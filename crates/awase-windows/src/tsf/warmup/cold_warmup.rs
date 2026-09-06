@@ -78,7 +78,7 @@ impl<'a> ColdWarmupSequence<'a> {
                 None
             };
             let conv_pre = crate::ime::get_ime_conversion_mode_raw_timeout_async(50).await;
-            log::debug!(
+            tracing::debug!(
                 "[cold-diag] pre-send conv={} NATIVE={} ROMAN={} KATAKANA={} write={conv_mutation_allowed} \
                  capture_target={target:?}",
                 conv_pre.map_or_else(|| "none".to_string(), |v| format!("0x{v:08X}")),
@@ -88,7 +88,7 @@ impl<'a> ColdWarmupSequence<'a> {
             );
             if conv_mutation_allowed {
                 let Some(target) = target else {
-                    log::debug!("[cold-diag] capture 失敗（フォーカス無し） → 書き込み中止");
+                    tracing::debug!("[cold-diag] capture 失敗（フォーカス無し） → 書き込み中止");
                     return;
                 };
                 let outcome = crate::ime::set_ime_conv_for_target(target, None, || {
@@ -96,7 +96,7 @@ impl<'a> ColdWarmupSequence<'a> {
                         .unwrap_or_else(|| focus_gen.wrapping_add(1))
                 })
                 .await;
-                log::debug!("[cold-diag] 結果: {outcome:?}");
+                tracing::debug!("[cold-diag] 結果: {outcome:?}");
             }
         });
 
@@ -104,7 +104,7 @@ impl<'a> ColdWarmupSequence<'a> {
         // SAFETY: Win32 GetForegroundWindow + GetClassName; returns empty string on failure.
         let win_class = unsafe { crate::ime::get_foreground_window_class() };
         let cold_reason = self.output.composition.last_cold_reason();
-        log::debug!(
+        tracing::debug!(
             "[h1-warmup] cold={cold_seq} class={win_class} session_expired={session_expired} \
              elapsed={elapsed_ms}ms reason={cold_reason:?} → F2/probe待機省略、per-VK confirm へ",
             cold_seq = cold_seq.value(),

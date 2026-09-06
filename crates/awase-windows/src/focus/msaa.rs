@@ -101,6 +101,7 @@ impl MsaaRole {
 /// 非テキストロール（ツールバー、メニュー等）なら NonText、
 /// 判定不能なら Undetermined を返す。
 #[must_use]
+#[tracing::instrument(level = "debug", skip_all)]
 pub fn msaa_classify(hwnd: HWND) -> ClassifyResult {
     let mut acc: *mut std::ffi::c_void = std::ptr::null_mut();
     #[expect(clippy::cast_sign_loss)] // OBJID_CLIENT (-4) is a Windows API convention
@@ -123,14 +124,14 @@ pub fn msaa_classify(hwnd: HWND) -> ClassifyResult {
 
             if let Some(role) = MsaaRole::from_u32(role_id) {
                 if role.is_text_input() {
-                    log::debug!("MSAA: {role:?} → TextInput");
+                    tracing::debug!("MSAA: {role:?} → TextInput");
                     return ClassifyResult {
                         kind: FocusKind::TextInput,
                         reason: ClassifyReason::MsaaRole(format!("{role:?}")),
                     };
                 }
                 if role.is_non_text() {
-                    log::debug!("MSAA: {role:?} → NonText");
+                    tracing::debug!("MSAA: {role:?} → NonText");
                     return ClassifyResult {
                         kind: FocusKind::NonText,
                         reason: ClassifyReason::MsaaRole(format!("{role:?}")),
@@ -138,7 +139,7 @@ pub fn msaa_classify(hwnd: HWND) -> ClassifyResult {
                 }
             }
 
-            log::debug!("MSAA: role={role_id} → Undetermined (not in allow/deny list)");
+            tracing::debug!("MSAA: role={role_id} → Undetermined (not in allow/deny list)");
         }
     }
 

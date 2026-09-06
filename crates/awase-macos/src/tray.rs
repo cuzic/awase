@@ -10,21 +10,21 @@ pub struct SystemTray {
 
 impl SystemTray {
     pub fn new() -> Self {
-        log::info!("Menu bar icon: stub (NSStatusBar not yet implemented)");
+        tracing::info!("Menu bar icon: stub (NSStatusBar not yet implemented)");
         Self { enabled: true }
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
-        log::info!("Tray: engine {}", if enabled { "ON" } else { "OFF" });
+        tracing::info!("Tray: engine {}", if enabled { "ON" } else { "OFF" });
     }
 
     pub fn show_balloon(&self, title: &str, message: &str) {
-        log::info!("Notification: {title}: {message}");
+        tracing::info!("Notification: {title}: {message}");
     }
 
     pub fn set_layout_name(&self, name: &str) {
-        log::info!("Tray: layout = {name}");
+        tracing::info!("Tray: layout = {name}");
     }
 }
 

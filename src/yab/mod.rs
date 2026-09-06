@@ -208,7 +208,7 @@ impl YabValue {
             Self::CtrlChord { raw, .. } | Self::InlineSequence { raw, .. } => raw.clone(),
             Self::MacroRef(name) => format!("@{name}"),
             Self::Sequence(_) => {
-                log::error!(
+                tracing::error!(
                     "[yab] 解決済み Sequence を .yab へ serialize しようとした\
                      （プレビュー専用コピーのはず）"
                 );

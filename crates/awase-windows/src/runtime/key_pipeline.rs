@@ -169,7 +169,7 @@ impl Runtime {
         // （実機では open 条件と warm 条件は常に一致していた）。
         let ime_on = self.platform_state.ime.effective_open();
         if !(ime_on && !shadow_toggled && self.platform.output.is_composition_warm()) {
-            log::debug!(
+            tracing::debug!(
                 "[kana-mode-restore] 見送り: ime_on={ime_on} shadow_toggled={shadow_toggled} \
                  composition_warm={} （cold-start中の可能性、物理かなキーは今回無反応）",
                 self.platform.output.is_composition_warm(),
@@ -182,7 +182,7 @@ impl Runtime {
             awase::engine::kana_input_warn::KanaLockReading::On
         );
         if kana_lock_on {
-            log::warn!(
+            tracing::warn!(
                 "[kana-mode-restore] ABORT: OS のかな入力ロックが既に On のため \
                  scan 付き VK_DBE_HIRAGANA 注入を見送る（BUG-15 追補7/BUG-61）"
             );
@@ -194,7 +194,7 @@ impl Runtime {
             ime_on,
             false,
         );
-        log::info!(
+        tracing::info!(
             "[kana-mode-restore] Suppress された物理かなキーの埋め合わせに \
              VK_DBE_HIRAGANA を注入 (sent={sent})"
         );
@@ -209,7 +209,7 @@ impl Runtime {
         // TsfGate: PendingWarmup 中はキーを保留し TSF モード確定を待つ。
         // run_with_prefetched 完了後に OUTPUT_PENDING_QUEUE 経由で再処理される。
         if self.platform.try_hold_key(event) {
-            log::debug!(
+            tracing::debug!(
                 "[tsf-gate-hold] vk=0x{:02X} {:?} held by TsfGate (PendingWarmup)",
                 event.vk_code,
                 event.event_type
@@ -229,13 +229,13 @@ impl Runtime {
                 // Ctrl↑ within 50ms: 「Ctrl+他キー中の誤打 無変換」を破棄する。
                 // ctrl=false で発火すると NICOLA FSM が PendingThumb に入り thumb shift に
                 // 化けてしまうため、無変換を消費する（IME OFF も発火しない）。
-                log::info!(
+                tracing::info!(
                     "[ime-off-rescue] Ctrl↑ within 50ms → 無変換 vk=0x{:02X} を破棄（thumb shift 防止）",
                     pending_event.vk_code
                 );
                 // 続けて現在 event (Ctrl↑) を通常処理する
             } else {
-                log::info!(
+                tracing::info!(
                     "[ime-off-rescue] non-Ctrl↑ event 到着 → 保留 vk=0x{:02X} を IME OFF として発火",
                     pending_event.vk_code
                 );
@@ -304,7 +304,7 @@ impl Runtime {
         // GetAsyncKeyState が汚染されている可能性がある。
         let phys_ctrl = hook::is_physical_key_down(crate::vk::VK_LCONTROL)
             || hook::is_physical_key_down(crate::vk::VK_RCONTROL);
-        log::debug!(
+        tracing::debug!(
             "[engine-input] vk=0x{:02X} {:?} ts={}us delay={}ms state={} \
              mods(c={} s={} a={} w={}) gas_ctrl={} phys_ctrl={} extra=0x{:X} \
              pending_drain={} gate_active={} \
@@ -329,7 +329,7 @@ impl Runtime {
             ctx.composing,
         );
         if !mods.ctrl && phys_ctrl {
-            log::warn!(
+            tracing::warn!(
                 "[engine-input] CTRL MISMATCH: mods.ctrl=false だが phys_ctrl=true (vk=0x{:02X} {:?}) \
                  → synthetic Ctrl↑ が GetAsyncKeyState を汚染した可能性がある",
                 event.vk_code, event.event_type,
@@ -345,7 +345,7 @@ impl Runtime {
             && hook::ctrl_consumed_since_down()
             && self.engine.matches_ime_off(&ctx, &event)
         {
-            log::debug!(
+            tracing::debug!(
                 "[ime-off-rescue] vk=0x{:02X} を 50ms 保留 (Ctrl consumed)",
                 event.vk_code
             );
@@ -542,6 +542,14 @@ impl Runtime {
     /// 戻り値: 非同期 conv 読み取りを spawn した（＝resync の場合、gate がまだ
     /// active で呼び出し元がハード期限タイマーを武装すべき）なら `true`。
     /// いずれかのガードで同期的に return した場合は `false`。
+    #[tracing::instrument(
+        level = "debug",
+        skip_all,
+        fields(
+            is_first_key_after_focus = is_first_key_after_focus,
+            resync_generation = resync_generation
+        )
+    )]
     fn kp_stage_idle_conv_check_inner(
         &mut self,
         event: &RawKeyEvent,
@@ -587,7 +595,7 @@ impl Runtime {
                     || is_first_key_after_focus)
                 && explicit_age < crate::tuning::EXPLICIT_IME_SUPPRESS_MS
             {
-                log::debug!(
+                tracing::debug!(
                     "[idle-conv-check] TsfNative: explicit IME action {}ms ago → スキップ (suppress={}ms)",
                     explicit_age,
                     crate::tuning::EXPLICIT_IME_SUPPRESS_MS,
@@ -626,12 +634,12 @@ impl Runtime {
             if let Some(since) = self.platform_state.gate.idle_conv_check_in_flight_since_ms {
                 let elapsed = now_ms_for_gate.saturating_sub(since);
                 if elapsed < crate::state::platform_state::IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS {
-                    log::debug!(
+                    tracing::debug!(
                         "[idle-conv-check] 前回の conv 読み取りが in-flight のためスキップ"
                     );
                     return false;
                 }
-                log::warn!(
+                tracing::warn!(
                     "[idle-conv-check] 前回の in-flight が {elapsed}ms 未解放 → 放棄されたとみなし再武装"
                 );
             }
@@ -739,7 +747,7 @@ impl Runtime {
         if self.platform_state.gate.half_width_alnum.is_guard_pending()
             || self.platform_state.gate.half_width_alnum.is_toggle_active()
         {
-            log::debug!(
+            tracing::debug!(
                 "[idle-conv-check] apply 時に shift ガードが有効 → 読み取り結果 conv=0x{conv:08X} を破棄"
             );
             return;
@@ -760,7 +768,7 @@ impl Runtime {
         // 関わらず「spawn〜apply の間に明示操作があった」事実だけで確実に棄却できる。
         if self.platform_state.ime.last_explicit_ime_action_ms_raw() != explicit_action_ms_at_spawn
         {
-            log::debug!(
+            tracing::debug!(
                 "[idle-conv-check] apply 時に spawn 後の explicit IME action を検出 → \
                  読み取り結果 conv=0x{conv:08X} を破棄 (spawn={explicit_action_ms_at_spawn}ms)"
             );
@@ -773,7 +781,7 @@ impl Runtime {
         // パターンであり、この suppress window 判定はそれとは別軸）。
         let explicit_age = self.platform_state.ime.explicit_ime_action_age_ms(now_tick);
         if explicit_age < crate::tuning::EXPLICIT_IME_SUPPRESS_MS {
-            log::debug!(
+            tracing::debug!(
                 "[idle-conv-check] apply 時に explicit IME action {explicit_age}ms 前 → \
                  読み取り結果 conv=0x{conv:08X} を破棄 (suppress={}ms)",
                 crate::tuning::EXPLICIT_IME_SUPPRESS_MS,
@@ -796,7 +804,7 @@ impl Runtime {
         // conv ワードを変えうる VK でのみ増分）のビット一致に置き換える。
         let conv_mutation_seq_now = crate::conv_mutation::current();
         if conv_mutation_seq_now != conv_mutation_seq_at_spawn {
-            log::debug!(
+            tracing::debug!(
                 "[idle-conv-check] apply 時に自己出力(conv変異)を検出 \
                  (conv_mutation_seq {conv_mutation_seq_at_spawn}→{conv_mutation_seq_now}) → \
                  読み取り結果 conv=0x{conv:08X} を破棄"
@@ -870,7 +878,7 @@ impl Runtime {
         // ここが key_pipeline 内で唯一の idle-conv-check InputModeObserved 構築点。
         match transition.input_mode_update {
             None => {
-                log::debug!(
+                tracing::debug!(
                     "[idle-conv-check] TsfNative: conv=0x{:08X}{} → belief {:?} 変更なし",
                     conv,
                     if is_cold && conv & crate::imm::IME_CMODE_ROMAN != 0 {
@@ -882,7 +890,7 @@ impl Runtime {
                 );
             }
             Some(new_mode) => {
-                log::info!(
+                tracing::info!(
                     "[idle-conv-check] TsfNative: conv=0x{conv:08X} → belief {current:?}→{new_mode:?}"
                 );
                 // source=ConvBitsInference: 実態は conv ビット（ImmGetConversionStatus 由来）
@@ -926,7 +934,7 @@ impl Runtime {
                 // 変更されないため、実際に補正が必要かは既存の drift correction
                 // 経路（check_drift_correction、BUG-20 で OFF 方向も修正済み）に
                 // 委ねる（2026-07-08 BUG-19 再発対策）。
-                log::info!(
+                tracing::info!(
                     "[idle-conv-check] TsfNative: conv observation open=true reason={reason:?} \
                      (conv=0x{conv:08X}) → ObserverReported として記録 (engine は actuate しない)"
                 );
@@ -946,13 +954,13 @@ impl Runtime {
                 return;
             }
             EngineSync::SetOpen(reason) => {
-                log::info!(
+                tracing::info!(
                     "[idle-conv-check] TsfNative: engine ON 同期 (conv=0x{conv:08X}, reason={reason:?})"
                 );
                 true
             }
             EngineSync::DirectInput => {
-                log::info!("[idle-conv-check] TsfNative: ObservedEisu 検出 → DirectInput (conv=0x{conv:08X})");
+                tracing::info!("[idle-conv-check] TsfNative: ObservedEisu 検出 → DirectInput (conv=0x{conv:08X})");
                 false
             }
         };
@@ -1051,7 +1059,7 @@ impl Runtime {
             if event.ime_relevance.sync_direction.is_some()
                 || event.ime_relevance.shadow_action.is_some()
             {
-                log::info!(
+                tracing::info!(
                     "[shadow-toggle] injected IME キー vk=0x{:02X} はユーザー意図に昇格させない \
                      (BUG-14) — belief 追従は may_change_ime refresh 観測に委譲",
                     event.vk_code,
@@ -1115,13 +1123,13 @@ impl Runtime {
             // 通るため、triage用の「intent 昇格」ログ（下のelse節、INFO）と
             // 違いdebugに留める——delegate側の「IME open axis delegated」
             // INFOログでtriageに必要な情報はカバーされる（Opusレビュー指摘）。
-            log::debug!(
+            tracing::debug!(
                 "[shadow-toggle] vk=0x{:02X}はFSM delegate所有 → \
                  belief書き込み/actuationをスキップ",
                 event.vk_code,
             );
         } else {
-            log::info!(
+            tracing::info!(
                 "[shadow-toggle] intent 昇格: vk=0x{:02X} scan=0x{:02X} action={:?} \
                  kind={:?} injected={} {}→{}",
                 event.vk_code,
@@ -1162,7 +1170,7 @@ impl Runtime {
             // 実 OS IME が別経路 (物理キー直結等) で乖離していても訂正されない。
             // hook.rs の [hook] IME-mode ログと突き合わせ、直前に対応する KeyDown
             // (vk=0xF0 等) が self_injected=false で到達していたか確認すること。
-            log::debug!(
+            tracing::debug!(
                 "[shadow-toggle] no-op: vk=0x{:02X} action={:?} source={:?} \
                  effective_open は既に {} → apply-ime 見送り",
                 event.vk_code,
@@ -1208,7 +1216,9 @@ impl Runtime {
                 // ため（2026-07-11 codexレビュー: 単に書き戻すとbeliefだけromaji-capable
                 // に戻り実convは半角英数のままの壊れた中間状態になる）。
                 if self.platform_state.gate.half_width_alnum.is_toggle_active() {
-                    log::info!("[shadow-toggle] TurnOn（半角英数トグルON中）→ トグルOFF処理へ委譲");
+                    tracing::info!(
+                        "[shadow-toggle] TurnOn（半角英数トグルON中）→ トグルOFF処理へ委譲"
+                    );
                     self.kp_restore_kana_from_half_width(false);
                 } else {
                     self.apply_input_mode_correction(
@@ -1216,7 +1226,7 @@ impl Runtime {
                         crate::state::ime_event::InputModeApplyStrategy::UserTurnOnEisuReset,
                         tick_ms,
                     );
-                    log::info!(
+                    tracing::info!(
                         "[shadow-toggle] TurnOn (IME既にopen) + ObservedEisu → AssumedRomaji に \
                          リセット (UserTurnOnEisuReset)"
                     );
@@ -1240,7 +1250,7 @@ impl Runtime {
             // 半角英数持続トグルON中は、通常のObservedEisu→AssumedRomaji書き戻しを
             // スキップしてトグルOFF処理そのものを呼ぶ（E節の理由は上の分岐と同じ）。
             if self.platform_state.gate.half_width_alnum.is_toggle_active() {
-                log::info!("[shadow-toggle] IME ON（半角英数トグルON中）→ トグルOFF処理へ委譲");
+                tracing::info!("[shadow-toggle] IME ON（半角英数トグルON中）→ トグルOFF処理へ委譲");
                 self.kp_restore_kana_from_half_width(false);
             } else {
                 self.apply_input_mode_correction(
@@ -1248,7 +1258,7 @@ impl Runtime {
                     crate::state::ime_event::InputModeApplyStrategy::UserImeOnEisuReset,
                     tick_ms,
                 );
-                log::info!(
+                tracing::info!(
                     "[shadow-toggle] IME ON + ObservedEisu → AssumedRomaji にリセット \
                      (UserImeOnEisuReset, engine 即活性化)"
                 );
@@ -1317,9 +1327,11 @@ impl Runtime {
                     crate::state::ime_event::OpenApplyReason::ShadowToggle,
                 );
             }
-            log::debug!("[shadow-toggle] ON→OFF: apply_ime_open(false) dispatched + applied=false");
+            tracing::debug!(
+                "[shadow-toggle] ON→OFF: apply_ime_open(false) dispatched + applied=false"
+            );
         }
-        log::debug!(
+        tracing::debug!(
             "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
             if current { "ON" } else { "OFF" },
             if self.platform_state.ime.effective_open() {
@@ -1409,7 +1421,7 @@ impl Runtime {
             // ON へ戻る）の切り分けのため debug → info に格上げし、遷移直前の
             // last_intent 内訳を追加した。この分岐は Engine の active/inactive が実際に
             // 遷移した時だけ通るため、毎 tick 出るログではない（低頻度）。
-            log::info!(
+            tracing::info!(
                 "IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest, origin={origin:?}), \
                  was_open_before={was_open_before} last_intent_before={last_intent_before:?} \
                  poll suspended{}",
@@ -1468,7 +1480,7 @@ impl Runtime {
                 // スキップしてトグルOFF処理そのものを呼ぶ（E節、shadow_ime_toggle側の
                 // 2箇所と同じ理由）。
                 if self.platform_state.gate.half_width_alnum.is_toggle_active() {
-                    log::info!(
+                    tracing::info!(
                         "[post-decision] SetOpen(true)（半角英数トグルON中）→ トグルOFF処理へ委譲"
                     );
                     self.kp_restore_kana_from_half_width(false);
@@ -1482,7 +1494,7 @@ impl Runtime {
                         crate::state::ime_event::InputModeApplyStrategy::PostSetOpenEisuReset,
                         tick_ms,
                     );
-                    log::info!(
+                    tracing::info!(
                         "[post-decision] SetOpen(true) + ObservedEisu → AssumedRomaji にリセット \
                          (engine 即活性化)"
                     );
@@ -1495,7 +1507,7 @@ impl Runtime {
             && matches!(event.event_type, KeyEventType::KeyDown)
         {
             self.schedule_ime_refresh(20);
-            log::debug!("may_change_ime key passed through → IME refresh scheduled (20ms)");
+            tracing::debug!("may_change_ime key passed through → IME refresh scheduled (20ms)");
         }
 
         self.kp_stage_shift_conv_guard(event);
@@ -1520,9 +1532,9 @@ impl Runtime {
         // メインスレッド（フックスレッド）から呼んでいる。
         if unsafe { crate::ime::is_caps_lock_on() } {
             unsafe { crate::ime::toggle_caps_lock() };
-            log::info!("[ime-on-combo] IME 既に ON → Caps Lock を OFF に");
+            tracing::info!("[ime-on-combo] IME 既に ON → Caps Lock を OFF に");
         }
-        log::info!(
+        tracing::info!(
             "[ime-on-combo] IME 既に ON → ひらがな＋ローマ字入力へリセット \
              (NATIVE|FULLSHAPE|ROMAN を立て KATAKANA を落とす)"
         );
@@ -1545,7 +1557,7 @@ impl Runtime {
         // 効いて挙動が変わってしまうため、今回は見送る。
         win32_async::spawn_local(async move {
             let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
-                log::debug!("[ime-on-combo] capture 失敗（フォーカス無し） → リセット中止");
+                tracing::debug!("[ime-on-combo] capture 失敗（フォーカス無し） → リセット中止");
                 return;
             };
             let current = crate::ime::get_ime_conv_for_target(target, 50).await;
@@ -1560,7 +1572,7 @@ impl Runtime {
             })
             .await;
             if !matches!(outcome, crate::ime::ActuationOutcome::Written) {
-                log::warn!(
+                tracing::warn!(
                     "[ime-on-combo] ひらがな＋ローマ字リセットの conv write に失敗: {outcome:?}"
                 );
             }
@@ -1751,7 +1763,7 @@ impl Runtime {
                 // まま先書きしていた）。IMC経路は `actuate_conv_mode` の**前**に
                 // 無条件でlatchを立てる（§3原則2、挙動を変えないこと）。
                 self.platform_state.gate.half_width_alnum.commit_enter_imc();
-                log::info!(
+                tracing::info!(
                     "[shift-conv-guard] 左Shift単独タップ → 半角英数トグルON (conv=0x0000 書き込み)"
                 );
                 let now_tick = crate::state::TickMs(hook::current_tick_ms());
@@ -1781,7 +1793,7 @@ impl Runtime {
                     match conv {
                         Some(c) => {
                             let native = c & crate::imm::IME_CMODE_NATIVE != 0;
-                            log::info!(
+                            tracing::info!(
                                 "[shift-conv-guard] entry verify (150ms後): conv=0x{c:08X} \
                              NATIVE={native} ({})",
                                 if native {
@@ -1792,7 +1804,7 @@ impl Runtime {
                             );
                         }
                         None => {
-                            log::info!(
+                            tracing::info!(
                                 "[shift-conv-guard] entry verify (150ms後): conv 読み取り失敗 (None)"
                             );
                         }
@@ -1814,7 +1826,7 @@ impl Runtime {
                     true,
                 ) {
                     self.platform_state.gate.half_width_alnum.commit_enter_gji();
-                    log::info!(
+                    tracing::info!(
                         "[shift-conv-guard] 左Shift単独タップ → GJI 半角英数トグルON \
                          (VK_DBE_ALPHANUMERIC)"
                     );
@@ -1890,14 +1902,14 @@ impl Runtime {
                 .gate
                 .half_width_alnum
                 .rearm_after_failed_gji_exit();
-            log::warn!(
+            tracing::warn!(
                 "[shift-conv-guard] GJI 半角英数トグル exit の SendInput を見送った \
                  (Win/Alt押下中 or effective_open=false)。実GJIは半角英数のままの \
                  可能性が高いため belief を据え置き、ラッチを true に戻して再試行に備える"
             );
             false
         } else {
-            log::warn!(
+            tracing::warn!(
                 "[shift-conv-guard] GJI 半角英数トグル exit の SendInput を見送った \
                  (Win/Alt押下中 or effective_open=false、呼び出し元はフォーカス変更/\
                  shadow toggle/post-decision)。実GJIは半角英数のままの可能性が \
@@ -1943,7 +1955,7 @@ impl Runtime {
         // GJI の非冪等トグル二重送信を防ぐ（INV-B）。
         let active_ime_kind = crate::tsf::observer::tsf_obs().active_ime_kind();
         if !was_toggle_active {
-            log::debug!(
+            tracing::debug!(
                 "[shift-conv-guard] 半角英数トグル復元 write をスキップ (already inactive)"
             );
         } else if active_ime_kind == crate::tsf::observer::ActiveImeKind::MicrosoftIme {
@@ -2024,16 +2036,16 @@ impl Runtime {
                     true,
                 ));
                 let _ = crate::win32::send_input_safe(&f2_inputs);
-                log::debug!(
+                tracing::debug!(
                     "[shift-conv-guard] VK_DBE_HIRAGANA (scan 付き) 注入 → ひらがなモード復元"
                 );
             } else if blocking_modifier_held {
-                log::debug!(
+                tracing::debug!(
                     "[shift-conv-guard] Win/Alt 押下中のため VK_DBE_HIRAGANA 注入をスキップ \
                      (IMC write のみ。Alt+かな誤発火/Win+F2のスタートメニュー起動を防ぐ)"
                 );
             } else {
-                log::debug!(
+                tracing::debug!(
                     "[shift-conv-guard] effective_open()=false のため VK_DBE_HIRAGANA 注入をスキップ \
                      (IMC write のみ、BUG-15 追補7の教訓)"
                 );
@@ -2045,7 +2057,7 @@ impl Runtime {
             let target_conv = crate::imm::IME_CMODE_NATIVE
                 | crate::imm::IME_CMODE_FULLSHAPE
                 | crate::imm::IME_CMODE_ROMAN;
-            log::info!("[shift-conv-guard] かな入力へ復元 (target=0x{target_conv:08X})");
+            tracing::info!("[shift-conv-guard] かな入力へ復元 (target=0x{target_conv:08X})");
 
             // pass-5 レビュー指摘（blocking）: このリトライタスクは detached
             // (`spawn_local`) で、完了は Shift タップ間隔より遅れうる。起動時点の
@@ -2074,7 +2086,7 @@ impl Runtime {
                 const RETRY_INTERVAL_MS: u32 = 160;
                 const MAX_TRIES: u32 = 4;
                 let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
-                    log::debug!("[shift-conv-guard] capture 失敗（フォーカス無し） → 復元中止");
+                    tracing::debug!("[shift-conv-guard] capture 失敗（フォーカス無し） → 復元中止");
                     return;
                 };
                 for attempt in 0..MAX_TRIES {
@@ -2101,14 +2113,14 @@ impl Runtime {
                         // await 前・他の with_app のネスト無し）、万一 None が
                         // 返った場合に沈黙で猶予が更新されないと BUG-49 が
                         // 無警告で再発するため、痕跡を残す。
-                        log::warn!(
+                        tracing::warn!(
                             "[shift-conv-guard] 復元リトライ #{attempt}: with_app 再入 \
                              (None) により override 更新をスキップ"
                         );
                         false
                     });
                     if !still_owner {
-                        log::debug!(
+                        tracing::debug!(
                             "[shift-conv-guard] 復元リトライ #{attempt}: 新しい hold が \
                              開始された (gen 不一致) ため中断"
                         );
@@ -2125,7 +2137,7 @@ impl Runtime {
                     match outcome {
                         crate::ime::ActuationOutcome::Written => {}
                         crate::ime::ActuationOutcome::Failed => {
-                            log::warn!("[shift-conv-guard] conv 復元 write #{attempt} 失敗");
+                            tracing::warn!("[shift-conv-guard] conv 復元 write #{attempt} 失敗");
                         }
                         crate::ime::ActuationOutcome::Aborted(reason) => {
                             // GenStale はこの直前の still_owner チェックとほぼ同じ条件
@@ -2134,7 +2146,7 @@ impl Runtime {
                             // TargetMoved は capture 後にフォーカスだけが動いた
                             // （gen 更新が伴わない）ケースの検知。どちらも同じ
                             // capture 済み target のまま次の試行を続ける（write は冪等）。
-                            log::warn!(
+                            tracing::warn!(
                                 "[shift-conv-guard] conv 復元 write #{attempt}: Aborted({reason:?})"
                             );
                         }
@@ -2150,7 +2162,7 @@ impl Runtime {
                     let conv = crate::ime::get_ime_conv_for_target(target, 10).await;
                     if let Some(c) = conv {
                         if c & crate::imm::IME_CMODE_NATIVE != 0 {
-                            log::debug!(
+                            tracing::debug!(
                                 "[shift-conv-guard] conv=0x{c:08X} NATIVE 確認 (#{attempt}) → 復元完了"
                             );
                             // 復元完了。confirm-gate は通常どおり
@@ -2168,7 +2180,9 @@ impl Runtime {
                         }
                     }
                 }
-                log::warn!("[shift-conv-guard] conv 復元 {MAX_TRIES} 回で NATIVE 未確認のまま終了");
+                tracing::warn!(
+                    "[shift-conv-guard] conv 復元 {MAX_TRIES} 回で NATIVE 未確認のまま終了"
+                );
                 // 復元が最終的に失敗した場合は override を解除し、通常の安全弁
                 // （IMC 未確認なら give-up latch）へ戻す。延長したまま放置すると
                 // 本当に IMC が読めない環境でも give-up が永久に立たなくなる。
@@ -2224,7 +2238,7 @@ impl Runtime {
         physical: crate::runtime::PhysicalKeyDisposition,
     ) -> CallbackResult {
         if let Some(reason) = physical.suppress_reason(event, profile) {
-            log::debug!(
+            tracing::debug!(
                 "[{reason}] key suppress vk={:#04x} {:?} (physical disposition)",
                 event.vk_code,
                 event.event_type
@@ -2282,7 +2296,7 @@ impl Runtime {
         let action = self.kana_lock_hysteresis.observe(reading);
         let after = self.kana_lock_hysteresis.streak();
         if streak_side(before) != streak_side(after) {
-            log::debug!("[kana-lock] streak transition: {before:?} -> {after:?}");
+            tracing::debug!("[kana-lock] streak transition: {before:?} -> {after:?}");
         }
 
         match action {
@@ -2290,14 +2304,14 @@ impl Runtime {
             WarnAction::Warn => {
                 // SAFETY: 診断ログ用の読み取りのみ。メッセージループスレッド上で呼ぶ。
                 let fg_class = unsafe { crate::observer::kana_lock::foreground_class_name() };
-                log::warn!(
+                tracing::warn!(
                     "[kana-lock] OS かな入力ロックを検知しました \
                      (reading={reading:?} streak={after:?} fg_class={fg_class})"
                 );
                 post_to_main_thread(WM_KANA_LOCK_WARNING_CHANGED);
             }
             WarnAction::ClearWarned => {
-                log::warn!("[kana-lock] OS かな入力ロック解除を検知しました");
+                tracing::warn!("[kana-lock] OS かな入力ロック解除を検知しました");
                 post_to_main_thread(WM_KANA_LOCK_WARNING_CHANGED);
             }
         }
@@ -2487,7 +2501,7 @@ impl Runtime {
             FocusProbeOpenStatus::NotObservable(_) => None,
         };
         if probe.ime_on.is_some() && probe_ime_on.is_none() {
-            log::debug!(
+            tracing::debug!(
                 "FocusProbe: profile={current_profile:?} は IMM32 open status 非対応のため \
                  probe.ime_on={:?} を破棄",
                 probe.ime_on
@@ -2584,7 +2598,7 @@ impl Runtime {
                             accepted.fence,
                         );
                         self.platform_state.ime.set_prev_conversion_mode(Some(conv));
-                        log::debug!(
+                        tracing::debug!(
                             "[focus-conv-check] TsfNative: conv=0x{conv:08X} 読み取り（belief 更新なし、\
                              フォーカス変更直後の値はユーザー意図の signal ではないため idle-conv-check に一任）"
                         );
@@ -2592,7 +2606,9 @@ impl Runtime {
                 } else {
                     // warn: バグ報告に添付する awase.log（info レベル既定）に残す
                     // ため。BUG-34 横展開の切り分け材料。
-                    log::warn!("[focus-conv-check] SendHealth degrade で conv 読み取りを見送り");
+                    tracing::warn!(
+                        "[focus-conv-check] SendHealth degrade で conv 読み取りを見送り"
+                    );
                 }
             }
         }
@@ -2628,7 +2644,7 @@ impl Runtime {
                                 let ime = &mut app.platform_state.ime;
                                 // ON/OFF: High confidence (ImmCrossProbe source)
                                 ime.write_imm_cross_probe(open, tick_ms, inner_accepted);
-                                log::debug!(
+                                tracing::debug!(
                                     "[ImmCrossProbe] child-hwnd IME={open} → High confidence 観測記録"
                                 );
                                 // input_mode: Observe → pure decision → belief
@@ -2687,7 +2703,7 @@ impl Runtime {
                         })
                         .unwrap_or((false, 0));
                         if should_restore {
-                            log::debug!(
+                            tracing::debug!(
                                 "[ImmCrossProbe] kana mode (conv=0x{conv:08X}) + IME ON \
                                  → romaji 修正 (MS-IME かなモード修正)"
                             );
@@ -2695,7 +2711,7 @@ impl Runtime {
                                 let Some(target) =
                                     crate::ime::ActuationTarget::capture(focus_gen).await
                                 else {
-                                    log::debug!(
+                                    tracing::debug!(
                                         "[ImmCrossProbe] romaji 修正: capture 失敗（フォーカス無し）"
                                     );
                                     return;
@@ -2709,7 +2725,9 @@ impl Runtime {
                                     })
                                     .await;
                                 if !matches!(outcome, crate::ime::ActuationOutcome::Written) {
-                                    log::warn!("[ImmCrossProbe] romaji 修正に失敗: {outcome:?}");
+                                    tracing::warn!(
+                                        "[ImmCrossProbe] romaji 修正に失敗: {outcome:?}"
+                                    );
                                 }
                             });
                         }
@@ -2742,7 +2760,7 @@ impl Runtime {
             } else {
                 String::new()
             };
-        log::info!(
+        tracing::info!(
             "FocusProbe +{}ms: ime_on={}{} mode={:?} [ime={:?} sig1={}{}]",
             probe_age_ms,
             ime_on_after_probe,
@@ -2754,14 +2772,14 @@ impl Runtime {
         );
 
         match suppressed_reason {
-            Some(reason) => log::debug!(
+            Some(reason) => tracing::debug!(
                 "FocusProbe: imc_open=false を抑制 (reason={reason}) — Engine deactivation を防止"
             ),
-            None if used_shadow_fallback => log::debug!(
+            None if used_shadow_fallback => tracing::debug!(
                 "FocusProbe: TsfNative/Imm32Unavailable — 観測不能のため記録は行わず、shadow 値 \
                  {shadow_on} を guard 解除判定にのみ使用 [probe_age={probe_age_ms}ms]"
             ),
-            None if probe.ime_on.is_none() => log::warn!(
+            None if probe.ime_on.is_none() => tracing::warn!(
                 "FocusProbe: ime_on 未検出 — stale値 {ime_on_before_probe} \
                  [probe_age={probe_age_ms}ms]",
             ),

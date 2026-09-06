@@ -51,7 +51,7 @@ impl HwndImeCache {
             recorded_ms: crate::hook::current_tick_ms(),
             from_explicit_off_intent,
         };
-        log::debug!(
+        tracing::debug!(
             "HwndCache: save [{} {}] ime_on={} mode={:?}",
             old_pid,
             old_class,
@@ -74,7 +74,7 @@ impl HwndImeCache {
         if let Some(&snapshot) = self.0.get(&cache_key) {
             let age_ms = crate::hook::current_tick_ms().saturating_sub(snapshot.recorded_ms);
             if age_ms <= HWND_CACHE_MAX_AGE_MS {
-                log::info!(
+                tracing::info!(
                     "HwndCache: restore [{} {}] ime_on={} mode={:?} ({}ms ago)",
                     new_pid,
                     new_class,
@@ -84,7 +84,7 @@ impl HwndImeCache {
                 );
                 return Some(snapshot);
             }
-            log::info!(
+            tracing::info!(
                 "HwndCache: stale [{} {}] ime_on={} mode={:?} ({}ms ago > {}ms) → FocusProbe 待ち",
                 new_pid,
                 new_class,
@@ -94,7 +94,9 @@ impl HwndImeCache {
                 HWND_CACHE_MAX_AGE_MS,
             );
         } else {
-            log::debug!("HwndCache: no entry for [{new_pid} {new_class}], stale until FocusProbe");
+            tracing::debug!(
+                "HwndCache: no entry for [{new_pid} {new_class}], stale until FocusProbe"
+            );
         }
         None
     }

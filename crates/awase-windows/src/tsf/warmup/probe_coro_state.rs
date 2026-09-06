@@ -65,7 +65,7 @@ impl ProbeCoroState {
     /// 呼び出し元（`tsf-probe-vk-sent-trace`/`gji-coro-vk-sent-trace`）で書き分ける。
     pub(crate) fn tick(&mut self, env: TsfEnvSnapshot, log_tag: &str) -> Vec<ProbeAction> {
         if self.pending_vk_sent.is_some() || self.pending_transmit_done.is_some() {
-            log::debug!(
+            tracing::debug!(
                 "[{log_tag}] cold={} tick consuming pending_vk_sent={} \
                  pending_transmit_done={} t={}ms",
                 self.cold_seq.value(),
@@ -124,7 +124,7 @@ impl ProbeCoroState {
         // まだ tick() に消費されないまま次の apply_vk_sent が来ている
         // （＝1 tick 内で TransmitSingleVk が2回ディスパッチされた等の異常）。
         let overwritten = self.pending_vk_sent.is_some();
-        log::debug!(
+        tracing::debug!(
             "[{log_tag}] cold={} apply_vk_sent SET deadline_ms={deadline_ms} \
              overwritten_unconsumed={overwritten} t={}ms",
             self.cold_seq.value(),

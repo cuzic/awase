@@ -50,7 +50,7 @@ pub unsafe fn resolve_focus_kind(
 
     // 3. エンジンタイマー活性中はスキップ
     if platform.is_engine_processing() {
-        log::debug!("classify_focus skipped: engine timer active (user typing)");
+        tracing::debug!("classify_focus skipped: engine timer active (user typing)");
         return FocusKindResolution {
             kind: FocusKind::Undetermined,
             reason: "skipped (engine active)".to_string(),
@@ -72,7 +72,7 @@ pub unsafe fn resolve_focus_kind(
             overridden: false,
         }
     } else {
-        log::warn!("classify_focus timed out for hwnd={hwnd:?}");
+        tracing::warn!("classify_focus timed out for hwnd={hwnd:?}");
         FocusKindResolution {
             kind: FocusKind::Undetermined,
             reason: "classify timeout".to_string(),

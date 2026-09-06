@@ -27,8 +27,12 @@ awase = { path = "../.." }
 awase-gji-config = { path = "../awase-gji-config" }
 awase-vkmap = { path = "../awase-vkmap" }
 timed-fsm = { path = "../timed-fsm", version = "0.5.0" }
-log = "0.4"
-env_logger = "0.11"
+tracing = "0.1"
+# tracing-log は default feature（他の default: smallvec/fmt/ansi/std も維持する
+# ことが必須 — default-features = false にしない）。SubscriberInitExt::{init,
+# try_init} 経由でのみ LogTracer が自動設置され、egui/winit 等が出す `log` 出力を
+# 拾い続けられる（ADR-139 決定2 参照）。
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 anyhow = "1"
 toml = "0.8"
 itertools = "0.13"

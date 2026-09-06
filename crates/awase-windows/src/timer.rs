@@ -31,7 +31,7 @@ impl Win32Timer {
     pub fn set(&mut self, logical_id: usize, duration: Duration) {
         let ms = u32::try_from(duration.as_millis()).unwrap_or(u32::MAX);
         let os_id = unsafe { SetTimer(None, 0, ms, None) };
-        log::debug!("Timer set: logical={logical_id}, ms={ms}, os_id={os_id}");
+        tracing::debug!("Timer set: logical={logical_id}, ms={ms}, os_id={os_id}");
 
         // 古いマッピングがあれば OS タイマーも破棄
         if let Some(old_os) = self.to_os.insert(logical_id, os_id) {
@@ -50,7 +50,7 @@ impl Win32Timer {
             unsafe {
                 let _ = KillTimer(None, os_id);
             }
-            log::debug!("Timer killed: logical={logical_id}, os_id={os_id}");
+            tracing::debug!("Timer killed: logical={logical_id}, os_id={os_id}");
         }
     }
 

@@ -91,7 +91,7 @@ async fn ms_ime_ready_coro_body(
     loop {
         let env = yield_step(ch.clone(), vec![]).await;
         if env_native_ready(env) {
-            log::info!(
+            tracing::info!(
                 "[msime-ready] cold={cold_seq} IME mode NATIVE 確認 (+{}ms) → 送信 {romaji:?}",
                 crate::hook::current_tick_ms().saturating_sub(start_ms),
                 cold_seq = cold_seq.value(),
@@ -113,7 +113,7 @@ async fn ms_ime_ready_coro_body(
         if crate::hook::current_tick_ms() >= effective_deadline_ms {
             // 安全弁: IMC が読めない環境でタイピングを止めない。
             // give-up latch（連続発動の抑止）は start_ms_ime_ready_poll 側が設定する。
-            log::warn!(
+            tracing::warn!(
                 "[msime-ready] cold={cold_seq} 期限切れ (mode={:?} confirmed={} \
                  deadline=0x{effective_deadline_ms:X}) → 強制送信 {romaji:?}",
                 env.ime_mode,

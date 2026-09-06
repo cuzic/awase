@@ -10,7 +10,7 @@ pub fn run() {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        log::warn!("[update-check] Windows以外では更新確認は利用できません");
+        tracing::warn!("[update-check] Windows以外では更新確認は利用できません");
     }
 }
 
@@ -30,7 +30,7 @@ fn run_windows() {
     let attempted_at = awase::update_state::now_unix();
     state.last_attempted_at = Some(attempted_at);
     if let Err(e) = awase::update_state::save(&path, &state) {
-        log::warn!(
+        tracing::warn!(
             "[update-check] 試行時刻を保存できませんでした: {} ({e})",
             path.display()
         );
@@ -40,7 +40,7 @@ fn run_windows() {
     let config = match awase::config::AppConfig::load(&config_path) {
         Ok(config) => config,
         Err(e) => {
-            log::warn!(
+            tracing::warn!(
                 "[update-check] config.tomlを読めないため更新確認をスキップします: {} ({e})",
                 config_path.display()
             );
@@ -48,14 +48,14 @@ fn run_windows() {
         }
     };
     if !config.general.update_check {
-        log::info!("[update-check] 更新確認は無効です");
+        tracing::info!("[update-check] 更新確認は無効です");
         return;
     }
 
     match fetch_latest_version() {
         Ok(latest_version) => {
             let Some(parsed) = awase::version::parse(&latest_version) else {
-                log::warn!(
+                tracing::warn!(
                     "[update-check] latest_versionをSemVerとして解釈できません: {latest_version}"
                 );
                 return;
@@ -64,16 +64,16 @@ fn run_windows() {
             state.last_success_at = Some(now);
             state.last_seen_latest = Some(parsed.to_string());
             if let Err(e) = awase::update_state::save(&path, &state) {
-                log::warn!(
+                tracing::warn!(
                     "[update-check] 成功状態を保存できませんでした: {} ({e})",
                     path.display()
                 );
                 return;
             }
-            log::info!("[update-check] 最新バージョンを確認しました: {parsed}");
+            tracing::info!("[update-check] 最新バージョンを確認しました: {parsed}");
         }
         Err(e) => {
-            log::warn!("[update-check] 最新バージョンを確認できませんでした: {e}");
+            tracing::warn!("[update-check] 最新バージョンを確認できませんでした: {e}");
         }
     }
 }
@@ -95,7 +95,7 @@ impl UpdateCheckMutex {
             Ok(handle) => {
                 // SAFETY: GetLastError is read immediately after CreateMutexW on this thread.
                 if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
-                    log::info!("[update-check] 既に実行中のためスキップします");
+                    tracing::info!("[update-check] 既に実行中のためスキップします");
                     // SAFETY: handle was returned by CreateMutexW and is closed exactly once here.
                     unsafe {
                         let _ = windows::Win32::Foundation::CloseHandle(handle);
@@ -106,7 +106,7 @@ impl UpdateCheckMutex {
                 }
             }
             Err(e) => {
-                log::warn!("[update-check] Mutexを取得できませんでした: {e}");
+                tracing::warn!("[update-check] Mutexを取得できませんでした: {e}");
                 None
             }
         }

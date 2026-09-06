@@ -8,7 +8,7 @@ repository = "https://github.com/cuzic/awase"
 publish = false
 
 [dependencies]
-log = "0.4"
+tracing = "0.1"
 
 [lints.rust]
 unsafe_code = "deny"

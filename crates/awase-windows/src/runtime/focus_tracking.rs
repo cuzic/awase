@@ -73,6 +73,7 @@ impl Runtime {
     /// フォーカスプローブ結果を適用する（blocking なし、with_app 内で呼ぶ）。
     /// detect_and_update_focus の fetch 部分を除いた apply のみ。
     /// async drain 後に with_app 内で呼ぶ用途に使う。
+    #[tracing::instrument(level = "debug", skip_all)]
     pub fn apply_focus_probe_result(
         &mut self,
         probe: Option<crate::focus::probe::FocusSnapshot>,
@@ -174,7 +175,7 @@ impl Runtime {
         self.platform.notify_focus_changed();
 
         self.recompute_active_keymaps();
-        log::debug!(
+        tracing::debug!(
             "[keymap] active rules updated on focus change: {} rule(s) \
              (hwnd={:?} kind={:?} focus_epoch={})",
             self.platform_state.keymap.active_keymaps.len(),
@@ -216,7 +217,7 @@ impl Runtime {
     /// `clear_on_focus_change()` が担当する）。
     fn sync_initial_focus_fence(&mut self, tick_ms: crate::state::TickMs) {
         let fence = self.focus_fence();
-        log::debug!("[focus-fence] bootstrap initial fence: {fence:?}");
+        tracing::debug!("[focus-fence] bootstrap initial fence: {fence:?}");
         self.platform_state.ime.dispatch_event(
             crate::state::ime_event::ImeEvent::InitialFocusFenceEstablished { fence },
             tick_ms,
@@ -236,7 +237,7 @@ impl Runtime {
     fn sync_initial_app_policy(&mut self, tick_ms: crate::state::TickMs) {
         let profile: crate::state::ime_event::ImePolicyProfile =
             self.platform.current_app_profile().into();
-        log::debug!("[app-policy] bootstrap initial app_policy: profile={profile:?}");
+        tracing::debug!("[app-policy] bootstrap initial app_policy: profile={profile:?}");
         self.platform_state.ime.dispatch_event(
             crate::state::ime_event::ImeEvent::InitialAppPolicyEstablished { profile },
             tick_ms,
@@ -255,7 +256,7 @@ impl Runtime {
         use crate::focus::kind_classifier;
 
         let Some(probe) = probe else {
-            log::warn!("Focus probe timed out — skipping update this cycle");
+            tracing::warn!("Focus probe timed out — skipping update this cycle");
             return None;
         };
         if probe.process_id == 0 {
@@ -292,7 +293,7 @@ impl Runtime {
         }
 
         if self.platform_state.focus.app_kind != new_app_kind {
-            log::info!(
+            tracing::info!(
                 "AppKind changed: {:?} → {:?} (class={class_name})",
                 self.platform_state.focus.app_kind,
                 new_app_kind
@@ -311,7 +312,7 @@ impl Runtime {
         let overridden = resolution.overridden;
 
         if self.platform_state.focus.focus_kind != kind {
-            log::debug!(
+            tracing::debug!(
                 "Focus kind changed: {:?} → {kind:?} (reason={reason})",
                 self.platform_state.focus.focus_kind
             );
@@ -398,7 +399,7 @@ impl Runtime {
                     from_explicit_off_intent,
                 );
             } else {
-                log::debug!(
+                tracing::debug!(
                     "[focus] focus duration {focus_duration_ms}ms < MIN_FOCUS_DURATION_MS={} — cache save スキップ",
                     crate::tuning::MIN_FOCUS_DURATION_MS,
                 );
@@ -522,7 +523,9 @@ impl Runtime {
             self.invalidate_engine_context(ContextChange::FocusChanged);
         }
 
-        log::info!("[app-disable] {transition:?}: process_id={process_id} disabled={is_disabled}");
+        tracing::info!(
+            "[app-disable] {transition:?}: process_id={process_id} disabled={is_disabled}"
+        );
     }
 
     /// プロセス変更時の後処理（ログ・タイムスタンプ・output 通知・IME キャッシュ復元等）。
@@ -533,7 +536,7 @@ impl Runtime {
         prev_pid: Option<u32>,
         prev: &FocusIdentity,
     ) {
-        log::info!(
+        tracing::info!(
             "FocusChange [{}→{}] {}: stale ime_on={} intent={:?} mode={:?} japanese={}",
             prev_pid.map_or_else(|| "?".to_string(), |p| p.to_string()),
             classified.process_id,
@@ -609,7 +612,7 @@ impl Runtime {
                     self.platform_state
                         .ime
                         .apply_hwnd_cache_restore(cache_hit, tick_ms);
-                    log::debug!(
+                    tracing::debug!(
                         "[focus] TsfNative: cache restore \
                          (desired_open=false だが cache=true — Imm32Unavailable 汚染を修正)"
                     );
@@ -617,7 +620,7 @@ impl Runtime {
                     // SSOT: desired_open を前窓の値のまま維持。
                     // FocusChanged が applied=Unknown を設定済みのため、最初のキー入力で
                     // dispatch_ime が desired_open を窓へ apply する。
-                    log::debug!(
+                    tracing::debug!(
                         "[focus] TsfNative/SSOT: cache restore スキップ — \
                          最初のキー入力で dispatch_ime が apply"
                     );
@@ -633,7 +636,7 @@ impl Runtime {
                     pre_focus_explicit_off_ms,
                 );
                 if discard_cache {
-                    log::debug!(
+                    tracing::debug!(
                         "[focus] Imm32Unavailable cache discarded \
                          (stale false or explicit IME OFF is newer) — treating as cache miss"
                     );
@@ -648,7 +651,7 @@ impl Runtime {
                     let last_off_ms = pre_focus_explicit_off_ms;
                     let elapsed = tick_ms.saturating_sub(last_off_ms);
                     if last_off_ms > 0 && elapsed < EXPLICIT_OFF_CACHE_SUPPRESS_MS {
-                        log::debug!(
+                        tracing::debug!(
                             "[focus] Imm32Unavailable cache-miss: skip reset_stale \
                              — explicit IME OFF {elapsed}ms ago",
                         );
@@ -682,7 +685,7 @@ impl Runtime {
             let ime_on_now = self.platform_state.ime.effective_open();
             if ime_on_now {
                 self.platform_state.ime.record_confirmed(true, tick_ms.0);
-                log::debug!(
+                tracing::debug!(
                     "[focus] Imm32Unavailable hard pre-sync applied=true \
                      (prevent spurious VK_KANJI on first character key)"
                 );
@@ -738,7 +741,7 @@ impl Runtime {
                                 app.platform_state
                                     .ime
                                     .write_imm_cross_probe(open, now_tick, accepted);
-                                log::debug!(
+                                tracing::debug!(
                                     "[ImmCrossProbe/focus] child-hwnd IME={open} → \
                                      High confidence 観測記録"
                                 );
@@ -752,7 +755,7 @@ impl Runtime {
         if self.platform_state.ime.is_force_on_guard_active()
             || self.platform_state.ime.detect_miss_count() > 0
         {
-            log::debug!(
+            tracing::debug!(
                 "Focus changed: clearing force_on_guard and detect_miss_count \
                  (new window may have different IME state)"
             );

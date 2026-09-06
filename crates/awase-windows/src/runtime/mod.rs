@@ -44,7 +44,7 @@ pub(crate) fn resolve_dedicated_fn_key(name: Option<&str>) -> Option<VkCode> {
     let name = name?;
     let resolved = VkCode::from_name(name);
     if resolved.is_none() {
-        log::warn!(
+        tracing::warn!(
             "[config] muhenkan_solo_tap_dedicated_fn_key = {name:?} を VK 名として \
              解決できませんでした。専用 Fn キー変換は無効のままです \
              （\"VK_F18\" のような完全な VK 名が必要、\"F18\" 等の短縮形は不可）"
@@ -421,7 +421,7 @@ impl Runtime {
             crate::IME_DETECT_MISS_THRESHOLD,
             current,
         ) {
-            log::info!(
+            tracing::info!(
                 "IMM capability learned: {process_name}/{class_name} → {new_cap:?} (miss {miss_before}→{miss_after})"
             );
             self.platform
@@ -511,6 +511,7 @@ impl Runtime {
     /// （force 系の適用は generation を持たずこの経路を通らない）、`reason` は
     /// ジャーナルへ直接記録することで force 系も含めた全経路の provenance を
     /// 一意に残す。
+    #[tracing::instrument(level = "debug", skip_all, fields(open = open, ?outcome, ?generation, ?reason))]
     pub fn on_ime_apply_complete(
         &mut self,
         open: bool,
@@ -693,7 +694,7 @@ impl Runtime {
     /// 説明文（例: `"apply_force_on_for_imm_broken skipped (settling)"`）。
     pub fn schedule_settle_retry(&mut self, reason: &str) {
         let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
-        log::debug!("[focus-settle] {reason} → {retry_ms}ms 後に refresh で再試行");
+        tracing::debug!("[focus-settle] {reason} → {retry_ms}ms 後に refresh で再試行");
         self.schedule_ime_refresh(retry_ms);
     }
 
@@ -768,7 +769,7 @@ impl Runtime {
         };
         self.platform.timer.kill(crate::TIMER_TSF_GATE);
         if !held.is_empty() {
-            log::debug!(
+            tracing::debug!(
                 "[tsf-gate] draining {} held keys via INPUT_DEFER",
                 held.len()
             );
@@ -924,11 +925,11 @@ impl Runtime {
         // 起案する。授権が下りなくても書き込みは止めない（A-2 で倒す）。
         let order = self.issue_actuation_order(true, "force_on_and_correct_romaji");
         let outcome = self.platform.apply_ime_open_with_view(order, &view, belief);
-        log::info!("force-ON ({reason:?}): apply_ime_open(true) → {outcome:?}");
+        tracing::info!("force-ON ({reason:?}): apply_ime_open(true) → {outcome:?}");
         self.on_ime_apply_complete(true, outcome, None, reason);
         if !self.platform_state.ime.input_mode().is_romaji_capable() {
             if let Some(new_mode) = self.platform_state.ime.correction_for_imm_broken() {
-                log::info!(
+                tracing::info!(
                     "force-ON ({reason:?}): input_mode → AssumedRomaji (IMM broken, ime_on=true)"
                 );
                 let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
@@ -939,7 +940,7 @@ impl Runtime {
                 );
             } else {
                 // romaji-capable は外側の if で除外済みなので None = ObservedEisu のみ
-                log::info!(
+                tracing::info!(
                     "force-ON ({reason:?}): input_mode スキップ (belief=ObservedEisu, eisu guard)"
                 );
             }
@@ -959,7 +960,7 @@ impl Runtime {
                 self.schedule_settle_retry("try_force_on_bootstrap skipped (settling)");
                 return;
             }
-            log::warn!(
+            tracing::warn!(
                 "IME detection failed {} times, forcing OS ime_on=true (shadow=ON)",
                 self.platform_state.ime.detect_miss_count()
             );
@@ -1016,7 +1017,7 @@ impl Runtime {
             let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
             win32_async::spawn_local(async move {
                 let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
-                    log::debug!(
+                    tracing::debug!(
                         "[force-on-bootstrap] capture 失敗（フォーカス無し） → UnsafeToToggle"
                     );
                     message_handlers::post_async_ime_apply_complete(
@@ -1037,7 +1038,7 @@ impl Runtime {
                     },
                 )
                 .await;
-                log::info!("force-on bootstrap: apply_ime_open(true) → {outcome:?}");
+                tracing::info!("force-on bootstrap: apply_ime_open(true) → {outcome:?}");
                 message_handlers::post_async_ime_apply_complete(
                     true,
                     outcome,
@@ -1063,7 +1064,7 @@ impl Runtime {
     /// 確定させてしまうことを避ける。
     pub(crate) fn reload_layouts(&mut self, layouts: Vec<LayoutEntry>, default_layout: &str) {
         let Some(layouts) = NonEmptyLayouts::new(layouts) else {
-            log::warn!("reload_layouts: no layouts found, keeping current layout");
+            tracing::warn!("reload_layouts: no layouts found, keeping current layout");
             return;
         };
 
@@ -1085,7 +1086,7 @@ impl Runtime {
     /// 配列を動的に切り替える
     pub fn switch_layout(&mut self, index: usize) {
         let Some(entry) = self.layouts.get(index) else {
-            log::warn!("Layout index {index} out of range");
+            tracing::warn!("Layout index {index} out of range");
             return;
         };
 
@@ -1098,7 +1099,7 @@ impl Runtime {
 
         self.platform.tray.set_layout_name(&name);
 
-        log::info!("Switched layout to: {name}");
+        tracing::info!("Switched layout to: {name}");
     }
 
     /// 手動アプリオーバーライドのトグル処理
@@ -1141,7 +1142,7 @@ impl Runtime {
         } else {
             "NonText (engine bypassed)"
         };
-        log::info!("Manual focus override: → {mode_str}");
+        tracing::info!("Manual focus override: → {mode_str}");
     }
 
     /// Sync key 後に遅延されたキーを再処理する。
@@ -1153,7 +1154,7 @@ impl Runtime {
     pub fn process_deferred_keys(&mut self) {
         // Guard を解除し、保留キーを回収
         let keys = self.platform_state.gate.sync_key_gate.deactivate();
-        log::debug!("IME guard OFF (process_deferred_keys)");
+        tracing::debug!("IME guard OFF (process_deferred_keys)");
 
         // Refresh IME state (Observer → ImeObservations → Preconditions)
         // SAFETY: `poll_and_classify_ime` は Win32 IMM API（`ImmGetContext` 等）を呼ぶ unsafe fn。
@@ -1189,7 +1190,7 @@ impl Runtime {
         self.platform_state
             .ime
             .record_confirmed(observed_ime_on, tick_ms.0);
-        log::debug!("[process-deferred] applied_open → {observed_ime_on} (sync with OS poll)");
+        tracing::debug!("[process-deferred] applied_open → {observed_ime_on} (sync with OS poll)");
 
         // Engine に IME 状態変化を即通知する（deferred keys の有無にかかわらず）。
         // suppress_engine_state_key = true: sync key（Kanji 等）がすでに IME を正しい状態に
@@ -1205,7 +1206,7 @@ impl Runtime {
             return;
         }
 
-        log::debug!("Processing {} deferred key(s) after IME toggle", keys.len());
+        tracing::debug!("Processing {} deferred key(s) after IME toggle", keys.len());
 
         for (event, _phys) in keys {
             // Build fresh context with updated preconditions
@@ -1298,7 +1299,11 @@ impl Runtime {
             self.platform_state
                 .keymap
                 .active_keymaps
-                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key", log::Level::Warn);
+                .warn_if_vk_conflicts(
+                    vk,
+                    "muhenkan_solo_tap_dedicated_fn_key",
+                    crate::keymap::KeymapConflictLevel::Warn,
+                );
         }
     }
 
@@ -1450,7 +1455,7 @@ impl Runtime {
                 let hint = self.platform.injection_hint_for(pid, &class_name);
                 let new_mode = crate::output::types::InjectionMode::from((hint, new_app_kind));
                 self.platform.update_injection_mode(new_mode);
-                log::debug!(
+                tracing::debug!(
                     "[focus-sync] hwnd=0x{:X} class={class_name:?} \
                      app_kind={new_app_kind:?} hint={hint:?} → mode={new_mode:?}",
                     hwnd_id.0
@@ -1481,7 +1486,7 @@ impl Runtime {
                     &class_name,
                     self.platform_state.ime.effective_open(),
                 ) {
-                    log::debug!(
+                    tracing::debug!(
                         "[focus-sync] belief=ON かつ実状態を問い合わせられないプロファイル \
                          (profile={profile:?}) → 次の入力で再プライムするため cold mark"
                     );
@@ -1657,13 +1662,13 @@ impl Runtime {
                 .set_thumb_shift_faces_enabled(crate::app::thumb_shift_faces_enabled_for(
                     left, right,
                 ));
-            log::info!(
+            tracing::info!(
                 "Thumb keys updated: left={:?}, right={:?}",
                 config.general.left_thumb_key,
                 config.general.right_thumb_key,
             );
         } else {
-            log::warn!(
+            tracing::warn!(
                 "Invalid thumb key names: left={:?}, right={:?}",
                 config.general.left_thumb_key,
                 config.general.right_thumb_key,
@@ -1679,7 +1684,7 @@ impl Runtime {
         self.all_keymaps =
             crate::keymap::KeymapTable::new(&config.keymaps, left_thumb_vk, right_thumb_vk);
         self.recompute_active_keymaps();
-        log::info!(
+        tracing::info!(
             "Config applied: threshold={}ms, speculative_delay={}ms",
             config.general.simultaneous_threshold_ms,
             config.general.speculative_delay_ms,
@@ -1695,7 +1700,7 @@ impl Runtime {
     fn recompute_active_keymaps(&mut self) {
         let process_name = self.platform.focus.process_name().to_owned();
         self.platform_state.keymap.active_keymaps = self.all_keymaps.filter_active(&process_name);
-        log::debug!(
+        tracing::debug!(
             "[keymap] active rules recomputed: {} rule(s) for process={:?}",
             self.platform_state.keymap.active_keymaps.len(),
             process_name,
@@ -1709,7 +1714,11 @@ impl Runtime {
             self.platform_state
                 .keymap
                 .active_keymaps
-                .warn_if_vk_conflicts(vk, "muhenkan_solo_tap_dedicated_fn_key", log::Level::Debug);
+                .warn_if_vk_conflicts(
+                    vk,
+                    "muhenkan_solo_tap_dedicated_fn_key",
+                    crate::keymap::KeymapConflictLevel::Debug,
+                );
         }
     }
 
@@ -1734,11 +1743,11 @@ impl Runtime {
         if requests.is_empty() {
             return;
         }
-        log::debug!("[runtime-outbox] {} request(s) を drain", requests.len());
+        tracing::debug!("[runtime-outbox] {} request(s) を drain", requests.len());
         for request in requests {
             match request {
                 RuntimeRequest::StartTsfProbe => {
-                    log::debug!("[runtime-outbox] StartTsfProbe → pending TSF timer 適用");
+                    tracing::debug!("[runtime-outbox] StartTsfProbe → pending TSF timer 適用");
                     if let Some(cmd) = self.platform.output.pending_tsf_timer() {
                         self.platform.apply_timer_command(cmd);
                     }
@@ -1753,7 +1762,7 @@ impl Runtime {
     /// メッセージループ上で呼ぶこと（ブロッキング OK）。
     #[allow(unsafe_code)] // cancel_ime_composition() が Win32 IMM API を呼ぶ
     pub fn panic_reset(&mut self) {
-        log::warn!("Panic reset triggered!");
+        tracing::warn!("Panic reset triggered!");
 
         // 1. エンジンの保留状態をフラッシュ
         self.invalidate_engine_context(ContextChange::InputLanguageChanged);
@@ -1859,7 +1868,7 @@ fn send_all_modifier_key_ups() {
     // OUTPUT_GATE.active=true で INPUT_DEFER に退避する。
     let _guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
     let _ = crate::win32::send_input_safe(&inputs);
-    log::debug!("Sent KeyUp for all modifier keys");
+    tracing::debug!("Sent KeyUp for all modifier keys");
 }
 
 /// IME の未確定文字列をキャンセルする。
@@ -1895,7 +1904,9 @@ unsafe fn cancel_ime_composition() {
     //         `ImmContextGuard` は RAII で `ImmReleaseContext` を呼ぶため、
     //         コンテキストリークは発生しない。
     let Some(ctx) = (unsafe { crate::imm::ImmContextGuard::new(hwnd) }) else {
-        log::debug!("[ctrl-bypass] ImmGetContext returned NULL for hwnd={hwnd:?}, cancel skipped");
+        tracing::debug!(
+            "[ctrl-bypass] ImmGetContext returned NULL for hwnd={hwnd:?}, cancel skipped"
+        );
         return;
     };
     // NI_COMPOSITIONSTR = 0x15, CPS_CANCEL = 0x04
@@ -1909,7 +1920,7 @@ unsafe fn cancel_ime_composition() {
             0,
         )
     };
-    log::debug!(
+    tracing::debug!(
         "[ctrl-bypass] ImmNotifyIME(CPS_CANCEL) hwnd={hwnd:?} → {}",
         ok.as_bool()
     );

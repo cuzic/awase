@@ -32,7 +32,7 @@ pub(crate) fn send_eager_warmup_vk_pair() -> Option<u64> {
     // Win を押したまま IME モードキーを注入すると Win+key として届き、
     // Win↑ 時にスタートメニューが開く原因になる。
     if crate::hook::win_key_held() {
-        log::debug!("[tsf-warmup] skipped VK_IME_ON (Win key held)");
+        tracing::debug!("[tsf-warmup] skipped VK_IME_ON (Win key held)");
         return None;
     }
 

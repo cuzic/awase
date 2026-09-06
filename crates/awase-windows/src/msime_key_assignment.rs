@@ -156,7 +156,7 @@ mod windows_impl {
     /// メッセージループでフックのスレッドメッセージ処理を止めてしまうため。
     pub(crate) fn check_and_warn() {
         let assignment = read_from_registry();
-        log::info!("[msime-keyassign] {assignment:?}");
+        tracing::info!("[msime-keyassign] {assignment:?}");
         let Some(warning) = assignment.conflict_warning() else {
             // 競合なし → 警告履歴をリセット（後で有効化されたら再警告できるように）
             LAST_WARNED.store(NOT_WARNED, Ordering::Relaxed);
@@ -167,7 +167,7 @@ mod windows_impl {
         if LAST_WARNED.swap(packed, Ordering::Relaxed) == packed {
             return; // 同じ内容で警告済み
         }
-        log::warn!("[msime-keyassign] {}", warning.replace('\n', " "));
+        tracing::warn!("[msime-keyassign] {}", warning.replace('\n', " "));
         let text = format!(
             "{warning}\n\n\
              いますぐ Windows の設定画面を開いて解除しますか？\n\n\
@@ -308,9 +308,9 @@ mod windows_impl {
         };
         // ShellExecuteW returns HINSTANCE > 32 on success
         if result.0 as isize > 32 {
-            log::info!("[msime-keyassign] ms-settings:regionlanguage-jpnime を開きました");
+            tracing::info!("[msime-keyassign] ms-settings:regionlanguage-jpnime を開きました");
         } else {
-            log::warn!("[msime-keyassign] 設定画面を開けませんでした (result={result:?})");
+            tracing::warn!("[msime-keyassign] 設定画面を開けませんでした (result={result:?})");
         }
     }
 }

@@ -38,7 +38,7 @@ fn recover_pending_drain_request() {
         return;
     }
     if DRAIN_RERUN_PENDING.swap(false, Ordering::AcqRel) {
-        log::debug!("[drain] recovering deferred drain request");
+        tracing::debug!("[drain] recovering deferred drain request");
         post_to_main_thread(crate::tsf::probe_bridge::WM_DRAIN_OUTPUT_QUEUE);
     }
 }
@@ -350,13 +350,13 @@ fn cancel_composition_and_arm_post_bypass_on_ctrl(
     // 読み、ログと分岐判定の両方に同じ値を使う（`Ordering::Relaxed` の
     // atomic 読み取りのため、2回呼ぶと値が食い違いログと実際の動作が矛盾しうる）。
     let candidate_visible = app.platform.is_composition_warm_in_tsf();
-    log::debug!(
+    tracing::debug!(
         "[ctrl-check] vk=0x{:02X} candidate_visible={candidate_visible}",
         event.vk_code
     );
     if candidate_visible {
         cancel_composition(app, crate::output::ColdReason::CtrlKeyBypass);
-        log::debug!(
+        tracing::debug!(
             "[ctrl-bypass] IME composition cancelled (vk=0x{:02X})",
             event.vk_code
         );
@@ -383,11 +383,11 @@ fn consume_post_bypass(
     match app.platform_state.gate.post_bypass.peek(now) {
         ScopeCheck::NotArmed => None,
         ScopeCheck::Expired => {
-            log::debug!("[post-bypass] expired: 前景が変わった → latch 失効");
+            tracing::debug!("[post-bypass] expired: 前景が変わった → latch 失効");
             None
         }
         ScopeCheck::Live(arm) => {
-            log::debug!(
+            tracing::debug!(
                 "[post-bypass] live: armed_focus_epoch={} current_focus_epoch={} \
                  (診断専用、判定には使わない)",
                 arm.armed_focus_epoch,
@@ -406,7 +406,7 @@ fn consume_post_bypass(
                 }
                 PostBypassKey::ConsumeAndPassthrough => {
                     app.platform_state.gate.post_bypass.disarm();
-                    log::debug!(
+                    tracing::debug!(
                         "[post-bypass] consumed: vk=0x{:02X} → direct passthrough (NICOLA skipped)",
                         event.vk_code
                     );
@@ -445,11 +445,11 @@ fn arm_post_bypass_if_matches(app: &mut Runtime, vk: VkCode) {
                 armed_focus_epoch: app.platform_state.focus.focus_epoch,
             },
         );
-        log::debug!(
+        tracing::debug!(
             "[ctrl-bypass] post_bypass armed (proc={proc:?} class={cls:?} scope={scope:?})"
         );
     } else {
-        log::debug!("[ctrl-bypass] post_bypass not armed: foreground scope unavailable");
+        tracing::debug!("[ctrl-bypass] post_bypass not armed: foreground scope unavailable");
     }
 }
 
@@ -487,7 +487,7 @@ pub(crate) unsafe fn handle_wm_timer(
         }
         Some(id) if id == TIMER_POWER_RESUME => {
             app.platform.timer.kill(TIMER_POWER_RESUME);
-            log::info!("Power resume recovery");
+            tracing::info!("Power resume recovery");
             app.invalidate_engine_context(ContextChange::InputLanguageChanged);
             app.platform_state.focus.focus_kind = FocusKind::Undetermined;
             app.schedule_ime_refresh(500);
@@ -514,7 +514,7 @@ pub(crate) unsafe fn handle_wm_timer(
             app.platform.timer.kill(TIMER_TSF_GATE);
             let held = app.platform.on_tsf_warmup_timeout();
             if !held.is_empty() {
-                log::debug!(
+                tracing::debug!(
                     "[tsf-gate-timeout] draining {} held keys via INPUT_DEFER",
                     held.len()
                 );
@@ -523,7 +523,7 @@ pub(crate) unsafe fn handle_wm_timer(
         }
         Some(id) if id == crate::TIMER_IME_OFF_RESCUE => {
             if let Some(pending_event) = app.take_ime_off_rescue_pending() {
-                log::info!(
+                tracing::info!(
                     "[ime-off-rescue] 50ms timer expired → 保留 vk=0x{:02X} を IME OFF として発火",
                     pending_event.vk_code
                 );
@@ -556,7 +556,7 @@ pub(crate) unsafe fn handle_wm_timer(
             app.platform.timer.kill(crate::TIMER_FOCUS_RESYNC);
             let generation = crate::focus_resync::FOCUS_RESYNC.current_generation();
             if crate::focus_resync::FOCUS_RESYNC.open_if_current(generation) {
-                log::debug!(
+                tracing::debug!(
                     "[focus-resync] ハード期限 {}ms 到達 → defer 中のキーを drain",
                     crate::tuning::FOCUS_RESYNC_DEADLINE_MS
                 );
@@ -580,7 +580,7 @@ pub(crate) unsafe fn handle_wm_timer(
                 match hook::os_last_input_tick_ms() {
                     Some(os_last_input) => {
                         let os_idle_ms = now.saturating_sub(os_last_input);
-                        log::warn!(
+                        tracing::warn!(
                             "Hook watchdog: no activity for {stale_ms}ms (OS全体の最終入力は\
                              {os_idle_ms}ms前{})",
                             if os_idle_ms < 5000 {
@@ -591,20 +591,20 @@ pub(crate) unsafe fn handle_wm_timer(
                         );
                     }
                     None => {
-                        log::warn!(
+                        tracing::warn!(
                             "Hook watchdog: no activity for {stale_ms}ms \
                              (GetLastInputInfo取得失敗)"
                         );
                     }
                 }
             } else {
-                log::trace!("Hook watchdog: last activity {stale_ms}ms ago");
+                tracing::trace!("Hook watchdog: last activity {stale_ms}ms ago");
             }
             crate::hook_channel::recover_stuck_wake_if_needed();
             recover_pending_drain_request();
         }
         Some(timer_id) => {
-            log::debug!("WM_TIMER fired: logical_id={timer_id}");
+            tracing::debug!("WM_TIMER fired: logical_id={timer_id}");
             // OUTPUT_GATE active 中はエンジンタイマー（TIMER_PENDING/TIMER_SPECULATIVE）を
             // drain 後に延期する。
             // OUTPUT_GATE active 期間中、後続キー（親指キー等）は INPUT_DEFER にキューされる。
@@ -627,7 +627,7 @@ pub(crate) unsafe fn handle_wm_timer(
             // ここで gate 判定を拡張するだけで両ゲートに対して正しく機能する。
             if crate::OUTPUT_GATE.is_active() || crate::focus_resync::FOCUS_RESYNC.is_gate_active()
             {
-                log::debug!(
+                tracing::debug!(
                     "[engine-timer] OUTPUT_GATE/FOCUS_RESYNC gate active → logical_id={timer_id} (os_id={wparam}) を drain 後に延期"
                 );
                 app.ime_coordinator
@@ -718,7 +718,7 @@ fn decode_outcome(value: isize) -> ImeOpenOutcome {
         4 => ImeOpenOutcome::UnsafeToToggle,
         5 => ImeOpenOutcome::NotOwned,
         other => {
-            log::error!("WM_ASYNC_IME_APPLY_COMPLETE: unknown outcome code {other}");
+            tracing::error!("WM_ASYNC_IME_APPLY_COMPLETE: unknown outcome code {other}");
             ImeOpenOutcome::UnsafeToToggle
         }
     }
@@ -765,7 +765,7 @@ pub(crate) fn post_async_ime_apply_complete(
         wparam,
         encode_outcome(outcome),
     ) {
-        log::warn!(
+        tracing::warn!(
             "[async-ime-apply] WM_ASYNC_IME_APPLY_COMPLETE の post に失敗しました \
              (open={open} generation={generation} reason={reason:?}) — \
              このIME適用完了通知は失われ、pending generation が未解決のまま残ります"
@@ -792,7 +792,7 @@ pub(crate) fn handle_wm_async_ime_apply_complete(app: &mut Runtime, wparam: usiz
     let generation = crate::state::ApplyGeneration::from_wire((wparam >> 2) as u64);
     let outcome = decode_outcome(lparam);
     if outcome == ImeOpenOutcome::Failed {
-        log::warn!("apply_ime_open({open}) failed (async)");
+        tracing::warn!("apply_ime_open({open}) failed (async)");
     }
     app.on_ime_apply_complete(open, outcome, generation, reason);
 }
@@ -800,11 +800,11 @@ pub(crate) fn handle_wm_async_ime_apply_complete(app: &mut Runtime, wparam: usiz
 /// WM_GJI_REINIT_RETRY_COMPLETE ハンドラ。
 pub(crate) fn handle_wm_gji_reinit_retry_complete(app: &mut Runtime, wparam: usize, lparam: isize) {
     let Ok(token) = u32::try_from(wparam) else {
-        log::warn!("[chrome-reinit-retry] completion token out of range: {wparam}");
+        tracing::warn!("[chrome-reinit-retry] completion token out of range: {wparam}");
         return;
     };
     let Some(status) = crate::output::GjiReinitPollStatus::decode(lparam) else {
-        log::warn!("[chrome-reinit-retry] unknown completion status: {lparam}");
+        tracing::warn!("[chrome-reinit-retry] unknown completion status: {lparam}");
         return;
     };
     app.platform.complete_gji_reinit_retry(token, status);
@@ -833,14 +833,14 @@ pub(crate) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
 /// `Engine`側でそちらが優先されるため、こちらも無条件に呼んでよい。
 pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
     let toggle_assignment = crate::msime_key_assignment::read_toggle_assignment_from_registry();
-    log::info!("[msime-keyassign] toggle assignment: {toggle_assignment:?}");
+    tracing::info!("[msime-keyassign] toggle assignment: {toggle_assignment:?}");
     let skip_shift_space = app.space_is_thumb_key();
     app.engine
         .set_ime_toggle_auto_keys(toggle_assignment.to_combos(skip_shift_space));
 
     let delegate_assignment =
         crate::msime_key_assignment::read_delegate_to_open_axis_assignment_from_registry();
-    log::info!("[msime-keyassign] delegate-to-open-axis assignment: {delegate_assignment:?}");
+    tracing::info!("[msime-keyassign] delegate-to-open-axis assignment: {delegate_assignment:?}");
     app.engine
         .set_muhenkan_delegate_to_open_axis(delegate_assignment.muhenkan);
     app.engine
@@ -859,7 +859,7 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
     let obs = crate::tsf::observer::tsf_obs();
     let kind = obs.active_ime_kind();
     let detected = obs.ime_kind_detected();
-    log::info!("[runtime] IME kind sync ({source}): {kind:?} (detected={detected})");
+    tracing::info!("[runtime] IME kind sync ({source}): {kind:?} (detected={detected})");
     app.platform.output.set_active_ime_kind(kind);
     if matches!(
         kind,
@@ -867,7 +867,7 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
     ) && app.platform_state.ime.model().applied.applied_open() == Some(true)
     {
         let mode = app.platform.output.injection_mode;
-        log::debug!("[runtime] GJI warmup FSM sync: applied_open=true → ImeOn");
+        tracing::debug!("[runtime] GJI warmup FSM sync: applied_open=true → ImeOn");
         app.platform.gji_on_ime_on(mode);
         for entry in app.platform.drain_journal_entries() {
             app.platform_state.ime.journal.absorb(entry);
@@ -926,7 +926,7 @@ pub(crate) unsafe fn handle_wm_ime_kind_changed(app: &mut Runtime) {
 
 /// WM_DUPLICATE_INSTANCE ハンドラ
 pub(crate) unsafe fn handle_wm_duplicate_instance(app: &mut Runtime) {
-    log::info!("Duplicate instance notification received");
+    tracing::info!("Duplicate instance notification received");
     app.platform
         .tray
         .show_balloon("awase", "awase はすでに起動しています");
@@ -939,7 +939,7 @@ pub(crate) unsafe fn handle_wm_duplicate_instance(app: &mut Runtime) {
 pub(crate) unsafe fn handle_wm_powerbroadcast(app: &mut Runtime, pbt: usize) {
     use windows::Win32::UI::WindowsAndMessaging::{PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND};
     if pbt == PBT_APMRESUMESUSPEND as usize || pbt == PBT_APMRESUMEAUTOMATIC as usize {
-        log::info!("Power resume detected (PBT=0x{pbt:02X}), scheduling deferred recovery");
+        tracing::info!("Power resume detected (PBT=0x{pbt:02X}), scheduling deferred recovery");
         app.platform.timer.kill(TIMER_IME_REFRESH);
         app.platform
             .timer
@@ -953,11 +953,11 @@ pub(crate) unsafe fn handle_wts_session_change(app: &mut Runtime, session_event:
     const WTS_SESSION_UNLOCK: u32 = 8;
     match session_event {
         WTS_SESSION_LOCK => {
-            log::info!("Session locked, flushing engine state");
+            tracing::info!("Session locked, flushing engine state");
             app.invalidate_engine_context(ContextChange::FocusChanged);
         }
         WTS_SESSION_UNLOCK => {
-            log::info!("Session unlocked, scheduling deferred recovery");
+            tracing::info!("Session unlocked, scheduling deferred recovery");
             // ロック中 (Secure Desktop) は WH_KEYBOARD_LL にイベントが届かないため、
             // ロック直前に押されていた物理キーの KeyUp が失われうる。PHYSICAL_KEY_STATE は
             // OR で左右を合成するため、片側が stuck するだけで mods.shift/ctrl が恒久的に
@@ -979,7 +979,7 @@ pub(crate) unsafe fn handle_wts_session_change(app: &mut Runtime, session_event:
 
 /// WM_INPUTLANGCHANGE ハンドラ
 pub(crate) unsafe fn handle_wm_inputlangchange(app: &mut Runtime) {
-    log::info!("Input language changed, flushing pending state");
+    tracing::info!("Input language changed, flushing pending state");
     app.invalidate_engine_context(ContextChange::InputLanguageChanged);
     app.refresh_ime_state_cache();
     check_keyboard_layout_on_change();
@@ -1017,9 +1017,9 @@ pub(crate) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usiz
     // 意図的に戻す。sync 分類（既知クラス・WS_EX_NOIME・MSAA）は従来どおり機能する。
     let _ = app;
     if GetGUIThreadInfo(0, &raw mut info).is_ok() && info.hwndFocus != result_hwnd {
-        log::debug!("UIA result for stale hwnd, ignoring");
+        tracing::debug!("UIA result for stale hwnd, ignoring");
     } else {
-        log::debug!(
+        tracing::debug!(
             "UIA async result received (kind={kind:?} app_kind_u8={app_kind_u8}) — \
              BUG-12 により適用せずログのみ"
         );
@@ -1038,7 +1038,7 @@ pub(crate) unsafe fn handle_wm_hotkey_focus_override(app: &mut Runtime) {
 
 /// WM_APP (トレイメッセージ) ハンドラ
 pub(crate) unsafe fn handle_wm_app_tray(hwnd: HWND, lparam: LPARAM) {
-    log::debug!(
+    tracing::debug!(
         "WM_APP received: hwnd={:?} lparam=0x{:016X}",
         hwnd,
         lparam.0
@@ -1070,7 +1070,7 @@ pub(crate) unsafe fn handle_wm_app_tray(hwnd: HWND, lparam: LPARAM) {
 
 /// WM_RELOAD_CONFIG ハンドラ
 pub(crate) fn handle_wm_reload_config() {
-    log::info!("Config reload requested via WM_RELOAD_CONFIG");
+    tracing::info!("Config reload requested via WM_RELOAD_CONFIG");
     reload_config();
 }
 
@@ -1131,16 +1131,23 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                     .dump_to_file_capped(crate::bug_report::LOG_EXCERPT_MAX_BYTES);
                 (dump_result, current_bug_report_diagnostics(app))
             }) else {
-                log::error!("[bug-report] runtime unavailable");
+                tracing::error!("[bug-report] runtime unavailable");
                 return;
             };
             let diagnostics_path = match write_bug_report_diagnostics(&diagnostics) {
                 Ok(path) => Some(path),
                 Err(e) => {
-                    log::warn!("[bug-report] diagnostics dump failed: {e}");
+                    tracing::warn!("[bug-report] diagnostics dump failed: {e}");
                     None
                 }
             };
+            // ADR-139 決定2: awase.log は BufWriter でラップされており、末尾の
+            // 未flush分（クラッシュ直前の最も価値の高い行を含みうる）が
+            // 不具合報告に読み込まれる前に確実にディスクへ出るよう、ここで
+            // 明示的に flush する。awase.log を実際に読むのは
+            // `--applog` 引数で起動される別プロセス（awase-settings.exe）であり、
+            // awase.exe 側のこの flush を経ないと反映されない。
+            crate::app::flush_log_writer();
             let app_log_path = crate::app::bug_report_log_path();
             let app_log_path = app_log_path.exists().then_some(app_log_path.as_path());
             match dump_result {
@@ -1148,7 +1155,7 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                     launch_bug_report(&path, ime_kind, diagnostics_path.as_deref(), app_log_path);
                 }
                 Err(e) => {
-                    log::error!("[bug-report] journal dump failed: {e}");
+                    tracing::error!("[bug-report] journal dump failed: {e}");
                     let _ = with_app(|app| {
                         app.platform
                             .tray
@@ -1360,7 +1367,7 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
     // タイムスタンプで突き合わせるための起点ログ。
     let drain_start_us = hook::now_timestamp_us();
     let queue_len_initial = crate::INPUT_DEFER.pending_len_nonblocking();
-    log::debug!(
+    tracing::debug!(
         "[drain-start] now={}us queue_len={}",
         drain_start_us,
         queue_len_initial.map_or_else(|| "?".to_owned(), |n| n.to_string()),
@@ -1380,7 +1387,7 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
         begin_key_batch(app);
         for ev in &mut events {
             app.enrich_ime_relevance(ev);
-            log::debug!("[drain] vk=0x{:02X} {:?}", ev.vk_code, ev.event_type);
+            tracing::debug!("[drain] vk=0x{:02X} {:?}", ev.vk_code, ev.event_type);
         }
         events
     });
@@ -1401,7 +1408,7 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
         let mut any_reinject = false;
         let processed = with_app(|app| {
             for queued_event in &queue {
-                log::debug!(
+                tracing::debug!(
                     "[output-drain] replay vk=0x{:02X} {:?} event_ts={}us now={}us delta={}ms",
                     queued_event.vk_code,
                     queued_event.event_type,
@@ -1411,7 +1418,7 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
                 );
                 let delivery = deliver_key_event(app, *queued_event, KeyOrigin::DeferredReplay);
                 if matches!(delivery, KeyDelivery::Reinjected) {
-                    log::debug!(
+                    tracing::debug!(
                         "[output-drain] PassThrough → enqueue ReinjectKey vk=0x{:02X} {:?} (drain has no hook→OS path)",
                         queued_event.vk_code, queued_event.event_type,
                     );
@@ -1451,14 +1458,14 @@ pub(crate) unsafe fn handle_wm_drain_output_queue() {
         for (timer_id, os_id) in deferred {
             let current = app.platform.timer.current_os_id(timer_id);
             if current == Some(os_id) {
-                log::debug!(
+                tracing::debug!(
                     "[deferred-timer] drain 後に replay logical_id={timer_id} (os_id={os_id})"
                 );
                 let decision = app.engine.on_timeout(timer_id, &ctx);
                 notify_if_solo_off_triggered(app);
                 app.execute_decision(decision);
             } else {
-                log::debug!(
+                tracing::debug!(
                     "[deferred-timer] logical_id={timer_id} (os_id={os_id}) は drain 中に変化 (current={current:?}) → skip"
                 );
             }
@@ -1522,7 +1529,7 @@ mod tests {
 
 /// TaskbarCreated ハンドラ（Explorer 再起動時にトレイアイコンを復元）
 pub(crate) unsafe fn handle_taskbar_created(app: &mut Runtime) {
-    log::info!("Explorer restarted, re-registering tray icon");
+    tracing::info!("Explorer restarted, re-registering tray icon");
     app.platform.tray.recreate();
 }
 
@@ -1534,7 +1541,7 @@ pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
         || stats.hwnd_mismatch_same_root > 0
         || stats.hwnd_mismatch_cross_root > 0
     {
-        log::info!(
+        tracing::info!(
             "[probe-admission] rejected since last dump: epoch_mismatch={} \
              hwnd_mismatch_same_root={} hwnd_mismatch_cross_root={}",
             stats.epoch_mismatch,
@@ -1545,7 +1552,7 @@ pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
     // HOOK_KEYS の最大占有数（指摘2-4）: overflow の頻度を実測できるようにする。
     let max_occupancy = crate::hook_channel::HOOK_KEYS.take_max_occupancy();
     if max_occupancy > 0 {
-        log::info!(
+        tracing::info!(
             "[hook-ring] max occupancy since last dump: {max_occupancy}/{}",
             crate::hook_channel::CAP
         );
@@ -1566,13 +1573,13 @@ pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
         .record(crate::journal::JournalEntry::DumpTriggered);
     match app.platform_state.ime.journal.dump_to_file() {
         Ok(path) => {
-            log::info!("[journal] ダンプ完了: {}", path.display());
+            tracing::info!("[journal] ダンプ完了: {}", path.display());
             app.platform
                 .tray
                 .show_balloon("awase journal", &format!("ダンプ完了: {}", path.display()));
         }
         Err(e) => {
-            log::error!("[journal] ダンプ失敗: {e}");
+            tracing::error!("[journal] ダンプ失敗: {e}");
         }
     }
 }

@@ -92,18 +92,18 @@ impl KeymapTable {
         let mut result = Vec::new();
         'rules: for rule in rules {
             let Some(combo) = crate::vk::parse_key_combo(&rule.from) else {
-                log::warn!("[keymap] 'from' のパース失敗: {:?}", rule.from);
+                tracing::warn!("[keymap] 'from' のパース失敗: {:?}", rule.from);
                 continue;
             };
             if combo.alt {
-                log::warn!(
+                tracing::warn!(
                     "[keymap] 'from' の Alt 修飾は使用できません（ADR-114 決定5）: {:?}",
                     rule.from
                 );
                 continue;
             }
             if is_forbidden_ctrl_or_shift_primary_key(combo.vk) {
-                log::warn!(
+                tracing::warn!(
                     "[keymap] 'from' の主キーに Ctrl/Shift は指定できません（ADR-114 決定5）: {:?}",
                     rule.from
                 );
@@ -112,7 +112,7 @@ impl KeymapTable {
             if let Some(reason) =
                 forbidden_target_vk_reason(combo.vk, left_thumb_vk, right_thumb_vk, false)
             {
-                log::warn!(
+                tracing::warn!(
                     "[keymap] 'from' に {reason} は指定できません（ADR-114 決定5）: {:?}",
                     rule.from
                 );
@@ -124,18 +124,18 @@ impl KeymapTable {
                     VkCode::from_name(to).or_else(|| VkCode::from_name(&format!("VK_{to}")));
                 let Some(vk) = resolved else {
                     if to.contains('+') {
-                        log::warn!(
+                        tracing::warn!(
                             "[keymap] 'to' に修飾キーは指定できません（ADR-130 決定2）: {to:?}"
                         );
                     } else {
-                        log::warn!("[keymap] 'to' のパース失敗: {to:?}");
+                        tracing::warn!("[keymap] 'to' のパース失敗: {to:?}");
                     }
                     continue 'rules;
                 };
                 if let Some(reason) =
                     forbidden_target_vk_reason(vk, left_thumb_vk, right_thumb_vk, true)
                 {
-                    log::warn!(
+                    tracing::warn!(
                         "[keymap] 'to' に {reason} は指定できません（ADR-114 決定5）: {to:?}"
                     );
                     continue 'rules;
@@ -214,31 +214,52 @@ impl KeymapTable {
     /// `level` を呼び出し元に選ばせる理由（実装レビュー指摘 m-4）:
     /// `recompute_active_keymaps()` はフォーカス変更のたびに呼ばれるため、
     /// 衝突が存在する環境では `Level::Warn` 固定だと全フォーカス変更で
-    /// `log::warn!` が出続け、`app.log`（不具合報告に添付される）が
+    /// 警告ログが出続け、`awase.log`（不具合報告に添付される）が
     /// スパムで埋もれる。setter（`set_muhenkan_dedicated_fn_key_*`、vk が
     /// 実際に変化した瞬間のみ呼ばれる）は `Warn`、`recompute_active_keymaps()`
     /// は `Debug` を渡す。
+    ///
+    /// ADR-139 決定1: `tracing::event!` はレベルをコンパイル時定数としてしか
+    /// 受け取れないため（呼び出しごとに静的な callsite metadata を持つ設計）、
+    /// `log::Level` のような実行時値をそのまま転送する等価物が無い。呼び出し元が
+    /// 実際に使うのは `Warn`/`Debug` の2値のみなので、その2値だけを持つ専用の
+    /// enum で置き換える。
     pub(crate) fn warn_if_vk_conflicts(
         &self,
         vk: VkCode,
         context: &str,
-        level: log::Level,
+        level: KeymapConflictLevel,
     ) -> bool {
         let conflicts = self
             .0
             .iter()
             .any(|rule| rule.combo.vk == vk || rule.send_vks.contains(&vk));
         if conflicts {
-            log::log!(
-                level,
-                "[keymap] アクティブな [[keymap]] ルールが {context}（vk=0x{:02X}）と \
-                 同じキーを使っています。両方のロジックが同じ物理キーに反応します \
-                 （ADR-114）",
-                vk.0
-            );
+            let vk_hex = vk.0;
+            match level {
+                KeymapConflictLevel::Warn => tracing::warn!(
+                    "[keymap] アクティブな [[keymap]] ルールが {context}（vk=0x{vk_hex:02X}）と \
+                     同じキーを使っています。両方のロジックが同じ物理キーに反応します \
+                     （ADR-114）"
+                ),
+                KeymapConflictLevel::Debug => tracing::debug!(
+                    "[keymap] アクティブな [[keymap]] ルールが {context}（vk=0x{vk_hex:02X}）と \
+                     同じキーを使っています。両方のロジックが同じ物理キーに反応します \
+                     （ADR-114）"
+                ),
+            }
         }
         conflicts
     }
+}
+
+/// [`KeymapRuleTable::warn_if_vk_conflicts`] のログレベル。`log::Level` の
+/// 実行時値をそのまま `tracing` へ転送できないため導入した専用の2値 enum
+/// （ADR-139 決定1 参照）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeymapConflictLevel {
+    Warn,
+    Debug,
 }
 
 /// ADR-130 決定3: `[[keymap]]` の `to` 各ステップを独立した Down+Up ペアに展開する。
@@ -304,7 +325,7 @@ pub(crate) fn warn_on_engine_hotkey_collision(
             ("ime_toggle", ime_toggle),
         ] {
             if combos.contains(&combo) {
-                log::warn!(
+                tracing::warn!(
                     "[keymap] 'from' = {:?} は keys.{label} と同じキーコンボです。\
                      [[keymap]] が先に消費するため {label} が発火しなくなります \
                      （ADR-114）",
@@ -314,7 +335,7 @@ pub(crate) fn warn_on_engine_hotkey_collision(
         }
         if let Some(hotkey) = &hotkey_combo {
             if *hotkey == combo {
-                log::warn!(
+                tracing::warn!(
                     "[keymap] 'from' = {:?} は general.engine_toggle_hotkey と \
                      同じキーコンボです。[[keymap]] が先に消費するため \
                      engine_toggle_hotkey が発火しなくなります（ADR-114）",
@@ -613,15 +634,15 @@ from = "Ctrl+VK_K"
         let vk_unrelated = VkCode::from_name("VK_Z").expect("VK_Z resolves");
 
         assert!(
-            table.warn_if_vk_conflicts(vk_i, "test", log::Level::Debug),
+            table.warn_if_vk_conflicts(vk_i, "test", KeymapConflictLevel::Debug),
             "主キーとの衝突"
         );
         assert!(
-            table.warn_if_vk_conflicts(vk_f7, "test", log::Level::Debug),
+            table.warn_if_vk_conflicts(vk_f7, "test", KeymapConflictLevel::Debug),
             "toターゲットとの衝突"
         );
         assert!(
-            !table.warn_if_vk_conflicts(vk_unrelated, "test", log::Level::Debug),
+            !table.warn_if_vk_conflicts(vk_unrelated, "test", KeymapConflictLevel::Debug),
             "無関係な vk は衝突しない"
         );
     }

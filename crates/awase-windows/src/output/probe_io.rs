@@ -112,7 +112,7 @@ impl ProbeIo for Output {
         if outcome.used_eager_path && crate::tsf::output::kana_for_romaji_static(romaji).is_some() {
             let now = crate::hook::current_tick_ms();
             self.composition.set_last_unicode_transmit_ms(now);
-            log::debug!(
+            tracing::debug!(
                 "[post-unicode] PendingGjiConfirm 開始: last_unicode_transmit_ms={now} romaji={romaji:?}"
             );
         }
@@ -181,7 +181,7 @@ impl ProbeIo for Output {
         let now_ms = crate::hook::current_tick_ms();
         let elapsed = now_ms.saturating_sub(self.last_gji_reinit_ms.get());
         if elapsed < crate::tuning::CHROME_GJI_REINIT_CONFIRM_MS {
-            log::debug!(
+            tracing::debug!(
                 "[chrome-reinit] cold={cold_seq} skip: 前回 reinit から {elapsed}ms \
                  (< {}ms) しか経っていない",
                 crate::tuning::CHROME_GJI_REINIT_CONFIRM_MS,
@@ -200,7 +200,7 @@ impl ProbeIo for Output {
         // write_bytes ベースラインを SendInput 前に取得する。
         // VK_IME_OFF→ON が GJI の WriteTransferCount を上昇させるかを観測する実験ログ。
         let write_bytes_before = crate::tsf::observer::gji_write_bytes();
-        log::debug!(
+        tracing::debug!(
             "[chrome-reinit] cold={cold_seq} VK_IME_OFF→VK_IME_ON 強制リセット送信 + IMC ポーリング開始 \
              (write_bytes_baseline={write_bytes_before})",
             cold_seq = cold_seq.value(),
@@ -224,7 +224,7 @@ impl ProbeIo for Output {
                 let write_delta = write_bytes_now.saturating_sub(write_bytes_before);
                 if write_delta > 0 && first_write_tick.is_none() {
                     first_write_tick = Some(i as u32 + 1);
-                    log::info!(
+                    tracing::info!(
                         "[chrome-reinit] cold={cold_seq} GJI write_bytes 上昇検出: \
                          tick=#{i} delta=+{write_delta}B (+{:.1}KB)",
                         write_delta as f64 / 1024.0,
@@ -232,7 +232,7 @@ impl ProbeIo for Output {
                     );
                 }
                 let conv = crate::ime::get_ime_conversion_mode_raw_timeout_async(15).await;
-                log::debug!(
+                tracing::debug!(
                     "[chrome-reinit] cold={cold_seq} IMC poll #{i}: conv={} NATIVE={} \
                      write_delta=+{write_delta}B",
                     fmt_conv(conv),
@@ -259,7 +259,7 @@ impl ProbeIo for Output {
                 // たまたま1tick 再入しただけで retry と deferred 救済の両方を失っていた。
                 // 未観測として次 tick へ継続する（`Timeout` 分岐と同じ「何もしない」扱い）。
                 if status.is_none() {
-                    log::debug!(
+                    tracing::debug!(
                         "[chrome-reinit] cold={cold_seq} with_app reentrant, skip tick #{i}",
                         cold_seq = cold_seq.value(),
                     );
@@ -267,7 +267,7 @@ impl ProbeIo for Output {
                 match gji_reinit_poll_tick_outcome(status) {
                     GjiReinitPollTickOutcome::Done(GjiReinitPollTerminalStatus::Confirmed) => {
                         final_status = GjiReinitPollStatus::Confirmed;
-                        log::debug!(
+                        tracing::debug!(
                             "[chrome-reinit] cold={cold_seq} Hiragana 確認 → ポーリング終了",
                             cold_seq = cold_seq.value(),
                         );
@@ -275,7 +275,7 @@ impl ProbeIo for Output {
                     }
                     GjiReinitPollTickOutcome::Done(GjiReinitPollTerminalStatus::Stale) => {
                         final_status = GjiReinitPollStatus::Stale;
-                        log::debug!(
+                        tracing::debug!(
                             "[chrome-reinit] cold={cold_seq} stale focus_gen={} → ポーリング終了",
                             focus_gen,
                             cold_seq = cold_seq.value(),
@@ -285,7 +285,7 @@ impl ProbeIo for Output {
                     GjiReinitPollTickOutcome::Continue => {}
                 }
             }
-            log::info!(
+            tracing::info!(
                 "[chrome-reinit] cold={cold_seq} ポーリング完了: \
                  total_write_delta=+{}B first_write_tick={:?}",
                 crate::tsf::observer::gji_write_bytes().saturating_sub(write_bytes_before),
@@ -438,7 +438,7 @@ impl Output {
                         deadline_ms.max(out.confirm_gate_deadline_override_ms.get());
                     if crate::hook::current_tick_ms() >= effective_deadline_ms {
                         out.ms_ime_gate_give_up.set(true);
-                        log::warn!(
+                        tracing::warn!(
                             "[msime-ready] cold={cold_seq} IMC 未確認のまま期限切れ \
                              (deadline=0x{effective_deadline_ms:X}) → give-up latch 設定 \
                              （フォーカス変更 / 次の IME ON / 次の conv actuation まで gate 停止）",
@@ -453,7 +453,7 @@ impl Output {
 
                 match status {
                     MsImePollStatus::Ready => {
-                        log::debug!(
+                        tracing::debug!(
                             "[msime-ready] cold={cold_seq} IMC ポーリング: NATIVE 確認 → 終了",
                             cold_seq = cold_seq.value(),
                         );
@@ -525,6 +525,7 @@ impl DispatchResult {
 /// `io: &impl ProbeIo` で Win32 副作用を注入することでテスト可能。
 #[expect(clippy::too_many_lines)]
 #[expect(clippy::cognitive_complexity)]
+#[tracing::instrument(level = "debug", skip_all)]
 pub(crate) fn dispatch_probe_actions<M, I>(
     machine: &mut M,
     initial_actions: Vec<crate::tsf::warmup::probe_fsm::ProbeAction>,
@@ -558,7 +559,9 @@ where
                     match target {
                         TransmitTarget::Tsf => {
                             if io.gate_is_bypass() {
-                                log::debug!("[do-transmit] gate=Bypass, skipping TSF injection");
+                                tracing::debug!(
+                                    "[do-transmit] gate=Bypass, skipping TSF injection"
+                                );
                                 break 'stage Some(StageEndReason::GateBypass);
                             }
                             if chars.is_empty() {
@@ -581,7 +584,7 @@ where
                                     let conv =
                                         crate::ime::get_ime_conversion_mode_raw_timeout_async(10)
                                             .await;
-                                    log::debug!(
+                                    tracing::debug!(
                                     "[h1-send] cold={cold_seq} romaji={romaji_owned:?} chars={chars_len} \
                                      gji_idle={gji_idle}ms conv={} ROMAN={} NATIVE={}",
                                     fmt_conv(conv),
@@ -665,7 +668,7 @@ where
                     // Chrome には適用されない（Chrome は常に gate=Bypass 運用）。
                     // Tsf 向けのときだけ確認する。
                     if target == TransmitTarget::Tsf && idx == 0 && io.gate_is_bypass() {
-                        log::debug!(
+                        tracing::debug!(
                         "[do-transmit] cold={cold_seq} gate=Bypass, skipping per-VK TSF injection",
                         cold_seq = cold_seq.value(),
                     );
@@ -717,7 +720,7 @@ where
                 ProbeAction::FlushDeferredUnicodeChars(chars) => {
                     // UnicodeColdWarmupFsm が GJI wake-up 確認後に emit する。
                     // deferred chars を直接送信する（Done が続いて FSM 完了）。
-                    log::debug!(
+                    tracing::debug!(
                         "[unicode-cold-warmup] FlushDeferredUnicodeChars: {} chars 送信",
                         chars.len()
                     );
@@ -755,7 +758,7 @@ where
                             romaji: Some(romaji.clone()),
                         }));
                     if consecutive == 0 {
-                        log::warn!(
+                        tracing::warn!(
                             "[raw-tsf-literal] cold={cold_seq} raw TSF literal suspected \
                         → backspace ×{backs} + re-send {romaji:?} scheduled \
                         + mark cold",
@@ -763,7 +766,7 @@ where
                         );
                         io.set_raw_literal(backs, romaji, escape_composition);
                     } else {
-                        log::warn!(
+                        tracing::warn!(
                             "[raw-tsf-literal] cold={cold_seq} consecutive raw-tsf-literal \
                         (count={}) → giving up, backs={backs} cleanup only (no re-send)",
                             consecutive + 1,
@@ -804,7 +807,7 @@ where
                                 poll_token,
                                 age_ms,
                             } => {
-                                log::warn!(
+                                tracing::warn!(
                                     "[raw-tsf-literal] suppress raw cleanup during existing \
                                  reinit retry poll: new_cold={} existing_cold={} token={} \
                                  age_ms={} consecutive_before={}",
@@ -818,7 +821,7 @@ where
                             ScheduleGjiReinitResult::SuppressedExistingScheduled {
                                 existing_cold_seq,
                             } => {
-                                log::warn!(
+                                tracing::warn!(
                                     "[raw-tsf-literal] suppress raw cleanup: earlier reinit still \
                                  scheduled (not yet flushed): new_cold={} existing_cold={} \
                                  consecutive_before={}",

@@ -57,11 +57,11 @@ pub fn detect_ime_backend() -> ImeBackend {
 pub fn query_ime_state(backend: &ImeBackend) -> Option<bool> {
     match backend {
         ImeBackend::IBus => {
-            log::debug!("IBus IME state query: not yet implemented");
+            tracing::debug!("IBus IME state query: not yet implemented");
             None
         }
         ImeBackend::Fcitx5 => {
-            log::debug!("Fcitx5 IME state query: not yet implemented");
+            tracing::debug!("Fcitx5 IME state query: not yet implemented");
             None
         }
         ImeBackend::None => None,
@@ -79,7 +79,7 @@ impl ImeDetector {
     #[must_use]
     pub fn new() -> Self {
         let backend = detect_ime_backend();
-        log::info!("IME backend: {backend:?}");
+        tracing::info!("IME backend: {backend:?}");
         Self { backend }
     }
 

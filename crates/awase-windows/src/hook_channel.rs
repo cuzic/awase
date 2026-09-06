@@ -221,10 +221,10 @@ pub fn wake_post_failed_lifetime_count() -> u32 {
 #[cfg(windows)]
 pub fn recover_stuck_wake_if_needed() {
     if WAKE_POST_FAILED.swap(false, Ordering::AcqRel) {
-        log::warn!("[hook-ring] request_engine_wake の PostMessageW が失敗した形跡があります");
+        tracing::warn!("[hook-ring] request_engine_wake の PostMessageW が失敗した形跡があります");
     }
     if HOOK_KEYS.has_pending() && WAKE_PENDING.swap(false, Ordering::AcqRel) {
-        log::warn!("[hook-ring] WAKE_PENDING recovered by hook watchdog");
+        tracing::warn!("[hook-ring] WAKE_PENDING recovered by hook watchdog");
         request_engine_wake();
     }
 }

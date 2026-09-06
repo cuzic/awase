@@ -266,7 +266,7 @@ impl KeyInjector {
         // 初回 composition 失敗を修正した経緯（`99f56a2`/`2d4d85c`）と同じ理屈。
         for run in Self::split_vk_runs(chars) {
             let n = Self::send_vk_run_batch(run, VkMarker::InjectedWithScan);
-            log::debug!("[vk-send] romaji={romaji:?} batch {n} inputs");
+            tracing::debug!("[vk-send] romaji={romaji:?} batch {n} inputs");
         }
     }
 
@@ -289,7 +289,7 @@ impl KeyInjector {
 
         for (run_idx, run) in runs.into_iter().enumerate() {
             let run_gji_idle = crate::tsf::observer::gji_idle_ms();
-            log::debug!(
+            tracing::debug!(
                 "[h1-run] cold={cold_seq} run={run_idx}/{total_runs} gji={run_gji_idle}ms vks=[{}]",
                 Self::format_vk_run(run),
                 cold_seq = cold_seq.value(),
@@ -303,7 +303,7 @@ impl KeyInjector {
         if vks.is_empty() {
             return;
         }
-        log::debug!(
+        tracing::debug!(
             "[tsf-probe] deferred {} VK(s) を romaji 直後に送出 ({marker:?})",
             vks.len()
         );

@@ -142,6 +142,7 @@ impl AsyncMechanismWriter for AsyncChainWriter {
 // （`spawn_local` のシングルスレッド実行が前提、HWND はスレッドアフィニティを
 // 持つ）で Send は要求しない。
 #[allow(clippy::future_not_send)]
+#[tracing::instrument(level = "debug", skip_all, fields(open = open))]
 async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
     // issue #136 / BUG-90 決定4（/code-review指摘で追加）: `AsyncChainWriter::
     // is_applicable(ImmCross)` は `self.imm.is_some()` しか見ておらず profile を
@@ -167,7 +168,7 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
     // （MS-IME での信頼性未検証）は `TsfObservations::ime_composition_active` の
     // doc コメント参照。
     let obs = crate::tsf::observer::tsf_obs();
-    log::info!(
+    tracing::info!(
         "[apply-ime] ImmCross async: open={open} composition_active={} show_seq={} \
          change_seq={} (issue #138診断)",
         obs.ime_composition_active(),
@@ -194,7 +195,7 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
             )
             .await;
             if let Some(conv_outcome) = result.conv {
-                log::debug!("[apply-ime] ROMAN 補完結果: {conv_outcome:?}");
+                tracing::debug!("[apply-ime] ROMAN 補完結果: {conv_outcome:?}");
             }
             result.open
         }
@@ -221,7 +222,7 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
             // ADR-117: 「送ったが検証失敗で中止した（1バイトも書いていない）」を
             // `info!` で可視化する（送信直前ログだけが info に残ると、実ユーザー
             // 報告で「送ったのに文字が消えた」と誤読されるため）。
-            log::info!("[apply-ime] ImmCross open Aborted({reason:?}) → UnsafeToToggle");
+            tracing::info!("[apply-ime] ImmCross open Aborted({reason:?}) → UnsafeToToggle");
             ImeOpenOutcome::UnsafeToToggle
         }
         ActuationOutcome::Failed => {
@@ -230,13 +231,13 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
             let actual = unsafe { crate::ime::read_ime_state_fast() }.ime_on;
             if actual == Some(open) {
                 // ADR-117: 同上、「送信自体が失敗した」を info! で可視化する。
-                log::info!(
+                tracing::info!(
                     "[apply-ime] ImmCross failed but actual ime_on={actual:?} \
                      already matches desired={open}, skip fallback"
                 );
                 ImeOpenOutcome::AlreadyMatched
             } else {
-                log::info!(
+                tracing::info!(
                     "[apply-ime] ImmCross failed (async, actual ime_on={actual:?}), \
                      falling through to next mechanism"
                 );
@@ -294,6 +295,7 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
 /// ImmCross 試行にとっては「送信後」（tear-down 済みかもしれない）の値でもある**。
 /// ログを見る側は「この値がどちらの送信に対応するか」を混同しないこと
 /// （`imm_cross_write` 冒頭の live 読み取りが ImmCross 自身の送信前の値）。
+#[tracing::instrument(level = "debug", skip_all, fields(open = open, ?mechanism))]
 fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
     crate::with_app(|app| {
         let mut view = app.shadow_ime_control_view();
@@ -320,7 +322,7 @@ fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
         // ADR-117 issue #138診断）の `shadow=` ログフィールドが、この上書き後は
         // 常に `None` になり診断価値を失う。上書き前の値をここで1行記録して
         // 補う（Opus敵対的レビューround3 提案）。
-        log::debug!(
+        tracing::debug!(
             "[apply-ime] fallback_write: shadow_on={:?} → None で bypass (mechanism={mechanism:?})",
             view.control.shadow_on
         );
@@ -338,7 +340,7 @@ fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
         } else {
             // ADR-117: ImmCross Failed → フォールスルーしたが結局どの機構にも
             // 到達できなかった無音ケースを可視化する。
-            log::info!(
+            tracing::info!(
                 "[apply-ime] fallback_write: mechanism={mechanism:?} not applicable → Failed"
             );
             ImeOpenOutcome::Failed
@@ -346,7 +348,7 @@ fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
     })
     .unwrap_or_else(|| {
         // ADR-117: `with_app` が `None`（RUNTIME 未初期化/再入等）を返した無音ケース。
-        log::info!("[apply-ime] fallback_write: with_app returned None → Failed");
+        tracing::info!("[apply-ime] fallback_write: with_app returned None → Failed");
         ImeOpenOutcome::Failed
     })
 }
@@ -358,6 +360,7 @@ fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
 // `Send` にならない。`win32_async::spawn_local`（シングルスレッド実行）経由で
 // のみ呼ばれるため実害はない（`ActuationTarget::verify_still_current` と同じ制約）。
 #[allow(clippy::future_not_send)]
+#[tracing::instrument(level = "debug", skip_all)]
 pub(crate) async fn run_open_chain_async(order: ActuationOrder, imm: ImmCrossOp) -> ImeOpenOutcome {
     // issue #136 / BUG-90 決定4: この関数は `order`/`imm` のみを受け取り
     // `ImeControlView` を持たないため、呼び出し元の分岐（`imm_cross_is_first_

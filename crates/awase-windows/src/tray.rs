@@ -225,9 +225,9 @@ impl SystemTray {
             // シェル未起動時（ログオン直後等）は失敗しても OK。
             // TaskbarCreated がブロードキャストされた時点で recreate() が呼ばれる。
             if Shell_NotifyIconW(NIM_ADD, &raw const nid).as_bool() {
-                log::info!("System tray icon created (elevated={elevated})");
+                tracing::info!("System tray icon created (elevated={elevated})");
             } else {
-                log::warn!("Shell_NotifyIcon NIM_ADD failed — shell not ready, will retry on TaskbarCreated");
+                tracing::warn!("Shell_NotifyIcon NIM_ADD failed — shell not ready, will retry on TaskbarCreated");
             }
 
             Ok(Self {
@@ -336,7 +336,7 @@ impl SystemTray {
         unsafe {
             let _ = Shell_NotifyIconW(NIM_ADD, &raw const self.nid);
         }
-        log::info!("Tray icon re-registered after Explorer restart");
+        tracing::info!("Tray icon re-registered after Explorer restart");
     }
 
     /// バルーン通知を表示する
@@ -374,7 +374,7 @@ impl Drop for SystemTray {
             let _ = Shell_NotifyIconW(NIM_DELETE, &raw const self.nid);
             let _ = DestroyWindow(self.hwnd);
         }
-        log::info!("System tray icon destroyed");
+        tracing::info!("System tray icon destroyed");
     }
 }
 
@@ -570,7 +570,7 @@ pub fn handle_tray_message(
     #[expect(clippy::cast_sign_loss)]
     let event = (lparam.0 & 0xFFFF) as u32;
 
-    log::debug!(
+    tracing::debug!(
         "Tray message: event=0x{event:04X} lparam=0x{:016X}",
         lparam.0
     );
@@ -794,7 +794,7 @@ pub fn restart_as_admin() {
     let exe = match std::env::current_exe() {
         Ok(e) => e,
         Err(e) => {
-            log::error!("Failed to get current exe path: {e}");
+            tracing::error!("Failed to get current exe path: {e}");
             return;
         }
     };
@@ -815,10 +815,10 @@ pub fn restart_as_admin() {
         );
         // ShellExecuteW returns HINSTANCE > 32 on success
         if result.0 as isize > 32 {
-            log::info!("Restarting as admin, exiting current process");
+            tracing::info!("Restarting as admin, exiting current process");
             std::process::exit(0);
         } else {
-            log::warn!("Failed to restart as admin (user may have cancelled UAC)");
+            tracing::warn!("Failed to restart as admin (user may have cancelled UAC)");
         }
     }
 }
@@ -830,17 +830,17 @@ pub fn restart_self() {
     let exe = match std::env::current_exe() {
         Ok(e) => e,
         Err(e) => {
-            log::error!("Failed to get current exe path: {e}");
+            tracing::error!("Failed to get current exe path: {e}");
             return;
         }
     };
     match std::process::Command::new(&exe).spawn() {
         Ok(_) => {
-            log::info!("Restarting self, exiting current process");
+            tracing::info!("Restarting self, exiting current process");
             std::process::exit(0);
         }
         Err(e) => {
-            log::error!("Failed to restart self: {e}");
+            tracing::error!("Failed to restart self: {e}");
         }
     }
 }
@@ -943,9 +943,9 @@ fn open_url(url: &str) {
     };
     // ShellExecuteW returns HINSTANCE > 32 on success
     if result.0 as isize > 32 {
-        log::info!("Opened URL: {url}");
+        tracing::info!("Opened URL: {url}");
     } else {
-        log::warn!("Failed to open URL {url} (result={result:?})");
+        tracing::warn!("Failed to open URL {url} (result={result:?})");
     }
 }
 
@@ -1038,7 +1038,7 @@ pub(crate) fn handle_autostart_toggle() {
 /// 出してはならない）。
 fn save_auto_start_config(value: &str) -> Option<Vec<String>> {
     let Ok(config_path) = crate::app::find_config_path() else {
-        log::warn!("Could not find config path to save auto_start");
+        tracing::warn!("Could not find config path to save auto_start");
         return None;
     };
     match awase::config::AppConfig::load(&config_path) {
@@ -1051,17 +1051,17 @@ fn save_auto_start_config(value: &str) -> Option<Vec<String>> {
             // （設定画面のapply_confirmed）と同様、保存前に必ずvalidate()を通す。
             let (validated, warnings) = config.validate();
             for w in &warnings {
-                log::warn!("Config validation warning while saving auto_start: {w}");
+                tracing::warn!("Config validation warning while saving auto_start: {w}");
             }
             let config = awase::config::AppConfig::from(validated);
             if let Err(e) = config.save(&config_path) {
-                log::error!("Failed to save auto_start config: {e}");
+                tracing::error!("Failed to save auto_start config: {e}");
                 return None;
             }
             Some(warnings)
         }
         Err(e) => {
-            log::error!("Failed to load config for saving auto_start: {e}");
+            tracing::error!("Failed to load config for saving auto_start: {e}");
             None
         }
     }
@@ -1117,7 +1117,7 @@ unsafe extern "system" fn tray_wnd_proc(
             // 届くのは taskkill（/f なし）やタスクマネージャーの「タスクの終了」など、
             // 外部からの明示的な終了要求のみ（2026-07-22 実機ログで確認済み）。
             // これらを正常終了として受理する。
-            log::info!("Tray window received WM_CLOSE — shutting down");
+            tracing::info!("Tray window received WM_CLOSE — shutting down");
             PostQuitMessage(0);
             LRESULT(0)
         }

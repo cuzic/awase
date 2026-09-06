@@ -211,7 +211,7 @@ impl ImeDiagnosticSnapshot {
             |o| if o { "true" } else { "false" }.to_string(),
         );
 
-        log::debug!(
+        tracing::debug!(
             "[ime-diag] label={label} t={t} hwnd={hwnd:#x} pid={pid} tid={tid} class=\"{class}\" \
              hkl={hkl:08x} lang={lang:04x} imm_bridge={bridge} \
              imc_open={imc_open} imc_conv={conv} \
@@ -340,7 +340,7 @@ pub fn log_composition_probe(cold_seq: Generation, label: &'static str) {
         .sentence_mode
         .map_or_else(|| "-".to_string(), |v| format!("{v:#06x}"));
 
-    log::info!(
+    tracing::info!(
         "[comp-probe] {label} cold={cold_seq} hwnd={hwnd_raw:#x} profile={profile} class=\"{class}\" \
          himc_null={himc_null} open={open} conv={conv} sent={sent} \
          comp={comp} comp_read={comp_read} result={result} result_read={result_read} \

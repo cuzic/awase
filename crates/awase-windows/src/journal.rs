@@ -359,7 +359,7 @@ pub enum JournalEntry {
     /// `platform.rs::flush_raw_tsf_literal_recovery`）と、ADR-128 の
     /// drain-before-send 実 flush（`trigger="drain_before_send"`、
     /// `output/vk_send.rs::drain_pending_deferred_before_send_if_queue_only`）から
-    /// 記録する。従来は `log::debug!`/`log::warn!` の自由文字列でしか残らず、journal
+    /// 記録する。従来は `tracing::debug!`/`tracing::warn!` の自由文字列でしか残らず、journal
     /// （構造化・容量優先度あり）には現れなかった（issue #148 の調査で
     /// `app_log_excerpt` を直接読まないと確認できず、journal の
     /// `DumpTruncated` で欠落しうる弱点だった）。
@@ -379,7 +379,7 @@ pub enum JournalEntry {
     /// `origin_focus_gen`（give-up 検出時点のフォーカス世代）と
     /// `current_focus_gen`（poll 完了時点の世代）の一致・不一致が、
     /// `pending_deferred` を安全に flush してよいか（focus_matches）を
-    /// 決める。この判定は従来 `log::debug!`/`log::warn!` のみで、journal
+    /// 決める。この判定は従来 `tracing::debug!`/`tracing::warn!` のみで、journal
     /// には一切現れなかった。
     GjiReinitRetryCompleted {
         token: u32,
@@ -546,6 +546,461 @@ impl JournalEntry {
     }
 }
 
+// ── journal → tracing 一方向 fan-out（ADR-139 決定4、Option C） ──────────────
+//
+// journal を SSOT（決定論的リプレイの正）のまま変えず、`UnifiedJournal::absorb`
+// （journal への2系統の入口が最終的に合流する唯一の地点）から、構造化 tracing
+// イベントとして journal の内容をそのまま流す。既定レベルは `debug!` に統一する
+// （`ImeEvent`/`KeyInput` 等は tick・打鍵ごとに無条件で journal へ落ちるため、
+// 一部だけ `info!` に格上げすると既定フィルタ `"info"` の下で awase.log が
+// 常時肥大化し、決定2〈ログ肥大防止〉と矛盾する）。
+//
+// 判別子文字列（`?`/`%` の代わり）は journal.rs 内に閉じた private fn として
+// 実装する（型自体に `as_str()` を生やさない — `ConvClassifyCall` 等が保持する
+// `awase::engine::InputModeState` のような core crate の型に手を入れず、
+// ADR-019 の依存追加議論を避けるため）。値は journal の JSON シリアライズ
+// （serde、variant 名そのまま）と表記を揃える。
+//
+// 深くネストした構造体（`ActuationRecord`/`AnyObservation`/
+// `DriftGiveUpDiagnosticRecord` 等）は、当面トップレベルの主要フィールド、
+// または粗い判別子のみを記録する（完全な再帰的展開は将来のフォローアップ、
+// 決定4 必須条件6）。`match` の網羅性（`_ =>` を書かない）だけは全箇所で守る
+// ——将来 variant が増えたときにコンパイルエラーで検知させるための唯一の
+// 安全装置。
+
+fn decision_kind_str(d: &DecisionKind) -> &'static str {
+    match d {
+        DecisionKind::PassThrough => "PassThrough",
+        DecisionKind::PassThroughWith { .. } => "PassThroughWith",
+        DecisionKind::Consume { .. } => "Consume",
+    }
+}
+
+fn physical_disposition_str(p: &PhysicalDispositionSummary) -> &'static str {
+    match p {
+        PhysicalDispositionSummary::Allow => "Allow",
+        PhysicalDispositionSummary::Suppress { .. } => "Suppress",
+    }
+}
+
+fn ime_event_kind_str(e: &crate::state::ime_event::ImeEvent) -> &'static str {
+    use crate::state::ime_event::ImeEvent;
+    match e {
+        ImeEvent::UserImeToggleIntent { .. } => "UserImeToggleIntent",
+        ImeEvent::UserImeSetIntent { .. } => "UserImeSetIntent",
+        ImeEvent::PanicReset { .. } => "PanicReset",
+        ImeEvent::HwndCacheRestored { .. } => "HwndCacheRestored",
+        ImeEvent::EngineActivationSync { .. } => "EngineActivationSync",
+        ImeEvent::ImeApplyRequested { .. } => "ImeApplyRequested",
+        ImeEvent::ImeApplySucceeded { .. } => "ImeApplySucceeded",
+        ImeEvent::ImeApplyFailed { .. } => "ImeApplyFailed",
+        ImeEvent::ObserverReported(_) => "ObserverReported",
+        ImeEvent::FocusChanged { .. } => "FocusChanged",
+        ImeEvent::FocusHwndUpdated { .. } => "FocusHwndUpdated",
+        ImeEvent::InitialFocusFenceEstablished { .. } => "InitialFocusFenceEstablished",
+        ImeEvent::InitialAppPolicyEstablished { .. } => "InitialAppPolicyEstablished",
+        ImeEvent::ChordEnded { .. } => "ChordEnded",
+        ImeEvent::DriftDetected { .. } => "DriftDetected",
+        ImeEvent::InputModeObserved { .. } => "InputModeObserved",
+        ImeEvent::InputModeApplied { .. } => "InputModeApplied",
+        ImeEvent::UserChangedInputMode { .. } => "UserChangedInputMode",
+    }
+}
+
+fn ime_open_outcome_str(o: awase::platform::ImeOpenOutcome) -> &'static str {
+    use awase::platform::ImeOpenOutcome;
+    match o {
+        ImeOpenOutcome::Applied => "Applied",
+        ImeOpenOutcome::FallbackSent => "FallbackSent",
+        ImeOpenOutcome::AlreadyMatched => "AlreadyMatched",
+        ImeOpenOutcome::Failed => "Failed",
+        ImeOpenOutcome::UnsafeToToggle => "UnsafeToToggle",
+        ImeOpenOutcome::NotOwned => "NotOwned",
+    }
+}
+
+fn open_apply_reason_str(r: crate::state::ime_event::OpenApplyReason) -> &'static str {
+    use crate::state::ime_event::OpenApplyReason;
+    match r {
+        OpenApplyReason::EngineDecision => "EngineDecision",
+        OpenApplyReason::ImmBrokenForceOn => "ImmBrokenForceOn",
+        OpenApplyReason::Bootstrap => "Bootstrap",
+        OpenApplyReason::DriftCorrection => "DriftCorrection",
+        OpenApplyReason::ShadowToggle => "ShadowToggle",
+    }
+}
+
+fn literal_verdict_str(v: crate::tsf::literal_facts::LiteralVerdict) -> &'static str {
+    use crate::tsf::literal_facts::LiteralVerdict;
+    match v {
+        LiteralVerdict::CompositionConfirmed => "CompositionConfirmed",
+        LiteralVerdict::SuspectedLiteral => "SuspectedLiteral",
+        LiteralVerdict::StaleConfirm => "StaleConfirm",
+        LiteralVerdict::VetoExpired => "VetoExpired",
+        LiteralVerdict::SessionSkip => "SessionSkip",
+        LiteralVerdict::PlanSkippedLiteral => "PlanSkippedLiteral",
+        LiteralVerdict::AbortedNoVerdict => "AbortedNoVerdict",
+    }
+}
+
+fn actuation_action_str(a: crate::state::ime_actuation::ActuationAction) -> &'static str {
+    use crate::state::ime_actuation::ActuationAction;
+    match a {
+        ActuationAction::Send => "Send",
+        ActuationAction::GiveUp => "GiveUp",
+    }
+}
+
+fn feedback_policy_kind_str(p: &crate::state::ime_actuation::FeedbackPolicy) -> &'static str {
+    use crate::state::ime_actuation::FeedbackPolicy;
+    match p {
+        FeedbackPolicy::Read { .. } => "Read",
+        FeedbackPolicy::Blind { .. } => "Blind",
+    }
+}
+
+fn deferred_recovery_outcome_str(o: &DeferredRecoveryOutcomeSummary) -> &'static str {
+    match o {
+        DeferredRecoveryOutcomeSummary::DiscardedStale { .. } => "DiscardedStale",
+        DeferredRecoveryOutcomeSummary::SkippedWhilePolling => "SkippedWhilePolling",
+        DeferredRecoveryOutcomeSummary::Flushed { .. } => "Flushed",
+    }
+}
+
+impl JournalEntry {
+    /// journal エントリを構造化 tracing イベントとして吐く。呼ぶのは
+    /// [`JournalEnvelope::emit_tracing`] の内側だけ（`UnifiedJournal::absorb` 経由）。
+    ///
+    /// **`_ =>` ワイルドカードを書かない**こと。`architecture_guard.rs` の
+    /// `journal_emit_tracing_has_no_debug_display_sigils_or_wildcards` が
+    /// `?`/`%` シギルと併せてこれを機械的に禁止する。
+    ///
+    /// 19 variant を1関数で網羅する構造上、`cognitive_complexity` は必然的に
+    /// 高くなる（実測 21/15、Windows実機CIで検出）。`hook_callback` 等
+    /// 既存の大規模dispatch関数と同型の許容パターン（本ファイルの他、
+    /// `output/mod.rs`・`runtime/key_pipeline.rs`等13箇所に既存）。
+    /// variantごとに小関数へ分割すると、match の網羅性チェック
+    /// （将来variant追加時のコンパイルエラー検知、この機構の唯一の安全装置）
+    /// が複数関数に分散し、かえって見通しが悪くなる。
+    #[allow(clippy::cognitive_complexity)]
+    fn emit_tracing(&self, seq: u64, elapsed_ms: u64) {
+        match self {
+            Self::KeyInput {
+                event,
+                state_before,
+                state_after,
+                decision,
+                physical,
+            } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    vk_code = event.vk_code,
+                    is_down = event.is_down,
+                    injected = event.injected,
+                    key_class = event.key_class,
+                    state_before = state_before.as_str(),
+                    state_after = state_after.as_str(),
+                    decision = decision_kind_str(decision),
+                    physical = physical_disposition_str(physical),
+                    "key input"
+                );
+            }
+            Self::TimerFired {
+                timer_id,
+                state_before,
+                state_after,
+            } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    timer_id,
+                    state_before = state_before.as_str(),
+                    state_after = state_after.as_str(),
+                    "timer fired"
+                );
+            }
+            Self::ImeEvent { event } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    event_kind = ime_event_kind_str(event),
+                    "ime event"
+                );
+            }
+            Self::ConvClassifyCall {
+                conv,
+                current: _,
+                is_cold,
+                effective_open,
+                conv_mode_changed,
+                is_roman_reliable,
+                result: _,
+            } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    conv,
+                    is_cold,
+                    effective_open,
+                    conv_mode_changed,
+                    is_roman_reliable,
+                    "conv classify call"
+                );
+            }
+            Self::ImeActuation { record } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    target_open = record.target,
+                    attempts = record.attempts,
+                    policy = feedback_policy_kind_str(&record.policy),
+                    action = actuation_action_str(record.action),
+                    "ime actuation"
+                );
+            }
+            Self::DriftGiveUpDiagnostic { record } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    desired_open = record.desired_open,
+                    observed_open = record.observed_open,
+                    drift_duration_ms = record.drift_duration_ms,
+                    layout_name = record.layout_name.as_str(),
+                    half_width_alnum_toggle_active = record.half_width_alnum_toggle_active,
+                    "drift give-up diagnostic"
+                );
+            }
+            Self::HookImeModeDiagnostic { record } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    vk_code = record.vk_code,
+                    is_down = record.is_down,
+                    self_injected = record.self_injected,
+                    injected = record.injected,
+                    scan = record.scan,
+                    "hook ime-mode diagnostic"
+                );
+            }
+            Self::DriftGiveUpIntervalEnded {
+                reason,
+                elapsed_ms: interval_elapsed_ms,
+            } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    reason = *reason,
+                    interval_elapsed_ms,
+                    "drift give-up interval ended"
+                );
+            }
+            Self::ImeOpenApplied {
+                open,
+                outcome,
+                reason,
+            } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    open,
+                    outcome = ime_open_outcome_str(*outcome),
+                    reason = open_apply_reason_str(*reason),
+                    "ime open applied"
+                );
+            }
+            Self::FocusTransition {
+                changed,
+                from: _,
+                to: _,
+                dwell_ms,
+                profile,
+            } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    changed_process = changed.process,
+                    changed_window = changed.window,
+                    changed_app_kind = changed.app_kind,
+                    changed_focus_kind = changed.focus_kind,
+                    dwell_ms,
+                    profile = profile.as_str(),
+                    "focus transition"
+                );
+            }
+            Self::GjiFsmTransition {
+                trigger,
+                state_before,
+                state_after,
+            } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    trigger = trigger.as_str(),
+                    state_before = state_before.as_str(),
+                    state_after = state_after.as_str(),
+                    "gji fsm transition"
+                );
+            }
+            Self::TsfProbeStarted {
+                source,
+                cold_seq,
+                probe_id,
+                gji_state,
+                consecutive_at_start,
+                pending_deferred_len,
+            } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    source = source.as_str(),
+                    cold_seq,
+                    probe_id = probe_id.unwrap_or(u64::MAX),
+                    probe_id_present = probe_id.is_some(),
+                    gji_state = gji_state.as_str(),
+                    consecutive_at_start,
+                    pending_deferred_len,
+                    "tsf probe started"
+                );
+            }
+            Self::TsfProbeCompleted {
+                outcome,
+                cold_seq,
+                probe_id,
+                elapsed_ms: duration_ms,
+                tick_count,
+                gji_state,
+            } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    outcome = outcome.as_str(),
+                    cold_seq = cold_seq.unwrap_or(u64::MAX),
+                    cold_seq_present = cold_seq.is_some(),
+                    probe_id = probe_id.unwrap_or(u64::MAX),
+                    probe_id_present = probe_id.is_some(),
+                    duration_ms,
+                    tick_count,
+                    gji_state = gji_state.as_str(),
+                    "tsf probe completed"
+                );
+            }
+            Self::LiteralDetect {
+                record,
+                suppressed_confirms,
+                since_vk_sent_ms,
+            } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    verdict = literal_verdict_str(record.facts.verdict),
+                    consecutive_before = record.consecutive_before,
+                    gave_up = record.gave_up,
+                    backs = record.backs,
+                    suppressed_confirms,
+                    since_vk_sent_ms,
+                    "literal detect"
+                );
+            }
+            Self::DeferredRecoveryFlush { trigger, outcome } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    trigger = *trigger,
+                    outcome = deferred_recovery_outcome_str(outcome),
+                    "deferred recovery flush"
+                );
+            }
+            Self::GjiReinitRetryCompleted {
+                token,
+                status,
+                cold_seq,
+                origin_focus_gen,
+                current_focus_gen,
+                focus_matches,
+                retry_romaji_present,
+                deferred_flushed,
+                deferred_discarded,
+            } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    token,
+                    status = status.as_str(),
+                    cold_seq,
+                    origin_focus_gen,
+                    current_focus_gen,
+                    focus_matches,
+                    retry_romaji_present,
+                    deferred_flushed,
+                    deferred_discarded,
+                    "gji reinit retry completed"
+                );
+            }
+            Self::ClockAnchor { tick_ms, hook_us } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    tick_ms,
+                    hook_us,
+                    "clock anchor"
+                );
+            }
+            Self::DumpTruncated {
+                budget_bytes,
+                total_entries,
+                emitted_entries,
+                dropped_state,
+                dropped_timing,
+                dropped_actuation,
+                dropped_key_input,
+            } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    budget_bytes,
+                    total_entries,
+                    emitted_entries,
+                    dropped_state,
+                    dropped_timing,
+                    dropped_actuation,
+                    dropped_key_input,
+                    "dump truncated"
+                );
+            }
+            Self::DumpTriggered => {
+                tracing::debug!(target: "awase::journal", seq, elapsed_ms, "dump triggered");
+            }
+        }
+    }
+}
+
+impl JournalEnvelope {
+    /// [`JournalEntry::emit_tracing`] に委譲する。呼ぶのは
+    /// `UnifiedJournal::absorb` の内側だけ（1箇所）。
+    fn emit_tracing(&self) {
+        self.entry.emit_tracing(self.seq, self.elapsed_ms);
+    }
+}
+
 /// 統合イベントジャーナル。
 ///
 /// タイムスタンプは注入された `quanta::Clock` で自己採取するため、
@@ -640,7 +1095,14 @@ impl UnifiedJournal {
     }
 
     /// 発生時に stamp 済みの envelope をレーンへ収める。
+    ///
+    /// ADR-139 決定4（Option C）: journal → tracing の一方向 fan-out を
+    /// ここ（journal への2系統の入口が最終的に合流する唯一の地点）で行う。
+    /// レーン容量超過で `JournalLane::push` が黙って捨てるエントリも
+    /// tracing 側には出力される（意図的。tracing は人間向けの、独自フィルタを
+    /// 持つ可能性のあるチャネル、journal はリプレイ用の有界リングという役割分担）。
     pub fn absorb(&mut self, envelope: JournalEnvelope) {
+        envelope.emit_tracing();
         let lane = envelope.entry.lane_kind();
         match lane {
             LaneKind::State => self.lanes.state.push(envelope),

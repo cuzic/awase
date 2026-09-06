@@ -159,6 +159,7 @@ pub(crate) fn kana_for_romaji_static(romaji: &str) -> Option<char> {
 ///
 /// # Panics
 /// `INPUT` のサイズが `i32` に収まらない場合（実際には起こらない）。
+#[tracing::instrument(level = "debug")]
 pub fn flush_raw_tsf_literal_backspaces() {
     use crate::vk::{VK_BACK, VK_ESCAPE};
     use std::sync::atomic::Ordering::Relaxed;
@@ -180,6 +181,6 @@ pub fn flush_raw_tsf_literal_backspaces() {
             make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
         ]
     }));
-    log::debug!("[raw-tsf-literal] flush escape={escape_composition} backspace ×{n}");
+    tracing::debug!("[raw-tsf-literal] flush escape={escape_composition} backspace ×{n}");
     let _ = crate::win32::send_input_safe(&inputs);
 }

@@ -77,7 +77,7 @@ impl Future for SleepFuture {
             // null HWND のとき nIDEvent は無視され、戻り値が割り当て ID になる
             let timer_id = unsafe { SetTimer(ptr::null_mut(), 0, self.ms, Some(timer_proc)) };
             if timer_id == 0 {
-                log::warn!("[win32-async] SetTimer failed");
+                tracing::warn!("[win32-async] SetTimer failed");
                 self.done = true;
                 return Poll::Ready(());
             }

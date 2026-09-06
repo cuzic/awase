@@ -272,7 +272,7 @@ impl LiteralDetectCore {
         // 「今回のセッションで実際にcomposeが機能した」という直接の事実だけで
         // 十分と判断し、無駄な確認・訂正の反復を避ける（反応速度優先）。
         if env.literal_session_confirmed_gen == Some(self.cold_seq) {
-            log::debug!(
+            tracing::debug!(
                 "[literal-detect] cold={} セッション確認済み → スキップ",
                 self.cold_seq.value()
             );
@@ -311,7 +311,7 @@ impl LiteralDetectCore {
                     // プレフィックス分（PARTIAL_LITERAL_BS）のみを担う。
                     // 例: "ltu" → 'l' リテラル + 'tu'→'と' composition
                     //     → ESC (composition 破棄) + BS×1 ('l' 削除) が正しい。
-                    log::debug!(
+                    tracing::debug!(
                         "[literal-detect] cold={} partial literal (nc=false tsf romaji={:?} escape+backs={} consecutive={} real_gji_idle_ms={})",
                         self.cold_seq.value(),
                         self.romaji,
@@ -330,7 +330,7 @@ impl LiteralDetectCore {
                     ));
                 }
 
-                log::debug!(
+                tracing::debug!(
                     "[literal-detect] cold={} composition confirmed real_gji_idle_ms={}",
                     self.cold_seq.value(),
                     crate::tsf::observer::gji_idle_ms(),
@@ -350,7 +350,7 @@ impl LiteralDetectCore {
             }
             DetectionResult::SuspectedLiteral => match self.veto_decision(env) {
                 VetoDecision::Hold => {
-                    log::debug!(
+                    tracing::debug!(
                         "[literal-detect] cold={} candidate window可視のため回収を保留 (real_gji_idle_ms={})",
                         self.cold_seq.value(),
                         crate::tsf::observer::gji_idle_ms(),
@@ -358,7 +358,7 @@ impl LiteralDetectCore {
                     None
                 }
                 VetoDecision::Expired => {
-                    log::warn!(
+                    tracing::warn!(
                         "[literal-detect] cold={} candidate window可視のまま veto 上限 {}ms 超過 → 無回収で打ち切り",
                         self.cold_seq.value(),
                         crate::tuning::GJI_CANDIDATE_VETO_CAP_MS,
@@ -382,7 +382,7 @@ impl LiteralDetectCore {
                     ])
                 }
                 VetoDecision::NotApplicable => {
-                    log::debug!(
+                    tracing::debug!(
                         "[literal-detect] cold={} suspected literal (backs={} consecutive={} real_gji_idle_ms={})",
                         self.cold_seq.value(),
                         self.ze_bs_count,
@@ -400,7 +400,7 @@ impl LiteralDetectCore {
                 // あって「literal である」証拠ではない。backspace は送らず
                 // （backs=0）、romaji 再送のみスケジュールする
                 // （`per_vk_recovery_params` のドキュメント参照）。
-                log::warn!(
+                tracing::warn!(
                     "[literal-detect] cold={} stale confirm 検出 (romaji={:?}) → \
                      backspace は送らず romaji 再送のみ行う",
                     self.cold_seq.value(),

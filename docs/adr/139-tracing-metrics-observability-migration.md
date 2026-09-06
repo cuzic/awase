@@ -92,7 +92,7 @@ Phase 1 の全数調査（880件超という表現は誤りで、実測1161件�
 - `target:` 指定、`log_enabled!`、`log::max_level`、`set_boxed_logger`、独自 `Log`
   実装、動的フォーマット文字列は**いずれも0件**。単一行640件・複数行475件、
   合計 **1115件は純粋な機械置換（sed 相当）で通る**。
-- **機械置換できない残り5箇所**（全数特定済み）:
+- **機械置換できない残り6箇所**（全数特定済み。タスク分解レビューで6箇所目を追加）:
   1. `crates/awase-windows/src/keymap.rs:225,232` — `level: log::Level` を引数に取り
      `log::log!(level, ...)` する実行時レベル分岐。`tracing::event!` はレベルが
      コンパイル時定数でなければならず直接の等価物が無いため、`match level { Warn => ..,
@@ -121,6 +121,14 @@ Phase 1 の全数調査（880件超という表現は誤りで、実測1161件�
      このテストが確実に panic する**ため、「Phase 1 は CI が無傷であることを確認してから
      次フェーズへ」という進め方は成立しない。マーカー文字列の更新を `ime_refresh.rs` の
      置換と**同一コミット**に含めることを Phase 1 の必須項目とする。
+  6. **`crates/awase-linux/src/output.rs`** — ワークスペース内で唯一
+     `use log::warn;`（:8行目）で `warn!` をインポートしており、プレフィックス無しの
+     bare `warn!(...)` が6箇所（:131,150,159,165,184,200）ある。他の1155箇所を
+     `log::(trace|debug|info|warn|error)!` という正規表現で機械置換しても、この
+     6箇所は一致せず取り残される。同ファイルの `log::debug!`（:245,250,253,256）は
+     通常の機械置換対象。この6箇所を見落として `log` 依存を Cargo.toml から削除すると
+     `awase-linux` が `unresolved import` でビルド不能になるため、個別に
+     `tracing::warn!` のフルパス呼び出しへ置換し `use log::warn;` を削除する。
 
 `#[expect(clippy::cognitive_complexity)]` が本番コード13箇所にあり
 （`clippy.toml` の閾値15、CI で `-D warnings` 明示有効化）、マクロ展開形の違いで
@@ -141,12 +149,19 @@ dylint 3本（`lints/no_vk_as_scan`, `lints/ime_event_guard`,
 のマクロ名長変化で `cargo fmt` の折り返しを変え**、無関係な再インデント差分が出る。
 マクロ名の機械置換コミットと `cargo fmt` 適用コミットは分離すること。
 
-**Phase 1 と同時、または直前の独立修正（このADRの完了を待たない）**: `.githooks/pre-push`
-の再発ファミリー正規表現（29行目付近）に `transport.rs`/`ime_refresh.rs` が含まれて
-いない。これは `fix-requires-evidence.md` 自身が BUG-116（2026-09-05）の反省として
-「このファイルが表にも pre-push 正規表現にも含まれていなかった穴」と名指ししている
-既知の欠落が、`ime_refresh.rs` についても同型で残っているということである。ADR-139 とは
-別コミットで今すぐ追加すること。
+**Phase 1 と同時、または直前の独立修正（このADRの完了を待たない）**: 当初
+「`.githooks/pre-push` の再発ファミリー正規表現に `transport.rs`/`ime_refresh.rs` が
+含まれていない」としたが、タスク分解レビューで再確認したところ **`transport` は
+`.githooks/pre-push:28` に既に含まれており、欠けているのは `ime_refresh` のみ**
+だった。さらに重大な点として、**このマシンで実際に実行される pre-push フックは
+`.githooks/pre-push`（Git 管理下）ではなく `.git/hooks/pre-push`（`core.hooksPath`
+が指す、Git 管理外の別ファイル）であり、両者は既に乖離している**
+（`.git/hooks/pre-push:28` は `transport` も `ime_refresh` も含まない古いコピー）。
+`.githooks/pre-push` だけを直しても、このリポジトリの実際の pre-push 実行結果は
+1ビットも変わらない。対応は2段階: (1) `.githooks/pre-push` に `ime_refresh` を追加する、
+(2) `.git/hooks/pre-push` を `.githooks/pre-push` の内容で同期する（またはユーザーの
+同意を得た上で `core.hooksPath` を `.githooks` に向け直す）。(2) はリポジトリの
+フック実行設定を変える操作なのでユーザー確認を要する。
 
 ### 決定2: ファイル writer への `BufWriter` + ローテーション導入（同期のまま）。非同期化は本ADRでは決定しない
 
@@ -161,8 +176,23 @@ dylint 3本（`lints/no_vk_as_scan`, `lints/ime_event_guard`,
 
 1. **エンジンスレッドの stall**: `awase.log` の書き込みに `BufWriter` を挟み、
    1レコード1 syscall を解消する。
-2. **ログ肥大**: `tracing-appender::rolling` による同期ローテーションを導入し、
-   747MB 肥大化（実測、`docs/adr/125-*.md:287`）を防ぐ。
+2. **ログ肥大**: 同期ローテーションを導入し、747MB 肥大化（実測、
+   `docs/adr/125-*.md:287`）を防ぐ。
+
+**ローテーション実装の追補（タスク分解レビューで判明）**: 当初 `tracing-appender::rolling`
+を想定したが、これは時間ベース（MINUTELY/HOURLY/DAILY/WEEKLY/NEVER）のローテーションしか
+持たず、実測根拠（747MB は単一セッション中の肥大化）に合わない。さらにローテーション後の
+ファイル名が日付サフィックス付きになるため、`bug_report_log_path()`/`app_log_path.exists()`
+（`app/mod.rs:3`, `runtime/message_handlers.rs:1144-1145`）が前提とする「`awase.log` という
+固定パスが常に存在する」という契約を壊す。**`tracing-appender::rolling` は採用しない。**
+代わりに、固定パス `awase.log` を維持したまま、自前の軽量な1世代ローテーション
+（閾値超過で `awase.log` → `awase.log.old` にリネームしてから新規 `awase.log` を開く）を
+実装する。awase は常駐トレイアプリで数日〜数週間再起動されないため、**起動時チェックだけ
+では不十分**であり、セッション中も（既存のウォッチドッグ tick 等に相乗りして）周期的に
+書き込みバイト数を見てローテーションを発火させる。Windows では開いたままの `File` は
+`rename` できない（`FILE_SHARE_DELETE` 無しでは `ERROR_SHARING_VIOLATION`）ため、
+「`Mutex` 取得 → `BufWriter::flush` → 内側 `File` を drop → `rename` → 新規 `File` を開いて
+差し替え」という順序を守る。
 
 この2点は**非同期化（`non_blocking`）を伴わずに同期のまま実現できる**。
 `tracing-appender::non_blocking` の既定 `lossy=true` はチャネル溢れ時に**サイレントに
@@ -184,9 +214,29 @@ dylint 3本（`lints/no_vk_as_scan`, `lints/ime_event_guard`,
 - `--debug`（stderr）経路は同期のまま維持する。
 - **フラッシュ方針を明記する**: `BufWriter` はクラッシュ時にバッファ内容（＝直近の、
   不具合報告に添付される最も価値の高い行）を失いうる。`warn!`/`error!` レベルの
-  イベント到達時、および不具合報告用の末尾読み出し（`app_log_excerpt` 生成）直前に
+  イベント到達時、および不具合報告起動（`launch_bug_report` 呼び出し）直前に
   明示的に flush する方針をここで決定する。`LineWriter` への変更は syscall 削減効果を
-  消すため採らない。
+  消すため採らない。**flush 経路の実装内では tracing マクロを呼ばない**こと
+  （`std::sync::Mutex` は再入不可であり、flush 用の writer ハンドルと同じ Mutex を
+  ログ出力側も取得するため、flush の内側でログを出すと自己デッドロックする）。
+  不具合報告起動直前の flush は **awase.exe プロセス内**（`runtime/message_handlers.rs`
+  の `launch_bug_report` 呼び出し直前）で行う — 実際に `awase.log` を読むのは
+  `--applog` 引数で起動される別プロセスの awase-settings.exe 側であり、awase.exe が
+  保持する writer ハンドルにはそちらから触れないため、flush は必ず awase.exe 側で
+  完了させておく必要がある。
+- WARN 以上での自動 flush は、`tracing_subscriber::Layer` ではなく
+  **`MakeWriter::make_writer_for(&Metadata)`** を実装したカスタム `MakeWriter`
+  として実装する（`fmt::Layer` が保持する `MakeWriter` は外部の `Layer` から
+  アクセスできないため、`Layer` 経由の実装は成立しない）。
+- サブスクライバの設置は必ず **`tracing_subscriber::util::SubscriberInitExt::init()`
+  （または `try_init()`）経由**で行い、`tracing::subscriber::set_global_default()` を
+  直接呼ばないこと。`tracing-log`（`tracing-subscriber` の default feature）による
+  外部 crate（egui/winit/zbus 等）の `log` 出力の自動収集（`LogTracer`）は
+  `SubscriberInitExt::{init,try_init}` の内部でのみ設置され、
+  `set_global_default()` を直接使うと無言で失われる（`awase-settings/src/main.rs:150`
+  の doc が記録している「`env_logger` 未初期化で `log::warn!` が no-op になっていた」
+  事故の再演になる）。`tracing-subscriber` の依存指定に `default-features = false` を
+  付けないこと。
 - `hook_channel.rs:183-199` の不変条件は維持することを明記し、`architecture_guard.rs`
   に「`hook_callback` 本体にログ/tracing マクロ呼び出しが増えていない」ことを保証する
   テキスト走査テストを追加する（この移行で invariant が緩む方向のリスクを構造的に防ぐ）。
@@ -203,18 +253,18 @@ dylint 3本（`lints/no_vk_as_scan`, `lints/ime_event_guard`,
 
 - `ime_controller.rs::apply`（trait メソッド。実体は**4つの実装**
   `ImmCrossProcessStrategy`/`GjiDirectStrategy`/`MsImeDirectStrategy`/
-  `KanjiToggleStrategy`、`ime_controller.rs:68/145/211/296` — `#[instrument]` は
+  `KanjiToggleStrategy`、`ime_controller.rs:73/150/219/301` — `#[instrument]` は
   trait 定義側に付けられないため**4箇所全てに付与する**。「1箇所付ければ全経路を
   カバーできる」という誤読は、`fix-requires-evidence.md` の「IME actuation 合流点」行が
   警告する issue #136 の失敗〈gate を1箇所にしか置かず二重 actuation を作った〉と
   同型なので明記する）
 - `runtime/open_chain.rs::run_open_chain_async` / `fallback_write` / `imm_cross_write`
 - `runtime/executor.rs::dispatch_ime_set_open` / `execute_one` /
-  **`applied_snapshot` を書く2メソッド**（`executor.rs:179,208`。`applied_snapshot`
-  自体は関数ではなくフィールド〈宣言 `:101`、消費 `:590`〉なので instrument 単位は
-  これを書く2メソッド）
+  **`applied_snapshot` を書くメソッド**（`execute_from_hook`：宣言`:171`/書込`:179`、
+  `execute_from_loop`：宣言`:202`/書込`:208`。`applied_snapshot` 自体は関数ではなく
+  フィールド〈宣言 `:101`、消費 `:590`〉なので instrument 単位はこれを書く関数側）
 - `runtime/conv_actuation.rs`, `output/conv_actuation.rs`
-- `runtime/transport.rs::plan`
+- `runtime/transport.rs::plan`（`self` を取らない関連関数）
 - `output/tsf_warmup_coord.rs`, `output/probe_io.rs`, `output/ime_apply_planner.rs`
 - `state/ime_model.rs`, `state/observation_store.rs`, `runtime/ime_coordinator.rs`
 - `focus/classifier.rs` **および** `focus/classify.rs`（両方実在する別ファイル。
@@ -225,20 +275,40 @@ dylint 3本（`lints/no_vk_as_scan`, `lints/ime_event_guard`,
 - `platform.rs`（特に `build_ime_control_view`）
 - `runtime/ime_refresh.rs::ir_apply_drift_correction`
 - `runtime/key_pipeline.rs`（idle-conv-check の DirectInput 回復経路）
-- `tsf/` の probe/observer/output 各層
+- `tsf/` の probe/observer/output 各層（`tsf/probe.rs`, `tsf/observer.rs`,
+  `tsf/output.rs` を含む）
 
-`#[instrument]` の既定は全引数を記録するため、`view: &ImeControlView<'_>` のような
-大きい値は `skip` するか `fields(...)` で必要な値だけ抜くこと。`runtime/open_chain.rs`
-の `async fn` は `#[instrument]` を付けると `Instrumented<Future>` を返すが、
-`winmsg-executor::spawn_local` はただの `Future` を取るため問題ない。
+**`#[instrument]` は既定で `self` を含む全引数を `Debug` で記録するため、
+`skip(...)` で個別に大きい引数だけを列挙する方式は使わない。全対象に
+`skip_all` を付け、相関性の高いプリミティブ値だけを `fields(...)` で明示する。**
+理由: 上記対象には `Debug` を derive していない型が複数含まれる
+（4戦略の裸のユニット構造体 `ImmCrossProcessStrategy` 等、`ImeControlView`
+〈`Clone, Copy` のみ〉、`impl Into<..>` 引数）。`skip(view)` のように個別列挙すると
+`self` 等の記録漏れが残りコンパイルエラーになる。`skip_all` ならこの問題が
+構造的に発生しない。`runtime/open_chain.rs` の `async fn` は `#[instrument]` を
+付けると `Instrumented<Future>` を返すが、`winmsg-executor::spawn_local` はただの
+`Future` を取るため問題ない。
+
+**高頻度経路（打鍵ごとに通る `runtime/transport.rs::plan`, `output/vk_send.rs`,
+`runtime/executor.rs::execute_from_hook`/`execute_from_loop` 等）は
+`#[instrument(level = "debug", skip_all, ...)]` とし、`info!` 相当の既定レベルを
+使わない。** `#[instrument]` の既定レベルは INFO で、`app/bootstrap.rs` の既定
+フィルタも `"info"` のため、既定のまま付与すると通常起動でも打鍵ごとにエンジン
+スレッドで span 生成が走り、`.claude/rules/tuning-constants.md` が守る ms 単位の
+予算を無用に消費する。
 
 `tuning.rs` は定数のみでインストルメントすべき関数が無いため対象外とする。
 
-**Phase 2 完了条件として、以下の3者の一致を機械的に保証するガードテストを追加する**:
+**Phase 2 完了条件として、以下の3者の関係を機械的に保証するガードテストを追加する**:
 `fix-requires-evidence.md` の再発ファミリー表、本決定3のファイルリスト、
-`.githooks/pre-push` の正規表現。3者は今後も独立に更新されうるため、`architecture_guard.rs`
-にテキスト走査で集合の一致を assert するテストを1本足す（既存の同ファイルの手法を踏襲する
-ため追加コストは小さい）。
+`.githooks/pre-push` の正規表現。ただし3者は**完全な集合一致にはならない**
+（`tuning.rs` は表/正規表現には現れるが決定3では明示的に対象外、正規表現は
+ディレクトリ/パスのプレフィックス単位でありファイル単位の決定3リストとは粒度が
+異なる）。テストは「**決定3のファイルリスト ⊆ (表 ∪ 正規表現が示すパス集合)**」
+という包含関係を assert し、`tuning.rs` 等の意図的な例外はテストコード内に
+コメント付き定数として明記する。この包含関係は**一方向のみ**（決定3が対象範囲を
+逸脱していないかは検知できるが、表/正規表現が守るべきファイルを決定3が
+instrument し忘れていないかは検知できない）ことをテストの doc コメントに明記する。
 
 ### 決定4: journal 基盤との統合方式を確定する（Option C: journal → tracing の一方向 fan-out、設置場所は `UnifiedJournal::absorb`）
 
@@ -289,25 +359,40 @@ journal への入口は2系統ある: (1) `platform.rs::push_journal_entry`（10
 同型であり、本 ADR 自身がその再発例になりかけた。）
 
 ```rust
-// journal.rs — JournalEntry に構造化 tracing イベントとして吐くメソッドを追加
+// journal.rs — enum ごとの判別子文字列は journal.rs 内に閉じた private fn として
+// 実装する（型自体に as_str() を生やさない。ConvClassifyCall 等は core crate
+// (awase::engine::InputModeState 等) の型を含むため、型側への実装だと ADR-019 の
+// 依存追加議論に踏み込む。journal.rs 内で完結させることでそれを回避する）。
+// 文字列値は journal の JSON シリアライズ（serde、variant 名そのまま）と揃え、
+// tracing 側と journal 側で語彙が食い違わないようにする。
+fn literal_verdict_str(v: LiteralVerdict) -> &'static str {
+    match v {
+        LiteralVerdict::SuspectedLiteral => "SuspectedLiteral",
+        LiteralVerdict::StaleConfirm => "StaleConfirm",
+        // ... 残りの variant も同様（_ => を書かない。網羅性維持が目的）
+    }
+}
+
+// JournalEntry に構造化 tracing イベントとして吐くメソッドを追加
 impl JournalEntry {
     /// 呼ぶのは JournalEnvelope::emit_tracing の内側だけ(1箇所)。
+    /// 既定レベルは debug!。info! に格上げするのは行わない（後述、頻度の理由）。
     fn emit_tracing(&self, seq: u64, elapsed_ms: u64) {
         match self {
             Self::TsfProbeStarted { source, cold_seq, probe_id, gji_state,
                                     consecutive_at_start, pending_deferred_len } => {
-                tracing::info!(target: "awase::journal",
+                tracing::debug!(target: "awase::journal",
                     seq, elapsed_ms, source, cold_seq, ?probe_id, gji_state,
                     consecutive_at_start, pending_deferred_len,
                     "tsf probe started");
             }
             Self::LiteralDetect { record, suppressed_confirms, since_vk_sent_ms } => {
-                tracing::info!(target: "awase::journal",
+                tracing::debug!(target: "awase::journal",
                     seq, elapsed_ms,
-                    verdict = record.facts.verdict.as_str(), // Debugでなく判別子文字列
+                    verdict = literal_verdict_str(record.facts.verdict), // Debugでなく判別子文字列
                     suppressed_confirms, since_vk_sent_ms, "literal detect");
             }
-            // ... 各 variant
+            // ... 残りの variant も同様。_ => は書かない（網羅性がこの機構の安全装置）。
         }
     }
 }
@@ -337,7 +422,7 @@ pub fn absorb(&mut self, envelope: JournalEnvelope) {
   subscriber は awase の状態（`RUNTIME`）に一切アクセスしない」という不変条件が
   構造的に満たされる。
 
-**この設計を実装する上での必須条件（3点）:**
+**この設計を実装する上での必須条件（6点、タスク分解レビューで3点追補）:**
 
 1. **`seq`/`elapsed_ms` を明示フィールドとして必ず出す。** `push_journal_entry` は
    発生時点で `stamper.stamp()`（`journal.rs:569-577`）して `seq`/`elapsed_ms` を
@@ -345,18 +430,46 @@ pub fn absorb(&mut self, envelope: JournalEnvelope) {
    イベントタイムスタンプは（drain 時刻ではなく）`JournalEnvelope` が保持する
    `seq`/`elapsed_ms` から読み取れるようにする。
 2. **`emit_tracing` の実装内で `?`/`%` シギル（Debug/Display フォーマット）を禁止し、
-   enum は `&'static str` 判別子（`as_str()` 相当）を明示的に持たせる。** `?record` の
-   ような書き方は `tracing::field::Value` が任意の型付き値を運べないために発生する
-   Debug 文字列化であり、ADR-082 決定1（`description: String` の自由文字列を廃止し
-   型として取り出せる形にした）を実質的に巻き戻す。`architecture_guard.rs` に
-   `journal.rs` の `emit_tracing` 実装を対象としたテキスト走査テストを追加し、
-   `?`/`%` の出現を機械的に禁止する。
-3. **journal のレーン容量超過で捨てられるエントリも tracing には出ることを明記する。**
+   enum は `&'static str` 判別子を明示的に持たせる。** `?record` のような書き方は
+   `tracing::field::Value` が任意の型付き値を運べないために発生する Debug 文字列化
+   であり、ADR-082 決定1（`description: String` の自由文字列を廃止し型として取り出せる
+   形にした）を実質的に巻き戻す。判別子文字列は enum の型自体に `as_str()` を生やす
+   のではなく、**`journal.rs` 内に閉じた private fn**として実装する（`ConvClassifyCall`
+   等が保持する `awase::engine::InputModeState` のような core crate の型に手を入れず、
+   ADR-019 の依存追加議論を避けるため）。この文字列値は journal の JSON シリアライズ
+   （serde、variant 名そのまま）と**同じ表記に揃える** — tracing 側で独自の
+   snake_case 等を作ると、`log_excerpt`（JSON）を見る人と `app_log_excerpt`
+   （awase.log）を見る人とで語彙が食い違い、不具合報告の triage を混乱させる。
+   `architecture_guard.rs` に `journal.rs` の `emit_tracing` 実装を対象とした
+   テキスト走査テストを追加し、`?`/`%` の出現を機械的に禁止する。
+3. **`emit_tracing` の `match` に `_ =>`/`..` のワイルドカードアームを書かない。**
+   ワイルドカードを使うと、将来 `JournalEntry` に variant が追加されたときに
+   コンパイルエラーで検知できなくなり、この機構の唯一の安全装置（網羅性検査）が
+   失われる。上記の `?`/`%` 禁止と同じテキスト走査テストに、ワイルドカードアームの
+   禁止も同居させる。
+4. **`emit_tracing` は既定で `tracing::debug!` を使い、`info!` への格上げは行わない。**
+   journal への入口となる `dispatch_event`（`state/platform_state.rs:167-170`）は
+   `JournalEntry::ImeEvent` を無条件・無制限に記録しており、しかもその多くは
+   ポーリング由来の観測（`InputModeObserved`/`ObserverReported` 等）でティックごとに
+   発火する。`KeyInput`（打鍵ごと）よりさらに高頻度になりうる。variant やレーン
+   ごとに「これは低頻度だから `info!` でよい」と個別判断すると、新しい呼び出し元が
+   増えるたびに前提が崩れる。**全 variant を一律 `debug!` にし、既定フィルタ
+   （`"info"`）のもとでは journal 由来の tracing 出力が一切出ない**ようにすることで、
+   決定2（ログ肥大防止）と構造的に矛盾しなくする。詳細を見たい場合は
+   `RUST_LOG=awase::journal=debug` 等で明示的に有効化する。
+5. **journal のレーン容量超過で捨てられるエントリも tracing には出ることを明記する。**
    `emit_tracing` を `absorb` の**先頭**（lane push より前）に置くため、
    `JournalLane::push`（`journal.rs:481-495`）が容量超過で黙って捨てるエントリも
    tracing 側には出力される。これは意図的である（tracing は人間向けの、独自フィルタを
    持つ可能性のあるチャネル、journal はリプレイ用の有界リング、という役割分担）が、
    書いておかないと後日「不整合だ」として誤って揃えられる恐れがあるため明記する。
+6. **深くネストした variant は当面トップレベルの主要フィールドのみ出力してよい。**
+   `JournalEntry` は実測19 variant（当初「約24種」としたのは過大）で、うち
+   `ImeEvent { event: state::ime_event::ImeEvent }` は内側の `ImeEvent` 自体が
+   約17 variant を持つ深いネストである。全ての内側 variant を今回のPRで再帰的に
+   `&'static str` へ展開することは求めない（`event_kind` のような大枠の判別子と、
+   既存の primitive フィールドのみで初版とし、完全展開は将来のフォローアップとする）。
+   ただし `match` 自体の網羅性（条件3）は維持すること。
 
 これにより、`platform.rs:169` のような重複した `log::warn!` は削除できる（同じ情報が
 構造化フィールド付きで journal 側から自動的に出るため）。Phase の位置づけは
@@ -437,9 +550,16 @@ ETW はそれを見せてくれない。
 
 ## 未解決の疑問
 
-- Phase 1 の機械置換がバイナリサイズ・起動時間に与える影響は未計測。`tracing`
-  サブスクライバースタックは `log`/`env_logger` よりコンパイル時展開が大きいとされる。
-  実測してから Phase 1 完了を判断する。
+- ~~Phase 1 の機械置換がバイナリサイズ・起動時間に与える影響は未計測~~ →
+  **実測済み（2026-09-06）**。`cargo xwin build --target x86_64-pc-windows-msvc
+  --release -p awase-windows`（lld-link 使用）で `awase.exe` を移行前後で
+  ビルドし比較: 移行前（`log`/`env_logger`）4,881,920 バイト → 移行後
+  （`tracing`/`tracing-subscriber`）4,792,832 バイト（**-89,088 バイト、
+  -1.82%**）。懸念された「`tracing` サブスクライバースタックはコンパイル時
+  展開が大きい」という増加は観測されず、むしろわずかに縮小した
+  （`env_logger`/`log` の削除分が `tracing-subscriber` 等の追加分を上回った
+  とみられる）。起動時間は実機（Windows）でしか計測できないため未計測のまま
+  だが、バイナリサイズの観点では Phase 1 完了の判断を妨げる要因はない。
 - 決定2で保留にした非同期化（`non_blocking` writer）の採否・`lossy` 方針・ドロップ
   可視化の設計は未確定。必要になった時点で別途決定する。
 - `#[cfg(windows)]` 配下にある `#[cfg(test)]` ユニットテスト（`runtime/` 等）は

@@ -59,11 +59,11 @@ unsafe fn resolve_app_kind(element: &IUIAutomationElement) -> Option<AppKind> {
                 "DirectUI" | "XAML" | "WPF" => Some(AppKind::Uwp),
                 _ => None,
             };
-            log::debug!("UIA: FrameworkId=\"{fid_str}\" → app_kind={kind:?}");
+            tracing::debug!("UIA: FrameworkId=\"{fid_str}\" → app_kind={kind:?}");
             kind
         }
         Err(e) => {
-            log::trace!("UIA: CurrentFrameworkId failed: {e:?}");
+            tracing::trace!("UIA: CurrentFrameworkId failed: {e:?}");
             None
         }
     }
@@ -83,11 +83,11 @@ unsafe fn check_value_pattern(element: &IUIAutomationElement) -> Option<FocusKin
         .ok()?;
     match pattern.CurrentIsReadOnly() {
         Ok(read_only) if !read_only.as_bool() => {
-            log::debug!("UIA: ValuePattern(IsReadOnly=false) → TextInput");
+            tracing::debug!("UIA: ValuePattern(IsReadOnly=false) → TextInput");
             Some(FocusKind::TextInput)
         }
         Ok(_) => {
-            log::debug!("UIA: ValuePattern(IsReadOnly=true) → NonText");
+            tracing::debug!("UIA: ValuePattern(IsReadOnly=true) → NonText");
             Some(FocusKind::NonText)
         }
         Err(_) => None,
@@ -106,7 +106,7 @@ unsafe fn check_text_pattern(element: &IUIAutomationElement) -> Option<FocusKind
         .GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
         .is_ok()
     {
-        log::debug!("UIA: TextPattern available → TextInput");
+        tracing::debug!("UIA: TextPattern available → TextInput");
         Some(FocusKind::TextInput)
     } else {
         None
@@ -125,7 +125,7 @@ unsafe fn check_control_type(element: &IUIAutomationElement) -> Option<FocusKind
     let control_type = element.CurrentControlType().ok()?;
 
     if control_type == UIA_EditControlTypeId || control_type == UIA_DocumentControlTypeId {
-        log::debug!("UIA: ControlType={control_type:?} → TextInput");
+        tracing::debug!("UIA: ControlType={control_type:?} → TextInput");
         return Some(FocusKind::TextInput);
     }
 
@@ -150,7 +150,7 @@ unsafe fn check_control_type(element: &IUIAutomationElement) -> Option<FocusKind
         UIA_TextControlTypeId,
     ];
     if non_text_types.contains(&control_type) {
-        log::debug!("UIA: ControlType={control_type:?} → NonText");
+        tracing::debug!("UIA: ControlType={control_type:?} → NonText");
         return Some(FocusKind::NonText);
     }
 
@@ -170,6 +170,7 @@ unsafe fn check_control_type(element: &IUIAutomationElement) -> Option<FocusKind
 ///
 /// COM が初期化済みのスレッドから呼び出すこと
 #[must_use]
+#[tracing::instrument(level = "debug", skip_all)]
 pub fn uia_classify_focus(automation: &IUIAutomation, _hwnd: HWND) -> UiaClassifyResult {
     // SAFETY: automation は CoCreateInstance が返した有効な IUIAutomation COM オブジェクト。
     //         GetFocusedElement は COM が初期化済みのスレッドから呼び出されることが
@@ -177,7 +178,7 @@ pub fn uia_classify_focus(automation: &IUIAutomation, _hwnd: HWND) -> UiaClassif
     let element: IUIAutomationElement = match unsafe { automation.GetFocusedElement() } {
         Ok(el) => el,
         Err(e) => {
-            log::trace!("UIA: GetFocusedElement failed: {e:?}");
+            tracing::trace!("UIA: GetFocusedElement failed: {e:?}");
             return UiaClassifyResult {
                 focus_kind: FocusKind::Undetermined,
                 app_kind: None,
@@ -216,7 +217,7 @@ pub fn uia_classify_focus(automation: &IUIAutomation, _hwnd: HWND) -> UiaClassif
         };
     }
 
-    log::debug!("UIA: no definitive signal → Undetermined");
+    tracing::debug!("UIA: no definitive signal → Undetermined");
     UiaClassifyResult {
         focus_kind: FocusKind::Undetermined,
         app_kind,
@@ -240,7 +241,7 @@ pub fn spawn_uia_worker() -> (win32_worker::WorkerThread, mpsc::Sender<SendableH
         unsafe {
             let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             if hr.is_err() {
-                log::warn!("UIA: CoInitializeEx failed: {hr:?}");
+                tracing::warn!("UIA: CoInitializeEx failed: {hr:?}");
             }
         }
 
@@ -251,11 +252,11 @@ pub fn spawn_uia_worker() -> (win32_worker::WorkerThread, mpsc::Sender<SendableH
             unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok() };
 
         let Some(automation) = automation else {
-            log::warn!("UIA: Failed to create IUIAutomation, Phase 3 disabled");
+            tracing::warn!("UIA: Failed to create IUIAutomation, Phase 3 disabled");
             return;
         };
 
-        log::info!("UIA worker thread started");
+        tracing::info!("UIA worker thread started");
 
         loop {
             // recv_timeout でシャットダウン通知も定期的に確認する
@@ -268,7 +269,7 @@ pub fn spawn_uia_worker() -> (win32_worker::WorkerThread, mpsc::Sender<SendableH
                         result.focus_kind != FocusKind::Undetermined || result.app_kind.is_some();
 
                     if has_info {
-                        log::debug!(
+                        tracing::debug!(
                             "UIA async: hwnd={hwnd:?} → {:?} (app_kind={:?})",
                             result.focus_kind,
                             result.app_kind,
@@ -290,12 +291,12 @@ pub fn spawn_uia_worker() -> (win32_worker::WorkerThread, mpsc::Sender<SendableH
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if token.is_shutdown() {
-                        log::info!("UIA worker: shutdown signal received, exiting");
+                        tracing::info!("UIA worker: shutdown signal received, exiting");
                         break;
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    log::info!("UIA worker: channel closed, exiting");
+                    tracing::info!("UIA worker: channel closed, exiting");
                     break;
                 }
             }

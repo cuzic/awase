@@ -73,14 +73,14 @@ impl TickableFsm for UnicodeLiteralObserverFsm {
         // プロファイルで何を返すかを実機ログで確認するためだけの呼び出し（module doc参照）。
         crate::ime_diagnostic::log_composition_probe(self.cold_seq, "unicode-obs-himc-check");
         if current == self.baseline_bytes {
-            log::info!(
+            tracing::info!(
                 "[unicode-obs] cold={} {}ms GJI write なし → injection_mode Tsf 昇格",
                 self.cold_seq.value(),
                 self.elapsed_ms
             );
             vec![ProbeAction::UpgradeToTsf, ProbeAction::Done]
         } else {
-            log::debug!(
+            tracing::debug!(
                 "[unicode-obs] cold={} GJI write 確認 (Δ={}) → Unicode 維持",
                 self.cold_seq.value(),
                 current.wrapping_sub(self.baseline_bytes)

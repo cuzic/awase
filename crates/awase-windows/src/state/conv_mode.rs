@@ -196,9 +196,10 @@ impl ConvModeMgr {
     /// の観測より古い場合も、到着順序に関わらず棄却する（monotonic guard）。
     ///
     /// 採用の上でモードが変化した場合のみ `true` を返す（呼び出し元は info ログを出す）。
+    #[tracing::instrument(level = "debug", skip_all)]
     pub(crate) fn observe(&self, obs: ConvObservation, current: FocusFence) -> bool {
         if obs.fence != current {
-            log::debug!(
+            tracing::debug!(
                 "[conv-mode] stale focus context の観測を棄却: obs.epoch={} current.epoch={} \
                  obs.hwnd={:?} current.hwnd={:?} source={:?}",
                 obs.fence.epoch,
@@ -211,7 +212,7 @@ impl ConvModeMgr {
         }
         if let Some(last) = self.last.get() {
             if obs.read_at < last.read_at {
-                log::debug!(
+                tracing::debug!(
                     "[conv-mode] stale read_at の観測を棄却: obs={:?} last={:?} source={:?}",
                     obs.read_at,
                     last.read_at,
@@ -232,7 +233,7 @@ impl ConvModeMgr {
             return false;
         }
 
-        log::info!(
+        tracing::info!(
             "[conv-mode] {} → {} (source={:?})",
             old.map_or_else(|| "None".to_string(), |m| m.to_string()),
             new,

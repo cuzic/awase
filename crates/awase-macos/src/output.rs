@@ -102,32 +102,32 @@ impl Output {
             match action {
                 KeyAction::SpecialKey(sk) => {
                     let _kc = special_key_to_keycode(*sk);
-                    log::trace!("macOS output: SpecialKey({sk:?}) -> keycode 0x{_kc:02X}");
+                    tracing::trace!("macOS output: SpecialKey({sk:?}) -> keycode 0x{_kc:02X}");
                 }
                 KeyAction::Key(vk) => {
-                    log::trace!("macOS output: Key(0x{:02X})", vk.0);
+                    tracing::trace!("macOS output: Key(0x{:02X})", vk.0);
                 }
                 KeyAction::KeyUp(vk) => {
-                    log::trace!("macOS output: KeyUp(0x{:02X})", vk.0);
+                    tracing::trace!("macOS output: KeyUp(0x{:02X})", vk.0);
                 }
                 KeyAction::Char(ch) => {
-                    log::trace!("macOS output: Char('{ch}') via CGEvent::set_string");
+                    tracing::trace!("macOS output: Char('{ch}') via CGEvent::set_string");
                 }
                 KeyAction::Romaji(s) => {
-                    log::trace!("macOS output: Romaji(\"{s}\")");
+                    tracing::trace!("macOS output: Romaji(\"{s}\")");
                 }
                 KeyAction::Suppress => {}
                 KeyAction::KeySequence(s) => {
-                    log::trace!("macOS output: KeySequence(\"{s}\")");
+                    tracing::trace!("macOS output: KeySequence(\"{s}\")");
                 }
                 // ADR-115: macOS実装は現状スタブのため no-op ログのみ。
                 // 実送信の実装は本ADRのスコープ外（決定10、コンパイル通過
                 // が目的）。
                 KeyAction::CtrlChord(vk) => {
-                    log::trace!("macOS output: CtrlChord(Ctrl+0x{:02X}) [stub, no-op]", vk.0);
+                    tracing::trace!("macOS output: CtrlChord(Ctrl+0x{:02X}) [stub, no-op]", vk.0);
                 }
                 KeyAction::Sequence(items) => {
-                    log::trace!(
+                    tracing::trace!(
                         "macOS output: Sequence({} items) [stub, no-op]",
                         items.len()
                     );

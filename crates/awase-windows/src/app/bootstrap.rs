@@ -27,6 +27,7 @@ use crate::tray;
 use crate::tray::SystemTray;
 use crate::{with_app, with_app_ref, LayoutEntry, Runtime, RUNTIME};
 
+use super::logging;
 use super::{
     build_panic_trigger_combos, init_ime_sync_keys, init_ngram_validated, load_config,
     parse_key_combos, resolve_relative, run_message_loop, set_taskbar_created_msg, HotKeyGuard,
@@ -118,6 +119,9 @@ pub(crate) fn log_path() -> PathBuf {
 }
 
 pub(super) fn init_logging(debug_console: bool) {
+    use tracing_subscriber::util::SubscriberInitExt as _;
+    use tracing_subscriber::EnvFilter;
+
     let log_path = log_path();
 
     if debug_console {
@@ -129,29 +133,33 @@ pub(super) fn init_logging(debug_console: bool) {
             const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
             let _ = AttachConsole(ATTACH_PARENT_PROCESS);
         }
-        let mut builder =
-            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"));
-        builder.format_timestamp_millis();
-        builder.target(env_logger::Target::Stderr);
-        builder.init();
-        log::info!("--debug: ログをコンソール(stderr)に出力, レベル=debug");
+        // --debug の stderr 経路は ADR-139 決定2 のスコープ外（同期のまま）。
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .finish()
+            .init();
+        tracing::info!("--debug: ログをコンソール(stderr)に出力, レベル=debug");
     } else {
-        let log_file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path);
-
-        let mut builder =
-            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
-        builder.format_timestamp_millis();
-
-        if let Ok(file) = log_file {
-            builder.target(env_logger::Target::Pipe(Box::new(file)));
-        }
-        // ファイルが開けない場合は stderr フォールバック
-
-        builder.init();
-        log::info!(
+        // ADR-139 決定2: awase.log は固定パスを維持したまま BufWriter でラップし、
+        // 書き込みバイト数が閾値を超えたら awase.log.old へ1世代だけリネームする。
+        // `tracing-appender::rolling` は時間ベースのみでサイズベース実測に合わず、
+        // 日付サフィックス付きファイル名が bug_report_log_path() の
+        // exists() 契約を壊すため採用しない。
+        let writer = logging::RotatingLogWriter::init_global(log_path.clone());
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(writer)
+            // ファイル出力にANSIエスケープシーケンスを混入させない
+            // （env_loggerのWriteStyle::Autoは非端末出力で自動的に無効化していたが、
+            // tracing-subscriberは既定でansi featureが有効なため明示指定が必要。
+            // 不具合報告に添付されるawase.logが読めなくなるのを防ぐ）。
+            .with_ansi(false)
+            .finish()
+            .init();
+        tracing::info!(
             "Keyboard Layout Emulator starting... (log → {})",
             log_path.display()
         );
@@ -175,7 +183,7 @@ pub(super) fn handle_auto_start(config: &awase::config::AppConfig) {
         }
         "disabled" => {}
         other => {
-            log::warn!("Unknown auto_start value: {other}, ignoring");
+            tracing::warn!("Unknown auto_start value: {other}, ignoring");
         }
     }
 }
@@ -225,7 +233,7 @@ pub(super) fn init_engine_validated(
         ));
     };
     let layout_names = layouts.names();
-    log::info!("Available layouts: {layout_names:?}");
+    tracing::info!("Available layouts: {layout_names:?}");
 
     let (layout, initial_layout_name) = select_default_layout(layouts.as_slice(), config)
         .context("default layout selection failed")?;
@@ -236,7 +244,7 @@ pub(super) fn init_engine_validated(
     ) {
         super::launch_settings();
     }
-    log::info!(
+    tracing::info!(
         "Layout loaded: {} normal keys, {} left thumb keys, {} right thumb keys",
         layout.normal.len(),
         layout.left_thumb.len(),
@@ -398,7 +406,7 @@ pub(super) fn check_conflicting_software(diag: &mut StartupDiagnostics) {
 /// キーボードレイアウトが日本語(106/109)かどうかを検証し、警告を出す
 pub(super) fn check_keyboard_layout(diag: &mut StartupDiagnostics) {
     let (is_japanese, lang_id) = ime::keyboard_layout_info();
-    log::info!("Keyboard layout: LANGID=0x{lang_id:04X}, Japanese={is_japanese}");
+    tracing::info!("Keyboard layout: LANGID=0x{lang_id:04X}, Japanese={is_japanese}");
     if !is_japanese {
         if lang_id == crate::vk::LANGID_ENGLISH_US {
             diag.warn(
@@ -443,11 +451,11 @@ pub(super) fn install_hooks_and_hotkeys_validated(
         .as_ref()
         .and_then(|hotkey_str| {
             register_toggle_hotkey(hotkey_str)
-                .map_err(|e| log::warn!("{e}"))
+                .map_err(|e| tracing::warn!("{e}"))
                 .ok()
         });
     let app_override_guard = register_app_override_hotkey()
-        .map_err(|e| log::warn!("{e}"))
+        .map_err(|e| tracing::warn!("{e}"))
         .ok();
     Ok((guard, toggle_guard, app_override_guard))
 }
@@ -466,7 +474,7 @@ fn register_toggle_hotkey(hotkey_str: &str) -> Result<HotKeyGuard> {
         )
         .context(format!("Failed to register toggle hotkey: {hotkey_str}"))?;
     }
-    log::info!("Toggle hotkey registered: {hotkey_str}");
+    tracing::info!("Toggle hotkey registered: {hotkey_str}");
     Ok(HotKeyGuard(HOTKEY_ID_TOGGLE))
 }
 
@@ -483,7 +491,7 @@ fn register_app_override_hotkey() -> Result<HotKeyGuard> {
         )
         .context("Failed to register focus override hotkey: Ctrl+Shift+F11")?;
     }
-    log::info!("Focus override hotkey registered: Ctrl+Shift+F11");
+    tracing::info!("Focus override hotkey registered: Ctrl+Shift+F11");
     Ok(HotKeyGuard(HOTKEY_ID_FOCUS_OVERRIDE))
 }
 
@@ -496,7 +504,7 @@ impl Drop for WtsGuard {
         unsafe {
             let _ = super::WTSUnRegisterSessionNotification(self.0);
         }
-        log::info!("WTS session notification unregistered");
+        tracing::info!("WTS session notification unregistered");
     }
 }
 
@@ -508,7 +516,7 @@ pub(super) fn register_session_notification() -> Result<WtsGuard> {
         super::WTSRegisterSessionNotification(tray_hwnd, super::NOTIFY_FOR_THIS_SESSION).as_bool()
     };
     anyhow::ensure!(ok, "WTSRegisterSessionNotification failed");
-    log::info!("WTS session notification registered");
+    tracing::info!("WTS session notification registered");
     Ok(WtsGuard(tray_hwnd))
 }
 
@@ -559,7 +567,7 @@ pub(super) fn initialize_app(
         .filter_map(|rule| {
             let combo = crate::vk::parse_key_combo(&rule.key)?;
             if !combo.ctrl {
-                log::warn!(
+                tracing::warn!(
                     "[post_bypass] key {:?} は Ctrl+key 形式であること（例: \"Ctrl+J\"）",
                     rule.key
                 );
@@ -573,7 +581,7 @@ pub(super) fn initialize_app(
         })
         .collect();
     if !post_bypass_rules.is_empty() {
-        log::info!("[post_bypass] {} ルールをロード", post_bypass_rules.len());
+        tracing::info!("[post_bypass] {} ルールをロード", post_bypass_rules.len());
     }
 
     // RUNTIME.set() / RAPID_IME_TIMESTAMPS.set() はメッセージループ開始前に一度だけ呼ばれる。
@@ -641,7 +649,7 @@ pub(super) fn initialize_ime_cache() {
 pub(super) fn cleanup() {
     // cleanup() はメッセージループ終了後にメインスレッドから呼ばれる。
     RUNTIME.clear();
-    log::info!("Exited cleanly.");
+    tracing::info!("Exited cleanly.");
 }
 
 use windows::Win32::UI::WindowsAndMessaging::{EVENT_OBJECT_FOCUS, WINEVENT_OUTOFCONTEXT};
@@ -655,7 +663,7 @@ impl Drop for WinEventHookGuard {
         unsafe {
             let _ = windows::Win32::UI::Accessibility::UnhookWinEvent(self.0);
         }
-        log::info!("Focus event hook uninstalled");
+        tracing::info!("Focus event hook uninstalled");
     }
 }
 
@@ -675,7 +683,7 @@ pub(super) fn install_focus_hook() -> Result<WinEventHookGuard> {
         )
     };
     anyhow::ensure!(!hook.is_invalid(), "Failed to install focus event hook");
-    log::info!("Focus event hook installed");
+    tracing::info!("Focus event hook installed");
     Ok(WinEventHookGuard(hook))
 }
 
@@ -814,7 +822,7 @@ impl LayoutEntry {
                                 for w in warnings {
                                     diag.warn(format!("{stem}: {w}"));
                                 }
-                                log::info!("Discovered layout: {stem} ({})", path.display());
+                                tracing::info!("Discovered layout: {stem} ({})", path.display());
                                 layouts.push(Self {
                                     name: stem,
                                     layout: yab,
@@ -865,7 +873,7 @@ pub(super) fn run_all() -> Result<()> {
             .copied()
             .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
             .unwrap_or("(non-string payload)");
-        log::error!("[PANIC] {msg} @ {location}");
+        tracing::error!("[PANIC] {msg} @ {location}");
         prev_hook(info);
     }));
 
@@ -875,10 +883,10 @@ pub(super) fn run_all() -> Result<()> {
         .find(|w| w[0] == "--exit-after")
         .and_then(|w| w[1].parse().ok());
     if let Some(secs) = exit_after_secs {
-        log::info!("--exit-after {secs}s: {secs} 秒後に自動終了します");
+        tracing::info!("--exit-after {secs}s: {secs} 秒後に自動終了します");
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(secs));
-            log::info!("--exit-after タイムアウト ({secs}s) → 終了");
+            tracing::info!("--exit-after タイムアウト ({secs}s) → 終了");
             use windows::Win32::UI::WindowsAndMessaging::WM_QUIT;
             if crate::runtime::engine_window::engine_hwnd().is_none() {
                 std::process::exit(0);
@@ -918,13 +926,13 @@ pub(super) fn run_all() -> Result<()> {
                     }
                 }
                 Ok(handle) => acquired_handle = Some(handle),
-                Err(e) => log::warn!("Failed to create instance mutex: {e}"),
+                Err(e) => tracing::warn!("Failed to create instance mutex: {e}"),
             }
             break;
         }
 
         if duplicate {
-            log::error!("Another instance of awase is already running. Exiting.");
+            tracing::error!("Another instance of awase is already running. Exiting.");
             let class_wide = crate::win32::to_wide(tray::WINDOW_CLASS_NAME);
             if let Ok(existing) = FindWindowW(PCWSTR(class_wide.as_ptr()), PCWSTR::null()) {
                 if !existing.is_invalid() {
@@ -947,9 +955,9 @@ pub(super) fn run_all() -> Result<()> {
     let elevated = tray::is_elevated();
     crate::set_elevated(elevated);
     if elevated {
-        log::info!("Running with administrator privileges");
+        tracing::info!("Running with administrator privileges");
     } else {
-        log::warn!(
+        tracing::warn!(
             "Running without administrator privileges — \
              keyboard hook will not work in elevated windows (e.g. Task Manager)"
         );
@@ -1121,13 +1129,13 @@ pub(super) fn run_all() -> Result<()> {
         install_hooks_and_hotkeys_validated(&config)?;
     diag.report();
 
-    log::info!("Hook installed. Running message loop...");
+    tracing::info!("Hook installed. Running message loop...");
     // SAFETY: GetCurrentThreadId always succeeds and has no preconditions.
     crate::set_main_thread_id(unsafe { windows::Win32::System::Threading::GetCurrentThreadId() });
     if let Err(e) = install_ctrl_handler() {
-        log::warn!("{e}");
+        tracing::warn!("{e}");
     }
-    let _focus_hook_guard = install_focus_hook().map_err(|e| log::warn!("{e}")).ok();
+    let _focus_hook_guard = install_focus_hook().map_err(|e| tracing::warn!("{e}")).ok();
     let _obs_hook_guards = crate::tsf::observer::install_observation_hooks();
 
     // 統合 IME リフレッシュタイマー + ウォッチドッグタイマー
@@ -1141,7 +1149,7 @@ pub(super) fn run_all() -> Result<()> {
     let _ = with_app(|app| app.set_uia_sender(uia_tx));
 
     let _wts_guard = register_session_notification()
-        .map_err(|e| log::warn!("{e}"))
+        .map_err(|e| tracing::warn!("{e}"))
         .ok();
     let _ = with_app(Runtime::establish_initial_focus_scope);
     initialize_ime_cache();

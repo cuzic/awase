@@ -14,7 +14,7 @@ impl EventLoop {
 
     /// イベントループを開始する（スタブ: 即座にリターン）
     pub fn run(&mut self) -> anyhow::Result<()> {
-        log::warn!("macOS event loop not yet implemented");
+        tracing::warn!("macOS event loop not yet implemented");
         Ok(())
     }
 }

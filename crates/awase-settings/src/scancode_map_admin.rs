@@ -27,7 +27,7 @@ pub fn run_elevated_worker(selection: awase_windows::scancode_map::ScancodeMapSe
     #[cfg(not(windows))]
     {
         let _ = selection;
-        log::error!("[scancode-map] このプラットフォームでは未対応");
+        tracing::error!("[scancode-map] このプラットフォームでは未対応");
         1
     }
 }
@@ -41,7 +41,7 @@ fn run_elevated_worker_windows(
     let existing = match read_entries() {
         Ok(entries) => entries,
         Err(e) => {
-            log::error!("[scancode-map] 既存値の読み取りに失敗: {e}");
+            tracing::error!("[scancode-map] 既存値の読み取りに失敗: {e}");
             return 1;
         }
     };
@@ -51,7 +51,7 @@ fn run_elevated_worker_windows(
         None => sm::delete(),
     };
     if let Err(e) = write_result {
-        log::error!("[scancode-map] 書き込みに失敗: {e}");
+        tracing::error!("[scancode-map] 書き込みに失敗: {e}");
         return 1;
     }
 
@@ -59,11 +59,11 @@ fn run_elevated_worker_windows(
     match read_entries() {
         Ok(verified) if verified == new_entries => 0,
         Ok(_) => {
-            log::error!("[scancode-map] 読み戻し検証で内容が一致しない");
+            tracing::error!("[scancode-map] 読み戻し検証で内容が一致しない");
             1
         }
         Err(e) => {
-            log::error!("[scancode-map] 読み戻し検証に失敗: {e}");
+            tracing::error!("[scancode-map] 読み戻し検証に失敗: {e}");
             1
         }
     }

@@ -28,7 +28,7 @@ impl LeakedThreadPool {
         leaked.retain(|h| !h.is_finished());
         let reaped = before - leaked.len();
         if reaped > 0 {
-            log::debug!(
+            tracing::debug!(
                 "Reaped {reaped} finished leaked worker threads ({} remaining)",
                 leaked.len()
             );
@@ -40,7 +40,7 @@ impl LeakedThreadPool {
             return;
         };
         leaked.push(handle);
-        log::warn!("Leaked worker thread (now {} in list)", leaked.len());
+        tracing::warn!("Leaked worker thread (now {} in list)", leaked.len());
     }
 
     fn is_full(&self) -> bool {
@@ -74,7 +74,7 @@ where
     LEAKED_THREADS.reap();
 
     if LEAKED_THREADS.is_full() {
-        log::error!(
+        tracing::error!(
             "Leaked thread list is full ({}), refusing to spawn new worker. \
              A Win32 API is persistently blocking.",
             LEAKED_THREADS.max
@@ -95,11 +95,11 @@ where
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
             let _ = handle.join();
-            log::error!("run_with_timeout: worker thread ended without result");
+            tracing::error!("run_with_timeout: worker thread ended without result");
             None
         }
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            log::warn!(
+            tracing::warn!(
                 "run_with_timeout: worker thread exceeded {}ms, leaked for later GC",
                 timeout.as_millis()
             );

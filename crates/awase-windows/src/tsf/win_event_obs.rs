@@ -45,7 +45,7 @@ impl Drop for WinEventHookGuard {
         unsafe {
             let _ = UnhookWinEvent(self.0);
         }
-        log::info!("[obs-hook] uninstalled");
+        tracing::info!("[obs-hook] uninstalled");
     }
 }
 
@@ -73,7 +73,7 @@ pub fn install_observation_hooks() -> Vec<WinEventHookGuard> {
         )
     };
     if nc_hook.is_invalid() {
-        log::warn!("[obs-hook] failed to install NAMECHANGE hook");
+        tracing::warn!("[obs-hook] failed to install NAMECHANGE hook");
     } else {
         hooks.push(WinEventHookGuard(nc_hook));
     }
@@ -93,9 +93,9 @@ pub fn install_observation_hooks() -> Vec<WinEventHookGuard> {
         )
     };
     if show_hook.is_invalid() {
-        log::warn!("[obs-hook] failed to install OBJECT_SHOW/HIDE hook");
+        tracing::warn!("[obs-hook] failed to install OBJECT_SHOW/HIDE hook");
     } else {
-        log::info!(
+        tracing::info!(
             "[obs-hook] OBJECT_SHOW/HIDE hook installed (GJI candidate window visibility tracking)"
         );
         hooks.push(WinEventHookGuard(show_hook));
@@ -116,9 +116,9 @@ pub fn install_observation_hooks() -> Vec<WinEventHookGuard> {
         )
     };
     if ime_hook.is_invalid() {
-        log::warn!("[obs-hook] failed to install EVENT_OBJECT_IME_* hook");
+        tracing::warn!("[obs-hook] failed to install EVENT_OBJECT_IME_* hook");
     } else {
-        log::info!(
+        tracing::info!(
             "[obs-hook] EVENT_OBJECT_IME_SHOW/HIDE/CHANGE hook installed (Chrome TSF composition context probe)"
         );
         hooks.push(WinEventHookGuard(ime_hook));
@@ -148,7 +148,7 @@ unsafe extern "system" fn observation_event_proc(
             let class = hwnd_class_name(hwnd);
             if class.contains("CASCADIA") {
                 let seq = TSF_OBS.focus_namechange.notify();
-                log::debug!("[tsf-settle] OBJ_NAMECHANGE #{seq} class={class}");
+                tracing::debug!("[tsf-settle] OBJ_NAMECHANGE #{seq} class={class}");
             }
         }
         EVENT_OBJECT_SHOW => {
@@ -168,10 +168,10 @@ unsafe extern "system" fn observation_event_proc(
                     } else {
                         format!("{}ms ago", now_ms.saturating_sub(last_write_ms))
                     };
-                    log::info!("[gji-obs] candidate SHOW #{seq}: last_gji_write={write_ago}");
+                    tracing::info!("[gji-obs] candidate SHOW #{seq}: last_gji_write={write_ago}");
                 }
             } else if class == MSCTFIME_UI_CLASS {
-                log::debug!("[tsf-ime-ui] SHOW hwnd={:?}", hwnd.0);
+                tracing::debug!("[tsf-ime-ui] SHOW hwnd={:?}", hwnd.0);
             }
         }
         EVENT_OBJECT_HIDE => {
@@ -191,10 +191,10 @@ unsafe extern "system" fn observation_event_proc(
                     } else {
                         format!("{}ms ago", now_ms.saturating_sub(last_write_ms))
                     };
-                    log::info!("[gji-obs] candidate HIDE: last_gji_write={write_ago}");
+                    tracing::info!("[gji-obs] candidate HIDE: last_gji_write={write_ago}");
                 }
             } else if class == MSCTFIME_UI_CLASS {
-                log::debug!("[tsf-ime-ui] HIDE hwnd={:?}", hwnd.0);
+                tracing::debug!("[tsf-ime-ui] HIDE hwnd={:?}", hwnd.0);
             }
         }
         EVENT_OBJECT_IME_SHOW => {
@@ -203,19 +203,19 @@ unsafe extern "system" fn observation_event_proc(
                 .ime_composition_active
                 .store(true, Ordering::Relaxed);
             let seq = TSF_OBS.ime_show_seq.notify();
-            log::info!("[ime-obj] IME_SHOW #{seq} class={class} hwnd={:?}", hwnd.0);
+            tracing::info!("[ime-obj] IME_SHOW #{seq} class={class} hwnd={:?}", hwnd.0);
         }
         EVENT_OBJECT_IME_HIDE => {
             let class = hwnd_class_name(hwnd);
             TSF_OBS
                 .ime_composition_active
                 .store(false, Ordering::Relaxed);
-            log::info!("[ime-obj] IME_HIDE class={class} hwnd={:?}", hwnd.0);
+            tracing::info!("[ime-obj] IME_HIDE class={class} hwnd={:?}", hwnd.0);
         }
         EVENT_OBJECT_IME_CHANGE => {
             let class = hwnd_class_name(hwnd);
             let seq = TSF_OBS.ime_change_seq.notify();
-            log::info!(
+            tracing::info!(
                 "[ime-obj] IME_CHANGE #{seq} class={class} hwnd={:?}",
                 hwnd.0
             );

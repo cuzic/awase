@@ -117,7 +117,7 @@ impl From<&YabValue> for KeyAction {
             // ここへ到達しうる。unreachable!() は使わず安全側に倒す
             // （ADR-104「型で保証されない unreachable! の除去」に整合）。
             YabValue::InlineSequence { .. } | YabValue::MacroRef(_) => {
-                log::error!(
+                tracing::error!(
                     "[yab] 未解決の新構文がエンジンに到達した \
                      — resolve_keystroke_syntax の呼び出し漏れ: {value:?}"
                 );
@@ -658,7 +658,7 @@ impl NicolaFsm {
         }
 
         if !was_idle {
-            log::info!(
+            tracing::info!(
                 "flush_pending({:?}): flushed {} action(s)",
                 reason,
                 response.actions.len()
@@ -698,7 +698,7 @@ impl NicolaFsm {
         self.backspace_down = false;
         // 物理キー状態（modifiers, thumb_down）は InputTracker が常に追跡しているため、
         // ここでのリセットは不要。
-        log::info!(
+        tracing::info!(
             "Engine {}",
             if self.enabled { "enabled" } else { "disabled" }
         );
@@ -1479,7 +1479,7 @@ impl NicolaFsm {
                 // Passthrough key (e.g. ENTER) arrived while a char is pending.
                 // Flush the pending char first so it reaches IME before the passthrough key.
                 let pending = self.state.expect_pending_char();
-                log::debug!(
+                tracing::debug!(
                     "[passthrough-flush] pending=PendingChar(vk={:#04x}) → flush, then reprocess passthrough_vk={:#04x} ts={}us",
                     pending.vk_code.0,
                     ev.vk_code.0,
@@ -1501,7 +1501,7 @@ impl NicolaFsm {
                 // Passthrough key arrived while a thumb is pending.
                 // Flush the pending thumb first so it reaches IME before the passthrough key.
                 let thumb = self.state.expect_pending_thumb();
-                log::debug!(
+                tracing::debug!(
                     "[passthrough-flush] pending=PendingThumb(vk={:#04x}) → flush, then reprocess passthrough_vk={:#04x} ts={}us",
                     thumb.vk_code.0,
                     ev.vk_code.0,
@@ -2638,7 +2638,7 @@ impl NicolaFsm {
             EngineState::Idle
             | EngineState::PendingCharThumb { .. }
             | EngineState::SpeculativeChar(_) => {
-                log::error!(
+                tracing::error!(
                     "unexpected state in handle_key_up_pending: {:?}",
                     self.state
                 );
@@ -2869,7 +2869,7 @@ impl NicolaFsm {
             }
             // Other states shouldn't have TIMER_SPECULATIVE active
             other => {
-                log::warn!("TIMER_SPECULATIVE fired in unexpected state: {other:?}");
+                tracing::warn!("TIMER_SPECULATIVE fired in unexpected state: {other:?}");
                 Response::pass_through().with_kill_timer(TIMER_SPECULATIVE)
             }
         }
@@ -3066,7 +3066,7 @@ impl NicolaFsm {
         if self.state.is_idle() {
             return Response::pass_through();
         }
-        log::debug!(
+        tracing::debug!(
             "handle_bypass: vk=0x{:02X} reason={:?} state={}",
             ev.vk_code.0,
             reason,

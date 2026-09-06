@@ -314,7 +314,7 @@ fn inject_alt_menu_mask() {
         crate::tsf::output::make_key_input_ex(crate::vk::VK_CONTROL, true, INJECTED_MARKER),
     ];
     let sent = crate::win32::send_input_safe(&mask_inputs);
-    log::info!("[hook] inject_alt_menu_mask: ダミー Ctrl down+up 注入 sent={sent}/2");
+    tracing::info!("[hook] inject_alt_menu_mask: ダミー Ctrl down+up 注入 sent={sent}/2");
 }
 
 /// `PHYSICAL_KEY_STATE` / `PHYSICAL_KEY_DOWN_AT_MS` を全 VK ぶん強制的に「離した」状態へ戻す。
@@ -344,7 +344,7 @@ pub fn reset_physical_key_state() {
     ALT_R_IMPERSONATING.store(false, Ordering::Relaxed);
     ALT_L_WAS_DOWN.store(false, Ordering::Relaxed);
     ALT_R_WAS_DOWN.store(false, Ordering::Relaxed);
-    log::info!("[hook] PHYSICAL_KEY_STATE をリセット（全 VK を解放状態に）");
+    tracing::info!("[hook] PHYSICAL_KEY_STATE をリセット（全 VK を解放状態に）");
 }
 
 /// `disable_apps` へ出入りする際にフックローカルなラッチを後始末する（BUG-78 対策）。
@@ -405,9 +405,11 @@ pub(crate) fn clear_hook_latches_for_app_disable(
                 slot.store(0, Ordering::Relaxed);
             }
         }
-        log::info!("[app-disable] Leave: Ctrl/Shift の PHYSICAL_KEY_STATE をクリア（BUG-78対策）");
+        tracing::info!(
+            "[app-disable] Leave: Ctrl/Shift の PHYSICAL_KEY_STATE をクリア（BUG-78対策）"
+        );
     }
-    log::info!("[app-disable] {edge:?}: hook latches をクリア");
+    tracing::info!("[app-disable] {edge:?}: hook latches をクリア");
 }
 
 /// 直近の物理 Ctrl 押下後に他の VK の KeyDown を 1 つでも観測したか。
@@ -732,7 +734,7 @@ impl Drop for HookGuard {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
-        log::info!("Keyboard hook uninstalled");
+        tracing::info!("Keyboard hook uninstalled");
     }
 }
 
@@ -785,17 +787,17 @@ pub fn install_hook() -> windows::core::Result<HookGuard> {
                             HOOK_HANDLE.set(HHOOK(std::ptr::null_mut()));
                         }
                     }
-                    log::info!("Keyboard hook thread exiting cleanly");
+                    tracing::info!("Keyboard hook thread exiting cleanly");
                 }
                 Err(e) => {
-                    log::error!("SetWindowsHookExW failed in hook thread: {e}");
+                    tracing::error!("SetWindowsHookExW failed in hook thread: {e}");
                     // u32::MAX でエラーを通知
                     hook_tid_fail();
                 }
             }
         })
         .map_err(|e| {
-            log::error!("Failed to spawn awase-hook thread: {e}");
+            tracing::error!("Failed to spawn awase-hook thread: {e}");
             windows::core::Error::from_thread()
         })?;
 
@@ -814,7 +816,7 @@ pub fn install_hook() -> windows::core::Result<HookGuard> {
         return Err(windows::core::Error::from_thread());
     }
 
-    log::info!("Keyboard hook installed in dedicated thread (tid={hook_tid})");
+    tracing::info!("Keyboard hook installed in dedicated thread (tid={hook_tid})");
     Ok(HookGuard {
         hook_thread_id: hook_tid,
         thread: Some(thread),
@@ -916,7 +918,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         let dir = if is_keydown { "down" } else { "up" };
         let now_ms = current_tick_ms();
         let prev_ms = LAST_IME_MODE_HOOK_MS.swap(now_ms, Ordering::Relaxed);
-        log::debug!(
+        tracing::debug!(
             "[hook] IME-mode vk=0x{:02X} {dir} self_injected={self_injected} injected={is_injected} scan=0x{:X} extra=0x{:X}",
             vk.0, kb.scanCode, kb.dwExtraInfo,
         );
@@ -1014,7 +1016,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         let dir = if is_keydown { "down" } else { "up" };
         let alt_held = alt_key_held();
         if is_injected {
-            log::info!(
+            tracing::info!(
                 "[hook] foreign-injected VK_KANA {dir} を swallow\
                  （kana-lock 汚染防止, scan=0x{:X}, extra=0x{:X}, alt_held={alt_held}）",
                 kb.scanCode,
@@ -1026,7 +1028,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             return LRESULT(1);
         }
         if alt_held {
-            log::info!(
+            tracing::info!(
                 "[hook] Alt+VK_KANA {dir} を swallow（BUG-62: MS-IME の Alt+かな＝\
                  ローマ字/JISかな入力方式切替ショートカット。BUG-61 で復旧不能と\
                  確定済みのため未然に防ぐ, scan=0x{:X}, extra=0x{:X}）",
@@ -1038,7 +1040,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             }
             return LRESULT(1);
         }
-        log::info!(
+        tracing::info!(
             "[hook] VK_KANA {dir} 到達 (injected=false, scan=0x{:X}, extra=0x{:X}) \
              — かなロックをトグルする可能性 (BUG-08 注入元調査ログ)",
             kb.scanCode,
@@ -1073,7 +1075,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             "VK_DBE_NOROMAN"
         };
         let alt_held = alt_key_held();
-        log::info!(
+        tracing::info!(
             "[hook] {name} {dir} を swallow（BUG-62追補4: Alt+かな の実際のキー\
              コード。BUG-61 で復旧不能と確定済みのため未然に防ぐ, scan=0x{:X}, \
              extra=0x{:X}, alt_held={alt_held}）",
@@ -1112,7 +1114,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // （classify_alt_side 参照）。
     let alt_extended = (kb.flags.0 & LLKHF_EXTENDED) != 0;
     if matches!(vk.0, 0x12 | 0xA4 | 0xA5) {
-        log::debug!(
+        tracing::debug!(
             "[alt-impersonation] raw vk=0x{:02X} scan=0x{:X} extended={} is_keydown={} \
              left_cfg={} right_cfg={} engine_enabled={}",
             vk.0,
@@ -1126,7 +1128,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     }
     let rewritten_vk = apply_alt_impersonation(vk, is_keydown, alt_extended, config);
     if rewritten_vk != vk {
-        log::debug!(
+        tracing::debug!(
             "[alt-impersonation] impersonating: vk 0x{:02X} -> 0x{:02X}",
             vk.0,
             rewritten_vk.0

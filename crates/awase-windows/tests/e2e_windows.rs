@@ -39,9 +39,11 @@ static INTERACTIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 /// Initialize logging (once per test run)
 fn init_test_logging() {
-    let _ = env_logger::builder()
-        .is_test(true)
-        .filter_level(log::LevelFilter::Debug)
+    use tracing_subscriber::util::SubscriberInitExt as _;
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_max_level(tracing::Level::DEBUG)
+        .finish()
         .try_init();
 }
 
@@ -169,10 +171,10 @@ unsafe fn log_system_info() {
     use windows::Win32::UI::Input::KeyboardAndMouse::*;
     use windows::Win32::UI::WindowsAndMessaging::*;
 
-    log::info!("=== System Diagnostics ===");
+    tracing::info!("=== System Diagnostics ===");
 
     // OS version
-    log::info!(
+    tracing::info!(
         "OS: Windows (CI={}, GITHUB_ACTIONS={})",
         std::env::var("CI").unwrap_or_default(),
         std::env::var("GITHUB_ACTIONS").unwrap_or_default()
@@ -180,21 +182,21 @@ unsafe fn log_system_info() {
 
     // Desktop window
     let desktop = GetDesktopWindow();
-    log::info!("Desktop HWND: {:?}", desktop);
+    tracing::info!("Desktop HWND: {:?}", desktop);
 
     // Foreground window
     let fg = GetForegroundWindow();
-    log::info!("Foreground HWND: {:?}", fg);
+    tracing::info!("Foreground HWND: {:?}", fg);
 
     // Keyboard layout
     let hkl = GetKeyboardLayout(0);
     let lang_id = (hkl.0 as u32) & 0xFFFF;
-    log::info!("Keyboard layout: HKL={:?} lang_id=0x{:04X}", hkl, lang_id);
+    tracing::info!("Keyboard layout: HKL={:?} lang_id=0x{:04X}", hkl, lang_id);
 
     // Thread ID
-    log::info!("Thread ID: {:?}", std::thread::current().id());
+    tracing::info!("Thread ID: {:?}", std::thread::current().id());
 
-    log::info!("=== End Diagnostics ===");
+    tracing::info!("=== End Diagnostics ===");
 }
 
 // ────────────────────────────────────────────
@@ -206,12 +208,12 @@ fn e2e_engine_basic_char_input() {
     init_test_logging();
     let mut engine = make_test_engine(ConfirmMode::Wait);
 
-    log::info!("=== E2E: Basic char input (Wait mode) ===");
+    tracing::info!("=== E2E: Basic char input (Wait mode) ===");
 
     // Press 'A' key (VK_A=0x41, scan=0x1E) → should go pending
     let t0 = 1_000_000u64;
     let r = engine.on_event(key_down(0x41, 0x1E, t0));
-    log::debug!(
+    tracing::debug!(
         "KeyDown A: consumed={}, actions={:?}",
         r.consumed,
         r.actions
@@ -221,12 +223,12 @@ fn e2e_engine_basic_char_input() {
 
     // Timeout → should emit the character
     let r = engine.on_timeout(awase::engine::TIMER_PENDING);
-    log::debug!("Timeout: consumed={}, actions={:?}", r.consumed, r.actions);
+    tracing::debug!("Timeout: consumed={}, actions={:?}", r.consumed, r.actions);
     assert!(
         !r.actions.is_empty(),
         "timeout should emit the pending char"
     );
-    log::info!("Output action: {:?}", r.actions[0]);
+    tracing::info!("Output action: {:?}", r.actions[0]);
 }
 
 #[test]
@@ -234,13 +236,13 @@ fn e2e_engine_simultaneous_keystroke() {
     init_test_logging();
     let mut engine = make_test_engine(ConfirmMode::Wait);
 
-    log::info!("=== E2E: Simultaneous keystroke (char + thumb) ===");
+    tracing::info!("=== E2E: Simultaneous keystroke (char + thumb) ===");
 
     let t0 = 1_000_000u64;
 
     // Press 'A' → pending
     let r = engine.on_event(key_down(0x41, 0x1E, t0));
-    log::debug!(
+    tracing::debug!(
         "KeyDown A: consumed={}, actions={:?}",
         r.consumed,
         r.actions
@@ -249,7 +251,7 @@ fn e2e_engine_simultaneous_keystroke() {
 
     // Press left thumb (VK_NONCONVERT) within threshold → simultaneous
     let r = engine.on_event(key_down(0x1D, 0x7B, t0 + 30_000));
-    log::debug!(
+    tracing::debug!(
         "KeyDown NonConvert: consumed={}, actions={:?}",
         r.consumed,
         r.actions
@@ -258,12 +260,12 @@ fn e2e_engine_simultaneous_keystroke() {
 
     // Timeout → should emit simultaneous result (thumb face)
     let r = engine.on_timeout(awase::engine::TIMER_PENDING);
-    log::debug!("Timeout: consumed={}, actions={:?}", r.consumed, r.actions);
+    tracing::debug!("Timeout: consumed={}, actions={:?}", r.consumed, r.actions);
     assert!(
         !r.actions.is_empty(),
         "simultaneous keystroke should produce output"
     );
-    log::info!("Simultaneous output: {:?}", r.actions[0]);
+    tracing::info!("Simultaneous output: {:?}", r.actions[0]);
 }
 
 #[test]
@@ -271,13 +273,13 @@ fn e2e_engine_speculative_mode() {
     init_test_logging();
     let mut engine = make_test_engine(ConfirmMode::Speculative);
 
-    log::info!("=== E2E: Speculative mode ===");
+    tracing::info!("=== E2E: Speculative mode ===");
 
     let t0 = 1_000_000u64;
 
     // Press 'A' → immediate output (speculative)
     let r = engine.on_event(key_down(0x41, 0x1E, t0));
-    log::debug!(
+    tracing::debug!(
         "KeyDown A (speculative): consumed={}, actions={:?}",
         r.consumed,
         r.actions
@@ -287,11 +289,11 @@ fn e2e_engine_speculative_mode() {
         !r.actions.is_empty(),
         "speculative mode outputs immediately"
     );
-    log::info!("Speculative output: {:?}", r.actions[0]);
+    tracing::info!("Speculative output: {:?}", r.actions[0]);
 
     // Press left thumb within threshold → should retract + re-emit
     let r = engine.on_event(key_down(0x1D, 0x7B, t0 + 30_000));
-    log::debug!(
+    tracing::debug!(
         "KeyDown NonConvert: consumed={}, actions={:?}",
         r.consumed,
         r.actions
@@ -301,7 +303,7 @@ fn e2e_engine_speculative_mode() {
         .actions
         .iter()
         .any(|a| matches!(a, KeyAction::SpecialKey(SpecialKey::Backspace)));
-    log::info!("Has BS for retraction: {}", has_bs);
+    tracing::info!("Has BS for retraction: {}", has_bs);
     assert!(has_bs, "speculative retraction should include BS");
 }
 
@@ -316,12 +318,12 @@ fn e2e_engine_all_confirm_modes() {
         ConfirmMode::AdaptiveTiming,
         ConfirmMode::NgramPredictive,
     ] {
-        log::info!("=== E2E: Testing {:?} mode ===", mode);
+        tracing::info!("=== E2E: Testing {:?} mode ===", mode);
         let mut engine = make_test_engine(mode);
 
         let t0 = 1_000_000u64;
         let r = engine.on_event(key_down(0x41, 0x1E, t0));
-        log::debug!(
+        tracing::debug!(
             "{:?}: KeyDown A: consumed={}, actions={:?}",
             mode,
             r.consumed,
@@ -331,7 +333,7 @@ fn e2e_engine_all_confirm_modes() {
 
         // Ensure timeout works
         let r = engine.on_timeout(awase::engine::TIMER_PENDING);
-        log::debug!("{:?}: Timeout: actions={:?}", mode, r.actions);
+        tracing::debug!("{:?}: Timeout: actions={:?}", mode, r.actions);
     }
 }
 
@@ -339,19 +341,19 @@ fn e2e_engine_all_confirm_modes() {
 fn e2e_engine_flush_pending_all_states() {
     init_test_logging();
 
-    log::info!("=== E2E: flush_pending from all states ===");
+    tracing::info!("=== E2E: flush_pending from all states ===");
 
     // Idle
     let mut engine = make_test_engine(ConfirmMode::Wait);
     let r = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
-    log::debug!("Flush from Idle: actions={:?}", r.actions);
+    tracing::debug!("Flush from Idle: actions={:?}", r.actions);
     assert!(r.actions.is_empty());
 
     // PendingChar
     let mut engine = make_test_engine(ConfirmMode::Wait);
     engine.on_event(key_down(0x41, 0x1E, 1_000_000));
     let r = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
-    log::debug!("Flush from PendingChar: actions={:?}", r.actions);
+    tracing::debug!("Flush from PendingChar: actions={:?}", r.actions);
     assert!(!r.actions.is_empty());
 
     // PendingThumb: composing=false（IME 変換候補ウィンドウ非表示）なら、
@@ -360,7 +362,7 @@ fn e2e_engine_flush_pending_all_states() {
     let mut engine = make_test_engine(ConfirmMode::Wait);
     engine.on_event(key_down(0x1D, 0x7B, 1_000_000));
     let r = engine.flush_pending(ContextChange::EngineDisabled, ComposingHint::Trusted(false));
-    log::debug!("Flush from PendingThumb: actions={:?}", r.actions);
+    tracing::debug!("Flush from PendingThumb: actions={:?}", r.actions);
     assert!(
         !r.actions.is_empty(),
         "lone thumb key should emit raw VK when not composing"
@@ -373,11 +375,11 @@ fn e2e_engine_flush_pending_all_states() {
         ContextChange::InputLanguageChanged,
         ComposingHint::Trusted(false),
     );
-    log::debug!("Flush from SpeculativeChar: actions={:?}", r.actions);
+    tracing::debug!("Flush from SpeculativeChar: actions={:?}", r.actions);
     // SpeculativeChar already output, flush should be empty
     assert!(r.actions.is_empty());
 
-    log::info!("All flush_pending states verified");
+    tracing::info!("All flush_pending states verified");
 }
 
 #[test]
@@ -385,26 +387,26 @@ fn e2e_engine_passthrough_keys() {
     init_test_logging();
     let mut engine = make_test_engine(ConfirmMode::Wait);
 
-    log::info!("=== E2E: Passthrough keys ===");
+    tracing::info!("=== E2E: Passthrough keys ===");
 
     let t0 = 1_000_000u64;
 
     // Ctrl key → passthrough
     let r = engine.on_event(key_down(0x11, 0x1D, t0)); // VK_CTRL
-    log::debug!("Ctrl: consumed={}, passthrough={}", r.consumed, !r.consumed);
+    tracing::debug!("Ctrl: consumed={}, passthrough={}", r.consumed, !r.consumed);
     assert!(!r.consumed, "Ctrl should passthrough");
 
     // Esc → passthrough
     let r = engine.on_event(key_down(0x1B, 0x01, t0)); // VK_ESCAPE
-    log::debug!("Esc: consumed={}", r.consumed);
+    tracing::debug!("Esc: consumed={}", r.consumed);
     assert!(!r.consumed, "Esc should passthrough");
 
     // F1 → passthrough
     let r = engine.on_event(key_down(0x70, 0x3B, t0)); // VK_F1
-    log::debug!("F1: consumed={}", r.consumed);
+    tracing::debug!("F1: consumed={}", r.consumed);
     assert!(!r.consumed, "F1 should passthrough");
 
-    log::info!("All passthrough keys verified");
+    tracing::info!("All passthrough keys verified");
 }
 
 #[test]
@@ -412,16 +414,16 @@ fn e2e_engine_disabled_passthrough() {
     init_test_logging();
     let mut engine = make_test_engine(ConfirmMode::Wait);
 
-    log::info!("=== E2E: Disabled engine passthrough ===");
+    tracing::info!("=== E2E: Disabled engine passthrough ===");
 
     let _ = engine.toggle_enabled();
     assert!(!engine.is_enabled());
 
     let r = engine.on_event(key_down(0x41, 0x1E, 1_000_000));
-    log::debug!("Disabled engine: consumed={}", r.consumed);
+    tracing::debug!("Disabled engine: consumed={}", r.consumed);
     assert!(!r.consumed, "disabled engine should passthrough all keys");
 
-    log::info!("Disabled engine passthrough verified");
+    tracing::info!("Disabled engine passthrough verified");
 }
 
 // ────────────────────────────────────────────
@@ -440,8 +442,8 @@ fn is_interactive_session() -> bool {
     }
     // Skip in CI (GitHub Actions)
     if std::env::var("CI").is_ok() || std::env::var("GITHUB_ACTIONS").is_ok() {
-        log::info!("CI environment detected, skipping interactive tests");
-        log::info!("Set AWASE_E2E_INTERACTIVE=1 to force execution");
+        tracing::info!("CI environment detected, skipping interactive tests");
+        tracing::info!("Set AWASE_E2E_INTERACTIVE=1 to force execution");
         return false;
     }
     // Check for desktop presence
@@ -507,11 +509,11 @@ impl TestEditWindow {
             Ok(h) if h != HWND::default() => h,
             Ok(_) => {
                 let err = windows::core::Error::from_thread();
-                log::error!("CreateWindowExW returned null HWND: {:?}", err);
+                tracing::error!("CreateWindowExW returned null HWND: {:?}", err);
                 return None;
             }
             Err(e) => {
-                log::error!("CreateWindowExW failed: {:?}", e);
+                tracing::error!("CreateWindowExW failed: {:?}", e);
                 return None;
             }
         };
@@ -536,20 +538,20 @@ impl TestEditWindow {
             Ok(h) if h != HWND::default() => h,
             Ok(_) => {
                 let err = windows::core::Error::from_thread();
-                log::error!("CreateWindowExW(EDIT) returned null HWND: {:?}", err);
+                tracing::error!("CreateWindowExW(EDIT) returned null HWND: {:?}", err);
                 let _ = DestroyWindow(hwnd);
                 return None;
             }
             Err(e) => {
-                log::error!("CreateWindowExW(EDIT) failed: {:?}", e);
+                tracing::error!("CreateWindowExW(EDIT) failed: {:?}", e);
                 let _ = DestroyWindow(hwnd);
                 return None;
             }
         };
 
         // Log window creation details
-        log::info!("Window created: hwnd={:?} class=AwaseTestWindow", hwnd);
-        log::info!("Edit created: hwnd={:?} class=EDIT", edit_hwnd);
+        tracing::info!("Window created: hwnd={:?} class=AwaseTestWindow", hwnd);
+        tracing::info!("Edit created: hwnd={:?} class=EDIT", edit_hwnd);
 
         // Show window and set focus. Plain SetForegroundWindow can lose to
         // another window that already holds the foreground (observed on
@@ -565,19 +567,19 @@ impl TestEditWindow {
         // Verify focus state after setup
         let fg_after = GetForegroundWindow();
         let focus_after = GetFocus();
-        log::info!(
+        tracing::info!(
             "After focus: foreground={:?} focus={:?} (expected edit={:?})",
             fg_after,
             focus_after,
             edit_hwnd
         );
-        log::info!("Foreground match: {}", fg_after == hwnd);
-        log::info!("Focus match: {}", focus_after == edit_hwnd);
+        tracing::info!("Foreground match: {}", fg_after == hwnd);
+        tracing::info!("Focus match: {}", focus_after == edit_hwnd);
 
         // Keyboard layout at creation time
         let hkl = GetKeyboardLayout(0);
         let lang_id = (hkl.0 as u32) & 0xFFFF;
-        log::info!(
+        tracing::info!(
             "Keyboard layout at window create: HKL={:?} lang_id=0x{:04X}",
             hkl,
             lang_id
@@ -620,7 +622,7 @@ impl TestEditWindow {
 
         let fg = GetForegroundWindow();
         let focus = GetFocus();
-        log::debug!(
+        tracing::debug!(
             "focus(): foreground={:?} (expected={:?}) focus={:?} (expected={:?})",
             fg,
             self.hwnd,
@@ -635,7 +637,7 @@ impl Drop for TestEditWindow {
         unsafe {
             use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
             let _ = DestroyWindow(self.hwnd);
-            log::debug!("TestEditWindow destroyed");
+            tracing::debug!("TestEditWindow destroyed");
         }
     }
 }
@@ -666,7 +668,7 @@ unsafe fn send_char_to_edit(edit_hwnd: windows::Win32::Foundation::HWND, ch: cha
         Some(WPARAM(ch as usize)),
         Some(LPARAM(0)),
     );
-    log::debug!("SendMessage WM_CHAR: '{ch}' to {:?}", edit_hwnd);
+    tracing::debug!("SendMessage WM_CHAR: '{ch}' to {:?}", edit_hwnd);
     pump_messages();
 }
 
@@ -703,11 +705,11 @@ unsafe fn send_key_to_edit(vk: u16, scan: u16) {
     ];
     let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits i32");
     let sent = SendInput(&inputs, size);
-    log::debug!("SendInput: vk=0x{vk:02X} scan=0x{scan:02X} sent={sent}");
+    tracing::debug!("SendInput: vk=0x{vk:02X} scan=0x{scan:02X} sent={sent}");
 
     if sent == 0 {
         let err = windows::core::Error::from_thread();
-        log::error!("SendInput failed! Error: {:?}", err);
+        tracing::error!("SendInput failed! Error: {:?}", err);
     }
 
     // Wait for the input to be processed
@@ -717,7 +719,7 @@ unsafe fn send_key_to_edit(vk: u16, scan: u16) {
     // After pump_messages, check foreground
     let fg = GetForegroundWindow();
     let focus = GetFocus();
-    log::debug!("After send: foreground={:?} focus={:?}", fg, focus);
+    tracing::debug!("After send: foreground={:?} focus={:?}", fg, focus);
 }
 
 #[test]
@@ -728,55 +730,55 @@ fn e2e_message_edit_control() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 2: SendMessage + Edit control ===");
+    tracing::info!("=== E2E Phase 2: SendMessage + Edit control ===");
 
     unsafe {
         let Some(win) = TestEditWindow::create() else {
-            log::error!("Could not create test window, skipping");
+            tracing::error!("Could not create test window, skipping");
             return;
         };
 
         // Test 1: Single char 'a'
-        log::info!("--- Test: WM_CHAR 'a' ---");
+        tracing::info!("--- Test: WM_CHAR 'a' ---");
         win.clear();
         send_char_to_edit(win.edit_hwnd, 'a');
         let text = win.get_text();
-        log::info!("Edit content: '{text}'");
+        tracing::info!("Edit content: '{text}'");
         assert_eq!(text, "a", "WM_CHAR 'a' should produce 'a', got: '{text}'");
 
         // Test 2: Multiple chars
-        log::info!("--- Test: WM_CHAR 'abc' ---");
+        tracing::info!("--- Test: WM_CHAR 'abc' ---");
         win.clear();
         send_char_to_edit(win.edit_hwnd, 'a');
         send_char_to_edit(win.edit_hwnd, 'b');
         send_char_to_edit(win.edit_hwnd, 'c');
         let text = win.get_text();
-        log::info!("Edit content: '{text}'");
+        tracing::info!("Edit content: '{text}'");
         assert_eq!(text, "abc", "Expected 'abc', got: '{text}'");
 
         // Test 3: Backspace via WM_CHAR '\x08'
         // Edit control deletes on WM_CHAR with BS character (\x08)
-        log::info!("--- Test: Backspace ---");
+        tracing::info!("--- Test: Backspace ---");
         win.clear();
         send_char_to_edit(win.edit_hwnd, 'a');
         send_char_to_edit(win.edit_hwnd, 'b');
         send_char_to_edit(win.edit_hwnd, '\x08'); // BS as WM_CHAR
         let text = win.get_text();
-        log::info!("Edit content after BS: '{text}'");
+        tracing::info!("Edit content after BS: '{text}'");
         assert_eq!(text, "a", "After BS expected 'a', got: '{text}'");
 
         // Test 4: Unicode character (Japanese)
-        log::info!("--- Test: Unicode char '\u{3042}' ---");
+        tracing::info!("--- Test: Unicode char '\u{3042}' ---");
         win.clear();
         send_char_to_edit(win.edit_hwnd, '\u{3042}');
         let text = win.get_text();
-        log::info!("Edit content: '{text}'");
+        tracing::info!("Edit content: '{text}'");
         assert_eq!(
             text, "\u{3042}",
             "WM_CHAR should handle Unicode, got: '{text}'"
         );
 
-        log::info!("=== Phase 2 tests passed ===");
+        tracing::info!("=== Phase 2 tests passed ===");
     }
 }
 
@@ -784,13 +786,13 @@ fn e2e_message_edit_control() {
 fn e2e_sendinput_interactive() {
     init_test_logging();
     if !is_interactive_session() {
-        log::info!("Skipping SendInput interactive test (set AWASE_E2E_INTERACTIVE=1)");
+        tracing::info!("Skipping SendInput interactive test (set AWASE_E2E_INTERACTIVE=1)");
         return;
     }
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 2 (interactive): SendInput + Edit control ===");
+    tracing::info!("=== E2E Phase 2 (interactive): SendInput + Edit control ===");
 
     unsafe {
         use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
@@ -799,17 +801,17 @@ fn e2e_sendinput_interactive() {
         log_system_info();
 
         let Some(win) = TestEditWindow::create() else {
-            log::error!("Could not create test window, skipping");
+            tracing::error!("Could not create test window, skipping");
             return;
         };
 
         // Test 1: Simple key input ('A' -> 'a')
-        log::info!("--- Test: Single key 'A' -> edit should contain 'a' ---");
+        tracing::info!("--- Test: Single key 'A' -> edit should contain 'a' ---");
         win.clear();
         win.focus();
         send_key_to_edit(0x41, 0x1E); // VK_A, scan=0x1E
         let text = win.get_text();
-        log::info!("Edit content after 'A': '{text}'");
+        tracing::info!("Edit content after 'A': '{text}'");
         assert!(
             text.contains('a') || text.contains('A'),
             "Edit should contain 'a' or 'A'\n\
@@ -824,14 +826,14 @@ fn e2e_sendinput_interactive() {
         );
 
         // Test 2: Multiple key input
-        log::info!("--- Test: Multiple keys 'ABC' ---");
+        tracing::info!("--- Test: Multiple keys 'ABC' ---");
         win.clear();
         win.focus();
         send_key_to_edit(0x41, 0x1E); // A
         send_key_to_edit(0x42, 0x30); // B
         send_key_to_edit(0x43, 0x2E); // C
         let text = win.get_text();
-        log::info!("Edit content after 'ABC': '{text}'");
+        tracing::info!("Edit content after 'ABC': '{text}'");
         {
             let fg = GetForegroundWindow();
             let focus = GetFocus();
@@ -851,14 +853,14 @@ fn e2e_sendinput_interactive() {
         }
 
         // Test 3: Backspace
-        log::info!("--- Test: Backspace deletes last char ---");
+        tracing::info!("--- Test: Backspace deletes last char ---");
         win.clear();
         win.focus();
         send_key_to_edit(0x41, 0x1E); // A
         send_key_to_edit(0x42, 0x30); // B
         send_key_to_edit(0x08, 0x0E); // VK_BACK
         let text = win.get_text();
-        log::info!("Edit content after 'AB' + BS: '{text}'");
+        tracing::info!("Edit content after 'AB' + BS: '{text}'");
         {
             let fg = GetForegroundWindow();
             let focus = GetFocus();
@@ -877,7 +879,7 @@ fn e2e_sendinput_interactive() {
             );
         }
 
-        log::info!("=== Phase 2 interactive tests passed ===");
+        tracing::info!("=== Phase 2 interactive tests passed ===");
     }
 }
 
@@ -889,11 +891,11 @@ fn e2e_message_special_keys() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 2: Special keys via SendMessage ===");
+    tracing::info!("=== E2E Phase 2: Special keys via SendMessage ===");
 
     unsafe {
         let Some(win) = TestEditWindow::create() else {
-            log::error!("Could not create test window, skipping");
+            tracing::error!("Could not create test window, skipping");
             return;
         };
 
@@ -902,15 +904,15 @@ fn e2e_message_special_keys() {
         send_char_to_edit(win.edit_hwnd, 'x');
         send_char_to_edit(win.edit_hwnd, 'y');
         let text = win.get_text();
-        log::info!("Before clear: '{text}'");
+        tracing::info!("Before clear: '{text}'");
         assert_eq!(text, "xy");
 
         win.clear();
         let text = win.get_text();
-        log::info!("After clear: '{text}'");
+        tracing::info!("After clear: '{text}'");
         assert_eq!(text, "", "clear() should empty the edit");
 
-        log::info!("=== Special keys tests passed ===");
+        tracing::info!("=== Special keys tests passed ===");
     }
 }
 
@@ -918,7 +920,7 @@ fn e2e_message_special_keys() {
 fn e2e_sendinput_special_keys_interactive() {
     init_test_logging();
     if !is_interactive_session() {
-        log::info!(
+        tracing::info!(
             "Skipping SendInput special keys interactive test (set AWASE_E2E_INTERACTIVE=1)"
         );
         return;
@@ -926,7 +928,7 @@ fn e2e_sendinput_special_keys_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 2 (interactive): Special keys ===");
+    tracing::info!("=== E2E Phase 2 (interactive): Special keys ===");
 
     unsafe {
         use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
@@ -935,19 +937,19 @@ fn e2e_sendinput_special_keys_interactive() {
         log_system_info();
 
         let Some(win) = TestEditWindow::create() else {
-            log::error!("Could not create test window, skipping");
+            tracing::error!("Could not create test window, skipping");
             return;
         };
 
         // Enter key does not insert a newline in a single-line Edit
-        log::info!("--- Test: Enter key in single-line Edit ---");
+        tracing::info!("--- Test: Enter key in single-line Edit ---");
         win.clear();
         win.focus();
         send_key_to_edit(0x41, 0x1E); // A
         send_key_to_edit(0x0D, 0x1C); // VK_RETURN
         send_key_to_edit(0x42, 0x30); // B
         let text = win.get_text();
-        log::info!("Edit content after A+Enter+B: '{text}'");
+        tracing::info!("Edit content after A+Enter+B: '{text}'");
         // Single-line Edit ignores Enter
         {
             let fg = GetForegroundWindow();
@@ -966,7 +968,7 @@ fn e2e_sendinput_special_keys_interactive() {
             );
         }
 
-        log::info!("=== Special keys interactive tests passed ===");
+        tracing::info!("=== Special keys interactive tests passed ===");
     }
 }
 
@@ -981,7 +983,7 @@ unsafe fn is_japanese_ime_available() -> bool {
     let hkl = GetKeyboardLayout(0);
     let lang_id = (hkl.0 as u32) & 0xFFFF;
     let is_japanese = lang_id == 0x0411; // ja-JP
-    log::debug!(
+    tracing::debug!(
         "Keyboard layout: HKL={:?} lang_id=0x{:04X} japanese={}",
         hkl,
         lang_id,
@@ -1013,12 +1015,12 @@ unsafe fn set_ime_open(hwnd: windows::Win32::Foundation::HWND, open: bool) -> bo
     let himc = ImmGetContext(hwnd);
     if himc.is_invalid() {
         let err = windows::core::Error::from_thread();
-        log::warn!("ImmGetContext failed for hwnd={:?}: {:?}", hwnd, err);
+        tracing::warn!("ImmGetContext failed for hwnd={:?}: {:?}", hwnd, err);
         return false;
     }
     let result = ImmSetOpenStatus(himc, open);
     let _ = ImmReleaseContext(hwnd, himc);
-    log::debug!("ImmSetOpenStatus({open}): result={:?}", result);
+    tracing::debug!("ImmSetOpenStatus({open}): result={:?}", result);
     result.as_bool()
 }
 
@@ -1028,7 +1030,7 @@ unsafe fn get_ime_open(hwnd: windows::Win32::Foundation::HWND) -> bool {
     let himc = ImmGetContext(hwnd);
     if himc.is_invalid() {
         let err = windows::core::Error::from_thread();
-        log::warn!(
+        tracing::warn!(
             "ImmGetContext failed (get_ime_open) for hwnd={:?}: {:?}",
             hwnd,
             err
@@ -1044,41 +1046,41 @@ unsafe fn get_ime_open(hwnd: windows::Win32::Foundation::HWND) -> bool {
 fn e2e_ime_status_detection() {
     init_test_logging();
     if !is_interactive_session() {
-        log::warn!("Skipping IME test: no interactive desktop session");
+        tracing::warn!("Skipping IME test: no interactive desktop session");
         return;
     }
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 3: IME status detection ===");
+    tracing::info!("=== E2E Phase 3: IME status detection ===");
 
     unsafe {
         log_system_info();
 
         let Some(win) = TestEditWindow::create() else {
-            log::error!("Could not create test window, skipping");
+            tracing::error!("Could not create test window, skipping");
             return;
         };
         win.focus();
 
         // Check for Japanese IME availability
         let has_japanese = is_japanese_ime_available();
-        log::info!("Japanese IME available: {has_japanese}");
+        tracing::info!("Japanese IME available: {has_japanese}");
 
         if !has_japanese {
-            log::warn!("Japanese IME not installed, skipping IME-specific tests");
-            log::info!(
+            tracing::warn!("Japanese IME not installed, skipping IME-specific tests");
+            tracing::info!(
                 "To enable: PowerShell -> New-WinUserLanguageList ja-JP -> Set-WinUserLanguageList"
             );
             return;
         }
 
         // IME OFF -> direct input to Edit
-        log::info!("--- Test: IME OFF -> direct input ---");
+        tracing::info!("--- Test: IME OFF -> direct input ---");
         set_ime_open(win.edit_hwnd, false);
         std::thread::sleep(std::time::Duration::from_millis(100));
         let ime_status = get_ime_open(win.edit_hwnd);
-        log::info!("IME open status after OFF: {ime_status}");
+        tracing::info!("IME open status after OFF: {ime_status}");
 
         win.clear();
         // Use SendMessage(WM_CHAR) instead of SendInput to avoid focus issues
@@ -1086,21 +1088,21 @@ fn e2e_ime_status_detection() {
         // is contested when tests run concurrently.
         send_char_to_edit(win.edit_hwnd, 'a');
         let text = win.get_text();
-        log::info!("IME OFF, sent 'a' via WM_CHAR: edit='{text}'");
+        tracing::info!("IME OFF, sent 'a' via WM_CHAR: edit='{text}'");
         assert_eq!(
             text, "a",
             "IME OFF: WM_CHAR 'a' should produce 'a', got: '{text}'"
         );
 
         // IME ON -> verify romaji input mode behavior
-        log::info!("--- Test: IME ON -> romaji input ---");
+        tracing::info!("--- Test: IME ON -> romaji input ---");
         set_ime_open(win.edit_hwnd, true);
         std::thread::sleep(std::time::Duration::from_millis(100));
         let ime_status = get_ime_open(win.edit_hwnd);
-        log::info!("IME open status after ON: {ime_status}");
+        tracing::info!("IME open status after ON: {ime_status}");
 
         if !ime_status {
-            log::warn!("Could not enable IME, skipping IME ON tests");
+            tracing::warn!("Could not enable IME, skipping IME ON tests");
             return;
         }
 
@@ -1112,13 +1114,13 @@ fn e2e_ime_status_detection() {
         send_char_to_edit(win.edit_hwnd, 'a');
         pump_messages();
         let text = win.get_text();
-        log::info!("IME ON, sent 'a' via WM_CHAR: edit='{text}'");
+        tracing::info!("IME ON, sent 'a' via WM_CHAR: edit='{text}'");
         // WM_CHAR bypasses IME, so we get the raw character
-        log::info!("WM_CHAR result: '{text}' (WM_CHAR bypasses IME, raw char expected)");
+        tracing::info!("WM_CHAR result: '{text}' (WM_CHAR bypasses IME, raw char expected)");
 
         // Restore IME OFF (cleanup)
         set_ime_open(win.edit_hwnd, false);
-        log::info!("=== Phase 3 IME status tests completed ===");
+        tracing::info!("=== Phase 3 IME status tests completed ===");
     }
 }
 
@@ -1226,18 +1228,18 @@ unsafe fn wait_for_composition_cleared(
 /// available, otherwise create a focused Edit window with the IME turned on.
 unsafe fn setup_ime_composition_test() -> Option<TestEditWindow> {
     if !is_interactive_session() {
-        log::info!("Skipping MS-IME composition test (set AWASE_E2E_INTERACTIVE=1)");
+        tracing::info!("Skipping MS-IME composition test (set AWASE_E2E_INTERACTIVE=1)");
         return None;
     }
     log_system_info();
 
     if !is_japanese_ime_available() {
-        log::warn!("Japanese IME not installed, skipping MS-IME composition test");
+        tracing::warn!("Japanese IME not installed, skipping MS-IME composition test");
         return None;
     }
 
     let Some(win) = TestEditWindow::create() else {
-        log::error!("Could not create test window, skipping");
+        tracing::error!("Could not create test window, skipping");
         return None;
     };
     win.clear();
@@ -1248,7 +1250,7 @@ unsafe fn setup_ime_composition_test() -> Option<TestEditWindow> {
     set_ime_open(win.edit_hwnd, true);
     std::thread::sleep(std::time::Duration::from_millis(100));
     if !get_ime_open(win.edit_hwnd) {
-        log::warn!("Could not enable IME, skipping MS-IME composition test");
+        tracing::warn!("Could not enable IME, skipping MS-IME composition test");
         return None;
     }
 
@@ -1261,7 +1263,7 @@ fn e2e_msime_romaji_to_kana_conversion_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 3: MS-IME romaji->kana conversion (SendInput) ===");
+    tracing::info!("=== E2E Phase 3: MS-IME romaji->kana conversion (SendInput) ===");
 
     unsafe {
         let Some(win) = setup_ime_composition_test() else {
@@ -1271,12 +1273,12 @@ fn e2e_msime_romaji_to_kana_conversion_interactive() {
         // Type "ka" via SendInput (VK_K, VK_A). MS-IME's default romaji
         // table composes this to the hiragana "か" without needing an
         // explicit henkan (space) conversion step.
-        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        tracing::info!("--- Sending 'k' 'a' via SendInput ---");
         send_key_to_edit(0x4B, 0x25); // VK_K
         send_key_to_edit(0x41, 0x1E); // VK_A
 
         let compstr = wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
-        log::info!("Composition string after 'ka': {compstr:?}");
+        tracing::info!("Composition string after 'ka': {compstr:?}");
         assert_eq!(
             compstr.as_deref(),
             Some("\u{304B}"), // か
@@ -1285,11 +1287,11 @@ fn e2e_msime_romaji_to_kana_conversion_interactive() {
 
         // Confirm the composition (Enter commits the current compstr as-is,
         // without opening a kanji conversion candidate list).
-        log::info!("--- Confirming composition with Enter ---");
+        tracing::info!("--- Confirming composition with Enter ---");
         send_key_to_edit(0x0D, 0x1C); // VK_RETURN
 
         let text = win.get_text();
-        log::info!("Edit content after confirm: '{text}'");
+        tracing::info!("Edit content after confirm: '{text}'");
         assert_eq!(
             text, "\u{304B}",
             "confirmed text should be 'か', got: '{text}'"
@@ -1297,7 +1299,7 @@ fn e2e_msime_romaji_to_kana_conversion_interactive() {
 
         // Cleanup
         set_ime_open(win.edit_hwnd, false);
-        log::info!("=== MS-IME romaji->kana conversion test completed ===");
+        tracing::info!("=== MS-IME romaji->kana conversion test completed ===");
     }
 }
 
@@ -1307,7 +1309,7 @@ fn e2e_msime_kanji_conversion_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 3: MS-IME kanji conversion (henkan via Space) ===");
+    tracing::info!("=== E2E Phase 3: MS-IME kanji conversion (henkan via Space) ===");
 
     unsafe {
         let Some(win) = setup_ime_composition_test() else {
@@ -1320,7 +1322,7 @@ fn e2e_msime_kanji_conversion_interactive() {
         // than a kanji (observed: "め" -> "メ", not "目") — readings need to
         // be long/common enough that the kanji candidate is unambiguously
         // ranked first, which holds for this everyday word.
-        log::info!("--- Sending 'n' 'a' 'm' 'a' 'e' via SendInput ---");
+        tracing::info!("--- Sending 'n' 'a' 'm' 'a' 'e' via SendInput ---");
         send_key_to_edit(0x4E, 0x31); // VK_N
         send_key_to_edit(0x41, 0x1E); // VK_A
         send_key_to_edit(0x4D, 0x32); // VK_M
@@ -1328,7 +1330,7 @@ fn e2e_msime_kanji_conversion_interactive() {
         send_key_to_edit(0x45, 0x12); // VK_E
 
         let reading = wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
-        log::info!("Composition string after 'namae': {reading:?}");
+        tracing::info!("Composition string after 'namae': {reading:?}");
         assert_eq!(
             reading.as_deref(),
             Some("\u{306A}\u{307E}\u{3048}"), // なまえ
@@ -1336,7 +1338,7 @@ fn e2e_msime_kanji_conversion_interactive() {
         );
 
         // Space triggers henkan (kanji conversion).
-        log::info!("--- Sending Space to trigger henkan ---");
+        tracing::info!("--- Sending Space to trigger henkan ---");
         send_key_to_edit(0x20, 0x39); // VK_SPACE
 
         let converted = wait_for_composition_change(
@@ -1344,25 +1346,25 @@ fn e2e_msime_kanji_conversion_interactive() {
             "\u{306A}\u{307E}\u{3048}",
             std::time::Duration::from_secs(1),
         );
-        log::info!("Composition string after henkan: {converted:?}");
+        tracing::info!("Composition string after henkan: {converted:?}");
         assert_eq!(
             converted.as_deref(),
             Some("\u{540D}\u{524D}"), // 名前
             "composing string should convert to '名前' after Space, got: {converted:?}"
         );
 
-        log::info!("--- Confirming conversion with Enter ---");
+        tracing::info!("--- Confirming conversion with Enter ---");
         send_key_to_edit(0x0D, 0x1C); // VK_RETURN
 
         let text = win.get_text();
-        log::info!("Edit content after confirm: '{text}'");
+        tracing::info!("Edit content after confirm: '{text}'");
         assert_eq!(
             text, "\u{540D}\u{524D}",
             "confirmed text should be '名前', got: '{text}'"
         );
 
         set_ime_open(win.edit_hwnd, false);
-        log::info!("=== MS-IME kanji conversion test completed ===");
+        tracing::info!("=== MS-IME kanji conversion test completed ===");
     }
 }
 
@@ -1372,26 +1374,26 @@ fn e2e_msime_katakana_conversion_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 3: MS-IME katakana conversion (F7) ===");
+    tracing::info!("=== E2E Phase 3: MS-IME katakana conversion (F7) ===");
 
     unsafe {
         let Some(win) = setup_ime_composition_test() else {
             return;
         };
 
-        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        tracing::info!("--- Sending 'k' 'a' via SendInput ---");
         send_key_to_edit(0x4B, 0x25); // VK_K
         send_key_to_edit(0x41, 0x1E); // VK_A
 
         let hiragana =
             wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
-        log::info!("Composition string after 'ka': {hiragana:?}");
+        tracing::info!("Composition string after 'ka': {hiragana:?}");
         assert_eq!(hiragana.as_deref(), Some("\u{304B}")); // か
 
         // F7 is the cross-IME (MS-IME/ATOK/etc.) convention for "convert the
         // current composition to full-width katakana", independent of any
         // conversion dictionary/candidate ranking.
-        log::info!("--- Sending F7 to force katakana conversion ---");
+        tracing::info!("--- Sending F7 to force katakana conversion ---");
         send_key_to_edit(0x76, 0x41); // VK_F7
 
         let katakana = wait_for_composition_change(
@@ -1399,25 +1401,25 @@ fn e2e_msime_katakana_conversion_interactive() {
             "\u{304B}",
             std::time::Duration::from_secs(1),
         );
-        log::info!("Composition string after F7: {katakana:?}");
+        tracing::info!("Composition string after F7: {katakana:?}");
         assert_eq!(
             katakana.as_deref(),
             Some("\u{30AB}"), // カ
             "composing string should be 'カ' after F7, got: {katakana:?}"
         );
 
-        log::info!("--- Confirming conversion with Enter ---");
+        tracing::info!("--- Confirming conversion with Enter ---");
         send_key_to_edit(0x0D, 0x1C); // VK_RETURN
 
         let text = win.get_text();
-        log::info!("Edit content after confirm: '{text}'");
+        tracing::info!("Edit content after confirm: '{text}'");
         assert_eq!(
             text, "\u{30AB}",
             "confirmed text should be 'カ', got: '{text}'"
         );
 
         set_ime_open(win.edit_hwnd, false);
-        log::info!("=== MS-IME katakana conversion test completed ===");
+        tracing::info!("=== MS-IME katakana conversion test completed ===");
     }
 }
 
@@ -1427,7 +1429,7 @@ fn e2e_msime_long_phrase_composition_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 3: MS-IME long phrase composition (no henkan) ===");
+    tracing::info!("=== E2E Phase 3: MS-IME long phrase composition (no henkan) ===");
 
     unsafe {
         let Some(win) = setup_ime_composition_test() else {
@@ -1436,7 +1438,7 @@ fn e2e_msime_long_phrase_composition_interactive() {
 
         // "arigatou" -> "ありがとう" (thank you), a longer multi-mora
         // composition confirmed directly without a conversion step.
-        log::info!("--- Sending 'arigatou' via SendInput ---");
+        tracing::info!("--- Sending 'arigatou' via SendInput ---");
         send_key_to_edit(0x41, 0x1E); // VK_A
         send_key_to_edit(0x52, 0x13); // VK_R
         send_key_to_edit(0x49, 0x17); // VK_I
@@ -1447,25 +1449,25 @@ fn e2e_msime_long_phrase_composition_interactive() {
         send_key_to_edit(0x55, 0x16); // VK_U
 
         let compstr = wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
-        log::info!("Composition string after 'arigatou': {compstr:?}");
+        tracing::info!("Composition string after 'arigatou': {compstr:?}");
         assert_eq!(
             compstr.as_deref(),
             Some("\u{3042}\u{308A}\u{304C}\u{3068}\u{3046}"), // ありがとう
             "composing string should be 'ありがとう', got: {compstr:?}"
         );
 
-        log::info!("--- Confirming composition with Enter ---");
+        tracing::info!("--- Confirming composition with Enter ---");
         send_key_to_edit(0x0D, 0x1C); // VK_RETURN
 
         let text = win.get_text();
-        log::info!("Edit content after confirm: '{text}'");
+        tracing::info!("Edit content after confirm: '{text}'");
         assert_eq!(
             text, "\u{3042}\u{308A}\u{304C}\u{3068}\u{3046}",
             "confirmed text should be 'ありがとう', got: '{text}'"
         );
 
         set_ime_open(win.edit_hwnd, false);
-        log::info!("=== MS-IME long phrase composition test completed ===");
+        tracing::info!("=== MS-IME long phrase composition test completed ===");
     }
 }
 
@@ -1475,22 +1477,22 @@ fn e2e_msime_composition_cancel_escape_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 3: MS-IME composition cancel (Escape) ===");
+    tracing::info!("=== E2E Phase 3: MS-IME composition cancel (Escape) ===");
 
     unsafe {
         let Some(win) = setup_ime_composition_test() else {
             return;
         };
 
-        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        tracing::info!("--- Sending 'k' 'a' via SendInput ---");
         send_key_to_edit(0x4B, 0x25); // VK_K
         send_key_to_edit(0x41, 0x1E); // VK_A
 
         let compstr = wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
-        log::info!("Composition string after 'ka': {compstr:?}");
+        tracing::info!("Composition string after 'ka': {compstr:?}");
         assert_eq!(compstr.as_deref(), Some("\u{304B}")); // か
 
-        log::info!("--- Sending Escape to cancel composition ---");
+        tracing::info!("--- Sending Escape to cancel composition ---");
         send_key_to_edit(0x1B, 0x01); // VK_ESCAPE
 
         let cleared =
@@ -1498,14 +1500,14 @@ fn e2e_msime_composition_cancel_escape_interactive() {
         assert!(cleared, "composition should be cancelled after Escape");
 
         let text = win.get_text();
-        log::info!("Edit content after Escape cancel: '{text}'");
+        tracing::info!("Edit content after Escape cancel: '{text}'");
         assert_eq!(
             text, "",
             "Escape should cancel the composition without committing text, got: '{text}'"
         );
 
         set_ime_open(win.edit_hwnd, false);
-        log::info!("=== MS-IME composition cancel test completed ===");
+        tracing::info!("=== MS-IME composition cancel test completed ===");
     }
 }
 
@@ -1524,42 +1526,42 @@ fn e2e_gji_romaji_to_kana_conversion_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 3: GJI romaji->kana conversion (SendInput) ===");
+    tracing::info!("=== E2E Phase 3: GJI romaji->kana conversion (SendInput) ===");
 
     unsafe {
         let Some(win) = setup_ime_composition_test() else {
             return;
         };
 
-        log::info!(
+        tracing::info!(
             "Active IME description (diagnostic only): {:?}",
             get_ime_description()
         );
 
-        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        tracing::info!("--- Sending 'k' 'a' via SendInput ---");
         send_key_to_edit(0x4B, 0x25); // VK_K
         send_key_to_edit(0x41, 0x1E); // VK_A
 
         let compstr = wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
-        log::info!("Composition string after 'ka': {compstr:?}");
+        tracing::info!("Composition string after 'ka': {compstr:?}");
         assert_eq!(
             compstr.as_deref(),
             Some("\u{304B}"), // か
             "composing string should be 'か' after typing 'ka' via GJI, got: {compstr:?}"
         );
 
-        log::info!("--- Confirming composition with Enter ---");
+        tracing::info!("--- Confirming composition with Enter ---");
         send_key_to_edit(0x0D, 0x1C); // VK_RETURN
 
         let text = win.get_text();
-        log::info!("Edit content after confirm: '{text}'");
+        tracing::info!("Edit content after confirm: '{text}'");
         assert_eq!(
             text, "\u{304B}",
             "confirmed text should be 'か', got: '{text}'"
         );
 
         set_ime_open(win.edit_hwnd, false);
-        log::info!("=== GJI romaji->kana conversion test completed ===");
+        tracing::info!("=== GJI romaji->kana conversion test completed ===");
     }
 }
 
@@ -1569,14 +1571,14 @@ fn e2e_gji_kanji_conversion_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 3: GJI kanji conversion (henkan via Space) ===");
+    tracing::info!("=== E2E Phase 3: GJI kanji conversion (henkan via Space) ===");
 
     unsafe {
         let Some(win) = setup_ime_composition_test() else {
             return;
         };
 
-        log::info!("--- Sending 'n' 'a' 'm' 'a' 'e' via SendInput ---");
+        tracing::info!("--- Sending 'n' 'a' 'm' 'a' 'e' via SendInput ---");
         send_key_to_edit(0x4E, 0x31); // VK_N
         send_key_to_edit(0x41, 0x1E); // VK_A
         send_key_to_edit(0x4D, 0x32); // VK_M
@@ -1584,14 +1586,14 @@ fn e2e_gji_kanji_conversion_interactive() {
         send_key_to_edit(0x45, 0x12); // VK_E
 
         let reading = wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
-        log::info!("Composition string after 'namae': {reading:?}");
+        tracing::info!("Composition string after 'namae': {reading:?}");
         assert_eq!(
             reading.as_deref(),
             Some("\u{306A}\u{307E}\u{3048}"), // なまえ
             "composing string should be 'なまえ' after typing 'namae' via GJI, got: {reading:?}"
         );
 
-        log::info!("--- Sending Space to trigger henkan ---");
+        tracing::info!("--- Sending Space to trigger henkan ---");
         send_key_to_edit(0x20, 0x39); // VK_SPACE
 
         let converted = wait_for_composition_change(
@@ -1599,25 +1601,25 @@ fn e2e_gji_kanji_conversion_interactive() {
             "\u{306A}\u{307E}\u{3048}",
             std::time::Duration::from_secs(1),
         );
-        log::info!("Composition string after henkan: {converted:?}");
+        tracing::info!("Composition string after henkan: {converted:?}");
         assert_eq!(
             converted.as_deref(),
             Some("\u{540D}\u{524D}"), // 名前
             "composing string should convert to '名前' after Space via GJI, got: {converted:?}"
         );
 
-        log::info!("--- Confirming conversion with Enter ---");
+        tracing::info!("--- Confirming conversion with Enter ---");
         send_key_to_edit(0x0D, 0x1C); // VK_RETURN
 
         let text = win.get_text();
-        log::info!("Edit content after confirm: '{text}'");
+        tracing::info!("Edit content after confirm: '{text}'");
         assert_eq!(
             text, "\u{540D}\u{524D}",
             "confirmed text should be '名前', got: '{text}'"
         );
 
         set_ime_open(win.edit_hwnd, false);
-        log::info!("=== GJI kanji conversion test completed ===");
+        tracing::info!("=== GJI kanji conversion test completed ===");
     }
 }
 
@@ -1627,23 +1629,23 @@ fn e2e_gji_katakana_conversion_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 3: GJI katakana conversion (F7) ===");
+    tracing::info!("=== E2E Phase 3: GJI katakana conversion (F7) ===");
 
     unsafe {
         let Some(win) = setup_ime_composition_test() else {
             return;
         };
 
-        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        tracing::info!("--- Sending 'k' 'a' via SendInput ---");
         send_key_to_edit(0x4B, 0x25); // VK_K
         send_key_to_edit(0x41, 0x1E); // VK_A
 
         let hiragana =
             wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
-        log::info!("Composition string after 'ka': {hiragana:?}");
+        tracing::info!("Composition string after 'ka': {hiragana:?}");
         assert_eq!(hiragana.as_deref(), Some("\u{304B}")); // か
 
-        log::info!("--- Sending F7 to force katakana conversion ---");
+        tracing::info!("--- Sending F7 to force katakana conversion ---");
         send_key_to_edit(0x76, 0x41); // VK_F7
 
         let katakana = wait_for_composition_change(
@@ -1651,25 +1653,25 @@ fn e2e_gji_katakana_conversion_interactive() {
             "\u{304B}",
             std::time::Duration::from_secs(1),
         );
-        log::info!("Composition string after F7: {katakana:?}");
+        tracing::info!("Composition string after F7: {katakana:?}");
         assert_eq!(
             katakana.as_deref(),
             Some("\u{30AB}"), // カ
             "composing string should be 'カ' after F7 via GJI, got: {katakana:?}"
         );
 
-        log::info!("--- Confirming conversion with Enter ---");
+        tracing::info!("--- Confirming conversion with Enter ---");
         send_key_to_edit(0x0D, 0x1C); // VK_RETURN
 
         let text = win.get_text();
-        log::info!("Edit content after confirm: '{text}'");
+        tracing::info!("Edit content after confirm: '{text}'");
         assert_eq!(
             text, "\u{30AB}",
             "confirmed text should be 'カ', got: '{text}'"
         );
 
         set_ime_open(win.edit_hwnd, false);
-        log::info!("=== GJI katakana conversion test completed ===");
+        tracing::info!("=== GJI katakana conversion test completed ===");
     }
 }
 
@@ -1679,14 +1681,14 @@ fn e2e_gji_long_phrase_composition_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 3: GJI long phrase composition (no henkan) ===");
+    tracing::info!("=== E2E Phase 3: GJI long phrase composition (no henkan) ===");
 
     unsafe {
         let Some(win) = setup_ime_composition_test() else {
             return;
         };
 
-        log::info!("--- Sending 'arigatou' via SendInput ---");
+        tracing::info!("--- Sending 'arigatou' via SendInput ---");
         send_key_to_edit(0x41, 0x1E); // VK_A
         send_key_to_edit(0x52, 0x13); // VK_R
         send_key_to_edit(0x49, 0x17); // VK_I
@@ -1697,25 +1699,25 @@ fn e2e_gji_long_phrase_composition_interactive() {
         send_key_to_edit(0x55, 0x16); // VK_U
 
         let compstr = wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
-        log::info!("Composition string after 'arigatou': {compstr:?}");
+        tracing::info!("Composition string after 'arigatou': {compstr:?}");
         assert_eq!(
             compstr.as_deref(),
             Some("\u{3042}\u{308A}\u{304C}\u{3068}\u{3046}"), // ありがとう
             "composing string should be 'ありがとう' via GJI, got: {compstr:?}"
         );
 
-        log::info!("--- Confirming composition with Enter ---");
+        tracing::info!("--- Confirming composition with Enter ---");
         send_key_to_edit(0x0D, 0x1C); // VK_RETURN
 
         let text = win.get_text();
-        log::info!("Edit content after confirm: '{text}'");
+        tracing::info!("Edit content after confirm: '{text}'");
         assert_eq!(
             text, "\u{3042}\u{308A}\u{304C}\u{3068}\u{3046}",
             "confirmed text should be 'ありがとう', got: '{text}'"
         );
 
         set_ime_open(win.edit_hwnd, false);
-        log::info!("=== GJI long phrase composition test completed ===");
+        tracing::info!("=== GJI long phrase composition test completed ===");
     }
 }
 
@@ -1725,22 +1727,22 @@ fn e2e_gji_composition_cancel_escape_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 3: GJI composition cancel (Escape) ===");
+    tracing::info!("=== E2E Phase 3: GJI composition cancel (Escape) ===");
 
     unsafe {
         let Some(win) = setup_ime_composition_test() else {
             return;
         };
 
-        log::info!("--- Sending 'k' 'a' via SendInput ---");
+        tracing::info!("--- Sending 'k' 'a' via SendInput ---");
         send_key_to_edit(0x4B, 0x25); // VK_K
         send_key_to_edit(0x41, 0x1E); // VK_A
 
         let compstr = wait_for_composition_string(win.edit_hwnd, std::time::Duration::from_secs(1));
-        log::info!("Composition string after 'ka': {compstr:?}");
+        tracing::info!("Composition string after 'ka': {compstr:?}");
         assert_eq!(compstr.as_deref(), Some("\u{304B}")); // か
 
-        log::info!("--- Sending Escape to cancel composition ---");
+        tracing::info!("--- Sending Escape to cancel composition ---");
         send_key_to_edit(0x1B, 0x01); // VK_ESCAPE
 
         let cleared =
@@ -1751,14 +1753,14 @@ fn e2e_gji_composition_cancel_escape_interactive() {
         );
 
         let text = win.get_text();
-        log::info!("Edit content after Escape cancel: '{text}'");
+        tracing::info!("Edit content after Escape cancel: '{text}'");
         assert_eq!(
             text, "",
             "Escape should cancel the composition without committing text, got: '{text}'"
         );
 
         set_ime_open(win.edit_hwnd, false);
-        log::info!("=== GJI composition cancel test completed ===");
+        tracing::info!("=== GJI composition cancel test completed ===");
     }
 }
 
@@ -1768,7 +1770,7 @@ fn e2e_gji_vk_ime_off_is_idempotent_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!(
+    tracing::info!(
         "=== E2E Phase 3: VK_IME_OFF is idempotent via GJI (IME-off key selection regression) ==="
     );
 
@@ -1778,14 +1780,14 @@ fn e2e_gji_vk_ime_off_is_idempotent_interactive() {
         };
         assert!(get_ime_open(win.edit_hwnd), "sanity: IME should start ON");
 
-        log::info!("--- Sending VK_IME_OFF (1st) ---");
+        tracing::info!("--- Sending VK_IME_OFF (1st) ---");
         send_key_to_edit(0x1A, 0); // VK_IME_OFF
         assert!(
             !get_ime_open(win.edit_hwnd),
             "VK_IME_OFF should turn the IME off via GJI"
         );
 
-        log::info!("--- Sending VK_IME_OFF (2nd, already off) ---");
+        tracing::info!("--- Sending VK_IME_OFF (2nd, already off) ---");
         send_key_to_edit(0x1A, 0); // VK_IME_OFF again
         assert!(
             !get_ime_open(win.edit_hwnd),
@@ -1793,7 +1795,7 @@ fn e2e_gji_vk_ime_off_is_idempotent_interactive() {
              already off must not toggle back on"
         );
 
-        log::info!("=== GJI VK_IME_OFF idempotency test completed ===");
+        tracing::info!("=== GJI VK_IME_OFF idempotency test completed ===");
     }
 }
 
@@ -1803,7 +1805,7 @@ fn e2e_gji_vk_kanji_toggle_hazard_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 3: VK_KANJI toggles via GJI, not idempotent (IME-off key selection regression) ===");
+    tracing::info!("=== E2E Phase 3: VK_KANJI toggles via GJI, not idempotent (IME-off key selection regression) ===");
 
     unsafe {
         let Some(win) = setup_ime_composition_test() else {
@@ -1811,14 +1813,14 @@ fn e2e_gji_vk_kanji_toggle_hazard_interactive() {
         };
         assert!(get_ime_open(win.edit_hwnd), "sanity: IME should start ON");
 
-        log::info!("--- Sending VK_KANJI (1st) ---");
+        tracing::info!("--- Sending VK_KANJI (1st) ---");
         send_key_to_edit(0x19, 0); // VK_KANJI
         assert!(
             !get_ime_open(win.edit_hwnd),
             "VK_KANJI should toggle the IME off on first press via GJI"
         );
 
-        log::info!("--- Sending VK_KANJI (2nd) ---");
+        tracing::info!("--- Sending VK_KANJI (2nd) ---");
         send_key_to_edit(0x19, 0); // VK_KANJI again
         assert!(
             get_ime_open(win.edit_hwnd),
@@ -1826,7 +1828,7 @@ fn e2e_gji_vk_kanji_toggle_hazard_interactive() {
         );
 
         set_ime_open(win.edit_hwnd, false);
-        log::info!("=== GJI VK_KANJI toggle hazard test completed ===");
+        tracing::info!("=== GJI VK_KANJI toggle hazard test completed ===");
     }
 }
 
@@ -1836,7 +1838,7 @@ fn e2e_gji_vk_dbe_alphanumeric_stays_open_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!(
+    tracing::info!(
         "=== E2E Phase 3: VK_DBE_ALPHANUMERIC keeps IME 'open' via GJI (IME-off key selection regression) ==="
     );
 
@@ -1846,7 +1848,7 @@ fn e2e_gji_vk_dbe_alphanumeric_stays_open_interactive() {
         };
         assert!(get_ime_open(win.edit_hwnd), "sanity: IME should start ON");
 
-        log::info!("--- Sending VK_DBE_ALPHANUMERIC ---");
+        tracing::info!("--- Sending VK_DBE_ALPHANUMERIC ---");
         send_key_to_edit(0xF0, 0); // VK_DBE_ALPHANUMERIC
         assert!(
             get_ime_open(win.edit_hwnd),
@@ -1855,7 +1857,7 @@ fn e2e_gji_vk_dbe_alphanumeric_stays_open_interactive() {
         );
 
         set_ime_open(win.edit_hwnd, false);
-        log::info!("=== GJI VK_DBE_ALPHANUMERIC stays-open test completed ===");
+        tracing::info!("=== GJI VK_DBE_ALPHANUMERIC stays-open test completed ===");
     }
 }
 
@@ -1876,7 +1878,9 @@ fn e2e_msime_vk_ime_off_is_idempotent_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 3: VK_IME_OFF is idempotent (IME-off key selection regression) ===");
+    tracing::info!(
+        "=== E2E Phase 3: VK_IME_OFF is idempotent (IME-off key selection regression) ==="
+    );
 
     unsafe {
         let Some(win) = setup_ime_composition_test() else {
@@ -1887,14 +1891,14 @@ fn e2e_msime_vk_ime_off_is_idempotent_interactive() {
         // MsImeDirectStrategy settled on VK_IME_OFF specifically because,
         // unlike VK_KANJI, sending it while already off must NOT toggle
         // back on (48a667a).
-        log::info!("--- Sending VK_IME_OFF (1st) ---");
+        tracing::info!("--- Sending VK_IME_OFF (1st) ---");
         send_key_to_edit(0x1A, 0); // VK_IME_OFF
         assert!(
             !get_ime_open(win.edit_hwnd),
             "VK_IME_OFF should turn the IME off"
         );
 
-        log::info!("--- Sending VK_IME_OFF (2nd, already off) ---");
+        tracing::info!("--- Sending VK_IME_OFF (2nd, already off) ---");
         send_key_to_edit(0x1A, 0); // VK_IME_OFF again
         assert!(
             !get_ime_open(win.edit_hwnd),
@@ -1902,7 +1906,7 @@ fn e2e_msime_vk_ime_off_is_idempotent_interactive() {
              must not toggle back on"
         );
 
-        log::info!("=== VK_IME_OFF idempotency test completed ===");
+        tracing::info!("=== VK_IME_OFF idempotency test completed ===");
     }
 }
 
@@ -1912,7 +1916,7 @@ fn e2e_msime_vk_kanji_toggle_hazard_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!(
+    tracing::info!(
         "=== E2E Phase 3: VK_KANJI toggles, not idempotent (IME-off key selection regression) ==="
     );
 
@@ -1928,14 +1932,14 @@ fn e2e_msime_vk_kanji_toggle_hazard_interactive() {
         // VK_IME_OFF. If this test ever starts failing because VK_KANJI
         // became idempotent on some future Windows/MS-IME version, that's
         // useful signal, not just noise.
-        log::info!("--- Sending VK_KANJI (1st) ---");
+        tracing::info!("--- Sending VK_KANJI (1st) ---");
         send_key_to_edit(0x19, 0); // VK_KANJI
         assert!(
             !get_ime_open(win.edit_hwnd),
             "VK_KANJI should toggle the IME off on first press"
         );
 
-        log::info!("--- Sending VK_KANJI (2nd) ---");
+        tracing::info!("--- Sending VK_KANJI (2nd) ---");
         send_key_to_edit(0x19, 0); // VK_KANJI again
         assert!(
             get_ime_open(win.edit_hwnd),
@@ -1945,7 +1949,7 @@ fn e2e_msime_vk_kanji_toggle_hazard_interactive() {
 
         // Leave the IME in a known state for subsequent tests.
         set_ime_open(win.edit_hwnd, false);
-        log::info!("=== VK_KANJI toggle hazard test completed ===");
+        tracing::info!("=== VK_KANJI toggle hazard test completed ===");
     }
 }
 
@@ -1955,7 +1959,7 @@ fn e2e_msime_vk_dbe_alphanumeric_stays_open_interactive() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!(
+    tracing::info!(
         "=== E2E Phase 3: VK_DBE_ALPHANUMERIC keeps IME 'open' (IME-off key selection regression) ==="
     );
 
@@ -1970,7 +1974,7 @@ fn e2e_msime_vk_dbe_alphanumeric_stays_open_interactive() {
         // IME-off key. Treating it as one was an earlier, rejected
         // assumption (docs/experiments.md エントリ01); VK_IME_OFF is the
         // key that actually clears ImmGetOpenStatus().
-        log::info!("--- Sending VK_DBE_ALPHANUMERIC ---");
+        tracing::info!("--- Sending VK_DBE_ALPHANUMERIC ---");
         send_key_to_edit(0xF0, 0); // VK_DBE_ALPHANUMERIC
         assert!(
             get_ime_open(win.edit_hwnd),
@@ -1981,7 +1985,7 @@ fn e2e_msime_vk_dbe_alphanumeric_stays_open_interactive() {
         );
 
         set_ime_open(win.edit_hwnd, false);
-        log::info!("=== VK_DBE_ALPHANUMERIC stays-open test completed ===");
+        tracing::info!("=== VK_DBE_ALPHANUMERIC stays-open test completed ===");
     }
 }
 
@@ -1990,7 +1994,7 @@ fn e2e_engine_with_ime_context() {
     init_test_logging();
     // This is a pure Engine in-process test (no windows, no SendInput).
     // No INTERACTIVE_TEST_LOCK needed.
-    log::info!("=== E2E Phase 3: Engine with IME context ===");
+    tracing::info!("=== E2E Phase 3: Engine with IME context ===");
 
     // Use Engine in-process to verify behavior based on IME state
     let mut engine = make_test_engine(ConfirmMode::Wait);
@@ -1998,31 +2002,31 @@ fn e2e_engine_with_ime_context() {
 
     // Engine enabled + normal key input -> consumed
     let r = engine.on_event(key_down(0x41, 0x1E, t0));
-    log::debug!("Engine enabled, 'A': consumed={}", r.consumed);
+    tracing::debug!("Engine enabled, 'A': consumed={}", r.consumed);
     assert!(r.consumed, "enabled engine should consume char key");
 
     // Confirm via timeout
     let r = engine.on_timeout(awase::engine::TIMER_PENDING);
-    log::debug!("Timeout: actions={:?}", r.actions);
+    tracing::debug!("Timeout: actions={:?}", r.actions);
 
     // Disable engine
     let (enabled, _flush) = engine.toggle_enabled();
     assert!(!enabled);
     let r = engine.on_event(key_down(0x41, 0x1E, t0 + 500_000));
-    log::debug!("Engine disabled, 'A': consumed={}", r.consumed);
+    tracing::debug!("Engine disabled, 'A': consumed={}", r.consumed);
     assert!(!r.consumed, "disabled engine should passthrough");
 
     // Re-enable
     let (enabled, _flush) = engine.toggle_enabled();
     assert!(enabled);
     let r = engine.on_event(key_down(0x41, 0x1E, t0 + 1_000_000));
-    log::debug!("Engine re-enabled, 'A': consumed={}", r.consumed);
+    tracing::debug!("Engine re-enabled, 'A': consumed={}", r.consumed);
     assert!(r.consumed, "re-enabled engine should consume");
 
     // Flush to release pending state
     let _ = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
 
-    log::info!("=== Phase 3 engine+IME tests completed ===");
+    tracing::info!("=== Phase 3 engine+IME tests completed ===");
 }
 
 // ─────────────────────────────────────────────
@@ -2033,7 +2037,7 @@ fn e2e_engine_with_ime_context() {
 fn e2e_nicola_normal_face_mapping() {
     init_test_logging();
     let mut engine = make_test_engine(ConfirmMode::Wait);
-    log::info!("=== E2E: NICOLA normal face mapping ===");
+    tracing::info!("=== E2E: NICOLA normal face mapping ===");
 
     let t0 = 1_000_000u64;
 
@@ -2042,31 +2046,31 @@ fn e2e_nicola_normal_face_mapping() {
     let r = engine.on_event(key_down(0x41, 0x1E, t0));
     assert!(r.consumed);
     let r = engine.on_timeout(awase::engine::TIMER_PENDING);
-    log::info!("Normal face 'A': {:?}", r.actions);
+    tracing::info!("Normal face 'A': {:?}", r.actions);
     assert!(!r.actions.is_empty(), "should produce output for 'A'");
 
     // 'S' (VK_S=0x53, scan=0x1F)
     let r = engine.on_event(key_down(0x53, 0x1F, t0 + 500_000));
     assert!(r.consumed);
     let r = engine.on_timeout(awase::engine::TIMER_PENDING);
-    log::info!("Normal face 'S': {:?}", r.actions);
+    tracing::info!("Normal face 'S': {:?}", r.actions);
     assert!(!r.actions.is_empty(), "should produce output for 'S'");
 
     // 'D' (VK_D=0x44, scan=0x20)
     let r = engine.on_event(key_down(0x44, 0x20, t0 + 1_000_000));
     assert!(r.consumed);
     let r = engine.on_timeout(awase::engine::TIMER_PENDING);
-    log::info!("Normal face 'D': {:?}", r.actions);
+    tracing::info!("Normal face 'D': {:?}", r.actions);
     assert!(!r.actions.is_empty());
 
-    log::info!("Normal face mapping verified");
+    tracing::info!("Normal face mapping verified");
 }
 
 #[test]
 fn e2e_nicola_thumb_face_mapping() {
     init_test_logging();
     let mut engine = make_test_engine(ConfirmMode::Wait);
-    log::info!("=== E2E: NICOLA thumb face mapping ===");
+    tracing::info!("=== E2E: NICOLA thumb face mapping ===");
 
     let t0 = 1_000_000u64;
 
@@ -2074,7 +2078,7 @@ fn e2e_nicola_thumb_face_mapping() {
     engine.on_event(key_down(0x41, 0x1E, t0));
     engine.on_event(key_down(0x1D, 0x7B, t0 + 30_000)); // NONCONVERT within threshold
     let r = engine.on_timeout(awase::engine::TIMER_PENDING);
-    log::info!("Left thumb face 'A': {:?}", r.actions);
+    tracing::info!("Left thumb face 'A': {:?}", r.actions);
     assert!(!r.actions.is_empty(), "thumb face should produce output");
 
     // 'A' + right thumb (simultaneous) -> right thumb face character
@@ -2082,13 +2086,13 @@ fn e2e_nicola_thumb_face_mapping() {
     engine.on_event(key_down(0x41, 0x1E, t0));
     engine.on_event(key_down(0x1C, 0x79, t0 + 30_000)); // CONVERT within threshold
     let r = engine.on_timeout(awase::engine::TIMER_PENDING);
-    log::info!("Right thumb face 'A': {:?}", r.actions);
+    tracing::info!("Right thumb face 'A': {:?}", r.actions);
     assert!(
         !r.actions.is_empty(),
         "right thumb face should produce output"
     );
 
-    log::info!("Thumb face mapping verified");
+    tracing::info!("Thumb face mapping verified");
 }
 
 // ─────────────────────────────────────────────
@@ -2098,7 +2102,7 @@ fn e2e_nicola_thumb_face_mapping() {
 #[test]
 fn e2e_timing_threshold_boundary() {
     init_test_logging();
-    log::info!("=== E2E: Timing threshold boundary ===");
+    tracing::info!("=== E2E: Timing threshold boundary ===");
 
     let t0 = 1_000_000u64;
     let threshold_us = 100_000; // 100ms
@@ -2108,7 +2112,7 @@ fn e2e_timing_threshold_boundary() {
     engine.on_event(key_down(0x41, 0x1E, t0));
     engine.on_event(key_down(0x1D, 0x7B, t0 + threshold_us - 1));
     let r = engine.on_timeout(awase::engine::TIMER_PENDING);
-    log::info!("Inside threshold ({}us): {:?}", threshold_us - 1, r.actions);
+    tracing::info!("Inside threshold ({}us): {:?}", threshold_us - 1, r.actions);
     // Should be simultaneous (thumb face)
 
     // Just outside threshold -> separate keys
@@ -2116,19 +2120,19 @@ fn e2e_timing_threshold_boundary() {
     engine.on_event(key_down(0x41, 0x1E, t0));
     engine.on_event(key_down(0x1D, 0x7B, t0 + threshold_us + 1));
     // The first key should have been flushed as single
-    log::info!(
+    tracing::info!(
         "Outside threshold ({}us): first key flushed separately",
         threshold_us + 1
     );
 
-    log::info!("Threshold boundary verified");
+    tracing::info!("Threshold boundary verified");
 }
 
 #[test]
 fn e2e_rapid_sequential_input() {
     init_test_logging();
     let mut engine = make_test_engine(ConfirmMode::Wait);
-    log::info!("=== E2E: Rapid sequential input ===");
+    tracing::info!("=== E2E: Rapid sequential input ===");
 
     let t0 = 1_000_000u64;
     let interval = 200_000u64; // 200ms between keys (outside threshold)
@@ -2151,7 +2155,7 @@ fn e2e_rapid_sequential_input() {
     for (i, (vk, scan)) in keys.iter().enumerate() {
         let ts = t0 + (i as u64) * interval;
         let r = engine.on_event(key_down(*vk, *scan, ts));
-        log::debug!("Key {i}: vk=0x{vk:02X} consumed={}", r.consumed);
+        tracing::debug!("Key {i}: vk=0x{vk:02X} consumed={}", r.consumed);
 
         // Each key goes pending, then the NEXT key flushes the previous
         // (except the first one which just goes pending)
@@ -2162,20 +2166,20 @@ fn e2e_rapid_sequential_input() {
     let r = engine.on_timeout(awase::engine::TIMER_PENDING);
     total_actions += r.actions.len();
 
-    log::info!("Total actions from 10 keys: {total_actions}");
+    tracing::info!("Total actions from 10 keys: {total_actions}");
     assert!(
         total_actions >= 10,
         "should produce at least 10 actions for 10 keys"
     );
 
-    log::info!("Rapid sequential input verified");
+    tracing::info!("Rapid sequential input verified");
 }
 
 #[test]
 fn e2e_three_key_arbitration() {
     init_test_logging();
     let mut engine = make_test_engine(ConfirmMode::Wait);
-    log::info!("=== E2E: Three-key arbitration (d1 < d2) ===");
+    tracing::info!("=== E2E: Three-key arbitration (d1 < d2) ===");
 
     let t0 = 1_000_000u64;
 
@@ -2185,7 +2189,7 @@ fn e2e_three_key_arbitration() {
     engine.on_event(key_down(0x41, 0x1E, t0)); // char1: A
     engine.on_event(key_down(0x1D, 0x7B, t0 + 20_000)); // thumb: NonConvert
     let r = engine.on_event(key_down(0x53, 0x1F, t0 + 70_000)); // char2: S
-    log::info!(
+    tracing::info!(
         "3-key (d1<d2): consumed={} actions={:?}",
         r.consumed,
         r.actions
@@ -2193,16 +2197,16 @@ fn e2e_three_key_arbitration() {
     // char1+thumb should be simultaneous, char2 should be new pending
 
     let r = engine.on_timeout(awase::engine::TIMER_PENDING);
-    log::info!("3-key timeout: {:?}", r.actions);
+    tracing::info!("3-key timeout: {:?}", r.actions);
 
-    log::info!("Three-key arbitration verified");
+    tracing::info!("Three-key arbitration verified");
 }
 
 #[test]
 fn e2e_three_key_arbitration_reversed() {
     init_test_logging();
     let mut engine = make_test_engine(ConfirmMode::Wait);
-    log::info!("=== E2E: Three-key arbitration (d1 >= d2) ===");
+    tracing::info!("=== E2E: Three-key arbitration (d1 >= d2) ===");
 
     let t0 = 1_000_000u64;
 
@@ -2212,16 +2216,16 @@ fn e2e_three_key_arbitration_reversed() {
     engine.on_event(key_down(0x41, 0x1E, t0)); // char1: A
     engine.on_event(key_down(0x1D, 0x7B, t0 + 50_000)); // thumb
     let r = engine.on_event(key_down(0x53, 0x1F, t0 + 70_000)); // char2: S
-    log::info!(
+    tracing::info!(
         "3-key (d1>=d2): consumed={} actions={:?}",
         r.consumed,
         r.actions
     );
 
     let r = engine.on_timeout(awase::engine::TIMER_PENDING);
-    log::info!("3-key timeout: {:?}", r.actions);
+    tracing::info!("3-key timeout: {:?}", r.actions);
 
-    log::info!("Three-key arbitration (reversed) verified");
+    tracing::info!("Three-key arbitration (reversed) verified");
 }
 
 // ─────────────────────────────────────────────
@@ -2232,13 +2236,13 @@ fn e2e_three_key_arbitration_reversed() {
 fn e2e_two_phase_mode_transition() {
     init_test_logging();
     let mut engine = make_test_engine(ConfirmMode::TwoPhase);
-    log::info!("=== E2E: TwoPhase mode Phase 1->2 transition ===");
+    tracing::info!("=== E2E: TwoPhase mode Phase 1->2 transition ===");
 
     let t0 = 1_000_000u64;
 
     // Phase 1: short wait (speculative_delay_ms = 30ms)
     let r = engine.on_event(key_down(0x41, 0x1E, t0));
-    log::debug!(
+    tracing::debug!(
         "TwoPhase KeyDown: consumed={} actions={:?}",
         r.consumed,
         r.actions
@@ -2248,27 +2252,27 @@ fn e2e_two_phase_mode_transition() {
 
     // TIMER_SPECULATIVE fires -> Phase 2 (speculative output)
     let r = engine.on_timeout(awase::engine::TIMER_SPECULATIVE);
-    log::info!("Phase 2 transition: actions={:?}", r.actions);
+    tracing::info!("Phase 2 transition: actions={:?}", r.actions);
     // Should now have speculative output
 
     // TIMER_PENDING fires -> confirm speculative
     let r = engine.on_timeout(awase::engine::TIMER_PENDING);
-    log::info!("Phase 2 confirm: actions={:?}", r.actions);
+    tracing::info!("Phase 2 confirm: actions={:?}", r.actions);
 
-    log::info!("TwoPhase transition verified");
+    tracing::info!("TwoPhase transition verified");
 }
 
 #[test]
 fn e2e_speculative_retraction_then_normal() {
     init_test_logging();
     let mut engine = make_test_engine(ConfirmMode::Speculative);
-    log::info!("=== E2E: Speculative retraction followed by normal input ===");
+    tracing::info!("=== E2E: Speculative retraction followed by normal input ===");
 
     let t0 = 1_000_000u64;
 
     // Key 1: speculative output
     let r = engine.on_event(key_down(0x41, 0x1E, t0));
-    log::debug!("Speculative A: {:?}", r.actions);
+    tracing::debug!("Speculative A: {:?}", r.actions);
     assert!(
         !r.actions.is_empty(),
         "speculative should output immediately"
@@ -2276,7 +2280,7 @@ fn e2e_speculative_retraction_then_normal() {
 
     // Thumb within threshold -> retract + new output
     let r = engine.on_event(key_down(0x1D, 0x7B, t0 + 30_000));
-    log::debug!("Retraction: {:?}", r.actions);
+    tracing::debug!("Retraction: {:?}", r.actions);
     let has_bs = r
         .actions
         .iter()
@@ -2285,7 +2289,7 @@ fn e2e_speculative_retraction_then_normal() {
 
     // Key 2: normal speculative (fresh start)
     let r = engine.on_event(key_down(0x53, 0x1F, t0 + 500_000));
-    log::debug!("Next speculative S: {:?}", r.actions);
+    tracing::debug!("Next speculative S: {:?}", r.actions);
     assert!(
         !r.actions.is_empty(),
         "next key should also output speculatively"
@@ -2293,9 +2297,9 @@ fn e2e_speculative_retraction_then_normal() {
 
     // Timeout -> confirm
     let r = engine.on_timeout(awase::engine::TIMER_PENDING);
-    log::debug!("Confirm: {:?}", r.actions);
+    tracing::debug!("Confirm: {:?}", r.actions);
 
-    log::info!("Speculative retraction + normal verified");
+    tracing::info!("Speculative retraction + normal verified");
 }
 
 // ─────────────────────────────────────────────
@@ -2306,7 +2310,7 @@ fn e2e_speculative_retraction_then_normal() {
 fn e2e_key_up_during_pending() {
     init_test_logging();
     let mut engine = make_test_engine(ConfirmMode::Wait);
-    log::info!("=== E2E: KeyUp during pending forces resolution ===");
+    tracing::info!("=== E2E: KeyUp during pending forces resolution ===");
 
     let t0 = 1_000_000u64;
 
@@ -2315,7 +2319,7 @@ fn e2e_key_up_during_pending() {
 
     // KeyUp A -> should force resolution (single character)
     let r = engine.on_event(key_up(0x41, 0x1E, t0 + 50_000));
-    log::info!(
+    tracing::info!(
         "KeyUp during pending: consumed={} actions={:?}",
         r.consumed,
         r.actions
@@ -2326,14 +2330,14 @@ fn e2e_key_up_during_pending() {
         "KeyUp should trigger resolution"
     );
 
-    log::info!("KeyUp during pending verified");
+    tracing::info!("KeyUp during pending verified");
 }
 
 #[test]
 fn e2e_key_up_after_simultaneous() {
     init_test_logging();
     let mut engine = make_test_engine(ConfirmMode::Wait);
-    log::info!("=== E2E: KeyUp sequence after simultaneous keystroke ===");
+    tracing::info!("=== E2E: KeyUp sequence after simultaneous keystroke ===");
 
     let t0 = 1_000_000u64;
 
@@ -2341,21 +2345,21 @@ fn e2e_key_up_after_simultaneous() {
     engine.on_event(key_down(0x41, 0x1E, t0));
     engine.on_event(key_down(0x1D, 0x7B, t0 + 30_000));
     let r = engine.on_timeout(awase::engine::TIMER_PENDING);
-    log::debug!("Simultaneous result: {:?}", r.actions);
+    tracing::debug!("Simultaneous result: {:?}", r.actions);
 
     // KeyUp A
     let r = engine.on_event(key_up(0x41, 0x1E, t0 + 200_000));
-    log::debug!("KeyUp A: consumed={} actions={:?}", r.consumed, r.actions);
+    tracing::debug!("KeyUp A: consumed={} actions={:?}", r.consumed, r.actions);
 
     // KeyUp NonConvert
     let r = engine.on_event(key_up(0x1D, 0x7B, t0 + 210_000));
-    log::debug!(
+    tracing::debug!(
         "KeyUp NonConvert: consumed={} actions={:?}",
         r.consumed,
         r.actions
     );
 
-    log::info!("KeyUp after simultaneous verified");
+    tracing::info!("KeyUp after simultaneous verified");
 }
 
 // ─────────────────────────────────────────────
@@ -2366,7 +2370,7 @@ fn e2e_key_up_after_simultaneous() {
 fn e2e_engine_toggle_during_pending() {
     init_test_logging();
     let mut engine = make_test_engine(ConfirmMode::Wait);
-    log::info!("=== E2E: Toggle engine during pending state ===");
+    tracing::info!("=== E2E: Toggle engine during pending state ===");
 
     let t0 = 1_000_000u64;
 
@@ -2375,7 +2379,7 @@ fn e2e_engine_toggle_during_pending() {
 
     // Toggle off -> should flush pending
     let (enabled, flush) = engine.toggle_enabled();
-    log::info!(
+    tracing::info!(
         "Toggle off: enabled={enabled} flush_actions={:?}",
         flush.actions
     );
@@ -2393,13 +2397,13 @@ fn e2e_engine_toggle_during_pending() {
     assert!(r.consumed, "re-enabled engine should consume");
 
     let _ = engine.on_timeout(awase::engine::TIMER_PENDING);
-    log::info!("Toggle during pending verified");
+    tracing::info!("Toggle during pending verified");
 }
 
 #[test]
 fn e2e_layout_swap_during_pending() {
     init_test_logging();
-    log::info!("=== E2E: Layout swap during pending ===");
+    tracing::info!("=== E2E: Layout swap during pending ===");
 
     let mut engine = make_test_engine(ConfirmMode::Wait);
     let t0 = 1_000_000u64;
@@ -2410,7 +2414,7 @@ fn e2e_layout_swap_during_pending() {
     // Swap layout -> should flush pending
     let new_layout = load_test_layout(); // reload same layout
     let flush = engine.swap_layout(new_layout);
-    log::info!("Swap layout: flush_actions={:?}", flush.actions);
+    tracing::info!("Swap layout: flush_actions={:?}", flush.actions);
     assert!(!flush.actions.is_empty(), "swap should flush pending");
 
     // Engine should be idle, next key works normally
@@ -2418,13 +2422,13 @@ fn e2e_layout_swap_during_pending() {
     assert!(r.consumed);
     let _ = engine.on_timeout(awase::engine::TIMER_PENDING);
 
-    log::info!("Layout swap during pending verified");
+    tracing::info!("Layout swap during pending verified");
 }
 
 #[test]
 fn e2e_config_validation() {
     init_test_logging();
-    log::info!("=== E2E: Config validation ===");
+    tracing::info!("=== E2E: Config validation ===");
 
     use awase::config::AppConfig;
 
@@ -2433,22 +2437,22 @@ fn e2e_config_validation() {
     if config_path.exists() {
         let config = AppConfig::load(config_path).expect("config.toml should parse");
         let (validated, warnings) = config.validate();
-        log::info!(
+        tracing::info!(
             "Config validated: threshold={}ms",
             validated.general.simultaneous_threshold_ms,
         );
         for w in &warnings {
-            log::warn!("Config warning: {w}");
+            tracing::warn!("Config warning: {w}");
         }
         assert!(
             warnings.is_empty(),
             "default config should have no warnings"
         );
     } else {
-        log::warn!("config.toml not found, skipping");
+        tracing::warn!("config.toml not found, skipping");
     }
 
-    log::info!("Config validation verified");
+    tracing::info!("Config validation verified");
 }
 
 // ─────────────────────────────────────────────
@@ -2468,11 +2472,11 @@ fn e2e_message_unicode_chars() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 2: Unicode characters via SendMessage ===");
+    tracing::info!("=== E2E Phase 2: Unicode characters via SendMessage ===");
 
     unsafe {
         let Some(win) = TestEditWindow::create() else {
-            log::error!("Could not create test window, skipping");
+            tracing::error!("Could not create test window, skipping");
             return;
         };
 
@@ -2482,7 +2486,7 @@ fn e2e_message_unicode_chars() {
         send_char_to_edit(win.edit_hwnd, '\u{3044}');
         send_char_to_edit(win.edit_hwnd, '\u{3046}');
         let text = win.get_text();
-        log::info!("Hiragana: '{text}'");
+        tracing::info!("Hiragana: '{text}'");
         assert_eq!(text, "\u{3042}\u{3044}\u{3046}");
 
         // Katakana
@@ -2490,7 +2494,7 @@ fn e2e_message_unicode_chars() {
         send_char_to_edit(win.edit_hwnd, '\u{30A2}');
         send_char_to_edit(win.edit_hwnd, '\u{30A4}');
         let text = win.get_text();
-        log::info!("Katakana: '{text}'");
+        tracing::info!("Katakana: '{text}'");
         assert_eq!(text, "\u{30A2}\u{30A4}");
 
         // Mixed ASCII + Japanese
@@ -2504,7 +2508,7 @@ fn e2e_message_unicode_chars() {
         send_char_to_edit(win.edit_hwnd, '\u{4E16}');
         send_char_to_edit(win.edit_hwnd, '\u{754C}');
         let text = win.get_text();
-        log::info!("Mixed: '{text}'");
+        tracing::info!("Mixed: '{text}'");
         assert_eq!(text, "Hello \u{4E16}\u{754C}");
 
         // Multiple backspaces
@@ -2515,10 +2519,10 @@ fn e2e_message_unicode_chars() {
         send_char_to_edit(win.edit_hwnd, '\x08'); // BS
         send_char_to_edit(win.edit_hwnd, '\x08'); // BS
         let text = win.get_text();
-        log::info!("After 2x BS: '{text}'");
+        tracing::info!("After 2x BS: '{text}'");
         assert_eq!(text, "a");
 
-        log::info!("Unicode tests passed");
+        tracing::info!("Unicode tests passed");
     }
 }
 
@@ -2530,11 +2534,11 @@ fn e2e_message_long_text() {
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!("=== E2E Phase 2: Long text input ===");
+    tracing::info!("=== E2E Phase 2: Long text input ===");
 
     unsafe {
         let Some(win) = TestEditWindow::create() else {
-            log::error!("Could not create test window, skipping");
+            tracing::error!("Could not create test window, skipping");
             return;
         };
 
@@ -2545,11 +2549,11 @@ fn e2e_message_long_text() {
             send_char_to_edit(win.edit_hwnd, ch);
         }
         let text = win.get_text();
-        log::info!("100 chars: len={}", text.len());
+        tracing::info!("100 chars: len={}", text.len());
         assert_eq!(text.len(), 100, "should have 100 chars, got {}", text.len());
         assert_eq!(text, input);
 
-        log::info!("Long text test passed");
+        tracing::info!("Long text test passed");
     }
 }
 
@@ -2666,7 +2670,7 @@ unsafe fn send_unicode_string(s: &str) {
     }
     let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits i32");
     let sent = SendInput(&inputs, size);
-    log::debug!("SendInput unicode string: len={} sent={sent}", s.len());
+    tracing::debug!("SendInput unicode string: len={} sent={sent}", s.len());
     std::thread::sleep(std::time::Duration::from_millis(150));
     pump_messages();
 }
@@ -2676,20 +2680,20 @@ unsafe fn send_unicode_string(s: &str) {
 fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
     init_test_logging();
     if !is_interactive_session() {
-        log::info!("Skipping Windows Terminal cold-start test (set AWASE_E2E_INTERACTIVE=1)");
+        tracing::info!("Skipping Windows Terminal cold-start test (set AWASE_E2E_INTERACTIVE=1)");
         return;
     }
     let _lock = INTERACTIVE_TEST_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    log::info!(
+    tracing::info!(
         "=== E2E Phase 3: Windows Terminal (TsfNative) MS-IME cold-start (BUG-13 Vk-mode gap) ==="
     );
 
     unsafe {
         log_system_info();
         if !is_japanese_ime_available() {
-            log::warn!("Japanese IME not installed, skipping");
+            tracing::warn!("Japanese IME not installed, skipping");
             return;
         }
 
@@ -2704,7 +2708,7 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
         // shell is pinned explicitly (powershell -NoProfile -NoLogo) so the
         // setup command below doesn't depend on whatever the default
         // profile happens to be.
-        log::info!("--- Launching a fresh Windows Terminal window (wt -w -1) ---");
+        tracing::info!("--- Launching a fresh Windows Terminal window (wt -w -1) ---");
         let Ok(mut child) = std::process::Command::new("powershell")
             .args([
                 "-NoProfile",
@@ -2714,7 +2718,7 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
             ])
             .spawn()
         else {
-            log::warn!("Could not launch 'wt' (Windows Terminal not available?), skipping");
+            tracing::warn!("Could not launch 'wt' (Windows Terminal not available?), skipping");
             return;
         };
 
@@ -2729,11 +2733,11 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
         let Some(hwnd) = new_hwnd else {
-            log::warn!("Windows Terminal window did not appear in time, skipping");
+            tracing::warn!("Windows Terminal window did not appear in time, skipping");
             let _ = child.kill();
             return;
         };
-        log::info!("Found new Windows Terminal window: {hwnd:?}");
+        tracing::info!("Found new Windows Terminal window: {hwnd:?}");
 
         force_foreground(hwnd);
         // Give the shell inside the new pane time to start and show its
@@ -2748,7 +2752,7 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
 
         let actual_fg = windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow();
         if actual_fg != hwnd {
-            log::warn!(
+            tracing::warn!(
                 "Windows Terminal window ({hwnd:?}) did not actually become the \
                  foreground window (foreground is {actual_fg:?} instead) — \
                  SendInput would go to the wrong window, skipping to avoid a \
@@ -2783,7 +2787,7 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
         // canary line ("probe123") we check BEFORE touching the IME at
         // all, so a failure here isolates "typing into this window
         // doesn't work" from "the IME-specific part doesn't work".
-        log::info!("--- Ensuring IME is off, then typing the Read-Host setup command ---");
+        tracing::info!("--- Ensuring IME is off, then typing the Read-Host setup command ---");
         send_key_to_edit(0x1A, 0); // VK_IME_OFF — our own ASCII setup line, not part of the test
         send_unicode_string(&format!(
             "for ($i=0; $i -lt 2; $i++) {{ Read-Host | Add-Content -Path '{capture_path}' -Encoding utf8 }}"
@@ -2792,7 +2796,7 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
         std::thread::sleep(std::time::Duration::from_secs(1));
         pump_messages();
 
-        log::info!("--- Sending ASCII canary line 'probe123' ---");
+        tracing::info!("--- Sending ASCII canary line 'probe123' ---");
         send_unicode_string("probe123");
         send_key_to_edit(0x0D, 0x1C); // VK_RETURN
 
@@ -2805,9 +2809,9 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
             }
             std::thread::sleep(std::time::Duration::from_millis(150));
         }
-        log::info!("ASCII canary line observed in capture file: {canary_seen}");
+        tracing::info!("ASCII canary line observed in capture file: {canary_seen}");
         if !canary_seen {
-            log::warn!(
+            tracing::warn!(
                 "Plain ASCII typed via SendInput never reached the new Windows Terminal \
                  window's Read-Host prompt at all — this is a setup/typing problem, not \
                  something specific to the IME race. Skipping the rest of this test as \
@@ -2828,7 +2832,7 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
         // for TSF-native cold-start warmup (F2 / VK_DBE_HIRAGANA), then
         // IMMEDIATELY (no gate/settle delay) type "wo" via SendInput —
         // this is the actual BUG-13 race under test.
-        log::info!("--- Sending VK_DBE_HIRAGANA (F2) then immediately 'w' 'o', no gate ---");
+        tracing::info!("--- Sending VK_DBE_HIRAGANA (F2) then immediately 'w' 'o', no gate ---");
         send_key_to_edit(0xF2, 0x3C); // VK_DBE_HIRAGANA / F2
         send_key_to_edit(0x57, 0x11); // VK_W
         send_key_to_edit(0x4F, 0x18); // VK_O
@@ -2856,7 +2860,7 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
             }
             std::thread::sleep(std::time::Duration::from_millis(150));
         }
-        log::info!("Read-Host capture file contents: {captured:?}");
+        tracing::info!("Read-Host capture file contents: {captured:?}");
         // Only the second captured line (the actual romaji test) matters
         // from here on; drop the canary line.
         let captured = captured.map(|s| s.lines().nth(1).unwrap_or_default().to_string());
@@ -2876,7 +2880,7 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
         let _ = std::fs::remove_file(&capture_path);
 
         let Some(captured) = captured else {
-            log::warn!(
+            tracing::warn!(
                 "Could not read the Read-Host capture file ({capture_path}) — treating as \
                  inconclusive, not a failure."
             );
@@ -2889,7 +2893,7 @@ fn e2e_msime_windows_terminal_vk_mode_coldstart_interactive() {
         // MS-IME was ready), per BUG-13 / docs/known-bugs.md.
         let has_wo_kana = captured.contains('\u{3092}'); // を
         let has_literal_leak = captured.contains("w\u{304A}"); // "wお"
-        log::info!(
+        tracing::info!(
             "Windows Terminal capture check: has_wo_kana={has_wo_kana} \
              has_literal_leak={has_literal_leak} raw={captured:?}"
         );

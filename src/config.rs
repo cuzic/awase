@@ -412,8 +412,8 @@ pub struct GeneralConfig {
     ///    する保証は無い。
     ///
     /// これらのリスクを理解した上で有効化したいユーザーのためのopt-in
-    /// フラグ。`true`にすると`log::info!`で反映したことを通知する
-    /// （`false`のまま矛盾を検出した場合は`log::warn!`で対処法を案内する）。
+    /// フラグ。`true`にすると`tracing::info!`で反映したことを通知する
+    /// （`false`のまま矛盾を検出した場合は`tracing::warn!`で対処法を案内する）。
     #[serde(default)]
     pub gji_thumb_key_ime_toggle: bool,
 }
@@ -582,7 +582,7 @@ pub struct AppOverrideEntry {
 /// `[[keymap]]` ショートカットインターセプトルール
 ///
 /// `from`/`to` に指定できない vk がある（ADR-114 決定5、`KeymapTable::new` が
-/// `log::warn!` して該当ルールを skip する）: 親指キー・IME 制御系 VK・Alt 系
+/// `tracing::warn!` して該当ルールを skip する）: 親指キー・IME 制御系 VK・Alt 系
 /// VK（`from` の修飾子としての Alt を含む）・Win 系 VK・`VK_CAPITAL`・
 /// Shift を `from` の主キーにすること。
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]

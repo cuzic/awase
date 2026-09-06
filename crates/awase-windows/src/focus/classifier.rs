@@ -101,7 +101,7 @@ unsafe fn input_site_fallback_matches(
         return false;
     }
     let matched = matches_override_entry(entries, process_name, &fg_class);
-    log::debug!(
+    tracing::debug!(
         "[force-tsf] InputSite fallback: fg_class={fg_class:?} process={process_name:?} → matched={matched}"
     );
     matched
@@ -181,6 +181,7 @@ impl ForceOverrides {
     /// 注入ヒントを返す（ForceTsf / ForceVk / Default）。
     ///
     /// `process_name` の取得を1回にまとめ、ヘルパー関数経由で判定する。
+    #[tracing::instrument(level = "debug", skip_all, fields(process_id = process_id, class_name = class_name))]
     pub(crate) fn injection_hint(&self, process_id: u32, class_name: &str) -> InjectionHint {
         if self.inner.force_tsf.is_empty() && self.inner.force_vk.is_empty() {
             return InjectionHint::Default;
@@ -315,7 +316,7 @@ impl ImmCapabilityStore {
         let table: toml::Table = match content.parse() {
             Ok(t) => t,
             Err(e) => {
-                log::warn!("Failed to parse {}: {e}", path.display());
+                tracing::warn!("Failed to parse {}: {e}", path.display());
                 return LoadedImmCapabilityCache {
                     cache: std::collections::HashMap::new(),
                     ignored_legacy_entries: 0,
@@ -350,7 +351,7 @@ impl ImmCapabilityStore {
             }
         }
         if ignored_legacy_entries > 0 {
-            log::warn!(
+            tracing::warn!(
                 "Ignored {ignored_legacy_entries} legacy flat IMM capability cache entries from {} \
                  (expected [imm_capability.\"process.exe\"] class = value)",
                 path.display()
@@ -358,7 +359,7 @@ impl ImmCapabilityStore {
         }
         let entry_count = count_imm_capability_entries(&cache);
         if entry_count > 0 {
-            log::info!(
+            tracing::info!(
                 "Loaded IMM capability cache: {} entries from {}",
                 entry_count,
                 path.display()
@@ -384,7 +385,7 @@ impl ImmCapabilityStore {
             section.insert(process_name.clone(), toml::Value::Table(process_section));
         }
         save_section(&self.base_dir, "imm_capability", section);
-        log::debug!(
+        tracing::debug!(
             "Saved IMM capability cache: {} entries",
             count_imm_capability_entries(&self.cache)
         );
@@ -412,7 +413,7 @@ fn save_section(base_dir: &std::path::Path, section_name: &str, section: toml::T
     root.insert(section_name.to_string(), toml::Value::Table(section));
     let content = toml::to_string_pretty(&root).unwrap_or_default();
     if let Err(e) = std::fs::write(&path, &content) {
-        log::warn!("Failed to save cache to {}: {e}", path.display());
+        tracing::warn!("Failed to save cache to {}: {e}", path.display());
     }
 }
 
@@ -467,7 +468,7 @@ impl InjectionModeStore {
             }
         }
         if !classes.is_empty() {
-            log::info!(
+            tracing::info!(
                 "Loaded injection mode cache: {} TSF classes from {}",
                 classes.len(),
                 path.display()
@@ -482,7 +483,7 @@ impl InjectionModeStore {
             section.insert(class_name.clone(), toml::Value::String("tsf".to_string()));
         }
         save_section(&self.base_dir, "injection_mode", section);
-        log::debug!(
+        tracing::debug!(
             "Saved injection mode cache: {} TSF classes",
             self.tsf_classes.len()
         );

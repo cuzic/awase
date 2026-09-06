@@ -73,11 +73,11 @@ pub(crate) fn record(elapsed_ms: u64, now_ms: u64) {
         let n = SEND_HEALTH.consecutive_slow.fetch_add(1, Ordering::Relaxed) + 1;
         if n >= TRIP_AFTER_CONSECUTIVE_SLOW {
             SEND_HEALTH.last_slow_at_ms.store(now_ms, Ordering::Relaxed);
-            log::warn!(
+            tracing::warn!(
                 "[send-health] slow IMM call: {elapsed_ms}ms (連続{n}回目) — 以後 {COOLDOWN_MS}ms は同期サイトの発行を見送る"
             );
         } else {
-            log::debug!(
+            tracing::debug!(
                 "[send-health] slow IMM call: {elapsed_ms}ms (連続{n}回目、{TRIP_AFTER_CONSECUTIVE_SLOW}回連続でブレーカ作動)"
             );
         }

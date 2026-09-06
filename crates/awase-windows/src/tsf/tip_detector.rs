@@ -50,11 +50,13 @@ pub(super) fn create_profile_ctx(
     unsafe {
         let mgr: ITfInputProcessorProfileMgr =
             CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)
-                .map_err(|e| log::warn!("[tip-detect] CoCreateInstance(ProfileMgr) failed: {e}"))
+                .map_err(|e| {
+                    tracing::warn!("[tip-detect] CoCreateInstance(ProfileMgr) failed: {e}");
+                })
                 .ok()?;
         let profiles: ITfInputProcessorProfiles = mgr
             .cast()
-            .map_err(|e| log::warn!("[tip-detect] cast(ITfInputProcessorProfiles) failed: {e}"))
+            .map_err(|e| tracing::warn!("[tip-detect] cast(ITfInputProcessorProfiles) failed: {e}"))
             .ok()?;
         Some((mgr, profiles))
     }
@@ -77,10 +79,10 @@ pub(super) fn discover_and_cache_gji_clsid(
     match find_gji_clsid(mgr, profiles) {
         Some(clsid) => {
             let _ = GJI_CLSID.set(clsid);
-            log::info!("[tip-detect] GJI CLSID discovered: {}", fmt_guid(&clsid));
+            tracing::info!("[tip-detect] GJI CLSID discovered: {}", fmt_guid(&clsid));
         }
         None => {
-            log::info!("[tip-detect] GJI not found in EnumProfiles(JA)");
+            tracing::info!("[tip-detect] GJI not found in EnumProfiles(JA)");
         }
     }
 }
@@ -92,7 +94,7 @@ fn find_gji_clsid(
     unsafe {
         let enumerator = mgr
             .EnumProfiles(0x0411 /* Japanese */)
-            .map_err(|e| log::warn!("[tip-detect] EnumProfiles(JA) failed: {e}"))
+            .map_err(|e| tracing::warn!("[tip-detect] EnumProfiles(JA) failed: {e}"))
             .ok()?;
         loop {
             let mut prof = TF_INPUTPROCESSORPROFILE::default();
@@ -129,7 +131,7 @@ pub(super) fn query_active_kind(mgr: &ITfInputProcessorProfileMgr) -> Option<Act
     unsafe {
         let mut prof = TF_INPUTPROCESSORPROFILE::default();
         mgr.GetActiveProfile(&GUID_TFCAT_TIP_KEYBOARD, &raw mut prof)
-            .map_err(|e| log::debug!("[tip-detect] GetActiveProfile failed: {e}"))
+            .map_err(|e| tracing::debug!("[tip-detect] GetActiveProfile failed: {e}"))
             .ok()?;
 
         if prof.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR {
@@ -159,10 +161,10 @@ pub(super) fn dump_profiles(
     mgr: &ITfInputProcessorProfileMgr,
     profiles: &ITfInputProcessorProfiles,
 ) {
-    log::info!("[tip-detect] ── EnumProfiles(JA) start ──");
+    tracing::info!("[tip-detect] ── EnumProfiles(JA) start ──");
     unsafe {
         let Ok(enumerator) = mgr.EnumProfiles(0x0411) else {
-            log::warn!("[tip-detect] EnumProfiles(JA) failed");
+            tracing::warn!("[tip-detect] EnumProfiles(JA) failed");
             return;
         };
         loop {
@@ -189,7 +191,7 @@ pub(super) fn dump_profiles(
             if prof.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR {
                 cache_profile_description(&prof, &desc);
             }
-            log::info!(
+            tracing::info!(
                 "[tip-detect] {kind} clsid={clsid} profile={pguid} lang={lang:04x} \
                  desc={desc:?}",
                 clsid = fmt_guid(&prof.clsid),
@@ -198,7 +200,7 @@ pub(super) fn dump_profiles(
             );
         }
     }
-    log::info!("[tip-detect] ── EnumProfiles(JA) end ──");
+    tracing::info!("[tip-detect] ── EnumProfiles(JA) end ──");
 }
 
 // ── ユーティリティ ──────────────────────────────────────────────────────────

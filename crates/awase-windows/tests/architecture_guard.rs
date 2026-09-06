@@ -286,7 +286,7 @@ fn extract_fn_body<'a>(content: &'a str, fn_signature_needle: &str) -> &'a str {
 
 /// `content[open_brace..]` の `open_brace` に対応する閉じ括弧の絶対バイト位置を
 /// 返す（波括弧の対応を数える）。**文字列リテラル（`"..."`、`\"` エスケープ考慮）
-/// の中身は無視する** — `log::debug!("... {{ ... }}")` のような Rust の
+/// の中身は無視する** — `tracing::debug!("... {{ ... }}")` のような Rust の
 /// format 文字列エスケープ（`{{`/`}}` はリテラルの `{`/`}` 1文字を表し、
 /// コード構造上の波括弧ではない）が深さカウントを狂わせるのを防ぐため
 /// （opus レビュー指摘、変異テストで実際に誤検知を確認済み、2026-08-08）。
@@ -1110,7 +1110,7 @@ fn any_observation_replay_door_is_not_used_in_production() {
 fn ime_open_actuation_entry_points_are_accounted_for() {
     // needle は先頭に `.` を付けたメソッド呼び出し形にする。定義行
     // (`fn apply_ime_open_with_belief(` 等) は `.` を伴わないため自動的に除外され、
-    // `log::info!("... apply_ime_open({open}) ...")` のような人間可読ログ文字列
+    // `tracing::info!("... apply_ime_open({open}) ...")` のような人間可読ログ文字列
     // （`.` を伴わない）も除外される（後者は `apply_ime_open(` の素の部分文字列
     // 一致だと 6 箇所誤検出することを実際に確認した上でこの形にした）。
     //
@@ -1164,7 +1164,7 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         (".set_ime_open(", 0),
         // 外部 2（ime_refresh.rs:534 focus change 強制 OFF / :752 drift correction
         // の ImmCross 分岐）。**旧コメントは `:727` と書いていたが実在しない**
-        // ——近いのは `log::warn!` の文字列（`:725`）で、先頭に `.` が無いため
+        // ——近いのは `tracing::warn!` の文字列（`:725`）で、先頭に `.` が無いため
         // そもそも needle に一致しない（ADR-090 §2.A.2(3) 脚注）。
         (".set_ime_open_ordered(", 2),
         // 呼び出し元ゼロ(死んだ入口)。`WindowsPlatform` のオーバーライドは
@@ -1381,7 +1381,7 @@ fn uia_async_focus_kind_handler_does_not_write_belief() {
 /// `match act_signature` 部分の開始マーカー。`ir_apply_drift_correction` の中で
 /// `FeedbackPolicy` を分岐する `match act_policy { ... }` ブロックの先頭。
 const DRIFT_MATCH_MARKER: &str = "match act_policy {";
-/// 実送信ブロックの先頭にある `log::warn!` のメッセージ接頭辞。この直前で
+/// 実送信ブロックの先頭にある `tracing::warn!` のメッセージ接頭辞。この直前で
 /// `match act_policy { ... }`（早期 return 分岐）が終わる。
 const DRIFT_SEND_LOG_MARKER: &str = "[drift] correction: observed=";
 
@@ -1389,11 +1389,15 @@ const DRIFT_SEND_LOG_MARKER: &str = "[drift] correction: observed=";
 /// と `Read`/`Confirmed` の早期 return 分岐）だけを切り出す。
 ///
 /// 開始は `match act_policy {`、終了は実送信ブロックの先頭にある
-/// `log::warn!("[drift] correction: observed=...")` の直前。この `log::warn!` より後は
+/// `tracing::warn!("[drift] correction: observed=...")` の直前。この `tracing::warn!` より後は
 /// ADR-080 不変条件6 のスコープ外（乖離が確定して実際に `set_ime_open` する正規経路であり、
 /// そこで `dispatch_event(ImeEvent::DriftDetected {..})` を呼ぶのは正当）。したがって
 /// **関数全体ではなく match ブロックだけ**を検査対象にする。行番号ではなくマーカー文字列で
 /// 境界を求めるため、周辺のコードが動いても壊れにくい。
+///
+/// ADR-139 決定1: `log::warn!` から `tracing::warn!` への機械置換に伴い、この関数が
+/// 探すマーカー文字列も同一コミットで更新した（更新を怠ると `ime_refresh.rs` の
+/// 置換直後にこの関数が必ず panic する — 実際にタスク分解レビューで検出された）。
 fn extract_drift_correction_match_block(content: &str) -> &str {
     let start = content
         .find(DRIFT_MATCH_MARKER)
@@ -1401,11 +1405,11 @@ fn extract_drift_correction_match_block(content: &str) -> &str {
     let send_marker = content.find(DRIFT_SEND_LOG_MARKER).unwrap_or_else(|| {
         panic!("send-path marker {DRIFT_SEND_LOG_MARKER:?} not found in ime_refresh.rs")
     });
-    // match ブロック内は `log::debug!` のみ。実送信は `log::warn!` で始まる唯一の箇所。
+    // match ブロック内は `tracing::debug!` のみ。実送信は `tracing::warn!` で始まる唯一の箇所。
     let send_log = content[start..send_marker]
-        .rfind("log::warn!(")
+        .rfind("tracing::warn!(")
         .map_or_else(
-            || panic!("no `log::warn!(` found between match block and send-path marker"),
+            || panic!("no `tracing::warn!(` found between match block and send-path marker"),
             |i| start + i,
         );
     assert!(
@@ -1461,7 +1465,7 @@ fn drift_correction_giveup_and_confirmed_do_not_write_observations() {
              `observations` への書き込み（`ObserverReported` 等の dispatch）を \
              一切発生させてはなりません。違反すると docs/known-bugs.md BUG-33 と同型の \
              収束偽装（自分の belief を観測として書き戻し、drift 検知が二度と発火しない）\
-             が再発します。実送信は match ブロックの後（`log::warn!(\"[drift] correction: \
+             が再発します。実送信は match ブロックの後（`tracing::warn!(\"[drift] correction: \
              observed=...\")` 以降）でのみ行い、そこでの `DriftDetected` dispatch は \
              不変条件6 のスコープ外です。"
         );
@@ -1809,7 +1813,7 @@ fn ir_post_focus_change_snapshot_write_call_sites_are_accounted_for() {
     // **ADR-090 A-1**: 実呼び出しは `set_ime_open_ordered(` へ移った
     // （トレイトメソッドには `ActuationOrder` 引数を足せないため、
     // §2.A 設計案 3）。`set_ime_open(` に残るのはログメッセージ 1 件
-    // （`log::debug!("... set_ime_open(false) called ...")`）だけ。
+    // （`tracing::debug!("... set_ime_open(false) called ...")`）だけ。
     let set_ime_open_count = count_real_calls(body, "set_ime_open(");
     assert_eq!(
         set_ime_open_count, 1,
@@ -2998,6 +3002,11 @@ fn initial_focus_fence_event_only_touches_the_fence() {
                 ("state/ime_model.rs", 1),
                 // variant 定義そのもの。
                 ("state/ime_event.rs", 1),
+                // ADR-139決定4: journal.rs::ime_event_kind_str がtracing出力用の
+                // 判別子文字列としてvariant名を返すだけの非機能的な参照
+                // （belief には一切触れない）。1行にmatchアームと戻り値の文字列
+                // リテラルの両方でvariant名が現れるため2としてカウントされる。
+                ("journal.rs", 2),
             ],
         ),
         (
@@ -3057,6 +3066,11 @@ fn initial_app_policy_event_only_touches_app_policy() {
             ("runtime/focus_tracking.rs", 1),
             ("state/ime_model.rs", 1),
             ("state/ime_event.rs", 1),
+            // ADR-139決定4: journal.rs::ime_event_kind_str がtracing出力用の
+            // 判別子文字列としてvariant名を返すだけの非機能的な参照
+            // （belief には一切触れない）。1行にmatchアームと戻り値の文字列
+            // リテラルの両方でvariant名が現れるため2としてカウントされる。
+            ("journal.rs", 2),
         ],
     )];
     for path in &files {
@@ -3883,4 +3897,214 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
              （BUG-116/ADR-137 決定2のガード）"
         );
     }
+}
+
+/// `hook_callback`（`WH_KEYBOARD_LL` フックプロシージャ本体）内のログ/tracing
+/// マクロ呼び出し数を固定する（ADR-139 決定2）。
+///
+/// `hook_channel.rs:183-199` の不変条件「フックコールバック上ではロック取得・
+/// アロケーション・ブロッキング呼び出し・ログ出力を一切行わない」により、
+/// 通常のキー打鍵経路はログ呼び出しゼロで抜ける。現在ある7箇所は全て
+/// IME モードキー・`VK_KANA`・`VK_DBE_ROMAN`/`NOROMAN`・Alt 系 vk という
+/// **稀な分岐内のみ**（`hook.rs` のコメントに「VK_KANA は稀なキーなので
+/// ログコストは無視できる」と評価済み）。`log`→`tracing` 移行（決定1）で
+/// `tracing-appender::non_blocking` 等を安易に導入すると「non_blocking なら
+/// フックコールバックで自由にログしてよい」という誤読を招きかねないため、
+/// この数が増えていないことをテストで固定し、invariant が緩む方向の変更を
+/// 機械的に検知する。意図した追加ならこのテストの期待値を更新すること。
+#[test]
+fn hook_callback_log_call_count_is_pinned() {
+    const START_MARKER: &str = "unsafe extern \"system\" fn hook_callback(";
+    const END_MARKER: &str = "pub fn now_timestamp_us";
+
+    let content = read_crate_file("src/hook.rs");
+    let start = content
+        .find(START_MARKER)
+        .unwrap_or_else(|| panic!("marker {START_MARKER:?} not found in hook.rs"));
+    let end = content[start..]
+        .find(END_MARKER)
+        .map(|i| start + i)
+        .unwrap_or_else(|| panic!("marker {END_MARKER:?} not found after hook_callback"));
+    let body = &content[start..end];
+
+    let count = body.matches("tracing::trace!").count()
+        + body.matches("tracing::debug!").count()
+        + body.matches("tracing::info!").count()
+        + body.matches("tracing::warn!").count()
+        + body.matches("tracing::error!").count();
+    assert_eq!(
+        count, 7,
+        "hook_callback 内のログ/tracing マクロ呼び出し数が想定(7)と異なります \
+         (実際: {count})。hook_channel.rs:183-199 の不変条件\
+         （フックコールバック上でログ出力を一切行わない）が緩んでいないか、\
+         増えた呼び出しが本当に稀な分岐内に限定されているかを確認すること。\
+         意図した変更ならこのテストの期待値を更新すること。"
+    );
+}
+
+/// リポジトリルート相対のファイルを読む（`read_crate_file` は crate ルート
+/// 相対専用のため、`.claude/`・`.githooks/` はこちらを使う）。
+fn read_repo_root_file(rel_path: &str) -> String {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    // crates/awase-windows/ から見てリポジトリルートは2段上。
+    let repo_root = Path::new(manifest_dir)
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or_else(|| panic!("failed to resolve repo root from {manifest_dir}"));
+    let raw = fs::read_to_string(repo_root.join(rel_path))
+        .unwrap_or_else(|e| panic!("failed to read {rel_path}: {e}"));
+    raw.replace("\r\n", "\n")
+}
+
+/// ADR-139 決定3の `#[instrument]` 対象ファイルが、
+/// `.claude/rules/fix-requires-evidence.md` の再発ファミリー表、または
+/// `.githooks/pre-push` の正規表現のいずれかでカバーされていることを保証する。
+///
+/// **この assert は一方向のみ**（決定3 ⊆ 表 ∪ 正規表現）。逆方向——表/正規表現が
+/// 守るべきファイルを決定3側が instrument し忘れていないか——は検知できない
+/// （表・正規表現・決定3の3者は完全な集合一致にならない: `tuning.rs` は表・
+/// 正規表現には現れるが決定3では定数のみのため明示的に対象外、正規表現は
+/// ディレクトリ/パスのプレフィックス単位でありファイル単位の決定3リストとは
+/// 粒度が異なる。タスク分解レビューで判明、ADR-139 決定3参照）。
+/// 決定3の対象ファイルが増減したらこの定数リストも更新すること。
+#[test]
+fn decision3_instrument_targets_are_covered_by_reincidence_family_docs() {
+    const DECISION3_FILES: &[&str] = &[
+        "ime_controller.rs",
+        "runtime/open_chain.rs",
+        "runtime/executor.rs",
+        "runtime/conv_actuation.rs",
+        "output/conv_actuation.rs",
+        "runtime/transport.rs",
+        "output/tsf_warmup_coord.rs",
+        "output/probe_io.rs",
+        "output/ime_apply_planner.rs",
+        "state/ime_model.rs",
+        "state/observation_store.rs",
+        "runtime/ime_coordinator.rs",
+        "focus/classifier.rs",
+        "focus/classify.rs",
+        "focus/uia.rs",
+        "focus/msaa.rs",
+        "runtime/focus_tracking.rs",
+        "state/conv_mode.rs",
+        "ime.rs",
+        "output/vk_send.rs",
+        "platform.rs",
+        "runtime/ime_refresh.rs",
+        "runtime/key_pipeline.rs",
+        "tsf/probe.rs",
+        "tsf/observer.rs",
+        "tsf/output.rs",
+    ];
+
+    // `#[tracing::instrument]` を1つも持たない対象（PRコードレビューで、
+    // このリストに載っているのに計装されていないことが検出された）。
+    // 中身を確認した上での意図的な除外のみここに載せ、理由を書くこと。
+    const NO_INSTRUMENT_EXCEPTIONS: &[(&str, &str)] = &[
+        (
+            "runtime/ime_coordinator.rs",
+            "29行、ImeCoordinator::new()のみ。実際のIME適用結果の集約は\
+             runtime/mod.rs::on_ime_apply_completeが担い、そちらに#[instrument]済み。",
+        ),
+        (
+            "tsf/observer.rs",
+            "ほぼ全てatomicのアクセサ（notify/baseline/has_changed/reset/value等）で、\
+             相関情報を持つ意味のある処理単位が無い。",
+        ),
+    ];
+
+    let table = read_repo_root_file(".claude/rules/fix-requires-evidence.md");
+    let hook = read_repo_root_file(".githooks/pre-push");
+
+    for file in DECISION3_FILES {
+        let file_stem = file.rsplit('/').next().unwrap_or(file);
+        let module_stem = file_stem.trim_end_matches(".rs");
+        // 表・正規表現とも、個別ファイル名ではなくディレクトリ単位
+        // （`focus/`・`output/`・`tsf/`等）で再発ファミリーを指す行がある
+        // （例: 「focus 遷移」行は `focus/` とだけ書き、`focus/classifier.rs`
+        // を個別列挙しない、`.githooks/pre-push`の正規表現も同様）ため、
+        // ディレクトリプレフィックスでの一致も許容する。**この包含チェックは
+        // 一方向かつ緩い**（決定3が表/正規表現の範囲を逸脱していないかしか
+        // 見ない。表/正規表現がカバーすべきファイルを決定3が計装し忘れて
+        // いないかは、下の「実際に#[instrument]があるか」チェックが担う）。
+        let dir_prefix = file.rsplit_once('/').map(|(dir, _)| format!("{dir}/"));
+        let dir_hit = dir_prefix
+            .as_deref()
+            .is_some_and(|d| table.contains(d) || hook.contains(d));
+        let in_table = table.contains(file_stem) || table.contains(module_stem);
+        let in_hook = hook.contains(file_stem) || hook.contains(module_stem);
+        assert!(
+            in_table || in_hook || dir_hit,
+            "ADR-139決定3の対象 `{file}` が fix-requires-evidence.md の再発ファミリー表にも \
+             .githooks/pre-push の正規表現にも見つかりません。決定3がホットスポット表の \
+             範囲外へ逸脱していないか（本当に再発ファミリー領域か）確認すること。\
+             意図した対象追加なら表または正規表現側も更新するか、このテストの \
+             コメントに除外理由を明記すること。"
+        );
+
+        // 逆方向: リストに載っているのに実際は計装されていない、という
+        // このPR自身が作った状態（B4/B-4、PRコードレビューで検出）を検知する。
+        if let Some((_, reason)) = NO_INSTRUMENT_EXCEPTIONS.iter().find(|(f, _)| f == file) {
+            let _ = reason; // 理由はコメント/定数として保持するのみ、assertはしない
+            continue;
+        }
+        let content = read_crate_file(&format!("src/{file}"));
+        // コメント中の説明的な言及（例: 本テスト自身の存在を解説する
+        // `runtime/ime_refresh.rs` のコメントが偶然 `#[tracing::instrument]`
+        // という文字列を含む）に誤って一致しないよう、コメント行を除去してから
+        // 実際の属性出現を数える（PRコードレビュー指摘）。
+        let production = non_comment_lines(production_code_only(&content));
+        assert!(
+            production.contains("#[tracing::instrument"),
+            "ADR-139決定3の対象 `{file}` に #[tracing::instrument] が1つもありません。\
+             リストに載せたなら実際に計装すること。計装すべき関数が無いファイルなら \
+             NO_INSTRUMENT_EXCEPTIONS に理由付きで追加すること。"
+        );
+    }
+}
+
+/// ADR-139 決定4 必須条件2・3: `journal.rs` の `emit_tracing` 実装
+/// （`JournalEntry::emit_tracing`／判別子文字列ヘルパー群／
+/// `JournalEnvelope::emit_tracing`）に `?`/`%` シギル（Debug/Display
+/// フォーマット）と `_ =>`/`.. =>` ワイルドカードアームが出現しないことを保証する。
+///
+/// `?`/`%` はDebug文字列化であり、ADR-082決定1（`ImeEvent`等の型を保った
+/// journal記録）を実質的に巻き戻す。ワイルドカードは`match`の網羅性検査
+/// （将来variantが増えたときにコンパイルエラーで検知する、この機構の唯一の
+/// 安全装置）を破壊する。コメント中の `` `?`/`%` `` `` `_ =>` `` という説明的な
+/// 言及は対象外にするため、コメント行を除去してから走査する。
+#[test]
+fn journal_emit_tracing_has_no_debug_display_sigils_or_wildcards() {
+    const START_MARKER: &str = "fn decision_kind_str(";
+    const END_MARKER: &str = "/// 統合イベントジャーナル。";
+
+    let content = read_crate_file("src/journal.rs");
+    let start = content
+        .find(START_MARKER)
+        .unwrap_or_else(|| panic!("marker {START_MARKER:?} not found in journal.rs"));
+    let end = content[start..]
+        .find(END_MARKER)
+        .map(|i| start + i)
+        .unwrap_or_else(|| panic!("marker {END_MARKER:?} not found after {START_MARKER:?}"));
+    let block = non_comment_lines(&content[start..end]);
+
+    assert!(
+        !block.contains('?'),
+        "journal.rs の emit_tracing 実装に `?`（Debug フォーマット）が含まれています。\
+         ADR-139決定4はDebug文字列化を禁止しています（ADR-082決定1の巻き戻し防止）。\
+         判別子文字列は型に手を入れず journal.rs 内の private fn でマッピングすること。"
+    );
+    assert!(
+        !block.contains('%'),
+        "journal.rs の emit_tracing 実装に `%`（Display フォーマット）が含まれています。\
+         ADR-139決定4はDisplayフォーマットも禁止しています（理由は `?` と同じ）。"
+    );
+    assert!(
+        !block.contains("_ =>") && !block.contains(".. =>"),
+        "journal.rs の emit_tracing 実装（またはその判別子文字列ヘルパー）に \
+         ワイルドカードアームが含まれています。将来 variant が増えたときの \
+         コンパイルエラー検知（この機構の唯一の安全装置）が失われるため、\
+         全 variant を明示的に列挙すること。"
+    );
 }
