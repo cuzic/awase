@@ -775,9 +775,23 @@ impl Runtime {
             }
         }
 
+        // 診断専用（BUG-113残置調査、2026-09-06）: WARN行だけで再計算し、
+        // 上のcheck_drift_correction/actuation_for等の本判定ロジックには一切
+        // 影響しない（decide_actuation_action等の分岐条件はこの値を見ない）。
+        // ConvOpenInference由来かObserverPoll由来かをログだけで切り分けるための
+        // 暫定計測——check_drift_correctionの戻り値をsource付き構造体化する
+        // 恒久対応（BUG-113残置の決定1）が入ったら、この再計算は削除して
+        // その構造体から読むように差し替えること。
+        let trusted_diag = self
+            .platform_state
+            .ime
+            .model()
+            .observations
+            .most_recent_trusted(now)
+            .map(|o| (o.source, o.confidence));
         tracing::warn!(
             "[drift] correction: observed={observed} ≠ desired={desired} for {duration_ms}ms \
-             → set_ime_open({desired})"
+             → set_ime_open({desired}) (trusted_diag={trusted_diag:?})"
         );
         // ADR-082 Phase 0.5: 実送信する試行を出所・世代付きで構造化記録する。
         // `Blind` はここに到達する時点で必ず `Send`（`GiveUp` は上で return 済み）、

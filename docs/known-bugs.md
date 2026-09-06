@@ -13952,7 +13952,7 @@ SHOW イベントは `gji_write_bytes` の増加より確実に遅れて発火�
 の確定した原因ではなく、上記 `Imm32Unavailable` 誤学習経路とは別に検証中の
 候補である**——両者を混同しないこと。
 
-## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消＋ADR-140 Step1（probe/actuation競合の解消）を実装、いずれも実機確認済み。本BUGの主再現手順（物理半角/全角キー）・Ctrl+無変換・Alt+Tab後最初のIME OFFのいずれも再発なし。半角状態での変換/無変換キーでは「@」単発は残るが大量暴発は解消——これは別の未特定要因として残置（詳細は末尾の追記参照）**）
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消＋ADR-140 Step1（probe/actuation競合の解消）を実装、いずれも実機確認済み。本BUGの主再現手順（物理半角/全角キー）・Ctrl+無変換・Alt+Tab後最初のIME OFFのいずれも再発なし。半角状態での変換/無変換キー単独タップでは「@」単発は残るが大量暴発は解消——`classify_conv_transition`のBUG-26対策分岐が招く周期的Blind VK_IME_OFFバーストが真因と実機ログで特定、未修正（詳細は末尾の追記参照）**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
 WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
@@ -14599,6 +14599,89 @@ start_ms_ime_ready_poll`）。
 を立てないためseverityは元々低いが、3箇所の交錯防止を一貫させた。詳細は
 ADR-140「Step1b マージ前`/code-review max`
 再確認」節参照）。
+
+**追記（2026-09-06 続き・残置課題「半角状態で変換/無変換キー押下時の「@」単発」の
+機序を実機ログで特定、未修正）:** Step1/Step1bマージ後も残っていた「半角
+（直接入力/IME OFF）状態で変換または無変換キーを単独タップすると「@」が単発で
+出る」症状（大量暴発は解消済み）について、dragonflyg4実機で`RUST_LOG=debug`の
+develop最新ビルドを走らせ、Windows Terminal + GJIで実際に再現させてログを取得・
+解析した。
+
+**確認できた機序（Step1/Step1bの4箇所のprobe/actuationフェンスとは別の経路）:**
+`crates/awase-windows/src/state/conv_classify.rs::classify_conv_transition`
+（107-131行目）には、BUG-26対策として「belief に変化が無い
+（`input_mode_update == None`、idle-conv-check の大半がこれ）場合、
+`conv_mode_changed` の値に関わらず、conv が NATIVE を示していて
+`!effective_open`（IME OFF/半角）なら `EngineSync::ReportOpenInference
+(ConvSyncReason::NativeToggleShadowOff)` を無条件で発火する」という分岐が
+ある（127-131行目、BUG-26修正時に意図的にconv_mode_changedチェックを外した
+経緯がコメントに明記されている）。
+
+実機ログでは、対象ウィンドウ（Windows Terminal、UIA分類上は
+`FrameworkId="XAML" → app_kind=Some(Uwp)`、`[force-tsf] InputSite fallback
+matched=true`）で conv 値が `0x00000019`（NATIVE|FULLSHAPE|ROMAN）のまま
+**セッション開始（`[conv-mode] None → Kana/roma`、1回のみ）以降ずっと変化
+していない**（`[conv-mode]`の遷移/棄却ログが以後1件も出ない＝
+`conv_mode_changed` は事実上ずっと `false`）。にもかかわらず上記の無条件
+分岐により、`[conv-open-inference] reason=NativeToggleShadowOff open=true`
+が idle-conv-check の**毎tick（実測約30ms間隔）で継続的に発火**していた
+（多くのIMEはIME OFF後もconv-modeレジスタの値自体は保持するため、convが
+NATIVEのまま残ること自体は珍しくない）。
+
+この`ReportOpenInference`は`ObservationSource::ConvOpenInference`のtrusted
+観測として記録され、`state/platform_state.rs::check_drift_correction`は
+`explicit_intent == desired`（かつ`last_intent`確定済み）の場合は補正閾値を
+0（即時）にするため、`observed=true(trusted) ≠ desired=false`のたびに
+`runtime/ime_refresh.rs::ir_apply_drift_correction`のBlindポリシー
+（`VK_IME_OFF`を5回送って`GiveUp`）が実機ログで**数百ms〜3秒弱おきに
+繰り返し発火**していることを確認した:
+
+```
+DEBUG awase_windows::state::platform_state: [conv-open-inference] reason=NativeToggleShadowOff open=true
+INFO  awase_windows::runtime::key_pipeline: [idle-conv-check] TsfNative: conv observation open=true reason=NativeToggleShadowOff (conv=0x00000019) → ObserverReported として記録 (engine は actuate しない)
+...(上記が~30ms間隔で継続)...
+DEBUG ir_apply_drift_correction: awase::journal: ime actuation seq=4054 elapsed_ms=688452 target_open=false attempts=5 policy="Blind" action="GiveUp"
+DEBUG ir_apply_drift_correction: awase::journal: ime actuation seq=4061 elapsed_ms=688978 target_open=false attempts=5 policy="Blind" action="GiveUp"
+DEBUG ir_apply_drift_correction: awase::journal: ime actuation seq=4074 elapsed_ms=690050 target_open=false attempts=5 policy="Blind" action="GiveUp"
+```
+
+この`VK_IME_OFF`×5のBlindバーストは、BUG-113の主再現手順（物理半角/全角キー）
+で確立済みの「バーストがGJIのTSF compositionを乱し`@`を生む」機構と**同一**
+であると考えられる。すなわち**変換/無変換キーの単独タップ自体が直接「@」を
+生んでいるのではなく、対象ウィンドウでは背景でこのBlindバーストが常時・
+周期的に発生し続けており（`may_change_ime=false`な変換/無変換キーの押下とは
+無関係に、フォーカスが居続ける限り継続する）、ユーザーがそのキーを押して
+composition操作を行ったタイミングとバーストが重なると「@」が見える**、
+という関係だと推測される（変換/無変換キー自体が「@」の直接原因ではなく、
+「その操作をした瞬間にたまたま背景の破壊的バーストと衝突しやすい」という
+関係）。ADR-140 Step1/Step1bがフェンスした4箇所のprobe/actuation競合とは
+**別の経路**であり、Step1/Step1bの修正はこの経路をカバーしない。
+
+**未修正・次の設計課題:** `classify_conv_transition`の127-131行目の無条件
+分岐はBUG-26（FocusChanged直後にNATIVE steady-stateを一度も回復できない
+問題）の対策として意図的に`conv_mode_changed`を見ないようにしてある
+ため、単純に`conv_mode_changed`を条件に足し戻すとBUG-26の再発になる。
+考えられる方向性（いずれも未検討・未実装）:
+- `ReportOpenInference(NativeToggleShadowOff)`自体の発火頻度は変えず、
+  `check_drift_correction`側でBlindポリシーの再送インターバルにデバウンス/
+  クールダウンを設ける（`DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS=3000`は
+  診断バルーン通知のみのcooldownで、実際のBlind VK_IME_OFF再送自体は
+  それより短い間隔で再発しうることが今回の実機ログで判明した——この
+  cooldownが実際の再送ペースを制御していない可能性を検証する必要がある）。
+- 「conv=NATIVEのままshadow=OFFが継続している」という**定常状態**と、
+  「たった今NATIVEへ遷移した」という**イベント**を区別し、定常状態からの
+  回復トリガーを「idle-conv-check毎tick」ではなく「フォーカス変更時」や
+  「明示的なユーザー操作時」等、頻度の低いタイミングに限定する
+  （BUG-26の回復自体は維持しつつ、tickごとの再発火を防ぐ）。
+- Blindポリシー自体（読み返しできないアプリでの「5回送ってGiveUp」）が
+  繰り返し実行されること自体がGJIのTSF composition破壊のリスクを孕むため、
+  同一の乖離に対する再送を「一度GiveUpしたら一定時間は同じ乖離では
+  再送しない」ようラッチする案（BUG-19/BUG-26双方の再発を避けつつ検証要）。
+
+この領域（`check_drift_correction`/`classify_conv_transition`/`conv_mode`）は
+BUG-19・BUG-26の実発生履歴があり、`.claude/rules/ime-belief-architecture.md`・
+`fix-requires-evidence.md`の対象（reincidence family）でもあるため、
+修正案は実装前にOpus等による設計レビューを経ることが望ましい。
 
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 
