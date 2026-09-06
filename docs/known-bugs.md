@@ -14476,6 +14476,28 @@ probe`行が無い」ことは「probeが不要だった／発生しなかった
 次のステップは実機での`RUST_LOG=debug`収集によるΔms分布の実測
 （ADR-140のStep 0データ収集プロトコル参照）。
 
+**追記（2026-09-06、Step 1実装、[ADR-140](adr/140-ime-probe-actuation-quiet-window.md)
+確定設計v4参照、実機ソーク前）:** probe/actuationの発行競合を解消する排他機構
+（案D、フェンス値のissue時点比較）を実装した。新設の`probe_actuation_fence`
+（`AtomicU64`、`conv_mutation`とは別カウンタ）を、OSへ到達する物理syscall境界
+2箇所（`win32.rs::send_input_safe`のactuationマーカー判定、`imm.rs::
+send_ime_control`のactuation cmd判定——いずれもStep 0診断ログと同一条件）で
+bumpし、`kp_stage_idle_conv_check_inner`のprobe呼び出し元がissue直前
+（メインスレッド側=offloadへ委譲する直前、ワーカースレッド側=実際の
+`SendMessageTimeoutW`呼び出し直前）の2箇所と、結果が返った後（apply時点、
+`conv_mutation_seq`と同型の比較）の計3箇所でこのフェンスを比較する。
+issue前の2箇所で不一致を検知した場合はOS呼び出し自体を発行せず`Abandoned`
+として扱い、resync経由（`kp_trigger_focus_resync`）ならgateを閉じずハード
+期限タイマーに引き取らせ、通常経由ならin-flightフラグだけ解放する。apply
+時点の不一致は読み取り結果を破棄するのみ（既存のconv_mutation_seqチェックと
+同じ扱い）。abandon発生はresync経路/通常経路を分けて累計カウントし、不具合
+報告（`idle_conv_check_abandoned_resync_count`/`_normal_count`）に含めた
+（starvation検知用）。`SendInput(`/`SendMessageTimeoutW(`の生産コード呼び出し
+サイトが各1箇所であることを固定する`architecture_guard.rs`の回帰テストも
+追加した。**この時点では実機での「@」再現テストによる効果検証は未実施**
+——次のステップは dragonflyg4 実機での再現手順（本BUGの「再現手順」節参照）
+によるA/B確認。
+
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_

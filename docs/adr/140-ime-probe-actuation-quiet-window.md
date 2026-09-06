@@ -1,10 +1,13 @@
-# ADR-140: IME probe/actuation の発行競合 — Step 0（診断ログ追加）のみ採用、Step 1（排他機構）は実機実測待ちで未着手
+# ADR-140: IME probe/actuation の発行競合 — Step 0（診断ログ）採用済み、Step 1（排他機構）実装済み・実機ソーク前
 
 ## ステータス
 
-**採用（Step 0のみ、2026-09-06）。** Step 1（排他/フェンス機構本体）は
-このADRの対象外であり、Step 0で実機から得られる実測値なしには設計・実装
-に着手できない。
+**採用。Step 0（診断ログ）・Step 1（排他/フェンス機構本体）とも実装済み
+（2026-09-06）。** Step 1は確定設計v4（下記「Step 1確定設計」節）どおり
+`probe_actuation_fence`として実装した（実装箇所は同節末尾「実装
+（2026-09-06）」参照）。**dragonflyg4実機での「@」再現手順によるA/B効果
+検証、および決定Iのabandon率実機ソークは未実施**——次のステップはそちらの
+実機確認。
 
 ## Context
 
@@ -539,6 +542,47 @@ abandon回数を追加し、実機ソークで機能不全が起きていない�
 - 実装そのもの（次のアクション）
 - StepCoro案の実装（別PR）
 - 排他窓の量を表すms定数の導入（案Dは不要）
+
+## 実装（2026-09-06）
+
+確定設計（A〜I）を以下のとおり実装した。実装時に確定設計から意図的に
+逸脱した点のみここに記録する（`experiment-logging.md`と同じ理由）:
+
+- **A/B**: `crates/awase-windows/src/probe_actuation_fence.rs`（新設）。
+  bump地点は`win32.rs::send_input_safe`（`ime_actuation_marker_kind`と
+  同一条件）・`imm.rs::send_ime_control`（`kind=actuation`判定と同一条件）。
+- **C/D**: `runtime/key_pipeline.rs`に新設した`idle_conv_check_probe`
+  （free async fn）が3チェックポイントを実装する。**確定設計からの逸脱**:
+  設計文は`Abandoned{resync_generation: Some(_)/None}`という、abandon
+  理由の enum 自体に`resync_generation`を持たせる形を書いていたが、実装は
+  `enum IdleConvCheckOutcome { Read(Option<u32>), Abandoned }`という
+  resync非依存の単純な形にし、resync/通常の分岐は呼び出し元
+  （`kp_stage_idle_conv_check_inner`、`resync_generation`を元々クロージャ
+  内に保持している）に委ねた。フェンス比較という「メカニズム」と
+  resyncゲートの扱いという「ポリシー」を分離でき、`idle_conv_check_probe`
+  自体はresyncの存在を一切知らなくてよくなる。`Abandoned`到達時の
+  3分岐（resync=gate維持/通常=in-flight解放）の実際の分岐ロジックは
+  設計どおり。
+- **E/F**: 上記のとおり呼び出し元で分岐。checkpoint3（apply、`apply_idle_
+  conv_check`内、既存`conv_mutation_seq`チェックと同型）はresync gateが
+  既にクローズ済みの時点で走るため、gate維持の特別扱いはせず読み取り結果を
+  破棄するのみ（設計の「3. apply」の記述と整合、E/Fの3分岐対象は
+  checkpoint1/2のみ）。
+- **G**: `tests/architecture_guard.rs::
+  send_input_and_send_message_timeout_w_have_single_production_call_site`。
+  `count_real_calls`ではなく新設の`count_real_calls_excluding_string_
+  literals`（同じneedleがtracingフォーマット文字列中に出現する既知の
+  誤検出——`ime.rs`/`held_modifiers.rs`等——を「needleの手前に`"`があるか」
+  で除外）を使う。
+- **H**: 案E（`ProbeAction`/`dispatch_probe_actions`パターン）のキュー集約
+  機構・StepCoro案は実装していない（設計どおり別スコープ）。
+- **I**: `probe_actuation_fence::{abandoned_resync_lifetime_count,
+  abandoned_normal_lifetime_count}`を`BugReportStateSnapshot`の
+  `idle_conv_check_abandoned_resync_count`/`_normal_count`として不具合
+  報告に含めた。
+
+全変更を通じて`crates/win32-async`（`offload.rs`含む）は一切変更していない
+（決定Cが明示的に禁止した`ime::offload_unsafe`への比較挿入も行っていない）。
 
 ## 関連
 

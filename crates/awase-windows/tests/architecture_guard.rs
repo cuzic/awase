@@ -2335,6 +2335,82 @@ fn raw_mechanism_write_sites_are_confined_to_chain_writers() {
     }
 }
 
+/// `count_real_calls` に加えて、tracing フォーマット文字列中の言及
+/// （例: `tracing::debug!("... SendInput(...) ...")`）を除外する。
+///
+/// `SendInput`/`SendMessageTimeoutW` は関数定義ではなく Win32 API 名なので
+/// `fn xxx(` 形の自己定義除外は不要な一方、これらのシンボル名はログメッセージ
+/// （`ime.rs`/`held_modifiers.rs` 等）や doc コメント中の説明で頻出する。
+/// 同じ行の needle 出現位置より前に `"` があれば文字列リテラル中の言及と
+/// みなして除外する（実際の呼び出し行に `"` が先行することはない）。
+fn count_real_calls_excluding_string_literals(content: &str, needle: &str) -> usize {
+    content
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .filter(|line| {
+            line.find(needle)
+                .is_some_and(|pos| !line[..pos].contains('"'))
+        })
+        .count()
+}
+
+/// ADR-140 Step1 決定G: `SendInput(` / `SendMessageTimeoutW(` の生産コード
+/// 呼び出しは、OS に到達する唯一の物理境界（`win32.rs::send_input_safe` /
+/// `imm.rs::send_ime_control`）にそれぞれ1箇所だけであることを固定する。
+///
+/// # なぜ必要か
+///
+/// ADR-140 決定B（`crate::probe_actuation_fence`）は「物理境界は単一
+/// チョークポイント」という前提の上に、bump 地点をここ2箇所だけに置くことで
+/// 未発見の第4・第5 actuation 経路（確定事実5が「少なくとも3つ確認、全てとは
+/// 限らない」と明記）を気にせず済ませている。この前提が崩れる（新しい
+/// `SendInput`/`SendMessageTimeoutW` 直接呼び出しが別ファイルに増える）と、
+/// フェンスが一部の actuation を検出できなくなり、issue #136 型の
+/// 「1箇所塞いで別箇所に穴」を再演する。
+///
+/// `imm.rs:127-130` のコメントは既に「本クレートの全 `SendMessageTimeoutW`
+/// 呼び出しは本関数を経由する唯一のチョークポイント」と宣言しているが、
+/// それを固定するテストは無かった（本テストが最初）。
+#[test]
+fn send_input_and_send_message_timeout_w_have_single_production_call_site() {
+    let files = list_src_files();
+
+    let mut send_input_sites: Vec<(String, usize)> = Vec::new();
+    let mut send_message_timeout_w_sites: Vec<(String, usize)> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let send_input_count = count_real_calls_excluding_string_literals(production, "SendInput(");
+        if send_input_count > 0 {
+            send_input_sites.push((path.clone(), send_input_count));
+        }
+        let send_message_timeout_w_count =
+            count_real_calls_excluding_string_literals(production, "SendMessageTimeoutW(");
+        if send_message_timeout_w_count > 0 {
+            send_message_timeout_w_sites.push((path.clone(), send_message_timeout_w_count));
+        }
+    }
+    send_input_sites.sort();
+    send_message_timeout_w_sites.sort();
+
+    assert_eq!(
+        send_input_sites,
+        vec![("src/win32.rs".to_string(), 1)],
+        "`SendInput(` の生産コード呼び出しは `win32.rs::send_input_safe` の\
+         1箇所のみに固定されています（ADR-140 決定B/G）。実際: {send_input_sites:?}\n\
+         新しい呼び出しを追加する場合は `send_input_safe` 経由にすること\
+         （さもないと probe_actuation_fence の bump がその actuation を検出できない）。"
+    );
+    assert_eq!(
+        send_message_timeout_w_sites,
+        vec![("src/imm.rs".to_string(), 1)],
+        "`SendMessageTimeoutW(` の生産コード呼び出しは `imm.rs::send_ime_control` の\
+         1箇所のみに固定されています（ADR-140 決定B/G）。実際: {send_message_timeout_w_sites:?}\n\
+         新しい呼び出しを追加する場合は `send_ime_control` 経由にすること\
+         （さもないと probe_actuation_fence の bump がその actuation/probe を検出できない）。"
+    );
+}
+
 /// ADR-089 §6 Phase C item 12（= ADR-086 INV-14 の未移行分の是正）:
 /// **同期経路の ROMAN 補完 IMC write は、捕獲済み `ActuationTarget` を必ず通る。**
 ///
