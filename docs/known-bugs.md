@@ -5573,6 +5573,10 @@ Windows cross-compile（`cargo check --target x86_64-pc-windows-gnu` /
 
 **関連ファイル:** `crates/awase-windows/src/runtime/ime_refresh.rs`（`ir_apply_drift_correction`）、`crates/awase-windows/src/runtime/mod.rs`（`Runtime::last_drift_correction_send` フィールド追加）、`crates/awase-windows/src/state/platform_state.rs`（`check_drift_correction`、変更なし）。関連: BUG-20（drift correction 送信側の対称バグ）、BUG-33（drift correction 検知側の逆方向バグ）。
 
+**追記（実機ソークデータ、2026-09-06、不具合報告 `01M1TG7AQRE9WPRBS1CQQS0WVG`、v1.19.0＝ADR-080 Blind policy込み）:** タスクトレイ経由の不具合報告（Windows Terminal + PowerShell、GJI、msedge系ではなくWindowsTerminal.exe）のjournal/app_logを解析したところ、上記「次回この症状が出ないか確認すること」への回答が得られた。`Blacklist drift correction: apply_ime_open(false) → Applied` ログは1バーストあたり**正確に5回**で毎回停止しており（04:32:18/04:34:02/04:37:01、プロセス再起動を跨いでも再現）、修正前の16連射・無限ループは**再発していない**——`IME_ACTUATION_BLIND_MAX_ATTEMPTS=5`による有界化は実機で機能していることを確認できた。ただし `check_drift_correction` が検知する乖離（`observed=true≠desired=false`）自体は**約1.5〜3分おきに周期的に再発**しており、そのたびに5回分の`VK_IME_OFF`送信バーストが発生する。報告者の症状（「PowerShellで英字/漢字キーで@が入る件、0.19.0で改善されたようなされてないような」）は、この「無限連射は止まったが乖離の周期的再発とそれに伴う5連射バーストは残っている」という状態と整合する——BUG-113が確立した「このバーストがGJIのTSF compositionを乱し`@`を生む」という機構の十分条件は、5回でも満たされ得る。
+
+**現状の評価:** ADR-080のBlind policy（tight loop防止）は意図通り機能しており、これ自体の追加対応は不要。残存する問題は「乖離がなぜ周期的に再発するか」という別軸の問題で、これはBUG-43の原因が構造的に指す「TsfNative/Blacklistパスはobservation storeを更新する手段がない」という限界そのもの（本バグの「原因」節参照）に起因する可能性が高い。BUG-114（`docs/known-bugs.md`該当節）の「D1（`ir_apply_drift_correction`のライブ再導出）・D1a（`ImePolicyProfile::InputRelay`追加）は根本原因2系（`FocusChanged`を経由しないライブ分類変化）向けの補完として未実装のまま残す——実機ソークでこの経路の再発が確認された場合に着手する」という保留条件に該当する可能性があり、次のアクションとしてD1/D1aの実装要否を再検討すべき。
+
 ## BUG-44: `tray_wnd_proc` の「到達不能」判断が逆で、トレイ右クリックのコンテキストメニューが一切表示されなくなった
 
 **症状:** `develop` ブランチで、システムトレイのアイコンを右クリックしてもコンテキストメニューが一瞬も表示されない（フラッシュすらしない）。ユーザー報告（2026-07-27）。実機ログは未取得。
@@ -14448,6 +14452,30 @@ BUG-114（同じ調査から派生した独立のバグ、drift correction の
 注意）。`spike/adr133-wt-vk-kana-dbe-hiragana` ブランチ（`VK_KANA` 置換、
 この機体では到達不能コードだったため不要と判明）は削除候補。
 
+**追記（2026-09-06、Step 0診断ログ追加、[ADR-140](adr/140-ime-probe-actuation-quiet-window.md)参照）:**
+「二重actuationの解消」とは独立に残置されている、`kp_stage_idle_conv_check`
+のクロスプロセスprobe読み取りとGJI actuationの発行タイミング競合（真の
+レースではなく決定論的順序）について、実機データ収集のための診断ログを
+追加した。`[ime-io]`タグで、actuationの`SendInput`発行（`win32.rs::
+send_input_safe`、`IME_KANJI_MARKER`判定）と、クロスプロセスprobe/
+actuation（`imm.rs::send_ime_control`、`IMC_GETOPENSTATUS`/
+`IMC_GETCONVERSIONMODE`が`probe`、それ以外が`actuation`）の発行タイム
+スタンプ（`now_timestamp_us()`基準、µs分解能、同一時間軸）を記録できる
+ようになった。
+
+**実機データ収集時の注意（サーキットブレーカとの突き合わせ必須）:**
+`send_health`のサーキットブレーカ（`imm.rs`、`SLOW_THRESHOLD_MS=100`、
+2回連続超過で`COOLDOWN_MS=2000`の間、一部呼び出しサイトが
+`send_health::blocking_allowed()`で発行自体を見送る）が作動している間は
+`[ime-io] cross_process ... kind=probe`行が出力されない。**「`[ime-io]
+probe`行が無い」ことは「probeが不要だった／発生しなかった」ことを意味
+せず、サーキットブレーカによる見送りの可能性がある**——これを`awase.log`
+の`[send-health]`行と突き合わせずに読むと、低速probeが絡むシナリオが
+系統的に過小サンプリングされる。
+
+次のステップは実機での`RUST_LOG=debug`収集によるΔms分布の実測
+（ADR-140のStep 0データ収集プロトコル参照）。
+
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
@@ -15331,3 +15359,73 @@ BUG-115（`gji_charset_autodetect::is_configured_thumb_key`による衝突
 回避ガードを本修正の決定1/2両方に追加）、
 [ime-belief-architecture](../.claude/rules/ime-belief-architecture.md)
 （IME actuation合流点の変更は影響経路を洗い出す必要がある領域）。
+
+## BUG-117: `UserImeSetIntent{source: PhysicalImeKey}` が発生源を検証せず `desired_open` を無条件上書きし、Edge(TsfNative)の特定テキストボックスで Ctrl+無変換 による IME OFF が数秒後に勝手に ON へ戻る（**原因未確定・再現せず、保留**）
+
+**追記（2026-09-06、保留）:** 報告者が同一環境で再度操作したところ、本症状は
+**再発しなかった**。恒常的な再現手順が確立していないため、これ以上の追跡調査
+は一旦保留とする。下記に記録した journal 解析結果とコード側の構造的ギャップ
+（`UserImeSetIntent` が `source` の真正性を検証しない、TsfNative で
+`explicit_verify` が無効）はそのまま残し、次に類似症状（Edge 等 TsfNative
+アプリの特定テキストボックスで IME OFF が効かない）が再現した際の手がかりと
+する。
+
+**症状（不具合報告 `01M1TQ2KVRW0SA73SBHWA7Y2NE`、2026-09-06、v1.18.0、GJI）:**
+msedge.exe（`Chrome_WidgetWin_1`、`app_kind=TsfNative`）で、Ctrl+無変換を
+押しても半角/全角キーを押しても IME OFF にならなかった。他のテキストボックス
+にフォーカスすると IME OFF になった。awase エンジンを無効化すると入力できた。
+報告者への追加ヒアリングで、**症状は特定のテキストボックスでのみ再現し、
+他のテキストボックスでは再現しない**ことを確認した。
+
+**journal解析で確認できた事実:**
+
+```
+17198208ms  HookImeModeDiagnostic vk=0xF4(DBCSCHAR) up / vk=0xF3(SBCSCHAR) down
+            → UserImeSetIntent{target:false, source:PhysicalImeKey}  （半角化、意図通り）
+   :        Ctrl+無変換を複数回押下 → ChordEnded{CtrlMuhenkanImeOff}
+            → ImeApplyRequested{target:false} → ImeOpenApplied{AlreadyMatched/Applied}
+            （awase視点では成功、GjiFsmTransition は OffCold のまま）
+17206039ms  （7.8秒後、対応する物理操作がjournal上に見当たらない）
+            HookImeModeDiagnostic vk=0xF3(SBCSCHAR) up / vk=0xF4(DBCSCHAR) down
+            → UserImeSetIntent{target:true, source:PhysicalImeKey}  （全角化、勝手に）
+            → 直後に awase 自身が IME ON を再適用し GjiFsmTransition が OnCold へ遷移
+```
+
+`state/ime_model.rs::reduce()` の `UserImeSetIntent` ハンドラは `source` を
+一切検証せず `self.desired_open = target` を無条件実行する。加えて
+`runtime/ime_refresh.rs::ir_decide_read_strategy` のコード内コメントに
+「Ctrl+無変換等の明示的IME操作後、実際にOS状態が変化したか即時検証する
+（`explicit_verify`）...TsfNative/Blacklist アプリは `skip_imm_query=true`
+で弾かれるため対象外」と明記されており、msedge.exe（TsfNative）ではこの
+検証自体が構造的に無効化されている。
+
+**作業仮説（未検証）:** Chromium（Blink）は `<input type="email"/"url"/
+"tel"/"number">` や `inputmode` 属性を持つフィールドにフォーカスすると、
+TSF の `ITfInputScope` 経由で IME 側に入力制限ヒントを渡す。GJI がこの
+ヒントを受けてユーザー操作なしに自動でモード切替（`VK_DBE_SBCSCHAR`/
+`DBCSCHAR` 相当の状態通知）を行うと、`injected=false` のため awase は
+これを本物の物理キー押下と区別できず、`UserImeSetIntent{PhysicalImeKey}`
+として `desired_open` を無条件に上書きしてしまう。他の（input-scope
+ヒントを持たない）フィールドでは GJI の自動切替が起きないため再現しない、
+という説明は「特定のテキストボックスのみ再現」という報告者確認と整合する。
+
+**未確定な点:**
+
+- `VK_DBE_SBCSCHAR(0xF3) up → VK_DBE_DBCSCHAR(0xF4) down` ペアの発生源
+  （GJI の input-scope 対応による自動切替か、ユーザー自身の物理操作か、
+  他の外部要因か）はコード読解・journal解析だけでは特定できない。
+  Windows 実機での TSF ログ（`ITfInputScope::GetInputScopes` 呼び出しの
+  有無）や、報告者への「どの種類の入力欄だったか」の追加ヒアリングが
+  必要。
+- 上記仮説が正しいとしても、`UserImeSetIntent{PhysicalImeKey}` が発生源を
+  検証しないという構造自体は本バグの有無に関わらず既存の設計であり、
+  修正すべきかどうか（対応: 直前の明示的ユーザー操作からごく短時間の
+  `PhysicalImeKey` 由来の反転を疑わしいとして抑制する等）は未検討。
+
+**関連ファイル:** `crates/awase-windows/src/state/ime_model.rs`
+（`ImeModel::reduce`、`UserImeSetIntent`）、`crates/awase-windows/src/runtime/
+ime_refresh.rs`（`ir_decide_read_strategy`、`explicit_verify`/`skip_imm_query`）。
+関連: BUG-43（TsfNative/Blacklist パスが observation store を更新できないという
+同系統の構造的限界）、BUG-45節に埋没した見出し欠落バグ（`transport.rs::
+PhysicalKeyDisposition::plan` の TsfNative 物理 KANJI 系キー二重 actuation、
+本バグとは別経路）。
