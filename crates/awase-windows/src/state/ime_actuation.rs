@@ -415,6 +415,90 @@ pub struct DriftCorrectionTick {
     pub expected: ActuationAction,
 }
 
+// ── BUG-113 残置課題: ConvOpenInference 由来 drift のエピソードラッチ ──────
+
+/// `ConvOpenInference` だけを根拠とする drift correction の「エピソード」識別子。
+///
+/// `intent_at_ms` は `ImeModel::last_intent`（`RecordedIntent::at_ms`）。これを設定するのは
+/// `UserImeSetIntent`/`UserImeToggleIntent` のみで、本番の呼び出し元は打鍵駆動
+/// （`runtime/key_pipeline.rs`の shadow-toggle 受理点・IME on/off コンボ受理点）に
+/// 限られる。`EngineActivationSync`/`PanicReset`/`HwndCacheRestored` は設定しない
+/// （`state/ime_model.rs`）。したがって awase 自身の周期処理
+/// （`post_ime_refresh()` の 20ms 自己駆動チェーン、WinEvent フォーカスイベント、
+/// `apply_force_on_for_imm_broken`）ではこの値が進まない。
+///
+/// **`Actuation` のライフサイクル（`target` 変化 + `FocusChanged`）をキーにしては
+/// ならない** — awase 自身が起こす `FocusChanged`（Windows Terminal 等の XAML/UWP
+/// InputSite 子ウィンドウが無操作でも出すフォーカスイベント）で周期的にリセット
+/// され、2026-09-06 実機で確認した「無操作のまま `VK_IME_OFF`×5 連射が
+/// 25秒〜4分43秒間隔で再発する」症状が再燃する（docs/known-bugs.md BUG-113
+/// 残置課題の追記参照）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ConvDriftEpisode {
+    /// `None` = 明示意図なし（`FocusChanged` 直後を含む）。
+    /// `last_explicit_ime_action_ms` の 0 センチネル（`platform_state.rs`）と
+    /// 混同しないよう `Option` のまま扱う。
+    pub intent_at_ms: Option<u64>,
+    pub desired: bool,
+}
+
+/// [`decide_conv_inference_drift`] の判定結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ConvDriftDecision {
+    /// 実 actuation を行ってよい。
+    Send,
+    /// 本エピソードでは既に1回補正済み → 送らない。
+    Suppress,
+}
+
+/// `Option<u64>` の同一判定（`const fn` は `Option` の `PartialEq` 呼び出しを
+/// 直接使えないための補助）。`Some(0)` と `None` を同一視しないことが要件
+/// （[`ConvDriftEpisode::intent_at_ms`] の doc 参照）。
+const fn same_intent(a: Option<u64>, b: Option<u64>) -> bool {
+    match (a, b) {
+        (Some(x), Some(y)) => x == y,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// `ConvOpenInference` 由来の drift correction を「明示ユーザー意図エピソード
+/// あたり実送信1回」に絞る（BUG-113残置課題）。
+///
+/// conv NATIVE ビットは `VK_IME_OFF` を送っても消えない持続的な変換モード設定
+/// であり（多くの IME は IME を閉じても最後の変換モードを保持する）、
+/// `classify_conv_transition` の BUG-26 対策分岐（belief 変化なしの steady-state
+/// でも conv が NATIVE を示していれば無条件に `ReportOpenInference` する）は
+/// この乖離を idle-conv-check の毎 tick で再発火させる。この乖離は
+/// `VK_IME_OFF` を何度送っても解消しない（反証不能）ため、`ObservationAuthority`
+/// が `ConvOpenInference` を `BeliefOnly`（actuation の根拠として単独では弱い）と
+/// 分類しているのと同じ理由で、繰り返し実送信する意味が無い——1回送れば
+/// 十分（実 IME が開いていたなら閉じる、既に閉じていたなら元々不要だった）。
+///
+/// `ConvOpenInference` 以外のソース（`ObserverPoll`/`ImmCrossProbe`/`Tsf`等の
+/// 実 API 読み取り）は反証可能な genuine な乖離でありうるため、このラッチの
+/// 対象外——常に `Send` を返し、既存の `FeedbackPolicy::Blind`/`Read` 機構に
+/// そのまま委ねる。
+#[must_use]
+pub const fn decide_conv_inference_drift(
+    source: ObservationSource,
+    episode: ConvDriftEpisode,
+    latched: Option<ConvDriftEpisode>,
+) -> ConvDriftDecision {
+    if !matches!(source, ObservationSource::ConvOpenInference) {
+        return ConvDriftDecision::Send;
+    }
+    match latched {
+        Some(l)
+            if same_intent(l.intent_at_ms, episode.intent_at_ms)
+                && l.desired == episode.desired =>
+        {
+            ConvDriftDecision::Suppress
+        }
+        _ => ConvDriftDecision::Send,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -662,6 +746,183 @@ mod tests {
                 }
             );
             assert_eq!(rebuilt.epoch, epoch);
+        }
+    }
+
+    // ── BUG-113 残置課題: decide_conv_inference_drift ──────────────────────
+
+    const CONV: ObservationSource = ObservationSource::ConvOpenInference;
+
+    fn episode(intent_at_ms: Option<u64>, desired: bool) -> ConvDriftEpisode {
+        ConvDriftEpisode {
+            intent_at_ms,
+            desired,
+        }
+    }
+
+    #[test]
+    fn conv_inference_first_send_in_episode_is_allowed() {
+        assert_eq!(
+            decide_conv_inference_drift(CONV, episode(Some(1_000), false), None),
+            ConvDriftDecision::Send
+        );
+    }
+
+    #[test]
+    fn conv_inference_second_send_in_same_episode_is_suppressed() {
+        let ep = episode(Some(1_000), false);
+        assert_eq!(
+            decide_conv_inference_drift(CONV, ep, Some(ep)),
+            ConvDriftDecision::Suppress
+        );
+    }
+
+    #[test]
+    fn conv_inference_third_and_later_stay_suppressed() {
+        // ラッチは「送った」という事実だけを覚える。何度問い合わせても
+        // 同じ episode である限り Suppress のまま（送信のたびに更新しない）。
+        let ep = episode(Some(1_000), false);
+        for _ in 0..10 {
+            assert_eq!(
+                decide_conv_inference_drift(CONV, ep, Some(ep)),
+                ConvDriftDecision::Suppress
+            );
+        }
+    }
+
+    #[test]
+    fn latch_survives_actuation_rebuild_and_focus_churn_within_same_intent_episode() {
+        // 本件の核心: Actuation の再構築や FocusChanged がいくら起きても、
+        // ConvDriftEpisode 自体（intent_at_ms/desired）が変わらない限り
+        // 同じ episode とみなし続け、10回連続で呼んでも2回目以降は全て Suppress。
+        let ep = episode(Some(42), false);
+        let mut latched = None;
+        let mut results = Vec::new();
+        for _ in 0..10 {
+            let decision = decide_conv_inference_drift(CONV, ep, latched);
+            results.push(decision);
+            if decision == ConvDriftDecision::Send {
+                latched = Some(ep);
+            }
+        }
+        assert_eq!(results[0], ConvDriftDecision::Send);
+        assert!(results[1..]
+            .iter()
+            .all(|d| *d == ConvDriftDecision::Suppress));
+    }
+
+    #[test]
+    fn new_user_intent_at_ms_reopens_the_episode() {
+        // BUG-51 回復: ユーザーが同方向の IME 切替キーを押し直すと last_intent.at_ms が
+        // 進み、新しい episode として扱われて再送が許される。
+        let latched = episode(Some(688_000), false);
+        let new_episode = episode(Some(720_000), false);
+        assert_eq!(
+            decide_conv_inference_drift(CONV, new_episode, Some(latched)),
+            ConvDriftDecision::Send
+        );
+    }
+
+    #[test]
+    fn desired_direction_flip_reopens_the_episode() {
+        let latched = episode(Some(1_000), false);
+        let new_episode = episode(Some(1_000), true);
+        assert_eq!(
+            decide_conv_inference_drift(CONV, new_episode, Some(latched)),
+            ConvDriftDecision::Send
+        );
+    }
+
+    #[test]
+    fn actuating_sources_are_never_suppressed() {
+        let latched = episode(Some(1_000), false);
+        for source in [
+            ObservationSource::ImmGetOpenStatus,
+            ObservationSource::ImmCrossProbe,
+            ObservationSource::ObserverPoll,
+            ObservationSource::Gji,
+            ObservationSource::Tsf,
+        ] {
+            assert_eq!(
+                decide_conv_inference_drift(source, latched, Some(latched)),
+                ConvDriftDecision::Send,
+                "source={source:?} は反証可能な観測なので常に Send のはず"
+            );
+        }
+    }
+
+    #[test]
+    fn belief_only_but_not_conv_inference_is_never_suppressed() {
+        let latched = episode(Some(1_000), false);
+        for source in [
+            ObservationSource::FocusProbe,
+            ObservationSource::HeuristicDefault,
+            ObservationSource::HwndCache,
+            ObservationSource::ConvBitsInference,
+            ObservationSource::GjiIoInference,
+        ] {
+            assert_eq!(
+                decide_conv_inference_drift(source, latched, Some(latched)),
+                ConvDriftDecision::Send,
+                "source={source:?} は ConvOpenInference ではないので常に Send のはず"
+            );
+        }
+    }
+
+    #[test]
+    fn none_intent_is_not_conflated_with_intent_at_ms_zero() {
+        let latched_none = episode(None, false);
+        let episode_zero = episode(Some(0), false);
+        assert_eq!(
+            decide_conv_inference_drift(CONV, episode_zero, Some(latched_none)),
+            ConvDriftDecision::Send
+        );
+        let latched_zero = episode(Some(0), false);
+        let episode_none = episode(None, false);
+        assert_eq!(
+            decide_conv_inference_drift(CONV, episode_none, Some(latched_zero)),
+            ConvDriftDecision::Send
+        );
+    }
+
+    #[test]
+    fn exhaustive_over_all_observation_sources() {
+        // Suppress になるのは「ConvOpenInference かつ episode 完全一致」の
+        // 場合だけであることを、全 ObservationSource variant × desired 2値 ×
+        // intent_at_ms 一致/不一致で固定する（conv_classify.rs の網羅テストと
+        // 同じ独立オラクル方式）。
+        let all_sources = [
+            ObservationSource::FocusProbe,
+            ObservationSource::ObserverPoll,
+            ObservationSource::Gji,
+            ObservationSource::ImmGetOpenStatus,
+            ObservationSource::ConvBitsInference,
+            ObservationSource::GjiIoInference,
+            ObservationSource::ConvOpenInference,
+            ObservationSource::Tsf,
+            ObservationSource::HwndCache,
+            ObservationSource::ImmCrossProbe,
+            ObservationSource::HeuristicDefault,
+        ];
+        for &source in &all_sources {
+            for &desired in &[false, true] {
+                for &intent in &[None, Some(1_000), Some(2_000)] {
+                    let latched = episode(Some(1_000), desired);
+                    let candidate = episode(intent, desired);
+                    let decision = decide_conv_inference_drift(source, candidate, Some(latched));
+                    let expect_suppress = matches!(source, ObservationSource::ConvOpenInference)
+                        && intent == Some(1_000);
+                    assert_eq!(
+                        decision,
+                        if expect_suppress {
+                            ConvDriftDecision::Suppress
+                        } else {
+                            ConvDriftDecision::Send
+                        },
+                        "source={source:?} desired={desired} intent={intent:?}"
+                    );
+                }
+            }
         }
     }
 }

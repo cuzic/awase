@@ -224,6 +224,15 @@ pub struct Runtime {
     /// 進行中の IME actuation 試行（ADR-080）。`desired` 変化・`FocusChanged`・
     /// `Resolution` 確定でのみ破棄・再構築する（`runtime/ime_actuation.rs`）。
     active_actuation: Option<ime_actuation::Actuation>,
+    /// BUG-113残置課題(2026-09-06): `ConvOpenInference`由来のdrift correctionを
+    /// 「明示ユーザー意図エピソードあたり実送信1回」に絞るラッチ
+    /// (`state/ime_actuation.rs::decide_conv_inference_drift`)。
+    /// **`active_actuation`とライフサイクルを共有しない**——`discard_actuation()`や
+    /// `ir_notify_focus_changed`ではリセットしない。Windows Terminal等のXAML/UWP
+    /// InputSite子ウィンドウが無操作でも出すフォーカスイベントでこのラッチが
+    /// 周期的にリセットされると、実機で確認した「無操作のままVK_IME_OFF×5連射が
+    /// 25秒〜4分43秒間隔で再発する」症状が再燃する（docs/known-bugs.md BUG-113参照）。
+    conv_drift_latch: Option<crate::state::ime_actuation::ConvDriftEpisode>,
     /// BUG-52 の DBE レンジ Suppress（`VK_DBE_ALPHANUMERIC`/`KATAKANA`/
     /// `SBCSCHAR`/`DBCSCHAR`）を無条件のままにするか、パススルーを許すか。
     /// `config.general.dbe_mode_key_policy` から `apply_config_update`/起動時の
@@ -1247,6 +1256,7 @@ impl Runtime {
             post_bypass_rules,
             ime_coordinator: ime_coordinator::ImeCoordinator::new(),
             active_actuation: None,
+            conv_drift_latch: None,
             dbe_mode_key_policy: awase::config::DbeModeKeyPolicy::default(),
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,

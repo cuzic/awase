@@ -14683,6 +14683,81 @@ BUG-19・BUG-26の実発生履歴があり、`.claude/rules/ime-belief-architect
 `fix-requires-evidence.md`の対象（reincidence family）でもあるため、
 修正案は実装前にOpus等による設計レビューを経ることが望ましい。
 
+**追記（2026-09-06 続き・診断ログで真因をConvOpenInferenceに確定、修正実装）:**
+Opus敵対的設計レビューにより、上記3案はいずれもそのままでは不十分と判明した:
+
+- 案1（`check_drift_correction`側のクールダウン）: 同じ述語を共有する
+  `resolve_warmup_ime_on`（BUG-110/ADR-132 INV-B1'）を巻き込み、warmup抑止が
+  フラップする。却下。
+- 案2（`conv_mode_changed`を条件に戻す/回復を低頻度化）: BUG-26が対策した
+  「FocusChanged直後、NATIVE steady-stateを一度も回復できない」シナリオの
+  直接的な再発。BUG-26実機ログは「フォーカス変更後30秒以上・数十回」の
+  未回復を記録しており、低頻度化では足りない。却下。
+- 案3（GiveUp後のラッチ）: 既にBUG-68/BUG-114の修正
+  （`DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS=3000` + `AnyFreshEvidence`から
+  `ConvOpenInference`/`ObserverPoll`除外）で**バースト間**は実装済みだった。
+  残る穴は「`FeedbackPolicy::Blind::backoff`が一度も読まれず**バースト内**の
+  5回に間隔規制が無い」「ラッチが証拠の種類を区別しない」「バルーンが指示する
+  『IME切替キーを押し直す』回復操作が`Actuation`のライフサイクル上意味を
+  持たない」の3点。
+
+さらに、無操作時にも5連射が25秒〜4分43秒間隔で再発する原因を追ったところ、
+**バースト内の5連射自体は自己駆動ループ**（`ir_apply_drift_correction`の
+実送信→`on_ime_apply_complete`→`post_ime_refresh()`が outcome によらず
+無条件で`TIMER_IME_REFRESH`を20msでセット→`ir_apply_drift_correction`に
+戻る、というチェーンがTsfNativeでは`reschedule_ime_refresh`の周期ポーリングに
+上書きされないため一度送信すると`attempts=5`まで自動完走する）と判明した。
+バースト**間**の再武装源は当初「`ObserverPoll`由来のgenuineな乖離」
+（`most_recent_trusted()`が新しい方を採用するため）の可能性も疑われたが、
+診断ログ（`[drift] correction`のWARN行に`trusted.source`/`confidence`を
+追加）で実機確認したところ**`trusted_diag=Some((ConvOpenInference, Medium))`
+と確定**——ConvOpenInference由来で間違いなかった。
+
+**修正実装（判定ロジックは1行も変えず、新規の絞り込みレイヤーを追加）:**
+
+1. `state/ime_actuation.rs`に純関数`decide_conv_inference_drift(source,
+   episode, latched) -> Send | Suppress`を新設（`ConvDriftEpisode {
+   intent_at_ms: Option<u64>, desired: bool }`）。`source`が
+   `ConvOpenInference`以外なら常に`Send`（反証可能な観測は既存機構に委ねる）。
+   `ConvOpenInference`なら、`intent_at_ms`（`ImeModel::last_intent.at_ms`、
+   `UserImeSetIntent`/`UserImeToggleIntent`のみが設定＝打鍵駆動）と`desired`が
+   ラッチ済みの値と完全一致する限り`Suppress`。conv NATIVEビットは
+   `VK_IME_OFF`を送っても消えない持続的な設定で乖離が反証不能なため、
+   「明示ユーザー意図エピソードあたり実送信1回」に絞ってよいという判断。
+2. `runtime/mod.rs::Runtime`に`conv_drift_latch: Option<ConvDriftEpisode>`を
+   追加。**`active_actuation`とライフサイクルを共有しない**（`discard_actuation()`
+   でも`FocusChanged`でもリセットしない）——Windows Terminal等のXAML/UWP
+   InputSite子ウィンドウが無操作でも出すフォーカスイベントで周期リセット
+   されると、無操作での周期再発症状がそのまま再燃するため。
+3. `state/platform_state.rs::check_drift_correction`の戻り値を
+   `(bool,bool,u64)`タプルから`DriftCorrection{desired,observed,duration_ms,
+   source,confidence}`構造体に変更。**判定ロジック自体は無変更**。
+   `resolve_warmup_ime_on`（BUG-110/ADR-132）の述語も
+   `matches!(.., Some(DriftCorrection{desired:false,observed:true,..}))`へ
+   ビット同値のまま書き換え。
+4. `runtime/ime_refresh.rs::ir_apply_drift_correction`の
+   `ir_notify_drift_giveup_diagnostic`直後・`match act_policy`直前に
+   `decide_conv_inference_drift`のゲートを挿入。`Suppress`ならログ1行を
+   出して`return`（実送信・journal記録・`ImeEvent::DriftDetected`
+   dispatch・`discard_actuation()`はいずれも行わない）。`ConvOpenInference`
+   由来の実送信が確定した時点で`conv_drift_latch`を更新する。トレイ
+   バルーン（`ir_notify_drift_giveup_diagnostic`、「該当のIME切替キーを
+   もう一度押してください」）はこのゲートより前に呼ぶ配置のまま——
+   ユーザーが同方向キーを押し直すと`last_intent.at_ms`が進み新しい
+   episodeとして扱われ再送が許される（`write_sync_key`/`write_physical_key`
+   の`UserImeSetIntent`は値の変化に関わらず無条件に`last_intent`を更新
+   することをコードで確認済み、BUG-51回復手段は維持）。
+
+回帰テスト: `state/ime_actuation.rs`に純関数の単体テスト10件を追加
+（`latch_survives_actuation_rebuild_and_focus_churn_within_same_intent_episode`
+が本件の核心、`exhaustive_over_all_observation_sources`が全`ObservationSource`
+variant×desired×intent_at_msの組み合わせで「Suppressになるのは
+ConvOpenInferenceかつepisode完全一致の場合だけ」を固定）。いずれもLinux上の
+`cargo test -p awase-windows --lib`で実行可能。`cargo test -p awase-windows
+--lib`（613件）・`architecture_guard`/`golden_scenarios`/`layer_boundary_guard`
+（109件）は全green、Windowsターゲットの`cargo check`/`cargo clippy`も
+警告ゼロを確認。実機ソークは次のログで確認する。
+
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_

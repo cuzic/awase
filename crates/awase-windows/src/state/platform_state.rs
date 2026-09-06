@@ -107,6 +107,23 @@ pub(crate) struct ImePollState {
     pub(crate) prev_conv: Option<u32>,
 }
 
+/// [`ImeStateHub::check_drift_correction`] の戻り値（BUG-113残置課題）。
+///
+/// 旧 `(bool, bool, u64)` タプルから構造体化したのは、`ir_apply_drift_correction`
+/// （`runtime/ime_refresh.rs`）が `ConvOpenInference` 由来の drift を
+/// 「明示意図エピソードあたり1送信」に絞る際の根拠（`source`）を、呼び出し元が
+/// 別途 `most_recent_trusted()` を再計算せずに受け取れるようにするため
+/// （独立再計算は BUG-110 と同型の構造的欠陥、`resolve_warmup_ime_on` の doc 参照）。
+/// `confidence` は診断ログ専用で判定には使わない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DriftCorrection {
+    pub(crate) desired: bool,
+    pub(crate) observed: bool,
+    pub(crate) duration_ms: u64,
+    pub(crate) source: ObservationSource,
+    pub(crate) confidence: ObservationConfidence,
+}
+
 impl ImeStateHub {
     /// デフォルト値で初期化する。
     pub(crate) fn new() -> Self {
@@ -582,7 +599,11 @@ impl ImeStateHub {
         let effective = self.effective_open();
         let off_drift_active = matches!(
             self.check_drift_correction(now, self.explicit_intent()),
-            Some((false, true, _))
+            Some(DriftCorrection {
+                desired: false,
+                observed: true,
+                ..
+            })
         );
         let gated = awase::platform::WarmupImeOn::from_applied_or_belief_unless_off_drift(
             applied_open,
@@ -860,13 +881,21 @@ impl ImeStateHub {
 
     /// desired ≠ observed ドリフトが補正閾値を超えているか判定し、超えていれば補正情報を返す。
     ///
-    /// 戻り値: `Some((desired, observed, duration_ms))` — 補正が必要な場合
+    /// 戻り値: 補正が必要な場合 `Some(DriftCorrection { .. })`。
     /// `explicit_intent`: [`Self::explicit_intent`] の値をそのまま渡す。
+    ///
+    /// BUG-113残置課題（2026-09-06）: 従来 `(bool, bool, u64)` タプルだったが、
+    /// `ir_apply_drift_correction`側でconv由来drift（`ConvOpenInference`）を
+    /// 「明示意図エピソードあたり1送信」に絞るために`source`/`confidence`を
+    /// 追加した構造体に変えた。**判定ロジック自体は1行も変えていない**——
+    /// `resolve_warmup_ime_on`が同じ述語を`matches!(.., Some(DriftCorrection
+    /// { desired: false, observed: true, .. }))`として使うため、旧
+    /// `Some((false, true, _))`とビット同値であること（ADR-132/INV-B1'）。
     pub(crate) fn check_drift_correction(
         &self,
         now: std::time::Instant,
         explicit_intent: Option<bool>,
-    ) -> Option<(bool, bool, u64)> {
+    ) -> Option<DriftCorrection> {
         let desired = self.shadow_model.desired_open();
 
         let dur = self.shadow_model.observations.drift_duration(now)?;
@@ -904,7 +933,13 @@ impl ImeStateHub {
             return None;
         }
 
-        Some((desired, trusted.open, dur.as_millis() as u64))
+        Some(DriftCorrection {
+            desired,
+            observed: trusted.open,
+            duration_ms: dur.as_millis() as u64,
+            source: trusted.source,
+            confidence: trusted.confidence,
+        })
     }
 
     /// IME apply 完了を記録する（D: generation 照合 dispatch）。
@@ -2096,7 +2131,9 @@ mod tests {
         let now = std::time::Instant::now();
         let explicit_intent = ps.ime.explicit_intent();
         match ps.ime.check_drift_correction(now, explicit_intent) {
-            Some((desired, observed, _dur_ms)) => {
+            Some(DriftCorrection {
+                desired, observed, ..
+            }) => {
                 assert!(!desired, "desired は false のまま保持されている");
                 assert!(observed, "conv 推論が observed=true として記録されている");
             }
