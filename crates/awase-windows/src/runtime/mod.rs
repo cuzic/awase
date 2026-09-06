@@ -14,7 +14,7 @@ pub(crate) mod open_chain;
 pub(crate) mod outbox;
 mod transport;
 
-pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
+pub(crate) use transport::{DbeModeKeyContext, PassthroughQueue, PhysicalKeyDisposition};
 
 use crate::focus::FocusKind;
 use awase::config::ValidatedConfig;

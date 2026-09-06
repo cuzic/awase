@@ -363,7 +363,11 @@ pub unsafe fn send_ime_mode_key_with_shift_release_prefix(
         // いるため、OS 側の状態は synthetic 側でしか更新できない）。右Shift
         // 起点の緊急解除で OS/GJI から見た Shift が押下中のまま残ると、決定0
         // M4 が実機で確定させた「Shift 押下中は DBE キーの KeyDown 自体が
-        // フックに配送されない」条件を踏み、脱出経路そのものが不発になる。
+        // フックに配送されない」条件（**awase 自身が SendInput する scan=0 の
+        // `VK_DBE_ALPHANUMERIC` について実測したもの**——BUG-116/ADR-137 で
+        // 確認した「物理 scan 0x70 由来の `VK_DBE_KATAKANA` は Shift 押下中でも
+        // 正常にフックへ配送される」とは対象が異なり矛盾しない）を踏み、
+        // 脱出経路そのものが不発になる。
         // 左右両方の synthetic Shift up を送る（KeyUp の重複は無害、既存の
         // 復元経路と同じ根拠）。
         inputs.push(make_scan_key_input(VK_LSHIFT, true, IME_KANJI_MARKER));
