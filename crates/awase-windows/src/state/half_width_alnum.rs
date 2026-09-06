@@ -135,11 +135,6 @@ impl HalfWidthAlnumState {
         self.entry_policy = policy;
     }
 
-    #[must_use]
-    pub const fn policy(&self) -> HalfWidthAlnumTogglePolicy {
-        self.entry_policy
-    }
-
     // ── 物理キー観測 ──────────────────────────────────────────────────
 
     /// Shift以外の物理キーDownで、単独タップ候補を左右対称に折る。
@@ -149,10 +144,10 @@ impl HalfWidthAlnumState {
     /// vkから「反対側の候補を折る」左右判定ロジックのみを持つ——engine層の
     /// イベント種別の意味論をstate層に持ち込まないため。
     pub fn note_physical_key_down(&mut self, vk: VkCode) {
-        if vk.0 != crate::vk::VK_LSHIFT.0 {
+        if vk != crate::vk::VK_LSHIFT {
             self.left_tap_armed = false;
         }
-        if vk.0 != crate::vk::VK_RSHIFT.0 {
+        if vk != crate::vk::VK_RSHIFT {
             self.right_tap_armed = false;
         }
     }
@@ -193,7 +188,12 @@ impl HalfWidthAlnumState {
     /// 両方を `mem::take` している。`side` だけ disarm する実装に変えると
     /// BUG-25追補11の左右非対称（右Shiftチョードが常にExit扱いだった不具合）
     /// が再発するため、「両方disarmする」ことをメソッド名自体に刻む。
-    pub fn take_shift_up_kind_disarming_both(&mut self, side: ShiftSide) -> ShiftKeyUpKind {
+    ///
+    /// モジュールprivate（`pub`ではない）: entry/exit判定は必ず`on_shift_up`
+    /// を経由させ、この判定だけを外部から個別に呼んで`on_shift_up`の
+    /// policy/entry_ime_ok判定を迂回できないようにする（テストは同一
+    /// モジュール内の子`mod tests`からアクセスするため`pub`は不要）。
+    fn take_shift_up_kind_disarming_both(&mut self, side: ShiftSide) -> ShiftKeyUpKind {
         let was_left = std::mem::take(&mut self.left_tap_armed);
         let was_right = std::mem::take(&mut self.right_tap_armed);
         match side {
@@ -218,13 +218,16 @@ impl HalfWidthAlnumState {
 
     /// Shift KeyUp を起点に「次に何をすべきか」を計画する。
     ///
-    /// `entry_ime_ok` は「IME がかな入力可能・engine が有効」等、
-    /// このモジュールが直接観測しない外部条件（`ImeStateHub`/`Engine`/
-    /// `Output::conv_mutation_allowed`）を呼び出し元が事前にまとめた1個の
-    /// bool。`uses_imc_conv_write` はアクティブIMEがMS-IME（IMC write可）
-    /// かどうか——`entry_policy` が `MsImeOnly` のときの entry 可否と、
-    /// Enter時にIMC書き込み経路とGJI SendInput経路のどちらを選ぶかの
-    /// **両方**に使う。
+    /// `entry_ime_ok` は `effective_open() && is_japanese_ime() &&
+    /// is_user_enabled()` の3条件のみをまとめた1個のbool——このモジュールが
+    /// 直接観測しない外部条件（`ImeStateHub`/`Engine`）を呼び出し元が事前に
+    /// 集約したもの。**`Output::conv_mutation_allowed` は含まない**——
+    /// conv書込権限はentry条件ではなく、呼び出し元
+    /// `kp_stage_shift_conv_guard` 側の disarm_guard（一度 arm_guard した
+    /// pending を降ろす側）にのみ効く、別軸の判定である。`uses_imc_conv_write`
+    /// はアクティブIMEがMS-IME（IMC write可）かどうか——`entry_policy` が
+    /// `MsImeOnly` のときの entry 可否と、Enter時にIMC書き込み経路とGJI
+    /// SendInput経路のどちらを選ぶかの**両方**に使う。
     pub fn on_shift_up(
         &mut self,
         side: ShiftSide,
@@ -419,32 +422,76 @@ mod tests {
     }
 
     /// 左右非対称の再発防止テスト（BUG-25追補11型）: `note_physical_key_down`
-    /// は反対側の候補**だけ**を折り、`take_shift_up_kind_disarming_both` は
-    /// 呼んだ側に関わらず**必ず両方**をdisarmする。
+    /// は反対側の候補**だけ**を折り、自分自身の候補は生き残る。
+    /// `take_shift_up_kind_disarming_both` は呼んだ側に関わらず**必ず両方**を
+    /// disarmする。
+    ///
+    /// m2（Opus敵対的レビュー指摘）: 旧実装は `arm_tap(Right)` を
+    /// `note_physical_key_down(VK_RSHIFT)` の**後**に呼んでいたため、
+    /// `note_physical_key_down` を「無条件に両方false」へ変異させても
+    /// このテストは通ってしまっていた（ミューテーション耐性ゼロ）。
+    /// `arm_tap` を検証対象の呼び出しより**前**に置き、直後に
+    /// `take_shift_up_kind_disarming_both` で確認する順序に組み替える。
     #[test]
     fn note_physical_key_down_folds_only_the_opposite_side_bug25_addendum11() {
-        let mut state = HalfWidthAlnumState::default();
-        state.arm_tap(ShiftSide::Left);
-        // VK_RSHIFT の物理KeyDownは左候補のみ折る（`vk != VK_LSHIFT`）。
-        state.note_physical_key_down(crate::vk::VK_RSHIFT);
-        state.arm_tap(ShiftSide::Right);
-
-        assert_eq!(
-            state.take_shift_up_kind_disarming_both(ShiftSide::Left),
-            ShiftKeyUpKind::LeftChord,
-            "note_physical_key_down(VK_RSHIFT) は左候補のみ折るはずなので、\
-             左Shiftのkeyupはチョード扱いになるべき"
-        );
-        // 上の呼び出しで右候補も含め両方disarmされているため、直後に右を
-        // 取るとチョード扱いになる（`take_shift_up_kind_disarming_both` が
-        // 呼んだ側だけをdisarmする実装に変えると、ここが `RightTap` に
-        // なってしまい退行を検知できなくなる）。
-        assert_eq!(
-            state.take_shift_up_kind_disarming_both(ShiftSide::Right),
-            ShiftKeyUpKind::RightChord,
-            "take_shift_up_kind_disarming_both は呼んだ側に関係なく両方を\
-             disarmするべき"
-        );
+        // ケース1: VK_RSHIFT の物理KeyDownは左候補を折る（`vk != VK_LSHIFT`）。
+        {
+            let mut state = HalfWidthAlnumState::default();
+            state.arm_tap(ShiftSide::Left);
+            state.note_physical_key_down(crate::vk::VK_RSHIFT);
+            assert_eq!(
+                state.take_shift_up_kind_disarming_both(ShiftSide::Left),
+                ShiftKeyUpKind::LeftChord,
+                "note_physical_key_down(VK_RSHIFT) は左候補を折るはずなので、\
+                 左Shiftのkeyupはチョード扱いになるべき"
+            );
+        }
+        // ケース2: VK_RSHIFT 自身の物理KeyDownは右候補を折らない
+        // （`vk != VK_RSHIFT` が false になるため）。arm_tap を
+        // note_physical_key_down より前に置くことで、「無条件に両方false」
+        // という変異にもこのテストが反応する（変異があればここが
+        // RightChordになり失敗する）。
+        {
+            let mut state = HalfWidthAlnumState::default();
+            state.arm_tap(ShiftSide::Right);
+            state.note_physical_key_down(crate::vk::VK_RSHIFT);
+            assert_eq!(
+                state.take_shift_up_kind_disarming_both(ShiftSide::Right),
+                ShiftKeyUpKind::RightTap,
+                "note_physical_key_down(VK_RSHIFT) は右候補（自分自身の\
+                 KeyDown）を折ってはならない"
+            );
+        }
+        // ケース3（新規）: 対称に、VK_LSHIFT 自身の物理KeyDownは左候補を
+        // 折らない。
+        {
+            let mut state = HalfWidthAlnumState::default();
+            state.arm_tap(ShiftSide::Left);
+            state.note_physical_key_down(crate::vk::VK_LSHIFT);
+            assert_eq!(
+                state.take_shift_up_kind_disarming_both(ShiftSide::Left),
+                ShiftKeyUpKind::LeftTap,
+                "note_physical_key_down(VK_LSHIFT) は左候補（自分自身の\
+                 KeyDown）を折ってはならない"
+            );
+        }
+        // ケース4: take_shift_up_kind_disarming_both は呼んだ側に関係なく
+        // 必ず両方をdisarmする（左を取った直後に右を取るとチョード扱いに
+        // なる——`side` だけ disarm する実装に変えると `RightTap` になって
+        // しまい退行を検知できなくなる）。
+        {
+            let mut state = HalfWidthAlnumState::default();
+            state.arm_tap(ShiftSide::Left);
+            state.arm_tap(ShiftSide::Right);
+            let _ = state.take_shift_up_kind_disarming_both(ShiftSide::Left);
+            assert_eq!(
+                state.take_shift_up_kind_disarming_both(ShiftSide::Right),
+                ShiftKeyUpKind::RightChord,
+                "take_shift_up_kind_disarming_both は呼んだ側に関係なく\
+                 両方をdisarmするべき（直前のLeft呼び出しで既にdisarm済み\
+                 のはず）"
+            );
+        }
     }
 
     /// GJI失敗時の巻き戻し: `begin_restore_kana` → `rearm_after_failed_gji_exit`
@@ -474,9 +521,16 @@ mod tests {
 
     /// Enter Effectの真理値表: `entry_policy`(`Off`/`MsImeOnly`/`All`) ×
     /// `uses_imc_conv_write`(true/false) × `toggle_held`(true/false) ×
-    /// `ShiftKeyUpKind`4種の全組み合わせで `on_shift_up` の戻り値が
-    /// `plan_half_width_alnum_action` + policy 判定から導出される期待値と
-    /// 一致することを確認する。
+    /// `entry_ime_ok`(true/false) × `ShiftKeyUpKind`4種の全組み合わせで
+    /// `on_shift_up` の戻り値が `plan_half_width_alnum_action` + policy 判定
+    /// から導出される期待値と一致することを確認する。
+    ///
+    /// m3（Opus敵対的レビュー指摘）: 旧実装は `entry_ime_ok` を常に `true`
+    /// 固定していたため、`on_shift_up` 内の
+    /// `policy_allows_entry && entry_ime_ok` の `&&` を `||` へ変異させても
+    /// 全パターンが通ってしまっていた（ミューテーション耐性ゼロ）。
+    /// `entry_ime_ok` を5軸目としてtrue/false両方回し、期待値側の
+    /// `toggle_entry_supported` 計算にも同じ `&&` を反映する。
     #[test]
     fn enter_effect_truth_table_across_policy_ime_and_toggle_state() {
         for policy in [
@@ -486,51 +540,57 @@ mod tests {
         ] {
             for uses_imc in [true, false] {
                 for toggle_active in [true, false] {
-                    for kind in [
-                        ShiftKeyUpKind::LeftTap,
-                        ShiftKeyUpKind::LeftChord,
-                        ShiftKeyUpKind::RightTap,
-                        ShiftKeyUpKind::RightChord,
-                    ] {
-                        let side = match kind {
-                            ShiftKeyUpKind::LeftTap | ShiftKeyUpKind::LeftChord => ShiftSide::Left,
-                            ShiftKeyUpKind::RightTap | ShiftKeyUpKind::RightChord => {
-                                ShiftSide::Right
-                            }
-                        };
-                        let mut state = HalfWidthAlnumState::default();
-                        state.set_policy(policy);
-                        if toggle_active {
-                            state.commit_enter_imc();
-                        }
-                        if matches!(kind, ShiftKeyUpKind::LeftTap | ShiftKeyUpKind::RightTap) {
-                            state.arm_tap(side);
-                        }
-
-                        let effect = state.on_shift_up(side, true, uses_imc);
-
-                        let policy_allows_entry = match policy {
-                            HalfWidthAlnumTogglePolicy::Off => false,
-                            HalfWidthAlnumTogglePolicy::MsImeOnly => uses_imc,
-                            HalfWidthAlnumTogglePolicy::All => true,
-                        };
-                        let action = plan(kind, toggle_active, policy_allows_entry);
-                        let expected = match action {
-                            HalfWidthAlnumAction::None => Effect::Nothing,
-                            HalfWidthAlnumAction::Enter => {
-                                if uses_imc {
-                                    Effect::EnterViaImcWrite
-                                } else {
-                                    Effect::EnterViaGjiSendInput
+                    for entry_ime_ok in [true, false] {
+                        for kind in [
+                            ShiftKeyUpKind::LeftTap,
+                            ShiftKeyUpKind::LeftChord,
+                            ShiftKeyUpKind::RightTap,
+                            ShiftKeyUpKind::RightChord,
+                        ] {
+                            let side = match kind {
+                                ShiftKeyUpKind::LeftTap | ShiftKeyUpKind::LeftChord => {
+                                    ShiftSide::Left
                                 }
+                                ShiftKeyUpKind::RightTap | ShiftKeyUpKind::RightChord => {
+                                    ShiftSide::Right
+                                }
+                            };
+                            let mut state = HalfWidthAlnumState::default();
+                            state.set_policy(policy);
+                            if toggle_active {
+                                state.commit_enter_imc();
                             }
-                            HalfWidthAlnumAction::Exit => Effect::ExitRestoreKana,
-                        };
-                        assert_eq!(
-                            effect, expected,
-                            "policy={policy:?} uses_imc={uses_imc} \
-                             toggle_active={toggle_active} kind={kind:?}"
-                        );
+                            if matches!(kind, ShiftKeyUpKind::LeftTap | ShiftKeyUpKind::RightTap) {
+                                state.arm_tap(side);
+                            }
+
+                            let effect = state.on_shift_up(side, entry_ime_ok, uses_imc);
+
+                            let policy_allows_entry = match policy {
+                                HalfWidthAlnumTogglePolicy::Off => false,
+                                HalfWidthAlnumTogglePolicy::MsImeOnly => uses_imc,
+                                HalfWidthAlnumTogglePolicy::All => true,
+                            };
+                            let toggle_entry_supported = policy_allows_entry && entry_ime_ok;
+                            let action = plan(kind, toggle_active, toggle_entry_supported);
+                            let expected = match action {
+                                HalfWidthAlnumAction::None => Effect::Nothing,
+                                HalfWidthAlnumAction::Enter => {
+                                    if uses_imc {
+                                        Effect::EnterViaImcWrite
+                                    } else {
+                                        Effect::EnterViaGjiSendInput
+                                    }
+                                }
+                                HalfWidthAlnumAction::Exit => Effect::ExitRestoreKana,
+                            };
+                            assert_eq!(
+                                effect, expected,
+                                "policy={policy:?} uses_imc={uses_imc} \
+                                 toggle_active={toggle_active} \
+                                 entry_ime_ok={entry_ime_ok} kind={kind:?}"
+                            );
+                        }
                     }
                 }
             }

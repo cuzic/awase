@@ -1521,9 +1521,11 @@ impl Runtime {
         let active_ime_kind = crate::tsf::observer::tsf_obs().active_ime_kind();
         let uses_imc_conv_write =
             active_ime_kind == crate::tsf::observer::ActiveImeKind::MicrosoftIme;
-        // かな入力コンテキストのみ: IME ON・engine 有効・conv 書込権限。
-        // policy（entry_policy、`HalfWidthAlnumState`内部で判定）とは独立な
-        // 外部条件をまとめて1個のboolにする。
+        // かな入力コンテキストのみ: IME ON・日本語IME・engine 有効の3条件
+        // （conv 書込権限は含まない——それは `kp_stage_shift_conv_guard` 側の
+        // disarm_guard 判定にのみ効く別軸の条件）。policy（entry_policy、
+        // `HalfWidthAlnumState`内部で判定）とは独立な外部条件をまとめて
+        // 1個のboolにする。
         let entry_ime_ok = self.platform_state.ime.effective_open()
             && self.platform_state.ime.belief.is_japanese_ime()
             && self.engine.is_user_enabled();
