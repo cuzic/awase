@@ -169,21 +169,47 @@ fn input_may_mutate_conv(input: &INPUT) -> bool {
     crate::vk::vk_may_mutate_conv(awase::types::VkCode(ki.wVk.0))
 }
 
-/// `input` が awase 自身の IME actuation 送信（`send_ime_mode_key` 等）かどうかを
-/// `dwExtraInfo` のマーカーで判定する（ADR-140 Step0 診断ログ用）。
+/// `input` が awase 自身の IME actuation 送信（`send_ime_mode_key` 等、または
+/// TSF eager warmup の `VK_IME_ON` 送信）かどうかを `dwExtraInfo` のマーカーで
+/// 判定する（ADR-140 Step0 診断ログ用）。判定できた場合、どちらのマーカー由来かを
+/// ログの `kind=` に出せるよう返す。
 ///
 /// VK の固定リストでは判定しない: `keys.engine_on_ime_key`/`engine_off_ime_key`
 /// （`src/config.rs:550-556`）はユーザー設定可能な自由文字列で `VkCodeExt::from_name`
 /// 経由で F13-F24 等にもなりうるため、VK 値の固定リストでは設定済みマシンで
 /// actuation が不可視になり、測定したい対象が測定できなくなる本末転倒を招く。
-fn input_is_ime_actuation(input: &INPUT) -> bool {
+///
+/// **`IME_KANJI_MARKER` だけでは不十分**（ADR-140コードレビュー指摘、MAJOR）:
+/// `tsf/send.rs::send_eager_warmup_vk_pair`（ADR-140が確認済みの3経路のうち
+/// warmup経路(c)）は`tsf/output.rs::make_tsf_key_input`経由で`TSF_MARKER`を
+/// 使い`IME_KANJI_MARKER`を使わないため、`IME_KANJI_MARKER`単独判定だと
+/// この経路のVK_IME_ON送信が診断ログに一切出ない「ログが無い＝発火していない」
+/// という誤読を招く（この診断が防ごうとしている罠そのもの）。
+///
+/// **`TSF_MARKER`単独では判定しない**: このマーカーは通常のローマ字文字出力
+/// （`output/key_injector.rs::InjectionMode::Tsf`）やF2 warmup
+/// （`VK_DBE_HIRAGANA`）にも広く使われる「サブシステム単位」のマーカーであり、
+/// これだけで actuation と判定すると通常の文字出力のたびに誤検出（ノイズ）を
+/// 生む。`TSF_MARKER`は`VK_IME_ON`/`VK_IME_OFF`（open/close軸）と組み合わさった
+/// 場合に限定して actuation とみなす——これが`send_eager_warmup_vk_pair`が
+/// 実際に送る唯一の組み合わせ。
+fn ime_actuation_marker_kind(input: &INPUT) -> Option<&'static str> {
     if input.r#type != INPUT_KEYBOARD {
-        return false;
+        return None;
     }
     // SAFETY: r#type == INPUT_KEYBOARD を確認済みなので Anonymous.ki は
     //         このユニオンの有効なアクティブフィールドである。
     let ki = unsafe { input.Anonymous.ki };
-    ki.dwExtraInfo == crate::tsf::output::IME_KANJI_MARKER
+    if ki.dwExtraInfo == crate::tsf::output::IME_KANJI_MARKER {
+        return Some("kanji_marker");
+    }
+    let vk = awase::types::VkCode(ki.wVk.0);
+    if ki.dwExtraInfo == crate::tsf::output::TSF_MARKER
+        && (vk == crate::vk::VK_IME_ON || vk == crate::vk::VK_IME_OFF)
+    {
+        return Some("tsf_marker_warmup");
+    }
+    None
 }
 
 /// `SendInput` の安全ラッパー（`size_of` キャストを安全に処理）
@@ -204,9 +230,9 @@ pub(crate) fn send_input_safe(inputs: &[INPUT]) -> u32 {
     if inputs.iter().any(input_may_mutate_conv) {
         crate::conv_mutation::bump();
     }
-    if inputs.iter().any(input_is_ime_actuation) {
+    if let Some(kind) = inputs.iter().find_map(ime_actuation_marker_kind) {
         log::debug!(
-            "[ime-io] actuation SendInput issue_us={}",
+            "[ime-io] actuation SendInput kind={kind} issue_us={}",
             crate::hook::now_timestamp_us()
         );
     }

@@ -97,7 +97,7 @@ Explore 2体 + Opus設計2体による深い調査（相互批判による収束
      という過去のインシデントを記録している。したがって本ADRは
      **「少なくとも3つの経路が確認されている」とのみ記載し、「経路は
      3つで全てである」という確定的な主張はしない**——`runtime/
-     key_pipeline.rs`のshadow-toggle経路や`ime_controller.rs:431`の
+     key_pipeline.rs`のshadow-toggle経路や`runtime/mod.rs:951`の
      `try_force_on_bootstrap`等、未監査の直接呼び出し箇所が残っている
      可能性がある。Step 1着手前には改めてこの経路一覧を洗い出し直す
      必要がある。
@@ -160,12 +160,19 @@ ADR-138決定2（呼び出し元ごとの計装）は依然として未実装の
 以下を追加する（実装詳細はコード参照）:
 
 - `crates/awase-windows/src/win32.rs::send_input_safe`: 送信する`INPUT`が
-  IME actuationか否かを`dwExtraInfo == tsf::output::IME_KANJI_MARKER`
-  で判定し（VKの固定リストでは`keys.engine_on_ime_key`/
-  `engine_off_ime_key`がユーザー設定可能な自由文字列でF13-F24等にも
-  なりうるため、設定済みマシンでactuationが不可視になり本末転倒——
-  `src/config.rs:550-556`参照）、該当する場合に`[ime-io] actuation
-  SendInput issue_us=...`をdebugログ出力する。
+  IME actuationか否かを`dwExtraInfo`のマーカーで判定する（VKの固定
+  リストでは`keys.engine_on_ime_key`/`engine_off_ime_key`がユーザー
+  設定可能な自由文字列でF13-F24等にもなりうるため、設定済みマシンで
+  actuationが不可視になり本末転倒——`src/config.rs:550-556`参照）。
+  `dwExtraInfo == tsf::output::IME_KANJI_MARKER`（決定1(a)(b)の
+  `send_ime_mode_key`系）に加え、**`dwExtraInfo == tsf::output::
+  TSF_MARKER`かつVKが`VK_IME_ON`/`VK_IME_OFF`の組み合わせ**
+  （決定1(c)の`send_eager_warmup_vk_pair`）も判定対象に含める
+  （コードレビュー指摘、MAJOR：`IME_KANJI_MARKER`単独では warmup経路が
+  不可視になっていた。`TSF_MARKER`は通常の文字出力にも広く使われる
+  サブシステム単位のマーカーのため、VK限定と組み合わせてノイズを
+  避けている）。該当する場合に`[ime-io] actuation SendInput
+  kind=<kanji_marker|tsf_marker_warmup> issue_us=...`をdebugログ出力する。
 - `crates/awase-windows/src/imm.rs::send_ime_control`: 既存の
   `start_ms`/`end_ms`（`current_tick_ms()`基準、`send_health::record`が
   依存する既存のサーキットブレーカ用計測）は変更せず、別に
@@ -180,18 +187,19 @@ Step 1の設計候補は複数存在し収束途上である。将来的な排�
 （例えば`IME_ACTUATION_QUIET_MS`のような名前になる可能性がある）の
 **値は本ADRでは一切決めない。書く場合は必ず「未定（Step 0の実測前に
 値を書かない——`tuning-constants.md`の盲目的エスカレーション回避の
-ため）」と明記する。例示的な数値（「例: 50ms」等）も絶対に書かない**
-——一度書かれた数値は測定なしに後続セッションがそのまま採用してしまう
-「アンカー効果」がこのリポジトリで繰り返し起きている（Chrome probe
-定数の20→100→200→350msエスカレーション、`tuning-constants.md`参照）。
+ため）」と明記する。イラストレーション目的であっても具体的な数値を
+一切書かない**——一度でも数値が書かれると、測定なしに後続セッションが
+それをそのまま採用してしまう「アンカー効果」がこのリポジトリで繰り返し
+起きている（Chrome probe定数のエスカレーション事例、
+`tuning-constants.md`参照。数値そのものも本ADRでは引用しない）。
 
 ## Step 0 データ収集プロトコル
 
 収集するログは`tuning-constants.md`が要求する「測ったもの／数値／導出」
 の3点にそのまま対応するように設計している:
 
-- **測ったもの**: (1) GJI actuation（`SendInput`、`IME_KANJI_MARKER`
-  判定）のissueタイムスタンプ、(2) probe/actuation双方の
+- **測ったもの**: (1) GJI actuation（`SendInput`、`IME_KANJI_MARKER`/
+  `TSF_MARKER`+VK判定）のissueタイムスタンプ、(2) probe/actuation双方の
   `SendMessageTimeoutW`（`WM_IME_CONTROL`）のissueタイムスタンプと
   完了までのelapsed。両者とも`now_timestamp_us()`（`Instant`/QPC基準）
   で同一時間軸に載る。
