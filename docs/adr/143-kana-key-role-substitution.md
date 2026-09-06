@@ -31,17 +31,28 @@ architect役・premortem役との追加協議（実質r11、途中でさらにBl
    テーブル引きする」実装だと、かなスロットを一切設定していないユーザー
    でもBUG-52/BUG-116（ADR-137）の既存挙動が壊れることが判明した。
    「恒等＝テーブル引き自体をスキップしvkを書き換えない」に訂正した。
-5. **【追加で発見・修正、Major相当】injected KeyUpによるラッチ迂回**
+5. **【追加で発見・修正、Major相当×3】injected KeyUpによるラッチ迂回**
    （決定2・決定4参照）: `to`=かな方向のDownがSuppressされた後、リレー
    ツール等のinjected KeyUpが決定2の静的3条件（`!event.injected`）を
    満たさずラッチを迂回し、対応するDownを持たない0xF2のKeyUpがOSへ
-   送出されうる経路を発見。当初`confirmed_target == Some(VK_DBE_
-   HIRAGANA)`を条件にしたが、これは「Downは常にSuppressされる」という
-   r3時点の前提に乗っており、決定2のr4以降（`actuation_will_fire`が
-   偽のフォールスルー）ではDownがAllowされOSへ実際に配送される場合が
-   あるため誤り（architect役再指摘）。**条件をラッチの値そのもの
-   （`Some(true)`＝Suppressのときのみ）に訂正**し、決定2・決定4の
-   両方を修正した。
+   送出されうる経路を発見。3段階で訂正した:
+   (a) 当初`confirmed_target == Some(VK_DBE_HIRAGANA)`を条件にしたが、
+   これは「Downは常にSuppressされる」というr3時点の前提に乗っており、
+   決定2のr4以降（`actuation_will_fire`が偽のフォールスルー）では
+   DownがAllowされOSへ実際に配送される場合があるため誤り（architect役
+   指摘）→条件をラッチの値そのもの（`Some(true)`＝Suppressのときのみ）
+   に訂正。
+   (b) その訂正版も「hook.rs側のvk変換自体を止める」実装は不可能と
+   判明（premortem役R11-M1指摘——変換はフックスレッド、ラッチは
+   メインスレッドの値でクロススレッド参照になる）→例外の置き場所を
+   `plan()`側のKeyUp専用Suppress分岐へ移し、hook.rs側の変換（ADR-141
+   決定1「適用は無条件」）自体には触れない形に再訂正。
+   (c) この移動によりinjected KeyUpがラッチを**読む**ようになった
+   ため、ラッチの**クリア**規則も`!event.injected`でゲートしないと、
+   injected Upが先にラッチをクリアし直後の物理Upがフォールスルーする
+   形で同じ問題が別経路から復活すると判明（architect役指摘）→クリアは
+   非注入のKeyUpのみ、読み取りはKeyUpに限りinjectedにも開く、という
+   形に最終確定した。
 
 Phase A実装時の受け入れ条件として以下の実機確認が必要（決定8のテスト
 計画に加えて）: 代入先キー押下でGJI・MS-IME双方の実IMEが実際にONになる
@@ -771,15 +782,33 @@ press`は安全な3キー・かなスロットのどちらについても、そ�
 不要になった）。
 
 **ラッチを参照・更新してよいイベントの限定（r7追加、premortem役R6-M2
-指摘への対応）**: ラッチの読み書きは、静的3条件（`event.vk_code ==
-VK_DBE_HIRAGANA && !event.injected && event.scan_code != SCAN_KANA`）
-を満たすイベントに限る。満たさないイベント（物理かなキー自身の押下
-〈`scan_code == SCAN_KANA`〉、他プロセスrelayのinjected 0xF2など）は
-ラッチを一切読まず、既存判定へ進む。この限定が無いと、取り残された
-staleなラッチが無関係なイベントに適用され、物理かなキーでは本来
+指摘への対応。2026-09-06訂正、architect役Minor指摘）**: ラッチの
+**書き込み・クリア**は、静的3条件（`event.vk_code == VK_DBE_HIRAGANA
+&& !event.injected && event.scan_code != SCAN_KANA`）を満たすイベント
+に限る。満たさないイベント（物理かなキー自身の押下〈`scan_code ==
+SCAN_KANA`〉、他プロセスrelayのinjected 0xF2など）はラッチを書き込み・
+クリアせず、既存判定へ進む。この限定が無いと、取り残されたstaleな
+ラッチが無関係なイベントに適用され、物理かなキーでは本来
 `is_tsf_mode && f2_warmup_owned`で判定すべきものが無条件Suppressに
 なり（MS-IME環境でBUG-10の食い逃げ）、injected relayではADR-119回帰が
-別経路で復活する。
+別経路で復活する。**訂正**: **読み取り**については、KeyUpに限り
+injectedなイベントも許す（下記「injected KeyUpがラッチを迂回する
+ケースへの対処」参照——役割代入で確定した押下の解放に対応するための
+決定2のKeyUp専用Suppress分岐）。R6-M2が懸念したstaleラッチの誤適用は、
+書き込み・クリアを従来どおり非注入に限定していれば維持される
+（読み取りだけをKeyUpに限り開いても、ラッチの値自体は非注入イベント
+でしか変化しないため、無関係なイベントに古い値が誤って「新規に
+書き込まれる」ことは起きない）。
+
+**既知の制限（architect役指摘、2026-09-06追加）**: 読み取りを
+injectedへ開いた副作用として、ローカルで代入先キーを押している最中
+（ラッチが`Some(true)`）に、リレーツールが（awaseの変換を経由しない）
+生の0xF2 KeyUpを送ってきた場合も、この分岐でSuppressされる。awase
+自身が変換したUp（scanが物理変換キーの値等）とリレーの生Up（scan=0）
+は理屈上区別できるが、新たな判別子を追加するほどの実害ではないと
+判断し、ADR-119「解釈しない入力は消費しない」に対する狭い例外として
+ここに記録する（発生窓が「ローカルの押下中」に限られるため、
+リモート側のキーが恒久的に無反応になるADR-119の被害像には至らない）。
 
 **injected KeyUpがラッチを迂回するケースへの対処（2026-09-06追加、
 architect役Major指摘・premortem役の対称な解法提案）**: 静的3条件は
@@ -805,26 +834,59 @@ delegateがturn-on以外〉にラッチが`Some(false)`＝Allowへフォール�
 injected Upの変換を止めると、OS側の0xF2が解放されないまま残り、対応
 する物理Upが上流ガードで失われると恒久的にstuckする）。
 
-**決定**: ラッチが`Some(true)`（Suppress）を保持している間は、
-そのスロットに対応するinjected KeyUpのvk変換（ADR-141決定1の「適用は
-無条件」の対象）自体を行わない（変換前のvkのまま、通常の非F2経路へ
-流す）。ラッチが`Some(false)`（Allow）の場合は、Downが実際にOSへ配送
-されているため、injected Upも従来どおり対称に変換する（変換を止めると
-ADR-142決定B7 r3→r4が防いだstuck keyが復活する）。これにより、
-Suppressされた押下でのみ静的3条件のフォールスルー先で0xF2として評価
-されることが無くなり、orphanな0xF2 KeyUpの送出が構造的に発生しなく
-なる。安全な3キー同士の代入（`to`が0xF2以外）には元々この例外は
-関係しない。
+**置き場所の訂正（2026-09-06、premortem役R11-M1指摘）**: 当初「ラッチが
+`Some(true)`の間はhook.rs挿入点でのvk変換自体を行わない」という案を
+検討したが、**これは実装不可能だった**——vk変換はADR-141決定1の挿入点
+（`hook.rs:1135`、フックスレッド）でのみ行われるのに対し、ラッチは
+`plan()`の呼び出し元（メインスレッドの`kp_run_inner`）に閉じた値で
+あり、フックスレッドから直接参照できない。「参照できない経路では
+安全側デフォルト（変換する）を適用する」を機械的に当てはめると、
+変換は常に行われることになり、この例外自体がデッドコードになって
+orphan 0xF2 KeyUpの問題が未解決のまま残ってしまう。
 
-なお「対称な例外」という表現は実態とややずれる——**変換自体の対称性は
-（Suppress時に限り）破れており、対称なのは「OSへの配送」の方**である
-（Downが未配送ならUpも出さない）。これは`plan()`の呼び出し元
-（メインスレッドの`kp_run_inner`）が保持するラッチの値を条件にする
-必要があるため、フックスレッド側（決定7-3のoverflow経路、決定5の
-swallow分岐）でこのラッチを直接参照できない場合は、安全側のデフォルト
-として「注入する」を選ぶ（未対のUpを1つ出す方が、stuck Downを残す
-よりも安全——ADR-141決定7-2の「stuck-trueは危険側だがstuck-falseは
-そうならない」という非対称に従う）。
+**決定（訂正版）**: 例外はhook.rs側の変換を止める形ではなく、
+**`plan()`側にKeyUp専用のSuppress分岐を追加する**形で実装する。
+orphan 0xF2 KeyUpが実際にOSへ届くのは`plan()`が`Allow`を返し
+`reinject()`が走る一点だけなので、そこをSuppressすればよい——変換
+自体（ADR-141決定1の「適用は無条件」）はhook.rs側で変更せず、
+変換後のvk=0xF2としてメインスレッドに届いた**後**、`plan()`が以下を
+追加条件としてSuppressを返す:
+
+```
+（決定2の追加分岐、KeyUpのみ）
+event.vk_code == VK_DBE_HIRAGANA
+  && event.injected
+  && event.scan_code != SCAN_KANA
+  && ラッチ == Some(true)        // Downがこの押下でSuppressされていた
+  → Suppress
+```
+
+ラッチが`Some(false)`（Downを配送済み）または`None`（不明）の場合は
+この分岐に入らず、既存のF2判定（`Allow`）へフォールスルーし、Upを
+通常どおり届ける——いずれも「stuck Downを作らない」安全側である。
+この分岐は`plan()`（メインスレッド）で完結するためラッチを問題なく
+参照でき、決定1の静的3条件（`!event.injected`）とは別の、KeyUp限定の
+追加分岐として実装する。ADR-119との関係: ここでSuppressするのは
+「Downを一度もOSへ配送していない押下のUp」に限られるため、ADR-119
+（issue #136）が守ろうとした「リモートのかなキーが完全に無反応になる」
+ケースには当たらない——リレーツール側から見ればDown自体が最初から
+awase側でSuppressされていた押下であり、Upだけを機能させる意味が無い。
+
+**危険度の優先順位（premortem役R11-m1指摘、2026-09-06追加）**:
+本ADR・ADR-141を通じて、stuck Down（危険——OSにキーが押しっぱなしの
+まま残る）とorphan/重複Up（無害側——BUG-46のKANJI系Up常時Suppress・
+`deferred_vks`残留inertと同型の既に受容された性質）のどちらかを選ぶ
+局面では、常に**「stuck Downを避けることを優先し、orphan/重複Upは
+許容する」**という優先順位に従う。上記の`plan()`分岐・決定4のKeyUp
+注入抑止・ADR-141決定1の重複KeyUp許容は、いずれもこの単一の優先順位
+から導かれる（個別に矛盾して見える場合は、この優先順位に立ち返って
+判断する）。
+
+**ラッチ`None`の扱い（premortem役R11-m2指摘）**: 決定4のKeyUp注入
+抑止・上記`plan()`分岐とも、ラッチが`Some(true)`である場合にのみ
+抑止/Suppressし、それ以外（`Some(false)`・`None`）はすべて通常どおり
+注入/Allowする、という単一の規則で統一する（「`Some(true)`以外は
+すべて安全側」という形が最も誤読が少ない）。
 
 **ラッチのスレッド安全性**: `plan()`の呼び出しはメインスレッドの
 `kp_run_inner`に閉じており、このラッチもそこに閉じた値（`plan()`の
@@ -929,10 +991,18 @@ event.vk_code == VK_DBE_HIRAGANA
 を格納する。auto-repeat KeyDown（`role_substitution_fresh_press`が
 `Some(false)`かつラッチが`Some`）とKeyUpは、この確定済みラッチを
 そのまま踏襲し再評価しない。
-0xF2のKeyUpを観測した時点で、`plan()`の戻り値や早期returnの分岐に
-関わらず`kp_run_inner`側でラッチをクリアする（r8追加、architect役
-Minor2指摘: ラッチのライフサイクルを`plan()`内部の分岐——InputRelay
-早期returnを含む——に依存させない）。KeyUp到達時点でラッチが`None`
+**非注入の**0xF2のKeyUpを観測した時点で、`plan()`の戻り値や早期return
+の分岐に関わらず`kp_run_inner`側でラッチをクリアする（r8追加、
+architect役Minor2指摘: ラッチのライフサイクルを`plan()`内部の分岐
+——InputRelay早期returnを含む——に依存させない。**2026-09-06訂正
+（architect役Major指摘）**: クリアの条件に`!event.injected`を明記
+する——後述のinjected KeyUp用Suppress分岐がラッチを**読む**ように
+なったため、クリアまでinjectedイベントに開くと、injectedなUpが
+先にラッチをクリアしてしまい、直後の物理Upが`None`を読んでフォール
+スルーし、対応するDownを持たない0xF2のKeyUpがOSへ出る——今回の
+修正で防ごうとした問題がクリア経路から別途復活する。読み取りのみ
+KeyUpに限りinjectedへ開き、書き込み・クリアは従来どおり非注入に
+限定する）。KeyUp到達時点でラッチが`None`
 （異常系）の場合はSuppress側を安全側とする（r7追加、premortem役
 R6-m1指摘: BUG-46の「KANJI系KeyUpは常にSuppress」という既存の規律、
 `transport.rs:118-125`、に揃える。`None`のままAllowへフォールスルー
@@ -1296,6 +1366,18 @@ Suppressされる」というr3時点の前提に乗っていた。決定2のr4�
 のため、フックスレッド側の経路（決定7-3のoverflow経路等）でラッチを
 直接参照できない場合は、安全側のデフォルトとして「注入する」を選ぶ
 （未対のUpの方が、stuck Downより安全——ADR-141決定7-2の非対称に従う）。
+**決定7-3（フックスレッド）ではラッチを参照できないため、本規則により
+常に注入側になる——フックスレッドからラッチを参照する実装をしては
+ならない**（premortem役R11-m1補足、2026-09-06。r1の
+`KANA_DOWN_WAS_ALLOWED`と同じクロススレッド罠の再発防止）。なお決定5
+が新設する2つのswallow分岐は`SCAN_KANA_*`（`from`=かな方向、targetは
+安全な3キーのいずれかのvkであり0xF2にはならない）が対象であり、この
+0xF2限定の規則とは無関係——この規則が実際に効くのはADR-141決定7の
+5箇所のうち、かなスロット（`{KEY}_CONFIRMED_TARGET == Some(VK_DBE_
+HIRAGANA)`）に対する`reset_physical_key_state`・
+`clear_hook_latches_for_app_disable`（メインスレッド、ラッチ参照可）・
+`passthrough_or_swallow_for_impersonation`（フックスレッド、常に注入
+側）の3箇所のみである。
 **この例外はADR-141決定7自身への申し送りとしてADR-141本体にも参照
 ポインタを追加する**（ADR-142がr5で行ったのと同じ手当て——ADR-143だけ
 に書くと、ADR-141を単体で読む実装者が無条件でKeyUp注入を実装して
