@@ -1268,6 +1268,15 @@ impl Runtime {
                     vk if vk == crate::vk::VK_DBE_KATAKANA => {
                         self.engine.katakana_delegate_to_open_axis()
                     }
+                    // ADR-141: 無変換/変換もHiragana/Katakanaと対称に、
+                    // 実際に発火するdelegateの配線先を見る（CUSTOM keymap
+                    // でOff/Toggleに配線されている場合もあるため、VKの
+                    // 固定ハードウェア分類=actionをそのまま使ってはならない、
+                    // 上のコメント参照）。
+                    vk if vk == crate::vk::VK_CONVERT => self.engine.henkan_delegate_to_open_axis(),
+                    vk if vk == crate::vk::VK_NONCONVERT => {
+                        self.engine.muhenkan_delegate_to_open_axis()
+                    }
                     _ => None,
                 }
                 .unwrap_or(action)

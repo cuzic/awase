@@ -845,6 +845,13 @@ pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
         .set_muhenkan_delegate_to_open_axis(delegate_assignment.muhenkan);
     app.engine
         .set_henkan_delegate_to_open_axis(delegate_assignment.henkan);
+    // ADR-141（C2対策）: delegateと同じ値をshadow_action overrideにも
+    // 反映する。GJI側の`sync_gji_charset_autodetect`と同じ共有フィールド
+    // （`Runtime::henkan_shadow_override`/`muhenkan_shadow_override`）に
+    // 書き込むため、GJI→MS-IME遷移時はこの呼び出しが必ず後から上書きする
+    // （`sync_ime_kind_from_observation`がGJI側を先に呼ぶ順序、既存の
+    // delegate-to-open-axisと同じ順序依存）。
+    app.set_thumb_key_shadow_overrides(delegate_assignment.henkan, delegate_assignment.muhenkan);
 }
 
 /// IME 種別を観測値から pull し、warmup 戦略切替 + MS-IME 割当てチェックに反映する。

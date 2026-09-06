@@ -319,6 +319,26 @@ impl PhysicalKeyDisposition {
             return Self::Allow;
         }
 
+        // 無変換/変換（ADR-141、C2対策）: shadow_action は belief 追随専用
+        // （follow-only）であり、物理配送は常に Allow する。C2対策で
+        // これら2キーにも`shadow_action`（`enrich_ime_relevance`経由の
+        // shadow_action override）が付くようになったため、対策なしだと
+        // 下の`is_kanji_event`判定を抜けてKANJI関連VK同様にSuppressされ
+        // うる——GJI自身がこの物理キーを見てIMEを切り替えることに
+        // 依存している設計（BUG-115）なので、Suppressすると「OS側にも
+        // awase側にも誰もIMEを切り替えない二重の空振り」（ADR-119と同型）
+        // になる。VK_DBE_HIRAGANA等の静的KANJIキーと異なり、無変換/変換は
+        // awase自身がactuationを所有する対象ではない（delegate/
+        // shadow-toggleのどちらが処理する場合もbelief追随のみで、OS側の
+        // 実際の切替はGJI自身が物理キー配送を通じて行う）ため、
+        // `is_kanji_event`判定より前で無条件Allowにする。
+        if matches!(
+            event.vk_code,
+            crate::vk::VK_CONVERT | crate::vk::VK_NONCONVERT
+        ) {
+            return Self::Allow;
+        }
+
         let is_kanji_event = event.ime_relevance.shadow_action.is_some();
         if !is_kanji_event {
             return Self::Allow;
@@ -585,6 +605,65 @@ mod plan_tests {
                     PhysicalKeyDisposition::Suppress,
                     "ImmCross (Standard) は shadow_toggled={shadow_toggled} event_type={event_type:?} \
                      でも常に Suppress (spurious VK_F3/F4 連鎖の根本修正、08b8661)"
+                );
+            }
+        }
+    }
+
+    // ── 無変換/変換（ADR-141、C2対策）: shadow_action が付いても物理配送は
+    //    常にAllow（follow-only、GJI自身が物理キーでIMEを切り替える設計）──
+
+    fn henkan_muhenkan_event(
+        vk_code: VkCode,
+        action: Option<ShadowImeAction>,
+        event_type: KeyEventType,
+    ) -> RawKeyEvent {
+        RawKeyEvent {
+            vk_code,
+            ..kanji_event(event_type, action)
+        }
+    }
+
+    #[test]
+    fn henkan_muhenkan_always_allowed_even_with_shadow_action_under_suppress_conditions() {
+        for vk in [crate::vk::VK_CONVERT, crate::vk::VK_NONCONVERT] {
+            for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
+                // ImmCross (Standard): KANJI 系 VK なら shadow_action 有りで
+                // 無条件 Suppress される条件（`immcross_suppresses_kanji_
+                // down_and_up_regardless_of_shadow_toggled` と同じ形）。
+                let ev = henkan_muhenkan_event(vk, Some(ShadowImeAction::TurnOn), event_type);
+                assert_eq!(
+                    PhysicalKeyDisposition::plan(
+                        &ev,
+                        AppImeProfile::Standard,
+                        false,
+                        false,
+                        false,
+                        ActiveImeKind::MicrosoftIme,
+                        DbeModeKeyPolicy::Suppress
+                    ),
+                    PhysicalKeyDisposition::Allow,
+                    "無変換/変換(vk={vk:?}, event_type={event_type:?}) は shadow_action が \
+                     付いても ImmCross 下で常に Allow（follow-only、ADR-141）"
+                );
+
+                // TsfNative + GJI（ime_actuation_owned=true）+ shadow_toggled=true:
+                // KANJI 系 VK なら Suppress される条件
+                // （`owned_actuation_cases`系のテストと同じ形）。
+                let ev2 = henkan_muhenkan_event(vk, Some(ShadowImeAction::TurnOn), event_type);
+                assert_eq!(
+                    PhysicalKeyDisposition::plan(
+                        &ev2,
+                        AppImeProfile::TsfNative,
+                        true,
+                        false,
+                        false,
+                        ActiveImeKind::GoogleJapaneseInput,
+                        DbeModeKeyPolicy::Suppress
+                    ),
+                    PhysicalKeyDisposition::Allow,
+                    "無変換/変換(vk={vk:?}, event_type={event_type:?}) は shadow_toggled=true \
+                     かつ ime_actuation_owned な状況でも常に Allow（follow-only、ADR-141）"
                 );
             }
         }

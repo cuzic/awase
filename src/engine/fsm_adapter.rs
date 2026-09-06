@@ -211,6 +211,19 @@ impl FsmAdapter {
         self.fsm.set_henkan_delegate_to_open_axis(action);
     }
 
+    /// ADR-141: Hiragana/Katakanaの対称なgetterと同型。
+    pub(super) const fn muhenkan_delegate_to_open_axis(
+        &self,
+    ) -> Option<crate::types::ShadowImeAction> {
+        self.fsm.muhenkan_delegate_to_open_axis()
+    }
+
+    pub(super) const fn henkan_delegate_to_open_axis(
+        &self,
+    ) -> Option<crate::types::ShadowImeAction> {
+        self.fsm.henkan_delegate_to_open_axis()
+    }
+
     pub(super) const fn set_hiragana_katakana_thumb_key_config(
         &mut self,
         hiragana_vk: Option<crate::types::VkCode>,

@@ -253,6 +253,20 @@ pub struct Runtime {
     /// 適用可否（現在親指キーでないこと）は消費時に判定する。
     gji_hiragana_shadow_override: Option<awase::types::ShadowImeAction>,
     gji_katakana_shadow_override: Option<awase::types::ShadowImeAction>,
+    /// 無変換/変換キーの shadow_action override（ADR-141、C2対策）。
+    /// Hiragana/Katakana版と異なり `gji_` 接頭辞を付けない——GJI
+    /// （`sync_gji_charset_autodetect`）と MS-IME（`sync_ime_toggle_
+    /// auto_detect`）の両方がこのフィールドに書き込む共有フィールドで
+    /// あり、`henkan_delegate_to_open_axis`/`muhenkan_delegate_to_open_axis`
+    /// （`Engine`側）と同じ「共有フィールド＋GJI→MS-IME呼び出し順序
+    /// 依存」パターンを踏襲するため（GJI離脱時のクリアも同じ順序で効く、
+    /// `sync_gji_charset_autodetect`参照）。適用可否は
+    /// `mode_key_delegate_owns_shadow_toggle`（`&& effective_open()`）が
+    /// 消費時に判定する——Hiragana/Katakanaと違い「親指キーなら`None`」の
+    /// 早期returnは適用しない（無変換/変換には守るべき静的
+    /// `shadow_action`が存在しないため、ADR-141参照）。
+    henkan_shadow_override: Option<awase::types::ShadowImeAction>,
+    muhenkan_shadow_override: Option<awase::types::ShadowImeAction>,
     /// BugReport 診断用: 現在ロード済みの `GeneralConfig.keyboard_model`。
     keyboard_model: awase::scanmap::KeyboardModel,
     /// トレイ右クリック時の更新確認を有効にするか。
@@ -434,14 +448,35 @@ impl Runtime {
     /// 実処理は [`focus_tracker::FocusTracker::enrich_ime_relevance`] に委譲する。
     pub fn enrich_ime_relevance(&self, event: &mut RawKeyEvent) {
         self.focus_tracker.enrich_ime_relevance(event);
-        if let Some(action) =
+        // Hiragana/Katakana と 無変換/変換（ADR-141、C2対策）の2ソースは
+        // 対象VKが重複しないため（前者は`ModeKeyCandidate::Hiragana/
+        // Katakana`、後者は`Henkan/Muhenkan`）、どちらの順で評価しても
+        // 高々一方だけがSomeを返す。書き込み箇所を1箇所に保つため
+        // `or_else`で合成してから1回だけ書く
+        // （`tests/architecture_guard.rs::
+        // ime_relevance_shadow_action_writes_are_accounted_for`が
+        // このファイル内の書き込み箇所数を1に固定している）。
+        // 無変換/変換はHiragana/Katakanaと異なり守るべき静的
+        // shadow_actionを持たないため、親指キーとして設定されている
+        // 場合でもoverrideを差す（「親指キーならNone」の早期returnは
+        // 適用しない）。実際にdelegateとshadow-toggleのどちらが処理する
+        // かは`mode_key_delegate_owns_shadow_toggle`の
+        // `&& effective_open()`ゲートが実行時に排他的に決める。
+        let override_action =
             crate::gji_charset_autodetect::resolve_mode_key_shadow_override_for_event(
                 event.vk_code,
                 self.gji_hiragana_shadow_override,
                 self.gji_katakana_shadow_override,
                 crate::hook::thumb_vk_codes(),
             )
-        {
+            .or_else(|| {
+                crate::gji_charset_autodetect::resolve_henkan_muhenkan_shadow_override_for_event(
+                    event.vk_code,
+                    self.henkan_shadow_override,
+                    self.muhenkan_shadow_override,
+                )
+            });
+        if let Some(action) = override_action {
             event.ime_relevance.shadow_action = Some(action);
         }
     }
@@ -1253,6 +1288,8 @@ impl Runtime {
             gji_thumb_key_ime_toggle_opt_in: false,
             gji_hiragana_shadow_override: None,
             gji_katakana_shadow_override: None,
+            henkan_shadow_override: None,
+            muhenkan_shadow_override: None,
             keyboard_model: awase::scanmap::KeyboardModel::default(),
             update_check_enabled: true,
             kana_lock_hysteresis: KanaLockHysteresis::new(),
@@ -1376,6 +1413,19 @@ impl Runtime {
         self.engine.set_katakana_delegate_to_open_axis(katakana);
     }
 
+    /// ADR-141: 無変換/変換の shadow_action override を設定する。GJI
+    /// （`sync_gji_charset_autodetect`）と MS-IME（`sync_ime_toggle_auto_
+    /// detect`）の両方から共通で呼ばれる（`gji_`接頭辞を付けない理由は
+    /// フィールドのdoc参照）。
+    pub(crate) fn set_thumb_key_shadow_overrides(
+        &mut self,
+        henkan: Option<awase::types::ShadowImeAction>,
+        muhenkan: Option<awase::types::ShadowImeAction>,
+    ) {
+        self.henkan_shadow_override = henkan;
+        self.muhenkan_shadow_override = muhenkan;
+    }
+
     #[must_use]
     pub(crate) fn mode_key_delegate_owns_shadow_toggle(&self, vk: VkCode) -> bool {
         // 親指キー判定は`gji_charset_autodetect::is_configured_thumb_key`と
@@ -1386,6 +1436,8 @@ impl Runtime {
             crate::gji_charset_autodetect::is_configured_thumb_key(vk),
             self.engine.hiragana_delegate_to_open_axis(),
             self.engine.katakana_delegate_to_open_axis(),
+            self.engine.henkan_delegate_to_open_axis(),
+            self.engine.muhenkan_delegate_to_open_axis(),
         )
     }
 
