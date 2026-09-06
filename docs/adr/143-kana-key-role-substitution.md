@@ -2,11 +2,13 @@
 
 ## ステータス
 
-**r8（Opus 2体の敵対的レビューを8ラウンド実施。両エージェントが独立に
-「`is_fresh_press`の計算位置が挿入点では既に汚染されている」という
-同一の核心に到達。計算位置を`PHYSICAL_KEY_DOWN_AT_MS`更新ブロック内
-〈既存の`prev == 0`イディオムを流用〉へ訂正し、fresh press自身が
-overflowで失われた場合のフォールバックも追加。r9レビュー未実施）。**
+**r9（Opus 2体の敵対的レビューを9ラウンド実施。r8の`is_fresh_press`が
+`PHYSICAL_KEY_DOWN_AT_MS`という別の状態機械のライフサイクルを借用した
+ことで生じた二重情報源問題（NB12）を発見・修正。fresh press判定の
+情報源を役割代入自身の`{KEY}_WAS_DOWN`/`SCAN_KANA_WAS_DOWN`
+〈`role_substitution_fresh_press: Option<bool>`〉に一本化し、クリア
+箇所をADR-141決定7＋本ADR決定5の5箇所と完全に一致させた。r10レビュー
+未実施）。**
 
 本ADRは、ADR-141（物理キー役割代入・Phase A、変換/無変換/スペースの3キー
 間の入れ替え）決定0が「安全な3キー」へスコープを縮小した際に切り出した、
@@ -294,6 +296,34 @@ R7-n1→決定8のテスト計画・決定4/決定2の相互参照・NM13重複�
 いれば3ラウンド分（NB7・r6のラッチ化議論・NB10/NB11）の一部を短縮
 できた可能性がある。
 
+### レビュー指摘との対応表（r8→r9、9ラウンド目）
+
+architect役が新規Blocker1件（NB12）を発見した——r8の教訓「既存の
+イディオムを流用すべき」が、そのイディオムが属する**状態機械の
+ライフサイクルごと**借りてきてしまうという新しい失敗を生んだ。
+
+architect役: NB12(`is_fresh_press`と役割代入自身の`was_down`が二重の
+情報源になりクリア箇所が食い違う)→情報源を役割代入自身の`{KEY}_
+WAS_DOWN`/`SCAN_KANA_WAS_DOWN`へ一本化し`role_substitution_fresh_
+press: Option<bool>`へ改名、Minor1〜3・Nit1→情報源統一により大部分が
+解消（injectedは`None`で自然に表現、`reset_physical_key_state`の
+挙動を既知の制限として明記）。
+premortem役: R8-M1(`reset_physical_key_state`によるmid-holdの再確定)
+→情報源統一後もADR-141が既に持つ性質として既知の制限に明記、
+R8-m1〜m3→フィールド型の変更・テスト計画・将来の変更への耐性という
+形で反映。
+
+9ラウンド共通の総括: architect役自身がr8総括で述べた「イディオム
+（判定式）は流用してよいが、その状態のライフサイクル（誰がいつ、
+どの範囲をクリアするか）まで一緒に借りてはならない」という教訓が、
+まさにその同じレビューが生んだ設計に対して次のラウンドで検証された
+形になった。最終的な解は、新しい状態機械を作らず・既存の別の状態機械
+から借りるのでもなく、**役割代入自身が既に持つhold-state（ADR-141
+決定2/本ADR決定4）をそのまま再利用する**という、最も保守的な選択
+だった——fresh press検出という概念自体が、実は役割代入のhold-state
+管理と本質的に同じものだったことに、8ラウンドを経てようやく気づいた
+形である。
+
 ## 背景
 
 ### ADR-141決定0がかな系キーを除外した理由（再掲）
@@ -569,47 +599,69 @@ r7は「決定1の挿入点（`hook.rs:1135`以降）で`is_keydown && !was_down
 で同じ罠が3度目（`half_width_alnum_toggle_active`、NB7、今回）になる
 ところだった。
 
-**決定**: `is_fresh_press`は挿入点ではなく、`PHYSICAL_KEY_DOWN_AT_MS`の
-更新ブロック自体（`hook.rs:955-968`）の**内部**、`slot`の値を上書きする
-**前**に計算し、ローカル変数として`build_raw_key_event`まで運ぶ。同
-ブロックには既にこのリポジトリのfresh-press検出イディオムがある
-（`let prev = slot.load(Ordering::Relaxed); if prev == 0 { ... }`——
-`prev == 0`がauto-repeatでないKeyDownであることの判定そのもので、
-コメントも「同一VKのauto-repeat KeyDownではdown_atを上書きしない」と
-明記している）。`is_fresh_press = is_keydown && prev == 0`として、この
-`prev`（更新前の値）を使う。
+**r8の解決策とそこに残った欠陥（NB12、r9で訂正）**: r8は`is_fresh_
+press`を`PHYSICAL_KEY_DOWN_AT_MS`の更新ブロック内で計算する設計に
+したが、これは新たに「fresh pressの情報源が2つになる」という問題を
+生んでいた。`PHYSICAL_KEY_DOWN_AT_MS`は**長押し時間計測**のための
+独自の状態機械で、そのクリア規律（`reset_physical_key_state`で全256
+スロット、`clear_hook_latches_for_app_disable`のLeave時はCtrl/Shiftの
+6スロットのみ、BUG-78対策）は、役割代入自身の`{KEY}_WAS_DOWN`/
+`SCAN_KANA_WAS_DOWN`のクリア規律（ADR-141決定7の3箇所＋本ADR決定5の
+2箇所）と**一致するのは`reset_physical_key_state`だけ**だった。
+`disable_apps`のEnter遷移やoverflowラッチ経路では、役割代入側の
+`{KEY}_WAS_DOWN`はクリアされる（fresh press再確定）のに
+`PHYSICAL_KEY_DOWN_AT_MS`は維持される（auto-repeat判定のまま）という
+食い違いが起こり、NB10が解決したはずの3経路のうち2つで自己修復性が
+再び失われていた。
 
-この位置で計算することで、`RawKeyEvent`の**全てのキーイベント**
-（安全な3キー・かなスロットに限らずA〜Z等も含む）について意味のある
-値になる——`false`固定にすると「fresh pressの'A'が非freshと記録される」
-という嘘のフィールドをcoreの公開構造体に持ち込むことになり
-（`feedback_dont_provision_ahead_without_consumer_logic`が警告する
-「消費ロジックの無い予備フィールドの先回り」と同型のリスク）、この
-計算位置を選ぶことでその懸念も同時に解消する（premortem役R7-M2への
-対応も兼ねる）。`key_classification`/`ime_relevance`/`physical_pos`/
-`modifier_key`と同じ「プラットフォーム層が事前に決定する」フィールド
-群の一員として自然に収まり、VKのマジックナンバーではないためADR-019
-にも抵触しない（`docs/layer-boundaries.md`のカテゴリでいえば、これら
-既存フィールドと同じ「プラットフォーム層が事前分類してcoreへ渡す情報」
-に該当する）。
+**決定（r9）**: fresh pressの情報源を1つに統一する。fresh press判定は
+`PHYSICAL_KEY_DOWN_AT_MS`ではなく、**役割代入自身の`{KEY}_WAS_DOWN`
+（安全な3キー、ADR-141決定2）/`SCAN_KANA_WAS_DOWN`（かなスロット、
+本ADR決定4）**から計算する。`decide_role_substitution`（ADR-141決定2の
+判定関数）は`was_down: bool`を引数に取り更新後の状態を返す設計なので、
+決定1の挿入点（`hook.rs:1135`以降）でこの関数に**渡すのとまったく
+同じ`was_down`**（更新前の値）を使えば、挿入点で計算してもr7のNB11の
+ような順序汚染を受けない——r7がNB11で見落としていたのは、汎用の
+`PHYSICAL_KEY_STATE`/`PHYSICAL_KEY_DOWN_AT_MS`だけを検討し、役割代入
+専用の`{KEY}_WAS_DOWN`という第3の情報源を見ていなかったことだった。
 
-この方式なら、**fresh pressでは必ずラッチを上書きする**ため、
-取りこぼしたstaleなラッチが残っていても次のfresh pressで自己修復し、
-NB10が挙げた3経路すべてが無害化される。
+この判定は`is_keydown && !was_down`という式そのもので、役割代入対象の
+fromキーまたは`to`側で使われる安全な3キーの物理キーについてのみ、
+この`was_down`を参照する。情報源をこの1つに統一することで、クリア箇所
+は自動的にADR-141決定7の3箇所＋本ADR決定5の2箇所（計5箇所）に揃い、
+二重管理そのものが構造的に消える。
 
-**vkキーであることの限界（r8追加、architect役NM16指摘）**:
-`is_fresh_press`は（`PHYSICAL_KEY_DOWN_AT_MS`がvkでインデックスされる
-ため）raw vk単位で計算される。安全な3キーはvkと物理キーが1:1で安定
-なので正しく機能するが、**物理かなキー自身については信頼できない**
-——背景節が確定したとおり同じ物理キーが状態依存で0xF0/0xF1/0xF2の
-どれとしても届くため、Downが0xF2・Upが0xF1で届いた場合
-`PHYSICAL_KEY_DOWN_AT_MS[0xF2]`はクリアされず、次に0xF2で届く押下が
-非freshと誤判定されうる。決定2のメインスレッドラッチが使うのは
-`to`=かな方向（raw vkは安定した安全な3キー）に限られるため本ADRの
-機構には実害が無いが、`is_fresh_press`をcoreの汎用フィールドとして
-公開する以上、フィールドのdocに「かなスロット自身についてはvkの
-非決定性により信頼できない。`from`=かな方向の判定には使わず、決定4の
-scanベースの`SCAN_KANA_WAS_DOWN`を使うこと」という制約を明記する。
+**フィールドの型（r9訂正、NB11(a)の再解決）**: 汎用の`is_fresh_press:
+bool`ではなく、`role_substitution_fresh_press: Option<bool>`とする
+（`None`＝役割代入の対象外〈安全な3キー・かなスロットのいずれでも
+ない、またはinjected〉のイベント、`Some(true)`＝fresh press、
+`Some(false)`＝auto-repeat）。`bool`固定にすると「fresh pressの'A'が
+非freshと記録される」という嘘のフィールドをcoreの公開構造体に持ち込む
+ことになる（`feedback_dont_provision_ahead_without_consumer_logic`が
+警告する「消費ロジックの無い予備フィールドの先回り」と同型のリスク、
+premortem役R7-M2・R8-m1が指摘した「injectedイベントでは常にfalse」
+という不正確さも`None`で自然に表現できる）。`key_classification`/
+`ime_relevance`/`physical_pos`/`modifier_key`と同じ「プラットフォーム
+層が事前に決定する」フィールド群の一員として自然に収まり、VKの
+マジックナンバーではないためADR-019にも抵触しない（`docs/layer-
+boundaries.md`のカテゴリでいえば、これら既存フィールドと同じ
+「プラットフォーム層が事前分類してcoreへ渡す情報」に該当する）。
+
+**vkキーであることの限界が消えた（r9、NM16は解消）**: r8時点では
+`PHYSICAL_KEY_DOWN_AT_MS`がvkインデックスであるため、物理かなキー
+自身（vkが0xF0/0xF1/0xF2の間で揺れる）については信頼できないという
+制約があった。r9の情報源統一により、かなスロットについては
+`SCAN_KANA_WAS_DOWN`（scanベース、決定1の設計原則をそのまま継承）
+から計算されるため、この制約は不要になる——`role_substitution_fresh_
+press`は安全な3キー・かなスロットのどちらについても、それぞれの
+専用hold-stateの規律にそのまま従う。
+
+この設計により、**fresh pressでは必ずラッチを上書きする**という
+自己修復性の論拠は、「情報源が単一であり、その単一の情報源が既に
+5箇所で正しくクリアされている」という、より強い形で成立する
+（r8時点の「取りこぼしたら次のfresh pressで上書きされる」という
+自己修復の論証は、そもそも取りこぼし自体が起こらなくなったため
+不要になった）。
 
 **ラッチを参照・更新してよいイベントの限定（r7追加、premortem役R6-M2
 指摘への対応）**: ラッチの読み書きは、静的3条件（`event.vk_code ==
@@ -628,32 +680,37 @@ staleなラッチが無関係なイベントに適用され、物理かなキー
 として実装する。r1の`KANA_DOWN_WAS_ALLOWED`がフックスレッド（hook.rs
 のhold-state）とメインスレッド（`plan()`）を跨いで破綻したのとは構造的
 に別物——今回は書き込みと読み出しが同一スレッド・同一関数群内で完結
-する。`is_fresh_press`フィールドはhook.rs側で計算されるが、それを
-`RawKeyEvent`経由でメインスレッドへ**運ぶだけ**であり、hook.rs側の
-状態をメインスレッドから直接参照するわけではない（既存の
-`key_classification`等と同じデータフロー）。
+する。`role_substitution_fresh_press`フィールドはhook.rs側で計算
+されるが、それを`RawKeyEvent`経由でメインスレッドへ**運ぶだけ**で
+あり、hook.rs側の状態をメインスレッドから直接参照するわけではない
+（既存の`key_classification`等と同じデータフロー）。
 
 **stale latch取り残しへの残存対応（r7追加、premortem役R6-M3指摘への
-対応）**: 上記のfresh press明示ビットにより、ラッチが取り残されても
-次のfresh pressで必ず上書きされ自己修復する。ただし決定4が挙げる
-ADR-141決定7の3箇所＋決定5の2箇所（計5箇所、いずれもフックスレッドの
-関数）には、この新しいラッチは**含まれない**——これらの箇所から
-メインスレッドのラッチへ手を伸ばす必要は無く（そうすればクロス
-スレッド問題に戻る）、fresh press明示ビットによる自己修復だけで十分
-である。取り残されたラッチが与えうる実害は「次のfresh press一回分の
-待ち時間だけ、直前の（古い）dispositionが誤って適用される」ことに
-限定される（R6-M2の限定により影響範囲は0xF2のイベントのみ）。
+対応。r9でNB12対応により論拠を強化）**: `role_substitution_fresh_
+press`の情報源を`{KEY}_WAS_DOWN`/`SCAN_KANA_WAS_DOWN`に統一した
+（NB12対応）ことにより、この値自体がADR-141決定7の3箇所＋決定5の2箇所
+（計5箇所）で常に正しくクリアされる——r8時点で懸念していた「情報源が
+別の状態機械のため経路によってクリア規律が食い違う」という問題は
+構造的に存在しなくなった。`kp_run_inner`側のSuppress/Allowラッチ自体
+はこれら5箇所には含まれない（含める必要が無い——そもそも情報源が
+単一になったことで、いつ`Some`のまま取り残されても次の`Some(true)`な
+`role_substitution_fresh_press`で確実に上書きされる）。取り残された
+ラッチが与えうる実害は「次のfresh press一回分の待ち時間だけ、直前の
+（古い）dispositionが誤って適用される」ことに限定される（R6-M2の
+限定により影響範囲は0xF2のイベントのみ）。
 
 **fresh press自身が失われた場合のフォールバック（r8追加、premortem役
-R7-M3指摘への対応）**: `is_fresh_press`ビットを持つKeyDown自体が
-`HOOK_KEYS`のoverflow（`hook.rs:1100-1102`／`:1203-1205`）で
+R7-M3指摘への対応）**: `role_substitution_fresh_press`を持つKeyDown
+自体が`HOOK_KEYS`のoverflow（`hook.rs:1100-1102`／`:1203-1205`）で
 `kp_run_inner`に届かない場合、以後のauto-repeat KeyDownは
-`is_fresh_press=false`のままラッチ`None`を読み続け、既存判定への
-フォールスルーが繰り返される（MS-IME/非TSFでは`Allow`＝auto-repeatの
-間ずっと生の0xF2がOSへ流れる、NB9の縮小版）。**決定**:
-`is_fresh_press`を主たる判定に使いつつ、ラッチが`None`のまま静的3条件
-を満たすKeyDownを観測した場合も評価点として扱う（`is_fresh_press`が
-falseでもラッチが`None`なら動的条件を評価し確定させる）。r6の推論
+`Some(false)`のままラッチ`None`を読み続け、既存判定へのフォールスルー
+が繰り返される（MS-IME/非TSFでは`Allow`＝auto-repeatの間ずっと生の
+0xF2がOSへ流れる、NB9の縮小版）。**決定**:
+`role_substitution_fresh_press`を主たる判定に使いつつ、ラッチが
+`None`のまま静的3条件
+を満たすKeyDownを観測した場合も評価点として扱う
+（`role_substitution_fresh_press`が`Some(false)`でもラッチが`None`
+なら動的条件を評価し確定させる）。r6の推論
 方式（`None`+KeyDown＝評価）をフォールバックとして併用することで、
 fresh press自身が失われた場合でも次のKeyDownで確実に確定させる。
 
@@ -668,8 +725,9 @@ event.vk_code == VK_DBE_HIRAGANA
 ```
 真ならばラッチに`Some(true)`（Suppress）を、偽ならば`Some(false)`
 （Allow、既存の`is_tsf_mode && f2_warmup_owned`判定へフォールスルー）
-を格納する。auto-repeat KeyDown（`is_fresh_press=false`かつラッチが
-`Some`）とKeyUpは、この確定済みラッチをそのまま踏襲し再評価しない。
+を格納する。auto-repeat KeyDown（`role_substitution_fresh_press`が
+`Some(false)`かつラッチが`Some`）とKeyUpは、この確定済みラッチを
+そのまま踏襲し再評価しない。
 0xF2のKeyUpを観測した時点で、`plan()`の戻り値や早期returnの分岐に
 関わらず`kp_run_inner`側でラッチをクリアする（r8追加、architect役
 Minor2指摘: ラッチのライフサイクルを`plan()`内部の分岐——InputRelay
@@ -871,7 +929,25 @@ Alt押下中にactuationが発火してもBUG-61のリスクには該当しな�
 9. **Phase Aの受け入れ条件**: 実装完了後、代入先キーの押下で実際に
    GJI・MS-IME双方の実IMEがONになることを実機で確認することを、
    Phase A実装の受け入れ条件とする。
-10. **依存する値の一覧表（r8追加、architect役の総括での推奨）**:
+10. **`reset_physical_key_state`によるmid-holdの再確定（r9追加、
+    premortem役R8-M1指摘）**: `reset_physical_key_state()`
+    （`hook.rs:334-347`）は`{KEY}_WAS_DOWN`/`SCAN_KANA_WAS_DOWN`を含む
+    hold-stateを全クリアする。役割代入対象キーを押しっぱなしのまま
+    これが呼ばれると（呼び出し元は`WTS_SESSION_UNLOCK`と
+    `panic_reset()`——前者はアンロック時点で物理キーはどれも離されて
+    いると仮定してよいため実害が薄いが、後者は打鍵中に走りうる）、
+    直後のauto-repeat KeyDownが`role_substitution_fresh_press=
+    Some(true)`（fresh press）と再判定され、ラッチが再評価される。この
+    時点では1打目のactuationで既にbeliefが開いているため
+    `actuation_will_fire`は偽となり、ラッチは`Some(false)`（Allow）へ
+    反転する——残りのauto-repeatとKeyUpで生の0xF2がOSへ流れる
+    （Alt押下中ならBUG-61のリスクも伴う）。これは`reset_physical_key_
+    state`がADR-141決定7以来「押下中の物理キー状態を全クリアする」と
+    いう設計を既に持っていることの帰結であり、本ADRが新たに導入する
+    ハザードではない（安全な3キー同士の役割代入でも同型の再確定が
+    起こりうる）。既知の限定的な制限として記録するに留める——実害は
+    当該押下の残り時間に限定され、指を離せば自己修復する。
+11. **依存する値の一覧表（r8追加、architect役の総括での推奨）**:
     r0〜r7で発見されたBlockerは、いずれも「決定2が依存する既存の値を
     いつ・どこで読むか」という同一クラスの問題だった。以下に決定2が
     依存する値と、その計算地点・参照地点・間で更新されうるかを一覧
@@ -883,12 +959,13 @@ Alt押下中にactuationが発火してもBUG-61のリスクには該当しな�
     | `shadow_toggled` | `key_pipeline.rs:270` | `:392`（`plan()`引数） | しない（同一呼び出しの戻り値） |
     | `delegate_owned`/`turn_on_direction` | `:1074-1075`/`:1188-1200` | `:392` | しない（同上、戻り値に載せる） |
     | `kana_role_active` | configロード/reload時 | `:392` | する（押下中のreload）→fresh pressでのみ評価し、確定後はラッチが優先される |
-    | `is_fresh_press` | `hook.rs:955-968`（`prev`読み取り直後） | `:392`（`RawKeyEvent`経由） | しない（イベントに載せて運ぶ） |
+    | `role_substitution_fresh_press` | 決定1の挿入点（`hook.rs:1135`以降、`decide_role_substitution`に渡す`was_down`と同一） | `:392`（`RawKeyEvent`経由） | しない（`{KEY}_WAS_DOWN`/`SCAN_KANA_WAS_DOWN`という単一の情報源から計算、ADR-141決定7＋決定5の5箇所で正しくクリアされる） |
     | `profile` | `key_pipeline.rs:385` | `transport.rs:260` | する（フォーカス遷移）→NM13の既知の制限（決定4参照） |
 
     この表から、「押しっぱなしで0xF2が繰り返し届かないこと」
-    （`is_fresh_press`の行）・「押下中のreloadでKeyUpが失われないこと」
-    （`kana_role_active`の行）・「押下中のフォーカス遷移でorphan
+    （`role_substitution_fresh_press`の行）・「押下中のreloadでKeyUp
+    が失われないこと」（`kana_role_active`の行）・「押下中のフォーカス
+    遷移でorphan
     KeyUpが出ないこと」（`profile`の行）という3つの実機受け入れ条件が
     直接導ける。
 
@@ -983,9 +1060,11 @@ KeyUp注入の対象として列挙する3箇所——`reset_physical_key_state(
 `:1066-1087`）とは別の合流点である（合計5箇所）。**r7追加
 （architect役Minor2指摘）**: これら5箇所はいずれもフックスレッドの
 hold-state（`SCAN_KANA_WAS_DOWN`/`SCAN_KANA_CONFIRMED_TARGET`）を扱う
-ものであり、決定2が新設するメインスレッドのラッチとは別物——ラッチは
-`is_fresh_press`明示ビットにより自己修復する設計（決定2参照）のため、
-この5箇所にラッチのクリア処理を追加する必要は無い。
+ものであり、決定2が新設するメインスレッドのラッチとは別物——決定2の
+`role_substitution_fresh_press`は（r9でNB12対応により）まさにこの
+`SCAN_KANA_WAS_DOWN`を含む役割代入自身のhold-stateから計算されるため、
+ここでのクリアがそのままfresh press判定の正しさにも反映される。
+メインスレッドのラッチ自体をこの5箇所で個別にクリアする必要は無い。
 
 ### 決定5: 上流のAlt+かなswallowガードに、かなスロットの保留KeyUpを注入してからクリアする分岐を追加する（`from`=かな方向専用）
 
@@ -1284,14 +1363,22 @@ R6-m3指摘）**: (i) auto-repeat2打目以降が1打目と同じdispositionに�
 一切読まないこと（R6-M2の回帰防止）、の3ケースを追加する。いずれも
 `plan()`とラッチ状態遷移の組でLinux実行可能である。**r8追加
 （architect役Minor1・premortem役R7-m1指摘）**: `RawKeyEvent`への
-`is_fresh_press`フィールド追加は、`build_raw_key_event`（hook.rs）
-だけでなく、journal replay基盤（`journal_replay.rs`）・
+`role_substitution_fresh_press`フィールド追加は、`build_raw_key_event`
+（hook.rs）だけでなく、journal replay基盤（`journal_replay.rs`）・
 `golden_scenarios.rs`・各種ユニットテストの`RawKeyEvent`リテラル
 構築箇所すべてへ波及する。これらの機械的更新と、journal記録
 （`journal.rs`の`KeyInput`）のserde互換性（`#[serde(default)]`等に
 よる旧journalとの互換維持）をテスト計画に加える。fresh press自身が
 overflowで失われた場合のフォールバック（ラッチ`None`でのKeyDown
-評価、決定2参照）のテストも追加する。
+評価、決定2参照）のテストも追加する。**r9追加（premortem役R8-m3・
+architect役の依存値一覧表指摘）**: `role_substitution_fresh_press`が
+依拠する`{KEY}_WAS_DOWN`/`SCAN_KANA_WAS_DOWN`更新規則（auto-repeatでは
+上書きしない・KeyUpでクリアする）が将来変わった場合に静かに壊れない
+よう、hook.rs側の単体テストとして「auto-repeat KeyDownで`Some(false)`」
+「KeyUpで`Some(false)`」「離してから再押下で`Some(true)`」の3ケースを
+追加する（`windows-build` CI対象）。`reset_physical_key_state`
+（`panic_reset()`経由で押下中に呼ばれうる）が呼ばれた場合の挙動
+（決定2の既知の制限、下記参照）もテストで確認する。
 
 ### 決定9: 代入後vkを基準に評価される下流の合流点を棚卸しする
 
@@ -1600,3 +1687,36 @@ premortem役M6指摘を受け、決定1〜8がカバーしない、代入後vk�
   `plan()`内部の分岐に依存しないことを明記し、NM13の既知の制限に
   「orphan 0xF2 KeyUpがinertである保証は無い」という留保（r5 Minor4）
   を再併記した。
+- r9（2026-09-06）: Opus 2体の敵対的レビュー9ラウンド目で、architect役
+  が新規Blocker1件（NB12）を発見した——r8が導入した`is_fresh_press`
+  （`PHYSICAL_KEY_DOWN_AT_MS`から計算）と、役割代入自身が持つ
+  `{KEY}_WAS_DOWN`/`SCAN_KANA_WAS_DOWN`が、どちらも「fresh press」を
+  表す独立した情報源になっており、クリア箇所が食い違っていた。
+  `PHYSICAL_KEY_DOWN_AT_MS`は長押し時間計測のための別の状態機械で、
+  そのクリア規律（`reset_physical_key_state`で全256スロット、
+  `clear_hook_latches_for_app_disable`のLeave時はCtrl/Shiftの6スロット
+  のみ）は、役割代入側の`{KEY}_WAS_DOWN`のクリア規律（ADR-141決定7の
+  3箇所＋本ADR決定5の2箇所）と一致するのは`reset_physical_key_state`
+  だけだった。`disable_apps`のEnter遷移やoverflowラッチ経路では、
+  役割代入側だけがfresh pressとして再確定されるのに`is_fresh_press`
+  はauto-repeatのままという食い違いが生じ、NB10が解決したはずの3経路
+  のうち2つで自己修復性が再び失われていた。
+
+  修正として、fresh press判定の情報源を役割代入自身の`{KEY}_WAS_DOWN`
+  /`SCAN_KANA_WAS_DOWN`へ一本化した——`decide_role_substitution`
+  （ADR-141決定2）は`was_down`を引数に取り更新後の状態を返す設計
+  なので、決定1の挿入点でこの関数に渡すのと同じ`was_down`（更新前の
+  値）を使えば、r7のNB11のような順序汚染を受けずに計算できる。r7が
+  NB11でこれを見落としていたのは、汎用の`PHYSICAL_KEY_STATE`/
+  `PHYSICAL_KEY_DOWN_AT_MS`だけを検討し、役割代入専用の情報源を見て
+  いなかったためだった。情報源をこの1つに統一したことで、クリア箇所
+  はADR-141決定7の3箇所＋本ADR決定5の2箇所に自動的に揃い、二重管理が
+  構造的に消えた。フィールドの型も汎用の`bool`から`Option<bool>`
+  （`role_substitution_fresh_press`、`None`=役割代入の対象外）へ改名
+  し、injectedイベントでの不正確さ（premortem役R8-m1）も自然に解消
+  した。この統一により、r8で必要だった「かなスロット自身にはvkの
+  非決定性により信頼できない」という制約（NM16）も不要になった
+  （`SCAN_KANA_WAS_DOWN`はscanベースのため）。premortem役R8-M1
+  （`reset_physical_key_state`によるmid-holdの再確定）は、情報源統一
+  後もADR-141が既に持つ性質として既知の制限に明記するに留めた
+  （本ADRが新規に導入するハザードではない）。
