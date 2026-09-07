@@ -9,13 +9,15 @@
 棄却した道を踏まないための実装機構の指定であり設計判断ではない）も
 反映済み）。**
 
-**実装着手前の残る前提条件**（r9総評より）: (1) 未決着#1（B4、mode1
-実験時の抑止が`transport.rs::plan`経由で実効だったかのコード確認）、
-(2) ADR-149「案C」続報ADRの起票、(3) `plan_tests`・
-`crates/awase-windows/tests/`への回帰テスト追加（`fix-requires-
-evidence.md`の2つの再発ファミリーに該当）。これらは設計ではなく
-実装ゲートであり、本ADRの決定自体はこの3点の完了を待たずに確定して
-よい。
+**実装着手前の残る前提条件**（r9総評より）: (1) ✅解消（2026-09-08、
+未決着#1参照）——B4（mode1実験時の抑止が`transport.rs::plan`経由で
+実効だったかのコード確認）はコード上で確認済み、(2) ✅解消（2026-09-08）
+——ADR-149「案C」続報として[ADR-154](154-delegate-shadow-toggle-exclusivity-off-to-on-transition.md)
+を起票済み（提案中・未実装、実装自体は本ADRのスコープ外のまま）、
+(3) `plan_tests`・`crates/awase-windows/tests/`への回帰テスト追加
+（`fix-requires-evidence.md`の2つの再発ファミリーに該当）——これは
+決定1の実装自体に含めて満たす。これらは設計ではなく実装ゲートであり、
+本ADRの決定自体はこの3点の完了を待たずに確定してよい。
 
 **経緯（r1〜r7の要約）**: (1) GJIキーマップ自動検出→生キー抑止→
 静的VK置換という当初案はADR-110撤回・force-ON誤発火・チョード破壊
@@ -609,6 +611,22 @@ Toggle => !ctx.ime_on`）に一本化した（決定1参照）。ATOK プリセ�
    ため、mode1 の抑止（`transport.rs::plan` 経由）が実際に効いていたか
    自体、コード上の再確認が必要——決定1の実装時、この検証を先に行う
    こと。
+
+   **✅ 解消（2026-09-08、コード確認）**: `diag/adr153-vk-substitution-spike`
+   ブランチの実装（`crates/awase-windows/src/runtime/transport.rs`の
+   `PhysicalKeyDisposition::plan`）を読むと、無変換/変換の無条件`Allow`
+   分岐の直前に`if diag_adr153_mode() >= 1 { return Self::Suppress; }`
+   が挿入されており、`diag_adr153_mode`は`Runtime::apply_config`
+   （`crates/awase-windows/src/runtime/mod.rs`）が
+   `transport::set_diag_adr153_mode(config.general.diag_adr153_mode)`
+   として毎回config.tomlの値を`AtomicU8`へ反映する経路で供給されていた。
+   すなわちmode1の抑止は実際に`plan`経由で発火しており、コード上の
+   到達性に疑義は無い。ログタグが確認できなかった件は「抑止がplan
+   経由で効いていたか」とは別問題（tracing出力側の見落としの可能性）
+   であり、抑止自体の実効性を否定する材料ではない。4セル目（抑止なし+
+   代替送信）の未実験は残るが、これは「代替送信だけで足りるか」という
+   別の問い（決定1が採用する経路とは無関係——決定1は常に抑止する設計）
+   のため、決定1の実装ゲートとしてはこれ以上のブロッカーではない。
 2. **`ShadowImeActionConfig` の TOML 表現**: `"on"`/`"off"`/`"toggle"`
    の文字列か、既存の `engine_on_ime_key`/`engine_off_ime_key` に似た
    構造にするか。命名も含め実装時に確定する。
@@ -684,5 +702,8 @@ BUG-113、BUG-115、BUG-118、BUG-119、
 opus-adversarial-consult r1 で判明、現決定1はこれを回避する設計）、
 [ADR-151](151-actuation-delegate-by-default-drift-scoped-to-ownership.md)、
 [ADR-152](152-keystroke-step-source-sink-pipeline.md)（隣接するが方向が
-逆の保留中構想）、`.claude/rules/fix-requires-evidence.md` の
-「キー選択（IME ON/OFFに送るVK）」表。
+逆の保留中構想）、[ADR-154](154-delegate-shadow-toggle-exclusivity-off-to-on-transition.md)
+（ADR-149「案C」続報、本ADRが決定2としてフォールバック維持する既存
+delegate機構自体の排他性の穴——提案中・未実装）、
+`.claude/rules/fix-requires-evidence.md` の「キー選択（IME ON/OFFに
+送るVK）」表。
