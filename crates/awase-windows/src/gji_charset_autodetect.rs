@@ -572,7 +572,8 @@ pub(crate) fn resolve_hiragana_katakana_thumb_vks(
 
 #[cfg(windows)]
 pub(crate) use windows_impl::{
-    is_configured_thumb_key, reset_streak_latch_for_reload, sync_gji_charset_autodetect,
+    is_configured_thumb_key, read_config1_db, reset_streak_latch_for_reload,
+    sync_gji_charset_autodetect,
 };
 
 #[cfg(windows)]
@@ -945,8 +946,11 @@ mod windows_impl {
     }
 
     /// `config1.db`を読む。存在しない・読めない場合は`None`（エラーにしない、
-    /// GJI未インストール環境を正常系として扱う）。
-    fn read_config1_db() -> Option<Vec<u8>> {
+    /// GJI未インストール環境を正常系として扱う）。ADR-148（bug report）が
+    /// `sync_gji_charset_autodetect`とは独立に、報告生成時点の内容を
+    /// 都度読み直すためにも使う（Runtime側にキャッシュされた
+    /// `GjiRawConfig`は存在しないため）。
+    pub(crate) fn read_config1_db() -> Option<Vec<u8>> {
         let path = config1_db_path()?;
         std::fs::read(&path).ok()
     }

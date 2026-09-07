@@ -27,6 +27,7 @@ pub(crate) struct BugReportApp {
     attach_config: bool,
     attach_layout: bool,
     attach_retro_eval_stats: bool,
+    attach_ime_keymap: bool,
     journal_json: Option<String>,
     journal_status: String,
     app_log: Option<String>,
@@ -113,6 +114,7 @@ impl BugReportApp {
             attach_config: true,
             attach_layout: true,
             attach_retro_eval_stats: true,
+            attach_ime_keymap: true,
             journal_json,
             journal_status,
             app_log,
@@ -193,6 +195,19 @@ impl BugReportApp {
                 "この統計情報は送信しません。",
             ))
             .changed();
+        let attach_ime_keymap_changed = ui
+            .checkbox(
+                &mut self.attach_ime_keymap,
+                "IMEのキーマップ設定を添付する",
+            )
+            .on_hover_text(attachment_hover_text(
+                // ADR-148。GJI(Google日本語入力)ならconfig1.dbから、MS-IMEなら
+                // レジストリから読み取った、無変換/変換キー等へのIME ON/OFF割当て
+                // 設定を送信内容に含める。使用中でない側のIMEの情報は含めない。
+                "使用中のIME(Google日本語入力またはMicrosoft IME)の、無変換/変換キー等への\nIME ON/OFF割り当て設定を送信内容に含めます。IMEが勝手にON/OFFする、\n親指キーが効かないといった症状の原因調査に役立ちます。",
+                "IMEのキーマップ設定は送信しません。",
+            ))
+            .changed();
         ui.label(&self.journal_status);
         ui.label(&self.app_log_status);
         attach_log_changed
@@ -200,6 +215,7 @@ impl BugReportApp {
             || attach_config_changed
             || attach_layout_changed
             || attach_retro_eval_stats_changed
+            || attach_ime_keymap_changed
     }
 
     /// 生成済みのプレビュー JSON を反映する。デバウンス完了時と「プレビュー
@@ -258,6 +274,9 @@ impl BugReportApp {
                 attach_layout: self.attach_layout,
                 attach_retro_eval_stats: self.attach_retro_eval_stats,
                 retro_eval_stats: self.diagnostics.retro_eval_stats,
+                attach_ime_keymap: self.attach_ime_keymap,
+                gji_keymap: self.diagnostics.gji_keymap.clone(),
+                msime_key_assignment: self.diagnostics.msime_key_assignment.clone(),
                 reported_at: &self.reported_at,
             },
             MAX_BODY_BYTES,

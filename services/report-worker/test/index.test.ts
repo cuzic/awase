@@ -30,6 +30,9 @@ const validPayload = {
   layout_yab: null,
   attach_retro_eval_stats: false,
   retro_eval_stats: null,
+  attach_ime_keymap: false,
+  gji_keymap: null,
+  msime_key_assignment: null,
   reported_at: "2026-08-19T12:34:56Z"
 };
 
@@ -347,6 +350,103 @@ describe("payload validation", () => {
         three_key_total: 10,
         phase2_reached: 3,
         followup_elapsed_ms_histogram: [1, 2, 3, 4, 5, 6, 7]
+      }
+    };
+
+    expect(parseAndValidatePayload(JSON.stringify(payload))).toEqual(payload);
+  });
+
+  // ADR-148: SCHEMA_VERSION は上げていないため、この変更より前のクライアント
+  // （attach_ime_keymap/gji_keymap/msime_key_assignment を一切送らないペイロード）
+  // が引き続き200で受理されることを固定する（retro_eval_stats と同型の回帰）。
+  it("accepts payloads without ime_keymap fields (pre-ADR-148 clients) and normalizes to false/null", () => {
+    const {
+      attach_ime_keymap: _attachImeKeymap,
+      gji_keymap: _gjiKeymap,
+      msime_key_assignment: _msimeKeyAssignment,
+      ...payload
+    } = validPayload;
+
+    expect(parseAndValidatePayload(JSON.stringify(payload))).toEqual({
+      ...payload,
+      attach_ime_keymap: false,
+      gji_keymap: null,
+      msime_key_assignment: null
+    });
+  });
+
+  it("rejects a non-boolean attach_ime_keymap", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_ime_keymap: "yes"
+      })),
+      400,
+      "attach_ime_keymap_invalid"
+    );
+  });
+
+  it("rejects a non-object, non-null gji_keymap", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_ime_keymap: true,
+        gji_keymap: 42
+      })),
+      400,
+      "gji_keymap_invalid"
+    );
+  });
+
+  it("rejects a non-object, non-null msime_key_assignment", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_ime_keymap: true,
+        msime_key_assignment: 42
+      })),
+      400,
+      "msime_key_assignment_invalid"
+    );
+  });
+
+  it("rejects gji_keymap unless attach_ime_keymap is explicitly true", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_ime_keymap: false,
+        gji_keymap: { session_keymap: 0 }
+      })),
+      400,
+      "gji_keymap_requires_attach_ime_keymap"
+    );
+  });
+
+  it("rejects msime_key_assignment unless attach_ime_keymap is explicitly true", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_ime_keymap: false,
+        msime_key_assignment: { is_key_assignment_enabled: 1 }
+      })),
+      400,
+      "msime_key_assignment_requires_attach_ime_keymap"
+    );
+  });
+
+  it("accepts explicitly attached gji_keymap and msime_key_assignment objects", () => {
+    const payload = {
+      ...validPayload,
+      attach_ime_keymap: true,
+      gji_keymap: {
+        config1_db_status: "Ok",
+        session_keymap: 0,
+        custom_keymap_table_is_effective: true,
+        ime_on_keys: ["VK_F21"]
+      },
+      msime_key_assignment: {
+        is_key_assignment_enabled: 1,
+        key_assignment_muhenkan: 1
       }
     };
 
