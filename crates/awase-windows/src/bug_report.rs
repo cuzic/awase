@@ -303,8 +303,12 @@ pub struct BugReportLegacyMsImeKeymapSummary {
     /// `keystyle`の実測値の既知集合のみ文字列化する（未知値は`"Other"`、
     /// ADR-148 F7と同じ理由で自由文字列は送らない）。
     pub active_style: Option<String>,
-    pub muhenkan_ime_on_toggle: bool,
-    pub henkan_ime_on_toggle: bool,
+    /// `None`=判定できなかった（未知プリセット・レジストリエラー等）。
+    /// `Some(false)`（割当てなしと確認できた）とは区別する
+    /// （コードレビュー指摘、`msime_legacy_keymap::LegacyMsImeToggleAssignment`
+    /// のdoc参照）。
+    pub muhenkan_ime_on_toggle: Option<bool>,
+    pub henkan_ime_on_toggle: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -886,8 +890,8 @@ mod tests {
     fn test_legacy_msime_keymap_summary() -> BugReportLegacyMsImeKeymapSummary {
         BugReportLegacyMsImeKeymapSummary {
             active_style: Some("Custom".to_owned()),
-            muhenkan_ime_on_toggle: true,
-            henkan_ime_on_toggle: false,
+            muhenkan_ime_on_toggle: Some(true),
+            henkan_ime_on_toggle: Some(false),
         }
     }
 

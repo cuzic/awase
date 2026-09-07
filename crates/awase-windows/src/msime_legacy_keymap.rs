@@ -159,53 +159,78 @@ pub enum LegacyKeyStyle {
     Other,
 }
 
+/// [`LegacyKeyStyle::from_registry_value`]/[`LegacyKeyStyle::as_str`]共通の
+/// 唯一の対応表（コードレビュー指摘: 2つのmatch文に同じ6値を重複させると
+/// 将来値追加時に片方だけ更新して静かにズレる）。
+const KNOWN_STYLES: &[(LegacyKeyStyle, &str)] = &[
+    (LegacyKeyStyle::Atok, "ATOK"),
+    (LegacyKeyStyle::Custom, "Custom"),
+    (LegacyKeyStyle::MsIme2000, "MS-IME2000"),
+    (LegacyKeyStyle::Natural, "NATURAL"),
+    (LegacyKeyStyle::Vje, "VJE"),
+    (LegacyKeyStyle::Wx, "WX"),
+];
+
 impl LegacyKeyStyle {
     fn from_registry_value(s: &str) -> Self {
-        match s {
-            "ATOK" => Self::Atok,
-            "Custom" => Self::Custom,
-            "MS-IME2000" => Self::MsIme2000,
-            "NATURAL" => Self::Natural,
-            "VJE" => Self::Vje,
-            "WX" => Self::Wx,
-            _ => Self::Other,
-        }
+        KNOWN_STYLES
+            .iter()
+            .find(|(_, name)| *name == s)
+            .map_or(Self::Other, |(style, _)| *style)
     }
 
     #[must_use]
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Atok => "ATOK",
-            Self::Custom => "Custom",
-            Self::MsIme2000 => "MS-IME2000",
-            Self::Natural => "NATURAL",
-            Self::Vje => "VJE",
-            Self::Wx => "WX",
-            Self::Other => "Other",
-        }
+        KNOWN_STYLES
+            .iter()
+            .find(|(style, _)| *style == self)
+            .map_or("Other", |(_, name)| name)
     }
 }
 
 /// 旧UI（詳細キーカスタマイズ）で無変換/変換キーに「IMEオン/オフ」
 /// トグルが割り当てられているかの検出結果。
 ///
-/// `muhenkan_ime_on_toggle`/`henkan_ime_on_toggle`が`true`でも、実機確認
-/// 済みなのは「直接入力中に押すと予期せずIME ONになる」方向のみで、
-/// 「IME ON中に押すとIME OFFになる」方向は実効性未確認（モジュールdoc
-/// 参照）。
+/// `muhenkan_ime_on_toggle`/`henkan_ime_on_toggle`は`Option<bool>`——
+/// `None`は「判定できなかった」（未知プリセット・レジストリエラー等）を
+/// 意味し、「割当てなしと確認できた」（`Some(false)`）とは区別する
+/// （コードレビュー指摘: この区別が無いと、判定不能を「安全」と誤読する
+/// 静かな偽陰性になる）。`Some(true)`でも実機確認済みなのは「直接入力中に
+/// 押すと予期せずIME ONになる」方向のみで、「IME ON中に押すとIME OFFに
+/// なる」方向は実効性未確認（モジュールdoc参照）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LegacyMsImeToggleAssignment {
     pub active_style: Option<LegacyKeyStyle>,
-    pub muhenkan_ime_on_toggle: bool,
-    pub henkan_ime_on_toggle: bool,
+    pub muhenkan_ime_on_toggle: Option<bool>,
+    pub henkan_ime_on_toggle: Option<bool>,
 }
 
 impl LegacyMsImeToggleAssignment {
-    fn from_table(active_style: Option<LegacyKeyStyle>, records: &[LegacyKeymapRecord]) -> Self {
+    /// 判定不能（未知プリセット・レジストリエラー等）。
+    fn unknown(active_style: Option<LegacyKeyStyle>) -> Self {
         Self {
             active_style,
-            muhenkan_ime_on_toggle: any_record_has_ime_on_toggle(records, is_muhenkan_label),
-            henkan_ime_on_toggle: any_record_has_ime_on_toggle(records, is_henkan_label),
+            muhenkan_ime_on_toggle: None,
+            henkan_ime_on_toggle: None,
+        }
+    }
+
+    /// 既知プリセットだが`key`値自体が存在しない（＝一度も詳細カスタマイズ
+    /// されていない）ことをレジストリの「値なし」応答から確認できた場合。
+    /// 「判定不能」ではなく確定した`Some(false)`として扱ってよい。
+    fn confirmed_absent(active_style: LegacyKeyStyle) -> Self {
+        Self {
+            active_style: Some(active_style),
+            muhenkan_ime_on_toggle: Some(false),
+            henkan_ime_on_toggle: Some(false),
+        }
+    }
+
+    fn from_table(active_style: LegacyKeyStyle, records: &[LegacyKeymapRecord]) -> Self {
+        Self {
+            active_style: Some(active_style),
+            muhenkan_ime_on_toggle: Some(any_record_has_ime_on_toggle(records, is_muhenkan_label)),
+            henkan_ime_on_toggle: Some(any_record_has_ime_on_toggle(records, is_henkan_label)),
         }
     }
 }
@@ -213,6 +238,7 @@ impl LegacyMsImeToggleAssignment {
 #[cfg(windows)]
 mod windows_impl {
     use windows::core::PCWSTR;
+    use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 
     use super::{parse_legacy_key_table, LegacyKeyStyle, LegacyMsImeToggleAssignment};
 
@@ -220,7 +246,17 @@ mod windows_impl {
 
     /// `RegGetValueW`の2回呼び出し（サイズ取得→本読み）で可変長の値を読む。
     /// `flags`は`RRF_RT_REG_SZ`/`RRF_RT_REG_BINARY`いずれかを渡す。
-    fn read_raw_value(subkey: &str, value_name: &str, flags: u32) -> Option<Vec<u8>> {
+    ///
+    /// `scancode_map.rs::registry::read()`と同じ形（コードレビュー指摘）:
+    /// 値が存在しない（`ERROR_FILE_NOT_FOUND`）ことと、それ以外の失敗
+    /// （TOCTOU競合等の一時的なエラーを含む）を区別して返す——前者は
+    /// 「確認できた事実」、後者は「判定できなかった」であり、呼び出し元は
+    /// この2つを別の意味として扱う必要がある。
+    fn read_raw_value(
+        subkey: &str,
+        value_name: &str,
+        flags: u32,
+    ) -> Result<Option<Vec<u8>>, String> {
         use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER};
         let subkey_wide = crate::win32::to_wide(subkey);
         let value_wide = crate::win32::to_wide(value_name);
@@ -240,8 +276,16 @@ mod windows_impl {
                 Some(&raw mut size),
             )
         };
-        if probe.is_err() || size == 0 {
-            return None;
+        if probe.is_err() {
+            if probe == ERROR_FILE_NOT_FOUND {
+                return Ok(None);
+            }
+            return Err(format!(
+                "registry read failed (size probe) for {subkey}\\{value_name}: {probe:?}"
+            ));
+        }
+        if size == 0 {
+            return Ok(Some(Vec::new()));
         }
         let mut buf = vec![0u8; size as usize];
         let mut size2 = size;
@@ -259,26 +303,45 @@ mod windows_impl {
             )
         };
         if fill.is_err() {
-            return None;
+            if fill == ERROR_FILE_NOT_FOUND {
+                return Ok(None);
+            }
+            return Err(format!(
+                "registry read failed (fill) for {subkey}\\{value_name}: {fill:?}"
+            ));
         }
         buf.truncate(size2 as usize);
-        Some(buf)
+        Ok(Some(buf))
     }
 
-    fn read_active_style() -> Option<LegacyKeyStyle> {
+    /// `keystyle`(REG_SZ)を読む。`Ok(None)`=値が存在しない、`Err`=読み取り
+    /// 自体に失敗（TOCTOU競合・不正なUTF-16長等、コードレビュー指摘で
+    /// 追加——以前は末尾半端バイトを`chunks_exact`で無言破棄していた）。
+    fn read_active_style() -> Result<Option<LegacyKeyStyle>, String> {
         use windows::Win32::System::Registry::RRF_RT_REG_SZ;
-        let bytes = read_raw_value(&format!("{IMEJP_BASE}\\MSIME"), "keystyle", RRF_RT_REG_SZ.0)?;
+        let Some(bytes) =
+            read_raw_value(&format!("{IMEJP_BASE}\\MSIME"), "keystyle", RRF_RT_REG_SZ.0)?
+        else {
+            return Ok(None);
+        };
+        if bytes.len() % 2 != 0 {
+            return Err(format!(
+                "keystyle registry value has odd byte length: {}",
+                bytes.len()
+            ));
+        }
         // REG_SZ はUTF-16LE、末尾NULを含む。
         let units: Vec<u16> = bytes
             .chunks_exact(2)
             .map(|c| u16::from_le_bytes([c[0], c[1]]))
             .take_while(|&u| u != 0)
             .collect();
-        let s = String::from_utf16(&units).ok()?;
-        Some(LegacyKeyStyle::from_registry_value(&s))
+        let s = String::from_utf16(&units)
+            .map_err(|e| format!("keystyle registry value is not valid UTF-16: {e}"))?;
+        Ok(Some(LegacyKeyStyle::from_registry_value(&s)))
     }
 
-    fn read_key_table_bytes(style: LegacyKeyStyle) -> Option<Vec<u8>> {
+    fn read_key_table_bytes(style: LegacyKeyStyle) -> Result<Option<Vec<u8>>, String> {
         use windows::Win32::System::Registry::RRF_RT_REG_BINARY;
         let subkey = format!("{IMEJP_BASE}\\StyleList\\{}", style.as_str());
         read_raw_value(&subkey, "key", RRF_RT_REG_BINARY.0)
@@ -286,20 +349,26 @@ mod windows_impl {
 
     /// 現在有効な詳細キーカスタマイズプリセットを読み、無変換/変換キーへの
     /// 「IMEオン/オフ」割当てを検出する（ADR-148 Phase 2）。
+    ///
+    /// `LegacyKeyStyle::Other`（未知プリセット）は「判定不能」を返す
+    /// （コードレビュー指摘: `StyleList\Other\key`という実在しないパスを
+    /// 読みに行って「値なし」＝「割当てなし」と誤判定していた）。
     #[must_use]
     pub(crate) fn read_legacy_toggle_assignment() -> LegacyMsImeToggleAssignment {
-        let Some(style) = read_active_style() else {
-            return LegacyMsImeToggleAssignment::default();
+        let Ok(Some(style)) = read_active_style() else {
+            return LegacyMsImeToggleAssignment::unknown(None);
         };
-        let Some(table_bytes) = read_key_table_bytes(style) else {
-            return LegacyMsImeToggleAssignment {
-                active_style: Some(style),
-                muhenkan_ime_on_toggle: false,
-                henkan_ime_on_toggle: false,
-            };
-        };
-        let records = parse_legacy_key_table(&table_bytes);
-        LegacyMsImeToggleAssignment::from_table(Some(style), &records)
+        if style == LegacyKeyStyle::Other {
+            return LegacyMsImeToggleAssignment::unknown(Some(style));
+        }
+        match read_key_table_bytes(style) {
+            Ok(Some(table_bytes)) => {
+                let records = parse_legacy_key_table(&table_bytes);
+                LegacyMsImeToggleAssignment::from_table(style, &records)
+            }
+            Ok(None) => LegacyMsImeToggleAssignment::confirmed_absent(style),
+            Err(_) => LegacyMsImeToggleAssignment::unknown(Some(style)),
+        }
     }
 }
 
@@ -340,10 +409,9 @@ mod tests {
         let mut bytes = muhenkan_ime_on_toggle_record();
         bytes.push(0x00);
         let records = parse_legacy_key_table(&bytes);
-        let result =
-            LegacyMsImeToggleAssignment::from_table(Some(LegacyKeyStyle::Custom), &records);
-        assert!(result.muhenkan_ime_on_toggle);
-        assert!(!result.henkan_ime_on_toggle);
+        let result = LegacyMsImeToggleAssignment::from_table(LegacyKeyStyle::Custom, &records);
+        assert_eq!(result.muhenkan_ime_on_toggle, Some(true));
+        assert_eq!(result.henkan_ime_on_toggle, Some(false));
     }
 
     #[test]
@@ -351,8 +419,8 @@ mod tests {
         let mut bytes = muhenkan_default_record();
         bytes.push(0x00);
         let records = parse_legacy_key_table(&bytes);
-        let result = LegacyMsImeToggleAssignment::from_table(Some(LegacyKeyStyle::Atok), &records);
-        assert!(!result.muhenkan_ime_on_toggle);
+        let result = LegacyMsImeToggleAssignment::from_table(LegacyKeyStyle::Atok, &records);
+        assert_eq!(result.muhenkan_ime_on_toggle, Some(false));
     }
 
     /// 変換キーで実機確認した「重複行」ケース: 同名の行が2つあり、後の方は
@@ -367,9 +435,8 @@ mod tests {
         bytes.push(0x00);
         let records = parse_legacy_key_table(&bytes);
         assert_eq!(records.len(), 2);
-        let result =
-            LegacyMsImeToggleAssignment::from_table(Some(LegacyKeyStyle::Custom), &records);
-        assert!(result.henkan_ime_on_toggle);
+        let result = LegacyMsImeToggleAssignment::from_table(LegacyKeyStyle::Custom, &records);
+        assert_eq!(result.henkan_ime_on_toggle, Some(true));
     }
 
     #[test]
@@ -381,9 +448,27 @@ mod tests {
         bytes.push(0x00);
         let records = parse_legacy_key_table(&bytes);
         assert_eq!(records.len(), 1);
-        let result =
-            LegacyMsImeToggleAssignment::from_table(Some(LegacyKeyStyle::Custom), &records);
-        assert!(!result.henkan_ime_on_toggle);
+        let result = LegacyMsImeToggleAssignment::from_table(LegacyKeyStyle::Custom, &records);
+        assert_eq!(result.henkan_ime_on_toggle, Some(false));
+    }
+
+    #[test]
+    fn unknown_style_is_reported_as_undetermined_not_absent() {
+        // コードレビュー指摘の回帰: 未知プリセットは「割当てなし」
+        // (Some(false))ではなく「判定不能」(None)であるべき。
+        let result = LegacyMsImeToggleAssignment::unknown(Some(LegacyKeyStyle::Other));
+        assert_eq!(result.muhenkan_ime_on_toggle, None);
+        assert_eq!(result.henkan_ime_on_toggle, None);
+        assert_eq!(result.active_style, Some(LegacyKeyStyle::Other));
+    }
+
+    #[test]
+    fn confirmed_absent_reports_false_not_unknown() {
+        // 既知プリセットで`key`値自体が存在しない場合は確定した
+        // Some(false)（「判定不能」ではない）。
+        let result = LegacyMsImeToggleAssignment::confirmed_absent(LegacyKeyStyle::Natural);
+        assert_eq!(result.muhenkan_ime_on_toggle, Some(false));
+        assert_eq!(result.henkan_ime_on_toggle, Some(false));
     }
 
     #[test]
