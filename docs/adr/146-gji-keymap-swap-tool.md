@@ -2,7 +2,24 @@
 
 ## ステータス
 
-**r3レビュー完了、r4改訂版（2026-09-06、実装前）。**
+**r4レビュー完了、r5改訂版（2026-09-06、実装前）。premortemはr3時点で
+Blockerゼロと判定、architectがr3で新規Blocker（B-8）を1件検出。**
+
+r4はpremortemからBlockerゼロの判定を得たが、architectからは新規に
+B-8（物理かなキーがIME内部状態により`Eisu`(`VK_DBE_ALPHANUMERIC`=
+0xF0)トークンとしても届きうるという、ADR-143背景に実測記録済みの
+BUG-52の事実が、決定5の二値トークンモデルに反映されていなかった）
+を指摘された。これもB-6/B-7と同型の「同一worktree内の既存ADRの実測と
+新設した決定の前提が食い違う」パターン。r5はこれを反映し、`Eisu`は
+かなスロットのトークン集合に含めない決定とその既知の制限を明記した。
+
+また、premortemが提起した新規指摘（M-A: 変換/無変換のAllow機序として
+「専用の早期分岐+C2 override対策」があるという主張）は、`plan()`の
+実コード（237-361行、テストモジュール直前まで）を再度読み直しても
+該当する分岐が存在しないため、**採用しなかった**（決定0項目4の記述は
+r4のまま維持——`ImeKeyKind::from_vk`が対象としないため`shadow_action`
+が`None`になり`!is_kanji_event`の早期Allowに該当する、という説明が
+実コードと一致する）。
 
 r2で新設した決定0（awase稼働中の配送経路）に、専用Exploreエージェントの
 検証結果を要約する際の誤り（「VK_DBE_0xF0〜0xF4は無条件Suppress」）が
@@ -145,7 +162,15 @@ r0は「ADR-141/143と同じ4要素の全単射モデルによる役割入れ替
    アプリでのみ機能する。Shift併用側（`Katakana`トークン）はさらに別の
    条件（ImmCross/`ime_actuation_owned`/`shift_katakana_passthrough`）
    に依存する。
-5. **MS-IME非対応**（ADR-144と同じ制約）。
+5. **物理かなキーがIME内部状態により`Eisu`(`VK_DBE_ALPHANUMERIC`=0xF0)
+   として届いた場合、その押下は入れ替え対象外**（r5新設、決定5参照、
+   architect B-8指摘反映）。物理かなキーは単独押下でも常に`Hiragana`
+   トークン(0xF2)として届くとは限らず、IME内部状態によっては`Eisu`
+   トークン(0xF0)として届くことがある（BUG-52）。この場合は入れ替え
+   対象外の`Eisu`行（元のまま）が発火し、入れ替えた側の役割は発火
+   しない。Alt併用時（0xF5/0xF6、BUG-61/62の復旧不能領域）も同様に
+   対象外。
+6. **MS-IME非対応**（ADR-144と同じ制約）。
 
 - 対象IME: **GJI(Mozc)専用**。
 - 出力: **`keymap.txt`ファイルのみ**。GJIのプロパティダイアログ
@@ -166,8 +191,13 @@ r1レビューでarchitectが指摘した懸念（B-2）を、専用Exploreエ�
 うち`f2_warmup_owned`の実体（`output/mod.rs::f2_warmup_owned()`→
 `TsfWarmupCoordinator::needs_f2_probe()`→現在の warmup 戦略の
 `needs_f2_probe()`）を`crates/awase-windows/src/tsf/warmup/warmup_strategy.rs`
-で確認した。正しい分岐構造は以下の通り（上から順に評価、最初に
-マッチした分岐が結果を決める）:
+で確認した。正しい分岐構造は以下の通り（`runtime/transport.rs::
+PhysicalKeyDisposition::plan`、237-361行、r5訂正：r3は357行までとして
+いたが実際の関数末尾は361行。上から順に評価、最初にマッチした分岐が
+結果を決める。**本表はKeyDownの配送可否のみを扱う**——手順6の実際の
+Suppress条件は`shadow_toggled || is_dbe_mode_key_down ||
+matches!(event_type, KeyUp)`のOR結合であり、KeyUpは本表の対象に
+関わらず別途Suppressされうる、r5、premortem MN-B指摘反映）:
 
 1. `profile == AppImeProfile::InputRelay` → **最優先でAllow**。
 2. `event.vk_code == VK_DBE_HIRAGANA`(0xF2、かなスロットの「Hiragana」/
@@ -276,9 +306,17 @@ NICOLAエンジンを無効化するだけでこのConsumeが止まるかは未�
 ALPHANUMERIC/SBCSCHAR/DBCSCHAR側の判定（決定0手順6）のみであり、
 VK_DBE_HIRAGANA（無シフト側）は手順2の専用早期分岐で決まるため、この
 設定の対象外である。したがって無シフト側の制約には**既知の回避策が
-無い**ことを正直に伝える。Shift併用側（Katakanaトークン）については
-`dbe_mode_key_policy`の変更が選択肢になりうるため、案内文でそこだけ
-区別して言及してもよい（実装時の判断）。
+無い**ことを正直に伝える。
+
+**r5訂正（M-20指摘反映）**: Shift併用側（Katakanaトークン）については
+`dbe_mode_key_policy=Passthrough`の変更が技術的には選択肢になりうるが、
+この設定はBUG-52の無条件Suppressそのものを無効化するものであり
+（`transport.rs`のコメント自身が「上級者がBUG-52のリスクを引き受けて
+素のパススルーを選んだ場合の抜け道」と位置づけている）、**補助ツールの
+UIから既知の不具合ファミリーを再発させうる隠し設定の変更を積極的に
+案内するのは筋が悪い**。したがって本ツールのUI・案内文からは
+`dbe_mode_key_policy`への言及自体を削除し、「使用中のアプリによって
+効かない場合があります（サポート対象外）」という事実提示のみに留める。
 
 この検査・案内はいずれもブロッキングではなく情報提供に留める。警告を
 無視して生成した場合でも`keymap.txt`自体は正しく生成する（TSF-native
@@ -459,7 +497,7 @@ MSIME相当としてfail-closedに扱っている）。本ADRはBL-5の判断（
 r1レビューで両エージェントから独立に指摘され撤回した。詳細は決定3-1・
 却下した代替案を参照。
 
-## 決定5: かなスロットの二重トークン性とShift正規化（核心アルゴリズム、r2で修正）
+## 決定5: かなスロットの二重トークン性とShift正規化（核心アルゴリズム、r2で修正、r5でEisu(0xF0)の扱いを追加）
 
 Mozcのキーマップでは、物理かなキーは押され方によって2つの異なる特殊
 キートークンとしてGJIへ届く——無シフト相当は`Kana`/`Hiragana`
@@ -468,6 +506,30 @@ Mozcのキーマップでは、物理かなキーは押され方によって2つ
 この二重性が無く、常に単一トークンで、シフトを伴う場合は明示的な
 `Shift`修飾語を前置して表現する（[[project_adr144_145_kana_alternatives_2026_09_06]]
 参照）。
+
+**r5追加（B-8指摘反映）— かなスロットは実際には二値ではなく三値**:
+`docs/adr/143-kana-key-role-substitution.md`が実測として記録している
+通り、物理かなキー（scan 0x70）は単独押下で通常`VK_DBE_HIRAGANA`
+(0xF2)だが、**IME内部状態によっては`VK_DBE_ALPHANUMERIC`(0xF0)にも
+なりうる**（BUG-52）。0xF0はMozcの`Eisu`トークンに対応する
+（`crates/awase-gji-config/src/keymap.rs`の`MOZC_KEY_ALIASES`が
+`"Eisu"`→`VK_DBE_ALPHANUMERIC`と対応付け済み）。
+
+**本ツールのかなスロットのトークン集合は`{Hiragana/Kana, Katakana}`の
+二値のままとし、`Eisu`は含めない**（決定として選択、理由: `Eisu`は
+意味的に「かな」ではなく英数入力への切替であり、これを「かなスロット」
+に含めると決定5の設計全体の見通しが崩れる）。**既知の制限として明示
+する**: 物理かなキーがIME内部状態により`VK_DBE_ALPHANUMERIC`(0xF0)
+として届いた場合、その押下は入れ替え対象外の`Eisu`行（元のまま）を
+発火させ、入れ替えた側の役割は発火しない。ユーザーには「同じキーを
+押しても、そのときのIME内部状態によって挙動が変わることがある」という
+形で現れうる。Alt併用時（`VK_DBE_ROMAN`/`VK_DBE_NOROMAN`、0xF5/0xF6、
+BUG-61/62の復旧不能領域）も同様に対象外。この制限はスコープ
+「できないこと」にも追記する。
+
+なお`MOZC_KEY_ALIASES`の0xF0↔`Eisu`対応はawase側の既存の前提であり、
+Windows版GJI自身が実際に0xF0を`Eisu`として解釈するかは別途未検証
+（未解決の疑問、着手前ゲートに追加）。
 
 したがって、かなスロットとそれ以外のスロットとの入れ替えは非対称に
 扱う:
@@ -565,8 +627,13 @@ GJI公式のインポート機能（`custom_keymap_table`の全置換）であ�
    検知できるようインターフェースを拡張する）を確認する。健全性検証に
    失敗したら生成を中止する。
 2. **ラウンドトリップ不変条件のテスト**: 恒等順列（入れ替えなし）で
-   決定7のアルゴリズムを適用した結果が、入力とバイト等価になることを
-   単体テストで固定する。**注意（r2追加、architect Minor-2指摘反映）**:
+   決定7のアルゴリズムを適用した結果が、**決定7-0で定義した正規化
+   （`(status, key, command)`集合としての比較、バイト等価ではない）の
+   もとで入力と一致する**ことを単体テストで固定する（r4訂正、M-19
+   指摘反映——本項目がr3時点で「バイト等価」のまま残っており、決定
+   7-0が同じページで宣言した正規化比較と矛盾していた。正規化処理自体が
+   冪等であることも別テストで固定する）。**注意（r2追加、architect
+   Minor-2指摘反映）**:
    既存の`tsv::parse_custom_keymap_table`は`status`/`key`/`command`の
    3列しか読まず（`columns.next()`を3回呼ぶのみ）、4列目以降がもし
    実データに存在すれば黙って失われる。この不変条件テストを通すには、
@@ -821,6 +888,9 @@ Precomposition/Composition等でHenkan→CancelAndIMEOff）を生成すると、
    持たない（旧版はms-ime.tsv同梱を根拠にできたが、r2でその同梱自体を
    撤回したため）。同じ着手前ゲートで、ユーザー実機のGJIエクスポート
    データに実際に`Katakana`行が存在することも合わせて確認する。
+   **r5追加（B-8指摘反映）**: `MOZC_KEY_ALIASES`の0xF0↔`Eisu`対応
+   （awase側の既存の前提）を、Windows版GJIが実際にそう解釈するか
+   同じゲートで確認する（決定5参照）。
 3. `crates/awase-gji-config/src/lib.rs`の既存docコメントに「Mozc本家は
    Apache-2.0」という誤り（正しくはBSD-3-Clause）が無いか確認し、
    あれば別途訂正する。
