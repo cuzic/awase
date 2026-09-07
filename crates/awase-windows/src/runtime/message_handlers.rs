@@ -1159,7 +1159,7 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                     .ime
                     .journal
                     .dump_to_file_capped(crate::bug_report::LOG_EXCERPT_MAX_BYTES);
-                (dump_result, current_bug_report_diagnostics(app))
+                (dump_result, current_bug_report_diagnostics(app, ime_kind))
             }) else {
                 tracing::error!("[bug-report] runtime unavailable");
                 return;
@@ -1238,7 +1238,10 @@ fn current_bug_report_ime_kind() -> crate::bug_report::BugReportImeKind {
     }
 }
 
-fn current_bug_report_diagnostics(app: &Runtime) -> crate::bug_report::BugReportDiagnostics {
+fn current_bug_report_diagnostics(
+    app: &Runtime,
+    ime_kind: crate::bug_report::BugReportImeKind,
+) -> crate::bug_report::BugReportDiagnostics {
     let (is_japanese, lang_id) = crate::ime::keyboard_layout_info();
     let now_ms = hook::current_tick_ms();
     let resources = process_resource_snapshot();
@@ -1288,6 +1291,9 @@ fn current_bug_report_diagnostics(app: &Runtime) -> crate::bug_report::BugReport
     // も診断情報として含める。後者は起動時「終了してください」警告の対象ではない。
     let mut competing_software = crate::app::detect_conflicting_software();
     competing_software.extend(crate::app::detect_relay_or_remap_software());
+    // ADR-148: GJI/MS-IMEのキーマップ・キー割当て設定。
+    let gji_keymap = Some(build_bug_report_gji_keymap_summary(app, ime_kind));
+    let msime_key_assignment = Some(build_bug_report_msime_key_assignment_summary(app, ime_kind));
     crate::bug_report::BugReportDiagnostics {
         ime_product_name: crate::tsf::observer::current_ime_product_name(),
         keyboard_model: bug_report_keyboard_model(app.keyboard_model()).to_owned(),
@@ -1297,7 +1303,348 @@ fn current_bug_report_diagnostics(app: &Runtime) -> crate::bug_report::BugReport
         config_toml,
         layout_yab,
         retro_eval_stats,
+        gji_keymap,
+        msime_key_assignment,
     }
+}
+
+/// `custom_keymap_table_is_effective`が`true`のときにのみ埋まる、
+/// GJIキーマップ抽出結果（ADR-148）。
+///
+/// フィールド名は`BugReportGjiKeymapSummary`の対応フィールドとあえて
+/// 揃えている（`let GjiCustomKeymapFields { ime_on_keys, .. } = ...`の
+/// ような分解を分かりやすくするため）ので、`*_keys`共通後置の
+/// clippy指摘は抑止する。
+///
+/// 位置引数タプルではなく名前付きフィールドの構造体にしているのは
+/// 可読性目的だけではない: 複数の`None`を並べた裸のタプルリテラルは、
+/// `architecture_guard.rs::build_input_context_callers_do_not_drop_
+/// thumb_down_state`がファイル全体を空白除去した上で特定の部分文字列の
+/// 有無だけを見て判定する設計のため、`build_input_context`呼び出しとは
+/// 無関係なこの箇所でも誤検出（false positive）を起こす。名前付き
+/// フィールドの`Default::default()`はその部分文字列を生成しない。
+#[derive(Default)]
+#[allow(clippy::struct_field_names)]
+struct GjiCustomKeymapFields {
+    ime_on_keys: Option<Vec<String>>,
+    ime_off_keys: Option<Vec<String>>,
+    ime_toggle_keys: Option<Vec<String>>,
+    mode_set_keys: Option<Vec<(String, String)>>,
+    mode_toggle_alphanumeric_keys: Option<Vec<String>>,
+    mode_toggle_kana_type_keys: Option<Vec<String>>,
+}
+
+/// `ime_kind == Gji`のときにのみ埋まる、GJIの「採用系」フィールド
+/// （ADR-148）。
+#[derive(Default)]
+struct GjiAdoptedFields {
+    henkan_adopted_kind: Option<String>,
+    muhenkan_adopted_kind: Option<String>,
+    henkan_adopted_route: Option<String>,
+    muhenkan_adopted_route: Option<String>,
+    thumb_key_ime_warning: Option<String>,
+}
+
+/// `ime_kind == MsIme`のときにのみ埋まる、MS-IMEの「採用系」フィールド
+/// （ADR-148）。フィールド名の共通前置についてはGJI側
+/// `GjiCustomKeymapFields`のdoc参照。
+#[derive(Default)]
+#[allow(clippy::struct_field_names)]
+struct MsImeAdoptedFields {
+    adopted_ime_toggle_combos: Option<Vec<String>>,
+    adopted_muhenkan_delegate: Option<String>,
+    adopted_henkan_delegate: Option<String>,
+}
+
+/// GJI（`config1.db`）から、無変換/変換キーのIME意味論・キーマップ設定を
+/// 要約する（ADR-148）。「生値・分類系」は`ime_kind`に関わらず常に計算し、
+/// 「採用系」は`ime_kind == Gji`のときのみ計算する（Opus敵対的レビュー
+/// G1: GJIが非アクティブなら、これらの値は`sync_gji_charset_autodetect`
+/// により既に解除済みのため）。
+///
+/// `sync_gji_charset_autodetect`とは独立に、報告生成時点の`config1.db`を
+/// 都度読み直す（Runtime側に`GjiRawConfig`のキャッシュは存在しないため。
+/// 報告時点のファイル内容と、Engineが最後に採用した値とが理論上ズレうる
+/// 限界については ADR-148「実装スコープの訂正」参照）。
+fn build_bug_report_gji_keymap_summary(
+    app: &Runtime,
+    ime_kind: crate::bug_report::BugReportImeKind,
+) -> crate::bug_report::BugReportGjiKeymapSummary {
+    let bytes = crate::gji_charset_autodetect::read_config1_db();
+    let bytes_read_ok = bytes.is_some();
+    let raw = bytes
+        .as_deref()
+        .and_then(awase_gji_config::wire::parse_top_level);
+    let config1_db_status = if raw.is_some() {
+        "Ok"
+    } else if bytes_read_ok {
+        "ParseFailed"
+    } else {
+        "NotFound"
+    }
+    .to_owned();
+
+    let default_raw = awase_gji_config::wire::GjiRawConfig::default();
+    let raw_ref = raw.as_ref().unwrap_or(&default_raw);
+
+    let session_keymap = raw_ref.session_keymap;
+    let has_henkan_muhenkan_overlay = raw_ref
+        .overlay_keymaps
+        .contains(&awase_gji_config::SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF);
+    let custom_keymap_table_present = raw_ref.custom_keymap_table.is_some();
+    // /code-review指摘: `sync_gji_charset_autodetect`（`gji_charset_autodetect.rs`
+    // の`session_keymap != CUSTOM`ガード直後の`let Some(table) = raw.
+    // custom_keymap_table else { return }`）の実際のゲートは
+    // 「session_keymap == CUSTOM」**かつ**「custom_keymap_tableが存在する」の
+    // 両方。前者だけをここで再現すると、CUSTOM選択中だがfield 42が不在の
+    // 環境（本文doc「custom_keymap_table_present」との組み合わせが
+    // (true, false)になるケース）で本フィールドが誤って`true`になり、
+    // 実際には抽出処理に到達しない状態を「有効」と報告してしまう。
+    let custom_keymap_table_is_effective = session_keymap
+        == Some(awase_gji_config::SESSION_KEYMAP_CUSTOM)
+        && custom_keymap_table_present;
+
+    let custom_keymap_fields = if custom_keymap_table_is_effective {
+        let table = raw_ref.custom_keymap_table.as_deref().unwrap_or("");
+        let ime_keys = awase_gji_config::keymap::extract_ime_keys(table);
+        let mode_keys = awase_gji_config::keymap::extract_mode_keys(table);
+        GjiCustomKeymapFields {
+            ime_on_keys: Some(ime_keys.on),
+            ime_off_keys: Some(ime_keys.off),
+            ime_toggle_keys: Some(ime_keys.toggle),
+            mode_set_keys: Some(
+                mode_keys
+                    .set_mode
+                    .into_iter()
+                    .map(|(vk, mode)| (vk, gji_composition_mode_str(mode).to_owned()))
+                    .collect(),
+            ),
+            mode_toggle_alphanumeric_keys: Some(mode_keys.toggle_alphanumeric),
+            mode_toggle_kana_type_keys: Some(mode_keys.toggle_kana_type),
+        }
+    } else {
+        GjiCustomKeymapFields::default()
+    };
+    let GjiCustomKeymapFields {
+        ime_on_keys,
+        ime_off_keys,
+        ime_toggle_keys,
+        mode_set_keys,
+        mode_toggle_alphanumeric_keys,
+        mode_toggle_kana_type_keys,
+    } = custom_keymap_fields;
+
+    let (henkan_classified, muhenkan_classified) =
+        crate::gji_charset_autodetect::classify_thumb_key_ime_actions(raw_ref);
+    let henkan_classified_kind = henkan_classified
+        .map(ime_toggle_kind_str)
+        .map(str::to_owned);
+    let muhenkan_classified_kind = muhenkan_classified
+        .map(ime_toggle_kind_str)
+        .map(str::to_owned);
+
+    let muhenkan_dedicated_fn_key_configured = app.muhenkan_dedicated_fn_key_configured();
+
+    let adopted_fields = if ime_kind == crate::bug_report::BugReportImeKind::Gji {
+        let wiring = crate::gji_charset_autodetect::gate_thumb_key_ime_actions(
+            henkan_classified,
+            muhenkan_classified,
+            app.gji_thumb_key_ime_toggle_opt_in(),
+        );
+        let henkan_is_thumb_key =
+            crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_CONVERT);
+        let muhenkan_is_thumb_key =
+            crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_NONCONVERT);
+        // /code-review指摘: `route_thumb_key_action`
+        // （`gji_charset_autodetect.rs:522`）を直接呼ばず、その分岐条件
+        // （`is_thumb_key`の真偽のみ、`action`自体は`route_thumb_key_action`
+        // に先んじて`wiring.henkan`/`wiring.muhenkan`から素通し）をここで
+        // 再現している。`route_thumb_key_action`は`on`/`off`/`toggle`の
+        // 3つの`&mut Vec<ParsedKeyCombo>`を要求する副作用ありの関数
+        // （actuation-auto側への追加）で、診断専用のこの経路のためだけに
+        // 使い捨てのVecを渡すのは本末転倒なため。ここで再現しているのは
+        // 「`is_thumb_key`なら`Delegate`、そうでなければ`ActuationAuto`」
+        // という1行の分岐のみで、`ImeToggleKind→ShadowImeAction`の変換
+        // 自体（実際の値の計算）は`gate_thumb_key_ime_actions`にすべて
+        // 委譲済み。この分岐がずれていないことはOpus敵対的コードレビュー
+        // で`route_thumb_key_action`本体と突き合わせ済み（ADR-148参照）。
+        let henkan_route = wiring.henkan.map(|_| {
+            if henkan_is_thumb_key {
+                "Delegate"
+            } else {
+                "ActuationAuto"
+            }
+            .to_owned()
+        });
+        let muhenkan_route = wiring.muhenkan.map(|_| {
+            if muhenkan_is_thumb_key {
+                "Delegate"
+            } else {
+                "ActuationAuto"
+            }
+            .to_owned()
+        });
+        GjiAdoptedFields {
+            henkan_adopted_kind: wiring.henkan.map(ime_toggle_kind_str).map(str::to_owned),
+            muhenkan_adopted_kind: wiring.muhenkan.map(ime_toggle_kind_str).map(str::to_owned),
+            henkan_adopted_route: henkan_route,
+            muhenkan_adopted_route: muhenkan_route,
+            thumb_key_ime_warning: thumb_key_ime_warning_str(wiring.warning).map(str::to_owned),
+        }
+    } else {
+        GjiAdoptedFields::default()
+    };
+    let GjiAdoptedFields {
+        henkan_adopted_kind,
+        muhenkan_adopted_kind,
+        henkan_adopted_route,
+        muhenkan_adopted_route,
+        thumb_key_ime_warning,
+    } = adopted_fields;
+
+    crate::bug_report::BugReportGjiKeymapSummary {
+        config1_db_status,
+        session_keymap,
+        has_henkan_muhenkan_overlay,
+        custom_keymap_table_present,
+        custom_keymap_table_is_effective,
+        ime_on_keys,
+        ime_off_keys,
+        ime_toggle_keys,
+        mode_set_keys,
+        mode_toggle_alphanumeric_keys,
+        mode_toggle_kana_type_keys,
+        henkan_classified_kind,
+        muhenkan_classified_kind,
+        henkan_adopted_kind,
+        muhenkan_adopted_kind,
+        henkan_adopted_route,
+        muhenkan_adopted_route,
+        thumb_key_ime_warning,
+        muhenkan_dedicated_fn_key_configured,
+    }
+}
+
+/// MS-IME「キーとタッチのカスタマイズ」（シンプルキー割当て）のレジストリ
+/// 値を要約する（ADR-148）。生のDWORD5個は`ime_kind`に関わらず常に読む。
+/// `adopted_*`は`ime_kind == MsIme`のときのみ`Some`（Opus敵対的レビュー
+/// G1、GJI側と同じ理由）。
+fn build_bug_report_msime_key_assignment_summary(
+    app: &Runtime,
+    ime_kind: crate::bug_report::BugReportImeKind,
+) -> crate::bug_report::BugReportMsImeKeyAssignmentSummary {
+    let raw_dwords = crate::msime_key_assignment::read_raw_key_assignment_dwords();
+    let muhenkan_dedicated_fn_key_configured = app.muhenkan_dedicated_fn_key_configured();
+
+    let adopted_fields = if ime_kind == crate::bug_report::BugReportImeKind::MsIme {
+        let toggle_assignment = crate::msime_key_assignment::read_toggle_assignment_from_registry();
+        let combos = toggle_assignment.to_combos(app.space_is_thumb_key());
+        // Opus敵対的コードレビューM-1: 空でも`Some(vec![])`にする。
+        // `ime_kind == MsIme`の枝に入った時点で「採用値を計算した」ことは
+        // 確定しているため、`None`（GJI側`ime_*_keys`同様「非該当」の意味）
+        // と「採用ゼロ件」を区別する。
+        let adopted_ime_toggle_combos =
+            Some(combos.iter().copied().map(parsed_key_combo_label).collect());
+
+        let delegate_assignment =
+            crate::msime_key_assignment::read_delegate_to_open_axis_assignment_from_registry();
+        let henkan_is_thumb_key =
+            crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_CONVERT);
+        let muhenkan_is_thumb_key =
+            crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_NONCONVERT);
+        let adopted_henkan_delegate = henkan_is_thumb_key
+            .then_some(delegate_assignment.henkan)
+            .flatten()
+            .map(shadow_ime_action_str)
+            .map(str::to_owned);
+        let adopted_muhenkan_delegate = muhenkan_is_thumb_key
+            .then_some(delegate_assignment.muhenkan)
+            .flatten()
+            .map(shadow_ime_action_str)
+            .map(str::to_owned);
+        MsImeAdoptedFields {
+            adopted_ime_toggle_combos,
+            adopted_muhenkan_delegate,
+            adopted_henkan_delegate,
+        }
+    } else {
+        MsImeAdoptedFields::default()
+    };
+    let MsImeAdoptedFields {
+        adopted_ime_toggle_combos,
+        adopted_muhenkan_delegate,
+        adopted_henkan_delegate,
+    } = adopted_fields;
+
+    crate::bug_report::BugReportMsImeKeyAssignmentSummary {
+        is_key_assignment_enabled: raw_dwords.is_key_assignment_enabled,
+        key_assignment_muhenkan: raw_dwords.key_assignment_muhenkan,
+        key_assignment_henkan: raw_dwords.key_assignment_henkan,
+        key_assignment_ctrl_space: raw_dwords.key_assignment_ctrl_space,
+        key_assignment_shift_space: raw_dwords.key_assignment_shift_space,
+        adopted_ime_toggle_combos,
+        adopted_muhenkan_delegate,
+        adopted_henkan_delegate,
+        muhenkan_dedicated_fn_key_configured,
+    }
+}
+
+fn ime_toggle_kind_str(kind: crate::gji_charset_autodetect::ImeToggleKind) -> &'static str {
+    use crate::gji_charset_autodetect::ImeToggleKind;
+    match kind {
+        ImeToggleKind::On => "On",
+        ImeToggleKind::Off => "Off",
+        ImeToggleKind::Toggle => "Toggle",
+    }
+}
+
+fn thumb_key_ime_warning_str(
+    warning: crate::gji_charset_autodetect::ThumbKeyImeWarning,
+) -> Option<&'static str> {
+    use crate::gji_charset_autodetect::ThumbKeyImeWarning;
+    match warning {
+        ThumbKeyImeWarning::None => None,
+        ThumbKeyImeWarning::ToggleDeclined => Some("ToggleDeclined"),
+        ThumbKeyImeWarning::ToggleHonored => Some("ToggleHonored"),
+    }
+}
+
+fn gji_composition_mode_str(mode: awase_gji_config::command::GjiCompositionMode) -> &'static str {
+    use awase_gji_config::command::GjiCompositionMode;
+    match mode {
+        GjiCompositionMode::Hiragana => "Hiragana",
+        GjiCompositionMode::FullKatakana => "FullKatakana",
+        GjiCompositionMode::HalfKatakana => "HalfKatakana",
+        GjiCompositionMode::FullAlphanumeric => "FullAlphanumeric",
+        GjiCompositionMode::HalfAlphanumeric => "HalfAlphanumeric",
+    }
+}
+
+fn shadow_ime_action_str(action: awase::types::ShadowImeAction) -> &'static str {
+    match action {
+        awase::types::ShadowImeAction::TurnOn => "TurnOn",
+        awase::types::ShadowImeAction::TurnOff => "TurnOff",
+        awase::types::ShadowImeAction::Toggle => "Toggle",
+    }
+}
+
+/// `combo.vk`は見ずSpace固定（レビューR-1）: `MsImeToggleAssignment::
+/// to_combos`が現状生成するのは`VK_SPACE`のみのため実害はないが、
+/// 将来`to_combos`が他のVKを返すようになった場合はこの関数も
+/// 追随させること。
+fn parsed_key_combo_label(combo: awase::config::ParsedKeyCombo) -> String {
+    let mut label = String::new();
+    if combo.ctrl {
+        label.push_str("Ctrl+");
+    }
+    if combo.shift {
+        label.push_str("Shift+");
+    }
+    if combo.alt {
+        label.push_str("Alt+");
+    }
+    label.push_str("Space");
+    label
 }
 
 /// 「長時間使うと重くなる」報告の切り分け用プロセスリソーススナップショット

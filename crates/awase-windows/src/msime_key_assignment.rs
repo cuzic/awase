@@ -91,6 +91,20 @@ pub struct MsImeDelegateToOpenAxisAssignment {
     pub henkan: Option<awase::types::ShadowImeAction>,
 }
 
+/// bug report用（ADR-148）: `MSIME`直下の5つのDWORD値を解釈せず生のまま
+/// 返す。`MsImeKeyAssignment`等の解釈済み型（`== Some(1)`/`== Some(2)`で
+/// 分岐、それ以外は「宣言なし」に潰す）と違い、未知の値（将来値`3`以降等）
+/// やマスタースイッチOFF時の実際の登録値も報告からそのまま読み取れる
+/// ようにするため。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RawKeyAssignmentDwords {
+    pub is_key_assignment_enabled: Option<u32>,
+    pub key_assignment_muhenkan: Option<u32>,
+    pub key_assignment_henkan: Option<u32>,
+    pub key_assignment_ctrl_space: Option<u32>,
+    pub key_assignment_shift_space: Option<u32>,
+}
+
 /// MS-IME キー割当ての読み取り結果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MsImeKeyAssignment {
@@ -231,6 +245,23 @@ mod windows_impl {
         }
     }
 
+    /// bug report用（ADR-148）: 5つのDWORD値を解釈せず生のまま読む。
+    /// マスタースイッチの値に関わらず個々の値を読む（`read_toggle_
+    /// assignment_from_registry`/`read_delegate_to_open_axis_assignment_
+    /// from_registry`と違い、マスタースイッチOFF時の実際の登録値を
+    /// 隠さないため）。
+    #[must_use]
+    pub(crate) fn read_raw_key_assignment_dwords() -> super::RawKeyAssignmentDwords {
+        use windows::core::w;
+        super::RawKeyAssignmentDwords {
+            is_key_assignment_enabled: read_dword(w!("IsKeyAssignmentEnabled")),
+            key_assignment_muhenkan: read_dword(w!("KeyAssignmentMuhenkan")),
+            key_assignment_henkan: read_dword(w!("KeyAssignmentHenkan")),
+            key_assignment_ctrl_space: read_dword(w!("KeyAssignmentCtrlSpace")),
+            key_assignment_shift_space: read_dword(w!("KeyAssignmentShiftSpace")),
+        }
+    }
+
     /// レジストリから `KeyAssignmentMuhenkan`/`KeyAssignmentHenkan` を
     /// `ShadowImeAction` として読み取る（ADR-092 決定A・決定D Step4b）。
     #[must_use]
@@ -318,7 +349,8 @@ mod windows_impl {
 #[cfg(windows)]
 pub(crate) use windows_impl::{
     check_and_warn, read_delegate_to_open_axis_assignment_from_registry,
-    read_toggle_assignment_from_registry, spawn_yes_open_ime_settings_dialog,
+    read_raw_key_assignment_dwords, read_toggle_assignment_from_registry,
+    spawn_yes_open_ime_settings_dialog,
 };
 
 #[cfg(test)]

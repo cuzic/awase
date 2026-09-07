@@ -56,6 +56,12 @@ export interface BugReportPayload {
    * optionalBoolean/optionalNullableRecord で読む）。 */
   attach_retro_eval_stats: boolean;
   retro_eval_stats: Record<string, unknown> | null;
+  /** ADR-148。GJI/MS-IMEのキーマップ・キー割当て設定。`SCHEMA_VERSION`は
+   * 上げていないため、旧クライアントが生成した報告にはこの3フィールドが
+   * 存在しない（`retro_eval_stats`と同じ理由でoptionalとして読む）。 */
+  attach_ime_keymap: boolean;
+  gji_keymap: Record<string, unknown> | null;
+  msime_key_assignment: Record<string, unknown> | null;
   reported_at: string;
 }
 
@@ -377,6 +383,10 @@ export function validatePayload(value: unknown): BugReportPayload {
   // 存在しない旧クライアントの報告も拒否しない（schema_version は不変）。
   const attachRetroEvalStats = optionalBoolean(value, "attach_retro_eval_stats");
   const retroEvalStats = optionalNullableRecord(value, "retro_eval_stats");
+  // ADR-148: 上記2フィールドと同じ理由でoptionalとして読む。
+  const attachImeKeymap = optionalBoolean(value, "attach_ime_keymap");
+  const gjiKeymap = optionalNullableRecord(value, "gji_keymap");
+  const msimeKeyAssignment = optionalNullableRecord(value, "msime_key_assignment");
   const reportedAt = requiredString(value, "reported_at");
   if (Number.isNaN(Date.parse(reportedAt))) {
     throw new HttpError(400, "reported_at_must_be_rfc3339");
@@ -399,6 +409,15 @@ export function validatePayload(value: unknown): BugReportPayload {
   }
   if (!attachRetroEvalStats && retroEvalStats !== null) {
     throw new HttpError(400, "retro_eval_stats_requires_attach_retro_eval_stats");
+  }
+  // ADR-148: attach_ime_keymap は1フラグだが紐づくデータはgji_keymap/
+  // msime_key_assignmentの2オブジェクトなので、整合性チェックも2本必要
+  // （1フラグ1オブジェクトの他フィールドとカーディナリティが異なる）。
+  if (!attachImeKeymap && gjiKeymap !== null) {
+    throw new HttpError(400, "gji_keymap_requires_attach_ime_keymap");
+  }
+  if (!attachImeKeymap && msimeKeyAssignment !== null) {
+    throw new HttpError(400, "msime_key_assignment_requires_attach_ime_keymap");
   }
 
   return {
@@ -423,6 +442,9 @@ export function validatePayload(value: unknown): BugReportPayload {
     layout_yab: layoutYab,
     attach_retro_eval_stats: attachRetroEvalStats,
     retro_eval_stats: retroEvalStats,
+    attach_ime_keymap: attachImeKeymap,
+    gji_keymap: gjiKeymap,
+    msime_key_assignment: msimeKeyAssignment,
     reported_at: reportedAt
   };
 }
