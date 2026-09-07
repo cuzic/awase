@@ -15985,8 +15985,7 @@ transport.rs`（`PhysicalKeyDisposition::plan`）、`crates/awase-windows/src/
 runtime/message_handlers.rs`（`sync_ime_toggle_auto_detect`、MS-IME側配線）。
 関連: BUG-115（同じGJI設定検出機構）、[ADR-135](adr/135-generic-thumb-key-ime-toggle-delegate.md)
 （Hiragana/Katakana版の同型修正、C1）。
-
-## BUG-119: GJI自動検出の無変換/変換 `delegate_to_open_axis` が、ユーザーが明示的に選んだ「常に送出する（パススルー）」設定を無視して物理キーを握りつぶす（**原因確定、修正はADR-147で検討中**）
+## BUG-119: GJI自動検出の無変換/変換 `delegate_to_open_axis` が、ユーザーが明示的に選んだ「常に送出する（パススルー）」設定を無視して物理キーを握りつぶす（**`TurnOn`方向のみ修正済み・実機ソーク未実施。`TurnOff`/`Toggle`方向は既知の限界として未解消**）
 
 **症状:** GJIのカスタムキーマップ（`custom_keymap_table`）で無変換キーに
 `DirectInput → IMEOn`・`Composition → Commit`（確定）を割り当て、awase側は
@@ -16000,8 +15999,18 @@ v1.18.0までは直接入力中の無変換単独タップが生の`VK_NONCONVER
 BUG-115/ADR-092決定D Step4b）以降、直接入力中に無変換キーを単独タップしても
 物理キーがOSへ一切送出されなくなり、パススルー設定が機能しなくなった。
 
+**注（Opusレビューで確認済み）:** 「v1.18.0までは正しく動いていた」というのは
+「物理キーがGJIへ届いていた」という意味に限る。v1.18.0時点では`muhenkan_
+shadow_override`（ADR-141で新設）も`ImeKeyKind::from_vk`のVK_CONVERT/
+VK_NONCONVERT対応も存在せず、`kp_stage_shadow_ime_toggle`はこれらのキーの
+belief追随を一切行っていなかった——つまりGJIが自力でIMEをONにしてもawaseの
+beliefが追随しないという欠落自体は当時から存在しており、それがBUG-115として
+別途報告されていた。本ADR-147の修正は「v1.18.0への単純な巻き戻し」ではなく、
+BUG-115の修正（belief追随）を保ったまま、パススルーを選んだユーザーに限り
+物理キー配送も復元する、という両立を狙ったものである。
+
 **機序（コード確認済み）:** `resolve_pending_thumb_as_single`
-（`src/engine/nicola_fsm.rs:1977-2038`）は、無変換/変換の単独タップ確定時に
+（`src/engine/nicola_fsm.rs:1977`起点、delegate分岐は`:2020-2068`）は、無変換/変換の単独タップ確定時に
 以下の優先順位で処理する。
 
 1. `special.dedicated_fn_key`（専用Fnキー、隠し設定）
@@ -16022,24 +16031,52 @@ BUG-115）がGJIのカスタムキーマップから`DirectInput 無変換 IMEOn
 `muhenkan_delegate_to_open_axis = Some(ShadowImeAction::TurnOn)`が立ち、
 直接入力中の無変換単独タップは常に2の分岐に奪われる。
 
-**なお、`ModeKeyConfig::is_passthrough()`（`src/engine/fsm_types.rs:582`）
-という、まさにこの判定に使えるヘルパーが定義されているが、本番コードの
-どこからも呼び出されていない**（ユニットテスト以外に呼び出し箇所ゼロ、
-`grep -rn "is_passthrough(" src/`で確認）。
+**なお、本修正前は`ModeKeyConfig::is_passthrough()`（`src/engine/fsm_types.rs:582`）
+という、まさにこの判定に使えるヘルパーが定義されているにもかかわらず本番
+コードのどこからも呼び出されていなかった**（ユニットテスト以外に呼び出し
+箇所ゼロ）。修正では`resolve_pending_thumb_as_single`の`.filter()`から
+このヘルパーを呼び出すよう配線した（下記「修正」参照）。
 
 **影響範囲:** GJIのカスタムキーマップで無変換/変換キーにIME ON/OFF/トグルの
 いずれかを割り当てており、かつ同じキーをNICOLA親指キーにも設定し、かつ
 「常に送出する（パススルー）」を選んでいるユーザーに限定される
 （`always_suppress = true`の既定設定ユーザーには影響しない——そちらは元々
 composing中もidle中もSuppressのため、delegateが代わりに動くこと自体が
-BUG-115の修正目的そのものであり退行ではない）。Composition中
-（`composing == true`）の単独タップは`delegate_to_open_axis`の判定が
-`if !composing`でガードされているため引き続き`mode_key_config`（パススルー
-設定）どおりに動作し、影響を受けない——退行するのは直接入力（idle）中の
-単独タップのみ。
+BUG-115の修正目的そのものであり退行ではない）。
 
-**修正方針:** [ADR-147](adr/147-thumb-key-delegate-defers-to-user-passthrough.md)
-で検討中。
+**「直接入力中のみ」に限定されない点に注意（重要な訂正）:** `resolve_pending_
+thumb_as_single`の`composing`引数は、GJI/Mozcのセッション状態（DirectInput/
+Precomposition/Composition/Conversion...）とは別物で、`InputContext::composing`
+（供給元は`crate::tsf::observer::ime_composition_active_now()`、doc曰く
+「IME composition **window が可視**かどうか」、`EVENT_OBJECT_IME_SHOW`/`HIDE`
+契機で更新）——つまり**候補ウィンドウが実際に画面上に表示されているか**だけを
+見ている。GJI側の「Composition」状態（かな入力を確定前に打っている最中）は、
+変換候補ウィンドウを明示的に呼び出す（Space等）までは表示されないことが多く、
+その間`InputContext::composing`は`false`のままになりうる。したがって、
+ユーザーがGJI側で「Composition→確定」を設定していても、確定を意図した
+無変換単独タップの時点で候補ウィンドウが非表示なら`composing == false`と
+awaseは判定し、`!composing`ガードを満たして`delegate_to_open_axis`側に
+奪われる——**退行は「直接入力中」に限らず、GJIの実際のComposition状態でも
+候補ウィンドウが非表示である限り再現しうる**（最初の相談で報告された「確定
+動作が意図通りにならない」症状はこちらに該当する可能性が高い）。逆に候補
+ウィンドウが実際に表示されている間（`composing == true`）は`delegate_to_
+open_axis`の判定が`if !composing`でガードされているため`mode_key_config`
+（パススルー設定）どおりに動作し、影響を受けない。
+
+**修正:** [ADR-147](adr/147-thumb-key-delegate-defers-to-user-passthrough.md)
+（設計確定、Opus敵対的レビュー2ラウンドで収束）どおり実装済み
+（`src/engine/nicola_fsm.rs::resolve_pending_thumb_as_single`、回帰テスト
+7件を`src/engine/tests.rs`に追加、`cargo test --lib`/Windowsターゲット
+`cargo check`/`architecture_guard`/`layer_boundary_guard`/
+`gji_charset_autodetect`各テストとも緑）。実機ソークは未実施。
+**`TurnOn`方向の
+delegateに限定した修正**——`kp_stage_shadow_ime_toggle`の所有権判定
+（`delegate_owns_mode_key_shadow_toggle`）が`mode_key_config`を見ないため、
+`TurnOff`/`Toggle`方向まで無条件に辞退させると「誰もbeliefを追随しない」
+新規の穴を作ることが判明したため。したがって本バグはBUG-119の元報告
+（`DirectInput→IMEOn`、TurnOn方向）は解消するが、GJIのoverlay設定
+（無変換→`Off`が既定）やATOKプリセット（Toggle）を使っているパススルー
+ユーザーには未解消のまま残る——詳細はADR-147の「残存する既知の限界」参照。
 
 **関連ファイル:** `src/engine/nicola_fsm.rs`
 （`resolve_pending_thumb_as_single`/`thumb_solo_special_handling`）、

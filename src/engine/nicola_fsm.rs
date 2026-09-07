@@ -2017,11 +2017,41 @@ impl NicolaFsm {
                 None,
             );
         }
-        if let Some(open_axis_action) = special.delegate_to_open_axis.filter(|_| {
+        if let Some(open_axis_action) = special.delegate_to_open_axis.filter(|action| {
             // Hiragana/Katakana は MS-IME/CTF から注入されうるため、注入された
             // 偽の単独タップでは delegate を発火させない。ここでは suppress せず
             // 既定分岐へ落とし、キー自体は従来どおり OS へ届く余地を残す。
-            !(special.injected_guarded_delegate && injected)
+            //
+            // BUG-119/ADR-147: ユーザーが `mode_key_config` で明示的に
+            // Passthrough（無変換/変換キー単独タップの「常に送出する」設定）を
+            // 選んでいる場合、`TurnOn` 方向に限り delegate を辞退し
+            // `mode_key_config` 側（下の分岐）に譲る。GJI/MS-IME 側の自動検出
+            // （`classify_thumb_key_ime_actions` 等）が delegate を配線しても、
+            // ユーザーが「GJI 自身に物理キーの意味論を委ねたい」と明示している
+            // 場合はそれを尊重する。
+            //
+            // **`TurnOn` 限定である理由（`TurnOff`/`Toggle` に広げてはならない）**:
+            // この安全性は `crates/awase-windows::gji_charset_autodetect::
+            // delegate_owns_mode_key_shadow_toggle`（`kp_stage_shadow_ime_toggle`
+            // の所有権判定）が `mode_key_config` を一切見ない、という
+            // `awase` コアからは見えない外部の不変条件に依存している。
+            // belief OFF 中はその判定が `&& effective_open()` で方向を問わず
+            // false になるため shadow-toggle が常に belief を追随するが、
+            // belief ON 中は「delegate が処理する」と誤信したまま shadow-toggle
+            // が身を引く。`TurnOn` は belief ON 中に発火しても IME 側・belief側
+            // 共に no-op なので害が無いが、`TurnOff`/`Toggle` は belief ON 中に
+            // 実際に状態を反転させるため、ここで辞退すると GJI 自身が実 IME を
+            // 切り替える一方 awase の belief だけが取り残される「誰も追随
+            // しない」窓を新規に作る（ADR-147「消費点と所有権のマトリクス」
+            // 参照）。`TurnOff`/`Toggle` 方向にこの辞退を広げる場合は、まず
+            // `delegate_owns_mode_key_shadow_toggle` 側の対称な配線が必要。
+            let is_fake_injected_solo_tap = special.injected_guarded_delegate && injected;
+            let user_passthrough_defers_turn_on =
+                matches!(action, crate::types::ShadowImeAction::TurnOn)
+                    && special
+                        .mode_key_config
+                        .is_some_and(ModeKeyConfig::is_passthrough);
+            !is_fake_injected_solo_tap && !user_passthrough_defers_turn_on
         }) {
             // composing 中は fail-closed に倒す。誤って true でも suppress に落ちるだけだが、
             // 誤って false で TurnOff/Toggle(→OFF) すると composition を復旧不能に破棄する。
