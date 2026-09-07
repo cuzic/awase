@@ -1036,35 +1036,14 @@ pub(crate) fn handle_autostart_toggle() {
 /// なら保存に成功（`warnings`は検証で正規化・警告が発生した項目、無ければ
 /// 空）、`None`なら読み込み/保存自体が失敗（呼び出し元は成功バルーンを
 /// 出してはならない）。
+/// 実処理は [`awase::config::AppConfig::save_auto_start`]（`awase-settings`
+/// の設定画面と共通化、Opus敵対的レビュー指摘 Minor 11、2026-09-07）。
 fn save_auto_start_config(value: &str) -> Option<Vec<String>> {
     let Ok(config_path) = crate::app::find_config_path() else {
         tracing::warn!("Could not find config path to save auto_start");
         return None;
     };
-    match awase::config::AppConfig::load(&config_path) {
-        Ok(mut config) => {
-            config.general.auto_start = value.to_string();
-            // /code-review指摘（PR #127）: validate()を経由せず生のconfigを
-            // そのまま保存すると、confirm_mode="speculative"のような廃止済み
-            // 設定値が正規化されないまま再保存され、トレイのauto_start切替
-            // だけを経由するユーザーはこの移行が永久に完了しない。他の保存経路
-            // （設定画面のapply_confirmed）と同様、保存前に必ずvalidate()を通す。
-            let (validated, warnings) = config.validate();
-            for w in &warnings {
-                tracing::warn!("Config validation warning while saving auto_start: {w}");
-            }
-            let config = awase::config::AppConfig::from(validated);
-            if let Err(e) = config.save(&config_path) {
-                tracing::error!("Failed to save auto_start config: {e}");
-                return None;
-            }
-            Some(warnings)
-        }
-        Err(e) => {
-            tracing::error!("Failed to load config for saving auto_start: {e}");
-            None
-        }
-    }
+    awase::config::AppConfig::save_auto_start(&config_path, value)
 }
 
 /// トレイウィンドウプロシージャ

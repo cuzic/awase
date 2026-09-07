@@ -256,6 +256,62 @@ fn attach_parent_console() {
 #[cfg(not(target_os = "windows"))]
 fn attach_parent_console() {}
 
+/// `awase_windows::autostart` は `#[cfg(windows)]` 専用モジュール（HKCU Run
+/// キー操作は Windows でしか意味を持たない）。このブリッジで参照を1箇所に
+/// 集約し、非Windowsホストでのビルド確認（`cargo check -p awase-settings`、
+/// 開発者のLinux環境やCI）を通す。
+///
+/// Blocker（Opus敵対的レビュー指摘、2026-09-07）: 以前は `main.rs` の複数箇所
+/// から `awase_windows::autostart::*` を無条件に呼んでおり、非Windowsホスト
+/// ビルドが `E0433 cannot find autostart in awase_windows` で失敗していた。
+/// CIにはこの経路（windowsターゲット指定無しでの `-p awase-settings` ビルド）
+/// が無く検出できなかったため、`.github/workflows/ci.yml` にも
+/// `cargo check -p awase-settings`（ホストターゲット）を追加している。
+#[cfg(target_os = "windows")]
+mod autostart_bridge {
+    pub fn is_registered() -> bool {
+        awase_windows::autostart::is_registered()
+    }
+
+    pub fn register_path(exe: &std::path::Path) -> bool {
+        awase_windows::autostart::register_path(exe)
+    }
+
+    pub fn unregister() -> bool {
+        awase_windows::autostart::unregister()
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+mod autostart_bridge {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Windows の Run キーを模倣する、プロセス内だけの状態。実際のレジストリ
+    /// は存在しないため永続化はしない。
+    ///
+    /// このPR以前は、設定画面のチェックボックスは Win32 API を一切呼ばず
+    /// `config.toml` の値を直接書き換えるだけだったため、非Windowsホスト
+    /// （Linuxでの設定GUI開発）でもチェックボックスが「動いているように」
+    /// 見えた。常に `false`/失敗を返す素朴なスタブにすると、この開発体験を
+    /// 壊してチェックボックスが恒久的に操作不能になる（/code-review指摘、
+    /// 2026-09-07）。実体を持たない無害なフラグで模倣し、その体験を保つ。
+    static SIMULATED_REGISTERED: AtomicBool = AtomicBool::new(false);
+
+    pub fn is_registered() -> bool {
+        SIMULATED_REGISTERED.load(Ordering::Relaxed)
+    }
+
+    pub fn register_path(_exe: &std::path::Path) -> bool {
+        SIMULATED_REGISTERED.store(true, Ordering::Relaxed);
+        true
+    }
+
+    pub fn unregister() -> bool {
+        SIMULATED_REGISTERED.store(false, Ordering::Relaxed);
+        true
+    }
+}
+
 /// panic 時にファイル:行番号とメッセージをログに記録する。
 ///
 /// デフォルトの panic handler は stderr に書くだけなので、コンソールが無い
@@ -346,6 +402,16 @@ fn arg_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     args.windows(2)
         .find(|pair| pair[0] == name)
         .map(|pair| pair[1].as_str())
+}
+
+/// 現在の実行ファイル（`awase-settings.exe`）と同じフォルダにある `name`
+/// を探す。`app::launch_settings_with_args`（awase.exe から awase-settings.exe
+/// を探す逆方向の実装）と同じ「実行ファイルの隣を探す」パターン。
+fn resolve_sibling_exe(name: &str) -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let path = dir.join(name);
+    path.exists().then_some(path)
 }
 
 /// 各 bool は無関係な由来（keymap キャプチャの修飾キー3つ、配列編集タブの
@@ -443,6 +509,12 @@ struct SettingsApp {
     /// 内の全 `.yab` の読込失敗/`yab::lint()` 警告。`recompute_diagnostics()`
     /// で計算し、`config_path_panel` に表示する。空なら表示しない。
     startup_diagnostics: Vec<String>,
+    /// 自動起動チェックボックスの表示に使う、レジストリ実体
+    /// （`autostart_bridge::is_registered()`）のキャッシュ。`tab_basic` の
+    /// 再描画ごとに `RegGetValueW` を呼ぶのを避けるため、`new()` と
+    /// `recompute_diagnostics()`（`apply_autostart_toggle` 末尾からも呼ばれる）
+    /// でのみ更新する（Opus敵対的レビュー指摘、2026-09-07）。
+    auto_start_registered: bool,
 }
 
 /// バックグラウンドスレッドで実行する保存処理の結果。
@@ -536,6 +608,8 @@ impl SettingsApp {
             scancode_map_status: None,
             scancode_map_last_message: None,
             startup_diagnostics: Vec::new(),
+            // recompute_diagnostics() が直後に実体で上書きする。
+            auto_start_registered: false,
         };
         app.recompute_diagnostics();
         app
@@ -965,6 +1039,40 @@ impl SettingsApp {
         let (_, warnings) = self.config.clone().validate();
         diagnostics.extend(warnings);
 
+        // Defender の Behavior:Win32/Persistence.A!.ml 誤検知対策
+        // （2026-09-07）で awase.exe 側のバックグラウンド自己修復を廃止した
+        // ため、config.toml とレジストリ実体がズレていても awase.exe は
+        // ログにしか記録しない。ユーザーへの可視化はここ（設定画面を開いた
+        // ときの診断）で行う方針。
+        //
+        // 「自動起動」チェックボックス自体は config.toml ではなく
+        // `autostart_bridge::is_registered()`（レジストリ実体）を真実源として
+        // 表示する（Opus敵対的レビュー指摘 Major 6、2026-09-07: 以前は
+        // config.toml を真実源にしていたため、レジストリ側の操作が失敗した
+        // 場合にチェックボックス表示が実状態と食い違ったまま固まる経路が
+        // あった）。ここでの診断はそれとは別に、config.toml に記録された
+        // 「最後にユーザーが選んだ意図」と実体がズレていること自体を知らせる
+        // （MSIの再インストールでRunキーが復活する等、外部要因でズレうる）。
+        let auto_start_configured = self.config.general.auto_start == "enabled";
+        self.auto_start_registered = autostart_bridge::is_registered();
+        let auto_start_registered = self.auto_start_registered;
+        if auto_start_configured && !auto_start_registered {
+            diagnostics.push(
+                "config.toml では自動起動が有効になっていますが、Windowsの自動起動登録が\
+                 見つかりません。上の「自動起動」チェックボックスをクリックして登録してください。"
+                    .to_string(),
+            );
+        } else if !auto_start_configured && auto_start_registered {
+            diagnostics.push(
+                "config.toml では自動起動が無効になっていますが、Windowsには自動起動登録が\
+                 残っています（再インストール等が原因の可能性があります）。解除したい場合は\
+                 上の「自動起動」チェックボックスをクリックして解除してください。このまま\
+                 有効な状態として維持したい場合は、一度オフにしてから再度オンにすると\
+                 config.tomlの記録もWindowsの実体と一致します。"
+                    .to_string(),
+            );
+        }
+
         self.startup_diagnostics = diagnostics;
     }
 
@@ -1031,11 +1139,15 @@ impl SettingsApp {
             }
             if !self.startup_diagnostics.is_empty() {
                 ui.add_space(4.0);
+                // Defender誤検知対策で「設定画面を開いたときの警告だけで
+                // 十分」という方針にした以上、折りたたまれたまま気づかれ
+                // ないのでは意味が無い（Opus敵対的レビュー指摘 Minor 9、
+                // 2026-09-07）。診断が1件でもあれば既定で開く。
                 egui::CollapsingHeader::new(format!(
                     "⚠ 設定の診断結果（{}件）",
                     self.startup_diagnostics.len()
                 ))
-                .default_open(false)
+                .default_open(true)
                 .show(ui, |ui| {
                     // /code-review指摘: 警告件数が多いと TopBottomPanel が
                     // 際限なく伸びて中央の設定UIを押し出しかねないため、
@@ -1853,6 +1965,83 @@ enum CapturedKey {
 // ── Tab methods ──
 
 impl SettingsApp {
+    /// 自動起動チェックボックスがクリックされた直後（＝ボタン起点）に、
+    /// HKCU Run キーへの実際の登録/解除を即座に行い、成功した場合のみ
+    /// `config.toml` の `auto_start` を更新する。
+    ///
+    /// Windows Defender の Behavior:Win32/Persistence.A!.ml 誤検知対策
+    /// （2026-09-07、ユーザーとの相談で方針決定）: Run キーへの書き込みは
+    /// ユーザーのクリックに対する直接の同期的な応答としてのみ発生させ、
+    /// バックグラウンドでの無操作な自己修復（awase.exe起動時の再書き込み）
+    /// は行わない（`app::bootstrap::handle_auto_start` 参照）。設定画面側の
+    /// このチェックボックスも同じ方針に合わせ、トグル時にその場で
+    /// register/unregister を呼ぶ（config.toml の値だけを変えて次回
+    /// awase.exe 起動時に反映されるのを待つ、という間接的な経路にしない）。
+    ///
+    /// `awase-settings.exe` は `awase.exe` とは別プロセスのため
+    /// `std::env::current_exe()` は自分自身のパスしか返さない。登録対象は
+    /// 同じフォルダにある `awase.exe`（`app::launch_settings_with_args` が
+    /// 逆方向で使っているのと同じ「実行ファイルの隣を探す」パターン）を
+    /// 明示的に解決して渡す。
+    fn apply_autostart_toggle(&mut self, enable: bool) {
+        if enable {
+            let Some(awase_exe) = resolve_sibling_exe("awase.exe") else {
+                self.status =
+                    "自動起動を有効にできませんでした: 同じフォルダに awase.exe が見つかりません。"
+                        .to_string();
+                return;
+            };
+            if !autostart_bridge::register_path(&awase_exe) {
+                self.status =
+                    "自動起動を有効にできませんでした（レジストリへの書き込みに失敗しました）。"
+                        .to_string();
+                return;
+            }
+        } else if !autostart_bridge::unregister() {
+            self.status = "自動起動を無効にできませんでした。".to_string();
+            return;
+        }
+
+        let value = if enable { "enabled" } else { "disabled" };
+        match self.save_auto_start_config(value) {
+            Some(warnings) if warnings.is_empty() => {
+                self.config.general.auto_start = value.to_string();
+                self.status = if enable {
+                    "自動起動を有効にしました。".to_string()
+                } else {
+                    "自動起動を無効にしました。".to_string()
+                };
+            }
+            Some(warnings) => {
+                self.config.general.auto_start = value.to_string();
+                self.status = format!(
+                    "自動起動の設定は反映しましたが、config.toml の他の項目に警告があります: {}",
+                    warnings.join("; ")
+                );
+            }
+            None => {
+                // レジストリ側は既に更新済みだが config.toml への反映に失敗した。
+                // チェックボックス表示自体は config.toml ではなくレジストリ実体
+                // （`is_registered()`）を真実源にしているため in-memory の値を
+                // 更新してもズレの可視化には影響しない。むしろここで更新して
+                // おかないと、後で無関係な項目を編集して「適用」（全体保存）を
+                // 押した際に古い値が書き戻され、この保存失敗が固定化してしまう
+                // （/code-review指摘、2026-09-07）。
+                self.config.general.auto_start = value.to_string();
+                self.status =
+                    "自動起動レジストリは更新しましたが、config.toml への保存に失敗しました。"
+                        .to_string();
+            }
+        }
+        self.recompute_diagnostics();
+    }
+
+    /// 実処理は [`awase::config::AppConfig::save_auto_start`]（`tray.rs`
+    /// と共通化、Opus敵対的レビュー指摘 Minor 11、2026-09-07）。
+    fn save_auto_start_config(&self, value: &str) -> Option<Vec<String>> {
+        awase::config::AppConfig::save_auto_start(&self.config_path, value)
+    }
+
     #[expect(clippy::too_many_lines)]
     fn tab_basic(&mut self, ui: &mut egui::Ui) {
         ui.heading("全般設定");
@@ -1871,14 +2060,24 @@ impl SettingsApp {
             .on_hover_text(
                 "フォアグラウンドのアプリ種別を判別し、VK送信・TSF送信等の\n最適な文字注入方式を自動的に切り替えます。手動設定は不要です。",
             );
-        let mut auto_start_checked = self.config.general.auto_start == "enabled";
-        if ui.checkbox(&mut auto_start_checked, "自動起動").on_hover_text("ONにすると: Windows ログオン時に自動的に awase を起動します。\nタスクスケジューラに登録されます。").changed() {
-            self.config.general.auto_start = if auto_start_checked {
-                "enabled"
-            } else {
-                "disabled"
-            }
-            .to_string();
+        // config.toml ではなくレジストリ実体を真実源として表示する
+        // （Opus敵対的レビュー指摘 Major 6、`recompute_diagnostics` の
+        // コメント参照）。再描画のたびに `RegGetValueW` を呼ばないよう
+        // `self.auto_start_registered`（`recompute_diagnostics`/
+        // `apply_autostart_toggle` が更新）をキャッシュとして使う
+        // （Opus敵対的レビュー指摘、2026-09-07）。
+        let mut auto_start_checked = self.auto_start_registered;
+        if ui
+            .checkbox(&mut auto_start_checked, "自動起動")
+            .on_hover_text(
+                "ONにすると: Windows ログオン時に自動的に awase を起動します。\n\
+                 チェックした時点ですぐにレジストリへ登録/解除します\n\
+                 （バックグラウンドでの自動修復は行いません — 反映されない場合は\n\
+                 このチェックボックスを再度クリックしてください）。",
+            )
+            .changed()
+        {
+            self.apply_autostart_toggle(auto_start_checked);
         }
         ui.checkbox(&mut self.config.general.update_check, "更新を確認")
             .on_hover_text(
@@ -5354,6 +5553,7 @@ mod layout_tab_repro {
             scancode_map_status: None,
             scancode_map_last_message: None,
             startup_diagnostics: Vec::new(),
+            auto_start_registered: false,
         }
     }
 

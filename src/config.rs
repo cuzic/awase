@@ -814,6 +814,42 @@ impl AppConfig {
         let content = toml::to_string_pretty(self).context("Failed to serialize config")?;
         crate::fs_atomic::write_atomic(path, content.as_bytes())
     }
+
+    /// `config.toml` を再読み込みし、`general.auto_start` フィールドだけを
+    /// 差し替えて保存する。
+    ///
+    /// 自動起動のON/OFFはトレイメニュー（`awase.exe`）と設定画面
+    /// （`awase-settings.exe`、別プロセス）の両方から独立に切り替えられる。
+    /// どちらも「フォームで編集中の他の未保存の変更」を巻き込まないよう、
+    /// in-memory の `AppConfig` をそのまま保存するのではなく、この関数を
+    /// 通して都度ディスクから読み直す（2箇所に重複実装されていたものを
+    /// 統合、Opus敵対的レビュー指摘 Minor 11、2026-09-07）。
+    ///
+    /// 戻り値: `Some(warnings)` は保存に成功したことを示す（`warnings` は
+    /// `validate()` が検出した他フィールドの警告、空なら警告なし）。`None`
+    /// は読み込みまたは保存自体が失敗したことを示す（空の `Vec` と区別する
+    /// ため `Option` にしてある — 呼び出し元は「警告0件で成功」と
+    /// 「保存自体が失敗」を混同してはならない）。
+    pub fn save_auto_start(path: &Path, value: &str) -> Option<Vec<String>> {
+        let mut config = match Self::load(path) {
+            Ok(config) => config,
+            Err(e) => {
+                tracing::error!("Failed to load config for saving auto_start: {e}");
+                return None;
+            }
+        };
+        config.general.auto_start = value.to_string();
+        let (validated, warnings) = config.validate();
+        for w in &warnings {
+            tracing::warn!("Config validation warning while saving auto_start: {w}");
+        }
+        let config = Self::from(validated);
+        if let Err(e) = config.save(path) {
+            tracing::error!("Failed to save auto_start config: {e}");
+            return None;
+        }
+        Some(warnings)
+    }
 }
 
 /// 検証済み設定（全値が妥当であることが保証される）

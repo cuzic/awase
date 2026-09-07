@@ -4197,3 +4197,58 @@ fn journal_emit_tracing_has_no_debug_display_sigils_or_wildcards() {
          全 variant を明示的に列挙すること。"
     );
 }
+
+/// Windows Defenderの`Behavior:Win32/Persistence.A!.ml`誤検知対策
+/// （`docs/known-bugs.md` BUG-120、2026-09-07）: HKCU Runキーへの登録/解除
+/// (`autostart::register()`/`autostart::unregister()`)は、ユーザーの
+/// クリックに対する直接の同期的な応答からのみ発生させる方針にした
+/// （`bootstrap.rs::handle_auto_start`からの自動再登録を撤去）。
+///
+/// この方針は現状プローズ（コードコメント）だけで守られており、
+/// 型やコンパイラでは強制されていない。将来、新しいバックグラウンド
+/// メンテナンス/自動修復処理がうっかり`autostart::register()`を呼ぶと、
+/// 本PRが除去したのと同じ「無操作でのRunキー書き込み」パターンを
+/// 静かに再導入してしまう（`fix-requires-evidence.md`が記録するissue
+/// #136と同型の「1箇所直しても別経路が迂回する」問題）。せめて
+/// 呼び出し箇所数をテキスト走査で固定し、想定外の増加を検知する
+/// （`awase-windows`クレート内のみ対象。`awase-settings`側の呼び出しは
+/// `crates/awase-settings/src/main.rs::apply_autostart_toggle`が唯一の
+/// 呼び出し元であることをコードレビューで確認済み、こちらは別crateの
+/// ためこのテストのスキャン対象外）。
+#[test]
+fn autostart_register_call_sites_are_limited_to_tray_click_handler() {
+    const NEEDLES: [(&str, usize); 2] =
+        [("autostart::register(", 1), ("autostart::unregister(", 1)];
+
+    let files = list_src_files();
+    for (needle, expected) in NEEDLES {
+        let mut total = 0usize;
+        let mut breakdown: Vec<(String, usize)> = Vec::new();
+        for path in &files {
+            let content = read_crate_file(path);
+            let production = production_code_only(&content);
+            let count = count_real_calls(production, needle);
+            if count > 0 {
+                total += count;
+                breakdown.push((path.clone(), count));
+            }
+        }
+        assert_eq!(
+            total, expected,
+            "`{needle}` の呼び出し箇所数が想定({expected})と異なります(実際: {total})。\
+             内訳: {breakdown:?}\n\
+             唯一の想定呼び出し元は `src/tray.rs::handle_autostart_toggle`\
+             （トレイメニュークリックへの直接の同期応答）です。新しい呼び出しを\
+             追加する前に、それがユーザーのクリックに対する直接の同期的な応答か\
+             確認してください——起動時やタイマー等、無操作の経路から呼ぶと\
+             Windows Defenderの`Behavior:Win32/Persistence.A!.ml`誤検知の\
+             再発要因になります（`docs/known-bugs.md` BUG-120参照）。"
+        );
+        assert_eq!(
+            breakdown,
+            vec![("src/tray.rs".to_string(), expected)],
+            "`{needle}` は src/tray.rs 以外からも呼ばれています: {breakdown:?}\n\
+             上記assert_eqのメッセージ参照。"
+        );
+    }
+}
