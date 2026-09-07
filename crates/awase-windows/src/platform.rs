@@ -1467,27 +1467,9 @@ impl TsfComposition for WindowsPlatform {
             // `VK_IME_ON` を送っている場合（`Applied`/`FallbackSent`）は、この
             // 随伴 warmup を重ねて送らない。1打鍵あたり最大3回の重複 SendInput
             // が「@」の確立済み必要条件を満たしていた（実機ログで確認済み）。
-            //
-            // BUG-113 スパイク検証（案α）: 案α有効時は `AlreadyMatched`
-            // （delegate タイマー満了後の再アサーション、~108ms後）も実送信
-            // せず latch のみにする（Opus敵対的レビューB1指摘: 元の実装は
-            // `AlreadyMatched` を「送る」側に残しており、これが3回→2回に
-            // しかならなかった残存経路だった）。`crate::bug113_spike`削除時は
-            // この分岐を削除し、常に `should_send_accompanying_warmup` の
-            // 元の判定（Applied/FallbackSentのみskip）に戻す。
-            let should_send = if awase::bug113_spike::alpha_active() {
-                matches!(outcome, ImeOpenOutcome::Failed)
-            } else {
-                awase::platform::should_send_accompanying_warmup(outcome)
-            };
-            if should_send {
+            if awase::platform::should_send_accompanying_warmup(outcome) {
                 self.output
                     .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Actuated);
-            } else {
-                self.output.latch_eager_warmup_without_send(
-                    warmup_ime_on,
-                    crate::output::WarmupOrigin::Actuated,
-                );
             }
         } else {
             tracing::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");

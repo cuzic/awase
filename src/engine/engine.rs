@@ -597,30 +597,11 @@ impl Engine {
             ShadowImeAction::TurnOff => false,
             ShadowImeAction::Toggle => !ctx.ime_on,
         };
-        // BUG-113 スパイク検証: モード巡回のフックを、この関数（delegate
-        // が実際に発火する唯一の合流点。無変換/変換は shadow_action が
-        // GJI 検出値による override 任せのため、`[shadow-toggle] intent
-        // 昇格` ログでは捕捉できないケースがある）に置き直す。TurnOn
-        // 方向（OFF→ON、今回の再現条件）に限定して巡回する。
-        let spike_mode = if matches!(action, ShadowImeAction::TurnOn) {
-            Some(crate::bug113_spike::next_mode())
-        } else {
-            None
-        };
-        tracing::info!(
-            "IME open axis delegated (solo tap, key semantics absorption) → {new_open} \
-             bug113_spike_mode={spike_mode:?}"
-        );
+        tracing::info!("IME open axis delegated (solo tap, key semantics absorption) → {new_open}");
         // ime_on/ime_off コンボキーと同じ `ime_set_open_effects` を経由する
         // （`prev_activation` を進めて次打鍵での重複 SetOpen を防ぐため必須、
         // 直接 push_effect してはならない。上のdoc参照）。
-        //
-        // BUG-113 スパイク検証（案β）: `force_when_noop=false` のとき、
-        // activation状態が変化しない（＝shadow-toggleが既に同じ打鍵で
-        // beliefをONへ書き換え済みの）no-op 再アサーションを抑止する。
-        // `crate::bug113_spike` 削除時はこの呼び出しを常に `true` に固定する。
-        let force_when_noop = !crate::bug113_spike::beta_active();
-        for effect in self.ime_set_open_effects(ctx, new_open, force_when_noop) {
+        for effect in self.ime_set_open_effects(ctx, new_open) {
             decision.push_effect(effect);
         }
     }
@@ -869,18 +850,7 @@ impl Engine {
     /// `Decision::push_effect` で `SetOpen` を直接追加していたため
     /// `prev_activation` が進まず、次の打鍵で `ActivationSync` 起点の重複
     /// `SetOpen` + 不要な `EngineStateChanged` が再発火する回帰があった）。
-    /// `force_when_noop`: activation 状態が変化しない（no-op）場合でも
-    /// `Effect::Ime(SetOpen)` を明示的に追加するか。既定は `true`
-    /// （drift 補正相当の自己修復、IME ON/OFF コンボキー用）。BUG-113
-    /// スパイク検証（案β）専用に `false` を渡す呼び出し元がある
-    /// （`apply_ime_open_request` 参照、`crate::bug113_spike` 削除時は
-    /// 全呼び出し元を `true` 固定に戻す）。
-    fn ime_set_open_effects(
-        &mut self,
-        ctx: &InputContext,
-        open: bool,
-        force_when_noop: bool,
-    ) -> EffectVec {
+    fn ime_set_open_effects(&mut self, ctx: &InputContext, open: bool) -> EffectVec {
         let pseudo_ctx = InputContext {
             ime_on: open,
             ..*ctx
@@ -890,7 +860,7 @@ impl Engine {
         let now_active = new_state.is_active();
 
         let mut effects = self.transition_activation(new_state, SetOpenOrigin::ExplicitUserAction);
-        if was_active == now_active && force_when_noop {
+        if was_active == now_active {
             // 状態遷移なし → transition_activation は空 effects を返す。
             // IME 制御の意図 (SetOpen) は明示的に追加する。
             effects.push(Effect::Ime(ImeEffect::SetOpen {
@@ -904,7 +874,7 @@ impl Engine {
     /// IME ON/OFF コンボキーに対する Decision を構築する（`ime_set_open_effects`
     /// 参照）。
     fn build_ime_set_open_decision(&mut self, ctx: &InputContext, open: bool) -> Decision {
-        Decision::consumed_with(self.ime_set_open_effects(ctx, open, true))
+        Decision::consumed_with(self.ime_set_open_effects(ctx, open))
     }
 
     /// 与えられたイベントが IME OFF コンボキーにマッチするかを副作用なしで返す。

@@ -1197,21 +1197,9 @@ impl Runtime {
                 event.vk_code,
             );
         } else {
-            // BUG-113 スパイク検証: モードの巡回自体は
-            // `engine.rs::apply_ime_open_request`（delegateが実際に発火する
-            // 唯一の合流点）で行う。ここでは診断用に現在のモードを読むのみ
-            // （このステージ自体は無変換/変換のTurnOn方向では発火しない
-            // ——shadow_actionがGJI検出override任せのため——起票時の誤診断の
-            // 記録として残す）。`crate::bug113_spike`削除時はこの呼び出しごと
-            // 削除する。
-            let spike_mode = if !current && new_val && matches!(kind, IntentKind::PhysicalImeKey) {
-                Some(awase::bug113_spike::current_mode())
-            } else {
-                None
-            };
             tracing::info!(
                 "[shadow-toggle] intent 昇格: vk=0x{:02X} scan=0x{:02X} action={:?} \
-                 kind={:?} injected={} {}→{} bug113_spike_mode={:?}",
+                 kind={:?} injected={} {}→{}",
                 event.vk_code,
                 event.scan_code,
                 action,
@@ -1219,7 +1207,6 @@ impl Runtime {
                 event.injected,
                 current,
                 new_val,
-                spike_mode,
             );
         }
         // witness は「注入されていない実キーイベント」の存在証明（BUG-14 の

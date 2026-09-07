@@ -1133,33 +1133,6 @@ impl Output {
         warmup_ime_on: awase::platform::WarmupImeOn,
         origin: WarmupOrigin,
     ) {
-        self.eager_tsf_warmup_inner(warmup_ime_on, origin, true);
-    }
-
-    /// [`send_eager_tsf_warmup`] と同じ準備チェック（`conv_mutation_allowed`/
-    /// `needs_f2_probe`/`tsf_readiness`）を通すが、実際の `VK_IME_ON` SendInput
-    /// は行わず `eager_warmup_sent_ms` の latch のみ行う。
-    ///
-    /// ADR-149 実機ソーク中に発見（Opus敵対的レビュー M3）: `on_ime_applied` の
-    /// 随伴 warmup を丸ごとスキップすると、`send_eager_tsf_warmup` が本来更新する
-    /// `eager_warmup_sent_ms`（`compute_focus_probe_grace` の唯一の入力）も
-    /// 一緒に失われ、focus probe の grace 期間が短縮される副作用があった。
-    /// 「戦略（`ImeOpenStrategy`）が既に `VK_IME_ON` を送った/確定させた」場合は、
-    /// 二重送信だけを避け、grace の供給元としての latch は維持する。
-    pub fn latch_eager_warmup_without_send(
-        &self,
-        warmup_ime_on: awase::platform::WarmupImeOn,
-        origin: WarmupOrigin,
-    ) {
-        self.eager_tsf_warmup_inner(warmup_ime_on, origin, false);
-    }
-
-    fn eager_tsf_warmup_inner(
-        &self,
-        warmup_ime_on: awase::platform::WarmupImeOn,
-        origin: WarmupOrigin,
-        send_vk: bool,
-    ) {
         if !self.conv_mutation_allowed.get() {
             tracing::trace!("[tsf-eager-warmup] non-AwaseOwned → warmup スキップ");
             return;
@@ -1169,18 +1142,6 @@ impl Output {
             return;
         }
         if !self.tsf_readiness(warmup_ime_on).can_warmup() {
-            return;
-        }
-        if !send_vk {
-            // ADR-149: 戦略が同じ apply で既に VK_IME_ON を送信/確定済みのため、
-            // 二重 SendInput は行わず eager_warmup_sent_ms だけ latch する
-            // （BUG-113: 重複 SendInput が GJI の TSF composition 追跡を乱す）。
-            let ms = crate::hook::current_tick_ms();
-            tracing::info!(
-                "[tsf-eager-warmup] スキップ (戦略が既に送信済み, origin={origin}) \
-                 → eager_warmup_sent_ms={ms}ms のみ latch"
-            );
-            self.composition.set_eager_warmup_sent_ms(ms);
             return;
         }
         // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）
