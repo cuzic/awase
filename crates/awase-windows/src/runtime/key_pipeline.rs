@@ -1197,9 +1197,18 @@ impl Runtime {
                 event.vk_code,
             );
         } else {
+            // BUG-113 スパイク検証: OFF→ON への物理IMEキー単独タップ（今回の
+            // 残置症状の再現条件）を新しいエピソードとみなし、案α/案β/両方/
+            // baselineを巡回する。`crate::bug113_spike`削除時はこの呼び出し
+            // ごと削除する。
+            let spike_mode = if !current && new_val && matches!(kind, IntentKind::PhysicalImeKey) {
+                Some(awase::bug113_spike::next_mode())
+            } else {
+                None
+            };
             tracing::info!(
                 "[shadow-toggle] intent 昇格: vk=0x{:02X} scan=0x{:02X} action={:?} \
-                 kind={:?} injected={} {}→{}",
+                 kind={:?} injected={} {}→{} bug113_spike_mode={:?}",
                 event.vk_code,
                 event.scan_code,
                 action,
@@ -1207,6 +1216,7 @@ impl Runtime {
                 event.injected,
                 current,
                 new_val,
+                spike_mode,
             );
         }
         // witness は「注入されていない実キーイベント」の存在証明（BUG-14 の
