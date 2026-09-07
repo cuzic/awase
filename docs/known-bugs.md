@@ -15711,3 +15711,77 @@ ime_refresh.rs`（`ir_decide_read_strategy`、`explicit_verify`/`skip_imm_query`
 同系統の構造的限界）、BUG-45節に埋没した見出し欠落バグ（`transport.rs::
 PhysicalKeyDisposition::plan` の TsfNative 物理 KANJI 系キー二重 actuation、
 本バグとは別経路）。
+
+## BUG-118: 無変換/変換 delegate-to-open-axis の `TurnOn` 方向が構造的に発火できず、GJI 自身が IME を ON にしても NICOLA 変換が起動しない（**ADR-141 で shadow-toggle 経路への合流により修正、実装済み・実機ソーク未実施**）
+
+**症状（BUG-115 の調査中、[ADR-135](adr/135-generic-thumb-key-ime-toggle-delegate.md)
+実装レビューで発見、C2として記録。2026-09-06に正式なBUG番号として起票）:**
+GJI（Google 日本語入力）を UWP アプリで使用中、日本語をOFFにした後、無変換/
+変換キーを`left_thumb_key`/`right_thumb_key`（NICOLA親指キー）にも設定して
+いる状態で「変換」キーを単独タップしてON復帰しようとしても、日本語入力には
+なる（GJI自身がその物理キーを見てIMEをONにする）が親指シフト変換にはならない
+（awaseのbeliefが追随しない）。
+
+**機序（実機確認済み、2026-09-05、dragonflyg4）:** `resolve_pending_thumb_as_
+single`（`src/engine/nicola_fsm.rs`）に実装されているdelegate-to-open-axis
+（ADR-092決定D Step4b）は、`NicolaFsm`のチョード処理内でのみ評価される。
+`src/engine/engine.rs::on_input_body`はPhase 2で`!compute_active(ctx)`
+（IME OFF等でエンジン非活性）の場合、Phase 3（`NicolaFsm`呼び出し）へ到達
+する前に`Decision::pass_through()`で早期returnする。したがってIME OFFの間は
+delegateが原理的に評価されず、変換キー単独タップによるOFF→ON復帰が発火
+しない。GJIアクティブ・IME OFF状態で変換キー（`VK_CONVERT`=0x1C）を単独
+タップしたところ、`resolve_pending_thumb_as_single`に到達した形跡（「IME
+open axis delegated」ログ）が一切無いままPassThroughされ、約6秒後に受動的な
+TsfNative conv観測フォールバックでようやくbeliefが訂正される、という挙動を
+確認した。観測不能なアプリ（Imm32Unavailable、本バグの元報告環境である
+UWP）ではこのフォールバックも効かず、ON復帰手段が実質存在しない。
+
+**修正方針（ADR-141）:** Hiragana/Katakanaキーで既にADR-135（C1修正）が
+確立していた「`&& effective_open()`ゲートでdelegateとshadow-toggle
+（belief追随のみ、actuationなし）を排他的に切り替える」機構を、無変換/変換
+にも水平展開した。`Runtime`に`henkan_shadow_override`/`muhenkan_shadow_
+override`を新設し、`enrich_ime_relevance`経由で`event.ime_relevance.
+shadow_action`に反映、`kp_stage_shadow_ime_toggle`の`&& effective_open()`
+ゲート（`mode_key_delegate_owns_shadow_toggle`を拡張）がbelief ON中は
+delegate、belief OFF中はshadow-toggleに処理を委ねる。`transport.rs::plan`
+にも無変換/変換専用のfollow-only例外（`is_kanji_event`判定より前で常に
+Allow）を追加し、GJI自身による物理キー処理を妨げないようにした。詳細は
+[ADR-141](adr/141-henkan-muhenkan-delegate-inactive-recovery.md)参照
+（Opus敵対的レビュー2ラウンドで収束、棄却した原案・代替案も同ADRに記録）。
+
+**実装後の`/code-review`で発見・修正した2件（2026-09-06）:**
+1. MS-IME側（`sync_ime_toggle_auto_detect`）が、無変換/変換をNICOLA親指
+   キーに設定していないユーザーでもレジストリ由来の値を無条件で
+   shadow_action overrideへ書き込んでいたため、`is_configured_thumb_key`
+   によるチェックが効かず、awase自身の能動actuationとMS-IME自身の
+   ネイティブ処理が二重に発火しうる新規の二重actuation（BUG-46型）を
+   作っていた。GJI側の`route_thumb_key_action`と同じ「親指キーのときだけ
+   overrideへ渡す」条件を追加して修正。
+2. `delegate_owns_mode_key_shadow_toggle`が`muhenkan_solo_tap_dedicated_
+   fn_key`の優先順位（`resolve_pending_thumb_as_single`では専用Fnキーが
+   delegateより優先）を考慮しておらず、専用Fnキー設定時にshadow-toggleが
+   「delegateが処理する」と誤信して身を引き、delegateも実際には発火
+   しない（専用Fnキーが優先されるため）という、C2と同型の「誰も何も
+   しない」穴が無変換側だけ再発しうる状態だった。ownership判定に
+   `!muhenkan_dedicated_fn_key_configured`条件を追加して修正
+   （Henkanには専用Fnキーの概念自体が無いため対象外）。
+
+**残存する既知の限界（ADR-141に記録、対応せず）:**
+- `Toggle`（`gji_thumb_key_ime_toggle=true`のopt-in時のみ）はshadow-toggle
+  の冪等no-op分岐が効かないため、押しっぱなしでbeliefの反転とOFF方向
+  actuationがオートリピート周期で連射されうる。
+- `is_japanese_ime()`がスリープ復帰/フォーカス変更直後のgrace期間中に
+  一時的にfalseを誤答する窓では、Hiragana/Katakanaと異なり無変換/変換には
+  自己修復手段が無く、この窓の間だけC2が残存する（`should_upgrade_is_
+  japanese_ime`に無変換/変換を追加してはならない理由も含めADR-141参照）。
+
+**関連ファイル:** `crates/awase-windows/src/gji_charset_autodetect.rs`
+（`resolve_henkan_muhenkan_shadow_override_for_event`/
+`delegate_owns_mode_key_shadow_toggle`）、`crates/awase-windows/src/runtime/
+mod.rs`（`Runtime::enrich_ime_relevance`/`set_thumb_key_shadow_overrides`）、
+`crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_stage_shadow_ime_toggle`）、`crates/awase-windows/src/runtime/
+transport.rs`（`PhysicalKeyDisposition::plan`）、`crates/awase-windows/src/
+runtime/message_handlers.rs`（`sync_ime_toggle_auto_detect`、MS-IME側配線）。
+関連: BUG-115（同じGJI設定検出機構）、[ADR-135](adr/135-generic-thumb-key-ime-toggle-delegate.md)
+（Hiragana/Katakana版の同型修正、C1）。

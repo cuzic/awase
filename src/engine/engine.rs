@@ -190,6 +190,19 @@ impl Engine {
         self.adapter.set_henkan_delegate_to_open_axis(action);
     }
 
+    /// ADR-141: shadow-toggle経路との排他判定（`&& effective_open()`）に
+    /// 現在の delegate 配線先を必要とするため、Hiragana/Katakanaと対称に
+    /// getter を追加する。
+    #[must_use]
+    pub const fn muhenkan_delegate_to_open_axis(&self) -> Option<ShadowImeAction> {
+        self.adapter.muhenkan_delegate_to_open_axis()
+    }
+
+    #[must_use]
+    pub const fn henkan_delegate_to_open_axis(&self) -> Option<ShadowImeAction> {
+        self.adapter.henkan_delegate_to_open_axis()
+    }
+
     /// Hiragana/Katakana が現在の親指キーなら Platform 層から解決済み VK を渡す。
     pub const fn set_hiragana_katakana_thumb_key_config(
         &mut self,

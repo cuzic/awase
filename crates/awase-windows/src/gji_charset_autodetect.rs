@@ -466,10 +466,46 @@ pub(crate) fn delegate_owns_mode_key_shadow_toggle(
     is_configured_thumb_key: bool,
     hiragana_delegate: Option<ShadowImeAction>,
     katakana_delegate: Option<ShadowImeAction>,
+    henkan_delegate: Option<ShadowImeAction>,
+    muhenkan_delegate: Option<ShadowImeAction>,
+    muhenkan_dedicated_fn_key_configured: bool,
 ) -> bool {
     is_configured_thumb_key
         && ((vk == ModeKeyCandidate::Hiragana.vk() && hiragana_delegate.is_some())
-            || (vk == ModeKeyCandidate::Katakana.vk() && katakana_delegate.is_some()))
+            || (vk == ModeKeyCandidate::Katakana.vk() && katakana_delegate.is_some())
+            || (vk == ModeKeyCandidate::Henkan.vk() && henkan_delegate.is_some())
+            // ADR-141実装レビュー(/code-review指摘): `muhenkan_solo_tap_
+            // dedicated_fn_key`が設定済みだと、`resolve_pending_thumb_
+            // as_single`の優先順位（専用Fnキー > delegate）でdelegateが
+            // 実際には発火しない（BUG-115「専用Fnキーとの非対称」節）。
+            // それを見ずにここが true を返すと、shadow-toggleが「delegate
+            // が処理する」と誤信して身を引き、delegateも発火しないため
+            // 「誰も何もしない」C2と同型の穴が専用Fnキー設定時に再発する。
+            || (vk == ModeKeyCandidate::Muhenkan.vk()
+                && muhenkan_delegate.is_some()
+                && !muhenkan_dedicated_fn_key_configured))
+}
+
+/// [`resolve_mode_key_shadow_override_for_event`]の無変換/変換専用版
+/// （ADR-141、C2対策）。Hiragana/Katakana版と異なり「親指キーならNone」
+/// の早期returnを行わない——無変換/変換には`ImeKeyKind::from_vk`由来の
+/// 守るべき静的`shadow_action`が存在しないため、親指キーとして設定
+/// されている場合でもoverrideを差してよい（`&& effective_open()`
+/// ゲートが`delegate_owns_mode_key_shadow_toggle`側で排他的に切り替える）。
+#[must_use]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn resolve_henkan_muhenkan_shadow_override_for_event(
+    vk: VkCode,
+    henkan_override: Option<ShadowImeAction>,
+    muhenkan_override: Option<ShadowImeAction>,
+) -> Option<ShadowImeAction> {
+    if vk == ModeKeyCandidate::Henkan.vk() {
+        henkan_override
+    } else if vk == ModeKeyCandidate::Muhenkan.vk() {
+        muhenkan_override
+    } else {
+        None
+    }
 }
 
 /// 無変換/変換キーのGJI検出値を、親指キーかどうかで
@@ -620,6 +656,12 @@ mod windows_impl {
                 app.clear_gji_ime_on_off_auto_keys();
                 app.set_gji_mode_key_shadow_overrides(None, None);
                 app.set_gji_mode_key_delegate_to_open_axis(None, None);
+                // ADR-141: 無変換/変換のshadow_action overrideも同様に解除
+                // する。忘れると、GJI由来のstale overrideが非GJI文脈へ
+                // 無期限に残留する——直後の`set_gji_thumb_key_delegate_to_
+                // open_axis(None, None)`の行が過去に抜けていて同種のバグを
+                // 踏んだ経緯と同じ（Opus再レビュー Must-fix指摘）。
+                app.set_thumb_key_shadow_overrides(None, None);
                 // 無変換/変換側のGJI由来delegateも同様に解除する。従来は
                 // 「GJI→非GJI遷移では必ずMS-IME側のsync_ime_toggle_auto_detect
                 // が無条件で上書きするため冗長」としてここでは解除していな
@@ -704,6 +746,16 @@ mod windows_impl {
             &mut toggle,
         );
         app.set_gji_thumb_key_delegate_to_open_axis(henkan_delegate, muhenkan_delegate);
+        // ADR-141（C2対策）: delegateと同じ値をshadow_action overrideにも
+        // 常時反映する。非親指キー（delegateがNone）の場合は
+        // resolve_henkan_muhenkan_shadow_override_for_eventが何もしない
+        // ので無害——`ime_on_auto`等（actuation-auto）が既に非親指キーを
+        // カバーしている。親指キーの場合、delegateとoverrideの両方に
+        // 同じ値が登録され、`&& effective_open()`ゲート
+        // （`mode_key_delegate_owns_shadow_toggle`）が実行時に排他的に
+        // 切り替える——belief ON中はdelegateが、belief OFF中は
+        // shadow-toggle（belief追随のみ）が処理する。
+        app.set_thumb_key_shadow_overrides(henkan_delegate, muhenkan_delegate);
 
         // BUG-115 Phase 2/3: Hiragana/Katakana は actuation-auto には載せない。
         // 非親指キーでは Runtime::enrich_ime_relevance の shadow_action
@@ -987,6 +1039,7 @@ Precomposition\tEisu\tToggleAlphanumericMode
         classify_mode_key_ime_action, classify_thumb_key_ime_actions,
         delegate_owns_mode_key_shadow_toggle, gate_thumb_key_ime_actions,
         ime_toggle_kind_to_shadow_action, resolve_gji_mode_key_shadow_overrides,
+        resolve_henkan_muhenkan_shadow_override_for_event,
         resolve_mode_key_shadow_override_for_event, route_thumb_key_action, ImeToggleKind,
         ModeKeyCandidate, ThumbKeyImeWarning,
     };
@@ -1355,15 +1408,71 @@ Precomposition\tEisu\tToggleAlphanumericMode
             false,
             Some(ShadowImeAction::TurnOn),
             None,
+            None,
+            None,
+            false,
         ));
         assert!(!delegate_owns_mode_key_shadow_toggle(
-            hiragana, true, None, None,
+            hiragana, true, None, None, None, None, false,
         ));
         assert!(delegate_owns_mode_key_shadow_toggle(
             hiragana,
             true,
             Some(ShadowImeAction::TurnOn),
             None,
+            None,
+            None,
+            false,
+        ));
+        // ADR-141: Henkan/Muhenkanも同じ関数で判定される。
+        let henkan = ModeKeyCandidate::Henkan.vk();
+        assert!(!delegate_owns_mode_key_shadow_toggle(
+            henkan,
+            false,
+            None,
+            None,
+            Some(ShadowImeAction::TurnOn),
+            None,
+            false,
+        ));
+        assert!(delegate_owns_mode_key_shadow_toggle(
+            henkan,
+            true,
+            None,
+            None,
+            Some(ShadowImeAction::TurnOn),
+            None,
+            false,
+        ));
+    }
+
+    /// /code-review指摘（実装レビューで発見）: `muhenkan_solo_tap_dedicated_
+    /// fn_key`が設定済みだと`resolve_pending_thumb_as_single`の優先順位で
+    /// delegateが実際には発火しない（専用Fnキーが勝つ）ため、delegateが
+    /// armedでもownershipはfalseを返すべき（さもないとshadow-toggleが
+    /// 「delegateが処理する」と誤信して身を引き、どちらも処理しない
+    /// C2型の穴が再発する）。Henkanには専用Fnキーの概念自体が無いため
+    /// 対象外（既存の非対称、BUG-115「専用Fnキーとの非対称」節）。
+    #[test]
+    fn muhenkan_dedicated_fn_key_configured_blocks_delegate_ownership() {
+        let muhenkan = ModeKeyCandidate::Muhenkan.vk();
+        assert!(delegate_owns_mode_key_shadow_toggle(
+            muhenkan,
+            true,
+            None,
+            None,
+            None,
+            Some(ShadowImeAction::TurnOff),
+            false,
+        ));
+        assert!(!delegate_owns_mode_key_shadow_toggle(
+            muhenkan,
+            true,
+            None,
+            None,
+            None,
+            Some(ShadowImeAction::TurnOff),
+            true,
         ));
     }
 
@@ -1428,9 +1537,18 @@ Precomposition\tEisu\tToggleAlphanumericMode
     enum PipelineOutcome {
         /// GJI判定がNone、またはToggleでopt-in未設定のため何も反映されない。
         Nothing,
-        /// 親指キー: delegate-to-open-axisへ反映される（単独タップ確定時に
-        /// この値でIME open軸を操作する）。
+        /// 親指キー（Hiragana/Katakana）: delegate-to-open-axisへ反映される
+        /// （単独タップ確定時にこの値でIME open軸を操作する）。静的
+        /// `shadow_action`を守るため、shadow-toggle側のoverrideは適用
+        /// されない。
         Delegate(ShadowImeAction),
+        /// 親指キーのHenkan/Muhenkan（ADR-141）: delegate-to-open-axisと
+        /// shadow_action overrideの**両方**に同じ値が反映される。
+        /// `&& effective_open()`ゲートが実行時に排他的に切り替える
+        /// （belief ON中はdelegate、belief OFF中はshadow-toggle）ため、
+        /// 静的`shadow_action`を持たないHenkan/MuhenkanはHiragana/
+        /// Katakanaと異なりこの二重登録が必要（C2対策）。
+        DelegateAndShadowOverride(ShadowImeAction),
         /// 非親指キーのHenkan/Muhenkan: Step4c実効automation
         /// （`ime_on_auto`/`ime_off_auto`/`ime_toggle_auto`）へ積まれる。
         ActuationAuto(ImeToggleKind),
@@ -1472,24 +1590,26 @@ Precomposition\tEisu\tToggleAlphanumericMode
         if is_toggle && !opt_in {
             return PipelineOutcome::Nothing;
         }
+        let action = match kind {
+            ImeToggleKind::On => ShadowImeAction::TurnOn,
+            ImeToggleKind::Off => ShadowImeAction::TurnOff,
+            ImeToggleKind::Toggle => ShadowImeAction::Toggle,
+        };
         if is_thumb {
-            let action = match kind {
-                ImeToggleKind::On => ShadowImeAction::TurnOn,
-                ImeToggleKind::Off => ShadowImeAction::TurnOff,
-                ImeToggleKind::Toggle => ShadowImeAction::Toggle,
+            // ADR-141: Henkan/Muhenkanは親指キーの場合、delegateと
+            // shadow_action overrideの両方に同じ値が登録される
+            // （`&& effective_open()`ゲートが実行時に排他的に切り替える）。
+            // Hiragana/Katakanaは静的shadow_actionを守るためdelegateのみ
+            // （overrideは「親指キーならNone」で適用されない、Opus再レビュー
+            // Must-fix #2で明確化）。
+            return match family {
+                KeyFamily::HenkanMuhenkan => PipelineOutcome::DelegateAndShadowOverride(action),
+                KeyFamily::HiraganaKatakana => PipelineOutcome::Delegate(action),
             };
-            return PipelineOutcome::Delegate(action);
         }
         match family {
             KeyFamily::HenkanMuhenkan => PipelineOutcome::ActuationAuto(kind),
-            KeyFamily::HiraganaKatakana => {
-                let action = match kind {
-                    ImeToggleKind::On => ShadowImeAction::TurnOn,
-                    ImeToggleKind::Off => ShadowImeAction::TurnOff,
-                    ImeToggleKind::Toggle => ShadowImeAction::Toggle,
-                };
-                PipelineOutcome::ShadowOverride(action)
-            }
+            KeyFamily::HiraganaKatakana => PipelineOutcome::ShadowOverride(action),
         }
     }
 
@@ -1515,7 +1635,30 @@ Precomposition\tEisu\tToggleAlphanumericMode
         let delegate =
             route_thumb_key_action(gated, is_thumb, target.vk(), &mut on, &mut off, &mut toggle);
         if let Some(action) = delegate {
-            return PipelineOutcome::Delegate(action);
+            // ADR-141: 本番の`sync_gji_charset_autodetect`はdelegateと
+            // 同じ値を`set_thumb_key_shadow_overrides`にも渡す
+            // （`henkan_delegate`/`muhenkan_delegate`をそのまま再利用）。
+            // ここでは対象キー自身のoverrideスロットにのみ`delegate`を
+            // 入れて`resolve_henkan_muhenkan_shadow_override_for_event`を
+            // 呼び、本番配線を再現する（他方のキーの値は本ヘルパーの
+            // 対象外なのでNoneのままでよい——vk一致判定にしか影響しない）。
+            let (henkan_override, muhenkan_override) = match target {
+                ModeKeyCandidate::Henkan => (delegate, None),
+                ModeKeyCandidate::Muhenkan => (None, delegate),
+                _ => unreachable!("this helper is Henkan/Muhenkan専用"),
+            };
+            let shadow_override = resolve_henkan_muhenkan_shadow_override_for_event(
+                target.vk(),
+                henkan_override,
+                muhenkan_override,
+            );
+            assert_eq!(
+                shadow_override,
+                Some(action),
+                "delegateがSomeならshadow_action overrideも同じ値でSomeになるはず \
+                 （両方に登録する設計、ADR-141）"
+            );
+            return PipelineOutcome::DelegateAndShadowOverride(action);
         }
         if !on.is_empty() {
             return PipelineOutcome::ActuationAuto(ImeToggleKind::On);
@@ -1560,7 +1703,15 @@ Precomposition\tEisu\tToggleAlphanumericMode
             ModeKeyCandidate::Katakana => (None, armed),
             _ => unreachable!("this helper is Hiragana/Katakana専用"),
         };
-        if delegate_owns_mode_key_shadow_toggle(vk, is_thumb, hiragana_armed, katakana_armed) {
+        if delegate_owns_mode_key_shadow_toggle(
+            vk,
+            is_thumb,
+            hiragana_armed,
+            katakana_armed,
+            None,
+            None,
+            false,
+        ) {
             return PipelineOutcome::Delegate(
                 armed.expect("armedのはず(delegate_owns==trueの前提)"),
             );

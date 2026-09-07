@@ -845,6 +845,36 @@ pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
         .set_muhenkan_delegate_to_open_axis(delegate_assignment.muhenkan);
     app.engine
         .set_henkan_delegate_to_open_axis(delegate_assignment.henkan);
+    // ADR-141（C2対策）: delegateと同じ値をshadow_action overrideにも
+    // 反映する。GJI側の`sync_gji_charset_autodetect`と同じ共有フィールド
+    // （`Runtime::henkan_shadow_override`/`muhenkan_shadow_override`）に
+    // 書き込むため、GJI→MS-IME遷移時はこの呼び出しが必ず後から上書きする
+    // （`sync_ime_kind_from_observation`がGJI側を先に呼ぶ順序、既存の
+    // delegate-to-open-axisと同じ順序依存）。
+    //
+    // **重要（/code-review指摘、実装レビューで発見・修正）**: GJI側の
+    // `route_thumb_key_action`は`is_thumb_key`のときだけoverride相当の値を
+    // 返す（非親指キーの場合はactuation-auto側に積まれ、overrideには渡らない
+    // 設計）。ここでも同じ条件を課さないと、無変換/変換を親指キーに
+    // 設定していないMS-IMEユーザーで、レジストリ由来の値が無条件に
+    // overrideへ入ってしまう。すると`is_configured_thumb_key=false`により
+    // `mode_key_delegate_owns_shadow_toggle`がfalseを返し、
+    // `kp_stage_shadow_ime_toggle`が通常の物理IMEキーとして能動的に
+    // actuateする一方、`transport.rs::plan`のfollow-only例外で物理キー
+    // 自体もOSへ届くため、MS-IME自身のネイティブ処理とawaseの能動
+    // actuationが二重に発火する（BUG-46型の新規二重actuation）。
+    let henkan_is_thumb_key =
+        crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_CONVERT);
+    let muhenkan_is_thumb_key =
+        crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_NONCONVERT);
+    app.set_thumb_key_shadow_overrides(
+        henkan_is_thumb_key
+            .then_some(delegate_assignment.henkan)
+            .flatten(),
+        muhenkan_is_thumb_key
+            .then_some(delegate_assignment.muhenkan)
+            .flatten(),
+    );
 }
 
 /// IME 種別を観測値から pull し、warmup 戦略切替 + MS-IME 割当てチェックに反映する。

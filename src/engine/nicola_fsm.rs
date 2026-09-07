@@ -826,6 +826,20 @@ impl NicolaFsm {
         self.henkan_delegate_to_open_axis = action;
     }
 
+    /// ADR-141: `mode_key_delegate_owns_shadow_toggle`（shadow-toggle経路との
+    /// 排他判定）と`key_pipeline.rs`の`turn_on_direction`判定が現在値を
+    /// 参照するために必要（Hiragana/Katakanaの対称なgetterと同型）。
+    #[must_use]
+    pub const fn muhenkan_delegate_to_open_axis(&self) -> Option<crate::types::ShadowImeAction> {
+        self.muhenkan_delegate_to_open_axis
+    }
+
+    /// `muhenkan_delegate_to_open_axis` と対称（変換キー用）。
+    #[must_use]
+    pub const fn henkan_delegate_to_open_axis(&self) -> Option<crate::types::ShadowImeAction> {
+        self.henkan_delegate_to_open_axis
+    }
+
     /// Hiragana/Katakana が現在の親指キーなら、その VK を Platform 層から渡す。
     /// core は生 VK 定数を持たず、ここで渡された値との等値比較のみを行う。
     pub const fn set_hiragana_katakana_thumb_key_config(

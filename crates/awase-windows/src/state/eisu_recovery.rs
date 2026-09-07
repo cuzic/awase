@@ -30,6 +30,15 @@
 //! **新しい user IME-ON 経路を追加する場合は、[`eisu_reset_on_ime_on`] による救済を
 //! 対で配線し、上記の表と guard テストの期待値を更新すること。**
 //!
+//! **ADR-141（無変換/変換の shadow-toggle 経路合流、C2対策）**: 無変換/変換
+//! （`VK_CONVERT`/`VK_NONCONVERT`）は Hiragana/Katakana と同じ
+//! `kp_stage_shadow_ime_toggle` を経由するようになり、上記「owned キーの
+//! shadow-toggle」「owned キーの Phase 3 delegate」「非owned キーの物理
+//! IME キー」の3行にそのまま該当するようになった（既存の typed writer
+//! 呼び出し箇所自体は増えておらず、`eisu_reset_on_ime_on`/
+//! `eisu_reset_on_turn_on_while_open` の呼び出し件数も不変）。新しい行を
+//! 追加する必要はなく、対象VKが増えたことをここに明記するのみ。
+//!
 //! ## hwnd キャッシュ復元は対応表の対象外（別ガード）
 //!
 //! `apply_hwnd_cache_restore`（`state/platform_state.rs`）が復元する
