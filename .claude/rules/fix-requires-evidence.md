@@ -36,6 +36,10 @@
 - `crates/awase-windows/tests/e2e_windows.rs` — Windows 実機経路の e2e。
 - ジャーナルリプレイ基盤（`journal.rs` 起点、整備中）— `classify_*` 純粋関数への
   入力列を記録・再生して belief/conv 遷移を回帰させる。純粋判定を変える fix はここが最適。
+- `src/engine/tests.rs`（ルート`awase`クレート） — `resolve_pending_thumb_as_
+  single`等、プラットフォーム非依存のエンジン内部ロジックを変える fix はここに
+  ユニットテストを足す（BUG-119/ADR-147の前例）。`cargo test --lib`（ホスト
+  ターゲットで実行可、Windowsターゲット不要）。
 
 Linux で `cargo test -p awase-windows` から実行できるもの（golden / architecture_guard /
 layer_boundary_guard 等）を優先する。実機依存で自動化できない場合は (b) の known-bugs.md

@@ -325,6 +325,24 @@ Imm32観測可能アプリでしか救えない上、単独では不十分（方
 
 ## 残存する既知の限界（対応せず記録のみ）
 
+- **（`/code-review`指摘）辞退時、awase自身の強制的なIME再アサーション
+  （drift補正）が失われる。** `ime_set_open_effects`（`engine.rs:853-872`）
+  は、activation状態が変化しない（＝belief的にno-op）場合でも
+  `Effect::Ime(SetOpen{open, ..})`を明示的に追加で発行する（`was_active
+  == now_active`分岐）。つまり本ADR適用前は、TurnOn方向delegateが発火する
+  たびに——beliefが既にONで実質no-opであっても——実IMEへ`SetOpen(true)`が
+  毎回強制再送されており、これが「beliefは正しいが実IMEだけが何らかの
+  理由で密かにOFFに乖離した」場合の自己修復（drift補正）として機能して
+  いた（本リポジトリはBUG-113等、belief/実IME乖離のバグを繰り返し踏んで
+  きた経緯がある）。本ADRでパススルーユーザーのTurnOn方向delegateが辞退
+  すると、この強制再アサーションは発行されなくなり、実際にIMEを開閉する
+  のはGJI自身の物理キー処理だけになる。これは**意図した trade-off**
+  である——パススルーはユーザーが「この局面のIME制御をGJI自身に完全に
+  委ね、awaseは介入しない」と明示的に選ぶ設定であり、awaseが横から
+  `SetOpen`を強制送信し続けることは、パススルーが本来避けようとしている
+  「awaseとGJIの二重介入」そのものになる。したがって恒久対応はせず、
+  実機でdrift（belief/実IME乖離）とパススルー設定の組み合わせによる実害
+  報告があった場合に、`docs/known-bugs.md`へ新規起票の上で改めて検討する。
 - **`TurnOff`/`Toggle`方向のdelegate×パススルー設定の組み合わせは
   未修正のまま残る**（r1でBlocker判明、方式2で解消可能だが本ADRのスコープ
   外——上記「検討した代替案」参照）。具体例: GJIのoverlay設定
