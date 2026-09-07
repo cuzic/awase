@@ -285,6 +285,7 @@ impl BugReportApp {
                 attach_ime_keymap: self.attach_ime_keymap,
                 gji_keymap: self.diagnostics.gji_keymap.clone(),
                 msime_key_assignment: self.diagnostics.msime_key_assignment.clone(),
+                legacy_msime_keymap: self.diagnostics.legacy_msime_keymap.clone(),
                 reported_at: &self.reported_at,
             },
             MAX_BODY_BYTES,

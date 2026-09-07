@@ -33,6 +33,7 @@ const validPayload = {
   attach_ime_keymap: false,
   gji_keymap: null,
   msime_key_assignment: null,
+  legacy_msime_keymap: null,
   reported_at: "2026-08-19T12:34:56Z"
 };
 
@@ -359,11 +360,13 @@ describe("payload validation", () => {
   // ADR-148: SCHEMA_VERSION は上げていないため、この変更より前のクライアント
   // （attach_ime_keymap/gji_keymap/msime_key_assignment を一切送らないペイロード）
   // が引き続き200で受理されることを固定する（retro_eval_stats と同型の回帰）。
+  // legacy_msime_keymap（Phase 2）も同じ理由でoptionalとして読むため、ここに含める。
   it("accepts payloads without ime_keymap fields (pre-ADR-148 clients) and normalizes to false/null", () => {
     const {
       attach_ime_keymap: _attachImeKeymap,
       gji_keymap: _gjiKeymap,
       msime_key_assignment: _msimeKeyAssignment,
+      legacy_msime_keymap: _legacyMsimeKeymap,
       ...payload
     } = validPayload;
 
@@ -371,7 +374,8 @@ describe("payload validation", () => {
       ...payload,
       attach_ime_keymap: false,
       gji_keymap: null,
-      msime_key_assignment: null
+      msime_key_assignment: null,
+      legacy_msime_keymap: null
     });
   });
 
@@ -434,7 +438,31 @@ describe("payload validation", () => {
     );
   });
 
-  it("accepts explicitly attached gji_keymap and msime_key_assignment objects", () => {
+  it("rejects a non-object, non-null legacy_msime_keymap", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_ime_keymap: true,
+        legacy_msime_keymap: 42
+      })),
+      400,
+      "legacy_msime_keymap_invalid"
+    );
+  });
+
+  it("rejects legacy_msime_keymap unless attach_ime_keymap is explicitly true", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_ime_keymap: false,
+        legacy_msime_keymap: { muhenkan_ime_on_toggle: true }
+      })),
+      400,
+      "legacy_msime_keymap_requires_attach_ime_keymap"
+    );
+  });
+
+  it("accepts explicitly attached gji_keymap, msime_key_assignment and legacy_msime_keymap objects", () => {
     const payload = {
       ...validPayload,
       attach_ime_keymap: true,
@@ -447,6 +475,11 @@ describe("payload validation", () => {
       msime_key_assignment: {
         is_key_assignment_enabled: 1,
         key_assignment_muhenkan: 1
+      },
+      legacy_msime_keymap: {
+        active_style: "Custom",
+        muhenkan_ime_on_toggle: true,
+        henkan_ime_on_toggle: false
       }
     };
 
