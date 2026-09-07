@@ -284,16 +284,31 @@ mod autostart_bridge {
 
 #[cfg(not(target_os = "windows"))]
 mod autostart_bridge {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Windows の Run キーを模倣する、プロセス内だけの状態。実際のレジストリ
+    /// は存在しないため永続化はしない。
+    ///
+    /// このPR以前は、設定画面のチェックボックスは Win32 API を一切呼ばず
+    /// `config.toml` の値を直接書き換えるだけだったため、非Windowsホスト
+    /// （Linuxでの設定GUI開発）でもチェックボックスが「動いているように」
+    /// 見えた。常に `false`/失敗を返す素朴なスタブにすると、この開発体験を
+    /// 壊してチェックボックスが恒久的に操作不能になる（/code-review指摘、
+    /// 2026-09-07）。実体を持たない無害なフラグで模倣し、その体験を保つ。
+    static SIMULATED_REGISTERED: AtomicBool = AtomicBool::new(false);
+
     pub fn is_registered() -> bool {
-        false
+        SIMULATED_REGISTERED.load(Ordering::Relaxed)
     }
 
     pub fn register_path(_exe: &std::path::Path) -> bool {
-        false
+        SIMULATED_REGISTERED.store(true, Ordering::Relaxed);
+        true
     }
 
     pub fn unregister() -> bool {
-        false
+        SIMULATED_REGISTERED.store(false, Ordering::Relaxed);
+        true
     }
 }
 
@@ -2006,8 +2021,13 @@ impl SettingsApp {
             }
             None => {
                 // レジストリ側は既に更新済みだが config.toml への反映に失敗した。
-                // in-memory の値は変えず、次回チェックボックス表示が実状態と
-                // ズレていることが分かるようにする。
+                // チェックボックス表示自体は config.toml ではなくレジストリ実体
+                // （`is_registered()`）を真実源にしているため in-memory の値を
+                // 更新してもズレの可視化には影響しない。むしろここで更新して
+                // おかないと、後で無関係な項目を編集して「適用」（全体保存）を
+                // 押した際に古い値が書き戻され、この保存失敗が固定化してしまう
+                // （/code-review指摘、2026-09-07）。
+                self.config.general.auto_start = value.to_string();
                 self.status =
                     "自動起動レジストリは更新しましたが、config.toml への保存に失敗しました。"
                         .to_string();
