@@ -156,11 +156,18 @@ pub struct TsfObservations {
     ///
     /// `gji_write_bytes` は F2/`VK_IME_ON` 等のモード切替キーでは +0.0KB のまま
     /// 動かないことが実測済み（本ファイル `gji_write_bytes` の doc 参照）。
-    /// `GetProcessIoCounters` のドキュメントは「Other」を「データ転送を伴わない
-    /// 制御系 I/O」と定義しており、モード切替のような RPC/パイプ制御呼び出しは
-    /// Write ではなく Other 側に現れる可能性がある——2026-09-07、モード切替キー
-    /// 単独タップの actuation 確認シグナルとして使えるか検証するために追加。
-    /// [`Self::gji_write_ops`] と同じ理由で診断専用（判定ロジックには使わない）。
+    /// 2026-09-07、`GetProcessIoCounters` のドキュメントが「Other」を「データ
+    /// 転送を伴わない制御系 I/O」と定義していることから、モード切替のような
+    /// RPC/パイプ制御呼び出しは Write ではなく Other 側にバイト量が現れるので
+    /// はないかという仮説を立て、dragonflyg4 実機（半角/全角キー、awase が
+    /// actuate しない委譲シナリオ）で検証した。**結果は否定的**——`gji_write_
+    /// bytes` と同じく `gji_other_bytes` も常に +0.0KB のまま動かないことを
+    /// 確認済み（`ObservationSource` ではなく `gji_other_ops`〈操作回数〉の
+    /// 方が有望というのが実際の結論、`docs/adr/151-*.md` 論点7-1/7-2、
+    /// `project_adr151_force_on_rescue_observation_experiment_2026_09_07`
+    /// メモリ参照）。この否定的な実測結果自体に診断上の価値があるため
+    /// フィールドは撤去せず残す。[`Self::gji_write_ops`] と同じ理由で診断専用
+    /// （判定ロジックには使わない）。
     pub(super) gji_other_bytes: AtomicU64,
 
     /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
