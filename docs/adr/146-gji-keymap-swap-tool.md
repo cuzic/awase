@@ -2,10 +2,26 @@
 
 ## ステータス
 
-**r6レビュー完了、r7改訂版（2026-09-06）。両エージェントともBlocker
-ゼロで収束。設計としては実装着手可能な水準に到達——ただし実装着手前に
-(a)ユーザーへの製品判断確認、(b)このworktreeへのdevelop取り込み、
-の2点が必要（下記参照）。**
+**r8レビュー完了、r9改訂版（2026-09-06）。両エージェントともBlocker
+ゼロで最終収束。設計としては実装着手可能な水準に到達——実装着手前の
+必須手順は(a)ユーザーへの製品判断確認、(b)このworktreeへのdevelop
+取り込み、(c)取り込み後に本ADRが引用する全コード事実の再検証、の3点
+（下記参照）。着手前ゲート3件のうち2件はclipwire経由の実機データで
+検証済み（決定0近傍の未解決の疑問参照）。**
+
+**r7→r9の追加訂正（architect・premortem双方が独立に到達、B-9）**:
+r7でdecision0はdevelop基準に訂正したが、**decision9（awase belief/
+キー選択ロジックとの相互作用）は`246338bc`適用前のコードを前提のまま
+残っていた**——同コミットは`runtime/mod.rs::enrich_ime_relevance`にも
+変更を加え、変換/無変換専用の第4の経路（`resolve_henkan_muhenkan_
+shadow_override_for_event`、Hiragana/Katakana版と異なり親指キー設定
+でも`None`にならない）を追加していたが、決定9はこれを反映していな
+かった。develop側のコードで直接確認の上、決定9に経路Dを追加し、
+経路Cの「安全である理由」の説明も訂正した（r9）。両エージェントとも
+「今回学んだ教訓として、developとの乖離は`plan()`だけとは限らない
+ため、develop取り込み後に本ADRが引用する全コード事実を1回まとめて
+再検証すること」を実装着手前チェックに追加するよう申し送った——これを
+上記(c)として明記する。
 
 **r6→r7の重要な訂正（premortemが発見・特定）**: architect・premortem
 両エージェントが決定0（`transport.rs::plan()`の分岐構造）の検証で
@@ -911,16 +927,43 @@ Precomposition/Composition等でHenkan→CancelAndIMEOff）を生成すると、
   「IME状態を変える証拠」としてbeliefへ流入し始める**。決定0が明らかに
   した「本ツールが実際に機能する層」（変換/無変換を親指キーにして
   いないユーザー）は、まさにこの経路の当事者である。
-- **経路C**: `resolve_gji_mode_key_shadow_overrides`→
+- **経路C**: `resolve_mode_key_shadow_override_for_event`→
   `Runtime::enrich_ime_relevance`が、非親指キー時のVK_DBE_HIRAGANA/
   KATAKANAの`shadow_action`をGJI設定由来の値で**上書き**する。生成した
   キーマップが、かなキー押下のshadow意味論（TurnOn/TurnOff/Toggle）
-  そのものを変えうる。ただしこの上書きは`None→Some`のみで`Some→None`
-  はしない（0xF1/0xF2は`from_vk`により静的に既に`Some`）ため、
+  そのものを変えうる。この上書きは`None→Some`のみで`Some→None`は
+  しない（0xF1/0xF2は`from_vk`により静的に既に`Some`）ため、
   `plan()`の`is_kanji_event`判定は変わらず**決定0の配送判定には
   影響しない**——影響範囲はbelief側（IME状態の追随ロジック）に限られる。
 
-対応表・回帰テストはこの3経路すべてを対象に作成する。
+**r9追加（B-9指摘反映、architect・premortem両者が独立に到達）**:
+`246338bc`（ADR-141/BUG-118のC2対策、決定0参照）は`runtime/mod.rs::
+Runtime::enrich_ime_relevance`にも変更を加えており、経路Cとは別の
+**第4の経路**を追加していた。決定9はr6時点でこの変更前のコードを
+前提にしていたため、経路Cの「安全である理由」の説明が誤りになっていた
+（結論は偶然維持されるが理由が違う）。
+
+- **経路D（新設）**: `gji_charset_autodetect::
+  resolve_henkan_muhenkan_shadow_override_for_event`→
+  `Runtime::enrich_ime_relevance`が、**変換/無変換**の`shadow_action`を
+  `henkan_shadow_override`/`muhenkan_shadow_override`（本ツールが書き
+  換える`custom_keymap_table`から`classify_thumb_key_ime_actions`
+  経由で導かれる値）で設定する。**Hiragana/Katakana版（経路C）と異なり、
+  この関数は「親指キーならNone」の早期returnを行わない**——develop
+  のコメントが明記する通り「無変換/変換はHiragana/Katakanaと異なり
+  守るべき静的`shadow_action`を持たないため、親指キーとして設定されて
+  いる場合でもoverrideを差してよい」。**つまり決定0-1が対象にしている
+  親指キー設定ユーザーも、この経路の影響を免れない**——決定0-1の警告は
+  「GJIへのキー配送」についてのものであり、「belief側への影響」は
+  別軸として残る。
+- **経路Cの「安全である理由」を訂正**: 変換/無変換がAllowされる理由は
+  「`None→Some`しか起きないから」ではなく、**決定0手順4の`246338bc`
+  専用分岐が`is_kanji_event`判定より前にreturnするから**である
+  （経路D自体は`None→Some`の遷移を起こすが、それは`plan()`の
+  `is_kanji_event`判定に到達する前提が崩れることを意味しない——
+  専用分岐がその判定自体をバイパスするため）。
+
+対応表・回帰テストはこの4経路すべてを対象に作成する。
 
 ## 決定10: ADR-141/142との併存関係（r2新設）
 
