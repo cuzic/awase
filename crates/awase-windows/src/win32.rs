@@ -214,13 +214,14 @@ fn ime_actuation_marker_kind(input: &INPUT) -> Option<&'static str> {
 }
 
 /// `inputs` バッチに含まれる非ゼロ `wVk`（Unicode モードの `wVk=0` を除く）を
-/// 出現順・重複なしで集める（BUG-113 疑似エコー調査用診断ログ）。
+/// 出現順・重複なしで集める。BUG-113 で確定した「1打鍵に対する複数回
+/// actuation」の内訳（`docs/adr/149-physical-ime-key-activation-defers-forced-set-open.md`
+/// 参照）を後から実機ログで追跡するための恒久診断。
 ///
 /// `kind=kanji_marker` は `send_ime_mode_key`（GjiDirect/MsImeDirect の
 /// VK_IME_ON=0x16/VK_IME_OFF=0x1A）と `post_kanji_toggle_to_focused`
-/// （KanjiToggle の VK_KANJI=0x19）の両方が同じマーカーを使うため区別できない
-/// （[[project_bug113_vk_kanji_pseudo_echo_2026_09_06]] 未確定点1）。実 VK 値は
-/// この3値が互いに異なるため、ここで戦略を一意に判別できる。
+/// （KanjiToggle の VK_KANJI=0x19）の両方が同じマーカーを使うため区別できない。
+/// 実 VK 値はこの3値が互いに異なるため、ここで戦略を一意に判別できる。
 fn actuation_vks(inputs: &[INPUT]) -> Vec<u16> {
     let mut vks = Vec::new();
     for input in inputs {
@@ -238,10 +239,10 @@ fn actuation_vks(inputs: &[INPUT]) -> Vec<u16> {
 
 /// 最後に awase 自身が actuation（`ime_actuation_marker_kind` が `Some` を
 /// 返した）SendInput を発行した `now_timestamp_us()` 時刻。0 は「まだ一度も
-/// 発行していない」センチネル。BUG-113 疑似エコー調査用診断
-/// （[[project_bug113_vk_kanji_pseudo_echo_2026_09_06]]）: `hook.rs` の
-/// `[hook] IME-mode` 行がこの値との差分を出し、フックに届いた IME モード
-/// キーが直前の自己 actuation からどれだけ経過したかを見えるようにする。
+/// 発行していない」センチネル。BUG-113 の内訳追跡用の恒久診断:
+/// `hook.rs` の `[hook] IME-mode` 行がこの値との差分を出し、フックに届いた
+/// IME モードキーが直前の自己 actuation からどれだけ経過したかを見えるように
+/// する。
 static LAST_ACTUATION_ISSUE_US: AtomicU64 = AtomicU64::new(0);
 
 /// [`LAST_ACTUATION_ISSUE_US`] を読む。診断ログ専用。

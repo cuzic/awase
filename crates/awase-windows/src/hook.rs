@@ -919,12 +919,12 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         let dir = if is_keydown { "down" } else { "up" };
         let now_ms = current_tick_ms();
         let prev_ms = LAST_IME_MODE_HOOK_MS.swap(now_ms, Ordering::Relaxed);
-        // BUG-113 疑似エコー調査用診断（[[project_bug113_vk_kanji_pseudo_echo_2026_09_06]]）:
-        // 直前に awase 自身が発行した actuation SendInput（`win32::send_input_safe`
-        // の `[ime-io] actuation` ログ）から何 us 経過してこのフックイベントが
-        // 届いたかを見える化する。0 は「まだ actuation が一度も発行されていない」
-        // センチネル（`last_actuation_issue_us` の doc 参照）のため `since_actuation_us`
-        // は出さない。
+        // BUG-113（docs/adr/149-physical-ime-key-activation-defers-forced-set-open.md）
+        // の内訳追跡用の恒久診断: 直前に awase 自身が発行した actuation SendInput
+        // （`win32::send_input_safe` の `[ime-io] actuation` ログ）から何 us 経過して
+        // このフックイベントが届いたかを見える化する。0 は「まだ actuation が
+        // 一度も発行されていない」センチネル（`last_actuation_issue_us` の doc
+        // 参照）のため `since_actuation_us` は出さない。
         let last_actuation_us = crate::win32::last_actuation_issue_us();
         let since_actuation_us =
             (last_actuation_us != 0).then(|| now_timestamp_us().saturating_sub(last_actuation_us));

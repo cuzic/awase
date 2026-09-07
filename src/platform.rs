@@ -179,11 +179,26 @@ pub enum ImeOpenOutcome {
 /// 送らない——1回の物理キー押下に対し `VK_IME_ON` を最大3回重複送信して
 /// いたことが、Windows Terminal + GJI で「@」が単発出力される BUG-113 の
 /// 確立済み必要条件（重複 SendInput が GJI の TSF composition 追跡を乱す）
-/// を満たしていた。実送信が無かった場合（`AlreadyMatched`/`Failed`）は、
-/// TSF がウォームアップされていない可能性があるため従来どおり送る。
+/// を満たしていた。`AlreadyMatched` は実送信が無かった（TSF が
+/// ウォームアップされていない可能性がある）ため従来どおり送る。
+///
+/// `Failed` も便宜上「送る」側（`true`）を返すが、呼び出し元
+/// （`on_ime_applied`）の `effective = !open` 計算により、`open == true`
+/// の呼び出し元経路では `warmup_ime_on` が `from_actuated(false)` になり
+/// `tsf_readiness(..).can_warmup()`（`ime_on && is_tsf_mode` の
+/// `ime_on` が false）が false を返すため、**実際には呼び出し元の
+/// `send_eager_tsf_warmup`/`latch_eager_warmup_without_send` いずれも
+/// 早期 return で no-op になる**（真値を返すのは従来挙動との bit
+/// 同一性を保つためであり、実送信には結びつかない。opus-adversarial-consult
+/// S1 指摘）。
 ///
 /// 呼び出し元は `UnsafeToToggle`/`NotOwned`（送信自体を試みなかった）を
-/// 既に早期 return で除外済みの前提（`on_ime_applied` 参照）。
+/// 既に早期 return で除外済みの前提（`on_ime_applied` 参照）。加えて
+/// `AppImeProfile::can_use_imm32_cross_process() == true`（`Standard`
+/// プロファイル）では `ImmCrossProcessStrategy` が SendInput を伴わずに
+/// `Applied` を返しうるため、呼び出し元（`platform.rs::on_ime_applied`）
+/// はこの述語の結果をそのプロファイルでは使わず常に送る側に倒す
+/// （/code-review 指摘、詳細は呼び出し元のコメント参照）。
 #[must_use]
 pub const fn should_send_accompanying_warmup(outcome: ImeOpenOutcome) -> bool {
     !matches!(

@@ -1467,9 +1467,30 @@ impl TsfComposition for WindowsPlatform {
             // `VK_IME_ON` を送っている場合（`Applied`/`FallbackSent`）は、この
             // 随伴 warmup を重ねて送らない。1打鍵あたり最大3回の重複 SendInput
             // が「@」の確立済み必要条件を満たしていた（実機ログで確認済み）。
-            if awase::platform::should_send_accompanying_warmup(outcome) {
+            //
+            // ただし `should_send_accompanying_warmup` の前提（`Applied` ==
+            // 戦略が実際に `SendInput` した）は `ImmCrossProcessStrategy`
+            // （`ImmSetOpenStatus` クロスプロセス API のみ、SendInput 皆無）
+            // には当てはまらない（/code-review 指摘）。このストラテジーは
+            // `AppImeProfile::can_use_imm32_cross_process() == true`
+            // （= `Standard` プロファイルのみ）でしか選ばれないため、その
+            // プロファイルでは前提が成立せず、常に安全側（従来どおり送る）
+            // に倒す——`Standard` 以外（`TsfNative`/`Imm32Unavailable`/
+            // `InputRelay`）では `ImmCrossProcessStrategy` 自体が
+            // `is_applicable() == false` のため `Applied` は必ず実送信を
+            // 伴う戦略（`GjiDirectStrategy`/`MsImeDirectStrategy`）由来と
+            // 確定できる。
+            let profile = self.current_app_profile();
+            let should_send = profile.can_use_imm32_cross_process()
+                || awase::platform::should_send_accompanying_warmup(outcome);
+            if should_send {
                 self.output
                     .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Actuated);
+            } else {
+                self.output.latch_eager_warmup_without_send(
+                    warmup_ime_on,
+                    crate::output::WarmupOrigin::Actuated,
+                );
             }
         } else {
             tracing::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");
