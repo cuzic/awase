@@ -9,7 +9,8 @@
 （下記参照）。着手前ゲート3件のうち2件はclipwire経由の実機データで
 検証済み（決定0近傍の未解決の疑問参照）。**
 
-**r7→r9の追加訂正（architect・premortem双方が独立に到達、B-9）**:
+**r7→r9の追加訂正（B-9、architectが起票・premortemが同じ`246338bc`の
+差分をMinorとして独立に指摘し一致）**:
 r7でdecision0はdevelop基準に訂正したが、**decision9（awase belief/
 キー選択ロジックとの相互作用）は`246338bc`適用前のコードを前提のまま
 残っていた**——同コミットは`runtime/mod.rs::enrich_ime_relevance`にも
