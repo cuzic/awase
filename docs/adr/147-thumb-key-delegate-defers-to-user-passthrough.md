@@ -67,7 +67,13 @@ ONにしてもawaseのbeliefが追随せず最初の1文字がローマ字化す
 - v1.18.0まで（`classify_thumb_key_ime_actions`が存在せず`delegate_to_
   open_axis`が常に`None`だったGJIユーザー）: 単独タップは`mode_key_config`
   のみで決まり、パススルー設定どおりに生の`VK_NONCONVERT`/`VK_CONVERT`が
-  GJIへ届いていた。
+  GJIへ届いていた。**ただし、この時点でも`muhenkan_shadow_override`
+  （ADR-141で新設）や`ImeKeyKind::from_vk`のVK_CONVERT/VK_NONCONVERT対応は
+  存在せず、`kp_stage_shadow_ime_toggle`によるbelief追随は一切無かった**
+  ——GJIが自力でIMEをONにしてもawaseのbeliefが追随しない欠落そのものは
+  当時から存在しており、それがBUG-115として別途報告されていた。本ADRは
+  「v1.18.0への巻き戻し」ではなく、BUG-115の修正（belief追随）を保った
+  ままパススルーユーザーの物理キー配送も復元することを狙う。
 - v1.19.0以降: GJIのカスタムキーマップにDirectInput行の検出があると、
   候補ウィンドウが非表示である間（GJI自身は「Composition」状態で確定前の
   かな入力中であっても、変換候補ウィンドウを明示的に呼び出すまでは非表示

@@ -15894,6 +15894,16 @@ v1.18.0までは直接入力中の無変換単独タップが生の`VK_NONCONVER
 BUG-115/ADR-092決定D Step4b）以降、直接入力中に無変換キーを単独タップしても
 物理キーがOSへ一切送出されなくなり、パススルー設定が機能しなくなった。
 
+**注（Opusレビューで確認済み）:** 「v1.18.0までは正しく動いていた」というのは
+「物理キーがGJIへ届いていた」という意味に限る。v1.18.0時点では`muhenkan_
+shadow_override`（ADR-141で新設）も`ImeKeyKind::from_vk`のVK_CONVERT/
+VK_NONCONVERT対応も存在せず、`kp_stage_shadow_ime_toggle`はこれらのキーの
+belief追随を一切行っていなかった——つまりGJIが自力でIMEをONにしてもawaseの
+beliefが追随しないという欠落自体は当時から存在しており、それがBUG-115として
+別途報告されていた。本ADR-147の修正は「v1.18.0への単純な巻き戻し」ではなく、
+BUG-115の修正（belief追随）を保ったまま、パススルーを選んだユーザーに限り
+物理キー配送も復元する、という両立を狙ったものである。
+
 **機序（コード確認済み）:** `resolve_pending_thumb_as_single`
 （`src/engine/nicola_fsm.rs:1977`起点、delegate分岐は`:2020-2038`）は、無変換/変換の単独タップ確定時に
 以下の優先順位で処理する。
