@@ -14800,6 +14800,16 @@ PSReadLine issue #2206と酷似するが機構レベルの一致は未確認、�
 `explicit_age_ms`が更新されないため、素の変換/無変換のような**passthrough**
 される物理モードキー自体には無防備だった、という穴を塞ぐ。
 
+**誤解防止の注記（Opus敵対的設計レビューで強く指摘）**: ガード5が効く理由は
+「passthroughを止めるから」では**ない**——`VK_NONCONVERT`のpassthrough
+自体は従来どおりGJIへ届く（ガード5は`[reinject]`のqueued/firingには一切
+触れない）。ガード5が消しているのは、**同じKeyDownが`kp_stage_idle_conv_
+check`を駆動してcross-process読み取り（`WM_IME_CONTROL/IMC_GETCONVERSIONMODE`）
+を発行し、その結果が`ConvOpenInference`→drift→`schedule_ime_refresh(20)`→
+VK_KANJIという25msの因果連鎖を作る経路**の方である。「passthroughには
+無関係だからガード5は不要」と誤解して将来のセッションで外すと、この
+BUG-113残置症状が再発する。
+
 - `crates/awase-windows/src/vk.rs::is_ime_mode_key_for_ime`: 新規の第3の
   判定軸（`may_change_ime`/`vk_may_mutate_conv`のいずれとも異なる）。
   `may_change_ime`を含み、さらに`VK_CONVERT`/`VK_NONCONVERT`(0x1C/0x1D)を
