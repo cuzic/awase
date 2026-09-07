@@ -2,9 +2,12 @@
 
 ## ステータス
 
-**設計確定（Opus敵対的レビュー2ラウンドで収束、Blocker1件・Major2件を検出・
-解消、Should-fix1件・Minor複数件を反映）。実装は未着手。** 対象は develop
-ブランチ。BUG-119として起票。
+**設計確定・実装済み（Opus敵対的レビュー2ラウンドで収束、Blocker1件・
+Major2件を検出・解消、Should-fix1件・Minor複数件を反映）。回帰テスト
+（必須条件1）追加済み、`cargo test --lib`（995件）・Windowsターゲット
+`cargo check -p awase -p awase-windows`・`architecture_guard`/
+`layer_boundary_guard`/`gji_charset_autodetect`各テストとも緑。実機ソーク
+未実施。** 対象は develop ブランチ。BUG-119として起票。
 
 **r1での変更点（r0からの差分）**: r0は`delegate_to_open_axis`の辞退を
 方向（TurnOn/TurnOff/Toggle）を問わず一律に行う案だったが、Opusレビューで

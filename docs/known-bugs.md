@@ -15880,7 +15880,7 @@ runtime/message_handlers.rs`（`sync_ime_toggle_auto_detect`、MS-IME側配線�
 関連: BUG-115（同じGJI設定検出機構）、[ADR-135](adr/135-generic-thumb-key-ime-toggle-delegate.md)
 （Hiragana/Katakana版の同型修正、C1）。
 
-## BUG-119: GJI自動検出の無変換/変換 `delegate_to_open_axis` が、ユーザーが明示的に選んだ「常に送出する（パススルー）」設定を無視して物理キーを握りつぶす（**原因確定、修正はADR-147で検討中**）
+## BUG-119: GJI自動検出の無変換/変換 `delegate_to_open_axis` が、ユーザーが明示的に選んだ「常に送出する（パススルー）」設定を無視して物理キーを握りつぶす（**`TurnOn`方向のみ修正済み・実機ソーク未実施。`TurnOff`/`Toggle`方向は既知の限界として未解消**）
 
 **症状:** GJIのカスタムキーマップ（`custom_keymap_table`）で無変換キーに
 `DirectInput → IMEOn`・`Composition → Commit`（確定）を割り当て、awase側は
@@ -15957,8 +15957,13 @@ awaseは判定し、`!composing`ガードを満たして`delegate_to_open_axis`�
 open_axis`の判定が`if !composing`でガードされているため`mode_key_config`
 （パススルー設定）どおりに動作し、影響を受けない。
 
-**修正方針:** [ADR-147](adr/147-thumb-key-delegate-defers-to-user-passthrough.md)
-で検討中（r1時点、Opusレビューでの指摘反映済み）。**`TurnOn`方向の
+**修正:** [ADR-147](adr/147-thumb-key-delegate-defers-to-user-passthrough.md)
+（設計確定、Opus敵対的レビュー2ラウンドで収束）どおり実装済み
+（`src/engine/nicola_fsm.rs::resolve_pending_thumb_as_single`、回帰テスト
+7件を`src/engine/tests.rs`に追加、`cargo test --lib`/Windowsターゲット
+`cargo check`/`architecture_guard`/`layer_boundary_guard`/
+`gji_charset_autodetect`各テストとも緑）。実機ソークは未実施。
+**`TurnOn`方向の
 delegateに限定した修正**——`kp_stage_shadow_ime_toggle`の所有権判定
 （`delegate_owns_mode_key_shadow_toggle`）が`mode_key_config`を見ないため、
 `TurnOff`/`Toggle`方向まで無条件に辞退させると「誰もbeliefを追随しない」
