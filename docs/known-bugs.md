@@ -11172,6 +11172,64 @@ x86_64-pc-windows-msvc -p awase-windows`（CI `windows-cross-check` ジョブ
    コンパイル時間の無駄」だったが、対応しようとすると別のCIジョブを
    壊す方が実害が大きいため、Cargo.tomlにその理由をコメントで残し
    現状維持とした。
+
+**追補（2026-09-08、実機で実害を確認・修正済み）:** 上記「既知の限界」で
+記録した「実機でのマニフェスト埋め込み後の動作確認は未実施」がそのまま
+的中する形で、新規の実害が実機（dragonflyg4）で発生した。
+
+**症状:** トレイアイコンを右クリック→「設定」を選択しても
+`awase-settings.exe` が一切起動しない（エラーダイアログも出ない、完全に
+無反応）。`awase.log` に
+`failed to spawn awase-settings.exe: この要求はサポートされていません。
+(os error 50)`（`ERROR_NOT_SUPPORTED`）が記録されていた。
+
+**原因:** `embed_awase_manifest`（当時の実装）は、CI の
+`windows-cross-check`（Linux + cargo-xwin、`mt.exe` 非搭載）向けに
+`TARGET` 環境変数を `-msvc`→`-gnu` に偽装して `.rsrc` COFF オブジェクトを
+直接注入する経路を、**実機 Windows ネイティブビルドに対しても無条件に
+適用していた**。実機（`windows-latest` CI、および開発者の実機）は
+`mt.exe` を同じ MSVC ツールチェーン（`link.exe`/`lld-link.exe` と同じ
+Windows SDK）内に普通に持っているため、この偽装は本来不要だった。
+
+`cargo xwin build --tests`（CIと同一コマンド）でのリンク成功は事前に
+確認していたが、「リンクが通ること」と「生成されたマニフェストリソースが
+実機の Win32 API から見て完全に正しいこと」は別の問題だった。`-gnu` 経路
+で生成した COFF オブジェクトを `-msvc` バイナリへ注入したマニフェスト
+リソースは、`ShellExecute` 系 API（PowerShell の `Start-Process`、
+エクスプローラーのダブルクリック）では問題なく起動できる一方、
+**`CreateProcessW`（`std::process::Command::spawn` が内部で使う）では
+`ERROR_NOT_SUPPORTED` で拒否される**という非対称な壊れ方をしていた。
+`awase.exe` が `awase-settings.exe` を起動する経路はまさに
+`std::process::Command::spawn` を使うため、ここでのみ症状が出た
+（`ImmSetOpenStatus`等の他のWin32呼び出しには無関係）。
+
+**修正（`98c6afa7`、branch `fix/bug79-manifest-embed-native-createprocess`）:**
+`HOST` 環境変数（Cargo が常にビルド機自身の triple を設定する）でネイティブ
+Windows ホストを判定し、そこでは `embed_manifest` の素の `-msvc`
+`/MANIFEST:EMBED` 経路（実 `mt.exe`）を使うよう分岐した。`mt.exe` は
+dragonflyg4 実機で `C:\Program Files (x86)\Windows Kits\10\bin\...\mt.exe`
+として実在することを確認済み。cargo-xwin クロスビルド（`HOST` が Linux）は
+従来どおり `-gnu` spoofing を維持する。
+
+**実機検証（2026-09-08、dragonflyg4）:** 修正版を実機でネイティブビルドし
+（`cargo build -p awase-windows --bin awase -p awase-settings --bin
+awase-settings`）、トレイメニューの「設定」から `awase-settings.exe` が
+正常に起動することを確認した。
+
+**教訓:** 「クロスビルドでリンクが通る」ことを実機での正しい動作の
+証明として扱ってはならない——マニフェストのようなリンカが検証しない
+データリソースは、リンク段階では気づけない実行時の非互換を持ちうる。
+BUG-79 自身が「既知の限界」として明記していた「実機での動作確認は
+未実施」を、次のセッションが確認せずに放置した結果の再発でもある。
+
+**テスト:** `cargo test -p awase-build-support`（`HOST` 分岐を追加した後も
+既存の `manifest_requests_as_invoker_execution_level` は Pass）、`cargo
+check`/`cargo clippy --target x86_64-pc-windows-msvc`（Linux 上、cross
+経路の回帰なしを確認）。`HOST` 分岐そのものを固定する unit test は
+追加していない（`std::env::var("HOST")` はビルド機依存でテスト環境ごとに
+値が変わるため、`cfg!(windows)` 相当の determinism が無く有効なテストに
+しにくい——実機ビルド確認が実質的なテストを兼ねる）。
+
 ---
 
 ## BUG-80: 起動時・モーダルポンプ中のフックキー配送で打鍵が消える/順序が壊れる可能性
