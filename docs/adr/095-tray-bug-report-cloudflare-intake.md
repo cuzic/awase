@@ -390,6 +390,16 @@ journal ログと同じ設計（**マスキングしない生データ、既定 
   `optionalBoolean`/`optionalNullableRecord`パターンで旧クライアントの
   報告も引き続き受理する。既定はONで送信前プレビューから個別に外せる。
 
+- **`legacy_msime_keymap`**（同じく`attach_ime_keymap: bool`、
+  [ADR-148 Phase 2](148-bug-report-ime-keymap-attachment.md#phase-2-実装2026-09-07追記2)、
+  2026-09-07追記）: 上記`msime_key_assignment`（新UI・シンプルキー割当て）
+  とは別系統の、旧UI（互換モードでのみ到達できる詳細キーカスタマイズ）
+  での無変換/変換キーへの「IMEオン/オフ」割当て検出結果
+  （`BugReportLegacyMsImeKeymapSummary`）。`msime_legacy_keymap.rs`の
+  実機確認済みの範囲のみ（無変換/変換の直接入力→ON方向のみ）を構造化して
+  送る。他の2フィールドと同じ`optionalNullableRecord`パターン・同じ
+  `attach_ime_keymap`フラグに相乗り。
+
 **プライバシー注記**: `layouts_dir`/`default_layout` にユーザーが絶対
 パスを入力していた場合、Windows のユーザー名が含まれる可能性がある。
 決定4の journal ログ同様マスキングはせず、送信前プレビューでの手動編集
