@@ -7879,6 +7879,39 @@ mod engine_integration_tests {
         );
     }
 
+    /// `resolve_pending_thumb_as_single`の呼び出し元は7箇所あり
+    /// （`on_timeout`経由の`step_pending_thumb_*`だけでなく、`step_pending_
+    /// thumb_thumb`のように別の親指キー押下で前の保留を単独確定させる経路も
+    /// ある）、上記のテストはすべて`on_timeout`経路のみを通していた
+    /// （PRレビュー指摘）。無変換キーが保留中に別の親指キー（変換キー）が
+    /// 押されて`step_pending_thumb_thumb`から即座に単独確定するケースでも、
+    /// 同じくTurnOn方向delegateがパススルー設定に道を譲ることを固定する。
+    #[test]
+    fn delegate_to_open_axis_turn_on_defers_to_user_passthrough_via_thumb_thumb_confirm() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOn));
+
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ime_on_ctx());
+        // 別の親指キー（変換）が来て、保留中の無変換を単独タップとして確定
+        // （`step_pending_thumb_thumb`、`on_timeout`を経由しない即時確定経路）。
+        let d = engine.on_input(Ev::down(VK_CONVERT).at(50).build(), &ime_on_ctx());
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "TurnOn delegate must defer to user passthrough via step_pending_thumb_thumb, \
+             got {:?}",
+            effects_of(&d)
+        );
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
+            )),
+            "raw VK_NONCONVERT must be passed through when confirmed via thumb+thumb, got {:?}",
+            effects_of(&d)
+        );
+    }
+
     // 二重 enqueue 回帰防止: IME OFF コンボ後の次キーで SetOpen が再発行されないこと。
     //
     // 旧実装は SpecialKeyMatch::ImeOff が SetOpen(false) のみ emit し、activation.prev を
