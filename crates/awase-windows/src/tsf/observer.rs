@@ -469,6 +469,15 @@ pub(crate) fn gji_other_ops() -> u64 {
     TSF_OBS.gji_other_ops.load(Ordering::Relaxed)
 }
 
+/// GJI プロセスの累積 `OtherTransferCount`（バイト数）を返す。0 = 未観測。live 読み取り。
+///
+/// 診断専用。`gji_write_bytes` と同じくモード切替キーでは +0.0KB のまま動かない
+/// ことが実機確認済み（`gji_other_bytes` フィールドの doc 参照）だが、
+/// `gji_write_ops`/`gji_other_ops`（操作回数）と同じ呼び出し元から突き合わせて
+/// 参照できるよう、他のアクセサと対称に用意する（/code-review指摘、2026-09-07）。
+pub(crate) fn gji_other_bytes() -> u64 {
+    TSF_OBS.gji_other_bytes.load(Ordering::Relaxed)
+}
 
 /// GJI プロセスが起動済みかつアクティブ IME として CLSID ベースで選択されているかどうか。
 ///

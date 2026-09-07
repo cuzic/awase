@@ -1196,10 +1196,11 @@ impl Runtime {
             // 理由でベースラインを残す。
             tracing::debug!(
                 "[shadow-toggle] vk=0x{:02X}はFSM delegate所有 → \
-                 belief書き込み/actuationをスキップ w_ops0={} x_ops0={}",
+                 belief書き込み/actuationをスキップ w_ops0={} x_ops0={} x_KB0={:.1}",
                 event.vk_code,
                 crate::tsf::observer::gji_write_ops(),
                 crate::tsf::observer::gji_other_ops(),
+                crate::tsf::observer::gji_other_bytes() as f64 / 1024.0,
             );
         } else {
             // 2026-09-07 実験追加: awase が actuate しない委譲シナリオ
@@ -1212,7 +1213,7 @@ impl Runtime {
             // observation_experiment_2026_09_07 参照）。
             tracing::info!(
                 "[shadow-toggle] intent 昇格: vk=0x{:02X} scan=0x{:02X} action={:?} \
-                 kind={:?} injected={} {}→{} w_ops0={} x_ops0={}",
+                 kind={:?} injected={} {}→{} w_ops0={} x_ops0={} x_KB0={:.1}",
                 event.vk_code,
                 event.scan_code,
                 action,
@@ -1222,6 +1223,7 @@ impl Runtime {
                 new_val,
                 crate::tsf::observer::gji_write_ops(),
                 crate::tsf::observer::gji_other_ops(),
+                crate::tsf::observer::gji_other_bytes() as f64 / 1024.0,
             );
         }
         // witness は「注入されていない実キーイベント」の存在証明（BUG-14 の
