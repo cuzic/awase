@@ -16,8 +16,34 @@ platform.rs::on_ime_applied`から配線した。ADR-132（`Phase 2`節の
 はずのため、随伴warmupのスキップによる機能欠落は無いと判断した。**
 `cargo test --lib`（998件）・windows target `cargo check`/`clippy`・
 `architecture_guard`/`golden_scenarios`/`layer_boundary_guard`（109件）
-とも緑。実機ソーク未実施。** 対象はBUG-113の残置症状（半角状態で無変換/
-変換キー単独タップ時に「@」が単発で出る）。
+とも緑。** 対象はBUG-113の残置症状（半角状態で無変換/変換キー単独タップ
+時に「@」が単発で出る）。
+
+**実機ソーク完了（2026-09-07）**: dragonflyg4実機（Windows Terminal +
+GJI）で、半角/全角キー単独タップ・IME OFF状態からの無変換/変換系キー
+単独タップ双方を反復し、「@」の再発なしを確認した。
+
+**追記（実機ログ解析、送信回数の訂正）**: `RUST_LOG=debug`で採取した
+実機ログを解析した結果、当初「3回→1回」と見積もっていた送信回数は、
+実際には**3回→2回**だった。本ADRが特定・修正した「送信3」（NICOLA
+同時打鍵タイマー満了→delegate機構由来の随伴warmup、~100ms後）は
+狙いどおり消えたが、**「送信2」に相当する随伴warmupは、本ADRが gate
+した`on_ime_applied`末尾の呼び出しとは別に、同じ`on_ime_applied`内で
+より前に無条件実行される`feed_composition_event`→
+`dispatch_composition_response`の`CompositionAction::EmitWarmup`
+（`platform.rs:638-643`、`CompositionFsm`が「cold」と判断した場合に
+`self.output.send_eager_tsf_warmup`を`outcome`を見ずに呼ぶ）からも
+独立して発火することが判明した。実機ログでは、`outcome=Applied`の
+apply直後に`[tsf-eager-warmup]`が1回だけ記録されており（本ADRが
+gateした末尾の呼び出しは`should_send_accompanying_warmup(Applied)
+== false`により正しく抑止されていることをログから確認済み）、これは
+`EmitWarmup`経路由来と判断できる。
+
+**この経路は本ADRのスコープ外として未修正のまま残す**——3回→2回への
+削減だけで実機上「@」の再発が確認されなくなったため（重複SendInputの
+「回数」ではなく「発生の有無」自体が閾値だった可能性が高い）、追加の
+修正は行わない。完全な3回→1回化（`EmitWarmup`経路にも同種のgateを
+追加する）は、実害が再度報告された場合に別ADRとして検討する。
 
 **最終確認**: 2026-09-07 05:40台、Windows実機（dragonflyg4）で
 `grep "IME open axis delegated"`を実行した結果、

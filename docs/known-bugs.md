@@ -13952,7 +13952,7 @@ SHOW イベントは `gji_write_bytes` の増加より確実に遅れて発火�
 の確定した原因ではなく、上記 `Imm32Unavailable` 誤学習経路とは別に検証中の
 候補である**——両者を混同しないこと。
 
-## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消＋ADR-140 Step1（probe/actuation競合の解消）を実装、いずれも実機確認済み。本BUGの主再現手順（物理半角/全角キー）・Ctrl+無変換・Alt+Tab後最初のIME OFFのいずれも再発なし。半角状態での変換/無変換キー単独タップの残置症状は、[ADR-149](adr/149-physical-ime-key-activation-defers-forced-set-open.md)で根本原因（半角状態でのTurnOn方向単独タップ1回に対し、awase自身が`VK_IME_ON`を3回重複SendInputしていた）を実機ログで確定・修正実装済み。当初仮説だった「OS/ドライバによる疑似エコー」（孤児KeyUp→別VKのKeyDown）は撤回済み——クリーンな実機再現ではそのようなイベントは一切出現せず、内訳が完全に説明できる自己内の3重送信だった。詳細は末尾の追記を参照**）
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消＋ADR-140 Step1（probe/actuation競合の解消）を実装、いずれも実機確認済み。本BUGの主再現手順（物理半角/全角キー）・Ctrl+無変換・Alt+Tab後最初のIME OFFのいずれも再発なし。半角状態での変換/無変換キー単独タップの残置症状は、[ADR-149](adr/149-physical-ime-key-activation-defers-forced-set-open.md)で根本原因（半角状態でのTurnOn方向単独タップ1回に対し、awase自身が`VK_IME_ON`を3回重複SendInputしていた）を実機ログで確定・修正実装済み。当初仮説だった「OS/ドライバによる疑似エコー」（孤児KeyUp→別VKのKeyDown）は撤回済み——クリーンな実機再現ではそのようなイベントは一切出現せず、内訳が完全に説明できる自己内の3重送信だった。修正後は送信回数3回→2回（別経路の随伴warmupが1件残存、詳細はADR-149参照）となったが、2026-09-07にdragonflyg4実機で半角/全角キー・無変換/変換キー単独タップを反復し「@」の再発なしを確認済み。詳細は末尾の追記を参照**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
 WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
@@ -14984,8 +14984,24 @@ composition追跡を乱す」を、この3回の送信がawase単独で満たし
 実際に`VK_IME_ON`を送っている場合（`outcome == Applied`または
 `FallbackSent`）はスキップするよう変更（純粋関数
 `awase::platform::should_send_accompanying_warmup`に切り出し、
-`src/platform.rs`にユニットテスト2件を追加）。1打鍵あたりの送信回数は
-3回→1回（送信1のみ）に減少する。
+`src/platform.rs`にユニットテスト2件を追加）。当初「1打鍵あたり3回→
+1回」と見積もっていたが、**実機ログ解析の結果、実際には3回→2回**
+だった——本修正が消したのは送信3（NICOLA同時打鍵タイマー満了→
+delegate機構由来、~100ms後）のみで、送信2に相当する随伴warmupは、
+`on_ime_applied`内で`feed_composition_event`→
+`dispatch_composition_response`の`CompositionAction::EmitWarmup`
+（`platform.rs:638-643`、`CompositionFsm`が「cold」と判断すると
+`outcome`を見ずに`send_eager_tsf_warmup`を呼ぶ）という**別の独立した
+経路**からなお発火する（本修正がgateしたのは`on_ime_applied`末尾の
+呼び出しのみで、こちらは未対応）。この経路の修正は本ADRのスコープ外
+として保留する。
+
+**実機確認（2026-09-07、dragonflyg4、Windows Terminal + GJI）**:
+半角/全角キー単独タップ・IME OFFからの無変換/変換系キー単独タップを
+反復し、送信回数が3回→2回に減った状態で「@」の再発が無いことを確認
+した——重複SendInputの「回数」自体より「発生の有無」が閾値だった
+可能性が高い。完全な3回→1回化（`EmitWarmup`経路への同種gate追加）は、
+実害が再度確認された場合に別途検討する。
 
 **独立して発見した2つの未解決事項（本修正のスコープ外、記録のみ）:**
 
