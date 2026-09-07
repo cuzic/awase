@@ -2,8 +2,8 @@
 
 ## ステータス
 
-**r1（Opus敵対的レビュー1ラウンド目でBlocker1件・Major2件を検出、方針を
-「TurnOn方向限定の辞退」に絞り込んで反映。再確認待ち）。** 対象は develop
+**設計確定（Opus敵対的レビュー2ラウンドで収束、Blocker1件・Major2件を検出・
+解消、Should-fix1件・Minor複数件を反映）。実装は未着手。** 対象は develop
 ブランチ。BUG-119として起票。
 
 **r1での変更点（r0からの差分）**: r0は`delegate_to_open_axis`の辞退を
@@ -183,11 +183,12 @@ if let Some(open_axis_action) = special.delegate_to_open_axis.filter(|action| {
   はこの`effective_open()`ゲート自体が原因で別の問題（delegateがOFF中に
   一切発火しない）を起こしていたが、逆に言えば「belief OFF中は2が
   delegateに委ねることは無い」ため、1が辞退してもbeliefが孤立しない。
-- **belief ON（`effective_open() == true`）の間**、`TurnOn`方向の
-  delegateが発火しても`new_val == current == true`で元々no-op
-  （`key_pipeline.rs:1235`の冪等分岐）。1がTurnOn方向で辞退し生キーを
-  GJIへ渡しても、GJI自身のTurnOn相当の処理も（IMEが既にONなら）通常
-  no-opであり、実IMEもbeliefも共に`true`のまま食い違わない。
+- **belief ON（`effective_open() == true`）の間**、1がTurnOn方向で辞退し
+  生キーをGJIへ渡しても、GJI自身のTurnOn相当の処理は（IMEが既にONなら）
+  通常no-opであり、実IMEもbeliefも共に`true`のまま食い違わない
+  （`key_pipeline.rs:1235`の冪等分岐は`delegate_owned`が`true`の間は
+  方向を問わず常に成立するため、TurnOn/TurnOffを区別する論拠には
+  ならない——区別の根拠は上記のGJI側の実際の処理内容のみ）。
 - 対照的に`TurnOff`/`Toggle`方向は、belief ON中に発火すると**実際に
   状態を反転させる**——2が「delegateが処理する」と誤信して身を引いた
   まま1も辞退すると、GJI自身が生キーでIMEをOFFにする一方awaseの
@@ -300,6 +301,17 @@ Imm32観測可能アプリでしか救えない上、単独では不十分（方
    緑であることのみ確認すれば足りる**（本ADRの方式ではこれらの関数の
    シグネチャ・挙動を一切変えないため、新規テスト追加は不要——変更した
    場合は方式選択の前提が崩れている）。
+6. **実装時、`resolve_pending_thumb_as_single`のフィルタ箇所に「なぜ
+   TurnOn限定なのか」を説明するコメントを置く**（Opusレビュー
+   Should-fix）。この設計の正しさは**別クレート**（`crates/awase-windows`）
+   の`delegate_owns_mode_key_shadow_toggle`が`mode_key_config`を一切
+   見ない、という`awase`コア（プラットフォーム非依存）からは見えない
+   外部の不変条件に依存している。コメントが無いと、将来「TurnOn限定は
+   保守的すぎる、TurnOff/Toggleにも広げよう」という一見自然な変更が
+   Blockerをそのまま復活させる。`gji_charset_autodetect.rs:479-485`の
+   `muhenkan_dedicated_fn_key_configured`に関する同種のコメント
+   （コア`awase`クレートはOS非依存を保つ必要があるため、コード参照では
+   なく散文＋本ADRへのリンクで書く）に揃える。
 
 ## 残存する既知の限界（対応せず記録のみ）
 
