@@ -35,10 +35,17 @@ public class RawKbdLogger
     private static LowLevelKeyboardProc _proc = HookCallback;
     private static IntPtr _hookID = IntPtr.Zero;
     private static StreamWriter _writer;
-    // QueryPerformanceCounter 由来、DateTime.Now (~15ms分解能) より遥かに高精度。
-    // イベント間の真の間隔（本物のADR-149が確認した「0.5ms間隔」相当）を
-    // 判別するために使う。Start() で明示的に初期化する。
-    private static Stopwatch _sw;
+    // QueryPerformanceCounter 直接呼び出し（DateTime.Now の ~15ms 分解能では
+    // イベント間の真の間隔を判別できないため）。System.Diagnostics.Stopwatch
+    // が Add-Type 経由のコンパイルで解決できなかったため、DllImport で直接叩く。
+    private static long _qpcFreq;
+    private static long _qpcStart;
+
+    [DllImport("kernel32.dll")]
+    private static extern bool QueryPerformanceCounter(out long lpPerformanceCount);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool QueryPerformanceFrequency(out long lpFrequency);
 
     [StructLayout(LayoutKind.Sequential)]
     public struct KBDLLHOOKSTRUCT
@@ -67,7 +74,8 @@ public class RawKbdLogger
 
     public static void Start(string logPath)
     {
-        _sw = Stopwatch.StartNew();
+        QueryPerformanceFrequency(out _qpcFreq);
+        QueryPerformanceCounter(out _qpcStart);
         _writer = new StreamWriter(logPath, true);
         _writer.AutoFlush = true;
         _writer.WriteLine("=== rawkbd_logger started (awaseとは無関係の独立プロセス) pid=" + System.Diagnostics.Process.GetCurrentProcess().Id + " at " + DateTime.Now.ToString("o"));
@@ -98,7 +106,9 @@ public class RawKbdLogger
             bool injected = (hookStruct.flags & LLKHF_INJECTED) != 0;
             bool lowerInjected = (hookStruct.flags & LLKHF_LOWER_IL_INJECTED) != 0;
             bool extended = (hookStruct.flags & LLKHF_EXTENDED) != 0;
-            long qpcUs = (long)(_sw.Elapsed.Ticks / (double)(TimeSpan.TicksPerMillisecond) * 1000.0);
+            long qpcNow;
+            QueryPerformanceCounter(out qpcNow);
+            long qpcUs = (_qpcFreq > 0) ? (long)((qpcNow - _qpcStart) * 1000000.0 / _qpcFreq) : 0;
             _writer.WriteLine(string.Format(CultureInfo.InvariantCulture,
                 "{0} qpc_us={1} {2,-7} vk=0x{3:X2} scan=0x{4:X2} flags=0x{5:X} injected={6} lowerInjected={7} extended={8} os_time_ms={9}",
                 DateTime.Now.ToString("HH:mm:ss.fffffff"), qpcUs, action, hookStruct.vkCode, hookStruct.scanCode,
