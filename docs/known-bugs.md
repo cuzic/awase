@@ -13952,7 +13952,7 @@ SHOW イベントは `gji_write_bytes` の増加より確実に遅れて発火�
 の確定した原因ではなく、上記 `Imm32Unavailable` 誤学習経路とは別に検証中の
 候補である**——両者を混同しないこと。
 
-## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消＋ADR-140 Step1（probe/actuation競合の解消）を実装、いずれも実機確認済み。本BUGの主再現手順（物理半角/全角キー）・Ctrl+無変換・Alt+Tab後最初のIME OFFのいずれも再発なし。半角状態での変換/無変換キー単独タップの残置症状は、2026-09-05のA/B実験で確定していた「idle-conv-check probeとGJI actuationの時間的近接」という未修正の独立十分条件が真因と特定し、idle-conv-checkのガード5（IMEモードキー自身の打鍵ではprobeを発行しない）を実装。実機A/B未検証（詳細は末尾の追記参照）**）
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消＋ADR-140 Step1（probe/actuation競合の解消）を実装、いずれも実機確認済み。本BUGの主再現手順（物理半角/全角キー）・Ctrl+無変換・Alt+Tab後最初のIME OFFのいずれも再発なし。半角状態での変換/無変換キー単独タップの残置症状には、idle-conv-check経路の対策（decision1/4）を実装したが実機で解消せず——真因は別系統、awase自身のIME actuation送信の約0.5〜1秒後に「孤児KeyUp→別VKのKeyDown」という物理キーボードでは起こり得ない形のイベントがinjected=falseで届き、正規のユーザー操作としてEngineを勝手に再活性化させる機構（新規、次セッションでBUG番号起票・実機検証予定）と特定。詳細・次セッション手順は末尾の追記参照**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
 WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
@@ -14851,6 +14851,103 @@ pedantic（`fn_params_excessive_bools`/`struct_excessive_bools`）に抵触し�
 
 未検証: decision4適用後の実機A/B（半角状態で変換/無変換単独タップを複数回、
 「@」が出ないことの確認）。次のログ取得で確認する。
+
+**追記（2026-09-06 続き・decision4実機検証の結果、症状は解消せず。別の新規機構
+（VK_KANJI疑似エコーによるEngine勝手なON化）を発見・未実装のまま次セッション
+へ持ち越し）:**
+
+decision4適用版を実機投入したところ、ユーザーから「変わりません、無変換/
+変換で@が出ます」と報告された。実機ログを追跡した結果、**これまでの
+decision1/4が対策していたConvOpenInference/idle-conv-check経路とは別の、
+もう一つの実在する不具合**を発見した:
+
+1. Ctrl+無変換等でIMEを明示的にOFFにした約0.5〜1秒後、**awase自身のengineが
+   `reason=EngineDecision`で勝手にIMEをONへ戻す**（ユーザー操作ゼロ）。
+   これが繰り返し観測された。
+2. 原因を追跡したところ、journal上`UserImeSetIntent{target:true,
+   source:PhysicalImeKey}`が打鍵なしで発行されていることが判明。これは
+   `check_active_transition`（`src/engine/engine.rs:351`）由来の
+   `ActivationSync`エコーではなく（`explicit_intent`が同時に`Some(true)`に
+   変わっていることから、`last_intent`自体を書き換える経路——
+   `kp_stage_shadow_ime_toggle`——が実際に発火している）。
+3. 実機ログでその直接証拠を確認した:
+   ```
+   [ime-io] actuation SendInput kind=kanji_marker（awase自身の送信、"OFF"意図）
+   （約0.5〜1秒後）
+   [hook] IME-mode vk=0xF0 up self_injected=false injected=false scan=0x70
+   [hook] IME-mode vk=0xF2 down self_injected=false injected=false scan=0x70
+   [shadow-toggle] intent 昇格: vk=0xF2 ... action=TurnOn kind=PhysicalImeKey
+     injected=false false→true
+   Shadow IME toggle: OFF → ON (vk=0xF2, source=PhysicalImeKey)
+   Engine activated (ime=true, ...)
+   dispatch_ime_set_open{open=true}: SendInput kind=kanji_marker（再度送信、振動継続）
+   ```
+   このパターン（awase自身のIME actuation送信の約0.5〜1秒後に、対応する
+   KeyDownを持たない「孤児KeyUp」vk=0xF0→同一scanの別VK KeyDown vk=0xF2、
+   という組み合わせが`injected=false`で届く）が実機ログ中に最低4回、
+   同一の形で繰り返し観測された。
+
+**これはBUG-14（外部注入IMEモードキー）と症状は同型だが、`injected=false`
+で届くためBUG-14の`event.injected`チェックでは検出できない新変種**——
+BUG番号は次セッションで正式に起票すること（並行ブランチとの番号衝突を
+`feedback_bug_number_collision_on_branch_merge`の手順で確認してから）。
+
+**未確定の2点（次セッションが最初に解消すべき、Opus敵対的設計レビューで
+特定）:**
+
+1. **実際にどのVKを送っているか未確認。** ログの`kind=kanji_marker`は
+   `win32.rs::send_input_safe`が付与する**マーカー名**であり、実際に送信
+   したVK値そのものではない（`ime_actuation_marker_kind`で判別している
+   だけでVK値をログに出していない）。`ime_controller.rs::
+   characterize_strategy`の戦略チェーン（`ImmCross → GjiDirect →
+   MsImeDirect → KanjiToggle`、`KanjiToggle`が最後の手段）のうち、GJI
+   検出ができていれば状態指定の`GjiDirect`が選ばれるはずで、もし
+   `KanjiToggle`（非冪等トグル）に落ちているならGJI検出自体の失敗が
+   第一の異常である可能性がある。
+2. **`vk=0xF0 up`/`vk=0xF2 down`の出所が未確定。** 「OS/IMEドライバが
+   awaseの送信に対する疑似エコーを非注入として生成している」という仮説
+   （主仮説）と、「awase自身が`VK_DBE_HIRAGANA`等をマーカー無しで送信して
+   おり、自分のフックに`self_injected=false`で戻ってきているだけ」という
+   対抗仮説（`output/mod.rs::send_eager_tsf_warmup`等、`VK_DBE_HIRAGANA`
+   を送りうる経路が複数存在する）のどちらもまだ否定できていない。
+   後者ならOSのバグではなく単純な「マーカー付与漏れ」であり、はるかに
+   単純かつ確実に直せる。
+
+**次セッションの着手手順（順序つき、Opus敵対的設計レビューで確定）:**
+
+1. **診断ログを2行追加する（実装ではなく計装、これだけは低リスクで
+   実施してよい）**: `win32.rs::send_input_safe`のactuation分岐に実VK値
+   と戦略名を出力（`[ime-io] actuation SendInput kind=... vk=0x.. \
+   strategy=..`）。`hook.rs`の`[hook] IME-mode`行に直前のawase
+   actuationからの経過時間を追加。
+2. 上記1点目の確認（2-1）: TsfNative + GJIで実際にどの戦略・VKが選ばれて
+   いるか（`tests/ime_key_sequence_golden.rs`の期待値と突き合わせる）。
+3. 上記2点目の確認（2-2）: `VK_DBE_ALPHANUMERIC`/`VK_DBE_HIRAGANA`
+   （0xF0/0xF2）を送る全経路をgrepし、すべてが`win32::send_input_safe`
+   経由でマーカー付与されているか確認する（`tests/architecture_guard.rs`
+   が「SendInputの生産コード呼び出しサイトは1箇所」を固定している前提を
+   利用できる）。
+4. 上記2点が確定して初めて、対策（decision9: 「別VKの孤児KeyUpの直後に
+   同一scanのKeyDownが来る」という物理キーボードでは起こり得ない“形”
+   だけで判別し、`UserImeSetIntent`の発行を見送る、`injected`フラグにも
+   タイミング窓にも依存しない設計——issue #136/ADR-119のInputRelay注入
+   キー受理と衝突しない、新規tuning定数も不要）に進む。
+
+**なぜ拙速に実装しなかったか:** この領域（IME OFF方向に何を送るか）は
+`docs/experiments.md`エントリ01に記録されている「5日間で6回、採用と撤回が
+反転した」現場そのものであり、`.claude/rules/experiment-logging.md`・
+`fix-requires-evidence.md`・`tuning-constants.md`のすべてが対象になる。
+上記2点（実VK・出所）が確定しないまま実装すると7回目の反転を作る
+リスクが高いとOpus敵対的設計レビューで判断し、ユーザーの合意のもと
+今回は診断・設計止まりとした。
+
+**decision1/4の評価（今回の症状への効果は無かったが、独立した実バグとして
+価値はある）**: decision1（無操作時の周期バースト、25秒〜4分43秒間隔での
+Blind VK_IME_OFF×5連射）は実機で解消を確認済み。decision4（idle-conv-check
+のguard5）も、その対象とする経路（無変換/変換キー自身がidle-conv-check
+probeを起動させるケース）は構造的に解消したはずだが、**今回発見した
+VK_KANJI疑似エコー機構は全く別の経路であり、decision1/4はこれに対して
+無力だった**。両方とも実装は正しく機能しているため撤回の必要はない。
 
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 
@@ -15879,3 +15976,65 @@ transport.rs`（`PhysicalKeyDisposition::plan`）、`crates/awase-windows/src/
 runtime/message_handlers.rs`（`sync_ime_toggle_auto_detect`、MS-IME側配線）。
 関連: BUG-115（同じGJI設定検出機構）、[ADR-135](adr/135-generic-thumb-key-ime-toggle-delegate.md)
 （Hiragana/Katakana版の同型修正、C1）。
+
+## BUG-119: GJI自動検出の無変換/変換 `delegate_to_open_axis` が、ユーザーが明示的に選んだ「常に送出する（パススルー）」設定を無視して物理キーを握りつぶす（**原因確定、修正はADR-147で検討中**）
+
+**症状:** GJIのカスタムキーマップ（`custom_keymap_table`）で無変換キーに
+`DirectInput → IMEOn`・`Composition → Commit`（確定）を割り当て、awase側は
+無変換を`left_thumb_key`/`right_thumb_key`（NICOLA親指キー）にも設定した上で、
+設定画面の「無変換キー単独タップ」を「常に送出する（パススルー）」
+（`muhenkan_solo_tap_always_suppress = false`、
+`muhenkan_solo_tap_ignore_composing_guard = true`）に変更している場合、
+v1.18.0までは直接入力中の無変換単独タップが生の`VK_NONCONVERT`としてGJIへ
+そのまま届き、GJI自身の`DirectInput→IMEOn`バインドどおりにIMEがONになって
+いた。v1.19.0（2026-09-05〜06追加のGJI無変換/変換IME意味論自動検出、
+BUG-115/ADR-092決定D Step4b）以降、直接入力中に無変換キーを単独タップしても
+物理キーがOSへ一切送出されなくなり、パススルー設定が機能しなくなった。
+
+**機序（コード確認済み）:** `resolve_pending_thumb_as_single`
+（`src/engine/nicola_fsm.rs:1977-2038`）は、無変換/変換の単独タップ確定時に
+以下の優先順位で処理する。
+
+1. `special.dedicated_fn_key`（専用Fnキー、隠し設定）
+2. `special.delegate_to_open_axis`（GJI/MS-IMEのキー設定自動検出に基づく
+   IME open軸への肩代わり、ADR-092決定D Step4b）— `Some`かつ`!composing`
+   （直接入力中）なら、**物理キーを完全にSuppressし**（`SmallVec::new()`）、
+   代わりに`ime_open_requested`経由で`Effect::Ime(SetOpen)`を発行する
+   （`engine.rs::apply_ime_open_request`）
+3. `special.mode_key_config`（`ModeKeyConfig`、ユーザーが設定画面で選ぶ
+   Suppress/Passthrough）
+
+2が3より無条件に優先されるため、ユーザーが3で明示的に
+`Passthrough`（`ModeKeyConfig::is_passthrough() == true`）を選んでいても、
+2の`delegate_to_open_axis`が`Some`である限り、その選択は一切参照されずに
+迂回される。`classify_thumb_key_ime_actions`
+（`crates/awase-windows/src/gji_charset_autodetect.rs`、2026-09-05新規、
+BUG-115）がGJIのカスタムキーマップから`DirectInput 無変換 IMEOn`を検出すると
+`muhenkan_delegate_to_open_axis = Some(ShadowImeAction::TurnOn)`が立ち、
+直接入力中の無変換単独タップは常に2の分岐に奪われる。
+
+**なお、`ModeKeyConfig::is_passthrough()`（`src/engine/fsm_types.rs:582`）
+という、まさにこの判定に使えるヘルパーが定義されているが、本番コードの
+どこからも呼び出されていない**（ユニットテスト以外に呼び出し箇所ゼロ、
+`grep -rn "is_passthrough(" src/`で確認）。
+
+**影響範囲:** GJIのカスタムキーマップで無変換/変換キーにIME ON/OFF/トグルの
+いずれかを割り当てており、かつ同じキーをNICOLA親指キーにも設定し、かつ
+「常に送出する（パススルー）」を選んでいるユーザーに限定される
+（`always_suppress = true`の既定設定ユーザーには影響しない——そちらは元々
+composing中もidle中もSuppressのため、delegateが代わりに動くこと自体が
+BUG-115の修正目的そのものであり退行ではない）。Composition中
+（`composing == true`）の単独タップは`delegate_to_open_axis`の判定が
+`if !composing`でガードされているため引き続き`mode_key_config`（パススルー
+設定）どおりに動作し、影響を受けない——退行するのは直接入力（idle）中の
+単独タップのみ。
+
+**修正方針:** [ADR-147](adr/147-thumb-key-delegate-defers-to-user-passthrough.md)
+で検討中。
+
+**関連ファイル:** `src/engine/nicola_fsm.rs`
+（`resolve_pending_thumb_as_single`/`thumb_solo_special_handling`）、
+`src/engine/fsm_types.rs`（`ModeKeyConfig::is_passthrough`）、
+`crates/awase-windows/src/gji_charset_autodetect.rs`
+（`classify_thumb_key_ime_actions`）。関連: BUG-115（本バグの原因となった
+自動検出機能の追加元）、BUG-118（同じdelegate機構のTurnOn方向欠陥、C2）。
