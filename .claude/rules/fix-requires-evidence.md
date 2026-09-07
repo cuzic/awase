@@ -20,7 +20,7 @@
 | focus 遷移 | `focus/`, `runtime/focus_tracking.rs` |
 | IME belief | `state/ime_model.rs`, `state/observation_store.rs`, `runtime/ime_coordinator.rs`, `focus/uia.rs`, `focus/msaa.rs` |
 | conv mode | `state/conv_mode.rs`, `focus/classify.rs`, `output/conv_actuation.rs`, `runtime/conv_actuation.rs`, `ime.rs` |
-| キー選択（IME ON/OFF に送る VK） | `ime_controller.rs`, `output/vk_send.rs` |
+| キー選択（IME ON/OFF に送る VK） | `ime_controller.rs`, `output/vk_send.rs`, `src/engine/nicola_fsm.rs::resolve_pending_thumb_as_single`（無変換/変換単独タップの`dedicated_fn_key`/`delegate_to_open_axis`/`ModeKeyConfig`優先順位、BUG-119でルート`awase`クレート側にも同ファミリーの再発が判明。`crates/awase-windows/`配下だけを見ていた本表・`.githooks/pre-push`双方の見落としを2026-09-06に追加して埋めた） |
 | force-write / actuation ターゲット（ADR-084/086） | `platform.rs`, `output/conv_actuation.rs`, `runtime/conv_actuation.rs`, `ime.rs` |
 | IME actuation 合流点（新しい gate/precondition を足す場所、ADR-119） | `ime_controller.rs::apply`（同期経路唯一の合流点）, `runtime/open_chain.rs::run_open_chain_async`/`fallback_write`/`imm_cross_write`（非同期経路。3関数**すべて**が独立に再検出する設計、1箇所だけでは足りない）, `runtime/executor.rs::dispatch_ime_set_open`（早期exit最適化、上記と重複するが単独では不十分） |
 | `ImeControlView.control.shadow_on`（`ControlLog`）の供給元（BUG-113、gate自体は1箇所でも供給元は経路ごとに違う） | `platform.rs::build_ime_control_view`（`ImeModel.applied_pair()`経由、`None`=未知）、`runtime/ime_refresh.rs::ir_apply_drift_correction`（`apply_ime_open_with_belief(order, None, ..)` — drift correction OFF方向回復、`None`ハードコード）、`runtime/key_pipeline.rs`のidle-conv-check DirectInput回復（同じく`None`ハードコード、コメントに「already_matchedをバイパスして apply する」と明記）、`runtime/executor.rs`の`applied_snapshot`。**`shadow_on`を`bool`に潰す（`unwrap_or(false)`）と「未知」と「確認済みfalse」の区別が消え、`None`で意図的にbypassしている経路の意図を握り潰す**——`Option<bool>`のまま扱い、「送信を省略してよいか」の判定は陽性の確認済み証拠（`Some(x)`）にのみ基づかせること（`state/ime_model.rs::applied_open()`のdocが警告するADR-098決定1-bの罠と同型）。 |
@@ -36,6 +36,10 @@
 - `crates/awase-windows/tests/e2e_windows.rs` — Windows 実機経路の e2e。
 - ジャーナルリプレイ基盤（`journal.rs` 起点、整備中）— `classify_*` 純粋関数への
   入力列を記録・再生して belief/conv 遷移を回帰させる。純粋判定を変える fix はここが最適。
+- `src/engine/tests.rs`（ルート`awase`クレート） — `resolve_pending_thumb_as_
+  single`等、プラットフォーム非依存のエンジン内部ロジックを変える fix はここに
+  ユニットテストを足す（BUG-119/ADR-147の前例）。`cargo test --lib`（ホスト
+  ターゲットで実行可、Windowsターゲット不要）。
 
 Linux で `cargo test -p awase-windows` から実行できるもの（golden / architecture_guard /
 layer_boundary_guard 等）を優先する。実機依存で自動化できない場合は (b) の known-bugs.md
