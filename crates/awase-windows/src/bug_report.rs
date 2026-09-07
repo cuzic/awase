@@ -178,6 +178,115 @@ pub struct BugReportStateSnapshot {
     pub hook_ring_max_occupancy: u32,
 }
 
+/// GJI（`config1.db`）から抽出した、無変換/変換キーのIME意味論・
+/// キーマップ設定の要約（ADR-148）。
+///
+/// フィールドは大きく2種類に分かれる:
+/// - **生値・分類系**（`session_keymap`/`custom_keymap_table_present`/
+///   `custom_keymap_table_is_effective`/`ime_*_keys`/`mode_*_keys`/
+///   `henkan_classified_kind`/`muhenkan_classified_kind`）:
+///   `config1.db`の内容を解釈するだけの計算で、現在のアクティブIME
+///   （`ime_kind`）に関わらず常に計算する。
+/// - **採用系**（`henkan_adopted_kind`/`muhenkan_adopted_kind`/
+///   `henkan_adopted_route`/`muhenkan_adopted_route`/
+///   `thumb_key_ime_warning`）: GJIが実際にアクティブ（`ime_kind ==
+///   Gji`）なときのみ計算する。GJIから離脱すると
+///   `sync_gji_charset_autodetect`がこれらの値を全部解除するため、
+///   非アクティブ時に計算すると「既に解除済みの設定」を「現在の設定」
+///   であるかのように報告してしまう（Opus敵対的レビューG1で検出）。
+///
+/// # この型の安全性が依存している前提（レビューF7・S-2）
+///
+/// `ime_*_keys`/`mode_*_keys`に含まれるVK名は
+/// `awase_gji_config::keymap::mozc_key_to_vk_name`のallowlist
+/// （固定エイリアス表と`F1`-`F24`のみ）を通過したものだけであり、
+/// `config1.db`由来の任意文字列が混入する経路はない。**将来「未対応の
+/// キートークンも診断のため載せよう」という変更を加えると、この
+/// allowlistという唯一の防壁を素通りして`config1.db`由来の任意文字列を
+/// 送信するチャネルに変質する**ため、そのような変更は行わないこと。
+///
+/// # `ime_*_keys`はawaseが実際に採用したキー集合ではない（レビューS-3）
+///
+/// `ime_on_keys`/`ime_off_keys`/`ime_toggle_keys`は
+/// `awase_gji_config::keymap::extract_ime_keys`の抽出結果をそのまま
+/// 反映したものであり、awase本体が実際にIME ON/OFF自動検出へ採用する
+/// 際にさらに適用する安全範囲フィルタ（`gji_charset_autodetect.rs::
+/// is_in_safe_autodetect_range`、F15-F24限定、`VK_KANJI`等はBUG-14
+/// 対策で除外）は通していない。したがって、ここに`"VK_KANJI"`等
+/// フィルタで除外されるはずのVK名が現れても、それは「awaseがその
+/// キーを誤って自動検出に採用した」ことを意味しない——`config1.db`側の
+/// 生の宣言をそのまま見せているだけである。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct BugReportGjiKeymapSummary {
+    /// `"NotFound"` / `"ParseFailed"` / `"Ok"`。
+    pub config1_db_status: String,
+    /// `SESSION_KEYMAP_CUSTOM`等の生値。
+    pub session_keymap: Option<i64>,
+    /// `overlay_keymaps`に`SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF`
+    /// を含むか。
+    pub has_henkan_muhenkan_overlay: bool,
+    /// `custom_keymap_table`（field 42）そのものが存在するか
+    /// （`session_keymap`の値は問わない）。
+    pub custom_keymap_table_present: bool,
+    /// `session_keymap == CUSTOM`のときのみ`true`。GJI本体が
+    /// `custom_keymap_table`を実際に参照するかどうかのガード
+    /// （`gji_charset_autodetect.rs`のガードを再現）。
+    pub custom_keymap_table_is_effective: bool,
+    /// `custom_keymap_table_is_effective`が`true`のときのみ`Some`。
+    pub ime_on_keys: Option<Vec<String>>,
+    pub ime_off_keys: Option<Vec<String>>,
+    pub ime_toggle_keys: Option<Vec<String>>,
+    /// VK名と`GjiCompositionMode`の文字列表現のペア。
+    pub mode_set_keys: Option<Vec<(String, String)>>,
+    pub mode_toggle_alphanumeric_keys: Option<Vec<String>>,
+    pub mode_toggle_kana_type_keys: Option<Vec<String>>,
+    /// `classify_thumb_key_ime_actions`（gate前）の結果。`"On"`/`"Off"`/
+    /// `"Toggle"`。
+    pub henkan_classified_kind: Option<String>,
+    pub muhenkan_classified_kind: Option<String>,
+    /// `gate_thumb_key_ime_actions`（gate後）の結果。`ime_kind == Gji`
+    /// のときのみ`Some`。
+    pub henkan_adopted_kind: Option<String>,
+    pub muhenkan_adopted_kind: Option<String>,
+    /// `"Delegate"` / `"ActuationAuto"`。`ime_kind == Gji`のときのみ`Some`。
+    pub henkan_adopted_route: Option<String>,
+    pub muhenkan_adopted_route: Option<String>,
+    /// `"ToggleDeclined"` / `"ToggleHonored"`。`ime_kind == Gji`のときのみ
+    /// `Some`（警告不要なら`None`）。
+    pub thumb_key_ime_warning: Option<String>,
+    /// `muhenkan_solo_tap_dedicated_fn_key`が設定済みか。`true`の場合、
+    /// `muhenkan_adopted_route == Some("Delegate")`であっても実際には
+    /// 発火しない（優先順位で専用Fnキーが勝つ）。GJI/MS-IME共通の
+    /// 意味を持つため両summary型に同じフィールドを持たせる。
+    pub muhenkan_dedicated_fn_key_configured: bool,
+}
+
+/// MS-IME「キーとタッチのカスタマイズ」（シンプルキー割当て）のレジストリ
+/// 値の要約（ADR-148）。
+///
+/// フィールドの生値/採用系の区別は[`BugReportGjiKeymapSummary`]と同じ
+/// 考え方: 生のDWORD5個は`ime_kind`に関わらず常に読む。`adopted_*`は
+/// `ime_kind == MsIme`のときのみ`Some`（MS-IMEが非アクティブなら、その
+/// レジストリ値をawaseは採用していない）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct BugReportMsImeKeyAssignmentSummary {
+    pub is_key_assignment_enabled: Option<u32>,
+    pub key_assignment_muhenkan: Option<u32>,
+    pub key_assignment_henkan: Option<u32>,
+    pub key_assignment_ctrl_space: Option<u32>,
+    pub key_assignment_shift_space: Option<u32>,
+    /// `"Ctrl+Space"`/`"Shift+Space"`のような表現。`ime_kind == MsIme`の
+    /// ときのみ`Some`。
+    pub adopted_ime_toggle_combos: Option<Vec<String>>,
+    /// `ShadowImeAction`の文字列表現。`ime_kind == MsIme`かつ対象キーが
+    /// 親指キーとして設定されているときのみ`Some`。
+    pub adopted_muhenkan_delegate: Option<String>,
+    pub adopted_henkan_delegate: Option<String>,
+    /// [`BugReportGjiKeymapSummary::muhenkan_dedicated_fn_key_configured`]
+    /// と同じ意味。
+    pub muhenkan_dedicated_fn_key_configured: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BugReportPayload {
     pub schema_version: u8,
@@ -206,6 +315,10 @@ pub struct BugReportPayload {
     /// 打鍵内容・かな1文字も含まない、起動からの累積カウンタのみ。
     pub attach_retro_eval_stats: bool,
     pub retro_eval_stats: Option<BugReportRetroEvalStats>,
+    /// ADR-148: GJI/MS-IMEのキーマップ・キー割当て設定。
+    pub attach_ime_keymap: bool,
+    pub gji_keymap: Option<BugReportGjiKeymapSummary>,
+    pub msime_key_assignment: Option<BugReportMsImeKeyAssignmentSummary>,
     pub reported_at: String,
 }
 
@@ -321,6 +434,13 @@ pub struct BugReportDiagnostics {
     /// 消える（`crates/awase-settings/src/bug_report.rs` 参照）ため必須。
     #[serde(default)]
     pub retro_eval_stats: Option<BugReportRetroEvalStats>,
+    /// ADR-148。上記`retro_eval_stats`と同じ理由で`#[serde(default)]`必須
+    /// （`SCHEMA_VERSION`は上げていないため、旧クライアントが生成した
+    /// 診断JSONにはこの2フィールドが存在しない）。
+    #[serde(default)]
+    pub gji_keymap: Option<BugReportGjiKeymapSummary>,
+    #[serde(default)]
+    pub msime_key_assignment: Option<BugReportMsImeKeyAssignmentSummary>,
 }
 
 impl Default for BugReportDiagnostics {
@@ -334,6 +454,8 @@ impl Default for BugReportDiagnostics {
             config_toml: None,
             layout_yab: None,
             retro_eval_stats: None,
+            gji_keymap: None,
+            msime_key_assignment: None,
         }
     }
 }
@@ -365,6 +487,11 @@ pub struct BugReportInput<'a> {
     /// 変換して渡す。
     pub attach_retro_eval_stats: bool,
     pub retro_eval_stats: Option<BugReportRetroEvalStats>,
+    /// ADR-148。呼び出し側（`current_bug_report_diagnostics`）が
+    /// `ime_kind`に応じたゲート済みの値を構築して渡す。
+    pub attach_ime_keymap: bool,
+    pub gji_keymap: Option<BugReportGjiKeymapSummary>,
+    pub msime_key_assignment: Option<BugReportMsImeKeyAssignmentSummary>,
     pub reported_at: &'a str,
 }
 
@@ -422,6 +549,16 @@ pub fn build_payload_with_log_budget(
     } else {
         None
     };
+    let gji_keymap = if input.attach_ime_keymap {
+        input.gji_keymap.clone()
+    } else {
+        None
+    };
+    let msime_key_assignment = if input.attach_ime_keymap {
+        input.msime_key_assignment.clone()
+    } else {
+        None
+    };
     Ok(BugReportPayload {
         schema_version: SCHEMA_VERSION,
         app_version: input.app_version.to_owned(),
@@ -444,6 +581,9 @@ pub fn build_payload_with_log_budget(
         app_log_excerpt,
         attach_retro_eval_stats: input.attach_retro_eval_stats,
         retro_eval_stats,
+        attach_ime_keymap: input.attach_ime_keymap,
+        gji_keymap,
+        msime_key_assignment,
         reported_at: input.reported_at.to_owned(),
     })
 }
@@ -655,7 +795,54 @@ mod tests {
                 three_key_total: 42,
                 ..BugReportRetroEvalStats::default()
             }),
+            attach_ime_keymap: true,
+            gji_keymap: Some(test_gji_keymap_summary()),
+            msime_key_assignment: Some(test_msime_key_assignment_summary()),
             reported_at: "2026-08-19T12:34:56Z",
+        }
+    }
+
+    fn test_gji_keymap_summary() -> BugReportGjiKeymapSummary {
+        BugReportGjiKeymapSummary {
+            config1_db_status: "Ok".to_owned(),
+            session_keymap: Some(0),
+            has_henkan_muhenkan_overlay: false,
+            custom_keymap_table_present: true,
+            custom_keymap_table_is_effective: true,
+            // Opus敵対的コードレビューS-1: henkan/muhenkan_classified_kindが
+            // "On"/"Off"になるのは、実コードでは無変換/変換キー自身
+            // （VK_CONVERT/VK_NONCONVERT）がcustom_keymap_tableでIMEOn/Off
+            // に割り当てられている場合のみ（`classify_thumb_key_ime_actions`
+            // 参照）。VK_F21/F22だけではこの組み合わせは到達不能だったため、
+            // フィクスチャに含める。
+            ime_on_keys: Some(vec!["VK_F21".to_owned(), "VK_CONVERT".to_owned()]),
+            ime_off_keys: Some(vec!["VK_F22".to_owned(), "VK_NONCONVERT".to_owned()]),
+            ime_toggle_keys: Some(vec![]),
+            mode_set_keys: Some(vec![("VK_F6".to_owned(), "Hiragana".to_owned())]),
+            mode_toggle_alphanumeric_keys: Some(vec![]),
+            mode_toggle_kana_type_keys: Some(vec![]),
+            henkan_classified_kind: Some("On".to_owned()),
+            muhenkan_classified_kind: Some("Off".to_owned()),
+            henkan_adopted_kind: Some("On".to_owned()),
+            muhenkan_adopted_kind: Some("Off".to_owned()),
+            henkan_adopted_route: Some("ActuationAuto".to_owned()),
+            muhenkan_adopted_route: Some("ActuationAuto".to_owned()),
+            thumb_key_ime_warning: None,
+            muhenkan_dedicated_fn_key_configured: false,
+        }
+    }
+
+    fn test_msime_key_assignment_summary() -> BugReportMsImeKeyAssignmentSummary {
+        BugReportMsImeKeyAssignmentSummary {
+            is_key_assignment_enabled: Some(1),
+            key_assignment_muhenkan: Some(1),
+            key_assignment_henkan: Some(1),
+            key_assignment_ctrl_space: Some(0),
+            key_assignment_shift_space: Some(0),
+            adopted_ime_toggle_combos: None,
+            adopted_muhenkan_delegate: None,
+            adopted_henkan_delegate: None,
+            muhenkan_dedicated_fn_key_configured: false,
         }
     }
 
@@ -739,11 +926,18 @@ mod tests {
                 ..BugReportRetroEvalStats::default()
             })
         );
+        assert!(payload.attach_ime_keymap);
+        assert_eq!(payload.gji_keymap, Some(test_gji_keymap_summary()));
+        assert_eq!(
+            payload.msime_key_assignment,
+            Some(test_msime_key_assignment_summary())
+        );
 
         input.attach_state_snapshot = false;
         input.attach_config = false;
         input.attach_layout = false;
         input.attach_retro_eval_stats = false;
+        input.attach_ime_keymap = false;
         let detached = build_payload(&input).unwrap();
         assert!(!detached.attach_state_snapshot);
         assert_eq!(detached.state_snapshot, None);
@@ -753,6 +947,9 @@ mod tests {
         assert_eq!(detached.layout_yab, None);
         assert!(!detached.attach_retro_eval_stats);
         assert_eq!(detached.retro_eval_stats, None);
+        assert!(!detached.attach_ime_keymap);
+        assert_eq!(detached.gji_keymap, None);
+        assert_eq!(detached.msime_key_assignment, None);
     }
 
     #[test]
@@ -885,6 +1082,12 @@ mod tests {
         assert!(json.contains("\"attach_retro_eval_stats\": true"));
         assert!(json.contains("\"retro_eval_stats\": {"));
         assert!(json.contains("\"three_key_total\": 42"));
+        assert!(json.contains("\"attach_ime_keymap\": true"));
+        assert!(json.contains("\"gji_keymap\": {"));
+        assert!(json.contains("\"config1_db_status\": \"Ok\""));
+        assert!(json.contains("\"custom_keymap_table_is_effective\": true"));
+        assert!(json.contains("\"msime_key_assignment\": {"));
+        assert!(json.contains("\"key_assignment_muhenkan\": 1"));
         assert!(!json.contains("JournalEntry"));
     }
 

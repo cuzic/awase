@@ -380,6 +380,16 @@ journal ログと同じ設計（**マスキングしない生データ、既定 
   `optionalBoolean`/`optionalNullableRecord`）。他の `attach_*` と同様、既定は
   ON で送信前プレビューから個別に外せる。
 
+- **`gji_keymap`/`msime_key_assignment`**（`attach_ime_keymap: bool`、
+  [ADR-148](148-bug-report-ime-keymap-attachment.md)、2026-09-07追記）:
+  使用中のIME（GJIまたはMS-IME）の無変換/変換キー等へのIME ON/OFF割当て
+  設定。GJIは`config1.db`、MS-IMEはレジストリ（`キーとタッチの
+  カスタマイズ`）から読み取る。生バイナリ・生TSVは送らず、構造化された
+  要約型（`BugReportGjiKeymapSummary`/`BugReportMsImeKeyAssignmentSummary`）
+  のみを送る。`schema_version`は据え置き、`retro_eval_stats`と同じ
+  `optionalBoolean`/`optionalNullableRecord`パターンで旧クライアントの
+  報告も引き続き受理する。既定はONで送信前プレビューから個別に外せる。
+
 **プライバシー注記**: `layouts_dir`/`default_layout` にユーザーが絶対
 パスを入力していた場合、Windows のユーザー名が含まれる可能性がある。
 決定4の journal ログ同様マスキングはせず、送信前プレビューでの手動編集
