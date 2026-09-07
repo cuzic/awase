@@ -992,6 +992,42 @@ premortem M-C指摘反映——「ADR-141/142は未実装だから本ADRに実�
    **r5追加（B-8指摘反映）**: `MOZC_KEY_ALIASES`の0xF0↔`Eisu`対応
    （awase側の既存の前提）を、Windows版GJIが実際にそう解釈するか
    同じゲートで確認する（決定5参照）。
+
+   **r8追記（clipwire経由で実機`config1.db`を取得・検証、一部解消）**:
+   ユーザー実機（Windows、GJI 3.34.6230.0）の`config1.db`を取得し、
+   protobufを手動デコードして`custom_keymap_table`（field 42、175行）を
+   直接確認した。
+
+   - **`session_keymap`（field 41）= 0（CUSTOM）、`overlay_keymaps`
+     （field 68）は不在（空）**——この実機では決定3-0のオーバーレイ
+     検査は通過する（ブロックされない）ことを確認。
+   - **`Katakana`行は実在する**（未解決の疑問1の前提を裏付け）:
+     `Composition Katakana CompositionModeFullKatakana`／
+     `Conversion Katakana CompositionModeFullKatakana`／
+     `Precomposition Katakana CompositionModeFullKatakana`／
+     `DirectInput Katakana IMEOn`。
+   - **`Eisu`行も同様に実在する**（B-8の懸念が仮説ではなく実データで
+     裏付けられた）: `Composition/Conversion/Precomposition Eisu
+     ToggleAlphanumericMode`、**`DirectInput Eisu IMEOn`**。興味深い
+     ことに、この実機の既定テーブルでは`DirectInput`状態において
+     `Hiragana`/`Katakana`/`Eisu`の**3トークンすべてが`IMEOn`に
+     揃えられている**——物理かなキーがIME状態次第でどの0xF0/0xF1/0xF2
+     として届いても「IME ONになる」という結果自体は既定で頑健になる
+     よう設計されている（ただし`CompositionModeFullKatakana`等の
+     区別が必要な他コマンドでは、この頑健性は無い）。
+   - **重要な追加発見**: この実機の`custom_keymap_table`には**無修飾の
+     `Henkan`／`Muhenkan`行が1件も存在しない**（`Shift Henkan`→
+     `ConvertPrev`、`Shift Muhenkan`→`ConvertToFullAlphanumeric`のみ）。
+     つまりこのユーザーの現在の設定では、変換/無変換キーはIME ON/OFFの
+     いずれにも紐付いていない。**これは「かな→変換方向」への入れ替えが
+     単なる移動ではなく、まさにユーザーが当初望んでいた
+     `Henkan(DirectInput)→IMEOn`という新規の対応を生み出すことを意味する**
+     ——決定5のアルゴリズムが実データに対して意図通りに機能する見込みが
+     高いことを示す、最初の実証的な裏付けとなった。
+   - **未解決のまま残る項目**: GJI公式GUIインポータが、本ツールが生成する
+     行（`Hiragana`/`Katakana`トークンが移動した後の`keymap.txt`）を
+     実際に受理するかどうかは、config1.dbの読み取りだけでは確認できず、
+     実際にインポート操作を行う必要があるため未検証のまま。
 3. `crates/awase-gji-config/src/lib.rs`の既存docコメントに「Mozc本家は
    Apache-2.0」という誤り（正しくはBSD-3-Clause）が無いか確認し、
    あれば別途訂正する。
