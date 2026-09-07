@@ -348,6 +348,16 @@ fn arg_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
         .map(|pair| pair[1].as_str())
 }
 
+/// 現在の実行ファイル（`awase-settings.exe`）と同じフォルダにある `name`
+/// を探す。`app::launch_settings_with_args`（awase.exe から awase-settings.exe
+/// を探す逆方向の実装）と同じ「実行ファイルの隣を探す」パターン。
+fn resolve_sibling_exe(name: &str) -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let path = dir.join(name);
+    path.exists().then_some(path)
+}
+
 /// 各 bool は無関係な由来（keymap キャプチャの修飾キー3つ、配列編集タブの
 /// dirty フラグ1つ、ADR-099 決定4の確認モーダル開閉フラグ1つ）を持つ独立
 /// したフラグであり、bitflags 化や enum への統合は可読性を下げるだけ
@@ -964,6 +974,20 @@ impl SettingsApp {
         // ない）にしか呼ばれない。
         let (_, warnings) = self.config.clone().validate();
         diagnostics.extend(warnings);
+
+        // Defender の Behavior:Win32/Persistence.A!.ml 誤検知対策
+        // （2026-09-07）で awase.exe 側のバックグラウンド自己修復を廃止した
+        // ため、config.toml とレジストリ実体がズレていても awase.exe は
+        // ログにしか記録しない。ユーザーへの可視化はここ（設定画面を開いた
+        // ときの診断）で行う方針。
+        if self.config.general.auto_start == "enabled" && !awase_windows::autostart::is_registered()
+        {
+            diagnostics.push(
+                "自動起動が有効になっていますが、Windowsの自動起動登録が見つかりません。\
+                 上の「自動起動」チェックボックスを一度オフにしてから再度オンにしてください。"
+                    .to_string(),
+            );
+        }
 
         self.startup_diagnostics = diagnostics;
     }
@@ -1853,6 +1877,98 @@ enum CapturedKey {
 // ── Tab methods ──
 
 impl SettingsApp {
+    /// 自動起動チェックボックスがクリックされた直後（＝ボタン起点）に、
+    /// HKCU Run キーへの実際の登録/解除を即座に行い、成功した場合のみ
+    /// `config.toml` の `auto_start` を更新する。
+    ///
+    /// Windows Defender の Behavior:Win32/Persistence.A!.ml 誤検知対策
+    /// （2026-09-07、ユーザーとの相談で方針決定）: Run キーへの書き込みは
+    /// ユーザーのクリックに対する直接の同期的な応答としてのみ発生させ、
+    /// バックグラウンドでの無操作な自己修復（awase.exe起動時の再書き込み）
+    /// は行わない（`app::bootstrap::handle_auto_start` 参照）。設定画面側の
+    /// このチェックボックスも同じ方針に合わせ、トグル時にその場で
+    /// register/unregister を呼ぶ（config.toml の値だけを変えて次回
+    /// awase.exe 起動時に反映されるのを待つ、という間接的な経路にしない）。
+    ///
+    /// `awase-settings.exe` は `awase.exe` とは別プロセスのため
+    /// `std::env::current_exe()` は自分自身のパスしか返さない。登録対象は
+    /// 同じフォルダにある `awase.exe`（`app::launch_settings_with_args` が
+    /// 逆方向で使っているのと同じ「実行ファイルの隣を探す」パターン）を
+    /// 明示的に解決して渡す。
+    fn apply_autostart_toggle(&mut self, enable: bool) {
+        if enable {
+            let Some(awase_exe) = resolve_sibling_exe("awase.exe") else {
+                self.status =
+                    "自動起動を有効にできませんでした: 同じフォルダに awase.exe が見つかりません。"
+                        .to_string();
+                return;
+            };
+            if !awase_windows::autostart::register_path(&awase_exe) {
+                self.status =
+                    "自動起動を有効にできませんでした（レジストリへの書き込みに失敗しました）。"
+                        .to_string();
+                return;
+            }
+        } else if !awase_windows::autostart::unregister() {
+            self.status = "自動起動を無効にできませんでした。".to_string();
+            return;
+        }
+
+        let value = if enable { "enabled" } else { "disabled" };
+        match self.save_auto_start_config(value) {
+            Some(warnings) if warnings.is_empty() => {
+                self.config.general.auto_start = value.to_string();
+                self.status = if enable {
+                    "自動起動を有効にしました。".to_string()
+                } else {
+                    "自動起動を無効にしました。".to_string()
+                };
+            }
+            Some(warnings) => {
+                self.config.general.auto_start = value.to_string();
+                self.status = format!(
+                    "自動起動の設定は反映しましたが、config.toml の他の項目に警告があります: {}",
+                    warnings.join("; ")
+                );
+            }
+            None => {
+                // レジストリ側は既に更新済みだが config.toml への反映に失敗した。
+                // in-memory の値は変えず、次回チェックボックス表示が実状態と
+                // ズレていることが分かるようにする。
+                self.status =
+                    "自動起動レジストリは更新しましたが、config.toml への保存に失敗しました。"
+                        .to_string();
+            }
+        }
+        self.recompute_diagnostics();
+    }
+
+    /// `config.toml` を再読み込みし、`auto_start` フィールドだけを更新して
+    /// 保存する。`tray.rs::save_auto_start_config`（awase.exe 側の同等実装）
+    /// と同じく、フォームで編集中の未保存の他の変更を巻き込まないよう、
+    /// `self.config` を保存するのではなくディスクから読み直す。
+    fn save_auto_start_config(&self, value: &str) -> Option<Vec<String>> {
+        match awase::config::AppConfig::load(&self.config_path) {
+            Ok(mut config) => {
+                config.general.auto_start = value.to_string();
+                let (validated, warnings) = config.validate();
+                for w in &warnings {
+                    tracing::warn!("Config validation warning while saving auto_start: {w}");
+                }
+                let config = awase::config::AppConfig::from(validated);
+                if let Err(e) = config.save(&self.config_path) {
+                    tracing::error!("Failed to save auto_start config: {e}");
+                    return None;
+                }
+                Some(warnings)
+            }
+            Err(e) => {
+                tracing::error!("Failed to load config for saving auto_start: {e}");
+                None
+            }
+        }
+    }
+
     #[expect(clippy::too_many_lines)]
     fn tab_basic(&mut self, ui: &mut egui::Ui) {
         ui.heading("全般設定");
@@ -1872,13 +1988,17 @@ impl SettingsApp {
                 "フォアグラウンドのアプリ種別を判別し、VK送信・TSF送信等の\n最適な文字注入方式を自動的に切り替えます。手動設定は不要です。",
             );
         let mut auto_start_checked = self.config.general.auto_start == "enabled";
-        if ui.checkbox(&mut auto_start_checked, "自動起動").on_hover_text("ONにすると: Windows ログオン時に自動的に awase を起動します。\nタスクスケジューラに登録されます。").changed() {
-            self.config.general.auto_start = if auto_start_checked {
-                "enabled"
-            } else {
-                "disabled"
-            }
-            .to_string();
+        if ui
+            .checkbox(&mut auto_start_checked, "自動起動")
+            .on_hover_text(
+                "ONにすると: Windows ログオン時に自動的に awase を起動します。\n\
+                 チェックした時点ですぐにレジストリへ登録/解除します\n\
+                 （バックグラウンドでの自動修復は行いません — 反映されない場合は\n\
+                 このチェックボックスを再度クリックしてください）。",
+            )
+            .changed()
+        {
+            self.apply_autostart_toggle(auto_start_checked);
         }
         ui.checkbox(&mut self.config.general.update_check, "更新を確認")
             .on_hover_text(

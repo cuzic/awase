@@ -166,9 +166,23 @@ pub(super) fn init_logging(debug_console: bool) {
     }
 }
 
-/// 自動起動の設定を処理する
+/// 自動起動の設定状態を確認する
 ///
-/// `auto_start` の値（"enabled"/"disabled"）に応じて HKCU Run キーへの登録/解除を行う。
+/// HKCU Run キーへの登録/解除はトレイメニュー（`tray::handle_autostart_toggle`）
+/// または設定画面のチェックボックスから、ユーザーが直接ボタン操作した場合にのみ
+/// 行う。ここでは書き込みを一切行わない。`auto_start = "enabled"` なのに実際の
+/// 登録が失われている（ズレている）場合も、トレイバルーン等でユーザーに割り込む
+/// ことはせず、ログにのみ記録する（ユーザーとの相談で「設定UIを開いたときの
+/// 警告だけで十分」と方針決定、2026-09-07）。実際の警告表示は設定画面
+/// （`awase-settings`）の `recompute_diagnostics` が同じズレを検知して行う。
+///
+/// Windows Defender の Behavior:Win32/Persistence.A!.ml 誤検知対策
+/// （2026-09-07）: 起動のたびにユーザー操作なしで Run キーへ書き込む
+/// 「自己修復」は、グローバルキーフックと組み合わさると持続化型マルウェアの
+/// 典型的な挙動パターンと見分けがつかない。ユーザーが過去にトレイ/設定画面で
+/// 有効化したという文脈をDefenderは知らないため、無操作での再書き込みだけが
+/// 単独のシグナルとして観測される。書き込みをボタン起点の経路に限定すること
+/// でこのシグナルを消す。
 pub(super) fn handle_auto_start(config: &awase::config::AppConfig) {
     use crate::autostart;
 
@@ -178,7 +192,10 @@ pub(super) fn handle_auto_start(config: &awase::config::AppConfig) {
     match config.general.auto_start.as_str() {
         "enabled" => {
             if !autostart::is_registered() {
-                let _ = autostart::register();
+                tracing::warn!(
+                    "auto_start is enabled in config.toml but no Windows Run key entry \
+                     was found; re-enable it via the tray menu or settings UI"
+                );
             }
         }
         "disabled" => {}

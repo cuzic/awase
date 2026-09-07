@@ -20,13 +20,28 @@ const RUN_SUBKEY: windows::core::PCWSTR =
     windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 const VALUE_NAME: windows::core::PCWSTR = windows::core::w!("awase");
 
-/// HKCU Run キーに自動起動エントリを登録する
+/// HKCU Run キーに自動起動エントリを登録する（自プロセス自身のパスを使う）
+///
+/// `awase.exe` 自身から呼ぶ用途（トレイメニュー操作）向け。別プロセスから
+/// 任意のパスで登録したい場合（`awase-settings.exe` から `awase.exe` を
+/// 登録する等）は [`register_path`] を使う。
 #[must_use]
 pub fn register() -> bool {
     let Ok(exe) = std::env::current_exe() else {
         tracing::error!("Failed to get current executable path");
         return false;
     };
+    register_path(&exe)
+}
+
+/// HKCU Run キーに指定した実行ファイルパスで自動起動エントリを登録する。
+///
+/// `awase-settings.exe`（設定 GUI、別プロセス）から `awase.exe`（本体）を
+/// 登録する用途向け。`current_exe()` は呼び出し元プロセス自身のパスしか
+/// 返せないため、自プロセス以外を登録する場合は明示的にパスを渡す必要が
+/// ある。
+#[must_use]
+pub fn register_path(exe: &std::path::Path) -> bool {
     let Some(exe_str) = exe.to_str() else {
         tracing::error!("Executable path contains non-UTF-8 characters");
         return false;
