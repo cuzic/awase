@@ -287,6 +287,26 @@ pub struct BugReportMsImeKeyAssignmentSummary {
     pub muhenkan_dedicated_fn_key_configured: bool,
 }
 
+/// 旧UI（互換モード「以前のバージョンのMicrosoft IMEを使う」でのみ到達
+/// できる詳細キーカスタマイズ）の要約（ADR-148 Phase 2）。
+///
+/// [`BugReportMsImeKeyAssignmentSummary`]（新UI・シンプルキー割当て）とは
+/// 別系統のレジストリ値。`msime_legacy_keymap::LegacyMsImeToggleAssignment`
+/// の実測範囲がそのまま出所——検出できるのは無変換/変換キー（修飾子なし）
+/// への「IMEオン/オフ」トグル割当てのみで、かつ実機確認済みなのは
+/// 「直接入力中に押すと予期せずIME ONになる」方向だけ（`msime_legacy_keymap`
+/// のモジュールdoc参照）。`ime_kind`に関わらず常に読む
+/// （[`BugReportMsImeKeyAssignmentSummary`]の生DWORDと同じ理由——
+/// レジストリの内容自体は現在のフォーカス先IMEと無関係に存在するため）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct BugReportLegacyMsImeKeymapSummary {
+    /// `keystyle`の実測値の既知集合のみ文字列化する（未知値は`"Other"`、
+    /// ADR-148 F7と同じ理由で自由文字列は送らない）。
+    pub active_style: Option<String>,
+    pub muhenkan_ime_on_toggle: bool,
+    pub henkan_ime_on_toggle: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BugReportPayload {
     pub schema_version: u8,
@@ -319,6 +339,9 @@ pub struct BugReportPayload {
     pub attach_ime_keymap: bool,
     pub gji_keymap: Option<BugReportGjiKeymapSummary>,
     pub msime_key_assignment: Option<BugReportMsImeKeyAssignmentSummary>,
+    /// ADR-148 Phase 2（2026-09-07追記）。`attach_ime_keymap`に相乗り
+    /// （新規フラグは追加しない、上記2フィールドと同じ理由）。
+    pub legacy_msime_keymap: Option<BugReportLegacyMsImeKeymapSummary>,
     pub reported_at: String,
 }
 
@@ -441,6 +464,9 @@ pub struct BugReportDiagnostics {
     pub gji_keymap: Option<BugReportGjiKeymapSummary>,
     #[serde(default)]
     pub msime_key_assignment: Option<BugReportMsImeKeyAssignmentSummary>,
+    /// ADR-148 Phase 2。上記2フィールドと同じ理由で`#[serde(default)]`必須。
+    #[serde(default)]
+    pub legacy_msime_keymap: Option<BugReportLegacyMsImeKeymapSummary>,
 }
 
 impl Default for BugReportDiagnostics {
@@ -456,6 +482,7 @@ impl Default for BugReportDiagnostics {
             retro_eval_stats: None,
             gji_keymap: None,
             msime_key_assignment: None,
+            legacy_msime_keymap: None,
         }
     }
 }
@@ -492,6 +519,9 @@ pub struct BugReportInput<'a> {
     pub attach_ime_keymap: bool,
     pub gji_keymap: Option<BugReportGjiKeymapSummary>,
     pub msime_key_assignment: Option<BugReportMsImeKeyAssignmentSummary>,
+    /// ADR-148 Phase 2。呼び出し側（`current_bug_report_diagnostics`）が
+    /// 常に構築して渡す（上記2フィールドと同じ理由）。
+    pub legacy_msime_keymap: Option<BugReportLegacyMsImeKeymapSummary>,
     pub reported_at: &'a str,
 }
 
@@ -559,6 +589,11 @@ pub fn build_payload_with_log_budget(
     } else {
         None
     };
+    let legacy_msime_keymap = if input.attach_ime_keymap {
+        input.legacy_msime_keymap.clone()
+    } else {
+        None
+    };
     Ok(BugReportPayload {
         schema_version: SCHEMA_VERSION,
         app_version: input.app_version.to_owned(),
@@ -584,6 +619,7 @@ pub fn build_payload_with_log_budget(
         attach_ime_keymap: input.attach_ime_keymap,
         gji_keymap,
         msime_key_assignment,
+        legacy_msime_keymap,
         reported_at: input.reported_at.to_owned(),
     })
 }
@@ -798,6 +834,7 @@ mod tests {
             attach_ime_keymap: true,
             gji_keymap: Some(test_gji_keymap_summary()),
             msime_key_assignment: Some(test_msime_key_assignment_summary()),
+            legacy_msime_keymap: Some(test_legacy_msime_keymap_summary()),
             reported_at: "2026-08-19T12:34:56Z",
         }
     }
@@ -843,6 +880,14 @@ mod tests {
             adopted_muhenkan_delegate: None,
             adopted_henkan_delegate: None,
             muhenkan_dedicated_fn_key_configured: false,
+        }
+    }
+
+    fn test_legacy_msime_keymap_summary() -> BugReportLegacyMsImeKeymapSummary {
+        BugReportLegacyMsImeKeymapSummary {
+            active_style: Some("Custom".to_owned()),
+            muhenkan_ime_on_toggle: true,
+            henkan_ime_on_toggle: false,
         }
     }
 
@@ -932,6 +977,10 @@ mod tests {
             payload.msime_key_assignment,
             Some(test_msime_key_assignment_summary())
         );
+        assert_eq!(
+            payload.legacy_msime_keymap,
+            Some(test_legacy_msime_keymap_summary())
+        );
 
         input.attach_state_snapshot = false;
         input.attach_config = false;
@@ -950,6 +999,7 @@ mod tests {
         assert!(!detached.attach_ime_keymap);
         assert_eq!(detached.gji_keymap, None);
         assert_eq!(detached.msime_key_assignment, None);
+        assert_eq!(detached.legacy_msime_keymap, None);
     }
 
     #[test]
@@ -1088,6 +1138,8 @@ mod tests {
         assert!(json.contains("\"custom_keymap_table_is_effective\": true"));
         assert!(json.contains("\"msime_key_assignment\": {"));
         assert!(json.contains("\"key_assignment_muhenkan\": 1"));
+        assert!(json.contains("\"legacy_msime_keymap\": {"));
+        assert!(json.contains("\"muhenkan_ime_on_toggle\": true"));
         assert!(!json.contains("JournalEntry"));
     }
 

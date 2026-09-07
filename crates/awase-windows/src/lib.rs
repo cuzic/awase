@@ -28,6 +28,7 @@ pub mod gji_charset_autodetect;
 pub mod hook_channel;
 pub mod journal_policy;
 pub mod msime_key_assignment;
+pub mod msime_legacy_keymap;
 pub mod scancode_map;
 pub mod scanmap;
 pub mod single_thread_cell;

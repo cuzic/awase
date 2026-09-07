@@ -62,6 +62,10 @@ export interface BugReportPayload {
   attach_ime_keymap: boolean;
   gji_keymap: Record<string, unknown> | null;
   msime_key_assignment: Record<string, unknown> | null;
+  /** ADR-148 Phase 2（2026-09-07追記）。旧UI（互換モード）の詳細キー
+   * カスタマイズで無変換/変換キーに「IMEオン/オフ」が割当てられているかの
+   * 検出結果。`attach_ime_keymap`に相乗り（新規フラグは追加しない）。 */
+  legacy_msime_keymap: Record<string, unknown> | null;
   reported_at: string;
 }
 
@@ -387,6 +391,8 @@ export function validatePayload(value: unknown): BugReportPayload {
   const attachImeKeymap = optionalBoolean(value, "attach_ime_keymap");
   const gjiKeymap = optionalNullableRecord(value, "gji_keymap");
   const msimeKeyAssignment = optionalNullableRecord(value, "msime_key_assignment");
+  // ADR-148 Phase 2: attach_ime_keymap に相乗り。上記2フィールドと同じ理由でoptional。
+  const legacyMsimeKeymap = optionalNullableRecord(value, "legacy_msime_keymap");
   const reportedAt = requiredString(value, "reported_at");
   if (Number.isNaN(Date.parse(reportedAt))) {
     throw new HttpError(400, "reported_at_must_be_rfc3339");
@@ -419,6 +425,9 @@ export function validatePayload(value: unknown): BugReportPayload {
   if (!attachImeKeymap && msimeKeyAssignment !== null) {
     throw new HttpError(400, "msime_key_assignment_requires_attach_ime_keymap");
   }
+  if (!attachImeKeymap && legacyMsimeKeymap !== null) {
+    throw new HttpError(400, "legacy_msime_keymap_requires_attach_ime_keymap");
+  }
 
   return {
     schema_version: SCHEMA_VERSION,
@@ -445,6 +454,7 @@ export function validatePayload(value: unknown): BugReportPayload {
     attach_ime_keymap: attachImeKeymap,
     gji_keymap: gjiKeymap,
     msime_key_assignment: msimeKeyAssignment,
+    legacy_msime_keymap: legacyMsimeKeymap,
     reported_at: reportedAt
   };
 }

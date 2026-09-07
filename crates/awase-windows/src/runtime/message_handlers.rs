@@ -1294,6 +1294,8 @@ fn current_bug_report_diagnostics(
     // ADR-148: GJI/MS-IMEのキーマップ・キー割当て設定。
     let gji_keymap = Some(build_bug_report_gji_keymap_summary(app, ime_kind));
     let msime_key_assignment = Some(build_bug_report_msime_key_assignment_summary(app, ime_kind));
+    // ADR-148 Phase 2: 旧UI（互換モード）の詳細キーカスタマイズ。
+    let legacy_msime_keymap = Some(build_bug_report_legacy_msime_keymap_summary());
     crate::bug_report::BugReportDiagnostics {
         ime_product_name: crate::tsf::observer::current_ime_product_name(),
         keyboard_model: bug_report_keyboard_model(app.keyboard_model()).to_owned(),
@@ -1305,6 +1307,7 @@ fn current_bug_report_diagnostics(
         retro_eval_stats,
         gji_keymap,
         msime_key_assignment,
+        legacy_msime_keymap,
     }
 }
 
@@ -1586,6 +1589,21 @@ fn build_bug_report_msime_key_assignment_summary(
         adopted_muhenkan_delegate,
         adopted_henkan_delegate,
         muhenkan_dedicated_fn_key_configured,
+    }
+}
+
+/// 旧UI（互換モードでのみ到達できる詳細キーカスタマイズ）の要約
+/// （ADR-148 Phase 2）。`msime_legacy_keymap`モジュールdoc参照。
+/// `ime_kind`に関わらず常に読む（レジストリの内容自体は現在の
+/// フォーカス先IMEと無関係に存在するため、上位の`msime_key_assignment`の
+/// 生DWORDと同じ扱い）。
+fn build_bug_report_legacy_msime_keymap_summary(
+) -> crate::bug_report::BugReportLegacyMsImeKeymapSummary {
+    let assignment = crate::msime_legacy_keymap::read_legacy_toggle_assignment();
+    crate::bug_report::BugReportLegacyMsImeKeymapSummary {
+        active_style: assignment.active_style.map(|s| s.as_str().to_owned()),
+        muhenkan_ime_on_toggle: assignment.muhenkan_ime_on_toggle,
+        henkan_ime_on_toggle: assignment.henkan_ime_on_toggle,
     }
 }
 
