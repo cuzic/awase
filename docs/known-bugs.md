@@ -15879,3 +15879,80 @@ transport.rs`（`PhysicalKeyDisposition::plan`）、`crates/awase-windows/src/
 runtime/message_handlers.rs`（`sync_ime_toggle_auto_detect`、MS-IME側配線）。
 関連: BUG-115（同じGJI設定検出機構）、[ADR-135](adr/135-generic-thumb-key-ime-toggle-delegate.md)
 （Hiragana/Katakana版の同型修正、C1）。
+
+## BUG-119: GJI自動検出の無変換/変換 `delegate_to_open_axis` が、ユーザーが明示的に選んだ「常に送出する（パススルー）」設定を無視して物理キーを握りつぶす（**原因確定、修正はADR-147で検討中**）
+
+**症状:** GJIのカスタムキーマップ（`custom_keymap_table`）で無変換キーに
+`DirectInput → IMEOn`・`Composition → Commit`（確定）を割り当て、awase側は
+無変換を`left_thumb_key`/`right_thumb_key`（NICOLA親指キー）にも設定した上で、
+設定画面の「無変換キー単独タップ」を「常に送出する（パススルー）」
+（`muhenkan_solo_tap_always_suppress = false`、
+`muhenkan_solo_tap_ignore_composing_guard = true`）に変更している場合、
+v1.18.0までは直接入力中の無変換単独タップが生の`VK_NONCONVERT`としてGJIへ
+そのまま届き、GJI自身の`DirectInput→IMEOn`バインドどおりにIMEがONになって
+いた。v1.19.0（2026-09-05〜06追加のGJI無変換/変換IME意味論自動検出、
+BUG-115/ADR-092決定D Step4b）以降、直接入力中に無変換キーを単独タップしても
+物理キーがOSへ一切送出されなくなり、パススルー設定が機能しなくなった。
+
+**機序（コード確認済み）:** `resolve_pending_thumb_as_single`
+（`src/engine/nicola_fsm.rs:1977-2038`）は、無変換/変換の単独タップ確定時に
+以下の優先順位で処理する。
+
+1. `special.dedicated_fn_key`（専用Fnキー、隠し設定）
+2. `special.delegate_to_open_axis`（GJI/MS-IMEのキー設定自動検出に基づく
+   IME open軸への肩代わり、ADR-092決定D Step4b）— `Some`かつ`!composing`
+   （直接入力中）なら、**物理キーを完全にSuppressし**（`SmallVec::new()`）、
+   代わりに`ime_open_requested`経由で`Effect::Ime(SetOpen)`を発行する
+   （`engine.rs::apply_ime_open_request`）
+3. `special.mode_key_config`（`ModeKeyConfig`、ユーザーが設定画面で選ぶ
+   Suppress/Passthrough）
+
+2が3より無条件に優先されるため、ユーザーが3で明示的に
+`Passthrough`（`ModeKeyConfig::is_passthrough() == true`）を選んでいても、
+2の`delegate_to_open_axis`が`Some`である限り、その選択は一切参照されずに
+迂回される。`classify_thumb_key_ime_actions`
+（`crates/awase-windows/src/gji_charset_autodetect.rs`、2026-09-05新規、
+BUG-115）がGJIのカスタムキーマップから`DirectInput 無変換 IMEOn`を検出すると
+`muhenkan_delegate_to_open_axis = Some(ShadowImeAction::TurnOn)`が立ち、
+直接入力中の無変換単独タップは常に2の分岐に奪われる。
+
+**なお、`ModeKeyConfig::is_passthrough()`（`src/engine/fsm_types.rs:582`）
+という、まさにこの判定に使えるヘルパーが定義されているが、本番コードの
+どこからも呼び出されていない**（ユニットテスト以外に呼び出し箇所ゼロ、
+`grep -rn "is_passthrough(" src/`で確認）。
+
+**影響範囲:** GJIのカスタムキーマップで無変換/変換キーにIME ON/OFF/トグルの
+いずれかを割り当てており、かつ同じキーをNICOLA親指キーにも設定し、かつ
+「常に送出する（パススルー）」を選んでいるユーザーに限定される
+（`always_suppress = true`の既定設定ユーザーには影響しない——そちらは元々
+composing中もidle中もSuppressのため、delegateが代わりに動くこと自体が
+BUG-115の修正目的そのものであり退行ではない）。
+
+**「直接入力中のみ」に限定されない点に注意（重要な訂正）:** `resolve_pending_
+thumb_as_single`の`composing`引数は、GJI/Mozcのセッション状態（DirectInput/
+Precomposition/Composition/Conversion...）とは別物で、`InputContext::composing`
+（供給元は`crate::tsf::observer::ime_composition_active_now()`、doc曰く
+「IME composition **window が可視**かどうか」、`EVENT_OBJECT_IME_SHOW`/`HIDE`
+契機で更新）——つまり**候補ウィンドウが実際に画面上に表示されているか**だけを
+見ている。GJI側の「Composition」状態（かな入力を確定前に打っている最中）は、
+変換候補ウィンドウを明示的に呼び出す（Space等）までは表示されないことが多く、
+その間`InputContext::composing`は`false`のままになりうる。したがって、
+ユーザーがGJI側で「Composition→確定」を設定していても、確定を意図した
+無変換単独タップの時点で候補ウィンドウが非表示なら`composing == false`と
+awaseは判定し、`!composing`ガードを満たして`delegate_to_open_axis`側に
+奪われる——**退行は「直接入力中」に限らず、GJIの実際のComposition状態でも
+候補ウィンドウが非表示である限り再現しうる**（最初の相談で報告された「確定
+動作が意図通りにならない」症状はこちらに該当する可能性が高い）。逆に候補
+ウィンドウが実際に表示されている間（`composing == true`）は`delegate_to_
+open_axis`の判定が`if !composing`でガードされているため`mode_key_config`
+（パススルー設定）どおりに動作し、影響を受けない。
+
+**修正方針:** [ADR-147](adr/147-thumb-key-delegate-defers-to-user-passthrough.md)
+で検討中。
+
+**関連ファイル:** `src/engine/nicola_fsm.rs`
+（`resolve_pending_thumb_as_single`/`thumb_solo_special_handling`）、
+`src/engine/fsm_types.rs`（`ModeKeyConfig::is_passthrough`）、
+`crates/awase-windows/src/gji_charset_autodetect.rs`
+（`classify_thumb_key_ime_actions`）。関連: BUG-115（本バグの原因となった
+自動検出機能の追加元）、BUG-118（同じdelegate機構のTurnOn方向欠陥、C2）。
