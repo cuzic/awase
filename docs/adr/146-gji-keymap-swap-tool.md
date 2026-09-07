@@ -2,7 +2,7 @@
 
 ## ステータス
 
-**r2レビュー完了、r3改訂版（2026-09-06、実装前）。**
+**r3レビュー完了、r4改訂版（2026-09-06、実装前）。**
 
 r2で新設した決定0（awase稼働中の配送経路）に、専用Exploreエージェントの
 検証結果を要約する際の誤り（「VK_DBE_0xF0〜0xF4は無条件Suppress」）が
@@ -13,8 +13,20 @@ r2で新設した決定0（awase稼働中の配送経路）に、専用Explore�
 された「改訂作業自体が新しいBlockerを混入させる」パターンが、r2でも
 2件（decision0・decision7-0という新設箇所そのもの）に再現した。r3は
 transport.rs::plan()を自分で直接読み直して事実確認した上でこの2件を
-修正し、加えてr2レビューで検出された残りのMajor（M-10〜M-16、
-R2-MJ-1〜）も反映している。
+修正した。
+
+**r3のdecision0修正にも見落としがあった**: `is_tsf_mode &&
+f2_warmup_owned`のうち`f2_warmup_owned`の実体を、r3は「awase自身の
+F2 warmupが進行中の狭い状況」と誤って軽く見積もっていたが、
+`warmup_strategy.rs`を直接読むと、GJI検出時に使われる`GjiFsm`戦略は
+この値を返すメソッドをオーバーライドしておらず、トレイトのデフォルト
+実装（無条件`true`）をそのまま使うと判明した。**つまり本ツールの対象
+ユーザー（GJI専用）では`f2_warmup_owned`は常にtrueであり、かなスロット
+の無シフト側は「TSF-nativeアプリでは常にSuppress、それ以外では常に
+Allow」という恒常的な制約になる**——一時的な状況ではない。premortemは
+architectのB-6指摘を受けてR2-BL-2の前提を自ら訂正し、この結論に到達
+した。r4はこの訂正と、r3レビューで検出された残りのMajor
+（R2-MJ-1〜MJ-8）を反映している。
 
 `adr146-architect`・`adr146-premortem`（Opus 2体）の初回ラウンドで、
 architectがBlocker5件・Major9件・Minor5件・Nit3件、premortemが
@@ -108,19 +120,32 @@ r0は「ADR-141/143と同じ4要素の全単射モデルによる役割入れ替
 
 ### できないこと（非対象として明示する）
 
-1. **スペースキーを含む入れ替え**: `Space`キーはDirectInput状態では
-   Mozcキーマップに行が存在せず、押されるとアプリへ素通しされてリテラル
-   空白になる。他のスロットの役割をSpaceへ移しても、物理Spaceキーは
-   相変わらず空白を入力し続ける——これは「入れ替え」にならない。
-   **本ツールの対象スロットは変換・無変換・かなスロットの3つのみ**とし、
-   ADR-141/143が扱う4要素目（スペース）は対象外とする。
+1. **スペースキーを含む入れ替え**: DirectInput状態ではSpaceキーの押下は
+   Mozcキーマップを経由せずアプリへ素通しされ、リテラル空白になる
+   （IME ON状態には`Composition Space Convert`等の実在行があるが、
+   それはあくまでMozcが入力を持っている間の話であり、DirectInput時の
+   物理Spaceキーの動作そのものは変わらない）。他のスロットの役割を
+   Spaceへ移しても、DirectInput時の物理Spaceキーは相変わらず素通しの
+   空白入力のままであり、物理キーの役割そのものが入れ替わったことには
+   ならない——**互換として成立しない**（r4、premortem R2-MJ-5指摘反映
+   で理由文を修正）。**本ツールの対象スロットは変換・無変換・かな
+   スロットの3つのみ**とし、ADR-141/143が扱う4要素目（スペース）は
+   対象外とする。
 2. **ADR-143の`from`=かな方向そのもの**（物理かなキーをNICOLA同時打鍵の
    親指キーとして使うこと）: これはawase engine内部の判定であり、GJI
    キーマップからは原理的に触れない。
-3. **awase稼働中に、入れ替え対象のキーがNICOLA親指キーとして設定されて
+3. **awase稼働中に、変換/無変換キーがNICOLA親指キーとして設定されて
    いる場合**: 決定0参照。engineがKeyDownをConsumeするため、GJIキー
    マップの変更が反映されない。
-4. **MS-IME非対応**（ADR-144と同じ制約）。
+4. **awase稼働中、かなスロットの無シフト側（`Hiragana`/`Kana`トークン）
+   の役割は、TSF-nativeアプリ（Chrome/VS Code/Windows Terminal/
+   WezTerm等）では常に反映されない**（r4新設、決定0参照、premortem
+   R3-BL-2/architect B-6の指摘反映）。これはawaseの設定に関わらず
+   常に成立する制約で、既知の回避策は無い。legacy IMM32/ImmCross
+   アプリでのみ機能する。Shift併用側（`Katakana`トークン）はさらに別の
+   条件（ImmCross/`ime_actuation_owned`/`shift_katakana_passthrough`）
+   に依存する。
+5. **MS-IME非対応**（ADR-144と同じ制約）。
 
 - 対象IME: **GJI(Mozc)専用**。
 - 出力: **`keymap.txt`ファイルのみ**。GJIのプロパティダイアログ
@@ -130,24 +155,26 @@ r0は「ADR-141/143と同じ4要素の全単射モデルによる役割入れ替
   ユーザーに一切意識させない。ユーザーが選ぶのは「どのスロットとどの
   スロットを入れ替えるか」だけ（決定8）。
 
-## 決定0: awase稼働中の配送経路と本ツールの適用条件（r2新設、r3で修正）
+## 決定0: awase稼働中の配送経路と本ツールの適用条件（r2新設、r3で修正、r4で`f2_warmup_owned`の実体を追加確認）
 
 r1レビューでarchitectが指摘した懸念（B-2）を、専用Exploreエージェントで
 実コード確認した。r2はこの結果を「VK_DBE_0xF0〜0xF4は無条件Suppress」
 と要約したが、**r2レビューでarchitectが`runtime/transport.rs::plan()`
 （237-357行）を1行ずつ精査した結果、この要約自体が不正確と判明した
-（B-6）**。私自身も同関数を直接読み、この指摘が正しいことを確認した。
-正しい分岐構造は以下の通り（上から順に評価、最初にマッチした分岐が
-結果を決める）:
+（B-6、premortemもR2-BL-2で同様に検証・自己訂正した）**。私自身も同
+関数を直接読み、さらに`is_tsf_mode && f2_warmup_owned`という条件の
+うち`f2_warmup_owned`の実体（`output/mod.rs::f2_warmup_owned()`→
+`TsfWarmupCoordinator::needs_f2_probe()`→現在の warmup 戦略の
+`needs_f2_probe()`）を`crates/awase-windows/src/tsf/warmup/warmup_strategy.rs`
+で確認した。正しい分岐構造は以下の通り（上から順に評価、最初に
+マッチした分岐が結果を決める）:
 
 1. `profile == AppImeProfile::InputRelay` → **最優先でAllow**。
 2. `event.vk_code == VK_DBE_HIRAGANA`(0xF2、かなスロットの「Hiragana」/
    「Kana」トークンの実体) → **専用の早期分岐**（コード自身のコメント
    「0xF2 HIRAGANAは上の専用分岐で既に処理済みのためここには来ない」が
    明記する通り、以降のImmCross/actuation判定より手前でreturnする）。
-   `is_tsf_mode && f2_warmup_owned`（awase自身のTSF warmup機構が
-   F2送信を所有している狭い状況）のときのみSuppress、**それ以外は
-   Allow**。
+   `is_tsf_mode && f2_warmup_owned`のときのみSuppress、それ以外はAllow。
 3. `event.injected` → Allow。
 4. `ime_relevance.shadow_action.is_none()`（変換/無変換を含む、
    `ImeKeyKind::from_vk`が対象としないVK全般はここに該当）→ Allow
@@ -160,20 +187,47 @@ r1レビューでarchitectが指摘した懸念（B-2）を、専用Exploreエ�
    `!shift_katakana_passthrough`のときのみ、該当VKのKeyDownを
    Suppress。`ime_actuation_owned`が偽ならAllow。
 
-**帰結（r3訂正）**:
+### `f2_warmup_owned`の実体（r4で追加確認、重要な訂正）
 
-- **かなスロットの無シフト側（`Hiragana`トークン、物理的にはVK_DBE_
-  HIRAGANA=0xF2）は、大半のケースでawase稼働中も届く**——Suppressされる
-  のは「TSFネイティブアプリかつawase自身のF2 warmupが進行中」という
-  狭い状況に限られる。r2の「死んだコードになる」という記述は誤りだった。
-- **かなスロットのシフト側（`Katakana`トークン、物理的にはVK_DBE_
-  KATAKANA=0xF1）は、フォーカス中のアプリ種別・アクティブIME種別・
-  `dbe_mode_key_policy`（隠し設定）・`shift_katakana_passthrough`の
-  該非に依存する**。ImmCrossアプリでは常にSuppress、GjiDirect/
-  MsImeDirectが適用されるアプリではSuppressが既定（`shift_katakana_
-  passthrough`の3条件——Shift併用・半角英数トグル区間でない・親指キー
-  設定でない——を満たす場合のみAllow）、それ以外のアプリでは
-  `ime_actuation_owned`が偽になりAllow。
+`f2_warmup_owned()`は「現在の warmup 戦略（`ImeWarmupStrategy`トレイト）
+の`needs_f2_probe()`」を返す。このトレイトの`needs_f2_probe`は**デフォルト
+実装が無条件`true`**であり、`GjiFsm`（GJI検出時に使われる戦略）はこの
+デフォルトを**オーバーライドしていない**——つまり`GjiFsm`では常に
+`true`。一方`MsImeStrategy`（MS-IME検出時）は明示的に`false`を
+オーバーライドしている。**本ツールはGJI専用（スコープ節）であり、
+本ツールのユーザーは定義上すべて`f2_warmup_owned=true`側**にいる。
+これは「狭い状況」ではなく、**GJIを使っている限り常に真の条件**である。
+
+したがって、決定0の分岐2（VK_DBE_HIRAGANA=0xF2）は、本ツールの対象
+ユーザーにおいては実質`is_tsf_mode`だけで決まる:
+
+- **`is_tsf_mode == true`（TSF-nativeアプリ、例: Chrome/VS Code/
+  Windows Terminal/WezTerm等）: 常にSuppressされる。**
+- **`is_tsf_mode == false`（legacy IMM32/ImmCrossアプリ）: 常にAllow
+  される。**
+
+r3は「大半のケースでawase稼働中も届く」と書いたが、これは
+`f2_warmup_owned`を「進行中の狭い状況」と誤解したことによる誤りだった
+（premortemが自ら気づき訂正、私も追加確認して同じ結論に至った）。
+**正しくは「TSF-nativeアプリでは常に届かず、非TSFアプリでは常に届く」
+という、アプリ種別で二分される恒常的な制約**である。
+
+### 帰結
+
+- **かなスロットの無シフト側（`Hiragana`トークン、VK_DBE_HIRAGANA=
+  0xF2）は、TSF-nativeアプリ（Chrome/VS Code/Windows Terminal/
+  WezTerm等、現代的なアプリの主要な一角）では常にSuppressされ、機能
+  しない**。legacy IMM32/ImmCrossアプリでのみ機能する。この制約は
+  `dbe_mode_key_policy`（隠し設定）の対象外——0xF2はその判定に到達する
+  前の専用早期分岐でSuppressされるため、既知の回避策が無い。
+- **かなスロットのシフト側（`Katakana`トークン、VK_DBE_KATAKANA=
+  0xF1）は、別の軸（ImmCross/`ime_actuation_owned`/
+  `dbe_mode_key_policy`/`shift_katakana_passthrough`）に依存する**。
+  ImmCrossアプリでは常にSuppress、GjiDirect/MsImeDirectが適用される
+  アプリではSuppressが既定（`shift_katakana_passthrough`の3条件——
+  Shift併用・半角英数トグル区間でない・親指キー設定でない——を満たす
+  場合のみAllow）、それ以外のアプリでは`ime_actuation_owned`が偽に
+  なりAllow。
 - **変換(VK_CONVERT)/無変換(VK_NONCONVERT)は、`ImeKeyKind::from_vk`が
   対象としないため`plan()`の手順4で（ImmCrossアプリを含め）Allow
   される**。ただしこれは`plan()`に到達した場合の話であり、
@@ -181,12 +235,11 @@ r1レビューでarchitectが指摘した懸念（B-2）を、専用Exploreエ�
   （`config.left_thumb_vk`/`right_thumb_vk`）として分類する場合は
   `plan()`に到達する前にengineがConsumeし、GJIには一切届かない。
 
-**結論**: 本ツールの実効性は「フォーカス中のアプリ種別」「かなスロット
-のシフト有無」「変換/無変換の親指キー設定」という複数の軸に依存し、
-単純な「効く/効かない」の二値では説明できない。特にKatakana側は
-**実行時のアプリ・IME状態に依存するため、`keymap.txt`生成時点で
-静的に判定・警告することができない**——ユーザーは「メモ帳では入れ替わる
-のにChromeでは入れ替わらない」という、切り分けの難しい体験をしうる。
+**結論（r4で確定）**: **かなスロットが絡む入れ替えは、アプリ種別
+（TSF-native／それ以外）で恒常的に効いたり効かなかったりする**——
+一時的な状態ではなく、フォーカスしているアプリの種類だけで決まる
+構造的な制約である。これはブロッキングな設計変更ではなく、**ユーザーに
+明示すべきスコープの一部**として扱う（下記スコープ節に反映）。
 
 ### 決定0-1: 生成前にawase自身の親指キー設定を検査し、警告する（r3で警告文を修正）
 
@@ -206,19 +259,31 @@ NICOLAエンジンを無効化するだけでこのConsumeが止まるかは未�
 （決定0-2）。確認が取れるまでは、確実に効果がある「awaseプロセス自体を
 終了する」という案内に留める。
 
-さらに、かなスロットが入れ替え対象に含まれる場合は、決定0で明らかに
-なった「Katakana側はアプリ依存で静的検出できない」という制約自体を
-情報として提示する（ブロッキングではない）:
+**r4追加（premortem R3-BL-2指摘反映）**: かなスロットが入れ替え対象の
+一方に含まれる場合、**親指キー設定の有無とは無関係に常に**次の警告を
+表示する（決定0の帰結が示す通り、これはアプリ種別だけで決まる恒常的な
+制約であり、設定次第で解消するものではないため）:
 
-- 「かなキーとの入れ替えで、Shift併用時の挙動（カタカナ切り替え相当）
-  は使用中のアプリによって効かない場合があります。確実に効かせたい
-  場合は、GJIの設定で「DBE系キーのSuppress」に関する隠し設定
-  （`dbe_mode_key_policy`）の変更を検討してください（BUG-52の再発
-  リスクを伴うため上級者向け、変更前に`docs/known-bugs.md`のBUG-52を
-  必ず確認すること）。」
+- 「かなキーとの入れ替えは、使用中のアプリの種類によって効き方が
+  変わります。Shift無しでの切り替えは、Chrome・VS Code・Windows
+  Terminal・WezTermなど（TSF方式のアプリ）では**常に反映されません**。
+  メモ帳など一部の古い方式のアプリでのみ反映されます。Shift併用時
+  （カタカナ切り替え相当）はさらに別の条件に依存し、確実に効かせる
+  既知の回避策は現時点でありません。」
+
+**r4訂正**: r3は「`dbe_mode_key_policy`の変更で回避できる」と案内して
+いたが、これは誤りだった——この隠し設定が効くのはVK_DBE_KATAKANA/
+ALPHANUMERIC/SBCSCHAR/DBCSCHAR側の判定（決定0手順6）のみであり、
+VK_DBE_HIRAGANA（無シフト側）は手順2の専用早期分岐で決まるため、この
+設定の対象外である。したがって無シフト側の制約には**既知の回避策が
+無い**ことを正直に伝える。Shift併用側（Katakanaトークン）については
+`dbe_mode_key_policy`の変更が選択肢になりうるため、案内文でそこだけ
+区別して言及してもよい（実装時の判断）。
 
 この検査・案内はいずれもブロッキングではなく情報提供に留める。警告を
-無視して生成した場合でも`keymap.txt`自体は正しく生成する。
+無視して生成した場合でも`keymap.txt`自体は正しく生成する（TSF-native
+以外のアプリ、または後日awaseの制約が変わった場合に備え、生成物自体は
+制限しない）。
 
 ### 決定0-2: 実機検証が必要な項目
 
@@ -319,6 +384,23 @@ IMEOn／Muhenkan→IMEOffを無条件に重ね掛けする既存の仕組み
 （`lib.rs`の`SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF`
 定数のdoc参照）であり、これを無視すると変換/無変換の入れ替えが
 「インポートしても効かない」という最も分かりにくい失敗を起こす。
+
+**r4追加（R2-MJ-8指摘反映）**: この検査は`config1.db`を最後まで
+パースできることが前提だが、`wire::parse_top_level`はbest-effort設計
+（途中で未対応/壊れたフィールドに遭遇しても、そこまでに読めた
+フィールドを保持したまま返す、`wire.rs`のdoc参照）であり、`overlay_
+keymaps`(field 68)より手前で走査が打ち切られると`overlay_keymaps`は
+**空**（＝オーバーレイ無しと区別がつかない）で返る。したがって
+判定は2値ではなく3値にする:
+
+1. **最後まで読めた かつ 100を含まない** → 通過（生成を続行）。
+2. **最後まで読めた かつ 100を含む** → 中止（上記案内）。
+3. **途中で打ち切られた（`GjiRawConfig`が完全に得られたか、パース時に
+   打ち切りが起きたかを`wire.rs`側で区別できるようインターフェースを
+   拡張する）** → 「オーバーレイの状態を確認できませんでした。GJIの
+   設定を手動で確認してから進めてください」という警告付きで続行する
+   （中止はしない——過度に保守的だとツールが使えなくなるケースが
+   増える）。
 
 ### 決定3-1: 基底テーブルの決定
 
@@ -435,6 +517,16 @@ ADR-143 decision7が大掛かりな実装（sentinel VK・`ime_open_before`
   基底テーブルに両方の表記が混在する場合（サードパーティ製キーマップ
   エディタ経由、異なるGJIバージョン間の設定等）は読み取り時点で
   `Hiragana`表記へ統合し、変換後に重複行を生まないようにする。
+
+**r4追加（R2-MJ-6指摘反映）**: 本ADRの大小文字非依存の照合（決定7手順3）
+と、既存の`mozc_key_to_vk_name`（BUG-115のIME ON/OFF検出経路、`keymap.rs`）
+の大小文字を区別する完全一致は、**同じMozcキートークンの集合を指しながら
+別々の比較ロジックで二重管理**になる。決定9（awase自身のIME belief/
+キー選択ロジックとの相互作用）が両経路の相互作用を扱う以上、エイリアス
+集合を単一のテーブルに集約する（`MOZC_KEY_ALIASES`を両方から参照する、
+または本ADRのエイリアス処理を`MOZC_KEY_ALIASES`の拡張として実装する）
+か、最低限「両者が同じキー集合に対して一致した判定を返す」ことを
+テストで固定する。
 
 ### 決定5-2（r2新設）: 修飾語の直交処理と(status, key)重複検出
 
@@ -624,6 +716,20 @@ key, command)`の集合として正規化した上で一致するか」で行う
    2つで構成する。これとは別に、いつでも恒等順列へ一発で戻せる
    「既定に戻す」を提供する——3要素6通りとはいえ、複数回の交換を経た
    後に手探りで元の状態を再現するのは実用上煩雑なため。
+
+   **r4追加（R2-MJ-4指摘反映、意味の明確化）**: 「既定に戻す」は
+   **UI上の順列を恒等に戻すだけ**であり、GJI設定を過去の状態へ戻す
+   ものではない——決定7-0の修正（pristine baseを常に基底とする）に
+   より、恒等順列で生成すればpristine base（真に未入れ替えの状態）と
+   一致する`keymap.txt`ができるため、これを再度インポートすれば
+   GJI設定も実際に元に戻る。したがって「既定に戻す」ボタン自体は
+   UI状態のリセットに過ぎないが、その後の生成→インポートまで含めれば
+   真の復元として機能する。一方、決定6項目3のバックアップファイルは
+   pristine baseの生バイト列そのものであり、**本ツールを経由せず直接
+   GJIへインポートし直すことでも復元できる**独立した手段である。UI上は
+   両者の違い（「既定に戻す」は生成前のリセット、バックアップは
+   インポート実行前の任意の時点への復元）をラベル・説明文で明確に
+   区別する。
 5. **DnDのキャンセル規定**（r2追加、MN-1の指摘反映）: ESCキーでの
    キャンセル、配置図の範囲外へのドロップ、同一スロットへのドロップは
    いずれも無操作（順列を変更しない）として扱う。キーボード操作での
@@ -732,6 +838,12 @@ Precomposition/Composition等でHenkan→CancelAndIMEOff）を生成すると、
    144〜146のリンク（相互参照）を張り替える計画を持つこと。
 7. `Shift Katakana`（シフト相当トークンへの明示的Shift修飾語の重複）が
    実際のMozcキーマップに存在しうるか（決定5-2）。
+8. **r4追加（R2-MJ-7指摘反映）**: 決定3-0の案内文が指す「GJIの設定で
+   『変換/無変換キーでIMEを切り替える』オプションを無効にしてください」
+   という操作に対応するGUI項目が、GJIのプロパティダイアログに実在する
+   か未確認。存在しない場合（`overlay_keymaps`はキーマップエディタの
+   GUIから直接は触れず、`keymap.txt`側で個別に上書きするしかない可能性
+   がある）、案内文とその後の手順を実装時に見直す必要がある。
 
 ## 関連ファイル
 
