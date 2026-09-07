@@ -14986,22 +14986,39 @@ composition追跡を乱す」を、この3回の送信がawase単独で満たし
 `awase::platform::should_send_accompanying_warmup`に切り出し、
 `src/platform.rs`にユニットテスト2件を追加）。当初「1打鍵あたり3回→
 1回」と見積もっていたが、**実機ログ解析の結果、実際には3回→2回**
-だった——本修正が消したのは送信3（NICOLA同時打鍵タイマー満了→
-delegate機構由来、~100ms後）のみで、送信2に相当する随伴warmupは、
-`on_ime_applied`内で`feed_composition_event`→
-`dispatch_composition_response`の`CompositionAction::EmitWarmup`
-（`platform.rs:638-643`、`CompositionFsm`が「cold」と判断すると
-`outcome`を見ずに`send_eager_tsf_warmup`を呼ぶ）という**別の独立した
-経路**からなお発火する（本修正がgateしたのは`on_ime_applied`末尾の
-呼び出しのみで、こちらは未対応）。この経路の修正は本ADRのスコープ外
-として保留する。
+だった。
+
+**（2026-09-07、opus-adversarial-consult指摘で訂正）** 上記の「消えた
+のは送信3、残るのは送信2で`EmitWarmup`という別経路由来」という記述は
+**誤り**だった。実コード確認（`tsf/composition_fsm.rs:165-172`、
+`CompositionEvent::ImeOn`は`Response::consume()`を返し`EmitWarmup`を
+一切出さない）の結果、正しくは**消えたのは送信2（`outcome=Applied`
+直後の随伴warmup）、残っているのは送信3（NICOLA同時打鍵タイマー
+満了→delegate機構由来、`outcome=AlreadyMatched`のため意図的に送信
+する設計、gateした呼び出しと同一箇所からの~108ms後の再送）**。この
+残存パターンは、[ADR-149](adr/149-physical-ime-key-activation-defers-forced-set-open.md)
+が「棄却した代替案・案B」として自ら「3回→2回にしかならず機構は依然
+成立する」と不十分判定していた形と同じであり、それでも実機で「@」が
+再発しなかった理由（回数より間隔が閾値に効いた可能性）は未解明のまま。
 
 **実機確認（2026-09-07、dragonflyg4、Windows Terminal + GJI）**:
-半角/全角キー単独タップ・IME OFFからの無変換/変換系キー単独タップを
-反復し、送信回数が3回→2回に減った状態で「@」の再発が無いことを確認
-した——重複SendInputの「回数」自体より「発生の有無」が閾値だった
-可能性が高い。完全な3回→1回化（`EmitWarmup`経路への同種gate追加）は、
-実害が再度確認された場合に別途検討する。
+半角/全角キー単独タップ・IME OFFからの変換キー単独タップを反復し、
+送信回数が3回→2回に減った状態で「@」の再発が無いことを確認した。
+
+**重要な追加確認（2026-09-07）: 無変換キー単独タップの「@」は別原因、
+awaseとは無関係と確定。** ユーザーから「変換キーでは直ったが無変換
+キーでは毎回『@』が出る」と報告を受け追調査した結果、**awase.exeを
+完全に停止した状態でも無変換キーを押すたびに「@」が再現することを
+実機で確認した**。awase非依存の独立`WH_KEYBOARD_LL`ロガー
+（`scripts/rawkbd_logger.ps1`、`diag/bug113-vk-kanji-echo`ブランチに
+同梱）で検証し、awaseが一切介在しない条件でも100%再現するため、
+**この症状はawase側のactuation・送信回数とは完全に無関係**——GJI自身
+が無変換キーの物理押下をネイティブに処理した結果である可能性が高い。
+本BUGの対象外として切り離し、別途GJI側のキーマップ設定を調査する
+必要がある。この調査中に実装した案α/案β（`AlreadyMatched`もskip化・
+delegateのno-op強制再アサーション抑止）は誤った前提に基づいていた
+ため撤回済み（revertコミット参照）。完全な3回→1回化（残る送信3の
+排除）は、無変換キーとは別の実害が再度確認された場合に改めて検討する。
 
 **独立して発見した2つの未解決事項（本修正のスコープ外、記録のみ）:**
 

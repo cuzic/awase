@@ -23,27 +23,36 @@ platform.rs::on_ime_applied`から配線した。ADR-132（`Phase 2`節の
 GJI）で、半角/全角キー単独タップ・IME OFF状態からの無変換/変換系キー
 単独タップ双方を反復し、「@」の再発なしを確認した。
 
-**追記（実機ログ解析、送信回数の訂正）**: `RUST_LOG=debug`で採取した
-実機ログを解析した結果、当初「3回→1回」と見積もっていた送信回数は、
-実際には**3回→2回**だった。本ADRが特定・修正した「送信3」（NICOLA
-同時打鍵タイマー満了→delegate機構由来の随伴warmup、~100ms後）は
-狙いどおり消えたが、**「送信2」に相当する随伴warmupは、本ADRが gate
-した`on_ime_applied`末尾の呼び出しとは別に、同じ`on_ime_applied`内で
-より前に無条件実行される`feed_composition_event`→
-`dispatch_composition_response`の`CompositionAction::EmitWarmup`
-（`platform.rs:638-643`、`CompositionFsm`が「cold」と判断した場合に
-`self.output.send_eager_tsf_warmup`を`outcome`を見ずに呼ぶ）からも
-独立して発火することが判明した。実機ログでは、`outcome=Applied`の
-apply直後に`[tsf-eager-warmup]`が1回だけ記録されており（本ADRが
-gateした末尾の呼び出しは`should_send_accompanying_warmup(Applied)
-== false`により正しく抑止されていることをログから確認済み）、これは
-`EmitWarmup`経路由来と判断できる。
+**追記（実機ログ解析、送信回数の訂正、2026-09-07 opus-adversarial-consult
+B1指摘で再訂正）**: `RUST_LOG=debug`で採取した実機ログを解析した結果、
+当初「3回→1回」と見積もっていた送信回数は、実際には**3回→2回**
+だった。ここまでは正しい。**ただし「どちらの送信が消えたか」の当初の
+記述は誤りだった**——PRレビュー（opus-adversarial-consult、実コード
+確認込み）で以下が判明した:
 
-**この経路は本ADRのスコープ外として未修正のまま残す**——3回→2回への
-削減だけで実機上「@」の再発が確認されなくなったため（重複SendInputの
-「回数」ではなく「発生の有無」自体が閾値だった可能性が高い）、追加の
-修正は行わない。完全な3回→1回化（`EmitWarmup`経路にも同種のgateを
-追加する）は、実害が再度報告された場合に別ADRとして検討する。
+- `WarmupOrigin::Actuated`を伴う`send_eager_tsf_warmup(`呼び出しは
+  リポジトリ全体で1箇所（本ADRがgateした`on_ime_applied`末尾の呼び出し）
+  のみ。`feed_composition_event`に渡る`CompositionEvent::ImeOn`の
+  ハンドラ（`tsf/composition_fsm.rs:165-172`）はstateをColdにする
+  だけで`Response::consume()`（actionsが空）を返す。**`ImeOn`は
+  `EmitWarmup`を一切出さない**——「送信2は`EmitWarmup`経由の別経路
+  から発火し続ける」という当初の説明は誤り（実在しない経路を原因と
+  誤認していた）。
+- 実際に消えたのは**送信2**（`outcome=Applied`直後、戦略の実送信
+  ~5.4ms後の随伴warmup）。**残っているのは送信3**（NICOLA同時打鍵
+  タイマー満了→delegate機構由来、`outcome=AlreadyMatched`のため
+  `should_send_accompanying_warmup`が意図通り「送る」側に倒す、
+  gateした呼び出しと同一箇所からの~108ms後の再送）。
+
+**この残存パターン（送信1直後は消え、~108ms後の重複だけ残る）は、
+本ADRの「棄却した代替案」節が案Bを評価した際「3回→2回にしかならず、
+しかも108ms遅延するだけで、BUG-113の機構は依然として成立する」と
+自ら不十分と判定していた形そのものである。** それにもかかわらず実機
+（半角/全角・変換キー、TsfNative/Windows Terminal）で「@」の再発が
+確認されなかった点は未解明のまま残る——重複SendInputの「回数」より
+「間隔」（直後 vs ~108ms後）が閾値に影響する可能性があるが、検証は
+していない。追加修正（真の3回→1回化）は、実害が再度報告された場合に
+別ADRとして検討する。
 
 **最終確認**: 2026-09-07 05:40台、Windows実機（dragonflyg4）で
 `grep "IME open axis delegated"`を実行した結果、
@@ -436,6 +445,55 @@ single`、既に物理キーをSuppressしてGJIに届けない設計）が**現
   バッファを壊し「@」という1文字に帰結するのかは、awase側からは
   観測できないブラックボックスのまま。修正の効果検証は実機での
   「重複が消えた後、『@』が再現しなくなるか」に依存する。
+
+## 追記（2026-09-07）: 無変換キー単独タップの「@」は本ADRの対象外——awaseとは無関係と確定
+
+ユーザー報告「変換キーでは『@』が再発しないが、無変換キーでは毎回
+再発する」を受けて追調査した結果、**無変換キーの「@」は本ADRが扱う
+機構（awase自身の重複SendInput）とは無関係であることが実機で確定した**。
+次のセッションが同じ調査を繰り返さないよう、経緯と根拠を残す。
+
+### 調査の経緯（誤って辿った道）
+
+1. 当初、無変換キー押下時のログを見ると`vk=0xF2 scan=0x70`
+   （かなキー）が引き金として記録されており、「無変換キーの物理キー
+   がリマップされているのでは」と疑った。レジストリのScancode Map・
+   HKCU Substitutes・他のawaseプロセス残留を調査したが、いずれも
+   該当なし。
+2. `awase.exe`とは完全に独立した、生の`WH_KEYBOARD_LL`フックだけを
+   記録する診断ツール（`scripts/rawkbd_logger.ps1`、本コミットに
+   同梱、awaseのプロセス・コードを一切経由しない）を新設し実機で
+   検証した結果、**無変換キー(`scan=0x7B`)は常に正しく記録される**
+   一方、`vk=0xF2 scan=0x70`（かなキー相当）のイベントが、無変換
+   キー押下とは独立したタイミングで不定期に発生することを確認した
+   （`injected=False`、Alt+Tab等のフォーカス変更と近い時間に観測
+   されることが多いが、規則的ではない）。
+3. `should_send_accompanying_warmup`（案α: `AlreadyMatched`も
+   skip+latchにする）・delegateのno-op強制再アサーション抑止
+   （案β）を実装し、実機A/Bでモードを巡回して検証したが、**いずれの
+   組み合わせでも無変換キー押下のたびに「@」が再発し続けた**。
+4. **決定的な検証**: `awase.exe`を完全に停止した状態で、独立ロガー
+   のみを動かして無変換キーを複数回タップしたところ、**awaseが
+   一切動作していないにもかかわらず、無変換キーを押すたびに「@」が
+   毎回再発することを確認した**（ユーザー報告、2026-09-07）。
+
+### 結論
+
+**無変換キー単独タップで「@」が出る現象は、awase側のactuation・
+送信回数とは完全に無関係である。** awaseが介在しなくても100%再現する
+ため、GJI（Google日本語入力）自身がWindows Terminal上で無変換キーの
+物理押下をネイティブに処理した結果として生じている可能性が高い
+（GJIのキーマップ設定、あるいはWindows Terminal側のTSF処理との組み
+合わせ）。したがって本ADR（および将来のいかなるawase側コード修正）
+では原理的に解決できない。**別調査（GJI側のキーマップ・config1.dbの
+確認）として切り離すこと。**
+
+案α・案β・スパイク検証用のモード巡回コード（`src/bug113_spike.rs`
+ほか）は、この誤った前提に基づいていたため撤回した（`git log`参照、
+`.claude/rules/experiment-logging.md`の規約に従いrevertコミットの本文
+に失敗条件を記録済み）。`scripts/rawkbd_logger.ps1`（独立キーボード
+フックロガー）は原因切り分けに有用だったため、診断ツールとして
+リポジトリに残す。
 
 ## 関連
 
