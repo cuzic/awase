@@ -152,6 +152,17 @@ pub struct TsfObservations {
     /// 計上される）。[`Self::gji_write_ops`] と同じ理由で診断専用に記録する。
     pub(super) gji_other_ops: AtomicU64,
 
+    /// GJI プロセスの累積 `OtherTransferCount`（バイト数、`gji_other_ops` の量版）。
+    ///
+    /// `gji_write_bytes` は F2/`VK_IME_ON` 等のモード切替キーでは +0.0KB のまま
+    /// 動かないことが実測済み（本ファイル `gji_write_bytes` の doc 参照）。
+    /// `GetProcessIoCounters` のドキュメントは「Other」を「データ転送を伴わない
+    /// 制御系 I/O」と定義しており、モード切替のような RPC/パイプ制御呼び出しは
+    /// Write ではなく Other 側に現れる可能性がある——2026-09-07、モード切替キー
+    /// 単独タップの actuation 確認シグナルとして使えるか検証するために追加。
+    /// [`Self::gji_write_ops`] と同じ理由で診断専用（判定ロジックには使わない）。
+    pub(super) gji_other_bytes: AtomicU64,
+
     /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
     pub(super) gji_monitor_ok: AtomicBool,
 
@@ -256,6 +267,7 @@ impl TsfObservations {
             gji_write_ops: AtomicU64::new(0),
             gji_read_ops: AtomicU64::new(0),
             gji_other_ops: AtomicU64::new(0),
+            gji_other_bytes: AtomicU64::new(0),
             gji_monitor_ok: AtomicBool::new(false),
             candidate_was_seen: AtomicBool::new(false),
             literal_session_confirmed_gen: AtomicU64::new(0),
@@ -456,6 +468,7 @@ pub(crate) fn gji_read_ops() -> u64 {
 pub(crate) fn gji_other_ops() -> u64 {
     TSF_OBS.gji_other_ops.load(Ordering::Relaxed)
 }
+
 
 /// GJI プロセスが起動済みかつアクティブ IME として CLSID ベースで選択されているかどうか。
 ///

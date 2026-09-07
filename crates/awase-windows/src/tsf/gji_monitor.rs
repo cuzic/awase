@@ -114,6 +114,8 @@ struct GjiIoDelta {
     read_bytes: u64,
     /// 前回ポーリングからの WriteTransferCount 差分（バイト数）
     write_bytes: u64,
+    /// 前回ポーリングからの OtherTransferCount 差分（バイト数、2026-09-07 実験追加）
+    other_bytes: u64,
 }
 
 impl GjiIoDelta {
@@ -132,6 +134,8 @@ struct GjiMonitor {
     last_read_bytes: u64,
     /// GJI プロセスの累積 WriteTransferCount（バイト数）
     last_write_bytes: u64,
+    /// GJI プロセスの累積 OtherTransferCount（バイト数、2026-09-07 実験追加）
+    last_other_bytes: u64,
     /// 最後に I/O 変化を検出した時刻 (GetTickCount64 ms)
     last_change_ms: u64,
     /// 最後に WriteOperationCount が変化した時刻 (GetTickCount64 ms)。0 = 未観測。
@@ -159,6 +163,7 @@ impl GjiMonitor {
             last_other_ops: 0,
             last_read_bytes: 0,
             last_write_bytes: 0,
+            last_other_bytes: 0,
             last_change_ms: now_ms,
             last_write_change_ms: 0,
         };
@@ -194,6 +199,9 @@ impl GjiMonitor {
             write_bytes: counters
                 .WriteTransferCount
                 .saturating_sub(self.last_write_bytes),
+            other_bytes: counters
+                .OtherTransferCount
+                .saturating_sub(self.last_other_bytes),
         };
         if delta.any() {
             let now_ms = crate::hook::current_tick_ms();
@@ -202,6 +210,7 @@ impl GjiMonitor {
             self.last_other_ops = counters.OtherOperationCount;
             self.last_read_bytes = counters.ReadTransferCount;
             self.last_write_bytes = counters.WriteTransferCount;
+            self.last_other_bytes = counters.OtherTransferCount;
             self.last_change_ms = now_ms;
             if delta.write_ops > 0 {
                 self.last_write_change_ms = now_ms;
@@ -235,6 +244,11 @@ impl GjiMonitor {
     /// 累積 `OtherOperationCount`（パイプ・セクション経由 IPC 等）。診断専用（BUG-75）。
     const fn last_other_ops(&self) -> u64 {
         self.last_other_ops
+    }
+
+    /// 累積 `OtherTransferCount`（バイト数）。診断専用（2026-09-07 実験追加）。
+    const fn last_other_bytes(&self) -> u64 {
+        self.last_other_bytes
     }
 }
 
@@ -538,25 +552,30 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                     TSF_OBS
                         .gji_other_ops
                         .store(m.last_other_ops(), Ordering::Relaxed);
+                    TSF_OBS
+                        .gji_other_bytes
+                        .store(m.last_other_bytes(), Ordering::Relaxed);
                     if delta.write_ops > 0 {
                         TSF_OBS
                             .gji_last_write_ms
                             .store(m.last_write_change_ms(), Ordering::Relaxed);
                         tracing::debug!(
                             "[gji-io] WRITE: w_ops=+{} w_KB=+{:.1} \
-                             (r_ops=+{} x_ops=+{})",
+                             (r_ops=+{} x_ops=+{} x_KB=+{:.1})",
                             delta.write_ops,
                             delta.write_bytes as f64 / 1024.0,
                             delta.read_ops,
                             delta.other_ops,
+                            delta.other_bytes as f64 / 1024.0,
                         );
                     } else if delta.any() {
                         tracing::debug!(
-                            "[gji-io] r_ops=+{} w_ops=+{} x_ops=+{} read_KB=+{:.1}",
+                            "[gji-io] r_ops=+{} w_ops=+{} x_ops=+{} read_KB=+{:.1} x_KB=+{:.1}",
                             delta.read_ops,
                             delta.write_ops,
                             delta.other_ops,
                             delta.read_bytes as f64 / 1024.0,
+                            delta.other_bytes as f64 / 1024.0,
                         );
                     }
                     if delta.read_bytes >= 512 * 1024 {
