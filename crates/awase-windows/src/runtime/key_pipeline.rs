@@ -1191,15 +1191,28 @@ impl Runtime {
             // 通るため、triage用の「intent 昇格」ログ（下のelse節、INFO）と
             // 違いdebugに留める——delegate側の「IME open axis delegated」
             // INFOログでtriageに必要な情報はカバーされる（Opusレビュー指摘）。
+            // 2026-09-07 実験追加: こちらも awase が actuate しない委譲シナリオ
+            // （Phase 3 delegate、無変換/変換のチョード中等）——上記と同じ
+            // 理由でベースラインを残す。
             tracing::debug!(
                 "[shadow-toggle] vk=0x{:02X}はFSM delegate所有 → \
-                 belief書き込み/actuationをスキップ",
+                 belief書き込み/actuationをスキップ w_ops0={} x_ops0={}",
                 event.vk_code,
+                crate::tsf::observer::gji_write_ops(),
+                crate::tsf::observer::gji_other_ops(),
             );
         } else {
+            // 2026-09-07 実験追加: awase が actuate しない委譲シナリオ
+            // （半角/全角キー等、この関数は belief 追随のみ行いactuationは
+            // しない）で、GJI 自身がこの物理キーに反応したかを事後に
+            // gji_write_ops/gji_other_ops のバックグラウンドポーリング
+            // （`[gji-io]`、tsf/gji_monitor.rs）と突き合わせて検証できる
+            // よう、判断時点の累積値をベースラインとして残す（診断専用、
+            // 判定ロジックには使わない。project_adr151_force_on_rescue_
+            // observation_experiment_2026_09_07 参照）。
             tracing::info!(
                 "[shadow-toggle] intent 昇格: vk=0x{:02X} scan=0x{:02X} action={:?} \
-                 kind={:?} injected={} {}→{}",
+                 kind={:?} injected={} {}→{} w_ops0={} x_ops0={}",
                 event.vk_code,
                 event.scan_code,
                 action,
@@ -1207,6 +1220,8 @@ impl Runtime {
                 event.injected,
                 current,
                 new_val,
+                crate::tsf::observer::gji_write_ops(),
+                crate::tsf::observer::gji_other_ops(),
             );
         }
         // witness は「注入されていない実キーイベント」の存在証明（BUG-14 の
