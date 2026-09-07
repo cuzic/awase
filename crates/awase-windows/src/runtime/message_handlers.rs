@@ -1315,6 +1315,14 @@ fn current_bug_report_diagnostics(
 /// 揃えている（`let GjiCustomKeymapFields { ime_on_keys, .. } = ...`の
 /// ような分解を分かりやすくするため）ので、`*_keys`共通後置の
 /// clippy指摘は抑止する。
+///
+/// 位置引数タプルではなく名前付きフィールドの構造体にしているのは
+/// 可読性目的だけではない: 複数の`None`を並べた裸のタプルリテラルは、
+/// `architecture_guard.rs::build_input_context_callers_do_not_drop_
+/// thumb_down_state`がファイル全体を空白除去した上で特定の部分文字列の
+/// 有無だけを見て判定する設計のため、`build_input_context`呼び出しとは
+/// 無関係なこの箇所でも誤検出（false positive）を起こす。名前付き
+/// フィールドの`Default::default()`はその部分文字列を生成しない。
 #[derive(Default)]
 #[allow(clippy::struct_field_names)]
 struct GjiCustomKeymapFields {
@@ -1384,8 +1392,17 @@ fn build_bug_report_gji_keymap_summary(
         .overlay_keymaps
         .contains(&awase_gji_config::SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF);
     let custom_keymap_table_present = raw_ref.custom_keymap_table.is_some();
-    let custom_keymap_table_is_effective =
-        session_keymap == Some(awase_gji_config::SESSION_KEYMAP_CUSTOM);
+    // /code-review指摘: `sync_gji_charset_autodetect`（`gji_charset_autodetect.rs`
+    // の`session_keymap != CUSTOM`ガード直後の`let Some(table) = raw.
+    // custom_keymap_table else { return }`）の実際のゲートは
+    // 「session_keymap == CUSTOM」**かつ**「custom_keymap_tableが存在する」の
+    // 両方。前者だけをここで再現すると、CUSTOM選択中だがfield 42が不在の
+    // 環境（本文doc「custom_keymap_table_present」との組み合わせが
+    // (true, false)になるケース）で本フィールドが誤って`true`になり、
+    // 実際には抽出処理に到達しない状態を「有効」と報告してしまう。
+    let custom_keymap_table_is_effective = session_keymap
+        == Some(awase_gji_config::SESSION_KEYMAP_CUSTOM)
+        && custom_keymap_table_present;
 
     let custom_keymap_fields = if custom_keymap_table_is_effective {
         let table = raw_ref.custom_keymap_table.as_deref().unwrap_or("");
@@ -1438,6 +1455,19 @@ fn build_bug_report_gji_keymap_summary(
             crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_CONVERT);
         let muhenkan_is_thumb_key =
             crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_NONCONVERT);
+        // /code-review指摘: `route_thumb_key_action`
+        // （`gji_charset_autodetect.rs:522`）を直接呼ばず、その分岐条件
+        // （`is_thumb_key`の真偽のみ、`action`自体は`route_thumb_key_action`
+        // に先んじて`wiring.henkan`/`wiring.muhenkan`から素通し）をここで
+        // 再現している。`route_thumb_key_action`は`on`/`off`/`toggle`の
+        // 3つの`&mut Vec<ParsedKeyCombo>`を要求する副作用ありの関数
+        // （actuation-auto側への追加）で、診断専用のこの経路のためだけに
+        // 使い捨てのVecを渡すのは本末転倒なため。ここで再現しているのは
+        // 「`is_thumb_key`なら`Delegate`、そうでなければ`ActuationAuto`」
+        // という1行の分岐のみで、`ImeToggleKind→ShadowImeAction`の変換
+        // 自体（実際の値の計算）は`gate_thumb_key_ime_actions`にすべて
+        // 委譲済み。この分岐がずれていないことはOpus敵対的コードレビュー
+        // で`route_thumb_key_action`本体と突き合わせ済み（ADR-148参照）。
         let henkan_route = wiring.henkan.map(|_| {
             if henkan_is_thumb_key {
                 "Delegate"

@@ -275,7 +275,14 @@ MS-IME側（`msime_key_assignment.rs`の3関数）はレジストリの都度読
      存在するか（`session_keymap`の値は問わない）。
    - **`custom_keymap_table_is_effective: bool`**（レビューF11対応、
      新規フィールド）: `session_keymap == Some(SESSION_KEYMAP_CUSTOM)`
-     のときのみ`true`。`awase_gji_config::read_gji_ime_keys`/
+     **かつ**`custom_keymap_table_present`が`true`のときのみ`true`
+     （**実装コードレビューで訂正**: 当初`session_keymap`の条件のみで
+     計算していたが、`gji_charset_autodetect.rs`の実際のガードは
+     `session_keymap == CUSTOM`のearly returnの**さらに後**に
+     `let Some(table) = raw.custom_keymap_table else { return }`という
+     2段目のガードを持つ。前者だけを再現すると、CUSTOM選択中だが
+     field 42が不在の環境で本フィールドが誤って`true`になる）。
+     `awase_gji_config::read_gji_ime_keys`/
      `read_gji_mode_keys`自体は`session_keymap`を一切見ず
      `custom_keymap_table`（field 42）があれば無条件に解析するが、
      awase本体（`gji_charset_autodetect.rs:789-805`）は「session_keymap
