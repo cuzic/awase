@@ -22,7 +22,7 @@ delegateが辞退すると誰もbeliefを追随しない『二重の空振り』
 
 ### 既存の仕組み（要約）
 
-`resolve_pending_thumb_as_single`（`src/engine/nicola_fsm.rs:1977`起点、delegate分岐は`:2020-2038`）は、
+`resolve_pending_thumb_as_single`（`src/engine/nicola_fsm.rs:1977`起点、delegate分岐は`:2020-2068`）は、
 無変換/変換キーを`left_thumb_key`/`right_thumb_key`（NICOLA親指キー）にも
 設定しているユーザーに対して、単独タップ（同時打鍵が不成立）確定時の挙動を
 次の優先順位で決める。
@@ -166,15 +166,22 @@ delegateの方向が`TurnOn`である場合にのみdelegateを無効化する�
 
 ```rust
 if let Some(open_axis_action) = special.delegate_to_open_axis.filter(|action| {
-    !(special.injected_guarded_delegate && injected)
-        && !(matches!(action, crate::types::ShadowImeAction::TurnOn)
-            && special
-                .mode_key_config
-                .is_some_and(ModeKeyConfig::is_passthrough))
+    let is_fake_injected_solo_tap = special.injected_guarded_delegate && injected;
+    let user_passthrough_defers_turn_on = matches!(
+        action,
+        crate::types::ShadowImeAction::TurnOn
+    ) && special
+        .mode_key_config
+        .is_some_and(ModeKeyConfig::is_passthrough);
+    !is_fake_injected_solo_tap && !user_passthrough_defers_turn_on
 }) {
     // 従来どおり
 }
 ```
+
+（名前付きローカル2つに分けた形——`nicola_fsm.rs`の実装と字面を揃えてある。
+De Morganの二重否定`!(A) && !(B && C)`と等価だが、`clippy::nonminimal_bool`
+（`clippy::pedantic`経由）がこの形を要求する。）
 
 `TurnOn`方向に限定する理由（上記マトリクスの2への影響が実害を生まない
 ことの根拠）:

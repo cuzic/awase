@@ -459,6 +459,16 @@ pub(crate) fn resolve_mode_key_shadow_override_for_event(
     }
 }
 
+/// この関数が見ていない「`resolve_pending_thumb_as_single`側でdelegateが
+/// 実際には発火しない条件」は現在2つある: (1) 専用Fnキー設定
+/// （`muhenkan_dedicated_fn_key_configured`引数で対処済み）、(2) ユーザーの
+/// 単独タップ「パススルー」設定（BUG-119/ADR-147、`TurnOn`方向のみ辞退。
+/// `TurnOn`分類は`crates/awase-gji-config/src/keymap.rs::classify_and_push`
+/// の構造上、全状態でOFFにならないことが保証されるため配線不要——詳細は
+/// ADR-147「消費点と所有権のマトリクス」参照）。3つ目の「黙って辞退する
+/// 条件」を`resolve_pending_thumb_as_single`側に足す場合は、この関数側も
+/// 対称に配線が必要かどうか（=belief ON中に実際に状態を反転させうる方向
+/// かどうか）を必ず検討すること。
 #[must_use]
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn delegate_owns_mode_key_shadow_toggle(

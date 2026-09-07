@@ -16010,7 +16010,7 @@ BUG-115の修正（belief追随）を保ったまま、パススルーを選ん�
 物理キー配送も復元する、という両立を狙ったものである。
 
 **機序（コード確認済み）:** `resolve_pending_thumb_as_single`
-（`src/engine/nicola_fsm.rs:1977`起点、delegate分岐は`:2020-2038`）は、無変換/変換の単独タップ確定時に
+（`src/engine/nicola_fsm.rs:1977`起点、delegate分岐は`:2020-2068`）は、無変換/変換の単独タップ確定時に
 以下の優先順位で処理する。
 
 1. `special.dedicated_fn_key`（専用Fnキー、隠し設定）
