@@ -33,7 +33,7 @@ config.toml の全設定項目を GUI で編集できる設定画面。eframe (e
 | 同時打鍵閾値 | スライダー + 数値表示 (10-500ms) | `general.simultaneous_threshold_ms` | デフォルト: 100ms |
 | 出力モード | ドロップダウン (Unicode / PerKey / Batched) | `general.output_mode` | |
 | フックモード | ラジオボタン (Filter / Relay) | `general.hook_mode` | ツールチップで違いを説明 |
-| 自動起動 | チェックボックス | `general.auto_start` | チェック ON → "enabled", OFF → "disabled" |
+| 自動起動 | チェックボックス | `general.auto_start` | 表示の真実源はWindowsのRunキー登録実体（`is_registered()`）。クリック時に即座に登録/解除し、成功時のみ`general.auto_start`へ「最後に選んだ意図」として記録する（2026-09-07、Defender誤検知対策で変更。詳細は`docs/known-bugs.md` BUG-120） |
 | レイアウト | ドロップダウン | `general.default_layout` | layouts_dir 内の .yab を列挙 |
 
 > **2026-08-30 撤去**: 確定モード（`general.confirm_mode`）・投機出力待機

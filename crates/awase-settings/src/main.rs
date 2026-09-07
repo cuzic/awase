@@ -494,6 +494,12 @@ struct SettingsApp {
     /// 内の全 `.yab` の読込失敗/`yab::lint()` 警告。`recompute_diagnostics()`
     /// で計算し、`config_path_panel` に表示する。空なら表示しない。
     startup_diagnostics: Vec<String>,
+    /// 自動起動チェックボックスの表示に使う、レジストリ実体
+    /// （`autostart_bridge::is_registered()`）のキャッシュ。`tab_basic` の
+    /// 再描画ごとに `RegGetValueW` を呼ぶのを避けるため、`new()` と
+    /// `recompute_diagnostics()`（`apply_autostart_toggle` 末尾からも呼ばれる）
+    /// でのみ更新する（Opus敵対的レビュー指摘、2026-09-07）。
+    auto_start_registered: bool,
 }
 
 /// バックグラウンドスレッドで実行する保存処理の結果。
@@ -587,6 +593,8 @@ impl SettingsApp {
             scancode_map_status: None,
             scancode_map_last_message: None,
             startup_diagnostics: Vec::new(),
+            // recompute_diagnostics() が直後に実体で上書きする。
+            auto_start_registered: false,
         };
         app.recompute_diagnostics();
         app
@@ -1031,7 +1039,8 @@ impl SettingsApp {
         // 「最後にユーザーが選んだ意図」と実体がズレていること自体を知らせる
         // （MSIの再インストールでRunキーが復活する等、外部要因でズレうる）。
         let auto_start_configured = self.config.general.auto_start == "enabled";
-        let auto_start_registered = autostart_bridge::is_registered();
+        self.auto_start_registered = autostart_bridge::is_registered();
+        let auto_start_registered = self.auto_start_registered;
         if auto_start_configured && !auto_start_registered {
             diagnostics.push(
                 "config.toml では自動起動が有効になっていますが、Windowsの自動起動登録が\
@@ -1041,8 +1050,10 @@ impl SettingsApp {
         } else if !auto_start_configured && auto_start_registered {
             diagnostics.push(
                 "config.toml では自動起動が無効になっていますが、Windowsには自動起動登録が\
-                 残っています（再インストール等が原因の可能性があります）。意図しない場合は\
-                 上の「自動起動」チェックボックスをクリックして解除してください。"
+                 残っています（再インストール等が原因の可能性があります）。解除したい場合は\
+                 上の「自動起動」チェックボックスをクリックして解除してください。このまま\
+                 有効な状態として維持したい場合は、一度オフにしてから再度オンにすると\
+                 config.tomlの記録もWindowsの実体と一致します。"
                     .to_string(),
             );
         }
@@ -2031,8 +2042,11 @@ impl SettingsApp {
             );
         // config.toml ではなくレジストリ実体を真実源として表示する
         // （Opus敵対的レビュー指摘 Major 6、`recompute_diagnostics` の
-        // コメント参照）。
-        let mut auto_start_checked = autostart_bridge::is_registered();
+        // コメント参照）。再描画のたびに `RegGetValueW` を呼ばないよう
+        // `self.auto_start_registered`（`recompute_diagnostics`/
+        // `apply_autostart_toggle` が更新）をキャッシュとして使う
+        // （Opus敵対的レビュー指摘、2026-09-07）。
+        let mut auto_start_checked = self.auto_start_registered;
         if ui
             .checkbox(&mut auto_start_checked, "自動起動")
             .on_hover_text(
@@ -5519,6 +5533,7 @@ mod layout_tab_repro {
             scancode_map_status: None,
             scancode_map_last_message: None,
             startup_diagnostics: Vec::new(),
+            auto_start_registered: false,
         }
     }
 

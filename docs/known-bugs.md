@@ -16112,7 +16112,12 @@ v1.19.0）は**インストール時点**（zip版はawase.exe自体が削除さ
 Runキーへの書き込みを「ユーザーのクリックに対する直接の同期的な応答」
 からのみ発生させ、バックグラウンドでの無操作な自己修復を廃止した。
 `schtasks`削除も`HKCU\Software\awase\SchtasksMigrated`マーカーで一度きりに
-変更しspawn自体を止めた。設定画面（`awase-settings.exe`）の自動起動
+変更しspawn自体を止めた（マーカーは`scripts/install.ps1`と
+`wix/main.wxs`のインストーラ側でも種まきしており、公式インストーラ経由の
+新規インストールでは初回起動時点でもspawnが一切発生しない——Opus敵対的
+レビュー指摘: マーカー化前は「毎起動→初回のみ」に減っても、その初回
+起動こそが未署名バイナリに対するDefenderの採点が最も厳しいタイミングで
+あり対策の目的を打ち消していた）。設定画面（`awase-settings.exe`）の自動起動
 チェックボックスは、クリック時に即座に`register_path()`/`unregister()`を
 呼ぶ実装に変更し、真実源をconfig.tomlではなくレジストリ実体
 （`is_registered()`）にした（Opus敵対的レビュー指摘、詳細はコミット
@@ -16136,10 +16141,26 @@ spawnを毎起動無条件に戻す、といった変更を検討する前に、
    シグナル自体を復活させることになるため、それがDefender誤検知の再発と
    無関係だと確認できてから戻すこと。
 
+**残課題（Opus敵対的レビュー指摘、2026-09-07、今回は見送り）:**
+
+- `autostart::is_registered()` はRunキーの値の**存在**しか見ず、指している
+  パスが実在するかは検証しない。ポータブル展開先を移動／別ディレクトリへ
+  再インストールした場合、消えた古いexeを指したまま「登録済み」と判定され、
+  設定画面のチェックボックスも診断も「問題なし」を示してしまう。対応する
+  なら`registered_path()`を追加し、sibling `awase.exe`のパスと比較する形に
+  なる。
+- **既知の発生源:** MSIの`MainExe`コンポーネント（`wix/main.wxs`）は
+  `auto_start`設定に関わらず`RegistryValue`でRunキーへ無条件に書き込む。
+  そのため「`config.toml`は`disabled`なのにRunキーは登録済み」という状態は、
+  ユーザーがawaseの自動起動を明示的にオフにした後にMSIアップグレードが
+  走るたびに再発しうる（新規バグではなく既存の挙動）。今回追加した
+  双方向ドリフト診断は、このケースでもMSI更新のたびに警告を表示する。
+
 **関連ファイル:** `crates/awase-windows/src/autostart.rs`、
 `crates/awase-windows/src/app/bootstrap.rs::handle_auto_start`、
 `crates/awase-windows/src/tray.rs::handle_autostart_toggle`、
 `crates/awase-settings/src/main.rs`（`apply_autostart_toggle`/
 `autostart_bridge`/`recompute_diagnostics`）、`src/config.rs::AppConfig::
-save_auto_start`。関連ADR: `docs/adr/059-autostart-schtasks-to-hkcu-run.md`
-（本バグの対策により一部の記述が陳腐化、要追記）。
+save_auto_start`、`scripts/install.ps1`、`wix/main.wxs`。関連ADR:
+[docs/adr/059-autostart-schtasks-to-hkcu-run.md](adr/059-autostart-schtasks-to-hkcu-run.md)
+の「2026-09-07 追記」節。

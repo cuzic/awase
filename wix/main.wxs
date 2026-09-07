@@ -76,11 +76,22 @@
         <File Id="AwaseExe" Source="dist\awase.exe" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="MainExe"
                        Type="string" Value="" KeyPath="yes" />
+        <!-- ダブルクォートで囲む: スペースを含むインストール先でCreateProcessの
+             解釈が曖昧にならないようにする（Opus敵対的レビュー指摘、
+             2026-09-07。crates/awase-windows/src/autostart.rs::register_path
+             と揃える）。 -->
         <RegistryValue Root="HKCU"
                        Key="Software\Microsoft\Windows\CurrentVersion\Run"
                        Name="awase"
                        Type="string"
-                       Value="[INSTALLDIR]awase.exe" />
+                       Value="&quot;[INSTALLDIR]awase.exe&quot;" />
+        <!-- 新規インストールでは旧バージョン(v1.4.x)のschtasksタスクは最初から
+             存在しないため、awase.exe初回起動時の`schtasks.exe /delete`spawn
+             自体を避ける（Windows Defenderの振る舞い監視対策、Opus敵対的
+             レビュー指摘 2026-09-07。crates/awase-windows/src/autostart.rs::
+             migrate_from_schtasksが見るマーカーと同じキー）。 -->
+        <RegistryValue Root="HKCU" Key="Software\awase" Name="SchtasksMigrated"
+                       Type="integer" Value="1" />
         <RemoveFolder Id="RemoveInstallDir" Directory="INSTALLDIR" On="uninstall" />
       </Component>
       <Component Id="SettingsExe" Guid="83280E86-7973-43A3-84E9-A4B51E47751B">

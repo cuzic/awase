@@ -70,8 +70,22 @@ if (-not (Test-Path "$installDir\config.toml")) {
 }
 
 # Register startup
+# パスをダブルクォートで囲む: スペースを含むインストール先（ユーザー名に
+# スペースがあるプロファイル等）でCreateProcessの解釈が曖昧にならないよう
+# にする（Opus敵対的レビュー指摘、2026-09-07。crates/awase-windows/src/
+# autostart.rs::register_pathと揃える）。
 $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-Set-ItemProperty -Path $regPath -Name "awase" -Value "$installDir\awase.exe"
+Set-ItemProperty -Path $regPath -Name "awase" -Value "`"$installDir\awase.exe`""
+
+# 新規インストールでは旧バージョン(v1.4.x)のschtasksタスクは最初から
+# 存在しないため、awase.exe初回起動時の`schtasks.exe /delete`spawn自体を
+# 避ける（Windows Defenderの振る舞い監視対策、Opus敵対的レビュー指摘
+# 2026-09-07。未署名バイナリの最初の実行はDefenderが最も厳しく採点する
+# タイミングであり、初回起動でも無操作のプロセスspawnを残さない）。
+# crates/awase-windows/src/autostart.rs::migrate_from_schtasksが見る
+# マーカーと同じキー。
+New-Item -Path "HKCU:\Software\awase" -Force | Out-Null
+Set-ItemProperty -Path "HKCU:\Software\awase" -Name "SchtasksMigrated" -Value 1 -Type DWord
 
 # Create Start Menu shortcut
 $shell = New-Object -ComObject WScript.Shell

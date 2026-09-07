@@ -152,15 +152,26 @@ pub fn migrate_from_schtasks() {
     match &output {
         Ok(o) if o.status.success() => {
             tracing::info!("Migration: removed legacy schtasks task '{TASK_NAME}'");
+            set_schtasks_migration_marker();
         }
         Ok(_) => {
-            // タスクが存在しない場合は正常（ほとんどの実行はここを通る）
+            // タスクが存在しない場合（ほとんどの実行はここを通る）と、
+            // アクセス拒否等の他エラーの両方がここに来る（schtasks /delete は
+            // どちらも終了コード1を返すため区別できない）。どちらも「もう
+            // spawnし続ける理由がない」終端状態としてマーカーを立てる
+            // （Opus敵対的レビュー指摘、2026-09-07）。
+            set_schtasks_migration_marker();
         }
         Err(e) => {
+            // プロセス自体の起動に失敗（PATHにschtasks.exeが無い、
+            // AppLocker/SRPでブロックされている等）。この場合はマーカーを
+            // 立てず次回起動で再試行させる——立ててしまうと、環境要因で
+            // 一度でも起動に失敗しただけで旧タスクが永久に残り、Runキーとの
+            // 二重起動が固定化する（Opus敵対的レビュー指摘、2026-09-07:
+            // 以前はここでもマーカーを立てていた）。
             tracing::warn!("Migration: failed to invoke schtasks: {e}");
         }
     }
-    set_schtasks_migration_marker();
 }
 
 fn schtasks_migration_marker_is_set() -> bool {
