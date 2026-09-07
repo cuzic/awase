@@ -334,14 +334,21 @@ Imm32観測可能アプリでしか救えない上、単独では不十分（方
   delegateが優先される（本ADRの対象範囲外——このケースでは元々awase側が
   意味論を肩代わりする設計であり、ユーザーはGJI自身に処理させる選択を
   していないため）。
-- **awaseはGJIが実際に何をするかを予測できない。** `classify_mode_key_
-  ime_action`は「ON/OFF/Toggleのどれに分類されるか」だけを抽出し、
-  Mozcのstatus→command全表は持たない。`CUSTOM`キーマップ（ATOKベースから
-  作成した可能性がある、BUG-119の元報告環境）では、`Precomposition`行が
-  `CancelAndIMEOff`であってもDirectInput行だけを見て`TurnOn`に分類する
-  組み合わせが存在しうる——「TurnOn検出なのに実際には別状態でOFFされる」
-  ケースは本ADRの`TurnOn`限定という安全策でも完全には防げない、という
-  前提を明記しておく。
+- **（r1補足、PRレビューで訂正）`TurnOn`分類は構造的に「全状態でOFFに
+  ならない」ことを保証する。** 当初「`Precomposition`行が`CancelAndIMEOff`
+  であってもDirectInput行だけを見て`TurnOn`に誤分類しうる」という懸念を
+  記録していたが、実コード確認の結果これは起きない。`classify_and_push`
+  （`crates/awase-gji-config/src/keymap.rs:279-284`）は`off_statuses`が
+  空の場合に限り`on`バケットへ積む。`CancelAndIMEOff`は`command.rs:72`で
+  `ImeOff`にエイリアスされる（BUG-115対策）ため、DirectInput→IMEOn +
+  Precomposition→CancelAndIMEOffの組み合わせは`on_statuses`/
+  `off_statuses`が両方非空になり、`Toggle`に分類される（`On`にはならない）。
+  つまり**GJI検出由来で`TurnOn`と分類されたキーは、定義上どの状態にも
+  OFF相当のバインドを持たない**——これが「belief ON中に辞退してもbelief
+  乖離が起きない」ことのより強い（no-opに頼らない）根拠になる。MS-IME側
+  （`crates/awase-windows/src/msime_key_assignment.rs:244-253`）も無変換は
+  `TurnOff`/`Toggle`のみを取り、`TurnOn`は変換の`KeyAssignmentHenkan=1`
+  （IME ON固定）のみのため同様に安全。
 - 消費点3（`turn_on_direction`、Eisu救済の方向判定）は、辞退後も
   `muhenkan/henkan_delegate_to_open_axis()`を素直に読み続けるため
   「delegateが発火した」という前提で方向を決めるが、TurnOn方向の辞退時は
