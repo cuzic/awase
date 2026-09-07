@@ -331,9 +331,10 @@ mod windows_impl {
             ));
         }
         // REG_SZ はUTF-16LE、末尾NULを含む。
-        let units: Vec<u16> = bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        let (chunks, _remainder) = bytes.as_chunks::<2>();
+        let units: Vec<u16> = chunks
+            .iter()
+            .map(|&c| u16::from_le_bytes(c))
             .take_while(|&u| u != 0)
             .collect();
         let s = String::from_utf16(&units)
