@@ -16084,3 +16084,62 @@ delegateに限定した修正**——`kp_stage_shadow_ime_toggle`の所有権判
 `crates/awase-windows/src/gji_charset_autodetect.rs`
 （`classify_thumb_key_ime_actions`）。関連: BUG-115（本バグの原因となった
 自動検出機能の追加元）、BUG-118（同じdelegate機構のTurnOn方向欠陥、C2）。
+
+---
+
+## BUG-120: Windows Defenderが`Behavior:Win32/Persistence.A!.ml`としてawase.exeを誤検知（対策は補助的、未確認・恒久対策はコード署名）
+
+**症状:** 複数ユーザーからWindows Defenderがawaseを誤検知する報告。
+`docs/bug-reports-triage.md`の`01M1VD20QTPAEGC7P8JKDQPN1Z`（2026-09-06、
+v1.19.0）は**インストール時点**（zip版はawase.exe自体が削除される）の検出で、
+「配布物(未署名exe)へのヒューリスティック/レピュテーション誤検知」と結論し
+対応不可クローズ済み。2026-09-07、別途`Behavior:Win32/Persistence.A!.ml`
+（振る舞い監視ベースのML判定）という具体的な検知名の報告があり、
+`fix/autostart-defender-persistence-fp`で対策を試行した。
+
+**採用した仮説:** awase.exeはグローバル低レベルキーボードフック
+(`WH_KEYBOARD_LL`)を張りIMEへキー注入する（アプリの存在理由そのもので
+削除不可能）。加えて修正前は、起動のたびに`config.toml`の`auto_start`が
+`"enabled"`なのにHKCU Runキーへの自己登録が見当たらない場合、**ユーザー
+操作なしで**黙って`RegSetKeyValueW`により再登録する「自己修復」処理
+（`bootstrap.rs::handle_auto_start`）と、毎起動無条件で`schtasks.exe /delete`
+を隠しウィンドウでspawnする処理（`autostart.rs::migrate_from_schtasks`）を
+持っていた。「持続化キー経由で起動→無操作で持続化キーを再確認・
+再書き込み/schtasks実行→グローバルフック設置」は、持続化型マルウェアの
+典型的挙動パターンと見分けがつきにくい、という仮説のもとで対策した。
+
+**対策（コード確認・コンパイル確認のみ、実機Defenderでの検証は未実施）:**
+Runキーへの書き込みを「ユーザーのクリックに対する直接の同期的な応答」
+からのみ発生させ、バックグラウンドでの無操作な自己修復を廃止した。
+`schtasks`削除も`HKCU\Software\awase\SchtasksMigrated`マーカーで一度きりに
+変更しspawn自体を止めた。設定画面（`awase-settings.exe`）の自動起動
+チェックボックスは、クリック時に即座に`register_path()`/`unregister()`を
+呼ぶ実装に変更し、真実源をconfig.tomlではなくレジストリ実体
+（`is_registered()`）にした（Opus敵対的レビュー指摘、詳細はコミット
+`824557c8`以降のfix/autostart-defender-persistence-fpの各コミット参照）。
+
+**再導入前に必ず読むこと（この節が本エントリの主目的）:** 「バックグラウンド
+での自動修復が無いのは不便だ/バグだ」と考えて`handle_auto_start`に
+`register()`呼び出しを復活させる、または`migrate_from_schtasks`の
+spawnを毎起動無条件に戻す、といった変更を検討する前に、必ず以下を読むこと。
+
+1. 本エントリと`docs/bug-reports-triage.md`の`01M1VD20QTPAEGC7P8JKDQPN1Z`行
+   （2026-09-07追記部分）。
+2. **この対策で実際にDefenderの検知が止まったかどうかは未検証。**
+   `01M1VD20QTPAEGC7P8JKDQPN1Z`はexeが一度も実行される前（インストール時）
+   の検出であり、静的/レピュテーション判定（未署名・低配布数exeへのML
+   判定）が主因の可能性が高い。その場合は振る舞い監視シグナルを減らしても
+   Defenderの判定閾値は割らない。恒久対策の本命はコード署名
+   （Authenticode / Microsoft Trusted Signing）とMicrosoftへの誤検知報告
+   （WDSI submission）であり、本エントリの対策はあくまで補助。
+3. 自己修復を戻すなら、「無操作でのWin32/レジストリ書き込み」という
+   シグナル自体を復活させることになるため、それがDefender誤検知の再発と
+   無関係だと確認できてから戻すこと。
+
+**関連ファイル:** `crates/awase-windows/src/autostart.rs`、
+`crates/awase-windows/src/app/bootstrap.rs::handle_auto_start`、
+`crates/awase-windows/src/tray.rs::handle_autostart_toggle`、
+`crates/awase-settings/src/main.rs`（`apply_autostart_toggle`/
+`autostart_bridge`/`recompute_diagnostics`）、`src/config.rs::AppConfig::
+save_auto_start`。関連ADR: `docs/adr/059-autostart-schtasks-to-hkcu-run.md`
+（本バグの対策により一部の記述が陳腐化、要追記）。

@@ -45,6 +45,16 @@ jobs:
       # `cargo test --doc -p timed-fsm` に限定すること)。
       - run: cargo nextest run --workspace --lib
       - run: cargo nextest run -p awase-windows --test architecture_guard --test golden_scenarios --test layer_boundary_guard
+      # awase-settings はWindows専用ではなく非Windowsホストでもビルド可能な
+      # ように意図的に維持されている（main.rs内に#[cfg(not(target_os =
+      # "windows"))]の分岐が複数存在）。しかし他のCIジョブは全て
+      # `--target x86_64-pc-windows-msvc` 付きでしかこのcrateをビルドしない
+      # ため、ホストターゲットでのビルド経路がCIに一つも無かった。2026-09-07、
+      # awase-settingsからWindows専用モジュール(awase_windows::autostart、
+      # #[cfg(windows)])を無条件参照するコードが追加され、ホストビルドが
+      # E0433で壊れていたにもかかわらずCIは全green のまま検出できなかった
+      # （Opus敵対的レビューで発覚）。この穴を塞ぐための最小限の1行。
+      - run: cargo check -p awase-settings
 
   windows-cross-check:
     runs-on: ubuntu-latest

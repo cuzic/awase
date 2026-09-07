@@ -121,3 +121,23 @@ HKCU\Run はすべての Windows ユーザーアプリが採用する標準的�
 ## 関連 ADR
 
 - ADR-052: トレイパニックリセット（`TaskbarCreated` による recreate の設計）
+
+## 2026-09-07 追記: Windows Defender誤検知対策による設計変更
+
+Windows Defenderが`Behavior:Win32/Persistence.A!.ml`としてawaseを誤検知する
+報告への対策（詳細は[docs/known-bugs.md BUG-120](../known-bugs.md#bug-120-windows-defenderがbehaviorwin32persistenceamlとしてawaseexeを誤検知対策は補助的未確認恒久対策はコード署名)）
+により、本ADRが記述する2箇所の挙動が変わった。
+
+1. `handle_auto_start()`は、`config.toml`の`auto_start`が`"enabled"`なのに
+   実際のRunキー登録が無い場合の**自動再登録（`register()`呼び出し）を
+   廃止**した。ズレの検知はログ記録のみで、ユーザーへの可視化は設定画面
+   （`awase-settings`）を開いたときの診断表示に一本化した。Runキーへの
+   書き込みはトレイメニューまたは設定画面のチェックボックス操作という
+   「ユーザーのクリックに対する直接の同期的な応答」からのみ発生する。
+2. `migrate_from_schtasks()`は、毎起動無条件で`schtasks.exe /delete`を
+   spawnしていたのを、`HKCU\Software\awase\SchtasksMigrated`マーカーで
+   一度きりの実行に変更した（v1.4.x からの移行はもう十分完了している
+   ため、無操作でのプロセスspawn自体を止める狙い）。
+
+本ADRの「なぜこの設計か」節（HKCU\Run採用の理由）自体は変わらない。
+変わったのは「登録・解除をいつ行うか」という呼び出しタイミングの方針。
