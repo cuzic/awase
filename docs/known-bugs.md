@@ -15895,7 +15895,7 @@ BUG-115/ADR-092決定D Step4b）以降、直接入力中に無変換キーを単
 物理キーがOSへ一切送出されなくなり、パススルー設定が機能しなくなった。
 
 **機序（コード確認済み）:** `resolve_pending_thumb_as_single`
-（`src/engine/nicola_fsm.rs:1977-2038`）は、無変換/変換の単独タップ確定時に
+（`src/engine/nicola_fsm.rs:1977`起点、delegate分岐は`:2020-2038`）は、無変換/変換の単独タップ確定時に
 以下の優先順位で処理する。
 
 1. `special.dedicated_fn_key`（専用Fnキー、隠し設定）
@@ -15948,7 +15948,14 @@ open_axis`の判定が`if !composing`でガードされているため`mode_key_
 （パススルー設定）どおりに動作し、影響を受けない。
 
 **修正方針:** [ADR-147](adr/147-thumb-key-delegate-defers-to-user-passthrough.md)
-で検討中。
+で検討中（r1時点、Opusレビューでの指摘反映済み）。**`TurnOn`方向の
+delegateに限定した修正**——`kp_stage_shadow_ime_toggle`の所有権判定
+（`delegate_owns_mode_key_shadow_toggle`）が`mode_key_config`を見ないため、
+`TurnOff`/`Toggle`方向まで無条件に辞退させると「誰もbeliefを追随しない」
+新規の穴を作ることが判明したため。したがって本バグはBUG-119の元報告
+（`DirectInput→IMEOn`、TurnOn方向）は解消するが、GJIのoverlay設定
+（無変換→`Off`が既定）やATOKプリセット（Toggle）を使っているパススルー
+ユーザーには未解消のまま残る——詳細はADR-147の「残存する既知の限界」参照。
 
 **関連ファイル:** `src/engine/nicola_fsm.rs`
 （`resolve_pending_thumb_as_single`/`thumb_solo_special_handling`）、
