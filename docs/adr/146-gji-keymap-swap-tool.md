@@ -2,8 +2,26 @@
 
 ## ステータス
 
-**r4レビュー完了、r5改訂版（2026-09-06、実装前）。premortemはr3時点で
-Blockerゼロと判定、architectがr3で新規Blocker（B-8）を1件検出。**
+**r5レビュー完了、r6改訂版（2026-09-06）。両エージェントともBlocker
+ゼロで収束。設計としては実装着手可能な水準に到達——ただし実装着手前に
+ユーザーへの製品判断確認が必要（下記参照）。**
+
+architect・premortemの両エージェントがr5について「Blockerゼロ」と
+判定した（r0からの累計Blocker8件、B-1〜B-8すべて解消）。残るMajorは
+M-21（決定9の相互作用経路が1つ漏れていた）のみで、r6で反映済み。
+
+**重要: 実装着手前にユーザーへ上げるべき製品判断（architect指摘）**:
+r4〜r5で確定した制約（決定0・決定5のEisu/0xF0対応）により、**かな
+スロット側の入れ替えは、Chrome/VS Code/Windows Terminal/WezTermなど
+TSF-nativeアプリでは恒常的に機能せず、legacy IMM32/ImmCrossアプリ
+でのみ動作する**。非TSFアプリでもIME内部状態次第で`Eisu`行が発火し
+入れ替えが効かない場合がある（決定5参照）。**つまり本ツールの実効
+価値は、事実上「変換/無変換キーにGJIのIMEコマンドを割り当てる」に
+収束しており、当初（r0）想定していた「かなキーの役割入れ替え」の
+価値の大半は実際には得られない。** これは設計の欠陥ではなくawase
+自身のBUG-52/TSF warmup機構との構造的な相互作用だが、「ADR-143の
+代わりにこれを実装する」というr0時点の製品判断の前提が大きく変わって
+いるため、実装着手前にユーザーの意思確認を挟む。
 
 r4はpremortemからBlockerゼロの判定を得たが、architectからは新規に
 B-8（物理かなキーがIME内部状態により`Eisu`(`VK_DBE_ALPHANUMERIC`=
@@ -829,6 +847,30 @@ Precomposition/Composition等でHenkan→CancelAndIMEOff）を生成すると、
 `classify_thumb_key_ime_actions`でどう分類されるかの対応表を作成し、
 `docs/known-bugs.md`または回帰テストとして記録する
 （`.claude/rules/fix-requires-evidence.md`の要求に従う）。
+
+**r6追加（M-21指摘反映）**: `shadow_action`が書かれうる経路を全数
+確認した結果、awase側への波及は上記（経路A）だけでなく3経路ある:
+
+- **経路A**（上記）: `classify_thumb_key_ime_actions`→親指キーの
+  delegate-to-open-axis／`ImeToggleKind`。
+- **経路B**: `gji_charset_autodetect::route_thumb_key_action`の
+  **非親指キー分岐**が、変換/無変換のVKを`on`/`off`/`toggle`
+  （`ime_detect`相当）へpushする。その結果
+  `FocusTracker::enrich_ime_relevance`が`is_sync_key=true`/
+  `sync_direction`/`may_change_ime=true`を立て、**変換キーの押下が
+  「IME状態を変える証拠」としてbeliefへ流入し始める**。決定0が明らかに
+  した「本ツールが実際に機能する層」（変換/無変換を親指キーにして
+  いないユーザー）は、まさにこの経路の当事者である。
+- **経路C**: `resolve_gji_mode_key_shadow_overrides`→
+  `Runtime::enrich_ime_relevance`が、非親指キー時のVK_DBE_HIRAGANA/
+  KATAKANAの`shadow_action`をGJI設定由来の値で**上書き**する。生成した
+  キーマップが、かなキー押下のshadow意味論（TurnOn/TurnOff/Toggle）
+  そのものを変えうる。ただしこの上書きは`None→Some`のみで`Some→None`
+  はしない（0xF1/0xF2は`from_vk`により静的に既に`Some`）ため、
+  `plan()`の`is_kanji_event`判定は変わらず**決定0の配送判定には
+  影響しない**——影響範囲はbelief側（IME状態の追随ロジック）に限られる。
+
+対応表・回帰テストはこの3経路すべてを対象に作成する。
 
 ## 決定10: ADR-141/142との併存関係（r2新設）
 
