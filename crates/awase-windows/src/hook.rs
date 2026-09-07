@@ -139,6 +139,7 @@ pub fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
         is_sync_key: false,   // set by runtime with config
         sync_direction: None, // set by runtime with config
         is_ime_control: vk.is_ime_control(),
+        is_ime_mode_key: vk.is_ime_mode_key_for_ime(),
     }
 }
 

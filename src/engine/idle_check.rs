@@ -14,11 +14,22 @@
 /// - `is_first_key_after_focus`: フォーカス復帰後の resync 対象キー（`RawKeyEvent::
 ///   starts_focus_resync()`）かどうか。true のときガード3（タイピング停止判定）
 ///   のみバイパスする（report `01M0VGJ2M5KQHD1D9V7HAMBHNT`: フォーカス復帰直後は
-///   `output_in_flight_ms` が意味を持たないため）。ガード1・2・4は
+///   `output_in_flight_ms` が意味を持たないため）。ガード1・2・4・5は
 ///   `is_first_key_after_focus` でも必ず効く——特にガード4（明示的 IME 操作直後の
 ///   抑制窓）を緩めると、フォーカス復帰直後にユーザーが意図的に IME 操作した
 ///   直後の conv 誤読で belief を押し付ける経路が生まれる。
+/// - `is_ime_mode_key`: この打鍵自身が IME のモードを動かしうるキーか
+///   （`ImeRelevance::is_ime_mode_key`、`is_ime_mode_key_for_ime()`）。
+///   true なら conv 読み取りをスキップする（ガード5、BUG-113残置課題）。
+///   ガード4の doc が挙げる「Ctrl+変換/無変換」は`explicit_age_ms`経由で
+///   守られているのに、素の 変換/無変換（`note_explicit_ime_action`を呼ばない
+///   passthroughのモードキー）が無防備だった穴を塞ぐ。GJI既定キーマップでは
+///   無変換=直接入力/変換=ひらがなであり、その打鍵直後のconvはGJI側で遷移中
+///   のため、この読み取りとそれに続くdrift correctionのactuation（SendInput）
+///   が時間的に近接し、GJIのTSF composition追跡を乱して「@」を生む
+///   （実機A/Bで確定済みの独立した十分条件、docs/known-bugs.md BUG-113参照）。
 #[must_use]
+#[allow(clippy::fn_params_excessive_bools)] // 各ガード条件を独立の引数として明示（enum化は呼び出し元の可読性を下げる）
 pub const fn should_run_idle_conv_check(
     is_key_down: bool,
     is_tsf_native: bool,
@@ -27,6 +38,7 @@ pub const fn should_run_idle_conv_check(
     typing_idle_ms: u64,
     explicit_suppress_ms: u64,
     is_first_key_after_focus: bool,
+    is_ime_mode_key: bool,
 ) -> bool {
     // ガード 1: KeyDown イベントのみ対象
     if !is_key_down {
@@ -48,6 +60,12 @@ pub const fn should_run_idle_conv_check(
     if explicit_age_ms < explicit_suppress_ms {
         return false;
     }
+    // ガード 5: この打鍵自身が IME モードを動かすキー → conv は遷移中で
+    // 信用できない。加えて、この打鍵で probe を発行しないことが BUG-113
+    // 「読み取りと書き込みの時間的近接」の最大のトリガーを根元から消す。
+    if is_ime_mode_key {
+        return false;
+    }
     true
 }
 
@@ -67,6 +85,7 @@ mod tests {
             IDLE_MS,
             SUPPRESS_MS,
             false,
+            false,
         )
     }
 
@@ -79,6 +98,20 @@ mod tests {
             IDLE_MS,
             SUPPRESS_MS,
             true,
+            false,
+        )
+    }
+
+    fn run_ok_mode_key(is_ime_mode_key: bool) -> bool {
+        should_run_idle_conv_check(
+            true,
+            true,
+            u64::MAX,
+            u64::MAX,
+            IDLE_MS,
+            SUPPRESS_MS,
+            false,
+            is_ime_mode_key,
         )
     }
 
@@ -92,6 +125,7 @@ mod tests {
             u64::MAX,
             IDLE_MS,
             SUPPRESS_MS,
+            false,
             false
         ));
     }
@@ -105,6 +139,7 @@ mod tests {
             u64::MAX,
             IDLE_MS,
             SUPPRESS_MS,
+            false,
             false
         ));
     }
@@ -119,6 +154,7 @@ mod tests {
             u64::MAX,
             IDLE_MS,
             SUPPRESS_MS,
+            false,
             false
         ));
     }
@@ -181,6 +217,7 @@ mod tests {
             u64::MAX,
             IDLE_MS,
             SUPPRESS_MS,
+            false,
             false
         ));
     }
@@ -212,6 +249,7 @@ mod tests {
             IDLE_MS,
             SUPPRESS_MS,
             true,
+            false,
         ));
     }
 
@@ -225,12 +263,45 @@ mod tests {
             IDLE_MS,
             SUPPRESS_MS,
             true,
+            false,
         ));
     }
 
     #[test]
     fn is_first_key_after_focus_false_preserves_legacy_behavior() {
         // 既存の全ケースが is_first_key_after_focus=false で従来どおりであること
+        assert!(!run_ok(IDLE_MS, u64::MAX));
+        assert!(run_ok(IDLE_MS + 1, u64::MAX));
+        assert!(run_ok(u64::MAX, u64::MAX));
+        assert!(!run_ok(u64::MAX, 0));
+    }
+
+    // ── ガード 5: IME モードキー自身の打鍵はスキップ（BUG-113残置課題）──
+
+    #[test]
+    fn guard5_ime_mode_key_skips() {
+        // ガード1〜4を全通過する条件でも is_ime_mode_key=true なら false
+        assert!(!run_ok_mode_key(true));
+    }
+
+    #[test]
+    fn guard5_is_not_bypassed_by_first_key_after_focus() {
+        assert!(!should_run_idle_conv_check(
+            true,
+            true,
+            0,
+            u64::MAX,
+            IDLE_MS,
+            SUPPRESS_MS,
+            true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn guard5_false_preserves_legacy_behavior() {
+        // 既存の代表4ケースが is_ime_mode_key=false で従来どおりであること
+        assert!(run_ok_mode_key(false));
         assert!(!run_ok(IDLE_MS, u64::MAX));
         assert!(run_ok(IDLE_MS + 1, u64::MAX));
         assert!(run_ok(u64::MAX, u64::MAX));

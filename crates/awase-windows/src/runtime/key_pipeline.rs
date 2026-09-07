@@ -586,6 +586,7 @@ impl Runtime {
             crate::tuning::TYPING_IDLE_MS,
             crate::tuning::EXPLICIT_IME_SUPPRESS_MS,
             is_first_key_after_focus,
+            event.ime_relevance.is_ime_mode_key,
         ) {
             // explicit IME 操作直後のスキップのみデバッグログを残す
             // （KeyDown・TsfNative・idle の 3 条件を通過した上で explicit_age だけが残っている場合）

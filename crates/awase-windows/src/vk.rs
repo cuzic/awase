@@ -160,6 +160,30 @@ pub const fn may_change_ime(vk_code: VkCode) -> bool {
     matches!(vk_code.0, 0xF0..=0xF6)
 }
 
+/// OS/IME 側がモード切替として解釈しうる物理キーか
+/// （＝この打鍵の直後は conv の読み取りが信用できないか）。
+///
+/// `may_change_ime`（awase が IME refresh をスケジュールすべきか）とも
+/// `vk_may_mutate_conv`（IMM32 の conv ワードを変えるか、`VK_NONCONVERT`は
+/// 「composition キャンセルキーでありモード選択キーではない」として意図的に
+/// 除外）とも判定軸が異なる。GJI 既定キーマップでは 無変換=直接入力/
+/// 変換=ひらがな であり、`VK_NONCONVERT`(0x1D) は上記2つのどちらにも
+/// 含まれないため、この軸が無いと素の 無変換 の直後に idle-conv-check の
+/// cross-process 読み取りが走り、GJI の TSF composition がまだ遷移中の値を
+/// 拾ってしまう（実機A/Bで確定済みの「@」の独立した十分条件、
+/// docs/known-bugs.md BUG-113参照）。
+///
+/// **`may_change_ime`/`vk_may_mutate_conv` を widen して代用してはならない**——
+/// 前者を広げると `schedule_ime_refresh(20)` の頻度が上がり衝突機会が増え、
+/// 後者を広げると `conv_mutation_seq` 照合とADR-140の判定がずれる。
+#[must_use]
+pub const fn is_ime_mode_key_for_ime(vk_code: VkCode) -> bool {
+    if may_change_ime(vk_code) {
+        return true; // 0x15-0x1A（VK_KANA/IME_ON/JUNJA/KANJI/IME_OFF）+ 0xF0-0xF6
+    }
+    matches!(vk_code.0, 0x1C | 0x1D) // VK_CONVERT / VK_NONCONVERT
+}
+
 /// この VK が IME conv-mode ワード（NATIVE/KATAKANA/FULLSHAPE/ROMAN、
 /// `imm.rs::IME_CMODE_*`）を変えうるかどうかを判定する（BUG-34 横展開
 /// Step0-a、`conv_mutation::bump()` の唯一のゲート）。
@@ -342,6 +366,7 @@ pub trait VkCodeExt {
     fn is_composition_confirm_key(self) -> bool;
     fn is_modifier_free_char(self, os_modifier_held: bool) -> bool;
     fn may_change_ime(self) -> bool;
+    fn is_ime_mode_key_for_ime(self) -> bool;
     fn classify_modifier(self) -> Option<ModifierKey>;
     fn ime_kind(self) -> Option<ImeKeyKind>;
     fn to_pos(self) -> Option<awase::scanmap::PhysicalPos>;
@@ -375,6 +400,9 @@ impl VkCodeExt for VkCode {
     }
     fn may_change_ime(self) -> bool {
         may_change_ime(self)
+    }
+    fn is_ime_mode_key_for_ime(self) -> bool {
+        is_ime_mode_key_for_ime(self)
     }
     fn classify_modifier(self) -> Option<ModifierKey> {
         classify_modifier(self)
@@ -810,8 +838,9 @@ pub(crate) fn build_symbol_to_vk() -> HashMap<char, (VkCode, bool)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ascii_to_vk, build_symbol_to_vk, is_synthetic_dbe_ime_hotkey,
-        should_upgrade_is_japanese_ime, vk_may_mutate_conv, vk_pair_to_ascii, ImeKeyKind, VkCode,
+        ascii_to_vk, build_symbol_to_vk, is_ime_mode_key_for_ime, is_synthetic_dbe_ime_hotkey,
+        may_change_ime, should_upgrade_is_japanese_ime, vk_may_mutate_conv, vk_pair_to_ascii,
+        ImeKeyKind, VkCode, VK_A, VK_RETURN, VK_SPACE,
     };
 
     /// `vk_pair_to_ascii` は `ascii_to_vk` の厳密な逆写像である
@@ -964,6 +993,55 @@ mod tests {
         assert!(!vk_may_mutate_conv(VkCode(0x41)), "'A'");
         assert!(!vk_may_mutate_conv(VkCode(0xEF)), "0xF0 の直前");
         assert!(!vk_may_mutate_conv(VkCode(0xF7)), "0xF6 の直後");
+    }
+
+    // ── BUG-113残置課題: is_ime_mode_key_for_ime ──
+
+    /// VK_CONVERT/VK_NONCONVERT は may_change_ime にも vk_may_mutate_conv にも
+    /// 含まれない第3の軸であることを明文化する（将来のwiden防止）。
+    #[test]
+    fn is_ime_mode_key_for_ime_covers_convert_and_nonconvert() {
+        assert!(is_ime_mode_key_for_ime(VkCode(0x1C)), "VK_CONVERT");
+        assert!(is_ime_mode_key_for_ime(VkCode(0x1D)), "VK_NONCONVERT");
+        assert!(
+            !may_change_ime(VkCode(0x1C)),
+            "VK_CONVERTはmay_change_ime対象外のはず"
+        );
+        assert!(
+            !vk_may_mutate_conv(VkCode(0x1D)),
+            "VK_NONCONVERTはvk_may_mutate_conv対象外のはず"
+        );
+    }
+
+    #[test]
+    fn is_ime_mode_key_for_ime_is_superset_of_may_change_ime() {
+        for raw in [0x15u16, 0x16, 0x17, 0x19, 0x1A] {
+            assert!(
+                is_ime_mode_key_for_ime(VkCode(raw)),
+                "0x{raw:02X} は may_change_ime 対象なので is_ime_mode_key_for_ime も true のはず"
+            );
+        }
+        for raw in 0xF0u16..=0xF6 {
+            assert!(
+                is_ime_mode_key_for_ime(VkCode(raw)),
+                "0x{raw:02X} は VK_DBE_ALPHANUMERIC..=NOROMAN の範囲のはず"
+            );
+        }
+    }
+
+    #[test]
+    fn is_ime_mode_key_for_ime_excludes_ordinary_keys() {
+        assert!(!is_ime_mode_key_for_ime(VK_A), "'A'");
+        assert!(!is_ime_mode_key_for_ime(VK_SPACE));
+        assert!(!is_ime_mode_key_for_ime(VK_RETURN));
+        assert!(!is_ime_mode_key_for_ime(VkCode(0x1B)), "VK_ESCAPE");
+    }
+
+    #[test]
+    fn vk_may_mutate_conv_still_excludes_nonconvert_after_new_axis_added() {
+        // is_ime_mode_key_for_ime の追加が vk_may_mutate_conv の判定に
+        // 逆流していないことの回帰防止（3軸が独立であることの固定）。
+        assert!(!vk_may_mutate_conv(VkCode(0x1D)), "VK_NONCONVERT");
     }
 
     // ── ADR-093: should_upgrade_is_japanese_ime ──

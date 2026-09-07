@@ -13952,7 +13952,7 @@ SHOW イベントは `gji_write_bytes` の増加より確実に遅れて発火�
 の確定した原因ではなく、上記 `Imm32Unavailable` 誤学習経路とは別に検証中の
 候補である**——両者を混同しないこと。
 
-## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消＋ADR-140 Step1（probe/actuation競合の解消）を実装、いずれも実機確認済み。本BUGの主再現手順（物理半角/全角キー）・Ctrl+無変換・Alt+Tab後最初のIME OFFのいずれも再発なし。半角状態での変換/無変換キー単独タップでは「@」単発は残るが大量暴発は解消——`classify_conv_transition`のBUG-26対策分岐が招く周期的Blind VK_IME_OFFバーストが真因と実機ログで特定、未修正（詳細は末尾の追記参照）**）
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消＋ADR-140 Step1（probe/actuation競合の解消）を実装、いずれも実機確認済み。本BUGの主再現手順（物理半角/全角キー）・Ctrl+無変換・Alt+Tab後最初のIME OFFのいずれも再発なし。半角状態での変換/無変換キー単独タップの残置症状は、2026-09-05のA/B実験で確定していた「idle-conv-check probeとGJI actuationの時間的近接」という未修正の独立十分条件が真因と特定し、idle-conv-checkのガード5（IMEモードキー自身の打鍵ではprobeを発行しない）を実装。実機A/B未検証（詳細は末尾の追記参照）**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
 WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
@@ -14757,6 +14757,90 @@ ConvOpenInferenceかつepisode完全一致の場合だけ」を固定）。い�
 --lib`（613件）・`architecture_guard`/`golden_scenarios`/`layer_boundary_guard`
 （109件）は全green、Windowsターゲットの`cargo check`/`cargo clippy`も
 警告ゼロを確認。実機ソークは次のログで確認する。
+
+**追記（2026-09-06 続き・上記修正だけでは「@」が解消せず、真因を別途特定・
+2次修正を実装）:** 実機で上記修正版を確認したところ、無操作時の周期バースト
+は解消したが、**ユーザーが報告した本来の症状（半角状態で無変換/変換キーを
+単独タップすると「@」が単発で出る）は解消しなかった**。実機ログで追跡した
+ところ、「エピソードの最初の1回」の送信自体が、**その乖離を検出した
+idle-conv-checkのtickが、まさにそのキー押下によって駆動されている**ため、
+物理キー押下から一直線（idle-conv-check probe → `ReportOpenInference` →
+`schedule_ime_refresh(20)` → 20〜25ms後に`ir_apply_drift_correction`が
+`VK_KANJI`をSendInput）で約25ms後に実送信されており、頻度をいくら絞っても
+その1回自体が押下と衝突することが判明した:
+
+```
+00:17:54.232447 vk=0x1D(無変換) KeyDown ... ime_on=false
+00:17:54.233003 [reinject] vk=0x1d down (queued passthrough now firing)
+00:17:54.235591 [ime-io] cross_process kind=probe（idle-conv-checkの読み取り）
+00:17:54.260812 WARN [drift] correction: ... for 24ms → set_ime_open(false)
+                 (source=ConvOpenInference confidence=Medium)
+00:17:54.260942 apply{open=false}: [ime-io] actuation SendInput kind=kanji_marker
+```
+
+**この機構は2026-09-05の63試行A/B実機実験で既に確定していた、未修正のまま
+残っていた独立十分条件と完全に一致する**（本節冒頭近くの「未解決・次にやる
+こと」参照）: 「`kp_stage_idle_conv_check`のcross-process読み取り
+（`IMC_GETCONVERSIONMODE`）とGJIへのSendInputによるIME actuationが時間的に
+近接して発生すること」が、当時「4回に1回、きわめて整合的」に「@」を発生
+させる十分条件として確定していたが、二重actuation解消（dedup）の修正だけが
+実装され、こちらは「次に着手する場合は別途新しい診断コードを起こすこと」と
+記されたまま2026-09-06まで未着手だった。なお、ユーザーから「PSReadLine
+自体のバグでは」という指摘もあったが、2026-09-05の調査で既に「症状は
+PSReadLine issue #2206と酷似するが機構レベルの一致は未確認、確定している
+唯一の十分条件は上記のawase側の時間的近接」との結論が出ている
+（両OSSを読んでも機構レベルの確証は得られなかった、詳細は上記参照）。
+
+**2次修正（decision4、Opus敵対的設計レビューで収束）:** 「idle-conv-check
+のprobe自体を、そのprobeを引き起こしたキーがIMEモードを動かしうる物理キー
+（変換/無変換等）である場合はそもそも発行しない」というガード5を追加した。
+これは既存のガード4（`explicit_age_ms`、Ctrl+変換/無変換等**awase自身が
+検知した明示操作**直後の抑制）が守っている意図と同じだが、ガード4は
+`note_explicit_ime_action`を呼ぶ経路（awase自身のactuation）でしか
+`explicit_age_ms`が更新されないため、素の変換/無変換のような**passthrough**
+される物理モードキー自体には無防備だった、という穴を塞ぐ。
+
+- `crates/awase-windows/src/vk.rs::is_ime_mode_key_for_ime`: 新規の第3の
+  判定軸（`may_change_ime`/`vk_may_mutate_conv`のいずれとも異なる）。
+  `may_change_ime`を含み、さらに`VK_CONVERT`/`VK_NONCONVERT`(0x1C/0x1D)を
+  含む。**`may_change_ime`/`vk_may_mutate_conv`自体をwidenして代用しては
+  ならない**——前者を広げると`schedule_ime_refresh(20)`の頻度が上がり
+  衝突機会が増え、後者を広げると`conv_mutation_seq`照合とADR-140の判定が
+  ずれる。
+- `src/types.rs::ImeRelevance`に`is_ime_mode_key: bool`フィールドを追加。
+  `crates/awase-windows/src/hook.rs::classify_ime_relevance`で
+  `vk.is_ime_mode_key_for_ime()`をセット。**加えて
+  `runtime/focus_tracker.rs::enrich_ime_relevance`の3箇所
+  （sync_toggle_keys/sync_on_keys/sync_off_keys）でも同時にセットする**
+  ——ユーザーがconfig.tomlで任意のVKをIME同期キーに設定している場合、
+  その打鍵も`hook.rs`側の判定だけでは拾えないため（issue #136/ADR-119
+  「新しいgateを1箇所に置いて満足しない」と同型の穴）。
+- `src/engine/idle_check.rs::should_run_idle_conv_check`にガード5
+  （`is_ime_mode_key`引数、trueならスキップ）を追加。`is_first_key_after_
+  focus`でもバイパスしない（ガード1・2・4と同じ扱い）。
+- `crates/awase-windows/src/runtime/key_pipeline.rs`の呼び出し箇所に
+  `event.ime_relevance.is_ime_mode_key`を追加。
+
+**decision4で解消する範囲・解消しない残余**: 今回ログの連鎖（その打鍵自身が
+probeを開始させ、20〜25ms後にactuationに至るケース）は構造的に消える。
+一方、**別のキーで既に乖離が検知されておりその`schedule_ime_refresh(20)`
+タイマーが偶然、変換/無変換押下と重なるケース**は残りうる（頻度は激減する
+はずだが構造的にゼロではない）。decision1（エピソードラッチ）によりこの
+残余も「1 intentエピソードにつき最大1回」に制限済み。実機A/B（16試行）で
+再現しなければdecision4で十分と判断し、再現した場合は「idle-conv-checkの
+cross-process読み取り完了から一定時間（実測が必要、`.claude/rules/
+tuning-constants.md`対象）はConvOpenInference由来のactuationを延期する
+quiet window」を追加検討する（Opusとの設計相談で決定5として概要は
+詰めてあるが、実測データが無いため今回は見送り）。
+
+`vk.rs`/`idle_check.rs`双方で`bool`引数/フィールドが4つを超えclippy
+pedantic（`fn_params_excessive_bools`/`struct_excessive_bools`）に抵触した
+ため、`#[allow]`を明示（各判定軸が独立の事実を表しており、enumへの統合は
+可読性を下げると判断——`src/types.rs::ModifierState`等の既存の同種
+`#[allow]`と同じ扱い）。
+
+未検証: decision4適用後の実機A/B（半角状態で変換/無変換単独タップを複数回、
+「@」が出ないことの確認）。次のログ取得で確認する。
 
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 

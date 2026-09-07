@@ -522,6 +522,7 @@ mod tests {
                 is_sync_key: sync,
                 sync_direction: sync.then_some(ShadowImeAction::TurnOn),
                 is_ime_control: false,
+                is_ime_mode_key: false,
             },
             modifier_key: None,
             modifier_snapshot: ModifierState::default(),

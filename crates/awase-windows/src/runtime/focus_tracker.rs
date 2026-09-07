@@ -45,7 +45,15 @@ impl FocusTracker {
     ///
     /// `Runtime::enrich_ime_relevance` の実処理をここに集約する。
     /// `sync_toggle_keys` / `sync_on_keys` / `sync_off_keys` に基づいて
-    /// `event.ime_relevance` の `is_sync_key` / `sync_direction` / `may_change_ime` を設定する。
+    /// `event.ime_relevance` の `is_sync_key` / `sync_direction` / `may_change_ime` /
+    /// `is_ime_mode_key` を設定する。
+    ///
+    /// `is_ime_mode_key`（BUG-113残置課題のguard5用）も`may_change_ime`と同じ
+    /// 3箇所で立てる——ユーザーがconfig.tomlで任意のVKをIME同期キーに設定
+    /// している場合、その打鍵も（本来のVK分類上は無関係でも）IMEモードを
+    /// 動かす操作になるため、hook.rs::classify_ime_relevance側の
+    /// is_ime_mode_key_for_ime()だけでは拾えない（ADR-119「新しいgateを
+    /// 1箇所に置いて満足しない」と同型の穴）。
     pub(crate) fn enrich_ime_relevance(&self, event: &mut RawKeyEvent) {
         let vk = event.vk_code;
         let rel = &mut event.ime_relevance;
@@ -54,14 +62,17 @@ impl FocusTracker {
             rel.is_sync_key = true;
             rel.sync_direction = Some(ShadowImeAction::Toggle);
             rel.may_change_ime = true;
+            rel.is_ime_mode_key = true;
         } else if self.sync_on_keys.contains(&vk) {
             rel.is_sync_key = true;
             rel.sync_direction = Some(ShadowImeAction::TurnOn);
             rel.may_change_ime = true;
+            rel.is_ime_mode_key = true;
         } else if self.sync_off_keys.contains(&vk) {
             rel.is_sync_key = true;
             rel.sync_direction = Some(ShadowImeAction::TurnOff);
             rel.may_change_ime = true;
+            rel.is_ime_mode_key = true;
         }
     }
 

@@ -2280,6 +2280,7 @@ mod tests {
                 is_sync_key: true,
                 sync_direction: Some(ShadowImeAction::TurnOff),
                 is_ime_control: false,
+                is_ime_mode_key: false,
             },
             modifier_key: None,
             modifier_snapshot: ModifierState::default(),

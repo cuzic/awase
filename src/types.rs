@@ -147,6 +147,8 @@ pub enum ShadowImeAction {
 }
 
 /// キーの IME 関連情報（プラットフォーム層が事前分類）
+#[allow(clippy::struct_excessive_bools)]
+// 各フィールドは独立の判定軸を1:1で表現（enum化はwiden/意味混同のリスクを増やす）
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ImeRelevance {
     /// このキーが IME 状態を変更する可能性がある
@@ -159,6 +161,18 @@ pub struct ImeRelevance {
     pub sync_direction: Option<ShadowImeAction>,
     /// IME 制御キー（半角/全角等、保留フラッシュ必要）
     pub is_ime_control: bool,
+    /// この打鍵の直後、IME 側の状態（open/conv）が遷移しうるか
+    /// （＝今この瞬間に conv を読んでも信用できないか）。
+    ///
+    /// `may_change_ime`（awase が IME refresh をスケジュールすべきか）とも
+    /// `vk_may_mutate_conv`（IMM32 の conv ワードを変えるか、`VK_NONCONVERT`
+    /// は意図的に除外）とも判定軸が異なる第3の軸（BUG-113 残置課題）。
+    /// GJI 既定キーマップでは 無変換=直接入力/変換=ひらがな であり、この軸が
+    /// 無いと素の 変換/無変換 の直後に idle-conv-check の cross-process 読み取りが
+    /// 走り、GJI の TSF composition がまだ遷移中の値を拾って drift correction の
+    /// actuation を誘発しうる（読み取りと書き込みの時間的近接、実機A/Bで
+    /// 「@」の独立した十分条件と確定済み、docs/known-bugs.md BUG-113参照）。
+    pub is_ime_mode_key: bool,
 }
 
 // ── キーイベント ──
