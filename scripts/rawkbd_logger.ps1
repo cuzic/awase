@@ -19,6 +19,7 @@ using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using System.IO;
 using System.Globalization;
+using System.Diagnostics;
 
 public class RawKbdLogger
 {
@@ -34,6 +35,10 @@ public class RawKbdLogger
     private static LowLevelKeyboardProc _proc = HookCallback;
     private static IntPtr _hookID = IntPtr.Zero;
     private static StreamWriter _writer;
+    // QueryPerformanceCounter 由来、DateTime.Now (~15ms分解能) より遥かに高精度。
+    // イベント間の真の間隔（本物のADR-149が確認した「0.5ms間隔」相当）を
+    // 判別するために使う。
+    private static readonly Stopwatch _sw = Stopwatch.StartNew();
 
     [StructLayout(LayoutKind.Sequential)]
     public struct KBDLLHOOKSTRUCT
@@ -92,9 +97,10 @@ public class RawKbdLogger
             bool injected = (hookStruct.flags & LLKHF_INJECTED) != 0;
             bool lowerInjected = (hookStruct.flags & LLKHF_LOWER_IL_INJECTED) != 0;
             bool extended = (hookStruct.flags & LLKHF_EXTENDED) != 0;
+            long qpcUs = (long)(_sw.Elapsed.Ticks / (double)(TimeSpan.TicksPerMillisecond) * 1000.0);
             _writer.WriteLine(string.Format(CultureInfo.InvariantCulture,
-                "{0} {1,-7} vk=0x{2:X2} scan=0x{3:X2} flags=0x{4:X} injected={5} lowerInjected={6} extended={7} os_time_ms={8}",
-                DateTime.Now.ToString("HH:mm:ss.fffffff"), action, hookStruct.vkCode, hookStruct.scanCode,
+                "{0} qpc_us={1} {2,-7} vk=0x{3:X2} scan=0x{4:X2} flags=0x{5:X} injected={6} lowerInjected={7} extended={8} os_time_ms={9}",
+                DateTime.Now.ToString("HH:mm:ss.fffffff"), qpcUs, action, hookStruct.vkCode, hookStruct.scanCode,
                 hookStruct.flags, injected, lowerInjected, extended, hookStruct.time));
         }
         return CallNextHookEx(_hookID, nCode, wParam, lParam);
