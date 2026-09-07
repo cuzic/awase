@@ -2,10 +2,12 @@
 
 ## ステータス
 
-**設計確定（r0→r1→r2、Opus敵対的レビュー2周目まで実施・実機ログで
-最終確認済み）。実装前にADR-132/ADR-141整合性確認のみ残る。** 対象は
-BUG-113の残置症状（半角状態で無変換/変換キー単独タップ時に「@」が
-単発で出る）。
+**設計確定（r0→r1→r2→r3、Opus敵対的レビュー3周目まで実施・実機ログで
+最終確認済み）。決定（随伴warmupのoutcome gating）は変更なし——r3は
+より根本的な代替案（後述「検討し棄却した代替案」案D）を検証した結果、
+現行決定を維持するという結論に至った。実装前にADR-132整合性確認のみ
+残る。** 対象はBUG-113の残置症状（半角状態で無変換/変換キー単独タップ
+時に「@」が単発で出る）。
 
 **最終確認**: 2026-09-07 05:40台、Windows実機（dragonflyg4）で
 `grep "IME open axis delegated"`を実行した結果、
@@ -285,6 +287,81 @@ effective_open()`は「同時刻に片方だけ」しか保証せず「1打鍵�
 ——記録しないと次のセッションが同じ「排他的に決める」という記述を
 信じて別の変更を積み重ねるリスクがある。
 
+### 案D（r3で検証、より根本的な代替案、別ADRへ保留を推奨）: `IntentKind::PhysicalImeKey`起因の場合はactuation自体を発行しない
+
+ユーザーから、より根本的な設計提案があった:「GJI/MS-IME自身のキー
+マップ検出（`IntentKind::PhysicalImeKey`）で判明したIME ON/OFFキーは、
+GJI自身のネイティブpassthrough処理に完全に委ね、awase自身は
+`SendInput`を一切送らない。actuationが必要なのはawase自身の明示設定
+（`IntentKind::SyncKey`、Ctrl+変換等）の場合のみ」。
+
+議論の過程で、当初の「GJI側委任はfire-and-forgetでconfirmできないから
+危険」という反論は**誤りと判明した**——TsfNative（`FeedbackPolicy::
+Blind`、実読み戻し不能）では、awase自身が`SendInput`しても
+`outcome=Applied`は「送信呼び出しが成功した」以上の意味を持たず、
+「実際にIMEが開いた」ことのconfirmにはならない。self-actuationと
+trust-GJIはconfirmabilityの観点では対称である。
+
+Opus敵対的レビュー（r3）でこの設計を検証した結果:
+
+1. **「belief追随とactuationの分離」という切り分け自体は既存コード
+   構造と整合する**（`write_physical_key`/`handle_engine_activation_
+   sync`はWin32呼び出しを一切伴わず、実`SendInput`は`GjiDirectStrategy::
+   apply`の`send_ime_mode_key`呼び出し1点に閉じている）。
+2. **配線（`IntentKind`をactuation地点まで届ける経路）は、新規の
+   グローバル状態なしで実現可能**——`ImeModel.last_intent.source`
+   （`UserIntentSource::PhysicalImeKey`/`SyncKey`/`Command`）が既に
+   この情報を保持しており、`ControlLog.shadow_on`と同じパターンで
+   `ImeControlView`に流せば、即時経路（ActivationSync）と約100ms後の
+   delegate経路の両方に届く。ただし`last_intent`はstickyなため、
+   30秒後のdrift correction等、無関係な後続actuationまで誤って
+   巻き込む——`EventSource::SelfActuated`の起案元文字列との二重条件が
+   必要になる。
+3. **「self-actuationの方が信頼性が高い」という非対称性は、
+   confirmabilityではなく「状態カバレッジ」の軸で実在する。**
+   `VK_IME_ON`はGJIがTSF層でネイティブに処理する、全状態で有効な
+   冪等キーであることが実機確認済みだが、`classify_and_push`
+   （`crates/awase-gji-config/src/keymap.rs:281-283`）はTurnOn分類に
+   `on_statuses`が`"DirectInput"`を含むことを要求しないため、
+   **「TurnOnと分類されたが、IME OFF状態では何も起きないキー」が
+   構造的に作れる**。ADR-147の構造的保証（「TurnOn分類のキーはどの
+   状態にもOFF相当のバインドを持たない」）は「OFFにしてしまわない」
+   ことしか保証せず、「OFFからONにできる」ことは保証しない。
+4. **Blocker: `Applied`を詐称する（送っていないのに送った扱いにする）
+   と、TsfNativeにおける唯一のON方向救済機構
+   `apply_force_on_for_imm_broken`が構造的に永久停止する**
+   （`state/ime_actuation.rs::force_on_attempt_allowed`が
+   `applied`がON確定済みの場合に早期returnするため）。round 1の
+   Major 3（belief乖離が検知できない）が、この設計では「検知できない」
+   から「救済経路が構造的に閉じる」へ悪化する。
+5. **決定打: この設計を採用しても、随伴eager warmup
+   （`platform.rs:1459-1467`）は`outcome`を見ないため送信2回が
+   残ってしまう。** warmup gating（本ADRの決定）はどちらの設計でも
+   前提条件であり、それを先に入れた時点で残り送信は1回になり、
+   BUG-113の確立済み機構（重複SendInput）はもう成立しない。案Dが
+   追加で削るのは残り最後の1回であり、限界効用はほぼゼロ。
+
+**結論（r3）: 本ADRの決定（随伴warmupのoutcome gating）を維持し、
+案Dは別ADRとして起票・保留する。** 再検討の条件は、(a) TsfNativeでも
+IME open状態を読める観測手段が手に入ったとき（force-ON救済の代替が
+用意できる）、(b) `classify_and_push`に「`on_statuses`が
+`DirectInput`を含むこと」をTurnOn分類の必要条件として追加し、
+状態カバレッジの穴を塞いだとき、の両方が揃った時点。
+
+**独立した発見（案Dの採否と無関係、`docs/known-bugs.md`への記録を
+推奨）**: `classify_and_push`のTurnOn分類が`DirectInput`状態を要求
+しないという穴は、ADR-147のdelegate機構（`resolve_pending_thumb_as_
+single`、既に物理キーをSuppressしてGJIに届けない設計）が**現時点で
+既に**この分類に依存しているため、対象キーがDirectInput状態で無効
+なら、IME OFFからの復帰が黙って失敗しうる（BUG-115の再来）。これは
+案Dの採否と無関係な既存の潜在バグとして記録する価値がある。
+
+参考: `feedback_immcross_owns_kanji`メモリの原則（「ImmCrossアプリに
+は物理IMEキーを見せない」）と案Dは矛盾しない——「open軸の所有権は
+アプリ/IME環境ごとに排他的でなければならない」という同一の上位原則の
+裏表であり、ImmCross環境ではawaseが所有し物理キーを見せず、GJI検出
+キー環境ではGJIが所有しawaseが手を出さない、という対称的な設計。
+
 ## 必須条件
 
 1. **✅ 完了（2026-09-07）**: `IME open axis delegated (solo tap, key
@@ -307,7 +384,14 @@ effective_open()`は「同時刻に片方だけ」しか保証せず「1打鍵�
    随伴warmup）と、実測時刻・除去した2回を記録する。
 4. **ADR-141への追記または`docs/known-bugs.md`記録**（案Cで発見した
    排他性不変条件の不成立、上記「検討し棄却した代替案」参照）。
-5. `tuning-constants.md`の実測義務は、タイミング定数を変更しないため
+5. **`docs/known-bugs.md`への記録**（案Dのr3レビューで発見した独立の
+   潜在バグ、上記「案D」参照）: `classify_and_push`
+   （`crates/awase-gji-config/src/keymap.rs:281-283`）のTurnOn分類が
+   `on_statuses`に`"DirectInput"`を含むことを要求しないため、
+   ADR-147のdelegate機構が既にこの分類に依存する形でIME OFFからの
+   復帰に黙って失敗しうる（BUG-115の再来）。本ADRの決定・実装とは
+   独立に記録すること。
+6. `tuning-constants.md`の実測義務は、タイミング定数を変更しないため
    対象外。
 
 ## 残された未検証事項
@@ -334,4 +418,6 @@ thumb_as_single`、消費点1）は本ADRの送信3の発生源と同じ関数�
 （C2修正、コミット`246338bc`——本ADRが「排他的に決める」という
 その不変条件の不成立を発見した）、BUG-110/ADR-132（Phase 2節の
 随伴warmupに関する既知の限界コメントが本ADR決定の実装前提条件、
-`platform.rs:1443-1452`）。
+`platform.rs:1443-1452`）、BUG-115（`classify_and_push`の
+DirectInputカバレッジの穴——上記「案D」参照——が再燃しうる領域、
+`crates/awase-gji-config/src/keymap.rs:281-283`）。
