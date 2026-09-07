@@ -1509,11 +1509,12 @@ fn build_bug_report_msime_key_assignment_summary(
     let adopted_fields = if ime_kind == crate::bug_report::BugReportImeKind::MsIme {
         let toggle_assignment = crate::msime_key_assignment::read_toggle_assignment_from_registry();
         let combos = toggle_assignment.to_combos(app.space_is_thumb_key());
-        let adopted_ime_toggle_combos = if combos.is_empty() {
-            None
-        } else {
-            Some(combos.iter().copied().map(parsed_key_combo_label).collect())
-        };
+        // Opus敵対的コードレビューM-1: 空でも`Some(vec![])`にする。
+        // `ime_kind == MsIme`の枝に入った時点で「採用値を計算した」ことは
+        // 確定しているため、`None`（GJI側`ime_*_keys`同様「非該当」の意味）
+        // と「採用ゼロ件」を区別する。
+        let adopted_ime_toggle_combos =
+            Some(combos.iter().copied().map(parsed_key_combo_label).collect());
 
         let delegate_assignment =
             crate::msime_key_assignment::read_delegate_to_open_axis_assignment_from_registry();
@@ -1597,6 +1598,10 @@ fn shadow_ime_action_str(action: awase::types::ShadowImeAction) -> &'static str 
     }
 }
 
+/// `combo.vk`は見ずSpace固定（レビューR-1）: `MsImeToggleAssignment::
+/// to_combos`が現状生成するのは`VK_SPACE`のみのため実害はないが、
+/// 将来`to_combos`が他のVKを返すようになった場合はこの関数も
+/// 追随させること。
 fn parsed_key_combo_label(combo: awase::config::ParsedKeyCombo) -> String {
     let mut label = String::new();
     if combo.ctrl {

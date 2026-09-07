@@ -194,6 +194,28 @@ pub struct BugReportStateSnapshot {
 ///   `sync_gji_charset_autodetect`がこれらの値を全部解除するため、
 ///   非アクティブ時に計算すると「既に解除済みの設定」を「現在の設定」
 ///   であるかのように報告してしまう（Opus敵対的レビューG1で検出）。
+///
+/// # この型の安全性が依存している前提（レビューF7・S-2）
+///
+/// `ime_*_keys`/`mode_*_keys`に含まれるVK名は
+/// `awase_gji_config::keymap::mozc_key_to_vk_name`のallowlist
+/// （固定エイリアス表と`F1`-`F24`のみ）を通過したものだけであり、
+/// `config1.db`由来の任意文字列が混入する経路はない。**将来「未対応の
+/// キートークンも診断のため載せよう」という変更を加えると、この
+/// allowlistという唯一の防壁を素通りして`config1.db`由来の任意文字列を
+/// 送信するチャネルに変質する**ため、そのような変更は行わないこと。
+///
+/// # `ime_*_keys`はawaseが実際に採用したキー集合ではない（レビューS-3）
+///
+/// `ime_on_keys`/`ime_off_keys`/`ime_toggle_keys`は
+/// `awase_gji_config::keymap::extract_ime_keys`の抽出結果をそのまま
+/// 反映したものであり、awase本体が実際にIME ON/OFF自動検出へ採用する
+/// 際にさらに適用する安全範囲フィルタ（`gji_charset_autodetect.rs::
+/// is_in_safe_autodetect_range`、F15-F24限定、`VK_KANJI`等はBUG-14
+/// 対策で除外）は通していない。したがって、ここに`"VK_KANJI"`等
+/// フィルタで除外されるはずのVK名が現れても、それは「awaseがその
+/// キーを誤って自動検出に採用した」ことを意味しない——`config1.db`側の
+/// 生の宣言をそのまま見せているだけである。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct BugReportGjiKeymapSummary {
     /// `"NotFound"` / `"ParseFailed"` / `"Ok"`。
@@ -787,8 +809,14 @@ mod tests {
             has_henkan_muhenkan_overlay: false,
             custom_keymap_table_present: true,
             custom_keymap_table_is_effective: true,
-            ime_on_keys: Some(vec!["VK_F21".to_owned()]),
-            ime_off_keys: Some(vec!["VK_F22".to_owned()]),
+            // Opus敵対的コードレビューS-1: henkan/muhenkan_classified_kindが
+            // "On"/"Off"になるのは、実コードでは無変換/変換キー自身
+            // （VK_CONVERT/VK_NONCONVERT）がcustom_keymap_tableでIMEOn/Off
+            // に割り当てられている場合のみ（`classify_thumb_key_ime_actions`
+            // 参照）。VK_F21/F22だけではこの組み合わせは到達不能だったため、
+            // フィクスチャに含める。
+            ime_on_keys: Some(vec!["VK_F21".to_owned(), "VK_CONVERT".to_owned()]),
+            ime_off_keys: Some(vec!["VK_F22".to_owned(), "VK_NONCONVERT".to_owned()]),
             ime_toggle_keys: Some(vec![]),
             mode_set_keys: Some(vec![("VK_F6".to_owned(), "Hiragana".to_owned())]),
             mode_toggle_alphanumeric_keys: Some(vec![]),

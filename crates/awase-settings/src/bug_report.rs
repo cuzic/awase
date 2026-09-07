@@ -135,7 +135,7 @@ impl BugReportApp {
         app
     }
 
-    /// 添付チェックボックス4つとその下のステータスラベルを描画する。
+    /// 添付チェックボックス（現在6個）とその下のステータスラベルを描画する。
     /// `update` の行数を抑えるための抽出（clippy::too_many_lines）。
     /// 戻り値: いずれかのチェックボックスが変化したか。
     fn draw_attachment_checkboxes(&mut self, ui: &mut egui::Ui) -> bool {

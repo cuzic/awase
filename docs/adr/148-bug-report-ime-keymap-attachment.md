@@ -2,20 +2,45 @@
 
 ## ステータス
 
-**設計フェーズ（起票のみ、未実装）。** Opus敵対的レビュー1ラウンド目で
-Must-fix 4件（F1・F2・F5・F8）・Should-fix 12件（F3・F4・F6・F7・F9〜F16）
-を検出、反映した（142→148改番含む）。2ラウンド目でF1〜F19は全件解消を
-確認された上で、改訂自体が生んだ新規の欠陥がMust-fix 1件（G1: GJI/
-MS-IME「採用値」フィールドに`ime_kind`一致ゲートが抜けていた）・
-Should-fix 2件（G2: `custom_keymap_table_present`の欠落、G3: GJI側
-採用値の粒度〈分類系/採用系〉未分離）検出され、反映した（参考意見
-G4〜G6も反映済み）。3ラウンド目でG1〜G6は全件解消を確認された上で、
-`*_adopted_route`関連の残課題がShould-fix 1件（H1: 専用Fnキー設定時に
+**実装済み（`feat/adr148-bug-report-ime-keymap`、develop未マージ）。**
+設計は4ラウンドのOpus敵対的レビューで収束済み。実装後、同じ観点で
+Opus敵対的コードレビューを実施し、Must-fix 1件（M-1:
+`adopted_ime_toggle_combos`が空のとき`None`に潰していた——「MS-IME
+非アクティブ」と「MS-IMEアクティブだが採用ゼロ件」を区別できなく
+なる設計逸脱）・Should-fix 5件（S-1: テストフィクスチャの
+分類系/採用系が実コードで到達不能な組み合わせだった、S-2:
+`mozc_key_to_vk_name`allowlist依存の型docコメントが欠落、S-3:
+`ime_*_keys`が安全範囲フィルタ適用前である旨の型docコメントが欠落、
+S-4: 本ステータス節の更新漏れ〈今回対応〉、S-5: ADR-095送信項目
+インベントリへの追記漏れ）を検出、全件反映した。呼び出し等価性
+（`classify_thumb_key_ime_actions`/`gate_thumb_key_ime_actions`の
+引数、`route_thumb_key_action`の分岐との一致）・`read_config1_db`の
+副作用（既存ラッチを汚染しないか）・TypeScript側の整合性はいずれも
+「該当なし」（問題なし）。
+
+設計レビュー・実装レビューとも詳細な経緯は以下（設計フェーズ時点の
+Must-fix 4件+Should-fix 12件〈F1〜F19〉、G1〜G6、H1・H2）を参照。
+
+### 設計フェーズの経緯（参考、折りたたみ）
+
+<details>
+<summary>設計フェーズのOpus敵対的レビュー4ラウンドの経緯（折りたたみ）</summary>
+
+Opus敵対的レビュー1ラウンド目でMust-fix 4件（F1・F2・F5・F8）・
+Should-fix 12件（F3・F4・F6・F7・F9〜F16）を検出、反映した
+（142→148改番含む）。2ラウンド目でF1〜F19は全件解消を確認された上で、
+改訂自体が生んだ新規の欠陥がMust-fix 1件（G1: GJI/MS-IME「採用値」
+フィールドに`ime_kind`一致ゲートが抜けていた）・Should-fix 2件（G2:
+`custom_keymap_table_present`の欠落、G3: GJI側採用値の粒度〈分類系/
+採用系〉未分離）検出され、反映した（参考意見G4〜G6も反映済み）。
+3ラウンド目でG1〜G6は全件解消を確認された上で、`*_adopted_route`
+関連の残課題がShould-fix 1件（H1: 専用Fnキー設定時に
 `muhenkan_adopted_route: "Delegate"`が実際には発火しない優先順位の
 マスキングが未反映）・実装メモ1件（H2: `ime_kind`評価を1回に固定する
-実装上の注意）検出され、反映した。**4ラウンド目でH1・H2の解消を確認、
-追加指摘なし＝収束を確認済み。** 実装フェーズへ進める（実装時は本文中の
-各レビュー注記〈F1〜F19・G1〜G6・H1〜H2〉に沿って型・配線を作ること）。
+実装上の注意）検出され、反映した。4ラウンド目でH1・H2の解消を確認、
+追加指摘なし＝収束を確認済み。
+
+</details>
 
 ### 番号について
 
@@ -282,9 +307,16 @@ MS-IME側（`msime_key_assignment.rs`の3関数）はレジストリの都度読
      と呼ぶ）
    - `mode_set_keys: Option<Vec<(String, String)>>`（VK名と
      `GjiCompositionMode`の文字列表現。**レビューF17対応**: `Debug`
-     表記ではなく`awase_gji_config::command::GjiCompositionMode`に
-     `serde::Serialize`を追加し、そのシリアライズ結果を使う——`Debug`は
-     外部crateのバリアント名変更で静かに壊れるため）/
+     表記に依存せず、`GjiCompositionMode`の全バリアントを網羅した
+     ローカルなmatch式（`message_handlers.rs::gji_composition_mode_str`）
+     で文字列化する——`Debug`は外部crateのバリアント名変更で静かに
+     壊れるが、網羅的match式なら新バリアント追加時にコンパイルエラーで
+     気づける。**（実装レビューR-5で確認）** F17は当初
+     `serde::Serialize`の追加を想定していたが、実装ではこの網羅的match
+     方式を採用した——コンパイラが変更を強制する点で狙いは同じであり、
+     `GjiCompositionMode`自体への変更（クレート横断の依存追加）が
+     不要になる分、こちらの方が筋が良い。したがってG4が言及した
+     `GjiCompositionMode`の可視性調整も不要だった（既に`pub`）。）/
      `mode_toggle_alphanumeric_keys: Option<Vec<String>>` /
      `mode_toggle_kana_type_keys: Option<Vec<String>>`（`GjiModeKeys`
      から、同じく`custom_keymap_table_is_effective`との対応で
