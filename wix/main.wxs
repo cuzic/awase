@@ -85,11 +85,20 @@
                        Name="awase"
                        Type="string"
                        Value="&quot;[INSTALLDIR]awase.exe&quot;" />
-        <!-- 新規インストールでは旧バージョン(v1.4.x)のschtasksタスクは最初から
-             存在しないため、awase.exe初回起動時の`schtasks.exe /delete`spawn
-             自体を避ける（Windows Defenderの振る舞い監視対策、Opus敵対的
-             レビュー指摘 2026-09-07。crates/awase-windows/src/autostart.rs::
-             migrate_from_schtasksが見るマーカーと同じキー）。 -->
+        <!-- awase.exe初回起動時の`schtasks.exe /delete`spawn自体を避ける
+             （Windows Defenderの振る舞い監視対策、Opus敵対的レビュー指摘
+             2026-09-07。crates/awase-windows/src/autostart.rs::
+             migrate_from_schtasksが見るマーカーと同じキー）。
+
+             注意（Opus敵対的レビュー指摘、2026-09-07）: このコンポーネントは
+             新規インストールだけでなく上書きアップグレードでも再書き込み
+             される。v1.4.x（schtasks方式）ユーザーがMSI経由で直接
+             アップグレードした場合、ここでマーカーが立つため
+             migrate_from_schtasksが一度も走らず、旧schtasksタスクがRunキー
+             と二重に残る可能性がある。v1.4.xは約5ヶ月前（2026年3月）の
+             バージョンで、以降ずっと毎起動migrationが走っていたため未移行
+             の残存ユーザーはほぼいないと判断し許容した。詳細は
+             docs/known-bugs.md BUG-120参照。 -->
         <RegistryValue Root="HKCU" Key="Software\awase" Name="SchtasksMigrated"
                        Type="integer" Value="1" />
         <RemoveFolder Id="RemoveInstallDir" Directory="INSTALLDIR" On="uninstall" />

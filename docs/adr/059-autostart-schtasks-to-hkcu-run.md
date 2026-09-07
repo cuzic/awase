@@ -125,9 +125,7 @@ HKCU\Run はすべての Windows ユーザーアプリが採用する標準的�
 ## 2026-09-07 追記: Windows Defender誤検知対策による設計変更
 
 Windows Defenderが`Behavior:Win32/Persistence.A!.ml`としてawaseを誤検知する
-報告への対策（詳細は[docs/known-bugs.md](../known-bugs.md)のBUG-120、
-Opus敵対的レビュー指摘でアンカーリンクがスラッグと一致しない懸念が
-あったため見出しへのフラグメントは付けていない）
+報告への対策（詳細は[docs/known-bugs.md](../known-bugs.md)のBUG-120）
 により、本ADRが記述する2箇所の挙動が変わった。
 
 1. `handle_auto_start()`は、`config.toml`の`auto_start`が`"enabled"`なのに

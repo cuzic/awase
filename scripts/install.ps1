@@ -77,13 +77,22 @@ if (-not (Test-Path "$installDir\config.toml")) {
 $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 Set-ItemProperty -Path $regPath -Name "awase" -Value "`"$installDir\awase.exe`""
 
-# 新規インストールでは旧バージョン(v1.4.x)のschtasksタスクは最初から
-# 存在しないため、awase.exe初回起動時の`schtasks.exe /delete`spawn自体を
-# 避ける（Windows Defenderの振る舞い監視対策、Opus敵対的レビュー指摘
+# awase.exe初回起動時の`schtasks.exe /delete`spawn自体を避ける
+# （Windows Defenderの振る舞い監視対策、Opus敵対的レビュー指摘
 # 2026-09-07。未署名バイナリの最初の実行はDefenderが最も厳しく採点する
 # タイミングであり、初回起動でも無操作のプロセスspawnを残さない）。
 # crates/awase-windows/src/autostart.rs::migrate_from_schtasksが見る
 # マーカーと同じキー。
+#
+# 注意（Opus敵対的レビュー指摘、2026-09-07）: このスクリプトは新規
+# インストールだけでなく上書きアップグレードでも無条件に実行される。
+# v1.4.x（schtasks方式）ユーザーがインストーラ経由で直接アップグレード
+# した場合、ここでマーカーが立つため`migrate_from_schtasks()`が一度も
+# 走らず、旧schtasksタスクがRunキーと二重に残る可能性がある（救済経路は
+# インストーラを経由しない手動コピー更新のみ）。v1.4.xは約5ヶ月前
+# （2026年3月）のバージョンで、以降ずっと毎起動migrationが走っていた
+# ため未移行の残存ユーザーはほぼいないと判断し許容した。詳細は
+# docs/known-bugs.md BUG-120参照。
 New-Item -Path "HKCU:\Software\awase" -Force | Out-Null
 Set-ItemProperty -Path "HKCU:\Software\awase" -Name "SchtasksMigrated" -Value 1 -Type DWord
 
