@@ -37,8 +37,8 @@ public class RawKbdLogger
     private static StreamWriter _writer;
     // QueryPerformanceCounter 由来、DateTime.Now (~15ms分解能) より遥かに高精度。
     // イベント間の真の間隔（本物のADR-149が確認した「0.5ms間隔」相当）を
-    // 判別するために使う。
-    private static readonly Stopwatch _sw = Stopwatch.StartNew();
+    // 判別するために使う。Start() で明示的に初期化する。
+    private static Stopwatch _sw;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct KBDLLHOOKSTRUCT
@@ -67,6 +67,7 @@ public class RawKbdLogger
 
     public static void Start(string logPath)
     {
+        _sw = Stopwatch.StartNew();
         _writer = new StreamWriter(logPath, true);
         _writer.AutoFlush = true;
         _writer.WriteLine("=== rawkbd_logger started (awaseとは無関係の独立プロセス) pid=" + System.Diagnostics.Process.GetCurrentProcess().Id + " at " + DateTime.Now.ToString("o"));
