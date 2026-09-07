@@ -597,7 +597,20 @@ impl Engine {
             ShadowImeAction::TurnOff => false,
             ShadowImeAction::Toggle => !ctx.ime_on,
         };
-        tracing::info!("IME open axis delegated (solo tap, key semantics absorption) → {new_open}");
+        // BUG-113 スパイク検証: モード巡回のフックを、この関数（delegate
+        // が実際に発火する唯一の合流点。無変換/変換は shadow_action が
+        // GJI 検出値による override 任せのため、`[shadow-toggle] intent
+        // 昇格` ログでは捕捉できないケースがある）に置き直す。TurnOn
+        // 方向（OFF→ON、今回の再現条件）に限定して巡回する。
+        let spike_mode = if matches!(action, ShadowImeAction::TurnOn) {
+            Some(crate::bug113_spike::next_mode())
+        } else {
+            None
+        };
+        tracing::info!(
+            "IME open axis delegated (solo tap, key semantics absorption) → {new_open} \
+             bug113_spike_mode={spike_mode:?}"
+        );
         // ime_on/ime_off コンボキーと同じ `ime_set_open_effects` を経由する
         // （`prev_activation` を進めて次打鍵での重複 SetOpen を防ぐため必須、
         // 直接 push_effect してはならない。上のdoc参照）。

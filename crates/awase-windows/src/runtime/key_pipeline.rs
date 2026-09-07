@@ -1197,12 +1197,15 @@ impl Runtime {
                 event.vk_code,
             );
         } else {
-            // BUG-113 スパイク検証: OFF→ON への物理IMEキー単独タップ（今回の
-            // 残置症状の再現条件）を新しいエピソードとみなし、案α/案β/両方/
-            // baselineを巡回する。`crate::bug113_spike`削除時はこの呼び出し
-            // ごと削除する。
+            // BUG-113 スパイク検証: モードの巡回自体は
+            // `engine.rs::apply_ime_open_request`（delegateが実際に発火する
+            // 唯一の合流点）で行う。ここでは診断用に現在のモードを読むのみ
+            // （このステージ自体は無変換/変換のTurnOn方向では発火しない
+            // ——shadow_actionがGJI検出override任せのため——起票時の誤診断の
+            // 記録として残す）。`crate::bug113_spike`削除時はこの呼び出しごと
+            // 削除する。
             let spike_mode = if !current && new_val && matches!(kind, IntentKind::PhysicalImeKey) {
-                Some(awase::bug113_spike::next_mode())
+                Some(awase::bug113_spike::current_mode())
             } else {
                 None
             };
