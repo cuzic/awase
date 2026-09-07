@@ -2,9 +2,25 @@
 
 ## ステータス
 
-**r5レビュー完了、r6改訂版（2026-09-06）。両エージェントともBlocker
+**r6レビュー完了、r7改訂版（2026-09-06）。両エージェントともBlocker
 ゼロで収束。設計としては実装着手可能な水準に到達——ただし実装着手前に
-ユーザーへの製品判断確認が必要（下記参照）。**
+(a)ユーザーへの製品判断確認、(b)このworktreeへのdevelop取り込み、
+の2点が必要（下記参照）。**
+
+**r6→r7の重要な訂正（premortemが発見・特定）**: architect・premortem
+両エージェントが決定0（`transport.rs::plan()`の分岐構造）の検証で
+同じ関数を読みながら異なる行番号・異なる分岐を報告する食い違いが生じ、
+原因は**両者が異なるブランチを見ていたこと**と判明した——このworktree
+（`feat/adr140-physical-key-role-substitution`、developの`fae8a3f4`
+から分岐）には無いが、develop本体には既に`246338bc`
+（ADR-141/BUG-118のC2対策、Opus敵対的レビュー2ラウンドで収束済み）が
+`plan()`に新しい分岐（変換/無変換専用のAllow、専用分岐で守られている
+という機序）を追加していた。本ADRはdevelopにマージされて実装される
+ため、決定0をdevelop側の現在のコードに基づいて書き直した（r7）。
+機能的な結論（変換/無変換は常にAllowされる）自体は変わらないが、
+**このworktree自体もdevelopをマージしてから実装に着手する必要がある**
+（premortem自身も「次に検証を頼まれた際は最初にmerge-baseを確認する」
+と教訓化した）。
 
 architect・premortemの両エージェントがr5について「Blockerゼロ」と
 判定した（r0からの累計Blocker8件、B-1〜B-8すべて解消）。残るMajorは
@@ -198,24 +214,38 @@ r0は「ADR-141/143と同じ4要素の全単射モデルによる役割入れ替
   ユーザーに一切意識させない。ユーザーが選ぶのは「どのスロットとどの
   スロットを入れ替えるか」だけ（決定8）。
 
-## 決定0: awase稼働中の配送経路と本ツールの適用条件（r2新設、r3で修正、r4で`f2_warmup_owned`の実体を追加確認）
+## 決定0: awase稼働中の配送経路と本ツールの適用条件（r2新設、r3で修正、r4で`f2_warmup_owned`の実体を追加確認、r6でdevelopとworktreeの乖離を訂正）
 
 r1レビューでarchitectが指摘した懸念（B-2）を、専用Exploreエージェントで
 実コード確認した。r2はこの結果を「VK_DBE_0xF0〜0xF4は無条件Suppress」
 と要約したが、**r2レビューでarchitectが`runtime/transport.rs::plan()`
-（237-357行）を1行ずつ精査した結果、この要約自体が不正確と判明した
-（B-6、premortemもR2-BL-2で同様に検証・自己訂正した）**。私自身も同
-関数を直接読み、さらに`is_tsf_mode && f2_warmup_owned`という条件の
-うち`f2_warmup_owned`の実体（`output/mod.rs::f2_warmup_owned()`→
+を1行ずつ精査した結果、この要約自体が不正確と判明した（B-6、premortem
+もR2-BL-2で同様に検証・自己訂正した）**。私自身も同関数を直接読み、
+さらに`is_tsf_mode && f2_warmup_owned`という条件のうち
+`f2_warmup_owned`の実体（`output/mod.rs::f2_warmup_owned()`→
 `TsfWarmupCoordinator::needs_f2_probe()`→現在の warmup 戦略の
 `needs_f2_probe()`）を`crates/awase-windows/src/tsf/warmup/warmup_strategy.rs`
-で確認した。正しい分岐構造は以下の通り（`runtime/transport.rs::
-PhysicalKeyDisposition::plan`、237-361行、r5訂正：r3は357行までとして
-いたが実際の関数末尾は361行。上から順に評価、最初にマッチした分岐が
-結果を決める。**本表はKeyDownの配送可否のみを扱う**——手順6の実際の
+で確認した。
+
+**r6訂正（重要な手順ミス、premortemが発見）**: r2〜r5の検証は、本ADRを
+書いているworktree（`feat/adr140-physical-key-role-substitution`）内の
+`transport.rs`を対象にしていた。ところが同日、**develop**側で
+`246338bc`（「無変換/変換delegate-to-open-axisのTurnOn方向構造的到達
+不能(C2)をshadow-toggle経路合流で解消」、ADR-141/BUG-118対応、Opus
+敵対的レビュー2ラウンドで収束済み）が`plan()`に新しい分岐を追加して
+おり、このworktreeはこのコミットの前（`fae8a3f4`）から分岐しているため
+含んでいない。**本ADRは（developにマージされて）developの`plan()`に
+対して実装される**ため、以下はdevelop側の現在のコードに基づいて
+記述し直す。この見落とし自体が、architect・premortem双方が同じ関数を
+検証しながら異なる行番号・異なる分岐を報告していた原因だった
+（premortemが`git merge-base`の確認不足に自ら気づき特定した）。
+
+developの`plan()`（`runtime/transport.rs::PhysicalKeyDisposition::plan`）
+の正しい分岐構造は以下の通り（上から順に評価、最初にマッチした分岐が
+結果を決める。**本表はKeyDownの配送可否のみを扱う**——手順7の実際の
 Suppress条件は`shadow_toggled || is_dbe_mode_key_down ||
 matches!(event_type, KeyUp)`のOR結合であり、KeyUpは本表の対象に
-関わらず別途Suppressされうる、r5、premortem MN-B指摘反映）:
+関わらず別途Suppressされうる、premortem MN-B指摘反映）:
 
 1. `profile == AppImeProfile::InputRelay` → **最優先でAllow**。
 2. `event.vk_code == VK_DBE_HIRAGANA`(0xF2、かなスロットの「Hiragana」/
@@ -224,13 +254,31 @@ matches!(event_type, KeyUp)`のOR結合であり、KeyUpは本表の対象に
    明記する通り、以降のImmCross/actuation判定より手前でreturnする）。
    `is_tsf_mode && f2_warmup_owned`のときのみSuppress、それ以外はAllow。
 3. `event.injected` → Allow。
-4. `ime_relevance.shadow_action.is_none()`（変換/無変換を含む、
-   `ImeKeyKind::from_vk`が対象としないVK全般はここに該当）→ Allow
-   （**ImmCrossアプリでもここで先にAllowされる**）。
-5. `profile.can_use_imm32_cross_process()`（ImmCross） → 残りのVK_DBE_*
+4. **`event.vk_code`が`VK_CONVERT`または`VK_NONCONVERT`（変換/無変換）**
+   → **専用の早期分岐（`246338bc`、ADR-141/BUG-118のC2対策）で常に
+   Allow**。この分岐が無いとどうなるかがコード自身のコメントに明記
+   されている——ADR-141のC2対策（delegate-to-open-axisのTurnOn方向
+   構造的到達不能の解消）により、`enrich_ime_relevance`経由でこの2キー
+   にも`shadow_action`が付きうるようになった。対策が無いと次の手順5の
+   `is_kanji_event`判定を通過し、KANJI系VKと同様にImmCross等でSuppress
+   されてしまう。しかし変換/無変換はawase自身がactuationを所有する
+   対象ではなく（delegate/shadow-toggleのどちらでもbelief追随のみで、
+   OS側の実際のIME切替はGJI自身が物理キー配送を通じて行う設計、
+   BUG-115）、Suppressすると「OS側にもawase側にも誰もIMEを切り替えない
+   二重の空振り」になる。**したがって変換/無変換がAllowされる理由は
+   「`shadow_action`を持たないから」ではなく「持ちうるが専用分岐で
+   守られているから」——この1分岐が本ツールの中核前提そのものである。**
+   （r6訂正、premortem M-A発見・訂正版の反映。r5までは`ImeKeyKind::
+   from_vk`が対象としないため`shadow_action`が常にNoneのまま手順5の
+   `!is_kanji_event`でAllowされる、と誤って記述していた——これは
+   `246338bc`より前のworktreeのコードに対しては正しかったが、develop
+   に対しては機序が異なる。）
+5. `ime_relevance.shadow_action.is_none()`（上記2キー以外で
+   `ImeKeyKind::from_vk`が対象としないVK全般はここに該当）→ Allow。
+6. `profile.can_use_imm32_cross_process()`（ImmCross） → 残りのVK_DBE_*
    （0xF0/0xF1/0xF3/0xF4、かなスロットの「Katakana」トークンの実体
    `VK_DBE_KATAKANA`＝0xF1を含む）はDown/Up問わず**常にSuppress**。
-6. それ以外: `ime_actuation_owned`（GjiDirectまたはMsImeDirectが適用
+7. それ以外: `ime_actuation_owned`（GjiDirectまたはMsImeDirectが適用
    可能）かつ`dbe_mode_key_policy == Suppress`（既定）かつ
    `!shift_katakana_passthrough`のときのみ、該当VKのKeyDownを
    Suppress。`ime_actuation_owned`が偽ならAllow。
@@ -276,10 +324,12 @@ r3は「大半のケースでawase稼働中も届く」と書いたが、これ�
   Shift併用・半角英数トグル区間でない・親指キー設定でない——を満たす
   場合のみAllow）、それ以外のアプリでは`ime_actuation_owned`が偽に
   なりAllow。
-- **変換(VK_CONVERT)/無変換(VK_NONCONVERT)は、`ImeKeyKind::from_vk`が
-  対象としないため`plan()`の手順4で（ImmCrossアプリを含め）Allow
-  される**。ただしこれは`plan()`に到達した場合の話であり、
-  `hook.rs::classify_key`がこの2キーをNICOLA親指キー
+- **変換(VK_CONVERT)/無変換(VK_NONCONVERT)は、`246338bc`（ADR-141の
+  C2対策）が追加した専用の早期分岐（手順4）により、ImmCrossアプリを
+  含め常にAllowされる**。この結論自体はr5までと同じだが、r6でその
+  機序（「`shadow_action`を持たないから」ではなく「専用分岐で守られて
+  いるから」）を訂正した。ただしこれは`plan()`に到達した場合の話で
+  あり、`hook.rs::classify_key`がこの2キーをNICOLA親指キー
   （`config.left_thumb_vk`/`right_thumb_vk`）として分類する場合は
   `plan()`に到達する前にengineがConsumeし、GJIには一切届かない。
 
@@ -887,8 +937,13 @@ Precomposition/Composition等でHenkan→CancelAndIMEOff）を生成すると、
 - `awase-settings`の設定GUIに「キー入れ替え」的なタブが2つ（ADR-142の
   ものと本ツールのもの）並ぶことによるユーザーの混乱。
 
-2026-09-06時点でADR-141/142は未実装のため、本ADR単独での実害は無い。
-**ADR-141/142の実装に着手する際、本ADRとの併存関係（排他にするか、
+2026-09-06時点でADR-141/142は設計全体としては未実装だが、**その一部
+（C2対策、BUG-118、`246338bc`）は既にdevelopへマージ済みで、本ADRの
+決定0が依拠する`transport.rs::plan()`そのものを変更している**（r6訂正、
+premortem M-C指摘反映——「ADR-141/142は未実装だから本ADRに実害は無い」
+という当初の切り分けは、少なくとも`plan()`については既に成立して
+いない）。決定0はこの`246338bc`適用後のdevelopのコードを前提とする。
+**ADR-141/142の残りの実装に着手する際、本ADRとの併存関係（排他にするか、
 両方使えるようにしそれぞれの効果範囲・優先順位をUIで明示するか）を
 必ず再検討すること**を、ADR-141/142側にも申し送り事項として記録する
 （未解決の疑問参照）。
