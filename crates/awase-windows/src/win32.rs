@@ -2,6 +2,7 @@
 // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
 //! Windows API の安全ラッパー
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use windows::Win32::Foundation::HWND;
@@ -212,6 +213,43 @@ fn ime_actuation_marker_kind(input: &INPUT) -> Option<&'static str> {
     None
 }
 
+/// `inputs` バッチに含まれる非ゼロ `wVk`（Unicode モードの `wVk=0` を除く）を
+/// 出現順・重複なしで集める（BUG-113 疑似エコー調査用診断ログ）。
+///
+/// `kind=kanji_marker` は `send_ime_mode_key`（GjiDirect/MsImeDirect の
+/// VK_IME_ON=0x16/VK_IME_OFF=0x1A）と `post_kanji_toggle_to_focused`
+/// （KanjiToggle の VK_KANJI=0x19）の両方が同じマーカーを使うため区別できない
+/// （[[project_bug113_vk_kanji_pseudo_echo_2026_09_06]] 未確定点1）。実 VK 値は
+/// この3値が互いに異なるため、ここで戦略を一意に判別できる。
+fn actuation_vks(inputs: &[INPUT]) -> Vec<u16> {
+    let mut vks = Vec::new();
+    for input in inputs {
+        if input.r#type != INPUT_KEYBOARD {
+            continue;
+        }
+        // SAFETY: r#type == INPUT_KEYBOARD を確認済み。
+        let vk = unsafe { input.Anonymous.ki }.wVk.0;
+        if vk != 0 && !vks.contains(&vk) {
+            vks.push(vk);
+        }
+    }
+    vks
+}
+
+/// 最後に awase 自身が actuation（`ime_actuation_marker_kind` が `Some` を
+/// 返した）SendInput を発行した `now_timestamp_us()` 時刻。0 は「まだ一度も
+/// 発行していない」センチネル。BUG-113 疑似エコー調査用診断
+/// （[[project_bug113_vk_kanji_pseudo_echo_2026_09_06]]）: `hook.rs` の
+/// `[hook] IME-mode` 行がこの値との差分を出し、フックに届いた IME モード
+/// キーが直前の自己 actuation からどれだけ経過したかを見えるようにする。
+static LAST_ACTUATION_ISSUE_US: AtomicU64 = AtomicU64::new(0);
+
+/// [`LAST_ACTUATION_ISSUE_US`] を読む。診断ログ専用。
+#[must_use]
+pub(crate) fn last_actuation_issue_us() -> u64 {
+    LAST_ACTUATION_ISSUE_US.load(Ordering::Relaxed)
+}
+
 /// `SendInput` の安全ラッパー（`size_of` キャストを安全に処理）
 ///
 /// BUG-34 横展開 Step0-a: このクレートの全 `SendInput` 呼び出しは本関数を
@@ -237,9 +275,11 @@ pub(crate) fn send_input_safe(inputs: &[INPUT]) -> u32 {
         // 実際の `SendInput` 呼び出しより前にこの分岐があるため、bump は syscall の
         // 前に完了する（決定Bの必須要件）。
         crate::probe_actuation_fence::bump();
+        let issue_us = crate::hook::now_timestamp_us();
+        LAST_ACTUATION_ISSUE_US.store(issue_us, Ordering::Relaxed);
+        let vks = actuation_vks(inputs);
         tracing::debug!(
-            "[ime-io] actuation SendInput kind={kind} issue_us={}",
-            crate::hook::now_timestamp_us()
+            "[ime-io] actuation SendInput kind={kind} vk={vks:02X?} issue_us={issue_us}"
         );
     }
     let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32");
