@@ -1463,8 +1463,14 @@ impl TsfComposition for WindowsPlatform {
             // `injection_mode` は receipt にも settle の引数にも積まない。
             // `sync_gji` の実装内で settle 時点の値を読む（ADR-089 §2.4 細目2）。
             receipt.settle(self);
-            self.output
-                .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Actuated);
+            // ADR-149/BUG-113: 戦略（`ImeOpenStrategy`）が今回の apply で実際に
+            // `VK_IME_ON` を送っている場合（`Applied`/`FallbackSent`）は、この
+            // 随伴 warmup を重ねて送らない。1打鍵あたり最大3回の重複 SendInput
+            // が「@」の確立済み必要条件を満たしていた（実機ログで確認済み）。
+            if awase::platform::should_send_accompanying_warmup(outcome) {
+                self.output
+                    .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Actuated);
+            }
         } else {
             tracing::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");
             self.output

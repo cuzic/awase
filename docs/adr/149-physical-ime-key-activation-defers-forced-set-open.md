@@ -2,12 +2,22 @@
 
 ## ステータス
 
-**設計確定（r0→r1→r2→r3、Opus敵対的レビュー3周目まで実施・実機ログで
-最終確認済み）。決定（随伴warmupのoutcome gating）は変更なし——r3は
-より根本的な代替案（後述「検討し棄却した代替案」案D）を検証した結果、
-現行決定を維持するという結論に至った。実装前にADR-132整合性確認のみ
-残る。** 対象はBUG-113の残置症状（半角状態で無変換/変換キー単独タップ
-時に「@」が単発で出る）。
+**実装完了（2026-09-07）。設計確定（r0→r1→r2→r3、Opus敵対的レビュー3周目
+まで実施・実機ログで最終確認済み）に基づき、`should_send_accompanying_
+warmup`（`src/platform.rs`）を実装、`crates/awase-windows/src/
+platform.rs::on_ime_applied`から配線した。ADR-132（`Phase 2`節の
+`send_eager_tsf_warmup`/INV-B1'）とのコード上の整合性を確認済み——
+本修正は`WarmupImeOn`の値構築（`resolve_warmup_ime_on`/INV-B1'が扱う
+範囲）には一切触れず、`on_ime_applied`の`origin=WarmupOrigin::Actuated`
+呼び出し自体を`outcome`で条件付けるのみであり、この呼び出しはADR-132
+自身が「既知の限界（INV-B1'はこの経路には及ばない）」として明記していた
+箇所（`platform.rs:1443-1452`のコメント）である。force-ONの`Applied`
+（実際に`VK_IME_ON`を送信済み）はその送信自体でTSFが既に温まっている
+はずのため、随伴warmupのスキップによる機能欠落は無いと判断した。**
+`cargo test --lib`（998件）・windows target `cargo check`/`clippy`・
+`architecture_guard`/`golden_scenarios`/`layer_boundary_guard`（109件）
+とも緑。実機ソーク未実施。** 対象はBUG-113の残置症状（半角状態で無変換/
+変換キー単独タップ時に「@」が単発で出る）。
 
 **最終確認**: 2026-09-07 05:40台、Windows実機（dragonflyg4）で
 `grep "IME open axis delegated"`を実行した結果、
@@ -370,27 +380,25 @@ single`、既に物理キーをSuppressしてGJIに届けない設計）が**現
    対応する`execute_from_loop`呼び出し（`:44.551486`）の0.455ms前
    ——に出現することを確認した。「送信3の発生源はNICOLA同時打鍵タイマー
    満了によるdelegate機構」という特定が確定した。
-2. **回帰テスト**（`fix-requires-evidence.md`「キー選択」「IME belief」
-   ファミリー該当）: 随伴warmupの送信可否判定を純粋関数に切り出し
-   （例: `fn should_send_accompanying_warmup(open: bool, outcome:
-   ImeOpenOutcome) -> bool`）、`Applied`/`FallbackSent`/
-   `AlreadyMatched`/`Failed`の各outcomeに対する期待値をLinuxで実行
-   可能な単体テストで固定する。現状`platform.rs`の当該分岐を覆う
-   テストは存在しない。
-3. **`docs/known-bugs.md`のBUG-113修正履歴への追記**（新規BUG番号では
-   なく既存BUG-113への追加修正として積む）: 1打鍵あたり`VK_IME_ON`が
-   3回送信されていた内訳（送信1=戦略の実送信、送信2=送信1直後の随伴
-   warmup、送信3=約100ms後のdelegateタイムアウト由来dispatchに付随する
-   随伴warmup）と、実測時刻・除去した2回を記録する。
-4. **ADR-141への追記または`docs/known-bugs.md`記録**（案Cで発見した
-   排他性不変条件の不成立、上記「検討し棄却した代替案」参照）。
-5. **`docs/known-bugs.md`への記録**（案Dのr3レビューで発見した独立の
-   潜在バグ、上記「案D」参照）: `classify_and_push`
-   （`crates/awase-gji-config/src/keymap.rs:281-283`）のTurnOn分類が
-   `on_statuses`に`"DirectInput"`を含むことを要求しないため、
-   ADR-147のdelegate機構が既にこの分類に依存する形でIME OFFからの
-   復帰に黙って失敗しうる（BUG-115の再来）。本ADRの決定・実装とは
-   独立に記録すること。
+2. **✅ 完了（2026-09-07）**: `should_send_accompanying_warmup(outcome:
+   ImeOpenOutcome) -> bool`として`src/platform.rs`に切り出し、
+   `Applied`/`FallbackSent`（スキップ）・`AlreadyMatched`/`Failed`
+   （送信）の各分岐をLinuxで実行可能な単体テスト2件（`cargo test --lib`）
+   で固定した。`UnsafeToToggle`/`NotOwned`は呼び出し元（`on_ime_applied`）
+   側で既に早期returnされているため対象外。
+3. **✅ 完了（2026-09-07）**: `docs/known-bugs.md`のBUG-113節に、
+   1打鍵あたり`VK_IME_ON`が3回送信されていた内訳（送信1=戦略の実送信、
+   送信2=送信1直後の随伴warmup、送信3=約100ms後のdelegateタイムアウト
+   由来dispatchに付随する随伴warmup）・実測時刻・修正内容を追記し、
+   BUG-113の見出し要約も最新の確定原因に更新した。
+4. **✅ 完了（2026-09-07、`docs/known-bugs.md`記録の形で対応）**: 案Cで
+   発見した排他性不変条件の不成立（上記「検討し棄却した代替案」参照）を、
+   BUG-113節に「独立して発見した未解決事項」として記録した。
+5. **✅ 完了（2026-09-07、`docs/known-bugs.md`記録の形で対応）**: 案Dの
+   r3レビューで発見した独立の潜在バグ（`classify_and_push`の
+   `on_statuses`が`"DirectInput"`を要求しないため、
+   ADR-147のdelegate機構がIME OFFからの復帰に黙って失敗しうる、BUG-115
+   の再来）を、BUG-113節に記録した。
 6. `tuning-constants.md`の実測義務は、タイミング定数を変更しないため
    対象外。
 

@@ -13952,7 +13952,7 @@ SHOW イベントは `gji_write_bytes` の増加より確実に遅れて発火�
 の確定した原因ではなく、上記 `Imm32Unavailable` 誤学習経路とは別に検証中の
 候補である**——両者を混同しないこと。
 
-## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消＋ADR-140 Step1（probe/actuation競合の解消）を実装、いずれも実機確認済み。本BUGの主再現手順（物理半角/全角キー）・Ctrl+無変換・Alt+Tab後最初のIME OFFのいずれも再発なし。半角状態での変換/無変換キー単独タップの残置症状には、idle-conv-check経路の対策（decision1/4）を実装したが実機で解消せず——真因は別系統、awase自身のIME actuation送信の約0.5〜1秒後に「孤児KeyUp→別VKのKeyDown」という物理キーボードでは起こり得ない形のイベントがinjected=falseで届き、正規のユーザー操作としてEngineを勝手に再活性化させる機構（新規、次セッションでBUG番号起票・実機検証予定）と特定。詳細・次セッション手順は末尾の追記参照**）
+## BUG-113: Windows Terminal + GJI で、Engine 有効時に物理半角/全角キー（`VK_DBE_SBCSCHAR`）を押すと余分な「@」が出力される（**二重actuationの解消＋ADR-140 Step1（probe/actuation競合の解消）を実装、いずれも実機確認済み。本BUGの主再現手順（物理半角/全角キー）・Ctrl+無変換・Alt+Tab後最初のIME OFFのいずれも再発なし。半角状態での変換/無変換キー単独タップの残置症状は、[ADR-149](adr/149-physical-ime-key-activation-defers-forced-set-open.md)で根本原因（半角状態でのTurnOn方向単独タップ1回に対し、awase自身が`VK_IME_ON`を3回重複SendInputしていた）を実機ログで確定・修正実装済み。当初仮説だった「OS/ドライバによる疑似エコー」（孤児KeyUp→別VKのKeyDown）は撤回済み——クリーンな実機再現ではそのようなイベントは一切出現せず、内訳が完全に説明できる自己内の3重送信だった。詳細は末尾の追記を参照**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
 WINDOW_CLASS`/`Windows.UI.Input.InputSite.WindowClass`、`AppImeProfile::
@@ -14957,6 +14957,55 @@ Blind VK_IME_OFF×5連射）は実機で解消を確認済み。decision4（idle
 probeを起動させるケース）は構造的に解消したはずだが、**今回発見した
 VK_KANJI疑似エコー機構は全く別の経路であり、decision1/4はこれに対して
 無力だった**。両方とも実装は正しく機能しているため撤回の必要はない。
+
+**追記（2026-09-07、根本原因確定・修正実装、[ADR-149](adr/149-physical-ime-key-activation-defers-forced-set-open.md)）:**
+
+上記の「VK_KANJI疑似エコー」仮説（孤児KeyUp→別VKのKeyDownを OS/ドライバ由来
+と推定）は**撤回する**。クリーンな実機再現（診断ログ拡充後）では、
+`self_injected=false`かつVKが一致しない孤児イベントは一切出現せず、代わりに
+**awase自身が1回の物理キー押下に対し`VK_IME_ON`を正確に3回SendInputして
+いた**ことが確定した（半角状態で無変換/変換キーを単独タップした場合、
+`TurnOn`方向）。内訳:
+
+- 送信1（実送信）: shadow-toggleのbelief書き込み→Engine活性化同期
+  （`ActivationSync`）→戦略（`GjiDirectStrategy`）の実送信
+- 送信2（実送信）: 送信1完了直後、`platform.rs::on_ime_applied`の随伴
+  eager warmup（`send_eager_tsf_warmup`）が`outcome`を見ずに無条件で
+  再送
+- 送信3（実送信）: 約100ms後（`simultaneous_threshold_ms`既定値と一致）、
+  NICOLA同時打鍵タイマー満了によるdelegate機構（`delegate_to_open_axis`
+  `TurnOn`、[ADR-141](adr/141-henkan-muhenkan-delegate-inactive-recovery.md)
+  のPhase 3）が発行した`SetOpen(true)`の随伴warmupが同じく無条件で発火
+
+BUG-113が実機A/Bで確立した必要十分条件「重複したSendInputがGJIのTSF
+composition追跡を乱す」を、この3回の送信がawase単独で満たしていた。
+
+**修正**: `on_ime_applied`の随伴warmup呼び出しを、戦略が今回の`apply`で
+実際に`VK_IME_ON`を送っている場合（`outcome == Applied`または
+`FallbackSent`）はスキップするよう変更（純粋関数
+`awase::platform::should_send_accompanying_warmup`に切り出し、
+`src/platform.rs`にユニットテスト2件を追加）。1打鍵あたりの送信回数は
+3回→1回（送信1のみ）に減少する。
+
+**独立して発見した2つの未解決事項（本修正のスコープ外、記録のみ）:**
+
+1. delegateとshadow-toggleの排他性（[ADR-141](adr/141-henkan-muhenkan-delegate-inactive-recovery.md)
+   が「`&& effective_open()`ゲートが実行時に排他的に決める」と明記する
+   不変条件）は、OFF→ON遷移の打鍵に限り**成立していない**——消費点2
+   （`kp_run_inner`内、`build_input_context`より前に評価）がbeliefを
+   OFF→ONへ書き換えた**後**に消費点1（`resolve_pending_thumb_as_single`、
+   約100ms後のタイムアウトで評価）も発火するため、1打鍵で両方が処理を
+   行う。今回「@」の観点で実害が無かったのは、送信1が`Applied`を返し
+   `applied_snapshot`を先にON確定させていたため送信3が`AlreadyMatched`
+   （実送信なし）に握り潰されるという**偶然の産物**にすぎない。この
+   排他性の穴自体の修正は別ADRのスコープとする。
+2. `classify_and_push`（`crates/awase-gji-config/src/keymap.rs`）の
+   `TurnOn`分類が`on_statuses`に`"DirectInput"`を含むことを要求しない
+   ため、「`TurnOn`と分類されたが実際にはIME OFF状態で何も起きないキー」
+   が構造的に作れる。[ADR-147](adr/147-thumb-key-delegate-defers-to-user-passthrough.md)
+   のdelegate機構（物理キーをSuppressしてGJIに届けない設計）は既に
+   この分類に依存しているため、対象キーがDirectInput状態で無効なら
+   IME OFFからの復帰が黙って失敗しうる（BUG-115の再来）。
 
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 
