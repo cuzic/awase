@@ -1,13 +1,13 @@
-# awase とは完全に独立した、生の WH_KEYBOARD_LL フックのログ取得専用ツール。
-# BUG-113 調査用: 無変換キー押下時に本当に vk=0xF2 (かなキー) の
-# スキャンコードが届いているのか、awase 自身のフック/処理を経由せずに
-# 直接確認する。
+﻿# Independent WH_KEYBOARD_LL hook logger, unrelated to awase.exe's own code.
+# BUG-113 investigation: verify whether the raw hardware event for the
+# muhenkan key really is vk=0xF2 (kana key) or something else, without
+# going through awase's own hook/processing at all.
 #
-# 使い方:
+# Usage:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File rawkbd_logger.ps1 -LogPath C:/rawkbd.log
 #
-# 何もキーを消費/抑制しない（CallNextHookEx を必ず呼ぶ、Suppress は一切しない）。
-# awase.exe のプロセス・コードとは無関係な別プロセスとして動作する。
+# Never consumes/suppresses any key (always calls CallNextHookEx).
+# Runs as a separate process unrelated to awase.exe.
 
 param(
     [string]$LogPath = "C:/rawkbd.log"
@@ -19,7 +19,6 @@ using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using System.IO;
 using System.Globalization;
-using System.Diagnostics;
 
 public class RawKbdLogger
 {
@@ -35,9 +34,6 @@ public class RawKbdLogger
     private static LowLevelKeyboardProc _proc = HookCallback;
     private static IntPtr _hookID = IntPtr.Zero;
     private static StreamWriter _writer;
-    // QueryPerformanceCounter 直接呼び出し（DateTime.Now の ~15ms 分解能では
-    // イベント間の真の間隔を判別できないため）。System.Diagnostics.Stopwatch
-    // が Add-Type 経由のコンパイルで解決できなかったため、DllImport で直接叩く。
     private static long _qpcFreq;
     private static long _qpcStart;
 
@@ -78,7 +74,7 @@ public class RawKbdLogger
         QueryPerformanceCounter(out _qpcStart);
         _writer = new StreamWriter(logPath, true);
         _writer.AutoFlush = true;
-        _writer.WriteLine("=== rawkbd_logger started (awaseとは無関係の独立プロセス) pid=" + System.Diagnostics.Process.GetCurrentProcess().Id + " at " + DateTime.Now.ToString("o"));
+        _writer.WriteLine("=== rawkbd_logger started (independent of awase) pid=" + System.Diagnostics.Process.GetCurrentProcess().Id + " at " + DateTime.Now.ToString("o"));
         _hookID = SetHook(_proc);
         Application.Run();
     }
