@@ -15055,13 +15055,13 @@ delegateのno-op強制再アサーション抑止）は誤った前提に基づ�
   双方）と代替`VK_IME_OFF`の同期的なSendInputは設計どおり発火して
   いることをデバッグログで確認済み——「抑止漏れ」でも「actuationの
   遅延」でもない。切り分けのため、本ADRのコードとは無関係な既存機能
-  `Ctrl+無変換`（`IntentKind::SyncKey`経由、belief既にOFFならno-opで
-  VK_IME_OFF送信自体が発生しないはずの経路）を半角状態で押したところ
-  **そちらでも「@」が再現した**——ユーザーからは「以前はCtrl+無変換
-  では出なかった」との指摘があり、ADR-153のコード変更とは独立した
-  根本原因（develop側の回帰の可能性を含む）が関与している疑いが強い。
-  この「@」の機序の再調査はADR-153のスコープを超えるため次セッション
-  へ持ち越す（下記追加のBUG候補、番号未採番として記録）。
+  `Ctrl+無変換`（`config.toml`の`keys.ime_off = ["Ctrl+無変換"]`、
+  `Engine::match_special_keys`経由のホットキー、`keys.ime_detect`
+  SyncKeyではない——後述の訂正参照）を半角状態で押したところ
+  **そちらでも「@」が再現した**。この時点では「ADR-153のコード変更
+  とは独立した根本原因（develop側の回帰の可能性）」と推測していたが、
+  下記2026-09-08追記のとおり、この推測は誤りだったことが後の実機
+  切り分け実験で判明した。
 
 opus-adversarial-consult r1〜r9（9ラウンド、Blocker B1〜B14すべて解消）
 で設計収束、`cargo test --lib`（コア1003件）・`cargo nextest run -p
@@ -15073,18 +15073,63 @@ ime_action`（変換）・`"toggle"`方向・ATOKプリセット併用は未確�
 本実装のスコープ外のまま残り、続報として[ADR-154](adr/154-delegate-shadow-toggle-exclusivity-off-to-on-transition.md)
 （提案中・未実装）を起票済み。
 
-**新規発見（2026-09-08、未採番・要追加調査）**: `Ctrl+無変換`
-（既存の`keys.ime_detect`sync off キー、`config.toml`の`ime_off =
-["Ctrl+無変換"]`）を、IME が既に半角（OFF）の状態で押すと「@」が
-出力される。ユーザーは「以前はこの挙動は無かった」と証言しており、
-develop側の回帰の可能性がある。`Ctrl+無変換`はbelief既にOFFなら
-`kp_stage_shadow_ime_toggle`の`effective_open() == current`分岐で
-no-opとなり`apply_ime_open_with_belief`等のactuationを一切発行しない
-はずの経路であり、もし本当にactuationなしで「@」が出るなら、
-本ADR/ADR-149が確定させた「GJIのTSFキー横取りは無変換/変換への
-IME制御コマンド割当てが引き金」という機序モデルそのものを再検証する
-必要がある。ADR-153の変更（PR #185）とは無関係のコードパスで再現する
-ため、本PRのスコープ外として切り離し、別セッションでの調査対象とする。
+**追記（2026-09-08、ケース3「@」再現の機序確定、opus-adversarial-consult
++ dragonflyg4実機A/B切り分け実験で判明、PR #185未マージ）**:
+
+上記の「Ctrl+無変換はdevelop側の回帰では」という推測は**誤りだった**。
+まず事実訂正: `Ctrl+無変換`は`keys.ime_detect`のSyncKeyではなく
+`keys.ime_off`の既定コンボ（`src/config.rs`の`KeysConfig::default()`）
+であり、`Engine::match_special_keys` → `SpecialKeyMatch::ImeOff`経由の
+ホットキーである（`keys.ime_detect`は`VkCode::from_name`でVK名のみを
+パースするため、`"Ctrl+無変換"`という文字列表現は構文上そもそも解釈
+できない）。「belief既にOFFならno-opでSendInput自体が発生しない」と
+いう当初の前提も誤りで、`Engine::match_event`の二重処理ガード
+（`engine.rs`）は`sync_direction`しか見ておらず、ホットキー一致による
+`SetOpen`要求（decision）自体は毎回発生する——ただし通常経路では
+`handle_engine_set_open`より下流の`applied_snapshot`比較が「beliefが
+既に一致しているなら実SendInputはしない」というno-op化を行うため、
+**実際にSendInputが飛ぶのは本物のON→OFF遷移が起きた時だけ**である。
+
+実機A/B切り分け実験（dragonflyg4、Windows Terminal + GJI、診断用
+ブランチ`diag/adr153-case3-ctrlmuhenkan-experiment`、commit
+`f8bf6cb0`で追加した`modifier_snapshot`ログ・二重actuation検出ログ・
+`AWASE_DIAG_CASE3_SUPPRESS_ONLY`環境変数によるsuppress-onlyトグルを
+使用）で3フェーズを検証した結果、以下が確定した:
+
+1. **単発のシグナルだけで「@」を誘発するのに十分**であり、二重送信は
+   必要条件ではない。具体的には次の3条件を実機で確認した:
+   - 生キーが未Suppressで届く → 「@」（既知、2026-09-07確認済み、
+     awase完全停止でも100%再現）
+   - **生キーをSuppressしても、awase自身が`VK_IME_OFF`を1回
+     SendInputするだけで同様に「@」が出る**（config="off"、通常
+     actuate時、無変換単独タップで実機確認——毎回100%再現）
+   - **生キーをSuppressし、かつ何も送らなければ「@」は完全に消える**
+     （`AWASE_DIAG_CASE3_SUPPRESS_ONLY=1`で無変換単独タップを実機確認
+     ——「GJI側の内部状態は物理キー押下そのものではなく、何らかの
+     IME制御シグナルの到達で乱れる」ことを示す）
+2. **Symptom A（ケース3、無変換単独タップ、"off"設定）の真因はケース3
+   自身の設計**: `shadow_on: None`バイパスで意図的にno-op保護を外し
+   「beliefが変化しなくても毎回強制actuateする」ため、上記1の
+   「単発SendInputだけで十分」な条件を**毎回**満たしてしまう。生キー
+   の代わりに別の引き金を毎回撃っているだけであり、抑止漏れでも
+   競合窓でもない。**ケース3の"off"方向は、Ctrl等の修飾キーで場合分け
+   する程度の修正では直らない**——「no-op保護をバイパスして毎回強制
+   送信する」という設計そのものが「@」を生む十分条件になっている。
+3. **Symptom B（Ctrl+無変換）はADR-153/ケース3とは無関係の、既存の
+   `keys.ime_off`ホットキー処理に元からある独立したバグ**（develop
+   回帰ではなく、ADR-153適用前のbaseline、`muhenkan_solo_tap_ime_
+   action`未設定でも同一条件で再現することを実機確認済み）。判断
+   （decision）自体は毎回発生するが、実SendInputは「本物のON→OFF
+   遷移が起きた最初の1回」だけに絞られるため、通常は稀にしか顕在化
+   しない（例: 直前の無変換単独タップでbeliefがGJI側の実状態と
+   ズレていた場合等）。ケース3が有効だとこれが**毎回**に格上げされる
+   （ケース3自身の強制送信が同時に発生するため）が、原因そのものは
+   ケース3ではない。
+
+**推奨（次セッションで実施予定、未実装）**: ケース3の"off"方向は撤回
+する。Ctrl+無変換の独立バグは本項とは別に新規BUGとして追加調査・記録
+する（低頻度・pre-existingのため優先度は低い）。診断コード
+（`diag/adr153-case3-ctrlmuhenkan-experiment`）はrevert対象。
 
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 
