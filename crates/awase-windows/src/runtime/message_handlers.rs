@@ -482,6 +482,21 @@ pub(crate) unsafe fn handle_wm_timer(
             {
                 app.process_deferred_keys();
             }
+            // ADR-121 D1: settle 中に見送った物理IMEキーの冪等再送を、settle
+            // 明けのこの既存リフレッシュ tick で1回だけ消費する
+            // （schedule_settle_retry が使うのと同じタイマー、新規タイマーは
+            // 増やさない）。まだ settle 中なら黙って捨てず再度先送りする
+            // （round 2 premortem R2-4: 黙って失うと「明示訂正が消える」という
+            // 本 ADR が解消しようとした症状そのものが再現する）。
+            if let Some(open) = app.take_pending_explicit_reassert() {
+                if app.ime_apply_should_defer() {
+                    app.set_pending_explicit_reassert(open);
+                    app.schedule_settle_retry("explicit_key_reassert still settling");
+                } else {
+                    let tick_ms = crate::state::TickMs(hook::current_tick_ms());
+                    app.reassert_explicit_physical_key(open, tick_ms);
+                }
+            }
             // async タスクをスポーン（with_app を解放してから fetch）
             app.spawn_ime_refresh();
         }

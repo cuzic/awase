@@ -339,6 +339,15 @@ pub enum OpenApplyReason {
     DriftCorrection,
     /// Shadow IME belief のトグル（`kp_stage_shadow_ime_toggle`）に伴う適用。
     ShadowToggle,
+    /// ADR-121 D1/D5: 物理IMEキー（`VK_DBE_HIRAGANA`、`TurnOn` 方向）が belief
+    /// 一致で no-op になったときの冪等な追加再送（`Runtime::
+    /// reassert_explicit_physical_key`）。「必ず直る」ではなく「試みる」
+    /// best-effort な書き込みであり、`applied` belief（`record_ime_apply_result`）
+    /// は更新しない——効果が確認できていない書き込みを確定した観測であるかの
+    /// ように記録すると BUG-69 型の belief 偽装と同型の危険を持ち込むため
+    /// （ADR-121 D3 参照）。既存の `ShadowToggle`/`ImmBrokenForceOn` と journal
+    /// 上で区別できるよう専用 variant にする。
+    ExplicitKeyReassert,
 }
 
 /// IME 状態モデルへの全 event。

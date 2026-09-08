@@ -1475,6 +1475,7 @@ impl Runtime {
             } else {
                 action
             };
+            let mut half_width_restore_fired = false;
             if let Some(new_mode) = crate::state::eisu_recovery::eisu_reset_on_turn_on_while_open(
                 matches!(turn_on_direction, ShadowImeAction::TurnOn),
                 self.platform_state.ime.input_mode(),
@@ -1488,6 +1489,7 @@ impl Runtime {
                         "[shadow-toggle] TurnOn（半角英数トグルON中）→ トグルOFF処理へ委譲"
                     );
                     self.kp_restore_kana_from_half_width(false);
+                    half_width_restore_fired = true;
                 } else {
                     self.apply_input_mode_correction(
                         new_mode,
@@ -1498,6 +1500,30 @@ impl Runtime {
                         "[shadow-toggle] TurnOn (IME既にopen) + ObservedEisu → AssumedRomaji に \
                          リセット (UserTurnOnEisuReset)"
                     );
+                }
+            }
+            // ADR-121 D1（BUG-37部分対策）: 物理VK_DBE_HIRAGANAのTurnOn方向が
+            // belief一致でno-opになったとき、Blacklistプロファイル限定で
+            // VK_IME_ONの冪等な追加再送を1回試みる。`delegate_owned`の場合は
+            // 上のbelief書き込み自体が最初から行われておらず(この関数冒頭の
+            // `if !delegate_owned {...write...}`参照)、actuation責務がFSM
+            // delegate側にあるため対象外(D1はIntentKind::PhysicalImeKeyに
+            // 限定、"未解決のまま残る問題"節参照)。D2(auto-repeat時の
+            // デバウンス)は実機でVK_DBE_HIRAGANAのKeyDownがauto-repeatする
+            // か未確認のため、ADR-121が明記する「最も安全な選択」に従い
+            // 現時点ではデバウンスを新設しない——実機確認後に必要と判明
+            // すれば追加する。
+            if !delegate_owned
+                && event.vk_code == crate::vk::VK_DBE_HIRAGANA
+                && action == ShadowImeAction::TurnOn
+                && !self.can_use_imm32_cross_process()
+                && !half_width_restore_fired
+            {
+                if self.ime_apply_should_defer() {
+                    self.set_pending_explicit_reassert(new_val);
+                    self.schedule_settle_retry("explicit_key_reassert deferred (settling)");
+                } else {
+                    self.reassert_explicit_physical_key(new_val, tick_ms);
                 }
             }
             return false;

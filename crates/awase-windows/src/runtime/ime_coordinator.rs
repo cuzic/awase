@@ -16,10 +16,16 @@ use awase::types::RawKeyEvent;
 ///   drain 完了後に `handle_wm_drain_output_queue` が replay する。
 ///   os_id を一緒に保存することで、drain 中に元のタイマーが kill → 別の新規タイマーが
 ///   セットされた場合に誤って新タイマーを発火させないよう照合できる。
+/// - `pending_explicit_reassert` — ADR-121 D1: 物理IMEキーの no-op 冪等再送
+///   （`Runtime::reassert_explicit_physical_key`）が focus-settle 中で見送られた
+///   とき、settle 明けの次回 `TIMER_IME_REFRESH` tick で1回だけ消費する単発
+///   フラグ（`Some(open)`）。`schedule_settle_retry` が使うのと同じタイマーに
+///   相乗りする（新規タイマーは増やさない）。
 #[derive(Debug, Default)]
 pub(crate) struct ImeCoordinator {
     pub(crate) pending_ime_off_rescue: Option<RawKeyEvent>,
     pub(crate) deferred_engine_timers: Vec<(usize, usize)>,
+    pub(crate) pending_explicit_reassert: Option<bool>,
 }
 
 impl ImeCoordinator {

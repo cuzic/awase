@@ -627,6 +627,7 @@ fn open_apply_reason_str(r: crate::state::ime_event::OpenApplyReason) -> &'stati
         OpenApplyReason::Bootstrap => "Bootstrap",
         OpenApplyReason::DriftCorrection => "DriftCorrection",
         OpenApplyReason::ShadowToggle => "ShadowToggle",
+        OpenApplyReason::ExplicitKeyReassert => "ExplicitKeyReassert",
     }
 }
 
