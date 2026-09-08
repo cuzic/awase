@@ -350,13 +350,28 @@ pub struct IntentWitness {
 impl IntentWitness {
     /// 物理 IME キー（VK_F3/F4 等）由来の明示意図。
     ///
-    /// `injected == true`（他プロセスの SendInput 由来）と、そもそも
-    /// shadow_action を持たないキーは `None`。
+    /// `injected == true`（他プロセスの SendInput 由来）は常に `None`。
+    /// 非注入イベントについては、GJI/MS-IME 自動検出由来の `shadow_action`
+    /// に加えて、ADR-153 決定1の明示config（`muhenkan_solo_tap_ime_action`/
+    /// `henkan_solo_tap_ime_action`）が発火したことを示す
+    /// `explicit_ime_action_consumed` も「IME 関連の物理キーである」ことの
+    /// 証拠として受理する——**2026-09-08、実機A/B確認で発見・修正した回帰**:
+    /// 明示config（ケース2、OFF→ON昇格）は`shadow_action`を経由せず
+    /// `kp_stage_shadow_ime_toggle`が`explicit_ime_action_consumed`を立てる
+    /// ことでのみ「物理IMEキー由来の意図」を成立させるため、この受理を
+    /// 欠くと`shadow_action.is_some()`が常にfalseのままこの関数が常に
+    /// `None`を返し、`write_physical_key`が一度も呼ばれず、明示config="on"
+    /// 設定時にbeliefのOFF→ON書き込みが**毎回黙って失敗する**（実機で
+    /// 「OFF→ON へ昇格」ログは出るのにIMEが実際にはONにならない症状として
+    /// 確認、`docs/known-bugs.md`参照）。
     #[must_use]
     pub fn from_physical(e: &awase::types::RawKeyEvent) -> Option<Self> {
-        (!e.injected && e.ime_relevance.shadow_action.is_some()).then_some(Self {
-            source: super::ime_event::UserIntentSource::PhysicalImeKey,
-        })
+        (!e.injected
+            && (e.ime_relevance.shadow_action.is_some()
+                || e.ime_relevance.explicit_ime_action_consumed))
+            .then_some(Self {
+                source: super::ime_event::UserIntentSource::PhysicalImeKey,
+            })
     }
 
     /// 設定された同期キー（Shift+Space 等）由来の明示意図。
@@ -504,6 +519,15 @@ mod tests {
     // ── IntentWitness（BUG-14 の型化） ──
 
     fn key_event(injected: bool, shadow: bool, sync: bool) -> awase::types::RawKeyEvent {
+        key_event_ex(injected, shadow, sync, false)
+    }
+
+    fn key_event_ex(
+        injected: bool,
+        shadow: bool,
+        sync: bool,
+        explicit_ime_action_consumed: bool,
+    ) -> awase::types::RawKeyEvent {
         use awase::types::{
             ImeRelevance, KeyClassification, KeyEventType, ModifierState, ScanCode,
             ShadowImeAction, VkCode,
@@ -523,7 +547,7 @@ mod tests {
                 sync_direction: sync.then_some(ShadowImeAction::TurnOn),
                 is_ime_control: false,
                 is_ime_mode_key: false,
-                explicit_ime_action_consumed: false,
+                explicit_ime_action_consumed,
             },
             modifier_key: None,
             modifier_snapshot: ModifierState::default(),
@@ -559,6 +583,36 @@ mod tests {
         assert!(
             IntentWitness::from_physical(&sync).is_none(),
             "shadow_action が無いキーは PhysicalImeKey 意図になれない"
+        );
+    }
+
+    /// 2026-09-08 実機A/B確認で発見した回帰の再現・修正確認テスト。
+    ///
+    /// ADR-153 決定1のケース2（`muhenkan_solo_tap_ime_action`/
+    /// `henkan_solo_tap_ime_action`によるOFF→ON昇格）は`shadow_action`を
+    /// 経由せず、`kp_stage_shadow_ime_toggle`が`explicit_ime_action_
+    /// consumed`を立てることだけで「物理IMEキー由来の意図」を主張する。
+    /// `shadow_action`も`sync_direction`も無いこのケースで`from_physical`
+    /// が`None`を返すと、`write_physical_key`が一度も呼ばれず、明示config
+    /// が「OFF→ON へ昇格」ログを出すだけで実際には belief を全く更新しない
+    /// （実機でIMEが実際にはONにならない）。
+    #[test]
+    fn explicit_config_consumed_marker_alone_is_a_valid_physical_witness() {
+        use crate::state::ime_event::UserIntentSource;
+        let explicit_only = key_event_ex(false, false, false, true);
+        assert_eq!(
+            IntentWitness::from_physical(&explicit_only).map(|w| w.source()),
+            Some(UserIntentSource::PhysicalImeKey),
+            "explicit_ime_action_consumed だけでも from_physical は witness を \
+             発行しなければならない（ADR-153決定1ケース2のbelief書き込みが \
+             常にno-opになる回帰の再発防止）"
+        );
+
+        let injected_explicit = key_event_ex(true, false, false, true);
+        assert!(
+            IntentWitness::from_physical(&injected_explicit).is_none(),
+            "explicit_ime_action_consumed が立っていても injected イベントは \
+             witness になれない（BUG-14の型化は維持する）"
         );
     }
 }

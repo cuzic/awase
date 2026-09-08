@@ -3574,39 +3574,67 @@ fn kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate() {
     let content = read_crate_file("src/runtime/key_pipeline.rs");
     let production = production_code_only(&content);
 
+    // 旧ケース3（2026-09-08に一度全面撤回）専用だったアクチュエーション
+    // 理由タグ。ケース3改（抑止のみ）は`apply_ime_open_with_belief`等の
+    // actuationを一切呼ばないため、このタグ自体が復活してはならない。
     assert!(
         !production.contains("explicit_ime_action_case3_off"),
-        "ADR-153決定1のケース3（\"off\"×belief既にOFFの強制actuate）専用の \
-         アクチュエーション理由タグ`explicit_ime_action_case3_off`が \
-         再導入されています。2026-09-08に実機A/B実験で「@」再現の直接 \
-         原因と確定し撤回済みです——再導入前に`docs/known-bugs.md` \
-         BUG-113節と`docs/experiments.md`エントリ25を必ず読んでください。"
+        "旧ケース3（\"off\"×belief既にOFFの強制actuate、2026-09-08に全面 \
+         撤回）専用のアクチュエーション理由タグ`explicit_ime_action_case3_off`\
+         が再導入されています。この設計は「beliefが変化しなくても毎回 \
+         強制actuateする」ことが「@」再現の直接原因と確定済みです \
+         ——再導入前に`docs/known-bugs.md` BUG-113節・BUG-124節と \
+         `docs/experiments.md`エントリ25を必ず読んでください。"
     );
 
-    let signature_idx = production
-        .find("fn explicit_ime_action_target(")
-        .expect("fn explicit_ime_action_target( not found in key_pipeline.rs");
-    let signature_end = production[signature_idx..]
-        .find('{')
-        .map(|i| signature_idx + i)
-        .expect("explicit_ime_action_target signature must have a body");
-    let signature = &production[signature_idx..signature_end];
-    assert!(
-        signature.contains("-> bool") && !signature.contains("Option<bool>"),
-        "`explicit_ime_action_target`は`Option<bool>`ではなく`bool`を \
-         返すはずです（ケース3撤回によりSome(false)というバリアントが \
-         意味を持たなくなったため）。`Option<bool>`に戻っている場合、 \
-         ケース3（`Some(false)`）が復活していないか確認してください。"
-    );
-
+    // ケース3改（"off"×既にOFF）の分岐本体には、実際のactuation呼び出し
+    // （`apply_ime_open_with_belief`/`issue_actuation_order`/
+    // `on_ime_apply_complete`）が一切含まれてはならない——抑止
+    // （`explicit_ime_action_consumed = true`）だけを行い、そのまま
+    // `return false`することを固定する（BUG-124: 抑止まで失うと旧
+    // BUG-113の「GJI自身のTSFキー横取りが『@』を誘発する」根本原因に
+    // 逆戻りする一方、actuateを復活させると旧ケース3の「@」原因が再発する
+    // ——「抑止する・actuateしない」の両立が本節の核心）。
     let body = extract_fn_body(production, "fn kp_stage_shadow_ime_toggle(");
+    let case23_start = body
+        .find("if let Some(target) = self.explicit_ime_action_target(")
+        .expect(
+            "kp_stage_shadow_ime_toggle にケース2/3改の `if let Some(target) = \
+             self.explicit_ime_action_target(...)` 分岐が見つかりません。",
+        );
+    let else_start = body[case23_start..]
+        .find("} else {")
+        .map(|i| case23_start + i)
+        .expect("ケース2/3改の if let に対応する else 節が見つかりません。");
+    let else_body_end = find_balanced_close(&body, else_start + "} else {".len() - 1)
+        .expect("ケース3改（else節）の閉じ括弧が見つかりません。");
+    let case3_else_body = &body[else_start..=else_body_end];
+
+    assert!(
+        !case3_else_body.contains("apply_ime_open_with_belief(")
+            && !case3_else_body.contains("issue_actuation_order(")
+            && !case3_else_body.contains("on_ime_apply_complete("),
+        "ケース3改（\"off\"×既にOFF）のelse節にactuation呼び出しが含まれて \
+         います。この節は生キーの抑止マーカーを立てるだけで、実際の \
+         actuationは一切行ってはならない（旧ケース3の「毎回強制actuate」\
+         設計が「@」を誘発した、BUG-113/BUG-124参照）。"
+    );
+    assert!(
+        case3_else_body.contains("explicit_ime_action_consumed = true")
+            && case3_else_body.contains("return false"),
+        "ケース3改（\"off\"×既にOFF）のelse節は、`explicit_ime_action_\
+         consumed = true`（生キーの抑止マーカー）を立てて`return false`\
+         するだけの実装であるはずです。この構造が崩れています。"
+    );
+
     let target_calls = body.matches("explicit_ime_action_target(").count();
-    assert_eq!(
-        target_calls, 1,
-        "kp_stage_shadow_ime_toggle から `explicit_ime_action_target(` を \
-         呼ぶのはKeyDownケース2判定の1箇所のみのはず（実際の呼び出し数: \
-         {target_calls}）。2箇所以上ある場合、撤回したはずのKeyUp M19 \
-         ペアリング分岐（ケース3専用）が復活しているおそれがあります。"
+    assert!(
+        target_calls >= 2,
+        "kp_stage_shadow_ime_toggle は `explicit_ime_action_target(` を \
+         KeyUpペアリング判定とKeyDownケース2/3改判定の両方から呼ぶはず \
+         （実際の呼び出し数: {target_calls}）。片方だけになっている場合、\
+         KeyDown/KeyUpいずれかの経路でケース3改の判定条件が乖離している \
+         おそれがある。"
     );
 }
 

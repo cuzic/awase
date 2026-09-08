@@ -1020,11 +1020,24 @@ BUG-115（ひらがな/カタカナキーの親指キーdelegate機構）をマ�
   suppress-onlyのA/Bテスト（生キーSuppress + 実送信ゼロ）が、この
   区別をつける決め手になった。
 
-**追記（2026-09-08、対応完了）**: 上記の学びに基づき、ケース3（"off"×
-belief既にOFFの強制actuate、`kp_stage_shadow_ime_toggle`）を撤回した
-（`crates/awase-windows/src/runtime/key_pipeline.rs`）。Ctrl+無変換の
-独立バグは`docs/known-bugs.md` BUG-121として新規記録し、診断ブランチ
-`diag/adr153-case3-ctrlmuhenkan-experiment`（worktree・ローカル・
-リモート）は破棄した——実験結果はこのエントリと known-bugs.md 双方に
-残っているため、診断コード自体（`AWASE_DIAG_CASE3_SUPPRESS_ONLY`等）を
-保持する必要はないと判断した。
+**追記（2026-09-08、対応完了・ただし1往復の反転あり）**: 上記の学びに
+基づき、ケース3（"off"×belief既にOFFの強制actuate、`kp_stage_shadow_
+ime_toggle`）を撤回した（`crates/awase-windows/src/runtime/key_
+pipeline.rs`）。Ctrl+無変換の独立バグは`docs/known-bugs.md` BUG-121
+として新規記録し、診断ブランチ`diag/adr153-case3-ctrlmuhenkan-
+experiment`（worktree・ローカル・リモート）は破棄した——実験結果は
+このエントリと known-bugs.md 双方に残っているため、診断コード自体
+（`AWASE_DIAG_CASE3_SUPPRESS_ONLY`等）を保持する必要はないと判断した。
+
+**追記2（2026-09-08、全面撤回が上記Phase3の教訓を見落としていたと判明、
+BUG-124）**: 上記の全面撤回（生キーの抑止も含めて撤去）を実機ビルドし
+再検証したところ、「@」が再現し続けた。原因は、抑止まで撤去した結果、
+GJI自身が無変換/変換キーを生で受け取るようになったこと——**まさに
+上記Phase3の実験結果（「生キーをSuppressし、かつ何も送らなければ
+『@』は完全に消える」）が示していた「抑止自体は無害、問題は強制
+actuateの方」という結論を、全面撤回の設計時に見落としていた**。
+「抑止はする・actuateはしない」の形に再設計し、`docs/known-bugs.md`
+BUG-124として詳細を記録した。この実験ログに実測済みの事実が既に
+書かれていたにも関わらず参照せず早合点したこと自体が教訓——
+実験結果は「その場で使う」だけでなく「次の設計変更の前に読み返す」
+ためのものであることを再確認した。
