@@ -209,7 +209,8 @@ ADR-152 と衝突しない」ことの証明にはならない——単に両者
    等）を再検討する。観測は `fix-requires-evidence.md` の新設行と
    `docs/known-bugs.md` への記録を通じて行う（本版で運用開始済み。ただし
    `input_defer.rs`/`runtime/message_handlers.rs`/`runtime/outbox.rs` は
-   「不採用（初版の決定3）」節で確認したとおり `.git/hooks/pre-push` の
+   「採用: `fix-requires-evidence.md` の再発ファミリー表に本ファミリーを
+   追加する」節で確認したとおり `.git/hooks/pre-push` の
    自動警告の対象外であり、この3ファイルについては手動記録に依存する）。
 2. パターン2（ライブグローバル参照、および「不採用（初版の決定3）」節の
    注記が特定した根本原因「同一イベントに対する時刻/状態の二重読み取り」
