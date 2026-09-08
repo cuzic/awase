@@ -1022,6 +1022,13 @@ impl Runtime {
     pub(crate) fn peek_pending_explicit_reassert(
         &mut self,
     ) -> crate::state::scoped_latch::ScopeCheck<bool> {
+        // /code-review round2指摘: 毎TIMER_IME_REFRESH tick（20/150/500ms毎）
+        // で無条件にforeground_scope()（GetForegroundWindow+GetWindowThread
+        // ProcessId）を呼ぶのは、armedでない大多数のtickでは無駄な呼び出し。
+        // is_armed()で先に弾く。
+        if !self.ime_coordinator.pending_explicit_reassert.is_armed() {
+            return crate::state::scoped_latch::ScopeCheck::NotArmed;
+        }
         let now = crate::win32::foreground_scope();
         self.ime_coordinator.pending_explicit_reassert.peek(now)
     }
@@ -1035,8 +1042,20 @@ impl Runtime {
     /// 必ず直後に [`Self::schedule_settle_retry`] を呼び、既存の 20ms/150ms
     /// リフレッシュ tick に相乗りさせること（新規タイマーを増やさない）。
     /// 武装スコープは呼び出し時点の前景ウィンドウ（`ForegroundScope`）。
+    /// `scope.is_valid()` が false（フォーカス遷移中で `GetForegroundWindow()`
+    /// が null 等）の場合は武装しない——`ForegroundScope::INVALID` は
+    /// `INVALID == INVALID` が成立するため、無効スコープのまま武装すると
+    /// 消費時にも無効スコープで一致してしまい S1 が防ごうとしたフォーカス
+    /// 照合が効かなくなる（opus-adversarial-consult round2 N2指摘、
+    /// `arm_post_bypass_if_matches` と同じガードを踏襲）。
     pub(crate) fn set_pending_explicit_reassert(&mut self, open: bool) {
         let scope = crate::win32::foreground_scope();
+        if !scope.is_valid() {
+            tracing::debug!(
+                "[explicit-reassert] 前景ウィンドウ取得失敗のため武装を見送り (open={open})"
+            );
+            return;
+        }
         self.ime_coordinator
             .pending_explicit_reassert
             .arm(scope, open);

@@ -1470,7 +1470,14 @@ impl WindowsPlatform {
     /// obligation`、ADR-089 INV-42/43）は実送信が起きた事実に基づくため
     /// D1でも必要——`mark_composition_cold`だけを外し、他の副作用
     /// （ImeModeFsm invalidate・confirm_gate clear・composition_fsmへの
-    /// イベント供給・GJI sync）はそのまま残す。
+    /// イベント供給・GJI sync）はそのまま残す（他3つの類似副作用を残した
+    /// 理由はADR-121ステータス節参照）。
+    ///
+    /// 名前は`open == true`側の`mark_composition_cold(SetOpenTrue)`のみを
+    /// 対象にしている（呼び出し元D1は常に`open == true`）。`open == false`
+    /// 側の`mark_composition_cold(SetOpenFalse)`は抑止しない——将来
+    /// `open == false`でこの経路を使う場合は挙動を再確認すること
+    /// （opus-adversarial-consult round2 N3指摘）。
     pub(crate) fn on_ime_applied_without_cold_mark(
         &mut self,
         open: bool,
