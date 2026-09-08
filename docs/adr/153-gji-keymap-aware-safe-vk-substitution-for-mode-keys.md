@@ -3,14 +3,35 @@
 ## ステータス
 
 **決定1実装済み（2026-09-08、`feat/adr153-explicit-ime-action`ブランチ、
-develop未マージ）・実機未検証。** `cargo test --lib`（コア1003件）・
-`cargo nextest run -p awase-windows`（architecture_guard/golden_scenarios/
-layer_boundary_guard等132件）・clippy/fmt はすべてgreen。ケース1〜3の
-実装、M13/M15/M19/M22/M24対策、B13/B14対策（`ImeRelevance.
-explicit_ime_action_consumed`マーカー）はいずれも設計どおり実装済み。
-Windows実機でのビルド・半角/全角状態からの`"on"`/`"off"`/`"toggle"`
-設定・ATOKプリセット併用の確認（下記「未決着・要レビュー論点」#5）は
-次のセッションでの作業として残る。
+develop未マージ）・ケース2は実機確認済み、ケース3は実機で未解決の課題が
+残る。** `cargo test --lib`（コア1003件）・`cargo nextest run -p
+awase-windows`（134件）・clippy/fmt はすべてgreen。
+
+**実機検証結果（2026-09-08、dragonflyg4、Windows Terminal + GJI）**:
+
+- **ケース2（belief OFF→ON昇格、`muhenkan_solo_tap_ime_action = "on"`）:
+  確定的に修正を確認**。半角状態で無変換単独タップ→ひらがなモードへ
+  切り替わり、「@」は一切再現しなくなった（デバッグログでも
+  `[shadow-toggle] 明示config: vk=0x1D OFF→ON へ昇格`の発火と
+  `physical="Suppress"`（Down/Up双方）を確認）。IME ON中の無変換単独
+  タップ（M13維持、GJI自身のかな切替に委譲）も正常動作を確認。
+- **ケース3（"off"×belief既にOFF、`muhenkan_solo_tap_ime_action = "off"`）:
+  実機で「@」が再現し続けることを確認、未解決。** デバッグログでは
+  生キーのSuppress（Down/Up双方）と代替`VK_IME_OFF`のSendInputが
+  いずれも設計どおり同期的に発火していることを確認済み——つまり
+  「抑止漏れ」でも「actuationのタイミング遅延」でもない。当初の
+  仮説（「belief既にOFFの状態へ冗長にVK_IME_OFFを送ること自体が
+  引き金」）は、切り分けのため実行した**別テスト**（本ADRのコードとは
+  無関係な既存機能`Ctrl+無変換`〈IntentKind::SyncKey経由、belief既に
+  OFFなら本来no-opでVK_IME_OFF送信自体が起きないはずの経路〉を半角状態
+  で押したところ**そちらでも「@」が再現した**ことで揺らいでいる——
+  ユーザーからは「以前はCtrl+無変換では出なかった」との指摘もあり、
+  ADR-153のコード変更とは独立した根本原因（develop側の回帰の可能性を
+  含む）が関与している疑いが強い。**この「@」の機序の再調査は
+  ADR-153のスコープを超えるため、次セッションへ持ち越す。**
+- 実機確認は`muhenkan_solo_tap_ime_action`（無変換）のみで実施。
+  `henkan_solo_tap_ime_action`（変換）・`"toggle"`方向・ATOKプリセット
+  併用は未確認のまま。
 
 以下は決定1着手前（設計収束フェーズ）の記録:
 

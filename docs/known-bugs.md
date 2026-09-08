@@ -15040,25 +15040,51 @@ delegateのno-op強制再アサーション抑止）は誤った前提に基づ�
    この分類に依存しているため、対象キーがDirectInput状態で無効なら
    IME OFFからの復帰が黙って失敗しうる（BUG-115の再来）。
 
-**追記（2026-09-08、[ADR-153](adr/153-gji-keymap-aware-safe-vk-substitution-for-mode-keys.md)決定1実装、develop実装済み・実機未検証）**:
-上記「無変換キー単独タップの残置症状」の機序を実機3段階検証で確定
-させた——「@」はGJI自身のTSFキー横取り（`ITfKeyEventSink`）の副産物で
-あり、GJIが無変換/変換に何らかのIME制御コマンドを割り当てている場合
-（例: ATOKプリセット）にのみ発火する。対策として、無変換/変換単独タップ
-確定後のIME ON/OFF/Toggleを、GJI/MS-IME自動検出に頼らずawase自身の
-明示config（`GeneralConfig::muhenkan_solo_tap_ime_action`/
+**追記（2026-09-08、[ADR-153](adr/153-gji-keymap-aware-safe-vk-substitution-for-mode-keys.md)決定1実装、develop未マージ・ケース2実機確認済み・ケース3未解決）**:
+無変換/変換単独タップ確定後のIME ON/OFF/Toggleを、GJI/MS-IME自動検出に
+頼らずawase自身の明示config（`GeneralConfig::muhenkan_solo_tap_ime_action`/
 `henkan_solo_tap_ime_action`、隠し設定・既定`None`）で直接指定できる
-ようにした。設定すると生の`VK_NONCONVERT`/`VK_CONVERT`をGJIに一切渡さ
-なくなり、GJI側のキーマップ設定に依存せず「@」の引き金自体を構造的に
-無くす。opus-adversarial-consult r1〜r9（9ラウンド、Blocker B1〜B14
-すべて解消）で設計収束、実装コードレビュー相当の`cargo test --lib`
-（コア1003件）・`cargo nextest run -p awase-windows`（132件）・
-clippy/fmtすべてgreenを確認済み。実機A/B（半角/全角状態それぞれから
-`"on"`/`"off"`/`"toggle"`設定で無変換単独タップし「@」が再発しないこと、
-ATOKプリセット併用時の確認）は未実施——次のセッションでの検証が必要。
+ようにする実装を行い、dragonflyg4（Windows Terminal + GJI）で実機検証した。
+
+- **ケース2（belief OFF→ON昇格、`"on"`設定）: 確定的に修正を確認**。
+  半角状態で無変換単独タップ→ひらがなモードへ切り替わり、「@」は
+  再現しなくなった。IME ON中の無変換単独タップ（GJI自身のかな切替に
+  委譲する既存動作）も正常動作を維持していることを確認済み。
+- **ケース3（"off"×belief既にOFF、`"off"`設定）: 実機で「@」が再現し
+  続けることを確認、未解決のまま。** 生キーのSuppress（KeyDown/KeyUp
+  双方）と代替`VK_IME_OFF`の同期的なSendInputは設計どおり発火して
+  いることをデバッグログで確認済み——「抑止漏れ」でも「actuationの
+  遅延」でもない。切り分けのため、本ADRのコードとは無関係な既存機能
+  `Ctrl+無変換`（`IntentKind::SyncKey`経由、belief既にOFFならno-opで
+  VK_IME_OFF送信自体が発生しないはずの経路）を半角状態で押したところ
+  **そちらでも「@」が再現した**——ユーザーからは「以前はCtrl+無変換
+  では出なかった」との指摘があり、ADR-153のコード変更とは独立した
+  根本原因（develop側の回帰の可能性を含む）が関与している疑いが強い。
+  この「@」の機序の再調査はADR-153のスコープを超えるため次セッション
+  へ持ち越す（下記追加のBUG候補、番号未採番として記録）。
+
+opus-adversarial-consult r1〜r9（9ラウンド、Blocker B1〜B14すべて解消）
+で設計収束、`cargo test --lib`（コア1003件）・`cargo nextest run -p
+awase-windows`（134件）・clippy/fmtすべてgreen。実機検証は
+`muhenkan_solo_tap_ime_action`（無変換）のみ実施——`henkan_solo_tap_
+ime_action`（変換）・`"toggle"`方向・ATOKプリセット併用は未確認。
+
 上記の未解決事項1（delegateとshadow-toggleの排他性、OFF→ON遷移限定）は
 本実装のスコープ外のまま残り、続報として[ADR-154](adr/154-delegate-shadow-toggle-exclusivity-off-to-on-transition.md)
 （提案中・未実装）を起票済み。
+
+**新規発見（2026-09-08、未採番・要追加調査）**: `Ctrl+無変換`
+（既存の`keys.ime_detect`sync off キー、`config.toml`の`ime_off =
+["Ctrl+無変換"]`）を、IME が既に半角（OFF）の状態で押すと「@」が
+出力される。ユーザーは「以前はこの挙動は無かった」と証言しており、
+develop側の回帰の可能性がある。`Ctrl+無変換`はbelief既にOFFなら
+`kp_stage_shadow_ime_toggle`の`effective_open() == current`分岐で
+no-opとなり`apply_ime_open_with_belief`等のactuationを一切発行しない
+はずの経路であり、もし本当にactuationなしで「@」が出るなら、
+本ADR/ADR-149が確定させた「GJIのTSFキー横取りは無変換/変換への
+IME制御コマンド割当てが引き金」という機序モデルそのものを再検証する
+必要がある。ADR-153の変更（PR #185）とは無関係のコードパスで再現する
+ため、本PRのスコープ外として切り離し、別セッションでの調査対象とする。
 
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 
