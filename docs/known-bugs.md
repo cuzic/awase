@@ -15040,6 +15040,26 @@ delegateのno-op強制再アサーション抑止）は誤った前提に基づ�
    この分類に依存しているため、対象キーがDirectInput状態で無効なら
    IME OFFからの復帰が黙って失敗しうる（BUG-115の再来）。
 
+**追記（2026-09-08、[ADR-153](adr/153-gji-keymap-aware-safe-vk-substitution-for-mode-keys.md)決定1実装、develop実装済み・実機未検証）**:
+上記「無変換キー単独タップの残置症状」の機序を実機3段階検証で確定
+させた——「@」はGJI自身のTSFキー横取り（`ITfKeyEventSink`）の副産物で
+あり、GJIが無変換/変換に何らかのIME制御コマンドを割り当てている場合
+（例: ATOKプリセット）にのみ発火する。対策として、無変換/変換単独タップ
+確定後のIME ON/OFF/Toggleを、GJI/MS-IME自動検出に頼らずawase自身の
+明示config（`GeneralConfig::muhenkan_solo_tap_ime_action`/
+`henkan_solo_tap_ime_action`、隠し設定・既定`None`）で直接指定できる
+ようにした。設定すると生の`VK_NONCONVERT`/`VK_CONVERT`をGJIに一切渡さ
+なくなり、GJI側のキーマップ設定に依存せず「@」の引き金自体を構造的に
+無くす。opus-adversarial-consult r1〜r9（9ラウンド、Blocker B1〜B14
+すべて解消）で設計収束、実装コードレビュー相当の`cargo test --lib`
+（コア1003件）・`cargo nextest run -p awase-windows`（132件）・
+clippy/fmtすべてgreenを確認済み。実機A/B（半角/全角状態それぞれから
+`"on"`/`"off"`/`"toggle"`設定で無変換単独タップし「@」が再発しないこと、
+ATOKプリセット併用時の確認）は未実施——次のセッションでの検証が必要。
+上記の未解決事項1（delegateとshadow-toggleの排他性、OFF→ON遷移限定）は
+本実装のスコープ外のまま残り、続報として[ADR-154](adr/154-delegate-shadow-toggle-exclusivity-off-to-on-transition.md)
+（提案中・未実装）を起票済み。
+
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
