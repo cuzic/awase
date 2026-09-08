@@ -28,11 +28,17 @@ drain replay 時に「イベント発生時点の値」ではなく「replay を
 ### 訂正1: `thumb_down_timestamps()` の呼び出し箇所は2つではなく3つ
 
 初版は「gate 非 active 時の直接発火は `build_ctx()` を経由する」と書いて
-いたが誤り。`Runtime::build_ctx()`（`runtime/mod.rs`）を実際に呼んでいるのは
-**drain/replay 側**（`message_handlers.rs::handle_wm_drain_output_queue` が
-`deferred_engine_timers` の replay ループの**前に1回だけ** `let ctx =
-app.build_ctx();` を呼び、全エントリで使い回す）だけである。**gate 非
-active 時にタイマーが直接発火する経路**（`handle_wm_timer` の
+いたが誤り。**round2 レビューで、その訂正自体も過剰訂正だったと判明した
+ため本版でさらに訂正する。**
+
+`Runtime::build_ctx()`（`runtime/mod.rs`）は **12箇所**（`runtime/mod.rs`
+8箇所、`message_handlers.rs` 2箇所——`begin_key_batch` と
+`handle_wm_drain_output_queue` の deferred timer replay、
+`runtime/ime_refresh.rs` 2箇所）から呼ばれる**共有関数**である。この
+うち `deferred_engine_timers` の replay に使われているのは
+`handle_wm_drain_output_queue`（replay ループの**前に1回だけ** `let
+ctx = app.build_ctx();` を呼び、全エントリで使い回す）の1箇所のみ。
+**gate 非 active 時にタイマーが直接発火する経路**（`handle_wm_timer` の
 `Some(timer_id) =>` 分岐、gate 判定を通過した場合）は `build_ctx()` を
 呼ばず、`read_os_modifiers()` → Alt なりすまし補正 → `hook::
 thumb_down_timestamps()` → `super::build_input_context(...)` という
@@ -45,6 +51,14 @@ thumb_down_timestamps()` → `super::build_input_context(...)` という
 1箇所に縮小できるか）の前提を崩す——**現状のコード構造のままでは縮小
 できない**。縮小するには、まずタイマー直接発火経路の手書き複製を
 `build_ctx()` の呼び出しに置き換える独立したリファクタが要る。
+
+**`build_ctx()` が12箇所から呼ばれる共有関数であるという事実は、下記
+「未決着・要レビュー論点」1（シグネチャ変更の是非）に直結する**——
+呼び出し元が多数ある以上、`build_ctx()` 自身のシグネチャを変えて
+スナップショットを渡せるようにする案は、本 ADR のスコープ（タイマー
+replay のみ）を超えて影響範囲が広がる。案Aを採る場合、`build_ctx()`
+本体は変えず、タイマーキューのエントリ側にスナップショットを持たせて
+replay 側で戻り値を部分的に上書きする方が変更を局所化できる。
 
 ### 訂正2: gate 条件は `OUTPUT_GATE` だけではない
 
@@ -126,22 +140,42 @@ replay 側はこのスナップショットで `InputContext` の該当2フィ�
 上書きする。この案を採る場合、上記「訂正3」により `ctx` の単一構築
 構造をエントリ単位の構築へ変える実装コストが伴う。
 
-**案B（round1 で新規発見、より根本的）**: `hook.rs` 側で「同一キー
-イベントに対して `now_timestamp()` を複数回呼ばない」よう改める。
-現状、`RawKeyEvent.timestamp` は `hook.rs::build_raw_key_event` 内の
-`now_timestamp()` 呼び出しで決まり（1回目の呼び出し）、`LEFT/RIGHT_
-THUMB_DOWN_AT_US` グローバルは同じフックコールバック内の**別の**
-`now_timestamp()` 呼び出し（`slot.store(now_timestamp(), ..)`）で
-更新される——**同一の物理押下に対して `now_timestamp()` が2回呼ばれ、
-数 µs ずれた別の値になる。** この2値をどちらも「その押下の時刻」として
-比較に使おうとすると（`is_thumb_consumed` のような等値比較）、原理的に
-一致しない。案Bは、親指キーの KeyDown を処理する箇所で `now_timestamp()`
-を1回だけ呼び、その値を `RawKeyEvent.timestamp` とグローバル両方へ
-同じ値として書き込む。これが実現すれば、`PendingThumbData.timestamp`
-（対象押下の `RawKeyEvent.timestamp` をそのまま保持）を直接
-`Some(thumb.timestamp)` として使え、グローバル `AtomicU64` 経由の
-ライブクエリ機構自体（案A・ADR-129 決定・本 ADR が扱ってきた仕組み全体）
-を代替できる可能性がある。
+**案B（round1 で新規発見、より根本的。round2 で発火順序を訂正）**:
+`hook.rs` 側で「同一キーイベントに対して `now_timestamp()` を複数回
+呼ばない」よう改める。フックコールバック内の実行順は次のとおり
+（round2 で訂正——初版は逆順に書いていた）: まず `update_thumb`
+クロージャ（`vk == config.left/right_thumb_vk` かつ非 injected の
+場合のみ）が `slot.store(now_timestamp(), ..)` で **グローバルを先に
+更新**し、その**後**に `build_raw_key_event(...)` 呼び出しが
+`timestamp: now_timestamp()` で `RawKeyEvent.timestamp` を決める
+（**イベント自身の timestamp の方が後**）。**同一の物理押下に対して
+`now_timestamp()` が2回呼ばれ、数 µs ずれた別の値になる。** この2値を
+どちらも「その押下の時刻」として比較に使おうとすると（`is_thumb_
+consumed` のような等値比較）、原理的に一致しない。
+
+案Bは、親指キーの KeyDown を処理する箇所で `now_timestamp()` を1回だけ
+呼び、その値を `RawKeyEvent.timestamp` とグローバル両方へ同じ値として
+書き込む——ただし、これを実装可能な規定にするには最低限次の2点を
+先に決める必要がある（round2 で発見、未解決のまま記録）。
+
+1. **キーリピート**: `update_thumb` は `prev == 0` のとき（＝新規押下）
+   のみ `store` する（押しっぱなしで届く2回目以降の KeyDown では
+   グローバルを更新しない）。一方 `RawKeyEvent.timestamp` は
+   auto-repeat の KeyDown ごとに毎回新しい値になる。「同じ値を両方へ
+   書く」は auto-repeat 中の KeyDown には文字どおり適用できない——
+   案Bはこの場合「グローバルへ新規に書かず、格納済みの値を読み戻して
+   `RawKeyEvent.timestamp` 側に採用する」という非対称な規定にする
+   必要がある。
+2. **injected イベントの扱い**: `update_thumb` は `!is_injected` の
+   条件下でのみ呼ばれるが、`build_raw_key_event` は injected な
+   イベントに対しても呼ばれる。injected な親指 KeyDown の
+   `timestamp` が何と比較されるべきか（グローバルは更新されないため
+   比較対象自体が無い）を、案Bの実装前に定義する必要がある。
+
+これらが解決すれば、`PendingThumbData.timestamp`（対象押下の
+`RawKeyEvent.timestamp` をそのまま保持）を直接 `Some(thumb.timestamp)`
+として使え、グローバル `AtomicU64` 経由のライブクエリ機構自体（案A・
+ADR-129 決定・本 ADR が扱ってきた仕組み全体）を代替できる可能性がある。
 
 **優先順位に関する注記**: 案Bは [ADR-129](129-thumb-timestamp-live-requery-during-gate-drain-replay.md)
 自身の実装（`left/right_thumb_down_snapshot` フィールド追加、まだ未着手）
