@@ -3,9 +3,26 @@
 ## ステータス
 
 **決定1実装済み（2026-09-08、`feat/adr153-explicit-ime-action`ブランチ、
-develop未マージ）・ケース2は実機確認済み、ケース3は実機で未解決の課題が
-残る。** `cargo test --lib`（コア1003件）・`cargo nextest run -p
-awase-windows`（134件）・clippy/fmt はすべてgreen。
+develop未マージ）・ケース2は実機確認済み。ケース3は同日中に撤回した
+（下記2026-09-08追記参照）。** `cargo test --lib`（コア1003件）・`cargo
+nextest run -p awase-windows`（113件）・clippy/fmt はすべてgreen。
+
+**追記（2026-09-08、ケース3撤回・完了）**: 下記「実機検証結果」が記録した
+ケース3の未解決症状は、後続の実機A/B切り分け実験で根本原因が確定した
+（`docs/known-bugs.md` BUG-113節・`docs/experiments.md`エントリ25）。
+当初疑っていた「develop側の回帰」は誤りで、真因はケース3自身の設計
+（`shadow_on: None`バイパスで「beliefが変化しなくても毎回強制actuate
+する」ことが「単発SendInputで『@』を誘発するのに十分」という機序の
+十分条件を毎回満たしてしまう）だった。この節以下に残る「ケース3」の
+設計記述は、**採用されなかった設計として記録のため残している**——
+再度この方向を検討する前に必ず上記の実機実験結果を読むこと。実装は
+`crates/awase-windows/src/runtime/key_pipeline.rs`の
+`kp_stage_shadow_ime_toggle`/`explicit_ime_action_target`から撤去済み
+（回帰ガード: `architecture_guard.rs`の
+`kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate`）。
+Ctrl+無変換の症状は、ケース3とは無関係な既存の`keys.ime_off`ホットキー
+処理に元からある独立した低頻度バグと判明し、`docs/known-bugs.md`
+BUG-121として別途記録した。
 
 **実機検証結果（2026-09-08、dragonflyg4、Windows Terminal + GJI）**:
 

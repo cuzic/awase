@@ -15126,10 +15126,21 @@ ime_action`（変換）・`"toggle"`方向・ATOKプリセット併用は未確�
    （ケース3自身の強制送信が同時に発生するため）が、原因そのものは
    ケース3ではない。
 
-**推奨（次セッションで実施予定、未実装）**: ケース3の"off"方向は撤回
-する。Ctrl+無変換の独立バグは本項とは別に新規BUGとして追加調査・記録
-する（低頻度・pre-existingのため優先度は低い）。診断コード
-（`diag/adr153-case3-ctrlmuhenkan-experiment`）はrevert対象。
+**追記（2026-09-08、ケース3"off"方向を撤回・実装済み）**: 上記推奨どおり、
+`crates/awase-windows/src/runtime/key_pipeline.rs`の`kp_stage_shadow_
+ime_toggle`からケース3（"off"×belief既にOFFの強制actuateブロックと、
+それに対応するKeyUp M19ペアリング早期分岐）を削除した。`explicit_ime_
+action_target`は戻り値を`Option<bool>`から`bool`（ケース2が発火するか
+否かのみ）に単純化し、"off"設定×belief既にOFFの場合は単に`false`を
+返して素通しする（何もしない）——強制actuateは行わない。ケース1
+（`resolve_explicit_ime_action`〈コア側〉、belief ON→OFFの実際の遷移）
+はこの撤回の対象外で、影響を受けない。回帰ガードは
+`crates/awase-windows/tests/architecture_guard.rs`の
+`kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate`
+（新設）。Ctrl+無変換の独立バグはBUG-121として新規記録した。診断ブランチ（`diag/adr153-case3-ctrlmuhenkan-
+experiment`、commit `f8bf6cb0`）はworktree/ローカル/リモートとも破棄
+済み——上記の実験結果はこの追記と実装コミット自体に残っているため、
+診断コード自体を保持する必要はない。
 
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 
@@ -16347,3 +16358,52 @@ spawnを毎起動無条件に戻す、といった変更を検討する前に、
 save_auto_start`、`scripts/install.ps1`、`wix/main.wxs`。関連ADR:
 [docs/adr/059-autostart-schtasks-to-hkcu-run.md](adr/059-autostart-schtasks-to-hkcu-run.md)
 の「2026-09-07 追記」節。
+
+---
+
+## BUG-121: `Ctrl+無変換`（`keys.ime_off`既定ホットキー）が、実IME状態と belief がズレた直後に稀に「@」を誘発する（既存の独立バグ、develop回帰ではない・未修正）
+
+**症状:** Windows Terminal + GJIで、`Ctrl+無変換`（`src/config.rs`の
+`KeysConfig::default()`が定義する既定の`keys.ime_off`ホットキー）を押すと、
+低頻度で余分な「@」が出力されることがある。ADR-153決定1（本ファイル
+BUG-113節の2026-09-08追記）の実機A/B切り分け実験で発見されたが、
+`muhenkan_solo_tap_ime_action`（ADR-153決定1の明示config、ケース2/3）
+を一切設定していないbaseline（本PR適用前のdevelop相当）でも同一条件で
+再現することを実機確認済みであり、**develop側の回帰ではなく元から
+存在する独立したバグ**。
+
+**根本原因（実機A/B実験で確定、詳細はBUG-113節の2026-09-08追記参照）:**
+`Ctrl+無変換`は`Engine::match_special_keys`が処理する`SpecialKeyMatch::
+ImeOff`ホットキーであり、`keys.ime_detect`の`SyncKey`ではない。この
+ホットキーに一致すると`SetOpen`要求（decision）自体は毎回発生するが、
+`handle_engine_set_open`より下流の`applied_snapshot`比較により、beliefが
+既に一致していれば実際の`SendInput`は発生しない（no-op化）——つまり
+**実SendInputが飛ぶのは、本物のON→OFF遷移が起きた最初の1回だけ**。
+一方、実機実験で「単発のIME制御`SendInput`が1回飛ぶだけでGJI側の
+TSF composition内部状態が乱れ『@』を誘発するのに十分」という機序が
+別途確定しており（BUG-113節参照）、`Ctrl+無変換`もこの十分条件に
+該当する送信を行う経路の一つである。そのため、直前の操作でbeliefと
+実IME状態がズレていた場合（例: 直前の無変換単独タップ後等）に限り、
+本物のON→OFF遷移としてSendInputが飛び、低頻度で「@」が顕在化しうる。
+ADR-153決定1のケース3（"off"×belief既にOFFで毎回強制actuateする設計、
+2026-09-08に撤回済み）が有効だった間は、この独立バグの発火条件
+（実SendInputが飛ぶ）が「毎回」に格上げされて見えていたが、原因は
+ケース3ではなくこの`keys.ime_off`ホットキー処理自体にある。
+
+**再現条件:** 通常は稀にしか顕在化しない（本物のON→OFF遷移が起きた
+瞬間のみ）。安定再現させるには、直前にbeliefと実IME状態をズレさせる
+操作（診断ブランチ`diag/adr153-case3-ctrlmuhenkan-experiment`の実験
+では、ADR-153ケース3を有効にして無変換単独タップと組み合わせていた）
+が必要で、単体の再現手順は未確立。
+
+**優先度・対応方針:** 低頻度・pre-existingのバグであり、優先度は低い。
+本BUGの根治には、`keys.ime_off`等の任意のホットキー経由actuationと
+「単発SendInputで『@』を誘発するのに十分」という機序（BUG-113の
+真因そのもの）を切り離す必要があり、単発のホットキー修正では閉じない
+可能性が高い——スコープはBUG-113の根治と重なる。
+
+**関連ファイル:** `src/engine/engine.rs`（`match_special_keys`）、
+`src/config.rs`（`KeysConfig::default()`の`ime_off`既定値）、
+`crates/awase-windows/src/runtime/`の`handle_engine_set_open`/
+`applied_snapshot`経路。関連: BUG-113（本BUGの発見元、「単発SendInputで
+『@』に十分」という共通の真因）。

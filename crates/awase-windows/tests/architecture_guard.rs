@@ -1153,7 +1153,11 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         // **2026-09-08（ADR-153決定1実装）**: 表 #12（`key_pipeline.rs::
         // kp_stage_shadow_ime_toggle`のケース3、無変換/変換単独タップの
         // 明示config`"off"`×belief既にOFF）が新規追加され 2→3。
-        (".apply_ime_open_with_belief(", 3),
+        //
+        // **2026-09-08（同日、ケース3撤回）**: 実機A/B実験で「@」再現の
+        // 直接原因と確定し撤回したため、表 #12 の入口が消えて 3→2 に戻った
+        // （`docs/known-bugs.md` BUG-113節・`docs/experiments.md`エントリ25）。
+        (".apply_ime_open_with_belief(", 2),
         // 外部 2（executor.rs engine decision / mod.rs force_on_and_correct_romaji、
         // 表 #1/#6）+ apply_ime_open_with_belief 内部からの委譲 1 = 3。
         // （`apply_ime_open_with_belief` からの委譲であって `apply_ime_open_with_applied`
@@ -3549,46 +3553,60 @@ fn explicit_ime_action_masks_autodetect_delegate_in_both_gji_and_msime() {
     }
 }
 
-/// ADR-153 決定1 M19対策の KeyUp ペアリング回帰ガード（/code-review指摘、
-/// PR #185）。
+/// ADR-153 決定1「ケース3」（"off"×belief既にOFFの強制actuate）再導入
+/// 防止ガード（2026-09-08、実機A/B実験で「@」再現の直接原因と確定、
+/// `docs/known-bugs.md` BUG-113節・`docs/experiments.md`エントリ25参照）。
 ///
-/// ケース3（"off"×belief既にOFF）は KeyDown で `explicit_ime_action_
-/// consumed` マーカーを立てて `transport.rs::plan` に Suppress させるが、
-/// `RawKeyEvent.ime_relevance` は打鍵ごとに新規構築されるため、対応する
-/// KeyUp にこのマーカーは自動的には引き継がれない。`kp_stage_shadow_ime_
-/// toggle` は、KeyUp到着時点で `explicit_ime_action_target` を再評価する
-/// 早期分岐を、通常の `!matches!(KeyDown)` 早期return **より前**に持つ
-/// ことで、この孤立KeyUp漏れ（B7/B8再発）を防いでいる——この構造が
-/// 崩れていないかを固定する。
+/// ケース3は`apply_ime_open_with_belief(order, None, belief)`の
+/// `shadow_on: None`バイパスで「beliefが変化しなくても毎回強制
+/// actuateする」設計そのものが「単発のIME制御SendInputが1回飛ぶだけで
+/// 『@』を誘発するのに十分」という機序の十分条件を毎回満たしてしまう
+/// ことが確定し、撤回した。撤回に伴い、対応するKeyUpのM19ペアリング
+/// 早期分岐（`explicit_ime_action_target(...) == Some(false)`を見る
+/// KeyUp特別扱い）も不要になり削除済み。このガードは、ケース3固有の
+/// アクチュエーション理由タグ（`"explicit_ime_action_case3_off"`）が
+/// 再導入されていないか、また`explicit_ime_action_target`が
+/// `Option<bool>`（`Some(false)`=ケース3）に巻き戻されていないかを固定
+/// する——「off方向の強制actuateが欲しい」という要望が再浮上したときに、
+/// 実機実験で確定済みの失敗機序を読まずに同じ設計へ戻ることを防ぐ。
 #[test]
-fn kp_stage_shadow_ime_toggle_pairs_key_up_with_explicit_ime_action_marker() {
+fn kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate() {
     let content = read_crate_file("src/runtime/key_pipeline.rs");
     let production = production_code_only(&content);
-    let body = extract_fn_body(production, "fn kp_stage_shadow_ime_toggle(");
 
-    let key_up_check_idx = body
-        .find("KeyEventType::KeyUp")
-        .expect("kp_stage_shadow_ime_toggle must special-case KeyEventType::KeyUp for M19 pairing");
-    let key_down_early_return_idx = body
-        .find("!matches!(event.event_type, KeyEventType::KeyDown)")
-        .expect("kp_stage_shadow_ime_toggle must early-return for non-KeyDown events");
     assert!(
-        key_up_check_idx < key_down_early_return_idx,
-        "KeyUp用のM19ペアリング分岐は、`!matches!(event.event_type, \
-         KeyEventType::KeyDown)`早期returnより前に置くこと。後ろに \
-         置くとKeyUpイベントがそこで即returnされ、ペアリング分岐に \
-         到達しないまま孤立KeyUpがGJIへ生のまま配送される \
-         （ADR-153決定1ケース3の抑止とactuationの1対1対応、B7/B8再発）。"
+        !production.contains("explicit_ime_action_case3_off"),
+        "ADR-153決定1のケース3（\"off\"×belief既にOFFの強制actuate）専用の \
+         アクチュエーション理由タグ`explicit_ime_action_case3_off`が \
+         再導入されています。2026-09-08に実機A/B実験で「@」再現の直接 \
+         原因と確定し撤回済みです——再導入前に`docs/known-bugs.md` \
+         BUG-113節と`docs/experiments.md`エントリ25を必ず読んでください。"
     );
 
-    let target_calls = body.matches("explicit_ime_action_target(").count();
+    let signature_idx = production
+        .find("fn explicit_ime_action_target(")
+        .expect("fn explicit_ime_action_target( not found in key_pipeline.rs");
+    let signature_end = production[signature_idx..]
+        .find('{')
+        .map(|i| signature_idx + i)
+        .expect("explicit_ime_action_target signature must have a body");
+    let signature = &production[signature_idx..signature_end];
     assert!(
-        target_calls >= 2,
-        "kp_stage_shadow_ime_toggle は `explicit_ime_action_target(` を \
-         KeyUpペアリング判定とKeyDownケース2/3判定の両方から呼ぶはず \
-         （実際の呼び出し数: {target_calls}）。片方だけになっている場合、\
-         KeyDown/KeyUpいずれかの経路でケース3の判定条件が乖離している \
-         おそれがある。"
+        signature.contains("-> bool") && !signature.contains("Option<bool>"),
+        "`explicit_ime_action_target`は`Option<bool>`ではなく`bool`を \
+         返すはずです（ケース3撤回によりSome(false)というバリアントが \
+         意味を持たなくなったため）。`Option<bool>`に戻っている場合、 \
+         ケース3（`Some(false)`）が復活していないか確認してください。"
+    );
+
+    let body = extract_fn_body(production, "fn kp_stage_shadow_ime_toggle(");
+    let target_calls = body.matches("explicit_ime_action_target(").count();
+    assert_eq!(
+        target_calls, 1,
+        "kp_stage_shadow_ime_toggle から `explicit_ime_action_target(` を \
+         呼ぶのはKeyDownケース2判定の1箇所のみのはず（実際の呼び出し数: \
+         {target_calls}）。2箇所以上ある場合、撤回したはずのKeyUp M19 \
+         ペアリング分岐（ケース3専用）が復活しているおそれがあります。"
     );
 }
 

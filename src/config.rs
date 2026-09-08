@@ -439,19 +439,27 @@ pub struct GeneralConfig {
     /// 持つ——この明示config もこの窓では一時的に無反応になりうる
     /// （既存の自動検出経路と共通の制約、新規リスクではない）。
     ///
-    /// **既知の問題（2026-09-08、dragonflyg4実機A/B切り分け実験で機序
-    /// 確定、`docs/known-bugs.md` BUG-113節参照）**: `"on"`（belief
-    /// OFF→ON昇格、ケース2）は実機で「@」再現なしを確認済み。一方
-    /// `"off"`（belief既にOFFのまま維持、ケース3）は実機で「@」が
-    /// 毎回再現することを確認した——原因は、ケース3が`shadow_on: None`
-    /// バイパスで意図的にno-op保護を外し「beliefが変化しなくても毎回
-    /// 強制actuateする」設計そのものにある（生キーのSuppress自体は
-    /// 正しく動作している）。実機A/B実験で「生キーをSuppressし、かつ
-    /// 何も送らなければ『@』は完全に消える」ことを確認しており、
-    /// 「単発のIME制御SendInputが1回でも飛べば『@』を誘発するのに
-    /// 十分」というのが確定した機序——ケース3はこの十分条件を毎回
-    /// 満たしてしまう。**`"off"`方向は撤回予定（次セッション）。
-    /// 使用しないこと**。
+    /// **既知の問題と撤回（2026-09-08、dragonflyg4実機A/B切り分け実験で
+    /// 機序確定、`docs/known-bugs.md` BUG-113節参照）**: `"on"`（belief
+    /// OFF→ON昇格、ケース2）は実機で「@」再現なしを確認済みで、現在も
+    /// 有効。一方 `"off"`（belief既にOFFのまま維持、旧ケース3）は実機で
+    /// 「@」が毎回再現することを確認した——原因は、ケース3が
+    /// `shadow_on: None` バイパスで意図的にno-op保護を外し「beliefが
+    /// 変化しなくても毎回強制actuateする」設計そのものにあった（生キーの
+    /// Suppress自体は正しく動作していた）。実機A/B実験で「生キーを
+    /// Suppressし、かつ何も送らなければ『@』は完全に消える」ことを
+    /// 確認しており、「単発のIME制御SendInputが1回でも飛べば『@』を
+    /// 誘発するのに十分」というのが確定した機序——ケース3はこの十分
+    /// 条件を毎回満たしてしまっていた。**この"off"×belief既にOFFの
+    /// 強制actuate（ケース3）は2026-09-08に撤回済み**
+    /// （`crates/awase-windows/src/runtime/key_pipeline.rs::
+    /// explicit_ime_action_target`）——現在この設定値は、belief既に
+    /// OFFの状態では単に無反応（フォールスルー）になる。belief ON中の
+    /// 実際のON→OFF遷移（ケース1、`resolve_explicit_ime_action`〈コア
+    /// 側〉）はこの撤回の対象外で、`"off"`は引き続きそちらでは有効な値。
+    /// 再度belief OFF側の強制actuateを検討する場合は、上記実機実験の
+    /// 結論（`docs/experiments.md`エントリ25）を必ず読むこと——同じ
+    /// 設計に戻すと同じ症状が再発する。
     #[serde(default)]
     pub muhenkan_solo_tap_ime_action: Option<ShadowImeActionConfig>,
     /// `muhenkan_solo_tap_ime_action` と対称（変換キー用）。

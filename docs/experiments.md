@@ -1019,3 +1019,12 @@ BUG-115（ひらがな/カタカナキーの親指キーdelegate機構）をマ�
   今回「単発でも十分」という、より緩い十分条件へと更新された）。
   suppress-onlyのA/Bテスト（生キーSuppress + 実送信ゼロ）が、この
   区別をつける決め手になった。
+
+**追記（2026-09-08、対応完了）**: 上記の学びに基づき、ケース3（"off"×
+belief既にOFFの強制actuate、`kp_stage_shadow_ime_toggle`）を撤回した
+（`crates/awase-windows/src/runtime/key_pipeline.rs`）。Ctrl+無変換の
+独立バグは`docs/known-bugs.md` BUG-121として新規記録し、診断ブランチ
+`diag/adr153-case3-ctrlmuhenkan-experiment`（worktree・ローカル・
+リモート）は破棄した——実験結果はこのエントリと known-bugs.md 双方に
+残っているため、診断コード自体（`AWASE_DIAG_CASE3_SUPPRESS_ONLY`等）を
+保持する必要はないと判断した。
