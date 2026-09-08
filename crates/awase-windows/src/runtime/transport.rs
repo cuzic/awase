@@ -234,6 +234,11 @@ impl PhysicalKeyDisposition {
     /// `profile.should_pass_physical_key()`（TsfNative で常に true）のみで判定しており、
     /// 「TSF が KANJI を正しく処理する」という前提が `GjiDirectStrategy` の全プロファイル
     /// 適用化（`ime_controller.rs`）より前のまま残っていたことが原因だった。
+    // 物理キーのSuppress/Allow判断は分岐が本質的に多い（プロファイル×VK種別×
+    // 各種例外の組み合わせ）。分割は挙動変更リスクが高い「reincidence family」
+    // （`.claude/rules/fix-requires-evidence.md`のtransport.rs::plan行参照）
+    // のため、複雑度警告のみ抑制する（`kp_stage_shadow_ime_toggle`と同じ方針）。
+    #[expect(clippy::cognitive_complexity)]
     #[tracing::instrument(
         level = "debug",
         skip_all,
@@ -333,17 +338,23 @@ impl PhysicalKeyDisposition {
         // 実際の切替はGJI自身が物理キー配送を通じて行う）ため、
         // `is_kanji_event`判定より前でこの分岐を置く。
         //
-        // **例外（ADR-153決定1 M19、ケース3）**: 明示config
+        // **例外（ADR-153決定1 M19）**: 明示config
         // （`muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`）が
-        // `kp_stage_shadow_ime_toggle`のケース3で既にこの打鍵のIME open軸
-        // actuationを発行済み（`event.ime_relevance.explicit_ime_action_
-        // consumed`）の場合のみ Suppress する——抑止とactuationが1対1で
-        // 対応する原則（B7/B8対策）を守るため、実際にawase自身が代替
-        // actuateした場合に限り生キーを止める。ケース2（belief OFF→ON）も
-        // 同じマーカーを立てるが、その場合は`Decision::Consume`（NicolaFsm
-        // がこの打鍵をPendingThumbとして消費する）が既に生キー配送を止めて
-        // おり、`execute_relay`の`Decision::Consume`アームは`physical`を
-        // 一切参照しないため、この分岐の値は無害な冗長値になる。
+        // `kp_stage_shadow_ime_toggle`で既にこの打鍵のIME open軸actuation
+        // を発行済み（`event.ime_relevance.explicit_ime_action_consumed`）
+        // の場合のみ Suppress する——抑止とactuationが1対1で対応する原則
+        // （B7/B8対策）を守るため、実際にawase自身が代替actuateした場合に
+        // 限り生キーを止める。**2026-09-08、この分岐を要求していたケース3
+        // （"off"×belief既にOFFの強制actuate）は撤回済み**
+        // （`docs/known-bugs.md` BUG-113節参照）——現在このマーカーを
+        // 立てるのはケース2（belief OFF→ON）のみだが、その場合は
+        // `Decision::Consume`（NicolaFsmがこの打鍵をPendingThumbとして
+        // 消費する）が既に生キー配送を止めており、`execute_relay`の
+        // `Decision::Consume`アームは`physical`を一切参照しないため、
+        // この分岐の値は無害な冗長値になる。ケース3の実装がまだ存在した
+        // 頃の実挙動への影響（Suppressが実際に効いていたケース）が
+        // このコメントの主目的だったため、撤回後も分岐自体は残すが
+        // 実質的にはノーオペレーションであることを明記しておく。
         if matches!(
             event.vk_code,
             crate::vk::VK_CONVERT | crate::vk::VK_NONCONVERT
