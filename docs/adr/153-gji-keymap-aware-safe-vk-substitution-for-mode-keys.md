@@ -2,13 +2,32 @@
 
 ## ステータス
 
-**決定1実装済み（2026-09-08、PR #185でdevelopマージ済み）。ケース3は同日中に
-撤回済み（下記2026-09-08追記1参照）。ケース2（"on"）は同日中に実機再検証で
-2件のバグ（BUG-122・BUG-123）を連鎖的に発見・修正した（下記2026-09-08
-追記2・3参照）——本ADRの「ケース2は実機確認済み」という当初の記述は
-誤りだったと判明している。** `cargo test --lib`（コア1004件）・`cargo
-nextest run -p awase-windows`（113件）・clippy/fmt はすべてgreen。実機での
-最終確認（BUG-122+BUG-123修正後のビルド）は次のステップで実施予定。
+**決定1実装済み（2026-09-08、PR #185でdevelopマージ済み）。ケース2
+（"on"）は同日中に実機再検証で2件のバグ（BUG-122・BUG-123）を連鎖的に
+発見・修正し、実機で最終確認済み（下記2026-09-08追記2・3参照）——本ADR
+の「ケース2は実機確認済み」という当初の記述は誤りだったと判明している。
+ケース3（"off"）は同日中に一度全面撤回したが、それが別の「@」退行
+（BUG-124）を招いたため「抑止のみ・actuateしない」の形に再設計した
+（下記2026-09-08追記1・4参照）——実機での最終確認は次のステップで
+実施予定。** `cargo test --lib`（コア1004件）・`cargo nextest run -p
+awase-windows`（113件）・clippy/fmt はすべてgreen。
+
+**追記4（2026-09-08、ケース3の全面撤回が「@」を再発させたため「抑止
+のみ」の形に再設計、BUG-124）**: 追記1の全面撤回版（強制actuateだけで
+なく生キーの抑止も含めて撤去）を実機ビルドし`"off"`設定で再検証した
+ところ、**「@」が再現し続けた**。原因は、抑止まで撤去した結果GJI自身が
+無変換/変換キーを生で受け取るようになり、本ADRが解決しようとしていた
+BUG-113の根本原因（GJI自身のTSFキー横取り）そのものに逆戻りしていた
+こと。追記1時点で参照していた実機実験（`docs/experiments.md`エントリ25
+Phase3）は「生キーをSuppressし、かつ何も送らなければ『@』は完全に
+消える」ことを既に示していた——**問題は「抑止」ではなく「強制
+actuate」の方**だったにも関わらず、全面撤回の設計時にこの区別を
+見落とし、両方まとめて撤去してしまっていた。`explicit_ime_action_
+target`を再び`Option<bool>`に戻し、"off"×既にOFFの場合は
+`explicit_ime_action_consumed`マーカーを立てて`return false`する
+だけの「抑止のみ」実装（`apply_ime_open_with_belief`等のactuationは
+一切呼ばない）に再設計した。KeyUpのM19ペアリング早期分岐も復活させた。
+詳細は`docs/known-bugs.md` BUG-124節参照。
 
 **追記3（2026-09-08、`always_suppress=false`環境での二重信号送出を発見・
 修正、BUG-123）**: 追記2のBUG-122修正版を実機ビルドし再検証したところ、
@@ -22,7 +41,10 @@ nextest run -p awase-windows`（113件）・clippy/fmt はすべてgreen。実�
 1回のタップがGJIへ「ケース2のIME ON化」＋「100ms後の生キー再送」という
 2つの信号として届き、GJIが後者をかな⇄カタカナ切替と誤認していた。
 `explicit_action_consumed`のときは優先順位3/4を評価せず即座に打ち切る
-よう修正した。詳細は`docs/known-bugs.md` BUG-123節参照。
+よう修正した。詳細は`docs/known-bugs.md` BUG-123節参照。実機再検証で
+このケース2の修正（BUG-122+BUG-123）が正しく動作することを確認済み
+——半角状態から無変換単独タップで正常にひらがな入力へ切り替わり、
+「@」もカタカナへの誤遷移も再現しないことを確認した。
 
 **追記2（2026-09-08、ケース2のbelief書き込みno-opバグを発見・修正、
 BUG-122）**: PR #185マージ後の実機再検証（dragonflyg4、`muhenkan_solo_tap_
@@ -37,22 +59,23 @@ from_physical(event)`経由でしか`write_physical_key`を呼ばないが、
 修正内容は`docs/known-bugs.md` BUG-122節を参照。当初の実機確認がなぜ
 「成功」に見えたかは確定できていない（推測は known-bugs.md 参照）。
 
-**追記1（2026-09-08、ケース3撤回・完了）**: 下記「実機検証結果」が記録した
-ケース3の未解決症状は、後続の実機A/B切り分け実験で根本原因が確定した
-（`docs/known-bugs.md` BUG-113節・`docs/experiments.md`エントリ25）。
-当初疑っていた「develop側の回帰」は誤りで、真因はケース3自身の設計
-（`shadow_on: None`バイパスで「beliefが変化しなくても毎回強制actuate
-する」ことが「単発SendInputで『@』を誘発するのに十分」という機序の
-十分条件を毎回満たしてしまう）だった。この節以下に残る「ケース3」の
-設計記述は、**採用されなかった設計として記録のため残している**——
-再度この方向を検討する前に必ず上記の実機実験結果を読むこと。実装は
-`crates/awase-windows/src/runtime/key_pipeline.rs`の
-`kp_stage_shadow_ime_toggle`/`explicit_ime_action_target`から撤去済み
-（回帰ガード: `architecture_guard.rs`の
-`kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate`）。
-Ctrl+無変換の症状は、ケース3とは無関係な既存の`keys.ime_off`ホットキー
-処理に元からある独立した低頻度バグと判明し、`docs/known-bugs.md`
-BUG-121として別途記録した。
+**追記1（2026-09-08、ケース3を一度全面撤回。後に追記4で「抑止のみ」の
+形へ再設計——本節は当日の経緯の記録として残す）**: 下記「実機検証結果」
+が記録したケース3の未解決症状は、後続の実機A/B切り分け実験で根本原因が
+確定した（`docs/known-bugs.md` BUG-113節・`docs/experiments.md`
+エントリ25）。当初疑っていた「develop側の回帰」は誤りで、真因はケース3
+自身の設計（`shadow_on: None`バイパスで「beliefが変化しなくても毎回
+強制actuateする」ことが「単発SendInputで『@』を誘発するのに十分」と
+いう機序の十分条件を毎回満たしてしまう）だった。この時点では強制
+actuateブロックを生キーの抑止ごと全面撤去したが、**この全面撤去
+自体が別の「@」退行を招いたことが追記4で判明し、「抑止はする・
+actuateはしない」という形に再設計している**——現在の実装は追記4を
+参照すること（`crates/awase-windows/src/runtime/key_pipeline.rs`の
+`kp_stage_shadow_ime_toggle`/`explicit_ime_action_target`、回帰ガードは
+`architecture_guard.rs`の`kp_stage_shadow_ime_toggle_never_
+reintroduces_case3_forced_actuate`）。Ctrl+無変換の症状は、ケース3とは
+無関係な既存の`keys.ime_off`ホットキー処理に元からある独立した低頻度
+バグと判明し、`docs/known-bugs.md` BUG-121として別途記録した。
 
 **実機検証結果（2026-09-08、dragonflyg4、Windows Terminal + GJI）**:
 

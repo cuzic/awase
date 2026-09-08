@@ -15126,21 +15126,42 @@ ime_action`（変換）・`"toggle"`方向・ATOKプリセット併用は未確�
    （ケース3自身の強制送信が同時に発生するため）が、原因そのものは
    ケース3ではない。
 
-**追記（2026-09-08、ケース3"off"方向を撤回・実装済み）**: 上記推奨どおり、
-`crates/awase-windows/src/runtime/key_pipeline.rs`の`kp_stage_shadow_
-ime_toggle`からケース3（"off"×belief既にOFFの強制actuateブロックと、
-それに対応するKeyUp M19ペアリング早期分岐）を削除した。`explicit_ime_
-action_target`は戻り値を`Option<bool>`から`bool`（ケース2が発火するか
-否かのみ）に単純化し、"off"設定×belief既にOFFの場合は単に`false`を
-返して素通しする（何もしない）——強制actuateは行わない。ケース1
-（`resolve_explicit_ime_action`〈コア側〉、belief ON→OFFの実際の遷移）
-はこの撤回の対象外で、影響を受けない。回帰ガードは
-`crates/awase-windows/tests/architecture_guard.rs`の
+**追記（2026-09-08、ケース3"off"方向を一度全面撤回・実装済み）**: 上記
+推奨どおり、`crates/awase-windows/src/runtime/key_pipeline.rs`の
+`kp_stage_shadow_ime_toggle`からケース3（"off"×belief既にOFFの強制
+actuateブロックと、それに対応するKeyUp M19ペアリング早期分岐）を削除
+した。`explicit_ime_action_target`は戻り値を`Option<bool>`から`bool`
+（ケース2が発火するか否かのみ）に単純化し、"off"設定×belief既にOFFの
+場合は単に`false`を返して素通しする（何もしない）——強制actuateは行わ
+ない。ケース1（`resolve_explicit_ime_action`〈コア側〉、belief ON→OFF
+の実際の遷移）はこの撤回の対象外で、影響を受けない。Ctrl+無変換の独立
+バグはBUG-121として新規記録した。診断ブランチ（`diag/adr153-case3-
+ctrlmuhenkan-experiment`、commit `f8bf6cb0`）はworktree/ローカル/
+リモートとも破棄済み——上記の実験結果はこの追記と実装コミット自体に
+残っているため、診断コード自体を保持する必要はない。
+
+**追記2（2026-09-08、全面撤回が別の「@」を再発させたため「抑止のみ」の
+形に再設計、BUG-124）**: 上記の全面撤回版を実機ビルドし
+`muhenkan_solo_tap_ime_action = "off"`で再検証したところ、**「@」が
+再現し続ける**ことが判明した。原因は、全面撤回により生キーの抑止まで
+失われ、GJI自身が無変換/変換キーを生で受け取るようになったこと——
+これは本節（BUG-113）が確立した「GJI自身のTSFキー横取りが『@』を
+誘発する」という根本原因そのものへの逆戻りだった。詳細はBUG-124節を
+参照。教訓: 旧ケース3の問題は「生キーを抑止すること」ではなく
+「beliefが変化しなくても毎回強制actuateすること」の方だった——診断
+実験（`docs/experiments.md`エントリ25 Phase3）で「生キーをSuppressし、
+かつ何も送らなければ『@』は完全に消える」ことは既に確認済みだったにも
+関わらず、全面撤回時にこの区別を見落とし、抑止ごと削ってしまった。
+`explicit_ime_action_target`は再び`Option<bool>`（`Some(false)`=
+"off"×既にOFF、抑止のみ・actuateしない）に戻し、KeyUp M19ペアリング
+早期分岐も復活させた——ただし旧ケース3の強制actuateブロック
+（`apply_ime_open_with_belief`呼び出し）は復活させていない。回帰ガード
+は`crates/awase-windows/tests/architecture_guard.rs`の
 `kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate`
-（新設）。Ctrl+無変換の独立バグはBUG-121として新規記録した。診断ブランチ（`diag/adr153-case3-ctrlmuhenkan-
-experiment`、commit `f8bf6cb0`）はworktree/ローカル/リモートとも破棄
-済み——上記の実験結果はこの追記と実装コミット自体に残っているため、
-診断コード自体を保持する必要はない。
+を更新し、(a)強制actuate用の理由タグ`explicit_ime_action_case3_off`が
+再導入されていないこと、(b)ケース3改のelse節が`apply_ime_open_with_
+belief`等のactuation呼び出しを一切含まないこと、(c)KeyUpペアリングが
+維持されていること、の3点を固定している。
 
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 
@@ -16503,3 +16524,66 @@ consumed_marker_skips_case1_b13_b14`（`always_suppress=true`側）と対）。
 ようになって初めて顕在化した——BUG-122修正前は明示configのbelief書き込み
 自体が起きていなかったため、この二重送出はIME ON化と組み合わさらず
 症状として気付かれなかった）。
+
+---
+
+## BUG-124: ADR-153決定1「ケース3」の"off"×belief既にOFFを全面撤回したところ、GJI自身のTSFキー横取りによる「@」再現に逆戻りした（設計の見直し不足、同日中に「抑止のみ」の形へ再設計・修正）
+
+**症状:** BUG-113節の「ケース3」全面撤回版（強制actuateブロックとKeyUp
+M19ペアリング早期分岐をどちらも削除、生キーの抑止も含めて撤去）を実機
+ビルドし、`muhenkan_solo_tap_ime_action = "off"`で半角状態から無変換
+単独タップを行ったところ、**「@」が再現し続けた**（ユーザー報告により
+発見）。ログでは無変換キーの物理配送が`decision="PassThrough"
+physical="Allow"`となっており、`[shadow-toggle] 明示config`のINFOログも
+一切出力されていなかった——つまり明示configが何もしなくなり、生キーが
+そのままGJIへ渡っていた。
+
+**根本原因（設計上の見落とし）:** BUG-113節が確立した「@」の根本原因は
+「GJI自身が無変換/変換キーを生で受け取ると、そのTSFキー横取り
+（`ITfKeyEventSink`）が『@』を誘発する」ことである。旧ケース3の問題は
+**この生キー自体を抑止していたこと**ではなく、**「beliefが変化しなくても
+毎回強制actuateする」設計の方**だった——実機実験（`docs/experiments.md`
+エントリ25 Phase3、`AWASE_DIAG_CASE3_SUPPRESS_ONLY=1`）で「生キーを
+Suppressし、かつ何も送らなければ『@』は完全に消える」ことは既に確認
+済みだった。しかし旧ケース3を撤回する際、「強制actuateをやめる」と
+「生キーの抑止をやめる」を分けて考えず、**両方まとめて撤去してしまった**
+——結果、GJI自身が無変換/変換キーを生で受け取るようになり、ADR-153
+決定1全体が解決しようとしていたBUG-113の根本原因そのものに逆戻りした。
+
+**修正（同日中に再設計）:** `explicit_ime_action_target`
+（`crates/awase-windows/src/runtime/key_pipeline.rs`）を`Option<bool>`
+に戻し、`Some(false)`（"off"×既にOFF）の場合は
+`event.ime_relevance.explicit_ime_action_consumed = true`を立てて
+`return false`するだけの「抑止のみ」実装にした——`apply_ime_open_
+with_belief`等のactuation呼び出しは一切行わない。対応するKeyUpの
+ペアリング早期分岐（M19対策、孤立KeyUpがGJIへ漏れるのを防ぐ）も復活
+させた。`transport.rs::plan`のM19例外分岐（`explicit_ime_action_
+consumed`を見てSuppressする箇所）は変更していない——この分岐こそが
+ケース3改にとって唯一の実効的なSuppress手段であることをコメントで
+明記した（BUG-123修正時に「ケース2にとっては無害な冗長値」とだけ
+書いていたコメントが、ケース3改にも同じ理由付けが適用できるかのように
+誤読されるおそれがあったため訂正）。
+
+回帰ガード: `crates/awase-windows/tests/architecture_guard.rs::
+kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate`
+を更新し、(a) 旧ケース3専用の理由タグ`explicit_ime_action_case3_off`が
+再導入されていないこと、(b) ケース3改のelse節が`apply_ime_open_with_
+belief`/`issue_actuation_order`/`on_ime_apply_complete`のいずれも
+含まないこと（抑止のみを保証）、(c) KeyUpペアリング分岐が維持されて
+いること、の3点を機械的に固定した。
+
+**教訓（`.claude/rules/experiment-logging.md`が警告する「反転の繰り返し」
+の実例）:** 同一日のうちに「撤回→別の退行を発見→再設計」を1往復した。
+実験ログとknown-bugsに実測済みの事実（「抑止のみなら@が消える」）が
+既に記録されていたにも関わらず、全面撤回の設計時にその記録を参照せず
+「actuateも抑止もまとめて撤去すれば安全」と早合点したことが原因——
+revertする際は「何が本当に悪かったのか」を対象を絞って特定し、無関係な
+副産物（ここでは生キーの抑止という別の目的を持つ機構）まで巻き込んで
+撤去しないこと。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_stage_shadow_ime_toggle`/`explicit_ime_action_target`）、
+`crates/awase-windows/src/runtime/transport.rs`（`plan`のM19例外）、
+`crates/awase-windows/tests/architecture_guard.rs`。関連: BUG-113
+（本BUGが逆戻りした根本原因）、`docs/experiments.md`エントリ25（抑止
+のみで「@」が消えることを確認した実験）。

@@ -340,21 +340,26 @@ impl PhysicalKeyDisposition {
         //
         // **例外（ADR-153決定1 M19）**: 明示config
         // （`muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`）が
-        // `kp_stage_shadow_ime_toggle`で既にこの打鍵のIME open軸actuation
-        // を発行済み（`event.ime_relevance.explicit_ime_action_consumed`）
-        // の場合のみ Suppress する——抑止とactuationが1対1で対応する原則
-        // （B7/B8対策）を守るため、実際にawase自身が代替actuateした場合に
-        // 限り生キーを止める。**2026-09-08、この分岐を要求していたケース3
-        // （"off"×belief既にOFFの強制actuate）は撤回済み**
-        // （`docs/known-bugs.md` BUG-113節参照）——現在このマーカーを
-        // 立てるのはケース2（belief OFF→ON）のみだが、その場合は
-        // `Decision::Consume`（NicolaFsmがこの打鍵をPendingThumbとして
-        // 消費する）が既に生キー配送を止めており、`execute_relay`の
-        // `Decision::Consume`アームは`physical`を一切参照しないため、
-        // この分岐の値は無害な冗長値になる。ケース3の実装がまだ存在した
-        // 頃の実挙動への影響（Suppressが実際に効いていたケース）が
-        // このコメントの主目的だったため、撤回後も分岐自体は残すが
-        // 実質的にはノーオペレーションであることを明記しておく。
+        // `kp_stage_shadow_ime_toggle`でこの打鍵に反応済み
+        // （`event.ime_relevance.explicit_ime_action_consumed`）の場合のみ
+        // Suppress する。このマーカーは2つの別経路から立つ:
+        //
+        // - **ケース2**（belief OFF→ON昇格）: 実際にIME open軸のactuationを
+        //   発行済み。ただしこの経路の物理配送停止は`Decision::Consume`
+        //   （NicolaFsmがこの打鍵をPendingThumbとして消費する）が別途
+        //   担っており、`execute_relay`の`Decision::Consume`アームは
+        //   `physical`を一切参照しないため、ケース2単独ではこの分岐の値は
+        //   無害な冗長値になる。
+        // - **ケース3改**（2026-09-08再設計、BUG-124対策、"off"×既にOFF）:
+        //   `kp_stage_shadow_ime_toggle`はactuationを一切行わず
+        //   マーカーだけを立てる——**この経路にとって、この分岐こそが
+        //   唯一の実効的なSuppress手段**である（`Decision::Consume`には
+        //   乗らない）。ここでSuppressしないと生の`VK_NONCONVERT`/
+        //   `VK_CONVERT`がGJIへ届き、GJI自身のTSFキー横取り
+        //   （`ITfKeyEventSink`）が「@」を誘発する（BUG-113の根本原因
+        //   そのもの、実機A/B確認済み・BUG-124参照）。この分岐を
+        //   「無害な冗長値」と誤認して削除すると、ケース3改が事実上の
+        //   無防備になり「@」が再発する。
         if matches!(
             event.vk_code,
             crate::vk::VK_CONVERT | crate::vk::VK_NONCONVERT
