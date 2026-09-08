@@ -1011,6 +1011,160 @@ impl Runtime {
         outcome
     }
 
+    // ── ADR-121: 物理IMEキー no-op 時の冪等再送（BUG-37 部分対策） ──────────
+
+    /// settle 中で見送った [`Self::reassert_explicit_physical_key`] の pending
+    /// 値を、武装時のウィンドウ（`ForegroundScope`）と現在の前景ウィンドウを
+    /// 照合して覗き見る（消費はしない）。武装後にフォーカスが別ウィンドウへ
+    /// 移っていれば `ScopeCheck::Expired` を返し latch 自体を自動的に失効
+    /// させる（opus-adversarial-consult round1 S1、Blacklist アプリ間の
+    /// フォーカス遷移で無関係なウィンドウへ誤 actuate するのを防ぐ）。
+    pub(crate) fn peek_pending_explicit_reassert(
+        &mut self,
+    ) -> crate::state::scoped_latch::ScopeCheck<bool> {
+        // /code-review round2指摘: 毎TIMER_IME_REFRESH tick（20/150/500ms毎）
+        // で無条件にforeground_scope()（GetForegroundWindow+GetWindowThread
+        // ProcessId）を呼ぶのは、armedでない大多数のtickでは無駄な呼び出し。
+        // is_armed()で先に弾く。
+        if !self.ime_coordinator.pending_explicit_reassert.is_armed() {
+            return crate::state::scoped_latch::ScopeCheck::NotArmed;
+        }
+        let now = crate::win32::foreground_scope();
+        self.ime_coordinator.pending_explicit_reassert.peek(now)
+    }
+
+    /// 消費（実際に再試行する／プロファイル変化で破棄する）確定後に呼ぶ。
+    pub(crate) fn disarm_pending_explicit_reassert(&mut self) {
+        self.ime_coordinator.pending_explicit_reassert.disarm();
+    }
+
+    /// settle 明けに1回だけ再試行するための pending 値をセットする。呼び出し元は
+    /// 必ず直後に [`Self::schedule_settle_retry`] を呼び、既存の 20ms/150ms
+    /// リフレッシュ tick に相乗りさせること（新規タイマーを増やさない）。
+    /// 武装スコープは呼び出し時点の前景ウィンドウ（`ForegroundScope`）。
+    /// `scope.is_valid()` が false（フォーカス遷移中で `GetForegroundWindow()`
+    /// が null 等）の場合は武装しない——`ForegroundScope::INVALID` は
+    /// `INVALID == INVALID` が成立するため、無効スコープのまま武装すると
+    /// 消費時にも無効スコープで一致してしまい S1 が防ごうとしたフォーカス
+    /// 照合が効かなくなる（opus-adversarial-consult round2 N2指摘、
+    /// `arm_post_bypass_if_matches` と同じガードを踏襲）。
+    pub(crate) fn set_pending_explicit_reassert(&mut self, open: bool) {
+        let scope = crate::win32::foreground_scope();
+        if !scope.is_valid() {
+            tracing::debug!(
+                "[explicit-reassert] 前景ウィンドウ取得失敗のため武装を見送り (open={open})"
+            );
+            return;
+        }
+        self.ime_coordinator
+            .pending_explicit_reassert
+            .arm(scope, open);
+    }
+
+    /// ADR-121 D3: `on_ime_apply_complete` の (1)(2)(4) は行うが (3)
+    /// （`record_ime_apply_result`、`applied` belief の書き込み）だけを
+    /// 呼ばない後処理。reassert は効果不明の best-effort な追加試行であり、
+    /// 確認できていない書き込みに `applied = Confirmed{..}` という確定した
+    /// 観測であるかのような値を記録するのは BUG-69（TsfNative force-on の
+    /// belief 偽装）と同型の危険を持ち込む（round 2 premortem R2-1）。
+    ///
+    /// (4) の発火可否は `record_ime_apply_result` の `generation == None` 分岐
+    /// が `ImeApplyAcceptance::Accepted` を返す条件（`outcome ∉
+    /// {UnsafeToToggle, NotOwned}`）と同値な条件で判定する（round 3 architect
+    /// レビュー R3-1）。**`generation == None` の同期経路専用**——generation
+    /// 付き完了には `dispatch_event`/pending 解放という別の副作用があり、
+    /// それを飛ばすと event dispatch の欠落・pending 固着という別種の重大
+    /// バグになる（R3-2）。`tests/architecture_guard.rs` がこの関数の唯一の
+    /// 呼び出し元を固定する。
+    fn reassert_ime_apply_complete_without_belief_write(
+        &mut self,
+        open: bool,
+        outcome: awase::platform::ImeOpenOutcome,
+        reason: crate::state::ime_event::OpenApplyReason,
+    ) {
+        use awase::platform::ImeOpenOutcome;
+
+        self.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::ImeOpenApplied {
+                open,
+                outcome,
+                reason,
+            });
+
+        self.platform.post_ime_refresh();
+
+        if !matches!(
+            outcome,
+            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned
+        ) {
+            // M1（/code-review・opus-adversarial-consult指摘）: 通常の
+            // `on_ime_applied` は無条件で `mark_composition_cold` する。
+            // D1の冪等再送はIME側で実際には何も遷移していない（belief
+            // が既にeffective_openと一致しているno-op分岐からの再送）
+            // ため、warmだったcompositionを不必要にcold化してしまう
+            // （直後の1文字がBUG-02型のリテラル化条件を満たしうる）。
+            // GJI同期義務（ActuationReceipt）は実送信の事実に基づき必要
+            // なため維持しつつ、cold化だけを抑止する専用経路を使う。
+            self.platform
+                .on_ime_applied_without_cold_mark(open, outcome);
+        }
+    }
+
+    /// ADR-121 D1〜D6（BUG-37 部分対策）: 物理 IME キー（`VK_DBE_HIRAGANA`、
+    /// `TurnOn` 方向）が `kp_stage_shadow_ime_toggle` の no-op 分岐（belief が
+    /// 既に一致しているため apply-ime を見送った）に到達したとき、Blacklist
+    /// プロファイル（`!can_use_imm32_cross_process()`）限定で `VK_IME_ON` の
+    /// 冪等な追加送信を1回試みる。
+    ///
+    /// **「必ず直る」ではなく「試みる」**——MS-IME が既に一度ネイティブキーに
+    /// 応答しなかった実機事例（不具合報告 `01M1GVNR840NZ3XWRX0JPDSQR7`）が
+    /// あり、なぜ応答しなかったかという根本原因は本 ADR のスコープ外のまま
+    /// 未解明（ADR-121「未解決のまま残る問題」節）。
+    ///
+    /// 呼び出し元（`kp_stage_shadow_ime_toggle`）が以下をすべて確認してから
+    /// 呼ぶこと（D1）: `vk_code == VK_DBE_HIRAGANA && action == TurnOn`、
+    /// `!delegate_owned`、`!can_use_imm32_cross_process()`、同一打鍵で
+    /// `kp_restore_kana_from_half_width` が発火していない（D6）。
+    pub(crate) fn reassert_explicit_physical_key(
+        &mut self,
+        open: bool,
+        tick_ms: crate::state::TickMs,
+    ) {
+        // ADR-090 §2.A A-1（shadow）+ D3: `force_on_and_correct_romaji` と
+        // 同じく `ActuationOrder` を起案し、`would_have_blocked()` なら送信
+        // しない（A-2 の最初の限定的インスタンス）。
+        let order = self.issue_actuation_order(open, "explicit_key_reassert");
+        if order.would_have_blocked() {
+            tracing::debug!("[explicit-reassert] would_have_blocked のため見送り (open={open})");
+            return;
+        }
+        // N1（force_on_and_correct_romaji と同じ理由）: 同期 IMC write を
+        // idle_conv_check の汚染再検証ガードから見える形にする。
+        self.platform_state.ime.note_explicit_ime_action(tick_ms);
+        // N2（force_on_and_correct_romaji と同じ理由）: `belief_input_mode`
+        // を明示的に埋めないと `ObservedKana` 保護（ユーザーが意図的に
+        // かな入力を選んでいれば ROMAN 補完で上書きしない）が効かない。
+        // `applied` は `None` のまま維持する（GJI の `shadow_on` スキップを
+        // 意図的に外す既存仕様、`force_on_and_correct_romaji` のコメント参照）。
+        let mut view = self.platform.build_ime_control_view(None);
+        view.belief_input_mode = self.platform_state.ime.input_mode();
+        let belief = crate::output::OpenBelief {
+            effective_open: open,
+            confident: true,
+        };
+        let outcome = self.platform.apply_ime_open_with_view(order, &view, belief);
+        tracing::info!(
+            "[explicit-reassert] apply_ime_open({open}) → {outcome:?} (物理IMEキー冪等再送, BUG-37)"
+        );
+        self.reassert_ime_apply_complete_without_belief_write(
+            open,
+            outcome,
+            crate::state::ime_event::OpenApplyReason::ExplicitKeyReassert,
+        );
+    }
+
     /// 未知 Imm32Unavailable アプリで IME 検出が連続失敗したとき、一時 force-ON を試みる。
     pub fn try_force_on_bootstrap(&mut self) {
         if self.platform_state.ime.detect_miss_count() >= crate::IME_DETECT_MISS_THRESHOLD

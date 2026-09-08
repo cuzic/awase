@@ -5251,10 +5251,33 @@ x86_64-pc-windows-gnu --no-run` でコンパイルのみ確認。実機での Ct
 **関連ファイル:** `crates/awase-windows/src/focus/class_names.rs`
 （`cannot_verify_real_ime_state`/`should_reprime_on_lightweight_focus_sync` 新設）、
 `crates/awase-windows/src/runtime/mod.rs`（`on_window_focus_event` に配線）。
+
 関連: BUG-36（本バグが引き起こした literal 化の直接症状、別コミットで先行修正済み）、
 BUG-33（Imm32Unavailable の drift correction 不発火、同根の問題）、
 [ADR-028](adr/028-focus-event-redesign.md)（未実装、より広い設計）、
 `.claude/rules/ime-belief-architecture.md`。
+
+**実装済み・効果検証中（[ADR-121](adr/121-explicit-physical-ime-key-idempotent-reassert.md)
+D1、PR #188、2026-09-08）:** 上記「原因」節1の「no-op チェックは無条件」
+という欠落経路そのものへの部分対策。`kp_stage_shadow_ime_toggle` の
+no-op ガード（本節冒頭の実機ログの `[shadow-toggle] no-op: ... effective_
+open は既に true → apply-ime 見送り` そのもの）に、`!can_use_imm32_cross_
+process()`（Imm32Unavailable/TsfNative限定）かつ `IntentKind::
+PhysicalImeKey` の場合のみ、`VK_IME_ON` の冪等な追加再送を1回試みる分岐を
+追加した。ADR-121 自身の位置づけどおり「BUG-37 の解決」ではなく「欠落
+経路の補填＋診断能力の追加」であり、本節が示す3つの根本原因（no-op
+握り潰し／同一プロセス内フォーカス移動でbelief再検証が発火しない／
+再ロック）のうち1番目にのみ作用する。2番目・3番目は上記Stage 1修正
+（`should_reprime_on_lightweight_focus_sync`）が別途対応済み。実機ソーク
+で本節冒頭のログパターン（Ctrl+T後の物理サムキー押下→literal化）が
+再発しないことを確認するまで「解決」に格上げしない。**実機ソークの
+観測項目（opus-adversarial-consult round2 S3指摘）:** Blacklistアプリ
+（Chrome/Windows Terminal/WezTerm等）で「かな」打鍵を繰り返した際に
+「@」が出現しないか——本D1修正はBlacklistアプリでの`VK_IME_ON`追加送信を
+伴うため、BUG-113の「@」の確立済み必要条件（1打鍵あたりの重複
+SendInput）と表面上似た形になる。ADR-153の解析ではBUG-113の機序はGJIの
+TSFキー横取り（無変換/変換限定）で`VK_DBE_HIRAGANA`は対象外の公算が
+高いが、実機未確認。
 
 ---
 
@@ -13264,13 +13287,13 @@ composition の実内容は Chrome では読めない（`himc_null=true`）た�
   記録されていない点は独立の欠落であり、`DeferredRecoveryFlush` に
   `trigger: "drain_before_send"` を追加する計装は採用案と別に価値がある。
 
-**未実施:** 回帰テスト・修正いずれも未着手。ADR-128 の decision（drain を
-`gate: DeferGate` 引数付きにして `Enforced` 限定にする）で実装に着手する。
-回帰テストは `output/vk_send.rs` の既存テスト群（`:770-`）に引数を足した
-上で「`Exempt` では drain がキューを保持する」旨を1本追加する
-（`#[cfg(windows)]` 配下のため Linux では `cargo check --target
-x86_64-pc-windows-msvc -p awase-windows --tests --lib` で確認し、実行は
-`windows-build` CI に委ねる、`fix-requires-evidence.md` (a) を満たす）。
+**解決済み（2026-09-04、`1b5ca721`、PR #160/`a04fd209`、developマージ済み）:**
+ADR-128 の decision どおり、`drain_pending_deferred_before_send_if_queue_only`
+に `gate: DeferGate` 引数を追加し `Enforced` 限定にした。回帰テストも
+`output/vk_send.rs` の既存テスト群に「`Exempt` では drain がキューを保持
+する」旨を追加済み。修正マージ前にビルドされたバイナリからの再発報告2件
+（`01M1NEJYGDFYXMRQVRCNQKWV45` 等）は事後確認データと判明しており、修正
+マージ後の新規再発は無い（`docs/bug-reports-triage.md` 参照）。
 
 **関連ファイル:** `crates/awase-windows/src/output/vk_send.rs`
 （`drain_pending_deferred_before_send_if_queue_only`（`:76-86`、本件の

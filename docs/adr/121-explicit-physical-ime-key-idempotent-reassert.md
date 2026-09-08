@@ -2,16 +2,41 @@
 
 ## ステータス
 
-**設計完了（未実装）。Opus 2体による敵対的レビュー round 1〜3 完了、両者
-承認。** premortem_reviewer は round 3 で「承認」、architect は round 3 で
-残っていた 3 点（(3) 単独省略の実装可能性・適用範囲の明記・機構的主張の
-訂正）を指摘し、それらを反映した本版で収束。**BUG-37 の「解決」ではなく
-「欠落経路の補填＋診断能力の追加」として位置づけること**（round 2 architect
-総合判定、round 3 でも維持）。実装に進んでよいが、`docs/known-bugs.md`
-BUG-37 は本 ADR の実装だけでは「解決」にせず、実機ソークで観測状態の
-改善を確認するまで「実装済み・効果検証中」に留めること。**round 1 で
-当初案の重大な欠陥が複数判明し、本稿は全面改訂版。** 改訂差分は
-文末「round 1 レビューでの主な訂正」参照。
+**D1実装済み・実機未検証（PR #188）。** Opus 2体による敵対的レビュー
+round 1〜3 完了、両者承認。premortem_reviewer は round 3 で「承認」、
+architect は round 3 で残っていた 3 点（(3) 単独省略の実装可能性・適用
+範囲の明記・機構的主張の訂正）を指摘し、それらを反映した本版で収束。
+**BUG-37 の「解決」ではなく「欠落経路の補填＋診断能力の追加」として
+位置づけること**（round 2 architect総合判定、round 3 でも維持）。
+`docs/known-bugs.md` BUG-37 は本 ADR の実装だけでは「解決」にせず、
+実機ソークで観測状態の改善を確認するまで「実装済み・効果検証中」に
+留める（BUG-37節に反映済み）。実装後の `/code-review`・opus-adversarial-
+consultで、`on_ime_applied`の無条件`mark_composition_cold`副作用
+（本来この打鍵はcompositionへ一切影響しないno-opのはずが、cold化した
+上でADR-149ゲートが随伴warmupを省略し「coldのままwarm化しない」状態を
+作りうる）を検出・修正済み——`on_ime_applied_without_cold_mark`という
+専用経路を新設し、GJI同期義務（ActuationReceipt）は維持しつつ
+composition cold化だけを抑止した。
+
+**なぜ`mark_composition_cold`だけを外し、`ime_mode_fsm`のunconfirmed化・
+`shift_conv_guard`世代の無効化・`composition_fsm`のCold遷移という他の
+3つの類似副作用は残したか（opus round2 N1指摘）**: この3つも
+「`SetOpen(true)`が適用された＝IMEが実際にOFF→ONへサイクルした」という
+同じ前提の上に立っており、D1の冪等再送（IME側では実際に何も遷移して
+いない）には論理的には同様に当てはまらない。しかし`mark_composition_
+cold`だけが実機で確認された具体的な失敗シナリオ（BUG-02型リテラル化）
+を持つのに対し、残り3つは同型の懸念にとどまり実害シナリオが未確認
+だった（`composition_fsm`のCold遷移はFSM内部状態のみで`is_composition_
+warm()`には波及せずM1の主症状には至らないとround2で確認済み）。
+`mark_composition_cold`以外まで一度に外すと、D1の「効果不明のbest-
+effort再送」という前提のもとで検証すべき変更点が増えすぎる——確認
+できた実害だけを先に潰し、残り3つは将来同型の実害が見つかった時点で
+同じ論法（`on_ime_applied_inner`への追加フラグ）で対処する。
+
+D2（auto-repeat時のデバウンス）は実機で`VK_DBE_HIRAGANA`のKeyDownが
+auto-repeatするか未確認のため、下記「最も安全な選択」方針どおり未実装
+のまま。**round 1 で当初案の重大な欠陥が複数判明し、本稿は全面改訂版。**
+改訂差分は文末「round 1 レビューでの主な訂正」参照。
 
 ## 背景
 
@@ -417,6 +442,36 @@ EXPLICIT_KEY_REASSERT_COOLDOWN_MS` のときのみ発火する。**これは時�
    ここを通過するが、Step 0（`SafetyValve`、`PanicReset` 等）が先に評価
    されるため、まれに block されることがある——それは既存の安全弁の
    仕様どおりであり、本 ADR が悪化させる余地はない。
+**settle 待機中の意図変化に対する `would_have_blocked()` の防御（実装後の
+opus-adversarial-consult round1/round2 で検証・確認済み）**: D1の再送は
+`ime_apply_should_defer()` で settle 明けまで pending 化されることがある
+（実装時に追加した`schedule_settle_retry`/`pending_explicit_reassert`機構）。pending 化されている間にユーザーが同一ウィンドウ内で明示的に
+IME を OFF へ切り替えた場合でも、`issue_actuation_order()` は**消費時点**
+（settle 明け、pending を再試行する瞬間）に呼ばれ、その時点の生きた状態
+から `WarrantContext` を構築するため、stale な `open=true` の値がそのまま
+送られることはない。3層で保護される:
+
+- **Step 1**（`IntentStore` 照合）: 明示的な OFF 操作は
+  `write_physical_key`/`write_sync_key` → `record_explicit_intent()` が
+  同一ターゲットの `IntentStore` エントリを `open=false` へ置換する
+  （`intent_store.rs`「同一対象では最新 intent が旧 intent を置換する」）。
+  `issue_open_warrant()` の Step 1 がこの新しいエントリを見て
+  `finalize(requested=true, resolved=false, ..)` → `None` を返す。
+- **Step 4c**（`OwnSsot`、Step 1 が TTL 超過等で外れた場合の保険）:
+  `desired_open=false` により同じく `finalize` が `None` を返す
+  （`open_warrant.rs` のテストが同型のケースを固定済み）。
+- **Step 0**（`SafetyValve`）が先に評価され block を覆すことはない:
+  明示的な OFF は `kp_stage_shadow_ime_toggle` の no-op 早期 return 直後の
+  `on_ime_toggled()` → `reset_detect_state()` → `force_guards.clear()` で
+  全 force guard を消すため、Step 0 が stale な `true` を正当化する形には
+  ならない（settle 窓内に新たな force guard が張り直された場合は
+  `effective_open()` 自身も ON へ上書きされているため、送る `open=true`
+  は stale ではなく現在の belief と整合する）。
+
+つまり「かな押下 → pending 化 → ユーザーが settle 中に明示的に OFF」という
+キャンセル系は、専用のフォーカス照合（`pending_explicit_reassert`の`ScopedOneShot<ForegroundScope,_>`化、実装時対応）とは独立に、
+既存の `would_have_blocked()` 機構自体で正しく保護される。
+
 3. 通過したら `order.into_actuation_shadow()`（または実装時に妥当な
    `Actuation` 状態遷移）を経由し、`ImeController::apply` 相当のチェーンで
    実際に `SendInput` する。`force_on_and_correct_romaji()` と同じ書き込み

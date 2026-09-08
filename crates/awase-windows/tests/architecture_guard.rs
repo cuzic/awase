@@ -1162,7 +1162,10 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         // 表 #1/#6）+ apply_ime_open_with_belief 内部からの委譲 1 = 3。
         // （`apply_ime_open_with_belief` からの委譲であって `apply_ime_open_with_applied`
         // からではないため ADR-098 決定2 の影響を受けない。）
-        (".apply_ime_open_with_view(", 3),
+        //
+        // **2026-09-08（ADR-121 D3）**: `mod.rs::reassert_explicit_physical_key`
+        // （物理IMEキーno-op時の冪等再送、BUG-37部分対策）が新規追加され 3→4。
+        (".apply_ime_open_with_view(", 4),
         // ADR-098 決定2（BUG-69）: 唯一の呼び出し元（ime_refresh.rs の GJI
         // TsfNative 強制 ON ブロック）を撤去し、メソッド自体も削除した。
         (".apply_ime_open_with_applied(", 0),
@@ -1258,6 +1261,52 @@ fn applied_state_recorders_call_sites_are_accounted_for() {
              （`state/platform_state.rs` の `record_optimistic` doc 参照）。"
         );
     }
+}
+
+/// ADR-121 D3: reassert 専用の apply-complete 後処理
+/// (`reassert_ime_apply_complete_without_belief_write`) が、意図的に
+/// `record_ime_apply_result`（`applied` belief の書き込み）を呼ばないことと、
+/// 唯一の呼び出し元（`reassert_explicit_physical_key`、`generation==None` の
+/// 同期経路）だけに保たれていることを固定する。
+///
+/// reassert は効果不明の best-effort な追加試行であり、確認できていない
+/// 書き込みに `applied = Confirmed{..}` という確定した観測であるかのような
+/// 値を記録すると BUG-69（TsfNative force-on の belief 偽装）と同型の危険を
+/// 持ち込む（round 2 premortem R2-1）。呼び出し元が増えた場合、それが本当に
+/// `generation==None` の同期経路かを確認すること（round 3 architect R3-2:
+/// generation 付き完了には `dispatch_event`/pending 解放という別の副作用が
+/// あり、それを飛ばすと event dispatch の欠落・pending 固着という別種の
+/// 重大バグになる）。
+#[test]
+fn reassert_ime_apply_complete_skips_belief_write() {
+    let path = "src/runtime/mod.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+
+    let body = extract_fn_body(
+        production,
+        "fn reassert_ime_apply_complete_without_belief_write",
+    );
+    assert!(
+        !body.contains(".record_ime_apply_result("),
+        "{path} の reassert_ime_apply_complete_without_belief_write が \
+         record_ime_apply_result を呼んでいます。ADR-121 D3 の意図（applied \
+         belief を書かない）に反するか、意図的な変更であれば根拠を \
+         known-bugs.md/ADR-121 に追記した上でこのテストを更新してください。"
+    );
+
+    let call_count = count_real_calls(
+        production,
+        ".reassert_ime_apply_complete_without_belief_write(",
+    );
+    assert_eq!(
+        call_count, 1,
+        "reassert_ime_apply_complete_without_belief_write の呼び出し元が \
+         想定(1、reassert_explicit_physical_key のみ)と異なります(実際: \
+         {call_count})。新しい呼び出し元が generation==None の同期経路で \
+         あることを確認した上でこの期待値を更新してください（ADR-121 D3 \
+         R3-2）。"
+    );
 }
 
 /// ADR-108 証拠義務(a-2): `ImeModel.applied` はまだ `pub` のため、reducer 外からの

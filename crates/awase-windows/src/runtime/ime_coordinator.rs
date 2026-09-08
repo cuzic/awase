@@ -16,10 +16,26 @@ use awase::types::RawKeyEvent;
 ///   drain 完了後に `handle_wm_drain_output_queue` が replay する。
 ///   os_id を一緒に保存することで、drain 中に元のタイマーが kill → 別の新規タイマーが
 ///   セットされた場合に誤って新タイマーを発火させないよう照合できる。
+/// - `pending_explicit_reassert` — ADR-121 D1: 物理IMEキーの no-op 冪等再送
+///   （`Runtime::reassert_explicit_physical_key`）が focus-settle 中で見送られた
+///   とき、settle 明けの次回 `TIMER_IME_REFRESH` tick で1回だけ消費する単発
+///   フラグ（`Live(open)`）。`schedule_settle_retry` が使うのと同じタイマーに
+///   相乗りする（新規タイマーは増やさない）。`ScopedOneShot<ForegroundScope, _>`
+///   （`post_bypass` と同型、opus-adversarial-consult round1指摘S1）を使い、
+///   打鍵時に武装したウィンドウと settle 明け消費時の前景ウィンドウが一致
+///   しない場合は自動的に失効させる——一致しないまま消費すると、settle待機中
+///   にBlacklist同士（例: Chrome→Windows Terminal）でフォーカスが移った際、
+///   打鍵していない無関係なウィンドウへ`VK_IME_ON`を誤actuateしてしまう
+///   （`can_use_imm32_cross_process()`の再検証だけでは同一プロファイル間の
+///   遷移を検出できない）。
+pub(crate) type PendingExplicitReassert =
+    crate::state::scoped_latch::ScopedOneShot<crate::win32::ForegroundScope, bool>;
+
 #[derive(Debug, Default)]
 pub(crate) struct ImeCoordinator {
     pub(crate) pending_ime_off_rescue: Option<RawKeyEvent>,
     pub(crate) deferred_engine_timers: Vec<(usize, usize)>,
+    pub(crate) pending_explicit_reassert: PendingExplicitReassert,
 }
 
 impl ImeCoordinator {

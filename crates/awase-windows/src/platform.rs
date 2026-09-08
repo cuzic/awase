@@ -1372,6 +1372,126 @@ impl TsfComposition for WindowsPlatform {
     }
 
     fn on_ime_applied(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
+        self.on_ime_applied_inner(open, outcome, true);
+    }
+
+    fn on_passthrough_key(
+        &mut self,
+        vk: awase::types::VkCode,
+        is_keydown: bool,
+        warmup_ime_on: awase::platform::WarmupImeOn,
+    ) -> bool {
+        use crate::tsf::composition_fsm::CompositionEvent;
+        use crate::vk::VkCodeExt as _;
+
+        // confirm キー KeyDown を CompositionFsm に委譲する。
+        // FSM が cold mark / GJI reset / warmup 送信 を action として返し dispatcher が実行する。
+        // warm+TSF では warmup を KeyUp まで遅延し PendingWarmupOnKeyUp に入るので、
+        // その有無を deferral 戻り値とする。
+        // （物理 F2 は composition_native_f2_down を直接呼ぶ別経路で処理する。）
+        if is_keydown && vk.is_composition_confirm_key() {
+            let tsf_mode = self.output.is_tsf_mode();
+            let warm = self.output.is_composition_warm();
+            // 呼び出し元（executor の `handle_confirm_key_passthrough`）は
+            // `resolve_warmup_ime_on` 経由（ゲート適用済み）を渡す。
+            self.feed_composition_event(
+                CompositionEvent::ConfirmKeyDown { vk, tsf_mode, warm },
+                warmup_ime_on,
+                crate::output::WarmupOrigin::Gated,
+            );
+            return self.composition_fsm.pending_warmup_vk() == Some(vk);
+        }
+        false
+    }
+
+    /// 呼び出し元（executor の `handle_reinject`）は `resolve_warmup_ime_on` 経由
+    /// （ゲート適用済み）を渡すため、以下2箇所の `send_eager_tsf_warmup` は
+    /// いずれも `origin=WarmupOrigin::Gated` 固定。
+    fn on_reinject_key(
+        &mut self,
+        vk: awase::types::VkCode,
+        is_keydown: bool,
+        warmup_ime_on: awase::platform::WarmupImeOn,
+    ) {
+        use crate::vk::VkCodeExt as _;
+
+        if vk == crate::vk::VK_DBE_HIRAGANA && is_keydown && self.output.is_tsf_mode() {
+            tracing::debug!(
+                "[reinject-tsf] vk=0xf2 KeyDown TSF mode → marking cold (NativeF2Consumed)",
+            );
+            self.output
+                .mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
+            self.gji_on_native_f2_consumed();
+            // conv mutation の可否は send_eager_tsf_warmup が conv_mutation_allowed で self-gate する。
+            self.output
+                .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Gated);
+            return;
+        }
+
+        if is_keydown && vk.is_composition_confirm_key() {
+            // 2026-07-11: この confirm キーは on_passthrough_key で既に一度処理済みの
+            // 同じ物理キーイベントが reinject/defer キューを経由して再度届いたもの。
+            // warm であれば（composition_fsm.rs の ConfirmKeyDown と同じ理由で）
+            // cold 化・GJI reset とも不要 — 何もしないと BUG-24 系の false positive
+            // （不要な BS）の温床になっていた連続 typing 中の余分な cold 化を防げる。
+            if self.output.is_composition_warm() {
+                tracing::trace!(
+                    "[composition] reinject KeyDown vk={vk:#04x} warm → cold化スキップ"
+                );
+                return;
+            }
+            tracing::debug!(
+                "[composition] reinject KeyDown vk={vk:#04x} → marking cold + eager warmup",
+            );
+            self.output
+                .mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
+            self.gji_on_composition_reset();
+            // conv mutation の可否は send_eager_tsf_warmup が conv_mutation_allowed で self-gate する。
+            self.output
+                .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Gated);
+        }
+    }
+}
+
+impl WindowsPlatform {
+    /// ADR-121 D1（/code-review・opus-adversarial-consult指摘、M1）:
+    /// `on_ime_applied` 通常経路は `mark_composition_cold` を無条件で
+    /// 実行するが、これは「非同期apply完了が確定的にIME状態を遷移させた」
+    /// ことを前提にした副作用であり（唯一の既存呼び出し元
+    /// `Runtime::on_ime_apply_complete` は `drives_composition_side_effects()`
+    /// でこの前提をゲートしている）、D1の冪等再送(belief が既に
+    /// effective_open と一致しているno-op分岐からの再送、実際にはIME側で
+    /// 何も遷移していない)には当てはまらない。無条件に適用すると、warm
+    /// だったcompositionをcold化した上でADR-149ゲート（`outcome ==
+    /// Applied`）が随伴warmupの送信を省略し、「coldにした上でwarm化しない」
+    /// 状態を作る——直後の1文字がBUG-02型のリテラル化条件を満たしてしまう
+    /// （従来この打鍵は完全なno-opだったため、これは本ADRが持ち込む純粋な
+    /// 新規リスク）。GJI同期義務（`ActuationReceipt`/`legacy_gji_sync_
+    /// obligation`、ADR-089 INV-42/43）は実送信が起きた事実に基づくため
+    /// D1でも必要——`mark_composition_cold`だけを外し、他の副作用
+    /// （ImeModeFsm invalidate・confirm_gate clear・composition_fsmへの
+    /// イベント供給・GJI sync）はそのまま残す（他3つの類似副作用を残した
+    /// 理由はADR-121ステータス節参照）。
+    ///
+    /// 名前は`open == true`側の`mark_composition_cold(SetOpenTrue)`のみを
+    /// 対象にしている（呼び出し元D1は常に`open == true`）。`open == false`
+    /// 側の`mark_composition_cold(SetOpenFalse)`は抑止しない——将来
+    /// `open == false`でこの経路を使う場合は挙動を再確認すること
+    /// （opus-adversarial-consult round2 N3指摘）。
+    pub(crate) fn on_ime_applied_without_cold_mark(
+        &mut self,
+        open: bool,
+        outcome: awase::platform::ImeOpenOutcome,
+    ) {
+        self.on_ime_applied_inner(open, outcome, false);
+    }
+
+    fn on_ime_applied_inner(
+        &mut self,
+        open: bool,
+        outcome: awase::platform::ImeOpenOutcome,
+        mark_cold: bool,
+    ) {
         use awase::platform::ImeOpenOutcome;
         // ADR-089 §2.4（INV-42/43）: `GjiFsm` 同期義務を `ActuationReceipt` として
         // 明示的に運ぶ。同期の要否を決める式は
@@ -1457,9 +1577,13 @@ impl TsfComposition for WindowsPlatform {
             crate::output::WarmupOrigin::Actuated,
         );
         if open {
-            tracing::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
-            self.output
-                .mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
+            if mark_cold {
+                tracing::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
+                self.output
+                    .mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
+            } else {
+                tracing::debug!("[composition] ImeEffect::SetOpen(true) (冪等再送) → cold化を抑止");
+            }
             // `injection_mode` は receipt にも settle の引数にも積まない。
             // `sync_gji` の実装内で settle 時点の値を読む（ADR-089 §2.4 細目2）。
             receipt.settle(self);
@@ -1500,85 +1624,6 @@ impl TsfComposition for WindowsPlatform {
         }
     }
 
-    fn on_passthrough_key(
-        &mut self,
-        vk: awase::types::VkCode,
-        is_keydown: bool,
-        warmup_ime_on: awase::platform::WarmupImeOn,
-    ) -> bool {
-        use crate::tsf::composition_fsm::CompositionEvent;
-        use crate::vk::VkCodeExt as _;
-
-        // confirm キー KeyDown を CompositionFsm に委譲する。
-        // FSM が cold mark / GJI reset / warmup 送信 を action として返し dispatcher が実行する。
-        // warm+TSF では warmup を KeyUp まで遅延し PendingWarmupOnKeyUp に入るので、
-        // その有無を deferral 戻り値とする。
-        // （物理 F2 は composition_native_f2_down を直接呼ぶ別経路で処理する。）
-        if is_keydown && vk.is_composition_confirm_key() {
-            let tsf_mode = self.output.is_tsf_mode();
-            let warm = self.output.is_composition_warm();
-            // 呼び出し元（executor の `handle_confirm_key_passthrough`）は
-            // `resolve_warmup_ime_on` 経由（ゲート適用済み）を渡す。
-            self.feed_composition_event(
-                CompositionEvent::ConfirmKeyDown { vk, tsf_mode, warm },
-                warmup_ime_on,
-                crate::output::WarmupOrigin::Gated,
-            );
-            return self.composition_fsm.pending_warmup_vk() == Some(vk);
-        }
-        false
-    }
-
-    /// 呼び出し元（executor の `handle_reinject`）は `resolve_warmup_ime_on` 経由
-    /// （ゲート適用済み）を渡すため、以下2箇所の `send_eager_tsf_warmup` は
-    /// いずれも `origin=WarmupOrigin::Gated` 固定。
-    fn on_reinject_key(
-        &mut self,
-        vk: awase::types::VkCode,
-        is_keydown: bool,
-        warmup_ime_on: awase::platform::WarmupImeOn,
-    ) {
-        use crate::vk::VkCodeExt as _;
-
-        if vk == crate::vk::VK_DBE_HIRAGANA && is_keydown && self.output.is_tsf_mode() {
-            tracing::debug!(
-                "[reinject-tsf] vk=0xf2 KeyDown TSF mode → marking cold (NativeF2Consumed)",
-            );
-            self.output
-                .mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
-            self.gji_on_native_f2_consumed();
-            // conv mutation の可否は send_eager_tsf_warmup が conv_mutation_allowed で self-gate する。
-            self.output
-                .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Gated);
-            return;
-        }
-
-        if is_keydown && vk.is_composition_confirm_key() {
-            // 2026-07-11: この confirm キーは on_passthrough_key で既に一度処理済みの
-            // 同じ物理キーイベントが reinject/defer キューを経由して再度届いたもの。
-            // warm であれば（composition_fsm.rs の ConfirmKeyDown と同じ理由で）
-            // cold 化・GJI reset とも不要 — 何もしないと BUG-24 系の false positive
-            // （不要な BS）の温床になっていた連続 typing 中の余分な cold 化を防げる。
-            if self.output.is_composition_warm() {
-                tracing::trace!(
-                    "[composition] reinject KeyDown vk={vk:#04x} warm → cold化スキップ"
-                );
-                return;
-            }
-            tracing::debug!(
-                "[composition] reinject KeyDown vk={vk:#04x} → marking cold + eager warmup",
-            );
-            self.output
-                .mark_composition_cold(crate::output::ColdReason::ReinjectConfirmKey);
-            self.gji_on_composition_reset();
-            // conv mutation の可否は send_eager_tsf_warmup が conv_mutation_allowed で self-gate する。
-            self.output
-                .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Gated);
-        }
-    }
-}
-
-impl WindowsPlatform {
     /// `apply_ime_open` 用の `ImeControlView` を構築する。
     ///
     /// `applied` には呼び出し元が持つ `ImeModel.applied_pair()` の戻り値を渡す。
