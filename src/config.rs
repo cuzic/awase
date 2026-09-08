@@ -416,6 +416,33 @@ pub struct GeneralConfig {
     /// （`false`のまま矛盾を検出した場合は`tracing::warn!`で対処法を案内する）。
     #[serde(default)]
     pub gji_thumb_key_ime_toggle: bool,
+    /// ADR-153 決定1: 無変換単独タップ確定時に、素の `VK_NONCONVERT` の代わりに
+    /// awase 自身が直接 IME を ON/OFF/Toggle する（隠し設定、上級者向け）。
+    /// `None`（既定）なら無効で、従来どおり GJI/MS-IME 自動検出
+    /// （`muhenkan_delegate_to_open_axis`）または `ModeKeyConfig` の
+    /// 抑制/パススルー判定に委ねる。
+    ///
+    /// GJI 自身が無変換/変換に何らかの IME 制御コマンドを割り当てていると、
+    /// GJI の TSF キー横取り（`ITfKeyEventSink`）が発火し「@」等の疑似文字が
+    /// 挿入されうる（BUG-113 残置症状、実機3段階検証で確定）。この設定を使うと
+    /// 生の `VK_NONCONVERT`/`VK_CONVERT` を一切 GJI に渡さなくなり、GJI 側の
+    /// キーマップ設定に依存しなくなる。
+    ///
+    /// `Toggle` は belief（awase が推定する現在の IME 状態）依存であり、
+    /// TSF ネイティブアプリ（Windows Terminal 等、`FeedbackPolicy::Blind`）
+    /// では実際の IME 状態を読み戻せないため、belief がズレていると逆方向へ
+    /// 切り替わりうる（`gji_thumb_key_ime_toggle` の doc と同じ注意）。
+    ///
+    /// `kp_stage_shadow_ime_toggle` の intent 昇格（ケース2/3）は
+    /// `is_japanese_ime()` を要求するが、この belief はスリープ復帰/フォーカス
+    /// 変更直後の grace 期間中に一時的に `false` を誤答しうる既知の弱点を
+    /// 持つ——この明示config もこの窓では一時的に無反応になりうる
+    /// （既存の自動検出経路と共通の制約、新規リスクではない）。
+    #[serde(default)]
+    pub muhenkan_solo_tap_ime_action: Option<ShadowImeActionConfig>,
+    /// `muhenkan_solo_tap_ime_action` と対称（変換キー用）。
+    #[serde(default)]
+    pub henkan_solo_tap_ime_action: Option<ShadowImeActionConfig>,
 }
 
 impl Default for GeneralConfig {
@@ -456,6 +483,33 @@ impl Default for GeneralConfig {
             enter_thumb_shift_literal: true,
             swallow_alt_kana_input_method_switch: true,
             gji_thumb_key_ime_toggle: false,
+            muhenkan_solo_tap_ime_action: None,
+            henkan_solo_tap_ime_action: None,
+        }
+    }
+}
+
+/// ADR-153 決定1: `muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`
+/// のTOML表現（`"on"`/`"off"`/`"toggle"`）。`awase::types::ShadowImeAction`
+/// という**プラットフォーム非依存コア型**への変換は、ここ（config 側の薄い層）
+/// に置く——`ADR-019` の層境界を守るため、core 型に serde を直接付けない
+/// （`deserialize_keymap_to` と同じ様式）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShadowImeActionConfig {
+    On,
+    Off,
+    Toggle,
+}
+
+impl ShadowImeActionConfig {
+    /// `awase::types::ShadowImeAction`（core 型）へ変換する。
+    #[must_use]
+    pub const fn to_core(self) -> crate::types::ShadowImeAction {
+        match self {
+            Self::On => crate::types::ShadowImeAction::TurnOn,
+            Self::Off => crate::types::ShadowImeAction::TurnOff,
+            Self::Toggle => crate::types::ShadowImeAction::Toggle,
         }
     }
 }
