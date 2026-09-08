@@ -2,16 +2,25 @@
 
 ## ステータス
 
-**設計完了（未実装）。Opus 2体による敵対的レビュー round 1〜3 完了、両者
-承認。** premortem_reviewer は round 3 で「承認」、architect は round 3 で
-残っていた 3 点（(3) 単独省略の実装可能性・適用範囲の明記・機構的主張の
-訂正）を指摘し、それらを反映した本版で収束。**BUG-37 の「解決」ではなく
-「欠落経路の補填＋診断能力の追加」として位置づけること**（round 2 architect
-総合判定、round 3 でも維持）。実装に進んでよいが、`docs/known-bugs.md`
-BUG-37 は本 ADR の実装だけでは「解決」にせず、実機ソークで観測状態の
-改善を確認するまで「実装済み・効果検証中」に留めること。**round 1 で
-当初案の重大な欠陥が複数判明し、本稿は全面改訂版。** 改訂差分は
-文末「round 1 レビューでの主な訂正」参照。
+**D1実装済み・実機未検証（PR #188）。** Opus 2体による敵対的レビュー
+round 1〜3 完了、両者承認。premortem_reviewer は round 3 で「承認」、
+architect は round 3 で残っていた 3 点（(3) 単独省略の実装可能性・適用
+範囲の明記・機構的主張の訂正）を指摘し、それらを反映した本版で収束。
+**BUG-37 の「解決」ではなく「欠落経路の補填＋診断能力の追加」として
+位置づけること**（round 2 architect総合判定、round 3 でも維持）。
+`docs/known-bugs.md` BUG-37 は本 ADR の実装だけでは「解決」にせず、
+実機ソークで観測状態の改善を確認するまで「実装済み・効果検証中」に
+留める（BUG-37節に反映済み）。実装後の `/code-review`・opus-adversarial-
+consultで、`on_ime_applied`の無条件`mark_composition_cold`副作用
+（本来この打鍵はcompositionへ一切影響しないno-opのはずが、cold化した
+上でADR-149ゲートが随伴warmupを省略し「coldのままwarm化しない」状態を
+作りうた）を検出・修正済み——`on_ime_applied_without_cold_mark`という
+専用経路を新設し、GJI同期義務（ActuationReceipt）は維持しつつcompositi
+on cold化だけを抑止した。D2（auto-repeat時のデバウンス）は実機で
+`VK_DBE_HIRAGANA`のKeyDownがauto-repeatするか未確認のため、下記
+「最も安全な選択」方針どおり未実装のまま。**round 1 で当初案の重大な
+欠陥が複数判明し、本稿は全面改訂版。** 改訂差分は文末「round 1 レビュー
+での主な訂正」参照。
 
 ## 背景
 

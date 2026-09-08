@@ -5251,6 +5251,21 @@ x86_64-pc-windows-gnu --no-run` でコンパイルのみ確認。実機での Ct
 **関連ファイル:** `crates/awase-windows/src/focus/class_names.rs`
 （`cannot_verify_real_ime_state`/`should_reprime_on_lightweight_focus_sync` 新設）、
 `crates/awase-windows/src/runtime/mod.rs`（`on_window_focus_event` に配線）。
+
+**実装済み・効果検証中（[ADR-121](adr/121-explicit-physical-ime-key-idempotent-reassert.md)
+D1、PR #188、2026-09-08）:** 上記「原因」節1の「no-op チェックは無条件」
+という欠落経路そのものへの部分対策。`kp_stage_shadow_ime_toggle` の
+no-op ガード（本節冒頭の実機ログの `[shadow-toggle] no-op: ... effective_
+open は既に true → apply-ime 見送り` そのもの）に、`!can_use_imm32_cross_
+process()`（Imm32Unavailable/TsfNative限定）かつ `IntentKind::
+PhysicalImeKey` の場合のみ、`VK_IME_ON` の冪等な追加再送を1回試みる分岐を
+追加した。ADR-121 自身の位置づけどおり「BUG-37 の解決」ではなく「欠落
+経路の補填＋診断能力の追加」であり、本節が示す3つの根本原因（no-op
+握り潰し／同一プロセス内フォーカス移動でbelief再検証が発火しない／
+再ロック）のうち1番目にのみ作用する。2番目・3番目は上記Stage 1修正
+（`should_reprime_on_lightweight_focus_sync`）が別途対応済み。実機ソーク
+で本節冒頭のログパターン（Ctrl+T後の物理サムキー押下→literal化）が
+再発しないことを確認するまで「解決」に格上げしない。
 関連: BUG-36（本バグが引き起こした literal 化の直接症状、別コミットで先行修正済み）、
 BUG-33（Imm32Unavailable の drift correction 不発火、同根の問題）、
 [ADR-028](adr/028-focus-event-redesign.md)（未実装、より広い設計）、
