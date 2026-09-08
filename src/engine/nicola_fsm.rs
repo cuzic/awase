@@ -2009,6 +2009,20 @@ impl NicolaFsm {
     /// composing 中は fail-closed に倒す（delegate_to_open_axis と同じ
     /// 方針）——`None` を返し、優先順位3（delegate）・4（ModeKeyConfig）へ
     /// フォールスルーさせる。
+    /// `resolve_pending_thumb_as_single` 内で繰り返し使う
+    /// 「何もしない（actions空・IME open軸要求なし）」の戻り値。行数削減の
+    /// ためだけの抽出（`clippy::too_many_lines`対策、`resolve_explicit_
+    /// ime_action`と同じ理由）。
+    fn no_op_resolution() -> (ResolvedAction, Option<crate::types::ShadowImeAction>) {
+        (
+            ResolvedAction {
+                actions: SmallVec::new(),
+                output: OutputUpdate::None,
+            },
+            None,
+        )
+    }
+
     fn resolve_explicit_ime_action(
         special: &ThumbSoloSpecialHandling,
         explicit_action_consumed: bool,
@@ -2100,13 +2114,7 @@ impl NicolaFsm {
         // 親指キーが OS 修飾キー（Ctrl/Shift/Alt/Meta）に割り当てられている場合は
         // composing に関わらず常に suppress する（Alt 単独送出の副作用回避）。
         if modifier_key.is_some() {
-            return (
-                ResolvedAction {
-                    actions: SmallVec::new(),
-                    output: OutputUpdate::None,
-                },
-                None,
-            );
+            return Self::no_op_resolution();
         }
 
         // 無変換/変換の優先順位（ADR-092 決定B/決定D Step4b、ADR-153決定1）:
@@ -2148,6 +2156,16 @@ impl NicolaFsm {
                 },
                 Some(explicit_action),
             );
+        }
+        // BUG-123（2026-09-08、実機確認）: `explicit_action_consumed` なら
+        // ケース2（windows runtime）が既にIME open軸を処理済み。優先順位3/4
+        // （delegate_to_open_axis/ModeKeyConfig Passthrough）へフォール
+        // スルーすると、`*_solo_tap_always_suppress=false`環境で生キーが
+        // GJIへ二重送出され、かな⇄カタカナ切替と誤認される
+        // （`explicit_ime_action_consumed_marker_suppresses_mode_key_
+        // passthrough_replay`参照）。ここで明示的に打ち切る。
+        if explicit_action_consumed {
+            return Self::no_op_resolution();
         }
         if let Some(open_axis_action) = special.delegate_to_open_axis.filter(|action| {
             // Hiragana/Katakana は MS-IME/CTF から注入されうるため、注入された
@@ -2236,13 +2254,7 @@ impl NicolaFsm {
             self.enter_thumb_vk == Some(vk_code) && self.text_key_enter.ignore_composing_guard;
         let ignore_composing_guard = is_space_with_fallback || is_enter_with_fallback;
         if composing && !ignore_composing_guard {
-            return (
-                ResolvedAction {
-                    actions: SmallVec::new(),
-                    output: OutputUpdate::None,
-                },
-                None,
-            );
+            return Self::no_op_resolution();
         }
 
         let action = KeyAction::Key(vk_code);
@@ -3499,8 +3511,12 @@ mod tests {
     fn explicit_ime_action_consumed_marker_skips_case1_b13_b14() {
         // ケース2（`kp_stage_shadow_ime_toggle`）が既にこの打鍵のIME open軸
         // actuationを発行済み（`explicit_action_consumed=true`）なら、
-        // ケース1はスキップし delegate_to_open_axis/ModeKeyConfig 側へ
-        // フォールスルーする（B13/B14対策の直接検証）。
+        // ケース1（明示config自体の再評価）はスキップし、かつ
+        // delegate_to_open_axis/ModeKeyConfigへのフォールスルーも行わず
+        // 打鍵をそのまま「処理済み・何もしない」として終える（BUG-123、
+        // B13/B14対策の直接検証。フォールスルーしてはならない理由は
+        // `explicit_ime_action_consumed_marker_suppresses_mode_key_
+        // passthrough_replay`参照）。
         let mut fsm = make_test_fsm();
         let muhenkan_vk = VkCode(0x1D);
         fsm.set_thumb_key_solo_tap_config(
@@ -3524,8 +3540,53 @@ mod tests {
         );
         assert!(
             resolved.actions.is_empty(),
-            "delegate_to_open_axis未設定・mode_key_config=always_suppressへ \
-             フォールスルーするのでactionsは空のはず、実際: {:?}",
+            "explicit_action_consumedのため打鍵はここで打ち切られ、\
+             delegate_to_open_axis/mode_key_configへはフォールスルーしない \
+             のでactionsは空のはず、実際: {:?}",
+            resolved.actions
+        );
+    }
+
+    #[test]
+    fn explicit_ime_action_consumed_marker_suppresses_mode_key_passthrough_replay() {
+        // BUG-123（2026-09-08、実機確認）: `mode_key_config`が`*_solo_tap_
+        // always_suppress = false`（idle=Passthrough）に設定されたユーザー
+        // 環境で、ケース2が既にこの打鍵を処理済み（`explicit_action_
+        // consumed=true`）にも関わらず、以前の実装は delegate_to_open_axis/
+        // ModeKeyConfigへフォールスルーしていたため、`SoloTapAction::
+        // Passthrough`分岐が生の`VK_NONCONVERT`を**もう一度**送出していた。
+        // 実機では「ケース2のactuationでIMEがONになった直後、この二重目の
+        // 生キー送出をGJIがかな⇄カタカナ切替と誤認し、半角から直接
+        // カタカナへ飛ぶ」形で再現した。`always_suppress=false`（このテスト
+        // が固定するシナリオ）でも`resolved.actions`が空であることを固定し、
+        // 上の`explicit_ime_action_consumed_marker_skips_case1_b13_b14`
+        // （`always_suppress=true`側）と対で回帰を防ぐ。
+        let mut fsm = make_test_fsm();
+        let muhenkan_vk = VkCode(0x1D);
+        fsm.set_thumb_key_solo_tap_config(
+            Some(muhenkan_vk),
+            ModeKeyConfig::from_legacy_bools(false, false), // idle=Passthrough, composing=Suppress
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        fsm.set_muhenkan_solo_tap_ime_action(Some(crate::types::ShadowImeAction::TurnOn));
+        let (resolved, request) = fsm.resolve_pending_thumb_as_single(
+            ScanCode(0x7B),
+            muhenkan_vk,
+            None,
+            false,
+            false, // composing=false → idle branch (Passthrough) が対象
+            true,  // explicit_action_consumed
+        );
+        assert_eq!(
+            request, None,
+            "ケース2が既に処理済みなら、ケース1は明示configを二重発火させてはならない"
+        );
+        assert!(
+            resolved.actions.is_empty(),
+            "mode_key_config=Passthroughであっても、explicit_action_consumed \
+             のときは生キーを再送してはならない（GJIへの二重信号送出、BUG-123 \
+             再発防止）。実際: {:?}",
             resolved.actions
         );
     }

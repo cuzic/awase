@@ -4,10 +4,25 @@
 
 **決定1実装済み（2026-09-08、PR #185でdevelopマージ済み）。ケース3は同日中に
 撤回済み（下記2026-09-08追記1参照）。ケース2（"on"）は同日中に実機再検証で
-belief書き込みが機能していない別のバグ（BUG-122）を発見・修正した
-（下記2026-09-08追記2参照）——本ADRの「ケース2は実機確認済み」という当初の
-記述は誤りだったと判明している。** `cargo test --lib`（コア1003件）・`cargo
-nextest run -p awase-windows`（113件）・clippy/fmt はすべてgreen。
+2件のバグ（BUG-122・BUG-123）を連鎖的に発見・修正した（下記2026-09-08
+追記2・3参照）——本ADRの「ケース2は実機確認済み」という当初の記述は
+誤りだったと判明している。** `cargo test --lib`（コア1004件）・`cargo
+nextest run -p awase-windows`（113件）・clippy/fmt はすべてgreen。実機での
+最終確認（BUG-122+BUG-123修正後のビルド）は次のステップで実施予定。
+
+**追記3（2026-09-08、`always_suppress=false`環境での二重信号送出を発見・
+修正、BUG-123）**: 追記2のBUG-122修正版を実機ビルドし再検証したところ、
+「@」は再現しなくなったが、**半角状態から無変換単独タップすると、
+ひらがなを経由せずいきなりカタカナに切り替わる**新たな症状が見つかった
+（ユーザー報告）。原因は`resolve_pending_thumb_as_single`が
+`explicit_action_consumed=true`（ケース2が既にこの打鍵を処理済み）でも
+優先順位3/4（`delegate_to_open_axis`/`ModeKeyConfig`）へフォールスルーして
+おり、`muhenkan_solo_tap_always_suppress = false`（このユーザーの実設定）
+環境では優先順位4が生の`VK_NONCONVERT`を**もう一度**送出していたため——
+1回のタップがGJIへ「ケース2のIME ON化」＋「100ms後の生キー再送」という
+2つの信号として届き、GJIが後者をかな⇄カタカナ切替と誤認していた。
+`explicit_action_consumed`のときは優先順位3/4を評価せず即座に打ち切る
+よう修正した。詳細は`docs/known-bugs.md` BUG-123節参照。
 
 **追記2（2026-09-08、ケース2のbelief書き込みno-opバグを発見・修正、
 BUG-122）**: PR #185マージ後の実機再検証（dragonflyg4、`muhenkan_solo_tap_

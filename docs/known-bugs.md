@@ -16458,4 +16458,48 @@ awase-windows --lib`でLinux上でも実行・確認可能）。
 key_pipeline.rs`（`kp_stage_shadow_ime_toggle`、呼び出し元）。関連:
 [ADR-153](adr/153-gji-keymap-aware-safe-vk-substitution-for-mode-keys.md)
 決定1（本BUGが無効化していた機能そのもの）。
-『@』に十分」という共通の真因）。
+
+---
+
+## BUG-123: ADR-153決定1「ケース2」修正（BUG-122）後、`*_solo_tap_always_suppress = false`環境で無変換/変換キー単独タップがGJIへ二重の信号として届き、半角から直接カタカナへ飛ぶ（実機確認・同日中に修正）
+
+**症状:** BUG-122修正後の実機再検証（dragonflyg4、`muhenkan_solo_tap_ime_
+action = "on"`、`muhenkan_solo_tap_always_suppress = false`）で、「@」は
+再現しなくなったものの、半角状態で無変換単独タップすると**ひらがなを
+経由せず、いきなりカタカナに切り替わる**症状が新たに確認された（ユーザー
+報告により発見）。
+
+**根本原因:** `src/engine/nicola_fsm.rs::resolve_pending_thumb_as_single`
+の優先順位は「1. 専用Fnキー → 2. 明示config（`resolve_explicit_ime_
+action`） → 3. `delegate_to_open_axis` → 4. `ModeKeyConfig`
+（Suppress/Passthrough）」。`kp_stage_shadow_ime_toggle`のケース2
+（windows runtime側）が既にこの打鍵のIME open軸actuationを発行済みの場合、
+`explicit_action_consumed=true`が渡され`resolve_explicit_ime_action`は
+`None`を返すが、**修正前のコードはそのまま優先順位3・4へフォールスルー
+していた**。`*_solo_tap_always_suppress = false`（idle=Passthrough）
+環境では優先順位4の`SoloTapAction::Passthrough`分岐が生の
+`VK_NONCONVERT`/`VK_CONVERT`を**もう一度**OSへ送出する——1回の物理タップに
+対し、(1)ケース2自身のactuation（BUG-122修正でIMEをONにする）と(2)
+100ms後のこのフォールスルーによる生キー再送、という**2つの信号**がGJIに
+届いていた。GJIは(2)を「IMEが既に開いた状態での無変換」＝かな⇄カタカナ
+切替のトリガーとして解釈するため、半角→（一瞬ひらがな）→カタカナと
+遷移し、ユーザーには「半角から直接カタカナに飛んだ」ように見える。
+
+**修正:** `resolve_pending_thumb_as_single`に、`explicit_action_consumed`
+が真の場合は優先順位3・4を評価せず即座に「何もしない」で打ち切る分岐を
+追加した（`Self::no_op_resolution()`、行数削減のため既存の`resolve_
+explicit_ime_action`分離と同じ理由で抽出）。この打鍵は既にケース2が
+IME open軸の面倒を見ているため、フォールスルーする理由がそもそも無い。
+
+回帰テスト: `src/engine/nicola_fsm.rs::tests::
+explicit_ime_action_consumed_marker_suppresses_mode_key_passthrough_replay`
+（`always_suppress=false`、`explicit_action_consumed=true`で
+`resolved.actions`が空であることを固定。既存の`explicit_ime_action_
+consumed_marker_skips_case1_b13_b14`（`always_suppress=true`側）と対）。
+
+**関連ファイル:** `src/engine/nicola_fsm.rs`
+（`resolve_pending_thumb_as_single`/`resolve_explicit_ime_action`）。
+関連: BUG-122（本BUGは、BUG-122の修正でbelief書き込みが実際に機能する
+ようになって初めて顕在化した——BUG-122修正前は明示configのbelief書き込み
+自体が起きていなかったため、この二重送出はIME ON化と組み合わさらず
+症状として気付かれなかった）。
