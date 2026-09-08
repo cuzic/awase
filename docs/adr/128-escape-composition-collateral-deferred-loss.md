@@ -2,11 +2,15 @@
 
 ## ステータス
 
-**root cause・decision 確定、実装未着手。opus-adversarial-consult
-round1〜round3 完了・収束（round3 の唯一の blocker——cold 分岐での
-flush 実行主体の取り違え——を反映済み。レビュアーは「このリストの後に
-続きはありません」「round4 は不要」と round3 で明言済み）。**
-[BUG-109](../known-bugs.md)（`report_id: 01M1MW0KSY5KWVYSGPGRBTNSPA`）から起票。
+**実装済み・developマージ済み（`1b5ca721`、PR #160/`a04fd209`、
+2026-09-04）。** opus-adversarial-consult round1〜round3 完了・収束
+（round3 の唯一の blocker——cold 分岐での flush 実行主体の取り違え——を
+反映済み。レビュアーは「このリストの後に続きはありません」「round4 は
+不要」と round3 で明言済み）。[BUG-109](../known-bugs.md)（`report_id:
+01M1MW0KSY5KWVYSGPGRBTNSPA`）は解消——修正マージ前にビルドされたバイナリ
+からの再発報告2件（`01M1NEJYGDFYXMRQVRCNQKWV45` 等）は事後確認データと
+判明しており、修正マージ後の新規再発は無い（`docs/bug-reports-triage.md`
+参照）。
 
 当初の草案（第1版）は「`pending_deferred` の flush は正しく起きているのに、
 flush 後に生えた元モーラの stale-confirm 回収が composition ごと巻き込んで

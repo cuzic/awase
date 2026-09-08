@@ -13264,13 +13264,13 @@ composition の実内容は Chrome では読めない（`himc_null=true`）た�
   記録されていない点は独立の欠落であり、`DeferredRecoveryFlush` に
   `trigger: "drain_before_send"` を追加する計装は採用案と別に価値がある。
 
-**未実施:** 回帰テスト・修正いずれも未着手。ADR-128 の decision（drain を
-`gate: DeferGate` 引数付きにして `Enforced` 限定にする）で実装に着手する。
-回帰テストは `output/vk_send.rs` の既存テスト群（`:770-`）に引数を足した
-上で「`Exempt` では drain がキューを保持する」旨を1本追加する
-（`#[cfg(windows)]` 配下のため Linux では `cargo check --target
-x86_64-pc-windows-msvc -p awase-windows --tests --lib` で確認し、実行は
-`windows-build` CI に委ねる、`fix-requires-evidence.md` (a) を満たす）。
+**解決済み（2026-09-04、`1b5ca721`、PR #160/`a04fd209`、developマージ済み）:**
+ADR-128 の decision どおり、`drain_pending_deferred_before_send_if_queue_only`
+に `gate: DeferGate` 引数を追加し `Enforced` 限定にした。回帰テストも
+`output/vk_send.rs` の既存テスト群に「`Exempt` では drain がキューを保持
+する」旨を追加済み。修正マージ前にビルドされたバイナリからの再発報告2件
+（`01M1NEJYGDFYXMRQVRCNQKWV45` 等）は事後確認データと判明しており、修正
+マージ後の新規再発は無い（`docs/bug-reports-triage.md` 参照）。
 
 **関連ファイル:** `crates/awase-windows/src/output/vk_send.rs`
 （`drain_pending_deferred_before_send_if_queue_only`（`:76-86`、本件の
