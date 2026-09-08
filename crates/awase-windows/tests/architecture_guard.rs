@@ -1149,7 +1149,11 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         // 経路）を経由しなくなり、executor.rs の ImmCross async path と同じ
         // run_open_chain_async へ委譲するようになったため
         // （`async_imm_cross_actuation_goes_through_the_single_chain_entry` 参照）。
-        (".apply_ime_open_with_belief(", 2),
+        //
+        // **2026-09-08（ADR-153決定1実装）**: 表 #12（`key_pipeline.rs::
+        // kp_stage_shadow_ime_toggle`のケース3、無変換/変換単独タップの
+        // 明示config`"off"`×belief既にOFF）が新規追加され 2→3。
+        (".apply_ime_open_with_belief(", 3),
         // 外部 2（executor.rs engine decision / mod.rs force_on_and_correct_romaji、
         // 表 #1/#6）+ apply_ime_open_with_belief 内部からの委譲 1 = 3。
         // （`apply_ime_open_with_belief` からの委譲であって `apply_ime_open_with_applied`
@@ -3500,6 +3504,34 @@ fn strip_any_test_module(content: &str) -> &str {
         from = idx + MARKER.len();
     }
     content
+}
+
+/// ADR-153 決定1 M15対策: 明示config（`muhenkan_solo_tap_ime_action`/
+/// `henkan_solo_tap_ime_action`）設定済みキーには、GJI/MS-IME自動検出由来の
+/// delegate/shadow_overrideをarmedにしない。書き込み点は2系統4箇所
+/// （GJI側=`gji_charset_autodetect.rs`、MS-IME側=`message_handlers.rs`）——
+/// ADR-119の教訓「gateを1箇所に置いて満足しない」のとおり、両ファイルに
+/// 同じ無効化ロジックが存在することを固定する。
+#[test]
+fn explicit_ime_action_masks_autodetect_delegate_in_both_gji_and_msime() {
+    let expectations: &[(&str, usize)] = &[
+        ("src/gji_charset_autodetect.rs", 2),
+        ("src/runtime/message_handlers.rs", 2),
+    ];
+    for (path, expected) in expectations {
+        let content = read_crate_file(path);
+        let production = strip_any_test_module(&content);
+        let count = production.matches("_solo_tap_ime_action()").count();
+        assert!(
+            count >= *expected,
+            "{path} 内で `*_solo_tap_ime_action()`（明示config読み取り）の本番 \
+             コードでの出現数が想定({expected}以上)を下回ります(実際: {count})。\
+             ADR-153決定1 M15対策（GJI/MS-IME自動検出由来のdelegate/\
+             shadow_overrideを明示config設定済みキーではarmedにしない）が \
+             欠落していないか確認すること。ADR-119の教訓どおり、gateは \
+             GJI側・MS-IME側の2系統4箇所すべてに適用する必要がある。"
+        );
+    }
 }
 
 #[test]

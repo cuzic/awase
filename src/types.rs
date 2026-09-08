@@ -184,6 +184,7 @@ pub struct ImeRelevance {
     /// - ケース3（belief既にOFF×"off"、エンジンが非活性で`NicolaFsm`に
     ///   到達しない）で立てた場合: `transport.rs::plan` が同じ打鍵の生キー
     ///   配送をSuppressする判定に使う（M19対策）。
+    ///
     /// 常にこのイベント1回限りの値（次のKeyDownでは
     /// `RawKeyEvent::ime_relevance` が新規に構築され直す）。
     pub explicit_ime_action_consumed: bool,

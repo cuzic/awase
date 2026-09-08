@@ -989,6 +989,7 @@ bit-identical 性は成立しない（round3 M1 参照）——実装レビュ�
     | 9 | `ime_refresh.rs:534` | `set_ime_open(false)` | focus change 強制 OFF（IMM32 のみ） | — | — |
     | 10 | `ime_refresh.rs:727` | `set_ime_open(desired)` | drift correction（ImmCross） | — | — |
     | 11 | `ime_refresh.rs:740` | `apply_ime_open_with_belief(desired, None, belief)` | drift correction（非 ImmCross = Blacklist/TsfNative） | 空 | — |
+    | 12 | `key_pipeline.rs`（`kp_stage_shadow_ime_toggle`、ADR-153決定1ケース3、2026-09-08追加） | `apply_ime_open_with_belief(false, None, belief)` | user explicit config force-actuate（無変換/変換単独タップの明示config`"off"`×belief既にOFF。ケース1/2と異なりbelief変化を伴わないため通常の`write_physical_key`→活性化カスケード経路が使えず、TsfNativeのbeliefドリフト回復のため`shadow_on: None`バイパスで強制actuate） | 空（`None`） | — |
     | — | `platform.rs:728`（trait `apply_ime_open`）/ `src/platform.rs:210` | — | **呼び出し元ゼロ（死んだ入口）** | — | — |
 
     **訂正（2026-08-21、[ADR-098](098-tsfnative-applied-confirmed-laundering-and-force-on-removal.md)
@@ -1036,6 +1037,27 @@ bit-identical 性は成立しない（round3 M1 参照）——実装レビュ�
     `tests/architecture_guard.rs` の `actuation_target_capture_call_sites_are_accounted_for`
     / `ime_open_actuation_entry_points_are_accounted_for` /
     `async_imm_cross_actuation_goes_through_the_single_chain_entry` を更新済み。
+
+    **訂正（2026-09-08、[ADR-153](153-gji-keymap-aware-safe-vk-substitution-for-mode-keys.md)
+    決定1実装）**: 上表に #12（`key_pipeline.rs::kp_stage_shadow_ime_toggle`
+    のケース3、無変換/変換単独タップの明示config`"off"`×belief既にOFF）を
+    追加した。ケース1/2（belief ONまたはOFF→ON昇格）は既存の
+    `write_physical_key`書き込み→`Engine::check_active_transition`の自動
+    activationカスケードに乗るため新規actuation入口を増やさないが、
+    ケース3はbeliefが変化しない（既にOFF、目標もOFF）ためこのカスケードが
+    発火せず、`kp_stage_idle_conv_check`のDirectInput回復（上表#4）と同型の
+    `shadow_on: None`バイパスで独立に強制actuateする必要がある。分類は
+    force-write/observation-based correctionのどちらでもない**新しい第3の
+    分類（user explicit config force-actuate）**——ユーザーが明示的に
+    選んだ設定に基づく能動的なactuationであり、観測に基づく補正
+    （observation-based correction）でも自動救済機構（force-write）でもない。
+    warrant必須化の対象とすべきかは、他の`shadow_on: None`バイパス系
+    入口（#4/#6/#7/#11）と同じ扱いで良いと考えられる（ユーザー自身が
+    直接選んだ設定に基づく点で、force-write系より正当性が高い）が、本項目
+    全体の実装（`OpenWarrant`新設）が未着手のため確定はしていない。
+    `.apply_ime_open_with_belief(`の直接呼び出しは2件→3件（#4/#11/#12）に
+    増えた。`architecture_guard.rs`の`ENTRY_POINTS`もこれに合わせて2→3に
+    更新済み。
 15. `is_eligible_for_ime_force_on()`（`state/platform_state.rs:478`、
     `belief.is_japanese_ime() && effective_open()`）の判定を `issue_open_warrant()`
     経由に差し替える（INV-25、P16）。呼び出し元は3箇所

@@ -489,11 +489,12 @@ impl Default for GeneralConfig {
     }
 }
 
-/// ADR-153 決定1: `muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`
-/// のTOML表現（`"on"`/`"off"`/`"toggle"`）。`awase::types::ShadowImeAction`
-/// という**プラットフォーム非依存コア型**への変換は、ここ（config 側の薄い層）
-/// に置く——`ADR-019` の層境界を守るため、core 型に serde を直接付けない
-/// （`deserialize_keymap_to` と同じ様式）。
+/// `muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action` のTOML表現
+/// （`"on"`/`"off"`/`"toggle"`、ADR-153 決定1）。
+///
+/// `awase::types::ShadowImeAction` という**プラットフォーム非依存コア型**への
+/// 変換は、ここ（config 側の薄い層）に置く——`ADR-019` の層境界を守るため、
+/// core 型に serde を直接付けない（`deserialize_keymap_to` と同じ様式）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ShadowImeActionConfig {

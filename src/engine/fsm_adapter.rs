@@ -246,9 +246,7 @@ impl FsmAdapter {
         self.fsm.muhenkan_solo_tap_ime_action()
     }
 
-    pub(super) const fn henkan_solo_tap_ime_action(
-        &self,
-    ) -> Option<crate::types::ShadowImeAction> {
+    pub(super) const fn henkan_solo_tap_ime_action(&self) -> Option<crate::types::ShadowImeAction> {
         self.fsm.henkan_solo_tap_ime_action()
     }
 

@@ -1484,6 +1484,40 @@ impl Runtime {
         self.gji_thumb_key_ime_toggle_opt_in
     }
 
+    /// ADR-153 決定1: ユーザー明示config（`GeneralConfig::
+    /// muhenkan_solo_tap_ime_action`）を`Engine`へ設定する。`Engine::adapter`
+    /// が private なため、`bootstrap.rs`/`apply_config`双方から呼べる薄い
+    /// ラッパーを公開する（`set_gji_thumb_key_ime_toggle_opt_in`と同じ形式）。
+    pub(crate) fn set_muhenkan_solo_tap_ime_action(
+        &mut self,
+        action: Option<awase::types::ShadowImeAction>,
+    ) {
+        self.engine.set_muhenkan_solo_tap_ime_action(action);
+    }
+
+    /// `set_muhenkan_solo_tap_ime_action` と対称（変換キー用）。
+    pub(crate) fn set_henkan_solo_tap_ime_action(
+        &mut self,
+        action: Option<awase::types::ShadowImeAction>,
+    ) {
+        self.engine.set_henkan_solo_tap_ime_action(action);
+    }
+
+    /// ADR-153 決定1 M15対策: `gji_charset_autodetect.rs`/
+    /// `message_handlers.rs`（いずれも`crate::runtime`の外）が、明示config
+    /// 設定済みキーへの自動検出delegate/shadow_override armed化を避けるため
+    /// に読む。
+    #[must_use]
+    pub(crate) fn muhenkan_solo_tap_ime_action(&self) -> Option<awase::types::ShadowImeAction> {
+        self.engine.muhenkan_solo_tap_ime_action()
+    }
+
+    /// `muhenkan_solo_tap_ime_action` と対称（変換キー用）。
+    #[must_use]
+    pub(crate) fn henkan_solo_tap_ime_action(&self) -> Option<awase::types::ShadowImeAction> {
+        self.engine.henkan_solo_tap_ime_action()
+    }
+
     /// `sync_ime_toggle_auto_detect`（`message_handlers.rs`）が Shift+Space の
     /// 自動検出を反映すべきかの判定に使う。
     #[must_use]
@@ -1707,6 +1741,21 @@ impl Runtime {
                 .set_hiragana_katakana_thumb_key_config(hiragana_vk, katakana_vk);
             let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
             self.set_muhenkan_dedicated_fn_key_config(resolve_dedicated_fn_key(manual_fn_key));
+            // ADR-153 決定1: ユーザー明示config。config.toml 由来のため毎回の
+            // reload で再設定される（自動検出由来の delegate と異なり消去
+            // されて構わない、`muhenkan_solo_tap_ime_action` フィールドdoc参照）。
+            self.engine.set_muhenkan_solo_tap_ime_action(
+                config
+                    .general
+                    .muhenkan_solo_tap_ime_action
+                    .map(awase::config::ShadowImeActionConfig::to_core),
+            );
+            self.engine.set_henkan_solo_tap_ime_action(
+                config
+                    .general
+                    .henkan_solo_tap_ime_action
+                    .map(awase::config::ShadowImeActionConfig::to_core),
+            );
             self.set_space_is_thumb_key(
                 config.general.left_thumb_key == "VK_SPACE"
                     || config.general.right_thumb_key == "VK_SPACE",

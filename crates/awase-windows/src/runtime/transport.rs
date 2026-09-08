@@ -320,7 +320,7 @@ impl PhysicalKeyDisposition {
         }
 
         // 無変換/変換（ADR-141、C2対策）: shadow_action は belief 追随専用
-        // （follow-only）であり、物理配送は常に Allow する。C2対策で
+        // （follow-only）であり、物理配送は既定で Allow する。C2対策で
         // これら2キーにも`shadow_action`（`enrich_ime_relevance`経由の
         // shadow_action override）が付くようになったため、対策なしだと
         // 下の`is_kanji_event`判定を抜けてKANJI関連VK同様にSuppressされ
@@ -328,15 +328,31 @@ impl PhysicalKeyDisposition {
         // 依存している設計（BUG-115）なので、Suppressすると「OS側にも
         // awase側にも誰もIMEを切り替えない二重の空振り」（ADR-119と同型）
         // になる。VK_DBE_HIRAGANA等の静的KANJIキーと異なり、無変換/変換は
-        // awase自身がactuationを所有する対象ではない（delegate/
+        // 既定では awase自身がactuationを所有する対象ではない（delegate/
         // shadow-toggleのどちらが処理する場合もbelief追随のみで、OS側の
         // 実際の切替はGJI自身が物理キー配送を通じて行う）ため、
-        // `is_kanji_event`判定より前で無条件Allowにする。
+        // `is_kanji_event`判定より前でこの分岐を置く。
+        //
+        // **例外（ADR-153決定1 M19、ケース3）**: 明示config
+        // （`muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`）が
+        // `kp_stage_shadow_ime_toggle`のケース3で既にこの打鍵のIME open軸
+        // actuationを発行済み（`event.ime_relevance.explicit_ime_action_
+        // consumed`）の場合のみ Suppress する——抑止とactuationが1対1で
+        // 対応する原則（B7/B8対策）を守るため、実際にawase自身が代替
+        // actuateした場合に限り生キーを止める。ケース2（belief OFF→ON）も
+        // 同じマーカーを立てるが、その場合は`Decision::Consume`（NicolaFsm
+        // がこの打鍵をPendingThumbとして消費する）が既に生キー配送を止めて
+        // おり、`execute_relay`の`Decision::Consume`アームは`physical`を
+        // 一切参照しないため、この分岐の値は無害な冗長値になる。
         if matches!(
             event.vk_code,
             crate::vk::VK_CONVERT | crate::vk::VK_NONCONVERT
         ) {
-            return Self::Allow;
+            return if event.ime_relevance.explicit_ime_action_consumed {
+                Self::Suppress
+            } else {
+                Self::Allow
+            };
         }
 
         let is_kanji_event = event.ime_relevance.shadow_action.is_some();
@@ -666,6 +682,58 @@ mod plan_tests {
                      かつ ime_actuation_owned な状況でも常に Allow（follow-only、ADR-141）"
                 );
             }
+        }
+    }
+
+    // ── ADR-153 決定1 M19対策: 明示config（ケース3）が既にこの打鍵の
+    //    IME open軸actuationを発行済み（explicit_ime_action_consumed）の
+    //    場合のみ、上記follow-only原則の例外としてSuppressする ──
+
+    #[test]
+    fn henkan_muhenkan_suppressed_when_explicit_ime_action_already_consumed() {
+        for vk in [crate::vk::VK_CONVERT, crate::vk::VK_NONCONVERT] {
+            for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
+                let mut ev = henkan_muhenkan_event(vk, None, event_type);
+                ev.ime_relevance.explicit_ime_action_consumed = true;
+                assert_eq!(
+                    PhysicalKeyDisposition::plan(
+                        &ev,
+                        AppImeProfile::Standard,
+                        false,
+                        false,
+                        false,
+                        ActiveImeKind::MicrosoftIme,
+                        DbeModeKeyPolicy::Suppress
+                    ),
+                    PhysicalKeyDisposition::Suppress,
+                    "無変換/変換(vk={vk:?}, event_type={event_type:?}) は明示config \
+                     （ADR-153決定1ケース3）が既にactuate済みならSuppressする \
+                     （抑止とactuationの1対1対応、B7/B8対策）"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn henkan_muhenkan_allowed_when_explicit_ime_action_not_consumed() {
+        // マーカーが立っていない（既定値 false）通常時は、明示config未使用
+        // ユーザーも含め従来どおり follow-only Allow のまま。
+        for vk in [crate::vk::VK_CONVERT, crate::vk::VK_NONCONVERT] {
+            let ev = henkan_muhenkan_event(vk, None, KeyEventType::KeyDown);
+            assert!(!ev.ime_relevance.explicit_ime_action_consumed);
+            assert_eq!(
+                PhysicalKeyDisposition::plan(
+                    &ev,
+                    AppImeProfile::Standard,
+                    false,
+                    false,
+                    false,
+                    ActiveImeKind::MicrosoftIme,
+                    DbeModeKeyPolicy::Suppress
+                ),
+                PhysicalKeyDisposition::Allow,
+                "vk={vk:?}: マーカー未設定時は既定のfollow-only Allowのまま"
+            );
         }
     }
 
