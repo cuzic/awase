@@ -15098,6 +15098,129 @@ delegateのno-op強制再アサーション抑止）は誤った前提に基づ�
    この分類に依存しているため、対象キーがDirectInput状態で無効なら
    IME OFFからの復帰が黙って失敗しうる（BUG-115の再来）。
 
+**追記（2026-09-08、[ADR-153](adr/153-gji-keymap-aware-safe-vk-substitution-for-mode-keys.md)決定1実装、develop未マージ・ケース2実機確認済み・ケース3未解決）**:
+無変換/変換単独タップ確定後のIME ON/OFF/Toggleを、GJI/MS-IME自動検出に
+頼らずawase自身の明示config（`GeneralConfig::muhenkan_solo_tap_ime_action`/
+`henkan_solo_tap_ime_action`、隠し設定・既定`None`）で直接指定できる
+ようにする実装を行い、dragonflyg4（Windows Terminal + GJI）で実機検証した。
+
+- **ケース2（belief OFF→ON昇格、`"on"`設定）: 確定的に修正を確認**。
+  半角状態で無変換単独タップ→ひらがなモードへ切り替わり、「@」は
+  再現しなくなった。IME ON中の無変換単独タップ（GJI自身のかな切替に
+  委譲する既存動作）も正常動作を維持していることを確認済み。
+- **ケース3（"off"×belief既にOFF、`"off"`設定）: 実機で「@」が再現し
+  続けることを確認、未解決のまま。** 生キーのSuppress（KeyDown/KeyUp
+  双方）と代替`VK_IME_OFF`の同期的なSendInputは設計どおり発火して
+  いることをデバッグログで確認済み——「抑止漏れ」でも「actuationの
+  遅延」でもない。切り分けのため、本ADRのコードとは無関係な既存機能
+  `Ctrl+無変換`（`config.toml`の`keys.ime_off = ["Ctrl+無変換"]`、
+  `Engine::match_special_keys`経由のホットキー、`keys.ime_detect`
+  SyncKeyではない——後述の訂正参照）を半角状態で押したところ
+  **そちらでも「@」が再現した**。この時点では「ADR-153のコード変更
+  とは独立した根本原因（develop側の回帰の可能性）」と推測していたが、
+  下記2026-09-08追記のとおり、この推測は誤りだったことが後の実機
+  切り分け実験で判明した。
+
+opus-adversarial-consult r1〜r9（9ラウンド、Blocker B1〜B14すべて解消）
+で設計収束、`cargo test --lib`（コア1003件）・`cargo nextest run -p
+awase-windows`（134件）・clippy/fmtすべてgreen。実機検証は
+`muhenkan_solo_tap_ime_action`（無変換）のみ実施——`henkan_solo_tap_
+ime_action`（変換）・`"toggle"`方向・ATOKプリセット併用は未確認。
+
+上記の未解決事項1（delegateとshadow-toggleの排他性、OFF→ON遷移限定）は
+本実装のスコープ外のまま残り、続報として[ADR-154](adr/154-delegate-shadow-toggle-exclusivity-off-to-on-transition.md)
+（提案中・未実装）を起票済み。
+
+**追記（2026-09-08、ケース3「@」再現の機序確定、opus-adversarial-consult
++ dragonflyg4実機A/B切り分け実験で判明、PR #185未マージ）**:
+
+上記の「Ctrl+無変換はdevelop側の回帰では」という推測は**誤りだった**。
+まず事実訂正: `Ctrl+無変換`は`keys.ime_detect`のSyncKeyではなく
+`keys.ime_off`の既定コンボ（`src/config.rs`の`KeysConfig::default()`）
+であり、`Engine::match_special_keys` → `SpecialKeyMatch::ImeOff`経由の
+ホットキーである（`keys.ime_detect`は`VkCode::from_name`でVK名のみを
+パースするため、`"Ctrl+無変換"`という文字列表現は構文上そもそも解釈
+できない）。「belief既にOFFならno-opでSendInput自体が発生しない」と
+いう当初の前提も誤りで、`Engine::match_event`の二重処理ガード
+（`engine.rs`）は`sync_direction`しか見ておらず、ホットキー一致による
+`SetOpen`要求（decision）自体は毎回発生する——ただし通常経路では
+`handle_engine_set_open`より下流の`applied_snapshot`比較が「beliefが
+既に一致しているなら実SendInputはしない」というno-op化を行うため、
+**実際にSendInputが飛ぶのは本物のON→OFF遷移が起きた時だけ**である。
+
+実機A/B切り分け実験（dragonflyg4、Windows Terminal + GJI、診断用
+ブランチ`diag/adr153-case3-ctrlmuhenkan-experiment`、commit
+`f8bf6cb0`で追加した`modifier_snapshot`ログ・二重actuation検出ログ・
+`AWASE_DIAG_CASE3_SUPPRESS_ONLY`環境変数によるsuppress-onlyトグルを
+使用）で3フェーズを検証した結果、以下が確定した:
+
+1. **単発のシグナルだけで「@」を誘発するのに十分**であり、二重送信は
+   必要条件ではない。具体的には次の3条件を実機で確認した:
+   - 生キーが未Suppressで届く → 「@」（既知、2026-09-07確認済み、
+     awase完全停止でも100%再現）
+   - **生キーをSuppressしても、awase自身が`VK_IME_OFF`を1回
+     SendInputするだけで同様に「@」が出る**（config="off"、通常
+     actuate時、無変換単独タップで実機確認——毎回100%再現）
+   - **生キーをSuppressし、かつ何も送らなければ「@」は完全に消える**
+     （`AWASE_DIAG_CASE3_SUPPRESS_ONLY=1`で無変換単独タップを実機確認
+     ——「GJI側の内部状態は物理キー押下そのものではなく、何らかの
+     IME制御シグナルの到達で乱れる」ことを示す）
+2. **Symptom A（ケース3、無変換単独タップ、"off"設定）の真因はケース3
+   自身の設計**: `shadow_on: None`バイパスで意図的にno-op保護を外し
+   「beliefが変化しなくても毎回強制actuateする」ため、上記1の
+   「単発SendInputだけで十分」な条件を**毎回**満たしてしまう。生キー
+   の代わりに別の引き金を毎回撃っているだけであり、抑止漏れでも
+   競合窓でもない。**ケース3の"off"方向は、Ctrl等の修飾キーで場合分け
+   する程度の修正では直らない**——「no-op保護をバイパスして毎回強制
+   送信する」という設計そのものが「@」を生む十分条件になっている。
+3. **Symptom B（Ctrl+無変換）はADR-153/ケース3とは無関係の、既存の
+   `keys.ime_off`ホットキー処理に元からある独立したバグ**（develop
+   回帰ではなく、ADR-153適用前のbaseline、`muhenkan_solo_tap_ime_
+   action`未設定でも同一条件で再現することを実機確認済み）。判断
+   （decision）自体は毎回発生するが、実SendInputは「本物のON→OFF
+   遷移が起きた最初の1回」だけに絞られるため、通常は稀にしか顕在化
+   しない（例: 直前の無変換単独タップでbeliefがGJI側の実状態と
+   ズレていた場合等）。ケース3が有効だとこれが**毎回**に格上げされる
+   （ケース3自身の強制送信が同時に発生するため）が、原因そのものは
+   ケース3ではない。
+
+**追記（2026-09-08、ケース3"off"方向を一度全面撤回・実装済み）**: 上記
+推奨どおり、`crates/awase-windows/src/runtime/key_pipeline.rs`の
+`kp_stage_shadow_ime_toggle`からケース3（"off"×belief既にOFFの強制
+actuateブロックと、それに対応するKeyUp M19ペアリング早期分岐）を削除
+した。`explicit_ime_action_target`は戻り値を`Option<bool>`から`bool`
+（ケース2が発火するか否かのみ）に単純化し、"off"設定×belief既にOFFの
+場合は単に`false`を返して素通しする（何もしない）——強制actuateは行わ
+ない。ケース1（`resolve_explicit_ime_action`〈コア側〉、belief ON→OFF
+の実際の遷移）はこの撤回の対象外で、影響を受けない。Ctrl+無変換の独立
+バグはBUG-121として新規記録した。診断ブランチ（`diag/adr153-case3-
+ctrlmuhenkan-experiment`、commit `f8bf6cb0`）はworktree/ローカル/
+リモートとも破棄済み——上記の実験結果はこの追記と実装コミット自体に
+残っているため、診断コード自体を保持する必要はない。
+
+**追記2（2026-09-08、全面撤回が別の「@」を再発させたため「抑止のみ」の
+形に再設計、BUG-124）**: 上記の全面撤回版を実機ビルドし
+`muhenkan_solo_tap_ime_action = "off"`で再検証したところ、**「@」が
+再現し続ける**ことが判明した。原因は、全面撤回により生キーの抑止まで
+失われ、GJI自身が無変換/変換キーを生で受け取るようになったこと——
+これは本節（BUG-113）が確立した「GJI自身のTSFキー横取りが『@』を
+誘発する」という根本原因そのものへの逆戻りだった。詳細はBUG-124節を
+参照。教訓: 旧ケース3の問題は「生キーを抑止すること」ではなく
+「beliefが変化しなくても毎回強制actuateすること」の方だった——診断
+実験（`docs/experiments.md`エントリ25 Phase3）で「生キーをSuppressし、
+かつ何も送らなければ『@』は完全に消える」ことは既に確認済みだったにも
+関わらず、全面撤回時にこの区別を見落とし、抑止ごと削ってしまった。
+`explicit_ime_action_target`は再び`Option<bool>`（`Some(false)`=
+"off"×既にOFF、抑止のみ・actuateしない）に戻し、KeyUp M19ペアリング
+早期分岐も復活させた——ただし旧ケース3の強制actuateブロック
+（`apply_ime_open_with_belief`呼び出し）は復活させていない。回帰ガード
+は`crates/awase-windows/tests/architecture_guard.rs`の
+`kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate`
+を更新し、(a)強制actuate用の理由タグ`explicit_ime_action_case3_off`が
+再導入されていないこと、(b)ケース3改のelse節が`apply_ime_open_with_
+belief`等のactuation呼び出しを一切含まないこと、(c)KeyUpペアリングが
+維持されていること、の3点を固定している。
+
 ## BUG-114: Windows Terminal（TsfNative プロファイル）の `FocusChanged` 分類が `Standard`/`ImmCross` にフォールバックし、drift correction が `FeedbackPolicy::Read` で `VK_IME_OFF` を無限に近い頻度で再送し続ける（**ADR-134 D1c + AnyFreshEvidence除外拡張で修正・実機確認済み**）
 
 **アプリ:** Windows Terminal（`WindowsTerminal.exe`、`CASCADIA_HOSTING_
@@ -16314,3 +16437,246 @@ spawnを毎起動無条件に戻す、といった変更を検討する前に、
 save_auto_start`、`scripts/install.ps1`、`wix/main.wxs`。関連ADR:
 [docs/adr/059-autostart-schtasks-to-hkcu-run.md](adr/059-autostart-schtasks-to-hkcu-run.md)
 の「2026-09-07 追記」節。
+
+---
+
+## BUG-121: `Ctrl+無変換`（`keys.ime_off`既定ホットキー）が、実IME状態と belief がズレた直後に稀に「@」を誘発する（既存の独立バグ、develop回帰ではない・未修正）
+
+**症状:** Windows Terminal + GJIで、`Ctrl+無変換`（`src/config.rs`の
+`KeysConfig::default()`が定義する既定の`keys.ime_off`ホットキー）を押すと、
+低頻度で余分な「@」が出力されることがある。ADR-153決定1（本ファイル
+BUG-113節の2026-09-08追記）の実機A/B切り分け実験で発見されたが、
+`muhenkan_solo_tap_ime_action`（ADR-153決定1の明示config、ケース2/3）
+を一切設定していないbaseline（本PR適用前のdevelop相当）でも同一条件で
+再現することを実機確認済みであり、**develop側の回帰ではなく元から
+存在する独立したバグ**。
+
+**根本原因（実機A/B実験で確定、詳細はBUG-113節の2026-09-08追記参照）:**
+`Ctrl+無変換`は`Engine::match_special_keys`が処理する`SpecialKeyMatch::
+ImeOff`ホットキーであり、`keys.ime_detect`の`SyncKey`ではない。この
+ホットキーに一致すると`SetOpen`要求（decision）自体は毎回発生するが、
+`handle_engine_set_open`より下流の`applied_snapshot`比較により、beliefが
+既に一致していれば実際の`SendInput`は発生しない（no-op化）——つまり
+**実SendInputが飛ぶのは、本物のON→OFF遷移が起きた最初の1回だけ**。
+一方、実機実験で「単発のIME制御`SendInput`が1回飛ぶだけでGJI側の
+TSF composition内部状態が乱れ『@』を誘発するのに十分」という機序が
+別途確定しており（BUG-113節参照）、`Ctrl+無変換`もこの十分条件に
+該当する送信を行う経路の一つである。そのため、直前の操作でbeliefと
+実IME状態がズレていた場合（例: 直前の無変換単独タップ後等）に限り、
+本物のON→OFF遷移としてSendInputが飛び、低頻度で「@」が顕在化しうる。
+ADR-153決定1のケース3（"off"×belief既にOFFで毎回強制actuateする設計、
+2026-09-08に撤回済み）が有効だった間は、この独立バグの発火条件
+（実SendInputが飛ぶ）が「毎回」に格上げされて見えていたが、原因は
+ケース3ではなくこの`keys.ime_off`ホットキー処理自体にある。
+
+**再現条件:** 通常は稀にしか顕在化しない（本物のON→OFF遷移が起きた
+瞬間のみ）。安定再現させるには、直前にbeliefと実IME状態をズレさせる
+操作（診断ブランチ`diag/adr153-case3-ctrlmuhenkan-experiment`の実験
+では、ADR-153ケース3を有効にして無変換単独タップと組み合わせていた）
+が必要で、単体の再現手順は未確立。
+
+**優先度・対応方針:** 低頻度・pre-existingのバグであり、優先度は低い。
+本BUGの根治には、`keys.ime_off`等の任意のホットキー経由actuationと
+「単発SendInputで『@』を誘発するのに十分」という機序（BUG-113の
+真因そのもの）を切り離す必要があり、単発のホットキー修正では閉じない
+可能性が高い——スコープはBUG-113の根治と重なる。
+
+**関連ファイル:** `src/engine/engine.rs`（`match_special_keys`）、
+`src/config.rs`（`KeysConfig::default()`の`ime_off`既定値）、
+`crates/awase-windows/src/runtime/`の`handle_engine_set_open`/
+`applied_snapshot`経路。関連: BUG-113（本BUGの発見元、「単発SendInputで
+『@』に十分」という共通の真因）。
+
+---
+
+## BUG-122: ADR-153決定1「ケース2」（無変換/変換単独タップの明示config、`"on"`方向）が、`IntentWitness::from_physical` の witness 条件不足により belief 書き込みを常に黙ってno-opする（実機A/B確認で発見・同日中に修正）
+
+**症状:** `muhenkan_solo_tap_ime_action = "on"`（または`henkan_solo_tap_ime_action
+= "on"`）を設定し、半角状態(belief OFF)で無変換/変換キーを単独タップすると、
+ログには`[shadow-toggle] 明示config: vk=0x1D OFF→ON へ昇格`
+（続けて`intent 昇格: ... false→true`）が正しく出力されるにもかかわらず、
+**実際のIMEはONにならず、ひらがな入力にも切り替わらない**。生キーの
+Suppress自体（`transport.rs::plan`のM19分岐）は設計どおり動作している。
+
+**根本原因:** `crates/awase-windows/src/runtime/key_pipeline.rs::kp_stage_
+shadow_ime_toggle`は、明示configが発火した打鍵を通常の`IntentKind::
+PhysicalImeKey`パイプラインへ合流させ、`state/evidence.rs::IntentWitness::
+from_physical(event)`を経由して初めて`ImeModel::write_physical_key`
+（実際の belief 書き込み）を呼ぶ設計になっている。しかし
+`IntentWitness::from_physical`は`!e.injected && e.ime_relevance.
+shadow_action.is_some()`という条件でしか`Some`を返さず、**ADR-153決定1の
+明示configは`shadow_action`を一切経由しない**（GJI/MS-IME自動検出とは
+独立に動作させることが本ADRの目的そのものだったため）。結果として
+`from_physical`は常に`None`を返し、`let Some(witness) = ... else { return
+false; }`で早期returnし、`write_physical_key`が一度も呼ばれない——「OFF→ON
+へ昇格」ログはbelief書き込みの**前**に出力される診断ログに過ぎず、実際の
+書き込みが起きたことの証明にはなっていなかった。
+
+この不具合はADR-153決定1の実装当初（commit `8732e68c`、2026-09-08）から
+存在しており、同日の「ケース2は実機で確定的に修正を確認」という記録
+（本ファイル・`docs/adr/153-...md`）は、**明示configによるbelief書き込みが
+実際には機能していない状態での誤った成功判定だった**可能性が高い（当時の
+テストでは、M13撤廃直後の別条件——生キーがまだ完全にはSuppressされて
+いなかった、GJI自身が別経路で反応した等——により偶然「@」非再現・
+ひらがな切替という見た目上の成功が得られていたと推測されるが、当時の
+詳細ログは残っておらず確定はできない）。
+
+**修正（同日中に実施）:** `IntentWitness::from_physical`が、`shadow_action.
+is_some()`に加えて`e.ime_relevance.explicit_ime_action_consumed`（明示config
+発火時に`kp_stage_shadow_ime_toggle`が同じ`RawKeyEvent`に立てるマーカー、
+witness呼び出し時点で既にセット済み）も有効な証拠として受理するよう変更
+した。`injected`イベントは従来どおり除外されるため、BUG-14の型化は
+維持される。回帰テスト:
+`crates/awase-windows/src/state/evidence.rs::tests::
+explicit_config_consumed_marker_alone_is_a_valid_physical_witness`
+（`state`モジュールはWindows専用cfgゲート外のため、`cargo test -p
+awase-windows --lib`でLinux上でも実行・確認可能）。
+
+**関連ファイル:** `crates/awase-windows/src/state/evidence.rs`
+（`IntentWitness::from_physical`）、`crates/awase-windows/src/runtime/
+key_pipeline.rs`（`kp_stage_shadow_ime_toggle`、呼び出し元）。関連:
+[ADR-153](adr/153-gji-keymap-aware-safe-vk-substitution-for-mode-keys.md)
+決定1（本BUGが無効化していた機能そのもの）。
+
+---
+
+## BUG-123: ADR-153決定1「ケース2」修正（BUG-122）後、`*_solo_tap_always_suppress = false`環境で無変換/変換キー単独タップがGJIへ二重の信号として届き、半角から直接カタカナへ飛ぶ（実機確認・同日中に修正）
+
+**症状:** BUG-122修正後の実機再検証（dragonflyg4、`muhenkan_solo_tap_ime_
+action = "on"`、`muhenkan_solo_tap_always_suppress = false`）で、「@」は
+再現しなくなったものの、半角状態で無変換単独タップすると**ひらがなを
+経由せず、いきなりカタカナに切り替わる**症状が新たに確認された（ユーザー
+報告により発見）。
+
+**根本原因:** `src/engine/nicola_fsm.rs::resolve_pending_thumb_as_single`
+の優先順位は「1. 専用Fnキー → 2. 明示config（`resolve_explicit_ime_
+action`） → 3. `delegate_to_open_axis` → 4. `ModeKeyConfig`
+（Suppress/Passthrough）」。`kp_stage_shadow_ime_toggle`のケース2
+（windows runtime側）が既にこの打鍵のIME open軸actuationを発行済みの場合、
+`explicit_action_consumed=true`が渡され`resolve_explicit_ime_action`は
+`None`を返すが、**修正前のコードはそのまま優先順位3・4へフォールスルー
+していた**。`*_solo_tap_always_suppress = false`（idle=Passthrough）
+環境では優先順位4の`SoloTapAction::Passthrough`分岐が生の
+`VK_NONCONVERT`/`VK_CONVERT`を**もう一度**OSへ送出する——1回の物理タップに
+対し、(1)ケース2自身のactuation（BUG-122修正でIMEをONにする）と(2)
+100ms後のこのフォールスルーによる生キー再送、という**2つの信号**がGJIに
+届いていた。GJIは(2)を「IMEが既に開いた状態での無変換」＝かな⇄カタカナ
+切替のトリガーとして解釈するため、半角→（一瞬ひらがな）→カタカナと
+遷移し、ユーザーには「半角から直接カタカナに飛んだ」ように見える。
+
+**修正:** `resolve_pending_thumb_as_single`に、`explicit_action_consumed`
+が真の場合は優先順位3・4を評価せず即座に「何もしない」で打ち切る分岐を
+追加した（`Self::no_op_resolution()`、行数削減のため既存の`resolve_
+explicit_ime_action`分離と同じ理由で抽出）。この打鍵は既にケース2が
+IME open軸の面倒を見ているため、フォールスルーする理由がそもそも無い。
+
+回帰テスト: `src/engine/nicola_fsm.rs::tests::
+explicit_ime_action_consumed_marker_suppresses_mode_key_passthrough_replay`
+（`always_suppress=false`、`explicit_action_consumed=true`で
+`resolved.actions`が空であることを固定。既存の`explicit_ime_action_
+consumed_marker_skips_case1_b13_b14`（`always_suppress=true`側）と対）。
+
+**関連ファイル:** `src/engine/nicola_fsm.rs`
+（`resolve_pending_thumb_as_single`/`resolve_explicit_ime_action`）。
+関連: BUG-122（本BUGは、BUG-122の修正でbelief書き込みが実際に機能する
+ようになって初めて顕在化した——BUG-122修正前は明示configのbelief書き込み
+自体が起きていなかったため、この二重送出はIME ON化と組み合わさらず
+症状として気付かれなかった）。
+
+---
+
+## BUG-124: ADR-153決定1「ケース3」の"off"×belief既にOFFを全面撤回したところ、GJI自身のTSFキー横取りによる「@」再現に逆戻りした（設計の見直し不足、同日中に「抑止のみ」の形へ再設計・修正）
+
+**症状:** BUG-113節の「ケース3」全面撤回版（強制actuateブロックとKeyUp
+M19ペアリング早期分岐をどちらも削除、生キーの抑止も含めて撤去）を実機
+ビルドし、`muhenkan_solo_tap_ime_action = "off"`で半角状態から無変換
+単独タップを行ったところ、**「@」が再現し続けた**（ユーザー報告により
+発見）。ログでは無変換キーの物理配送が`decision="PassThrough"
+physical="Allow"`となっており、`[shadow-toggle] 明示config`のINFOログも
+一切出力されていなかった——つまり明示configが何もしなくなり、生キーが
+そのままGJIへ渡っていた。
+
+**根本原因（設計上の見落とし）:** BUG-113節が確立した「@」の根本原因は
+「GJI自身が無変換/変換キーを生で受け取ると、そのTSFキー横取り
+（`ITfKeyEventSink`）が『@』を誘発する」ことである。旧ケース3の問題は
+**この生キー自体を抑止していたこと**ではなく、**「beliefが変化しなくても
+毎回強制actuateする」設計の方**だった——実機実験（`docs/experiments.md`
+エントリ25 Phase3、`AWASE_DIAG_CASE3_SUPPRESS_ONLY=1`）で「生キーを
+Suppressし、かつ何も送らなければ『@』は完全に消える」ことは既に確認
+済みだった。しかし旧ケース3を撤回する際、「強制actuateをやめる」と
+「生キーの抑止をやめる」を分けて考えず、**両方まとめて撤去してしまった**
+——結果、GJI自身が無変換/変換キーを生で受け取るようになり、ADR-153
+決定1全体が解決しようとしていたBUG-113の根本原因そのものに逆戻りした。
+
+**修正（同日中に再設計）:** `explicit_ime_action_target`
+（`crates/awase-windows/src/runtime/key_pipeline.rs`）を`Option<bool>`
+に戻し、`Some(false)`（"off"×既にOFF）の場合は
+`event.ime_relevance.explicit_ime_action_consumed = true`を立てて
+`return false`するだけの「抑止のみ」実装にした——`apply_ime_open_
+with_belief`等のactuation呼び出しは一切行わない。対応するKeyUpの
+ペアリング早期分岐（M19対策、孤立KeyUpがGJIへ漏れるのを防ぐ）も復活
+させた。`transport.rs::plan`のM19例外分岐（`explicit_ime_action_
+consumed`を見てSuppressする箇所）は変更していない——この分岐こそが
+ケース3改にとって唯一の実効的なSuppress手段であることをコメントで
+明記した（BUG-123修正時に「ケース2にとっては無害な冗長値」とだけ
+書いていたコメントが、ケース3改にも同じ理由付けが適用できるかのように
+誤読されるおそれがあったため訂正）。
+
+回帰ガード: `crates/awase-windows/tests/architecture_guard.rs::
+kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate`
+を更新し、(a) 旧ケース3専用の理由タグ`explicit_ime_action_case3_off`が
+再導入されていないこと、(b) ケース3改のelse節が`apply_ime_open_with_
+belief`/`issue_actuation_order`/`on_ime_apply_complete`のいずれも
+含まないこと（抑止のみを保証）、(c) KeyUpペアリング分岐が維持されて
+いること、の3点を機械的に固定した。
+
+**教訓（`.claude/rules/experiment-logging.md`が警告する「反転の繰り返し」
+の実例）:** 同一日のうちに「撤回→別の退行を発見→再設計」を1往復した。
+実験ログとknown-bugsに実測済みの事実（「抑止のみなら@が消える」）が
+既に記録されていたにも関わらず、全面撤回の設計時にその記録を参照せず
+「actuateも抑止もまとめて撤去すれば安全」と早合点したことが原因——
+revertする際は「何が本当に悪かったのか」を対象を絞って特定し、無関係な
+副産物（ここでは生キーの抑止という別の目的を持つ機構）まで巻き込んで
+撤去しないこと。
+
+**関連ファイル:** `crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_stage_shadow_ime_toggle`/`explicit_ime_action_target`）、
+`crates/awase-windows/src/runtime/transport.rs`（`plan`のM19例外）、
+`crates/awase-windows/tests/architecture_guard.rs`。関連: BUG-113
+（本BUGが逆戻りした根本原因）、`docs/experiments.md`エントリ25（抑止
+のみで「@」が消えることを確認した実験）。
+
+---
+
+## BUG-125: 明示config対象VKが現在のNICOLA親指キー設定と一致しない場合、GJI自動検出由来のactuationがマスクされず二重actuationしうる（/code-review指摘で発見・同日中に修正、実機未確認）
+
+**症状（コードレビューで発見、実機未再現）:** `muhenkan_solo_tap_ime_
+action`/`henkan_solo_tap_ime_action`を設定しつつ、その対象VK
+（`VK_NONCONVERT`/`VK_CONVERT`）が現在の`left_thumb_key`/
+`right_thumb_key`設定と一致しない構成（無変換/変換キーをNICOLA親指
+キーとして使っていない、かつそのVKに明示configだけを設定している
+構成）で、GJI自動検出由来の`ime_on_auto`/`ime_off_auto`/`ime_toggle_
+auto`（`Engine`のPhase 1が無条件で消費する自動actuation経路）と、
+`key_pipeline.rs`の明示config経路（ケース2/3改、VKを直接見るだけで
+thumb key設定を見ない）が独立に発火し、1回の物理打鍵に対しGJI自動
+検出由来のSetOpenと明示config由来のactuationの両方が届きうる——
+BUG-113/BUG-124と同型の「二重信号で@」を誘発する経路。
+
+**根本原因:** `gji_charset_autodetect.rs::route_thumb_key_action`は、
+対象VKが**親指キー**（`is_thumb_key=true`）の場合のdelegate値は
+`mask_auto_detect_for_explicit_config`（ADR-153決定1 M15対策）で
+マスクしていたが、対象VKが親指キーでない場合（`is_thumb_key=false`）
+に積む`on`/`off`/`toggle`（`ime_on_auto`等）はこのマスクの対象外
+だった——M15対策の「明示config設定済みキーには自動検出由来の値を
+一切残さない」という意図が、親指キー判定の分岐に限って抜けていた。
+
+**修正:** `route_thumb_key_action`に`explicit_config: Option<
+ShadowImeAction>`引数を追加し、`is_thumb_key`の真偽に関わらず
+`explicit_config.is_some()`なら`on`/`off`/`toggle`に一切積まないよう
+統一した。回帰テスト:
+`gji_charset_autodetect.rs::tests::route_thumb_key_action_masks_
+actuation_auto_when_explicit_config_is_set`。
+
+**関連ファイル:** `crates/awase-windows/src/gji_charset_autodetect.rs`
+（`route_thumb_key_action`、`sync_gji_charset_autodetect`内の呼び出し
+箇所2箇所）。関連: BUG-113/BUG-124（同型の二重信号送出パターン）。

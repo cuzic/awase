@@ -146,6 +146,22 @@ pub enum ShadowImeAction {
     Toggle,
 }
 
+impl ShadowImeAction {
+    /// 現在の実効IME開閉状態（`current_open`）から、このactionが要求する
+    /// 新しい開閉状態を解決する（/code-review指摘、2026-09-08——
+    /// `engine.rs::apply_ime_open_request`と
+    /// `awase-windows::key_pipeline::kp_stage_shadow_ime_toggle`が
+    /// 同じ`match`を独立に書いていたため共有ヘルパーへ統合）。
+    #[must_use]
+    pub const fn resolve(self, current_open: bool) -> bool {
+        match self {
+            Self::TurnOn => true,
+            Self::TurnOff => false,
+            Self::Toggle => !current_open,
+        }
+    }
+}
+
 /// キーの IME 関連情報（プラットフォーム層が事前分類）
 #[allow(clippy::struct_excessive_bools)]
 // 各フィールドは独立の判定軸を1:1で表現（enum化はwiden/意味混同のリスクを増やす）
@@ -173,6 +189,21 @@ pub struct ImeRelevance {
     /// actuation を誘発しうる（読み取りと書き込みの時間的近接、実機A/Bで
     /// 「@」の独立した十分条件と確定済み、docs/known-bugs.md BUG-113参照）。
     pub is_ime_mode_key: bool,
+    /// ADR-153 決定1: 無変換/変換単独タップの明示config
+    /// (`muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`) による
+    /// IME open 軸 actuation を、`kp_stage_shadow_ime_toggle`
+    /// （プラットフォーム層）が**この物理KeyDown 1回分について既に発行済み**
+    /// であることを示すマーカー。2つの独立した消費者を持つ:
+    /// - ケース2（belief OFF→ON昇格）で立てた場合: `PendingThumbData`
+    ///   経由で運ばれ、100ms後の `resolve_pending_thumb_as_single`
+    ///   （ケース1）が同じ打鍵を二重に actuate しないためのB13/B14対策。
+    /// - ケース3（belief既にOFF×"off"、エンジンが非活性で`NicolaFsm`に
+    ///   到達しない）で立てた場合: `transport.rs::plan` が同じ打鍵の生キー
+    ///   配送をSuppressする判定に使う（M19対策）。
+    ///
+    /// 常にこのイベント1回限りの値（次のKeyDownでは
+    /// `RawKeyEvent::ime_relevance` が新規に構築され直す）。
+    pub explicit_ime_action_consumed: bool,
 }
 
 // ── キーイベント ──
@@ -328,6 +359,22 @@ mod tests {
     use itertools::Itertools as _;
 
     use super::*;
+
+    // ── ShadowImeAction::resolve ──
+
+    #[test]
+    fn shadow_ime_action_resolve_matches_expected_truth_table() {
+        // /code-review指摘（2026-09-08）で追加した共有ヘルパー。
+        // engine.rs::apply_ime_open_request と
+        // key_pipeline.rs::kp_stage_shadow_ime_toggle が独立に実装していた
+        // 同じ真理値表をここに固定する。
+        assert!(ShadowImeAction::TurnOn.resolve(false));
+        assert!(ShadowImeAction::TurnOn.resolve(true));
+        assert!(!ShadowImeAction::TurnOff.resolve(false));
+        assert!(!ShadowImeAction::TurnOff.resolve(true));
+        assert!(ShadowImeAction::Toggle.resolve(false));
+        assert!(!ShadowImeAction::Toggle.resolve(true));
+    }
 
     // ── RawKeyEvent::starts_focus_resync ──
 

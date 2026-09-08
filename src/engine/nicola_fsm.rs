@@ -300,6 +300,19 @@ pub struct NicolaFsm {
     /// `muhenkan_delegate_to_open_axis` と対称（変換キー用）。
     henkan_delegate_to_open_axis: Option<crate::types::ShadowImeAction>,
 
+    /// ADR-153 決定1: `GeneralConfig::muhenkan_solo_tap_ime_action`
+    /// （ユーザーが直接指定する、上級者向け隠し設定）に対応する。`Some(action)`
+    /// なら、`muhenkan_solo_tap_dedicated_fn_key` の次・
+    /// `muhenkan_delegate_to_open_axis`（GJI/MS-IME自動検出）より前に評価される
+    /// （優先順位表、`resolve_pending_thumb_as_single` 参照）。
+    /// `muhenkan_delegate_to_open_axis` と同じ理由で `ModeKeyConfig` には
+    /// 統合しない——ただし自動検出由来ではなく config.toml 由来の値なので、
+    /// config reload のたびに再設定される（消去はされない）。
+    muhenkan_solo_tap_ime_action: Option<crate::types::ShadowImeAction>,
+
+    /// `muhenkan_solo_tap_ime_action` と対称（変換キー用）。
+    henkan_solo_tap_ime_action: Option<crate::types::ShadowImeAction>,
+
     /// `left_thumb_key`/`right_thumb_key` のいずれかが Hiragana に割り当てられて
     /// いる場合、その VK コード。実際の VK 番号は Platform 層の責務であり、
     /// core は渡された値と等値比較するだけ。
@@ -392,6 +405,9 @@ pub struct NicolaFsm {
 
 struct ThumbSoloSpecialHandling {
     dedicated_fn_key: Option<VkCode>,
+    /// ADR-153 決定1: ユーザー明示config（優先順位2、`dedicated_fn_key` の
+    /// 次・`delegate_to_open_axis` の前）。
+    explicit_ime_action: Option<crate::types::ShadowImeAction>,
     delegate_to_open_axis: Option<crate::types::ShadowImeAction>,
     mode_key_config: Option<ModeKeyConfig>,
     injected_guarded_delegate: bool,
@@ -495,6 +511,8 @@ impl NicolaFsm {
             muhenkan_solo_tap_dedicated_fn_key: None,
             muhenkan_delegate_to_open_axis: None,
             henkan_delegate_to_open_axis: None,
+            muhenkan_solo_tap_ime_action: None,
+            henkan_solo_tap_ime_action: None,
             hiragana_vk: None,
             hiragana_delegate_to_open_axis: None,
             katakana_vk: None,
@@ -589,6 +607,7 @@ impl NicolaFsm {
                         thumb.modifier_key,
                         thumb.injected,
                         c,
+                        thumb.explicit_ime_action_consumed,
                     ),
                     ComposingHint::Unknown => (
                         ResolvedAction {
@@ -840,6 +859,38 @@ impl NicolaFsm {
         self.henkan_delegate_to_open_axis
     }
 
+    /// ADR-153 決定1: `GeneralConfig::muhenkan_solo_tap_ime_action`
+    /// （ユーザー明示config）を設定する。`config.toml` 由来のためconfig
+    /// reload のたびに呼ばれる（自動検出由来の値と異なり消去されて構わない）。
+    pub const fn set_muhenkan_solo_tap_ime_action(
+        &mut self,
+        action: Option<crate::types::ShadowImeAction>,
+    ) {
+        self.muhenkan_solo_tap_ime_action = action;
+    }
+
+    /// `set_muhenkan_solo_tap_ime_action` と対称（変換キー用）。
+    pub const fn set_henkan_solo_tap_ime_action(
+        &mut self,
+        action: Option<crate::types::ShadowImeAction>,
+    ) {
+        self.henkan_solo_tap_ime_action = action;
+    }
+
+    /// `crates/awase-windows::runtime::key_pipeline::kp_stage_shadow_ime_toggle`
+    /// （ケース2/3、belief OFF側）が、GJI/MS-IME自動検出の成否に関わらず
+    /// 明示config自体を読むために使う。
+    #[must_use]
+    pub const fn muhenkan_solo_tap_ime_action(&self) -> Option<crate::types::ShadowImeAction> {
+        self.muhenkan_solo_tap_ime_action
+    }
+
+    /// `muhenkan_solo_tap_ime_action` と対称（変換キー用）。
+    #[must_use]
+    pub const fn henkan_solo_tap_ime_action(&self) -> Option<crate::types::ShadowImeAction> {
+        self.henkan_solo_tap_ime_action
+    }
+
     /// Hiragana/Katakana が現在の親指キーなら、その VK を Platform 層から渡す。
     /// core は生 VK 定数を持たず、ここで渡された値との等値比較のみを行う。
     pub const fn set_hiragana_katakana_thumb_key_config(
@@ -888,6 +939,7 @@ impl NicolaFsm {
         if self.muhenkan_vk == Some(vk_code) {
             ThumbSoloSpecialHandling {
                 dedicated_fn_key: self.muhenkan_solo_tap_dedicated_fn_key,
+                explicit_ime_action: self.muhenkan_solo_tap_ime_action,
                 delegate_to_open_axis: self.muhenkan_delegate_to_open_axis,
                 mode_key_config: Some(self.mode_key_muhenkan),
                 injected_guarded_delegate: false,
@@ -895,6 +947,7 @@ impl NicolaFsm {
         } else if self.henkan_vk == Some(vk_code) {
             ThumbSoloSpecialHandling {
                 dedicated_fn_key: None,
+                explicit_ime_action: self.henkan_solo_tap_ime_action,
                 delegate_to_open_axis: self.henkan_delegate_to_open_axis,
                 mode_key_config: Some(self.mode_key_henkan),
                 injected_guarded_delegate: false,
@@ -902,6 +955,7 @@ impl NicolaFsm {
         } else if self.hiragana_vk == Some(vk_code) {
             ThumbSoloSpecialHandling {
                 dedicated_fn_key: None,
+                explicit_ime_action: None,
                 delegate_to_open_axis: self.hiragana_delegate_to_open_axis,
                 mode_key_config: None,
                 injected_guarded_delegate: true,
@@ -909,6 +963,7 @@ impl NicolaFsm {
         } else if self.katakana_vk == Some(vk_code) {
             ThumbSoloSpecialHandling {
                 dedicated_fn_key: None,
+                explicit_ime_action: None,
                 delegate_to_open_axis: self.katakana_delegate_to_open_axis,
                 mode_key_config: None,
                 injected_guarded_delegate: true,
@@ -916,6 +971,7 @@ impl NicolaFsm {
         } else {
             ThumbSoloSpecialHandling {
                 dedicated_fn_key: None,
+                explicit_ime_action: None,
                 delegate_to_open_axis: None,
                 mode_key_config: None,
                 injected_guarded_delegate: false,
@@ -1528,6 +1584,7 @@ impl NicolaFsm {
                     thumb.modifier_key,
                     thumb.injected,
                     self.phys.composing,
+                    thumb.explicit_ime_action_consumed,
                 );
                 if ime_open_request.is_some() {
                     self.ime_open_requested = ime_open_request;
@@ -1656,6 +1713,7 @@ impl NicolaFsm {
                     timestamp: ev.timestamp,
                     injected: ev.injected,
                     modifier_key: ev.modifier_key,
+                    explicit_ime_action_consumed: ev.explicit_ime_action_consumed,
                 },
             );
             return ParseAction::Shift {
@@ -1712,6 +1770,7 @@ impl NicolaFsm {
             thumb.modifier_key,
             thumb.injected,
             self.phys.composing,
+            thumb.explicit_ime_action_consumed,
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -1729,6 +1788,7 @@ impl NicolaFsm {
             thumb.modifier_key,
             thumb.injected,
             self.phys.composing,
+            thumb.explicit_ime_action_consumed,
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -1930,6 +1990,74 @@ impl NicolaFsm {
         }
     }
 
+    /// ADR-153 決定1: `resolve_pending_thumb_as_single` の優先順位2
+    /// （ユーザー明示config）の発火可否を判定する純粋関数。`clippy::
+    /// too_many_lines` を踏まないための単純な抽出であり、独立した意味を
+    /// 持つ判定ではない——呼び出し元の doc（優先順位表）を参照すること。
+    ///
+    /// `explicit_action_consumed`（B13/B14対策）: `kp_stage_shadow_ime_
+    /// toggle` のケース2（belief OFF→ON昇格）が既にこの打鍵のIME open軸
+    /// actuationを発行済みなら、ここでは読まずスキップする——ADR-149
+    /// 「案C」と構造的に同型の二重評価（ケース2とケース1が同一打鍵を
+    /// 別タイミングで評価してしまう）を防ぐ。
+    ///
+    /// `mode_key_config` の `Passthrough` 判定（M13）は `for_composing`
+    /// 適用前の静的値を見る——ユーザーが「常に OS へ送出する」と明示した
+    /// キーには、composing の有無に関わらずこの明示config自体を発火
+    /// させない。
+    ///
+    /// composing 中は fail-closed に倒す（delegate_to_open_axis と同じ
+    /// 方針）——`None` を返し、優先順位3（delegate）・4（ModeKeyConfig）へ
+    /// フォールスルーさせる。
+    /// `resolve_pending_thumb_as_single` 内で繰り返し使う
+    /// 「何もしない（actions空・IME open軸要求なし）」の戻り値。行数削減の
+    /// ためだけの抽出（`clippy::too_many_lines`対策、`resolve_explicit_
+    /// ime_action`と同じ理由）。
+    fn no_op_resolution() -> (ResolvedAction, Option<crate::types::ShadowImeAction>) {
+        (
+            ResolvedAction {
+                actions: SmallVec::new(),
+                output: OutputUpdate::None,
+            },
+            None,
+        )
+    }
+
+    fn resolve_explicit_ime_action(
+        special: &ThumbSoloSpecialHandling,
+        explicit_action_consumed: bool,
+        composing: bool,
+    ) -> Option<crate::types::ShadowImeAction> {
+        // M13はケース1（belief ON、この関数）に限り維持する（2026-09-08、
+        // 実機検証を経てユーザーと協議の上で確定）。ケース2/3
+        // （`crates/awase-windows::runtime::key_pipeline::
+        // explicit_ime_action_target`、belief OFF側）は撤廃済み——
+        // `muhenkan_solo_tap_always_suppress = false`（Passthrough相当）が
+        // ADR-153以前からの既定値・legacy設定であるユーザーが大半で、
+        // belief OFF状態でのGJI自身のかな切替には意味が無い（IMEが閉じて
+        // いるため）ため、M13を維持すると明示config機能そのものが常に
+        // 無効化されてしまっていた（実機A/Bで確認、半角状態で「@」再現継続）。
+        //
+        // 一方ケース1（belief ON、無変換単独タップ）は、「IME既にONの状態で
+        // GJI自身のひらがな→カタカナ→半角カナのようなかな切替をGJI側の
+        // ネイティブ処理に任せたい」という正当なユースケースが実在する
+        // （ユーザー指摘）。この場合、無変換に明示config（例:
+        // `"toggle"`でIME OFFへ）を設定しつつ`mode_key_muhenkan`を
+        // Passthroughにしておけば、belief ON中はGJI自身のかな切替に
+        // 委ね、belief OFF→ONの復帰だけ明示configに任せる、という
+        // 非対称な使い分けが可能になる。
+        let explicit_action = special.explicit_ime_action.filter(|_| {
+            !explicit_action_consumed
+                && !special
+                    .mode_key_config
+                    .is_some_and(ModeKeyConfig::is_passthrough)
+        })?;
+        if composing {
+            return None;
+        }
+        Some(explicit_action)
+    }
+
     /// 保留中の親指キーを単独打鍵として解決し、アクション列と `OutputUpdate` を返す。
     ///
     /// NICOLA では親指キー (無変換 / 変換) は文字キーとの同時打鍵専用であり、
@@ -1981,29 +2109,28 @@ impl NicolaFsm {
         modifier_key: Option<crate::types::ModifierKey>,
         injected: bool,
         composing: bool,
+        explicit_action_consumed: bool,
     ) -> (ResolvedAction, Option<crate::types::ShadowImeAction>) {
         // 親指キーが OS 修飾キー（Ctrl/Shift/Alt/Meta）に割り当てられている場合は
         // composing に関わらず常に suppress する（Alt 単独送出の副作用回避）。
         if modifier_key.is_some() {
-            return (
-                ResolvedAction {
-                    actions: SmallVec::new(),
-                    output: OutputUpdate::None,
-                },
-                None,
-            );
+            return Self::no_op_resolution();
         }
 
-        // 無変換/変換の優先順位（ADR-092 決定B/決定D Step4b）:
+        // 無変換/変換の優先順位（ADR-092 決定B/決定D Step4b、ADR-153決定1）:
         // 1. 専用Fnキー（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091 §D3.2）
-        // 2. IME open 軸への肩代わり（`*_delegate_to_open_axis`、決定D Step4b）
-        // 3. `ModeKeyConfig` ベースの Suppress/Passthrough
-        // 1・2 はいずれも `ModeKeyConfig` の外側で独立に判定する——config reload で
-        // `ModeKeyConfig` が丸ごと再設定されても、自動検出由来のこれらの値が
-        // 消去されないようにするため。GJI の config1.db にこの Fn キーを
-        // Composition/Conversion 時の `SwitchKanaType` としてバインドしておく
-        // ことで、GJI が自身の内部状態を見てかな形状をトグルする
-        // （awase 側は belief を持たない）。
+        // 2. ★ユーザー明示config（`*_solo_tap_ime_action`、ADR-153決定1）
+        // 3. IME open 軸への肩代わり（`*_delegate_to_open_axis`、決定D Step4b、
+        //    GJI/MS-IME自動検出）
+        // 4. `ModeKeyConfig` ベースの Suppress/Passthrough
+        // 1・2・3 はいずれも `ModeKeyConfig` の外側で独立に判定する——config
+        // reload で `ModeKeyConfig` が丸ごと再設定されても、自動検出由来や
+        // ユーザー明示config由来のこれらの値が消去されないようにするため
+        // （2は config.toml から毎回再読込されるため実際には消去されて
+        // 構わないが、3と同じ独立フィールドに揃えることで実装を単純化する）。
+        // GJI の config1.db にこの Fn キーを Composition/Conversion 時の
+        // `SwitchKanaType` としてバインドしておくことで、GJI が自身の内部
+        // 状態を見てかな形状をトグルする（awase 側は belief を持たない）。
         let special = self.thumb_solo_special_handling(vk_code);
 
         if let Some(fn_key) = special.dedicated_fn_key {
@@ -2016,6 +2143,39 @@ impl NicolaFsm {
                 },
                 None,
             );
+        }
+        // ADR-153 決定1: ユーザー明示config（優先順位2）。分割理由は
+        // `resolve_explicit_ime_action` のdoc参照。
+        if let Some(explicit_action) =
+            Self::resolve_explicit_ime_action(&special, explicit_action_consumed, composing)
+        {
+            return (
+                ResolvedAction {
+                    actions: SmallVec::new(),
+                    output: OutputUpdate::None,
+                },
+                Some(explicit_action),
+            );
+        }
+        // BUG-123（2026-09-08、実機確認）: `explicit_action_consumed` なら
+        // ケース2（windows runtime）が既にIME open軸を処理済み。優先順位3/4
+        // （delegate_to_open_axis/ModeKeyConfig Passthrough）へフォール
+        // スルーすると、`*_solo_tap_always_suppress=false`環境で生キーが
+        // GJIへ二重送出され、かな⇄カタカナ切替と誤認される
+        // （`explicit_ime_action_consumed_marker_suppresses_mode_key_
+        // passthrough_replay`参照）。ここで明示的に打ち切る。
+        //
+        // **既知のトレードオフ（/code-review指摘）**: この早期returnは
+        // `composing`状態を一切見ないため、ユーザーが`mode_key_config`を
+        // 「composing中も常にPassthrough」（`ignore_composing_guard=true`）
+        // に設定していても適用されない——この打鍵は既にケース2が処理済み
+        // であり、生キーを再送するとGJIへの二重送出（上記）を再現するため、
+        // 意図的にModeKeyConfigの設定内容より優先する。この組み合わせ
+        // （explicit_action_consumed×composing=true×Passthrough設定）は
+        // 固定テスト`explicit_ime_action_consumed_marker_overrides_
+        // composing_passthrough_too`で明文化している。
+        if explicit_action_consumed {
+            return Self::no_op_resolution();
         }
         if let Some(open_axis_action) = special.delegate_to_open_axis.filter(|action| {
             // Hiragana/Katakana は MS-IME/CTF から注入されうるため、注入された
@@ -2104,13 +2264,7 @@ impl NicolaFsm {
             self.enter_thumb_vk == Some(vk_code) && self.text_key_enter.ignore_composing_guard;
         let ignore_composing_guard = is_space_with_fallback || is_enter_with_fallback;
         if composing && !ignore_composing_guard {
-            return (
-                ResolvedAction {
-                    actions: SmallVec::new(),
-                    output: OutputUpdate::None,
-                },
-                None,
-            );
+            return Self::no_op_resolution();
         }
 
         let action = KeyAction::Key(vk_code);
@@ -2648,6 +2802,7 @@ impl NicolaFsm {
             thumb.modifier_key,
             thumb.injected,
             self.phys.composing,
+            thumb.explicit_ime_action_consumed,
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -2678,6 +2833,7 @@ impl NicolaFsm {
                 thumb.modifier_key,
                 thumb.injected,
                 self.phys.composing,
+                thumb.explicit_ime_action_consumed,
             ),
             EngineState::Idle
             | EngineState::PendingCharThumb { .. }
@@ -2686,13 +2842,7 @@ impl NicolaFsm {
                     "unexpected state in handle_key_up_pending: {:?}",
                     self.state
                 );
-                (
-                    ResolvedAction {
-                        actions: SmallVec::new(),
-                        output: OutputUpdate::None,
-                    },
-                    None,
-                )
+                Self::no_op_resolution()
             }
         };
         if ime_open_request.is_some() {
@@ -2781,6 +2931,7 @@ impl NicolaFsm {
         composing: bool,
         modifier_key: Option<crate::types::ModifierKey>,
         injected: bool,
+        explicit_ime_action_consumed: bool,
     ) -> Resp {
         // ソロ連打によるエンジン OFF トリガーチェック
         if self.engine_off_solo_repeat_vk.0 != 0 && vk_code == self.engine_off_solo_repeat_vk {
@@ -2808,6 +2959,7 @@ impl NicolaFsm {
             modifier_key,
             injected,
             composing,
+            explicit_ime_action_consumed,
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -3181,6 +3333,7 @@ impl NicolaFsm {
                 composing,
                 thumb.modifier_key,
                 thumb.injected,
+                thumb.explicit_ime_action_consumed,
             ),
             EngineState::PendingCharThumb {
                 char_key,
@@ -3264,8 +3417,14 @@ mod tests {
         let hiragana_vk = VkCode(0x70);
         fsm.set_hiragana_katakana_thumb_key_config(Some(hiragana_vk), None);
         fsm.set_hiragana_delegate_to_open_axis(Some(crate::types::ShadowImeAction::TurnOff));
-        let (resolved, request) =
-            fsm.resolve_pending_thumb_as_single(ScanCode(0x39), hiragana_vk, None, false, false);
+        let (resolved, request) = fsm.resolve_pending_thumb_as_single(
+            ScanCode(0x39),
+            hiragana_vk,
+            None,
+            false,
+            false,
+            false,
+        );
         assert!(resolved.actions.is_empty());
         assert_eq!(request, Some(crate::types::ShadowImeAction::TurnOff));
     }
@@ -3276,8 +3435,14 @@ mod tests {
         let katakana_vk = VkCode(0x71);
         fsm.set_hiragana_katakana_thumb_key_config(None, Some(katakana_vk));
         fsm.set_katakana_delegate_to_open_axis(Some(crate::types::ShadowImeAction::Toggle));
-        let (resolved, request) =
-            fsm.resolve_pending_thumb_as_single(ScanCode(0x39), katakana_vk, None, false, false);
+        let (resolved, request) = fsm.resolve_pending_thumb_as_single(
+            ScanCode(0x39),
+            katakana_vk,
+            None,
+            false,
+            false,
+            false,
+        );
         assert!(resolved.actions.is_empty());
         assert_eq!(request, Some(crate::types::ShadowImeAction::Toggle));
     }
@@ -3288,8 +3453,14 @@ mod tests {
         let hiragana_vk = VkCode(0x70);
         fsm.set_hiragana_katakana_thumb_key_config(Some(hiragana_vk), None);
         fsm.set_hiragana_delegate_to_open_axis(Some(crate::types::ShadowImeAction::TurnOn));
-        let (resolved, request) =
-            fsm.resolve_pending_thumb_as_single(ScanCode(0x39), hiragana_vk, None, true, false);
+        let (resolved, request) = fsm.resolve_pending_thumb_as_single(
+            ScanCode(0x39),
+            hiragana_vk,
+            None,
+            true,
+            false,
+            false,
+        );
         assert!(matches!(resolved.actions.as_slice(), [KeyAction::Key(vk)] if *vk == hiragana_vk));
         assert_eq!(request, None);
     }
@@ -3299,10 +3470,316 @@ mod tests {
         let mut fsm = make_test_fsm();
         let hiragana_vk = VkCode(0x70);
         fsm.set_hiragana_katakana_thumb_key_config(Some(hiragana_vk), None);
-        let (resolved, request) =
-            fsm.resolve_pending_thumb_as_single(ScanCode(0x39), hiragana_vk, None, false, false);
+        let (resolved, request) = fsm.resolve_pending_thumb_as_single(
+            ScanCode(0x39),
+            hiragana_vk,
+            None,
+            false,
+            false,
+            false,
+        );
         assert!(matches!(resolved.actions.as_slice(), [KeyAction::Key(vk)] if *vk == hiragana_vk));
         assert_eq!(request, None);
+    }
+
+    // ── ADR-153 決定1: 無変換単独タップの明示config（優先順位2） ──────
+
+    /// /code-review指摘（2026-09-08）: `ThumbSoloSpecialHandling`は
+    /// `dedicated_fn_key`/`explicit_ime_action`/`delegate_to_open_axis`/
+    /// `mode_key_config`/`injected_guarded_delegate`の5フィールドを持つが、
+    /// `thumb_solo_special_handling`のhiragana/katakana分岐・非対象キー
+    /// 分岐は`explicit_ime_action`を常に`None`に固定する（無変換/変換
+    /// 専用のADR-153決定1機能であり、静的`shadow_action`を持つhiragana/
+    /// katakanaには意味を持たない）——この不変条件はコンパイラでは強制
+    /// されないため、「対称性のため」等の理由で将来hiragana/katakanaにも
+    /// `explicit_ime_action`が配線されてしまう退行をここで固定する。
+    #[test]
+    fn thumb_solo_special_handling_never_sets_explicit_ime_action_for_hiragana_katakana() {
+        let mut fsm = make_test_fsm();
+        let muhenkan_vk = VkCode(0x1D);
+        let hiragana_vk = VkCode(0x70);
+        let katakana_vk = VkCode(0x71);
+        let unrelated_vk = VkCode(0x99);
+        fsm.set_thumb_key_solo_tap_config(
+            Some(muhenkan_vk),
+            ModeKeyConfig::from_legacy_bools(false, true),
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        fsm.set_muhenkan_solo_tap_ime_action(Some(crate::types::ShadowImeAction::TurnOn));
+        fsm.set_hiragana_katakana_thumb_key_config(Some(hiragana_vk), Some(katakana_vk));
+
+        assert_eq!(
+            fsm.thumb_solo_special_handling(muhenkan_vk)
+                .explicit_ime_action,
+            Some(crate::types::ShadowImeAction::TurnOn),
+            "無変換キー自身にはexplicit_ime_actionが設定されるはず（前提確認）"
+        );
+        assert_eq!(
+            fsm.thumb_solo_special_handling(hiragana_vk)
+                .explicit_ime_action,
+            None,
+            "hiragana分岐はexplicit_ime_actionを常にNoneに固定するはず"
+        );
+        assert_eq!(
+            fsm.thumb_solo_special_handling(katakana_vk)
+                .explicit_ime_action,
+            None,
+            "katakana分岐はexplicit_ime_actionを常にNoneに固定するはず"
+        );
+        assert_eq!(
+            fsm.thumb_solo_special_handling(unrelated_vk)
+                .explicit_ime_action,
+            None,
+            "対象外キーの既定分岐もexplicit_ime_actionを常にNoneに固定するはず"
+        );
+    }
+
+    #[test]
+    fn explicit_ime_action_fires_on_non_composing_solo_tap() {
+        let mut fsm = make_test_fsm();
+        let muhenkan_vk = VkCode(0x1D);
+        fsm.set_thumb_key_solo_tap_config(
+            Some(muhenkan_vk),
+            ModeKeyConfig::from_legacy_bools(false, true),
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        fsm.set_muhenkan_solo_tap_ime_action(Some(crate::types::ShadowImeAction::TurnOn));
+        let (resolved, request) = fsm.resolve_pending_thumb_as_single(
+            ScanCode(0x7B),
+            muhenkan_vk,
+            None,
+            false,
+            false,
+            false,
+        );
+        assert!(
+            resolved.actions.is_empty(),
+            "明示config発火時はactionsが空のはず、実際: {:?}",
+            resolved.actions
+        );
+        assert_eq!(request, Some(crate::types::ShadowImeAction::TurnOn));
+    }
+
+    #[test]
+    fn explicit_ime_action_consumed_marker_skips_case1_b13_b14() {
+        // ケース2（`kp_stage_shadow_ime_toggle`）が既にこの打鍵のIME open軸
+        // actuationを発行済み（`explicit_action_consumed=true`）なら、
+        // ケース1（明示config自体の再評価）はスキップし、かつ
+        // delegate_to_open_axis/ModeKeyConfigへのフォールスルーも行わず
+        // 打鍵をそのまま「処理済み・何もしない」として終える（BUG-123、
+        // B13/B14対策の直接検証。フォールスルーしてはならない理由は
+        // `explicit_ime_action_consumed_marker_suppresses_mode_key_
+        // passthrough_replay`参照）。
+        let mut fsm = make_test_fsm();
+        let muhenkan_vk = VkCode(0x1D);
+        fsm.set_thumb_key_solo_tap_config(
+            Some(muhenkan_vk),
+            ModeKeyConfig::from_legacy_bools(false, true),
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        fsm.set_muhenkan_solo_tap_ime_action(Some(crate::types::ShadowImeAction::TurnOn));
+        let (resolved, request) = fsm.resolve_pending_thumb_as_single(
+            ScanCode(0x7B),
+            muhenkan_vk,
+            None,
+            false,
+            false,
+            true, // explicit_action_consumed
+        );
+        assert_eq!(
+            request, None,
+            "ケース2が既に処理済みなら、ケース1は明示configを二重発火させてはならない"
+        );
+        assert!(
+            resolved.actions.is_empty(),
+            "explicit_action_consumedのため打鍵はここで打ち切られ、\
+             delegate_to_open_axis/mode_key_configへはフォールスルーしない \
+             のでactionsは空のはず、実際: {:?}",
+            resolved.actions
+        );
+    }
+
+    #[test]
+    fn explicit_ime_action_consumed_marker_suppresses_mode_key_passthrough_replay() {
+        // BUG-123（2026-09-08、実機確認）: `mode_key_config`が`*_solo_tap_
+        // always_suppress = false`（idle=Passthrough）に設定されたユーザー
+        // 環境で、ケース2が既にこの打鍵を処理済み（`explicit_action_
+        // consumed=true`）にも関わらず、以前の実装は delegate_to_open_axis/
+        // ModeKeyConfigへフォールスルーしていたため、`SoloTapAction::
+        // Passthrough`分岐が生の`VK_NONCONVERT`を**もう一度**送出していた。
+        // 実機では「ケース2のactuationでIMEがONになった直後、この二重目の
+        // 生キー送出をGJIがかな⇄カタカナ切替と誤認し、半角から直接
+        // カタカナへ飛ぶ」形で再現した。`always_suppress=false`（このテスト
+        // が固定するシナリオ）でも`resolved.actions`が空であることを固定し、
+        // 上の`explicit_ime_action_consumed_marker_skips_case1_b13_b14`
+        // （`always_suppress=true`側）と対で回帰を防ぐ。
+        let mut fsm = make_test_fsm();
+        let muhenkan_vk = VkCode(0x1D);
+        fsm.set_thumb_key_solo_tap_config(
+            Some(muhenkan_vk),
+            ModeKeyConfig::from_legacy_bools(false, false), // idle=Passthrough, composing=Suppress
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        fsm.set_muhenkan_solo_tap_ime_action(Some(crate::types::ShadowImeAction::TurnOn));
+        let (resolved, request) = fsm.resolve_pending_thumb_as_single(
+            ScanCode(0x7B),
+            muhenkan_vk,
+            None,
+            false,
+            false, // composing=false → idle branch (Passthrough) が対象
+            true,  // explicit_action_consumed
+        );
+        assert_eq!(
+            request, None,
+            "ケース2が既に処理済みなら、ケース1は明示configを二重発火させてはならない"
+        );
+        assert!(
+            resolved.actions.is_empty(),
+            "mode_key_config=Passthroughであっても、explicit_action_consumed \
+             のときは生キーを再送してはならない（GJIへの二重信号送出、BUG-123 \
+             再発防止）。実際: {:?}",
+            resolved.actions
+        );
+    }
+
+    #[test]
+    fn explicit_ime_action_consumed_marker_overrides_composing_passthrough_too() {
+        // /code-review指摘（2026-09-08）: 上記テストは`idle=Passthrough,
+        // composing=Suppress`（`always_suppress=false`）のidle分岐だけを
+        // 固定していた。`ignore_composing_guard=true`
+        // （idle=Passthrough**かつ**composing=Passthrough、「composing中も
+        // 常に生キーを送出する」という別のユーザー設定）で`composing=true`
+        // の場合に、`explicit_action_consumed`の早期returnが本当に
+        // ModeKeyConfigより優先されるか（意図的なトレードオフとして固定
+        // されているか）は未検証だった。この設定・状態でも
+        // `resolved.actions`が空であることを固定する——GJIへの二重送出
+        // 防止（BUG-123）を、ユーザーが選んだ「composing中も常に
+        // Passthrough」設定より優先するのは意図的な設計であり、
+        // `resolve_pending_thumb_as_single`のdoc（`explicit_action_
+        // consumed`早期return直前のコメント）が明記するトレードオフ。
+        let mut fsm = make_test_fsm();
+        let muhenkan_vk = VkCode(0x1D);
+        fsm.set_thumb_key_solo_tap_config(
+            Some(muhenkan_vk),
+            ModeKeyConfig::from_legacy_bools(true, false), // idle=Passthrough, composing=Passthrough
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        fsm.set_muhenkan_solo_tap_ime_action(Some(crate::types::ShadowImeAction::TurnOn));
+        let (resolved, request) = fsm.resolve_pending_thumb_as_single(
+            ScanCode(0x7B),
+            muhenkan_vk,
+            None,
+            false,
+            true, // composing=true → mode_key_config的にはPassthroughが期待される状態
+            true, // explicit_action_consumed
+        );
+        assert_eq!(
+            request, None,
+            "ケース2が既に処理済みなら、ケース1は明示configを二重発火させてはならない"
+        );
+        assert!(
+            resolved.actions.is_empty(),
+            "mode_key_config=Passthrough（composing中も含む）と設定されていても、\
+             explicit_action_consumedのときは生キーを再送してはならない \
+             （GJIへの二重信号送出防止をユーザー設定より優先する意図的な \
+             トレードオフ）。実際: {:?}",
+            resolved.actions
+        );
+    }
+
+    #[test]
+    fn explicit_ime_action_fails_closed_while_composing() {
+        // composing中はfail-closedでフォールスルーする（delegate_to_open_axisと
+        // 同じ方針）。
+        let mut fsm = make_test_fsm();
+        let muhenkan_vk = VkCode(0x1D);
+        fsm.set_thumb_key_solo_tap_config(
+            Some(muhenkan_vk),
+            ModeKeyConfig::from_legacy_bools(false, false), // idle=Passthrough, composing=Suppress
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        fsm.set_muhenkan_solo_tap_ime_action(Some(crate::types::ShadowImeAction::TurnOff));
+        let (resolved, request) = fsm.resolve_pending_thumb_as_single(
+            ScanCode(0x7B),
+            muhenkan_vk,
+            None,
+            false,
+            true, // composing
+            false,
+        );
+        assert_eq!(
+            request, None,
+            "composing中は明示configを発火させず、ModeKeyConfig.composing（Suppress）へ委ねる"
+        );
+        assert!(resolved.actions.is_empty());
+    }
+
+    #[test]
+    fn explicit_ime_action_does_not_fire_when_mode_key_config_is_passthrough() {
+        // M13: mode_key_config=Passthrough（ユーザーが「常に送出する」と明示済み）
+        // の場合、明示configより先にあった明示パススルー設定を勝たせる。
+        let mut fsm = make_test_fsm();
+        let muhenkan_vk = VkCode(0x1D);
+        fsm.set_thumb_key_solo_tap_config(
+            Some(muhenkan_vk),
+            ModeKeyConfig::from_legacy_bools(true, false), // idle=Passthrough, composing=Passthrough
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        fsm.set_muhenkan_solo_tap_ime_action(Some(crate::types::ShadowImeAction::TurnOn));
+        let (resolved, request) = fsm.resolve_pending_thumb_as_single(
+            ScanCode(0x7B),
+            muhenkan_vk,
+            None,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            request, None,
+            "mode_key_config=Passthroughのキーには明示configを発火させない"
+        );
+        assert!(
+            matches!(resolved.actions.as_slice(), [KeyAction::Key(vk)] if *vk == muhenkan_vk),
+            "Passthrough設定どおり生キーを素通しするはず、実際: {:?}",
+            resolved.actions
+        );
+    }
+
+    #[test]
+    fn dedicated_fn_key_outranks_explicit_ime_action() {
+        // 優先順位1（専用Fnキー）が優先順位2（明示config）より優先される
+        // （M24が前提とする既存の優先順位、無変換のみ該当）。
+        let mut fsm = make_test_fsm();
+        let muhenkan_vk = VkCode(0x1D);
+        let fn_key = VkCode(0x87); // VK_F21相当のダミー値
+        fsm.set_thumb_key_solo_tap_config(
+            Some(muhenkan_vk),
+            ModeKeyConfig::from_legacy_bools(false, true),
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        fsm.set_muhenkan_solo_tap_dedicated_fn_key(Some(fn_key));
+        fsm.set_muhenkan_solo_tap_ime_action(Some(crate::types::ShadowImeAction::TurnOn));
+        let (resolved, request) = fsm.resolve_pending_thumb_as_single(
+            ScanCode(0x7B),
+            muhenkan_vk,
+            None,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(
+            request, None,
+            "専用Fnキーが優先されるため明示configは発火しない"
+        );
+        assert!(matches!(resolved.actions.as_slice(), [KeyAction::Key(vk)] if *vk == fn_key));
     }
 
     // `timeout_pending_thumb`（PendingThumbタイムアウト経路）は
@@ -3318,7 +3795,8 @@ mod tests {
         let hiragana_vk = VkCode(0x70);
         fsm.set_hiragana_katakana_thumb_key_config(Some(hiragana_vk), None);
         fsm.set_hiragana_delegate_to_open_axis(Some(crate::types::ShadowImeAction::TurnOn));
-        let resp = fsm.timeout_pending_thumb(ScanCode(0x39), hiragana_vk, 0, false, None, true);
+        let resp =
+            fsm.timeout_pending_thumb(ScanCode(0x39), hiragana_vk, 0, false, None, true, false);
         assert!(
             matches!(resp.actions.as_slice(), [KeyAction::Key(vk)] if *vk == hiragana_vk),
             "injectedな単独タップはPassthroughへフォールバックするはず、実際: {:?}",
@@ -3337,7 +3815,8 @@ mod tests {
         let hiragana_vk = VkCode(0x70);
         fsm.set_hiragana_katakana_thumb_key_config(Some(hiragana_vk), None);
         fsm.set_hiragana_delegate_to_open_axis(Some(crate::types::ShadowImeAction::TurnOff));
-        let resp = fsm.timeout_pending_thumb(ScanCode(0x39), hiragana_vk, 0, false, None, false);
+        let resp =
+            fsm.timeout_pending_thumb(ScanCode(0x39), hiragana_vk, 0, false, None, false, false);
         assert!(
             resp.actions.is_empty(),
             "delegate発火時はactionsが空のはず、実際: {:?}",

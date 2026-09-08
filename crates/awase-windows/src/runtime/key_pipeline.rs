@@ -27,6 +27,25 @@ enum IntentKind {
     PhysicalImeKey,
 }
 
+/// `explicit_ime_action_target`の判定結果（/code-review指摘、
+/// 2026-09-08——旧`Option<bool>`は`Some(true)`/`Some(false)`/`None`の
+/// 意味がプロース〈doc comment〉でしか説明されておらず、呼び出し側も
+/// `== Some(false)`のような比較で意味を推測させていた。この3値enumは
+/// 各バリアント名自体が意味を表すため、呼び出し側のコードだけで
+/// 判読できる）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExplicitImeActionOutcome {
+    /// 対象キーでない・明示config未設定・M24（専用Fnキー設定済み）・
+    /// 非日本語IME・belief既にONのいずれかに該当し、明示configは
+    /// 一切発火しない（フォールスルーで通常経路に委ねる）。
+    Inactive,
+    /// ケース2（OFF→ON昇格）。実際にIME open軸のactuationを発行する。
+    PromoteToOn,
+    /// ケース3改（"off"方向×既にOFF、2026-09-08再設計・BUG-124対策）。
+    /// 生キーを抑止するだけで、actuateは一切行わない。
+    SuppressOnly,
+}
+
 impl Runtime {
     /// キーイベント処理エントリポイント
     pub(crate) fn process_key_event(&mut self, event: RawKeyEvent) -> CallbackResult {
@@ -267,7 +286,7 @@ impl Runtime {
         // 委譲が起きる**前**の値をここで確定させる。
         let half_width_alnum_toggle_before =
             self.platform_state.gate.half_width_alnum.is_toggle_active();
-        let shadow_toggled = self.kp_stage_shadow_ime_toggle(&event);
+        let shadow_toggled = self.kp_stage_shadow_ime_toggle(&mut event);
 
         let (left_thumb_down, right_thumb_down) = hook::thumb_down_timestamps();
         let ctx = super::build_input_context(
@@ -1074,6 +1093,92 @@ impl Runtime {
         }
     }
 
+    /// ADR-153 決定1: 無変換/変換の明示config（`muhenkan_solo_tap_ime_action`/
+    /// `henkan_solo_tap_ime_action`）が、この VK について**現在の状態で**
+    /// `ExplicitImeActionOutcome`のどれに該当するかを、副作用なしに判定する。
+    ///
+    /// **ケース3は2026-09-08に一度全面撤回し、同日中に「抑止のみ」の形で
+    /// 再設計した**（実機A/B確認2回、`docs/known-bugs.md` BUG-113節・
+    /// BUG-124節参照）。経緯:
+    /// 1. 当初のケース3は`apply_ime_open_with_belief(order, None, belief)`
+    ///    の`shadow_on: None`バイパスで「beliefが変化しなくても毎回強制
+    ///    actuateする」設計だった——これが「単発のIME制御SendInputが1回
+    ///    飛ぶだけで『@』を誘発するのに十分」という機序の十分条件を毎回
+    ///    満たしてしまうと確定し、生キーの抑止ごと全面撤回した。
+    /// 2. 撤回直後の実機再検証（BUG-122/123修正版）で、"off"設定でも
+    ///    「@」が再現し続けることが判明した（BUG-124）。原因は、全面撤回に
+    ///    より生キーの抑止まで失われ、GJI自身が無変換/変換キーを生で
+    ///    受け取るようになったこと——これはADR-153全体が解決しようとして
+    ///    いた「GJI自身のTSFキー横取りが『@』を誘発する」という
+    ///    **BUG-113の根本原因そのもの**への逆戻りだった。
+    /// 3. 診断ブランチ`diag/adr153-case3-ctrlmuhenkan-experiment`の実験
+    ///    （`docs/experiments.md`エントリ25 Phase3、`AWASE_DIAG_CASE3_
+    ///    SUPPRESS_ONLY=1`）で「生キーをSuppressし、かつ何も送らなければ
+    ///    『@』は完全に消える」ことは既に実機確認済みだった——**問題は
+    ///    「抑止」ではなく「強制actuate」の方だった**。この決め手を元に、
+    ///    「抑止はする・actuateはしない」の形で再設計した。
+    ///
+    /// **この設計はケース1（`resolve_explicit_ime_action`〈コア側〉、
+    /// belief ON→OFFの実際の遷移）には影響しない**——そちらは正常なbelief
+    /// 変化を伴う actuation であり、このバグの対象ではない。再度この関数を
+    /// 変更する場合は、上記1〜3の経緯（特に「抑止」と「actuate」は別問題
+    /// である点）を必ず読むこと。
+    ///
+    /// `kp_stage_shadow_ime_toggle` の KeyDown（実際に処理する）と KeyUp
+    /// （M19のペアリングのため同じ条件を再評価するだけ）の両方から呼ぶ
+    /// ——ステートフルなラッチ（KeyDownで立ててKeyUpで消費）は取り出し
+    /// 漏れによる恒久残留リスク（B14と同型の落とし穴）を持つため使わず、
+    /// ケース3改がbelief不変（既にOFF→OFFのまま）を前提にしていることを
+    /// 利用し、KeyDownとKeyUpの間でbeliefが変化しない限り同じ結論になる
+    /// ステートレスな再評価で代える。
+    #[must_use]
+    fn explicit_ime_action_target(
+        &self,
+        vk_code: awase::types::VkCode,
+    ) -> ExplicitImeActionOutcome {
+        let action = match vk_code {
+            vk if vk == crate::vk::VK_NONCONVERT => self.engine.muhenkan_solo_tap_ime_action(),
+            vk if vk == crate::vk::VK_CONVERT => self.engine.henkan_solo_tap_ime_action(),
+            _ => None,
+        };
+        let Some(action) = action else {
+            return ExplicitImeActionOutcome::Inactive;
+        };
+        let current = self.platform_state.ime.effective_open();
+        if current || !self.platform_state.ime.belief.is_japanese_ime() {
+            return ExplicitImeActionOutcome::Inactive;
+        }
+        // M13はケース2/3改（ここ、belief OFF側）では撤廃済み（2026-09-08、
+        // 実機検証＋ユーザー協議で確定）。当初は`mode_key_config`が
+        // Passthroughの場合に発火を控える設計だったが、実機のユーザー設定
+        // （`muhenkan_solo_tap_always_suppress = false`、ADR-153以前からの
+        // legacy設定）が常にPassthroughへ解決され、明示config機能が
+        // 恒久的に無効化されていた。belief OFF状態でのGJI自身のかな切替
+        // には意味が無い（IMEが閉じているため）ため、ここでのM13撤廃は
+        // 安全と判断した。
+        //
+        // **ケース1（`resolve_explicit_ime_action`〈コア側〉、belief ON）は
+        // M13を維持している**——「IME既にONの状態でGJI自身のひらがな→
+        // カタカナ→半角カナのようなかな切替をGJI側のネイティブ処理に
+        // 任せたい」という正当なユースケースがbelief ON中には実在する
+        // （ユーザー指摘）。ケース2/3改とケース1で扱いが非対称になった
+        // 意図的な設計であり、統一漏れではない。
+        let dedicated_fn_key_blocks =
+            vk_code == crate::vk::VK_NONCONVERT && self.muhenkan_dedicated_fn_key_configured();
+        if dedicated_fn_key_blocks {
+            return ExplicitImeActionOutcome::Inactive;
+        }
+        // `current`はこの時点で常に`false`（関数冒頭で保証済み）。
+        // `ShadowImeAction::resolve`（/code-review指摘で追加した共有
+        // ヘルパー、`awase::types`）に判定を委ね、Toggleの解決規則を
+        // ここで独自に再実装しない。
+        if action.resolve(current) {
+            ExplicitImeActionOutcome::PromoteToOn
+        } else {
+            ExplicitImeActionOutcome::SuppressOnly
+        }
+    }
+
     /// Shadow IME トグル処理
     ///
     /// IME ON/OFF が変化したら `true` を返す。`kp_stage_execute` がこの値を見て
@@ -1081,7 +1186,29 @@ impl Runtime {
     // shadow IME belief トグルは分岐が本質的に多い。分割は挙動変更リスクが高いため
     // 複雑度警告のみ抑制する。
     #[expect(clippy::cognitive_complexity)]
-    fn kp_stage_shadow_ime_toggle(&mut self, event: &RawKeyEvent) -> bool {
+    fn kp_stage_shadow_ime_toggle(&mut self, event: &mut RawKeyEvent) -> bool {
+        // ADR-153 決定1 M19対策: ケース3改（下記、"off"×belief既にOFF、
+        // 生キーの抑止のみ・強制actuateはしない、2026-09-08に再設計・
+        // `explicit_ime_action_target`のdoc参照）はKeyDownで
+        // `explicit_ime_action_consumed`を立てて`transport.rs::plan`に
+        // Suppressさせるが、`RawKeyEvent.ime_relevance`は打鍵ごとに
+        // 新規構築されるため、対応するKeyUpにはこのマーカーが引き継がれ
+        // ない。ステートフルなラッチ（KeyDownで立ててKeyUpで消費）は
+        // 取り出し漏れによる恒久残留リスクを持つ（B14が警告する落とし穴と
+        // 同型）ため使わず、KeyUp到着時点の**現在の状態**でケース3改の発火
+        // 条件をステートレスに再評価する——ケース3改はbelief不変
+        // （既にOFF→OFFのまま）を前提にしているため、KeyDownとKeyUpの
+        // 間でbeliefが変化しない限り同じ結論になり、Down/Up双方が
+        // Suppressされる（孤立KeyUpがGJIへ漏れる非対称を防ぐ、B7/B8対策
+        // の完全化）。injected イベントはBUG-14と同じ理由で対象外。
+        if matches!(event.event_type, KeyEventType::KeyUp)
+            && !event.injected
+            && self.explicit_ime_action_target(event.vk_code)
+                == ExplicitImeActionOutcome::SuppressOnly
+        {
+            event.ime_relevance.explicit_ime_action_consumed = true;
+            return false;
+        }
         if !matches!(event.event_type, KeyEventType::KeyDown) {
             return false;
         }
@@ -1135,6 +1262,65 @@ impl Runtime {
             }
             return false;
         }
+        // ADR-153 決定1（ケース2/3改）: 無変換/変換単独タップの明示config
+        // （`muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`）を、
+        // GJI/MS-IME自動検出の成否に関わらず直接扱う。belief ON中はここでは
+        // 何もせず、100ms後の `resolve_pending_thumb_as_single`（ケース1）に
+        // 委ねる——同時打鍵チョード判定を常に維持するため、KeyDown時点で
+        // actuateしてよいのは belief OFF の間だけ（M8/B9/B10対策）。
+        //
+        // ケース2（OFF→ON/Toggle→ON方向）は、ここで独自にactuateせず
+        // `explicit_action_for_pipeline` に載せて下の intent_kind 決定へ
+        // 合流させる——`IntentKind::PhysicalImeKey` と全く同じ write/no-op/
+        // stale ObservedEisu救済(`eisu_reset_on_ime_on`)/ON→OFF actuation
+        // 共通処理をそのまま継承するため（二重実装すると
+        // `user_ime_on_paths_are_paired_with_eisu_reset` ガードが検出する
+        // とおり、新しいuser IME-ON経路にeisu救済を対で配線し忘れる
+        // リスクがある）。ケース3改（"off"×既にOFF）はbeliefが変化せず
+        // このパイプラインの no-op 早期return に飲まれてしまうため、
+        // 合流させず単独で処理する。
+        let mut explicit_action_for_pipeline = None;
+        match self.explicit_ime_action_target(event.vk_code) {
+            ExplicitImeActionOutcome::Inactive => {}
+            ExplicitImeActionOutcome::PromoteToOn => {
+                // ケース2。実際の`action`（TurnOn/Toggle）が何であれ、既に
+                // ON方向へ解決済みなので、下流の`intent_kind`パイプラインへは
+                // 常に`TurnOn`として渡してよい（`new_val`計算が
+                // `TurnOn => true`と`Toggle => !current`のどちらでも同じ
+                // 結果になる）。
+                tracing::info!(
+                    "[shadow-toggle] 明示config: vk=0x{:02X} OFF→ON へ昇格 \
+                     （通常のintent昇格処理へ合流）",
+                    event.vk_code,
+                );
+                explicit_action_for_pipeline = Some(ShadowImeAction::TurnOn);
+            }
+            ExplicitImeActionOutcome::SuppressOnly => {
+                // ケース3改（2026-09-08再設計、BUG-124）: "off"×既にOFF。
+                // **actuateは一切しない**——`apply_ime_open_with_belief`等の
+                // 呼び出しは行わない（旧ケース3が「beliefが変化しなくても
+                // 毎回強制actuateする」設計だったことが「@」再現の直接原因
+                // だったため、撤回済み・二度と復活させない）。ここで行うのは
+                // 生キーの抑止（`explicit_ime_action_consumed`マーカーを
+                // 立てて`transport.rs::plan`にSuppressさせる）だけ——GJI
+                // 自身が無変換/変換キーを生で受け取ると、そのTSFキー横取り
+                // （`ITfKeyEventSink`）自体が「@」を誘発する（BUG-113の
+                // 根本原因そのもの）。この抑止だけなら実機A/B実験
+                // （`docs/experiments.md`エントリ25 Phase3、
+                // `AWASE_DIAG_CASE3_SUPPRESS_ONLY=1`）で「@」が完全に消える
+                // ことを確認済み。抑止（`transport.rs::plan`のM19例外）と
+                // このマーカーが1対1で対応するよう、マーカーは必ずここで
+                // 立てる（対応するKeyUpのペアリングは本関数冒頭のKeyUp
+                // 早期分岐が`explicit_ime_action_target`の再評価で担う）。
+                event.ime_relevance.explicit_ime_action_consumed = true;
+                tracing::info!(
+                    "[shadow-toggle] 明示config: vk=0x{:02X} \"off\"×既にOFF \
+                     → 生キーのみ抑止（actuateはしない、BUG-124対策）",
+                    event.vk_code,
+                );
+                return false;
+            }
+        }
         // Phase 3 delegate が「所有」するのは、親指キー×delegate armed に加えて
         // エンジンが活性(=belief ON)である場合だけ（C1、Opus実装レビュー指摘）。
         // `resolve_pending_thumb_as_single`（delegateの唯一の発火点）は
@@ -1149,7 +1335,12 @@ impl Runtime {
         // アプリ——UWP等——では恒久的に固着する）。
         let delegate_owned = self.mode_key_delegate_owns_shadow_toggle(event.vk_code)
             && self.platform_state.ime.effective_open();
-        // 同期キー (config sync_direction) > 物理 KANJI (Japanese 限定) の順で意図を採用する。
+        // 同期キー (config sync_direction) > 物理 KANJI (Japanese 限定、GJI/
+        // MS-IME自動検出由来のshadow_action) > ADR-153決定1の明示config
+        // （`explicit_action_for_pipeline`、GJI/MS-IME自動検出とは独立）の
+        // 順で意図を採用する。M15対策により、明示config設定済みキーの
+        // `shadow_action`は既にNoneへ無効化されているため、実際には両者が
+        // 同時にSomeになることはない。
         let intent_kind = if let Some(a) = event.ime_relevance.sync_direction {
             Some((a, IntentKind::SyncKey))
         } else if self.platform_state.ime.belief.is_japanese_ime() {
@@ -1157,19 +1348,25 @@ impl Runtime {
                 .ime_relevance
                 .shadow_action
                 .map(|a| (a, IntentKind::PhysicalImeKey))
+                .or_else(|| explicit_action_for_pipeline.map(|a| (a, IntentKind::PhysicalImeKey)))
         } else {
             None
         };
         let Some((action, kind)) = intent_kind else {
             return false;
         };
+        // B13/B14対策: この打鍵の意図が明示configから来た場合、100ms後の
+        // `resolve_pending_thumb_as_single`（ケース1）が同じ打鍵を二重
+        // evaluateしないようマーカーを立てる。`sync_direction`が同じVKに
+        // 同時設定され優先された場合も、その打鍵は既にbeliefが遷移する
+        // ため、ケース1が改めて明示config方向へ評価する必要はない
+        // （このマーカーで正しくスキップされる）。
+        if explicit_action_for_pipeline.is_some() {
+            event.ime_relevance.explicit_ime_action_consumed = true;
+        }
 
         let current = self.platform_state.ime.effective_open();
-        let new_val = match action {
-            ShadowImeAction::Toggle => !current,
-            ShadowImeAction::TurnOn => true,
-            ShadowImeAction::TurnOff => false,
-        };
+        let new_val = action.resolve(current);
         let tick_ms = crate::state::TickMs(hook::current_tick_ms());
         // 診断ログ (2026-08-05 "IME OFF 後 FocusChange 無しで Engine が勝手に ON へ
         // 戻る" 再発報告の切り分け用): このステージが last_intent を書き換える唯一

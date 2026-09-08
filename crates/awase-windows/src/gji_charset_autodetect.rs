@@ -528,11 +528,28 @@ pub(crate) fn resolve_henkan_muhenkan_shadow_override_for_event(
 /// （元は`windows_impl`内のprivate関数だったため、decision table
 /// テストで到達できなかった——`route_thumb_key_action`という同名のまま
 /// 引き上げた）。
+///
+/// `explicit_config`（ADR-153決定1 M15対策、/code-review指摘で追加）:
+/// このVKに`muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`が
+/// 設定されている場合、`on`/`off`/`toggle`へは一切積まない（`None`を返す）。
+/// 親指キー側（`is_thumb_key=true`）の分岐は呼び出し元
+/// （`sync_gji_charset_autodetect`）が別途`mask_auto_detect_for_explicit_
+/// config`でdelegate値をマスクしているが、**このVKが現在の
+/// `left_thumb_key`/`right_thumb_key`と一致しない場合**（`is_thumb_key=
+/// false`）は従来ここでマスクされずに`on`/`off`/`toggle`（Engineの
+/// Phase 1が無条件で消費する、親指キーとは独立の自動actuation経路）へ
+/// 積まれてしまい、`key_pipeline.rs`の明示config経路（ケース2/3改、VK
+/// を直接見るだけでthumb key設定を見ない）と独立に二重actuationしうる
+/// ——1回の物理打鍵に対しGJI自動検出由来のSetOpenと明示config由来の
+/// actuationが両方発火し、BUG-113/BUG-124と同型の「二重信号で@」を
+/// 誘発する。ここでマスクすることで、親指キー設定の有無に関わらず
+/// 明示config対象VKが`on`/`off`/`toggle`に載らないことを保証する。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn route_thumb_key_action(
     action: Option<ImeToggleKind>,
     is_thumb_key: bool,
     vk: VkCode,
+    explicit_config: Option<ShadowImeAction>,
     on: &mut Vec<ParsedKeyCombo>,
     off: &mut Vec<ParsedKeyCombo>,
     toggle: &mut Vec<ParsedKeyCombo>,
@@ -544,6 +561,9 @@ pub(crate) fn route_thumb_key_action(
         // `ime_toggle_kind_to_shadow_action`に委譲し、On/Off/Toggleの
         // 変換ロジックを二重管理しない（/code-review指摘）。
         return ime_toggle_kind_to_shadow_action(action, true);
+    }
+    if explicit_config.is_some() {
+        return None;
     }
     let combo = ParsedKeyCombo {
         ctrl: false,
@@ -744,6 +764,7 @@ mod windows_impl {
             wiring.henkan,
             is_configured_thumb_key(ModeKeyCandidate::Henkan.vk()),
             ModeKeyCandidate::Henkan.vk(),
+            app.henkan_solo_tap_ime_action(),
             &mut on,
             &mut off,
             &mut toggle,
@@ -752,9 +773,30 @@ mod windows_impl {
             wiring.muhenkan,
             is_configured_thumb_key(ModeKeyCandidate::Muhenkan.vk()),
             ModeKeyCandidate::Muhenkan.vk(),
+            app.muhenkan_solo_tap_ime_action(),
             &mut on,
             &mut off,
             &mut toggle,
+        );
+        // ADR-153 決定1 M15対策: ユーザーが明示config
+        // （`henkan_solo_tap_ime_action`/`muhenkan_solo_tap_ime_action`）を
+        // 設定しているキーについては、GJI自動検出由来のdelegate/
+        // shadow_overrideの両方をarmedにしない——`kp_stage_shadow_ime_toggle`
+        // のケース2/3（belief OFF側）とcase1（belief ON側、
+        // `resolve_pending_thumb_as_single`）が明示configを直接扱うため、
+        // 自動検出由来の値が同時にarmedのままだと、明示config対象キーの
+        // 「@」対策（生キーを一切GJIに渡さない）が自動検出結果に依存して
+        // しまう（本ADRの動機そのものを崩す）。書き込み点は2系統4箇所
+        // （GJI側=ここ、MS-IME側=`message_handlers.rs::
+        // sync_ime_toggle_auto_detect`）、両方に同じ無効化を適用する
+        // （ADR-119の教訓「gateを1箇所に置いて満足しない」）。
+        let henkan_delegate = crate::runtime::mask_auto_detect_for_explicit_config(
+            henkan_delegate,
+            app.henkan_solo_tap_ime_action(),
+        );
+        let muhenkan_delegate = crate::runtime::mask_auto_detect_for_explicit_config(
+            muhenkan_delegate,
+            app.muhenkan_solo_tap_ime_action(),
         );
         app.set_gji_thumb_key_delegate_to_open_axis(henkan_delegate, muhenkan_delegate);
         // ADR-141（C2対策）: delegateと同じ値をshadow_action overrideにも
@@ -765,7 +807,9 @@ mod windows_impl {
         // 同じ値が登録され、`&& effective_open()`ゲート
         // （`mode_key_delegate_owns_shadow_toggle`）が実行時に排他的に
         // 切り替える——belief ON中はdelegateが、belief OFF中は
-        // shadow-toggle（belief追随のみ）が処理する。
+        // shadow-toggle（belief追随のみ）が処理する。上記M15対策の
+        // 上書き後の値をそのまま使うため、明示config対象キーはここでも
+        // Noneのまま。
         app.set_thumb_key_shadow_overrides(henkan_delegate, muhenkan_delegate);
 
         // BUG-115 Phase 2/3: Hiragana/Katakana は actuation-auto には載せない。
@@ -1646,8 +1690,20 @@ Precomposition\tEisu\tToggleAlphanumericMode
         let mut on = Vec::new();
         let mut off = Vec::new();
         let mut toggle = Vec::new();
-        let delegate =
-            route_thumb_key_action(gated, is_thumb, target.vk(), &mut on, &mut off, &mut toggle);
+        // このdecision tableは明示config（ADR-153決定1 M15）の次元を
+        // 対象外としている（GJI検出値×opt_in×親指キー判定の組み合わせが
+        // 検証対象）。明示config併用時のマスク動作は
+        // `route_thumb_key_action_masks_actuation_auto_when_explicit_
+        // config_is_set`で別途固定する。
+        let delegate = route_thumb_key_action(
+            gated,
+            is_thumb,
+            target.vk(),
+            None,
+            &mut on,
+            &mut off,
+            &mut toggle,
+        );
         if let Some(action) = delegate {
             // ADR-141: 本番の`sync_gji_charset_autodetect`はdelegateと
             // 同じ値を`set_thumb_key_shadow_overrides`にも渡す
@@ -1796,6 +1852,59 @@ Precomposition\tEisu\tToggleAlphanumericMode
             checked,
             KEYS.len() * CLASSIFY_VALUES.len() * BOOLS.len() * BOOLS.len(),
             "4x4x2x2=64通りを全数網羅したことの自己点検"
+        );
+    }
+
+    /// /code-review指摘（2026-09-08）: `route_thumb_key_action`は親指キー
+    /// 側（`is_thumb_key=true`）のdelegate値は呼び出し元
+    /// （`sync_gji_charset_autodetect`）が`mask_auto_detect_for_explicit_
+    /// config`で別途マスクしているが、**このVKが現在の`left_thumb_key`/
+    /// `right_thumb_key`と一致しない場合**（`is_thumb_key=false`）は
+    /// マスクされずに`on`/`off`/`toggle`（Engine Phase 1が無条件で消費する
+    /// 自動actuation経路）へ積まれてしまい、ADR-153決定1の明示config
+    /// 経路（`key_pipeline.rs`、VKを直接見るだけでthumb key設定を見ない）
+    /// と独立に二重actuationしうる漏れがあった——1回の物理打鍵に対し
+    /// GJI自動検出由来のSetOpenと明示config由来のactuationが両方発火し、
+    /// BUG-113/BUG-124と同型の「二重信号で@」を誘発する経路。
+    /// `explicit_config`引数を追加してこの漏れを塞いだことを固定する。
+    #[test]
+    fn route_thumb_key_action_masks_actuation_auto_when_explicit_config_is_set() {
+        let vk = ModeKeyCandidate::Muhenkan.vk();
+        let mut on = Vec::new();
+        let mut off = Vec::new();
+        let mut toggle = Vec::new();
+
+        // 明示config未設定なら従来どおりactuation-autoへ積まれる（回帰確認）。
+        let delegate = route_thumb_key_action(
+            Some(ImeToggleKind::On),
+            false, // is_thumb_key=false（現在の thumb key 設定と不一致）
+            vk,
+            None,
+            &mut on,
+            &mut off,
+            &mut toggle,
+        );
+        assert_eq!(delegate, None);
+        assert_eq!(on.len(), 1, "明示config未設定ならon-autoへ積まれるはず");
+
+        // 明示config設定済みなら、is_thumb_key=falseでもactuation-autoへ
+        // 積まれてはならない（本テストの主目的）。
+        on.clear();
+        let delegate = route_thumb_key_action(
+            Some(ImeToggleKind::On),
+            false,
+            vk,
+            Some(ShadowImeAction::TurnOn),
+            &mut on,
+            &mut off,
+            &mut toggle,
+        );
+        assert_eq!(delegate, None);
+        assert!(
+            on.is_empty() && off.is_empty() && toggle.is_empty(),
+            "明示config設定済みのVKはactuation-auto(on/off/toggle)へ \
+             一切積まれてはならない（二重actuation防止）。実際: \
+             on={on:?} off={off:?} toggle={toggle:?}"
         );
     }
 }

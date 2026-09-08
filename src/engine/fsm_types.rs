@@ -62,6 +62,13 @@ pub struct ClassifiedEvent {
     /// 素通しして良いか（無変換/変換等）／してはいけないか（Alt 等、
     /// 単独タップで OS 側の副作用があるキー）を判定するために使う。
     pub modifier_key: Option<ModifierKey>,
+    /// ADR-153 決定1（B13/B14対策）: `RawKeyEvent.ime_relevance.
+    /// explicit_ime_action_consumed` をそのまま引き継ぐ。`kp_stage_shadow_
+    /// ime_toggle`（ケース2）が既にこの打鍵のIME open軸actuationを発行
+    /// 済みなら true——`PendingThumbData` へ格納され、100ms後の
+    /// `resolve_pending_thumb_as_single`（ケース1）が同じ打鍵を二重
+    /// 評価しないためのガードに使われる。
+    pub explicit_ime_action_consumed: bool,
 }
 
 impl ClassifiedEvent {
@@ -77,6 +84,7 @@ impl ClassifiedEvent {
             injected: false,
             is_ime_control: false,
             modifier_key: None,
+            explicit_ime_action_consumed: false,
         }
     }
 }
@@ -465,6 +473,11 @@ pub struct PendingThumbData {
     /// この親指キーが OS 修飾キー（Ctrl/Shift/Alt/Meta）に割り当てられているか。
     /// `NicolaFsm::timeout_pending_thumb` 参照。
     pub modifier_key: Option<ModifierKey>,
+    /// ADR-153 決定1（B13/B14対策）: `ClassifiedEvent.explicit_ime_action_
+    /// consumed` を引き継ぐ。true なら `resolve_pending_thumb_as_single`
+    /// はこの打鍵の `explicit_ime_action` を読まずスキップする
+    /// （`kp_stage_shadow_ime_toggle` のケース2が既に処理済みのため）。
+    pub explicit_ime_action_consumed: bool,
 }
 
 impl PendingThumbData {
@@ -477,6 +490,7 @@ impl PendingThumbData {
             timestamp: ev.timestamp,
             injected: ev.injected,
             modifier_key: ev.modifier_key,
+            explicit_ime_action_consumed: ev.explicit_ime_action_consumed,
         }
     }
 
@@ -1007,6 +1021,7 @@ mod tests {
             timestamp: 2000,
             injected: false,
             modifier_key: None,
+            explicit_ime_action_consumed: false,
         }
     }
 
@@ -1286,6 +1301,7 @@ mod tests {
             injected: false,
             is_ime_control: false,
             modifier_key: None,
+            explicit_ime_action_consumed: false,
         };
         assert_eq!(ev.key_class, KeyClass::Char);
         assert!(ev.pos.is_some());
@@ -1303,6 +1319,7 @@ mod tests {
             injected: false,
             is_ime_control: false,
             modifier_key: None,
+            explicit_ime_action_consumed: false,
         };
         assert!(ev.key_class.is_thumb());
         assert!(ev.pos.is_none());
@@ -1319,6 +1336,7 @@ mod tests {
             injected: false,
             is_ime_control: true,
             modifier_key: None,
+            explicit_ime_action_consumed: false,
         };
         assert!(ev.is_ime_control);
     }
@@ -1415,6 +1433,7 @@ mod tests {
             injected: false,
             is_ime_control: false,
             modifier_key: None,
+            explicit_ime_action_consumed: false,
         };
         let pa = ParseAction::ReduceAndContinue {
             actions: smallvec::smallvec![KeyAction::Suppress],
