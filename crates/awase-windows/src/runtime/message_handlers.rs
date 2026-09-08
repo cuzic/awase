@@ -482,6 +482,19 @@ pub(crate) unsafe fn handle_wm_timer(
             {
                 app.process_deferred_keys();
             }
+            // async タスクをスポーン（with_app を解放してから fetch）。
+            //
+            // ADR-121 D1（/code-review指摘で順序を訂正）: この直後の
+            // pending_explicit_reassert 消費ブロックより**前**に呼ぶこと。
+            // `spawn_ime_refresh()` 冒頭は無条件で `TIMER_IME_REFRESH` を
+            // kill するため、後ろで呼ぶと直前に `schedule_settle_retry` が
+            // 再武装したばかりのタイマーを同一tick内で自ら握り潰し、
+            // pending 値が二度と消費されず永久に取り残される
+            // （`reschedule_ime_refresh()` もこの打鍵で立った
+            // `explicit_intent()` により自己抑制するため、他の経路からの
+            // 再武装も期待できない）。この順序なら `schedule_settle_retry`
+            // が新しく張るタイマーは kill されずに残る。
+            app.spawn_ime_refresh();
             // ADR-121 D1: settle 中に見送った物理IMEキーの冪等再送を、settle
             // 明けのこの既存リフレッシュ tick で1回だけ消費する
             // （schedule_settle_retry が使うのと同じタイマー、新規タイマーは
@@ -492,13 +505,22 @@ pub(crate) unsafe fn handle_wm_timer(
                 if app.ime_apply_should_defer() {
                     app.set_pending_explicit_reassert(open);
                     app.schedule_settle_retry("explicit_key_reassert still settling");
+                } else if app.can_use_imm32_cross_process() {
+                    // /code-review指摘: settle待機中にフォーカス/プロファイル
+                    // が変わり、再送発火時点では元のBlacklist前提が崩れて
+                    // いる場合がある。ここで再確認せず送ると、現在フォーカス
+                    // 中の無関係なウィンドウ（ImmCross対応アプリ）へ古い
+                    // open値を誤actuateしてしまう。D1条件2の再検証として
+                    // 破棄する。
+                    tracing::debug!(
+                        "[explicit-reassert] settle明けの再確認でImmCross対応アプリへ \
+                         フォーカスが変わっていたため破棄 (open={open})"
+                    );
                 } else {
                     let tick_ms = crate::state::TickMs(hook::current_tick_ms());
                     app.reassert_explicit_physical_key(open, tick_ms);
                 }
             }
-            // async タスクをスポーン（with_app を解放してから fetch）
-            app.spawn_ime_refresh();
         }
         Some(id) if id == TIMER_POWER_RESUME => {
             app.platform.timer.kill(TIMER_POWER_RESUME);

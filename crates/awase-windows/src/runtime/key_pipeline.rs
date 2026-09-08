@@ -1508,14 +1508,20 @@ impl Runtime {
             // 上のbelief書き込み自体が最初から行われておらず(この関数冒頭の
             // `if !delegate_owned {...write...}`参照)、actuation責務がFSM
             // delegate側にあるため対象外(D1はIntentKind::PhysicalImeKeyに
-            // 限定、"未解決のまま残る問題"節参照)。D2(auto-repeat時の
-            // デバウンス)は実機でVK_DBE_HIRAGANAのKeyDownがauto-repeatする
-            // か未確認のため、ADR-121が明記する「最も安全な選択」に従い
-            // 現時点ではデバウンスを新設しない——実機確認後に必要と判明
-            // すれば追加する。
+            // 限定、"未解決のまま残る問題"節参照)。`kind ==
+            // IntentKind::PhysicalImeKey`のチェックが必須——VK_DBE_HIRAGANAが
+            // config `keys.ime_detect`等でsync keyとしても設定されている
+            // 場合、`intent_kind`解決順序(同期キー優先)により`kind ==
+            // IntentKind::SyncKey`になりうる(/code-review指摘、当初はこの
+            // 区別を欠いておりD1のスコープ限定コメントと実装が矛盾していた)。
+            // D2(auto-repeat時のデバウンス)は実機でVK_DBE_HIRAGANAの
+            // KeyDownがauto-repeatするか未確認のため、ADR-121が明記する
+            // 「最も安全な選択」に従い現時点ではデバウンスを新設しない——
+            // 実機確認後に必要と判明すれば追加する。
             if !delegate_owned
                 && event.vk_code == crate::vk::VK_DBE_HIRAGANA
                 && action == ShadowImeAction::TurnOn
+                && matches!(kind, IntentKind::PhysicalImeKey)
                 && !self.can_use_imm32_cross_process()
                 && !half_width_restore_fired
             {
