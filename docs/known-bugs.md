@@ -16407,3 +16407,55 @@ ADR-153決定1のケース3（"off"×belief既にOFFで毎回強制actuateする
 `crates/awase-windows/src/runtime/`の`handle_engine_set_open`/
 `applied_snapshot`経路。関連: BUG-113（本BUGの発見元、「単発SendInputで
 『@』に十分」という共通の真因）。
+
+---
+
+## BUG-122: ADR-153決定1「ケース2」（無変換/変換単独タップの明示config、`"on"`方向）が、`IntentWitness::from_physical` の witness 条件不足により belief 書き込みを常に黙ってno-opする（実機A/B確認で発見・同日中に修正）
+
+**症状:** `muhenkan_solo_tap_ime_action = "on"`（または`henkan_solo_tap_ime_action
+= "on"`）を設定し、半角状態(belief OFF)で無変換/変換キーを単独タップすると、
+ログには`[shadow-toggle] 明示config: vk=0x1D OFF→ON へ昇格`
+（続けて`intent 昇格: ... false→true`）が正しく出力されるにもかかわらず、
+**実際のIMEはONにならず、ひらがな入力にも切り替わらない**。生キーの
+Suppress自体（`transport.rs::plan`のM19分岐）は設計どおり動作している。
+
+**根本原因:** `crates/awase-windows/src/runtime/key_pipeline.rs::kp_stage_
+shadow_ime_toggle`は、明示configが発火した打鍵を通常の`IntentKind::
+PhysicalImeKey`パイプラインへ合流させ、`state/evidence.rs::IntentWitness::
+from_physical(event)`を経由して初めて`ImeModel::write_physical_key`
+（実際の belief 書き込み）を呼ぶ設計になっている。しかし
+`IntentWitness::from_physical`は`!e.injected && e.ime_relevance.
+shadow_action.is_some()`という条件でしか`Some`を返さず、**ADR-153決定1の
+明示configは`shadow_action`を一切経由しない**（GJI/MS-IME自動検出とは
+独立に動作させることが本ADRの目的そのものだったため）。結果として
+`from_physical`は常に`None`を返し、`let Some(witness) = ... else { return
+false; }`で早期returnし、`write_physical_key`が一度も呼ばれない——「OFF→ON
+へ昇格」ログはbelief書き込みの**前**に出力される診断ログに過ぎず、実際の
+書き込みが起きたことの証明にはなっていなかった。
+
+この不具合はADR-153決定1の実装当初（commit `8732e68c`、2026-09-08）から
+存在しており、同日の「ケース2は実機で確定的に修正を確認」という記録
+（本ファイル・`docs/adr/153-...md`）は、**明示configによるbelief書き込みが
+実際には機能していない状態での誤った成功判定だった**可能性が高い（当時の
+テストでは、M13撤廃直後の別条件——生キーがまだ完全にはSuppressされて
+いなかった、GJI自身が別経路で反応した等——により偶然「@」非再現・
+ひらがな切替という見た目上の成功が得られていたと推測されるが、当時の
+詳細ログは残っておらず確定はできない）。
+
+**修正（同日中に実施）:** `IntentWitness::from_physical`が、`shadow_action.
+is_some()`に加えて`e.ime_relevance.explicit_ime_action_consumed`（明示config
+発火時に`kp_stage_shadow_ime_toggle`が同じ`RawKeyEvent`に立てるマーカー、
+witness呼び出し時点で既にセット済み）も有効な証拠として受理するよう変更
+した。`injected`イベントは従来どおり除外されるため、BUG-14の型化は
+維持される。回帰テスト:
+`crates/awase-windows/src/state/evidence.rs::tests::
+explicit_config_consumed_marker_alone_is_a_valid_physical_witness`
+（`state`モジュールはWindows専用cfgゲート外のため、`cargo test -p
+awase-windows --lib`でLinux上でも実行・確認可能）。
+
+**関連ファイル:** `crates/awase-windows/src/state/evidence.rs`
+（`IntentWitness::from_physical`）、`crates/awase-windows/src/runtime/
+key_pipeline.rs`（`kp_stage_shadow_ime_toggle`、呼び出し元）。関連:
+[ADR-153](adr/153-gji-keymap-aware-safe-vk-substitution-for-mode-keys.md)
+決定1（本BUGが無効化していた機能そのもの）。
+『@』に十分」という共通の真因）。

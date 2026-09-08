@@ -2,12 +2,27 @@
 
 ## ステータス
 
-**決定1実装済み（2026-09-08、`feat/adr153-explicit-ime-action`ブランチ、
-develop未マージ）・ケース2は実機確認済み。ケース3は同日中に撤回した
-（下記2026-09-08追記参照）。** `cargo test --lib`（コア1003件）・`cargo
+**決定1実装済み（2026-09-08、PR #185でdevelopマージ済み）。ケース3は同日中に
+撤回済み（下記2026-09-08追記1参照）。ケース2（"on"）は同日中に実機再検証で
+belief書き込みが機能していない別のバグ（BUG-122）を発見・修正した
+（下記2026-09-08追記2参照）——本ADRの「ケース2は実機確認済み」という当初の
+記述は誤りだったと判明している。** `cargo test --lib`（コア1003件）・`cargo
 nextest run -p awase-windows`（113件）・clippy/fmt はすべてgreen。
 
-**追記（2026-09-08、ケース3撤回・完了）**: 下記「実機検証結果」が記録した
+**追記2（2026-09-08、ケース2のbelief書き込みno-opバグを発見・修正、
+BUG-122）**: PR #185マージ後の実機再検証（dragonflyg4、`muhenkan_solo_tap_
+ime_action = "on"`）で、下記「実機検証結果」が「確定的に修正を確認」と
+記録したケース2が、**実際には一度もbeliefを書き込んでいなかった**ことが
+判明した。`kp_stage_shadow_ime_toggle`はケース2発火時に`IntentWitness::
+from_physical(event)`経由でしか`write_physical_key`を呼ばないが、
+`from_physical`は`shadow_action.is_some()`しか witness として受理せず、
+ケース2は`shadow_action`を一切経由しない設計のため、常に`None`が返り
+`write_physical_key`が黙ってスキップされていた——「OFF→ON へ昇格」ログ
+自体は書き込みの**前**に出るためログだけでは検知できなかった。詳細・
+修正内容は`docs/known-bugs.md` BUG-122節を参照。当初の実機確認がなぜ
+「成功」に見えたかは確定できていない（推測は known-bugs.md 参照）。
+
+**追記1（2026-09-08、ケース3撤回・完了）**: 下記「実機検証結果」が記録した
 ケース3の未解決症状は、後続の実機A/B切り分け実験で根本原因が確定した
 （`docs/known-bugs.md` BUG-113節・`docs/experiments.md`エントリ25）。
 当初疑っていた「develop側の回帰」は誤りで、真因はケース3自身の設計
