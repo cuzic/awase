@@ -2,7 +2,10 @@
 
 ## ステータス
 
-**実装済み（`feat/adr148-bug-report-ime-keymap`、develop未マージ）。**
+**実装済み・developマージ済み**（Phase 1: PR #179、Phase 2: PR #181。
+`git merge-base --is-ancestor`でdevelop HEADの祖先であることを
+2026-09-08に確認。本ステータス節はマージ前の記述のまま更新が漏れて
+いた）。
 設計は4ラウンドのOpus敵対的レビューで収束済み。実装後、同じ観点で
 Opus敵対的コードレビューを実施し、Must-fix 1件（M-1:
 `adopted_ime_toggle_combos`が空のとき`None`に潰していた——「MS-IME

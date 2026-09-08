@@ -2,12 +2,20 @@
 
 ## ステータス
 
-**恒久修正（二重actuationの解消）を実装。develop マージ前の Opus 敵対的
-レビュー2ラウンドで Blocker 1件（`shadow_on` を `bool` に潰すと「未知」を
-「確認済み OFF」と誤認）+ Major 1件（`open_chain.rs::fallback_write` が
-pre-actuation write を読み返す循環）を発見・修正済み。実機での初回確認
-（`!shadow_on` 版、Blocker修正前）は取れているが、両修正後の実機再検証は
-これから（2026-09-05）。3ラウンド目のレビュー結果待ち。**
+**恒久修正（二重actuationの解消）を実装・developマージ済み・実機確認済み
+（2026-09-08、`docs/known-bugs.md` BUG-113見出し・ADR-149参照）。** develop
+マージ前の Opus 敵対的レビュー2ラウンドで Blocker 1件（`shadow_on` を
+`bool` に潰すと「未知」を「確認済み OFF」と誤認）+ Major 1件
+（`open_chain.rs::fallback_write` が pre-actuation write を読み返す循環）
+を発見・修正済み。**両修正後の実機再検証は2026-09-07にdragonflyg4実機で
+実施し、半角/全角キー・Ctrl+無変換の反復で「@」の再発なしを確認した**
+（当初この節が「これから」としていた再検証は完了済み）。もう一つの
+独立十分条件だった `kp_stage_idle_conv_check` のprobe競合も
+[ADR-140](140-ime-probe-actuation-quiet-window.md) Step 1で別途解消・
+実機確認済み。BUG-113の主要な既知機序（二重actuation・probe競合）は
+両方とも塞がれており、半角状態での変換/無変換キー**単独タップ**限定の
+残置症状は[ADR-149](149-physical-ime-key-activation-defers-forced-set-open.md)
+（別の原因、随伴warmupの重複送信）で別途対応済み。
 
 バッチ形状（候補V/A/B3/B4）・VK値（`VK_IME_OFF` vs `VK_KANJI`）の両仮説、
 および `set_ime_open_cross_process`（TsfNativeに効果なし）はいずれも
