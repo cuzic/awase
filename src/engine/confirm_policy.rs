@@ -211,6 +211,7 @@ mod tests {
             injected: false,
             is_ime_control: false,
             modifier_key: None,
+            explicit_ime_action_consumed: false,
         }
     }
 
@@ -224,6 +225,7 @@ mod tests {
             injected: false,
             is_ime_control: false,
             modifier_key: None,
+            explicit_ime_action_consumed: false,
         }
     }
 
@@ -237,6 +239,7 @@ mod tests {
             injected: false,
             is_ime_control: false,
             modifier_key: None,
+            explicit_ime_action_consumed: false,
         }
     }
 

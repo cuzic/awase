@@ -224,6 +224,44 @@ impl FsmAdapter {
         self.fsm.henkan_delegate_to_open_axis()
     }
 
+    /// ADR-153 決定1: ユーザー明示config（`*_solo_tap_ime_action`）を設定する。
+    pub(super) const fn set_muhenkan_solo_tap_ime_action(
+        &mut self,
+        action: Option<crate::types::ShadowImeAction>,
+    ) {
+        self.fsm.set_muhenkan_solo_tap_ime_action(action);
+    }
+
+    /// `set_muhenkan_solo_tap_ime_action` と対称（変換キー用）。
+    pub(super) const fn set_henkan_solo_tap_ime_action(
+        &mut self,
+        action: Option<crate::types::ShadowImeAction>,
+    ) {
+        self.fsm.set_henkan_solo_tap_ime_action(action);
+    }
+
+    pub(super) const fn muhenkan_solo_tap_ime_action(
+        &self,
+    ) -> Option<crate::types::ShadowImeAction> {
+        self.fsm.muhenkan_solo_tap_ime_action()
+    }
+
+    pub(super) const fn henkan_solo_tap_ime_action(
+        &self,
+    ) -> Option<crate::types::ShadowImeAction> {
+        self.fsm.henkan_solo_tap_ime_action()
+    }
+
+    /// ADR-153 決定1 M22対策: `mode_key_muhenkan`/`mode_key_henkan`
+    /// （pre-composingの静的値）を公開する。
+    pub(super) const fn muhenkan_mode_key_config(&self) -> super::fsm_types::ModeKeyConfig {
+        self.fsm.muhenkan_mode_key_config()
+    }
+
+    pub(super) const fn henkan_mode_key_config(&self) -> super::fsm_types::ModeKeyConfig {
+        self.fsm.henkan_mode_key_config()
+    }
+
     pub(super) const fn set_hiragana_katakana_thumb_key_config(
         &mut self,
         hiragana_vk: Option<crate::types::VkCode>,
