@@ -442,6 +442,36 @@ EXPLICIT_KEY_REASSERT_COOLDOWN_MS` のときのみ発火する。**これは時�
    ここを通過するが、Step 0（`SafetyValve`、`PanicReset` 等）が先に評価
    されるため、まれに block されることがある——それは既存の安全弁の
    仕様どおりであり、本 ADR が悪化させる余地はない。
+**settle 待機中の意図変化に対する `would_have_blocked()` の防御（実装後の
+opus-adversarial-consult round1/round2 で検証・確認済み）**: D1の再送は
+`ime_apply_should_defer()` で settle 明けまで pending 化されることがある
+（実装時に追加した`schedule_settle_retry`/`pending_explicit_reassert`機構）。pending 化されている間にユーザーが同一ウィンドウ内で明示的に
+IME を OFF へ切り替えた場合でも、`issue_actuation_order()` は**消費時点**
+（settle 明け、pending を再試行する瞬間）に呼ばれ、その時点の生きた状態
+から `WarrantContext` を構築するため、stale な `open=true` の値がそのまま
+送られることはない。3層で保護される:
+
+- **Step 1**（`IntentStore` 照合）: 明示的な OFF 操作は
+  `write_physical_key`/`write_sync_key` → `record_explicit_intent()` が
+  同一ターゲットの `IntentStore` エントリを `open=false` へ置換する
+  （`intent_store.rs`「同一対象では最新 intent が旧 intent を置換する」）。
+  `issue_open_warrant()` の Step 1 がこの新しいエントリを見て
+  `finalize(requested=true, resolved=false, ..)` → `None` を返す。
+- **Step 4c**（`OwnSsot`、Step 1 が TTL 超過等で外れた場合の保険）:
+  `desired_open=false` により同じく `finalize` が `None` を返す
+  （`open_warrant.rs` のテストが同型のケースを固定済み）。
+- **Step 0**（`SafetyValve`）が先に評価され block を覆すことはない:
+  明示的な OFF は `kp_stage_shadow_ime_toggle` の no-op 早期 return 直後の
+  `on_ime_toggled()` → `reset_detect_state()` → `force_guards.clear()` で
+  全 force guard を消すため、Step 0 が stale な `true` を正当化する形には
+  ならない（settle 窓内に新たな force guard が張り直された場合は
+  `effective_open()` 自身も ON へ上書きされているため、送る `open=true`
+  は stale ではなく現在の belief と整合する）。
+
+つまり「かな押下 → pending 化 → ユーザーが settle 中に明示的に OFF」という
+キャンセル系は、専用のフォーカス照合（`pending_explicit_reassert`の`ScopedOneShot<ForegroundScope,_>`化、実装時対応）とは独立に、
+既存の `would_have_blocked()` 機構自体で正しく保護される。
+
 3. 通過したら `order.into_actuation_shadow()`（または実装時に妥当な
    `Actuation` 状態遷移）を経由し、`ImeController::apply` 相当のチェーンで
    実際に `SendInput` する。`force_on_and_correct_romaji()` と同じ書き込み
