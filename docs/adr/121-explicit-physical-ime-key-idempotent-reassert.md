@@ -14,13 +14,29 @@ architect は round 3 で残っていた 3 点（(3) 単独省略の実装可能
 consultで、`on_ime_applied`の無条件`mark_composition_cold`副作用
 （本来この打鍵はcompositionへ一切影響しないno-opのはずが、cold化した
 上でADR-149ゲートが随伴warmupを省略し「coldのままwarm化しない」状態を
-作りうた）を検出・修正済み——`on_ime_applied_without_cold_mark`という
-専用経路を新設し、GJI同期義務（ActuationReceipt）は維持しつつcompositi
-on cold化だけを抑止した。D2（auto-repeat時のデバウンス）は実機で
-`VK_DBE_HIRAGANA`のKeyDownがauto-repeatするか未確認のため、下記
-「最も安全な選択」方針どおり未実装のまま。**round 1 で当初案の重大な
-欠陥が複数判明し、本稿は全面改訂版。** 改訂差分は文末「round 1 レビュー
-での主な訂正」参照。
+作りうる）を検出・修正済み——`on_ime_applied_without_cold_mark`という
+専用経路を新設し、GJI同期義務（ActuationReceipt）は維持しつつ
+composition cold化だけを抑止した。
+
+**なぜ`mark_composition_cold`だけを外し、`ime_mode_fsm`のunconfirmed化・
+`shift_conv_guard`世代の無効化・`composition_fsm`のCold遷移という他の
+3つの類似副作用は残したか（opus round2 N1指摘）**: この3つも
+「`SetOpen(true)`が適用された＝IMEが実際にOFF→ONへサイクルした」という
+同じ前提の上に立っており、D1の冪等再送（IME側では実際に何も遷移して
+いない）には論理的には同様に当てはまらない。しかし`mark_composition_
+cold`だけが実機で確認された具体的な失敗シナリオ（BUG-02型リテラル化）
+を持つのに対し、残り3つは同型の懸念にとどまり実害シナリオが未確認
+だった（`composition_fsm`のCold遷移はFSM内部状態のみで`is_composition_
+warm()`には波及せずM1の主症状には至らないとround2で確認済み）。
+`mark_composition_cold`以外まで一度に外すと、D1の「効果不明のbest-
+effort再送」という前提のもとで検証すべき変更点が増えすぎる——確認
+できた実害だけを先に潰し、残り3つは将来同型の実害が見つかった時点で
+同じ論法（`on_ime_applied_inner`への追加フラグ）で対処する。
+
+D2（auto-repeat時のデバウンス）は実機で`VK_DBE_HIRAGANA`のKeyDownが
+auto-repeatするか未確認のため、下記「最も安全な選択」方針どおり未実装
+のまま。**round 1 で当初案の重大な欠陥が複数判明し、本稿は全面改訂版。**
+改訂差分は文末「round 1 レビューでの主な訂正」参照。
 
 ## 背景
 
