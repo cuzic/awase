@@ -439,38 +439,18 @@ pub struct GeneralConfig {
     /// 持つ——この明示config もこの窓では一時的に無反応になりうる
     /// （既存の自動検出経路と共通の制約、新規リスクではない）。
     ///
-    /// **既知の問題と再設計の経緯（2026-09-08、dragonflyg4実機A/B確認
-    /// 3回、`docs/known-bugs.md` BUG-113/BUG-124節参照）**: `"on"`
-    /// （belief OFF→ON昇格、ケース2）は実機で「@」再現なしを確認済みで、
-    /// 現在も有効（別途BUG-122/BUG-123も参照——belief書き込み自体が
-    /// 機能していなかった回帰と、その修正が誘発した二重信号送出の回帰を
-    /// 同日中に発見・修正している）。
-    ///
-    /// `"off"`（belief既にOFFのまま維持）は以下の経緯で「抑止のみ・
-    /// actuateしない」という設計に落ち着いている:
-    /// 1. 当初の実装（旧ケース3）は`shadow_on: None`バイパスで
-    ///    「beliefが変化しなくても毎回強制actuateする」設計だった。実機
-    ///    A/B実験で「単発のIME制御SendInputが1回でも飛べば『@』を誘発
-    ///    するのに十分」という機序を確認しており、旧ケース3の強制
-    ///    actuateはこの十分条件を毎回満たしてしまっていた。
-    /// 2. この強制actuateを、生キーの抑止ごと全面撤回したところ、
-    ///    別の実機確認で「@」が再現し続けることが判明した（BUG-124）。
-    ///    抑止まで失った結果、GJI自身が無変換/変換キーを生で受け取る
-    ///    ようになり、GJI自身のTSFキー横取り（BUG-113の根本原因
-    ///    そのもの）に逆戻りしていた。
-    /// 3. 診断実験（`docs/experiments.md`エントリ25 Phase3）で
-    ///    「生キーをSuppressし、かつ何も送らなければ『@』は完全に消える」
-    ///    ことは既に確認済みだった——**問題は「抑止」ではなく「強制
-    ///    actuate」の方**だったと判明し、「抑止はする・actuateはしない」
-    ///    という現在の設計（`crates/awase-windows/src/runtime/
-    ///    key_pipeline.rs::explicit_ime_action_target`の`Some(false)`
-    ///    分岐）に再設計した。
-    ///
-    /// belief ON中の実際のON→OFF遷移（ケース1、`resolve_explicit_ime_
-    /// action`〈コア側〉）はこの設計変更の対象外で、`"off"`は引き続き
-    /// そちらでは正常なactuationを伴う値。この設定を変更する場合は、
-    /// 上記1〜3の経緯（「抑止」と「actuate」は独立した別問題である点）を
-    /// 必ず読むこと——同じ設計に戻すと同じ症状が再発する。
+    /// **既知の問題と再設計の経緯（2026-09-08、実機A/B確認3回で発見・
+    /// 修正したBUG-122/BUG-123/BUG-124）**: `"on"`（belief OFF→ON昇格、
+    /// ケース2）・`"off"`（belief既にOFFのまま維持、"抑止のみ・actuate
+    /// しない"設計）とも実機確認済みで現在有効。詳細な経緯（なぜ"off"側が
+    /// 「抑止する・actuateしない」という設計に落ち着いたか、過去に
+    /// 試して撤回した設計を再度検討する前に必ず読むべき内容）は
+    /// `crates/awase-windows/src/runtime/key_pipeline.rs::
+    /// explicit_ime_action_target`のdoc commentを正本とする——同じ内容を
+    /// 重複して書かない（`docs/known-bugs.md` BUG-113/BUG-122/BUG-123/
+    /// BUG-124節にも記録）。belief ON中の実際のON→OFF遷移（ケース1、
+    /// `resolve_explicit_ime_action`〈コア側〉）はこの経緯の対象外で、
+    /// `"off"`は引き続きそちらでは正常なactuationを伴う値。
     #[serde(default)]
     pub muhenkan_solo_tap_ime_action: Option<ShadowImeActionConfig>,
     /// `muhenkan_solo_tap_ime_action` と対称（変換キー用）。

@@ -146,6 +146,22 @@ pub enum ShadowImeAction {
     Toggle,
 }
 
+impl ShadowImeAction {
+    /// 現在の実効IME開閉状態（`current_open`）から、このactionが要求する
+    /// 新しい開閉状態を解決する（/code-review指摘、2026-09-08——
+    /// `engine.rs::apply_ime_open_request`と
+    /// `awase-windows::key_pipeline::kp_stage_shadow_ime_toggle`が
+    /// 同じ`match`を独立に書いていたため共有ヘルパーへ統合）。
+    #[must_use]
+    pub const fn resolve(self, current_open: bool) -> bool {
+        match self {
+            Self::TurnOn => true,
+            Self::TurnOff => false,
+            Self::Toggle => !current_open,
+        }
+    }
+}
+
 /// キーの IME 関連情報（プラットフォーム層が事前分類）
 #[allow(clippy::struct_excessive_bools)]
 // 各フィールドは独立の判定軸を1:1で表現（enum化はwiden/意味混同のリスクを増やす）
@@ -343,6 +359,22 @@ mod tests {
     use itertools::Itertools as _;
 
     use super::*;
+
+    // ── ShadowImeAction::resolve ──
+
+    #[test]
+    fn shadow_ime_action_resolve_matches_expected_truth_table() {
+        // /code-review指摘（2026-09-08）で追加した共有ヘルパー。
+        // engine.rs::apply_ime_open_request と
+        // key_pipeline.rs::kp_stage_shadow_ime_toggle が独立に実装していた
+        // 同じ真理値表をここに固定する。
+        assert!(ShadowImeAction::TurnOn.resolve(false));
+        assert!(ShadowImeAction::TurnOn.resolve(true));
+        assert!(!ShadowImeAction::TurnOff.resolve(false));
+        assert!(!ShadowImeAction::TurnOff.resolve(true));
+        assert!(ShadowImeAction::Toggle.resolve(false));
+        assert!(!ShadowImeAction::Toggle.resolve(true));
+    }
 
     // ── RawKeyEvent::starts_focus_resync ──
 
