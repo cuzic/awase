@@ -11253,6 +11253,60 @@ check`/`cargo clippy --target x86_64-pc-windows-msvc`（Linux 上、cross
 値が変わるため、`cfg!(windows)` 相当の determinism が無く有効なテストに
 しにくい——実機ビルド確認が実質的なテストを兼ねる）。
 
+**追補2（2026-09-09、上記「実機検証」は誤検証・真因はマニフェストではなかった）:**
+上記の追補1（`98c6afa7`）をdragonflyg4実機に取り込み再ビルド・再起動した
+直後にもかかわらず、`awase.log`に同一の
+`failed to spawn awase-settings.exe: ...(os error 50)` が再発した
+（再ビルド・プロセス再起動の13分後、および以後トレイの「設定」を選ぶたび
+100%再現）。前回の「実機検証済み」は再現条件を踏まなかっただけの誤検証
+だったと判明。
+
+**切り分け（実機A/Bテスト、いずれもdragonflyg4）:**
+1. `awase-settings.exe`からマニフェストXMLを直接抽出 →
+   `requestedExecutionLevel level="asInvoker"`を含む整形式XMLで正常。
+2. `[System.Diagnostics.Process]::Start`（`UseShellExecute=$false`、
+   内部的に`CreateProcessW`を使う）で同じ`awase-settings.exe`を外部から
+   直接起動 → 成功。
+3. `#![windows_subsystem = "windows"]`を付けた最小限のRustバイナリ
+   （awase.exeと同じGUIサブシステム・コンソール無し）をその場でビルドし、
+   `std::process::Command::new(target).spawn()`で同じファイルを起動
+   → 成功。
+4. Exploit Protectionの個別ミティゲーション・IFEO MitigationOptions・
+   RUNASADMIN互換性フラグ・AppLocker/WDAC・サードパーティAV/EDR・
+   ASRルール・ハンドル数枯渇 → いずれも実機で確認したが該当なし
+   （`Get-ProcessMitigation`はnotepad.exeとの比較で「空出力=未設定」と
+   確認、AppCompatFlags\Layersにawase関連エントリ自体が存在しない、等）。
+
+1〜3が示すとおり、マニフェストも`CreateProcessW`単体も問題ない。**稼働中の
+`awase.exe`から`std::process::Command::spawn()`を呼んだときだけ**
+再現し続けた。`FindWindow("awase_tray_window")` +
+`PostMessage(WM_COMMAND, IDM_SETTINGS=50)`を外部から送るだけで
+トレイクリック無しに100%再現できることも確認した（以後の検証を高速化）。
+
+**真因:** `crates/awase-windows/src/app/mod.rs::launch_settings_with_args`が
+`std::process::Command::new(&path).args(&args).spawn()`と、stdin/stdout/
+stderrを一切明示せずに呼んでいた。この場合Rustは親の標準入出力を子に
+継承させようとし、その際に構築される継承ハンドル許可リスト
+（`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`）が、フック・タイマー・
+`win32-async`ワーカースレッドを多数抱えた長時間稼働中のawase.exeでのみ
+`CreateProcessW`を`ERROR_NOT_SUPPORTED`で失敗させていたとみられる
+（起動直後の裸のテストバイナリでは再現せず、稼働中のawase.exeでのみ・
+かつ毎回再現したことと整合）。
+
+**修正:** `.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())`
+を明示することで継承経路自体を回避した。dragonflyg4実機で、この変更を
+適用したビルドに差し替えたところ、上記PostMessageトリガーで即座に
+`awase-settings.exe`が正常起動し、以後`failed to spawn`が再発しないことを
+確認済み。
+
+**教訓:** 「実機で1回成功を確認した」は「実機検証済み」と同義ではない。
+今回の症状は100%再現するにもかかわらず、追補1の検証ではたまたま踏まな
+かった（あるいは確認が不十分だった）。次回以降、この種の失敗は
+PostMessageによる直接トリガーのような機械的な再現手段を先に確立してから
+「直った」と判断すること。
+
+**関連:** [experiment-logging](../.claude/rules/experiment-logging.md)。
+
 ---
 
 ## BUG-80: 起動時・モーダルポンプ中のフックキー配送で打鍵が消える/順序が壊れる可能性
