@@ -768,16 +768,14 @@ mod windows_impl {
         // （GJI側=ここ、MS-IME側=`message_handlers.rs::
         // sync_ime_toggle_auto_detect`）、両方に同じ無効化を適用する
         // （ADR-119の教訓「gateを1箇所に置いて満足しない」）。
-        let henkan_delegate = if app.henkan_solo_tap_ime_action().is_some() {
-            None
-        } else {
-            henkan_delegate
-        };
-        let muhenkan_delegate = if app.muhenkan_solo_tap_ime_action().is_some() {
-            None
-        } else {
-            muhenkan_delegate
-        };
+        let henkan_delegate = crate::runtime::mask_auto_detect_for_explicit_config(
+            henkan_delegate,
+            app.henkan_solo_tap_ime_action(),
+        );
+        let muhenkan_delegate = crate::runtime::mask_auto_detect_for_explicit_config(
+            muhenkan_delegate,
+            app.muhenkan_solo_tap_ime_action(),
+        );
         app.set_gji_thumb_key_delegate_to_open_axis(henkan_delegate, muhenkan_delegate);
         // ADR-141（C2対策）: delegateと同じ値をshadow_action overrideにも
         // 常時反映する。非親指キー（delegateがNone）の場合は

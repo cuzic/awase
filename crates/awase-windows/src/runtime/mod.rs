@@ -53,6 +53,25 @@ pub(crate) fn resolve_dedicated_fn_key(name: Option<&str>) -> Option<VkCode> {
     resolved
 }
 
+/// ADR-153 決定1 M15対策: ユーザー明示config（`*_solo_tap_ime_action`）が
+/// 設定されているキーについて、GJI/MS-IME自動検出由来の delegate/
+/// shadow_override 値を無効化する共有ヘルパー（/code-review指摘、PR #185
+/// ——2系統4箇所以上に同じ判定式が独立に書かれ、片方を直しても他方が
+/// 取り残されるリスクがあった。GJI側 `gji_charset_autodetect.rs`・
+/// MS-IME側 `runtime/message_handlers.rs::sync_ime_toggle_auto_detect`
+/// の両方から呼ぶ）。
+#[must_use]
+pub(crate) const fn mask_auto_detect_for_explicit_config(
+    auto_detected: Option<awase::types::ShadowImeAction>,
+    explicit_config: Option<awase::types::ShadowImeAction>,
+) -> Option<awase::types::ShadowImeAction> {
+    if explicit_config.is_some() {
+        None
+    } else {
+        auto_detected
+    }
+}
+
 /// IME 状態と修飾キースナップショットから `InputContext` を構築する。
 ///
 /// `modifiers` はフック時点でキャプチャした `ModifierState` を渡すこと。

@@ -843,12 +843,14 @@ pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
     tracing::info!("[msime-keyassign] delegate-to-open-axis assignment: {delegate_assignment:?}");
     // ADR-153 決定1 M15対策: 明示config設定済みキーにはレジストリ由来の
     // delegateもarmedにしない（下記shadow_overrideと同じ理由）。
-    let muhenkan_delegate = delegate_assignment
-        .muhenkan
-        .filter(|_| app.muhenkan_solo_tap_ime_action().is_none());
-    let henkan_delegate = delegate_assignment
-        .henkan
-        .filter(|_| app.henkan_solo_tap_ime_action().is_none());
+    let muhenkan_delegate = super::mask_auto_detect_for_explicit_config(
+        delegate_assignment.muhenkan,
+        app.muhenkan_solo_tap_ime_action(),
+    );
+    let henkan_delegate = super::mask_auto_detect_for_explicit_config(
+        delegate_assignment.henkan,
+        app.henkan_solo_tap_ime_action(),
+    );
     app.engine
         .set_muhenkan_delegate_to_open_axis(muhenkan_delegate);
     app.engine.set_henkan_delegate_to_open_axis(henkan_delegate);
@@ -880,14 +882,18 @@ pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
     // をarmedにしない——GJI側（`gji_charset_autodetect.rs`）と同じ理由
     // （ADR-119の教訓「gateを1箇所に置いて満足しない」、書き込み点は
     // 2系統4箇所のうちここが2箇所目）。
-    let henkan_override = henkan_is_thumb_key
-        .then_some(delegate_assignment.henkan)
-        .flatten()
-        .filter(|_| app.henkan_solo_tap_ime_action().is_none());
-    let muhenkan_override = muhenkan_is_thumb_key
-        .then_some(delegate_assignment.muhenkan)
-        .flatten()
-        .filter(|_| app.muhenkan_solo_tap_ime_action().is_none());
+    let henkan_override = super::mask_auto_detect_for_explicit_config(
+        henkan_is_thumb_key
+            .then_some(delegate_assignment.henkan)
+            .flatten(),
+        app.henkan_solo_tap_ime_action(),
+    );
+    let muhenkan_override = super::mask_auto_detect_for_explicit_config(
+        muhenkan_is_thumb_key
+            .then_some(delegate_assignment.muhenkan)
+            .flatten(),
+        app.muhenkan_solo_tap_ime_action(),
+    );
     app.set_thumb_key_shadow_overrides(henkan_override, muhenkan_override);
 }
 

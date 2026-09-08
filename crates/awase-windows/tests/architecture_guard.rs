@@ -3514,24 +3514,82 @@ fn strip_any_test_module(content: &str) -> &str {
 /// 同じ無効化ロジックが存在することを固定する。
 #[test]
 fn explicit_ime_action_masks_autodetect_delegate_in_both_gji_and_msime() {
-    let expectations: &[(&str, usize)] = &[
-        ("src/gji_charset_autodetect.rs", 2),
-        ("src/runtime/message_handlers.rs", 2),
+    // `_solo_tap_ime_action()`（明示config読み取り）の出現数と、実際に
+    // マスキングを行う共有ヘルパー `mask_auto_detect_for_explicit_config`
+    // （/code-review指摘、PR #185で4+箇所の重複if/else・filter実装を
+    // 統一）の呼び出し数の両方を固定する——前者だけだと「値は読んでいるが
+    // マスキングには使っていない」退行を見逃す。
+    let expectations: &[(&str, usize, usize)] = &[
+        ("src/gji_charset_autodetect.rs", 2, 2),
+        ("src/runtime/message_handlers.rs", 4, 4),
     ];
-    for (path, expected) in expectations {
+    for (path, expected_reads, expected_masks) in expectations {
         let content = read_crate_file(path);
         let production = strip_any_test_module(&content);
-        let count = production.matches("_solo_tap_ime_action()").count();
+        let read_count = production.matches("_solo_tap_ime_action()").count();
         assert!(
-            count >= *expected,
+            read_count >= *expected_reads,
             "{path} 内で `*_solo_tap_ime_action()`（明示config読み取り）の本番 \
-             コードでの出現数が想定({expected}以上)を下回ります(実際: {count})。\
-             ADR-153決定1 M15対策（GJI/MS-IME自動検出由来のdelegate/\
-             shadow_overrideを明示config設定済みキーではarmedにしない）が \
-             欠落していないか確認すること。ADR-119の教訓どおり、gateは \
-             GJI側・MS-IME側の2系統4箇所すべてに適用する必要がある。"
+             コードでの出現数が想定({expected_reads}以上)を下回ります \
+             (実際: {read_count})。ADR-153決定1 M15対策（GJI/MS-IME自動検出由来の\
+             delegate/shadow_overrideを明示config設定済みキーではarmedに \
+             しない）が欠落していないか確認すること。"
+        );
+        let mask_count = production
+            .matches("mask_auto_detect_for_explicit_config(")
+            .count();
+        assert!(
+            mask_count >= *expected_masks,
+            "{path} 内で `mask_auto_detect_for_explicit_config(`（M15マスキング \
+             共有ヘルパー）の呼び出し数が想定({expected_masks}以上)を下回ります \
+             (実際: {mask_count})。GJI側・MS-IME側の両方、かつdelegate/\
+             shadow_overrideの両方に適用する必要がある（ADR-119の教訓 \
+             「gateを1箇所に置いて満足しない」）。"
         );
     }
+}
+
+/// ADR-153 決定1 M19対策の KeyUp ペアリング回帰ガード（/code-review指摘、
+/// PR #185）。
+///
+/// ケース3（"off"×belief既にOFF）は KeyDown で `explicit_ime_action_
+/// consumed` マーカーを立てて `transport.rs::plan` に Suppress させるが、
+/// `RawKeyEvent.ime_relevance` は打鍵ごとに新規構築されるため、対応する
+/// KeyUp にこのマーカーは自動的には引き継がれない。`kp_stage_shadow_ime_
+/// toggle` は、KeyUp到着時点で `explicit_ime_action_target` を再評価する
+/// 早期分岐を、通常の `!matches!(KeyDown)` 早期return **より前**に持つ
+/// ことで、この孤立KeyUp漏れ（B7/B8再発）を防いでいる——この構造が
+/// 崩れていないかを固定する。
+#[test]
+fn kp_stage_shadow_ime_toggle_pairs_key_up_with_explicit_ime_action_marker() {
+    let content = read_crate_file("src/runtime/key_pipeline.rs");
+    let production = production_code_only(&content);
+    let body = extract_fn_body(production, "fn kp_stage_shadow_ime_toggle(");
+
+    let key_up_check_idx = body
+        .find("KeyEventType::KeyUp")
+        .expect("kp_stage_shadow_ime_toggle must special-case KeyEventType::KeyUp for M19 pairing");
+    let key_down_early_return_idx = body
+        .find("!matches!(event.event_type, KeyEventType::KeyDown)")
+        .expect("kp_stage_shadow_ime_toggle must early-return for non-KeyDown events");
+    assert!(
+        key_up_check_idx < key_down_early_return_idx,
+        "KeyUp用のM19ペアリング分岐は、`!matches!(event.event_type, \
+         KeyEventType::KeyDown)`早期returnより前に置くこと。後ろに \
+         置くとKeyUpイベントがそこで即returnされ、ペアリング分岐に \
+         到達しないまま孤立KeyUpがGJIへ生のまま配送される \
+         （ADR-153決定1ケース3の抑止とactuationの1対1対応、B7/B8再発）。"
+    );
+
+    let target_calls = body.matches("explicit_ime_action_target(").count();
+    assert!(
+        target_calls >= 2,
+        "kp_stage_shadow_ime_toggle は `explicit_ime_action_target(` を \
+         KeyUpペアリング判定とKeyDownケース2/3判定の両方から呼ぶはず \
+         （実際の呼び出し数: {target_calls}）。片方だけになっている場合、\
+         KeyDown/KeyUpいずれかの経路でケース3の判定条件が乖離している \
+         おそれがある。"
+    );
 }
 
 #[test]
