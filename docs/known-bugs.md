@@ -16703,3 +16703,49 @@ actuation_auto_when_explicit_config_is_set`。
 **関連ファイル:** `crates/awase-windows/src/gji_charset_autodetect.rs`
 （`route_thumb_key_action`、`sync_gji_charset_autodetect`内の呼び出し
 箇所2箇所）。関連: BUG-113/BUG-124（同型の二重信号送出パターン）。
+
+---
+
+## BUG-126: （未確認・理論的リスクとして調査しクローズ）タイマー経路の親指タイムスタンプがdrain replay時にライブ再取得され、別の押下の値と誤って比較されうる懸念——実機未再現、失敗シナリオも構成不能
+
+**経緯（2026-09-08、[ADR-155](adr/155-timer-path-live-thumb-requery-during-deferred-timer-replay.md)）:**
+[ADR-129](adr/129-thumb-timestamp-live-requery-during-gate-drain-replay.md)
+が指摘した「`hook::thumb_down_timestamps()`はライブ配送とdrain replayの
+両方から同一コードパスで呼ばれるため、drain replay時に『イベント発生時点の
+値』ではなく『replayを実行している"今"の値』を読んでしまう」という懸念が、
+`deferred_engine_timers`のreplay経路にも当てはまるかを調査した。
+
+**調査結果: 実害のある変種を1本も構成できなかった。** `handle_wm_drain_
+output_queue`の実行順序（1. `INPUT_DEFER.take_all()`で退避キーイベントを
+先にFSMへ流す、2. その後`deferred_engine_timers`を`os_id`照合付きでreplay）
+を踏まえ、到達可能な具体的なイベント列を洗った:
+
+- 親指KeyUpのみがdrain中に処理された場合: グローバルが`None`相当になり
+  `NicolaFsm::is_thumb_consumed`が`phys_down.is_some()`で不成立→実害なし。
+- `hook.rs`のグローバルクリア系関数によるゼロクリア: 同じく`phys_down =
+  None`になるだけで実害なし。
+- 実害がある変種（無関係な新しい押下が誤って「消費済み」と刻印される）に
+  必要な2条件（`os_id`一致・FSM状態維持）を両方満たす具体的なイベント列は、
+  round1レビューで1本も構成できなかった。
+
+**位置づけ: 「未観測・コードからの理論的特定のみ」ではなく「理論的にも
+未確立」。** `.claude/rules/tuning-constants.md`が禁じる「効かないので
+増やした」型の対症変更と同じ構造のリスクがあるため、実証されていない
+失敗シナリオへ実装コストを払わない判断とした。ADR-155はこの記録を残して
+クローズし、実装には進んでいない。
+
+**再オープンの条件:** 上記2条件（`os_id`一致・FSM状態維持）を両方すり抜ける
+具体的なイベント列を構成できた場合、または実機で再現した場合。その際は
+ADR-155「将来の実装案」節の案A（push時点でのスナップショット保持）・案B
+（`hook.rs`側で同一キーイベントに対し`now_timestamp()`を複数回呼ばないよう
+改める、より根本的）を出発点に設計すること——案A/Bのどちらを土台にするかは
+[ADR-129](adr/129-thumb-timestamp-live-requery-during-gate-drain-replay.md)
+自身の実装（まだ未着手）にも影響するため、ADR-129着手前に判断する順序依存が
+ある。
+
+**関連ファイル（未変更）:** `crates/awase-windows/src/hook.rs`
+（`now_timestamp()`、`update_thumb`）、`runtime/message_handlers.rs`
+（`handle_wm_drain_output_queue`/`handle_wm_timer`）、`runtime/mod.rs`
+（`build_ctx()`）。関連: [ADR-129](adr/129-thumb-timestamp-live-requery-during-gate-drain-replay.md)、
+[ADR-155](adr/155-timer-path-live-thumb-requery-during-deferred-timer-replay.md)、
+[ADR-156](adr/156-unify-deferred-execution-queues.md)（同型パターンの棚卸し）。
