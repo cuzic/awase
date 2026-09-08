@@ -2,6 +2,18 @@
 
 ## ステータス
 
+**決定1実装済み（2026-09-08、`feat/adr153-explicit-ime-action`ブランチ、
+develop未マージ）・実機未検証。** `cargo test --lib`（コア1003件）・
+`cargo nextest run -p awase-windows`（architecture_guard/golden_scenarios/
+layer_boundary_guard等132件）・clippy/fmt はすべてgreen。ケース1〜3の
+実装、M13/M15/M19/M22/M24対策、B13/B14対策（`ImeRelevance.
+explicit_ime_action_consumed`マーカー）はいずれも設計どおり実装済み。
+Windows実機でのビルド・半角/全角状態からの`"on"`/`"off"`/`"toggle"`
+設定・ATOKプリセット併用の確認（下記「未決着・要レビュー論点」#5）は
+次のセッションでの作業として残る。
+
+以下は決定1着手前（設計収束フェーズ）の記録:
+
 **設計収束・実装フェーズへ移行可能（opus-adversarial-consult r1〜r9で
 収束を確認。r9: 「設計としては収束したと判断する」——B1〜B14はすべて
 実装レベルで解消を確認済み、残るM25（マーカーの搬送は`InputContext`
