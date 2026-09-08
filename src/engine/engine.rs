@@ -618,11 +618,7 @@ impl Engine {
         let Some(action) = self.adapter.take_ime_open_requested() else {
             return;
         };
-        let new_open = match action {
-            ShadowImeAction::TurnOn => true,
-            ShadowImeAction::TurnOff => false,
-            ShadowImeAction::Toggle => !ctx.ime_on,
-        };
+        let new_open = action.resolve(ctx.ime_on);
         tracing::info!("IME open axis delegated (solo tap, key semantics absorption) → {new_open}");
         // ime_on/ime_off コンボキーと同じ `ime_set_open_effects` を経由する
         // （`prev_activation` を進めて次打鍵での重複 SetOpen を防ぐため必須、

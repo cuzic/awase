@@ -3587,42 +3587,39 @@ fn kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate() {
          `docs/experiments.md`エントリ25を必ず読んでください。"
     );
 
-    // ケース3改（"off"×既にOFF）の分岐本体には、実際のactuation呼び出し
-    // （`apply_ime_open_with_belief`/`issue_actuation_order`/
-    // `on_ime_apply_complete`）が一切含まれてはならない——抑止
-    // （`explicit_ime_action_consumed = true`）だけを行い、そのまま
-    // `return false`することを固定する（BUG-124: 抑止まで失うと旧
-    // BUG-113の「GJI自身のTSFキー横取りが『@』を誘発する」根本原因に
+    // ケース3改（`ExplicitImeActionOutcome::SuppressOnly`）の分岐本体には、
+    // 実際のactuation呼び出し（`apply_ime_open_with_belief`/
+    // `issue_actuation_order`/`on_ime_apply_complete`）が一切含まれては
+    // ならない——抑止（`explicit_ime_action_consumed = true`）だけを行い、
+    // そのまま`return false`することを固定する（BUG-124: 抑止まで失うと
+    // 旧BUG-113の「GJI自身のTSFキー横取りが『@』を誘発する」根本原因に
     // 逆戻りする一方、actuateを復活させると旧ケース3の「@」原因が再発する
     // ——「抑止する・actuateしない」の両立が本節の核心）。
     let body = extract_fn_body(production, "fn kp_stage_shadow_ime_toggle(");
-    let case23_start = body
-        .find("if let Some(target) = self.explicit_ime_action_target(")
+    let arm_start = body
+        .find("ExplicitImeActionOutcome::SuppressOnly => {")
         .expect(
-            "kp_stage_shadow_ime_toggle にケース2/3改の `if let Some(target) = \
-             self.explicit_ime_action_target(...)` 分岐が見つかりません。",
+            "kp_stage_shadow_ime_toggle に `ExplicitImeActionOutcome::\
+             SuppressOnly` のmatch armが見つかりません。",
         );
-    let else_start = body[case23_start..]
-        .find("} else {")
-        .map(|i| case23_start + i)
-        .expect("ケース2/3改の if let に対応する else 節が見つかりません。");
-    let else_body_end = find_balanced_close(&body, else_start + "} else {".len() - 1)
-        .expect("ケース3改（else節）の閉じ括弧が見つかりません。");
-    let case3_else_body = &body[else_start..=else_body_end];
+    let arm_open_brace = arm_start + "ExplicitImeActionOutcome::SuppressOnly => {".len() - 1;
+    let arm_end = find_balanced_close(&body, arm_open_brace)
+        .expect("SuppressOnlyアームの閉じ括弧が見つかりません。");
+    let suppress_only_arm_body = &body[arm_start..=arm_end];
 
     assert!(
-        !case3_else_body.contains("apply_ime_open_with_belief(")
-            && !case3_else_body.contains("issue_actuation_order(")
-            && !case3_else_body.contains("on_ime_apply_complete("),
-        "ケース3改（\"off\"×既にOFF）のelse節にactuation呼び出しが含まれて \
+        !suppress_only_arm_body.contains("apply_ime_open_with_belief(")
+            && !suppress_only_arm_body.contains("issue_actuation_order(")
+            && !suppress_only_arm_body.contains("on_ime_apply_complete("),
+        "ケース3改（SuppressOnly）のアームにactuation呼び出しが含まれて \
          います。この節は生キーの抑止マーカーを立てるだけで、実際の \
          actuationは一切行ってはならない（旧ケース3の「毎回強制actuate」\
          設計が「@」を誘発した、BUG-113/BUG-124参照）。"
     );
     assert!(
-        case3_else_body.contains("explicit_ime_action_consumed = true")
-            && case3_else_body.contains("return false"),
-        "ケース3改（\"off\"×既にOFF）のelse節は、`explicit_ime_action_\
+        suppress_only_arm_body.contains("explicit_ime_action_consumed = true")
+            && suppress_only_arm_body.contains("return false"),
+        "ケース3改（SuppressOnly）のアームは、`explicit_ime_action_\
          consumed = true`（生キーの抑止マーカー）を立てて`return false`\
          するだけの実装であるはずです。この構造が崩れています。"
     );

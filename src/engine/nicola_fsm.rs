@@ -2164,6 +2164,16 @@ impl NicolaFsm {
         // GJIへ二重送出され、かな⇄カタカナ切替と誤認される
         // （`explicit_ime_action_consumed_marker_suppresses_mode_key_
         // passthrough_replay`参照）。ここで明示的に打ち切る。
+        //
+        // **既知のトレードオフ（/code-review指摘）**: この早期returnは
+        // `composing`状態を一切見ないため、ユーザーが`mode_key_config`を
+        // 「composing中も常にPassthrough」（`ignore_composing_guard=true`）
+        // に設定していても適用されない——この打鍵は既にケース2が処理済み
+        // であり、生キーを再送するとGJIへの二重送出（上記）を再現するため、
+        // 意図的にModeKeyConfigの設定内容より優先する。この組み合わせ
+        // （explicit_action_consumed×composing=true×Passthrough設定）は
+        // 固定テスト`explicit_ime_action_consumed_marker_overrides_
+        // composing_passthrough_too`で明文化している。
         if explicit_action_consumed {
             return Self::no_op_resolution();
         }
@@ -2832,13 +2842,7 @@ impl NicolaFsm {
                     "unexpected state in handle_key_up_pending: {:?}",
                     self.state
                 );
-                (
-                    ResolvedAction {
-                        actions: SmallVec::new(),
-                        output: OutputUpdate::None,
-                    },
-                    None,
-                )
+                Self::no_op_resolution()
             }
         };
         if ime_open_request.is_some() {
@@ -3480,6 +3484,57 @@ mod tests {
 
     // ── ADR-153 決定1: 無変換単独タップの明示config（優先順位2） ──────
 
+    /// /code-review指摘（2026-09-08）: `ThumbSoloSpecialHandling`は
+    /// `dedicated_fn_key`/`explicit_ime_action`/`delegate_to_open_axis`/
+    /// `mode_key_config`/`injected_guarded_delegate`の5フィールドを持つが、
+    /// `thumb_solo_special_handling`のhiragana/katakana分岐・非対象キー
+    /// 分岐は`explicit_ime_action`を常に`None`に固定する（無変換/変換
+    /// 専用のADR-153決定1機能であり、静的`shadow_action`を持つhiragana/
+    /// katakanaには意味を持たない）——この不変条件はコンパイラでは強制
+    /// されないため、「対称性のため」等の理由で将来hiragana/katakanaにも
+    /// `explicit_ime_action`が配線されてしまう退行をここで固定する。
+    #[test]
+    fn thumb_solo_special_handling_never_sets_explicit_ime_action_for_hiragana_katakana() {
+        let mut fsm = make_test_fsm();
+        let muhenkan_vk = VkCode(0x1D);
+        let hiragana_vk = VkCode(0x70);
+        let katakana_vk = VkCode(0x71);
+        let unrelated_vk = VkCode(0x99);
+        fsm.set_thumb_key_solo_tap_config(
+            Some(muhenkan_vk),
+            ModeKeyConfig::from_legacy_bools(false, true),
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        fsm.set_muhenkan_solo_tap_ime_action(Some(crate::types::ShadowImeAction::TurnOn));
+        fsm.set_hiragana_katakana_thumb_key_config(Some(hiragana_vk), Some(katakana_vk));
+
+        assert_eq!(
+            fsm.thumb_solo_special_handling(muhenkan_vk)
+                .explicit_ime_action,
+            Some(crate::types::ShadowImeAction::TurnOn),
+            "無変換キー自身にはexplicit_ime_actionが設定されるはず（前提確認）"
+        );
+        assert_eq!(
+            fsm.thumb_solo_special_handling(hiragana_vk)
+                .explicit_ime_action,
+            None,
+            "hiragana分岐はexplicit_ime_actionを常にNoneに固定するはず"
+        );
+        assert_eq!(
+            fsm.thumb_solo_special_handling(katakana_vk)
+                .explicit_ime_action,
+            None,
+            "katakana分岐はexplicit_ime_actionを常にNoneに固定するはず"
+        );
+        assert_eq!(
+            fsm.thumb_solo_special_handling(unrelated_vk)
+                .explicit_ime_action,
+            None,
+            "対象外キーの既定分岐もexplicit_ime_actionを常にNoneに固定するはず"
+        );
+    }
+
     #[test]
     fn explicit_ime_action_fires_on_non_composing_solo_tap() {
         let mut fsm = make_test_fsm();
@@ -3587,6 +3642,52 @@ mod tests {
             "mode_key_config=Passthroughであっても、explicit_action_consumed \
              のときは生キーを再送してはならない（GJIへの二重信号送出、BUG-123 \
              再発防止）。実際: {:?}",
+            resolved.actions
+        );
+    }
+
+    #[test]
+    fn explicit_ime_action_consumed_marker_overrides_composing_passthrough_too() {
+        // /code-review指摘（2026-09-08）: 上記テストは`idle=Passthrough,
+        // composing=Suppress`（`always_suppress=false`）のidle分岐だけを
+        // 固定していた。`ignore_composing_guard=true`
+        // （idle=Passthrough**かつ**composing=Passthrough、「composing中も
+        // 常に生キーを送出する」という別のユーザー設定）で`composing=true`
+        // の場合に、`explicit_action_consumed`の早期returnが本当に
+        // ModeKeyConfigより優先されるか（意図的なトレードオフとして固定
+        // されているか）は未検証だった。この設定・状態でも
+        // `resolved.actions`が空であることを固定する——GJIへの二重送出
+        // 防止（BUG-123）を、ユーザーが選んだ「composing中も常に
+        // Passthrough」設定より優先するのは意図的な設計であり、
+        // `resolve_pending_thumb_as_single`のdoc（`explicit_action_
+        // consumed`早期return直前のコメント）が明記するトレードオフ。
+        let mut fsm = make_test_fsm();
+        let muhenkan_vk = VkCode(0x1D);
+        fsm.set_thumb_key_solo_tap_config(
+            Some(muhenkan_vk),
+            ModeKeyConfig::from_legacy_bools(true, false), // idle=Passthrough, composing=Passthrough
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        fsm.set_muhenkan_solo_tap_ime_action(Some(crate::types::ShadowImeAction::TurnOn));
+        let (resolved, request) = fsm.resolve_pending_thumb_as_single(
+            ScanCode(0x7B),
+            muhenkan_vk,
+            None,
+            false,
+            true, // composing=true → mode_key_config的にはPassthroughが期待される状態
+            true, // explicit_action_consumed
+        );
+        assert_eq!(
+            request, None,
+            "ケース2が既に処理済みなら、ケース1は明示configを二重発火させてはならない"
+        );
+        assert!(
+            resolved.actions.is_empty(),
+            "mode_key_config=Passthrough（composing中も含む）と設定されていても、\
+             explicit_action_consumedのときは生キーを再送してはならない \
+             （GJIへの二重信号送出防止をユーザー設定より優先する意図的な \
+             トレードオフ）。実際: {:?}",
             resolved.actions
         );
     }

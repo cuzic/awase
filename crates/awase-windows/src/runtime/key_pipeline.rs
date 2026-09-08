@@ -27,6 +27,25 @@ enum IntentKind {
     PhysicalImeKey,
 }
 
+/// `explicit_ime_action_target`の判定結果（/code-review指摘、
+/// 2026-09-08——旧`Option<bool>`は`Some(true)`/`Some(false)`/`None`の
+/// 意味がプロース〈doc comment〉でしか説明されておらず、呼び出し側も
+/// `== Some(false)`のような比較で意味を推測させていた。この3値enumは
+/// 各バリアント名自体が意味を表すため、呼び出し側のコードだけで
+/// 判読できる）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExplicitImeActionOutcome {
+    /// 対象キーでない・明示config未設定・M24（専用Fnキー設定済み）・
+    /// 非日本語IME・belief既にONのいずれかに該当し、明示configは
+    /// 一切発火しない（フォールスルーで通常経路に委ねる）。
+    Inactive,
+    /// ケース2（OFF→ON昇格）。実際にIME open軸のactuationを発行する。
+    PromoteToOn,
+    /// ケース3改（"off"方向×既にOFF、2026-09-08再設計・BUG-124対策）。
+    /// 生キーを抑止するだけで、actuateは一切行わない。
+    SuppressOnly,
+}
+
 impl Runtime {
     /// キーイベント処理エントリポイント
     pub(crate) fn process_key_event(&mut self, event: RawKeyEvent) -> CallbackResult {
@@ -1076,12 +1095,7 @@ impl Runtime {
 
     /// ADR-153 決定1: 無変換/変換の明示config（`muhenkan_solo_tap_ime_action`/
     /// `henkan_solo_tap_ime_action`）が、この VK について**現在の状態で**
-    /// ケース2（OFF→ON）・ケース3改（"off"×既にOFF、抑止のみ）のどちらの
-    /// 発火条件を満たすかを、副作用なしに判定する。`vk_code` が対象キー
-    /// でない、明示config未設定、M24（専用Fnキー設定済み）・非日本語IME・
-    /// belief既にONのいずれかに該当すれば `None`。`Some(true)`=ケース2
-    /// （ON方向へ昇格させてよい）、`Some(false)`=ケース3改（"off"方向、
-    /// 既にOFFなので生キーを抑止するだけでactuateはしない）。
+    /// `ExplicitImeActionOutcome`のどれに該当するかを、副作用なしに判定する。
     ///
     /// **ケース3は2026-09-08に一度全面撤回し、同日中に「抑止のみ」の形で
     /// 再設計した**（実機A/B確認2回、`docs/known-bugs.md` BUG-113節・
@@ -1118,15 +1132,21 @@ impl Runtime {
     /// 利用し、KeyDownとKeyUpの間でbeliefが変化しない限り同じ結論になる
     /// ステートレスな再評価で代える。
     #[must_use]
-    fn explicit_ime_action_target(&self, vk_code: awase::types::VkCode) -> Option<bool> {
+    fn explicit_ime_action_target(
+        &self,
+        vk_code: awase::types::VkCode,
+    ) -> ExplicitImeActionOutcome {
         let action = match vk_code {
             vk if vk == crate::vk::VK_NONCONVERT => self.engine.muhenkan_solo_tap_ime_action(),
             vk if vk == crate::vk::VK_CONVERT => self.engine.henkan_solo_tap_ime_action(),
             _ => None,
-        }?;
+        };
+        let Some(action) = action else {
+            return ExplicitImeActionOutcome::Inactive;
+        };
         let current = self.platform_state.ime.effective_open();
         if current || !self.platform_state.ime.belief.is_japanese_ime() {
-            return None;
+            return ExplicitImeActionOutcome::Inactive;
         }
         // M13はケース2/3改（ここ、belief OFF側）では撤廃済み（2026-09-08、
         // 実機検証＋ユーザー協議で確定）。当初は`mode_key_config`が
@@ -1146,13 +1166,17 @@ impl Runtime {
         let dedicated_fn_key_blocks =
             vk_code == crate::vk::VK_NONCONVERT && self.muhenkan_dedicated_fn_key_configured();
         if dedicated_fn_key_blocks {
-            return None;
+            return ExplicitImeActionOutcome::Inactive;
         }
-        Some(match action {
-            ShadowImeAction::TurnOff => false,
-            // belief OFF中の Toggle は常に ON 方向（!false）になるため TurnOn と同じ。
-            ShadowImeAction::TurnOn | ShadowImeAction::Toggle => true,
-        })
+        // `current`はこの時点で常に`false`（関数冒頭で保証済み）。
+        // `ShadowImeAction::resolve`（/code-review指摘で追加した共有
+        // ヘルパー、`awase::types`）に判定を委ね、Toggleの解決規則を
+        // ここで独自に再実装しない。
+        if action.resolve(current) {
+            ExplicitImeActionOutcome::PromoteToOn
+        } else {
+            ExplicitImeActionOutcome::SuppressOnly
+        }
     }
 
     /// Shadow IME トグル処理
@@ -1179,7 +1203,8 @@ impl Runtime {
         // の完全化）。injected イベントはBUG-14と同じ理由で対象外。
         if matches!(event.event_type, KeyEventType::KeyUp)
             && !event.injected
-            && self.explicit_ime_action_target(event.vk_code) == Some(false)
+            && self.explicit_ime_action_target(event.vk_code)
+                == ExplicitImeActionOutcome::SuppressOnly
         {
             event.ime_relevance.explicit_ime_action_consumed = true;
             return false;
@@ -1255,8 +1280,9 @@ impl Runtime {
         // このパイプラインの no-op 早期return に飲まれてしまうため、
         // 合流させず単独で処理する。
         let mut explicit_action_for_pipeline = None;
-        if let Some(target) = self.explicit_ime_action_target(event.vk_code) {
-            if target {
+        match self.explicit_ime_action_target(event.vk_code) {
+            ExplicitImeActionOutcome::Inactive => {}
+            ExplicitImeActionOutcome::PromoteToOn => {
                 // ケース2。実際の`action`（TurnOn/Toggle）が何であれ、既に
                 // ON方向へ解決済みなので、下流の`intent_kind`パイプラインへは
                 // 常に`TurnOn`として渡してよい（`new_val`計算が
@@ -1268,7 +1294,8 @@ impl Runtime {
                     event.vk_code,
                 );
                 explicit_action_for_pipeline = Some(ShadowImeAction::TurnOn);
-            } else {
+            }
+            ExplicitImeActionOutcome::SuppressOnly => {
                 // ケース3改（2026-09-08再設計、BUG-124）: "off"×既にOFF。
                 // **actuateは一切しない**——`apply_ime_open_with_belief`等の
                 // 呼び出しは行わない（旧ケース3が「beliefが変化しなくても
@@ -1339,11 +1366,7 @@ impl Runtime {
         }
 
         let current = self.platform_state.ime.effective_open();
-        let new_val = match action {
-            ShadowImeAction::Toggle => !current,
-            ShadowImeAction::TurnOn => true,
-            ShadowImeAction::TurnOff => false,
-        };
+        let new_val = action.resolve(current);
         let tick_ms = crate::state::TickMs(hook::current_tick_ms());
         // 診断ログ (2026-08-05 "IME OFF 後 FocusChange 無しで Engine が勝手に ON へ
         // 戻る" 再発報告の切り分け用): このステージが last_intent を書き換える唯一
