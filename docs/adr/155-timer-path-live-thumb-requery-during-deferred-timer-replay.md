@@ -2,14 +2,16 @@
 
 ## ステータス
 
-**実装保留（opus-adversarial-consult round1で4件のMust-fixを検出、うち1件
-は「本ADRの中心的な失敗シナリオが到達可能と示せていない」という根本的な
-指摘）。** 起票時点（初版）はコード内の行番号を [ADR-129](129-thumb-timestamp-live-requery-during-gate-drain-replay.md)
+**実装保留（opus-adversarial-consult round1〜round2 で収束）。**
+起票時点（初版）はコード内の行番号を [ADR-129](129-thumb-timestamp-live-requery-during-gate-drain-replay.md)
 「限界」節からそのまま複写していたが、develop 側の変更でその後の複数コミット
 により全てずれていた（初版がどの時点の行番号を指していたにせよ、ADR は
 「次の担当者が再調査せずに済む」ことが存在意義であり、体裁ではなく機能の
 欠落として round1 で Must-fix 扱いにした）。本版はシンボル名ベースの参照に
-改め、以下の技術的な誤りを訂正した上で、**実装着手そのものを保留する**。
+改め、round1で発見された技術的な誤りを訂正した上で、**実装着手そのものを
+保留する**。round2 で「round1 の訂正自体が過剰訂正だった」という新規
+Must-fix 1件（`build_ctx()` は12箇所から呼ばれる共有関数であり、
+drain/replay 側専用ではない）を追加で検出・反映し収束した。
 
 ## 背景（round1 で訂正済みの事実関係）
 

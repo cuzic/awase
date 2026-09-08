@@ -2,12 +2,18 @@
 
 ## ステータス
 
-**将来構想として起票、opus-adversarial-consult round1 で4件の Must-fix
-（うち中核の「3キュー統合」提案は根拠不成立）を検出。当初提案していた
-`DeferredExecutionQueue<T>` への大規模統合は不採用とし、実際に裏付けが
-取れた範囲（`pending_deferred` 1キュー内の2窓口間の見落とし）に絞った
-軽量な対策のみを残す。着手条件2（合流点一覧表の維持）は本版で
-`fix-requires-evidence.md` へ実際に反映済み——「今後の議論」節参照。**
+**将来構想として起票、opus-adversarial-consult round1〜round2 で収束。**
+round1 で検出した4件の Must-fix（うち中核の「3キュー統合」提案は根拠
+不成立）を反映し、当初提案していた `DeferredExecutionQueue<T>` への
+大規模統合は不採用とし、実際に裏付けが取れた範囲（`pending_deferred`
+1キュー内の2窓口間の見落とし）に絞った軽量な対策のみを残した。
+round2 でさらに1件の Must-fix（`fix-requires-evidence.md` へ追加した
+行が「自動的に蓄積される」と書いていたが、実際に走る `.git/hooks/
+pre-push` の正規表現には対象ファイルの一部が含まれておらず、自動化は
+部分的にしか効いていなかった）と Should-fix 4件を検出・反映し収束。
+着手条件2（合流点一覧表の維持）は `fix-requires-evidence.md` へ反映
+済みだが、pre-push 側の regex 更新は未追跡ファイルのためユーザー同意
+待ちのまま——「決定」節参照。
 
 ## 背景（round1 で訂正済みの事実関係）
 
@@ -25,7 +31,7 @@ round1 レビューが実コードと突き合わせた結果、この前提は�
 | `INPUT_DEFER` | gate active 中のキーイベント全体 | `input_defer.rs`, `message_handlers.rs::handle_wm_drain_output_queue` | `OUTPUT_GATE.is_active() \|\| FOCUS_RESYNC.is_gate_active()` |
 | `deferred_engine_timers` | 同じ gate active 中のエンジンタイマー | `runtime/ime_coordinator.rs`（フィールド）、push/replay とも `message_handlers.rs::handle_wm_timer`/`handle_wm_drain_output_queue` | `INPUT_DEFER` と**全く同じ gate 判定・同じ関数群**（別のキューだが解放条件は既に一本化済み） |
 | `pending_deferred` | TSF probe/recovery 中に確定できない VK | `output/tsf_warmup_coord.rs`（データ）、`output/vk_send.rs`（`DeferGate`/`defer_respecting_gate`/`drain_pending_deferred_before_send_if_queue_only` の定義・解放条件本体）、`platform.rs`（`StartProbe` 時の `pending_deferred_len` 追い越し検出） | `has_pending_tsf()`/`raw_recovery_owns_deferred()`/`!pending_deferred.is_empty()` に加え `gate: DeferGate::Enforced/Exempt`（[ADR-123](123-focus-resync-and-probe-defer-queue-composition-race.md)/[ADR-128](128-escape-composition-collateral-deferred-loss.md)、**同一キューに対する独立した2つの窓口**——defer 側 `defer_respecting_gate` と drain 側 `drain_pending_deferred_before_send_if_queue_only`） |
-| `Executor::guard_held`（`ReinjectKey`） | OUTPUT_GUARD 期間中の reinject 1件 | `runtime/executor.rs::drain_deferred` | output guard の解除 |
+| `Executor::guard_held`（`ReinjectKey`） | OUTPUT_GUARD 期間中に OS へ再注入待ちの reinject 1件（出力側） | `runtime/executor.rs::drain_deferred` | `drain_deferred` 到達のたびに `guard_held.take()` して無条件に再試行し、guard をまだ通れなければ再び park する（「guard 解除で解放」ではなく「次の drain 到達ごとに再試行」） |
 | `RuntimeOutbox` | `TIMER_TSF_PROBE` 等のタイマー命令 | `runtime/outbox.rs`、`Runtime::drain_runtime_requests` | `WM_EXECUTE_EFFECTS`/`WM_DRAIN_OUTPUT_QUEUE` 到達時 |
 
 初版の表は `pending_deferred` の所有ファイルを `tsf_warmup_coord.rs` の
@@ -80,9 +86,11 @@ gate`・`drain_pending_deferred_before_send_if_queue_only`）は
 
 ### 不採用（初版の決定1）: `DeferredExecutionQueue<T>` への統合
 
-「訂正1」「訂正2」により、5つのキューは性質が異なり（3つは入力側・
-エンジン前、`pending_deferred` は出力側・TSF 固有の状態機械、
-`RuntimeOutbox` はさらに別種のコマンドキュー）、かつ唯一の実例
+「訂正1」「訂正2」により、5つのキューは性質が異なり（`INPUT_DEFER`/
+`deferred_engine_timers` の2つが入力側・エンジン前、`pending_deferred`
+は出力側・TSF 固有の状態機械、`Executor::guard_held` は出力側の
+OS 再注入待ち、`RuntimeOutbox` はさらに別種のコマンドキュー）、かつ
+唯一の実例
 （ADR-123→ADR-128）は統合では防げない。共通の抽象型を新設するコスト
 （型設計・全呼び出し元の移行・実機ソーク）に見合う効果が無いため、
 大規模統合は不採用とする。
@@ -97,13 +105,23 @@ gate`・`drain_pending_deferred_before_send_if_queue_only`）は
 使えない）、この規則をテキスト走査で表現することはできない。
 
 このリポジトリは**既に `cargo dylint` によるカスタム意味解析 lint を
-2本運用している**（`lints/ime_event_guard`、`lints/observation_source_
-guard`、`.claude/rules/ime-belief-architecture.md` 参照）。「defer/
-replay 経路からのライブグローバル参照を禁止する」という規則は、まさに
-dylint が対象とする種類の意味解析であり、テキスト走査ベースの
-`architecture_guard.rs` の守備範囲ではない。**この規則自体に価値が
-無いわけではないが、実装するなら dylint の3本目として設計すべきで
-あり、本 ADR は決定として採用しない（別 ADR の対象）。**
+3本運用している**（`Cargo.toml` の `[workspace.metadata.dylint]
+libraries` — `lints/no_vk_as_scan`、`lints/ime_event_guard`、
+`lints/observation_source_guard`、`.claude/rules/ime-belief-
+architecture.md` 参照）。「defer/replay 経路からのライブグローバル
+参照を禁止する」という規則は、まさに dylint が対象とする種類の意味
+解析であり、テキスト走査ベースの `architecture_guard.rs` の守備範囲
+ではない。**この規則自体に価値が無いわけではないが、実装するなら
+dylint の4本目として設計すべきであり、本 ADR は決定として採用しない
+（別 ADR の対象）。**
+
+なお、この規則がそのまま実装されても、[ADR-155](155-timer-path-live-thumb-requery-during-deferred-timer-replay.md)
+「訂正3」/「案B」が特定した根本原因（同一物理押下に対して
+`hook.rs::now_timestamp()` が2回別々に呼ばれ、値がずれる）は検出でき
+ない——`now_timestamp()` の2回呼び出しはどちらも「グローバル参照」では
+なく単なる時刻取得であり、本規則の対象外である。パターン2の根治には
+別の規則（同一イベントに対する時刻/状態の二重読み取りを禁止する）が
+要る。「今後の議論」着手条件2 はこの区別を踏まえて読むこと。
 
 ### 採用: `fix-requires-evidence.md` の再発ファミリー表に本ファミリーを追加する（本版で実施済み）
 
@@ -117,10 +135,28 @@ send_if_queue_only`）、`output/tsf_warmup_coord.rs`、
 `handle_wm_timer`、`runtime/ime_coordinator.rs`、
 `runtime/executor.rs::drain_deferred`、`runtime/outbox.rs`。
 
-これにより「今後の議論」節の着手条件1（さらに1〜2件発見される）の
-観測が known-bugs.md 側に自動的に蓄積されるようになる——初版は条件1を
-「観測する仕組みが無いまま」放置していたため、事実上永久に満たされない
-条件だった。
+**round2 で判明した限界（Must-fix）**: 表に行を足すだけでは「自動的に
+蓄積される」ようにはならない。このリポジトリで実際に走る pre-push
+フックは `core.hooksPath` が指す `.git/hooks/pre-push`（未追跡）で
+あり、追跡下の `.githooks/pre-push` とは正規表現が乖離している
+（別途セッションで確認済みの既知の未解決課題）。`.git/hooks/pre-push` の対象 regex を
+確認したところ、今回追加した行が挙げるファイルのうち `output/vk_
+send.rs`・`output/tsf_warmup_coord.rs`（`output/` に一致）・
+`runtime/ime_coordinator.rs`・`runtime/executor.rs`（`runtime/
+(ime_coordinator|...|executor)\.rs` に一致）は**既にカバーされている**
+が、`input_defer.rs`・`runtime/message_handlers.rs`・
+`runtime/outbox.rs` は regex に含まれておらず、**これらのファイルだけ
+を変更する fix は pre-push の自動警告を受けない**。これは
+`fix-requires-evidence.md` の「物理IMEキーのSuppress/Allow配送判断」
+行が既に2度警告している「表には足したがフックの正規表現には入って
+いない」穴を、本 ADR がもう1つ増やしていたことに気づいた記録である。
+
+`.git/hooks/pre-push` は未追跡ファイルであり、regex の追加にはユーザー
+の同意が要る（本 ADR 単独の判断で書き換えない）。したがって現時点の
+着手条件1の観測は **`input_defer.rs`/`message_handlers.rs`/
+`outbox.rs` の3ファイルについては手動での known-bugs.md 記録に依存
+したまま**であり、「今後の議論」着手条件1（さらに1〜2件発見される）は
+この3ファイルに関する限り自動化されていない。
 
 ### 保留（将来、`pending_deferred` で2件目が起きた場合の候補）: 型レベルでの解放条件強制
 
