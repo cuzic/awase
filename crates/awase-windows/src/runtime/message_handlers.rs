@@ -473,6 +473,7 @@ pub(crate) unsafe fn handle_wm_timer(
     wparam: usize,
     msg: &windows::Win32::UI::WindowsAndMessaging::MSG,
 ) {
+    use crate::state::scoped_latch::ScopeCheck;
     use windows::Win32::UI::WindowsAndMessaging::DispatchMessageW;
     let logical_id = app.platform.timer.resolve(wparam);
     match logical_id {
@@ -501,24 +502,64 @@ pub(crate) unsafe fn handle_wm_timer(
             // 増やさない）。まだ settle 中なら黙って捨てず再度先送りする
             // （round 2 premortem R2-4: 黙って失うと「明示訂正が消える」という
             // 本 ADR が解消しようとした症状そのものが再現する）。
-            if let Some(open) = app.take_pending_explicit_reassert() {
-                if app.ime_apply_should_defer() {
-                    app.set_pending_explicit_reassert(open);
-                    app.schedule_settle_retry("explicit_key_reassert still settling");
-                } else if app.can_use_imm32_cross_process() {
-                    // /code-review指摘: settle待機中にフォーカス/プロファイル
-                    // が変わり、再送発火時点では元のBlacklist前提が崩れて
-                    // いる場合がある。ここで再確認せず送ると、現在フォーカス
-                    // 中の無関係なウィンドウ（ImmCross対応アプリ）へ古い
-                    // open値を誤actuateしてしまう。D1条件2の再検証として
-                    // 破棄する。
+            //
+            // opus-adversarial-consult round1 S1/S4指摘: 打鍵時点の6条件
+            // すべてがsettle明けに再検証されるわけではない。武装スコープ
+            // （`ForegroundScope`、`peek_pending_explicit_reassert`が判定）
+            // に加え、状態が変わりうる3条件（プロファイル・delegate所有権・
+            // 半角英数トグル）をここで再検証する。VK/action/kindの3条件は
+            // 武装時点で確定済みのため不要。
+            match app.peek_pending_explicit_reassert() {
+                ScopeCheck::NotArmed => {}
+                ScopeCheck::Expired => {
                     tracing::debug!(
-                        "[explicit-reassert] settle明けの再確認でImmCross対応アプリへ \
-                         フォーカスが変わっていたため破棄 (open={open})"
+                        "[explicit-reassert] settle待機中にフォーカスが別ウィンドウへ \
+                         移ったため破棄(無関係なウィンドウへの誤actuateを防止、S1)"
                     );
-                } else {
-                    let tick_ms = crate::state::TickMs(hook::current_tick_ms());
-                    app.reassert_explicit_physical_key(open, tick_ms);
+                }
+                ScopeCheck::Live(open) => {
+                    if app.ime_apply_should_defer() {
+                        // peek は消費しない（disarm しない限り armed のまま）ので
+                        // 再セット不要——schedule_settle_retry だけで良い。
+                        app.schedule_settle_retry("explicit_key_reassert still settling");
+                    } else {
+                        app.disarm_pending_explicit_reassert();
+                        let delegate_owned = app
+                            .mode_key_delegate_owns_shadow_toggle(crate::vk::VK_DBE_HIRAGANA)
+                            && app.platform_state.ime.effective_open();
+                        if app.can_use_imm32_cross_process() {
+                            // /code-review指摘: settle待機中にフォーカス/プロファイル
+                            // が変わり、再送発火時点では元のBlacklist前提が崩れて
+                            // いる場合がある。ここで再確認せず送ると、現在フォーカス
+                            // 中の無関係なウィンドウ（ImmCross対応アプリ）へ古い
+                            // open値を誤actuateしてしまう。D1条件2の再検証として
+                            // 破棄する。
+                            tracing::debug!(
+                                "[explicit-reassert] settle明けの再確認でImmCross対応アプリへ \
+                                 フォーカスが変わっていたため破棄 (open={open})"
+                            );
+                        } else if delegate_owned {
+                            // S4: settle待機中にconfig reload等でFSM delegateが
+                            // shadow-toggleを所有するように変わっていた場合、
+                            // awase側も送ると二重actuationになる（ADR-141 C1が
+                            // 構造的に防ごうとした状態そのもの）。
+                            tracing::debug!(
+                                "[explicit-reassert] settle明けの再確認でFSM delegateが \
+                                 shadow-toggleを所有していたため破棄 (open={open})"
+                            );
+                        } else if app.platform_state.gate.half_width_alnum.is_toggle_active() {
+                            // S4: settle待機中に半角英数トグルが立った場合、D6が
+                            // 避けようとした「半角英数トグル中にVK_IME_ONを送る」
+                            // 状態になる。
+                            tracing::debug!(
+                                "[explicit-reassert] settle明けの再確認で半角英数トグル中 \
+                                 だったため破棄 (open={open})"
+                            );
+                        } else {
+                            let tick_ms = crate::state::TickMs(hook::current_tick_ms());
+                            app.reassert_explicit_physical_key(open, tick_ms);
+                        }
+                    }
                 }
             }
         }
