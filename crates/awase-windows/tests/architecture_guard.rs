@@ -3592,6 +3592,47 @@ fn kp_stage_shadow_ime_toggle_pairs_key_up_with_explicit_ime_action_marker() {
     );
 }
 
+/// ADR-153 決定1 M13の非対称性回帰ガード（2026-09-08、実機検証＋ユーザー
+/// 協議で確定）。
+///
+/// ケース2/3（`explicit_ime_action_target`、belief OFF側）はM13を撤廃
+/// 済み——`mode_key_config`のPassthrough判定を参照してはならない（実機の
+/// legacy設定`muhenkan_solo_tap_always_suppress=false`が常にPassthrough
+/// へ解決され、明示config機能を恒久的に無効化していたため）。一方
+/// ケース1（`resolve_explicit_ime_action`、コア側・belief ON）はM13を
+/// 維持する——「IME ON中はGJI自身のかな切替に任せたい」という正当な
+/// ユースケースを守るため。この非対称性が崩れていないかを固定する。
+#[test]
+fn explicit_ime_action_case1_keeps_m13_but_case2_3_does_not() {
+    let windows_content = read_crate_file("src/runtime/key_pipeline.rs");
+    let windows_production = production_code_only(&windows_content);
+    let case23_body = extract_fn_body(windows_production, "fn explicit_ime_action_target(");
+    // コード上の実参照（メソッド呼び出し/フィールドアクセス）だけを見る。
+    // doc/inlineコメント中の説明的な言及（「M13は...撤廃済み」等）を
+    // 誤検出しないよう `.is_passthrough(`/`.mode_key_config` の形に限定する。
+    assert!(
+        !case23_body.contains(".is_passthrough(") && !case23_body.contains(".mode_key_config"),
+        "ケース2/3（explicit_ime_action_target、belief OFF側）はM13を \
+         撤廃済みのはず——`mode_key_config`/`is_passthrough`への実コード \
+         参照が復活している場合、実機で「@」が再発した2026-09-08の退行が \
+         再発している可能性がある。"
+    );
+
+    let core_content = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/engine/nicola_fsm.rs"),
+    )
+    .expect("failed to read src/engine/nicola_fsm.rs (awase core crate)");
+    let core_production = production_code_only(&core_content);
+    let case1_body = extract_fn_body(core_production, "fn resolve_explicit_ime_action(");
+    assert!(
+        case1_body.contains("is_passthrough") && case1_body.contains("mode_key_config"),
+        "ケース1（resolve_explicit_ime_action、コア側・belief ON）は \
+         M13（mode_key_config=Passthroughなら発火しない）を維持する \
+         はず——「IME ON中はGJI自身のかな切替に任せたい」ユースケースを \
+         守るための意図的な非対称設計（2026-09-08 ユーザー協議）。"
+    );
+}
+
 #[test]
 fn input_relay_profile_wiring_occurrence_counts_are_pinned() {
     let expectations: &[(&str, usize)] = &[

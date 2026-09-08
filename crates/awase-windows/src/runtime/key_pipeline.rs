@@ -1101,14 +1101,21 @@ impl Runtime {
         if current || !self.platform_state.ime.belief.is_japanese_ime() {
             return None;
         }
-        let mode_key_config = if vk_code == crate::vk::VK_NONCONVERT {
-            self.engine.muhenkan_mode_key_config()
-        } else {
-            self.engine.henkan_mode_key_config()
-        };
-        if mode_key_config.is_passthrough() {
-            return None;
-        }
+        // M13はケース2/3（ここ、belief OFF側）では撤廃済み（2026-09-08、
+        // 実機検証＋ユーザー協議で確定）。当初は`mode_key_config`が
+        // Passthroughの場合に発火を控える設計だったが、実機のユーザー設定
+        // （`muhenkan_solo_tap_always_suppress = false`、ADR-153以前からの
+        // legacy設定）が常にPassthroughへ解決され、明示config機能が
+        // 恒久的に無効化されていた。belief OFF状態でのGJI自身のかな切替
+        // には意味が無い（IMEが閉じているため）ため、ここでのM13撤廃は
+        // 安全と判断した。
+        //
+        // **ケース1（`resolve_explicit_ime_action`〈コア側〉、belief ON）は
+        // M13を維持している**——「IME既にONの状態でGJI自身のひらがな→
+        // カタカナ→半角カナのようなかな切替をGJI側のネイティブ処理に
+        // 任せたい」という正当なユースケースがbelief ON中には実在する
+        // （ユーザー指摘）。ケース2/3とケース1で扱いが非対称になった
+        // 意図的な設計であり、統一漏れではない。
         let dedicated_fn_key_blocks =
             vk_code == crate::vk::VK_NONCONVERT && self.muhenkan_dedicated_fn_key_configured();
         if dedicated_fn_key_blocks {

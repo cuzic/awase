@@ -250,16 +250,6 @@ impl FsmAdapter {
         self.fsm.henkan_solo_tap_ime_action()
     }
 
-    /// ADR-153 決定1 M22対策: `mode_key_muhenkan`/`mode_key_henkan`
-    /// （pre-composingの静的値）を公開する。
-    pub(super) const fn muhenkan_mode_key_config(&self) -> super::fsm_types::ModeKeyConfig {
-        self.fsm.muhenkan_mode_key_config()
-    }
-
-    pub(super) const fn henkan_mode_key_config(&self) -> super::fsm_types::ModeKeyConfig {
-        self.fsm.henkan_mode_key_config()
-    }
-
     pub(super) const fn set_hiragana_katakana_thumb_key_config(
         &mut self,
         hiragana_vk: Option<crate::types::VkCode>,

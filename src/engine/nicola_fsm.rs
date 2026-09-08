@@ -891,22 +891,6 @@ impl NicolaFsm {
         self.henkan_solo_tap_ime_action
     }
 
-    /// ADR-153 決定1 M22対策: `kp_stage_shadow_ime_toggle`（`awase-windows`側）
-    /// からは `NicolaFsm` 内部状態である `mode_key_muhenkan` が直接見えないため、
-    /// `mode_key_config = Passthrough` の場合にケース2/3を発火させない判定
-    /// （M13）に使うgetterを公開する。`for_composing` 適用前の静的値を返す
-    /// （M13の趣旨——composing中かどうかで介入可否を変えない——のため）。
-    #[must_use]
-    pub const fn muhenkan_mode_key_config(&self) -> ModeKeyConfig {
-        self.mode_key_muhenkan
-    }
-
-    /// `muhenkan_mode_key_config` と対称（変換キー用）。
-    #[must_use]
-    pub const fn henkan_mode_key_config(&self) -> ModeKeyConfig {
-        self.mode_key_henkan
-    }
-
     /// Hiragana/Katakana が現在の親指キーなら、その VK を Platform 層から渡す。
     /// core は生 VK 定数を持たず、ここで渡された値との等値比較のみを行う。
     pub const fn set_hiragana_katakana_thumb_key_config(
@@ -2030,6 +2014,24 @@ impl NicolaFsm {
         explicit_action_consumed: bool,
         composing: bool,
     ) -> Option<crate::types::ShadowImeAction> {
+        // M13はケース1（belief ON、この関数）に限り維持する（2026-09-08、
+        // 実機検証を経てユーザーと協議の上で確定）。ケース2/3
+        // （`crates/awase-windows::runtime::key_pipeline::
+        // explicit_ime_action_target`、belief OFF側）は撤廃済み——
+        // `muhenkan_solo_tap_always_suppress = false`（Passthrough相当）が
+        // ADR-153以前からの既定値・legacy設定であるユーザーが大半で、
+        // belief OFF状態でのGJI自身のかな切替には意味が無い（IMEが閉じて
+        // いるため）ため、M13を維持すると明示config機能そのものが常に
+        // 無効化されてしまっていた（実機A/Bで確認、半角状態で「@」再現継続）。
+        //
+        // 一方ケース1（belief ON、無変換単独タップ）は、「IME既にONの状態で
+        // GJI自身のひらがな→カタカナ→半角カナのようなかな切替をGJI側の
+        // ネイティブ処理に任せたい」という正当なユースケースが実在する
+        // （ユーザー指摘）。この場合、無変換に明示config（例:
+        // `"toggle"`でIME OFFへ）を設定しつつ`mode_key_muhenkan`を
+        // Passthroughにしておけば、belief ON中はGJI自身のかな切替に
+        // 委ね、belief OFF→ONの復帰だけ明示configに任せる、という
+        // 非対称な使い分けが可能になる。
         let explicit_action = special.explicit_ime_action.filter(|_| {
             !explicit_action_consumed
                 && !special
