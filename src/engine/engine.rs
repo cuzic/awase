@@ -203,6 +203,32 @@ impl Engine {
         self.adapter.henkan_delegate_to_open_axis()
     }
 
+    /// ADR-153 決定1: 無変換単独タップの IME ON/OFF/Toggle を、GJI/MS-IME
+    /// 自動検出に頼らずユーザーが直接指定する明示config
+    /// （`GeneralConfig::muhenkan_solo_tap_ime_action`）を設定する。
+    pub const fn set_muhenkan_solo_tap_ime_action(&mut self, action: Option<ShadowImeAction>) {
+        self.adapter.set_muhenkan_solo_tap_ime_action(action);
+    }
+
+    /// `set_muhenkan_solo_tap_ime_action` と対称（変換キー用）。
+    pub const fn set_henkan_solo_tap_ime_action(&mut self, action: Option<ShadowImeAction>) {
+        self.adapter.set_henkan_solo_tap_ime_action(action);
+    }
+
+    /// `crates/awase-windows::runtime::key_pipeline::kp_stage_shadow_ime_toggle`
+    /// （ケース2/3、belief OFF側）がGJI/MS-IME自動検出の成否に関わらず
+    /// 明示config自体を読むためのgetter。
+    #[must_use]
+    pub const fn muhenkan_solo_tap_ime_action(&self) -> Option<ShadowImeAction> {
+        self.adapter.muhenkan_solo_tap_ime_action()
+    }
+
+    /// `muhenkan_solo_tap_ime_action` と対称（変換キー用）。
+    #[must_use]
+    pub const fn henkan_solo_tap_ime_action(&self) -> Option<ShadowImeAction> {
+        self.adapter.henkan_solo_tap_ime_action()
+    }
+
     /// Hiragana/Katakana が現在の親指キーなら Platform 層から解決済み VK を渡す。
     pub const fn set_hiragana_katakana_thumb_key_config(
         &mut self,

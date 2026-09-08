@@ -175,6 +175,7 @@ impl InputTracker {
             injected: event.injected,
             is_ime_control: event.ime_relevance.is_ime_control,
             modifier_key: event.modifier_key,
+            explicit_ime_action_consumed: event.ime_relevance.explicit_ime_action_consumed,
         }
     }
 

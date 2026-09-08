@@ -1149,6 +1149,14 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         // 経路）を経由しなくなり、executor.rs の ImmCross async path と同じ
         // run_open_chain_async へ委譲するようになったため
         // （`async_imm_cross_actuation_goes_through_the_single_chain_entry` 参照）。
+        //
+        // **2026-09-08（ADR-153決定1実装）**: 表 #12（`key_pipeline.rs::
+        // kp_stage_shadow_ime_toggle`のケース3、無変換/変換単独タップの
+        // 明示config`"off"`×belief既にOFF）が新規追加され 2→3。
+        //
+        // **2026-09-08（同日、ケース3撤回）**: 実機A/B実験で「@」再現の
+        // 直接原因と確定し撤回したため、表 #12 の入口が消えて 3→2 に戻った
+        // （`docs/known-bugs.md` BUG-113節・`docs/experiments.md`エントリ25）。
         (".apply_ime_open_with_belief(", 2),
         // 外部 2（executor.rs engine decision / mod.rs force_on_and_correct_romaji、
         // 表 #1/#6）+ apply_ime_open_with_belief 内部からの委譲 1 = 3。
@@ -3500,6 +3508,147 @@ fn strip_any_test_module(content: &str) -> &str {
         from = idx + MARKER.len();
     }
     content
+}
+
+/// ADR-153 決定1 M15対策: 明示config（`muhenkan_solo_tap_ime_action`/
+/// `henkan_solo_tap_ime_action`）設定済みキーには、GJI/MS-IME自動検出由来の
+/// delegate/shadow_overrideをarmedにしない。書き込み点は2系統4箇所
+/// （GJI側=`gji_charset_autodetect.rs`、MS-IME側=`message_handlers.rs`）——
+/// ADR-119の教訓「gateを1箇所に置いて満足しない」のとおり、両ファイルに
+/// 同じ無効化ロジックが存在することを固定する。
+#[test]
+fn explicit_ime_action_masks_autodetect_delegate_in_both_gji_and_msime() {
+    // `_solo_tap_ime_action()`（明示config読み取り）の出現数と、実際に
+    // マスキングを行う共有ヘルパー `mask_auto_detect_for_explicit_config`
+    // （/code-review指摘、PR #185で4+箇所の重複if/else・filter実装を
+    // 統一）の呼び出し数の両方を固定する——前者だけだと「値は読んでいるが
+    // マスキングには使っていない」退行を見逃す。
+    let expectations: &[(&str, usize, usize)] = &[
+        ("src/gji_charset_autodetect.rs", 2, 2),
+        ("src/runtime/message_handlers.rs", 4, 4),
+    ];
+    for (path, expected_reads, expected_masks) in expectations {
+        let content = read_crate_file(path);
+        let production = strip_any_test_module(&content);
+        let read_count = production.matches("_solo_tap_ime_action()").count();
+        assert!(
+            read_count >= *expected_reads,
+            "{path} 内で `*_solo_tap_ime_action()`（明示config読み取り）の本番 \
+             コードでの出現数が想定({expected_reads}以上)を下回ります \
+             (実際: {read_count})。ADR-153決定1 M15対策（GJI/MS-IME自動検出由来の\
+             delegate/shadow_overrideを明示config設定済みキーではarmedに \
+             しない）が欠落していないか確認すること。"
+        );
+        let mask_count = production
+            .matches("mask_auto_detect_for_explicit_config(")
+            .count();
+        assert!(
+            mask_count >= *expected_masks,
+            "{path} 内で `mask_auto_detect_for_explicit_config(`（M15マスキング \
+             共有ヘルパー）の呼び出し数が想定({expected_masks}以上)を下回ります \
+             (実際: {mask_count})。GJI側・MS-IME側の両方、かつdelegate/\
+             shadow_overrideの両方に適用する必要がある（ADR-119の教訓 \
+             「gateを1箇所に置いて満足しない」）。"
+        );
+    }
+}
+
+/// ADR-153 決定1「ケース3」（"off"×belief既にOFFの強制actuate）再導入
+/// 防止ガード（2026-09-08、実機A/B実験で「@」再現の直接原因と確定、
+/// `docs/known-bugs.md` BUG-113節・`docs/experiments.md`エントリ25参照）。
+///
+/// ケース3は`apply_ime_open_with_belief(order, None, belief)`の
+/// `shadow_on: None`バイパスで「beliefが変化しなくても毎回強制
+/// actuateする」設計そのものが「単発のIME制御SendInputが1回飛ぶだけで
+/// 『@』を誘発するのに十分」という機序の十分条件を毎回満たしてしまう
+/// ことが確定し、撤回した。撤回に伴い、対応するKeyUpのM19ペアリング
+/// 早期分岐（`explicit_ime_action_target(...) == Some(false)`を見る
+/// KeyUp特別扱い）も不要になり削除済み。このガードは、ケース3固有の
+/// アクチュエーション理由タグ（`"explicit_ime_action_case3_off"`）が
+/// 再導入されていないか、また`explicit_ime_action_target`が
+/// `Option<bool>`（`Some(false)`=ケース3）に巻き戻されていないかを固定
+/// する——「off方向の強制actuateが欲しい」という要望が再浮上したときに、
+/// 実機実験で確定済みの失敗機序を読まずに同じ設計へ戻ることを防ぐ。
+#[test]
+fn kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate() {
+    let content = read_crate_file("src/runtime/key_pipeline.rs");
+    let production = production_code_only(&content);
+
+    assert!(
+        !production.contains("explicit_ime_action_case3_off"),
+        "ADR-153決定1のケース3（\"off\"×belief既にOFFの強制actuate）専用の \
+         アクチュエーション理由タグ`explicit_ime_action_case3_off`が \
+         再導入されています。2026-09-08に実機A/B実験で「@」再現の直接 \
+         原因と確定し撤回済みです——再導入前に`docs/known-bugs.md` \
+         BUG-113節と`docs/experiments.md`エントリ25を必ず読んでください。"
+    );
+
+    let signature_idx = production
+        .find("fn explicit_ime_action_target(")
+        .expect("fn explicit_ime_action_target( not found in key_pipeline.rs");
+    let signature_end = production[signature_idx..]
+        .find('{')
+        .map(|i| signature_idx + i)
+        .expect("explicit_ime_action_target signature must have a body");
+    let signature = &production[signature_idx..signature_end];
+    assert!(
+        signature.contains("-> bool") && !signature.contains("Option<bool>"),
+        "`explicit_ime_action_target`は`Option<bool>`ではなく`bool`を \
+         返すはずです（ケース3撤回によりSome(false)というバリアントが \
+         意味を持たなくなったため）。`Option<bool>`に戻っている場合、 \
+         ケース3（`Some(false)`）が復活していないか確認してください。"
+    );
+
+    let body = extract_fn_body(production, "fn kp_stage_shadow_ime_toggle(");
+    let target_calls = body.matches("explicit_ime_action_target(").count();
+    assert_eq!(
+        target_calls, 1,
+        "kp_stage_shadow_ime_toggle から `explicit_ime_action_target(` を \
+         呼ぶのはKeyDownケース2判定の1箇所のみのはず（実際の呼び出し数: \
+         {target_calls}）。2箇所以上ある場合、撤回したはずのKeyUp M19 \
+         ペアリング分岐（ケース3専用）が復活しているおそれがあります。"
+    );
+}
+
+/// ADR-153 決定1 M13の非対称性回帰ガード（2026-09-08、実機検証＋ユーザー
+/// 協議で確定）。
+///
+/// ケース2/3（`explicit_ime_action_target`、belief OFF側）はM13を撤廃
+/// 済み——`mode_key_config`のPassthrough判定を参照してはならない（実機の
+/// legacy設定`muhenkan_solo_tap_always_suppress=false`が常にPassthrough
+/// へ解決され、明示config機能を恒久的に無効化していたため）。一方
+/// ケース1（`resolve_explicit_ime_action`、コア側・belief ON）はM13を
+/// 維持する——「IME ON中はGJI自身のかな切替に任せたい」という正当な
+/// ユースケースを守るため。この非対称性が崩れていないかを固定する。
+#[test]
+fn explicit_ime_action_case1_keeps_m13_but_case2_3_does_not() {
+    let windows_content = read_crate_file("src/runtime/key_pipeline.rs");
+    let windows_production = production_code_only(&windows_content);
+    let case23_body = extract_fn_body(windows_production, "fn explicit_ime_action_target(");
+    // コード上の実参照（メソッド呼び出し/フィールドアクセス）だけを見る。
+    // doc/inlineコメント中の説明的な言及（「M13は...撤廃済み」等）を
+    // 誤検出しないよう `.is_passthrough(`/`.mode_key_config` の形に限定する。
+    assert!(
+        !case23_body.contains(".is_passthrough(") && !case23_body.contains(".mode_key_config"),
+        "ケース2/3（explicit_ime_action_target、belief OFF側）はM13を \
+         撤廃済みのはず——`mode_key_config`/`is_passthrough`への実コード \
+         参照が復活している場合、実機で「@」が再発した2026-09-08の退行が \
+         再発している可能性がある。"
+    );
+
+    let core_content = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/engine/nicola_fsm.rs"),
+    )
+    .expect("failed to read src/engine/nicola_fsm.rs (awase core crate)");
+    let core_production = production_code_only(&core_content);
+    let case1_body = extract_fn_body(core_production, "fn resolve_explicit_ime_action(");
+    assert!(
+        case1_body.contains("is_passthrough") && case1_body.contains("mode_key_config"),
+        "ケース1（resolve_explicit_ime_action、コア側・belief ON）は \
+         M13（mode_key_config=Passthroughなら発火しない）を維持する \
+         はず——「IME ON中はGJI自身のかな切替に任せたい」ユースケースを \
+         守るための意図的な非対称設計（2026-09-08 ユーザー協議）。"
+    );
 }
 
 #[test]

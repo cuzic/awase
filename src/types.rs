@@ -173,6 +173,21 @@ pub struct ImeRelevance {
     /// actuation を誘発しうる（読み取りと書き込みの時間的近接、実機A/Bで
     /// 「@」の独立した十分条件と確定済み、docs/known-bugs.md BUG-113参照）。
     pub is_ime_mode_key: bool,
+    /// ADR-153 決定1: 無変換/変換単独タップの明示config
+    /// (`muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`) による
+    /// IME open 軸 actuation を、`kp_stage_shadow_ime_toggle`
+    /// （プラットフォーム層）が**この物理KeyDown 1回分について既に発行済み**
+    /// であることを示すマーカー。2つの独立した消費者を持つ:
+    /// - ケース2（belief OFF→ON昇格）で立てた場合: `PendingThumbData`
+    ///   経由で運ばれ、100ms後の `resolve_pending_thumb_as_single`
+    ///   （ケース1）が同じ打鍵を二重に actuate しないためのB13/B14対策。
+    /// - ケース3（belief既にOFF×"off"、エンジンが非活性で`NicolaFsm`に
+    ///   到達しない）で立てた場合: `transport.rs::plan` が同じ打鍵の生キー
+    ///   配送をSuppressする判定に使う（M19対策）。
+    ///
+    /// 常にこのイベント1回限りの値（次のKeyDownでは
+    /// `RawKeyEvent::ime_relevance` が新規に構築され直す）。
+    pub explicit_ime_action_consumed: bool,
 }
 
 // ── キーイベント ──

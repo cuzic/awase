@@ -416,6 +416,55 @@ pub struct GeneralConfig {
     /// （`false`のまま矛盾を検出した場合は`tracing::warn!`で対処法を案内する）。
     #[serde(default)]
     pub gji_thumb_key_ime_toggle: bool,
+    /// ADR-153 決定1: 無変換単独タップ確定時に、素の `VK_NONCONVERT` の代わりに
+    /// awase 自身が直接 IME を ON/OFF/Toggle する（隠し設定、上級者向け）。
+    /// `None`（既定）なら無効で、従来どおり GJI/MS-IME 自動検出
+    /// （`muhenkan_delegate_to_open_axis`）または `ModeKeyConfig` の
+    /// 抑制/パススルー判定に委ねる。
+    ///
+    /// GJI 自身が無変換/変換に何らかの IME 制御コマンドを割り当てていると、
+    /// GJI の TSF キー横取り（`ITfKeyEventSink`）が発火し「@」等の疑似文字が
+    /// 挿入されうる（BUG-113 残置症状、実機3段階検証で確定）。この設定を使うと
+    /// 生の `VK_NONCONVERT`/`VK_CONVERT` を一切 GJI に渡さなくなり、GJI 側の
+    /// キーマップ設定に依存しなくなる。
+    ///
+    /// `Toggle` は belief（awase が推定する現在の IME 状態）依存であり、
+    /// TSF ネイティブアプリ（Windows Terminal 等、`FeedbackPolicy::Blind`）
+    /// では実際の IME 状態を読み戻せないため、belief がズレていると逆方向へ
+    /// 切り替わりうる（`gji_thumb_key_ime_toggle` の doc と同じ注意）。
+    ///
+    /// `kp_stage_shadow_ime_toggle` の intent 昇格（ケース2/3）は
+    /// `is_japanese_ime()` を要求するが、この belief はスリープ復帰/フォーカス
+    /// 変更直後の grace 期間中に一時的に `false` を誤答しうる既知の弱点を
+    /// 持つ——この明示config もこの窓では一時的に無反応になりうる
+    /// （既存の自動検出経路と共通の制約、新規リスクではない）。
+    ///
+    /// **既知の問題と撤回（2026-09-08、dragonflyg4実機A/B切り分け実験で
+    /// 機序確定、`docs/known-bugs.md` BUG-113節参照）**: `"on"`（belief
+    /// OFF→ON昇格、ケース2）は実機で「@」再現なしを確認済みで、現在も
+    /// 有効。一方 `"off"`（belief既にOFFのまま維持、旧ケース3）は実機で
+    /// 「@」が毎回再現することを確認した——原因は、ケース3が
+    /// `shadow_on: None` バイパスで意図的にno-op保護を外し「beliefが
+    /// 変化しなくても毎回強制actuateする」設計そのものにあった（生キーの
+    /// Suppress自体は正しく動作していた）。実機A/B実験で「生キーを
+    /// Suppressし、かつ何も送らなければ『@』は完全に消える」ことを
+    /// 確認しており、「単発のIME制御SendInputが1回でも飛べば『@』を
+    /// 誘発するのに十分」というのが確定した機序——ケース3はこの十分
+    /// 条件を毎回満たしてしまっていた。**この"off"×belief既にOFFの
+    /// 強制actuate（ケース3）は2026-09-08に撤回済み**
+    /// （`crates/awase-windows/src/runtime/key_pipeline.rs::
+    /// explicit_ime_action_target`）——現在この設定値は、belief既に
+    /// OFFの状態では単に無反応（フォールスルー）になる。belief ON中の
+    /// 実際のON→OFF遷移（ケース1、`resolve_explicit_ime_action`〈コア
+    /// 側〉）はこの撤回の対象外で、`"off"`は引き続きそちらでは有効な値。
+    /// 再度belief OFF側の強制actuateを検討する場合は、上記実機実験の
+    /// 結論（`docs/experiments.md`エントリ25）を必ず読むこと——同じ
+    /// 設計に戻すと同じ症状が再発する。
+    #[serde(default)]
+    pub muhenkan_solo_tap_ime_action: Option<ShadowImeActionConfig>,
+    /// `muhenkan_solo_tap_ime_action` と対称（変換キー用）。
+    #[serde(default)]
+    pub henkan_solo_tap_ime_action: Option<ShadowImeActionConfig>,
 }
 
 impl Default for GeneralConfig {
@@ -456,6 +505,34 @@ impl Default for GeneralConfig {
             enter_thumb_shift_literal: true,
             swallow_alt_kana_input_method_switch: true,
             gji_thumb_key_ime_toggle: false,
+            muhenkan_solo_tap_ime_action: None,
+            henkan_solo_tap_ime_action: None,
+        }
+    }
+}
+
+/// `muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action` のTOML表現
+/// （`"on"`/`"off"`/`"toggle"`、ADR-153 決定1）。
+///
+/// `awase::types::ShadowImeAction` という**プラットフォーム非依存コア型**への
+/// 変換は、ここ（config 側の薄い層）に置く——`ADR-019` の層境界を守るため、
+/// core 型に serde を直接付けない（`deserialize_keymap_to` と同じ様式）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShadowImeActionConfig {
+    On,
+    Off,
+    Toggle,
+}
+
+impl ShadowImeActionConfig {
+    /// `awase::types::ShadowImeAction`（core 型）へ変換する。
+    #[must_use]
+    pub const fn to_core(self) -> crate::types::ShadowImeAction {
+        match self {
+            Self::On => crate::types::ShadowImeAction::TurnOn,
+            Self::Off => crate::types::ShadowImeAction::TurnOff,
+            Self::Toggle => crate::types::ShadowImeAction::Toggle,
         }
     }
 }

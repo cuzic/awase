@@ -841,10 +841,19 @@ pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
     let delegate_assignment =
         crate::msime_key_assignment::read_delegate_to_open_axis_assignment_from_registry();
     tracing::info!("[msime-keyassign] delegate-to-open-axis assignment: {delegate_assignment:?}");
+    // ADR-153 決定1 M15対策: 明示config設定済みキーにはレジストリ由来の
+    // delegateもarmedにしない（下記shadow_overrideと同じ理由）。
+    let muhenkan_delegate = super::mask_auto_detect_for_explicit_config(
+        delegate_assignment.muhenkan,
+        app.muhenkan_solo_tap_ime_action(),
+    );
+    let henkan_delegate = super::mask_auto_detect_for_explicit_config(
+        delegate_assignment.henkan,
+        app.henkan_solo_tap_ime_action(),
+    );
     app.engine
-        .set_muhenkan_delegate_to_open_axis(delegate_assignment.muhenkan);
-    app.engine
-        .set_henkan_delegate_to_open_axis(delegate_assignment.henkan);
+        .set_muhenkan_delegate_to_open_axis(muhenkan_delegate);
+    app.engine.set_henkan_delegate_to_open_axis(henkan_delegate);
     // ADR-141（C2対策）: delegateと同じ値をshadow_action overrideにも
     // 反映する。GJI側の`sync_gji_charset_autodetect`と同じ共有フィールド
     // （`Runtime::henkan_shadow_override`/`muhenkan_shadow_override`）に
@@ -867,14 +876,25 @@ pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
         crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_CONVERT);
     let muhenkan_is_thumb_key =
         crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_NONCONVERT);
-    app.set_thumb_key_shadow_overrides(
+    // ADR-153 決定1 M15対策: ユーザーが明示config
+    // （`henkan_solo_tap_ime_action`/`muhenkan_solo_tap_ime_action`）を
+    // 設定しているキーについては、レジストリ由来のdelegate/shadow_override
+    // をarmedにしない——GJI側（`gji_charset_autodetect.rs`）と同じ理由
+    // （ADR-119の教訓「gateを1箇所に置いて満足しない」、書き込み点は
+    // 2系統4箇所のうちここが2箇所目）。
+    let henkan_override = super::mask_auto_detect_for_explicit_config(
         henkan_is_thumb_key
             .then_some(delegate_assignment.henkan)
             .flatten(),
+        app.henkan_solo_tap_ime_action(),
+    );
+    let muhenkan_override = super::mask_auto_detect_for_explicit_config(
         muhenkan_is_thumb_key
             .then_some(delegate_assignment.muhenkan)
             .flatten(),
+        app.muhenkan_solo_tap_ime_action(),
     );
+    app.set_thumb_key_shadow_overrides(henkan_override, muhenkan_override);
 }
 
 /// IME 種別を観測値から pull し、warmup 戦略切替 + MS-IME 割当てチェックに反映する。

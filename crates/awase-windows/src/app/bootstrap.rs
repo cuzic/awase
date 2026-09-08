@@ -652,6 +652,20 @@ pub(super) fn initialize_app(
                 || config.general.right_thumb_key == "VK_SPACE",
         );
         app.set_gji_thumb_key_ime_toggle_opt_in(config.general.gji_thumb_key_ime_toggle);
+        // ADR-153 決定1: ユーザー明示config。`apply_config`（reload時）と
+        // 同じ配線を起動時にも行う。
+        app.set_muhenkan_solo_tap_ime_action(
+            config
+                .general
+                .muhenkan_solo_tap_ime_action
+                .map(awase::config::ShadowImeActionConfig::to_core),
+        );
+        app.set_henkan_solo_tap_ime_action(
+            config
+                .general
+                .henkan_solo_tap_ime_action
+                .map(awase::config::ShadowImeActionConfig::to_core),
+        );
     });
     RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
     DUMP_TRIGGER.set(crate::journal::DumpTriggerTracker::new());

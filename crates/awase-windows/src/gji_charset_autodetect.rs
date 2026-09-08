@@ -756,6 +756,26 @@ mod windows_impl {
             &mut off,
             &mut toggle,
         );
+        // ADR-153 決定1 M15対策: ユーザーが明示config
+        // （`henkan_solo_tap_ime_action`/`muhenkan_solo_tap_ime_action`）を
+        // 設定しているキーについては、GJI自動検出由来のdelegate/
+        // shadow_overrideの両方をarmedにしない——`kp_stage_shadow_ime_toggle`
+        // のケース2/3（belief OFF側）とcase1（belief ON側、
+        // `resolve_pending_thumb_as_single`）が明示configを直接扱うため、
+        // 自動検出由来の値が同時にarmedのままだと、明示config対象キーの
+        // 「@」対策（生キーを一切GJIに渡さない）が自動検出結果に依存して
+        // しまう（本ADRの動機そのものを崩す）。書き込み点は2系統4箇所
+        // （GJI側=ここ、MS-IME側=`message_handlers.rs::
+        // sync_ime_toggle_auto_detect`）、両方に同じ無効化を適用する
+        // （ADR-119の教訓「gateを1箇所に置いて満足しない」）。
+        let henkan_delegate = crate::runtime::mask_auto_detect_for_explicit_config(
+            henkan_delegate,
+            app.henkan_solo_tap_ime_action(),
+        );
+        let muhenkan_delegate = crate::runtime::mask_auto_detect_for_explicit_config(
+            muhenkan_delegate,
+            app.muhenkan_solo_tap_ime_action(),
+        );
         app.set_gji_thumb_key_delegate_to_open_axis(henkan_delegate, muhenkan_delegate);
         // ADR-141（C2対策）: delegateと同じ値をshadow_action overrideにも
         // 常時反映する。非親指キー（delegateがNone）の場合は
@@ -765,7 +785,9 @@ mod windows_impl {
         // 同じ値が登録され、`&& effective_open()`ゲート
         // （`mode_key_delegate_owns_shadow_toggle`）が実行時に排他的に
         // 切り替える——belief ON中はdelegateが、belief OFF中は
-        // shadow-toggle（belief追随のみ）が処理する。
+        // shadow-toggle（belief追随のみ）が処理する。上記M15対策の
+        // 上書き後の値をそのまま使うため、明示config対象キーはここでも
+        // Noneのまま。
         app.set_thumb_key_shadow_overrides(henkan_delegate, muhenkan_delegate);
 
         // BUG-115 Phase 2/3: Hiragana/Katakana は actuation-auto には載せない。
