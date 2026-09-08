@@ -1,143 +1,190 @@
-# ADR-155: `deferred_engine_timers` の replay 時にも、親指キー押下タイムスタンプを defer 時点でスナップショットする（ADR-129 が未着手のまま残したタイマー経路）
+# ADR-155: タイマー経路の親指タイムスタンプ問題（ADR-129 が未着手のまま残した部分）— 実装保留、失敗シナリオの到達可能性が未確立
 
 ## ステータス
 
-**起票（未レビュー、opus-adversarial-consult 未実施）。** [ADR-129](129-thumb-timestamp-live-requery-during-gate-drain-replay.md)
-「未決定事項2」「限界」節がスコープ外として切り出した残りの半分を引き取る。
-ADR-129 のキーイベント経路の修正（`RawKeyEvent` への capture-time スナップ
-ショット追加）とは実装が独立しており、本 ADR の着手はそちらの完了を
-待たない。
+**実装保留（opus-adversarial-consult round1で4件のMust-fixを検出、うち1件
+は「本ADRの中心的な失敗シナリオが到達可能と示せていない」という根本的な
+指摘）。** 起票時点（初版）はコード内の行番号を [ADR-129](129-thumb-timestamp-live-requery-during-gate-drain-replay.md)
+「限界」節からそのまま複写していたが、develop 側の変更でその後の複数コミット
+により全てずれていた（初版がどの時点の行番号を指していたにせよ、ADR は
+「次の担当者が再調査せずに済む」ことが存在意義であり、体裁ではなく機能の
+欠落として round1 で Must-fix 扱いにした）。本版はシンボル名ベースの参照に
+改め、以下の技術的な誤りを訂正した上で、**実装着手そのものを保留する**。
 
-## 背景
+## 背景（round1 で訂正済みの事実関係）
 
-ADR-129 は `runtime/key_pipeline.rs:105` の
+ADR-129 は `runtime/key_pipeline.rs::kp_run_inner` が呼ぶ
 `hook::thumb_down_timestamps()`（`WH_KEYBOARD_LL` フックが実時間で更新する
 グローバル `AtomicU64` を、呼ばれた瞬間の値でライブに読む関数）が、
 「イベントのライブ配送」と「`OUTPUT_GATE` active 中に `INPUT_DEFER` へ
-退避されたイベントの drain replay」の両方から同一コードパスで呼ばれる
-ため、drain replay 時に「イベント発生時点の値」ではなく「replay を実行
-している"今"の値」を読んでしまう、という欠陥を確定させた。
+退避されたイベントの drain replay」の両方から同一コードパスで呼ばれるため、
+drain replay 時に「イベント発生時点の値」ではなく「replay を実行している
+"今"の値」を読んでしまう、という欠陥を確定させた。この修正（`RawKeyEvent`
+に `left_thumb_down_snapshot`/`right_thumb_down_snapshot` を追加し、
+`hook.rs::build_raw_key_event` の capture 時点で埋め込む）自体は**未実装**
+（`grep -rn thumb_down_snapshot` はコード中に1件もヒットしない、2026-09-08
+時点）。
 
-この修正（`RawKeyEvent` に `left_thumb_down_snapshot`/
-`right_thumb_down_snapshot` を追加し、`hook.rs::build_raw_key_event` の
-capture 時点で埋め込む）は **キーイベント経路のみ** を閉じる。ADR-129
-「限界」節が明記するとおり、`NicolaFsm::phys`（`nicola_fsm.rs:194`）は
-`on_event`（キーイベント経由）と `on_timeout`（タイマー経由）の**両方**で
-上書きされる共有フィールドであり、タイマー経由の書き込みは依然として
-`hook::thumb_down_timestamps()` のライブクエリ（`runtime/mod.rs:294`
-`build_ctx()`）に依存したまま残る。
+### 訂正1: `thumb_down_timestamps()` の呼び出し箇所は2つではなく3つ
 
-### タイマー経路が壊れる具体的な条件（ADR-129 から引き継ぐ、未観測だがコードから特定済み）
+初版は「gate 非 active 時の直接発火は `build_ctx()` を経由する」と書いて
+いたが誤り。`Runtime::build_ctx()`（`runtime/mod.rs`）を実際に呼んでいるのは
+**drain/replay 側**（`message_handlers.rs::handle_wm_drain_output_queue` が
+`deferred_engine_timers` の replay ループの**前に1回だけ** `let ctx =
+app.build_ctx();` を呼び、全エントリで使い回す）だけである。**gate 非
+active 時にタイマーが直接発火する経路**（`handle_wm_timer` の
+`Some(timer_id) =>` 分岐、gate 判定を通過した場合）は `build_ctx()` を
+呼ばず、`read_os_modifiers()` → Alt なりすまし補正 → `hook::
+thumb_down_timestamps()` → `super::build_input_context(...)` という
+**同じ処理を手書きで複製**している。したがって `thumb_down_timestamps()`
+の呼び出し箇所は現に3つ: `runtime/mod.rs::build_ctx`、
+`message_handlers.rs`（タイマー直接発火経路の複製コード）、
+`key_pipeline.rs::kp_run_inner`（キーイベント経路）。
 
-`message_handlers.rs:611` のタイマーハンドラ本体は、`OUTPUT_GATE.is_active()`
-（gate active）中は自身を `deferred_engine_timers`（`message_handlers.rs:
-600-601` で push）へ退避して早期 return するため、**gate 非 active 時に
-直接発火するケースは delta ≈ 0 で無害**。危険なのは gate 解除後、
-`:1403` で `std::mem::take` された `deferred_engine_timers` が `:1407` で
-`app.build_ctx()`（`runtime/mod.rs:294`、ライブの `hook::
-thumb_down_timestamps()` を含む）を使って一括 replay されるケースのみ。
+これは「未決着論点3」（`architecture_guard.rs` の許可箇所を `build_ctx`
+1箇所に縮小できるか）の前提を崩す——**現状のコード構造のままでは縮小
+できない**。縮小するには、まずタイマー直接発火経路の手書き複製を
+`build_ctx()` の呼び出しに置き換える独立したリファクタが要る。
 
-`resolve_char_and_thumb_as_separate_solos`（`nicola_fsm.rs:2459-2467` の
-doc comment が「タイムアウト経由では thumb はまだ物理的に押されたままな
-ので明示的に消費済みにする。怠ると `active_thumb_side()` が同じ物理押下を
-未消費とみなし二重に使ってしまう」と明言）が、この gate 解除後 replay 時に
-`phys` として「タイマーが本来対象としていた押下」ではなく「replay 実行
-時点でたまたま押されている別の押下」を受け取ると、`right_thumb_consumed`/
-`left_thumb_consumed` に無関係な押下が刻印される。
+### 訂正2: gate 条件は `OUTPUT_GATE` だけではない
 
-**症状はキーイベント経路（ADR-129 本編、「う」→「ゔ」のように余計な同時
-打鍵が成立する）の鏡像になる**: タイマー経路では逆に、未消費の新しい押下が
-「消費済み」と誤って刻印され、**本来成立すべき同時打鍵が失われる**（次に
-来る文字キーが親指シフト面ではなく無シフト面で出てしまう）。
+`handle_wm_timer` がエンジンタイマーを `deferred_engine_timers` へ退避する
+条件は `crate::OUTPUT_GATE.is_active() || crate::focus_resync::
+FOCUS_RESYNC.is_gate_active()`（BUG-77 コードレビュー追補で `FOCUS_RESYNC`
+が追加された）。初版は `OUTPUT_GATE` のみを前提に書いていた。
 
-### capture 点は既に存在する
+### 訂正3: replay 側の `InputContext` はループの外で1回だけ構築される
 
-タイマー側には capture 点が無いわけではない。`PendingThumbData` は対象と
-なる押下の `timestamp` を既に保持しており、`timeout_pending_thumb` が
-これを使っている。ADR-129 が却下した代替案(d)（`InputContext` から親指
-タイムスタンプを削除し、エンジン自身が親指キーの ↓/↑ から状態を導出する）
-は、`deliver_key_event` の5つの早期 return（`keymap_latch`/`Hook(Nested)`/
-`FocusKind::NonText`/`consume_keymap_match`/`consume_post_bypass`）のいずれかに
-親指キーの ↑ が握り潰されると「エンジンが親指を押されっぱなしと信じ続ける
-（無期限のスティッキー親指）」という、現状のバグより遥かに重い regression
-を生むため却下されている。この却下理由は本 ADR にもそのまま引き継ぐ——
-「エンジン側で導出する」方向は再提案しない。
+`handle_wm_drain_output_queue` の replay ループは `let ctx =
+app.build_ctx();` をループの**外**で1回だけ呼び、`deferred_engine_timers`
+の全エントリに同じ `ctx` を使い回す（`for (timer_id, os_id) in deferred {
+... app.engine.on_timeout(timer_id, &ctx) ... }`）。「エントリごとに defer
+時点のスナップショットを使う」という決定を実装するには、この `ctx` 単一
+構築という既存構造自体を変える必要がある——本 ADR の決定節はこの点を
+反映していなかった。
+
+## 中心的な問題: 本 ADR が想定する失敗シナリオは、到達可能性が実証されていない
+
+`handle_wm_drain_output_queue` の実行順序は次のとおりである。
+
+1. `crate::INPUT_DEFER.take_all()` → 退避されていたキーイベントを**先に**
+   FSM へ流す（`deliver_key_event` 経由）。
+2. その**後**で `deferred_engine_timers` を `std::mem::take` → 上記の
+   共有 `ctx` で replay する。
+
+replay 直前には `current_os_id(timer_id) == os_id` という照合ガードがあり
+（コード中のコメントが「drain 中に『古いタイマー kill → 新タイマー set』が
+起きると `logical_id` は `is_active=true` のままだが別の文字に属する新規
+タイマーになる。新規タイマーを早期発火させると文字順が狂うのを防ぐため」
+と明記している）、本 ADR が懸念する「replay 時点でたまたま押されている
+**別の**押下」が `phys` に混入するには、その別の親指押下の KeyDown が
+手順1で先に FSM へ流れてもなお、対象タイマーの `os_id` が変化せず
+（= FSM が kill/re-set していない）、かつ FSM が `PendingCharThumb` 相当の
+状態のまま生き残っている、という2条件を**両方**すり抜ける必要がある。
+
+到達可能な具体的な変種を洗った結果:
+
+- **親指 KeyUp のみが drain 中に処理された場合**: グローバル
+  （`LEFT/RIGHT_THUMB_DOWN_AT_US`）が `None` 相当になる →
+  `NicolaFsm::is_thumb_consumed`（`phys_down.is_some() && consumed ==
+  phys_down` という判定）は `phys_down` が `None` の時点で不成立 →
+  **実害なし**。
+- **`hook.rs` のグローバルクリア系関数**（`clear_hook_latches_for_app_
+  disable`/`set_thumb_vk_codes`/`reset_physical_key_state`）による
+  ゼロクリア: 対応する FSM イベントを伴わずに到達しうるが、同じく
+  `phys_down = None` になるだけで **実害なし**。
+- **実害がある変種**（無関係な新しい押下が誤って「消費済み」と刻印される）:
+  上記2条件（`os_id` 一致・FSM 状態維持）を両方満たす具体的なイベント列を
+  round1 レビューで探したが、1本も構成できなかった。
+
+**「未観測・コードからの理論的特定のみ」という初版の位置づけは過大評価
+だった。正確には「理論的にも未確立」である。** `.claude/rules/
+tuning-constants.md` が禁じる「効かないので増やした」型の対症変更と
+同じ構造的リスクがある——実証されていない失敗シナリオへ実装コストを
+払うべきではない。
 
 ## 決定
 
-### 採用: `deferred_engine_timers` に defer 時点の親指スナップショットを同梱する
+### 保留: 実装に進まない。次の担当者への引き継ぎ事項として以下を残す
 
-`message_handlers.rs:600-601` が `(timer_id, wparam)` をタイマーキューへ
-push する箇所で、その時点の `hook::thumb_down_timestamps()` を1回だけ
-読み、`(timer_id, wparam, left_thumb_down_snapshot, right_thumb_down_snapshot)`
-として保持する（キーイベント経路が `RawKeyEvent` に埋め込んだのと同じ
-「capture 時点で1回読んで運ぶ」パターンを、タイマーキューのエントリ型に
-適用するだけであり、新しい設計判断は持ち込まない）。
+1. **`os_id` 照合とドレイン順序（`INPUT_DEFER` を先に flush → その後で
+   `deferred_engine_timers` を replay）を両方すり抜ける、具体的な
+   イベント列（VK・タイミング・FSM 状態遷移込み）を先に構成できるかを
+   確認すること。** 構成できなければ、対象の失敗クラス自体が本当に
+   到達不能である可能性が高く、known-bugs.md への軽い記録に留めて
+   本 ADR はクローズしてよい。
+2. **構成できた場合、あるいは実機で再現した場合**は、下記「将来の実装
+   案（未採用のまま記録）」を出発点に設計し直すこと——ただし後述の
+   「決定1未満の優先論点」を先に解決すること。
 
-`:1403` の `std::mem::take` → `:1407` の `app.build_ctx()` 一括 replay を、
-エントリごとに保持しているスナップショットを使う形に置き換える。
-`build_ctx()`（`runtime/mod.rs:294`）はライブの `hook::
-thumb_down_timestamps()` を呼ぶ既存の実装のままでよい（gate 非 active 時の
-直接発火や、他のフィールド（modifiers 等）の解決には引き続き使われる）——
-本 ADR が変えるのは「タイマー replay 時に限り、親指タイムスタンプ2フィールド
-だけは defer 時点のスナップショットで上書きする」経路のみ。
+### 将来の実装案（未採用のまま記録、round1 で発見された代替案を含む）
 
-### 却下: `build_ctx()` 自体を「呼び出し元がスナップショットを渡せる」形にシグネチャ変更する
+**案A（初版の案、当初決定）**: `deferred_engine_timers` の push 時点で
+`hook::thumb_down_timestamps()` を1回読み、`(timer_id, os_id,
+left_thumb_down_snapshot, right_thumb_down_snapshot)` として保持する。
+replay 側はこのスナップショットで `InputContext` の該当2フィールドを
+上書きする。この案を採る場合、上記「訂正3」により `ctx` の単一構築
+構造をエントリ単位の構築へ変える実装コストが伴う。
 
-`build_ctx()` は他の呼び出し元（gate 非 active 時の直接発火経路含む）でも
-使われる共有関数であり、シグネチャを変えると影響範囲が本 ADR のスコープ
-（タイマー replay のみ）を超える。タイマーキューのエントリ側にスナップ
-ショットを持たせ、replay 側で `build_ctx()` の戻り値を**部分的に上書き**
-する方が、変更を局所化できる。
+**案B（round1 で新規発見、より根本的）**: `hook.rs` 側で「同一キー
+イベントに対して `now_timestamp()` を複数回呼ばない」よう改める。
+現状、`RawKeyEvent.timestamp` は `hook.rs::build_raw_key_event` 内の
+`now_timestamp()` 呼び出しで決まり（1回目の呼び出し）、`LEFT/RIGHT_
+THUMB_DOWN_AT_US` グローバルは同じフックコールバック内の**別の**
+`now_timestamp()` 呼び出し（`slot.store(now_timestamp(), ..)`）で
+更新される——**同一の物理押下に対して `now_timestamp()` が2回呼ばれ、
+数 µs ずれた別の値になる。** この2値をどちらも「その押下の時刻」として
+比較に使おうとすると（`is_thumb_consumed` のような等値比較）、原理的に
+一致しない。案Bは、親指キーの KeyDown を処理する箇所で `now_timestamp()`
+を1回だけ呼び、その値を `RawKeyEvent.timestamp` とグローバル両方へ
+同じ値として書き込む。これが実現すれば、`PendingThumbData.timestamp`
+（対象押下の `RawKeyEvent.timestamp` をそのまま保持）を直接
+`Some(thumb.timestamp)` として使え、グローバル `AtomicU64` 経由の
+ライブクエリ機構自体（案A・ADR-129 決定・本 ADR が扱ってきた仕組み全体）
+を代替できる可能性がある。
 
-## 未決着・要レビュー論点（opus-adversarial-consult で詰めること）
+**優先順位に関する注記**: 案Bは [ADR-129](129-thumb-timestamp-live-requery-during-gate-drain-replay.md)
+自身の実装（`left/right_thumb_down_snapshot` フィールド追加、まだ未着手）
+にも影響する——ADR-129 の決定がそのまま実装されると、案Bが解消しうる
+「二重 `now_timestamp()` 呼び出し」という根本問題を型で覆い隠したまま
+新しいフィールドだけが増える。**ADR-129 の実装に着手する前に、案A/案Bの
+どちらを土台にするかを判断すべき順序依存がある。** 本 ADR 単独では
+どちらを推奨するかを決定しない（実機再現/具体的失敗シナリオが無い以上、
+実装判断自体を保留しているため）。
 
-1. **上書きの実装形態**: `build_ctx()` の戻り値を丸ごと使うか、`InputContext`
-   の該当2フィールドだけをタイマー側で差し替えるか。後者の場合、
-   `InputContext` の構築責務が2箇所に分散することの是非。
-2. **`deferred_engine_timers` のエントリ型変更の影響範囲**: push 側
-   （`message_handlers.rs:600-601`）と consume 側（`:1403-1407`）以外に、
-   このキューを参照する箇所が無いか実装時に洗い出す。
-3. **回帰テストの置き場所**: ADR-129 が採用した
-   `tests/architecture_guard.rs` のテキスト走査ガード（「`hook::
-   thumb_down_timestamps()` の呼び出し許可箇所は `runtime/mod.rs::
-   build_ctx` と `message_handlers.rs` のタイマー経路のみ」）を、本 ADR
-   実装後は「タイマー経路」の許可自体を外す（= 呼び出し許可箇所を
-   `build_ctx` 1箇所のみへ縮小する）方向で更新できるか確認する。
-4. **実機観測**: ADR-129 のキーイベント経路は実際の不具合報告（`report
-   01M1N36MGDDJ5HN8FWRE4ZHS3J`）から起票されたが、本 ADR のタイマー経路は
-   **未観測・コードからの理論的特定のみ**。実装前提条件として `fix-
-   requires-evidence.md` の (b)（`docs/known-bugs.md` への記録）だけで
-   実装に進んでよいか、実機再現を待つべきかは opus-adversarial-consult で
-   判断する。
-5. **[[keymap]] 等、他のタイマー系（`deferred_engine_timers` 以外）に同型の
-   ライブクエリが残っていないかの棚卸し。** 本 ADR は `hook::
-   thumb_down_timestamps()` のタイマー経路に限定するが、同じ「defer
-   キューが実行時点のライブグローバル状態を読む」構造は他にもある
-   可能性がある（[ADR-156](156-unify-deferred-execution-queues.md) 参照）。
+## 未決着・要レビュー論点
+
+1. **上書きの実装形態**（案A採用時）: `build_ctx()` の戻り値を丸ごと
+   使うか、`InputContext` の該当2フィールドだけをタイマー側で差し替える
+   か。
+2. **タイマー直接発火経路の手書き複製の解消**: 「訂正1」で確認したとおり、
+   `message_handlers.rs` のタイマー直接発火経路が `build_ctx()` を呼ばず
+   ロジックを複製している。本 ADR のどの案を採るにしても、まずこの複製
+   を `build_ctx()` 呼び出しへ統合すべきかを判断すること。
+3. **回帰テストの置き場所**: 案Aを採る場合、`tests/architecture_guard.rs`
+   のテキスト走査ガードで `thumb_down_timestamps()` の呼び出し許可箇所を
+   `build_ctx` 1箇所（論点2 が先に解決していれば）に縮小できるか確認する。
+4. **[[keymap]] 等、他のタイマー系（`deferred_engine_timers` 以外）に同型の
+   ライブクエリが残っていないかの棚卸し。** [ADR-156](156-unify-deferred-execution-queues.md)
+   参照。
 
 ## テスト
 
-`fix-requires-evidence.md` のキー選択/warmup ファミリーに該当するため、
-(a) 回帰テストまたは (b) known-bugs.md 記録の少なくとも一方が必須。
-
-- 第一候補: `tests/architecture_guard.rs` への `hook::
-  thumb_down_timestamps()` 呼び出し許可箇所の縮小（上記論点3）。
-- 副次: `deferred_engine_timers` の replay がスナップショット値を使う
-  ことを検証する Windows 専用テスト（`#[cfg(windows)]`、実行は
-  `windows-build` CI に委ねる）。
-- 単体テストで `NicolaFsm::on_timeout(event, phys)` に新旧2つの `phys` を
-  渡す形は、ADR-129 が同型のケースで却下した理由（「バグの実体は
-  `phys` を作る側にあり、`on_timeout` 自体の比較ロジックは健全」）と
-  同じ理由で不採用とする。
+実装に進んでいないため未着手。実装に進む場合は `fix-requires-evidence.md`
+のキー選択/warmup ファミリーに該当するため、(a) 回帰テストまたは
+(b) known-bugs.md 記録の少なくとも一方が必須。単体テストで
+`NicolaFsm::on_timeout(event, phys)` に新旧2つの `phys` を渡す形は、
+ADR-129 が同型のケースで却下した理由（「バグの実体は `phys` を作る側に
+あり、`on_timeout` 自体の比較ロジックは健全」）と同じ理由で不採用とする。
 
 ## 関連
 
 [ADR-129](129-thumb-timestamp-live-requery-during-gate-drain-replay.md)
 （本 ADR が引き継ぐ「限界」節・未決定事項2の出所、キーイベント経路の
-先行修正）、[ADR-010](010-thumb-consumption-timestamp.md)（`Option<Timestamp>`
+決定は未実装。案Bとの順序依存あり）、
+[ADR-010](010-thumb-consumption-timestamp.md)（`Option<Timestamp>`
 による親指消費追跡、比較ロジック自体は健全と確認済み）、
 [ADR-008](008-physical-thumb-state-separation.md)（物理親指キー状態と
 FSM 解決ロジックの分離）、[ADR-156](156-unify-deferred-execution-queues.md)
 （`deferred_engine_timers`/`INPUT_DEFER`/`pending_deferred` の構造的な
-共通パターンを扱う将来構想、本 ADR はその1インスタンスの局所修正）。
+共通パターンを扱う将来構想）。
