@@ -201,69 +201,38 @@ git config core.hooksPath .githooks
 
 ---
 
-## タスクグループTD: D3（否定の宣言）の実装（[ADR-158](158-complexity-reduction-north-star.md)第4段階）
+## タスクグループTD: D3（否定の宣言）の実装（[ADR-158](158-complexity-reduction-north-star.md)第4段階、完了2026-09-09）
 
-### TD0: `ime_key_for`等を非gatedモジュールへ切り出す（round3 MF-2で内容を確定）
+**TD0〜TD3、実装時に方針転換（TJ1 M3の反映）**: 着手前に、[ADR-161](161-single-source-spec-generation.md)
+「判断の手順」問い4の下位チェック（round4 TJ1 S6で追加: 「既存のテスト・ゴールデン・ガードが
+同じ事実を既に固定していないか」）を先に確認したところ、`key_sequence_policy.rs`の既存テスト
+`gji_direct_keys`/`ms_ime_direct_keys`が`ime_key_for`の**4アームすべて**（
+`(GjiDirect|MsImeDirect, Open|Close)`）を`VK_IME_ON`/`VK_IME_OFF`という具体値へ既に固定して
+いることを確認した。つまり誰かが`VK_DBE_ALPHANUMERIC`等を再導入すれば、新しい機構を何も
+足さなくても既存テストが落ちる——**D3が実際に追加できる価値は「検出」ではなく「失敗時に
+読める理由（なぜ前回捨てたか）」のみ**（TJ1 M3が指摘した通り）。
 
-**内容**: `state/key_sequence_policy.rs::ime_key_for`・`ImeOperation`・`KeyMechanism`の
-依存を確認したところ、`#[cfg(windows)]`を要求する依存（`tsf::observer::ActiveImeKind`）は
-`gji_direct_applicable`/`ms_ime_direct_applicable`という別の述語関数側だけが使っており、
-`ime_key_for`自体は`focus::class_names::AppImeProfile`・`crate::vk`・`awase::types::VkCode`
-（いずれも非gated）にしか依存していない。**この3つ（`ime_key_for`・`ImeOperation`・
-`KeyMechanism`）を非gatedなモジュールへ切り出す**（または`key_sequence_policy.rs`を
-gatedな述語部分とungatedな純粋関数部分に分割する）。これによりTD2のテストがホストで
-完全に実行できるようになる。
+この結論により、TD0（非gatedモジュールへの切り出しリファクタ）・TD1（別建ての
+`REJECTED_IME_OFF_KEYS`宣言・型解決）・TD2（新規ユニットテスト）はいずれも不要と判断し、
+**当初計画を全面的に簡略化した**:
 
-`REJECTED_IME_OFF_KEYS`の宣言自体は、切り出し先と同じ非gatedモジュールに素の`const`配列
-として置く（実証実験4の関数形式マクロによるDSL化は後回し——round2 S-8: DSL化すると
-proc-macroクレートが1つ増え、TD2が謳う「proc-macro不要」という利点が崩れる）。
+- `crates/awase-windows/src/state/key_sequence_policy.rs`の`ime_key_for`関数doc comment内に、
+  「否定の宣言」（対象: `docs/experiments.md`エントリ01の1件のみ、round3 MF-1で確定済みの
+  絞り込みをそのまま踏襲）を記述として追加した——新規`const`配列・新規モジュール分割は
+  行わず、既存のgatedモジュールのまま。
+- 既存テスト`gji_direct_keys`/`ms_ime_direct_keys`の`assert_eq!`にカスタムメッセージを追加し、
+  失敗時にdocs/experiments.mdエントリ01を読むよう促す形にした（TD2が計画していた「新規
+  テスト」の代わりに、既存テストへの最小限の追記で同じ効果を得た）。
+- TD3（適用範囲の限界の明記）は、上記doc commentの一部として実施——GJIキーマップの実行時
+  読み取り・config文字列パース・注入経路といった実行時経路の失敗（エントリ07・08・09）は
+  防げない旨を記載した。
 
-**依存**: なし（TD1の前提）。
+**検証**: `cargo check --target x86_64-pc-windows-msvc -p awase-windows --tests --lib`が通ること
+を確認済み（`key_sequence_policy.rs`は`#[cfg(windows)]`配下のままのため、ホストでの直接実行は
+windows-build CIへ委譲。ただし新規テストを追加していないため、この委譲コストはround3 MF-2が
+懸念した「新規テストがホストで動くか」の問題自体が発生しない）。
 
-**検証方法**: 切り出し後、`cargo check --target x86_64-pc-windows-msvc -p awase -p
-awase-windows`が通ること、既存の呼び出し元（`gji_direct_applicable`等）が引き続き
-コンパイルできることを確認する。
-
-### TD1: `REJECTED_IME_OFF_KEYS`宣言の作成
-
-**内容**: `docs/experiments.md`の25エントリのうち、キー選択に関わるものを対象にする。
-**round2 M-2・round3 MF-1で候補を段階的に訂正**: エントリ07・08・09は注入経路側の失敗で
-D3の対象外、エントリ16は撤回ではなく採用済みのため除外、**エントリ05も同じ注入経路側の
-失敗（`345086b`でのモードキー注入、CapsLock汚染で撤回）と判明し対象外**——**実質的な候補は
-エントリ01の1件のみ**。フィールドは`vk`/`scope`/`reason`/`evidence`/`ime`/`app_kind`。
-
-**round3 SF-5で追記**: `Rejection.vk`は文字列（例: `"VK_DBE_ALPHANUMERIC"`）だが
-`ime_key_for`が返すのは`VkCode`型。突き合わせには名前→`VkCode`の解決が要り、
-`crates/awase-windows/src/vk.rs`の文字列matchが使える（非gatedのため利用可）。
-また候補に挙がりうる`F22`は`b271aee`で定数自体が削除されている
-（`docs/experiments.md:59`参照）——解決できないVK名を宣言に含める場合の扱い
-（文字列のまま保持して解決失敗を許容するか、宣言対象から外すか）を実装前に決めること。
-
-**依存**: TD0。
-
-**検証方法**: 宣言が意図通りの件数・内容でコンパイルできることを確認する。
-
-### TD2: `key_sequence_policy.rs`とのユニットテストによる突き合わせ
-
-**内容**: `ime_key_for`に対する`#[cfg(test)]`ユニットテストとして実装する。
-`REJECTED_IME_OFF_KEYS`の全エントリと、`ime_key_for`が実際に返すVKの組み合わせを突き合わせ、
-禁止されたVKが選ばれていないことを検証する。
-
-**依存**: TD1（TD0の切り出しが前提）。
-
-**round3 MF-2で訂正**: TD0で`ime_key_for`等を非gatedモジュールへ切り出していれば、本テストは
-**ホストの`cargo test -p awase-windows --lib`で実行できる**——「意図的に実装を書き換えて
-テストが落ちることを確認してから元に戻す」という検証が可能。切り出しを行わない場合のみ、
-`cargo check --target x86_64-pc-windows-msvc -p awase-windows --tests --lib`でのコンパイル
-確認とwindows-build CIへの実行委譲がフォールバックとなる（round2 M-1が指摘した制約は
-TD0で解消される前提）。
-
-### TD3: 適用範囲の限界をドキュメント化
-
-**内容**: TD2のテストが防げるのは`ime_key_for`のmatch表選択の失敗のみであり、GJIキーマップの
-実行時読み取り・config文字列パース・注入経路といった実行時経路の失敗（`docs/experiments.md`
-エントリ07・08・09）は防げないことを、テストのdocコメントと
-`.claude/rules/experiment-logging.md`に追記する。
+**依存**: なし。
 
 **依存**: TD2。
 

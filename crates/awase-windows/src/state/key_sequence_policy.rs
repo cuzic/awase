@@ -96,6 +96,26 @@ pub(crate) enum KeyMechanism {
 ///
 /// 呼び出し側は `crate::ime::send_ime_mode_key(ime_key_for(..))` で送る。各行の挙動根拠
 /// （コミットハッシュ）は P2-1 ゴールデンに集約済み。キー変更はこの match 1行の diff になる。
+///
+/// # 否定の宣言（ADR-158 D3、`docs/experiments.md`エントリ01）
+///
+/// `(GjiDirect | MsImeDirect, Close)` に `VK_DBE_ALPHANUMERIC` を選ぶ変更は**再導入禁止**。
+/// TsfNative + GJIのIME OFFキー選択は5日間に6回、採用と撤回が反転した
+/// （`534051a` → `098c663` → `adb856c` → `b271aee` → … → `489cdf1`、詳細は
+/// `docs/experiments.md`エントリ01）。`VK_DBE_ALPHANUMERIC`は複数回「IME OFFキー」として
+/// 採用・撤回され、そのたびに「これは半角英数（IME ON）であって直接入力ではない」という
+/// 同じ事実が再発見された。この4アームの組み合わせを変更する場合は必ずエントリ01を読み、
+/// 同じ実験を繰り返していないか確認すること。
+///
+/// **検出は下記`gji_direct_keys`/`ms_ime_direct_keys`テストが既に4アームすべてを
+/// ピン留めしており担っている**——D3が追加するのは検出ではなく、失敗時にこのコメントで
+/// 「なぜ前回捨てたか」を即座に読めるようにすることのみ（新しいdylint/マクロ機構は
+/// 導入しない。ADR-161「判断の手順」問い4の下位チェック——既存テストが同じ事実を
+/// 既に固定していないか——により、新機構は不要と判断した）。
+///
+/// **適用範囲の限界**: このmatch表の選択ミスは防げるが、GJIキーマップの実行時読み取り・
+/// config文字列パース・注入経路といった実行時に決まる経路の失敗（`docs/experiments.md`
+/// エントリ07・08・09）は防げない。
 #[must_use]
 // GjiDirect/Close と MsImeDirect/Close は現在同じ VK_IME_OFF を送るが、この表は
 // 「1行 = 1 (機構, 操作) の送信キー根拠（コミットハッシュ付き）」という宣言的テーブル
@@ -135,7 +155,9 @@ mod tests {
         );
         assert_eq!(
             ime_key_for(KeyMechanism::GjiDirect, ImeOperation::Close),
-            VK_IME_OFF
+            VK_IME_OFF,
+            "ADR-158 D3: IME OFFキーにVK_DBE_ALPHANUMERIC等を再導入していないか確認せよ。\
+             docs/experiments.mdエントリ01（5日間に6回反転した記録）を読むこと。"
         );
     }
 
@@ -147,7 +169,9 @@ mod tests {
         );
         assert_eq!(
             ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Close),
-            VK_IME_OFF
+            VK_IME_OFF,
+            "ADR-158 D3: IME OFFキーにVK_DBE_ALPHANUMERIC等を再導入していないか確認せよ。\
+             docs/experiments.mdエントリ01（5日間に6回反転した記録）を読むこと。"
         );
     }
 
