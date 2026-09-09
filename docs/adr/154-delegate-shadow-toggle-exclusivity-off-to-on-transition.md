@@ -362,6 +362,23 @@ timeout経由ラッパー）は元々`&mut self`+7引数＝8個で、`bool`を1�
 `cargo nextest`119件）およびclippy（host/Windows両ターゲット、pedantic/
 nursery込み）green。
 
+**既知のテストカバレッジの限界（/code-reviewで指摘、2026-09-09）**:
+上記のテストはいずれも「`resolve_pending_thumb_as_single`/`timeout_
+pending_thumb`を直接呼ぶユニットテスト」か「`architecture_guard.rs`の
+ソーステキストscan」のいずれかであり、`key_pipeline.rs`がマーカーを
+`RawKeyEvent`に立てる → `classify()`が`ClassifiedEvent`へ伝播する →
+`PendingThumbData`へ格納される、という**配線の連鎖を実際に通す**
+エンジンレベル/goldenテストは存在しない。この配線のどこかが将来壊れて
+も（例: `key_pipeline.rs`がマーカーを立て忘れる、`classify()`が新
+フィールドを伝播し忘れる）、既存のユニットテストは手動でマーカーを
+`true`にして直接呼ぶため通過し、`architecture_guard.rs`のgrepガードも
+文字列が存在する限り通過してしまう。ただしこれは本ADRが新規に導入した
+弱点ではない——`key_pipeline.rs`には`kp_run_inner`相当の実行環境
+（`platform_state`/`engine`一式）を構築してエンド・ツー・エンドで叩く
+既存のテストハーネスが無く、同ファイルの他の関数（`kp_stage_shadow_
+ime_toggle`自体を含む）も同じ制約を共有している。新規ハーネス構築は
+本ADRのスコープを大きく超えるため、Windows実機ソークでの確認に委ねる。
+
 ## 未検証事項の解決（opus-adversarial-consult r1/r2で決着）
 
 1. **ADR-153 M25のマーカーと本ADRのマーカーは同じフィールドで良いか**
