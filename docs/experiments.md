@@ -25,6 +25,24 @@ awase の IME ON/OFF 制御・warmup・focus 分類まわりは、Windows / IME 
 
 ---
 
+## エントリ 18: issue #189（BUG-110追補7）修正——調停機構は即日撤回、既存ガード拡張へ
+
+**背景**: MS-IME + Chromeでのdrift correction × force-ON二重SSOT振動
+（BUG-110追補7）に対し、当初「force-ONがdrift correctionの実行中バーストに
+調停で道を譲る」新機構（`DriftBurst`/`force_on_yields_to_drift`/専用
+リトライタイマー/新規チューニング定数）をopus-adversarial-consult 4ラウンドで
+収束させ実装・実機ソークまで完了させたが、ユーザーから「発火する仕組みの上に
+抑止する仕組みを重ねている」と設計複雑化を指摘され、同日中に全面撤回。
+既存の`ConvOpenInference`除外ガードに`HeuristicDefault`を1バリアント
+加えるだけの修正に置き換えた。
+
+| 日付 | 仮説 | 環境（アプリ × IME × idle） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-08 | force-ONの書き込みタイミングをdrift correctionのバーストに合わせて調停すれば振動が止まる | Chrome（TsfNative）× MS-IME、Word操作直後にフォーカス移動 | `state/ime_actuation.rs`に`DriftBurst`/`force_on_yields_to_drift`新設、`runtime/mod.rs`にgate配線、`tuning.rs`に`FORCE_ON_DRIFT_YIELD_RETRY_MS`(実測なし暫定200ms) | dragonflyg4実機ソークで`[drift-yield]`ログが設計どおり動作、1ms未満のタイトな往復は解消を確認 | 採用→**即日撤回**（動作はしたが「発火源の上に抑止層を重ねる」設計だとユーザー指摘、round1で判明していた恒真化の知見を踏まえ根本修正へ切替） | `6151cfb4`/`a3d88558`（revert: `12719f54`/`1666262f`） |
+| 2026-09-09 | `check_drift_correction`の既存`ConvOpenInference`除外ガード（BUG-19由来）に`HeuristicDefault`を加えれば、setpointの二重計算自体に触れず振動源を根本から消せる | 同上（実機再ソーク予定） | `state/platform_state.rs::check_drift_correction`のガード条件に`ObservationSource::HeuristicDefault`を追加（2行）、対応ユニットテスト1件追加 | opus-adversarial-consultで機序を確認（実機再ソークは別途実施） | 採用 | TBD |
+
+---
+
 ## エントリ 17: BUG-25 GJI 半角英数 entry の本実装（ADR-107 Task 1〜8）
 
 **背景**: BUG-25 の GJI entry は scan付きF0、IMC write、scan=0 F0 の3案を
