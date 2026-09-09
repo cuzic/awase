@@ -15358,8 +15358,16 @@ awase-windows`（134件）・clippy/fmtすべてgreen。実機検証は
 ime_action`（変換）・`"toggle"`方向・ATOKプリセット併用は未確認。
 
 上記の未解決事項1（delegateとshadow-toggleの排他性、OFF→ON遷移限定）は
-本実装のスコープ外のまま残り、続報として[ADR-154](adr/154-delegate-shadow-toggle-exclusivity-off-to-on-transition.md)
-（提案中・未実装）を起票済み。
+本実装のスコープ外のまま残っていたが、続報の[ADR-154](adr/154-delegate-shadow-toggle-exclusivity-off-to-on-transition.md)
+（**2026-09-09実装済み**、opus-adversarial-consult architect/critic
+各2ラウンドで収束）で解消した——`ImeRelevance`に新規マーカー
+`auto_delegate_open_axis_consumed`を追加し、消費点2
+（`kp_stage_shadow_ime_toggle`）がbeliefをOFF→ONへ動かした打鍵について
+消費点1（`resolve_pending_thumb_as_single`）がdelegateを二重発火させない
+ようにした。回帰テスト（エンジン側3件・`architecture_guard`のgrepガード
+2件・`transport.rs::plan_tests`1件）・`cargo test --lib`(1010件)・
+`cargo nextest`(119件)・clippy(pedantic/nursery込み)全green。
+Windows実機ソークは未実施。
 
 **追記（2026-09-08、ケース3「@」再現の機序確定、opus-adversarial-consult
 + dragonflyg4実機A/B切り分け実験で判明、PR #185未マージ）**:
