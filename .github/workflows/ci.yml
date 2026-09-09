@@ -192,6 +192,32 @@ jobs:
       - uses: taiki-e/install-action@cargo-machete
       - run: cargo machete
 
+  # ADR-162 E2/TH2: docs/adr/index.md の行に対応する本文ファイルが実在するかを
+  # 確認する。ADR-151/152は「index.mdに行はあるが本文ファイルが一度もcommitされて
+  # いなかった」まま他ADRから権威として参照され続けた(2026-09-08に判明)。この
+  # チェックはその再発を防ぐ——本文ファイルの追加を起票と同時に強制する形で、
+  # 「本文なき権威」を構造的に作れなくする。Rustのビルドを要さないため独立ジョブとする。
+  adr-index-consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: index.md の各行に対応する本文ファイルが存在することを確認
+        run: |
+          set -euo pipefail
+          missing=0
+          while IFS= read -r link; do
+            file="docs/adr/${link}"
+            if [ ! -f "$file" ]; then
+              echo "::error::docs/adr/index.md が参照する本文ファイルが存在しません: $file"
+              missing=$((missing + 1))
+            fi
+          done < <(grep -oP '^\| \[[0-9A-Za-z]+\]\(\K[^)]+(?=\))' docs/adr/index.md)
+          if [ "$missing" -gt 0 ]; then
+            echo "::error::$missing 件の本文ファイルが欠落しています(ADR-151/152と同型の「本文なき権威」)"
+            exit 1
+          fi
+          echo "全 index.md 行に対応する本文ファイルの存在を確認しました"
+
   # push/pull_request 毎にブロッキングで実行する。cargo-audit はコード変更が
   # 無くても新しい advisory の公開だけで赤くなり得るが、他ジョブ(clippy pedantic+
   # nursery deny 等)と同様にこのリポジトリは検知したら都度 .cargo/audit.toml で
