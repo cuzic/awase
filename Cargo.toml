@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/timed-fsm", "crates/win32-async", "crates/win32-worker", "crates/awase-windows", "crates/awase-linux", "crates/awase-macos", "crates/awase-settings", "crates/awase-gji-config", "crates/awase-vkmap", "crates/awase-build-support"]
+members = [".", "crates/timed-fsm", "crates/win32-async", "crates/win32-worker", "crates/awase-windows", "crates/awase-linux", "crates/awase-macos", "crates/awase-settings", "crates/awase-gji-config", "crates/awase-vkmap", "crates/awase-build-support", "crates/xtask-adr-evidence", "crates/measured-macro", "crates/actuation-choke-point-macro"]
 
 # awase-settings が wgpu(Direct3D 12 / Vulkan) フォールバックを取り込んだこと
 # （crates/awase-settings/src/startup_failure.rs）でリリースバイナリのサイズが
@@ -28,6 +28,7 @@ libraries = [
     { path = "lints/no_vk_as_scan" },
     { path = "lints/ime_event_guard" },
     { path = "lints/observation_source_guard" },
+    { path = "lints/actuation_call_guard" },
 ]
 
 [package]

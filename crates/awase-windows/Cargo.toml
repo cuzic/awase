@@ -26,6 +26,8 @@ awase-build-support = { path = "../awase-build-support" }
 awase = { path = "../.." }
 awase-gji-config = { path = "../awase-gji-config" }
 awase-vkmap = { path = "../awase-vkmap" }
+measured-macro = { path = "../measured-macro" }
+actuation-choke-point-macro = { path = "../actuation-choke-point-macro" }
 timed-fsm = { path = "../timed-fsm", version = "0.5.0" }
 tracing = "0.1"
 # tracing-log は default feature（他の default: smallvec/fmt/ansi/std も維持する
@@ -47,6 +49,12 @@ path = "../win32-async"
 [target.'cfg(windows)'.dependencies.win32-worker]
 path = "../win32-worker"
 version = "0.1.0"
+
+[dev-dependencies]
+# ADR-158 TI1: classify_*系の純粋関数へproptestを適用するスパイク。
+# 非gatedモジュール(state/conv_classify.rs)向けのためホストターゲットで動く
+# 通常のdev-dependenciesに置く(windows限定にしない)。
+proptest = "1.11.0"
 
 [target.'cfg(windows)'.dev-dependencies]
 # `#[implement(...)]` マクロ展開が `::windows_core::...` を直接参照するため、

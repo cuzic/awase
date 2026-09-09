@@ -1,0 +1,14 @@
+[package]
+name = "measured-macro"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "ADR-158 TE1: tuning.rsの定数にvalue_ms/commitのメタデータ付与を強制する#[measured(...)]属性マクロ(ADR-161実証実験6のスパイクを本実装化)"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "extra-traits"] }

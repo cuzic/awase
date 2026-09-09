@@ -13,6 +13,16 @@
 
 **実装保留（opus-adversarial-consult round1〜round2 で収束、クローズ前の
 経緯）。**
+
+**2026-09-09、ADR-158 TH2で追記**: `docs/adr/index.md`に本ADRとは別に
+「ADR-131」という行（同じ`deferred_engine_timers`のreplay/物理状態ライブ再取得を
+扱う計装ADR、「採用・実装完了、developマージ済み（診断専用、挙動変更なし）」）が
+存在していたが、対応する本文ファイル（`131-deferred-timer-replay-shares-stale-
+live-phys-snapshot.md`）は一度もcommitされたことがなかった（ADR-151/152と同型の
+「本文なき権威」、新設したCI存在チェックで発見）。内容が本ADRと同一調査の別段階
+（診断ログ追加の完了報告）と判断されるため、当該index.md行は削除し、この記録を
+本ADRへ統合した——診断専用ログの追加自体はdevelopに実装・マージ済みという事実は
+保持する。
 起票時点（初版）はコード内の行番号を [ADR-129](129-thumb-timestamp-live-requery-during-gate-drain-replay.md)
 「限界」節からそのまま複写していたが、develop 側の変更でその後の複数コミット
 により全てずれていた（初版がどの時点の行番号を指していたにせよ、ADR は

@@ -604,7 +604,20 @@ pub(crate) fn launch_settings_with_args(args: impl IntoIterator<Item = String>) 
     for name in &names {
         let path = dir.join(name);
         if path.exists() {
-            if let Err(e) = std::process::Command::new(&path).args(&args).spawn() {
+            // stdio を明示的に null にする（BUG-79追補2）: 指定しないとRustは
+            // 親の標準入出力ハンドルを子プロセスに継承させようとし、その際に
+            // 構築される継承ハンドル許可リストがawase.exe実機環境（フック・
+            // タイマー・非同期ワーカースレッドを多数抱えた長時間稼働プロセス）
+            // でのみ CreateProcessW を ERROR_NOT_SUPPORTED (os error 50) で
+            // 失敗させていた。実機A/Bテストで確認済み: この指定を外すと
+            // dragonflyg4実機で100%再現、指定すると同一ビルドで再現しない。
+            if let Err(e) = std::process::Command::new(&path)
+                .args(&args)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
                 tracing::warn!("failed to spawn {name}: {e}");
             }
             return;

@@ -519,7 +519,14 @@ fn hwnd_cache_restored_event_is_limited_to_apply_hwnd_cache_restore() {
 #[test]
 fn input_mode_observed_construction_sites_are_accounted_for() {
     let known_sites: &[(&str, usize)] = &[
-        ("src/state/platform_state.rs", 1), // apply_ime_update (ObserverPoll, Medium)
+        // 1 = apply_ime_update (ObserverPoll, Medium)。
+        // +1 (ADR-158 TF1、2026-09-09) =
+        // `#[cfg(test)] mod tests`内の
+        // `dispatch_event_journals_observation_source_without_new_journal_entry_variant`
+        // （journal記録経路を検証する回帰テストのヘルパー。実際の外部API/probe観測では
+        // ない——本ガードが対象とする「production codeでの偽装」ではなくテストフィクス
+        // チャ）。
+        ("src/state/platform_state.rs", 2),
         // idle-conv-check / ImmCrossProbe。focus-conv-check は ALT+TAB 直後の conv 値で
         // belief を書き換えるバグの温床だったため撤去済み（フォーカス変更直後の読み取りは
         // ユーザー意図の signal ではない。conv_mode/prev_conversion_mode の追跡のみ残す）。
@@ -667,13 +674,15 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
     let expected: &[(&str, usize, &str)] = &[
         (
             "state/platform_state.rs",
-            9,
+            10,
             "typed writer 定義 3 + handle_engine_set_open 内部委譲 1 (Decision 経由 \
              SetOpen — 救済: kp_stage_post_decision の PostSetOpenEisuReset) + \
              BUG-51 追補 v3 の IntentStore 回帰テスト内での write_sync_key/\
-             write_physical_key 直接呼び出し 5 件（新しい本番 IME-ON 経路ではなく \
-             既存 typed writer をテストから呼んでいるだけなので eisu-reset の \
-             追加配線は不要）",
+             write_physical_key 直接呼び出し 6 件（BUG-110 追補9、issue #189: \
+             check_drift_correction_ignores_heuristic_default_alone_without_\
+             explicit_intent が明示 OFF を作るための write_sync_key 呼び出しを \
+             1 件追加）（新しい本番 IME-ON 経路ではなく既存 typed writer を \
+             テストから呼んでいるだけなので eisu-reset の追加配線は不要）",
         ),
         (
             "runtime/key_pipeline.rs",
@@ -4627,4 +4636,51 @@ fn autostart_register_call_sites_are_limited_to_tray_click_handler() {
              上記assert_eqのメッセージ参照。"
         );
     }
+}
+
+/// ADR-158 TE1（opus code review M2で追加）: `tuning.rs`の全`pub const`に
+/// `#[measured_macro::measured(...)]`が付いていることを確認する。
+///
+/// `#[measured]`自体は`value_ms`と定数の実値が一致するかは検証するが、
+/// 「そもそも属性が付いているか」は検証しない（属性が無ければマクロは実行されず、
+/// 静かに素通りする）。新しい定数を無属性で追加する退行を、このガードで検出する。
+#[test]
+fn tuning_constants_all_have_measured_attribute() {
+    let content = read_crate_file("src/tuning.rs");
+    let lines: Vec<&str> = content.lines().collect();
+    let mut missing = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("pub const ") {
+            continue;
+        }
+        // 直前の非空行が #[measured_macro::measured(...)] であることを確認する。
+        let mut j = i;
+        let mut found = false;
+        while j > 0 {
+            j -= 1;
+            let prev = lines[j].trim();
+            if prev.is_empty() {
+                continue;
+            }
+            found = prev.starts_with("#[measured_macro::measured(");
+            break;
+        }
+        if !found {
+            let const_name = trimmed
+                .trim_start_matches("pub const ")
+                .split(':')
+                .next()
+                .unwrap_or(trimmed);
+            missing.push(format!("{const_name} (line {})", i + 1));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "tuning.rsに#[measured_macro::measured(...)]の付いていないpub constがあります: \
+         {missing:?}\n\
+         新しい定数を追加した場合は、実測済みなら#[measured(value_ms=.., commit=\"..\")]、\
+         未実測ならせめて#[measured(pending = true)]を付けること \
+         (.claude/rules/tuning-constants.md)。"
+    );
 }

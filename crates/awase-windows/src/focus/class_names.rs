@@ -212,8 +212,19 @@ impl AppImeProfile {
     ///
     /// `false` のとき `WindowsPlatform::set_ime_open` や `ImmCrossProcessStrategy`
     /// は IMM32 クロスプロセス呼び出しをスキップする。
+    ///
+    /// ADR-158 TE3（観測フェーズ）: `#[actuation_choke_point]`で実行時に呼び出し元を
+    /// 記録する。実測17箇所以上（`platform.rs`・`state/key_sequence_policy.rs`・
+    /// `runtime/message_handlers.rs`・`runtime/mod.rs`・`runtime/transport.rs`・
+    /// `runtime/executor.rs`・`runtime/ime_refresh.rs`・`runtime/key_pipeline.rs`
+    /// に分散）あり、数セッション分のログを集めた上でdylintの許可リストへ昇格するか
+    /// 判断する。`const fn`だった実装を、記録のため通常の`fn`へ変更した
+    /// （`const`文脈での呼び出しは実測なし）。
     #[must_use]
-    pub const fn can_use_imm32_cross_process(&self) -> bool {
+    #[actuation_choke_point_macro::actuation_choke_point(
+        callers = "17+ call sites across platform/state/runtime layers, see doc comment"
+    )]
+    pub fn can_use_imm32_cross_process(&self) -> bool {
         match self {
             Self::Standard => true,
             Self::Imm32Unavailable | Self::TsfNative | Self::InputRelay => false,

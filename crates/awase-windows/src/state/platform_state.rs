@@ -597,6 +597,23 @@ impl ImeStateHub {
     ) -> awase::platform::WarmupImeOn {
         let applied_open = applied.applied_open();
         let effective = self.effective_open();
+        // opus-adversarial-consult S2（BUG-110 追補9）: この `off_drift_active`
+        // は `check_drift_correction` と全く同じ述語を共有している（ADR-132
+        // Phase 2 / INV-B1'）。BUG-110 追補9 で `check_drift_correction` に
+        // `HeuristicDefault` の除外を加えたことにより、issue #189 のケース
+        // （Chrome 入場直後、明示意図なし）では `off_drift_active` が
+        // `false` になり、この warmup ゲートは以前より開きやすくなる。
+        // 検討済み・実害なし: (1) ADR-132 の発端シナリオ（物理 IME キー
+        // 1回）は `last_intent` が立つため `explicit_intent()`
+        // （`shadow_model.last_intent` のみを見る、`IntentStore` は無関係）
+        // が `Some` になり新ガードを通らず、ADR-132 の保護は保たれる
+        // （/code-review 指摘: 本コメントが誤って `IntentStore` も
+        // 関与すると書いていたのを訂正）。(2) issue #189 のケースでは
+        // warmup が向かう方向
+        // （ON）と force-ON が向かう方向（ON）が一致するため、そもそも
+        // ping-pong する相手がいない——ゲートは「drift correction と
+        // warmup が反対方向に書き合う」ことを防ぐためのものであり、
+        // drift correction 自体が発火しないなら不要になる。
         let off_drift_active = matches!(
             self.check_drift_correction(now, self.explicit_intent()),
             Some(DriftCorrection {
@@ -926,7 +943,47 @@ impl ImeStateHub {
         // 明示意図がある場合（BUG-19 再発の本来のシナリオ: ユーザーが OFF にした
         // 直後に conv がまだ native/katakana を示す）はこの gate を素通りし、
         // 既存の `desired`（ユーザーの意図した値）が正しく再適用される。
-        if trusted.source == ObservationSource::ConvOpenInference && explicit_intent.is_none() {
+        //
+        // BUG-110 追補7〜9（issue #189）: `HeuristicDefault`（観測ゼロの安全
+        // デフォルト、`reset_stale_ime_on_for_imm_broken` が Imm32Unavailable
+        // ウィンドウ入場時に記録する）でも全く同じ構造の問題が起きる——
+        // `FocusChanged` で `last_intent` がクリアされた直後に新しいウィンドウの
+        // `HeuristicDefault` 観測を record すると、`desired`（生の
+        // `desired_open()`、別ウィンドウでの古い明示操作の残留）と食い違い、
+        // drift correction がこの弱い観測1件を理由に実 IME へ書き込んでしまう。
+        // `apply_force_on_for_imm_broken`（`effective_open()` 経由で同じ
+        // `HeuristicDefault` を信頼する）と反対方向の書き込みを競って短時間に
+        // 往復する。
+        //
+        // ここに含めるかどうかの判断基準は「`ObservationSource::authority()`
+        // が `BeliefOnly` かどうか」ではない——`authority()` は `HwndCache`/
+        // `FocusProbe`/`ConvBitsInference`/`GjiIoInference` も含む6バリアント
+        // を持ち、判断基準として使うには広すぎる（opus-adversarial-consult
+        // 指摘）。正しい基準は**「外部観測の裏付けが一切ない、awase 自身の
+        // 推測であること」**——これを満たすのは `ConvOpenInference`（conv
+        // ビットからの間接推測）と `HeuristicDefault`（観測ゼロの安全
+        // デフォルト）の2つだけ。同じ `BeliefOnly` でも性質が違う残り4つを
+        // 対象外とする理由は個別に検討済みで、いずれも「まだ調べていないから」
+        // ではない:
+        // - `ConvBitsInference`/`GjiIoInference` は input_mode 専用ソースで
+        //   open/close 観測として `most_recent_trusted()` に到達しない
+        //   （`PerSourceObservations::get`/`set` が None/no-op を返す、
+        //   `authority()` 自身の doc 参照）——追加しても到達しないデッドコード
+        //   が増えるだけ。
+        // - `HwndCache` が運ぶ値は `HwndCacheRestored` が `desired_open` に
+        //   書く値と同一のため `trusted.open == desired` となり、下の等値
+        //   チェックで既に `None` になる（今日は無害）。将来その不変条件が
+        //   崩れたときに正当な補正経路を黙って殺す副作用だけが残るため、
+        //   あえて含めない。
+        // - `FocusProbe` は推測ではなく実 IMC 読み取り（Low confidence なのは
+        //   hwnd の曖昧性ゆえ、BUG-91 由来）。これを抑止すると BUG-16/BUG-20
+        //   型の固着（belief と実 IME が乖離したまま補正されない）を再導入する
+        //   リスクがあり、実機再現なしに含めるべきではない。
+        if matches!(
+            trusted.source,
+            ObservationSource::ConvOpenInference | ObservationSource::HeuristicDefault
+        ) && explicit_intent.is_none()
+        {
             return None;
         }
         if trusted.open == desired {
@@ -2215,6 +2272,84 @@ mod tests {
         );
     }
 
+    // BUG-110 追補7（issue #189）: `HeuristicDefault`（観測ゼロの安全デフォルト）も
+    // `ConvOpenInference` と全く同じ理由で、明示意図が無い間は単独で drift
+    // correction を発火させない。拡張前は、Word 等で明示 OFF → Chrome へ
+    // フォーカス移動 → `reset_stale_ime_on_for_imm_broken` が `HeuristicDefault(true)`
+    // を記録、という経路で `check_drift_correction` が
+    // `Some(desired:false, observed:true)` を返し、`apply_force_on_for_imm_broken`
+    // （`effective_open()` 経由で同じ `HeuristicDefault` を信頼して ON を送る）と
+    // 反対方向に競合し、短時間の ON/OFF 往復を起こしていた。
+    #[test]
+    fn check_drift_correction_ignores_heuristic_default_alone_without_explicit_intent() {
+        let mut ps = PlatformState::new();
+        ps.ime.belief.is_japanese_ime = true;
+        // Word 相当のウィンドウで明示 OFF。
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        ps.ime
+            .write_sync_key(sync_key_witness(), false, TickMs(100));
+        // Chrome 相当の別ウィンドウへフォーカス移動
+        // （last_intent クリア、対象 hwnd 向けの IntentStore エントリも無い）。
+        // 注（opus-adversarial-consult S3）: `dispatch_focus_changed` ヘルパは
+        // `ImePolicyProfile::TsfNative` 固定で、下の
+        // `reset_stale_ime_on_for_imm_broken` には別途 `Imm32Unavailable` を
+        // 渡している——実際の Chrome 入場（`AppKind: TsfNative` かつ
+        // Imm32Unavailable 扱い）を厳密に再現してはいないが、
+        // `check_drift_correction` は `app_policy` を読まないため本テストの
+        // 検証内容には影響しない。
+        let other_hwnd = HwndId(0x5678);
+        dispatch_focus_changed(&mut ps, other_hwnd, 2, 200);
+        assert!(
+            !ps.ime.effective_open_at(TickMs(200)),
+            "生の desired_open() フォールバックにより false のまま"
+        );
+
+        ps.ime
+            .reset_stale_ime_on_for_imm_broken(ImePolicyProfile::Imm32Unavailable, TickMs(300));
+
+        // opus-adversarial-consult S1: `reset_stale_ime_on_for_imm_broken` には
+        // 4つの早期 return があり、将来そのいずれかが誤って成立すると
+        // `HeuristicDefault` が一切記録されなくなる。その場合
+        // `most_recent_trusted()` が `None` を返し、`check_drift_correction` は
+        // 新ガード（本テストが検証したい箇所）より手前の別の分岐で `None` に
+        // なってしまい、テストは「間違った理由で」緑のままになる。観測が
+        // 実際に記録されたことを積極的にアサートしてこれを防ぐ。
+        let recorded = ps
+            .ime
+            .shadow_model
+            .observations
+            .per_source
+            .heuristic_default
+            .as_ref()
+            .expect("reset_stale_ime_on_for_imm_broken が HeuristicDefault を記録しているはず");
+        assert!(
+            recorded.open,
+            "HeuristicDefault の安全デフォルトは常に true"
+        );
+        assert!(
+            !ps.ime.shadow_model.desired_open(),
+            "desired_open は Word での明示 OFF のまま false（observed との食い違いが本題）"
+        );
+
+        // 明示意図なしでは閾値が DRIFT_CORRECTION_THRESHOLD_MS になる
+        // （ConvOpenInference のテストと同様、実 sleep を避けるためバックデートする）。
+        ps.ime.shadow_model.observations.drift = Some(ImeDrift {
+            started_at: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_millis(
+                    crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS + 50,
+                ))
+                .expect("test instant can be backdated"),
+        });
+        let now = std::time::Instant::now();
+        let explicit_intent = ps.ime.explicit_intent();
+        assert_eq!(explicit_intent, None);
+        assert_eq!(
+            ps.ime.check_drift_correction(now, explicit_intent),
+            None,
+            "明示意図なしでは HeuristicDefault 単独で補正を発火させない（issue #189）"
+        );
+    }
+
     // ── IntentStore 配線（ADR-087 §5 Phase 1' item8、BUG-51 追補 v3、2026-08-11） ──
     //
     // 実機再発: Ctrl+無変換 で明示 IME OFF を送った直後、同一ウィンドウへの
@@ -2560,5 +2695,52 @@ mod tests {
             "IntentStore に有効な OFF エントリがある間は HeuristicDefault(ON) が \
              書かれず、effective_open() は false のまま"
         );
+    }
+
+    // ── ADR-158 TF1: ObservationSource の journal 記録経路 ─────────────────
+    //
+    // ADR-159段階0の当初計画は「JournalEntryに新しいバリアントを1〜2個追加する」
+    // だったが、着手時に確認したところ`ImeEvent::InputModeObserved`が既に
+    // `source: ObservationSource`をフィールドとして持ち、`dispatch_event`が
+    // 無条件で全ImeEventを`JournalEntry::ImeEvent`として記録している（単一の
+    // 合流点、上記`journal.record`呼び出し参照）ため、11バリアントすべてが
+    // 新しい機構なしで既にjournal化されていると判明した。このテストはその
+    // 事実を固定する回帰テストであり、将来`dispatch_event`の記録経路が
+    // 分岐・迂回された場合に検出する。
+
+    /// `InputModeObserved`を`dispatch_event`した場合、`ObservationSource`の値が
+    /// 欠落・置換されずにそのままjournalへ記録されることを確認する
+    /// （11バリアントのうち代表的な3つで検証、新規JournalEntryバリアントは不要）。
+    #[test]
+    fn dispatch_event_journals_observation_source_without_new_journal_entry_variant() {
+        for source in [
+            ObservationSource::Tsf,
+            ObservationSource::GjiIoInference,
+            ObservationSource::HeuristicDefault,
+        ] {
+            let mut ps = PlatformState::new();
+            ps.ime.dispatch_event(
+                ImeEvent::InputModeObserved {
+                    mode: InputModeState::ObservedKana,
+                    source,
+                    confidence: ObservationConfidence::Medium,
+                    at: TickMs(0),
+                },
+                TickMs(0),
+            );
+            let json = ps
+                .ime
+                .journal
+                .to_json()
+                .expect("journal to_json should succeed for a single recorded entry");
+            assert!(
+                json.contains("InputModeObserved"),
+                "source={source:?}: journalにInputModeObservedエントリが記録されていない: {json}"
+            );
+            assert!(
+                json.contains(&format!("{source:?}")),
+                "source={source:?}: journalにObservationSourceの値が記録されていない: {json}"
+            );
+        }
     }
 }

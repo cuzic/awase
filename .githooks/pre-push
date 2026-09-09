@@ -25,7 +25,15 @@ warn_if_missing_evidence() {
         changed+="$(git diff --name-only "${rsha}..${lsha}" 2>/dev/null || true)"$'\n'
     done <<< "$refs"
 
-    local target='(crates/awase-windows/src/(output/|tsf/|focus/|runtime/(ime_coordinator|focus_tracking|key_pipeline|conv_actuation|open_chain|executor|transport|ime_refresh)\.rs|state/(ime|conv_mode|observation_store)|ime_controller\.rs|ime\.rs|platform\.rs|tuning\.rs)|src/engine/nicola_fsm\.rs)'
+    # ADR-158 TC1（2026-09-09）: 追跡下の.githooks/pre-pushと実行される
+    # .git/hooks/pre-push（未追跡）が双方向に乖離していたため、両者の正規表現の
+    # 和集合をここに反映した。runtime/(message_handlers|outbox)は旧.git/hooks側
+    # のみが持っていた対象、runtime/(transport|ime_refresh)は本ファイル側のみが
+    # 持っていた対象、input_defer.rsは旧.git/hooks側のみ。runtime/modは
+    # fix-requires-evidence.mdの「IME actuation合流点」表が挙げる5つ目の入口
+    # （reassert_explicit_physical_key）で、どちらのファイルにも含まれていな
+    # かったため新規追加した。
+    local target='(crates/awase-windows/src/(output/|tsf/|focus/|runtime/(ime_coordinator|focus_tracking|key_pipeline|conv_actuation|open_chain|executor|transport|ime_refresh|message_handlers|outbox|mod)\.rs|state/(ime|conv_mode|observation_store)|ime_controller\.rs|ime\.rs|input_defer\.rs|platform\.rs|tuning\.rs)|src/engine/nicola_fsm\.rs)'
     local evidence='(crates/awase-windows/tests/|src/engine/tests\.rs|docs/known-bugs\.md)'
 
     if printf '%s' "$changed" | grep -qE "$target"; then
