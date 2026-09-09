@@ -106,7 +106,7 @@ awase-windows -- --target x86_64-pc-windows-msvc`が全4本のlintで警告ゼ�
 
 ## タスクグループTB: 既存境界の宣言（[ADR-159](159-existing-io-boundary-inventory.md)段階0の主目的、[ADR-158](158-complexity-reduction-north-star.md)第1〜2段階）
 
-### TB0（round2 S13-2で追加、優先度高）: `send_input_safe`/`send_ime_control`の宣言
+### TB0（round2 S13-2で追加、優先度高）: `send_input_safe`/`send_ime_control`の宣言（完了、2026-09-09）
 
 **内容**: [ADR-159](159-existing-io-boundary-inventory.md)が段階0の「実際の成果物」と太字で
 明記している、`send_input_safe`（20箇所・12ファイル）と`send_ime_control`（10箇所・2ファイル
@@ -126,14 +126,32 @@ dylintでこの粒度が表現できない場合は「actuationを起こす`cmd`
 （10箇所、うちactuation対象は`cmd`ベースで2箇所）を分けて行う——合算した「20箇所」との照合は
 成立しない。
 
-### TB1: `apply_ime_open_with_view`/`_with_belief`の宣言
+**完了内容**: `send_input_safe`は20箇所・19の異なる呼び出し元関数名（12ファイル）、
+`send_ime_control`は10箇所・7の異なる呼び出し元関数名（3ファイル、`imm.rs`自身の定義を除く
+と2ファイル）を実測し`lints/actuation_call_guard`の`RESTRICTED_CALLS`へ宣言した。
+`send_ime_control`は`(関数,cmd)`粒度のdylint実装を見送り、7件全てを許可リストとして宣言する
+運用規約（ADR-159が事前承認した代替案）を採用した。呼び出し元名の中に4件の同名衝突
+（`reinject`・`send_chrome_gji_reinit_and_poll`・`send_unicode_char`・`send_vk_pair`、いずれも
+トレイト宣言+実装、または別ファイルの類似Strategy構造体の同名メソッド）を発見したが、
+実際にどちらも`send_input_safe`を呼んでいるのは宣言した側のみと確認済み（TA3が文書化した
+名前一致のみの制約と同種のリスク、現時点では偽陰性なし）。
+`cargo dylint --all -p awase-windows -- --target x86_64-pc-windows-msvc`
+（`DYLINT_RUSTFLAGS="-D warnings"`付き）がクリーンに通ることを確認済み。
+
+### TB1: `apply_ime_open_with_view`/`_with_belief`の宣言（完了、2026-09-09）
 
 **内容**: 4箇所（`apply_ime_open_with_view`）・2箇所（`apply_ime_open_with_belief`）の
 許可呼び出し元を宣言する。
 
+**完了内容**: `apply_ime_open_with_view`は`dispatch_ime_set_open`・
+`force_on_and_correct_romaji`・`reassert_explicit_physical_key`・
+`apply_ime_open_with_belief`（内部委譲）の4件、`apply_ime_open_with_belief`は
+`kp_apply_conv_engine_sync`・`ir_apply_drift_correction`の2件を実測し宣言した。
+両方とも既存`architecture_guard.rs`のガード期待値（4件・2件）と完全一致することを確認済み。
+
 **依存**: TA2。
 
-### TB2: `fix-requires-evidence.md`とガード期待値1件の生成
+### TB2: `fix-requires-evidence.md`とガード期待値1件の生成（完了、2026-09-09）
 
 **内容**: TB0・TB1で確定した宣言から、`.claude/rules/fix-requires-evidence.md`の「IME
 actuation合流点」該当行、および`crates/awase-windows/tests/architecture_guard.rs`の
@@ -145,11 +163,23 @@ actuation合流点」該当行、および`crates/awase-windows/tests/architectu
 ことを確認する。生成後、宣言に呼び出し元を1件追加してxtaskを再実行し、
 `fix-requires-evidence.md`該当行が自動更新されることを確認する。
 
+**完了内容**: `crates/xtask-adr-evidence`（syn構文解析で`RESTRICTED_CALLS`を読み取り、
+`architecture_guard.rs`のガード期待値・`fix-requires-evidence.md`向けの呼び出し元リストを
+出力する）を実装した。生成結果は`architecture_guard.rs`の`.apply_ime_open_with_view(`（4件）・
+`.apply_ime_open_with_belief(`（2件）と完全一致した。`fix-requires-evidence.md`の「IME
+actuation合流点」行との比較では、**当該行自体は「gate挿入ポイント」という別の粒度の
+キュレーションされた記述**（ADR-161 M1が既に指摘した通り、生成物ではなく`note`欄として
+人手で維持する対象）であるため機械的な完全一致は目指さないが、生成した呼び出し元リストを
+突き合わせた結果、`runtime/mod.rs::force_on_and_correct_romaji`
+（`apply_force_on_for_imm_broken`——ADR-149/151/153が扱うTsfNative唯一のON方向救済機構——
+から呼ばれる6つ目の独立入口）が当該行から漏れていることを新規発見し追加した。
+
 **round2追記（S13-4）**: [ADR-161](161-single-source-spec-generation.md)のD1が挙げる
 生成対象のうち、CLAUDE.md該当節（共有可変状態の一覧・dylint本数）の生成は**本タスクの
 スコープ外**とする（[ADR-158](158-complexity-reduction-north-star.md)第2段階「最初から
-広げない」方針に従う）。CLAUDE.mdのdylint本数の誤記（「2つ」、実際は3本）は生成を待たず
-手で先に直してよい。
+広げない」方針に従う）。**完了時点で確認**: CLAUDE.mdに総dylint本数の誤記は現存しない
+（「two dylint lints」という記述はbelief-architecture専用の2本を指す文脈であり総数の主張
+ではないため、修正不要と判断した）。
 
 ---
 

@@ -1,0 +1,9 @@
+[package]
+name = "xtask-adr-evidence"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "ADR-158 TB2: lints/actuation_call_guard の RESTRICTED_CALLS 宣言から、.claude/rules/fix-requires-evidence.md の該当行と architecture_guard.rs のガード期待値を生成する"
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }

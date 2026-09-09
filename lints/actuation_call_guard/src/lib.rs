@@ -63,6 +63,71 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
     // いる（`crates/xtask-spike`のsynスキャンで実測済み）。この呼び出し元だけを
     // 許可する（ADR-158 TA2）。
     ("set_ime_open", &["set_ime_open_ordered"]),
+    // send_input_safe（win32.rs）: ADR-159段階0の送信側主要対象。SendInput経由の
+    // 唯一のチョークポイント。2026-09-09時点の実測で20箇所・19の異なる呼び出し元
+    // 関数名（output/mod.rsの1関数が2箇所から呼ぶため19）を確認した（ADR-158 TB0）。
+    (
+        "send_input_safe",
+        &[
+            "inject_alt_menu_mask",
+            "reinject",
+            "transmit",
+            "send_keymap_target",
+            "post_kanji_toggle_to_focused",
+            "send_ime_mode_key",
+            "send_ime_mode_key_with_shift_release_prefix",
+            "toggle_caps_lock",
+            "send_chrome_gji_reinit_and_poll",
+            "send_key",
+            "send_ctrl_chord",
+            "send_unicode_char",
+            "send_vk_pair",
+            "send_vk_run_batch",
+            "flush_raw_tsf_literal_backspaces",
+            "kp_restore_kana_from_half_width",
+            "send_unicode_cold_warmup_keys",
+            "send_eager_warmup_vk_pair",
+            "send_all_modifier_key_ups",
+        ],
+    ),
+    // send_ime_control（imm.rs）: ADR-159段階0のもう一方の送信側対象。
+    // `SendMessageTimeoutW`の唯一のチョークポイント。関数名だけではactuation
+    // （cmd=IMC_SETOPENSTATUS/IMC_SETCONVERSIONMODE、7件中2件のみ:
+    // set_ime_open_for_target・modify_conv_mode）とprobe（cmd=IMC_GET*、残り）を
+    // 区別できないため（ADR-159 TB0 MF2、dylintでの(関数,cmd)粒度は未実装）、
+    // このリストは両方を含む「既知の正当な呼び出し元」全件（7つ）を宣言する運用
+    // 規約で代替する——probe専用の呼び出し元がここに含まれることはSSOTの希釈だが、
+    // 「無宣言の新規呼び出し元」を防ぐという本lintの主目的（RC4対策）は両方に対して
+    // 変わらず機能する。2026-09-09実測。
+    (
+        "send_ime_control",
+        &[
+            "capture_imc",
+            "set_ime_open_for_target",
+            "get_ime_conversion_mode_for_hwnd",
+            "modify_conv_mode",
+            "detect_ime_open_for_hwnd",
+            "detect_ime_conversion_for_hwnd",
+            "read_ime_state_fast",
+        ],
+    ),
+    // apply_ime_open_with_view: ADR-159段階0のもう1つの合流点。fix-requires-evidence.mdの
+    // 「IME actuation合流点」表が挙げる4箇所（2026-09-09実測、ADR-158 TB1）。
+    // `apply_ime_open_with_belief`からの内部委譲1件を含む。
+    (
+        "apply_ime_open_with_view",
+        &[
+            "dispatch_ime_set_open",
+            "force_on_and_correct_romaji",
+            "reassert_explicit_physical_key",
+            "apply_ime_open_with_belief",
+        ],
+    ),
+    // apply_ime_open_with_belief: 同表の2箇所（2026-09-09実測、ADR-158 TB1）。
+    (
+        "apply_ime_open_with_belief",
+        &["kp_apply_conv_engine_sync", "ir_apply_drift_correction"],
+    ),
 ];
 
 fn allowed_fns_for(target: &str) -> Option<&'static [&'static str]> {
