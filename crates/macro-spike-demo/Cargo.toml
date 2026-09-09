@@ -1,0 +1,11 @@
+[workspace]
+
+[package]
+name = "macro-spike-demo"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "macro-spikeの利用側。実際のactuation合流点データで検証する。恒久化しない。"
+
+[dependencies]
+macro-spike = { path = "../macro-spike" }

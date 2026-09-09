@@ -1,0 +1,16 @@
+[workspace]
+
+[package]
+name = "macro-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "ADR-161 機構選定指針スパイク: deriveマクロ(生成)と関数形式手続きマクロ(宣言DSL)の実現可能性検証。恒久化しない。"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
