@@ -588,13 +588,15 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
     let expected: &[(&str, usize, &str)] = &[
         (
             "state/platform_state.rs",
-            9,
+            10,
             "typed writer 定義 3 + handle_engine_set_open 内部委譲 1 (Decision 経由 \
              SetOpen — 救済: kp_stage_post_decision の PostSetOpenEisuReset) + \
              BUG-51 追補 v3 の IntentStore 回帰テスト内での write_sync_key/\
-             write_physical_key 直接呼び出し 5 件（新しい本番 IME-ON 経路ではなく \
-             既存 typed writer をテストから呼んでいるだけなので eisu-reset の \
-             追加配線は不要）",
+             write_physical_key 直接呼び出し 6 件（BUG-110 追補9、issue #189: \
+             check_drift_correction_ignores_heuristic_default_alone_without_\
+             explicit_intent が明示 OFF を作るための write_sync_key 呼び出しを \
+             1 件追加）（新しい本番 IME-ON 経路ではなく既存 typed writer を \
+             テストから呼んでいるだけなので eisu-reset の追加配線は不要）",
         ),
         (
             "runtime/key_pipeline.rs",
