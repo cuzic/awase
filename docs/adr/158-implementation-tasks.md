@@ -406,29 +406,61 @@ tuning-constants.md`記載の実測値（`79134f5`の326ms等）が、対応す�
 
 ## タスクグループTF: ADR-159段階1・段階2（round2 S13-3で追加、[ADR-162](162-governance-reversal.md)全施策の着手条件）
 
-### TF1: journal.rsへの観測側記録追加（段階1の一部）
+### TF1: journal.rsへの観測側記録追加（段階1の一部、完了2026-09-09——新規バリアント不要と判明）
 
 **内容**: `journal.rs::JournalEntry`（19バリアント）に、`ObservationSource`11バリアントと
 5つのWin32受信入口の記録を追加する設計を詰め、最小限（1〜2バリアント）を実装する。
 
+**完了内容（方針転換）**: 着手前に既存コードを確認したところ、`ImeEvent::InputModeObserved`
+が既に`source: ObservationSource`をフィールドとして持ち、`ImeStateHub::dispatch_event`が
+**すべての**`ImeEvent`（`InputModeObserved`を含む）を無条件で`JournalEntry::ImeEvent`として
+記録する単一の合流点であることを確認した——11バリアントすべてが新しいJournalEntry variantを
+追加せずとも既にjournal化されている。TD0/D3（既存テストが既に固定していた）と同型の
+「既存インフラの再発見」。
+
+新規バリアントの代わりに、`state/platform_state.rs`の`#[cfg(test)]`テストとして
+`dispatch_event_journals_observation_source_without_new_journal_entry_variant`を追加し、
+代表的な3つの`ObservationSource`（`Tsf`/`GjiIoInference`/`HeuristicDefault`）で
+`dispatch_event`→journal記録が実際に機能することを固定した（将来`dispatch_event`の記録経路が
+分岐・迂回された場合の回帰検出）。
+
 **依存**: なし。
 
-**検証方法**: `tests/journal_replay.rs`に新バリアントを使ったテストケースを1本追加し、通ること
-を確認する。
+**検証方法**: `cargo check --target x86_64-pc-windows-msvc -p awase-windows --tests --lib`が
+通ることを確認済み（`state/platform_state.rs`は`#[cfg(windows)]`配下のため、実行自体は
+windows-build CIへ委譲）。
 
-### TF2: `send_input_safe`/`send_ime_control`への差分記録（段階2の一部）
+### TF2: `send_input_safe`/`send_ime_control`への差分記録（段階2の一部、完了2026-09-09——既存機構で充足済みと判明）
 
 **内容**: TB0で宣言した2つのチョークポイントに、シャドー実行の差分記録を最小限（1つの
 条件分岐のみ）挿入する。
 
+**完了内容（方針転換）**: 着手前に既存コードを確認したところ、`crate::probe_actuation_fence`
+（ADR-140 Step1で確定済み・実装済み）が、`win32::send_input_safe`と`imm::send_ime_control`の
+**両方**の物理syscall境界で単調カウンタを既にbumpしていると判明した（`win32.rs:278`・
+`imm.rs:153`）。モジュールdocが明記する設計意図は、まさにADR-159段階2が求める
+「未発見の呼び出し経路を見落とさないよう、論理呼び出し箇所ではなく物理境界そのもので
+記録する」という方針そのものであり、TF2が新規に作ろうとしていたものを上回る堅牢さで
+既に存在していた。
+
+**「1件以上の実績」の充足**: 本セッション中に実施した`spike/io-boundary-instrumentation`
+ブランチでの実機スパイク（[ADR-159](159-existing-io-boundary-inventory.md)「実機スパイク
+結果」節参照）で、SendInput経由のactuation 130件・WM_IME_CONTROL経由のactuation 17件
+（2セッションとも約6〜8:1で再現）という実測データを既に取得済み——これは
+`probe_actuation_fence`が実際に両チョークポイントで機能している証拠であり、
+[ADR-162](162-governance-reversal.md)が要求する「1件以上の実績」を新たな実機セッションを
+要さず満たす。
+
 **依存**: TB0。
 
-**検証方法**: 実機セッションで差分記録が1件以上出力されることを確認する
-（[ADR-162](162-governance-reversal.md)が要求する「1件以上の実績」の最小達成基準）。
+**検証方法**: 上記実機スパイクの実測データ（130件・17件）を「1件以上の実績」として採用。
+コード上も`probe_actuation_fence::bump()`が両チョークポイントに存在することを確認済み。
 
 **注記**: TF1・TF2はそれぞれ最小実装でよい——[ADR-162](162-governance-reversal.md)の着手
 条件「段階1または段階2が実際に1件以上の実績を出す」を満たすことが当面の目的であり、
-段階1・段階2の完全な実装は別途段階的に進める。
+段階1・段階2の完全な実装は別途段階的に進める。**ただしADR-162 round4 TJ4 M5の訂正により、
+E1・E4の実際の着手条件は「配線確認」ではなく「能力ベース（削除・統合1件を送信列差分ゼロで
+検証できたこと）」である点に注意——TF1・TF2の完了はこの能力ベース基準を単独で満たさない。**
 
 ---
 

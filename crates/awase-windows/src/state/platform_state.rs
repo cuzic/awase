@@ -2696,4 +2696,51 @@ mod tests {
              書かれず、effective_open() は false のまま"
         );
     }
+
+    // ── ADR-158 TF1: ObservationSource の journal 記録経路 ─────────────────
+    //
+    // ADR-159段階0の当初計画は「JournalEntryに新しいバリアントを1〜2個追加する」
+    // だったが、着手時に確認したところ`ImeEvent::InputModeObserved`が既に
+    // `source: ObservationSource`をフィールドとして持ち、`dispatch_event`が
+    // 無条件で全ImeEventを`JournalEntry::ImeEvent`として記録している（単一の
+    // 合流点、上記`journal.record`呼び出し参照）ため、11バリアントすべてが
+    // 新しい機構なしで既にjournal化されていると判明した。このテストはその
+    // 事実を固定する回帰テストであり、将来`dispatch_event`の記録経路が
+    // 分岐・迂回された場合に検出する。
+
+    /// `InputModeObserved`を`dispatch_event`した場合、`ObservationSource`の値が
+    /// 欠落・置換されずにそのままjournalへ記録されることを確認する
+    /// （11バリアントのうち代表的な3つで検証、新規JournalEntryバリアントは不要）。
+    #[test]
+    fn dispatch_event_journals_observation_source_without_new_journal_entry_variant() {
+        for source in [
+            ObservationSource::Tsf,
+            ObservationSource::GjiIoInference,
+            ObservationSource::HeuristicDefault,
+        ] {
+            let mut ps = PlatformState::new();
+            ps.ime.dispatch_event(
+                ImeEvent::InputModeObserved {
+                    mode: InputModeState::ObservedKana,
+                    source,
+                    confidence: ObservationConfidence::Medium,
+                    at: TickMs(0),
+                },
+                TickMs(0),
+            );
+            let json = ps
+                .ime
+                .journal
+                .to_json()
+                .expect("journal to_json should succeed for a single recorded entry");
+            assert!(
+                json.contains("InputModeObserved"),
+                "source={source:?}: journalにInputModeObservedエントリが記録されていない: {json}"
+            );
+            assert!(
+                json.contains(&format!("{source:?}")),
+                "source={source:?}: journalにObservationSourceの値が記録されていない: {json}"
+            );
+        }
+    }
 }
