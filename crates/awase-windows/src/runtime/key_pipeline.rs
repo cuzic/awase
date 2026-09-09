@@ -1345,7 +1345,10 @@ impl Runtime {
         // 復帰できなくなる（BUG-115の元症状そのものの再現、観測できない
         // アプリ——UWP等——では恒久的に固着する）。
         let delegate_armed = self.mode_key_delegate_owns_shadow_toggle(event.vk_code);
-        let delegate_owned = delegate_armed && self.platform_state.ime.effective_open();
+        // /code-review指摘: 直後の`current`と同じ`effective_open()`を2回
+        // 呼んでいた（間に belief を書き換える処理は無い）ため、1回にまとめる。
+        let current = self.platform_state.ime.effective_open();
+        let delegate_owned = delegate_armed && current;
         // 同期キー (config sync_direction) > 物理 KANJI (Japanese 限定、GJI/
         // MS-IME自動検出由来のshadow_action) > ADR-153決定1の明示config
         // （`explicit_action_for_pipeline`、GJI/MS-IME自動検出とは独立）の
@@ -1376,7 +1379,6 @@ impl Runtime {
             event.ime_relevance.explicit_ime_action_consumed = true;
         }
 
-        let current = self.platform_state.ime.effective_open();
         let new_val = action.resolve(current);
         let tick_ms = crate::state::TickMs(hook::current_tick_ms());
         // 診断ログ (2026-08-05 "IME OFF 後 FocusChange 無しで Engine が勝手に ON へ
@@ -1462,17 +1464,21 @@ impl Runtime {
             // 立て、100ms 後の `resolve_pending_thumb_as_single`（消費点1）が
             // 同じ打鍵で優先順位3（delegate）を二重に発火させるのを止める。
             //
-            // `!current && effective_open()` と方向つきで書く（「belief が
-            // ON になった」場合のみ）理由: マーカーは `PendingThumb` に載って
-            // 最大 100ms（`simultaneous_threshold_ms`既定値）生き残る。belief
-            // が動かなかった打鍵（GJI既定の無変換=TurnOff×IME既にOFFが最頻）で
-            // マーカーを立てると、その100msの窓の間に`ir_apply_drift_
-            // correction`等の別経路がbeliefをONにした場合、タイムアウト時には
-            // engineが活性になっており、本来発火すべきdelegateを誤って
-            // 握り潰す。書き込み後の`effective_open()`（意図ではなく実際に
-            // reducerが受理した結果）を見るのは、直後の`:1460`の既存no-op
-            // 検出と同じidiom。
-            if delegate_armed && !current && self.platform_state.ime.effective_open() {
+            // 書き込み後の`effective_open()`（意図ではなく実際にreducerが
+            // 受理した結果）を見るのは、直後の`:1460`の既存no-op検出と同じ
+            // idiom。「beliefがONになった場合のみ」立てる理由: マーカーは
+            // `PendingThumb`に載って最大100ms（`simultaneous_threshold_ms`
+            // 既定値）生き残る。beliefが動かなかった打鍵（GJI既定の
+            // 無変換=TurnOff×IME既にOFFが最頻）でマーカーを立てると、その
+            // 100msの窓の間に`ir_apply_drift_correction`等の別経路がbelief
+            // をONにした場合、タイムアウト時にはengineが活性になっており、
+            // 本来発火すべきdelegateを誤って握り潰す。
+            //
+            // /code-review指摘: この`if`ブロックは`!delegate_owned`
+            // （＝`!(delegate_armed && current)`）の内側にあるため、
+            // `delegate_armed`が真なら`current`は必ず偽——`!current`は
+            // このスコープでは常に真となる冗長な項だったため削除した。
+            if delegate_armed && self.platform_state.ime.effective_open() {
                 event.ime_relevance.auto_delegate_open_axis_consumed = true;
             }
         }
