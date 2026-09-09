@@ -11253,6 +11253,60 @@ check`/`cargo clippy --target x86_64-pc-windows-msvc`（Linux 上、cross
 値が変わるため、`cfg!(windows)` 相当の determinism が無く有効なテストに
 しにくい——実機ビルド確認が実質的なテストを兼ねる）。
 
+**追補2（2026-09-09、上記「実機検証」は誤検証・真因はマニフェストではなかった）:**
+上記の追補1（`98c6afa7`）をdragonflyg4実機に取り込み再ビルド・再起動した
+直後にもかかわらず、`awase.log`に同一の
+`failed to spawn awase-settings.exe: ...(os error 50)` が再発した
+（再ビルド・プロセス再起動の13分後、および以後トレイの「設定」を選ぶたび
+100%再現）。前回の「実機検証済み」は再現条件を踏まなかっただけの誤検証
+だったと判明。
+
+**切り分け（実機A/Bテスト、いずれもdragonflyg4）:**
+1. `awase-settings.exe`からマニフェストXMLを直接抽出 →
+   `requestedExecutionLevel level="asInvoker"`を含む整形式XMLで正常。
+2. `[System.Diagnostics.Process]::Start`（`UseShellExecute=$false`、
+   内部的に`CreateProcessW`を使う）で同じ`awase-settings.exe`を外部から
+   直接起動 → 成功。
+3. `#![windows_subsystem = "windows"]`を付けた最小限のRustバイナリ
+   （awase.exeと同じGUIサブシステム・コンソール無し）をその場でビルドし、
+   `std::process::Command::new(target).spawn()`で同じファイルを起動
+   → 成功。
+4. Exploit Protectionの個別ミティゲーション・IFEO MitigationOptions・
+   RUNASADMIN互換性フラグ・AppLocker/WDAC・サードパーティAV/EDR・
+   ASRルール・ハンドル数枯渇 → いずれも実機で確認したが該当なし
+   （`Get-ProcessMitigation`はnotepad.exeとの比較で「空出力=未設定」と
+   確認、AppCompatFlags\Layersにawase関連エントリ自体が存在しない、等）。
+
+1〜3が示すとおり、マニフェストも`CreateProcessW`単体も問題ない。**稼働中の
+`awase.exe`から`std::process::Command::spawn()`を呼んだときだけ**
+再現し続けた。`FindWindow("awase_tray_window")` +
+`PostMessage(WM_COMMAND, IDM_SETTINGS=50)`を外部から送るだけで
+トレイクリック無しに100%再現できることも確認した（以後の検証を高速化）。
+
+**真因:** `crates/awase-windows/src/app/mod.rs::launch_settings_with_args`が
+`std::process::Command::new(&path).args(&args).spawn()`と、stdin/stdout/
+stderrを一切明示せずに呼んでいた。この場合Rustは親の標準入出力を子に
+継承させようとし、その際に構築される継承ハンドル許可リスト
+（`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`）が、フック・タイマー・
+`win32-async`ワーカースレッドを多数抱えた長時間稼働中のawase.exeでのみ
+`CreateProcessW`を`ERROR_NOT_SUPPORTED`で失敗させていたとみられる
+（起動直後の裸のテストバイナリでは再現せず、稼働中のawase.exeでのみ・
+かつ毎回再現したことと整合）。
+
+**修正:** `.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())`
+を明示することで継承経路自体を回避した。dragonflyg4実機で、この変更を
+適用したビルドに差し替えたところ、上記PostMessageトリガーで即座に
+`awase-settings.exe`が正常起動し、以後`failed to spawn`が再発しないことを
+確認済み。
+
+**教訓:** 「実機で1回成功を確認した」は「実機検証済み」と同義ではない。
+今回の症状は100%再現するにもかかわらず、追補1の検証ではたまたま踏まな
+かった（あるいは確認が不十分だった）。次回以降、この種の失敗は
+PostMessageによる直接トリガーのような機械的な再現手段を先に確立してから
+「直った」と判断すること。
+
+**関連:** [experiment-logging](../.claude/rules/experiment-logging.md)。
+
 ---
 
 ## BUG-80: 起動時・モーダルポンプ中のフックキー配送で打鍵が消える/順序が壊れる可能性
@@ -16703,3 +16757,49 @@ actuation_auto_when_explicit_config_is_set`。
 **関連ファイル:** `crates/awase-windows/src/gji_charset_autodetect.rs`
 （`route_thumb_key_action`、`sync_gji_charset_autodetect`内の呼び出し
 箇所2箇所）。関連: BUG-113/BUG-124（同型の二重信号送出パターン）。
+
+---
+
+## BUG-126: （未確認・理論的リスクとして調査しクローズ）タイマー経路の親指タイムスタンプがdrain replay時にライブ再取得され、別の押下の値と誤って比較されうる懸念——実機未再現、失敗シナリオも構成不能
+
+**経緯（2026-09-08、[ADR-155](adr/155-timer-path-live-thumb-requery-during-deferred-timer-replay.md)）:**
+[ADR-129](adr/129-thumb-timestamp-live-requery-during-gate-drain-replay.md)
+が指摘した「`hook::thumb_down_timestamps()`はライブ配送とdrain replayの
+両方から同一コードパスで呼ばれるため、drain replay時に『イベント発生時点の
+値』ではなく『replayを実行している"今"の値』を読んでしまう」という懸念が、
+`deferred_engine_timers`のreplay経路にも当てはまるかを調査した。
+
+**調査結果: 実害のある変種を1本も構成できなかった。** `handle_wm_drain_
+output_queue`の実行順序（1. `INPUT_DEFER.take_all()`で退避キーイベントを
+先にFSMへ流す、2. その後`deferred_engine_timers`を`os_id`照合付きでreplay）
+を踏まえ、到達可能な具体的なイベント列を洗った:
+
+- 親指KeyUpのみがdrain中に処理された場合: グローバルが`None`相当になり
+  `NicolaFsm::is_thumb_consumed`が`phys_down.is_some()`で不成立→実害なし。
+- `hook.rs`のグローバルクリア系関数によるゼロクリア: 同じく`phys_down =
+  None`になるだけで実害なし。
+- 実害がある変種（無関係な新しい押下が誤って「消費済み」と刻印される）に
+  必要な2条件（`os_id`一致・FSM状態維持）を両方満たす具体的なイベント列は、
+  round1レビューで1本も構成できなかった。
+
+**位置づけ: 「未観測・コードからの理論的特定のみ」ではなく「理論的にも
+未確立」。** `.claude/rules/tuning-constants.md`が禁じる「効かないので
+増やした」型の対症変更と同じ構造のリスクがあるため、実証されていない
+失敗シナリオへ実装コストを払わない判断とした。ADR-155はこの記録を残して
+クローズし、実装には進んでいない。
+
+**再オープンの条件:** 上記2条件（`os_id`一致・FSM状態維持）を両方すり抜ける
+具体的なイベント列を構成できた場合、または実機で再現した場合。その際は
+ADR-155「将来の実装案」節の案A（push時点でのスナップショット保持）・案B
+（`hook.rs`側で同一キーイベントに対し`now_timestamp()`を複数回呼ばないよう
+改める、より根本的）を出発点に設計すること——案A/Bのどちらを土台にするかは
+[ADR-129](adr/129-thumb-timestamp-live-requery-during-gate-drain-replay.md)
+自身の実装（まだ未着手）にも影響するため、ADR-129着手前に判断する順序依存が
+ある。
+
+**関連ファイル（未変更）:** `crates/awase-windows/src/hook.rs`
+（`now_timestamp()`、`update_thumb`）、`runtime/message_handlers.rs`
+（`handle_wm_drain_output_queue`/`handle_wm_timer`）、`runtime/mod.rs`
+（`build_ctx()`）。関連: [ADR-129](adr/129-thumb-timestamp-live-requery-during-gate-drain-replay.md)、
+[ADR-155](adr/155-timer-path-live-thumb-requery-during-deferred-timer-replay.md)、
+[ADR-156](adr/156-unify-deferred-execution-queues.md)（同型パターンの棚卸し）。
