@@ -215,21 +215,28 @@ TC1で`runtime/(...|mod)\.rs`として既に含めてあり、TB2が新たに発
 それぞれに一致していたファイルすべてを（和集合として）カバーすることを、実際に
 `git diff --name-only`相当のテストケースで確認する。
 
-### TC2: `core.hooksPath`の切り替え（TC1完了、実行待ち——ユーザー自身の操作が必要）
+### TC2: `core.hooksPath`の切り替え（完了、2026-09-09）
 
 **内容**: TC1完了後、`git config core.hooksPath .githooks`へ切り替える（ユーザー承認の上で
 実施）。
 
-**依存**: TC1（**必須**。TC1を経ずに実施すると3ファイルが対象から脱落する、round2 M-3）。
-**2026-09-09、TC1は完了・developマージ済み。TC2自体はClaude Codeのgit config変更禁止
-ルールにより実施せず、ユーザー自身が以下を実行すること**:
+**完了内容**: `git config core.hooksPath .githooks`はユーザー自身が実行した（Claude Code
+はgit config変更を行わない方針のため）。`git config core.hooksPath`が`.githooks`を返す
+ことを確認済み。
 
-```sh
-git config core.hooksPath .githooks
-```
+**実行時検証**: `.githooks/pre-push`に一時的な識別用echoを追加し、実際にpush（新規ブランチ
+`docs-adr158-tc2-verify-tmp`、検証後に削除済み）したところ、そのechoが出力に現れることを
+確認した——`core.hooksPath`切り替え後、実際に実行されるのが`.git/hooks/pre-push`（未追跡・
+旧内容）ではなく`.githooks/pre-push`（追跡下・TC1で和集合マージ済み）になったことを実地で
+確認した。識別用echoはこの検証後に削除し、フック本体は通常のクリーンチェック（`cargo xwin
+check --target x86_64-pc-windows-msvc -p awase-windows`）が正常に走ることも同じpushで
+確認済み。
+
+**依存**: TC1（**必須**。TC1を経ずに実施すると3ファイルが対象から脱落する、round2 M-3）——
+TC1は完了・developマージ済みのため満たされている。
 
 **検証方法**: `git config core.hooksPath`が`.githooks`を指すことを確認し、`.githooks/pre-push`
-を実際に編集してpushし、フックが発火することを確認する。
+を実際に編集してpushし、フックが発火することを確認する。→ 上記「実行時検証」の通り完了。
 
 ### TC3: 対象ファイル正規表現の生成への置き換え
 
