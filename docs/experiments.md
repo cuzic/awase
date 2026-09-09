@@ -25,7 +25,11 @@ awase の IME ON/OFF 制御・warmup・focus 分類まわりは、Windows / IME 
 
 ---
 
-## エントリ 18: issue #189（BUG-110追補7）修正——調停機構は即日撤回、既存ガード拡張へ
+## エントリ 27: issue #189（BUG-110追補7）修正——調停機構は即日撤回、既存ガード拡張へ
+
+（ADR-158 TD4、2026-09-09: 「エントリ18」を名乗る既存エントリが本ファイル下方
+（`エントリ18: issue #137...`）に既に存在していたため、その場で番号のみ27へ
+訂正した。以下の本文・見出し番号への言及も参照専用のため未変更）
 
 **背景**: MS-IME + Chromeでのdrift correction × force-ON二重SSOT振動
 （BUG-110追補7）に対し、当初「force-ONがdrift correctionの実行中バーストに
@@ -43,7 +47,11 @@ awase の IME ON/OFF 制御・warmup・focus 分類まわりは、Windows / IME 
 
 ---
 
-## エントリ 17: BUG-25 GJI 半角英数 entry の本実装（ADR-107 Task 1〜8）
+## エントリ 26: BUG-25 GJI 半角英数 entry の本実装（ADR-107 Task 1〜8）
+
+（ADR-158 TD4、2026-09-09: 「エントリ17」を名乗る既存エントリが本ファイル下方
+（`エントリ17: key_remap...撤回`）に既に存在していたため、その場で番号のみ26へ
+訂正した。当該エントリと連番の17〜25は動かしていない）
 
 **背景**: BUG-25 の GJI entry は scan付きF0、IMC write、scan=0 F0 の3案を
 いずれも撤回済み。ADR-107 決定0の2×2実機計測で `IME_KANJI_MARKER` +
