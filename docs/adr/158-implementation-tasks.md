@@ -368,7 +368,7 @@ tuning-constants.md`記載の実測値（`79134f5`の326ms等）が、対応す�
 --test layer_boundary_guard`（95件）全成功、`cargo fmt`/`cargo machete`/`cargo clippy`
 クリーンを確認済み。
 
-### TE2: `pending_deferred`の宣言強制（round2 M-7で機構を再選定）
+### TE2: `pending_deferred`の宣言強制（round2 M-7で機構を再選定、調査完了2026-09-09——(a)(b)いずれも不成立と確定）
 
 **内容**: **round2で判明**——`actuation_call_guard_spike`型の許可リスト方式dylintは
 「許可外から呼ばれた」という**存在**は検出できるが、「本来呼ぶべき窓口で呼ばれていない」
@@ -404,6 +404,25 @@ tuning-constants.md`記載の実測値（`79134f5`の326ms等）が、対応す�
   共有関数に集約するリファクタと、それを検証する通常のユニットテスト（ADR-123→ADR-128型の
   回帰を模したテストケース）で代替する。この分岐は8ファイルという分散度から見て現実的な
   可能性として想定しておくこと。
+
+**調査結果（2026-09-09、この分岐が実際に発生）**: `output/tsf_warmup_coord.rs`の
+「取り出し」系アクセサ4種を実際に精査したところ、当初想定した「defer側1窓口・drain側1窓口」
+という単純なモデルは成立しないと判明した。実際には**意図的に条件の異なる3つの独立した
+取り出し経路**が既に存在する:
+1. `take_pending_deferred_if_probe_idle`（`output/mod.rs::flush_pending_deferred_vks`
+   経由、probe idle時のみ・give-up専用、BUG-38）
+2. `discard_pending_deferred_after_stale_gji_reinit`（無条件破棄、ADR-123変更B）
+3. `drain_pending_deferred_before_send_if_queue_only`（queue-onlyのときだけ、ADR-123
+   変更A+C決定4-3）
+
+それぞれが異なるADR（BUG-38/ADR-103/ADR-123）由来の不変条件を持ち、doc commentで
+詳細に説明されている。これらを1つの共有ゲート関数へ統合するのは「偶発的重複の解消」
+ではなく「意図的に分離された3つの意味論を強制的に1つへ潰す」ことになり、(a)の前提
+（共有関数へ集約すればdylintで存在確認できる）も(b)の前提（`ReleaseToken<G>`という
+単一の許可構築点を設けられる）も成立しない。**新機構の追加・統合リファクタとも見送る**
+——各関数の密な不変条件ドキュメントを一次防御として維持し、新しい取り出し経路を追加する
+際は既存3経路のdocコメントを必ず読むことを次の担当者への申し送りとする。詳細は
+[ADR-161](161-single-source-spec-generation.md)の当てはめ表を参照。
 
 ### TE3: `AppImeProfile`能力表の段階的宣言化
 
