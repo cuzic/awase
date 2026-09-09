@@ -8,7 +8,17 @@
 - **(a) 回帰テスト**を追加する — golden / ジャーナルリプレイ / characterization の
   いずれか（下記「テストの置き場所」）。
 - **(b) [docs/known-bugs.md](../../docs/known-bugs.md)** に、症状・再現手順・修正履歴
-  （コミットハッシュ）を追記する。
+  （コミットハッシュ）を追記する。**1エントリあたり本文は目安30行以内**とする
+  （[ADR-158](../../docs/adr/158-complexity-reduction-north-star.md) TH4、
+  2026-09-09追記）——known-bugs.mdが16,825行まで膨らんだのは、まさにこの(b)の
+  選択肢が新規fixのたびに詳細な散文を要求し続け、削除・要約を促す仕組みが無かった
+  ことが一因（[ADR-158](../../docs/adr/158-complexity-reduction-north-star.md)
+  RC4参照）。要点（アプリ・IME・症状・原因・修正コミット）を簡潔に記録すれば足り、
+  経緯の詳細な物語は不要。将来的に[ADR-159](../../docs/adr/159-existing-io-boundary-inventory.md)
+  の記録・再生基盤が育てば、(b)は「再生トレースの追加」（実際に問題を再現する
+  journalトレースを`tests/journals/`等に保存する）へ置き換える予定（未実装、
+  能力ベースの前提条件は[ADR-162](../../docs/adr/162-governance-reversal.md)
+  E1/E4節参照）。
 
 ### 再発ファミリー（このルールが効く領域）
 
