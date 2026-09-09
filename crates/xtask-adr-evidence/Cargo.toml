@@ -7,3 +7,4 @@ description = "ADR-158 TB2: lints/actuation_call_guard の RESTRICTED_CALLS 宣�
 
 [dependencies]
 syn = { version = "2", features = ["full", "extra-traits"] }
+regex = "1"

@@ -195,6 +195,10 @@ jobs:
   # ADR-158 TB2（opus code reviewのM3で追加）: lints/actuation_call_guardの
   # RESTRICTED_CALLS宣言と architecture_guard.rs のガード期待値が一致しているかを
   # 機械的に照合する。実行するだけで比較・終了コードを返さなかった旧版の欠陥修正。
+  # ADR-158 TC3も同じバイナリに統合済み: .claude/rules/fix-requires-evidence.md の
+  # 「再発ファミリー」表のファイルパスが .githooks/pre-push の対象正規表現でカバー
+  # されているかも同時に照合する（ADR-156/BUG-116型の「表に追加したが正規表現の
+  # 更新を忘れる」退行を検出する）。
   adr-evidence-consistency:
     runs-on: ubuntu-latest
     steps:
