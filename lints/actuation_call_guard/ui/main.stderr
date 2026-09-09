@@ -1,0 +1,22 @@
+warning: calling `set_ime_open` from `apply_ime_open`, which is not its designated call site — route this through the sanctioned wrapper instead
+  --> $DIR/main.rs:11:9
+   |
+LL |         self.set_ime_open(open)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(restricted_actuation_call)]` on by default
+
+warning: calling `set_ime_open` from `rogue_caller`, which is not its designated call site — route this through the sanctioned wrapper instead
+  --> $DIR/main.rs:31:9
+   |
+LL |         PlatformRuntime::set_ime_open(self, open)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: calling `set_ime_open` from `another_rogue_caller`, which is not its designated call site — route this through the sanctioned wrapper instead
+  --> $DIR/main.rs:36:9
+   |
+LL |         self.set_ime_open(open)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: 3 warnings emitted
+
