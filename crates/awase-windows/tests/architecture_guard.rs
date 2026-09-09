@@ -3763,6 +3763,80 @@ fn kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate() {
     );
 }
 
+/// ADR-154: `auto_delegate_open_axis_consumed`マーカーが正しい場所でのみ
+/// 立てられ、`transport.rs`（follow-only原則、`explicit_ime_action_
+/// consumed`とは異なる第2の消費者を持つ既存フィールドと対称の位置づけ）から
+/// は一切読まれないことを固定する。
+///
+/// このマーカーは「消費点2（`kp_stage_shadow_ime_toggle`）がこの打鍵で
+/// beliefを実際にOFF→ONへ動かした」場合にのみ立てる必要がある——
+/// `if delegate_owned {...}`（delegateが所有し何もしないブランチ）の中で
+/// 立ててしまうと、消費点2も消費点1も何もしないBUG-115型の穴になる。
+#[test]
+fn auto_delegate_open_axis_consumed_marker_is_set_only_when_shadow_toggle_writes_belief() {
+    let content = read_crate_file("src/runtime/key_pipeline.rs");
+    let production = production_code_only(&content);
+    let body = extract_fn_body(production, "fn kp_stage_shadow_ime_toggle(");
+
+    // `if delegate_owned { ... }`（delegateが所有し何もしないブランチ、
+    // triage用ログのみ）にはマーカーが出現してはならない。
+    let owned_start = body.find("if delegate_owned {").expect(
+        "kp_stage_shadow_ime_toggle に `if delegate_owned {` ブロックが \
+         見つかりません。",
+    );
+    let owned_open_brace = owned_start + "if delegate_owned {".len() - 1;
+    let owned_end = find_balanced_close(body, owned_open_brace)
+        .expect("`if delegate_owned` ブロックの閉じ括弧が見つかりません。");
+    let owned_block = &body[owned_start..=owned_end];
+    assert!(
+        !owned_block.contains("auto_delegate_open_axis_consumed"),
+        "`if delegate_owned` ブロック（delegateが所有し何もしないブランチ）に \
+         `auto_delegate_open_axis_consumed` が出現しています。ここで \
+         マーカーを立てると、消費点2も消費点1も何もしないBUG-115型の穴に \
+         なります（ADR-154参照）。"
+    );
+
+    // `if !delegate_owned { ... }`（実際にbeliefを書き込むブランチ）には
+    // マーカーの代入が実際に存在すること（正のガード）。
+    let not_owned_start = body.find("if !delegate_owned {").expect(
+        "kp_stage_shadow_ime_toggle に `if !delegate_owned {` ブロックが \
+         見つかりません。",
+    );
+    let not_owned_open_brace = not_owned_start + "if !delegate_owned {".len() - 1;
+    let not_owned_end = find_balanced_close(body, not_owned_open_brace)
+        .expect("`if !delegate_owned` ブロックの閉じ括弧が見つかりません。");
+    let not_owned_block = &body[not_owned_start..=not_owned_end];
+    assert!(
+        not_owned_block.contains("auto_delegate_open_axis_consumed = true"),
+        "`if !delegate_owned` ブロック（実際にbeliefを書き込むブランチ）に \
+         `auto_delegate_open_axis_consumed = true` が見つかりません。\
+         ADR-154のマーカー設定ロジックが移動・削除されていないか確認して \
+         ください。"
+    );
+}
+
+/// ADR-154: `auto_delegate_open_axis_consumed`は`transport.rs::plan`から
+/// 参照してはならない（follow-only原則。`explicit_ime_action_consumed`との
+/// 違いはADR-154「決定」節・型のdocコメント参照）。
+#[test]
+fn transport_plan_never_reads_auto_delegate_open_axis_consumed() {
+    let content = read_crate_file("src/runtime/transport.rs");
+    // `production_code_only` は `#[cfg(test)] mod tests` の文字どおりの名前
+    // にしか対応しない。`transport.rs` のテストモジュールは `mod plan_tests`
+    // という別名のため、汎用版の `strip_any_test_module`（`#[cfg(test)]`
+    // 直後の `mod <任意の識別子>` を検出して切り落とす）を使う——さもないと
+    // 本テスト自身が追加した`plan_tests`内の`auto_delegate_open_axis_consumed`
+    // 出現（正しいfollow-only確認テスト）を「本番コードでの参照」と誤検出する。
+    let production = strip_any_test_module(&content);
+    assert!(
+        !production.contains("auto_delegate_open_axis_consumed"),
+        "crates/awase-windows/src/runtime/transport.rs の production コードが \
+         `auto_delegate_open_axis_consumed` を参照しています。このフィールドは \
+         engine非活性時（`Decision::PassThrough`）の物理配送可否を左右させて \
+         はならず、`transport.rs::plan`から読んではいけません（ADR-154参照）。"
+    );
+}
+
 /// ADR-153 決定1 M13の非対称性回帰ガード（2026-09-08、実機検証＋ユーザー
 /// 協議で確定）。
 ///

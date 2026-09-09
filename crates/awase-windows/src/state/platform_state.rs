@@ -2282,6 +2282,7 @@ mod tests {
                 is_ime_control: false,
                 is_ime_mode_key: false,
                 explicit_ime_action_consumed: false,
+                auto_delegate_open_axis_consumed: false,
             },
             modifier_key: None,
             modifier_snapshot: ModifierState::default(),

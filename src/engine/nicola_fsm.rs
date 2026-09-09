@@ -608,6 +608,7 @@ impl NicolaFsm {
                         thumb.injected,
                         c,
                         thumb.explicit_ime_action_consumed,
+                        thumb.auto_delegate_open_axis_consumed,
                     ),
                     ComposingHint::Unknown => (
                         ResolvedAction {
@@ -1585,6 +1586,7 @@ impl NicolaFsm {
                     thumb.injected,
                     self.phys.composing,
                     thumb.explicit_ime_action_consumed,
+                    thumb.auto_delegate_open_axis_consumed,
                 );
                 if ime_open_request.is_some() {
                     self.ime_open_requested = ime_open_request;
@@ -1714,6 +1716,7 @@ impl NicolaFsm {
                     injected: ev.injected,
                     modifier_key: ev.modifier_key,
                     explicit_ime_action_consumed: ev.explicit_ime_action_consumed,
+                    auto_delegate_open_axis_consumed: ev.auto_delegate_open_axis_consumed,
                 },
             );
             return ParseAction::Shift {
@@ -1771,6 +1774,7 @@ impl NicolaFsm {
             thumb.injected,
             self.phys.composing,
             thumb.explicit_ime_action_consumed,
+            thumb.auto_delegate_open_axis_consumed,
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -1789,6 +1793,7 @@ impl NicolaFsm {
             thumb.injected,
             self.phys.composing,
             thumb.explicit_ime_action_consumed,
+            thumb.auto_delegate_open_axis_consumed,
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -2102,6 +2107,14 @@ impl NicolaFsm {
     /// `ShadowImeAction`。呼び出し元（`&mut self` のメソッド）はこれを
     /// `self.ime_open_requested` へセットすること（このメソッド自体は `&self`
     /// のため直接セットできない）。
+    ///
+    /// `injected`/`composing`/`explicit_action_consumed`/
+    /// `auto_delegate_open_axis_consumed`の4個のboolはそれぞれ独立した
+    /// 分類・マーカーであり、two-variant enum化は不自然（opus-adversarial-
+    /// consult、ADR-153/ADR-154で検討済み）。呼び出し元は`PendingThumbData`
+    /// のフィールドをそのまま渡すため、まとめて1つの構造体にする案も
+    /// 呼び出し元7箇所+テスト側の書き換えコストに見合わないと判断した。
+    #[expect(clippy::fn_params_excessive_bools)]
     fn resolve_pending_thumb_as_single(
         &self,
         scan_code: ScanCode,
@@ -2110,6 +2123,7 @@ impl NicolaFsm {
         injected: bool,
         composing: bool,
         explicit_action_consumed: bool,
+        auto_delegate_open_axis_consumed: bool,
     ) -> (ResolvedAction, Option<crate::types::ShadowImeAction>) {
         // 親指キーが OS 修飾キー（Ctrl/Shift/Alt/Meta）に割り当てられている場合は
         // composing に関わらず常に suppress する（Alt 単独送出の副作用回避）。
@@ -2175,6 +2189,25 @@ impl NicolaFsm {
         // 固定テスト`explicit_ime_action_consumed_marker_overrides_
         // composing_passthrough_too`で明文化している。
         if explicit_action_consumed {
+            return Self::no_op_resolution();
+        }
+        // ADR-154: 消費点2（`kp_stage_shadow_ime_toggle`）がこの打鍵で belief を
+        // OFF→ON へ動かした。ActivationSync（`check_active_transition` →
+        // `handle_engine_activation_sync` → `GjiDirectStrategy`）が既に
+        // VK_IME_ON を実送信しているため、ユーザーの意図（IME を開ける）は
+        // 満たされている。ここで優先順位3（delegate）を発火させると同一打鍵に
+        // 対する2回目の actuation になり、優先順位4（`SoloTapAction::
+        // Passthrough`、下記）へ落とすと生の VK_NONCONVERT 等が合成送出され、
+        // BUG-123 と同型の二重送出（GJI がかな⇄カタカナ切替と誤認し、半角→
+        // カタカナに飛ぶ）になる。上の `explicit_action_consumed` と同じく
+        // `mode_key_config` の設定内容より優先して打ち切る（BUG-123の
+        // 「既知のトレードオフ」節と同じ判断）。
+        //
+        // 「第3の空振り」は起きない: 消費点2 の`write_physical_key`/
+        // `write_sync_key` 自身が既に `UserImeSetIntent` を dispatch し
+        // （`last_intent` を設定し）`record_explicit_intent` を呼んでいるため、
+        // このマーカーで打ち切っても明示意図の記録は失われない。
+        if auto_delegate_open_axis_consumed {
             return Self::no_op_resolution();
         }
         if let Some(open_axis_action) = special.delegate_to_open_axis.filter(|action| {
@@ -2803,6 +2836,7 @@ impl NicolaFsm {
             thumb.injected,
             self.phys.composing,
             thumb.explicit_ime_action_consumed,
+            thumb.auto_delegate_open_axis_consumed,
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -2834,6 +2868,7 @@ impl NicolaFsm {
                 thumb.injected,
                 self.phys.composing,
                 thumb.explicit_ime_action_consumed,
+                thumb.auto_delegate_open_axis_consumed,
             ),
             EngineState::Idle
             | EngineState::PendingCharThumb { .. }
@@ -2923,19 +2958,19 @@ impl NicolaFsm {
     }
 
     /// PendingThumb タイムアウト：親指キーを単独打鍵として確定する
-    fn timeout_pending_thumb(
-        &mut self,
-        scan_code: ScanCode,
-        vk_code: VkCode,
-        timestamp: Timestamp,
-        composing: bool,
-        modifier_key: Option<crate::types::ModifierKey>,
-        injected: bool,
-        explicit_ime_action_consumed: bool,
-    ) -> Resp {
+    ///
+    /// ADR-154: 引数を`PendingThumbData`1個にまとめてある。以前は
+    /// `scan_code`/`vk_code`/`timestamp`/`modifier_key`/`injected`/
+    /// `explicit_ime_action_consumed`を個別引数で受けていたが、いずれも
+    /// `PendingThumbData`のフィールドをそのまま渡しているだけであり、
+    /// `auto_delegate_open_axis_consumed`を追加すると`&mut self`込みで
+    /// 9個になり`clippy::too_many_arguments`（`clippy.toml`の閾値8）と
+    /// `clippy::fn_params_excessive_bools`（bool 4個）の両方に抵触する。
+    fn timeout_pending_thumb(&mut self, thumb: PendingThumbData, composing: bool) -> Resp {
         // ソロ連打によるエンジン OFF トリガーチェック
-        if self.engine_off_solo_repeat_vk.0 != 0 && vk_code == self.engine_off_solo_repeat_vk {
-            let count = self.solo_counter.record(vk_code, timestamp);
+        if self.engine_off_solo_repeat_vk.0 != 0 && thumb.vk_code == self.engine_off_solo_repeat_vk
+        {
+            let count = self.solo_counter.record(thumb.vk_code, thumb.timestamp);
             if count >= SOLO_OFF_TRIGGER_COUNT {
                 self.solo_counter.reset();
                 self.engine_off_requested = true;
@@ -2954,12 +2989,13 @@ impl NicolaFsm {
         // suppress/送出の判定（composing ガード・Space 例外・OS 修飾キーガード）は
         // resolve_pending_thumb_as_single に委譲し、flush 経路と挙動を統一する。
         let (resolved, ime_open_request) = self.resolve_pending_thumb_as_single(
-            scan_code,
-            vk_code,
-            modifier_key,
-            injected,
+            thumb.scan_code,
+            thumb.vk_code,
+            thumb.modifier_key,
+            thumb.injected,
             composing,
-            explicit_ime_action_consumed,
+            thumb.explicit_ime_action_consumed,
+            thumb.auto_delegate_open_axis_consumed,
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -3326,15 +3362,7 @@ impl NicolaFsm {
                 Response::pass_through().with_kill_timer(TIMER_PENDING)
             }
             EngineState::PendingChar(pending) => self.timeout_pending_char(&pending),
-            EngineState::PendingThumb(thumb) => self.timeout_pending_thumb(
-                thumb.scan_code,
-                thumb.vk_code,
-                thumb.timestamp,
-                composing,
-                thumb.modifier_key,
-                thumb.injected,
-                thumb.explicit_ime_action_consumed,
-            ),
+            EngineState::PendingThumb(thumb) => self.timeout_pending_thumb(thumb, composing),
             EngineState::PendingCharThumb {
                 char_key,
                 thumb,
@@ -3424,6 +3452,7 @@ mod tests {
             false,
             false,
             false,
+            false,
         );
         assert!(resolved.actions.is_empty());
         assert_eq!(request, Some(crate::types::ShadowImeAction::TurnOff));
@@ -3439,6 +3468,7 @@ mod tests {
             ScanCode(0x39),
             katakana_vk,
             None,
+            false,
             false,
             false,
             false,
@@ -3460,6 +3490,7 @@ mod tests {
             true,
             false,
             false,
+            false,
         );
         assert!(matches!(resolved.actions.as_slice(), [KeyAction::Key(vk)] if *vk == hiragana_vk));
         assert_eq!(request, None);
@@ -3474,6 +3505,7 @@ mod tests {
             ScanCode(0x39),
             hiragana_vk,
             None,
+            false,
             false,
             false,
             false,
@@ -3553,6 +3585,7 @@ mod tests {
             false,
             false,
             false,
+            false,
         );
         assert!(
             resolved.actions.is_empty(),
@@ -3588,6 +3621,7 @@ mod tests {
             false,
             false,
             true, // explicit_action_consumed
+            false,
         );
         assert_eq!(
             request, None,
@@ -3632,6 +3666,7 @@ mod tests {
             false,
             false, // composing=false → idle branch (Passthrough) が対象
             true,  // explicit_action_consumed
+            false,
         );
         assert_eq!(
             request, None,
@@ -3677,6 +3712,7 @@ mod tests {
             false,
             true, // composing=true → mode_key_config的にはPassthroughが期待される状態
             true, // explicit_action_consumed
+            false,
         );
         assert_eq!(
             request, None,
@@ -3688,6 +3724,116 @@ mod tests {
              explicit_action_consumedのときは生キーを再送してはならない \
              （GJIへの二重信号送出防止をユーザー設定より優先する意図的な \
              トレードオフ）。実際: {:?}",
+            resolved.actions
+        );
+    }
+
+    #[test]
+    fn auto_delegate_open_axis_consumed_marker_skips_delegate_to_open_axis() {
+        // ADR-154: 消費点2（`kp_stage_shadow_ime_toggle`）が既にこの打鍵で
+        // belief を OFF→ON へ動かした（`auto_delegate_open_axis_consumed=
+        // true`）なら、消費点1（この関数）は優先順位3（delegate）を二重に
+        // 発火させてはならない（BUG-113残置症状の根治）。
+        let mut fsm = make_test_fsm();
+        let muhenkan_vk = VkCode(0x1D);
+        fsm.set_thumb_key_solo_tap_config(
+            Some(muhenkan_vk),
+            ModeKeyConfig::from_legacy_bools(false, true),
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        fsm.set_muhenkan_delegate_to_open_axis(Some(crate::types::ShadowImeAction::TurnOn));
+        let (resolved, request) = fsm.resolve_pending_thumb_as_single(
+            ScanCode(0x7B),
+            muhenkan_vk,
+            None,
+            false,
+            false,
+            false,
+            true, // auto_delegate_open_axis_consumed
+        );
+        assert_eq!(
+            request, None,
+            "消費点2が既にbeliefをOFF→ONへ動かした打鍵は、消費点1がdelegateを \
+             二重発火させてはならない"
+        );
+        assert!(
+            resolved.actions.is_empty(),
+            "auto_delegate_open_axis_consumedのため打鍵はここで打ち切られ、\
+             mode_key_configへはフォールスルーしないのでactionsは空のはず、\
+             実際: {:?}",
+            resolved.actions
+        );
+    }
+
+    #[test]
+    fn auto_delegate_open_axis_consumed_marker_false_still_delegates() {
+        // 対照テスト: マーカーが立っていなければ従来どおりdelegateが発火する
+        // （マーカーが常時trueになる実装ミスを検出する）。
+        let mut fsm = make_test_fsm();
+        let muhenkan_vk = VkCode(0x1D);
+        fsm.set_thumb_key_solo_tap_config(
+            Some(muhenkan_vk),
+            ModeKeyConfig::from_legacy_bools(false, true),
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        fsm.set_muhenkan_delegate_to_open_axis(Some(crate::types::ShadowImeAction::TurnOn));
+        let (_resolved, request) = fsm.resolve_pending_thumb_as_single(
+            ScanCode(0x7B),
+            muhenkan_vk,
+            None,
+            false,
+            false,
+            false,
+            false, // auto_delegate_open_axis_consumed = false
+        );
+        assert_eq!(
+            request,
+            Some(crate::types::ShadowImeAction::TurnOn),
+            "マーカーが立っていなければdelegateは従来どおり発火するはず"
+        );
+    }
+
+    #[test]
+    fn auto_delegate_open_axis_consumed_marker_suppresses_mode_key_passthrough_replay() {
+        // BUG-123と同型の再発防止（ADR-154）: `mode_key_config`が
+        // `*_solo_tap_always_suppress=false`（idle=Passthrough）に設定された
+        // ユーザー環境で、消費点2が既にこの打鍵を処理済み
+        // （`auto_delegate_open_axis_consumed=true`）にも関わらず優先順位4へ
+        // フォールスルーすると、`SoloTapAction::Passthrough`分岐が生のVKを
+        // もう一度送出し、GJIがかな⇄カタカナ切替と誤認する（半角→カタカナに
+        // 飛ぶ）。`always_suppress=false`でも`resolved.actions`が空である
+        // ことを固定し、既存の`explicit_ime_action_consumed_marker_
+        // suppresses_mode_key_passthrough_replay`と同じ期待値になる
+        // ことで「2つのマーカーは対称に扱う」ことをテストとして残す。
+        let mut fsm = make_test_fsm();
+        let muhenkan_vk = VkCode(0x1D);
+        fsm.set_thumb_key_solo_tap_config(
+            Some(muhenkan_vk),
+            ModeKeyConfig::from_legacy_bools(false, false), // idle=Passthrough, composing=Suppress
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        fsm.set_muhenkan_delegate_to_open_axis(Some(crate::types::ShadowImeAction::TurnOn));
+        let (resolved, request) = fsm.resolve_pending_thumb_as_single(
+            ScanCode(0x7B),
+            muhenkan_vk,
+            None,
+            false,
+            false, // composing=false → idle branch (Passthrough) が対象
+            false,
+            true, // auto_delegate_open_axis_consumed
+        );
+        assert_eq!(
+            request, None,
+            "消費点2が既に処理済みなら、消費点1はdelegateを二重発火させてはならない"
+        );
+        assert!(
+            resolved.actions.is_empty(),
+            "mode_key_config=Passthroughであっても、auto_delegate_open_axis_ \
+             consumedのときは生キーを再送してはならない（GJIへの二重信号送出、\
+             BUG-123と同型の再発防止）。実際: {:?}",
             resolved.actions
         );
     }
@@ -3711,6 +3857,7 @@ mod tests {
             None,
             false,
             true, // composing
+            false,
             false,
         );
         assert_eq!(
@@ -3737,6 +3884,7 @@ mod tests {
             ScanCode(0x7B),
             muhenkan_vk,
             None,
+            false,
             false,
             false,
             false,
@@ -3774,6 +3922,7 @@ mod tests {
             false,
             false,
             false,
+            false,
         );
         assert_eq!(
             request, None,
@@ -3795,8 +3944,19 @@ mod tests {
         let hiragana_vk = VkCode(0x70);
         fsm.set_hiragana_katakana_thumb_key_config(Some(hiragana_vk), None);
         fsm.set_hiragana_delegate_to_open_axis(Some(crate::types::ShadowImeAction::TurnOn));
-        let resp =
-            fsm.timeout_pending_thumb(ScanCode(0x39), hiragana_vk, 0, false, None, true, false);
+        let resp = fsm.timeout_pending_thumb(
+            PendingThumbData {
+                scan_code: ScanCode(0x39),
+                vk_code: hiragana_vk,
+                is_left: false,
+                timestamp: 0,
+                injected: true,
+                modifier_key: None,
+                explicit_ime_action_consumed: false,
+                auto_delegate_open_axis_consumed: false,
+            },
+            false, // composing
+        );
         assert!(
             matches!(resp.actions.as_slice(), [KeyAction::Key(vk)] if *vk == hiragana_vk),
             "injectedな単独タップはPassthroughへフォールバックするはず、実際: {:?}",
@@ -3815,8 +3975,19 @@ mod tests {
         let hiragana_vk = VkCode(0x70);
         fsm.set_hiragana_katakana_thumb_key_config(Some(hiragana_vk), None);
         fsm.set_hiragana_delegate_to_open_axis(Some(crate::types::ShadowImeAction::TurnOff));
-        let resp =
-            fsm.timeout_pending_thumb(ScanCode(0x39), hiragana_vk, 0, false, None, false, false);
+        let resp = fsm.timeout_pending_thumb(
+            PendingThumbData {
+                scan_code: ScanCode(0x39),
+                vk_code: hiragana_vk,
+                is_left: false,
+                timestamp: 0,
+                injected: false,
+                modifier_key: None,
+                explicit_ime_action_consumed: false,
+                auto_delegate_open_axis_consumed: false,
+            },
+            false, // composing
+        );
         assert!(
             resp.actions.is_empty(),
             "delegate発火時はactionsが空のはず、実際: {:?}",

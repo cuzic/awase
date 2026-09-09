@@ -1344,8 +1344,8 @@ impl Runtime {
         // しない」状態を作り、IME OFFからひらがな/カタカナ親指キーで
         // 復帰できなくなる（BUG-115の元症状そのものの再現、観測できない
         // アプリ——UWP等——では恒久的に固着する）。
-        let delegate_owned = self.mode_key_delegate_owns_shadow_toggle(event.vk_code)
-            && self.platform_state.ime.effective_open();
+        let delegate_armed = self.mode_key_delegate_owns_shadow_toggle(event.vk_code);
+        let delegate_owned = delegate_armed && self.platform_state.ime.effective_open();
         // 同期キー (config sync_direction) > 物理 KANJI (Japanese 限定、GJI/
         // MS-IME自動検出由来のshadow_action) > ADR-153決定1の明示config
         // （`explicit_action_for_pipeline`、GJI/MS-IME自動検出とは独立）の
@@ -1455,6 +1455,25 @@ impl Runtime {
                         .ime
                         .write_physical_key(witness, new_val, tick_ms);
                 }
+            }
+            // ADR-154: delegate が armed なのに `!delegate_owned` だった＝
+            // この時点で belief は OFF であり、消費点2 がこの打鍵の open 軸を
+            // 裁定した。belief が実際に OFF→ON へ動いた場合に限りマーカーを
+            // 立て、100ms 後の `resolve_pending_thumb_as_single`（消費点1）が
+            // 同じ打鍵で優先順位3（delegate）を二重に発火させるのを止める。
+            //
+            // `!current && effective_open()` と方向つきで書く（「belief が
+            // ON になった」場合のみ）理由: マーカーは `PendingThumb` に載って
+            // 最大 100ms（`simultaneous_threshold_ms`既定値）生き残る。belief
+            // が動かなかった打鍵（GJI既定の無変換=TurnOff×IME既にOFFが最頻）で
+            // マーカーを立てると、その100msの窓の間に`ir_apply_drift_
+            // correction`等の別経路がbeliefをONにした場合、タイムアウト時には
+            // engineが活性になっており、本来発火すべきdelegateを誤って
+            // 握り潰す。書き込み後の`effective_open()`（意図ではなく実際に
+            // reducerが受理した結果）を見るのは、直後の`:1460`の既存no-op
+            // 検出と同じidiom。
+            if delegate_armed && !current && self.platform_state.ime.effective_open() {
+                event.ime_relevance.auto_delegate_open_axis_consumed = true;
             }
         }
         if self.platform_state.ime.effective_open() == current {
