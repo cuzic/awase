@@ -269,6 +269,17 @@ impl EvdevInput {
                         ime_relevance: classify_ime_relevance(keycode),
                         modifier_key: classify_modifier(keycode),
                         modifier_snapshot: Default::default(),
+                        // ADR-129: Linux は `main.rs` 側で
+                        // `event.key_classification` から親指状態を自前で追跡しており
+                        // （案(d)相当、Windows と異なり deliver_key_event 相当の早期
+                        // return 網を持たないため成立する）、RawKeyEvent 経由でこの
+                        // スナップショットを運ぶ必要が無い。`None` 固定でよいが、将来
+                        // core がこのフィールドを消費するコードを追加した瞬間、Linux は
+                        // `None` 固定のまま静かに壊れる（コンパイルは通る）——
+                        // core側で消費コードを足す際は本ファイルと `main.rs` 側の
+                        // 親指トラッキングを必ず同時に見直すこと。
+                        left_thumb_down_snapshot: None,
+                        right_thumb_down_snapshot: None,
                         // evdev はハードウェアイベントのみ（uinput 注入は別デバイス経由で
                         // ここには来ない）
                         injected: false,
