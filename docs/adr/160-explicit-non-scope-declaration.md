@@ -121,22 +121,37 @@ BUG-107型汚染は検出器が存在せず、症状が出て初めて人手で�
 **C2（アプリホワイトリスト化）— 収集未着手・計装新設がブロッカー（M5で既に判明済み）**:
 上記の通り計装が存在しない。
 
-**C3（conv-mode追跡全廃）— 書き込み側の棚卸しを実施、判断材料として重要な事実が判明**:
-`grep`による静的棚卸しで、conv-modeに言及するファイルは25個（240箇所超）確認したが、
-**実際に書き込む（`ImmSetConversionStatus`相当）経路は`output/conv_actuation.rs::
-actuate_conv_mode`ただ1つに既に集約されている**（ADR-084 P1/INV-1）。その唯一の
-呼び出し元は`runtime/key_pipeline.rs::kp_shift_conv_guard_key_down`で、**左Shift単独
-タップによる半角英数トグルON機能の一部**として使われている（`conv=0x0000`の書き込み）。
+**C3（conv-mode追跡全廃）— 書き込み側の棚卸しを実施**:
+`grep`による静的棚卸しで、conv-modeに言及するファイルは25個（240箇所超）確認した。
 
-これはC3の決定表の記述「`conv_classify`/`conv_actuation`/`eisu_recovery`系を削除」が
-示唆する「レガシーな余剰機構の削除」というイメージとは異なり、**現行の実ユーザー向け
-機能（Shift単独タップでの半角英数トグル）を実装する経路そのもの**である。C3を実施する
-場合、単なる削除ではなく「この機能自体を廃止する」か「conv-modeに依存しない別の実装
-（VK送信ベースのトグル等）へ置き換える」かの選択が必要になる——判断材料として、
-削除の実害は「かな⇔半角英数トグル機能の消失」という具体的なユーザー影響である点を
-明記する。読み取り側（約214〜240箇所、診断ログ・`classify_conv_transition`によるbelief
-補正等が主）は、project memoryが既に確立した「conv-modeはactuationのゲートに使わない」
-方針の対象であり、書き込み側とは別に扱う。
+**訂正（2026-09-09、opus code reviewで発見・M1）**: 当初「実際に書き込む
+（`ImmSetConversionStatus`相当）経路は`output/conv_actuation.rs::actuate_conv_mode`
+ただ1つに既に集約されている」「唯一の呼び出し元は`kp_shift_conv_guard_key_down`」と
+記述していたが、これは誤りだった。`actuate_conv_mode`が呼ぶ
+`crate::ime::set_ime_conv_for_target`自体に**5箇所**の呼び出し元がある
+（`output/conv_actuation.rs:176`＝`actuate_conv_mode`自身、`runtime/key_pipeline.rs:1928`/
+`:2489`/`:3079`、`tsf/warmup/cold_warmup.rs:94`）。さらに`IMC_SETCONVERSIONMODE`へ
+`set_ime_conv_for_target`を経由せず到達する経路が**4系統**ある（いずれも
+`ime.rs::modify_conv_mode`経由）:
+
+- `runtime/message_handlers.rs:1308` → `set_ime_mode_for_target`
+  （タスクトレイの「状態リセット」コマンド、**ユーザー向け機能**）
+- `runtime/mod.rs:2072` → `set_ime_hiragana_mode_cross_process_async`（`panic_reset`、
+  **ユーザー向け機能**）
+- `runtime/open_chain.rs:187` → `set_ime_open_then_conv_for_target`（ImmCrossのopen+conv
+  同時書き込み）
+- `ime.rs:1318` → `set_ime_romaji_mode_for_target_blocking`
+
+**実害の見積もりを訂正する**: C3実施の実害は「かな⇔半角英数トグル機能（Shift単独タップ）の
+消失」1点ではなく、**タスクトレイの状態リセット・panic_reset・ImmCrossのopen+conv同時
+actuationも巻き込む**。これはC3の決定表の記述「`conv_classify`/`conv_actuation`/
+`eisu_recovery`系を削除」が示唆する「レガシーな余剰機構の削除」というイメージとも異なり、
+**複数の現行機能にまたがる書き込み経路**である。C3を実施する場合、単なる削除ではなく、
+上記9呼び出し元それぞれについて「この機能自体を廃止する」か「conv-modeに依存しない別の
+実装（VK送信ベースのトグル等）へ置き換える」かの選択が個別に必要になる。読み取り側
+（約214〜240箇所、診断ログ・`classify_conv_transition`によるbelief補正等が主）は、
+project memoryが既に確立した「conv-modeはactuationのゲートに使わない」方針の対象であり、
+書き込み側とは別に扱う。
 
 C1〜C3のいずれかを実施する判断が下された場合、実施内容・影響範囲・移行手順は別途独立した
 ADRとして起票する。

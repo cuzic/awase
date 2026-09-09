@@ -198,6 +198,17 @@ actuation合流点」行との比較では、**当該行自体は「gate挿入�
 （`reassert_explicit_physical_key`、`fix-requires-evidence.md`の合流点表に明記されている
 5つ目の入口——round2で発見、どちらのファイルにも現状含まれていない）も含めて確認する。
 
+**注意（2026-09-09、opus code review S2で強調）**: このマージが反映されるのは**追跡下の
+`.githooks/pre-push`のみ**。`core.hooksPath`が`.githooks`に切り替わるまで（TC2、未実施）、
+**実際にpushのたびに実行されるのは引き続き`.git/hooks/pre-push`（未追跡、和集合反映前の
+古い内容のまま）である**。つまりTC1完了時点では、`runtime/transport.rs`・
+`runtime/ime_refresh.rs`・`runtime/mod.rs`（`.githooks/pre-push`側の正規表現には
+TC1で`runtime/(...|mod)\.rs`として既に含めてあり、TB2が新たに発見した6つ目の入口
+`force_on_and_correct_romaji`もこれでカバーされるが）は、実行される側のフックからは
+まだ見えていない。「和集合マージ完了」は「両ファイルの内容を統一した」という意味であり、
+「実行結果が変わった」という意味ではない——TC2が実行されるまで、この節が解決しようと
+していた「フックの見落とし穴」は実質的にまだ開いたままである。
+
 **依存**: なし。
 
 **検証方法**: マージ後の`.githooks/pre-push`の対象ファイル正規表現が、両ファイルの正規表現
@@ -491,31 +502,39 @@ layer_boundary_guard`（95件）・`cargo clippy`/`cargo fmt`/`cargo machete`の
 通ることを確認済み（`state/platform_state.rs`は`#[cfg(windows)]`配下のため、実行自体は
 windows-build CIへ委譲）。
 
-### TF2: `send_input_safe`/`send_ime_control`への差分記録（段階2の一部、完了2026-09-09——既存機構で充足済みと判明）
+### TF2: `send_input_safe`/`send_ime_control`への差分記録（段階2の一部、部分完了2026-09-09、opus code review S5で訂正）
 
 **内容**: TB0で宣言した2つのチョークポイントに、シャドー実行の差分記録を最小限（1つの
 条件分岐のみ）挿入する。
 
-**完了内容（方針転換）**: 着手前に既存コードを確認したところ、`crate::probe_actuation_fence`
-（ADR-140 Step1で確定済み・実装済み）が、`win32::send_input_safe`と`imm::send_ime_control`の
-**両方**の物理syscall境界で単調カウンタを既にbumpしていると判明した（`win32.rs:278`・
-`imm.rs:153`）。モジュールdocが明記する設計意図は、まさにADR-159段階2が求める
-「未発見の呼び出し経路を見落とさないよう、論理呼び出し箇所ではなく物理境界そのもので
-記録する」という方針そのものであり、TF2が新規に作ろうとしていたものを上回る堅牢さで
-既に存在していた。
+**訂正（opus code review S5）**: 当初「`crate::probe_actuation_fence`が既存機構で充足済み」
+としていたが、これは**解いている問題が違う**——正しい修正に差し替える。
+`probe_actuation_fence`（ADR-140 Step1）は`win32::send_input_safe`と`imm::send_ime_control`の
+**両方**の物理syscall境界で単調カウンタをbumpしている（`win32.rs:278`・`imm.rs:153`、
+かつ`send_input_safe`側はIME actuationマーカ付き送信のみを数え、ローマ字出力・backspace・
+unicode送信等の大半のトラフィックはそもそも数えていない）が、これは**probe/actuationの
+順序フェンス**であり、送信内容を1バイトも保持しない。TF2が本来求めていた「シャドー実行の
+**差分記録**」（送信列そのものを記録し、後で別実装との差分を取れるようにする）とは異なる
+機構であり、`probe_actuation_fence`の存在をもってTF2の内容が「充足済み」とは言えない。
+ADR-159段階2（送信列の記録・再生）は実質**未着手**のままである。
 
-**「1件以上の実績」の充足**: 本セッション中に実施した`spike/io-boundary-instrumentation`
+**「1件以上の実績」との関係**: 本セッション中に実施した`spike/io-boundary-instrumentation`
 ブランチでの実機スパイク（[ADR-159](159-existing-io-boundary-inventory.md)「実機スパイク
 結果」節参照）で、SendInput経由のactuation 130件・WM_IME_CONTROL経由のactuation 17件
-（2セッションとも約6〜8:1で再現）という実測データを既に取得済み——これは
-`probe_actuation_fence`が実際に両チョークポイントで機能している証拠であり、
-[ADR-162](162-governance-reversal.md)が要求する「1件以上の実績」を新たな実機セッションを
-要さず満たす。
+（2セッションとも約6〜8:1で再現）という実測データを取得済みだが、これは
+`probe_actuation_fence`（順序フェンス）が機能している証拠であって、TF2が求める
+「シャドー実行の差分記録」の実績ではない。**ADR-162 round4 TJ4 M5が既に訂正した通り、
+E1・E4の着手条件は「配線確認」ではなく「削除・統合1件を送信列差分ゼロで検証できたこと」
+という能力ベースの基準であり、この実測データ単独ではその基準を満たさない。**
+
+**残タスク**: `send_input_safe`/`send_ime_control`の呼び出し直前に、実際に送信する内容
+（VK列・cmd値等）を構造化ログまたはjournalへ記録する処理を最小限（1条件分岐）挿入する
+——これは次のセッションへの持ち越しとする。
 
 **依存**: TB0。
 
-**検証方法**: 上記実機スパイクの実測データ（130件・17件）を「1件以上の実績」として採用。
-コード上も`probe_actuation_fence::bump()`が両チョークポイントに存在することを確認済み。
+**検証方法（未達成）**: 実機セッションで送信内容そのものの差分記録が1件以上出力される
+ことを確認する（当初の検証方法を復元。`probe_actuation_fence`の存在確認では代替できない）。
 
 **注記**: TF1・TF2はそれぞれ最小実装でよい——[ADR-162](162-governance-reversal.md)の着手
 条件「段階1または段階2が実際に1件以上の実績を出す」を満たすことが当面の目的であり、
@@ -533,11 +552,12 @@ E1・E4の実際の着手条件は「配線確認」ではなく「能力ベー�
 （C1: ADR-095集計、C2: `focus/`学習キャッシュのカバレッジ実測とBUG-107型汚染の発生頻度、
 C3: conv-mode約214箇所の用途棚卸し）を収集する。
 
-**完了内容**: C3（書き込み側）を完了——`output/conv_actuation.rs::actuate_conv_mode`
-（ADR-084 P1/INV-1の唯一の窓口）を起点に静的棚卸しを行い、実際の書き込み経路が
-`runtime/key_pipeline.rs::kp_shift_conv_guard_key_down`（左Shift単独タップによる
-半角英数トグルON機能）の1箇所のみに集約済みと判明した。C3実施の実害は「かな⇔半角英数
-トグル機能の消失」という具体的なユーザー影響であることを判断材料として記録した
+**完了内容**: C3（書き込み側）を完了——`output/conv_actuation.rs::actuate_conv_mode`を
+起点に静的棚卸しを行った。**訂正（2026-09-09、opus code reviewで発見・M1）**: 当初
+「実際の書き込み経路は`kp_shift_conv_guard_key_down`の1箇所のみ」としていたが誤りで、
+実際には`set_ime_conv_for_target`経由5箇所＋`modify_conv_mode`経由4系統（うち2つは
+タスクトレイ「状態リセット」・`panic_reset`という現行のユーザー向け機能）の計9呼び出し元が
+ある。C3実施の実害は「かな⇔半角英数トグル機能の消失」1点ではなく複数の現行機能にまたがる
 （詳細は[ADR-160](160-explicit-non-scope-declaration.md)「TG1判断材料収集結果」節）。
 C1・C2は本セッションでは着手できなかった（C1は不具合報告raw JSONの取得手段への
 アクセスが本セッションに無く具体的にブロック、C2はM5が既に判明済みの計装未整備が

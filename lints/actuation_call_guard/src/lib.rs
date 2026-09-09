@@ -60,7 +60,8 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
     // メソッド。architecture_guard.rsは`.set_ime_open(`という正規表現で「本番
     // 呼び出し0件」を主張しているが、実際にはset_ime_open_ordered自身が
     // `PlatformRuntime::set_ime_open(self, open)`という完全修飾構文で1回呼んで
-    // いる（`crates/xtask-spike`のsynスキャンで実測済み）。この呼び出し元だけを
+    // いる（`spike/syn-xtask-prototype`ブランチの`crates/xtask-spike`のsynスキャンで
+    // 実測済み。このブランチには存在しない）。この呼び出し元だけを
     // 許可する（ADR-158 TA2）。
     ("set_ime_open", &["set_ime_open_ordered"]),
     // send_input_safe（win32.rs）: ADR-159段階0の送信側主要対象。SendInput経由の
@@ -186,6 +187,20 @@ impl<'a, 'tcx> Visitor<'tcx> for CallFinder<'a, 'tcx> {
                     emit(self.cx, expr.span, name, self.fn_name);
                 }
             }
+        }
+        // 2026-09-09（opus code review S1で追加）: `walk_expr`は`ExprKind::Closure`の
+        // パラメータ等は辿るが、本体（別の`Body`として`BodyId`経由で参照される）は
+        // `Visitor::nested_filter`のデフォルト（no-op）のため辿らない。このリポジトリの
+        // actuation呼び出しの多くが`spawn_local(async move { ... })`の中にあり、
+        // `async move {}`もHIR上は`ExprKind::Closure`へ脱糖されるため、この穴を放置すると
+        // クロージャ・asyncブロック内の呼び出しが構造的に検出対象から漏れる
+        // （2026-09-09時点で実害ゼロと実測済みだが、`send_input_safe`/`send_ime_control`
+        // の主要呼び出し経路がまさにこの形のため、次の追加がここに落ちる確率が高い）。
+        // `nested_filter`を設定する代わりに、ここで明示的にクロージャ本体を取得して
+        // 同じVisitorで再帰する（Visitorのトレイト境界を変えずに済む、最小の修正）。
+        if let ExprKind::Closure(closure) = expr.kind {
+            let nested_body = self.cx.tcx.hir_body(closure.body);
+            self.visit_expr(nested_body.value);
         }
         intravisit::walk_expr(self, expr);
     }

@@ -18,5 +18,11 @@ warning: calling `set_ime_open` from `another_rogue_caller`, which is not its de
 LL |         self.set_ime_open(open)
    |         ^^^^^^^^^^^^^^^^^^^^^^^
 
-warning: 3 warnings emitted
+warning: calling `set_ime_open` from `closure_rogue_caller`, which is not its designated call site — route this through the sanctioned wrapper instead
+  --> $DIR/main.rs:45:25
+   |
+LL |         let mut go = || self.set_ime_open(open);
+   |                         ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: 4 warnings emitted
 

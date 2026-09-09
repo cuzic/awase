@@ -4637,3 +4637,50 @@ fn autostart_register_call_sites_are_limited_to_tray_click_handler() {
         );
     }
 }
+
+/// ADR-158 TE1（opus code review M2で追加）: `tuning.rs`の全`pub const`に
+/// `#[measured_macro::measured(...)]`が付いていることを確認する。
+///
+/// `#[measured]`自体は`value_ms`と定数の実値が一致するかは検証するが、
+/// 「そもそも属性が付いているか」は検証しない（属性が無ければマクロは実行されず、
+/// 静かに素通りする）。新しい定数を無属性で追加する退行を、このガードで検出する。
+#[test]
+fn tuning_constants_all_have_measured_attribute() {
+    let content = read_crate_file("src/tuning.rs");
+    let lines: Vec<&str> = content.lines().collect();
+    let mut missing = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("pub const ") {
+            continue;
+        }
+        // 直前の非空行が #[measured_macro::measured(...)] であることを確認する。
+        let mut j = i;
+        let mut found = false;
+        while j > 0 {
+            j -= 1;
+            let prev = lines[j].trim();
+            if prev.is_empty() {
+                continue;
+            }
+            found = prev.starts_with("#[measured_macro::measured(");
+            break;
+        }
+        if !found {
+            let const_name = trimmed
+                .trim_start_matches("pub const ")
+                .split(':')
+                .next()
+                .unwrap_or(trimmed);
+            missing.push(format!("{const_name} (line {})", i + 1));
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "tuning.rsに#[measured_macro::measured(...)]の付いていないpub constがあります: \
+         {missing:?}\n\
+         新しい定数を追加した場合は、実測済みなら#[measured(value_ms=.., commit=\"..\")]、\
+         未実測ならせめて#[measured(pending = true)]を付けること \
+         (.claude/rules/tuning-constants.md)。"
+    );
+}

@@ -805,8 +805,30 @@ mod tests {
             (any::<bool>(), any::<bool>()).prop_map(|(eisu, romaji)| ConvMode { eisu, romaji })
         }
 
+        // 2026-09-09（opus code review S4で訂正）: 当初は3つのpropertyを持っていたが、
+        // 独立レビューで2件の問題が見つかり修正した。
+        //
+        // - 削除した「deterministic_for_same_inputs」（同じ入力からは同じ結果、を検証）は
+        //   vacuousだった。`classify_conv_transition`はCopy型の引数のみを取り、内部状態も
+        //   グローバル状態も一切持たない。このテストを失敗させうるコード変更は存在しない
+        //   （失敗させるには関数シグネチャ自体を変えるしかない）。「純粋関数である」という
+        //   事実は型シグネチャから自明であり、実行時テストとして固定する価値が無いと判断し
+        //   削除した。
+        // - 残した「no_self_transition_to_identical_input_mode」のdocは当初
+        //   「`conv_mode_changed=false`かつ`cm`が変わらない場合」と書いていたが誤りだった。
+        //   実装（`classify_conv_transition`本体、`cm.classify_idle(is_cold, current,
+        //   is_roman_reliable)`の呼び出し）を見ると`conv_mode_changed`はこの判定に一切
+        //   関与しない。また関数は前回の`cm`を引数に取らないため「`cm`が変わらない」は
+        //   そもそも表現不能な条件だった。実際に固定できているのは
+        //   「`classify_idle`は`Some(current)`（自己遷移）を返さない」という
+        //   `conv_mode_changed`の値に関わらず成立する、より単純な命題——これはこの直下の
+        //   直接呼び出しテストとして書き直した（proptestである必要はない、有限4値
+        //   （`ConvMode`は2bool）×belief5種×bool3個の組み合わせを全数確認すれば足りる）。
         proptest! {
-            /// 1. `classify_conv_transition` は任意の入力に対してpanicしない。
+            /// `classify_conv_transition` は任意の入力に対してpanicしない
+            /// （直下の`exhaustive_classify_conv_transition_matches_independent_oracle`が
+            /// 同じ320通りの入力空間を全数実行しておりこのpropertyを完全に包含するが、
+            /// 将来入力空間が広がった場合の安価な第一防衛線として残す）。
             #[test]
             fn never_panics_on_arbitrary_inputs(
                 cm in arb_conv_mode(),
@@ -825,44 +847,50 @@ mod tests {
                     is_roman_reliable,
                 );
             }
+        }
 
-            /// 2. 同じ入力からは常に同じ結果を返す（決定的、純粋関数の定義そのもの）。
-            #[test]
-            fn deterministic_for_same_inputs(
-                cm in arb_conv_mode(),
-                current in arb_input_mode_state(),
-                is_cold in any::<bool>(),
-                effective_open in any::<bool>(),
-                conv_mode_changed in any::<bool>(),
-                is_roman_reliable in any::<bool>(),
-            ) {
-                let a = classify_conv_transition(
-                    cm, current, is_cold, effective_open, conv_mode_changed, is_roman_reliable,
-                );
-                let b = classify_conv_transition(
-                    cm, current, is_cold, effective_open, conv_mode_changed, is_roman_reliable,
-                );
-                prop_assert_eq!(a, b);
-            }
-
-            /// 3. `conv_mode_changed=false` かつ `cm`が変わらない場合、
-            /// `input_mode_update`が`Some(current)`（同じ値への自己遷移）を
-            /// 返すことはない——遷移が無いなら`None`のはず、という不変条件。
-            /// （モジュールdocの「belief変化なしの場合」節が示す設計意図の一部を
-            /// property として固定する）
-            #[test]
-            fn no_self_transition_to_identical_input_mode(
-                cm in arb_conv_mode(),
-                current in arb_input_mode_state(),
-                is_cold in any::<bool>(),
-                effective_open in any::<bool>(),
-                is_roman_reliable in any::<bool>(),
-            ) {
-                let result = classify_conv_transition(
-                    cm, current, is_cold, effective_open, false, is_roman_reliable,
-                );
-                if let Some(update) = result.input_mode_update {
-                    prop_assert_ne!(update, current);
+        /// `classify_idle`は`Some(current)`（同じ値への自己遷移）を返さない——
+        /// 遷移が無いなら`None`のはず、という不変条件。`conv_mode_changed`の値には
+        /// 依存しない（`classify_conv_transition`本体がこの判定に`conv_mode_changed`を
+        /// 使わないため）ことを明示するため、true/false両方で確認する。
+        #[test]
+        fn no_self_transition_to_identical_input_mode() {
+            for &eisu in &[false, true] {
+                for &romaji in &[false, true] {
+                    let cm = ConvMode { eisu, romaji };
+                    for &current in &[
+                        InputModeState::ObservedRomaji,
+                        InputModeState::ObservedKana,
+                        InputModeState::ObservedEisu,
+                        InputModeState::Unknown,
+                    ] {
+                        for &is_cold in &[false, true] {
+                            for &effective_open in &[false, true] {
+                                for &conv_mode_changed in &[false, true] {
+                                    for &is_roman_reliable in &[false, true] {
+                                        let result = classify_conv_transition(
+                                            cm,
+                                            current,
+                                            is_cold,
+                                            effective_open,
+                                            conv_mode_changed,
+                                            is_roman_reliable,
+                                        );
+                                        if let Some(update) = result.input_mode_update {
+                                            assert_ne!(
+                                                update, current,
+                                                "自己遷移が発生: cm={cm:?} current={current:?} \
+                                                 is_cold={is_cold} \
+                                                 effective_open={effective_open} \
+                                                 conv_mode_changed={conv_mode_changed} \
+                                                 is_roman_reliable={is_roman_reliable}"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

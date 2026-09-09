@@ -1,7 +1,8 @@
 //! ADR-158 TE3前提サブタスク: `#[actuation_choke_point(callers = "...")]`属性マクロ。
 //!
 //! [ADR-161](../../docs/adr/161-single-source-spec-generation.md)実証実験5
-//! （`crates/macro-spike`のスパイク）を本実装化したもの。「まず記録・可視化してから
+//! （`spike/syn-xtask-prototype`ブランチの`crates/macro-spike`のスパイク。このブランチには
+//! 存在しない）を本実装化したもの。「まず記録・可視化してから
 //! dylintの許可リストへ昇格する」という[ADR-158](../../docs/adr/158-complexity-reduction-north-star.md)
 //! 「育て方」の考え方をコードとして具体化する——強制（コンパイルエラー）ではなく、実行時に
 //! 呼び出し元の`file:line`と期待される許可呼び出し元リストを`tracing::debug!`で記録する。

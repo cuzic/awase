@@ -35,6 +35,16 @@ impl Fake {
     fn another_rogue_caller(&mut self, open: bool) -> bool {
         self.set_ime_open(open)
     }
+
+    // Should trigger (2026-09-09, opus code review S1): the restricted call is nested
+    // inside a closure body. Before the S1 fix, `CallFinder` did not descend into
+    // closure/async-block bodies (a separate HIR `Body` reached via `BodyId`), so this
+    // call was silently invisible to the lint despite `closure_rogue_caller` itself not
+    // being an allowed caller.
+    fn closure_rogue_caller(&mut self, open: bool) -> bool {
+        let mut go = || self.set_ime_open(open);
+        go()
+    }
 }
 
 fn main() {}
