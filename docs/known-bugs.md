@@ -13862,6 +13862,146 @@ correction/`ImmBrokenForceOn`）と同一機構か、あるいは
 「explicit OFF送信後もGJIのnative convが変化しない」という別の
 未解明の現象かは未確認**——Phase 2着手時に切り分けが必要。
 
+**追補7（2026-09-08、report `01M1VHNFPH330D2VVWKHF3HERY`、GitHub issue #189）:**
+追補3が確定した根本原因（`ir_check_drift_correction`が読む`desired_open()`
+と`apply_force_on_for_imm_broken`のゲート`is_eligible_for_ime_force_on()`
+＝`effective_open()`という二重SSOT）が、**GJI/Windows Terminal以外——
+MS-IME + Chrome——でも実際に発火することを新規reportで確認した。**
+
+**入口点は追補3〜4のどちらとも異なる第3のパターン:** 物理IMEキーでも
+conv-bit推測(`ConvOpenInference`)でもなく、`platform_state.rs::
+reset_stale_ime_on_for_imm_broken`が発行する`HeuristicDefault`
+（Imm32Unavailableウィンドウへ入場した際、そのhwnd向けの`IntentStore`
+エントリも`last_intent`も無ければ「観測ゼロなので安全側でON」と
+Low confidenceで記録する）が起点。実機ログ(14:21:21〜14:21:22Z、
+1秒未満):
+
+1. `AppKind changed: Win32 → TsfNative (class=Chrome_WidgetWin_1)`
+   （直前のWord/Excelで`Ctrl+無変換`によりexplicit `desired_open=false`
+   済み。しかし`last_intent`は`FocusChanged`でクリアされ、Chromeの
+   hwndに対する`IntentStore`エントリも無い）
+2. `Imm32Unavailable entry without trusted cache: 安全デフォルトON`
+   → Low confidence `HeuristicDefault(true)`を記録
+3. `effective_open()`が`derive_any()`空→`most_recent_trusted()`
+   （confidence不問）でこの`HeuristicDefault(true)`を拾い`true`に
+   → `Engine activated (ime=true)` / `is_eligible_for_ime_force_on()`
+   も`true`
+4. 一方`ir_check_drift_correction`の`desired`は生の`desired_open()`
+   フィールドのまま`false`（HeuristicDefaultはLow confidenceなので
+   この生フィールド自体は動かない）→ `observed=true≠desired=false`
+   で`[drift] correction`が`VK_IME_OFF`相当(`0x001A`)を送信
+5. 直後に`apply_force_on_for_imm_broken`が`is_eligible_for_ime_force_on()
+   =true`を根拠に`force-ON (ImmBrokenForceOn)`で`0x0016`(IME ON)を再送
+6. 3〜5がもう一往復、その後フォーカスがUwpシェルへ移り沈静化
+
+**症状との対応関係は未確定（重要な限界）:** 本reportのjournal/app_log
+（往復窓のみ）には、この振動が起きていた約1秒間に実際のローマ字打鍵
+（`[key-output]`）が1件も無い——直前の最後の打鍵は約6分半前(14:14:44)
+であり、ユーザーはこの窓ではChromeへフォーカスを移しただけで実際に
+入力を試みていない。したがって「Edge/Chromeで全く入力できない」という
+体感が、この特定の振動そのものによるものか、本reportの捕捉範囲外
+（journalのring buffer容量制限で失われた別のタイミング）で起きた
+何かによるものかは、今回のログだけでは断定できない。ただし本追補3〜4が
+確定した機構自体は実コードに現在も存在し、条件（Imm32Unavailable
+ウィンドウへ`IntentStore`/`last_intent`の引き継ぎが無い状態で入場）が
+揃えば同じ振動が起きることをMS-IME/Chromeで新規に確認した、という
+事実は残る。
+
+**未着手のまま:** 追補4で「`apply_force_on_for_imm_broken`だけに
+`OpenWarrant`を適用する」案（本追補が示すペアの直接修正に相当）は
+Opus 2体の敵対的討論で**不採用**と結論済み（5段階梯子・3+ SSOT・
+BUG-69型無限再試行リスクのため）。追補5〜6のPhase 2は優先度が
+B1(`send_eager_tsf_warmup`)側に振られ、本追補が指すペア
+（`is_eligible_for_ime_force_on()` × `ir_check_drift_correction`の
+生`desired_open()`）自体への対応はPhase 2完了後も手つかずのまま。
+
+**追補8（2026-09-08〜09、検討の経緯——調停案は不採用・撤回）:**
+追補7のペアに対する修正として、当初「force-ONがdrift correctionの実行中
+バーストに調停で道を譲る」という新機構（`DriftBurst`列挙型・
+`force_on_yields_to_drift`純関数・専用リトライタイマー・新規チューニング
+定数`FORCE_ON_DRIFT_YIELD_RETRY_MS`など、[ADR-157](adr/157-symmetric-target-resolution-for-drift-correction-and-force-on.md)相当・約200行）を設計し、
+opus-adversarial-consult 4ラウンドを経て収束、実装、dragonflyg4実機ソーク
+まで完了させた（[drift-yield]ログで設計どおりforce-ONが退き、修正前に
+見られた1ms未満のタイトな往復は解消したことを確認済み）。
+
+**しかしユーザーから「発火する仕組みの上に抑止する仕組みを重ねており設計が
+複雑化している」との指摘を受け、再検討した結果、はるかにシンプルな根本
+修正が見つかったため、調停案は全面撤回した。** 詳細は追補9参照。
+`docs/adr/157-symmetric-target-resolution-for-drift-correction-and-force-on.md`
+は本撤回に伴いステータスを「不採用（撤回）」へ縮小した（旧設計の実装
+コード自体はgit履歴、コミット`6151cfb4`/`a3d88558`とそのrevertコミットに
+残る）。**同じ「setpointを統一する」案を実測なしに再提案しないための記録
+として、round1で判明した重要な知見をここにも残す:** `check_drift_correction`
+が読む`desired`を`IntentStore`優先→観測ベース導出→生フィールドの順に
+解決し直す、という素朴な統一案は、`observed`自体が`most_recent_trusted()`
+由来であるため`desired`も同じ経路から取ると必ず一致してしまい、明示意図が
+無い間drift correction全体が事実上無効化される（BUG-51型の正当な回復も
+止まりうる）。
+
+**追補9（2026-09-09、採用した修正）:** `check_drift_correction`
+（`state/platform_state.rs`）には元々、`ConvOpenInference`（conv ビットから
+の間接推測）を対象にした既存ガードがあった——「明示的なユーザー意図が
+一度も無い間は、この種の弱い間接観測だけでdrift correctionを発火させない」
+というもの（BUG-19由来）。`ObservationSource::authority()`
+（`state/ime_event.rs`）は`ConvOpenInference`と`HeuristicDefault`を
+**既に同じ`ObservationAuthority::BeliefOnly`**（actuationの根拠にならない）
+に分類していた——つまり両者は「外部観測の裏付けが一切ない、awase自身の
+推測である」という同じ性質を持つ、既に認識されていた同族だった。
+
+**採用した修正はこの既存ガードの対象に`HeuristicDefault`を1バリアント
+加えるだけ**（2行程度の変更）。Chrome入場時に`HeuristicDefault(true)`が
+記録されても、`explicit_intent()`が`None`（`FocusChanged`で`last_intent`が
+クリア済み）である限り`check_drift_correction`はそもそも発火しなくなり、
+`apply_force_on_for_imm_broken`（`effective_open()`経由で同じ
+`HeuristicDefault`を信頼する）は邪魔されずに発火する——振動が構造的に
+起きなくなる（「バーストが尽きるのを待つ」という間接的な解決ではなく）。
+`apply_force_on_for_imm_broken`側は一切変更しておらず、ADR-149/151/153が
+発見した`force_on_attempt_allowed`の`applied`詐称Blockerとは無関係
+（opus-adversarial-consultで`git diff origin/develop -- runtime/mod.rs`が
+0行であることも含めて確認済み）。
+
+**スコープ判断（同じ`BeliefOnly`分類の他4ソースは対象外）:** `HwndCache`・
+`FocusProbe`・`ConvBitsInference`・`GjiIoInference`も`authority()`上は
+同じ`BeliefOnly`だが、本ガードには含めない。`ConvBitsInference`/
+`GjiIoInference`はinput_mode専用でopen/close観測としてはそもそも
+`most_recent_trusted()`に到達しない（到達不能）。`HwndCache`が運ぶ値は
+`HwndCacheRestored`が`desired`に書く値と同一なので`trusted.open==desired`
+となり952行目の等値チェックで既に`None`になる（今日は無害だが、将来
+その不変条件が崩れたときに正当な補正経路を黙って殺す副作用だけが残るため
+あえて入れない）。`FocusProbe`は推測ではなく実IMC読み取り（Low confidence
+なのはhwnd曖昧性ゆえ、BUG-91由来）であり、抑止するとBUG-16/BUG-20型の
+固着を再導入するリスクがあるため実機再現なしに含めるべきではない。
+判断基準は`authority()==BeliefOnly`（6バリアントを含み広すぎる）ではなく
+「外部観測の裏付けが一切ない、awase自身の推測であること」——これを満たす
+のは`ConvOpenInference`と`HeuristicDefault`の2つだけ。
+
+**安全性（構造的な保証）:** `HeuristicDefault`は`open=true`固定の単一生成
+箇所（`reset_stale_ime_on_for_imm_broken`、`architecture_guard.rs`が件数1で
+固定）であるため、本ガードは構造的にOFF方向の書き込みしか抑止できず、
+BUG-16が担当するON方向の回復を塞ぐことは型として不可能。調停案（force-ON
+自体＝ON方向を止める設計）が新規に背負っていたリスクを、この非対称性だけで
+免れている。
+
+**残る限界（未解決のまま記録）:** 二重SSOT自体（`check_drift_correction`が
+生`desired_open()`、`is_eligible_for_ime_force_on()`が`effective_open()`を
+読む）は解消していない。`desired_open`がstale falseのウィンドウに
+Actuating系ソース（`ImmGetOpenStatus`/`ImmCrossProbe`/`ObserverPoll`/
+`Gji`/`Tsf`）が`open=true`を記録すれば、原理的には同じ振動が再現しうる。
+Imm32UnavailableではIMM読み取り自体がスキップされるためこれらのソースは
+出現しないはず、というのが本追補の対象を狭く絞ってよい根拠——ただし
+実機再現による裏付けはまだ無い。また、削除した追補8が記録していたとおり
+「症状との対応関係は未確定」（振動が起きた窓に実際の打鍵が無かった）
+という留保も引き続き有効——実機ソークで振動が解消したことは確認したが、
+それだけを根拠に issue #189 をクローズしないこと。
+
+**検証:** `cargo check --target x86_64-pc-windows-msvc`（`--tests`込み）・
+`clippy`・`fmt --check`全てpass（Linux実行不能な`platform_state.rs`は
+`#[cfg(windows)]`ゲート配下のためコンパイル確認のみ）。新規ユニットテスト
+`check_drift_correction_ignores_heuristic_default_alone_without_explicit_intent`
+を追加（既存の`..._ignores_conv_inference_alone_without_explicit_intent`と
+同型）。opus-adversarial-consultで検証済み。dragonflyg4実機での再ソークは
+別途実施予定。
+
 ## BUG-111: `run_ime_refresh` の 500ms 周期リフレッシュが実フォーカス変更の有無に関わらず `[imm-learning] profile 降格` ログを毎ティック再発火させる
 
 **症状（ユーザー報告「不具合報告レポートのテキスト入力フォームがおもすぎて実用に
