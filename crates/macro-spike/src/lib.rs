@@ -1,7 +1,12 @@
-//! ADR-161「機構の選定指針」実証実験3〜6（恒久化しない）。
+//! ADR-161「機構の選定指針」実証実験4〜6（恒久化しない）。
 //!
-//! - 実験3: deriveマクロによる「宣言→生成」(Markdown表の自動生成)の実現可能性を検証する。
-//! - 実験4: 関数形式の手続きマクロによる「宣言のDSL化」の実現可能性を検証する。
+//! 番号はADR-161本文に合わせている（round1 S-1で訂正: 当初このファイルは独自に
+//! 「実験3」「実験4」と番号を振っており、ADR-161側の「実験3=可視性+permitパターン
+//! (`spike/permit-pattern`ブランチ)」と衝突していた）。実験3はこのクレートには含まれない。
+//!
+//! - 実験4: deriveマクロ（`MarkdownRow`）による「宣言→生成」(Markdown表の自動生成)と、
+//!   関数形式の手続きマクロ（`choke_points!`）による「宣言のDSL化」——ADR-161では
+//!   まとめて「実験4」として記述している。
 //! - 実験5: 属性マクロ(実行時記録版)——関数に付けると呼び出し元のfile:lineを実行時に記録する。
 //!   dylintで強制する前の「まず可視化する」段階を想定。
 //! - 実験6: 属性マクロ(メタデータ強制版)——`#[measured(...)]`のように、必須フィールドが
@@ -15,7 +20,7 @@ use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{parse_macro_input, Data, DeriveInput, Fields, Ident, ItemFn, LitInt, LitStr, Token};
 
-/// 実験3: `#[derive(MarkdownRow)]`。
+/// 実験4: `#[derive(MarkdownRow)]`。
 ///
 /// 名前付きフィールドを持つ構造体に付けると、各フィールドを `Debug` 表示で
 /// 並べた Markdown テーブル行を返す `to_markdown_row(&self) -> String` を生成する。
@@ -52,7 +57,7 @@ pub fn derive_markdown_row(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         impl #name {
-            /// deriveマクロ(実験3)が生成したMarkdownテーブル行。
+            /// deriveマクロ(実験4)が生成したMarkdownテーブル行。
             pub fn to_markdown_row(&self) -> String {
                 let cells: Vec<String> = vec![ #( #cell_exprs ),* ];
                 format!("| {} |", cells.join(" | "))
@@ -62,7 +67,7 @@ pub fn derive_markdown_row(input: TokenStream) -> TokenStream {
     expanded.into()
 }
 
-/// 実験4: `choke_points! { ... }`。
+/// 実験4(DSL側): `choke_points! { ... }`。
 ///
 /// DSL:
 /// ```ignore
