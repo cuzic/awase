@@ -604,9 +604,12 @@ impl ImeStateHub {
         // （Chrome 入場直後、明示意図なし）では `off_drift_active` が
         // `false` になり、この warmup ゲートは以前より開きやすくなる。
         // 検討済み・実害なし: (1) ADR-132 の発端シナリオ（物理 IME キー
-        // 1回）は `last_intent`/`IntentStore` の両方が立つため
-        // `explicit_intent()` が `Some` になり新ガードを通らず、ADR-132 の
-        // 保護は保たれる。(2) issue #189 のケースでは warmup が向かう方向
+        // 1回）は `last_intent` が立つため `explicit_intent()`
+        // （`shadow_model.last_intent` のみを見る、`IntentStore` は無関係）
+        // が `Some` になり新ガードを通らず、ADR-132 の保護は保たれる
+        // （/code-review 指摘: 本コメントが誤って `IntentStore` も
+        // 関与すると書いていたのを訂正）。(2) issue #189 のケースでは
+        // warmup が向かう方向
         // （ON）と force-ON が向かう方向（ON）が一致するため、そもそも
         // ping-pong する相手がいない——ゲートは「drift correction と
         // warmup が反対方向に書き合う」ことを防ぐためのものであり、

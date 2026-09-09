@@ -146,6 +146,17 @@ pub enum ObservationSource {
     /// Medium+ 多数決には参加しないが、他に観測が一切ない場合の
     /// `effective_open()` フォールバックとしてのみ使われる。真の観測（Lowでも）が
     /// 後から届けば、鮮度・信頼度が同等以上のため上書きされる。
+    ///
+    /// **新しい「外部観測の裏付けが一切ない、awase 自身の推測」バリアントを
+    /// 追加するときの注意（BUG-110 追補9、/code-review 指摘）**:
+    /// `state/platform_state.rs::check_drift_correction` は `ConvOpenInference`
+    /// とこの `HeuristicDefault` の2つだけを明示的に列挙するガードを持つ
+    /// （`authority() == BeliefOnly` 全体ではなく、あえて狭い——`HwndCache`/
+    /// `FocusProbe`/`ConvBitsInference`/`GjiIoInference` を除外する理由は
+    /// 当該ガードのコメント参照）。同じ性質（外部観測の裏付けが無い自己推測）
+    /// を持つ新しいソースを追加する場合は、この enum に追加するだけでは
+    /// 自動的に保護対象へ入らない——`check_drift_correction` の
+    /// `matches!` も忘れず更新すること。
     HeuristicDefault,
 }
 
