@@ -326,7 +326,7 @@ MF-2で2つの欠陥が判明し撤回した**:
 
 ## タスクグループTE: tuning定数・キュー・AppImeProfileの宣言化（[ADR-158](158-complexity-reduction-north-star.md)第5段階）
 
-### TE1: tuning定数への`#[measured(...)]`本実装
+### TE1: tuning定数への`#[measured(...)]`本実装（完了、2026-09-09）
 
 **内容**: `#[measured(value_ms, margin_ms, commit)]`属性マクロを実装し、
 `crates/awase-windows/src/tuning.rs`の定数に適用する。
@@ -334,20 +334,39 @@ MF-2で2つの欠陥が判明し撤回した**:
 **round2訂正（M-5・M-6）**:
 - **実装先**: `crates/awase-vkmap`は通常ライブラリでproc-macroを同居できない（`[lib]`に
   `proc-macro = true`が必要かつマクロ以外をexportできない）。**新規crateを1つ作る**。
-- **定数の現況**: `tuning.rs`の`_MS`定数は実測**34個**（round2 S-12で33から訂正、非`_MS`の
-  `IME_DETECT_MISS_THRESHOLD`を含めると35個）。`.claude/rules/tuning-constants.md`が引用する
-  4定数（`CHROME_PROBE_MIN_MS`等）は**現在のtuning.rsに1件も存在しない**（リネーム/削除
-  済み、ルールファイル自体が古い）。tuning.rs内にコミットハッシュ表記は0件。
+- **定数の現況**: `tuning.rs`の定数は実測**35個**（round2 S-12で33から訂正した「34個」を
+  着手時にさらに実測し直したところ35個と判明、`IME_DETECT_MISS_THRESHOLD`含む）。
+  `.claude/rules/tuning-constants.md`が引用する4定数（`CHROME_PROBE_MIN_MS`等）は
+  **現在のtuning.rsに1件も存在しない**（リネーム/削除済み、ルールファイル自体が古い）。
+  tuning.rs内にコミットハッシュ表記は0件。
 - **段階導入**: `#[measured]`は`value_ms`と`commit`を必須にする実装のため、34定数すべてに
   一度に適用しようとすると34件分のgit考古学が前提になり「順次適用する」という当初方針と
   矛盾する。**未計測の定数向けに`#[measured(pending = true)]`のような猶予用バリアントを
   用意するか、計測が取れた定数から1つずつ適用するか**を先に決める。
 
+**完了内容**: `crates/measured-macro`（新規proc-macroクレート）を実装し、`pending=true`
+エスケープハッチを実装した（未実測の定数はこれで猶予、`value_ms`/`commit`のペアと
+`pending=true`のどちらか一方が必須）。`tuning.rs`の全35定数に属性を適用し、うち1件
+（`RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE`）は実際のgit考古学（`a6b4c0dd`、実測最大
+~370ms+130msマージン=500ms）で`value_ms=500, margin_ms=130, commit="a6b4c0dd"`を
+転記、残り34件は`pending=true`とした。強制が実際に機能することを、一時的に`value_ms`
+無しの属性へ書き換えてコンパイルエラーを確認 → 復元、という形で実地検証済み。
+
+**副産物（regression fix）**: この作業で全体の`cargo nextest run`を実行した際、直前の
+TF1コミット（`platform_state.rs`への回帰テスト追加）が
+`architecture_guard.rs::input_mode_observed_construction_sites_are_accounted_for`
+（`ImeEvent::InputModeObserved {`のテキスト一致件数ガード）を1→2で壊していたことを
+発見・修正した。TF1コミット時に`architecture_guard`/`layer_boundary_guard`テストを
+実行し忘れていたための見落とし。
+
 **依存**: なし（TA〜TDと並行できる）。
 
 **検証方法**: 属性を付けた定数について`cargo check`が通ること。`.claude/rules/
 tuning-constants.md`記載の実測値（`79134f5`の326ms等）が、対応する**現行の**定数名に
-転記できるかをまず確認してから着手する。
+転記できるかをまず確認してから着手する。`cargo check --target x86_64-pc-windows-msvc
+-p awase-windows`成功、`cargo nextest run -p awase-windows --test architecture_guard
+--test layer_boundary_guard`（95件）全成功、`cargo fmt`/`cargo machete`/`cargo clippy`
+クリーンを確認済み。
 
 ### TE2: `pending_deferred`の宣言強制（round2 M-7で機構を再選定）
 
