@@ -28,6 +28,7 @@ libraries = [
     { path = "lints/no_vk_as_scan" },
     { path = "lints/ime_event_guard" },
     { path = "lints/observation_source_guard" },
+    { path = "lints/actuation_call_guard_spike" },
 ]
 
 [package]

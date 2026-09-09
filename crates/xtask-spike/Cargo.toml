@@ -1,0 +1,12 @@
+[workspace]
+
+[package]
+name = "xtask-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "ADR-161 D1検証用スパイク: synベースのsource-parsing xtaskが実現可能か試作する。恒久化しない。"
+
+[dependencies]
+syn = { version = "2", features = ["full", "visit", "extra-traits"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }

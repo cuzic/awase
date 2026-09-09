@@ -1,0 +1,21 @@
+[workspace]
+
+[package]
+name = "actuation_call_guard_spike"
+version = "0.1.0"
+authors = ["authors go here"]
+description = "ADR-161 D1検証スパイク: actuation合流点への呼び出しを許可リスト方式で強制するdylint lintの試作。恒久化しない。"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+dylint_linting = "6.0.0"
+
+[dev-dependencies]
+dylint_testing = "6.0.0"
+
+[package.metadata.rust-analyzer]
+rustc_private = true
