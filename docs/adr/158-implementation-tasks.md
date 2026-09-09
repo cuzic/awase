@@ -155,7 +155,7 @@ actuation合流点」該当行、および`crates/awase-windows/tests/architectu
 
 ## タスクグループTC: pre-push regex統一（[ADR-158](158-complexity-reduction-north-star.md)第3段階）
 
-### TC1: `.githooks/pre-push`と`.git/hooks/pre-push`の和集合マージ（round2 M-3で2段手順に修正）
+### TC1: `.githooks/pre-push`と`.git/hooks/pre-push`の和集合マージ（round2 M-3で2段手順に修正、完了2026-09-09）
 
 **内容**: **round2で判明**——2ファイルの乖離は片方向ではなく**双方向**である。追跡下の
 `.githooks/pre-push`のみが含む対象（`runtime/transport.rs`・`runtime/ime_refresh.rs`・
@@ -174,12 +174,18 @@ actuation合流点」該当行、および`crates/awase-windows/tests/architectu
 それぞれに一致していたファイルすべてを（和集合として）カバーすることを、実際に
 `git diff --name-only`相当のテストケースで確認する。
 
-### TC2: `core.hooksPath`の切り替え
+### TC2: `core.hooksPath`の切り替え（TC1完了、実行待ち——ユーザー自身の操作が必要）
 
 **内容**: TC1完了後、`git config core.hooksPath .githooks`へ切り替える（ユーザー承認の上で
 実施）。
 
 **依存**: TC1（**必須**。TC1を経ずに実施すると3ファイルが対象から脱落する、round2 M-3）。
+**2026-09-09、TC1は完了・developマージ済み。TC2自体はClaude Codeのgit config変更禁止
+ルールにより実施せず、ユーザー自身が以下を実行すること**:
+
+```sh
+git config core.hooksPath .githooks
+```
 
 **検証方法**: `git config core.hooksPath`が`.githooks`を指すことを確認し、`.githooks/pre-push`
 を実際に編集してpushし、フックが発火することを確認する。
