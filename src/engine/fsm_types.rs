@@ -736,6 +736,8 @@ mod tests {
             ime_relevance: crate::types::ImeRelevance::default(),
             modifier_key,
             modifier_snapshot: Default::default(),
+            left_thumb_down_snapshot: None,
+            right_thumb_down_snapshot: None,
             injected: false,
         }
     }

@@ -288,7 +288,16 @@ impl Runtime {
             self.platform_state.gate.half_width_alnum.is_toggle_active();
         let shadow_toggled = self.kp_stage_shadow_ime_toggle(&mut event);
 
-        let (left_thumb_down, right_thumb_down) = hook::thumb_down_timestamps();
+        // ADR-129: ライブクエリ（`hook::thumb_down_timestamps()`）は使わない。
+        // drain replay 中に「replay を実行している"今"」の値を誤って読んでしまう
+        // ため、`hook.rs::build_raw_key_event` が capture 時点で埋め込んだ
+        // スナップショットをそのまま使う。ライブ配送と drain replay が同一の
+        // 値の出所（capture-time snapshot）を共有することになり、両者の分岐が
+        // 構造的に無くなる。
+        let (left_thumb_down, right_thumb_down) = (
+            event.left_thumb_down_snapshot,
+            event.right_thumb_down_snapshot,
+        );
         let ctx = super::build_input_context(
             self.platform_state.ime.effective_open(),
             self.platform_state.ime.input_mode(),
@@ -326,7 +335,7 @@ impl Runtime {
         tracing::debug!(
             "[engine-input] vk=0x{:02X} {:?} ts={}us delay={}ms state={} \
              mods(c={} s={} a={} w={}) gas_ctrl={} phys_ctrl={} extra=0x{:X} \
-             pending_drain={} gate_active={} \
+             pending_drain={} gate_active={} l_thumb={:?} r_thumb={:?} \
              [diag-ctx] ime_on={} japanese={} input_mode={:?} composing={}",
             event.vk_code,
             event.event_type,
@@ -342,6 +351,8 @@ impl Runtime {
             event.extra_info,
             pending_drain.map_or_else(|| "?".to_owned(), |n| n.to_string()),
             gate_active,
+            ctx.left_thumb_down,
+            ctx.right_thumb_down,
             ctx.ime_on,
             ctx.is_japanese_ime,
             ctx.input_mode,

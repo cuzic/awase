@@ -2,7 +2,14 @@
 
 ## ステータス
 
-**設計確定・実装未着手。** opus-adversarial-consult を通算3ラウンド実施し
+**実装済み（2026-09-09）。BUG-127として記録。** `cargo test --lib`
+（1007件）・`cargo test --test scenarios`（8件）・`cargo nextest run
+-p awase-windows --test architecture_guard --test golden_scenarios
+--test layer_boundary_guard`（117件）・`cargo check`/`cargo clippy`
+（host + `--target x86_64-pc-windows-msvc`）全green。テスト節 (a-1)〜(a-4)
+すべて実装済み。Windows実機ソークは未実施。
+
+opus-adversarial-consult を通算3ラウンド実施し
 （round1: 2026-09-04 の v1→v2、round2: 同日の v2 確認、round3: 2026-09-08 の
 案B対案検討）、いずれも収束済み。
 report `01M1N36MGDDJ5HN8FWRE4ZHS3J`（2026-09-04、タスクトレイ「不具合を報告」

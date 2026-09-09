@@ -183,6 +183,85 @@ fn build_input_context_callers_do_not_drop_thumb_down_state() {
     }
 }
 
+/// ADR-129 (a-1): `hook::thumb_down_timestamps()`（親指ダウンタイムスタンプの
+/// ライブクエリ）の呼び出し許可箇所を固定する。`key_pipeline.rs` は
+/// capture 時点のスナップショット（`event.left_thumb_down_snapshot` /
+/// `event.right_thumb_down_snapshot`）を読むだけで、ライブクエリを呼んでは
+/// ならない——呼ぶと drain replay 中に「replay を実行している"今"」の値を
+/// 誤って読み、無関係な親指押下と誤ってペアリングされる
+/// （ADR-129 が扱った実インシデント）。
+///
+/// 許可箇所は3つ: `hook.rs`（capture 時点で1回呼び `RawKeyEvent` へ埋め込む
+/// 本来の発生源）、`runtime/mod.rs::build_ctx`、
+/// `runtime/message_handlers.rs`（タイマー直接発火経路の手書き複製、
+/// `build_ctx` を経由しない。ADR-155 が指摘した既知の未解消の穴）。
+#[test]
+fn thumb_down_timestamps_live_query_is_limited_to_designated_call_sites() {
+    let known_sites: &[(&str, usize)] = &[
+        ("src/hook.rs", 1),        // capture 時点で1回呼び RawKeyEvent へ埋め込む
+        ("src/runtime/mod.rs", 1), // build_ctx
+        ("src/runtime/message_handlers.rs", 1), // タイマー直接発火経路（build_ctx 非経由）
+    ];
+    for (path, expected) in known_sites {
+        let content = read_crate_file(path);
+        let count = count_real_calls(&content, "thumb_down_timestamps(");
+        assert_eq!(
+            count, *expected,
+            "{path} 内の `thumb_down_timestamps()` 呼び出し箇所数が想定({expected})と \
+             異なります(実際: {count})。ADR-129 参照。"
+        );
+    }
+
+    let key_pipeline = read_crate_file("src/runtime/key_pipeline.rs");
+    let count = count_real_calls(&key_pipeline, "thumb_down_timestamps(");
+    assert_eq!(
+        count, 0,
+        "src/runtime/key_pipeline.rs は `hook::thumb_down_timestamps()` の \
+         ライブクエリを呼んではならない（ADR-129）。`event.left_thumb_down_snapshot` / \
+         `event.right_thumb_down_snapshot` を読むこと。"
+    );
+}
+
+/// ADR-129 (a-2-i): `key_pipeline.rs` が実際に capture-time スナップショット
+/// （`event.left_thumb_down_snapshot` / `event.right_thumb_down_snapshot`）を
+/// 読んでいることを固定する。
+///
+/// 上の負のガード（ライブクエリを呼ばない）だけでは、「ライブクエリを消したが
+/// `None, None` を渡している」状態を通してしまう（opus-adversarial-consult
+/// round2 critic 指摘、S1）。`build_input_context(` への引数文字列を厳密に
+/// 一致させる形にはしない——`let (left_thumb_down, right_thumb_down) =
+/// (event.left_thumb_down_snapshot, event.right_thumb_down_snapshot);` という
+/// ローカル束縛経由の実装も正しいため、出現有無だけを見る。
+#[test]
+fn key_pipeline_reads_thumb_down_snapshot_from_event() {
+    let content = read_crate_file("src/runtime/key_pipeline.rs");
+    for field in [
+        "event.left_thumb_down_snapshot",
+        "event.right_thumb_down_snapshot",
+    ] {
+        assert!(
+            content.contains(field),
+            "src/runtime/key_pipeline.rs は `{field}` を読んでいる必要があります（ADR-129）。"
+        );
+    }
+}
+
+/// ADR-129 (a-2-ii): `key_pipeline.rs` が `build_ctx()` を呼ばないことを固定する。
+///
+/// 将来ここで `self.build_ctx()` を呼べば `runtime/mod.rs::build_ctx` 経由で
+/// ライブクエリが**間接的に**復活しうるが、上の負のガードは
+/// `hook::thumb_down_timestamps` という文字列を探しているだけなのでそれを
+/// 検知できない（opus-adversarial-consult round2 critic 指摘、S5）。
+#[test]
+fn key_pipeline_does_not_call_build_ctx() {
+    let content = read_crate_file("src/runtime/key_pipeline.rs");
+    assert!(
+        count_real_calls(&content, "build_ctx(") == 0,
+        "src/runtime/key_pipeline.rs は `build_ctx()` を呼んではならない（ADR-129）。\
+         呼ぶと `hook::thumb_down_timestamps()` のライブクエリが間接的に復活しうる。"
+    );
+}
+
 fn non_comment_lines(content: &str) -> String {
     content
         .lines()
