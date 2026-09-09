@@ -7,8 +7,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering}
 
 use awase::types::RawKeyEvent;
 
-/// リング容量。`RawKeyEvent` は Copy な POD (数十バイト程度) のため、
-/// 256→1024 への引き上げは static 領域を数十KB増やすだけで済む
+/// リング容量。`RawKeyEvent` は Copy な POD（ADR-129 の
+/// `left_thumb_down_snapshot`/`right_thumb_down_snapshot`（`Option<Timestamp>`
+/// は `Timestamp = u64` のニッチ最適化が効かず16バイト、×2で+32バイト）
+/// 追加後も数十バイト程度）のため、256→1024 への引き上げは static 領域を
+/// 数十KB増やすだけで済む
 /// (タイミング定数ではないため `tuning-constants.md` の実測義務対象外)。
 pub(crate) const CAP: usize = 1024;
 const MASK: usize = CAP - 1;
@@ -247,6 +250,8 @@ mod tests {
             ime_relevance: ImeRelevance::default(),
             modifier_key: None,
             modifier_snapshot: ModifierState::default(),
+            left_thumb_down_snapshot: None,
+            right_thumb_down_snapshot: None,
             injected: false,
         }
     }

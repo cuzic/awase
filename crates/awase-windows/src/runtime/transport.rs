@@ -447,6 +447,8 @@ mod plan_tests {
             },
             modifier_key: None,
             modifier_snapshot: ModifierState::default(),
+            left_thumb_down_snapshot: None,
+            right_thumb_down_snapshot: None,
             injected: false,
         }
     }
@@ -750,6 +752,41 @@ mod plan_tests {
                 PhysicalKeyDisposition::Allow,
                 "vk={vk:?}: マーカー未設定時は既定のfollow-only Allowのまま"
             );
+        }
+    }
+
+    // ── ADR-154: `auto_delegate_open_axis_consumed`はfollow-only原則の例外
+    //    にならない（`explicit_ime_action_consumed`とは異なる第2の消費者を
+    //    持たない）ことを固定する ──
+
+    #[test]
+    fn henkan_muhenkan_allowed_even_when_auto_delegate_open_axis_consumed() {
+        // `auto_delegate_open_axis_consumed`だけを立てても、`plan`の判定は
+        // 一切変わらずAllowのままであること（ADR-154の中核根拠）。このガードが
+        // 落ちたら、`transport.rs::plan`が`explicit_ime_action_consumed`と
+        // 同じ経路でこのフィールドも見るよう改変された可能性が高く、
+        // follow-only原則を壊す（engine非活性経路で無変換/変換がGJIに一切
+        // 届かなくなる、ADR-119型の「二重の空振り」）。
+        for vk in [crate::vk::VK_CONVERT, crate::vk::VK_NONCONVERT] {
+            for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
+                let mut ev = henkan_muhenkan_event(vk, None, event_type);
+                ev.ime_relevance.auto_delegate_open_axis_consumed = true;
+                assert_eq!(
+                    PhysicalKeyDisposition::plan(
+                        &ev,
+                        AppImeProfile::Standard,
+                        false,
+                        false,
+                        false,
+                        ActiveImeKind::MicrosoftIme,
+                        DbeModeKeyPolicy::Suppress
+                    ),
+                    PhysicalKeyDisposition::Allow,
+                    "無変換/変換(vk={vk:?}, event_type={event_type:?}) は \
+                     auto_delegate_open_axis_consumedだけを立てても \
+                     follow-only Allowのままであるべき（ADR-154）"
+                );
+            }
         }
     }
 

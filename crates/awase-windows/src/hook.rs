@@ -144,6 +144,9 @@ pub fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
         // 実際に明示config actuationを発行した打鍵についてのみ後から立てる
         // マーカー。分類の時点では常にfalse。
         explicit_ime_action_consumed: false,
+        // ADR-154: kp_stage_shadow_ime_toggleが実際にbeliefをOFF→ONへ動かした
+        // 打鍵についてのみ後から立てるマーカー。分類の時点では常にfalse。
+        auto_delegate_open_axis_consumed: false,
     }
 }
 
@@ -828,6 +831,7 @@ pub fn install_hook() -> windows::core::Result<HookGuard> {
     })
 }
 
+#[expect(clippy::too_many_arguments)]
 fn build_raw_key_event(
     vk: VkCode,
     scan: ScanCode,
@@ -836,6 +840,8 @@ fn build_raw_key_event(
     key_classification: KeyClassification,
     physical_pos: Option<PhysicalPos>,
     modifier_snapshot: awase::engine::ModifierState,
+    left_thumb_down_snapshot: Option<Timestamp>,
+    right_thumb_down_snapshot: Option<Timestamp>,
     injected: bool,
 ) -> RawKeyEvent {
     use crate::vk::VkCodeExt;
@@ -854,6 +860,8 @@ fn build_raw_key_event(
         ime_relevance: classify_ime_relevance(vk),
         modifier_key: vk.classify_modifier(),
         modifier_snapshot,
+        left_thumb_down_snapshot,
+        right_thumb_down_snapshot,
         injected,
     }
 }
@@ -1185,6 +1193,9 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         }
     }
     let (key_classification, physical_pos) = classify_key(vk, scan, &config);
+    // ADR-129: update_thumb（上記）より後であればよい。capture 時点の値を
+    // RawKeyEvent へ埋め込み、drain replay 時のライブ再取得を防ぐ。
+    let (left_thumb_down_snapshot, right_thumb_down_snapshot) = thumb_down_timestamps();
     // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼べる。
     let mut modifier_snapshot = crate::observer::focus_observer::read_os_modifiers();
     // Alt 物理押下中またはメニューモード（WM_SYSKEYDOWN コンテキスト）のキーは変換しない
@@ -1205,6 +1216,8 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         key_classification,
         physical_pos,
         modifier_snapshot,
+        left_thumb_down_snapshot,
+        right_thumb_down_snapshot,
         is_injected,
     );
 

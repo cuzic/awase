@@ -183,6 +183,85 @@ fn build_input_context_callers_do_not_drop_thumb_down_state() {
     }
 }
 
+/// ADR-129 (a-1): `hook::thumb_down_timestamps()`（親指ダウンタイムスタンプの
+/// ライブクエリ）の呼び出し許可箇所を固定する。`key_pipeline.rs` は
+/// capture 時点のスナップショット（`event.left_thumb_down_snapshot` /
+/// `event.right_thumb_down_snapshot`）を読むだけで、ライブクエリを呼んでは
+/// ならない——呼ぶと drain replay 中に「replay を実行している"今"」の値を
+/// 誤って読み、無関係な親指押下と誤ってペアリングされる
+/// （ADR-129 が扱った実インシデント）。
+///
+/// 許可箇所は3つ: `hook.rs`（capture 時点で1回呼び `RawKeyEvent` へ埋め込む
+/// 本来の発生源）、`runtime/mod.rs::build_ctx`、
+/// `runtime/message_handlers.rs`（タイマー直接発火経路の手書き複製、
+/// `build_ctx` を経由しない。ADR-155 が指摘した既知の未解消の穴）。
+#[test]
+fn thumb_down_timestamps_live_query_is_limited_to_designated_call_sites() {
+    let known_sites: &[(&str, usize)] = &[
+        ("src/hook.rs", 1),        // capture 時点で1回呼び RawKeyEvent へ埋め込む
+        ("src/runtime/mod.rs", 1), // build_ctx
+        ("src/runtime/message_handlers.rs", 1), // タイマー直接発火経路（build_ctx 非経由）
+    ];
+    for (path, expected) in known_sites {
+        let content = read_crate_file(path);
+        let count = count_real_calls(&content, "thumb_down_timestamps(");
+        assert_eq!(
+            count, *expected,
+            "{path} 内の `thumb_down_timestamps()` 呼び出し箇所数が想定({expected})と \
+             異なります(実際: {count})。ADR-129 参照。"
+        );
+    }
+
+    let key_pipeline = read_crate_file("src/runtime/key_pipeline.rs");
+    let count = count_real_calls(&key_pipeline, "thumb_down_timestamps(");
+    assert_eq!(
+        count, 0,
+        "src/runtime/key_pipeline.rs は `hook::thumb_down_timestamps()` の \
+         ライブクエリを呼んではならない（ADR-129）。`event.left_thumb_down_snapshot` / \
+         `event.right_thumb_down_snapshot` を読むこと。"
+    );
+}
+
+/// ADR-129 (a-2-i): `key_pipeline.rs` が実際に capture-time スナップショット
+/// （`event.left_thumb_down_snapshot` / `event.right_thumb_down_snapshot`）を
+/// 読んでいることを固定する。
+///
+/// 上の負のガード（ライブクエリを呼ばない）だけでは、「ライブクエリを消したが
+/// `None, None` を渡している」状態を通してしまう（opus-adversarial-consult
+/// round2 critic 指摘、S1）。`build_input_context(` への引数文字列を厳密に
+/// 一致させる形にはしない——`let (left_thumb_down, right_thumb_down) =
+/// (event.left_thumb_down_snapshot, event.right_thumb_down_snapshot);` という
+/// ローカル束縛経由の実装も正しいため、出現有無だけを見る。
+#[test]
+fn key_pipeline_reads_thumb_down_snapshot_from_event() {
+    let content = read_crate_file("src/runtime/key_pipeline.rs");
+    for field in [
+        "event.left_thumb_down_snapshot",
+        "event.right_thumb_down_snapshot",
+    ] {
+        assert!(
+            content.contains(field),
+            "src/runtime/key_pipeline.rs は `{field}` を読んでいる必要があります（ADR-129）。"
+        );
+    }
+}
+
+/// ADR-129 (a-2-ii): `key_pipeline.rs` が `build_ctx()` を呼ばないことを固定する。
+///
+/// 将来ここで `self.build_ctx()` を呼べば `runtime/mod.rs::build_ctx` 経由で
+/// ライブクエリが**間接的に**復活しうるが、上の負のガードは
+/// `hook::thumb_down_timestamps` という文字列を探しているだけなのでそれを
+/// 検知できない（opus-adversarial-consult round2 critic 指摘、S5）。
+#[test]
+fn key_pipeline_does_not_call_build_ctx() {
+    let content = read_crate_file("src/runtime/key_pipeline.rs");
+    assert!(
+        count_real_calls(&content, "build_ctx(") == 0,
+        "src/runtime/key_pipeline.rs は `build_ctx()` を呼んではならない（ADR-129）。\
+         呼ぶと `hook::thumb_down_timestamps()` のライブクエリが間接的に復活しうる。"
+    );
+}
+
 fn non_comment_lines(content: &str) -> String {
     content
         .lines()
@@ -3683,6 +3762,80 @@ fn kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate() {
          （実際の呼び出し数: {target_calls}）。片方だけになっている場合、\
          KeyDown/KeyUpいずれかの経路でケース3改の判定条件が乖離している \
          おそれがある。"
+    );
+}
+
+/// ADR-154: `auto_delegate_open_axis_consumed`マーカーが正しい場所でのみ
+/// 立てられ、`transport.rs`（follow-only原則、`explicit_ime_action_
+/// consumed`とは異なる第2の消費者を持つ既存フィールドと対称の位置づけ）から
+/// は一切読まれないことを固定する。
+///
+/// このマーカーは「消費点2（`kp_stage_shadow_ime_toggle`）がこの打鍵で
+/// beliefを実際にOFF→ONへ動かした」場合にのみ立てる必要がある——
+/// `if delegate_owned {...}`（delegateが所有し何もしないブランチ）の中で
+/// 立ててしまうと、消費点2も消費点1も何もしないBUG-115型の穴になる。
+#[test]
+fn auto_delegate_open_axis_consumed_marker_is_set_only_when_shadow_toggle_writes_belief() {
+    let content = read_crate_file("src/runtime/key_pipeline.rs");
+    let production = production_code_only(&content);
+    let body = extract_fn_body(production, "fn kp_stage_shadow_ime_toggle(");
+
+    // `if delegate_owned { ... }`（delegateが所有し何もしないブランチ、
+    // triage用ログのみ）にはマーカーが出現してはならない。
+    let owned_start = body.find("if delegate_owned {").expect(
+        "kp_stage_shadow_ime_toggle に `if delegate_owned {` ブロックが \
+         見つかりません。",
+    );
+    let owned_open_brace = owned_start + "if delegate_owned {".len() - 1;
+    let owned_end = find_balanced_close(body, owned_open_brace)
+        .expect("`if delegate_owned` ブロックの閉じ括弧が見つかりません。");
+    let owned_block = &body[owned_start..=owned_end];
+    assert!(
+        !owned_block.contains("auto_delegate_open_axis_consumed"),
+        "`if delegate_owned` ブロック（delegateが所有し何もしないブランチ）に \
+         `auto_delegate_open_axis_consumed` が出現しています。ここで \
+         マーカーを立てると、消費点2も消費点1も何もしないBUG-115型の穴に \
+         なります（ADR-154参照）。"
+    );
+
+    // `if !delegate_owned { ... }`（実際にbeliefを書き込むブランチ）には
+    // マーカーの代入が実際に存在すること（正のガード）。
+    let not_owned_start = body.find("if !delegate_owned {").expect(
+        "kp_stage_shadow_ime_toggle に `if !delegate_owned {` ブロックが \
+         見つかりません。",
+    );
+    let not_owned_open_brace = not_owned_start + "if !delegate_owned {".len() - 1;
+    let not_owned_end = find_balanced_close(body, not_owned_open_brace)
+        .expect("`if !delegate_owned` ブロックの閉じ括弧が見つかりません。");
+    let not_owned_block = &body[not_owned_start..=not_owned_end];
+    assert!(
+        not_owned_block.contains("auto_delegate_open_axis_consumed = true"),
+        "`if !delegate_owned` ブロック（実際にbeliefを書き込むブランチ）に \
+         `auto_delegate_open_axis_consumed = true` が見つかりません。\
+         ADR-154のマーカー設定ロジックが移動・削除されていないか確認して \
+         ください。"
+    );
+}
+
+/// ADR-154: `auto_delegate_open_axis_consumed`は`transport.rs::plan`から
+/// 参照してはならない（follow-only原則。`explicit_ime_action_consumed`との
+/// 違いはADR-154「決定」節・型のdocコメント参照）。
+#[test]
+fn transport_plan_never_reads_auto_delegate_open_axis_consumed() {
+    let content = read_crate_file("src/runtime/transport.rs");
+    // `production_code_only` は `#[cfg(test)] mod tests` の文字どおりの名前
+    // にしか対応しない。`transport.rs` のテストモジュールは `mod plan_tests`
+    // という別名のため、汎用版の `strip_any_test_module`（`#[cfg(test)]`
+    // 直後の `mod <任意の識別子>` を検出して切り落とす）を使う——さもないと
+    // 本テスト自身が追加した`plan_tests`内の`auto_delegate_open_axis_consumed`
+    // 出現（正しいfollow-only確認テスト）を「本番コードでの参照」と誤検出する。
+    let production = strip_any_test_module(&content);
+    assert!(
+        !production.contains("auto_delegate_open_axis_consumed"),
+        "crates/awase-windows/src/runtime/transport.rs の production コードが \
+         `auto_delegate_open_axis_consumed` を参照しています。このフィールドは \
+         engine非活性時（`Decision::PassThrough`）の物理配送可否を左右させて \
+         はならず、`transport.rs::plan`から読んではいけません（ADR-154参照）。"
     );
 }
 

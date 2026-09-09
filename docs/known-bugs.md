@@ -15358,8 +15358,16 @@ awase-windows`（134件）・clippy/fmtすべてgreen。実機検証は
 ime_action`（変換）・`"toggle"`方向・ATOKプリセット併用は未確認。
 
 上記の未解決事項1（delegateとshadow-toggleの排他性、OFF→ON遷移限定）は
-本実装のスコープ外のまま残り、続報として[ADR-154](adr/154-delegate-shadow-toggle-exclusivity-off-to-on-transition.md)
-（提案中・未実装）を起票済み。
+本実装のスコープ外のまま残っていたが、続報の[ADR-154](adr/154-delegate-shadow-toggle-exclusivity-off-to-on-transition.md)
+（**2026-09-09実装済み**、opus-adversarial-consult architect/critic
+各2ラウンドで収束）で解消した——`ImeRelevance`に新規マーカー
+`auto_delegate_open_axis_consumed`を追加し、消費点2
+（`kp_stage_shadow_ime_toggle`）がbeliefをOFF→ONへ動かした打鍵について
+消費点1（`resolve_pending_thumb_as_single`）がdelegateを二重発火させない
+ようにした。回帰テスト（エンジン側3件・`architecture_guard`のgrepガード
+2件・`transport.rs::plan_tests`1件）・`cargo test --lib`(1010件)・
+`cargo nextest`(119件)・clippy(pedantic/nursery込み)全green。
+Windows実機ソークは未実施。
 
 **追記（2026-09-08、ケース3「@」再現の機序確定、opus-adversarial-consult
 + dragonflyg4実機A/B切り分け実験で判明、PR #185未マージ）**:
@@ -16945,10 +16953,9 @@ output_queue`の実行順序（1. `INPUT_DEFER.take_all()`で退避キーイベ�
 具体的なイベント列を構成できた場合、または実機で再現した場合。その際は
 ADR-155「将来の実装案」節の案A（push時点でのスナップショット保持）・案B
 （`hook.rs`側で同一キーイベントに対し`now_timestamp()`を複数回呼ばないよう
-改める、より根本的）を出発点に設計すること——案A/Bのどちらを土台にするかは
-[ADR-129](adr/129-thumb-timestamp-live-requery-during-gate-drain-replay.md)
-自身の実装（まだ未着手）にも影響するため、ADR-129着手前に判断する順序依存が
-ある。
+改める、より根本的）を出発点に設計すること。**2026-09-09: ADR-129（キー
+イベント経路、案A）は実装済み・BUG-127として記録**——タイマー経路は
+ADR-129の実装後も既知の未修正の穴として残る。
 
 **関連ファイル（未変更）:** `crates/awase-windows/src/hook.rs`
 （`now_timestamp()`、`update_thumb`）、`runtime/message_handlers.rs`
@@ -16956,3 +16963,70 @@ ADR-155「将来の実装案」節の案A（push時点でのスナップショ�
 （`build_ctx()`）。関連: [ADR-129](adr/129-thumb-timestamp-live-requery-during-gate-drain-replay.md)、
 [ADR-155](adr/155-timer-path-live-thumb-requery-during-deferred-timer-replay.md)、
 [ADR-156](adr/156-unify-deferred-execution-queues.md)（同型パターンの棚卸し）。
+
+---
+
+## BUG-127: `OUTPUT_GATE` drain replay 中、親指キー押下タイムスタンプがイベント捕捉時点ではなくリプレイ実行時点のライブ値で再構築され、既に消費済みの押下と無関係な後続押下がペアリングされる（ADR-129実装済み）
+
+**症状（不具合報告、report `01M1N36MGDDJ5HN8FWRE4ZHS3J`、2026-09-04、GJI/TSF、
+Uwp/TsfNativeアプリ）:** 「ようするに」と入力すると「よゔするに」に誤変換
+される。
+
+**根本原因:** `runtime/key_pipeline.rs`が`Engine::on_input()`に渡す
+`InputContext`を組み立てる直前に`hook::thumb_down_timestamps()`（`WH_KEYBOARD_LL`
+フックが実時間で更新するグローバル`AtomicU64`）をライブクエリしていた。
+ライブ配送では発生時刻とほぼ同時刻に読むため無害だが、`OUTPUT_GATE`が
+active な間`INPUT_DEFER`へ退避されたイベントを後からバーストでdrain
+replayすると、「イベント発生時点の値」ではなく「replayを実行している
+"今"の値」を読んでしまう。detailは
+[ADR-129](adr/129-thumb-timestamp-live-requery-during-gate-drain-replay.md)
+参照。
+
+**修正（2026-09-09）:** `RawKeyEvent::modifier_snapshot`と同じ、capture
+時点で`RawKeyEvent`に埋め込む方式に揃えた。`src/types.rs::RawKeyEvent`に
+`left_thumb_down_snapshot`/`right_thumb_down_snapshot`（`Option<Timestamp>`）
+を追加し、`hook.rs::build_raw_key_event`呼び出し直前（`update_thumb`より後）
+で`thumb_down_timestamps()`を1回呼んで埋め込む。`key_pipeline.rs`側の
+ライブクエリは`event.left_thumb_down_snapshot`/
+`event.right_thumb_down_snapshot`の読み取りに置き換え、ライブ配送とdrain
+replayが同一コードパスになった。
+
+opus-adversarial-consultで検討した代替案（案B: `hook.rs`側で
+`now_timestamp()`の二重呼び出しを一本化する）は、本件の失敗経路
+（`Idle`からの`active_thumb_side()`、`PendingThumbData`を参照しない）を
+直さないため不採用と確定（ADR-129「案B検討結果」節）。`INPUT_DEFER`に
+残ったイベントがグローバルゼロクリア後もstaleなスナップショットを運ぶ
+懸念（3経路: `panic_reset`/`clear_hook_latches_for_app_disable`/
+`set_thumb_vk_codes`）は「有界（OUTPUT_GATE active窓、~300ms規模）なので
+許容する」と判断——ただし`SuppressionEdge::Leave`は`hook.rs`の
+`FOCUS_APP_DISABLED`早期returnにより`RawKeyEvent`自体が構築されないため
+無害と確定、実在するのは`Enter`エッジのみ。
+
+タイマー経路（`deferred_engine_timers`、実体は`build_ctx()`経由のライブ
+クエリ）は本BUGの対象外のまま残る——[ADR-155](adr/155-timer-path-live-thumb-requery-during-deferred-timer-replay.md)
+として別途検討され、具体的な失敗シナリオを構成できず2026-09-08に
+「実装せず」でクローズ済み（[BUG-126](#bug-126)参照）。
+
+**テスト:** `cargo test --lib`（1007件）・`cargo test --test scenarios`
+（8件）・`cargo nextest run -p awase-windows --test architecture_guard
+--test golden_scenarios --test layer_boundary_guard`（117件）全green。
+`architecture_guard.rs`に回帰ガード3件を追加
+（`thumb_down_timestamps_live_query_is_limited_to_designated_call_sites`
+（`key_pipeline.rs`に0件・`hook.rs`/`runtime/mod.rs`/
+`message_handlers.rs`に各1件を固定）、
+`key_pipeline_reads_thumb_down_snapshot_from_event`（新フィールドが
+実際に読まれていることの正のガード）、`key_pipeline_does_not_call_build_ctx`
+（`build_ctx()`経由の間接復活を防ぐ））。`[engine-input]`デバッグログに
+`l_thumb=`/`r_thumb=`フィールドを追加し、次回同型症状の診断コストを
+下げた。Windows実機ソークは未実施。
+
+**関連ファイル:** `src/types.rs`（`RawKeyEvent`）、
+`crates/awase-windows/src/hook.rs`（`build_raw_key_event`、production
+構築サイト）、`crates/awase-linux/src/hook.rs`（production構築サイト、
+`None`固定）、`crates/awase-windows/src/runtime/key_pipeline.rs`
+（`kp_run_inner`）、`crates/awase-windows/tests/architecture_guard.rs`、
+`crates/awase-windows/src/hook_channel.rs`（コメント更新）。関連:
+[ADR-010](adr/010-thumb-consumption-timestamp.md)、
+[ADR-008](adr/008-physical-thumb-state-separation.md)、BUG-105
+（3鍵仲裁の別欠陥、症状は類似するが原因は別）、BUG-126（タイマー経路の
+クローズ判断）。

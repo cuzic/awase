@@ -146,6 +146,8 @@ fn key_down(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
         ime_relevance: ImeRelevance::default(),
         modifier_key: None,
         modifier_snapshot: ModifierState::default(),
+        left_thumb_down_snapshot: None,
+        right_thumb_down_snapshot: None,
         injected: false,
     }
 }
@@ -162,6 +164,8 @@ fn key_up(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
         ime_relevance: ImeRelevance::default(),
         modifier_key: None,
         modifier_snapshot: ModifierState::default(),
+        left_thumb_down_snapshot: None,
+        right_thumb_down_snapshot: None,
         injected: false,
     }
 }

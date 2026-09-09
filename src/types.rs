@@ -204,6 +204,34 @@ pub struct ImeRelevance {
     /// 常にこのイベント1回限りの値（次のKeyDownでは
     /// `RawKeyEvent::ime_relevance` が新規に構築され直す）。
     pub explicit_ime_action_consumed: bool,
+    /// ADR-154: GJI/MS-IME **自動検出**由来の`delegate_to_open_axis`が armed な
+    /// 親指キーについて、`kp_stage_shadow_ime_toggle`（消費点2）がこの物理
+    /// KeyDown 1回分のIME open軸を**beliefをOFF→ONへ実際に動かす形で裁定済み**
+    /// であることを示すマーカー。`PendingThumbData`経由で運ばれ、100ms後の
+    /// `resolve_pending_thumb_as_single`（消費点1）が同じ打鍵に対して優先順位3
+    /// （delegate）を二重に発火させないために使う。
+    ///
+    /// **`explicit_ime_action_consumed`とは別フィールドである理由**: あちらは
+    /// `transport.rs::plan`という**engine外の第2の消費者**を持ち、無変換/変換の
+    /// 物理配送を`Suppress`に転じさせる。本フィールドが意味を持つのは
+    /// `Decision::Consume`に乗る打鍵（＝engine活性時の親指キー）だけであり、
+    /// engine非活性時（`Inactive(ImeOff)`/`Inactive(UserDisabled)`）は
+    /// `Decision::PassThrough`に落ちて`plan`の戻り値が実際に物理配送を左右する。
+    /// この経路で流用すると、明示config用のSuppress判定が誤発火し、無変換/変換が
+    /// GJIに一切届かないままawaseも何もactuateしない——ADR-119型の「二重の空振り」
+    /// を新規に作る（詳細はADR-154「決定」節）。
+    ///
+    /// **禁止事項**: `crates/awase-windows/src/runtime/transport.rs`の production
+    /// コードはこのフィールドを読んではならない（`tests/architecture_guard.rs`の
+    /// grepガードで機械的に固定する）。物理配送の可否を左右させてはならず、
+    /// 非活性経路では単に捨てられる値である。
+    ///
+    /// 常にこのイベント1回限りの値。KeyUpでは立たない（`kp_stage_shadow_ime_toggle`
+    /// がKeyDown以外を早期returnするため）——ADR-153ケース3改がKeyUp側にも
+    /// マーカーを立てる特別分岐を持つのとは非対称だが、本フィールドは
+    /// `PendingThumb`経由で運ばれるだけで物理配送に影響しないためKeyUpペアリングは
+    /// 不要（意図的な非対称）。
+    pub auto_delegate_open_axis_consumed: bool,
 }
 
 // ── キーイベント ──
@@ -251,9 +279,30 @@ pub struct RawKeyEvent {
     /// フック時点でキャプチャした修飾キー状態スナップショット
     ///
     /// `GetAsyncKeyState` を replay 時ではなく capture 時に呼ぶことで、
-    /// OUTPUT_PENDING_QUEUE 経由の drain 時に modifier 状態が変化していても
-    /// 正しい文脈でイベントを再処理できる。
+    /// `crate::INPUT_DEFER` 経由の drain 時に modifier 状態が変化していても
+    /// 正しい文脈でイベントを再処理できる（doc は元々 `OUTPUT_PENDING_QUEUE` と
+    /// 書いていたが、実際にこの前提へ依存している経路は `INPUT_DEFER` である。
+    /// ADR-129 未決定事項4）。
     pub modifier_snapshot: ModifierState,
+    /// フック時点でキャプチャした左/右親指キーの押下タイムスタンプ
+    /// （[ADR-129](../docs/adr/129-thumb-timestamp-live-requery-during-gate-drain-replay.md)）。
+    ///
+    /// **T1系**（`hook.rs` の `update_thumb` クロージャ内 `now_timestamp()`）
+    /// 由来である。同一構造体の `timestamp` フィールドは **T2系**
+    /// （`build_raw_key_event` 内の `now_timestamp()`）由来で、同じ物理押下
+    /// でも数 µs ずれる。**両者を減算・比較してはならない。** 本フィールドの
+    /// 用途は `InputContext.left/right_thumb_down` への供給（＝
+    /// `NicolaFsm::phys` への供給）のみであり、そこでの比較相手は同じく
+    /// T1系の `left_thumb_consumed`/`right_thumb_consumed` である。
+    ///
+    /// `modifier_snapshot` と同じ理由（capture 時点で埋め込み、drain replay
+    /// 時にライブ再取得しない）でこのフィールドを持つ。`OUTPUT_GATE` active
+    /// 中に `crate::INPUT_DEFER` へ退避されたイベントの drain replay で、
+    /// このスナップショットが無ければ「replay を実行している"今"」のライブ
+    /// 値を誤って読んでしまう（ADR-129 が扱う実インシデント）。
+    pub left_thumb_down_snapshot: Option<Timestamp>,
+    /// [`Self::left_thumb_down_snapshot`] の右親指版。
+    pub right_thumb_down_snapshot: Option<Timestamp>,
     /// ソフトウェア注入イベント（Windows: `LLKHF_INJECTED`）。
     ///
     /// awase 自身の注入（marker 付き）はフック層で除外済みのため、これが true なのは
@@ -395,6 +444,8 @@ mod tests {
             ime_relevance: ImeRelevance::default(),
             modifier_key: None,
             modifier_snapshot,
+            left_thumb_down_snapshot: None,
+            right_thumb_down_snapshot: None,
             injected,
         }
     }

@@ -194,6 +194,8 @@ impl EvBuilder {
             },
             modifier_key: classify_test_modifier(self.vk),
             modifier_snapshot: Default::default(),
+            left_thumb_down_snapshot: None,
+            right_thumb_down_snapshot: None,
             injected: self.injected,
         }
     }
@@ -855,6 +857,8 @@ fn test_ctrl_alt_win_thumb_key_never_enters_pending_due_to_os_modifier_bypass() 
             ime_relevance: ImeRelevance::default(),
             modifier_key: Some(mk),
             modifier_snapshot: ModifierState::default(),
+            left_thumb_down_snapshot: None,
+            right_thumb_down_snapshot: None,
             injected: false,
         };
 
@@ -900,6 +904,8 @@ fn test_thumb_alone_timeout_suppressed_when_thumb_is_os_modifier() {
         ime_relevance: ImeRelevance::default(),
         modifier_key: Some(ModifierKey::Shift),
         modifier_snapshot: ModifierState::default(),
+        left_thumb_down_snapshot: None,
+        right_thumb_down_snapshot: None,
         injected: false,
     };
 
@@ -1132,6 +1138,8 @@ fn enter_thumb_down_event(ts: Timestamp) -> RawKeyEvent {
         ime_relevance: ImeRelevance::default(),
         modifier_key: None,
         modifier_snapshot: ModifierState::default(),
+        left_thumb_down_snapshot: None,
+        right_thumb_down_snapshot: None,
         injected: false,
     }
 }
@@ -3012,6 +3020,8 @@ fn test_nicola_state_stores_scan_code() {
         key_classification: crate::types::KeyClassification::Char,
         physical_pos: Some(PhysicalPos::new(2, 0)),
         modifier_snapshot: Default::default(),
+        left_thumb_down_snapshot: None,
+        right_thumb_down_snapshot: None,
         injected: false,
     };
 
@@ -3045,6 +3055,8 @@ fn test_pending_char_thumb_stores_char_scan() {
         key_classification: crate::types::KeyClassification::Char,
         physical_pos: Some(PhysicalPos::new(2, 0)),
         modifier_snapshot: Default::default(),
+        left_thumb_down_snapshot: None,
+        right_thumb_down_snapshot: None,
         injected: false,
     };
     engine.on_event(char_event);
@@ -3060,6 +3072,8 @@ fn test_pending_char_thumb_stores_char_scan() {
         key_classification: crate::types::KeyClassification::RightThumb,
         physical_pos: None,
         modifier_snapshot: Default::default(),
+        left_thumb_down_snapshot: None,
+        right_thumb_down_snapshot: None,
         injected: false,
     };
     let result = engine.on_event(thumb_event);

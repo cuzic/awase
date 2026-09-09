@@ -39,6 +39,14 @@ impl KeyClass {
 }
 
 /// classify() の結果。キー分類と物理位置を一度に計算する。
+///
+/// `injected`/`is_ime_control`/`explicit_ime_action_consumed`/
+/// `auto_delegate_open_axis_consumed`の4個のboolは、それぞれ独立した
+/// プラットフォーム層の分類結果（互いに排他でも状態遷移でもない）であり、
+/// 状態機械やtwo-variant enumへの統合は不自然。`RawKeyEvent`（この型の
+/// 変換元）からそのまま引き継ぐ以上、こちら側だけ型を変えると変換箇所で
+/// 逆に複雑化する。
+#[expect(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy)]
 pub struct ClassifiedEvent {
     pub key_class: KeyClass,
@@ -69,6 +77,12 @@ pub struct ClassifiedEvent {
     /// `resolve_pending_thumb_as_single`（ケース1）が同じ打鍵を二重
     /// 評価しないためのガードに使われる。
     pub explicit_ime_action_consumed: bool,
+    /// ADR-154: `RawKeyEvent.ime_relevance.auto_delegate_open_axis_consumed`を
+    /// そのまま引き継ぐ。`kp_stage_shadow_ime_toggle`（消費点2）が既にこの打鍵で
+    /// beliefをOFF→ONへ動かしたなら true——`PendingThumbData`へ格納され、
+    /// 100ms後の`resolve_pending_thumb_as_single`（消費点1）が優先順位3
+    /// （delegate）を二重に発火させないためのガードに使われる。
+    pub auto_delegate_open_axis_consumed: bool,
 }
 
 impl ClassifiedEvent {
@@ -85,6 +99,7 @@ impl ClassifiedEvent {
             is_ime_control: false,
             modifier_key: None,
             explicit_ime_action_consumed: false,
+            auto_delegate_open_axis_consumed: false,
         }
     }
 }
@@ -461,6 +476,12 @@ impl PendingKey {
 }
 
 /// 保留中の親指キーデータ
+///
+/// `ClassifiedEvent`と同じ理由（`#[expect(clippy::struct_excessive_bools)]`
+/// 参照）で、`is_left`/`injected`/`explicit_ime_action_consumed`/
+/// `auto_delegate_open_axis_consumed`は独立した分類結果であり、
+/// `ClassifiedEvent`からそのまま引き継ぐ。
+#[expect(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy)]
 pub struct PendingThumbData {
     pub scan_code: ScanCode,
@@ -478,6 +499,11 @@ pub struct PendingThumbData {
     /// はこの打鍵の `explicit_ime_action` を読まずスキップする
     /// （`kp_stage_shadow_ime_toggle` のケース2が既に処理済みのため）。
     pub explicit_ime_action_consumed: bool,
+    /// ADR-154: `ClassifiedEvent.auto_delegate_open_axis_consumed`を引き継ぐ。
+    /// true なら `resolve_pending_thumb_as_single` はこの打鍵で優先順位3
+    /// （delegate）を発火させずスキップする（`kp_stage_shadow_ime_toggle`が
+    /// 既にbeliefをOFF→ONへ動かしているため）。
+    pub auto_delegate_open_axis_consumed: bool,
 }
 
 impl PendingThumbData {
@@ -491,6 +517,7 @@ impl PendingThumbData {
             injected: ev.injected,
             modifier_key: ev.modifier_key,
             explicit_ime_action_consumed: ev.explicit_ime_action_consumed,
+            auto_delegate_open_axis_consumed: ev.auto_delegate_open_axis_consumed,
         }
     }
 
@@ -736,6 +763,8 @@ mod tests {
             ime_relevance: crate::types::ImeRelevance::default(),
             modifier_key,
             modifier_snapshot: Default::default(),
+            left_thumb_down_snapshot: None,
+            right_thumb_down_snapshot: None,
             injected: false,
         }
     }
@@ -1022,6 +1051,7 @@ mod tests {
             injected: false,
             modifier_key: None,
             explicit_ime_action_consumed: false,
+            auto_delegate_open_axis_consumed: false,
         }
     }
 
@@ -1302,6 +1332,7 @@ mod tests {
             is_ime_control: false,
             modifier_key: None,
             explicit_ime_action_consumed: false,
+            auto_delegate_open_axis_consumed: false,
         };
         assert_eq!(ev.key_class, KeyClass::Char);
         assert!(ev.pos.is_some());
@@ -1320,6 +1351,7 @@ mod tests {
             is_ime_control: false,
             modifier_key: None,
             explicit_ime_action_consumed: false,
+            auto_delegate_open_axis_consumed: false,
         };
         assert!(ev.key_class.is_thumb());
         assert!(ev.pos.is_none());
@@ -1337,6 +1369,7 @@ mod tests {
             is_ime_control: true,
             modifier_key: None,
             explicit_ime_action_consumed: false,
+            auto_delegate_open_axis_consumed: false,
         };
         assert!(ev.is_ime_control);
     }
@@ -1434,6 +1467,7 @@ mod tests {
             is_ime_control: false,
             modifier_key: None,
             explicit_ime_action_consumed: false,
+            auto_delegate_open_axis_consumed: false,
         };
         let pa = ParseAction::ReduceAndContinue {
             actions: smallvec::smallvec![KeyAction::Suppress],

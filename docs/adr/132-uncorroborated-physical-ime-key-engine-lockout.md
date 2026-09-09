@@ -2,8 +2,11 @@
 
 ## ステータス
 
-**Phase 1・Phase 2ともに実装済み・敵対的コードレビュー収束済み
-（developとの同期後、v5、developへは未マージ）。** Phase 1
+**Phase 1・Phase 2ともに実装済み・敵対的コードレビュー収束済み・
+developマージ済み**（コミット`448b1521`ほか、`git merge-base
+--is-ancestor`でdevelop HEADの祖先であることを2026-09-08に確認。
+本ステータス節はマージ前のv5時点の記述のまま更新が漏れていた）。
+Phase 1
 （候補3のUX可視化＋診断ログ7項目）はOpus 2体（architect/premortem）
 敵対的レビュー・討論4ラウンドで収束、実機3件の再現を経て根本原因
 （`desired_open()`/`effective_open()`/`warmup_ime_on()`の三重SSOT競合）

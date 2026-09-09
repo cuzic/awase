@@ -288,7 +288,16 @@ impl Runtime {
             self.platform_state.gate.half_width_alnum.is_toggle_active();
         let shadow_toggled = self.kp_stage_shadow_ime_toggle(&mut event);
 
-        let (left_thumb_down, right_thumb_down) = hook::thumb_down_timestamps();
+        // ADR-129: ライブクエリ（`hook::thumb_down_timestamps()`）は使わない。
+        // drain replay 中に「replay を実行している"今"」の値を誤って読んでしまう
+        // ため、`hook.rs::build_raw_key_event` が capture 時点で埋め込んだ
+        // スナップショットをそのまま使う。ライブ配送と drain replay が同一の
+        // 値の出所（capture-time snapshot）を共有することになり、両者の分岐が
+        // 構造的に無くなる。
+        let (left_thumb_down, right_thumb_down) = (
+            event.left_thumb_down_snapshot,
+            event.right_thumb_down_snapshot,
+        );
         let ctx = super::build_input_context(
             self.platform_state.ime.effective_open(),
             self.platform_state.ime.input_mode(),
@@ -326,7 +335,7 @@ impl Runtime {
         tracing::debug!(
             "[engine-input] vk=0x{:02X} {:?} ts={}us delay={}ms state={} \
              mods(c={} s={} a={} w={}) gas_ctrl={} phys_ctrl={} extra=0x{:X} \
-             pending_drain={} gate_active={} \
+             pending_drain={} gate_active={} l_thumb={:?} r_thumb={:?} \
              [diag-ctx] ime_on={} japanese={} input_mode={:?} composing={}",
             event.vk_code,
             event.event_type,
@@ -342,6 +351,8 @@ impl Runtime {
             event.extra_info,
             pending_drain.map_or_else(|| "?".to_owned(), |n| n.to_string()),
             gate_active,
+            ctx.left_thumb_down,
+            ctx.right_thumb_down,
             ctx.ime_on,
             ctx.is_japanese_ime,
             ctx.input_mode,
@@ -1333,8 +1344,11 @@ impl Runtime {
         // しない」状態を作り、IME OFFからひらがな/カタカナ親指キーで
         // 復帰できなくなる（BUG-115の元症状そのものの再現、観測できない
         // アプリ——UWP等——では恒久的に固着する）。
-        let delegate_owned = self.mode_key_delegate_owns_shadow_toggle(event.vk_code)
-            && self.platform_state.ime.effective_open();
+        let delegate_armed = self.mode_key_delegate_owns_shadow_toggle(event.vk_code);
+        // /code-review指摘: 直後の`current`と同じ`effective_open()`を2回
+        // 呼んでいた（間に belief を書き換える処理は無い）ため、1回にまとめる。
+        let current = self.platform_state.ime.effective_open();
+        let delegate_owned = delegate_armed && current;
         // 同期キー (config sync_direction) > 物理 KANJI (Japanese 限定、GJI/
         // MS-IME自動検出由来のshadow_action) > ADR-153決定1の明示config
         // （`explicit_action_for_pipeline`、GJI/MS-IME自動検出とは独立）の
@@ -1365,7 +1379,6 @@ impl Runtime {
             event.ime_relevance.explicit_ime_action_consumed = true;
         }
 
-        let current = self.platform_state.ime.effective_open();
         let new_val = action.resolve(current);
         let tick_ms = crate::state::TickMs(hook::current_tick_ms());
         // 診断ログ (2026-08-05 "IME OFF 後 FocusChange 無しで Engine が勝手に ON へ
@@ -1444,6 +1457,29 @@ impl Runtime {
                         .ime
                         .write_physical_key(witness, new_val, tick_ms);
                 }
+            }
+            // ADR-154: delegate が armed なのに `!delegate_owned` だった＝
+            // この時点で belief は OFF であり、消費点2 がこの打鍵の open 軸を
+            // 裁定した。belief が実際に OFF→ON へ動いた場合に限りマーカーを
+            // 立て、100ms 後の `resolve_pending_thumb_as_single`（消費点1）が
+            // 同じ打鍵で優先順位3（delegate）を二重に発火させるのを止める。
+            //
+            // 書き込み後の`effective_open()`（意図ではなく実際にreducerが
+            // 受理した結果）を見るのは、直後の`:1460`の既存no-op検出と同じ
+            // idiom。「beliefがONになった場合のみ」立てる理由: マーカーは
+            // `PendingThumb`に載って最大100ms（`simultaneous_threshold_ms`
+            // 既定値）生き残る。beliefが動かなかった打鍵（GJI既定の
+            // 無変換=TurnOff×IME既にOFFが最頻）でマーカーを立てると、その
+            // 100msの窓の間に`ir_apply_drift_correction`等の別経路がbelief
+            // をONにした場合、タイムアウト時にはengineが活性になっており、
+            // 本来発火すべきdelegateを誤って握り潰す。
+            //
+            // /code-review指摘: この`if`ブロックは`!delegate_owned`
+            // （＝`!(delegate_armed && current)`）の内側にあるため、
+            // `delegate_armed`が真なら`current`は必ず偽——`!current`は
+            // このスコープでは常に真となる冗長な項だったため削除した。
+            if delegate_armed && self.platform_state.ime.effective_open() {
+                event.ime_relevance.auto_delegate_open_axis_consumed = true;
             }
         }
         if self.platform_state.ime.effective_open() == current {
