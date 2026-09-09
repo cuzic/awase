@@ -612,17 +612,31 @@ ADR-160のC1〜C3判断期限の基準として使われる（ADR-160側には20
 
 ## タスクグループTI: ADR-161 D2（純粋層proptest、round2 S13-1で追加）
 
-### TI1: `classify_*`関数へのproptest適用スパイク
+### TI1: `classify_*`関数へのproptest適用スパイク（完了、2026-09-09）
 
 **内容**: `pub fn classify_*` 6個に対して、既存のproptestパターン（ルート`awase`クレートに
 実例あり）を適用するスパイクを行う。
 
-**依存**: なし。
+**完了内容**: `crates/awase-windows`に`[dev-dependencies]`として`proptest`を追加
+（非gated、ホストターゲットで動く）。`state/conv_classify.rs::classify_conv_transition`
+（6個のうち唯一の非gated関数）へ3件のproperty（never panics・決定性・
+「belief変化なしなら自己遷移しない」という不変条件）を適用し、いずれもホストで
+成功を確認した。`awase-windows`にproptestが1本もなかった空白を埋めた。
 
-### TI2: D2対象範囲の見極め
+**検証方法**: `cargo test -p awase-windows --lib conv_classify`成功（28件、うち新規3件）。
+
+### TI2: D2対象範囲の見極め（完了、2026-09-09）
 
 **内容**: `observation_store.rs`等の証拠管理コードから、モデル検査可能な粒度まで純粋層を
 切り出す対象範囲を見極める。
+
+**完了内容**: 6個の`classify_*`関数すべてがWin32ハンドル・I/O・グローバル状態に依存しない
+真の純粋関数であることを確認した（詳細は[ADR-161](161-single-source-spec-generation.md)
+D2節「TI1/TI2実施結果」参照）。**D2の対象範囲は既存の6関数に確定**——
+`observation_store.rs`/`platform_state.rs`/`open_warrant.rs`のような証拠管理コードは
+対象外のまま維持し、追加の再設計（新規純粋関数の切り出し）は不要と判断した。6関数中
+`classify_conv_transition`のみ非gatedでホスト実行可能、残り5つは`#[cfg(windows)]`配下の
+ためwindows-build CIでの実行に限られる。
 
 **依存**: TI1。
 

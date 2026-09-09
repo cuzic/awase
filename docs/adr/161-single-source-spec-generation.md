@@ -135,6 +135,32 @@ lintで防ぐ」という約束はこの範囲に限定される。TA2着手時�
 なく、モデル検査可能な粒度まで純粋層を実際に切り出す再設計を含む**——`awase-windows`に
 proptestが1本もない（ルート`awase`と`timed-fsm`にはある）という現状の空白を埋める。
 
+**TI1/TI2実施結果（2026-09-09）**: 6個の`classify_*`を実際に精査したところ、
+すべてがWin32ハンドル・I/O・グローバル状態に依存しない真の純粋関数と確認できた
+（`hook.rs::classify_key`/`classify_ime_relevance`、
+`gji_charset_autodetect.rs::classify_thumb_key_ime_actions`/`classify_mode_key_ime_action`、
+`observer/ime_observer.rs::classify_ime_snapshot`/`classify_fetched_snapshot`、
+`state/conv_classify.rs::classify_conv_transition`——8個の関数名を挙げたが
+`classify_thumb_key_ime_actions`は内部で`classify_mode_key_ime_action`を2回呼ぶだけの
+薄いラッパーのため実質7、さらに`classify_ime_snapshot`/`classify_fetched_snapshot`も
+共通ロジックの委譲関係にあり実質6という数え方になる。`focus/classify.rs::classify_focus(hwnd)`
+はHWND引数を取るため純粋ではなく対象外、ルート`awase`クレートの`config.rs::
+classify_load_error`は別ドメインのため対象外）。
+
+TI1のスパイクとして`state/conv_classify.rs::classify_conv_transition`（非gatedモジュール、
+ホストで実行可能）へproptestを3件適用した——never panics・決定性・「belief変化なしなら
+自己遷移しない」という不変条件の3つで、実際にホスト上で成功を確認済み
+（`cargo test -p awase-windows --lib conv_classify`）。
+
+**TI2の結論（D2対象範囲）**: 6つの`classify_*`はいずれもproptest適用の候補として妥当だが、
+非gated（ホスト実行可能）なのは`classify_conv_transition`のみ——他5つは`#[cfg(windows)]`
+配下（`hook.rs`/`gji_charset_autodetect.rs`/`observer/ime_observer.rs`が該当）にあり、
+windows-build CIでの実行に限られる。**D2の対象範囲は「6つのclassify_*関数」に確定**し、
+`observation_store.rs`/`platform_state.rs`/`open_warrant.rs`のような証拠管理コード
+（状態を持つ・Win32依存が強い）はD2の対象外のまま維持する——ADR-161当初の想定通り、
+モデル検査可能な粒度への追加の再設計（新しい純粋関数の切り出し）は今回発見されず、
+既存の6関数で完結する。
+
 ### D3: 否定の宣言（`REJECTED_*`）で`docs/experiments.md`の反転史を防ぐ（2026-09-09、
 Opusによる発展的構想からの採用。**タスクTD0〜TD3として2026-09-09に実装完了**——ただし
 実装時にTJ1 M3の再判断（既存テストが既に4アームすべてを固定済みと判明）により、新規

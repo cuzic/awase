@@ -770,4 +770,101 @@ mod tests {
             mismatches.join("\n")
         );
     }
+
+    // ── ADR-158 TI1: proptestスパイク ──────────────────────────────────────
+    //
+    // ルートawaseクレート(src/engine/proptest_tests.rs)の既存パターンを踏襲し、
+    // `classify_conv_transition`（純粋関数、非gatedモジュール）へ適用する。
+    // ADR-161 D2の対象範囲見極め(TI2)の前提として、実際に動くスパイクを1つ用意する。
+    mod proptest_spike {
+        use super::*;
+        use awase::engine::AssumedReason;
+        use proptest::prelude::*;
+
+        fn arb_assumed_reason() -> impl Strategy<Value = AssumedReason> {
+            prop_oneof![
+                Just(AssumedReason::ImmBridgeBroken),
+                Just(AssumedReason::FocusTransition),
+                Just(AssumedReason::AppKindExcluded),
+                Just(AssumedReason::ForceOnGuardActive),
+                Just(AssumedReason::UserHalfWidthAlnumToggleOff),
+            ]
+        }
+
+        fn arb_input_mode_state() -> impl Strategy<Value = InputModeState> {
+            prop_oneof![
+                Just(InputModeState::ObservedRomaji),
+                Just(InputModeState::ObservedKana),
+                Just(InputModeState::ObservedEisu),
+                arb_assumed_reason().prop_map(|reason| InputModeState::AssumedRomaji { reason }),
+                Just(InputModeState::Unknown),
+            ]
+        }
+
+        fn arb_conv_mode() -> impl Strategy<Value = ConvMode> {
+            (any::<bool>(), any::<bool>()).prop_map(|(eisu, romaji)| ConvMode { eisu, romaji })
+        }
+
+        proptest! {
+            /// 1. `classify_conv_transition` は任意の入力に対してpanicしない。
+            #[test]
+            fn never_panics_on_arbitrary_inputs(
+                cm in arb_conv_mode(),
+                current in arb_input_mode_state(),
+                is_cold in any::<bool>(),
+                effective_open in any::<bool>(),
+                conv_mode_changed in any::<bool>(),
+                is_roman_reliable in any::<bool>(),
+            ) {
+                let _ = classify_conv_transition(
+                    cm,
+                    current,
+                    is_cold,
+                    effective_open,
+                    conv_mode_changed,
+                    is_roman_reliable,
+                );
+            }
+
+            /// 2. 同じ入力からは常に同じ結果を返す（決定的、純粋関数の定義そのもの）。
+            #[test]
+            fn deterministic_for_same_inputs(
+                cm in arb_conv_mode(),
+                current in arb_input_mode_state(),
+                is_cold in any::<bool>(),
+                effective_open in any::<bool>(),
+                conv_mode_changed in any::<bool>(),
+                is_roman_reliable in any::<bool>(),
+            ) {
+                let a = classify_conv_transition(
+                    cm, current, is_cold, effective_open, conv_mode_changed, is_roman_reliable,
+                );
+                let b = classify_conv_transition(
+                    cm, current, is_cold, effective_open, conv_mode_changed, is_roman_reliable,
+                );
+                prop_assert_eq!(a, b);
+            }
+
+            /// 3. `conv_mode_changed=false` かつ `cm`が変わらない場合、
+            /// `input_mode_update`が`Some(current)`（同じ値への自己遷移）を
+            /// 返すことはない——遷移が無いなら`None`のはず、という不変条件。
+            /// （モジュールdocの「belief変化なしの場合」節が示す設計意図の一部を
+            /// property として固定する）
+            #[test]
+            fn no_self_transition_to_identical_input_mode(
+                cm in arb_conv_mode(),
+                current in arb_input_mode_state(),
+                is_cold in any::<bool>(),
+                effective_open in any::<bool>(),
+                is_roman_reliable in any::<bool>(),
+            ) {
+                let result = classify_conv_transition(
+                    cm, current, is_cold, effective_open, false, is_roman_reliable,
+                );
+                if let Some(update) = result.input_mode_update {
+                    prop_assert_ne!(update, current);
+                }
+            }
+        }
+    }
 }

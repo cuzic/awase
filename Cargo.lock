@@ -536,6 +536,7 @@ dependencies = [
  "awase-vkmap",
  "itertools",
  "measured-macro",
+ "proptest",
  "quanta",
  "serde",
  "serde_json",
