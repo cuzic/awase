@@ -63,10 +63,13 @@ pub(crate) struct OpenBelief {
 /// 分岐へ再配線する場合は、同決定が書く `Optimistic` の扱いを先に見直すこと。
 #[tracing::instrument(level = "debug", skip_all, fields(desired_open = desired_open))]
 pub(crate) fn reduce_open_belief(inputs: &OpenBeliefInputs, desired_open: bool) -> OpenBelief {
+    // SPIKE(ADR-160 S1 検証用、恒久化しない): conv_mode の有無によらず
+    // fallback式の値を常に計算し、実際に選ばれた値と比較記録する。
+    let fallback_value = inputs.shadow_on
+        || inputs.candidate_visible
+        || (!desired_open && inputs.candidate_was_seen);
     let effective_open = inputs.conv_mode.map_or(
-        inputs.shadow_on
-            || inputs.candidate_visible
-            || (!desired_open && inputs.candidate_was_seen),
+        fallback_value,
         |conv| {
             if desired_open {
                 // open=true 要求時: IME_CMODE_NATIVE(0x1) ビットでひらがな/カタカナを判定。
@@ -79,6 +82,17 @@ pub(crate) fn reduce_open_belief(inputs: &OpenBeliefInputs, desired_open: bool) 
             }
         },
     );
+    if inputs.conv_mode.is_some() && effective_open != fallback_value {
+        tracing::debug!(
+            "[spike-io] effective_open diverges: conv_mode={:?} conv_path={effective_open} \
+             fallback_path={fallback_value} shadow_on={} candidate_visible={} \
+             candidate_was_seen={} desired_open={desired_open}",
+            inputs.conv_mode,
+            inputs.shadow_on,
+            inputs.candidate_visible,
+            inputs.candidate_was_seen,
+        );
+    }
 
     let confident = if !inputs.can_imm32_cross_process
         && !inputs.gji_monitor_ok

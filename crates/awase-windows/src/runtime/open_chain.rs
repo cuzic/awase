@@ -157,6 +157,9 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
     })
     .unwrap_or(false);
     if is_input_relay {
+        // SPIKE(ADR-159 M2 検証用、恒久化しない): この gate が実際に
+        // await 競合を捕まえているかを実測するための一時ログ。
+        tracing::debug!("[spike-io] input_relay_gate site=imm_cross_write hit=true");
         return ImeOpenOutcome::NotOwned;
     }
     // ADR-117（issue #138 切り分け: MS-IME「直接入力モード許可」時の英数キー文字消失）:
@@ -333,6 +336,10 @@ fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
         // `NotOwned` は `falls_through` が偽なので、GjiDirect/MsImeDirect/
         // KanjiToggle を1つずつ試すことなくチェーンをここで止める。
         if view.focus.profile == crate::focus::class_names::AppImeProfile::InputRelay {
+            // SPIKE(ADR-159 M2 検証用、恒久化しない)
+            tracing::debug!(
+                "[spike-io] input_relay_gate site=fallback_write mechanism={mechanism:?} hit=true"
+            );
             return ImeOpenOutcome::NotOwned;
         }
         if crate::ime_controller::mechanism_is_applicable(mechanism, &view) {
@@ -382,6 +389,8 @@ pub(crate) async fn run_open_chain_async(order: ActuationOrder, imm: ImmCrossOp)
     })
     .unwrap_or(false);
     if is_input_relay {
+        // SPIKE(ADR-159 M2 検証用、恒久化しない)
+        tracing::debug!("[spike-io] input_relay_gate site=run_open_chain_async hit=true");
         return ImeOpenOutcome::NotOwned;
     }
     // ADR-090 §2.A A-1: 授権は起案側（`ImeStateHub::issue_actuation_order`）で
