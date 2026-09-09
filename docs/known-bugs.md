@@ -13999,8 +13999,21 @@ Imm32UnavailableではIMM読み取り自体がスキップされるためこれ�
 `#[cfg(windows)]`ゲート配下のためコンパイル確認のみ）。新規ユニットテスト
 `check_drift_correction_ignores_heuristic_default_alone_without_explicit_intent`
 を追加（既存の`..._ignores_conv_inference_alone_without_explicit_intent`と
-同型）。opus-adversarial-consultで検証済み。dragonflyg4実機での再ソークは
-別途実施予定。
+同型）。opus-adversarial-consultで検証済み。
+
+**dragonflyg4実機ソーク結果（2026-09-09、`fix/issue189-force-on-yields-to-drift`
+ブランチ、`cargo test -p awase-windows --lib`で新規テスト含む5件を実機上で
+実行しall pass済み）:** 約33分間（03:58〜04:31Z）の実機ログで、issue #189の
+発火条件（`Imm32Unavailable entry without trusted cache`＝`HeuristicDefault`
+記録）が5回発生した。**5回すべてで、その後の drift correction・force-ON
+いずれの発火も一切観測されなかった**（前バージョンの調停案では
+`[drift-yield]`ログとともに「バーストが尽きるまで待つ」形で解消していたが、
+本修正では競合そのものが発生していない）。同一ログ内で別種の乖離
+（`source=ConvOpenInference confidence=Medium`、明示意図`Some(false)`が
+存在するBUG-19本来のシナリオ）は従来どおり正しく発火し続けていることも
+確認済み——本ガードが`ConvOpenInference`/`HeuristicDefault`以外や、
+明示意図がある場合の正当な drift correction を妨げていないことの裏付けにも
+なった。
 
 ## BUG-111: `run_ime_refresh` の 500ms 周期リフレッシュが実フォーカス変更の有無に関わらず `[imm-learning] profile 降格` ログを毎ティック再発火させる
 
