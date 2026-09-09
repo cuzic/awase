@@ -350,6 +350,24 @@ pub struct ForegroundInfo {
     pub class_name: String,
 }
 
+/// SPIKE（恒久化しない）: `set_ime_open` の宣言の強制を、dylintではなく可視性＋
+/// newtypeのpermitパターンで実現できるかを検証する。
+///
+/// `issue()` を `pub(crate)` にしているのは意図的——ルートクレート（本ファイル）の
+/// 外からは構築できないことを確認するため。もし `awase-windows` 側の
+/// `set_ime_open_ordered` がこの permit を必要とするなら、その構築を
+/// `awase-windows` 側で行えなければならないが、`pub(crate)` は同一クレート内
+/// でしか効かないため、クレートをまたいだ「この関数だけ許可」は表現できない
+/// はずである——それを実際にコンパイルして確かめる。
+pub struct ActuationPermit(());
+
+impl ActuationPermit {
+    /// SPIKE: ルートクレート内でのみ構築できる。
+    pub(crate) fn issue_for_ordered_actuation() -> Self {
+        Self(())
+    }
+}
+
 /// プラットフォーム固有の副作用実行インターフェース。
 ///
 /// `DecisionExecutor` がこのトレイトを通じて OS 操作を行う。
@@ -380,7 +398,7 @@ pub trait PlatformRuntime {
     /// 呼ばれている。以下の `apply_ime_open`（このトレイトのデフォルト実装）
     /// を使うようにという doc は実態と逆転していたため訂正する
     /// （2026-08-10、ADR-087 §5 Phase 3 item14 実 actuation 入口棚卸しで判明）。
-    fn set_ime_open(&mut self, open: bool) -> bool;
+    fn set_ime_open(&mut self, open: bool, _permit: ActuationPermit) -> bool;
 
     /// IME の ON/OFF を設定し、実行結果を返す。
     ///
@@ -394,7 +412,7 @@ pub trait PlatformRuntime {
     /// ラップする。プラットフォーム実装はオーバーライドしてフォールバック
     /// 戦略を組み込める。
     fn apply_ime_open(&mut self, open: bool) -> ImeOpenOutcome {
-        if self.set_ime_open(open) {
+        if self.set_ime_open(open, ActuationPermit::issue_for_ordered_actuation()) {
             ImeOpenOutcome::Applied
         } else {
             ImeOpenOutcome::Failed

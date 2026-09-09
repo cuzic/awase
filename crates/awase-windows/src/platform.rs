@@ -1243,7 +1243,7 @@ impl PlatformRuntime for WindowsPlatform {
 
     // ── IME ──
 
-    fn set_ime_open(&mut self, open: bool) -> bool {
+    fn set_ime_open(&mut self, open: bool, _permit: awase::platform::ActuationPermit) -> bool {
         // IMM32 API で直接 open/close できないアプリ（Imm32Unavailable / TSF-native）では
         // get_gui_thread_info + send_ime_control が ~200ms タイムアウトしてブロックする。
         // 早期 return して IMM32 経由のクロスプロセス呼び出しをスキップする。
@@ -1719,7 +1719,8 @@ impl WindowsPlatform {
         // チェーンを通らないこの経路でも保つため——参照で受けると同じ order で
         // 2 回書けてしまう。
         drop(order);
-        PlatformRuntime::set_ime_open(self, open)
+        // SPIKE: これがコンパイルできるか(=クレートをまたいだpermit構築ができるか)を確認する。
+        PlatformRuntime::set_ime_open(self, open, awase::platform::ActuationPermit::issue_for_ordered_actuation())
     }
 
     // ── タイマー問い合わせ ──
