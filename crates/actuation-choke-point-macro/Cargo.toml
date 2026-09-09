@@ -1,0 +1,13 @@
+[package]
+name = "actuation-choke-point-macro"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "ADR-158 TE3前提サブタスク: ADR-161実証実験5(#[actuation_choke_point])の本実装化。「まず記録・可視化してからdylintの許可リストへ昇格する」という育て方の観測フェーズ用属性マクロ"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+quote = "1"
+syn = { version = "2", features = ["full", "extra-traits"] }

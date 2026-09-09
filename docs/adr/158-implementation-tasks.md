@@ -424,7 +424,7 @@ tuning-constants.md`記載の実測値（`79134f5`の326ms等）が、対応す�
 際は既存3経路のdocコメントを必ず読むことを次の担当者への申し送りとする。詳細は
 [ADR-161](161-single-source-spec-generation.md)の当てはめ表を参照。
 
-### TE3: `AppImeProfile`能力表の段階的宣言化
+### TE3: `AppImeProfile`能力表の段階的宣言化（観測フェーズ開始、2026-09-09——昇格フェーズは性質上ここでは完了不能）
 
 **内容**: `focus/class_names.rs::AppImeProfile`の各バリアントが持つ能力を、まず
 [ADR-161](161-single-source-spec-generation.md)実証実験5の属性マクロ（実行時記録版）で
@@ -436,9 +436,32 @@ tuning-constants.md`記載の実測値（`79134f5`の326ms等）が、対応す�
 存在しないため、TE3着手前に「実証実験5を`crates/macro-spike`から正式なcrateへ格上げする」
 というサブタスクを別途起票すること）。
 
+**完了内容（前提サブタスク＋観測フェーズ開始）**: `crates/actuation-choke-point-macro`
+（新規proc-macroクレート、`spike/syn-xtask-prototype`の`#[actuation_choke_point]`実装を
+`println!`から`tracing::debug!`へ差し替えて本実装化）を実装した。`AppImeProfile::
+can_use_imm32_cross_process`（4能力メソッドのうち1つ、実測17箇所以上の呼び出し元を持つ
+代表例）に適用し観測を開始した。適用に伴い、このメソッド自体と、これを呼ぶ2つの
+`const fn`（`state/key_sequence_policy.rs::imm_cross_applicable`/
+`ms_ime_direct_applicable`）から`const`修飾子を除去する必要があった（`tracing::debug!`は
+const文脈で呼べないため）——const経由の呼び出しは実測ゼロだったため安全に除去できた。
+残り3つの能力メソッド（`uses_kanji_toggle`/`should_pass_physical_key`/
+`can_read_imm32_open_status`）への適用は、[ADR-158](158-complexity-reduction-north-star.md)
+「育て方」の「最初から広げない」方針に従い今回は見送り、次のセッションで実機ログの蓄積状況
+（下記）を確認した上で追加するか判断する。
+
+**昇格フェーズは今回完了しない**: 本タスクの性質上（「数セッション分のログを集めた上で」が
+前提）、実機での複数セッション運用を経ないと昇格判断ができない。次にこのタスクへ戻る
+セッションは、まず`[actuation-record]`タグの実機ログが蓄積されているか確認し、
+`can_use_imm32_cross_process`の実際の呼び出し元file:lineが上記doc commentの想定
+（17箇所以上）と一致するかを確認してから、`lints/actuation_call_guard`への昇格に着手する
+こと。
+
 **検証方法**: 観測フェーズでは実機ログに`[actuation-record]`相当の出力が実際に現れることを
 確認。昇格フェーズでは、issue #136型の回帰（gateを1箇所だけに置いて自己回帰する）を模した
-テストケースで新lintが検知することを確認する。
+テストケースで新lintが検知することを確認する。今回は`cargo check --target
+x86_64-pc-windows-msvc -p awase-windows`・`cargo nextest run architecture_guard/
+layer_boundary_guard`（95件）・`cargo clippy`/`cargo fmt`/`cargo machete`の成功のみ確認済み
+（実機ログでの確認は未実施、次セッションの課題）。
 
 ---
 

@@ -36,7 +36,7 @@ use awase::types::VkCode;
 
 /// `ImmCrossProcessStrategy` の適用条件: IMM32 クロスプロセス制御が使えるプロファイルか。
 #[must_use]
-pub(crate) const fn imm_cross_applicable(profile: AppImeProfile) -> bool {
+pub(crate) fn imm_cross_applicable(profile: AppImeProfile) -> bool {
     profile.can_use_imm32_cross_process()
 }
 
@@ -48,7 +48,7 @@ pub(crate) const fn gji_direct_applicable(kind: ActiveImeKind) -> bool {
 
 /// `MsImeDirectStrategy` の適用条件: MS-IME 検出済み かつ IMM32 クロスプロセス不可。
 #[must_use]
-pub(crate) const fn ms_ime_direct_applicable(kind: ActiveImeKind, profile: AppImeProfile) -> bool {
+pub(crate) fn ms_ime_direct_applicable(kind: ActiveImeKind, profile: AppImeProfile) -> bool {
     matches!(kind, ActiveImeKind::MicrosoftIme) && !profile.can_use_imm32_cross_process()
 }
 

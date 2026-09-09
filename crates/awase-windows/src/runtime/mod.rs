@@ -432,7 +432,11 @@ impl Runtime {
     }
 
     /// 現在フォーカス中のアプリが IMM32 クロスプロセス制御を使えるか返す。
-    #[expect(clippy::missing_const_for_fn)]
+    ///
+    /// ADR-158 TE3: `AppImeProfile::can_use_imm32_cross_process`が観測用の
+    /// `#[actuation_choke_point]`を付けた際に`const fn`ではなくなったため、
+    /// 以前ここにあった`#[expect(clippy::missing_const_for_fn)]`（「const化できる」
+    /// というclippy提案の抑制）は不要になった。
     #[must_use]
     pub fn can_use_imm32_cross_process(&self) -> bool {
         self.platform
