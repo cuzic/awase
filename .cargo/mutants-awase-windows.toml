@@ -24,6 +24,7 @@ examine_globs = [
     "crates/awase-windows/src/scanmap.rs",
     "crates/awase-windows/src/msime_key_assignment.rs",
     "crates/awase-windows/src/single_thread_cell.rs",
+    "crates/awase-windows/src/lifetime_counter.rs",
     "crates/awase-windows/src/state/ime_model.rs",
     "crates/awase-windows/src/state/observation_store.rs",
     "crates/awase-windows/src/state/conv_classify.rs",

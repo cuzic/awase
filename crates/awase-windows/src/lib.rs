@@ -27,6 +27,7 @@ pub mod focus_resync;
 pub mod gji_charset_autodetect;
 pub mod hook_channel;
 pub mod journal_policy;
+pub(crate) mod lifetime_counter;
 pub mod msime_key_assignment;
 pub mod msime_legacy_keymap;
 pub mod scancode_map;
