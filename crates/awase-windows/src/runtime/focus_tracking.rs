@@ -63,8 +63,8 @@ impl Runtime {
             .journal
             .record(crate::journal::JournalEntry::FocusTransition {
                 changed,
-                from: (prev.hwnd != 0).then(|| focus_endpoint(prev)),
-                to: focus_endpoint(next),
+                from: (prev.hwnd != 0).then(|| crate::journal::FocusEndpoint::from(prev)),
+                to: crate::journal::FocusEndpoint::from(next),
                 dwell_ms,
                 profile: format!("{profile:?}"),
             });
@@ -798,14 +798,19 @@ impl Runtime {
     }
 }
 
-fn focus_endpoint(identity: &FocusIdentity) -> crate::journal::FocusEndpoint {
-    crate::journal::FocusEndpoint {
-        hwnd: crate::state::ime_event::HwndId(identity.hwnd),
-        pid: identity.pid,
-        process_name: identity.process_name.clone(),
-        class_name: identity.class_name.clone(),
-        app_kind: format!("{:?}", identity.app_kind),
-        focus_kind: format!("{:?}", identity.focus_kind),
+/// 2026-09-10、自由関数`focus_endpoint(identity: &FocusIdentity)`から`From`実装へ
+/// 変更した（[[project_orphaned_free_fn_methodization_2026_09_10]]、同じ関数内の
+/// `ImePolicyProfile::from(next.app_profile)`と揃える）。挙動は変更していない。
+impl From<&FocusIdentity> for crate::journal::FocusEndpoint {
+    fn from(identity: &FocusIdentity) -> Self {
+        Self {
+            hwnd: crate::state::ime_event::HwndId(identity.hwnd),
+            pid: identity.pid,
+            process_name: identity.process_name.clone(),
+            class_name: identity.class_name.clone(),
+            app_kind: format!("{:?}", identity.app_kind),
+            focus_kind: format!("{:?}", identity.focus_kind),
+        }
     }
 }
 
