@@ -592,14 +592,22 @@ TsfNative）にフォーカスした状態で外部プロセスから`SendInput`
 [shadow-send] channel=SendInput kind=tsf_marker_warmup vk=[16] cmd=None issue_us=91949
 ```
 
-上記訂正（バッファ撤去・`lparam`追加・計測窓移動）後の簡素化版でも同じ
-`dragonflyg4`実機で再検証し、`[shadow-send] channel=SendInput ...`（フィールド
-構成のみ変更、`cmd`/`vk`はチャンネルごとの必須フィールドに変更）の出力を
-再確認した（下記「簡素化版の実機再検証」参照）。
+**簡素化版の実機再検証（2026-09-10、コミット`317967f1`）**: 同じ`dragonflyg4`
+実機で再ビルド・再起動し、同じ手順（外部SendInputで`VK_IME_ON`/`VK_IME_OFF`
+注入）で以下を確認した:
+
+```
+2026-09-10T01:28:46.479228Z DEBUG apply{open=true profile=TsfNative focus_gen=0}: awase_windows::shadow_send_trace: [shadow-send] channel=SendInput kind=kanji_marker vk=[16] issue_us=76163
+2026-09-10T01:28:46.487319Z DEBUG on_ime_apply_complete{open=true outcome=AlreadyMatched generation=None reason=EngineDecision}: awase_windows::shadow_send_trace: [shadow-send] channel=SendInput kind=tsf_marker_warmup vk=[16] issue_us=84233
+```
+
+初版との差分どおり、ログレベルが`INFO`→`DEBUG`になり、`cmd=None`フィールドが
+消えている（`SendInput`チャンネルには存在しないフィールドになった）ことを確認。
 
 `SendInput`経路（`win32.rs`側）の記録は実機で確認済み。`WM_IME_CONTROL`経路
-（`imm.rs`側）は同一セッションでは発火条件（`IMC_SETOPENSTATUS`/
-`IMC_SETCONVERSIONMODE`のactuation cmd）に到達せず未確認のまま
+（`imm.rs`側、`lparam`追加後）は本テストシナリオ（`VK_IME_ON`/`VK_IME_OFF`の
+SendInput注入）では発火条件（`IMC_SETOPENSTATUS`/`IMC_SETCONVERSIONMODE`の
+actuation cmd）に到達せず、初版に続き今回も未確認のまま
 （ADR-159実機スパイクの実測比率どおりSendInput側が支配的で、これ自体は
 想定内——コードは`win32.rs`側と同一パターンで`cargo check --target
 x86_64-pc-windows-msvc -p awase-windows --tests --lib`はpass済み）。
