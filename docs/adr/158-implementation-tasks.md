@@ -529,7 +529,7 @@ layer_boundary_guard`（95件）・`cargo clippy`/`cargo fmt`/`cargo machete`の
 通ることを確認済み（`state/platform_state.rs`は`#[cfg(windows)]`配下のため、実行自体は
 windows-build CIへ委譲）。
 
-### TF2: `send_input_safe`/`send_ime_control`への差分記録（段階2の一部、部分完了2026-09-09、opus code review S5で訂正）
+### TF2: `send_input_safe`/`send_ime_control`への差分記録（段階2の一部、実装・実機検証完了2026-09-10、2026-09-09にopus code review S5で訂正済み）
 
 **内容**: TB0で宣言した2つのチョークポイントに、シャドー実行の差分記録を最小限（1つの
 条件分岐のみ）挿入する。
@@ -554,20 +554,47 @@ ADR-159段階2（送信列の記録・再生）は実質**未着手**のまま�
 E1・E4の着手条件は「配線確認」ではなく「削除・統合1件を送信列差分ゼロで検証できたこと」
 という能力ベースの基準であり、この実測データ単独ではその基準を満たさない。**
 
-**残タスク**: `send_input_safe`/`send_ime_control`の呼び出し直前に、実際に送信する内容
-（VK列・cmd値等）を構造化ログまたはjournalへ記録する処理を最小限（1条件分岐）挿入する
-——これは次のセッションへの持ち越しとする。
+**残タスクの実装完了（2026-09-10、`feat/adr159-tf2-shadow-send-trace`ブランチ）**:
+新規モジュール`crates/awase-windows/src/shadow_send_trace.rs`を追加した。
+`send_input_safe`（`win32.rs`）・`send_ime_control`（`imm.rs`）は`Journal`
+（`PlatformState`所有）へアクセスできないself無しの`pub(crate) fn`のため、
+`probe_actuation_fence`/`conv_mutation`と同型のグローバルstateパターン
+（`Mutex<VecDeque<ShadowSendRecord>>`、上限64件）を踏襲した。挿入は両関数の
+**既存のactuation判定分岐に1行ずつ追加するのみ**（新しい条件分岐は増やして
+いない）——`win32.rs`は`probe_actuation_fence::bump()`と同一の
+`ime_actuation_marker_kind`判定内、`imm.rs`は同じく`probe_actuation_fence::bump()`
+と同一の`is_actuation`判定内（この訂正のため`bump()`呼び出しと診断ログの両方が
+参照する条件を`is_actuation`という単一のローカル変数に統合した）。
 
 **依存**: TB0。
 
-**検証方法（未達成）**: 実機セッションで送信内容そのものの差分記録が1件以上出力される
-ことを確認する（当初の検証方法を復元。`probe_actuation_fence`の存在確認では代替できない）。
+**検証（達成、2026-09-10）**: `dragonflyg4`実機（`feat/adr159-tf2-shadow-send-trace`
+ブランチ、コミット`7e39a234`）で、WezTerm（`CASCADIA_HOSTING_WINDOW_CLASS`、
+TsfNative）にフォーカスした状態で外部プロセスから`SendInput`で`VK_IME_ON`/
+`VK_IME_OFF`を注入し、awase自身の反応的actuationとして以下の構造化ログが
+実際に出力されることを確認した:
+
+```
+[shadow-send] channel=SendInput kind=kanji_marker vk=[16] cmd=None issue_us=81702
+[shadow-send] channel=SendInput kind=tsf_marker_warmup vk=[16] cmd=None issue_us=91949
+```
+
+`SendInput`経路（`win32.rs`側）の記録は実機で確認済み。`WM_IME_CONTROL`経路
+（`imm.rs`側）は同一セッションでは発火条件（`IMC_SETOPENSTATUS`/
+`IMC_SETCONVERSIONMODE`のactuation cmd）に到達せず未確認のまま
+（ADR-159実機スパイクの実測比率どおりSendInput側が支配的で、これ自体は
+想定内——コードは`win32.rs`側と同一パターンで`cargo check --target
+x86_64-pc-windows-msvc -p awase-windows --tests --lib`はpass済み）。
 
 **注記**: TF1・TF2はそれぞれ最小実装でよい——[ADR-162](162-governance-reversal.md)の着手
 条件「段階1または段階2が実際に1件以上の実績を出す」を満たすことが当面の目的であり、
 段階1・段階2の完全な実装は別途段階的に進める。**ただしADR-162 round4 TJ4 M5の訂正により、
 E1・E4の実際の着手条件は「配線確認」ではなく「能力ベース（削除・統合1件を送信列差分ゼロで
 検証できたこと）」である点に注意——TF1・TF2の完了はこの能力ベース基準を単独で満たさない。**
+本コミットで満たしたのは「段階2が実際に1件以上の実績を出す」という着手条件のみであり、
+TH1/TH4の発効条件（実際の削除・統合1件を記録トレースの再生で送信列差分ゼロと検証）は
+未達成のまま——これは別セッションの持ち越しタスクとする（記録した`ShadowSendRecord`を
+`journal.rs`のタクソノミーへ合流させる設計判断も含め、未着手）。
 
 ---
 
