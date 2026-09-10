@@ -58,10 +58,11 @@ impl ImeStateHub {
     /// 実 actuation の 1 件を起案する（ADR-090 §2.A A-1、INV-47）。
     ///
     /// `DecisionExecutor` は `Runtime` を持たないため
-    /// `Runtime::issue_actuation_order` を使えないが、4 つの公開入口
-    /// （`execute_from_hook` / `execute_from_loop` / `drain_deferred` /
-    /// `on_output_guard_timer`）が**既に `ime: &ImeStateHub` を受け取っている**ので、
-    /// それを `dispatch_ime_set_open` まで通すだけで warrant を発行できる。
+    /// [`Runtime::issue_actuation_order`](super::Runtime::issue_actuation_order) を
+    /// 使えないが、4 つの公開入口（`execute_from_hook` / `execute_from_loop` /
+    /// `drain_deferred` / `on_output_guard_timer`）が**既に `ime: &ImeStateHub` を
+    /// 受け取っている**ので、それを `dispatch_ime_set_open` まで通すだけで
+    /// warrant を発行できる。
     ///
     /// **`crate::with_app` で `ImeStateHub` を取りに行ってはならない**——ここは
     /// 既に `with_app` の内側であり、再入すると panic せず `None` が返る。
@@ -69,13 +70,25 @@ impl ImeStateHub {
     /// 静かに落ち、A-1 の shadow ログが測ろうとしている当のものが汚染される
     /// （ADR-090 §2.A.2(1)・§4.2）。
     ///
-    /// 2026-09-10、自由関数からメソッドへ変更した（第1引数`&ImeStateHub`を
-    /// selfにせず取り続けていた、[[project_orphaned_free_fn_methodization_2026_09_10]]の
-    /// 検出シグナルに合致）。`state/platform_state.rs`ではなくこの
-    /// `runtime/executor.rs`側に`impl`を追加している——`crate::hook::current_tick_ms()`
-    /// はWindows依存であり、`state/`はADR-065によりプラットフォーム非依存を
-    /// 維持する必要があるため。挙動は変更していない。
-    fn issue_order(
+    /// # 似た名前のメソッドとの違い（意図的に区別すること）
+    ///
+    /// - [`Self::issue_actuation_order`]（`state/platform_state.rs`）: 最下層。
+    ///   `origin`/`now`/`now_ms` を呼び出し元が組み立てて渡す。本メソッドの
+    ///   実装はこれをそのまま呼ぶ。
+    /// - [`Runtime::issue_actuation_order`](super::Runtime::issue_actuation_order) /
+    ///   [`Runtime::issue_actuation_order_with_origin`](super::Runtime::issue_actuation_order_with_origin)
+    ///   （`runtime/mod.rs`）: `Runtime` を持つ呼び出し元向けの同型の便利メソッド。
+    ///   本メソッドはそれの `ImeStateHub` 版（`Runtime` を持たない
+    ///   `DecisionExecutor` 用）であり、**ロジックは意図的に重複している**
+    ///   （統合すると `DecisionExecutor` に `Runtime` 依存を持ち込むことになり、
+    ///   上記のとおりそれ自体が本メソッドの存在理由を壊す）。
+    ///
+    /// 2026-09-10、自由関数`issue_order`からメソッドへ変更した際、`Runtime::
+    /// issue_actuation_order`と紛らわしいと指摘を受け`issue_self_actuation_order`
+    /// にリネームした（常に`EventSource::SelfActuated`を組み立てることを名前に
+    /// 反映、[[project_orphaned_free_fn_methodization_2026_09_10]]）。挙動は
+    /// 変更していない。
+    fn issue_self_actuation_order(
         &self,
         open: bool,
         strategy: &'static str,
@@ -849,7 +862,7 @@ impl DecisionExecutor {
             // ADR-090 §2.A A-1（shadow）: 起案は spawn_local の**外**で行う
             // ——future の中では `with_app` 再入で `ImeStateHub` に届かない
             // （ADR-090 §4.2）。
-            let order = ime.issue_order(open, "engine_decision_async");
+            let order = ime.issue_self_actuation_order(open, "engine_decision_async");
             let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
             // ADR-086 §1.2 欠陥1 是正（opus レビュー指摘 2026-08-08）: 「open と
             // 同じウィンドウへ ROMAN ビットを補完する」という意図を、open/conv を
@@ -974,7 +987,7 @@ impl DecisionExecutor {
                 view.focus.profile
             );
             // ADR-090 §2.A A-1（shadow）。
-            let order = ime.issue_order(open, "engine_decision_sync");
+            let order = ime.issue_self_actuation_order(open, "engine_decision_sync");
             let outcome = platform.apply_ime_open_with_view(order, &view, belief);
             if outcome == awase::platform::ImeOpenOutcome::Failed {
                 tracing::warn!("apply_ime_open({open}) failed");
