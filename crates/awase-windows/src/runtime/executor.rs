@@ -805,7 +805,7 @@ impl DecisionExecutor {
         let mut view = platform.build_ime_control_view(self.applied_snapshot.to_pair());
         view.belief_input_mode = self.belief_input_mode;
         if matches!(
-            crate::state::ime_actuation_decision::decide_gate(&(&view).into()),
+            crate::state::ime_actuation_decision::decide_gate((&view).into()),
             crate::state::ime_actuation_decision::GateResult::NotOwned
         ) {
             return Some((open, awase::platform::ImeOpenOutcome::NotOwned));

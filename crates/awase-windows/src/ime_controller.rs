@@ -554,7 +554,7 @@ impl ImeController {
         // 経路（`key_pipeline.rs:1065`/`mod.rs:897` 等）を含めてここで確実に止める。
         // ADR-119 参照（gate をここ1点に集約できなかった経緯）。
         if matches!(
-            crate::state::ime_actuation_decision::decide_gate(&view.into()),
+            crate::state::ime_actuation_decision::decide_gate(view.into()),
             crate::state::ime_actuation_decision::GateResult::NotOwned
         ) {
             return ImeOpenOutcome::NotOwned;
@@ -610,7 +610,7 @@ impl ImeController {
 /// `focus/class_names.rs` と `tsf/observer.rs` の `From` impl 1 箇所ずつが担う。
 /// 実際の選択は `state::ime_actuation_decision::decide_chain` に委譲する。
 fn caps_chain_for(view: &ImeControlView<'_>) -> &'static [WriteMechanism] {
-    crate::state::ime_actuation_decision::decide_chain(&view.into())
+    crate::state::ime_actuation_decision::decide_chain(view.into())
 }
 
 // 旧 `pub(crate) static CONTROLLER: ImeController` は撤去した。Phase B で

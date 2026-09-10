@@ -84,7 +84,7 @@ pub(crate) enum MechanismCommand {
 /// `ImeController::apply`/`run_open_chain_async`/`dispatch_ime_set_open`冒頭の
 /// InputRelayゲート（`view.focus.profile == AppImeProfile::InputRelay`）と同一の判定。
 #[must_use]
-pub(crate) const fn decide_gate(inputs: &DecisionInputs) -> GateResult {
+pub(crate) const fn decide_gate(inputs: DecisionInputs) -> GateResult {
     if matches!(inputs.profile, AppImeProfile::InputRelay) {
         GateResult::NotOwned
     } else {
@@ -97,7 +97,7 @@ pub(crate) const fn decide_gate(inputs: &DecisionInputs) -> GateResult {
 /// async経路（`open_chain.rs`）は`WriteMechanism::ALL`固定のまま変更しない
 /// （ADR-163 round2 T2、ADR-159の理由により意図的に非対称）。
 #[must_use]
-pub(crate) fn decide_chain(inputs: &DecisionInputs) -> &'static [WriteMechanism] {
+pub(crate) fn decide_chain(inputs: DecisionInputs) -> &'static [WriteMechanism] {
     caps(inputs.profile.into(), inputs.kind).chain
 }
 
@@ -120,7 +120,7 @@ const fn gji_direct_already_matches(shadow_on: Option<bool>, open: bool) -> bool
 /// 別タスクであり、本モジュールの新設時点では行わない）。
 #[must_use]
 pub(crate) fn decide_dispatch_conv_after_open(
-    inputs: &DecisionInputs,
+    inputs: DecisionInputs,
     open: bool,
 ) -> ConvAfterOpenId {
     if open && !matches!(inputs.belief_input_mode, InputModeState::ObservedKana) {
@@ -148,7 +148,7 @@ pub(crate) fn decide_dispatch_conv_after_open(
 /// （="この関数の責務外"、パニックにはしない）。
 #[must_use]
 pub(crate) fn decide_attempt(
-    inputs: &DecisionInputs,
+    inputs: DecisionInputs,
     site: DecisionSite,
     mechanism: WriteMechanism,
     open: bool,
@@ -209,7 +209,7 @@ mod tests {
             None,
             InputModeState::Unknown,
         );
-        assert_eq!(decide_gate(&i), GateResult::NotOwned);
+        assert_eq!(decide_gate(i), GateResult::NotOwned);
     }
 
     #[test]
@@ -220,7 +220,7 @@ mod tests {
             AppImeProfile::TsfNative,
         ] {
             let i = inputs(profile, ImeKindId::Gji, None, InputModeState::Unknown);
-            assert_eq!(decide_gate(&i), GateResult::Proceed, "{profile:?}");
+            assert_eq!(decide_gate(i), GateResult::Proceed, "{profile:?}");
         }
     }
 
@@ -236,7 +236,7 @@ mod tests {
             for kind in ImeKindId::ALL {
                 let i = inputs(profile, kind, None, InputModeState::Unknown);
                 assert_eq!(
-                    decide_chain(&i),
+                    decide_chain(i),
                     caps(profile.into(), kind).chain,
                     "{profile:?} {kind:?}"
                 );
@@ -255,7 +255,7 @@ mod tests {
             InputModeState::Unknown,
         );
         assert_eq!(
-            decide_dispatch_conv_after_open(&i, true),
+            decide_dispatch_conv_after_open(i, true),
             ConvAfterOpenId::Write(None)
         );
     }
@@ -269,7 +269,7 @@ mod tests {
             InputModeState::Unknown,
         );
         assert_eq!(
-            decide_dispatch_conv_after_open(&i, false),
+            decide_dispatch_conv_after_open(i, false),
             ConvAfterOpenId::Skip
         );
     }
@@ -283,7 +283,7 @@ mod tests {
             InputModeState::ObservedKana,
         );
         assert_eq!(
-            decide_dispatch_conv_after_open(&i, true),
+            decide_dispatch_conv_after_open(i, true),
             ConvAfterOpenId::Skip
         );
     }
@@ -299,7 +299,7 @@ mod tests {
             InputModeState::Unknown,
         );
         assert_eq!(
-            decide_dispatch_conv_after_open(&i, true),
+            decide_dispatch_conv_after_open(i, true),
             ConvAfterOpenId::Write(None)
         );
         assert!(!needs_romaji_pre_write(
@@ -320,7 +320,7 @@ mod tests {
             Some(true),
             InputModeState::Unknown,
         );
-        let (_, cmd) = decide_attempt(&i, DecisionSite::Sync, WriteMechanism::GjiDirect, true);
+        let (_, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::GjiDirect, true);
         assert_eq!(cmd, None);
     }
 
@@ -334,7 +334,7 @@ mod tests {
             None,
             InputModeState::Unknown,
         );
-        let (_, cmd) = decide_attempt(&i, DecisionSite::Sync, WriteMechanism::GjiDirect, true);
+        let (_, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::GjiDirect, true);
         assert_eq!(
             cmd,
             Some(MechanismCommand::SendVk(key_sequence_policy::ime_key_for(
@@ -352,7 +352,7 @@ mod tests {
             Some(false),
             InputModeState::Unknown,
         );
-        let (_, cmd) = decide_attempt(&i, DecisionSite::Sync, WriteMechanism::GjiDirect, true);
+        let (_, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::GjiDirect, true);
         assert!(cmd.is_some());
     }
 
@@ -367,8 +367,7 @@ mod tests {
                 shadow_on,
                 InputModeState::Unknown,
             );
-            let (_, cmd) =
-                decide_attempt(&i, DecisionSite::Sync, WriteMechanism::MsImeDirect, true);
+            let (_, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::MsImeDirect, true);
             assert!(cmd.is_some(), "shadow_on={shadow_on:?}");
         }
     }
@@ -383,7 +382,7 @@ mod tests {
             Some(true),
             InputModeState::Unknown,
         );
-        let (_, cmd) = decide_attempt(&i, DecisionSite::Sync, WriteMechanism::KanjiToggle, true);
+        let (_, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::KanjiToggle, true);
         assert_eq!(cmd, Some(MechanismCommand::PostKanjiToggle));
     }
 
@@ -397,7 +396,7 @@ mod tests {
             None,
             InputModeState::Unknown,
         );
-        let (_, cmd) = decide_attempt(&i, DecisionSite::Sync, WriteMechanism::ImmCross, true);
+        let (_, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::ImmCross, true);
         assert_eq!(cmd, Some(MechanismCommand::SetOpenCrossProcessSync(true)));
     }
 
@@ -417,7 +416,7 @@ mod tests {
             DecisionSite::RunOpenChainAsync,
             DecisionSite::DispatchImeSetOpen,
         ] {
-            let (_, cmd) = decide_attempt(&i, site, WriteMechanism::ImmCross, true);
+            let (_, cmd) = decide_attempt(i, site, WriteMechanism::ImmCross, true);
             assert_eq!(cmd, None, "{site:?}");
         }
     }
@@ -437,7 +436,7 @@ mod tests {
                     for belief_input_mode in [InputModeState::Unknown, InputModeState::ObservedKana]
                     {
                         let i = inputs(AppImeProfile::Standard, kind, None, belief_input_mode);
-                        let (flag, _) = decide_attempt(&i, DecisionSite::Sync, mechanism, open);
+                        let (flag, _) = decide_attempt(i, DecisionSite::Sync, mechanism, open);
                         assert_eq!(
                             flag,
                             needs_romaji_pre_write(mechanism, open, kind, belief_input_mode),

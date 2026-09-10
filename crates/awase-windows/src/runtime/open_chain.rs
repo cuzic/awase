@@ -154,7 +154,7 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
     let is_input_relay = crate::with_app(|app| {
         let view = app.shadow_ime_control_view();
         matches!(
-            crate::state::ime_actuation_decision::decide_gate(&(&view).into()),
+            crate::state::ime_actuation_decision::decide_gate((&view).into()),
             crate::state::ime_actuation_decision::GateResult::NotOwned
         )
     })
@@ -336,7 +336,7 @@ fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
         // `NotOwned` は `falls_through` が偽なので、GjiDirect/MsImeDirect/
         // KanjiToggle を1つずつ試すことなくチェーンをここで止める。
         if matches!(
-            crate::state::ime_actuation_decision::decide_gate(&(&view).into()),
+            crate::state::ime_actuation_decision::decide_gate((&view).into()),
             crate::state::ime_actuation_decision::GateResult::NotOwned
         ) {
             return ImeOpenOutcome::NotOwned;
@@ -385,7 +385,7 @@ pub(crate) async fn run_open_chain_async(order: ActuationOrder, imm: ImmCrossOp)
     let is_input_relay = crate::with_app(|app| {
         let view = app.shadow_ime_control_view();
         matches!(
-            crate::state::ime_actuation_decision::decide_gate(&(&view).into()),
+            crate::state::ime_actuation_decision::decide_gate((&view).into()),
             crate::state::ime_actuation_decision::GateResult::NotOwned
         )
     })
