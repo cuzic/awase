@@ -88,6 +88,10 @@ pub mod eisu_recovery;
 // ADR-163 TH1a: `crate::ime::ConvAfterOpen` の ungated ミラー。将来の
 // actuation 決定出力が Windows-gated 型を state 層へ持ち込まないための境界型。
 pub mod conv_after_open;
+// ADR-163 TH1b-1: IME actuation の「何を送るか」を Win32 I/O から切り離した
+// 純粋決定関数。まだどこからも呼ばれない追加のみのモジュールで、配線は別タスク。
+#[allow(dead_code)]
+pub(crate) mod ime_actuation_decision;
 // ADR-089 §2.1/§2.2: open 観測の evidence 型（プール分離 + データ witness）。
 pub mod evidence;
 pub mod force_guard;
