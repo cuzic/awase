@@ -295,6 +295,26 @@ pub struct Runtime {
     /// `shadow_action`が存在しないため、ADR-141参照）。
     henkan_shadow_override: Option<awase::types::ShadowImeAction>,
     muhenkan_shadow_override: Option<awase::types::ShadowImeAction>,
+    /// GJIが継続してアクティブな「区間」ごとに一度だけ`config1.db`を判定
+    /// するためのラッチ（ADR-164フェーズ1、旧
+    /// `gji_charset_autodetect::windows_impl::LAST_GJI_STREAK_CHECKED`）。
+    /// `false`＝GJI以外、または未判定／`true`＝この区間で判定済み。
+    /// `gji_charset_autodetect::sync_gji_charset_autodetect`と
+    /// `reset_streak_latch_for_reload`以外から触らない。
+    gji_charset_streak_checked: bool,
+    /// BUG-115: 直前にトグル関連の警告を出したかどうかのデデュープ
+    /// （ADR-164フェーズ1、旧`LAST_TOGGLE_WARNING`）。
+    /// `session_keymap`/`custom_keymap_table`/`overlay_keymaps`の内容が
+    /// 変わらない限り連呼しない。`None`＝未警告、`Some(warning)`＝直前に
+    /// 通知した内容。**GJI離脱ではリセットしない**（Q3方針:
+    /// GJI⇔MS-IME往復のたびに再警告すると煩わしいため、内容が変わった
+    /// ときだけ再警告する）。
+    gji_toggle_warning: Option<crate::gji_charset_autodetect::ThumbKeyImeWarning>,
+    /// BUG-115（N8）: Hiragana/Katakanaが親指キーで状態依存トグルを検出
+    /// したが`gji_thumb_key_ime_toggle`未opt-inのため反映しなかった旨の
+    /// 警告デデュープ（ADR-164フェーズ1、旧`LAST_MODE_KEY_THUMB_WARNING`）。
+    /// `true`＝直前に警告済み。
+    gji_mode_key_thumb_warning_declined: bool,
     /// BugReport 診断用: 現在ロード済みの `GeneralConfig.keyboard_model`。
     keyboard_model: awase::scanmap::KeyboardModel,
     /// トレイ右クリック時の更新確認を有効にするか。
@@ -1484,6 +1504,9 @@ impl Runtime {
             gji_katakana_shadow_override: None,
             henkan_shadow_override: None,
             muhenkan_shadow_override: None,
+            gji_charset_streak_checked: false,
+            gji_toggle_warning: None,
+            gji_mode_key_thumb_warning_declined: false,
             keyboard_model: awase::scanmap::KeyboardModel::default(),
             update_check_enabled: true,
             kana_lock_hysteresis: KanaLockHysteresis::new(),
@@ -1618,6 +1641,40 @@ impl Runtime {
     ) {
         self.henkan_shadow_override = henkan;
         self.muhenkan_shadow_override = muhenkan;
+    }
+
+    /// GJI継続区間の判定済みラッチを`checked`に更新し、更新前の値を返す
+    /// （ADR-164フェーズ1、旧`LAST_GJI_STREAK_CHECKED`のswap操作に対応）。
+    pub(crate) fn swap_gji_charset_streak_checked(&mut self, checked: bool) -> bool {
+        std::mem::replace(&mut self.gji_charset_streak_checked, checked)
+    }
+
+    /// `reset_streak_latch_for_reload`専用: GJI継続区間ラッチを未判定へ
+    /// 戻す（BUG-115 F4、ADR-164フェーズ1）。
+    pub(crate) fn reset_gji_charset_streak_checked(&mut self) {
+        self.gji_charset_streak_checked = false;
+    }
+
+    /// BUG-115トグル警告のデデュープ値を`warning`に更新し、更新前の値を
+    /// 返す（ADR-164フェーズ1、旧`LAST_TOGGLE_WARNING`のswap操作に対応）。
+    pub(crate) fn swap_gji_toggle_warning(
+        &mut self,
+        warning: crate::gji_charset_autodetect::ThumbKeyImeWarning,
+    ) -> Option<crate::gji_charset_autodetect::ThumbKeyImeWarning> {
+        self.gji_toggle_warning.replace(warning)
+    }
+
+    /// BUG-115（N8）Hiragana/Katakana親指キー警告のデデュープ値を
+    /// `declined`に更新し、更新前の値を返す（ADR-164フェーズ1、旧
+    /// `LAST_MODE_KEY_THUMB_WARNING`のswap操作に対応）。
+    pub(crate) fn swap_gji_mode_key_thumb_warning_declined(&mut self, declined: bool) -> bool {
+        std::mem::replace(&mut self.gji_mode_key_thumb_warning_declined, declined)
+    }
+
+    /// Hiragana/Katakana親指キー警告のデデュープ値を未警告へ戻す
+    /// （ADR-164フェーズ1、旧`LAST_MODE_KEY_THUMB_WARNING`のstore(NOT_WARNED)に対応）。
+    pub(crate) fn reset_gji_mode_key_thumb_warning_declined(&mut self) {
+        self.gji_mode_key_thumb_warning_declined = false;
     }
 
     #[must_use]

@@ -608,8 +608,6 @@ pub(crate) use windows_impl::{
 
 #[cfg(windows)]
 mod windows_impl {
-    use std::sync::atomic::{AtomicU8, Ordering};
-
     use awase::types::VkCode;
 
     use crate::runtime::Runtime;
@@ -621,26 +619,6 @@ mod windows_impl {
         ModeKeyCandidate, ThumbKeyImeWarning,
     };
 
-    const NOT_GJI: u8 = 0;
-    const GJI_CHECKED: u8 = 1;
-
-    /// GJIが継続してアクティブな「区間」ごとに一度だけ判定するためのラッチ。
-    /// `NOT_GJI`（GJI以外、または未判定）/`GJI_CHECKED`（この区間で判定済み）
-    /// の2値。`sync_gji_charset_autodetect`と`reset_streak_latch_for_reload`
-    /// 以外から触らない。
-    static LAST_GJI_STREAK_CHECKED: AtomicU8 = AtomicU8::new(NOT_GJI);
-
-    /// BUG-115: 直前にトグル関連の警告を出したかどうかのデデュープ
-    /// （`session_keymap`/`custom_keymap_table`/`overlay_keymaps`の内容が
-    /// 変わらない限り連呼しない）。`msime_key_assignment::LAST_WARNED`と
-    /// 同型。`NOT_WARNED`は未警告、それ以外は`ThumbKeyImeWarning`を
-    /// `u8`化した値。GJI離脱ではリセットしない（Q3方針:
-    /// GJI⇔MS-IME往復のたびに再警告すると煩わしいため、内容が変わった
-    /// ときだけ再警告する）。
-    static LAST_TOGGLE_WARNING: AtomicU8 = AtomicU8::new(NOT_WARNED);
-    static LAST_MODE_KEY_THUMB_WARNING: AtomicU8 = AtomicU8::new(NOT_WARNED);
-    const NOT_WARNED: u8 = 0xFF;
-
     /// `app/mod.rs::reload_config`から、GJI利用中の設定リロード時に呼ぶ
     /// （BUG-115 F4）。MS-IME側の`sync_ime_toggle_auto_detect`が設定
     /// リロードのたびに無条件で再読みするのと対称に、GJI側もラッチを
@@ -650,7 +628,7 @@ mod windows_impl {
     /// stale化を防ぐ。ADR-091の「継続的ポーリングをしない」とは矛盾しない
     /// （reloadはユーザー起点の離散イベントであり、ポーリングではない）。
     pub(crate) fn reset_streak_latch_for_reload(app: &mut Runtime) {
-        LAST_GJI_STREAK_CHECKED.store(NOT_GJI, Ordering::Relaxed);
+        app.reset_gji_charset_streak_checked();
         sync_gji_charset_autodetect(app, true);
     }
 
@@ -671,7 +649,7 @@ mod windows_impl {
     ///   `GJI_CHECKED`のまま）何もしない——継続的なポーリングをしないため。
     pub(crate) fn sync_gji_charset_autodetect(app: &mut Runtime, is_gji: bool) {
         if !is_gji {
-            if LAST_GJI_STREAK_CHECKED.swap(NOT_GJI, Ordering::Relaxed) == GJI_CHECKED {
+            if app.swap_gji_charset_streak_checked(false) {
                 tracing::info!(
                     "[gji-charset-autodetect] GJI から離脱: 自動検出したIME ON/OFFキーを解除"
                 );
@@ -706,7 +684,7 @@ mod windows_impl {
             }
             return;
         }
-        if LAST_GJI_STREAK_CHECKED.swap(GJI_CHECKED, Ordering::Relaxed) == GJI_CHECKED {
+        if app.swap_gji_charset_streak_checked(true) {
             return;
         }
 
@@ -894,12 +872,11 @@ mod windows_impl {
     /// 同一内容の警告はプロセス内で一度だけ
     /// （`msime_key_assignment::check_and_warn`と同型のデデュープ）。
     fn warn_thumb_key_toggle_if_needed(
-        app: &Runtime,
+        app: &mut Runtime,
         warning: ThumbKeyImeWarning,
         muhenkan: Option<ImeToggleKind>,
     ) {
-        let packed = warning as u8;
-        if LAST_TOGGLE_WARNING.swap(packed, Ordering::Relaxed) == packed {
+        if app.swap_gji_toggle_warning(warning) == Some(warning) {
             return; // 同じ内容で通知済み
         }
         match warning {
@@ -951,11 +928,11 @@ mod windows_impl {
     }
 
     fn warn_mode_key_thumb_key_unsupported_if_needed(
-        app: &Runtime,
+        app: &mut Runtime,
         raw: Option<&awase_gji_config::wire::GjiRawConfig>,
     ) {
         let Some(raw) = raw else {
-            LAST_MODE_KEY_THUMB_WARNING.store(NOT_WARNED, Ordering::Relaxed);
+            app.reset_gji_mode_key_thumb_warning_declined();
             return;
         };
         let declined = [ModeKeyCandidate::Hiragana, ModeKeyCandidate::Katakana]
@@ -968,12 +945,11 @@ mod windows_impl {
                     )
                     && !app.gji_thumb_key_ime_toggle_opt_in()
             });
-        let packed = u8::from(declined);
         if !declined {
-            LAST_MODE_KEY_THUMB_WARNING.store(NOT_WARNED, Ordering::Relaxed);
+            app.reset_gji_mode_key_thumb_warning_declined();
             return;
         }
-        if LAST_MODE_KEY_THUMB_WARNING.swap(packed, Ordering::Relaxed) == packed {
+        if app.swap_gji_mode_key_thumb_warning_declined(true) {
             return;
         }
         tracing::warn!(
