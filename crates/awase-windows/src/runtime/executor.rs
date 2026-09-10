@@ -919,7 +919,7 @@ impl DecisionExecutor {
             // その打鍵の IME open/close 判定そのものが Win32 往復の後ろに回る。
             //
             // この read の唯一の消費先は belief_inputs.conv_mode →
-            // reduce_open_belief → belief.effective_open/confident だが、
+            // OpenBeliefInputs::reduce → belief.effective_open/confident だが、
             // apply_ime_open_with_view (platform.rs) は belief を tracing::debug! に
             // 渡すだけで、実行本体 ImeController::apply(order, view) は belief
             // 引数を受け取っていない（読んだ値は最終的にログ2行にしか影響しない）。
@@ -956,7 +956,7 @@ impl DecisionExecutor {
                 can_imm32_cross_process: view.focus.profile.can_use_imm32_cross_process(),
                 now_ms,
             };
-            let belief = crate::output::reduce_open_belief(&belief_inputs, open);
+            let belief = belief_inputs.reduce(open);
             tracing::debug!(
                 "[dispatch-ime] belief: effective={} confident={} conv={:?} (profile={:?})",
                 belief.effective_open,
@@ -1006,13 +1006,13 @@ impl DecisionExecutor {
     }
 }
 
-/// `reduce_open_belief` および `AppliedImeState` の unit tests。
+/// `OpenBeliefInputs::reduce` および `AppliedImeState` の unit tests。
 ///
 /// `awase-windows` クレートは `#![cfg(windows)]` で囲まれているため
 /// Windows 実機でのみ実行される。
 #[cfg(test)]
 mod tests {
-    use crate::output::{reduce_open_belief, OpenBeliefInputs};
+    use crate::output::OpenBeliefInputs;
     use crate::state::AppliedImeState;
 
     /// Chrome 相当の設定（can_imm32=false, gji=false, EngineIntent）で confident を返すヘルパー。
@@ -1033,7 +1033,7 @@ mod tests {
             can_imm32_cross_process: false,
             now_ms,
         };
-        reduce_open_belief(&inputs, desired).confident
+        inputs.reduce(desired).confident
     }
 
     // 6-C ケース 1: フォーカス直後 (Unknown) → confident=false（必ず apply）
@@ -1127,7 +1127,7 @@ mod tests {
             can_imm32_cross_process: true,
             now_ms: 1000,
         };
-        assert!(reduce_open_belief(&inputs, false).confident);
+        assert!(inputs.reduce(false).confident);
     }
 
     // ケース 7: GJI 健全 → confident
@@ -1143,7 +1143,7 @@ mod tests {
             can_imm32_cross_process: false,
             now_ms: 1000,
         };
-        assert!(reduce_open_belief(&inputs, false).confident);
+        assert!(inputs.reduce(false).confident);
     }
 
     // （旧ケース 8「EngineIntent でない → confident」は 2026-07-06 到達不能パス監査
