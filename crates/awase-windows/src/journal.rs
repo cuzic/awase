@@ -16,11 +16,10 @@ pub use crate::journal_policy::LaneKind;
 use crate::journal_policy::{select_tail_within_budget, BudgetItem};
 
 pub const DEFAULT_CAPACITY: usize = 2048;
-pub const STATE_LANE_CAPACITY: usize = crate::journal_policy::lane_capacity(LaneKind::State);
-pub const TIMING_LANE_CAPACITY: usize = crate::journal_policy::lane_capacity(LaneKind::Timing);
-pub const ACTUATION_LANE_CAPACITY: usize =
-    crate::journal_policy::lane_capacity(LaneKind::Actuation);
-pub const KEY_INPUT_LANE_CAPACITY: usize = crate::journal_policy::lane_capacity(LaneKind::KeyInput);
+pub const STATE_LANE_CAPACITY: usize = LaneKind::State.capacity();
+pub const TIMING_LANE_CAPACITY: usize = LaneKind::Timing.capacity();
+pub const ACTUATION_LANE_CAPACITY: usize = LaneKind::Actuation.capacity();
+pub const KEY_INPUT_LANE_CAPACITY: usize = LaneKind::KeyInput.capacity();
 
 const TRIGGER_WINDOW: Duration = Duration::from_secs(3);
 
