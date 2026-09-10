@@ -36,21 +36,20 @@
 //! 棄却された probe はアトミックカウンタに記録される。
 //! 診断ダンプ時に [`drain_stats`] で取り出し、ログ出力に使う。
 
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use super::ime_event::HwndId;
+use crate::lifetime_counter::LifetimeCounter;
 
 /// 棄却統計（グローバルアトミック）。
-static REJECTED_EPOCH_MISMATCH: AtomicU64 = AtomicU64::new(0);
+static REJECTED_EPOCH_MISMATCH: LifetimeCounter = LifetimeCounter::new();
 /// hwnd 不一致による棄却統計のうち、spawn 時と現在で top-level 祖先ウィンドウ
 /// （`root_hwnd`、`GetAncestor(hwnd, GA_ROOT)`）が同じだったケース（PR 109
 /// コードレビュー指摘1 Step1: ネイティブ Win32 マルチフィールドダイアログでの
 /// フィールド間 Tab 移動等、同一 top-level ウィンドウ内でのコントロール間
 /// フォーカス移動が疑われる。BUG-91 参照）。
-static REJECTED_HWND_MISMATCH_SAME_ROOT: AtomicU64 = AtomicU64::new(0);
+static REJECTED_HWND_MISMATCH_SAME_ROOT: LifetimeCounter = LifetimeCounter::new();
 /// hwnd 不一致による棄却統計のうち、spawn 時と現在で `root_hwnd` が異なった
 /// ケース（真に別の top-level ウィンドウへの切替）。
-static REJECTED_HWND_MISMATCH_CROSS_ROOT: AtomicU64 = AtomicU64::new(0);
+static REJECTED_HWND_MISMATCH_CROSS_ROOT: LifetimeCounter = LifetimeCounter::new();
 
 /// 棄却統計のスナップショット。
 #[derive(Debug, Default, Clone, Copy)]
@@ -69,9 +68,9 @@ pub struct RejectionStats {
 #[must_use]
 pub fn drain_stats() -> RejectionStats {
     RejectionStats {
-        epoch_mismatch: REJECTED_EPOCH_MISMATCH.swap(0, Ordering::Relaxed),
-        hwnd_mismatch_same_root: REJECTED_HWND_MISMATCH_SAME_ROOT.swap(0, Ordering::Relaxed),
-        hwnd_mismatch_cross_root: REJECTED_HWND_MISMATCH_CROSS_ROOT.swap(0, Ordering::Relaxed),
+        epoch_mismatch: REJECTED_EPOCH_MISMATCH.drain(),
+        hwnd_mismatch_same_root: REJECTED_HWND_MISMATCH_SAME_ROOT.drain(),
+        hwnd_mismatch_cross_root: REJECTED_HWND_MISMATCH_CROSS_ROOT.drain(),
     }
 }
 
@@ -84,9 +83,9 @@ pub fn drain_stats() -> RejectionStats {
 #[cfg_attr(not(windows), allow(dead_code))]
 fn record_hwnd_mismatch(same_root: bool) {
     if same_root {
-        REJECTED_HWND_MISMATCH_SAME_ROOT.fetch_add(1, Ordering::Relaxed);
+        REJECTED_HWND_MISMATCH_SAME_ROOT.increment();
     } else {
-        REJECTED_HWND_MISMATCH_CROSS_ROOT.fetch_add(1, Ordering::Relaxed);
+        REJECTED_HWND_MISMATCH_CROSS_ROOT.increment();
     }
 }
 
@@ -267,7 +266,7 @@ impl ImmLikeTicket {
     #[must_use]
     pub fn admit(self, current: FocusFence) -> Admission {
         if current.epoch != self.fence.epoch {
-            REJECTED_EPOCH_MISMATCH.fetch_add(1, Ordering::Relaxed);
+            REJECTED_EPOCH_MISMATCH.increment();
             return Admission::Reject(RejectReason::FocusEpochChanged {
                 at_spawn: self.fence.epoch,
                 current: current.epoch,

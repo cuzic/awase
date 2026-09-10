@@ -195,7 +195,8 @@ static WAKE_POST_FAILED: AtomicBool = AtomicBool::new(false);
 /// consume してしまう）とは別に持つ、不具合報告スナップショット用の診断値
 /// （issue #165: エンジンスレッド詰まり/`PostMessageW`失敗の既存センサを可視化）。
 #[cfg(windows)]
-static WAKE_POST_FAILED_LIFETIME_COUNT: AtomicU32 = AtomicU32::new(0);
+static WAKE_POST_FAILED_LIFETIME_COUNT: crate::lifetime_counter::LifetimeCounter =
+    crate::lifetime_counter::LifetimeCounter::new();
 
 /// `WH_KEYBOARD_LL` フックコールバックから同期的に呼ぶ。
 ///
@@ -208,7 +209,7 @@ pub fn request_engine_wake() {
     {
         WAKE_PENDING.store(false, Ordering::Release);
         WAKE_POST_FAILED.store(true, Ordering::Release);
-        WAKE_POST_FAILED_LIFETIME_COUNT.fetch_add(1, Ordering::Relaxed);
+        WAKE_POST_FAILED_LIFETIME_COUNT.increment();
     }
 }
 
@@ -216,7 +217,7 @@ pub fn request_engine_wake() {
 #[cfg(windows)]
 #[must_use]
 pub fn wake_post_failed_lifetime_count() -> u32 {
-    WAKE_POST_FAILED_LIFETIME_COUNT.load(Ordering::Relaxed)
+    WAKE_POST_FAILED_LIFETIME_COUNT.read() as u32
 }
 
 /// エンジンスレッド側のウォッチドッグから呼ぶ。フック側で記録された post 失敗を
