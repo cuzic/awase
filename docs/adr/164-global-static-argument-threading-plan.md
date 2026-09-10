@@ -19,10 +19,17 @@ PR [#197](https://github.com/cuzic/awase/pull/197)でdevelopにマージ済み�
 フェーズ2（`msime_key_assignment.rs::LAST_WARNED`）はPR
 [#198](https://github.com/cuzic/awase/pull/198)（ブランチ
 `refactor/adr164-phase2-msime-last-warned`）で実装済み、develop未マージ。
-いずれも実装はcodex execに委任し、設計（本ADR）どおりの逐語的な指示で差分を
-作成、`cargo check`/`clippy`/`fmt`/既存テスト（純粋関数群・
-`architecture_guard`/`layer_boundary_guard`）を実行者側で再検証済み。
-フェーズ3以降は未着手。
+フェーズ4（`hook.rs`）は実装前調査のみ完了（コード変更なし）、実機ソーク・
+memory ordering突き合わせの段取りが必要な高リスクのため、より安価な
+フェーズ8→7→5でsingleton集約パターンを先に検証する方針とした
+（[[project_adr164_global_static_singleton_consolidation_2026_09_10]]参照）。
+フェーズ8（`state/probe_admission.rs`の3カウンタ）はブランチ
+`refactor/adr164-phase8-probe-admission-counters`で実装済み、develop未マージ。
+実装はcodex exec委任とセッション自身の直接実装を状況に応じて使い分け、
+`cargo check`（host/windows両ターゲット、`--tests --lib`含む）/clippy/fmt/
+`cargo nextest run -p awase-windows --test architecture_guard --test
+layer_boundary_guard --test golden_scenarios`を実行者側で再検証済み。
+フェーズ3・6・9は未着手。
 
 ## 背景
 
@@ -395,13 +402,19 @@ singleton構造体（`lib.rs:155-199`）であり、**ADR自身の原則を既�
 - 規模: 極小。
 - リスク: 低。設定GUI別バイナリで、IME actuation系のリスクファミリーに触れない。
 
-### フェーズ8: `state/probe_admission.rs`の3件をsingleton集約
+### フェーズ8: `state/probe_admission.rs`の3件をsingleton集約（実装済み、develop未マージ）
 
 プロセス生存期間の棄却統計カウンタ、`drain_stats()`で消費するのみで判定ロジックには
 使われない。3件を1つの構造体にまとめる。
 
 - 規模: 極小。
 - リスク: 低。
+- **実装（2026-09-10）**: ブランチ`refactor/adr164-phase8-probe-admission-counters`。
+  `REJECTED_EPOCH_MISMATCH`/`REJECTED_HWND_MISMATCH_SAME_ROOT`/
+  `REJECTED_HWND_MISMATCH_CROSS_ROOT`の3裸staticを`RejectionCounters`構造体
+  （フィールドは変更前と同じ`LifetimeCounter`型、全て`Ordering::Relaxed`）に集約し、
+  `static REJECTION_COUNTERS: RejectionCounters`1つに縮小。呼び出し元
+  （`admit()`・`record_hwnd_mismatch()`・`drain_stats()`）のロジック・戻り値は無変更。
 
 ### フェーズ9: `hook_channel.rs`（3件）・`runtime/engine_window.rs`（3件）をsingleton集約
 
