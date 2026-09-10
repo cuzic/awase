@@ -301,6 +301,30 @@ staleness（BUG-46/52/116ファミリーと同種の症状）を生む。**完�
 確認すること**（`rg -o 'Ordering::\w+'`のヒストグラム一致だけでは不十分、個々の読み書き
 箇所を突き合わせる）。
 
+**実装前調査（2026-09-10、フェーズ1・2マージ後に実施）**: 上記の21件・4分類・ordering実測値
+（Relaxed 49・Release 9・Acquire 7・SeqCst 1）・`HOOK_TID_INIT_SLOT`/`FOCUS_APP_DISABLED`の
+非対称・`HOOK_IME_MODE_DIAGNOSTICS`の同居安全性根拠を、いずれも実コード（develop最新）に対して
+再検証し、**全て一致**を確認した（コード変更なし、read-only調査）。ただしメインスレッド側
+書き込み元の行番号（`runtime/mod.rs:2089`等）は、フェーズ1・2で`Runtime`に新規フィールド/
+メソッドを追加した副作用で一部ズレている——実装時は行番号を当てにせず再取得すること。
+
+**この調査で新たに判明した、ADR本文に無かった完了条件の漏れ**:
+`crates/awase-windows/tests/architecture_guard.rs`に、`hook.rs`のソースコードをリテラル
+文字列で走査するテストが2件あり、本フェーズの改修（static→`HOOK_STATE`フィールド化）で
+**確実に壊れる**:
+
+1. `disable_apps_early_return_is_positioned_after_physical_key_state_update_and_before_vk_kana`
+   — `"FOCUS_APP_DISABLED.load(Ordering::Relaxed)"`等のリテラル文字列を`.find()`/`.expect()`
+   で探しており、`HOOK_STATE.focus_app_disabled.load(...)`のような形に書き換えると
+   `.expect(...)`がpanicする。
+2. `cross_thread_shared_lock_declarations_are_accounted_for` — 行頭`static `/`pub `/`pub(`
+   かつ`": Mutex<"`を含む行数をカウントし固定リストと突き合わせる。`HOOK_IME_MODE_DIAGNOSTICS`
+   がstructのフィールドになると`static `プレフィックスの行でなくなり、カウントが崩れる。
+
+壊れること自体は想定内（意図的な変更なら期待値更新でよい設計のテスト）だが、**フェーズ4の
+完了条件に、この2テストの期待値・リテラル文字列パターンの更新を追加する**（下記「検証方法」
+節にも反映）。`hook_callback_log_call_count_is_pinned`はstatic名に依存しないため対象外。
+
 - 規模: 大。20フィールドの`HOOK_STATE`構造体設計、既存アクセサ関数の内部実装差し替え、
   呼び出し元（メインスレッド側6箇所以上）の動作が変わらないことの確認、上記ordering保存の
   確認。
@@ -437,6 +461,12 @@ singleton構造体（`lib.rs:155-199`）であり、**ADR自身の原則を既�
    （`cargo test --lib`）テストを確認する。
 4. フェーズ4・5・6・9はWindows実機（`clipwire-exec`等）でのソークを経てからマージする
    （round2 N3——フェーズ6もCtrl+Cハンドラの動作確認が必要なため追加）。
+5. フェーズ4は追加で、`tests/architecture_guard.rs`の
+   `disable_apps_early_return_is_positioned_after_physical_key_state_update_and_before_vk_kana`
+   と`cross_thread_shared_lock_declarations_are_accounted_for`の2テスト（`hook.rs`の
+   ソースコードをリテラル文字列で走査しており、static宣言の形が変わると確実に壊れる）を
+   新しいコード形に合わせて更新することを完了条件に含める（2026-09-10実装前調査で判明、
+   フェーズ4本文の「実装前調査」節参照）。
 
 ## 非スコープ
 
