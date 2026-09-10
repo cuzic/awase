@@ -14,13 +14,15 @@ round1で当初案（フェーズ4の「`hook_callback`以下を`&mut HookState`
 [ADR-158](158-complexity-reduction-north-star.md)の複雑性棚卸しの追調査から派生した独立ADR
 （158の採択A〜Eいずれの子ADRでもない、新規の観点）。
 
-**実装状況（2026-09-10）**: フェーズ1（`gji_charset_autodetect.rs`の3ラッチ）を
-ブランチ`refactor/adr164-phase1-gji-charset-latches`（worktree
-`rust-nicola-worktrees/refactor-adr164-phase1-gji-charset-latches`）で実装済み、
-develop未マージ。実装はcodex execに委任し、設計（本ADR）どおりの逐語的な指示で
-差分を作成、`cargo check`/`clippy`/`fmt`/既存テスト（`gji_charset_autodetect.rs`の
-純粋関数29件、`architecture_guard`/`layer_boundary_guard`）を実行者側で再検証済み。
-フェーズ2以降は未着手。
+**実装状況（2026-09-10）**: フェーズ1（`gji_charset_autodetect.rs`の3ラッチ）は
+PR [#197](https://github.com/cuzic/awase/pull/197)でdevelopにマージ済み。
+フェーズ2（`msime_key_assignment.rs::LAST_WARNED`）はPR
+[#198](https://github.com/cuzic/awase/pull/198)（ブランチ
+`refactor/adr164-phase2-msime-last-warned`）で実装済み、develop未マージ。
+いずれも実装はcodex execに委任し、設計（本ADR）どおりの逐語的な指示で差分を
+作成、`cargo check`/`clippy`/`fmt`/既存テスト（純粋関数群・
+`architecture_guard`/`layer_boundary_guard`）を実行者側で再検証済み。
+フェーズ3以降は未着手。
 
 ## 背景
 
