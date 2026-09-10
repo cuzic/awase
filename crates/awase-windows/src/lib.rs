@@ -77,6 +77,8 @@ pub mod runtime;
 #[cfg(windows)]
 pub(crate) mod send_health;
 #[cfg(windows)]
+pub(crate) mod shadow_send_trace;
+#[cfg(windows)]
 pub mod timer;
 #[cfg(windows)]
 pub mod tray;

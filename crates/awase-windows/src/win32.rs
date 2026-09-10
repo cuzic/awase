@@ -282,6 +282,9 @@ pub(crate) fn send_input_safe(inputs: &[INPUT]) -> u32 {
         tracing::debug!(
             "[ime-io] actuation SendInput kind={kind} vk={vks:02X?} issue_us={issue_us}"
         );
+        // ADR-159 段階2(TF2、`shadow_send_trace`doc参照): 上と同一の条件で
+        // 実際の送信内容を構造化記録する。新しい条件は増やさない。
+        crate::shadow_send_trace::record_send_input(kind, &vks, issue_us);
     }
     let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32");
     // SAFETY: inputs スライスは呼び出し中有効であり、size は sizeof::<INPUT>() の正確な値。

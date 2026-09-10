@@ -149,7 +149,8 @@ pub(crate) unsafe fn send_ime_control(
     // 数えていなかった軸そのものが BUG-113 の actuation だったため
     // （`crate::probe_actuation_fence` doc 参照）。実際の `SendMessageTimeoutW`
     // 呼び出しより前に bump することが決定Bの必須要件。
-    if !matches!(cmd, IMC_GETOPENSTATUS | IMC_GETCONVERSIONMODE) {
+    let is_actuation = !matches!(cmd, IMC_GETOPENSTATUS | IMC_GETCONVERSIONMODE);
+    if is_actuation {
         crate::probe_actuation_fence::bump();
     }
     let start_ms = crate::hook::current_tick_ms();
@@ -176,17 +177,19 @@ pub(crate) unsafe fn send_ime_control(
     // ADR-140 コードレビュー指摘（MAJOR）: end_ms は send_health のサーキット
     // ブレーカ計測に使われるため、下の tracing::debug! のフォーマット/I/O コストを
     // その計測窓に含めてはならない——先に end_ms を確定させてから記録する。
+    // ADR-159 段階2(TF2)の`shadow_send_trace`記録も同じ理由でここに置く
+    // （`is_actuation`は上のbump()と同一条件、`158-implementation-tasks.md`
+    // TF2「最小限(1条件分岐)」の要件どおり新しい条件は増やしていない）。
     let end_ms = crate::hook::current_tick_ms();
     tracing::debug!(
         "[ime-io] cross_process cmd=0x{cmd:04X} kind={} ime_wnd={ime_wnd:?} \
          thread={:?} issue_us={issue_us} elapsed_us={elapsed_us}",
-        if matches!(cmd, IMC_GETOPENSTATUS | IMC_GETCONVERSIONMODE) {
-            "probe"
-        } else {
-            "actuation"
-        },
+        if is_actuation { "actuation" } else { "probe" },
         std::thread::current().id(),
     );
+    if is_actuation {
+        crate::shadow_send_trace::record_ime_control(cmd, lparam, issue_us);
+    }
     crate::send_health::record(end_ms.saturating_sub(start_ms), end_ms);
     (ok.0 != 0).then_some(result)
 }
