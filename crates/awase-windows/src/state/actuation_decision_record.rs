@@ -201,6 +201,18 @@ mod tests {
         let mut failures = Vec::new();
 
         let gate = decide_gate(record.gate_inputs);
+        // `attempts.is_empty()` から`GateResult`を逆算できるのは、現行コードで
+        // `is_applicable`（`ImmCrossProcessStrategy`/`GjiDirectStrategy`/
+        // `MsImeDirectStrategy`の3実装）が`profile`/`kind`——いずれも
+        // `DecisionInputs`に含まれる——にしか依存せず、`caps(profile, kind)`
+        // （sync）・`WriteMechanism::ALL`（async）のいずれのchainも先頭要素が
+        // 必ず適用可能になるよう構成されているためである。この結合が将来
+        // 崩れる（`is_applicable`がDecisionInputs外の値に依存するようになる、
+        // または`caps`が非適用要素を含むchainを返すようになる）と、
+        // 「chainはあるが全機構が非適用で1件もwriteしない」という正当な
+        // `Proceed`かつ空`attempts`のレコードが本チェックで誤検知されうる。
+        // TH1dで実機ダンプを投入した際にこの理由でgate mismatchが出た場合は、
+        // この逆算そのものを見直すこと（この分岐を無条件に信用しない）。
         let expected_gate = if record.attempts.is_empty() {
             GateResult::NotOwned
         } else {
