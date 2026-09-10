@@ -356,6 +356,60 @@ mod tests {
         assert!(cmd.is_some());
     }
 
+    // ── decide_attempt: GjiDirect（OFF方向、open=false）──────────────────────
+    //
+    // 上記3件（open=true）に対する対称ケース。削除された旧
+    // `ime_controller.rs`側のテスト（`gji_direct_already_matches_treats_
+    // unknown_shadow_as_not_matched`/`gji_direct_apply_off_is_already_matched_
+    // when_shadow_already_off`）はBUG-113の本来の症状であるOFF方向を直接
+    // 検証していたが、この3件（open=true専用）だけではその回帰を検知
+    // できなかった（/code-review PR#195指摘）。
+
+    #[test]
+    fn gji_direct_skips_when_shadow_already_matches_close_direction() {
+        let i = inputs(
+            AppImeProfile::Standard,
+            ImeKindId::Gji,
+            Some(false),
+            InputModeState::Unknown,
+        );
+        let (_, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::GjiDirect, false);
+        assert_eq!(cmd, None);
+    }
+
+    #[test]
+    fn gji_direct_sends_vk_when_shadow_unknown_close_direction() {
+        // BUG-113 Blocker: shadow_on == None（未知）は open=false 方向でも
+        // 「確認済みOFF」と誤認してはならない。`unwrap_or(false)` で bool に
+        // 潰していた旧実装はここを壊していた（docs/known-bugs.md BUG-113）。
+        let i = inputs(
+            AppImeProfile::Standard,
+            ImeKindId::Gji,
+            None,
+            InputModeState::Unknown,
+        );
+        let (_, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::GjiDirect, false);
+        assert_eq!(
+            cmd,
+            Some(MechanismCommand::SendVk(key_sequence_policy::ime_key_for(
+                KeyMechanism::GjiDirect,
+                ImeOperation::Close
+            )))
+        );
+    }
+
+    #[test]
+    fn gji_direct_sends_vk_when_shadow_mismatches_close_direction() {
+        let i = inputs(
+            AppImeProfile::Standard,
+            ImeKindId::Gji,
+            Some(true),
+            InputModeState::Unknown,
+        );
+        let (_, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::GjiDirect, false);
+        assert!(cmd.is_some());
+    }
+
     // ── decide_attempt: MsImeDirect（already-matched判定を持たない）──────────
 
     #[test]

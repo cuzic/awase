@@ -215,6 +215,12 @@ pub const fn falls_through(outcome: ImeOpenOutcome) -> bool {
 /// IME ON の直前に ROMAN ビットを補完する同期 IMC write が要るか
 /// （ADR-089 §6 Phase C item 12 = ADR-086 INV-14 の未移行分の是正）。
 ///
+/// **`state::ime_actuation_decision::decide_dispatch_conv_after_open`
+/// （`runtime/executor.rs::dispatch_ime_set_open` の非同期 ImmCross 経路が使う、
+/// 同じ「open 後に conv-mode/ROMAN を書くか」を決める別の述語）とは意図的に
+/// 異なる条件式である。統合しないこと——理由は
+/// `decide_dispatch_conv_after_open` の doc コメント参照（ADR-163 round2 R5）。
+///
 /// # なぜこの述語がここ（ungated）にあるのか
 ///
 /// Phase C 以前、この条件は `ime_controller.rs` の 2 つの戦略の中に**別々に**

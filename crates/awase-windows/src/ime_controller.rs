@@ -330,6 +330,16 @@ pub(crate) fn apply_mechanism(
             MechanismCommand::SetOpenThenConvForTarget { .. }
             | MechanismCommand::SetOpenCrossProcessAsyncUntargeted(_),
         ) => {
+            // decide_attempt はこの2 variantを現状どこでも構築しない
+            // （`state::ime_actuation_decision`は`ImmCross`に対して
+            // `Sync`site以外では常に`None`を返す——
+            // `imm_cross_sync_site_sends_set_open_cross_process_sync`と
+            // `imm_cross_non_sync_sites_return_none_command`が
+            // `(mechanism, site)`の全組み合わせで固定している）。この2
+            // variantはADR-163が将来（TH1e等でopen_chain.rsの非同期ImmCross
+            // 経路もdecide_attempt経由に統合する際）実際に構築されることを
+            // 想定した設計上の place holder であり、`apply_mechanism`
+            // （常に`DecisionSite::Sync`で呼ぶ）からは構造的に到達しない。
             unreachable!(
                 "apply_mechanism はDecisionSite::Sync専用で呼ばれる（上記 site 引数の \
                  コメント参照）。非同期 ImmCross（Targeted/Untargeted）は \
@@ -836,8 +846,10 @@ mod tests {
     /// `view_for` の既定の `shadow_on` は `None`（未知、`AppliedImeState::Unknown`
     /// 相当——フォーカス変更直後や起動直後で実際に起こる）でなければならない。
     /// `shadow_on == None` のとき GjiDirect 相当（`decide_attempt`、ADR-163
-    /// TH1b-2b）が `AlreadyMatched` を返して**はならない**ことは
-    /// `state::ime_actuation_decision::tests::gji_direct_sends_vk_when_shadow_unknown`
+    /// TH1b-2b）が `AlreadyMatched` を返して**はならない**ことは、ON方向を
+    /// `state::ime_actuation_decision::tests::gji_direct_sends_vk_when_shadow_unknown`、
+    /// OFF方向（BUG-113 本来の症状）を同
+    /// `gji_direct_sends_vk_when_shadow_unknown_close_direction`
     /// が固定している（ここでは `view_for` の既定値のみ確認する）。
     #[test]
     fn view_for_default_shadow_is_unknown() {
