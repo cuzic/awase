@@ -3621,9 +3621,11 @@ fn every_platform_entry_point_calls_apply_general_config_after_nicola_fsm_new() 
 /// 判断基準(c)）。件数が変わった場合、それが意図した変更（新しい消費箇所の追加等）
 /// なら定数を更新すればよい。意図せず減っていた場合は、`can_use_imm32_cross_process`
 /// / `uses_kanji_toggle` / `should_pass_physical_key` / `can_read_imm32_open_status`
-/// の4述語、`is_effectively_tsf_native` / `cannot_verify_real_ime_state` /
-/// `should_reprime_on_lightweight_focus_sync` の3自由関数、`From<AppImeProfile>
-/// for ImePolicyProfile`、`from_class_and_process` のいずれかで `InputRelay` の
+/// の4述語、`AppImeProfile::is_effectively_tsf_native` /
+/// `AppImeProfile::cannot_verify_real_ime_state` /
+/// `AppImeProfile::should_reprime_on_lightweight_focus_sync` の3メソッド
+/// （2026-09-10、自由関数から`impl AppImeProfile`のメソッドへ移動）、
+/// `From<AppImeProfile> for ImePolicyProfile`、`from_class_and_process` のいずれかで `InputRelay` の
 /// 分岐が欠落していないか確認すること（欠落すると condition (b)/(c) が
 /// 別経路から迂回されうる、査読で指摘された最重要ポイント）。
 /// `production_code_only` は `#[cfg(test)]` の直後が文字どおり `mod tests` の

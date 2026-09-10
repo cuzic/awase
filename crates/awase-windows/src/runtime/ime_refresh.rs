@@ -457,10 +457,10 @@ impl Runtime {
         // 判定してしまう（2026-07-05: これが原因で enforce IME OFF ブロックが
         // Windows Terminal に対して誤発火していた）。ADR-098 決定1-a のために
         // 算出位置を mirror 書き込みより前へ移した。
-        let new_profile_is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
-            self.platform.current_app_profile(),
-            self.platform.focus.class_name(),
-        );
+        let new_profile_is_tsf_native = self
+            .platform
+            .current_app_profile()
+            .is_effectively_tsf_native(self.platform.focus.class_name());
 
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
         // ADR-098 決定1-a（BUG-69 F2 の修正）: TsfNative では `applied` を
