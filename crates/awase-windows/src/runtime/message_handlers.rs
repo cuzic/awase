@@ -1040,7 +1040,7 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
     // detected を見るのは、未検出時の active_ime_kind() が安全デフォルトとして
     // MicrosoftIme を返すため — これを見ないと GJI ユーザーの起動時にも誤発動する。
     if detected && matches!(kind, crate::tsf::observer::ActiveImeKind::MicrosoftIme) {
-        crate::msime_key_assignment::check_and_warn();
+        crate::msime_key_assignment::check_and_warn(app);
         sync_ime_toggle_auto_detect(app);
     }
 }

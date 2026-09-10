@@ -315,6 +315,13 @@ pub struct Runtime {
     /// 警告デデュープ（ADR-164フェーズ1、旧`LAST_MODE_KEY_THUMB_WARNING`）。
     /// `true`＝直前に警告済み。
     gji_mode_key_thumb_warning_declined: bool,
+    /// 前回`msime_key_assignment::check_and_warn`が警告を出した割当て内容
+    /// （bit0=変換, bit1=無変換、ADR-164フェーズ2、旧
+    /// `msime_key_assignment::windows_impl::LAST_WARNED`）。同じ内容で
+    /// 繰り返しポップアップを出さないためのデデュープ。`None`＝未警告
+    /// （競合が解消された観測でリセットされるため、割当てを解除→再度
+    /// 有効化した場合は再警告される）。
+    msime_key_assignment_warned: Option<u8>,
     /// BugReport 診断用: 現在ロード済みの `GeneralConfig.keyboard_model`。
     keyboard_model: awase::scanmap::KeyboardModel,
     /// トレイ右クリック時の更新確認を有効にするか。
@@ -1507,6 +1514,7 @@ impl Runtime {
             gji_charset_streak_checked: false,
             gji_toggle_warning: None,
             gji_mode_key_thumb_warning_declined: false,
+            msime_key_assignment_warned: None,
             keyboard_model: awase::scanmap::KeyboardModel::default(),
             update_check_enabled: true,
             kana_lock_hysteresis: KanaLockHysteresis::new(),
@@ -1675,6 +1683,19 @@ impl Runtime {
     /// （ADR-164フェーズ1、旧`LAST_MODE_KEY_THUMB_WARNING`のstore(NOT_WARNED)に対応）。
     pub(crate) fn reset_gji_mode_key_thumb_warning_declined(&mut self) {
         self.gji_mode_key_thumb_warning_declined = false;
+    }
+
+    /// `msime_key_assignment::check_and_warn`の警告デデュープ値を`packed`に
+    /// 更新し、更新前の値を返す（ADR-164フェーズ2、旧`LAST_WARNED`の
+    /// swap操作に対応）。
+    pub(crate) fn swap_msime_key_assignment_warned(&mut self, packed: u8) -> Option<u8> {
+        self.msime_key_assignment_warned.replace(packed)
+    }
+
+    /// `msime_key_assignment::check_and_warn`の警告デデュープ値を未警告へ
+    /// 戻す（ADR-164フェーズ2、旧`LAST_WARNED`のstore(NOT_WARNED)に対応）。
+    pub(crate) fn reset_msime_key_assignment_warned(&mut self) {
+        self.msime_key_assignment_warned = None;
     }
 
     #[must_use]

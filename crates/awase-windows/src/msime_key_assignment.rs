@@ -148,16 +148,9 @@ impl MsImeKeyAssignment {
 
 #[cfg(windows)]
 mod windows_impl {
-    use std::sync::atomic::{AtomicU8, Ordering};
+    use crate::runtime::Runtime;
 
     use super::MsImeKeyAssignment;
-
-    /// 前回警告を出した割当て内容（bit0=変換, bit1=無変換）。`NOT_WARNED` = 未警告。
-    ///
-    /// 同じ内容で繰り返しポップアップを出さないためのデデュープ。競合が解消された
-    /// 観測でリセットされるため、割当てを解除→再度有効化した場合は再警告される。
-    static LAST_WARNED: AtomicU8 = AtomicU8::new(NOT_WARNED);
-    const NOT_WARNED: u8 = 0xFF;
 
     /// アクティブ IME が MS-IME と確定したときに呼ぶ: 競合割当てを検出したら
     /// 警告ログ + 解除案内ポップアップを出す（同一内容の警告はプロセス内で一度だけ）。
@@ -168,17 +161,20 @@ mod windows_impl {
     /// 切替 or 再起動）で再チェックされる。
     /// ダイアログは別スレッドに出す — メインスレッドの `MessageBoxW` はモーダル
     /// メッセージループでフックのスレッドメッセージ処理を止めてしまうため。
-    pub(crate) fn check_and_warn() {
+    /// `app`（`&mut Runtime`）はデデュープラッチの読み書きにのみ使う——`Runtime`は
+    /// スレッド跨ぎ不可（`SingleThreadCell`前提）なので、下で呼ぶ
+    /// `spawn_yes_open_ime_settings_dialog`が起動する別スレッドへは渡さないこと。
+    pub(crate) fn check_and_warn(app: &mut Runtime) {
         let assignment = read_from_registry();
         tracing::info!("[msime-keyassign] {assignment:?}");
         let Some(warning) = assignment.conflict_warning() else {
             // 競合なし → 警告履歴をリセット（後で有効化されたら再警告できるように）
-            LAST_WARNED.store(NOT_WARNED, Ordering::Relaxed);
+            app.reset_msime_key_assignment_warned();
             return;
         };
         let packed =
             u8::from(assignment.henkan_ime_on) | (u8::from(assignment.muhenkan_ime_off) << 1);
-        if LAST_WARNED.swap(packed, Ordering::Relaxed) == packed {
+        if app.swap_msime_key_assignment_warned(packed) == Some(packed) {
             return; // 同じ内容で警告済み
         }
         tracing::warn!("[msime-keyassign] {}", warning.replace('\n', " "));
