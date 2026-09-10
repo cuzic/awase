@@ -148,10 +148,11 @@ pub(crate) enum FencedProbeOutcome {
 }
 
 /// resync 経路（`kp_trigger_focus_resync` 由来）の probe abandon 累計回数
-/// （プロセス生存期間中、リセットしない）。`fetch_add` は `u32::MAX`到達時に
-/// ラップするが、1プロセスの生存期間中にそこまで到達することは実用上ない
-/// ため `saturating_add` にはしていない（他の lifetime カウンタ、
-/// 例えば `hook_channel::WAKE_POST_FAILED_LIFETIME_COUNT`、と同じ判断）。
+/// （プロセス生存期間中、リセットしない）。内部は`LifetimeCounter`
+/// （`AtomicU64`）で、読み取り時に`u32`へ切り詰めるが、1プロセスの生存期間中に
+/// `u32::MAX`到達することは実用上ないため`saturating_add`相当の対策は
+/// していない（他の lifetime カウンタ、例えば
+/// `hook_channel::WAKE_POST_FAILED_LIFETIME_COUNT`、と同じ判断）。
 static ABANDONED_RESYNC_LIFETIME_COUNT: LifetimeCounter = LifetimeCounter::new();
 /// 通常経路（`kp_stage_idle_conv_check`）の probe abandon 累計回数。
 static ABANDONED_NORMAL_LIFETIME_COUNT: LifetimeCounter = LifetimeCounter::new();

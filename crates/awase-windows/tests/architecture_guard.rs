@@ -3918,19 +3918,31 @@ fn input_relay_profile_wiring_occurrence_counts_are_pinned() {
 
 #[test]
 fn cross_thread_shared_lock_declarations_are_accounted_for() {
+    // 裸の `static X: Mutex<...>`（`OnceLock`/`Arc`でラップされていない生の
+    // ロック、例: hook.rs::HOOK_IME_MODE_DIAGNOSTICS）も対象に含める。ただし
+    // `#[cfg(test)]`直後の宣言（OUTPUT_GATE_TEST_LOCK/TSF_OBS_TEST_LOCK等、
+    // テストビルドにしか存在しないロック）は本番のクロススレッド共有状態
+    // ではないため除外する。
     fn shared_lock_declaration_count(production: &str) -> usize {
-        production
-            .lines()
-            .map(str::trim_start)
-            .filter(|line| {
-                line.contains("OnceLock<RwLock<")
+        let mut count = 0;
+        let mut prev_was_cfg_test = false;
+        for line in production.lines().map(str::trim_start) {
+            let is_static_decl =
+                line.starts_with("static ") || line.starts_with("pub ") || line.starts_with("pub(");
+            if is_static_decl
+                && !prev_was_cfg_test
+                && (line.contains("OnceLock<RwLock<")
                     || line.contains("OnceLock<Arc<Mutex<")
-                    || (line.contains(": RwLock<")
-                        && (line.starts_with("static ")
-                            || line.starts_with("pub ")
-                            || line.starts_with("pub(")))
-            })
-            .count()
+                    || line.contains(": RwLock<")
+                    || line.contains(": Mutex<"))
+            {
+                count += 1;
+            }
+            if !line.is_empty() {
+                prev_was_cfg_test = line == "#[cfg(test)]";
+            }
+        }
+        count
     }
 
     let mut actual: Vec<(String, usize)> = list_src_files()
@@ -3947,6 +3959,7 @@ fn cross_thread_shared_lock_declarations_are_accounted_for() {
     let mut expected: Vec<(String, usize)> = vec![
         ("src/app/logging.rs".to_string(), 1),
         ("src/focus/classifier.rs".to_string(), 1),
+        ("src/hook.rs".to_string(), 1),
         ("src/tsf/observer.rs".to_string(), 1),
         ("src/tsf/tip_detector.rs".to_string(), 1),
     ];
@@ -3966,6 +3979,10 @@ fn cross_thread_shared_lock_declarations_are_accounted_for() {
         (
             "src/focus/classifier.rs",
             &[("static INPUT_RELAY_APPS: OnceLock<RwLock<", 1)][..],
+        ),
+        (
+            "src/hook.rs",
+            &[("static HOOK_IME_MODE_DIAGNOSTICS: Mutex<", 1)][..],
         ),
         (
             "src/tsf/observer.rs",
