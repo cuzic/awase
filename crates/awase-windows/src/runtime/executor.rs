@@ -54,31 +54,40 @@ pub(crate) struct BatchResult {
     pub sync_outcomes: Vec<ImeApplyPair>,
 }
 
-/// 実 actuation の 1 件を起案する（ADR-090 §2.A A-1、INV-47）。
-///
-/// `DecisionExecutor` は `Runtime` を持たないため
-/// `Runtime::issue_actuation_order` を使えないが、4 つの公開入口
-/// （`execute_from_hook` / `execute_from_loop` / `drain_deferred` /
-/// `on_output_guard_timer`）が**既に `ime: &ImeStateHub` を受け取っている**ので、
-/// それを `dispatch_ime_set_open` まで通すだけで warrant を発行できる。
-///
-/// **`crate::with_app` で `ImeStateHub` を取りに行ってはならない**——ここは
-/// 既に `with_app` の内側であり、再入すると panic せず `None` が返る。
-/// つまり「取れなかった」ことと「授権が下りなかった」が区別できない形で
-/// 静かに落ち、A-1 の shadow ログが測ろうとしている当のものが汚染される
-/// （ADR-090 §2.A.2(1)・§4.2）。
-fn issue_order(
-    ime: &ImeStateHub,
-    open: bool,
-    strategy: &'static str,
-) -> crate::state::actuation_chain::ActuationOrder {
-    let origin = crate::state::event_origin::EventOrigin::new(
-        crate::state::event_origin::EventSource::SelfActuated { strategy },
-        crate::state::event_origin::Generation::INITIAL,
-    );
-    let now = std::time::Instant::now();
-    let now_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-    ime.issue_actuation_order(open, origin, now, now_ms)
+impl ImeStateHub {
+    /// 実 actuation の 1 件を起案する（ADR-090 §2.A A-1、INV-47）。
+    ///
+    /// `DecisionExecutor` は `Runtime` を持たないため
+    /// `Runtime::issue_actuation_order` を使えないが、4 つの公開入口
+    /// （`execute_from_hook` / `execute_from_loop` / `drain_deferred` /
+    /// `on_output_guard_timer`）が**既に `ime: &ImeStateHub` を受け取っている**ので、
+    /// それを `dispatch_ime_set_open` まで通すだけで warrant を発行できる。
+    ///
+    /// **`crate::with_app` で `ImeStateHub` を取りに行ってはならない**——ここは
+    /// 既に `with_app` の内側であり、再入すると panic せず `None` が返る。
+    /// つまり「取れなかった」ことと「授権が下りなかった」が区別できない形で
+    /// 静かに落ち、A-1 の shadow ログが測ろうとしている当のものが汚染される
+    /// （ADR-090 §2.A.2(1)・§4.2）。
+    ///
+    /// 2026-09-10、自由関数からメソッドへ変更した（第1引数`&ImeStateHub`を
+    /// selfにせず取り続けていた、[[project_orphaned_free_fn_methodization_2026_09_10]]の
+    /// 検出シグナルに合致）。`state/platform_state.rs`ではなくこの
+    /// `runtime/executor.rs`側に`impl`を追加している——`crate::hook::current_tick_ms()`
+    /// はWindows依存であり、`state/`はADR-065によりプラットフォーム非依存を
+    /// 維持する必要があるため。挙動は変更していない。
+    fn issue_order(
+        &self,
+        open: bool,
+        strategy: &'static str,
+    ) -> crate::state::actuation_chain::ActuationOrder {
+        let origin = crate::state::event_origin::EventOrigin::new(
+            crate::state::event_origin::EventSource::SelfActuated { strategy },
+            crate::state::event_origin::Generation::INITIAL,
+        );
+        let now = std::time::Instant::now();
+        let now_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+        self.issue_actuation_order(open, origin, now, now_ms)
+    }
 }
 
 pub(crate) struct DecisionExecutor {
@@ -840,7 +849,7 @@ impl DecisionExecutor {
             // ADR-090 §2.A A-1（shadow）: 起案は spawn_local の**外**で行う
             // ——future の中では `with_app` 再入で `ImeStateHub` に届かない
             // （ADR-090 §4.2）。
-            let order = issue_order(ime, open, "engine_decision_async");
+            let order = ime.issue_order(open, "engine_decision_async");
             let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
             // ADR-086 §1.2 欠陥1 是正（opus レビュー指摘 2026-08-08）: 「open と
             // 同じウィンドウへ ROMAN ビットを補完する」という意図を、open/conv を
@@ -965,7 +974,7 @@ impl DecisionExecutor {
                 view.focus.profile
             );
             // ADR-090 §2.A A-1（shadow）。
-            let order = issue_order(ime, open, "engine_decision_sync");
+            let order = ime.issue_order(open, "engine_decision_sync");
             let outcome = platform.apply_ime_open_with_view(order, &view, belief);
             if outcome == awase::platform::ImeOpenOutcome::Failed {
                 tracing::warn!("apply_ime_open({open}) failed");
