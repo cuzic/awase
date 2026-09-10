@@ -149,7 +149,8 @@ pub(crate) unsafe fn send_ime_control(
     // 数えていなかった軸そのものが BUG-113 の actuation だったため
     // （`crate::probe_actuation_fence` doc 参照）。実際の `SendMessageTimeoutW`
     // 呼び出しより前に bump することが決定Bの必須要件。
-    if !matches!(cmd, IMC_GETOPENSTATUS | IMC_GETCONVERSIONMODE) {
+    let is_actuation = !matches!(cmd, IMC_GETOPENSTATUS | IMC_GETCONVERSIONMODE);
+    if is_actuation {
         crate::probe_actuation_fence::bump();
     }
     let start_ms = crate::hook::current_tick_ms();
@@ -158,6 +159,11 @@ pub(crate) unsafe fn send_ime_control(
     // 別に、probe/actuation発行タイミングの相関用として高分解能タイムスタンプを
     // 追加で記録する。
     let issue_us = crate::hook::now_timestamp_us();
+    // ADR-159 段階2(TF2、`shadow_send_trace`doc参照): 上の`is_actuation`と
+    // 同一の条件で実際の送信内容(cmd)を構造化記録する。新しい条件は増やさない。
+    if is_actuation {
+        crate::shadow_send_trace::record_ime_control(cmd, issue_us);
+    }
     // SAFETY: ime_wnd は呼出元が ImmGetDefaultIMEWnd で取得した有効な IME ウィンドウハンドル。
     //         SMTO_ABORTIFHUNG によりハングしたスレッドで無期限にブロックしない。
     //         result はスタック上の有効な usize でポインタ渡しが安全。
@@ -180,11 +186,7 @@ pub(crate) unsafe fn send_ime_control(
     tracing::debug!(
         "[ime-io] cross_process cmd=0x{cmd:04X} kind={} ime_wnd={ime_wnd:?} \
          thread={:?} issue_us={issue_us} elapsed_us={elapsed_us}",
-        if matches!(cmd, IMC_GETOPENSTATUS | IMC_GETCONVERSIONMODE) {
-            "probe"
-        } else {
-            "actuation"
-        },
+        if is_actuation { "actuation" } else { "probe" },
         std::thread::current().id(),
     );
     crate::send_health::record(end_ms.saturating_sub(start_ms), end_ms);
