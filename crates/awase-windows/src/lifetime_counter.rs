@@ -1,6 +1,13 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// 診断用の生存期間カウンタ実装を、各モジュールの static から重複排除する。
+///
+/// 「増分し続け、drain/読み取りで消費する」累積カウンタ専用。`bump`/`current`で
+/// staleness検知に使う単調フェンス（`probe_actuation_fence::PROBE_ACTUATION_FENCE`・
+/// `conv_mutation::CONV_MUTATION_SEQ`・`tsf::observer::ChangeCounter`）とは
+/// 意味論が異なるため統合しない——値の減少（`drain`）を伴わず、比較対象の
+/// スナップショットとして使う目的のカウンタにはこちらではなく`ChangeCounter`
+/// 相当のパターンを使うこと。
 pub(crate) struct LifetimeCounter {
     value: AtomicU64,
 }
