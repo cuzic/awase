@@ -2111,7 +2111,7 @@ fn actuation_is_only_requested_through_actuation_order() {
     // 構築だけ（ただし**2 箇所とも本番未配線の死んだコード**。上の doc 参照）:
     //   1. `ActuationOrder::into_actuation`（A-2 用。本番呼び出し元ゼロ）
     //   2. `DriftEpisode::next_attempt`（同一 warrant からの再試行。回数制限は
-    //      `decide_actuation_action` が持つ、INV-41。`DriftEpisode::new` は
+    //      `FeedbackPolicy::decide_action` が持つ、INV-41。`DriftEpisode::new` は
     //      テストからしか呼ばれておらず、これも本番未配線）
     // **`state/actuation_chain.rs` の外に出たら、それは warrant を持たない
     // 起案経路が復活したということ。**

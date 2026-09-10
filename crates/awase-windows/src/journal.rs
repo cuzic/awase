@@ -1698,7 +1698,7 @@ mod tests {
     #[test]
     fn ime_actuation_entry_serializes_structured_origin() {
         use crate::state::event_origin::Generation;
-        use crate::state::ime_actuation::{actuation_origin, ActuationRecord, FeedbackPolicy};
+        use crate::state::ime_actuation::{ActuationRecord, FeedbackPolicy};
 
         let policy = FeedbackPolicy::Blind {
             max_attempts: 5,
@@ -1707,12 +1707,7 @@ mod tests {
         let (mut j, _mock) = mock_journal();
         // attempts=2 < max_attempts=5 なので action は Send に導出される。
         j.record(JournalEntry::ImeActuation {
-            record: ActuationRecord::new(
-                actuation_origin(policy, Generation::new(2)),
-                false,
-                policy,
-                2,
-            ),
+            record: ActuationRecord::new(policy.origin(Generation::new(2)), false, policy, 2),
         });
         let json = j.to_json().unwrap();
         // 自由文字列ではなく構造化された出所・世代・判定が型として書き出される。

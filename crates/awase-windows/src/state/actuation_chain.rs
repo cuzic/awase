@@ -11,11 +11,11 @@
 //!
 //! # 型が保証しないもの（INV-41、誤読防止）
 //!
-//! **回数制限は型ではなく [`decide_actuation_action`] の責務である。**
+//! **回数制限は型ではなく [`FeedbackPolicy::decide_action`] の責務である。**
 //! `FeedbackPolicy::Blind { max_attempts }` の下では、同一 warrant で最大
 //! `max_attempts` 回の成功 write が正常に起こりうる（[`DriftEpisode`] が
 //! attempt ごとに新しい `Actuation` を作る）。「型が回数を守っている」と
-//! 読み替えて `decide_actuation_action` の呼び出しを省くと ADR-080 / BUG-43 の
+//! 読み替えて `FeedbackPolicy::decide_action` の呼び出しを省くと ADR-080 / BUG-43 の
 //! give-up が無効化される。
 //!
 //! # ADR-089 の記述との差分（実装時の判断、2026-08-12）
@@ -116,7 +116,7 @@ use std::marker::PhantomData;
 use awase::platform::ImeOpenOutcome;
 
 use super::event_origin::EventOrigin;
-use super::ime_actuation::{decide_actuation_action, ActuationAction, FeedbackPolicy};
+use super::ime_actuation::{ActuationAction, FeedbackPolicy};
 use super::ime_event::HwndId;
 use super::open_warrant::{issue_open_warrant, OpenWarrant, WarrantContext};
 
@@ -604,7 +604,7 @@ pub trait AsyncMechanismWriter {
 /// 再試行 episode。attempt ごとに新しい [`Actuation<Warranted>`] を作る。
 ///
 /// **warrant の有効性は episode 単位**であり、`Actuation` 値のアフィン性
-/// （1 値 = 高々 1 回の成功 write）と、[`decide_actuation_action`] による
+/// （1 値 = 高々 1 回の成功 write）と、[`FeedbackPolicy::decide_action`] による
 /// 回数制限がここで組み合わさる（INV-41）。
 #[derive(Debug, Clone)]
 pub struct DriftEpisode {
@@ -642,13 +642,13 @@ impl DriftEpisode {
         self.warrant.target
     }
 
-    /// 次の attempt を払い出す。`decide_actuation_action` が `GiveUp` を返したら
+    /// 次の attempt を払い出す。`FeedbackPolicy::decide_action` が `GiveUp` を返したら
     /// `None`（**回数制限は型ではなくこの関数の責務**、INV-41）。
     ///
     /// `Actuation` 値を使い回さないこと——毎回ここで新規に作るのが
     /// アフィン性の実効条件である。
     pub fn next_attempt(&mut self) -> Option<Actuation<Warranted>> {
-        if decide_actuation_action(self.policy, self.attempts) == ActuationAction::GiveUp {
+        if self.policy.decide_action(self.attempts) == ActuationAction::GiveUp {
             return None;
         }
         self.attempts += 1;
@@ -837,7 +837,7 @@ mod tests {
     }
 
     /// `DriftEpisode` は `Blind` の `max_attempts` で払い出しを止める
-    /// （**回数制限は型ではなく `decide_actuation_action`**、INV-41）。
+    /// （**回数制限は型ではなく `FeedbackPolicy::decide_action`**、INV-41）。
     #[test]
     fn drift_episode_stops_at_blind_max_attempts() {
         let policy = FeedbackPolicy::Blind {
@@ -854,7 +854,7 @@ mod tests {
         assert_eq!(episode.attempts(), 3, "GiveUp では attempts を進めない");
     }
 
-    /// `Read` は試行回数では打ち切らない（`decide_actuation_action` と同じ挙動）。
+    /// `Read` は試行回数では打ち切らない（`FeedbackPolicy::decide_action` と同じ挙動）。
     #[test]
     fn drift_episode_never_gives_up_under_read_policy() {
         let policy = FeedbackPolicy::Read {

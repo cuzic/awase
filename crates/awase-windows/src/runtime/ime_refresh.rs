@@ -2,7 +2,7 @@
 use awase::engine::{EngineCommand, InputModeState, KanaLockHysteresis};
 
 use super::Runtime;
-use crate::state::ime_actuation::{decide_actuation_action, ActuationAction, FeedbackPolicy};
+use crate::state::ime_actuation::{ActuationAction, FeedbackPolicy};
 use crate::tuning::TYPING_IDLE_MS;
 
 // ── IoMode ──
@@ -667,7 +667,7 @@ impl Runtime {
 
         match act_policy {
             FeedbackPolicy::Blind { .. } => {
-                let action = decide_actuation_action(act_policy, act_attempts);
+                let action = act_policy.decide_action(act_attempts);
                 if action == ActuationAction::GiveUp {
                     // ADR-082 Phase 0.5: 打ち切り判定も出所・世代付きで構造化記録する
                     // （BUG-43 の「16 回中 5 回だけ送り、残りは GiveUp」を journal から
@@ -832,7 +832,7 @@ impl Runtime {
         // ADR-082 Phase 0.5: 実送信する試行を出所・世代付きで構造化記録する。
         // `Blind` はここに到達する時点で必ず `Send`（`GiveUp` は上で return 済み）、
         // `Read` は常に `Send`。`action` は `ActuationRecord::new` が
-        // `decide_actuation_action` で導出する。
+        // `FeedbackPolicy::decide_action` で導出する。
         self.platform_state
             .ime
             .journal

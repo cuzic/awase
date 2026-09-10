@@ -26,8 +26,8 @@
 //! correction の actuation 試行ごとに `source = SelfActuated{strategy}`・`epoch`
 //! を積む（`runtime/ime_refresh.rs::ir_apply_drift_correction`）。試行1回分は
 //! `journal.rs::JournalEntry::ImeActuation` として構造化記録される。`strategy` の
-//! 導出と `EventOrigin` の構築は `state::ime_actuation::actuation_origin()`（純粋
-//! 関数、Linux でユニットテスト可能）に集約している。`WarmEpoch` / `cold_seq` /
+//! 導出と `EventOrigin` の構築は `state::ime_actuation::FeedbackPolicy::origin()`
+//! （純粋関数、Linux でユニットテスト可能）に集約している。`WarmEpoch` / `cold_seq` /
 //! `RawKeyEvent::injected` を `EventOrigin` へ寄せるのは引き続き将来スコープ。
 
 // ── Generation ───────────────────────────────────────────────────────────────
@@ -113,8 +113,8 @@ impl Generation {
 /// `&'static str` のため、任意入力から借用を復元する `Deserialize` は型として表現
 /// できない。journal は書き出し専用（`Serialize`）でありこれで足りる。リプレイ側
 /// （`DriftCorrectionFixture`）は世代（`Generation`、Ser/De 両対応）だけを保存し、
-/// `SelfActuated` の `strategy` は `actuation_strategy()`（`state::ime_actuation`）で
-/// `policy` から一意に再構築するため、`EventSource` 自体の `Deserialize` は不要。
+/// `SelfActuated` の `strategy` は `FeedbackPolicy::strategy()`
+/// （`state::ime_actuation`、内部専用ヘルパー）で`policy` から一意に再構築するため、`EventSource` 自体の `Deserialize` は不要。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum EventSource {
     /// 実機ユーザーの物理キー操作（`LLKHF_INJECTED` が立っていない）。
