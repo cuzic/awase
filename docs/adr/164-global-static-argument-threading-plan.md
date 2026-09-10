@@ -22,7 +22,12 @@ PR [#197](https://github.com/cuzic/awase/pull/197)でdevelopにマージ済み�
 いずれも実装はcodex execに委任し、設計（本ADR）どおりの逐語的な指示で差分を
 作成、`cargo check`/`clippy`/`fmt`/既存テスト（純粋関数群・
 `architecture_guard`/`layer_boundary_guard`）を実行者側で再検証済み。
-フェーズ3以降は未着手。
+フェーズ8（`state/probe_admission.rs`の3カウンタ）はブランチ
+`refactor/adr164-phase8-probe-admission-counters`（PR
+[#199](https://github.com/cuzic/awase/pull/199)）で実装済み、develop未マージ。
+フェーズ7は実装着手時の再分類でADR起票時の誤り（別モジュール・別cfgゲートの
+2静的を「同一ファイルだから」まとめようとしていた）が判明し、対象外へ廃止した
+（コード変更なし、旧フェーズ7参照）。フェーズ3・6・9は未着手。
 
 ## 背景
 
@@ -131,7 +136,7 @@ rg -n '^\s*(pub(\([a-z()]*\))?\s+)?static [A-Z_0-9]+\s*:' crates src
 | `runtime/engine_window.rs` | 3 | A2 | `ENGINE_HWND`/`MODAL_DEPTH`/`NEEDS_ENGINE_RESYNC`（:14-16）が裸のまま並ぶ。`engine_wnd_proc`（`WNDPROC`固定署名）およびネストしたモーダルポンプからの再入で使われる（round1 N2で実測、フェーズ9） | **1** |
 | `gji_charset_autodetect.rs` | 3 | **B** | doc既に2関数（`sync_gji_charset_autodetect`/`reset_streak_latch_for_reload`）限定、両方とも既に`&mut Runtime`を保持 | **0**（Runtimeフィールド化、staticそのものを消せる） |
 | `state/probe_admission.rs` | 3 | C | プロセス生存期間の棄却統計カウンタ | **1**（フェーズ8） |
-| `awase-settings/src/main.rs` | 4（うち2件は`#[cfg(test)]`専用） | C | `SETTINGS_LOG_FILE`はOnceLockシングルトン、`SIMULATED_REGISTERED`はテスト補助 | **1**（本体2件のみ対象、フェーズ7） |
+| `awase-settings/src/main.rs` | 4（うち2件は`#[cfg(test)]`専用） | **対象外（2026-09-10実装着手時に訂正）** | `SETTINGS_LOG_FILE`（crateルート、全OS共通）と`SIMULATED_REGISTERED`（`autostart_bridge`サブモジュール、非Windows限定）は別モジュール・別cfgゲート・別並行性ドメインで、「同一ファイル」以外の共通点が無い | 対象外（フェーズ7廃止、現状の2件のまま） |
 | `runtime/message_handlers.rs` | 2 | D | `DRAIN_PENDING`/`DRAIN_RERUN_PENDING`は`tray_wnd_proc`からも呼ばれるとdocにあるが呼び出し経路未確認、A/Bどちらか要追加調査 | 判断保留 |
 | `focus/classifier.rs`(`INPUT_RELAY_APPS`) | 2 | A | CLAUDE.mdが「唯一の意図的な例外」と明記済み。`read_ime_state_fast`が`self`無し`pub unsafe fn`のため。**変更対象外** | 1（現状維持） |
 | `app/bootstrap.rs`(`LAST_FOCUS_HWND`) | 1 | A | `win_event_proc`（`WinEventProc`固定署名）内static、`hook_callback`と同型 | 1（既に1件のみ、対応不要） |
@@ -386,14 +391,30 @@ singleton構造体（`lib.rs:155-199`）であり、**ADR自身の原則を既�
 - リスク: 中。Ctrl+Cハンドラでの動作（プロセス終了シーケンス）に触れるため、変更後は
   Ctrl+C動作の手動確認（実機）を行う。
 
-### フェーズ7: `awase-settings/src/main.rs`の本体2件をsingleton集約
+### フェーズ7（廃止・対象外へ変更）: `awase-settings/src/main.rs`の本体2件
 
-`#[cfg(test)]`専用の`COUNTER`類2件は対象外（テストのみに存在し本体スメルではない）。
-`SETTINGS_LOG_FILE`（OnceLockシングルトン）と`SIMULATED_REGISTERED`の2件を1つの構造体に
-まとめる。
+**2026-09-10、実装着手時の再分類でADR起票時の誤りを訂正——「1つの構造体にまとめる」を
+見送り対象外とした。**
 
-- 規模: 極小。
-- リスク: 低。設定GUI別バイナリで、IME actuation系のリスクファミリーに触れない。
+`#[cfg(test)]`専用の`COUNTER`類2件は元々対象外（テストのみに存在し本体スメルではない）。
+残る`SETTINGS_LOG_FILE`（`OnceLock<Arc<Mutex<File>>>`、ファイル先頭・全プラットフォーム
+共通、`init_logging`/`log_checkpoint`が使う）と`SIMULATED_REGISTERED`（`AtomicBool`、
+`#[cfg(not(target_os = "windows"))] mod autostart_bridge`内のLinux専用autostart登録
+シミュレーション）は、**同じファイルに書かれているという以外に共通点が無い**——別モジュール
+（crateルート vs `autostart_bridge`サブモジュール）、別cfgゲート（無条件 vs 非Windows限定）、
+別の並行性ドメイン（tracingのwriterはログ発生元の任意スレッドから呼ばれうる vs 設定GUIの
+チェックボックス操作はGUIスレッド限定）、別の目的（ログ基盤 vs Windows Runキー操作の開発用
+スタブ）。「原則の確定」が定める単位は「1つの独立した並行性ドメインにつき1つ」であり
+「1ファイルにつき1つ」ではない（round1 M3の訂正と同じ理由）。この2件は元々それぞれが
+自分のモジュール/cfgスコープで単独の静的であり、追加原則が問題視する「裸staticが複数並ぶ」
+状態には該当しない。
+
+ADR起票時のファイル別分類表がこの区別をせず「同一ファイルだから」で2件をまとめて1行に
+記載していたこと自体が誤りだった。両者を無理に1つのstructへ押し込めると、`SIMULATED_REGISTERED`
+フィールドだけが`#[cfg(not(target_os = "windows"))]`という条件付きフィールドになり、
+無関係な概念を型レベルで結合するだけでスメルの実質的な解消にはならない。
+
+**結論**: `SETTINGS_LOG_FILE`・`SIMULATED_REGISTERED`とも現状維持。本ADRの対象から外す。
 
 ### フェーズ8: `state/probe_admission.rs`の3件をsingleton集約
 
@@ -435,6 +456,10 @@ singleton構造体（`lib.rs:155-199`）であり、**ADR自身の原則を既�
   ポンプ境界」として現状維持する。
 - `hook.rs`の関数ローカルstatic2件（`CACHE`/`BASELINE`）——write-onceキャッシュとして
   既に最小スコープ、親singletonへ引き上げるとスコープが拡大するため対象外。
+- `awase-settings/src/main.rs::SETTINGS_LOG_FILE`・`SIMULATED_REGISTERED`——2026-09-10
+  実装着手時にフェーズ7を廃止し対象外に変更（旧フェーズ7参照）。別モジュール・別cfg
+  ゲート・別並行性ドメインで「同一ファイル」以外の共通点が無く、それぞれ既に自分の
+  モジュール/cfgスコープで単独の静的として原則を満たしている。
 - 既に1ファイル1staticになっている約20ファイル——追加原則を既に満たしている
   **と推定されるが、round1 N4指摘の通り全件は未検証。実装着手時に上記rgコマンドで
   再確認すること**。
