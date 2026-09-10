@@ -38,7 +38,7 @@ use crate::state::actuation_chain::{
     needs_romaji_pre_write, ActuationOrder, MechanismWriter, VerifiedTarget, WriteMechanism,
 };
 use crate::state::ime_decision_view::ImeControlView;
-use crate::state::key_sequence_policy::{self, ime_key_for, ImeOperation, KeyMechanism};
+use crate::state::key_sequence_policy;
 use crate::tsf::observer::ActiveImeKind;
 
 /// IME ON/OFF を実行する戦略インターフェース。
@@ -53,8 +53,6 @@ use crate::tsf::observer::ActiveImeKind;
 trait ImeOpenStrategy: Sync {
     /// このコンテキストで戦略が有効かどうか。
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool;
-    /// IME を指定状態に設定しその結果を返す。
-    fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome;
 }
 
 // ── ImmCrossProcessStrategy ──────────────────────────────────────
@@ -68,47 +66,6 @@ impl ImeOpenStrategy for ImmCrossProcessStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
         key_sequence_policy::imm_cross_applicable(view.focus.profile)
     }
-
-    #[tracing::instrument(level = "debug", skip_all, fields(open = open, profile = ?view.focus.profile, focus_gen = view.focus.focus_gen))]
-    fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
-        // ROMAN ビットの事前補完（MS-IME + ImmCross でかなモードのまま IME ON すると
-        // JIS かな入力になる問題への対処）は、ADR-089 §6 Phase C item 12 で
-        // `apply_mechanism` の ROMAN 補完ステップへ移した（ADR-086 INV-14 の是正）。
-        // 発火条件は `needs_romaji_pre_write` が SSOT。
-        //
-        // ADR-117（issue #138 切り分け）: この経路は Standard プロファイル×MS-IME の
-        // 完全同期呼び出し（`try_force_on_bootstrap` 等）のみ到達し、報告環境の
-        // 主経路（非同期 ImmCross）は `runtime/open_chain.rs::imm_cross_write` が
-        // 別途担う。`composition_active`/`ime_show_seq`/`ime_change_seq` の解釈上の
-        // 注意は `TsfObservations::ime_composition_active` の doc コメント参照。
-        tracing::info!(
-            "[apply-ime] ImmCross sync: open={open} composition_active={} show_seq={} \
-             change_seq={} (issue #138診断)",
-            view.observed.composition_active,
-            view.observed.ime_show_seq,
-            view.observed.ime_change_seq,
-        );
-        if unsafe { crate::ime::set_ime_open_cross_process(open) } {
-            ImeOpenOutcome::Applied
-        } else {
-            tracing::info!("[apply-ime] ImmCross sync: set_ime_open_cross_process failed → Failed");
-            ImeOpenOutcome::Failed
-        }
-    }
-}
-
-/// `GjiDirectStrategy::apply` の already-matched 判定（純粋関数）。
-///
-/// shadow が `open` 方向で「確認済み」（`Some(open)`）のときだけ `true`
-/// を返す。`shadow_on == None`（未知——`AppliedImeState::Unknown` や、
-/// drift correction/idle-conv-check の DirectInput 回復のように意図的に
-/// `applied` を渡さない経路）は決して `true` にならない——「証拠が無い
-/// ときは実際に送信する」側に倒す（BUG-113 Blocker、Opus 敵対的レビューで
-/// 発見。`bool` に潰した `!shadow_on` で「未知」を「確認済み OFF」と
-/// 誤認し、正当な再送を無音で握り潰していた）。
-#[must_use]
-fn gji_direct_already_matches(shadow_on: Option<bool>, open: bool) -> bool {
-    shadow_on == Some(open)
 }
 
 // ── GjiDirectStrategy ────────────────────────────────────────────
@@ -145,39 +102,6 @@ struct GjiDirectStrategy;
 impl ImeOpenStrategy for GjiDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
         key_sequence_policy::gji_direct_applicable(view.observed.active_ime_kind.into())
-    }
-
-    #[tracing::instrument(level = "debug", skip_all, fields(open = open, profile = ?view.focus.profile, focus_gen = view.focus.focus_gen))]
-    fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
-        if gji_direct_already_matches(view.control.shadow_on, open) {
-            // shadow が desired 方向で「確認済み」（`Some(open)`）なら no-op と
-            // 見込まれるためスキップする。`shadow_on == None`（未知——まだ
-            // 何も確認していない、`AppliedImeState::Unknown` 等）はここに
-            // 該当しない（`gji_direct_already_matches` 参照）。BUG-113
-            // 恒久修正: 以前は OFF 方向だけ「shadow が ON だと確認できて
-            // いない」を `bool` に潰した `!shadow_on` で判定しており、
-            // `None`（未知）まで「確認済み OFF」と誤認して drift correction
-            // 等の正当な再送を無音で握り潰していた（Opus 敵対的レビューで
-            // 発見、docs/known-bugs.md BUG-113 参照）。ON 方向の元の実装
-            // （`open && shadow_on`）はこの `bool` 化の下でも `None→false`
-            // が安全側（送る）に倒れていたため、当時は問題が露見しなかった。
-            tracing::debug!(
-                "[apply-ime] GJI direct: shadow already {} (open={open}), skip",
-                if open { "ON" } else { "OFF" }
-            );
-            return ImeOpenOutcome::AlreadyMatched;
-        }
-        // 送信キーは KeySequencePolicy が SSOT（VK_IME_ON / VK_IME_OFF、GJI 冪等キー）。
-        let vk = ime_key_for(KeyMechanism::GjiDirect, ImeOperation::from_open(open));
-        tracing::debug!("[apply-ime] GJI direct: send {vk:#06X} (open={open})");
-        // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
-        if unsafe { crate::ime::send_ime_mode_key(vk) } {
-            ImeOpenOutcome::Applied
-        } else {
-            // Win キー押下中で未送信。Applied 扱いにすると applied_snapshot がラッチされ
-            // 以降の再試行が全て no-op になる（BUG-16 追補）。未適用として返す。
-            ImeOpenOutcome::UnsafeToToggle
-        }
     }
 }
 
@@ -216,69 +140,6 @@ impl ImeOpenStrategy for MsImeDirectStrategy {
             view.focus.profile,
         )
     }
-
-    #[tracing::instrument(level = "debug", skip_all, fields(open = open, profile = ?view.focus.profile, focus_gen = view.focus.focus_gen))]
-    fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
-        // ADR-117（issue #138 切り分け）: `composition_active`/`ime_show_seq`/
-        // `ime_change_seq` の解釈上の注意は `TsfObservations::ime_composition_active`
-        // の doc コメント参照（MS-IME での信頼性は未検証）。
-        if open {
-            // VK_IME_ON は conv-mode（ひらがな/カタカナ、全角/半角）に一切触れない
-            // 真の開閉キーのため、旧 VK_DBE_HIRAGANA 版にあった「現在カタカナなら
-            // 送信をスキップする」ガード（BUG-50 デッドロックの直接の前提）は不要。
-            //
-            // VK_IME_ON は ROMAN ビット (IME_CMODE_ROMAN=0x10) を変更しない。
-            // かな入力の conv=0x09 のまま IME ON すると JIS かな入力になる（例: LINE, Edge）。
-            // 先に ROMAN ビットを立てる補完は ADR-089 §6 Phase C item 12 で
-            // `apply_mechanism` の ROMAN 補完ステップへ移した（ADR-086 INV-14 の是正）。
-            // `ObservedKana`（ユーザーが意図的にかな入力に設定した状態）を上書きしない
-            // 保護もそちらへ移動している（`needs_romaji_pre_write` が SSOT）。
-            //
-            // 送信キーは KeySequencePolicy が SSOT（VK_IME_ON、MS-IME 冪等 ON キー）。
-            let vk = ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Open);
-            tracing::info!(
-                "[apply-ime] MS-IME direct: send {vk:#06X} (IME ON) composition_active={} \
-                 show_seq={} change_seq={} (issue #138診断)",
-                view.observed.composition_active,
-                view.observed.ime_show_seq,
-                view.observed.ime_change_seq,
-            );
-            // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
-            if !unsafe { crate::ime::send_ime_mode_key(vk) } {
-                // Win キー押下中（デスクトップ切替等）で未送信。Applied 扱いにすると
-                // applied_snapshot がラッチされ、settle 明けの force-ON 再試行まで全て
-                // 「適用済み」no-op になり belief ON × 実 IME OFF が固定される
-                // （2026-07-07 実機: ロック解除 → Win+Ctrl+→ 直後の「korede」化。
-                // BUG-16 追補）。未適用として返し、次の refresh/force-ON に再送させる。
-                tracing::info!(
-                    "[apply-ime] MS-IME direct: send_ime_mode_key failed (Winキー押下中等) \
-                     → UnsafeToToggle"
-                );
-                return ImeOpenOutcome::UnsafeToToggle;
-            }
-        } else {
-            // DirectInput（直接入力）へ移行する。
-            // VK_IME_OFF は MS-IME がネイティブに処理する冪等キー。
-            // 既に DirectInput の場合は no-op のため conv チェック不要。
-            let vk = ime_key_for(KeyMechanism::MsImeDirect, ImeOperation::Close);
-            tracing::info!(
-                "[apply-ime] MS-IME direct: send {vk:#06X} (DirectInput, 冪等) \
-                 composition_active={} show_seq={} change_seq={} (issue #138診断)",
-                view.observed.composition_active,
-                view.observed.ime_show_seq,
-                view.observed.ime_change_seq,
-            );
-            // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。メインスレッドから呼ぶこと。
-            if !unsafe { crate::ime::send_ime_mode_key(vk) } {
-                tracing::info!(
-                    "[apply-ime] MS-IME direct: send_ime_mode_key failed (Winキー押下中等) \
-                     → UnsafeToToggle"
-                );
-                return ImeOpenOutcome::UnsafeToToggle;
-            }
-        }
-        ImeOpenOutcome::Applied
-    }
 }
 
 // ── KanjiToggleStrategy ──────────────────────────────────────────
@@ -298,30 +159,6 @@ struct KanjiToggleStrategy;
 impl ImeOpenStrategy for KanjiToggleStrategy {
     fn is_applicable(&self, _view: &ImeControlView<'_>) -> bool {
         true // 汎用フォールバック: IME 種別不明環境 + ImmCross 失敗時の代替
-    }
-
-    #[tracing::instrument(level = "debug", skip_all, fields(open = open, profile = ?view.focus.profile, focus_gen = view.focus.focus_gen))]
-    fn apply(&self, open: bool, view: &ImeControlView<'_>) -> ImeOpenOutcome {
-        // ADR-117（issue #138 切り分け）: Standard×MS-IME で ImmCross が Failed を
-        // 返した場合に `runtime/open_chain.rs::fallback_write` が実際に到達させる
-        // 唯一の機構。composition_active/ime_show_seq/ime_change_seq の解釈上の
-        // 注意（MS-IME での信頼性未検証）に加え、`fallback_write` が view を
-        // 作り直すため、この値は直前の ImmCross 試行にとっては送信「後」の値
-        // でもある点に注意（`fallback_write` の doc コメント参照）。
-        tracing::info!(
-            "[apply-ime] shadow={:?} candidate={} was_seen={} profile={:?} \
-             composition_active={} show_seq={} change_seq={} → desired={open}: \
-             SendInput VK_KANJI (issue #138診断)",
-            view.control.shadow_on,
-            view.observed.candidate_visible,
-            view.observed.candidate_was_seen,
-            view.focus.profile,
-            view.observed.composition_active,
-            view.observed.ime_show_seq,
-            view.observed.ime_change_seq,
-        );
-        unsafe { crate::ime::post_kanji_toggle_to_focused() };
-        ImeOpenOutcome::FallbackSent
     }
 }
 
@@ -375,13 +212,154 @@ pub(crate) fn mechanism_is_applicable(
 /// 同じパターン）。ここを増やすと、`falls_through` 規則も
 /// `Actuation` のアフィン性（1 値 = 高々 1 回の成功 write、INV-41）も通らない
 /// 3 本目の write 経路になる。
+// ADR-163 TH1b-2b: 旧`ImeOpenStrategy::apply`4実装（各々に
+// `#[tracing::instrument]`付き）が持っていたログ・分岐をこの1関数に
+// 集約したため複雑度が閾値を超える。`journal.rs`/`runtime/ime_refresh.rs`
+// に既存の同種の許可があり（ログ付きdispatchテーブルは分割しても
+// 複雑さの総量は変わらず、むしろ呼び出し関係が追いにくくなる）、
+// それに倣う。
+#[allow(clippy::cognitive_complexity)]
+#[tracing::instrument(level = "debug", skip_all, fields(mechanism = ?mechanism, open = open, profile = ?view.focus.profile, focus_gen = view.focus.focus_gen))]
 pub(crate) fn apply_mechanism(
     mechanism: WriteMechanism,
     open: bool,
     view: &ImeControlView<'_>,
 ) -> ImeOpenOutcome {
+    use crate::state::ime_actuation_decision::{decide_attempt, DecisionSite, MechanismCommand};
+
     romaji_pre_write(mechanism, open, view);
-    strategy_for(mechanism).apply(open, view)
+    // ADR-163 TH1b-2b: 「何を送るか」の決定は `decide_attempt`（純粋関数）に
+    // 委譲し、ここは実際の Win32 呼び出しへのディスパッチだけを行う。
+    // `apply_mechanism` は同期チェーン（`SyncChainWriter::write`）と
+    // `open_chain.rs::fallback_write`（非同期チェーンの ImmCross 以降）の
+    // 2箇所からのみ呼ばれ、いずれも `WriteMechanism::ImmCross` を渡すのは
+    // 同期経路（`SyncChainWriter`）からだけである。そのため `site` は常に
+    // `DecisionSite::Sync` を渡してよい——`decide_attempt` が site を見るのは
+    // ImmCross のときだけであり、GjiDirect/MsImeDirect/KanjiToggle は site に
+    // 依存しない（ADR-163 round3 U1 の設計）。
+    let (_, command) = decide_attempt(view.into(), DecisionSite::Sync, mechanism, open);
+    match command {
+        Some(MechanismCommand::SetOpenCrossProcessSync(_)) => {
+            // ADR-117（issue #138 切り分け）: この経路は Standard プロファイル×MS-IME の
+            // 完全同期呼び出し（`try_force_on_bootstrap` 等）のみ到達し、報告環境の
+            // 主経路（非同期 ImmCross）は `runtime/open_chain.rs::imm_cross_write` が
+            // 別途担う。
+            tracing::info!(
+                "[apply-ime] ImmCross sync: open={open} composition_active={} show_seq={} \
+                 change_seq={} (issue #138診断)",
+                view.observed.composition_active,
+                view.observed.ime_show_seq,
+                view.observed.ime_change_seq,
+            );
+            // SAFETY: send_ime_mode_key/set_ime_open_cross_process 等の Win32 呼び出しは
+            // メインスレッド（フックまたはメッセージループ）からのみ行われる
+            // （`apply_mechanism` の呼び出し元制約、上記 doc 参照）。
+            if unsafe { crate::ime::set_ime_open_cross_process(open) } {
+                ImeOpenOutcome::Applied
+            } else {
+                tracing::info!(
+                    "[apply-ime] ImmCross sync: set_ime_open_cross_process failed → Failed"
+                );
+                ImeOpenOutcome::Failed
+            }
+        }
+        Some(MechanismCommand::SendVk(vk)) if mechanism == WriteMechanism::GjiDirect => {
+            tracing::debug!("[apply-ime] GJI direct: send {vk:#06X} (open={open})");
+            // SAFETY: 同上。
+            if unsafe { crate::ime::send_ime_mode_key(vk) } {
+                ImeOpenOutcome::Applied
+            } else {
+                // Win キー押下中で未送信。Applied 扱いにすると applied_snapshot がラッチされ
+                // 以降の再試行が全て no-op になる（BUG-16 追補）。未適用として返す。
+                ImeOpenOutcome::UnsafeToToggle
+            }
+        }
+        Some(MechanismCommand::SendVk(vk)) => {
+            debug_assert_eq!(mechanism, WriteMechanism::MsImeDirect);
+            if open {
+                tracing::info!(
+                    "[apply-ime] MS-IME direct: send {vk:#06X} (IME ON) composition_active={} \
+                     show_seq={} change_seq={} (issue #138診断)",
+                    view.observed.composition_active,
+                    view.observed.ime_show_seq,
+                    view.observed.ime_change_seq,
+                );
+            } else {
+                tracing::info!(
+                    "[apply-ime] MS-IME direct: send {vk:#06X} (DirectInput, 冪等) \
+                     composition_active={} show_seq={} change_seq={} (issue #138診断)",
+                    view.observed.composition_active,
+                    view.observed.ime_show_seq,
+                    view.observed.ime_change_seq,
+                );
+            }
+            // SAFETY: 同上。
+            if unsafe { crate::ime::send_ime_mode_key(vk) } {
+                ImeOpenOutcome::Applied
+            } else {
+                // Winキー押下中（デスクトップ切替等）で未送信。Applied 扱いにすると
+                // applied_snapshot がラッチされ、settle 明けの force-ON 再試行まで全て
+                // 「適用済み」no-op になり belief ON × 実 IME OFF が固定される
+                // （2026-07-07 実機: ロック解除 → Win+Ctrl+→ 直後の「korede」化。
+                // BUG-16 追補）。未適用として返し、次の refresh/force-ON に再送させる。
+                tracing::info!(
+                    "[apply-ime] MS-IME direct: send_ime_mode_key failed (Winキー押下中等) \
+                     → UnsafeToToggle"
+                );
+                ImeOpenOutcome::UnsafeToToggle
+            }
+        }
+        Some(MechanismCommand::PostKanjiToggle) => {
+            tracing::info!(
+                "[apply-ime] shadow={:?} candidate={} was_seen={} profile={:?} \
+                 composition_active={} show_seq={} change_seq={} → desired={open}: \
+                 SendInput VK_KANJI (issue #138診断)",
+                view.control.shadow_on,
+                view.observed.candidate_visible,
+                view.observed.candidate_was_seen,
+                view.focus.profile,
+                view.observed.composition_active,
+                view.observed.ime_show_seq,
+                view.observed.ime_change_seq,
+            );
+            // SAFETY: 同上。
+            unsafe { crate::ime::post_kanji_toggle_to_focused() };
+            ImeOpenOutcome::FallbackSent
+        }
+        Some(
+            MechanismCommand::SetOpenThenConvForTarget { .. }
+            | MechanismCommand::SetOpenCrossProcessAsyncUntargeted(_),
+        ) => {
+            unreachable!(
+                "apply_mechanism はDecisionSite::Sync専用で呼ばれる（上記 site 引数の \
+                 コメント参照）。非同期 ImmCross（Targeted/Untargeted）は \
+                 open_chain.rs::imm_cross_write が別経路で処理するためここには \
+                 到達しない。到達した場合は呼び出し元がImmCrossを誤ってこの関数へ \
+                 渡している"
+            )
+        }
+        None => {
+            // GjiDirectStrategy の already-matched（shadow が確認済みで一致）判定。
+            // `decide_attempt` が `None` を返すのは、GjiDirect の already-matched か、
+            // ImmCross×非Sync（このcallerからは到達しない、上記 unreachable! 分岐参照）
+            // のいずれかである。
+            debug_assert_eq!(
+                mechanism,
+                WriteMechanism::GjiDirect,
+                "apply_mechanism が None を受け取るのは GjiDirect の already-matched \
+                 のみを想定している"
+            );
+            // shadow が desired 方向で「確認済み」（`Some(open)`）なら no-op と
+            // 見込まれるためスキップする。`shadow_on == None`（未知）はここに
+            // 該当しない（BUG-113 恒久修正、`state::ime_actuation_decision::
+            // gji_direct_already_matches` 参照）。
+            tracing::debug!(
+                "[apply-ime] GJI direct: shadow already {} (open={open}), skip",
+                if open { "ON" } else { "OFF" }
+            );
+            ImeOpenOutcome::AlreadyMatched
+        }
+    }
 }
 
 /// IME ON の直前に ROMAN ビットを補完する同期 IMC write
@@ -800,30 +778,6 @@ mod tests {
         );
     }
 
-    /// `gji_direct_already_matches` の純粋関数テスト（Win32 呼び出しを一切
-    /// 経由しない）。BUG-113 Blocker（Opus 敵対的レビューで発見）の核心:
-    /// `shadow_on == None`（未知）は、`open` の値によらず「確認済み」と
-    /// 判定してはならない——`unwrap_or(false)` で `bool` に潰していた旧
-    /// 実装は、OFF 方向でこの `None` を「確認済み OFF」と誤認し、drift
-    /// correction・idle-conv-check の DirectInput 回復のように意図的に
-    /// `applied` を渡さず「shadow を無視して実際に送れ」と設計された経路の
-    /// 正当な再送を無音で握り潰していた（docs/known-bugs.md BUG-113 参照）。
-    #[test]
-    fn gji_direct_already_matches_treats_unknown_shadow_as_not_matched() {
-        assert!(gji_direct_already_matches(Some(true), true));
-        assert!(gji_direct_already_matches(Some(false), false));
-        assert!(
-            !gji_direct_already_matches(None, true),
-            "shadow_on=None（未知）を ON 確認済みと誤認してはならない"
-        );
-        assert!(
-            !gji_direct_already_matches(None, false),
-            "shadow_on=None（未知）を OFF 確認済みと誤認してはならない（BUG-113 Blocker）"
-        );
-        assert!(!gji_direct_already_matches(Some(false), true));
-        assert!(!gji_direct_already_matches(Some(true), false));
-    }
-
     /// BUG-113 恒久修正: `GjiDirectStrategy::apply(open=false)` は、shadow が
     /// `Some(false)`（確認済み OFF）なら実際に `SendInput` せず
     /// `AlreadyMatched` を返さなければならない。ON方向の既存ガードと対称
@@ -878,34 +832,19 @@ mod tests {
         );
     }
 
-    /// BUG-113 Blocker（Opus 敵対的レビューで発見）の統合テスト:
-    /// `shadow_on == None`（未知、`AppliedImeState::Unknown` 相当——
-    /// フォーカス変更直後や起動直後で実際に起こる）のとき、
-    /// `GjiDirectStrategy::apply(open=false)` は `AlreadyMatched` を
-    /// 返して**はならない**。もし返してしまうと、drift correction や
-    /// idle-conv-check の DirectInput 回復のように「shadow が何であれ
-    /// 実際に送信すべき」設計の経路が無音で握り潰され、必要な
-    /// `VK_IME_OFF` が一度も OS に届かないまま `record_confirmed(false)`
-    /// で「収束した」と誤記録される（belief laundering）。
-    ///
-    /// `apply()` 自体（`ImeController::apply`）は Win32 副作用を持つため、
-    /// 「skip しない」側をそこまで通して検証するとテスト実行環境で本物の
-    /// キーイベントを注入してしまう（`tests/ime_key_sequence_golden.rs` の
-    /// 冒頭コメント参照、このリポジトリ全体の既存方針）。代わりに
-    /// `view_for` の既定が実際に `None`（未知）であること、およびその値が
-    /// `gji_direct_already_matches` で「skip しない」と判定されることを
-    /// 固定する——両方とも純粋・副作用フリー。
+    /// BUG-113 Blocker（Opus 敵対的レビューで発見）の再発防止:
+    /// `view_for` の既定の `shadow_on` は `None`（未知、`AppliedImeState::Unknown`
+    /// 相当——フォーカス変更直後や起動直後で実際に起こる）でなければならない。
+    /// `shadow_on == None` のとき GjiDirect 相当（`decide_attempt`、ADR-163
+    /// TH1b-2b）が `AlreadyMatched` を返して**はならない**ことは
+    /// `state::ime_actuation_decision::tests::gji_direct_sends_vk_when_shadow_unknown`
+    /// が固定している（ここでは `view_for` の既定値のみ確認する）。
     #[test]
-    fn view_for_default_shadow_is_unknown_and_does_not_match() {
+    fn view_for_default_shadow_is_unknown() {
         let view = view_for(AppImeProfile::TsfNative, ActiveImeKind::GoogleJapaneseInput);
         assert_eq!(
             view.control.shadow_on, None,
             "view_for の既定は未知（None）でなければならない（BUG-113 Blockerの再発防止）"
-        );
-        assert!(
-            !gji_direct_already_matches(view.control.shadow_on, false),
-            "shadow_on=None のとき GjiDirectStrategy は AlreadyMatched を \
-             返してはならない（BUG-113 Blocker）"
         );
     }
 
