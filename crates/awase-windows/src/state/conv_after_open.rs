@@ -10,7 +10,7 @@
 /// `Write(None)` は ROMAN ビット確保のみ（既存 conv に `IME_CMODE_ROMAN` を追加）、
 /// `Write(Some(v))` は `v` をそのまま設定する。`crate::ime::ConvAfterOpen` と同じ
 /// 意味だが、こちらは state 層の ungated なミラーである。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ConvAfterOpenId {
     /// conv は書かない。
     Skip,

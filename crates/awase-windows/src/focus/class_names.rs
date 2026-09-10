@@ -131,7 +131,7 @@ pub fn should_reprime_on_lightweight_focus_sync(
 /// フォーカス変更時に `from_class_name` で決定して
 /// `AppKindClassifier.current_app_profile` にキャッシュし、
 /// `current_app_profile()` メソッドで参照する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum AppImeProfile {
     /// 通常の IMM32 アプリ。IMM32 クロスプロセス制御が使用可能。
     #[default]

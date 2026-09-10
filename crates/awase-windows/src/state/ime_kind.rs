@@ -15,7 +15,7 @@
 /// したがって、この値で分岐してよいのは **誤っても被害が対称な選択** だけで
 /// ある（原則 P20）。`GjiFsm` 同期義務のような「閉じ損ねると同期が落ちる」
 /// ゲートに使ってはならない（ADR-089 §4.3、INV-42）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ImeKindId {
     /// Google 日本語入力を検出済み。
     Gji,
