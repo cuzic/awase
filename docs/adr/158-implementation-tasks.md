@@ -55,7 +55,27 @@ TD0の非gated化前提と整合させた。
 
 ---
 
-## タスクグループTA: dylint 4本目のlintを本実装に格上げする（[ADR-158](158-complexity-reduction-north-star.md)第1段階）
+## タスクグループTA: dylint 4本目のlintを本実装に格上げする（[ADR-158](158-complexity-reduction-north-star.md)第1段階、TA1〜TA3完了2026-09-09）
+
+**完了内容（追記、2026-09-10）**: TA1〜TA3はいずれも2026-09-09に実装・develop
+マージ済みだった（本節が完了マーカーの無い「未着手」の体裁のまま放置されて
+いたため、次セッションが同じ調査をやり直す寸前だった——調査エージェントが
+develop実コードとの照合で発見）。
+
+- TA1: コミット`163c8efa`（`refactor(platform): ADR-087 §5 Phase 3判断、
+  PlatformRuntime::apply_ime_openを削除`）で「削除」判断を実施。
+  `src/platform.rs`から`apply_ime_open`デフォルト実装を削除済み。
+- TA2: コミット`b67b5806`（`feat(lints): actuation_call_guard_spikeを
+  正式なdylint lintに昇格(ADR-158 TA2/TA3)`）＋`fe0813da`（opusコード
+  レビュー指摘反映）で`lints/actuation_call_guard/`が既存3本と同じ構成の
+  正式lintとして存在。ルート`Cargo.toml`の
+  `[workspace.metadata.dylint].libraries`に登録済み、`ui/main.stderr`も
+  存在、`.github/workflows/ci.yml`のlint名列挙も更新済み。
+- TA3: `lints/actuation_call_guard/src/lib.rs`の
+  「### 型解決について（ADR-158 TA3の判断）」doc commentで、型解決は追加
+  せず`segment.ident.name`による名前一致のみとする判断とその制約
+  （無関係な同名関数への誤検出可能性、`tests/e2e_windows.rs`の無関係な
+  `set_ime_open`関数の例）を明記済み。
 
 ### TA1: `PlatformRuntime::apply_ime_open`のADR-087 §5 Phase 3判断
 

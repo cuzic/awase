@@ -13065,6 +13065,28 @@ belief/engine/IMM への書き込み、`ImeEvent` dispatch、自動復旧は行�
 
 **修正履歴:** `40a2d091`（2026-09-02、`feat/issue-137-teams-kana-lock-detection`）。
 
+**追補1（スコープ拡大、2026-09-06〜07 実機報告2件）:** 不具合報告
+`01M1WH2F0YMCVMKV1A1SEKH0HP`（1.18.0）・`01M1WK863PTTNMV8GDKPWWN1QC`
+（同一ユーザーの約38分後の再報告、1.19.0）で、判定シグネチャ（U→な/S→と/I→に）
+が完全一致する症状が **Chrome** でも発生し、awase 再起動・PC 再起動でも
+復旧しないことを確認した。当初の記述「Teams/WebView2/MS-IME のどこで入力方式が
+反転したか未特定」は Teams 固有ではなく、MS-IME の入力方式反転自体がアプリ非依存で
+起きうることを示す。1.18.0→1.19.0 の両バージョンで再現しており、対応が
+「復旧不可・OS制約」である以上バージョンアップでは直らない性質のもの。
+
+副次的な観測として、両報告のログに `observer/ime_observer.rs::
+input_mode_from_romaji_flag` が出す `IME input method changed: romaji → kana`
+という info ログが、`awase_tray_window`（awase 自身のトレイウィンドウ）や
+`Windows.UI.Input.InputSite.WindowClass`（UWP シェル）へフォーカスが移った
+瞬間・`classify_focus` がタイムアウトした直後に頻発している（1報告あたり
+7〜12回）。この経路は BUG-106 の対応で追加した `observer/kana_lock.rs`
+（VK 送信直前に1打鍵1サンプル）とは**別の観測点**で、通常の IME poll/probe
+（`ImeSnapshot.is_romaji`）が実際の編集対象ではないウィンドウの値を拾って
+`current_input_mode` と食い違ったときに発火する。実際の文字化けと対応する
+観測なのか、フォーカス遷移時のノイズ的な誤検出（実害なし）なのかは未分離。
+`kana_input_warn` のヒステリシス（On 3連続で警告）がこのノイズで誤発火しうるか
+どうかは次回の調査対象。
+
 ## BUG-107: `ImmCapabilityStore` の学習キャッシュが `class_name` のみをキーにしており、winitの汎用クラス名を介して無関係なプロセスの誤学習が `awase-settings.exe` に伝播し、テキスト入力の先頭に「あ」が混入する（BUG-56のプロセス間版）
 
 **症状（ユーザー報告、2026-09-03）:** タスクトレイの「不具合を報告」画面
