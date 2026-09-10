@@ -37,7 +37,6 @@ use awase::platform::ImeOpenOutcome;
 use crate::state::actuation_chain::{
     needs_romaji_pre_write, ActuationOrder, MechanismWriter, VerifiedTarget, WriteMechanism,
 };
-use crate::state::app_ime_policy::caps;
 use crate::state::ime_decision_view::ImeControlView;
 use crate::state::key_sequence_policy::{self, ime_key_for, ImeOperation, KeyMechanism};
 use crate::tsf::observer::ActiveImeKind;
@@ -554,7 +553,10 @@ impl ImeController {
         // `runtime/executor.rs::dispatch_ime_set_open` の早期 gate をバイパスする
         // 経路（`key_pipeline.rs:1065`/`mod.rs:897` 等）を含めてここで確実に止める。
         // ADR-119 参照（gate をここ1点に集約できなかった経緯）。
-        if view.focus.profile == crate::focus::class_names::AppImeProfile::InputRelay {
+        if matches!(
+            crate::state::ime_actuation_decision::decide_gate(&view.into()),
+            crate::state::ime_actuation_decision::GateResult::NotOwned
+        ) {
             return ImeOpenOutcome::NotOwned;
         }
         // ADR-090 §2.A A-1: 授権は入口側（`ImeStateHub::issue_actuation_order`）で
@@ -606,12 +608,9 @@ impl ImeController {
 /// windows-gated な観測型（`AppImeProfile` / `ActiveImeKind`）から ungated な
 /// 表の引数（`ImePolicyProfile` / `ImeKindId`）への変換は、それぞれ
 /// `focus/class_names.rs` と `tsf/observer.rs` の `From` impl 1 箇所ずつが担う。
+/// 実際の選択は `state::ime_actuation_decision::decide_chain` に委譲する。
 fn caps_chain_for(view: &ImeControlView<'_>) -> &'static [WriteMechanism] {
-    caps(
-        view.focus.profile.into(),
-        view.observed.active_ime_kind.into(),
-    )
-    .chain
+    crate::state::ime_actuation_decision::decide_chain(&view.into())
 }
 
 // 旧 `pub(crate) static CONTROLLER: ImeController` は撤去した。Phase B で

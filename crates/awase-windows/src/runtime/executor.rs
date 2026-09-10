@@ -804,7 +804,10 @@ impl DecisionExecutor {
         // view は imm_first 判定と sync path の両方で使うため一度だけ構築する。
         let mut view = platform.build_ime_control_view(self.applied_snapshot.to_pair());
         view.belief_input_mode = self.belief_input_mode;
-        if view.focus.profile == crate::focus::class_names::AppImeProfile::InputRelay {
+        if matches!(
+            crate::state::ime_actuation_decision::decide_gate(&(&view).into()),
+            crate::state::ime_actuation_decision::GateResult::NotOwned
+        ) {
             return Some((open, awase::platform::ImeOpenOutcome::NotOwned));
         }
         let imm_first = crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
