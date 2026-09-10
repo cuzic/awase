@@ -6,15 +6,16 @@
 //! Win32呼び出しから切り離した純粋関数として提供する。**このモジュール自体は
 //! まだどこからも呼ばれない**（TH1b-1: 追加のみ、配線は別タスクTH1b-2）。
 //! 既存の挙動を1行も変えていないことを、このファイルのユニットテストで
-//! 実装元のコード（`ime_controller.rs`の4戦略・`state/actuation_chain.rs::
-//! needs_romaji_pre_write`・`runtime/executor.rs::dispatch_ime_set_open`の
-//! conv_after_open判定）と1対1で突き合わせて固定する。
+//! 実装元のコード（`ime_controller.rs`の4戦略・[`decide_needs_romaji_pre_write`]
+//! （2026-09-10に`state/actuation_chain.rs`から移動）・
+//! `runtime/executor.rs::dispatch_ime_set_open`のconv_after_open判定）と
+//! 1対1で突き合わせて固定する。
 
 use awase::engine::InputModeState;
 use awase::types::VkCode;
 
 use crate::focus::class_names::AppImeProfile;
-use crate::state::actuation_chain::{needs_romaji_pre_write, WriteMechanism};
+use crate::state::actuation_chain::WriteMechanism;
 use crate::state::app_ime_policy::caps;
 use crate::state::conv_after_open::ConvAfterOpenId;
 use crate::state::ime_kind::ImeKindId;
@@ -108,16 +109,67 @@ const fn gji_direct_already_matches(shadow_on: Option<bool>, open: bool) -> bool
     matches!(shadow_on, Some(v) if v == open)
 }
 
+/// IME ON の直前に ROMAN ビットを補完する同期 IMC write が要るか
+/// （ADR-089 §6 Phase C item 12 = ADR-086 INV-14 の未移行分の是正）。
+///
+/// 2026-09-10、`state/actuation_chain.rs`から本モジュールへ移動しリネームした
+/// （旧名`needs_romaji_pre_write`、[[project_orphaned_free_fn_methodization_2026_09_10]]）。
+/// 「`decide_chain`/`decide_attempt`と同じ判断入力を扱うのに命名も配置も
+/// 揃っていなかった」ことが動機——`decide_attempt`（下記）が`WriteMechanism`/
+/// `open`/`kind`/`belief_input_mode`を受けて本関数をそのまま呼ぶ、隣接する
+/// 「1機構分の判断」の一部である。挙動は移動前と1バイトも変えていない。
+///
+/// **すぐ下の[`decide_dispatch_conv_after_open`]とは意図的に別の条件式である**
+/// （ADR-163 round2 R5「次点候補」参照）。本関数は`mechanism ∈ {ImmCross,
+/// MsImeDirect}`かつ`kind == MsIme`の場合のみ真になるが、
+/// `decide_dispatch_conv_after_open`は`open`と`belief_input_mode`だけで決まり、
+/// mechanism/kind条件を一切持たない。統合を試みると実際に差分が出る可能性が
+/// 高いとADR-163が既に指摘済みであり、**この2つを1つの条件式へ統合しないこと**
+/// （統合はADR-163「今後の議論」4番の別タスク）。
+///
+/// # なぜこの述語がここ（ungated）にあるのか
+///
+/// Phase C 以前、この条件は `ime_controller.rs` の 2 つの戦略の中に**別々に**
+/// 書かれていた（`ImmCrossProcessStrategy::apply` と
+/// `MsImeDirectStrategy::apply`。どちらも `crate::ime::set_ime_romaji_mode()` を
+/// 直接呼んでいた）。どちらも Win32 FFI と同居していたため Linux から
+/// 条件を検査できず、`output/conv_actuation.rs` の doc が
+/// 「ADR-086 Phase 1〜2 の『7 経路』の数え漏れ」と書いていた 2 経路そのもので
+/// あった。Phase C で **書き込み口を 1 箇所（`ime_controller::apply_mechanism`）に
+/// 統合**し、その発火条件だけをここへ純粋関数として切り出した。
+///
+/// # 条件（Phase C 以前と同値であること）
+///
+/// - `open == true` のときだけ（OFF 方向は ROMAN を触らない）。
+/// - 機構が `ImmCross` または `MsImeDirect` のときだけ
+///   （`GjiDirect` / `KanjiToggle` は元から ROMAN を書かない）。
+/// - `kind == MsIme` のときだけ。旧 `ImmCrossProcessStrategy` は
+///   `active_ime_kind == MicrosoftIme` を明示的に見ており、旧
+///   `MsImeDirectStrategy` は見ていなかったが、`MsImeDirect` の
+///   `is_applicable` 自体が `MicrosoftIme` を要求するため**同値**である
+///   （`apply_mechanism` は `is_applicable` が真の機構に対してしか呼ばれない）。
+/// - `belief_input_mode != ObservedKana` のときだけ——ユーザーが意図的に
+///   かな入力を選んでいる状態を ROMAN で上書きしない（既存の保護、
+///   `runtime/mod.rs::force_on_and_correct_romaji` の N2 も参照）。
+#[must_use]
+pub(crate) const fn decide_needs_romaji_pre_write(
+    mechanism: WriteMechanism,
+    open: bool,
+    kind: ImeKindId,
+    belief_input_mode: InputModeState,
+) -> bool {
+    open && matches!(
+        mechanism,
+        WriteMechanism::ImmCross | WriteMechanism::MsImeDirect
+    ) && matches!(kind, ImeKindId::MsIme)
+        && !matches!(belief_input_mode, InputModeState::ObservedKana)
+}
+
 /// `runtime/executor.rs::dispatch_ime_set_open`が`ImmCrossOp::Targeted`を組み立てる際の
 /// conv_after_open判定（実コード該当箇所のコメントでは「issue #138診断」節の直前）。
 ///
-/// **`needs_romaji_pre_write`とは意図的に別の条件式である**（ADR-163 round2 R5
-/// 「次点候補」参照）。`needs_romaji_pre_write`は`mechanism ∈ {ImmCross,
-/// MsImeDirect}`かつ`kind == MsIme`の場合のみ真になるが、こちらは`open`と
-/// `belief_input_mode`だけで決まり、mechanism/kind条件を一切持たない。
-/// 統合を試みると実際に差分が出る可能性が高いとADR-163が既に指摘済みであり、
-/// **この2つを1つの条件式へ統合しないこと**（統合はADR-163「今後の議論」4番の
-/// 別タスクであり、本モジュールの新設時点では行わない）。
+/// **すぐ上の[`decide_needs_romaji_pre_write`]とは意図的に別の条件式である**（ADR-163
+/// round2 R5「次点候補」参照）。詳細はそちらのdocコメント参照。
 #[must_use]
 pub(crate) fn decide_dispatch_conv_after_open(
     inputs: DecisionInputs,
@@ -135,7 +187,7 @@ pub(crate) fn decide_dispatch_conv_after_open(
 /// 戻り値の1つ目は「この機構をwriteする前にROMAN補完(`romaji_pre_write`、
 /// `send_ime_control(IMC_SETCONVERSIONMODE)`)を行うか」——`apply_mechanism`が
 /// `strategy_for(mechanism).apply()`の前に呼ぶ既存の`romaji_pre_write`関数と
-/// 同一の判定（`needs_romaji_pre_write`をそのまま呼ぶだけ）。2つ目が
+/// 同一の判定（[`decide_needs_romaji_pre_write`]をそのまま呼ぶだけ）。2つ目が
 /// `MechanismCommand`（`None` = already-matchedで送信しない）。
 ///
 /// `WriteMechanism::ImmCross`は`site == Sync`の場合のみここで決定する
@@ -154,7 +206,7 @@ pub(crate) fn decide_attempt(
     open: bool,
 ) -> (bool, Option<MechanismCommand>) {
     let romaji_pre_write =
-        needs_romaji_pre_write(mechanism, open, inputs.kind, inputs.belief_input_mode);
+        decide_needs_romaji_pre_write(mechanism, open, inputs.kind, inputs.belief_input_mode);
     let command = match (mechanism, site) {
         (WriteMechanism::ImmCross, DecisionSite::Sync) => {
             Some(MechanismCommand::SetOpenCrossProcessSync(open))
@@ -244,6 +296,77 @@ mod tests {
         }
     }
 
+    // ── decide_needs_romaji_pre_write（ADR-089 Phase C item 12 / ADR-086 INV-14、
+    //    2026-09-10に state/actuation_chain.rs から移動）──
+
+    use awase::engine::AssumedReason;
+
+    const ALL_INPUT_MODES: [InputModeState; 5] = [
+        InputModeState::ObservedRomaji,
+        InputModeState::ObservedKana,
+        InputModeState::ObservedEisu,
+        InputModeState::AssumedRomaji {
+            reason: AssumedReason::ImmBridgeBroken,
+        },
+        InputModeState::Unknown,
+    ];
+
+    /// Phase C 以前の 2 戦略の条件と同値であることを全数で固定する。
+    ///
+    /// 旧条件:
+    /// - `ImmCrossProcessStrategy::apply`:
+    ///   `open && active_ime_kind == MicrosoftIme && belief != ObservedKana`
+    /// - `MsImeDirectStrategy::apply`: `open && belief != ObservedKana`
+    ///   （`is_applicable` が `MicrosoftIme` を要求するため kind 条件は暗黙）
+    #[test]
+    fn needs_romaji_pre_write_condition_matches_the_pre_phase_c_strategies() {
+        for mechanism in WriteMechanism::ALL {
+            for open in [true, false] {
+                for kind in ImeKindId::ALL {
+                    for mode in ALL_INPUT_MODES {
+                        let expected =
+                            open && matches!(
+                                mechanism,
+                                WriteMechanism::ImmCross | WriteMechanism::MsImeDirect
+                            ) && kind == ImeKindId::MsIme
+                                && mode != InputModeState::ObservedKana;
+                        assert_eq!(
+                            decide_needs_romaji_pre_write(mechanism, open, kind, mode),
+                            expected,
+                            "{mechanism:?} open={open} {kind:?} {mode:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// GJI 経路では ROMAN 補完を一切行わない（Phase C 以前も同じ）。
+    #[test]
+    fn needs_romaji_pre_write_never_fires_for_gji_mechanisms() {
+        for mechanism in [WriteMechanism::GjiDirect, WriteMechanism::KanjiToggle] {
+            for kind in ImeKindId::ALL {
+                assert!(!decide_needs_romaji_pre_write(
+                    mechanism,
+                    true,
+                    kind,
+                    InputModeState::Unknown
+                ));
+            }
+        }
+    }
+
+    /// `ObservedKana`（ユーザーが意図的にかな入力を選んだ状態）は上書きしない。
+    #[test]
+    fn needs_romaji_pre_write_respects_observed_kana() {
+        assert!(!decide_needs_romaji_pre_write(
+            WriteMechanism::MsImeDirect,
+            true,
+            ImeKindId::MsIme,
+            InputModeState::ObservedKana
+        ));
+    }
+
     // ── decide_dispatch_conv_after_open（executor.rsの「第3のROMAN判定」の固定）──
 
     #[test]
@@ -289,9 +412,9 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_conv_after_open_ignores_mechanism_and_kind_unlike_needs_romaji_pre_write() {
+    fn dispatch_conv_after_open_ignores_mechanism_and_kind_unlike_decide_needs_romaji_pre_write() {
         // GJI kind・open=true・非ObservedKana でも Write(None) になる
-        // （needs_romaji_pre_write なら kind==MsIme 条件で false になる場面）。
+        // （decide_needs_romaji_pre_write なら kind==MsIme 条件で false になる場面）。
         let i = inputs(
             AppImeProfile::Standard,
             ImeKindId::Gji,
@@ -302,7 +425,7 @@ mod tests {
             decide_dispatch_conv_after_open(i, true),
             ConvAfterOpenId::Write(None)
         );
-        assert!(!needs_romaji_pre_write(
+        assert!(!decide_needs_romaji_pre_write(
             WriteMechanism::ImmCross,
             true,
             ImeKindId::Gji,
@@ -475,10 +598,10 @@ mod tests {
         }
     }
 
-    // ── decide_attempt: romaji_pre_write の bool は needs_romaji_pre_write と一致 ──
+    // ── decide_attempt: romaji_pre_write の bool は decide_needs_romaji_pre_write と一致 ──
 
     #[test]
-    fn romaji_pre_write_flag_matches_needs_romaji_pre_write() {
+    fn romaji_pre_write_flag_matches_decide_needs_romaji_pre_write() {
         for mechanism in [
             WriteMechanism::ImmCross,
             WriteMechanism::GjiDirect,
@@ -493,7 +616,7 @@ mod tests {
                         let (flag, _) = decide_attempt(i, DecisionSite::Sync, mechanism, open);
                         assert_eq!(
                             flag,
-                            needs_romaji_pre_write(mechanism, open, kind, belief_input_mode),
+                            decide_needs_romaji_pre_write(mechanism, open, kind, belief_input_mode),
                             "{mechanism:?} {kind:?} open={open} {belief_input_mode:?}"
                         );
                     }
