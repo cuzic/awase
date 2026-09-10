@@ -23,8 +23,8 @@
 //! - [`crate::win32::send_input_safe`]: ADR-140 Step0 診断ログの
 //!   `ime_actuation_marker_kind` 判定と**同一の条件式**で bump する。
 //! - [`crate::imm::send_ime_control`]: 同診断ログの `kind=actuation` 判定
-//!   （`!matches!(cmd, IMC_GETOPENSTATUS | IMC_GETCONVERSIONMODE)`）と
-//!   **同一の条件式**で bump する。
+//!   （`is_actuation`、`!matches!(cmd, IMC_GETOPENSTATUS | IMC_GETCONVERSIONMODE)`
+//!   を1変数に集約したもの、ADR-159 TF2で抽出）と**同一の条件**で bump する。
 //!
 //! 判定を診断ログと共有することで将来の乖離を防ぐ。`Ordering::Relaxed` で
 //! 足りる: 単一ロケーションのカウンタで、これ経由で他のデータを publish

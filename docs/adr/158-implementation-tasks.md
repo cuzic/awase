@@ -554,22 +554,35 @@ ADR-159段階2（送信列の記録・再生）は実質**未着手**のまま�
 E1・E4の着手条件は「配線確認」ではなく「削除・統合1件を送信列差分ゼロで検証できたこと」
 という能力ベースの基準であり、この実測データ単独ではその基準を満たさない。**
 
-**残タスクの実装完了（2026-09-10、`feat/adr159-tf2-shadow-send-trace`ブランチ）**:
-新規モジュール`crates/awase-windows/src/shadow_send_trace.rs`を追加した。
-`send_input_safe`（`win32.rs`）・`send_ime_control`（`imm.rs`）は`Journal`
-（`PlatformState`所有）へアクセスできないself無しの`pub(crate) fn`のため、
-`probe_actuation_fence`/`conv_mutation`と同型のグローバルstateパターン
-（`Mutex<VecDeque<ShadowSendRecord>>`、上限64件）を踏襲した。挿入は両関数の
-**既存のactuation判定分岐に1行ずつ追加するのみ**（新しい条件分岐は増やして
-いない）——`win32.rs`は`probe_actuation_fence::bump()`と同一の
-`ime_actuation_marker_kind`判定内、`imm.rs`は同じく`probe_actuation_fence::bump()`
-と同一の`is_actuation`判定内（この訂正のため`bump()`呼び出しと診断ログの両方が
-参照する条件を`is_actuation`という単一のローカル変数に統合した）。
+**残タスクの実装完了（2026-09-10、`feat/adr159-tf2-shadow-send-trace`ブランチ、
+PR #193）**: 新規モジュール`crates/awase-windows/src/shadow_send_trace.rs`を
+追加した。挿入は両関数の**既存のactuation判定分岐に1行ずつ追加するのみ**
+（新しい条件分岐は増やしていない）——`win32.rs`は`probe_actuation_fence::bump()`
+と同一の`ime_actuation_marker_kind`判定内、`imm.rs`は同じく
+`probe_actuation_fence::bump()`と同一の`is_actuation`判定内（この訂正のため
+`bump()`呼び出しと診断ログの両方が参照する条件を`is_actuation`という単一の
+ローカル変数に統合した）。
+
+**設計の訂正（2回目、`/code-review`複数系統＋チームレビューの指摘、2026-09-10）**:
+初版は`Mutex<VecDeque<ShadowSendRecord>>`によるプロセス内リングバッファを持ち、
+`probe_actuation_fence`/`conv_mutation`と「同型のグローバルstateパターン」と
+説明していたが、この説明自体が誤りだった（両者は実際にはロックフリーな
+`AtomicU64`単調カウンタで、`Mutex`は使っていない）。加えてバッファを読む
+`snapshot()`はテスト以外に呼び出し元が無く、TF2の検証方法（ログ出力1件以上）は
+バッファを一切使わない——時期尚早なストレージ層だった。**バッファを撤去し、
+`tracing::debug!`1行のみの実装に簡素化した**（既存の`[ime-io]`診断ログと
+同じレベルに揃え、`info!`が既定フィルタで常時発火する問題も解消）。
+あわせて次の2点も修正: (1) `imm.rs`側の記録呼び出しをsend_healthの計測窓
+（`start_ms`〜`end_ms`）の外（既存の`[ime-io]`診断ログと同じ位置、`end_ms`
+確定後）へ移動——ADR-140 MAJOR指摘と同じ理由。(2) `send_ime_control`の
+`cmd`だけでは`IMC_SETOPENSTATUS`のON/OFF、`IMC_SETCONVERSIONMODE`の新
+convモード値を区別できず「送信内容」として不十分だったため、`lparam`
+（実際に送信する値そのもの）を記録に追加した。
 
 **依存**: TB0。
 
-**検証（達成、2026-09-10）**: `dragonflyg4`実機（`feat/adr159-tf2-shadow-send-trace`
-ブランチ、コミット`7e39a234`）で、WezTerm（`CASCADIA_HOSTING_WINDOW_CLASS`、
+**検証（初版、達成、2026-09-10）**: `dragonflyg4`実機（コミット`7e39a234`、
+バッファ版の初版実装）で、WezTerm（`CASCADIA_HOSTING_WINDOW_CLASS`、
 TsfNative）にフォーカスした状態で外部プロセスから`SendInput`で`VK_IME_ON`/
 `VK_IME_OFF`を注入し、awase自身の反応的actuationとして以下の構造化ログが
 実際に出力されることを確認した:
@@ -578,6 +591,11 @@ TsfNative）にフォーカスした状態で外部プロセスから`SendInput`
 [shadow-send] channel=SendInput kind=kanji_marker vk=[16] cmd=None issue_us=81702
 [shadow-send] channel=SendInput kind=tsf_marker_warmup vk=[16] cmd=None issue_us=91949
 ```
+
+上記訂正（バッファ撤去・`lparam`追加・計測窓移動）後の簡素化版でも同じ
+`dragonflyg4`実機で再検証し、`[shadow-send] channel=SendInput ...`（フィールド
+構成のみ変更、`cmd`/`vk`はチャンネルごとの必須フィールドに変更）の出力を
+再確認した（下記「簡素化版の実機再検証」参照）。
 
 `SendInput`経路（`win32.rs`側）の記録は実機で確認済み。`WM_IME_CONTROL`経路
 （`imm.rs`側）は同一セッションでは発火条件（`IMC_SETOPENSTATUS`/
