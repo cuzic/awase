@@ -221,7 +221,7 @@ impl AppImeProfile {
     /// `*profile == AppImeProfile::TsfNative` ではなく必ずこのメソッドを使うこと。
     ///
     /// 2026-09-10、自由関数`is_effectively_tsf_native(profile, class_name)`から
-    /// メソッドへ変更した（[[project_orphaned_free_fn_methodization_2026_09_10]]）。
+    /// メソッドへ変更した（第1引数`AppImeProfile`をselfにせず取り続けていたため）。
     /// 挙動は変更していない。
     #[must_use]
     pub fn is_effectively_tsf_native(&self, class_name: &str) -> bool {

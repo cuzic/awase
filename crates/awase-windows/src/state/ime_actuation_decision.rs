@@ -113,7 +113,7 @@ const fn gji_direct_already_matches(shadow_on: Option<bool>, open: bool) -> bool
 /// （ADR-089 §6 Phase C item 12 = ADR-086 INV-14 の未移行分の是正）。
 ///
 /// 2026-09-10、`state/actuation_chain.rs`から本モジュールへ移動しリネームした
-/// （旧名`needs_romaji_pre_write`、[[project_orphaned_free_fn_methodization_2026_09_10]]）。
+/// （旧名`needs_romaji_pre_write`）。
 /// 「`decide_chain`/`decide_attempt`と同じ判断入力を扱うのに命名も配置も
 /// 揃っていなかった」ことが動機——`decide_attempt`（下記）が`WriteMechanism`/
 /// `open`/`kind`/`belief_input_mode`を受けて本関数をそのまま呼ぶ、隣接する

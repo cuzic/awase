@@ -431,8 +431,8 @@ impl Output {
     /// `true`なら`update_ime_mode_from_imc`済みなので、続けて終端判定を行える。
     ///
     /// 2026-09-10、自由関数からメソッドへ変更した（`&Output`を引数に取り続けて
-    /// いた、[[project_orphaned_free_fn_methodization_2026_09_10]]の検出シグナル
-    /// に合致）。挙動は変更していない。
+    /// いたが、同じファイル内に既存の`impl Output`ブロックがあった）。
+    /// 挙動は変更していない。
     fn refresh_ime_mode_if_focus_matches(
         &self,
         expected_focus_gen: u32,

@@ -1019,7 +1019,7 @@ pub(crate) fn long_idle_ms_for(mode: InjectionMode) -> u64 {
 
 impl GjiState {
     /// 2026-09-10、自由関数`state_label(state: &GjiState)`からメソッドへ変更した
-    /// （[[project_orphaned_free_fn_methodization_2026_09_10]]）。挙動は変更していない。
+    /// （第1引数`&GjiState`をselfにせず取り続けていたため）。挙動は変更していない。
     pub(crate) fn state_label(&self) -> &'static str {
         match self {
             Self::OffCold => "OffCold",

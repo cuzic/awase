@@ -38,8 +38,8 @@ impl FeedbackPolicy {
     /// `Send` を返す（収束は観測確認で成立し、その終端は別処理が担う）。
     ///
     /// 2026-09-10、自由関数`decide_actuation_action(policy, attempts)`から
-    /// `FeedbackPolicy`のメソッドへ変更した
-    /// （[[project_orphaned_free_fn_methodization_2026_09_10]]）。挙動は変更していない。
+    /// `FeedbackPolicy`のメソッドへ変更した（第1引数`FeedbackPolicy`をselfにせず
+    /// 取り続けていたため）。挙動は変更していない。
     #[must_use]
     pub fn decide_action(&self, attempts: u32) -> ActuationAction {
         match self {

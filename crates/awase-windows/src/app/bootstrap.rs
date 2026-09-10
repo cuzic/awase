@@ -481,8 +481,8 @@ impl HotKeyGuard {
     /// トグルホットキーを登録する。
     ///
     /// 2026-09-10、自由関数からメソッドへ変更した（戻り値`Result<HotKeyGuard>`の
-    /// ためだけの関数が型定義（`app/mod.rs`）から離れたファイルにあった、
-    /// [[project_orphaned_free_fn_methodization_2026_09_10]]参照）。挙動は変更していない。
+    /// ためだけの関数が型定義（`app/mod.rs`）から離れたファイルにあった）。
+    /// 挙動は変更していない。
     fn register_toggle(hotkey_str: &str) -> Result<Self> {
         let (modifiers, vk) = crate::vk::parse_hotkey(hotkey_str)
             .context(format!("Invalid toggle hotkey format: {hotkey_str}"))?;

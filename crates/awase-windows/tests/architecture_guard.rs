@@ -2587,7 +2587,7 @@ fn send_input_and_send_message_timeout_w_have_single_production_call_site() {
 /// 2. 同期捕獲（`ActuationTarget::capture_blocking`）と同期 ROMAN write の
 ///    呼び出し元が `ime_controller.rs` の 1 箇所ずつであること。
 /// 3. その 1 箇所が `romaji_pre_write` の中にあること
-///    （= `needs_romaji_pre_write` の条件判定を必ず通ること）。
+///    （= `decide_needs_romaji_pre_write` の条件判定を必ず通ること）。
 #[test]
 fn sync_romaji_write_goes_through_a_captured_target() {
     let files = list_src_files();
@@ -2652,7 +2652,7 @@ fn sync_romaji_write_goes_through_a_captured_target() {
             count_real_calls(pre_write, needle),
             1,
             "`{needle}` は `romaji_pre_write` の中で呼ぶこと（条件判定 \
-             `needs_romaji_pre_write` を迂回させないため、ADR-089 Phase C item 12）"
+             `decide_needs_romaji_pre_write` を迂回させないため、ADR-089 Phase C item 12）"
         );
     }
 }

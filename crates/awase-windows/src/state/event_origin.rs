@@ -114,7 +114,10 @@ impl Generation {
 /// できない。journal は書き出し専用（`Serialize`）でありこれで足りる。リプレイ側
 /// （`DriftCorrectionFixture`）は世代（`Generation`、Ser/De 両対応）だけを保存し、
 /// `SelfActuated` の `strategy` は `FeedbackPolicy::strategy()`
-/// （`state::ime_actuation`、内部専用ヘルパー）で`policy` から一意に再構築するため、`EventSource` 自体の `Deserialize` は不要。
+/// （`state::ime_actuation`、`pub`——`tests/drift_correction_replay.rs`が
+/// フィクスチャの`policy`から独立に`EventSource`を再構築して照合するために
+/// 外部から呼ぶ）で`policy` から一意に再構築するため、`EventSource` 自体の
+/// `Deserialize` は不要。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum EventSource {
     /// 実機ユーザーの物理キー操作（`LLKHF_INJECTED` が立っていない）。

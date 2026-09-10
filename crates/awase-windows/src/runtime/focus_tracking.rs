@@ -799,8 +799,8 @@ impl Runtime {
 }
 
 /// 2026-09-10、自由関数`focus_endpoint(identity: &FocusIdentity)`から`From`実装へ
-/// 変更した（[[project_orphaned_free_fn_methodization_2026_09_10]]、同じ関数内の
-/// `ImePolicyProfile::from(next.app_profile)`と揃える）。挙動は変更していない。
+/// 変更した（同じ関数内の`ImePolicyProfile::from(next.app_profile)`と揃える）。
+/// 挙動は変更していない。
 impl From<&FocusIdentity> for crate::journal::FocusEndpoint {
     fn from(identity: &FocusIdentity) -> Self {
         Self {

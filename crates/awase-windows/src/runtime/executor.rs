@@ -86,8 +86,7 @@ impl ImeStateHub {
     /// 2026-09-10、自由関数`issue_order`からメソッドへ変更した際、`Runtime::
     /// issue_actuation_order`と紛らわしいと指摘を受け`issue_self_actuation_order`
     /// にリネームした（常に`EventSource::SelfActuated`を組み立てることを名前に
-    /// 反映、[[project_orphaned_free_fn_methodization_2026_09_10]]）。挙動は
-    /// 変更していない。
+    /// 反映）。挙動は変更していない。
     fn issue_self_actuation_order(
         &self,
         open: bool,
