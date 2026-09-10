@@ -226,6 +226,14 @@ pre-pushフック・CLAUDE.md該当節を宣言から出力する。既存3本�
 分解したものが[158-implementation-tasks.md](158-implementation-tasks.md)にある**
 （round1レビュー反映後に作成、依存関係と検証方法つき）。
 
+**2026-09-10追記**: タスクグループTA〜TJがほぼ完了した時点で測定し直したところ、
+これらは「今後の増築を防ぐガバナンス機構」の整備にとどまり、**既存の増築そのものは
+1つも解体・統合されていない**ことが判明した（`known-bugs.md`は測定時点16,825行から
+17,054行へ増加、`complexity-budget.md`は今も未発効）。実際にコードを読んで棚卸しした
+結果は[158-complexity-inventory-2026-09-10.md](158-complexity-inventory-2026-09-10.md)
+（Codex CLIによる読み取り専用調査＋Claude Codeによる裏取り）にまとめた。解体・統合の
+候補5件を優先度順に挙げてあるが、**どれを実際に着手するかはまだユーザー判断待ち**。
+
 1. **[ADR-161](161-single-source-spec-generation.md)実証実験2（`actuation_call_guard_spike`）を
    本実装に格上げする**。`set_ime_open`の許可リストを、実証実験で見つかった2件
    （`set_ime_open_ordered`とルートクレートのトレイトデフォルト実装）で確定する——後者は
