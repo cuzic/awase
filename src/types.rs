@@ -4,7 +4,7 @@ pub type Timestamp = u64;
 /// プラットフォーム固有のキーコード（Windows VK, macOS keycode, Linux evdev keycode）
 ///
 /// Engine はこの値を直接検査しない。再注入・ログ出力等でプラットフォーム層に返すために保持する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct VkCode(pub u16);
 
 impl From<u16> for VkCode {

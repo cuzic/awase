@@ -150,7 +150,7 @@ use std::time::Duration;
 use crate::types::{KeyAction, RawKeyEvent};
 
 /// `apply_ime_open` の実行結果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ImeOpenOutcome {
     /// IMM 経由で確実に設定できた
     Applied,
