@@ -23,7 +23,9 @@ use std::sync::{OnceLock, RwLock};
 /// `offload_unsafe`（ワーカースレッド）からも直接（`open_chain.rs`、
 /// メインスレッドの `spawn_local` 内）からも呼ばれる。config リロード時の
 /// 書き込み（`ForceOverrides::new`）はメインスレッドから、読み取りは両方の
-/// スレッドから起こりうるため、`RwLock` はこの1箇所に限り正当。
+/// スレッドから起こりうるため、この `RwLock` は正当。共有 `RwLock` は現在3箇所:
+/// ここ、TSF プロファイル列挙結果の `PROFILE_DESCRIPTIONS`、BugReport 用 IME 製品名
+/// キャッシュの `TSF_OBS.ime_product_name`。
 static INPUT_RELAY_APPS: OnceLock<RwLock<Vec<String>>> = OnceLock::new();
 
 fn input_relay_apps_cell() -> &'static RwLock<Vec<String>> {

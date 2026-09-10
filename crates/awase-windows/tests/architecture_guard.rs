@@ -3916,6 +3916,79 @@ fn input_relay_profile_wiring_occurrence_counts_are_pinned() {
     }
 }
 
+#[test]
+fn cross_thread_shared_lock_declarations_are_accounted_for() {
+    fn shared_lock_declaration_count(production: &str) -> usize {
+        production
+            .lines()
+            .map(str::trim_start)
+            .filter(|line| {
+                line.contains("OnceLock<RwLock<")
+                    || line.contains("OnceLock<Arc<Mutex<")
+                    || (line.contains(": RwLock<")
+                        && (line.starts_with("static ")
+                            || line.starts_with("pub ")
+                            || line.starts_with("pub(")))
+            })
+            .count()
+    }
+
+    let mut actual: Vec<(String, usize)> = list_src_files()
+        .into_iter()
+        .filter_map(|path| {
+            let content = read_crate_file(&path);
+            let production = production_code_only(&content);
+            let count = shared_lock_declaration_count(production);
+            (count > 0).then_some((path, count))
+        })
+        .collect();
+    actual.sort();
+
+    let mut expected: Vec<(String, usize)> = vec![
+        ("src/app/logging.rs".to_string(), 1),
+        ("src/focus/classifier.rs".to_string(), 1),
+        ("src/tsf/observer.rs".to_string(), 1),
+        ("src/tsf/tip_detector.rs".to_string(), 1),
+    ];
+    expected.sort();
+
+    assert_eq!(
+        actual, expected,
+        "クロススレッド共有ロック宣言の出現箇所が想定と異なります。\
+         意図した変更なら期待値を更新してください。"
+    );
+
+    for (path, checks) in [
+        (
+            "src/app/logging.rs",
+            &[("static LOG_WRITER_STATE: OnceLock<Arc<Mutex<", 1)][..],
+        ),
+        (
+            "src/focus/classifier.rs",
+            &[("static INPUT_RELAY_APPS: OnceLock<RwLock<", 1)][..],
+        ),
+        (
+            "src/tsf/observer.rs",
+            &[("ime_product_name: RwLock<", 1)][..],
+        ),
+        (
+            "src/tsf/tip_detector.rs",
+            &[("static PROFILE_DESCRIPTIONS: RwLock<", 1)][..],
+        ),
+    ] {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        for (needle, expected) in checks {
+            let count = production.matches(needle).count();
+            assert_eq!(
+                count, *expected,
+                "{path} 内の `{needle}` 出現数が想定({expected})と異なります(実際: {count})。\
+                 クロススレッド共有ロックを増減する場合は理由を確認し、この期待値を更新してください。"
+            );
+        }
+    }
+}
+
 /// `DeferredOrigin::RecoveryResend` の本番構築箇所は
 /// `DeferGate::deferred_origin`（`src/output/vk_send.rs`）1箇所に限定する。
 ///
