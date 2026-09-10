@@ -145,7 +145,7 @@ struct GjiDirectStrategy;
 
 impl ImeOpenStrategy for GjiDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
-        key_sequence_policy::gji_direct_applicable(view.observed.active_ime_kind)
+        key_sequence_policy::gji_direct_applicable(view.observed.active_ime_kind.into())
     }
 
     #[tracing::instrument(level = "debug", skip_all, fields(open = open, profile = ?view.focus.profile, focus_gen = view.focus.focus_gen))]
@@ -213,7 +213,7 @@ struct MsImeDirectStrategy;
 impl ImeOpenStrategy for MsImeDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
         key_sequence_policy::ms_ime_direct_applicable(
-            view.observed.active_ime_kind,
+            view.observed.active_ime_kind.into(),
             view.focus.profile,
         )
     }

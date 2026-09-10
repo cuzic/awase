@@ -85,6 +85,9 @@ pub mod conv_classify;
 // #[cfg(windows)] の runtime/ のみ。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod eisu_recovery;
+// ADR-163 TH1a: `crate::ime::ConvAfterOpen` の ungated ミラー。将来の
+// actuation 決定出力が Windows-gated 型を state 層へ持ち込まないための境界型。
+pub mod conv_after_open;
 // ADR-089 §2.1/§2.2: open 観測の evidence 型（プール分離 + データ witness）。
 pub mod evidence;
 pub mod force_guard;
@@ -138,7 +141,9 @@ pub(crate) mod ime_decision_view;
 #[cfg(windows)]
 pub(crate) use ime_decision_view::{ControlLog, FocusFacts, ImeControlView, ObservedState};
 
-#[cfg(windows)]
+// 純粋関数モジュール（conv_classify と同じ ungated パターン）。呼び出し元は
+// #[cfg(windows)] の ime_controller/runtime のみ。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod key_sequence_policy;
 
 #[cfg(windows)]
