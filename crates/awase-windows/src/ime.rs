@@ -13,6 +13,7 @@ use crate::imm::{
     IME_CMODE_FULLSHAPE, IME_CMODE_KATAKANA, IME_CMODE_NATIVE, IME_CMODE_ROMAN,
 };
 use crate::output::held_modifiers::HeldModifiers;
+use crate::state::conv_after_open::ConvAfterOpenId;
 use crate::win32::HwndExt as _;
 
 // ─── Cross-process IME 設定 ───────────────────────────────────
@@ -1407,6 +1408,15 @@ pub(crate) enum ConvAfterOpen {
     /// `open` が成功したら続けて書く。`None` は ROMAN ビット確保のみ
     /// （既存 conv に `IME_CMODE_ROMAN` を追加）、`Some(v)` は `v` をそのまま設定。
     Write(Option<u32>),
+}
+
+impl From<ConvAfterOpenId> for ConvAfterOpen {
+    fn from(conv: ConvAfterOpenId) -> Self {
+        match conv {
+            ConvAfterOpenId::Skip => Self::Skip,
+            ConvAfterOpenId::Write(target_conv) => Self::Write(target_conv),
+        }
+    }
 }
 
 /// [`set_ime_open_then_conv_for_target`] の結果。

@@ -148,3 +148,14 @@ pub(crate) struct ImeControlView<'a> {
     /// `build_ime_control_view` 時点では `Unknown`。呼び出し元が `input_mode()` で上書きすること。
     pub belief_input_mode: InputModeState,
 }
+
+impl From<&ImeControlView<'_>> for crate::state::ime_actuation_decision::DecisionInputs {
+    fn from(view: &ImeControlView<'_>) -> Self {
+        Self {
+            profile: view.focus.profile,
+            kind: view.observed.active_ime_kind.into(),
+            shadow_on: view.control.shadow_on,
+            belief_input_mode: view.belief_input_mode,
+        }
+    }
+}

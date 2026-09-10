@@ -3892,15 +3892,34 @@ fn input_relay_profile_wiring_occurrence_counts_are_pinned() {
     let expectations: &[(&str, usize)] = &[
         ("src/focus/class_names.rs", 12),
         ("src/runtime/transport.rs", 4),
-        ("src/runtime/executor.rs", 1),
-        // `executor.rs` の gate は早期 exit の最適化（重複するが無害）。
+        // ADR-163 TH1b-2a: `executor.rs::dispatch_ime_set_open` の InputRelay
+        // ゲートは、5箇所（この関数 + `ime_controller.rs::apply` +
+        // `open_chain.rs`の3関数）に重複していた同一条件のリテラル比較を
+        // `state::ime_actuation_decision::decide_gate`（ungated、TH1b-1で
+        // 全数テスト済み）への呼び出しに置き換えた。このファイルの本番コード
+        // からは `InputRelay` という識別子が消えるため 0 に更新する
+        // （gate自体が消えたわけではないことは、直後の
+        // `decide_gate_wiring_occurrence_counts_are_pinned` が
+        // `decide_gate(` 呼び出しの残存を別途固定する）。
+        ("src/runtime/executor.rs", 0),
+        // `ime_controller.rs`/`open_chain.rs` も同様に `decide_gate` 経由に
+        // 置き換わったが、周辺コメント（issue #136/BUG-90決定4の説明文）に
+        // `InputRelay` の記述が残っているため件数は変化しない。
         // condition (a) を実際に担保しているのはこちらの2ファイル
         // （`ImeController::apply` / `run_open_chain_async` /
         // `fallback_write` の3箇所、コードレビューで gate 取りこぼしが
         // 見つかった経緯は ADR-119 参照）。ここが欠けると、今回踏んだのと
         // 同じクラスの退行（gate の一部消失）を検知できない。
-        ("src/ime_controller.rs", 2),
-        ("src/runtime/open_chain.rs", 7),
+        //
+        // ADR-163 TH1b-2a: `ImeController::apply`冒頭のリテラル比較
+        // （`view.focus.profile == AppImeProfile::InputRelay`）も
+        // `decide_gate`呼び出しに置き換えたため、本番コードの`InputRelay`
+        // 出現は直前の説明コメント（551行目付近）1件のみになる。
+        ("src/ime_controller.rs", 1),
+        // 同じく`imm_cross_write`/`fallback_write`/`run_open_chain_async`の
+        // 3箇所のリテラル比較を`decide_gate`呼び出しへ置き換えたため、
+        // 本番コードの`InputRelay`出現は7から4（周辺コメント分）に減る。
+        ("src/runtime/open_chain.rs", 4),
     ];
     for (path, expected) in expectations {
         let content = read_crate_file(path);
@@ -4003,6 +4022,38 @@ fn cross_thread_shared_lock_declarations_are_accounted_for() {
                  クロススレッド共有ロックを増減する場合は理由を確認し、この期待値を更新してください。"
             );
         }
+    }
+}
+
+/// ADR-163 TH1b-2a: 上記テストが`executor.rs`で追えなくなった
+/// InputRelayゲートの存在を、`decide_gate(`呼び出し箇所の件数で改めて固定する。
+///
+/// `state::ime_actuation_decision::decide_gate`はissue #136/BUG-90決定4の
+/// InputRelayゲートを1箇所に集約した purely 関数（TH1b-1）。5箇所の呼び出し元
+/// （`ImeController::apply`・`dispatch_ime_set_open`・`open_chain.rs`の
+/// `imm_cross_write`/`fallback_write`/`run_open_chain_async`）のうち1つでも
+/// 削除されると、上記テストの`InputRelay`文字列カウント（コメント由来で
+/// 見かけ上は変化しないファイルもある）だけでは検知できない
+/// ——本テストが呼び出し件数そのものを見て埋め合わせる。
+#[test]
+fn decide_gate_wiring_occurrence_counts_are_pinned() {
+    let expectations: &[(&str, usize)] = &[
+        ("src/ime_controller.rs", 1),
+        ("src/runtime/executor.rs", 1),
+        ("src/runtime/open_chain.rs", 3),
+    ];
+    for (path, expected) in expectations {
+        let content = read_crate_file(path);
+        let production = strip_any_test_module(&content);
+        let count = production.matches("decide_gate(").count();
+        assert_eq!(
+            count, *expected,
+            "{path} 内で `ime_actuation_decision::decide_gate(` 呼び出しの \
+             本番コードでの出現数が想定({expected})と異なります(実際: {count})。\
+             InputRelayゲート（issue #136/BUG-90決定4）の呼び出し元が \
+             増減していないか確認すること。意図した変更ならこのテストの \
+             期待値を更新すること。"
+        );
     }
 }
 

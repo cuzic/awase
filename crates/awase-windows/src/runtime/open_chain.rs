@@ -152,8 +152,11 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
     // 再検出する（`fallback_write` が GjiDirect/MsImeDirect/KanjiToggle に
     // 対して行っているのと同じ防御をImmCrossにも及ぼす）。
     let is_input_relay = crate::with_app(|app| {
-        app.shadow_ime_control_view().focus.profile
-            == crate::focus::class_names::AppImeProfile::InputRelay
+        let view = app.shadow_ime_control_view();
+        matches!(
+            crate::state::ime_actuation_decision::decide_gate((&view).into()),
+            crate::state::ime_actuation_decision::GateResult::NotOwned
+        )
     })
     .unwrap_or(false);
     if is_input_relay {
@@ -332,7 +335,10 @@ fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
         // フォーカスが await 中に InputRelay へ移った場合もここで再検出できる。
         // `NotOwned` は `falls_through` が偽なので、GjiDirect/MsImeDirect/
         // KanjiToggle を1つずつ試すことなくチェーンをここで止める。
-        if view.focus.profile == crate::focus::class_names::AppImeProfile::InputRelay {
+        if matches!(
+            crate::state::ime_actuation_decision::decide_gate((&view).into()),
+            crate::state::ime_actuation_decision::GateResult::NotOwned
+        ) {
             return ImeOpenOutcome::NotOwned;
         }
         if crate::ime_controller::mechanism_is_applicable(mechanism, &view) {
@@ -377,8 +383,11 @@ pub(crate) async fn run_open_chain_async(order: ActuationOrder, imm: ImmCrossOp)
     // is_applicable(ImmCross)` が `self.imm.is_some()` しか見ておらず
     // profile を素通りしていた）、最終的に write が実行されることはない。
     let is_input_relay = crate::with_app(|app| {
-        app.shadow_ime_control_view().focus.profile
-            == crate::focus::class_names::AppImeProfile::InputRelay
+        let view = app.shadow_ime_control_view();
+        matches!(
+            crate::state::ime_actuation_decision::decide_gate((&view).into()),
+            crate::state::ime_actuation_decision::GateResult::NotOwned
+        )
     })
     .unwrap_or(false);
     if is_input_relay {

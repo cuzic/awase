@@ -381,8 +381,9 @@ impl PhysicalKeyDisposition {
         } else {
             // apply-ime が GjiDirect/MsImeDirect で実際に actuate する場合のみ、
             // shadow_toggle 発火時 KeyDown + 全 KeyUp を Suppress（BUG-46）。
-            let ime_actuation_owned = key_sequence_policy::gji_direct_applicable(active_ime_kind)
-                || key_sequence_policy::ms_ime_direct_applicable(active_ime_kind, profile);
+            let kind = active_ime_kind.into();
+            let ime_actuation_owned = key_sequence_policy::gji_direct_applicable(kind)
+                || key_sequence_policy::ms_ime_direct_applicable(kind, profile);
             // VK_DBE_* (0xF0 ALPHANUMERIC / 0xF1 KATAKANA / 0xF3 SBCSCHAR / 0xF4
             // DBCSCHAR。0xF2 HIRAGANA は上の専用分岐で既に処理済みのためここには
             // 来ない) の KeyDown は shadow_toggled に関わらず常に Suppress。

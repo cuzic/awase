@@ -24,11 +24,11 @@
 //!     に conv-mode に触れない `VK_IME_ON` へ移行しこの判断自体を撤去した。
 //!
 //! # アプリ分岐を持ち込まない（C-4）
-//! 述語は `AppImeProfile` / `ActiveImeKind` までの抽象で判断する。アプリ名文字列や class_name
+//! 述語は `AppImeProfile` / `ImeKindId` までの抽象で判断する。アプリ名文字列や class_name
 //! マッチはここに新設しない（それらは focus 層の classifier が所有する）。
 
 use crate::focus::class_names::AppImeProfile;
-use crate::tsf::observer::ActiveImeKind;
+use crate::state::ime_kind::ImeKindId;
 use crate::vk::{VK_IME_OFF, VK_IME_ON};
 use awase::types::VkCode;
 
@@ -48,8 +48,8 @@ pub(crate) fn imm_cross_applicable(profile: AppImeProfile) -> bool {
 
 /// `GjiDirectStrategy` の適用条件: GJI が検出済みか（全プロファイルで適用）。
 #[must_use]
-pub(crate) const fn gji_direct_applicable(kind: ActiveImeKind) -> bool {
-    matches!(kind, ActiveImeKind::GoogleJapaneseInput)
+pub(crate) const fn gji_direct_applicable(kind: ImeKindId) -> bool {
+    matches!(kind, ImeKindId::Gji)
 }
 
 /// `MsImeDirectStrategy` の適用条件: MS-IME 検出済み かつ IMM32 クロスプロセス不可。
@@ -57,8 +57,8 @@ pub(crate) const fn gji_direct_applicable(kind: ActiveImeKind) -> bool {
 /// `#[track_caller]`（opus code review S3で追加、理由は`imm_cross_applicable`と同じ）。
 #[must_use]
 #[track_caller]
-pub(crate) fn ms_ime_direct_applicable(kind: ActiveImeKind, profile: AppImeProfile) -> bool {
-    matches!(kind, ActiveImeKind::MicrosoftIme) && !profile.can_use_imm32_cross_process()
+pub(crate) fn ms_ime_direct_applicable(kind: ImeKindId, profile: AppImeProfile) -> bool {
+    matches!(kind, ImeKindId::MsIme) && !profile.can_use_imm32_cross_process()
 }
 
 // KanjiToggleStrategy は最終フォールバックで常に true。自明なため述語関数は設けない。
@@ -195,27 +195,27 @@ mod tests {
 
     #[test]
     fn gji_direct_any_profile_when_gji() {
-        assert!(gji_direct_applicable(ActiveImeKind::GoogleJapaneseInput));
-        assert!(!gji_direct_applicable(ActiveImeKind::MicrosoftIme));
+        assert!(gji_direct_applicable(ImeKindId::Gji));
+        assert!(!gji_direct_applicable(ImeKindId::MsIme));
     }
 
     #[test]
     fn ms_ime_direct_requires_non_imm_cross() {
         // MS-IME × 非 Standard のみ true。
         assert!(ms_ime_direct_applicable(
-            ActiveImeKind::MicrosoftIme,
+            ImeKindId::MsIme,
             AppImeProfile::Imm32Unavailable
         ));
         assert!(ms_ime_direct_applicable(
-            ActiveImeKind::MicrosoftIme,
+            ImeKindId::MsIme,
             AppImeProfile::TsfNative
         ));
         assert!(!ms_ime_direct_applicable(
-            ActiveImeKind::MicrosoftIme,
+            ImeKindId::MsIme,
             AppImeProfile::Standard
         ));
         assert!(!ms_ime_direct_applicable(
-            ActiveImeKind::GoogleJapaneseInput,
+            ImeKindId::Gji,
             AppImeProfile::TsfNative
         ));
     }

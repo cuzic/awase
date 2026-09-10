@@ -804,7 +804,10 @@ impl DecisionExecutor {
         // view は imm_first 判定と sync path の両方で使うため一度だけ構築する。
         let mut view = platform.build_ime_control_view(self.applied_snapshot.to_pair());
         view.belief_input_mode = self.belief_input_mode;
-        if view.focus.profile == crate::focus::class_names::AppImeProfile::InputRelay {
+        if matches!(
+            crate::state::ime_actuation_decision::decide_gate((&view).into()),
+            crate::state::ime_actuation_decision::GateResult::NotOwned
+        ) {
             return Some((open, awase::platform::ImeOpenOutcome::NotOwned));
         }
         let imm_first = crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
@@ -834,7 +837,6 @@ impl DecisionExecutor {
             // MsImeDirectStrategy と同じく ObservedKana 以外なら ROMAN ビットを補完する。
             // ImmCross アプリは ir_poll_and_learn で ObservedKana の観測を抑制するため
             // belief は ObservedKana にならず、ここに到達したときは常に補完対象になる。
-            let belief_input_mode = self.belief_input_mode;
             // ADR-090 §2.A A-1（shadow）: 起案は spawn_local の**外**で行う
             // ——future の中では `with_app` 再入で `ImeStateHub` に届かない
             // （ADR-090 §4.2）。
@@ -848,12 +850,12 @@ impl DecisionExecutor {
             // focus_gen を捕獲し、実際の verify → open → conv はすべて
             // set_ime_open_then_conv_for_target 1回に閉じ込めて同一 hwnd を使い回す。
             let focus_gen = platform.output.ime_mode_focus_gen.get();
-            let conv_after_open =
-                if open && !matches!(belief_input_mode, InputModeState::ObservedKana) {
-                    crate::ime::ConvAfterOpen::Write(None)
-                } else {
-                    crate::ime::ConvAfterOpen::Skip
-                };
+            let conv_after_open: crate::ime::ConvAfterOpen =
+                crate::state::ime_actuation_decision::decide_dispatch_conv_after_open(
+                    (&view).into(),
+                    open,
+                )
+                .into();
             win32_async::spawn_local(async move {
                 let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
                     tracing::debug!(
