@@ -28,6 +28,19 @@ use crate::state::key_sequence_policy::{self, ImeOperation, KeyMechanism};
 /// あえてここには含めない——`ImeControlView`自体はungate化しない
 /// （ADR-163 round2 T5）。windows側に`impl From<&ImeControlView<'_>> for
 /// DecisionInputs`を後で追加し、そこから本モジュールの関数を呼ぶ。
+///
+/// # この型のフィールドを増やす前に読むこと（ADR-163 Part D 決定D8）
+///
+/// `DecisionInputs`（および`ActuationDecisionRecord`/`AttemptRecord`）は
+/// [`journal.rs::JournalEntry::ActuationDecision`](../../journal/enum.JournalEntry.html)
+/// 経由でbug report（ADR-095）の`journal_json`に相乗りし、実ユーザー環境から
+/// 収集される。現状は打鍵の生の文字・ローマ字・かなを一切含まず、アプリ名や
+/// ウィンドウクラス名（`class_name`）も上記のとおり意図的に除外されている。
+/// **将来「診断のため`class_name`も載せよう」のような1行を追加すると、この
+/// 除外という唯一の防壁を素通りして、ユーザーが何のソフトを使っているかを
+/// 送信するチャネルに変質する**（`bug_report.rs`の`BugReportGjiKeymapSummary`が
+/// 残す同種の警告と同じ構造の罠）ため、フィールド追加は録取される情報の変化を
+/// 都度この観点で見直すこと。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DecisionInputs {
     pub profile: AppImeProfile,
