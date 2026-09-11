@@ -28,8 +28,21 @@ use crate::state::key_sequence_policy::{self, ImeOperation, KeyMechanism};
 /// あえてここには含めない——`ImeControlView`自体はungate化しない
 /// （ADR-163 round2 T5）。windows側に`impl From<&ImeControlView<'_>> for
 /// DecisionInputs`を後で追加し、そこから本モジュールの関数を呼ぶ。
+///
+/// # この型のフィールドを増やす前に読むこと（ADR-163 Part D 決定D8）
+///
+/// `DecisionInputs`（および`ActuationDecisionRecord`/`AttemptRecord`）は
+/// [`journal.rs::JournalEntry::ActuationDecision`](../../journal/enum.JournalEntry.html)
+/// 経由でbug report（ADR-095）の`journal_json`に相乗りし、実ユーザー環境から
+/// 収集される。現状は打鍵の生の文字・ローマ字・かなを一切含まず、アプリ名や
+/// ウィンドウクラス名（`class_name`）も上記のとおり意図的に除外されている。
+/// **将来「診断のため`class_name`も載せよう」のような1行を追加すると、この
+/// 除外という唯一の防壁を素通りして、ユーザーが何のソフトを使っているかを
+/// 送信するチャネルに変質する**（`bug_report.rs`の`BugReportGjiKeymapSummary`が
+/// 残す同種の警告と同じ構造の罠）ため、フィールド追加は録取される情報の変化を
+/// 都度この観点で見直すこと。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct DecisionInputs {
+pub struct DecisionInputs {
     pub profile: AppImeProfile,
     pub kind: ImeKindId,
     /// `ControlLog.shadow_on`。`None` = 未知（BUG-113: `bool`に潰さないこと）。
@@ -52,19 +65,23 @@ pub(crate) enum GateResult {
 /// 本ADRが対象とする4関数+これらが内部で辿る経路を表す。`ImmCrossWrite`は
 /// `runtime/open_chain.rs::imm_cross_write`、`FallbackWrite`は同`fallback_write`、
 /// `RunOpenChainAsync`は同`run_open_chain_async`冒頭のゲート、`DispatchImeSetOpen`は
-/// `runtime/executor.rs::dispatch_ime_set_open`。
+/// `runtime/executor.rs::dispatch_ime_set_open`。`ReassertExplicitPhysicalKey`/
+/// `ForceOnRomajiCorrection`は記録専用ラベルであり、command計算へは使わない
+/// （ADR-163 Part D B1）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum DecisionSite {
+pub enum DecisionSite {
     Sync,
     ImmCrossWrite,
     FallbackWrite,
     RunOpenChainAsync,
     DispatchImeSetOpen,
+    ReassertExplicitPhysicalKey,
+    ForceOnRomajiCorrection,
 }
 
 /// 1機構分の「何を送るか」の決定結果（実I/Oは含まない）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum MechanismCommand {
+pub enum MechanismCommand {
     /// 同期`ImmCrossProcessStrategy::apply`が呼ぶ`set_ime_open_cross_process(open)`相当。
     SetOpenCrossProcessSync(bool),
     /// 非同期・宛先未捕獲の`set_ime_open_cross_process_async(open)`相当
@@ -592,6 +609,8 @@ mod tests {
             DecisionSite::FallbackWrite,
             DecisionSite::RunOpenChainAsync,
             DecisionSite::DispatchImeSetOpen,
+            DecisionSite::ReassertExplicitPhysicalKey,
+            DecisionSite::ForceOnRomajiCorrection,
         ] {
             let (_, cmd) = decide_attempt(i, site, WriteMechanism::ImmCross, true);
             assert_eq!(cmd, None, "{site:?}");

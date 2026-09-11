@@ -1669,15 +1669,18 @@ impl WindowsPlatform {
         order: crate::state::actuation_chain::ActuationOrder,
         view: &crate::state::ImeControlView<'_>,
         belief: crate::output::OpenBelief,
-    ) -> awase::platform::ImeOpenOutcome {
+    ) -> (
+        awase::platform::ImeOpenOutcome,
+        crate::state::actuation_decision_record::ActuationDecisionRecord,
+    ) {
         let open = order.open();
-        let outcome = crate::ime_controller::ImeController::apply(order, view);
+        let (outcome, record) = crate::ime_controller::ImeController::apply(order, view);
         tracing::debug!(
             "[apply-ime] open={open} eff={} conf={} → outcome={outcome:?}",
             belief.effective_open,
             belief.confident
         );
-        outcome
+        (outcome, record)
     }
 
     /// `applied` から view を構築して [`Self::apply_ime_open_with_view`] に委譲する。
@@ -1688,7 +1691,10 @@ impl WindowsPlatform {
         order: crate::state::actuation_chain::ActuationOrder,
         applied: Option<(bool, u64)>,
         belief: crate::output::OpenBelief,
-    ) -> awase::platform::ImeOpenOutcome {
+    ) -> (
+        awase::platform::ImeOpenOutcome,
+        crate::state::actuation_decision_record::ActuationDecisionRecord,
+    ) {
         let view = self.build_ime_control_view(applied);
         self.apply_ime_open_with_view(order, &view, belief)
     }

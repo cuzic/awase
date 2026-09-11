@@ -1082,9 +1082,13 @@ impl Runtime {
             };
             // ADR-090 §2.A A-1（shadow）。
             let order = self.issue_actuation_order(false, "idle_conv_check_direct_input");
-            let outcome = self
+            let (outcome, record) = self
                 .platform
                 .apply_ime_open_with_belief(order, None, belief);
+            self.platform_state
+                .ime
+                .journal
+                .record(crate::journal::JournalEntry::ActuationDecision { record });
             self.on_ime_apply_complete(
                 false,
                 outcome,
@@ -1662,6 +1666,7 @@ impl Runtime {
                     let outcome = crate::runtime::open_chain::run_open_chain_async(
                         order,
                         crate::runtime::open_chain::ImmCrossOp::Untargeted,
+                        crate::state::ime_actuation_decision::DecisionSite::RunOpenChainAsync,
                     )
                     .await;
                     // B+C(ts更新)+D(noop)+E
@@ -1677,7 +1682,11 @@ impl Runtime {
                 });
             } else {
                 let order = self.issue_actuation_order(false, "shadow_toggle_off_sync");
-                let outcome = crate::ime_controller::ImeController::apply(order, &view);
+                let (outcome, record) = crate::ime_controller::ImeController::apply(order, &view);
+                self.platform_state
+                    .ime
+                    .journal
+                    .record(crate::journal::JournalEntry::ActuationDecision { record });
                 // B+C+D(noop)+E
                 self.on_ime_apply_complete(
                     false,
@@ -2621,7 +2630,7 @@ impl Runtime {
 
         let result = self.executor.execute_from_hook(
             &mut self.platform,
-            &self.platform_state.ime,
+            &mut self.platform_state.ime,
             decision,
             event,
             physical,

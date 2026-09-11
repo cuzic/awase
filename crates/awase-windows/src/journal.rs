@@ -262,6 +262,13 @@ pub enum JournalEntry {
     ImeActuation {
         record: crate::state::ime_actuation::ActuationRecord,
     },
+    /// ADR-163 Part D: actuation合流点の決定点レコード。
+    ///
+    /// 既存のActuation laneへ相乗りし、bug reportが既に添付しているjournal JSONから
+    /// 実機コーパスを抽出できるようにする。本variantの本番配線は163-T1b以降で行う。
+    ActuationDecision {
+        record: crate::state::actuation_decision_record::ActuationDecisionRecord,
+    },
     /// ADR-132 Phase 1: Blind GiveUp 到達時に、次段の設計判断に必要な観測・
     /// 送信・意図・環境情報だけを構造化して残す。
     DriftGiveUpDiagnostic { record: DriftGiveUpDiagnosticRecord },
@@ -395,6 +402,7 @@ pub enum JournalEntry {
     ClockAnchor { tick_ms: u64, hook_us: u64 },
     /// 添付用 capped JSON が古い entry を落としたことを示す合成ヘッダ。
     DumpTruncated {
+        app_version: &'static str,
         budget_bytes: usize,
         total_entries: usize,
         emitted_entries: usize,
@@ -406,6 +414,19 @@ pub enum JournalEntry {
     /// ダンプトリガー発動
     DumpTriggered,
 }
+
+// /code-review指摘（PR #201、ADR-163 Part D）: 当初「`ActuationDecision`
+// （`ActuationDecisionRecord`、`size_of <= 176`）が`JournalEntry`の最大
+// variantを更新し、Rustがenumサイズを最大variantに合わせる結果、全4 lane
+// （`ActuationDecision`を一切積まないState/Timing/KeyInputも含む）で
+// `VecDeque<JournalEnvelope>`の事前確保メモリが増える」という懸念が
+// 指摘された。**実測の結果、この懸念は成立しない**——`JournalEntry`の
+// サイズは本PR適用前後で264バイトのまま変化していない（develop時点の
+// `size_of::<JournalEntry>()`も264、`ActuationDecisionRecord`の176バイトは
+// 既存の最大variantを更新しない）。以下は将来variantを追加して264バイトを
+// 超えた場合に気付くための回帰ガード（実測値をそのまま固定、
+// [tuning-constants](../../.claude/rules/tuning-constants.md)の精神）。
+const _: () = assert!(size_of::<JournalEntry>() == 264);
 
 // ── JournalEnvelope ───────────────────────────────────────────────────────────
 
@@ -536,6 +557,7 @@ impl JournalEntry {
             | Self::DeferredRecoveryFlush { .. }
             | Self::GjiReinitRetryCompleted { .. } => LaneKind::Timing,
             Self::ImeActuation { .. }
+            | Self::ActuationDecision { .. }
             | Self::DriftGiveUpDiagnostic { .. }
             | Self::DriftGiveUpIntervalEnded { .. }
             | Self::ConvClassifyCall { .. }
@@ -659,6 +681,74 @@ fn feedback_policy_kind_str(p: &crate::state::ime_actuation::FeedbackPolicy) -> 
     }
 }
 
+fn decision_site_str(site: crate::state::ime_actuation_decision::DecisionSite) -> &'static str {
+    use crate::state::ime_actuation_decision::DecisionSite;
+    match site {
+        DecisionSite::Sync => "Sync",
+        DecisionSite::ImmCrossWrite => "ImmCrossWrite",
+        DecisionSite::FallbackWrite => "FallbackWrite",
+        DecisionSite::RunOpenChainAsync => "RunOpenChainAsync",
+        DecisionSite::DispatchImeSetOpen => "DispatchImeSetOpen",
+        DecisionSite::ReassertExplicitPhysicalKey => "ReassertExplicitPhysicalKey",
+        DecisionSite::ForceOnRomajiCorrection => "ForceOnRomajiCorrection",
+    }
+}
+
+fn write_mechanism_str(mechanism: crate::state::actuation_chain::WriteMechanism) -> &'static str {
+    use crate::state::actuation_chain::WriteMechanism;
+    match mechanism {
+        WriteMechanism::ImmCross => "ImmCross",
+        WriteMechanism::GjiDirect => "GjiDirect",
+        WriteMechanism::MsImeDirect => "MsImeDirect",
+        WriteMechanism::KanjiToggle => "KanjiToggle",
+    }
+}
+
+fn mechanism_command_str(
+    command: Option<crate::state::ime_actuation_decision::MechanismCommand>,
+) -> &'static str {
+    use crate::state::ime_actuation_decision::MechanismCommand;
+    match command {
+        Some(MechanismCommand::SetOpenCrossProcessSync(_)) => "SetOpenCrossProcessSync",
+        Some(MechanismCommand::SetOpenCrossProcessAsyncUntargeted(_)) => {
+            "SetOpenCrossProcessAsyncUntargeted"
+        }
+        Some(MechanismCommand::SetOpenThenConvForTarget { .. }) => "SetOpenThenConvForTarget",
+        Some(MechanismCommand::SendVk(_)) => "SendVk",
+        Some(MechanismCommand::PostKanjiToggle) => "PostKanjiToggle",
+        None => "None",
+    }
+}
+
+fn app_ime_profile_str(profile: crate::focus::class_names::AppImeProfile) -> &'static str {
+    use crate::focus::class_names::AppImeProfile;
+    match profile {
+        AppImeProfile::Standard => "Standard",
+        AppImeProfile::Imm32Unavailable => "Imm32Unavailable",
+        AppImeProfile::TsfNative => "TsfNative",
+        AppImeProfile::InputRelay => "InputRelay",
+    }
+}
+
+fn ime_kind_id_str(kind: crate::state::ime_kind::ImeKindId) -> &'static str {
+    use crate::state::ime_kind::ImeKindId;
+    match kind {
+        ImeKindId::Gji => "Gji",
+        ImeKindId::MsIme => "MsIme",
+    }
+}
+
+fn input_mode_state_str(state: awase::engine::InputModeState) -> &'static str {
+    use awase::engine::InputModeState;
+    match state {
+        InputModeState::ObservedRomaji => "ObservedRomaji",
+        InputModeState::ObservedKana => "ObservedKana",
+        InputModeState::ObservedEisu => "ObservedEisu",
+        InputModeState::AssumedRomaji { .. } => "AssumedRomaji",
+        InputModeState::Unknown => "Unknown",
+    }
+}
+
 fn deferred_recovery_outcome_str(o: &DeferredRecoveryOutcomeSummary) -> &'static str {
     match o {
         DeferredRecoveryOutcomeSummary::DiscardedStale { .. } => "DiscardedStale",
@@ -762,6 +852,42 @@ impl JournalEntry {
                     policy = feedback_policy_kind_str(&record.policy),
                     action = actuation_action_str(record.action),
                     "ime actuation"
+                );
+            }
+            Self::ActuationDecision { record } => {
+                let attempt_limit = record.attempts_len.min(record.attempts.len());
+                let first_attempt = record.attempts[..attempt_limit]
+                    .iter()
+                    .find_map(|attempt| *attempt);
+                let first_inputs = first_attempt.map(|attempt| attempt.inputs);
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    site = decision_site_str(record.site),
+                    open = record.order.open,
+                    chain_len = record.chain_len,
+                    attempts_len = record.attempts_len,
+                    gate_profile = app_ime_profile_str(record.gate_inputs.profile),
+                    gate_kind = ime_kind_id_str(record.gate_inputs.kind),
+                    gate_shadow_known = record.gate_inputs.shadow_on.is_some(),
+                    gate_shadow_on = record.gate_inputs.shadow_on.unwrap_or(false),
+                    gate_input_mode = input_mode_state_str(record.gate_inputs.belief_input_mode),
+                    first_attempt_present = first_attempt.is_some(),
+                    first_mechanism = first_attempt
+                        .map_or("None", |attempt| write_mechanism_str(attempt.mechanism)),
+                    first_command = first_attempt
+                        .map_or("None", |attempt| mechanism_command_str(attempt.command)),
+                    first_outcome = first_attempt
+                        .map_or("None", |attempt| ime_open_outcome_str(attempt.outcome)),
+                    first_with_app_available = first_attempt
+                        .is_some_and(|attempt| attempt.with_app_available),
+                    first_profile = first_inputs
+                        .map_or("None", |inputs| app_ime_profile_str(inputs.profile)),
+                    first_kind = first_inputs.map_or("None", |inputs| ime_kind_id_str(inputs.kind)),
+                    first_input_mode = first_inputs
+                        .map_or("None", |inputs| input_mode_state_str(inputs.belief_input_mode)),
+                    "actuation decision"
                 );
             }
             Self::DriftGiveUpDiagnostic { record } => {
@@ -964,6 +1090,7 @@ impl JournalEntry {
                 );
             }
             Self::DumpTruncated {
+                app_version,
                 budget_bytes,
                 total_entries,
                 emitted_entries,
@@ -976,6 +1103,7 @@ impl JournalEntry {
                     target: "awase::journal",
                     seq,
                     elapsed_ms,
+                    app_version = *app_version,
                     budget_bytes,
                     total_entries,
                     emitted_entries,
@@ -1343,6 +1471,7 @@ fn truncation_header_json(
         seq,
         elapsed_ms: 0,
         entry: JournalEntry::DumpTruncated {
+            app_version: env!("CARGO_PKG_VERSION"),
             budget_bytes,
             total_entries,
             emitted_entries,
@@ -1635,6 +1764,9 @@ mod tests {
         assert!(values
             .first()
             .is_some_and(|v| v["entry"]["type"] == "DumpTruncated"));
+        assert!(values
+            .first()
+            .is_some_and(|v| v["entry"]["app_version"] == env!("CARGO_PKG_VERSION")));
     }
 
     #[test]

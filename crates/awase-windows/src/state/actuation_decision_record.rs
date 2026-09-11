@@ -40,12 +40,62 @@
 //!   （その統合はTH1eのスコープ）。このためこの組合せの`AttemptRecord`は
 //!   記録済み`command`をそのまま信用し、再計算による一致確認はスキップする
 //!   （[`tests::replay_record`]のコメント参照）。
+//! - **`ImmCrossWrite`/`RunOpenChainAsync`/`DispatchImeSetOpen`のImmCross
+//!   attemptはTH1e完了まで自動差分証明の対象外**。これらは記録済み
+//!   `command`を人間の診断材料として保持するが、現時点の再生ハーネスでは
+//!   command再計算による一致確認を行わない。
 
 use awase::platform::ImeOpenOutcome;
+use std::mem::size_of;
 
 use super::actuation_chain::WriteMechanism;
 use super::event_origin::{EventOrigin, EventSource, Generation};
 use super::ime_actuation_decision::{DecisionInputs, DecisionSite, MechanismCommand};
+
+/// ADR-163 D2: `WriteMechanism::ALL`と同じ最大attempt数。
+pub const MAX_WRITE_MECHANISMS: usize = 4;
+
+mod nested_optional_bool {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    struct Encoded {
+        recorded: bool,
+        value: Option<bool>,
+    }
+
+    #[allow(
+        clippy::option_option,
+        clippy::ref_option,
+        clippy::trivially_copy_pass_by_ref
+    )]
+    pub(super) fn serialize<S>(
+        value: &Option<Option<bool>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        Encoded {
+            recorded: value.is_some(),
+            value: value.unwrap_or(None),
+        }
+        .serialize(serializer)
+    }
+
+    #[allow(clippy::option_option)]
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Option<Option<bool>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = Encoded::deserialize(deserializer)?;
+        Ok(if encoded.recorded {
+            Some(encoded.value)
+        } else {
+            None
+        })
+    }
+}
 
 /// [`EventOrigin`]の出所を、`&'static str`を含まない判別子だけで表したもの
 /// （ADR-163 Part B「`ActuationOrderRecord`の借用問題」節）。
@@ -58,7 +108,7 @@ use super::ime_actuation_decision::{DecisionInputs, DecisionSite, MechanismComma
 /// 注入理由や戦略名の文字列そのものではない
 /// （`state::ime_actuation::ActuationRecord`の回避策と同型）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum EventSourceKind {
+pub enum EventSourceKind {
     Physical,
     Injected,
     SelfActuated,
@@ -76,7 +126,7 @@ impl From<EventSource> for EventSourceKind {
 
 /// [`EventOrigin`]のfixture専用ミラー（`&'static str`を含まないためDeserialize可能）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct EventOriginRecord {
+pub struct EventOriginRecord {
     pub source: EventSourceKind,
     pub epoch: Generation,
 }
@@ -95,17 +145,29 @@ impl From<EventOrigin> for EventOriginRecord {
 /// 導出できないため、公開アクセサ（`open()`/`would_have_blocked()`/`origin()`）
 /// が返す値だけをここに集める。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct ActuationOrderRecord {
+pub struct ActuationOrderRecord {
     pub open: bool,
     /// A-1 shadow authorization の測定値（`log_shadow_warrant`が使う値と同一）。
     pub would_have_blocked: bool,
     pub origin: EventOriginRecord,
 }
 
+impl From<&crate::state::actuation_chain::ActuationOrder> for ActuationOrderRecord {
+    /// `ime_controller.rs`と`runtime/open_chain.rs`が独立に持っていた同一実装の
+    /// `order_record`関数を統合した（/code-review指摘、PR #201）。
+    fn from(order: &crate::state::actuation_chain::ActuationOrder) -> Self {
+        Self {
+            open: order.open(),
+            would_have_blocked: order.would_have_blocked(),
+            origin: EventOriginRecord::from(order.origin()),
+        }
+    }
+}
+
 /// 1機構への1回のwrite判断の記録（ADR-163 Part B「スキーマはsite単位ではなく
 /// attempt単位」節）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct AttemptRecord {
+pub struct AttemptRecord {
     /// このattempt時点で再サンプリングされた決定入力。
     pub inputs: DecisionInputs,
     /// `with_app(...).unwrap_or(false)`のfail-open結果（決定ロジックからは
@@ -116,19 +178,24 @@ pub(crate) struct AttemptRecord {
     pub command: Option<MechanismCommand>,
     /// 実`ImeOpenOutcome`。外部入力として記録し、再計算しない。
     pub outcome: ImeOpenOutcome,
+    /// BUG-113追補で`view.control.shadow_on = None`へ上書きする直前の値。
+    /// 「上書きなし」（外側`None`）と「上書き前の値が未知」（`Some(None)`）を
+    /// 区別するため、`post_failed_reobservation`と同じ二重`Option`で保持する。
+    #[serde(with = "nested_optional_bool")]
+    pub shadow_on_before_bug113_override: Option<Option<bool>>,
     /// `ActuationOutcome::Failed`後の`read_ime_state_fast()`再観測結果。
     /// 「未取得」（外側`None`）と「取得してfalse」（`Some(Some(false))`）を
     /// 区別する（BUG-113と同型の罠、round2 T3。`Option<bool>`に潰さないこと）。
     // `runtime/ime_refresh.rs::ir_stage_focus`と同じ理由でネストする
     // `Option`が必須（`clippy::option_option`は意図的に無視する）。
-    #[expect(clippy::option_option)]
+    #[serde(with = "nested_optional_bool")]
     pub post_failed_reobservation: Option<Option<bool>>,
 }
 
 /// actuation合流点1呼び出し分の決定点ジャーナルレコード
 /// （ADR-163 Part B、`ActuationDecisionRecord`）。
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct ActuationDecisionRecord {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ActuationDecisionRecord {
     pub site: DecisionSite,
     /// `decide_gate`/`decide_chain`（siteがSyncの場合のみ再導出、round2 T2）を
     /// 評価する際に使った決定入力。sync経路では全attemptがこのviewを共有する
@@ -141,10 +208,38 @@ pub(crate) struct ActuationDecisionRecord {
     /// 使用したchain。syncは`decide_chain(gate_inputs)`との一致を再生時に
     /// assertする。asyncは`WriteMechanism::ALL`固定（ADR-159の理由により
     /// 変更しない、round2 T2）ため記録値をそのまま使う。
-    pub chain: Vec<WriteMechanism>,
+    pub chain: [Option<WriteMechanism>; MAX_WRITE_MECHANISMS],
+    pub chain_len: usize,
     /// `GateResult::NotOwned`だった場合は空（chainの走査自体が起きない）。
-    pub attempts: Vec<AttemptRecord>,
+    pub attempts: [Option<AttemptRecord>; MAX_WRITE_MECHANISMS],
+    pub attempts_len: usize,
+    /// このレコードを実際に記録した呼び出し元（provenance）。`site`とは意味が
+    /// 異なるフィールドとして分離している（/code-review指摘 B-2、PR #201）。
+    ///
+    /// `site`は「`decide_gate`/`decide_chain`/`decide_attempt`にどの
+    /// `DecisionSite`を渡して決定を計算したか」を表し、`replay_record`の
+    /// chain再導出（siteがSyncのときのみ）・ImmCross command再計算スキップ
+    /// 判定（siteがSync以外のときスキップ）が直接この値を見る。`caller`は
+    /// これとは独立に「実際にどの関数がこのレコードを作ったか」という
+    /// 診断ラベルで、再生の一致検証には一切使わない。
+    ///
+    /// 当初`site`自体を呼び出し元ラベルへ事後上書きしていたが、それだと
+    /// `ImeController::apply`経由（常に`site=Sync`で`decide_attempt`を
+    /// 呼ぶ）のレコードのうち`reassert_explicit_physical_key`/
+    /// `force_on_and_correct_romaji`由来の分だけ`site`が`Sync`でなくなり、
+    /// `replay_record`のchain再導出とImmCross command再計算がその分
+    /// スキップされ、実際には`Sync`で計算された正当な値の検証が
+    /// 無効化されていた（同期記録点6箇所中3箇所、`dispatch_ime_set_open`の
+    /// 主経路を含む）。`caller`に分離することでこの穴を塞ぐ。
+    pub caller: Option<DecisionSite>,
 }
+
+const _: () = assert!(size_of::<ActuationDecisionRecord>() <= 184);
+const _: () = {
+    const fn assert_copy<T: Copy>() {}
+    assert_copy::<AttemptRecord>();
+    assert_copy::<ActuationDecisionRecord>();
+};
 
 #[cfg(test)]
 mod tests {
@@ -194,6 +289,49 @@ mod tests {
 
     // ── 再生ドライバ ─────────────────────────────────────────────────────────
 
+    fn used_chain(record: &ActuationDecisionRecord) -> &[Option<WriteMechanism>] {
+        assert!(record.chain_len <= MAX_WRITE_MECHANISMS);
+        &record.chain[..record.chain_len]
+    }
+
+    fn used_attempts(record: &ActuationDecisionRecord) -> &[Option<AttemptRecord>] {
+        assert!(record.attempts_len <= MAX_WRITE_MECHANISMS);
+        &record.attempts[..record.attempts_len]
+    }
+
+    fn chain<const N: usize>(
+        mechanisms: [WriteMechanism; N],
+    ) -> ([Option<WriteMechanism>; MAX_WRITE_MECHANISMS], usize) {
+        assert!(N <= MAX_WRITE_MECHANISMS);
+        let mut chain = [None; MAX_WRITE_MECHANISMS];
+        for (index, mechanism) in mechanisms.into_iter().enumerate() {
+            chain[index] = Some(mechanism);
+        }
+        (chain, N)
+    }
+
+    fn chain_from_slice(
+        mechanisms: &[WriteMechanism],
+    ) -> ([Option<WriteMechanism>; MAX_WRITE_MECHANISMS], usize) {
+        assert!(mechanisms.len() <= MAX_WRITE_MECHANISMS);
+        let mut chain = [None; MAX_WRITE_MECHANISMS];
+        for (index, mechanism) in mechanisms.iter().copied().enumerate() {
+            chain[index] = Some(mechanism);
+        }
+        (chain, mechanisms.len())
+    }
+
+    fn attempts<const N: usize>(
+        records: [AttemptRecord; N],
+    ) -> ([Option<AttemptRecord>; MAX_WRITE_MECHANISMS], usize) {
+        assert!(N <= MAX_WRITE_MECHANISMS);
+        let mut attempts = [None; MAX_WRITE_MECHANISMS];
+        for (index, record) in records.into_iter().enumerate() {
+            attempts[index] = Some(record);
+        }
+        (attempts, N)
+    }
+
     /// 1レコード分の再生。`decide_gate`/`decide_chain`/`decide_attempt`を
     /// 記録済み入力へ再度通し、記録済みの判定・chain・commandと不一致な点を
     /// 文字列のVecとして返す（空なら全一致）。
@@ -213,7 +351,19 @@ mod tests {
         // `Proceed`かつ空`attempts`のレコードが本チェックで誤検知されうる。
         // TH1dで実機ダンプを投入した際にこの理由でgate mismatchが出た場合は、
         // この逆算そのものを見直すこと（この分岐を無条件に信用しない）。
-        let expected_gate = if record.attempts.is_empty() {
+        //
+        // /code-review指摘（S-6、PR #201）: 本PR自身が上記の「先頭要素が
+        // 必ず適用可能」という前提から外れた具体的な経路を作った——
+        // `run_open_chain_async`の冒頭gateは`with_app`成功だが（gate自体は
+        // Proceed）、その後`imm_cross_write`/`fallback_write`内側の
+        // `with_app`が全機構でNoneを返すfail-openケース（`runtime/
+        // open_chain.rs`のB-1修正参照）では、`attempts_len == 0`のまま
+        // `Proceed`なレコードが記録されうる。この場合`expected_gate`は
+        // `NotOwned`（誤り）になり`gate mismatch`が報告される——実装の
+        // バグではなく、この逆算ロジックの既知の誤検知パターンである。
+        // 163-T8でfixtureを投入する際は、この組合せ（gate=Proceed、
+        // attempts_len=0）を「既知の誤検知」として扱うこと。
+        let expected_gate = if record.attempts_len == 0 {
             GateResult::NotOwned
         } else {
             GateResult::Proceed
@@ -222,22 +372,54 @@ mod tests {
             failures.push(format!(
                 "gate mismatch: decide_gate(gate_inputs)={gate:?}, \
                  attempts.is_empty()={} から期待される値は{expected_gate:?}",
-                record.attempts.is_empty()
+                record.attempts_len == 0
             ));
         }
 
         if record.site == DecisionSite::Sync && gate == GateResult::Proceed {
             let recomputed = decide_chain(record.gate_inputs);
-            if recomputed != record.chain.as_slice() {
+            let recorded_chain: Vec<WriteMechanism> =
+                used_chain(record).iter().filter_map(|m| *m).collect();
+            if recomputed != recorded_chain.as_slice() {
                 failures.push(format!(
                     "chain mismatch (Sync): decide_chain(gate_inputs)={recomputed:?} \
-                     != recorded {:?}",
-                    record.chain
+                     != recorded {recorded_chain:?}"
                 ));
             }
         }
 
-        for (i, attempt) in record.attempts.iter().enumerate() {
+        for (i, attempt) in used_attempts(record).iter().enumerate() {
+            let Some(attempt) = attempt else {
+                failures.push(format!("attempt[{i}] is empty within attempts_len"));
+                continue;
+            };
+            // `shadow_on_before_bug113_override`の値そのものは`outcome`と同じ
+            // 「外部入力として記録し、再計算しない」フィールドであり、上書き前の
+            // 値が何だったかを独立に再導出する手段は無い。ただし
+            // `Some(_)`（＝上書きが発生した）ときは、上書き後に組み立てられた
+            // `attempt.inputs.shadow_on`が必ず`None`になるという構造的な
+            // 事実は再生時に検証できる（`runtime/open_chain.rs::fallback_write`が
+            // `view.control.shadow_on = None;`の**後**に`inputs`を組み立てる
+            // ため）。
+            //
+            // /code-review指摘（PR #201）: 当初はここで
+            // `before_override != attempt.inputs.shadow_on`という一致確認を
+            // 行っていたが構造的に誤りだった——`attempt.inputs.shadow_on`は
+            // 上書き後の値（常に`None`）であり、上書き**前**の値
+            // `before_override`と比較すると、上書き前の値が既知
+            // （`Some(true)`/`Some(false)`）だった実機コーパスの全件が
+            // 「不一致」と誤検出されていた。上記の正しい不変条件に置き換えた。
+            if attempt.shadow_on_before_bug113_override.is_some()
+                && attempt.inputs.shadow_on.is_some()
+            {
+                failures.push(format!(
+                    "attempt[{i}] shadow_on_before_bug113_override is Some \
+                     (override happened) but attempt.inputs.shadow_on is \
+                     {:?} instead of None (fallback_write always overrides \
+                     shadow_on to None before building inputs)",
+                    attempt.inputs.shadow_on
+                ));
+            }
             if attempt.mechanism == WriteMechanism::ImmCross && record.site != DecisionSite::Sync {
                 // モジュールdoc「スコープ外」節参照: この組合せはdecide_attemptの
                 // 責務外（常にNoneを返す設計）であり、再計算による一致確認は
@@ -295,12 +477,14 @@ mod tests {
             None,
             InputModeState::Unknown,
         );
+        let (chain, chain_len) = chain_from_slice(decide_chain(gate_inputs));
         let record = ActuationDecisionRecord {
             site: DecisionSite::Sync,
             gate_inputs,
             order: order(true),
-            chain: decide_chain(gate_inputs).to_vec(),
-            attempts: vec![AttemptRecord {
+            chain,
+            chain_len,
+            attempts: attempts([AttemptRecord {
                 inputs: gate_inputs,
                 with_app_available: true,
                 mechanism: WriteMechanism::GjiDirect,
@@ -312,13 +496,112 @@ mod tests {
                 )
                 .1,
                 outcome: ImeOpenOutcome::Applied,
+                shadow_on_before_bug113_override: None,
                 post_failed_reobservation: None,
-            }],
+            }])
+            .0,
+            attempts_len: 1,
+            caller: None,
         };
         assert_eq!(
             replay_record(&record),
             Vec::<String>::new(),
             "手で組み立てた自己無矛盾なレコードは再生で一致するはず"
+        );
+    }
+
+    #[test]
+    fn actuation_decision_record_round_trips_via_json() {
+        let gate_inputs = inputs(
+            AppImeProfile::Standard,
+            ImeKindId::Gji,
+            None,
+            InputModeState::Unknown,
+        );
+        let (chain, chain_len) = chain_from_slice(decide_chain(gate_inputs));
+        let record = ActuationDecisionRecord {
+            site: DecisionSite::Sync,
+            gate_inputs,
+            order: order(true),
+            chain,
+            chain_len,
+            attempts: attempts([AttemptRecord {
+                inputs: gate_inputs,
+                with_app_available: true,
+                mechanism: WriteMechanism::GjiDirect,
+                command: Some(MechanismCommand::SendVk(VkCode(0x16))),
+                outcome: ImeOpenOutcome::Applied,
+                shadow_on_before_bug113_override: Some(None),
+                post_failed_reobservation: Some(Some(true)),
+            }])
+            .0,
+            attempts_len: 1,
+            caller: None,
+        };
+
+        let json = serde_json::to_string(&record).expect("serialize");
+        let back: ActuationDecisionRecord = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(record, back);
+    }
+
+    // /code-review指摘（S-4、PR #201）: 「LaneKind::Actuationへの相乗りが
+    // 既存ImeActuation/DriftGiveUpDiagnostic/ConvClassifyCallエントリを
+    // 押し出すペースを悪化させないか」の実測は、windows-build CIや実機
+    // ダンプが無くてもLinux上のJSONバイト数計測で今すぐ着手できる
+    // （指摘のとおり「実測はCI待ち」は不要な先送りだった）。固定長配列化
+    // （163-T2）で未使用スロットも`null`として4枠ぶん出力される点、
+    // `nested_optional_bool`がattemptごとにオブジェクト2個を増やす点を
+    // 含めて実測する。1 actuationにつき既存`ImeActuation`と合わせ同一lane
+    // に2エントリ積まれる点は本テストの範囲外（実際のlane圧迫の実測は
+    // windows-build CI/実機ダンプでの前後比較が別途必要、163-T1dの
+    // 受け入れ基準に残したまま）。
+    #[test]
+    fn actuation_decision_record_json_byte_size_is_measured() {
+        let gate_inputs = inputs(
+            AppImeProfile::Standard,
+            ImeKindId::Gji,
+            Some(true),
+            InputModeState::Unknown,
+        );
+        let (chain, chain_len) = chain_from_slice(decide_chain(gate_inputs));
+        // 実運用で最頻出と見込む構成: attemptsは1件のみ埋まり残り3スロットは
+        // null（GjiDirect/MsImeDirectはchain中1機構だけで already-matched/
+        // 送信が決まることが多い）。
+        let record = ActuationDecisionRecord {
+            site: DecisionSite::Sync,
+            gate_inputs,
+            order: order(true),
+            chain,
+            chain_len,
+            attempts: attempts([AttemptRecord {
+                inputs: gate_inputs,
+                with_app_available: true,
+                mechanism: WriteMechanism::GjiDirect,
+                command: Some(MechanismCommand::SendVk(VkCode(0x16))),
+                outcome: ImeOpenOutcome::Applied,
+                shadow_on_before_bug113_override: Some(Some(true)),
+                post_failed_reobservation: Some(Some(true)),
+            }])
+            .0,
+            attempts_len: 1,
+            caller: None,
+        };
+        let json = serde_json::to_string(&record).expect("serialize");
+        // 実測値（2026-09-11時点、フィールド構成が変わったら更新すること）:
+        // attempt 1件・未使用スロット3個nullの構成で631バイト。
+        // 未使用スロットのnull・nested_optional_boolのオブジェクト展開が
+        // 主要因（`chain`/`attempts`の未使用null 6個＋
+        // `shadow_on_before_bug113_override`/`post_failed_reobservation`の
+        // オブジェクト展開2個）。journal.rsの`select_tail_within_budget`は
+        // lane予約20%（Actuation）の中で既存`ImeActuation`（固定サイズ
+        // 数十バイト）と奪い合うため、1 actuationあたりのlane消費バイト数は
+        // 本エントリの追加でおよそ10倍規模になる——この数値をwindows-build
+        // CI/実機ダンプでの前後比較（163-T1d受け入れ基準）の基準値として
+        // 使うこと。
+        assert!(
+            json.len() < 700,
+            "ActuationDecisionRecordのJSON表現が想定より大きい: {} bytes ({json})",
+            json.len()
         );
     }
 
@@ -334,8 +617,11 @@ mod tests {
             site: DecisionSite::Sync,
             gate_inputs,
             order: order(true),
-            chain: Vec::new(),
-            attempts: Vec::new(),
+            chain: [None; MAX_WRITE_MECHANISMS],
+            chain_len: 0,
+            attempts: [None; MAX_WRITE_MECHANISMS],
+            attempts_len: 0,
+            caller: None,
         };
         assert_eq!(replay_record(&record), Vec::<String>::new());
     }
@@ -348,24 +634,83 @@ mod tests {
             Some(true), // already matches open=true → 本来 command は None
             InputModeState::Unknown,
         );
+        let (chain, chain_len) = chain_from_slice(decide_chain(gate_inputs));
         let record = ActuationDecisionRecord {
             site: DecisionSite::Sync,
             gate_inputs,
             order: order(true),
-            chain: decide_chain(gate_inputs).to_vec(),
-            attempts: vec![AttemptRecord {
+            chain,
+            chain_len,
+            attempts: attempts([AttemptRecord {
                 inputs: gate_inputs,
                 with_app_available: true,
                 mechanism: WriteMechanism::GjiDirect,
                 // 意図的に誤った記録値（本来はNoneのはず）。
                 command: Some(MechanismCommand::SendVk(VkCode(0x16))),
                 outcome: ImeOpenOutcome::Applied,
+                shadow_on_before_bug113_override: None,
                 post_failed_reobservation: None,
-            }],
+            }])
+            .0,
+            attempts_len: 1,
+            caller: None,
         };
         assert!(
             !replay_record(&record).is_empty(),
             "改ざんしたcommandはreplay_recordが不一致として検出するはず"
+        );
+    }
+
+    #[test]
+    // /code-review指摘（S-2、PR #201）: F1修正前は「上書き前の値の改ざん」を
+    // 検出するテストのつもりだったが、F1修正後の不変条件（shadow_on_before_
+    // bug113_overrideがSomeなら、attempt.inputs.shadow_onは必ずNoneのはず）
+    // のもとでは、実際に検出しているのは「値の改ざん」ではなく「上書きが
+    // 発生したはずなのにinputs.shadow_onがNoneでない」という構造的な矛盾
+    // （fallback_writeでは起こり得ない組合せ）である。テスト名を実態に
+    // 合わせて訂正した（163-T0の受け入れ基準「上書き前の値の改ざんを検出」も
+    // 同じ理由で原理的に達成不可能——上書き前の値を独立に再導出する手段が
+    // 無いため——docs/adr/163-implementation-tasks.mdに記録済み）。
+    fn replay_detects_bug113_override_recorded_but_inputs_shadow_on_not_none() {
+        let gate_inputs = inputs(
+            AppImeProfile::Standard,
+            ImeKindId::Gji,
+            Some(true),
+            InputModeState::Unknown,
+        );
+        let record = ActuationDecisionRecord {
+            site: DecisionSite::FallbackWrite,
+            gate_inputs,
+            order: order(true),
+            chain: chain(WriteMechanism::ALL).0,
+            chain_len: WriteMechanism::ALL.len(),
+            attempts: attempts([AttemptRecord {
+                inputs: gate_inputs,
+                with_app_available: true,
+                mechanism: WriteMechanism::GjiDirect,
+                command: decide_attempt(
+                    gate_inputs,
+                    DecisionSite::FallbackWrite,
+                    WriteMechanism::GjiDirect,
+                    true,
+                )
+                .1,
+                outcome: ImeOpenOutcome::Applied,
+                // fallback_writeでは上書きが発生したattemptのinputs.shadow_on
+                // は必ずNoneになる（open_chain.rs::fallback_write参照）。
+                // ここでは意図的にinputs.shadow_on（gate_inputs由来のSome(true)）
+                // と矛盾させている。
+                shadow_on_before_bug113_override: Some(Some(false)),
+                post_failed_reobservation: None,
+            }])
+            .0,
+            attempts_len: 1,
+            caller: None,
+        };
+        assert!(
+            !replay_record(&record).is_empty(),
+            "shadow_on_before_bug113_overrideがSomeなのにinputs.shadow_onが\
+             Noneでない矛盾はreplay_recordが検出するはず"
         );
     }
 
@@ -383,8 +728,9 @@ mod tests {
             site: DecisionSite::RunOpenChainAsync,
             gate_inputs,
             order: order(true),
-            chain: WriteMechanism::ALL.to_vec(),
-            attempts: vec![AttemptRecord {
+            chain: chain(WriteMechanism::ALL).0,
+            chain_len: WriteMechanism::ALL.len(),
+            attempts: attempts([AttemptRecord {
                 inputs: gate_inputs,
                 with_app_available: true,
                 mechanism: WriteMechanism::ImmCross,
@@ -393,8 +739,12 @@ mod tests {
                     conv_after_open: ConvAfterOpenId::Write(None),
                 }),
                 outcome: ImeOpenOutcome::Applied,
+                shadow_on_before_bug113_override: None,
                 post_failed_reobservation: None,
-            }],
+            }])
+            .0,
+            attempts_len: 1,
+            caller: None,
         };
         assert_eq!(replay_record(&record), Vec::<String>::new());
     }
