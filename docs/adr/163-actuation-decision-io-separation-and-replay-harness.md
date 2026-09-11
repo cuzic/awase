@@ -279,9 +279,12 @@ pub(crate) struct ActuationDecisionRecord {
     // 別の独立した5つ目の入口（両者が独立に同じ判定を持つのがADR-119の経緯そのもの）。
     // Sync に畳むと、executor側のゲートだけを削る回帰が記録上区別できなくなる。
     pub site: DecisionSite,  // Sync | ImmCrossWrite | FallbackWrite | RunOpenChainAsync | DispatchImeSetOpen
+    pub gate_inputs: DecisionInputs,
     pub order: ActuationOrderRecord,
-    pub chain: Vec<WriteMechanism>,     // syncは decide_chain 再導出との一致もassertする
-    pub attempts: Vec<AttemptRecord>,
+    pub chain: [Option<WriteMechanism>; 4],
+    pub chain_len: usize,     // syncは decide_chain 再導出との一致もassertする
+    pub attempts: [Option<AttemptRecord>; 4],
+    pub attempts_len: usize,
 }
 pub(crate) struct AttemptRecord {
     pub inputs: DecisionInputs,         // この attempt 時点の再サンプリング値

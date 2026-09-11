@@ -42,10 +42,14 @@
 //!   （[`tests::replay_record`]のコメント参照）。
 
 use awase::platform::ImeOpenOutcome;
+use std::mem::size_of;
 
 use super::actuation_chain::WriteMechanism;
 use super::event_origin::{EventOrigin, EventSource, Generation};
 use super::ime_actuation_decision::{DecisionInputs, DecisionSite, MechanismCommand};
+
+/// ADR-163 D2: `WriteMechanism::ALL`と同じ最大attempt数。
+pub(crate) const MAX_WRITE_MECHANISMS: usize = 4;
 
 /// [`EventOrigin`]の出所を、`&'static str`を含まない判別子だけで表したもの
 /// （ADR-163 Part B「`ActuationOrderRecord`の借用問題」節）。
@@ -132,7 +136,7 @@ pub(crate) struct AttemptRecord {
 
 /// actuation合流点1呼び出し分の決定点ジャーナルレコード
 /// （ADR-163 Part B、`ActuationDecisionRecord`）。
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ActuationDecisionRecord {
     pub site: DecisionSite,
     /// `decide_gate`/`decide_chain`（siteがSyncの場合のみ再導出、round2 T2）を
@@ -146,10 +150,19 @@ pub(crate) struct ActuationDecisionRecord {
     /// 使用したchain。syncは`decide_chain(gate_inputs)`との一致を再生時に
     /// assertする。asyncは`WriteMechanism::ALL`固定（ADR-159の理由により
     /// 変更しない、round2 T2）ため記録値をそのまま使う。
-    pub chain: Vec<WriteMechanism>,
+    pub chain: [Option<WriteMechanism>; MAX_WRITE_MECHANISMS],
+    pub chain_len: usize,
     /// `GateResult::NotOwned`だった場合は空（chainの走査自体が起きない）。
-    pub attempts: Vec<AttemptRecord>,
+    pub attempts: [Option<AttemptRecord>; MAX_WRITE_MECHANISMS],
+    pub attempts_len: usize,
 }
+
+const _: () = assert!(size_of::<ActuationDecisionRecord>() <= 176);
+const _: () = {
+    const fn assert_copy<T: Copy>() {}
+    assert_copy::<AttemptRecord>();
+    assert_copy::<ActuationDecisionRecord>();
+};
 
 #[cfg(test)]
 mod tests {
@@ -199,6 +212,49 @@ mod tests {
 
     // ── 再生ドライバ ─────────────────────────────────────────────────────────
 
+    fn used_chain(record: &ActuationDecisionRecord) -> &[Option<WriteMechanism>] {
+        assert!(record.chain_len <= MAX_WRITE_MECHANISMS);
+        &record.chain[..record.chain_len]
+    }
+
+    fn used_attempts(record: &ActuationDecisionRecord) -> &[Option<AttemptRecord>] {
+        assert!(record.attempts_len <= MAX_WRITE_MECHANISMS);
+        &record.attempts[..record.attempts_len]
+    }
+
+    fn chain<const N: usize>(
+        mechanisms: [WriteMechanism; N],
+    ) -> ([Option<WriteMechanism>; MAX_WRITE_MECHANISMS], usize) {
+        assert!(N <= MAX_WRITE_MECHANISMS);
+        let mut chain = [None; MAX_WRITE_MECHANISMS];
+        for (index, mechanism) in mechanisms.into_iter().enumerate() {
+            chain[index] = Some(mechanism);
+        }
+        (chain, N)
+    }
+
+    fn chain_from_slice(
+        mechanisms: &[WriteMechanism],
+    ) -> ([Option<WriteMechanism>; MAX_WRITE_MECHANISMS], usize) {
+        assert!(mechanisms.len() <= MAX_WRITE_MECHANISMS);
+        let mut chain = [None; MAX_WRITE_MECHANISMS];
+        for (index, mechanism) in mechanisms.iter().copied().enumerate() {
+            chain[index] = Some(mechanism);
+        }
+        (chain, mechanisms.len())
+    }
+
+    fn attempts<const N: usize>(
+        records: [AttemptRecord; N],
+    ) -> ([Option<AttemptRecord>; MAX_WRITE_MECHANISMS], usize) {
+        assert!(N <= MAX_WRITE_MECHANISMS);
+        let mut attempts = [None; MAX_WRITE_MECHANISMS];
+        for (index, record) in records.into_iter().enumerate() {
+            attempts[index] = Some(record);
+        }
+        (attempts, N)
+    }
+
     /// 1レコード分の再生。`decide_gate`/`decide_chain`/`decide_attempt`を
     /// 記録済み入力へ再度通し、記録済みの判定・chain・commandと不一致な点を
     /// 文字列のVecとして返す（空なら全一致）。
@@ -218,7 +274,7 @@ mod tests {
         // `Proceed`かつ空`attempts`のレコードが本チェックで誤検知されうる。
         // TH1dで実機ダンプを投入した際にこの理由でgate mismatchが出た場合は、
         // この逆算そのものを見直すこと（この分岐を無条件に信用しない）。
-        let expected_gate = if record.attempts.is_empty() {
+        let expected_gate = if record.attempts_len == 0 {
             GateResult::NotOwned
         } else {
             GateResult::Proceed
@@ -227,22 +283,28 @@ mod tests {
             failures.push(format!(
                 "gate mismatch: decide_gate(gate_inputs)={gate:?}, \
                  attempts.is_empty()={} から期待される値は{expected_gate:?}",
-                record.attempts.is_empty()
+                record.attempts_len == 0
             ));
         }
 
         if record.site == DecisionSite::Sync && gate == GateResult::Proceed {
             let recomputed = decide_chain(record.gate_inputs);
-            if recomputed != record.chain.as_slice() {
+            let recorded_chain: Vec<WriteMechanism> =
+                used_chain(record).iter().filter_map(|m| *m).collect();
+            if recomputed != recorded_chain.as_slice() {
                 failures.push(format!(
                     "chain mismatch (Sync): decide_chain(gate_inputs)={recomputed:?} \
                      != recorded {:?}",
-                    record.chain
+                    recorded_chain
                 ));
             }
         }
 
-        for (i, attempt) in record.attempts.iter().enumerate() {
+        for (i, attempt) in used_attempts(record).iter().enumerate() {
+            let Some(attempt) = attempt else {
+                failures.push(format!("attempt[{i}] is empty within attempts_len"));
+                continue;
+            };
             if let Some(before_override) = attempt.shadow_on_before_bug113_override {
                 if before_override != attempt.inputs.shadow_on {
                     failures.push(format!(
@@ -310,12 +372,14 @@ mod tests {
             None,
             InputModeState::Unknown,
         );
+        let (chain, chain_len) = chain_from_slice(decide_chain(gate_inputs));
         let record = ActuationDecisionRecord {
             site: DecisionSite::Sync,
             gate_inputs,
             order: order(true),
-            chain: decide_chain(gate_inputs).to_vec(),
-            attempts: vec![AttemptRecord {
+            chain,
+            chain_len,
+            attempts: attempts([AttemptRecord {
                 inputs: gate_inputs,
                 with_app_available: true,
                 mechanism: WriteMechanism::GjiDirect,
@@ -329,7 +393,9 @@ mod tests {
                 outcome: ImeOpenOutcome::Applied,
                 shadow_on_before_bug113_override: None,
                 post_failed_reobservation: None,
-            }],
+            }])
+            .0,
+            attempts_len: 1,
         };
         assert_eq!(
             replay_record(&record),
@@ -350,8 +416,10 @@ mod tests {
             site: DecisionSite::Sync,
             gate_inputs,
             order: order(true),
-            chain: Vec::new(),
-            attempts: Vec::new(),
+            chain: [None; MAX_WRITE_MECHANISMS],
+            chain_len: 0,
+            attempts: [None; MAX_WRITE_MECHANISMS],
+            attempts_len: 0,
         };
         assert_eq!(replay_record(&record), Vec::<String>::new());
     }
@@ -364,12 +432,14 @@ mod tests {
             Some(true), // already matches open=true → 本来 command は None
             InputModeState::Unknown,
         );
+        let (chain, chain_len) = chain_from_slice(decide_chain(gate_inputs));
         let record = ActuationDecisionRecord {
             site: DecisionSite::Sync,
             gate_inputs,
             order: order(true),
-            chain: decide_chain(gate_inputs).to_vec(),
-            attempts: vec![AttemptRecord {
+            chain,
+            chain_len,
+            attempts: attempts([AttemptRecord {
                 inputs: gate_inputs,
                 with_app_available: true,
                 mechanism: WriteMechanism::GjiDirect,
@@ -378,7 +448,9 @@ mod tests {
                 outcome: ImeOpenOutcome::Applied,
                 shadow_on_before_bug113_override: None,
                 post_failed_reobservation: None,
-            }],
+            }])
+            .0,
+            attempts_len: 1,
         };
         assert!(
             !replay_record(&record).is_empty(),
@@ -398,8 +470,9 @@ mod tests {
             site: DecisionSite::FallbackWrite,
             gate_inputs,
             order: order(true),
-            chain: WriteMechanism::ALL.to_vec(),
-            attempts: vec![AttemptRecord {
+            chain: chain(WriteMechanism::ALL).0,
+            chain_len: WriteMechanism::ALL.len(),
+            attempts: attempts([AttemptRecord {
                 inputs: gate_inputs,
                 with_app_available: true,
                 mechanism: WriteMechanism::GjiDirect,
@@ -414,7 +487,9 @@ mod tests {
                 // 意図的に誤った記録値（attempt.inputs.shadow_onはSome(true)）。
                 shadow_on_before_bug113_override: Some(Some(false)),
                 post_failed_reobservation: None,
-            }],
+            }])
+            .0,
+            attempts_len: 1,
         };
         assert!(
             !replay_record(&record).is_empty(),
@@ -436,8 +511,9 @@ mod tests {
             site: DecisionSite::RunOpenChainAsync,
             gate_inputs,
             order: order(true),
-            chain: WriteMechanism::ALL.to_vec(),
-            attempts: vec![AttemptRecord {
+            chain: chain(WriteMechanism::ALL).0,
+            chain_len: WriteMechanism::ALL.len(),
+            attempts: attempts([AttemptRecord {
                 inputs: gate_inputs,
                 with_app_available: true,
                 mechanism: WriteMechanism::ImmCross,
@@ -448,7 +524,9 @@ mod tests {
                 outcome: ImeOpenOutcome::Applied,
                 shadow_on_before_bug113_override: None,
                 post_failed_reobservation: None,
-            }],
+            }])
+            .0,
+            attempts_len: 1,
         };
         assert_eq!(replay_record(&record), Vec::<String>::new());
     }
