@@ -902,6 +902,7 @@ impl DecisionExecutor {
                         conv_after_open,
                         focus_gen,
                     },
+                    crate::state::ime_actuation_decision::DecisionSite::DispatchImeSetOpen,
                 )
                 .await;
                 // sync path（sync_outcomes → dispatch_outcomes → on_ime_apply_complete）と
@@ -987,7 +988,8 @@ impl DecisionExecutor {
             );
             // ADR-090 §2.A A-1（shadow）。
             let order = ime.issue_self_actuation_order(open, "engine_decision_sync");
-            let (outcome, record) = platform.apply_ime_open_with_view(order, &view, belief);
+            let (outcome, mut record) = platform.apply_ime_open_with_view(order, &view, belief);
+            record.site = crate::state::ime_actuation_decision::DecisionSite::DispatchImeSetOpen;
             ime.journal
                 .record(crate::journal::JournalEntry::ActuationDecision { record });
             if outcome == awase::platform::ImeOpenOutcome::Failed {

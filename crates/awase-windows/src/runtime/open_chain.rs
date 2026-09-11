@@ -512,7 +512,11 @@ fn fallback_write(
 // のみ呼ばれるため実害はない（`ActuationTarget::verify_still_current` と同じ制約）。
 #[allow(clippy::future_not_send)]
 #[tracing::instrument(level = "debug", skip_all)]
-pub(crate) async fn run_open_chain_async(order: ActuationOrder, imm: ImmCrossOp) -> ImeOpenOutcome {
+pub(crate) async fn run_open_chain_async(
+    order: ActuationOrder,
+    imm: ImmCrossOp,
+    site: DecisionSite,
+) -> ImeOpenOutcome {
     // issue #136 / BUG-90 決定4: この関数は `order`/`imm` のみを受け取り
     // `ImeControlView` を持たないため、呼び出し元の分岐（`imm_cross_is_first_
     // applicable`）でこの経路に入らないよう InputRelay は排除されるのが通常
@@ -541,13 +545,7 @@ pub(crate) async fn run_open_chain_async(order: ActuationOrder, imm: ImmCrossOp)
         return ImeOpenOutcome::Failed;
     };
     if is_input_relay {
-        let record = async_record(
-            DecisionSite::RunOpenChainAsync,
-            gate_inputs,
-            &order,
-            [None; MAX_WRITE_MECHANISMS],
-            0,
-        );
+        let record = async_record(site, gate_inputs, &order, [None; MAX_WRITE_MECHANISMS], 0);
         let _ = crate::with_app(|app| {
             app.platform_state
                 .ime
@@ -575,7 +573,7 @@ pub(crate) async fn run_open_chain_async(order: ActuationOrder, imm: ImmCrossOp)
         .run_chain_async(&WriteMechanism::ALL, &mut writer)
         .await;
     let record = async_record(
-        DecisionSite::RunOpenChainAsync,
+        site,
         gate_inputs,
         &order_for_record,
         writer.attempts,

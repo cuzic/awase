@@ -1666,6 +1666,7 @@ impl Runtime {
                     let outcome = crate::runtime::open_chain::run_open_chain_async(
                         order,
                         crate::runtime::open_chain::ImmCrossOp::Untargeted,
+                        crate::state::ime_actuation_decision::DecisionSite::RunOpenChainAsync,
                     )
                     .await;
                     // B+C(ts更新)+D(noop)+E

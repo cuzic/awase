@@ -1304,6 +1304,7 @@ impl Runtime {
                         conv_after_open,
                         focus_gen,
                     },
+                    crate::state::ime_actuation_decision::DecisionSite::RunOpenChainAsync,
                 )
                 .await;
                 tracing::info!("force-on bootstrap: apply_ime_open(true) → {outcome:?}");
