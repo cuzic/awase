@@ -55,6 +55,42 @@ use super::ime_actuation_decision::{DecisionInputs, DecisionSite, MechanismComma
 /// ADR-163 D2: `WriteMechanism::ALL`と同じ最大attempt数。
 pub(crate) const MAX_WRITE_MECHANISMS: usize = 4;
 
+mod nested_optional_bool {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    struct Encoded {
+        recorded: bool,
+        value: Option<bool>,
+    }
+
+    pub(super) fn serialize<S>(
+        value: &Option<Option<bool>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        Encoded {
+            recorded: value.is_some(),
+            value: value.unwrap_or(None),
+        }
+        .serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Option<Option<bool>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = Encoded::deserialize(deserializer)?;
+        Ok(if encoded.recorded {
+            Some(encoded.value)
+        } else {
+            None
+        })
+    }
+}
+
 /// [`EventOrigin`]の出所を、`&'static str`を含まない判別子だけで表したもの
 /// （ADR-163 Part B「`ActuationOrderRecord`の借用問題」節）。
 ///
@@ -128,6 +164,7 @@ pub(crate) struct AttemptRecord {
     /// 「上書きなし」（外側`None`）と「上書き前の値が未知」（`Some(None)`）を
     /// 区別するため、`post_failed_reobservation`と同じ二重`Option`で保持する。
     #[expect(clippy::option_option)]
+    #[serde(with = "nested_optional_bool")]
     pub shadow_on_before_bug113_override: Option<Option<bool>>,
     /// `ActuationOutcome::Failed`後の`read_ime_state_fast()`再観測結果。
     /// 「未取得」（外側`None`）と「取得してfalse」（`Some(Some(false))`）を
@@ -135,6 +172,7 @@ pub(crate) struct AttemptRecord {
     // `runtime/ime_refresh.rs::ir_stage_focus`と同じ理由でネストする
     // `Option`が必須（`clippy::option_option`は意図的に無視する）。
     #[expect(clippy::option_option)]
+    #[serde(with = "nested_optional_bool")]
     pub post_failed_reobservation: Option<Option<bool>>,
 }
 
@@ -406,6 +444,39 @@ mod tests {
             Vec::<String>::new(),
             "手で組み立てた自己無矛盾なレコードは再生で一致するはず"
         );
+    }
+
+    #[test]
+    fn actuation_decision_record_round_trips_via_json() {
+        let gate_inputs = inputs(
+            AppImeProfile::Standard,
+            ImeKindId::Gji,
+            None,
+            InputModeState::Unknown,
+        );
+        let (chain, chain_len) = chain_from_slice(decide_chain(gate_inputs));
+        let record = ActuationDecisionRecord {
+            site: DecisionSite::Sync,
+            gate_inputs,
+            order: order(true),
+            chain,
+            chain_len,
+            attempts: attempts([AttemptRecord {
+                inputs: gate_inputs,
+                with_app_available: true,
+                mechanism: WriteMechanism::GjiDirect,
+                command: Some(MechanismCommand::SendVk(VkCode(0x16))),
+                outcome: ImeOpenOutcome::Applied,
+                shadow_on_before_bug113_override: Some(None),
+                post_failed_reobservation: Some(Some(true)),
+            }])
+            .0,
+            attempts_len: 1,
+        };
+
+        let json = serde_json::to_string(&record).expect("serialize");
+        let back: ActuationDecisionRecord = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(record, back);
     }
 
     #[test]

@@ -296,10 +296,12 @@ pub(crate) struct AttemptRecord {
     pub outcome: ImeOpenOutcome,             // 外部入力として記録、再計算しない
     // BUG-113追補上書き前の`view.control.shadow_on`。外側Noneは「上書きなし」、
     // Some(None)は「上書き前の値が未知」。
+    #[serde(with = "nested_optional_bool")]  // 標準serdeではSome(None)がNoneと同じnullに潰れる
     pub shadow_on_before_bug113_override: Option<Option<bool>>,
     // round2 T3: 「未取得」と「取得してfalse」を区別する（BUG-113と同型の罠を
     // ここで再現しないため）。実体は read_ime_state_fast().ime_on の Option<bool> を
     // そのまま運ぶ。Option<bool> に潰さないこと。
+    #[serde(with = "nested_optional_bool")]
     pub post_failed_reobservation: Option<Option<bool>>,
 }
 ```
