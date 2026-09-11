@@ -52,7 +52,9 @@ pub(crate) enum GateResult {
 /// 本ADRが対象とする4関数+これらが内部で辿る経路を表す。`ImmCrossWrite`は
 /// `runtime/open_chain.rs::imm_cross_write`、`FallbackWrite`は同`fallback_write`、
 /// `RunOpenChainAsync`は同`run_open_chain_async`冒頭のゲート、`DispatchImeSetOpen`は
-/// `runtime/executor.rs::dispatch_ime_set_open`。
+/// `runtime/executor.rs::dispatch_ime_set_open`。`ReassertExplicitPhysicalKey`/
+/// `ForceOnRomajiCorrection`は記録専用ラベルであり、command計算へは使わない
+/// （ADR-163 Part D B1）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum DecisionSite {
     Sync,
@@ -60,6 +62,8 @@ pub(crate) enum DecisionSite {
     FallbackWrite,
     RunOpenChainAsync,
     DispatchImeSetOpen,
+    ReassertExplicitPhysicalKey,
+    ForceOnRomajiCorrection,
 }
 
 /// 1機構分の「何を送るか」の決定結果（実I/Oは含まない）。
@@ -592,6 +596,8 @@ mod tests {
             DecisionSite::FallbackWrite,
             DecisionSite::RunOpenChainAsync,
             DecisionSite::DispatchImeSetOpen,
+            DecisionSite::ReassertExplicitPhysicalKey,
+            DecisionSite::ForceOnRomajiCorrection,
         ] {
             let (_, cmd) = decide_attempt(i, site, WriteMechanism::ImmCross, true);
             assert_eq!(cmd, None, "{site:?}");

@@ -278,7 +278,9 @@ pub(crate) struct ActuationDecisionRecord {
     // InputRelay ゲートは ImeController::apply（Sync）とも run_open_chain_async とも
     // 別の独立した5つ目の入口（両者が独立に同じ判定を持つのがADR-119の経緯そのもの）。
     // Sync に畳むと、executor側のゲートだけを削る回帰が記録上区別できなくなる。
-    pub site: DecisionSite,  // Sync | ImmCrossWrite | FallbackWrite | RunOpenChainAsync | DispatchImeSetOpen
+    pub site: DecisionSite,  // Sync | ImmCrossWrite | FallbackWrite | RunOpenChainAsync |
+                             // DispatchImeSetOpen | ReassertExplicitPhysicalKey |
+                             // ForceOnRomajiCorrection
     pub gate_inputs: DecisionInputs,
     pub order: ActuationOrderRecord,
     pub chain: [Option<WriteMechanism>; 4],
