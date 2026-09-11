@@ -12,6 +12,23 @@ awase の再発バグ（fc18cc7 / 109b4c9 / 1544d3f / ea3da7f 等）の多くは
 
 将来的に他の純粋関数（`classify_idle`, `classify_fetched_snapshot` 等）にも同様の仕組みを広げられる。
 
+## ActuationDecision コーパスの扱い
+
+ADR-163 Part D で `JournalEntry::ActuationDecision` として集める
+`tests/journals/actuation_decision/` のレコードは、上の `ConvClassifyFixture` と違い
+correctness corpus ではなく characterization corpus として扱う。凍結時点の実機で
+実際に選ばれた chain/attempt/command/outcome をそのまま残し、「あるべき出力」へ手で
+書き換えない。
+
+用途は2つに限る。1つ目は、人間が bug report を読んで「どの入口で、どの mechanism と
+command が選ばれ、実 I/O がどの outcome を返したか」を見る根本原因特定である。2つ目は、
+TH1e 以降のリファクタで、変更前コードが記録した送信列と変更後コードの再生結果がゼロ差分
+であることを機械的に確認することである。この用途では記録値そのものの正しさは仮定しない。
+
+`DecisionSite::ImmCrossWrite`、`RunOpenChainAsync`、`DispatchImeSetOpen` の ImmCross attempt は、
+TH1e で非同期 ImmCross 側の決定再計算が統合されるまで、自動差分証明の対象外である。
+それでも、診断材料としては収集開始時点から有効なので、実機ダンプには含める。
+
 ## 仕組み
 
 1. `journal.rs::JournalEntry::ConvClassifyCall` — `classify_conv_transition` の実引数と戻り値を構造化して記録する専用エントリ。`kp_stage_idle_conv_check`（`runtime/key_pipeline.rs`）が呼び出しのたびに記録する。
