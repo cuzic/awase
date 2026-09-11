@@ -40,6 +40,10 @@
 //!   （その統合はTH1eのスコープ）。このためこの組合せの`AttemptRecord`は
 //!   記録済み`command`をそのまま信用し、再計算による一致確認はスキップする
 //!   （[`tests::replay_record`]のコメント参照）。
+//! - **`ImmCrossWrite`/`RunOpenChainAsync`/`DispatchImeSetOpen`のImmCross
+//!   attemptはTH1e完了まで自動差分証明の対象外**。これらは記録済み
+//!   `command`を人間の診断材料として保持するが、現時点の再生ハーネスでは
+//!   command再計算による一致確認を行わない。
 
 use awase::platform::ImeOpenOutcome;
 use std::mem::size_of;

@@ -395,6 +395,7 @@ pub enum JournalEntry {
     ClockAnchor { tick_ms: u64, hook_us: u64 },
     /// 添付用 capped JSON が古い entry を落としたことを示す合成ヘッダ。
     DumpTruncated {
+        app_version: &'static str,
         budget_bytes: usize,
         total_entries: usize,
         emitted_entries: usize,
@@ -964,6 +965,7 @@ impl JournalEntry {
                 );
             }
             Self::DumpTruncated {
+                app_version,
                 budget_bytes,
                 total_entries,
                 emitted_entries,
@@ -976,6 +978,7 @@ impl JournalEntry {
                     target: "awase::journal",
                     seq,
                     elapsed_ms,
+                    app_version = *app_version,
                     budget_bytes,
                     total_entries,
                     emitted_entries,
@@ -1343,6 +1346,7 @@ fn truncation_header_json(
         seq,
         elapsed_ms: 0,
         entry: JournalEntry::DumpTruncated {
+            app_version: env!("CARGO_PKG_VERSION"),
             budget_bytes,
             total_entries,
             emitted_entries,
@@ -1635,6 +1639,9 @@ mod tests {
         assert!(values
             .first()
             .is_some_and(|v| v["entry"]["type"] == "DumpTruncated"));
+        assert!(values
+            .first()
+            .is_some_and(|v| v["entry"]["app_version"] == env!("CARGO_PKG_VERSION")));
     }
 
     #[test]

@@ -506,9 +506,9 @@ ImmCrossのattemptは再生で`continue`（skip）される（TH1eのスコー�
 （「母集団Nを増やせるから含めたい」）を優先し、**収集はTH1eの完了を待たずに今から
 始める**：
 
-- 各`ActuationDecisionRecord`に`app_version`（バイナリのバージョン）を必須フィールド
-  として持たせる（S3対応）。TH1eが着地した時点で、それ以前に集まった非同期ImmCross
-  レコードを遡って再生できるようにするため。
+- `ActuationDecisionRecord`ごとの`app_version: String`は持たせない。バージョンは
+  journal dumpの`DumpTruncated`ヘッダに1回だけ持たせる（B4対応）。TH1eが着地した
+  時点で、それ以前に集まった非同期ImmCrossレコードを遡って再生できるようにするため。
 - 「非同期ImmCross系のattemptはTH1e完了まで決定D3用途2（自動差分証明）の対象外だが、
   用途1（人間による根本原因特定）では収集開始時点から有効」という限定を本ADRと
   `docs/journal-replay-guide.md`相当のガイドに明記する。
