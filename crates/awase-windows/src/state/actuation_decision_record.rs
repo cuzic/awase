@@ -116,6 +116,11 @@ pub(crate) struct AttemptRecord {
     pub command: Option<MechanismCommand>,
     /// 実`ImeOpenOutcome`。外部入力として記録し、再計算しない。
     pub outcome: ImeOpenOutcome,
+    /// BUG-113追補で`view.control.shadow_on = None`へ上書きする直前の値。
+    /// 「上書きなし」（外側`None`）と「上書き前の値が未知」（`Some(None)`）を
+    /// 区別するため、`post_failed_reobservation`と同じ二重`Option`で保持する。
+    #[expect(clippy::option_option)]
+    pub shadow_on_before_bug113_override: Option<Option<bool>>,
     /// `ActuationOutcome::Failed`後の`read_ime_state_fast()`再観測結果。
     /// 「未取得」（外側`None`）と「取得してfalse」（`Some(Some(false))`）を
     /// 区別する（BUG-113と同型の罠、round2 T3。`Option<bool>`に潰さないこと）。
@@ -238,6 +243,16 @@ mod tests {
         }
 
         for (i, attempt) in record.attempts.iter().enumerate() {
+            if let Some(before_override) = attempt.shadow_on_before_bug113_override {
+                if before_override != attempt.inputs.shadow_on {
+                    failures.push(format!(
+                        "attempt[{i}] shadow_on_before_bug113_override mismatch: \
+                         recorded before-override value {before_override:?} \
+                         != attempt.inputs.shadow_on {:?}",
+                        attempt.inputs.shadow_on
+                    ));
+                }
+            }
             if attempt.mechanism == WriteMechanism::ImmCross && record.site != DecisionSite::Sync {
                 // モジュールdoc「スコープ外」節参照: この組合せはdecide_attemptの
                 // 責務外（常にNoneを返す設計）であり、再計算による一致確認は
@@ -312,6 +327,7 @@ mod tests {
                 )
                 .1,
                 outcome: ImeOpenOutcome::Applied,
+                shadow_on_before_bug113_override: None,
                 post_failed_reobservation: None,
             }],
         };
@@ -360,12 +376,49 @@ mod tests {
                 // 意図的に誤った記録値（本来はNoneのはず）。
                 command: Some(MechanismCommand::SendVk(VkCode(0x16))),
                 outcome: ImeOpenOutcome::Applied,
+                shadow_on_before_bug113_override: None,
                 post_failed_reobservation: None,
             }],
         };
         assert!(
             !replay_record(&record).is_empty(),
             "改ざんしたcommandはreplay_recordが不一致として検出するはず"
+        );
+    }
+
+    #[test]
+    fn replay_detects_a_tampered_bug113_before_override_value() {
+        let gate_inputs = inputs(
+            AppImeProfile::Standard,
+            ImeKindId::Gji,
+            Some(true),
+            InputModeState::Unknown,
+        );
+        let record = ActuationDecisionRecord {
+            site: DecisionSite::FallbackWrite,
+            gate_inputs,
+            order: order(true),
+            chain: WriteMechanism::ALL.to_vec(),
+            attempts: vec![AttemptRecord {
+                inputs: gate_inputs,
+                with_app_available: true,
+                mechanism: WriteMechanism::GjiDirect,
+                command: decide_attempt(
+                    gate_inputs,
+                    DecisionSite::FallbackWrite,
+                    WriteMechanism::GjiDirect,
+                    true,
+                )
+                .1,
+                outcome: ImeOpenOutcome::Applied,
+                // 意図的に誤った記録値（attempt.inputs.shadow_onはSome(true)）。
+                shadow_on_before_bug113_override: Some(Some(false)),
+                post_failed_reobservation: None,
+            }],
+        };
+        assert!(
+            !replay_record(&record).is_empty(),
+            "改ざんしたBUG-113上書き前値はreplay_recordが不一致として検出するはず"
         );
     }
 
@@ -393,6 +446,7 @@ mod tests {
                     conv_after_open: ConvAfterOpenId::Write(None),
                 }),
                 outcome: ImeOpenOutcome::Applied,
+                shadow_on_before_bug113_override: None,
                 post_failed_reobservation: None,
             }],
         };

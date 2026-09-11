@@ -265,7 +265,7 @@ round1 M3指摘: `fallback_write`（`open_chain.rs:299-348`）は機構ごとに
   `Failed`を分ける追加観測（`open_chain.rs:228-248`）
 - `view.control.shadow_on`へのBUG-113追補上書き（`open_chain.rs:329`、決定入力の
   改変であり決定そのものではない——記録は上書き後の値でよいが、上書きが発生した
-  事実自体は別フィールドで残す）
+  事実自体と上書き前の値は別フィールドで残す）
 - 使用したchain。**sync/asyncで再生時の扱いを変える**（round2 T2）: asyncは
   `WriteMechanism::ALL`固定（ADR-159の理由により変更しない）なので記録値をそのまま
   使う。**syncは記録値をそのまま信用せず、再生時に`decide_chain(inputs)`で
@@ -289,6 +289,9 @@ pub(crate) struct AttemptRecord {
     pub mechanism: WriteMechanism,
     pub command: Option<MechanismCommand>,  // None = already-matched で送信せず
     pub outcome: ImeOpenOutcome,             // 外部入力として記録、再計算しない
+    // BUG-113追補上書き前の`view.control.shadow_on`。外側Noneは「上書きなし」、
+    // Some(None)は「上書き前の値が未知」。
+    pub shadow_on_before_bug113_override: Option<Option<bool>>,
     // round2 T3: 「未取得」と「取得してfalse」を区別する（BUG-113と同型の罠を
     // ここで再現しないため）。実体は read_ime_state_fast().ime_on の Option<bool> を
     // そのまま運ぶ。Option<bool> に潰さないこと。
