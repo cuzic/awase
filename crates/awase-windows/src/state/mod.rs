@@ -91,12 +91,11 @@ pub mod conv_after_open;
 // ADR-163 TH1b-1: IME actuation の「何を送るか」を Win32 I/O から切り離した
 // 純粋決定関数。まだどこからも呼ばれない追加のみのモジュールで、配線は別タスク。
 #[allow(dead_code)]
-pub(crate) mod ime_actuation_decision;
+pub mod ime_actuation_decision;
 // ADR-163 Part B（TH1c）: attempt単位の決定点ジャーナルスキーマとcrate内
 // 再生ハーネス。ime_actuation_decisionと同じ「追加のみ、本番経路への配線は
 // 別タスク（TH1d/TH1e）」のモジュール。
-#[cfg(test)]
-pub(crate) mod actuation_decision_record;
+pub mod actuation_decision_record;
 // ADR-089 §2.1/§2.2: open 観測の evidence 型（プール分離 + データ witness）。
 pub mod evidence;
 pub mod force_guard;

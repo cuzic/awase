@@ -29,7 +29,7 @@ use crate::state::key_sequence_policy::{self, ImeOperation, KeyMechanism};
 /// （ADR-163 round2 T5）。windows側に`impl From<&ImeControlView<'_>> for
 /// DecisionInputs`を後で追加し、そこから本モジュールの関数を呼ぶ。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct DecisionInputs {
+pub struct DecisionInputs {
     pub profile: AppImeProfile,
     pub kind: ImeKindId,
     /// `ControlLog.shadow_on`。`None` = 未知（BUG-113: `bool`に潰さないこと）。
@@ -56,7 +56,7 @@ pub(crate) enum GateResult {
 /// `ForceOnRomajiCorrection`は記録専用ラベルであり、command計算へは使わない
 /// （ADR-163 Part D B1）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum DecisionSite {
+pub enum DecisionSite {
     Sync,
     ImmCrossWrite,
     FallbackWrite,
@@ -68,7 +68,7 @@ pub(crate) enum DecisionSite {
 
 /// 1機構分の「何を送るか」の決定結果（実I/Oは含まない）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum MechanismCommand {
+pub enum MechanismCommand {
     /// 同期`ImmCrossProcessStrategy::apply`が呼ぶ`set_ime_open_cross_process(open)`相当。
     SetOpenCrossProcessSync(bool),
     /// 非同期・宛先未捕獲の`set_ime_open_cross_process_async(open)`相当

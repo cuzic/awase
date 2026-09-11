@@ -53,7 +53,7 @@ use super::event_origin::{EventOrigin, EventSource, Generation};
 use super::ime_actuation_decision::{DecisionInputs, DecisionSite, MechanismCommand};
 
 /// ADR-163 D2: `WriteMechanism::ALL`と同じ最大attempt数。
-pub(crate) const MAX_WRITE_MECHANISMS: usize = 4;
+pub const MAX_WRITE_MECHANISMS: usize = 4;
 
 mod nested_optional_bool {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -64,6 +64,11 @@ mod nested_optional_bool {
         value: Option<bool>,
     }
 
+    #[allow(
+        clippy::option_option,
+        clippy::ref_option,
+        clippy::trivially_copy_pass_by_ref
+    )]
     pub(super) fn serialize<S>(
         value: &Option<Option<bool>>,
         serializer: S,
@@ -78,6 +83,7 @@ mod nested_optional_bool {
         .serialize(serializer)
     }
 
+    #[allow(clippy::option_option)]
     pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<Option<Option<bool>>, D::Error>
     where
         D: Deserializer<'de>,
@@ -102,7 +108,7 @@ mod nested_optional_bool {
 /// 注入理由や戦略名の文字列そのものではない
 /// （`state::ime_actuation::ActuationRecord`の回避策と同型）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) enum EventSourceKind {
+pub enum EventSourceKind {
     Physical,
     Injected,
     SelfActuated,
@@ -120,7 +126,7 @@ impl From<EventSource> for EventSourceKind {
 
 /// [`EventOrigin`]のfixture専用ミラー（`&'static str`を含まないためDeserialize可能）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct EventOriginRecord {
+pub struct EventOriginRecord {
     pub source: EventSourceKind,
     pub epoch: Generation,
 }
@@ -139,7 +145,7 @@ impl From<EventOrigin> for EventOriginRecord {
 /// 導出できないため、公開アクセサ（`open()`/`would_have_blocked()`/`origin()`）
 /// が返す値だけをここに集める。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct ActuationOrderRecord {
+pub struct ActuationOrderRecord {
     pub open: bool,
     /// A-1 shadow authorization の測定値（`log_shadow_warrant`が使う値と同一）。
     pub would_have_blocked: bool,
@@ -149,7 +155,7 @@ pub(crate) struct ActuationOrderRecord {
 /// 1機構への1回のwrite判断の記録（ADR-163 Part B「スキーマはsite単位ではなく
 /// attempt単位」節）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct AttemptRecord {
+pub struct AttemptRecord {
     /// このattempt時点で再サンプリングされた決定入力。
     pub inputs: DecisionInputs,
     /// `with_app(...).unwrap_or(false)`のfail-open結果（決定ロジックからは
@@ -163,7 +169,6 @@ pub(crate) struct AttemptRecord {
     /// BUG-113追補で`view.control.shadow_on = None`へ上書きする直前の値。
     /// 「上書きなし」（外側`None`）と「上書き前の値が未知」（`Some(None)`）を
     /// 区別するため、`post_failed_reobservation`と同じ二重`Option`で保持する。
-    #[expect(clippy::option_option)]
     #[serde(with = "nested_optional_bool")]
     pub shadow_on_before_bug113_override: Option<Option<bool>>,
     /// `ActuationOutcome::Failed`後の`read_ime_state_fast()`再観測結果。
@@ -171,7 +176,6 @@ pub(crate) struct AttemptRecord {
     /// 区別する（BUG-113と同型の罠、round2 T3。`Option<bool>`に潰さないこと）。
     // `runtime/ime_refresh.rs::ir_stage_focus`と同じ理由でネストする
     // `Option`が必須（`clippy::option_option`は意図的に無視する）。
-    #[expect(clippy::option_option)]
     #[serde(with = "nested_optional_bool")]
     pub post_failed_reobservation: Option<Option<bool>>,
 }
@@ -179,7 +183,7 @@ pub(crate) struct AttemptRecord {
 /// actuation合流点1呼び出し分の決定点ジャーナルレコード
 /// （ADR-163 Part B、`ActuationDecisionRecord`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct ActuationDecisionRecord {
+pub struct ActuationDecisionRecord {
     pub site: DecisionSite,
     /// `decide_gate`/`decide_chain`（siteがSyncの場合のみ再導出、round2 T2）を
     /// 評価する際に使った決定入力。sync経路では全attemptがこのviewを共有する
