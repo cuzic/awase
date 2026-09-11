@@ -35,8 +35,9 @@
 use awase::platform::ImeOpenOutcome;
 
 use crate::state::actuation_chain::{
-    needs_romaji_pre_write, ActuationOrder, MechanismWriter, VerifiedTarget, WriteMechanism,
+    ActuationOrder, MechanismWriter, VerifiedTarget, WriteMechanism,
 };
+use crate::state::ime_actuation_decision::decide_needs_romaji_pre_write;
 use crate::state::ime_decision_view::ImeControlView;
 use crate::state::key_sequence_policy;
 use crate::tsf::observer::ActiveImeKind;
@@ -383,7 +384,7 @@ pub(crate) fn apply_mechanism(
 /// | 宛先 | `set_ime_romaji_mode()` が write 時点にライブクエリで**自己決定** | 起案時に捕獲した [`crate::ime::ActuationTarget`] |
 /// | 世代照合 | 無し | 型としては `view.focus.focus_gen` と照合し不一致なら `Aborted`。**ただし現在の呼び出し方では常に一致する**（下記） |
 /// | 結果 | `let _ =` で握り潰し | `Written` 以外は必ずログに残す（INV-14） |
-/// | 発火条件 | 2 戦略に別々に書かれた（Linux から検査不能） | `needs_romaji_pre_write`（ungated、全数テスト済み） |
+/// | 発火条件 | 2 戦略に別々に書かれた（Linux から検査不能） | `decide_needs_romaji_pre_write`（ungated、全数テスト済み） |
 ///
 /// # 世代照合は現状では恒真である（ADR-089 §9-22）
 ///
@@ -425,7 +426,7 @@ pub(crate) fn apply_mechanism(
 /// ただし **Phase C 以前から同じ挙動**であり、Phase C が作り込んだ
 /// 回帰ではない。
 fn romaji_pre_write(mechanism: WriteMechanism, open: bool, view: &ImeControlView<'_>) {
-    if !needs_romaji_pre_write(
+    if !decide_needs_romaji_pre_write(
         mechanism,
         open,
         view.observed.active_ime_kind.into(),

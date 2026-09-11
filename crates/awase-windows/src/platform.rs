@@ -446,16 +446,16 @@ impl WindowsPlatform {
             }
         );
         self.consume_literal_detect_trace(result.literal_detect, terminal_timer);
-        let notable =
-            crate::journal_policy::probe_tick_is_notable(crate::journal_policy::ProbeTickFacts {
-                state_changed: state_before_step != state_after_step,
-                needs_composition_reset: result.needs_gji_composition_reset,
-                has_gji_response: result.gji_response.is_some(),
-                learned_tsf: result.learned_tsf,
-                completed: result.completed_cold_seq.is_some(),
-                terminal_timer,
-                is_first_tick: self.probe_tick_index == 1,
-            });
+        let notable = crate::journal_policy::ProbeTickFacts {
+            state_changed: state_before_step != state_after_step,
+            needs_composition_reset: result.needs_gji_composition_reset,
+            has_gji_response: result.gji_response.is_some(),
+            learned_tsf: result.learned_tsf,
+            completed: result.completed_cold_seq.is_some(),
+            terminal_timer,
+            is_first_tick: self.probe_tick_index == 1,
+        }
+        .is_notable();
         if notable {
             let suppressed = self.suppressed_probe_ticks;
             self.suppressed_probe_ticks = 0;

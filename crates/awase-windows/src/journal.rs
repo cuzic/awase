@@ -16,11 +16,10 @@ pub use crate::journal_policy::LaneKind;
 use crate::journal_policy::{select_tail_within_budget, BudgetItem};
 
 pub const DEFAULT_CAPACITY: usize = 2048;
-pub const STATE_LANE_CAPACITY: usize = crate::journal_policy::lane_capacity(LaneKind::State);
-pub const TIMING_LANE_CAPACITY: usize = crate::journal_policy::lane_capacity(LaneKind::Timing);
-pub const ACTUATION_LANE_CAPACITY: usize =
-    crate::journal_policy::lane_capacity(LaneKind::Actuation);
-pub const KEY_INPUT_LANE_CAPACITY: usize = crate::journal_policy::lane_capacity(LaneKind::KeyInput);
+pub const STATE_LANE_CAPACITY: usize = LaneKind::State.capacity();
+pub const TIMING_LANE_CAPACITY: usize = LaneKind::Timing.capacity();
+pub const ACTUATION_LANE_CAPACITY: usize = LaneKind::Actuation.capacity();
+pub const KEY_INPUT_LANE_CAPACITY: usize = LaneKind::KeyInput.capacity();
 
 const TRIGGER_WINDOW: Duration = Duration::from_secs(3);
 
@@ -1698,7 +1697,7 @@ mod tests {
     #[test]
     fn ime_actuation_entry_serializes_structured_origin() {
         use crate::state::event_origin::Generation;
-        use crate::state::ime_actuation::{actuation_origin, ActuationRecord, FeedbackPolicy};
+        use crate::state::ime_actuation::{ActuationRecord, FeedbackPolicy};
 
         let policy = FeedbackPolicy::Blind {
             max_attempts: 5,
@@ -1707,12 +1706,7 @@ mod tests {
         let (mut j, _mock) = mock_journal();
         // attempts=2 < max_attempts=5 なので action は Send に導出される。
         j.record(JournalEntry::ImeActuation {
-            record: ActuationRecord::new(
-                actuation_origin(policy, Generation::new(2)),
-                false,
-                policy,
-                2,
-            ),
+            record: ActuationRecord::new(policy.origin(Generation::new(2)), false, policy, 2),
         });
         let json = j.to_json().unwrap();
         // 自由文字列ではなく構造化された出所・世代・判定が型として書き出される。

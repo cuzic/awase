@@ -9,11 +9,13 @@ pub enum LaneKind {
     KeyInput,
 }
 
-#[must_use]
-pub const fn lane_capacity(lane: LaneKind) -> usize {
-    match lane {
-        LaneKind::State => 1024,
-        LaneKind::Timing | LaneKind::Actuation | LaneKind::KeyInput => 512,
+impl LaneKind {
+    #[must_use]
+    pub const fn capacity(self) -> usize {
+        match self {
+            Self::State => 1024,
+            Self::Timing | Self::Actuation | Self::KeyInput => 512,
+        }
     }
 }
 
@@ -35,15 +37,17 @@ pub struct ProbeTickFacts {
     pub is_first_tick: bool,
 }
 
-#[must_use]
-pub const fn probe_tick_is_notable(f: ProbeTickFacts) -> bool {
-    f.state_changed
-        || f.needs_composition_reset
-        || f.has_gji_response
-        || f.learned_tsf
-        || f.completed
-        || f.terminal_timer
-        || f.is_first_tick
+impl ProbeTickFacts {
+    #[must_use]
+    pub const fn is_notable(self) -> bool {
+        self.state_changed
+            || self.needs_composition_reset
+            || self.has_gji_response
+            || self.learned_tsf
+            || self.completed
+            || self.terminal_timer
+            || self.is_first_tick
+    }
 }
 
 #[must_use]
@@ -246,35 +250,42 @@ mod tests {
 
     #[test]
     fn probe_tick_is_notable_for_each_fact() {
-        assert!(!probe_tick_is_notable(ProbeTickFacts::default()));
-        assert!(probe_tick_is_notable(ProbeTickFacts {
+        assert!(!ProbeTickFacts::default().is_notable());
+        assert!(ProbeTickFacts {
             state_changed: true,
             ..ProbeTickFacts::default()
-        }));
-        assert!(probe_tick_is_notable(ProbeTickFacts {
+        }
+        .is_notable());
+        assert!(ProbeTickFacts {
             needs_composition_reset: true,
             ..ProbeTickFacts::default()
-        }));
-        assert!(probe_tick_is_notable(ProbeTickFacts {
+        }
+        .is_notable());
+        assert!(ProbeTickFacts {
             has_gji_response: true,
             ..ProbeTickFacts::default()
-        }));
-        assert!(probe_tick_is_notable(ProbeTickFacts {
+        }
+        .is_notable());
+        assert!(ProbeTickFacts {
             learned_tsf: true,
             ..ProbeTickFacts::default()
-        }));
-        assert!(probe_tick_is_notable(ProbeTickFacts {
+        }
+        .is_notable());
+        assert!(ProbeTickFacts {
             completed: true,
             ..ProbeTickFacts::default()
-        }));
-        assert!(probe_tick_is_notable(ProbeTickFacts {
+        }
+        .is_notable());
+        assert!(ProbeTickFacts {
             terminal_timer: true,
             ..ProbeTickFacts::default()
-        }));
-        assert!(probe_tick_is_notable(ProbeTickFacts {
+        }
+        .is_notable());
+        assert!(ProbeTickFacts {
             is_first_tick: true,
             ..ProbeTickFacts::default()
-        }));
+        }
+        .is_notable());
     }
 
     #[test]

@@ -22,8 +22,9 @@ pub(crate) mod probe_io;
 mod resolve;
 mod tsf_warmup_coord;
 mod vk_send;
-/// IME open 状態の観測値を適用時ビリーフへ純粋還元する data-model。
-pub(crate) use ime_apply_planner::{reduce_open_belief, OpenBelief, OpenBeliefInputs};
+/// IME open 状態の観測値を適用時ビリーフへ純粋還元する data-model
+/// （`OpenBeliefInputs::reduce`）。
+pub(crate) use ime_apply_planner::{OpenBelief, OpenBeliefInputs};
 use resolve::special_key_to_vk;
 pub(crate) use tsf_warmup_coord::TsfWarmupCoordinator;
 

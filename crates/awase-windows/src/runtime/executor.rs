@@ -54,31 +54,52 @@ pub(crate) struct BatchResult {
     pub sync_outcomes: Vec<ImeApplyPair>,
 }
 
-/// 実 actuation の 1 件を起案する（ADR-090 §2.A A-1、INV-47）。
-///
-/// `DecisionExecutor` は `Runtime` を持たないため
-/// `Runtime::issue_actuation_order` を使えないが、4 つの公開入口
-/// （`execute_from_hook` / `execute_from_loop` / `drain_deferred` /
-/// `on_output_guard_timer`）が**既に `ime: &ImeStateHub` を受け取っている**ので、
-/// それを `dispatch_ime_set_open` まで通すだけで warrant を発行できる。
-///
-/// **`crate::with_app` で `ImeStateHub` を取りに行ってはならない**——ここは
-/// 既に `with_app` の内側であり、再入すると panic せず `None` が返る。
-/// つまり「取れなかった」ことと「授権が下りなかった」が区別できない形で
-/// 静かに落ち、A-1 の shadow ログが測ろうとしている当のものが汚染される
-/// （ADR-090 §2.A.2(1)・§4.2）。
-fn issue_order(
-    ime: &ImeStateHub,
-    open: bool,
-    strategy: &'static str,
-) -> crate::state::actuation_chain::ActuationOrder {
-    let origin = crate::state::event_origin::EventOrigin::new(
-        crate::state::event_origin::EventSource::SelfActuated { strategy },
-        crate::state::event_origin::Generation::INITIAL,
-    );
-    let now = std::time::Instant::now();
-    let now_ms = crate::state::TickMs(crate::hook::current_tick_ms());
-    ime.issue_actuation_order(open, origin, now, now_ms)
+impl ImeStateHub {
+    /// 実 actuation の 1 件を起案する（ADR-090 §2.A A-1、INV-47）。
+    ///
+    /// `DecisionExecutor` は `Runtime` を持たないため
+    /// [`Runtime::issue_actuation_order`](super::Runtime::issue_actuation_order) を
+    /// 使えないが、4 つの公開入口（`execute_from_hook` / `execute_from_loop` /
+    /// `drain_deferred` / `on_output_guard_timer`）が**既に `ime: &ImeStateHub` を
+    /// 受け取っている**ので、それを `dispatch_ime_set_open` まで通すだけで
+    /// warrant を発行できる。
+    ///
+    /// **`crate::with_app` で `ImeStateHub` を取りに行ってはならない**——ここは
+    /// 既に `with_app` の内側であり、再入すると panic せず `None` が返る。
+    /// つまり「取れなかった」ことと「授権が下りなかった」が区別できない形で
+    /// 静かに落ち、A-1 の shadow ログが測ろうとしている当のものが汚染される
+    /// （ADR-090 §2.A.2(1)・§4.2）。
+    ///
+    /// # 似た名前のメソッドとの違い（意図的に区別すること）
+    ///
+    /// - [`Self::issue_actuation_order`]（`state/platform_state.rs`）: 最下層。
+    ///   `origin`/`now`/`now_ms` を呼び出し元が組み立てて渡す。本メソッドの
+    ///   実装はこれをそのまま呼ぶ。
+    /// - [`Runtime::issue_actuation_order`](super::Runtime::issue_actuation_order) /
+    ///   [`Runtime::issue_actuation_order_with_origin`](super::Runtime::issue_actuation_order_with_origin)
+    ///   （`runtime/mod.rs`）: `Runtime` を持つ呼び出し元向けの同型の便利メソッド。
+    ///   本メソッドはそれの `ImeStateHub` 版（`Runtime` を持たない
+    ///   `DecisionExecutor` 用）であり、**ロジックは意図的に重複している**
+    ///   （統合すると `DecisionExecutor` に `Runtime` 依存を持ち込むことになり、
+    ///   上記のとおりそれ自体が本メソッドの存在理由を壊す）。
+    ///
+    /// 2026-09-10、自由関数`issue_order`からメソッドへ変更した際、`Runtime::
+    /// issue_actuation_order`と紛らわしいと指摘を受け`issue_self_actuation_order`
+    /// にリネームした（常に`EventSource::SelfActuated`を組み立てることを名前に
+    /// 反映）。挙動は変更していない。
+    fn issue_self_actuation_order(
+        &self,
+        open: bool,
+        strategy: &'static str,
+    ) -> crate::state::actuation_chain::ActuationOrder {
+        let origin = crate::state::event_origin::EventOrigin::new(
+            crate::state::event_origin::EventSource::SelfActuated { strategy },
+            crate::state::event_origin::Generation::INITIAL,
+        );
+        let now = std::time::Instant::now();
+        let now_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+        self.issue_actuation_order(open, origin, now, now_ms)
+    }
 }
 
 pub(crate) struct DecisionExecutor {
@@ -840,7 +861,7 @@ impl DecisionExecutor {
             // ADR-090 §2.A A-1（shadow）: 起案は spawn_local の**外**で行う
             // ——future の中では `with_app` 再入で `ImeStateHub` に届かない
             // （ADR-090 §4.2）。
-            let order = issue_order(ime, open, "engine_decision_async");
+            let order = ime.issue_self_actuation_order(open, "engine_decision_async");
             let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
             // ADR-086 §1.2 欠陥1 是正（opus レビュー指摘 2026-08-08）: 「open と
             // 同じウィンドウへ ROMAN ビットを補完する」という意図を、open/conv を
@@ -919,7 +940,7 @@ impl DecisionExecutor {
             // その打鍵の IME open/close 判定そのものが Win32 往復の後ろに回る。
             //
             // この read の唯一の消費先は belief_inputs.conv_mode →
-            // reduce_open_belief → belief.effective_open/confident だが、
+            // OpenBeliefInputs::reduce → belief.effective_open/confident だが、
             // apply_ime_open_with_view (platform.rs) は belief を tracing::debug! に
             // 渡すだけで、実行本体 ImeController::apply(order, view) は belief
             // 引数を受け取っていない（読んだ値は最終的にログ2行にしか影響しない）。
@@ -956,7 +977,7 @@ impl DecisionExecutor {
                 can_imm32_cross_process: view.focus.profile.can_use_imm32_cross_process(),
                 now_ms,
             };
-            let belief = crate::output::reduce_open_belief(&belief_inputs, open);
+            let belief = belief_inputs.reduce(open);
             tracing::debug!(
                 "[dispatch-ime] belief: effective={} confident={} conv={:?} (profile={:?})",
                 belief.effective_open,
@@ -965,7 +986,7 @@ impl DecisionExecutor {
                 view.focus.profile
             );
             // ADR-090 §2.A A-1（shadow）。
-            let order = issue_order(ime, open, "engine_decision_sync");
+            let order = ime.issue_self_actuation_order(open, "engine_decision_sync");
             let outcome = platform.apply_ime_open_with_view(order, &view, belief);
             if outcome == awase::platform::ImeOpenOutcome::Failed {
                 tracing::warn!("apply_ime_open({open}) failed");
@@ -1006,13 +1027,13 @@ impl DecisionExecutor {
     }
 }
 
-/// `reduce_open_belief` および `AppliedImeState` の unit tests。
+/// `OpenBeliefInputs::reduce` および `AppliedImeState` の unit tests。
 ///
 /// `awase-windows` クレートは `#![cfg(windows)]` で囲まれているため
 /// Windows 実機でのみ実行される。
 #[cfg(test)]
 mod tests {
-    use crate::output::{reduce_open_belief, OpenBeliefInputs};
+    use crate::output::OpenBeliefInputs;
     use crate::state::AppliedImeState;
 
     /// Chrome 相当の設定（can_imm32=false, gji=false, EngineIntent）で confident を返すヘルパー。
@@ -1033,7 +1054,7 @@ mod tests {
             can_imm32_cross_process: false,
             now_ms,
         };
-        reduce_open_belief(&inputs, desired).confident
+        inputs.reduce(desired).confident
     }
 
     // 6-C ケース 1: フォーカス直後 (Unknown) → confident=false（必ず apply）
@@ -1127,7 +1148,7 @@ mod tests {
             can_imm32_cross_process: true,
             now_ms: 1000,
         };
-        assert!(reduce_open_belief(&inputs, false).confident);
+        assert!(inputs.reduce(false).confident);
     }
 
     // ケース 7: GJI 健全 → confident
@@ -1143,7 +1164,7 @@ mod tests {
             can_imm32_cross_process: false,
             now_ms: 1000,
         };
-        assert!(reduce_open_belief(&inputs, false).confident);
+        assert!(inputs.reduce(false).confident);
     }
 
     // （旧ケース 8「EngineIntent でない → confident」は 2026-07-06 到達不能パス監査

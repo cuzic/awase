@@ -266,11 +266,11 @@ impl ProbeIo for Output {
                                 cold_seq = cold_seq.value(),
                             );
                             crate::with_app(|runtime| {
-                                if !refresh_ime_mode_if_focus_matches(
-                                    &runtime.platform.output,
-                                    focus_gen,
-                                    conv,
-                                ) {
+                                if !runtime
+                                    .platform
+                                    .output
+                                    .refresh_ime_mode_if_focus_matches(focus_gen, conv)
+                                {
                                     return GjiReinitPollStatus::Stale;
                                 }
                                 // Hiragana 確認済みならポーリング終了
@@ -362,27 +362,6 @@ fn fmt_conv(conv: Option<u32>) -> String {
     conv.map_or_else(|| "none".to_owned(), |v| format!("0x{v:08X}"))
 }
 
-/// `send_chrome_gji_reinit_and_poll` / `Output::start_ms_ime_ready_poll` の
-/// `with_app` クロージャ内で1 tickごとに独立してコピーされていた「focus_gen
-/// 照合 → 不一致なら stale → `update_ime_mode_from_imc(conv)` で IMC を反映」を
-/// 共通化する。この2行より外側（ループの周期・終了条件・give-up latch・
-/// write_bytes 観測ログ・完了通知の有無）は両者で意味が異なるため、あえて
-/// 呼び出し元にそのまま残す（無理に1つのポーリングループへ統合しない）。
-///
-/// `false`（focus_gen不一致）なら呼び出し元は自分の stale 値を返すこと。
-/// `true`なら`update_ime_mode_from_imc`済みなので、続けて終端判定を行える。
-fn refresh_ime_mode_if_focus_matches(
-    output: &Output,
-    expected_focus_gen: u32,
-    conv: Option<u32>,
-) -> bool {
-    if output.ime_mode_focus_gen.get() != expected_focus_gen {
-        return false;
-    }
-    output.update_ime_mode_from_imc(conv);
-    true
-}
-
 /// `gji_reinit_poll_tick_outcome` が確定させうる終端状態。`GjiReinitPollStatus`
 /// のうち `Timeout` は「まだ確定しない」を表す非終端値なのでここには含まれない
 /// ——コードレビュー指摘(simplify角度): 以前は `Break(GjiReinitPollStatus)` と
@@ -440,35 +419,62 @@ enum MsImePollStatus {
     Stale,
 }
 
-/// [`Output::start_ms_ime_ready_poll`] の期限判定（ADR-140 Step1b 指摘S1対応）。
-///
-/// conv を読めた・読めなかった（GJI actuation フェンスで abandon した）に
-/// 関わらず、**このループが必ず終了する**ことを保証するために、conv の
-/// 有無と無関係に毎tick呼べる形で分離した。呼ばなければ「abandon が連続する
-/// 限りタスクが不死になり `ms_ime_gate_give_up` を一度も立てない」という
-/// 終了保証の喪失を招く（実装レビュー指摘S1、BUG-114のような actuation
-/// ストーム下で顕在化しうる）。
-fn ms_ime_ready_poll_check_deadline(out: &Output, deadline_ms: u64, cold_seq: Generation) -> bool {
-    // ADR-084（BUG-49 追補2）: `shift-conv-guard` の hold 中は
-    // `confirm_gate_deadline_override_ms` が元の `deadline_ms`
-    // （送信試行時点起点）を押し出す。詳細は `MsImeReadyCoro` の
-    // 同型コメント参照。
-    let effective_deadline_ms = deadline_ms.max(out.confirm_gate_deadline_override_ms.get());
-    if crate::hook::current_tick_ms() >= effective_deadline_ms {
-        out.ms_ime_gate_give_up.set(true);
-        tracing::warn!(
-            "[msime-ready] cold={cold_seq} IMC 未確認のまま期限切れ \
-             (deadline=0x{effective_deadline_ms:X}) → give-up latch 設定 \
-             （フォーカス変更 / 次の IME ON / 次の conv actuation まで gate 停止）",
-            cold_seq = cold_seq.value(),
-        );
-        true
-    } else {
-        false
-    }
-}
-
 impl Output {
+    /// `send_chrome_gji_reinit_and_poll` / [`Output::start_ms_ime_ready_poll`] の
+    /// `with_app` クロージャ内で1 tickごとに独立してコピーされていた「focus_gen
+    /// 照合 → 不一致なら stale → `update_ime_mode_from_imc(conv)` で IMC を反映」を
+    /// 共通化する。この2行より外側（ループの周期・終了条件・give-up latch・
+    /// write_bytes 観測ログ・完了通知の有無）は両者で意味が異なるため、あえて
+    /// 呼び出し元にそのまま残す（無理に1つのポーリングループへ統合しない）。
+    ///
+    /// `false`（focus_gen不一致）なら呼び出し元は自分の stale 値を返すこと。
+    /// `true`なら`update_ime_mode_from_imc`済みなので、続けて終端判定を行える。
+    ///
+    /// 2026-09-10、自由関数からメソッドへ変更した（`&Output`を引数に取り続けて
+    /// いたが、同じファイル内に既存の`impl Output`ブロックがあった）。
+    /// 挙動は変更していない。
+    fn refresh_ime_mode_if_focus_matches(
+        &self,
+        expected_focus_gen: u32,
+        conv: Option<u32>,
+    ) -> bool {
+        if self.ime_mode_focus_gen.get() != expected_focus_gen {
+            return false;
+        }
+        self.update_ime_mode_from_imc(conv);
+        true
+    }
+
+    /// [`Output::start_ms_ime_ready_poll`] の期限判定（ADR-140 Step1b 指摘S1対応）。
+    ///
+    /// conv を読めた・読めなかった（GJI actuation フェンスで abandon した）に
+    /// 関わらず、**このループが必ず終了する**ことを保証するために、conv の
+    /// 有無と無関係に毎tick呼べる形で分離した。呼ばなければ「abandon が連続する
+    /// 限りタスクが不死になり `ms_ime_gate_give_up` を一度も立てない」という
+    /// 終了保証の喪失を招く（実装レビュー指摘S1、BUG-114のような actuation
+    /// ストーム下で顕在化しうる）。
+    ///
+    /// 2026-09-10、自由関数からメソッドへ変更した（同上）。挙動は変更していない。
+    fn ms_ime_ready_poll_check_deadline(&self, deadline_ms: u64, cold_seq: Generation) -> bool {
+        // ADR-084（BUG-49 追補2）: `shift-conv-guard` の hold 中は
+        // `confirm_gate_deadline_override_ms` が元の `deadline_ms`
+        // （送信試行時点起点）を押し出す。詳細は `MsImeReadyCoro` の
+        // 同型コメント参照。
+        let effective_deadline_ms = deadline_ms.max(self.confirm_gate_deadline_override_ms.get());
+        if crate::hook::current_tick_ms() >= effective_deadline_ms {
+            self.ms_ime_gate_give_up.set(true);
+            tracing::warn!(
+                "[msime-ready] cold={cold_seq} IMC 未確認のまま期限切れ \
+                 (deadline=0x{effective_deadline_ms:X}) → give-up latch 設定 \
+                 （フォーカス変更 / 次の IME ON / 次の conv actuation まで gate 停止）",
+                cold_seq = cold_seq.value(),
+            );
+            true
+        } else {
+            false
+        }
+    }
+
     /// MS-IME confirm-then-transmit ゲート（BUG-13）の IMC 確認ポーリングを開始する。
     ///
     /// `MS_IME_READY_POLL_INTERVAL_MS` 間隔で `IMC_GETCONVERSIONMODE` を読み、
@@ -531,13 +537,13 @@ impl Output {
                     {
                         crate::with_app(|runtime| {
                             let out = &runtime.platform.output;
-                            if !refresh_ime_mode_if_focus_matches(out, gen, conv) {
+                            if !out.refresh_ime_mode_if_focus_matches(gen, conv) {
                                 return MsImePollStatus::Stale;
                             }
                             if out.ime_mode_fsm.borrow().is_native_ready() {
                                 return MsImePollStatus::Ready;
                             }
-                            if ms_ime_ready_poll_check_deadline(out, deadline_ms, cold_seq) {
+                            if out.ms_ime_ready_poll_check_deadline(deadline_ms, cold_seq) {
                                 MsImePollStatus::Expired
                             } else {
                                 MsImePollStatus::Pending
@@ -573,7 +579,7 @@ impl Output {
                             if out.ime_mode_focus_gen.get() != gen {
                                 return MsImePollStatus::Stale;
                             }
-                            if ms_ime_ready_poll_check_deadline(out, deadline_ms, cold_seq) {
+                            if out.ms_ime_ready_poll_check_deadline(deadline_ms, cold_seq) {
                                 MsImePollStatus::Expired
                             } else {
                                 MsImePollStatus::Pending

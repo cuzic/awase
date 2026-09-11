@@ -375,9 +375,7 @@ mod tests {
     /// が保証する。
     #[test]
     fn invariant_3_blind_profiles_terminate_without_writing_observation() {
-        use crate::state::ime_actuation::{
-            decide_actuation_action, ActuationAction, FeedbackPolicy,
-        };
+        use crate::state::ime_actuation::{ActuationAction, FeedbackPolicy};
         let mut saw_blind = false;
         let mut saw_read = false;
         for profile in ALL_PROFILES {
@@ -387,13 +385,13 @@ mod tests {
                     FeedbackPolicy::Blind { max_attempts, .. } => {
                         saw_blind = true;
                         assert_eq!(
-                            decide_actuation_action(feedback, max_attempts),
+                            feedback.decide_action(max_attempts),
                             ActuationAction::GiveUp,
                             "{profile:?} × {kind:?}: Blind は max_attempts で GiveUp \
                              （observation 非書き込み）に終端する"
                         );
                         assert_eq!(
-                            decide_actuation_action(feedback, max_attempts.saturating_sub(1)),
+                            feedback.decide_action(max_attempts.saturating_sub(1)),
                             ActuationAction::Send,
                             "{profile:?} × {kind:?}: max_attempts 未満では諦めない"
                         );
@@ -402,7 +400,7 @@ mod tests {
                         saw_read = true;
                         // Read は試行回数で打ち切らない。
                         assert_eq!(
-                            decide_actuation_action(feedback, u32::MAX),
+                            feedback.decide_action(u32::MAX),
                             ActuationAction::Send,
                             "{profile:?} × {kind:?}"
                         );

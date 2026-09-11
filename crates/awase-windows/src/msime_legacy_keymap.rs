@@ -60,7 +60,7 @@
 //!
 //! レジストリは**読み取り専用**。
 
-/// [`parse_legacy_key_table`]が返す1レコード。
+/// [`LegacyKeymapRecord::parse_table`]が返す1レコード。
 ///
 /// `key_name_raw`はShift-JISの生バイト列のまま保持する（全キー名を汎用的に
 /// デコードする実装を持たないため——[`is_muhenkan_label`]/[`is_henkan_label`]
@@ -81,35 +81,54 @@ const HENKAN_LABEL: &[u8] = &[0x95, 0xcf, 0x8a, 0xb7];
 /// 再現確認済み。
 const IME_ON_TOGGLE_CODE_COL0: u8 = 0xCE;
 
-/// `key`(REG_BINARY)の生バイト列を[`LegacyKeymapRecord`]のリストへ分解する。
-///
-/// 形式の詳細はモジュールdoc参照。壊れたレコード（`=`が無い、コードの
-/// トークン数が6でない、16進として不正）はエラーにせず単に読み飛ばす
-/// （1レコードの破損でテーブル全体を読めなくしないため）。
-pub(crate) fn parse_legacy_key_table(bytes: &[u8]) -> Vec<LegacyKeymapRecord> {
-    bytes
-        .split(|&b| b == 0x00)
-        .filter(|chunk| !chunk.is_empty())
-        .filter_map(parse_one_record)
-        .collect()
-}
+impl LegacyKeymapRecord {
+    /// `key`(REG_BINARY)の生バイト列を[`LegacyKeymapRecord`]のリストへ分解する。
+    ///
+    /// 形式の詳細はモジュールdoc参照。壊れたレコード（`=`が無い、コードの
+    /// トークン数が6でない、16進として不正）はエラーにせず単に読み飛ばす
+    /// （1レコードの破損でテーブル全体を読めなくしないため）。
+    ///
+    /// 2026-09-10、自由関数`parse_legacy_key_table`/`parse_one_record`から
+    /// 関連関数へ変更した（戻り値`LegacyKeymapRecord`のためだけの関数が
+    /// 型定義から離れた自由関数のままだった）。挙動は変更していない。
+    pub(crate) fn parse_table(bytes: &[u8]) -> Vec<Self> {
+        bytes
+            .split(|&b| b == 0x00)
+            .filter(|chunk| !chunk.is_empty())
+            .filter_map(Self::parse_one)
+            .collect()
+    }
 
-fn parse_one_record(chunk: &[u8]) -> Option<LegacyKeymapRecord> {
-    let eq_pos = chunk.iter().position(|&b| b == b'=')?;
-    let key_name_raw = chunk[..eq_pos].to_vec();
-    let codes_str = &chunk[eq_pos + 1..];
-    let tokens: Vec<&[u8]> = codes_str.split(|&b| b == b' ').collect();
-    if tokens.len() != 6 {
-        return None;
+    fn parse_one(chunk: &[u8]) -> Option<Self> {
+        let eq_pos = chunk.iter().position(|&b| b == b'=')?;
+        let key_name_raw = chunk[..eq_pos].to_vec();
+        let codes_str = &chunk[eq_pos + 1..];
+        let tokens: Vec<&[u8]> = codes_str.split(|&b| b == b' ').collect();
+        if tokens.len() != 6 {
+            return None;
+        }
+        let mut codes = [0u8; 6];
+        for (i, token) in tokens.iter().enumerate() {
+            codes[i] = parse_hex_byte(token)?;
+        }
+        Some(Self {
+            key_name_raw,
+            codes,
+        })
     }
-    let mut codes = [0u8; 6];
-    for (i, token) in tokens.iter().enumerate() {
-        codes[i] = parse_hex_byte(token)?;
+
+    /// 指定ラベルの行（複数あれば重複行すべて）のうち、いずれか1つでも
+    /// 1列目が`IME_ON_TOGGLE_CODE_COL0`なら`true`。重複行は1列目の値が
+    /// 一致することを実機確認済み（変換キーの事例）なので、`any`で安全。
+    ///
+    /// 2026-09-10、自由関数`any_record_has_ime_on_toggle`から関連関数へ
+    /// 変更した（第1引数`&[LegacyKeymapRecord]`をselfにせず取り続けていた）。
+    /// 挙動は変更していない。
+    fn any_has_ime_on_toggle(records: &[Self], is_target: impl Fn(&[u8]) -> bool) -> bool {
+        records
+            .iter()
+            .any(|r| is_target(&r.key_name_raw) && r.codes[0] == IME_ON_TOGGLE_CODE_COL0)
     }
-    Some(LegacyKeymapRecord {
-        key_name_raw,
-        codes,
-    })
 }
 
 fn parse_hex_byte(token: &[u8]) -> Option<u8> {
@@ -126,18 +145,6 @@ fn is_muhenkan_label(raw: &[u8]) -> bool {
 
 fn is_henkan_label(raw: &[u8]) -> bool {
     raw == HENKAN_LABEL
-}
-
-/// 指定ラベルの行（複数あれば重複行すべて）のうち、いずれか1つでも
-/// 1列目が`IME_ON_TOGGLE_CODE_COL0`なら`true`。重複行は1列目の値が
-/// 一致することを実機確認済み（変換キーの事例）なので、`any`で安全。
-fn any_record_has_ime_on_toggle(
-    records: &[LegacyKeymapRecord],
-    is_target: impl Fn(&[u8]) -> bool,
-) -> bool {
-    records
-        .iter()
-        .any(|r| is_target(&r.key_name_raw) && r.codes[0] == IME_ON_TOGGLE_CODE_COL0)
 }
 
 /// 現在有効な詳細キーカスタマイズプリセット名（`keystyle`の実測値の既知集合）。
@@ -229,8 +236,14 @@ impl LegacyMsImeToggleAssignment {
     fn from_table(active_style: LegacyKeyStyle, records: &[LegacyKeymapRecord]) -> Self {
         Self {
             active_style: Some(active_style),
-            muhenkan_ime_on_toggle: Some(any_record_has_ime_on_toggle(records, is_muhenkan_label)),
-            henkan_ime_on_toggle: Some(any_record_has_ime_on_toggle(records, is_henkan_label)),
+            muhenkan_ime_on_toggle: Some(LegacyKeymapRecord::any_has_ime_on_toggle(
+                records,
+                is_muhenkan_label,
+            )),
+            henkan_ime_on_toggle: Some(LegacyKeymapRecord::any_has_ime_on_toggle(
+                records,
+                is_henkan_label,
+            )),
         }
     }
 }
@@ -240,7 +253,7 @@ mod windows_impl {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 
-    use super::{parse_legacy_key_table, LegacyKeyStyle, LegacyMsImeToggleAssignment};
+    use super::{LegacyKeyStyle, LegacyKeymapRecord, LegacyMsImeToggleAssignment};
 
     const IMEJP_BASE: &str = "Software\\Microsoft\\IME\\15.0\\IMEJP";
 
@@ -364,7 +377,7 @@ mod windows_impl {
         }
         match read_key_table_bytes(style) {
             Ok(Some(table_bytes)) => {
-                let records = parse_legacy_key_table(&table_bytes);
+                let records = LegacyKeymapRecord::parse_table(&table_bytes);
                 LegacyMsImeToggleAssignment::from_table(style, &records)
             }
             Ok(None) => LegacyMsImeToggleAssignment::confirmed_absent(style),
@@ -399,7 +412,7 @@ mod tests {
     fn parses_single_record() {
         let mut bytes = muhenkan_ime_on_toggle_record();
         bytes.push(0x00); // リスト終端の追加NUL
-        let records = parse_legacy_key_table(&bytes);
+        let records = LegacyKeymapRecord::parse_table(&bytes);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].key_name_raw, MUHENKAN_LABEL);
         assert_eq!(records[0].codes, [0xCE, 0xCD, 0xCD, 0xCD, 0xCD, 0xCD]);
@@ -409,7 +422,7 @@ mod tests {
     fn detects_ime_on_toggle_on_muhenkan() {
         let mut bytes = muhenkan_ime_on_toggle_record();
         bytes.push(0x00);
-        let records = parse_legacy_key_table(&bytes);
+        let records = LegacyKeymapRecord::parse_table(&bytes);
         let result = LegacyMsImeToggleAssignment::from_table(LegacyKeyStyle::Custom, &records);
         assert_eq!(result.muhenkan_ime_on_toggle, Some(true));
         assert_eq!(result.henkan_ime_on_toggle, Some(false));
@@ -419,7 +432,7 @@ mod tests {
     fn default_assignment_is_not_detected_as_toggle() {
         let mut bytes = muhenkan_default_record();
         bytes.push(0x00);
-        let records = parse_legacy_key_table(&bytes);
+        let records = LegacyKeymapRecord::parse_table(&bytes);
         let result = LegacyMsImeToggleAssignment::from_table(LegacyKeyStyle::Atok, &records);
         assert_eq!(result.muhenkan_ime_on_toggle, Some(false));
     }
@@ -434,7 +447,7 @@ mod tests {
         bytes.extend_from_slice(HENKAN_LABEL);
         bytes.extend_from_slice(b"=CE 00 00 00 00 00\0");
         bytes.push(0x00);
-        let records = parse_legacy_key_table(&bytes);
+        let records = LegacyKeymapRecord::parse_table(&bytes);
         assert_eq!(records.len(), 2);
         let result = LegacyMsImeToggleAssignment::from_table(LegacyKeyStyle::Custom, &records);
         assert_eq!(result.henkan_ime_on_toggle, Some(true));
@@ -447,7 +460,7 @@ mod tests {
         bytes.extend_from_slice(HENKAN_LABEL);
         bytes.extend_from_slice(b"=CE 00 00 00 00 00\0");
         bytes.push(0x00);
-        let records = parse_legacy_key_table(&bytes);
+        let records = LegacyKeymapRecord::parse_table(&bytes);
         assert_eq!(records.len(), 1);
         let result = LegacyMsImeToggleAssignment::from_table(LegacyKeyStyle::Custom, &records);
         assert_eq!(result.henkan_ime_on_toggle, Some(false));
@@ -478,7 +491,7 @@ mod tests {
         bytes.push(0x00);
         bytes.extend_from_slice(&muhenkan_ime_on_toggle_record());
         bytes.push(0x00);
-        let records = parse_legacy_key_table(&bytes);
+        let records = LegacyKeymapRecord::parse_table(&bytes);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].key_name_raw, MUHENKAN_LABEL);
     }
@@ -488,7 +501,7 @@ mod tests {
         let mut bytes = MUHENKAN_LABEL.to_vec();
         bytes.extend_from_slice(b"=CE CD CD\0"); // 6個ではなく3個
         bytes.push(0x00);
-        let records = parse_legacy_key_table(&bytes);
+        let records = LegacyKeymapRecord::parse_table(&bytes);
         assert!(records.is_empty());
     }
 

@@ -604,10 +604,10 @@ impl Runtime {
             .platform_state
             .ime
             .explicit_ime_action_age_ms(now_tick_at_spawn);
-        let is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
-            self.platform.current_app_profile(),
-            self.platform.focus.class_name(),
-        );
+        let is_tsf_native = self
+            .platform
+            .current_app_profile()
+            .is_effectively_tsf_native(self.platform.focus.class_name());
         if !awase::engine::should_run_idle_conv_check(
             matches!(event.event_type, KeyEventType::KeyDown),
             is_tsf_native,
@@ -2915,10 +2915,11 @@ impl Runtime {
         // から巻き戻してしまうバグの温床だった）。同一ウィンドウ内でタスクバーからモードを
         // 変更した場合は idle-conv-check（TYPING_IDLE_MS 経過後の次キー入力で発火）が
         // 正当なユーザー操作として拾うため、そちらに一本化する。
-        if crate::focus::class_names::is_effectively_tsf_native(
-            self.platform.current_app_profile(),
-            self.platform.focus.class_name(),
-        ) && probe.is_japanese_ime
+        if self
+            .platform
+            .current_app_profile()
+            .is_effectively_tsf_native(self.platform.focus.class_name())
+            && probe.is_japanese_ime
         {
             let in_flight = self.platform.output_in_flight_ms();
             // cold start: ROMAN ビットが信頼できないためスキップ

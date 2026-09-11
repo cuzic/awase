@@ -836,10 +836,10 @@ impl Runtime {
         // force ポリシー自体を撤去したのに伴い削除した。`apply_force_on_for_imm_broken`
         // は常時この早期 return の影響を受ける（force policy 分岐が無くなった今、
         // 周期リフレッシュに乗るのが唯一の force-ON 経路になった）。
-        let is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
-            self.platform.current_app_profile(),
-            self.platform.focus.class_name(),
-        );
+        let is_tsf_native = self
+            .platform
+            .current_app_profile()
+            .is_effectively_tsf_native(self.platform.focus.class_name());
         if is_tsf_native || self.platform_state.ime.explicit_intent().is_some() {
             return;
         }
@@ -1840,8 +1840,7 @@ impl Runtime {
                     crate::focus::classify::AppImeProfile::resolve(&class_name, relay_apps, || {
                         crate::focus::classify::get_process_name(pid)
                     });
-                if crate::focus::class_names::should_reprime_on_lightweight_focus_sync(
-                    profile,
+                if profile.should_reprime_on_lightweight_focus_sync(
                     &class_name,
                     self.platform_state.ime.effective_open(),
                 ) {
