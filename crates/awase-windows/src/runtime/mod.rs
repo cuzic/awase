@@ -582,9 +582,11 @@ impl Runtime {
     }
 
     pub fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
-        let (callback, sync_outcomes, stripped_set_open) =
-            self.executor
-                .execute_from_loop(&mut self.platform, &self.platform_state.ime, decision);
+        let (callback, sync_outcomes, stripped_set_open) = self.executor.execute_from_loop(
+            &mut self.platform,
+            &mut self.platform_state.ime,
+            decision,
+        );
         self.dispatch_outcomes(sync_outcomes);
         if stripped_set_open.is_some() {
             // settle 中に握りつぶした SetOpen は自然には再発行されない
@@ -1025,7 +1027,12 @@ impl Runtime {
         // ADR-090 §2.A A-1（shadow）: 実 actuation 入口は `ActuationOrder` を
         // 起案する。授権が下りなくても書き込みは止めない（A-2 で倒す）。
         let order = self.issue_actuation_order(true, "force_on_and_correct_romaji");
-        let outcome = self.platform.apply_ime_open_with_view(order, &view, belief);
+        let (outcome, mut record) = self.platform.apply_ime_open_with_view(order, &view, belief);
+        record.site = crate::state::ime_actuation_decision::DecisionSite::ForceOnRomajiCorrection;
+        self.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::ActuationDecision { record });
         tracing::info!("force-ON ({reason:?}): apply_ime_open(true) → {outcome:?}");
         self.on_ime_apply_complete(true, outcome, None, reason);
         if !self.platform_state.ime.input_mode().is_romaji_capable() {
@@ -1192,7 +1199,13 @@ impl Runtime {
             effective_open: open,
             confident: true,
         };
-        let outcome = self.platform.apply_ime_open_with_view(order, &view, belief);
+        let (outcome, mut record) = self.platform.apply_ime_open_with_view(order, &view, belief);
+        record.site =
+            crate::state::ime_actuation_decision::DecisionSite::ReassertExplicitPhysicalKey;
+        self.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::ActuationDecision { record });
         tracing::info!(
             "[explicit-reassert] apply_ime_open({open}) → {outcome:?} (物理IMEキー冪等再送, BUG-37)"
         );

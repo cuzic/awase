@@ -868,9 +868,13 @@ impl Runtime {
                 confident: true,
             };
             let order = self.issue_actuation_order_with_origin(desired, act_origin);
-            let outcome = self
+            let (outcome, record) = self
                 .platform
                 .apply_ime_open_with_belief(order, None, belief);
+            self.platform_state
+                .ime
+                .journal
+                .record(crate::journal::JournalEntry::ActuationDecision { record });
             tracing::info!("Blacklist drift correction: apply_ime_open({desired}) → {outcome:?}");
             self.on_ime_apply_complete(
                 desired,

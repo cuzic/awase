@@ -60,7 +60,7 @@ impl ImeStateHub {
     /// `DecisionExecutor` は `Runtime` を持たないため
     /// [`Runtime::issue_actuation_order`](super::Runtime::issue_actuation_order) を
     /// 使えないが、4 つの公開入口（`execute_from_hook` / `execute_from_loop` /
-    /// `drain_deferred` / `on_output_guard_timer`）が**既に `ime: &ImeStateHub` を
+    /// `drain_deferred` / `on_output_guard_timer`）が**既に `ime: &mut ImeStateHub` を
     /// 受け取っている**ので、それを `dispatch_ime_set_open` まで通すだけで
     /// warrant を発行できる。
     ///
@@ -193,7 +193,7 @@ impl DecisionExecutor {
     pub(crate) fn execute_from_hook(
         &mut self,
         platform: &mut WindowsPlatform,
-        ime: &ImeStateHub,
+        ime: &mut ImeStateHub,
         decision: Decision,
         raw_event: &RawKeyEvent,
         physical: PhysicalKeyDisposition,
@@ -225,7 +225,7 @@ impl DecisionExecutor {
     pub(crate) fn execute_from_loop(
         &mut self,
         platform: &mut WindowsPlatform,
-        ime: &ImeStateHub,
+        ime: &mut ImeStateHub,
         mut decision: Decision,
     ) -> (CallbackResult, Vec<ImeApplyPair>, Option<bool>) {
         self.applied_snapshot = ime.model().applied;
@@ -268,7 +268,7 @@ impl DecisionExecutor {
     pub(crate) fn drain_deferred(
         &mut self,
         platform: &mut WindowsPlatform,
-        ime: &ImeStateHub,
+        ime: &mut ImeStateHub,
     ) -> Vec<ImeApplyPair> {
         // 同一 drain 呼び出し内で最初の ReinjectKey だけ OUTPUT_GUARD を適用する。
         // 連続する reinject (例: Win_DOWN→X_DOWN→X_UP→Win_UP) を個別にガードすると
@@ -336,7 +336,7 @@ impl DecisionExecutor {
     pub(crate) fn on_output_guard_timer(
         &mut self,
         platform: &mut WindowsPlatform,
-        ime: &ImeStateHub,
+        ime: &mut ImeStateHub,
     ) -> Vec<ImeApplyPair> {
         platform.timer.kill(crate::TIMER_OUTPUT_GUARD);
         self.drain_deferred(platform, ime)
@@ -427,7 +427,7 @@ impl DecisionExecutor {
     fn execute_relay(
         &mut self,
         platform: &mut WindowsPlatform,
-        ime: &ImeStateHub,
+        ime: &mut ImeStateHub,
         decision: Decision,
         raw_event: &RawKeyEvent,
         physical: PhysicalKeyDisposition,
@@ -661,7 +661,7 @@ impl DecisionExecutor {
     fn execute_one(
         &mut self,
         platform: &mut WindowsPlatform,
-        ime: &ImeStateHub,
+        ime: &mut ImeStateHub,
         effect: Effect,
         generation: Option<crate::state::ApplyGeneration>,
     ) -> Option<ImeApplyCompletion> {
@@ -745,7 +745,7 @@ impl DecisionExecutor {
     fn dispatch_effect(
         &mut self,
         platform: &mut WindowsPlatform,
-        ime: &ImeStateHub,
+        ime: &mut ImeStateHub,
         effect: Effect,
         generation: Option<crate::state::ApplyGeneration>,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
@@ -818,7 +818,7 @@ impl DecisionExecutor {
     fn dispatch_ime_set_open(
         &mut self,
         platform: &WindowsPlatform,
-        ime: &ImeStateHub,
+        ime: &mut ImeStateHub,
         open: bool,
         generation: Option<crate::state::ApplyGeneration>,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
@@ -987,7 +987,9 @@ impl DecisionExecutor {
             );
             // ADR-090 §2.A A-1（shadow）。
             let order = ime.issue_self_actuation_order(open, "engine_decision_sync");
-            let outcome = platform.apply_ime_open_with_view(order, &view, belief);
+            let (outcome, record) = platform.apply_ime_open_with_view(order, &view, belief);
+            ime.journal
+                .record(crate::journal::JournalEntry::ActuationDecision { record });
             if outcome == awase::platform::ImeOpenOutcome::Failed {
                 tracing::warn!("apply_ime_open({open}) failed");
             }
