@@ -152,6 +152,18 @@ pub struct ActuationOrderRecord {
     pub origin: EventOriginRecord,
 }
 
+impl From<&crate::state::actuation_chain::ActuationOrder> for ActuationOrderRecord {
+    /// `ime_controller.rs`と`runtime/open_chain.rs`が独立に持っていた同一実装の
+    /// `order_record`関数を統合した（/code-review指摘、PR #201）。
+    fn from(order: &crate::state::actuation_chain::ActuationOrder) -> Self {
+        Self {
+            open: order.open(),
+            would_have_blocked: order.would_have_blocked(),
+            origin: EventOriginRecord::from(order.origin()),
+        }
+    }
+}
+
 /// 1機構への1回のwrite判断の記録（ADR-163 Part B「スキーマはsite単位ではなく
 /// attempt単位」節）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -351,15 +363,32 @@ mod tests {
                 failures.push(format!("attempt[{i}] is empty within attempts_len"));
                 continue;
             };
-            if let Some(before_override) = attempt.shadow_on_before_bug113_override {
-                if before_override != attempt.inputs.shadow_on {
-                    failures.push(format!(
-                        "attempt[{i}] shadow_on_before_bug113_override mismatch: \
-                         recorded before-override value {before_override:?} \
-                         != attempt.inputs.shadow_on {:?}",
-                        attempt.inputs.shadow_on
-                    ));
-                }
+            // `shadow_on_before_bug113_override`の値そのものは`outcome`と同じ
+            // 「外部入力として記録し、再計算しない」フィールドであり、上書き前の
+            // 値が何だったかを独立に再導出する手段は無い。ただし
+            // `Some(_)`（＝上書きが発生した）ときは、上書き後に組み立てられた
+            // `attempt.inputs.shadow_on`が必ず`None`になるという構造的な
+            // 事実は再生時に検証できる（`runtime/open_chain.rs::fallback_write`が
+            // `view.control.shadow_on = None;`の**後**に`inputs`を組み立てる
+            // ため）。
+            //
+            // /code-review指摘（PR #201）: 当初はここで
+            // `before_override != attempt.inputs.shadow_on`という一致確認を
+            // 行っていたが構造的に誤りだった——`attempt.inputs.shadow_on`は
+            // 上書き後の値（常に`None`）であり、上書き**前**の値
+            // `before_override`と比較すると、上書き前の値が既知
+            // （`Some(true)`/`Some(false)`）だった実機コーパスの全件が
+            // 「不一致」と誤検出されていた。上記の正しい不変条件に置き換えた。
+            if attempt.shadow_on_before_bug113_override.is_some()
+                && attempt.inputs.shadow_on.is_some()
+            {
+                failures.push(format!(
+                    "attempt[{i}] shadow_on_before_bug113_override is Some \
+                     (override happened) but attempt.inputs.shadow_on is \
+                     {:?} instead of None (fallback_write always overrides \
+                     shadow_on to None before building inputs)",
+                    attempt.inputs.shadow_on
+                ));
             }
             if attempt.mechanism == WriteMechanism::ImmCross && record.site != DecisionSite::Sync {
                 // モジュールdoc「スコープ外」節参照: この組合せはdecide_attemptの

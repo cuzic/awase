@@ -415,6 +415,19 @@ pub enum JournalEntry {
     DumpTriggered,
 }
 
+// /code-review指摘（PR #201、ADR-163 Part D）: 当初「`ActuationDecision`
+// （`ActuationDecisionRecord`、`size_of <= 176`）が`JournalEntry`の最大
+// variantを更新し、Rustがenumサイズを最大variantに合わせる結果、全4 lane
+// （`ActuationDecision`を一切積まないState/Timing/KeyInputも含む）で
+// `VecDeque<JournalEnvelope>`の事前確保メモリが増える」という懸念が
+// 指摘された。**実測の結果、この懸念は成立しない**——`JournalEntry`の
+// サイズは本PR適用前後で264バイトのまま変化していない（develop時点の
+// `size_of::<JournalEntry>()`も264、`ActuationDecisionRecord`の176バイトは
+// 既存の最大variantを更新しない）。以下は将来variantを追加して264バイトを
+// 超えた場合に気付くための回帰ガード（実測値をそのまま固定、
+// [tuning-constants](../../.claude/rules/tuning-constants.md)の精神）。
+const _: () = assert!(size_of::<JournalEntry>() == 264);
+
 // ── JournalEnvelope ───────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]

@@ -67,8 +67,7 @@ use crate::state::actuation_chain::{
     ActuationOrder, AsyncMechanismWriter, VerifiedTarget, WriteMechanism,
 };
 use crate::state::actuation_decision_record::{
-    ActuationDecisionRecord, ActuationOrderRecord, AttemptRecord, EventOriginRecord,
-    MAX_WRITE_MECHANISMS,
+    ActuationDecisionRecord, ActuationOrderRecord, AttemptRecord, MAX_WRITE_MECHANISMS,
 };
 use crate::state::ime_actuation_decision::{DecisionInputs, DecisionSite, MechanismCommand};
 
@@ -162,14 +161,6 @@ impl AsyncChainWriter {
     }
 }
 
-fn order_record(order: &ActuationOrder) -> ActuationOrderRecord {
-    ActuationOrderRecord {
-        open: order.open(),
-        would_have_blocked: order.would_have_blocked(),
-        origin: EventOriginRecord::from(order.origin()),
-    }
-}
-
 fn conv_after_open_id(conv: ConvAfterOpen) -> crate::state::conv_after_open::ConvAfterOpenId {
     match conv {
         ConvAfterOpen::Skip => crate::state::conv_after_open::ConvAfterOpenId::Skip,
@@ -197,7 +188,7 @@ fn async_record(
     ActuationDecisionRecord {
         site,
         gate_inputs,
-        order: order_record(order),
+        order: ActuationOrderRecord::from(order),
         chain: all_chain_record(),
         chain_len: WriteMechanism::ALL.len(),
         attempts,

@@ -38,8 +38,7 @@ use crate::state::actuation_chain::{
     ActuationOrder, MechanismWriter, VerifiedTarget, WriteMechanism,
 };
 use crate::state::actuation_decision_record::{
-    ActuationDecisionRecord, ActuationOrderRecord, AttemptRecord, EventOriginRecord,
-    MAX_WRITE_MECHANISMS,
+    ActuationDecisionRecord, ActuationOrderRecord, AttemptRecord, MAX_WRITE_MECHANISMS,
 };
 use crate::state::ime_actuation_decision::decide_needs_romaji_pre_write;
 use crate::state::ime_decision_view::ImeControlView;
@@ -525,14 +524,6 @@ impl MechanismWriter for SyncChainWriter<'_, '_> {
 /// `with_app` 再入を理由に却下済みなので、将来 `self` が要る見込みも無い。
 pub(crate) struct ImeController;
 
-fn order_record(order: &ActuationOrder) -> ActuationOrderRecord {
-    ActuationOrderRecord {
-        open: order.open(),
-        would_have_blocked: order.would_have_blocked(),
-        origin: EventOriginRecord::from(order.origin()),
-    }
-}
-
 fn chain_record(
     chain: &[WriteMechanism],
 ) -> ([Option<WriteMechanism>; MAX_WRITE_MECHANISMS], usize) {
@@ -555,7 +546,7 @@ fn actuation_decision_record(
     ActuationDecisionRecord {
         site: crate::state::ime_actuation_decision::DecisionSite::Sync,
         gate_inputs,
-        order: order_record(order),
+        order: ActuationOrderRecord::from(order),
         chain,
         chain_len,
         attempts,
