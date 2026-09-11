@@ -2,20 +2,38 @@
 
 ## ステータス
 
-**起草。opus-adversarial-consult round1・round2・round3実施済み・反映済み。round3で
-「設計の骨格は収束した」と判定され、round4は不要（残ったU1〜U3は反映済み）。実装
-（TH1a）着手可能な水準。
+**設計は収束済み（opus-adversarial-consult round1・round2・round3実施済み・反映済み。
+round3で「設計の骨格は収束した」と判定され、round4は不要）。実装はTH1a〜TH1cが
+developへマージ済み、TH1d・TH1eが未着手（2026-09-11時点、実装順序は「今後の議論」節参照）。**
+
+- **TH1a（`key_sequence_policy`のImeKindId化等、Step 0）: 完了**
+  （`69a9a6b5`、PR#195に統合）。
+- **TH1b（Part A、`decide_gate`/`decide_chain`/`decide_attempt`の新設と
+  `ime_controller.rs`/`executor.rs`/`open_chain.rs`への配線）: 完了**
+  （`e72adfaa`/`cc8624bf`/`3f3bb17c`、PR#195マージ・/code-review指摘対応済み）。
+- **TH1c（Part B、`ActuationDecisionRecord`/`AttemptRecord`スキーマ+
+  crate内`#[cfg(test)]`再生ハーネス）: 完了**（`6e389a9a`/`f88d019b`、PR#196マージ、
+  `state/actuation_decision_record.rs`）。ただしハーネスが読むfixtureは
+  現時点ではすべて手組み（`replay_all_actuation_decision_fixtures`が読む
+  テストコード内固定値）であり、**`tests/journals/actuation_decision/`
+  （実機ダンプからの凍結コーパス）はまだ存在しない**。
+- **TH1d（凍結コーパスの初回投入、実機ダンプからの手動転記）: 未着手**。
+- **TH1e（Part C、`AsyncChainWriter::is_applicable`統合+差分ゼロ再生証明、
+  ADR-158 TH1発効条件の充足）: 未着手**。
+
 [ADR-159](159-existing-io-boundary-inventory.md)の子ADR。ADR-159段階1（TF1）・段階2の最小実装
 （TF2、`shadow_send_trace.rs`）は完了済みだが、これらは「何が起きたか」を記録する側だけであり、
 「記録した入力をもう一度、意思決定ロジック（ゲート判定・戦略選択・チェーン走査）に通してWin32を
-実際に叩かずに送信列を再現する」という再生ハーネス側が存在しない。本ADRはこの欠落を埋める設計だが、
-**round1レビューでPart Aの前提（既存分離の範囲）が実コードと食い違っていること、および再生入口が
-浅すぎて検出したい回帰の中心（ADR-119型のゲート見落とし）を通らないことが判明し決定節を全面的に
-書き直した。round2レビューでは、書き直した決定節の内部（決定関数のシグネチャとattempt単位記録の
-非両立、TH1eの証明対象選定、windows-gated型の混入）に新たな矛盾が見つかり、さらに反映した**。
-round1/round2の指摘は「round1・round2での指摘と反映」節に記録する。**本ADR単体は
+実際に叩かずに送信列を再現する」という再生ハーネス側が存在しなかった。本ADRはこの欠落を埋める
+設計であり、TH1a〜TH1cの実装により再生ハーネス自体（crate内・手組みfixture限定）は存在する
+状態になった。**round1レビューでPart Aの前提（既存分離の範囲）が実コードと食い違っていること、
+および再生入口が浅すぎて検出したい回帰の中心（ADR-119型のゲート見落とし）を通らないことが判明し
+決定節を全面的に書き直した。round2レビューでは、書き直した決定節の内部（決定関数のシグネチャと
+attempt単位記録の非両立、TH1eの証明対象選定、windows-gated型の混入）に新たな矛盾が見つかり、
+さらに反映した**。round1/round2の指摘は「round1・round2での指摘と反映」節に記録する。
+**本ADRはTH1eが未完了のため、
 [ADR-158](158-complexity-reduction-north-star.md) TH1の発効条件（実削除・統合1件＋差分ゼロ再生証明）
-を満たさない——TH1の必要条件の一部を満たすに留まる**（後述）。**
+をまだ満たさない——TH1a〜TH1cはTH1の必要条件の一部を満たすに留まる**（後述）。**
 
 ## 背景
 
