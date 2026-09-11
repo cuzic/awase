@@ -19,7 +19,7 @@
 
 use awase::config::ConfirmMode;
 use awase::engine::input_tracker::InputTracker;
-use awase::engine::{ComposingHint, ModifierState, NicolaFsm};
+use awase::engine::{ModifierState, NicolaFsm, ThumbRawVkEmission};
 use awase::types::{
     ContextChange, ImeRelevance, KeyAction, KeyClassification, KeyEventType, RawKeyEvent, ScanCode,
     SpecialKey, VkCode,
@@ -349,14 +349,14 @@ fn e2e_engine_flush_pending_all_states() {
 
     // Idle
     let mut engine = make_test_engine(ConfirmMode::Wait);
-    let r = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
+    let r = engine.flush_pending(ContextChange::ImeOff, ThumbRawVkEmission::Allowed(false));
     tracing::debug!("Flush from Idle: actions={:?}", r.actions);
     assert!(r.actions.is_empty());
 
     // PendingChar
     let mut engine = make_test_engine(ConfirmMode::Wait);
     engine.on_event(key_down(0x41, 0x1E, 1_000_000));
-    let r = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
+    let r = engine.flush_pending(ContextChange::ImeOff, ThumbRawVkEmission::Allowed(false));
     tracing::debug!("Flush from PendingChar: actions={:?}", r.actions);
     assert!(!r.actions.is_empty());
 
@@ -365,7 +365,10 @@ fn e2e_engine_flush_pending_all_states() {
     // （timeout 経路と統一済み、composing=true 時のみ suppress される）。
     let mut engine = make_test_engine(ConfirmMode::Wait);
     engine.on_event(key_down(0x1D, 0x7B, 1_000_000));
-    let r = engine.flush_pending(ContextChange::EngineDisabled, ComposingHint::Trusted(false));
+    let r = engine.flush_pending(
+        ContextChange::EngineDisabled,
+        ThumbRawVkEmission::Allowed(false),
+    );
     tracing::debug!("Flush from PendingThumb: actions={:?}", r.actions);
     assert!(
         !r.actions.is_empty(),
@@ -377,7 +380,7 @@ fn e2e_engine_flush_pending_all_states() {
     engine.on_event(key_down(0x41, 0x1E, 1_000_000));
     let r = engine.flush_pending(
         ContextChange::InputLanguageChanged,
-        ComposingHint::Trusted(false),
+        ThumbRawVkEmission::Allowed(false),
     );
     tracing::debug!("Flush from SpeculativeChar: actions={:?}", r.actions);
     // SpeculativeChar already output, flush should be empty
@@ -2028,7 +2031,7 @@ fn e2e_engine_with_ime_context() {
     assert!(r.consumed, "re-enabled engine should consume");
 
     // Flush to release pending state
-    let _ = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
+    let _ = engine.flush_pending(ContextChange::ImeOff, ThumbRawVkEmission::Allowed(false));
 
     tracing::info!("=== Phase 3 engine+IME tests completed ===");
 }
