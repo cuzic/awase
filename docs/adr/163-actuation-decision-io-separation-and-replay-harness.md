@@ -17,7 +17,14 @@ developへマージ済み、TH1d・TH1eが未着手（2026-09-11時点、実装�
   現時点ではすべて手組み（`replay_all_actuation_decision_fixtures`が読む
   テストコード内固定値）であり、**`tests/journals/actuation_decision/`
   （実機ダンプからの凍結コーパス）はまだ存在しない**。
-- **TH1d（凍結コーパスの初回投入、実機ダンプからの手動転記）: 未着手**。
+- **TH1d（`tests/journals/actuation_decision/`への既知バグ由来fixture投入+
+  `assert!(total > 0)`ガード追加）: 未着手**（置き換えではなく維持、下記TH1d'とは
+  並行タスク）。
+- **TH1d'（新設、Part D）: bug report経由の実機コーパス自動収集: 未着手**。
+  opus-adversarial-consult round4を1ラウンド実施済み（Blocker7件・Should-fix9件、
+  すべて反映済み）。初版の「別枠リングバッファ+bug_reportへの新規フィールド追加」
+  という設計を撤回し、「`journal.rs`のJournalEntry variantとして相乗りする」設計
+  （決定D1〜D8）に全面的に書き直した。
 - **TH1e（Part C、`AsyncChainWriter::is_applicable`統合+差分ゼロ再生証明、
   ADR-158 TH1発効条件の充足）: 未着手**。
 
@@ -393,6 +400,165 @@ SSOTになっている。この資産を落とさないため、**3シーム統�
 副次効果も得られる（背景節が問題視した「決定だけ見るシームがwindows-gatedファイルに
 閉じ込められている」ことの直接的な解消）。
 
+### Part D（round4実施済み・反映済み、TH1d'として新設）: journal相乗りによるbug report経由の実機コーパス収集
+
+**発端**: ユーザーから「bug report機能にmetrics/tracing情報を含め、操作のリプレイや
+不要ロジックの調査に役立てたい」という要望。評価基準はユーザー自身が明示した2点——
+**①撤去すべき処理の特定に役立つこと、②不具合の根本原因特定に役立つこと**——であり、
+bug reportに含める価値は「母集団N（実機からの記録本数）を増やせること」にある
+（ユーザー指示、2026-09-11：「母集団nの数を増やせるからbug reportに含めることは
+やりたい」）。
+
+**round4での全面書き直し**: 初版（2026-09-11、Blocker7件・Should-fix9件、
+opus-adversarial-consult 1ラウンド）は「別枠の新規リングバッファ＋bug_reportへの
+新規`attach_X`フィールド」という設計だったが、以下が判明し決定を全面的に書き直した:
+
+- **B7**: Part Bが前例として引用した`drift_correction_replay.rs`が実際に踏襲している
+  構成は「ungatedな`pub`型を`state/`に置き`JournalEntry`のvariantとして積む」
+  （`journal.rs:262-264`の`JournalEntry::ImeActuation { record: ActuationRecord }`、
+  `state/ime_actuation.rs`）であり、初版が提案した「別枠リングバッファ＋新規bug_report
+  フィールド」とは逆方向だった。
+- **B1**: `ActuationDecisionRecord`等を`pub(crate)`のままにすると`BugReportPayload`
+  （`pub`型）のフィールドに置けずE0446でコンパイルが通らない。`#[cfg(windows)]`を
+  足すと`mod tests`ごとLinuxビルドから消える。
+- **B2**: bug reportは`awase.exe`と`awase-settings.exe`の別プロセス間をファイル経由で
+  受け渡す構成（`message_handlers.rs`→JSON書き出し→`crates/awase-settings/src/bug_report.rs`
+  が読み込み）であり、`bug_report.rs`への型追加だけでは配線されない。
+- **B3**: サーバ側`services/report-worker/src/index.ts::validatePayload`は未知
+  フィールドを無言で捨てる設計であり、Worker先行デプロイ無しでは新フィールドが
+  400にすらならず欠落する。
+- **B4**: `ActuationDecisionRecord`が持つ`chain: Vec<WriteMechanism>`/
+  `attempts: Vec<AttemptRecord>`は、ADR自身がTF2再開条件として明記した
+  「actuationのホットパスにロック・ヒープ確保・キュー操作を足さないことを示す」
+  （後述「TF2との突合せ」節参照）に抵触する。
+- **B5**: `journal_replay.rs`の凍結運用（「あるべき出力」に手で書き換えてから
+  コミット）を転用できない——`ActuationDecisionRecord.command`の「あるべき値」を
+  人間が独立に導く情報源が存在しない（`decide_attempt`の実装自体が唯一の情報源）。
+- **B6**: `decide_chain`/`decide_attempt`の実配線は`ime_controller.rs:602`/`:241`の
+  各1箇所のみで、後者は`DecisionSite::Sync`固定。非同期ImmCross attemptは
+  `decide_attempt`が構造的に`None`を返し再生で`continue`（skip）されるため、
+  初版が主張した「母数を増やせば検証範囲が広がる」は成立しない。
+
+（レビュー全文はセッション記録参照。ここでは反映結果のみ記す。）
+
+#### 決定D1: 型はjournal.rsの前例に揃える——ungatedなpub型+`JournalEntry` variant（B7対応）
+
+`ActuationDecisionRecord`/`AttemptRecord`等（現行`state/mod.rs:98`で
+`#[cfg(test)] pub(crate) mod actuation_decision_record;`）を、
+`state/ime_actuation.rs::ActuationRecord`と同じ構成に揃える:
+
+- 型定義をungatedな`pub`型として`state/actuation_decision_record.rs`に置く
+  （`#[cfg(windows)]`も`#[cfg(test)]`も付けない）。
+- `journal.rs::JournalEntry`に新variant`ActuationDecision { record: ActuationDecisionRecord }`
+  を追加する。
+- 再生ハーネス（`mod tests`、TH1c実装済み）はcrate内`#[cfg(test)]`のまま維持する——
+  Part BのM9決定が守ろうとしたのは「外部crate扱いの`tests/*.rs`から`pub(crate)`型が
+  見えない」問題であり、`ActuationRecord`の前例どおり型をungated `pub`にした上で
+  再生テストだけを`#[cfg(test)]`に残せば両立する（M9への抵触なし、B1解消）。
+- **`bug_report.rs`側の変更は不要**: `journal_json`は既に`attach_log`経由で
+  `JournalEntry`群をシリアライズして送っており、新variantを追加するだけで既存経路に
+  自動的に乗る。初版決定3（`attach_actuation_decisions`+`BugReportActuationDecisions`
+  の新設）・決定4（MAX_BODY_BYTES新規予算設計）は撤回する（B1・B2・B3・S1・S7・S8
+  が同時に解消する）。ADR-095決定3（B-5、allowlist原則）が求める4層ミラー型の新設も
+  不要になる。サーバ側`report-worker`の変更も不要（journal_jsonは既存の文字列
+  フィールドとしてそのままR2へ保存される）。
+- lane配置は既存`LaneKind::Actuation`（capacity=512、`ImeActuation`等と共有）への
+  相乗りか、専用の新規`LaneKind`を切るかを実装時に決める。共有する場合は既存エントリの
+  枠を食う実測影響を、専用lane を切る場合は容量の実測根拠
+  （[tuning-constants](../../.claude/rules/tuning-constants.md)の精神）を、
+  それぞれコミット本文に残すこと——**ここでの数値の決め打ちはしない**。
+
+#### 決定D2: `chain`/`attempts`はVecではなく固定長配列にする（B4対応、TF2再開条件を満たす）
+
+`WriteMechanism::ALL`は`[Self; 4]`（`state/actuation_chain.rs:162`）で最大4機構固定
+のため、`chain`/`attempts`を`Vec`ではなく`[Option<_>; 4]`+使用数のような固定長表現に
+変更しヒープ確保を排除する。`AttemptRecord`自体も可能な限り`Copy`にできる構成を
+優先する。これにより「TF2との突合せ」節（後述）が定める再開条件（ホットパスに
+ロック・ヒープ確保・キュー操作を足さないことを示す）を満たす。
+
+#### 決定D3: このコーパスはcharacterization corpus——「あるべき出力」への書き換えは行わない（B5対応）
+
+初版決定5（`journal_replay.rs`と同じ「あるべき出力に書き換えてから凍結」）は撤回する。
+bug report経由で集まったレコードは「**凍結時点の実際の出力をそのまま記録する**」
+characterization corpusとして扱う。用途は2つ、いずれもユーザーが示した評価基準に
+直接対応する:
+
+1. **不具合の根本原因特定**（評価基準②）: 人間が個別のbug reportを見て「このケースで
+   どのmechanism/commandが選ばれ、どんな`ImeOpenOutcome`が返ったか」を読む診断材料
+   として、TH1e/自動再生の完成を待たずに**今すぐ**使える。
+2. **撤去すべき処理の特定**（評価基準①、TH1e）: 「現行コードでの記録」と
+   「リファクタ後コードでの再生」を比較し送信列（attempts/command列）の差分ゼロを
+   機械的に確認する。この用途では「あるべき出力」の正しさは不要——比較対象は常に
+   「変更前のコード自身が出した値」であり、それがそもそも正しいかは問わない。
+
+#### 決定D4: 収集はTH1eを待たず今から始める。非同期ImmCross経路は当面「死蔵」であることを明記し、バイナリバージョンをスタンプする（B6対応）
+
+`decide_chain`/`decide_attempt`の配線がSync経路1箇所に限られる現状では、非同期
+ImmCrossのattemptは再生で`continue`（skip）される（TH1eのスコープ）。ユーザー指示
+（「母集団Nを増やせるから含めたい」）を優先し、**収集はTH1eの完了を待たずに今から
+始める**：
+
+- 各`ActuationDecisionRecord`に`app_version`（バイナリのバージョン）を必須フィールド
+  として持たせる（S3対応）。TH1eが着地した時点で、それ以前に集まった非同期ImmCross
+  レコードを遡って再生できるようにするため。
+- 「非同期ImmCross系のattemptはTH1e完了まで決定D3用途2（自動差分証明）の対象外だが、
+  用途1（人間による根本原因特定）では収集開始時点から有効」という限定を本ADRと
+  `docs/journal-replay-guide.md`相当のガイドに明記する。
+
+#### 決定D5: `DecisionSite`に2バリアントを追加し、スコープ外2経路の混入を避ける（S5対応）
+
+`fix-requires-evidence.md`表が5番目・6番目の独立入口として挙げる
+`runtime/mod.rs::reassert_explicit_physical_key`/`force_on_and_correct_romaji`
+（本ADR「検出できる回帰・できない回帰」節が「本ハーネスでは検出できない」と明記した
+経路）は、現状`ImeController::apply`経由で`site: Sync`として記録され他のSyncレコードと
+区別がつかない。`DecisionSite`に`ReassertExplicitPhysicalKey`/
+`ForceOnRomajiCorrection`を追加し、TH1eの差分ゼロ検証の母数にスコープ外経路が無自覚に
+混入しないようにする。
+
+#### 決定D6: `with_app`再入時の記録漏れは別カウンタで可視化する（解消はしない、S4対応）
+
+`UnifiedJournal`は`PlatformState`（`with_app`経由でのみ到達可能）の中にあるため、
+journal相乗り方式でも`run_open_chain_async`/`imm_cross_write`のfail-open再入時
+（`with_app`が`None`）は記録できない——これは記録したい`with_app_available: false`の
+ケースそのものが記録から漏れるという構造的な限界。再入自体を解決しようとはせず、
+既存の`dropped_by_lane`と同じパターンで「再入により記録をスキップした回数」を
+カウンタとして残す。
+
+#### 決定D7: `AttemptRecord`にBUG-113上書き前の値を追加する（S2対応、Part Dの前提条件）
+
+Part B「attempt単位の決定点ジャーナルと凍結コーパス」節が「上書きが発生した事実自体は
+別フィールドで残す」と約束していたのに、現行`AttemptRecord`に該当フィールドが無い
+（TH1cの実装漏れ）。Part D着手前に、`fallback_write`が`view.control.shadow_on`を
+上書きする直前の値を`AttemptRecord`に追加する。
+
+#### 決定D8: `DecisionInputs`のdoc commentにドリフト防止の警告を追加する（S6対応）
+
+プライバシー境界についてはround4レビューで実コード（`DecisionInputs`/`AttemptRecord`/
+`MechanismCommand`/`EventSourceKind`の全フィールド）を確認した上で「打鍵の生の文字・
+ローマ字・かなは含まれず、新しい境界を動かす話にはならない」と確認済み（ユーザー
+指摘どおり）。ただし将来「診断のため`class_name`も入れよう」のような1行が入ると
+アプリ名（ユーザーが何のソフトを使っているか）の送信チャネルに変質するリスクがある。
+ADR-148が`BugReportGjiKeymapSummary`のdocに残した同種の警告（allowlist原則を素通り
+する変更への注意）を、`DecisionInputs`のdoc comment（`state/ime_actuation_decision.rs`、
+既に`class_name`除外理由が書かれている箇所）に追記する。
+
+#### タスク名: TH1dは維持、本Part Dは並行タスク「TH1d'」とする（S9対応）
+
+TH1d（`tests/journals/actuation_decision/`へ既知バグ由来のfixtureを最低1本手で投入し、
+`replay_all_actuation_decision_fixtures`の「ディレクトリが存在しない間は黙って通す」
+ガードを`assert!(total > 0)`相当に強化するタスク）は**そのまま残す**——bug report由来の
+レコードは決定D3の通りcharacterization専用であり、「意図した不一致を実際に検出できる」
+ことを示す最初の1本（fixtureファイルとして、ユニットテスト内の手組みレコード
+`replay_detects_a_tampered_command`とは別に）は依然として手組みが要る。本Part Dは
+**TH1d'**として、TH1d/TH1eと並行に進める自動コーパス成長タスクと位置づける。
+
+**TH1e・複雑性予算制との関係**: 決定D4のとおり、このコーパスは収集開始時点から
+評価基準②（根本原因特定）に使え、TH1e完了後は評価基準①（撤去すべき処理の特定）にも
+使える。[complexity-budget.md](../../.claude/rules/complexity-budget.md)の発効条件
+（「実際の削除・統合を1件、N本の記録トレースの再生で送信列差分ゼロと検証できたこと」）
+が要求する「N本の記録トレース」の供給源になりうるが、発効条件を満たすのはあくまで
+「実削除+差分ゼロ証明を1件やり切ったとき」であり、コーパスを集めただけでは満たさない。
+
 ## 検出できる回帰・できない回帰（round1 M6を受けて明記）
 
 - **検出できる**: `is_applicable`判定の変更によるチェーンの早期終了・別機構への
@@ -518,16 +684,25 @@ bounded-buffer機構）へ合流させる設計を別途詰め、TF2が一度撤
    `raw_mechanism_write_sites_are_confined_to_chain_writers`（`apply_mechanism(`呼び出し元
    件数）・`.apply_ime_open_with_view(`件数（4）は配線変更で動きうるため、期待値更新と
    想定外の増加が無いことの確認を行う）→ TH1c（Part B、`ActuationDecisionRecord`
-   スキーマ+crate内再生ハーネス）→ TH1d（凍結コーパスの初回投入、実機ダンプからの
-   手動転記）→ TH1e（Part C、`AsyncChainWriter::is_applicable`統合+差分ゼロ再生証明、
-   TH1発効条件の充足）→ Part C副次タスク（3シーム統合+golden移行、複雑性予算の返済）。
+   スキーマ+crate内再生ハーネス）→ TH1d（既知バグ由来fixture1本の手動投入、
+   `assert!(total > 0)`ガード）と**TH1d'（Part D、journal相乗りによるbug report経由の
+   実機コーパス自動収集、決定D1〜D8。round4のopus-adversarial-consultで全面書き直し
+   済み）は並行**→ TH1e（Part C、`AsyncChainWriter::is_applicable`統合+差分ゼロ再生証明、
+   TH1発効条件の充足。TH1d'決定D4により非同期ImmCross系レコードはTH1e完了時点で
+   遡って再生対象になる）→ Part C副次タスク（3シーム統合+golden移行、複雑性予算の返済）。
+   TH1a〜TH1cは2026-09-10にPR#195/#196でdevelopマージ済み（詳細はステータス節）。
 4. **round2 R5の次点候補**: `needs_romaji_pre_write`と`executor.rs:851-856`の
    第3のROMAN判定をSSOTへ統合する変更を、TH1e完了後に試す。条件式が実際に異なるため
    差分が出る可能性が高く、出た場合は「本ハーネスが最初に検出した実回帰」として基盤の
    有効性そのものの証拠になる（TH1eの代替候補ではなく別タスク）。
-5. opus-adversarial-consult round3（U1〜U3反映済み）で「設計の骨格は収束した」と
-   判定済み、round4は不要。TH1aの実装着手時に本ADRの記述と実コードが乖離していないか
-   （特にPart AのStep 0対象・`DecisionSite`の5バリアント）を再確認すること。
+5. opus-adversarial-consult round3（U1〜U3反映済み）で「設計の骨格（Part A〜C）は
+   収束した」と判定済み。**Part D（TH1d'）はround4を1ラウンド実施済み（Blocker7件・
+   Should-fix9件、すべて反映済み。ユーザー指示により多段ループはせず1ラウンドで
+   打ち切り）**。実装着手時に決定D1〜D8の記述と実コードが乖離していないか
+   （特にD1の`journal.rs::JournalEntry`variant追加、D2の固定長配列化）を再確認する
+   こと。TH1aの実装着手時に本ADRの記述と実コードが乖離していないか（特にPart AのStep 0
+   対象・`DecisionSite`の5バリアント）を再確認すること、という記述自体はTH1a完了に
+   より役目を終えた（実施済み・乖離なし）。
 
 ## 関連
 
@@ -540,5 +715,7 @@ bounded-buffer機構）へ合流させる設計を別途詰め、TF2が一度撤
 踏襲する分離パターンの前例）、
 [ADR-151](151-actuation-delegate-by-default-drift-scoped-to-ownership.md)/
 [ADR-152](152-keystroke-step-source-sink-pipeline.md)（同じ領域での過去のBlocker）、
+[ADR-095](095-tray-bug-report-cloudflare-intake.md)（Part Dが実機コーパスの収集元と
+して相乗りする既存のbug report機能。`attach_X`フラグ追加の既存パターンのSSOT）、
 `.claude/rules/complexity-budget.md`（TH1e/Part CがADR-162 E1の1-in-1-out原則の
 実例になる）。
