@@ -72,6 +72,9 @@ use crate::state::actuation_decision_record::{
 };
 use crate::state::ime_actuation_decision::{DecisionInputs, DecisionSite, MechanismCommand};
 
+static ACTUATION_DECISION_RECORD_SKIPPED: crate::lifetime_counter::LifetimeCounter =
+    crate::lifetime_counter::LifetimeCounter::new();
+
 /// ImmCross 機構の書き込み方法。呼び出し元が起案時に決める。
 pub(crate) enum ImmCrossOp {
     /// ADR-086 INV-14 準拠: 起案時に捕獲した `ActuationTarget` へ
@@ -202,6 +205,15 @@ fn async_record(
     }
 }
 
+fn record_actuation_decision_skipped(site: DecisionSite) {
+    ACTUATION_DECISION_RECORD_SKIPPED.increment();
+    tracing::debug!(
+        skipped = ACTUATION_DECISION_RECORD_SKIPPED.read(),
+        site = ?site,
+        "actuation decision record skipped because with_app returned None"
+    );
+}
+
 /// ImmCross の実書き込み。旧 `executor.rs` / `key_pipeline.rs` の分岐をそのまま
 /// 持ってきたもの。
 // `ImmCrossOp::Targeted` が保持する `ActuationTarget` は HWND(`*mut c_void`) を
@@ -229,6 +241,7 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
     });
     let Some((inputs, is_input_relay)) = gate else {
         tracing::info!("[apply-ime] ImmCross async: with_app returned None during gate");
+        record_actuation_decision_skipped(DecisionSite::ImmCrossWrite);
         return (ImeOpenOutcome::Failed, None);
     };
     let command = match &op {
@@ -500,6 +513,7 @@ fn fallback_write(
     .unwrap_or_else(|| {
         // ADR-117: `with_app` が `None`（RUNTIME 未初期化/再入等）を返した無音ケース。
         tracing::info!("[apply-ime] fallback_write: with_app returned None → Failed");
+        record_actuation_decision_skipped(DecisionSite::FallbackWrite);
         (ImeOpenOutcome::Failed, None)
     })
 }
@@ -542,16 +556,21 @@ pub(crate) async fn run_open_chain_async(
     });
     let Some((gate_inputs, is_input_relay)) = gate else {
         tracing::info!("[apply-ime] run_open_chain_async: with_app returned None during gate");
+        record_actuation_decision_skipped(site);
         return ImeOpenOutcome::Failed;
     };
     if is_input_relay {
         let record = async_record(site, gate_inputs, &order, [None; MAX_WRITE_MECHANISMS], 0);
-        let _ = crate::with_app(|app| {
+        if crate::with_app(|app| {
             app.platform_state
                 .ime
                 .journal
                 .record(crate::journal::JournalEntry::ActuationDecision { record });
-        });
+        })
+        .is_none()
+        {
+            record_actuation_decision_skipped(site);
+        }
         return ImeOpenOutcome::NotOwned;
     }
     // ADR-090 §2.A A-1: 授権は起案側（`ImeStateHub::issue_actuation_order`）で
@@ -579,11 +598,28 @@ pub(crate) async fn run_open_chain_async(
         writer.attempts,
         writer.attempts_len,
     );
-    let _ = crate::with_app(|app| {
+    if crate::with_app(|app| {
         app.platform_state
             .ime
             .journal
             .record(crate::journal::JournalEntry::ActuationDecision { record });
-    });
+    })
+    .is_none()
+    {
+        record_actuation_decision_skipped(site);
+    }
     outcome
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_actuation_decision_skipped_increments_counter() {
+        let before = ACTUATION_DECISION_RECORD_SKIPPED.read();
+        record_actuation_decision_skipped(DecisionSite::RunOpenChainAsync);
+        let after = ACTUATION_DECISION_RECORD_SKIPPED.read();
+        assert_eq!(after, before + 1);
+    }
 }
