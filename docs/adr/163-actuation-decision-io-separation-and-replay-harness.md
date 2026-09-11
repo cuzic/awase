@@ -3,7 +3,7 @@
 ## ステータス
 
 **設計は収束済み（opus-adversarial-consult round1・round2・round3実施済み・反映済み。
-round3で「設計の骨格は収束した」と判定され、round4は不要）。実装はTH1a〜TH1cが
+round3で「設計の骨格は収束した」と判定され、round4は不要）。実装はTH1a〜TH1c・TH1d'が
 developへマージ済み、TH1d・TH1eが未着手（2026-09-11時点、実装順序は「今後の議論」節参照）。**
 
 - **TH1a（`key_sequence_policy`のImeKindId化等、Step 0）: 完了**
@@ -20,11 +20,18 @@ developへマージ済み、TH1d・TH1eが未着手（2026-09-11時点、実装�
 - **TH1d（`tests/journals/actuation_decision/`への既知バグ由来fixture投入+
   `assert!(total > 0)`ガード追加）: 未着手**（置き換えではなく維持、下記TH1d'とは
   並行タスク）。
-- **TH1d'（新設、Part D）: bug report経由の実機コーパス自動収集: 未着手**。
-  opus-adversarial-consult round4を1ラウンド実施済み（Blocker7件・Should-fix9件、
-  すべて反映済み）。初版の「別枠リングバッファ+bug_reportへの新規フィールド追加」
-  という設計を撤回し、「`journal.rs`のJournalEntry variantとして相乗りする」設計
-  （決定D1〜D8）に全面的に書き直した。
+- **TH1d'（新設、Part D）: bug report経由の実機コーパス自動収集: 実装・developマージ済み**
+  （PR#201、2026-09-11）。opus-adversarial-consultを3ラウンド実施（Part D設計1回・
+  実装タスク分割1回・PR全体のマージ前レビュー1回、計16件のBlocker・19件以上の
+  Should-fixを反映）。初版の「別枠リングバッファ+bug_reportへの新規フィールド追加」
+  という設計は撤回し、「`journal.rs`のJournalEntry variantとして相乗りする」設計
+  （決定D1〜D8）で実装した。マージ前レビューでBlocker3件（`with_app`再入時の
+  fail-open→fail-closed回帰／`site`事後上書きによるreplay検証の無効化／
+  `dispatch_ime_set_open`早期gateの記録漏れ）が発覚しすべて修正済み。
+  **未達のまま残る事項**（`docs/adr/163-implementation-tasks.md`末尾に記録）:
+  163-T1c/T1d/T6の一部受け入れ基準（windows-build CI/実機が必要な回帰テスト）、
+  および6件のShould-fix（N-1〜N-6、うちN-1はJSON表現1レコード約631バイトという
+  実測に基づく圧縮の推奨——実ユーザーのコーパスが溜まり始める前の対応が望ましい）。
 - **TH1e（Part C、`AsyncChainWriter::is_applicable`統合+差分ゼロ再生証明、
   ADR-158 TH1発効条件の充足）: 未着手**。
 
