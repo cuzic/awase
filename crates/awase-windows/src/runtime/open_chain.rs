@@ -66,6 +66,11 @@ use crate::ime::{ActuationOutcome, ActuationTarget, ConvAfterOpen};
 use crate::state::actuation_chain::{
     ActuationOrder, AsyncMechanismWriter, VerifiedTarget, WriteMechanism,
 };
+use crate::state::actuation_decision_record::{
+    ActuationDecisionRecord, ActuationOrderRecord, AttemptRecord, EventOriginRecord,
+    MAX_WRITE_MECHANISMS,
+};
+use crate::state::ime_actuation_decision::{DecisionInputs, DecisionSite, MechanismCommand};
 
 /// ImmCross 機構の書き込み方法。呼び出し元が起案時に決める。
 pub(crate) enum ImmCrossOp {
@@ -97,6 +102,8 @@ impl ImmCrossOp {
 struct AsyncChainWriter {
     /// 1 回だけ使える（`Actuation` 値のアフィン性と同じ理由で `Option`）。
     imm: Option<ImmCrossOp>,
+    attempts: [Option<AttemptRecord>; MAX_WRITE_MECHANISMS],
+    attempts_len: usize,
 }
 
 impl AsyncMechanismWriter for AsyncChainWriter {
@@ -128,10 +135,70 @@ impl AsyncMechanismWriter for AsyncChainWriter {
                 let Some(op) = self.imm.take() else {
                     return ImeOpenOutcome::Failed;
                 };
-                imm_cross_write(op, open).await
+                let (outcome, attempt) = imm_cross_write(op, open).await;
+                self.record_attempt(attempt);
+                outcome
             }
-            other => fallback_write(other, open),
+            other => {
+                let (outcome, attempt) = fallback_write(other, open);
+                self.record_attempt(attempt);
+                outcome
+            }
         }
+    }
+}
+
+impl AsyncChainWriter {
+    fn record_attempt(&mut self, attempt: Option<AttemptRecord>) {
+        if let Some(attempt) = attempt {
+            if self.attempts_len < MAX_WRITE_MECHANISMS {
+                self.attempts[self.attempts_len] = Some(attempt);
+                self.attempts_len += 1;
+            }
+        }
+    }
+}
+
+fn order_record(order: &ActuationOrder) -> ActuationOrderRecord {
+    ActuationOrderRecord {
+        open: order.open(),
+        would_have_blocked: order.would_have_blocked(),
+        origin: EventOriginRecord::from(order.origin()),
+    }
+}
+
+fn conv_after_open_id(conv: ConvAfterOpen) -> crate::state::conv_after_open::ConvAfterOpenId {
+    match conv {
+        ConvAfterOpen::Skip => crate::state::conv_after_open::ConvAfterOpenId::Skip,
+        ConvAfterOpen::Write(target_conv) => {
+            crate::state::conv_after_open::ConvAfterOpenId::Write(target_conv)
+        }
+    }
+}
+
+fn all_chain_record() -> [Option<WriteMechanism>; MAX_WRITE_MECHANISMS] {
+    let mut chain = [None; MAX_WRITE_MECHANISMS];
+    for (index, mechanism) in WriteMechanism::ALL.into_iter().enumerate() {
+        chain[index] = Some(mechanism);
+    }
+    chain
+}
+
+fn async_record(
+    site: DecisionSite,
+    gate_inputs: DecisionInputs,
+    order: &ActuationOrder,
+    attempts: [Option<AttemptRecord>; MAX_WRITE_MECHANISMS],
+    attempts_len: usize,
+) -> ActuationDecisionRecord {
+    ActuationDecisionRecord {
+        site,
+        gate_inputs,
+        order: order_record(order),
+        chain: all_chain_record(),
+        chain_len: WriteMechanism::ALL.len(),
+        attempts,
+        attempts_len,
     }
 }
 
@@ -143,7 +210,7 @@ impl AsyncMechanismWriter for AsyncChainWriter {
 // 持つ）で Send は要求しない。
 #[allow(clippy::future_not_send)]
 #[tracing::instrument(level = "debug", skip_all, fields(open = open))]
-async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
+async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<AttemptRecord>) {
     // issue #136 / BUG-90 決定4（/code-review指摘で追加）: `AsyncChainWriter::
     // is_applicable(ImmCross)` は `self.imm.is_some()` しか見ておらず profile を
     // 一切参照しないため、`run_open_chain_async` 冒頭の gate が `with_app` の
@@ -151,16 +218,41 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
     // ImmCross write を実行していた。ここで fresh な view を取り直して
     // 再検出する（`fallback_write` が GjiDirect/MsImeDirect/KanjiToggle に
     // 対して行っているのと同じ防御をImmCrossにも及ぼす）。
-    let is_input_relay = crate::with_app(|app| {
+    let gate = crate::with_app(|app| {
         let view = app.shadow_ime_control_view();
-        matches!(
-            crate::state::ime_actuation_decision::decide_gate((&view).into()),
+        let inputs = (&view).into();
+        let is_input_relay = matches!(
+            crate::state::ime_actuation_decision::decide_gate(inputs),
             crate::state::ime_actuation_decision::GateResult::NotOwned
-        )
-    })
-    .unwrap_or(false);
+        );
+        (inputs, is_input_relay)
+    });
+    let Some((inputs, is_input_relay)) = gate else {
+        tracing::info!("[apply-ime] ImmCross async: with_app returned None during gate");
+        return (ImeOpenOutcome::Failed, None);
+    };
+    let command = match &op {
+        ImmCrossOp::Targeted {
+            conv_after_open, ..
+        } => Some(MechanismCommand::SetOpenThenConvForTarget {
+            open,
+            conv_after_open: conv_after_open_id(*conv_after_open),
+        }),
+        ImmCrossOp::Untargeted => Some(MechanismCommand::SetOpenCrossProcessAsyncUntargeted(open)),
+    };
     if is_input_relay {
-        return ImeOpenOutcome::NotOwned;
+        return (
+            ImeOpenOutcome::NotOwned,
+            Some(AttemptRecord {
+                inputs,
+                with_app_available: true,
+                mechanism: WriteMechanism::ImmCross,
+                command,
+                outcome: ImeOpenOutcome::NotOwned,
+                shadow_on_before_bug113_override: None,
+                post_failed_reobservation: None,
+            }),
+        );
     }
     // ADR-117（issue #138 切り分け: MS-IME「直接入力モード許可」時の英数キー文字消失）:
     // 報告環境（Standard プロファイル×MS-IME）の主経路。`.await` に入る前の
@@ -211,7 +303,8 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
         }
     };
 
-    match raw {
+    let mut post_failed_reobservation = None;
+    let outcome = match raw {
         ActuationOutcome::Written => ImeOpenOutcome::Applied,
         ActuationOutcome::Aborted(reason) => {
             // INV-14: Aborted は「一度も書いていない」ので Applied 扱いにしない。
@@ -232,6 +325,7 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
             // SAFETY: `read_ime_state_fast` は Win32 IMM API を呼ぶ。
             //         spawn_local はメインスレッドのメッセージループで実行される。
             let actual = unsafe { crate::ime::read_ime_state_fast() }.ime_on;
+            post_failed_reobservation = Some(actual);
             if actual == Some(open) {
                 // ADR-117: 同上、「送信自体が失敗した」を info! で可視化する。
                 tracing::info!(
@@ -249,7 +343,19 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
                 ImeOpenOutcome::Failed
             }
         }
-    }
+    };
+    (
+        outcome,
+        Some(AttemptRecord {
+            inputs,
+            with_app_available: true,
+            mechanism: WriteMechanism::ImmCross,
+            command,
+            outcome,
+            shadow_on_before_bug113_override: None,
+            post_failed_reobservation,
+        }),
+    )
 }
 
 /// ImmCross 以外の機構の同期 write。view は完了時点の状態から作り直す
@@ -299,9 +405,13 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> ImeOpenOutcome {
 /// ログを見る側は「この値がどちらの送信に対応するか」を混同しないこと
 /// （`imm_cross_write` 冒頭の live 読み取りが ImmCross 自身の送信前の値）。
 #[tracing::instrument(level = "debug", skip_all, fields(open = open, ?mechanism))]
-fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
+fn fallback_write(
+    mechanism: WriteMechanism,
+    open: bool,
+) -> (ImeOpenOutcome, Option<AttemptRecord>) {
     crate::with_app(|app| {
         let mut view = app.shadow_ime_control_view();
+        let shadow_on_before_bug113_override = view.control.shadow_on;
         // BUG-113 追補（Opus 敵対的レビューで発見）: この関数は先行機構が
         // `Failed` を返した後にしか呼ばれず、`imm_cross_write` の `Failed` は
         // `read_ime_state_fast()` で「OS はまだ desired 状態でない」ことを
@@ -330,32 +440,67 @@ fn fallback_write(mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
             view.control.shadow_on
         );
         view.control.shadow_on = None;
+        let inputs = (&view).into();
         // issue #136 / BUG-90 決定4: view はこの関数が完了時点で作り直す
         // （モジュール doc 参照）ため、起案時点では InputRelay でなかった
         // フォーカスが await 中に InputRelay へ移った場合もここで再検出できる。
         // `NotOwned` は `falls_through` が偽なので、GjiDirect/MsImeDirect/
         // KanjiToggle を1つずつ試すことなくチェーンをここで止める。
         if matches!(
-            crate::state::ime_actuation_decision::decide_gate((&view).into()),
+            crate::state::ime_actuation_decision::decide_gate(inputs),
             crate::state::ime_actuation_decision::GateResult::NotOwned
         ) {
-            return ImeOpenOutcome::NotOwned;
+            let outcome = ImeOpenOutcome::NotOwned;
+            return (
+                outcome,
+                Some(AttemptRecord {
+                    inputs,
+                    with_app_available: true,
+                    mechanism,
+                    command: None,
+                    outcome,
+                    shadow_on_before_bug113_override: Some(shadow_on_before_bug113_override),
+                    post_failed_reobservation: None,
+                }),
+            );
         }
-        if crate::ime_controller::mechanism_is_applicable(mechanism, &view) {
-            crate::ime_controller::apply_mechanism(mechanism, open, &view)
+        let (command, outcome) = if crate::ime_controller::mechanism_is_applicable(mechanism, &view)
+        {
+            let (_, command) = crate::state::ime_actuation_decision::decide_attempt(
+                inputs,
+                DecisionSite::Sync,
+                mechanism,
+                open,
+            );
+            (
+                command,
+                crate::ime_controller::apply_mechanism(mechanism, open, &view),
+            )
         } else {
             // ADR-117: ImmCross Failed → フォールスルーしたが結局どの機構にも
             // 到達できなかった無音ケースを可視化する。
             tracing::info!(
                 "[apply-ime] fallback_write: mechanism={mechanism:?} not applicable → Failed"
             );
-            ImeOpenOutcome::Failed
-        }
+            (None, ImeOpenOutcome::Failed)
+        };
+        (
+            outcome,
+            Some(AttemptRecord {
+                inputs,
+                with_app_available: true,
+                mechanism,
+                command,
+                outcome,
+                shadow_on_before_bug113_override: Some(shadow_on_before_bug113_override),
+                post_failed_reobservation: None,
+            }),
+        )
     })
     .unwrap_or_else(|| {
         // ADR-117: `with_app` が `None`（RUNTIME 未初期化/再入等）を返した無音ケース。
         tracing::info!("[apply-ime] fallback_write: with_app returned None → Failed");
-        ImeOpenOutcome::Failed
+        (ImeOpenOutcome::Failed, None)
     })
 }
 
@@ -382,15 +527,33 @@ pub(crate) async fn run_open_chain_async(order: ActuationOrder, imm: ImmCrossOp)
     // （/code-review指摘で発見・追加、修正前は `AsyncChainWriter::
     // is_applicable(ImmCross)` が `self.imm.is_some()` しか見ておらず
     // profile を素通りしていた）、最終的に write が実行されることはない。
-    let is_input_relay = crate::with_app(|app| {
+    let gate = crate::with_app(|app| {
         let view = app.shadow_ime_control_view();
-        matches!(
-            crate::state::ime_actuation_decision::decide_gate((&view).into()),
+        let inputs = (&view).into();
+        let is_input_relay = matches!(
+            crate::state::ime_actuation_decision::decide_gate(inputs),
             crate::state::ime_actuation_decision::GateResult::NotOwned
-        )
-    })
-    .unwrap_or(false);
+        );
+        (inputs, is_input_relay)
+    });
+    let Some((gate_inputs, is_input_relay)) = gate else {
+        tracing::info!("[apply-ime] run_open_chain_async: with_app returned None during gate");
+        return ImeOpenOutcome::Failed;
+    };
     if is_input_relay {
+        let record = async_record(
+            DecisionSite::RunOpenChainAsync,
+            gate_inputs,
+            &order,
+            [None; MAX_WRITE_MECHANISMS],
+            0,
+        );
+        let _ = crate::with_app(|app| {
+            app.platform_state
+                .ime
+                .journal
+                .record(crate::journal::JournalEntry::ActuationDecision { record });
+        });
         return ImeOpenOutcome::NotOwned;
     }
     // ADR-090 §2.A A-1: 授権は起案側（`ImeStateHub::issue_actuation_order`）で
@@ -401,9 +564,28 @@ pub(crate) async fn run_open_chain_async(order: ActuationOrder, imm: ImmCrossOp)
     // await をまたいだ失効の扱いは warrant ではなく**チェーンの再抽選**
     // （ADR-090 項 D、実機ソーク必須のため未実装）で行う。
     crate::ime_controller::log_shadow_warrant("async", &order);
+    let order_for_record = order.clone();
     let actuation = order.into_actuation_shadow().verify(imm.verified_target());
-    let mut writer = AsyncChainWriter { imm: Some(imm) };
-    actuation
+    let mut writer = AsyncChainWriter {
+        imm: Some(imm),
+        attempts: [None; MAX_WRITE_MECHANISMS],
+        attempts_len: 0,
+    };
+    let outcome = actuation
         .run_chain_async(&WriteMechanism::ALL, &mut writer)
-        .await
+        .await;
+    let record = async_record(
+        DecisionSite::RunOpenChainAsync,
+        gate_inputs,
+        &order_for_record,
+        writer.attempts,
+        writer.attempts_len,
+    );
+    let _ = crate::with_app(|app| {
+        app.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::ActuationDecision { record });
+    });
+    outcome
 }
