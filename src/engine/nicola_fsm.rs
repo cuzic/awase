@@ -4249,4 +4249,316 @@ mod tests {
             "elapsed=1599msはbucket 5に計上されるはず"
         );
     }
+
+    // ── flush_pending の全数決定表（状態 × ContextChange × ComposingHint）──
+    //
+    // `docs/awase-state-machine-review.md`（gitignore済みの私的レビュー依頼文書）
+    // 13-4節が「EngineState の flush タイミングが一貫しているか確認してほしい」と
+    // 名指ししていた箇所。`EngineState`（5 variant）× `ContextChange`（6 variant）×
+    // `ComposingHint`（3値）の全組合せを実行し、各枝が実際に何を出力するかを
+    // 1つのテーブルとして固定する——散文の説明ではなく実行結果そのものを
+    // ドキュメントにすることで、コード変更時に自動的に検知されるようにする。
+    //
+    // 畳み込み（効かない軸を `*` にまとめる）は意図的に行わない: 12,096通りの
+    // actuation決定表を検討した際、畳み込みロジック自体が新たなバグの温床になる
+    // 懸念が指摘された（Opus敵対的レビュー）。本テーブルは全体で110行程度と
+    // 小さいため、生の全数列挙のまま可読性を保てる。
+    //
+    // # このテーブルが可視化した非対称性
+    //
+    // `ComposingHint::Unknown`（フォーカス変更等でコンテキスト境界を跨いだため
+    // composing値を信頼できない）を受け取ったとき:
+    // - `EngineState::PendingThumb` の腕は無条件 suppress する
+    //   （`flush_pending` 内 `ComposingHint::Unknown => (ResolvedAction::none, ..)`)。
+    // - `EngineState::PendingCharThumb` の腕は `composing` を一切参照せず、
+    //   常に `resolve_char_thumb_as_simultaneous` で確定する。
+    //
+    // `ComposingHint` 導入コミット（`e3041be6`、2026-07-19）の commit message は
+    // 「既存のflush経路...が既に無条件suppressしていた不整合を発見し統一した」
+    // 「Unknownでは無条件suppressする（別ウィンドウへの誤注入を防ぐ安全策）」と、
+    // *全flush経路*に適用する意図で書かれている。しかし同コミットの実際の diff は
+    // `PendingThumb` の腕だけを書き換えており、当時既に存在していた
+    // `PendingCharThumb`（`0edf8e84` で導入済み）の腕には触れていない。
+    // 意図的な除外を示すコメントもコミットメッセージも存在しない——**見落としと
+    // 判定する**。実害シナリオ: 文字キー+親指キーの2鍵を押下し3鍵目（同時打鍵
+    // 確定用）を待っている間にフォーカスが別ウィンドウへ切り替わると、
+    // `ir_notify_focus_changed` が `ContextChange::FocusChanged` +
+    // `ComposingHint::Unknown` で flush するが、`PendingCharThumb` はこれを無視して
+    // 新しいウィンドウへかな確定出力を送ってしまう（`PendingThumb` の Space
+    // フォールバックと同種の「別ウィンドウへの誤注入」）。
+    //
+    // 対応（このコミットでは行わない）: 「無条件 suppress」と「char1 を単独確定
+    // フォールバック」のどちらが正しい修正かは、ユーザー入力を黙って捨てる
+    // トレードオフを伴う製品判断であり、このリポジトリの「キー選択」再発ファミリー
+    // （5日で6回反転した実績、`.claude/rules/experiment-logging.md`）に該当するため
+    // 単独では決めない。`docs/known-bugs.md` に記録し、修正方針はユーザー判断を仰ぐ。
+
+    /// `flush_pending` の1回の呼び出し結果を要約した行。
+    #[expect(clippy::struct_excessive_bools)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct FlushRow {
+        state: &'static str,
+        char1_released: Option<bool>,
+        reason: &'static str,
+        composing: &'static str,
+        consumed: bool,
+        action_kinds: Vec<&'static str>,
+        timers: Vec<String>,
+        own_decision_reset: bool,
+        thumb_watch_reset: bool,
+        last_decision_reset: bool,
+    }
+
+    fn context_change_label(r: ContextChange) -> &'static str {
+        match r {
+            ContextChange::ImeOff => "ImeOff",
+            ContextChange::InputLanguageChanged => "InputLanguageChanged",
+            ContextChange::EngineDisabled => "EngineDisabled",
+            ContextChange::LayoutSwapped => "LayoutSwapped",
+            ContextChange::FocusChanged => "FocusChanged",
+            ContextChange::BypassKey => "BypassKey",
+        }
+    }
+
+    const fn composing_label(c: ComposingHint) -> &'static str {
+        match c {
+            ComposingHint::Trusted(true) => "Trusted(true)",
+            ComposingHint::Trusted(false) => "Trusted(false)",
+            ComposingHint::Unknown => "Unknown",
+        }
+    }
+
+    fn action_kind(a: &KeyAction) -> &'static str {
+        match a {
+            KeyAction::SpecialKey(_) => "SpecialKey",
+            KeyAction::Key(_) => "Key",
+            KeyAction::KeyUp(_) => "KeyUp",
+            KeyAction::Char(_) => "Char",
+            KeyAction::Suppress => "Suppress",
+            KeyAction::Romaji(_) => "Romaji",
+            KeyAction::KeySequence(_) => "KeySequence",
+            KeyAction::CtrlChord(_) => "CtrlChord",
+            KeyAction::Sequence(_) => "Sequence",
+        }
+    }
+
+    /// テスト用の代表値。実際の VK/ScanCode の値そのものは分岐に効かないため
+    /// （空レイアウトでは `lookup_face` が常に `None` を返す）、固定の適当な値でよい。
+    fn make_pending_key() -> PendingKey {
+        PendingKey {
+            scan_code: ScanCode(0x1E),
+            vk_code: VkCode(0x41),
+            pos: None,
+            timestamp: 1_000,
+        }
+    }
+
+    fn make_pending_thumb() -> PendingThumbData {
+        PendingThumbData {
+            scan_code: ScanCode(0x2A),
+            vk_code: VkCode(0xA0),
+            is_left: true,
+            timestamp: 1_000,
+            injected: false,
+            modifier_key: None,
+            explicit_ime_action_consumed: false,
+            auto_delegate_open_axis_consumed: false,
+        }
+    }
+
+    /// 各 `EngineState` variant を代表値で構築し、その kind ラベルを返す。
+    /// `PendingCharThumb` のみ `char1_released` を反映する。
+    fn build_state(kind: &str, char1_released: bool, fsm: &mut NicolaFsm) {
+        match kind {
+            "Idle" => {}
+            "PendingChar" => fsm.enter_pending_char(make_pending_key()),
+            "PendingThumb" => fsm.enter_pending_thumb(make_pending_thumb()),
+            "PendingCharThumb" => {
+                fsm.enter_pending_char_thumb(make_pending_key(), make_pending_thumb());
+                if char1_released {
+                    if let EngineState::PendingCharThumb {
+                        char1_released_at, ..
+                    } = &mut fsm.state
+                    {
+                        *char1_released_at = Some(500);
+                    }
+                }
+            }
+            "SpeculativeChar" => fsm.state = EngineState::SpeculativeChar(make_pending_key()),
+            other => panic!("unknown state kind: {other}"),
+        }
+    }
+
+    const STATE_KINDS: [&str; 5] = [
+        "Idle",
+        "PendingChar",
+        "PendingThumb",
+        "PendingCharThumb",
+        "SpeculativeChar",
+    ];
+    const REASONS: [ContextChange; 6] = [
+        ContextChange::ImeOff,
+        ContextChange::InputLanguageChanged,
+        ContextChange::EngineDisabled,
+        ContextChange::LayoutSwapped,
+        ContextChange::FocusChanged,
+        ContextChange::BypassKey,
+    ];
+    const COMPOSINGS: [ComposingHint; 3] = [
+        ComposingHint::Trusted(true),
+        ComposingHint::Trusted(false),
+        ComposingHint::Unknown,
+    ];
+
+    fn run_flush_matrix() -> Vec<FlushRow> {
+        let mut rows = Vec::new();
+        for &state_kind in &STATE_KINDS {
+            // `char1_released` は `PendingCharThumb` にしか存在しない軸。
+            // 他の状態では意味を持たないため `None` 固定・1通りだけ実行する。
+            let char1_variants: &[Option<bool>] = if state_kind == "PendingCharThumb" {
+                &[Some(false), Some(true)]
+            } else {
+                &[None]
+            };
+            for &char1_released in char1_variants {
+                for &reason in &REASONS {
+                    for &composing in &COMPOSINGS {
+                        let mut fsm = make_test_fsm();
+                        build_state(state_kind, char1_released.unwrap_or(false), &mut fsm);
+
+                        // own_decision_output/thumb_watch_window/last_decision の
+                        // リセット挙動を観測するため、事前に非 None の値を仕込む。
+                        fsm.own_decision_output = Some(OwnDecisionOutput {
+                            remaining: 1,
+                            measure_since: None,
+                        });
+                        fsm.thumb_watch_window = Some(ThumbWatchWindow {
+                            remaining: 1,
+                            last_vk: None,
+                            last_vk_down: false,
+                        });
+                        fsm.last_decision = Some(LastDecision {
+                            phase2_at: Some(1),
+                            phase1_at: None,
+                            baseline_at: None,
+                        });
+
+                        let resp = fsm.flush_pending(reason, composing);
+
+                        rows.push(FlushRow {
+                            state: state_kind,
+                            char1_released,
+                            reason: context_change_label(reason),
+                            composing: composing_label(composing),
+                            consumed: resp.consumed,
+                            action_kinds: resp.actions.iter().map(action_kind).collect(),
+                            timers: resp.timers.iter().map(|t| format!("{t:?}")).collect(),
+                            own_decision_reset: fsm.own_decision_output.is_none(),
+                            thumb_watch_reset: fsm.thumb_watch_window.is_none(),
+                            last_decision_reset: fsm.last_decision.is_none(),
+                        });
+                    }
+                }
+            }
+        }
+        rows
+    }
+
+    /// `PendingThumb` は `ComposingHint::Unknown` で無条件 suppress する
+    /// （actions が空になる）。
+    #[test]
+    fn flush_pending_thumb_suppresses_actions_on_unknown_composing() {
+        let rows = run_flush_matrix();
+        let affected: Vec<_> = rows
+            .iter()
+            .filter(|r| r.state == "PendingThumb" && r.composing == "Unknown")
+            .collect();
+        assert!(!affected.is_empty());
+        for row in affected {
+            assert!(
+                row.action_kinds.is_empty(),
+                "PendingThumb + Unknown は無条件suppressのはず: {row:?}"
+            );
+        }
+    }
+
+    /// **既知の非対称性（見落としと判定、テストヘッダのコメント参照）**:
+    /// `PendingCharThumb` は `ComposingHint` を一切参照しないため、
+    /// `Unknown` を渡しても `Trusted` と同じ action 列になる。
+    ///
+    /// このテストは「直っていないこと」を固定する回帰ガードではなく、
+    /// **現状を可視化するための characterization テスト**である。修正が
+    /// 入った場合はこのテストを更新し、本コメントと上部のテーブル説明も
+    /// 合わせて書き換えること。
+    #[test]
+    fn flush_pending_char_thumb_ignores_composing_hint_known_gap() {
+        let rows = run_flush_matrix();
+        for &char1_released in &[false, true] {
+            let trusted = rows
+                .iter()
+                .find(|r| {
+                    r.state == "PendingCharThumb"
+                        && r.char1_released == Some(char1_released)
+                        && r.reason == "FocusChanged"
+                        && r.composing == "Trusted(true)"
+                })
+                .expect("Trusted(true) row must exist");
+            let unknown = rows
+                .iter()
+                .find(|r| {
+                    r.state == "PendingCharThumb"
+                        && r.char1_released == Some(char1_released)
+                        && r.reason == "FocusChanged"
+                        && r.composing == "Unknown"
+                })
+                .expect("Unknown row must exist");
+            assert_eq!(
+                trusted.action_kinds, unknown.action_kinds,
+                "既知のギャップ: PendingCharThumbはcomposingを見ないため\
+                 Trusted/Unknownで出力が変わらない（char1_released={char1_released}）"
+            );
+            assert_eq!(trusted.consumed, unknown.consumed);
+        }
+    }
+
+    /// `reason == BypassKey` の場合のみ own_decision_output/thumb_watch_window/
+    /// last_decision をリセットしない（`nicola_fsm.rs::flush_pending` 末尾の
+    /// ADR-120 決定0a コメント参照）。他の5つの `ContextChange` は全てリセットする。
+    #[test]
+    fn flush_pending_resets_tracking_state_except_for_bypass_key() {
+        let rows = run_flush_matrix();
+        for row in &rows {
+            let expected_reset = row.reason != "BypassKey";
+            assert_eq!(
+                row.own_decision_reset, expected_reset,
+                "own_decision_output reset mismatch: {row:?}"
+            );
+            assert_eq!(
+                row.thumb_watch_reset, expected_reset,
+                "thumb_watch_window reset mismatch: {row:?}"
+            );
+            assert_eq!(
+                row.last_decision_reset, expected_reset,
+                "last_decision reset mismatch: {row:?}"
+            );
+        }
+    }
+
+    /// 全180行（`PendingCharThumb`はchar1_released 2値、他は1値 × 6reason ×
+    /// 3composing = (1+1+1+1)*6*3 + 2*6*3 = 72+36=108行）が panic せず、
+    /// `Idle`/`SpeculativeChar` は常に consume・no-op であることを確認する
+    /// 全数実行スモークテスト。
+    #[test]
+    fn flush_pending_matrix_runs_without_panic_and_idle_variants_are_noop() {
+        let rows = run_flush_matrix();
+        assert_eq!(rows.len(), 108, "想定した組合せ数と一致するはず");
+        for row in rows.iter().filter(|r| r.state == "Idle") {
+            assert!(row.consumed);
+            assert!(row.action_kinds.is_empty());
+        }
+        for row in rows.iter().filter(|r| r.state == "SpeculativeChar") {
+            assert!(row.consumed);
+            assert!(row.action_kinds.is_empty());
+        }
+    }
 }

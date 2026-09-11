@@ -17052,3 +17052,38 @@ opus-adversarial-consultで検討した代替案（案B: `hook.rs`側で
 [ADR-008](adr/008-physical-thumb-state-separation.md)、BUG-105
 （3鍵仲裁の別欠陥、症状は類似するが原因は別）、BUG-126（タイマー経路の
 クローズ判断）。
+
+---
+
+## BUG-129: `flush_pending`の`PendingCharThumb`腕が`ComposingHint`を一切参照しないため、フォーカス変更等コンテキスト境界を跨いでも同時打鍵確定が無条件suppressされない（未修正、方針未決定）
+
+**発見経緯（2026-09-11）:** `EngineState`×`ContextChange`×`ComposingHint`の
+全数決定表（`src/engine/nicola_fsm.rs::tests::run_flush_matrix`）を作成し
+可視化したところ判明。`ComposingHint`導入コミット（`e3041be6`、
+2026-07-19、US配列Space親指キー対応）のcommit messageは「既存のflush経路
+（フォーカス変更・エンジン無効化等）が...無条件suppressする」と*全flush
+経路*への適用を意図して書かれているが、実際のdiffは`EngineState::
+PendingThumb`の腕だけを書き換えており、当時既に存在していた
+`PendingCharThumb`（`0edf8e84`で導入済み）には触れていない。除外を示す
+コメントは存在せず、見落としと判定した。
+
+**症状（理論上、実機未確認）:** 文字キー+親指キーの2鍵を押下し3鍵目
+（同時打鍵確定用）を待っている`PendingCharThumb`状態のまま、フォーカスが
+別ウィンドウへ切り替わると、`ir_notify_focus_changed`は`ContextChange::
+FocusChanged`+`ComposingHint::Unknown`でflushするが、`PendingCharThumb`の
+腕はこれを無視して新しいウィンドウへかな確定出力を送る——`PendingThumb`の
+Spaceフォールバックと同種の「別ウィンドウへの誤注入」。
+
+**現状:** 修正せず記録のみ。「無条件suppress」と「char1単独確定への
+フォールバック」のどちらが正しいかはユーザー入力を黙って捨てるトレード
+オフを伴う製品判断であり、`.claude/rules/experiment-logging.md`が記録する
+「IME OFFキー選択が5日で6回反転」と同じ「キー選択」再発ファミリーに該当
+するため単独で決めない。
+
+**テスト:** `flush_pending_char_thumb_ignores_composing_hint_known_gap`
+（`src/engine/nicola_fsm.rs`）が現状（Trusted/Unknownで出力が変わらない
+こと）をcharacterizationテストとして固定。修正時はこのテストを更新すること。
+
+**関連ファイル:** `src/engine/nicola_fsm.rs::flush_pending`、
+`src/engine/fsm_types.rs`（`ComposingHint`）。関連コミット: `e3041be6`
+（`ComposingHint`導入）、`0edf8e84`（`PendingCharThumb`導入）。

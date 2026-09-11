@@ -946,12 +946,16 @@ mod tests {
     #[test]
     fn flush_with_all_context_change_variants() {
         use ContextChange::*;
+        // 6variant全て（`BypassKey`も含む）。以前は5variantのみで`BypassKey`が
+        // 抜けていた——`nicola_fsm::tests::run_flush_matrix`の全数決定表
+        // （BUG-129調査、2026-09-11）で気付いた抜けを埋めた。
         let variants = [
             ImeOff,
             InputLanguageChanged,
             EngineDisabled,
             LayoutSwapped,
             FocusChanged,
+            BypassKey,
         ];
         for variant in variants {
             let mut adapter = make_adapter();
