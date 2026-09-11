@@ -213,9 +213,28 @@ pub struct ActuationDecisionRecord {
     /// `GateResult::NotOwned`だった場合は空（chainの走査自体が起きない）。
     pub attempts: [Option<AttemptRecord>; MAX_WRITE_MECHANISMS],
     pub attempts_len: usize,
+    /// このレコードを実際に記録した呼び出し元（provenance）。`site`とは意味が
+    /// 異なるフィールドとして分離している（/code-review指摘 B-2、PR #201）。
+    ///
+    /// `site`は「`decide_gate`/`decide_chain`/`decide_attempt`にどの
+    /// `DecisionSite`を渡して決定を計算したか」を表し、`replay_record`の
+    /// chain再導出（siteがSyncのときのみ）・ImmCross command再計算スキップ
+    /// 判定（siteがSync以外のときスキップ）が直接この値を見る。`caller`は
+    /// これとは独立に「実際にどの関数がこのレコードを作ったか」という
+    /// 診断ラベルで、再生の一致検証には一切使わない。
+    ///
+    /// 当初`site`自体を呼び出し元ラベルへ事後上書きしていたが、それだと
+    /// `ImeController::apply`経由（常に`site=Sync`で`decide_attempt`を
+    /// 呼ぶ）のレコードのうち`reassert_explicit_physical_key`/
+    /// `force_on_and_correct_romaji`由来の分だけ`site`が`Sync`でなくなり、
+    /// `replay_record`のchain再導出とImmCross command再計算がその分
+    /// スキップされ、実際には`Sync`で計算された正当な値の検証が
+    /// 無効化されていた（同期記録点6箇所中3箇所、`dispatch_ime_set_open`の
+    /// 主経路を含む）。`caller`に分離することでこの穴を塞ぐ。
+    pub caller: Option<DecisionSite>,
 }
 
-const _: () = assert!(size_of::<ActuationDecisionRecord>() <= 176);
+const _: () = assert!(size_of::<ActuationDecisionRecord>() <= 184);
 const _: () = {
     const fn assert_copy<T: Copy>() {}
     assert_copy::<AttemptRecord>();
@@ -332,6 +351,18 @@ mod tests {
         // `Proceed`かつ空`attempts`のレコードが本チェックで誤検知されうる。
         // TH1dで実機ダンプを投入した際にこの理由でgate mismatchが出た場合は、
         // この逆算そのものを見直すこと（この分岐を無条件に信用しない）。
+        //
+        // /code-review指摘（S-6、PR #201）: 本PR自身が上記の「先頭要素が
+        // 必ず適用可能」という前提から外れた具体的な経路を作った——
+        // `run_open_chain_async`の冒頭gateは`with_app`成功だが（gate自体は
+        // Proceed）、その後`imm_cross_write`/`fallback_write`内側の
+        // `with_app`が全機構でNoneを返すfail-openケース（`runtime/
+        // open_chain.rs`のB-1修正参照）では、`attempts_len == 0`のまま
+        // `Proceed`なレコードが記録されうる。この場合`expected_gate`は
+        // `NotOwned`（誤り）になり`gate mismatch`が報告される——実装の
+        // バグではなく、この逆算ロジックの既知の誤検知パターンである。
+        // 163-T8でfixtureを投入する際は、この組合せ（gate=Proceed、
+        // attempts_len=0）を「既知の誤検知」として扱うこと。
         let expected_gate = if record.attempts_len == 0 {
             GateResult::NotOwned
         } else {
@@ -352,8 +383,7 @@ mod tests {
             if recomputed != recorded_chain.as_slice() {
                 failures.push(format!(
                     "chain mismatch (Sync): decide_chain(gate_inputs)={recomputed:?} \
-                     != recorded {:?}",
-                    recorded_chain
+                     != recorded {recorded_chain:?}"
                 ));
             }
         }
@@ -471,6 +501,7 @@ mod tests {
             }])
             .0,
             attempts_len: 1,
+            caller: None,
         };
         assert_eq!(
             replay_record(&record),
@@ -505,11 +536,73 @@ mod tests {
             }])
             .0,
             attempts_len: 1,
+            caller: None,
         };
 
         let json = serde_json::to_string(&record).expect("serialize");
         let back: ActuationDecisionRecord = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(record, back);
+    }
+
+    // /code-review指摘（S-4、PR #201）: 「LaneKind::Actuationへの相乗りが
+    // 既存ImeActuation/DriftGiveUpDiagnostic/ConvClassifyCallエントリを
+    // 押し出すペースを悪化させないか」の実測は、windows-build CIや実機
+    // ダンプが無くてもLinux上のJSONバイト数計測で今すぐ着手できる
+    // （指摘のとおり「実測はCI待ち」は不要な先送りだった）。固定長配列化
+    // （163-T2）で未使用スロットも`null`として4枠ぶん出力される点、
+    // `nested_optional_bool`がattemptごとにオブジェクト2個を増やす点を
+    // 含めて実測する。1 actuationにつき既存`ImeActuation`と合わせ同一lane
+    // に2エントリ積まれる点は本テストの範囲外（実際のlane圧迫の実測は
+    // windows-build CI/実機ダンプでの前後比較が別途必要、163-T1dの
+    // 受け入れ基準に残したまま）。
+    #[test]
+    fn actuation_decision_record_json_byte_size_is_measured() {
+        let gate_inputs = inputs(
+            AppImeProfile::Standard,
+            ImeKindId::Gji,
+            Some(true),
+            InputModeState::Unknown,
+        );
+        let (chain, chain_len) = chain_from_slice(decide_chain(gate_inputs));
+        // 実運用で最頻出と見込む構成: attemptsは1件のみ埋まり残り3スロットは
+        // null（GjiDirect/MsImeDirectはchain中1機構だけで already-matched/
+        // 送信が決まることが多い）。
+        let record = ActuationDecisionRecord {
+            site: DecisionSite::Sync,
+            gate_inputs,
+            order: order(true),
+            chain,
+            chain_len,
+            attempts: attempts([AttemptRecord {
+                inputs: gate_inputs,
+                with_app_available: true,
+                mechanism: WriteMechanism::GjiDirect,
+                command: Some(MechanismCommand::SendVk(VkCode(0x16))),
+                outcome: ImeOpenOutcome::Applied,
+                shadow_on_before_bug113_override: Some(Some(true)),
+                post_failed_reobservation: Some(Some(true)),
+            }])
+            .0,
+            attempts_len: 1,
+            caller: None,
+        };
+        let json = serde_json::to_string(&record).expect("serialize");
+        // 実測値（2026-09-11時点、フィールド構成が変わったら更新すること）:
+        // attempt 1件・未使用スロット3個nullの構成で631バイト。
+        // 未使用スロットのnull・nested_optional_boolのオブジェクト展開が
+        // 主要因（`chain`/`attempts`の未使用null 6個＋
+        // `shadow_on_before_bug113_override`/`post_failed_reobservation`の
+        // オブジェクト展開2個）。journal.rsの`select_tail_within_budget`は
+        // lane予約20%（Actuation）の中で既存`ImeActuation`（固定サイズ
+        // 数十バイト）と奪い合うため、1 actuationあたりのlane消費バイト数は
+        // 本エントリの追加でおよそ10倍規模になる——この数値をwindows-build
+        // CI/実機ダンプでの前後比較（163-T1d受け入れ基準）の基準値として
+        // 使うこと。
+        assert!(
+            json.len() < 700,
+            "ActuationDecisionRecordのJSON表現が想定より大きい: {} bytes ({json})",
+            json.len()
+        );
     }
 
     #[test]
@@ -528,6 +621,7 @@ mod tests {
             chain_len: 0,
             attempts: [None; MAX_WRITE_MECHANISMS],
             attempts_len: 0,
+            caller: None,
         };
         assert_eq!(replay_record(&record), Vec::<String>::new());
     }
@@ -559,6 +653,7 @@ mod tests {
             }])
             .0,
             attempts_len: 1,
+            caller: None,
         };
         assert!(
             !replay_record(&record).is_empty(),
@@ -567,7 +662,16 @@ mod tests {
     }
 
     #[test]
-    fn replay_detects_a_tampered_bug113_before_override_value() {
+    // /code-review指摘（S-2、PR #201）: F1修正前は「上書き前の値の改ざん」を
+    // 検出するテストのつもりだったが、F1修正後の不変条件（shadow_on_before_
+    // bug113_overrideがSomeなら、attempt.inputs.shadow_onは必ずNoneのはず）
+    // のもとでは、実際に検出しているのは「値の改ざん」ではなく「上書きが
+    // 発生したはずなのにinputs.shadow_onがNoneでない」という構造的な矛盾
+    // （fallback_writeでは起こり得ない組合せ）である。テスト名を実態に
+    // 合わせて訂正した（163-T0の受け入れ基準「上書き前の値の改ざんを検出」も
+    // 同じ理由で原理的に達成不可能——上書き前の値を独立に再導出する手段が
+    // 無いため——docs/adr/163-implementation-tasks.mdに記録済み）。
+    fn replay_detects_bug113_override_recorded_but_inputs_shadow_on_not_none() {
         let gate_inputs = inputs(
             AppImeProfile::Standard,
             ImeKindId::Gji,
@@ -592,16 +696,21 @@ mod tests {
                 )
                 .1,
                 outcome: ImeOpenOutcome::Applied,
-                // 意図的に誤った記録値（attempt.inputs.shadow_onはSome(true)）。
+                // fallback_writeでは上書きが発生したattemptのinputs.shadow_on
+                // は必ずNoneになる（open_chain.rs::fallback_write参照）。
+                // ここでは意図的にinputs.shadow_on（gate_inputs由来のSome(true)）
+                // と矛盾させている。
                 shadow_on_before_bug113_override: Some(Some(false)),
                 post_failed_reobservation: None,
             }])
             .0,
             attempts_len: 1,
+            caller: None,
         };
         assert!(
             !replay_record(&record).is_empty(),
-            "改ざんしたBUG-113上書き前値はreplay_recordが不一致として検出するはず"
+            "shadow_on_before_bug113_overrideがSomeなのにinputs.shadow_onが\
+             Noneでない矛盾はreplay_recordが検出するはず"
         );
     }
 
@@ -635,6 +744,7 @@ mod tests {
             }])
             .0,
             attempts_len: 1,
+            caller: None,
         };
         assert_eq!(replay_record(&record), Vec::<String>::new());
     }

@@ -178,21 +178,29 @@ fn all_chain_record() -> [Option<WriteMechanism>; MAX_WRITE_MECHANISMS] {
     chain
 }
 
+// /code-review指摘（S-5、PR #201）: `order: &ActuationOrder`ではなく
+// `ActuationOrderRecord`（Copy、記録に必要な3値のみ）を受け取る——
+// `ActuationOrder`はINV-47（`ActuationOrder::issue`だけが構築できる、
+// warrantを発行せずに起案することが型として書けない）で設計されたアフィン値
+// であり、記録のためだけに`.clone()`でwarrantを複製するのは設計意図に反する。
+// 呼び出し元は`order.into_actuation_shadow()`で`order`を消費する**前**に
+// `ActuationOrderRecord::from(&order)`を作っておく。
 fn async_record(
     site: DecisionSite,
     gate_inputs: DecisionInputs,
-    order: &ActuationOrder,
+    order_record: ActuationOrderRecord,
     attempts: [Option<AttemptRecord>; MAX_WRITE_MECHANISMS],
     attempts_len: usize,
 ) -> ActuationDecisionRecord {
     ActuationDecisionRecord {
         site,
         gate_inputs,
-        order: ActuationOrderRecord::from(order),
+        order: order_record,
         chain: all_chain_record(),
         chain_len: WriteMechanism::ALL.len(),
         attempts,
         attempts_len,
+        caller: None,
     }
 }
 
@@ -221,6 +229,14 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
     // ImmCross write を実行していた。ここで fresh な view を取り直して
     // 再検出する（`fallback_write` が GjiDirect/MsImeDirect/KanjiToggle に
     // 対して行っているのと同じ防御をImmCrossにも及ぼす）。
+    // /code-review指摘（PR #201 B-1）: `with_app`がNone（再入）を返した場合、
+    // developの元実装は`.unwrap_or(false)`でfail-open（is_input_relay=false、
+    // 実書き込みへ進む）していた。本PRが一度これをfail-closed（即Failed・
+    // 一切書き込まない）に変えてしまっており、再入時にIME切替が無音で
+    // 消える実害のある回帰だった。`inputs`（記録用）と`is_input_relay`
+    // （実書き込み判定）を分離し、`with_app`失敗時は`inputs=None`
+    // （記録できない、163-T6のカウンタ対象）・`is_input_relay=false`
+    // （fail-open、書き込みは続行）に戻す。
     let gate = crate::with_app(|app| {
         let view = app.shadow_ime_control_view();
         let inputs = (&view).into();
@@ -230,10 +246,15 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
         );
         (inputs, is_input_relay)
     });
-    let Some((inputs, is_input_relay)) = gate else {
-        tracing::info!("[apply-ime] ImmCross async: with_app returned None during gate");
+    let (inputs, is_input_relay) = if let Some((inputs, is_input_relay)) = gate {
+        (Some(inputs), is_input_relay)
+    } else {
+        tracing::info!(
+            "[apply-ime] ImmCross async: with_app returned None during gate \
+             (fail-open, proceeding without a decision record)"
+        );
         record_actuation_decision_skipped(DecisionSite::ImmCrossWrite);
-        return (ImeOpenOutcome::Failed, None);
+        (None, false)
     };
     let command = match &op {
         ImmCrossOp::Targeted {
@@ -245,6 +266,9 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
         ImmCrossOp::Untargeted => Some(MechanismCommand::SetOpenCrossProcessAsyncUntargeted(open)),
     };
     if is_input_relay {
+        // `is_input_relay`はgate（`with_app`成功時のみ）由来なので、ここでは
+        // `inputs`が必ず`Some`（`with_app`失敗時は常にfalse、B-1修正参照）。
+        let inputs = inputs.expect("is_input_relay implies with_app succeeded and inputs is Some");
         return (
             ImeOpenOutcome::NotOwned,
             Some(AttemptRecord {
@@ -348,18 +372,20 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
             }
         }
     };
-    (
+    // `inputs`が`None`（gate時点の`with_app`失敗、B-1修正）の場合は記録先の
+    // 決定入力が無いため`AttemptRecord`を作らない——163-T6のカウンタが
+    // 既に`record_actuation_decision_skipped`でこのケースを計上済み。
+    // 実際のImmCross書き込み自体（`outcome`）はfail-openで続行している。
+    let record = inputs.map(|inputs| AttemptRecord {
+        inputs,
+        with_app_available: true,
+        mechanism: WriteMechanism::ImmCross,
+        command,
         outcome,
-        Some(AttemptRecord {
-            inputs,
-            with_app_available: true,
-            mechanism: WriteMechanism::ImmCross,
-            command,
-            outcome,
-            shadow_on_before_bug113_override: None,
-            post_failed_reobservation,
-        }),
-    )
+        shadow_on_before_bug113_override: None,
+        post_failed_reobservation,
+    });
+    (outcome, record)
 }
 
 /// ImmCross 以外の機構の同期 write。view は完了時点の状態から作り直す
@@ -536,6 +562,12 @@ pub(crate) async fn run_open_chain_async(
     // （/code-review指摘で発見・追加、修正前は `AsyncChainWriter::
     // is_applicable(ImmCross)` が `self.imm.is_some()` しか見ておらず
     // profile を素通りしていた）、最終的に write が実行されることはない。
+    // /code-review指摘（PR #201 B-1）: 直前のコメントが明言する「with_appが
+    // Noneならfail-open」を、以前のコードは`Failed`即終了（fail-closed）に
+    // していた——コメントと実装が矛盾する回帰だった。`gate_inputs`を
+    // `Option<DecisionInputs>`にし、`with_app`失敗時は`is_input_relay=false`
+    // （fail-open、下の書き込みへ進む）・`gate_inputs=None`
+    // （記録できない、163-T6のカウンタ対象）に戻す。
     let gate = crate::with_app(|app| {
         let view = app.shadow_ime_control_view();
         let inputs = (&view).into();
@@ -545,13 +577,28 @@ pub(crate) async fn run_open_chain_async(
         );
         (inputs, is_input_relay)
     });
-    let Some((gate_inputs, is_input_relay)) = gate else {
-        tracing::info!("[apply-ime] run_open_chain_async: with_app returned None during gate");
+    let (gate_inputs, is_input_relay) = if let Some((inputs, is_input_relay)) = gate {
+        (Some(inputs), is_input_relay)
+    } else {
+        tracing::info!(
+            "[apply-ime] run_open_chain_async: with_app returned None during gate \
+             (fail-open, proceeding without a decision record)"
+        );
         record_actuation_decision_skipped(site);
-        return ImeOpenOutcome::Failed;
+        (None, false)
     };
     if is_input_relay {
-        let record = async_record(site, gate_inputs, &order, [None; MAX_WRITE_MECHANISMS], 0);
+        // `is_input_relay`はgate（`with_app`成功時のみ）由来なので、ここでは
+        // `gate_inputs`が必ず`Some`（B-1修正参照）。
+        let gate_inputs =
+            gate_inputs.expect("is_input_relay implies with_app succeeded and gate_inputs is Some");
+        let record = async_record(
+            site,
+            gate_inputs,
+            ActuationOrderRecord::from(&order),
+            [None; MAX_WRITE_MECHANISMS],
+            0,
+        );
         if crate::with_app(|app| {
             app.platform_state
                 .ime
@@ -572,7 +619,10 @@ pub(crate) async fn run_open_chain_async(
     // await をまたいだ失効の扱いは warrant ではなく**チェーンの再抽選**
     // （ADR-090 項 D、実機ソーク必須のため未実装）で行う。
     crate::ime_controller::log_shadow_warrant("async", &order);
-    let order_for_record = order.clone();
+    // S-5: `order`を`into_actuation_shadow()`で消費する前に、記録に必要な
+    // 3値だけを`ActuationOrderRecord`として退避する（`order.clone()`で
+    // warrantを複製しない）。
+    let order_record = ActuationOrderRecord::from(&order);
     let actuation = order.into_actuation_shadow().verify(imm.verified_target());
     let mut writer = AsyncChainWriter {
         imm: Some(imm),
@@ -582,21 +632,29 @@ pub(crate) async fn run_open_chain_async(
     let outcome = actuation
         .run_chain_async(&WriteMechanism::ALL, &mut writer)
         .await;
-    let record = async_record(
-        site,
-        gate_inputs,
-        &order_for_record,
-        writer.attempts,
-        writer.attempts_len,
-    );
-    if crate::with_app(|app| {
-        app.platform_state
-            .ime
-            .journal
-            .record(crate::journal::JournalEntry::ActuationDecision { record });
-    })
-    .is_none()
-    {
+    // `gate_inputs`が`None`（gate時点の`with_app`失敗、B-1修正）の場合は
+    // 記録先の決定入力が無いため`ActuationDecisionRecord`を作らない
+    // ——163-T6のカウンタが既に計上済み。実際のchain実行自体（`outcome`）は
+    // fail-openで続行している。
+    if let Some(gate_inputs) = gate_inputs {
+        let record = async_record(
+            site,
+            gate_inputs,
+            order_record,
+            writer.attempts,
+            writer.attempts_len,
+        );
+        if crate::with_app(|app| {
+            app.platform_state
+                .ime
+                .journal
+                .record(crate::journal::JournalEntry::ActuationDecision { record });
+        })
+        .is_none()
+        {
+            record_actuation_decision_skipped(site);
+        }
+    } else {
         record_actuation_decision_skipped(site);
     }
     outcome

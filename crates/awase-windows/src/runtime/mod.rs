@@ -1028,7 +1028,10 @@ impl Runtime {
         // 起案する。授権が下りなくても書き込みは止めない（A-2 で倒す）。
         let order = self.issue_actuation_order(true, "force_on_and_correct_romaji");
         let (outcome, mut record) = self.platform.apply_ime_open_with_view(order, &view, belief);
-        record.site = crate::state::ime_actuation_decision::DecisionSite::ForceOnRomajiCorrection;
+        // B-2（PR #201）: `site`は上書きせず`Sync`のまま維持し（replay_record
+        // のchain/ImmCross command検証を保つ）、呼び出し元は`caller`に記録する。
+        record.caller =
+            Some(crate::state::ime_actuation_decision::DecisionSite::ForceOnRomajiCorrection);
         self.platform_state
             .ime
             .journal
@@ -1200,8 +1203,10 @@ impl Runtime {
             confident: true,
         };
         let (outcome, mut record) = self.platform.apply_ime_open_with_view(order, &view, belief);
-        record.site =
-            crate::state::ime_actuation_decision::DecisionSite::ReassertExplicitPhysicalKey;
+        // B-2（PR #201）: `site`は上書きせず`Sync`のまま維持し（replay_record
+        // のchain/ImmCross command検証を保つ）、呼び出し元は`caller`に記録する。
+        record.caller =
+            Some(crate::state::ime_actuation_decision::DecisionSite::ReassertExplicitPhysicalKey);
         self.platform_state
             .ime
             .journal

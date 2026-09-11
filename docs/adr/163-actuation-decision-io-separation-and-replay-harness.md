@@ -117,8 +117,10 @@ ungate化する工事を暗黙に要求しており、これは本ADRが「検�
 
 ```rust
 // state/ime_actuation_decision.rs（仮称、新規ungatedモジュール）
+// Part D決定D1（PR #201、S-7）: journal相乗りのためpub(crate)からpubへ
+// 格上げ済み（TH1b時点の原設計はpub(crate)だった）。
 #[derive(Clone, Copy)]
-pub(crate) struct DecisionInputs {
+pub struct DecisionInputs {
     pub profile: AppImeProfile,       // 既にungated
     pub kind: ImeKindId,              // ActiveImeKind の既存ungatedミラー（ADR-089 §2.8）
     pub shadow_on: Option<bool>,      // ControlLog.shadow_on
@@ -273,7 +275,9 @@ round1 M3指摘: `fallback_write`（`open_chain.rs:299-348`）は機構ごとに
   `caps()`（`state/app_ime_policy.rs`）の回帰を再生が素通りしてしまうため。
 
 ```rust
-pub(crate) struct ActuationDecisionRecord {
+// Part D決定D1（PR #201）: journal相乗りのためungatedなpubへ格上げ済み
+// （元はpub(crate)、S-7指摘でこのスキーマ例も同期）。
+pub struct ActuationDecisionRecord {
     // round3 U2: DispatchImeSetOpen を追加。executor.rs::dispatch_ime_set_open の
     // InputRelay ゲートは ImeController::apply（Sync）とも run_open_chain_async とも
     // 別の独立した5つ目の入口（両者が独立に同じ判定を持つのがADR-119の経緯そのもの）。
@@ -287,8 +291,14 @@ pub(crate) struct ActuationDecisionRecord {
     pub chain_len: usize,     // syncは decide_chain 再導出との一致もassertする
     pub attempts: [Option<AttemptRecord>; 4],
     pub attempts_len: usize,
+    // /code-review指摘 B-2（PR #201）: `site`は「decide_attemptにどの
+    // DecisionSiteを渡したか」専用に固定し、呼び出し元の識別はこの独立
+    // フィールドへ分離した。`site`を呼び出し元ラベルへ事後上書きすると
+    // replay_recordのchain再導出/ImmCross command再計算検証が無効化される
+    // ため（詳細はPart D参照）。
+    pub caller: Option<DecisionSite>,
 }
-pub(crate) struct AttemptRecord {
+pub struct AttemptRecord {
     pub inputs: DecisionInputs,         // この attempt 時点の再サンプリング値
     pub with_app_available: bool,
     pub mechanism: WriteMechanism,

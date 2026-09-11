@@ -535,9 +535,13 @@ fn chain_record(
     (record, chain.len())
 }
 
+// /code-review指摘（S-5、PR #201）: `order: &ActuationOrder`ではなく
+// `ActuationOrderRecord`（Copy、記録に必要な3値のみ）を受け取る——
+// `ActuationOrder`はINV-47のアフィン値であり、記録のためだけに`.clone()`で
+// warrantを複製しない（`runtime/open_chain.rs::async_record`と同じ理由）。
 fn actuation_decision_record(
     gate_inputs: crate::state::ime_actuation_decision::DecisionInputs,
-    order: &ActuationOrder,
+    order_record: ActuationOrderRecord,
     chain: &[WriteMechanism],
     attempts: [Option<AttemptRecord>; MAX_WRITE_MECHANISMS],
     attempts_len: usize,
@@ -546,11 +550,12 @@ fn actuation_decision_record(
     ActuationDecisionRecord {
         site: crate::state::ime_actuation_decision::DecisionSite::Sync,
         gate_inputs,
-        order: ActuationOrderRecord::from(order),
+        order: order_record,
         chain,
         chain_len,
         attempts,
         attempts_len,
+        caller: None,
     }
 }
 
@@ -607,7 +612,7 @@ impl ImeController {
         ) {
             let record = actuation_decision_record(
                 gate_inputs,
-                &order,
+                ActuationOrderRecord::from(&order),
                 &[],
                 [None; MAX_WRITE_MECHANISMS],
                 0,
@@ -628,7 +633,7 @@ impl ImeController {
         // `ActuationTarget::capture_blocking` で捕獲する（Phase C item 12）。
         log_shadow_warrant("sync", &order);
         let chain = caps_chain_for(view);
-        let order_for_record = order.clone();
+        let order_record = ActuationOrderRecord::from(&order);
         let actuation = order
             .into_actuation_shadow()
             .verify(VerifiedTarget::FocusImplicit);
@@ -646,7 +651,7 @@ impl ImeController {
         }
         let record = actuation_decision_record(
             gate_inputs,
-            &order_for_record,
+            order_record,
             chain,
             writer.attempts,
             writer.attempts_len,

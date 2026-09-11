@@ -346,3 +346,26 @@ ADR本文同期は各スキーマ変更コミット（T0/T2/T4/T5）が既に行
 fixtureディレクトリを一時的に空にしてテストが意図どおり失敗することを確認する。
 
 **依存**: フェーズ1（最終スキーマ確定）+ フェーズ2（実機ダンプが取れる状態）。
+
+---
+
+## PR #201レビュー結果（opus-adversarial-consult round2、2026-09-11）での未達事項
+
+以下はPR #201のマージ時点で受け入れ基準が未達のまま残った項目。実機/windows-build
+CIが必要でこのセッション（Linuxサンドボックス）では実施できなかったもの。
+
+- **163-T1c**: `fallback_write`実行時にjournalへ`ActuationDecision`エントリが
+  実際に積まれることを確認する回帰テスト、`shadow_on_before_bug113_override`が
+  正しい値を持つことのアサートは未実施（windows-build CI必須）。
+- **163-T1d**: 同上の回帰テスト、およびlane別emitted/dropped件数の
+  変更前後比較（実機/windows-build CI必須。ただしJSONバイト数の実測は
+  `actuation_decision_record_json_byte_size_is_measured`テストでLinux上で
+  完了済み——1エントリ約631バイト、既存`ImeActuation`と合わせ同一laneを
+  消費する点に注意）。
+- **163-T6**: `with_app`が`None`を返す状況を実際に模したテストは未実施
+  （`runtime/`配下は`#[cfg(windows)]`のためLinuxのテストバイナリに存在しない）。
+- **S-8（新規Should-fix、未対応）**: `DecisionSite::RunOpenChainAsync`が
+  `key_pipeline.rs`のshadow-toggle OFF経路・`runtime/mod.rs`のforce-on
+  bootstrap経路・`run_open_chain_async`自身の冒頭gateという3つの異なる
+  呼び出し元に共有されており、診断粒度としては区別できない。`caller`
+  フィールド（B-2で新設）を使ってこれらも分離できるが、本PRでは見送った。

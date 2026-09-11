@@ -825,10 +825,39 @@ impl DecisionExecutor {
         // view は imm_first 判定と sync path の両方で使うため一度だけ構築する。
         let mut view = platform.build_ime_control_view(self.applied_snapshot.to_pair());
         view.belief_input_mode = self.belief_input_mode;
+        let gate_inputs = (&view).into();
         if matches!(
-            crate::state::ime_actuation_decision::decide_gate((&view).into()),
+            crate::state::ime_actuation_decision::decide_gate(gate_inputs),
             crate::state::ime_actuation_decision::GateResult::NotOwned
         ) {
+            // /code-review指摘（B-3、PR #201）: ADR-163がDecisionSite::
+            // DispatchImeSetOpenを新設した理由は、この早期gate（下のimm_first
+            // 判定・sync path双方より前の、executor側だけが持つ独立した
+            // 判定点）を「Syncに畳むと回帰が記録上区別できなくなる」ため
+            // 区別する必要があったからだが、以前はこのgateがNotOwnedを
+            // 返すケースを一切記録していなかった。ここで初めて実際に
+            // site=DispatchImeSetOpenのレコードを積む。まだ`ActuationOrder`は
+            // 発行されていない（両分岐が自分の理由文字列で個別に発行する）ため、
+            // この記録専用に使い捨てのorderを発行する——`ActuationOrder::issue`
+            // はA-1（shadow）段階の純粋な読み取りで、発行して`chain`に通さず
+            // 破棄しても既存の警告(warrant)会計に副作用は無い
+            // （`state/platform_state.rs::issue_actuation_order`のdoc参照）。
+            let gate_reject_order =
+                ime.issue_self_actuation_order(open, "dispatch_ime_set_open_gate_not_owned");
+            let record = crate::state::actuation_decision_record::ActuationDecisionRecord {
+                site: crate::state::ime_actuation_decision::DecisionSite::DispatchImeSetOpen,
+                gate_inputs,
+                order: crate::state::actuation_decision_record::ActuationOrderRecord::from(
+                    &gate_reject_order,
+                ),
+                chain: [None; crate::state::actuation_decision_record::MAX_WRITE_MECHANISMS],
+                chain_len: 0,
+                attempts: [None; crate::state::actuation_decision_record::MAX_WRITE_MECHANISMS],
+                attempts_len: 0,
+                caller: None,
+            };
+            ime.journal
+                .record(crate::journal::JournalEntry::ActuationDecision { record });
             return Some((open, awase::platform::ImeOpenOutcome::NotOwned));
         }
         let imm_first = crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
@@ -989,7 +1018,13 @@ impl DecisionExecutor {
             // ADR-090 §2.A A-1（shadow）。
             let order = ime.issue_self_actuation_order(open, "engine_decision_sync");
             let (outcome, mut record) = platform.apply_ime_open_with_view(order, &view, belief);
-            record.site = crate::state::ime_actuation_decision::DecisionSite::DispatchImeSetOpen;
+            // /code-review指摘（B-2、PR #201）: `site`は上書きしない——
+            // `decide_attempt`は常に`Sync`で呼ばれておりrecord.siteもSyncの
+            // ままなので、`replay_record`のchain再導出/ImmCross command
+            // 再計算検証を維持できる。呼び出し元の識別は独立の`caller`
+            // フィールドに記録する。
+            record.caller =
+                Some(crate::state::ime_actuation_decision::DecisionSite::DispatchImeSetOpen);
             ime.journal
                 .record(crate::journal::JournalEntry::ActuationDecision { record });
             if outcome == awase::platform::ImeOpenOutcome::Failed {
