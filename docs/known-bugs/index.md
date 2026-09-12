@@ -131,6 +131,7 @@
 | [BUG-126](BUG-126.md) | （未確認・理論的リスクとして調査しクローズ）タイマー経路の親指タイムスタンプがdrain replay時にライブ再取得され、別の押下の値と誤って比較されうる懸念——実機未再現、失敗… |
 | [BUG-127](BUG-127.md) | `OUTPUT_GATE` drain replay 中、親指キー押下タイムスタンプがイベント捕捉時点ではなくリプレイ実行時点のライブ値で再構築され、既に消費済みの押下と無関係な後… |
 | [BUG-129](BUG-129.md) | 【解決済み・仕様と判定】`flush_pending`の`PendingCharThumb`腕が`ComposingHint`（現`ThumbRawVkEmission`）を参照しない件、根本原因はコード見… |
+| [BUG-130](BUG-130.md) | `tsf::probe::tests::check_now_show_only_confirm_becomes_stale_after_grace_expires` がwindows-build CIで稀にflake（テスト自体の不具合、実装バグではない） |
 
 ## その他の資料
 

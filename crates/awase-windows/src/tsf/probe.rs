@@ -1164,8 +1164,13 @@ mod tests {
         let held = detector.check_now(far_deadline);
         assert!(held.is_none(), "猶予開始直後はまだ None のはず: {held:?}");
 
+        // +10ms マージンは `GetTickCount64` の既定タイマー分解能（~15.6ms）より
+        // 小さく、CI runner 負荷下では実経過 30ms でも tick 差分が量子化により
+        // grace(20ms) 未満に丸まることがあった（windows-build run 34659416676
+        // で1回再現、`docs/known-bugs/BUG-131.md`）。tick 分解能を確実に上回る
+        // マージンに広げて量子化ぶれを吸収する。
         std::thread::sleep(std::time::Duration::from_millis(
-            LiteralDetector::EPOCH_FENCE_GRACE_MS + 10,
+            LiteralDetector::EPOCH_FENCE_GRACE_MS + 50,
         ));
         let result = detector.check_now(far_deadline);
         assert!(
