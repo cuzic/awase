@@ -2659,9 +2659,11 @@ fn sync_romaji_write_goes_through_a_captured_target() {
 
 // ── BUG-78: disable_apps（アプリ単位の awase 無効化 + Ctrl/Shift スタック復旧） ──
 
-/// `disable_apps` の早期 return（`hook_callback` 内、`FOCUS_APP_DISABLED` を見る分岐）は
-/// ちょうど 1 箇所だけ存在し、`PHYSICAL_KEY_STATE`/`PHYSICAL_KEY_DOWN_AT_MS` 更新ブロック
-/// より**後**、`VK_KANA` swallow ブロックより**前**に置かれていること。
+/// `disable_apps` の早期 return（`hook_callback` 内、`HOOK_STATE.focus_app_disabled`
+/// を見る分岐）はちょうど 1 箇所だけ存在し、`HOOK_STATE.physical_key_state`/
+/// `HOOK_STATE.physical_key_down_at_ms` 更新ブロックより**後**、`VK_KANA` swallow
+/// ブロックより**前**に置かれていること（ADR-164 フェーズ4で20静的を`HookState`
+/// 構造体へ集約したが、フィールドの意味論・配置順は不変）。
 ///
 /// 設計上の理由（`.claude/plans` の premortem 参照）: 更新ブロックより前に早期 return する
 /// と、無効アプリに入る直前から押していたキーの KeyUp が記録されず、対策したい
@@ -2672,7 +2674,7 @@ fn disable_apps_early_return_is_positioned_after_physical_key_state_update_and_b
     let content = read_crate_file("src/hook.rs");
     let production = production_code_only(&content);
 
-    let early_return_needle = "FOCUS_APP_DISABLED.load(Ordering::Relaxed)";
+    let early_return_needle = "HOOK_STATE.focus_app_disabled.load(Ordering::Relaxed)";
     let count = production.matches(early_return_needle).count();
     assert_eq!(
         count, 1,
@@ -2682,8 +2684,8 @@ fn disable_apps_early_return_is_positioned_after_physical_key_state_update_and_b
     );
 
     let update_block_pos = production
-        .find("if let Some(slot) = PHYSICAL_KEY_STATE.get(vk.0 as usize) {")
-        .expect("PHYSICAL_KEY_STATE update block not found in src/hook.rs");
+        .find("if let Some(slot) = HOOK_STATE.physical_key_state.get(vk.0 as usize) {")
+        .expect("HOOK_STATE.physical_key_state update block not found in src/hook.rs");
     let early_return_pos = production
         .find(early_return_needle)
         .expect("early return needle not found (checked above)");
@@ -2693,7 +2695,7 @@ fn disable_apps_early_return_is_positioned_after_physical_key_state_update_and_b
 
     assert!(
         update_block_pos < early_return_pos,
-        "disable_apps の早期 return は PHYSICAL_KEY_STATE 更新ブロックより後に \
+        "disable_apps の早期 return は HOOK_STATE.physical_key_state 更新ブロックより後に \
          置くこと（前に置くと無効アプリ突入直前の KeyUp が記録されず、対策したい \
          Ctrl スタックをこの分岐自体が新規に生む）。"
     );
@@ -3977,10 +3979,16 @@ fn cross_thread_shared_lock_declarations_are_accounted_for() {
         .collect();
     actual.sort();
 
+    // ADR-164 フェーズ4（2026-09-12）: `src/hook.rs` の
+    // `HOOK_IME_MODE_DIAGNOSTICS: Mutex<...>` は裸の top-level static から
+    // `HookState` 構造体のフィールド（`ime_mode_diagnostics: Mutex<...>`）へ
+    // 移行し、このテストが検出する「裸の `static X: Mutex<...>`」パターンには
+    // もう一致しない（意図した変化——20静的を1つの singleton へ集約したことの
+    // 直接の結果）。Mutex 自体が消えたわけではないことは、直後の
+    // `hook_state_struct_has_exactly_one_mutex_field` が別途固定する。
     let mut expected: Vec<(String, usize)> = vec![
         ("src/app/logging.rs".to_string(), 1),
         ("src/focus/classifier.rs".to_string(), 1),
-        ("src/hook.rs".to_string(), 1),
         ("src/tsf/observer.rs".to_string(), 1),
         ("src/tsf/tip_detector.rs".to_string(), 1),
     ];
@@ -4002,10 +4010,6 @@ fn cross_thread_shared_lock_declarations_are_accounted_for() {
             &[("static INPUT_RELAY_APPS: OnceLock<RwLock<", 1)][..],
         ),
         (
-            "src/hook.rs",
-            &[("static HOOK_IME_MODE_DIAGNOSTICS: Mutex<", 1)][..],
-        ),
-        (
             "src/tsf/observer.rs",
             &[("ime_product_name: RwLock<", 1)][..],
         ),
@@ -4025,6 +4029,42 @@ fn cross_thread_shared_lock_declarations_are_accounted_for() {
             );
         }
     }
+}
+
+/// ADR-164 フェーズ4: `src/hook.rs` の20静的（`HookState`構造体、上記テストの
+/// module doc参照）は Mutex を`ime_mode_diagnostics`フィールド1件に限定し、
+/// 残り19フィールドはロックフリー struct-of-atomics であること。
+///
+/// `cross_thread_shared_lock_declarations_are_accounted_for` は「裸の
+/// top-level static」しか見ないため、`HookState`構造体の**内部**にMutexが
+/// いくつあるかは別途固定する必要がある——`HOOK_IME_MODE_DIAGNOSTICS`が
+/// `HookState`へ集約された際にこの検出力の欠落が判明した（同テストのコメント
+/// 参照）。将来誰かが `HookState` へ2件目の `Mutex` フィールドを追加した場合
+/// （`WH_KEYBOARD_LL`のホットパスでロックを増やすと`LowLevelHooksTimeout`
+/// サイレント解除のリスクが増える、ADR-164フェーズ4「訂正3」参照）、この
+/// テストが検知する。
+#[test]
+fn hook_state_struct_has_exactly_one_mutex_field() {
+    let content = read_crate_file("src/hook.rs");
+    let production = production_code_only(&content);
+    let body = extract_fn_body(&content, "struct HookState");
+
+    let struct_mutex_count = body.matches("Mutex<").count();
+    assert_eq!(
+        struct_mutex_count, 1,
+        "src/hook.rs::HookState 構造体内の `Mutex<` 出現数が想定(1)と異なります \
+         (実際: {struct_mutex_count})。ホットパスで新たな Mutex フィールドを \
+         追加していないか確認すること（ADR-164フェーズ4「訂正3」: \
+         WH_KEYBOARD_LLはLowLevelHooksTimeout内に返らないとフックがサイレントに \
+         外れるため、ime_mode_diagnostics以外へのMutex追加は原則禁止）。"
+    );
+
+    let total_mutex_count = production.matches("Mutex<").count();
+    assert_eq!(
+        total_mutex_count, 1,
+        "src/hook.rs 全体の `Mutex<` 出現数が想定(1)と異なります(実際: \
+         {total_mutex_count})。HookState外に新たなMutexを追加していないか確認すること。"
+    );
 }
 
 /// ADR-163 TH1b-2a: 上記テストが`executor.rs`で追えなくなった

@@ -44,18 +44,12 @@ PR [#197](https://github.com/cuzic/awase/pull/197)でdevelopにマージ済み�
 フェーズ7は実装着手時の再分類でADR起票時の誤り（別モジュール・別cfgゲートの
 2静的を「同一ファイルだから」まとめようとしていた）が判明し、対象外へ廃止した
 （コード変更なし、developへ直接マージ済み）。
-フェーズ4（`hook.rs`）は実装前調査のみ完了（コード変更なし）、実機ソーク・
-memory ordering突き合わせの段取りが必要な高リスクのため、より安価な
-フェーズ8→7→5→6でsingleton集約パターンを先に検証する方針とした
-（[[project_adr164_global_static_singleton_consolidation_2026_09_10]]参照）。
-フェーズ6（`lib.rs`の3静的）はブランチ`refactor/adr164-phase6-lib-process-flags`
-で実装済み、develop未マージ・実機ソーク（Ctrl+C動作確認）未実施。
+フェーズ6（`lib.rs`の3静的）はPR [#204](https://github.com/cuzic/awase/pull/204)で
+developにマージ済み（トレイ「終了」経由でCtrl+Cハンドラと同一コード経路の実機確認済み）。
 フェーズ9は保留（ユーザー判断、2026-09-12）。
-フェーズ5（`probe_actuation_fence.rs`の5静的）はブランチ
-`refactor/adr164-phase5-probe-actuation-fence`（PR
-[#200](https://github.com/cuzic/awase/pull/200)）で実装済み、develop未マージ・
-実機ソーク未実施（フェーズ4と同様、windows-build CI・実機ソークがマージ条件）。
-フェーズ3・6・9は未着手。
+フェーズ4（`hook.rs`の20静的）はブランチ`refactor/adr164-phase4-hook-state`で実装済み、
+develop未マージ・windows-build CI/実機ソーク未実施——本ADR全体で最高リスクのフェーズ
+（フェーズ4本文の実装節参照）。フェーズ3は対象外（round2で決着済み）。
 
 ## 背景
 
@@ -250,7 +244,7 @@ Runtime)`へシグネチャ変更しRuntimeフィールド化する。
 対象でもない。`MENU_TARGET_HWND`は**(A)「モーダルポンプ境界を跨ぐ受け渡し」として現状維持**
 とし、本ADRの対象から外す。
 
-### フェーズ4: `hook.rs`の20件（クロススレッド共有state）を単一struct-of-atomics singletonへ集約
+### フェーズ4: `hook.rs`の20件（クロススレッド共有state）を単一struct-of-atomics singletonへ集約（実装済み、develop未マージ・実機ソーク未実施）
 
 **round1 M1〜M4で当初案（「`hook_callback`以下を`&mut HookState`として全22件を引数引き回し」）の
 前提が実コードと矛盾すると判明し、全面的に書き直した。round2レビューで訂正版の設計骨格
@@ -366,7 +360,48 @@ staleness（BUG-46/52/116ファミリーと同種の症状）を生む。**完�
   golden回帰テスト（`tests/ime_key_sequence_golden.rs`）の拡充、および実機ソークが
   マージ条件。
 - フェーズ1〜2を先に終えてから着手し、「singleton集約」パターン自体の運用を、より小さく
-  安価な変更で先に検証する。
+  安価な変更で先に検証する（実際にはフェーズ8→7→5→6の順で先に検証してから着手した）。
+
+**実装（2026-09-12）**: ブランチ`refactor/adr164-phase4-hook-state`。実装前調査で確認した
+21件・4分類・ordering実測値（Relaxed 49・Release 9・Acquire 7・SeqCst 1）は develop最新でも
+完全一致していることを再確認してから着手した。
+
+- `HOOK_IME_MODE_DIAGNOSTICS`（`Mutex<VecDeque<..>>`）+19個の`Atomic*`静的
+  （`[AtomicBool; 256]`/`[AtomicU64; 256]`含む）を`HookState`構造体1つに集約し、
+  `static HOOK_STATE: HookState`1つへ縮小（`HOOK_HANDLE`は設計通り変更なし、
+  `hook.rs`のtop-level static宣言は2つに）。
+- 実装手順: (1) 全20フィールドの型・doc・呼び出し箇所を事前に読了、(2) 新struct+`const fn
+  new()`+`static HOOK_STATE`を1箇所に新設、(3) 元の18個の個別`static`宣言を削除、
+  (4) Pythonスクリプトで識別子境界（`\bIDENT\b`）を`HOOK_STATE.<field>`へ機械置換
+  ——**この段階では識別子の前後のトークン（`Ordering::`引数含む）には一切触れないため、
+  ordering保存は構造的に保証される**（"1対1一致の確認"は正しさの検証であり、置換操作
+  自体が改変不可能な設計）。
+- **memory ordering保存の確認（完了条件）**: 置換後も`rg -o 'Ordering::\w+' hook.rs | sort |
+  uniq -c`のヒストグラムが移行前と完全一致（Relaxed 49・Release 9・Acquire 7・SeqCst 1）。
+  加えて全19フィールドについて識別子ごとに`Ordering::`引数の集合を突き合わせ、
+  `HOOK_TID_INIT_SLOT`（現`hook_tid_init_slot`）の`SeqCst`/`Release`/`Acquire`の3値使い分けと
+  `FOCUS_APP_DISABLED`（現`focus_app_disabled`）の書き`Release`・アクセサ読み`Acquire`・
+  ホットパス読み`Relaxed`という非対称が変化していないことを確認済み。
+- ログ文言修正: 機械置換により`tracing::info!`のログメッセージ文字列2箇所
+  （`reset_physical_key_state`/`clear_hook_latches_for_app_disable`）に内部フィールドパス
+  `HOOK_STATE.physical_key_state`が意図せず混入したため、人間可読な元の表記
+  （`PHYSICAL_KEY_STATE`）に手動で戻した（コード識別子ではなくログ文言のみの修正）。
+- `tests/architecture_guard.rs`の2テスト更新（実装前調査で予告済みの既知の壊れ）:
+  `disable_apps_early_return_is_positioned_after_physical_key_state_update_and_before_vk_kana`
+  のneedleを`HOOK_STATE.focus_app_disabled.load(Ordering::Relaxed)`に更新。
+  `cross_thread_shared_lock_declarations_are_accounted_for`から`src/hook.rs`を削除
+  （裸のtop-level `static X: Mutex<`が無くなったため、正しい検出結果）。検出力の欠落を
+  埋めるため、新規テスト`hook_state_struct_has_exactly_one_mutex_field`を追加し、
+  `HookState`構造体内の`Mutex<`が引き続き1件のみであることを固定した。
+- 検証: `cargo check`（host/windows両ターゲット、`--tests --lib`含む）/clippy/fmt/
+  `cargo nextest run -p awase-windows --test architecture_guard --test layer_boundary_guard
+  --test golden_scenarios`（123/123 passed）/`cargo test --lib -p awase`（1014 passed）/
+  `cargo test --lib -p awase-windows`（668 passed、host targetでコンパイル可能な範囲）を
+  実行者側で確認済み。
+- **windows-build CI・実機ソークは未実施** — フェーズ4は本ADR全体で最高リスクのため、
+  develop mergeにはこれらに加え、複数アプリ種別（Win32/TSF-native/UWP）を跨いだ
+  拡張ソーク（物理キー状態追跡・IMEモードキー・Alt なりすまし・disable_apps）が必要
+  （検証方法節4参照）。
 
 ### フェーズ5: `probe_actuation_fence.rs`の5件をsingleton集約（実装済み、develop未マージ・実機ソーク未実施）
 

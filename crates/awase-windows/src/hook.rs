@@ -26,9 +26,139 @@ const LLKHF_INJECTED: u32 = 0x10;
 /// フラグで Left/Right を判別する（Right Alt/Right Ctrl は拡張キー、Left 側は非拡張）。
 const LLKHF_EXTENDED: u32 = 0x01;
 const HOOK_IME_MODE_DIAGNOSTIC_CAP: usize = 64;
-static HOOK_IME_MODE_DIAGNOSTICS: Mutex<VecDeque<crate::journal::HookImeModeDiagnosticRecord>> =
-    Mutex::new(VecDeque::new());
-static LAST_IME_MODE_HOOK_MS: AtomicU64 = AtomicU64::new(0);
+
+/// フックスレッド⇔メインスレッド間の双方向共有state 20件を1つに集約した
+/// singleton（ADR-164 フェーズ4）。全て hook スレッドが読み書きするホットパスの
+/// 一部であり、Mutex は`ime_mode_diagnostics`（IME モードキー診断リング）を
+/// 除いて禁止——`WH_KEYBOARD_LL` は `LowLevelHooksTimeout`（既定5000ms）内に
+/// 返らないと Windows がフックをサイレントに外すため、他のブロッキング処理
+/// （`run_with_timeout`の300ms・トレイの150ms `get_gui_thread_info_with_timeout`等）
+/// でメインスレッドがロックを取っている間 hook スレッドが待たされる設計は
+/// 許されない（詳細は ADR-164 フェーズ4「訂正3」参照）。
+///
+/// `ime_mode_diagnostics` は例外として `Mutex` のまま同居する: 保持区間が
+/// O(1)のdeque操作（`pop_front`/`push_back`、または`drain_hook_ime_mode_diagnostics`
+/// の上限64件`Vec`への`drain(..).collect()`）のみで、ブロッキング処理を含まない
+/// ため`LowLevelHooksTimeout`に対して実害が無い（同居の安全性根拠、ADR-164
+/// フェーズ4「訂正3」round3 M2参照）。この不変条件が崩れる変更（ロック下で
+/// ブロッキング処理や非有界な処理を挟む）は禁止。
+///
+/// **フィールドごとの`Ordering`は移行前と完全に同一**（1対1対応、変更禁止）。
+/// 実測: `Relaxed` 49・`Release` 9・`Acquire` 7・`SeqCst` 1（`hook_tid_init_slot`の
+/// リセット時のみ）。`focus_app_disabled`は書き`Release`・アクセサ読み`Acquire`・
+/// ホットパス読み`Relaxed`という意図的な非対称を持つ（ADR-164フェーズ4参照）。
+struct HookState {
+    /// IME モードキー（`VK_KANA`/`VK_IME_ON`/`VK_JUNJA`/`VK_KANJI`/`VK_IME_OFF`/
+    /// `VK_DBE_*`）の KeyDown/KeyUp 診断リング（直近`HOOK_IME_MODE_DIAGNOSTIC_CAP`件、
+    /// 上限有界）。唯一 Mutex のまま残すフィールド（上記 struct doc 参照）。
+    ime_mode_diagnostics: Mutex<VecDeque<crate::journal::HookImeModeDiagnosticRecord>>,
+    /// 直近の IME モードキー到達時刻（`current_tick_ms` 値）。0 = 未到達。
+    /// 連続する IME モードキー到達の間隔をログするための診断専用。
+    last_ime_mode_hook_ms: AtomicU64,
+    /// RUNTIME 借用なしで `classify_key` を呼ぶために親指 VK を AtomicU32 に
+    /// キャッシュする。上位 16bit = left_thumb_vk、下位 16bit = right_thumb_vk。
+    cached_thumb_vks: AtomicU32,
+    /// フックコールバックの最終活動タイムスタンプ（ウォッチドッグ用）。
+    /// 自己注入キー含む全コールバックで更新する。エンジンスレッドの
+    /// watchdog がここを読む。
+    hook_alive_tick_ms: AtomicU64,
+    /// `install_hook` がフックスレッドからの TID 通知を待つスロット。
+    /// 0 = 待機中、`u32::MAX` = `SetWindowsHookExW` 失敗、それ以外 = フックスレッド TID。
+    hook_tid_init_slot: AtomicU32,
+    /// VK ごとの物理押下状態。non-self-injected な KeyDown/KeyUp で更新する。
+    ///
+    /// 用途: `send_vk_pair` が合成 `LSHIFT↑` を送ったあと、OS state を物理状態に
+    /// 再同期するために物理 Shift が押下中か判定する。`GetAsyncKeyState` は
+    /// SendInput の影響も受けるため、物理状態の判定には使えない。
+    physical_key_state: [AtomicBool; 256],
+    /// VK ごとの物理 KeyDown 時刻（`current_tick_ms` 値）。0 = 押下されていない。
+    ///
+    /// 用途: 「Shift をどれくらい長く押しているか」で再注入の要否を判断する。
+    /// 短押し（例: 200ms 未満）では Ctrl+I 直後の無変換 で IME OFF 誤発火を
+    /// 避けるため修飾解放を生かし、長押しでのみ OS state を物理状態に再同期する。
+    physical_key_down_at_ms: [AtomicU64; 256],
+    /// Alt なりすまし適用後の左親指キー押下時刻（µs）。0 = 押下されていない。
+    left_thumb_down_at_us: AtomicU64,
+    /// Alt なりすまし適用後の右親指キー押下時刻（µs）。0 = 押下されていない。
+    right_thumb_down_at_us: AtomicU64,
+    /// 直近の物理 Ctrl 押下後に他の VK の KeyDown を 1 つでも観測したか。
+    ///
+    /// 用途: `Ctrl↓ → I↓ I↑ → 無変換↓` のような「Ctrl が既に他キーで consume
+    /// された」パターンを検知し、無変換↓ で Ctrl+無変換 IME OFF を即発火せず
+    /// 50ms 救済窓を設けるため。「Ctrl↓ → 直後に 無変換↓」の意図的チョードでは
+    /// false のままなので、即時 IME OFF できる。Ctrl↓/Ctrl↑ で false にリセットされる。
+    ctrl_consumed_since_down: AtomicBool,
+    /// キーボードモデル（JIS/US）のキャッシュ。RUNTIME 借用なしで `classify_key`
+    /// から参照するため `cached_thumb_vks` と同じ理由でキャッシュする。
+    /// false = Jis（既定）、true = Us。
+    cached_keyboard_model_is_us: AtomicBool,
+    /// 左 Alt なりすまし ON/OFF のキャッシュ。`resolve_thumb_key` が
+    /// `left_thumb_key` の値（`"Left Alt"` か否か）から導出した結果を保持する。
+    /// 左右は独立（片方だけの構成もあり得るため）。
+    cached_left_alt_impersonation_enabled: AtomicBool,
+    /// 右 Alt なりすまし ON/OFF のキャッシュ。`right_thumb_key`版（上記参照）。
+    cached_right_alt_impersonation_enabled: AtomicBool,
+    /// エンジンの実効有効状態（`UiEffect::EngineStateChanged` の `enabled` と
+    /// 同じ値）のキャッシュ。Alt なりすましの発動条件に使う（`hook_callback` 参照）。
+    cached_engine_enabled: AtomicBool,
+    /// `config.app_overrides.disable_apps` にマッチするアプリへ現在フォーカス
+    /// 中かのキャッシュ。メインスレッドのフォーカス追跡
+    /// （`runtime/focus_tracking.rs`）が `set_focus_app_disabled()` で書き込み、
+    /// フックスレッドが `hook_callback` 冒頭で読む（`cached_engine_enabled` と
+    /// 同型の受け渡しパターン）。
+    ///
+    /// マッチしている間、`hook_callback` は生のキーイベントを一切消費せず
+    /// `CallNextHookEx` でそのまま OS に通す（awase を丸ごとバイパスする）。
+    focus_app_disabled: AtomicBool,
+    /// `GeneralConfig::swallow_alt_kana_input_method_switch` のキャッシュ
+    /// （BUG-62 追補5）。既定値は `true`（安全側）で、config 読み込み前に発火
+    /// しても常に swallow する。
+    cached_swallow_alt_kana_mode_switch: AtomicBool,
+    /// 直近の左 Alt「新規押下」時点で「なりすまし発動中」だったか。
+    ///
+    /// 新規押下（離された状態からの KeyDown）時点の判定を、以降の auto-repeat
+    /// KeyDown・KeyUp まで保持するために使う。押しっぱなし中に
+    /// `left_thumb_key`/`right_thumb_key` の設定変更やエンジン ON/OFF 切替が
+    /// 起きても、同一の押下セッション内では判定がズレて Alt が stuck modifier
+    /// になる事故を防ぐ。
+    alt_l_impersonating: AtomicBool,
+    /// 直近の右 Alt「新規押下」時点で「なりすまし発動中」だったか（左版と対称）。
+    alt_r_impersonating: AtomicBool,
+    /// 左 Alt が直前のイベント時点で物理的に押下中だったか。KeyDown が
+    /// 「新規押下」か「auto-repeat」かを区別するために使う。
+    alt_l_was_down: AtomicBool,
+    /// 右 Alt が直前のイベント時点で物理的に押下中だったか（左版と対称）。
+    alt_r_was_down: AtomicBool,
+}
+
+impl HookState {
+    const fn new() -> Self {
+        Self {
+            ime_mode_diagnostics: Mutex::new(VecDeque::new()),
+            last_ime_mode_hook_ms: AtomicU64::new(0),
+            cached_thumb_vks: AtomicU32::new(0),
+            hook_alive_tick_ms: AtomicU64::new(0),
+            hook_tid_init_slot: AtomicU32::new(0),
+            physical_key_state: [const { AtomicBool::new(false) }; 256],
+            physical_key_down_at_ms: [const { AtomicU64::new(0) }; 256],
+            left_thumb_down_at_us: AtomicU64::new(0),
+            right_thumb_down_at_us: AtomicU64::new(0),
+            ctrl_consumed_since_down: AtomicBool::new(false),
+            cached_keyboard_model_is_us: AtomicBool::new(false),
+            cached_left_alt_impersonation_enabled: AtomicBool::new(false),
+            cached_right_alt_impersonation_enabled: AtomicBool::new(false),
+            cached_engine_enabled: AtomicBool::new(false),
+            focus_app_disabled: AtomicBool::new(false),
+            cached_swallow_alt_kana_mode_switch: AtomicBool::new(true),
+            alt_l_impersonating: AtomicBool::new(false),
+            alt_r_impersonating: AtomicBool::new(false),
+            alt_l_was_down: AtomicBool::new(false),
+            alt_r_was_down: AtomicBool::new(false),
+        }
+    }
+}
+
+static HOOK_STATE: HookState = HookState::new();
 use crate::scanmap::scan_to_pos;
 use crate::HookConfig;
 use awase::scanmap::PhysicalPos;
@@ -84,9 +214,9 @@ fn apply_alt_impersonation(
 ) -> VkCode {
     let (is_left_alt, is_right_alt) = classify_alt_side(vk, extended);
     if config.left_alt_impersonates_thumb_key && is_left_alt {
-        let engine_enabled = CACHED_ENGINE_ENABLED.load(Ordering::Relaxed);
-        let was_down = ALT_L_WAS_DOWN.load(Ordering::Relaxed);
-        let was_impersonating = ALT_L_IMPERSONATING.load(Ordering::Relaxed);
+        let engine_enabled = HOOK_STATE.cached_engine_enabled.load(Ordering::Relaxed);
+        let was_down = HOOK_STATE.alt_l_was_down.load(Ordering::Relaxed);
+        let was_impersonating = HOOK_STATE.alt_l_impersonating.load(Ordering::Relaxed);
         let (new_vk, impersonating) = decide_alt_impersonation(
             vk,
             config.left_thumb_vk,
@@ -95,13 +225,17 @@ fn apply_alt_impersonation(
             was_impersonating,
             engine_enabled,
         );
-        ALT_L_IMPERSONATING.store(impersonating, Ordering::Relaxed);
-        ALT_L_WAS_DOWN.store(is_keydown, Ordering::Relaxed);
+        HOOK_STATE
+            .alt_l_impersonating
+            .store(impersonating, Ordering::Relaxed);
+        HOOK_STATE
+            .alt_l_was_down
+            .store(is_keydown, Ordering::Relaxed);
         new_vk
     } else if config.right_alt_impersonates_thumb_key && is_right_alt {
-        let engine_enabled = CACHED_ENGINE_ENABLED.load(Ordering::Relaxed);
-        let was_down = ALT_R_WAS_DOWN.load(Ordering::Relaxed);
-        let was_impersonating = ALT_R_IMPERSONATING.load(Ordering::Relaxed);
+        let engine_enabled = HOOK_STATE.cached_engine_enabled.load(Ordering::Relaxed);
+        let was_down = HOOK_STATE.alt_r_was_down.load(Ordering::Relaxed);
+        let was_impersonating = HOOK_STATE.alt_r_impersonating.load(Ordering::Relaxed);
         let (new_vk, impersonating) = decide_alt_impersonation(
             vk,
             config.right_thumb_vk,
@@ -110,8 +244,12 @@ fn apply_alt_impersonation(
             was_impersonating,
             engine_enabled,
         );
-        ALT_R_IMPERSONATING.store(impersonating, Ordering::Relaxed);
-        ALT_R_WAS_DOWN.store(is_keydown, Ordering::Relaxed);
+        HOOK_STATE
+            .alt_r_impersonating
+            .store(impersonating, Ordering::Relaxed);
+        HOOK_STATE
+            .alt_r_was_down
+            .store(is_keydown, Ordering::Relaxed);
         new_vk
     } else {
         vk
@@ -150,64 +288,38 @@ pub fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
     }
 }
 
-/// RUNTIME 借用なしで classify_key を呼ぶために親指 VK を AtomicU32 にキャッシュする。
-/// 上位 16bit = left_thumb_vk、下位 16bit = right_thumb_vk。
-static CACHED_THUMB_VKS: AtomicU32 = AtomicU32::new(0);
-
-/// フックコールバックの最終活動タイムスタンプ（ウォッチドッグ用、クロススレッド対応）
-///
-/// 自己注入キー含む全コールバックで更新する。エンジンスレッドの watchdog がここを読む。
-static HOOK_ALIVE_TICK_MS: AtomicU64 = AtomicU64::new(0);
-
 /// フックコールバックの活動タイムスタンプを現在時刻で更新する
 pub(crate) fn tick_hook_alive() {
-    HOOK_ALIVE_TICK_MS.store(current_tick_ms(), Ordering::Relaxed);
+    HOOK_STATE
+        .hook_alive_tick_ms
+        .store(current_tick_ms(), Ordering::Relaxed);
 }
 
 /// フックコールバックの最終活動タイムスタンプ（ms）を返す
 pub fn hook_alive_tick_ms() -> u64 {
-    HOOK_ALIVE_TICK_MS.load(Ordering::Relaxed)
+    HOOK_STATE.hook_alive_tick_ms.load(Ordering::Relaxed)
 }
-
-/// install_hook がフックスレッドからの TID 通知を待つスロット
-/// 0 = 待機中、u32::MAX = SetWindowsHookExW 失敗、それ以外 = フックスレッド TID
-static HOOK_TID_INIT_SLOT: AtomicU32 = AtomicU32::new(0);
 
 fn hook_tid_reset() {
-    HOOK_TID_INIT_SLOT.store(0, Ordering::SeqCst);
+    HOOK_STATE.hook_tid_init_slot.store(0, Ordering::SeqCst);
 }
 fn hook_tid_set(tid: u32) {
-    HOOK_TID_INIT_SLOT.store(tid, Ordering::Release);
+    HOOK_STATE.hook_tid_init_slot.store(tid, Ordering::Release);
 }
 fn hook_tid_fail() {
-    HOOK_TID_INIT_SLOT.store(u32::MAX, Ordering::Release);
+    HOOK_STATE
+        .hook_tid_init_slot
+        .store(u32::MAX, Ordering::Release);
 }
 fn hook_tid_poll() -> u32 {
-    HOOK_TID_INIT_SLOT.load(Ordering::Acquire)
+    HOOK_STATE.hook_tid_init_slot.load(Ordering::Acquire)
 }
-
-/// VK ごとの物理押下状態。non-self-injected な KeyDown/KeyUp で更新する。
-///
-/// 用途: `send_vk_pair` が合成 `LSHIFT↑` を送ったあと、OS state を物理状態に
-/// 再同期するために物理 Shift が押下中か判定する。`GetAsyncKeyState` は
-/// SendInput の影響も受けるため、物理状態の判定には使えない。
-static PHYSICAL_KEY_STATE: [AtomicBool; 256] = [const { AtomicBool::new(false) }; 256];
-
-/// VK ごとの物理 KeyDown 時刻（`current_tick_ms` 値）。0 = 押下されていない。
-///
-/// 用途: 「Shift をどれくらい長く押しているか」で再注入の要否を判断する。
-/// 短押し（例: 200ms 未満）では Ctrl+I 直後の無変換 で IME OFF 誤発火を
-/// 避けるため修飾解放を生かし、長押しでのみ OS state を物理状態に再同期する。
-static PHYSICAL_KEY_DOWN_AT_MS: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
-
-/// Alt なりすまし適用後の左右親指キー押下時刻（µs）。0 = 押下されていない。
-static LEFT_THUMB_DOWN_AT_US: AtomicU64 = AtomicU64::new(0);
-static RIGHT_THUMB_DOWN_AT_US: AtomicU64 = AtomicU64::new(0);
 
 /// 物理 VK が押下中かを返す。SendInput では更新されないため信頼できる物理状態。
 #[must_use]
 pub fn is_physical_key_down(vk: VkCode) -> bool {
-    PHYSICAL_KEY_STATE
+    HOOK_STATE
+        .physical_key_state
         .get(vk.0 as usize)
         .is_some_and(|s| s.load(Ordering::Relaxed))
 }
@@ -215,7 +327,8 @@ pub fn is_physical_key_down(vk: VkCode) -> bool {
 /// 物理 VK の押下経過時間（ms）。押下されていなければ `None`。
 #[must_use]
 pub fn physical_key_held_ms(vk: VkCode) -> Option<u64> {
-    let down_at = PHYSICAL_KEY_DOWN_AT_MS
+    let down_at = HOOK_STATE
+        .physical_key_down_at_ms
         .get(vk.0 as usize)?
         .load(Ordering::Relaxed);
     (down_at != 0).then(|| current_tick_ms().saturating_sub(down_at))
@@ -227,7 +340,7 @@ pub fn physical_key_held_ms(vk: VkCode) -> Option<u64> {
 /// `tuning::WIN_KEY_HELD_STALE_MS` 以上「押されたまま」の値は stale として
 /// 無視する（2026-08-06 実機: Win キー押下で検索UIが開いた際に KeyUp が
 /// `WH_KEYBOARD_LL` フックチェーンの前段で消費され awase に届かず、
-/// `PHYSICAL_KEY_STATE` が恒久的に「押されたまま」スタックし、以後
+/// `HOOK_STATE.physical_key_state` が恒久的に「押されたまま」スタックし、以後
 /// `VK_IME_ON`/`VK_IME_OFF` の実送信が `win_key_held()` により無期限に
 /// スキップされ続けた不具合の対策。原因の確度は「推測」— `WH_KEYBOARD_LL`
 /// 自体は他キーには正常に応答していたため全面停止ではなく、Win キー固有の
@@ -254,7 +367,7 @@ pub fn win_key_held() -> bool {
 /// `win_key_held()` と全く同型の対策（`is_held_fresh` を共有し、判定点も
 /// 同じ関数として集約）。BUG-48 が Win キーで踏んだ「KeyUp が
 /// `WH_KEYBOARD_LL` フックチェーンの前段で消費され awase に届かず
-/// `PHYSICAL_KEY_STATE` が恒久的に「押されたまま」スタックする」不具合は、
+/// `HOOK_STATE.physical_key_state` が恒久的に「押されたまま」スタックする」不具合は、
 /// メカニズム自体が Win キー固有ではなく「何らかの OS/シェル側 UI が
 /// 一瞬でもキーイベントを横取りする」一般的なリスクである。BUG-62（Alt+かな
 /// swallow）実装後、ユーザーから「Alt down はあるが Alt up が（ログにすら）
@@ -325,11 +438,11 @@ fn inject_alt_menu_mask() {
     tracing::info!("[hook] inject_alt_menu_mask: ダミー Ctrl down+up 注入 sent={sent}/2");
 }
 
-/// `PHYSICAL_KEY_STATE` / `PHYSICAL_KEY_DOWN_AT_MS` を全 VK ぶん強制的に「離した」状態へ戻す。
+/// `HOOK_STATE.physical_key_state` / `HOOK_STATE.physical_key_down_at_ms` を全 VK ぶん強制的に「離した」状態へ戻す。
 ///
 /// セッションロック中（Secure Desktop 遷移中）は `WH_KEYBOARD_LL` フックにイベントが
 /// 一切届かないため、ロックの瞬間に押されていた物理キーの KeyUp が失われ得る。
-/// `PHYSICAL_KEY_STATE` は OR 演算で左右を合成する（`observer::focus_observer::read_os_modifiers`）
+/// `HOOK_STATE.physical_key_state` は OR 演算で左右を合成する（`observer::focus_observer::read_os_modifiers`）
 /// ため、片側が stuck するだけで `mods.shift`/`mods.ctrl` が恒久的に `true` になる
 /// （2026-07-09 実機で確認、右 Shift の KeyUp 消失が原因）。
 ///
@@ -337,21 +450,27 @@ fn inject_alt_menu_mask() {
 /// （ロック中ずっと押しっぱなしということはまず無い）ため、全スロットを無条件でクリアする。
 ///
 /// `panic_reset()`（`send_all_modifier_key_ups()` は自己注入 SendInput のため
-/// `is_self_injected` フィルタで弾かれ `PHYSICAL_KEY_STATE` を更新できない、ADR-054 由来の
+/// `is_self_injected` フィルタで弾かれ `HOOK_STATE.physical_key_state` を更新できない、ADR-054 由来の
 /// 隙間）と `WM_WTSSESSION_CHANGE` の `WTS_SESSION_UNLOCK` から呼ぶ。
 pub fn reset_physical_key_state() {
-    for slot in &PHYSICAL_KEY_STATE {
+    for slot in &HOOK_STATE.physical_key_state {
         slot.store(false, Ordering::Relaxed);
     }
-    for slot in &PHYSICAL_KEY_DOWN_AT_MS {
+    for slot in &HOOK_STATE.physical_key_down_at_ms {
         slot.store(0, Ordering::Relaxed);
     }
-    LEFT_THUMB_DOWN_AT_US.store(0, Ordering::Relaxed);
-    RIGHT_THUMB_DOWN_AT_US.store(0, Ordering::Relaxed);
-    ALT_L_IMPERSONATING.store(false, Ordering::Relaxed);
-    ALT_R_IMPERSONATING.store(false, Ordering::Relaxed);
-    ALT_L_WAS_DOWN.store(false, Ordering::Relaxed);
-    ALT_R_WAS_DOWN.store(false, Ordering::Relaxed);
+    HOOK_STATE.left_thumb_down_at_us.store(0, Ordering::Relaxed);
+    HOOK_STATE
+        .right_thumb_down_at_us
+        .store(0, Ordering::Relaxed);
+    HOOK_STATE
+        .alt_l_impersonating
+        .store(false, Ordering::Relaxed);
+    HOOK_STATE
+        .alt_r_impersonating
+        .store(false, Ordering::Relaxed);
+    HOOK_STATE.alt_l_was_down.store(false, Ordering::Relaxed);
+    HOOK_STATE.alt_r_was_down.store(false, Ordering::Relaxed);
     tracing::info!("[hook] PHYSICAL_KEY_STATE をリセット（全 VK を解放状態に）");
 }
 
@@ -365,12 +484,13 @@ pub fn reset_physical_key_state() {
 /// 指摘され、この分離に至った）。
 ///
 /// - Enter/Leave 共通: Alt なりすまし・チョード関連の一時ラッチのみを force-false
-///   する。`ALT_L/R_WAS_DOWN`・`ALT_L/R_IMPERSONATING`・`CTRL_CONSUMED_SINCE_DOWN`・
-///   親指キー押下タイムスタンプが対象。**`PHYSICAL_KEY_STATE`（Alt/Win を含む）
+///   する。`HOOK_STATE.alt_l_was_down`/`alt_r_was_down`・
+///   `HOOK_STATE.alt_l_impersonating`/`alt_r_impersonating`・`HOOK_STATE.ctrl_consumed_since_down`・
+///   親指キー押下タイムスタンプが対象。**`HOOK_STATE.physical_key_state`（Alt/Win を含む）
 ///   本体には一切触れない。**
 ///   無効アプリに入った瞬間に pending だったチョードは呼び出し元
 ///   （`runtime/focus_tracking.rs`）が engine 側の flush で別途処理する。
-/// - Leave のみ追加: `PHYSICAL_KEY_STATE`/`PHYSICAL_KEY_DOWN_AT_MS` のうち
+/// - Leave のみ追加: `HOOK_STATE.physical_key_state`/`HOOK_STATE.physical_key_down_at_ms` のうち
 ///   Ctrl/Shift の 6 スロット（`VK_CONTROL`/`VK_LCONTROL`/`VK_RCONTROL`/
 ///   `VK_SHIFT`/`VK_LSHIFT`/`VK_RSHIFT`）だけを force-false する。無効化対象
 ///   アプリ（既定で mstsc.exe）滞在中は KeyUp がフックに届かず Ctrl/Shift が
@@ -389,13 +509,21 @@ pub(crate) fn clear_hook_latches_for_app_disable(
         return;
     }
 
-    ALT_L_WAS_DOWN.store(false, Ordering::Relaxed);
-    ALT_R_WAS_DOWN.store(false, Ordering::Relaxed);
-    ALT_L_IMPERSONATING.store(false, Ordering::Relaxed);
-    ALT_R_IMPERSONATING.store(false, Ordering::Relaxed);
-    CTRL_CONSUMED_SINCE_DOWN.store(false, Ordering::Relaxed);
-    LEFT_THUMB_DOWN_AT_US.store(0, Ordering::Relaxed);
-    RIGHT_THUMB_DOWN_AT_US.store(0, Ordering::Relaxed);
+    HOOK_STATE.alt_l_was_down.store(false, Ordering::Relaxed);
+    HOOK_STATE.alt_r_was_down.store(false, Ordering::Relaxed);
+    HOOK_STATE
+        .alt_l_impersonating
+        .store(false, Ordering::Relaxed);
+    HOOK_STATE
+        .alt_r_impersonating
+        .store(false, Ordering::Relaxed);
+    HOOK_STATE
+        .ctrl_consumed_since_down
+        .store(false, Ordering::Relaxed);
+    HOOK_STATE.left_thumb_down_at_us.store(0, Ordering::Relaxed);
+    HOOK_STATE
+        .right_thumb_down_at_us
+        .store(0, Ordering::Relaxed);
 
     if matches!(edge, SuppressionEdge::Leave) {
         for vk in [
@@ -406,10 +534,10 @@ pub(crate) fn clear_hook_latches_for_app_disable(
             VK_LSHIFT,
             VK_RSHIFT,
         ] {
-            if let Some(slot) = PHYSICAL_KEY_STATE.get(vk.0 as usize) {
+            if let Some(slot) = HOOK_STATE.physical_key_state.get(vk.0 as usize) {
                 slot.store(false, Ordering::Relaxed);
             }
-            if let Some(slot) = PHYSICAL_KEY_DOWN_AT_MS.get(vk.0 as usize) {
+            if let Some(slot) = HOOK_STATE.physical_key_down_at_ms.get(vk.0 as usize) {
                 slot.store(0, Ordering::Relaxed);
             }
         }
@@ -420,72 +548,18 @@ pub(crate) fn clear_hook_latches_for_app_disable(
     tracing::info!("[app-disable] {edge:?}: hook latches をクリア");
 }
 
-/// 直近の物理 Ctrl 押下後に他の VK の KeyDown を 1 つでも観測したか。
-///
-/// 用途: `Ctrl↓ → I↓ I↑ → 無変換↓` のような「Ctrl が既に他キーで consume された」
-/// パターンを検知し、無変換↓ で Ctrl+無変換 IME OFF を即発火せず 50ms 救済窓を設けるため。
-/// 「Ctrl↓ → 直後に 無変換↓」の意図的チョードでは false のままなので、即時 IME OFF できる。
-///
-/// Ctrl↓/Ctrl↑ で false にリセットされる。
-static CTRL_CONSUMED_SINCE_DOWN: AtomicBool = AtomicBool::new(false);
-
 /// 直近の物理 Ctrl 押下以降に他の VK KeyDown を観測したか返す。
 #[must_use]
 pub fn ctrl_consumed_since_down() -> bool {
-    CTRL_CONSUMED_SINCE_DOWN.load(Ordering::Relaxed)
+    HOOK_STATE.ctrl_consumed_since_down.load(Ordering::Relaxed)
 }
-
-/// キーボードモデル（JIS/US）のキャッシュ。RUNTIME 借用なしで `classify_key` から
-/// 参照するため `CACHED_THUMB_VKS` と同じ理由でグローバル AtomicBool にキャッシュする。
-/// false = Jis（既定）、true = Us。
-static CACHED_KEYBOARD_MODEL_IS_US: AtomicBool = AtomicBool::new(false);
-
-/// Alt なりすまし ON/OFF のキャッシュ。`resolve_thumb_key` が
-/// `left_thumb_key`/`right_thumb_key` の値（`"Left Alt"`/`"Right Alt"` か否か）
-/// から導出した結果を保持する。左右は独立（片方だけの構成もあり得るため）。
-static CACHED_LEFT_ALT_IMPERSONATION_ENABLED: AtomicBool = AtomicBool::new(false);
-static CACHED_RIGHT_ALT_IMPERSONATION_ENABLED: AtomicBool = AtomicBool::new(false);
-
-/// エンジンの実効有効状態（`UiEffect::EngineStateChanged` の `enabled` と同じ値）の
-/// キャッシュ。Alt なりすましの発動条件に使う（`hook_callback` 参照）。
-static CACHED_ENGINE_ENABLED: AtomicBool = AtomicBool::new(false);
-
-/// `config.app_overrides.disable_apps` にマッチするアプリへ現在フォーカス中かの
-/// キャッシュ。メインスレッドのフォーカス追跡（`runtime/focus_tracking.rs`）が
-/// `set_focus_app_disabled()` で書き込み、フックスレッドが `hook_callback` 冒頭で
-/// 読む（`CACHED_ENGINE_ENABLED` と同型の受け渡しパターン）。
-///
-/// マッチしている間、`hook_callback` は生のキーイベントを一切消費せず
-/// `CallNextHookEx` でそのまま OS に通す（awase を丸ごとバイパスする）。
-/// 既存の `force_bypass`（`FocusKind::NonText` → `SendInput` で再注入）と異なり
-/// `LLKHF_INJECTED` の付かない生イベントが届くため、injected input を無視する
-/// ゲーム（DirectInput/Raw Input 系）にも通用する。
-static FOCUS_APP_DISABLED: AtomicBool = AtomicBool::new(false);
-
-/// `GeneralConfig::swallow_alt_kana_input_method_switch` のキャッシュ（BUG-62 追補5）。
-/// 既定値は `true`（安全側）で、config 読み込み前に発火しても常に swallow する。
-static CACHED_SWALLOW_ALT_KANA_MODE_SWITCH: AtomicBool = AtomicBool::new(true);
-
-/// 直近の Left/Right Alt「新規押下」時点で「なりすまし発動中」だったか。
-///
-/// 新規押下（離された状態からの KeyDown）時点の判定を、以降の auto-repeat
-/// KeyDown・KeyUp まで保持するために使う。押しっぱなし中に
-/// `left_thumb_key`/`right_thumb_key` の設定変更やエンジン ON/OFF 切替が
-/// 起きても、同一の押下セッション内では KeyDown（repeat 含む）/
-/// KeyUp が同じ扱い（なりすまし継続 or 通常 Alt 継続）になり、途中で判定がズレて
-/// Alt が stuck modifier になる事故を防ぐ（`PHYSICAL_KEY_DOWN_AT_MS` の
-/// auto-repeat 対策コメント参照、同種の問題）。
-static ALT_L_IMPERSONATING: AtomicBool = AtomicBool::new(false);
-static ALT_R_IMPERSONATING: AtomicBool = AtomicBool::new(false);
-
-/// Left/Right Alt が直前のイベント時点で物理的に押下中だったか。
-/// KeyDown が「新規押下」か「auto-repeat」かを区別するために使う。
-static ALT_L_WAS_DOWN: AtomicBool = AtomicBool::new(false);
-static ALT_R_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 
 fn cached_hook_config() -> HookConfig {
     let (left_thumb_vk, right_thumb_vk) = thumb_vk_codes();
-    let keyboard_model = if CACHED_KEYBOARD_MODEL_IS_US.load(Ordering::Acquire) {
+    let keyboard_model = if HOOK_STATE
+        .cached_keyboard_model_is_us
+        .load(Ordering::Acquire)
+    {
         awase::scanmap::KeyboardModel::Us
     } else {
         awase::scanmap::KeyboardModel::Jis
@@ -494,16 +568,18 @@ fn cached_hook_config() -> HookConfig {
         left_thumb_vk,
         right_thumb_vk,
         keyboard_model,
-        left_alt_impersonates_thumb_key: CACHED_LEFT_ALT_IMPERSONATION_ENABLED
+        left_alt_impersonates_thumb_key: HOOK_STATE
+            .cached_left_alt_impersonation_enabled
             .load(Ordering::Acquire),
-        right_alt_impersonates_thumb_key: CACHED_RIGHT_ALT_IMPERSONATION_ENABLED
+        right_alt_impersonates_thumb_key: HOOK_STATE
+            .cached_right_alt_impersonation_enabled
             .load(Ordering::Acquire),
     }
 }
 
 /// 現在キャッシュされている左右親指キーの VK コードを返す。
 ///
-/// `cached_hook_config()` もこの関数を経由する（`CACHED_THUMB_VKS` の
+/// `cached_hook_config()` もこの関数を経由する（`HOOK_STATE.cached_thumb_vks` の
 /// bit-unpack ロジックを1箇所に集約——ADR-114 実装レビュー指摘: 独立した
 /// 2つの unpack サイトがあると、pack 形式を変える際に片方だけ更新漏れが
 /// 起きても検知できない）。
@@ -516,18 +592,20 @@ fn cached_hook_config() -> HookConfig {
 /// 引き続き返すため、reload 経路がブロックされない。
 #[must_use]
 pub fn thumb_vk_codes() -> (VkCode, VkCode) {
-    let packed = CACHED_THUMB_VKS.load(Ordering::Acquire);
+    let packed = HOOK_STATE.cached_thumb_vks.load(Ordering::Acquire);
     (VkCode((packed >> 16) as u16), VkCode(packed as u16))
 }
 
 /// 親指キー VK コードを設定する（config 読み込み後に呼ぶ）
 pub fn set_thumb_vk_codes(left: VkCode, right: VkCode) {
-    CACHED_THUMB_VKS.store(
+    HOOK_STATE.cached_thumb_vks.store(
         (u32::from(left.0) << 16) | u32::from(right.0),
         Ordering::Release,
     );
-    LEFT_THUMB_DOWN_AT_US.store(0, Ordering::Relaxed);
-    RIGHT_THUMB_DOWN_AT_US.store(0, Ordering::Relaxed);
+    HOOK_STATE.left_thumb_down_at_us.store(0, Ordering::Relaxed);
+    HOOK_STATE
+        .right_thumb_down_at_us
+        .store(0, Ordering::Relaxed);
 }
 
 /// 現在押下中の左右親指キーの KeyDown 時刻（µs）を返す。
@@ -535,14 +613,14 @@ pub fn set_thumb_vk_codes(left: VkCode, right: VkCode) {
 pub fn thumb_down_timestamps() -> (Option<Timestamp>, Option<Timestamp>) {
     let to_option = |value| (value != 0).then_some(value);
     (
-        to_option(LEFT_THUMB_DOWN_AT_US.load(Ordering::Relaxed)),
-        to_option(RIGHT_THUMB_DOWN_AT_US.load(Ordering::Relaxed)),
+        to_option(HOOK_STATE.left_thumb_down_at_us.load(Ordering::Relaxed)),
+        to_option(HOOK_STATE.right_thumb_down_at_us.load(Ordering::Relaxed)),
     )
 }
 
 /// キーボードモデル（JIS/US）を設定する（config 読み込み後に呼ぶ）
 pub fn set_keyboard_model(model: awase::scanmap::KeyboardModel) {
-    CACHED_KEYBOARD_MODEL_IS_US.store(
+    HOOK_STATE.cached_keyboard_model_is_us.store(
         model == awase::scanmap::KeyboardModel::Us,
         Ordering::Release,
     );
@@ -550,31 +628,41 @@ pub fn set_keyboard_model(model: awase::scanmap::KeyboardModel) {
 
 /// Alt なりすましの ON/OFF を設定する（config 読み込み後に呼ぶ）。左右は独立。
 pub fn set_alt_impersonation_enabled(left: bool, right: bool) {
-    CACHED_LEFT_ALT_IMPERSONATION_ENABLED.store(left, Ordering::Release);
-    CACHED_RIGHT_ALT_IMPERSONATION_ENABLED.store(right, Ordering::Release);
+    HOOK_STATE
+        .cached_left_alt_impersonation_enabled
+        .store(left, Ordering::Release);
+    HOOK_STATE
+        .cached_right_alt_impersonation_enabled
+        .store(right, Ordering::Release);
 }
 
 /// エンジンの実効有効状態を設定する（`UiEffect::EngineStateChanged` 処理箇所から呼ぶ）。
 /// Alt なりすましの発動条件（エンジン ON 時のみ発動）に使う。
 pub fn set_engine_enabled(enabled: bool) {
-    CACHED_ENGINE_ENABLED.store(enabled, Ordering::Release);
+    HOOK_STATE
+        .cached_engine_enabled
+        .store(enabled, Ordering::Release);
 }
 
 /// 現在フォーカス中のアプリが `disable_apps` にマッチしているかを設定する
 /// （`runtime/focus_tracking.rs` のフォーカス変更処理から呼ぶ）。
 pub fn set_focus_app_disabled(disabled: bool) {
-    FOCUS_APP_DISABLED.store(disabled, Ordering::Release);
+    HOOK_STATE
+        .focus_app_disabled
+        .store(disabled, Ordering::Release);
 }
 
 /// 現在フォーカス中のアプリで awase が無効化されているか。
 #[must_use]
 pub fn is_focus_app_disabled() -> bool {
-    FOCUS_APP_DISABLED.load(Ordering::Acquire)
+    HOOK_STATE.focus_app_disabled.load(Ordering::Acquire)
 }
 
 /// `GeneralConfig::swallow_alt_kana_input_method_switch` を設定する（config 読み込み後に呼ぶ）。
 pub fn set_swallow_alt_kana_mode_switch(enabled: bool) {
-    CACHED_SWALLOW_ALT_KANA_MODE_SWITCH.store(enabled, Ordering::Release);
+    HOOK_STATE
+        .cached_swallow_alt_kana_mode_switch
+        .store(enabled, Ordering::Release);
 }
 
 /// Alt なりすましが現在発動中か（Left/Right いずれか）。
@@ -595,7 +683,8 @@ pub fn set_swallow_alt_kana_mode_switch(enabled: bool) {
 /// 「ローマ字入力のような挙動になる」不具合の直接原因になっていた。
 #[must_use]
 pub fn is_alt_impersonation_active() -> bool {
-    ALT_L_IMPERSONATING.load(Ordering::Relaxed) || ALT_R_IMPERSONATING.load(Ordering::Relaxed)
+    HOOK_STATE.alt_l_impersonating.load(Ordering::Relaxed)
+        || HOOK_STATE.alt_r_impersonating.load(Ordering::Relaxed)
 }
 
 /// overflow ラッチ中（HOOK_KEYS の resync 待ち）にキーを OS へ渡す/飲み込む
@@ -874,7 +963,7 @@ const fn is_self_injected(extra_info: usize) -> bool {
 }
 
 fn push_hook_ime_mode_diagnostic(record: crate::journal::HookImeModeDiagnosticRecord) {
-    let Ok(mut queue) = HOOK_IME_MODE_DIAGNOSTICS.lock() else {
+    let Ok(mut queue) = HOOK_STATE.ime_mode_diagnostics.lock() else {
         return;
     };
     if queue.len() >= HOOK_IME_MODE_DIAGNOSTIC_CAP {
@@ -885,7 +974,7 @@ fn push_hook_ime_mode_diagnostic(record: crate::journal::HookImeModeDiagnosticRe
 
 pub(crate) fn drain_hook_ime_mode_diagnostics() -> Vec<crate::journal::HookImeModeDiagnosticRecord>
 {
-    let Ok(mut queue) = HOOK_IME_MODE_DIAGNOSTICS.lock() else {
+    let Ok(mut queue) = HOOK_STATE.ime_mode_diagnostics.lock() else {
         return Vec::new();
     };
     queue.drain(..).collect()
@@ -930,7 +1019,9 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     if ime_key_kind.is_some() {
         let dir = if is_keydown { "down" } else { "up" };
         let now_ms = current_tick_ms();
-        let prev_ms = LAST_IME_MODE_HOOK_MS.swap(now_ms, Ordering::Relaxed);
+        let prev_ms = HOOK_STATE
+            .last_ime_mode_hook_ms
+            .swap(now_ms, Ordering::Relaxed);
         // BUG-113（docs/adr/149-physical-ime-key-activation-defers-forced-set-open.md）
         // の内訳追跡用の恒久診断: 直前に awase 自身が発行した actuation SendInput
         // （`win32::send_input_safe` の `[ime-io] actuation` ログ）から何 us 経過して
@@ -969,14 +1060,14 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // 方向で対処する（docs/known-bugs.md BUG-14）。VK_KANA のみ従来の BUG-08 swallow
     // を維持する（下のブロック）。
     //
-    // PHYSICAL_KEY_STATE はハードウェア由来のイベントのみで更新する。
+    // HOOK_STATE.physical_key_state はハードウェア由来のイベントのみで更新する。
     // LLKHF_INJECTED 付き（X サーバー・他ツールの synthetic）はスキップし、
     // stuck modifier による汚染を防ぐ。自前の synthetic は上の is_self_injected で既に除外済み。
     if !is_injected {
-        if let Some(slot) = PHYSICAL_KEY_STATE.get(vk.0 as usize) {
+        if let Some(slot) = HOOK_STATE.physical_key_state.get(vk.0 as usize) {
             slot.store(is_keydown, Ordering::Relaxed);
         }
-        if let Some(slot) = PHYSICAL_KEY_DOWN_AT_MS.get(vk.0 as usize) {
+        if let Some(slot) = HOOK_STATE.physical_key_down_at_ms.get(vk.0 as usize) {
             // 同一 VK の auto-repeat KeyDown では down_at を上書きしない
             // （長押し判定が常に「直前」へリセットされてしまうため）。
             let new_value = if is_keydown {
@@ -995,13 +1086,13 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
 
     // `disable_apps`（既定 mstsc.exe）にマッチするアプリへフォーカス中は、
     // ここで生キーイベントをそのまま OS に通す（awase を丸ごとバイパスする、
-    // BUG-78 対策）。`PHYSICAL_KEY_STATE` の更新（上のブロック）より後に置く —
+    // BUG-78 対策）。`HOOK_STATE.physical_key_state` の更新（上のブロック）より後に置く —
     // 前に置くと無効アプリに入る直前から押していたキーの KeyUp が記録されず、
     // 今回対策したいスタックをこの分岐自体が新規に生んでしまう。
     // VK_KANA/Alt なりすまし等の以降の変換系ロジックより前に置くことで、
     // それらの介入（BUG-08/BUG-61/BUG-62 対策含む）も無効化中は一切効かなくする
     // （ユーザー判断により例外なく無効化する）。
-    if FOCUS_APP_DISABLED.load(Ordering::Relaxed) {
+    if HOOK_STATE.focus_app_disabled.load(Ordering::Relaxed) {
         return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
     }
 
@@ -1088,7 +1179,9 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // `GeneralConfig::swallow_alt_kana_input_method_switch` で無効化できる
     // ようにした。既定値は `true`（従来どおり常時 swallow）。
     if (vk == crate::vk::VK_DBE_ROMAN || vk == crate::vk::VK_DBE_NOROMAN)
-        && CACHED_SWALLOW_ALT_KANA_MODE_SWITCH.load(Ordering::Acquire)
+        && HOOK_STATE
+            .cached_swallow_alt_kana_mode_switch
+            .load(Ordering::Acquire)
     {
         let dir = if is_keydown { "down" } else { "up" };
         let name = if vk == crate::vk::VK_DBE_ROMAN {
@@ -1145,7 +1238,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             is_keydown,
             config.left_alt_impersonates_thumb_key,
             config.right_alt_impersonates_thumb_key,
-            CACHED_ENGINE_ENABLED.load(Ordering::Relaxed),
+            HOOK_STATE.cached_engine_enabled.load(Ordering::Relaxed),
         );
     }
     let rewritten_vk = apply_alt_impersonation(vk, is_keydown, alt_extended, config);
@@ -1170,17 +1263,19 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             }
         };
         if vk == config.left_thumb_vk {
-            update_thumb(&LEFT_THUMB_DOWN_AT_US);
+            update_thumb(&HOOK_STATE.left_thumb_down_at_us);
         }
         if vk == config.right_thumb_vk {
-            update_thumb(&RIGHT_THUMB_DOWN_AT_US);
+            update_thumb(&HOOK_STATE.right_thumb_down_at_us);
         }
     }
 
     // Ctrl consumption tracking
     if crate::vk::is_ctrl_variant(vk) {
         // Ctrl↓/Ctrl↑ どちらでも consumption をリセット（次の Ctrl 押下から再計測）
-        CTRL_CONSUMED_SINCE_DOWN.store(false, Ordering::Relaxed);
+        HOOK_STATE
+            .ctrl_consumed_since_down
+            .store(false, Ordering::Relaxed);
     } else if is_keydown {
         let ctrl_held = is_physical_key_down(crate::vk::VK_LCONTROL)
             || is_physical_key_down(crate::vk::VK_RCONTROL);
@@ -1188,7 +1283,9 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             // 親指キー自身は "Ctrl consumed" に含めない。
             // Ctrl+無変換 を直接押したとき(他キーなし) rescue が誤発動しないようにするため。
             if vk != config.left_thumb_vk && vk != config.right_thumb_vk {
-                CTRL_CONSUMED_SINCE_DOWN.store(true, Ordering::Relaxed);
+                HOOK_STATE
+                    .ctrl_consumed_since_down
+                    .store(true, Ordering::Relaxed);
             }
         }
     }
