@@ -1517,6 +1517,7 @@ impl WindowsPlatform {
         let effective = match outcome {
             ImeOpenOutcome::Applied
             | ImeOpenOutcome::FallbackSent
+            | ImeOpenOutcome::AppliedWithoutSendInput
             | ImeOpenOutcome::AlreadyMatched => open,
             ImeOpenOutcome::Failed => !open,
             ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned => unreachable!(),
@@ -1529,11 +1530,10 @@ impl WindowsPlatform {
         // ここが唯一の invalidate 点。これにより IME ON 遷移直後の送信が
         // ms_ime_gate_defer で IMC 確認を待つようになる。
         // AlreadyMatched は状態不変（確認済み belief を降格させない）、Failed は
-        // 実状態が不明のため belief を汚さない。
-        if matches!(
-            outcome,
-            ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent
-        ) {
+        // 実状態が不明のため belief を汚さない。`AppliedWithoutSendInput`
+        // （ADR-167、ImmCrossProcessStrategy経由）も実際に適用が走った
+        // ケースなので`Applied`/`FallbackSent`と同じ扱いにする。
+        if outcome.wrote_open_state() {
             self.output
                 .ime_mode_fsm
                 .borrow_mut()
@@ -1592,21 +1592,19 @@ impl WindowsPlatform {
             // 随伴 warmup を重ねて送らない。1打鍵あたり最大3回の重複 SendInput
             // が「@」の確立済み必要条件を満たしていた（実機ログで確認済み）。
             //
-            // ただし `should_send_accompanying_warmup` の前提（`Applied` ==
-            // 戦略が実際に `SendInput` した）は `ImmCrossProcessStrategy`
-            // （`ImmSetOpenStatus` クロスプロセス API のみ、SendInput 皆無）
-            // には当てはまらない（/code-review 指摘）。このストラテジーは
-            // `AppImeProfile::can_use_imm32_cross_process() == true`
-            // （= `Standard` プロファイルのみ）でしか選ばれないため、その
-            // プロファイルでは前提が成立せず、常に安全側（従来どおり送る）
-            // に倒す——`Standard` 以外（`TsfNative`/`Imm32Unavailable`/
-            // `InputRelay`）では `ImmCrossProcessStrategy` 自体が
-            // `is_applicable() == false` のため `Applied` は必ず実送信を
-            // 伴う戦略（`GjiDirectStrategy`/`MsImeDirectStrategy`）由来と
-            // 確定できる。
-            let profile = self.current_app_profile();
-            let should_send = profile.can_use_imm32_cross_process()
-                || awase::platform::should_send_accompanying_warmup(outcome);
+            // ADR-167: `ImmCrossProcessStrategy`（`ImmSetOpenStatus` クロス
+            // プロセス API のみ、SendInput 皆無、`Standard` プロファイル限定）
+            // が成功した場合は `outcome` に `Applied` ではなく専用の
+            // `AppliedWithoutSendInput` が返るため（`ime_controller.rs`/
+            // `open_chain.rs` 参照）、ここではプロファイルを一切見ず
+            // `should_send_accompanying_warmup(outcome)` の結果をそのまま
+            // 使えばよい。旧実装は「Standardプロファイルなら常に送る」という
+            // profile軸の粗い代理指標に頼っており、`ImmCrossProcessStrategy`
+            // が`Failed`を返して`GjiDirectStrategy`（実SendInputを伴う）へ
+            // フォールスルーした場合に、実送信の直後へ随伴warmupが重複して
+            // 「@」の必要条件（1打鍵あたり連続2回以上のSendInput）を
+            // Standardプロファイルでも再現しうる欠陥があった（ADR-167参照）。
+            let should_send = awase::platform::should_send_accompanying_warmup(outcome);
             if should_send {
                 self.output
                     .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Actuated);

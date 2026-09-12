@@ -472,10 +472,8 @@ impl ImeModel {
             } else {
                 ImeApplyAcceptance::Stale
             }
-        } else if matches!(
-            outcome,
-            ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent | ImeOpenOutcome::AlreadyMatched
-        ) && generation >= self.focus_generation_watermark
+        } else if (outcome.wrote_open_state() || outcome == ImeOpenOutcome::AlreadyMatched)
+            && generation >= self.focus_generation_watermark
             && pending.focus_epoch == current_epoch
             && pending.target == open
             && self.applied.applied_open() != Some(open)

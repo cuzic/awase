@@ -135,6 +135,7 @@
 | [BUG-130](BUG-130.md) | `tsf::probe::tests::check_now_show_only_confirm_becomes_stale_after_grace_expires` がwindows-build CIで稀にflake（テスト自体の不具合、実装バグではない） |
 | [BUG-131](BUG-131.md) | `kana_mode_restore_key_down`（ADR-137決定2のM-2ラッチ）の解除条件がDBEキーのDown/Up vk非対称で成立せず固着する |
 | [BUG-132](BUG-132.md) | `hook.rs`の`LEFT_THUMB_DOWN_AT_US`がDBEキーのDown/Up vk非対称で親指キー押下中ラッチしうる（設定リロードで自然回復、未修正） |
+| [BUG-133](BUG-133.md) | Standardプロファイル×ImmCross失敗フォールバック時、随伴warmupがGjiDirectStrategyの実送信直後に重複する（修正済み、ADR-167） |
 
 ## その他の資料
 

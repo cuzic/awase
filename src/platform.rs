@@ -152,10 +152,22 @@ use crate::types::{KeyAction, RawKeyEvent};
 /// `apply_ime_open` の実行結果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ImeOpenOutcome {
-    /// IMM 経由で確実に設定できた
+    /// 実 `SendInput`（VK送信）を伴って確実に設定できた（`GjiDirectStrategy`/
+    /// `MsImeDirectStrategy`）。
     Applied,
     /// フォールバック（VK_KANJI 等）を送信済み。OS 処理完了まで不確定
     FallbackSent,
+    /// `ImmSetOpenStatus`（クロスプロセスIMM32 API）のみで設定できた。VK は
+    /// 一切送っていない（ADR-167）。`ImmCrossProcessStrategy`（`Standard`
+    /// プロファイル限定）専用。旧実装ではこのケースも`Applied`に潰していたが、
+    /// 「`Applied`/`FallbackSent` == 実SendInputを伴う」という
+    /// [`should_send_accompanying_warmup`] の前提が`ImmCrossProcessStrategy`
+    /// には成立しないため、この専用variantに分離した（ADR-149の随伴warmup
+    /// ゲートがStandardプロファイル全体を無条件例外にしていたことで、
+    /// `ImmCrossProcessStrategy`が`Failed`を返し`GjiDirectStrategy`へ
+    /// フォールスルーした場合に随伴warmupが実送信の直後へ重複する欠陥が
+    /// あった）。
+    AppliedWithoutSendInput,
     /// shadow が既に目標状態のためスキップ
     AlreadyMatched,
     /// 設定に失敗（非日本語環境など）
@@ -170,6 +182,21 @@ pub enum ImeOpenOutcome {
     /// 機構を一切試行しなかった（issue #136 / BUG-90、`AppImeProfile::InputRelay`）。
     /// `UnsafeToToggle` と同じく「送っていない」ので applied / belief を書かない。
     NotOwned,
+}
+
+impl ImeOpenOutcome {
+    /// この outcome が「実際に何らかの機構で open 軸へ書き込んだ」ことを
+    /// 意味するか（`Applied`/`FallbackSent`/`AppliedWithoutSendInput`の3つ、
+    /// ADR-167）。網羅 `match` で書くことで、将来 variant を追加した際に
+    /// このヘルパーの呼び出し元全てがコンパイルエラーで追随を強制される
+    /// （非網羅な `matches!` の書き直しを1箇所に集約する狙い）。
+    #[must_use]
+    pub const fn wrote_open_state(self) -> bool {
+        match self {
+            Self::Applied | Self::FallbackSent | Self::AppliedWithoutSendInput => true,
+            Self::AlreadyMatched | Self::Failed | Self::UnsafeToToggle | Self::NotOwned => false,
+        }
+    }
 }
 
 /// `on_ime_applied` の随伴 eager TSF warmup を送るべきか（ADR-149、BUG-113）。
@@ -193,12 +220,18 @@ pub enum ImeOpenOutcome {
 /// S1 指摘）。
 ///
 /// 呼び出し元は `UnsafeToToggle`/`NotOwned`（送信自体を試みなかった）を
-/// 既に早期 return で除外済みの前提（`on_ime_applied` 参照）。加えて
-/// `AppImeProfile::can_use_imm32_cross_process() == true`（`Standard`
-/// プロファイル）では `ImmCrossProcessStrategy` が SendInput を伴わずに
-/// `Applied` を返しうるため、呼び出し元（`platform.rs::on_ime_applied`）
-/// はこの述語の結果をそのプロファイルでは使わず常に送る側に倒す
-/// （/code-review 指摘、詳細は呼び出し元のコメント参照）。
+/// 既に早期 return で除外済みの前提（`on_ime_applied` 参照）。
+///
+/// `ImmCrossProcessStrategy`（`AppImeProfile::can_use_imm32_cross_process()
+/// == true`、`Standard` プロファイル限定）が SendInput を伴わずに成功した
+/// 場合は `Applied` ではなく [`ImeOpenOutcome::AppliedWithoutSendInput`] を
+/// 返す（ADR-167）。旧実装はこの区別が無く、呼び出し元がプロファイル軸で
+/// 「Standardなら常に送る」という粗い代理指標に頼っていたため、
+/// `ImmCrossProcessStrategy`が`Failed`を返し`GjiDirectStrategy`（実
+/// SendInputを伴う）へフォールスルーした場合に、実送信の直後へ随伴warmup
+/// が重複するという欠陥があった（1打鍵に対する即時連続SendInputが
+/// BUG-113の確立済み必要条件を再現しうる）。variantで区別することで
+/// この関数の呼び出し元はプロファイルを一切参照する必要がなくなった。
 #[must_use]
 pub const fn should_send_accompanying_warmup(outcome: ImeOpenOutcome) -> bool {
     !matches!(
@@ -514,6 +547,30 @@ mod tests {
             ImeOpenOutcome::AlreadyMatched
         ));
         assert!(should_send_accompanying_warmup(ImeOpenOutcome::Failed));
+    }
+
+    #[test]
+    fn should_send_accompanying_warmup_sends_for_immcross_only_success() {
+        // ADR-167: ImmCrossProcessStrategyはSendInputを伴わないため、
+        // AppliedWithoutSendInputでは（Standardプロファイルかどうかに関わらず）
+        // 随伴warmupを送る必要がある。
+        assert!(should_send_accompanying_warmup(
+            ImeOpenOutcome::AppliedWithoutSendInput
+        ));
+    }
+
+    #[test]
+    fn wrote_open_state_distinguishes_real_send_from_immcross_only() {
+        // ADR-167: 「何か書き込んだか」（wrote_open_state）は3つとも true、
+        // 「実SendInputを伴ったか」（should_send_accompanying_warmupの否定）は
+        // AppliedWithoutSendInputだけ異なる、という非対称性を固定する。
+        assert!(ImeOpenOutcome::Applied.wrote_open_state());
+        assert!(ImeOpenOutcome::FallbackSent.wrote_open_state());
+        assert!(ImeOpenOutcome::AppliedWithoutSendInput.wrote_open_state());
+        assert!(!ImeOpenOutcome::AlreadyMatched.wrote_open_state());
+        assert!(!ImeOpenOutcome::Failed.wrote_open_state());
+        assert!(!ImeOpenOutcome::UnsafeToToggle.wrote_open_state());
+        assert!(!ImeOpenOutcome::NotOwned.wrote_open_state());
     }
 
     #[test]
