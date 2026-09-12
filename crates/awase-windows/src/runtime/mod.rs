@@ -1310,6 +1310,9 @@ impl Runtime {
                         focus_gen,
                     },
                     crate::state::ime_actuation_decision::DecisionSite::RunOpenChainAsync,
+                    // ADR-163 Part D S-8対応: key_pipeline.rsのshadow-toggle
+                    // OFF経路と`site`が同一値のため`caller`で区別する。
+                    Some(crate::state::ime_actuation_decision::DecisionSite::ForceOnBootstrap),
                 )
                 .await;
                 tracing::info!("force-on bootstrap: apply_ime_open(true) → {outcome:?}");

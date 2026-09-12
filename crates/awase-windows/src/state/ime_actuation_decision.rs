@@ -66,8 +66,21 @@ pub(crate) enum GateResult {
 /// `runtime/open_chain.rs::imm_cross_write`、`FallbackWrite`は同`fallback_write`、
 /// `RunOpenChainAsync`は同`run_open_chain_async`冒頭のゲート、`DispatchImeSetOpen`は
 /// `runtime/executor.rs::dispatch_ime_set_open`。`ReassertExplicitPhysicalKey`/
-/// `ForceOnRomajiCorrection`は記録専用ラベルであり、command計算へは使わない
-/// （ADR-163 Part D B1）。
+/// `ForceOnRomajiCorrection`/`ShadowToggleOff`/`ForceOnBootstrap`は記録専用
+/// ラベルであり、command計算へは使わない（ADR-163 Part D B1）。
+///
+/// # `ShadowToggleOff`/`ForceOnBootstrap`（ADR-163 Part D S-8対応、2026-09-11）
+///
+/// `run_open_chain_async`は`key_pipeline.rs`のshadow-toggle OFF経路・
+/// `runtime/mod.rs`のforce-on bootstrap経路・`runtime/executor.rs::
+/// dispatch_ime_set_open`の3箇所から呼ばれるが、後者は`site=DispatchImeSetOpen`
+/// を渡すのに対し、前者2つは共に`site=RunOpenChainAsync`（`run_open_chain_async`
+/// 自身の冒頭ゲート）を渡すため、記録された`ActuationDecisionRecord`だけでは
+/// この2経路を区別できなかった（`site`の意味を変えると`replay_record`の
+/// chain再導出・ImmCross command再計算スキップ判定に影響するため`site`自体は
+/// 変更しない）。`ReassertExplicitPhysicalKey`/`ForceOnRomajiCorrection`と同じ
+/// `caller`（`ActuationDecisionRecord::caller`）による事後ラベル付けで解決する:
+/// `run_open_chain_async`の`caller`引数に、呼び出し元がこの2値のどちらかを渡す。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DecisionSite {
     Sync,
@@ -77,6 +90,8 @@ pub enum DecisionSite {
     DispatchImeSetOpen,
     ReassertExplicitPhysicalKey,
     ForceOnRomajiCorrection,
+    ShadowToggleOff,
+    ForceOnBootstrap,
 }
 
 /// 1機構分の「何を送るか」の決定結果（実I/Oは含まない）。

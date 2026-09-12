@@ -691,6 +691,8 @@ fn decision_site_str(site: crate::state::ime_actuation_decision::DecisionSite) -
         DecisionSite::DispatchImeSetOpen => "DispatchImeSetOpen",
         DecisionSite::ReassertExplicitPhysicalKey => "ReassertExplicitPhysicalKey",
         DecisionSite::ForceOnRomajiCorrection => "ForceOnRomajiCorrection",
+        DecisionSite::ShadowToggleOff => "ShadowToggleOff",
+        DecisionSite::ForceOnBootstrap => "ForceOnBootstrap",
     }
 }
 
@@ -865,6 +867,7 @@ impl JournalEntry {
                     seq,
                     elapsed_ms,
                     site = decision_site_str(record.site),
+                    caller = record.caller.map_or("None", decision_site_str),
                     open = record.order.open,
                     chain_len = record.chain_len,
                     attempts_len = record.attempts_len,

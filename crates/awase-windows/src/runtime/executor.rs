@@ -932,6 +932,9 @@ impl DecisionExecutor {
                         focus_gen,
                     },
                     crate::state::ime_actuation_decision::DecisionSite::DispatchImeSetOpen,
+                    // ADR-163 Part D S-8対応: `site`自体が`DispatchImeSetOpen`
+                    // として一意に識別できるため、追加のラベルは不要。
+                    None,
                 )
                 .await;
                 // sync path（sync_outcomes → dispatch_outcomes → on_ime_apply_complete）と

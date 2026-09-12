@@ -1706,6 +1706,9 @@ impl Runtime {
                         order,
                         crate::runtime::open_chain::ImmCrossOp::Untargeted,
                         crate::state::ime_actuation_decision::DecisionSite::RunOpenChainAsync,
+                        // ADR-163 Part D S-8対応: runtime/mod.rsのforce-on
+                        // bootstrap経路と`site`が同一値のため`caller`で区別する。
+                        Some(crate::state::ime_actuation_decision::DecisionSite::ShadowToggleOff),
                     )
                     .await;
                     // B+C(ts更新)+D(noop)+E

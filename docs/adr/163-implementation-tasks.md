@@ -377,11 +377,17 @@ CIが必要でこのセッション（Linuxサンドボックス）では実施�
   完了済み——既存`ImeActuation`と合わせ同一laneを消費する点に注意）。
 - **163-T6**: `with_app`が`None`を返す状況を実際に模したテストは未実施
   （`runtime/`配下は`#[cfg(windows)]`のためLinuxのテストバイナリに存在しない）。
-- **S-8（新規Should-fix、未対応）**: `DecisionSite::RunOpenChainAsync`が
+- **S-8（対応済み、2026-09-11）**: `DecisionSite::RunOpenChainAsync`が
   `key_pipeline.rs`のshadow-toggle OFF経路・`runtime/mod.rs`のforce-on
-  bootstrap経路・`run_open_chain_async`自身の冒頭gateという3つの異なる
-  呼び出し元に共有されており、診断粒度としては区別できない。`caller`
-  フィールド（B-2で新設）を使ってこれらも分離できるが、本PRでは見送った。
+  bootstrap経路の2つの異なる呼び出し元に共有されており、診断粒度としては
+  区別できなかった（`executor.rs`の`dispatch_ime_set_open`経路は元々
+  `site=DispatchImeSetOpen`で区別済み）。`run_open_chain_async`に
+  `caller: Option<DecisionSite>`引数を追加し、`ActuationDecisionRecord::caller`
+  （B-2で新設、`ReassertExplicitPhysicalKey`/`ForceOnRomajiCorrection`と同じ
+  事後ラベル付けパターン）へそのまま転記する形で解決した。新設した
+  `DecisionSite::ShadowToggleOff`/`ForceOnBootstrap`はcommand再計算には
+  使わない記録専用ラベル（`state/ime_actuation_decision.rs`のdoc参照）。
+  `journal.rs`のActuationDecisionトレースログにも`caller`を追加した。
 - **N-1（対応済み、2026-09-11）**: `ActuationDecisionRecord`のJSON表現が
   1エントリ約631バイトあり、Actuation lane（journal.rsの20%予約）で既存
   `ImeActuation`/`DriftGiveUpDiagnostic`/`ConvClassifyCall`を押し出すペースを

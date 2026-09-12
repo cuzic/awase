@@ -187,6 +187,7 @@ fn all_chain_record() -> [Option<WriteMechanism>; MAX_WRITE_MECHANISMS] {
 // `ActuationOrderRecord::from(&order)`を作っておく。
 fn async_record(
     site: DecisionSite,
+    caller: Option<DecisionSite>,
     gate_inputs: DecisionInputs,
     order_record: ActuationOrderRecord,
     attempts: [Option<AttemptRecord>; MAX_WRITE_MECHANISMS],
@@ -200,7 +201,7 @@ fn async_record(
         chain_len: WriteMechanism::ALL.len(),
         attempts,
         attempts_len,
-        caller: None,
+        caller,
     }
 }
 
@@ -547,6 +548,14 @@ pub(crate) async fn run_open_chain_async(
     order: ActuationOrder,
     imm: ImmCrossOp,
     site: DecisionSite,
+    // ADR-163 Part D S-8対応: `site`は3つの呼び出し元（key_pipeline.rsの
+    // shadow-toggle OFF・runtime/mod.rsのforce-on bootstrap・executor.rsの
+    // dispatch_ime_set_open）のうち後者だけを`DispatchImeSetOpen`として
+    // 区別でき、前者2つは共に`RunOpenChainAsync`を渡すため記録上区別が
+    // つかなかった。`caller`は`ActuationDecisionRecord::caller`へそのまま
+    // 転記する診断専用ラベルで、`site`と違いcommand再計算には一切使わない
+    // （`DecisionInputs`/`DecisionSite`のdoc「ShadowToggleOff/ForceOnBootstrap」節参照）。
+    caller: Option<DecisionSite>,
 ) -> ImeOpenOutcome {
     // issue #136 / BUG-90 決定4: この関数は `order`/`imm` のみを受け取り
     // `ImeControlView` を持たないため、呼び出し元の分岐（`imm_cross_is_first_
@@ -594,6 +603,7 @@ pub(crate) async fn run_open_chain_async(
             gate_inputs.expect("is_input_relay implies with_app succeeded and gate_inputs is Some");
         let record = async_record(
             site,
+            caller,
             gate_inputs,
             ActuationOrderRecord::from(&order),
             [None; MAX_WRITE_MECHANISMS],
@@ -639,6 +649,7 @@ pub(crate) async fn run_open_chain_async(
     if let Some(gate_inputs) = gate_inputs {
         let record = async_record(
             site,
+            caller,
             gate_inputs,
             order_record,
             writer.attempts,
@@ -670,5 +681,61 @@ mod tests {
         record_actuation_decision_skipped(DecisionSite::RunOpenChainAsync);
         let after = ACTUATION_DECISION_RECORD_SKIPPED.read();
         assert_eq!(after, before + 1);
+    }
+
+    // ADR-163 Part D S-8対応: `run_open_chain_async`の2つの呼び出し元
+    // （key_pipeline.rsのshadow-toggle OFF経路・runtime/mod.rsのforce-on
+    // bootstrap経路）は共に`site=RunOpenChainAsync`を渡すため、以前は
+    // `async_record`が`caller`を常に`None`に固定しており記録上区別できな
+    // かった（`caller`引数を追加する前のS-8指摘そのもの）。`async_record`が
+    // 渡された`caller`をそのまま`ActuationDecisionRecord.caller`へ転記し、
+    // `site`自体は変更しないことを固定する。
+    #[test]
+    fn async_record_carries_caller_label_distinct_from_site() {
+        use crate::focus::class_names::AppImeProfile;
+        use crate::state::actuation_decision_record::EventOriginRecord;
+        use crate::state::event_origin::{EventOrigin, EventSource, Generation};
+        use crate::state::ime_kind::ImeKindId;
+        use awase::engine::InputModeState;
+
+        let gate_inputs = DecisionInputs {
+            profile: AppImeProfile::Standard,
+            kind: ImeKindId::Gji,
+            shadow_on: None,
+            belief_input_mode: InputModeState::Unknown,
+        };
+        let order_record = ActuationOrderRecord {
+            open: true,
+            would_have_blocked: false,
+            origin: EventOriginRecord::from(EventOrigin::new(
+                EventSource::Physical,
+                Generation::INITIAL,
+            )),
+        };
+
+        let record = async_record(
+            DecisionSite::RunOpenChainAsync,
+            Some(DecisionSite::ShadowToggleOff),
+            gate_inputs,
+            order_record,
+            [None; MAX_WRITE_MECHANISMS],
+            0,
+        );
+        assert_eq!(record.site, DecisionSite::RunOpenChainAsync);
+        assert_eq!(record.caller, Some(DecisionSite::ShadowToggleOff));
+
+        let other = async_record(
+            DecisionSite::RunOpenChainAsync,
+            Some(DecisionSite::ForceOnBootstrap),
+            gate_inputs,
+            order_record,
+            [None; MAX_WRITE_MECHANISMS],
+            0,
+        );
+        assert_eq!(other.caller, Some(DecisionSite::ForceOnBootstrap));
+        assert_ne!(
+            record.caller, other.caller,
+            "shadow-toggle OFF経路とforce-on bootstrap経路は`caller`で区別できるはず"
+        );
     }
 }
