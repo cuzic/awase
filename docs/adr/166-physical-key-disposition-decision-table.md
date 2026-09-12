@@ -15,13 +15,17 @@ summary: |-
   opus-adversarial-consult3ラウンドで、当初「BUG-131が本報告の直接原因」としていた
   確定的な記述は、決定的な反証も確証も無い「有力仮説の一つ」へ格下げした
 status: |-
-  実装済み（ブランチfix/bug131-kana-restore-latch）。決定表テスト・BUG-131修正いずれも
-  Linuxでコンパイル確認済み・Python独立シミュレーションで不変条件を事前検証済みだが、
-  runtime/配下は#[cfg(windows)]のためLinux上での実テスト実行は不可（CLAUDE.md記載の
-  既知の制約）。windows-build CIでの実行結果、実機でのJISキーボード検証、および
-  本報告の実際の原因特定（BUG-131 vs M-2 vs 他候補）はいずれも未実施。M-1（同型の
-  Down/Up非対称でhook.rsのLEFT_THUMB_DOWN_AT_USも影響を受けうる件）はBUG-132として
-  別途起票、本PRのスコープ外
+  実装済み・PR #206でwindows-build CI実行済み。初回のwindows-build CIで、決定表
+  テストが`plan()`自身の`debug_assert!`（injected==trueならshadow_toggledは必ず
+  false、BUG-14ガード）に違反する無効な組み合わせ（injected&&shadow_toggled）を
+  生成していたことが実際に検出され、Linuxコンパイル確認・Python独立シミュレーション
+  だけでは`debug_assert!`を再現できず見逃していたと判明（CLAUDE.md記載のとおり
+  runtime/配下はLinux上での実テスト実行が構造的に不可なため、windows-build CIが
+  唯一の実行環境だったことの実例）。生成時に`continue`で該当組み合わせを除外して
+  修正、再度CIへ投入。実機でのJISキーボード検証、および本報告の実際の原因特定
+  （BUG-131 vs M-2 vs 他候補）は未実施のまま。M-1（同型のDown/Up非対称でhook.rsの
+  親指キー押下タイムスタンプも影響を受けうる件）はBUG-132として別途起票、本PRの
+  スコープ外
 related_adr:
   - "ADR-137"
   - "ADR-119"
@@ -87,9 +91,12 @@ Up=Suppress となる組が実在する**（M-2 節参照）ことが判明し�
 
 - `run_plan_matrix()`: VK種別を6分類（`VK_DBE_HIRAGANA` / `VK_DBE_KATAKANA` /
   その他DBEモードキー3種 / `VK_CONVERT`・`VK_NONCONVERT` / 一般KANJI系 / 非KANJI系）し、
-  各分類ごとに意味のある軸だけを総当たりして `PlanRow` を生成する（計1680行、
-  Python独立シミュレーションで事前検証済み）。
-- `plan_matrix_covers_all_branches_without_panicking`: 全1680行の構築自体が「任意の入力で
+  各分類ごとに意味のある軸だけを総当たりして `PlanRow` を生成する（計1296行。
+  `injected && shadow_toggled` という `plan()` 自身の `debug_assert!` が禁じる
+  無効な組み合わせは生成時に `continue` で除外する——実機windows-build CIで
+  この除外漏れ2件が実際に検出された、Python独立シミュレーションだけでは
+  `debug_assert!` を再現できず見逃していた）。
+- `plan_matrix_covers_all_branches_without_panicking`: 全1296行の構築自体が「任意の入力で
   panicしない」を実質的に検証する。
 - `kanji_family_keyup_suppress_verdict_is_independent_of_specific_vk`: **段6bのKeyUp分岐は、
   `profile`/`shadow_toggled`/`active_ime_kind`/`injected`/`dbe_policy`が同じなら、vkが

@@ -1632,6 +1632,12 @@ mod plan_tests {
                     for &active_ime_kind in &ALL_IME_KINDS {
                         for &shift in &ALL_BOOLS {
                             for &injected in &ALL_BOOLS {
+                                // `plan()`自身のdebug_assert!が保証する不変条件
+                                // (BUG-14ガード: injected==trueならshadow_toggled
+                                // は必ずfalse)に反する組み合わせは生成しない。
+                                if injected && shadow_toggled {
+                                    continue;
+                                }
                                 for &dbe_policy in &ALL_DBE_POLICIES {
                                     for &half_width in &ALL_BOOLS {
                                         for &thumb in &ALL_BOOLS {
@@ -1694,6 +1700,9 @@ mod plan_tests {
                     for &shadow_toggled in &ALL_BOOLS {
                         for &active_ime_kind in &ALL_IME_KINDS {
                             for &injected in &ALL_BOOLS {
+                                if injected && shadow_toggled {
+                                    continue;
+                                }
                                 for &dbe_policy in &ALL_DBE_POLICIES {
                                     let mut ev = dbe_mode_event(vk, action, event_type);
                                     ev.injected = injected;
@@ -1789,6 +1798,9 @@ mod plan_tests {
                 for &shadow_toggled in &ALL_BOOLS {
                     for &active_ime_kind in &ALL_IME_KINDS {
                         for &injected in &ALL_BOOLS {
+                            if injected && shadow_toggled {
+                                continue;
+                            }
                             for &dbe_policy in &ALL_DBE_POLICIES {
                                 let mut ev = kanji_event(event_type, Some(ShadowImeAction::Toggle));
                                 ev.injected = injected;
