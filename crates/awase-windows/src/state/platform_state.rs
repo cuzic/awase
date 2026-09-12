@@ -1634,10 +1634,30 @@ pub(crate) struct GateStore {
     pub idle_conv_check_in_flight_since_ms: Option<u64>,
     /// BUG-116/ADR-137 決定2: 物理 `VK_DBE_HIRAGANA` KeyDown によるひらがな復元
     /// 注入（`kp_restore_hiragana_for_suppressed_mode_key`）が、対応する KeyUp
-    /// 前の auto-repeat KeyDown で重複発火しないようにする latch。KeyDown で
-    /// 注入したら true にし、その VK の KeyUp で false に戻す
-    /// （`half_width_alnum_toggle_active` と同型のパターン）。
-    pub kana_mode_restore_key_down: bool,
+    /// 前の auto-repeat KeyDown で重複発火しないようにする latch。
+    ///
+    /// BUG-131: 旧実装は `bool` で、KeyDown で `true` にし「同じ vk_code の
+    /// KeyUp」でのみ `false` に戻していた。しかし実機（JIS「カタカナ ひらがな
+    /// ローマ字」キー、scan=0x70）では KeyDown が切替先モードに応じ
+    /// `VK_DBE_KATAKANA`(0xF1)/`VK_DBE_HIRAGANA`(0xF2) になる一方、対応する
+    /// KeyUp は常に `VK_DBE_ALPHANUMERIC`(0xF0) で届く（vk_code が Down/Up で
+    /// 一致しない、`docs/adr/166-physical-key-disposition-decision-table.md`
+    /// 参照）ため、この解除条件が構造的に一度も成立せず永久固着していた。
+    ///
+    /// 物理キーの同一性を表す安定な軸は `scan_code`（Down/Up 双方とも実機で
+    /// 0x70 と一致することを確認済み）のため、`Option<ScanCode>` にして
+    /// 発火した KeyDown の `scan_code` を保持し、**同じ scan_code の KeyUp**
+    /// で解除する（`key_pipeline.rs::should_clear_kana_mode_restore_latch`）。
+    /// 副次効果として、VK 書き換え（`rewritten_vk`、ADR-140/143 のキー役割
+    /// 代入）で Up 側の vk が変わるケースも scan_code は不変のため自動的に
+    /// 解決される。
+    ///
+    /// 加えて、disable_apps バイパス等で対応する KeyUp がこのパイプライン
+    /// 自体に到達しない残存経路（M-3、opus-adversarial-consult指摘）に備え、
+    /// フォーカス遷移時にも `runtime/focus_tracking.rs` から解除する
+    /// （単一の物理押下中にフォーカスは変わらないため、M-2 のリピート防止
+    /// 効果は損なわれない）。
+    pub kana_mode_restore_key_down: Option<awase::types::ScanCode>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1662,7 +1682,7 @@ impl GateStore {
             sync_key_gate: SyncKeyGate::new(),
             half_width_alnum: crate::state::half_width_alnum::HalfWidthAlnumState::default(),
             idle_conv_check_in_flight_since_ms: None,
-            kana_mode_restore_key_down: false,
+            kana_mode_restore_key_down: None,
         }
     }
 }

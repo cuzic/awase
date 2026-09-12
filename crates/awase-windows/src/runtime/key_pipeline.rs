@@ -46,6 +46,36 @@ enum ExplicitImeActionOutcome {
     SuppressOnly,
 }
 
+/// BUG-131: `kp_restore_hiragana_for_suppressed_mode_key` の M-2 リピート防止
+/// ラッチ（`kana_mode_restore_key_down`）を解除してよい KeyUp かどうかの純粋判定。
+///
+/// JIS「カタカナ ひらがな ローマ字」キー（scan=0x70）は、Windows のキーボード
+/// レイヤーが押下時と離鍵時で別々に現在の IME モードを見て vk を合成するため、
+/// KeyDown と KeyUp の **vk_code** が一致するとは限らない（実機ログで確認:
+/// KeyDown は切替先モードに応じ `VK_DBE_KATAKANA`(0xF1)/`VK_DBE_HIRAGANA`(0xF2)
+/// だが、対応する KeyUp は5/5件すべて `VK_DBE_ALPHANUMERIC`(0xF0) で届いた）。
+/// 一方 **scan_code は Down/Up 双方とも 0x70 で一致**しており、こちらが物理
+/// キーの同一性を表す安定な軸である。旧実装は `vk_code == VK_DBE_HIRAGANA` の
+/// KeyUp しかラッチ解除の契機と認めておらず、この非対称性のせいで解除の機会が
+/// 構造的に一度も来ず、ラッチがプロセス生存中ずっと固着していた
+/// （`docs/known-bugs/BUG-131.md` 参照。opus-adversarial-consult指摘: vk_code
+/// ベースの判定（DBE合成キー群を一括で離鍵とみなす案）は、この物理キーの
+/// KeyUp 側 vk が `rewritten_vk`（ADR-140/143 のキー役割代入）で書き換わる
+/// 構成にも脆弱なため不採用。scan_code は書き換えの対象外のため頑健）。
+///
+/// KeyDown で注入した時点の `scan_code` と一致する KeyUp を、この物理キーの
+/// 離鍵とみなして解除する。M-2/`/code-review` review-4 の保護（外部プロセス
+/// 由来の injected KeyUp では解除しない——押しっぱなし中に割り込むと、まだ
+/// 物理的に押下中の auto-repeat KeyDown がラッチ解除後に重複発火しうる）は
+/// 維持する。
+fn should_clear_kana_mode_restore_latch(
+    armed_scan_code: Option<awase::types::ScanCode>,
+    keyup_scan_code: awase::types::ScanCode,
+    injected: bool,
+) -> bool {
+    armed_scan_code == Some(keyup_scan_code) && !injected
+}
+
 impl Runtime {
     /// キーイベント処理エントリポイント
     pub(crate) fn process_key_event(&mut self, event: RawKeyEvent) -> CallbackResult {
@@ -106,18 +136,22 @@ impl Runtime {
         is_configured_thumb_key: bool,
     ) {
         let is_keyup = matches!(event.event_type, KeyEventType::KeyUp);
-        if event.vk_code != crate::vk::VK_DBE_HIRAGANA {
+        // BUG-131: ラッチ解除は vk_code == VK_DBE_HIRAGANA の判定より先に行う。
+        // KeyUp の vk_code は KeyDown と一致するとは限らない
+        // （`should_clear_kana_mode_restore_latch` のdoc参照）ため、下の
+        // `vk_code != VK_DBE_HIRAGANA` 早期returnより前でこの分岐を評価しないと
+        // 解除ロジックに到達できない。
+        if is_keyup {
+            if should_clear_kana_mode_restore_latch(
+                self.platform_state.gate.kana_mode_restore_key_down,
+                event.scan_code,
+                event.injected,
+            ) {
+                self.platform_state.gate.kana_mode_restore_key_down = None;
+            }
             return;
         }
-        if is_keyup {
-            // KeyDown 起点の repeat latch（M-2）をここで解除する。BUG-14 の規律
-            // どおり、外部プロセス由来の injected KeyUp（MS-IME/CTF 自身の
-            // SendInput）でラッチを早期解除しない——押しっぱなし中に外部注入の
-            // KeyUp が割り込むと、まだ物理的に押下中の auto-repeat KeyDown が
-            // ラッチ解除後に重複発火しうる（/code-review 指摘）。
-            if !event.injected {
-                self.platform_state.gate.kana_mode_restore_key_down = false;
-            }
+        if event.vk_code != crate::vk::VK_DBE_HIRAGANA {
             return;
         }
         // `physical == Suppress` かつ 0xF2 は `plan()` の F2 分岐（InputRelay より
@@ -174,7 +208,12 @@ impl Runtime {
         }
         // M-2: auto-repeat KeyDown での重複発火を防ぐ。対応する KeyUp が来るまで
         // 再発火しない。
-        if self.platform_state.gate.kana_mode_restore_key_down {
+        if self
+            .platform_state
+            .gate
+            .kana_mode_restore_key_down
+            .is_some()
+        {
             return;
         }
         // M-4: awase engine が user-disabled（無変換3連打等）の間は
@@ -207,7 +246,7 @@ impl Runtime {
             );
             return;
         }
-        self.platform_state.gate.kana_mode_restore_key_down = true;
+        self.platform_state.gate.kana_mode_restore_key_down = Some(event.scan_code);
         let sent = self.platform.output.send_gji_half_width_alnum_toggle(
             HalfWidthAlnumAction::Exit,
             ime_on,
@@ -3206,6 +3245,54 @@ mod tests {
         assert!(matches!(
             FocusProbeOpenStatus::classify(None, AppImeProfile::Standard),
             FocusProbeOpenStatus::NotObservable(AppImeProfile::Standard)
+        ));
+    }
+
+    // ── BUG-131: kana_mode_restore_key_down ラッチ解除条件 ──
+
+    fn scan(n: u32) -> awase::types::ScanCode {
+        awase::types::ScanCode(n)
+    }
+
+    #[test]
+    fn kana_restore_latch_clears_on_matching_scan_code_not_injected() {
+        // BUG-131本体: 実機ではKeyDown/KeyUpのvk_codeが一致しないため、
+        // scan_code一致を離鍵の根拠にする（scan=0x70はDown/Up双方で実機確認済み）。
+        assert!(should_clear_kana_mode_restore_latch(
+            Some(scan(0x70)),
+            scan(0x70),
+            false
+        ));
+    }
+
+    #[test]
+    fn kana_restore_latch_does_not_clear_on_different_scan_code() {
+        // 無関係な物理キー（別のscan_code）のKeyUpでは解除しない。
+        assert!(!should_clear_kana_mode_restore_latch(
+            Some(scan(0x70)),
+            scan(0x1E), // 別のキー(例: 'A')のscan_code
+            false
+        ));
+    }
+
+    #[test]
+    fn kana_restore_latch_does_not_clear_when_not_armed() {
+        // ラッチが立っていない(None)状態では、どんなKeyUpが来ても解除操作は無害。
+        assert!(!should_clear_kana_mode_restore_latch(
+            None,
+            scan(0x70),
+            false
+        ));
+    }
+
+    #[test]
+    fn kana_restore_latch_does_not_clear_on_injected_keyup() {
+        // M-2/review-4: 外部プロセス由来の injected KeyUp では解除しない
+        // （押しっぱなし中の auto-repeat KeyDown 重複発火を防ぐ）。
+        assert!(!should_clear_kana_mode_restore_latch(
+            Some(scan(0x70)),
+            scan(0x70),
+            true
         ));
     }
 

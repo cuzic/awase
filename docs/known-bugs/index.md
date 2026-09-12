@@ -133,6 +133,8 @@
 | [BUG-128](BUG-128.md) | Chrome で Ctrl+無変換 直後に explorer.exe 内の別 UWP 入力面へフォーカスが移ると、無関係な cached ON が復元され force-ON まで誤発火する |
 | [BUG-129](BUG-129.md) | 【解決済み・仕様と判定】`flush_pending`の`PendingCharThumb`腕が`ComposingHint`（現`ThumbRawVkEmission`）を参照しない件、根本原因はコード見… |
 | [BUG-130](BUG-130.md) | `tsf::probe::tests::check_now_show_only_confirm_becomes_stale_after_grace_expires` がwindows-build CIで稀にflake（テスト自体の不具合、実装バグではない） |
+| [BUG-131](BUG-131.md) | `kana_mode_restore_key_down`（ADR-137決定2のM-2ラッチ）の解除条件がDBEキーのDown/Up vk非対称で成立せず固着する |
+| [BUG-132](BUG-132.md) | `hook.rs`の`LEFT_THUMB_DOWN_AT_US`がDBEキーのDown/Up vk非対称で親指キー押下中ラッチしうる（設定リロードで自然回復、未修正） |
 
 ## その他の資料
 

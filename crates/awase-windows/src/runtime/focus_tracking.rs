@@ -559,6 +559,12 @@ impl Runtime {
         // 他プロセス窓で候補ウィンドウが表示された履歴が新窓の dispatch-ime に影響すると
         // effective_open が誤って true になり VK_KANJI を誤送信する（shadow desync 偽陽性）。
         crate::tsf::observer::reset_candidate_was_seen();
+        // BUG-131（opus-adversarial-consult指摘）: `kana_mode_restore_key_down`
+        // ラッチは対応する scan_code の KeyUp で解除するが、disable_apps
+        // バイパス等でその KeyUp がこのパイプラインへ一切到達しない残存経路が
+        // ある。単一の物理押下中にフォーカスが変わることはないため、フォーカス
+        // 遷移時にクリアしても M-2（auto-repeat 中の重複発火防止）は損なわれない。
+        self.platform_state.gate.kana_mode_restore_key_down = None;
         let tick_ms = self.enter_focus_scope(classified);
         let new_profile = self.platform.current_app_profile();
         let new_hwnd = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);
