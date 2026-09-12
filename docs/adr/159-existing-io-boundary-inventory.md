@@ -5,7 +5,7 @@ title: |-
 summary: |-
   ADR-158採用Aの子ADR。当初案をround1で反証し「既存境界の棚卸しと未収束呼び出し元の特定」に組み替え。2026-09-09の実機スパイクでM1(送信機構はsend_input_safe/send_ime_control の2系統、SendInput:WM_IME_CONTROL比が2セッションとも約7〜8:1で再現性あり)・M6(journal非欠落)を実測で確定、M2(InputRelay gate)はテスト条件不足でMWB検証を当面見送り静的解析ベースで判断。さらに段階0の成果物を「棚卸し文書」から「ADR-161実証実験で検証済みのdylint宣言強制」に定義し直した
 status: |-
-  起票。TJ2(単体レビュー)実施済み・round4反映済み。段階1(TF1)/段階2(TF2、`shadow_send_trace.rs`、送信内容のシャドー記録)は2026-09-10にPR#193で実装・実機検証済み。再生側（決定点への再投入）は子ADR[163](163-actuation-decision-io-separation-and-replay-harness.md)が引き継ぐ
+  起票。TJ2(単体レビュー)実施済み・round4反映済み。段階0(TB0/TB1/TB2、宣言強制のdylint許可リスト`lints/actuation_call_guard`)・段階1(TF1)は完了。段階2(TF2、`shadow_send_trace.rs`)はPR#193で実装済みだが送信内容の`tracing::debug!`ログ出力のみで、蓄積・突合せ(自動A/B)は`/code-review`指摘で意図的に撤回し未着手（再開条件はADR-163「TF2との突合せ」節）。再生側（決定点への再投入）は子ADR[163](163-actuation-decision-io-separation-and-replay-harness.md)が引き継ぎ、TH1a〜TH1dまで完了・TH1eのみ未着手。opus-adversarial-consult round2相当レビュー(2026-09-12)を実施・Must-fix5件・Should-fix5件・Nice-to-have1件を反映済み
 related_adr:
   - "ADR-119"
   - "ADR-121"
@@ -28,10 +28,18 @@ related_adr:
 を受け、2026-09-09に実機スパイク（`spike/io-boundary-instrumentation`ブランチ）でM1・M2・M6を
 検証済み——詳細は「実機スパイク結果」節。M1（送信機構は複数ある）・M6（journal非欠落）は実測で
 決着、M2（InputRelay gate）はテスト環境の制約で未完了のまま、静的解析に基づき当面のMWB実機検証
-は見送る判断とした。round2（M3〜M5・Should-fix反映）は未実施。さらに2026-09-09、
+は見送る判断とした。round1のM3・M5とShould-fix 7件の個別内容は当時の会話記録が本文へ転記される
+前に失われ、以後の`round2`は実施されなかった。さらに2026-09-09、
 [ADR-161](161-single-source-spec-generation.md)の実証実験で検証された「宣言の強制とSSOT化」
 原則（[ADR-158](158-complexity-reduction-north-star.md)参照）を反映し、段階0の成果物を
 dylint宣言として明確化した。**
+
+**2026-09-12、失われたround2の代替として、現状の本文全体を対象に
+opus-adversarial-consultによる読み取り専用の再レビューを実施した（round1の個別項目の復元では
+なく、2026-09-12時点の実装進捗・関連ADRとの整合性を検証する形）。Must-fix 5件（実測結論の
+訂正未反映・段階2の達成度過大申告・「今後の議論」7項目中4項目が既決着・complexity-budget.md
+の発効条件内訳が古い・「送信列差分ゼロ」の定義とTH1eの証明範囲の不一致）、Should-fix 5件、
+Nice-to-have 1件を検出し、いずれも本文へ反映済み。**
 
 ## 背景
 
@@ -59,12 +67,15 @@ win32.rs:280  LAST_ACTUATION_ISSUE_US.store  // 発行時刻の記録
 win32.rs:283  tracing::debug!("[ime-io] actuation SendInput ...")
 ```
 
-分散しているのは境界ではなく、**この関数を呼ぶ側の意思決定**である。呼び出し元は12ファイル
-20箇所（`hook.rs:324`、`output/mod.rs:753,766`、`lib.rs:377`、`output/vk_send.rs:158`、
-`ime.rs:185,311,401,1785`、`output/held_modifiers.rs:134`、`output/key_injector.rs:112,138,
-154,222,241`、`output/probe_io.rs:208`、`runtime/mod.rs:2155`、`tsf/send.rs:43`、
-`tsf/output.rs:185`、`runtime/key_pipeline.rs:2391`）。新しい型を1枚被せても、この20箇所の
-呼び出し判断ロジックは消えない。
+分散しているのは境界ではなく、**この関数を呼ぶ側の意思決定**である。呼び出し元は起票時点
+（2026-09-09）で12ファイル20箇所だった。新しい型を1枚被せても、この呼び出し判断ロジックは
+消えない。
+
+**opus-adversarial-consult round2相当レビュー（2026-09-12）Should-fixで訂正**: 上記の
+file:line一覧は既に実コードとずれている（段階0が着地した現在、SSOTは本文の手書き複製では
+なく`lints/actuation_call_guard/src/lib.rs::RESTRICTED_CALLS`——[ADR-161](161-single-source-spec-generation.md)
+RC3が「散文の権威」として問題視する複製そのものになるため、本文に一覧を再掲しない）。
+最新の呼び出し元一覧が必要な場合は同ファイルを直接参照すること。
 
 **「重複」とされたInputRelay判定は、実は重複ではなかった**。`imm_cross_write`/`fallback_write`/
 `run_open_chain_async`冒頭の3箇所（`runtime/open_chain.rs:154,335,379`）で見つかった同種の
@@ -77,6 +88,16 @@ win32.rs:283  tracing::debug!("[ime-io] actuation SendInput ...")
 である。1つのインタフェースに畳むと、(a) 1回だけサンプリングして残り2箇所を消す→既知の
 取りこぼしが再発する、(b) インタフェース内部に3つのサンプリング呼び出しを残す→「境界の内部に
 if分岐が集中するだけ」のいずれかにしかならない。
+
+**opus-adversarial-consult round2相当レビュー（2026-09-12）Should-fixで訂正・3箇所を一律に
+扱わない**: 上記は3箇所を同じ理由（再サンプリング）で一括りにしているが、`run_open_chain_async`
+冒頭のgateは別の理由を持つ。`open_chain.rs:226-232`のコメントによれば、`imm_cross_write`の
+gateは「`AsyncChainWriter::is_applicable(ImmCross)`が`self.imm.is_some()`しか見ずprofileを
+参照しないため、冒頭のgateが`with_app`再入でfail-openした場合に無条件で書いてしまう」ことへの
+**多層防御（fail-openの穴埋め）**であり、再サンプリングではない。この違いはM2のリスク受容の
+質に直接響く——[ADR-163](163-actuation-decision-io-separation-and-replay-harness.md)決定D6が
+記録するとおり、この`with_app`再入ケース自体が記録（journal/TF1/TF2）から構造的に漏れるため、
+静的解析だけでは「gateが実際に発火するか」を裏付けられない残リスクとして残る。
 
 **受信側「5種類のバッファ」の内訳が誤っていた**。当初、打鍵→core到達までに`HOOK_KEYS`・
 `INPUT_DEFER`・executorのreinjectリスト・`TsfGate`の保留・`ime_off_rescue_pending`という
@@ -131,9 +152,19 @@ SSOT化」節の適用、round1 M4への回答）**: 段階0の成果物は棚�
 [ADR-161](161-single-source-spec-generation.md)の実証実験で検証済みの機構——dylintの許可
 リスト方式（既存3本＋実証実験済みの4本目`RESTRICTED_ACTUATION_CALL`と同型）による**宣言の
 強制**とする。棚卸しで「本来1箇所に集約されるべき」と確認された対象ごとに、許可された呼び出し元
-関数のリストをdylintのlintとしてコード化し、リストにない呼び出しをコンパイルエラーにする。
-これにより、段階0は「完了したかどうか判定できない終わりのない調査」ではなく、「対象ごとに
-lintが1本ずつ増える、進捗が機械的に確認できる作業」になる。
+関数のリストをdylintのlintとしてコード化する。これにより、段階0は「完了したかどうか判定できない
+終わりのない調査」ではなく、「対象ごとにlintが1本ずつ増える、進捗が機械的に確認できる作業」
+になる。
+
+**opus-adversarial-consult round2相当レビュー（2026-09-12）Should-fixで訂正・効能の過大申告**:
+「リストにない呼び出しをコンパイルエラーにする」は[ADR-161](161-single-source-spec-generation.md)
+の実証範囲より強く書きすぎていた。実際は次の3点が伴う: (1) lint自体は`Warn`宣言
+（`lints/actuation_call_guard/src/lib.rs:53`）で、強制はCIの`DYLINT_RUSTFLAGS="-D warnings"`
+（`.github/workflows/ci.yml:173`）があって初めて成立する。(2) 走査範囲は`-p awase-windows`
+のビルドグラフ限定で、`awase-settings`・`awase-linux`・`awase-macos`は素通りする。(3) 照合は
+名前一致のみで型解決を行わないため、`--tests`を含めると無関係な同名呼び出し（`tests/
+e2e_windows.rs`の`set_ime_open`等）に誤発火しうる（lint自身のdoc参照）。正しくは「CI
+（`-D warnings`）でエラーになる。ただしビルドグラフ内・非テストコードに限る」。
 
 - **送信側**: 当初「`win32::send_input_safe`を唯一の送信動作点」としていたが、実機スパイク
   （後述「実機スパイク結果」節）で誤りと判明した。実際の送信機構は`send_input_safe`
@@ -143,17 +174,22 @@ lintが1本ずつ増える、進捗が機械的に確認できる作業」にな
   **10箇所（2ファイル: `ime.rs`8箇所・`ime_diagnostic.rs`2箇所）**ある（2系統合計は約30箇所・
   14ファイル）。`158-implementation-tasks.md`のTB0受入基準は両方の宣言を対象にしつつ「20箇所」
   とのみ照合しているため、実装時は「`send_input_safe`は20箇所、`send_ime_control`は10箇所」と
-  分けて照合すること。
+  分けて照合すること。**opus-adversarial-consult round2相当レビュー（2026-09-12）Should-fixで
+  追記・照合単位の相違**: 実際に着地した宣言は箇所数ではなく**呼び出し元関数名**単位
+  （`send_input_safe`19個・`send_ime_control`7個、実測でも10箇所が7関数に収まる）。箇所数と
+  関数名数は別の単位であり、両方を併記して混同を避けること（[ADR-161](161-single-source-spec-generation.md)
+  RC3が指摘する「5/6/11」取り違えと同型の罠）。
 
   **round4 TJ2 MF2で追記・宣言の粒度**: `send_ime_control`（`imm.rs`の`SendMessageTimeoutW`
   呼び出し1箇所に集約）は、内部で`cmd`引数により**actuation**（`IMC_SETOPENSTATUS`・
   `IMC_SETCONVERSIONMODE`、10箇所中2箇所のみ）と**probe**（`IMC_GET*`、残り8箇所）を判別して
   いる（`conv_mutation::bump()`/`probe_actuation_fence::bump()`の呼び分けが既にこの区別を
   反映）。関数名だけをキーにした許可リストを作ると、probe専用の8箇所が「actuation合流点の
-  宣言」に混入し、SSOTが希釈される。**方針: `send_ime_control`の宣言キーは関数名単体ではなく
-  `(関数名, cmd)`のペアとする**（TB0着手時にdylintでこの粒度が表現できるかを確認し、
-  表現できない場合は「actuationを起こす`cmd`のみを許可リストの対象とし、probe専用の`cmd`は
-  対象外」という運用規約で代替する）。
+  宣言」に混入し、SSOTが希釈される。当初方針として「`send_ime_control`の宣言キーは関数名単体
+  ではなく`(関数名, cmd)`のペアとする」を検討したが、**実装時にこの粒度は成立せず（TB0着手時
+  確認）、フォールバック案（`send_ime_control`のprobe呼び出し元も含めた全7関数を宣言する運用
+  規約、SSOTの希釈は既知の負債として受容）を採用した**
+  （`lints/actuation_call_guard/src/lib.rs:93-102`のコメント参照）。
 
   呼び出し元を棚卸しし、それぞれの呼び出し前
   判定ロジック（InputRelay検出、`shadow_on` bypass等）のうち、`.await`境界をまたぐ再サンプリング
@@ -175,6 +211,15 @@ lintが1本ずつ増える、進捗が機械的に確認できる作業」にな
   異なり「単一関数への呼び出し」ではなく「特定の型（`HoldingGate<M,T>`等）を経由しているか」が
   問題になるため、dylint宣言の強制対象は関数呼び出しではなく型の使用箇所になる可能性がある——
   この違いが実際にdylintで表現しやすいかは別途検証が要る（「今後の議論」参照）。
+  **opus-adversarial-consult round2相当レビュー（2026-09-12）Nice-to-haveで追記**: 障壁は
+  表現の難易度ではなく、検出したいものの性質の違いである可能性が高い。受信側キューで実際に
+  問題になるのは多くの場合「不在」（defer側/drain側の片方だけ配線し忘れる、ADR-156が扱う
+  型の再発ファミリー）であり、[ADR-161](161-single-source-spec-generation.md)問い5は
+  許可リスト方式のdylintでは不在を**原理的に**検出できないと結論している（[ADR-162](162-governance-reversal.md)
+  E1がこの理由で「キュー数」を対象から外しているのも同じ根拠）。したがって受信側の検証は
+  「dylintで型を表現できるか」ではなく「不在検出に適した別の機構（synによる事後スキャン、
+  または存在数を数える普通のユニットテスト）を選ぶか」を先に問うべき。これは「今後の議論」
+  項目3（`ime_off_rescue_pending`の`HoldingGate`合流スパイク）とは別論点である。
 - **観測側**: 上記5つのWin32コールバックと`ObservationSource`11バリアントを棚卸し対象に含める。
   これを欠くと段階1の記録・再生がbelief遷移を再現できない。
 
@@ -211,8 +256,19 @@ round4 TJ2 MF3で訂正: 従来「約1/6」「7〜8:1で一致」の2通りの�
 合わないため、この表現に統一する）を取りこぼす。`send_ime_control`側は`imm.rs`内の
 `SendMessageTimeoutW`呼び出し1箇所のチョークポイントに集約されている。**round4 TJ2 MF4で
 訂正**: 挿入自体は段階0（特に`TB0`によるこの2箇所の宣言）の完了後に着手する——上記
-「段階1（記録・再生）」節の訂正を参照。成立すれば、日常入力が自動A/B装置になり、実験単価が
-「翌日revert」から「差分ゼロ件を確認してから投入」に落ちる。
+「段階1（記録・再生）」節の訂正を参照。
+
+**opus-adversarial-consult round2相当レビュー（2026-09-12）Must-fixで訂正・達成度の分離**:
+PR#193で実装済みのTF2（`shadow_send_trace.rs`）は`tracing::debug!`によるログ出力のみで、
+蓄積・保持・突合せは一切行わない（同ファイル冒頭docが明記するとおり、当初案の
+`Mutex<VecDeque<..>>`リングバッファは`/code-review`指摘で撤回済み）。したがって
+「成立すれば日常入力が自動A/B装置になり、実験単価が『翌日revert』から『差分ゼロ件を確認
+してから投入』に落ちる」という価値はまだ実現していない——[ADR-163](163-actuation-decision-io-separation-and-replay-harness.md)
+「TF2との突合せは将来課題に降格する」節が、この突合せ自体を将来課題としてスコープ外に
+切り出したことで、TF2は「ログ出力（診断材料としては有効）」の段階に留まっている。再開する
+場合の条件は同節に明記されたとおり、`journal.rs`の`JournalLane`/`LaneKind::Actuation`への
+合流設計と、TF2が撤回したホットパスへのロック・ヒープ確保・キュー操作を再燃させないことの
+証明。
 
 ### 前提条件
 
@@ -269,6 +325,16 @@ InputRelayプロファイル対象アプリ（PowerToys「境界のないマウ�
 - 実機検証が本当に必要になるのは、3箇所のいずれかを実際に削除・統合する変更を書く段階であり、
   その時点で対象を絞った回帰テストとして検証環境を用意する方が費用対効果が高い。
 
+**opus-adversarial-consult round2相当レビュー（2026-09-12）Should-fixで追記・第3の選択肢**:
+上記の検討は「新規に検証環境を用意するか否か」の二択だったが、[ADR-163](163-actuation-decision-io-separation-and-replay-harness.md)
+Part D（TH1d'、journal相乗りによるbug report経由の実機コーパス自動収集、PR#201）が着地した
+2026-09-11以降、この二択は古くなっている。MWB利用者からの不具合報告が1本でも届けば、
+attempt単位の`DecisionInputs`（`profile`を含む）が実機ログから自動的に集まるため、
+「gateが実際に発火するか・3箇所のどれで捕まるか」を検証環境を新規に組まずに受動的に確認
+できる。見送り判断自体は妥当だが、根拠は「静的解析で十分」ではなく「安価な観測経路
+（bug report経由の実機コーパス）が別に生えた」に更新できる——ADR-163コーパスにMWB絡みの
+報告が蓄積した時点で、この節を再訪すること。
+
 したがって、InputRelay gate 3箇所の統合可否の判断は、静的解析（上記一次資料）に基づいて行い、
 実際にgateを削減する変更を提案する際に、その変更に限定したMWB環境での回帰テストを条件として
 課す（本ADRの決定には含めない、着手時の個別判断とする）。
@@ -288,13 +354,19 @@ idle→バースト再現を含むセッションで2回、既存のダンプト
 
 `ime_apply_planner.rs::reduce_open_belief`に、`conv_mode`使用時の値とfallback式
 （`shadow_on||candidate_visible||...`）の値を常に比較するログを追加し、再測定セッションで
-**乖離0件**を確認した。同セッション中、conv_modeの読み取りを含む`WM_IME_CONTROL`のprobe
-呼び出しは2192件と高頻度で発生しており、conv_modeが取得できる場面自体は多かったにもかかわらず
-乖離が一度も起きなかった——**初回の「0件」とは異なり、今回は計装が正しく動作した上での有効な
-結果**。ADR-160 S1（静的解析）が指摘した「conv_modeは`effective_open`の最優先決定要因」という
-事実と矛盾はしないが、動的には実際に差が出るケースが（少なくともGJI中心のセッションでは）稀で
-ある可能性を示す。MS-IME等での検証は未実施のため一般化には注意が必要。詳細は
-[ADR-160](160-explicit-non-scope-declaration.md)へ反映する。
+**乖離0件**を確認した——初回の「0件」とは異なり、今回は計装が正しく動作した上での有効な結果。
+
+**opus-adversarial-consult round2相当レビュー（2026-09-12）Must-fixで訂正**: 当初この節は
+「同セッション中conv_modeの読み取りを含む`WM_IME_CONTROL`のprobe呼び出しは2192件と高頻度で
+発生しており、乖離が一度も起きなかった」と書いていたが、2192件は`WM_IME_CONTROL`の
+`kind=probe`呼び出し数であり、乖離比較ログを置いた`reduce_open_belief`の呼び出し数とは
+**別の母集団**（[ADR-160](160-explicit-non-scope-declaration.md) round4 TJ3 M3で訂正済み）。
+`reduce_open_belief`は`conv_mode.map_or(fallback式, |conv| …)`のため`conv_mode`が`None`の
+サンプルでは構造的に乖離しえず、「乖離0件」の最も素直な解釈は「当該セッション中に半角英数
+(ROMAN only)状態に一度も入らなかった」であって「conv_modeが冗長」ではない（同ADR round4
+TJ3 M4）。正式な判断材料として使うには、半角/全角キー等で明示的に半角英数へ切り替える操作を
+含むセッションでの追加測定が必要。詳細な訂正内容は[ADR-160](160-explicit-non-scope-declaration.md)
+本文（round4 TJ3 M2〜M4）を参照——本節はこれ以上重複させない。
 
 ## 検討した代替案
 
@@ -306,20 +378,38 @@ idle→バースト再現を含むセッションで2回、既存のダンプト
 
 ## 今後の議論
 
-1. 送信側20箇所の呼び出し元を実際に一覧化し、`.await`をまたぐ再サンプリングという構造的制約が
-   ある箇所とそうでない箇所を仕分ける最初の棚卸し作業に着手する。
-2. 仕分けが終わった送信側の対象（`send_input_safe`/`send_ime_control`）から、
+**opus-adversarial-consult round2相当レビュー（2026-09-12）Must-fixで訂正**: 以下7項目は
+起票時（2026-09-09）の未着手リストだったが、うち4項目は既に着地している。着地済み分は
+完了印を付け、残りを絞り込む。
+
+1. ~~送信側20箇所の呼び出し元を実際に一覧化し、`.await`をまたぐ再サンプリングという構造的
+   制約がある箇所とそうでない箇所を仕分ける最初の棚卸し作業に着手する。~~ **完了**
+   （TB0/TB1/TB2、commit `2e4825cf`）。
+2. ~~仕分けが終わった送信側の対象（`send_input_safe`/`send_ime_control`）から、
    [ADR-161](161-single-source-spec-generation.md)の実証実験で検証済みのdylint許可リスト
-   方式を適用し、宣言を強制する。**これが段階0の実際の成果物**（上記「成果物の定義」参照）。
+   方式を適用し、宣言を強制する。~~ **完了**——`lints/actuation_call_guard/src/lib.rs::
+   RESTRICTED_CALLS`として着地（段階0の実際の成果物、上記「成果物の定義」参照）。
 3. `ime_off_rescue_pending`を`HoldingGate<M,T>`に合流できるかを検証するスパイクを行う。
+   **未着手**（`runtime/mod.rs:568,576`が依然単発`Option`のまま）。
 4. 受信側（型経由の宣言強制がdylintで表現できるか）を、送信側（関数呼び出しの宣言強制）の
-   実装で得た知見をもとに検証する。関数呼び出しより表現が難しい場合は、受信側は当面synによる
-   事後スキャンに留める、という判断もありうる。
-5. `journal.rs::JournalEntry`に観測側（`ObservationSource`11バリアント、5つのWin32コールバック）
-   の記録を追加する設計を詰める。
-6. `send_input_safe`/`send_ime_control`への差分記録（段階2）の実装方式を設計する。
+   実装で得た知見をもとに検証する。**未着手**——ただし送信側で得た知見（下記
+   「段階0（棚卸し）」節の宣言粒度の訂正、および[ADR-161](161-single-source-spec-generation.md)
+   問い5が指摘する「不在の検出はdylint許可リスト方式では原理的にできない」という限界）を先に
+   踏まえること。「受信側」の課題は表現の難易度ではなく存在/不在の非対称性である可能性が高い。
+5. ~~`journal.rs::JournalEntry`に観測側（`ObservationSource`11バリアント、5つのWin32
+   コールバック）の記録を追加する設計を詰める。~~ **`ObservationSource`側は完了**
+   （TF1、`dispatch_event`が既に無条件でjournal化することが判明し新規variant不要と決着、
+   `158-implementation-tasks.md`TF1参照）。**残るのは5つのWin32コールバック側のみ**
+   （`hook.rs::hook_callback`/`tsf/win_event_obs.rs::observation_event_proc`/
+   `app/bootstrap.rs::win_event_proc`/`runtime/engine_window.rs::engine_wnd_proc`/
+   `tray.rs::tray_wnd_proc`）。
+6. ~~`send_input_safe`/`send_ime_control`への差分記録（段階2）の実装方式を設計する。~~
+   **TF2として着地**（`shadow_send_trace.rs`）——ただしログ出力のみで蓄積・突合せ（自動A/B）
+   は未着手、詳細は上記「段階2（シャドー実行）」節の訂正参照。
 7. 段階0でactuation合流点の再配置が必要と判明した場合は、ADR-151/152のBlockerへの対処を
-   別途検討する（本ADRのスコープには含めない）。
+   別途検討する（本ADRのスコープには含めない）。**未着手**（再配置自体がまだ提案されていない）。
+
+**残タスクは3・4・7に加え「5つのWin32コールバックの記録」に絞られる。**
 
 ## 関連
 

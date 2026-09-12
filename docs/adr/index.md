@@ -165,7 +165,7 @@
 | [156](156-unify-deferred-execution-queues.md) | 遅延実行キューの解放条件管理 — 観察記録と軽量な対策（将来構想、大規模統合は不採用） | 大規模統合は不採用・軽量策のみ実装済み。**pre-pushフック（`.git/hooks/pre-push`、未追跡）のregexに`in… |
 | [157](157-symmetric-target-resolution-for-drift-correction-and-force-on.md) | force-ON が drift correction に道を譲る調停案（不採用・撤回） | **不採用（撤回）。採用した修正はdocs/known-bugs.md BUG-110追補9を参照。round1の恒真化に関する知見のみ本A… |
 | [158](158-complexity-reduction-north-star.md) | アーキテクチャ複雑性根絶の北極星 — 記録・再生基盤／非スコープ宣言／単一仕様生成／ガバナンス反転（Bは棄却） | **北極星として起票、round1反映済み・round2待ち。設計原則を159〜162すべてに反映済み（round4 MF-3で訂正——16… |
-| [159](159-existing-io-boundary-inventory.md) | 既存の送受信境界を棚卸しし、記録・再生・シャドー実行の土台にする | 起票。TJ2(単体レビュー)実施済み・round4反映済み。段階1(TF1)/段階2(TF2、`shadow_send_trace.rs`、… |
+| [159](159-existing-io-boundary-inventory.md) | 既存の送受信境界を棚卸しし、記録・再生・シャドー実行の土台にする | 起票。段階0/段階1完了、段階2(TF2)はログ出力のみ実装。再生側(ADR-163)はTH1a〜TH1d完了・TH1eのみ… |
 | [160](160-explicit-non-scope-declaration.md) | 非スコープを決定する会議体を持つ（C1: IME一本化／C2: アプリホワイトリスト化／C3: conv-mode追跡全廃） | 起票。TJ3(単体レビュー)実施済み・round4反映済み。実施可否はユーザー確認待ちのまま未確定(2026-12-31バックストップ設定済… |
 | [161](161-single-source-spec-generation.md) | 散文の権威を剥奪し、機械可読な単一仕様から生成する＋純粋層にモデル検査をかける | 起票。実証実験6件+round1〜round5レビュー・TJ1(単体レビュー)反映済み |
 | [162](162-governance-reversal.md) | ガバナンスを反転する — 複雑性予算制・ADRのTTL・敵対的レビューの向き先変更 | 起票。TJ4(単体レビュー)実施済み・round4反映済み。E2/E3は着手可、E1/E4はADR-159実績(能力ベース)待ち |

@@ -45,18 +45,21 @@ diffとしては同一の見た目になる。
 
 [ADR-162](../../docs/adr/162-governance-reversal.md) round4 TJ4 M5の訂正により、
 本ルールの発効条件は「配線確認」ではなく**能力ベース**である: [ADR-159](../../docs/adr/159-existing-io-boundary-inventory.md)
-の記録・再生基盤で、**実際の削除・統合を1件、N本の記録トレースの再生で送信列差分ゼロと
-検証できたこと**。
+の記録・再生基盤で、**実際の削除・統合を1件、N本の決定レコード（attempts列・
+`MechanismCommand`列）の再生で差分ゼロと検証できたこと**（opus-adversarial-consult
+round2相当レビュー2026-09-12で「送信列」という語を明確化——[ADR-163](../../docs/adr/163-actuation-decision-io-separation-and-replay-harness.md)
+のTH1eが実際に証明できるのは`MechanismCommand`のvariant種別レベルまでで、
+`imm::send_ime_control`が組み立てる実cmd/lparamバイト値の一致や`with_app`再入頻度の
+変化までは対象外——同ADR round2 T1・round3 U3参照）。
 
-2026-09-11時点でこの条件は**未達成**——ADR-159段階2（TF2、`send_input_safe`/
-`send_ime_control`の実際の送信内容を記録するシャドー実行、`shadow_send_trace.rs`）は
-2026-09-10にPR#193で実装・実機検証済みだが、これは「記録」側の充足に過ぎない。
+2026-09-12時点で**TH1d（既知バグ由来fixtureの実機ダンプからの投入）まで完了**した
+（`tests/journals/actuation_decision/bug-131-report-01m29kdnz.json`、37レコード）。
+ADR-159段階2（TF2、送信内容のログ出力、`shadow_send_trace.rs`）はPR#193で実装済みだが
+蓄積・突合せ（自動A/B）は未着手のまま将来課題（ADR-163「TF2との突合せ」節参照）。
 [ADR-163](../../docs/adr/163-actuation-decision-io-separation-and-replay-harness.md)が
-定める「決定点への再投入（再生）」側もTH1a〜TH1c（`decide_gate`/`decide_chain`/
-`decide_attempt`+crate内再生ハーネス、PR#195/#196）まで実装済みだが、再生ハーネスが
-読むのは現時点では手組みfixtureのみで、実機ダンプからの凍結コーパス投入（TH1d）と、
-そのコーパスを使った実際の削除・統合+差分ゼロ再生証明（TH1e、本ルールの発効条件そのもの）
-はまだ着手していない。この条件が満たされるまで、本ルールは参考文書のまま強制しない。
+定める「決定点への再投入（再生）」側はTH1a〜TH1dまで完了し、**残る未達成条件はTH1e
+（凍結コーパスを使った実際の削除・統合+差分ゼロ再生証明、本ルールの発効条件そのもの）
+のみ**。この条件が満たされるまで、本ルールは参考文書のまま強制しない。
 
 ## なぜこのルールが必要か（背景）
 

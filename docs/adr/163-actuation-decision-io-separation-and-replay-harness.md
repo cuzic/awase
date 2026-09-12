@@ -34,13 +34,19 @@ developへマージ済み、TH1eのみ未着手（2026-09-12時点、実装順�
   （`e72adfaa`/`cc8624bf`/`3f3bb17c`、PR#195マージ・/code-review指摘対応済み）。
 - **TH1c（Part B、`ActuationDecisionRecord`/`AttemptRecord`スキーマ+
   crate内`#[cfg(test)]`再生ハーネス）: 完了**（`6e389a9a`/`f88d019b`、PR#196マージ、
-  `state/actuation_decision_record.rs`）。ただしハーネスが読むfixtureは
-  現時点ではすべて手組み（`replay_all_actuation_decision_fixtures`が読む
-  テストコード内固定値）であり、**`tests/journals/actuation_decision/`
-  （実機ダンプからの凍結コーパス）はまだ存在しない**。
+  `state/actuation_decision_record.rs`）。TH1c時点では、ハーネスが読むfixtureは
+  すべて手組み（`replay_all_actuation_decision_fixtures`が読むテストコード内固定値）
+  であり`tests/journals/actuation_decision/`（実機ダンプからの凍結コーパス）は
+  まだ存在しなかった——下記TH1dで解消。
 - **TH1d（`tests/journals/actuation_decision/`への既知バグ由来fixture投入+
-  `assert!(total > 0)`ガード追加）: 未着手**（置き換えではなく維持、下記TH1d'とは
-  並行タスク）。
+  `assert!(total > 0)`ガード追加）: 完了**（2026-09-12）。不具合報告
+  `01M29KDNZ22KNY1FPXSKBGMW7V`（BUG-131/ADR-166の原因調査対象）の実機journalから
+  `ActuationDecision`エントリ37件を抽出し、N-1ワイヤ圧縮後の現行スキーマへ変換して
+  `tests/journals/actuation_decision/bug-131-report-01m29kdnz.json`として投入。
+  「ディレクトリ不在」「fixture 0件」「レコード0件」の3段assertへ強化し、
+  `cargo test -p awase-windows --lib`が669件greenを確認済み。抽出・変換手順は
+  `docs/journal-replay-guide.md`「ActuationDecisionコーパスの扱い」節に追記(S10)。
+  （置き換えではなく維持、下記TH1d'とは並行タスクだった）。
 - **TH1d'（新設、Part D）: bug report経由の実機コーパス自動収集: 実装・developマージ済み**
   （PR#201、2026-09-11）。opus-adversarial-consultを3ラウンド実施（Part D設計1回・
   実装タスク分割1回・PR全体のマージ前レビュー1回、計16件のBlocker・19件以上の
