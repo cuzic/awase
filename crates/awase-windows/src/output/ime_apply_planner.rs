@@ -2,12 +2,12 @@
 //!
 //! IME 適用機構の選択と実行は [`crate::ime_controller`] の Strategy 群が唯一の
 //! SSOT として担う。このモジュールは観測値（conv_mode / candidate / shadow 等）を
-//! `effective_open` / `confident` に副作用なしで還元する `reduce_open_belief` のみを
-//! 提供する。結果は `platform.rs` の apply 経路で診断ログに使われる。
+//! `effective_open` / `confident` に副作用なしで還元する `OpenBeliefInputs::reduce`
+//! のみを提供する。結果は `platform.rs` の apply 経路で診断ログに使われる。
 
 // ── Observation → Belief reduction ───────────────────────────────
 
-/// [`reduce_open_belief`] へ渡す観測値の集約。
+/// [`OpenBeliefInputs::reduce`] へ渡す観測値の集約。
 ///
 /// 呼び出し元が収集できる全観測値をここにまとめる。
 /// planner / strategy は自らこれらの値を読まない（テスト可能性のため）。
@@ -42,62 +42,57 @@ pub(crate) struct OpenBelief {
     pub confident: bool,
 }
 
-/// 観測値を純粋に還元して `OpenBelief` を返す。
-///
-/// # effective_open の計算
-/// `conv_mode` が取得できた場合はそれを ground-truth として使用する（conv=0 → DirectInput=false）。
-/// 取得できない場合は shadow_on + candidate 観測で推定する。
-///
-/// # confident の計算
-/// ImmCross/GJI で確認できない環境（KanjiToggle 系）でのみ `safely_confirmed` を
-/// 検査する。それ以外は常に `true`。
-/// （旧 `is_engine_intent` 条件は 2026-07-06 到達不能パス監査 B6 で撤去 —
-/// SetOpen は常に Engine の意図であり恒真だった。）
-///
-/// 【doc 訂正、2026-08-10】`confident=false` は「already_matched を強制 false」
-/// つまり「必ず apply する」という設計意図だったが、`OpenBelief::confident` を
-/// 読む本番コードは現在ログ（`platform.rs`）のみで、already_matched 判定には
-/// 使われていない（判定は `ime_controller::ImeController::apply` が `shadow_on` から
-/// 独立に行う）。ADR-108 決定2の緩和経路は `Confirmed` を `Optimistic` へ降格
-/// させないため、この `confident` 判定は現状維持される。将来 `confident` を本番
-/// 分岐へ再配線する場合は、同決定が書く `Optimistic` の扱いを先に見直すこと。
-#[tracing::instrument(level = "debug", skip_all, fields(desired_open = desired_open))]
-pub(crate) fn reduce_open_belief(inputs: &OpenBeliefInputs, desired_open: bool) -> OpenBelief {
-    let effective_open = inputs.conv_mode.map_or(
-        inputs.shadow_on
-            || inputs.candidate_visible
-            || (!desired_open && inputs.candidate_was_seen),
-        |conv| {
-            if desired_open {
-                // open=true 要求時: IME_CMODE_NATIVE(0x1) ビットでひらがな/カタカナを判定。
-                // conv=0 (DirectInput) や conv=0x10 (ROMAN のみ) は半角英数直接入力 = IME OFF 相当扱い。
-                // VK_DBE_HIRAGANA を送ってひらがなモードに復帰させる必要がある。
-                conv & 0x0001 != 0
+impl OpenBeliefInputs {
+    /// 観測値を純粋に還元して `OpenBelief` を返す。
+    ///
+    /// # effective_open の計算
+    /// `conv_mode` が取得できた場合はそれを ground-truth として使用する（conv=0 → DirectInput=false）。
+    /// 取得できない場合は shadow_on + candidate 観測で推定する。
+    ///
+    /// # confident の計算
+    /// ImmCross/GJI で確認できない環境（KanjiToggle 系）でのみ `safely_confirmed` を
+    /// 検査する。それ以外は常に `true`。
+    /// （旧 `is_engine_intent` 条件は 2026-07-06 到達不能パス監査 B6 で撤去 —
+    /// SetOpen は常に Engine の意図であり恒真だった。）
+    ///
+    /// 【doc 訂正、2026-08-10】`confident=false` は「already_matched を強制 false」
+    /// つまり「必ず apply する」という設計意図だったが、`OpenBelief::confident` を
+    /// 読む本番コードは現在ログ（`platform.rs`）のみで、already_matched 判定には
+    /// 使われていない（判定は `ime_controller::ImeController::apply` が `shadow_on` から
+    /// 独立に行う）。ADR-108 決定2の緩和経路は `Confirmed` を `Optimistic` へ降格
+    /// させないため、この `confident` 判定は現状維持される。将来 `confident` を本番
+    /// 分岐へ再配線する場合は、同決定が書く `Optimistic` の扱いを先に見直すこと。
+    #[tracing::instrument(level = "debug", skip_all, fields(desired_open = desired_open))]
+    pub(crate) fn reduce(&self, desired_open: bool) -> OpenBelief {
+        let effective_open = self.conv_mode.map_or(
+            self.shadow_on || self.candidate_visible || (!desired_open && self.candidate_was_seen),
+            |conv| {
+                if desired_open {
+                    // open=true 要求時: IME_CMODE_NATIVE(0x1) ビットでひらがな/カタカナを判定。
+                    // conv=0 (DirectInput) や conv=0x10 (ROMAN のみ) は半角英数直接入力 = IME OFF 相当扱い。
+                    // VK_DBE_HIRAGANA を送ってひらがなモードに復帰させる必要がある。
+                    conv & 0x0001 != 0
+                } else {
+                    // open=false 要求時: DirectInput(0) でなければ「IME ON」扱い（従来通り）。
+                    conv != 0
+                }
+            },
+        );
+
+        let confident =
+            if !self.can_imm32_cross_process && !self.gji_monitor_ok && self.conv_mode.is_none() {
+                // KanjiToggle 系（Chrome/TsfNative 等）: Confirmed かつ shadow 一致 かつ 300ms 以内のみ確信あり
+                self.shadow_on == desired_open
+                    && self.applied.is_confirmed()
+                    && self.now_ms.saturating_sub(self.applied.confirmed_at_ms()) < 300
             } else {
-                // open=false 要求時: DirectInput(0) でなければ「IME ON」扱い（従来通り）。
-                conv != 0
-            }
-        },
-    );
+                true
+            };
 
-    let confident = if !inputs.can_imm32_cross_process
-        && !inputs.gji_monitor_ok
-        && inputs.conv_mode.is_none()
-    {
-        // KanjiToggle 系（Chrome/TsfNative 等）: Confirmed かつ shadow 一致 かつ 300ms 以内のみ確信あり
-        inputs.shadow_on == desired_open
-            && inputs.applied.is_confirmed()
-            && inputs
-                .now_ms
-                .saturating_sub(inputs.applied.confirmed_at_ms())
-                < 300
-    } else {
-        true
-    };
-
-    OpenBelief {
-        effective_open,
-        confident,
+        OpenBelief {
+            effective_open,
+            confident,
+        }
     }
 }
 
@@ -118,13 +113,13 @@ mod tests {
             can_imm32_cross_process: false,
             now_ms: 0,
         };
-        let belief = reduce_open_belief(&inputs, true);
+        let belief = inputs.reduce(true);
         assert!(
             !belief.effective_open,
             "conv=16 (ROMAN only) は open=true 要求時に false"
         );
         // open=false 要求時は従来通り true（DirectInput でないため）
-        let belief_off = reduce_open_belief(&inputs, false);
+        let belief_off = inputs.reduce(false);
         assert!(
             belief_off.effective_open,
             "conv=16 は open=false 要求時に true（IME ON 状態）"
@@ -144,7 +139,7 @@ mod tests {
             can_imm32_cross_process: false,
             now_ms: 0,
         };
-        let belief = reduce_open_belief(&inputs, true);
+        let belief = inputs.reduce(true);
         assert!(
             belief.effective_open,
             "conv=9 (NATIVE|ROMAN) は open=true 要求時に true"

@@ -1,3 +1,15 @@
+---
+id: ADR-122
+title: |-
+  GJI コールドスタート直後の per-VK confirm が「確認遅延」を「未着弾」と誤認し、回収送信が GJI 自身の非同期処理と競合してモーラが重複する（BUG-75 追加実機データに基づく再検討）
+summary: |-
+  BUG-75（既存、`StaleConfirm`回収がGJI I/Oカウンタのポーリング遅延をliteralの証拠と誤認する）の実機再発。不具合報告`01M1JGJNDJT9ZAEMRAEB58ES5A`（LINE+GJI、42秒アイドル後のcold-startでセッション最初のモーラ「と」の2番目のVK「o」がStaleConfirm誤判定→ESC+全体再送でモーラ重複）から起票。Opus 2体（architect/premortem）敵対的レビュー3ラウンドで大きく収束。round1で提案した「案F（`grace_hold_verdict`の早期確定バグ修正）＋案G（`veto_eligible`拡張）の二段構え」は、round2で案Gがper-VK経路（本incidentの経路）では`LiteralDetectCore::poll`を一切経由しないno-opと判明し崩れた。round3で案Gをループローカル条件・新設ゲートとして再設計した版をレビューしたところ、(1)終端状態「候補可視のまま無回収Done」が2026-07-22「kれでできる」というrevert済みregressionをそのまま再生産する、(2)適用条件に使うpending_confirmは判定地点で常にNone、という2つのblockerが判明し、案G/G'は本ADRのスコープから外し将来課題へ切り出した。あわせて本incidentの実際のdeadlineが500msでなく300ms（`target=Chrome`はlong-idle分岐を通らない）と判明し、案Fの効果も「効く」から「効く可能性がある（未測定）」へ訂正
+status: |-
+  **設計継続中（Opus 2体round1〜3完了）。案Fを decision として確定（実装は4前提条件、うち観測フェーズの先行実施が必須）。案G/G'はblocker未解決のため本ADRのスコープ外、別ADR/将来課題へ。[GitHub issue #149](https://github.com/cuzic/awase/issues/149)として追跡、ユーザー判断で実装は一旦ペンディング（2026-09-03）。未実装**
+related_adr:
+  - "ADR-079"
+---
+
 # ADR-122: GJI コールドスタート直後の per-VK confirm が「確認遅延」を「未着弾」と誤認し、回収送信が GJI 自身の非同期処理と競合してモーラが重複する（BUG-75 追加実機データに基づく再検討）
 
 ## ステータス

@@ -1,3 +1,16 @@
+---
+id: ADR-077
+title: |-
+  ObservationAdmission Layer — FocusEpoch による probe 受理ポリシー
+status: |-
+  採用済み
+related_adr:
+  - "ADR-033"
+  - "ADR-075"
+  - "ADR-076"
+  - "ADR-164"
+---
+
 # ADR-077: ObservationAdmission Layer — FocusEpoch による probe 受理ポリシー
 
 ## ステータス
@@ -85,7 +98,7 @@ app.platform_state.ime.write_imm_cross_probe(open, tick_ms, accepted);
 | 判定基準 | `probe_age < 200ms`（近似） | フォーカスが「同じ」か（正確） |
 | CPU 負荷時 | 200ms 超で素通りのリスク | 時間に無関係 |
 | 重複コード | 3 箇所にコピー | `ImmLikeTicket::admit()` 1 箇所 |
-| 診断 | なし | `REJECTED_EPOCH_MISMATCH` 原子カウンタ |
+| 診断 | なし | `REJECTED_EPOCH_MISMATCH` 原子カウンタ（[ADR-164](164-global-static-argument-threading-plan.md)フェーズ8で`RejectionCounters::epoch_mismatch`へ改名・集約） |
 
 ### Phase 2: AcceptedObservation 型保証
 

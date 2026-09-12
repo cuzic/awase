@@ -446,16 +446,16 @@ impl WindowsPlatform {
             }
         );
         self.consume_literal_detect_trace(result.literal_detect, terminal_timer);
-        let notable =
-            crate::journal_policy::probe_tick_is_notable(crate::journal_policy::ProbeTickFacts {
-                state_changed: state_before_step != state_after_step,
-                needs_composition_reset: result.needs_gji_composition_reset,
-                has_gji_response: result.gji_response.is_some(),
-                learned_tsf: result.learned_tsf,
-                completed: result.completed_cold_seq.is_some(),
-                terminal_timer,
-                is_first_tick: self.probe_tick_index == 1,
-            });
+        let notable = crate::journal_policy::ProbeTickFacts {
+            state_changed: state_before_step != state_after_step,
+            needs_composition_reset: result.needs_gji_composition_reset,
+            has_gji_response: result.gji_response.is_some(),
+            learned_tsf: result.learned_tsf,
+            completed: result.completed_cold_seq.is_some(),
+            terminal_timer,
+            is_first_tick: self.probe_tick_index == 1,
+        }
+        .is_notable();
         if notable {
             let suppressed = self.suppressed_probe_ticks;
             self.suppressed_probe_ticks = 0;
@@ -1669,15 +1669,18 @@ impl WindowsPlatform {
         order: crate::state::actuation_chain::ActuationOrder,
         view: &crate::state::ImeControlView<'_>,
         belief: crate::output::OpenBelief,
-    ) -> awase::platform::ImeOpenOutcome {
+    ) -> (
+        awase::platform::ImeOpenOutcome,
+        crate::state::actuation_decision_record::ActuationDecisionRecord,
+    ) {
         let open = order.open();
-        let outcome = crate::ime_controller::ImeController::apply(order, view);
+        let (outcome, record) = crate::ime_controller::ImeController::apply(order, view);
         tracing::debug!(
             "[apply-ime] open={open} eff={} conf={} → outcome={outcome:?}",
             belief.effective_open,
             belief.confident
         );
-        outcome
+        (outcome, record)
     }
 
     /// `applied` から view を構築して [`Self::apply_ime_open_with_view`] に委譲する。
@@ -1688,7 +1691,10 @@ impl WindowsPlatform {
         order: crate::state::actuation_chain::ActuationOrder,
         applied: Option<(bool, u64)>,
         belief: crate::output::OpenBelief,
-    ) -> awase::platform::ImeOpenOutcome {
+    ) -> (
+        awase::platform::ImeOpenOutcome,
+        crate::state::actuation_decision_record::ActuationDecisionRecord,
+    ) {
         let view = self.build_ime_control_view(applied);
         self.apply_ime_open_with_view(order, &view, belief)
     }

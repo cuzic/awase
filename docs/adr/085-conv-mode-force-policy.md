@@ -1,3 +1,18 @@
+---
+id: ADR-085
+title: |-
+  `conv_mode_policy = force` — cold 転換時に awase トレイの目標 conv モードを強制する opt-in 設定
+summary: |-
+  `conv_mode_policy = force` — cold 転換時に awase トレイの目標 conv モードを強制する opt-in 設定。ADR-078 全面実装を待たない軽量な緩和策
+status: |-
+  実装済み（デフォルト無効、実機ソーク未実施）
+related_adr:
+  - "ADR-078"
+  - "ADR-084"
+  - "ADR-086"
+  - "ADR-094"
+---
+
 # ADR-085: `conv_mode_policy = force` — cold 転換時に awase トレイの目標 conv モードを強制する opt-in 設定
 
 ## ステータス

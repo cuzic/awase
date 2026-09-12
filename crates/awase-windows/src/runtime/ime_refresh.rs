@@ -2,7 +2,7 @@
 use awase::engine::{EngineCommand, InputModeState, KanaLockHysteresis};
 
 use super::Runtime;
-use crate::state::ime_actuation::{decide_actuation_action, ActuationAction, FeedbackPolicy};
+use crate::state::ime_actuation::{ActuationAction, FeedbackPolicy};
 use crate::tuning::TYPING_IDLE_MS;
 
 // ── IoMode ──
@@ -457,10 +457,10 @@ impl Runtime {
         // 判定してしまう（2026-07-05: これが原因で enforce IME OFF ブロックが
         // Windows Terminal に対して誤発火していた）。ADR-098 決定1-a のために
         // 算出位置を mirror 書き込みより前へ移した。
-        let new_profile_is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
-            self.platform.current_app_profile(),
-            self.platform.focus.class_name(),
-        );
+        let new_profile_is_tsf_native = self
+            .platform
+            .current_app_profile()
+            .is_effectively_tsf_native(self.platform.focus.class_name());
 
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
         // ADR-098 決定1-a（BUG-69 F2 の修正）: TsfNative では `applied` を
@@ -667,7 +667,7 @@ impl Runtime {
 
         match act_policy {
             FeedbackPolicy::Blind { .. } => {
-                let action = decide_actuation_action(act_policy, act_attempts);
+                let action = act_policy.decide_action(act_attempts);
                 if action == ActuationAction::GiveUp {
                     // ADR-082 Phase 0.5: 打ち切り判定も出所・世代付きで構造化記録する
                     // （BUG-43 の「16 回中 5 回だけ送り、残りは GiveUp」を journal から
@@ -832,7 +832,7 @@ impl Runtime {
         // ADR-082 Phase 0.5: 実送信する試行を出所・世代付きで構造化記録する。
         // `Blind` はここに到達する時点で必ず `Send`（`GiveUp` は上で return 済み）、
         // `Read` は常に `Send`。`action` は `ActuationRecord::new` が
-        // `decide_actuation_action` で導出する。
+        // `FeedbackPolicy::decide_action` で導出する。
         self.platform_state
             .ime
             .journal
@@ -868,9 +868,13 @@ impl Runtime {
                 confident: true,
             };
             let order = self.issue_actuation_order_with_origin(desired, act_origin);
-            let outcome = self
+            let (outcome, record) = self
                 .platform
                 .apply_ime_open_with_belief(order, None, belief);
+            self.platform_state
+                .ime
+                .journal
+                .record(crate::journal::JournalEntry::ActuationDecision { record });
             tracing::info!("Blacklist drift correction: apply_ime_open({desired}) → {outcome:?}");
             self.on_ime_apply_complete(
                 desired,

@@ -1,3 +1,14 @@
+---
+id: ADR-119
+title: |-
+  注入キーイベントの取り扱い — 解釈しないものは消費もしない
+summary: |-
+  [GitHub Issue #136](https://github.com/cuzic/awase/issues/136)（PowerToys「境界線のないマウス」経由でIME ON/OFFが効かない）。R2実データ検証でBUG-90と同一インシデントかつ独立した2バグの合成と判明: (1)リモート側は`transport.rs::plan`のVK_DBE_* SuppressがBUG-14修正の不変条件「解釈しない入力は消費しない」をBUG-52対応(2026-08-05)が破ったリグレッション (2)ローカル側はMWB中継ウィンドウへのImmCross actuationが宛先ミスマッチで空振り。Opus 2体の敵対的議論で決定1(injected passthrough)+決定4(`AppImeProfile::InputRelay`新設)に収束。設計段階のコードレビューで`caps()`空チェーン案(観測なしにbeliefへ嘘を書く欠陥)を`ImeOpenOutcome::NotOwned`新設へ差し替え、`should_pass_physical_key`が本番デッドコードだった発見でcondition(b)の実装場所を修正、`debug_assert`配置ミス(通常操作でpanicする)を発見・修正。実装完了後のOpus敵対的コードレビューでさらに、gateを`runtime/executor.rs`1点だけに置いた初期実装がissue #136当該操作(物理IMEキー押下)の経路をバイパスしBUG-46型の二重actuationという自己回帰を生んでいたことを発見、実際の合流点4箇所(`ImeController::apply`/`run_open_chain_async`/`fallback_write`/`imm_cross_write`)へgateを置き直して修正。番号衝突（develop側issue #137がADR-118を先に採番）が発覚しADR-119へ改番
+status: |-
+  実装済み（2026-09、Windows実機ソーク・MWBプロセス名確定・リンク(a)フックチェーン順序の実機確認は未実施）
+related_adr: []
+---
+
 # ADR-119: 注入キーイベントの取り扱い — 解釈しないものは消費もしない
 
 ## ステータス

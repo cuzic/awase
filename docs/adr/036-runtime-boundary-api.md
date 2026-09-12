@@ -1,3 +1,16 @@
+---
+id: ADR-036
+title: |-
+  Runtime フィールド境界 API
+status: |-
+  採用済み
+related_adr:
+  - "ADR-004"
+  - "ADR-014"
+  - "ADR-032"
+  - "ADR-035"
+---
+
 # ADR-036: Runtime フィールド境界 API
 
 ## ステータス

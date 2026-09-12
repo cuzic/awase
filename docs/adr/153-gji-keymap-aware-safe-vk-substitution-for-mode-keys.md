@@ -1,3 +1,28 @@
+---
+id: ADR-153
+title: |-
+  無変換/変換キー単独タップの IME ON/OFF/Toggle を、GJI 側のキーマップ設定に頼らずユーザーが awase 側で直接指定できるようにする
+summary: |-
+  BUG-113残置症状（半角状態で無変換キー単独タップ時にWindows Terminal+GJIで「@」）の機序を実機3段階検証で確定: GJI自身のTSFキー横取り（`ITfKeyEventSink`、GJIが無変換/変換に何らかのIME制御コマンドを割り当てている場合のみ発火）が原因。当初の「物理キーリマップ」案（ADR-110流用）はB1〜B3のBlockerで撤回、無変換/変換単独タップ確定後のIME ON/OFF/Toggleを、GJI/MS-IME自動検出に頼らずawase自身の明示config（`*_solo_tap_ime_action`）で直接指定できるようにする決定1に転換。opus-adversarial-consult r1〜r9で9ラウンドの敵対的レビューを経て収束（B1〜B14すべて解消）、3ケース分割（belief ON/OFF→ON遷移/OFF維持）・one-shotマーカー（B13/B14対策）・優先順位表拡張などの実装レベルの詳細まで確定
+status: |-
+  **決定1実装済み・developマージ済み（PR #185）。ケース2("on")は実機で最終確認済み——マージ後の実機再検証で連鎖バグ2件（BUG-122・BUG-123）を発見・修正し、PR #186でdevelopマージ済み。ケース3("off")は全面撤回が別の「@」退行（BUG-124）を招いたため「抑止のみ・actuateしない」設計に作り直し、実機でも「@」再現なし・正常動作を確認済み（PR #186）**。コア/windows crateの全テスト・clippy/fmt green
+related_adr:
+  - "ADR-019"
+  - "ADR-080"
+  - "ADR-091"
+  - "ADR-092"
+  - "ADR-110"
+  - "ADR-114"
+  - "ADR-119"
+  - "ADR-135"
+  - "ADR-141"
+  - "ADR-147"
+  - "ADR-149"
+  - "ADR-151"
+  - "ADR-152"
+  - "ADR-154"
+---
+
 # ADR-153: 無変換/変換キー単独タップの IME ON/OFF/Toggle を、GJI 側のキーマップ設定に頼らずユーザーが awase 側で直接指定できるようにする
 
 ## ステータス

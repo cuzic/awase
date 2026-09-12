@@ -1,3 +1,14 @@
+---
+id: ADR-045
+title: |-
+  Dead Field 検出方針とプレースホルダーフィールド禁止原則
+status: |-
+  採用済み
+related_adr:
+  - "ADR-032"
+  - "ADR-040"
+---
+
 # ADR-045: Dead Field 検出方針とプレースホルダーフィールド禁止原則
 
 ## ステータス

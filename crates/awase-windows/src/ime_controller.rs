@@ -35,8 +35,12 @@
 use awase::platform::ImeOpenOutcome;
 
 use crate::state::actuation_chain::{
-    needs_romaji_pre_write, ActuationOrder, MechanismWriter, VerifiedTarget, WriteMechanism,
+    ActuationOrder, MechanismWriter, VerifiedTarget, WriteMechanism,
 };
+use crate::state::actuation_decision_record::{
+    ActuationDecisionRecord, ActuationOrderRecord, AttemptRecord, MAX_WRITE_MECHANISMS,
+};
+use crate::state::ime_actuation_decision::decide_needs_romaji_pre_write;
 use crate::state::ime_decision_view::ImeControlView;
 use crate::state::key_sequence_policy;
 use crate::tsf::observer::ActiveImeKind;
@@ -383,7 +387,7 @@ pub(crate) fn apply_mechanism(
 /// | 宛先 | `set_ime_romaji_mode()` が write 時点にライブクエリで**自己決定** | 起案時に捕獲した [`crate::ime::ActuationTarget`] |
 /// | 世代照合 | 無し | 型としては `view.focus.focus_gen` と照合し不一致なら `Aborted`。**ただし現在の呼び出し方では常に一致する**（下記） |
 /// | 結果 | `let _ =` で握り潰し | `Written` 以外は必ずログに残す（INV-14） |
-/// | 発火条件 | 2 戦略に別々に書かれた（Linux から検査不能） | `needs_romaji_pre_write`（ungated、全数テスト済み） |
+/// | 発火条件 | 2 戦略に別々に書かれた（Linux から検査不能） | `decide_needs_romaji_pre_write`（ungated、全数テスト済み） |
 ///
 /// # 世代照合は現状では恒真である（ADR-089 §9-22）
 ///
@@ -425,7 +429,7 @@ pub(crate) fn apply_mechanism(
 /// ただし **Phase C 以前から同じ挙動**であり、Phase C が作り込んだ
 /// 回帰ではない。
 fn romaji_pre_write(mechanism: WriteMechanism, open: bool, view: &ImeControlView<'_>) {
-    if !needs_romaji_pre_write(
+    if !decide_needs_romaji_pre_write(
         mechanism,
         open,
         view.observed.active_ime_kind.into(),
@@ -465,6 +469,8 @@ fn romaji_pre_write(mechanism: WriteMechanism, open: bool, view: &ImeControlView
 /// （`tsf_obs()` の二重呼び出しを避ける既存方針をそのまま維持）。
 struct SyncChainWriter<'v, 'a> {
     view: &'v ImeControlView<'a>,
+    attempts: [Option<AttemptRecord>; MAX_WRITE_MECHANISMS],
+    attempts_len: usize,
 }
 
 impl MechanismWriter for SyncChainWriter<'_, '_> {
@@ -473,7 +479,27 @@ impl MechanismWriter for SyncChainWriter<'_, '_> {
     }
 
     fn write(&mut self, mechanism: WriteMechanism, open: bool) -> ImeOpenOutcome {
-        apply_mechanism(mechanism, open, self.view)
+        let inputs = self.view.into();
+        let (_, command) = crate::state::ime_actuation_decision::decide_attempt(
+            inputs,
+            crate::state::ime_actuation_decision::DecisionSite::Sync,
+            mechanism,
+            open,
+        );
+        let outcome = apply_mechanism(mechanism, open, self.view);
+        if self.attempts_len < MAX_WRITE_MECHANISMS {
+            self.attempts[self.attempts_len] = Some(AttemptRecord {
+                inputs,
+                with_app_available: true,
+                mechanism,
+                command,
+                outcome,
+                shadow_on_before_bug113_override: None,
+                post_failed_reobservation: None,
+            });
+            self.attempts_len += 1;
+        }
+        outcome
     }
 }
 
@@ -497,6 +523,41 @@ impl MechanismWriter for SyncChainWriter<'_, '_> {
 /// 状態を持たせる方向（`ImeStateHub` を直接読む等）は ADR-090 §4.2 で
 /// `with_app` 再入を理由に却下済みなので、将来 `self` が要る見込みも無い。
 pub(crate) struct ImeController;
+
+fn chain_record(
+    chain: &[WriteMechanism],
+) -> ([Option<WriteMechanism>; MAX_WRITE_MECHANISMS], usize) {
+    debug_assert!(chain.len() <= MAX_WRITE_MECHANISMS);
+    let mut record = [None; MAX_WRITE_MECHANISMS];
+    for (index, mechanism) in chain.iter().copied().enumerate() {
+        record[index] = Some(mechanism);
+    }
+    (record, chain.len())
+}
+
+// /code-review指摘（S-5、PR #201）: `order: &ActuationOrder`ではなく
+// `ActuationOrderRecord`（Copy、記録に必要な3値のみ）を受け取る——
+// `ActuationOrder`はINV-47のアフィン値であり、記録のためだけに`.clone()`で
+// warrantを複製しない（`runtime/open_chain.rs::async_record`と同じ理由）。
+fn actuation_decision_record(
+    gate_inputs: crate::state::ime_actuation_decision::DecisionInputs,
+    order_record: ActuationOrderRecord,
+    chain: &[WriteMechanism],
+    attempts: [Option<AttemptRecord>; MAX_WRITE_MECHANISMS],
+    attempts_len: usize,
+) -> ActuationDecisionRecord {
+    let (chain, chain_len) = chain_record(chain);
+    ActuationDecisionRecord {
+        site: crate::state::ime_actuation_decision::DecisionSite::Sync,
+        gate_inputs,
+        order: order_record,
+        chain,
+        chain_len,
+        attempts,
+        attempts_len,
+        caller: None,
+    }
+}
 
 /// A-1 shadow の測定点（ADR-090 §2.A 設計案 2、§6 ステップ 5 item 21）。
 ///
@@ -534,7 +595,11 @@ impl ImeController {
     ///
     /// 機構が `Failed` を返した場合（例: `ImmCrossProcessStrategy` の
     /// `SendMessageTimeout` タイムアウト）、次の適用可能な機構へフォールスルーする。
-    pub(crate) fn apply(order: ActuationOrder, view: &ImeControlView<'_>) -> ImeOpenOutcome {
+    pub(crate) fn apply(
+        order: ActuationOrder,
+        view: &ImeControlView<'_>,
+    ) -> (ImeOpenOutcome, ActuationDecisionRecord) {
+        let gate_inputs = view.into();
         // issue #136 / BUG-90 決定4: この窓は awase が IME actuation を所有しない
         // （InputRelay）。ここが同期経路（`runtime/key_pipeline.rs`/`runtime/mod.rs`
         // の apply_ime_open_with_view 経由も含む）の唯一の合流点であり、
@@ -542,10 +607,17 @@ impl ImeController {
         // 経路（`key_pipeline.rs:1065`/`mod.rs:897` 等）を含めてここで確実に止める。
         // ADR-119 参照（gate をここ1点に集約できなかった経緯）。
         if matches!(
-            crate::state::ime_actuation_decision::decide_gate(view.into()),
+            crate::state::ime_actuation_decision::decide_gate(gate_inputs),
             crate::state::ime_actuation_decision::GateResult::NotOwned
         ) {
-            return ImeOpenOutcome::NotOwned;
+            let record = actuation_decision_record(
+                gate_inputs,
+                ActuationOrderRecord::from(&order),
+                &[],
+                [None; MAX_WRITE_MECHANISMS],
+                0,
+            );
+            return (ImeOpenOutcome::NotOwned, record);
         }
         // ADR-090 §2.A A-1: 授権は入口側（`ImeStateHub::issue_actuation_order`）で
         // 発行済み。ここは **shadow モード**なので、授権が下りていなくても
@@ -560,18 +632,31 @@ impl ImeController {
         // ROMAN 補完であり、そちらは `apply_mechanism` が
         // `ActuationTarget::capture_blocking` で捕獲する（Phase C item 12）。
         log_shadow_warrant("sync", &order);
+        let chain = caps_chain_for(view);
+        let order_record = ActuationOrderRecord::from(&order);
         let actuation = order
             .into_actuation_shadow()
             .verify(VerifiedTarget::FocusImplicit);
-        let mut writer = SyncChainWriter { view };
-        let outcome = actuation.run_chain(caps_chain_for(view), &mut writer);
+        let mut writer = SyncChainWriter {
+            view,
+            attempts: [None; MAX_WRITE_MECHANISMS],
+            attempts_len: 0,
+        };
+        let outcome = actuation.run_chain(chain, &mut writer);
         if outcome == ImeOpenOutcome::Failed {
             tracing::warn!(
                 "[apply-ime] all strategies failed for class={}",
                 view.focus.class_name
             );
         }
-        outcome
+        let record = actuation_decision_record(
+            gate_inputs,
+            order_record,
+            chain,
+            writer.attempts,
+            writer.attempts_len,
+        );
+        (outcome, record)
     }
 
     /// `ImmCrossProcessStrategy` が現在のコンテキストで最初に適用可能か。
@@ -778,7 +863,7 @@ mod tests {
             AppImeProfile::InputRelay,
             ActiveImeKind::GoogleJapaneseInput,
         );
-        let outcome = ImeController::apply(order, &view);
+        let (outcome, record) = ImeController::apply(order, &view);
 
         assert_eq!(
             outcome,
@@ -786,6 +871,7 @@ mod tests {
             "InputRelay では ImeController::apply がどの機構も試行せず \
              NotOwned を即返さなければならない（issue #136 / BUG-90 決定4）"
         );
+        assert_eq!(record.attempts_len, 0);
     }
 
     /// BUG-113 恒久修正: `GjiDirectStrategy::apply(open=false)` は、shadow が
@@ -831,7 +917,7 @@ mod tests {
         // 明示的に上書きする。
         let mut view = view_for(AppImeProfile::TsfNative, ActiveImeKind::GoogleJapaneseInput);
         view.control.shadow_on = Some(false);
-        let outcome = ImeController::apply(order, &view);
+        let (outcome, record) = ImeController::apply(order, &view);
 
         assert_eq!(
             outcome,
@@ -840,6 +926,7 @@ mod tests {
              実際に SendInput せず AlreadyMatched を返さなければならない \
              （BUG-113、ON方向の既存ガードと対称）"
         );
+        assert_eq!(record.attempts_len, 1);
     }
 
     /// BUG-113 Blocker（Opus 敵対的レビューで発見）の再発防止:

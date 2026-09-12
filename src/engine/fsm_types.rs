@@ -295,18 +295,35 @@ pub enum IdleIntent {
     ConfirmMode,
 }
 
-/// `flush_pending` に渡す composing 値の信頼性。
+/// `flush_pending` で保留中の親指キーを単独確定する際、生の機能VK
+/// （`VK_SPACE`/無変換/変換等、US配列 Space 親指キー対応・`e3041be6`）を
+/// OS へ送出してよいかの許可。
+///
+/// **かな出力の可否とは無関係**——`EngineState::PendingChar`/`PendingCharThumb`
+/// の腕はこの値を一切参照しない。両腕とも `lookup_face` の結果（かなの
+/// `KeyAction`）だけを出力し、生VKを送出しないため、「別ウィンドウへの生VK
+/// 誤注入」というこの型が守ろうとしているリスクが構造的に存在しない（詳細は
+/// `EngineState::PendingThumb` の flush 実装と `docs/known-bugs.md` BUG-129
+/// 参照。旧名 `ComposingHint`——「composing の信頼性」という名前が実態
+/// 〈生VK送出許可〉より広い意味に読めたことが BUG-129 調査で見つかった
+/// 非対称性を「見落としでは」と誤読させる一因だったため、2026-09-11 に
+/// 改名した）。
 ///
 /// `NicolaFsm::flush_pending` の doc 参照。呼び出し元が `composing` を「保留キーが
-/// 入力された時点と同一のコンテキスト」のものだと保証できる場合のみ `Trusted` を渡す。
-/// フォーカス変更等でコンテキスト境界を跨ぐ場合は `Unknown` を渡し、
-/// Space フォールバック例外も含め無条件 suppress する（安全側）。
+/// 入力された時点と同一のウィンドウ/コンテキストである」と保証できる場合のみ
+/// `Allowed(composing)` を渡す。フォーカス変更等でコンテキスト境界を跨ぐ場合は
+/// `Denied` を渡す——`ContextChange` の variant からは自動導出しないこと
+/// （`ImeOff` という reason でも実体はフォーカス変更でありうるため、境界情報は
+/// 呼び出し元が明示的に渡し続ける設計）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ComposingHint {
-    /// `composing` は保留キーと同一コンテキストのものと信頼できる。
-    Trusted(bool),
-    /// コンテキスト境界を跨ぐため `composing` を信頼できない。無条件 suppress する。
-    Unknown,
+pub enum ThumbRawVkEmission {
+    /// 同一ウィンドウ・同一コンテキスト内の flush。`composing` は保留キーと
+    /// 同一コンテキストのものと信頼できるため、その値どおりに生VK送出可否を判定する。
+    Allowed(bool),
+    /// フォーカス変更等、出力先ウィンドウが保留キー入力時と異なりうる flush。
+    /// 別ウィンドウへ `VK_SPACE` 等を誤注入しないため生VK送出を禁止する
+    /// （`e3041be6` の除外条項）。
+    Denied,
 }
 
 /// 出力履歴の更新指示。

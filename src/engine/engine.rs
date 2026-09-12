@@ -21,7 +21,7 @@ use super::decision::{
     InputContext, InputEffect, SetOpenOrigin, SpecialKeyCombos, UiEffect,
 };
 use super::fsm_adapter::FsmAdapter;
-use super::fsm_types::{ComposingHint, ModeKeyConfig, ModifierState, TextKeyConfig};
+use super::fsm_types::{ModeKeyConfig, ModifierState, TextKeyConfig, ThumbRawVkEmission};
 use super::input_tracker::PhysicalKeyState;
 use super::key_lifecycle::{KeyLifecycle, UpDuty};
 use super::nicola_fsm::NicolaFsm;
@@ -404,12 +404,13 @@ impl Engine {
                 // active → inactive: 保留キーをフラッシュ。
                 // ctx.composing はこの呼び出し時点の最新値であり、保留キーが入力された
                 // 時点と同一ウィンドウ/コンテキストである保証がない（フォーカス変更に
-                // 伴う non-active 化等）ため Unknown を渡し、Space フォールバック例外も
-                // 含め無条件 suppress する（ComposingHint の doc 参照）。
+                // 伴う non-active 化等）ため Denied を渡し、保留中の親指キーによる
+                // 生の機能VK送出（Space フォールバック等）を無条件禁止する
+                // （`ThumbRawVkEmission` の doc 参照。かな出力には無関係）。
                 let reason = new_state.to_context_change();
                 let flush = self
                     .adapter
-                    .flush_to_effects(reason, ComposingHint::Unknown);
+                    .flush_to_effects(reason, ThumbRawVkEmission::Denied);
                 effects.extend(flush);
                 self.release_pending_and_reinject(&mut effects);
             }
@@ -585,11 +586,11 @@ impl Engine {
 
         // Engine が非活性なら on_timeout せず flush（コンテキスト喪失）。
         // 非活性化の理由（IME OFF・フォーカス変更等）を問わず、保留キーが入力された
-        // 時点と同一コンテキストである保証がないため Unknown を渡す。
+        // 時点と同一コンテキストである保証がないため Denied を渡す。
         if !self.compute_active(ctx) {
             return self
                 .adapter
-                .flush(ContextChange::ImeOff, ComposingHint::Unknown);
+                .flush(ContextChange::ImeOff, ThumbRawVkEmission::Denied);
         }
 
         let mut decision = self.adapter.on_timeout(timer_id, &phys, ctx.composing);
@@ -684,9 +685,9 @@ impl Engine {
                 decision
             }
             // InvalidateContext は外部コンテキスト喪失（IME OFF・言語切替等）の汎用通知
-            // であり、composing が保留キーと同一コンテキストか保証できないため Unknown。
+            // であり、composing が保留キーと同一コンテキストか保証できないため Denied。
             EngineCommand::InvalidateContext(reason) => {
-                self.adapter.flush(reason, ComposingHint::Unknown)
+                self.adapter.flush(reason, ThumbRawVkEmission::Denied)
             }
             EngineCommand::SwapLayout(layout) => {
                 let decision = self.adapter.swap_layout(layout);
@@ -742,11 +743,11 @@ impl Engine {
         // アプリ切替: 前のウィンドウで入力途中だったキーを別のウィンドウに持ち越さない。
         // ctx.composing はこの時点で既に新ウィンドウの状態を指しうる
         // （フォーカス切替が先に完了してから build_ctx() が呼ばれるため）ので、
-        // Unknown を渡して Space フォールバック例外も含め無条件 suppress する。
-        // 生 VK_SPACE 等が別ウィンドウへ誤注入されるのを防ぐ安全側の選択。
+        // Denied を渡して保留中の親指キーによる生の機能VK送出（Space フォールバック等）
+        // を無条件禁止する。VK_SPACE 等が別ウィンドウへ誤注入されるのを防ぐ安全側の選択。
         let flush_effects = self
             .adapter
-            .flush_to_effects(ContextChange::FocusChanged, ComposingHint::Unknown);
+            .flush_to_effects(ContextChange::FocusChanged, ThumbRawVkEmission::Denied);
         effects.extend(flush_effects);
 
         // output_history の pending_releases を同期して掃除する（ADR-112

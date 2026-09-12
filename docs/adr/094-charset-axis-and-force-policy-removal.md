@@ -1,3 +1,21 @@
+---
+id: ADR-094
+title: |-
+  charset 軸の追跡撤去と `conv_mode_policy`（force ポリシー）の全撤去
+summary: |-
+  ユーザー要望によりcharset軸(ひらがな/カタカナ×全角/半角)の追跡自体を撤去。ADR-091決定3 §D3.1の原則を実装面でも徹底し、§D3.3が明示的に容認していた`ConvModeMgr`/`has_katakana`の既存観測利用も撤去対象に含めた(BUG-50の原因2がBUG-52と判明したことによる状況変化)。`conv_mode_policy`(observe/force)設定と、それに連動していたADR-086 Phase 2(conv軸)/Phase 3(open/close軸)のforce-write機構を全撤去。eisu/かな二値境界(`state/eisu_recovery.rs`)はADR-091決定3 §D3.4通り別軸として維持
+status: |-
+  **実装済み(2026-08-17)**。build/test/clippy(Linux `--lib`+Windows `cargo xwin`)・fmt全緑。Windows実機での動作確認は未実施
+related_adr:
+  - "ADR-050"
+  - "ADR-085"
+  - "ADR-086"
+  - "ADR-087"
+  - "ADR-088"
+  - "ADR-091"
+  - "ADR-092"
+---
+
 # ADR-094: charset 軸の追跡撤去と `conv_mode_policy`（force ポリシー）の全撤去
 
 ## ステータス

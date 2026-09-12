@@ -1,3 +1,15 @@
+---
+id: ADR-158-companion-158-complexity-inventory-2026-09-10
+title: |-
+  ADR-158 複雑性インベントリ（2026-09-10）
+type: companion-doc
+related_adr:
+  - "ADR-156"
+  - "ADR-158"
+  - "ADR-160"
+  - "ADR-164"
+---
+
 # ADR-158 複雑性インベントリ（2026-09-10）
 
 [ADR-158](158-complexity-reduction-north-star.md)（北極星）・
@@ -116,7 +128,11 @@ deferred request」という同じ概念に見える（型は異なる）。統�
    （`state/probe_admission.rs`の3つ・`probe_actuation_fence.rs`のabandoned/spawned
    4つ・`hook_channel.rs`の1つ）を`LifetimeCounter`型に統合した
    （`refactor/adr158-shared-counters`ブランチ、コミット`ee66073f`）。一方
-   `probe_actuation_fence::PROBE_ACTUATION_FENCE`・`conv_mutation::CONV_MUTATION_SEQ`は
+   `probe_actuation_fence::PROBE_ACTUATION_FENCE`（現`ProbeFence::fence_value`、
+   [ADR-164](164-global-static-argument-threading-plan.md)フェーズ5で`probe_actuation_fence.rs`
+   内の他4カウンタと同じ`ProbeFence`構造体へ集約済み。ただし`LifetimeCounter`型への
+   統合ではなく`AtomicU64`のまま——下記の理由通り意味論が異なるため）・
+   `conv_mutation::CONV_MUTATION_SEQ`は
    「単調に増え続けるフェンス（bump/current、staleness検知用）」であり累積カウンタとは
    意味論が異なると実装前調査で判明したため、意図的に統合対象から除外した
    （見落としではなく検討済みの判断）。`send_health::SendHealth`（サーキットブレーカ）・

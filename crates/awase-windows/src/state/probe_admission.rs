@@ -39,17 +39,36 @@
 use super::ime_event::HwndId;
 use crate::lifetime_counter::LifetimeCounter;
 
-/// 棄却統計（グローバルアトミック）。
-static REJECTED_EPOCH_MISMATCH: LifetimeCounter = LifetimeCounter::new();
-/// hwnd 不一致による棄却統計のうち、spawn 時と現在で top-level 祖先ウィンドウ
-/// （`root_hwnd`、`GetAncestor(hwnd, GA_ROOT)`）が同じだったケース（PR 109
-/// コードレビュー指摘1 Step1: ネイティブ Win32 マルチフィールドダイアログでの
-/// フィールド間 Tab 移動等、同一 top-level ウィンドウ内でのコントロール間
-/// フォーカス移動が疑われる。BUG-91 参照）。
-static REJECTED_HWND_MISMATCH_SAME_ROOT: LifetimeCounter = LifetimeCounter::new();
-/// hwnd 不一致による棄却統計のうち、spawn 時と現在で `root_hwnd` が異なった
-/// ケース（真に別の top-level ウィンドウへの切替）。
-static REJECTED_HWND_MISMATCH_CROSS_ROOT: LifetimeCounter = LifetimeCounter::new();
+/// 棄却統計（グローバルアトミック、ADR-164 フェーズ8）。
+///
+/// `admit()` と `record_hwnd_mismatch()` という2つの独立した呼び出し元から
+/// 書かれる診断カウンタで、単一の呼び出し木を持たないため引数引き回しは
+/// できない（ADR-164 分類C）。3フィールドを1つの singleton にまとめる。
+struct RejectionCounters {
+    /// FocusEpoch 不一致による棄却統計。
+    epoch_mismatch: LifetimeCounter,
+    /// hwnd 不一致による棄却統計のうち、spawn 時と現在で top-level 祖先ウィンドウ
+    /// （`root_hwnd`、`GetAncestor(hwnd, GA_ROOT)`）が同じだったケース（PR 109
+    /// コードレビュー指摘1 Step1: ネイティブ Win32 マルチフィールドダイアログでの
+    /// フィールド間 Tab 移動等、同一 top-level ウィンドウ内でのコントロール間
+    /// フォーカス移動が疑われる。BUG-91 参照）。
+    hwnd_mismatch_same_root: LifetimeCounter,
+    /// hwnd 不一致による棄却統計のうち、spawn 時と現在で `root_hwnd` が異なった
+    /// ケース（真に別の top-level ウィンドウへの切替）。
+    hwnd_mismatch_cross_root: LifetimeCounter,
+}
+
+impl RejectionCounters {
+    const fn new() -> Self {
+        Self {
+            epoch_mismatch: LifetimeCounter::new(),
+            hwnd_mismatch_same_root: LifetimeCounter::new(),
+            hwnd_mismatch_cross_root: LifetimeCounter::new(),
+        }
+    }
+}
+
+static REJECTION_COUNTERS: RejectionCounters = RejectionCounters::new();
 
 /// 棄却統計のスナップショット。
 #[derive(Debug, Default, Clone, Copy)]
@@ -68,9 +87,9 @@ pub struct RejectionStats {
 #[must_use]
 pub fn drain_stats() -> RejectionStats {
     RejectionStats {
-        epoch_mismatch: REJECTED_EPOCH_MISMATCH.drain(),
-        hwnd_mismatch_same_root: REJECTED_HWND_MISMATCH_SAME_ROOT.drain(),
-        hwnd_mismatch_cross_root: REJECTED_HWND_MISMATCH_CROSS_ROOT.drain(),
+        epoch_mismatch: REJECTION_COUNTERS.epoch_mismatch.drain(),
+        hwnd_mismatch_same_root: REJECTION_COUNTERS.hwnd_mismatch_same_root.drain(),
+        hwnd_mismatch_cross_root: REJECTION_COUNTERS.hwnd_mismatch_cross_root.drain(),
     }
 }
 
@@ -83,9 +102,9 @@ pub fn drain_stats() -> RejectionStats {
 #[cfg_attr(not(windows), allow(dead_code))]
 fn record_hwnd_mismatch(same_root: bool) {
     if same_root {
-        REJECTED_HWND_MISMATCH_SAME_ROOT.increment();
+        REJECTION_COUNTERS.hwnd_mismatch_same_root.increment();
     } else {
-        REJECTED_HWND_MISMATCH_CROSS_ROOT.increment();
+        REJECTION_COUNTERS.hwnd_mismatch_cross_root.increment();
     }
 }
 
@@ -266,7 +285,7 @@ impl ImmLikeTicket {
     #[must_use]
     pub fn admit(self, current: FocusFence) -> Admission {
         if current.epoch != self.fence.epoch {
-            REJECTED_EPOCH_MISMATCH.increment();
+            REJECTION_COUNTERS.epoch_mismatch.increment();
             return Admission::Reject(RejectReason::FocusEpochChanged {
                 at_spawn: self.fence.epoch,
                 current: current.epoch,

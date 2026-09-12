@@ -1,3 +1,12 @@
+---
+id: ADR-029
+title: |-
+  IME 状態検出の耐障害性と SSOT 設計
+status: |-
+  採用済み
+related_adr: []
+---
+
 # ADR 029: IME 状態検出の耐障害性と SSOT 設計
 
 ## ステータス

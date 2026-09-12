@@ -1,3 +1,24 @@
+---
+id: ADR-090
+title: |-
+  ADR-089 の型保護を実効化し、隣接 ADR の後始末を確定する — warrant 実配線 / 読み戻し API / 裏口の可視性 / 非同期 caps / dylint 方針 / ADR-081 Phase 1d 凍結
+summary: |-
+  ADR-089 の型保護を実効化し、隣接 ADR の後始末を確定する — `issue_open_warrant()` の実配線（`ActuationOrder` による warrant の運搬、shadow→enforce の二段階）、`ConvergedReceipt` の制御フロー配線と `most_recent_trusted_after` の private 化、観測ストアの裏口の可視性縮小と「閉じられない witness」の理由確定、非同期チェーンの `caps` 再抽選化、dylint 2 crate を恒久的に実行時 lint とする決定、**ADR-081 Phase 1d/1e の凍結決定**、golden の stale な関数名。INV-47〜52、P22
+status: |-
+  **ドラフト（計画のみ、実装未着手）**（コード変更 0 行。7 項に優先順位と規模を付与——C/B/F/E は Linux 完結・挙動変更なし、A-1 は挙動変更なしの測定配線、D/A-2 は実機ソーク必須）
+related_adr:
+  - "ADR-065"
+  - "ADR-078"
+  - "ADR-080"
+  - "ADR-081"
+  - "ADR-082"
+  - "ADR-084"
+  - "ADR-086"
+  - "ADR-087"
+  - "ADR-088"
+  - "ADR-089"
+---
+
 # ADR-090: ADR-089 の型保護を実効化し、隣接 ADR の後始末を確定する — warrant 実配線 / 読み戻し API / 裏口の可視性 / 非同期 caps / dylint 方針 / ADR-081 Phase 1d 凍結
 
 ## ステータス

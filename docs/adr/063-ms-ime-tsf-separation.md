@@ -1,3 +1,15 @@
+---
+id: ADR-063
+title: |-
+  TSF 共通層と IME 固有層の分離 + MS-IME 対応（案B）
+status: |-
+  採用済み
+related_adr:
+  - "ADR-034"
+  - "ADR-047"
+  - "ADR-048"
+---
+
 # ADR-063: TSF 共通層と IME 固有層の分離 + MS-IME 対応（案B）
 
 ## ステータス

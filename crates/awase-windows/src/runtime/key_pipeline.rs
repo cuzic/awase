@@ -604,10 +604,10 @@ impl Runtime {
             .platform_state
             .ime
             .explicit_ime_action_age_ms(now_tick_at_spawn);
-        let is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
-            self.platform.current_app_profile(),
-            self.platform.focus.class_name(),
-        );
+        let is_tsf_native = self
+            .platform
+            .current_app_profile()
+            .is_effectively_tsf_native(self.platform.focus.class_name());
         if !awase::engine::should_run_idle_conv_check(
             matches!(event.event_type, KeyEventType::KeyDown),
             is_tsf_native,
@@ -1082,9 +1082,13 @@ impl Runtime {
             };
             // ADR-090 §2.A A-1（shadow）。
             let order = self.issue_actuation_order(false, "idle_conv_check_direct_input");
-            let outcome = self
+            let (outcome, record) = self
                 .platform
                 .apply_ime_open_with_belief(order, None, belief);
+            self.platform_state
+                .ime
+                .journal
+                .record(crate::journal::JournalEntry::ActuationDecision { record });
             self.on_ime_apply_complete(
                 false,
                 outcome,
@@ -1662,6 +1666,7 @@ impl Runtime {
                     let outcome = crate::runtime::open_chain::run_open_chain_async(
                         order,
                         crate::runtime::open_chain::ImmCrossOp::Untargeted,
+                        crate::state::ime_actuation_decision::DecisionSite::RunOpenChainAsync,
                     )
                     .await;
                     // B+C(ts更新)+D(noop)+E
@@ -1677,7 +1682,11 @@ impl Runtime {
                 });
             } else {
                 let order = self.issue_actuation_order(false, "shadow_toggle_off_sync");
-                let outcome = crate::ime_controller::ImeController::apply(order, &view);
+                let (outcome, record) = crate::ime_controller::ImeController::apply(order, &view);
+                self.platform_state
+                    .ime
+                    .journal
+                    .record(crate::journal::JournalEntry::ActuationDecision { record });
                 // B+C+D(noop)+E
                 self.on_ime_apply_complete(
                     false,
@@ -2621,7 +2630,7 @@ impl Runtime {
 
         let result = self.executor.execute_from_hook(
             &mut self.platform,
-            &self.platform_state.ime,
+            &mut self.platform_state.ime,
             decision,
             event,
             physical,
@@ -2915,10 +2924,11 @@ impl Runtime {
         // から巻き戻してしまうバグの温床だった）。同一ウィンドウ内でタスクバーからモードを
         // 変更した場合は idle-conv-check（TYPING_IDLE_MS 経過後の次キー入力で発火）が
         // 正当なユーザー操作として拾うため、そちらに一本化する。
-        if crate::focus::class_names::is_effectively_tsf_native(
-            self.platform.current_app_profile(),
-            self.platform.focus.class_name(),
-        ) && probe.is_japanese_ime
+        if self
+            .platform
+            .current_app_profile()
+            .is_effectively_tsf_native(self.platform.focus.class_name())
+            && probe.is_japanese_ime
         {
             let in_flight = self.platform.output_in_flight_ms();
             // cold start: ROMAN ビットが信頼できないためスキップ

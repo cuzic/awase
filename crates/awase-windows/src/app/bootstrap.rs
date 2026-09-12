@@ -467,49 +467,57 @@ pub(super) fn install_hooks_and_hotkeys_validated(
         .engine_toggle_hotkey
         .as_ref()
         .and_then(|hotkey_str| {
-            register_toggle_hotkey(hotkey_str)
+            HotKeyGuard::register_toggle(hotkey_str)
                 .map_err(|e| tracing::warn!("{e}"))
                 .ok()
         });
-    let app_override_guard = register_app_override_hotkey()
+    let app_override_guard = HotKeyGuard::register_app_override()
         .map_err(|e| tracing::warn!("{e}"))
         .ok();
     Ok((guard, toggle_guard, app_override_guard))
 }
 
-/// トグルホットキーを登録する
-fn register_toggle_hotkey(hotkey_str: &str) -> Result<HotKeyGuard> {
-    let (modifiers, vk) = crate::vk::parse_hotkey(hotkey_str)
-        .context(format!("Invalid toggle hotkey format: {hotkey_str}"))?;
-    // SAFETY: RegisterHotKey with None HWND registers on the calling thread's message queue; VK and modifiers are valid values.
-    unsafe {
-        RegisterHotKey(
-            None,
-            HOTKEY_ID_TOGGLE,
-            HOT_KEY_MODIFIERS(modifiers),
-            u32::from(vk.0),
-        )
-        .context(format!("Failed to register toggle hotkey: {hotkey_str}"))?;
+impl HotKeyGuard {
+    /// トグルホットキーを登録する。
+    ///
+    /// 2026-09-10、自由関数からメソッドへ変更した（戻り値`Result<HotKeyGuard>`の
+    /// ためだけの関数が型定義（`app/mod.rs`）から離れたファイルにあった）。
+    /// 挙動は変更していない。
+    fn register_toggle(hotkey_str: &str) -> Result<Self> {
+        let (modifiers, vk) = crate::vk::parse_hotkey(hotkey_str)
+            .context(format!("Invalid toggle hotkey format: {hotkey_str}"))?;
+        // SAFETY: RegisterHotKey with None HWND registers on the calling thread's message queue; VK and modifiers are valid values.
+        unsafe {
+            RegisterHotKey(
+                None,
+                HOTKEY_ID_TOGGLE,
+                HOT_KEY_MODIFIERS(modifiers),
+                u32::from(vk.0),
+            )
+            .context(format!("Failed to register toggle hotkey: {hotkey_str}"))?;
+        }
+        tracing::info!("Toggle hotkey registered: {hotkey_str}");
+        Ok(Self(HOTKEY_ID_TOGGLE))
     }
-    tracing::info!("Toggle hotkey registered: {hotkey_str}");
-    Ok(HotKeyGuard(HOTKEY_ID_TOGGLE))
-}
 
-/// 手動アプリオーバーライドホットキー (Ctrl+Shift+F11) を登録する
-fn register_app_override_hotkey() -> Result<HotKeyGuard> {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_CONTROL, MOD_SHIFT};
-    // SAFETY: RegisterHotKey with None HWND registers on the calling thread's message queue; VK and modifiers are valid values.
-    unsafe {
-        RegisterHotKey(
-            None,
-            HOTKEY_ID_FOCUS_OVERRIDE,
-            MOD_CONTROL | MOD_SHIFT,
-            u32::from(crate::vk::VK_F11.0),
-        )
-        .context("Failed to register focus override hotkey: Ctrl+Shift+F11")?;
+    /// 手動アプリオーバーライドホットキー (Ctrl+Shift+F11) を登録する。
+    ///
+    /// 2026-09-10、自由関数からメソッドへ変更した（同上）。挙動は変更していない。
+    fn register_app_override() -> Result<Self> {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_CONTROL, MOD_SHIFT};
+        // SAFETY: RegisterHotKey with None HWND registers on the calling thread's message queue; VK and modifiers are valid values.
+        unsafe {
+            RegisterHotKey(
+                None,
+                HOTKEY_ID_FOCUS_OVERRIDE,
+                MOD_CONTROL | MOD_SHIFT,
+                u32::from(crate::vk::VK_F11.0),
+            )
+            .context("Failed to register focus override hotkey: Ctrl+Shift+F11")?;
+        }
+        tracing::info!("Focus override hotkey registered: Ctrl+Shift+F11");
+        Ok(Self(HOTKEY_ID_FOCUS_OVERRIDE))
     }
-    tracing::info!("Focus override hotkey registered: Ctrl+Shift+F11");
-    Ok(HotKeyGuard(HOTKEY_ID_FOCUS_OVERRIDE))
 }
 
 /// `WTSRegisterSessionNotification` の RAII ガード。Drop 時に解除する。

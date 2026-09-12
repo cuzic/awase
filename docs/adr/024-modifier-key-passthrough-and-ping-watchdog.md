@@ -1,3 +1,12 @@
+---
+id: ADR-024
+title: |-
+  修飾キーの PassThrough 保証と ping ベースフック監視
+status: |-
+  承認済み（実装完了）
+related_adr: []
+---
+
 # ADR 024: 修飾キーの PassThrough 保証と ping ベースフック監視
 
 ## ステータス

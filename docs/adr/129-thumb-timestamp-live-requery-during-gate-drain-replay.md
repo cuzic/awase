@@ -1,3 +1,19 @@
+---
+id: ADR-129
+title: |-
+  OUTPUT_GATE drain replay 中、親指キー押下タイムスタンプがイベント捕捉時点ではなくリプレイ実行時点のライブ値で再構築され、既に消費済みの押下と無関係な後続押下がペアリングされる
+summary: |-
+  report `01M1N36MGDDJ5HN8FWRE4ZHS3J`（GJIで「ようするに」→「よゔするに」）から起票。journal/app_log実測でBUG-105（3鍵仲裁ロジック自体のバグ）とは別原因と特定: `key_pipeline.rs:105`の`hook::thumb_down_timestamps()`はWH_KEYBOARD_LLフックが実時間更新するグローバルAtomicU64をその場でライブクエリする実装で、ライブ配送と`OUTPUT_GATE`中に`INPUT_DEFER`へ退避されたイベントのdrain replay（`deliver_key_event(..., KeyOrigin::DeferredReplay)`）の両方から同一コードパスで呼ばれる。drain replayは数百ms前に発生した複数イベントを<2msのバーストで一括処理するため、古いイベント（本件ではA↓、実発生時は1回目の親指押下961165と同時）のreplay時にライブクエリすると「replay実行中の今」の親指状態（既に進行中の2回目の押下313529）を誤って読み、`NicolaFsm::is_thumb_consumed`の消費済み判定（[ADR-010](010-thumb-consumption-timestamp.md)）が不一致となり未消費の親指キーとして誤って同時打鍵確定(RightThumb+A=「ゔ」)する。`RawKeyEvent::modifier_snapshot`（`src/types.rs:206`）が全く同じ問題をCtrl/Shift/Alt/Winについて「capture時点でイベントに埋め込む」方式で既に解決済みであることが判明——本件は新種のバグではなくその修正パターンの適用漏れ。decision: 親指ダウンタイムスタンプも`RawKeyEvent`にcapture時点でスナップショットし、`key_pipeline.rs:105`のライブ再クエリを置き換える。キュー内再構築案・FSM側への時刻引数追加案・drain中は常にNone扱いにする案はいずれも却下
+status: |-
+  **実装済み（2026-09-09、BUG-127として記録）。** opus-adversarial-consult計3ラウンド（round1〜2で決定確定、round3で代替案「案B」を検討し不採用と確定）。`cargo test --lib`（1007件）・`cargo test --test scenarios`（8件）・`cargo nextest`（architecture_guard/golden_scenarios/layer_boundary_guard、117件）・host/Windowsターゲット両方のcheck/clippy全green。Windows実機ソークは未実施
+related_adr:
+  - "ADR-008"
+  - "ADR-010"
+  - "ADR-019"
+  - "ADR-095"
+  - "ADR-155"
+---
+
 # ADR-129: OUTPUT_GATE drain replay 中、親指キー押下タイムスタンプがイベント捕捉時点ではなくリプレイ実行時点のライブ値で再構築され、既に消費済みの押下と無関係な後続押下がペアリングされる
 
 ## ステータス

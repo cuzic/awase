@@ -1,3 +1,14 @@
+---
+id: ADR-044
+title: |-
+  AppliedImeState と decide_kanji_apply — 保守性改善
+status: |-
+  採用済み
+related_adr:
+  - "ADR-032"
+  - "ADR-035"
+---
+
 # ADR-044: AppliedImeState と decide_kanji_apply — 保守性改善
 
 ## ステータス

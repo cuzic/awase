@@ -1,3 +1,15 @@
+---
+id: ADR-064
+title: |-
+  ConvModePolicy による conv mutation ゲートの導入
+status: |-
+  採用済み
+related_adr:
+  - "ADR-023"
+  - "ADR-046"
+  - "ADR-065"
+---
+
 # ADR-064: ConvModePolicy による conv mutation ゲートの導入
 
 ## ステータス

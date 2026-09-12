@@ -1,3 +1,16 @@
+---
+id: ADR-112
+title: |-
+  `Engine::on_input` Phase 0 が KeyUp を FSM に一切届けていない欠陥の修正
+summary: |-
+  `Engine::on_input`のPhase 0（`KeyLifecycle`、2026-03-31混入）が、Consume済みKeyDownに対応するKeyUpを無条件に「OSへ渡さない」だけでなく「FSMへも渡さない」まま握りつぶしていたリグレッションをBUG-101として発見（`feat/confirm-mode-simplify`でのEngine経由テスト作成中に発覚）。`min_overlap_margin_percent`が実運用で常に無効・`KeyAction::Key(vk)`出力キー全般でstuck key・`OutputHistory`が上限なし`Vec`で単調増加、の3実害を確認。Opus 2体の敵対的premortem 2ラウンドで、`OutputHistory`をKeyUp整合性索引(`pending_releases`)とn-gram文脈確定ログ(`committed`)に責務分離してから着手する順序、`min_overlap_margin_percent`既定値を一時的に0へ落として「経路修正」と「判定有効化」を分離、Phase 0を「Consume義務の予約+単一出口での`force_consume`格上げ」に再設計しつつ非活性時専用の`release_only`狭入口で内部状態の取り残しを防ぐ、`UpDuty`は三値案から根拠不成立で二値へ撤回、の4コミット構成に収束。決定0〜2を実装済み
+status: |-
+  **クローズ**（2026-08-31、Windows実機ソーク完了・不具合報告なし。決定3は実測データ無しのため見送り、`min_overlap_margin_percent`既定0%を恒久化）
+related_adr:
+  - "ADR-019"
+  - "ADR-020"
+---
+
 # ADR-112: `Engine::on_input` Phase 0 が KeyUp を FSM に一切届けていない欠陥の修正
 
 ## ステータス

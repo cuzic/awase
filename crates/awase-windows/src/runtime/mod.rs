@@ -582,9 +582,11 @@ impl Runtime {
     }
 
     pub fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
-        let (callback, sync_outcomes, stripped_set_open) =
-            self.executor
-                .execute_from_loop(&mut self.platform, &self.platform_state.ime, decision);
+        let (callback, sync_outcomes, stripped_set_open) = self.executor.execute_from_loop(
+            &mut self.platform,
+            &mut self.platform_state.ime,
+            decision,
+        );
         self.dispatch_outcomes(sync_outcomes);
         if stripped_set_open.is_some() {
             // settle 中に握りつぶした SetOpen は自然には再発行されない
@@ -836,10 +838,10 @@ impl Runtime {
         // force ポリシー自体を撤去したのに伴い削除した。`apply_force_on_for_imm_broken`
         // は常時この早期 return の影響を受ける（force policy 分岐が無くなった今、
         // 周期リフレッシュに乗るのが唯一の force-ON 経路になった）。
-        let is_tsf_native = crate::focus::class_names::is_effectively_tsf_native(
-            self.platform.current_app_profile(),
-            self.platform.focus.class_name(),
-        );
+        let is_tsf_native = self
+            .platform
+            .current_app_profile()
+            .is_effectively_tsf_native(self.platform.focus.class_name());
         if is_tsf_native || self.platform_state.ime.explicit_intent().is_some() {
             return;
         }
@@ -1025,7 +1027,15 @@ impl Runtime {
         // ADR-090 §2.A A-1（shadow）: 実 actuation 入口は `ActuationOrder` を
         // 起案する。授権が下りなくても書き込みは止めない（A-2 で倒す）。
         let order = self.issue_actuation_order(true, "force_on_and_correct_romaji");
-        let outcome = self.platform.apply_ime_open_with_view(order, &view, belief);
+        let (outcome, mut record) = self.platform.apply_ime_open_with_view(order, &view, belief);
+        // B-2（PR #201）: `site`は上書きせず`Sync`のまま維持し（replay_record
+        // のchain/ImmCross command検証を保つ）、呼び出し元は`caller`に記録する。
+        record.caller =
+            Some(crate::state::ime_actuation_decision::DecisionSite::ForceOnRomajiCorrection);
+        self.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::ActuationDecision { record });
         tracing::info!("force-ON ({reason:?}): apply_ime_open(true) → {outcome:?}");
         self.on_ime_apply_complete(true, outcome, None, reason);
         if !self.platform_state.ime.input_mode().is_romaji_capable() {
@@ -1192,7 +1202,15 @@ impl Runtime {
             effective_open: open,
             confident: true,
         };
-        let outcome = self.platform.apply_ime_open_with_view(order, &view, belief);
+        let (outcome, mut record) = self.platform.apply_ime_open_with_view(order, &view, belief);
+        // B-2（PR #201）: `site`は上書きせず`Sync`のまま維持し（replay_record
+        // のchain/ImmCross command検証を保つ）、呼び出し元は`caller`に記録する。
+        record.caller =
+            Some(crate::state::ime_actuation_decision::DecisionSite::ReassertExplicitPhysicalKey);
+        self.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::ActuationDecision { record });
         tracing::info!(
             "[explicit-reassert] apply_ime_open({open}) → {outcome:?} (物理IMEキー冪等再送, BUG-37)"
         );
@@ -1291,6 +1309,7 @@ impl Runtime {
                         conv_after_open,
                         focus_gen,
                     },
+                    crate::state::ime_actuation_decision::DecisionSite::RunOpenChainAsync,
                 )
                 .await;
                 tracing::info!("force-on bootstrap: apply_ime_open(true) → {outcome:?}");
@@ -1840,8 +1859,7 @@ impl Runtime {
                     crate::focus::classify::AppImeProfile::resolve(&class_name, relay_apps, || {
                         crate::focus::classify::get_process_name(pid)
                     });
-                if crate::focus::class_names::should_reprime_on_lightweight_focus_sync(
-                    profile,
+                if profile.should_reprime_on_lightweight_focus_sync(
                     &class_name,
                     self.platform_state.ime.effective_open(),
                 ) {

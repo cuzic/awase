@@ -1,3 +1,15 @@
+---
+id: ADR-073
+title: |-
+  GJI 検出後は active_ime_kind をプロセス中固定（MS-IME への降格禁止）
+status: |-
+  採用済み
+related_adr:
+  - "ADR-052"
+  - "ADR-063"
+  - "ADR-066"
+---
+
 # ADR-073: GJI 検出後は active_ime_kind をプロセス中固定（MS-IME への降格禁止）
 
 ## ステータス

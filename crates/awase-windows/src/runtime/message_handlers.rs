@@ -573,7 +573,7 @@ pub(crate) unsafe fn handle_wm_timer(
         Some(id) if id == TIMER_OUTPUT_GUARD => {
             let outcomes = app
                 .executor
-                .on_output_guard_timer(&mut app.platform, &app.platform_state.ime);
+                .on_output_guard_timer(&mut app.platform, &mut app.platform_state.ime);
             app.dispatch_outcomes(outcomes);
         }
         Some(id) if id == TIMER_TSF_PROBE => {
@@ -757,7 +757,7 @@ pub(crate) unsafe fn handle_wm_timer(
 pub(crate) unsafe fn handle_wm_execute_effects(app: &mut Runtime) {
     let outcomes = app
         .executor
-        .drain_deferred(&mut app.platform, &app.platform_state.ime);
+        .drain_deferred(&mut app.platform, &mut app.platform_state.ime);
     app.dispatch_outcomes(outcomes);
     // H-4-a: Output が send_keys 中に積んだ RuntimeRequest を一括処理する。
     app.drain_runtime_requests();

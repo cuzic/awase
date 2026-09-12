@@ -1,3 +1,17 @@
+---
+id: ADR-096
+title: |-
+  journal の優先度別 複数リングバッファ化と3つの取りこぼし解消
+summary: |-
+  ADR-095実装後、known-bugs.md全68件+experiments.md全15件を通読し診断に効いた観測値を8カテゴリで集計、`journal.rs`と突き合わせて3つの取りこぼしを発見: (1)GJI/TSF warm-cold・probeタイミングが最頻出診断根拠なのに0%収録、(2)アプリ名(process_name)がFocusChangedにHwndIdしかなく0%収録、(3)`RawKeyEvent.injected`(BUG-08/14等の決め手)がKeyEventSummaryに未コピー。単一VecDeque(容量2048)を重要度別4レーン(state/timing新設/actuation/key_input、容量1024/512/512/512、seq共有・マージ出力でJSON外形は不変)に分割する方針を決定。GjiFsm/TSF層はjournal非依存を維持しplatform.rs側から前後状態を記録、`ImeEvent`本体は変更せずfocus_tracking.rsから新設JournalEntryへprocess_nameを直接記録、という形でレイヤー境界(layer-boundaries.md)を侵さない設計。WindowsPlatformはjournalを直接持たないため保留キュー+drain方式で配線。**round2(2026-08-19)**: Opusアドバーサリアルレビュー(「過去バグ検証に十分な情報があるか」含む)でmust-fix1件+should-fix4件(B-1〜B-5)を発見・Opus設計([docs/design/journal-diagnostic-fidelity-fixes.md](../design/journal-diagnostic-fidelity-fixes.md))に基づきcodexで是正。B-1(must-fix): bug_report.rsが添付ログの先頭(最古)を残し症状発生直前を切り捨てていた致命的バグを、直近seqから予算内に収めるcapped JSONシリアライザに修正。B-2/3: FocusTransition.fromが常にNoneだった問題とプロセス変更時のみ発火だった問題を是正。B-4: 保留キューがdrain時刻で採番され因果順が乱れる問題をJournalStamperで是正。B-5: 無変化probe tickの無条件記録を抑制。**round3(2026-08-19、同一PR)**: round2レビューが「次に大きい穴」と評価したliteral-detect判定結果(`DetectionResult`・per-VK状態・`raw_tsf_literal_consecutive_count`のgive-up分岐、BUG-03/24/27/29/30/36/38/40/45の9件で決め手)の0%収録を、Opus設計([docs/design/journal-literal-detect-capture.md](../design/journal-literal-detect-capture.md))に基づき解消。probe timingを一切変えない制約(yield_step呼び出し回数不変をコードで確認)を守りつつ、verdictをアクションから逆算不可能(`per_vk_recovery_params`がSuspectedLiteral/StaleConfirmを同じ値に潰すことを確認済み)という制約下でProbeAction経由でplatform.rsまでfactsを持ち上げる設計。output/tsf層の`crate::journal`非参照を`architecture_guard`の新規ガードで機械的に強制(33→34件)
+status: |-
+  **実装済み・round2/round3是正済み**(2026-08-19、codex CLI実装・Claude/Opus検証。test 410件+journal_replay+drift_correction_replay+architecture_guard(34件固定)全green、xwinビルド成功。Windows実機確認は未実施)
+related_adr:
+  - "ADR-030"
+  - "ADR-047"
+  - "ADR-095"
+---
+
 # ADR-096: journal の優先度別 複数リングバッファ化と3つの取りこぼし解消
 
 ## ステータス

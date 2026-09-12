@@ -3,7 +3,7 @@
 //!
 //! `docs/known-bugs.md` BUG-43 の実機ログ（675ms の間に `apply_ime_open(false)` を
 //! 16 回連続送信）を `DriftCorrectionFixture`（`state/ime_actuation.rs`）として固定化し、
-//! ADR-080 Phase1 で実装済みの `decide_actuation_action` が同じ 16 回の drift 検知に
+//! ADR-080 Phase1 で実装済みの `FeedbackPolicy::decide_action` が同じ 16 回の drift 検知に
 //! 対して試行回数を有界に打ち切る（`FeedbackPolicy::Blind::max_attempts` 到達後は
 //! `GiveUp` のまま `Send` に戻らない）ことを回帰テストとして固定する。
 //!
@@ -26,12 +26,12 @@
 //! 共有し、リプレイはこの `ActuationRecord`（= journal に積まれるのと同一の構造化
 //! レコード）を `ActuationRecord::new` で構築して照合する。これにより「出所（常に
 //! `SelfActuated`）・世代（`epoch`）・判定（`action`）が型として正しく積まれるか」まで
-//! 含めて回帰させる（従来は `decide_actuation_action` の `action` だけを見ていた）。
+//! 含めて回帰させる（従来は `FeedbackPolicy::decide_action` の `action` だけを見ていた）。
 
 use awase_windows::state::app_ime_policy::AppImePolicy;
 use awase_windows::state::event_origin::EventSource;
 use awase_windows::state::ime_actuation::{
-    actuation_origin, ActuationAction, ActuationRecord, DriftCorrectionFixture, FeedbackPolicy,
+    ActuationAction, ActuationRecord, DriftCorrectionFixture, FeedbackPolicy,
 };
 use awase_windows::state::ime_event::ImePolicyProfile;
 
@@ -45,7 +45,7 @@ fn record_for_tick(
     fixture: &DriftCorrectionFixture,
     tick: &awase_windows::state::ime_actuation::DriftCorrectionTick,
 ) -> ActuationRecord {
-    let origin = actuation_origin(fixture.policy, tick.epoch);
+    let origin = fixture.policy.origin(tick.epoch);
     ActuationRecord::new(origin, BUG43_TARGET, fixture.policy, tick.attempts)
 }
 
@@ -61,7 +61,7 @@ fn fixture_dir() -> std::path::PathBuf {
 }
 
 /// `ConvClassifyFixture` リプレイ（`tests/journal_replay.rs`）と同じ形の per-tick 照合:
-/// フィクスチャに記録された `policy`/`attempts` の組で `decide_actuation_action` を
+/// フィクスチャに記録された `policy`/`attempts` の組で `FeedbackPolicy::decide_action` を
 /// 再実行し、`expected` と一致するかを確認する。
 #[test]
 fn replay_all_drift_correction_fixtures() {
@@ -97,9 +97,7 @@ fn replay_all_drift_correction_fixtures() {
 
                 // (2) 出所の照合: actuation は常に SelfActuated（物理でも外部注入でもない）。
                 let expected_source = EventSource::SelfActuated {
-                    strategy: awase_windows::state::ime_actuation::actuation_strategy(
-                        fixture.policy,
-                    ),
+                    strategy: fixture.policy.strategy(),
                 };
                 if record.origin.source != expected_source {
                     failures.push(format!(

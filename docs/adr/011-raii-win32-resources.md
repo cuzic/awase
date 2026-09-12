@@ -1,3 +1,12 @@
+---
+id: ADR-011
+title: |-
+  RAII ガードによる Win32 リソース管理
+status: |-
+  採用済み
+related_adr: []
+---
+
 # ADR-011: RAII ガードによる Win32 リソース管理
 
 ## ステータス

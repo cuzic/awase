@@ -1,3 +1,17 @@
+---
+id: ADR-101
+title: |-
+  BUG-74 give-up retry と focus guard
+summary: |-
+  BUG-74: RawTsfLiteralRecovery give-up で失われるromajiを、F6 focus世代照合・WM完了通知・Polling中deferred順序保護を前提に通常送信経路で1回だけretryする。ADR-100決定3の却下理由を前提条件として解消し、決定5(F6)も実装する
+status: |-
+  採用・実装済み（2026-08-24、実機ソーク未実施）
+related_adr:
+  - "ADR-079"
+  - "ADR-100"
+  - "ADR-123"
+---
+
 # ADR-101: BUG-74 give-up retry と focus guard
 
 ## ステータス

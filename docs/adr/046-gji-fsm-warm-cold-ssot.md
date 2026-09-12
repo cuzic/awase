@@ -1,3 +1,16 @@
+---
+id: ADR-046
+title: |-
+  GjiFsm — warm/cold 状態の FSM 一元管理
+status: |-
+  採用済み
+related_adr:
+  - "ADR-040"
+  - "ADR-042"
+  - "ADR-045"
+  - "ADR-047"
+---
+
 # ADR-046: GjiFsm — warm/cold 状態の FSM 一元管理
 
 ## ステータス

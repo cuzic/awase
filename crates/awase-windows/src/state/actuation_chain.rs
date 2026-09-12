@@ -11,11 +11,11 @@
 //!
 //! # 型が保証しないもの（INV-41、誤読防止）
 //!
-//! **回数制限は型ではなく [`decide_actuation_action`] の責務である。**
+//! **回数制限は型ではなく [`FeedbackPolicy::decide_action`] の責務である。**
 //! `FeedbackPolicy::Blind { max_attempts }` の下では、同一 warrant で最大
 //! `max_attempts` 回の成功 write が正常に起こりうる（[`DriftEpisode`] が
 //! attempt ごとに新しい `Actuation` を作る）。「型が回数を守っている」と
-//! 読み替えて `decide_actuation_action` の呼び出しを省くと ADR-080 / BUG-43 の
+//! 読み替えて `FeedbackPolicy::decide_action` の呼び出しを省くと ADR-080 / BUG-43 の
 //! give-up が無効化される。
 //!
 //! # ADR-089 の記述との差分（実装時の判断、2026-08-12）
@@ -116,7 +116,7 @@ use std::marker::PhantomData;
 use awase::platform::ImeOpenOutcome;
 
 use super::event_origin::EventOrigin;
-use super::ime_actuation::{decide_actuation_action, ActuationAction, FeedbackPolicy};
+use super::ime_actuation::{ActuationAction, FeedbackPolicy};
 use super::ime_event::HwndId;
 use super::open_warrant::{issue_open_warrant, OpenWarrant, WarrantContext};
 
@@ -210,56 +210,6 @@ impl WriteMechanism {
 #[must_use]
 pub const fn falls_through(outcome: ImeOpenOutcome) -> bool {
     matches!(outcome, ImeOpenOutcome::Failed)
-}
-
-/// IME ON の直前に ROMAN ビットを補完する同期 IMC write が要るか
-/// （ADR-089 §6 Phase C item 12 = ADR-086 INV-14 の未移行分の是正）。
-///
-/// **`state::ime_actuation_decision::decide_dispatch_conv_after_open`
-/// （`runtime/executor.rs::dispatch_ime_set_open` の非同期 ImmCross 経路が使う、
-/// 同じ「open 後に conv-mode/ROMAN を書くか」を決める別の述語）とは意図的に
-/// 異なる条件式である。統合しないこと——理由は
-/// `decide_dispatch_conv_after_open` の doc コメント参照（ADR-163 round2 R5）。
-///
-/// # なぜこの述語がここ（ungated）にあるのか
-///
-/// Phase C 以前、この条件は `ime_controller.rs` の 2 つの戦略の中に**別々に**
-/// 書かれていた（`ImmCrossProcessStrategy::apply` と
-/// `MsImeDirectStrategy::apply`。どちらも `crate::ime::set_ime_romaji_mode()` を
-/// 直接呼んでいた）。どちらも Win32 FFI と同居していたため Linux から
-/// 条件を検査できず、`output/conv_actuation.rs` の doc が
-/// 「ADR-086 Phase 1〜2 の『7 経路』の数え漏れ」と書いていた 2 経路そのもので
-/// あった。Phase C で **書き込み口を 1 箇所（`ime_controller::apply_mechanism`）に
-/// 統合**し、その発火条件だけをここへ純粋関数として切り出した。
-///
-/// # 条件（Phase C 以前と同値であること）
-///
-/// - `open == true` のときだけ（OFF 方向は ROMAN を触らない）。
-/// - 機構が `ImmCross` または `MsImeDirect` のときだけ
-///   （`GjiDirect` / `KanjiToggle` は元から ROMAN を書かない）。
-/// - `kind == MsIme` のときだけ。旧 `ImmCrossProcessStrategy` は
-///   `active_ime_kind == MicrosoftIme` を明示的に見ており、旧
-///   `MsImeDirectStrategy` は見ていなかったが、`MsImeDirect` の
-///   `is_applicable` 自体が `MicrosoftIme` を要求するため**同値**である
-///   （`apply_mechanism` は `is_applicable` が真の機構に対してしか呼ばれない）。
-/// - `belief_input_mode != ObservedKana` のときだけ——ユーザーが意図的に
-///   かな入力を選んでいる状態を ROMAN で上書きしない（既存の保護、
-///   `runtime/mod.rs::force_on_and_correct_romaji` の N2 も参照）。
-#[must_use]
-pub const fn needs_romaji_pre_write(
-    mechanism: WriteMechanism,
-    open: bool,
-    kind: crate::state::ime_kind::ImeKindId,
-    belief_input_mode: awase::engine::InputModeState,
-) -> bool {
-    open && matches!(
-        mechanism,
-        WriteMechanism::ImmCross | WriteMechanism::MsImeDirect
-    ) && matches!(kind, crate::state::ime_kind::ImeKindId::MsIme)
-        && !matches!(
-            belief_input_mode,
-            awase::engine::InputModeState::ObservedKana
-        )
 }
 
 // ── 型状態 ────────────────────────────────────────────────────────────────────
@@ -654,7 +604,7 @@ pub trait AsyncMechanismWriter {
 /// 再試行 episode。attempt ごとに新しい [`Actuation<Warranted>`] を作る。
 ///
 /// **warrant の有効性は episode 単位**であり、`Actuation` 値のアフィン性
-/// （1 値 = 高々 1 回の成功 write）と、[`decide_actuation_action`] による
+/// （1 値 = 高々 1 回の成功 write）と、[`FeedbackPolicy::decide_action`] による
 /// 回数制限がここで組み合わさる（INV-41）。
 #[derive(Debug, Clone)]
 pub struct DriftEpisode {
@@ -692,13 +642,13 @@ impl DriftEpisode {
         self.warrant.target
     }
 
-    /// 次の attempt を払い出す。`decide_actuation_action` が `GiveUp` を返したら
+    /// 次の attempt を払い出す。`FeedbackPolicy::decide_action` が `GiveUp` を返したら
     /// `None`（**回数制限は型ではなくこの関数の責務**、INV-41）。
     ///
     /// `Actuation` 値を使い回さないこと——毎回ここで新規に作るのが
     /// アフィン性の実効条件である。
     pub fn next_attempt(&mut self) -> Option<Actuation<Warranted>> {
-        if decide_actuation_action(self.policy, self.attempts) == ActuationAction::GiveUp {
+        if self.policy.decide_action(self.attempts) == ActuationAction::GiveUp {
             return None;
         }
         self.attempts += 1;
@@ -887,7 +837,7 @@ mod tests {
     }
 
     /// `DriftEpisode` は `Blind` の `max_attempts` で払い出しを止める
-    /// （**回数制限は型ではなく `decide_actuation_action`**、INV-41）。
+    /// （**回数制限は型ではなく `FeedbackPolicy::decide_action`**、INV-41）。
     #[test]
     fn drift_episode_stops_at_blind_max_attempts() {
         let policy = FeedbackPolicy::Blind {
@@ -904,7 +854,7 @@ mod tests {
         assert_eq!(episode.attempts(), 3, "GiveUp では attempts を進めない");
     }
 
-    /// `Read` は試行回数では打ち切らない（`decide_actuation_action` と同じ挙動）。
+    /// `Read` は試行回数では打ち切らない（`FeedbackPolicy::decide_action` と同じ挙動）。
     #[test]
     fn drift_episode_never_gives_up_under_read_policy() {
         let policy = FeedbackPolicy::Read {
@@ -973,77 +923,6 @@ mod tests {
                 .any(|_| mechanism.may_return_failed());
             assert_eq!(reachable_fall_through, mechanism.may_return_failed());
         }
-    }
-
-    // ── needs_romaji_pre_write（ADR-089 Phase C item 12 / ADR-086 INV-14）──
-
-    use crate::state::ime_kind::ImeKindId;
-    use awase::engine::{AssumedReason, InputModeState};
-
-    const ALL_INPUT_MODES: [InputModeState; 5] = [
-        InputModeState::ObservedRomaji,
-        InputModeState::ObservedKana,
-        InputModeState::ObservedEisu,
-        InputModeState::AssumedRomaji {
-            reason: AssumedReason::ImmBridgeBroken,
-        },
-        InputModeState::Unknown,
-    ];
-
-    /// Phase C 以前の 2 戦略の条件と同値であることを全数で固定する。
-    ///
-    /// 旧条件:
-    /// - `ImmCrossProcessStrategy::apply`:
-    ///   `open && active_ime_kind == MicrosoftIme && belief != ObservedKana`
-    /// - `MsImeDirectStrategy::apply`: `open && belief != ObservedKana`
-    ///   （`is_applicable` が `MicrosoftIme` を要求するため kind 条件は暗黙）
-    #[test]
-    fn romaji_pre_write_condition_matches_the_pre_phase_c_strategies() {
-        for mechanism in WriteMechanism::ALL {
-            for open in [true, false] {
-                for kind in ImeKindId::ALL {
-                    for mode in ALL_INPUT_MODES {
-                        let expected =
-                            open && matches!(
-                                mechanism,
-                                WriteMechanism::ImmCross | WriteMechanism::MsImeDirect
-                            ) && kind == ImeKindId::MsIme
-                                && mode != InputModeState::ObservedKana;
-                        assert_eq!(
-                            needs_romaji_pre_write(mechanism, open, kind, mode),
-                            expected,
-                            "{mechanism:?} open={open} {kind:?} {mode:?}"
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    /// GJI 経路では ROMAN 補完を一切行わない（Phase C 以前も同じ）。
-    #[test]
-    fn romaji_pre_write_never_fires_for_gji_mechanisms() {
-        for mechanism in [WriteMechanism::GjiDirect, WriteMechanism::KanjiToggle] {
-            for kind in ImeKindId::ALL {
-                assert!(!needs_romaji_pre_write(
-                    mechanism,
-                    true,
-                    kind,
-                    InputModeState::Unknown
-                ));
-            }
-        }
-    }
-
-    /// `ObservedKana`（ユーザーが意図的にかな入力を選んだ状態）は上書きしない。
-    #[test]
-    fn romaji_pre_write_respects_observed_kana() {
-        assert!(!needs_romaji_pre_write(
-            WriteMechanism::MsImeDirect,
-            true,
-            ImeKindId::MsIme,
-            InputModeState::ObservedKana
-        ));
     }
 
     /// 機構名は golden（`tests/ime_key_sequence_golden.rs`）の綴りと一致する。

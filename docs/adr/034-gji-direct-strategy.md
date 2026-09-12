@@ -1,3 +1,16 @@
+---
+id: ADR-034
+title: |-
+  GJI Direct Strategy — Google 日本語入力との協調設計
+status: |-
+  採用済み
+related_adr:
+  - "ADR-0003"
+  - "ADR-033"
+  - "ADR-044"
+  - "ADR-057"
+---
+
 # ADR-034: GJI Direct Strategy — Google 日本語入力との協調設計
 
 ## ステータス

@@ -1,3 +1,15 @@
+---
+id: ADR-074
+title: |-
+  ObservedEisu 自動直接入力切替 — IME ON 英数モードを idle-conv-check で自動 OFF
+status: |-
+  採用済み
+related_adr:
+  - "ADR-032"
+  - "ADR-038"
+  - "ADR-068"
+---
+
 # ADR-074: ObservedEisu 自動直接入力切替 — IME ON 英数モードを idle-conv-check で自動 OFF
 
 ## ステータス

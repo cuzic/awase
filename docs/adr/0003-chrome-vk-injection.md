@@ -1,3 +1,12 @@
+---
+id: ADR-0003
+title: |-
+  Chrome VK injection と F2 warmup
+status: |-
+  実験中
+related_adr: []
+---
+
 # ADR 0003: Chrome VK injection と F2 warmup
 
 **Status:** 実験中（2026-05-19 現在、`SendMessageTimeout` 方式を試行）  

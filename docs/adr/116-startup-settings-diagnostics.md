@@ -1,3 +1,15 @@
+---
+id: ADR-116
+title: |-
+  起動時設定診断（awase / awase-settings 共通）
+summary: |-
+  BUG-104（`.yab`読込失敗の無言フォールバック）の調査を機に、「設定が正しいか診断して警告する」機能を汎用化してほしいとのユーザー要望。r1は独自の`Diagnostic`型・`diagnose()`関数を新設する設計だったが、Opus 2体の敵対的レビューで`LayoutEntry::scan_all`・`config_path_panel`という既存コードとの重複、USキーボードで同梱JIS用レイアウトを恒久的に誤警告する既存バグ、`reload_config`が`config.validate()`警告をユーザーに一切届けていない事実誤認、を検出。r2で新規抽象を撤回し既存の走査点・既存UIへの追加に縮小。r2の再レビューで`mem::take`と`layouts_dir`解決順序の衝突・US誤警告の再混入をr3で解消、architectの実装レビューで`mem::take`書き戻しが決定3の方針とそもそも両立しない構造的欠陥をr4で`clone()`方式に修正。実装完了後、独立したOpus 2体のコードレビューでlint警告がセル単位で通知を埋め尽くす問題・`layouts_dir`不在時の無言フォールバック・テスト不足を検出しr5で解消、実装・テスト完了
+status: |-
+  採用・実装済み（2026-08-31、Windows実機ソーク未実施）
+related_adr:
+  - "ADR-095"
+---
+
 # ADR-116: 起動時設定診断（awase / awase-settings 共通）
 
 ## ステータス

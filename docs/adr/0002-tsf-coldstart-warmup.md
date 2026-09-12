@@ -1,3 +1,13 @@
+---
+id: ADR-0002
+title: |-
+  TSF cold-start warmup 戦略
+status: |-
+  安定
+related_adr:
+  - "ADR-030"
+---
+
 # ADR 0002: TSF cold-start warmup 戦略
 
 **Status:** 安定（2026-05-19 現在）  

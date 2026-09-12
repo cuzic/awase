@@ -1,3 +1,15 @@
+---
+id: ADR-033
+title: |-
+  AppImeProfile — アプリ別 IME API 互換性分類
+status: |-
+  採用済み
+related_adr:
+  - "ADR-005"
+  - "ADR-027"
+  - "ADR-032"
+---
+
 # ADR-033: AppImeProfile — アプリ別 IME API 互換性分類
 
 ## ステータス

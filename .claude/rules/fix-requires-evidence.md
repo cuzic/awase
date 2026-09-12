@@ -7,14 +7,19 @@
 
 - **(a) 回帰テスト**を追加する — golden / ジャーナルリプレイ / characterization の
   いずれか（下記「テストの置き場所」）。
-- **(b) [docs/known-bugs.md](../../docs/known-bugs.md)** に、症状・再現手順・修正履歴
-  （コミットハッシュ）を追記する。**1エントリあたり本文は目安30行以内**とする
-  （[ADR-158](../../docs/adr/158-complexity-reduction-north-star.md) TH4、
-  2026-09-09追記）——known-bugs.mdが16,825行まで膨らんだのは、まさにこの(b)の
-  選択肢が新規fixのたびに詳細な散文を要求し続け、削除・要約を促す仕組みが無かった
-  ことが一因（[ADR-158](../../docs/adr/158-complexity-reduction-north-star.md)
-  RC4参照）。要点（アプリ・IME・症状・原因・修正コミット）を簡潔に記録すれば足り、
-  経緯の詳細な物語は不要。将来的に[ADR-159](../../docs/adr/159-existing-io-boundary-inventory.md)
+- **(b) [docs/known-bugs/](../../docs/known-bugs/index.md)** に、症状・再現手順・修正履歴
+  （コミットハッシュ）を1バグ1ファイル（`docs/known-bugs/BUG-NNN.md`、新規バグは
+  次の連番を採番して新規作成）として追記する。**1ファイルあたり本文は目安30行以内**
+  とする（[ADR-158](../../docs/adr/158-complexity-reduction-north-star.md) TH4、
+  2026-09-09追記）——単一ファイル`docs/known-bugs.md`が16,825行まで膨らんだのは、
+  まさにこの(b)の選択肢が新規fixのたびに詳細な散文を要求し続け、削除・要約を促す
+  仕組みが無かったことが一因（[ADR-158](../../docs/adr/158-complexity-reduction-north-star.md)
+  RC4参照）。2026-09-11に`docs/known-bugs/BUG-NNN.md`へ1件1ファイル分割し
+  （frontmatterに完全なタイトル・関連コミット・関連ADRを保持、索引は
+  [docs/known-bugs/index.md](../../docs/known-bugs/index.md)）、旧`docs/known-bugs.md`
+  はリダイレクトスタブのみになった——これは表示上のスケーラビリティ対策であり、
+  「要点を簡潔に記録し経緯の詳細な物語は書かない」という30行ルール自体は変わらない。
+  将来的に[ADR-159](../../docs/adr/159-existing-io-boundary-inventory.md)
   の記録・再生基盤が育てば、(b)は「再生トレースの追加」（実際に問題を再現する
   journalトレースを`tests/journals/`等に保存する）へ置き換える予定（未実装、
   能力ベースの前提条件は[ADR-162](../../docs/adr/162-governance-reversal.md)
@@ -53,8 +58,8 @@
   ターゲットで実行可、Windowsターゲット不要）。
 
 Linux で `cargo test -p awase-windows` から実行できるもの（golden / architecture_guard /
-layer_boundary_guard 等）を優先する。実機依存で自動化できない場合は (b) の known-bugs.md
-追記で代替する。
+layer_boundary_guard 等）を優先する。実機依存で自動化できない場合は (b) の
+`docs/known-bugs/BUG-NNN.md` 追加で代替する。
 
 ## なぜこのルールが必要か（背景）
 
@@ -64,9 +69,10 @@ warmup・focus・belief・conv・キー選択の 5 領域は、実機の組み�
 - IME OFF キー選択は 5 日間で 6 回反転した（[docs/experiments.md](../../docs/experiments.md)、
   `534051a`〜`489cdf1`）。golden（`ime_key_sequence_golden.rs`）があれば、キーを変えた
   瞬間に「Chrome では受け付けない `VK_IME_OFF` に変えた」等の退行を CI で検知できる。
-- Chrome cold-start のリテラル化（`b101153` / `79134f5` / `3c275a7` …）は known-bugs.md
-  の BUG-02 に修正履歴が積まれており、次の担当者が「probe 起点のズレが真因で、値を
-  上げるのは対症」という過去の知見にすぐ辿り着ける。
+- Chrome cold-start のリテラル化（`b101153` / `79134f5` / `3c275a7` …）は
+  [docs/known-bugs/BUG-002.md](../../docs/known-bugs/BUG-002.md) に修正履歴が積まれており、
+  次の担当者が「probe 起点のズレが真因で、値を上げるのは対症」という過去の知見に
+  すぐ辿り着ける。
 - issue #136 / ADR-119（2026-09-02）: `AppImeProfile::InputRelay` に「actuation を
   所有しない」gate を追加した際、最初に見つけた `runtime/executor.rs::
   dispatch_ime_set_open` の1箇所にしか置かなかった。しかし実際の actuation 呼び出し
@@ -80,15 +86,17 @@ warmup・focus・belief・conv・キー選択の 5 領域は、実機の組み�
   合流点」行はこの経緯で追加した。
 
 「fix コミット単体」は、それが**何を再発させないためのものか**を残さない。テストは
-機械可読な再発防止、known-bugs.md は人間可読な再発防止であり、どちらか一方は必ず要る。
+機械可読な再発防止、`docs/known-bugs/` は人間可読な再発防止であり、どちらか一方は必ず要る。
 
 ## 自動チェック（pre-push）
 
-`.git/hooks/pre-push` に軽量チェックを入れてある。上表の対象ファイルが変更されている
-push で、`crates/awase-windows/tests/` にも `docs/known-bugs.md` にも差分が無い場合、
-**警告を出す（ブロックはしない）**。golden の期待値更新や known-bugs 追記を忘れていないか
-の気づきを与えるのが目的。意図的にテスト/記録が不要な変更（純粋なリファクタ等）は
-そのまま push してよい。
+`.git/hooks/pre-push`（および追跡下のミラー`.githooks/pre-push`、両者は2026-09-06時点で
+本文が一部乖離しており未解消——実行されるのは`.git/hooks/pre-push`側）に軽量チェックを
+入れてある。上表の対象ファイルが変更されている
+push で、`crates/awase-windows/tests/` にも `docs/known-bugs/` にも差分が無い場合、
+**警告を出す（ブロックはしない）**。golden の期待値更新や `docs/known-bugs/` への
+新規ファイル追加を忘れていないかの気づきを与えるのが目的。意図的にテスト/記録が
+不要な変更（純粋なリファクタ等）はそのまま push してよい。
 
 関連: [experiment-logging](./experiment-logging.md)、[tuning-constants](./tuning-constants.md)、
 [ime-belief-architecture](./ime-belief-architecture.md)。

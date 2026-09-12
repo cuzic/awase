@@ -1,3 +1,20 @@
+---
+id: ADR-135
+title: |-
+  親指キー単独タップのIME ON/OFF/トグル意味論への汎用対応（BUG-115）
+summary: |-
+  BUG-115（GJIの「変換」キーでIME復帰しても親指シフトに戻らない不具合報告）の調査から出発し、当初想定より大幅にスコープ拡大。Phase 1: `awase-gji-config`の`session_keymap`フィールド番号誤り(22→41)・`overlay_keymaps`(field 68)未対応を修正、GJIの無変換/変換キーのIME意味論をdelegate-to-open-axis/actuation-autoへ対称配線、設定UIの`keys.ime_detect`消失バグも修正。Phase 2: 非親指キーのHiragana/Katakanaに対しGJI検出値で既存の静的`shadow_action`テーブルをオーバーライド。当初のv1(`nicola_fsm`左右親指スロット汎用化)はOpus設計レビューで前提誤りと判明し撤回、Opus敵対的設計レビュー3ラウンドで収束(親指キー構成では毎打鍵IME OFF/反転を作るブロッカーが発覚し「親指キーでない場合のみ適用」に訂正)——ただしPhase 2単独ではBUG-115の元シナリオ(ひらがな/カタカナを親指キーにしている場合)を救えない限界が判明。Phase 3: Henkan/Muhenkanの既存delegate-to-open-axisをHiragana/Katakanaへ拡張しPhase 2の限界を埋める(ユーザー指摘「Phase 2と3を同時にやる方が効率的」で統合)、BUG-14ガード(`injected`のコア伝播)込みでOpus敵対的設計レビュー3ラウンド収束。実装後のOpus敵対的コードレビューでさらにブロッカー1件(排他制御ゲートにエンジン活性条件が抜けておりIME復帰が固着しうる)を発見・修正、既存バグ1件(Henkan/Muhenkan delegateのTurnOn方向が構造的に発火せず実機で確認、別issue化)を発見・記録
+status: |-
+  **Phase 1〜3とも実装・Opus敵対的レビュー(設計6ラウンド+実装後コード3ラウンド)収束済み、PR #168でdevelopへレビュー中。`cargo test`/`architecture_guard`/`clippy`/`fmt`いずれもクリーン、実機検証(shadow-toggleログ出力・BUG-52非再発・Henkan delegate TurnOn方向の構造的不発火)も完了済み**
+related_adr:
+  - "ADR-019"
+  - "ADR-089"
+  - "ADR-092"
+  - "ADR-119"
+  - "ADR-133"
+  - "ADR-137"
+---
+
 # ADR-135: 親指キー単独タップのIME ON/OFF/トグル意味論への汎用対応（BUG-115）
 
 ## ステータス

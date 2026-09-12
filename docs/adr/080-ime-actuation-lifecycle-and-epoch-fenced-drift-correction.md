@@ -1,3 +1,18 @@
+---
+id: ADR-080
+title: |-
+  IME actuation（VK送信/IMM32呼び出し）を型付きトランザクション化し、closed-loop/open-loop の区別と有限終端を構造で強制する
+summary: |-
+  IME actuation の型付きトランザクション化 — Feedback（Read/Blind）で closed-loop/open-loop を表現し drift correction の無限/皆無ループを根治
+status: |-
+  Phase 1 実装済み（実機ソーク未実施）
+related_adr:
+  - "ADR-040"
+  - "ADR-046"
+  - "ADR-077"
+  - "ADR-078"
+---
+
 # ADR-080: IME actuation（VK送信/IMM32呼び出し）を型付きトランザクション化し、closed-loop/open-loop の区別と有限終端を構造で強制する
 
 ## ステータス

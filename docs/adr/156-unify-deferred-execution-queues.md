@@ -1,3 +1,21 @@
+---
+id: ADR-156
+title: |-
+  遅延実行キューの解放条件管理 — 観察記録と軽量な対策（将来構想、大規模統合は不採用）
+summary: |-
+  ADR-121/123/128/129を「同じ2パターンの4インスタンス」とする初版仮説を、round1レビューが実コード照合で反証（正味はpending_deferred内の2窓口間1件、ライブグローバル参照1件のみ）。`DeferredExecutionQueue<T>`への大規模統合・`architecture_guard.rs`への横断ガード追加はいずれも根拠不成立で不採用、`fix-requires-evidence.md`表への追加のみ採用
+status: |-
+  大規模統合は不採用・軽量策のみ実装済み。**pre-pushフック（`.git/hooks/pre-push`、未追跡）のregexに`input_defer.rs`/`runtime/message_handlers.rs`/`runtime/outbox.rs`が含まれていない自動化の穴を2026-09-08にユーザー同意のうえ修正済み**
+related_adr:
+  - "ADR-121"
+  - "ADR-123"
+  - "ADR-128"
+  - "ADR-129"
+  - "ADR-151"
+  - "ADR-152"
+  - "ADR-155"
+---
+
 # ADR-156: 遅延実行キューの解放条件管理 — 観察記録と軽量な対策（将来構想、大規模統合は不採用）
 
 ## ステータス

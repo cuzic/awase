@@ -1,3 +1,18 @@
+---
+id: ADR-164
+title: |-
+  グローバルstatic縮小 — 引数引き回し優先＋残りは単一singleton集約の段階的リファクタ計画
+summary: |-
+  ADR-158とは独立に、「グローバルstaticが76件(30%が`hook.rs`)あること自体がスメル」というユーザー指摘から起票。ワークスペース全体を実地調査しA(OSコールバック境界)/A2(クロススレッド共有state、round1で新設)/B(引数引き回し可能)/C(正当な可変シングルトン)/C-immutable(不変ディスパッチテーブル、対象外)/D(要追加調査)に分類。opus-adversarial-consult round1で当初のフェーズ4案(`hook.rs`22件を`&mut HookState`引き回し)の前提が実コードと矛盾すると判明し全面書き直し(20件をロックフリーstruct-of-atomics singletonへ、Mutex明示的に禁止)。round2で新フェーズ3(`tray.rs`)に新たなリスク(トレイメニュー消失)が見つかりユーザー判断で対象外化。round3で反映時の記述矛盾3件を訂正し収束
+status: |-
+  round1〜round3実施・収束(Must-fixゼロ)。フェーズ1(`gji_charset_autodetect.rs`)PR#197でdevelopマージ済み。フェーズ2(`msime_key_assignment.rs::LAST_WARNED`)PR#198で実装済み・develop未マージ。フェーズ3以降未着手
+related_adr:
+  - "ADR-119"
+  - "ADR-158"
+  - "ADR-159"
+  - "ADR-162"
+---
+
 # ADR-164: グローバルstatic縮小 — 引数引き回し優先＋残りは単一singleton集約の段階的リファクタ計画
 
 ## ステータス
@@ -21,14 +36,23 @@ PR [#197](https://github.com/cuzic/awase/pull/197)でdevelopにマージ済み�
 いずれも実装はcodex execに委任し、設計（本ADR）どおりの逐語的な指示で差分を
 作成、`cargo check`/`clippy`/`fmt`/既存テスト（純粋関数群・
 `architecture_guard`/`layer_boundary_guard`）を実行者側で再検証済み。
+フェーズ4（`hook.rs`）は実装前調査のみ完了（コード変更なし）、実機ソーク・
+memory ordering突き合わせの段取りが必要な高リスクのため、より安価な
+フェーズ8→7→5でsingleton集約パターンを先に検証する方針とした
+（[[project_adr164_global_static_singleton_consolidation_2026_09_10]]参照）。
 フェーズ8（`state/probe_admission.rs`の3カウンタ）はブランチ
 `refactor/adr164-phase8-probe-admission-counters`（PR
 [#199](https://github.com/cuzic/awase/pull/199)）で実装済み、develop未マージ。
+実装はcodex exec委任とセッション自身の直接実装を状況に応じて使い分け、
+`cargo check`（host/windows両ターゲット、`--tests --lib`含む）/clippy/fmt/
+`cargo nextest run -p awase-windows --test architecture_guard --test
+layer_boundary_guard --test golden_scenarios`を実行者側で再検証済み。
 フェーズ7は実装着手時の再分類でADR起票時の誤り（別モジュール・別cfgゲートの
 2静的を「同一ファイルだから」まとめようとしていた）が判明し、対象外へ廃止した
 （コード変更なし、developへ直接マージ済み）。
 フェーズ5（`probe_actuation_fence.rs`の5静的）はブランチ
-`refactor/adr164-phase5-probe-actuation-fence`で実装済み、develop未マージ・
+`refactor/adr164-phase5-probe-actuation-fence`（PR
+[#200](https://github.com/cuzic/awase/pull/200)）で実装済み、develop未マージ・
 実機ソーク未実施（フェーズ4と同様、windows-build CI・実機ソークがマージ条件）。
 フェーズ3・6・9は未着手。
 
@@ -431,13 +455,19 @@ ADR起票時のファイル別分類表がこの区別をせず「同一ファ�
 
 **結論**: `SETTINGS_LOG_FILE`・`SIMULATED_REGISTERED`とも現状維持。本ADRの対象から外す。
 
-### フェーズ8: `state/probe_admission.rs`の3件をsingleton集約
+### フェーズ8: `state/probe_admission.rs`の3件をsingleton集約（実装済み、develop未マージ）
 
 プロセス生存期間の棄却統計カウンタ、`drain_stats()`で消費するのみで判定ロジックには
 使われない。3件を1つの構造体にまとめる。
 
 - 規模: 極小。
 - リスク: 低。
+- **実装（2026-09-10）**: ブランチ`refactor/adr164-phase8-probe-admission-counters`。
+  `REJECTED_EPOCH_MISMATCH`/`REJECTED_HWND_MISMATCH_SAME_ROOT`/
+  `REJECTED_HWND_MISMATCH_CROSS_ROOT`の3裸staticを`RejectionCounters`構造体
+  （フィールドは変更前と同じ`LifetimeCounter`型、全て`Ordering::Relaxed`）に集約し、
+  `static REJECTION_COUNTERS: RejectionCounters`1つに縮小。呼び出し元
+  （`admit()`・`record_hwnd_mismatch()`・`drain_stats()`）のロジック・戻り値は無変更。
 
 ### フェーズ9: `hook_channel.rs`（3件）・`runtime/engine_window.rs`（3件）をsingleton集約
 

@@ -1,3 +1,15 @@
+---
+id: ADR-067
+title: |-
+  F21/F22 → VK_IME_ON/OFF への完全移行と config1.db バインド廃止
+status: |-
+  採用済み
+related_adr:
+  - "ADR-034"
+  - "ADR-057"
+  - "ADR-063"
+---
+
 # ADR-067: F21/F22 → VK_IME_ON/OFF への完全移行と config1.db バインド廃止
 
 ## ステータス

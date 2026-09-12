@@ -1,3 +1,14 @@
+---
+id: ADR-035
+title: |-
+  DecisionExecutor の純粋状態機械化
+status: |-
+  採用済み
+related_adr:
+  - "ADR-014"
+  - "ADR-036"
+---
+
 # ADR-035: DecisionExecutor の純粋状態機械化
 
 ## ステータス

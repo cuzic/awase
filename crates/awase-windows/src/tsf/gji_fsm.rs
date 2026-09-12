@@ -327,7 +327,7 @@ impl GjiFsm {
     }
 
     pub(crate) fn state_label(&self) -> &'static str {
-        state_label(&self.state)
+        self.state.state_label()
     }
 
     fn alloc_probe_id(&mut self) -> ProbeId {
@@ -621,7 +621,7 @@ impl TimedStateMachine for GjiFsm {
                 } else {
                     tracing::debug!(
                         "[gji-fsm] ImeOn: already on ({}), ignored",
-                        state_label(&self.state)
+                        self.state.state_label()
                     );
                     Response::consume()
                 }
@@ -939,7 +939,7 @@ impl TimedStateMachine for GjiFsm {
                 } else {
                     tracing::debug!(
                         "[gji-fsm] EndComposition: not composing ({}), ignored",
-                        state_label(&self.state)
+                        self.state.state_label()
                     );
                     Response::consume()
                 }
@@ -989,7 +989,7 @@ impl TimedStateMachine for GjiFsm {
                 } else {
                     tracing::warn!(
                         "[gji-fsm] LongIdle timeout in unexpected state ({})",
-                        state_label(&self.state)
+                        self.state.state_label()
                     );
                 }
                 Response::consume()
@@ -1017,34 +1017,38 @@ pub(crate) fn long_idle_ms_for(mode: InjectionMode) -> u64 {
     }
 }
 
-fn state_label(state: &GjiState) -> &'static str {
-    match state {
-        GjiState::OffCold => "OffCold",
-        GjiState::OnCold {
-            kind: ColdKind::Short,
-            ..
-        } => "OnCold(Short)",
-        GjiState::OnCold {
-            kind: ColdKind::Medium,
-            ..
-        } => "OnCold(Medium)",
-        GjiState::OnCold {
-            kind: ColdKind::Long,
-            ..
-        } => "OnCold(Long)",
-        GjiState::OnWarm { .. } => "OnWarm",
-        GjiState::OnComposing {
-            warmup: ComposingWarmup::AlreadyWarm,
-            ..
-        } => "OnComposing(Warm)",
-        GjiState::OnComposing {
-            warmup: ComposingWarmup::AwaitingProbe { .. },
-            ..
-        } => "OnComposing(AwaitingProbe)",
-        GjiState::OnComposing {
-            warmup: ComposingWarmup::AbortedCold { .. },
-            ..
-        } => "OnComposing(AbortedCold)",
+impl GjiState {
+    /// 2026-09-10、自由関数`state_label(state: &GjiState)`からメソッドへ変更した
+    /// （第1引数`&GjiState`をselfにせず取り続けていたため）。挙動は変更していない。
+    pub(crate) fn state_label(&self) -> &'static str {
+        match self {
+            Self::OffCold => "OffCold",
+            Self::OnCold {
+                kind: ColdKind::Short,
+                ..
+            } => "OnCold(Short)",
+            Self::OnCold {
+                kind: ColdKind::Medium,
+                ..
+            } => "OnCold(Medium)",
+            Self::OnCold {
+                kind: ColdKind::Long,
+                ..
+            } => "OnCold(Long)",
+            Self::OnWarm { .. } => "OnWarm",
+            Self::OnComposing {
+                warmup: ComposingWarmup::AlreadyWarm,
+                ..
+            } => "OnComposing(Warm)",
+            Self::OnComposing {
+                warmup: ComposingWarmup::AwaitingProbe { .. },
+                ..
+            } => "OnComposing(AwaitingProbe)",
+            Self::OnComposing {
+                warmup: ComposingWarmup::AbortedCold { .. },
+                ..
+            } => "OnComposing(AbortedCold)",
+        }
     }
 }
 
@@ -1085,7 +1089,7 @@ mod tests {
                 probe: ProbeStatus::Authorized { probe_id, .. },
                 ..
             } => *probe_id,
-            s => panic!("expected OnCold(Authorized), got {}", state_label(s)),
+            s => panic!("expected OnCold(Authorized), got {}", s.state_label()),
         };
         GjiEvent::WarmupComplete { probe_id }
     }
@@ -1474,7 +1478,7 @@ mod tests {
         assert!(
             matches!(fsm.state(), GjiState::OnWarm { .. }),
             "genuinely warm(Short) な CompositionReset は OnCold に落ちてはいけない: {}",
-            state_label(fsm.state())
+            fsm.state().state_label()
         );
     }
 
@@ -1515,7 +1519,7 @@ mod tests {
         assert!(
             matches!(fsm.state(), GjiState::OnWarm { .. }),
             "genuinely warm(Short) な NativeF2Consumed は OnCold に落ちてはいけない: {}",
-            state_label(fsm.state())
+            fsm.state().state_label()
         );
     }
 
@@ -1557,7 +1561,7 @@ mod tests {
                 ColdKind::Short => assert!(
                     matches!(fsm.state(), GjiState::OnWarm { .. }),
                     "{via}: gji_idle_ms={gji_idle_ms} (Short) は OnWarm を維持すべき: {}",
-                    state_label(fsm.state())
+                    fsm.state().state_label()
                 ),
                 _ => assert!(
                     matches!(
@@ -1567,7 +1571,7 @@ mod tests {
                     ),
                     "{via}: gji_idle_ms={gji_idle_ms} は OnCold{{kind: {expected_kind:?}}} に \
                      倒すべき: {}",
-                    state_label(fsm.state())
+                    fsm.state().state_label()
                 ),
             }
         }
@@ -1843,7 +1847,7 @@ mod tests {
             }
             s => panic!(
                 "expected OnComposing(AwaitingProbe), got {}",
-                state_label(s)
+                s.state_label()
             ),
         }
     }
@@ -1956,7 +1960,7 @@ mod tests {
                 assert_eq!(*current_id, probe_id, "probe_id が保持されていない");
                 assert_eq!(pending.len(), 1, "pending が保持されていない");
             }
-            s => panic!("expected OnCold(Authorized), got {}", state_label(s)),
+            s => panic!("expected OnCold(Authorized), got {}", s.state_label()),
         }
 
         // WarmupComplete → OnWarm に遷移し pending が flush される
@@ -2088,7 +2092,7 @@ mod tests {
             }
             other => panic!(
                 "expected OnCold(Medium, Authorized) after EndComposition, got {}",
-                state_label(other)
+                other.state_label()
             ),
         }
     }
@@ -2122,7 +2126,7 @@ mod tests {
             } => assert!(pending.is_empty()),
             other => panic!(
                 "expected OnCold(Short, NotStarted), got {}",
-                state_label(other)
+                other.state_label()
             ),
         }
         assert!(

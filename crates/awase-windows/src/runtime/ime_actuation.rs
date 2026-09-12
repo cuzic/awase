@@ -15,7 +15,7 @@
 
 use super::Runtime;
 use crate::state::event_origin::{EventOrigin, Generation};
-use crate::state::ime_actuation::{actuation_origin, FeedbackPolicy};
+use crate::state::ime_actuation::FeedbackPolicy;
 
 /// 進行中の actuation 試行そのもの（`Copy` ではない、生存期間を持つ状態）。
 ///
@@ -76,7 +76,7 @@ impl Runtime {
                 attempts: 0,
                 sent_at: std::time::Instant::now(),
                 gave_up_at: None,
-                origin: actuation_origin(policy, Generation::INITIAL),
+                origin: policy.origin(Generation::INITIAL),
             });
         }
         self.active_actuation

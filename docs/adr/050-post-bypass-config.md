@@ -1,3 +1,15 @@
+---
+id: ADR-050
+title: |-
+  post_bypass — バイパス後キーの NICOLA スキップ設定
+status: |-
+  採用済み
+related_adr:
+  - "ADR-024"
+  - "ADR-026"
+  - "ADR-041"
+---
+
 # ADR-050: post_bypass — バイパス後キーの NICOLA スキップ設定
 
 ## ステータス

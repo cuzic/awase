@@ -1,3 +1,16 @@
+---
+id: ADR-053
+title: |-
+  StepCoro — タイマー駆動コルーチンによる FSM チェーン置換
+status: |-
+  採用済み
+related_adr:
+  - "ADR-042"
+  - "ADR-047"
+  - "ADR-048"
+  - "ADR-051"
+---
+
 # ADR-053: StepCoro — タイマー駆動コルーチンによる FSM チェーン置換
 
 ## ステータス

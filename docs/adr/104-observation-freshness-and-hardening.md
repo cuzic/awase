@@ -1,3 +1,19 @@
+---
+id: ADR-104
+title: |-
+  非同期観測の鮮度・Win32 戻り値・死んだ安全弁の整理
+summary: |-
+  非同期観測の鮮度(ObservationTicketへのfocus_hwnd/intent_seq拡張)・drift confidence 3値化・generation=0番兵衝突の解消・key_pipelineの同期conv読み取り追い出し(BUG-34横展開)・SendInput/SetTimer戻り値の型化・型で保証されないunreachable!の除去・候補ウィンドウveto flicker指摘の撤回(再現しないと判明)・ForceOnReason::ProfilePolicy等の死んだ安全弁撤去
+status: |-
+  提案（未実装、2026-08-26）
+related_adr:
+  - "ADR-098"
+  - "ADR-101"
+  - "ADR-102"
+  - "ADR-103"
+  - "ADR-105"
+---
+
 # ADR-104: 非同期観測の鮮度・Win32 戻り値・死んだ安全弁の整理
 
 ## ステータス
