@@ -5,7 +5,7 @@ title: |-
 summary: |-
   ADR-159の子ADR。ADR-159段階1/2(TF1/TF2)は「何が起きたか」を記録する側のみで、記録した入力を意思決定ロジック(ゲート判定・戦略選択・チェーン走査)へ再投入してWin32を実際に叩かずに送信列を再現する再生ハーネス側が存在しなかった欠落を埋める設計。opus-adversarial-consult round1〜round3で決定節を2度全面書き直し、round3で「設計の骨格(Part A〜C)は収束した」と判定・round4不要。2026-09-11、ユーザー要望（bug reportをリプレイ/不要ロジック調査に役立てたい、母集団Nを増やしたい）を受けPart D（TH1d'、journal相乗りによるbug report経由の実機コーパス自動収集）を追記。opus-adversarial-consultを3ラウンド実施（設計1回・タスク分割1回・PRマージ前レビュー1回、計16件のBlocker解消）
 status: |-
-  設計収束済み(Part A〜D)。実装はTH1a(Step 0)〜TH1c(Part B)に加えTH1d'(Part D、journal相乗りによる実機コーパス自動収集)もPR#201でdevelopへマージ済み(2026-09-11)。TH1d(既知バグfixture手動投入)・TH1e(Part C、実削除+差分ゼロ再生証明、ADR-158 TH1発効条件の充足)は未着手。TH1d'内の一部受け入れ基準(windows-build CI/実機必須)は未達のままdocs/adr/163-implementation-tasks.mdに記録済み。N-1(JSON表現1レコード631バイト)・S-8(RunOpenChainAsyncの呼び出し元2種が区別不能)はいずれも2026-09-11同日中に対応済み
+  設計収束済み(Part A〜D)。実装はTH1a(Step 0)〜TH1c(Part B)・TH1d'(Part D、journal相乗りによる実機コーパス自動収集、PR#201)に加え、TH1d(既知バグfixture投入、不具合報告01M29KDNZ22KNY1FPXSKBGMW7V〈BUG-131/ADR-166〉の実機journalから37レコードを抽出・変換して`tests/journals/actuation_decision/`へ投入、空ディレクトリ拒否ガードも追加、2026-09-12)まで完了。TH1e(Part C、実削除+差分ゼロ再生証明、ADR-158 TH1発効条件の充足)のみ未着手。TH1d'内の一部受け入れ基準(windows-build CI/実機必須)は未達のままdocs/adr/163-implementation-tasks.mdに記録済み。N-1(JSON表現1レコード631バイト)・S-8(RunOpenChainAsyncの呼び出し元2種が区別不能)はいずれも2026-09-11同日中に対応済み
 related_adr:
   - "ADR-089"
   - "ADR-095"
@@ -24,8 +24,8 @@ related_adr:
 ## ステータス
 
 **設計は収束済み（opus-adversarial-consult round1・round2・round3実施済み・反映済み。
-round3で「設計の骨格は収束した」と判定され、round4は不要）。実装はTH1a〜TH1c・TH1d'が
-developへマージ済み、TH1d・TH1eが未着手（2026-09-11時点、実装順序は「今後の議論」節参照）。**
+round3で「設計の骨格は収束した」と判定され、round4は不要）。実装はTH1a〜TH1c・TH1d'・TH1dが
+developへマージ済み、TH1eのみ未着手（2026-09-12時点、実装順序は「今後の議論」節参照）。**
 
 - **TH1a（`key_sequence_policy`のImeKindId化等、Step 0）: 完了**
   （`69a9a6b5`、PR#195に統合）。

@@ -347,19 +347,32 @@ ADR本文同期は各スキーマ変更コミット（T0/T2/T4/T5）が既に行
 
 ## フェーズ5
 
-### 163-T8（TH1d、既存タスク・維持）: 既知バグ由来fixtureの初回投入
+### 163-T8（TH1d）: 既知バグ由来fixtureの初回投入 — **完了（2026-09-12）**
 
 **内容**: `tests/journals/actuation_decision/`に既知バグ由来のfixtureを最低1本、
-**実機ダンプから**手で投入する。抽出手順（`{"seq":..,"entry":{"ActuationDecision":
-{"record":{...}}}}`というenvelope形式から`record`部だけを取り出す、jq相当の手順）を
-`docs/journal-replay-guide.md`に書く（S10、この手順が無いとダンプが誰にも使われない
-まま滞留する）。`replay_all_actuation_decision_fixtures`の「ディレクトリが存在しない
-間は黙って通す」ガードを`assert!(total > 0)`相当に強化する。
+**実機ダンプから**手で投入する。
 
-**受け入れ基準**: `cargo test -p awase-windows --lib`が新fixture込みでgreen。
-fixtureディレクトリを一時的に空にしてテストが意図どおり失敗することを確認する。
+**実施結果**: `bug-report-latest`スキルで直近10件の実機bug reportを取得し、
+`ActuationDecision`エントリを含む唯一の報告（`01M29KDNZ22KNY1FPXSKBGMW7V`、
+BUG-131/ADR-166の原因調査対象そのもの）から37レコードを抽出。抽出元は
+N-1（ワイヤ圧縮）適用前のビルドが記録した旧形式（`chain`/`attempts`が
+`null`パディング固定長配列、`shadow_on_before_bug113_override`等が
+`{"recorded":bool,"value":..}`展開形）だったため、現行の
+`ActuationDecisionRecordWire`が読める形へ変換（`null`除去・3値圧縮表現化）
+してから`tests/journals/actuation_decision/bug-131-report-01m29kdnz.json`
+として投入した。抽出・変換手順は`docs/journal-replay-guide.md`
+「ActuationDecisionコーパスの扱い」節に追記（S10）。
+`replay_all_actuation_decision_fixtures`の「ディレクトリ不在／フィクスチャ0件は
+黙って通す」ガードを`assert!`（ディレクトリ不在拒否・`paths.is_empty()`拒否・
+`total > 0`拒否の3段）に強化した。
 
-**依存**: フェーズ1（最終スキーマ確定）+ フェーズ2（実機ダンプが取れる状態）。
+**受け入れ基準**: `cargo test -p awase-windows --lib`が新fixture込みで37件の
+リプレイ含め green（669 passed）。fixtureディレクトリを一時的に空にしてテストが
+意図どおり失敗することを確認済み。`cargo check --target x86_64-pc-windows-msvc
+-p awase-windows`確認済み。`cargo fmt`適用済み。
+
+**依存**: フェーズ1（最終スキーマ確定）+ フェーズ2（実機ダンプが取れる状態）
+——いずれも充足済みだった。
 
 ---
 

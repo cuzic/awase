@@ -169,7 +169,7 @@
 | [160](160-explicit-non-scope-declaration.md) | 非スコープを決定する会議体を持つ（C1: IME一本化／C2: アプリホワイトリスト化／C3: conv-mode追跡全廃） | 起票。TJ3(単体レビュー)実施済み・round4反映済み。実施可否はユーザー確認待ちのまま未確定(2026-12-31バックストップ設定済… |
 | [161](161-single-source-spec-generation.md) | 散文の権威を剥奪し、機械可読な単一仕様から生成する＋純粋層にモデル検査をかける | 起票。実証実験6件+round1〜round5レビュー・TJ1(単体レビュー)反映済み |
 | [162](162-governance-reversal.md) | ガバナンスを反転する — 複雑性予算制・ADRのTTL・敵対的レビューの向き先変更 | 起票。TJ4(単体レビュー)実施済み・round4反映済み。E2/E3は着手可、E1/E4はADR-159実績(能力ベース)待ち |
-| [163](163-actuation-decision-io-separation-and-replay-harness.md) | actuation合流点の「決定」と「実I/O」の分離、および決定点ジャーナル再生ハーネス | 設計収束済み(Part A〜D)。実装はTH1a(Step 0)〜TH1c(Part B)に加えTH1d'(Part D、journal相乗… |
+| [163](163-actuation-decision-io-separation-and-replay-harness.md) | actuation合流点の「決定」と「実I/O」の分離、および決定点ジャーナル再生ハーネス | 設計収束済み(Part A〜D)。TH1a〜TH1c・TH1d'・TH1dまで完了、TH1e(実削除+差分ゼロ証明)のみ未着手… |
 | [164](164-global-static-argument-threading-plan.md) | グローバルstatic縮小 — 引数引き回し優先＋残りは単一singleton集約の段階的リファクタ計画 | round1〜round3実施・収束(Must-fixゼロ)。フェーズ1・2・4・5・6・8がdevelopマージ済み、3… |
 | [165](165-tsf-cache-restore-recency-guard.md) | TsfNativeキャッシュ復元にhwnd一致を要求し、無関係な窓の誤ON復元とforce-ON誤発火を防ぐ (BUG-128) | 実装済み(ブランチ`fix/bug128-tsf-cache-restore-recency`)。opus-adversarial-consult round1〜round6で収束、dragonflyg4実機で修正前後の動作を確認済み |
 | [166](166-physical-key-disposition-decision-table.md) | PhysicalKeyDisposition::plan()の全数決定表化、DBEモードキーDown/Up vk非対称ハザードの明文化 (BUG-131) | 実装済み(ブランチ`fix/bug131-kana-restore-latch`)。Linuxコンパイル確認・Python独立シミュレーション済み、windows-build CI実行と実機検証は未実施 |

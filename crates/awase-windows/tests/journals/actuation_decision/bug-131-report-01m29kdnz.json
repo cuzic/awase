@@ -1,0 +1,1441 @@
+[
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "Unknown"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 1
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "Unknown"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": null
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "Unknown"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 2
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "Unknown"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": null
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "Unknown"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 3
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "Unknown"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": null
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "Unknown"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 4
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "Unknown"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": null
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "Imm32Unavailable",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "Imm32Unavailable",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "ReassertExplicitPhysicalKey"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "Imm32Unavailable",
+      "kind": "Gji",
+      "shadow_on": true,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "Imm32Unavailable",
+          "kind": "Gji",
+          "shadow_on": true,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": null,
+        "outcome": "AlreadyMatched",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "DispatchImeSetOpen"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "Imm32Unavailable",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "Imm32Unavailable",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "ReassertExplicitPhysicalKey"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "Imm32Unavailable",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "Imm32Unavailable",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "ReassertExplicitPhysicalKey"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "ForceOnRomajiCorrection"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "ReassertExplicitPhysicalKey"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": true,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": false,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": true,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 26
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "DispatchImeSetOpen"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "Unknown"
+    },
+    "order": {
+      "open": false,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "Unknown"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 26
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": null
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": false,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": false,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "DispatchImeSetOpen"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": true,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": false,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": true,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 26
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "DispatchImeSetOpen"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "Unknown"
+    },
+    "order": {
+      "open": false,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 1
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "Unknown"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 26
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": null
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": false,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": false,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "DispatchImeSetOpen"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": true,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": false,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": true,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 26
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "DispatchImeSetOpen"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "Unknown"
+    },
+    "order": {
+      "open": false,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 2
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "Unknown"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 26
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": null
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": false,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": false,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "DispatchImeSetOpen"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": true,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": false,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": true,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 26
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "DispatchImeSetOpen"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": false,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": false,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "DispatchImeSetOpen"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": true,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": false,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": true,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 26
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "DispatchImeSetOpen"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "Unknown"
+    },
+    "order": {
+      "open": false,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 3
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "Unknown"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 26
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": null
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": false,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": false,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "DispatchImeSetOpen"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "ReassertExplicitPhysicalKey"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": true,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": false,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": true,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 26
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": null
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": false,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": false,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": false,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": null,
+        "outcome": "AlreadyMatched",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "DispatchImeSetOpen"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": false,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": false,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "DispatchImeSetOpen"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "ReassertExplicitPhysicalKey"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "ReassertExplicitPhysicalKey"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "ReassertExplicitPhysicalKey"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "ReassertExplicitPhysicalKey"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "ReassertExplicitPhysicalKey"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "ReassertExplicitPhysicalKey"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "ReassertExplicitPhysicalKey"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "ReassertExplicitPhysicalKey"
+  },
+  {
+    "site": "Sync",
+    "gate_inputs": {
+      "profile": "TsfNative",
+      "kind": "Gji",
+      "shadow_on": null,
+      "belief_input_mode": "ObservedRomaji"
+    },
+    "order": {
+      "open": true,
+      "would_have_blocked": false,
+      "origin": {
+        "source": "SelfActuated",
+        "epoch": 0
+      }
+    },
+    "chain": [
+      "GjiDirect"
+    ],
+    "attempts": [
+      {
+        "inputs": {
+          "profile": "TsfNative",
+          "kind": "Gji",
+          "shadow_on": null,
+          "belief_input_mode": "ObservedRomaji"
+        },
+        "with_app_available": true,
+        "mechanism": "GjiDirect",
+        "command": {
+          "SendVk": 22
+        },
+        "outcome": "Applied",
+        "shadow_on_before_bug113_override": null,
+        "post_failed_reobservation": null
+      }
+    ],
+    "caller": "ForceOnRomajiCorrection"
+  }
+]

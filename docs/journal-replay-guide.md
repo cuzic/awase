@@ -29,6 +29,47 @@ TH1e 以降のリファクタで、変更前コードが記録した送信列と
 TH1e で非同期 ImmCross 側の決定再計算が統合されるまで、自動差分証明の対象外である。
 それでも、診断材料としては収集開始時点から有効なので、実機ダンプには含める。
 
+### 抽出手順（実機ダンプ／bug report → `tests/journals/actuation_decision/*.json`）
+
+TH1dで実際に使った手順（1本目: 不具合報告`01M29KDNZ22KNY1FPXSKBGMW7V`、BUG-131/ADR-166）。
+
+1. **実機ダンプを入手する。** タスクトレイ「不具合を報告」経由の journal は
+   `.claude/skills/bug-report-fetch`/`bug-report-latest` で取得できる
+   （`<report_id>.journal.json`として書き出される、`log_excerpt`フィールドの中身）。
+   手元でホットキーダンプした`%TEMP%/awase_journal_<tick_ms>.json`でも同様。
+2. **`entry.type == "ActuationDecision"`のエントリだけ抽出し、`entry.record`を
+   取り出す。**jq相当の処理（例）:
+   ```python
+   import json
+   entries = json.load(open("<report_id>.journal.json"))
+   records = [e["entry"]["record"] for e in entries
+              if isinstance(e.get("entry"), dict) and e["entry"].get("type") == "ActuationDecision"]
+   ```
+3. **`chain_len`/`attempts_len`フィールドを捨て、`chain`/`attempts`の`null`パディングを
+   取り除く。**（ADR-163 Part D N-1、2026-09-11以降のワイヤ形式は
+   `ActuationDecisionRecordWire`——固定長`null`パディング配列ではなく
+   埋まっている分だけの可変長配列。**この変換を忘れると`serde_json`が
+   「expected value」という分かりにくいエラーで`deserialize`に失敗する**——
+   TH1d実装時に実際に踏んだ）:
+   ```python
+   chain = [c for c in record["chain"] if c is not None]
+   attempts = [a for a in record["attempts"] if a is not None]
+   ```
+4. **`shadow_on_before_bug113_override`/`post_failed_reobservation`を
+   3値の圧縮表現へ変換する。**古い形式（`{"recorded": bool, "value": Option<bool>}`）
+   のダンプが混在する場合は、`recorded=false`→`null`、`recorded=true, value=None`→
+   `"unknown"`、`recorded=true, value=Some(b)`→素の`bool`、へ変換する
+   （`nested_optional_bool`モジュールのdoc参照）。新しい形式のダンプは既にこの
+   3値表現で出力されるため変換不要。
+5. 各attempt内の`inputs`はそのまま（`DecisionInputs`はワイヤ形式の変更を受けていない）。
+6. 変換後のレコード配列（`Vec<ActuationDecisionRecord>`と互換のJSON配列）を
+   `crates/awase-windows/tests/journals/actuation_decision/<説明的な名前>.json`
+   として保存する。ファイル名に対応するBUG番号/report_idを含めること。
+7. `cargo test -p awase-windows --lib actuation_decision_record` でreplayがgreenに
+   なることを確認する。`replay_all_actuation_decision_fixtures`は
+   `assert!(!paths.is_empty())`でフィクスチャ0件を拒否するため、ディレクトリを
+   誤って空にした場合はこのテストが落ちて気づける。
+
 ## 仕組み
 
 1. `journal.rs::JournalEntry::ConvClassifyCall` — `classify_conv_transition` の実引数と戻り値を構造化して記録する専用エントリ。`kp_stage_idle_conv_check`（`runtime/key_pipeline.rs`）が呼び出しのたびに記録する。

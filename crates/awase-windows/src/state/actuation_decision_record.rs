@@ -11,7 +11,8 @@
 //!    attempt単位の決定点ジャーナルスキーマ（[`ActuationDecisionRecord`]/
 //!    [`AttemptRecord`]）、
 //! 2. `tests/journals/actuation_decision/*.json`（TH1dで実機ダンプから
-//!    投入予定、本タスク時点では未投入）を読み、記録済みの
+//!    投入済み。1本目は不具合報告`01M29KDNZ22KNY1FPXSKBGMW7V`
+//!    〈BUG-131/ADR-166〉のjournalから抽出した37レコード）を読み、記録済みの
 //!    `decide_gate`/`decide_chain`/`decide_attempt`の入力から
 //!    同じ関数を再度呼んで記録済みの判定・chain・commandと一致するかを
 //!    確認するcrate内再生ハーネス（[`tests`]モジュール）
@@ -935,26 +936,34 @@ mod tests {
             .unwrap_or_else(|e| panic!("フィクスチャのJSONパース失敗 {}: {e}", path.display()))
     }
 
-    /// `tests/journals/actuation_decision/*.json`（TH1dで投入予定）を再生する。
-    /// ディレクトリが存在しない間（TH1c時点）はTH1d未着手として黙って通す
-    /// ——フィクスチャが実在するようになった時点で「1件もない」ことを拒否する
-    /// ガード（`assert!(total > 0)`相当）を足すのはTH1dの作業とする。
+    /// `tests/journals/actuation_decision/*.json`（TH1dで実機ダンプから投入済み）を再生する。
+    /// TH1dでfixtureが投入された以降は、ディレクトリ自体が存在しないことは想定しない
+    /// （投入済みfixtureをディレクトリ削除で無効化する事故を防ぐ）。
     #[test]
     fn replay_all_actuation_decision_fixtures() {
         let dir = fixture_dir();
-        if !dir.exists() {
-            return;
-        }
+        assert!(
+            dir.exists(),
+            "{} が存在しない。TH1dで投入したfixtureディレクトリが削除された可能性",
+            dir.display()
+        );
         let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
             .unwrap_or_else(|e| panic!("{} が読めない: {e}", dir.display()))
             .map(|entry| entry.expect("dir entry read failed").path())
             .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
             .collect();
         paths.sort();
+        assert!(
+            !paths.is_empty(),
+            "{} にfixture(*.json)が1件もない（TH1d後は最低1件を要求）",
+            dir.display()
+        );
 
+        let mut total = 0usize;
         let mut failures = Vec::new();
         for path in &paths {
             for record in load_fixtures(path) {
+                total += 1;
                 for failure in replay_record(&record) {
                     failures.push(format!(
                         "[{}] {failure}",
@@ -963,6 +972,11 @@ mod tests {
                 }
             }
         }
+        assert!(
+            total > 0,
+            "{} のfixtureファイルに1件もレコードが無い",
+            dir.display()
+        );
         assert!(
             failures.is_empty(),
             "{} 件のactuation決定リプレイ不一致:\n\n{}",
