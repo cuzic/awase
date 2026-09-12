@@ -374,8 +374,7 @@ CIが必要でこのセッション（Linuxサンドボックス）では実施�
 - **163-T1d**: 同上の回帰テスト、およびlane別emitted/dropped件数の
   変更前後比較（実機/windows-build CI必須。ただしJSONバイト数の実測は
   `actuation_decision_record_json_byte_size_is_measured`テストでLinux上で
-  完了済み——1エントリ約631バイト、既存`ImeActuation`と合わせ同一laneを
-  消費する点に注意）。
+  完了済み——既存`ImeActuation`と合わせ同一laneを消費する点に注意）。
 - **163-T6**: `with_app`が`None`を返す状況を実際に模したテストは未実施
   （`runtime/`配下は`#[cfg(windows)]`のためLinuxのテストバイナリに存在しない）。
 - **S-8（新規Should-fix、未対応）**: `DecisionSite::RunOpenChainAsync`が
@@ -383,3 +382,14 @@ CIが必要でこのセッション（Linuxサンドボックス）では実施�
   bootstrap経路・`run_open_chain_async`自身の冒頭gateという3つの異なる
   呼び出し元に共有されており、診断粒度としては区別できない。`caller`
   フィールド（B-2で新設）を使ってこれらも分離できるが、本PRでは見送った。
+- **N-1（対応済み、2026-09-11）**: `ActuationDecisionRecord`のJSON表現が
+  1エントリ約631バイトあり、Actuation lane（journal.rsの20%予約）で既存
+  `ImeActuation`/`DriftGiveUpDiagnostic`/`ConvClassifyCall`を押し出すペースを
+  悪化させる懸念があった。`chain`/`attempts`を`null`パディング済み固定長
+  配列のまま出さず埋まっている分だけの可変長配列として直列化し
+  `chain_len`/`attempts_len`フィールドを廃止（`ActuationDecisionRecordWire`
+  経由の手書き`Serialize`/`Deserialize`、メモリ上の固定長`Copy`表現はホット
+  パスのヒープ確保回避のためそのまま維持）、`nested_optional_bool`の
+  `{"recorded":bool,"value":Option<bool>}`オブジェクト展開を`null`／
+  `"unknown"`／素の`bool`へ圧縮し、523バイトへ縮小した
+  （`actuation_decision_record_json_byte_size_is_measured`参照）。

@@ -55,14 +55,17 @@ use super::ime_actuation_decision::{DecisionInputs, DecisionSite, MechanismComma
 /// ADR-163 D2: `WriteMechanism::ALL`と同じ最大attempt数。
 pub const MAX_WRITE_MECHANISMS: usize = 4;
 
+/// `Option<Option<bool>>` の3値（未記録／記録済みだが値不明／記録済みで既知）を
+/// `{"recorded":bool,"value":Option<bool>}` という常に固定サイズのオブジェクトへ
+/// 展開する代わりに、`null`／`"unknown"`／素の`bool`という自己記述的な最小表現へ
+/// 直接写す（ADR-163 Part D N-1対応、2026-09-11）。この値は`docs/journal-replay-guide.md`
+/// 「ActuationDecisionコーパスの扱い」が明記するとおり人間がbug reportを直接読んで
+/// 根本原因特定に使うためのものなので、数値コード（例: `0`/`1`/`2`）ではなく文字列
+/// `"unknown"`を選び、圧縮と可読性を両立させる。
 mod nested_optional_bool {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    #[derive(Serialize, Deserialize)]
-    struct Encoded {
-        recorded: bool,
-        value: Option<bool>,
-    }
+    use serde::de::{Error, Unexpected, Visitor};
+    use serde::{Deserializer, Serializer};
+    use std::fmt;
 
     #[allow(
         clippy::option_option,
@@ -76,11 +79,41 @@ mod nested_optional_bool {
     where
         S: Serializer,
     {
-        Encoded {
-            recorded: value.is_some(),
-            value: value.unwrap_or(None),
+        match value {
+            None => serializer.serialize_none(),
+            Some(None) => serializer.serialize_str("unknown"),
+            Some(Some(b)) => serializer.serialize_bool(*b),
         }
-        .serialize(serializer)
+    }
+
+    struct TriStateVisitor;
+
+    impl Visitor<'_> for TriStateVisitor {
+        type Value = Option<Option<bool>>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("null, \"unknown\", or a bool")
+        }
+
+        fn visit_unit<E: Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_none<E: Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_bool<E: Error>(self, v: bool) -> Result<Self::Value, E> {
+            Ok(Some(Some(v)))
+        }
+
+        fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+            if v == "unknown" {
+                Ok(Some(None))
+            } else {
+                Err(E::invalid_value(Unexpected::Str(v), &self))
+            }
+        }
     }
 
     #[allow(clippy::option_option)]
@@ -88,12 +121,7 @@ mod nested_optional_bool {
     where
         D: Deserializer<'de>,
     {
-        let encoded = Encoded::deserialize(deserializer)?;
-        Ok(if encoded.recorded {
-            Some(encoded.value)
-        } else {
-            None
-        })
+        deserializer.deserialize_any(TriStateVisitor)
     }
 }
 
@@ -194,7 +222,24 @@ pub struct AttemptRecord {
 
 /// actuation合流点1呼び出し分の決定点ジャーナルレコード
 /// （ADR-163 Part B、`ActuationDecisionRecord`）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+///
+/// # ワイヤ表現は固定長配列をそのまま出さない（ADR-163 Part D N-1対応）
+///
+/// `chain`/`attempts`はホットパス（`ImeController::apply`等）でヒープ確保を
+/// 避けるため固定長`[Option<_>; MAX_WRITE_MECHANISMS]`で持つ（ADR-163 round1 B4）
+/// が、この型そのものに`#[derive(Serialize, Deserialize)]`を付けると、未使用
+/// スロットの`null`と`chain_len`/`attempts_len`の冗長フィールドがJSON表現に
+/// そのまま出て1レコード約631バイトに膨らみ（`journal.rs`のActuation lane予約
+/// （全体の20%）を既存の`ImeActuation`等と奪い合う——実測はこのファイルの
+/// `actuation_decision_record_json_byte_size_is_measured`参照）、実ユーザーの
+/// bug report経由コーパスが溜まるほどlaneの実効容量を圧迫する。
+///
+/// メモリ上の表現（固定長・`Copy`）とワイヤ表現（可変長・ヒープ確保あり）を
+/// 分離するため、`Serialize`/`Deserialize`は`derive`せず[`ActuationDecisionRecordWire`]
+/// を介した手書き実装にしている。ワイヤ側の変換自体はI/O層（journalダンプ時、
+/// ホットパスではない）でのみ発生するため、B4が守ろうとした制約（構築時に
+/// ヒープ確保しない）とは抵触しない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ActuationDecisionRecord {
     pub site: DecisionSite,
     /// `decide_gate`/`decide_chain`（siteがSyncの場合のみ再導出、round2 T2）を
@@ -240,6 +285,112 @@ const _: () = {
     assert_copy::<AttemptRecord>();
     assert_copy::<ActuationDecisionRecord>();
 };
+
+/// [`ActuationDecisionRecord`]のワイヤ専用ミラー（ADR-163 Part D N-1対応）。
+///
+/// `chain`/`attempts`を固定長`[Option<_>; MAX_WRITE_MECHANISMS]`のまま
+/// シリアライズすると未使用スロットの`null`がそのまま出力される。ここでは
+/// 実際に埋まっている`chain_len`/`attempts_len`件分だけを`Vec`として持ち、
+/// 長さそのものを`chain_len`/`attempts_len`フィールドの代わりに使う。
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ActuationDecisionRecordWire {
+    site: DecisionSite,
+    gate_inputs: DecisionInputs,
+    order: ActuationOrderRecord,
+    chain: Vec<WriteMechanism>,
+    attempts: Vec<AttemptRecord>,
+    caller: Option<DecisionSite>,
+}
+
+impl From<&ActuationDecisionRecord> for ActuationDecisionRecordWire {
+    fn from(record: &ActuationDecisionRecord) -> Self {
+        Self {
+            site: record.site,
+            gate_inputs: record.gate_inputs,
+            order: record.order,
+            chain: record.chain[..record.chain_len]
+                .iter()
+                .copied()
+                .flatten()
+                .collect(),
+            attempts: record.attempts[..record.attempts_len]
+                .iter()
+                .copied()
+                .flatten()
+                .collect(),
+            caller: record.caller,
+        }
+    }
+}
+
+/// ワイヤの`Vec`長が[`MAX_WRITE_MECHANISMS`]を超えていた場合のエラー
+/// （改ざんされた、または将来`MAX_WRITE_MECHANISMS`が縮小されたフィクスチャの
+/// デシリアライズ時のみ発生しうる）。
+#[derive(Debug)]
+struct WireLenOverflow {
+    field: &'static str,
+    len: usize,
+}
+
+impl std::fmt::Display for WireLenOverflow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} has {} entries, exceeding MAX_WRITE_MECHANISMS={MAX_WRITE_MECHANISMS}",
+            self.field, self.len
+        )
+    }
+}
+
+fn fixed_array_from_vec<T: Copy>(
+    field: &'static str,
+    values: Vec<T>,
+) -> Result<([Option<T>; MAX_WRITE_MECHANISMS], usize), WireLenOverflow> {
+    if values.len() > MAX_WRITE_MECHANISMS {
+        return Err(WireLenOverflow {
+            field,
+            len: values.len(),
+        });
+    }
+    let len = values.len();
+    let mut array = [None; MAX_WRITE_MECHANISMS];
+    for (slot, value) in array.iter_mut().zip(values) {
+        *slot = Some(value);
+    }
+    Ok((array, len))
+}
+
+impl TryFrom<ActuationDecisionRecordWire> for ActuationDecisionRecord {
+    type Error = WireLenOverflow;
+
+    fn try_from(wire: ActuationDecisionRecordWire) -> Result<Self, Self::Error> {
+        let (chain, chain_len) = fixed_array_from_vec("chain", wire.chain)?;
+        let (attempts, attempts_len) = fixed_array_from_vec("attempts", wire.attempts)?;
+        Ok(Self {
+            site: wire.site,
+            gate_inputs: wire.gate_inputs,
+            order: wire.order,
+            chain,
+            chain_len,
+            attempts,
+            attempts_len,
+            caller: wire.caller,
+        })
+    }
+}
+
+impl serde::Serialize for ActuationDecisionRecord {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        ActuationDecisionRecordWire::from(self).serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ActuationDecisionRecord {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = ActuationDecisionRecordWire::deserialize(deserializer)?;
+        Self::try_from(wire).map_err(serde::de::Error::custom)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -544,17 +695,43 @@ mod tests {
         assert_eq!(record, back);
     }
 
+    // N-1対応（`ActuationDecisionRecordWire`導入）で新設したバリデーション。
+    // 改ざん・または将来`MAX_WRITE_MECHANISMS`が縮小されたフィクスチャで
+    // `chain`/`attempts`が上限を超えていた場合、固定長配列への詰め直しで
+    // 静かに切り詰めるのではなくデシリアライズ自体をエラーにする。
+    #[test]
+    fn deserialize_rejects_chain_longer_than_max_write_mechanisms() {
+        let json = r#"{
+            "site": "Sync",
+            "gate_inputs": {"profile":"Standard","kind":"Gji","shadow_on":null,"belief_input_mode":"Unknown"},
+            "order": {"open":true,"would_have_blocked":false,"origin":{"source":"Physical","epoch":0}},
+            "chain": ["ImmCross","GjiDirect","MsImeDirect","KanjiToggle","ImmCross"],
+            "attempts": [],
+            "caller": null
+        }"#;
+        let result: Result<ActuationDecisionRecord, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "chainがMAX_WRITE_MECHANISMSを超える場合はデシリアライズが失敗するはず"
+        );
+    }
+
     // /code-review指摘（S-4、PR #201）: 「LaneKind::Actuationへの相乗りが
     // 既存ImeActuation/DriftGiveUpDiagnostic/ConvClassifyCallエントリを
     // 押し出すペースを悪化させないか」の実測は、windows-build CIや実機
     // ダンプが無くてもLinux上のJSONバイト数計測で今すぐ着手できる
-    // （指摘のとおり「実測はCI待ち」は不要な先送りだった）。固定長配列化
-    // （163-T2）で未使用スロットも`null`として4枠ぶん出力される点、
-    // `nested_optional_bool`がattemptごとにオブジェクト2個を増やす点を
-    // 含めて実測する。1 actuationにつき既存`ImeActuation`と合わせ同一lane
-    // に2エントリ積まれる点は本テストの範囲外（実際のlane圧迫の実測は
-    // windows-build CI/実機ダンプでの前後比較が別途必要、163-T1dの
-    // 受け入れ基準に残したまま）。
+    // （指摘のとおり「実測はCI待ち」は不要な先送りだった）。1 actuationに
+    // つき既存`ImeActuation`と合わせ同一laneに2エントリ積まれる点は本テスト
+    // の範囲外（実際のlane圧迫の実測はwindows-build CI/実機ダンプでの前後
+    // 比較が別途必要、163-T1dの受け入れ基準に残したまま）。
+    //
+    // N-1対応（2026-09-11、docs/adr/163-implementation-tasks.md）:
+    // 当初631バイトだった実測値を、ワイヤ表現の圧縮（`chain`/`attempts`を
+    // `null`パディング済み固定長配列のまま出さず、埋まっている分だけの`Vec`
+    // として直列化し`chain_len`/`attempts_len`を廃止する
+    // [`ActuationDecisionRecordWire`]、`nested_optional_bool`を
+    // `{"recorded":..,"value":..}`オブジェクトから`null`/`"unknown"`/素の
+    // `bool`へ圧縮）で523バイトへ縮小した。
     #[test]
     fn actuation_decision_record_json_byte_size_is_measured() {
         let gate_inputs = inputs(
@@ -588,18 +765,14 @@ mod tests {
         };
         let json = serde_json::to_string(&record).expect("serialize");
         // 実測値（2026-09-11時点、フィールド構成が変わったら更新すること）:
-        // attempt 1件・未使用スロット3個nullの構成で631バイト。
-        // 未使用スロットのnull・nested_optional_boolのオブジェクト展開が
-        // 主要因（`chain`/`attempts`の未使用null 6個＋
-        // `shadow_on_before_bug113_override`/`post_failed_reobservation`の
-        // オブジェクト展開2個）。journal.rsの`select_tail_within_budget`は
-        // lane予約20%（Actuation）の中で既存`ImeActuation`（固定サイズ
-        // 数十バイト）と奪い合うため、1 actuationあたりのlane消費バイト数は
-        // 本エントリの追加でおよそ10倍規模になる——この数値をwindows-build
-        // CI/実機ダンプでの前後比較（163-T1d受け入れ基準）の基準値として
-        // 使うこと。
+        // attempt 1件の構成で523バイト（N-1対応前は631バイト、上記コメント
+        // 参照）。journal.rsの`select_tail_within_budget`はlane予約20%
+        // （Actuation）の中で既存`ImeActuation`（固定サイズ数十バイト）と
+        // 奪い合うため、1 actuationあたりのlane消費バイト数は本エントリの
+        // 追加でおよそ7〜8倍規模になる——この数値をwindows-build CI/実機
+        // ダンプでの前後比較（163-T1d受け入れ基準）の基準値として使うこと。
         assert!(
-            json.len() < 700,
+            json.len() < 560,
             "ActuationDecisionRecordのJSON表現が想定より大きい: {} bytes ({json})",
             json.len()
         );
