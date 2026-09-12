@@ -5,7 +5,7 @@ title: |-
 summary: |-
   ADR-158とは独立に、「グローバルstaticが76件(30%が`hook.rs`)あること自体がスメル」というユーザー指摘から起票。ワークスペース全体を実地調査しA(OSコールバック境界)/A2(クロススレッド共有state、round1で新設)/B(引数引き回し可能)/C(正当な可変シングルトン)/C-immutable(不変ディスパッチテーブル、対象外)/D(要追加調査)に分類。opus-adversarial-consult round1で当初のフェーズ4案(`hook.rs`22件を`&mut HookState`引き回し)の前提が実コードと矛盾すると判明し全面書き直し(20件をロックフリーstruct-of-atomics singletonへ、Mutex明示的に禁止)。round2で新フェーズ3(`tray.rs`)に新たなリスク(トレイメニュー消失)が見つかりユーザー判断で対象外化。round3で反映時の記述矛盾3件を訂正し収束
 status: |-
-  round1〜round3実施・収束(Must-fixゼロ)。フェーズ1(`gji_charset_autodetect.rs`)PR#197でdevelopマージ済み。フェーズ2(`msime_key_assignment.rs::LAST_WARNED`)PR#198で実装済み・develop未マージ。フェーズ3以降未着手
+  round1〜round3実施・収束(Must-fixゼロ)。フェーズ1(PR#197)・フェーズ2(PR#198)・フェーズ8(PR#199)・フェーズ5(PR#200)・フェーズ6(PR#204)・フェーズ4(PR#205)がいずれもdevelopマージ済み。フェーズ3・7は対象外化、フェーズ9はユーザー判断で保留。ほぼ完了
 related_adr:
   - "ADR-119"
   - "ADR-158"
@@ -47,9 +47,13 @@ PR [#197](https://github.com/cuzic/awase/pull/197)でdevelopにマージ済み�
 フェーズ6（`lib.rs`の3静的）はPR [#204](https://github.com/cuzic/awase/pull/204)で
 developにマージ済み（トレイ「終了」経由でCtrl+Cハンドラと同一コード経路の実機確認済み）。
 フェーズ9は保留（ユーザー判断、2026-09-12）。
-フェーズ4（`hook.rs`の20静的）はブランチ`refactor/adr164-phase4-hook-state`で実装済み、
-develop未マージ・windows-build CI/実機ソーク未実施——本ADR全体で最高リスクのフェーズ
-（フェーズ4本文の実装節参照）。フェーズ3は対象外（round2で決着済み）。
+フェーズ4（`hook.rs`の20静的）はPR [#205](https://github.com/cuzic/awase/pull/205)で
+developにマージ済み（本ADR全体で最高リスクのフェーズ、詳細はフェーズ4本文の実装節参照）。
+フェーズ3は対象外（round2で決着済み）。
+
+**現時点（2026-09-11）のまとめ**: フェーズ1・2・4・5・6・8が全てdevelopマージ済み、
+フェーズ3・7は対象外、フェーズ9はユーザー判断で保留。本ADRが対象としたフェーズは
+実質完了している。
 
 ## 背景
 
