@@ -110,6 +110,38 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.20.0] - 2026-09-12</h2>
+<h3>追加</h3>
+<ul>
+<li><strong>無変換/変換キー単独タップのIME ON/OFF/トグル動作を、GJI/MS-IME側の自動検出に頼らずawase側で直接指定できるようにした</strong><ul>
+<li>新しい設定項目（<code>muhenkan_solo_tap_ime_action</code>/<code>henkan_solo_tap_ime_action</code>）で「常にON/OFF/トグルにする」を明示指定できる。GJI/MS-IME側のキーマップ設定と噛み合わずIME制御が効かない環境向けの対応</li>
+</ul>
+</li>
+<li><strong>不具合報告に、現在のGJI/MS-IME側のキー割り当て設定を自動的に添付するようにした</strong><ul>
+<li>新UI（シンプルキー割当て）・旧UI（詳細キーカスタマイズ）の両方に対応。ユーザー側の追加操作は不要</li>
+</ul>
+</li>
+</ul>
+<h3>修正</h3>
+<ul>
+<li><strong>Windows Defenderが awase.exe を持続化型マルウェアの挙動として誤検知することがある問題への対策として、自動起動のレジストリ登録タイミングを変更した</strong><ul>
+<li>従来は起動のたびに無条件でレジストリへ自己修復書き込みを行っていたが、設定画面の「自動起動」チェックボックス操作時のみ書き込むように変更した（効果は未検証、恒久対策は今後のコード署名対応）</li>
+</ul>
+</li>
+<li><strong>一部の環境でインストール後に自動起動が無言で失敗する不具合を修正</strong><ul>
+<li>実行ファイルにアプリケーションマニフェストが無く、Windowsのプログラム互換性アシスタントが「管理者として実行」フラグを誤って立てていたことが原因</li>
+</ul>
+</li>
+<li><strong>Windows Terminal + Google 日本語入力で、物理半角/全角・無変換・変換キーを押した際に余分な「＠」が出力されることがある問題について、複数の残存原因を追加で特定・修正</strong><ul>
+<li>IME ONの重複送信（最大3回→2回に削減、Standardプロファイル固有の抜け漏れも含む）、probe読み取りとIME操作発行のタイミング競合、delegate/shadow-toggleの二重発火などが原因だった</li>
+</ul>
+</li>
+<li><strong>GJI自動検出の無変換/変換delegateが、設定画面で明示的に選んだ「常に送出する」設定を無視して物理キーを握りつぶす不具合を修正</strong></li>
+<li><strong>Google 日本語入力で「ようするに」のような入力が「よゔするに」のように誤変換されることがある不具合を修正</strong></li>
+<li><strong>物理「カタカナ ひらがな ローマ字」キーでカタカナに切り替えた後、ひらがなに戻せなくなることがある不具合を修正</strong></li>
+<li><strong>Chromeで無変換キー操作の直後にエクスプローラー内の別入力欄へフォーカスが移ると、無関係なIME ON状態が復元されてしまう不具合を修正</strong></li>
+<li><strong>Windows Terminal + MS-IMEで、物理IME訂正キーの操作が無視され、ローマ字がそのまま表示され続けることがある問題について、キーの再送を追加で試みるようにした（部分対策）</strong></li>
+</ul>
 <h2>[1.19.0] - 2026-09-06</h2>
 <h3>追加</h3>
 <ul>
