@@ -259,7 +259,10 @@ pub(crate) fn apply_mechanism(
             // メインスレッド（フックまたはメッセージループ）からのみ行われる
             // （`apply_mechanism` の呼び出し元制約、上記 doc 参照）。
             if unsafe { crate::ime::set_ime_open_cross_process(open) } {
-                ImeOpenOutcome::Applied
+                // ADR-167: この機構は SendInput を伴わない（クロスプロセス
+                // IMM32 APIのみ）ため、実送信を意味する `Applied` とは
+                // 区別する。
+                ImeOpenOutcome::AppliedWithoutSendInput
             } else {
                 tracing::info!(
                     "[apply-ime] ImmCross sync: set_ime_open_cross_process failed → Failed"

@@ -662,9 +662,10 @@ mod tests {
     use crate::state::ime_event::ObservationSource;
     use crate::state::open_warrant::WarrantBasis;
 
-    const ALL_OUTCOMES: [ImeOpenOutcome; 6] = [
+    const ALL_OUTCOMES: [ImeOpenOutcome; 7] = [
         ImeOpenOutcome::Applied,
         ImeOpenOutcome::FallbackSent,
+        ImeOpenOutcome::AppliedWithoutSendInput,
         ImeOpenOutcome::AlreadyMatched,
         ImeOpenOutcome::Failed,
         ImeOpenOutcome::UnsafeToToggle,

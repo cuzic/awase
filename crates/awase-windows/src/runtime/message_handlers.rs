@@ -783,6 +783,14 @@ const fn encode_outcome(outcome: ImeOpenOutcome) -> isize {
         ImeOpenOutcome::Failed => 3,
         ImeOpenOutcome::UnsafeToToggle => 4,
         ImeOpenOutcome::NotOwned => 5,
+        // ADR-167: async ImmCross の成功（`imm_cross_write`）は常にこの経路
+        // （`run_open_chain_async` → `post_async_ime_apply_complete` →
+        // このWM wire）を通るため、ここに追加しないと
+        // `on_ime_applied_inner`/`should_send_accompanying_warmup`が新
+        // variantを一度も観測できず、ADR-167が対象とするStandardプロファイル
+        // ×ImmCross失敗フォールバック時の随伴warmup重複が直らない
+        // （opus-adversarial-consult指摘）。
+        ImeOpenOutcome::AppliedWithoutSendInput => 6,
     }
 }
 
@@ -795,6 +803,7 @@ fn decode_outcome(value: isize) -> ImeOpenOutcome {
         3 => ImeOpenOutcome::Failed,
         4 => ImeOpenOutcome::UnsafeToToggle,
         5 => ImeOpenOutcome::NotOwned,
+        6 => ImeOpenOutcome::AppliedWithoutSendInput,
         other => {
             tracing::error!("WM_ASYNC_IME_APPLY_COMPLETE: unknown outcome code {other}");
             ImeOpenOutcome::UnsafeToToggle
@@ -2013,6 +2022,32 @@ pub(crate) mod drain_pending_test_api {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn encode_decode_outcome_roundtrips_for_all_variants() {
+        // ADR-167: WM_ASYNC_IME_APPLY_COMPLETE のwparam/lparamエンコードは
+        // ImeOpenOutcomeの全variantを損失なく往復できなければならない。
+        // これが崩れると、対応する物理経路（executor.rs::dispatch_ime_set_open/
+        // mod.rs::force_on_and_correct_romaji の非同期完了）で
+        // AppliedWithoutSendInputがUnsafeToToggleへ誤って落ち、
+        // should_send_accompanying_warmupの区別が非同期経路だけ効かなくなる。
+        for outcome in [
+            super::ImeOpenOutcome::Applied,
+            super::ImeOpenOutcome::FallbackSent,
+            super::ImeOpenOutcome::AppliedWithoutSendInput,
+            super::ImeOpenOutcome::AlreadyMatched,
+            super::ImeOpenOutcome::Failed,
+            super::ImeOpenOutcome::UnsafeToToggle,
+            super::ImeOpenOutcome::NotOwned,
+        ] {
+            let encoded = super::encode_outcome(outcome);
+            assert_eq!(
+                super::decode_outcome(encoded),
+                outcome,
+                "roundtrip failed for {outcome:?} (encoded as {encoded})"
+            );
+        }
+    }
+
     #[test]
     fn drain_pending_reentrant_request_is_recovered_by_next_handler() {
         super::drain_pending_test_api::reset();

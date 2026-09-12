@@ -334,7 +334,10 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
 
     let mut post_failed_reobservation = None;
     let outcome = match raw {
-        ActuationOutcome::Written => ImeOpenOutcome::Applied,
+        // ADR-167: `imm_cross_write` は常に ImmCrossProcessStrategy（クロス
+        // プロセス IMM32 API のみ、SendInput 皆無）の書き込みであり、実送信を
+        // 意味する `Applied` とは区別する。
+        ActuationOutcome::Written => ImeOpenOutcome::AppliedWithoutSendInput,
         ActuationOutcome::Aborted(reason) => {
             // INV-14: Aborted は「一度も書いていない」ので Applied 扱いにしない。
             // UnsafeToToggle は `on_ime_apply_complete` の C/D（SSOT の
