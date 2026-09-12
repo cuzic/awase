@@ -1,3 +1,12 @@
+---
+id: ADR-010
+title: |-
+  Option<Timestamp> による親指キー消費追跡
+status: |-
+  採用済み
+related_adr: []
+---
+
 # ADR-010: Option<Timestamp> による親指キー消費追跡
 
 ## ステータス

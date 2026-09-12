@@ -1,3 +1,21 @@
+---
+id: ADR-114
+title: |-
+  `[[keymap]]`（アプリ別ショートカット再割当）の未配線を解消する
+summary: |-
+  `[[keymap]]`（ADR-037、アプリ別ショートカット再割当）は設定GUI・config parse・フォーカス別フィルタ（`active_keymaps`）まで完成しているが`KeymapTable::find_match`を実際のキー処理から呼ぶ箇所が皆無で、設定しても一切効果がない死んだ機能だった（2026-08-28発見）。PowerToys Keyboard Manager devdocsを参考に配線設計を確定。Opus 2体の敵対的レビューr1〜r4で収束：r1でADR-110は未マージではなく実装後にBUG-100で撤回済みという事実誤認、latchと自動リピート判定の兼用がBUG-100を再現する設計、latchが消えない5経路の見落としを検出・修正。r2の改訂でrepeat判定に`is_physical_key_down`を使うと配線後も一切動かなくなる新規Critical、決定4内の自己矛盾（経路4の「無条件上書き」とrepeat抑制規則の衝突）、Altを`from`の修飾子として禁止し忘れ、`release_all()`のKeyUp注入が決定3のDown+Up同一バッチ完結と矛盾、を検出・修正。r3でKeyDown/KeyUpのstep配置が非対称なままだと経路4の残存リスクが「1打鍵消失」に収まらないと指摘されr4で解消。挿入順序はlatchチェック（KeyUp解放+KeyDown repeat抑制、最優先）→Nested/NonText早期return→find_match新規照合→post_bypass消費→NICOLAエンジン、に確定。実装タスク分解(T1a〜T11)もOpus 2体でr1〜r3レビューし収束させ実装完了(cargo xwin check/clippy -D warnings/fmt/machete全green、architecture_guard/golden_scenarios/layer_boundary_guard/lib全ユニットテスト計1516件green)。副次的にkeymap.rsがWindows専用ゲートでLinuxテスト不能だった点も是正
+status: |-
+  採用・実装済み（2026-08-31、Windows実機ソーク未実施）
+related_adr:
+  - "ADR-0005"
+  - "ADR-007"
+  - "ADR-019"
+  - "ADR-037"
+  - "ADR-048"
+  - "ADR-110"
+  - "ADR-111"
+---
+
 # ADR-114: `[[keymap]]`（アプリ別ショートカット再割当）の未配線を解消する
 
 ## ステータス

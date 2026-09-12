@@ -1,3 +1,19 @@
+---
+id: ADR-107
+title: |-
+  BUG-25 GJI 半角英数 entry の実現機構（自己注入の識別・修飾キー文脈・一度きりのトグル）
+summary: |-
+  BUG-25「左Shift単独タップ→IME-ON半角英数トグル」のGJI側entry機構(3回撤回済み)を4回目としてどう作るか。**追補4の真因記述を訂正する**: `hook.rs::is_self_injected`(INJECTED/TSF/IME_KANJIの3マーカ)がマッチしたイベントは`build_raw_key_event`より前で`CallNextHookEx`に落ちるため、awase自身のマーカ付き注入は`transport::plan`に構造的に到達し得ない——追補4が特定した`dbe_mode_key_policy=Suppress`は**経路5(spikeのunmarked SendInput)のみ**を説明し、追補1/3(TSF_MARKER付き注入)の失敗は説明しない。代わりに原因Bとして**修飾キー文脈**を特定: entryが発火する`kp_shift_conv_guard_key_up`時点で`HeldModifiers::read()`は`PHYSICAL_KEY_STATE`由来のため既に`shift=false`を返し`push_release`がShift↑を出さない一方、awaseが物理Shift↑をまだreinjectしていないためOS/実IMEから見たShiftは押下中——追補2/3の注入は`Shift+VK_DBE_ALPHANUMERIC`として届き、mozcのキーマップに束縛が無くno-opになっていた可能性が高い(復元側`kp_restore_kana_from_half_width`は`prepend_synthetic_shift_up`でこの罠を既に回避しているのにentry側だけ持っていなかった)。決定0(実装前に spike で marker×awase起動×Shift の2×2切り分け計測、これを飛ばして実装に入らない)→決定2(`IME_KANJI_MARKER`+scan=0+synthetic Shift↑前置、最優先案)→決定3(M3失敗時のみ: unmarked注入+`DbeSelfInjectionPass`ワンショット通行証。マーカと通行証の二要素で識別しBUG-52の外部DBEキー保護は無傷、専用マーカを`is_self_injected`に足さないという反直感的契約をguard testで固定)。非冪等な`ToggleAlphanumericMode`の冪等性はawase側の遷移ゲートで担保(INV-A/B)し、**exitは`kp_restore_kana_from_half_width`が無条件に`false`代入+OS書き込みする現在の実装のままだとGJIでは二重復元が「かなへ戻す」ではなく「英数へ反転」する**ため`mem::replace`で真の遷移時のみ送る。Composition/候補表示中はentryを発火せず**ラッチもしない**(追補3の「かな入力が壊れる」実害の再来を防ぐ、INV-D)。置き場所は`Output::send_gji_half_width_alnum_toggle`(vk_send=テキスト送信/conv_actuation=IMM32 conv write/tsf/send=warmup専用、いずれも責務不一致)。キルスイッチ`half_width_alnum_toggle`(`off`/`ms_ime_only`既定/`all`)を新設しGJI経路はオプトイン、`dbe_mode_key_policy`への相乗りは軸違いとして却下。`toggle_entry_supported`判定を純粋関数`plan_half_width_alnum_action`へ切り出しLinuxでテスト可能にする
+status: |-
+  実装中（2026-08-27）。決定0完了、Task 1〜8をコード反映中。Task 9のWindows実機検証・ソークは未実施のためBUG-25は未クローズ
+related_adr:
+  - "ADR-084"
+  - "ADR-088"
+  - "ADR-100"
+  - "ADR-105"
+  - "ADR-106"
+---
+
 # ADR-107: BUG-25 GJI 半角英数 entry の実現機構（自己注入の識別・修飾キー文脈・一度きりのトグル）
 
 ## ステータス

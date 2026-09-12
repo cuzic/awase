@@ -1,3 +1,21 @@
+---
+id: ADR-132
+title: |-
+  物理IMEキー1回による明示意図が、失敗しても所有権を返さない問題
+summary: |-
+  不具合報告`01M1MMK8987NT5B2W73PCPZNZ1`（Windows Terminal+PowerShell、GJIで余分な「＠」出力）の根本原因調査から起票。Opus 2体（architect/premortem）敵対的レビューでv1の因果分析（drift correctionが無期限リトライしたため29秒ロックした）を訂正: 実際は`IntentStore`/`last_intent`が物理IMEキー1回の検出で30秒・`FocusChanged`でしか解除されない絶対的権威を獲得し、observedを一切見ずに`desired_open`をピン留めする構造が真因（29秒のうちdrift correctionが説明できるのは9.5秒のみ、残り約17秒はフォーカス変更待ちの純粋な待機。報告ダイアログへのフォーカス移動が実際の解除トリガーだったこともログで確認）。検討した3案(A:証拠強度の分離、B:observedへの追従によるdesired_open訂正、B':明示意図の有界失効)はいずれもblocker判明——Aはtransport.rsのAllow/Suppress判定と連動しBUG-52/BUG-15追補7を再導入、BはBUG-19型再発（今回のobserved=trueの出所`ConvOpenInference`は型レベルでactuationの根拠に使用禁止と宣言済み）、B'は`last_intent`除去後に`derive_any()`がconv 1件だけでbeliefを反転させる既存挙動（BUG-26依拠）によりBと同一の実害に加えdrift correction停止によるリテラル出力固着という新たな悪化を招くと判明。v3でさらに俯瞰し「actuation対象への権威／engine活性化ゲート／証拠確度」の3関心事が1本のスカラーに同居している点を根本原因と再定義、非連続な案を含む5候補（1: engine活性化のbelief分離、2: IntentKind別TTL分割、3: 状態不確実性をUXで即可視化、4: 証拠質フィルタをobserverレイヤーへ引き上げ、5: 単発DBEキーをbelief書き込み源から恒久除外）を提示。ユーザー依頼によりOpus 2体で候補1「矛盾検出中ラッチ」を2ラウンド討論——architectがヒステリシス付きの詳細設計(開く条件1つ・閉じる条件3つ・意図的に閉じない条件5つ)まで具体化したが、premortemの最終検証で(a)区間全体でdrift correctionが actuation-quietにならず変換しながらVK_IME_OFFを撃ち続ける、(b)開閉の非対称の向きが安全側と逆で誤って開いたことを検出できない、という2つのblockerが残ると確定し不採用。「そもそもobserved=trueの方が正しいという前提自体がBUG-68に照らすと偽の可能性が高い」との指摘も
+status: |-
+  **Phase 1・Phase 2ともに実装済み・敵対的コードレビュー収束済み・developマージ済み**（コミット`448b1521`ほか、2026-09-08にindex.mdの記載漏れ「develop未マージ」を訂正）。Phase 1: 候補3(UX可視化)+診断ログ7項目のみ採用しCodexへ実装委譲。BUG-110として記録。3件の実機再現を経て根本原因はdesired_open()/effective_open()/warmup_ime_on()という三重SSOTの競合と確定、実IME書き込み全経路の棚卸しをやり直しwarrant非経由の経路が新たに4系統(B1〜B4、最重要はwarmup経由のB1)見つかった。Phase 2: B1(`send_eager_tsf_warmup`)を対象にOpus2体で追加討論——v1(`desired_open`ゲート)はfocus跨ぎでstaleな値を修正根拠に使うblockerで却下、v2(`check_drift_correction()`の戻り値でゲート、INV-B1')で収束・実装。IntentStoreベースの代替案は実測データ(TTL30秒 vs 乖離365秒)から不採用。実装後、独立した読み取り専用Opusエージェントによる敵対的コードレビューを2ラウンド実施——round1で`on_ime_applied`のfrom_actuated経路がゲート未通過だった等9件、round2でそのround1修正自体が持ち込んだdedupロジックのフラップバグ等7件を発見・修正、収束確認済み。**実機ソークは未実施のまま残る。** #6(`apply_force_on_for_imm_broken`)との競合は未解決のまま残る、B1由来の内訳確定は次回実機報告待ち
+related_adr:
+  - "ADR-086"
+  - "ADR-087"
+  - "ADR-090"
+  - "ADR-093"
+  - "ADR-119"
+  - "ADR-120"
+  - "ADR-121"
+---
+
 # ADR-132: 物理IMEキー1回による明示意図が、失敗しても所有権を返さない問題
 
 ## ステータス

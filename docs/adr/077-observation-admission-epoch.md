@@ -1,3 +1,16 @@
+---
+id: ADR-077
+title: |-
+  ObservationAdmission Layer — FocusEpoch による probe 受理ポリシー
+status: |-
+  採用済み
+related_adr:
+  - "ADR-033"
+  - "ADR-075"
+  - "ADR-076"
+  - "ADR-164"
+---
+
 # ADR-077: ObservationAdmission Layer — FocusEpoch による probe 受理ポリシー
 
 ## ステータス

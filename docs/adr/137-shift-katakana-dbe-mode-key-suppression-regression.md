@@ -1,3 +1,17 @@
+---
+id: ADR-137
+title: |-
+  `VK_DBE_*` KeyDown 無条件 Suppress（BUG-52対策）が Shift+かな→カタカナ変換を巻き添えで殺している（BUG-116）
+summary: |-
+  ユーザー報告「Shift+かなでカタカナにならない」を発端に調査。当初案（`!event.modifier_snapshot.shift`を条件追加、v1）はOpus 2体（architect/premortem役）4ラウンドの敵対的レビューで根拠不十分と判定され取り下げ（B-1〜B-4/SB-1/SB-2）、「確定した修正」ではなく「実機で検証する診断スパイク」（環境変数2軸・3段安全ゲート・デシジョンツリー付き）を`diag/bug116-shift-katakana`ブランチに実装して実機投入。TsfNative+GJI環境で(1)Shift併用時のみvk=0xF1が観測されBUG-52とは実際に区別できる、(2)scanを一切変更せずAllowのみで実機でカタカナ変換に切り替わりSB-1のscanハザードは踏まずに済む、(3)報告者確認は未実施だがStandard/ImmCross限定の症状ではない、(4)BUG-52は非再発、を確認。副産物として「カタカナに入れるが物理かなキー単独でひらがなに戻せない」新規副問題を発見（原因はADR-100決定2でwarmup送信キーがVK_DBE_HIRAGANA→VK_IME_ONに変わりcharset軸の埋め合わせが片肺化していたこと）、ADR-107(BUG-25)実機検証済みの安全な注入経路を再利用する決定2で対処し実機確認済み。本実装（`fix/bug116-shift-katakana-return`）に向けたOpus 2体レビューでさらにBUG-115のmode_key_delegate機構との衝突（親指キー設定時に打鍵ごと誤発火）・M-3ガードの実行順序バグ・決定2がADR-100/ADR-098-F4/BUG-50が排除したscan付き注入パターンを別経路で復活させる点、を新たにBlocker3件として発見・全て対処
+status: |-
+  **決定1/2実装済み・実機確認済み（2026-09-06）。BUG-115 delegate構成との衝突は親指キーガードで解消。M-2(IME OFF起点)/Shift stuck鮮度ガード/MS-IME実機検証/報告者アプリ確認は残存事項**
+related_adr:
+  - "ADR-098"
+  - "ADR-100"
+  - "ADR-107"
+---
+
 # ADR-137: `VK_DBE_*` KeyDown 無条件 Suppress（BUG-52対策）が Shift+かな→カタカナ変換を巻き添えで殺している（BUG-116）
 
 ## ステータス

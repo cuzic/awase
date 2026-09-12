@@ -1,3 +1,12 @@
+---
+id: ADR-0001
+title: |-
+  IME 状態検出戦略
+status: |-
+  安定
+related_adr: []
+---
+
 # ADR 0001: IME 状態検出戦略
 
 **Status:** 安定（2026-05-19 現在）  

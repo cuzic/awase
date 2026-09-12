@@ -1,3 +1,14 @@
+---
+id: ADR-076
+title: |-
+  スリープ復帰後 is_japanese_ime 一時 false — grace 保護
+status: |-
+  採用済み
+related_adr:
+  - "ADR-032"
+  - "ADR-075"
+---
+
 # ADR-076: スリープ復帰後 is_japanese_ime 一時 false — grace 保護
 
 ## ステータス

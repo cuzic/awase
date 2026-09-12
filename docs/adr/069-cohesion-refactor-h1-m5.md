@@ -1,3 +1,16 @@
+---
+id: ADR-069
+title: |-
+  凝集性リファクタ（H-1〜M-5）— 循環依存・God Object・Reducer 不変条件の一括改善
+status: |-
+  採用済み
+related_adr:
+  - "ADR-032"
+  - "ADR-036"
+  - "ADR-070"
+  - "ADR-071"
+---
+
 # ADR-069: 凝集性リファクタ（H-1〜M-5）— 循環依存・God Object・Reducer 不変条件の一括改善
 
 ## ステータス

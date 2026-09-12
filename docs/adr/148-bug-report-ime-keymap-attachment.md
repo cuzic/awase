@@ -1,3 +1,19 @@
+---
+id: ADR-148
+title: |-
+  不具合報告へのIME別キーマップ/キー割り当て設定の添付
+summary: |-
+  ユーザー要望「不具合報告にGJI/MS-IMEのキーマップ設定を添付したい」を受け起票。Web調査の結果、「新IME/旧IME」は別製品ではなく同一エンジン(v15.0)の2つの設定UI（新UI=シンプルキー割当て`MSIME`直下のDWORD値、旧UI互換=詳細キーカスタマイズ`StyleList\Custom`のバイナリblob）と判明。GJI側は既存の`awase-gji-config`crate、MS-IMEシンプル割当ては既存の`msime_key_assignment.rs`をそのままbug reportへ配線するだけで実現可能（Phase 1）。`StyleList\Custom`はバイナリフォーマット未解読・パス自体も実機未確認のため、Phase 2（実機diff調査後）に完全に先送り。起票時は142で採番したが、未マージの`feat/adr140-physical-key-role-substitution`（141〜146占有）・`fix/bug119-muhenkan-passthrough-delegate-priority`（147占有）と衝突するため148へ改番。Opus敵対的レビュー1ラウンド目でMust-fix4件（MS-IMEレジストリ読み取りが実はEngine挙動を駆動している事実誤認、`attach_*`フラグの型配置誤り、番号衝突、`ime_kind==Unknown`時に情報が全く送れない設計欠陥）・Should-fix12件を検出・反映（`ime_kind`ゲートを型単位で撤回）。2ラウンド目でF1〜F19収束を確認しつつ、その撤回自体が新規欠陥（GJI/MS-IMEの「採用値」フィールドに`ime_kind`一致ゲートが抜け、非アクティブIME側の解除済み設定を現在の設定であるかのように報告してしまう）をMust-fix 1件検出、フィールド単位のゲート（生値/分類系は常時、採用系のみime_kind一致時）に設計を訂正。3ラウンド目でG1〜G6収束を確認しつつ、専用Fnキー設定時に`muhenkan_adopted_route`が実際には発火しないマスキング未反映（H1）を検出し反映。4ラウンド目で追加指摘なし、収束を確認。設計収束後に実装し、同じ観点でOpus敵対的コードレビューを実施。Must-fix1件（`adopted_ime_toggle_combos`が空のとき`None`に潰し「MS-IME非アクティブ」と「採用ゼロ件」を区別できなくなる設計逸脱）・Should-fix5件（テストフィクスチャの分類系/採用系が到達不能な組み合わせだった等）を検出・反映
+status: |-
+  **実装済み・developマージ済み（Phase 1: PR #179、Phase 2: PR #181）。設計レビュー4ラウンド+実装コードレビュー1ラウンドで収束。2026-09-08にindex.mdの記載漏れを訂正**
+related_adr:
+  - "ADR-092"
+  - "ADR-095"
+  - "ADR-120"
+  - "ADR-135"
+  - "ADR-141"
+---
+
 # ADR-148: 不具合報告へのIME別キーマップ/キー割り当て設定の添付
 
 ## ステータス

@@ -1,3 +1,20 @@
+---
+id: ADR-149
+title: |-
+  半角状態での物理IMEキー単独タップによるIME ON遷移で、awase自身が`VK_IME_ON`を3回重複送信する問題
+summary: |-
+  BUG-113の残置症状（半角状態での物理IMEキー単独タップで「@」が単発出力される）を実機ログで根本原因まで特定: 1回の物理キー押下に対しawase自身が`VK_IME_ON`を3回SendInputしていた（送信1=戦略の実送信、送信2=直後の随伴warmup、送信3=~100ms後のdelegateタイムアウト由来dispatchに付随する随伴warmup）。随伴warmupの送信可否を`outcome`で条件付ける修正（`should_send_accompanying_warmup`）で3回→2回に削減、実機で「@」再発なしを確認。opus-adversarial-consultで「どちらの送信が消えたか」の当初記述の誤り（実在しない`EmitWarmup`経路を原因誤認）・`ImmCrossProcessStrategy`のAppliedがSendInputを伴わないケース（Standardプロファイル限定、`can_use_imm32_cross_process()`でスコープして解消）・`eager_warmup_sent_ms`のラッチ喪失（`latch_eager_warmup_without_send`新設で解消）を指摘・反映。ユーザー報告「無変換キーでは『@』が再発する」を受け追調査した結果、**awase.exeを完全停止した状態でも無変換キー押下のたびに「@」が再現することを独立な`WH_KEYBOARD_LL`ロガー（`scripts/rawkbd_logger.ps1`）で実機確認**——この症状はawase側のactuationとは無関係と確定し、案α/案β（AlreadyMatchedのskip化・delegateのno-op強制再アサーション抑止）は誤った前提に基づいていたためrevert
+status: |-
+  実装済み・実機確認済み（PR #180）。無変換キーの「@」はGJI側の別問題として本ADRの対象外に切り離し
+related_adr:
+  - "ADR-019"
+  - "ADR-092"
+  - "ADR-132"
+  - "ADR-140"
+  - "ADR-141"
+  - "ADR-147"
+---
+
 # ADR-149: 半角状態での物理IMEキー単独タップによるIME ON遷移で、awase自身が`VK_IME_ON`を3回重複送信する問題
 
 ## ステータス

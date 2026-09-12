@@ -1,3 +1,16 @@
+---
+id: ADR-058
+title: |-
+  InjectionMode の cache.toml 永続化
+status: |-
+  採用済み
+related_adr:
+  - "ADR-004"
+  - "ADR-033"
+  - "ADR-034"
+  - "ADR-125"
+---
+
 # ADR-058: InjectionMode の cache.toml 永続化
 
 ## ステータス

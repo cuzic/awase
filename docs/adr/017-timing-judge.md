@@ -1,3 +1,12 @@
+---
+id: ADR-017
+title: |-
+  TimingJudge によるタイミング判定の集中化
+status: |-
+  採用済み
+related_adr: []
+---
+
 # ADR-017: TimingJudge によるタイミング判定の集中化
 
 ## ステータス

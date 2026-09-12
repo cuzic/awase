@@ -1,3 +1,12 @@
+---
+id: ADR-009
+title: |-
+  データ付き enum による FSM 状態表現
+status: |-
+  採用済み
+related_adr: []
+---
+
 # ADR-009: データ付き enum による FSM 状態表現
 
 ## ステータス

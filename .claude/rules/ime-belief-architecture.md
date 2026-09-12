@@ -223,7 +223,7 @@ dylint は安くない。`.github/workflows/ci.yml` の `dylint` ジョブは ni
 一切無く、`GjiEvent::CompositionReset`/`NativeF2Consumed` が弱い代理指標
 （`gji_candidate_visible_now()` の素の `AtomicBool` 読み取り）だけで無条件に
 belief を書き換えていたことが、実機バグ2件（確定済み文字が VK_BACK で消える、
-`docs/known-bugs.md` BUG-33 追補3・4）の根本原因だった。修正は dylint 新設や
+`docs/known-bugs/BUG-033.md` 追補3・4）の根本原因だった。修正は dylint 新設や
 private 化ではなく、`gji_idle_ms`（実観測値）をイベントの必須パラメータ化する
 という軽量な手法で行った。
 

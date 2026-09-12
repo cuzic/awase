@@ -1,3 +1,15 @@
+---
+id: ADR-093
+title: |-
+  IME 専用ホットキーの受信を `is_japanese_ime()` の即時真更新トリガーにする
+summary: |-
+  ADR-092決定A-5の検討中に発見した別軸の穴。`VK_DBE_HIRAGANA`等5つのIME専用合成VK(0xF0-0xF4)は意味が確実(`vk.rs::ImeKeyKind::shadow_effect()`)なのに、それを採用する前提条件`is_japanese_ime()`がスリープ復帰/フォーカス変更直後のgrace期間中に一時的にfalseを誤答する既知の弱点(`key_pipeline.rs:1940-1943`)があり、その間の観測が黙って捨てられる。ゲートを迂回する(`SyncKey`経由、BUG-51追補3の優先順位昇格リスクを引き込む)のではなく、この5VKの受信を`is_japanese_ime()`の即時true更新トリガーに追加してゲート自体の精度を上げる方針(既存の非対称信頼パターン=trueはいつでも即時反映・falseへのダウングレードのみgrace中に抑制、を踏襲)
+status: |-
+  **実装済み(2026-08-15)**。`vk.rs::is_synthetic_dbe_ime_hotkey`を追加し`key_pipeline.rs::kp_stage_shadow_ime_toggle`冒頭(BUG-14注入イベント除外より前)で配線。architecture_guard等の件数固定テストへの影響は無し(394+34+22件パス)。実機でのgrace期間中の誤答訂正確認は未実施。CJK他言語IME由来の可能性はプロジェクトのスコープ外として考慮しない判断済み。自己評価7/10
+related_adr:
+  - "ADR-092"
+---
+
 # ADR-093: IME 専用ホットキーの受信を `is_japanese_ime()` の即時真更新トリガーにする
 
 ## ステータス

@@ -1,3 +1,12 @@
+---
+id: ADR-0004
+title: |-
+  InjectionMode 三分岐設計
+status: |-
+  安定
+related_adr: []
+---
+
 # ADR 0004: InjectionMode 三分岐設計
 
 **Status:** 安定（2026-05-19 現在）  

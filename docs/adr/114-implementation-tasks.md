@@ -1,3 +1,13 @@
+---
+id: ADR-114-companion-114-implementation-tasks
+title: |-
+  ADR-114 実装タスク分解（確定・実装完了、Opus 敵対的レビュー r1〜r3 で収束、2026-08-31）
+type: companion-doc
+related_adr:
+  - "ADR-110"
+  - "ADR-114"
+---
+
 # ADR-114 実装タスク分解（確定・実装完了、Opus 敵対的レビュー r1〜r3 で収束、2026-08-31）
 
 ADR-114（`docs/adr/114-keymap-app-scoped-shortcut-wiring.md`、設計確定 r1〜r4 収束済み）

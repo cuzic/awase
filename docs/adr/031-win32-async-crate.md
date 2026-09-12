@@ -1,3 +1,12 @@
+---
+id: ADR-031
+title: |-
+  win32-async クレートの設計
+status: |-
+  採用済み
+related_adr: []
+---
+
 # ADR-031: win32-async クレートの設計
 
 ## ステータス

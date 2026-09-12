@@ -1,3 +1,25 @@
+---
+id: ADR-089
+title: |-
+  IME 状態制御を Rust の型システムでどう表現するか — 型状態パターンの局所適用と capability const 表（trait 静的分岐の却下）
+summary: |-
+  IME 状態制御を Rust の型システムでどう表現するか — 型状態パターンの**局所適用**3箇所（`ObservationStore` の Actuating/BeliefOnly プール分離を関連型で排他化、`Actuation<Requested/Warranted/Verified>` チェーン、`ActuationReceipt` による `GjiFsm` 同期義務のアフィン型化）と、capability を **const 表 `caps(p,k)`** に据える決定。**trait 静的分岐は却下**（§4.1、再提案禁止）。ADR-088 の姉妹編（088=「何が壊れているか」／089=「型でどう表現するか」）。INV-38〜46
+status: |-
+  **ドラフト**（Fable×Opus pre-mortem 4ラウンド + 起票後 Opus レビュー(round5、指摘10件反映)で収束。**Phase A/B/C すべて実装済み**（2026-08-12）——ただし `record`/`record_belief` の本番呼び出し元はゼロ（§9-10）、`issue_open_warrant()` も未配線で `warrant_pending_adr087()` が 2 箇所（§9-12）、`ConvergedReceipt` は制御フロー未接続（§9-16）、非同期チェーンは `caps` 未適用（§9-20）。**実機ソーク未実施**（申し送りは §9-17）。残課題の詳細化は ADR-090 が引き取った）
+related_adr:
+  - "ADR-065"
+  - "ADR-078"
+  - "ADR-080"
+  - "ADR-081"
+  - "ADR-082"
+  - "ADR-084"
+  - "ADR-085"
+  - "ADR-086"
+  - "ADR-087"
+  - "ADR-088"
+  - "ADR-090"
+---
+
 # ADR-089: IME 状態制御を Rust の型システムでどう表現するか — 型状態パターンの局所適用と capability const 表（trait 静的分岐の却下）
 
 ## ステータス

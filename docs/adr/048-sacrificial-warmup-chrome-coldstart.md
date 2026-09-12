@@ -1,3 +1,15 @@
+---
+id: ADR-048
+title: |-
+  SacrificialWarmup — Chrome cold-start の不可視プローブ方式
+status: |-
+  採用済み
+related_adr:
+  - "ADR-034"
+  - "ADR-046"
+  - "ADR-047"
+---
+
 # ADR-048: SacrificialWarmup — Chrome cold-start の不可視プローブ方式
 
 ## ステータス

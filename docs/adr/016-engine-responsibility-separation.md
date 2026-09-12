@@ -1,3 +1,12 @@
+---
+id: ADR-016
+title: |-
+  Engine 内部の責務分離（5層構造）
+status: |-
+  採用済み
+related_adr: []
+---
+
 # ADR-016: Engine 内部の責務分離（5層構造）
 
 ## ステータス

@@ -1,3 +1,26 @@
+---
+id: ADR-086
+title: |-
+  force-write の単一規律 — 「観測を信じない書き込み」のトリガー条件と書き込みターゲット同一性
+summary: |-
+  force-write の単一規律 — 「観測を信じない書き込み」のトリガー条件（arm-on-focus/fire-on-intent）と書き込みターゲット同一性（ActuationTarget）。ADR-084 の姉妹編、INV-12〜19
+status: |-
+  Phase 0〜1（INV-14 全経路移行）実装済み、Phase 2〜4 未着手、実機ソーク未実施
+related_adr:
+  - "ADR-033"
+  - "ADR-064"
+  - "ADR-068"
+  - "ADR-072"
+  - "ADR-078"
+  - "ADR-080"
+  - "ADR-083"
+  - "ADR-084"
+  - "ADR-085"
+  - "ADR-087"
+  - "ADR-089"
+  - "ADR-094"
+---
+
 # ADR-086: force-write の単一規律 — 「観測を信じない書き込み」のトリガー条件と書き込みターゲット同一性
 
 ## ステータス

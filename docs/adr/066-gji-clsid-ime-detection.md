@@ -1,3 +1,16 @@
+---
+id: ADR-066
+title: |-
+  GJI CLSID ベース IME 種別検出（gji_write_idle_ms ヒューリスティック廃止）
+status: |-
+  採用済み
+related_adr:
+  - "ADR-048"
+  - "ADR-049"
+  - "ADR-058"
+  - "ADR-063"
+---
+
 # ADR-066: GJI CLSID ベース IME 種別検出（gji_write_idle_ms ヒューリスティック廃止）
 
 ## ステータス

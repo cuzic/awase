@@ -1,3 +1,15 @@
+---
+id: ADR-109
+title: |-
+  `.yab` 句読点確定サフィックス（やまぶき `CV4D` 相当）の実現機構
+summary: |-
+  [GitHub Issue #118](https://github.com/cuzic/awase/issues/118)「やまぶきCV4D相当（句読点入力時の変換候補自動確定）」の実現機構を検討。`YabValue`/`KeyAction`に`ConfirmThenSend(Box<Self>)`を新設する個別実装案（確定実体は既存の`SpecialKey::Enter`送信経路の再利用、composing判定はプラットフォームの`send_keys()`直前で行う非対称設計、既定Offの隠しキルスイッチ等）を検討したが、専用variantとして先取り実装せず、**将来実装予定の汎用「打鍵列機能」（1セルに複数キーアクション列を定義できる機能、未着手）の一特殊ケース**として位置づけ直すことにした。本ファイルは調査結果をその設計時の入力資料として保持する
+status: |-
+  保留（本ADR単独実装はしない、2026-08-28。ADR-115が`CV4D`の実体(Ctrl+M)をComposing判定なしの直接送信で実装したため、本ADRのConfirmThenSend案は当面採用見送り。将来Composing条件付き確定が必要になった場合の参考資料として保持）
+related_adr:
+  - "ADR-107"
+---
+
 # ADR-109: `.yab` 句読点確定サフィックス（やまぶき `CV4D` 相当）の実現機構
 
 ## ステータス

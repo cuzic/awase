@@ -1,3 +1,14 @@
+---
+id: ADR-043
+title: |-
+  AppDeliveryProfile — アプリ固有出力動作の宣言的集約
+status: |-
+  採用済み
+related_adr:
+  - "ADR-004"
+  - "ADR-033"
+---
+
 # ADR-043: AppDeliveryProfile — アプリ固有出力動作の宣言的集約
 
 **状態:** 提案（未実装）  

@@ -1,3 +1,12 @@
+---
+id: ADR-026
+title: |-
+  Preconditions モデルと一元的キールーティング
+status: |-
+  承認済み（実装完了）
+related_adr: []
+---
+
 # ADR 026: Preconditions モデルと一元的キールーティング
 
 ## ステータス

@@ -1,3 +1,12 @@
+---
+id: ADR-079
+title: |-
+  per-VK confirm の stale confirm 誤帰属と、ESC スコープを利用した epoch-fenced literal recovery + 限定 replay
+status: |-
+  提案中
+related_adr: []
+---
+
 # ADR-079: per-VK confirm の stale confirm 誤帰属と、ESC スコープを利用した epoch-fenced literal recovery + 限定 replay
 
 ## ステータス

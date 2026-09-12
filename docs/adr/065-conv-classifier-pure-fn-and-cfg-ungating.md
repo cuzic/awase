@@ -1,3 +1,16 @@
+---
+id: ADR-065
+title: |-
+  conv 分類の純粋関数化と awase-windows の段階的プラットフォーム非依存化
+status: |-
+  採用済み
+related_adr:
+  - "ADR-014"
+  - "ADR-019"
+  - "ADR-022"
+  - "ADR-064"
+---
+
 # ADR-065: conv 分類の純粋関数化と awase-windows の段階的プラットフォーム非依存化
 
 ## ステータス

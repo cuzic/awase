@@ -1,3 +1,12 @@
+---
+id: ADR-001
+title: |-
+  UIA FrameworkId ベースの IME 信頼度判定
+status: |-
+  採用済み
+related_adr: []
+---
+
 # ADR-001: UIA FrameworkId ベースの IME 信頼度判定
 
 ## ステータス

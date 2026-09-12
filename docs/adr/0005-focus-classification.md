@@ -1,3 +1,12 @@
+---
+id: ADR-0005
+title: |-
+  フォーカス判定と AppKind 設計
+status: |-
+  安定
+related_adr: []
+---
+
 # ADR 0005: フォーカス判定と AppKind 設計
 
 **Status:** 安定（2026-05-19 現在）  

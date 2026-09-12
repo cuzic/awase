@@ -1,3 +1,26 @@
+---
+id: ADR-088
+title: |-
+  IME 状態の軸分解（`AxisCapability`）と charset 軸の所有権（`CharsetOwner`）— および修飾キー汚染ハザードの未収束記録
+summary: |-
+  IME 状態の軸分解（`AxisCapability`）と charset 軸の所有権（`CharsetOwner`）— ADR-087 の根拠軸を open 軸から4軸（open/charset/romaji/engine）へ一般化し、ADR-084 INV-11 が要求した conv 帰属を型にする。あわせて修飾キー汚染ハザードの**未収束**記録・VK モードキー送信口 18 箇所の棚卸し・実機実測トラック中断の経緯を保存。INV-29〜37
+status: |-
+  **ドラフト**（軸モデル+`CharsetOwner` は pre-mortem 5ラウンドで収束・**実装未着手**／修飾キー汚染ポリシーは**収束せず**／実機実測トラックは**中断**。コード変更なし）
+related_adr:
+  - "ADR-048"
+  - "ADR-061"
+  - "ADR-064"
+  - "ADR-067"
+  - "ADR-072"
+  - "ADR-078"
+  - "ADR-081"
+  - "ADR-084"
+  - "ADR-085"
+  - "ADR-086"
+  - "ADR-087"
+  - "ADR-094"
+---
+
 # ADR-088: IME 状態の軸分解（`AxisCapability`）と charset 軸の所有権（`CharsetOwner`）— および修飾キー汚染ハザードの未収束記録
 
 ## ステータス

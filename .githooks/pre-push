@@ -34,13 +34,16 @@ warn_if_missing_evidence() {
     # （reassert_explicit_physical_key）で、どちらのファイルにも含まれていな
     # かったため新規追加した。
     local target='(crates/awase-windows/src/(output/|tsf/|focus/|runtime/(ime_coordinator|focus_tracking|key_pipeline|conv_actuation|open_chain|executor|transport|ime_refresh|message_handlers|outbox|mod)\.rs|state/(ime|conv_mode|observation_store)|ime_controller\.rs|ime\.rs|input_defer\.rs|platform\.rs|tuning\.rs)|src/engine/nicola_fsm\.rs)'
-    local evidence='(crates/awase-windows/tests/|src/engine/tests\.rs|docs/known-bugs\.md)'
+    # 2026-09-11: docs/known-bugs.md を docs/known-bugs/*.md に分割したため、
+    # エビデンス対象パスをディレクトリ側に変更（旧ファイルは以後リダイレクト
+    # スタブのみで差分が発生しない）。
+    local evidence='(crates/awase-windows/tests/|src/engine/tests\.rs|docs/known-bugs/)'
 
     if printf '%s' "$changed" | grep -qE "$target"; then
         if ! printf '%s' "$changed" | grep -qE "$evidence"; then
             echo "[pre-push][warn] awase-windows の再発ファミリー該当ファイルが変更されていますが、"
-            echo "                 tests/ にも docs/known-bugs.md にも差分がありません。"
-            echo "                 golden/ジャーナルリプレイの追加、または known-bugs.md への再現手順追記を検討してください。"
+            echo "                 tests/ にも docs/known-bugs/ にも差分がありません。"
+            echo "                 golden/ジャーナルリプレイの追加、または docs/known-bugs/ への新規BUGファイル追記を検討してください。"
             echo "                 （.claude/rules/fix-requires-evidence.md 参照 / 警告のみ・push はブロックしません）"
         fi
     fi

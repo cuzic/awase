@@ -1,3 +1,28 @@
+---
+id: ADR-158-companion-158-implementation-tasks
+title: |-
+  ADR-158〜162 実装タスクリスト（2026-09-09、round4レビュー反映後）
+type: companion-doc
+related_adr:
+  - "ADR-087"
+  - "ADR-095"
+  - "ADR-100"
+  - "ADR-103"
+  - "ADR-123"
+  - "ADR-128"
+  - "ADR-131"
+  - "ADR-140"
+  - "ADR-149"
+  - "ADR-151"
+  - "ADR-156"
+  - "ADR-158"
+  - "ADR-159"
+  - "ADR-160"
+  - "ADR-161"
+  - "ADR-162"
+  - "ADR-163"
+---
+
 # ADR-158〜162 実装タスクリスト（2026-09-09、round4レビュー反映後）
 
 [ADR-158](158-complexity-reduction-north-star.md)「育て方」ロードマップと、

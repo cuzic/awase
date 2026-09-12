@@ -1,3 +1,12 @@
+---
+id: ADR-020
+title: |-
+  KeyLifecycle による Down/Up ペア追跡
+status: |-
+  採用済み
+related_adr: []
+---
+
 # ADR-020: KeyLifecycle による Down/Up ペア追跡
 
 ## ステータス

@@ -1,3 +1,19 @@
+---
+id: ADR-098
+title: |-
+  TsfNative フォーカス復帰時の `applied` 偽装確定を止め、到達不能な force-on ブロックを撤去する（BUG-69）
+summary: |-
+  BUG-34追補4(eisuガード撤去)完了直後、「eager warmupもGJIなら不要では」という疑問を機にeager warmup/drift correction/TsfNative force-onブロックの3機構をOpus premortemで監査(BUG-69)。TsfNative force-onブロックは`ir_post_focus_change_snapshot`が常にfocus settle barrier内で呼ばれるため到達不能(F1)、同関数の`mirror_applied_open`が何もapplyせずbeliefを`applied=Confirmed`へ偽装しfocus_tracking.rsの「TsfNativeはapplied=Unknown維持」不変条件に違反、`apply_force_on_for_imm_broken`(BUG-16修正)のスパムガードを誤発火させ恒久的に無効化する(F2、核心)。結果TsfNative+GJIのフォーカス復帰時に発火する唯一のactuationはeager warmupのみとなり(F3)、そのscan付き`VK_DBE_HIRAGANA`はBUG-15追補7が「実IME確実ON時のみ」と禁止する危険な注入形態を無監査で行っていた(F4)。**ADR-087の「`AppliedImeState`がConfirmedに遷移する契機が無い」という前提がF2により誤りと判明**、Phase3配線着手前の再検証が必要。決定: F2修正(mirror_applied_openをTsfNativeで呼ばない)→force-onブロック撤去→eager warmupゲート強化、の順で段階的に実施。drift correctionはKEEP AS-IS
+status: |-
+  **実装済み（クロスコンパイル検証のみ、Windows実機未検証、2026-08-21）**。決定0/1-a/1-b/1-c/2/4/6-a/6-b/6-cをコード反映済み、`cargo xwin check/build/clippy`全クリーン・Linuxで実行可能なテスト504件全成功。Windows実機での再現・検証・ソークは未実施
+related_adr:
+  - "ADR-044"
+  - "ADR-080"
+  - "ADR-087"
+  - "ADR-089"
+  - "ADR-100"
+---
+
 # ADR-098: TsfNative フォーカス復帰時の `applied` 偽装確定を止め、到達不能な force-on ブロックを撤去する（BUG-69）
 
 ## ステータス

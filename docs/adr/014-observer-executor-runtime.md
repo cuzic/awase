@@ -1,3 +1,12 @@
+---
+id: ADR-014
+title: |-
+  Observer / Executor / Runtime の3層分離
+status: |-
+  採用済み
+related_adr: []
+---
+
 # ADR-014: Observer / Executor / Runtime の3層分離
 
 ## ステータス

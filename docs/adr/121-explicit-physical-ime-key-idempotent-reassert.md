@@ -1,3 +1,20 @@
+---
+id: ADR-121
+title: |-
+  物理 IME 訂正キーの no-op 時に、冪等な再送を追加で試みる（BUG-37 部分対策）
+summary: |-
+  BUG-37（既存、物理IME訂正キーが`kp_stage_shadow_ime_toggle`のno-opガードに握り潰される）の部分対策。不具合報告`01M1GVNR840NZ3XWRX0JPDSQR7`（Windows Terminal+MS-IME、「よしっ」→「yosiltu」literal化）の実機解析から起票。当初「物理キーがOSに届かなかった」と誤診断していたが、Opus 2体round1レビューで自己検証の結果「3回ともネイティブにOSへ届いていたがMS-IMEが応答しなかった」と訂正——no-op説は原因の半分に過ぎず、MS-IME側がなぜネイティブキーに無応答だったかは未解決のまま残る（GJI→MS-IME製品切替が候補仮説として浮上、BUG-25の同型既知の限界を参照）。Opus 2体（architect/premortem）敵対的レビューround1〜3で収束。round1: `issue_open_warrant()`直接呼び出しがINV-47/48ガードに衝突し実装不能と判明→`issue_actuation_order()`+`would_have_blocked()`へ変更、デバウンス案（`physical_key_held_ms`）がVK_DBE_HIRAGANAにKeyUpが来ないため既存の3回連打を逆に抑制すると判明→専用クールダウンへ変更、ON/OFF対称化が`issue_open_warrant`のStep0で構造的に崩れると判明→ON方向のみへ縮小。round2: `romaji_pre_write()`のROMANビット書き込みを見落としていたと判明（`view.belief_input_mode`の明示的設定を追加）、0xF1/0xF4の解釈曖昧性（かなキー由来か独立カタカナ要求か未確認）を指摘され初期スコープを0xF2単独へ縮小、settle中の再試行の担い手が無いと指摘されpendingフラグ設計を追加。round3: `on_ime_apply_complete`の4分解のうち`record_ime_apply_result`のみ省略する決定の実装可能性（(4)の発火条件を`outcome ∉ {UnsafeToToggle, NotOwned}`で明示）・適用範囲（`generation==None`の同期経路限定）・省略の根拠（「ゲートBの沈黙が延びる」という当初の機構的主張は誤りと判明し撤回、BUG-69型belief偽装回避のみに一本化）を修正して収束
+status: |-
+  **D1実装済み・実機未検証（PR #188）。「BUG-37の解決ではなく欠落経路の補填＋診断能力の追加」と位置づけ、実機ソークで観測状態の改善を確認するまで未解決扱い（known-bugs.md BUG-37節に反映済み）。実装後の`/code-review`・opus-adversarial-consultで`on_ime_applied`無条件`mark_composition_cold`副作用（BUG-02型リテラル化リスク）を検出・専用経路で修正済み。D2（auto-repeatデバウンス）は実機未確認のため未実装のまま**
+related_adr:
+  - "ADR-028"
+  - "ADR-087"
+  - "ADR-090"
+  - "ADR-093"
+  - "ADR-098"
+  - "ADR-149"
+---
+
 # ADR-121: 物理 IME 訂正キーの no-op 時に、冪等な再送を追加で試みる（BUG-37 部分対策）
 
 ## ステータス
