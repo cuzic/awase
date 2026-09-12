@@ -277,6 +277,15 @@ pub struct ActuationDecisionRecord {
     /// スキップされ、実際には`Sync`で計算された正当な値の検証が
     /// 無効化されていた（同期記録点6箇所中3箇所、`dispatch_ime_set_open`の
     /// 主経路を含む）。`caller`に分離することでこの穴を塞ぐ。
+    ///
+    /// 2026-09-12（/code-review指摘、PR #201 wave3）: `caller`導入後も
+    /// `shadow_toggle_off`の同期分岐・`idle_conv_check_direct_input`・
+    /// blacklist drift correctionの3箇所が未配線のまま残っており、
+    /// 同期記録点6箇所中3箇所しか`caller`を持たない状態が続いていた
+    /// （`caller`を追加した目的そのものが3箇所で果たされていなかった）。
+    /// 3箇所とも`ShadowToggleOff`/`IdleConvCheckDirectInput`/
+    /// `BlacklistDriftCorrection`を設定するよう修正し、6箇所全てに
+    /// `caller`が付くようになった。
     pub caller: Option<DecisionSite>,
 }
 

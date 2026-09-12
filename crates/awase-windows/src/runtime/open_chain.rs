@@ -592,11 +592,16 @@ pub(crate) async fn run_open_chain_async(
     let (gate_inputs, is_input_relay) = if let Some((inputs, is_input_relay)) = gate {
         (Some(inputs), is_input_relay)
     } else {
+        // /code-review指摘(PR #201 wave3): ここでカウンタを積むと、下の
+        // `if let Some(gate_inputs) = gate_inputs { .. } else { .. }`が
+        // 同じ`with_app`失敗イベントに対してもう一度カウントし二重加算に
+        // なっていた（`is_input_relay`はgate失敗時に常にfalseなので、この
+        // 分岐に入った場合は必ず下の`else`にも到達する）。163-T6のカウンタは
+        // 下の1箇所のみで積む。
         tracing::info!(
             "[apply-ime] run_open_chain_async: with_app returned None during gate \
              (fail-open, proceeding without a decision record)"
         );
-        record_actuation_decision_skipped(site);
         (None, false)
     };
     if is_input_relay {
@@ -646,9 +651,9 @@ pub(crate) async fn run_open_chain_async(
         .run_chain_async(&WriteMechanism::ALL, &mut writer)
         .await;
     // `gate_inputs`が`None`（gate時点の`with_app`失敗、B-1修正）の場合は
-    // 記録先の決定入力が無いため`ActuationDecisionRecord`を作らない
-    // ——163-T6のカウンタが既に計上済み。実際のchain実行自体（`outcome`）は
-    // fail-openで続行している。
+    // 記録先の決定入力が無いため`ActuationDecisionRecord`を作らず、下の
+    // `else`で163-T6のカウンタを計上する（この1箇所のみ、二重加算修正済み）。
+    // 実際のchain実行自体（`outcome`）はfail-openで続行している。
     if let Some(gate_inputs) = gate_inputs {
         let record = async_record(
             site,

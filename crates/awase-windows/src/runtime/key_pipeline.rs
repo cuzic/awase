@@ -1121,9 +1121,14 @@ impl Runtime {
             };
             // ADR-090 §2.A A-1（shadow）。
             let order = self.issue_actuation_order(false, "idle_conv_check_direct_input");
-            let (outcome, record) = self
+            let (outcome, mut record) = self
                 .platform
                 .apply_ime_open_with_belief(order, None, belief);
+            // /code-review指摘（PR #201 wave3）: この同期記録点は`caller`が
+            // 常に`None`のままで、`site=Sync`の他の呼び出し元と記録上区別
+            // できなかった（B-2、PR #201パターンに揃える）。
+            record.caller =
+                Some(crate::state::ime_actuation_decision::DecisionSite::IdleConvCheckDirectInput);
             self.platform_state
                 .ime
                 .journal
@@ -1724,7 +1729,14 @@ impl Runtime {
                 });
             } else {
                 let order = self.issue_actuation_order(false, "shadow_toggle_off_sync");
-                let (outcome, record) = crate::ime_controller::ImeController::apply(order, &view);
+                let (outcome, mut record) =
+                    crate::ime_controller::ImeController::apply(order, &view);
+                // /code-review指摘（PR #201 wave3）: `caller`はasync分岐
+                // （`ShadowToggleOff`）でのみ設定され、この同期分岐は`site=Sync`
+                // のまま`caller=None`だった。同じ論理的呼び出し元なので同じ
+                // ラベルを付ける（B-2、PR #201のパターンに揃える）。
+                record.caller =
+                    Some(crate::state::ime_actuation_decision::DecisionSite::ShadowToggleOff);
                 self.platform_state
                     .ime
                     .journal

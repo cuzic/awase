@@ -868,9 +868,14 @@ impl Runtime {
                 confident: true,
             };
             let order = self.issue_actuation_order_with_origin(desired, act_origin);
-            let (outcome, record) = self
+            let (outcome, mut record) = self
                 .platform
                 .apply_ime_open_with_belief(order, None, belief);
+            // /code-review指摘（PR #201 wave3）: この同期記録点は`caller`が
+            // 常に`None`のままで、`site=Sync`の他の呼び出し元と記録上区別
+            // できなかった（B-2、PR #201パターンに揃える）。
+            record.caller =
+                Some(crate::state::ime_actuation_decision::DecisionSite::BlacklistDriftCorrection);
             self.platform_state
                 .ime
                 .journal

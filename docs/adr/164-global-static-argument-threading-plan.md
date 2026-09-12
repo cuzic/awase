@@ -40,7 +40,7 @@ PR [#197](https://github.com/cuzic/awase/pull/197)でdevelopにマージ済み�
 （実機ソーク実施——途中、Windows共有作業ディレクトリを他セッションが同名
 ローカルブランチで上書きする事故が発覚し、`git checkout -B`で正しいコミットへ
 復元・developの最新も取り込んだ上で再ソークして確認済み。
-[[feedback_worktree_per_session]]が警告する事故の実例）。
+worktreeをセッションごとに分離すべき理由として過去にも記録済みの事故の実例）。
 フェーズ7は実装着手時の再分類でADR起票時の誤り（別モジュール・別cfgゲートの
 2静的を「同一ファイルだから」まとめようとしていた）が判明し、対象外へ廃止した
 （コード変更なし、developへ直接マージ済み）。
@@ -70,8 +70,7 @@ grep・グローバルstatic76件の参照回数スイープという3種の機�
 
 ### 原則の確定
 
-議論の結果、以下の原則で合意した（[[feedback_no_raw_global_statics_prefer_static_struct]]に
-記録済み）:
+議論の結果、以下の原則で合意した:
 
 - **第一選択は関数引数での引き回し**。あるstaticを必要とする全呼び出し元が、既存の呼び出し木の中で
   共通の祖先関数（Rustの通常呼び出しで辿れる、FFI境界でない、**かつ同一OSスレッド上**）から
@@ -173,8 +172,8 @@ rg -n '^\s*(pub(\([a-z()]*\))?\s+)?static [A-Z_0-9]+\s*:' crates src
 
 ## 決定
 
-ADR-158の複雑性予算制（[[tuning-constants]]や
-[[complexity-budget]]とは対象が異なる——本ADRはtuning定数でもactuation合流点数でもなく
+ADR-158の複雑性予算制（`.claude/rules/tuning-constants.md`や
+`.claude/rules/complexity-budget.md`とは対象が異なる——本ADRはtuning定数でもactuation合流点数でもなく
 「グローバル可変状態の個数」を扱う、対応する予算制機構は現状無い）とは独立に、以下の順で
 リファクタを段階的に実施する。**各フェーズは独立したPRとし、フェーズ間で
 opus-adversarial-consultやユーザーレビューを挟んで良い**。
@@ -188,7 +187,7 @@ opus-adversarial-consultやユーザーレビューを挟んで良い**。
 新規のFFI境界を通らない。
 
 - 規模: 小（2関数＋呼び出し元1箇所）。
-- リスク: 中。[[fix-requires-evidence.md]]の「キー選択（IME ON/OFF に送る VK）」ファミリーに
+- リスク: 中。`.claude/rules/fix-requires-evidence.md`の「キー選択（IME ON/OFF に送る VK）」ファミリーに
   触れる（BUG-115系、具体的には`sync_gji_charset_autodetect`が書く
   `set_gji_mode_key_shadow_overrides`/`set_gji_mode_key_delegate_to_open_axis`/
   `set_thumb_key_shadow_overrides`が`src/engine/nicola_fsm.rs::resolve_pending_thumb_as_single`の
@@ -359,7 +358,7 @@ staleness（BUG-46/52/116ファミリーと同種の症状）を生む。**完�
 - 規模: 大。20フィールドの`HOOK_STATE`構造体設計、既存アクセサ関数の内部実装差し替え、
   呼び出し元（メインスレッド側6箇所以上）の動作が変わらないことの確認、上記ordering保存の
   確認。
-- リスク: **高**。[[fix-requires-evidence.md]]の「キー選択」および「物理IMEキーの
+- リスク: **高**。`.claude/rules/fix-requires-evidence.md`の「キー選択」および「物理IMEキーの
   Suppress/Allow配送判断」の両再発ファミリーに直結する（BUG-46/52/116系）。
   golden回帰テスト（`tests/ime_key_sequence_golden.rs`）の拡充、および実機ソークが
   マージ条件。
@@ -420,7 +419,7 @@ staleness（BUG-46/52/116ファミリーと同種の症状）を生む。**完�
 `SPAWNED_RESYNC`/`SPAWNED_NORMAL`）のみで、5件中1件は判定ロジック本体。`bump()`の呼び出し元
 （`win32.rs:278`/`imm.rs:154`）はどちらも`lints/actuation_call_guard/src/lib.rs`の
 `RESTRICTED_CALLS`チョークポイント（`send_input_safe`/`send_ime_control`）であり、
-[[fix-requires-evidence.md]]の「IME actuation 合流点（ADR-119）」再発ファミリーに直撃する。
+`.claude/rules/fix-requires-evidence.md`の「IME actuation 合流点（ADR-119）」再発ファミリーに直撃する。
 `current()`は`output/probe_io.rs`の`run_with_timeout`ワーカースレッドからも読まれる。
 
 5件を1つの`PROBE_FENCE`singleton構造体のフィールドに統合する（フィールドの意味論は変えない）。
@@ -429,7 +428,7 @@ staleness（BUG-46/52/116ファミリーと同種の症状）を生む。**完�
 
 - 規模: 小。読み書き箇所を1つの構造体アクセスに置き換えるだけ。
 - リスク: **中**（当初「低」から訂正）。actuation判定ロジックに触れるため、
-  [[fix-requires-evidence.md]]の(a)(b)義務（golden/architecture_guardでの回帰テスト、
+  `.claude/rules/fix-requires-evidence.md`の(a)(b)義務（golden/architecture_guardでの回帰テスト、
   またはknown-bugs.mdへの記録）を満たすこと。
 - **実装（2026-09-10）**: ブランチ`refactor/adr164-phase5-probe-actuation-fence`。
   `PROBE_ACTUATION_FENCE`（`AtomicU64`、フェンス値）と`ABANDONED_RESYNC`/
@@ -597,7 +596,7 @@ ADR起票時のファイル別分類表がこの区別をせず「同一ファ�
   新設するものではない。今回のフェーズ1・2・4〜9で対象範囲を実施しきることを目標とする
   （旧フェーズ3は対象外へ変更、上記参照）。
   将来これを機械化する（ファイルごと/並行性ドメインごとのtop-level static数を数えるlint等）
-  場合は、第二の並列予算制を新設せず[[complexity-budget]]（ADR-162 E1）の下に編入し、
+  場合は、第二の並列予算制を新設せず`.claude/rules/complexity-budget.md`（ADR-162 E1）の下に編入し、
   「宣言の強制とSSOT化」の既存原則に揃えること（round1 N5）——ADR-162が問題視した
   「ガバナンスが加算のみを義務化し減算に報酬がない」非対称性を再生産しないため。
 - ADR-159（記録・再生基盤）の完成を待たない。フェーズ1・2・4〜9はADR-159の記録・再生基盤の
@@ -613,8 +612,5 @@ ADR起票時のファイル別分類表がこの区別をせず「同一ファ�
 ## 関連
 
 - [ADR-158](158-complexity-reduction-north-star.md) — 本ADRの発端となった複雑性棚卸し。
-- [[feedback_no_raw_global_statics_prefer_static_struct]] — 本ADRの原則の出典。
-- [[project_adr164_global_static_singleton_consolidation_2026_09_10]] — 本ADR起票時の
-  調査ログとround1レビュー結果の要約。
-- [[fix-requires-evidence.md]] — フェーズ1・4・5が触れる再発ファミリーのテスト/記録義務。
-- [[worktree-per-session.md]] — 実装は専用worktree/branchで行う。
+- `.claude/rules/fix-requires-evidence.md` — フェーズ1・4・5が触れる再発ファミリーのテスト/記録義務。
+- `.claude/rules/worktree-per-session.md` — 実装は専用worktree/branchで行う。

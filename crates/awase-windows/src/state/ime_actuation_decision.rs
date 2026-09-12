@@ -92,6 +92,8 @@ pub enum DecisionSite {
     ForceOnRomajiCorrection,
     ShadowToggleOff,
     ForceOnBootstrap,
+    IdleConvCheckDirectInput,
+    BlacklistDriftCorrection,
 }
 
 /// 1機構分の「何を送るか」の決定結果（実I/Oは含まない）。

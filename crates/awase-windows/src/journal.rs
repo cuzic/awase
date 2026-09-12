@@ -694,6 +694,8 @@ fn decision_site_str(site: crate::state::ime_actuation_decision::DecisionSite) -
         DecisionSite::ForceOnRomajiCorrection => "ForceOnRomajiCorrection",
         DecisionSite::ShadowToggleOff => "ShadowToggleOff",
         DecisionSite::ForceOnBootstrap => "ForceOnBootstrap",
+        DecisionSite::IdleConvCheckDirectInput => "IdleConvCheckDirectInput",
+        DecisionSite::BlacklistDriftCorrection => "BlacklistDriftCorrection",
     }
 }
 

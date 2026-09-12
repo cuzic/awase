@@ -140,6 +140,7 @@
 | [BUG-135](BUG-135.md) | ADR-121のVK_IME_ON冪等再送、即時パスがpending_explicit_reassertラッチを解除せず冗長送信しうる（未修正） |
 | [BUG-136](BUG-136.md) | ADR-121のVK_IME_ON冪等再送ゲートがVK_DBE_HIRAGANA限定で、対称のはずのKatakana/Henkan/Muhenkanが対象外（未修正） |
 | [BUG-137](BUG-137.md) | explicit_ime_action_targetのKeyDown/KeyUpステートレス再評価が、押下中にbeliefが変化すると孤立KeyUpを漏らしうる（未修正） |
+| [BUG-139](BUG-139.md) | ADR-163のActuationDecisionRecord診断が、with_app再入時のskipカウンタ二重加算と一部同期記録点のcaller未設定を持っていた（修正済み） |
 
 ## その他の資料
 
