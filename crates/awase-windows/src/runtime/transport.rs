@@ -1874,11 +1874,20 @@ mod plan_tests {
         rows
     }
 
+    /// `run_plan_matrix`は1000行超の決定表を生成するため、複数のテストが
+    /// 同じ表を参照する場合はここで1回だけ計算してキャッシュする
+    /// （/code-review指摘、PR #206棚卸し。以前は3テストが独立に呼び毎回
+    /// 全行を再生成していた）。
+    fn cached_plan_matrix() -> &'static Vec<PlanRow> {
+        static CACHE: std::sync::OnceLock<Vec<PlanRow>> = std::sync::OnceLock::new();
+        CACHE.get_or_init(run_plan_matrix)
+    }
+
     /// `run_plan_matrix`が全行を構築できること自体が「任意の入力でpanicしない」
     /// を実質的に検証する（`conv_classify.rs`の同種コメント参照）。
     #[test]
     fn plan_matrix_covers_all_branches_without_panicking() {
-        let rows = run_plan_matrix();
+        let rows = cached_plan_matrix();
         assert!(
             rows.len() > 1000,
             "決定表が想定より小さい: {} 行",
@@ -1895,7 +1904,7 @@ mod plan_tests {
     /// vk一致を誤って前提にしたことが原因だった、という対比を残す。
     #[test]
     fn kanji_family_keyup_suppress_verdict_is_independent_of_specific_vk() {
-        let rows = run_plan_matrix();
+        let rows = cached_plan_matrix();
         let dbe_family = [
             "VK_DBE_ALPHANUMERIC",
             "VK_DBE_KATAKANA",
@@ -1940,7 +1949,7 @@ mod plan_tests {
     /// 常にAllow（awaseはこの窓のactuationを所有しない）。
     #[test]
     fn input_relay_always_allows_regardless_of_other_axes() {
-        let rows = run_plan_matrix();
+        let rows = cached_plan_matrix();
         let input_relay_rows: Vec<&PlanRow> = rows
             .iter()
             .filter(|r| r.profile == AppImeProfile::InputRelay)
