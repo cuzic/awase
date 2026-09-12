@@ -595,15 +595,25 @@ impl Runtime {
                 //
                 // 例外: Imm32Unavailable (Chrome 等) での明示 IME-OFF が
                 // desired_open=false をグローバルに書いた後に TsfNative 窓へ戻る場合。
-                // キャッシュが ime_on=true ならキャッシュ復元し TsfNative の最後の状態を回復する。
-                // (desired_open がどのコンテキストで設定されたかではなく
-                //  「キャッシュとの不一致」で Imm32Unavailable 汚染を検出する。)
-                // 仮想デスクトップ transient bug (29a39b9) への影響なし:
-                //  transient UWP 窓のキャッシュが false (explicit/non-explicit) の場合は
-                //  cache_says_on=false → 復元しない → 従来の SSOT 継続。
+                // キャッシュが ime_on=true かつ hwnd が一致するならキャッシュ復元し
+                // TsfNative の最後の状態を回復する。
+                //
+                // hwnd 一致を要求する理由（BUG-128、ADR-165）: `(pid, class_name)` は
+                // 同一クラス名を共有する複数の無関係なウィンドウを取り違えうる
+                // （`Windows.UI.Input.InputSite.WindowClass` は explorer.exe 内の
+                // 複数の無関係な入力面が共有する汎用クラス名）。以前は
+                // 「キャッシュとの不一致」だけで汚染を判定しており、Chrome で
+                // Ctrl+無変換 押下後に無関係な別ウィンドウへフォーカスが移っただけで
+                // 古いキャッシュにより desired_open が ON へ強制復元され、
+                // force-ON まで誤発火していた。hwnd 一致を要求することで
+                // 「同じウィンドウインスタンスへ戻ってきた場合のみ復元する」という
+                // 本来の意図（35230fd、仮想デスクトップ往復での復帰）に絞り込む。
+                // 時間条件は設けない（詳細は docs/adr/165-tsf-cache-restore-recency-guard.md、
+                // 実機検証済み）。
                 let desired_open = self.platform_state.ime.model().desired_open();
-                let cache_says_on = matches!(&cache_hit, Some(snap) if snap.ime_on);
-                if cache_says_on && !desired_open {
+                let new_hwnd = classified.hwnd.0 as usize;
+                let cache_hwnd = cache_hit.as_ref().map(|snap| snap.hwnd);
+                if should_restore_tsf_cache_on(cache_hit.as_ref(), desired_open, new_hwnd) {
                     // Imm32Unavailable コンテキストで desired_open が false に汚染された可能性。
                     // キャッシュの true を復元して TsfNative 窓の状態を回復する。
                     self.platform_state
@@ -611,14 +621,22 @@ impl Runtime {
                         .apply_hwnd_cache_restore(cache_hit, tick_ms);
                     tracing::debug!(
                         "[focus] TsfNative: cache restore \
-                         (desired_open=false だが cache=true — Imm32Unavailable 汚染を修正)"
+                         (desired_open=false だが cache=true かつ hwnd 一致 cache_hwnd={cache_hwnd:?} \
+                         new_hwnd={new_hwnd} — 汚染を修正)"
                     );
                 } else {
                     // SSOT: desired_open を前窓の値のまま維持。
                     // FocusChanged が applied=Unknown を設定済みのため、最初のキー入力で
                     // dispatch_ime が desired_open を窓へ apply する。
+                    //
+                    // cache_hwnd/new_hwnd をログに残す（round「実装レビュー」M-impl-1）:
+                    // 「キャッシュ無し」「desired_open が既に true」「hwnd 不一致」を
+                    // 区別できないと、WezTerm・仮想デスクトップ往復・ペイン分割
+                    // （ADR-165 が実機ソークへ委ねた項目）で hwnd が不安定だった場合の
+                    // 「静かな後退」（35230fd の救済が効かなくなる）を診断できない。
                     tracing::debug!(
-                        "[focus] TsfNative/SSOT: cache restore スキップ — \
+                        "[focus] TsfNative/SSOT: cache restore スキップ \
+                         (desired_open={desired_open} cache_hwnd={cache_hwnd:?} new_hwnd={new_hwnd}) — \
                          最初のキー入力で dispatch_ime が apply"
                     );
                 }
@@ -814,6 +832,23 @@ impl From<&FocusIdentity> for crate::journal::FocusEndpoint {
     }
 }
 
+/// TsfNative 窓入場時に、`(pid, class_name)` キャッシュの `ime_on=true` を
+/// 復元してよいか判定する（BUG-128、ADR-165）。
+///
+/// `snap.hwnd == new_hwnd` を要求することで、`(pid, class_name)` キーが
+/// 同一クラス名を共有する複数の無関係なウィンドウ（例:
+/// `Windows.UI.Input.InputSite.WindowClass` を共有する explorer.exe 内の
+/// 複数の UWP 入力面）を取り違えないようにする。時間条件は設けない
+/// （`docs/adr/165-tsf-cache-restore-recency-guard.md` 参照、実機検証済み）。
+fn should_restore_tsf_cache_on(
+    snap: Option<&crate::focus::hwnd_cache::HwndImeSnapshot>,
+    desired_open: bool,
+    new_hwnd: usize,
+) -> bool {
+    let Some(snap) = snap else { return false };
+    snap.ime_on && !desired_open && snap.hwnd == new_hwnd
+}
+
 fn should_discard_imm_broken_cache(
     cache_hit: Option<crate::focus::hwnd_cache::HwndImeSnapshot>,
     is_imm_broken: bool,
@@ -844,19 +879,21 @@ mod tests {
     fn snap(
         ime_on: bool,
         from_explicit_off_intent: bool,
+        hwnd: usize,
     ) -> crate::focus::hwnd_cache::HwndImeSnapshot {
         crate::focus::hwnd_cache::HwndImeSnapshot {
             ime_on,
             input_mode: InputModeState::ObservedRomaji,
             recorded_ms: 0,
             from_explicit_off_intent,
+            hwnd,
         }
     }
 
     #[test]
     fn imm_broken_true_cache_is_discarded_right_after_explicit_off() {
         assert!(should_discard_imm_broken_cache(
-            Some(snap(true, false)),
+            Some(snap(true, false, 0)),
             true,
             20_000,
             19_000,
@@ -866,7 +903,7 @@ mod tests {
     #[test]
     fn imm_broken_true_cache_is_kept_after_explicit_off_window_expires() {
         assert!(!should_discard_imm_broken_cache(
-            Some(snap(true, false)),
+            Some(snap(true, false, 0)),
             true,
             30_001,
             20_000,
@@ -876,10 +913,56 @@ mod tests {
     #[test]
     fn imm_broken_false_cache_is_kept_when_it_came_from_explicit_off() {
         assert!(!should_discard_imm_broken_cache(
-            Some(snap(false, true)),
+            Some(snap(false, true, 0)),
             true,
             20_000,
             19_000,
         ));
+    }
+
+    // ── should_restore_tsf_cache_on（BUG-128、ADR-165）──────────────────────
+
+    #[test]
+    fn tsf_cache_restore_fires_when_hwnd_matches() {
+        // 35230fd の救済シナリオ: 同じウィンドウ（同じ hwnd）へ戻ってきた場合は復元する。
+        assert!(should_restore_tsf_cache_on(
+            Some(&snap(true, false, 42)),
+            false,
+            42,
+        ));
+    }
+
+    #[test]
+    fn tsf_cache_restore_is_suppressed_when_hwnd_differs() {
+        // report_id 01M27VXD4SPAD4STQ9TG1PZSCD の再現: 同じ (pid, class_name) でも
+        // 別のウィンドウインスタンス（別 hwnd）への入場では復元しない。
+        assert!(!should_restore_tsf_cache_on(
+            Some(&snap(true, false, 42)),
+            false,
+            999,
+        ));
+    }
+
+    #[test]
+    fn tsf_cache_restore_skips_when_desired_open_already_true() {
+        assert!(!should_restore_tsf_cache_on(
+            Some(&snap(true, false, 42)),
+            true,
+            42,
+        ));
+    }
+
+    #[test]
+    fn tsf_cache_restore_skips_when_cache_says_off() {
+        assert!(!should_restore_tsf_cache_on(
+            Some(&snap(false, false, 42)),
+            false,
+            42,
+        ));
+    }
+
+    #[test]
+    fn tsf_cache_restore_skips_when_no_cache_entry() {
+        assert!(!should_restore_tsf_cache_on(None, false, 42));
     }
 }
