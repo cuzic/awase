@@ -367,7 +367,7 @@ staleness（BUG-46/52/116ファミリーと同種の症状）を生む。**完�
 - フェーズ1〜2を先に終えてから着手し、「singleton集約」パターン自体の運用を、より小さく
   安価な変更で先に検証する。
 
-### フェーズ5: `probe_actuation_fence.rs`の5件をsingleton集約
+### フェーズ5: `probe_actuation_fence.rs`の5件をsingleton集約（実装済み、develop未マージ・実機ソーク未実施）
 
 **round1 M7で当初のリスク評価（「診断/カウンタ用途でactuationの判定ロジックには使われない」）が
 誤りと判明、訂正。**
@@ -391,6 +391,18 @@ staleness（BUG-46/52/116ファミリーと同種の症状）を生む。**完�
 - リスク: **中**（当初「低」から訂正）。actuation判定ロジックに触れるため、
   [[fix-requires-evidence.md]]の(a)(b)義務（golden/architecture_guardでの回帰テスト、
   またはknown-bugs.mdへの記録）を満たすこと。
+- **実装（2026-09-10）**: ブランチ`refactor/adr164-phase5-probe-actuation-fence`。
+  `PROBE_ACTUATION_FENCE`（`AtomicU64`、フェンス値）と`ABANDONED_RESYNC`/
+  `ABANDONED_NORMAL`/`SPAWNED_RESYNC`/`SPAWNED_NORMAL`（`LifetimeCounter`）の5裸static
+  を`ProbeFence`構造体（`fence_value`+4フィールド、全て変更前と同じ`Ordering::Relaxed`）
+  に集約し、`static PROBE_FENCE: ProbeFence`1つに縮小。`bump()`/`current()`/
+  `record_abandoned()`/`record_spawned()`/4つの`*_lifetime_count()`アクセサの
+  シグネチャ・ロジックは無変更。(a)充足の根拠: 本ファイル内の既存
+  `#[cfg(test)]`ユニットテスト3件（`bump_advances_current_monotonically`等）が
+  変更後もWindowsターゲットで`cargo check --tests --lib`コンパイル確認済み
+  （このファイルは`#[cfg(windows)]`ゲート下のためLinuxでは実行不可、CLAUDE.md
+  参照）。**windows-build CIでのテスト実行、および実機ソーク（検証方法節4）は
+  未実施** — フェーズ4と同様、develop マージ前に必要。
 
 ### フェーズ6: `lib.rs`の3件（`MAIN_THREAD_ID`/`QUIT_REQUESTED`/`ELEVATED`）をsingleton集約
 

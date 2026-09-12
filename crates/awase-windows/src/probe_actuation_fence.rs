@@ -112,21 +112,56 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::lifetime_counter::LifetimeCounter;
 
-/// 0 は「まだ一度も観測していない」ことを表すセンチネルとして予約する
-/// （`conv_mutation`/`send_health` 等、他の fence 実装と同じ規約）ため 1 から始める。
-static PROBE_ACTUATION_FENCE: AtomicU64 = AtomicU64::new(1);
+/// 本ファイルの5静的（フェンス値+4棄却/spawn累計カウンタ）を1つに集約した
+/// singleton（ADR-164 フェーズ5）。`send_input_safe`/`send_ime_control`という
+/// 2つの独立したsyscallチョークポイント、および`current()`は
+/// `run_with_timeout`ワーカースレッドからも読まれるため、引数引き回しは
+/// できない（ADR-164 分類C・クロススレッド読み取りあり）。
+///
+/// `hook.rs`と同じ理由でMutex禁止・ロックフリーな struct-of-atomics のみ
+/// （ADR-164フェーズ4決定と同型: ワーカースレッドからの読み取りをロック待ちで
+/// 止めない）。5フィールド全て元々`Ordering::Relaxed`のみを使用しており、
+/// 本集約でordering・意味論は一切変更しない。
+struct ProbeFence {
+    /// GJI IME actuation の単調フェンス値。0は「まだ一度も観測していない」
+    /// ことを表すセンチネルとして予約するため1から始まる。
+    fence_value: AtomicU64,
+    /// resync 経路（`kp_trigger_focus_resync` 由来）の probe abandon 累計回数
+    /// （プロセス生存期間中、リセットしない）。
+    abandoned_resync: LifetimeCounter,
+    /// 通常経路（`kp_stage_idle_conv_check`）の probe abandon 累計回数。
+    abandoned_normal: LifetimeCounter,
+    /// resync 経路の probe を実際に spawn した累計回数（abandon 率の分母）。
+    spawned_resync: LifetimeCounter,
+    /// 通常経路の probe を実際に spawn した累計回数。
+    spawned_normal: LifetimeCounter,
+}
+
+impl ProbeFence {
+    const fn new() -> Self {
+        Self {
+            fence_value: AtomicU64::new(1),
+            abandoned_resync: LifetimeCounter::new(),
+            abandoned_normal: LifetimeCounter::new(),
+            spawned_resync: LifetimeCounter::new(),
+            spawned_normal: LifetimeCounter::new(),
+        }
+    }
+}
+
+static PROBE_FENCE: ProbeFence = ProbeFence::new();
 
 /// GJI IME actuation の物理 syscall 境界（[`crate::win32::send_input_safe`] /
 /// [`crate::imm::send_ime_control`]）で呼ぶ。
 pub(crate) fn bump() {
-    PROBE_ACTUATION_FENCE.fetch_add(1, Ordering::Relaxed);
+    PROBE_FENCE.fence_value.fetch_add(1, Ordering::Relaxed);
 }
 
 /// 現在の値を読む。probe 側の spawn 時スナップショットと issue/apply 時の
 /// 再読み取りを比較するために使う（ビット一致で判定すること、経過時間で
 /// 判定しない——`conv_mutation::current()` と同じ規約）。
 pub(crate) fn current() -> u64 {
-    PROBE_ACTUATION_FENCE.load(Ordering::Relaxed)
+    PROBE_FENCE.fence_value.load(Ordering::Relaxed)
 }
 
 /// [`crate::ime::get_ime_conversion_mode_fenced_async`] の結果（ADR-140
@@ -147,61 +182,50 @@ pub(crate) enum FencedProbeOutcome {
     Abandoned,
 }
 
-/// resync 経路（`kp_trigger_focus_resync` 由来）の probe abandon 累計回数
-/// （プロセス生存期間中、リセットしない）。内部は`LifetimeCounter`
-/// （`AtomicU64`）で、読み取り時に`u32`へ切り詰めるが、1プロセスの生存期間中に
-/// `u32::MAX`到達することは実用上ないため`saturating_add`相当の対策は
-/// していない（他の lifetime カウンタ、例えば
-/// `hook_channel::WAKE_POST_FAILED_LIFETIME_COUNT`、と同じ判断）。
-static ABANDONED_RESYNC_LIFETIME_COUNT: LifetimeCounter = LifetimeCounter::new();
-/// 通常経路（`kp_stage_idle_conv_check`）の probe abandon 累計回数。
-static ABANDONED_NORMAL_LIFETIME_COUNT: LifetimeCounter = LifetimeCounter::new();
-/// resync 経路の probe を実際に spawn した累計回数（abandon 率の分母、
-/// 実装レビュー指摘M1）。
-static SPAWNED_RESYNC_LIFETIME_COUNT: LifetimeCounter = LifetimeCounter::new();
-/// 通常経路の probe を実際に spawn した累計回数。
-static SPAWNED_NORMAL_LIFETIME_COUNT: LifetimeCounter = LifetimeCounter::new();
-
 /// probe が actuation との交錯を検知して checkpoint1/2（issue 前）で abandon
 /// したことを記録する。`resync_generation.is_some()` なら resync 経路、`None`
 /// なら通常経路として別々に数える（module doc 参照。checkpoint3〈apply 時点〉
 /// はここを呼ばない——同 doc の M3 注記参照）。
+///
+/// カウンタは`u32::MAX`到達することは実用上ないため`saturating_add`相当の
+/// 対策はしていない（他の lifetime カウンタ、例えば
+/// `hook_channel::WAKE_POST_FAILED_LIFETIME_COUNT`、と同じ判断）。
 pub(crate) fn record_abandoned(resync_generation: Option<u64>) {
     if resync_generation.is_some() {
-        ABANDONED_RESYNC_LIFETIME_COUNT.increment();
+        PROBE_FENCE.abandoned_resync.increment();
     } else {
-        ABANDONED_NORMAL_LIFETIME_COUNT.increment();
+        PROBE_FENCE.abandoned_normal.increment();
     }
 }
 
-/// `ABANDONED_RESYNC_LIFETIME_COUNT` を消費せずに読む（不具合報告用診断）。
+/// resync 経路の abandon 累計回数を消費せずに読む（不具合報告用診断）。
 pub(crate) fn abandoned_resync_lifetime_count() -> u32 {
-    ABANDONED_RESYNC_LIFETIME_COUNT.read() as u32
+    PROBE_FENCE.abandoned_resync.read() as u32
 }
 
-/// `ABANDONED_NORMAL_LIFETIME_COUNT` を消費せずに読む（不具合報告用診断）。
+/// 通常経路の abandon 累計回数を消費せずに読む（不具合報告用診断）。
 pub(crate) fn abandoned_normal_lifetime_count() -> u32 {
-    ABANDONED_NORMAL_LIFETIME_COUNT.read() as u32
+    PROBE_FENCE.abandoned_normal.read() as u32
 }
 
 /// idle-conv-check probe を実際に spawn したことを記録する（abandon 率の分母、
 /// 実装レビュー指摘M1）。`record_abandoned` と同じ resync/通常の軸で数える。
 pub(crate) fn record_spawned(resync_generation: Option<u64>) {
     if resync_generation.is_some() {
-        SPAWNED_RESYNC_LIFETIME_COUNT.increment();
+        PROBE_FENCE.spawned_resync.increment();
     } else {
-        SPAWNED_NORMAL_LIFETIME_COUNT.increment();
+        PROBE_FENCE.spawned_normal.increment();
     }
 }
 
-/// `SPAWNED_RESYNC_LIFETIME_COUNT` を消費せずに読む（不具合報告用診断）。
+/// resync 経路の spawn 累計回数を消費せずに読む（不具合報告用診断）。
 pub(crate) fn spawned_resync_lifetime_count() -> u32 {
-    SPAWNED_RESYNC_LIFETIME_COUNT.read() as u32
+    PROBE_FENCE.spawned_resync.read() as u32
 }
 
-/// `SPAWNED_NORMAL_LIFETIME_COUNT` を消費せずに読む（不具合報告用診断）。
+/// 通常経路の spawn 累計回数を消費せずに読む（不具合報告用診断）。
 pub(crate) fn spawned_normal_lifetime_count() -> u32 {
-    SPAWNED_NORMAL_LIFETIME_COUNT.read() as u32
+    PROBE_FENCE.spawned_normal.read() as u32
 }
 
 #[cfg(test)]
