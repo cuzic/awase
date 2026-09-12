@@ -114,37 +114,56 @@ pub use crate::tsf::probe_bridge::{OUTPUT_GATE, WM_DRAIN_OUTPUT_QUEUE};
 #[cfg(windows)]
 pub use crate::input_defer::{InputDeferQueue, INPUT_DEFER};
 
-// ── クロススレッド共有グローバル状態 ──
+// ── クロススレッド共有グローバル状態（ADR-164 フェーズ6）──
 //
 // Ctrl+C ハンドラ（別スレッド）からアクセスされるため、Atomic 型でなければならない。
+// 3フィールドをまとめて1つのロックフリー struct-of-atomics singleton に集約する
+// （分類A2、`hook.rs`/`probe_actuation_fence.rs`と同型。Mutexは使わない）。
+// フィールドごとの `Ordering` は集約前と完全に同一（`main_thread_id`/`quit_requested`
+// は `SeqCst`、`elevated` は `Relaxed`）——この非対称は意図的なため変更しない。
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-static MAIN_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+struct ProcessFlags {
+    main_thread_id: AtomicU32,
+    quit_requested: AtomicBool,
+    elevated: AtomicBool,
+}
+
+impl ProcessFlags {
+    const fn new() -> Self {
+        Self {
+            main_thread_id: AtomicU32::new(0),
+            quit_requested: AtomicBool::new(false),
+            elevated: AtomicBool::new(false),
+        }
+    }
+}
+
+static PROCESS_FLAGS: ProcessFlags = ProcessFlags::new();
+
 pub fn main_thread_id() -> u32 {
-    MAIN_THREAD_ID.load(Ordering::SeqCst)
+    PROCESS_FLAGS.main_thread_id.load(Ordering::SeqCst)
 }
 #[cfg(windows)]
 pub(crate) fn set_main_thread_id(tid: u32) {
-    MAIN_THREAD_ID.store(tid, Ordering::SeqCst);
+    PROCESS_FLAGS.main_thread_id.store(tid, Ordering::SeqCst);
 }
 
-static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 pub fn is_quit_requested() -> bool {
-    QUIT_REQUESTED.load(Ordering::SeqCst)
+    PROCESS_FLAGS.quit_requested.load(Ordering::SeqCst)
 }
 #[cfg(windows)]
 pub(crate) fn request_quit() {
-    QUIT_REQUESTED.store(true, Ordering::SeqCst);
+    PROCESS_FLAGS.quit_requested.store(true, Ordering::SeqCst);
 }
 
-static ELEVATED: AtomicBool = AtomicBool::new(false);
 pub fn is_elevated() -> bool {
-    ELEVATED.load(Ordering::Relaxed)
+    PROCESS_FLAGS.elevated.load(Ordering::Relaxed)
 }
 #[cfg(windows)]
 pub(crate) fn set_elevated(v: bool) {
-    ELEVATED.store(v, Ordering::Relaxed);
+    PROCESS_FLAGS.elevated.store(v, Ordering::Relaxed);
 }
 
 /// raw TSF literal 検出後の回収ペイロード。
