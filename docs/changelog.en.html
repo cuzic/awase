@@ -110,7 +110,38 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
-<h2>[1.19.0] - 2026-09-06</h2>
+<h2>[1.20.0] - 2026-09-12</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>You can now explicitly set what a solo tap of the Non-conversion/Conversion key does to the IME on/off/toggle state, instead of relying on auto-detecting GJI/MS-IME's own key settings</strong><ul>
+<li>New settings items (`muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`) let you force "always turn on/off/toggle". For environments where IME control doesn't work because it clashes with GJI/MS-IME's own keymap settings</li>
+</ul>
+</li>
+<li><strong>Bug reports now automatically attach your current GJI/MS-IME key-assignment settings</strong><ul>
+<li>Supported for both the new simple key-assignment UI and the legacy detailed key-customization UI. No extra steps needed on your part</li>
+</ul>
+</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Changed when awase writes its auto-start registry entry, as a mitigation for Windows Defender sometimes flagging awase.exe as persistence-malware-like behavior</strong><ul>
+<li>Previously awase rewrote the registry entry unconditionally on every startup as a self-heal; now it only writes when you actually toggle the "Start automatically" checkbox in the settings window (effectiveness unverified; a proper code-signing fix is planned)</li>
+</ul>
+</li>
+<li><strong>Fixed auto-start silently failing after installation in some environments</strong><ul>
+<li>The executable had no application manifest, causing Windows' Program Compatibility Assistant to incorrectly mark it as needing to "Run as administrator"</li>
+</ul>
+</li>
+<li><strong>Identified and fixed several additional remaining causes of a stray "@" being typed when pressing the physical Han/Zen, Non-conversion, or Conversion keys in Windows Terminal with Google Japanese Input</strong><ul>
+<li>Causes included duplicate IME-on sends (reduced from up to 3 down to 2, including a gap specific to the Standard profile), a race between probe reads and issuing IME operations, and double-firing between delegate and shadow-toggle handling</li>
+</ul>
+</li>
+<li><strong>Fixed GJI's auto-detected Non-conversion/Conversion delegate swallowing the physical key press even when you had explicitly chosen "always pass it through" in the settings window</strong></li>
+<li><strong>Fixed Google Japanese Input sometimes mis-converting input like "&#12424;&#12358;&#12377;&#12427;&#12395;" ("y&#333;-suru-ni") into "&#12424;&#12421;&#12377;&#12427;&#12395;"</strong></li>
+<li><strong>Fixed the physical "Katakana/Hiragana/Romaji" key sometimes being unable to switch back to hiragana after switching to katakana</strong></li>
+<li><strong>Fixed an unrelated cached IME-on state being restored when focus moved to a different input field hosted by Explorer right after a Non-conversion key operation in Chrome</strong></li>
+<li><strong>Added a retry of the key send for the case where a physical IME-correction key press in Windows Terminal with MS-IME is ignored and romaji keeps being displayed as-is (partial mitigation)</strong></li>
+</ul>
 <h3>Added</h3>
 <ul>
 <li><strong>The tray icon can now check whether a newer version is available</strong><ul>
