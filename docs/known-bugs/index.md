@@ -136,6 +136,10 @@
 | [BUG-131](BUG-131.md) | `kana_mode_restore_key_down`（ADR-137決定2のM-2ラッチ）の解除条件がDBEキーのDown/Up vk非対称で成立せず固着する |
 | [BUG-132](BUG-132.md) | `hook.rs`の`LEFT_THUMB_DOWN_AT_US`がDBEキーのDown/Up vk非対称で親指キー押下中ラッチしうる（設定リロードで自然回復、未修正） |
 | [BUG-133](BUG-133.md) | Standardプロファイル×ImmCross失敗フォールバック時、随伴warmupがGjiDirectStrategyの実送信直後に重複する（修正済み、ADR-167） |
+| [BUG-134](BUG-134.md) | tray.rs::restart_self()がBUG-79と同型のos error 50で失敗しうる（未修正） |
+| [BUG-135](BUG-135.md) | ADR-121のVK_IME_ON冪等再送、即時パスがpending_explicit_reassertラッチを解除せず冗長送信しうる（未修正） |
+| [BUG-136](BUG-136.md) | ADR-121のVK_IME_ON冪等再送ゲートがVK_DBE_HIRAGANA限定で、対称のはずのKatakana/Henkan/Muhenkanが対象外（未修正） |
+| [BUG-137](BUG-137.md) | explicit_ime_action_targetのKeyDown/KeyUpステートレス再評価が、押下中にbeliefが変化すると孤立KeyUpを漏らしうる（未修正） |
 
 ## その他の資料
 
