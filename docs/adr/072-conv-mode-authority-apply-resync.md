@@ -1,3 +1,15 @@
+---
+id: ADR-072
+title: |-
+  conv_mode_authority を apply 完了ごとに再同期する
+status: |-
+  採用済み
+related_adr:
+  - "ADR-038"
+  - "ADR-056"
+  - "ADR-064"
+---
+
 # ADR-072: conv_mode_authority を apply 完了ごとに再同期する
 
 ## ステータス

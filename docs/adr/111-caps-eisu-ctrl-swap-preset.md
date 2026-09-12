@@ -1,3 +1,17 @@
+---
+id: ADR-111
+title: |-
+  Caps(英数)⇔Ctrl 入れ替え専用プリセット（Scancode Map 一本化）
+summary: |-
+  「人気のある組み合わせに絞ってGUIを簡単にしたい」という要望を受け、ADR-110の汎用`key_remap`をCaps(英数)⇔Ctrl入れ替え1種類のプリセットへ絞り込む設計。Opus 2体の並列敵対的レビューとPowerToys実例調査（Issue #3397/#32344）で、フックベース方式（key_remap）はJIS英数キー位置と日本語IMEのShiftショートカット競合により構造的に危険と判明し、Scancode Map（レジストリ、ドライバレベルのスキャンコード置換）一本化に方針転換（r2）。さらに検討の結果、汎用key_remap GUIエディタも撤去（r3）、ADR-110機構自体をバックエンドごと撤回（r4、PR #123）。Scancode Mapのバイト列パース/生成/マージを純粋関数化しLinuxでテスト、既存値の無条件上書きを避けるマージロジック、`awase-settings.exe`自身を`--scancode-map on\|off`で自己昇格(`ShellExecuteExW`+`SEE_MASK_NOCLOSEPROCESS`)する昇格フローを実装（PR #124）
+status: |-
+  採用・実装済み（2026-08-31、Windows実機ソーク未実施）
+related_adr:
+  - "ADR-108"
+  - "ADR-110"
+  - "ADR-126"
+---
+
 # ADR-111: Caps(英数)⇔Ctrl 入れ替え専用プリセット（Scancode Map 一本化）
 
 ## ステータス

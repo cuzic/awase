@@ -1,3 +1,15 @@
+---
+id: ADR-051
+title: |-
+  HoldingGate の timed-fsm クレートへの移植
+status: |-
+  採用済み
+related_adr:
+  - "ADR-008"
+  - "ADR-015"
+  - "ADR-042"
+---
+
 # ADR-051: HoldingGate の timed-fsm クレートへの移植
 
 ## ステータス

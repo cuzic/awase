@@ -1,3 +1,14 @@
+---
+id: ADR-124
+title: |-
+  タスクトレイからの更新確認
+summary: |-
+  タスクトレイ右クリックを唯一のトリガーにした更新確認。常駐フックプロセス `awase.exe` は通信せず、`awase-settings.exe --check-update` がWinHTTPでWorkerへ問い合わせる。状態は `update_check.json` に最小限だけ保存し、表示は `display()` で導出する。WorkerはGitHub latest releaseをKVでキャッシュし、URLは返さず、クライアントが検証済みSemVerからリリースページを組み立てる
+status: |-
+  採用・実装中（2026-09-03）
+related_adr: []
+---
+
 # ADR-124: タスクトレイからの更新確認
 
 ## ステータス

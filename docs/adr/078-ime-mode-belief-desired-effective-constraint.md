@@ -1,3 +1,19 @@
+---
+id: ADR-078
+title: |-
+  IME conv-mode belief の三分割（DesiredMode / EffectiveMode / ModeConstraint）と観測駆動書き込みの排除
+summary: |-
+  IME conv-mode belief の三分割（DesiredMode / EffectiveMode / ModeConstraint）— Imm32Unavailable/TsfNative 限定、Standard は観測駆動を維持
+status: |-
+  提案中
+related_adr:
+  - "ADR-029"
+  - "ADR-074"
+  - "ADR-075"
+  - "ADR-077"
+  - "ADR-087"
+---
+
 # ADR-078: IME conv-mode belief の三分割（DesiredMode / EffectiveMode / ModeConstraint）と観測駆動書き込みの排除
 
 ## ステータス

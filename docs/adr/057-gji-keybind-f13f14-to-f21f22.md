@@ -1,3 +1,14 @@
+---
+id: ADR-057
+title: |-
+  GJI キーバインド F13/F14 → F21/F22 への移行
+status: |-
+  ~~採用済み~~ **廃止済み（VK_IME_ON/OFF 移行）**
+related_adr:
+  - "ADR-034"
+  - "ADR-046"
+---
+
 # ADR-057: GJI キーバインド F13/F14 → F21/F22 への移行
 
 ## ステータス

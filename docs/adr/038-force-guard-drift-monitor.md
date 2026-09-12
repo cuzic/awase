@@ -1,3 +1,13 @@
+---
+id: ADR-038
+title: |-
+  ForceGuardSet / DriftMonitor 型分解
+status: |-
+  採用済み
+related_adr:
+  - "ADR-032"
+---
+
 # ADR-038: ForceGuardSet / DriftMonitor 型分解
 
 ## ステータス

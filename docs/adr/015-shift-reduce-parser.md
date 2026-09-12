@@ -1,3 +1,12 @@
+---
+id: ADR-015
+title: |-
+  NicolaFsm のシフト-リデュースパーサーモデル
+status: |-
+  採用済み
+related_adr: []
+---
+
 # ADR-015: NicolaFsm のシフト-リデュースパーサーモデル
 
 ## ステータス

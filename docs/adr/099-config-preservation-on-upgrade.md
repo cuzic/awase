@@ -1,3 +1,15 @@
+---
+id: ADR-099
+title: |-
+  バージョンアップ時の設定消失を防ぐ — MSI/ZIP インストーラーのユーザーデータ分離と load-failure セーフティネット
+summary: |-
+  ユーザー報告「バージョンアップすると既存の設定が失われる」の原因調査と対策。**round1 Opus premortemで「MSI経路は保護されている」という当初前提が誤りと判明**: `wix/main.wxs`の`<MajorUpgrade>`に`Schedule`属性が無く既定値`afterInstallValidate`のため、新バージョンのファイルインストールより前に旧バージョンが完全アンインストールされ、`ConfigFile`コンポーネントの`NeverOverwrite="yes"`(KeyPathはレジストリ値でファイルではない)は無力化される(F1、MSIでインストールした全ユーザーが対象、最優先で修正)。加えてZIP配布の2箇所と実装共通の1箇所: (F2)`scripts/uninstall.ps1`が`%LOCALAPPDATA%\awase`を無条件再帰削除、(F3)`scripts/install.ps1`が`config.toml`は「既存なら上書きしない」のに`layout/*`は無条件`-Force`上書き(`awase-yab-editor`はawase-settingsの「配列編集」タブとして統合済みと判明、GUI編集ユーザー全員が対象)、(F4・最重要)`awase-settings`の`AppConfig::load()`失敗時に`default_config()`へ静かにフォールバックし「適用」でconfig.tomlへ永続化(`AppConfig::general`に`#[serde(default)]`が無く`[general]`欠落だけでparse失敗する点も発見、F5としてpaths.rsのCWDフォールバックも関連リスクとして記録)。決定0〜8: `<MajorUpgrade Schedule="afterInstallExecute">`＋`NicolaYab`コンポーネントへの`NeverOverwrite="yes"`追加(最優先、round2でMSI上書き経路と削除経路が別物と判明し拡張)、uninstall.ps1のユーザーデータ削除を`-Purge`明示フラグへ分離、install.ps1は`layout/`のみ非破壊化(`data/`はプログラム資産として対象外のまま維持しMSIと挙動を揃える)、`AppConfig::save()`をfsync+リトライ付きアトミック書き込み化、awase-settingsに`NotFound`/`Dangerous`(NotFound以外は全て危険側に倒す明示ルール)分類のload状態を追加しegui内製の確認UIで警告・一度限りバックアップ、`general`フィールドへの`#[serde(default)]`付与、パス解決フォールバックへの診断ログ追加、`wix/main.wxs`のGUID/Schedule/NeverOverwrite不変条件を機械的に固定するguard test新設。schema_versionマイグレーション機構の新設は不採用(既存方針に整合)
+status: |-
+  **実装済み(2026-08-21)**。round1(6 must-fix)→round2(実コード裏取りで4 must-fix、うちMSIの`layout/nicola.yab`保護漏れ等)→round3(round2 must-fix4件の反映確認)の3ラウンドOpus premortemを経て実装。cargo test(800件超)・fmt・CI相当clippy・`cargo xwin check/clippy/build --tests`(実Windowsターゲット)全緑。実装後Opusコードレビューで2件のCONFIRMEDバグ(guard testが自分のコメント文言で無効化・`.bak`コピー失敗時も保存続行)を検出・修正済み。Windows実機でのアップグレード検証は未実施
+related_adr:
+  - "ADR-092"
+---
+
 # ADR-099: バージョンアップ時の設定消失を防ぐ — MSI/ZIP インストーラーのユーザーデータ分離と load-failure セーフティネット
 
 ## ステータス

@@ -1,3 +1,23 @@
+---
+id: ADR-159
+title: |-
+  既存の送受信境界を棚卸しし、記録・再生・シャドー実行の土台にする
+summary: |-
+  ADR-158採用Aの子ADR。当初案をround1で反証し「既存境界の棚卸しと未収束呼び出し元の特定」に組み替え。2026-09-09の実機スパイクでM1(送信機構はsend_input_safe/send_ime_control の2系統、SendInput:WM_IME_CONTROL比が2セッションとも約7〜8:1で再現性あり)・M6(journal非欠落)を実測で確定、M2(InputRelay gate)はテスト条件不足でMWB検証を当面見送り静的解析ベースで判断。さらに段階0の成果物を「棚卸し文書」から「ADR-161実証実験で検証済みのdylint宣言強制」に定義し直した
+status: |-
+  起票。TJ2(単体レビュー)実施済み・round4反映済み。段階1(TF1)/段階2(TF2、`shadow_send_trace.rs`、送信内容のシャドー記録)は2026-09-10にPR#193で実装・実機検証済み。再生側（決定点への再投入）は子ADR[163](163-actuation-decision-io-separation-and-replay-harness.md)が引き継ぐ
+related_adr:
+  - "ADR-119"
+  - "ADR-121"
+  - "ADR-151"
+  - "ADR-152"
+  - "ADR-156"
+  - "ADR-158"
+  - "ADR-160"
+  - "ADR-161"
+  - "ADR-162"
+---
+
 # ADR-159: 既存の送受信境界を棚卸しし、記録・再生・シャドー実行の土台にする
 
 ## ステータス

@@ -1,3 +1,24 @@
+---
+id: ADR-163
+title: |-
+  actuation合流点の「決定」と「実I/O」の分離、および決定点ジャーナル再生ハーネス
+summary: |-
+  ADR-159の子ADR。ADR-159段階1/2(TF1/TF2)は「何が起きたか」を記録する側のみで、記録した入力を意思決定ロジック(ゲート判定・戦略選択・チェーン走査)へ再投入してWin32を実際に叩かずに送信列を再現する再生ハーネス側が存在しなかった欠落を埋める設計。opus-adversarial-consult round1〜round3で決定節を2度全面書き直し、round3で「設計の骨格(Part A〜C)は収束した」と判定・round4不要。2026-09-11、ユーザー要望（bug reportをリプレイ/不要ロジック調査に役立てたい、母集団Nを増やしたい）を受けPart D（TH1d'、journal相乗りによるbug report経由の実機コーパス自動収集）を追記。opus-adversarial-consultを3ラウンド実施（設計1回・タスク分割1回・PRマージ前レビュー1回、計16件のBlocker解消）
+status: |-
+  設計収束済み(Part A〜D)。実装はTH1a(Step 0)〜TH1c(Part B)に加えTH1d'(Part D、journal相乗りによる実機コーパス自動収集)もPR#201でdevelopへマージ済み(2026-09-11)。TH1d(既知バグfixture手動投入)・TH1e(Part C、実削除+差分ゼロ再生証明、ADR-158 TH1発効条件の充足)は未着手。TH1d'内の一部受け入れ基準(windows-build CI/実機必須)とShould-fix6件(N-1〜N-6)も未達のままdocs/adr/163-implementation-tasks.mdに記録済み
+related_adr:
+  - "ADR-089"
+  - "ADR-095"
+  - "ADR-117"
+  - "ADR-119"
+  - "ADR-148"
+  - "ADR-151"
+  - "ADR-152"
+  - "ADR-158"
+  - "ADR-159"
+  - "ADR-162"
+---
+
 # ADR-163: actuation合流点の「決定」と「実I/O」の分離、および決定点ジャーナル再生ハーネス
 
 ## ステータス

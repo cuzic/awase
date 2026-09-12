@@ -1,3 +1,14 @@
+---
+id: ADR-021
+title: |-
+  Effect 遅延実行によるフックタイムアウト防止
+summary: |-
+  Effect 遅延実行（bounded ring + guard slot 含む）
+status: |-
+  採用済み
+related_adr: []
+---
+
 # ADR-021: Effect 遅延実行によるフックタイムアウト防止
 
 ## ステータス

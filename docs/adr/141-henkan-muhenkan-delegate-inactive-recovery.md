@@ -1,3 +1,17 @@
+---
+id: ADR-141
+title: |-
+  無変換/変換 delegate-to-open-axis の TurnOn 方向構造的到達不能問題（C2）の解消
+summary: |-
+  変換/無変換キーのdelegate-to-open-axisが、対象キーが親指キーでない場合や活性化条件を満たさない場合に不活性のまま復旧しない問題への対応
+status: |-
+  実装済み（PR #177でdevelopマージ済み）
+related_adr:
+  - "ADR-092"
+  - "ADR-119"
+  - "ADR-135"
+---
+
 # ADR-141: 無変換/変換 delegate-to-open-axis の TurnOn 方向構造的到達不能問題（C2）の解消
 
 ## ステータス

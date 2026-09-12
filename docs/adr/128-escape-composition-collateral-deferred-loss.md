@@ -1,3 +1,19 @@
+---
+id: ADR-128
+title: |-
+  recovery resend が自分自身の実送信より前に `pending_deferred` を drain し、出力順を反転させたうえ直後の per-VK confirm の証拠を汚染して `StaleConfirm`→`VK_ESCAPE` を誘発する（ADR-123 決定4-3 の回帰）
+summary: |-
+  BUG-109（`report_id: 01M1MW0KSY5KWVYSGPGRBTNSPA`、ADR-123修正適用済みビルドで「なまえま」→「なま」に文字消失）から起票。初版は「flushは正しく成功していたが事後のescapeに巻き込まれた」と誤診断したが、opus-adversarial-consult round1が journal の`deferred_flushed: 0`とapp_logの実際の呼び出し順から因果が逆であることを実証: ADR-123決定4-3の`drain_pending_deferred_before_send_if_queue_only`（`output/vk_send.rs:216`/`:392`）が`gate`（`DeferGate::Enforced`/`Exempt`）を見ずに無条件発火するため、GJI reinit retryの再送（`resend_gji_reinit_retry_romaji`、`gate=Exempt`）自身の実送信より**前**にdrainしてしまい、その注入内容が再送自身のper-VK confirmの証拠を汚染して`StaleConfirm`→`VK_ESCAPE`を誘発する**ADR-123決定4-3自身の回帰**と確定。副次的に出力順反転も発生しうることも判明。decision: drainを`DeferGate::Enforced`限定に修正。backspace案は既存invariant（BUG-33追補3・4）と衝突するため却下、確定待ち案は候補シグナルが本件で両方とも事前に無効化されるため保留、計測先行案はADR-100決定4-aの誤引用と判明し独立の計装へ格下げ
+status: |-
+  **実装済み・developマージ済み（`1b5ca721`、PR #160）。BUG-109は解消、修正マージ後の新規再発なし。2026-09-08にindex.mdの記載漏れを訂正**
+related_adr:
+  - "ADR-100"
+  - "ADR-101"
+  - "ADR-103"
+  - "ADR-122"
+  - "ADR-123"
+---
+
 # ADR-128: recovery resend が自分自身の実送信より前に `pending_deferred` を drain し、出力順を反転させたうえ直後の per-VK confirm の証拠を汚染して `StaleConfirm`→`VK_ESCAPE` を誘発する（ADR-123 決定4-3 の回帰）
 
 ## ステータス

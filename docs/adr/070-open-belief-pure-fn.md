@@ -1,3 +1,15 @@
+---
+id: ADR-070
+title: |-
+  `reduce_open_belief` — 観測値を純粋関数で単一ビリーフに還元する
+status: |-
+  採用済み
+related_adr:
+  - "ADR-035"
+  - "ADR-044"
+  - "ADR-069"
+---
+
 # ADR-070: `reduce_open_belief` — 観測値を純粋関数で単一ビリーフに還元する
 
 ## ステータス

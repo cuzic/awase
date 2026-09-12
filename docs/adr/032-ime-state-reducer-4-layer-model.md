@@ -1,3 +1,17 @@
+---
+id: ADR-032
+title: |-
+  IME 状態モデルの 4 階層 reducer アーキテクチャ
+status: |-
+  採用済み
+related_adr:
+  - "ADR-021"
+  - "ADR-026"
+  - "ADR-027"
+  - "ADR-029"
+  - "ADR-030"
+---
+
 # ADR-032: IME 状態モデルの 4 階層 reducer アーキテクチャ
 
 ## ステータス

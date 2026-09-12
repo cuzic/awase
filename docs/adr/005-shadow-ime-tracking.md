@@ -1,3 +1,12 @@
+---
+id: ADR-005
+title: |-
+  Shadow IME 状態追跡と IME トグルキー検出
+status: |-
+  採用済み
+related_adr: []
+---
+
 # ADR-005: Shadow IME 状態追跡と IME トグルキー検出
 
 ## ステータス

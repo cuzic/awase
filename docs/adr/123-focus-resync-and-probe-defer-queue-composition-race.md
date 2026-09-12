@@ -1,3 +1,18 @@
+---
+id: ADR-123
+title: |-
+  `pending_deferred` の flush ガードが GJI reinit-retry 完了しか見ていないため、reinit 完了を待つ間に到着した別モーラが独立 probe で追い越し、deferred VK が確定済みセッションの後ろに取り残されて出力順が入れ替わる
+summary: |-
+  [GitHub issue #148](https://github.com/cuzic/awase/issues/148)（Windows Terminal+GJIで「たとえば」が「ばたと」に文字脱落・順序入替）から起票。Opus 2体（architect/premortem）敵対的レビュー2ラウンド完了後、round2で提示された2点の検証項目を`report_id: 01M1JJD54XQXSEJTHHFKV1WKA1`の`app_log_excerpt`（journalでは追えないlog::生ログ層）を直接読んで確定させ、根本原因を確定させた。「た」のgive-upが予約したGJI reinitのポーリング完了を待つ間`pending_deferred`（と+え、3VK）のflushは保留されるが、この保留期間中に到着した「ば」が`pending_deferred`の存在を考慮しない`defer_if_probe_in_flight`（`has_pending_tsf()`のみ判定）を通り独立probeを開始して先に確定、`pending_deferred`が後から来たモーラに追い越される、という機序を特定。round0の「え+ば融合」仮説・round2で浮上した`discard_raw_recovery_if_focus_stale`（focus churn破棄）仮説はいずれも反証・不発火確認済みで棄却
+status: |-
+  **根本原因確定・decision確定（未実装）。ユーザー判断により実際の修正（`defer_if_probe_in_flight`のgating拡張）は次回`TsfProbeStarted.pending_deferred_len>0`が実際に観測されるまで見送り、再発時に仮説を機械的に確定できる診断ログ（`TsfProbeStarted.pending_deferred_len`/`probe_id`、`DeferredRecoveryFlush`、`GjiReinitRetryCompleted`）のみを実装（PR #151）**
+related_adr:
+  - "ADR-095"
+  - "ADR-101"
+  - "ADR-122"
+  - "ADR-128"
+---
+
 # ADR-123: `pending_deferred` の flush ガードが GJI reinit-retry 完了しか見ていないため、reinit 完了を待つ間に到着した別モーラが独立 probe で追い越し、deferred VK が確定済みセッションの後ろに取り残されて出力順が入れ替わる
 
 ## ステータス

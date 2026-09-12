@@ -1,3 +1,15 @@
+---
+id: ADR-054
+title: |-
+  PHYSICAL_KEY_STATE と LLKHF_INJECTED フィルタリング
+status: |-
+  採用済み
+related_adr:
+  - "ADR-032"
+  - "ADR-040"
+  - "ADR-053"
+---
+
 # ADR-054: PHYSICAL_KEY_STATE と LLKHF_INJECTED フィルタリング
 
 ## ステータス

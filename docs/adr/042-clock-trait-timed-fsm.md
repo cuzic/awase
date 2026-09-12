@@ -1,3 +1,14 @@
+---
+id: ADR-042
+title: |-
+  Clock トレイト抽象化と timed-fsm のテスト可能性
+status: |-
+  採用済み
+related_adr:
+  - "ADR-019"
+  - "ADR-022"
+---
+
 # ADR-042: Clock トレイト抽象化と timed-fsm のテスト可能性
 
 ## ステータス
