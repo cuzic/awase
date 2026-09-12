@@ -249,7 +249,7 @@ pub struct GeneralConfig {
     /// 変換操作そのものが壊れる。そのため既定値は `true`（常時送出）。
     ///
     /// この設定が `true` でも、フォーカス変更等コンテキスト境界を跨ぐフラッシュ
-    /// （`ComposingHint::Unknown`、`nicola_fsm.rs` 参照）では常に suppress される。
+    /// （`ThumbRawVkEmission::Denied`、`nicola_fsm.rs` 参照）では常に suppress される。
     /// 別ウィンドウへの生 VK_SPACE 誤注入を防ぐための安全策で、ユーザーが設定できる
     /// 範囲ではない。
     pub space_thumb_ignore_composing_guard: bool,
@@ -273,7 +273,7 @@ pub struct GeneralConfig {
     /// 無変換キー本来の機能（かな変換の取り消し等）を使いたい場合のみ `true` にする。
     ///
     /// この設定が `true` でも、フォーカス変更等コンテキスト境界を跨ぐフラッシュ
-    /// （`ComposingHint::Unknown`、`nicola_fsm.rs` 参照）では常に suppress される。
+    /// （`ThumbRawVkEmission::Denied`、`nicola_fsm.rs` 参照）では常に suppress される。
     /// 別ウィンドウへの生 VK 誤注入を防ぐための安全策で、ユーザーが設定できる
     /// 範囲ではない。
     pub muhenkan_solo_tap_ignore_composing_guard: bool,
@@ -361,7 +361,7 @@ pub struct GeneralConfig {
     /// 操作そのものができなくなってしまう。
     ///
     /// この設定が `true` でも、フォーカス変更等コンテキスト境界を跨ぐフラッシュ
-    /// （`ComposingHint::Unknown`、`nicola_fsm.rs` 参照）では常に suppress される。
+    /// （`ThumbRawVkEmission::Denied`、`nicola_fsm.rs` 参照）では常に suppress される。
     pub enter_thumb_ignore_composing_guard: bool,
     /// `left_thumb_key`/`right_thumb_key` に Enter (`VK_RETURN`) を割り当てている
     /// 場合に限り効く設定。無変換/変換や Space 等他の VK には一切影響しない。

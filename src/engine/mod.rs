@@ -30,9 +30,9 @@ pub use decision::{
 };
 pub use engine::Engine;
 pub use fsm_types::{
-    ClassifiedEvent, ComposingHint, EngineState, GuardAction, KeyClass, ModeKeyConfig,
-    ModifierState, OutputUpdate, ParseAction, PendingKey, PendingThumbData, SoloTapAction,
-    TextKeyConfig, TimerIntent, TIMER_PENDING, TIMER_SPECULATIVE,
+    ClassifiedEvent, EngineState, GuardAction, KeyClass, ModeKeyConfig, ModifierState,
+    OutputUpdate, ParseAction, PendingKey, PendingThumbData, SoloTapAction, TextKeyConfig,
+    ThumbRawVkEmission, TimerIntent, TIMER_PENDING, TIMER_SPECULATIVE,
 };
 pub use idle_check::should_run_idle_conv_check;
 pub use kana_input_warn::{KanaLockHysteresis, KanaLockReading, KanaLockStreak, WarnAction};

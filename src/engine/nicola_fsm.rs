@@ -15,9 +15,9 @@ use crate::yab::{YabFace, YabLayout, YabValue};
 
 use super::consecutive_counter::ConsecutiveSoloCounter;
 use super::fsm_types::{
-    BypassReason, ClassifiedEvent, ComposingHint, EngineState, Face, IdleIntent, KeyClass,
-    ModeKeyConfig, OutputUpdate, ParseAction, PendingKey, PendingThumbData, ResolvedAction,
-    SoloTapAction, TextKeyConfig, ThumbSide, TimerIntent, TIMER_PENDING, TIMER_SPECULATIVE,
+    BypassReason, ClassifiedEvent, EngineState, Face, IdleIntent, KeyClass, ModeKeyConfig,
+    OutputUpdate, ParseAction, PendingKey, PendingThumbData, ResolvedAction, SoloTapAction,
+    TextKeyConfig, ThumbRawVkEmission, ThumbSide, TimerIntent, TIMER_PENDING, TIMER_SPECULATIVE,
 };
 use super::retro_eval_stats::{self, RetroEvalStats};
 use super::timing::{self, DecisionPhase};
@@ -579,9 +579,13 @@ impl NicolaFsm {
     ///
     /// Panics if internal state is inconsistent (e.g. `PendingChar` phase
     /// without a stored `pending_char`). This indicates a logic error.
-    pub fn flush_pending(&mut self, reason: ContextChange, composing: ComposingHint) -> Resp {
+    pub fn flush_pending(&mut self, reason: ContextChange, raw_vk: ThumbRawVkEmission) -> Resp {
         let old_state = std::mem::replace(&mut self.state, EngineState::Idle);
         let was_idle = matches!(old_state, EngineState::Idle);
+        // BUG-129「再検討条件」の証拠収集用（挙動は変えない、ログのみ）:
+        // FocusChanged等のflushが非Idle状態を実際にどれだけ掴んでいるかを
+        // 後から journal/bug report で数えられるようにする。
+        let old_state_label = old_state.debug_label();
 
         let response = match old_state {
             EngineState::Idle => {
@@ -589,7 +593,10 @@ impl NicolaFsm {
                 Response::consume()
             }
             EngineState::PendingChar(pending) => {
-                // 保留中の文字キーを通常面で単独確定
+                // 保留中の文字キーを通常面で単独確定。`raw_vk` は参照しない
+                // （意図的、BUG-129）——この腕はかな（`lookup_face`の結果）のみを
+                // 出力し生の機能VKを送出しないため、`ThumbRawVkEmission`が守る
+                // 「別ウィンドウへの生VK誤注入」というリスクが構造的に存在しない。
                 let resolved = self.resolve_pending_char_as_single(&pending);
                 self.update_history_imprecise(
                     resolved.output,
@@ -598,19 +605,20 @@ impl NicolaFsm {
                 Response::emit(flatten_actions(resolved.actions))
             }
             EngineState::PendingThumb(thumb) => {
-                // 保留中の親指キーを単独確定。composing を信頼できない場合は
-                // Space 例外も含め無条件 suppress する（上記 doc 参照）。
-                let (resolved, ime_open_request) = match composing {
-                    ComposingHint::Trusted(c) => self.resolve_pending_thumb_as_single(
+                // 保留中の親指キーを単独確定。`raw_vk == Denied`（コンテキスト
+                // 境界を跨ぐ flush）では生の機能VK送出（Space フォールバック等）を
+                // 無条件 suppress する（上記 doc 参照）。
+                let (resolved, ime_open_request) = match raw_vk {
+                    ThumbRawVkEmission::Allowed(composing) => self.resolve_pending_thumb_as_single(
                         thumb.scan_code,
                         thumb.vk_code,
                         thumb.modifier_key,
                         thumb.injected,
-                        c,
+                        composing,
                         thumb.explicit_ime_action_consumed,
                         thumb.auto_delegate_open_axis_consumed,
                     ),
-                    ComposingHint::Unknown => (
+                    ThumbRawVkEmission::Denied => (
                         ResolvedAction {
                             actions: SmallVec::new(),
                             output: OutputUpdate::None,
@@ -638,6 +646,9 @@ impl NicolaFsm {
                 // 重なり不足判定（confirms_char_thumb_chord）もここでは適用しない
                 // ——異常系 flush は「今ある情報で即座に確定する」経路であり、
                 // 通常の 2 鍵解決（KeyUp/タイムアウト経由）とは別軸のため。
+                //
+                // `raw_vk` は参照しない（意図的、BUG-129）——`PendingChar`と同じ
+                // 理由で、この腕もかなのみを出力し生の機能VKを送出しない。
                 let resolved = self.resolve_char_thumb_as_simultaneous(&char_key, thumb.face());
                 self.update_history_imprecise(
                     resolved.output,
@@ -679,8 +690,9 @@ impl NicolaFsm {
 
         if !was_idle {
             tracing::info!(
-                "flush_pending({:?}): flushed {} action(s)",
+                "flush_pending({:?}, from={}): flushed {} action(s)",
                 reason,
+                old_state_label,
                 response.actions.len()
             );
         }
@@ -698,7 +710,7 @@ impl NicolaFsm {
     pub fn toggle_enabled(&mut self) -> (bool, Resp) {
         let mut flush_resp = self.flush_pending(
             ContextChange::EngineDisabled,
-            ComposingHint::Trusted(self.phys.composing),
+            ThumbRawVkEmission::Allowed(self.phys.composing),
         );
         self.enabled = !self.enabled;
         self.clear_output_history_appending_releases(&mut flush_resp);
@@ -1077,7 +1089,7 @@ impl NicolaFsm {
     pub fn swap_layout(&mut self, layout: YabLayout) -> Resp {
         let mut flush_resp = self.flush_pending(
             ContextChange::LayoutSwapped,
-            ComposingHint::Trusted(self.phys.composing),
+            ThumbRawVkEmission::Allowed(self.phys.composing),
         );
         self.layout = layout;
         self.clear_output_history_appending_releases(&mut flush_resp);
@@ -3282,7 +3294,7 @@ impl NicolaFsm {
                     }
                     let flush = self.flush_pending(
                         ContextChange::BypassKey,
-                        ComposingHint::Trusted(self.phys.composing),
+                        ThumbRawVkEmission::Allowed(self.phys.composing),
                     );
                     let mut resp =
                         self.build_response(SmallVec::new(), true, TimerIntent::CancelAll);
@@ -3306,7 +3318,7 @@ impl NicolaFsm {
         );
         let flush = self.flush_pending(
             ContextChange::BypassKey,
-            ComposingHint::Trusted(self.phys.composing),
+            ThumbRawVkEmission::Allowed(self.phys.composing),
         );
         let mut resp = Response::pass_through();
         resp.actions = flush.actions;
@@ -4248,5 +4260,332 @@ mod tests {
             [0, 0, 0, 0, 0, 1, 0],
             "elapsed=1599msはbucket 5に計上されるはず"
         );
+    }
+
+    // ── flush_pending の全数決定表（状態 × ContextChange × ThumbRawVkEmission）──
+    //
+    // `docs/awase-state-machine-review.md`（gitignore済みの私的レビュー依頼文書）
+    // 13-4節が「EngineState の flush タイミングが一貫しているか確認してほしい」と
+    // 名指ししていた箇所。`EngineState`（5 variant）× `ContextChange`（6 variant）×
+    // `ThumbRawVkEmission`（2値）の全組合せを実行し、各枝が実際に何を出力するかを
+    // 1つのテーブルとして固定する——散文の説明ではなく実行結果そのものを
+    // ドキュメントにすることで、コード変更時に自動的に検知されるようにする。
+    //
+    // 畳み込み（効かない軸を `*` にまとめる）は意図的に行わない: 12,096通りの
+    // actuation決定表を検討した際、畳み込みロジック自体が新たなバグの温床になる
+    // 懸念が指摘された（Opus敵対的レビュー）。本テーブルは全体で数十行と
+    // 小さいため、生の全数列挙のまま可読性を保てる。
+    //
+    // # このテーブルが可視化した非対称性と、それが「バグではない」と判定した経緯
+    //
+    // 旧名 `ComposingHint::Unknown`（現 `ThumbRawVkEmission::Denied`、フォーカス
+    // 変更等でコンテキスト境界を跨いだ flush）を受け取ったとき:
+    // - `EngineState::PendingThumb` の腕は生の機能VK（Space/無変換/変換等）の
+    //   送出を無条件禁止する。
+    // - `EngineState::PendingChar` / `PendingCharThumb` の腕はこの値を一切
+    //   参照しない。
+    //
+    // このテーブルを最初に作った際（2026-09-11）、`PendingCharThumb` だけが
+    // `Unknown` を無視するのは見落としだと判定し BUG-129 として記録した。
+    // しかしユーザー指示でOpusに根本原因を再検討させたところ、**この非対称性は
+    // 見落としではなく型（旧名）が実態より広い意味を名乗っていたことによる
+    // 誤読**と判明した:
+    //
+    // 1. `composing`（生 bool 値）を実際に消費するのは `resolve_pending_thumb_as_
+    //    single` 系のみ（`PendingThumb` の腕）。`resolve_char_thumb_as_
+    //    simultaneous`（`PendingCharThumb`）と `resolve_pending_char_as_single`
+    //    （`PendingChar`）は `lookup_face` の結果＝かなの `KeyAction` だけを
+    //    返し、composing 値を一切見ない——生VKを送出しないため。
+    // 2. `ComposingHint` 導入コミット `e3041be6` の diff を見ると、変更**前**の
+    //    `PendingThumb` 腕は常に生VK抑止（composing引数なし）で、同コミットは
+    //    「flush でも composing を見て生VKを撃てるようにする」**緩和**だった。
+    //    `Unknown` はこの緩和の適用除外＝従来挙動の維持であり、「flush全体に
+    //    掛かる安全ガード」ではない。`PendingCharThumb` はこの緩和の対象外
+    //    （生VKを撃たない）なので、除外条項を書く相手がそもそも存在しない。
+    // 3. フォーカス変更の検出は `run_ime_refresh` の500ms周期ティックでしか
+    //    起きない（`crates/awase-windows/src/focus/tracker.rs`）のに対し、
+    //    `PendingCharThumb` の滞在時間は同時打鍵しきい値+3鍵目待ちの数十msしか
+    //    ない。よって `flush_pending(FocusChanged)` が掴む保留キーは、実際の
+    //    フォーカス切替より**後**に打たれた（＝現在のウィンドウ宛て）可能性の
+    //    方が高い。ここで無条件 suppress を入れると、ユーザーが今見ている
+    //    ウィンドウへ打った文字を黙って消す——`docs/known-bugs.md` が最も
+    //    嫌う silent data loss を新規に作る、誤答側の「修正」になる。
+    // 4. `PendingChar`（単独文字キーのみ保留）も同じくかなを出力するが
+    //    suppress していない。`PendingCharThumb` だけ変えると「単独文字は
+    //    出るのに文字+親指は消える」という新しい非対称を作る。
+    //
+    // 結論: **挙動は変えない**。再燃の原因だった「2通りに読める型名」を
+    // `ComposingHint` → `ThumbRawVkEmission`（`Trusted(bool)`/`Unknown` →
+    // `Allowed`/`Denied`）に改名し、`PendingChar`/`PendingCharThumb` の腕には
+    // 「参照しない」ことが意図的である旨のコメントを付けた。詳細・再検討条件は
+    // `docs/known-bugs.md` BUG-129 参照。
+
+    /// `flush_pending` の1回の呼び出し結果を要約した行。
+    #[expect(clippy::struct_excessive_bools)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct FlushRow {
+        state: &'static str,
+        char1_released: Option<bool>,
+        reason: &'static str,
+        raw_vk: &'static str,
+        consumed: bool,
+        action_kinds: Vec<&'static str>,
+        timers: Vec<String>,
+        own_decision_reset: bool,
+        thumb_watch_reset: bool,
+        last_decision_reset: bool,
+    }
+
+    fn context_change_label(r: ContextChange) -> &'static str {
+        match r {
+            ContextChange::ImeOff => "ImeOff",
+            ContextChange::InputLanguageChanged => "InputLanguageChanged",
+            ContextChange::EngineDisabled => "EngineDisabled",
+            ContextChange::LayoutSwapped => "LayoutSwapped",
+            ContextChange::FocusChanged => "FocusChanged",
+            ContextChange::BypassKey => "BypassKey",
+        }
+    }
+
+    const fn raw_vk_label(v: ThumbRawVkEmission) -> &'static str {
+        match v {
+            ThumbRawVkEmission::Allowed(true) => "Allowed(true)",
+            ThumbRawVkEmission::Allowed(false) => "Allowed(false)",
+            ThumbRawVkEmission::Denied => "Denied",
+        }
+    }
+
+    fn action_kind(a: &KeyAction) -> &'static str {
+        match a {
+            KeyAction::SpecialKey(_) => "SpecialKey",
+            KeyAction::Key(_) => "Key",
+            KeyAction::KeyUp(_) => "KeyUp",
+            KeyAction::Char(_) => "Char",
+            KeyAction::Suppress => "Suppress",
+            KeyAction::Romaji(_) => "Romaji",
+            KeyAction::KeySequence(_) => "KeySequence",
+            KeyAction::CtrlChord(_) => "CtrlChord",
+            KeyAction::Sequence(_) => "Sequence",
+        }
+    }
+
+    /// テスト用の代表値。実際の VK/ScanCode の値そのものは分岐に効かないため
+    /// （空レイアウトでは `lookup_face` が常に `None` を返す）、固定の適当な値でよい。
+    fn make_pending_key() -> PendingKey {
+        PendingKey {
+            scan_code: ScanCode(0x1E),
+            vk_code: VkCode(0x41),
+            pos: None,
+            timestamp: 1_000,
+        }
+    }
+
+    fn make_pending_thumb() -> PendingThumbData {
+        PendingThumbData {
+            scan_code: ScanCode(0x2A),
+            vk_code: VkCode(0xA0),
+            is_left: true,
+            timestamp: 1_000,
+            injected: false,
+            modifier_key: None,
+            explicit_ime_action_consumed: false,
+            auto_delegate_open_axis_consumed: false,
+        }
+    }
+
+    /// 各 `EngineState` variant を代表値で構築し、その kind ラベルを返す。
+    /// `PendingCharThumb` のみ `char1_released` を反映する。
+    fn build_state(kind: &str, char1_released: bool, fsm: &mut NicolaFsm) {
+        match kind {
+            "Idle" => {}
+            "PendingChar" => fsm.enter_pending_char(make_pending_key()),
+            "PendingThumb" => fsm.enter_pending_thumb(make_pending_thumb()),
+            "PendingCharThumb" => {
+                fsm.enter_pending_char_thumb(make_pending_key(), make_pending_thumb());
+                if char1_released {
+                    if let EngineState::PendingCharThumb {
+                        char1_released_at, ..
+                    } = &mut fsm.state
+                    {
+                        *char1_released_at = Some(500);
+                    }
+                }
+            }
+            "SpeculativeChar" => fsm.state = EngineState::SpeculativeChar(make_pending_key()),
+            other => panic!("unknown state kind: {other}"),
+        }
+    }
+
+    const STATE_KINDS: [&str; 5] = [
+        "Idle",
+        "PendingChar",
+        "PendingThumb",
+        "PendingCharThumb",
+        "SpeculativeChar",
+    ];
+    const REASONS: [ContextChange; 6] = [
+        ContextChange::ImeOff,
+        ContextChange::InputLanguageChanged,
+        ContextChange::EngineDisabled,
+        ContextChange::LayoutSwapped,
+        ContextChange::FocusChanged,
+        ContextChange::BypassKey,
+    ];
+    const RAW_VK_EMISSIONS: [ThumbRawVkEmission; 3] = [
+        ThumbRawVkEmission::Allowed(true),
+        ThumbRawVkEmission::Allowed(false),
+        ThumbRawVkEmission::Denied,
+    ];
+
+    fn run_flush_matrix() -> Vec<FlushRow> {
+        let mut rows = Vec::new();
+        for &state_kind in &STATE_KINDS {
+            // `char1_released` は `PendingCharThumb` にしか存在しない軸。
+            // 他の状態では意味を持たないため `None` 固定・1通りだけ実行する。
+            let char1_variants: &[Option<bool>] = if state_kind == "PendingCharThumb" {
+                &[Some(false), Some(true)]
+            } else {
+                &[None]
+            };
+            for &char1_released in char1_variants {
+                for &reason in &REASONS {
+                    for &raw_vk in &RAW_VK_EMISSIONS {
+                        let mut fsm = make_test_fsm();
+                        build_state(state_kind, char1_released.unwrap_or(false), &mut fsm);
+
+                        // own_decision_output/thumb_watch_window/last_decision の
+                        // リセット挙動を観測するため、事前に非 None の値を仕込む。
+                        fsm.own_decision_output = Some(OwnDecisionOutput {
+                            remaining: 1,
+                            measure_since: None,
+                        });
+                        fsm.thumb_watch_window = Some(ThumbWatchWindow {
+                            remaining: 1,
+                            last_vk: None,
+                            last_vk_down: false,
+                        });
+                        fsm.last_decision = Some(LastDecision {
+                            phase2_at: Some(1),
+                            phase1_at: None,
+                            baseline_at: None,
+                        });
+
+                        let resp = fsm.flush_pending(reason, raw_vk);
+
+                        rows.push(FlushRow {
+                            state: state_kind,
+                            char1_released,
+                            reason: context_change_label(reason),
+                            raw_vk: raw_vk_label(raw_vk),
+                            consumed: resp.consumed,
+                            action_kinds: resp.actions.iter().map(action_kind).collect(),
+                            timers: resp.timers.iter().map(|t| format!("{t:?}")).collect(),
+                            own_decision_reset: fsm.own_decision_output.is_none(),
+                            thumb_watch_reset: fsm.thumb_watch_window.is_none(),
+                            last_decision_reset: fsm.last_decision.is_none(),
+                        });
+                    }
+                }
+            }
+        }
+        rows
+    }
+
+    /// `PendingThumb` は `ThumbRawVkEmission::Denied` で生VK送出を無条件禁止する
+    /// （actions が空になる）。
+    #[test]
+    fn flush_pending_thumb_suppresses_raw_vk_when_denied() {
+        let rows = run_flush_matrix();
+        let affected: Vec<_> = rows
+            .iter()
+            .filter(|r| r.state == "PendingThumb" && r.raw_vk == "Denied")
+            .collect();
+        assert!(!affected.is_empty());
+        for row in affected {
+            assert!(
+                row.action_kinds.is_empty(),
+                "PendingThumb + Denied は無条件suppressのはず: {row:?}"
+            );
+        }
+    }
+
+    /// **意図的な非対称性（BUG-129 参照。当初は見落としと誤診したが、Opus再検討で
+    /// 「型が実態より広い意味を名乗っていた」ことが原因と判明し、挙動は変えず
+    /// `ComposingHint` → `ThumbRawVkEmission` へ改名した）**:
+    /// `PendingCharThumb` はかな出力のみで生VKを送出しないため
+    /// `ThumbRawVkEmission` を一切参照せず、`Allowed`/`Denied` で action 列が
+    /// 変わらない。これは invariant（設計意図の固定）であり、直すべきギャップ
+    /// ではない——変更する場合は `docs/known-bugs.md` BUG-129 の「再検討条件」を
+    /// 満たしてから、本テストと上部のテーブル説明を合わせて書き換えること。
+    #[test]
+    fn flush_pending_char_thumb_ignores_raw_vk_emission_by_design() {
+        let rows = run_flush_matrix();
+        for &char1_released in &[false, true] {
+            let allowed = rows
+                .iter()
+                .find(|r| {
+                    r.state == "PendingCharThumb"
+                        && r.char1_released == Some(char1_released)
+                        && r.reason == "FocusChanged"
+                        && r.raw_vk == "Allowed(true)"
+                })
+                .expect("Allowed(true) row must exist");
+            let denied = rows
+                .iter()
+                .find(|r| {
+                    r.state == "PendingCharThumb"
+                        && r.char1_released == Some(char1_released)
+                        && r.reason == "FocusChanged"
+                        && r.raw_vk == "Denied"
+                })
+                .expect("Denied row must exist");
+            assert_eq!(
+                allowed.action_kinds, denied.action_kinds,
+                "意図的な設計: PendingCharThumbはThumbRawVkEmissionを見ないため\
+                 Allowed/Deniedで出力が変わらない（char1_released={char1_released}）"
+            );
+            assert_eq!(allowed.consumed, denied.consumed);
+        }
+    }
+
+    /// `reason == BypassKey` の場合のみ own_decision_output/thumb_watch_window/
+    /// last_decision をリセットしない（`nicola_fsm.rs::flush_pending` 末尾の
+    /// ADR-120 決定0a コメント参照）。他の5つの `ContextChange` は全てリセットする。
+    #[test]
+    fn flush_pending_resets_tracking_state_except_for_bypass_key() {
+        let rows = run_flush_matrix();
+        for row in &rows {
+            let expected_reset = row.reason != "BypassKey";
+            assert_eq!(
+                row.own_decision_reset, expected_reset,
+                "own_decision_output reset mismatch: {row:?}"
+            );
+            assert_eq!(
+                row.thumb_watch_reset, expected_reset,
+                "thumb_watch_window reset mismatch: {row:?}"
+            );
+            assert_eq!(
+                row.last_decision_reset, expected_reset,
+                "last_decision reset mismatch: {row:?}"
+            );
+        }
+    }
+
+    /// 全108行（`PendingCharThumb`はchar1_released 2値、他は1値 × 6reason ×
+    /// 3raw_vk = (1+1+1+1)*6*3 + 2*6*3 = 72+36=108行）が panic せず、
+    /// `Idle`/`SpeculativeChar` は常に consume・no-op であることを確認する
+    /// 全数実行スモークテスト。
+    #[test]
+    fn flush_pending_matrix_runs_without_panic_and_idle_variants_are_noop() {
+        let rows = run_flush_matrix();
+        assert_eq!(rows.len(), 108, "想定した組合せ数と一致するはず");
+        for row in rows.iter().filter(|r| r.state == "Idle") {
+            assert!(row.consumed);
+            assert!(row.action_kinds.is_empty());
+        }
+        for row in rows.iter().filter(|r| r.state == "SpeculativeChar") {
+            assert!(row.consumed);
+            assert!(row.action_kinds.is_empty());
+        }
     }
 }

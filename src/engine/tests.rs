@@ -990,7 +990,7 @@ fn test_space_thumb_suppressed_while_composing_when_guard_disabled() {
 }
 
 /// flush 経路でも、composing 値を「保留キーと同一コンテキスト」だと呼び出し元が
-/// `ComposingHint::Trusted` で明示保証した場合は、composing 中の Space フォールバックが
+/// `ThumbRawVkEmission::Allowed` で明示保証した場合は、composing 中の Space フォールバックが
 /// タイムアウト経路と一貫している（従来 flush は無条件 suppress だった不整合の回帰防止）。
 /// `EngineDisabled`/`LayoutSwapped`/`BypassKey` 等、同一イベント処理内で完結する
 /// flush がこれに当たる（`NicolaFsm::toggle_enabled`/`swap_layout`/`handle_bypass` 参照）。
@@ -1001,7 +1001,10 @@ fn test_space_thumb_flush_consistent_with_timeout_when_composing_trusted() {
     let result = engine.on_event(Ev::down(VK_SPACE).build());
     assert_pending(&result);
 
-    let result = engine.flush_pending(ContextChange::EngineDisabled, ComposingHint::Trusted(true));
+    let result = engine.flush_pending(
+        ContextChange::EngineDisabled,
+        ThumbRawVkEmission::Allowed(true),
+    );
     assert!(
         result
             .actions
@@ -1011,7 +1014,7 @@ fn test_space_thumb_flush_consistent_with_timeout_when_composing_trusted() {
     );
 }
 
-/// `ComposingHint::Unknown`（フォーカス変更等、コンテキスト境界を跨ぐフラッシュ）では、
+/// `ThumbRawVkEmission::Denied`（フォーカス変更等、コンテキスト境界を跨ぐフラッシュ）では、
 /// `space_thumb_ignore_composing_guard=true` であっても Space フォールバック例外を
 /// 一切適用せず、無条件 suppress する。
 ///
@@ -1029,11 +1032,11 @@ fn test_space_thumb_flush_suppressed_when_composing_hint_unknown() {
     let result = engine.on_event(Ev::down(VK_SPACE).build());
     assert_pending(&result);
 
-    let result = engine.flush_pending(ContextChange::FocusChanged, ComposingHint::Unknown);
+    let result = engine.flush_pending(ContextChange::FocusChanged, ThumbRawVkEmission::Denied);
     assert_eq!(
         result.actions.len(),
         0,
-        "ComposingHint::Unknown では Space 例外を含め無条件 suppress すべき\
+        "ThumbRawVkEmission::Denied では Space 例外を含め無条件 suppress すべき\
          （コンテキスト境界を跨ぐため composing の新鮮さを保証できない）"
     );
 }
@@ -2339,7 +2342,7 @@ fn test_retro_eval_stats_focus_change_resets_last_decision_attribution() {
     assert_eq!(engine.retro_eval_stats().phase2_reached, 1);
 
     // フォーカス変更（コンテキスト喪失）。
-    engine.flush_pending(ContextChange::FocusChanged, ComposingHint::Unknown);
+    engine.flush_pending(ContextChange::FocusChanged, ThumbRawVkEmission::Denied);
 
     // 190ms後（STALE_ATTRIBUTION_MSの1600ms窓内）、別コンテキストでの
     // BACKSPACE。リセットされていなければ誤って計上されてしまうタイミング。
@@ -3151,12 +3154,12 @@ fn test_toggle_enabled_returns_state() {
 #[test]
 fn test_flush_pending_from_idle_is_noop() {
     let mut engine = make_engine();
-    let r = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
+    let r = engine.flush_pending(ContextChange::ImeOff, ThumbRawVkEmission::Allowed(false));
     // Idle → no-op, consume with no actions
     assert!(r.actions.is_empty());
     assert!(r.consumed);
     // 再入しても no-op
-    let r2 = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
+    let r2 = engine.flush_pending(ContextChange::ImeOff, ThumbRawVkEmission::Allowed(false));
     assert!(r2.actions.is_empty());
 }
 
@@ -3167,10 +3170,13 @@ fn test_flush_pending_from_pending_char() {
     // PendingChar 状態にする
     let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
     // flush → 通常面で単独確定
-    let r = engine.flush_pending(ContextChange::EngineDisabled, ComposingHint::Trusted(false));
+    let r = engine.flush_pending(
+        ContextChange::EngineDisabled,
+        ThumbRawVkEmission::Allowed(false),
+    );
     assert!(!r.actions.is_empty(), "should emit the pending char");
     // Idle に戻っている
-    let r2 = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
+    let r2 = engine.flush_pending(ContextChange::ImeOff, ThumbRawVkEmission::Allowed(false));
     assert!(r2.actions.is_empty(), "should be idle after flush");
 }
 
@@ -3185,7 +3191,7 @@ fn test_flush_pending_from_pending_thumb() {
     // composing 中の抑制（無変換/変換のかな/カタカナ切替誤爆防止）を確認する。
     let r = engine.flush_pending(
         ContextChange::InputLanguageChanged,
-        ComposingHint::Trusted(true),
+        ThumbRawVkEmission::Allowed(true),
     );
     // 単独親指打鍵は composing 中は IME 副作用を防ぐため suppress される
     assert!(
@@ -3202,7 +3208,10 @@ fn test_flush_pending_from_pending_char_thumb() {
     let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
     let _ = engine.on_event(Ev::down(VK_NONCONVERT).at(t0 + 30_000).build());
     // flush → 同時打鍵として確定
-    let r = engine.flush_pending(ContextChange::LayoutSwapped, ComposingHint::Trusted(false));
+    let r = engine.flush_pending(
+        ContextChange::LayoutSwapped,
+        ThumbRawVkEmission::Allowed(false),
+    );
     assert!(!r.actions.is_empty(), "should emit simultaneous result");
 }
 
@@ -3214,7 +3223,7 @@ fn test_flush_pending_from_speculative_char() {
     let r1 = engine.on_event(Ev::down(VK_A).at(t0).build());
     assert!(!r1.actions.is_empty(), "speculative output");
     // flush → 既に出力済みなので追加出力なし
-    let r = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
+    let r = engine.flush_pending(ContextChange::ImeOff, ThumbRawVkEmission::Allowed(false));
     assert!(
         r.actions.is_empty(),
         "speculative was already output, no additional actions"
@@ -3226,7 +3235,7 @@ fn test_flush_pending_cancels_timers() {
     let mut engine = make_engine();
     let t0 = 1_000_000;
     let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
-    let r = engine.flush_pending(ContextChange::ImeOff, ComposingHint::Trusted(false));
+    let r = engine.flush_pending(ContextChange::ImeOff, ThumbRawVkEmission::Allowed(false));
     // タイマー停止命令が含まれる（assert_timer_kill ヘルパーを使用）
     r.assert_timer_kill(TIMER_PENDING);
     r.assert_timer_kill(TIMER_SPECULATIVE);
@@ -5990,7 +5999,10 @@ mod fsm_adapter_tests {
     #[test]
     fn flush_returns_decision() {
         let mut adapter = make_adapter();
-        let decision = adapter.flush(ContextChange::FocusChanged, ComposingHint::Trusted(false));
+        let decision = adapter.flush(
+            ContextChange::FocusChanged,
+            ThumbRawVkEmission::Allowed(false),
+        );
         // Flush on idle should return a Decision without panicking
         let _ = decision.is_consumed();
     }
@@ -5998,8 +6010,10 @@ mod fsm_adapter_tests {
     #[test]
     fn flush_to_effects_returns_vec() {
         let mut adapter = make_adapter();
-        let effects =
-            adapter.flush_to_effects(ContextChange::FocusChanged, ComposingHint::Trusted(false));
+        let effects = adapter.flush_to_effects(
+            ContextChange::FocusChanged,
+            ThumbRawVkEmission::Allowed(false),
+        );
         // Verify it returns a Vec (may or may not be empty depending on FSM internals)
         let _ = effects.len();
     }
@@ -6141,7 +6155,10 @@ mod fsm_adapter_tests {
         let _ = adapter.on_event(event, &phys);
 
         // Flush should resolve the pending key
-        let decision = adapter.flush(ContextChange::FocusChanged, ComposingHint::Trusted(false));
+        let decision = adapter.flush(
+            ContextChange::FocusChanged,
+            ThumbRawVkEmission::Allowed(false),
+        );
         // The flush should produce some output (consumed with effects)
         let _ = decision;
     }
@@ -7581,7 +7598,7 @@ mod engine_integration_tests {
     /// M2 回帰防止（Opus コードレビュー指摘、実機テストプローブで実証済み）:
     /// 無変換が物理的に押下中（`PendingThumb`、まだ単独タップ確定前）に
     /// `EngineCommand::ToggleEngine` が届くと、`toggle_enabled()` 内部の
-    /// flush が `ComposingHint::Trusted` で保留キーを強制的に単独タップ
+    /// flush が `ThumbRawVkEmission::Allowed` で保留キーを強制的に単独タップ
     /// 確定させ、`ime_open_requested` をセットしうる。この「確定」は
     /// ユーザーが実際に無変換をタップしたのではなくトレイ操作等の無関係な
     /// 外部イベントによる強制解決であり、`apply_ime_open_request` を素通り
@@ -9038,7 +9055,7 @@ mod engine_integration_tests {
     #[test]
     fn on_timeout_while_active_resolves_normally_not_via_flush() {
         // `if !self.compute_active(ctx)` (line 278) の `!` が消えると、
-        // active なときに flush(ImeOff, ComposingHint::Unknown) 経由になってしまう。
+        // active なときに flush(ImeOff, ThumbRawVkEmission::Denied) 経由になってしまう。
         // PendingChar の場合は resolve_pending_char_as_single が hint に依存しないため
         // 区別できないが、PendingThumb は composing hint で挙動が変わる
         // （Unknown なら無条件 suppress）ため、こちらで区別する。
@@ -9055,7 +9072,7 @@ mod engine_integration_tests {
                 Effect::Input(InputEffect::SendKeys(actions)) if !actions.is_empty()
             )),
             "active な on_timeout は通常経路で親指キーの生VKを出力するはず（flush 経路だと \
-             ComposingHint::Unknown により無条件 suppress され actions が空になる）, got {:?}",
+             ThumbRawVkEmission::Denied により無条件 suppress され actions が空になる）, got {:?}",
             effects_of(&d2)
         );
     }
