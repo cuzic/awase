@@ -130,6 +130,7 @@
 | [BUG-125](BUG-125.md) | 明示config対象VKが現在のNICOLA親指キー設定と一致しない場合、GJI自動検出由来のactuationがマスクされず二重actuationしうる（/code-review… |
 | [BUG-126](BUG-126.md) | （未確認・理論的リスクとして調査しクローズ）タイマー経路の親指タイムスタンプがdrain replay時にライブ再取得され、別の押下の値と誤って比較されうる懸念——実機未再現、失敗… |
 | [BUG-127](BUG-127.md) | `OUTPUT_GATE` drain replay 中、親指キー押下タイムスタンプがイベント捕捉時点ではなくリプレイ実行時点のライブ値で再構築され、既に消費済みの押下と無関係な後… |
+| [BUG-128](BUG-128.md) | Chrome で Ctrl+無変換 直後に explorer.exe 内の別 UWP 入力面へフォーカスが移ると、無関係な cached ON が復元され force-ON まで誤発火する |
 | [BUG-129](BUG-129.md) | 【解決済み・仕様と判定】`flush_pending`の`PendingCharThumb`腕が`ComposingHint`（現`ThumbRawVkEmission`）を参照しない件、根本原因はコード見… |
 
 ## その他の資料

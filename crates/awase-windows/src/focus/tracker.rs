@@ -269,6 +269,7 @@ impl FocusTracker {
             ime_on,
             input_mode,
             from_explicit_off_intent,
+            self.current.hwnd,
         );
     }
 

@@ -19,6 +19,13 @@ pub struct HwndImeSnapshot {
     /// `false`: 前ウィンドウからの carry-over や Recovery 等の不確かな状態 → stale の可能性あり。
     /// `ime_on=true` のときは常に `false`（使用しない）。
     pub from_explicit_off_intent: bool,
+    /// このスナップショットを記録した時点でフォーカスされていたウィンドウの hwnd。
+    ///
+    /// `(pid, class_name)` キーは同一クラス名を共有する複数の無関係なウィンドウを
+    /// 取り違えうる（`Windows.UI.Input.InputSite.WindowClass` 等）ため、
+    /// TsfNative 窓への ON 復元時にこの値と入場先の hwnd を比較して同一ウィンドウ
+    /// インスタンスへの復帰かどうかを判定する（BUG-128、ADR-165 参照）。
+    pub hwnd: usize,
 }
 
 /// per-HWND IME 状態スナップショットのキャッシュ。
@@ -44,19 +51,22 @@ impl HwndImeCache {
         ime_on: bool,
         input_mode: InputModeState,
         from_explicit_off_intent: bool,
+        old_hwnd: usize,
     ) {
         let snapshot = HwndImeSnapshot {
             ime_on,
             input_mode,
             recorded_ms: crate::hook::current_tick_ms(),
             from_explicit_off_intent,
+            hwnd: old_hwnd,
         };
         tracing::debug!(
-            "HwndCache: save [{} {}] ime_on={} mode={:?}",
+            "HwndCache: save [{} {}] ime_on={} mode={:?} hwnd={}",
             old_pid,
             old_class,
             snapshot.ime_on,
             snapshot.input_mode,
+            snapshot.hwnd,
         );
         let now_ms = snapshot.recorded_ms;
         self.0
@@ -75,21 +85,23 @@ impl HwndImeCache {
             let age_ms = crate::hook::current_tick_ms().saturating_sub(snapshot.recorded_ms);
             if age_ms <= HWND_CACHE_MAX_AGE_MS {
                 tracing::info!(
-                    "HwndCache: restore [{} {}] ime_on={} mode={:?} ({}ms ago)",
+                    "HwndCache: restore [{} {}] ime_on={} mode={:?} hwnd={} ({}ms ago)",
                     new_pid,
                     new_class,
                     snapshot.ime_on,
                     snapshot.input_mode,
+                    snapshot.hwnd,
                     age_ms,
                 );
                 return Some(snapshot);
             }
             tracing::info!(
-                "HwndCache: stale [{} {}] ime_on={} mode={:?} ({}ms ago > {}ms) → FocusProbe 待ち",
+                "HwndCache: stale [{} {}] ime_on={} mode={:?} hwnd={} ({}ms ago > {}ms) → FocusProbe 待ち",
                 new_pid,
                 new_class,
                 snapshot.ime_on,
                 snapshot.input_mode,
+                snapshot.hwnd,
                 age_ms,
                 HWND_CACHE_MAX_AGE_MS,
             );

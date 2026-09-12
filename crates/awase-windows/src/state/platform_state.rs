@@ -2638,6 +2638,7 @@ mod tests {
                 input_mode: InputModeState::ObservedRomaji,
                 recorded_ms: 100,
                 from_explicit_off_intent: false,
+                hwnd: 0,
             }),
             TickMs(600),
         );
@@ -2662,6 +2663,7 @@ mod tests {
                 input_mode: InputModeState::ObservedRomaji,
                 recorded_ms: 500,
                 from_explicit_off_intent: false,
+                hwnd: 0,
             }),
             TickMs(600),
         );
