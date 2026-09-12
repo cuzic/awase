@@ -1,3 +1,19 @@
+---
+id: ADR-140
+title: |-
+  IME probe/actuation の発行競合 — Step 0（診断ログ）・Step 1（排他機構）とも実装・実機確認済み
+summary: |-
+  BUG-113の「二重actuation」とは独立に残置された、`kp_stage_idle_conv_check`のクロスプロセスprobe読み取りとGJI actuationの発行タイミング競合（真のレースではなく決定論的順序）を扱う。Explore 2体+Opus設計2体の相互批判で、既存フェンス（`conv_mutation_seq`等）は「issue自体を止める機構」を持たないため原理的に検出不能と判明。GJI actuationの発行経路（同期`ImeController::apply`/非同期`open_chain::fallback_write`/`tsf::send::send_eager_warmup_vk_pair`、他にも未監査の経路が残りうる）を実コード照合済みで記録。排他機構（Step 1）は排他窓の量が実測必須（`tuning-constants.md`）のため未着手とし、`win32.rs::send_input_safe`（`IME_KANJI_MARKER`判定）と`imm.rs::send_ime_control`（`now_timestamp_us()`基準の追加ログ、既存`send_health`用`current_tick_ms()`計測は不変）へのStep 0診断ログ追加のみを本ADRで採用
+status: |-
+  採用。Step 0・Step 1（`probe_actuation_fence`排他機構）・Step 1b（兄弟probe3箇所への拡張、PR #175/#176でdevelopマージ済み）とも実装・実機確認済み
+related_adr:
+  - "ADR-078"
+  - "ADR-119"
+  - "ADR-133"
+  - "ADR-136"
+  - "ADR-138"
+---
+
 # ADR-140: IME probe/actuation の発行競合 — Step 0（診断ログ）・Step 1（排他機構）とも実装・実機確認済み
 
 ## ステータス

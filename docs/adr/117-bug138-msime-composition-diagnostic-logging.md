@@ -1,3 +1,14 @@
+---
+id: ADR-117
+title: |-
+  MS-IME「直接入力モード許可」時の英数キー文字消失（issue #138）切り分け用ログ
+summary: |-
+  [GitHub issue #138](https://github.com/cuzic/awase/issues/138)「MS-IME『直接入力モードを使用しない』を無効化していると、英数キーで入力中の文字が消える」の切り分け用に、挙動は変更せず診断ログのみを追加。r1は`ImmCrossProcessStrategy::apply`にログを足す案だったが、Opus 2体の敵対的レビューで「報告環境の実書き込みは非同期`imm_cross_write`を通り戦略層自体を経由しない」「journal記録がcomposition tear-down後の値になり一次証拠にならない」という致命的欠陥を検出。r2で対象を実際の4送信経路（`imm_cross_write`/`MsImeDirectStrategy`/`KanjiToggleStrategy`/`ImmCrossProcessStrategy`）に絞り直しjournal案は撤回、architectはr2で収束。premortemはr2で送信成否の可視性不足・`fallback_write`経由の値の陳腐化・`composition_active=false`の両義性を指摘しr3で反映、さらに「送信していない」無音分岐3箇所とログ書式の不整合をr4で解消し収束。r4の設計どおり実装完了、check/clippy/fmt/guard・golden(94件)/lib(921件)全green
+status: |-
+  採用・実装済み（2026-09-02、Windows実機ソーク未実施）
+related_adr: []
+---
+
 # ADR-117: MS-IME「直接入力モード許可」時の英数キー文字消失（issue #138）切り分け用ログ
 
 ## ステータス

@@ -1,3 +1,15 @@
+---
+id: ADR-158-companion-158-complexity-inventory-2026-09-10
+title: |-
+  ADR-158 複雑性インベントリ（2026-09-10）
+type: companion-doc
+related_adr:
+  - "ADR-156"
+  - "ADR-158"
+  - "ADR-160"
+  - "ADR-164"
+---
+
 # ADR-158 複雑性インベントリ（2026-09-10）
 
 [ADR-158](158-complexity-reduction-north-star.md)（北極星）・

@@ -1,3 +1,18 @@
+---
+id: ADR-164
+title: |-
+  グローバルstatic縮小 — 引数引き回し優先＋残りは単一singleton集約の段階的リファクタ計画
+summary: |-
+  ADR-158とは独立に、「グローバルstaticが76件(30%が`hook.rs`)あること自体がスメル」というユーザー指摘から起票。ワークスペース全体を実地調査しA(OSコールバック境界)/A2(クロススレッド共有state、round1で新設)/B(引数引き回し可能)/C(正当な可変シングルトン)/C-immutable(不変ディスパッチテーブル、対象外)/D(要追加調査)に分類。opus-adversarial-consult round1で当初のフェーズ4案(`hook.rs`22件を`&mut HookState`引き回し)の前提が実コードと矛盾すると判明し全面書き直し(20件をロックフリーstruct-of-atomics singletonへ、Mutex明示的に禁止)。round2で新フェーズ3(`tray.rs`)に新たなリスク(トレイメニュー消失)が見つかりユーザー判断で対象外化。round3で反映時の記述矛盾3件を訂正し収束
+status: |-
+  round1〜round3実施・収束(Must-fixゼロ)。フェーズ1(`gji_charset_autodetect.rs`)PR#197でdevelopマージ済み。フェーズ2(`msime_key_assignment.rs::LAST_WARNED`)PR#198で実装済み・develop未マージ。フェーズ3以降未着手
+related_adr:
+  - "ADR-119"
+  - "ADR-158"
+  - "ADR-159"
+  - "ADR-162"
+---
+
 # ADR-164: グローバルstatic縮小 — 引数引き回し優先＋残りは単一singleton集約の段階的リファクタ計画
 
 ## ステータス

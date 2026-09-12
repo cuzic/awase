@@ -1,3 +1,12 @@
+---
+id: ADR-012
+title: |-
+  VkCode / ScanCode newtype の全面適用
+status: |-
+  採用済み
+related_adr: []
+---
+
 # ADR-012: VkCode / ScanCode newtype の全面適用
 
 ## ステータス

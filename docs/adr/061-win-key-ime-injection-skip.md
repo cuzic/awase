@@ -1,3 +1,15 @@
+---
+id: ADR-061
+title: |-
+  Win キー押下中の IME キー注入スキップ
+status: |-
+  採用済み
+related_adr:
+  - "ADR-048"
+  - "ADR-054"
+  - "ADR-057"
+---
+
 # ADR-061: Win キー押下中の IME キー注入スキップ
 
 ## ステータス

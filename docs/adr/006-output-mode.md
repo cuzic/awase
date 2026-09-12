@@ -1,3 +1,12 @@
+---
+id: ADR-006
+title: |-
+  出力モード選択 (per_key / batched / unicode)
+status: |-
+  採用済み
+related_adr: []
+---
+
 # ADR-006: 出力モード選択 (per_key / batched / unicode)
 
 ## ステータス

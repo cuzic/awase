@@ -1,3 +1,17 @@
+---
+id: ADR-163-companion-163-implementation-tasks
+title: |-
+  ADR-163 Part D（TH1d'）実装タスク一覧
+type: companion-doc
+related_adr:
+  - "ADR-119"
+  - "ADR-121"
+  - "ADR-148"
+  - "ADR-149"
+  - "ADR-163"
+  - "ADR-164"
+---
+
 # ADR-163 Part D（TH1d'）実装タスク一覧
 
 [ADR-163](163-actuation-decision-io-separation-and-replay-harness.md)「Part D」節の決定D1〜D8を、

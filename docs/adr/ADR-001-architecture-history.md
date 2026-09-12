@@ -1,3 +1,14 @@
+---
+id: ADR-001-architecture-history
+title: |-
+  ADR-001: awase アーキテクチャ変遷記録
+type: history-doc
+note: |-
+  番号付きADRシリーズの一部ではない。ファイル名・見出しの「ADR-001」は
+  001-ime-reliability-detection.md（本物のADR-001）とは無関係の別文書。
+related_adr: []
+---
+
 # ADR-001: awase アーキテクチャ変遷記録
 
 **ステータス:** 記録済み  

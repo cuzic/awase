@@ -1,3 +1,20 @@
+---
+id: ADR-130
+title: |-
+  `[[keymap]]` の `to` を複数キーの打鍵列へ一般化する
+summary: |-
+  ユーザー要望「打鍵列機能みたいな感じで複数の打鍵を注入できないか」を受け、`[[keymap]]`（ADR-114 ショートカット再割当て機能）の`to`を単一VKから複数ステップの列へ一般化する設計ADR。当初r1は「IME制御系VK（半角/全角/かな等）を明示オプトインで`to`に許可する」機構も同一ADRで扱おうとしたが、Opus 2体（architect/premortem）の独立レビューがそれぞれ別角度から技術的に成立しないと判定: `send_keymap_target`が`INJECTED_MARKER`付き送信のためフックの早期return（`is_self_injected`）で`ImeModel`のbeliefが一切更新されず実IME状態だけが変わる（awase自身のidle-conv-check/drift correctionが誤読して介入し実機で復旧不能になった記録あり）、かつ同じ手法（SendInputでVK_DBE_*を注入）は`docs/experiments.md`で既に3回試されて撤去済みという先例をr1が未引用、GJI config1.db書き込み方式も前日(`fc5898ff`)に撤去済みという事実誤認も発覚。r2でIME制御系VKのopt-inを完全に削除し「通常VKの複数ステップ打鍵列のみ」に純化、ADR-115打鍵列エンジンの転用も棄却（物理修飾キーのrelease/restoreが無くADR-115が「稀」と許容した限界が`[[keymap]]`では100%発生するため）。両者ともr2を「収束」と判定、複数の軽微な追記（TOML例が既定設定で自身の禁止規則により動かない事故・`vk_may_mutate_conv`が`ImeKeyKind`より広くVK_DBE_ROMAN/NOROMANとVK_CONVERTを漏らす穴・OR判定はfrom側には適用しない非対称性等）を反映して確定。IME関連キーのcharset軸切替は別ADRへ切り出し
+status: |-
+  **採用・実装済み（r2、Opus 2体の敵対的レビューで収束、設定GUI含め配線済み）。2026-09-08にindex.mdの記載漏れを訂正**
+related_adr:
+  - "ADR-037"
+  - "ADR-091"
+  - "ADR-094"
+  - "ADR-110"
+  - "ADR-114"
+  - "ADR-115"
+---
+
 # ADR-130: `[[keymap]]` の `to` を複数キーの打鍵列へ一般化する
 
 ## ステータス

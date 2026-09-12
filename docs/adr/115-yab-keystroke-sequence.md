@@ -1,3 +1,19 @@
+---
+id: ADR-115
+title: |-
+  `.yab` 打鍵列機能（1キーに複数の `KeyAction` を定義する）
+summary: |-
+  [GitHub Issue #118](https://github.com/cuzic/awase/issues/118)で所有者自身が提案した、`.yab`の1キーに複数`KeyAction`を定義できる汎用「打鍵列機能」。Opus 2体の独立レビューをr1→r6の6ラウンド実施。r1(セル内トークナイザ+`ConfirmIfComposing`案)はCritical4件で「実装に進められない」。r2〜r4は`CtrlChord`+セル内`+`区切り+名前付きマクロレジストリへ再設計する過程でラウンドごとに新設計起因のCriticalが見つかり続けた(平坦化点の列挙漏れ、Issue実データ(33セル中29が単発2要素)による決定前提の反証、投機出力ガードのfalse時フォールバックが打鍵列消失/生VK漏洩/受付窓縮小を招く、キルスイッチOff復元の`serialize()`非可逆性、`InlineSequence`に`Vk`禁止フィルタ未適用でstuck key再発、`InlineSequence`内`MacroRef`展開で`Sequence`ネスト等)。r5でCritical 0件に到達（両エージェント一致）、r6で残ったMajor(空Sequenceの扱い未定義→`YabValue::None`に統一、`Romaji`許可によるn-gram文脈欠落を既知制約として明記、モジュール配置確定)とMinor群(投機ガードの機構記述誤り訂正等)を反映して収束。最終設計: `CtrlChord`/`InlineSequence`は元セル生テキストを`raw`として直接保持しキルスイッチOff時はそれを返すのみ、`KeystrokeMacro.steps: Vec<String>`を既存`YabValue::parse`にそのまま通す、決定2b/2cの許可リストを`InlineSequence`にも適用しマクロ展開は`Sequence`で包まず平坦にextend、投機ガードのfalse時は`PendingChar`を維持し`Phase2Transition`で残り時間を再設定
+status: |-
+  採用・実装済み（2026-08-31、r6でOpus 2体レビュー収束後に実装。パーサ・config・engine・Windows配線・macOS/Linuxスタブ・設定GUI表示まで反映し`cargo test --lib -p awase`919件・fmt・clippy(`-p awase`)全green。実装過程で`release_only`のSuppress扱いに関するADR原文の誤り（既存の意図的pass-through仕様を「バグ」と誤認）を発見しADR本文を訂正、既存挙動を保持する形へ修正済み。実装後Opus `/code-review`（8観点並列）で2周にわたる自己回帰2件（Unicode cold-defer順序判定の過剰な無効化条件、GUIプレビューのresolve混入によるレイアウト保存時の打鍵列セル破壊）とLinux/macOSでのキルスイッチ未配線を検出・修正済み。Windows実機ソーク未実施）
+related_adr:
+  - "ADR-045"
+  - "ADR-104"
+  - "ADR-107"
+  - "ADR-109"
+  - "ADR-112"
+---
+
 # ADR-115: `.yab` 打鍵列機能（1キーに複数の `KeyAction` を定義する）
 
 ## ステータス

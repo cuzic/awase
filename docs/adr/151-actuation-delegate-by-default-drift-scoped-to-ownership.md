@@ -1,3 +1,18 @@
+---
+id: ADR-151
+title: |-
+  delegate 対象キーの actuation を belief 追随のみに倒す方向（[ADR-149](149-physical-ime-key-activation-defers-forced-set-open.md)「案D」の分離・保留）
+summary: |-
+  ADR-149「案D」の再検討として、delegate対象キーはawaseが一切actuateしない（belief追随のみ）方向を検証したが、「Appliedを詐称するとTsfNative唯一のON方向救済機構`apply_force_on_for_imm_broken`が構造的に永久停止する」というBlockerが見つかり保留
+status: |-
+  将来構想として保留（未実装）。ADR-149と同じBlockerを共有。**2026-09-08: ファイル本体が一度もcommitされていなかったことが判明、ADR-149 r3節を一次資料として本文を再構成し起票**
+related_adr:
+  - "ADR-149"
+  - "ADR-152"
+  - "ADR-153"
+  - "ADR-156"
+---
+
 # ADR-151: delegate 対象キーの actuation を belief 追随のみに倒す方向（[ADR-149](149-physical-ime-key-activation-defers-forced-set-open.md)「案D」の分離・保留）
 
 ## ステータス

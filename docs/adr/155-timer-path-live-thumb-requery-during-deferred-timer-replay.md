@@ -1,3 +1,21 @@
+---
+id: ADR-155
+title: |-
+  タイマー経路の親指タイムスタンプ問題（ADR-129 が未着手のまま残した部分）— クローズ（未実装、failure scenario 未確立）
+summary: |-
+  ADR-129が未着手のまま残した「タイマー経路（`deferred_engine_timers`のreplay）でも同型のライブ再取得問題が起きるか」を調査。opus-adversarial-consult round1〜round2で、懸念する失敗シナリオ（`os_id`一致・FSM状態維持を両方満たす具体的なイベント列）を1本も構成できないと判明
+status: |-
+  **クローズ（2026-09-08、未実装）。`docs/known-bugs.md` BUG-126へ軽い記録を残し、失敗シナリオが実機再現/理論的に構成できた場合に再オープンする条件を明記**
+related_adr:
+  - "ADR-008"
+  - "ADR-010"
+  - "ADR-129"
+  - "ADR-131"
+  - "ADR-151"
+  - "ADR-156"
+  - "ADR-158"
+---
+
 # ADR-155: タイマー経路の親指タイムスタンプ問題（ADR-129 が未着手のまま残した部分）— クローズ（未実装、failure scenario 未確立）
 
 ## ステータス

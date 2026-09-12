@@ -1,3 +1,17 @@
+---
+id: ADR-138
+title: |-
+  IME probe/actuation 検証用ウィットネスアプリは Opus 敵対的レビューで却下、発信源タグ計装+最小スパイクへ縮小
+summary: |-
+  ユーザー依頼「不要なprobe/actuationが発火していないか検証する専用アプリを作れないか」を受け、独立プロセスがOSレベルのグランドトゥルース（`WM_IME_CONTROL`サブクラス化+`dwExtraInfo`署名によるキー帰属+3ペイン×AppKindクラス名+`ITextStoreACP`自前実装+シナリオ自動化）を記録する新規クレート`awase-witness`案を詳細設計し、Opus 2体（feasibility/methodology役）に敵対的レビューさせた。両者独立に致命的欠陥へ収束: (1)当初の実証課題であるADR-136の問い自体が原理的に決着不能（経路A/Bは同一メッセージ対を同一タイムアウトで送るため外部観測では区別不可、判定根拠のconfidence/`SkipTyping`消費は100%内部情報）、(2)`AppKind`ではなく完全一致リストで決まる`AppImeProfile`が実挙動を支配するため衝突回避のクラス名詐称は`Standard`(Notepad相当)にしかならず測りたい分岐に一切到達しない、(3)`EventOrigin`/`ActuationRecord`(ADR-082)と`drift_correction_replay.rs`が既にCIで同種の検証を行っており新規JSONLは下位互換、(4)`send_ime_control`は数ある actuation/probe 経路の1つに過ぎず`ImmNotifyIME`等は原理的に観測不能、(5)`examples/*.rs`の恒久化ツールはこのリポジトリで一度も定着した実績がない、(6)シナリオ自動化は`docs/experiments.md`エントリ22のエイリアシング教訓に逆行
+status: |-
+  **フルスコープ案は却下。発信源タグ計装(決定2)+物理キー実配送確認に絞った~200行スパイク(決定3、対象はADR-136ではなくBUG-116/`transport.rs::plan`)へ縮小した上で保留、いずれも未実装**
+related_adr:
+  - "ADR-082"
+  - "ADR-119"
+  - "ADR-136"
+---
+
 # ADR-138: IME probe/actuation 検証用ウィットネスアプリは Opus 敵対的レビューで却下、発信源タグ計装+最小スパイクへ縮小
 
 ## ステータス

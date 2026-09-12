@@ -1,3 +1,15 @@
+---
+id: ADR-118
+title: |-
+  Teams(WebView2/MS-IME) のかな入力ロック検知と通知
+summary: |-
+  [GitHub issue #137](https://github.com/cuzic/awase/issues/137)「Teams(WebView2/MS-IME)でawaseの送信VKがJISかな配列として誤解釈される」への対応。Opus 2体（proposer/critic）の3ラウンド敵対的レビューで収束。r1はconvのROMANビットに基づく検知案だったが、r2でTeams（`Imm32Unavailable`分類）では`kp_stage_idle_conv_check`の経路自体が走らないと判明し検知不能と確定、`GetKeyState(VK_KANA)`直読みへ主軸を転換。r3でBUG-14の高頻度VK_KANAエコーによる通知点滅リスクを指摘されヒステリシス（`KanaLockHysteresis`）を導入し収束。実機スパイク（`spike_kana_lock_probe.rs`）でTeams focus中の言語バー操作による入力方式反転に`GetKeyState(VK_KANA)&1`が追従することを確認。自動復旧はBUG-61/62で不可能と確定済みのためスコープ外、案内のみ。実装はCodex CLIに委譲しOpusが独立レビュー、初回で検知漏れ（`KeyAction::Romaji`しか見ておらずNICOLAの主要出力経路`Char`を取りこぼす）等2件のブロッカーを検出・修正、再レビューで収束。PR #142の`/code-review`（Opus）でWM_APPメッセージの再入時ドロップリスク・ADR未登録・BUG番号衝突（並行PR #141と同一番号）等を検出・修正
+status: |-
+  採用・実装済み（2026-09-02）
+related_adr:
+  - "ADR-116"
+---
+
 # ADR-118: Teams(WebView2/MS-IME) のかな入力ロック検知と通知
 
 ## ステータス

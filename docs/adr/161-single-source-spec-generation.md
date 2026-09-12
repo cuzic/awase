@@ -1,3 +1,24 @@
+---
+id: ADR-161
+title: |-
+  散文の権威を剥奪し、機械可読な単一仕様から生成する＋純粋層にモデル検査をかける
+summary: |-
+  ADR-158採用Dの子ADR。実証実験1〜6(syn事後スキャン・dylint・可視性+permitパターン・derive/関数形式/属性マクロ)ですべて実装・検証し、D1を「dylintによる宣言の強制→生成」に確定、D3(否定の宣言でexperiments.md反転史を防止)を新規採用。ADR-158〜162横断のopus-adversarial-consult round1(Must-fix5件)反映後、そこから作成した実装タスクリスト(158-implementation-tasks.md)のround2レビュー(Must-fix8件)でさらにD3の機構がホスト非対応(cfg(windows))と判明・訂正、判断基準に「存在/不在」の区別を追加
+status: |-
+  起票。実証実験6件+round1〜round5レビュー・TJ1(単体レビュー)反映済み
+related_adr:
+  - "ADR-087"
+  - "ADR-123"
+  - "ADR-128"
+  - "ADR-151"
+  - "ADR-152"
+  - "ADR-156"
+  - "ADR-158"
+  - "ADR-159"
+  - "ADR-162"
+  - "ADR-38"
+---
+
 # ADR-161: 散文の権威を剥奪し、機械可読な単一仕様から生成する＋純粋層にモデル検査をかける
 
 ## ステータス

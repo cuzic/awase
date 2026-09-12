@@ -1,3 +1,17 @@
+---
+id: ADR-047
+title: |-
+  TickableFsm / ImeWarmupStrategy — 出力層 FSM の抽象化
+status: |-
+  採用済み
+related_adr:
+  - "ADR-002"
+  - "ADR-034"
+  - "ADR-042"
+  - "ADR-046"
+  - "ADR-048"
+---
+
 # ADR-047: TickableFsm / ImeWarmupStrategy — 出力層 FSM の抽象化
 
 ## ステータス

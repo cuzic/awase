@@ -1,3 +1,15 @@
+---
+id: ADR-157
+title: |-
+  force-ON が drift correction に道を譲る調停案（不採用・撤回）
+summary: |-
+  BUG-110追補7（issue #189、MS-IME/Chrome）の二重SSOT問題に対し、当初「force-ONがdrift correctionの実行中バーストに調停で道を譲る」新機構を設計、opus-adversarial-consult 4ラウンドで収束・実装・実機ソークまで完了させた。しかしユーザー指摘（設計の複雑化）を受け再検討し、既存の`ConvOpenInference`除外ガードに`HeuristicDefault`を1バリアント加えるだけのシンプルな根本修正に置き換え
+status: |-
+  **不採用（撤回）。採用した修正はdocs/known-bugs.md BUG-110追補9を参照。round1の恒真化に関する知見のみ本ADRに保存**
+related_adr:
+  - "ADR-087"
+---
+
 # ADR-157: force-ON が drift correction に道を譲る調停案（不採用・撤回）
 
 ## ステータス

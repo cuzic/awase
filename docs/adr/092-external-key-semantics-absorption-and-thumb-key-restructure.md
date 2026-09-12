@@ -1,3 +1,18 @@
+---
+id: ADR-092
+title: |-
+  外部ソース由来のキー意味論の吸収と、親指キー設定群の再編
+summary: |-
+  2026-07-06「MS-IME二重オーナー問題」分析の積み残しを正式設計化。宣言ソースをMS-IMEレジストリ(`KeyAssignmentMuhenkan`/`Henkan`/`CtrlSpace`/`ShiftSpace`の4キー固定)とGJI config1.db(`read_gji_ime_keys`、round1懸念5-1が指摘した「消費者不在」機構に初めて配線。**4キーに限定せず任意VKを対象**、VK種類による安全フィルタ=親指キー役割/非かな生成/かな生成の3分類でルーティング)の両方に対応、`ShadowImeAction{TurnOn,TurnOff,Toggle}`で統一解釈し`UserIntentSource::SyncKey`(`PhysicalImeKey`とは別のwitness、architecture_guard衝突を回避)経由でactuation(冪等キーVK_IME_ON/OFFへの変換送信)まで行う。宣言に「揺れ」(矛盾)を検出した場合は警告+素のパススルーへフォールバック。親指キー8bool設定はTextKeyConfig/ModeKeyConfig(idle/composing総関数)へ再編。優先順位「明示>自動>既定」(R1-R4)を明文化
+status: |-
+  **Step1・Step2・Step6実装済み(2026-08-15、Opusコードレビュー2巡反映済み)。Step3-5は次フェーズへ先送り**。engine_on/off_ime_key既定None化(Step1、実機確認は残タスク)、ThumbKeySoloTapGuard→ModeKeyConfig/TextKeyConfig再設計(Step2、config.toml非破壊のfrom_legacy_boolsブリッジ方式でserde移行案から意図的逸脱)、IME検出タブをキー設定タブの上級者向け折りたたみへ統合(Step6)。round1 Opusレビュー→round2ユーザー判断で決定4を着手対象へ格上げ、実機レジストリ確認済み。2026-08-15実機(dragonflyg4)でKeyAssignmentCtrlSpace/ShiftSpaceの実在と、「IME ON/OFF」割当て時の値が4キー共通で`2`(Toggle相当)であることを確認。Step 4a(Ctrl+Space/Shift+Space)・Step 4b(無変換/変換、NicolaFsm Phase3への新分岐)・Step 4c(GJI/MS-IME両ソースの読み取り配線)に分割。GJI側の「かな生成VK判定」ロジックは未実装、BUG-64級のリスクがあるためStep 4c着手前に固める必要あり。**決定A-4追加**: `session_keymap`がCUSTOM以外(ATOK/MS-IME/ことえり等プリセット)の場合はGJI config1.dbではなくMozc公式ソース(`google/mozc` `src/data/keymap/*.tsv`)の組み込みプリセットデータで意味解決(ATOK=DirectInput→IMEOnは単純、Precomposition→CancelAndIMEOffはComposition破棄+IME OFFの複合コマンドで2巡目レビュー指摘によりPrecomposition状態限定に修正、MS-IMEの無変換はcharset軸複合コマンドでADR-091のF21領域に残り対象外、ことえりは該当定義なし。取得元コミットハッシュは未記録で実装前に埋める必要あり)。**「IME検出」独立タブは廃止し`tab_keys`へ統合、「IME制御」→「awase→IME ON/OFFキー」・`ImeDetectConfig`→「IME→awase ON/OFFキー」と送受信の向きが伝わる対称名に改称し、両者を上級者向け折りたたみ(CollapsingHeader)にまとめる**(round4。設定自体を廃止する案はサードパーティIME等で唯一の設定手段を失うため不採用、名称の曖昧さとPCベストプラクティス不足を自己点検して修正。toggle/on/off 3リストは折りたたみ内で個別表示を維持。Step 6、GUIリファクタのみでStep 4の自動判定実装を待たず先行着手可)。**`SettingSource`表示の具体化**: 各キーエントリに`AutoDetected{from}`=青バッジ/`Manual`=緑バッジ/`Default`=グレーバッジ(既存の「変更あり/保存済み」色分けパターン踏襲)、セクション先頭に`color_legend`形式の凡例、`AutoDetected`値の直接編集は即座に`Manual`へ切替、「自動判定に戻す」ボタンで復帰可能。`from`はユーザー向けには内部名(config1.db等)ではなく製品名で表示(「自動: Microsoft IME設定」「自動: Google日本語入力設定」「自動: ATOK設定」、`from`識別子自体はADR本文・コードでは技術名のまま)。`SoloTapAction::DedicatedFnKey`自動選択にも同じバッジ規約を横展開。**決定A-5は2巡目Opusレビューで撤回・大幅縮小**: 複合副作用キー(ひらがな/カタカナ/全角/英数/半角)の観測を`ImeDetectConfig`へ追加する案は、`vk.rs::ImeKeyKind::shadow_effect()`が既に同じ判定を実装済みの重複であり、かつ`key_pipeline.rs`の優先順位規則により`is_japanese_ime()`ゲートを迂回し既存より強いwitnessへ格上げする安全性後退だったと判明(round1が指摘した「既存機構を見落として同型の型を作る」誤りの再発)。ADRの寄与を「GUI候補リストへ半角/全角の2つを追加するのみ」に縮小し、`ImeDetectConfig`へのコード変更・既定値追加は行わない。**決定Cにも修正**: `Vec<String>`設定は要素単位でSettingSourceが異なりうるため`Manual`は`config.toml`永続化・`AutoDetected`はIME種別確定イベントごとのライブ計算という二層設計に変更(R5追加: Manual編集への即時切替を明文化)、これにより「自動判定に戻す」ボタンの復帰先も自然に確保。**決定Bにも修正**: Alt親指なりすまし時の`modifier_key.is_some()`優先ガードが実効表から漏れていたため表の外側の最優先ガードとして追記。自己評価は一時5〜6/10まで下がったが、M1-M6反映後7/10で維持。決定A-5の検討中に見つかった`is_japanese_ime()`ゲートの精度不足は別軸の問題としてADR-093へ切り出した
+related_adr:
+  - "ADR-084"
+  - "ADR-089"
+  - "ADR-091"
+  - "ADR-093"
+---
+
 # ADR-092: 外部ソース由来のキー意味論の吸収と、親指キー設定群の再編
 
 ## ステータス

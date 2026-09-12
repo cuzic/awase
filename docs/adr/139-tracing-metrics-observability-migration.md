@@ -1,3 +1,21 @@
+---
+id: ADR-139
+title: |-
+  ログ/メトリクス基盤を `log` から `tracing`/`metrics` エコシステムへ移行する
+summary: |-
+  ユーザー依頼「ログ/メトリクスをtracing/metricsクレートでRustベストプラクティスに準拠させたい、大胆かつ非連続的な変更も含めて」を受け起票。Opus 2体（architect/premortem役）の敵対的レビュー3ラウンドで収束。r1でarchitectが事実誤認6件を検出（実測1161箇所〈880超ではない〉、`app.log`ではなく`awase.log`、tracingは既にfacade3本のみ推移的依存でsubscriberスタックは全て新規、hook.rsの通常打鍵経路はログゼロで`hook_channel.rs`が既に同期I/O排除を構造的に実装済み等）。premortemがBlocker多数を検出: `architecture_guard.rs:1406`が`"log::warn!("`を構造マーカーに使い機械置換で確実にpanic（ADR-080不変条件6/BUG-33ガード）、`keymap.rs`の実行時`log::Level`分岐にtracing等価物なし、決定3の対象ファイルが`fix-requires-evidence.md`表と不一致（IME belief系が全滅）、決定4当初案（journalをtracing Layer化）は`Layer::enabled`にフィールド値が渡らず`with_app`再入で最重要イベントがdropされるため技術的に不成立。r2でarchitectが決定4に代案Option C（journal→tracingの一方向fan-out）を提案しB4/B5を解消、決定5(`metrics`crate)は`BugReportStateSnapshot`と重複するため不採用、決定5-1(awase-settingsパネル)は別プロセスでIPCが片方向のみのため実現不能と判明。r3でOption Cの設置場所を`push_journal_entry`から真の合流点`UnifiedJournal::absorb`へ訂正（premortem発見のB9、`JournalEntry::ImeEvent`が漏れる経路を防ぐ）、clippyのcognitive_complexity懸念は実測（同一構造で`log`/`tracing`とも同スコア29/15）で否認
+status: |-
+  採用・実装済み（Opus 2体の敵対的レビュー計5ラウンド〈設計3+実装コード2〉で収束、Blockerゼロ）。PR #172でdevelopマージ済み（`48406822`、2026-09-06）
+related_adr:
+  - "ADR-019"
+  - "ADR-080"
+  - "ADR-082"
+  - "ADR-095"
+  - "ADR-114"
+  - "ADR-119"
+  - "ADR-120"
+---
+
 # ADR-139: ログ/メトリクス基盤を `log` から `tracing`/`metrics` エコシステムへ移行する
 
 ## ステータス

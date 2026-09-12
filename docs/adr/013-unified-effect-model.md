@@ -1,3 +1,12 @@
+---
+id: ADR-013
+title: |-
+  統一 Effect モデル（Decision / Effect パターン）
+status: |-
+  採用済み
+related_adr: []
+---
+
 # ADR-013: 統一 Effect モデル（Decision / Effect パターン）
 
 ## ステータス

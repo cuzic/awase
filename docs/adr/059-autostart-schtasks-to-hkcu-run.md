@@ -1,3 +1,13 @@
+---
+id: ADR-059
+title: |-
+  自動起動: schtasks → HKCU\Run レジストリへの移行
+status: |-
+  採用済み
+related_adr:
+  - "ADR-052"
+---
+
 # ADR-059: 自動起動: schtasks → HKCU\Run レジストリへの移行
 
 ## ステータス

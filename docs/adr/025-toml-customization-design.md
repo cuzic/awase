@@ -1,3 +1,12 @@
+---
+id: ADR-025
+title: |-
+  TOML ベースのカスタマイズ設計
+status: |-
+  提案中
+related_adr: []
+---
+
 # ADR 025: TOML ベースのカスタマイズ設計
 
 ## ステータス

@@ -25,7 +25,7 @@ warmup 待機、settle grace など、`_MS` 系の定数）を変更するコミ
   keyboard idle が 1000ms と短く long_idle=false → probe_min_ms=20ms が選ばれ、
   probe 初回 tick(~305ms) で max_deadline 超過 → 308ms 時点で T+O 送信 → Chrome 未準備
   (ready=326ms) でリテラル `to` 出力」と、**症状・実測・因果・対策定数（350ms）** が
-  すべて本文にある。さらに [docs/known-bugs.md](../../docs/known-bugs.md)（BUG-02 修正履歴）
+  すべて本文にある。さらに [docs/known-bugs/BUG-002.md](../../docs/known-bugs/BUG-002.md)（修正履歴）
   にも実測 ~326ms 付きで残してある。この水準が目標。
 - **`b101153`**（`こ→ko` 修正）: `CHROME_PROBE_LONG_IDLE_MIN_MS` 100→200ms。本文に
   「Chrome の再初期化に ~114ms、probe 起点が F2 送信より ~7ms 早いため実効 ~102ms で

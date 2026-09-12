@@ -1,3 +1,15 @@
+---
+id: ADR-049
+title: |-
+  TSF mode LiteralDetect と WezTerm long-idle warm 維持パターン
+status: |-
+  採用済み
+related_adr:
+  - "ADR-034"
+  - "ADR-046"
+  - "ADR-047"
+---
+
 # ADR-049: TSF mode LiteralDetect と WezTerm long-idle warm 維持パターン
 
 ## ステータス

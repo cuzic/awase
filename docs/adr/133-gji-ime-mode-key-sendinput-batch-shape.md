@@ -1,3 +1,23 @@
+---
+id: ADR-133
+title: |-
+  `send_ime_mode_key` が送る `SendInput` バッチの形状が GJI の「@」誤出力を左右する（BUG-113 恒久修正）
+summary: |-
+  当初「Windows TerminalでVK_KANA/VK_KANJIが文字化する」前提（2026-09-04起票）で書かれたが、2026-09-05実機検証で前提が反証（両キーとも awase フック到達時点で既に別VKに変換済みで、VK_KANA置換案は到達不能コード）。真因調査を続け、`send_ime_mode_key`の`wScan=0`仮説→（反証）→BUG-114（drift correctionのFeedbackPolicy::Read無限再送）→（単独では説明できないと判明）→`VK_IME_OFF`単体`SendInput`バッチ（Ctrl+無変換との対比で発見）、と段階的に絞り込んだ。Opus敵対的レビューround1で「イベント数のみが弁別因子」という主張は過剰主張と判明（GJI eager warmupが裸2イベントの`VK_IME_ON`を日常送信しているため）、偽Ctrlブラケット(mode=3)のstuck Ctrl欠陥・呼び出し元見落とし（ユーザー設定トグルVKの二重送信）等のBlockerを検出・修正。round2でさらに、再設計案の一つ（対称形ブラケット）がmode keyをCtrl押下中に配送する既存不変条件違反だったこと、JISスキャンコード0x16は`6`ではなく`U`だったというround1自身の誤りを検出・修正。現在は`SendInput`をdown/upに分割する案（候補V、新VKも偽修飾も持ち込まない）を第一候補、自己エコーパディング（候補A）を第二候補、3イベント版に絞った偽Ctrlブラケット（候補B再設計版）をフォールバックとする設計。VK値をscanコードとして誤読する機構仮説（`VK_IME_OFF=0x1A`とJIS`@`キーの一致）を優先検証するD0も新設。BUG-113として記録
+status: |-
+  **恒久修正（二重actuation解消）実装済み・developマージ済み・実機確認済み（2026-09-07、dragonflyg4）。もう一つの独立十分条件だったidle-conv-check probe競合もADR-140 Step1で解消・実機確認済み。2026-09-08にindex.mdの記載漏れを訂正**。旧D1〜D6（VK_KANA置換、当初仮説が反証され不採用）は`spike/adr133-wt-vk-kana-dbe-hiragana`ブランチ（develop未マージ）に実装のみ残存、develop統合の予定なし
+related_adr:
+  - "ADR-081"
+  - "ADR-087"
+  - "ADR-100"
+  - "ADR-114"
+  - "ADR-119"
+  - "ADR-130"
+  - "ADR-134"
+  - "ADR-140"
+  - "ADR-149"
+---
+
 # ADR-133: `send_ime_mode_key` が送る `SendInput` バッチの形状が GJI の「@」誤出力を左右する（BUG-113 恒久修正）
 
 ## ステータス

@@ -1,3 +1,16 @@
+---
+id: ADR-062
+title: |-
+  InjectionMode 事後昇格: GJI write_bytes 観測による自動昇格
+status: |-
+  採用済み
+related_adr:
+  - "ADR-004"
+  - "ADR-047"
+  - "ADR-048"
+  - "ADR-058"
+---
+
 # ADR-062: InjectionMode 事後昇格: GJI write_bytes 観測による自動昇格
 
 ## ステータス

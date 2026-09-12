@@ -1,3 +1,15 @@
+---
+id: ADR-105
+title: |-
+  エンジンスレッドへの通知はHWND宛のPostMessageWに統一する
+summary: |-
+  ADR-102の根本原因分析で判明した、PostThreadMessageW(スレッドID宛)がネストしたモーダルポンプ中に恒久消失する構造的脆弱性への対策。post_to_main_thread(唯一の集約点、13箇所)の実装をエンジン専用HWND宛PostMessageWへ差し替え。BUG-09(PostMessageW(None,..)の罠)の再導入ではないことを明記。実機実験(dragonflyg4)でネストポンプ中も配送されることを検証済み。Ctrl+C/--exit-afterが集約点を迂回し同じ脆弱性を新規に露呈していたことも発見
+status: |-
+  実装済み（2026-08-26、Windows実機ソーク未実施）
+related_adr:
+  - "ADR-102"
+---
+
 # ADR-105: エンジンスレッドへの通知はHWND宛のPostMessageWに統一する
 
 ## ステータス

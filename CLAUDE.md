@@ -153,11 +153,19 @@ here caused silent state corruption.
 
 ### ADRs and known issues
 
-`docs/adr/` holds a large and growing set of Architecture Decision Records (`docs/adr/index.md` is the index).
-`docs/known-bugs.md` tracks confirmed bugs with repro steps and fix-commit history — check it
-before assuming a symptom is new. `docs/experiments.md` logs reverted approaches for IME-control
-tuning so the same rejected idea doesn't get re-tried blind (see
-`.claude/rules/experiment-logging.md`).
+`docs/adr/` holds a large and growing set of Architecture Decision Records. Each ADR file
+(`docs/adr/NNN-slug.md`) carries a YAML frontmatter block (`id`, `title`, `status`, and — for
+older ADRs whose full decision context used to live only in the index row — `summary`) so its
+gist is readable without opening the (sometimes 1000+ line) body; `docs/adr/index.md` is a short
+index of one-line title + status per ADR, links to the files.
+
+`docs/known-bugs/` tracks confirmed bugs with repro steps and fix-commit history, one file per
+bug (`docs/known-bugs/BUG-NNN.md`, each with an `id`/`title`/`fix_commits`/`related_adr`
+frontmatter block) — check `docs/known-bugs/index.md` before assuming a symptom is new. The old
+single `docs/known-bugs.md` is now just a redirect stub (kept so pre-existing links elsewhere in
+this repo still resolve) — add new bugs as new files under `docs/known-bugs/`, not to that stub.
+`docs/experiments.md` logs reverted approaches for IME-control tuning so the same rejected idea
+doesn't get re-tried blind (see `.claude/rules/experiment-logging.md`).
 
 ## Repo-specific workflow rules (auto-loaded, summarized here for orientation)
 
@@ -173,5 +181,5 @@ a map of what to expect, not a substitute for reading them when the relevant are
 - `tuning-constants.md` — changes to timing constants in `crates/awase-windows/src/tuning.rs` must
   cite a real measurement (ms) in the commit body, not "increase until it works."
 - `fix-requires-evidence.md` — fixes in the warmup/focus/belief/conv/key-selection "reincidence
-  families" need either a regression test or a `docs/known-bugs.md` entry.
+  families" need either a regression test or a new `docs/known-bugs/BUG-NNN.md` entry.
 - `ime-belief-architecture.md` — see Architecture section above.

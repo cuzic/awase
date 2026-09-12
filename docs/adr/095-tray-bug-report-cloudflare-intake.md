@@ -1,3 +1,17 @@
+---
+id: ADR-095
+title: |-
+  タスクトレイからの不具合報告機能 — Cloudflare Workers + R2 による非公開受付
+summary: |-
+  タスクトレイから不具合報告(症状発生時の内部状態を自動添付)を送信する機能。受け口にGitHub Issuesは使わず、`report.awase.cc`をCloudflare Workers+R2の非公開受付として新設(`awase.cc`は既にCloudflare権威DNS配下のためゾーン移管不要)。GCPは無料枠超過時のfail-closed特性でCloudflareに劣ると判断し不採用。Opus round1レビュー(must-fix 8件)を受けユーザー判断でround2化: journalの生打鍵列はマスキングせず送信前プレビュー必須化で対応、ログ添付は既定ON、Turnstileはネイティブアプリ非対応のため不採用しレート制限+サイズ上限のみ。送信主体分離・R2書き込み専用トークン・ペイロードallowlist型化はエンジニアリング判断として決定。codex CLIで`services/report-worker/`(Worker)と`crates/awase-{windows,settings}/src/bug_report.rs`(トレイUI)を実装、Claudeが検証・修正(clippy borrow_as_ptr 4件・TS型エラー1件)しdevelop起点のADRブランチへマージ。Cloudflare実デプロイも完了(R2 `awase-report-bucket`+90日lifecycle・KV `RATE_LIMIT_KV`作成、`report.awase.cc`は手動CNAME(proxied)+Worker routeで疎通、有効ペイロードでのエンドツーエンド疎通確認(201+R2書き込み)済み。R2有効化にカード登録は不要と実地確認)。**決定7・8(2026-08-19追加)**: クラッシュレポーターと異なりawaseのバグはサイレントに違う動作をするため自由記述の価値は残しつつ、症状カテゴリ(10択)を選ぶだけの最小操作送信を可能にした(自由記述は任意化、「その他」選択時のみ必須)。あわせてIME製品名(既存TSFプロファイル列挙のキャッシュ、新規COM呼び出しなし)・keyboard_model設定・Windowsキーボードレイアウト・競合ソフトウェア検出(ADR-060再利用)を追加。schema_versionを2に上げ再デプロイ、エンドツーエンド疎通確認済み
+status: |-
+  **実装済み・Cloudflare実デプロイ済み(schema v2)**(2026-08-19。Windows実機でのタスクトレイ操作確認のみ未実施)
+related_adr:
+  - "ADR-060"
+  - "ADR-120"
+  - "ADR-148"
+---
+
 # ADR-095: タスクトレイからの不具合報告機能 — Cloudflare Workers + R2 による非公開受付
 
 ## ステータス
