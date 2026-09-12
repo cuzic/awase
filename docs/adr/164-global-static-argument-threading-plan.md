@@ -29,27 +29,28 @@ round1で当初案（フェーズ4の「`hook_callback`以下を`&mut HookState`
 [ADR-158](158-complexity-reduction-north-star.md)の複雑性棚卸しの追調査から派生した独立ADR
 （158の採択A〜Eいずれの子ADRでもない、新規の観点）。
 
-**実装状況（2026-09-10）**: フェーズ1（`gji_charset_autodetect.rs`の3ラッチ）は
+**実装状況（2026-09-12）**: フェーズ1（`gji_charset_autodetect.rs`の3ラッチ）は
 PR [#197](https://github.com/cuzic/awase/pull/197)でdevelopにマージ済み。
 フェーズ2（`msime_key_assignment.rs::LAST_WARNED`）はPR
 [#198](https://github.com/cuzic/awase/pull/198)でdevelopにマージ済み。
-いずれも実装はcodex execに委任し、設計（本ADR）どおりの逐語的な指示で差分を
-作成、`cargo check`/`clippy`/`fmt`/既存テスト（純粋関数群・
-`architecture_guard`/`layer_boundary_guard`）を実行者側で再検証済み。
-フェーズ4（`hook.rs`）は実装前調査のみ完了（コード変更なし）、実機ソーク・
-memory ordering突き合わせの段取りが必要な高リスクのため、より安価な
-フェーズ8→7→5でsingleton集約パターンを先に検証する方針とした
-（[[project_adr164_global_static_singleton_consolidation_2026_09_10]]参照）。
-フェーズ8（`state/probe_admission.rs`の3カウンタ）はブランチ
-`refactor/adr164-phase8-probe-admission-counters`（PR
-[#199](https://github.com/cuzic/awase/pull/199)）で実装済み、develop未マージ。
-実装はcodex exec委任とセッション自身の直接実装を状況に応じて使い分け、
-`cargo check`（host/windows両ターゲット、`--tests --lib`含む）/clippy/fmt/
-`cargo nextest run -p awase-windows --test architecture_guard --test
-layer_boundary_guard --test golden_scenarios`を実行者側で再検証済み。
+フェーズ8（`state/probe_admission.rs`の3カウンタ）はPR
+[#199](https://github.com/cuzic/awase/pull/199)でdevelopにマージ済み。
+フェーズ5（`probe_actuation_fence.rs`の5静的）はPR
+[#200](https://github.com/cuzic/awase/pull/200)でdevelopにマージ済み
+（実機ソーク実施——途中、Windows共有作業ディレクトリを他セッションが同名
+ローカルブランチで上書きする事故が発覚し、`git checkout -B`で正しいコミットへ
+復元・developの最新も取り込んだ上で再ソークして確認済み。
+[[feedback_worktree_per_session]]が警告する事故の実例）。
 フェーズ7は実装着手時の再分類でADR起票時の誤り（別モジュール・別cfgゲートの
 2静的を「同一ファイルだから」まとめようとしていた）が判明し、対象外へ廃止した
 （コード変更なし、developへ直接マージ済み）。
+フェーズ4（`hook.rs`）は実装前調査のみ完了（コード変更なし）、実機ソーク・
+memory ordering突き合わせの段取りが必要な高リスクのため、より安価な
+フェーズ8→7→5→6でsingleton集約パターンを先に検証する方針とした
+（[[project_adr164_global_static_singleton_consolidation_2026_09_10]]参照）。
+フェーズ6（`lib.rs`の3静的）はブランチ`refactor/adr164-phase6-lib-process-flags`
+で実装済み、develop未マージ・実機ソーク（Ctrl+C動作確認）未実施。
+フェーズ9は保留（ユーザー判断、2026-09-12）。
 フェーズ5（`probe_actuation_fence.rs`の5静的）はブランチ
 `refactor/adr164-phase5-probe-actuation-fence`（PR
 [#200](https://github.com/cuzic/awase/pull/200)）で実装済み、develop未マージ・
@@ -404,7 +405,7 @@ staleness（BUG-46/52/116ファミリーと同種の症状）を生む。**完�
   参照）。**windows-build CIでのテスト実行、および実機ソーク（検証方法節4）は
   未実施** — フェーズ4と同様、develop マージ前に必要。
 
-### フェーズ6: `lib.rs`の3件（`MAIN_THREAD_ID`/`QUIT_REQUESTED`/`ELEVATED`）をsingleton集約
+### フェーズ6: `lib.rs`の3件（`MAIN_THREAD_ID`/`QUIT_REQUESTED`/`ELEVATED`）をsingleton集約（実装済み、develop未マージ・実機ソーク未実施）
 
 **round1 M5で棚卸しの誤り（`ELEVATED`の記載漏れ、`RAW_TSF_LITERAL`は既に対応済みと誤認識、
 リスク機序の誤り）を訂正。**
@@ -429,6 +430,19 @@ singleton構造体（`lib.rs:155-199`）であり、**ADR自身の原則を既�
 - 規模: 小。
 - リスク: 中。Ctrl+Cハンドラでの動作（プロセス終了シーケンス）に触れるため、変更後は
   Ctrl+C動作の手動確認（実機）を行う。
+- **実装（2026-09-12）**: ブランチ`refactor/adr164-phase6-lib-process-flags`。
+  `MAIN_THREAD_ID`（`AtomicU32`）/`QUIT_REQUESTED`/`ELEVATED`（`AtomicBool`）の
+  3裸staticを`ProcessFlags`構造体に集約し、`static PROCESS_FLAGS: ProcessFlags`
+  1つに縮小。フィールドごとのOrdering（`main_thread_id`/`quit_requested`は
+  `SeqCst`、`elevated`は`Relaxed`）は集約前と完全一致で変更なし。
+  `main_thread_id()`/`is_quit_requested()`/`is_elevated()`/`set_main_thread_id()`/
+  `request_quit()`/`set_elevated()`のシグネチャ・ロジックは無変更（呼び出し元は
+  全てこれらの関数経由で、生staticへの直接参照は`lib.rs`外に無いことを
+  `grep`で確認済み）。`cargo check`（host/windows両ターゲット、`--tests --lib`
+  含む）/clippy/fmt/`cargo nextest run -p awase-windows --test architecture_guard
+  --test layer_boundary_guard --test golden_scenarios`（122件）は通過済み。
+  **Ctrl+Cハンドラの実機動作確認・windows-build CIは未実施**——develop merge前に
+  必要（検証方法節4参照）。
 
 ### フェーズ7（廃止・対象外へ変更）: `awase-settings/src/main.rs`の本体2件
 
