@@ -1655,8 +1655,15 @@ pub(crate) struct GateStore {
     /// 加えて、disable_apps バイパス等で対応する KeyUp がこのパイプライン
     /// 自体に到達しない残存経路（M-3、opus-adversarial-consult指摘）に備え、
     /// フォーカス遷移時にも `runtime/focus_tracking.rs` から解除する
-    /// （単一の物理押下中にフォーカスは変わらないため、M-2 のリピート防止
-    /// 効果は損なわれない）。
+    /// （`on_focus_process_changed` と `apply_app_disable_transition` の
+    /// 両方、後者は前者のエッジ判定が取りこぼす「無効化対象アプリがフォーカス
+    /// を持ったまま起動」等のケースを埋める）。**通常は**単一の物理押下中に
+    /// フォーカスは変わらないため実害は無いが、このリポジトリには spurious
+    /// FocusChange の実績がある（`GjiFsm` の cold 再突入誤爆等）。仮に
+    /// spurious 発火でこのラッチが早期解除されても、被害は「まだ物理的に
+    /// 押下中の auto-repeat KeyDown 1回ぶんの重複注入」に留まり、旧実装の
+    /// 恒久固着より遥かに軽いというトレードオフで採用した（不変条件では
+    /// なく許容可能なリスクとして受け入れている）。
     pub kana_mode_restore_key_down: Option<awase::types::ScanCode>,
 }
 

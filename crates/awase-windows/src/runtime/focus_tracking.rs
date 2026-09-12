@@ -513,6 +513,14 @@ impl Runtime {
         // deliver_key_event に一切イベントを渡さないため、latch が残っていても
         // 対応する KeyUp が永遠に届かない。
         self.platform_state.keymap.keymap_latch.release_all();
+        // BUG-131（opus-adversarial-consult指摘m-7）: `kana_mode_restore_key_down`
+        // も同じ「FOCUS_APP_DISABLED 遷移中は対応する KeyUp が永遠に届かない」
+        // 穴を持つ。`on_focus_process_changed`（下記）のクリアは
+        // `process_changed` のエッジ判定に依存するため、無効化対象アプリが
+        // フォーカスを持ったまま起動した等のケース（このメソッド自身のdoc
+        // コメント参照）を取りこぼす。ADR-114 決定4 経路3 と同じ場所・同じ
+        // タイミングでクリアする。
+        self.platform_state.gate.kana_mode_restore_key_down = None;
 
         if matches!(transition, SuppressionEdge::Enter) && !is_bootstrap {
             // 無効アプリに入った瞬間、pending だったチョードをタイマー満了に任せず
@@ -562,8 +570,10 @@ impl Runtime {
         // BUG-131（opus-adversarial-consult指摘）: `kana_mode_restore_key_down`
         // ラッチは対応する scan_code の KeyUp で解除するが、disable_apps
         // バイパス等でその KeyUp がこのパイプラインへ一切到達しない残存経路が
-        // ある。単一の物理押下中にフォーカスが変わることはないため、フォーカス
-        // 遷移時にクリアしても M-2（auto-repeat 中の重複発火防止）は損なわれない。
+        // ある。**通常は**単一の物理押下中にフォーカスは変わらないためここで
+        // クリアしても実害は無いが、絶対的な不変条件ではない（spurious
+        // FocusChangeの実績がある。詳細は`GateStore::kana_mode_restore_key_down`
+        // のdoc参照。仮に早期解除されても被害は重複注入1回に留まる）。
         self.platform_state.gate.kana_mode_restore_key_down = None;
         let tick_ms = self.enter_focus_scope(classified);
         let new_profile = self.platform.current_app_profile();

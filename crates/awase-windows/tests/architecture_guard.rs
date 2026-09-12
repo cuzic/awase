@@ -4547,6 +4547,11 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
         "read_kana_lock",
         "conv_mutation_allowed",
         "kana_mode_restore_key_down",
+        // BUG-131（opus-adversarial-consult指摘m-9）: ラッチ解除条件が
+        // scan_code一致であること自体を固定する。この関数名が消える・
+        // vkベースの比較へ戻る変更は、runtime/配下がLinuxでテスト実行
+        // できない（CLAUDE.md参照）ためこの静的スキャンでしか検知できない。
+        "fn should_clear_kana_mode_restore_latch",
     ] {
         assert!(
             kp.contains(token),
