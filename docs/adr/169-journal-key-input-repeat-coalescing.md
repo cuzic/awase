@@ -531,6 +531,32 @@ ADR-159/163 の actuation decision 再生は `ActuationDecisionRecord`
 `src/types.rs::RawKeyEvent::was_down` のdoc commentも、KeyUpでも
 更新される事実を明記するよう訂正した。
 
+### 実装後レビュー第2ラウンド（コミット`ef1d8197`）: 契約違反時のパニック誘発とevicted位置依存
+
+再度 `/code-review opus`（正しいブランチを対象に再実行）で3件指摘・修正:
+
+1. `record_key_input()` の「契約違反（非KeyInput）」フォールバックが
+   `key_input` レーンへ無条件 push していたため、次回呼び出しの
+   `key_input_identity()` が `unreachable!()` でパニックする経路が
+   存在した（`debug_assert` はリリースビルドで無効化されるため実害が
+   残る）。`absorb()` と共通の `route_to_lane()`（`lane_kind()` に
+   基づく正しいレーン振り分け）に置き換え、`absorb()` 側にも
+   `KeyInput` 混入を検知する `debug_assert` を追加。
+2. `evicted_by_lane()` が `[(LaneKind, usize); 4]` を位置依存
+   （`evicted[0].1` 等）で消費されていたため、named struct
+   `EvictedByLane { state, timing, actuation, key_input }` に置き換え、
+   将来の並び順変更がコンパイルエラー無しに誤対応する危険を解消。
+3. `key_pipeline.rs` が渡す `repeat_count`/`last_timestamp_us`/
+   `last_elapsed_ms` の初期値は `record_key_input()` が常に上書きする
+   死んだ値であることをコメントで明記。
+
+`record_key_input()` 自体のユニットテスト4件（畳み込み成立・
+`was_down=false`での非畳み込み・KeyUpの非畳み込み・契約違反時の
+パニック確認）を追加。指摘のうち「`KeyInputDecisionShape`/
+`KeyInputPhysicalShape` が `DecisionKind`/`PhysicalDispositionSummary`
+を複製している」点は、決定1本文が既に述べている `journal_policy.rs`
+非ゲート化とのトレードオフとして意図的に受け入れ、変更しなかった。
+
 ## 関連
 
 [ADR-096](096-journal-priority-tiers-multi-lane-ring-buffer.md)（本ADRが
