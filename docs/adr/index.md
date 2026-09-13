@@ -177,7 +177,7 @@
 | [168](168-actuation-boundary-small-cleanups.md) | Clojure風protocol/transducer案(型システム全面置換・決定軸registry統一)の却下記録 + ADR-088の`post_*_direct`4関数保持決定の反転 | 実装済み。opus-adversarial-consult 2ラウンドで収束 |
 | [169](169-journal-key-input-repeat-coalescing.md) | journal `KeyInput`レーンのOS auto-repeat畳み込みでダンプ予算窓を圧縮する | 実装完了(ブランチ`feat/adr169-journal-key-input-repeat-coalescing`)。opus-adversarial-consult round1/round2で設計収束、Linux上のtest/clippy/fmt全緑。実機ソーク未実施。元168番、developマージ済みの別ADR-168と衝突し169へ採番し直し |
 | [170](170-codesmell-hotspot-decomposition.md) | コードスメル解消: belief reduce()の大きい4分岐をprivateヘルパーへ抽出(決定1のみ実施) | opus-adversarial-consult round1〜round3反映済み・収束(Blockerゼロ)。決定2(runtime/mod.rs重複統合)・決定3(output/mod.rs分割)は事実誤認/テスト破壊のため見送り |
-| [171](171-gji-candidate-reopen-after-off-observation.md) | GJI候補ウィンドウの意図しない再表示(BUG-141)を正式な観測として belief に流し、既存drift correctionで自動補正する | 起草。opus-adversarial-consult未実施 |
+| [171](171-gji-candidate-reopen-after-off-observation.md) | GJI候補ウィンドウの意図しない再表示(BUG-141)を正式な観測として belief に流し、既存drift correctionで自動補正する | 起草・opus-adversarial-consult round1反映済み(Blocker4/Major4/Minor6を全面反映)。round2待ち |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
