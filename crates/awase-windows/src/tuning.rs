@@ -40,6 +40,15 @@ pub const POST_IDLE_MARGIN_MS: u64 = 30;
 #[measured_macro::measured(pending = true)]
 pub const GJI_CONFIRM_WINDOW_MS: u64 = 500;
 
+/// `ObservationStore::derive_any` / `derive_actuating` が観測を鮮度ありと見なす窓 (ms)。
+///
+/// この時間を超えた観測は無視する。フォーカス変更時に `clear_on_focus_change()` が
+/// 呼ばれるため通常は問題にならないが、稀に残留する古い観測を排除するためのガード。
+/// 元は `state/observation_store.rs::derive_filtered` にローカル定数として埋め込まれて
+/// いたものをここへ移設した（値は 3000ms のまま変更なし、実測根拠は未取得のため pending）。
+#[measured_macro::measured(pending = true)]
+pub const OBSERVATION_FRESH_WINDOW_MS: u64 = 3_000;
+
 // === TSF warmup タイミング ===
 
 /// cold 発生前のアイドル時間がこれ以上なら「長期 idle」と判定する (ms)。

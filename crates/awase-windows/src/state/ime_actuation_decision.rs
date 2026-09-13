@@ -445,6 +445,39 @@ mod tests {
         );
     }
 
+    /// `decide_needs_romaji_pre_write`と`decide_dispatch_conv_after_open`は、どちらも
+    /// 「ROMAN補完要否」を独立に判定する意図的に別の条件式である（ADR-163 round2 R5が
+    /// 統合を検討した上で「統合すると差分が出そうという予測だけで」非統合のまま
+    /// 放置、とdocコメントに明記）。この関係を、統合はせず全数の含意として固定する:
+    /// **`pre_write`がtrueなら`conv_after_open`は常に`Write(None)`になる**
+    /// （狭い側は`pre_write`、広い側は`conv_after_open`、差は`mechanism`/`kind`の2条件）。
+    /// 逆（`conv_after_open`がtrueでも`pre_write`はfalseになりうる）の証人は
+    /// 直後の`dispatch_conv_after_open_ignores_mechanism_and_kind_unlike_decide_needs_romaji_pre_write`
+    /// が既に固定している——含意が厳密（同値ではない）ことの証拠として参照する。
+    #[test]
+    fn needs_romaji_pre_write_implies_dispatch_conv_after_open_writes() {
+        for mechanism in WriteMechanism::ALL {
+            for open in [true, false] {
+                for kind in ImeKindId::ALL {
+                    for mode in ALL_INPUT_MODES {
+                        let pre_write = decide_needs_romaji_pre_write(mechanism, open, kind, mode);
+                        if !pre_write {
+                            continue;
+                        }
+                        let i = inputs(AppImeProfile::Standard, kind, None, mode);
+                        assert_eq!(
+                            decide_dispatch_conv_after_open(i, open),
+                            ConvAfterOpenId::Write(None),
+                            "{mechanism:?} open={open} {kind:?} {mode:?}: \
+                             decide_needs_romaji_pre_write=true なのに \
+                             decide_dispatch_conv_after_open が Write(None) を返しません。"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn dispatch_conv_after_open_ignores_mechanism_and_kind_unlike_decide_needs_romaji_pre_write() {
         // GJI kind・open=true・非ObservedKana でも Write(None) になる

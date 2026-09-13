@@ -314,106 +314,6 @@ impl ImeKindDebounce {
     }
 }
 
-#[cfg(test)]
-#[allow(clippy::items_after_test_module)]
-mod ime_kind_debounce_tests {
-    use super::{ActiveImeKind, ImeKindDebounce};
-
-    #[test]
-    fn stable_same_kind_never_confirms() {
-        let mut d = ImeKindDebounce::new();
-        for _ in 0..5 {
-            assert_eq!(
-                d.observe(
-                    ActiveImeKind::GoogleJapaneseInput,
-                    ActiveImeKind::GoogleJapaneseInput
-                ),
-                None
-            );
-        }
-    }
-
-    /// 単発フリップ（1 tick だけ別種別 → 次 tick で元に戻る）は確定させない。
-    #[test]
-    fn single_tick_flap_is_filtered_out() {
-        let mut d = ImeKindDebounce::new();
-        // tick 1: 誤検出で MicrosoftIme が混入
-        assert_eq!(
-            d.observe(
-                ActiveImeKind::MicrosoftIme,
-                ActiveImeKind::GoogleJapaneseInput
-            ),
-            None
-        );
-        // tick 2: 元の GoogleJapaneseInput に戻る → 候補クリア、確定させない
-        assert_eq!(
-            d.observe(
-                ActiveImeKind::GoogleJapaneseInput,
-                ActiveImeKind::GoogleJapaneseInput
-            ),
-            None
-        );
-    }
-
-    /// 2 回連続で同じ新種別が観測されたら確定として返す。
-    #[test]
-    fn two_consecutive_same_new_kind_confirms() {
-        let mut d = ImeKindDebounce::new();
-        assert_eq!(
-            d.observe(
-                ActiveImeKind::MicrosoftIme,
-                ActiveImeKind::GoogleJapaneseInput
-            ),
-            None
-        );
-        assert_eq!(
-            d.observe(
-                ActiveImeKind::MicrosoftIme,
-                ActiveImeKind::GoogleJapaneseInput
-            ),
-            Some(ActiveImeKind::MicrosoftIme)
-        );
-    }
-
-    /// 確定後、次の観測が current 側の更新を反映して安定すれば再度クリアされる
-    /// （呼び出し元が確定値で `current` を更新した後の挙動）。
-    #[test]
-    fn confirms_then_settles() {
-        let mut d = ImeKindDebounce::new();
-        d.observe(
-            ActiveImeKind::MicrosoftIme,
-            ActiveImeKind::GoogleJapaneseInput,
-        );
-        let confirmed = d.observe(
-            ActiveImeKind::MicrosoftIme,
-            ActiveImeKind::GoogleJapaneseInput,
-        );
-        assert_eq!(confirmed, Some(ActiveImeKind::MicrosoftIme));
-        // 呼び出し元が TSF_OBS を MicrosoftIme に更新した後の次 tick
-        assert_eq!(
-            d.observe(ActiveImeKind::MicrosoftIme, ActiveImeKind::MicrosoftIme),
-            None
-        );
-    }
-
-    /// フリップ後、別の値が来ても連続2回条件を満たさない限り確定しない。
-    #[test]
-    fn differing_candidates_do_not_accumulate_across_kinds() {
-        let mut d = ImeKindDebounce::new();
-        d.observe(
-            ActiveImeKind::MicrosoftIme,
-            ActiveImeKind::GoogleJapaneseInput,
-        );
-        assert_eq!(
-            d.observe(
-                ActiveImeKind::GoogleJapaneseInput,
-                ActiveImeKind::GoogleJapaneseInput
-            ),
-            None
-        );
-    }
-}
-
 // ── バックグラウンドモニタースレッド ──
 
 /// GJI I/O モニタースレッドを起動する。
@@ -596,5 +496,104 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
             tracing::info!("[gji-monitor] shutdown signal received, exiting");
             break;
         }
+    }
+}
+
+#[cfg(test)]
+mod ime_kind_debounce_tests {
+    use super::{ActiveImeKind, ImeKindDebounce};
+
+    #[test]
+    fn stable_same_kind_never_confirms() {
+        let mut d = ImeKindDebounce::new();
+        for _ in 0..5 {
+            assert_eq!(
+                d.observe(
+                    ActiveImeKind::GoogleJapaneseInput,
+                    ActiveImeKind::GoogleJapaneseInput
+                ),
+                None
+            );
+        }
+    }
+
+    /// 単発フリップ（1 tick だけ別種別 → 次 tick で元に戻る）は確定させない。
+    #[test]
+    fn single_tick_flap_is_filtered_out() {
+        let mut d = ImeKindDebounce::new();
+        // tick 1: 誤検出で MicrosoftIme が混入
+        assert_eq!(
+            d.observe(
+                ActiveImeKind::MicrosoftIme,
+                ActiveImeKind::GoogleJapaneseInput
+            ),
+            None
+        );
+        // tick 2: 元の GoogleJapaneseInput に戻る → 候補クリア、確定させない
+        assert_eq!(
+            d.observe(
+                ActiveImeKind::GoogleJapaneseInput,
+                ActiveImeKind::GoogleJapaneseInput
+            ),
+            None
+        );
+    }
+
+    /// 2 回連続で同じ新種別が観測されたら確定として返す。
+    #[test]
+    fn two_consecutive_same_new_kind_confirms() {
+        let mut d = ImeKindDebounce::new();
+        assert_eq!(
+            d.observe(
+                ActiveImeKind::MicrosoftIme,
+                ActiveImeKind::GoogleJapaneseInput
+            ),
+            None
+        );
+        assert_eq!(
+            d.observe(
+                ActiveImeKind::MicrosoftIme,
+                ActiveImeKind::GoogleJapaneseInput
+            ),
+            Some(ActiveImeKind::MicrosoftIme)
+        );
+    }
+
+    /// 確定後、次の観測が current 側の更新を反映して安定すれば再度クリアされる
+    /// （呼び出し元が確定値で `current` を更新した後の挙動）。
+    #[test]
+    fn confirms_then_settles() {
+        let mut d = ImeKindDebounce::new();
+        d.observe(
+            ActiveImeKind::MicrosoftIme,
+            ActiveImeKind::GoogleJapaneseInput,
+        );
+        let confirmed = d.observe(
+            ActiveImeKind::MicrosoftIme,
+            ActiveImeKind::GoogleJapaneseInput,
+        );
+        assert_eq!(confirmed, Some(ActiveImeKind::MicrosoftIme));
+        // 呼び出し元が TSF_OBS を MicrosoftIme に更新した後の次 tick
+        assert_eq!(
+            d.observe(ActiveImeKind::MicrosoftIme, ActiveImeKind::MicrosoftIme),
+            None
+        );
+    }
+
+    /// フリップ後、別の値が来ても連続2回条件を満たさない限り確定しない。
+    #[test]
+    fn differing_candidates_do_not_accumulate_across_kinds() {
+        let mut d = ImeKindDebounce::new();
+        d.observe(
+            ActiveImeKind::MicrosoftIme,
+            ActiveImeKind::GoogleJapaneseInput,
+        );
+        assert_eq!(
+            d.observe(
+                ActiveImeKind::GoogleJapaneseInput,
+                ActiveImeKind::GoogleJapaneseInput
+            ),
+            None
+        );
     }
 }

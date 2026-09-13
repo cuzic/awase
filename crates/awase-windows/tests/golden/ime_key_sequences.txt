@@ -38,25 +38,25 @@ MS-IME	TsfNative	async_fallback	MsImeDirect
 #   （Opus敵対的レビューで発見）: `bool`に潰した`!shadow_on`でOFF方向だけ「未知」を
 #   「確認済みOFF」と誤認し、drift correction等の正当な再送を無音で握り潰していた。
 #   ON  → shadow_on==Some(true) なら送信せず AlreadyMatched（VK_IME_ON no-op 見込みでスキップ）、
-#         さもなくば VK_IME_ON (0x16) = ime::post_gji_ime_on() → Applied。
+#         さもなくば VK_IME_ON (0x16) = ime::send_ime_mode_key(VK_IME_ON) → Applied。
 #   OFF → shadow_on==Some(false) なら送信せず AlreadyMatched（VK_IME_OFF no-op 見込みで
 #         スキップ、ON方向と対称。BUG-113: 同一の物理キー押下で shadow_toggle_off_sync/
 #         engine_decision_sync の2経路から apply(open=false) が連続で2回呼ばれる際、
 #         このガードが無いと2回とも実際にSendInputし、Windows Terminal + GJI +
 #         PowerShell(PSReadLine) で余分な「@」が入力される不具合があった）、
-#         さもなくば VK_IME_OFF (0x1A) = ime::post_gji_ime_off() → Applied。
+#         さもなくば VK_IME_OFF (0x1A) = ime::send_ime_mode_key(VK_IME_OFF) → Applied。
 #   VK_IME_ON/OFF は Windows 標準の冪等キーで GJI が TSF 層でネイティブ処理する。
 #   GJI+TsfNative の OFF は旧 VK_KANJI から VK_IME_OFF へ移行済み（489cdf1）。
 #   （履歴: adb856c で一時 VK_KANJI フォールバックへ戻したが 489cdf1 で VK_IME_OFF に再修正）
 #
 # MsImeDirect (is_applicable: active_ime_kind==MicrosoftIme && !can_use_imm32_cross_process()):
 #   ON  → （belief!=ObservedKana のとき romaji_pre_write() 後）
-#         VK_IME_ON (0x16) = ime::post_ime_on_direct() → Applied。conv-mode に触れないため
+#         VK_IME_ON (0x16) = ime::send_ime_mode_key(VK_IME_ON) → Applied。conv-mode に触れないため
 #         AlreadyMatched スキップは不要（2026-08-06 まで VK_DBE_HIRAGANA を使っており、現 conv が
 #         KATAKANA ビット立ちなら送信をスキップするガードが必要だった。このガードが
 #         「ユーザーの意図的なカタカナ」と「内部の誤ったカタカナ」を区別できず、一度
 #         カタカナに入ると永久に復旧できないデッドロックの直接の前提だった。BUG-50 参照）。
-#   OFF → VK_IME_OFF (0x1A) = ime::post_ime_off_direct()（DirectInput へ、冪等）→ Applied。
+#   OFF → VK_IME_OFF (0x1A) = ime::send_ime_mode_key(VK_IME_OFF)（DirectInput へ、冪等）→ Applied。
 #   OFF が VK_IME_OFF（冪等）である根拠: 48a667a。VK_DBE_ALPHANUMERIC は半角英数（IME-ON）に
 #   留まるため不可、VK_KANJI はトグルのため不可。
 #   （履歴: 9c3f11e→668a131 revert、be3b056 で一時 VK_KANJI、48a667a で VK_IME_OFF に確定、

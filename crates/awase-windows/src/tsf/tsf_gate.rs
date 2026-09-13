@@ -41,6 +41,12 @@
 //! PendingWarmup → Bypass ─── (DrainHeld)
 //! ```
 
+// このファイルの型は意図的に `Gate*`/`TsfGate*` プレフィックスを揃えている
+// （モジュール名`tsf_gate`との重複はclippyの検出通りだが、`TsfGate`との混同を避ける
+// ための命名規約——上記ドキュメントコメント参照）。ファイル内の全アイテムに掛かるため
+// ここで一括allowする。
+#![allow(clippy::module_name_repetitions)]
+
 use std::time::Duration;
 
 use timed_fsm::{Response, TimedStateMachine};
@@ -57,7 +63,6 @@ const HELD_MAX: usize = 64;
 
 /// TsfGate への外部イベント。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(clippy::module_name_repetitions)]
 pub enum GateEvent {
     /// フォーカス変更検知（win_event_proc T=0）
     FocusChange,
@@ -71,7 +76,6 @@ pub enum GateEvent {
 
 /// TsfGate のタイマー ID。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(clippy::module_name_repetitions)]
 pub enum GateTimer {
     /// PendingWarmup のフォールバックタイムアウト
     WarmupTimeout,
@@ -79,7 +83,6 @@ pub enum GateTimer {
 
 /// TsfGate のステート。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(clippy::module_name_repetitions)]
 pub enum TsfGateState {
     /// フォーカス変更直後。TSF モードが確定するまでキーを保留する。
     PendingWarmup,
@@ -103,7 +106,6 @@ pub enum TsfGateState {
 /// `TsfGate` は TSF probe のタイムアウト（500ms）をトリガーとするが、
 /// `SyncKeyGate` は sync key 直後のキー保留を担当する（モジュール doc 参照）。
 #[derive(Debug)]
-#[allow(clippy::module_name_repetitions)]
 pub struct TsfGateMachine {
     state: TsfGateState,
 }
@@ -194,7 +196,6 @@ impl TimedStateMachine for TsfGateMachine {
 /// - `on_tsf_confirmed()` / `on_bypass()` 後 → `TIMER_TSF_GATE` を kill
 /// - `message_handlers.rs` の `TIMER_TSF_GATE` ハンドラ → `on_warmup_timeout()` を呼ぶ
 #[derive(Debug)]
-#[allow(clippy::module_name_repetitions)]
 pub struct TsfGate {
     inner: HoldingGate<TsfGateMachine, RawKeyEvent>,
 }
@@ -329,7 +330,6 @@ impl Default for TsfGate {
 /// `awase-windows` の `Output::tsf_readiness()` メソッドで生成する。
 /// このメソッドを通じてすべての条件が一箇所に集約される。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(clippy::module_name_repetitions)]
 pub struct TsfReadiness {
     /// ゲートの現在状態
     pub gate: TsfGateState,
