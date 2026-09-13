@@ -3081,6 +3081,7 @@ impl Runtime {
                                         ime.is_force_on_guard_active(),
                                         ime.input_mode(),
                                         ime.belief.prev_conversion_mode(),
+                                        app.platform.focus.process_name(),
                                     );
                                 if let Some(mode) = update.new_input_mode {
                                     use crate::state::ime_event::{

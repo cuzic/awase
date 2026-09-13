@@ -616,6 +616,14 @@ pub struct ImeSnapshot {
     /// TSF ネイティブウィンドウのため検出をスキップした（true = IMM32 未使用）。
     /// タイムアウト等の一時的失敗と区別し、miss_count を増やさないために使う。
     pub is_tsf_native: bool,
+    /// 観測対象ウィンドウのクラス名（`None` = フォーカスウィンドウ不明）。
+    ///
+    /// `classify_ime_snapshot` の呼び出し元が「この観測はawase自身のUI
+    /// （トレイ／設定画面）を読んだものではないか」を判定するための付随情報
+    /// （`focus::class_names::is_own_ui_window`、BUG-106追補3・4）。
+    /// 新しい Win32 呼び出しは増えない — `read_ime_state_full` が既に計算している
+    /// クラス名を保持するだけ。
+    pub focused_class: Option<String>,
 }
 
 /// `read_ime_state_full` をワーカースレッドでタイムアウト付きで実行する。
@@ -640,6 +648,7 @@ pub unsafe fn read_ime_state_full_with_timeout(timeout: std::time::Duration) -> 
                 is_romaji: None,
                 conversion_mode: None,
                 is_tsf_native: false,
+                focused_class: None,
             }
         },
     )
@@ -676,21 +685,20 @@ pub unsafe fn read_ime_state_full() -> ImeSnapshot {
 
     // 1b. TSF-native ウィンドウ（Windows Terminal の InputSite 等）は IMM32 を使わないため
     // imc_open=false を返すが、これは IME が OFF であることを意味しない。
-    {
-        let class = crate::focus::classify::get_class_name_string(focused_hwnd);
-        tracing::debug!("read_ime_state_full: focused_hwnd={focused_hwnd:?} class={class:?}");
-        if is_tsf_native_window(&class) {
-            tracing::debug!(
-                "read_ime_state_full: TSF-native window ({class}) → ime_on=None (preserving state)"
-            );
-            return ImeSnapshot {
-                is_japanese_ime: Some(is_japanese_ime),
-                ime_on: None,
-                is_romaji: None,
-                conversion_mode: None,
-                is_tsf_native: true,
-            };
-        }
+    let class = crate::focus::classify::get_class_name_string(focused_hwnd);
+    tracing::debug!("read_ime_state_full: focused_hwnd={focused_hwnd:?} class={class:?}");
+    if is_tsf_native_window(&class) {
+        tracing::debug!(
+            "read_ime_state_full: TSF-native window ({class}) → ime_on=None (preserving state)"
+        );
+        return ImeSnapshot {
+            is_japanese_ime: Some(is_japanese_ime),
+            ime_on: None,
+            is_romaji: None,
+            conversion_mode: None,
+            is_tsf_native: true,
+            focused_class: Some(class),
+        };
     }
 
     // 2. Cross-process IME ON/OFF → ime_on (using focused hwnd)
@@ -736,6 +744,7 @@ pub unsafe fn read_ime_state_full() -> ImeSnapshot {
         is_romaji,
         conversion_mode,
         is_tsf_native: false,
+        focused_class: Some(class),
     }
 }
 
