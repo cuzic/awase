@@ -180,7 +180,8 @@ ImeController::apply(desired_open, view)
   │
   ├─ [2] GjiDirectStrategy          ← Google日本語入力専用（全プロファイル共通）
   │       is_applicable(): gji_monitor_ok == true
-  │       実装: post_gji_ime_on() / post_gji_ime_off()
+  │       実装: send_ime_mode_key(VK_IME_ON) / send_ime_mode_key(VK_IME_OFF)
+  │       （旧 post_gji_ime_on/off は本番呼び出し元ゼロのためADR-168で削除）
   │         IME ON  → SendInput(VK_IME_ON=0x16)   // GJI ひらがなへ（冪等）
   │         IME OFF → SendInput(VK_IME_OFF=0x1A)  // GJI IME-OFF（冪等）
   │

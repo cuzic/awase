@@ -136,11 +136,13 @@ pub(crate) const fn ime_key_for(mechanism: KeyMechanism, op: ImeOperation) -> Vk
     use ImeOperation::{Close, Open};
     use KeyMechanism::{GjiDirect, MsImeDirect};
     match (mechanism, op) {
-        // GjiDirect: post_gji_ime_on/off 相当（GJI+TsfNative の OFF も VK_IME_OFF, 489cdf1）。
+        // GjiDirect（GJI+TsfNative の OFF も VK_IME_OFF, 489cdf1）。
         (GjiDirect, Open) => VK_IME_ON,
         (GjiDirect, Close) => VK_IME_OFF,
-        // MsImeDirect: ON=post_ime_on_direct(VK_IME_ON, 2026-08-06 BUG-50根治)、
-        // OFF=post_ime_off_direct(VK_IME_OFF, 48a667a)。
+        // MsImeDirect: ON=VK_IME_ON(2026-08-06 BUG-50根治)、OFF=VK_IME_OFF(48a667a)。
+        // 実送信は ime_controller.rs の `MechanismCommand::SendVk` 経由
+        // （旧 `post_ime_on_direct`/`post_ime_off_direct` は本番呼び出し元ゼロのため
+        // ADR-168 で削除、この2テストが唯一かつ十分な回帰検知）。
         (MsImeDirect, Open) => VK_IME_ON,
         (MsImeDirect, Close) => VK_IME_OFF,
     }
