@@ -1566,7 +1566,7 @@ mod tests {
         let past = Instant::now()
             .checked_sub(Duration::from_secs(10))
             .expect("test instant can be backdated");
-        // 10 秒前の Medium obs は FRESH(3s) を超えているため無視される
+        // 10 秒前の Medium obs は OBSERVATION_FRESH_WINDOW_MS(3s) を超えているため無視される
         let mut old = obs(false, ObservationSource::ObserverPoll, past);
         old.confidence = ObservationConfidence::Medium;
         rec(&mut s, old);
