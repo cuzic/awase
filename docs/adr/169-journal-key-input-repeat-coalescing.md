@@ -4,8 +4,10 @@ title: |-
   journal `KeyInput` レーンの OS auto-repeat 畳み込みでダンプ予算窓を圧縮する
 status: |-
   実装完了（決定1・決定1-b、ブランチ`feat/adr169-journal-key-input-repeat-coalescing`）。
-  opus-adversarial-consult round1/round2で設計収束済み。Linux上で
-  `cargo test --lib`/`cargo nextest run --workspace --lib`（1783件）・
+  opus-adversarial-consult round1/round2で設計収束済み。実装後
+  `/code-review opus`でKeyUp誤畳み込みの回帰を発見・修正済み
+  （コミット`8ecacaeb`、詳細は「実装ノート」節）。Linux上で
+  `cargo test --lib`/`cargo nextest run --workspace --lib`（1785件）・
   `cargo nextest run -p awase-windows --test architecture_guard --test
   golden_scenarios --test layer_boundary_guard`（124件、新設の
   `journal_key_input_construction_is_limited_to_key_pipeline`含む）全緑、
@@ -504,6 +506,30 @@ ADR-159/163 の actuation decision 再生は `ActuationDecisionRecord`
   construction は必ずこの形になる）のみを数える設計にした。
   `size_of::<JournalEntry>() == 264` の const assert は変更不要
   （3フィールド追加後も最大 variant は更新されなかった）。
+
+### 実装後レビュー（`/code-review opus`）で発見・修正した回帰（コミット`8ecacaeb`）
+
+初回実装は `KeyInputIdentity` に `is_down`（KeyDown/KeyUp の区別）を
+含めておらず、`coalesce_key_input` も `event_type` を確認していなかった。
+`hook.rs::HOOK_STATE.physical_key_state` の `swap` は KeyDown/KeyUp
+**両方**のイベントで「直前の物理押下状態」を返すため、ごく普通の
+1タップ（KeyDown→KeyUp）でも KeyUp 時点では `was_down: true` になる
+（直前は押されていたので当然、auto-repeatの証拠ではない）。この結果、
+他フィールドが一致する（アイドル中の `Passthrough` キーではほぼ常に
+一致する）限り、**実質すべての単発タップで KeyUp が直前の KeyDown へ
+誤って畳み込まれ**、journal 上は「押しっぱなしで一度も離されていない」
+という誤った記録になっていた——決定1本文（168:104-107時点の草稿）が
+明記していた「畳み込み対象は `event_type == KeyDown` の場合のみ」という
+条件を、実装時に取りこぼしていた。
+
+`KeyInputIdentity` に `is_down: bool` を追加（`PartialEq` 比較に自動的に
+含まれる）し、`coalesce_key_input` にも `next.is_down`/`prev.is_down` の
+明示ガードを二重に追加（`is_down` 以外の全フィールド一致に頼る設計への
+将来的な変更でも安全なように）。回帰テスト2件
+（`coalesce_never_merges_keyup_into_preceding_keydown_even_if_was_down`・
+`coalesce_never_merges_keydown_into_preceding_keyup`）を追加。
+`src/types.rs::RawKeyEvent::was_down` のdoc commentも、KeyUpでも
+更新される事実を明記するよう訂正した。
 
 ## 関連
 
