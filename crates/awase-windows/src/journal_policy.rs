@@ -239,6 +239,19 @@ pub struct KeyInputIdentity<'a> {
     /// journal 記録に化ける（`coalesce_key_input` 側の追加ガードと二重に
     /// 防御する）。
     pub is_down: bool,
+    /// **畳み込み判定に必須。** `coalesce_key_input` は `next`（これから
+    /// 記録するイベント）が非 injected であることは引数 `next_injected`
+    /// で確認するが、`KeyInputIdentity` にこのフィールドが無いと**直前
+    /// （`prev`）のエントリが injected かどうか**を一切確認できない。
+    /// foreign-injected な KeyDown（BUG-90/issue #136、PowerToys Mouse
+    /// Without Borders 等）が偶然レーン末尾に居るとき、その直後に届いた
+    /// **本物の**物理 auto-repeat（`next_injected: false`）が、他フィールド
+    /// 一致だけで injected エントリへ誤って畳み込まれてしまう
+    /// （`injected` フラグの信頼性が診断上の生命線である BUG-90 系の
+    /// 保護を破る）。`PartialEq` 比較に含めることで、`prev.injected`
+    /// と `next.injected`（常に `false`）の不一致により自動的に
+    /// 畳み込み対象外になる。
+    pub injected: bool,
     pub key_class: &'static str,
     pub alt: bool,
     pub ctrl: bool,
@@ -288,7 +301,15 @@ pub fn coalesce_key_input(
         return CoalesceOutcome::NewEntry;
     }
     match prev {
-        Some(prev) if prev.is_down && prev == next => CoalesceOutcome::MergeIntoPrevious,
+        // `prev.injected` の明示チェックは、foreign-injected な KeyDown
+        // （BUG-90/issue #136）が偶然レーン末尾に居るときに、直後の本物の
+        // auto-repeat がそれへ誤って畳み込まれるのを防ぐ（`injected` を
+        // `KeyInputIdentity::PartialEq` に含めたことで `prev == next` でも
+        // 実質同じ効果は得られるが、`is_down` と同じ理由で明示的に二重防御
+        // する）。
+        Some(prev) if prev.is_down && !prev.injected && prev == next => {
+            CoalesceOutcome::MergeIntoPrevious
+        }
         _ => CoalesceOutcome::NewEntry,
     }
 }
@@ -527,6 +548,7 @@ mod tests {
             vk_code: 162, // VK_LCONTROL
             scan_code: 29,
             is_down: true,
+            injected: false,
             key_class: "Passthrough",
             alt: false,
             ctrl: true,
@@ -642,6 +664,23 @@ mod tests {
         let keydown = ctrl_hold_identity(); // is_down: true
         assert_eq!(
             coalesce_key_input(Some(&keyup), &keydown, true, false),
+            CoalesceOutcome::NewEntry
+        );
+    }
+
+    /// 回帰テスト（`/code-review opus` round3 で発見）: 直前のレーン末尾が
+    /// foreign-injected な KeyDown（BUG-90/issue #136、PowerToys Mouse
+    /// Without Borders 等）だった場合、その直後に届いた**本物の**物理
+    /// auto-repeat（`next_injected: false`）が、他フィールド一致だけで
+    /// injected エントリへ誤って畳み込まれないこと。畳み込むと
+    /// `injected` フラグの信頼性（BUG-90系診断の生命線）が壊れる。
+    #[test]
+    fn coalesce_never_merges_real_repeat_into_preceding_injected_entry() {
+        let mut injected_prev = ctrl_hold_identity();
+        injected_prev.injected = true;
+        let real_next = ctrl_hold_identity(); // injected: false
+        assert_eq!(
+            coalesce_key_input(Some(&injected_prev), &real_next, true, false),
             CoalesceOutcome::NewEntry
         );
     }

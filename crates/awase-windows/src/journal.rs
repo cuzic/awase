@@ -548,6 +548,13 @@ impl JournalLane {
 
     fn push(&mut self, envelope: JournalEnvelope) {
         if self.capacity == 0 {
+            // 容量0のレーンへの記録も「本来記録されるべきだったが失われた」
+            // という点で他の2つの喪失経路と同じであり、evicted_by_lane()の
+            // 網羅性（ADR-169決定1-b）を保つため計上する（`/code-review
+            // opus` round3指摘。本番の各レーン容量は`LaneKind::capacity()`
+            // 由来の非ゼロ定数のみで、現状到達しない経路だが、将来
+            // capacity:0のレーンが構成された場合に無音の過小計上を防ぐ）。
+            self.evicted += 1;
             return;
         }
         if self.buffer.len() == self.capacity {
@@ -694,6 +701,7 @@ fn key_input_identity(entry: &JournalEntry) -> crate::journal_policy::KeyInputId
         vk_code: event.vk_code,
         scan_code: event.scan_code,
         is_down: event.is_down,
+        injected: event.injected,
         key_class: event.key_class,
         alt: event.alt,
         ctrl: event.ctrl,
@@ -1454,12 +1462,12 @@ impl UnifiedJournal {
 
         match outcome {
             crate::journal_policy::CoalesceOutcome::MergeIntoPrevious => {
-                let (event_timestamp_us, next_elapsed_ms) = match &envelope.entry {
-                    JournalEntry::KeyInput { event, .. } => {
-                        (event.timestamp_us, envelope.elapsed_ms)
-                    }
-                    _ => unreachable!(),
-                };
+                // `event`（1437行目で束縛済み）は `envelope.entry` からの
+                // 不変借用として引き続き有効——`opus-adversarial-consult`
+                // コードレビュー指摘により、ここで再度 `envelope.entry` を
+                // match し直す冗長な分解を削除した。
+                let event_timestamp_us = event.timestamp_us;
+                let next_elapsed_ms = envelope.elapsed_ms;
                 if let Some(back) = self.lanes.key_input.buffer.back_mut() {
                     if let JournalEntry::KeyInput {
                         repeat_count,
