@@ -1293,10 +1293,15 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                         tick_ms: hook::current_tick_ms(),
                         hook_us: hook::now_timestamp_us(),
                     });
-                app.platform_state
-                    .ime
-                    .journal
-                    .record(crate::journal::JournalEntry::DumpTriggered);
+                let evicted = app.platform_state.ime.journal.evicted_by_lane();
+                app.platform_state.ime.journal.record(
+                    crate::journal::JournalEntry::DumpTriggered {
+                        evicted_state: evicted.state,
+                        evicted_timing: evicted.timing,
+                        evicted_actuation: evicted.actuation,
+                        evicted_key_input: evicted.key_input,
+                    },
+                );
                 let dump_result = app
                     .platform_state
                     .ime
@@ -2139,10 +2144,16 @@ pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
             tick_ms: hook::current_tick_ms(),
             hook_us: hook::now_timestamp_us(),
         });
+    let evicted = app.platform_state.ime.journal.evicted_by_lane();
     app.platform_state
         .ime
         .journal
-        .record(crate::journal::JournalEntry::DumpTriggered);
+        .record(crate::journal::JournalEntry::DumpTriggered {
+            evicted_state: evicted.state,
+            evicted_timing: evicted.timing,
+            evicted_actuation: evicted.actuation,
+            evicted_key_input: evicted.key_input,
+        });
     match app.platform_state.ime.journal.dump_to_file() {
         Ok(path) => {
             tracing::info!("[journal] ダンプ完了: {}", path.display());

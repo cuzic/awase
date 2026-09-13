@@ -175,7 +175,7 @@
 | [166](166-physical-key-disposition-decision-table.md) | PhysicalKeyDisposition::plan()の全数決定表化、DBEモードキーDown/Up vk非対称ハザードの明文化 (BUG-131) | 実装済み(ブランチ`fix/bug131-kana-restore-latch`)。Linuxコンパイル確認・Python独立シミュレーション済み、windows-build CI実行と実機検証は未実施 |
 | [167](167-standard-profile-warmup-double-send.md) | Standardプロファイル×ImmCross失敗フォールバック時の随伴warmup重複送信 (BUG-133) | 実装完了(2026-09-12)。opus-adversarial-consult 1ラウンドで選択肢B採用、全テスト緑。実機ソーク未実施 |
 | [168](168-actuation-boundary-small-cleanups.md) | Clojure風protocol/transducer案(型システム全面置換・決定軸registry統一)の却下記録 + ADR-088の`post_*_direct`4関数保持決定の反転 | 実装済み。opus-adversarial-consult 2ラウンドで収束 |
-| [169](169-journal-key-input-repeat-coalescing.md) | journal `KeyInput`レーンのOS auto-repeat畳み込みでダンプ予算窓を圧縮する | 起草・opus-adversarial-consult round1/round2反映済み(round3で収束確認予定)。元168番、developマージ済みの別ADR-168と衝突し169へ採番し直し |
+| [169](169-journal-key-input-repeat-coalescing.md) | journal `KeyInput`レーンのOS auto-repeat畳み込みでダンプ予算窓を圧縮する | 実装完了(ブランチ`feat/adr169-journal-key-input-repeat-coalescing`)。opus-adversarial-consult round1/round2で設計収束、Linux上のtest/clippy/fmt全緑。実機ソーク未実施。元168番、developマージ済みの別ADR-168と衝突し169へ採番し直し |
 | [170](170-codesmell-hotspot-decomposition.md) | コードスメル解消: belief reduce()の大きい4分岐をprivateヘルパーへ抽出(決定1のみ実施) | opus-adversarial-consult round1〜round3反映済み・収束(Blockerゼロ)。決定2(runtime/mod.rs重複統合)・決定3(output/mod.rs分割)は事実誤認/テスト破壊のため見送り |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
