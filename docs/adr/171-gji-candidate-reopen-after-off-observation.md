@@ -1,312 +1,255 @@
 ---
 id: ADR-171
 title: |-
-  GJI候補ウィンドウの意図しない再表示を正式な観測として belief に流し、既存drift correctionで自動補正する
+  gji_direct_already_matchesが候補ウィンドウ再表示という既存のdesync証拠(candidate_was_seen)を無視して再送を握り潰す不具合を修正する(BUG-141)
 status: |-
-  起草・opus-adversarial-consult round1反映済み。round1でBlocker4件・Major4件・
-  Minor6件を指摘され、決定1〜4を全面的に書き直した（当初案は`AnyObservation`が
-  witness経由専用で構築不能・`platform.rs`にbelief経路が無い・BUG-114型の
-  無限再武装・確定した観測が二度と訂正されない、という4つのBlockerを持っていた）。
-  round2レビュー待ち。実装未着手。
+  起草・opus-adversarial-consult round1/round2反映済み。round1・round2で当初案
+  （belief/drift correction経由の自動補正、決定1-4）にBlocker合計8件が見つかり
+  設計を全面転換、round2が提示した最小案（案Z）を主決定として採用。round2は
+  「BUG-141のjournal解釈に事実誤認がある」ことも指摘し（M5）、それを自分で
+  裏取りして確定させた（下記「事実の訂正」参照）。round3レビュー待ち。
+  実装未着手。
 related_adr:
   - "ADR-034"
   - "ADR-080"
-  - "ADR-087"
-  - "ADR-089"
-  - "ADR-090"
   - "ADR-140"
+  - "ADR-163"
 ---
 
-# ADR-171: GJI候補ウィンドウの意図しない再表示を正式な観測として belief に流し、既存drift correctionで自動補正する
+# ADR-171: `gji_direct_already_matches`が候補ウィンドウ再表示という既存のdesync証拠(`candidate_was_seen`)を無視して再送を握り潰す不具合を修正する(BUG-141)
 
 ## 背景
 
 [BUG-141](../known-bugs/BUG-141.md)（report `01M2D8HS5SBWSZ221P240Z4ZXE`）で、
-Ctrl+無変換（`GjiDirectStrategy`が送る`VK_IME_OFF`、`ime_controller.rs:75-110`）
-を3回送っても、直後の英字入力でGJIの変換候補ウィンドウ
+Ctrl+無変換を3回押しても、直後の英字入力でGJIの変換候補ウィンドウ
 （`GoogleJapaneseInputCandidateWindow`）が3回連続で実際に再表示される
-現象が発生した。journal上は3回とも`ActuationDecision.outcome:Applied`/
-`AlreadyMatched`で「成功」と記録されており、awase自身のbelief/FSM
-（`GjiFsm`、`OffCold`状態）は正しくOFFのまま一貫していた。
+現象が発生した。
 
-Mozc（[`tip_input_mode_manager.cc`](https://github.com/google/mozc/blob/master/src/win32/tip/tip_input_mode_manager.cc)）
-と Chromium（[`tsf_bridge.cc`](https://chromium.googlesource.com/chromium/src/+/9ff13081c1766eac6edc574d3af12e72519e8091/ui/base/ime/win/tsf_bridge.cc)）
-の公開ソースを確認した結果（BUG-141参照、WebFetch要約に基づく未確証の仮説
-段階）、以下の機序が疑われる:
+### 事実の訂正（当初案・round1の誤読、round2 M5指摘を自分で裏取りして確定）
 
-- Mozcの`TipInputModeManager::OnSetFocus(bool system_open_close_mode, ...)`は、
-  TSFフォーカスが再通知されるたびに`tsf_state_.open_close`を呼び出し元の
-  `system_open_close_mode`で**無条件に上書き**する。`VK_IME_OFF`等の明示
-  コマンドは別経路（`OnReceiveCommand`）で反映されるが、その後
-  `OnSetFocus`が再度呼ばれると上書きされて消える。
-- Chromiumの`TSFBridge`は、テキスト入力欄の種別ごとに別々の`ITfDocumentMgr`
-  を使い分け、フォーカス対象クライアントの変更や入力欄種別の変化のたびに
-  `AssociateFocus()`でフォーカス関連付けを再実行する（コード内コメント
-  「一部のIMEはdocument focusの変化がないと状態を更新しない」という設計
-  意図の記述あり）。
+当初、journalの`ActuationDecision.outcome`だけを見て「Ctrl+無変換
+（`SendVk(26)`＝`VK_IME_OFF`）を3回送ったが3回とも無効だった」と記述していたが、
+これは誤り。実際にjournal（`ImeOpenApplied`/`ActuationDecision`）を精読すると:
 
-この機序が事実だとしても、**Mozc/Chromiumはawaseの管理下にない外部の
-オープンソースプロジェクトであり、awase側から直接修正することはできない**。
-また、この機序（プロセス内部のTSFフォーカス再関連付け）はawaseの既存の
-フォーカス計装（`FocusTransition`、OS/hwndレベル）では観測できない
-（BUG-141「重要な限界」節）。したがって根治ではなく、**症状（候補ウィンドウ
-の意図しない再表示）を検知して自動的に訂正する**という対症的だが確実な
-アプローチを採る。
+- **1回目（elapsed `6128805`）**: `outcome:Applied`——実際に`VK_IME_OFF`が
+  送信された。
+- **2回目（`6131393`）・3回目（`6135183`）**: **`outcome:AlreadyMatched`——
+  `send_ime_mode_key`は一度も呼ばれていない**（`gji_direct_already_matches`
+  が`shadow_on==Some(false)==open`で早期に`None`を返したため、
+  `decide_attempt`のGjiDirectアームで`MechanismCommand`自体が生成されない）。
 
-**[BUG-033](../known-bugs/BUG-033.md)が既にこの設計を検討し、見送っていた
-ことを round1 で指摘された。** BUG-033の「検討したが見送った案」は
-「belief/drift-correction を経由する設計（`ObservationSource`新設variantで
-`ObserverReported`をdispatchし、`check_drift_correction`に本物の観測を
-与える）。コード調査で実現可能と確認済みだったが、(a) 補正閾値のレイテンシ、
-(b) 新規`ObservationSource`variant追加のコストという理由で見送った。GJIが
-タイピング中でなく長時間OFFのまま乖離するケースにはBUG-033が採った直接
-呼び出し（`send_chrome_gji_reinit_and_poll`）は効かないため、将来そのような
-ケースが実機で確認されたら、この belief 経由の設計を別バグとして再検討する
-こと」——**ADR-171はBUG-033が予約していたこの再検討の実行にあたる**。
-(a)(b)のコストは既に承知した上で、BUG-141という具体的な実害を前に belief
-経由を選ぶ、という位置づけを明示する。
+つまり実際に起きていたのは「GJIが3回とも`VK_IME_OFF`を無視した」ではなく、
+**「awase自身が2回目以降の再送をshadowモデル任せで握り潰していた」**。
+awaseはこの間、候補ウィンドウの実際の再表示（`GjiFsmTransition
+{StartComposition}`）という**desyncの直接証拠**を既に持っていた
+（`tsf/observer.rs::candidate_was_seen`、下記参照）にもかかわらず、
+その証拠を`gji_direct_already_matches`の判定に一切使っていなかった。
 
-## 現状の問題点
+さらにjournal/app.logを実測で確認した結果、この区間（elapsed `6128715`〜
+`6136419`、absolute `2026-09-13T11:30:03.35`〜`11:30:14.25`）では
+**`ir_apply_drift_correction`の周期チェーンが一度も回っていなかった**
+ことも確認した（app.log `[stage-observe]`行が`explicit_intent=Some(false)`
+の間は疎らにしか出ず、`observer_poll=`行が皆無）。これは
+`runtime/mod.rs::reschedule_ime_refresh`が「`explicit_intent().is_some()`の
+間は次回tickを張らない」という設計（BUG-51と同型の既知の落とし穴、
+`runtime/key_pipeline.rs:1090-1103`に前例コメントあり）によるもので、
+本ADRのスコープ外の**別の既知の穴**として記録する（下記「関連する別の穴」）。
 
-`crates/awase-windows/src/tsf/gji_fsm.rs:885-887`:
+### 検討したが見送った設計（belief/drift correction経由の自動補正）
+
+当初、候補ウィンドウSHOWを新しい`ObservationSource`として belief に流し、
+既存のdrift correction機構に自動補正を委譲する設計（決定1-4）を起票した。
+opus-adversarial-consultで2ラウンド実施し、合計8件のBlockerが見つかった
+（`AnyObservation`構築不能、`platform.rs`にbelief経路が無い、BUG-114型の
+無限再武装、観測が焼き付いて訂正されない、`reschedule_ime_refresh`の
+explicit-intent停止でdrainが一度も走らない、`OffCold`gateの評価時点ズレに
+よる日常操作での誤発火、episode ラッチの配線漏れ、`Imm32Unavailable`の
+`ObserverPoll`が構造的に`false`を書けない）。詳細と全指摘は末尾
+「検討した代替案（見送り）」参照。**[BUG-033](../known-bugs/BUG-033.md)が
+既にこの種の設計を検討し(a)レイテンシ(b)新規observation source追加コストを
+理由に見送っていたことも round1 で判明しており、本ADRでも同じ理由に加え
+実装難度の高さから見送る。**
+
+## 決定（案Z）: `gji_direct_already_matches`に`candidate_was_seen`を渡し、desync証拠がある場合は再送を短絡させない
+
+### 現状の問題箇所
+
+`state/ime_actuation_decision.rs:142-144`:
 
 ```rust
-GjiState::OffCold => {
-    tracing::warn!("[gji-fsm] StartComposition while engine off — ignored");
-    Response::consume()
+const fn gji_direct_already_matches(shadow_on: Option<bool>, open: bool) -> bool {
+    matches!(shadow_on, Some(v) if v == open)
 }
 ```
 
-`GjiFsm`が`OffCold`（awase自身のbeliefは「IME OFF」）のときに
-`StartComposition`（候補ウィンドウの実際のSHOW、`observer.rs`の
-`EVENT_OBJECT_SHOW`が起点）が来ても、ログを警告として出すだけで、GJIの
-実状態への訂正コマンドも、awaseのbeliefへのフィードバックも一切発行しない。
+`shadow_on`（awase自身が最後に送ったコマンドの記録）が`open`（今回の要求）と
+一致していれば、実際にOSへ何も送らずに`AlreadyMatched`を返す
+（`decide_attempt`、同ファイル`:250`）。この判定は「前回送ったとおりに
+GJIが状態を保っているはず」という**awase自身の記録**だけに基づいており、
+その後にGJIの実状態が変化したという外部証拠（候補ウィンドウの実際の
+再表示）を一切見ない。
 
-**round1指摘（M2）を受けた重要な事実**: `GjiFsm::on_event(StartComposition)`
-自体が呼ばれる契機（`gji_on_start_composition`、`platform.rs:889-899`）は
-`drain_pending_composition_events`（同`:923-930`）のみで、その呼び出し元は
-`advance_tsf_probe`（TSFプローブタイマー中）と`drain_output_post_send_effects`
-（`send_keys`/`flush_raw_tsf_literal_recovery`直後、＝awase自身が実際に出力を
-送るとき）の3箇所に限られる。**IME OFFで engine が inactive のときは
-`send_keys`経路が通らない**ため、本ADRが対象とする状況（IME OFFのはずなのに
-候補が開く）はまさに既存のdrain契機が最も乏しい状況である。BUG-141で
-journalに`GjiFsmTransition{StartComposition}`が現れたのはTSFプローブタイマー
-がたまたま走っていたためと推定されるが、SHOW発生から実際にFSMへ届くまでの
-遅延は未計測。**この問題は決定2で「GjiFsmの外側」に新しいdrainルートを
-作ることで解消する（詳細は決定2）。**
+一方、awaseは既にこの証拠を`TSF_OBS.candidate_was_seen`
+（`tsf/observer.rs:176-181`、doc:「GJI candidateがSHOWになってから次の
+`on_ime_applied`呼び出しまでの間に『shadow=OFFなのに候補ウィンドウが
+表示された(desync)』ことがあったかを記録するラッチ」）として保持している。
+このラッチは`EVENT_OBJECT_SHOW`で`true`に、`on_ime_applied_inner`
+（`platform.rs:1518-1527`、`AlreadyMatched`を含む全outcomeで無条件に
+リセット、`UnsafeToToggle`/`NotOwned`のみ例外）で`false`にリセットされる
+——**次のapply判断が行われる直前まで値を保持し、apply完了後にリセットされる**
+ため、「前回のapply〜今回のapply判断の間にSHOWがあったか」を正確に表す。
 
-## 決定
+このラッチは既に`ImeControlView`（`state/ime_decision_view.rs::
+ObservedState::candidate_was_seen`、`:54`）へスナップショットされ、
+`OpenBelief::reduce`（`output/ime_apply_planner.rs:68`、
+`!desired_open && self.candidate_was_seen`という条件式で`KanjiToggleStrategy`
+向けのeffective_open計算に既に使われている）にも渡っている。**しかし
+`impl From<&ImeControlView<'_>> for DecisionInputs`
+（`state/ime_decision_view.rs:152-159`）はこの値をコピーしておらず、
+`GjiDirectStrategy`が使う`gji_direct_already_matches`には届いていない。**
+これが本バグの直接原因である——新しい観測経路を作る必要は無く、
+**既存の値を既存の配線にもう1本つなぐだけ**で足りる。
 
-### 決定1: 新しい evidence 型を「宣言だけ」でなく5点セットで追加する
+### 変更内容
 
-`ObservationSource`（`state/ime_event.rs`）に新variant
-`GjiCandidateShownWhileClosed`（仮名）を追加するだけでは、`AnyObservation`
-（`state/evidence.rs:269-330`）を作れない——同型は全フィールドprivateで、
-`Observed<E>`のwitness経由の`From`変換、または本番禁止の
-`restored_from_journal`（`tests/architecture_guard.rs::
-any_observation_replay_door_is_not_used_in_production`が本番0件を固定）
-経由でしか構築できない。したがって以下5点をセットで実装する
-（`ConvOpenInference`が全部やっている前例をなぞる、`state/evidence.rs`）:
+1. `DecisionInputs`（`state/ime_actuation_decision.rs:45-51`）に
+   `candidate_was_seen: bool`フィールドを追加する。
+2. `impl From<&ImeControlView<'_>> for DecisionInputs`
+   （`state/ime_decision_view.rs:152-159`）で
+   `candidate_was_seen: view.observed.candidate_was_seen`をコピーする。
+3. `gji_direct_already_matches`を次のように変更する
+   （`output/ime_apply_planner.rs:68`の`!desired_open && candidate_was_seen`
+   と同じ形の条件式を、意味の異なる場所へ機械的に複製するのではなく、
+   「OFF方向でdesync証拠があるときはshadow一致を信用しない」という
+   **同一の判断ルールをこの2箇所に適用する**、という位置づけで書く）:
 
-1. `ObservationSource`に variant 追加 + `authority()`のmatchアーム追加
-   （`state/ime_event.rs`）。**`authority(): Actuating`**
-   （drift correctionの補正根拠として使える）。
-2. `state/evidence.rs::declare_evidence!`に1行追加:
-   `GjiCandidateShownWhileClosed => ActuatingPool, GjiCandidateShownWhileClosed, Medium;`
-   **confidence は `Medium`（`High`ではない、round1 m2指摘）**——
-   `ObservationConfidence`の定義（`state/ime_event.rs:210-219`、
-   High=「直接API成功」、Medium=「間接観測(GJI/TSF observer)」）に照らすと、
-   「候補ウィンドウが表示された」という間接的なUIイベントはMedium相当
-   （`GjiIoInference`と同じ区分）。Mediumを選ぶことは決定3・決定4の設計にも
-   効いてくる（後述）。
-3. `Observed<GjiCandidateShownWhileClosed>`専用のwitness構築子を追加する。
-   引数として要求する「外部事実」は、決定2で新設する
-   `CandidateShowFact { tick_ms, front_hwnd, gji_idle_ms }`
-   （SHOW発生時点で実際に捕捉した値、`AtomicBool`のような裸のフラグではない
-   ——round1 M1指摘）。`hwnd`/`focus_epoch`は、drain時点で
-   `CandidateShowFact.front_hwnd`と現在のフォーカスhwnd/fenceを照合し、
-   一致する場合のみ現在のfocus_epochを使って構築する（不一致なら構築せず
-   捨てる、後述）。
-4. `PerSourceObservations`に10個目のフィールド＋`get`/`set`/`iter`/
-   `clear_all`のアーム追加（`state/observation_store.rs:240-330`）。
-5. `state/evidence.rs`の`evidence_sources_are_nine_distinct_recordable_sources`
-   を10に更新し、`ObservationSource`を列挙する全数テスト
-   （`state/ime_event.rs:639-716`等）にもアームを追加する。
+   ```rust
+   const fn gji_direct_already_matches(
+       shadow_on: Option<bool>,
+       open: bool,
+       candidate_was_seen: bool,
+   ) -> bool {
+       matches!(shadow_on, Some(v) if v == open) && !(!open && candidate_was_seen)
+   }
+   ```
 
-書き込み口は`ImeStateHub`の designated メソッド
-（`state/platform_state.rs::report_conv_open_inference`と同型、新設）に
-閉じ、`architecture_guard.rs`の既存ガード
-（`focus_probe_observation_is_limited_to_real_probe_path`等）と同種の
-「この観測は指定関数以外から構築できない」固定テストを追加する。
+4. 呼び出し元（`decide_attempt`、同ファイル`:250`）を
+   `gji_direct_already_matches(inputs.shadow_on, open, inputs.candidate_was_seen)`
+   に変更する。
+5. `#[cfg(test)]`の`inputs()`ヘルパー（同ファイル`:269-284`）と、
+   直接`DecisionInputs { .. }`を書いている他のテスト（`runtime/open_chain.rs`
+   の`async_record_carries_caller_label_distinct_from_site`等）に
+   `candidate_was_seen: false`（既定値、既存挙動を変えない）を追加する。
 
-**既存の未使用スロット`ObservationSource::Gji`（「GJI (GetGuiThreadInfo)
-由来」）は再利用しない**——round1 m1で「命名の正直さだけでなく、
-`GetGuiThreadInfo`ベースAPIとWinEventHookベースの`EVENT_OBJECT_SHOW`は
-実装上まったく別の観測経路であり、将来`GetGuiThreadInfo`由来の観測を
-実装する際にこのvariantが本来の意味で必要になる」という理由を明記する。
+### 実際のBUG-141タイムラインでの動作確認（トレース済み）
 
-### 決定2: `GjiFsm`を経由せず、WinEventHookのSHOWハンドラから直接事実を捕捉し、Runtime側の周期tickで drain する
+1. Ctrl+無変換1回目（`candidate_was_seen=false`、初回のため）:
+   `shadow_on`が`open(false)`と不一致 → 通常どおり送信、`Applied`。
+   送信完了後`candidate_was_seen`はリセット（既に`false`）。
+2. 候補SHOW（`6130462`）→ `candidate_was_seen=true`。
+3. Ctrl+無変換2回目: `shadow_on==Some(false)==open`だが
+   `candidate_was_seen==true` → **`!(!false && true)`は成立せず
+   全体が`false`になり、already-matchedと判定されない → 実際に再送する**
+   （旧実装ではここで無送信だった）。送信完了後リセット。
+4. 候補SHOW（`6131714`）→ `candidate_was_seen=true`。
+5. Ctrl+無変換3回目: 同様に再送する。
+6. 4回目の`C`,`H`,`A`入力で候補は表示されず（実際のjournal通り）。
 
-round1 B2（`platform.rs`は`platform_state`を持たずbeliefに届かない）と
-M2（drain契機がIME OFF時に乏しい）を同時に解決するため、**`GjiFsm`/
-`GjiAction`は一切変更しない**。代わりに、以下の別経路を新設する。
+**この変更により、ユーザーが実際に押した3回のCtrl+無変換が3回とも実際に
+GJIへ送信されるようになる**（旧実装では1回のみ）。GJI側が本当に受理する
+かどうか（Mozc/Chromiumの`OnSetFocus`無条件上書き機序、BUG-141背景参照）は
+依然awaseの管理外だが、少なくとも**awase自身がユーザーの意思を握り潰す**
+という、この変更で確実に解消できる部分が直る。
 
-1. `tsf/win_event_obs.rs::observation_event_proc`の`EVENT_OBJECT_SHOW`
-   ハンドラ（`:154-176`）で、`GJI_CANDIDATE_CLASS`一致時に現状セットしている
-   `pending_start_composition`（既存、`GjiFsm`用、変更しない）に加えて、
-   **新しい`pending_candidate_show_fact: Mutex<Option<CandidateShowFact>>`**
-   （`TSF_OBS`内、既存の`gji_candidate_visible`等と同じ場所）に
-   `CandidateShowFact { tick_ms: crate::hook::current_tick_ms(), front_hwnd:
-   <このコールバック内で取得できる現在のフォアグラウンドhwnd>, gji_idle_ms:
-   <取得可能なら> }`を格納する（既に値があれば上書き、最新のSHOWのみ保持）。
-2. `runtime/ime_refresh.rs::ir_stage_notify`（`TIMER_IME_REFRESH`、
-   20/50/500ms間隔で**engineがuser_enabledである限りIME open/close状態に
-   関わらず周期的に呼ばれる**、`ir_apply_drift_correction`自身の早期return
-   条件`!self.engine.is_user_enabled()`とは独立）に、`ir_apply_drift_correction`
-   呼び出しの**直前**に新しいステージ`ir_drain_candidate_show_fact()`を追加する。
-   このステージは`platform.take_pending_candidate_show_fact()`
-   （既存の`output.take_composition_reset()`と同型のtake口を`platform.rs`に
-   新設）でfactを取り出し、
-   - `GjiFsm`の現在状態が`OffCold`でなければ捨てる（IME ONなら候補SHOWは
-     正常なので観測不要）、
-   - `fact.front_hwnd`が現在のフォーカスhwnd（`self.platform.focus.
-     current_hwnd()`）と一致しなければ捨てる（**round1 M1の
-     Notepad→Edge誤帰属シナリオ対策**——別ウィンドウでのSHOWを現在の
-     フォーカス窓の観測として誤って取り込まない）、
-   - 両方通れば`self.platform_state.ime.report_gji_candidate_shown_while_off
-     (&fact, self.focus_epoch(), hwnd)`（決定1の designated メソッド）を呼ぶ。
+### BUG-113再導入にならない理由（構造的、round2で確認済み）
 
-この経路は`platform.rs`にbeliefへの依存を持ち込まず（B2解消）、
-`send_keys`に依存しない周期的なdrainを持つ（M2解消）。GjiFsm自身の
-状態遷移・純粋性契約（`gji_fsm.rs:295-304`）も一切変更しないため、round1
-m3が指摘した既存テスト（`startup_ime_on_sync_allows_candidate_show_to_
-warm_fsm`）への影響もない。
+BUG-113は「同一の物理キー押下に対し`shadow_toggle_off_sync`/
+`engine_decision_sync`の2経路から連続で2回`apply`が呼ばれ、2回目も
+実送信していた」ことが原因（`ime_controller.rs:88-100`のdoc）。
+`candidate_was_seen`は`on_ime_applied_inner`が**`AlreadyMatched`を含む
+全outcomeで毎回リセットする**ため、1回目のapply完了時点で`false`に落ちる。
+同一物理キー押下の2回目の呼び出しは（実際のGJI側composition変化が
+起きる時間が無いため）`candidate_was_seen`はまだ`false`のままで、
+**従来どおり`AlreadyMatched`のまま**になる——本変更が拾うのは「新しい
+候補SHOWが実際に挟まった後の再送」だけであり、BUG-113型の同一キー押下内
+の重複送信を再導入しない。
 
-### 決定3: HIDE（`EndComposition`）方向には対応する`open:false`観測を発行しない。ただし confidence を Medium にすることで「永久に焼き付く」リスクを構造的に緩和する
+### テスト（`.claude/rules/fix-requires-evidence.md`「キー選択」ファミリー）
 
-候補ウィンドウが閉じる（`EVENT_OBJECT_HIDE`起点）ことは「変換候補が確定
-した」ことを意味するだけで「IMEがOFFになった」ことを意味しないため、
-この観測は**SHOW方向のみの一方通行**とする（変更なし）。
+- `state/ime_actuation_decision.rs`の既存テスト
+  `gji_direct_skips_when_shadow_already_matches_close_direction`
+  （`:558-567`、`candidate_was_seen`無しの既存挙動、暗黙に`false`）は
+  変更後もそのまま緑であることを確認する（デフォルト`false`なら旧動作と
+  ビット同値）。
+- 新規テスト`gji_direct_resends_when_candidate_was_seen_despite_shadow_
+  match`（同ファイル）: `shadow_on=Some(false)`, `open=false`,
+  `candidate_was_seen=true`で`decide_attempt`が`Some(MechanismCommand::
+  SendVk(..))`を返すことを固定する。
+- `open=true`方向（ON時）は`candidate_was_seen`を条件に含めない
+  （`!(!open && ..)`の`!open`ガードにより`open=true`のときは常に`false`
+  側に落ち、既存の挙動と変わらないことを対称テストで固定する）。
+- 実機A/B（developマージ前、`.claude/rules/tuning-constants.md`は無関係だが
+  実機確認は必須）: BUG-113の症状（Windows Terminal × GJI × PSReadLineで
+  余分な「@」）が再発しないことを確認する。BUG-141の再現条件（GJI長時間
+  idle→Ctrl+無変換→候補SHOW）と同じセッションで一緒に測定できる。
 
-**round1 B4（Blocker）への対応**: `most_recent_trusted()`は
-confidence優先・`at`が第2キーで選ばれ（`observation_store.rs:694-699`）、
-`ObserverReported`由来の観測は`expires_at: None`（時間で消えない、
-同`:451-476`）。決定1で`confidence: High`を選んでいた当初案では、
-`Imm32Unavailable`プロファイルで**この観測を上書きできるMedium/Low観測が
-構造的に存在しない**（Highソースはこのプロファイルでは読めない）ため、
-一度発火すると同一フォーカスセッション中ずっと`open:true`が勝ち続け、
-実際にOFFへ補正された後もbeliefが古い`open:true`を拾い続けるリスクが
-あった（`FocusChanged`＝別プロセスへの移動でのみ`clear_on_focus_change`が
-発火し消える）。
+## 関連する別の穴（本ADRのスコープ外、記録のみ）
 
-**decision: confidenceをMediumにする**（決定1で確定済み）ことで、
-`Imm32Unavailable`で実際に周期的に record される`ObserverPoll`(Medium)が、
-より新しい`at`を持つ限り`most_recent_trusted()`で自然に上書きする
-（confidence同値はatで比較されるため）。500ms周期の`ObserverPoll`が
-実IMEの状態を正しく観測し続ける限り、この新観測は「一時的に不整合を
-検知してdrift correctionを起こすトリガー」として機能し、その後は自然に
-薄れる。**この選択がdecision4のexclusion/latch設計（後述）と整合すること
-を実装時のテストで確認する。**
+「事実の訂正」節で見つけた`reschedule_ime_refresh`のexplicit-intent停止
+（`runtime/mod.rs:834-855`、BUG-51と同型）により、本ADRの変更後も
+「awaseが送ったVK_IME_OFFが本当に効いたか」を確認する周期的なdrift
+correctionは、Ctrl+無変換直後の数秒〜十数秒間は動かないままである。
+今回の案Zは「awase自身の握り潰しをやめる」だけで、GJI側が実際に受理した
+かの自動確認・自動収束は依然無い。将来この方向の改善（BUG-51型の穴自体の
+修正、または本ADRが検討した belief/drift correction 経由の設計の再検討）が
+必要になった場合は、別ADRとして起票すること。
 
-### 決定4: 補正の実行は既存のdrift correction機構に委譲するが、そのままでは BUG-114 の無限再武装を再現するため、2点の追加ガードを同時に導入する
+## 検討した代替案（見送り）: belief/drift correction経由の自動補正
 
-決定1・2で`ObserverReported{open:true, Medium}`が記録されると、
-`PlatformState::check_drift_correction`（`platform_state.rs:911`）が
-`desired`との不一致を検知する。
+以下は当初案の要約。実装しないが、将来同種の検討をする際に同じ轍を
+踏まないよう記録する。
 
-**round1 B3（Blocker）への対応——`AnyFreshEvidence`除外リストへの追加**:
-`Blind`policyの`IME_ACTUATION_BLIND_MAX_ATTEMPTS`は「1 actuationあたり
-5回」の上限であり「全体で5回」ではない。`GiveUp`後は
-`DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS`（3000ms、`tuning.rs:322`）経過後、
-`read_back(.., ReadBackQuery::AnyFreshEvidence, ..)`が「`gave_up_at`以降に
-新しいtrusted観測が record されたか（値不問）」を見て再武装する
-（`runtime/ime_refresh.rs:703-786`）。除外されているのは現在
-`ObserverPoll`/`ConvOpenInference`の2ソースのみ（`observation_store.rs:
-667-670`、理由はBUG-114そのもの——読み戻し手段が構造的に無いプロファイルで
-自己確認しない弱い代理指標が3秒おきに永久バーストを再武装する）。
-新ソースは全く同じ性質（`desired`が実現したかを一切確認していない）を
-持つため、**`EXCLUDED_FROM_ANY_FRESH_EVIDENCE`に本ソースを追加することを
-決定とする**。これにより「BUG-141相当のセッションでVK_IME_OFFが最低5回・
-3秒境界を跨げば10回、awase側から自動送信される」という定量化されたリスク
-（round1 B3）を防ぐ。
+**方針**: 候補ウィンドウSHOWを新しい`ObservationSource`（evidence型5点セット:
+`ObservationSource`variant追加・`declare_evidence!`・witness構築子・
+`PerSourceObservations`フィールド・全数テスト更新）として`ObserverReported`
+経由でbeliefへ流し、既存の`check_drift_correction`/`ir_apply_drift_correction`
+に自動補正を委譲する。
 
-**round1 B3が指摘した episode ラッチの追加**: `decide_conv_inference_drift`
-（`state/ime_actuation.rs:492`）は現状`ObservationSource::ConvOpenInference`
-のみをハードコードで対象にした「同一の明示意図エピソード中は実送信1回に
-絞る」ラッチである。この`matches!`条件に本ソースも追加し、同じ
-episode-latch（`ConvDriftEpisode { intent_at_ms, desired }`が同一なら
-`Suppress`）を適用する。**新しいtuning定数・新しいクールダウンは追加しない**
-——既存の型的保証（BUG-113/BUG-43対策）をそのまま再利用する
-（`.claude/rules/tuning-constants.md`の実測義務に触れない）。
+**round1で見つかったBlocker（4件）**:
+1. `AnyObservation`は`Observed<E>`のwitness経由専用で、ADRが書いていた
+   コード片（`at`フィールド等）は実在せず構築不能。
+2. ディスパッチ先として想定した`platform.rs`は`platform_state`（belief）を
+   一切持たず、そこからbeliefへ書き込めない。
+3. 新しい観測は`AnyFreshEvidence`除外リストに入らず、BUG-114で実機確認済みの
+   「Blindバーストの無限再武装」を再現する（3秒クールダウンごとに再武装、
+   BUG-141相当のセッションで最低5回・境界を跨げば10回の自動送信）。
+4. confidence=Highを選ぶと、`Imm32Unavailable`にこの観測を上書きできる
+   同等以上の観測源が構造的に存在せず、一度発火すると belief が
+   「IME ON」に永久に焼き付く。
 
-**round1 M3（Major）への対応——「閾値0」の前提条件を正確に書く**:
-`check_drift_correction`が閾値0（即時）になるには実際には5条件
-（`platform_state.rs:911-1000`）が必要であり、うち
-`DRIFT_CORRECTION_OBS_MAX_AGE_MS`（1500ms、`tuning.rs:259`）を超えた
-観測は使われない。決定2の新しいdrainルートは`TIMER_IME_REFRESH`の
-最短周期（20ms）に乗るため、`send_keys`依存の旧経路よりこの1500ms
-上限に対して十分な余裕がある——ただし**実装時にSHOW発生からdrainまでの
-実測レイテンシを記録すること**（round1 M2の要求と同一）。
+**round1の指摘を反映してdrain経路をGjiFsm外・`TIMER_IME_REFRESH`ベースに
+再設計し、confidenceをMediumに変更した round2 でも、新たに4件のBlocker
+が見つかった**:
+1. `TIMER_IME_REFRESH`の周期チェーンは`explicit_intent().is_some()`の間
+   停止する（前述、BUG-51と同型）ため、本ADRが対象とする状況で新しいdrainが
+   一度も走らない。
+2. `OffCold`gateをdrain時点で評価するため、「日本語を打ってからIMEを切る」
+   という日常操作のたびに5連射を誘発する偽陽性がある。
+3. episode ラッチ（`decide_conv_inference_drift`の流用）は書き込み側
+   （`runtime/ime_refresh.rs:834`）の配線漏れでno-opになり、かつ
+   明示意図なしのケースでは「プロセス起動中ずっと1回だけ」という
+   恒久抑止になり、決定4後半（明示意図なしでも補正する）と正面衝突する。
+4. confidenceをMediumにしても、`Imm32Unavailable`唯一の`ObserverPoll`観測源
+   （`observer/gji_observer.rs:28-62`）は構造的に`Some(false)`を返す分岐を
+   持たず、値としての訂正力がゼロ——「後続の観測が自然に上書きする」という
+   前提が成立しない。
 
-また、`explicit_intent == desired`が成立しない場合（BUG-141の3回目の
-失敗のように、物理半角/全角キーで`last_intent`がON側に切り替わった直後）
-は、`trusted.open(true) == desired(true)`となり`check_drift_correction`は
-そもそも`None`を返す——これは**正しい挙動**（ユーザーの新しい明示意図と
-観測が一致しているので補正不要）であり、本設計が「救えない」ケースでは
-ない。ADRの当初案がこの点を「救う」ように読めた記述だったことを訂正する。
+加えてround2は、この設計を導入する前にBUG-141の journal で「既存のdrift
+correctionは既に発火していたのか」を確認すべきだと指摘した（本ADRの
+「事実の訂正」節で確認済み: 発火していなかった。理由は上記「関連する別の穴」）。
 
-`platform_state.rs:982-988`の「明示意図が無い間は`ConvOpenInference`/
-`HeuristicDefault`単独で発火させない」ガードの`matches!`には、**本ソースを
-追加しない**ことを決定として明記する——本ソースは自己生成の間接推測
-（conv bit推測・観測ゼロの安全デフォルト）ではなく、実際にOS上で起きた
-UIイベントに基づく genuine な外部証拠であり、明示意図がない状態
-（例: フォーカス変更直後のenforce-off直後に候補が開いた）でも補正すべき
-という判断を明示的に選ぶ。
-
-## この設計が対応する既存リスク（更新版）
-
-- **BUG-113（TSF composition破壊、5連射の危険性）**: 決定4のepisode
-  ラッチにより、同一の明示意図エピソード中は実送信を1回に絞る。BUG-141の
-  実際の再現パターン（Ctrl+無変換1回目〜3回目の間に候補SHOWが3回、
-  約6.4秒）でも、各Ctrl+無変換ごとに新しいエピソードが始まるため、
-  最悪でも「Ctrl+無変換の回数×最大5連射」に留まり、無限再武装
-  （B3が指摘した5〜10回の自動送信）は起きない。
-- **確定した観測が二度と訂正されない（B4）**: 決定3でconfidenceをMedium
-  にしたことで、後続の`ObserverPoll`が自然に上書きする経路を確保した。
-- **フォーカス変更中のスプリアス発火**: 決定2のhwnd照合（drain時点の
-  フォーカスとSHOW捕捉時点のフォーカスの一致確認）により、
-  Notepad→Edge型の誤帰属（round1 M1）を防ぐ。`focus_settle_ms`との
-  相互作用は実装時に確認する。
-
-## 未解決の論点・残存リスク
-
-1. **（round1 M4、実機検証待ち）**: 本設計の唯一の効能根拠は「候補SHOW後に
-   送るVK_IME_OFF（またはdrift correctionによる再送）が、Ctrl+無変換1回目の
-   送信より高い確率で実際に効く」という未検証の前提である。BUG-141の
-   根本原因仮説（Mozcの`OnSetFocus`が refocus のたびに無条件上書きする）が
-   正しいなら、**候補SHOW後の再送もまた次のrefocusで同様に上書きされうる**
-   ——その場合この設計は「ユーザーが手で3回送っていたのをawaseが自動で
-   数回送るだけ」になり、収束を早める効果はあっても根治しない可能性が
-   ある。BUG-141「次のアクション」の実機A/B
-   （idle 5秒以上放置→Ctrl+無変換→(a)そのまま入力/(b)別入力欄クリック後に
-   入力、および「候補SHOW直後に手動でCtrl+無変換をもう一度送ると直るか」）
-   を、**実装前またはdevelopマージ前に実施し、結果をこのADRに追記すること**。
-   効かないと判明した場合は、VK_IME_OFF（冪等キー）ではなくVK_KANJI
-   （トグルキー、Mozcの別処理経路を通る可能性がある）を試す等、送信内容
-   そのものの見直しに設計を戻す。
-2. **SHOW→drain実測レイテンシ**: 決定2の新しいdrainルート導入後、実際の
-   レイテンシを実機ログで確認し、1500ms上限に対して十分な余裕があるかを
-   記録する。
-3. **`CandidateShowFact`の`gji_idle_ms`取得可否**: `EVENT_OBJECT_SHOW`
-   ハンドラのコールバックコンテキストで`gji_idle_ms`相当の値を安全に
-   取得できるか（`GjiFsm`が保持する値へのアクセス経路）は実装時に確認する
-   （取得できない場合は`tick_ms`/`front_hwnd`のみで妥協する）。
-
-## 実装ノート
-
-未着手。round2レビューで収束後に着手する。最低限の回帰テスト
-（`.claude/rules/fix-requires-evidence.md`）:
-「新観測1件で5連射しないこと」「give-up後に同じ観測source単独では
-再武装しないこと」の2本を`state/platform_state.rs`の既存テスト
-（`check_drift_correction_fires_immediately_when_explicit_off_intent_
-conflicts_with_conv_inference`等）を雛形にLinux上で追加する。
+**結論**: 8件のBlockerを全て解消するコストは、案Zの1関数1パラメータ追加という
+コストと比べて見合わない。将来「awase自身の再送だけでは不十分（GJI側が
+本当に受理したかを確認して自動収束させたい）」という実害が実機で確認された
+場合に、この設計を再検討すること（BUG-033がADR-171に予約したのと同じ形で、
+ADR-171が次のADRに予約する）。
