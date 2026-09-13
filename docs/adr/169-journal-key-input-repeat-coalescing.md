@@ -3,7 +3,14 @@ id: ADR-169
 title: |-
   journal `KeyInput` レーンの OS auto-repeat 畳み込みでダンプ予算窓を圧縮する
 status: |-
-  起草・opus-adversarial-consult round1/round2反映済み（round3で収束確認予定）
+  実装完了（決定1・決定1-b、ブランチ`feat/adr169-journal-key-input-repeat-coalescing`）。
+  opus-adversarial-consult round1/round2で設計収束済み。Linux上で
+  `cargo test --lib`/`cargo nextest run --workspace --lib`（1783件）・
+  `cargo nextest run -p awase-windows --test architecture_guard --test
+  golden_scenarios --test layer_boundary_guard`（124件、新設の
+  `journal_key_input_construction_is_limited_to_key_pipeline`含む）全緑、
+  windows target `cargo check`/`cargo clippy`/`cargo fmt --check`も全緑。
+  実機ソーク・windows-build CI実行は未実施
 related_adr:
   - "ADR-096"
   - "ADR-095"
@@ -466,6 +473,37 @@ ADR-159/163 の actuation decision 再生は `ActuationDecisionRecord`
 `fix-requires-evidence.md` の再発ファミリー表には journal 自体は含まれて
 いないが、診断基盤の不具合を再発させないという同種の観点から、上記を
 本ADR実装コミットに含める。
+
+## 実装ノート（設計との差分）
+
+- **`was_down` の運搬先**: 設計どおり `RawKeyEvent`（core）へ追加。
+  構築箇所61箇所（19ファイル）を機械的に更新（`was_down: false`固定、
+  実際に物理状態を反映するのは `hook.rs::build_raw_key_event` の1箇所のみ）。
+- **R2-4（`coalesced_into_seq`）は簡略化**: `record_key_input` は
+  `emit_tracing` を毎回呼ぶ前に `JournalStamper::stamp` で毎回新しい
+  `seq` を採番する設計にしたため、tracing/app_log には物理イベントごとに
+  異なる `seq` がそのまま残る。畳み込まれた repeat はその `seq` を持つ
+  journal エントリを**作らない**（直前の `KeyInput` エントリの
+  `repeat_count` へ吸収される）ため、明示的な `coalesced_into_seq`
+  フィールドを追加しなくても「`KeyInput` レーンの seq の穴＝畳み込みに
+  よるもの」は、直前エントリの `repeat_count` から追跡できる。
+- **決定1-bの出力先**: `CappedJson::evicted_by_lane`（`bug_report.rs`
+  経路）に加え、`JournalEntry::DumpTriggered`（ダンプのたびに必ず1件
+  記録される、既存の呼び出し箇所2箇所）にも `evicted_state`/
+  `evicted_timing`/`evicted_actuation`/`evicted_key_input` を追加。
+  R2-1が懸念した「畳み込みが効くほど計器が消える」問題を、この2箇所
+  常設化で解消。
+- **決定3の代替案（journal/app_log予算配分見直し・`RESERVED_PERCENT`
+  見直し・1エントリあたりバイト削減）は未実装のまま**（本ADRのスコープ外、
+  次点候補として名前のみ残す）。
+- 新規 architecture_guard テスト
+  `journal_key_input_construction_is_limited_to_key_pipeline` は、
+  `journal.rs` 自身が内部で `JournalEntry::KeyInput` を分解（パターン
+  マッチ）する箇所と区別するため、フルパス表記
+  `crate::journal::JournalEntry::KeyInput {`（外部モジュールからの
+  construction は必ずこの形になる）のみを数える設計にした。
+  `size_of::<JournalEntry>() == 264` の const assert は変更不要
+  （3フィールド追加後も最大 variant は更新されなかった）。
 
 ## 関連
 
