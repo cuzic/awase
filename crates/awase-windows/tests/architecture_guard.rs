@@ -1397,6 +1397,68 @@ fn reassert_ime_apply_complete_skips_belief_write() {
     );
 }
 
+/// ADR-170 決定1: `ImeModel::reduce()` の大きい分岐を private ヘルパー
+/// (`reduce_*`) へ抽出した。`.claude/rules/ime-belief-architecture.md` の
+/// 「belief を書くのは reduce() だけ」という前提は、Rust の private が
+/// モジュールスコープでしかない以上コンパイラでは強制されない
+/// (opus-adversarial-consult round1 F2)。ヘルパーが `reduce()` の**本体内**
+/// からのみ呼ばれることを、`reduce()` 本体スコープでの出現数とファイル全体
+/// での出現数を突き合わせる二重固定で検証する——「ファイル内で件数1」だけの
+/// 検証では、`reduce()` を経由しない別の呼び出し元1件を見逃せてしまう
+/// (round2 R2-2)。ヘルパー名は `fn reduce_` 定義をファイルから自動抽出する
+/// ため、新しいヘルパーを追加してもこのテスト自体の更新は不要
+/// (round2 R2-3)。
+///
+/// 抽出条件は可視性修飾子(`pub`/`pub(crate)`)を剥がしてから`fn reduce_`と
+/// 照合する——剥がさないと、ヘルパーに可視性を付けた瞬間そのヘルパーだけが
+/// 自動抽出から静かに漏れてガード対象外になる(まさにこのガードが検知
+/// すべき「reduce()以外から呼べるようになった」瞬間に自分が無効化される、
+/// round3 R3-1)。
+#[test]
+fn reduce_helpers_are_called_only_from_reduce_body() {
+    let path = "src/state/ime_model.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let reduce_body = extract_fn_body(production, "pub fn reduce(");
+
+    let helper_names: Vec<String> = production
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            let without_vis = trimmed
+                .strip_prefix("pub(crate) ")
+                .or_else(|| trimmed.strip_prefix("pub "))
+                .unwrap_or(trimmed);
+            let rest = without_vis.strip_prefix("fn reduce_")?;
+            let end = rest.find('(')?;
+            Some(format!("reduce_{}", &rest[..end]))
+        })
+        .collect();
+    assert!(
+        !helper_names.is_empty(),
+        "{path} に ADR-170 の reduce_* ヘルパーが1つも見つかりません \
+         (命名規約 `fn reduce_*` が変わった場合はこのテストの抽出条件も \
+         見直してください)。"
+    );
+
+    for helper in &helper_names {
+        let needle = format!("self.{helper}(");
+        let in_body = count_real_calls(reduce_body, &needle);
+        let in_whole_file = count_real_calls(production, &needle);
+        assert_eq!(
+            in_body, 1,
+            "ADR-170: {helper} は reduce() 本体内から1回呼ばれるはずですが \
+             {in_body} 回でした。"
+        );
+        assert_eq!(
+            in_whole_file, in_body,
+            "ADR-170: {helper} が reduce() の外からも呼ばれています \
+             (本体内 {in_body} 回 / ファイル全体 {in_whole_file} 回)。belief を \
+             書くヘルパーは reduce() 本体からのみ呼ぶこと。"
+        );
+    }
+}
+
 /// ADR-108 証拠義務(a-2): `ImeModel.applied` はまだ `pub` のため、reducer 外からの
 /// 直接代入をテキスト走査で固定する。`record_confirmed`/`record_optimistic` の既知の
 /// 例外と、`ImeModel::reduce` 内の正規書き込み以外が増えた場合は、`applied` を
