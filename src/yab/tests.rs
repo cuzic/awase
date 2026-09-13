@@ -1052,6 +1052,83 @@ fn test_nicola_yab_and_nicola_keytop_yab_share_identical_kana_positions() {
 }
 
 #[test]
+fn test_nicola_kakutei_yab_matches_keytop_except_punctuation_cells() {
+    // layout/nicola_kakutei.yab は layout/nicola_keytop.yab の「。」(row1 col0)・
+    // 「、」(row1 col10) の normal 面2セルにのみ Ctrl+M 確定 (CV4D) を追加した
+    // ものであるはず。それ以外のセルが手作業コピーでずれていないことを機械的に
+    // 縛る（既存の nicola.yab/nicola_keytop.yab 比較テストと同じ手法）。
+    let keytop_path = std::path::Path::new("layout/nicola_keytop.yab");
+    let kakutei_path = std::path::Path::new("layout/nicola_kakutei.yab");
+    if !keytop_path.exists() || !kakutei_path.exists() {
+        return; // Skip in CI
+    }
+    let keytop = YabLayout::parse(
+        &std::fs::read_to_string(keytop_path).unwrap(),
+        KeyboardModel::Jis,
+    )
+    .unwrap();
+    let kakutei = YabLayout::parse(
+        &std::fs::read_to_string(kakutei_path).unwrap(),
+        KeyboardModel::Jis,
+    )
+    .unwrap();
+
+    let exceptions: &[(u8, u8)] = &[(1, 0), (1, 10)];
+
+    for row in 0..4u8 {
+        for col in 0..13u8 {
+            let pos = PhysicalPos::new(row, col);
+            for (face_name, keytop_face, kakutei_face) in [
+                ("normal", &keytop.normal, &kakutei.normal),
+                ("left_thumb", &keytop.left_thumb, &kakutei.left_thumb),
+                ("right_thumb", &keytop.right_thumb, &kakutei.right_thumb),
+                ("shift", &keytop.shift, &kakutei.shift),
+            ] {
+                if face_name == "normal" && exceptions.contains(&(row, col)) {
+                    continue;
+                }
+                assert_eq!(
+                    keytop_face.get(&pos),
+                    kakutei_face.get(&pos),
+                    "{face_name} face differs at ({row}, {col})"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_nicola_kakutei_yab_punctuation_cells_use_ctrl_chord_confirm() {
+    let path = std::path::Path::new("layout/nicola_kakutei.yab");
+    if !path.exists() {
+        return; // Skip in CI
+    }
+    let layout =
+        YabLayout::parse(&std::fs::read_to_string(path).unwrap(), KeyboardModel::Jis).unwrap();
+
+    for (pos, expected_literal) in [
+        (PhysicalPos::new(1, 0), "。"),
+        (PhysicalPos::new(1, 10), "、"),
+    ] {
+        match layout.normal.get(&pos) {
+            Some(YabValue::InlineSequence { items, .. }) => {
+                assert_eq!(
+                    items,
+                    &vec![
+                        YabValue::Literal(expected_literal.to_string()),
+                        YabValue::CtrlChord {
+                            vk: VkCode(0x4D),
+                            raw: "CV4D".to_string(),
+                        },
+                    ]
+                );
+            }
+            other => panic!("expected InlineSequence at {pos:?}, got {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn test_load_nicola_us_yab_file() {
     let path = std::path::Path::new("layout/nicola_us.yab");
     if !path.exists() {
