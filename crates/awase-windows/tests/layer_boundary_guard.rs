@@ -372,6 +372,12 @@ fn c6_single_reduce_call_site() {
     );
 }
 
+// ADR-170 決定1(reduce() の大きい分岐の private ヘルパー抽出)が
+// 「ヘルパーは reduce() 本体からのみ呼ばれる」ことを固定する count guard は
+// `tests/architecture_guard.rs::reduce_helpers_are_called_only_from_reduce_body`
+// にある(本体スコープの二重固定に `extract_fn_body` を使うため、それが既に
+// あるファイル側に置いた。opus-adversarial-consult round2 R2-2/R2-3)。
+
 // ───────────────────────── カテゴリ D ─────────────────────────
 
 /// layer-boundaries.md D-1: magic hex を vk.rs 外で書かない。
