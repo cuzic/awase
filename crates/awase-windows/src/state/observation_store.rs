@@ -762,8 +762,9 @@ impl ObservationStore {
     ///
     /// ## 鮮度ウィンドウ
     ///
-    /// `FRESH` を超えた観測は無視する。フォーカス変更時に `clear_on_focus_change()` が
-    /// 呼ばれるため通常は問題にならないが、稀に残留する古い観測を排除するためのガード。
+    /// `tuning::OBSERVATION_FRESH_WINDOW_MS` を超えた観測は無視する。フォーカス変更時に
+    /// `clear_on_focus_change()` が呼ばれるため通常は問題にならないが、稀に残留する古い
+    /// 観測を排除するためのガード。
     ///
     /// ## Epoch フィルタ（ImmCrossProbe / FocusProbe のみ）
     ///
@@ -798,10 +799,10 @@ impl ObservationStore {
         now: Instant,
         accept: impl Fn(ObservationSource) -> bool,
     ) -> Option<DeriveOutcome> {
-        const FRESH: Duration = Duration::from_secs(3);
+        let fresh_window = Duration::from_millis(crate::tuning::OBSERVATION_FRESH_WINDOW_MS);
         let current_fence = self.current_fence;
 
-        let is_fresh = |o: &ImeObservation| !o.is_expired(now) && o.age(now) <= FRESH;
+        let is_fresh = |o: &ImeObservation| !o.is_expired(now) && o.age(now) <= fresh_window;
 
         // フォーカス同一性照合が必要なソース（async/first-key トリガーのスナップショット
         // probe）。epoch はプロセス変更でのみ進むため、同一プロセス内でウィンドウだけが
@@ -1565,7 +1566,7 @@ mod tests {
         let past = Instant::now()
             .checked_sub(Duration::from_secs(10))
             .expect("test instant can be backdated");
-        // 10 秒前の Medium obs は FRESH(3s) を超えているため無視される
+        // 10 秒前の Medium obs は OBSERVATION_FRESH_WINDOW_MS(3s) を超えているため無視される
         let mut old = obs(false, ObservationSource::ObserverPoll, past);
         old.confidence = ObservationConfidence::Medium;
         rec(&mut s, old);
