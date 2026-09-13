@@ -494,6 +494,9 @@ impl Runtime {
                 physical: crate::journal::PhysicalDispositionSummary::new(
                     physical.suppress_reason(&event, profile),
                 ),
+                // プレースホルダー値: record_key_input() が
+                // MergeIntoPrevious/NewEntry いずれの経路でも上書きするため
+                // ここでの実際の値は意味を持たない（呼び出し規約）。
                 repeat_count: 1,
                 last_timestamp_us: event.timestamp,
                 last_elapsed_ms: 0,

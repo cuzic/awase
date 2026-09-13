@@ -1296,10 +1296,10 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                 let evicted = app.platform_state.ime.journal.evicted_by_lane();
                 app.platform_state.ime.journal.record(
                     crate::journal::JournalEntry::DumpTriggered {
-                        evicted_state: evicted[0].1,
-                        evicted_timing: evicted[1].1,
-                        evicted_actuation: evicted[2].1,
-                        evicted_key_input: evicted[3].1,
+                        evicted_state: evicted.state,
+                        evicted_timing: evicted.timing,
+                        evicted_actuation: evicted.actuation,
+                        evicted_key_input: evicted.key_input,
                     },
                 );
                 let dump_result = app
@@ -2149,10 +2149,10 @@ pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
         .ime
         .journal
         .record(crate::journal::JournalEntry::DumpTriggered {
-            evicted_state: evicted[0].1,
-            evicted_timing: evicted[1].1,
-            evicted_actuation: evicted[2].1,
-            evicted_key_input: evicted[3].1,
+            evicted_state: evicted.state,
+            evicted_timing: evicted.timing,
+            evicted_actuation: evicted.actuation,
+            evicted_key_input: evicted.key_input,
         });
     match app.platform_state.ime.journal.dump_to_file() {
         Ok(path) => {

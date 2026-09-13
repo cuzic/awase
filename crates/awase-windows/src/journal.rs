@@ -482,7 +482,21 @@ pub struct CappedJson {
     /// 収まった場合はレーンごとに0）とは別軸——**こちらは `DumpTruncated` の
     /// 生成有無に関わらず常にここに実値が入る**（`DumpTruncated`は切り詰め時
     /// にしか生成されないヘッダのため、evicted の主たる出力先にはしない）。
-    pub evicted_by_lane: [(LaneKind, usize); 4],
+    pub evicted_by_lane: EvictedByLane,
+}
+
+/// レーン別 eviction カウンタ（ADR-169決定1-b）。
+///
+/// `[(LaneKind, usize); 4]` ではなく named struct にする——配列だと
+/// 消費側（`evicted[0].1` 等）が `LaneKind` タグを見ずに位置だけで
+/// 読むため、将来配列の並び順を変えるとコンパイルエラー無しに
+/// 値が別レーンに誤対応する（opus-adversarial-consult コードレビュー指摘）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct EvictedByLane {
+    pub state: usize,
+    pub timing: usize,
+    pub actuation: usize,
+    pub key_input: usize,
 }
 
 // ── UnifiedJournal ────────────────────────────────────────────────────────────
@@ -1343,9 +1357,31 @@ impl UnifiedJournal {
     /// tracing 側には出力される（意図的。tracing は人間向けの、独自フィルタを
     /// 持つ可能性のあるチャネル、journal はリプレイ用の有界リングという役割分担）。
     pub fn absorb(&mut self, envelope: JournalEnvelope) {
+        // ADR-169: `KeyInput` は `record_key_input()` 専用（畳み込みが依存
+        // する「`key_input` レーンの `back()` は直前に記録した `KeyInput`
+        // である」という不変条件を、`absorb()` 経由の遅延 envelope が
+        // 壊しうるため——round1 Major1 参照）。将来 `KeyInput` が
+        // `drain_journal_entries()`/deferred キュー経由でこの経路に
+        // 紛れ込むと、無関係なエントリへ `repeat_count` が誤って加算される
+        // （時系列の捏造）事故を、静かに再発させず早期に検知する
+        // （opus-adversarial-consult コードレビュー指摘）。
+        debug_assert!(
+            !matches!(envelope.entry, JournalEntry::KeyInput { .. }),
+            "KeyInput は absorb() ではなく record_key_input() を使うこと(ADR-169)"
+        );
         envelope.emit_tracing();
-        let lane = envelope.entry.lane_kind();
-        match lane {
+        self.route_to_lane(envelope);
+    }
+
+    /// `entry.lane_kind()` に応じた正しいレーンへ push する（tracing 発行は
+    /// 呼び出し元の責務、ここでは行わない）。`absorb()` と
+    /// `record_key_input()` の契約違反フォールバックの両方から使う共通経路
+    /// （opus-adversarial-consult コードレビュー指摘、`key_input` レーンへ
+    /// 無条件 push していた旧実装は、非 `KeyInput` エントリが紛れ込んだ
+    /// 場合に `key_input_identity()` の `unreachable!()` を次回呼び出しで
+    /// 誘発しうる危険なフォールバックだった）。
+    fn route_to_lane(&mut self, envelope: JournalEnvelope) {
+        match envelope.entry.lane_kind() {
             LaneKind::State => self.lanes.state.push(envelope),
             LaneKind::Timing => self.lanes.timing.push(envelope),
             LaneKind::Actuation => self.lanes.actuation.push(envelope),
@@ -1391,9 +1427,14 @@ impl UnifiedJournal {
         envelope.emit_tracing();
 
         let JournalEntry::KeyInput { event, .. } = &envelope.entry else {
-            // 契約違反（KeyInput以外）。安全側で通常のKeyInputレーン push に
-            // フォールバックする（データを失わない方を優先）。
-            self.lanes.key_input.push(envelope);
+            // 契約違反（KeyInput以外）。`key_input` レーンへ無条件 push
+            // すると、次回呼び出しの `key_input_identity()`（back() が
+            // 常に KeyInput である前提）で `unreachable!()` を誘発する
+            // （opus-adversarial-consult コードレビュー指摘）。
+            // `lane_kind()` に基づく本来のレーンへ振り分ける
+            // （データを失わない、かつ `key_input` レーンの不変条件も
+            // 守る）。
+            self.route_to_lane(envelope);
             return seq;
         };
         let injected = event.injected;
@@ -1476,13 +1517,13 @@ impl UnifiedJournal {
     /// 各レーンの `evicted`（リングバッファ容量超過による完全消失件数）の
     /// 現在値を snapshot する（ADR-169決定1-b）。
     #[must_use]
-    pub fn evicted_by_lane(&self) -> [(LaneKind, usize); 4] {
-        [
-            (LaneKind::State, self.lanes.state.evicted),
-            (LaneKind::Timing, self.lanes.timing.evicted),
-            (LaneKind::Actuation, self.lanes.actuation.evicted),
-            (LaneKind::KeyInput, self.lanes.key_input.evicted),
-        ]
+    pub fn evicted_by_lane(&self) -> EvictedByLane {
+        EvictedByLane {
+            state: self.lanes.state.evicted,
+            timing: self.lanes.timing.evicted,
+            actuation: self.lanes.actuation.evicted,
+            key_input: self.lanes.key_input.evicted,
+        }
     }
 
     pub fn to_json_capped(&self, max_bytes: usize) -> Result<CappedJson, DumpError> {
@@ -1911,6 +1952,87 @@ mod tests {
             last_timestamp_us: 123,
             last_elapsed_ms: 0,
         }
+    }
+
+    /// `make_key_input_entry()` は `injected: true` 固定なので、
+    /// `record_key_input` の畳み込みテスト用に非 injected 版を作る。
+    fn make_non_injected_key_input_entry() -> JournalEntry {
+        let JournalEntry::KeyInput { mut event, .. } = make_key_input_entry() else {
+            unreachable!()
+        };
+        event.injected = false;
+        JournalEntry::KeyInput {
+            event,
+            state_before: "engine-before".to_owned(),
+            state_after: "engine-after".to_owned(),
+            decision: DecisionKind::PassThrough,
+            physical: PhysicalDispositionSummary::Allow,
+            repeat_count: 1,
+            last_timestamp_us: 123,
+            last_elapsed_ms: 0,
+        }
+    }
+
+    #[test]
+    fn record_key_input_merges_repeated_keydown_when_was_down_and_not_injected() {
+        let (mut j, _mock) = mock_journal();
+        j.record_key_input(make_non_injected_key_input_entry(), false);
+        j.record_key_input(make_non_injected_key_input_entry(), true);
+        assert_eq!(
+            j.len(),
+            1,
+            "同一payloadのKeyDown repeatは1エントリへ畳み込まれるはず"
+        );
+        let entries = j.entries_by_seq();
+        let JournalEntry::KeyInput { repeat_count, .. } = &entries[0].entry else {
+            panic!("KeyInput以外が記録された");
+        };
+        assert_eq!(*repeat_count, 2);
+    }
+
+    #[test]
+    fn record_key_input_does_not_merge_when_was_down_is_false() {
+        let (mut j, _mock) = mock_journal();
+        j.record_key_input(make_non_injected_key_input_entry(), false);
+        j.record_key_input(make_non_injected_key_input_entry(), false);
+        assert_eq!(
+            j.len(),
+            2,
+            "was_down=falseなら間にkey-upを挟んだ別打鍵として扱い畳み込まない"
+        );
+    }
+
+    #[test]
+    fn record_key_input_does_not_merge_keyup_even_if_was_down() {
+        let (mut j, _mock) = mock_journal();
+        j.record_key_input(make_non_injected_key_input_entry(), false);
+        let JournalEntry::KeyInput { mut event, .. } = make_non_injected_key_input_entry() else {
+            unreachable!()
+        };
+        event.is_down = false;
+        let keyup = JournalEntry::KeyInput {
+            event,
+            state_before: "engine-before".to_owned(),
+            state_after: "engine-after".to_owned(),
+            decision: DecisionKind::PassThrough,
+            physical: PhysicalDispositionSummary::Allow,
+            repeat_count: 1,
+            last_timestamp_us: 123,
+            last_elapsed_ms: 0,
+        };
+        j.record_key_input(keyup, true);
+        assert_eq!(
+            j.len(),
+            2,
+            "通常のKeyDown→KeyUpタップは畳み込まれてはならない(2026-09-13回帰)"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "record_key_input は JournalEntry::KeyInput 専用")]
+    fn record_key_input_panics_in_debug_on_contract_violation() {
+        let (mut j, _mock) = mock_journal();
+        j.record_key_input(make_state_entry(), false);
     }
 
     #[test]
