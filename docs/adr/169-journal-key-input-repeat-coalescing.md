@@ -557,6 +557,32 @@ ADR-159/163 の actuation decision 再生は `ActuationDecisionRecord`
 を複製している」点は、決定1本文が既に述べている `journal_policy.rs`
 非ゲート化とのトレードオフとして意図的に受け入れ、変更しなかった。
 
+### 実装後レビュー第3ラウンド（コミット`8cba3b94`）: 直前injectedエントリへの誤畳み込み
+
+`/code-review opus` を5観点並列で再実行し、以下を発見・修正:
+
+- **[重要]** `KeyInputIdentity` に `injected` が含まれておらず、
+  `coalesce_key_input` は `next_injected`（これから記録するイベント側）
+  しか確認していなかった。foreign-injected な KeyDown（BUG-90/issue #136）
+  が偶然レーン末尾に居るとき、直後に届いた**本物**の物理 auto-repeat
+  （`next_injected: false`）が、他フィールド一致だけでその injected
+  エントリへ誤って畳み込まれうる欠陥だった——is_down の欠落
+  （round1発見）と対称の、`prev` 側を見落とすバグ。`injected` を
+  `KeyInputIdentity` に追加し、`coalesce_key_input` にも
+  `!prev.injected` の明示ガードを二重に追加。回帰テストを追加。
+- `JournalLane::push` の `capacity == 0` 早期return が `evicted` を
+  計上していなかった（他2つの喪失経路は計上済み）。網羅性のため修正
+  （本番では到達しない経路）。
+- `record_key_input` の `MergeIntoPrevious` 枝で、既に束縛済みの
+  `event` を使わず `envelope.entry` を再度matchしていた冗長な分解を
+  削除（reuse/simplification観点、`/code-review` 指摘）。
+
+その他の指摘（`repeat_count`等3フィールドの手動複製をヘルパー化する案、
+`dropped_by_lane` も `EvictedByLane` 型に揃える案、placeholder値を
+専用コンストラクタで型的に保証する案）は、正当な指摘だが本ADRのスコープ
+（バグ修正）を超える設計改善として今回は見送り、次のリファクタ候補として
+記録のみ残す。
+
 ## 関連
 
 [ADR-096](096-journal-priority-tiers-multi-lane-ring-buffer.md)（本ADRが
