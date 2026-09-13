@@ -110,6 +110,19 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.20.1] - 2026-09-13</h2>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed a case where merely clicking the tray icon or opening the settings window could stop romaji-input completion while the IME was on</strong><ul>
+<li>Caused by IME state read during a brief focus move to the tray/settings window being mistaken for the actually-focused app's state, poisoning internal belief tracking</li>
+</ul>
+</li>
+<li><strong>Fixed IME re-application misfiring on every press of a key (e.g. the Conversion key) that was also registered as `right_thumb_key` and as an IME auto-detection watch key (`keys.ime_detect.on`), which could conflict with Google Japanese Input's own conversion feature and cause a stray "&#12354;" to be typed</strong><ul>
+<li>The duplicate registration is now detected and disabled at config-load time, with a tray warning shown</li>
+<li>Also fixed a related gap where reloading a config that changes the thumb key itself would check this duplication against the old cached thumb key instead of the new one</li>
+</ul>
+</li>
+</ul>
 <h2>[1.20.0] - 2026-09-12</h2>
 <h3>Added</h3>
 <ul>
@@ -142,6 +155,7 @@ footer p{margin:0.3rem 0}
 <li><strong>Fixed an unrelated cached IME-on state being restored when focus moved to a different input field hosted by Explorer right after a Non-conversion key operation in Chrome</strong></li>
 <li><strong>Added a retry of the key send for the case where a physical IME-correction key press in Windows Terminal with MS-IME is ignored and romaji keeps being displayed as-is (partial mitigation)</strong></li>
 </ul>
+<h2>[1.19.0] - 2026-09-06</h2>
 <h3>Added</h3>
 <ul>
 <li><strong>The tray icon can now check whether a newer version is available</strong><ul>
