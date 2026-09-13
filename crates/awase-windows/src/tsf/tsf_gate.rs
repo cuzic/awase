@@ -655,6 +655,7 @@ mod tests {
         gate.on_focus_change(); // PendingWarmup へ（HoldingGate 内部で holding=true）
 
         let dummy = RawKeyEvent {
+            was_down: false,
             vk_code: VkCode(0x41), // 'A'
             scan_code: ScanCode(0x1E),
             event_type: KeyEventType::KeyDown,

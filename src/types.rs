@@ -311,6 +311,21 @@ pub struct RawKeyEvent {
     /// に昇格させてはならない（BUG-14: 外部注入 VK_DBE_HIRAGANA を物理かなキーと誤読し
     /// ユーザーの IME OFF を Engine ON で上書きし続けた）。
     pub injected: bool,
+    /// このイベント（KeyDown）の直前に、同じ `vk_code` が物理的に押されたままだったか
+    /// （[ADR-169](../docs/adr/169-journal-key-input-repeat-coalescing.md)）。
+    ///
+    /// **診断専用フィールドであり、core（本クレート）のどのロジックも参照しない。**
+    /// `injected`/`modifier_snapshot` 等（core が実際に読んで判断に使う値）とは
+    /// 性質が異なる——journal の `KeyInput` レーンで OS auto-repeat（同一キーの
+    /// 連続 KeyDown）を安全に判定するためだけに存在する。`injected` なイベントは
+    /// このビットを更新しないため、常に直前の非 injected 状態を反映する（呼び出し側は
+    /// `was_down` の値だけに頼らず、必ず `!injected` も併せて確認すること）。
+    ///
+    /// `modifier_snapshot`/`left_thumb_down_snapshot` と同じ理由（capture 時点で
+    /// 埋め込み、`INPUT_DEFER`/`OUTPUT_PENDING_QUEUE` の drain replay 時にライブ
+    /// 再取得しない）でこのフィールドを持つ——ADR-129 が扱った「replay を実行している
+    /// "今" の値を誤って読む」事故と同型の罠を避けるため。
+    pub was_down: bool,
 }
 
 impl RawKeyEvent {
@@ -447,6 +462,7 @@ mod tests {
             left_thumb_down_snapshot: None,
             right_thumb_down_snapshot: None,
             injected,
+            was_down: false,
         }
     }
 
