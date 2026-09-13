@@ -534,6 +534,17 @@ struct JournalLane {
     /// このレーンから容量超過で完全に失われたエントリ数（ADR-169決定1-b）。
     /// `DumpTruncated.dropped_key_input`（byte予算段の間引き）とは別軸で、
     /// リングバッファ自体からの退避を数える。
+    ///
+    /// **2つの異なる原因を1つの数値に合算している点に注意**（`/code-review`
+    /// round3指摘）: (a) レーンが満杯で最古のエントリを `pop_front()` で
+    /// 追い出す本来の意味の「容量超過による退避」、(b) レーンが満杯かつ
+    /// 到着した（`absorb()` 経由の遅延）envelope の `seq` がレーン内の
+    /// 最古より古い（順序が乱れて遅着した）ため一度もバッファに入らず
+    /// 破棄されるケース。どちらも「本来記録されるべきだったエントリが
+    /// 失われた」点は同じだが、後者は容量不足ではなく defer 経路の
+    /// 順序/遅延の問題であり、`evicted_key_input` が高止まりしていても
+    /// 原因は「容量を増やせば直る」とは限らない。原因を区別したい場合は
+    /// `push()` の該当2箇所を参照すること。
     evicted: usize,
 }
 
@@ -1364,6 +1375,10 @@ impl UnifiedJournal {
     /// レーン容量超過で `JournalLane::push` が黙って捨てるエントリも
     /// tracing 側には出力される（意図的。tracing は人間向けの、独自フィルタを
     /// 持つ可能性のあるチャネル、journal はリプレイ用の有界リングという役割分担）。
+    ///
+    /// # Panics
+    /// `envelope.entry` が `JournalEntry::KeyInput` の場合（ADR-169、
+    /// `record_key_input()` を使うこと）。
     pub fn absorb(&mut self, envelope: JournalEnvelope) {
         // ADR-169: `KeyInput` は `record_key_input()` 専用（畳み込みが依存
         // する「`key_input` レーンの `back()` は直前に記録した `KeyInput`
@@ -1372,8 +1387,11 @@ impl UnifiedJournal {
         // `drain_journal_entries()`/deferred キュー経由でこの経路に
         // 紛れ込むと、無関係なエントリへ `repeat_count` が誤って加算される
         // （時系列の捏造）事故を、静かに再発させず早期に検知する
-        // （opus-adversarial-consult コードレビュー指摘）。
-        debug_assert!(
+        // （opus-adversarial-consult コードレビュー指摘）。`debug_assert!`
+        // だとリリースビルドで無効化され唯一の安全網が消えるため、通常の
+        // `assert!` にする（`matches!` 1回だけの軽量チェックであり、
+        // absorb() は per-keystroke のような超高頻度経路ではない）。
+        assert!(
             !matches!(envelope.entry, JournalEntry::KeyInput { .. }),
             "KeyInput は absorb() ではなく record_key_input() を使うこと(ADR-169)"
         );
