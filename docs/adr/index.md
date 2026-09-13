@@ -174,6 +174,7 @@
 | [165](165-tsf-cache-restore-recency-guard.md) | TsfNativeキャッシュ復元にhwnd一致を要求し、無関係な窓の誤ON復元とforce-ON誤発火を防ぐ (BUG-128) | 実装済み(ブランチ`fix/bug128-tsf-cache-restore-recency`)。opus-adversarial-consult round1〜round6で収束、dragonflyg4実機で修正前後の動作を確認済み |
 | [166](166-physical-key-disposition-decision-table.md) | PhysicalKeyDisposition::plan()の全数決定表化、DBEモードキーDown/Up vk非対称ハザードの明文化 (BUG-131) | 実装済み(ブランチ`fix/bug131-kana-restore-latch`)。Linuxコンパイル確認・Python独立シミュレーション済み、windows-build CI実行と実機検証は未実施 |
 | [167](167-standard-profile-warmup-double-send.md) | Standardプロファイル×ImmCross失敗フォールバック時の随伴warmup重複送信 (BUG-133) | 実装完了(2026-09-12)。opus-adversarial-consult 1ラウンドで選択肢B採用、全テスト緑。実機ソーク未実施 |
+| [168](168-actuation-boundary-small-cleanups.md) | Clojure風protocol/transducer案(型システム全面置換・決定軸registry統一)の却下記録 + ADR-088の`post_*_direct`4関数保持決定の反転 | 実装済み。opus-adversarial-consult 2ラウンドで収束 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
