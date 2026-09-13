@@ -406,9 +406,13 @@ pub(crate) fn dispatch_engine_message(
             });
         }
         WM_HOOK_IME_MODE_DIAGNOSTIC => {
-            with_app_or_repost(WM_HOOK_IME_MODE_DIAGNOSTIC, |app| {
-                message_handlers::handle_wm_hook_ime_mode_diagnostic(app);
-            });
+            // 診断リング自体が上限64件の耐久ストアで、次に成功した drain が
+            // 取りこぼし分も含めて全部拾うためロスレス配送は不要。
+            // with_app_or_repost だと、ネストしたモーダルポンプ（トレイメニュー等）で
+            // RUNTIME 借用中に届いた場合、repost → 即再配送 → 再入 → repost… で
+            // スピンし続ける（opus-adversarial-consult、
+            // docs/design/opus-review-hook-mutex-safety.md §3）。
+            let _ = with_app(message_handlers::handle_wm_hook_ime_mode_diagnostic);
         }
         WM_PANIC_RESET => {
             with_app_or_repost(WM_PANIC_RESET, |app| unsafe {
