@@ -1408,6 +1408,12 @@ fn reassert_ime_apply_complete_skips_belief_write() {
 /// (round2 R2-2)。ヘルパー名は `fn reduce_` 定義をファイルから自動抽出する
 /// ため、新しいヘルパーを追加してもこのテスト自体の更新は不要
 /// (round2 R2-3)。
+///
+/// 抽出条件は可視性修飾子(`pub`/`pub(crate)`)を剥がしてから`fn reduce_`と
+/// 照合する——剥がさないと、ヘルパーに可視性を付けた瞬間そのヘルパーだけが
+/// 自動抽出から静かに漏れてガード対象外になる(まさにこのガードが検知
+/// すべき「reduce()以外から呼べるようになった」瞬間に自分が無効化される、
+/// round3 R3-1)。
 #[test]
 fn reduce_helpers_are_called_only_from_reduce_body() {
     let path = "src/state/ime_model.rs";
@@ -1418,7 +1424,12 @@ fn reduce_helpers_are_called_only_from_reduce_body() {
     let helper_names: Vec<String> = production
         .lines()
         .filter_map(|line| {
-            let rest = line.trim_start().strip_prefix("fn reduce_")?;
+            let trimmed = line.trim_start();
+            let without_vis = trimmed
+                .strip_prefix("pub(crate) ")
+                .or_else(|| trimmed.strip_prefix("pub "))
+                .unwrap_or(trimmed);
+            let rest = without_vis.strip_prefix("fn reduce_")?;
             let end = rest.find('(')?;
             Some(format!("reduce_{}", &rest[..end]))
         })

@@ -3,7 +3,7 @@ id: ADR-170
 title: |-
   コードスメル解消: belief reduce()分割(決定1のみ実施、決定2・3は調査のみで見送り)
 status: |-
-  opus-adversarial-consult round1で決定2・3を見送りに縮小、決定1を実施しround2確認待ち
+  opus-adversarial-consult round1〜round3反映済み・収束(Blockerゼロ)。決定2・3は見送り、決定1のみ実施済み。マージ前の最終検証待ち
 related_adr:
   - "ADR-087"
   - "ADR-090"
