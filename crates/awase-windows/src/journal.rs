@@ -205,12 +205,24 @@ pub enum DeferredRecoveryOutcomeSummary {
 #[serde(tag = "type")]
 pub enum JournalEntry {
     /// エンジンのキー入力処理（on_input）
+    ///
+    /// `repeat_count`/`last_timestamp_us`/`last_elapsed_ms`（ADR-169）:
+    /// OS auto-repeat による同一キーの連続 `KeyInput` は
+    /// `UnifiedJournal::record_key_input` が1エントリへ畳み込む。
+    /// `repeat_count == 1` は畳み込みなし（通常の単発イベント）。
+    /// `last_timestamp_us`/`last_elapsed_ms` は畳み込んだ最後のイベントの
+    /// 生時刻（`event.timestamp_us`/envelope の `elapsed_ms` と同じ系）。
+    /// 畳み込みが起きても `JournalEnvelope.seq`/`elapsed_ms` は初回のまま
+    /// 変更しない（seq 昇順の時刻単調性を壊さないため）。
     KeyInput {
         event: KeyEventSummary,
         state_before: String,
         state_after: String,
         decision: DecisionKind,
         physical: PhysicalDispositionSummary,
+        repeat_count: u32,
+        last_timestamp_us: u64,
+        last_elapsed_ms: u64,
     },
     /// エンジンのタイマー処理（on_timeout）
     TimerFired {
@@ -412,7 +424,18 @@ pub enum JournalEntry {
         dropped_key_input: usize,
     },
     /// ダンプトリガー発動
-    DumpTriggered,
+    ///
+    /// `evicted_*`（ADR-169決定1-b）: 各レーンのリングバッファが容量超過で
+    /// 完全に失った（`pop_front()`/満杯+古い遅延envelope破棄）累計件数。
+    /// `DumpTruncated.dropped_*`（200KiB byte予算段の間引き、切り詰めが
+    /// 実際に発生した場合にしか生成されない）とは別軸で、**このエントリは
+    /// ダンプのたびに必ず1件生成される**ため、evicted の主たる出力先とする。
+    DumpTriggered {
+        evicted_state: usize,
+        evicted_timing: usize,
+        evicted_actuation: usize,
+        evicted_key_input: usize,
+    },
 }
 
 // /code-review指摘（PR #201、ADR-163 Part D）: 当初「`ActuationDecision`
@@ -454,6 +477,12 @@ pub struct CappedJson {
     pub total_entries: usize,
     pub emitted_entries: usize,
     pub dropped_by_lane: [(LaneKind, usize); 4],
+    /// レーンのリングバッファ容量超過で完全に失われたエントリ数（ADR-169決定1-b）。
+    /// `dropped_by_lane`（200KiBのbyte予算段で間引かれた件数、ダンプが予算内に
+    /// 収まった場合はレーンごとに0）とは別軸——**こちらは `DumpTruncated` の
+    /// 生成有無に関わらず常にここに実値が入る**（`DumpTruncated`は切り詰め時
+    /// にしか生成されないヘッダのため、evicted の主たる出力先にはしない）。
+    pub evicted_by_lane: [(LaneKind, usize); 4],
 }
 
 // ── UnifiedJournal ────────────────────────────────────────────────────────────
@@ -488,6 +517,10 @@ impl LaneCapacities {
 struct JournalLane {
     buffer: VecDeque<JournalEnvelope>,
     capacity: usize,
+    /// このレーンから容量超過で完全に失われたエントリ数（ADR-169決定1-b）。
+    /// `DumpTruncated.dropped_key_input`（byte予算段の間引き）とは別軸で、
+    /// リングバッファ自体からの退避を数える。
+    evicted: usize,
 }
 
 impl JournalLane {
@@ -495,6 +528,7 @@ impl JournalLane {
         Self {
             buffer: VecDeque::with_capacity(capacity),
             capacity,
+            evicted: 0,
         }
     }
 
@@ -508,9 +542,11 @@ impl JournalLane {
                 .front()
                 .is_some_and(|front| envelope.seq < front.seq)
             {
+                self.evicted += 1;
                 return;
             }
             self.buffer.pop_front();
+            self.evicted += 1;
         }
         let pos = self
             .buffer
@@ -548,7 +584,7 @@ impl JournalEntry {
             | Self::FocusTransition { .. }
             | Self::ClockAnchor { .. }
             | Self::DumpTruncated { .. }
-            | Self::DumpTriggered => LaneKind::State,
+            | Self::DumpTriggered { .. } => LaneKind::State,
             Self::GjiFsmTransition { .. }
             | Self::HookImeModeDiagnostic { .. }
             | Self::TsfProbeStarted { .. }
@@ -601,6 +637,56 @@ fn physical_disposition_str(p: &PhysicalDispositionSummary) -> &'static str {
     match p {
         PhysicalDispositionSummary::Allow => "Allow",
         PhysicalDispositionSummary::Suppress { .. } => "Suppress",
+    }
+}
+
+/// ADR-169: `journal_policy`（Windows非依存）は `DecisionKind`（`journal`
+/// モジュール自体が `#[cfg(windows)]` 配下）を直接参照できないため、比較用の
+/// 局所的な形（`KeyInputDecisionShape`）へここで変換する。
+fn decision_kind_shape(d: &DecisionKind) -> crate::journal_policy::KeyInputDecisionShape {
+    use crate::journal_policy::KeyInputDecisionShape as Shape;
+    match *d {
+        DecisionKind::PassThrough => Shape::PassThrough,
+        DecisionKind::PassThroughWith { effect_count } => Shape::PassThroughWith { effect_count },
+        DecisionKind::Consume { effect_count } => Shape::Consume { effect_count },
+    }
+}
+
+fn physical_disposition_shape(
+    p: &PhysicalDispositionSummary,
+) -> crate::journal_policy::KeyInputPhysicalShape {
+    use crate::journal_policy::KeyInputPhysicalShape as Shape;
+    match *p {
+        PhysicalDispositionSummary::Allow => Shape::Allow,
+        PhysicalDispositionSummary::Suppress { reason } => Shape::Suppress { reason },
+    }
+}
+
+/// `record_key_input` の畳み込み判定用に、`JournalEntry::KeyInput` から
+/// 識別情報を取り出す。呼び出し契約上、`entry` は必ず `KeyInput` variant。
+fn key_input_identity(entry: &JournalEntry) -> crate::journal_policy::KeyInputIdentity<'_> {
+    let JournalEntry::KeyInput {
+        event,
+        state_before,
+        state_after,
+        decision,
+        physical,
+        ..
+    } = entry
+    else {
+        unreachable!("key_input_identity は KeyInput variant にのみ呼ばれる")
+    };
+    crate::journal_policy::KeyInputIdentity {
+        vk_code: event.vk_code,
+        scan_code: event.scan_code,
+        key_class: event.key_class,
+        alt: event.alt,
+        ctrl: event.ctrl,
+        shift: event.shift,
+        state_before,
+        state_after,
+        decision: decision_kind_shape(decision),
+        physical: physical_disposition_shape(physical),
     }
 }
 
@@ -786,6 +872,9 @@ impl JournalEntry {
                 state_after,
                 decision,
                 physical,
+                repeat_count,
+                last_timestamp_us,
+                last_elapsed_ms,
             } => {
                 tracing::debug!(
                     target: "awase::journal",
@@ -799,6 +888,9 @@ impl JournalEntry {
                     state_after = state_after.as_str(),
                     decision = decision_kind_str(decision),
                     physical = physical_disposition_str(physical),
+                    repeat_count,
+                    last_timestamp_us,
+                    last_elapsed_ms,
                     "key input"
                 );
             }
@@ -1120,8 +1212,22 @@ impl JournalEntry {
                     "dump truncated"
                 );
             }
-            Self::DumpTriggered => {
-                tracing::debug!(target: "awase::journal", seq, elapsed_ms, "dump triggered");
+            Self::DumpTriggered {
+                evicted_state,
+                evicted_timing,
+                evicted_actuation,
+                evicted_key_input,
+            } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    evicted_state,
+                    evicted_timing,
+                    evicted_actuation,
+                    evicted_key_input,
+                    "dump triggered"
+                );
             }
         }
     }
@@ -1246,6 +1352,107 @@ impl UnifiedJournal {
         }
     }
 
+    /// `JournalEntry::KeyInput` 専用の記録経路（ADR-169）。
+    ///
+    /// `record()`/`absorb()` とは意図的に分離する（`docs/adr/169-*.md`
+    /// 「畳み込みの実装場所」参照）: `absorb()` は `drain_journal_entries()`
+    /// 経由の遅延 envelope（`JournalStamper` で先に採番済み、seq 順に
+    /// `rposition` で挿入し直される）も受け取るため、「`key_input` レーンの
+    /// `buffer.back()` は直前に記録した `KeyInput` である」という、この
+    /// 畳み込みロジックが依存する不変条件が成り立たない。**この不変条件は
+    /// `JournalEntry::KeyInput {` の本番構築点が `runtime/key_pipeline.rs`
+    /// の1箇所のみであること、かつこのレーンに `absorb()` 経由の遅延
+    /// envelope が流れ込まないことに依存する——どちらかが崩れると
+    /// `back()` は「直前の KeyInput」でなくなり、無関係なエントリへ
+    /// `repeat_count` が誤って加算される（`tests/architecture_guard.rs`
+    /// の出現数固定テストで守る）。**
+    ///
+    /// 呼び出し側は毎回 `record_key_input` を通し、`record()`/`absorb()` を
+    /// `KeyInput` に対して直接呼ばないこと。
+    ///
+    /// `was_down`: `hook.rs::HOOK_STATE.physical_key_state` の `swap` で
+    /// 得た、このイベント直前の物理押下状態（`RawKeyEvent::was_down`）。
+    /// `entry` は必ず `JournalEntry::KeyInput` variant で渡すこと。
+    ///
+    /// emit_tracing は畳み込みの有無に関わらず**毎回**呼ぶ（`app_log_excerpt`
+    /// 側から auto-repeat の痕跡が消えないようにするため）。畳み込まれた
+    /// repeat にも通常どおり `seq` を採番する——`key_input` レーンの journal
+    /// 出力に seq の穴が空くのは畳み込みによるものであり drop ではない
+    /// （穴の範囲は、その直前の `KeyInput` エントリの `repeat_count` から
+    /// 逆算できる）。
+    pub fn record_key_input(&mut self, entry: JournalEntry, was_down: bool) -> u64 {
+        debug_assert!(
+            matches!(entry, JournalEntry::KeyInput { .. }),
+            "record_key_input は JournalEntry::KeyInput 専用"
+        );
+        let envelope = self.stamper().stamp(entry);
+        let seq = envelope.seq;
+        envelope.emit_tracing();
+
+        let JournalEntry::KeyInput { event, .. } = &envelope.entry else {
+            // 契約違反（KeyInput以外）。安全側で通常のKeyInputレーン push に
+            // フォールバックする（データを失わない方を優先）。
+            self.lanes.key_input.push(envelope);
+            return seq;
+        };
+        let injected = event.injected;
+        let next_identity = key_input_identity(&envelope.entry);
+        let prev_identity = self
+            .lanes
+            .key_input
+            .buffer
+            .back()
+            .map(|prev| key_input_identity(&prev.entry));
+        let outcome = crate::journal_policy::coalesce_key_input(
+            prev_identity.as_ref(),
+            &next_identity,
+            was_down,
+            injected,
+        );
+
+        match outcome {
+            crate::journal_policy::CoalesceOutcome::MergeIntoPrevious => {
+                let (event_timestamp_us, next_elapsed_ms) = match &envelope.entry {
+                    JournalEntry::KeyInput { event, .. } => {
+                        (event.timestamp_us, envelope.elapsed_ms)
+                    }
+                    _ => unreachable!(),
+                };
+                if let Some(back) = self.lanes.key_input.buffer.back_mut() {
+                    if let JournalEntry::KeyInput {
+                        repeat_count,
+                        last_timestamp_us,
+                        last_elapsed_ms,
+                        ..
+                    } = &mut back.entry
+                    {
+                        *repeat_count += 1;
+                        *last_timestamp_us = event_timestamp_us;
+                        *last_elapsed_ms = next_elapsed_ms;
+                    }
+                }
+            }
+            crate::journal_policy::CoalesceOutcome::NewEntry => {
+                let mut envelope = envelope;
+                let elapsed_ms = envelope.elapsed_ms;
+                if let JournalEntry::KeyInput {
+                    event,
+                    repeat_count,
+                    last_timestamp_us,
+                    last_elapsed_ms,
+                    ..
+                } = &mut envelope.entry
+                {
+                    *repeat_count = 1;
+                    *last_timestamp_us = event.timestamp_us;
+                    *last_elapsed_ms = elapsed_ms;
+                }
+                self.lanes.key_input.push(envelope);
+            }
+        }
+        seq
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.lanes.state.buffer.len()
@@ -1263,6 +1470,18 @@ impl UnifiedJournal {
     pub fn to_json(&self) -> Result<String, DumpError> {
         let entries = self.entries_by_seq();
         Ok(serde_json::to_string_pretty(&entries)?)
+    }
+
+    /// 各レーンの `evicted`（リングバッファ容量超過による完全消失件数）の
+    /// 現在値を snapshot する（ADR-169決定1-b）。
+    #[must_use]
+    pub fn evicted_by_lane(&self) -> [(LaneKind, usize); 4] {
+        [
+            (LaneKind::State, self.lanes.state.evicted),
+            (LaneKind::Timing, self.lanes.timing.evicted),
+            (LaneKind::Actuation, self.lanes.actuation.evicted),
+            (LaneKind::KeyInput, self.lanes.key_input.evicted),
+        ]
     }
 
     pub fn to_json_capped(&self, max_bytes: usize) -> Result<CappedJson, DumpError> {
@@ -1286,6 +1505,7 @@ impl UnifiedJournal {
                 total_entries,
                 emitted_entries: total_entries,
                 dropped_by_lane: lane_counts(),
+                evicted_by_lane: self.evicted_by_lane(),
             });
         }
 
@@ -1352,6 +1572,7 @@ impl UnifiedJournal {
             total_entries,
             emitted_entries: selected_final.len(),
             dropped_by_lane: dropped,
+            evicted_by_lane: self.evicted_by_lane(),
         })
     }
 
@@ -1685,6 +1906,9 @@ mod tests {
             state_after: "engine-after".to_owned(),
             decision: DecisionKind::PassThrough,
             physical: PhysicalDispositionSummary::Allow,
+            repeat_count: 1,
+            last_timestamp_us: 123,
+            last_elapsed_ms: 0,
         }
     }
 

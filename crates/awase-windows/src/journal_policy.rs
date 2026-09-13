@@ -198,6 +198,81 @@ const fn item_cost(bytes: usize, needs_comma: bool) -> usize {
     }
 }
 
+// ── KeyInput auto-repeat 畳み込み（ADR-169） ────────────────────────────────
+//
+// `journal.rs::DecisionKind`/`PhysicalDispositionSummary` は `#[cfg(windows)]`
+// 配下（`journal` モジュール自体がゲートされている）のため、Windows非依存で
+// あるべき本モジュールから直接参照できない。判定に必要な形だけをここに
+// 局所的に再定義し、`journal.rs` 側で実際の型からこちらへ変換して渡す。
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyInputDecisionShape {
+    PassThrough,
+    PassThroughWith { effect_count: usize },
+    Consume { effect_count: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyInputPhysicalShape {
+    Allow,
+    Suppress { reason: &'static str },
+}
+
+/// auto-repeat 畳み込み判定に必要な、1件の `KeyInput` エントリの識別情報。
+///
+/// `state_before`/`state_after` は `&str` で借用する（全打鍵が通るホットパス
+/// `key_pipeline.rs` での比較のためだけに `String` を clone しない）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyInputIdentity<'a> {
+    pub vk_code: u16,
+    pub scan_code: u32,
+    pub key_class: &'static str,
+    pub alt: bool,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub state_before: &'a str,
+    pub state_after: &'a str,
+    pub decision: KeyInputDecisionShape,
+    pub physical: KeyInputPhysicalShape,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoalesceOutcome {
+    NewEntry,
+    MergeIntoPrevious,
+}
+
+/// 直近に記録した `KeyInput`（`prev`）と、これから記録しようとしている
+/// `KeyInput`（`next`）を比較し、OS auto-repeat として1エントリへ畳み込んで
+/// よいかを判定する（ADR-169）。
+///
+/// 畳み込む条件は次のすべてを満たす場合のみ:
+/// - `prev` が存在する（レーン先頭ではない）
+/// - `next_injected` が false（foreign-injected な連続 down を誤って
+///   auto-repeat とみなさない。BUG-90/issue #136 対策）
+/// - `next_was_down` が true（`hook.rs::HOOK_STATE.physical_key_state` の
+///   `swap` で得た、このイベント直前の物理押下状態。同一 vk の押下が
+///   間に key-up を挟まず連続することは、物理的に OS auto-repeat 以外では
+///   起こり得ない）
+/// - `prev` と `next` の識別情報（vk/scan/key_class/修飾キー/NICOLA状態/
+///   decision/physical）が完全一致（1つでも異なれば「auto-repeatだが
+///   診断上意味のある変化点」として畳み込まない）
+#[must_use]
+pub fn coalesce_key_input(
+    prev: Option<&KeyInputIdentity>,
+    next: &KeyInputIdentity,
+    next_was_down: bool,
+    next_injected: bool,
+) -> CoalesceOutcome {
+    if next_injected || !next_was_down {
+        return CoalesceOutcome::NewEntry;
+    }
+    match prev {
+        Some(prev) if prev == next => CoalesceOutcome::MergeIntoPrevious,
+        _ => CoalesceOutcome::NewEntry,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,5 +498,91 @@ mod tests {
         for (tokens, expected) in cases {
             assert_eq!(order_violation(tokens), Some(expected));
         }
+    }
+
+    // ── coalesce_key_input（ADR-169） ──
+
+    fn ctrl_hold_identity() -> KeyInputIdentity<'static> {
+        KeyInputIdentity {
+            vk_code: 162, // VK_LCONTROL
+            scan_code: 29,
+            key_class: "Passthrough",
+            alt: false,
+            ctrl: true,
+            shift: false,
+            state_before: "Idle",
+            state_after: "Idle",
+            decision: KeyInputDecisionShape::PassThrough,
+            physical: KeyInputPhysicalShape::Allow,
+        }
+    }
+
+    #[test]
+    fn coalesce_merges_identical_repeat_when_was_down_and_not_injected() {
+        let identity = ctrl_hold_identity();
+        assert_eq!(
+            coalesce_key_input(Some(&identity), &identity, true, false),
+            CoalesceOutcome::MergeIntoPrevious
+        );
+    }
+
+    #[test]
+    fn coalesce_keeps_new_entry_when_injected_even_if_was_down() {
+        let identity = ctrl_hold_identity();
+        assert_eq!(
+            coalesce_key_input(Some(&identity), &identity, true, true),
+            CoalesceOutcome::NewEntry
+        );
+    }
+
+    #[test]
+    fn coalesce_keeps_new_entry_when_not_was_down() {
+        let identity = ctrl_hold_identity();
+        assert_eq!(
+            coalesce_key_input(Some(&identity), &identity, false, false),
+            CoalesceOutcome::NewEntry
+        );
+    }
+
+    #[test]
+    fn coalesce_keeps_new_entry_when_lane_is_empty() {
+        let identity = ctrl_hold_identity();
+        assert_eq!(
+            coalesce_key_input(None, &identity, true, false),
+            CoalesceOutcome::NewEntry
+        );
+    }
+
+    #[test]
+    fn coalesce_keeps_new_entry_when_modifier_changes_mid_hold() {
+        let prev = ctrl_hold_identity();
+        let mut next = prev;
+        next.shift = true; // 例: 押しっぱなしの途中で Shift を追加で押す
+        assert_eq!(
+            coalesce_key_input(Some(&prev), &next, true, false),
+            CoalesceOutcome::NewEntry
+        );
+    }
+
+    #[test]
+    fn coalesce_keeps_new_entry_when_decision_changes_mid_hold() {
+        let prev = ctrl_hold_identity();
+        let mut next = prev;
+        next.decision = KeyInputDecisionShape::Consume { effect_count: 1 };
+        assert_eq!(
+            coalesce_key_input(Some(&prev), &next, true, false),
+            CoalesceOutcome::NewEntry
+        );
+    }
+
+    #[test]
+    fn coalesce_keeps_new_entry_when_fsm_state_changes_mid_hold() {
+        let prev = ctrl_hold_identity();
+        let mut next = prev;
+        next.state_after = "PendingChar(vk=0x41)";
+        assert_eq!(
+            coalesce_key_input(Some(&prev), &next, true, false),
+            CoalesceOutcome::NewEntry
+        );
     }
 }
