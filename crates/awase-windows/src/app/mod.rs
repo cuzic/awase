@@ -683,10 +683,23 @@ pub(crate) fn reload_config() {
         "IME control Toggle keys",
         &mut diag,
     );
-    // 親指キーは config reload では変更を反映しない（`initialize_app`
-    // でのみ `hook::set_thumb_vk_codes` が呼ばれる）ため、直近の起動/reload
-    // で確定した値をそのまま使ってよい。
-    let (left_thumb_vk, right_thumb_vk) = crate::hook::thumb_vk_codes();
+    // 親指キーも config reload で変更が反映される
+    // （`Runtime::apply_config_update` が `config.general.{left,right}_thumb_key`
+    // を再解決して `hook::set_thumb_vk_codes` を呼ぶ、本関数より後の処理）。
+    // ここで `hook::thumb_vk_codes()`（前回の起動/reload時点のキャッシュ）を
+    // 読むと、このreload内で親指キー自体を変更した場合に古い値のまま
+    // BUG-140 の重複判定が行われ、新しい親指キーとの重複を見逃す
+    // （code-review指摘、2026-09-13）。`apply_config_update`と同じ解決関数
+    // で新しい config から直接導出し、名前解決に失敗した場合のみ
+    // （`apply_config_update`側も同条件でこのreloadでは古い値を維持する
+    // ため）キャッシュ値にフォールバックする。
+    let (left_thumb_vk, right_thumb_vk) = match (
+        crate::hook::resolve_thumb_key(&config.general.left_thumb_key),
+        crate::hook::resolve_thumb_key(&config.general.right_thumb_key),
+    ) {
+        (Some((left, _)), Some((right, _))) => (left, right),
+        _ => crate::hook::thumb_vk_codes(),
+    };
     let (toggle, on, off) = init_ime_sync_keys(
         &config.keys.ime_detect,
         left_thumb_vk,
