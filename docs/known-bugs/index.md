@@ -141,6 +141,7 @@
 | [BUG-136](BUG-136.md) | ADR-121のVK_IME_ON冪等再送ゲートがVK_DBE_HIRAGANA限定で、対称のはずのKatakana/Henkan/Muhenkanが対象外（未修正） |
 | [BUG-137](BUG-137.md) | explicit_ime_action_targetのKeyDown/KeyUpステートレス再評価が、押下中にbeliefが変化すると孤立KeyUpを漏らしうる（未修正） |
 | [BUG-139](BUG-139.md) | ADR-163のActuationDecisionRecord診断が、with_app再入時のskipカウンタ二重加算と一部同期記録点のcaller未設定を持っていた（修正済み） |
+| [BUG-140](BUG-140.md) | `right_thumb_key`と同じキーを`keys.ime_detect.on`に登録すると、変換キー単独タップ毎にIME再適用が暴発し、GJI自身の変換機能と競合+「あ」混入 |
 
 ## その他の資料
 
