@@ -2097,7 +2097,9 @@ mod tests {
             j.record(make_state_entry());
         }
         for _ in 0..3 {
-            j.record(make_key_input_entry());
+            // ADR-169: KeyInput は record_key_input() 専用（record() は
+            // absorb() 経由で assert! に抵触する）。
+            j.record_key_input(make_key_input_entry(), false);
         }
         assert_eq!(j.len(), 4);
         let state_seqs: Vec<u64> = j.lanes.state.buffer.iter().map(|e| e.seq).collect();
@@ -2110,7 +2112,8 @@ mod tests {
     fn journal_to_json_merges_lanes_by_seq() {
         let (mut j, _mock) = mock_journal();
         j.record(make_state_entry());
-        j.record(make_key_input_entry());
+        // ADR-169: KeyInput は record_key_input() 専用。
+        j.record_key_input(make_key_input_entry(), false);
         j.record(make_timing_entry());
         let json = j.to_json().unwrap();
         let values: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
