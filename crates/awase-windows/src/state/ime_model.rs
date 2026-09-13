@@ -532,6 +532,15 @@ impl Default for ImeModel {
 }
 
 impl ImeModel {
+    /// `UserImeToggleIntent`/`UserImeSetIntent` 共通の `last_intent` 記録。
+    fn record_intent(&mut self, target: bool, source: UserIntentSource, at_ms: u64) {
+        self.last_intent = Some(RecordedIntent {
+            target,
+            source,
+            at_ms,
+        });
+    }
+
     /// Event を反映する。
     ///
     /// **UserIntent だけが `desired_open` を即時に変えられる**。
@@ -548,19 +557,11 @@ impl ImeModel {
             ImeEvent::UserImeToggleIntent { source } => {
                 let target = !self.desired_open;
                 self.desired_open = target;
-                self.last_intent = Some(RecordedIntent {
-                    target,
-                    source,
-                    at_ms: envelope.time.tick_ms,
-                });
+                self.record_intent(target, source, envelope.time.tick_ms);
             }
             ImeEvent::UserImeSetIntent { target, source } => {
                 self.desired_open = target;
-                self.last_intent = Some(RecordedIntent {
-                    target,
-                    source,
-                    at_ms: envelope.time.tick_ms,
-                });
+                self.record_intent(target, source, envelope.time.tick_ms);
             }
             ImeEvent::PanicReset { target } => {
                 // 復旧操作: desired_open を安全デフォルト値に戻す。
