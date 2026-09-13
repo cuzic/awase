@@ -4771,6 +4771,54 @@ fn journal_emit_tracing_has_no_debug_display_sigils_or_wildcards() {
     );
 }
 
+/// ADR-169: `UnifiedJournal::record_key_input` の OS auto-repeat 畳み込みは
+/// 「`key_input` レーンの `buffer.back()` は直前に記録した `KeyInput` である」
+/// という不変条件に依存する。この不変条件は `JournalEntry::KeyInput {` の
+/// 本番構築点が `runtime/key_pipeline.rs` の1箇所だけであることが前提
+/// （複数箇所から構築される、または `absorb()` 経由の遅延 envelope が
+/// このレーンに混ざると、`back()` が「直前の KeyInput」でなくなり、
+/// 無関係なエントリへ `repeat_count` が誤って加算される——時系列の
+/// 捏造）。新しい構築箇所を追加する前に、`record_key_input` の doc comment
+/// （`journal.rs`）を読み、この不変条件への影響を確認すること。
+#[test]
+fn journal_key_input_construction_is_limited_to_key_pipeline() {
+    // フルパス（`crate::journal::` 修飾）でのみ数える: `journal.rs` 自身の
+    // 内部コードは同モジュール内なので `JournalEntry::KeyInput` を無修飾で
+    // 参照する（`record_key_input` 内部の分解パターン等、これらは新規
+    // construction ではなく既存エントリの読み取りであり対象外）。
+    // 外部（他モジュール）からの construction は必ずこのフルパス表記に
+    // なるため、これで実質的に「外部からの構築箇所」だけを数えられる。
+    const NEEDLE: &str = "crate::journal::JournalEntry::KeyInput {";
+    const EXPECTED_PATH: &str = "src/runtime/key_pipeline.rs";
+
+    let files = list_src_files();
+    let mut total = 0usize;
+    let mut breakdown: Vec<(String, usize)> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = production.matches(NEEDLE).count();
+        if count > 0 {
+            total += count;
+            breakdown.push((path.clone(), count));
+        }
+    }
+    assert_eq!(
+        total, 1,
+        "`{NEEDLE}` の本番コードでの構築箇所数が想定(1)と異なります(実際: {total})。\
+         内訳: {breakdown:?}\n\
+         想定される唯一の構築箇所は `{EXPECTED_PATH}` の `kp_run_inner` です。\
+         この不変条件が崩れると `UnifiedJournal::record_key_input`（ADR-169）の \
+         auto-repeat 畳み込みが無関係なエントリへ誤って合流します。"
+    );
+    assert_eq!(
+        breakdown,
+        vec![(EXPECTED_PATH.to_owned(), 1)],
+        "`{NEEDLE}` の構築箇所は `{EXPECTED_PATH}` である想定でしたが、\
+         実際の内訳は {breakdown:?} でした。"
+    );
+}
+
 /// Windows Defenderの`Behavior:Win32/Persistence.A!.ml`誤検知対策
 /// （`docs/known-bugs.md` BUG-120、2026-09-07）: HKCU Runキーへの登録/解除
 /// (`autostart::register()`/`autostart::unregister()`)は、ユーザーの
