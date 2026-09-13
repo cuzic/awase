@@ -181,6 +181,7 @@ impl EvBuilder {
     fn build(self) -> RawKeyEvent {
         let (kc, pos) = classify_test_key(self.vk, self.scan);
         RawKeyEvent {
+            was_down: false,
             vk_code: self.vk,
             scan_code: self.scan,
             event_type: self.event_type,
@@ -847,6 +848,7 @@ fn test_ctrl_alt_win_thumb_key_never_enters_pending_due_to_os_modifier_bypass() 
         };
 
         let down = RawKeyEvent {
+            was_down: false,
             vk_code: vk,
             scan_code: scan,
             event_type: KeyEventType::KeyDown,
@@ -894,6 +896,7 @@ fn test_thumb_alone_timeout_suppressed_when_thumb_is_os_modifier() {
     };
 
     let down = RawKeyEvent {
+        was_down: false,
         vk_code: VK_LSHIFT,
         scan_code: vk_to_scan(VK_LSHIFT),
         event_type: KeyEventType::KeyDown,
@@ -1131,6 +1134,7 @@ fn make_engine_with_enter_thumb(ignore_composing_guard: bool, shift_literal: boo
 fn enter_thumb_down_event(ts: Timestamp) -> RawKeyEvent {
     use crate::types::{ImeRelevance, KeyClassification, KeyEventType, ModifierState};
     RawKeyEvent {
+        was_down: false,
         vk_code: VK_RETURN,
         scan_code: vk_to_scan(VK_RETURN),
         event_type: KeyEventType::KeyDown,
@@ -3013,6 +3017,7 @@ fn test_nicola_state_stores_scan_code() {
 
     // Create a key event with a specific scan code
     let event = RawKeyEvent {
+        was_down: false,
         vk_code: VK_A,
         scan_code: ScanCode(0x1E), // A key scan code
         event_type: KeyEventType::KeyDown,
@@ -3048,6 +3053,7 @@ fn test_pending_char_thumb_stores_char_scan() {
     let mut engine = make_engine();
 
     let char_event = RawKeyEvent {
+        was_down: false,
         vk_code: VK_A,
         scan_code: ScanCode(0x1E),
         event_type: KeyEventType::KeyDown,
@@ -3065,6 +3071,7 @@ fn test_pending_char_thumb_stores_char_scan() {
     engine.on_event(char_event);
 
     let thumb_event = RawKeyEvent {
+        was_down: false,
         vk_code: VK_CONVERT,
         scan_code: ScanCode(0x79), // Convert key scan code
         event_type: KeyEventType::KeyDown,

@@ -770,6 +770,7 @@ mod tests {
         modifier_key: Option<ModifierKey>,
     ) -> RawKeyEvent {
         RawKeyEvent {
+            was_down: false,
             vk_code: VkCode(0x41),
             scan_code: ScanCode(0x1E),
             event_type,

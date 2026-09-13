@@ -435,6 +435,7 @@ mod plan_tests {
         shadow_action: Option<ShadowImeAction>,
     ) -> RawKeyEvent {
         RawKeyEvent {
+            was_down: false,
             vk_code: crate::vk::VK_KANJI,
             scan_code: ScanCode(0x1E),
             event_type,
@@ -464,6 +465,7 @@ mod plan_tests {
         event_type: KeyEventType,
     ) -> RawKeyEvent {
         RawKeyEvent {
+            was_down: false,
             vk_code,
             ..kanji_event(event_type, Some(action))
         }
@@ -497,6 +499,7 @@ mod plan_tests {
 
     fn f2_event(event_type: KeyEventType) -> RawKeyEvent {
         RawKeyEvent {
+            was_down: false,
             vk_code: crate::vk::VK_DBE_HIRAGANA,
             ..kanji_event(event_type, None)
         }
@@ -654,6 +657,7 @@ mod plan_tests {
         event_type: KeyEventType,
     ) -> RawKeyEvent {
         RawKeyEvent {
+            was_down: false,
             vk_code,
             ..kanji_event(event_type, action)
         }

@@ -122,6 +122,7 @@ fn vk_to_pos(vk: VkCode) -> Option<PhysicalPos> {
 fn key_down(vk: VkCode, ts: Timestamp) -> RawKeyEvent {
     let (kc, pos) = classify_key(vk);
     RawKeyEvent {
+        was_down: false,
         vk_code: vk,
         scan_code: vk_to_scan(vk),
         event_type: KeyEventType::KeyDown,

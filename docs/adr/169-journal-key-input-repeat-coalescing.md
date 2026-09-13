@@ -3,7 +3,16 @@ id: ADR-169
 title: |-
   journal `KeyInput` レーンの OS auto-repeat 畳み込みでダンプ予算窓を圧縮する
 status: |-
-  起草・opus-adversarial-consult round1/round2反映済み（round3で収束確認予定）
+  実装完了（決定1・決定1-b、ブランチ`feat/adr169-journal-key-input-repeat-coalescing`）。
+  opus-adversarial-consult round1/round2で設計収束済み。実装後
+  `/code-review opus`でKeyUp誤畳み込みの回帰を発見・修正済み
+  （コミット`8ecacaeb`、詳細は「実装ノート」節）。Linux上で
+  `cargo test --lib`/`cargo nextest run --workspace --lib`（1785件）・
+  `cargo nextest run -p awase-windows --test architecture_guard --test
+  golden_scenarios --test layer_boundary_guard`（124件、新設の
+  `journal_key_input_construction_is_limited_to_key_pipeline`含む）全緑、
+  windows target `cargo check`/`cargo clippy`/`cargo fmt --check`も全緑。
+  実機ソーク・windows-build CI実行は未実施
 related_adr:
   - "ADR-096"
   - "ADR-095"
@@ -466,6 +475,113 @@ ADR-159/163 の actuation decision 再生は `ActuationDecisionRecord`
 `fix-requires-evidence.md` の再発ファミリー表には journal 自体は含まれて
 いないが、診断基盤の不具合を再発させないという同種の観点から、上記を
 本ADR実装コミットに含める。
+
+## 実装ノート（設計との差分）
+
+- **`was_down` の運搬先**: 設計どおり `RawKeyEvent`（core）へ追加。
+  構築箇所61箇所（19ファイル）を機械的に更新（`was_down: false`固定、
+  実際に物理状態を反映するのは `hook.rs::build_raw_key_event` の1箇所のみ）。
+- **R2-4（`coalesced_into_seq`）は簡略化**: `record_key_input` は
+  `emit_tracing` を毎回呼ぶ前に `JournalStamper::stamp` で毎回新しい
+  `seq` を採番する設計にしたため、tracing/app_log には物理イベントごとに
+  異なる `seq` がそのまま残る。畳み込まれた repeat はその `seq` を持つ
+  journal エントリを**作らない**（直前の `KeyInput` エントリの
+  `repeat_count` へ吸収される）ため、明示的な `coalesced_into_seq`
+  フィールドを追加しなくても「`KeyInput` レーンの seq の穴＝畳み込みに
+  よるもの」は、直前エントリの `repeat_count` から追跡できる。
+- **決定1-bの出力先**: `CappedJson::evicted_by_lane`（`bug_report.rs`
+  経路）に加え、`JournalEntry::DumpTriggered`（ダンプのたびに必ず1件
+  記録される、既存の呼び出し箇所2箇所）にも `evicted_state`/
+  `evicted_timing`/`evicted_actuation`/`evicted_key_input` を追加。
+  R2-1が懸念した「畳み込みが効くほど計器が消える」問題を、この2箇所
+  常設化で解消。
+- **決定3の代替案（journal/app_log予算配分見直し・`RESERVED_PERCENT`
+  見直し・1エントリあたりバイト削減）は未実装のまま**（本ADRのスコープ外、
+  次点候補として名前のみ残す）。
+- 新規 architecture_guard テスト
+  `journal_key_input_construction_is_limited_to_key_pipeline` は、
+  `journal.rs` 自身が内部で `JournalEntry::KeyInput` を分解（パターン
+  マッチ）する箇所と区別するため、フルパス表記
+  `crate::journal::JournalEntry::KeyInput {`（外部モジュールからの
+  construction は必ずこの形になる）のみを数える設計にした。
+  `size_of::<JournalEntry>() == 264` の const assert は変更不要
+  （3フィールド追加後も最大 variant は更新されなかった）。
+
+### 実装後レビュー（`/code-review opus`）で発見・修正した回帰（コミット`8ecacaeb`）
+
+初回実装は `KeyInputIdentity` に `is_down`（KeyDown/KeyUp の区別）を
+含めておらず、`coalesce_key_input` も `event_type` を確認していなかった。
+`hook.rs::HOOK_STATE.physical_key_state` の `swap` は KeyDown/KeyUp
+**両方**のイベントで「直前の物理押下状態」を返すため、ごく普通の
+1タップ（KeyDown→KeyUp）でも KeyUp 時点では `was_down: true` になる
+（直前は押されていたので当然、auto-repeatの証拠ではない）。この結果、
+他フィールドが一致する（アイドル中の `Passthrough` キーではほぼ常に
+一致する）限り、**実質すべての単発タップで KeyUp が直前の KeyDown へ
+誤って畳み込まれ**、journal 上は「押しっぱなしで一度も離されていない」
+という誤った記録になっていた——決定1本文（168:104-107時点の草稿）が
+明記していた「畳み込み対象は `event_type == KeyDown` の場合のみ」という
+条件を、実装時に取りこぼしていた。
+
+`KeyInputIdentity` に `is_down: bool` を追加（`PartialEq` 比較に自動的に
+含まれる）し、`coalesce_key_input` にも `next.is_down`/`prev.is_down` の
+明示ガードを二重に追加（`is_down` 以外の全フィールド一致に頼る設計への
+将来的な変更でも安全なように）。回帰テスト2件
+（`coalesce_never_merges_keyup_into_preceding_keydown_even_if_was_down`・
+`coalesce_never_merges_keydown_into_preceding_keyup`）を追加。
+`src/types.rs::RawKeyEvent::was_down` のdoc commentも、KeyUpでも
+更新される事実を明記するよう訂正した。
+
+### 実装後レビュー第2ラウンド（コミット`ef1d8197`）: 契約違反時のパニック誘発とevicted位置依存
+
+再度 `/code-review opus`（正しいブランチを対象に再実行）で3件指摘・修正:
+
+1. `record_key_input()` の「契約違反（非KeyInput）」フォールバックが
+   `key_input` レーンへ無条件 push していたため、次回呼び出しの
+   `key_input_identity()` が `unreachable!()` でパニックする経路が
+   存在した（`debug_assert` はリリースビルドで無効化されるため実害が
+   残る）。`absorb()` と共通の `route_to_lane()`（`lane_kind()` に
+   基づく正しいレーン振り分け）に置き換え、`absorb()` 側にも
+   `KeyInput` 混入を検知する `debug_assert` を追加。
+2. `evicted_by_lane()` が `[(LaneKind, usize); 4]` を位置依存
+   （`evicted[0].1` 等）で消費されていたため、named struct
+   `EvictedByLane { state, timing, actuation, key_input }` に置き換え、
+   将来の並び順変更がコンパイルエラー無しに誤対応する危険を解消。
+3. `key_pipeline.rs` が渡す `repeat_count`/`last_timestamp_us`/
+   `last_elapsed_ms` の初期値は `record_key_input()` が常に上書きする
+   死んだ値であることをコメントで明記。
+
+`record_key_input()` 自体のユニットテスト4件（畳み込み成立・
+`was_down=false`での非畳み込み・KeyUpの非畳み込み・契約違反時の
+パニック確認）を追加。指摘のうち「`KeyInputDecisionShape`/
+`KeyInputPhysicalShape` が `DecisionKind`/`PhysicalDispositionSummary`
+を複製している」点は、決定1本文が既に述べている `journal_policy.rs`
+非ゲート化とのトレードオフとして意図的に受け入れ、変更しなかった。
+
+### 実装後レビュー第3ラウンド（コミット`8cba3b94`）: 直前injectedエントリへの誤畳み込み
+
+`/code-review opus` を5観点並列で再実行し、以下を発見・修正:
+
+- **[重要]** `KeyInputIdentity` に `injected` が含まれておらず、
+  `coalesce_key_input` は `next_injected`（これから記録するイベント側）
+  しか確認していなかった。foreign-injected な KeyDown（BUG-90/issue #136）
+  が偶然レーン末尾に居るとき、直後に届いた**本物**の物理 auto-repeat
+  （`next_injected: false`）が、他フィールド一致だけでその injected
+  エントリへ誤って畳み込まれうる欠陥だった——is_down の欠落
+  （round1発見）と対称の、`prev` 側を見落とすバグ。`injected` を
+  `KeyInputIdentity` に追加し、`coalesce_key_input` にも
+  `!prev.injected` の明示ガードを二重に追加。回帰テストを追加。
+- `JournalLane::push` の `capacity == 0` 早期return が `evicted` を
+  計上していなかった（他2つの喪失経路は計上済み）。網羅性のため修正
+  （本番では到達しない経路）。
+- `record_key_input` の `MergeIntoPrevious` 枝で、既に束縛済みの
+  `event` を使わず `envelope.entry` を再度matchしていた冗長な分解を
+  削除（reuse/simplification観点、`/code-review` 指摘）。
+
+その他の指摘（`repeat_count`等3フィールドの手動複製をヘルパー化する案、
+`dropped_by_lane` も `EvictedByLane` 型に揃える案、placeholder値を
+専用コンストラクタで型的に保証する案）は、正当な指摘だが本ADRのスコープ
+（バグ修正）を超える設計改善として今回は見送り、次のリファクタ候補として
+記録のみ残す。
 
 ## 関連
 

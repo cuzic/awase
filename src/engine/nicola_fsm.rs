@@ -4093,6 +4093,7 @@ mod tests {
                 action,
             });
             let ev = RawKeyEvent {
+                was_down: false,
                 vk_code: VkCode(0x41),
                 scan_code: scan,
                 event_type: KeyEventType::KeyUp,

@@ -932,6 +932,7 @@ fn build_raw_key_event(
     left_thumb_down_snapshot: Option<Timestamp>,
     right_thumb_down_snapshot: Option<Timestamp>,
     injected: bool,
+    was_down: bool,
 ) -> RawKeyEvent {
     use crate::vk::VkCodeExt;
     RawKeyEvent {
@@ -952,6 +953,7 @@ fn build_raw_key_event(
         left_thumb_down_snapshot,
         right_thumb_down_snapshot,
         injected,
+        was_down,
     }
 }
 
@@ -1063,9 +1065,14 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // HOOK_STATE.physical_key_state はハードウェア由来のイベントのみで更新する。
     // LLKHF_INJECTED 付き（X サーバー・他ツールの synthetic）はスキップし、
     // stuck modifier による汚染を防ぐ。自前の synthetic は上の is_self_injected で既に除外済み。
+    // ADR-169: journal の KeyInput auto-repeat 畳み込み判定に使う「このイベント
+    // 直前の物理押下状態」。injected イベントはこのビットを更新しない（BUG-90/
+    // issue #136 系の foreign-injected 連打を誤って auto-repeat とみなさないよう、
+    // 呼び出し側は was_down の値に関わらず injected を常に非畳み込みとして扱う）。
+    let mut was_down = false;
     if !is_injected {
         if let Some(slot) = HOOK_STATE.physical_key_state.get(vk.0 as usize) {
-            slot.store(is_keydown, Ordering::Relaxed);
+            was_down = slot.swap(is_keydown, Ordering::Relaxed);
         }
         if let Some(slot) = HOOK_STATE.physical_key_down_at_ms.get(vk.0 as usize) {
             // 同一 VK の auto-repeat KeyDown では down_at を上書きしない
@@ -1316,6 +1323,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         left_thumb_down_snapshot,
         right_thumb_down_snapshot,
         is_injected,
+        was_down,
     );
 
     let produce_result = crate::hook_channel::HOOK_KEYS.produce(event);

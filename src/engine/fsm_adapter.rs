@@ -389,6 +389,7 @@ mod tests {
         pos: Option<PhysicalPos>,
     ) -> RawKeyEvent {
         RawKeyEvent {
+            was_down: false,
             vk_code: vk,
             scan_code: scan,
             event_type,

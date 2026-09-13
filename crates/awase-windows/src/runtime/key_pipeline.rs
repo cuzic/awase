@@ -480,10 +480,13 @@ impl Runtime {
             half_width_alnum_toggle_before,
             is_configured_thumb_key,
         );
-        self.platform_state
-            .ime
-            .journal
-            .record(crate::journal::JournalEntry::KeyInput {
+        // ADR-169: JournalEntry::KeyInput の本番構築点はここ1箇所のみ
+        // （`tests/architecture_guard.rs` の出現数固定テストで保証）。
+        // OS auto-repeat の畳み込み判定に使う `was_down` は
+        // `event.was_down`（`hook.rs::HOOK_STATE.physical_key_state` の
+        // `swap` 由来、capture時点のスナップショット）をそのまま使う。
+        self.platform_state.ime.journal.record_key_input(
+            crate::journal::JournalEntry::KeyInput {
                 event: crate::journal::KeyEventSummary::from_raw(&event),
                 state_before,
                 state_after,
@@ -491,7 +494,15 @@ impl Runtime {
                 physical: crate::journal::PhysicalDispositionSummary::new(
                     physical.suppress_reason(&event, profile),
                 ),
-            });
+                // プレースホルダー値: record_key_input() が
+                // MergeIntoPrevious/NewEntry いずれの経路でも上書きするため
+                // ここでの実際の値は意味を持たない（呼び出し規約）。
+                repeat_count: 1,
+                last_timestamp_us: event.timestamp,
+                last_elapsed_ms: 0,
+            },
+            event.was_down,
+        );
 
         self.kp_stage_post_decision(&decision, &event, focus_transition_was_pending);
 
