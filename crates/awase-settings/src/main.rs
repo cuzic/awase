@@ -3506,6 +3506,8 @@ impl SettingsApp {
         );
         ui.add_space(4.0);
         half_width_alnum_toggle_checkbox(ui, &mut self.config.general.half_width_alnum_toggle);
+        ui.add_space(4.0);
+        keystroke_sequence_checkbox(ui, &mut self.config.general.keystroke_sequence);
         ui.add_space(8.0);
         // n-gram はタイブレーク（3キー分岐・重なり不足判定・2キーしきい値の
         // 動的調整）に confirm_mode を問わず常に使われる（ngram_file が
@@ -3996,6 +3998,43 @@ fn half_width_alnum_toggle_checkbox(
             awase::config::HalfWidthAlnumTogglePolicy::All
         } else {
             awase::config::HalfWidthAlnumTogglePolicy::Off
+        };
+    }
+}
+
+/// 打鍵列機能（`.yab` の `CtrlChord`/`InlineSequence`/`MacroRef`、ADR-115）の
+/// 有効化チェックボックス。既定 On（2026-09-13〜、ADR-115 決定8追補）。
+/// `CV`+16進数2桁・セル内 `+` 区切り・`@`+マクロ名はいずれも偶然一致するには
+/// 十分特殊な文字列であり、`layout/nicola_kakutei.yab`（句読点で確定）を含め
+/// 素の目的で使われるのが通常のため常時有効にした。OFFはあくまで、この解釈
+/// 自体を望まないユーザー向けの明示的オプトアウト。
+fn keystroke_sequence_checkbox(
+    ui: &mut egui::Ui,
+    policy: &mut awase::config::KeystrokeSequencePolicy,
+) {
+    let mut enabled = *policy == awase::config::KeystrokeSequencePolicy::On;
+    if ui
+        .checkbox(&mut enabled, "打鍵列機能を有効にする")
+        .on_hover_text(
+            "ON(既定)の場合: .yab の1セルに複数のキー操作を割り当てる打鍵列構文\n\
+             （Ctrl+キー送信・セル内 `+` 区切りの複数アクション・`@`マクロ参照）\n\
+             が有効です。例: 「レイアウト」で `nicola_kakutei.yab` を選ぶと、\n\
+             句読点「。」「、」を入力した直後に Ctrl+M（IME の全確定ショート\n\
+             カット）を送ります（やまぶき／DvorakJ の「句読点で確定」相当）。\n\
+             確定に使う Ctrl+M は使用する IME（Google 日本語入力/MS-IME）側で\n\
+             「全確定」に割り当てられている必要があります。他のアプリで\n\
+             Ctrl+M が別機能に割り当てられている場合は競合します。\n\
+             OFFにすると: この構文（`C`+16進数2桁・セル内 `+`・`@`マクロ）を\n\
+             解釈せず、セルの生テキストをそのままリテラル文字列として扱う\n\
+             （打鍵列機能導入前の挙動）に戻します。この構文の解釈自体を\n\
+             望まない場合のみ OFF にしてください。",
+        )
+        .changed()
+    {
+        *policy = if enabled {
+            awase::config::KeystrokeSequencePolicy::On
+        } else {
+            awase::config::KeystrokeSequencePolicy::Off
         };
     }
 }

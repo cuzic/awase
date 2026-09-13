@@ -192,6 +192,7 @@ fn nicola_us_f_kb232_yab_are_bundled_in_msi() {
         ("NicolaUsYab", r"dist\layout\nicola_us.yab"),
         ("NicolaFYab", r"dist\layout\nicola_f.yab"),
         ("NicolaKb232Yab", r"dist\layout\nicola_kb232.yab"),
+        ("NicolaKakuteiYab", r"dist\layout\nicola_kakutei.yab"),
     ] {
         assert!(
             content.contains(&format!(r#"<Component Id="{component_id}""#)),
