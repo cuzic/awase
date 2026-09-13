@@ -174,6 +174,7 @@
 | [165](165-tsf-cache-restore-recency-guard.md) | TsfNativeキャッシュ復元にhwnd一致を要求し、無関係な窓の誤ON復元とforce-ON誤発火を防ぐ (BUG-128) | 実装済み(ブランチ`fix/bug128-tsf-cache-restore-recency`)。opus-adversarial-consult round1〜round6で収束、dragonflyg4実機で修正前後の動作を確認済み |
 | [166](166-physical-key-disposition-decision-table.md) | PhysicalKeyDisposition::plan()の全数決定表化、DBEモードキーDown/Up vk非対称ハザードの明文化 (BUG-131) | 実装済み(ブランチ`fix/bug131-kana-restore-latch`)。Linuxコンパイル確認・Python独立シミュレーション済み、windows-build CI実行と実機検証は未実施 |
 | [167](167-standard-profile-warmup-double-send.md) | Standardプロファイル×ImmCross失敗フォールバック時の随伴warmup重複送信 (BUG-133) | 実装完了(2026-09-12)。opus-adversarial-consult 1ラウンドで選択肢B採用、全テスト緑。実機ソーク未実施 |
+| [168](168-journal-key-input-repeat-coalescing.md) | journal `KeyInput`レーンのOS auto-repeat畳み込みでリングバッファ枯渇を防ぐ | 起草。opus-adversarial-consult未実施 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
