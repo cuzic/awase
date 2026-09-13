@@ -372,36 +372,11 @@ fn c6_single_reduce_call_site() {
     );
 }
 
-/// ADR-170 決定1: `ImeModel::reduce()` 本体20行超の分岐を private ヘルパーへ
-/// 抽出した。`.claude/rules/ime-belief-architecture.md` の「reduce() 以外からの
-/// 直接代入はコンパイルエラーになる」という主張は、実際にはモジュールスコープの
-/// private 可視性でしかなく、ヘルパーが `reduce()` 以外から呼ばれないことを
-/// 強制するコンパイラ機構は無い(ADR-170 opus-adversarial-consult round1 F2)。
-/// ヘルパーごとの呼び出し箇所が `reduce()` 内の1箇所だけであることを
-/// この count guard で固定する——新しいヘルパーを追加・改名したら
-/// `HELPERS` もあわせて更新すること。
-#[test]
-fn c6b_reduce_helpers_called_only_once_from_reduce() {
-    const HELPERS: &[&str] = &[
-        "reduce_focus_changed",
-        "reduce_ime_apply_requested",
-        "reduce_ime_apply_succeeded",
-        "reduce_ime_apply_failed",
-    ];
-    let path = manifest().join("src/state/ime_model.rs");
-    for helper in HELPERS {
-        let needle = format!("self.{helper}(");
-        let hits = scan(&[path.clone()], |code| code.contains(&needle));
-        assert_eq!(
-            hits.len(),
-            1,
-            "ADR-170: {helper} の呼び出しは reduce() 内の1箇所のみのはずが {} 箇所\
-             ありました。\n該当箇所:\n  {}",
-            hits.len(),
-            hits.join("\n  ")
-        );
-    }
-}
+// ADR-170 決定1(reduce() の大きい分岐の private ヘルパー抽出)が
+// 「ヘルパーは reduce() 本体からのみ呼ばれる」ことを固定する count guard は
+// `tests/architecture_guard.rs::reduce_helpers_are_called_only_from_reduce_body`
+// にある(本体スコープの二重固定に `extract_fn_body` を使うため、それが既に
+// あるファイル側に置いた。opus-adversarial-consult round2 R2-2/R2-3)。
 
 // ───────────────────────── カテゴリ D ─────────────────────────
 

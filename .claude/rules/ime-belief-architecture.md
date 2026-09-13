@@ -123,13 +123,13 @@ IME を ON にする経路を追加したら、stale `ObservedEisu` の救済（
 
 ## belief の書き込み点
 
-`ImeModel::reduce()` in `state/ime_model.rs` が唯一の書き込み点。`desired_open` / `input_mode` フィールドは private であり、**`state/ime_model.rs` モジュール外からの直接代入はコンパイルエラーになる**（Rust の private はモジュールスコープであり、`reduce()` という特定の関数だけを強制する言語機構ではない）。同一モジュール内の任意の関数は書き込めるため、`reduce()` からのみ呼ばれる private ヘルパー（ADR-170 決定1、`reduce_focus_changed` 等）を追加する場合、そのヘルパーが実際に `reduce()` 以外から呼ばれていないことは `tests/layer_boundary_guard.rs::c6b_reduce_helpers_called_only_once_from_reduce` の count guard が担保する（コンパイラではなく段3のCIテストと同じ仕組み）。
+`ImeModel::reduce()` in `state/ime_model.rs` が唯一の書き込み点。`desired_open` / `input_mode` フィールドは private であり、**`state/ime_model.rs` モジュール外からの直接代入はコンパイルエラーになる**（Rust の private はモジュールスコープであり、`reduce()` という特定の関数だけを強制する言語機構ではない）。同一モジュール内の任意の関数は書き込めるため、`reduce()` からのみ呼ばれる private ヘルパーを追加する場合、そのヘルパーが実際に `reduce()` の本体からのみ呼ばれていることは自動検証で担保する必要がある。ADR-170 決定1で追加した `fn reduce_*` ヘルパー（`reduce_focus_changed` 等）は `tests/architecture_guard.rs::reduce_helpers_are_called_only_from_reduce_body` が対象（ヘルパー名を自動抽出し、`reduce()` 本体内での呼び出し数とファイル全体での呼び出し数が一致することを固定、コンパイラではなくCIテストによる強制）。一方 PR #214 由来の `record_intent`（`reduce()` の複数 arm から呼ばれる、`reduce_` prefix ではないヘルパー）はこのテストの対象外であり、「`reduce()` 本体からのみ呼ぶ」という制約は依然として散文（コードコメント）に頼っている——新しい `reduce_` prefix 以外のヘルパーを追加する場合は、上記テストへの組み込みか同等の自動検証を検討すること。
 
 ## この規約を実際に強制する仕組み（散文だけに頼らない）
 
 規約は「読めば守れる」を前提にしない。以下の3段構えで、規約を破る近道が実際に取れないか、少なくとも自動で検知されるようにしている。
 
-1. **コンパイラ（最強）**: `desired_open` / `input_mode` フィールドの private 化。`UserIntentSource` から `Recovery` / `HwndCache` を削除し `PanicReset` / `HwndCacheRestored` 専用イベントに分離。`InputModeObserved` への `confidence` フィールド必須化。
+1. **コンパイラ（最強、ただしモジュール外に対して）**: `desired_open` / `input_mode` フィールドの private 化。`UserIntentSource` から `Recovery` / `HwndCache` を削除し `PanicReset` / `HwndCacheRestored` 専用イベントに分離。`InputModeObserved` への `confidence` フィールド必須化。
 2. **dylint lint（HIR レベルの意味解析）**: `lints/ime_event_guard` — `ImeEvent::PanicReset` / `HwndCacheRestored` が designated 関数（`apply_panic_reset` / `apply_hwnd_cache_restore`）以外で構築されると warning。`lints/observation_source_guard` — 禁止パターン2（観測偽装）を直接検出する: `InputModeObserved { source: ObservationSource::ImmGetOpenStatus, .. }` はどこで構築しても warning（この組合せは常に偽装）、`ConvBitsInference` は `apply_idle_conv_check` 以外で構築すると warning。`cargo dylint --all -p awase-windows -- --target x86_64-pc-windows-msvc` で両方まとめて実行。
 3. **CI テスト（軽量な第二の防衛線）**: `crates/awase-windows/tests/architecture_guard.rs` — `PanicReset` / `HwndCacheRestored` / `InputModeObserved` の構築箇所数をテキスト走査で固定し、想定外の増加を検知する。`cargo test -p awase-windows --test architecture_guard`（Linux でも実行可能、CI に組み込み済み）。
 

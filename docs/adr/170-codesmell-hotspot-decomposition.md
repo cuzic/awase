@@ -5,6 +5,7 @@ title: |-
 status: |-
   opus-adversarial-consult round1で決定2・3を見送りに縮小、決定1を実施しround2確認待ち
 related_adr:
+  - "ADR-087"
   - "ADR-090"
   - "ADR-098"
   - "ADR-108"
@@ -42,21 +43,26 @@ round1を実施したところ、**決定2・3は事実誤認や見落としが�
 
 ### 問題
 
-developブランチ基準(PR #214マージ後)で`reduce()`(555-703行、
-`#[expect(clippy::cognitive_complexity)]`付き)は17分岐約150行のmatch文。
+developブランチ基準(PR #214マージ後)で`reduce()`は555-846行(292行)、
+うち`match envelope.event`本体が556-832行(277行)・18分岐
+(`#[expect(clippy::cognitive_complexity)]`付き)。
 [ime-belief-architecture](../../.claude/rules/ime-belief-architecture.md)が
 要求する「belief更新はreduce()という単一書き込み口を通す」という制約自体は
 妥当だが、各分岐の**中身**まで1つの関数に押し込む必然性はない。
 
-17分岐のうち本体が20行を超えるのは以下の4件のみで、残り13分岐は3〜12行
-(大半が1〜3行の単純代入)だった(opus-adversarial-consult round1 F5の実測):
+18分岐のうち本体が20行を超えるのは以下の4件のみで、残り14分岐は4〜19行
+(最大の`EngineActivationSync`19行は本体がコメントのみ、大半が1〜3行の
+単純代入)だった(opus-adversarial-consult round2実測。round1 F5は
+「17分岐」「13分岐」と1件誤っていた):
 
-| arm | 本体行数(概算) |
+| arm | 本体行数(実測) |
 | --- | --- |
-| `FocusChanged` | ~54行 |
-| `ImeApplyRequested` | ~50行 |
-| `ImeApplyFailed` | ~25行 |
-| `ImeApplySucceeded` | ~23行 |
+| `FocusChanged` | 54行 |
+| `ImeApplyRequested` | 54行 |
+| `ImeApplyFailed` | 30行 |
+| `ImeApplySucceeded` | 24行 |
+
+抽出後の`reduce()`は557-705行(149行)に縮小した(約49%減)。
 
 **先行事例**: PR #214が既に`UserImeToggleIntent`/`UserImeSetIntent`共通の
 `RecordedIntent`構築を`record_intent()`private ヘルパーに切り出しており、
@@ -95,11 +101,22 @@ round1で、ADRが根拠にしていた前提2つがいずれも誤りだと判�
 
 - `.claude/rules/ime-belief-architecture.md`の「belief の書き込み点」節の
   記述を、実態(モジュールスコープのprivateであり、ヘルパーの呼び出し元は
-  count guardで担保する)に修正した。
-- `tests/layer_boundary_guard.rs::c6b_reduce_helpers_called_only_once_from_reduce`
-  を新設し、4ヘルパーそれぞれの呼び出し箇所(`self.<helper>(`)が
-  `ime_model.rs`内にちょうど1件であることを固定した。新しいヘルパーを
-  追加・改名する場合はこのテストの`HELPERS`リストも更新すること。
+  count guardで担保する)に修正した。この一般化は`fn reduce_`で始まる
+  ヘルパー(下記count guardの対象)についてのみ成立する。PR #214由来の
+  `record_intent`(`reduce()`の2つのarmから呼ばれる、`reduce_`prefixでは
+  ないヘルパー)はこの命名規約の対象外であり、「reduce本体からのみ呼ぶ」
+  という制約は依然として散文(コードコメント)による(round2 R2-4)。
+- `tests/architecture_guard.rs::reduce_helpers_are_called_only_from_reduce_body`
+  を新設した。当初`layer_boundary_guard.rs`に「ファイル内で`self.<helper>(`が
+  ちょうど1件」という単純な count guard を置いたが、これは**呼び出しが
+  `reduce()`の本体内にあるか**を見ておらず、「`reduce()`を経由しない別の
+  呼び出し元を1件作り、同時に`reduce()`側の呼び出しを消す」という壊れ方を
+  件数1のまま見逃せた(round2 R2-2、round1 F1で指摘した欠陥と同型)。
+  新テストは`extract_fn_body`で`reduce()`本体を切り出し、本体内での
+  出現数とファイル全体での出現数を突き合わせる二重固定にした。また
+  ヘルパー名を`fn reduce_`定義から自動抽出するため、新しいヘルパーを
+  追加してもテスト自体の更新は不要(round2 R2-3、`HELPERS`リストの
+  手動保守という「散文に頼る防御」を避けた)。
 
 ### `#[expect(clippy::cognitive_complexity)]`の除去
 
@@ -122,7 +139,7 @@ round1 F4)。
 - `cargo fmt -- --check`
 - `cargo test --lib`(ルート`awase`、1016 passed)
 - `cargo nextest run -p awase-windows --test architecture_guard --test golden_scenarios --test layer_boundary_guard`
-  (124 passed、新設`c6b_reduce_helpers_called_only_once_from_reduce`含む)
+  (新設`architecture_guard.rs::reduce_helpers_are_called_only_from_reduce_body`含め全pass)
 
 いずれもpass。`state/ime_model.rs`内の`#[cfg(test)] mod tests`(cfg(windows)配下、
 Linuxではリンクできずローカル実行不可)はwindows-build CIでの確認に委ねる。
@@ -176,6 +193,13 @@ view構築→actuation実行→journal記録という約7行をほぼ逐語コ�
   `("apply_actuation_and_record", &["force_on_and_correct_romaji", "reassert_explicit_physical_key"])`)、
   `.claude/rules/experiment-logging.md`の適用範囲一覧への`runtime/mod.rs`追加
   (現状漏れている、`.githooks/pre-push`の正規表現とはズレている)。
+- **不変条件**: `RESTRICTED_CALLS`の許可呼び出し元件数と
+  `architecture_guard.rs`の`(".apply_ime_open_with_view(", N)`のNは常に
+  等しく保つこと(`crates/xtask-adr-evidence/src/main.rs:227-251`がCI
+  `.github/workflows/ci.yml:207`で照合する)。補償エントリ
+  `("apply_actuation_and_record", &[...])`を追加してもxtaskが照合するのは
+  `apply_ime_open_with_view`/`apply_ime_open_with_belief`の2ターゲットだけ
+  なのでこの照合自体は壊れない(round1 B3で確認済み)。
 - `force_on_and_correct_romaji`は`issue_actuation_order`をview構築より後で
   呼んでいるが、共通ヘルパーにするなら構築より前に繰り上げる必要がある
   (両者とも`&self`で状態を変えないため等価だが、その根拠をADRに明記すること)。
@@ -217,10 +241,13 @@ TSF gate/warmupオーケストレーションの5クラスタに分割する案�
   これら全てにパス変更またはアクセサ追加が必要になり、「呼び出し元の
   変更を最小化する」という前提は成立しない。
 - パス固定のガードテストが最低1件確実に壊れ(`raw_recovery_owns_deferred_call_sites_are_accounted_for`)、
-  少なくとも1件は**failせずに検知能力だけを失う**
-  (`deferred_origin_recovery_resend_construction_is_limited_to_gate_bypass`が
-  列挙済みファイルパスだけを見るため、新規ファイルに同種の構築が
-  生えても気づけない)。
+  少なくとも2件は**failせずに検知能力だけを失う**:
+  `deferred_origin_recovery_resend_construction_is_limited_to_gate_bypass`が
+  列挙済みファイルパスだけを見るため新規ファイルに同種の構築が生えても
+  気づけない、`layer_boundary_guard.rs:389`の`d1_no_vk_magic_hex_outside_vk_rs`の
+  ALLOWリストが`("output/mod.rs", "const VK_A: VkCode = VkCode(0x41);")`と
+  ファイルパス固定(コメントに`// send_unicode_cold_warmup_keys`とあり、
+  クラスタCのこのメソッドを移すならALLOWのパスも追随が要る)。
 
 ### 今後の代替案(次に検討する場合の出発点)
 
@@ -246,7 +273,8 @@ TSF gate/warmupオーケストレーションの5クラスタに分割する案�
 
 - 決定1・2・3とも`fix`ではなくrefactorのため、
   `.claude/rules/fix-requires-evidence.md`の(a)回帰テスト/(b)known-bugs追記の
-  形式上の義務は発生しない。ただし決定1は`c6b_reduce_helpers_called_only_once_from_reduce`
+  形式上の義務は発生しない。ただし決定1は
+  `architecture_guard.rs::reduce_helpers_are_called_only_from_reduce_body`
   という新規回帰テストを実際に追加した(このリファクタ自身のevidence)。
 - `.claude/rules/complexity-budget.md`の1-in-1-out規約はADR-162 TH1e未達成のため
   現時点では未発効。決定2を将来実施する場合の`RESTRICTED_CALLS`補償エントリ追加は
