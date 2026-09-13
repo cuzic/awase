@@ -3,12 +3,15 @@ id: ADR-171
 title: |-
   gji_direct_already_matchesが候補ウィンドウ再表示という既存のdesync証拠(candidate_was_seen)を無視して再送を握り潰す不具合を修正する(BUG-141)
 status: |-
-  起草・opus-adversarial-consult round1/round2反映済み。round1・round2で当初案
-  （belief/drift correction経由の自動補正、決定1-4）にBlocker合計8件が見つかり
-  設計を全面転換、round2が提示した最小案（案Z）を主決定として採用。round2は
-  「BUG-141のjournal解釈に事実誤認がある」ことも指摘し（M5）、それを自分で
-  裏取りして確定させた（下記「事実の訂正」参照）。round3レビュー待ち。
-  実装未着手。
+  起草・opus-adversarial-consult round1〜round3反映済み。round1・round2で
+  当初案（belief/drift correction経由の自動補正、決定1-4）にBlocker合計8件が
+  見つかり設計を全面転換、round2が提示した最小案（案Z）を主決定として採用。
+  round2は「BUG-141のjournal解釈に事実誤認がある」ことも指摘し（M5）、それを
+  自分で裏取りして確定させた。round3は案Z自体に2件のBlocker
+  （`DecisionInputs`が凍結リプレイfixtureの対象でありフィールド追加に
+  `#[serde(default)]`が必須／`candidate_was_seen`のリセットが「全outcomeで
+  無条件」ではなく一般形ではBUG-113を再導入しうる）を検出、両方反映済み。
+  round4レビュー待ち。実装未着手。
 related_adr:
   - "ADR-034"
   - "ADR-080"
@@ -97,61 +100,116 @@ GJIが状態を保っているはず」という**awase自身の記録**だけ�
 （`platform.rs:1518-1527`、`AlreadyMatched`を含む全outcomeで無条件に
 リセット、`UnsafeToToggle`/`NotOwned`のみ例外）で`false`にリセットされる
 ——**次のapply判断が行われる直前まで値を保持し、apply完了後にリセットされる**
-ため、「前回のapply〜今回のapply判断の間にSHOWがあったか」を正確に表す。
+ため、「前回のapply〜今回のapply判断の間にSHOWがあったか」を正確に表す
+（**round3訂正**: このリセットが「無条件」と言えるのは呼び出し経路によって
+は成立しない場合がある。詳細と対策は下記「BUG-113再導入にならない理由」
+節を参照——本節の記述はあくまで`platform.rs::on_ime_applied_inner`単体の
+挙動であり、それが実際に呼ばれるかのゲートは別に存在する）。
 
 このラッチは既に`ImeControlView`（`state/ime_decision_view.rs::
 ObservedState::candidate_was_seen`、`:54`）へスナップショットされ、
-`OpenBelief::reduce`（`output/ime_apply_planner.rs:68`、
-`!desired_open && self.candidate_was_seen`という条件式で`KanjiToggleStrategy`
-向けのeffective_open計算に既に使われている）にも渡っている。**しかし
+`state/ime_decision_view.rs:52-54`/`tsf/observer.rs:179-181`のdocは
+現在「`KanjiToggleStrategy`が消費する」とだけ名指ししている。**round3
+指摘（m4）: この名指しは古い**——`output/ime_apply_planner.rs`の
+`OpenBelief::reduce`（`:68`、`!desired_open && self.candidate_was_seen`）が
+計算する`effective_open`の本番消費者は、2026-08-10のdoc訂正（ADR-087 §5
+Phase 3 item14）により**現在`platform.rs::apply_ime_open_with_view`の
+`tracing::debug!`だけ**であり、`already_matched`判定には使われていない
+（診断専用に降格している）。つまり本ADRの案Zは、**この信号を初めて
+実際のactuation判断（`gji_direct_already_matches`）へ配線する**ものである
+——「既にある配線をもう1本つなぐだけ」という表現は実態より楽観的だったため
+訂正する。既存のdoc（`tsf/observer.rs:179-181`、
+`state/ime_decision_view.rs:52-54`）の「`KanjiToggleStrategy`が唯一の消費者」
+という記述も、GjiDirectを2人目の消費者として追加する実装時に更新すること
+（`candidate_was_seen`を複数の判断サイトが読むこと自体は
+`ObservedState::from_snapshot`のdocが想定する使い方であり、問題ない）。
+
 `impl From<&ImeControlView<'_>> for DecisionInputs`
-（`state/ime_decision_view.rs:152-159`）はこの値をコピーしておらず、
-`GjiDirectStrategy`が使う`gji_direct_already_matches`には届いていない。**
-これが本バグの直接原因である——新しい観測経路を作る必要は無く、
-**既存の値を既存の配線にもう1本つなぐだけ**で足りる。
+（`state/ime_decision_view.rs:152-159`）は現状この値をコピーしておらず、
+`GjiDirectStrategy`が使う`gji_direct_already_matches`には届いていない。
+これが本バグの直接原因である。
 
 ### 変更内容
 
 1. `DecisionInputs`（`state/ime_actuation_decision.rs:45-51`）に
-   `candidate_was_seen: bool`フィールドを追加する。
-2. `impl From<&ImeControlView<'_>> for DecisionInputs`
+   `#[serde(default)] candidate_was_seen: bool`フィールドを追加する
+   （**round3 B1: `#[serde(default)]`は必須**——同型は`serde::Deserialize`を
+   導出しており、ADR-163の凍結リプレイコーパス
+   （`crates/awase-windows/tests/journals/actuation_decision/
+   bug-131-report-01m29kdnz.json`等、37レコード）が`DecisionInputs`をJSONから
+   復元する。`#[serde(default)]`が無いとフィールド追加だけで
+   `replay_all_actuation_decision_fixtures`が既存fixtureのパース失敗で
+   panicする。同型の前例は`bug_report.rs:456-472`
+   （「旧バージョンが生成した診断JSONにはこのフィールドが存在しない、
+   `#[serde(default)]`必須」というdoc付き）。付ければ既存37レコードは
+   `candidate_was_seen`を持たないため`default=false`で復元され、
+   `!(!open && false)`は常に`true`＝旧実装とビット同値のまま**差分ゼロで
+   再生される**——ADR-163 TH1eの複雑性予算制発効条件（決定・統合の
+   差分ゼロ再生証明）にも抵触しない。
+2. `state/ime_actuation_decision.rs:30-43`の「この型のフィールドを増やす前に
+   読むこと（ADR-163決定D8）」docに明示的に応答する（**round3 M1**）:
+   `candidate_was_seen`はbool 1個で、アプリ名・打鍵内容・class_name等の
+   PIIを一切含まない。bug report（ADR-095）の`journal_json`スキーマが
+   1フィールド増えるが、D8が警告する「除外という防壁を素通りする」ケースには
+   当たらない。副次的な利点として、この追加により`ActuationDecision`レコード
+   に`candidate_was_seen`が載るため、**override（後述）が効いた瞬間が
+   bug reportからそのまま読める**（実機A/Bの判定材料が自動で手に入る）。
+3. `impl From<&ImeControlView<'_>> for DecisionInputs`
    （`state/ime_decision_view.rs:152-159`）で
    `candidate_was_seen: view.observed.candidate_was_seen`をコピーする。
-3. `gji_direct_already_matches`を次のように変更する
-   （`output/ime_apply_planner.rs:68`の`!desired_open && candidate_was_seen`
-   と同じ形の条件式を、意味の異なる場所へ機械的に複製するのではなく、
-   「OFF方向でdesync証拠があるときはshadow一致を信用しない」という
-   **同一の判断ルールをこの2箇所に適用する**、という位置づけで書く）:
+4. `gji_direct_already_matches`を次のように変更する。**round3 M3への対応**:
+   `candidate_was_seen`（SHOW以降1回だけ立つエッジトリガのラッチ）だけでは、
+   「候補ウィンドウが開いたままBackspace無しで再度Ctrl+無変換を押す」
+   （新しいSHOWが発火しない）操作を救えない。`output/ime_apply_planner.rs:68`
+   が既に`self.shadow_on || self.candidate_visible || (!desired_open &&
+   self.candidate_was_seen)`という形でエッジ（`candidate_was_seen`）と
+   レベル（`candidate_visible`）の両方をORしている前例に倣い、
+   **本ソースも両方をORする**:
 
    ```rust
    const fn gji_direct_already_matches(
        shadow_on: Option<bool>,
        open: bool,
        candidate_was_seen: bool,
+       candidate_visible: bool,
    ) -> bool {
-       matches!(shadow_on, Some(v) if v == open) && !(!open && candidate_was_seen)
+       matches!(shadow_on, Some(v) if v == open)
+           && !(!open && (candidate_was_seen || candidate_visible))
    }
    ```
 
-4. 呼び出し元（`decide_attempt`、同ファイル`:250`）を
-   `gji_direct_already_matches(inputs.shadow_on, open, inputs.candidate_was_seen)`
-   に変更する。
-5. `#[cfg(test)]`の`inputs()`ヘルパー（同ファイル`:269-284`）と、
-   直接`DecisionInputs { .. }`を書いている他のテスト（`runtime/open_chain.rs`
-   の`async_record_carries_caller_label_distinct_from_site`等）に
-   `candidate_was_seen: false`（既定値、既存挙動を変えない）を追加する。
+   `candidate_visible`は`ObservedState`（`state/ime_decision_view.rs:44-45`、
+   `from_snapshot`で`snapshot.gji_candidate_visible()`から埋まる`:96`）に
+   既にあるレベル信号で、HIDEで自然に`false`へ戻る（awase側で手動リセット
+   しない）。候補ウィンドウが本当に閉じるまで、Ctrl+無変換を何度押しても
+   都度override送信されるようになる。
+5. `DecisionInputs`に`candidate_visible: bool`（`#[serde(default)]`付き、
+   上記1と同じ理由）も追加し、`From`実装で`view.observed.candidate_visible`
+   をコピーする。
+6. 呼び出し元（`decide_attempt`、同ファイル`:250`）を
+   `gji_direct_already_matches(inputs.shadow_on, open,
+   inputs.candidate_was_seen, inputs.candidate_visible)`に変更する。
+7. `#[cfg(test)]`の`inputs()`ヘルパー（同ファイル`:273-286`、round3で行番号
+   訂正）と、直接`DecisionInputs { .. }`を書いている他の全構築サイトに
+   `candidate_was_seen: false, candidate_visible: false`（既定値、既存挙動を
+   変えない）を追加する。**round3 m1で判明した漏れ**:
+   `state/actuation_decision_record.rs:614`の`inputs()`テストヘルパー
+   （`ime_actuation_decision.rs`の同名ヘルパーとは別物）も対象に含める。
+   本番構築サイトは`state/ime_decision_view.rs:152`の`From`実装1箇所のみ
+   （round3で確認済み）。
 
 ### 実際のBUG-141タイムラインでの動作確認（トレース済み）
 
-1. Ctrl+無変換1回目（`candidate_was_seen=false`、初回のため）:
-   `shadow_on`が`open(false)`と不一致 → 通常どおり送信、`Applied`。
-   送信完了後`candidate_was_seen`はリセット（既に`false`）。
-2. 候補SHOW（`6130462`）→ `candidate_was_seen=true`。
+1. Ctrl+無変換1回目（`candidate_was_seen=false`, `candidate_visible=false`、
+   初回のため）: `shadow_on`が`open(false)`と不一致 → 通常どおり送信、
+   `Applied`。
+2. 候補SHOW（`6130462`）→ `candidate_was_seen=true`, `candidate_visible=true`。
 3. Ctrl+無変換2回目: `shadow_on==Some(false)==open`だが
-   `candidate_was_seen==true` → **`!(!false && true)`は成立せず
-   全体が`false`になり、already-matchedと判定されない → 実際に再送する**
-   （旧実装ではここで無送信だった）。送信完了後リセット。
-4. 候補SHOW（`6131714`）→ `candidate_was_seen=true`。
+   `candidate_was_seen||candidate_visible`が`true` →
+   already-matchedと判定されず**実際に再送する**（旧実装ではここで無送信
+   だった）。送信直後に`candidate_was_seen`を消費（後述「BUG-113再導入に
+   ならない理由」）。
+4. 候補SHOW（`6131714`）→ 再び`candidate_was_seen=true`。
 5. Ctrl+無変換3回目: 同様に再送する。
 6. 4回目の`C`,`H`,`A`入力で候補は表示されず（実際のjournal通り）。
 
@@ -159,50 +217,108 @@ ObservedState::candidate_was_seen`、`:54`）へスナップショットされ�
 GJIへ送信されるようになる**（旧実装では1回のみ）。GJI側が本当に受理する
 かどうか（Mozc/Chromiumの`OnSetFocus`無条件上書き機序、BUG-141背景参照）は
 依然awaseの管理外だが、少なくとも**awase自身がユーザーの意思を握り潰す**
-という、この変更で確実に解消できる部分が直る。
+という、この変更で確実に解消できる部分が直る。`candidate_visible`のOR
+追加により、「候補ウィンドウが開いたままBackspace無しで再度押す」操作も
+（本当に閉じるまで）都度再送されるようになる。
 
-### BUG-113再導入にならない理由（構造的、round2で確認済み）
+### BUG-113再導入にならない理由（round3 B2で訂正、送信時にラッチを消費する）
 
 BUG-113は「同一の物理キー押下に対し`shadow_toggle_off_sync`/
 `engine_decision_sync`の2経路から連続で2回`apply`が呼ばれ、2回目も
 実送信していた」ことが原因（`ime_controller.rs:88-100`のdoc）。
-`candidate_was_seen`は`on_ime_applied_inner`が**`AlreadyMatched`を含む
-全outcomeで毎回リセットする**ため、1回目のapply完了時点で`false`に落ちる。
-同一物理キー押下の2回目の呼び出しは（実際のGJI側composition変化が
-起きる時間が無いため）`candidate_was_seen`はまだ`false`のままで、
-**従来どおり`AlreadyMatched`のまま**になる——本変更が拾うのは「新しい
-候補SHOWが実際に挟まった後の再送」だけであり、BUG-113型の同一キー押下内
-の重複送信を再導入しない。
+
+**round3訂正**: 当初「`candidate_was_seen`は`on_ime_applied_inner`が全
+outcomeで無条件にリセットするから安全」と説明したが、これは一般命題として
+不成立と判明した。実際には (a) リセットは`acceptance == Accepted`
+（`state/ime_model.rs:49-51`）のときにしか走らない
+（`runtime/mod.rs:664-671`、`Stale`/`Superseded`/`NotSent`は素通り）、
+(b) executor経路（`runtime/executor.rs::dispatch_ime_set_open`）の完了は
+バッチ内の全effectを実行し終えた後にまとめて処理される
+（`runtime/executor.rs:277-332`→`runtime/mod.rs:596`）一方、view はeffectご
+とに新しく構築される（`runtime/executor.rs:826`）。したがって**同一バッチ
+内に2つの`SetOpen`effectがある場合、1個目の送信後もリセットがまだ走らず、
+2個目のviewも同じ`candidate_was_seen=true`を見て再送する**——BUG-113と
+同型の重複`SendInput`になりうる（ADRが当初想定した`shadow_toggle_off_sync`
+経路は`generation:None`で即座に`Accepted`になり安全だが、これは
+「2経路の順序という偶然」に依存しており、一般命題ではない）。
+
+**決定（round3推奨案を採用）**: リセットのタイミングに依存せず、
+**ラッチを「override送信に使った時点で即座に消費する」**。
+`ime_controller.rs::apply_mechanism`のGjiDirectアーム
+（`:272-283`、`send_ime_mode_key(vk)`を呼ぶ箇所）で、`open==false`かつ
+実際に送信が成立した場合、その場で
+`crate::tsf::observer::reset_candidate_was_seen()`
+（既存のpub(crate)関数、既存呼び出し元は`platform.rs:1527`のみ）を呼ぶ。
+これにより「1 SHOW＝最大1回のoverride送信」は`candidate_was_seen`単体に
+関しては**バッチ構造やacceptance分類に依存せず構造的に成立する**。
+
+**未解決の懸念（round4で検証すべき、自分では確信を持てない点）**:
+`candidate_visible`は今回のOR追加でこのガードに新たに加わった項だが、
+これはawase側で消費するタイミングを持たない**レベル信号**であり、GJI側の
+実composition状態が変化するまで`true`のまま推移する。したがって
+「同一物理キー押下から2つの`SetOpen`effectが同一バッチ内に生成され、かつ
+そのタイミングで**候補ウィンドウが実際に可視状態**だった場合」、
+`candidate_was_seen`の消費とは独立に、両方のeffectが`candidate_visible=true`
+を見て**両方とも送信する**という、`candidate_was_seen`の消費だけでは
+防げない経路が残る可能性がある。BUG-113の実際の発生条件
+（Windows Terminal×GJI×PSReadLineで「余分な『@』」、`ime_controller.rs:88-100`）
+がこの「composition可視中の同一キー2重dispatch」と重なるかどうかは
+未確認——重なるなら`candidate_visible`のOR追加自体を見送るか、
+同一バッチ内での重複`SetOpen`effect自体のデデュープ（これが既に別の
+機構で保証されているかの確認を含む）が必要になる。
 
 ### テスト（`.claude/rules/fix-requires-evidence.md`「キー選択」ファミリー）
 
 - `state/ime_actuation_decision.rs`の既存テスト
   `gji_direct_skips_when_shadow_already_matches_close_direction`
-  （`:558-567`、`candidate_was_seen`無しの既存挙動、暗黙に`false`）は
-  変更後もそのまま緑であることを確認する（デフォルト`false`なら旧動作と
-  ビット同値）。
+  （`:559-568`、round3で行番号訂正、`candidate_was_seen`/`candidate_visible`
+  無しの既存挙動、暗黙に両方`false`）は変更後もそのまま緑であることを
+  確認する（デフォルト`false`なら旧動作とビット同値）。
 - 新規テスト`gji_direct_resends_when_candidate_was_seen_despite_shadow_
-  match`（同ファイル）: `shadow_on=Some(false)`, `open=false`,
-  `candidate_was_seen=true`で`decide_attempt`が`Some(MechanismCommand::
-  SendVk(..))`を返すことを固定する。
-- `open=true`方向（ON時）は`candidate_was_seen`を条件に含めない
+  match`/`gji_direct_resends_when_candidate_visible_despite_shadow_match`
+  （同ファイル）: それぞれ`shadow_on=Some(false)`, `open=false`で
+  `candidate_was_seen`/`candidate_visible`のどちらかのみ`true`のときに
+  `decide_attempt`が`Some(MechanismCommand::SendVk(..))`を返すことを固定する。
+- `open=true`方向（ON時）は両フラグを条件に含めない
   （`!(!open && ..)`の`!open`ガードにより`open=true`のときは常に`false`
   側に落ち、既存の挙動と変わらないことを対称テストで固定する）。
+- **round3 M2への対応**: BUG-113の不変条件（OFF方向の同一キー押下で
+  二重送信しない）を守る機械可読な検査は、`candidate_was_seen`/
+  `candidate_visible`両方`false`の場合しか存在しなくなる（`decide_attempt`
+  は純関数のため「2回目は送らない」という時間依存の性質はここでは表現
+  できない）。「送信時にラッチを消費する」実装（`reset_candidate_was_seen()`
+  の呼び出し）については、`architecture_guard.rs`のテキスト走査で
+  「呼び出し箇所数＝2（`platform.rs`と`ime_controller.rs`）」を固定する
+  （Linux上で走る）。
 - 実機A/B（developマージ前、`.claude/rules/tuning-constants.md`は無関係だが
   実機確認は必須）: BUG-113の症状（Windows Terminal × GJI × PSReadLineで
-  余分な「@」）が再発しないことを確認する。BUG-141の再現条件（GJI長時間
-  idle→Ctrl+無変換→候補SHOW）と同じセッションで一緒に測定できる。
+  余分な「@」）が再発しないことを確認する——特に**候補ウィンドウが可視の
+  状態で同一物理キーを連打した場合**（上記「未解決の懸念」）を優先的に
+  試す。BUG-141の再現条件（GJI長時間idle→Ctrl+無変換→候補SHOW）と同じ
+  セッションで一緒に測定できる。
 
-## 関連する別の穴（本ADRのスコープ外、記録のみ）
+## 残存リスク: `reschedule_ime_refresh`の恒久停止（BUG-51の別プロファイル再発、記録済み・修正は別ADR）
 
 「事実の訂正」節で見つけた`reschedule_ime_refresh`のexplicit-intent停止
-（`runtime/mod.rs:834-855`、BUG-51と同型）により、本ADRの変更後も
-「awaseが送ったVK_IME_OFFが本当に効いたか」を確認する周期的なdrift
-correctionは、Ctrl+無変換直後の数秒〜十数秒間は動かないままである。
-今回の案Zは「awase自身の握り潰しをやめる」だけで、GJI側が実際に受理した
-かの自動確認・自動収束は依然無い。将来この方向の改善（BUG-51型の穴自体の
-修正、または本ADRが検討した belief/drift correction 経由の設計の再検討）が
-必要になった場合は、別ADRとして起票すること。
+（`runtime/mod.rs:834-855`）は、**新しい穴ではなく[BUG-051](../known-bugs/BUG-051.md)
+（`fix_commits: ["21ca84d1"]`で「修正済み」と記録されている既知バグ）の
+未修理な別プロファイルでの再発**である（round3 M4）。既存の修正は
+idle-conv-check（TsfNative）という1つの観測サイトにしか入っておらず、
+`Imm32Unavailable`側は未修理のまま残っている——**`fix_commits`が付いている
+からといって「解決済み」と結論づけないこと**。BUG-051に追補として
+実測（本reportのabsolute timestamp）を追記済み。
+
+これを**本ADRの残存リスクとして明示的に格上げする**理由（round3指摘）:
+案Zは「awase自身の握り潰しをやめる」だけで、GJI側が実際に受理したかの
+自動確認・自動収束は提供しない。「送ったOFFが効いたかを確認して再送する」
+唯一の安全網であるdrift correctionが、まさにBUG-141が起きた状況
+（Ctrl+無変換直後の数秒〜十数秒間）で構造的に死んでいることが実測で
+判明した以上、**案Zの効果は「ユーザーが物理キーを押した回数だけ、確実に
+送信されるようになる」ことに限られ、それ以上の自動回復力は無い**、という
+事実として読者に伝わるようにする。修正自体は本ADRのスコープに含めない
+（案Zの正しさに依存しない別軸の修正のため）が、必要になった場合は
+BUG-051への追補実装、または本ADRが検討した belief/drift correction 経由の
+設計の再検討として、別ADRを起票すること。
 
 ## 検討した代替案（見送り）: belief/drift correction経由の自動補正
 
