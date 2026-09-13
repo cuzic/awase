@@ -59,6 +59,7 @@ config.toml          ← configuration file
 layout/
   nicola.yab         ← NICOLA layout (Backspace/Escape substitute variant)
   nicola_keytop.yab  ← NICOLA layout (keytop-symbol variant, default for new installs)
+  nicola_kakutei.yab ← NICOLA layout (keytop-symbol variant + confirm-on-punctuation)
   nicola_f.yab       ← for genuine Fujitsu thumb-shift keyboards (e.g. FKB7628-801)
   nicola_kb232.yab   ← for genuine Fujitsu thumb-shift keyboards (FMV-KB232)
   nicola_us.yab      ← US layout
@@ -183,6 +184,21 @@ The standard NICOLA layouts are bundled in two JIS variants. Both share the iden
 
 - `layout/nicola_keytop.yab` (**default for new installs**): outputs the symbols actually printed on a standard JIS keyboard's keytops (＠／［／］／：／￥／＾) at those positions. The ＠ is an exception: the physical @ key is assigned to "、" (Japanese comma) by the official NICOLA spec, so a bare tap still outputs "、" — ＠ only appears while holding a thumb-shift key at that position.
 - `layout/nicola.yab` (the default through v1.16.1): software-assigns those same positions to Backspace/Escape instead. Upgrading an existing install does not change the contents of `layout/nicola.yab` — the installer never silently overwrites a file you may have edited by hand in the Layout Editor tab. To switch to the keytop-symbol behavior, manually change `default_layout` to `"nicola_keytop.yab"`.
+
+### Confirm-on-punctuation layout
+
+`layout/nicola_kakutei.yab` is identical to `nicola_keytop.yab` except for two
+cells: "。" (kuten) and "、" (touten). Pressing either key now sends Ctrl+M (the
+IME's "confirm all" shortcut) right after outputting the punctuation mark — the
+same mechanism used by やまぶき／やまぶきR and DvorakJ's "confirm on
+punctuation" feature.
+
+Just pick `nicola_kakutei.yab` under "Layout" in the settings screen — the
+keystroke-sequence feature is on by default.
+
+You'll also need to confirm that your IME (Google Japanese Input / MS-IME) has
+Ctrl+M bound to "confirm all", and that no other application has Ctrl+M bound
+to something else (that would conflict).
 
 For a US layout, use `layout/nicola_us.yab`. Because a US keyboard physically lacks the Muhenkan/Henkan keys, the settings screen lets you impersonate thumb keys onto the left/right Alt keys, or assign the Space key as a thumb key.
 

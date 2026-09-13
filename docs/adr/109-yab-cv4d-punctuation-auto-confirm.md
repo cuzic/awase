@@ -5,7 +5,17 @@ title: |-
 summary: |-
   [GitHub Issue #118](https://github.com/cuzic/awase/issues/118)「やまぶきCV4D相当（句読点入力時の変換候補自動確定）」の実現機構を検討。`YabValue`/`KeyAction`に`ConfirmThenSend(Box<Self>)`を新設する個別実装案（確定実体は既存の`SpecialKey::Enter`送信経路の再利用、composing判定はプラットフォームの`send_keys()`直前で行う非対称設計、既定Offの隠しキルスイッチ等）を検討したが、専用variantとして先取り実装せず、**将来実装予定の汎用「打鍵列機能」（1セルに複数キーアクション列を定義できる機能、未着手）の一特殊ケース**として位置づけ直すことにした。本ファイルは調査結果をその設計時の入力資料として保持する
 status: |-
-  保留（本ADR単独実装はしない、2026-08-28。ADR-115が`CV4D`の実体(Ctrl+M)をComposing判定なしの直接送信で実装したため、本ADRのConfirmThenSend案は当面採用見送り。将来Composing条件付き確定が必要になった場合の参考資料として保持）
+  一部解決（2026-09-13）。ADR-115が実装済みの打鍵列構文（`。+CV4D`/`、+CV4D`、
+  Composing判定なしの直接送信）をそのまま使い、確定付きの `layout/nicola_kakutei.yab`
+  をバンドルして選択式で提供する形で決着。専用の `ConfirmThenSend` variant（本ADR
+  決定2〜6）は実装しない——生のCtrl+M送信で十分だったため。あわせて
+  `keystroke_sequence`（従来GUI非表示・既定Off）を設定GUIの「上級者向け
+  設定」タブにチェックボックスとして公開し、あわせて既定値もOnへ変更した
+  （ADR-115決定8追補、2026-09-13。詳細はADR-115参照）。Composing判定なしで無条件にCtrl+M
+  を送る設計のため、「未解決の疑問2」（confirm漏れ/誤送信の非対称性）は
+  やまぶき/DvorakJの実例と同じ前提を踏襲する形で許容している。本ADRの
+  決定1〜6・却下案は、将来Composing条件付きの確定（本ADR原案）が必要になった
+  場合の参考資料として引き続き保持する。
 related_adr:
   - "ADR-107"
 ---

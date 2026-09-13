@@ -18,6 +18,14 @@ type: feature-status
 `LayoutEntry::scan_all`への配線まで完了。既定`keystroke_sequence = "off"`の
 ためマージ後もデフォルト挙動は無変化。
 
+**2026-09-13追記（決定8追補）**: `keystroke_sequence`の既定値を`off`→`on`に
+変更し、設定GUI（上級者向け設定タブ）にチェックボックスとして公開した
+（`layout/nicola_kakutei.yab`の句読点確定をデフォルトで動かすため。詳細は
+[ADR-115](adr/115-yab-keystroke-sequence.md)決定8追補・
+[ADR-109](adr/109-yab-cv4d-punctuation-auto-confirm.md)参照）。上記の
+「マージ後もデフォルト挙動は無変化」は2026-08-31時点の記述であり、
+現在は当てはまらない。
+
 **未実施**:
 - Windows実機ソーク（`CtrlChord`がMS-IME/GJI双方で実際に確定を引き起こすか、
   TSF-nativeアプリでの順序・タイミング、押下中の物理修飾キーとの衝突）
