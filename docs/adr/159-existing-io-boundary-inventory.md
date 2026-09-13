@@ -5,7 +5,7 @@ title: |-
 summary: |-
   ADR-158採用Aの子ADR。当初案をround1で反証し「既存境界の棚卸しと未収束呼び出し元の特定」に組み替え。2026-09-09の実機スパイクでM1(送信機構はsend_input_safe/send_ime_control の2系統、SendInput:WM_IME_CONTROL比が2セッションとも約7〜8:1で再現性あり)・M6(journal非欠落)を実測で確定、M2(InputRelay gate)はテスト条件不足でMWB検証を当面見送り静的解析ベースで判断。さらに段階0の成果物を「棚卸し文書」から「ADR-161実証実験で検証済みのdylint宣言強制」に定義し直した
 status: |-
-  起票。TJ2(単体レビュー)実施済み・round4反映済み。段階0(TB0/TB1/TB2、宣言強制のdylint許可リスト`lints/actuation_call_guard`)・段階1(TF1)は完了。段階2(TF2、`shadow_send_trace.rs`)はPR#193で実装済みだが送信内容の`tracing::debug!`ログ出力のみで、蓄積・突合せ(自動A/B)は`/code-review`指摘で意図的に撤回し未着手（再開条件はADR-163「TF2との突合せ」節）。再生側（決定点への再投入）は子ADR[163](163-actuation-decision-io-separation-and-replay-harness.md)が引き継ぎ、TH1a〜TH1dまで完了・TH1eのみ未着手。opus-adversarial-consult round2相当レビュー(2026-09-12)を実施・Must-fix5件・Should-fix5件・Nice-to-have1件を反映済み
+  起票。TJ2(単体レビュー)実施済み・round4反映済み。段階0(TB0/TB1/TB2、宣言強制のdylint許可リスト`lints/actuation_call_guard`)・段階1(TF1)は完了。段階2(TF2、`shadow_send_trace.rs`)はPR#193で実装済みだが送信内容の`tracing::debug!`ログ出力のみで、蓄積・突合せ(自動A/B)は`/code-review`指摘で意図的に撤回し未着手（再開条件はADR-163「TF2との突合せ」節）。再生側（決定点への再投入）は子ADR[163](163-actuation-decision-io-separation-and-replay-harness.md)が引き継ぎ、TH1a〜TH1dまで完了・TH1eのみ未着手。opus-adversarial-consult round2相当レビュー(2026-09-12)を実施・Must-fix5件・Should-fix5件・Nice-to-have1件を反映済み。2026-09-13、round4 TJ2 MF2が受容していた`send_ime_control`のSSOT希釈を[ADR-168](168-actuation-boundary-small-cleanups.md)で`probe_ime_control`/`actuate_ime_control`への分割により返済・完了
 related_adr:
   - "ADR-119"
   - "ADR-121"
@@ -16,6 +16,7 @@ related_adr:
   - "ADR-160"
   - "ADR-161"
   - "ADR-162"
+  - "ADR-168"
 ---
 
 # ADR-159: 既存の送受信境界を棚卸しし、記録・再生・シャドー実行の土台にする
@@ -190,6 +191,23 @@ e2e_windows.rs`の`set_ime_open`等）に誤発火しうる（lint自身のdoc�
   確認）、フォールバック案（`send_ime_control`のprobe呼び出し元も含めた全7関数を宣言する運用
   規約、SSOTの希釈は既知の負債として受容）を採用した**
   （`lints/actuation_call_guard/src/lib.rs:93-102`のコメント参照）。
+
+  **2026-09-13追記（[ADR-168](168-actuation-boundary-small-cleanups.md)でこの負債を返済・
+  完了）**: `imm.rs`の`send_ime_control`を`send_ime_control_raw`（module-private、bump・計測・
+  診断ログを全て集約する単一チョークポイントはここに残す）へ改名した上で、`pub(crate) unsafe fn
+  probe_ime_control(ime_wnd, ProbeCmd, timeout_ms)`と`pub(crate) unsafe fn
+  actuate_ime_control(ime_wnd, ActuateCmd, timeout_ms)`という**呼び出し先の関数名が実際に2つに
+  分かれる**薄いラッパーを追加し、`RESTRICTED_CALLS`を`actuate_ime_control`（許可2件:
+  `set_ime_open_for_target`・`modify_conv_mode`）と`probe_ime_control`（許可6件:
+  `capture_imc`・`get_ime_conversion_mode_for_hwnd`・`modify_conv_mode`・
+  `detect_ime_open_for_hwnd`・`detect_ime_conversion_for_hwnd`・`read_ime_state_fast`）の
+  2エントリに分割した。`modify_conv_mode`はread-modify-writeのため両方に現れる（排他分割では
+  ない）。`cmd: usize`/`lparam: isize`という無型ペアを`ProbeCmd`/`ActuateCmd`という列挙型に
+  置き換えたことで、`is_actuation`判定（`imm.rs`内、`!matches!(cmd, IMC_GETOPENSTATUS |
+  IMC_GETCONVERSIONMODE)`）の根拠自体は実行時判定のまま残したが、**呼び出し元がactuateか
+  probeかは型（どちらの関数を呼んだか）で決まる**ようになり、dylintの許可リストが本当の
+  区別と一致するようになった。「関数名だけではcmdの種類を区別できない」というMF2の限界は
+  この分割で解消した。
 
   呼び出し元を棚卸しし、それぞれの呼び出し前
   判定ロジック（InputRelay検出、`shadow_on` bypass等）のうち、`.await`境界をまたぐ再サンプリング

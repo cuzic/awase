@@ -5,7 +5,9 @@ title: |-
 summary: |-
   IME 状態の軸分解（`AxisCapability`）と charset 軸の所有権（`CharsetOwner`）— ADR-087 の根拠軸を open 軸から4軸（open/charset/romaji/engine）へ一般化し、ADR-084 INV-11 が要求した conv 帰属を型にする。あわせて修飾キー汚染ハザードの**未収束**記録・VK モードキー送信口 18 箇所の棚卸し・実機実測トラック中断の経緯を保存。INV-29〜37
 status: |-
-  **ドラフト**（軸モデル+`CharsetOwner` は pre-mortem 5ラウンドで収束・**実装未着手**／修飾キー汚染ポリシーは**収束せず**／実機実測トラックは**中断**。コード変更なし）
+  **ドラフト**（軸モデル+`CharsetOwner` は pre-mortem 5ラウンドで収束・**実装未着手**／修飾キー汚染ポリシーは**収束せず**／実機実測トラックは**中断**。コード変更なし）。
+  2026-09-13追記: §5.2の棚卸し表にある「`post_ime_on_direct`等4関数は削除するな」という決定は、
+  後継の回帰テスト（ADR-158 D3）が揃ったことを理由にADR-168で反転・実施済み。
 related_adr:
   - "ADR-048"
   - "ADR-061"
@@ -19,6 +21,7 @@ related_adr:
   - "ADR-086"
   - "ADR-087"
   - "ADR-094"
+  - "ADR-168"
 ---
 
 # ADR-088: IME 状態の軸分解（`AxisCapability`）と charset 軸の所有権（`CharsetOwner`）— および修飾キー汚染ハザードの未収束記録
@@ -898,7 +901,7 @@ ADR-084 の INV-1〜11、ADR-086 の INV-12〜19、ADR-087 の INV-20〜28 を�
 | 場所 | 関数 | 状態 |
 |---|---|---|
 | ~~`ime.rs:1419`~~ | ~~`send_f2_via_sendmessage`~~（撤去済み） | **呼び出し元は「ゼロ」ではなく1つ**（`ime.rs:883`、`send_f2_via_sendmessage_async`（宣言 `:880`）が `offload_unsafe` 経由で呼ぶ）。**その async ラッパー自身の呼び出し元がゼロ**なので、結果として実質 dead code である（引き継ぎ時点の要約「呼び出し元ゼロ」は1段浅い観測だったので訂正）。~~**復活しうる送信口として管理対象には残す**~~ |
-| `ime.rs:290` / `:303` / `:312` / `:320` | `post_ime_on_direct` / `post_ime_off_direct` / `post_gji_ime_on` / `post_gji_ime_off` | production 呼び出し元ゼロ。**「テストのみ参照」も厳密には誤り**（訂正）——`tests/architecture_guard.rs:866/882/902/907` は `extract_fn_body(production, "pub unsafe fn post_ime_on_direct(")` で `src/ime.rs` を**テキストとして走査**しているだけ、`tests/ime_key_sequence_golden.rs:75/76/83/88` と `state/key_sequence_policy.rs:110/113/114` はコメント中の言及のみ。**コンパイル上のリンクは一切存在しない。** それでも削除してはならない: `tests/architecture_guard.rs:859` の `ime_open_close_functions_send_expected_vk_codes()` がこれらの**本体テキスト**を検査対象にしており、削除するとエントリ01（5日間6回反転）の回帰検知が消える |
+| `ime.rs:290` / `:303` / `:312` / `:320` | `post_ime_on_direct` / `post_ime_off_direct` / `post_gji_ime_on` / `post_gji_ime_off` | production 呼び出し元ゼロ。**「テストのみ参照」も厳密には誤り**（訂正）——`tests/architecture_guard.rs:866/882/902/907` は `extract_fn_body(production, "pub unsafe fn post_ime_on_direct(")` で `src/ime.rs` を**テキストとして走査**しているだけ、`tests/ime_key_sequence_golden.rs:75/76/83/88` と `state/key_sequence_policy.rs:110/113/114` はコメント中の言及のみ。**コンパイル上のリンクは一切存在しない。** それでも削除してはならない: `tests/architecture_guard.rs:859` の `ime_open_close_functions_send_expected_vk_codes()` がこれらの**本体テキスト**を検査対象にしており、削除するとエントリ01（5日間6回反転）の回帰検知が消える。**【2026-09-13追記: この決定は[ADR-168](168-actuation-boundary-small-cleanups.md)で反転した】** 本項執筆時点ではまだ `state/key_sequence_policy.rs::{gji_direct_keys, ms_ime_direct_keys}`（[ADR-158](158-complexity-reduction-north-star.md) D3、真の SSOT `ime_key_for` の4アームをピン留めする後継テスト）が無く、削除すると回帰検知そのものが消えるためこの判断は当時正しかった。その後継テストが揃ったため、ADR-168 で4関数と `ime_open_close_functions_send_expected_vk_codes()` の該当部分を削除し、回帰検知は上記2テストへ完全に引き継いだ（行番号はこの追記時点で `ime.rs:209/222/231/239`、`architecture_guard.rs:1656/1672/1692/1697` に移動済み、いずれもADR-168で削除済み） |
 
 **`send_f2_via_sendmessage` は §5.2 発見4（単一関門）の唯一の例外でもある**:
 この関数は `SendMessageTimeoutW(WM_KEYDOWN/WM_KEYUP)`（`ime.rs:1435` / `:1449`）で
