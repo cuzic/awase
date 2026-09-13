@@ -842,3 +842,99 @@ doc コメントに「`kana_lock_hysteresis` には投入しない（B の理由
 (c) `5000` リテラルが増えていないこと、(d) `spawn_local` /
 `run_with_timeout` / `offload` の呼び出しが**無い**こと、
 (e) `platform_state.ime` への書き込みが**無い**こと。
+
+---
+
+## §10 Codex 実装差分のレビュー
+
+（2026-09-13、`feat/bug106-watchdog-kana-lock-passive-probe` の未コミット差分、
+`message_handlers.rs` +20 / `mod.rs` +8 = 28 行）
+
+### §10.0 結論
+
+**コードはマージしてよい。ただし PR 化の前に `docs/known-bugs/BUG-106.md` への
+追補が 1 件必須**（§10.3）。コード側の指摘は nit 3 件のみで、いずれも
+ブロッカーではない。
+
+### §10.1 §9.4 チェックリスト（5 点すべて合格）
+
+| # | 項目 | 判定 | 根拠 |
+| --- | --- | --- | --- |
+| (a) | `kana_lock_hysteresis.observe(..)` の新規呼び出しが無い | ○ | 差分に `kana_lock_hysteresis` は**宣言の隣接行と doc コメント内の言及のみ**。`observe`/`streak` の呼び出しはゼロ |
+| (b) | 新フィールドのリセットが増えていない | ○ | `watchdog_kana_edge` の出現は 4 箇所（宣言・初期化 `mod.rs:1550`・読み `message_handlers.rs:682`・書き `:693`）のみ。`ime_refresh.rs` / `runtime/mod.rs:706` は差分に含まれない |
+| (c) | `5000` リテラルが増えていない | ○ | `let hook_starved = os_idle_ms < 5000;` を束縛し、既存のフォーマット文字列内の `if os_idle_ms < 5000` を `if hook_starved` に**置換**。ブロック内の `5000` は依然 1 個 |
+| (d) | `spawn_local` / `run_with_timeout` / `offload` が無い | ○ | 呼び出しは `read_kana_lock()` と `foreground_class_name()` の 2 本のみ。どちらも同期・非ブロッキング |
+| (e) | `platform_state.ime` への書き込みが無い | ○ | 書き込みは `app.watchdog_kana_edge = Some(reading)` の 1 行だけ。他は読み取り（`app.platform.focus.process_name()`）。`dispatch_event` / `apply_*` / `write_*` はゼロ |
+
+その他の §9.3 要件も満たしている:
+
+- `None`（`GetLastInputInfo` 失敗）の腕ではサンプルしない（§9.2-F）→ ○。
+  追加コードは `Some(os_last_input)` の腕の内側にのみある。
+- edge の比較キーは reading のみ（§9.1）→ ○。`previous != Some(reading)` で
+  `fg_class` は比較に入っていない。
+- ログ 1 行に `prev → now` / `fg_class` / `own_ui` / `stale_ms` / `os_idle_ms`
+  が全部入っている → ○。
+- 新しい `static` / `Mutex` / `Atomic` / `tuning.rs` 定数なし → ○。
+- フィールド名が `kana_lock_` で始まらない（§9.2-C）→ ○ (`watchdog_kana_edge`)。
+- `Unknown` に触れる match 腕を作っていない（§9.2-D）→ ○。
+  `Option<KanaLockReading>` の `None` で未サンプルを表現している。
+
+### §10.2 §9.3 からの逸脱の評価 → **実害のある逸脱はゼロ**
+
+相談で挙がっていた 2 点はどちらも逸脱ではない:
+
+- **`hook_starved` という変数名**: §9.3 の指示文が明示的に
+  `let hook_starved = os_idle_ms < 5000;` と書いており、**指示どおり**。
+- **ログを 1 行にまとめた出力形式**: §9.3-4 が「1 行に出す」と指定しており、
+  **指示どおり**。改行継続（`\` + 字下げ）は同ファイル既存の watchdog 警告と
+  同じ書き方で、スタイル上も整合している。
+
+### §10.3 PR 化の前に必須の 1 件
+
+**`docs/known-bugs/BUG-106.md` への追補（3〜5 行）。**
+
+- `.claude/rules/fix-requires-evidence.md` の再発ファミリー表は
+  `runtime/message_handlers.rs::handle_wm_drain_output_queue`/**`handle_wm_timer`**
+  を明示的に対象ファイルとして挙げている（同 :43）。したがって (a) 回帰テストか
+  (b) `docs/known-bugs/` への記録のいずれかが要る。
+- §9.2-G のとおり `runtime/` は `#[cfg(windows)]` 配下で Linux 回帰テストを
+  付けられないため、**(b) が唯一の選択肢**。
+- 追補に必ず書くこと: **この edge は「今この 3 秒窓で反転した」ことを意味しない。**
+  サンプリングは `hook_starved` のときしか走らないため、`previous` は
+  「前回フック詰まりを検知したとき」の値である。フックが健全な間に反転してから
+  しばらく後に詰まりが起きると、**反転はその間のどこかで起きた**としか言えない。
+  ログ文言 `Hook watchdog kana lock edge: X → Y` は今まさに変わったように読めるので、
+  読み手（次のセッション）が誤読しないようここに明記しておく。
+- 併せて「`own_ui=true` の行は awase 自身の UI にフォーカスがある状態での観測で、
+  BUG-106 追補3 のノイズと同系統として扱う（`grep -v own_ui=true` で分離）」も
+  1 行入れておくと、次の報告の読み方が確定する。
+
+### §10.4 Nit（任意、ブロッカーではない）
+
+1. **`fg_class` の取得を edge 成立後に遅延させる。** 現状は
+   `foreground_class_name()`（`GetForegroundWindow` + `GetClassNameW` +
+   `String` アロケーション）を**edge 判定より前に毎回**呼んでおり、
+   詰まりが続く間 3 秒ごとに実行されて大半は捨てられる。
+   `if previous != Some(reading) { .. }` の内側へ移すだけで、意味は変わらず
+   （同一 tick 内なので数 µs の差）、**システムが既に苦しんでいる局面での
+   無駄な作業が消える**。2 行の移動。
+2. **2 つ目の `unsafe` ブロックに SAFETY コメントが無い。** SAFETY コメントは
+   `read_kana_lock()` の行の上にあり、`foreground_class_name()` の
+   `unsafe {}` は素のまま。clippy は通っているが（`undocumented_unsafe_blocks`
+   は有効化されていない）、このリポジトリは `unsafe` ブロックごとに
+   SAFETY を書く慣習なので、文面を「以下 2 つの読み取りはいずれも……」に
+   直すか、各ブロックに付けるのが望ましい。
+3. **`fg_class`（新鮮）と `process_name()`（追跡値）の出所混在にコメントが無い。**
+   §9.1 で「doc コメントに 1 行書いておくこと」と指定した箇所。
+   これが無いと、将来の読み手が「不整合だ」と判断して
+   `get_process_name()`（`OpenProcess` 3 API）をここに足す方向の“修正”を
+   しかねない。`is_own_ui_window` は OR 判定なので過剰タグ方向にしか効かず、
+   gate ではなく label なので実害が無い——という 1 行を添える。
+
+### §10.5 初回サンプルが必ず 1 行出る件（仕様として許容）
+
+`previous` の初期値は `None` なので、プロセス起動後に初めてフック詰まりを
+検知した時点で必ず `None → Off`（または `On`）が 1 行出る。
+これは**抑止しない方がよい**: サンプラーが実際に動いたことの証拠になり、
+「ログに 1 行も無い＝詰まり自体が起きていない」と「サンプラーが壊れている」を
+区別できる。プロセス寿命あたり 1 行なのでコストも無い。

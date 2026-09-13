@@ -658,15 +658,22 @@ pub(crate) unsafe fn handle_wm_timer(
                 match hook::os_last_input_tick_ms() {
                     Some(os_last_input) => {
                         let os_idle_ms = now.saturating_sub(os_last_input);
+                        let hook_starved = os_idle_ms < 5000;
                         tracing::warn!(
                             "Hook watchdog: no activity for {stale_ms}ms (OS全体の最終入力は\
                              {os_idle_ms}ms前{})",
-                            if os_idle_ms < 5000 {
+                            if hook_starved {
                                 " → フックにイベントが届いていない疑い(issue #165)"
                             } else {
                                 "、OSも無操作のため単なるアイドルの可能性が高い"
                             }
                         );
+                        if hook_starved {
+                            // SAFETY: WM_TIMER ハンドラはメッセージループスレッド上で実行される。
+                            unsafe {
+                                sample_watchdog_kana_lock_edge(app, stale_ms, os_idle_ms);
+                            }
+                        }
                     }
                     None => {
                         tracing::warn!(
@@ -751,6 +758,35 @@ pub(crate) unsafe fn handle_wm_timer(
         }
     }
     recover_pending_drain_request();
+}
+
+/// hook watchdog が「フック詰まり」を検知した瞬間、OS のかな入力ロック状態を
+/// 受動サンプルする（issue #137/BUG-106追補5）。値が前回サンプルから変化した
+/// ときだけ1行ログする。belief には一切触れない（`Runtime::watchdog_kana_edge`
+/// への読み書きのみ）。`kana_lock_hysteresis`（1打鍵1サンプル前提で較正済み）
+/// とは完全に独立させること——混ぜると無打鍵でもトレイ警告が誤発火する。
+///
+/// # Safety
+/// `read_kana_lock`/`foreground_class_name` はメッセージループスレッド上から
+/// 呼ぶこと（`TIMER_HOOK_WATCHDOG` 分岐、`handle_wm_timer` 経由）。
+unsafe fn sample_watchdog_kana_lock_edge(app: &mut Runtime, stale_ms: u64, os_idle_ms: u64) {
+    let reading = unsafe { crate::observer::kana_lock::read_kana_lock() };
+    let previous = app.watchdog_kana_edge;
+    if previous == Some(reading) {
+        return;
+    }
+    // fg_class は今読んだ新鮮な値、process_name() は FocusTracker の追跡値で
+    // 出所が異なるが、is_own_ui_window は OR 判定のタグ付け（gateではない）
+    // なので、ずれても過剰タグ方向にしか効かず実害はない（新しい syscall を
+    // 足してまで揃える必要はない）。
+    let fg_class = unsafe { crate::observer::kana_lock::foreground_class_name() };
+    let own_ui =
+        crate::focus::class_names::is_own_ui_window(&fg_class, app.platform.focus.process_name());
+    tracing::warn!(
+        "Hook watchdog kana lock edge: {previous:?} → {reading:?} \
+         (fg_class={fg_class:?}, own_ui={own_ui}, stale_ms={stale_ms}, os_idle_ms={os_idle_ms})"
+    );
+    app.watchdog_kana_edge = Some(reading);
 }
 
 /// WM_EXECUTE_EFFECTS ハンドラ

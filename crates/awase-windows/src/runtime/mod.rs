@@ -328,6 +328,12 @@ pub struct Runtime {
     pub(crate) update_check_enabled: bool,
     /// OS かな入力ロック検知の通知ヒステリシス。
     kana_lock_hysteresis: KanaLockHysteresis,
+    /// hook watchdog が「フック詰まり」を検知した時点でサンプリングした
+    /// OS のかな入力ロック状態(前回値、ログの重複抑止用の診断専用メモ)。
+    ///
+    /// `kana_lock_hysteresis` とは完全に独立。3秒周期のwatchdogサンプルを
+    /// 混ぜると、無打鍵でも誤ってトレイ警告が発火しうる。
+    watchdog_kana_edge: Option<awase::engine::KanaLockReading>,
     /// ADR-132 Phase 1: drift GiveUp のトレイ通知は1フォーカスにつき1回に制限する。
     drift_giveup_notified_this_focus: bool,
     /// ADR-132 Phase 1 診断用: 直近の GiveUp 通知区間の開始時刻。
@@ -1541,6 +1547,7 @@ impl Runtime {
             keyboard_model: awase::scanmap::KeyboardModel::default(),
             update_check_enabled: true,
             kana_lock_hysteresis: KanaLockHysteresis::new(),
+            watchdog_kana_edge: None,
             drift_giveup_notified_this_focus: false,
             drift_giveup_started_at: None,
         }
