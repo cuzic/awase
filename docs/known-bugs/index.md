@@ -142,6 +142,7 @@
 | [BUG-137](BUG-137.md) | explicit_ime_action_targetのKeyDown/KeyUpステートレス再評価が、押下中にbeliefが変化すると孤立KeyUpを漏らしうる（未修正） |
 | [BUG-139](BUG-139.md) | ADR-163のActuationDecisionRecord診断が、with_app再入時のskipカウンタ二重加算と一部同期記録点のcaller未設定を持っていた（修正済み） |
 | [BUG-140](BUG-140.md) | `right_thumb_key`と同じキーを`keys.ime_detect.on`に登録すると、変換キー単独タップ毎にIME再適用が暴発し、GJI自身の変換機能と競合+「あ」混入 |
+| [BUG-141](BUG-141.md) | Ctrl+無変換で「Applied」記録されたIME OFF後も、GJI候補ウィンドウが実際に再表示され英字入力が変換され続ける（未修正） |
 
 ## その他の資料
 
