@@ -177,6 +177,16 @@
         <RegistryValue Root="HKCU" Key="Software\awase" Name="NicolaKb232Yab"
                        Type="string" Value="" KeyPath="yes" />
       </Component>
+      <!-- layout/nicola_kakutei.yab（2026-09-13追加、句読点「。」「、」で
+           Ctrl+M確定を送るnicola_keytop.yabの派生版）。README.md/README.en.md
+           がdefault_layoutの切り替え先として案内するファイルであり、
+           NicolaUsYab/NicolaFYab/NicolaKb232Yabと同じ理由でNeverOverwrite="yes"
+           にする。 -->
+      <Component Id="NicolaKakuteiYab" Guid="D860117F-60C7-45C7-AB47-96F6E51B4F87" NeverOverwrite="yes">
+        <File Source="dist\layout\nicola_kakutei.yab" />
+        <RegistryValue Root="HKCU" Key="Software\awase" Name="NicolaKakuteiYab"
+                       Type="string" Value="" KeyPath="yes" />
+      </Component>
     </ComponentGroup>
 
     <!-- Data files（ユーザーが編集する手段を持たないプログラム資産のため

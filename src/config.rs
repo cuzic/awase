@@ -60,15 +60,22 @@ pub enum DbeModeKeyPolicy {
 
 /// 打鍵列機能（`.yab` の `CtrlChord`/`InlineSequence`/`MacroRef`）を有効化するか。
 ///
-/// ADR-115 決定8。既定 `Off`。`.yab` パーサ自体は常に新構文を認識するが、
-/// `Off` のとき解決パス（`resolve_keystroke_syntax`）が
+/// ADR-115 決定8は既定 `Off` だったが、2026-09-13 に既定 `On` へ変更した
+/// （経緯は ADR-115 決定8追補・ADR-109 参照）。
+/// `CV`+16進数2桁（`CtrlChord`）・セル内 `+` 区切り（`InlineSequence`）・
+/// `@`+マクロ名（`MacroRef`）はいずれも偶然一致しうるほど一般的な文字列ではなく、
+/// 既存のやまぶき派生レイアウトでこの語彙を使うユーザー（Issue #118 報告者）に
+/// とっては「意図しない暴発」ではなく素の目的（`layout/nicola_kakutei.yab` の
+/// 句読点確定を含む）そのものである。`.yab` パーサ自体は常に新構文を認識するが、
+/// `Off` にすると解決パス（`resolve_keystroke_syntax`）が
 /// `CtrlChord`/`InlineSequence`/`MacroRef` を保持している元のセル
-/// 生テキストから `Literal` へ差し替え、今日と同じ挙動に復元する。
+/// 生テキストから `Literal` へ差し替え、この機能導入前の挙動に戻す
+/// （Ctrl+チョード等の解釈自体を望まないユーザー向けの明示的オプトアウト）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum KeystrokeSequencePolicy {
-    #[default]
     Off,
+    #[default]
     On,
 }
 
@@ -328,9 +335,11 @@ pub struct GeneralConfig {
     /// 既存ユーザーの config.toml に残っている場合のみ意味を持つ
     /// （チェックボックスを一切操作しなければ値は変わらない）。
     pub half_width_alnum_toggle: HalfWidthAlnumTogglePolicy,
-    /// 打鍵列機能（ADR-115）の有効化。既定 `Off`（隠し設定、config.toml
-    /// 手動編集のみで有効化できるオプトイン。実機ソークが積み上がるまで
-    /// 設定 GUI には出さない）。
+    /// 打鍵列機能（ADR-115）の有効化。既定 `On`（2026-09-13〜、ADR-115 決定8
+    /// 追補）。設定GUI（上級者向け設定）から `off`/`on` の二択チェックボックス
+    /// として操作できる。`off` はこの構文（`.yab` の `CtrlChord`/
+    /// `InlineSequence`/`MacroRef`）の解釈自体を望まないユーザー向けの
+    /// 明示的オプトアウト。
     pub keystroke_sequence: KeystrokeSequencePolicy,
     /// `left_thumb_key`/`right_thumb_key` に変換(`VK_CONVERT`)を割り当てている
     /// 場合に限り効く設定。無変換キーや Space 等他の VK には一切影響しない。
@@ -489,7 +498,7 @@ impl Default for GeneralConfig {
             muhenkan_solo_tap_dedicated_fn_key: None,
             dbe_mode_key_policy: DbeModeKeyPolicy::Suppress,
             half_width_alnum_toggle: HalfWidthAlnumTogglePolicy::MsImeOnly,
-            keystroke_sequence: KeystrokeSequencePolicy::Off,
+            keystroke_sequence: KeystrokeSequencePolicy::On,
             henkan_solo_tap_ignore_composing_guard: false,
             henkan_solo_tap_always_suppress: true,
             enter_thumb_ignore_composing_guard: true,
@@ -1179,7 +1188,7 @@ impl AppConfig {
 
         let jis_only_default = matches!(
             g.default_layout.trim_end_matches(".yab"),
-            "nicola" | "nicola_keytop" | "nicola_f" | "nicola_kb232"
+            "nicola" | "nicola_keytop" | "nicola_f" | "nicola_kb232" | "nicola_kakutei"
         );
         if jis_only_default {
             w.push(format!(
@@ -1558,6 +1567,30 @@ engine_off_solo_repeat = "VK_F15"
 [general]
 keyboard_model = "us"
 default_layout = "nicola_kb232.yab"
+left_thumb_key = "VK_F16"
+right_thumb_key = "VK_F17"
+
+[keys]
+engine_on = ["Ctrl+Shift+VK_F13"]
+engine_off = ["Ctrl+Shift+VK_F14"]
+ime_on = ["Ctrl+VK_F13"]
+ime_off = ["Ctrl+VK_F14"]
+engine_off_solo_repeat = "VK_F15"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("nicola_us.yab")));
+    }
+
+    #[test]
+    fn test_validate_us_keyboard_with_nicola_kakutei_default_layout_warns() {
+        // /code-review指摘（PR #217）: nicola_kb232.yab追加時に一度発生した
+        // 「JIS専用一覧への追記漏れ」（PR #132）と同型の見落としを、
+        // nicola_kakutei.yab追加時にも繰り返しかけていた。
+        let toml_str = r#"
+[general]
+keyboard_model = "us"
+default_layout = "nicola_kakutei.yab"
 left_thumb_key = "VK_F16"
 right_thumb_key = "VK_F17"
 
@@ -2291,11 +2324,12 @@ right_thumb_key = "VK_KANA"
     // ── ADR-115: 打鍵列機能 ──
 
     #[test]
-    fn test_keystroke_sequence_defaults_to_off() {
+    fn test_keystroke_sequence_defaults_to_on() {
+        // 2026-09-13 に既定 Off → On へ変更（ADR-115 決定8追補）。
         let config = AppConfig::default();
         assert_eq!(
             config.general.keystroke_sequence,
-            KeystrokeSequencePolicy::Off
+            KeystrokeSequencePolicy::On
         );
     }
 
