@@ -708,11 +708,11 @@ impl ImeModel {
     //
     // `reduce()` のみが belief を書ける、という
     // `.claude/rules/ime-belief-architecture.md` の前提は、これらのヘルパーが
-    // `reduce()` 以外から呼ばれないことに依存する。呼び出し箇所が `reduce()`
-    // 内の1箇所だけであることは
-    // `tests/layer_boundary_guard.rs::c6b_reduce_helpers_called_only_once_from_reduce`
-    // が固定する——ヘルパーを追加・改名する場合はこのテストの HELPERS リストも
-    // 更新すること。
+    // `reduce()` の本体からのみ呼ばれることに依存する。これは
+    // `tests/architecture_guard.rs::reduce_helpers_are_called_only_from_reduce_body`
+    // が固定する(ヘルパー名は `fn reduce_` 定義から自動抽出するため、
+    // ヘルパーを追加・改名してもこのテスト自体の更新は不要——ただし命名を
+    // `reduce_` prefix 以外に変える場合は同テストの抽出条件を見直すこと)。
 
     /// `FocusChanged`(ADR-170 決定1)。
     fn reduce_focus_changed(
