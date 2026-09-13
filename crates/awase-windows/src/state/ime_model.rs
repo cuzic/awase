@@ -15,12 +15,12 @@ use super::ApplyGeneration;
 use awase::engine::InputModeState;
 
 use super::ime_event::{
-    ApplyError, ChordKind, HwndId, ImeEvent, ImeEventEnvelope, InputModeApplyResult,
-    ObservationConfidence, ObservationSource, UserIntentSource,
+    ApplyError, ChordKind, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile,
+    InputModeApplyResult, ObservationConfidence, ObservationSource, UserIntentSource,
 };
 use super::input_barrier::InputBarrier;
 use super::observation_store::{DeriveOutcome, ObservationStore};
-use super::probe_admission::FocusFence;
+use super::probe_admission::{FocusEpoch, FocusFence};
 use super::transition::ImeTransition;
 use std::time::Instant;
 
@@ -545,7 +545,9 @@ impl ImeModel {
     ///
     /// **UserIntent だけが `desired_open` を即時に変えられる**。
     /// Observer は `observations` に記録するだけで desired を壊さない。
-    #[expect(clippy::cognitive_complexity)]
+    ///
+    /// 本体20行超の分岐(FocusChanged/ImeApplyRequested/ImeApplySucceeded/
+    /// ImeApplyFailed)はADR-170決定1でprivateヘルパーへ抽出済み。
     // `event` は `fields(?envelope.event)` のようなDebug展開をしない
     // （PRコードレビュー指摘: journal→tracing fan-out〈決定4〉が同じ
     // ImeEventを`event_kind = "UserImeToggleIntent"`のような判別子文字列で
@@ -613,55 +615,7 @@ impl ImeModel {
                 to,
                 focus_epoch,
                 ..
-            } => {
-                // Step 1.5/5: policy 確定 → observation 評価の順序ルール。
-                // FocusChanged を受けた時点で policy を更新し、以降の observation は
-                // 新しい policy で評価される。
-                self.app_policy = AppImePolicy::from_profile(profile);
-                // current_focus: write-only（ADR-087 §5 Phase 3 item15 前提配線、
-                // read 側は Phase 3 本体のスコープでまだ無い）。
-                self.current_focus = Some(to);
-                // フォーカス変更で intent / observation / applied / force_guard / drift は clear する
-                // (旧アプリの観測値が新アプリで有効と勘違いされないため)
-                self.last_intent = None;
-                // 新しい epoch/hwnd を store に伝える。derive_any() はこれ以降、
-                // 古い epoch/hwnd の ImmCrossProbe / FocusProbe を無視する
-                // （ADR-106 決定3）。
-                self.observations.clear_on_focus_change(FocusFence {
-                    epoch: focus_epoch,
-                    hwnd: to,
-                });
-                tracing::debug!("[explicit-intent] cleared (focus change)");
-                self.applied = AppliedImeState::Unknown;
-                // `pending` ではなく `last_seen_generation` から算出する
-                // （struct doc 参照）。`pending` が既に None でも、これまで
-                // 見た最大 generation の直後を watermark として前進させる。
-                if let Some(next_focus_generation) = self
-                    .last_seen_generation
-                    .and_then(ApplyGeneration::checked_next)
-                {
-                    self.focus_generation_watermark = next_focus_generation;
-                }
-                // ADR-098 決定1-c: force-ON の試行予算も同じ「フォーカス」単位で
-                // 戻す。`applied` のリセットと必ず同じ場所に置くこと——予算だけが
-                // 持ち越されると、新しいアプリで初回の force-ON が誤ってクール
-                // ダウン中と判定され飛ばない事故になる。
-                self.force_on_retry = crate::state::ime_actuation::ForceOnRetryState::default();
-                // force_guard: 旧アプリ文脈の guard を新アプリに引き継がない
-                self.force_guards.clear_for_focus_change();
-                // observe_miss_monitor: 旧アプリの miss_count が新アプリで閾値を誤超えしないようリセット
-                self.observe_miss_monitor.record_success();
-                // Step 5: FocusTransition barrier を立てる (旧 focus_transition_pending 相当)。
-                // settle_until は AppImePolicy.focus_settle_ms 由来。
-                let settle_until = envelope.time.monotonic
-                    + std::time::Duration::from_millis(self.app_policy.focus_settle_ms);
-                self.input_barrier = Some(InputBarrier::FocusTransition {
-                    to_hwnd: to,
-                    started_seq: envelope.time.seq,
-                    started_at: envelope.time.monotonic,
-                    settle_until,
-                });
-            }
+            } => self.reduce_focus_changed(profile, to, focus_epoch, envelope),
             ImeEvent::ChordEnded { .. } => {
                 // Step 4: chord transaction を終了。barrier を解除。
                 self.input_barrier = None;
@@ -670,110 +624,15 @@ impl ImeModel {
                 target,
                 generation,
                 ctrl_held,
-            } => {
-                // ADR-108 決定2/5: pending の上書き自体は許容する。上書きされた
-                // apply の成功完了は、同一 focus epoch かつ現在の pending.target と
-                // 同じ値なら `Optimistic` として `applied` へ反映できる。composition
-                // / warmup 副作用は `ImeApplyAcceptance::Accepted`（generation 厳密一致
-                // + 同一 epoch）のみが駆動する。
-                if let Some(existing) = &self.pending {
-                    if !existing.is_timed_out(envelope.time.monotonic) {
-                        tracing::warn!(
-                            "[ime-model] ImeApplyRequested(generation={generation}, target={target}) \
-                             が進行中の pending(generation={}, target={}) を上書きする — \
-                             上書きされた apply の完了は target と focus epoch が一致すれば \
-                             applied に反映され、一致しなければ破棄される",
-                            existing.generation, existing.target
-                        );
-                    }
-                }
-                // watermark 算出専用トラッカー。generation はディスパッチ順に
-                // 単調増加するため、pending の生死に関わらずここで更新しておく
-                // （FocusChanged 時点で pending が既に None でも watermark を
-                // 正しく前進させるため）。
-                self.last_seen_generation = Some(generation);
-                // Step 7 / ADR-108 決定1: pending transition を立てる。
-                // `ObservationStore::current_fence().epoch` でスタンプし、完了時にも同じ
-                // カウンタで照合する。`FocusStore` 側の epoch とは混ぜないこと。
-                self.pending = Some(ImeTransition {
-                    target,
-                    generation,
-                    focus_epoch: self.observations.current_fence().epoch,
-                    timeout_at: envelope.time.monotonic
-                        + std::time::Duration::from_millis(
-                            crate::tuning::IME_APPLY_PENDING_TIMEOUT_MS,
-                        ),
-                });
-                // Chord 開始判断: IME OFF 要求 + Ctrl 押下中 → CtrlImeChord barrier を立てる。
-                // KANJI（Ctrl なし）では立てない: ChordEnded のトリガが Ctrl KeyUp なので
-                // ペアにならず永続する事故を防ぐ。
-                if !target && ctrl_held {
-                    self.input_barrier = Some(InputBarrier::CtrlImeChord {
-                        target: false,
-                        kind: ChordKind::CtrlMuhenkanImeOff,
-                        started_seq: envelope.time.seq,
-                        started_at: envelope.time.monotonic,
-                    });
-                }
-                // Chord 中に IME ON 要求が来た場合 → chord を即時終了する。
-                if target && self.is_ctrl_ime_chord_active() {
-                    self.input_barrier = None;
-                }
-            }
+            } => self.reduce_ime_apply_requested(target, generation, ctrl_held, envelope),
             ImeEvent::ImeApplySucceeded { target, generation } => {
-                let acceptance = self.classify_apply_completion(
-                    target,
-                    awase::platform::ImeOpenOutcome::Applied,
-                    generation,
-                );
-                if self
-                    .pending
-                    .take_if(|pending| pending.generation == generation)
-                    .is_some()
-                {
-                    if matches!(acceptance, ImeApplyAcceptance::Accepted) {
-                        self.applied = AppliedImeState::Confirmed {
-                            open: target,
-                            at_ms: envelope.time.tick_ms,
-                        };
-                    }
-                } else if matches!(acceptance, ImeApplyAcceptance::Superseded) {
-                    // ADR-108 決定2: 上書きされた apply の成功完了。値は今
-                    // in-flight な apply の行き先と同じなので安全だが、現在の
-                    // pending 自身の確認ではないため `Confirmed` にはしない。
-                    self.applied = AppliedImeState::Optimistic(target);
-                }
+                self.reduce_ime_apply_succeeded(target, generation, envelope);
             }
             ImeEvent::ImeApplyFailed {
                 target,
                 generation,
                 error,
-            } => {
-                let outcome = match error {
-                    ApplyError::Timeout | ApplyError::CrossProcessFailed | ApplyError::Other => {
-                        awase::platform::ImeOpenOutcome::Failed
-                    }
-                    ApplyError::UnsafeToToggle => awase::platform::ImeOpenOutcome::UnsafeToToggle,
-                    ApplyError::NotOwned => awase::platform::ImeOpenOutcome::NotOwned,
-                };
-                let acceptance = self.classify_apply_completion(target, outcome, generation);
-                if self
-                    .pending
-                    .take_if(|pending| pending.generation == generation)
-                    .is_some()
-                {
-                    // ADR-108 決定3: `record_ime_apply_result` からの移設。`Failed` は
-                    // 既存挙動維持として `!target` を書くが、`UnsafeToToggle` は
-                    // 送っていないため実状態不明であり `applied` を書かない。この
-                    // 非対称の除去は独立した挙動変更なので別ADRで扱う。
-                    if matches!(acceptance, ImeApplyAcceptance::Accepted) {
-                        self.applied = AppliedImeState::Confirmed {
-                            open: !target,
-                            at_ms: envelope.time.tick_ms,
-                        };
-                    }
-                }
-            }
+            } => self.reduce_ime_apply_failed(target, generation, error, envelope),
             ImeEvent::DriftDetected { desired, .. } => {
                 // skip_override を無効化する: Optimistic にリセットすることで
                 // 次の SetOpen(desired) が「確認済み apply がない」扱いになり skip されなくなる。
@@ -841,6 +700,195 @@ impl ImeModel {
                     pending.target
                 );
                 self.pending = None;
+            }
+        }
+    }
+
+    // ── reduce() の大きい分岐を抽出したヘルパー群(ADR-170 決定1) ──────────
+    //
+    // `reduce()` のみが belief を書ける、という
+    // `.claude/rules/ime-belief-architecture.md` の前提は、これらのヘルパーが
+    // `reduce()` 以外から呼ばれないことに依存する。呼び出し箇所が `reduce()`
+    // 内の1箇所だけであることは
+    // `tests/layer_boundary_guard.rs::c6b_reduce_helpers_called_only_once_from_reduce`
+    // が固定する——ヘルパーを追加・改名する場合はこのテストの HELPERS リストも
+    // 更新すること。
+
+    /// `FocusChanged`(ADR-170 決定1)。
+    fn reduce_focus_changed(
+        &mut self,
+        profile: ImePolicyProfile,
+        to: HwndId,
+        focus_epoch: FocusEpoch,
+        envelope: &ImeEventEnvelope,
+    ) {
+        // Step 1.5/5: policy 確定 → observation 評価の順序ルール。
+        // FocusChanged を受けた時点で policy を更新し、以降の observation は
+        // 新しい policy で評価される。
+        self.app_policy = AppImePolicy::from_profile(profile);
+        // current_focus: write-only（ADR-087 §5 Phase 3 item15 前提配線、
+        // read 側は Phase 3 本体のスコープでまだ無い）。
+        self.current_focus = Some(to);
+        // フォーカス変更で intent / observation / applied / force_guard / drift は clear する
+        // (旧アプリの観測値が新アプリで有効と勘違いされないため)
+        self.last_intent = None;
+        // 新しい epoch/hwnd を store に伝える。derive_any() はこれ以降、
+        // 古い epoch/hwnd の ImmCrossProbe / FocusProbe を無視する
+        // （ADR-106 決定3）。
+        self.observations.clear_on_focus_change(FocusFence {
+            epoch: focus_epoch,
+            hwnd: to,
+        });
+        tracing::debug!("[explicit-intent] cleared (focus change)");
+        self.applied = AppliedImeState::Unknown;
+        // `pending` ではなく `last_seen_generation` から算出する
+        // （struct doc 参照）。`pending` が既に None でも、これまで
+        // 見た最大 generation の直後を watermark として前進させる。
+        if let Some(next_focus_generation) = self
+            .last_seen_generation
+            .and_then(ApplyGeneration::checked_next)
+        {
+            self.focus_generation_watermark = next_focus_generation;
+        }
+        // ADR-098 決定1-c: force-ON の試行予算も同じ「フォーカス」単位で
+        // 戻す。`applied` のリセットと必ず同じ場所に置くこと——予算だけが
+        // 持ち越されると、新しいアプリで初回の force-ON が誤ってクール
+        // ダウン中と判定され飛ばない事故になる。
+        self.force_on_retry = crate::state::ime_actuation::ForceOnRetryState::default();
+        // force_guard: 旧アプリ文脈の guard を新アプリに引き継がない
+        self.force_guards.clear_for_focus_change();
+        // observe_miss_monitor: 旧アプリの miss_count が新アプリで閾値を誤超えしないようリセット
+        self.observe_miss_monitor.record_success();
+        // Step 5: FocusTransition barrier を立てる (旧 focus_transition_pending 相当)。
+        // settle_until は AppImePolicy.focus_settle_ms 由来。
+        let settle_until = envelope.time.monotonic
+            + std::time::Duration::from_millis(self.app_policy.focus_settle_ms);
+        self.input_barrier = Some(InputBarrier::FocusTransition {
+            to_hwnd: to,
+            started_seq: envelope.time.seq,
+            started_at: envelope.time.monotonic,
+            settle_until,
+        });
+    }
+
+    /// `ImeApplyRequested`(ADR-170 決定1)。
+    fn reduce_ime_apply_requested(
+        &mut self,
+        target: bool,
+        generation: ApplyGeneration,
+        ctrl_held: bool,
+        envelope: &ImeEventEnvelope,
+    ) {
+        // ADR-108 決定2/5: pending の上書き自体は許容する。上書きされた
+        // apply の成功完了は、同一 focus epoch かつ現在の pending.target と
+        // 同じ値なら `Optimistic` として `applied` へ反映できる。composition
+        // / warmup 副作用は `ImeApplyAcceptance::Accepted`（generation 厳密一致
+        // + 同一 epoch）のみが駆動する。
+        if let Some(existing) = &self.pending {
+            if !existing.is_timed_out(envelope.time.monotonic) {
+                tracing::warn!(
+                    "[ime-model] ImeApplyRequested(generation={generation}, target={target}) \
+                     が進行中の pending(generation={}, target={}) を上書きする — \
+                     上書きされた apply の完了は target と focus epoch が一致すれば \
+                     applied に反映され、一致しなければ破棄される",
+                    existing.generation,
+                    existing.target
+                );
+            }
+        }
+        // watermark 算出専用トラッカー。generation はディスパッチ順に
+        // 単調増加するため、pending の生死に関わらずここで更新しておく
+        // （FocusChanged 時点で pending が既に None でも watermark を
+        // 正しく前進させるため）。
+        self.last_seen_generation = Some(generation);
+        // Step 7 / ADR-108 決定1: pending transition を立てる。
+        // `ObservationStore::current_fence().epoch` でスタンプし、完了時にも同じ
+        // カウンタで照合する。`FocusStore` 側の epoch とは混ぜないこと。
+        self.pending = Some(ImeTransition {
+            target,
+            generation,
+            focus_epoch: self.observations.current_fence().epoch,
+            timeout_at: envelope.time.monotonic
+                + std::time::Duration::from_millis(crate::tuning::IME_APPLY_PENDING_TIMEOUT_MS),
+        });
+        // Chord 開始判断: IME OFF 要求 + Ctrl 押下中 → CtrlImeChord barrier を立てる。
+        // KANJI（Ctrl なし）では立てない: ChordEnded のトリガが Ctrl KeyUp なので
+        // ペアにならず永続する事故を防ぐ。
+        if !target && ctrl_held {
+            self.input_barrier = Some(InputBarrier::CtrlImeChord {
+                target: false,
+                kind: ChordKind::CtrlMuhenkanImeOff,
+                started_seq: envelope.time.seq,
+                started_at: envelope.time.monotonic,
+            });
+        }
+        // Chord 中に IME ON 要求が来た場合 → chord を即時終了する。
+        if target && self.is_ctrl_ime_chord_active() {
+            self.input_barrier = None;
+        }
+    }
+
+    /// `ImeApplySucceeded`(ADR-170 決定1)。
+    fn reduce_ime_apply_succeeded(
+        &mut self,
+        target: bool,
+        generation: ApplyGeneration,
+        envelope: &ImeEventEnvelope,
+    ) {
+        let acceptance = self.classify_apply_completion(
+            target,
+            awase::platform::ImeOpenOutcome::Applied,
+            generation,
+        );
+        if self
+            .pending
+            .take_if(|pending| pending.generation == generation)
+            .is_some()
+        {
+            if matches!(acceptance, ImeApplyAcceptance::Accepted) {
+                self.applied = AppliedImeState::Confirmed {
+                    open: target,
+                    at_ms: envelope.time.tick_ms,
+                };
+            }
+        } else if matches!(acceptance, ImeApplyAcceptance::Superseded) {
+            // ADR-108 決定2: 上書きされた apply の成功完了。値は今
+            // in-flight な apply の行き先と同じなので安全だが、現在の
+            // pending 自身の確認ではないため `Confirmed` にはしない。
+            self.applied = AppliedImeState::Optimistic(target);
+        }
+    }
+
+    /// `ImeApplyFailed`(ADR-170 決定1)。
+    fn reduce_ime_apply_failed(
+        &mut self,
+        target: bool,
+        generation: ApplyGeneration,
+        error: ApplyError,
+        envelope: &ImeEventEnvelope,
+    ) {
+        let outcome = match error {
+            ApplyError::Timeout | ApplyError::CrossProcessFailed | ApplyError::Other => {
+                awase::platform::ImeOpenOutcome::Failed
+            }
+            ApplyError::UnsafeToToggle => awase::platform::ImeOpenOutcome::UnsafeToToggle,
+            ApplyError::NotOwned => awase::platform::ImeOpenOutcome::NotOwned,
+        };
+        let acceptance = self.classify_apply_completion(target, outcome, generation);
+        if self
+            .pending
+            .take_if(|pending| pending.generation == generation)
+            .is_some()
+        {
+            // ADR-108 決定3: `record_ime_apply_result` からの移設。`Failed` は
+            // 既存挙動維持として `!target` を書くが、`UnsafeToToggle` は
+            // 送っていないため実状態不明であり `applied` を書かない。この
+            // 非対称の除去は独立した挙動変更なので別ADRで扱う。
+            if matches!(acceptance, ImeApplyAcceptance::Accepted) {
+                self.applied = AppliedImeState::Confirmed {
+                    open: !target,
+                    at_ms: envelope.time.tick_ms,
+                };
             }
         }
     }

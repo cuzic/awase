@@ -123,7 +123,7 @@ IME を ON にする経路を追加したら、stale `ObservedEisu` の救済（
 
 ## belief の書き込み点
 
-`ImeModel::reduce()` in `state/ime_model.rs` が唯一の書き込み点。`desired_open` / `input_mode` フィールドは private であり、`reduce()` 以外からの直接代入はコンパイルエラーになる。
+`ImeModel::reduce()` in `state/ime_model.rs` が唯一の書き込み点。`desired_open` / `input_mode` フィールドは private であり、**`state/ime_model.rs` モジュール外からの直接代入はコンパイルエラーになる**（Rust の private はモジュールスコープであり、`reduce()` という特定の関数だけを強制する言語機構ではない）。同一モジュール内の任意の関数は書き込めるため、`reduce()` からのみ呼ばれる private ヘルパー（ADR-170 決定1、`reduce_focus_changed` 等）を追加する場合、そのヘルパーが実際に `reduce()` 以外から呼ばれていないことは `tests/layer_boundary_guard.rs::c6b_reduce_helpers_called_only_once_from_reduce` の count guard が担保する（コンパイラではなく段3のCIテストと同じ仕組み）。
 
 ## この規約を実際に強制する仕組み（散文だけに頼らない）
 
