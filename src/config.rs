@@ -61,8 +61,8 @@ pub enum DbeModeKeyPolicy {
 /// 打鍵列機能（`.yab` の `CtrlChord`/`InlineSequence`/`MacroRef`）を有効化するか。
 ///
 /// ADR-115 決定8は既定 `Off` だったが、2026-09-13 に既定 `On` へ変更した
-/// （経緯は ADR-115 決定8追補・[[docs/adr/109-yab-cv4d-punctuation-auto-confirm.md]]
-/// 参照）。`CV`+16進数2桁（`CtrlChord`）・セル内 `+` 区切り（`InlineSequence`）・
+/// （経緯は ADR-115 決定8追補・ADR-109 参照）。
+/// `CV`+16進数2桁（`CtrlChord`）・セル内 `+` 区切り（`InlineSequence`）・
 /// `@`+マクロ名（`MacroRef`）はいずれも偶然一致しうるほど一般的な文字列ではなく、
 /// 既存のやまぶき派生レイアウトでこの語彙を使うユーザー（Issue #118 報告者）に
 /// とっては「意図しない暴発」ではなく素の目的（`layout/nicola_kakutei.yab` の
@@ -1188,7 +1188,7 @@ impl AppConfig {
 
         let jis_only_default = matches!(
             g.default_layout.trim_end_matches(".yab"),
-            "nicola" | "nicola_keytop" | "nicola_f" | "nicola_kb232"
+            "nicola" | "nicola_keytop" | "nicola_f" | "nicola_kb232" | "nicola_kakutei"
         );
         if jis_only_default {
             w.push(format!(
@@ -1567,6 +1567,30 @@ engine_off_solo_repeat = "VK_F15"
 [general]
 keyboard_model = "us"
 default_layout = "nicola_kb232.yab"
+left_thumb_key = "VK_F16"
+right_thumb_key = "VK_F17"
+
+[keys]
+engine_on = ["Ctrl+Shift+VK_F13"]
+engine_off = ["Ctrl+Shift+VK_F14"]
+ime_on = ["Ctrl+VK_F13"]
+ime_off = ["Ctrl+VK_F14"]
+engine_off_solo_repeat = "VK_F15"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("nicola_us.yab")));
+    }
+
+    #[test]
+    fn test_validate_us_keyboard_with_nicola_kakutei_default_layout_warns() {
+        // /code-review指摘（PR #217）: nicola_kb232.yab追加時に一度発生した
+        // 「JIS専用一覧への追記漏れ」（PR #132）と同型の見落としを、
+        // nicola_kakutei.yab追加時にも繰り返しかけていた。
+        let toml_str = r#"
+[general]
+keyboard_model = "us"
+default_layout = "nicola_kakutei.yab"
 left_thumb_key = "VK_F16"
 right_thumb_key = "VK_F17"
 

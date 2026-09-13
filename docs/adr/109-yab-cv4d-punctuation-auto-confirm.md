@@ -9,7 +9,7 @@ status: |-
   Composing判定なしの直接送信）をそのまま使い、確定付きの `layout/nicola_kakutei.yab`
   をバンドルして選択式で提供する形で決着。専用の `ConfirmThenSend` variant（本ADR
   決定2〜6）は実装しない——生のCtrl+M送信で十分だったため。あわせて
-  `keystroke_sequence_policy`（従来GUI非表示・既定Off）を設定GUIの「上級者向け
+  `keystroke_sequence`（従来GUI非表示・既定Off）を設定GUIの「上級者向け
   設定」タブにチェックボックスとして公開し、あわせて既定値もOnへ変更した
   （ADR-115決定8追補、2026-09-13。詳細はADR-115参照）。Composing判定なしで無条件にCtrl+M
   を送る設計のため、「未解決の疑問2」（confirm漏れ/誤送信の非対称性）は

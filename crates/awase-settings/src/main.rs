@@ -3975,31 +3975,46 @@ impl SoloTapSuppressMode {
 /// 「左Shift単独タップで半角英数トグルを有効にする」チェックボックス。
 /// `Off`/`All`の二択として操作する（`MsImeOnly`はGUIからは選べない中間値、
 /// チェックボックスに触れなければ既存の`MsImeOnly`設定は変更されない）。
+/// 「二値enumをチェックボックス1個で切り替える」という、この画面に複数ある
+/// 定型パターンの共通実装。`on_value`/`off_value` のどちらでもない中間値
+/// （例: `HalfWidthAlnumTogglePolicy::MsImeOnly`）を持つ enum でも、チェック
+/// 済み判定は `*policy == on_value` のみで行うため、中間値は「未チェック」
+/// 側に表示されるだけで壊れない（ユーザーがチェックボックスを操作しない限り
+/// 値は変わらない）。
+fn enum_toggle_checkbox<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    policy: &mut T,
+    on_value: T,
+    off_value: T,
+    label: &str,
+    hover_text: &str,
+) {
+    let mut enabled = *policy == on_value;
+    if ui
+        .checkbox(&mut enabled, label)
+        .on_hover_text(hover_text)
+        .changed()
+    {
+        *policy = if enabled { on_value } else { off_value };
+    }
+}
+
 fn half_width_alnum_toggle_checkbox(
     ui: &mut egui::Ui,
     policy: &mut awase::config::HalfWidthAlnumTogglePolicy,
 ) {
-    let mut enabled = *policy == awase::config::HalfWidthAlnumTogglePolicy::All;
-    if ui
-        .checkbox(
-            &mut enabled,
-            "左Shift単独タップで半角英数トグルを有効にする",
-        )
-        .on_hover_text(
-            "ONにすると: 左Shiftキーを他のキーを介さずに単独でタップすると、\n\
-             IMEをONにしたまま半角英数入力に切り替わります（もう一度タップ、\n\
-             または右Shiftタップで解除）。MS-IME・Google 日本語入力の\n\
-             両方で有効になります（実機ソーク中の機能、BUG-25 参照）。\n\
-             OFFにすると: この機能全体を無効化します。",
-        )
-        .changed()
-    {
-        *policy = if enabled {
-            awase::config::HalfWidthAlnumTogglePolicy::All
-        } else {
-            awase::config::HalfWidthAlnumTogglePolicy::Off
-        };
-    }
+    enum_toggle_checkbox(
+        ui,
+        policy,
+        awase::config::HalfWidthAlnumTogglePolicy::All,
+        awase::config::HalfWidthAlnumTogglePolicy::Off,
+        "左Shift単独タップで半角英数トグルを有効にする",
+        "ONにすると: 左Shiftキーを他のキーを介さずに単独でタップすると、\n\
+         IMEをONにしたまま半角英数入力に切り替わります（もう一度タップ、\n\
+         または右Shiftタップで解除）。MS-IME・Google 日本語入力の\n\
+         両方で有効になります（実機ソーク中の機能、BUG-25 参照）。\n\
+         OFFにすると: この機能全体を無効化します。",
+    );
 }
 
 /// 打鍵列機能（`.yab` の `CtrlChord`/`InlineSequence`/`MacroRef`、ADR-115）の
@@ -4012,31 +4027,25 @@ fn keystroke_sequence_checkbox(
     ui: &mut egui::Ui,
     policy: &mut awase::config::KeystrokeSequencePolicy,
 ) {
-    let mut enabled = *policy == awase::config::KeystrokeSequencePolicy::On;
-    if ui
-        .checkbox(&mut enabled, "打鍵列機能を有効にする")
-        .on_hover_text(
-            "ON(既定)の場合: .yab の1セルに複数のキー操作を割り当てる打鍵列構文\n\
-             （Ctrl+キー送信・セル内 `+` 区切りの複数アクション・`@`マクロ参照）\n\
-             が有効です。例: 「レイアウト」で `nicola_kakutei.yab` を選ぶと、\n\
-             句読点「。」「、」を入力した直後に Ctrl+M（IME の全確定ショート\n\
-             カット）を送ります（やまぶき／DvorakJ の「句読点で確定」相当）。\n\
-             確定に使う Ctrl+M は使用する IME（Google 日本語入力/MS-IME）側で\n\
-             「全確定」に割り当てられている必要があります。他のアプリで\n\
-             Ctrl+M が別機能に割り当てられている場合は競合します。\n\
-             OFFにすると: この構文（`C`+16進数2桁・セル内 `+`・`@`マクロ）を\n\
-             解釈せず、セルの生テキストをそのままリテラル文字列として扱う\n\
-             （打鍵列機能導入前の挙動）に戻します。この構文の解釈自体を\n\
-             望まない場合のみ OFF にしてください。",
-        )
-        .changed()
-    {
-        *policy = if enabled {
-            awase::config::KeystrokeSequencePolicy::On
-        } else {
-            awase::config::KeystrokeSequencePolicy::Off
-        };
-    }
+    enum_toggle_checkbox(
+        ui,
+        policy,
+        awase::config::KeystrokeSequencePolicy::On,
+        awase::config::KeystrokeSequencePolicy::Off,
+        "打鍵列機能を有効にする",
+        "ON(既定)の場合: .yab の1セルに複数のキー操作を割り当てる打鍵列構文\n\
+         （Ctrl+キー送信・セル内 `+` 区切りの複数アクション・`@`マクロ参照）\n\
+         が有効です。例: 「レイアウト」で `nicola_kakutei.yab` を選ぶと、\n\
+         句読点「。」「、」を入力した直後に Ctrl+M（IME の全確定ショート\n\
+         カット）を送ります（やまぶき／DvorakJ の「句読点で確定」相当）。\n\
+         確定に使う Ctrl+M は使用する IME（Google 日本語入力/MS-IME）側で\n\
+         「全確定」に割り当てられている必要があります。他のアプリで\n\
+         Ctrl+M が別機能に割り当てられている場合は競合します。\n\
+         OFFにすると: この構文（`CV`+16進数2桁・セル内 `+`・`@`マクロ）を\n\
+         解釈せず、セルの生テキストをそのままリテラル文字列として扱う\n\
+         （打鍵列機能導入前の挙動）に戻します。この構文の解釈自体を\n\
+         望まない場合のみ OFF にしてください。",
+    );
 }
 
 /// 無変換/変換キー単独タップの抑制方針コンボボックス。`key_label`は
