@@ -1029,8 +1029,12 @@ pub(super) fn run_all() -> Result<()> {
         "IME control Toggle keys",
         &mut diag,
     );
-    let (ime_sync_toggle, ime_sync_on, ime_sync_off) =
-        init_ime_sync_keys(&config.keys.ime_detect, &mut diag);
+    let (ime_sync_toggle, ime_sync_on, ime_sync_off) = init_ime_sync_keys(
+        &config.keys.ime_detect,
+        left_thumb_vk,
+        right_thumb_vk,
+        &mut diag,
+    );
     check_conflicting_software(&mut diag);
     check_keyboard_layout(&mut diag);
     let system_tray = init_tray(&layout_names, &initial_layout_name, elevated)?;

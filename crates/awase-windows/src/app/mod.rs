@@ -241,19 +241,42 @@ fn parse_key_combos(
 }
 
 /// IME sync キーの初期化（shadow IME 状態追跡用）
+///
+/// `left_thumb_vk`/`right_thumb_vk`（NICOLA チョード判定が消費する親指キー）と
+/// 同じ VK が `keys.ime_detect.{toggle,on,off}` にも登録されている場合は
+/// 除外して警告する（BUG-140）。この重複があると、親指キーを単独タップする
+/// たびに sync key 側が「IMEがONになった」という信号として誤解釈し、
+/// 既にIMEが開いていても `apply_ime_open` を再送し続ける。この再適用が
+/// GJI自身のキーバインド（同じキーに割り当てた変換候補機能等）と競合し、
+/// 変換キーが効かないように見える・意図しない「あ」が混入する、という
+/// 症状の実測済みの原因（`docs/known-bugs/BUG-140.md`）。
 fn init_ime_sync_keys(
     ime_detect: &ImeDetectConfig,
+    left_thumb_vk: VkCode,
+    right_thumb_vk: VkCode,
     diag: &mut StartupDiagnostics,
 ) -> (Vec<VkCode>, Vec<VkCode>, Vec<VkCode>) {
     let mut parse_vk_list = |keys: &[String], label: &str| -> Vec<VkCode> {
         keys.iter()
             .filter_map(|s| {
-                VkCode::from_name(s).or_else(|| {
+                let vk = VkCode::from_name(s).or_else(|| {
                     diag.warn(format!(
                         "keys.ime_detect.{label} のパースに失敗しました: {s}"
                     ));
                     None
-                })
+                })?;
+                if vk == left_thumb_vk || vk == right_thumb_vk {
+                    diag.warn(format!(
+                        "keys.ime_detect.{label} の \"{s}\" は親指キー\
+                         （left_thumb_key/right_thumb_key）と同じキーのため、\
+                         IME同期キーとしては無視します。変換/無変換キー等を\
+                         GJI自身のキーバインドに割り当てている場合、この重複が\
+                         あると単独タップ毎に不要なIME再適用が発生します \
+                         (BUG-140)。"
+                    ));
+                    return None;
+                }
+                Some(vk)
             })
             .collect()
     };
@@ -660,7 +683,29 @@ pub(crate) fn reload_config() {
         "IME control Toggle keys",
         &mut diag,
     );
-    let (toggle, on, off) = init_ime_sync_keys(&config.keys.ime_detect, &mut diag);
+    // 親指キーも config reload で変更が反映される
+    // （`Runtime::apply_config_update` が `config.general.{left,right}_thumb_key`
+    // を再解決して `hook::set_thumb_vk_codes` を呼ぶ、本関数より後の処理）。
+    // ここで `hook::thumb_vk_codes()`（前回の起動/reload時点のキャッシュ）を
+    // 読むと、このreload内で親指キー自体を変更した場合に古い値のまま
+    // BUG-140 の重複判定が行われ、新しい親指キーとの重複を見逃す
+    // （code-review指摘、2026-09-13）。`apply_config_update`と同じ解決関数
+    // で新しい config から直接導出し、名前解決に失敗した場合のみ
+    // （`apply_config_update`側も同条件でこのreloadでは古い値を維持する
+    // ため）キャッシュ値にフォールバックする。
+    let (left_thumb_vk, right_thumb_vk) = match (
+        crate::hook::resolve_thumb_key(&config.general.left_thumb_key),
+        crate::hook::resolve_thumb_key(&config.general.right_thumb_key),
+    ) {
+        (Some((left, _)), Some((right, _))) => (left, right),
+        _ => crate::hook::thumb_vk_codes(),
+    };
+    let (toggle, on, off) = init_ime_sync_keys(
+        &config.keys.ime_detect,
+        left_thumb_vk,
+        right_thumb_vk,
+        &mut diag,
+    );
     let panic_trigger_combos = build_panic_trigger_combos(&ime_on, &ime_off);
     crate::panic_detect::set_panic_trigger_combos(panic_trigger_combos);
 
@@ -728,4 +773,62 @@ pub(crate) fn reload_config() {
 
     diag.report();
     tracing::info!("Config reloaded successfully");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// BUG-140: `right_thumb_key`と同じVKが`keys.ime_detect.on`にも登録されて
+    /// いる場合、そのVKをsync keyから除外し警告することを固定する。
+    #[test]
+    fn init_ime_sync_keys_excludes_vk_shared_with_thumb_keys() {
+        let henkan = VkCode::from_name("変換").expect("VK_CONVERT should parse");
+        let muhenkan = VkCode::from_name("無変換").expect("VK_NONCONVERT should parse");
+        let ime_on = VkCode::from_name("IMEオン").expect("VK_IME_ON should parse");
+
+        let ime_detect = ImeDetectConfig {
+            toggle: vec![],
+            on: vec!["IMEオン".to_string(), "変換".to_string()],
+            off: vec![],
+        };
+        let mut diag = StartupDiagnostics::new();
+        let (_toggle, on, _off) = init_ime_sync_keys(&ime_detect, muhenkan, henkan, &mut diag);
+
+        assert_eq!(
+            on,
+            vec![ime_on],
+            "変換キーはthumb keyと重複するため除外される"
+        );
+        assert!(
+            diag.warnings.iter().any(|w| w.contains("BUG-140")),
+            "重複検出時はBUG-140を参照する警告を出す: {:?}",
+            diag.warnings
+        );
+    }
+
+    /// 重複が無い通常設定では、すべてのキーがそのまま採用され警告も出ない。
+    #[test]
+    fn init_ime_sync_keys_keeps_non_overlapping_keys() {
+        let henkan = VkCode::from_name("変換").expect("VK_CONVERT should parse");
+        let muhenkan = VkCode::from_name("無変換").expect("VK_NONCONVERT should parse");
+        let ime_on = VkCode::from_name("IMEオン").expect("VK_IME_ON should parse");
+        let ime_off = VkCode::from_name("IMEオフ").expect("VK_IME_OFF should parse");
+
+        let ime_detect = ImeDetectConfig {
+            toggle: vec![],
+            on: vec!["IMEオン".to_string()],
+            off: vec!["IMEオフ".to_string()],
+        };
+        let mut diag = StartupDiagnostics::new();
+        let (_toggle, on, off) = init_ime_sync_keys(&ime_detect, muhenkan, henkan, &mut diag);
+
+        assert_eq!(on, vec![ime_on]);
+        assert_eq!(off, vec![ime_off]);
+        assert!(
+            diag.warnings.is_empty(),
+            "重複が無ければ警告は出ない: {:?}",
+            diag.warnings
+        );
+    }
 }
