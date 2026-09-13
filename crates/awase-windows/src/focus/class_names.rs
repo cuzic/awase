@@ -59,6 +59,28 @@ pub fn is_tsf_native_window(class_name: &str) -> bool {
     )
 }
 
+/// awase 自身の UI ウィンドウ（トレイ／設定画面）か。
+///
+/// ここから読んだ IMM の conv/romaji 値は「ユーザーが編集しているアプリの入力方式」
+/// ではないため、`input_mode` belief に採用してはならない（BUG-106 追補3・4）。
+/// トレイ・設定画面はどちらも `AppImeProfile::Standard` に分類される（Chrome 等の
+/// `Imm32Unavailable` とは別軸）ため、`AppImeProfile` では判別できない。
+///
+/// `process_name` は `FocusTracker::process_name()`（小文字）を渡すこと——
+/// awase-settings は winit 既定の `"Window Class"` という一般的なクラス名を使うため、
+/// クラス名だけでは無関係な winit アプリと区別できない
+/// （`tray.rs:132-138` の doc が記録している同型の直書き結合、"awase-settings.exe"
+/// はここにしか出現しないリテラルなので変更時は grep で追従すること）。
+///
+/// `crate::tray::WINDOW_CLASS_NAME` を直接参照しない: `tray` モジュールは
+/// `#[cfg(windows)]` だが、この `focus` モジュールは Linux ホストでもテストされる
+/// （`architecture_guard`/`layer_boundary_guard`）ため、文字列リテラルを直書きする
+/// （`tray.rs:138`の値と手で同期させること、変更時はこのdocも更新する）。
+#[must_use]
+pub fn is_own_ui_window(class_name: &str, process_name: &str) -> bool {
+    class_name == "awase_tray_window" || process_name == "awase-settings.exe"
+}
+
 // ── AppImeProfile ──────────────────────────────────────────────
 
 /// フォーカス中アプリの IME 制御プロファイル。
@@ -343,6 +365,30 @@ pub fn detect_app_kind(class_name: &str) -> AppKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // BUG-106追補3・4: awase自身のトレイ/設定画面から読んだ観測を、
+    // ユーザーが編集中のアプリの入力方式として誤ってbeliefに採用していた。
+    // 3件目（無関係なwinitアプリを排除しないこと）が本質——過剰排除の回帰を
+    // 防ぐのはこのテストだけ。
+
+    #[test]
+    fn is_own_ui_window_matches_tray_by_class_name() {
+        assert!(is_own_ui_window("awase_tray_window", "unrelated.exe"));
+    }
+
+    #[test]
+    fn is_own_ui_window_matches_settings_by_process_name() {
+        // awase-settings は winit 既定の一般的なクラス名 "Window Class" を使うため
+        // プロセス名で判定する。
+        assert!(is_own_ui_window("Window Class", "awase-settings.exe"));
+    }
+
+    #[test]
+    fn is_own_ui_window_does_not_match_unrelated_winit_app() {
+        // "Window Class" は winit の既定クラス名で、無関係な他社アプリも使いうる。
+        // プロセス名が一致しない限り誤って排除してはならない。
+        assert!(!is_own_ui_window("Window Class", "some_other_app.exe"));
+    }
 
     // 回帰テスト (2026-07-05): CASCADIA_HOSTING_WINDOW_CLASS (Windows Terminal) は
     // IMM32_UNAVAILABLE_CLASSES にも is_tsf_native_window にも該当するため、

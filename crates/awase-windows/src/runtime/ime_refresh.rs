@@ -345,6 +345,9 @@ impl Runtime {
         let poll = self.platform_state.ime.capture_poll_state();
         let ime_on_before_poll = poll.ime_on;
         let input_mode_before_poll = poll.input_mode;
+        // BUG-106追補3・4: awase自身のトレイ/設定画面から読んだ観測を
+        // input_mode beliefに採用しないための判定材料（`is_own_ui_window`）。
+        let focus_process_name = self.platform.focus.process_name().to_owned();
 
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
         let mut observer_out = ime_snap.map_or_else(
@@ -354,6 +357,7 @@ impl Runtime {
                     poll.force_guard,
                     poll.input_mode,
                     poll.prev_conv,
+                    &focus_process_name,
                 )
             },
             |snap| {
@@ -364,6 +368,7 @@ impl Runtime {
                     poll.force_guard,
                     poll.input_mode,
                     poll.prev_conv,
+                    &focus_process_name,
                 )
             },
         );

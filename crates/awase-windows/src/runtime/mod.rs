@@ -1442,6 +1442,7 @@ impl Runtime {
                 self.platform_state.ime.is_force_on_guard_active(),
                 self.platform_state.ime.input_mode(),
                 self.platform_state.ime.belief.prev_conversion_mode(),
+                self.platform.focus.process_name(),
             )
         };
         let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
