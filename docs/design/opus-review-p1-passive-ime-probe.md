@@ -688,3 +688,157 @@ BUG-07 型（偽の Low false が `most_recent_trusted()` を支配して Engine
   `InputModeObserved` の構築箇所数を固定している点に注意
   （構築箇所は増えないので抵触しないはずだが、実装後に
   `cargo test -p awase-windows --test architecture_guard` を回すこと）。
+
+---
+
+## §9 P1' の最終設計確認（P0 実装後、実装委譲の直前）
+
+（2026-09-13、P0 = `ac4d4ab1` `fix/bug106-tray-input-mode-belief-poisoning` /
+PR #211 を読んだうえでの再確認。読み取り専用調査）
+
+### §9.0 結論
+
+**§3 の設計は有効。ただし 1 点を訂正し、1 点を追加する。**
+
+- **訂正**: §3 が「設定リロード時のリセット（`runtime/mod.rs:706`）にも足すこと」と
+  書いたのは**誤り**。`:706` は設定リロードではなく**エンジン無効化**の分岐であり、
+  そもそも**この新フィールドはどこでもリセットしてはいけない**（§9.2-A）。
+- **追加**: `is_own_ui_window` は **gate ではなく label として使う**（§9.1）。
+  絞らない。ただしログ行に `own_ui=true/false` を必ず出す。
+
+### §9.1 Q1 の答え: 絞らない。`is_own_ui_window` は**タグ**として使う
+
+**結論: 記録対象を絞らない。ただし `is_own_ui_window` の結果をログに出す。**
+
+理由は「edge のキーに何を使うか」を分けて考えると明確になる。
+
+- **edge の比較キーは `KanaLockReading` だけにする。** `fg_class` は比較に
+  含めない（＝ペイロード扱い）。`GetKeyState(VK_KANA)&1` が返すのは
+  **awase のスレッド入力キューが持つトグルビット**であり、どのウィンドウが
+  フォアグラウンドかで値が決まるものではない。クラス名を比較キーに混ぜると、
+  値が変わっていないのにフォーカス移動のたびに行が出る（＝レベルトリガに近づく）。
+- **`fg_class` はペイロードとして毎回出す。** 「反転が起きた瞬間にどの窓に
+  いたか」が P1' の目的そのものなので、reading が変化した行に同梱すれば
+  「トレイクリック直後に反転していた」という情報は**失われない**
+  （相談で懸念されていた点は、絞らないことではなく edge キーの設計で解決する）。
+- **`is_own_ui_window(fg_class, tracked_process_name)` を gate にしない。**
+  P0 でこれを gate にしたのは、あちらが **belief を書く**経路だったから
+  （汚染したら実害が出る）。P1' は**何も書かない診断**であり、
+  gate にすると「トレイにフォーカスがある間に反転した」という観測を
+  収集時点で捨ててしまう——これは BUG-106 追補3 が
+  「実アプリ上での反転を一件も観測できていない」と結論した状況を、
+  別の軸で再生産する。
+- **代わりにタグを出す。** `own_ui=true` をログに含めれば、
+  解析時に `grep -v own_ui=true` で機械的に分離できる。
+  **収集は広く、解釈は後で絞る**——診断チャネルの正しい設計であり、
+  belief 経路（P0）とは逆の判断になるのが正しい。
+
+タグ用の `process_name` は `self.platform.focus.process_name()`
+（`focus/tracker.rs:72-74`、追跡済み・小文字化済み）を使う。**新しい syscall を
+足さないこと**（P0 の §8.3 と同じ理由）。`fg_class` は
+`foreground_class_name()` の**新鮮な値**、`process_name` は**追跡値**という
+出所の違いが残るが、`is_own_ui_window` は OR 判定なので過剰タグ方向にしか
+効かず、タグ（gate ではない）なので実害はない。**この出所の混在は
+doc コメントに 1 行書いておくこと**。
+
+### §9.2 Q2 の答え: 落とし穴 6 点
+
+#### A. リセットは**一切しない**（§3 の訂正）
+
+`kana_lock_hysteresis` は 3 箇所でリセットされる——
+フォーカス変更（`runtime/ime_refresh.rs:122`）、エンジン無効化
+（`runtime/mod.rs:706`）、初期化（`:1543`）。**新フィールドを同じ場所に
+足してはいけない。**
+
+- `kana_lock_hysteresis` がリセットされるのは、それが**トレイに表示される
+  ユーザー可視の警告状態**（On 3 連続で警告、フォーカスが変われば
+  切り替え先で検知し直す必要がある）だから。
+- 新フィールドは**ログの重複を抑えるためだけの前回値メモ**で、
+  ユーザー可視の状態を持たない。リセットすると次の watchdog で
+  同じ値がもう一度 edge 扱いされ、**ログ行が増えるだけで情報は増えない**。
+- 初期化（`Runtime` の構造体リテラル、`runtime/mod.rs:1536-1546` 付近）だけは
+  必要だが、これはコンパイラが強制するので漏れようがない。
+
+#### B. `kana_lock_hysteresis` に**投入しない**（§3 の再掲、最重要）
+
+`KanaLockHysteresis::observe()` は「On 3 連続で警告、Off 2 連続で解除」
+（`src/engine/kana_input_warn.rs`）で、**1 打鍵 1 サンプル**を前提に較正されている
+（`kp_stage_kana_lock_warn`、`runtime/key_pipeline.rs:2703-2740`）。
+そこに 3 秒周期の watchdog サンプルを混ぜると、**ユーザーが一度も打鍵して
+いないのに 9 秒でトレイ警告が出る**。BUG-106 追補1 が「このノイズで
+`kana_input_warn` が誤発火しないか」を次回調査対象に挙げていた、まさにその事故を
+自分で作ることになる。**新フィールドは `kana_lock_hysteresis` と完全に独立**。
+
+#### C. フィールド名を紛らわしくしない
+
+`kana_lock_hysteresis` の隣（`runtime/mod.rs:329-330`）に置くことになるので、
+`kana_lock_*` で始まる名前は避ける。`watchdog_kana_edge:
+Option<KanaLockReading>` 等、**watchdog 由来であることが名前から分かる形**にし、
+doc コメントに「`kana_lock_hysteresis` には投入しない（B の理由）」を明記する。
+
+#### D. `read_kana_lock()` は `Unknown` を返さない
+
+`KanaLockReading` の enum は `Off`/`On`/`Unknown` の 3 値だが、
+`observer/kana_lock.rs:10-21` の実装は `is_toggle_key_on()` の `bool` から
+`On`/`Off` のどちらかしか返さない。**`Unknown` に到達する match 腕を書いて
+「取得失敗時はこうする」というコメントを付けない**こと（実在しない分岐の
+ための説明はコードを誤読させる）。「まだ一度もサンプルしていない」は
+`Option` の `None` で表現する。
+
+#### E. 既存の `5000` リテラルを二重に書かない
+
+現在の watchdog 分岐（`runtime/message_handlers.rs:648-682`）は
+`os_idle_ms < 5000` を**フォーマット文字列の中の `if` 式**として書いている。
+サンプル採取の条件も同じ `os_idle_ms < 5000` なので、
+`let hook_starved = os_idle_ms < 5000;` を先に束縛して**両方でそれを使う**こと。
+リテラルを 2 箇所に増やすと、片方だけ直す退行の温床になる
+（`.claude/rules/tuning-constants.md` が対象にしている「同じ役割の定数の
+段階的釣り上げ」の芽）。**新しい `tuning.rs` 定数は作らない**
+（実測義務が発生し、かつ watchdog の既存周期を流用すれば足りる）。
+
+#### F. `None`（`GetLastInputInfo` 取得失敗）の腕には入れない
+
+`os_last_input_tick_ms()` が `None` を返す腕では `os_idle_ms` が求まらず、
+「フックにイベントが届いていない疑い」かどうかを判定できない。
+ここではサンプルしない（edge メモも更新しない）。
+
+#### G. 自動テストは付かない（承知のうえで進める）
+
+`runtime/` は `#[cfg(windows)]` 配下（CLAUDE.md 記載）なので、
+この変更に Linux で走る回帰テストは付けられない。
+`.claude/rules/fix-requires-evidence.md` の (a) が使えないため、
+**(b) `docs/known-bugs/BUG-106.md` への追補**（何を記録するようにしたか、
+次の報告でどう読むか、3〜5 行）で満たすこと。検証は
+`cargo check --target x86_64-pc-windows-msvc -p awase-windows` +
+`cargo clippy --target x86_64-pc-windows-msvc -p awase -- -A clippy::cargo`。
+
+### §9.3 Q3: 実装者（Codex CLI）への必須指示（5 行）
+
+1. **`runtime/message_handlers.rs` の `TIMER_HOOK_WATCHDOG` 分岐のみを触る。**
+   `Some(os_last_input)` の腕で `let hook_starved = os_idle_ms < 5000;` を束縛し、
+   既存のフォーマット文字列の `if` もそれを使う形に直したうえで、
+   `hook_starved` が真のときだけサンプルする（`None` の腕では何もしない）。
+2. **読むのは既存関数 2 本だけ**——`observer::kana_lock::read_kana_lock()` と
+   `observer::kana_lock::foreground_class_name()`（どちらも `unsafe fn`、
+   SAFETY コメントに「WM_TIMER ハンドラはメッセージループスレッド上」と書く）。
+   **IMM/TSF/`run_with_timeout`/`spawn_local`/ワーカースレッドは一切使わない。**
+3. **`Runtime` にプレーンフィールドを 1 本足す**（`Option<KanaLockReading>`、
+   `kana_lock_hysteresis` の隣、名前は `kana_lock_` で始めない）。
+   **初期化のみ行い、リセットはどこにも足さない。**
+   **`kana_lock_hysteresis` には絶対に投入しない**（トレイ警告が誤発火する）。
+4. **edge の比較キーは reading だけ。** 前回値と同じなら何も出さない。
+   変化したときだけ `tracing::warn!` で
+   `prev → now` / `fg_class` / `own_ui=<is_own_ui_window(fg_class,
+   platform.focus.process_name())>` / `stale_ms` / `os_idle_ms` を 1 行に出す。
+5. **belief に触れない。** `ImeModel`/`dispatch_event`/`apply_*`/`platform_state.ime`
+   への書き込みを一切含めないこと。新しい `static`/`Mutex`/`Atomic`/
+   `tuning.rs` 定数も追加しない。差分は 30 行未満に収まるはず。
+
+### §9.4 差分レビュー時に見る点（先に宣言しておく）
+
+受け取った差分で以下を確認する: (a) `kana_lock_hysteresis.observe(..)` の
+新しい呼び出しが**無い**こと、(b) 新フィールドのリセットが
+`ime_refresh.rs:122` / `runtime/mod.rs:706` に**増えていない**こと、
+(c) `5000` リテラルが増えていないこと、(d) `spawn_local` /
+`run_with_timeout` / `offload` の呼び出しが**無い**こと、
+(e) `platform_state.ime` への書き込みが**無い**こと。
