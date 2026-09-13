@@ -92,19 +92,18 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
         ],
     ),
     // send_ime_control（imm.rs）: ADR-159段階0のもう一方の送信側対象。
-    // `SendMessageTimeoutW`の唯一のチョークポイント。関数名だけではactuation
-    // （cmd=IMC_SETOPENSTATUS/IMC_SETCONVERSIONMODE、7件中2件のみ:
-    // set_ime_open_for_target・modify_conv_mode）とprobe（cmd=IMC_GET*、残り）を
-    // 区別できないため（ADR-159 TB0 MF2、dylintでの(関数,cmd)粒度は未実装）、
-    // このリストは両方を含む「既知の正当な呼び出し元」全件（7つ）を宣言する運用
-    // 規約で代替する——probe専用の呼び出し元がここに含まれることはSSOTの希釈だが、
-    // 「無宣言の新規呼び出し元」を防ぐという本lintの主目的（RC4対策）は両方に対して
-    // 変わらず機能する。2026-09-09実測。
+    // ADR-168でactuate/probeの2関数に分割し、ADR-159 TB0 MF2が受容していた
+    // SSOT希釈（関数名だけではcmdの種類を区別できない）を解消した。
+    // `modify_conv_mode`はread-modify-writeのため、probe用の読み取りと
+    // actuate用の書き込みの両方を呼ぶ（両エントリに現れるのは重複ではなく実態）。
     (
-        "send_ime_control",
+        "actuate_ime_control",
+        &["set_ime_open_for_target", "modify_conv_mode"],
+    ),
+    (
+        "probe_ime_control",
         &[
             "capture_imc",
-            "set_ime_open_for_target",
             "get_ime_conversion_mode_for_hwnd",
             "modify_conv_mode",
             "detect_ime_open_for_hwnd",
