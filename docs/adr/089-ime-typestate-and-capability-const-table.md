@@ -18,6 +18,8 @@ related_adr:
   - "ADR-087"
   - "ADR-088"
   - "ADR-090"
+  - "ADR-163"
+  - "ADR-168"
 ---
 
 # ADR-089: IME 状態制御を Rust の型システムでどう表現するか — 型状態パターンの局所適用と capability const 表（trait 静的分岐の却下）
@@ -717,6 +719,24 @@ Phase B での結論である:
 **採らなかった**——writer トレイトのシグネチャ変更は §7 の `compile_fail`
 doctest（ケース1 とその「通る双子」）まで波及し、`caps(p, k).chain` を導入する
 Phase C（§2.8）が同じ場所をもう一度触る。§9-15 に残す。
+
+**2026-09-13追記（[ADR-168](168-actuation-boundary-small-cleanups.md)検討時の再評価、
+§9-15は据え置き・未実装のまま）**: Phase Cは実装済み（2026-08-12）なので上記の
+先送り理由のうち「Phase Cが同じ場所をもう一度触る」は解消しているが、もう一方の理由
+（writerトレイトのシグネチャ変更が§7の`compile_fail` doctestに波及する）はまだ解消して
+いない。トークン型を`AsyncMechanismWriter`実装（別モジュール`runtime/open_chain.rs`）から
+名前で参照できる必要があるため`pub`にせざるを得ず、モジュールprivateにする単純な案は
+成立しない（`pub` + privateフィールドでの外部構築不可、という形にすれば`compile_fail`
+doctestの「通る双子」を壊さずに済むが未検証）。加えて実際に削除できる対価も当初の見立てより
+小さい: `raw_mechanism_write_sites_are_confined_to_chain_writers`が固定している性質のうち
+「writer実装2つの**中**にあること」は型で代替できるが、「呼び出し元の**総数**が2つのまま
+増えていないこと」はトークンでは代替できない（3つ目の`MechanismWriter`実装を新設すれば
+正当にトークンを受け取れてしまうため）——`ActuationOrder`が既に守っている性質と同型の限界。
+さらに、`AsyncMechanismWriter`は[ADR-163](163-actuation-decision-io-separation-and-replay-harness.md)
+がTH1e（`.claude/rules/complexity-budget.md`発効条件の最初の1件）の対象に確定させている
+`AsyncChainWriter::is_applicable`と**同じトレイト**であり、先にシグネチャを変えるとTH1eの
+凍結コーパス再生をやり直す必要が生じる。**したがって§9-15は今回も実装せず据え置く**——
+対価が小さくTH1e作業と衝突しうる現状では、優先度は低い。TH1e完了後に改めて評価すること。
 
 ### 2.4 `GjiFsm` 同期義務 — legacy 等価（outcome 軸のみ）に戻す
 

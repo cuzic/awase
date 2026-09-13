@@ -1630,75 +1630,28 @@ fn bug_report_journal_truncation_does_not_slice_from_the_front() {
     }
 }
 
-/// GJI/MS-IME の IME ON/OFF/フォールバックが送信する VK コードを、実装ソースの
+/// GJI/MS-IME のフォールバック（VK_KANJI トグル）が送信する VK コードを、実装ソースの
 /// テキスト走査で固定する。
 ///
 /// `docs/experiments.md` エントリ01: 「IME OFF に何のキーを送るか」で5日間に6回、
 /// 採用と撤回が反転した（`534051a` → `098c663` → `adb856c` → `b271aee` → … →
-/// `489cdf1`）。最終結論は「GJI/MS-IME いずれも IME ON/OFF は冪等 VK_IME_ON (0x16) /
-/// VK_IME_OFF (0x1A) を送る `post_ime_on_direct()`/`post_ime_off_direct()` 経由
-/// （VK_KANJI トグルには戻さない）」（根拠: `489cdf1`, `48a667a`、ON 側は
-/// `2026-08-06` に BUG-50 根治として同じキーへ統一）。
+/// `489cdf1`）。最終結論（GJI/MS-IME いずれも IME ON/OFF は冪等 VK_IME_ON (0x16) /
+/// VK_IME_OFF (0x1A)、VK_KANJI トグルには戻さない）は、現在は
+/// `state/key_sequence_policy.rs::{gji_direct_keys, ms_ime_direct_keys}`
+/// （真の SSOT `ime_key_for` の全4アームをピン留め）が回帰検知を担っている。
 ///
-/// `tests/ime_key_sequence_golden.rs` の `KEY_DOC` はこの結論をコメントとして固定して
-/// いるが、その本文はハードコードされた定数文字列同士の突き合わせ（自己参照）であり、
-/// 各 `post_*` 関数の実装が別の VK コードに戻ってもゴールデンは通ってしまう。この
-/// テストは `src/ime.rs` の実関数本体を直接検査し、送信 VK コードの回帰を検知する。
-/// Win32 呼び出しを伴わないテキスト走査のみのため Linux 上でもそのまま実行できる。
+/// 旧 `post_ime_on_direct`/`post_ime_off_direct`/`post_gji_ime_on`/`post_gji_ime_off`は
+/// `ime_controller.rs` が `send_ime_mode_key` を直接呼ぶようになった後も本番呼び出し元ゼロの
+/// まま残っており（ADR-088:901 が発見・記録した上で「削除するな」と決定していたが、当時は
+/// 上記の後継テストが無く、削除すると回帰検知そのものが消えるためだった）、その後継テストが
+/// 揃った ADR-168 で削除した——このテストが検査していた `post_ime_on_direct`/
+/// `post_ime_off_direct`/`post_gji_ime_on`/`post_gji_ime_off` 部分もそれに伴い削除し、
+/// 生きている `post_kanji_toggle_to_focused`（フォールバック）の検査だけを残す。
 #[test]
-fn ime_open_close_functions_send_expected_vk_codes() {
+fn kanji_toggle_fallback_sends_expected_vk_codes() {
     let path = "src/ime.rs";
     let content = read_crate_file(path);
     let production = production_code_only(&content);
-
-    // 冪等 IME ON: VK_IME_ON。VK_KANJI（非冪等トグル）・VK_DBE_HIRAGANA（MS-IME専用）が
-    // 混入すると shadow desync や環境依存の不具合を再導入する。
-    let on_direct = extract_fn_body(production, "pub unsafe fn post_ime_on_direct(");
-    assert!(
-        on_direct.contains("VK_IME_ON"),
-        "{path} の post_ime_on_direct が VK_IME_ON を送っていません。"
-    );
-    for forbidden in ["VK_KANJI", "VK_DBE_HIRAGANA", "VK_DBE_ALPHANUMERIC"] {
-        assert!(
-            !on_direct.contains(forbidden),
-            "{path} の post_ime_on_direct に {forbidden} が混入しています。冪等 IME ON は \
-             VK_IME_ON 単独であるべきです。"
-        );
-    }
-
-    // 冪等 IME OFF: VK_IME_OFF。docs/experiments.md エントリ01「IME OFF に何のキーを
-    // 送るか」で5日間に6回反転した最終結論（534051a→098c663→adb856c→b271aee→…→
-    // 489cdf1、根拠48a667a）。
-    let off_direct = extract_fn_body(production, "pub unsafe fn post_ime_off_direct(");
-    assert!(
-        off_direct.contains("VK_IME_OFF"),
-        "{path} の post_ime_off_direct が VK_IME_OFF を送っていません。docs/experiments.md \
-         エントリ01 の6回反転（534051a→098c663→adb856c→b271aee→…→489cdf1）の最終結論から \
-         の回帰です。"
-    );
-    for forbidden in ["VK_KANJI", "VK_DBE_ALPHANUMERIC", "VK_DBE_HIRAGANA"] {
-        assert!(
-            !off_direct.contains(forbidden),
-            "{path} の post_ime_off_direct に {forbidden} が混入しています。docs/experiments.md \
-             エントリ01 で撤回済みの選択肢への回帰の可能性があります。"
-        );
-    }
-
-    // GJI/MS-IME 共用エイリアスは post_ime_on_direct/post_ime_off_direct への委譲のみである
-    // こと。独自の VK 送信を再実装すると、6回反転の教訓を踏まえない別経路が生まれる。
-    // （2026-08-06: MsImeDirectStrategy の ON も VK_DBE_HIRAGANA → VK_IME_ON へ移行し
-    // GjiDirectStrategy と同じキーになったため、MS-IME 専用の post_ms_ime_on/off は
-    // 呼び出し元を失い削除した。BUG-50 参照）
-    let gji_on = extract_fn_body(production, "pub unsafe fn post_gji_ime_on(");
-    assert!(
-        gji_on.contains("post_ime_on_direct()"),
-        "{path} の post_gji_ime_on が post_ime_on_direct() に委譲していません。"
-    );
-    let gji_off = extract_fn_body(production, "pub unsafe fn post_gji_ime_off(");
-    assert!(
-        gji_off.contains("post_ime_off_direct()"),
-        "{path} の post_gji_ime_off が post_ime_off_direct() に委譲していません。"
-    );
 
     // 最終フォールバック: VK_KANJI トグルを down/up ちょうど1回ずつ送る。
     // （関数本体には import 文・診断ログ・コメントにも `VK_KANJI` という部分文字列が

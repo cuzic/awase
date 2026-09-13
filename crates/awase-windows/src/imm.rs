@@ -112,13 +112,83 @@ pub(crate) unsafe fn get_ime_wnd(hwnd: HWND) -> Option<HWND> {
 
 // ─── クロスプロセス IME コントロール ─────────────────────────────
 
+/// probe系コマンド（`IMC_GET*`）。IME状態を照会するだけで、actuationを起こさない。
+pub(crate) enum ProbeCmd {
+    GetOpenStatus,
+    GetConversionMode,
+}
+
+impl ProbeCmd {
+    const fn raw(self) -> usize {
+        match self {
+            Self::GetOpenStatus => IMC_GETOPENSTATUS,
+            Self::GetConversionMode => IMC_GETCONVERSIONMODE,
+        }
+    }
+}
+
+/// actuate系コマンド（`IMC_SET*`）。実際にIME状態を変更する。
+pub(crate) enum ActuateCmd {
+    SetOpenStatus(bool),
+    SetConversionMode(u32),
+}
+
+impl ActuateCmd {
+    fn raw(self) -> (usize, isize) {
+        match self {
+            Self::SetOpenStatus(open) => (IMC_SETOPENSTATUS, isize::from(open)),
+            Self::SetConversionMode(conv) => (IMC_SETCONVERSIONMODE, conv as isize),
+        }
+    }
+}
+
+/// IME状態の照会（`IMC_GET*`）。actuationを起こさない。
+///
+/// ADR-159 round4 TJ2 MF2が「関数名だけではcmdの種類を区別できない」という
+/// 既知の限界として受容していたSSOT希釈（`send_ime_control`という1関数にactuate/probe
+/// 混在）を、ADR-168でこの2関数への分割によって解消した。dylintの
+/// `lints/actuation_call_guard::RESTRICTED_CALLS`はこの関数名をキーに許可呼び出し元を
+/// 宣言する。
+///
+/// # Safety
+/// Win32 API を呼び出す。
+pub(crate) unsafe fn probe_ime_control(
+    ime_wnd: HWND,
+    cmd: ProbeCmd,
+    timeout_ms: u32,
+) -> Option<usize> {
+    // SAFETY: 呼び出し元の安全性要件をそのまま満たす。
+    unsafe { send_ime_control_raw(ime_wnd, cmd.raw(), 0, timeout_ms) }
+}
+
+/// IME状態のactuate（`IMC_SET*`）。このクレートで`WM_IME_CONTROL`経由のIME actuationを
+/// 起こす唯一の入口（`lints/actuation_call_guard::RESTRICTED_CALLS`の許可リスト対象）。
+///
+/// # Safety
+/// Win32 API を呼び出す。
+pub(crate) unsafe fn actuate_ime_control(
+    ime_wnd: HWND,
+    cmd: ActuateCmd,
+    timeout_ms: u32,
+) -> Option<usize> {
+    let (raw_cmd, lparam) = cmd.raw();
+    // SAFETY: 呼び出し元の安全性要件をそのまま満たす。
+    unsafe { send_ime_control_raw(ime_wnd, raw_cmd, lparam, timeout_ms) }
+}
+
 /// `WM_IME_CONTROL` を IME ウィンドウに送信し、結果を返す。
 ///
 /// タイムアウトまたはエラー時は `None` を返す。
 ///
+/// probe/actuate 双方の bump・計測・診断ログ（`conv_mutation`/`probe_actuation_fence`/
+/// `shadow_send_trace`/`send_health`）はすべてここに集約する——`probe_ime_control`/
+/// `actuate_ime_control` の2関数に分散させると、どちらか片方だけ計測が漏れる事故になる
+/// （このクレートの全 `SendMessageTimeoutW` 呼び出しが経由する唯一のチョークポイント
+/// という性質は分割後も本関数1つが維持する）。
+///
 /// # Safety
 /// Win32 API を呼び出す。
-pub(crate) unsafe fn send_ime_control(
+unsafe fn send_ime_control_raw(
     ime_wnd: HWND,
     cmd: usize,
     lparam: isize,
