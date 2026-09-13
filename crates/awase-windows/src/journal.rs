@@ -679,6 +679,7 @@ fn key_input_identity(entry: &JournalEntry) -> crate::journal_policy::KeyInputId
     crate::journal_policy::KeyInputIdentity {
         vk_code: event.vk_code,
         scan_code: event.scan_code,
+        is_down: event.is_down,
         key_class: event.key_class,
         alt: event.alt,
         ctrl: event.ctrl,

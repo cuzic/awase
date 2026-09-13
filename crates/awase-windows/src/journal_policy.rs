@@ -226,6 +226,19 @@ pub enum KeyInputPhysicalShape {
 pub struct KeyInputIdentity<'a> {
     pub vk_code: u16,
     pub scan_code: u32,
+    /// `true` = KeyDown、`false` = KeyUp。
+    ///
+    /// **畳み込み判定に必須。** `was_down`（`hook.rs::HOOK_STATE.
+    /// physical_key_state` の `swap` 由来）は KeyDown/KeyUp 両方のイベントで
+    /// 「このイベント直前の物理押下状態」を返す——ごく普通の1回のタップ
+    /// （KeyDown→KeyUp）でも、KeyUp 時点では直前は「押されていた」ので
+    /// `was_down: true` になる。これは auto-repeat（KeyDown が連続する）の
+    /// 検出とは全く別の事実であり、`is_down` を識別情報に含めて
+    /// KeyDown同士でなければ絶対に畳み込まないようにしないと、通常の
+    /// 1タップが「押しっぱなしで一度も離されていない」という誤った
+    /// journal 記録に化ける（`coalesce_key_input` 側の追加ガードと二重に
+    /// 防御する）。
+    pub is_down: bool,
     pub key_class: &'static str,
     pub alt: bool,
     pub ctrl: bool,
@@ -264,11 +277,18 @@ pub fn coalesce_key_input(
     next_was_down: bool,
     next_injected: bool,
 ) -> CoalesceOutcome {
-    if next_injected || !next_was_down {
+    // OS auto-repeat は KeyDown が連続するだけであり、KeyUp が連続すること
+    // はない。`next.is_down == false`（KeyUp）を無条件に除外する——`was_down`
+    // は KeyUp イベントでも「直前は押されていた」を意味するだけの通常の
+    // 事実であり、auto-repeat の証拠にはならない（`KeyInputIdentity::
+    // is_down` のdoc参照）。この明示ガードは、万一 `KeyInputIdentity` の
+    // `PartialEq` 比較だけに頼った場合に起こりうる事故（`is_down` 以外の
+    // 全フィールドが一致してしまうケースの見落とし）に対する二重の防御。
+    if next_injected || !next_was_down || !next.is_down {
         return CoalesceOutcome::NewEntry;
     }
     match prev {
-        Some(prev) if prev == next => CoalesceOutcome::MergeIntoPrevious,
+        Some(prev) if prev.is_down && prev == next => CoalesceOutcome::MergeIntoPrevious,
         _ => CoalesceOutcome::NewEntry,
     }
 }
@@ -506,6 +526,7 @@ mod tests {
         KeyInputIdentity {
             vk_code: 162, // VK_LCONTROL
             scan_code: 29,
+            is_down: true,
             key_class: "Passthrough",
             alt: false,
             ctrl: true,
@@ -582,6 +603,45 @@ mod tests {
         next.state_after = "PendingChar(vk=0x41)";
         assert_eq!(
             coalesce_key_input(Some(&prev), &next, true, false),
+            CoalesceOutcome::NewEntry
+        );
+    }
+
+    /// 回帰テスト: 通常の1タップ（KeyDown→KeyUp）が「押しっぱなしで一度も
+    /// 離されていない」という誤った記録に化けないこと。
+    ///
+    /// `hook.rs::HOOK_STATE.physical_key_state` の `swap` は KeyDown/KeyUp
+    /// 両方のイベントで「直前の物理押下状態」を返すため、ごく普通の
+    /// タップの KeyUp 時点でも `was_down: true` になる（直前は押されて
+    /// いたので当然。auto-repeat の証拠ではない）。`KeyInputIdentity` に
+    /// `is_down` が無かった旧実装では、他フィールドが一致するだけで
+    /// KeyDown を KeyUp が「畳み込んで」しまい、実質すべての単発タップで
+    /// 発火する回帰だった（opus-adversarial-consult コードレビューで発見）。
+    #[test]
+    fn coalesce_never_merges_keyup_into_preceding_keydown_even_if_was_down() {
+        let keydown = ctrl_hold_identity(); // is_down: true
+        let mut keyup = keydown;
+        keyup.is_down = false;
+        // KeyUp 時点では `was_down`（直前の物理状態）は必ず true になる
+        // （直前の KeyDown で slot が true になっているため）。この
+        // `next_was_down: true` を渡しても NewEntry のままであること。
+        assert_eq!(
+            coalesce_key_input(Some(&keydown), &keyup, true, false),
+            CoalesceOutcome::NewEntry
+        );
+    }
+
+    /// 上記と対称の回帰テスト: 直前が KeyUp（例: 他キーとの入れ替わり）の
+    /// 場合、次が KeyDown で `was_down: true` になっていても畳み込まない
+    /// （`is_down` 不一致で `PartialEq` 自体が false になるほか、
+    /// `prev.is_down` ガードでも二重に防ぐ）。
+    #[test]
+    fn coalesce_never_merges_keydown_into_preceding_keyup() {
+        let mut keyup = ctrl_hold_identity();
+        keyup.is_down = false;
+        let keydown = ctrl_hold_identity(); // is_down: true
+        assert_eq!(
+            coalesce_key_input(Some(&keyup), &keydown, true, false),
             CoalesceOutcome::NewEntry
         );
     }

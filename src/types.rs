@@ -311,15 +311,24 @@ pub struct RawKeyEvent {
     /// に昇格させてはならない（BUG-14: 外部注入 VK_DBE_HIRAGANA を物理かなキーと誤読し
     /// ユーザーの IME OFF を Engine ON で上書きし続けた）。
     pub injected: bool,
-    /// このイベント（KeyDown）の直前に、同じ `vk_code` が物理的に押されたままだったか
-    /// （[ADR-169](../docs/adr/169-journal-key-input-repeat-coalescing.md)）。
+    /// このイベント（KeyDown・KeyUp いずれも）の直前に、同じ `vk_code` が
+    /// 物理的に押されたままだったか（[ADR-169](../docs/adr/169-journal-key-input-repeat-coalescing.md)）。
+    ///
+    /// **KeyDown/KeyUp 両方のイベントで更新・設定される点に注意。** ごく
+    /// 普通の1回のタップ（KeyDown→KeyUp）でも、KeyUp イベント時点では
+    /// 直前は「押されていた」ので `was_down: true` になる——これは
+    /// auto-repeat（同一キーの連続 KeyDown）の証拠では**ない**。呼び出し側
+    /// （journal の OS auto-repeat 判定）は `was_down` の値だけに頼らず、
+    /// 必ず「このイベント自体が KeyDown であること」も併せて確認すること
+    /// （`journal_policy::KeyInputIdentity::is_down` 参照。この確認漏れは
+    /// 実装時に一度実際に発生し、通常の単発タップの大半が「押しっぱなしで
+    /// 一度も離されていない」という誤った journal 記録になる回帰を招いた）。
     ///
     /// **診断専用フィールドであり、core（本クレート）のどのロジックも参照しない。**
     /// `injected`/`modifier_snapshot` 等（core が実際に読んで判断に使う値）とは
-    /// 性質が異なる——journal の `KeyInput` レーンで OS auto-repeat（同一キーの
-    /// 連続 KeyDown）を安全に判定するためだけに存在する。`injected` なイベントは
-    /// このビットを更新しないため、常に直前の非 injected 状態を反映する（呼び出し側は
-    /// `was_down` の値だけに頼らず、必ず `!injected` も併せて確認すること）。
+    /// 性質が異なる。`injected` なイベントはこのビットを更新しないため、常に
+    /// 直前の非 injected 状態を反映する（呼び出し側は `was_down` の値だけに
+    /// 頼らず、必ず `!injected` も併せて確認すること）。
     ///
     /// `modifier_snapshot`/`left_thumb_down_snapshot` と同じ理由（capture 時点で
     /// 埋め込み、`INPUT_DEFER`/`OUTPUT_PENDING_QUEUE` の drain replay 時にライブ
