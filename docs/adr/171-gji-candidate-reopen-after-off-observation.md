@@ -3,17 +3,19 @@ id: ADR-171
 title: |-
   gji_direct_already_matchesが候補ウィンドウ再表示という既存のdesync証拠(candidate_was_seen)を無視して再送を握り潰す不具合を修正する(BUG-141)
 status: |-
-  起草・opus-adversarial-consult round1〜round4反映済み。round1・round2で
-  当初案（belief/drift correction経由の自動補正、決定1-4）にBlocker合計8件が
-  見つかり設計を全面転換、round2が提示した最小案（案Z）を主決定として採用。
-  round2は「BUG-141のjournal解釈に事実誤認がある」ことも指摘し（M5）、それを
-  自分で裏取りして確定させた。round3は案Z自体に2件のBlockerを検出
-  （`#[serde(default)]`必須／送信時にラッチを消費する設計への変更）、
-  対応の一部として追加した`candidate_visible`（レベル信号）が
-  round4で「BUG-113を決定的に再導入する」Blockerと判明し、実ログでの
-  裏取りの末に**撤回**した。round4は本ADR自身の記述（BUG-141タイムライン
-  トレース、BUG-051追補の因果帰属）にも実ログとの不一致を複数検出、
-  すべて反映済み。round5レビュー待ち。実装未着手。
+  起草・opus-adversarial-consult round1〜round5反映済み。**round5でBlocker
+  ゼロ、収束。実装着手可**。round1・round2で当初案（belief/drift correction
+  経由の自動補正、決定1-4）にBlocker合計8件が見つかり設計を全面転換、
+  round2が提示した最小案（案Z）を主決定として採用。round2は「BUG-141の
+  journal解釈に事実誤認がある」ことも指摘し（M5）、それを自分で裏取りして
+  確定させた。round3は案Z自体に2件のBlockerを検出（`#[serde(default)]`
+  必須／送信時にラッチを消費する設計への変更）、対応の一部として追加した
+  `candidate_visible`（レベル信号）がround4で「BUG-113を決定的に再導入する」
+  Blockerと判明し、実ログでの裏取りの末に撤回した。round4は本ADR自身の
+  記述（BUG-141タイムライントレース、BUG-051追補の因果帰属）にも実ログとの
+  不一致を複数検出。round5は残る文面上の誤り（async経路の到達性に関する
+  3回目の訂正）と手順漏れを検出、すべて反映済み。実機A/B（BUG-113/BUG-141
+  双方のシナリオ）は実装後に実施予定。
 related_adr:
   - "ADR-034"
   - "ADR-080"
@@ -191,7 +193,13 @@ Phase 3 item14）により**現在`platform.rs::apply_ime_open_with_view`の
    `candidate_visible`をORに含めるとBUG-113を**決定的に再導入する**ことが
    判明したため（詳細は下記「BUG-113再導入にならない理由」節）。
    `candidate_was_seen`のみを使う。
-5. `#[cfg(test)]`の`inputs()`ヘルパー（同ファイル`:273-286`）と、
+5. 呼び出し元（`decide_attempt`、`state/ime_actuation_decision.rs:250`、
+   `if gji_direct_already_matches(inputs.shadow_on, open)`）を
+   `gji_direct_already_matches(inputs.shadow_on, open,
+   inputs.candidate_was_seen)`に変更する（**round5 m1で判明した抜け**:
+   round3版にはこの手順があったが、`candidate_visible`撤回に伴う番号
+   振り直しで一度消えていた）。
+6. `#[cfg(test)]`の`inputs()`ヘルパー（同ファイル`:273-286`）と、
    直接`DecisionInputs { .. }`を書いている他の全構築サイトに
    `candidate_was_seen: false`（既定値、既存挙動を変えない）を追加する。
    **round3 m1で判明した漏れ**: `state/actuation_decision_record.rs:614`の
@@ -273,13 +281,24 @@ doc「## アーキテクチャ制約」は「このモジュールは観測値�
 - (c) `apply_mechanism`の戻り値/`AttemptRecord`に「overrideを消費した」
   事実を載せ、2つのwriter実装側で消費する。漏れは無いが変更点が増える。
 
-**(b)を採用する**——`Imm32Unavailable`プロファイル（本ADRが対象とする
-GJI環境）ではImmCrossが`is_applicable`で到達しないため(a)の漏れは
-発生しないと考えられるが、(b)はその前提に依存せず全経路を機械的に
-カバーできる。実装時に`ime_controller.rs:30-33`のモジュールdocへ
-「`reset_candidate_was_seen()`の呼び出しはこの制約の例外（読み取りでは
-なく書き込みであり、GjiDirectのOFF方向override消費専用）」という1行を
-追記すること。
+**(b)を採用する**。**round5訂正（round3→4→5で3回訂正が入った論点、
+正確に書き残す）**: 当初「`Imm32Unavailable`ではImmCrossが`is_applicable`
+で落ちるためasync経路に来ない」と書いていたが誤り——`run_open_chain_async`
+の呼び出し元は3箇所あり、3つ目`try_force_on_bootstrap`
+（`runtime/mod.rs:1311`）は`OpenApplyReason::Bootstrap`のdocが明記する
+とおり**まさに未知`Imm32Unavailable`アプリ向け**の経路で、ゲートされて
+いない。ただしこの経路は`open==true`固定（`ImeApplyRequested{target:true,
+..}`）であり、消費は`open==false`限定のため無関係。**(a)が実際に取りこぼす
+のは別の経路**: ImmCrossが`is_applicable`なプロファイル（Standard×GJI等）
+でImmCrossが`Failed`した後、OFF方向の`run_open_chain_async`
+（`key_pipeline.rs:1721`/`executor.rs:927`、いずれも`WriteMechanism::ALL`
+走査）がGjiDirectへフォールスルーするケースであり、これは
+`apply_ime_open_with_view`を一切通らない。**(b)はこれら全経路を、
+どのプロファイルがどの経路に来るかという前提に依存せず機械的にカバー
+できる**、という点が採用理由。実装時に`ime_controller.rs:30-33`の
+モジュールdocへ「`reset_candidate_was_seen()`の呼び出しはこの制約の例外
+（読み取りではなく書き込みであり、GjiDirectのOFF方向override消費専用）」
+という1行を追記すること。
 
 **round4 B1（Blocker、実ログで確定）: `candidate_visible`は同じ理屈で
 安全化できないため不採用に変更した。** round3で一時追加した
@@ -310,6 +329,26 @@ GJI環境）ではImmCrossが`is_applicable`で到達しないため(a)の漏れ
 継続的に検知して自動収束させる）は、本ADRが見送ったbelief/drift
 correction経由の設計の再検討にあたる（BUG-033がADR-171に予約したのと
 同じ形で、次のADRへ予約する）。
+
+### `outcome`が`AlreadyMatched`→`Applied`に変わることの副作用（round5 m2、網羅確認済み）
+
+案Zは「無送信だった2・3回目が送信されるようになる」変更だが、同時に
+journal/beliefに載る`outcome`が`AlreadyMatched`から`Applied`へ変わる。
+`ImeOpenOutcome`で分岐する全箇所を洗った結果、**唯一の意味的な差は
+`wrote_open_state()`が`false`→`true`になること**で、これにより
+`platform.rs`の`if outcome.wrote_open_state()`分岐で
+`ime_mode_fsm.on_set_open_applied(false)`が新たに呼ばれる（`state`は元々
+`Off`のため値は不変、`confirmed=false`と`last_vk_send_ms`の更新のみ——
+実際にapplyしたのだから正確な副作用）。**最も懸念すべきだったADR-149/
+BUG-113の随伴warmup抑止（`should_send_accompanying_warmup`）はこの変化の
+影響を受けない**——呼び出しが`if open { .. }`のスコープ内にあり、
+`open=false`はこの分岐自体に入らないため。候補ウィンドウのcold-mark
+（`[composition] marked cold reason=SetOpenFalse`）は元から両outcomeで
+走ることを実ログで確認済み。他の分岐点（`falls_through`、
+`legacy_gji_sync_obligation`、`record_ime_apply_result`の`effective`計算、
+`completion_can_update_applied`の`Superseded`判定、
+`update_intra_batch_applied`）はいずれも`Applied`/`AlreadyMatched`を
+区別しない。
 
 ### テスト（`.claude/rules/fix-requires-evidence.md`「キー選択」ファミリー）
 

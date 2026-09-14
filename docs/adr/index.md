@@ -177,7 +177,7 @@
 | [168](168-actuation-boundary-small-cleanups.md) | Clojure風protocol/transducer案(型システム全面置換・決定軸registry統一)の却下記録 + ADR-088の`post_*_direct`4関数保持決定の反転 | 実装済み。opus-adversarial-consult 2ラウンドで収束 |
 | [169](169-journal-key-input-repeat-coalescing.md) | journal `KeyInput`レーンのOS auto-repeat畳み込みでダンプ予算窓を圧縮する | 実装完了(ブランチ`feat/adr169-journal-key-input-repeat-coalescing`)。opus-adversarial-consult round1/round2で設計収束、Linux上のtest/clippy/fmt全緑。実機ソーク未実施。元168番、developマージ済みの別ADR-168と衝突し169へ採番し直し |
 | [170](170-codesmell-hotspot-decomposition.md) | コードスメル解消: belief reduce()の大きい4分岐をprivateヘルパーへ抽出(決定1のみ実施) | opus-adversarial-consult round1〜round3反映済み・収束(Blockerゼロ)。決定2(runtime/mod.rs重複統合)・決定3(output/mod.rs分割)は事実誤認/テスト破壊のため見送り |
-| [171](171-gji-candidate-reopen-after-off-observation.md) | `gji_direct_already_matches`が候補ウィンドウ再表示(`candidate_was_seen`)を無視して再送を握り潰す不具合を修正(BUG-141)。belief経由の自動補正案はround1/2で計8件のBlockerが出て見送り、`candidate_visible`併用案もround4でBUG-113再導入Blockerと判明し撤回 | 起草・案Z round4反映済み・round5待ち |
+| [171](171-gji-candidate-reopen-after-off-observation.md) | `gji_direct_already_matches`が候補ウィンドウ再表示(`candidate_was_seen`)を無視して再送を握り潰す不具合を修正(BUG-141)。belief経由の自動補正案はround1/2で計8件のBlockerが出て見送り、`candidate_visible`併用案もround4でBUG-113再導入Blockerと判明し撤回 | 起草・opus-adversarial-consult round5でBlockerゼロ・収束・実装着手可 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
