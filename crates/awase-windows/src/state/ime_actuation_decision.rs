@@ -48,6 +48,10 @@ pub struct DecisionInputs {
     /// `ControlLog.shadow_on`。`None` = 未知（BUG-113: `bool`に潰さないこと）。
     pub shadow_on: Option<bool>,
     pub belief_input_mode: InputModeState,
+    /// GJI candidate SHOW の desync 証拠（`tsf::observer::candidate_was_seen()`）。
+    /// ADR-163 決定D8: PII を含まない bool 1 個。
+    #[serde(default)]
+    pub candidate_was_seen: bool,
 }
 
 /// `ImeController::apply`/`run_open_chain_async`/`dispatch_ime_set_open`冒頭の
@@ -139,8 +143,13 @@ pub(crate) fn decide_chain(inputs: DecisionInputs) -> &'static [WriteMechanism] 
 /// `GjiDirectStrategy::apply`のalready-matched判定
 /// （旧`ime_controller.rs::gji_direct_already_matches`と同一）。
 #[must_use]
-const fn gji_direct_already_matches(shadow_on: Option<bool>, open: bool) -> bool {
-    matches!(shadow_on, Some(v) if v == open)
+#[allow(clippy::nonminimal_bool)]
+const fn gji_direct_already_matches(
+    shadow_on: Option<bool>,
+    open: bool,
+    candidate_was_seen: bool,
+) -> bool {
+    matches!(shadow_on, Some(v) if v == open) && !(!open && candidate_was_seen)
 }
 
 /// IME ON の直前に ROMAN ビットを補完する同期 IMC write が要るか
@@ -247,7 +256,7 @@ pub(crate) fn decide_attempt(
         }
         (WriteMechanism::ImmCross, _) => None,
         (WriteMechanism::GjiDirect, _) => {
-            if gji_direct_already_matches(inputs.shadow_on, open) {
+            if gji_direct_already_matches(inputs.shadow_on, open, inputs.candidate_was_seen) {
                 None
             } else {
                 Some(MechanismCommand::SendVk(key_sequence_policy::ime_key_for(
@@ -282,6 +291,7 @@ mod tests {
             kind,
             shadow_on,
             belief_input_mode,
+            candidate_was_seen: false,
         }
     }
 
@@ -564,6 +574,38 @@ mod tests {
             InputModeState::Unknown,
         );
         let (_, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::GjiDirect, false);
+        assert_eq!(cmd, None);
+    }
+
+    #[test]
+    fn gji_direct_resends_when_candidate_was_seen_despite_shadow_match() {
+        let mut i = inputs(
+            AppImeProfile::Standard,
+            ImeKindId::Gji,
+            Some(false),
+            InputModeState::Unknown,
+        );
+        i.candidate_was_seen = true;
+        let (_, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::GjiDirect, false);
+        assert_eq!(
+            cmd,
+            Some(MechanismCommand::SendVk(key_sequence_policy::ime_key_for(
+                KeyMechanism::GjiDirect,
+                ImeOperation::Close
+            )))
+        );
+    }
+
+    #[test]
+    fn gji_direct_open_direction_ignores_candidate_was_seen() {
+        let mut i = inputs(
+            AppImeProfile::Standard,
+            ImeKindId::Gji,
+            Some(true),
+            InputModeState::Unknown,
+        );
+        i.candidate_was_seen = true;
+        let (_, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::GjiDirect, true);
         assert_eq!(cmd, None);
     }
 

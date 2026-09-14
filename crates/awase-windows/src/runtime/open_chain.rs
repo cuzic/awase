@@ -711,6 +711,7 @@ mod tests {
             kind: ImeKindId::Gji,
             shadow_on: None,
             belief_input_mode: InputModeState::Unknown,
+            candidate_was_seen: false,
         };
         let order_record = ActuationOrderRecord {
             open: true,

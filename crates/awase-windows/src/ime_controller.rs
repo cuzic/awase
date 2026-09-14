@@ -31,6 +31,10 @@
 //! このモジュールは観測値を自ら読んではいけない。
 //! すべての観測値は `ImeControlView` 経由で受け取ること。
 //! `crate::tsf::observer::tsf_obs()` の直接呼び出し禁止（スナップショット経由で受け取ること）。
+//! **例外（ADR-171）**: `crate::tsf::observer::reset_candidate_was_seen()`
+//! の呼び出しはこの制約の対象外——読み取りではなく書き込みであり、
+//! `GjiDirectStrategy` の OFF 方向 override 送信を消費する専用の1箇所
+//! （`apply_mechanism` の GjiDirect アーム）に限定する。
 
 use awase::platform::ImeOpenOutcome;
 
@@ -274,6 +278,14 @@ pub(crate) fn apply_mechanism(
             tracing::debug!("[apply-ime] GJI direct: send {vk:#06X} (open={open})");
             // SAFETY: 同上。
             if unsafe { crate::ime::send_ime_mode_key(vk) } {
+                if !open {
+                    // ADR-171: この override 送信が候補ウィンドウ再表示という
+                    // desync 証拠(candidate_was_seen)を消費したことを示す。
+                    // 送信時に即座に消費することで、次回 apply がリセット
+                    // タイミング依存で同じ証拠を再度読んでしまう BUG-113 型の
+                    // 二重送信を防ぐ（ADR-171「BUG-113再導入にならない理由」）。
+                    crate::tsf::observer::reset_candidate_was_seen();
+                }
                 ImeOpenOutcome::Applied
             } else {
                 // Win キー押下中で未送信。Applied 扱いにすると applied_snapshot がラッチされ
