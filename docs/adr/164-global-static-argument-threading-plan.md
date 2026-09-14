@@ -310,6 +310,25 @@ deque操作のみ（`pop_front`/`push_back`、または`drain_hook_ime_mode_diag
 上限64件の`Vec`収集のみに留める）。これが崩れると訂正3が禁止した「hookスレッドがロック待ちで
 止まる」経路が復活する。
 
+**追記（2026-09-13、issue #137調査で再度疑われ、opus-adversarial-consultで排除済み）**:
+issue #137（MS-IMEローマ字⇔かな反転バグ）の調査で「Hook watchdog: no activity」
+（issue #165、hookスレッドが長時間応答しない）の慢性化が確認され、この`Mutex`が
+その原因ではないかと再度疑われた。読み取り専用レビューの結果、以下の2点で**排除
+できる**（詳細: `docs/design/opus-review-hook-mutex-safety.md`）:
+
+- watchdog警告自体がメインスレッドの3秒周期`WM_TIMER`（`runtime/mod.rs`
+  `start_hook_watchdog`）から出ているため、その警告が出続けている時点でメイン
+  スレッドはこのロックを5000ms以上保持できていない（両立不可能）。
+- `tick_hook_alive()`が`hook_callback`の最初の文（ロック取得より手前）にあるため、
+  `stale_ms > 5000`が観測されるにはロック保持が5000ms継続する必要があり、上と
+  同じ矛盾に帰着する。
+
+issue #165/#137の原因は別にある。なお同じレビューで、保持区間内に残っていた
+唯一のアロケーション（`drain_hook_ime_mode_diagnostics`の`drain(..).collect()`）は
+ロック取得前に確保した置換用バッファとの`mem::replace`に変更し、上記「不変条件」の
+「アロケーションは上限64件の`Vec`収集のみに留める」という緩和条項自体を撤廃した
+（保持区間は構造体3ワードの入れ替えのみになった）。
+
 既存のアクセサ関数（`cached_hook_config()`/`reset_physical_key_state()`/
 `clear_hook_latches_for_app_disable()`等）は**シグネチャを変えず**、内部実装だけを
 20個の裸staticから`HOOK_STATE`のフィールド参照に置き換える——「`&mut HookState`を引数として
