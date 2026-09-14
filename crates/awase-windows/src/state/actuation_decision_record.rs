@@ -616,6 +616,7 @@ mod tests {
             kind,
             shadow_on,
             belief_input_mode,
+            candidate_was_seen: false,
         }
     }
 
@@ -774,15 +775,16 @@ mod tests {
             caller: None,
         };
         let json = serde_json::to_string(&record).expect("serialize");
-        // 実測値（2026-09-11時点、フィールド構成が変わったら更新すること）:
-        // attempt 1件の構成で523バイト（N-1対応前は631バイト、上記コメント
-        // 参照）。journal.rsの`select_tail_within_budget`はlane予約20%
+        // 実測値（2026-09-14時点、フィールド構成が変わったら更新すること）:
+        // attempt 1件の構成で577バイト（ADR-171の`candidate_was_seen`追加前は
+        // 523バイト、N-1対応前は631バイト、上記コメント参照）。
+        // journal.rsの`select_tail_within_budget`はlane予約20%
         // （Actuation）の中で既存`ImeActuation`（固定サイズ数十バイト）と
         // 奪い合うため、1 actuationあたりのlane消費バイト数は本エントリの
         // 追加でおよそ7〜8倍規模になる——この数値をwindows-build CI/実機
         // ダンプでの前後比較（163-T1d受け入れ基準）の基準値として使うこと。
         assert!(
-            json.len() < 560,
+            json.len() < 600,
             "ActuationDecisionRecordのJSON表現が想定より大きい: {} bytes ({json})",
             json.len()
         );
