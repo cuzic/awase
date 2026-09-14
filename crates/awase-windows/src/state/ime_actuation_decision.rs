@@ -143,13 +143,12 @@ pub(crate) fn decide_chain(inputs: DecisionInputs) -> &'static [WriteMechanism] 
 /// `GjiDirectStrategy::apply`のalready-matched判定
 /// （旧`ime_controller.rs::gji_direct_already_matches`と同一）。
 #[must_use]
-#[allow(clippy::nonminimal_bool)]
 const fn gji_direct_already_matches(
     shadow_on: Option<bool>,
     open: bool,
     candidate_was_seen: bool,
 ) -> bool {
-    matches!(shadow_on, Some(v) if v == open) && !(!open && candidate_was_seen)
+    matches!(shadow_on, Some(v) if v == open) && (open || !candidate_was_seen)
 }
 
 /// IME ON の直前に ROMAN ビットを補完する同期 IMC write が要るか
