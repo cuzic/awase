@@ -24,6 +24,24 @@ status: |-
   reason=Active)`を確認、続く文字入力もNICOLA配列で正しく動作した
   （ユーザー確認）。ADR-174が目的としたEngine ON追従は達成された。
 
+  **Mozc公式ソース調査（2026-09-15）で判明した既知の限界**: 公式エンジン
+  （`google/mozc`の`session/keymap.cc::ApplyPrimarySessionKeymap`）は
+  `session_keymap != CUSTOM`のとき`custom_keymap_table`を完全に無視する
+  仕様であり、公式`ms-ime.tsv`も`DirectInput Henkan Reconvert`
+  （IME開閉と無関係）——本来の仕様としては修正前の実装の方が正しかった。
+  GUI実装（`gui/config_dialog/config_dialog.cc::EditKeymap`）を読むと、
+  キーマップ編集を確定した時だけ`custom_keymap_table`を更新し
+  `session_keymap`をCUSTOMへ切り替えるが、**プルダウンだけを別プリセット
+  へ戻す操作にはテーブルをクリアする処理が存在しない**ため、過去に
+  一度カスタマイズした後でプリセットへ戻すと古いテーブルが残留し
+  うる（公式ドキュメントには記載無し、GUI実装コードの読解のみで確認、
+  詳細はBUG-143参照）。実際のGJI Windowsバイナリがこの残留テーブルを
+  公式仕様どおり無視しているかは未確認だが、実機の観測結果（変換タップ
+  で実際にIMEが開いた）が`custom_keymap_table`の内容と一致したため、
+  この観測結果を優先する現状の修正で進めることにした（ユーザー判断）。
+  将来「過去に一度カスタマイズしたが今は別プリセットに戻している」
+  ユーザー環境で実害が出た場合は、この既知の限界を疑うこと。
+
   ユーザー提案の能動actuation代替案（VK_IME_ON注入+VK_CONVERT転送）は
   実機履歴（BUG-113/124）から却下済み（却下理由は本文「却下した代替案」
   節参照）。round1〜3の詳細は以下に残す（いずれも観測ベースの新設計を
