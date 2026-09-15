@@ -75,6 +75,11 @@ const HOTKEY_ID_DIAG_CHARSET_PROBE: i32 = 4;
 /// spike/bug142-charset-axis-diag、developへマージしない一時的な診断コード。
 const HOTKEY_ID_DIAG_FORCE_HALFWIDTH: i32 = 5;
 
+/// BUG-142実機検証用スパイク診断: VK_IME_OFF(0x1A)をSendInputで1回送るだけの
+/// プローブホットキー(修飾なしEnd)。belief/shadow-toggleの通常パイプラインを
+/// 経由しない生の実験用。spike/bug142-charset-axis-diag、developへマージしない。
+const HOTKEY_ID_DIAG_IME_OFF_PROBE: i32 = 6;
+
 /// `WM_WTSSESSION_CHANGE` — セッションの状態変更通知メッセージ
 const WM_WTSSESSION_CHANGE: u32 = 0x02B1;
 
@@ -475,6 +480,11 @@ pub(crate) fn dispatch_engine_message(
         WM_HOTKEY if wparam.0 == HOTKEY_ID_DIAG_FORCE_HALFWIDTH as usize => {
             let _ = with_app(|app| unsafe {
                 message_handlers::handle_wm_hotkey_diag_force_halfwidth(app);
+            });
+        }
+        WM_HOTKEY if wparam.0 == HOTKEY_ID_DIAG_IME_OFF_PROBE as usize => {
+            let _ = with_app(|app| unsafe {
+                message_handlers::handle_wm_hotkey_diag_ime_off_probe(app);
             });
         }
         WM_DUMP_JOURNAL => {

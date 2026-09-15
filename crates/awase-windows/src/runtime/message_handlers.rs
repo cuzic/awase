@@ -1285,6 +1285,21 @@ pub(crate) unsafe fn handle_wm_hotkey_diag_charset_probe(_app: &mut Runtime) {
     tracing::warn!("[bug142-spike-diag] charset probe: send VK_DBE_SBCSCHAR(0xF3) sent={sent}");
 }
 
+/// WM_HOTKEY ハンドラ (HOTKEY_ID_DIAG_IME_OFF_PROBE、修飾なしEnd)。
+///
+/// spike/bug142-charset-axis-diag: BUG-142の実機検証専用の一時的な診断コード、
+/// developへマージしない。`VK_IME_OFF`(0x1A)を1回SendInputし、belief/shadow-toggle
+/// の通常パイプラインを一切経由しない生の実験用。ユーザー指摘(2026-09-15)を受け、
+/// `WM_IME_CONTROL`(Home)・`VK_DBE_SBCSCHAR`(Insert)のどちらも固着中に実際の
+/// TSFエンジンへ届いていないことが実タイピングで確認されたため、GjiDirect戦略が
+/// 通常時に使っているのと同じ`VK_IME_ON`/`VK_IME_OFF`のSendInputが固着中にも
+/// 効くかどうかを切り分ける。
+pub(crate) unsafe fn handle_wm_hotkey_diag_ime_off_probe(_app: &mut Runtime) {
+    // SAFETY: send_ime_mode_key は SendInput 呼び出しのみ、belief には触れない。
+    let sent = unsafe { crate::ime::send_ime_mode_key(crate::vk::VK_IME_OFF) };
+    tracing::warn!("[bug142-spike-diag] ime-off probe: send VK_IME_OFF(0x1A) sent={sent}");
+}
+
 /// WM_HOTKEY ハンドラ (HOTKEY_ID_DIAG_FORCE_HALFWIDTH、Ctrl+Shift+F12)。
 ///
 /// spike/bug142-charset-axis-diag: BUG-142の実機検証専用の一時的な診断コード、

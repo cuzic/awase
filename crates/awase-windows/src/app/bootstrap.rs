@@ -32,8 +32,8 @@ use super::{
     build_panic_trigger_combos, init_ime_sync_keys, init_ngram_validated, load_config,
     parse_key_combos, resolve_relative, run_message_loop, set_taskbar_created_msg, HotKeyGuard,
     RapidPressTracker, StartupDiagnostics, DUMP_TRIGGER, HOTKEY_ID_DIAG_CHARSET_PROBE,
-    HOTKEY_ID_DIAG_DUMP, HOTKEY_ID_DIAG_FORCE_HALFWIDTH, HOTKEY_ID_FOCUS_OVERRIDE,
-    HOTKEY_ID_TOGGLE, RAPID_IME_TIMESTAMPS, WM_DUPLICATE_INSTANCE,
+    HOTKEY_ID_DIAG_DUMP, HOTKEY_ID_DIAG_FORCE_HALFWIDTH, HOTKEY_ID_DIAG_IME_OFF_PROBE,
+    HOTKEY_ID_FOCUS_OVERRIDE, HOTKEY_ID_TOGGLE, RAPID_IME_TIMESTAMPS, WM_DUPLICATE_INSTANCE,
 };
 
 fn show_no_layouts_dialog(layouts_dir: &Path) {
@@ -468,6 +468,7 @@ pub(super) fn install_hooks_and_hotkeys_validated(
     Option<HotKeyGuard>,
     Option<HotKeyGuard>,
     Option<HotKeyGuard>,
+    Option<HotKeyGuard>,
 )> {
     let guard = hook::install_hook().context("Failed to install keyboard hook")?;
 
@@ -493,6 +494,9 @@ pub(super) fn install_hooks_and_hotkeys_validated(
     let diag_force_halfwidth_guard = HotKeyGuard::register_diag_force_halfwidth()
         .map_err(|e| tracing::warn!("{e}"))
         .ok();
+    let diag_ime_off_probe_guard = HotKeyGuard::register_diag_ime_off_probe()
+        .map_err(|e| tracing::warn!("{e}"))
+        .ok();
     Ok((
         guard,
         toggle_guard,
@@ -500,6 +504,7 @@ pub(super) fn install_hooks_and_hotkeys_validated(
         diag_dump_guard,
         diag_charset_probe_guard,
         diag_force_halfwidth_guard,
+        diag_ime_off_probe_guard,
     ))
 }
 
@@ -611,6 +616,28 @@ impl HotKeyGuard {
             "[bug142-spike] Diag force-halfwidth hotkey registered: Home (修飾なし、Homeの本来機能は無効化される)"
         );
         Ok(Self(HOTKEY_ID_DIAG_FORCE_HALFWIDTH))
+    }
+
+    /// BUG-142スパイク診断ホットキー (修飾なしEnd) を登録する。
+    /// spike/bug142-charset-axis-diag、developへマージしない。
+    /// このホットキーが有効な間、システム全体でEndキーの本来の機能は失われる
+    /// （診断ビルド専用、developへは絶対にマージしない）。
+    fn register_diag_ime_off_probe() -> Result<Self> {
+        use windows::Win32::UI::Input::KeyboardAndMouse::HOT_KEY_MODIFIERS;
+        // SAFETY: RegisterHotKey with None HWND registers on the calling thread's message queue; VK and modifiers are valid values.
+        unsafe {
+            RegisterHotKey(
+                None,
+                HOTKEY_ID_DIAG_IME_OFF_PROBE,
+                HOT_KEY_MODIFIERS(0),
+                u32::from(crate::vk::VK_END.0),
+            )
+            .context("Failed to register diag ime-off probe hotkey: End")?;
+        }
+        tracing::info!(
+            "[bug142-spike] Diag ime-off probe hotkey registered: End (修飾なし、Endの本来機能は無効化される)"
+        );
+        Ok(Self(HOTKEY_ID_DIAG_IME_OFF_PROBE))
     }
 }
 
@@ -1269,6 +1296,7 @@ pub(super) fn run_all() -> Result<()> {
         _diag_dump_hotkey_guard,
         _diag_charset_probe_hotkey_guard,
         _diag_force_halfwidth_hotkey_guard,
+        _diag_ime_off_probe_hotkey_guard,
     ) = install_hooks_and_hotkeys_validated(&config)?;
     diag.report();
 
