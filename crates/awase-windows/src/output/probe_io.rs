@@ -170,7 +170,8 @@ impl ProbeIo for Output {
         focus_gen: u32,
         retry_poll_token: Option<u32>,
     ) -> bool {
-        use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
+        // SPIKE(bug033-realscan): send_ime_mode_key と同じ診断スパイク（ime.rs 参照）。
+        use crate::tsf::output::{make_scan_key_input as make_key_input_ex, IME_KANJI_MARKER};
         use crate::vk::{VK_IME_OFF, VK_IME_ON};
         // BUG-33: give-up（RawTsfLiteralRecovery 連続失敗）からもこの reinit を呼ぶため、
         // CHROME_GJI_REINIT_CONFIRM_MS のポーリング窓が終わる前の再発火をレート制限する。

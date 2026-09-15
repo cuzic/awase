@@ -232,7 +232,12 @@ pub unsafe fn post_kanji_toggle_to_focused() {
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 #[must_use]
 pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) -> bool {
-    use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
+    // SPIKE(bug033-realscan): wScan=0 固定 (make_key_input_ex) を実 scan 付き
+    // (make_scan_key_input) に変更する診断スパイク。BUG-113 で一度「変化なし」
+    // として revert されたが、その実験は同時発生していたBUG-114（drift
+    // correctionの無限バースト）に汚染されており、クリーンな単発条件では
+    // 未検証（docs/experiments.md エントリ20参照）。マージ禁止・実機A/B専用。
+    use crate::tsf::output::{make_scan_key_input as make_key_input_ex, IME_KANJI_MARKER};
 
     // Win キー押下中は注入をスキップする。
     // Win+VK_IME_ON/OFF は OS に未認識ショートカットとして届き、Win↑ のタイミングで
