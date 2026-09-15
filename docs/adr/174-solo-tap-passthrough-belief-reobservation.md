@@ -3,15 +3,25 @@ id: ADR-174
 title: |-
   無変換/変換ソロタップの生キーパススルーを維持したまま、GJIの実結果をbeliefへ再観測で追従させる
 status: |-
-  **B1解決・設計再開（2026-09-15）。** opus-adversarial-consult round1で
-  検出したBlocker6件のうちB1（「belief乖離→固着」の因果が未実証）は、
-  2026-09-15の実機検証（[BUG-142](../known-bugs/BUG-142.md)）で確定
-  した——タイピング一切不要、無変換/変換キーを1回押すだけで、直後の
-  物理半角/全角キー2回目の押下時点で既に固着することを実機ログで確認
-  済み（下記「背景」節に追記）。残るB2〜B6（既存`ConvOpenInference`
-  経路への合流可否、`observed`のみでは目的未達、既存機構転用の齟齬）は
-  round2で未着手のまま。次はround2としてopus-adversarial-consultに
-  かけ、下記「決定（案）」を検証する。
+  **保留（round2でBlocker継続、対抗仮説も実機で反証・原因未確定、
+  2026-09-15）。** round1のB1（因果未実証）を解決したつもりで
+  opus-adversarial-consult round2にかけたが、round2はB1が実は未解決の
+  ままである（「タイピング不要」という新しい最小手順が
+  [BUG-142](../known-bugs/BUG-142.md) Phase Dの記録＜タイピング必須＞と
+  食い違う、「GJIが実際にONになった」独立観測が無い）ことを指摘し、
+  さらに単純な対抗仮説（charset軸デッドロック——物理半角/全角キーは
+  open軸でなくcharset軸のキーで、awaseが常にSuppressする一方open軸だけ
+  動かすため誰も進めない静的ロックが起きる）を提示した。本ADRの決定案
+  （belief再観測）は実装すると逆効果（固着が1押し早まる）になりうる
+  ことも指摘された。この対抗仮説を実機A/Bで検証した結果、**charset軸
+  デッドロック仮説も反証された**（固着中のconv値はFULLSHAPE=true
+  のまま変化せず、`VK_DBE_SBCSCHAR`を実際にSendInputしても固着は
+  解消しなかった、詳細はBUG-142.md「続報」節参照）。drift correction・
+  ADR-121・charset軸の3仮説がいずれも実機で棄却され、残る最有力候補は
+  awase自身のフック内部状態（`hook.rs`/`transport.rs`が保持する
+  DBE範囲キー関連のstate）に絞り込まれている。**本ADRが前提とする
+  「belief乖離が原因」という枠組み自体が的外れである可能性が高まった
+  ため、原因がhook内部状態にあると確定するまで本ADRの実装には進まない。**
 related_adr:
   - "ADR-153"
   - "ADR-173"
