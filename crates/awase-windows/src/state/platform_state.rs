@@ -768,8 +768,8 @@ impl ImeStateHub {
     /// `check_drift_correction` 側の観測ソース信頼基準とは揃わない。ADR-172 は
     /// 代替の共有述語抽出案も実装不能と判断し（対象入口を1つに絞れない、
     /// `resolve_open_at()` の `BaseDecision` を経由しないと BUG-63 の当該ケース
-    /// `ConvOpenInference`(`DeriveMedium`枝) に効かない）、**本関数は意図的に
-    /// 無改造のまま据え置く**。）** `effective_open()` は
+    /// `ConvOpenInference`(`DeriveMedium`枝) に効かない）、本関数は意図的に
+    /// 無改造のまま据え置く。）** `effective_open()` は
     /// belief（間違っていても低リスク）であり、actuation の根拠に直接使うべき
     /// ではない——これはまさに本関数が持つ構造であり、BUG-63 の原因パターンが
     /// 実 actuation ゲートとして今も本番で使われている状態を示す。呼び出し元は

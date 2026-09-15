@@ -981,7 +981,9 @@ origin=`と`[warmup-gate]`のgrep突合せによるB1由来/#6由来の内訳確
 
 1. Phase 2（B1修正）を実機ソークし、次の実機報告で`[tsf-eager-warmup]`
    /`[warmup-gate]`/`force-ON (ImmBrokenForceOn)`のgrep突合せから
-   92件相当の内訳（B1由来 vs #6由来）を確定する。
+   92件相当の内訳（B1由来 vs #6由来）を確定する。**2026-09-15、この項目も
+   ADR-172「次のアクション」4として引き継いだ（次のアクション2の委譲注記と
+   同時、詳細はそちら参照）。**
 2. 内訳確定後、#6（`apply_force_on_for_imm_broken`）側の同型修正
    （`check_drift_correction`との排他、または別の設計）を要否判断する。
    B1由来がほぼゼロだった場合、Phase 2は「効果薄だが無害な予防線」
