@@ -3,11 +3,14 @@ id: ADR-174
 title: |-
   無変換/変換ソロタップの生キーパススルーを維持したまま、GJIの実結果をbeliefへ再観測で追従させる
 status: |-
-  起草中（opus-adversarial-consult未実施）。ADR-173（`solo_tap_ime_action_apps`、
-  生キー抑止方式）はユーザー判断でこの方針に置き換える方向——実機で
-  `muhenkan_solo_tap_ime_action = "off"`は「IME ON固着」を解消したが、
-  「無変換の本来の役割（ひらがな⇔カタカナ⇔半角カナ巡回）を潰す」ことへの
-  懸念からユーザーが却下し、実機configから既にrevert済み。
+  **保留（B1未解決）。** opus-adversarial-consult round1でBlocker6件検出
+  （B1「belief乖離→固着」の因果が未実証、B2既存ConvOpenInference経路への
+  合流案は巡回を潰すactuationを増やすだけ、B3 observed側だけでは目的未達、
+  B4-B6既存機構の転用が目的と噛み合わない）。round1の提案どおりB1を実機で
+  確定させようとしたが、develop・GJI再起動後とも複数回「無変換単独タップ
+  でIME ON」自体が再現せず、コード差分でブランチ起因の可能性も排除済み。
+  [BUG-142](../known-bugs/BUG-142.md)に詳細記録、因果関係が未確定のため
+  設計を先に進められない。round2は未実施のまま保留。
 related_adr:
   - "ADR-153"
   - "ADR-173"
