@@ -3,11 +3,11 @@ id: ADR-173
 title: |-
   `muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`(ケース2/3改)をプロセス名指定のアプリ限定にする
 status: |-
-  round1でBlocker4件・Should-fix6件（`AppImeProfile::TsfNative`はWindows
-  Terminalを構造的に取りこぼす、KeyDown/KeyUpペアリング不変条件の破壊、
-  ケース1(コア側)の扱い未定、「IME ON固着」の因果関係の取り違え）を検出。
-  round1指摘を反映し、決定を`app_overrides`方式のプロセス名リストへ変更。
-  「IME ON固着」はBUG-142として本ADRの成否根拠から切り離した。round2待ち。
+  opus-adversarial-consult round1(Blocker4件)→round2(Blockerゼロ、
+  Should-fix6件は本文へ反映済み)で収束。round3不要と判定。実装着手可。
+  決定は`app_overrides.solo_tap_ime_action_apps`(プロセス名リスト、
+  既定値=空で全アプリ・後方互換維持)。ケース1(コア側)は意図的にスコープ外。
+  「IME ON固着」はBUG-142として本ADRの成否根拠から切り離した。
 related_adr:
   - "ADR-153"
   - "ADR-121"
@@ -101,27 +101,65 @@ TSF ネイティブ経路）でだけこの回避策を効かせたい」と明�
 `src/config.rs::AppOverrides` に、既存の `disable_apps`/`input_relay_apps`
 と同じ形（`Vec<String>`、大文字小文字無視・`.exe` 有無どちらでも一致、
 `state/app_suppression::matches_disabled_app` を再利用）で
-`solo_tap_ime_action_apps: Vec<String>`（既定値: 空 = 無効）を追加する。
+`solo_tap_ime_action_apps: Vec<String>`（既定値: **空 = 全アプリで有効**、
+後方互換維持——理由は下記「既定値」節）を追加する。
 
-`focus/tracker.rs::FocusTracker` に、`input_relay_apps`
-（`:80-87`、`overrides.input_relay_apps()` 経由でプロセスグローバルに
-キャッシュされる既存パターン）と同じ配線で `solo_tap_ime_action_apps` を
-保持させ、`solo_tap_ime_action_in_scope() -> bool`
-（`matches_disabled_app(&self.solo_tap_ime_action_apps,
-self.process_name())`）を追加する。
+**配線は `input_relay_apps` の委譲チェーンをそのまま辿る（新規のプロセス
+グローバル static は一切追加しない）**: `AppOverrides`（`config.rs`）→
+`ForceOverrides { inner: AppOverrides }`（`focus/classifier.rs:115-140`）に
+アクセサを追加 → `FocusTracker.overrides: ForceOverrides`
+（`focus/tracker.rs:80-87` の `input_relay_apps()` と同じ形）へ委譲する
+`solo_tap_ime_action_in_scope() -> bool`
+（`matches_disabled_app(&self.overrides.solo_tap_ime_action_apps(),
+self.process_name())`）を追加する。設定リロードは既存の
+`FocusTracker::reset_overrides()`（`tracker.rs:247-249`）が
+`ForceOverrides` ごと差し替えるため追加作業は不要。
+
+**`focus/classifier.rs:29` の `static INPUT_RELAY_APPS:
+OnceLock<RwLock<Vec<String>>>` はコピーしないこと**——これは
+`self` を持てない `pub unsafe fn read_ime_state_fast`
+（`offload_unsafe` ワーカースレッドからも呼ばれる）専用の例外であり、
+その doc・`tracker.rs:80-86`・CLAUDE.md の3箇所が存在理由を明示的に
+限定している。`explicit_ime_action_target` は `&self` を持ち
+`self.platform.focus`（`key_pipeline.rs:659` が同様に
+`self.platform.focus.class_name()` を使っている）に到達できるため、
+グローバル static は不要——`feedback_no_raw_global_statics_prefer_
+static_struct`/ADR-164 の方針にも反しない。
 
 `key_pipeline.rs::explicit_ime_action_target`（ケース2/3改、belief OFF 側）
-の先頭で、`self.platform.focus.solo_tap_ime_action_in_scope()`
-（`self.platform.focus.process_name()` は `key_pipeline.rs:3095` で
-既に使われている既存アクセサ）が `false` なら
-`ExplicitImeActionOutcome::Inactive` を返す。
+の先頭で、`self.platform.focus.solo_tap_ime_action_in_scope()` が
+`false` なら `ExplicitImeActionOutcome::Inactive` を返す。
 
 **プロセス名を選ぶ理由**: `WindowsTerminal.exe` というプロセス名は、内部の
 子ウィンドウクラスが `CASCADIA_HOSTING_WINDOW_CLASS ⇔
-Windows.UI.Input.InputSite.WindowClass` を往復しても変わらない。プロセス名
-ベースにすることで、上記「却下した代替案」の Blocker 1・2 を両方とも
-構造的に回避できる（フォーカスが Windows Terminal プロセス内に留まる限り、
-KeyDown/KeyUp 間で判定が変わらない）。
+Windows.UI.Input.InputSite.WindowClass` を往復しても変わらない
+（実機ログで確認済み: `docs/bug-reports-triage.md:40` の不具合報告
+`01M0VGJ2M5KQHD1D9V7HAMBHNT` が `HwndCache: restore [2848 InputSite]
+ime_on=false` と記録しており、pid 2848 は WindowsTerminal.exe——つまり
+InputSite 子ウィンドウは Windows Terminal と同一プロセス内にある）。
+プロセス名ベースにすることで、上記「却下した代替案」の Blocker 1・2 は
+**実質的に**回避できる（構造的に不可能というより、同一プロセス内の
+クラス往復ではプロセス名が変わらないという実機観測に基づく）。
+プロセスを跨ぐフォーカス移動（例: Alt+Tab で別アプリへ）ではプロセス名も
+変わりうるが、その場合はフォーカスが実際に Windows Terminal を離れて
+いるため、判定が変わること自体は妥当な挙動である。
+
+**既定値（空 = 全アプリで有効、round1時点の案から変更）**: `disable_apps`
+は非空既定（`vec!["mstsc.exe"]`）、`input_relay_apps` は空既定、という
+両方の前例が `AppOverrides` に既にある。本 ADR は**空 = 全アプリ（従来
+どおり）** を選ぶ——`solo_tap_ime_action_apps` を明示的に空でない値に
+設定しているユーザーは現状存在しない（本設定自体が本 ADR で新設される
+ため）が、`muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`
+**自体**を既に設定しているユーザー（本 ADR 執筆のきっかけになった
+ユーザー含む）が、本 ADR 適用後に何も書き加えなくても回避策を失わない
+（＝サイレントな後方互換破壊が起きない）ことを優先する。ユーザーは
+`solo_tap_ime_action_apps = ["WindowsTerminal.exe"]` を明示的に書いた
+時点で初めて「Windows Terminal だけ」に限定される。
+
+この既定値の選択は、`src/config.rs` の `muhenkan_solo_tap_ime_action` doc
+（`:430-465`、`explicit_ime_action_target` の doc comment を正本と宣言）
+と、正本側（`key_pipeline.rs:1166-1203`）の両方に反映する（「次の
+アクション」参照）。
 
 ### 決定2: ケース1（コア側、belief ON）は意図的にスコープ対象外のまま残す
 
@@ -157,6 +195,24 @@ KeyDown/KeyUp 間で判定が変わらない）。
 明示的に設定した挙動（`muhenkan_solo_tap_ime_action` を意図的に設定した
 場合のみ発生）である点も踏まえ、許容する。
 
+**「ケース1は GJI の生キー横取りを経由しない」の根拠（opus-adversarial-
+consult round2 でコード確認済み）**: `nicola_fsm.rs:2175-2185` で
+ケース1が発火すると `actions: SmallVec::new()`（生キーを一切送出しない）
++ `Some(explicit_action)` を返す。元の KeyDown は既に `PendingThumb`
+として `Decision::Consume` 済み（`transport.rs:349-352` が同型の構造を
+明記）であり、生の `VK_NONCONVERT`/`VK_CONVERT` は GJI に届かない。
+
+**残余矛盾が実質ゼロになる可能性（未確認、実装時に確認すること）**:
+ケース1は M13 を維持しており（`resolve_explicit_ime_action:2066-2071`
+の `mode_key_config.is_some_and(is_passthrough)` フィルタ）、
+`key_pipeline.rs:1222-1228` のコメントが「実機のユーザー設定
+`muhenkan_solo_tap_always_suppress = false`（ADR-153 以前からの legacy
+設定）が常に Passthrough へ解決され、明示 config 機能が恒久的に無効化
+されていた」と記録している。本 ADR 執筆のきっかけになったユーザーの
+実機 config で `muhenkan_solo_tap_always_suppress`/
+`henkan_solo_tap_always_suppress` が `false` のままなら、ケース1は
+**そもそも一度も発火しない**——実装時にこの設定値を確認すること。
+
 ## 「IME ON固着」を本ADRの根拠から切り離す（round1 B4 対応）
 
 **round1 opus-adversarial-consult の指摘**: 「awase.exe を完全に停止した
@@ -180,49 +236,75 @@ correction/warmup/reassert）のいずれかが、ユーザーの OFF 操作を�
 効いた」証拠として扱わない——タイミング依存でマスクされた可能性を排除
 できないため。
 
-## 未確定・opus-adversarial-consult round2 で検証すべき点
+## フェンシング・ログ・テスト（opus-adversarial-consult round2 で決着）
 
-1. **決定1の process_name アクセサのフェンシング**: `FocusTracker` の
-   `process_name()`/`solo_tap_ime_action_in_scope()` は他の `current_app_
-   profile()` 系アクセサと同じくフォーカス変更時にキャッシュされる値で
-   あり、フォーカス着地直後の stale window（`focus_tracking.rs:139-144`
-   が記録する BUG-114 根本原因1と同型）を持つ可能性がある。決定1はこの
-   プロセス名ベースの切り替えにより B1/B2（クラス往復由来の誤判定）は
-   解消するが、S1 型の stale window（フォーカス変更直後の一時的な
-   誤判定、fail-open で生キーが GJI へ漏れる方向）が残るかどうかは
-   round2 で確認する。
-2. ログ: ガードが弾いたとき（スコープ外で `Inactive` を返したとき）に
-   `tracing::info!` 等でプロファイル/プロセス名を記録するか
-   （`kp_stage_shadow_ime_toggle` の他の分岐は全てログを出している）。
-3. 回帰テストの置き場所: `crates/awase-windows/src/runtime/mod.rs` 配下は
-   `#[cfg(windows)]` が掛かっており、`#[cfg(test)]` ユニットテストは
-   Linux の `cargo nextest run --workspace --lib` では一切検証されない
-   （CLAUDE.md 既知の制約）。`tests/architecture_guard.rs`
-   （Linux で走るソーススキャン型）に、決定1のガード呼び出しが
-   `explicit_ime_action_target` に存在することを固定する回帰を追加する
-   か検討する。
-4. `matches_disabled_app` の純粋関数テスト自体（`state/app_suppression.rs`）
-   は Linux で走る——`solo_tap_ime_action_apps` の照合ロジック自体は
-   ここに追加のユニットテストを足せる。
+1. **stale window は新設しない（フェンシングは足さない）**:
+   `CurrentFocus::update_with_process_name`（`focus/current.rs:57-83`）は
+   `process_name`・`class_name`・`app_profile` を同一の代入ブロックで
+   同時に更新するため、`process_name()` の stale 窓は `current_app_
+   profile()` のそれと完全に同一であり、プロセス名方式に変えても窓は
+   縮まりも広がりもしない。この窓は `transport.rs::
+   PhysicalKeyDisposition::plan` を含む全てのプロファイル依存判定が
+   既に共有している既存の窓であり、本 ADR が新設するものではない。
+   窓の上限は `ir_stage_focus` の 500ms 周期リフレッシュ
+   （`tracker.rs:126-134`）で抑えられている。fail 方向は両方向ありうる
+   （スコープ外と誤判定→生キーが GJI へ漏れる fail-open が主、スコープ内と
+   誤判定→直前アプリで生キーを抑止）。フェンシングを足すなら
+   `injection_hint_for(pid, class_name)`（`tracker.rs:104-113`）と同型に
+   なるが、`explicit_ime_action_target` は打鍵時点で pid/process を
+   独自に持たないため呼び出し側の改造が必要になり、本 ADR のスコープを
+   超える——**足さない**。
+2. **ログを足す**: `kp_stage_shadow_ime_toggle` の他の全分岐
+   （`:1361`, `:1386`）が `tracing::info!` を出している。スコープ外で
+   無言 `Inactive` を返すと、次の「設定が効かない」報告時に app.log から
+   「スコープ外」「belief ON」「`dedicated_fn_key` で弾かれた」
+   （`:1236-1240`）の区別が付かない。プロセス名を含む1行を、打鍵ごとの
+   journal 圧迫を避けるためレート制限付きで出す。
+3. **回帰テストを足す**: `state/app_suppression.rs` の
+   `matches_disabled_app` は Linux で走る純粋関数テストの対象になる
+   （`solo_tap_ime_action_apps` の照合ロジック自体）。ただしそれだけでは
+   「`explicit_ime_action_target` が実際にこのガードを呼んでいる」ことは
+   固定できない——既存の `architecture_guard.rs` の2本
+   （`kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate`、
+   `explicit_ime_action_case1_keeps_m13_but_case2_3_does_not`）は本変更に
+   一切反応しないため、後日ガードが削除されても誰も気付かない。
+   `architecture_guard.rs` に「`explicit_ime_action_target` の本体が
+   `solo_tap_ime_action_in_scope` の呼び出しを含む」というソーススキャン
+   回帰を1本足す。
 
 ## 次のアクション
 
-1. 本 ADR を opus-adversarial-consult round2 にかけ、上記未確定点を解消する。
-2. 実装後、dragonflyg4 実機で以下を確認する（本 ADR の受け入れ基準）:
+opus-adversarial-consult round1・round2 で Blocker ゼロに収束済み
+（round3 不要と判定）。実装時に行うこと:
+
+1. 実機で `muhenkan_solo_tap_always_suppress`/`henkan_solo_tap_always_
+   suppress` の現在値を確認する（決定2の残余矛盾が実質ゼロになるかの
+   判定材料、round2 R2-4）。
+2. `src/config.rs`（`muhenkan_solo_tap_ime_action` doc、`:430-465`）と
+   `key_pipeline.rs::explicit_ime_action_target`（正本、`:1166-1203`）
+   双方に、`solo_tap_ime_action_apps` による限定と既定値（空=全アプリ）を
+   追記する。
+3. `.claude/rules/fix-requires-evidence.md` の要求に従い、回帰テストを
+   追加する: `state/app_suppression.rs` に `solo_tap_ime_action_apps`
+   照合の純粋関数テスト、`architecture_guard.rs` に
+   `explicit_ime_action_target` が `solo_tap_ime_action_in_scope` を
+   呼んでいることを固定するソーススキャン回帰。
+4. 実装後、dragonflyg4 実機で以下を確認する（本 ADR の受け入れ基準）:
    - Windows Terminal + PowerShell + GJI: `config.toml` の
      `[app_overrides] solo_tap_ime_action_apps = ["WindowsTerminal.exe"]` +
      `muhenkan_solo_tap_ime_action = "off"` 設定時、半角モードで無変換/変換
      → 「@」が再現しないこと。
-   - 他アプリ（例: メモ帳 = Standard、Chrome = Imm32Unavailable）:
-     `solo_tap_ime_action_apps` にリストされていない状態で、無変換/変換
-     単独タップの挙動が本 ADR 適用前と変わらないこと（回帰確認）。
+   - 他アプリ（`solo_tap_ime_action_apps` にリストされていないプロセス、
+     例: メモ帳、Chrome）: 無変換/変換単独タップの挙動が本 ADR 適用前と
+     変わらないこと（回帰確認。プロファイル分類は本 ADR と無関係になった
+     ため、判定基準は「プロセス名がリストに無いこと」のみ）。
    - **「IME ON固着」の再現有無は記録するが、本 ADR の成否判定には使わない**
      （BUG-142 側で別途検証する）。
-3. `.claude/rules/fix-requires-evidence.md` の要求に従い、回帰テスト
-   （`state/app_suppression.rs` の `solo_tap_ime_action_apps` 照合テスト、
-   可能なら `architecture_guard.rs` のガード存在確認）を追加する。
-4. BUG-142 の調査は本 ADR とは独立に進める（journal `ActuationDecision`
+5. BUG-142 の調査は本 ADR とは独立に進める（journal `ActuationDecision`
    レコードによる ADR-172 4系統の内訳確認が最初の手順）。
+6. developマージ時、ADR-172（別ブランチ `adr/172-tsf-blind-rescue-
+   consolidation`）の `related_adr` に `"ADR-173"` を追加する
+   （現状は ADR-173 → ADR-172 の片側参照のみ）。
 
 ## 関連
 
