@@ -4,20 +4,25 @@ title: |-
   無変換/変換ソロタップの生キーパススルーを維持したまま、GJIの実結果を
   ソロタップ確定後に再観測してbeliefへ反映し、Engine ON追従を実現する
 status: |-
-  **2026-09-15: round4（Opus提案役）で真因を特定・修正完了（コミット
-  `f4317675`）。BUG-143参照。** round1〜3（観測ベースの新設計）は全て
-  Blockerで破綻したが、round4でOpusが「新設計は不要、既存機構
-  （ADR-141）がなぜ発火しないか調べるべき」と方向転換を提案した。実機の
-  `config1.db`を取得・解析した結果、`classify_mode_key_ime_action`
-  （`gji_charset_autodetect.rs`）が`session_keymap == CUSTOM(0)`の
-  ときしか`custom_keymap_table`を参照せず、実機では`session_keymap
-  =MSIME(2)`のまま`DirectInput Henkan IMEOn`を含む実在のカスタム
-  テーブルを完全に無視していたことが根本原因と判明した（実機ログでも
-  `[shadow-toggle]`ログが変換タップに対して一切出ないことで裏付け
-  済み）。`custom_keymap_table`が存在し該当行があれば`session_keymap`
-  の値に関わらず優先する形に修正し、回帰テスト2件を追加した（Linux CIで
-  実行可能）。Windows実機での「変換タップ後にEngineが正しくActiveへ
-  遷移するか」の確認は未実施（次セッションで確認すること）。
+  **2026-09-15: round4（Opus提案役）で真因を特定・修正・実機確認まで
+  完了（コミット`f4317675`、developマージ・push済み）。BUG-143参照。**
+  round1〜3（観測ベースの新設計）は全てBlockerで破綻したが、round4で
+  Opusが「新設計は不要、既存機構（ADR-141）がなぜ発火しないか調べる
+  べき」と方向転換を提案した。実機の`config1.db`を取得・解析した結果、
+  `classify_mode_key_ime_action`（`gji_charset_autodetect.rs`）が
+  `session_keymap == CUSTOM(0)`のときしか`custom_keymap_table`を参照
+  せず、実機では`session_keymap=MSIME(2)`のまま`DirectInput Henkan
+  IMEOn`を含む実在のカスタムテーブルを完全に無視していたことが根本
+  原因と判明した。`custom_keymap_table`が存在し該当行があれば
+  `session_keymap`の値に関わらず優先する形に修正し、回帰テスト2件を
+  追加した（Linux CIで実行可能）。
+
+  **実機確認済み（dragonflyg4、2026-09-15）**: 修正版ビルドで
+  直接入力中に変換キーを単独タップ→ログで`[shadow-toggle] intent
+  昇格: vk=0x1C ... action=TurnOn ... false→true`に続けて`Engine
+  activated (ime=true, romaji=true, japanese=true, user=true,
+  reason=Active)`を確認、続く文字入力もNICOLA配列で正しく動作した
+  （ユーザー確認）。ADR-174が目的としたEngine ON追従は達成された。
 
   ユーザー提案の能動actuation代替案（VK_IME_ON注入+VK_CONVERT転送）は
   実機履歴（BUG-113/124）から却下済み（却下理由は本文「却下した代替案」
