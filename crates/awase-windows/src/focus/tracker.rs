@@ -87,6 +87,14 @@ impl FocusTracker {
         self.overrides.input_relay_apps()
     }
 
+    /// `app_overrides.solo_tap_ime_action_apps`（ADR-173）に現在の
+    /// フォーカス先プロセス名が含まれるか（空リスト＝全アプリ対象）。
+    /// `key_pipeline.rs::explicit_ime_action_target`（ケース2/3改）専用。
+    pub(crate) fn solo_tap_ime_action_in_scope(&self) -> bool {
+        self.overrides
+            .solo_tap_ime_action_in_scope(self.process_name())
+    }
+
     pub(crate) fn injection_hint(&self) -> InjectionHint {
         if !self.current.is_focused() {
             return InjectionHint::Default;

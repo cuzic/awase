@@ -3940,6 +3940,31 @@ fn explicit_ime_action_case1_keeps_m13_but_case2_3_does_not() {
     );
 }
 
+/// ADR-173 回帰ガード: `explicit_ime_action_target`（ケース2/3改）が
+/// `solo_tap_ime_action_apps` によるプロセス名スコープ判定
+/// （`solo_tap_ime_action_in_scope`）を呼んでいることを固定する。
+///
+/// `state/app_suppression.rs` の純粋関数テストは照合ロジック自体は
+/// 検証できるが、`explicit_ime_action_target` が実際にこのガードを
+/// 呼んでいるかは固定できない（opus-adversarial-consult round2 R2-6）。
+/// 後日このガード呼び出しが削除されても、既存の
+/// `explicit_ime_action_case1_keeps_m13_but_case2_3_does_not` 等の
+/// テストは一切反応しないため、本テストで別途固定する。
+#[test]
+fn explicit_ime_action_target_checks_solo_tap_scope() {
+    let windows_content = read_crate_file("src/runtime/key_pipeline.rs");
+    let windows_production = production_code_only(&windows_content);
+    let case23_body = extract_fn_body(windows_production, "fn explicit_ime_action_target(");
+    assert!(
+        case23_body.contains("solo_tap_ime_action_in_scope"),
+        "explicit_ime_action_target（ケース2/3改）は \
+         solo_tap_ime_action_in_scope を呼び、app_overrides.\
+         solo_tap_ime_action_apps によるプロセス名限定（ADR-173）を \
+         適用しているはず。この呼び出しが消えると、無変換/変換の明示config \
+         が再びグローバルに効いてしまう。"
+    );
+}
+
 #[test]
 fn input_relay_profile_wiring_occurrence_counts_are_pinned() {
     let expectations: &[(&str, usize)] = &[

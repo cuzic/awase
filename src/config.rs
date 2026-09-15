@@ -460,6 +460,11 @@ pub struct GeneralConfig {
     /// BUG-124節にも記録）。belief ON中の実際のON→OFF遷移（ケース1、
     /// `resolve_explicit_ime_action`〈コア側〉）はこの経緯の対象外で、
     /// `"off"`は引き続きそちらでは正常なactuationを伴う値。
+    ///
+    /// **ADR-173（2026-09-15）**: ケース2/3改（本フィールド、belief OFF側）
+    /// は `app_overrides.solo_tap_ime_action_apps` でプロセス名限定できる
+    /// （既定は空＝全アプリ）。ケース1（belief ON側）はこの限定の対象外の
+    /// まま、常にグローバルに効く。
     #[serde(default)]
     pub muhenkan_solo_tap_ime_action: Option<ShadowImeActionConfig>,
     /// `muhenkan_solo_tap_ime_action` と対称（変換キー用）。
@@ -749,6 +754,22 @@ pub struct AppOverrides {
     /// 通常どおり継続する。
     #[serde(default = "default_input_relay_apps")]
     pub input_relay_apps: Vec<String>,
+    /// `muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`
+    /// （ケース2/3改、belief OFF 側のみ。ケース1〈belief ON 側〉には
+    /// 影響しない）を効かせるプロセス名（大文字小文字無視、`.exe` 有無
+    /// どちらでも一致）。ADR-173。
+    ///
+    /// **既定値は空 = 全アプリで有効**（従来どおり、後方互換維持）。
+    /// 空でない値を設定すると、そのプロセス名にフォーカスがあるときだけ
+    /// `muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action` が効き、
+    /// 他アプリでは無効（GJI 自身のネイティブなかな切替に委ねる）になる。
+    /// Windows Terminal + PowerShell 等の TSF ネイティブ経路でだけ無変換/
+    /// 変換の生キー抑止を効かせたい場合に
+    /// `solo_tap_ime_action_apps = ["WindowsTerminal.exe"]` のように使う
+    /// （`docs/known-bugs/BUG-113.md`、`docs/adr/173-scope-solo-tap-ime-
+    /// action-by-process-name.md` 参照）。
+    #[serde(default)]
+    pub solo_tap_ime_action_apps: Vec<String>,
 }
 
 impl Default for AppOverrides {
@@ -760,6 +781,7 @@ impl Default for AppOverrides {
             force_tsf: Vec::new(),
             disable_apps: default_disable_apps(),
             input_relay_apps: default_input_relay_apps(),
+            solo_tap_ime_action_apps: Vec::new(),
         }
     }
 }
@@ -1271,24 +1293,28 @@ impl AppConfig {
         Self::check_override_list(&overrides.force_bypass, "force_bypass", w);
         Self::check_override_list(&overrides.force_vk, "force_vk", w);
         Self::check_override_list(&overrides.force_tsf, "force_tsf", w);
-        Self::check_disable_apps_list(&overrides.disable_apps, w);
-        Self::check_input_relay_apps_list(&overrides.input_relay_apps, w);
+        Self::check_process_name_list(&overrides.disable_apps, "disable_apps", w);
+        Self::check_process_name_list(&overrides.input_relay_apps, "input_relay_apps", w);
+        Self::check_process_name_list(
+            &overrides.solo_tap_ime_action_apps,
+            "solo_tap_ime_action_apps",
+            w,
+        );
     }
 
-    /// `disable_apps` の空文字列エントリを警告する。
+    /// プロセス名リスト系設定（`disable_apps`/`input_relay_apps`/
+    /// `solo_tap_ime_action_apps`）の空文字列エントリを警告する（ADR-173、
+    /// 3本目の追加を機に共通化。以前は `check_disable_apps_list`/
+    /// `check_input_relay_apps_list` としてほぼ同一のメッセージ文字列違いの
+    /// みで重複していた）。
     ///
     /// 空文字列は `app_suppression::matches_disabled_app` が常に不一致として扱う
     /// ため実害はないが、設定ミスの手がかりとして警告だけ出す。
-    fn check_disable_apps_list(list: &[String], w: &mut Vec<String>) {
+    fn check_process_name_list(list: &[String], list_name: &str, w: &mut Vec<String>) {
         if list.iter().any(String::is_empty) {
-            w.push("app_overrides.disable_apps に空のエントリがあります".to_string());
-        }
-    }
-
-    /// `input_relay_apps` の空文字列エントリを警告する。
-    fn check_input_relay_apps_list(list: &[String], w: &mut Vec<String>) {
-        if list.iter().any(String::is_empty) {
-            w.push("app_overrides.input_relay_apps に空のエントリがあります".to_string());
+            w.push(format!(
+                "app_overrides.{list_name} に空のエントリがあります"
+            ));
         }
     }
 
@@ -1783,6 +1809,49 @@ input_relay_apps = ["relay.exe", ""]
                 .iter()
                 .any(|w| w.contains("app_overrides.input_relay_apps")),
             "expected a warning about input_relay_apps, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_solo_tap_ime_action_apps_defaults_to_empty() {
+        // ADR-173: 既定値は空＝全アプリで有効（後方互換維持）。
+        let toml_str = r#"
+[general]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.app_overrides.solo_tap_ime_action_apps.is_empty());
+    }
+
+    #[test]
+    fn test_solo_tap_ime_action_apps_custom_list_parse() {
+        let toml_str = r#"
+[general]
+
+[app_overrides]
+solo_tap_ime_action_apps = ["WindowsTerminal.exe"]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.app_overrides.solo_tap_ime_action_apps,
+            vec!["WindowsTerminal.exe"]
+        );
+    }
+
+    #[test]
+    fn test_solo_tap_ime_action_apps_empty_entry_warns() {
+        let toml_str = r#"
+[general]
+
+[app_overrides]
+solo_tap_ime_action_apps = ["WindowsTerminal.exe", ""]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("app_overrides.solo_tap_ime_action_apps")),
+            "expected a warning about solo_tap_ime_action_apps, got: {warnings:?}"
         );
     }
 

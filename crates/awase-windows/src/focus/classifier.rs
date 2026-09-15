@@ -180,6 +180,18 @@ impl ForceOverrides {
         &self.inner.input_relay_apps
     }
 
+    /// `solo_tap_ime_action_apps`（ADR-173）にプロセス名が含まれるか。
+    ///
+    /// `is_app_disabled` と同じ形だが極性が逆（空リスト＝全アプリ対象）
+    /// ——`state::app_suppression::solo_tap_ime_action_in_scope` 参照。
+    #[must_use]
+    pub(crate) fn solo_tap_ime_action_in_scope(&self, process_name: &str) -> bool {
+        crate::state::app_suppression::solo_tap_ime_action_in_scope(
+            &self.inner.solo_tap_ime_action_apps,
+            process_name,
+        )
+    }
+
     /// 注入ヒントを返す（ForceTsf / ForceVk / Default）。
     ///
     /// `process_name` の取得を1回にまとめ、ヘルパー関数経由で判定する。
