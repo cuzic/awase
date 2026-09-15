@@ -2495,6 +2495,40 @@ fn raw_mechanism_write_sites_are_confined_to_chain_writers() {
     }
 }
 
+/// ADR-171: `candidate_was_seen` を消費する呼び出し箇所を固定する。
+///
+/// ADR-171 対象は2箇所: `platform.rs::on_ime_applied_inner` の既存リセットと、
+/// `ime_controller.rs::apply_mechanism` の GjiDirect OFF 方向 override 送信直後の
+/// リセット。`runtime/focus_tracking.rs` にもフォーカス変更時のキャリーオーバー
+/// 防止用リセットが1箇所あるが、これは本ADRのスコープ外なので意図的に除外する。
+#[test]
+fn candidate_was_seen_consumption_sites_are_pinned_for_adr171() {
+    const NEEDLE: &str = "crate::tsf::observer::reset_candidate_was_seen(";
+    let mut breakdown: Vec<(String, usize)> = Vec::new();
+    for path in list_src_files() {
+        if path == "src/runtime/focus_tracking.rs" {
+            continue;
+        }
+        let content = read_crate_file(&path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, NEEDLE);
+        if count > 0 {
+            breakdown.push((path, count));
+        }
+    }
+    breakdown.sort();
+    assert_eq!(
+        breakdown,
+        vec![
+            ("src/ime_controller.rs".to_string(), 1),
+            ("src/platform.rs".to_string(), 1),
+        ],
+        "`reset_candidate_was_seen(` の ADR-171 対象呼び出し箇所は \
+         `platform.rs` と `ime_controller.rs` の2箇所に固定されています。\
+         実際: {breakdown:?}"
+    );
+}
+
 /// `count_real_calls` に加えて、tracing フォーマット文字列中の言及
 /// （例: `tracing::debug!("... SendInput(...) ...")`）と、行末コメント中の
 /// 言及（例: `foo(); // SendInput(...) の説明`）を除外する。
