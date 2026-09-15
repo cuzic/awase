@@ -143,7 +143,7 @@
 | [BUG-139](BUG-139.md) | ADR-163のActuationDecisionRecord診断が、with_app再入時のskipカウンタ二重加算と一部同期記録点のcaller未設定を持っていた（修正済み） |
 | [BUG-140](BUG-140.md) | `right_thumb_key`と同じキーを`keys.ime_detect.on`に登録すると、変換キー単独タップ毎にIME再適用が暴発し、GJI自身の変換機能と競合+「あ」混入 |
 | [BUG-141](BUG-141.md) | gji_direct_already_matchesがcandidate_was_seen desync証拠を無視し2・3回目のCtrl+無変換を無送信で握り潰す（ADR-171「案Z」で修正案起草済み） |
-| [BUG-142](BUG-142.md) | Windows Terminal + GJI、物理半角/全角キーがIMEをONから戻せなくなる（「IME ON固着」）。再現条件・因果関係とも未確定、実機で複数回再現試行も失敗 |
+| [BUG-142](BUG-142.md) | Windows Terminal + GJI、物理半角/全角キーがIMEをONから戻せなくなる（「IME ON固着」）。2026-09-15の再検証2回とも再現せず。charset(FULLSHAPE)軸は物理キーでは動かずWM_IME_CONTROL直接書込でのみ動くことを新たに確認 |
 
 ## その他の資料
 
