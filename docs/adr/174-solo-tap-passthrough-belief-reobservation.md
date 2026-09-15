@@ -4,7 +4,27 @@ title: |-
   無変換/変換ソロタップの生キーパススルーを維持したまま、GJIの実結果を
   ソロタップ確定後に再観測してbeliefへ反映し、Engine ON追従を実現する
 status: |-
-  **起草し直し（2026-09-15、目的を再設定）。opus-adversarial-consult未実施。**
+  **opus-adversarial-consult round1でBlocker5件・Major7件を検出、設計は
+  成立しないと判明（2026-09-15）。次セッションで全面redesignが必要。**
+  最重要（B1）: `resolve_pending_thumb_as_single`は対象シナリオ
+  （`ime_on=false`）では**一度も呼ばれない**——`Engine::on_input_body`の
+  Phase 2が`compute_active(ctx)=false`で早期returnし、この関数を含む
+  Phase 3（NicolaFsm）自体に入らない。旧版が使っていた`kp_stage_shadow_
+  ime_toggle`（Engine活性に依存しない層）の方が到達性は正しく、今回の
+  変更は安全性を上げたのではなく機能そのものを消していた。加えてB2
+  （`last_intent`がSomeの間`effective_open()`は`desired_open`に固定され
+  観測を一切見ない設計のため、観測を足してもbeliefが動かない——観測前に
+  `last_intent`をクリアする専用イベントの正当化が別途必要）、B3（提案
+  した再観測は読み取り専用ではなくdrift correction経由でSendInputに
+  到達し、しかもGJIが開けたIMEをawaseが閉じに行くという**目的と逆方向**
+  のactuationになる。これはBUG-113「@」対策で閉じたガード5の穴を再び
+  開ける）が残る。**一方、目的達成に必要なbelief報告経路
+  （`classify_conv_transition`のBUG-26対策分岐）は既に実装済みで、
+  欠けているのは`should_run_idle_conv_check`のガード3の条件緩和だけ、
+  という代替設計（M1）をレビュアーが提示した**——次セッションはこちらを
+  起点に再設計し、B2（`last_intent`ロック）を別途解決すること。
+
+  以下は上記redesign対象になる前の起票内容（参考として残す）。
   当初この ADR は BUG-142（IME ON固着）の原因説明として起票されたが、
   round1/round2 で「belief乖離→固着」という因果自体が実機で確定できず
   （B1未解決）、対抗仮説（charset軸デッドロック）も出た末に、BUG-142の
