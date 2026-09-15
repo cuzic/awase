@@ -540,39 +540,49 @@ impl HotKeyGuard {
         Ok(Self(HOTKEY_ID_FOCUS_OVERRIDE))
     }
 
-    /// BUG-142スパイク診断ホットキー (Ctrl+Shift+F9) を登録する。
+    /// BUG-142スパイク診断ホットキー (修飾なしDelete) を登録する。
     /// spike/bug142-charset-axis-diag、developへマージしない。
+    /// Ctrl+Shift+F9は他ソフト（またはOS）と衝突して発火しないことが
+    /// 実機検証で判明したため、修飾なしの単独キーに変更した。
+    /// このホットキーが有効な間、システム全体でDeleteキーの本来の機能は失われる
+    /// （診断ビルド専用、developへは絶対にマージしない）。
     fn register_diag_dump() -> Result<Self> {
-        use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_CONTROL, MOD_SHIFT};
+        use windows::Win32::UI::Input::KeyboardAndMouse::HOT_KEY_MODIFIERS;
         // SAFETY: RegisterHotKey with None HWND registers on the calling thread's message queue; VK and modifiers are valid values.
         unsafe {
             RegisterHotKey(
                 None,
                 HOTKEY_ID_DIAG_DUMP,
-                MOD_CONTROL | MOD_SHIFT,
-                u32::from(crate::vk::VK_F9.0),
+                HOT_KEY_MODIFIERS(0),
+                u32::from(crate::vk::VK_DELETE.0),
             )
-            .context("Failed to register diag dump hotkey: Ctrl+Shift+F9")?;
+            .context("Failed to register diag dump hotkey: Delete")?;
         }
-        tracing::info!("[bug142-spike] Diag dump hotkey registered: Ctrl+Shift+F9");
+        tracing::info!(
+            "[bug142-spike] Diag dump hotkey registered: Delete (修飾なし、Deleteの本来機能は無効化される)"
+        );
         Ok(Self(HOTKEY_ID_DIAG_DUMP))
     }
 
-    /// BUG-142スパイク診断ホットキー (Ctrl+Shift+F10) を登録する。
+    /// BUG-142スパイク診断ホットキー (修飾なしInsert) を登録する。
     /// spike/bug142-charset-axis-diag、developへマージしない。
+    /// このホットキーが有効な間、システム全体でInsertキーの本来の機能は失われる
+    /// （診断ビルド専用、developへは絶対にマージしない）。
     fn register_diag_charset_probe() -> Result<Self> {
-        use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_CONTROL, MOD_SHIFT};
+        use windows::Win32::UI::Input::KeyboardAndMouse::HOT_KEY_MODIFIERS;
         // SAFETY: RegisterHotKey with None HWND registers on the calling thread's message queue; VK and modifiers are valid values.
         unsafe {
             RegisterHotKey(
                 None,
                 HOTKEY_ID_DIAG_CHARSET_PROBE,
-                MOD_CONTROL | MOD_SHIFT,
-                u32::from(crate::vk::VK_F10.0),
+                HOT_KEY_MODIFIERS(0),
+                u32::from(crate::vk::VK_INSERT.0),
             )
-            .context("Failed to register diag charset probe hotkey: Ctrl+Shift+F10")?;
+            .context("Failed to register diag charset probe hotkey: Insert")?;
         }
-        tracing::info!("[bug142-spike] Diag charset probe hotkey registered: Ctrl+Shift+F10");
+        tracing::info!(
+            "[bug142-spike] Diag charset probe hotkey registered: Insert (修飾なし、Insertの本来機能は無効化される)"
+        );
         Ok(Self(HOTKEY_ID_DIAG_CHARSET_PROBE))
     }
 }
