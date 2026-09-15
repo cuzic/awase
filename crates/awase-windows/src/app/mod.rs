@@ -60,6 +60,15 @@ pub(crate) fn set_taskbar_created_msg(msg: u32) {
 /// 手動フォーカスオーバーライドホットキー ID (Ctrl+Shift+F11)
 const HOTKEY_ID_FOCUS_OVERRIDE: i32 = 2;
 
+/// BUG-142実機検証用スパイク診断: conv-mode/belief状態ダンプホットキー (Ctrl+Shift+F9)
+/// spike/bug142-charset-axis-diag、developへマージしない一時的な診断コード。
+const HOTKEY_ID_DIAG_DUMP: i32 = 3;
+
+/// BUG-142実機検証用スパイク診断: charset軸プローブ送信ホットキー (Ctrl+Shift+F10)
+/// VK_DBE_SBCSCHAR(0xF3)を1回SendInputし、charset軸デッドロック仮説のA/Bに使う。
+/// spike/bug142-charset-axis-diag、developへマージしない一時的な診断コード。
+const HOTKEY_ID_DIAG_CHARSET_PROBE: i32 = 4;
+
 /// `WM_WTSSESSION_CHANGE` — セッションの状態変更通知メッセージ
 const WM_WTSSESSION_CHANGE: u32 = 0x02B1;
 
@@ -447,6 +456,14 @@ pub(crate) fn dispatch_engine_message(
         WM_HOTKEY if wparam.0 == HOTKEY_ID_FOCUS_OVERRIDE as usize => {
             let _ = with_app(|app| unsafe {
                 message_handlers::handle_wm_hotkey_focus_override(app);
+            });
+        }
+        WM_HOTKEY if wparam.0 == HOTKEY_ID_DIAG_DUMP as usize => {
+            let _ = with_app(|app| unsafe { message_handlers::handle_wm_hotkey_diag_dump(app) });
+        }
+        WM_HOTKEY if wparam.0 == HOTKEY_ID_DIAG_CHARSET_PROBE as usize => {
+            let _ = with_app(|app| unsafe {
+                message_handlers::handle_wm_hotkey_diag_charset_probe(app);
             });
         }
         WM_DUMP_JOURNAL => {

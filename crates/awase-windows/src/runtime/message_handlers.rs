@@ -1209,6 +1209,55 @@ pub(crate) unsafe fn handle_wm_hotkey_focus_override(app: &mut Runtime) {
     app.toggle_app_override();
 }
 
+/// WM_HOTKEY ハンドラ (HOTKEY_ID_DIAG_DUMP、Ctrl+Shift+F9)。
+///
+/// spike/bug142-charset-axis-diag: BUG-142の実機検証専用の一時的な診断コード、
+/// developへマージしない。conv-modeの生値とbelief状態を突き合わせてログに残す。
+/// beliefの書き込みは一切行わない（読み取り専用、ime-belief-architecture.md対象外）。
+pub(crate) unsafe fn handle_wm_hotkey_diag_dump(app: &mut Runtime) {
+    // SAFETY: get_ime_conversion_mode_raw は Win32 API 呼び出しのみ、副作用なし。
+    let conv_raw = unsafe { crate::ime::get_ime_conversion_mode_raw() };
+    let (native, katakana, fullshape, roman) = conv_raw.map_or((None, None, None, None), |v| {
+        (
+            Some(v & 0x0001 != 0),
+            Some(v & 0x0002 != 0),
+            Some(v & 0x0008 != 0),
+            Some(v & 0x0010 != 0),
+        )
+    });
+    tracing::warn!(
+        "[bug142-spike-diag] conv_raw={:?} (NATIVE={:?} KATAKANA={:?} FULLSHAPE={:?} \
+         ROMAN={:?}) belief.effective_open={} belief.input_mode={:?}",
+        conv_raw.map(|v| format!("0x{v:04X}")),
+        native,
+        katakana,
+        fullshape,
+        roman,
+        app.platform_state.ime.effective_open(),
+        app.platform_state.ime.input_mode(),
+    );
+    app.show_tray_balloon(
+        "awase (bug142-spike)",
+        &format!(
+            "conv={:?} belief_open={}",
+            conv_raw.map(|v| format!("0x{v:04X}")),
+            app.platform_state.ime.effective_open(),
+        ),
+    );
+}
+
+/// WM_HOTKEY ハンドラ (HOTKEY_ID_DIAG_CHARSET_PROBE、Ctrl+Shift+F10)。
+///
+/// spike/bug142-charset-axis-diag: BUG-142の実機検証専用の一時的な診断コード、
+/// developへマージしない。VK_DBE_SBCSCHAR(0xF3、半角方向)を1回SendInputし、
+/// charset軸デッドロック仮説のA/Bに使う。beliefの書き込みは一切行わない
+/// （awaseの通常のactuationパイプラインを経由しない、素のSendInputのみ）。
+pub(crate) unsafe fn handle_wm_hotkey_diag_charset_probe(_app: &mut Runtime) {
+    // SAFETY: send_ime_mode_key は SendInput 呼び出しのみ、belief には触れない。
+    let sent = unsafe { crate::ime::send_ime_mode_key(crate::vk::VK_DBE_SBCSCHAR) };
+    tracing::warn!("[bug142-spike-diag] charset probe: send VK_DBE_SBCSCHAR(0xF3) sent={sent}");
+}
+
 /// WM_APP (トレイメッセージ) ハンドラ
 pub(crate) unsafe fn handle_wm_app_tray(hwnd: HWND, lparam: LPARAM) {
     tracing::debug!(
