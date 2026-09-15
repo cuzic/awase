@@ -284,6 +284,17 @@ pub(crate) fn apply_mechanism(
                     // 送信時に即座に消費することで、次回 apply がリセット
                     // タイミング依存で同じ証拠を再度読んでしまう BUG-113 型の
                     // 二重送信を防ぐ（ADR-171「BUG-113再導入にならない理由」）。
+                    //
+                    // 既知の限界（ADR-171 round4 M4、/code-review指摘で明文化）:
+                    // この消費は「SendInput の発行に成功した」時点で行われ、
+                    // GJI が実際に候補ウィンドウを閉じたことの確認を待たない。
+                    // このため、この override が効かず候補ウィンドウが開いた
+                    // ままで新しい EVENT_OBJECT_SHOW が発火しない場合、次回の
+                    // 押下では candidate_was_seen が既に false に戻っており
+                    // 再び AlreadyMatched へ落ちる（＝1回の desync 証拠につき
+                    // 再送は1回だけが保証される）。恒久的な解（候補が開いた
+                    // ままであることを継続的に検知する）は本 ADR のスコープ外
+                    // （ADR-171「残る既知の限界」節参照）。
                     crate::tsf::observer::reset_candidate_was_seen();
                 }
                 ImeOpenOutcome::Applied
