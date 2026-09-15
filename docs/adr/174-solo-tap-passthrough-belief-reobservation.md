@@ -4,9 +4,27 @@ title: |-
   無変換/変換ソロタップの生キーパススルーを維持したまま、GJIの実結果を
   ソロタップ確定後に再観測してbeliefへ反映し、Engine ON追従を実現する
 status: |-
-  **2026-09-15: opus-adversarial-consult 3ラウンドいずれもBlocker検出で
-  破綻。能動actuation代替案も実機履歴から却下（ユーザー判断）。次
-  セッションは下記「次に検討すべき方向」から再設計すること。**
+  **2026-09-15: round4（Opus提案役）で真因を特定・修正完了（コミット
+  `f4317675`）。BUG-143参照。** round1〜3（観測ベースの新設計）は全て
+  Blockerで破綻したが、round4でOpusが「新設計は不要、既存機構
+  （ADR-141）がなぜ発火しないか調べるべき」と方向転換を提案した。実機の
+  `config1.db`を取得・解析した結果、`classify_mode_key_ime_action`
+  （`gji_charset_autodetect.rs`）が`session_keymap == CUSTOM(0)`の
+  ときしか`custom_keymap_table`を参照せず、実機では`session_keymap
+  =MSIME(2)`のまま`DirectInput Henkan IMEOn`を含む実在のカスタム
+  テーブルを完全に無視していたことが根本原因と判明した（実機ログでも
+  `[shadow-toggle]`ログが変換タップに対して一切出ないことで裏付け
+  済み）。`custom_keymap_table`が存在し該当行があれば`session_keymap`
+  の値に関わらず優先する形に修正し、回帰テスト2件を追加した（Linux CIで
+  実行可能）。Windows実機での「変換タップ後にEngineが正しくActiveへ
+  遷移するか」の確認は未実施（次セッションで確認すること）。
+
+  ユーザー提案の能動actuation代替案（VK_IME_ON注入+VK_CONVERT転送）は
+  実機履歴（BUG-113/124）から却下済み（却下理由は本文「却下した代替案」
+  節参照）。round1〜3の詳細は以下に残す（いずれも観測ベースの新設計を
+  試みて破綻した経緯で、round4の「既存機構の不発を直す」という
+  正しい方針には直接寄与していないが、belief解決の全階層
+  （`IntentStore`等）を明らかにした調査価値は残る）。
 
   - **round1**（旧設計、`resolve_pending_thumb_as_single`統合）:
     Blocker5件。最重要（B1）: この関数は対象シナリオ（`ime_on=false`）
