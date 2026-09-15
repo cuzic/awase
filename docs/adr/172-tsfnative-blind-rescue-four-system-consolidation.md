@@ -1,12 +1,15 @@
 ---
 id: ADR-172
 title: |-
-  TsfNative ON方向救済4系統(force-on/drift correction/warmup/reassert)の整理方針
+  TsfNative ON方向救済4系統(force-on/drift correction/warmup/reassert)の現状整理と評価基盤の指針
 status: |-
-  起草（opus-adversarial-consult round1反映済み・round2待ち）。round1でBlocker6件・
-  Should-fix6件を受け、決定1「挙動不変」の主張を撤回、決定2を「issue_open_warrant()へ
-  の配線」から「観測ソース信頼フィルタの共有述語抽出」へ再設計、決定3をreassertが
-  既にA-2済みという事実に基づき書き直した。決定はまだ確定していない。
+  起草（opus-adversarial-consult round1・round2反映済み・round3待ち）。round2で
+  決定2「観測ソース信頼フィルタの共有述語抽出」も実装不能と判明（B1: 対象入口を
+  1つに限定できない、B2: 抽出述語の型が噛み合わずBUG-63ケースに効かない、B3:
+  「観測ソースの信頼判定」が4箇所目の独立判定になる）。さらにS6で、決定2が
+  前提としていた「force-onとdrift correctionの双方向衝突」はBUG-110修正時点で
+  既に解消済みと判明した。これを受け、決定2を「ゲートを直す」から「現状を
+  記録し、実装するなら実機コーパスでの差分検証を条件にする」へ方針転換した。
 related_adr:
   - "ADR-087"
   - "ADR-090"
@@ -20,18 +23,17 @@ related_adr:
   - "ADR-163"
 ---
 
-# ADR-172: TsfNative ON方向救済4系統(force-on/drift correction/warmup/reassert)の整理方針
+# ADR-172: TsfNative ON方向救済4系統(force-on/drift correction/warmup/reassert)の現状整理と評価基盤の指針
 
 ## ステータス
 
-**起草。opus-adversarial-consult round1を反映済み、round2は未実施。** round1
-（`opus-review-adr172-round1.md`）はBlocker 6件・Should-fix 6件を検出した。最大の
-指摘は、決定2の当初案（`issue_open_warrant()`への配線）が「drift correctionと同じ
-観測ソース信頼基準を共有する」というADRの主張を実際には達成しない（`issue_open_
-warrant()`はむしろ`HeuristicDefault`を鮮度窓なしで採用し、`FocusProbe`を除外する
-——drift correctionとは逆方向）という事実誤認だった。本版はこれを踏まえ、決定2を
-「`issue_open_warrant()`への配線」から「drift correctionの観測ソース信頼フィルタを
-共有述語として抽出しforce-on側にも適用する」という、より狭い変更へ再設計した。
+**起草。opus-adversarial-consult round1・round2を反映済み、round3は未実施。**
+round1（Blocker6件）はADRの事実誤認を正した。round2（Blocker3件・Should-fix6件）
+は、round1で再設計した決定2がなお実装不能であること、そして決定2が前提とする
+「force-onとdrift correctionの衝突」自体がBUG-110修正で既に解消済みであることを
+明らかにした。round2完了後、ゼロベースで見直した結果、**決定2を「ゲート実装」
+から撤退させ、「実装しない理由の記録」＋「次に触る人向けの評価手順の明記」に
+方針転換した**（詳細は「round1→round2で分かったこと」節）。
 
 ## 背景
 
@@ -43,7 +45,7 @@ warrant()`はむしろ`HeuristicDefault`を鮮度窓なしで採用し、`FocusP
 |---|---|---|---|---|
 | force-on | `runtime/mod.rs::apply_force_on_for_imm_broken`（`:949`の`is_eligible_for_ime_force_on`経由）/ `try_force_on_bootstrap`（`:1234`、同ゲート共有） | 周期リフレッシュ（`ir_stage_notify`）から毎tick呼ばれる | A-1（shadow、`issue_actuation_order`をログ用に呼ぶのみ。`runtime/mod.rs:1035`と`:1282`の2箇所） | TsfNative唯一のON方向救済。beliefが実際は閉じているのに開いていると誤認したケースの回復（ADR-098） |
 | drift correction | `runtime/ime_refresh.rs::ir_apply_drift_correction`（ゲート: `state/platform_state.rs::check_drift_correction`） | 同じく`ir_stage_notify`から、force-on実行の直後に毎tick呼ばれる | A-1（shadow） | `desired != observed`が閾値超で継続した際の実VK再送 |
-| warmup | `output/mod.rs::eager_tsf_warmup_inner`（`send_eager_tsf_warmup`/`latch_eager_warmup_without_send`の2関数、呼び出し元7箇所: `platform.rs`5箇所〔`:305,642,1427,1451,1610`〕、`output/vk_send.rs:692`、および`platform.rs:299`の`send_eager_warmup`ラッパー経由で`runtime/ime_refresh.rs`のFocusChange処理から間接的に1箇所） | フォーカス復帰・打鍵起因など複数トリガー、単一合流点を持たない | 対象外（`apply_ime_open_with_view`を経由しない） | TSF composition contextのcold-start対策（先回りVK送信でリテラル化を防ぐ） |
+| warmup | `output/mod.rs::eager_tsf_warmup_inner`（`send_eager_tsf_warmup`/`latch_eager_warmup_without_send`の2関数経由で到達、直接呼び出し6箇所: `platform.rs`5箇所〔`:305,642,1427,1451,1610`〕、`output/vk_send.rs:692`＋`latch_eager_warmup_without_send`1箇所で計7到達経路） | フォーカス復帰・打鍵起因など複数トリガー、単一合流点を持たない | 対象外（`apply_ime_open_with_view`を経由しない） | TSF composition contextのcold-start対策（先回りVK送信でリテラル化を防ぐ） |
 | reassert | `runtime/mod.rs::reassert_explicit_physical_key`（ADR-121 D1） | 物理IMEキー検出という**イベント駆動**（`key_pipeline.rs`, `message_handlers.rs`、settle中に見送られた分は`TIMER_IME_REFRESH`の同一tickで消費される） | **A-2（強制、`:1189-1196`で`order.would_have_blocked()`なら実送信しない。4系統中唯一）** | 物理IMEキーでの訂正がno-opに握り潰される問題（BUG-37）への冪等再送。**根本原因はADR-121が明示的に未解明のまま** |
 
 いずれも最終的に`apply_ime_open_with_view`/`apply_ime_open_with_belief`（実OS
@@ -57,11 +59,13 @@ actuationの発火点）を呼ぶ独立入口であり、`.claude/rules/fix-requ
 事実は、当初「発火の性質が違うから別カテゴリ」という理由づけで見落としていた
 （round1 S2）。決定3で扱い直す。
 
-## 今回の出発点: 「観測手段を見つければ4系統を統合できるのでは」を検証し、否定した
+## 観測手段の探索: 3方向は不成立と確認、2方向は未検討のまま残る
 
 ADR-151（案D、belief追随のみでactuateしない方向）の再検討条件の1つは「TsfNativeでも
 IME open状態を読める観測手段が手に入ったとき」だった。2026-09-14、これを満たせないか
-以下の観点で調査した。
+以下5方向で調査した。
+
+**不成立と確認した3方向（実際にmozc本体ソース・Microsoft公式ドキュメントを確認済み）:**
 
 1. mozc（GJIの元になっているOSS、Apache 2.0）自身の内部プロセス間通信を能動的に問い
    合わせる: `Status.activated`は欲しい値そのものだが、`session_id`がGJIのTIP内部
@@ -82,205 +86,206 @@ IME open状態を読める観測手段が手に入ったとき」だった。202
    理由そのもの）が実装しているかは未確認、(b) 実装されていても対象は変換中文字列の
    下線表示変化のみで、**IME ON/OFF（開閉）そのものは対象外**。
 
-**round1指摘（S5）: 上記3方向は「外部からTSF-nativeアプリのIME状態を覗く」新しい
-経路の探索であり、以下の2つを見落としていた。**
+**未検討のまま残っている2方向（round1 S5指摘、実行していない）:**
 
-4. **`ImmGetDefaultIMEWnd` + `WM_IME_CONTROL(IMC_GETOPENSTATUS)`という古典的な
-   クロスプロセス読み取り経路**。このリポジトリには既にスパイク実装
+4. `ImmGetDefaultIMEWnd` + `WM_IME_CONTROL(IMC_GETOPENSTATUS)`という古典的な
+   クロスプロセス読み取り経路。このリポジトリには既にスパイク実装
    （`crates/awase-windows/examples/spike_egui_ime_control_probe.rs`、
-   `spike_bug112_ime_wnd_race_probe.rs`）があり、手順のdocコメントも書かれている。
-   TsfNativeアプリでこの経路が成立するかどうかを実際に実行して確認した記録は
-   本ADRには無い。**「不成立」と断定する前に、このスパイクを実機で走らせて結果を
-   引用する必要がある**（未実施）。
-5. **awase自身が既に持っている観測を、型としては存在するが本番で一度も使われて
-   いない`ObservationSource::Gji`/`Tsf`（authority=Actuating）へ記録する**という、
-   新しい外部APIを一切追加しない改善余地。`state/evidence.rs`にこの2つは型として
-   宣言されているが、本番コードでの`Observed::<evidence::Gji>`/`<evidence::Tsf>`の
-   構築点はゼロ（テストとdocのみ）。GJI戦略が実際に行っているGJIとのI/O
-   （`GjiIoInference`という別ソースは既にある）の一部をここへ記録できれば、
-   TsfNativeで`Actuating`権威の観測プールが構造的に空という現状（決定2の再設計の
-   根拠そのもの、後述）が変わる可能性がある。
+   `spike_bug112_ime_wnd_race_probe.rs`）がある。TsfNativeアプリでこの経路が成立
+   するかどうかを実際に実行して確認した記録は無い。
+5. `ObservationSource::Gji`/`Tsf`（authority=Actuating、型のみ存在し本番writer
+   ゼロ）へ、awase自身が既に行っているGJIとのI/O観測の一部を記録する余地。
+   新しい外部APIを一切追加しない改善であり、実現すればTsfNativeで`Actuating`
+   権威の観測プールが構造的に空という現状（round2 B2/B3で明らかになった、決定2が
+   literal実装不能だった一因）が変わりうる。
 
-**結論（訂正）: 今回調査した3方向（mozc IPC能動/受動傍受、TSF公開UI要素API）に
-限っては統合の決め手にならないと確認したが、4・5は未検討のまま残っている。
-「観測手段の探索は尽くした」とは言えない。** ADR-151の案Dは、少なくとも1〜3の
-経路では再検討できないことが分かったが、4・5次第では状況が変わりうる。決定4で
-扱いを明確にする。
+**結論: 「観測手段の探索は尽くした」とは言えない。** 1〜3は再検討できないと確認
+したが、4・5は未着手のまま残る。ADR-151の案Dはこの2方向次第では状況が変わりうる
+——ただし本ADRのスコープでは4・5に着手しない（決定4）。
 
-## 決定
+## round1→round2で分かったこと: 決定2は「ゲートを直す」形では実装できない
+
+round1は、当初案（`is_eligible_for_ime_force_on()`を`issue_open_warrant()`へ配線
+する）が「drift correctionと同じ観測ソース信頼基準を共有する」というADRの主張を
+実際には達成しない（`issue_open_warrant()`はむしろ`HeuristicDefault`を鮮度窓なしで
+採用し、`FocusProbe`を除外する——drift correctionとは逆方向）ことを明らかにした。
+
+これを受けround1改訂版は、決定2を「`check_drift_correction`が持つ
+`ConvOpenInference`/`HeuristicDefault`除外判定を純粋関数として抽出し、
+`is_eligible_for_ime_force_on()`にも適用する」という、より狭い再設計に変更した。
+**しかしround2は、この再設計もそのままでは実装できないことを示した:**
+
+- **対象入口を1つに限定できない**: `is_eligible_for_ime_force_on()`は
+  `apply_force_on_for_imm_broken`と`try_force_on_bootstrap`の**両方が共有する
+  1関数**である。関数本体を変えれば両方が対象になる。`try_force_on_bootstrap`は
+  「まともな観測が無い（＝`HeuristicDefault`しか残らない）ときの最後の手段」なので、
+  除外を入れるとこの機構の発火条件とほぼ完全に潰れ合う。
+- **抽出した述語の型が噛み合わない**: drift correction側は`most_recent_trusted()`
+  という単一の観測源で判定するが、force-on側の`effective_open()`は
+  `resolve_open_at()`の5パターンの解決経路（`BaseDecision`）を通る。BUG-63の当該
+  ケースである`ConvOpenInference`（confidence Medium固定）は`derive_any()`による
+  `DeriveMedium`枝で決着し、`most_recent_trusted()`を経由しない。単純に移植すると
+  **肝心のBUG-63ケースには一切効かず、`HeuristicDefault`ケースだけ中途半端に効く**
+  という結果になる。正しく実装するには`resolve_open_at()`が返す診断API
+  `DecidedBy`/`BaseDecision`を使う必要があり、これは元の再設計案には書かれて
+  いなかった。
+- **「観測ソースの信頼判定」がこれで4箇所目の独立判定になる**: 既に
+  `check_drift_correction`、`issue_open_warrant()`のStep3、`decide_conv_
+  inference_drift`（`ime_actuation.rs`、BUG-113対策）の3箇所が、それぞれ違う
+  理由で「どの観測源を信頼するか」を独立に判定している。新述語は4箇所目であり、
+  しかも`decide_conv_inference_drift`と**同じファイルに同居**する。ADRが
+  「BUG-110型の分散判定を直す」と言いながら、新しい分散判定を1つ増やして終わる
+  ことになる。
+
+**さらに重要なのは、round2 S6が示した前提の陳腐化である**: 決定2の動機だった
+「force-onとdrift correctionが互いに逆方向へ書き込みを取り合う」という双方向の
+衝突は、**BUG-110追補9の修正時点で既にdrift correction側が沈黙しており、解消
+済み**である。残っているのは「force-onだけが`HeuristicDefault`という弱い観測を
+信じてONを書く」という**片側だけの動作**であり、これは「衝突の解消」ではなく
+「TsfNativeのON方向救済を弱めるかどうか」という、ADR-151のBlocker（force-onの
+構造的永久停止）に直結するリスク受容の判断である。**現在進行形の実害（衝突）は
+既に無い。残っているのは理論上の懸念（BUG-63パターンの再発可能性）だけ。**
+
+## 決定（ゼロベースで見直した結論）
 
 観測手段探しに全面的には賭けず、代わりに**ADR-157が既に示した教訓**（「発火する
 仕組みの上に抑止する仕組みを重ねるより、発火源そのものの条件を直す方が優れている」
 — force-onとdrift correctionの衝突を`DriftBurst`調停機構で解決しようとして実機
-ソークまで完了させたが、既存ガードへの2行追加に置き換えて全体を撤回した実例）を、
-今回の4系統整理の設計原則として明示的に採用する。
+ソークまで完了させたが、既存ガードへの2行追加に置き換えて全体を撤回した実例）を
+設計原則として採用する。round1・round2を経て、この原則を最も素直に適用した結論は
+**「実害の無いゲートを、机上の議論だけで直そうとしない」**だった
+（`.claude/rules/fix-requires-evidence.md`が「キー選択」を含む再発ファミリーに
+テストか記録を要求している精神とも一致する）。
 
-具体的には以下を提案する。
+### 決定1: warmupのGated/Actuated非対称は、今は統合しない。既知の限界として記録する
 
-### 決定1: warmupの呼び出しを整理する（挙動不変ではない、Gated/Actuatedの扱いが決定の本体）
+`platform.rs:1610`（Actuated系）が`resolve_warmup_ime_on()`の`off_drift_active`
+ゲート（INV-B1'）を通らない非対称は実在する（ADR-132「Phase 2」節に既に記録
+済み）。しかしこれが実際に問題を起こした実機インシデントは無い。7箇所の呼び出し
+（`eager_tsf_warmup_inner`への到達経路として）を単一合流点へ集約すること自体が
+Gated/Actuatedのどちらかへ挙動を倒す決定を伴う以上、**実害が出るまで統合しない**。
 
-**round1指摘（B6）により「挙動不変の構造リファクタ」という当初の前提は撤回する。**
-7箇所の呼び出しは実際には2系統に分かれる:
+**決定: コード変更は行わない。** ADR-132の既存記述で十分にカバーされているため、
+本ADRでは新規の記録も追加しない。`latch_eager_warmup_without_send`の存在と
+`architecture_guard.rs:4192`の`origin`区別は、将来この非対称が実際に問題を起こし
+統合を検討する際の出発点として、この節に残す。
 
-- **Gated系**（`platform.rs:305,1427,1451`等）: `resolve_warmup_ime_on()`経由で
-  `check_drift_correction`と同一の`off_drift_active`ゲート（INV-B1'）を通す。
-- **Actuated系**（`platform.rs:1610`、`WarmupImeOn::from_actuated`）: このゲートを
-  **通らない**。force-onが`SetOpen(true)`を適用した直後にもここを通るため、drift
-  correctionがOFF方向へ送り続けている最中でも随伴warmup（`VK_IME_ON`）が飛びうる
-  （既知の限界、ADR-132「Phase 2」節）。
+### 決定2: force-on側のBUG-63パターンは実装せず、既知の技術的負債として明記する。次に触る人への評価手順を残す
 
-単一の合流点へ集約し「呼ぶかどうかの条件だけを渡す」形にすると、このGated/Actuated
-の作り分けをどちらかへ倒すことになり、挙動が変わる。**決定: 集約するかどうか自体を
-決定の本体とし、以下を明示する:**
+**決定: `is_eligible_for_ime_force_on()`へのコード変更は行わない。** 理由:
 
-- 倒すなら「Actuated系にもINV-B1'ゲートを適用する」方向（=warmup全系統をGatedに
-  揃える）にする。逆方向（Gatedを無条件化する）はBUG-110型の衝突を広げるため採らない。
-- `latch_eager_warmup_without_send`（`output/mod.rs:1150`、`platform.rs:1610`の
-  else分岐、ADR-149 M3）は`compute_focus_probe_grace`の唯一の入力
-  `eager_warmup_sent_ms`の供給元であり、集約後も必ず保存する。
-- `architecture_guard.rs:4192`が固定する`origin`（`"gated"`/`"actuated"`）区別を
-  維持するか、統合後の新しい診断手段に置き換えるかを実装前に決める。
+- 動機だった「双方向の衝突」は既に解消済み（round2 S6）。現在進行形の実害が無い。
+- round1・round2の2ラウンドを費やしてなお、「対象入口を1つに絞れない」
+  「型が噛み合わずBUG-63ケースを取り逃す」「新しい分散判定を1つ増やすだけ」という
+  実装不能な設計しか出せなかった。これは個々の設計者の力量の問題ではなく、
+  **「どの観測源をどれだけ信頼してよいか」がTsfNativeの構造的な盲目性
+  （`FeedbackPolicy::Blind`）のもとでは、原理的に机上の議論だけで正しく決め
+  切れない**ことを示している。
 
-### 決定2: force-on側に、drift correctionと同じ観測ソース信頼フィルタを共有述語として適用する（再設計）
+**この判断を記録として残す**（`is_eligible_for_ime_force_on()`のdocコメント
+`state/platform_state.rs:764-772`が既に「BUG-63の原因パターンが実actuationゲート
+として今も本番で使われている」と自己申告済み。本ADRはこの自己申告を追認し、
+「意図的に、今は直さない」という判断であることを明記する）。
 
-**round1（B1〜B5）で当初案（`issue_open_warrant()`への配線）を検証した結果、以下が
-判明し、当初案は不採用とする。**
+**次にこのゲートを変更する人への評価手順（実施はしない、指針のみ）**: このADRの
+round1・round2はいずれも、手で列挙したケースと机上の議論だけで設計を検証しようと
+して、実装直前まで進んでから欠陥が見つかるということを2回繰り返した。次に同じ
+議論を繰り返さないために、**変更を提案する際は実際の`ActuationDecision`journal
+コーパスに対する差分検証を伴うこと**を推奨する。
 
-- `issue_open_warrant()`（ADR-087/090）は`HeuristicDefault`を**除外せず、鮮度窓
-  なしで明示的に採用する**（Step 4a）。drift correctionの除外ガードとは**逆方向**
-  であり、「観測ソース信頼基準を揃える」という当初の効能は達成されない。
-- TsfNativeでは`Actuating`権威の観測源（`Gji`/`Tsf`）が本番で一度も記録されない
-  ため、`issue_open_warrant()`はTsfNativeにおいて実質「`desired_open` +
-  `IntentStore` + 鮮度窓なし`HeuristicDefault`」に縮退する。これは当初案が書いて
-  いない、別の変更である。
-- `issue_open_warrant()`は`FocusProbe`（`BeliefOnly`権威）を必ず除外する。drift
-  correction側は「`FocusProbe`除外はBUG-16/BUG-20型の固着を再導入するリスクが
-  ある」として**意図的に除外していない**。当初案はこの拒否済みの基準をforce-on側
-  だけに持ち込むことになる。
-- `is_eligible_for_ime_force_on()`の呼び出し元は2箇所あり（`apply_force_on_for_
-  imm_broken`と`try_force_on_bootstrap`）、後者はコード中に「差分オラクルが判明
-  した中で最大の挙動変化」「A-2で倒すのは最後に回す」と明記されている
-  （`runtime/mod.rs:1277-1281`、ADR-090 A-R1/§4.9）。当初案は前者しか対象にして
-  いなかった。
-- 当初案は実質ADR-090 §2.A A-2そのものであり、ADR-090自身が「規模大・実機ソーク
-  必須・挙動変化最大9通り」と評価済みの作業を、軽い「配線」と言い換えていた。
+- `DecisionSite::ForceOnRomajiCorrection`/`ForceOnBootstrap`は既にjournalへ記録
+  される設計になっている（`runtime/mod.rs:1040`、`state/ime_actuation_decision.rs`）。
+- ADR-163 Part D（TH1d'）が構築した不具合報告経由の実機コーパス収集基盤により、
+  実際に1件（`crates/awase-windows/tests/journals/actuation_decision/
+  bug-131-report-01m29kdnz.json`）force-on関連の記録が既に存在する。
+- `state/open_warrant.rs::differential_old_gate_vs_issue_open_warrant`が「旧ゲート
+  vs 新ゲートの判定をケースごとに突き合わせる」手法の前例として既にある（ただし
+  対象は手で列挙したケース表であり、実機コーパスではない）。
 
-**再設計: `issue_open_warrant()`への配線（ADR-090 A-2のforce-on入口への適用）は
-別途トラッキングし、本ADRでは扱わない。代わりに、drift correctionが`check_drift_
-correction`内に持つ「`ConvOpenInference`/`HeuristicDefault`を明示意図なしでは
-信頼しない」という除外判定だけを純粋関数として抽出し（`state/ime_actuation.rs`、
-`.claude/rules/ime-belief-architecture.md`の`classify_*`規約に沿う）、
-`check_drift_correction`と`is_eligible_for_ime_force_on()`の両方から呼ぶ。**
+**この評価手順自体を今すぐ整備することはしない**（消費者＝実際に変更したい人が
+いない状態でテスト基盤だけ先に作るのは、消費ロジックの無い予備投資を避けるという
+このリポジトリの既存の教訓と同型の無駄になる、という判断）。誰かが実際にこの
+ゲートを変えたいと言い出したときに、上記の材料（journal記録・既存コーパス・
+差分オラクルの前例）を使って実機データで検証してから変更する、という順序だけを
+ここに残す。
 
-この案を選ぶ理由:
-
-- warmup↔drift correction間で既に同型の「共有述語」パターン（`resolve_warmup_
-  ime_on`が`check_drift_correction`と同じ判定式を再利用）が実際に機能しており、
-  前例がある。
-- `FocusProbe`の扱いを変えない（`is_eligible_for_ime_force_on()`は引き続き
-  `effective_open()`を主たる根拠として使い、その上に`ConvOpenInference`/
-  `HeuristicDefault`単独ケースの除外だけを追加する）ため、B2が指摘した「force-on
-  が止まるシナリオ」（`FocusProbe`実測がある状況）を新たに作らない。
-- ADR-090 A-2の「大規模・実機ソーク必須・挙動変化9通り」というスコープを本ADRの
-  対象から切り離せる——`is_eligible_for_ime_force_on()`のBUG-63パターン
-  （`effective_open()`を直接actuationの根拠にする構造）自体は解消しないが、
-  それはADR-087/090の別イニシアチブとして残し、本ADRは「BUG-110型の観測ソース
-  非対称」という当初の動機だけに絞る。
-
-**この再設計でも対応が必要な既知の論点（round1 B5、チェックリストへ追加）:**
-
-- BUG-63（「mise」→「くした」誤入力）の再現条件（`ConvOpenInference`単独での
-  force-on eligibility）を、除外導入後も別の経路で再発させないこと。
-- ADR-151のBlocker（force-onの構造的永久停止）を再導入しないこと——除外を追加
-  した結果、force-onの発火頻度が実機ソークで実質ゼロに落ち込んでいないか確認する。
-- 決定3で扱う同一tick内でのreassert/force-on/drift correctionの相互作用
-  （round1 S3、下記チェックリスト6参照）。
-
-**対象を`apply_force_on_for_imm_broken`（1入口）に限定する。`try_force_on_
-bootstrap`はADR-090 A-R1/§4.9の指示どおり対象外とし、別途最後に検討する。**
-
-### 決定3: reassertは「別カテゴリ」だが、決定2が追いつく相手として位置づける
+### 決定3: reassertは「別カテゴリ」だが、force-on/drift correctionより先行している
 
 **round1（S2/S3）により理由づけを訂正する。** reassertは周期tickではなく物理IMEキー
 検出というイベント駆動で、根本原因も未解明（ADR-121）という点は変わらないが、
 **reassertは4系統の中で唯一、既にADR-090 A-2（warrant強制）まで進んでいる**
 （`runtime/mod.rs:1189-1196`、`order.would_have_blocked()`なら送信しない）。
 つまり「発火の性質が違うから統合対象に含めない」という結論は妥当だが、warrantの
-観点では逆に「reassertが先行しており、決定2はその水準にforce-onを近づける動き」
-と位置づけるのが正確。
+観点では「reassertが先行しており、force-on/drift correctionはまだA-1（shadow）
+段階」というのが正確な位置づけ。決定2を見送ったため、この差は当面埋まらない
+——それ自体は問題ではなく、reassertがイベント駆動で挙動変化のリスクが局所的
+だったため先に進められた、という経緯の記録として残す。
 
 **同一tickでの相互作用（round1 S3）**: settleで見送られたreassertは`TIMER_IME_
 REFRESH`の同一tick上で消費され、その同じtickで`ir_stage_notify`がforce-on→drift
-correctionを連続実行する。3者は独立に`Instant::now()`を取るため、`DRIFT_
-CORRECTION_THRESHOLD_MS`等の境界を跨ぐ評価の食い違いが理論上ありうる。**決定2を
-共有述語の抽出（issue_open_warrantを経由しない設計）に留めたため、warrant評価の
-二重化・時刻ズレというS3の主要な懸念自体は今回のスコープでは発生しない**——ただし
-reassertが独自に呼ぶ`issue_actuation_order`とforce-on/drift correctionのtick評価
-との間の一般的な時刻ズレは既存の限界として残る（`resolve_warmup_ime_on`のdocが
-「`now`はバッチ内で一貫しない」と既に記録している問題と同型）。新たに悪化させない
-ことを決定2のチェックリストに含める。
+correctionを連続実行する。3者は独立に`Instant::now()`を取るため、境界を跨ぐ評価の
+食い違いが理論上ありうる（`resolve_warmup_ime_on`のdocが「`now`はバッチ内で一貫
+しない」と既に記録している問題と同型）。**決定2を見送ったため、この節で新たな
+コード変更は発生しない。** 既存の限界として記録するのみ。
 
-### 決定4: 「観測手段が見つかれば」に全面的には賭けないが、未検討の2経路は残す
+### 決定4: 未検討の観測経路2つは、着手せず別issue化する
 
-ADR-151案Dの再検討条件のうち観測手段側は、**今回検討した3方向（mozc IPC能動/受動
-傍受、TSF公開UI要素API）に限って**閉じたことを記録する。ただし以下は未検討のまま
-残し、「探索は尽くした」と誤読されないようにする（round1 S5）:
+決定4は本ADRでは着手判断をしない。上記「観測手段の探索」節の4・5（
+`WM_IME_CONTROL(IMC_GETOPENSTATUS)`古典経路の実機検証、`ObservationSource::Gji`/
+`Tsf`への記録追加）は、実行する価値があるかどうかも含めて別issueで検討する。
+`classify_and_push`のカバレッジ穴修正（ADR-151案Dのもう1つの再検討条件）も同様。
 
-- `WM_IME_CONTROL(IMC_GETOPENSTATUS)`経路の実機検証（既存スパイク
-  `spike_egui_ime_control_probe.rs`を実行して結果を記録する、未実施）。
-- `ObservationSource::Gji`/`Tsf`（Actuating権威、型のみ存在し本番writerゼロ）への
-  記録を追加する余地の検討。
+## 落としてはいけない既知シナリオ（将来この領域を触る際のチェックリスト）
 
-これらは本ADRのスコープ外として別issue化する。`classify_and_push`のカバレッジ穴
-修正（案Dのもう1つの再検討条件）も同様に独立issueとして切り出す。
-
-## 落としてはいけない既知シナリオ（変更時のチェックリスト）
+本ADR自体はコード変更を行わないため、直接のリグレッションチェックリストでは
+ない。将来decision2/decision1を実際に実装する人向けに、これまでの調査で判明した
+落とし穴を記録として残す。
 
 1. BUG-69: TsfNative+GJI+TSF注入モードのフォーカス復帰時、実際にOSへ届くactuationが
-   eager warmupだけになる窓を作らない。
+   eager warmupだけになる窓を作らない（決定1関連）。
 2. BUG-113: 半角/全角キー単独タップで`VK_IME_ON`が重複SendInputされない
-   （ADR-149/167適用後の実測で3回→2回、残り1回はwarmup由来として既知——決定1が
-   `should_send_accompanying_warmup`分岐に触るため、この値が変わらないことを
-   確認する）。
+   （ADR-149/167適用後の実測で3回→2回、残り1回はwarmup由来として既知。決定1に
+   触る場合、この値が変わらないことを確認する）。
 3. BUG-37: 物理IMEキーでの訂正がno-opに握り潰されるケースを再発させない
    （reassertの存在理由そのもの）。
-4. BUG-110追補7〜9: force-onとdrift correctionが同一シナリオで二重SSOTとして
-   衝突しない（ADR-157の反面教師、決定2の直接の動機）。
+4. BUG-110追補7〜9: 「force-onとdrift correctionが二重SSOTとして衝突しない」は
+   既に解消済み（round2 S6）。将来決定2を実装する場合に確認すべきは衝突の有無
+   ではなく、**除外を追加した結果「force-onが止まった後、誰がON方向へ戻すのか」**
+   （ADR-151のBlockerと同型）。
 5. ADR-098 F5: 「TsfNative」判定に`AppImeProfile`の単純matchを使うと、Windows
    Terminal（`is_effectively_tsf_native`では真だが`AppImeProfile`ではImm32Unavailable）
    を誤って対象から漏らす罠が過去2回実際に踏まれている。
-6. BUG-63（「mise」→「くした」）: 決定2の除外導入で`ConvOpenInference`単独での
-   force-onを止めるのは意図した改善だが、その結果ON方向救済が別のシナリオで
-   消えないこと。ADR-151のBlocker（force-onの構造的永久停止）を実機ソークの
-   発火頻度で確認する。
-7. 決定3のS3: reassert・force-on・drift correctionが同一tickで評価される際の
-   `Instant::now()`ズレを、決定2の変更が新たに悪化させないこと。
+6. BUG-63（「mise」→「くした」）: 将来決定2を実装する場合、`ConvOpenInference`は
+   `derive_any()`の`DeriveMedium`枝で決着し`most_recent_trusted()`を経由しない
+   ため、除外述語は`resolve_open_at()`の`DecidedBy`/`BaseDecision`を材料にする
+   こと（round2 B2）。`most_recent_trusted()`ベースの述語では効かない。
 
 ## 非スコープ（明示的に諦めるもの）
 
-- mozc内部IPCの解析・傍受を実装の結合先にすること（前節の調査で閉じたと判断）。
+- mozc内部IPCの解析・傍受を実装の結合先にすること（観測手段の探索1・2で不成立と
+  確認済み）。
 - 4系統を1つの統一state machine/調停エンジンへ完全統合すること（ADR-157の教訓により、
   それ自体を目的にしない）。
 - reassertを他3系統と同じ周期tick駆動の形に作り替えること。
 - `issue_open_warrant()`への全面配線（ADR-090 A-2のforce-on入口への適用、
-  `try_force_on_bootstrap`を含む）。本ADRの決定2はこれを行わず、別途トラッキング
-  する。
+  `try_force_on_bootstrap`を含む）。
+- **決定1（warmup Gated/Actuated統合）・決定2（force-onの観測ソース信頼フィルタ）
+  の実装そのもの。** 実害の記録が無い限り、本ADRの範囲では着手しない。
+- `WM_IME_CONTROL(IMC_GETOPENSTATUS)`スパイクの実機検証、`ObservationSource::
+  Gji`/`Tsf`への記録追加（決定4、別issue化）。
+- force-onゲート変更提案の実機コーパス差分検証基盤の先行整備（決定2、消費者が
+  いない状態でのインフラ投資は避ける）。
 
 ## 次のアクション
 
-1. **決定1**: Gated/Actuatedの作り分けをどちらへ倒すか（Actuated系にINV-B1'
-   ゲートを適用する方向を推奨）を確定した上で着手する。`latch_eager_warmup_
-   without_send`の保存と`architecture_guard.rs`の`origin`区別の扱いを実装計画に
-   明記する。
-2. **決定2**: (i) 対象を`apply_force_on_for_imm_broken`1本に限定すると明記する
-   （`try_force_on_bootstrap`は対象外）。(ii) `check_drift_correction`から
-   `ConvOpenInference`/`HeuristicDefault`除外判定を純粋関数として抽出し
-   `state/ime_actuation.rs`へ置く。(iii) `is_eligible_for_ime_force_on()`へ
-   同判定を追加する。(iv) チェックリスト項目6（BUG-63再発・ADR-151 Blocker
-   頻度）を実機ソークで確認する。(v) `.claude/rules/fix-requires-evidence.md`の
-   「キー選択」ファミリー該当につき、golden更新か`docs/known-bugs/BUG-NNN.md`
-   のどちらかを添える。
-3. 本ADRをopus-adversarial-consult round2にかけ、収束後に実装へ進む。
+1. 本ADRに実装タスクは無い。round3（opus-adversarial-consult）で本版の記録内容
+   （特に「決定2は実装しない」という結論とその根拠）に異存が無いか最終確認する。
+2. 決定4の2経路（`WM_IME_CONTROL`スパイク実機検証、`Gji`/`Tsf`観測記録）を
+   着手するかどうかは別途ユーザー判断を仰ぐ。
+3. `state/platform_state.rs:764-772`（`is_eligible_for_ime_force_on`のdocコメント）
+   に、本ADRへの参照を1行追記することを検討する（「BUG-63パターンは既知、
+   ADR-172で意図的に据え置き」）——ただしこれもコード変更を伴うため、round3の
+   確認後に判断する。
 
 ## 関連
 
@@ -289,6 +294,7 @@ ADR-087（`issue_open_warrant()`の設計、`effective_open()`をactuation根拠
 非スコープ化した対象）、ADR-098（force-on/drift correctionの原型）、ADR-121
 （reassert、D1）、ADR-132（INV-B1'、warmupのoff_drift_activeゲート、決定1が
 扱うGated/Actuated非対称の出典）、ADR-149/151/153（TsfNative ON方向救済の設計
-変遷、案D含む）、ADR-157（調停機構より発火源修正が優れていた前例）、ADR-163
-（actuation決定のI/O分離・再生基盤、TH1eが本ADR的な「実削除+差分ゼロ証明」の
-発効条件になっている）。
+変遷、案D含む）、ADR-157（調停機構より発火源修正が優れていた前例、本ADRが
+最終的に採った「実害が無いなら触らない」という結論の直接の先例）、ADR-163
+（actuation決定のI/O分離・再生基盤、`ActuationDecision`journalと不具合報告
+コーパスが決定2の「次に触る人への評価手順」の土台になっている）。
