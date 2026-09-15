@@ -1215,10 +1215,24 @@ pub(crate) unsafe fn handle_wm_hotkey_focus_override(app: &mut Runtime) {
 /// developへマージしない。conv-modeの生値とbelief状態を突き合わせてログに残す。
 /// beliefの書き込みは一切行わない（読み取り専用、ime-belief-architecture.md対象外）。
 pub(crate) unsafe fn handle_wm_hotkey_diag_dump(app: &mut Runtime) {
-    // SAFETY: get_focused_hwnd/capture_composition_snapshot は Win32 API 呼び出しのみ、副作用なし。
+    // SAFETY: TsfNative(Windows Terminal等)では素の ImmGetContext(hwnd) が
+    // himc_null になり読めない（capture_composition_snapshotで実際に確認済み）。
+    // get_ime_wnd + probe_ime_control(WM_IME_CONTROL経由、TSF互換ウィンドウ宛)を
+    // 使うことで、set_ime_open_for_target/get_ime_conversion_mode_rawと同じ
+    // 経路で読む（副作用なし、読み取り専用probe）。
     let hwnd = unsafe { crate::ime::get_focused_hwnd() };
-    let snap = unsafe { crate::ime::capture_composition_snapshot(hwnd) };
-    let conv_raw = snap.conversion_mode;
+    let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) };
+    let open_raw = match ime_wnd {
+        Some(w) => unsafe { crate::imm::probe_ime_control(w, crate::imm::ProbeCmd::GetOpenStatus, 50) },
+        None => None,
+    };
+    let conv_raw = match ime_wnd {
+        Some(w) => unsafe {
+            crate::imm::probe_ime_control(w, crate::imm::ProbeCmd::GetConversionMode, 50)
+        }
+        .map(|v| v as u32),
+        None => None,
+    };
     let (native, katakana, fullshape, roman) = conv_raw.map_or((None, None, None, None), |v| {
         (
             Some(v & 0x0001 != 0),
@@ -1234,13 +1248,12 @@ pub(crate) unsafe fn handle_wm_hotkey_diag_dump(app: &mut Runtime) {
     let (f3_down, f3_held) = phys(crate::vk::VK_DBE_SBCSCHAR);
     let (f4_down, f4_held) = phys(crate::vk::VK_DBE_DBCSCHAR);
     tracing::warn!(
-        "[bug142-spike-diag] hwnd={hwnd:?} himc_null={} open_status(Imm直接読み)={:?} \
+        "[bug142-spike-diag] hwnd={hwnd:?} ime_wnd={ime_wnd:?} open_raw(WM_IME_CONTROL)={:?} \
          conv_raw={:?} (NATIVE={:?} KATAKANA={:?} FULLSHAPE={:?} ROMAN={:?}) \
          belief.effective_open={} belief.input_mode={:?} \
          hook_phys[F2 down={f2_down} held_ms={f2_held:?}, F3 down={f3_down} held_ms={f3_held:?}, \
          F4 down={f4_down} held_ms={f4_held:?}]",
-        snap.himc_null,
-        snap.open_status,
+        open_raw,
         conv_raw.map(|v| format!("0x{v:04X}")),
         native,
         katakana,
@@ -1252,8 +1265,8 @@ pub(crate) unsafe fn handle_wm_hotkey_diag_dump(app: &mut Runtime) {
     app.show_tray_balloon(
         "awase (bug142-spike)",
         &format!(
-            "open(imm)={:?} conv={:?} belief_open={}",
-            snap.open_status,
+            "open_raw={:?} conv={:?} belief_open={}",
+            open_raw,
             conv_raw.map(|v| format!("0x{v:04X}")),
             app.platform_state.ime.effective_open(),
         ),
