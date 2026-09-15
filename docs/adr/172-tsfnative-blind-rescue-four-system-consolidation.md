@@ -3,7 +3,9 @@ id: ADR-172
 title: |-
   TsfNative ON方向救済4系統(force-on/drift correction/warmup/reassert)の整理方針
 status: |-
-  起草（opus-adversarial-consult未実施）。決定はまだ確定していない。
+  起草（opus-adversarial-consult未実施）。決定2はコード調査でforce-on/drift correction
+  の実際の衝突事例(BUG-110)と非対称な修正状態を確認し、対象箇所(issue_open_warrant()の
+  force-on側への配線)を特定済み。決定はまだ確定していない。
 related_adr:
   - "ADR-098"
   - "ADR-121"
@@ -89,16 +91,34 @@ drift correctionの衝突を`DriftBurst`調停機構で解決しようとして�
 だけを渡す形にする。挙動を変えない純粋なリファクタであり、他系統との関係を論じる前提
 条件として先に片付ける。
 
-### 決定2: force-on × drift correctionの発火条件の重なりを検証する（未実施、次の調査）
+### 決定2: force-on側のactuationゲートを`issue_open_warrant()`へ配線する（調査完了、対象特定済み）
 
-両者は同じ`ir_stage_notify`から毎tick連続実行される。ADR-157はこの2つが実際に衝突した
-前例（BUG-110追補7）であり、そのときの根治は「調停」ではなく「drift correction側の
-除外ガードに1バリアント足す」だった。同じパターンが他にも隠れていないか、
-`force_on_attempt_allowed`と`ir_apply_drift_correction`のゲート条件を並べて、両方が
-同時に真になりうる状態空間が存在するかを調べる。存在する場合、ADR-157の前例に倣い
-「どちらのゲートが本来除外すべきだったか」を特定して直す。調停機構（優先順位表・専用
-リトライタイマー等）を新設する案は、それ単独では採用しない——ADR-157の反例が示す通り、
-複雑さに見合う効果が無いことが多い。
+両者は同じ`ir_stage_notify`から毎tick連続実行される。**実際に重なりを検証した結果、
+BUG-110追補7〜9として既に一度実害が出ていたことが判明した**: `state/platform_state.rs::
+check_drift_correction`のコメントに、`HeuristicDefault`（観測ゼロの安全デフォルト）を
+force-on（`is_eligible_for_ime_force_on` → `effective_open()`経由）とdrift correction
+の両方が信頼し、互いに逆方向へ短時間で書き込みを取り合っていた経緯が明記されている。
+
+**修正は非対称に行われていた。** drift correction側（`check_drift_correction`）には
+`ConvOpenInference`/`HeuristicDefault`を明示意図なしでは信頼しない除外ガードが追加
+されたが、**force-on側（`is_eligible_for_ime_force_on`）には同等の除外が今も無い**。
+同関数のdocコメント自身が「`effective_open()`はactuationの根拠に直接使うべきでは
+ない——これはBUG-63の原因パターンが実actuationゲートとして今も本番で使われている
+状態」と自己申告し、置き換え先として`issue_open_warrant()`（ADR-087、
+`state/open_warrant.rs`、差分テスト`differential_old_gate_vs_issue_open_warrant`
+付きで実装済み）を挙げているが、force-onの呼び出し経路（`runtime/mod.rs::
+apply_force_on_for_imm_broken`）にはまだ配線されていない。
+
+一方、warmupとdrift correctionの間では既に同種の衝突をこのパターンで解決済み
+（`resolve_warmup_ime_on`が`check_drift_correction`と全く同じ判定式を再利用、
+「別々の関数が別々の解決経路で独立に計算するというBUG-110の構造的欠陥をこの2者間
+では作らない」とコメントに明記）。
+
+**決定: 新しい調停機構は作らない。ADR-087で既に設計・実装済みだが未配線の
+`issue_open_warrant()`を、`is_eligible_for_ime_force_on()`の呼び出し箇所へ配線する
+——ADR-087が元々計画していたタスクを完了させる形で、ADR-157/warmup前例と同じ
+「共有述語」パターンに揃える。** これにより力業の調停機構を新設せずに、force-onと
+drift correctionが同じ観測ソース信頼基準を共有するようになる。
 
 ### 決定3: reassertを「同カテゴリ」として扱わない
 
@@ -138,8 +158,10 @@ ADR-151案Dの再検討条件のうち観測手段側は当面閉じたことを
 ## 次のアクション
 
 1. 決定1（warmup呼び出し集約）は独立に着手可能、低リスク。
-2. 決定2（force-on×drift correctionのゲート重なり調査）はコードレベルの検証が必要、
-   本ADR時点では未実施。
+2. 決定2（`is_eligible_for_ime_force_on()`を`issue_open_warrant()`へ配線）は対象箇所を
+   特定済み。ADR-087が元々計画していた配線作業の完了そのもの。`force_on_attempt_
+   allowed`のクールダウン/`applied`判定とどう組み合わせるか（`issue_open_warrant()`が
+   全面置換なのか、追加の必要条件として併用するのか）は実装時に詰める。
 3. 本ADRをopus-adversarial-consultにかけ、収束後に実装へ進む（不具合診断後は
    すぐ実装せずADR起票→opus-adversarial-consultで収束させてから実装する、という
    このリポジトリの既存フローに倣う）。
