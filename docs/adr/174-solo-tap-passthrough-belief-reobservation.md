@@ -4,27 +4,83 @@ title: |-
   無変換/変換ソロタップの生キーパススルーを維持したまま、GJIの実結果を
   ソロタップ確定後に再観測してbeliefへ反映し、Engine ON追従を実現する
 status: |-
-  **opus-adversarial-consult round1でBlocker5件・Major7件を検出、設計は
-  成立しないと判明（2026-09-15）。次セッションで全面redesignが必要。**
-  最重要（B1）: `resolve_pending_thumb_as_single`は対象シナリオ
-  （`ime_on=false`）では**一度も呼ばれない**——`Engine::on_input_body`の
-  Phase 2が`compute_active(ctx)=false`で早期returnし、この関数を含む
-  Phase 3（NicolaFsm）自体に入らない。旧版が使っていた`kp_stage_shadow_
-  ime_toggle`（Engine活性に依存しない層）の方が到達性は正しく、今回の
-  変更は安全性を上げたのではなく機能そのものを消していた。加えてB2
-  （`last_intent`がSomeの間`effective_open()`は`desired_open`に固定され
-  観測を一切見ない設計のため、観測を足してもbeliefが動かない——観測前に
-  `last_intent`をクリアする専用イベントの正当化が別途必要）、B3（提案
-  した再観測は読み取り専用ではなくdrift correction経由でSendInputに
-  到達し、しかもGJIが開けたIMEをawaseが閉じに行くという**目的と逆方向**
-  のactuationになる。これはBUG-113「@」対策で閉じたガード5の穴を再び
-  開ける）が残る。**一方、目的達成に必要なbelief報告経路
-  （`classify_conv_transition`のBUG-26対策分岐）は既に実装済みで、
-  欠けているのは`should_run_idle_conv_check`のガード3の条件緩和だけ、
-  という代替設計（M1）をレビュアーが提示した**——次セッションはこちらを
-  起点に再設計し、B2（`last_intent`ロック）を別途解決すること。
+  **2026-09-15: opus-adversarial-consult 3ラウンドいずれもBlocker検出で
+  破綻。能動actuation代替案も実機履歴から却下（ユーザー判断）。次
+  セッションは下記「次に検討すべき方向」から再設計すること。**
 
-  以下は上記redesign対象になる前の起票内容（参考として残す）。
+  - **round1**（旧設計、`resolve_pending_thumb_as_single`統合）:
+    Blocker5件。最重要（B1）: この関数は対象シナリオ（`ime_on=false`）
+    では**一度も呼ばれない**——`Engine::on_input_body`のPhase 2が
+    `compute_active(ctx)=false`で早期returnし、Phase 3（NicolaFsm）
+    自体に入らない。B2（`last_intent`がSomeの間`effective_open()`は
+    `desired_open`に固定され観測を無視する）、B3（提案した再観測が
+    drift correction経由でSendInputに到達し、GJIが開けたIMEをawaseが
+    閉じに行く逆方向actuationになる——BUG-113「@」対策のガード5の穴を
+    再び開ける）も検出。
+  - **round2**（M2案、`explicit_ime_action_target`統合＋
+    `should_run_idle_conv_check`ガード3緩和）: Blocker3件・Major7件。
+    round1のB2・B3が形を変えて生き残っていることが判明——
+    `report_conv_open_inference()`の呼び出し元が直後に
+    `schedule_ime_refresh(20)`を自ら叩いてdrift correctionを誘発して
+    おり「observe-onlyで安全」という前提が誤りだった。統合ポイント
+    （`explicit_ime_action_target`）も副作用禁止契約・KeyDown/KeyUp
+    二重呼び出しの点で機構的に不適と判明。一方でレビュアーから
+    「`check_drift_correction`のConvOpenInferenceガードは
+    `explicit_intent.is_none()`のときだけ効く→**素の変換/無変換単独
+    タップで`last_intent`を無効化する1つの変更が、belief不動(P1)と
+    逆方向actuation(P2)を同時に解く可能性がある**」という方針転換案
+    （M3の元になった提案）が出た。
+  - **round3**（M3案、新イベント`UserIntentAbandoned`で`last_intent`
+    のみクリア）: Blocker2件。**決定的な見落とし**——
+    `Engine::compute_state`が読む`ctx.ime_on`の供給元は
+    `ImeModel::effective_open()`単体ではなく、その上に`IntentStore`
+    （明示OFF意図を**30秒間**保持、BUG-51追補対策）が重なった
+    `ImeStateHub::effective_open()`である。`last_intent`と
+    `IntentStore`は同じ3箇所（`write_physical_key`/`write_sync_key`/
+    `kp_stage_post_decision`のExplicitUserAction）で**同時に**書かれる
+    ため、`last_intent`だけをクリアしてもIntentStoreが30秒間古い値を
+    返し続け、P1（belief不動）は解けない。逆に`IntentStore`まで消すと
+    それが導入された理由（BUG-51追補、2026-08-11実機再発）が直撃し、
+    しかもdrift correctionも同時に無効化するため訂正経路の無い恒久
+    固着（現状より悪い劣化）になる。round1〜round3の3ラウンド連続で
+    この`IntentStore`層が設計から漏れていた。
+  - **能動actuation代替案**（変換単独タップをVK_IME_ON＋元のVK_CONVERT
+    転送に置き換える、ユーザー提案・2026-09-15）: ADR-153ケース3の
+    実機履歴（`docs/known-bugs/BUG-113.md`・`BUG-124.md`、
+    `key_pipeline.rs:1170-1189`）を精査した結果、**「生キーがGJIへ届く
+    こと」「awase自身が明示actuationすること」のどちらか片方だけでも
+    「@」を誘発するのに十分**と2回の実機A/Bで確定済み。この案は両方を
+    同時に含むため高確率で「@」を再現すると予想され、ユーザー判断で
+    却下・受動観測方針を維持することにした（2026-09-15）。
+
+  レビュアーから目的そのものへの根本的指摘も出ている:
+  `ConvOpenInference`（GJIのconv巡回からの間接推測）はBUG-19・BUG-51
+  追補・BUG-55の3件で「単独で信じてはいけない」と繰り返し確認されて
+  きたソースであり、本ADRの目的（この1件だけを根拠にEngineをActiveに
+  する）はこれらの結論と正面衝突している。
+
+  **次セッションで検討すべき方向（round3レビュアー提案、優先順）**:
+  1. `IntentStore`を含むbelief解決の全階層（`ImeStateHub::
+     effective_open()`→`IntentStore`→`ImeModel::resolve_open_at`→
+     `last_intent`/`derive_any`/`most_recent_trusted`/`force_guards`）
+     をADRに図示してから設計し直す。
+  2. 「クリア」ではなく「素タップから有界なNms間だけ、`IntentStore`
+     より新しいMedium+観測を優先する」という有界窓方式を検討する
+     （BUG-19の1.6秒シナリオとタップ起点で区別可能、`force_guards`
+     の判定〈`BrokenAppBootstrap`への無条件force-ON権限付与、round3
+     Major M5〉には触れない）。Nは`tuning-constants.md`の実測義務対象。
+  3. 弱い間接観測1件だけでEngineを活性化してよいかを先に決める。
+     他ソースとの裏付け（corroboration）を要求する設計に倒せないか
+     検討する。
+  4. GJI既定キーマップで直接入力中の無変換/変換が実際に毎回IMEを
+     開くのか、開かない構成が存在するのか、実機で確認する
+     （現状これは無検証の仮定——round3 Major M4）。
+
+  下記「決定（案）」節は**round1で破綻が確定した旧設計の記述であり
+  失効している**（統合ポイント・未解決点ともに現在の設計方針とは
+  異なる）。実装対象としては使わず、経緯の参考記録としてのみ残す。
+
+  以下は上記redesignが必要になる前の起票内容（参考として残す）。
   当初この ADR は BUG-142（IME ON固着）の原因説明として起票されたが、
   round1/round2 で「belief乖離→固着」という因果自体が実機で確定できず
   （B1未解決）、対抗仮説（charset軸デッドロック）も出た末に、BUG-142の
@@ -144,7 +200,44 @@ action_apps`とも設定解除）。**ADR-173自体（`solo_tap_ime_action_apps`
 上記「`henkan_solo_tap_ime_action = "on"`却下」と同型の問題——固定的な
 意味へ置き換える設計は、チョードキーとしての本来の柔軟性を犠牲にする。
 
-## 決定（案、opus-adversarial-consult未実施）
+## 却下した代替案: 能動actuation（VK_IME_ON注入＋元のVK_CONVERT転送）
+
+（ユーザー提案、2026-09-15）観測に頼る受動的な設計（M2/M3、下記参照）が
+いずれも破綻したことを受け、「無変換/変換の単独タップをVK_IME_ON等の
+IME制御actuationとオリジナルのVK_CONVERT/VK_NONCONVERTの転送を組み合わせた
+打鍵列に置き換え、awase自身が能動的にbeliefを書き換える」という方向性を
+検討した。ADR-153が却下した`henkan_solo_tap_ime_action = "on"`（オリジナル
+キーを完全に置き換え、巡回機能が失われる）とは異なり、こちらは**GJIへの
+生キー転送を維持したまま**IME ON actuationを追加する点が新しい。
+
+**却下**。ADR-153決定1「ケース3」の実機履歴
+（`docs/known-bugs/BUG-113.md`・`docs/known-bugs/BUG-124.md`、
+`crates/awase-windows/src/runtime/key_pipeline.rs:1170-1189`）を精査した
+結果、このアプリ/GJIの組み合わせでは次の2事実が2回の独立した実機A/Bで
+確定している:
+
+1. **旧ケース3**（生キーを抑止 + beliefが変化しなくても毎回強制actuate）
+   → 「@」再現。
+2. **旧ケース3の全面撤回版**（BUG-124、生キー抑止なし + actuateなし、
+   GJI自身が無変換/変換を生で受け取る）→ 「@」再現
+   （GJI自身のTSFキー横取り`ITfKeyEventSink`が原因）。
+3. **ケース3改**（現行、生キーを抑止 + actuateなし）のみ「@」消滅を確認。
+
+つまり「生キーがGJIへ届くこと」「awase自身が明示IME制御actuationを行う
+こと」は、**どちらか片方だけでも「@」を誘発するのに十分**という機序が
+確定している。今回提案した能動actuation案は、この2つのリスク要因を
+**同時に**含む（生キー転送を維持しつつ、明示actuationも追加する）ため、
+未検証ではあるが高確率で「@」を再現すると予想される。実装手段として
+`.yab`の打鍵列機能（`ADR-115`、1キーに複数`KeyAction`を定義できる汎用
+機構）を流用するかどうかは実装上の選択肢に過ぎず、この根本的な相性
+問題を回避できるものではない。
+
+ユーザー判断によりこの方向性は却下し、受動観測方針（下記M2/M3、
+round2/round3で破綻したが方針自体は維持）を継続することにした
+（2026-09-15）。
+
+## 決定（案、opus-adversarial-consult未実施、**round1で破綻・失効。
+参考記録として保持**）
 
 無変換/変換キーの押下が`src/engine/nicola_fsm.rs::
 resolve_pending_thumb_as_single`で**ソロタップとして確定**し、かつ
