@@ -155,17 +155,24 @@ pub(crate) enum ThumbKeyImeWarning {
 ///    ある（BUG-115で判明。`awase-gji-config::keymap::extract_ime_keys`が
 ///    これらのトークンを認識し、`STATUSES_WHEN_IME_OFF`/
 ///    `STATUSES_WHEN_IME_ON`に基づき`On`/`Off`/`Toggle`へ分類する——ATOK
-///    プリセット由来の行をそのままコピーした場合は3.と同じ`Toggle`に
+///    プリセット由来の行をそのままコピーした場合は4.と同じ`Toggle`に
 ///    classifyされる）。Henkan/Muhenkanそれぞれ独立に判定する
 ///    （一方だけ設定されている場合もある）。
-/// 3. **`session_keymap == ATOK`（overlay無し、custom無し）**:
+/// 3. **`session_keymap`がCUSTOM以外でも`custom_keymap_table`に該当行が
+///    ある場合はそれを優先する**（ADR-174実機検証、2026-09-15）:
+///    `session_keymap`がプリセット値（実機でMSIME=2を確認）のままでも、
+///    `custom_keymap_table`にユーザーが個別上書きした行
+///    （`DirectInput\tHenkan\tIMEOn`等、F15-F19のSetMode割り当てと
+///    共存する形で実機確認済み）が残っていることがある。テーブルに
+///    該当行が無ければ4.のプリセット静的知識へフォールスルーする。
+/// 4. **`session_keymap == ATOK`（overlay無し、custom無し）**:
 ///    `google/mozc`の`src/data/keymap/atok.tsv`（2026-09-05取得）は、
 ///    Henkan/Muhenkan双方を`DirectInput`状態で`IMEOn`、`Precomposition`
 ///    状態で`CancelAndIMEOff`に割り当てている——`ctx.ime_on`の値に応じて
 ///    反転する割当てだが、`ShadowImeAction::Toggle`
 ///    （`Engine::apply_ime_open_request`の`Toggle => !ctx.ime_on`）で
 ///    **正確に表現できる**（「表現不能」ではない）。
-/// 4. **それ以外**（`MSIME`/`MOBILE`/`KOTOERI`/`CHROMEOS`/フィールド不在/
+/// 5. **それ以外**（`MSIME`/`MOBILE`/`KOTOERI`/`CHROMEOS`/フィールド不在/
 ///    未知の値、または`CUSTOM`だがHenkan/Muhenkanトークンが無い）:
 ///    割り当てなし。`ms-ime.tsv`/`mobile.tsv`はHenkanが`Reconvert`
 ///    （IME開閉と無関係）でMuhenkanは該当行自体が無く、`kotoeri.tsv`/
@@ -263,7 +270,14 @@ impl ModeKeyCandidate {
 ///    `awase-gji-config::keymap::extract_ime_keys`がこれらのトークンを
 ///    認識し、`STATUSES_WHEN_IME_OFF`/`STATUSES_WHEN_IME_ON`に基づき
 ///    `On`/`Off`/`Toggle`へ分類する）。
-/// 3. **`session_keymap`がプリセット（overlay/custom無し）**:
+/// 3. **`session_keymap`がCUSTOM以外でも`custom_keymap_table`に該当行が
+///    ある場合はそれを優先する**（ADR-174実機検証、2026-09-15）:
+///    `session_keymap`がプリセット値（実機でMSIME=2を確認）のままでも、
+///    `custom_keymap_table`にユーザーが個別上書きした行
+///    （`DirectInput\tHenkan\tIMEOn`等、F15-F19のSetMode割り当てと
+///    共存する形で実機確認済み）が残っていることがある。テーブルに
+///    該当行が無ければ4.のプリセット静的知識へフォールスルーする。
+/// 4. **`session_keymap`がプリセット（overlay/custom無し）**:
 ///    `google/mozc`の各プリセットtsv（2026-09-05取得）の静的知識。
 ///    - `ATOK`: Henkan/Muhenkan双方を`DirectInput`状態で`IMEOn`、
 ///      `Precomposition`状態で`CancelAndIMEOff`に割り当てている——
@@ -277,7 +291,7 @@ impl ModeKeyCandidate {
 ///      開閉と無関係の絶対モード設定なので矛盾しない、単純に`On`）。
 ///      Henkan/Muhenkanへの割当ては`Reconvert`のみでIME開閉と無関係。
 ///    - `KOTOERI`/`CHROMEOS`: 該当行なし。
-/// 4. **それ以外**（フィールド不在/未知の値、または`CUSTOM`だが該当
+/// 5. **それ以外**（フィールド不在/未知の値、または`CUSTOM`だが該当
 ///    トークンが無い）: 割り当てなし。フィールド不在/`NONE`は、Windows版
 ///    GJIでは`ConfigHandler::GetDefaultKeyMap()`（`config_handler.cc`で
 ///    確認済み）により実質MSIME相当なので、`MSIME`の分岐へ委ねる
@@ -315,6 +329,27 @@ pub(crate) fn classify_mode_key_ime_action(
         };
         let keys = awase_gji_config::keymap::extract_ime_keys(table);
         return classify_vk_in_ime_keys(&keys, key.vk_name());
+    }
+    // ADR-174実機検証（2026-09-15）: `session_keymap`が`CUSTOM`以外の値
+    // （実機でMSIME=2を確認）でも、`custom_keymap_table`にこのキーの
+    // 明示的な行（実機で`DirectInput\tHenkan\tIMEOn`を確認）が実在する
+    // ことがある——旧実装はこの場合`custom_keymap_table`を一切参照せず
+    // 下記プリセット静的知識（Henkan/Muhenkanは`None`）へ落ち、実際に
+    // GJIがIMEを開いてもawaseのbeliefが追従しなかった。`session_keymap`
+    // がプリセット値のままでも`custom_keymap_table`にユーザーが個別に
+    // 上書きした行が残る実例（F15-F19のSetMode等と共存）が実機で確認
+    // 済みのため、テーブルに該当行があればプリセットの静的知識より
+    // 優先する。テーブルに該当行が無ければ下記のプリセット分岐へ
+    // フォールスルーする（`session_keymap == CUSTOM`の場合はこの
+    // フォールスルーを行わない——真にCUSTOM選択時は「テーブルに無い
+    // ＝割り当てなし」がGJIの実際の意味論であり、他プリセットの静的
+    // 知識を借用する根拠が無いため、上のCUSTOM専用分岐のまま`None`を
+    // 返す）。
+    if let Some(table) = &raw.custom_keymap_table {
+        let keys = awase_gji_config::keymap::extract_ime_keys(table);
+        if let Some(found) = classify_vk_in_ime_keys(&keys, key.vk_name()) {
+            return Some(found);
+        }
     }
     match raw.session_keymap {
         Some(v) if v == awase_gji_config::SESSION_KEYMAP_ATOK => match key {
@@ -1160,6 +1195,60 @@ Precomposition\tEisu\tToggleAlphanumericMode
         let (henkan, muhenkan) = classify_thumb_key_ime_actions(&raw);
         assert_eq!(henkan, Some(ImeToggleKind::On));
         assert_eq!(muhenkan, None);
+    }
+
+    /// ADR-174実機検証（2026-09-15、dragonflyg4）: `session_keymap`が
+    /// `MSIME`（実機で値2を確認）のままでも、`custom_keymap_table`に
+    /// `DirectInput\tHenkan\tIMEOn`という実際のユーザー上書きが残って
+    /// いれば、プリセット静的知識（Henkan/Muhenkanは`None`）より
+    /// 優先されるべき。旧実装ではこの場合`custom_keymap_table`を一切
+    /// 参照せず`None`を返し、GJIが実際にIMEを開いてもawaseのbeliefが
+    /// 追従しなかった（ユーザー報告、実機ログで`[shadow-toggle]`行が
+    /// 一切出力されないことを確認済み）。実機の`config1.db`はこれ以外にも
+    /// `Composition Henkan CompositionModeHiragana`等の行やF15-F19の
+    /// SetMode割り当てを含む（本テストはHenkan/Muhenkan分類に関係する
+    /// 部分のみ再現）。
+    #[test]
+    fn classify_msime_session_keymap_with_populated_custom_table_prefers_table() {
+        let table = "status\tkey\tcommand\n\
+            DirectInput\tHenkan\tIMEOn\n\
+            Composition\tHenkan\tCompositionModeHiragana\n";
+        let raw = GjiRawConfig {
+            session_keymap: Some(awase_gji_config::SESSION_KEYMAP_MSIME),
+            custom_keymap_table: Some(table.to_string()),
+            ..GjiRawConfig::default()
+        };
+        assert_eq!(
+            classify_mode_key_ime_action(ModeKeyCandidate::Henkan, &raw),
+            Some(ImeToggleKind::On)
+        );
+        // Muhenkanはテーブルに該当行が無いため、プリセット静的知識
+        // （MSIMEはMuhenkanに割り当てなし）へフォールスルーする。
+        assert_eq!(
+            classify_mode_key_ime_action(ModeKeyCandidate::Muhenkan, &raw),
+            None
+        );
+        // Hiragana/Katakanaはテーブルに該当行が無いため、MSIMEプリセット
+        // 静的知識（`On`）へフォールスルーする——テーブルの存在が
+        // 無関係なキーの判定を壊さないことの固定。
+        assert_eq!(
+            classify_mode_key_ime_action(ModeKeyCandidate::Hiragana, &raw),
+            Some(ImeToggleKind::On)
+        );
+    }
+
+    /// `custom_keymap_table`が存在してもHenkan/Muhenkanに該当する行が
+    /// 無ければ、MSIMEプリセットの静的知識（`None`）へフォールスルーする
+    /// （2.5節が3節を上書きしないことの固定）。
+    #[test]
+    fn classify_msime_session_keymap_with_table_lacking_henkan_falls_back_to_preset() {
+        let table = "status\tkey\tcommand\nDirectInput\tF21\tIMEOn\n";
+        let raw = GjiRawConfig {
+            session_keymap: Some(awase_gji_config::SESSION_KEYMAP_MSIME),
+            custom_keymap_table: Some(table.to_string()),
+            ..GjiRawConfig::default()
+        };
+        assert_eq!(classify_thumb_key_ime_actions(&raw), (None, None));
     }
 
     /// CUSTOMだがHenkan/Muhenkanトークンが無いテーブルは割り当てなし。
