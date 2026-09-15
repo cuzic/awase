@@ -69,6 +69,12 @@ const HOTKEY_ID_DIAG_DUMP: i32 = 3;
 /// spike/bug142-charset-axis-diag、developへマージしない一時的な診断コード。
 const HOTKEY_ID_DIAG_CHARSET_PROBE: i32 = 4;
 
+/// BUG-142実機検証用スパイク診断: WM_IME_CONTROL経由で直接 open=false+半角に
+/// 強制するホットキー (Ctrl+Shift+F12)。キー入力/SendInputを一切経由しない。
+/// H1(物理キーのVK生成は現在の実IME状態の関数)の決定的検証用。
+/// spike/bug142-charset-axis-diag、developへマージしない一時的な診断コード。
+const HOTKEY_ID_DIAG_FORCE_HALFWIDTH: i32 = 5;
+
 /// `WM_WTSSESSION_CHANGE` — セッションの状態変更通知メッセージ
 const WM_WTSSESSION_CHANGE: u32 = 0x02B1;
 
@@ -464,6 +470,11 @@ pub(crate) fn dispatch_engine_message(
         WM_HOTKEY if wparam.0 == HOTKEY_ID_DIAG_CHARSET_PROBE as usize => {
             let _ = with_app(|app| unsafe {
                 message_handlers::handle_wm_hotkey_diag_charset_probe(app);
+            });
+        }
+        WM_HOTKEY if wparam.0 == HOTKEY_ID_DIAG_FORCE_HALFWIDTH as usize => {
+            let _ = with_app(|app| unsafe {
+                message_handlers::handle_wm_hotkey_diag_force_halfwidth(app);
             });
         }
         WM_DUMP_JOURNAL => {

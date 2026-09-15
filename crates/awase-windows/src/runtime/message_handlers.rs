@@ -1215,8 +1215,10 @@ pub(crate) unsafe fn handle_wm_hotkey_focus_override(app: &mut Runtime) {
 /// developへマージしない。conv-modeの生値とbelief状態を突き合わせてログに残す。
 /// beliefの書き込みは一切行わない（読み取り専用、ime-belief-architecture.md対象外）。
 pub(crate) unsafe fn handle_wm_hotkey_diag_dump(app: &mut Runtime) {
-    // SAFETY: get_ime_conversion_mode_raw は Win32 API 呼び出しのみ、副作用なし。
-    let conv_raw = unsafe { crate::ime::get_ime_conversion_mode_raw() };
+    // SAFETY: get_focused_hwnd/capture_composition_snapshot は Win32 API 呼び出しのみ、副作用なし。
+    let hwnd = unsafe { crate::ime::get_focused_hwnd() };
+    let snap = unsafe { crate::ime::capture_composition_snapshot(hwnd) };
+    let conv_raw = snap.conversion_mode;
     let (native, katakana, fullshape, roman) = conv_raw.map_or((None, None, None, None), |v| {
         (
             Some(v & 0x0001 != 0),
@@ -1225,9 +1227,20 @@ pub(crate) unsafe fn handle_wm_hotkey_diag_dump(app: &mut Runtime) {
             Some(v & 0x0010 != 0),
         )
     });
+    // hook.rs 側の per-VK 物理状態（H4: awase 内部の静的 state が固着候補かどうかの
+    // 切り分け用）。0xF2/0xF3/0xF4 = VK_DBE_HIRAGANA/SBCSCHAR/DBCSCHAR。
+    let phys = |vk: VkCode| (hook::is_physical_key_down(vk), hook::physical_key_held_ms(vk));
+    let (f2_down, f2_held) = phys(crate::vk::VK_DBE_HIRAGANA);
+    let (f3_down, f3_held) = phys(crate::vk::VK_DBE_SBCSCHAR);
+    let (f4_down, f4_held) = phys(crate::vk::VK_DBE_DBCSCHAR);
     tracing::warn!(
-        "[bug142-spike-diag] conv_raw={:?} (NATIVE={:?} KATAKANA={:?} FULLSHAPE={:?} \
-         ROMAN={:?}) belief.effective_open={} belief.input_mode={:?}",
+        "[bug142-spike-diag] hwnd={hwnd:?} himc_null={} open_status(Imm直接読み)={:?} \
+         conv_raw={:?} (NATIVE={:?} KATAKANA={:?} FULLSHAPE={:?} ROMAN={:?}) \
+         belief.effective_open={} belief.input_mode={:?} \
+         hook_phys[F2 down={f2_down} held_ms={f2_held:?}, F3 down={f3_down} held_ms={f3_held:?}, \
+         F4 down={f4_down} held_ms={f4_held:?}]",
+        snap.himc_null,
+        snap.open_status,
         conv_raw.map(|v| format!("0x{v:04X}")),
         native,
         katakana,
@@ -1239,7 +1252,8 @@ pub(crate) unsafe fn handle_wm_hotkey_diag_dump(app: &mut Runtime) {
     app.show_tray_balloon(
         "awase (bug142-spike)",
         &format!(
-            "conv={:?} belief_open={}",
+            "open(imm)={:?} conv={:?} belief_open={}",
+            snap.open_status,
             conv_raw.map(|v| format!("0x{v:04X}")),
             app.platform_state.ime.effective_open(),
         ),
@@ -1256,6 +1270,58 @@ pub(crate) unsafe fn handle_wm_hotkey_diag_charset_probe(_app: &mut Runtime) {
     // SAFETY: send_ime_mode_key は SendInput 呼び出しのみ、belief には触れない。
     let sent = unsafe { crate::ime::send_ime_mode_key(crate::vk::VK_DBE_SBCSCHAR) };
     tracing::warn!("[bug142-spike-diag] charset probe: send VK_DBE_SBCSCHAR(0xF3) sent={sent}");
+}
+
+/// WM_HOTKEY ハンドラ (HOTKEY_ID_DIAG_FORCE_HALFWIDTH、Ctrl+Shift+F12)。
+///
+/// spike/bug142-charset-axis-diag: BUG-142の実機検証専用の一時的な診断コード、
+/// developへマージしない。キー入力・SendInputを一切経由せず、
+/// `WM_IME_CONTROL`（`set_ime_open_cross_process` / `IMC_SETCONVERSIONMODE`、
+/// awaseの物理キー処理パイプライン・hookとは完全に独立な経路）で直接
+/// open=false かつ FULLSHAPE ビットを落とす。
+///
+/// 「物理半角/全角キーが生成するVKは、その瞬間の実IME状態(open/charset)から
+/// 都度計算される関数であり、独立したトグル記憶ではない」という仮説(H1)の
+/// 決定的検証用: 固着中にこれを押した直後、物理キーを1回押して正しい方向
+/// (直前の実際の状態を反転する方向)のVKが生成されるかを見る。
+pub(crate) unsafe fn handle_wm_hotkey_diag_force_halfwidth(_app: &mut Runtime) {
+    // SAFETY: get_focused_hwnd は Win32 API 呼び出しのみ。
+    let hwnd = unsafe { crate::ime::get_focused_hwnd() };
+    // open 軸: WM_IME_CONTROL/IMC_SETOPENSTATUS(false)。SendInputは一切使わない。
+    // SAFETY: set_ime_open_for_target は SendMessageTimeoutW ラッパー、副作用は
+    // IME open 状態の変更のみ。
+    let open_ok = unsafe { crate::ime::set_ime_open_for_target(hwnd, false) };
+    // charset 軸: 現在の conv からFULLSHAPEビットのみを落として書き戻す
+    // （NATIVE/KATAKANA/ROMANは温存し、charset軸だけを狙って動かす）。
+    let conv_before = unsafe { crate::ime::get_ime_conversion_mode_raw() };
+    let conv_ok = if let Some(before) = conv_before {
+        let target = before & !0x0008u32; // FULLSHAPE クリア = 半角
+        // SAFETY: get_ime_wnd は hwnd から IME ウィンドウを解決するだけの読み取り。
+        //         actuate_ime_control は SendMessageTimeoutW ラッパー。
+        let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) };
+        match ime_wnd {
+            Some(w) => unsafe {
+                crate::imm::actuate_ime_control(
+                    w,
+                    crate::imm::ActuateCmd::SetConversionMode(target),
+                    150,
+                )
+            }
+            .is_some(),
+            None => false,
+        }
+    } else {
+        false
+    };
+    tracing::warn!(
+        "[bug142-spike-diag] force-halfwidth: hwnd={hwnd:?} open_ok={open_ok} \
+         conv_before={:?} conv_ok={conv_ok} (WM_IME_CONTROL経由、SendInput/キー入力を一切経由しない)",
+        conv_before.map(|v| format!("0x{v:04X}")),
+    );
+    _app.show_tray_balloon(
+        "awase (bug142-spike)",
+        &format!("force-halfwidth: open_ok={open_ok} conv_ok={conv_ok}"),
+    );
 }
 
 /// WM_APP (トレイメッセージ) ハンドラ
