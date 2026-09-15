@@ -4,19 +4,19 @@ title: |-
   物理半角/全角キー（VK_DBE_SBCSCHAR/DBCSCHAR）の固定方向マッピングをやめ、
   Toggleとして解決することでIME ON固着を解消する（BUG-142）
 status: |-
-  起草・opus-adversarial-consult round3反映済み。**round3で方針・適用条件
-  ・V5の同値性は収束、新規Blockerなし**（2026-09-15）。round1が当初案
-  （no-op N回連続検出→フォールバック送信）にBlocker5件・Major8件を検出し、
-  提示した代替案（`keys.ime_detect.toggle`にこの2VKを追加しToggle解決に
-  変える）を実機A/Bで検証した結果、**固着が解消することを確認した**
-  （dragonflyg4）。round2は方針自体は支持しつつ実装形態とスコープに
-  Blocker3件を検出し、round3がその2択（実装層・スコープ）に回答した:
-  実装層は`enrich_ime_relevance`の既存override機構を拡張する案
-  （`ImeDetectConfig::default()`変更は`Config::save`が既存ユーザーに
-  届かないため撤回済み）、スコープは`AppImeProfile::InputRelay`のみを
-  除外し`active_ime_kind`では絞らない（GJI限定は`active_ime_kind`の
-  cold window——BUG-116/ADR-137が踏んだ罠と同型——でフォーカス直後の
-  最初の押下がちょうど効かなくなるため却下）。実装着手可。
+  起草・opus-adversarial-consult round4反映済み。**round4判定: 設計判断
+  （方針・適用条件・実装層・スコープ）は収束、Blockerなし**（2026-09-15）。
+  round1が当初案（no-op N回連続検出→フォールバック送信）にBlocker5件・
+  Major8件を検出し、提示した代替案（`keys.ime_detect.toggle`にこの2VKを
+  追加しToggle解決に変える）を実機A/Bで検証した結果、**固着が解消する
+  ことを確認した**（dragonflyg4）。round2が実装形態とスコープにBlocker
+  3件を検出し、round3がその2択（実装層は`enrich_ime_relevance`の既存
+  override機構拡張、スコープは`AppImeProfile::InputRelay`のみ除外）に
+  回答、round4は新規に「旧no-op分岐にぶら下がる2つのeisu救済が
+  0xF3/0xF4では発火しなくなり復帰が2押しに変わる」ことを見落としとして
+  指摘した上で、既存の`eisu_recovery.rs`規則に従い意図的に受け入れる
+  形で決着した。文書上の残訂正（B4/B6の引用関数名、Linux実行不可の
+  テスト箇所の明記）も反映済み。round5で最終確認のうえ実装着手。
 related_adr:
   - "ADR-121"
   - "ADR-153"
@@ -266,9 +266,14 @@ ImeKeyKind::shadow_effect()`側で分類自体を変える」も**採らない**
   「N回連続no-op検出」という設計自体を廃止したため、この2つの論点は
   丸ごと消滅する。
 - **B4（フォールバック実装形態の曖昧さ）/ B6（`GjiDirectStrategy::apply`
-  とbelief書込みの混同）**: 解消。`Toggle`は既存の`IntentKind::SyncKey`
-  経路（`write_sync_key`、`IntentWitness::from_sync_key`）をそのまま通る
-  ため、新しいactuation合流点を作らない。`.claude/rules/
+  とbelief書込みの混同）**: 解消。採用した実装（`enrich_ime_relevance`の
+  `shadow_action` override）は既存の`IntentKind::PhysicalImeKey`経路
+  （`write_physical_key`、`IntentWitness::from_physical`、
+  `key_pipeline.rs:1421-1427`/`:1465-1480`）をそのまま通るため、新しい
+  actuation合流点を作らない（`write_sync_key`と`write_physical_key`は
+  どちらも`UserImeSetIntent`+`record_explicit_intent`を経由する完全に
+  対称な実装であり、`record_explicit_intent`のdocも両方を「呼んでよい
+  3箇所」として列挙している——round2 V1で確認済み）。`.claude/rules/
   fix-requires-evidence.md`の「IME actuation合流点」表に新しい入口は
   増えない。
 - **B5（0xF2との出典混同・ADR-121 D1との二重actuationリスク）**: 本ADRの
@@ -277,64 +282,105 @@ ImeKeyKind::shadow_effect()`側で分類自体を変える」も**採らない**
   ADR-121 D1（`reassert_explicit_physical_key`）の発火条件は`vk ==
   VK_DBE_HIRAGANA`のみであり、本ADRの変更とは排他的に重ならない。
 
-### round2 Major指摘（反映済み・M1は上記「決定」節に統合済み）
+### 残るリスク・受け入れるトレードオフ（round4で1節に集約）
 
-1. **M3（`dbe_mode_key_policy=Passthrough`への影響が全面化）**: Toggleは
-   必ずbeliefを反転させるため`shadow_toggled`が常にtrueになり、
-   `dbe_mode_key_policy=Passthrough`（隠し設定）でも0xF3/0xF4の
-   KeyDownが**常に**Suppressされるようになる（変更前は「方向が一致し
-   no-opだったとき」だけAllowされていた）。`transport.rs::plan`は
-   `fix-requires-evidence.md`の「物理IMEキーのSuppress/Allow配送判断」
-   ファミリーであり、一行の言及が要る。
-3. **M4（非冪等警告への反論を具体化）**: `gji_thumb_key_ime_toggle`の
-   「Toggleは非冪等」警告への反論は「対象キーが違う」では弱い。実際に
-   効いている防御を名指しする: (a) `key_pipeline.rs`のBUG-14
-   早期return（`event.injected`な打鍵はユーザー意図に昇格しない）、
-   (b) `init_ime_sync_keys`が親指キーと同一VKのsync登録を弾く
-   （BUG-140）ため、無変換/変換の誤発火経路（`resolve_pending_thumb_
-   as_single`、親指キー専用）とは両立しない。**(c)（round3 MR6追記）**:
-   `config.rs`の`engine_on_ime_key`/`engine_off_ime_key`（既定`None`、
-   doc例が`VK_DBE_DBCSCHAR`）を設定したユーザーでは、awase自身がこの
-   VKをSendInputする。Toggle化後はこの自己送信のエコーがbeliefを
-   **反転**させうる（絶対方向なら冪等だった）。実際の防御は自己注入
-   フィルタ（`hook.rs`）とBUG-14早期return（`event.injected`はユーザー
-   意図に昇格しない）の2段のみ——既定`None`のため既定構成では発生しない
-   が、設定したユーザーでは自己注入フィルタが唯一の防御になることを
-   明記する。
-4. **M5（実送信の裏取り）**: 実機A/Bの記録に`[apply-ime] GJI direct:
-   send 0x001A`のような実送信ログが出ていたこと（`AlreadyMatched`
-   ではないこと）を追記する。`already_matched`は直前に別経路が同方向へ
-   applied済みなら吸収するため、「固着が直った」の観測が実は別要因
-   （フォーカス変更でbeliefがリセットされた等）だった可能性を排除
-   できていない。
-5. **M6（回帰テストの強化、round3 MR3で実装層に合わせ更新）**: 実装層を
-   `enrich_ime_relevance`のoverride拡張に確定したことを受け、以下3本を
-   追加する（すべてLinuxで`cargo test -p awase-windows`実行可）:
-   (a) `state/key_sequence_policy.rs`に置く新しい純粋述語（0xF3/0xF4×
-   profile→`Option<ShadowImeAction>`）の決定表を全profile×両VKで固定
-   する（`InputRelay`で`None`、それ以外で`Some(Toggle)`——既存の
-   `gji_charset_autodetect.rs`のリゾルバ群のテストと同形式）、(b)
-   `transport.rs::plan_tests::run_plan_matrix`（`:1843-1879`）に
-   `shadow_action=Some(Toggle)`の0xF3/0xF4行を追加しSuppress判定が
-   変わらないことを固定（round2 V2の内容をテストで凍結）、(c)
-   `ShadowImeAction::resolve`のV5同値性（`v != current`のときToggleと
-   一致、異なるのは`v == current`のときだけ）を`src/types.rs`の単体
-   テストで固定する——本ADRの正当化そのものであり、壊れたら気づける
-   形にしておく価値が高い。
-6. **M7（0xF2の位相ズレは残る、トレードオフとして明記）**: BUG-142の
-   再現手順の第1歩（変換キー1回タップ）は本ADRの変更後も「実IMEだけ
-   ON、beliefは未追従」のまま残る——Toggle解決はbeliefと実IMEの位相が
-   合っていることを前提にする機構であり、この初期位相ズレの復帰手段は
-   Ctrl+無変換/Ctrl+変換（絶対方向の`keys.ime_off`/`ime_on`）のみになる。
-   変更前は0xF3/0xF4自体が絶対方向だったため、それ自体が位相の再同期
-   手段になっていた——**Toggle化はその再同期能力を手放すトレードオフ**
-   であることを明記する（V5の同値性と矛盾しない。再同期が効いていたのは
-   まさに旧no-opケースそのものであるため）。
-7. **M8（`is_japanese_ime()`ゲート迂回、軽微）**: `sync_direction`経路は
-   `is_japanese_ime()`ゲートの外側にあるため、awaseが「日本語IMEでない」
-   と信じている間もbeliefが反転しうる。実害は小さい（同じ打鍵で
-   `should_upgrade_is_japanese_ime`がゲートを実質的に常に満たすように
-   昇格させるため）が、一行の言及を残すこと。
+- **`dbe_mode_key_policy=Passthrough`（隠し設定）では0xF3/0xF4の
+  KeyDownが常にSuppressされるようになる。** Toggleは必ずbeliefを反転
+  させるため`shadow_toggled`が常にtrueになり、`transport.rs:416-419`の
+  `ime_actuation_owned && (shadow_toggled || ...)`によりPassthrough設定
+  でも常時Suppressに固定される（変更前は「方向が一致しno-opだったとき」
+  だけAllowされていた）。この設定を使うユーザーは稀だが、`transport.rs::
+  plan`は`fix-requires-evidence.md`の「物理IMEキーのSuppress/Allow配送
+  判断」ファミリーに属するため記録する。
+- **`resolve_pending_thumb_as_single`が返す旧no-op分岐の2つの救済
+  （stale `ObservedEisu`の訂正、半角英数持続トグルの解除）は、0xF3/0xF4
+  では発火しなくなる。** `eisu_reset_on_turn_on_while_open`
+  （`state/eisu_recovery.rs:135-144`）は`action_is_turn_on`（`matches!
+  (turn_on_direction, ShadowImeAction::TurnOn)`）を要求するが、`action`
+  が`Toggle`になるとこれは常に`false`になる。**この結果を意図的に
+  受け入れる**——`eisu_recovery.rs:128-129`の既存docが「`Toggle`（当時は
+  VK_KANJI）はON/OFFどちらへ向かうか一意に決まらないため対象外、
+  TurnOn系のみが『ひらがなへ戻す』という意図を一意に持つ」と定めており、
+  0xF3/0xF4を`Toggle`へ移すことはこの既存規則に従って自動的に「eisu
+  救済の対象外クラス」へ移動させることを意味する。実害は、`IME open
+  のままconvだけEisuに固着`という状態からの復帰が、従来の1押し
+  （`AssumedRomaji`へ即時復帰）から、1押し目でOFFへ反転→2押し目で
+  OFF→ONとなり対称処理（`eisu_reset_on_ime_on`）が発火する**2押しでの
+  復帰**に変わること。
+- **無変換/変換キー単独タップ由来の初期位相ズレ（0xF2、BUG-142再現手順の
+  第1歩）は本ADRの変更後も残る。** Toggle解決はbeliefと実IMEの位相が
+  合っていることを前提にする機構であり、この初期位相ズレの復帰手段は
+  Ctrl+無変換/Ctrl+変換（絶対方向の`keys.ime_off`/`ime_on`）のみになる。
+  変更前は0xF3/0xF4自体が絶対方向だったため、それ自体が位相の再同期
+  手段になっていた——**Toggle化はその再同期能力を手放すトレードオフ**
+  である（V5の同値性と矛盾しない。再同期が効いていたのはまさに旧
+  no-opケースそのものであるため）。
+- **`is_japanese_ime()`ゲートは実装層の決定により保持される。** 採用した
+  実装（`shadow_action` override、`IntentKind::PhysicalImeKey`経路）は
+  このゲートの内側を通るため、awaseが「日本語IMEでない」と信じている
+  間はbeliefが反転しない（round2 M8はこのゲートの外側にある
+  `sync_direction`経路〈実機A/Bで使った経路〉を前提にした指摘であり、
+  採用実装には該当しない）。ゲート外に出るのは、ユーザーが上記「後方
+  互換の逃げ道」（`keys.ime_detect.on/off`）でopt-outした場合のみ。
+- **`engine_on_ime_key`/`engine_off_ime_key`（既定`None`、doc例が
+  `VK_DBE_DBCSCHAR`）を設定したユーザーでは、awase自身がこのVKを
+  SendInputする。** Toggle化後はこの自己送信のエコーがbeliefを
+  **反転**させうる（絶対方向なら冪等だった）。実際の防御は自己注入
+  フィルタ（`hook.rs`）とBUG-14早期return（`event.injected`はユーザー
+  意図に昇格しない）の2段のみ——既定`None`のため既定構成では発生しない
+  が、設定したユーザーでは自己注入フィルタが唯一の防御になる。
+
+### `gji_thumb_key_ime_toggle`の非冪等警告への反論（round2 M4）
+
+`config.rs`の`gji_thumb_key_ime_toggle`が警告する「Toggleは非冪等。
+誤発火が状態の反転になり連続誤発火で発振しうる」への反論は「対象キーが
+違う」では弱い。実際に効いている防御を名指しする: (a) BUG-14早期return
+（`key_pipeline.rs`、`event.injected`な打鍵はユーザー意図に昇格しない）、
+(b) `init_ime_sync_keys`が親指キーと同一VKのsync登録を弾く（BUG-140）
+ため、無変換/変換の誤発火経路（`resolve_pending_thumb_as_single`、
+親指キー専用）とは両立しない。上記「残るリスク」節の
+`engine_on/off_ime_key`自己送信エコーが、この2段の防御をすり抜けない
+唯一の経路である。
+
+### 新しい純粋述語のシグネチャ: 親指キー設定時は`None`を返す（round4 MR4-6）
+
+既存の2つのリゾルバは扱いが分かれる: `resolve_mode_key_shadow_override_
+for_event`（`gji_charset_autodetect.rs`）は`thumb_pair`を受け取り、
+**親指キーなら`None`**（静的`shadow_action`を守る）。
+`resolve_henkan_muhenkan_shadow_override_for_event`は親指キーでも
+overrideする（無変換/変換には守るべき静的`shadow_action`が無いため）。
+0xF3/0xF4は**静的`shadow_action`を持つ側**（Hiragana/Katakanaと同型）
+なので、新しい純粋述語も`thumb_pair`引数を受け取り、**親指キーに設定
+されている場合は`None`を返し従来の絶対方向マッピングを維持する**設計に
+揃える。整合を欠くと、`delegate_owns_mode_key_shadow_toggle`との
+組み合わせでADR-141 C2型の「誰も何もしない」穴になりうる
+（既存docが警告済み）。
+
+### 回帰テスト（round3 MR3・round4 MR4-2で確定）
+
+実装層を`enrich_ime_relevance`のoverride拡張に確定したことを受け、
+以下3本を追加する:
+
+- (a) `state/key_sequence_policy.rs`に置く新しい純粋述語（0xF3/0xF4×
+  profile×thumb_pair→`Option<ShadowImeAction>`）の決定表を固定する
+  （`InputRelay`または親指キー設定時に`None`、それ以外で`Some(Toggle)`
+  ——既存の`gji_charset_autodetect.rs`のリゾルバ群のテストと同形式）。
+  `state`/`focus`はどちらも`lib.rs`でgateされておらずLinuxで走る。
+- (b) `transport.rs::plan_tests::run_plan_matrix`に`shadow_action=
+  Some(Toggle)`の0xF3/0xF4行を追加しSuppress判定が変わらないことを
+  固定する（round2 V2の内容をテストで凍結）。**`runtime`モジュール全体
+  が`lib.rs`で`#[cfg(windows)]`gateされているため、このテストはLinux
+  では実行されない**（`cargo test --list`にも出現しない、CLAUDE.md
+  「Commands」節が警告する既知の罠）。`windows-build` CIでのみ実際に
+  走る——ローカルでは`cargo check --target x86_64-pc-windows-msvc
+  -p awase-windows --tests --lib`でコンパイル確認までに留める。
+- (c) `ShadowImeAction::resolve`のV5同値性（`v != current`のときToggle
+  と一致、異なるのは`v == current`のときだけ）を`src/types.rs`
+  （ルート`awase`クレート、`cargo test --lib`で走る）の単体テストで
+  固定する——本ADRの正当化そのものであり、壊れたら気づける形にして
+  おく価値が高い。
+
+実送信ログでの機序裏取り（旧M5）は下記「次のアクション」に既に含まれる。
 
 ## round1レビューで棄却された当初案（記録として残す）
 
@@ -376,9 +422,14 @@ opus-adversarial-consult round1が以下を指摘し棄却した（詳細は
 1. 上記「実装層」の決定に沿って`state/key_sequence_policy.rs`に純粋述語
    を実装し、`runtime/mod.rs::enrich_ime_relevance`のoverride連鎖に
    1段追加する（config既定値は変更しないため、`ImeDetectConfig::
-   default()`関連のCIテストとの衝突確認は不要）。
-2. round3 M6の3点（決定表・`plan_tests`行追加・V5同値性の単体テスト）を
-   回帰テストとして追加する。
+   default()`関連のCIテストとの衝突確認は不要）。`runtime/mod.rs`は
+   `#[cfg(windows)]`配下のため、Linux上では
+   `cargo check --target x86_64-pc-windows-msvc -p awase-windows --tests
+   --lib`でコンパイル確認する（`cargo check -p awase-windows`単体では
+   このモジュールがコンパイル対象に入らない）。
+2. 上記「回帰テスト」の3点（決定表・`plan_tests`行追加・V5同値性の単体
+   テスト）を追加する。(b)は`windows-build` CIでのみ実行されることに
+   留意する。
 3. 実装後、develop最新（config手動追加なし）で改めて実機A/Bを行い、
    固着が解消することと、`[apply-ime]`の実送信ログ（`AlreadyMatched`
    でないこと）を確認する。この実装経路は`IntentKind::PhysicalImeKey`
