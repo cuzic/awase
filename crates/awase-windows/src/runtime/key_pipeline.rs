@@ -1194,6 +1194,15 @@ impl Runtime {
     /// 変更する場合は、上記1〜3の経緯（特に「抑止」と「actuate」は別問題
     /// である点）を必ず読むこと。
     ///
+    /// **ADR-173: `app_overrides.solo_tap_ime_action_apps` によるプロセス名
+    /// 限定（ケース2/3改のみ、ケース1は対象外）。** 既定値は空＝全アプリで
+    /// 有効（後方互換）。空でない値を設定すると、そのプロセス名以外では
+    /// 常に `Inactive` を返す（GJI自身のネイティブなかな切替に委ねる）。
+    /// クラス名ではなくプロセス名で判定する理由（Windows Terminal のような
+    /// 「1プロセス内で複数の子ウィンドウクラスを往復するアプリ」でクラス名
+    /// 判定が壊れること）は
+    /// `docs/adr/173-scope-solo-tap-ime-action-by-process-name.md` 参照。
+    ///
     /// `kp_stage_shadow_ime_toggle` の KeyDown（実際に処理する）と KeyUp
     /// （M19のペアリングのため同じ条件を再評価するだけ）の両方から呼ぶ
     /// ——ステートフルなラッチ（KeyDownで立ててKeyUpで消費）は取り出し
@@ -1214,6 +1223,17 @@ impl Runtime {
         let Some(action) = action else {
             return ExplicitImeActionOutcome::Inactive;
         };
+        // ADR-173: プロセス名がsolo_tap_ime_action_appsの対象外なら、明示
+        // configそのものが無効（GJI自身のネイティブなかな切替に委ねる）。
+        if !self.platform.focus.solo_tap_ime_action_in_scope() {
+            tracing::debug!(
+                "[shadow-toggle] 明示config: vk=0x{:02X} はプロセス名スコープ外 \
+                 (process={:?}) のため無効",
+                vk_code,
+                self.platform.focus.process_name(),
+            );
+            return ExplicitImeActionOutcome::Inactive;
+        }
         let current = self.platform_state.ime.effective_open();
         if current || !self.platform_state.ime.belief.is_japanese_ime() {
             return ExplicitImeActionOutcome::Inactive;

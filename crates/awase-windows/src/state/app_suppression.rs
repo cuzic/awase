@@ -31,6 +31,18 @@ pub fn matches_disabled_app(entries: &[String], process_name: &str) -> bool {
         .any(|entry| !entry.is_empty() && normalize_process_name(entry) == normalized)
 }
 
+/// `app_overrides.solo_tap_ime_action_apps`（ADR-173）専用の判定。
+///
+/// `matches_disabled_app` と極性が逆——空リストは「誰も対象外」ではなく
+/// 「全アプリが対象」を意味する（既定値が空でも
+/// `muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action` の後方互換を
+/// 保つため）。空でないリストが指定された場合のみ、そのプロセス名への
+/// 限定として `matches_disabled_app` に委ねる。
+#[must_use]
+pub fn solo_tap_ime_action_in_scope(entries: &[String], process_name: &str) -> bool {
+    entries.is_empty() || matches_disabled_app(entries, process_name)
+}
+
 /// プロセス名を比較用に正規化する（小文字化 + 末尾 `.exe` 除去）。
 ///
 /// `keymap.rs::filter_active` からも使う（ADR-114）ため `pub(crate)`。
@@ -106,6 +118,30 @@ mod tests {
     fn non_matching_process_returns_false() {
         let entries = vec!["mstsc.exe".to_string()];
         assert!(!matches_disabled_app(&entries, "notepad.exe"));
+    }
+
+    #[test]
+    fn solo_tap_scope_empty_list_means_all_apps() {
+        assert!(solo_tap_ime_action_in_scope(&[], "WindowsTerminal.exe"));
+        assert!(solo_tap_ime_action_in_scope(&[], "notepad.exe"));
+    }
+
+    #[test]
+    fn solo_tap_scope_nonempty_list_restricts_to_listed_process() {
+        let entries = vec!["WindowsTerminal.exe".to_string()];
+        assert!(solo_tap_ime_action_in_scope(
+            &entries,
+            "WindowsTerminal.exe"
+        ));
+        assert!(!solo_tap_ime_action_in_scope(&entries, "notepad.exe"));
+    }
+
+    #[test]
+    fn solo_tap_scope_nonempty_list_still_rejects_empty_process_name() {
+        // matches_disabled_app に委譲するため、get_process_name 失敗時の
+        // 空文字列は空エントリと一致しない（全アプリ許可の事故を防ぐ）。
+        let entries = vec!["WindowsTerminal.exe".to_string()];
+        assert!(!solo_tap_ime_action_in_scope(&entries, ""));
     }
 
     #[test]
