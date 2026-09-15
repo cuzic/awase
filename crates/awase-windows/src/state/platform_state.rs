@@ -762,7 +762,14 @@ impl ImeStateHub {
     /// `engine.is_user_enabled()` と組み合わせて IME force-ON の前提条件として使う。
     ///
     /// **belief 由来の暫定ゲート（ADR-087 §5 Phase 3 item15 で
-    /// `issue_open_warrant()` に置換予定、まだ未配線）。** `effective_open()` は
+    /// `issue_open_warrant()` に置換予定と書かれていたが、ADR-172 が検証した結果
+    /// この用途では置換の効能が無いと判明——`issue_open_warrant()` は
+    /// `HeuristicDefault` を鮮度窓なしで採用し `FocusProbe` を除外するため、
+    /// `check_drift_correction` 側の観測ソース信頼基準とは揃わない。ADR-172 は
+    /// 代替の共有述語抽出案も実装不能と判断し（対象入口を1つに絞れない、
+    /// `resolve_open_at()` の `BaseDecision` を経由しないと BUG-63 の当該ケース
+    /// `ConvOpenInference`(`DeriveMedium`枝) に効かない）、**本関数は意図的に
+    /// 無改造のまま据え置く**。）** `effective_open()` は
     /// belief（間違っていても低リスク）であり、actuation の根拠に直接使うべき
     /// ではない——これはまさに本関数が持つ構造であり、BUG-63 の原因パターンが
     /// 実 actuation ゲートとして今も本番で使われている状態を示す。呼び出し元は

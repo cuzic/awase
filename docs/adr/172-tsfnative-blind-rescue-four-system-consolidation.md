@@ -3,13 +3,15 @@ id: ADR-172
 title: |-
   TsfNative ON方向救済4系統(force-on/drift correction/warmup/reassert)の現状整理と評価基盤の指針
 status: |-
-  起草（opus-adversarial-consult round1・round2反映済み・round3待ち）。round2で
-  決定2「観測ソース信頼フィルタの共有述語抽出」も実装不能と判明（B1: 対象入口を
-  1つに限定できない、B2: 抽出述語の型が噛み合わずBUG-63ケースに効かない、B3:
-  「観測ソースの信頼判定」が4箇所目の独立判定になる）。さらにS6で、決定2が
-  前提としていた「force-onとdrift correctionの双方向衝突」はBUG-110修正時点で
-  既に解消済みと判明した。これを受け、決定2を「ゲートを直す」から「現状を
-  記録し、実装するなら実機コーパスでの差分検証を条件にする」へ方針転換した。
+  **opus-adversarial-consult round1〜round3で収束（Blockerゼロ）。決定1・決定2
+  ともコード変更なしで確定。** round1・round2で決定2の2つの実装案（`issue_open_
+  warrant()`配線、観測ソース信頼フィルタの共有述語抽出）がいずれも実装不能と
+  判明し、動機だった「force-onとdrift correctionの双方向衝突」もBUG-110修正で
+  既に解消済みと判明したため、force-on側のゲートは意図的に無改造のまま据え置く
+  方針に確定した（`state/platform_state.rs`・`state/ime_model.rs`のdocコメント
+  に追記済み）。round3 Blocker（「実害が無い」の根拠が未測定だった件）はADR-132
+  「次のアクション」1の引き継ぎで解消。実装タスクは無く、次の不具合報告時の
+  内訳確認とADR-151案Dの2つの未検討観測経路の扱いのみが残る。
 related_adr:
   - "ADR-087"
   - "ADR-090"
@@ -27,13 +29,17 @@ related_adr:
 
 ## ステータス
 
-**起草。opus-adversarial-consult round1・round2を反映済み、round3は未実施。**
+**opus-adversarial-consult round1〜round3で収束（Blockerゼロ）。**
 round1（Blocker6件）はADRの事実誤認を正した。round2（Blocker3件・Should-fix6件）
 は、round1で再設計した決定2がなお実装不能であること、そして決定2が前提とする
 「force-onとdrift correctionの衝突」自体がBUG-110修正で既に解消済みであることを
 明らかにした。round2完了後、ゼロベースで見直した結果、**決定2を「ゲート実装」
 から撤退させ、「実装しない理由の記録」＋「次に触る人向けの評価手順の明記」に
-方針転換した**（詳細は「round1→round2で分かったこと」節）。
+方針転換した**（詳細は「round1→round2で分かったこと」節）。round3（Blocker1件・
+Should-fix4件）は、その「実害が無い」という主張の根拠が未測定のまま残っていた
+点を指摘し（ADR-132「次のアクション」1が測定手順を未完了のまま持っていた）、
+本版でこの引き継ぎと`is_eligible_for_ime_force_on()`/`effective_open()`のdoc
+コメント追記を行い収束した。
 
 ## 背景
 
@@ -148,33 +154,56 @@ round1は、当初案（`is_eligible_for_ime_force_on()`を`issue_open_warrant()
 
 ## 決定（ゼロベースで見直した結論）
 
-観測手段探しに全面的には賭けず、代わりに**ADR-157が既に示した教訓**（「発火する
-仕組みの上に抑止する仕組みを重ねるより、発火源そのものの条件を直す方が優れている」
-— force-onとdrift correctionの衝突を`DriftBurst`調停機構で解決しようとして実機
-ソークまで完了させたが、既存ガードへの2行追加に置き換えて全体を撤回した実例）を
-設計原則として採用する。round1・round2を経て、この原則を最も素直に適用した結論は
-**「実害の無いゲートを、机上の議論だけで直そうとしない」**だった
-（`.claude/rules/fix-requires-evidence.md`が「キー選択」を含む再発ファミリーに
-テストか記録を要求している精神とも一致する）。
+当初案の却下には**ADR-157が既に示した教訓**（「発火する仕組みの上に抑止する仕組み
+を重ねるより、発火源そのものの条件を直す方が優れている」— force-onとdrift
+correctionの衝突を`DriftBurst`調停機構で解決しようとして実機ソークまで完了させたが、
+既存ガードへの2行追加に置き換えて全体を撤回した実例）がそのまま効いた（round2 B3
+「新しい分散判定を1つ増やすだけ」の却下）。
+
+**ただし round1・round2 を経て最終的に採った「実装しない」という判断は、ADR-157とは
+別の原則に基づく（round3 S2）。** ADR-157は**実機ソークを完了させた後**に撤回した
+——測ってから捨てた事例である。本件はround1・round2の時点で**まだ何も実機測定して
+いない**まま、設計が2回とも実装不能と判明したために撤退する——**測らずに撤退する**
+判断であり、証拠の無い変更はしない（YAGNI寄り）という別の原則が働いている。この
+区別は重要で、「実害が無い」という表現は「測って実害が無いと確認した」ではなく
+「実害の証拠が無い（＝まだ測っていない）」の意味で使う（下記決定1・決定2、
+`.claude/rules/fix-requires-evidence.md`が要求する記録・測定の精神と整合させる）。
 
 ### 決定1: warmupのGated/Actuated非対称は、今は統合しない。既知の限界として記録する
 
 `platform.rs:1610`（Actuated系）が`resolve_warmup_ime_on()`の`off_drift_active`
 ゲート（INV-B1'）を通らない非対称は実在する（ADR-132「Phase 2」節に既に記録
-済み）。しかしこれが実際に問題を起こした実機インシデントは無い。7箇所の呼び出し
+済み）。**ただし「実害が無い」の中身は限定的（round3 S4）: `off_drift_active`
+ゲートを通らないこと自体が原因と特定された実機インシデントは無い。Actuated経路
+そのものは無害ではなく、BUG-113（「@」混入、半角/全角キー単独タップでの`VK_IME_
+ON`重複送信）の当事者として既にADR-149/167が一度触っている**（送信回数を3回→
+2回に削減、残り1回がこのActuated経路由来として既知）。7箇所の呼び出し
 （`eager_tsf_warmup_inner`への到達経路として）を単一合流点へ集約すること自体が
-Gated/Actuatedのどちらかへ挙動を倒す決定を伴う以上、**実害が出るまで統合しない**。
+Gated/Actuatedのどちらかへ挙動を倒す決定を伴う以上、**ゲート非対称そのものが
+原因の新規インシデントが出るまで統合しない**。
 
 **決定: コード変更は行わない。** ADR-132の既存記述で十分にカバーされているため、
-本ADRでは新規の記録も追加しない。`latch_eager_warmup_without_send`の存在と
-`architecture_guard.rs:4192`の`origin`区別は、将来この非対称が実際に問題を起こし
-統合を検討する際の出発点として、この節に残す。
+本ADRでは決定1の理由づけ以外の新規の記録は追加しない。`latch_eager_warmup_
+without_send`の存在と`architecture_guard.rs:4192`の`origin`区別は、ADR-132に
+無い補足情報としてこの節に残す。将来この非対称が原因のインシデントが出て統合を
+検討する際の出発点にする。
+
+**ADR-132自身の「次のアクション」1・2（`origin=`タグのgrep突合せによる内訳確定、
+`apply_force_on_for_imm_broken`側との同型修正の要否判断）は未実施のまま残って
+いる。** これは低コストな計装済み測定であり、次の不具合報告で確認できる（詳細は
+「次のアクション」節）。
 
 ### 決定2: force-on側のBUG-63パターンは実装せず、既知の技術的負債として明記する。次に触る人への評価手順を残す
 
 **決定: `is_eligible_for_ime_force_on()`へのコード変更は行わない。** 理由:
 
-- 動機だった「双方向の衝突」は既に解消済み（round2 S6）。現在進行形の実害が無い。
+- 動機だった「双方向の衝突」は既に解消済み（round2 S6）。**ただし「実害が無い」は
+  「測って無いと確認した」ではなく「実害の証拠が無い（＝まだ測っていない）」の
+  意味である**（round3 B1）。ADR-132の「次のアクション」1・2はこの内訳（Gated/
+  Actuatedのゲート非対称由来 vs force-on由来）を測る手順を未完了のまま持っており、
+  ADR-172はこのタスクを引き継ぐ形で「次の不具合報告時にgrep突合せする」を
+  「次のアクション」に追加する（下記）。有意な内訳が出た場合、本決定（実装しない）
+  を再検討する。
 - round1・round2の2ラウンドを費やしてなお、「対象入口を1つに絞れない」
   「型が噛み合わずBUG-63ケースを取り逃す」「新しい分散判定を1つ増やすだけ」という
   実装不能な設計しか出せなかった。これは個々の設計者の力量の問題ではなく、
@@ -182,10 +211,12 @@ Gated/Actuatedのどちらかへ挙動を倒す決定を伴う以上、**実害�
   （`FeedbackPolicy::Blind`）のもとでは、原理的に机上の議論だけで正しく決め
   切れない**ことを示している。
 
-**この判断を記録として残す**（`is_eligible_for_ime_force_on()`のdocコメント
-`state/platform_state.rs:764-772`が既に「BUG-63の原因パターンが実actuationゲート
-として今も本番で使われている」と自己申告済み。本ADRはこの自己申告を追認し、
-「意図的に、今は直さない」という判断であることを明記する）。
+**この判断はコード側のdocコメントにも反映済み（round3 S1対応、本ADRと同時に
+実施）**: `state/platform_state.rs:764-772`（`is_eligible_for_ime_force_on`）と
+`state/ime_model.rs:355-362`（`effective_open`）はいずれも「ADR-087 item15/17で
+`issue_open_warrant()`に置換予定」と書いていたが、ADR-172の検証結果（置換の効能
+が無い、代替案も実装不能）を追記し、次の読み手が同じ2ラウンドを繰り返さないよう
+にした。doc追記のみで挙動変更は無い。
 
 **次にこのゲートを変更する人への評価手順（実施はしない、指針のみ）**: このADRの
 round1・round2はいずれも、手で列挙したケースと机上の議論だけで設計を検証しようと
@@ -197,7 +228,12 @@ round1・round2はいずれも、手で列挙したケースと机上の議論�
   される設計になっている（`runtime/mod.rs:1040`、`state/ime_actuation_decision.rs`）。
 - ADR-163 Part D（TH1d'）が構築した不具合報告経由の実機コーパス収集基盤により、
   実際に1件（`crates/awase-windows/tests/journals/actuation_decision/
-  bug-131-report-01m29kdnz.json`）force-on関連の記録が既に存在する。
+  bug-131-report-01m29kdnz.json`、37レコード）が存在する。**ただし内訳は
+  `ForceOnRomajiCorrection`2件・`ForceOnBootstrap`0件と薄い**（round3 S3実測）。
+  round2 B1が「除外を入れるとほぼ完全に潰れ合う」と指摘した`try_force_on_
+  bootstrap`側のデータがこのコーパスには無いため、**次に変更を検討する人は、
+  まずbootstrap経路を含む不具合報告を集める必要がある**——現状のコーパスだけで
+  「検証できる」と思って着手しないこと。
 - `state/open_warrant.rs::differential_old_gate_vs_issue_open_warrant`が「旧ゲート
   vs 新ゲートの判定をケースごとに突き合わせる」手法の前例として既にある（ただし
   対象は手で列挙したケース表であり、実機コーパスではない）。
@@ -228,14 +264,15 @@ correctionを連続実行する。3者は独立に`Instant::now()`を取るた�
 しない」と既に記録している問題と同型）。**決定2を見送ったため、この節で新たな
 コード変更は発生しない。** 既存の限界として記録するのみ。
 
-### 決定4: 未検討の観測経路2つは、着手せず別issue化する
+### 決定4: 未検討の観測経路2つは、本ADRでは着手せず別issue化する
 
-決定4は本ADRでは着手判断をしない。上記「観測手段の探索」節の4・5（
-`WM_IME_CONTROL(IMC_GETOPENSTATUS)`古典経路の実機検証、`ObservationSource::Gji`/
-`Tsf`への記録追加）は、実行する価値があるかどうかも含めて別issueで検討する。
-`classify_and_push`のカバレッジ穴修正（ADR-151案Dのもう1つの再検討条件）も同様。
+**決定: 上記「観測手段の探索」節の4・5（`WM_IME_CONTROL(IMC_GETOPENSTATUS)`古典
+経路の実機検証、`ObservationSource::Gji`/`Tsf`への記録追加）は、実行する価値が
+あるかどうかも含めて別issueで検討する。本ADRでは着手しない。**
+`classify_and_push`のカバレッジ穴修正（ADR-151案Dのもう1つの再検討条件）も同様に
+別issue化する。
 
-## 落としてはいけない既知シナリオ（将来この領域を触る際のチェックリスト）
+## 将来この領域を触る人への申し送り（本ADR自体のリグレッションチェックリストではない）
 
 本ADR自体はコード変更を行わないため、直接のリグレッションチェックリストでは
 ない。将来decision2/decision1を実際に実装する人向けに、これまでの調査で判明した
@@ -279,13 +316,25 @@ correctionを連続実行する。3者は独立に`Instant::now()`を取るた�
 ## 次のアクション
 
 1. 本ADRに実装タスクは無い。round3（opus-adversarial-consult）で本版の記録内容
-   （特に「決定2は実装しない」という結論とその根拠）に異存が無いか最終確認する。
+   （特に「決定2は実装しない」という結論とその根拠）の確認を得た（round3
+   Blocker 1件・doc追記2箇所を本コミットで解消、収束）。
 2. 決定4の2経路（`WM_IME_CONTROL`スパイク実機検証、`Gji`/`Tsf`観測記録）を
    着手するかどうかは別途ユーザー判断を仰ぐ。
-3. `state/platform_state.rs:764-772`（`is_eligible_for_ime_force_on`のdocコメント）
-   に、本ADRへの参照を1行追記することを検討する（「BUG-63パターンは既知、
-   ADR-172で意図的に据え置き」）——ただしこれもコード変更を伴うため、round3の
-   確認後に判断する。
+3. `state/platform_state.rs:764-772`（`is_eligible_for_ime_force_on`）・
+   `state/ime_model.rs:355-362`（`effective_open`）のdocコメントへ、本ADRの
+   検証結果（`issue_open_warrant()`置換は効能が無い、代替案も実装不能）を
+   追記済み（round3 S1対応）。
+4. **ADR-132「次のアクション」1・2を引き継ぐ（round3 B1対応）**: 次に
+   TsfNativeのIME関連不具合報告を受け取った際、`[tsf-eager-warmup] origin=`/
+   `[warmup-gate]`/`force-ON (ImmBrokenForceOn)`をgrepし、warmup非対称由来
+   （ADR-132 B1）とforce-on由来（ADR-172決定2が対象とする#6）の内訳を確定する。
+   force-on由来が有意に出た場合、決定1・決定2の「コード変更なし」判断を再検討
+   する。ADR-132自身の「次のアクション」2（`apply_force_on_for_imm_broken`側の
+   同型修正の要否判断）は、この内訳確定と合わせて本ADRが引き取る——ADR-132側は
+   このタスクをクローズ済みとして扱ってよい。
+5. 決定2の評価手順で参照した実機コーパス（`bug-131-report-01m29kdnz.json`）は
+   `ForceOnBootstrap`のレコードが0件（round3 S3）。決定2に将来着手する人は、
+   まずbootstrap経路を含む不具合報告の収集を優先すること。
 
 ## 関連
 

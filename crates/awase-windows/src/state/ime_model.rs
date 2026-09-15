@@ -360,7 +360,11 @@ impl ImeModel {
     /// warrant が必要な場面（IME を実際に force-ON する等）では
     /// `crate::state::open_warrant::issue_open_warrant()` を使うこと
     /// （Phase 3 で `is_eligible_for_ime_force_on()` 等の既存呼び出し元を
-    /// 順次差し替える予定、まだ未配線）。
+    /// 順次差し替える予定、まだ未配線）。**ただし TsfNative の force-ON 経路
+    /// （`is_eligible_for_ime_force_on()`）については ADR-172 参照——
+    /// `issue_open_warrant()` はこの用途では `HeuristicDefault` を鮮度窓なしで
+    /// 採用するため置換の効能が無く、代替案も実装不能と判明し、意図的に
+    /// 据え置かれている。**
     ///
     /// - ユーザーの明示意図がある場合: `desired_open` を優先（観測で上書きしない）
     /// - 明示意図なし（フォーカス変化直後等）:
