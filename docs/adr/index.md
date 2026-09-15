@@ -179,7 +179,7 @@
 | [170](170-codesmell-hotspot-decomposition.md) | コードスメル解消: belief reduce()の大きい4分岐をprivateヘルパーへ抽出(決定1のみ実施) | opus-adversarial-consult round1〜round3反映済み・収束(Blockerゼロ)。決定2(runtime/mod.rs重複統合)・決定3(output/mod.rs分割)は事実誤認/テスト破壊のため見送り |
 | [171](171-gji-candidate-reopen-after-off-observation.md) | `gji_direct_already_matches`が候補ウィンドウ再表示(`candidate_was_seen`)を無視して再送を握り潰す不具合を修正(BUG-141)。belief経由の自動補正案はround1/2で計8件のBlockerが出て見送り、`candidate_visible`併用案もround4でBUG-113再導入Blockerと判明し撤回 | 起草・opus-adversarial-consult round5でBlockerゼロ・収束・実装着手可 |
 | [174](174-solo-tap-passthrough-belief-reobservation.md) | 無変換/変換ソロタップの生キーパススルーを維持し、GJI実結果を再観測してbeliefへ反映(BUG-142「IME ON固着」対策)。ADR-173(生キー抑止方式)はユーザーが「巡回機能を潰す・乱暴」と却下し不使用に | 保留(round2でBlocker継続、原因がhook内部状態/shadow-toggle誤判定に絞り込まれたためADR-175へ主導権移行) |
-| [175](175-physical-dbe-key-stuck-direction-recovery.md) | 物理半角/全角キー(VK_DBE_SBCSCHAR/DBCSCHAR)の固定方向マッピングをやめToggle解決に変えIME ON固着を解消(BUG-142)。config変更のみで実機A/B確定済み | 起草・opus-adversarial-consult round1反映、決定をToggle化へ全面置換。round2未実施 |
+| [175](175-physical-dbe-key-stuck-direction-recovery.md) | 物理半角/全角キー(VK_DBE_SBCSCHAR/DBCSCHAR)の固定方向マッピングをやめToggle解決に変えIME ON固着を解消(BUG-142)。config変更のみで実機A/B確定済み | opus-adversarial-consult round5で収束・実装着手可（Blockerなし） |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

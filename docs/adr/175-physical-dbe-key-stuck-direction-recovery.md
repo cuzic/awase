@@ -4,8 +4,7 @@ title: |-
   物理半角/全角キー（VK_DBE_SBCSCHAR/DBCSCHAR）の固定方向マッピングをやめ、
   Toggleとして解決することでIME ON固着を解消する（BUG-142）
 status: |-
-  起草・opus-adversarial-consult round4反映済み。**round4判定: 設計判断
-  （方針・適用条件・実装層・スコープ）は収束、Blockerなし**（2026-09-15）。
+  **opus-adversarial-consult round5で収束・実装着手可（2026-09-15）。**
   round1が当初案（no-op N回連続検出→フォールバック送信）にBlocker5件・
   Major8件を検出し、提示した代替案（`keys.ime_detect.toggle`にこの2VKを
   追加しToggle解決に変える）を実機A/Bで検証した結果、**固着が解消する
@@ -15,8 +14,9 @@ status: |-
   回答、round4は新規に「旧no-op分岐にぶら下がる2つのeisu救済が
   0xF3/0xF4では発火しなくなり復帰が2押しに変わる」ことを見落としとして
   指摘した上で、既存の`eisu_recovery.rs`規則に従い意図的に受け入れる
-  形で決着した。文書上の残訂正（B4/B6の引用関数名、Linux実行不可の
-  テスト箇所の明記）も反映済み。round5で最終確認のうえ実装着手。
+  形で決着した。round5は残る誤記4件（引用関数名の取り違え等）のみを
+  指摘し**「収束」と明確に判定、Blocker・Major無し**。次セッションは
+  「次のアクション」1〜4に沿って実装着手する。
 related_adr:
   - "ADR-121"
   - "ADR-153"
@@ -142,8 +142,9 @@ awaseを再起動し、BUG-142の再現手順（変換キー1回→半角/全角
 両者が異なるのは`v == current`のとき、すなわち**`:1544`のno-op分岐に
 落ちるケースだけ**である。つまり本変更の影響範囲は「これまでno-opとして
 何もしなかった打鍵」に厳密に限定される——これは決定を支持する最も強い
-論拠であると同時に、下記「残るリスク」の影響範囲の上限を与える
-（リスクは「正当な冪等操作だったno-op」に限られる）。
+論拠であると同時に、下記「残るリスク・受け入れるトレードオフ」節が
+挙げる影響範囲の上限を与える（旧no-op打鍵に伴っていた副作用〈eisu救済
+等〉を含む、詳細は同節参照）。
 
 ## 決定（round3で確定）
 
@@ -292,7 +293,7 @@ ImeKeyKind::shadow_effect()`側で分類自体を変える」も**採らない**
   だけAllowされていた）。この設定を使うユーザーは稀だが、`transport.rs::
   plan`は`fix-requires-evidence.md`の「物理IMEキーのSuppress/Allow配送
   判断」ファミリーに属するため記録する。
-- **`resolve_pending_thumb_as_single`が返す旧no-op分岐の2つの救済
+- **旧no-op分岐（`key_pipeline.rs:1544-1655`）が抱えていた2つの救済
   （stale `ObservedEisu`の訂正、半角英数持続トグルの解除）は、0xF3/0xF4
   では発火しなくなる。** `eisu_reset_on_turn_on_while_open`
   （`state/eisu_recovery.rs:135-144`）は`action_is_turn_on`（`matches!
@@ -338,9 +339,9 @@ ImeKeyKind::shadow_effect()`側で分類自体を変える」も**採らない**
 （`key_pipeline.rs`、`event.injected`な打鍵はユーザー意図に昇格しない）、
 (b) `init_ime_sync_keys`が親指キーと同一VKのsync登録を弾く（BUG-140）
 ため、無変換/変換の誤発火経路（`resolve_pending_thumb_as_single`、
-親指キー専用）とは両立しない。上記「残るリスク」節の
-`engine_on/off_ime_key`自己送信エコーが、この2段の防御をすり抜けない
-唯一の経路である。
+親指キー専用）とは両立しない。上記「残るリスク・受け入れるトレードオフ」
+節の`engine_on/off_ime_key`自己送信エコーが、この2段の防御が実際に
+止めている唯一の経路である。
 
 ### 新しい純粋述語のシグネチャ: 親指キー設定時は`None`を返す（round4 MR4-6）
 
@@ -426,7 +427,9 @@ opus-adversarial-consult round1が以下を指摘し棄却した（詳細は
    `#[cfg(windows)]`配下のため、Linux上では
    `cargo check --target x86_64-pc-windows-msvc -p awase-windows --tests
    --lib`でコンパイル確認する（`cargo check -p awase-windows`単体では
-   このモジュールがコンパイル対象に入らない）。
+   このモジュールがコンパイル対象に入らない）。`key_sequence_policy.rs`
+   のモジュールdocが「担う判断/担わない判断」を列挙しているため、新しい
+   述語を追加したら「担う」リストに1行追記し宣言と実体の乖離を防ぐ。
 2. 上記「回帰テスト」の3点（決定表・`plan_tests`行追加・V5同値性の単体
    テスト）を追加する。(b)は`windows-build` CIでのみ実行されることに
    留意する。
