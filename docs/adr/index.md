@@ -178,7 +178,7 @@
 | [169](169-journal-key-input-repeat-coalescing.md) | journal `KeyInput`レーンのOS auto-repeat畳み込みでダンプ予算窓を圧縮する | 実装完了(ブランチ`feat/adr169-journal-key-input-repeat-coalescing`)。opus-adversarial-consult round1/round2で設計収束、Linux上のtest/clippy/fmt全緑。実機ソーク未実施。元168番、developマージ済みの別ADR-168と衝突し169へ採番し直し |
 | [170](170-codesmell-hotspot-decomposition.md) | コードスメル解消: belief reduce()の大きい4分岐をprivateヘルパーへ抽出(決定1のみ実施) | opus-adversarial-consult round1〜round3反映済み・収束(Blockerゼロ)。決定2(runtime/mod.rs重複統合)・決定3(output/mod.rs分割)は事実誤認/テスト破壊のため見送り |
 | [171](171-gji-candidate-reopen-after-off-observation.md) | `gji_direct_already_matches`が候補ウィンドウ再表示(`candidate_was_seen`)を無視して再送を握り潰す不具合を修正(BUG-141)。belief経由の自動補正案はround1/2で計8件のBlockerが出て見送り、`candidate_visible`併用案もround4でBUG-113再導入Blockerと判明し撤回 | 起草・opus-adversarial-consult round5でBlockerゼロ・収束・実装着手可 |
-| [173](173-scope-solo-tap-ime-action-by-process-name.md) | `muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`(ケース2/3改)を`app_overrides.solo_tap_ime_action_apps`(プロセス名指定)限定にする。`AppImeProfile::TsfNative`案はround1でWindows Terminal取りこぼし等Blocker4件により却下、プロセス名方式へ転換。「IME ON固着」はBUG-142として根拠から分離 | opus-adversarial-consult round1〜round2でBlockerゼロ・収束、実装着手可 |
+| [173](173-scope-solo-tap-ime-action-by-process-name.md) | `muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`(ケース2/3改)を`app_overrides.solo_tap_ime_action_apps`(プロセス名指定)限定にする。`AppImeProfile::TsfNative`案はround1でWindows Terminal取りこぼし等Blocker4件により却下、プロセス名方式へ転換。「IME ON固着」はBUG-142として根拠から分離 | opus-adversarial-consult round1〜round2でBlockerゼロ・収束、実装完了・実機ソーク未実施 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

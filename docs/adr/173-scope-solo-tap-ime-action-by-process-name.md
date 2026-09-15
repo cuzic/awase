@@ -4,10 +4,11 @@ title: |-
   `muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`(ケース2/3改)をプロセス名指定のアプリ限定にする
 status: |-
   opus-adversarial-consult round1(Blocker4件)→round2(Blockerゼロ、
-  Should-fix6件は本文へ反映済み)で収束。round3不要と判定。実装着手可。
+  Should-fix6件は本文へ反映済み)で収束。実装完了(commit `5e185c3f`)。
   決定は`app_overrides.solo_tap_ime_action_apps`(プロセス名リスト、
   既定値=空で全アプリ・後方互換維持)。ケース1(コア側)は意図的にスコープ外。
   「IME ON固着」はBUG-142として本ADRの成否根拠から切り離した。
+  実機ソーク未実施(次のアクション参照)。
 related_adr:
   - "ADR-153"
   - "ADR-121"
