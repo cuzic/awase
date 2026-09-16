@@ -1,66 +1,80 @@
 ---
 id: ADR-176
 title: |-
-  IME状態を確実に読めるアプリでモードキーの実効果を較正し、
-  読めないアプリへ受動観測として転用する
+  awase-settingsの明示的な較正UIでモードキーの実効果を測定し、
+  config1.db/レジストリより優先して適用する
 status: |-
-  **2026-09-15: round1・round2ともBlocker5件検出、v3へ全面訂正
+  **2026-09-16: round1〜3でBlocker計13件検出、v4へ全面訂正
   （opus-adversarial-consult未実施）。**
 
   - **round1**（同一アプリ内、`ConvOpenInference`という弱い代理
-    シグナルから学習、NICOLA親指キー除外つき）: Blocker5件（親指キー
-    除外が対象キー自身を全滅させる、観測チャネルがON方向専用、
-    「beliefを書き換えないから安全」がOFF→ON方向にしか成り立たない、
-    相関判定の循環論法、単一の弱い観測で広い決定をする時定数の悪化）。
-  - **round2（v2）**: 「IME状態を確実に読めるアプリ（Standard）で
-    `ImmGetOpenStatus`直接読み取りにより較正し、読めないアプリへ
-    `ObserverReported`（受動観測）として転用する」方式へ全面書き直し
-    したが、再びBlocker5件——(1)`ObserverReported`は
-    `check_drift_correction`の免除リスト（`ConvOpenInference`/
-    `HeuristicDefault`限定）に入らないため無条件でdrift correction
-    （実`VK_IME_OFF`送信）に到達する、(2)`IntentStore`/`last_intent`
-    （ADR-174 round3が発見した層）がv2で一度も検討されておらず
-    Engine ON追従という目的自体が明示意図が生きている間は達成
-    できない、(3)2セル表完成に必要な`pre_open=true`側の観測は
-    NICOLA親指キーのチョード判定（Phase 3）に入ってしまい原理的に
-    取れない、(4)Standardアプリでの`post_open`はconfig1.db駆動の
-    awase自身のactuationの結果である場合があり誤分類を追認しうる、
-    (5)モードキー直後のクロスプロセス読み取り自体がBUG-113で
-    確定した「@」の独立十分条件——という指摘だった。
+    シグナルから学習、NICOLA親指キー除外つき）: Blocker5件。
+  - **round2（v2）**: 「Standardアプリで`ImmGetOpenStatus`直接読み取り
+    により較正し、`ObserverReported`として転用する」方式へ書き直したが
+    再びBlocker5件（`ObserverReported`が無条件でdrift correctionに
+    到達、`IntentStore`/`last_intent`が未検討、2セル表完成に必要な
+    `pre_open=true`側が原理的に取れない、Standardアプリでのawase自身の
+    actuationによる汚染、モードキー直後の新規クロスプロセス読み取りが
+    BUG-113の「@」独立十分条件）。
+  - **round3（v3）**: 学習結果を`ObserverReported`ではなく`config1.db`と
+    同じ`shadow_action`供給層に、`config1.dbが未割当のときだけ埋める
+    補完」として置く方式へ書き直し、対象もOFF→ON方向のみに縮小。
+    10件中5件は構造的に解消したが、新たにBlocker3件——(B1)「OFF→ON
+    方向にはactuationが無い」という中核の安全主張が実コード上偽
+    （Engine活性化の`ActivationSync`経路で実際に`VK_IME_ON`が送信され、
+    BUG-113のADR-149追記が実機で2〜3回の送信を確認済み）、(B2)
+    「config1.dbの分類がNoneならawaseは何もしない」も偽（既定の
+    `Ctrl+変換`/`Ctrl+無変換`コンボ自体が汚染源になる、MS-IME
+    レジストリ由来のoverride・`keys.ime_detect`のsync_directionも
+    独立した反例）、(B3)較正が依存する既存observationが打鍵ゲート
+    （タイピング中500ms抑制）とintentゲート（明示意図中はポーリング
+    停止）で塞がれ、観測が来ないか相関窓が無限になる。加えてM5として
+    「config1.dbが未割当のときだけ埋める」に縮小した結果、当初の動機
+    （config1.dbが**間違って**分類している場合の自己修復）自体を
+    原理的にカバーできなくなっている、という指摘だった。
 
-  **ユーザーの再指摘**: 「`config1.db`を読む方式と、実際にユーザーに
-  打鍵してもらってその効果を観測する方式は、本質的にやっていることが
-  同じはず」という指摘を受け、実装上の制約（`ObserverReported`/
-  belief層を経由する、という思い込み）に引っ張られすぎていたことに
-  気づいた。**BUG-143の`config1.db`方式が安全な理由は「情報源が信頼
-  できるから」ではなく、分類結果を`shadow_action`という「物理IMEキーの
-  明示意図」を宣言する経路（`IntentKind::PhysicalImeKey`、
-  `IntentStore`と競合するのではなく正規に書き込む側）に乗せている
-  からである**。学習結果も`ObserverReported`ではなく、**config1.db
-  由来の分類と全く同じ`shadow_action`供給層**に、**config1.dbの分類が
-  `None`（未割当）のときだけ埋める補完**として書けば、(1)(2)は
-  BUG-143が既に実機確認済みの経路をそのまま継承するので発生しない。
-  さらに対象をBUG-143の実対象である**OFF→ON方向のみ**に絞れば
-  （Toggle/双方向の完全な学習は非スコープにする）、(3)は
-  `pre_open=true`側の観測が不要になり消える。(4)は「config1.dbが
-  `None`のときだけ学習する」制約により、awase自身が何もしていない
-  状況でのみ学習するため構造的に発生しない。(5)は「打鍵に反応して
-  新しい読み取りを発行する」のをやめ、**Standardアプリで既に定期的に
-  走っているObserverPoll/FocusProbe等の既存観測**を打鍵タイムスタンプの
-  前後で相関させるだけにすることで、新しい読み取りトリガーの追加
-  そのものを無くす。下記「決定（案、v3）」に全面的に書き直した。
+  **ユーザーによる再訂正（2点）**:
+
+  1. **B1（`VK_IME_ON`の再送信）は本ADR固有の問題ではなく、
+     `ActivationSync`側の既存の残置バグである。** GJIが変換キーで
+     実際にIMEを開いた（＝分類が正しい）場合でも、Engine活性化に
+     伴う`ActivationSync`が`VK_IME_ON`を再送するのは「二重送信」で
+     あり、これは`config1.db`経由の既存の`henkan_shadow_override`
+     機構（BUG-143で実機確認済み）にも同様に存在する（BUG-113の
+     ADR-149追記が「3回→2回」と記録している、その残る2回目）。
+     本ADRを理由に発生する問題ではなく、`ActivationSync`側に
+     「beliefが既に高信頼度で実状態と一致していれば再送しない」という
+     冪等性チェックを足すべき、既存の別問題として切り分ける。
+  2. **B3（「観測が来ない」）は設計の前提そのものが誤解だった。**
+     本ADRが想定する較正は、通常のタイピング中に**サイレントに
+     バックグラウンドで**行うものではなく、**`awase-settings`
+     （設定UIアプリ、`AppImeProfile::Standard`）に新設する専用の
+     較正パネルで、ユーザーが明示的に協力する形で**行う。ユーザーが
+     パネルを開き、案内に従って対象キーを単独タップし、awase-settings
+     が**その場で専用の観測ループ**（通常実行時のタイピングガード・
+     ポーリング抑制とは無関係、必要ならTSF/COMインターフェースも
+     使える）でIME状態の変化を直接監視する。「観測が来ない」という
+     心配は、この専用UIフローでは当てはまらない。
+
+  さらに優先順位について: `keys.ime_on`/`keys.ime_off`等の明示config
+  （`Ctrl+変換`等）は「GJIの既定動作を意図的に上書きする」思想であり
+  最優先・較正の対象外とする。MS-IMEレジストリ由来のoverride・
+  `keys.ime_detect`は較正結果と同じレイヤの競合であり、矛盾時は
+  **較正結果（実測）を優先**する方針とする。下記「決定（案、v4）」に
+  全面的に書き直した。
 related_adr:
   - "ADR-092"
   - "ADR-115"
   - "ADR-135"
   - "ADR-140"
   - "ADR-141"
+  - "ADR-149"
   - "ADR-153"
   - "ADR-174"
   - "ADR-175"
 ---
 
-# ADR-176: IME状態を確実に読めるアプリでモードキーの実効果を較正し、読めないアプリへ受動観測として転用する
+# ADR-176: awase-settingsの明示的な較正UIでモードキーの実効果を測定し、config1.db/レジストリより優先して適用する
 
 ## 背景
 
@@ -69,280 +83,210 @@ GJIの`config1.db`を静的パースして無変換/変換キーのIME意味論
 （`ImeToggleKind::On/Off/Toggle`）を判定する`classify_mode_key_ime_action`
 （`crates/awase-windows/src/gji_charset_autodetect.rs`）を修正した。
 修正自体は実機で正しく動作することを確認済みだが、修正直後にMozc
-公式ソース（`google/mozc`）を調査した結果、次の既知の限界が判明した
-（詳細はBUG-143参照）:
+公式ソース（`google/mozc`）を調査した結果、`config1.db`の
+`session_keymap`と`custom_keymap_table`が食い違いうる（GUI実装の
+クリア漏れ）という既知の限界が判明した（詳細はBUG-143参照）。
 
-- 公式エンジン（`session/keymap.cc::ApplyPrimarySessionKeymap`）は
-  `session_keymap != CUSTOM`のとき`custom_keymap_table`を完全に無視する
-  仕様であり、公式`ms-ime.tsv`も`DirectInput Henkan Reconvert`
-  （IME開閉と無関係）——修正前の実装の方が公式仕様には忠実だった。
-- 実機の食い違いは、GUI実装（`gui/config_dialog/config_dialog.cc::
-  EditKeymap`）が「編集」確定時のみ`custom_keymap_table_`を更新し
-  `session_keymap`をCUSTOMへ切り替える一方、**プルダウンだけを別
-  プリセットへ戻す操作にはテーブルをクリアする処理が存在しない**ため、
-  過去に一度カスタマイズした後でプリセットへ戻すと古いテーブルが
-  残留しうる、という**GUI実装の抜け（公式ドキュメントに記載なし）**に
-  起因すると推定される。
-
-つまり`config1.db`の静的パースは、**Google非公開の内部フォーマット
-（field番号は非公式知識）を解釈しているだけでなく、そのフォーマットが
-実際のGJIバイナリの挙動を正確に表しているという保証も無い**——今回は
-たまたま実機の挙動と`custom_keymap_table`の内容が一致したため修正は
-有効だったが、一般には「設定ファイルの記述」と「実際の挙動」が食い違う
-リスクを構造的に抱えている。
+つまり`config1.db`の静的パースは、Google非公開の内部フォーマットを
+解釈しているだけでなく、そのフォーマットが実際のGJIバイナリの挙動を
+正確に表しているという保証も無い。同様に、MS-IME使用時の判定は
+レジストリ値の読み取りに依存しており、これも「設定の記述」と
+「実際の挙動」が食い違いうる。
 
 ## 目的
 
-`config1.db`の静的パースに頼らず、**実際のOS/IME挙動を観測して**、
-モードキー（変換/無変換/かな/漢字等、GJI/MS-IMEのモード変更に関わり
-うるキー全般）がawaseのbeliefに正しく追従するようにする。
+`config1.db`/レジストリの静的パースに頼らず、**ユーザーが
+awase-settingsの専用UIで対象キーを実際に打鍵し、その結果（IMEが実際に
+ON/OFFどちらに動いたか）を直接測定して**、モードキー（変換/無変換/
+かな/漢字等）の意味論をawaseが正しく把握できるようにする。測定結果は
+`config1.db`ベースの静的分類と同じ`shadow_action`供給層に、**より高い
+優先度で**適用する——静的パースが誤っていた場合でも、実測した事実が
+勝つ。
 
-**核心アイデア（v2、ユーザー提案）**: このリポジトリには既に
-「IME状態を確実に読み取れるアプリ」と「読み取れないアプリ」の分類が
-ある（`AppImeProfile`、`can_read_imm32_open_status()`/
-`can_use_imm32_cross_process()`）。**読み取れるアプリ
-（`AppImeProfile::Standard`、例: メモ帳等の通常のWin32 IMMアプリ）で
-モードキーが実際にIME状態をどう変えるかを`ImmGetOpenStatus`の直接
-読み取りで観測・較正し、その較正結果（「このキーは今のGJI/IME設定
-ではTurnOnとして働く」等）を、読み取れないアプリ
-（TsfNative/Imm32Unavailable、例: Windows Terminal/Chrome）で
-そのキーが押されたときの受動的なbelief観測として適用する**。
-
-**位置づけ**: `config1.db`ベースの静的分類（ADR-092/135/141、BUG-115/
-BUG-143）を置き換えるのではなく、それが外れていた場合の自己修復経路
-として補完する。設定ファイルが読めない・信頼できない環境でも、実際に
-ユーザーがそのキーを（Standardアプリで一度でも）使った実績があれば、
-それ以降はTsfNative/Imm32Unavailableアプリでも正しく追従できるように
-する。
+**round1〜3との違い**: round1〜3は「通常のタイピング中にバックグラウンド
+で受動的に学習する」という設計だったため、(a)観測チャネルの信頼性・
+到達性、(b)NICOLA親指キーのチョード判定との衝突、(c)awase自身の
+actuationによる観測の汚染、といった問題が繰り返し発生した。
+v4は**ユーザーが明示的に協力する専用UIフロー**に変更することで、
+これらの問題の多くを構造的に解消する（詳細は「決定（案、v4）」参照）。
 
 ## 対象キー
 
-`vk.rs::is_ime_mode_key_for_ime`が対象とする範囲全体
-（`VK_KANA`/`VK_IME_ON`/`VK_KANJI`/`VK_IME_OFF`/`VK_CONVERT`/
-`VK_NONCONVERT`/`VK_DBE_ALPHANUMERIC`〜`VK_DBE_DBCSCHAR`等）を対象と
-してよい——**round1と異なり、変換/無変換を除外しない。むしろこれらは
-GJIのキーマップ設定次第で意味が変わる（ADR-174/BUG-143の対象）ため
-主要な対象である**。NICOLA親指キーとして設定されているかどうかは、
-較正フェーズ・適用フェーズのどちらの安全性にも影響しない（下記
-「なぜNICOLA親指キー除外が不要か」参照）——round1のB1はこの除外条件
-自体が誤りだった。
-
-`VK_KANA`等「Win32 API上は固定方向のはず」のキーも対象に含めてよい。
-[ADR-175](175-physical-dbe-key-stuck-direction-recovery.md)（BUG-142）が
-示すとおり「固定方向のはず」という前提自体が実機で裏切られることが
-あり、実際の挙動を観測して補正する仕組みはこれらのキーにも無関係では
-ない。ただし優先度の議論はround3に譲る（下記「未解決点」参照）。
-なお本ADR v3はOFF→ON方向のみを対象とする（下記「非スコープ」参照）
-——`VK_KANA`等は`ImeKeyKind::shadow_effect()`が既に固定方向で正しく
-判定できているため、v3の学習対象になるのは主に「config1.dbが
-`None`を返すVK」（BUG-143の`VK_CONVERT`/`VK_NONCONVERT`が典型例）
-である。
+`vk.rs::is_ime_mode_key_for_ime`が対象とする範囲のうち、
+`config1.db`/レジストリベースの静的分類が存在しうるキー
+（`ModeKeyCandidate::{Henkan, Muhenkan, Hiragana, Katakana}`、
+`crates/awase-windows/src/gji_charset_autodetect.rs:224-229`）を主対象と
+する。`VK_KANA`等「Win32 API上は固定方向のはず」のキー
+（`ImeKeyKind::shadow_effect()`が既に固定方向で判定済み）は、
+[ADR-175](175-physical-dbe-key-stuck-direction-recovery.md)の教訓
+（固定方向前提も実機で裏切られうる）を踏まえれば較正UIの対象に
+含める価値はあるが、v4では優先度を下げ非スコープとする（下記参照）。
 
 ## 却下した代替案
 
-### 能動的なテストキー送信によるプロービング
+### 能動的なテストキー送信によるプロービング（通常実行時）
 
 「起動時やGJI検出時に、awase自身が対象キーを合成SendInputで送信し、
 その結果を観測してキャリブレーションする」案は**却下**する。ADR-153
 ケース3の実機履歴（`docs/known-bugs/BUG-113.md`・`BUG-124.md`）で、
 「生キーがGJIへ届くこと」「awase自身が明示IME制御actuationを行う
 こと」のどちらか片方だけでも「@」を誘発するのに十分と2回の独立した
-実機A/Bで確定している。合成テストキー送信は両方を同時に満たすため、
-高確率で「@」を再現すると判断した。**本ADRは、ユーザーが自発的に
-押した物理キーの結果だけを観測する（awase自身は一切キーを送信
-しない）**——これはv2でも変わらない大原則。
+実機A/Bで確定している。**ただしこれは「通常実行時、ユーザーの
+意図しないタイミングで」合成キーを送る場合の話である**——v4の較正UI
+は、ユーザーが明示的に較正モードへ入り、実際に物理キーを押す
+（awase自身はキーを送信しない）ため、この却下理由には抵触しない。
 
 ### 却下（round1）: 同一アプリ内の弱い代理シグナルによる学習
 
 round1は「TsfNativeアプリ内で、次の実キー入力が自然に発生させる
-`ConvOpenInference`観測（conv ビットからの間接推測）と、直前の
-`effective_open()`スナップショットを突き合わせて学習する」という設計
-だった。opus-adversarial-consult round1でBlocker5件により**却下**。
-主因は、この観測チャネルが(a) ON方向にしか存在しない、(b)「打鍵前
-状態」をbelief自身から取るため循環する、の2点。詳細は本ファイル
-frontmatter statusに要約。
+`ConvOpenInference`観測と、直前の`effective_open()`スナップショットを
+突き合わせて学習する」という設計だった。Blocker5件により**却下**
+（詳細はfrontmatter status参照）。
 
 ### 却下（round2）: `ImmGetOpenStatus`直接読み取り＋`ObserverReported`
-（受動観測）としての適用
+としての適用（通常実行時のバックグラウンド較正）
 
-round2（v2）は「Standardアプリで`ImmGetOpenStatus`を較正のたびに
-新規に読み取り、適用フェーズは新設`ObservationSource`による
-`ObserverReported`（belief層への受動観測）とする」という設計だった。
-opus-adversarial-consult round2でBlocker5件により**却下**。主因は、
-(a) `ObserverReported`は`check_drift_correction`の免除リスト
-（`ConvOpenInference`/`HeuristicDefault`限定）に入らないため無条件で
-drift correction（実`VK_IME_OFF`送信）に到達する、(b) `IntentStore`/
-`last_intent`層が一度も検討されておらずEngine ON追従という目的自体が
-達成できない、(c) 較正の「打鍵直後に新規のクロスプロセス読み取りを
-発行する」設計がBUG-113で確定した「@」の独立十分条件そのものだった、
-の3点。詳細はfrontmatter status参照。
+round2（v2）は通常実行時にバックグラウンドで較正し、適用は
+`ObserverReported`（belief層への受動観測）とする設計だった。
+Blocker5件により**却下**（詳細はfrontmatter status参照）。
 
-## 決定（案、v3、opus-adversarial-consult未実施）
+### 却下（round3）: `config1.db`が未割当のときだけ埋める補完
+（通常実行時のバックグラウンド較正、`shadow_action`供給層への合流）
 
-### 核心の気づき: 分類結果の「置き場所」が安全性を決める
+round3（v3）は学習結果の置き場所を`shadow_action`供給層へ正しく
+修正したが、較正自体は依然として通常実行時のバックグラウンド処理
+だった。Blocker3件（`ActivationSync`の再送信、既定config設定による
+自己汚染、観測が来ない/相関窓が無限）により**却下**——ただし
+Blocker3件のうち2件（`ActivationSync`再送信、観測到達性）はv4の
+「専用UIフローへの変更」で解消する。
 
-BUG-143の`config1.db`方式が安全な理由は「情報源が信頼できるから」
-ではない。分類結果（`ImeToggleKind::On/Off/Toggle`）を
-`henkan_shadow_override`/`muhenkan_shadow_override`という**静的知識
-キャッシュ**に置き、`kp_stage_shadow_ime_toggle`が読む`shadow_action`
-→`IntentKind::PhysicalImeKey`→`write_physical_key`という、**物理IME
-キーの明示意図を宣言する経路**にそのまま合流させているからである。
-この経路は`IntentStore`/`last_intent`と「競合」するのではなく、
-それらへ**正規に書き込む側**（半角/全角等の本物の物理IMEキーと
-全く同じ扱い）であり、ADR-174 round4で確認済みのとおりOFF→ON方向は
-actuationを一切発行しない。
-
-したがって「学習した分類結果」も、`ObserverReported`（belief層の
-観測）としてではなく、**config1.db由来の分類と全く同じキャッシュ・
-同じ経路**に置けば、round2のBlocker(a)(b)は経路の選択ミスとして
-最初から発生しない——これは新しい安全機構ではなく、**BUG-143が既に
-実機確認済みの経路をそのまま再利用する**という設計である。
-
-### スコープを絞ることで残りのBlockerが構造的に消える
-
-round1のB1/round2のB3（NICOLA親指キーのチョード判定と衝突する）は、
-「両方向（OFF→ONとON→OFF）を学習しようとする」ことに起因していた。
-**本ADRの実対象（BUG-143）はOFF→ON方向だけ**なので、v3は明示的に
-**OFF→ON方向のみを学習・適用する**（Toggle・ON→OFF方向は非スコープ、
-下記「非スコープ」参照）。これにより:
-
-- 較正フェーズは`pre_open=false`（直接入力、Engine非活性）の間だけ
-  発火すればよく、`pre_open=true`側の観測（NICOLA親指キーのチョード
-  判定と衝突するround2 B3の原因）が不要になる。
-- 学習結果は常に`ShadowImeAction::TurnOn`のみなので、`Toggle`の
-  循環（round2 M5/6）も発生しない。
-
-round2のB4（Standardアプリでのawase自身のactuationによる汚染）は、
-**「config1.dbベースの静的分類が`None`（未割当）のVKについてのみ
-学習する」という制約**で解消する。分類が`None`ならawaseはそのVKに
-対して`shadow_action`を一切発行しないため、Standardアプリでの
-IME状態変化は純粋にIME/GJI自身の挙動であり、awase自身の作用による
-汚染が構造的にあり得ない。
-
-round2のB5・M1（打鍵に反応した新規クロスプロセス読み取りが「@」の
-十分条件・BUG-034の再燃）は、**打鍵のたびに新しい読み取りを発行
-しない**ことで解消する。Standardアプリでは`ObserverPoll`（500ms周期）
-・`FocusProbe`等の**既存の受動観測**が、この打鍵と無関係な独自の
-スケジュールで既に定期的に`PerSourceObservations`を更新している。
-較正は、対象VKの物理KeyDownの**タイムスタンプ**を記録し、その前後で
-これら既存observationが`open`の値をどう変えたかを事後的に相関させる
-だけでよい——打鍵がトリガーとなって新しい読み取りを発行する連鎖
-（BUG-113 guard5が禁じる形そのもの）を一切作らない。
+## 決定（案、v4、opus-adversarial-consult未実施）
 
 ### 設計の骨子
 
-1. **較正フェーズ（Standardアプリ、`can_read_imm32_open_status()==true`
-   かつ`!cannot_verify_real_ime_state(class_name)`——round2のMinor m2
-   指摘のとおり`profile==Standard`の値だけで判定しない）**:
-   - トリガー: 対象VKの物理（非注入）KeyDownで、
-     `explicit_ime_action_consumed`が立っておらず、かつ
-     **config1.dbベースの静的分類（`classify_mode_key_ime_action`）が
-     このVKについて`None`を返す**場合のみ。
-   - 打鍵の**タイムスタンプ**を記録する（新しい読み取りは発行しない）。
-   - 打鍵時点で`PerSourceObservations`から得られる直近の信頼できる
-     観測が`open=false`であることを確認する（`pre_open=false`条件、
-     ここも新規読み取りではなく既存の最新観測値を読むだけ）。
-   - 生キーはそのままパススルーする（一切変更しない）。
-   - **その後の既存observation更新**（次のObserverPoll/FocusProbe等、
-     この打鍵とは無関係な独自スケジュールで発生するもの）を監視し、
-     打鍵タイムスタンプより後に記録された観測が`open=true`を示せば
-     「このVKはOFF→ONとして働く」候補とする。
-   - 相関の失格条件（打鍵タイムスタンプ〜観測の間に発生したら較正を
-     諦める）: 別の明示IME操作、フォーカス変更、他のIMEモードキーの
-     打鍵、`conv_mutation_seq`の変化。
+1. **較正UI（`awase-settings`に新設）**:
+   - `awase-settings`（`AppImeProfile::Standard`、`can_read_imm32_
+     open_status()`/`can_use_imm32_cross_process()`が共に`true`）に
+     「IMEキー較正」パネルを新設する。
+   - ユーザーが対象キー（`変換`/`無変換`等、選択式）を指定し、
+     「較正開始」を押す。
+   - awase-settingsは較正対象キーが物理・非注入・修飾キー無し
+     （Ctrl/Shift/Alt/Winいずれも押されていない——`Ctrl+変換`等の
+     awase側明示config用の組み合わせと衝突しないため）で押されるまで
+     待機する。
+   - 押される**直前**の実IME open状態を、awase-settings自身のウィンドウ
+     に対する`ImmGetOpenStatus`（Standardプロファイルなので信頼できる、
+     `can_read_imm32_open_status()==true`）で確認する。open状態が
+     `false`でなければ（＝直接入力状態でなければ）ユーザーに直接入力へ
+     切り替えるよう案内し、待機し直す。
+   - キーを検知したら生キーはそのままOS/IMEへ渡す（awase自身は一切
+     actuateしない）。
+   - **専用の観測ループ**（通常実行時のタイピングガード・ポーリング
+     抑制ロジックとは完全に独立、`awase-settings`プロセス内で完結）で
+     `ImmGetOpenStatus`を短い間隔（実測して`tuning-constants.md`に
+     従い決定）でポーリングし、open状態がtrueへ変化するのを待つ。
+     必要ならTSF/COMインターフェース（`ITfThreadMgr`等）による、
+     より高精度・低レイテンシな観測も検討する（`awase-settings`
+     自身のウィンドウなので、クロスプロセス呼び出しの制約
+     （BUG-034のハングリスク等）はawase.exe本体の打鍵経路ほど
+     厳しくない——ユーザーが明示的に待っている一度きりの操作であり、
+     数百ms〜数秒のレイテンシは許容できる）。
+   - タイムアウト（実測して決定）までに変化が観測できなければ
+     「このキーはIME状態を変えないようです」とユーザーに提示する。
+   - 変化を観測できたら「変換キーはIMEをONにするようです。もう一度
+     確認しますか？」と確認を促し、**2回一致**するまで確定しない
+     （round1レビュアー提案・ユーザー承認済みの方針を維持）。
 
-2. **学習の確定条件（1セル・2回一致、ユーザー承認済みの「2回一致まで
-   確定しない」方針をOFF→ON方向のみに単純化して適用）**: 対象VKの
-   `TurnOn`候補が**2回連続で一致**した時点で確定とする。矛盾する
-   観測（確定後に`post_open`がfalseのまま、または別のOFF→ON以外の
-   遷移）が観測された場合は確定を取り消し未確定へ戻す。
+2. **保存**: 確定した結果を`config.toml`の新設セクション（例:
+   `[gji_measured_overrides]` または既存の`app_overrides`と同系統の
+   構造）に永続化する。既存の`henkan_shadow_override`等とは異なり
+   **プロセス再起動を跨いで永続化する**——これはユーザーが明示的に
+   時間をかけて測定した結果であり、`config1.db`のような外部ファイル
+   由来の値より安定した情報だと判断できるため（非スコープ節も参照）。
 
-3. **保存先**: `henkan_shadow_override`/`muhenkan_shadow_override`を
-   `VK_CONVERT`/`VK_NONCONVERT`に限らない汎用マップへ一般化するか、
-   並列の新規フィールド（例: `learned_mode_key_turn_on: HashSet<VkCode>`
-   または`HashMap<VkCode, u8>`で一致回数を保持し確定時に別集合へ昇格）
-   を追加する。**config1.dbベースの分類を読む関数
-   （`resolve_henkan_muhenkan_shadow_override_for_event`等）の
-   `.or_else()`チェーンの最後に、確定済み学習結果を`Some(ShadowImeAction::
-   TurnOn)`として追加する**——config1.dbの分類が`Some`を返す限り学習
-   結果は一切参照されない（config1.db優先、学習は補完のみ、
-   round2レビュアー推奨に従う）。
+3. **適用（awase.exe本体、通常実行時）**: 設定リロード時
+   （`reset_streak_latch_for_reload`と同じ配線点、
+   `gji_charset_autodetect.rs:665-668`）に`config.toml`の測定済み
+   overrideを読み込み、`henkan_shadow_override`/`muhenkan_shadow_override`
+   等と**同じ`shadow_action`供給層**（`resolve_henkan_muhenkan_shadow_
+   override_for_event`等）に合流させる。適用フェーズ自体は
+   `config1.db`ベースの経路と全く同じコードパスを通るため、新しい
+   actuation合流点はゼロ（既存のADR-141機構をそのまま再利用）。
 
-4. **適用フェーズ**: 新しい消費経路を追加しない。上記3で
-   config1.dbベースの分類関数の出力に合流させているため、
-   `kp_stage_shadow_ime_toggle`以降は**既存のconfig1.db駆動と全く
-   同じコードパス**を通る。新しいactuation合流点はゼロ
-   （`fix-requires-evidence.md`の「IME actuation合流点」表に
-   新規行を追加しない）。
+4. **優先順位**（対象VKごとに以下の順で解決、上に行くほど優先）:
+   1. `keys.ime_on`/`keys.ime_off`/`keys.ime_toggle`
+      （`Ctrl+変換`等、awase側の明示config） — 較正の対象外・
+      常に最優先（GJIの既定動作を意図的に上書きする思想のため）。
+   2. **本ADRの較正結果**（`config.toml`の測定済みoverride、確定済み
+      のもの） — 実測した事実を静的パースより優先する。
+   3. `config1.db`ベースの静的分類（GJI）/レジストリ由来の分類
+      （MS-IME）、および`keys.ime_detect`の`sync_direction`
+      ——これらは互いに同じレイヤの競合として扱われ、既存の優先順位
+      （`intent_kind`解決、`key_pipeline.rs`）を維持する。
+   較正結果が存在しないVKについては、従来どおり3の静的分類にフォール
+   バックする。
 
-5. **ライフサイクル**: 較正はStandardアプリで行われ適用は
-   TsfNative/Imm32Unavailableアプリで行われるため、`henkan_shadow_override`
-   （GJIアクティブ区間ごとにリセット）とは異なる寿命が必要——
-   IME種別（`ActiveImeKind`）が変わったとき、設定リロード
-   （`reset_streak_latch_for_reload`と同じ箇所）、`left_thumb_vk`/
-   `right_thumb_vk`の変更、のいずれかで学習表をクリアする
-   （round2 M4が指摘した4トリガーのうち、v3のスコープ縮小により
-   「`config1.db`の内容/mtime変化」は次善——config1.dbが`Some`を返す
-   ようになった時点で学習結果は`.or_else()`チェーンにより自然に
-   無視されるため、明示的なクリアは必須ではないが、リソース解放の
-   観点で実装時に検討する）。
+5. **`ActivationSync`の再送信は別問題として切り離す**: Engine活性化に
+   伴う`VK_IME_ON`の冗長送信（BUG-113 ADR-149追記、「3回→2回」の残る
+   2回目）は、本ADRの較正が正しく機能した場合でも既存の`config1.db`
+   経路と同様に発生しうる**既存の残置問題**であり、本ADRのスコープ
+   外とする。ただし本ADRの実装前提として、`ActivationSync`（
+   `src/engine/engine.rs:456-475`）に「beliefが既に高信頼度で実状態と
+   一致していれば`SetOpen`を再送しない」という冪等性チェックを別途
+   追加することを推奨する（既存のBUG-113/ADR-149の残課題として、
+   本ADRとは独立に、しかし関連するタイミングで対応するのが望ましい）。
 
-### round1・round2のBlockerがv3でどう解消されるか（要約）
+### round3のBlockerがv4でどう解消されるか
 
-| Blocker | v3での解消 |
+| round3 Blocker | v4での解消 |
 |---|---|
-| round1 B1/round2 B3: 親指キーのチョード判定と衝突 | OFF→ON方向のみに対象を限定し、`pre_open=true`側の観測自体を無くす |
-| round1 B2: `ConvOpenInference`はON方向専用 | v2からv3を通じて不使用のまま——較正は既存observationの前後比較のみ |
-| round2 B1: `ObserverReported`が無条件でdrift correctionに到達 | `ObserverReported`を使わない。学習結果はconfig1.dbと同じ`shadow_action`供給層に直接置く |
-| round2 B2: `IntentStore`/`last_intent`により目的が未達 | `IntentKind::PhysicalImeKey`経路（ADR-174 round4で実機確認済み）をそのまま再利用するため、`IntentStore`と競合せず正規に書き込む |
-| round1 B4/round2の循環懸念 | 較正の「打鍵前状態」は既存observationの最新値から取る（新規読み取りなし）。beliefは使わない |
-| round2 B4: Standardアプリでのawase自身のactuationによる汚染 | config1.dbの分類が`None`のVKについてのみ学習するため、awase自身は当該VKに対し何もしていない |
-| round2 B5/M1: 打鍵駆動の新規読み取りが「@」/BUG-034を再燃 | 打鍵に反応した新規読み取りを一切発行しない。既存の独立スケジュールのobservationを事後相関するのみ |
-| round1 B5/round2 M2: 単一の弱い観測・系統誤差 | 2回一致確定を維持。系統誤差（settle時間不足）は実機実測が必要（下記「未解決点」） |
+| B1: `ActivationSync`の`VK_IME_ON`再送信 | 本ADR固有の問題ではないと整理し、別途の冪等性チェック追加を推奨事項として切り離す（上記5） |
+| B2: `config1.db`分類None時の既定config等による自己汚染 | 較正は専用UIフローでのみ行われ、修飾キー付き打鍵（`Ctrl+変換`等）は較正対象外として明示的に除外する。MS-IMEレジストリ由来のoverride・`keys.ime_detect`との優先順位は上記4で明文化 |
+| B3: 既存observationが打鍵ゲート・intentゲートで塞がれる | 較正は`awase-settings`の専用観測ループで行われ、通常実行時のタイピングガード（500ms）・ポーリング抑制（明示意図中）とは無関係 |
+| M5: 動機（config1.dbが誤って分類している場合の自己修復）をカバーできない | v4は「未割当のときだけ埋める」制約を撤廃し、較正結果が存在すれば静的分類より優先するため、当初の動機を再びカバーする |
 
-## 未解決・opus-adversarial-consult round3で詰めるべき点
+## 未解決・opus-adversarial-consult round4で詰めるべき点
 
-1. **相関判定の失格条件の網羅性**: 上記「較正フェーズ」の失格条件
-   リストが十分か（BUG-19/BUG-51追補/BUG-55が警告する偽陽性源を
-   すべて塞げているか）。
-2. **既存observationの粒度で十分か**: `ObserverPoll`の周期（実装確認
-   要）が、この用途において「打鍵から遠すぎる／近すぎる」ことによる
-   系統誤差を生まないか。新規読み取りを追加しない制約の下で、
-   タイミング設計にどんな限界があるか。
-3. **保存先の具体的な型設計**: `henkan_shadow_override`を一般化する
-   か新規フィールドにするか、`.claude/rules/ime-belief-architecture.md`
-   「`ImeModel`以外のbelief的状態への適用範囲」節の基準（書き込み経路
-   の1箇所集約、フィールドprivate化）にどう適合させるか。
-4. **`fix-requires-evidence.md`対応**: 回帰テスト（相関判定・確定条件
-   を純粋関数化してLinux CIで実行可能にする）を用意すること。新しい
-   `ObservationSource`は不要になった（v3はbelief層を経由しないため）
-   ことを確認する。
-5. **実機検証方法**: メモ帳等のStandardアプリで、config1.dbの分類が
-   `None`のVK（意図的にそうなる設定を作る、またはBUG-143相当の
-   状況を再現する）について較正が正しく発火・確定することを実機ログで
-   確認し、その後Windows Terminal等のTsfNativeアプリへ切り替えて
-   学習結果が適用されEngineが正しくActiveへ遷移することを確認する
-   A/B手順を用意する。
+1. **`awase-settings`と`awase.exe`本体の連携方法**: 較正結果を
+   `config.toml`へ書き込んだ後、実行中の`awase.exe`にどう反映させるか
+   （設定リロードのトリガー、既存の設定変更検知機構があるか確認）。
+2. **観測ループの具体的な実装**: ポーリング間隔・タイムアウトの実測値
+   （`tuning-constants.md`対象）、TSF/COMインターフェースを使う場合の
+   実装コスト・複雑性とのトレードオフ。
+3. **優先順位（上記4）の実装箇所**: `intent_kind`解決
+   （`key_pipeline.rs:1417-1427`付近）にどう新しい優先順位を挿入する
+   か、既存の`sync_direction` > `shadow_action`という順序とどう統合
+   するか。
+4. **`config.toml`への永続化の設計**: 新設セクションのスキーマ、
+   既存の`app_overrides`等の設定ブロックとの一貫性。
+5. **UI/UX設計**: 較正パネルの具体的な操作フロー、失敗時
+   （キーが検出されない、タイムアウトする等）のエラーメッセージ。
+6. **`fix-requires-evidence.md`対応**: 較正ロジック自体は
+   `awase-settings`側の新規コードだが、適用フェーズ（優先順位解決）は
+   `awase-windows`側の「IME belief」「IME actuation合流点」ファミリー
+   に該当するため回帰テストが必要。
+7. **`ActivationSync`冪等性チェック**（上記5）の要否・実装方針。
+   本ADRとは別のBUGとして起票するか、本ADRの実装に含めるか。
 
 ## 非スコープ
 
-- 能動的なテストキー送信によるプロービング（上記「却下した代替案」）。
-- `config1.db`静的パース自体の廃止（ADR-092/135/141/BUG-143の資産は
-  引き続き初期値として使い、食い違った場合も常にconfig1.db側を
-  優先する——学習は「未割当」を埋める補完に限定する）。
-- **ON→OFF方向・Toggle意味論の学習**（v3の中核的なスコープ縮小。
-  round2のB3/M5がこれらの学習には別の設計が必要であることを示した
-  ため、別ADRの対象とする）。
-- 学習結果のプロセス再起動を跨いだ永続化。
+- 通常実行時のバックグラウンドでの受動的な学習（round1〜3の設計、
+  却下済み）。
+- ON→OFF方向・Toggle意味論の較正UI対応（v4の初期スコープはOFF→ON
+  方向の較正に集中する。ON→OFF方向はユーザーが直接入力からの
+  遷移だけを較正するUIフローと相性が悪いため、必要なら別途検討）。
+- `VK_KANA`等「固定方向のはず」のキーの較正（対象キー節参照、
+  優先度を下げて非スコープとする）。
+- `ActivationSync`の冪等性チェック自体の実装（上記「未解決点」7、
+  関連課題として記録するが本ADRの実装スコープには含めない）。
 
 ## 関連
 
 ADR-092（`classify_mode_key_ime_action`の起源）、ADR-115（打鍵列機能、
 本ADRとは無関係だが同じ「1キーに複数の意味を持たせる」領域）、
-ADR-135（Hiragana/Katakanaへの一般化）、ADR-140（probe/actuation競合、
-較正フェーズのフェンシングで参考にすべき先例）、ADR-141（Henkan/
-Muhenkan delegate、`shadow_action` override機構そのもの）、
-ADR-153（明示config、本ADRのトリガー条件が除外すべき既存経路）、
-ADR-174/BUG-143（本ADRの直接の動機、`IntentStore`を含むbelief解決の
-全階層の調査）、ADR-175（BUG-142、「Win32 API上の固定方向を信じすぎる」
-別の失敗モードの先例）。
+ADR-135（Hiragana/Katakanaへの一般化）、ADR-140（probe/actuation競合）、
+ADR-141（Henkan/Muhenkan delegate、`shadow_action` override機構
+そのもの）、ADR-149（`VK_IME_ON`重複送信の根本原因調査、
+`ActivationSync`再送信の既存文脈）、ADR-153（明示config、`Ctrl+変換`
+等が較正対象外になる理由）、ADR-174/BUG-143（本ADRの直接の動機）、
+ADR-175（BUG-142、「固定方向のはず」を信じすぎる失敗モードの先例）。
