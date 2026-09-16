@@ -4,9 +4,54 @@ title: |-
   awase-settingsの明示的な較正UIでモードキーの実効果を測定し、
   未登録時に静的分類を補完する
 status: |-
-  **2026-09-16: v6をopus round5レビューで即日撤回、v7として観測方式を
-  大幅に単純化（round1〜4のBlocker計17件はv5で対応方針確定済み、
-  実装着手前）。**
+  **2026-09-16: v7をopus round6レビューでBlocker4件・Major6件検出、
+  v8として決定1〜3・実装タスクT6〜T10を修正（round1〜4のBlocker計17件は
+  v5で対応方針確定済み、v6→v7の経緯は下記、実装着手前）。**
+
+  **round6（v7へのレビュー）の結論**: v6の撤回自体（較正専用ネイティブ
+  ウィンドウは不要）は実測と整合しており正しかったが、**観測を
+  awase-settingsプロセスからawase.exe本体へ移したことで、v6には
+  構造的に存在し得なかった衝突が新たに4件（Blocker）発生していた**。
+
+  - **B1（最重要）**: 較正probeは`runtime/ime_refresh.rs:70-78`の
+    `app_disabled`早期return（「例外なく無効化する」と明記、observe/
+    notify/drift correction/warmup/probeが全停止）と正面衝突する。
+    決定1が「完全バイパス」と呼んでいたものが、v7では「キー処理と
+    IME refreshは止まるが較正probeだけは動く」という**部分バイパス**に
+    変質していた。
+  - **B2**: `imm.rs::probe_ime_control`は`send_health::record`
+    （グローバルなI/O健全性サーキットブレーカ）へ無条件に給餌する
+    （`is_actuation`による除外対象はprobe/actuation fenceのみ）。
+    `runtime/executor.rs:986-995`に、**結果がログにしか使われない
+    診断目的のクロスプロセスprobeを、まさにこの理由（send_healthの
+    誤作動）で削除した**という直接の前例が残っている。較正probeも
+    同じカテゴリであり、無策で実装すると「較正した直後の最初の一打が
+    おかしい」という較正機能と結びつけようのない再現困難な症状を
+    生む。
+  - **B3**: 他プロセス（awase-settings）のHWNDをawase.exe本体が
+    IPCで受け取って保持し続ける設計に、ライフサイクル規定が無い
+    （較正中にawase-settingsがクラッシュ/終了した場合、awase.exeが
+    較正モードのまま/disable_appsを外さないまま/死んだHWNDへの
+    ポーリングを続ける恐れ。HWND再利用による誤爆リスクも含む）。
+  - **B4**: 「awase-settings側の変更は不要」は、新規ウィンドウ・新規
+    windows-rs feature・新規`SendMessageTimeoutW`呼び出しが不要という
+    意味では正しいが、**awase-settingsが自身のトップレベルHWNDを
+    取得する手段がどのタスクにも割り当てられていない**（見出しの
+    断定は誤り）。
+
+  Major6件（M1〜M6）: T9の受け入れ基準に実機A/B手順が無い、
+  決着実験とv7設計で「probeを出す側がLLキーボードフックを持つ単一
+  スレッドプロセスか」という未検証の差がある、タスクリストの250ms根拠が
+  round5が無効と判定したスパイクのままになっている、観測の基準点
+  （押下前の値）を誰がいつ取るか未定義、`lints/actuation_call_guard`
+  許可リスト更新の記載漏れ、決定2・決定3を統合した較正モード状態の
+  所有者（フックコールバック側かランタイム側か）が未決定。
+
+  **v8の対応方針**: 下記「決定」節1〜3・実装タスクT6〜T10で全項目に
+  対応する。
+
+  round1〜4の経緯・v6→v7の詳細（Blocker5件、round5レビュー）は
+  以下に要約済み。
 
   v6（「較正専用のネイティブWin32子ウィンドウを新設する」という決定3）は
   opus round5レビューで**Blocker 5件**を指摘され、当日中に撤回した。
@@ -252,10 +297,10 @@ actuationが動き続けるため測定が自己成就する（B1/B2）、(b)統
 ## 決定（v5、実装タスクリストは
 [176-implementation-tasks.md](176-implementation-tasks.md)参照）
 
-### 1. 較正中はawase自身を完全にバイパスする（B1/B2対応）
+### 1. 較正中はawase自身を完全にバイパスする（B1/B2対応、round6 B1で「完全」の意味を訂正）
 
 較正モード中、`awase-settings.exe`を対象に既存の`disable_apps`機構
-（`crates/awase-windows/src/hook.rs:1103-1105`、
+（`crates/awase-windows/src/hook.rs:1102-1104`、
 `HOOK_STATE.focus_app_disabled`、既定`mstsc.exe`のみ対象の完全
 バイパス——「例外なく無効化する」と明記済み）を一時的に適用する。
 これにより:
@@ -269,23 +314,71 @@ actuationが動き続けるため測定が自己成就する（B1/B2）、(b)統
   （flicker等）への防御であり、この自作自演汚染への防御では
   ない点をここで明確に区別する。
 
+**round6 B1の訂正**: 決定2・決定3により、較正モード中はawase.exe本体
+自身が（a）物理キー検知（`hook.rs`のフックコールバック内）と
+（b）IME状態観測（`imm.rs::probe_ime_control`呼び出し）の**2つを
+明示的に動かし続ける**。`ime_refresh.rs:70-78`の`app_disabled`早期
+returnは「observe/notify/drift correction/warmup/probeが全停止」と
+書かれており、これは較正probeも含む（無関係な区別が無い）。つまり
+「完全バイパス」の実態は**「通常のIME belief更新・actuationパイプライン
+からの完全バイパス」**であり、較正専用の検知・観測コードはこのバイパスの
+**明示的な例外**として存在する。この2点を必ず文書化・実装する:
+
+1. 較正probe（決定3）と較正キー検知（決定2）は、`app_disabled`
+   ゲート・`hook.rs:1102`の早期returnの**手前**に置く、`hook.rs`
+   既存の`physical_key_state`更新ブロック（`hook.rs:1094-1097`）と
+   同じ配置パターンを踏襲する。
+2. 較正probe・較正キー検知の結果は、`ImeModel`/`observation_store`
+   （`.claude/rules/ime-belief-architecture.md`のObserve→
+   `classify_*`→`reduce()`規律が管理する状態）へ**一切dispatchしない**。
+   通常の観測経路とは完全に独立したデータパスとして実装する
+   （dylintまたは`architecture_guard`相当のテキスト走査で「較正コードが
+   belief書き込みAPIを呼んでいない」ことを固定できないか、T9で検討）。
+
 ### 2. 物理キー検知はawase.exe本体の既存フックに担わせる
 
 `awase-settings`は較正パネルで「較正開始（対象VK指定）」ボタンを
 押すと、`awase.exe`本体（トレイウィンドウ、`FindWindowW(w!(
 "awase_tray_window"))`）へ`WM_APP+N`（既存のIPCパターン、
 `crates/awase-windows/src/lib.rs:299-355`参照）で較正モード開始を
-通知する。awase.exe本体は:
+通知する。このメッセージには対象VKに加えて、**awase-settings自身の
+PIDとトップレベルHWND**を含める（round6 B3/B4対応、下記・決定3参照）。
+
+awase-settingsが自身のトップレベルHWNDを取得する手段は、UIスレッドから
+`GetActiveWindow`（または`GetForegroundWindow`、自プロセスが
+フォアグラウンドであることを確認した上で使う）を呼ぶ——`windows`
+0.58の既存feature（`Win32_UI_WindowsAndMessaging`）で足り、新規
+feature追加は不要（round6 B4対応）。**`FindWindowW`によるクラス名
+検索は採らない**——winitの既定クラス名は汎用の`"Window Class"`であり、
+`focus/imm_learning.rs:22-23`がBUG-107の文脈で「プロセス間で衝突する」
+と明記している。
+
+awase.exe本体は:
 
 - 対象VKの物理（非注入、`LLKHF_INJECTED`で判定）・修飾キー無し
   （Ctrl/Shift/Alt/Win全て`ModifierState`で確認）KeyDownを検知する
-  （既存フックがこれらの判定を全て既に持つ）。
+  （既存フックがこれらの判定を全て既に持つ）。**検知コードは
+  `hook.rs:1102`の`app_disabled`早期returnより手前に置く**——決定1の
+  訂正どおり、この早期returnは較正検知も含めて全停止させるため
+  （round6 m3対応、既存の`physical_key_state`更新ブロック
+  `hook.rs:1094-1097`と同じ配置パターン）。
 - 較正モード中は上記1の`disable_apps`バイパスにより、この検知自体は
   何もactuateしない（フックは検知のみ、通常のshadow-toggle等の処理
   パイプラインには一切入らない）。
 - 検知結果（VK、タイムスタンプ）をawase-settingsへ返す
   （`WM_APP+N`応答、または共有メモリ/一時ファイル等、実装タスクで
   詳細化）。
+
+**較正モード状態の所有者（round6 M6対応）**: 物理キー検知は
+`HOOK_STATE`（LLフックコールバック側、atomicsで管理される既存の
+世界）で行い、観測ポーリング（決定3）はランタイム側
+（`AppState`/`spawn_local`タイマー）で行う——実行文脈が異なる2つの
+処理を1つの新しい裸のグローバルstaticにまとめない。較正モードの
+ON/OFFと対象VK・PID・HWNDは`HOOK_STATE`側に持たせ（フックコールバックが
+`app_disabled`判定と同じタイミングで読む必要があるため）、ランタイム側の
+観測ループはこの状態を都度読み取るだけの関係にする（ADR-164が集約した
+「裸のグローバルstaticより既存singletonへの集約を優先する」方針に
+従う）。
 
 awase-settings側はegui標準のテキスト入力やGetAsyncKeyStateに頼らない
 （前者は変換/無変換に対応するegui::Keyが無く、後者は非注入判定が
@@ -325,14 +418,13 @@ status参照）:
    v6が主張した「eguiメインウィンドウでは機能しない」は**誤りだった**
    （opus round5 B1指摘）。
 
-**採用する設計（v7）**: 較正専用のネイティブウィンドウは新設しない。
+**採用する設計（v8）**: 較正専用のネイティブウィンドウは新設しない。
 決定2で確立したIPC経路（awase-settings→`WM_APP+N`→awase.exe本体）を
 そのまま延長し、**awase.exe本体が物理キー検知と観測の両方を兼務する**。
 
-- 較正モード開始時、awase-settingsは自身のトップレベルHWND
-  （eguiのメインウィンドウ、`winit`が管理するもの——手法Bが直接
-  機能することを上記2で確認済み）をIPCメッセージに含めてawase.exe
-  本体へ渡す。
+- 較正モード開始時、awase-settingsは自身の**PID**と**トップレベル
+  HWND**（決定2参照、`GetActiveWindow`で取得——手法Bが直接機能する
+  ことを上記2で確認済み）をIPCメッセージに含めてawase.exe本体へ渡す。
 - awase.exe本体は、決定2の物理キー検知に加えて、`imm.rs::
   probe_ime_control`（`awase-windows`クレート内の既存の唯一の
   チョークポイント、新規APIを増やさない）をこのHWNDに対してそのまま
@@ -340,33 +432,120 @@ status参照）:
 - 観測結果（VK・物理キー検知タイムスタンプ・観測したIME状態の遷移）を
   同じ`WM_APP+N`応答でawase-settingsへ返す。
 
+**round6 B2の対応（`send_health`汚染）**: `imm.rs:263`の
+`send_health::record`は probe/actuation を問わず無条件に走る。
+`runtime/executor.rs:986-995`には、結果がログにしか使われない診断
+目的のクロスプロセスprobeを「`send_health`のグローバルなサーキット
+ブレーカを誤作動させる」という理由で削除した前例が残っている。
+較正probeは同じカテゴリ（本番のbeliefには流さない測定専用の
+クロスプロセスprobeを数秒間短間隔で回す）であるため、**較正probeは
+`send_health::record`へ給餌しない**。`send_ime_control_raw`
+（クレート唯一のチョークポイント、分割しない方針が明記されている）
+自体は変更せず、較正probe専用の薄いラッパ、または`record`呼び出しを
+スキップするフラグ引数を追加する形で対応する（実装方式はT9で決定）。
+
+**round6 B3の対応（他プロセスHWNDのライフサイクル）**:
+- IPCメッセージにawase-settingsの**PID**を含める（上記）。
+- awase.exe本体は観測tickごとに`GetWindowThreadProcessId(hwnd)`が
+  開始時に記録したPIDと一致することを確認し、不一致（プロセス終了・
+  HWND再利用）なら較正モードを即座に中止し`disable_apps`バイパスを
+  解除する。
+- 較正モード全体にタイムアウトを設け、awase-settingsからの応答が
+  一定時間無い場合は自動的に`disable_apps`を戻し較正モードを解除する
+  （awase-settingsのクラッシュ/強制終了への対策）。
+
+**round6 M2の対応（probeを出す側のスレッド）**: 決着実験
+（`spike_egui_ime_control_probe.rs`）はLLキーボードフックを持たない
+専用プロセス・専用メッセージループスレッドから`SendMessageTimeoutW`を
+送っていたが、awase.exe本体は単一スレッド・メッセージループ駆動
+（CLAUDE.md「Concurrency model」）であり、**そのスレッドがLL
+キーボードフックのコールバックスレッドでもある**。同一スレッドから
+同期`SendMessageTimeoutW`を出すと、その間フックコールバックの応答が
+遅れ、`LowLevelHooksTimeout`（既定~300ms）を超えるとフックが黙って
+外されるリスクがある（`SMTO_ABORTIFHUNG`は「呼び出し中にハングし
+始めた相手」には効かず、宣言タイムアウトを超えて~5sブロックしうる
+ことがBUG-34として記録済み）。較正probeは
+`win32_async::run_with_timeout`/offload経由でワーカースレッドに
+出す（`send_health.rs`が「エンジンスレッド直呼びと offload経由の
+両方がある」と記す既存パターンに従う）。
+
 この設計により:
 - awase-settings側に新しいWin32ウィンドウ・新しい`windows-rs`
   feature・新しい`SendMessageTimeoutW`呼び出し点が一切増えない
-  （`tests/architecture_guard.rs`/`lints/actuation_call_guard`の
+  （自身のPID/HWND取得のための`GetActiveWindow`呼び出し自体は増える
+  ——決定2参照、「変更が一切不要」という意味ではない）。
+  `tests/architecture_guard.rs`/`lints/actuation_call_guard`の
   走査対象は`awase-windows`のみだが、IMM32呼び出しがそこから一歩も
-  出ないため対象範囲外に複雑性が漏れる心配がそもそも無くなる。
-  opus round5 M6指摘への対応）。
+  出ないため対象範囲外に複雑性が漏れる心配は無くなる。ただし
+  `lints/actuation_call_guard::RESTRICTED_CALLS`の`probe_ime_control`
+  許可呼び出し元リスト（現行6件）には較正probeが7件目として増える
+  ——ガード**内**の宣言は1件増える（`.claude/rules/complexity-budget.md`
+  の1-in-1-out対象、未発効だが実装時のコミット本文に「棚卸しではなく
+  新規追加」と明記すること）。
 - `awase-windows`（windows-rs 0.62）と`awase-settings`（windows-rs
-  0.58）のバージョン不一致（opus round5 M5指摘）も問題にならない
-  ——Win32型は`awase-windows`の外に一切出ない。
+  0.58）のバージョン不一致は問題にならない——Win32型は`awase-windows`
+  の外に一切出ない。
 - 決定2が確立した「非注入判定はawase.exe本体のフックに担わせる」
   という理由付けと、観測窓口が同一プロセス・同一IPCになることで
   一貫する。
 
-ポーリング間隔・タイムアウトは実機実測の上`tuning-constants.md`に
-従い定数化する（`SendMessageTimeoutW`のタイムアウト自体はクロス
-プロセス送信のため実効する——awase-settings自身のスレッド内で
-同一スレッド宛てに送るのとは違い、opus round5 M4指摘はこの設計には
-当てはまらない）。
+**round6 M3の対応（ポーリング間隔の実測根拠）**: `ime_observation_
+spike.rs`（winit/eguiを含まない生ウィンドウでのスパイク）の
+`TIMER_INTERVAL_MS=250`は、eframe環境での可否について反証能力が
+無いため根拠に使わない。egui環境で実際に確認できた値——決着実験
+（`spike_egui_ime_control_probe.rs`）の`POLL_INTERVAL_MS=100`/
+`SEND_IME_CONTROL_TIMEOUT_MS=50`——を出発点とし、T9で実機実測の上
+`tuning-constants.md`に従い定数化する。
+
+**round6 M4の対応（観測の基準点と`None`の扱い）**: 観測ポーリングは
+較正モード開始（決定2のIPCメッセージ受信）と同時に開始し、物理キー
+検知（決定2）をトリガに開始するのではない——押下前の`open`値を
+基準点として持っておく必要があるため。`SendMessageTimeoutW`失敗
+（`open=None`）は「IMEが変化しなかった」（決定4の「変化なし」）とは
+区別し、再試行として扱う（`None`を「変化なし」に潰すと、たまたま
+probeが失敗した回が保存されず「何回やっても較正が完了しない」という
+症状になる）。
+
+**決着実験の条件・ログ抜粋（round6 m5対応、証跡をリポジトリ内に残す）**:
+2026-09-16 06:52:40〜06:53:08、`spike_egui_ime_control_probe.exe`
+（別プロセス）を起動し`awase-settings.exe --bug-report`にフォーカス
+した状態で、GJIを説明欄フォーカス時・他ウィジェットフォーカス時の
+両方で反復的にON/OFF切替した。既知の条件: GJIがアクティブなIME
+だった。**未確認・記録漏れの条件**: awase.exe本体（デーモン）が
+このとき通常どおり動作していたか、`disable_apps`が
+`awase-settings.exe`に適用されていたかは記録していない（=通常運用
+どおりawase.exe自身のフックが介入していた可能性がある。決定1が
+前提とする「較正中はawase自身を完全バイパスする」状態そのものでは
+測定していない）。この点は今後の実機A/B（実装タスクT9/T14）で
+`disable_apps`適用下でも同じ結果が再現することを確認すること。
+
+ログ抜粋（`awase-settings.exe`がフォーカスを持っていた区間の冒頭・
+ON/OFF遷移の一部・末尾。全文はこのセッションのスクラッチファイルに
+あったが永続化されていない）:
+
+```
+06:52:40.851 [FOCUS] hwnd 0x270B42 class=Window Class process=awase-settings.exe
+06:52:40.853 [IME-CTRL] ime_wnd=0x330C12 open=Some(false) elapsed_ms=0
+06:52:43.491 [IME-CTRL] ime_wnd=0x330C12 open=Some(true) elapsed_ms=0   <- OFF→ON
+06:52:49.527 [IME-CTRL] ime_wnd=0x330C12 open=Some(false) elapsed_ms=4  <- ON→OFF
+06:52:48.698 [IME-CTRL] ime_wnd=0x330C12 open=None elapsed_ms=63        <- 唯一の一時的な観測失敗
+06:53:08.545 [FOCUS] hwnd 0x270B42 -> 0x3042C process=WindowsTerminal.exe
+```
+
+（`elapsed_ms`はほぼ全区間で15ms未満、タイムアウトによる`None`は
+上記1回のみ。実測根拠として、M3のポーリング間隔決定・M4の再試行
+ロジック実装時に参照すること。）
 
 ### 4. 確定条件
 
 同じ遷移結果（`open: false→true`等）を**2回連続で一致**するまで
 確定しない（round1レビュアー提案・ユーザー承認済みの方針を維持）。
-「変化なし（タイムアウト）」および矛盾する観測パターン（Toggleか
-どうか判別できない）は**保存しない**——静的分類（`config1.db`/
-レジストリ）にフォールバックする。
+「変化なし（押下前後で`open`値が変わらなかった、タイムアウトではない）」
+および矛盾する観測パターン（Toggleかどうか判別できない）は**保存
+しない**——静的分類（`config1.db`/レジストリ）にフォールバックする。
+`SendMessageTimeoutW`失敗（`open=None`）は「変化なし」と区別し
+再試行する（決定3 round6 M4対応参照、混同すると「何回やっても
+較正が完了しない」症状になる）。
 
 ### 5. 統合点: `gate_thumb_key_ime_actions`出力の差し替え（B3対応）
 
@@ -465,7 +644,9 @@ ADR-149（`VK_IME_ON`重複送信の根本原因調査、`ActivationSync`再送�
 既存文脈）、ADR-153（明示config）、ADR-174/BUG-143（本ADRの直接の
 動機）、ADR-175（BUG-142、「固定方向のはず」を信じすぎる失敗モードの
 先例）、ADR-125（`awase-settings.exe`のeguiバックエンド`winit`が
-IMEコンテキストをデタッチするため`ImmGetContext`が常にHIMC=0を返す、
-決定3の「較正専用ネイティブウィンドウ」の直接の根拠）、BUG-140
+IMEコンテキストをデタッチするため`ImmGetContext`（手法A）が常に
+HIMC=0を返す一方、`ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`（手法B）は
+正常に機能することを実証済み——決定3がawase-settingsのeguiメイン
+ウィンドウをそのまま観測対象にできる直接の根拠）、BUG-140
 （同じVKが2つの意味づけ機構に登録されると暴発する、「優先順位では
 なく構造的除外」という対処方針の先例）。
