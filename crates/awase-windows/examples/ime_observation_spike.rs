@@ -33,7 +33,7 @@
 use std::cell::RefCell;
 use std::fmt::Write as _;
 
-use windows::core::{w, Result as WinResult};
+use windows::core::{w, Result as WinResult, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
@@ -47,10 +47,11 @@ use windows::Win32::UI::TextServices::{
     CLSID_TF_ThreadMgr, ITfCompartmentMgr, ITfThreadMgr, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, KillTimer, PostQuitMessage,
-    RegisterClassW, SendMessageTimeoutW, SendMessageW, SetTimer, ShowWindow, TranslateMessage,
-    CW_USEDEFAULT, MSG, SMTO_ABORTIFHUNG, SW_SHOW, WINDOW_STYLE, WM_DESTROY, WM_SETFOCUS, WM_TIMER,
-    WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, KillTimer, MessageBoxW,
+    PostQuitMessage, RegisterClassW, SendMessageTimeoutW, SendMessageW, SetTimer, ShowWindow,
+    TranslateMessage, CW_USEDEFAULT, MB_ICONERROR, MB_OK, MSG, SMTO_ABORTIFHUNG, SW_SHOW,
+    WINDOW_STYLE, WM_DESTROY, WM_SETFOCUS, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CHILD,
+    WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
 };
 
 const WM_IME_CONTROL: u32 = 0x0283;
@@ -356,7 +357,26 @@ fn create_window() -> WinResult<HWND> {
     }
 }
 
-fn main() -> WinResult<()> {
+/// `#![windows_subsystem = "windows"]`だとコンソールが無く、パニックや
+/// エラーが起きても何も見えず静かにプロセスが終了する。`MessageBoxW`で
+/// 必ず可視化する。
+fn report_fatal(msg: &str) {
+    let title: Vec<u16> = "ADR-176 spike: fatal error"
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let text: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(text.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+fn run() -> WinResult<()> {
     let tsf_ok = init_tsf().is_ok();
 
     let hwnd = create_window()?;
@@ -381,4 +401,13 @@ fn main() -> WinResult<()> {
         }
     }
     Ok(())
+}
+
+fn main() {
+    std::panic::set_hook(Box::new(|info| {
+        report_fatal(&format!("panic: {info}"));
+    }));
+    if let Err(e) = run() {
+        report_fatal(&format!("error: {e}"));
+    }
 }
