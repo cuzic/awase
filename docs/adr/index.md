@@ -180,7 +180,7 @@
 | [171](171-gji-candidate-reopen-after-off-observation.md) | `gji_direct_already_matches`が候補ウィンドウ再表示(`candidate_was_seen`)を無視して再送を握り潰す不具合を修正(BUG-141)。belief経由の自動補正案はround1/2で計8件のBlockerが出て見送り、`candidate_visible`併用案もround4でBUG-113再導入Blockerと判明し撤回 | 起草・opus-adversarial-consult round5でBlockerゼロ・収束・実装着手可 |
 | [174](174-solo-tap-passthrough-belief-reobservation.md) | 無変換/変換ソロタップでGJIが実際にIMEを開いてもEngineが追従しない問題。round1〜3(観測ベースの新設計)は全てBlockerで破綻、round4でclassify_mode_key_ime_actionのsession_keymapゲート不具合(BUG-143)と判明 | 修正・実機確認完了(コミットf4317675、BUG-143) |
 | [175](175-physical-dbe-key-stuck-direction-recovery.md) | 物理半角/全角キー(VK_DBE_SBCSCHAR/DBCSCHAR)の固定方向マッピングをやめToggle解決に変えIME ON固着を解消(BUG-142)。config変更のみで実機A/B確定済み | opus-adversarial-consult round5で収束・実装着手可（Blockerなし） |
-| [176](176-behavioral-calibration-of-ime-mode-key-shadow-overrides.md) | awase-settingsに専用較正UIを新設し、モードキーの実効果をユーザー協力の下で明示的に測定、gate_thumb_key_ime_actions出力を差し替えて静的分類を補完する。BUG-143の静的パースの限界を補完 | round1〜4で計17件のBlocker検出、v5で対応方針確定後、実機スパイクでIME状態観測手法(ImmGetDefaultIMEWnd+WM_IME_CONTROL採用・TSF不採用)を実測確定、v6として実装タスクリスト([176-implementation-tasks.md](176-implementation-tasks.md))のT9を更新、opus-adversarial-consultレビュー待ち |
+| [176](176-behavioral-calibration-of-ime-mode-key-shadow-overrides.md) | awase-settingsに専用較正UIを新設し、モードキーの実効果をユーザー協力の下で明示的に測定、gate_thumb_key_ime_actions出力を差し替えて静的分類を補完する。BUG-143の静的パースの限界を補完 | round1〜4で計17件のBlocker検出、v5で対応方針確定後、v6(較正専用ネイティブウィンドウ案)はopus round5で即日撤回、追加実機検証でegui本体ウィンドウ上でも観測可能と確定、v7でawase.exe本体が決定2と同じIPCで観測も兼務する設計に単純化、opus再レビュー待ち |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

@@ -4,10 +4,63 @@ title: |-
   awase-settingsの明示的な較正UIでモードキーの実効果を測定し、
   未登録時に静的分類を補完する
 status: |-
-  **2026-09-16: 技術スパイク実施・IME状態観測手法を実測で確定
-  （round1〜4のBlocker計17件はv5で対応方針確定済み、v6は観測手法の
-  実装詳細をスパイク結果で補強。opus-adversarial-consult round5
-  未実施、実装着手前）。**
+  **2026-09-16: v6をopus round5レビューで即日撤回、v7として観測方式を
+  大幅に単純化（round1〜4のBlocker計17件はv5で対応方針確定済み、
+  実装着手前）。**
+
+  v6（「較正専用のネイティブWin32子ウィンドウを新設する」という決定3）は
+  opus round5レビューで**Blocker 5件**を指摘され、当日中に撤回した。
+  最重要指摘: v6の中核前提「eguiメインウィンドウでは`WM_IME_CONTROL`も
+  機能しない」は**[ADR-125](125-egui-winit-dynamic-ime-association-focus-model-gap.md)
+  自身の実機検証ログ2と正面から矛盾していた**——ADR-125が否定したのは
+  手法A（`ImmGetContext`直読み、HIMC=0）だけで、手法B
+  （`ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`）は`awase-settings.exe`の
+  eguiメインウィンドウ上で実測動作が確認済みだった。加えて
+  `ImmGetDefaultIMEWnd`はHWND単位ではなくスレッド単位のため
+  「別HWNDを作る」こと自体が無意味、`IACE_CHILDREN`は子ウィンドウを
+  巻き込むため「子ウィンドウ」案は自己破壊的、
+  `ime_observation_spike.rs`はwinitを含まない環境でしか検証しておらず
+  eframe内での可否について反証能力がゼロ、TSF「実測で不採用確定」は
+  `GetGlobalCompartment()`というスコープの取り違えの可能性が高い、
+  の計5件。指摘全文は
+  `/tmp/.../opus-review-adr176-v6-round5.md`（セッション内スクラッチ
+  パス、以後のセッションでは再現不可——要点は本status節に転記済み）。
+
+  **決着実験（2026-09-16実施）**: 指摘を受け、`awase-settings.exe`の
+  実際のバグ報告画面（eframe/egui、`--bug-report`）にフォーカスした
+  状態で、既存の別プロセス観測スパイク
+  （`crates/awase-windows/examples/spike_egui_ime_control_probe.rs`、
+  ADR-125で作成済みのもの）を使い、手法Bで約28秒間（06:52:40〜
+  06:53:08、GJIのIME ON/OFFを説明欄フォーカス時・他ウィジェット
+  フォーカス時の両方で反復切替）継続観測した。**結果: 手法Bはこの間
+  実際のIME ON/OFF切替を最後まで正しく追跡し続けた**
+  （`elapsed_ms`はほぼ全て15ms未満、タイムアウト無し、`None`は1回のみの
+  一時的なブレ）。これによりADR-125の実機ログ2が再現・補強され、
+  **較正専用ネイティブウィンドウが不要であることが確定した**。
+
+  **v7の決定（decision 3を全面差し替え）**: 観測は較正専用ウィンドウを
+  新設せず、**awase.exe本体が決定2で確立した同一のIPC経路上で
+  観測も兼ねる**——awase.exe本体は既に`imm.rs::probe_ime_control`
+  （手法Bと同一実装、`awase-windows`クレート内の唯一のチョークポイント）
+  を持っており、較正モード中にawase-settings.exeのHWND（IPC開始
+  メッセージで受け取る）に対してこれをそのまま使い、観測結果を同じ
+  `WM_APP+N`応答でawase-settingsへ返す。これにより:
+  - awase-settings側に新しいWin32ウィンドウ・新しいwindows-rs
+    feature・新しいSendMessageTimeoutW呼び出し点が一切増えない
+    （`architecture_guard`/`actuation_call_guard`の対象範囲外に
+    複雑性が漏れる懸念（round5 M6）が構造的に消える）。
+  - windows-rsのバージョン不一致（`awase-windows`は0.62、
+    `awase-settings`は0.58、round5 M5）も問題にならない——Win32型は
+    awase-windowsの外に一切出ない。
+  - TSFは引き続き非スコープ（「@」機序という独立した却下理由、
+    ADR-153/BUG-113。round5 B5の指摘どおり「実測で機能しないことを
+    確認済み」という記述は誤りだったため、正しい理由に訂正する）。
+
+  詳細は下記「決定」節3・実装タスクリストT7〜T9参照。
+
+  以下はv6起草時（撤回済み）の記録。手法A/B/Cの実機比較データ自体は
+  正しく、v7でも引き続き根拠として使うが、そこから導いた「較正専用
+  ネイティブウィンドウが要る」という結論は誤りだった（上記参照）。
 
   round4完了後、v5のタスクリストレビュー（`176-implementation-
   tasks.md`）で7件のBlockerが新たに見つかり、うち最重要のもの
@@ -37,21 +90,16 @@ status: |-
   （eguiを介さない）であり、ADR-125が示した「eguiはIMEコンテキストを
   デタッチする」問題の影響を受けない。
 
-  **v6への反映（本ファイルの決定3・実装タスクT9を更新）**:
+  **v6が導いた結論（撤回済み、経緯記録として残す）**:
   1. 採用手法は**B**（`ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`）に確定
-     ——awase本体の既存実装と完全に同型のコードを較正UIでも使う
-     （新規API不要）。
-  2. TSFは**理論上の懸念ではなく実測で不採用が確定**——決定3・
-     非スコープ節の記述を「懸念があるため避ける」から「実測の結果、
-     機能しないことを確認済み」に更新する。
-  3. **ADR-125の問題（egui/winitのIMEコンテキストデタッチ）への
-     対処方針を確定**: 較正UIの観測・物理キーフォーカス受けは、
-     `awase-settings`のeguiメインウィンドウでは行わず、較正専用の
-     **本物のネイティブWin32子ウィンドウ**
-     （`CreateWindowExW`で作成、eguiの`winit`が管理しない独立HWND）
-     で行う。これによりADR-125の問題を回避しつつ、B案の
-     `ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`をそのまま使える
-     （TSFへの迂回は不要だった）。
+     ——ここはv7でも維持。
+  2. TSFは実測で不採用——理由の説明（「機能しないことを確認済み」）は
+     round5 B5で誤りと指摘され、v7で訂正した（GetGlobalCompartment()の
+     スコープ取り違えの可能性）。
+  3. ~~較正専用の本物のネイティブWin32子ウィンドウで観測する~~
+     ——**撤回**。ADR-125実機ログ2と決着実験により、
+     eguiメインウィンドウ上で手法Bがそのまま機能することが確定した
+     ため不要（v7決定3参照）。
 
   round1〜4の経緯（計17件のBlocker）は本ファイル過去版・関連レビュー
   に記録済み。以下は要約:
@@ -99,11 +147,12 @@ status: |-
      格上げ**: 較正により新たに`TurnOn`と判定されるVKが増える以上、
      この機構を踏む打鍵は確実に増える。実機A/Bで「@」が再発しないことを
      確認するまで、較正結果の適用を既定ONにしない。
-  5. （2026-09-16実機スパイクで確定に格上げ）TSF/COM観測案は非
-     スコープ——「@」の機序への懸念だけでなく、TSFグローバル
-     コンパートメント自体が実際のIME状態変化を一切反映しないことを
-     実測で確認した。`ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`
-     ポーリング（awase本体と同型）のみを使う。詳細は決定3参照。
+  5. TSF/COM観測案は非スコープ——「@」の機序（ADR-153/BUG-113）が
+     独立した却下理由。`ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`
+     ポーリング（awase本体と同型）のみを使う。詳細は決定3参照
+     （2026-09-16実機スパイクで`GetGlobalCompartment()`経由の観測が
+     常に0を返すことを確認したが、これはスコープの取り違えの可能性が
+     高く、TSF不採用の一次理由ではない——opus round5 B5指摘）。
   6. （望ましい）較正レコードに測定時点の`config1.db`/レジストリの
      フィンガープリントを同梱し、現在の値と食い違えばstaleとして
      無効化・再較正を促す。
@@ -214,8 +263,9 @@ actuationが動き続けるため測定が自己成就する（B1/B2）、(b)統
 - 較正対象キーの生入力がawaseに一切介入されずGJI/MS-IMEへ直接届く。
 - Hiragana/Katakanaも`transport.rs::plan`のSuppress判定に一切
   引っかからず、awase-settings上で正しく較正できる（B2解消）。
-- `ImmGetOpenStatus`の変化は100% GJI/MS-IME自身の反応であり、
-  awaseの自作自演が混入しない（B1解消）。「2回一致」は偽陽性
+- 観測（決定3、`ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`）で見える変化は
+  100% GJI/MS-IME自身の反応であり、awaseの自作自演が混入しない
+  （B1解消）。「2回一致」は偽陽性
   （flicker等）への防御であり、この自作自演汚染への防御では
   ない点をここで明確に区別する。
 
@@ -241,38 +291,74 @@ awase-settings側はegui標準のテキスト入力やGetAsyncKeyStateに頼ら�
 （前者は変換/無変換に対応するegui::Keyが無く、後者は非注入判定が
 できないため）。
 
-### 3. 観測は`ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`ポーリングに限定する（TSF/COM非スコープ、専用ネイティブウィンドウで実施）
+### 3. 観測はawase.exe本体が決定2と同じIPC経路で兼務する（TSF非スコープ、較正専用ウィンドウ不要）
 
-**2026-09-16実機スパイクで確定**（`crates/awase-windows/examples/
-ime_observation_spike.rs`、詳細はfrontmatter status参照）:
-`ImmGetContext`+`ImmGetOpenStatus`（手法A）と`ImmGetDefaultIMEWnd`+
-`WM_IME_CONTROL`/`IMC_GETOPENSTATUS`（手法B、awase本体の`imm.rs::
-probe_ime_control`と同型）は、本物のネイティブWin32ウィンドウ上で
-実際のIME ON/OFF切替を完全に一致して正しく追跡した。**TSF
-`ITfThreadMgr`のグローバルコンパートメント
-（`GUID_COMPARTMENT_KEYBOARD_OPENCLOSE`）は観測期間中一度も実際の
-IME状態変化を反映しなかった**（値は常に0で固定——このウィンドウは
-TSFネイティブではないためGJIがTSF経由で状態を公開していないと
-解釈できる）。したがってTSF/COMは「危険を避けるための不採用」
-ではなく「実測で機能しないことを確認した不採用」に格上げする。
+**2026-09-16の2段階の実機検証で確定**（v6からの訂正、frontmatter
+status参照）:
 
-採用するのは**手法B**（awase本体と同一実装、新規APIを増やさない）。
+1. 最初のスパイク（`crates/awase-windows/examples/
+   ime_observation_spike.rs`）で、`ImmGetContext`+`ImmGetOpenStatus`
+   （手法A）と`ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`/
+   `IMC_GETOPENSTATUS`（手法B、awase本体の`imm.rs::probe_ime_control`
+   と同型）が、生のWin32ウィンドウ上で実際のIME ON/OFF切替を完全に
+   一致して正しく追跡することを確認した。TSF
+   `ITfThreadMgr::GetGlobalCompartment()`経由の
+   `GUID_COMPARTMENT_KEYBOARD_OPENCLOSE`は観測期間中一度も実際の
+   IME状態変化を反映しなかった（値は常に0固定）——ただしこれは
+   「TSFでは観測できない」ことの証明ではなく、`GetGlobalCompartment()`
+   というスコープ自体が間違っていた可能性が高い（このGUIDは仕様上
+   スレッドマネージャ側のコンパートメントに置かれる。opus round5
+   B5指摘）。いずれにせよTSFは「@」機序（GJIのTSFキー横取りとの競合、
+   ADR-153/BUG-113）という独立した理由で非スコープのままでよい。
+2. このスパイクはwinit/eguiを一切含まない環境で実行されたため、
+   「eframeプロセス内で手法Bが機能するか」については何も証明していない
+   （opus round5 B4指摘）。そこでADR-125で作成済みの別プロセス観測
+   スパイク（`spike_egui_ime_control_probe.rs`）を使い、
+   `awase-settings.exe`の実際のバグ報告画面（eframe/egui）に
+   フォーカスした状態で、約28秒間（実際のGJI IME ON/OFF切替を説明欄
+   フォーカス時・他ウィジェットフォーカス時の両方で反復）手法Bを
+   観測した。**結果: 手法Bはこの間ずっと正しくIME状態を追跡し続けた**
+   （タイムアウト無し、`elapsed_ms`はほぼ全て15ms未満）。これは
+   [ADR-125](125-egui-winit-dynamic-ime-association-focus-model-gap.md)
+   の実機検証ログ2の結論（`awase-settings.exe`のeguiメインウィンドウに
+   対しても手法Bは正常に機能する）を再現・補強するものであり、
+   v6が主張した「eguiメインウィンドウでは機能しない」は**誤りだった**
+   （opus round5 B1指摘）。
 
-**ADR-125への対応**: [ADR-125](125-egui-winit-dynamic-ime-association-focus-model-gap.md)
-は`awase-settings.exe`のeguiメインウィンドウ（`winit`管理下）で
-`ImmGetContext`が常にHIMC=0を返すことを既に実証済み（`winit`の
-`set_ime_allowed(false)`が`ImmAssociateContextEx(hwnd, 0,
-IACE_CHILDREN)`でIMEコンテキストをデタッチするため）。スパイクは
-この問題を回避するために**eguiを介さない生の`CreateWindowExW`
-ウィンドウ**として実装されており、それゆえ手法Bが正常動作した。
-よって較正UIの観測・物理キーフォーカス受けは、**awase-settingsの
-eguiメインウィンドウ上では行わず、較正専用の本物のネイティブWin32
-子ウィンドウ**（`CreateWindowExW`で作成し`winit`が管理しない独立
-HWND、`EDIT`コントロールを1つ持つ）**で行う**。これによりTSFへの
-迂回なしに、awase本体と同一のIMM32 API呼び出しがそのまま使える。
+**採用する設計（v7）**: 較正専用のネイティブウィンドウは新設しない。
+決定2で確立したIPC経路（awase-settings→`WM_APP+N`→awase.exe本体）を
+そのまま延長し、**awase.exe本体が物理キー検知と観測の両方を兼務する**。
+
+- 較正モード開始時、awase-settingsは自身のトップレベルHWND
+  （eguiのメインウィンドウ、`winit`が管理するもの——手法Bが直接
+  機能することを上記2で確認済み）をIPCメッセージに含めてawase.exe
+  本体へ渡す。
+- awase.exe本体は、決定2の物理キー検知に加えて、`imm.rs::
+  probe_ime_control`（`awase-windows`クレート内の既存の唯一の
+  チョークポイント、新規APIを増やさない）をこのHWNDに対してそのまま
+  呼び出し、IME状態をポーリングする。
+- 観測結果（VK・物理キー検知タイムスタンプ・観測したIME状態の遷移）を
+  同じ`WM_APP+N`応答でawase-settingsへ返す。
+
+この設計により:
+- awase-settings側に新しいWin32ウィンドウ・新しい`windows-rs`
+  feature・新しい`SendMessageTimeoutW`呼び出し点が一切増えない
+  （`tests/architecture_guard.rs`/`lints/actuation_call_guard`の
+  走査対象は`awase-windows`のみだが、IMM32呼び出しがそこから一歩も
+  出ないため対象範囲外に複雑性が漏れる心配がそもそも無くなる。
+  opus round5 M6指摘への対応）。
+- `awase-windows`（windows-rs 0.62）と`awase-settings`（windows-rs
+  0.58）のバージョン不一致（opus round5 M5指摘）も問題にならない
+  ——Win32型は`awase-windows`の外に一切出ない。
+- 決定2が確立した「非注入判定はawase.exe本体のフックに担わせる」
+  という理由付けと、観測窓口が同一プロセス・同一IPCになることで
+  一貫する。
 
 ポーリング間隔・タイムアウトは実機実測の上`tuning-constants.md`に
-従い定数化する。
+従い定数化する（`SendMessageTimeoutW`のタイムアウト自体はクロス
+プロセス送信のため実効する——awase-settings自身のスレッド内で
+同一スレッド宛てに送るのとは違い、opus round5 M4指摘はこの設計には
+当てはまらない）。
 
 ### 4. 確定条件
 
@@ -358,9 +444,12 @@ belief の inactive→active 遷移で無条件に`SetOpen(true)`を発行する
   却下済み）。
 - ON→OFF方向・Toggle意味論の較正（v5もOFF→ON方向の較正に集中する）。
 - `VK_KANA`等「固定方向のはず」のキーの較正。
-- TSF/COMインターフェースによる観測（上記「決定3」——2026-09-16実機
-  スパイクで、TSFグローバルコンパートメントが実際のIME状態変化を
-  一切反映しないことを実測確認済み）。
+- TSF/COMインターフェースによる観測（上記「決定3」——「@」機序
+  （GJIのTSFキー横取りとの競合、ADR-153/BUG-113）という独立した理由で
+  非スコープ。2026-09-16実機スパイクで`GetGlobalCompartment()`経由の
+  観測が常に0を返すことを確認したが、これはスコープの取り違えの
+  可能性が高く「TSFでは観測不能」の証明ではない——採用しない理由は
+  あくまで「@」機序）。
 - `ActivationSync`の冪等性チェック自体の実装（上記「決定8」で必須の
   前提条件と位置づけるが、本ADRの実装スコープ自体には含めない——
   別途対応する）。
