@@ -277,6 +277,14 @@ pub struct Runtime {
     /// `gji_charset_autodetect::sync_gji_charset_autodetect`が
     /// `gate_thumb_key_ime_actions`を呼ぶ際に参照する。
     gji_thumb_key_ime_toggle_opt_in: bool,
+    /// ADR-176決定6（176-T3/T4）: モードキー較正結果（VKごと最大1件）。
+    /// **現時点ではメモリ上のみ**——`config.toml`への永続化（176-T11）・
+    /// 実際に値を書き込む較正フロー（176-T7〜T10）はまだ実装されておらず、
+    /// 常に空のまま。`apply_calibration_override`（`state/
+    /// calibrated_mode_key.rs`）の入力として`gate_thumb_key_ime_actions`の
+    /// 出力を差し替えるために参照する。
+    calibrated_mode_keys:
+        std::collections::HashMap<VkCode, crate::state::calibrated_mode_key::CalibratedModeKey>,
     /// GJI config1.db から検出した Hiragana/Katakana の shadow_action override。
     /// 適用可否（現在親指キーでないこと）は消費時に判定する。
     gji_hiragana_shadow_override: Option<awase::types::ShadowImeAction>,
@@ -1536,6 +1544,7 @@ impl Runtime {
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
             gji_thumb_key_ime_toggle_opt_in: false,
+            calibrated_mode_keys: std::collections::HashMap::new(),
             gji_hiragana_shadow_override: None,
             gji_katakana_shadow_override: None,
             henkan_shadow_override: None,
@@ -1774,6 +1783,30 @@ impl Runtime {
     #[must_use]
     pub(crate) const fn gji_thumb_key_ime_toggle_opt_in(&self) -> bool {
         self.gji_thumb_key_ime_toggle_opt_in
+    }
+
+    /// ADR-176決定6（176-T3/T4）: `vk`に対する確定済み較正結果を返す
+    /// （未較正/stale解除済みなら`None`）。`gji_charset_autodetect.rs`/
+    /// `message_handlers.rs`が`apply_calibration_override`へ渡す。
+    #[must_use]
+    pub(crate) fn calibrated_mode_key_for(
+        &self,
+        vk: VkCode,
+    ) -> Option<&crate::state::calibrated_mode_key::CalibratedModeKey> {
+        self.calibrated_mode_keys.get(&vk)
+    }
+
+    /// 較正結果を記録する（176-T7〜T10、まだ呼び出し元は無い）。
+    pub(crate) fn set_calibrated_mode_key(
+        &mut self,
+        record: crate::state::calibrated_mode_key::CalibratedModeKey,
+    ) {
+        self.calibrated_mode_keys.insert(record.vk, record);
+    }
+
+    /// staleな較正結果を無効化する（176-T12、まだ呼び出し元は無い）。
+    pub(crate) fn clear_calibrated_mode_key(&mut self, vk: VkCode) {
+        self.calibrated_mode_keys.remove(&vk);
     }
 
     /// ADR-153 決定1: ユーザー明示config（`GeneralConfig::

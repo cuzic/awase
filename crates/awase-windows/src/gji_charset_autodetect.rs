@@ -454,6 +454,37 @@ pub(crate) const fn ime_toggle_kind_to_shadow_action(
     }
 }
 
+/// `ImeToggleKind`と`ShadowImeAction`は同型（On/Off/Toggleの3値）だが、
+/// GJI由来の分類（`ImeToggleKind`）とMS-IMEレジストリ由来の分類
+/// （`ShadowImeAction`、`msime_key_assignment.rs`）で別の型として扱われて
+/// いる。ADR-176（較正結果の適用、176-T4）はどちらの経路でも同じ
+/// `CalibratedModeKey::result: ImeToggleKind`を使うため、opt-in条件を
+/// 挟まない直接の相互変換をここに用意する（`ime_toggle_kind_to_shadow_action`
+/// と違い`Toggle`を無条件に変換する——opt-inによる`Toggle`抑制は
+/// 呼び出し元がこの関数を使う前/後に別途行う）。
+#[must_use]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const fn shadow_action_to_ime_toggle_kind(action: ShadowImeAction) -> ImeToggleKind {
+    match action {
+        ShadowImeAction::TurnOn => ImeToggleKind::On,
+        ShadowImeAction::TurnOff => ImeToggleKind::Off,
+        ShadowImeAction::Toggle => ImeToggleKind::Toggle,
+    }
+}
+
+/// [`shadow_action_to_ime_toggle_kind`]の逆変換。
+#[must_use]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) const fn ime_toggle_kind_to_shadow_action_direct(
+    kind: ImeToggleKind,
+) -> ShadowImeAction {
+    match kind {
+        ImeToggleKind::On => ShadowImeAction::TurnOn,
+        ImeToggleKind::Off => ShadowImeAction::TurnOff,
+        ImeToggleKind::Toggle => ShadowImeAction::Toggle,
+    }
+}
+
 #[must_use]
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn resolve_gji_mode_key_shadow_overrides(
@@ -755,10 +786,22 @@ mod windows_impl {
         let default_raw = awase_gji_config::wire::GjiRawConfig::default();
         let (henkan_kind, muhenkan_kind) =
             classify_thumb_key_ime_actions(raw.as_ref().unwrap_or(&default_raw));
-        let wiring = gate_thumb_key_ime_actions(
+        let mut wiring = gate_thumb_key_ime_actions(
             henkan_kind,
             muhenkan_kind,
             app.gji_thumb_key_ime_toggle_opt_in(),
+        );
+        // ADR-176決定5（176-T3）: 確定済み較正結果があれば、
+        // gate_thumb_key_ime_actionsの出力そのものを差し替える。
+        // route_thumb_key_action以降のthumb/非thumb振り分け・
+        // mask_auto_detect_for_explicit_config等は変更せずそのまま効く。
+        wiring.henkan = crate::state::calibrated_mode_key::apply_calibration_override(
+            wiring.henkan,
+            app.calibrated_mode_key_for(ModeKeyCandidate::Henkan.vk()),
+        );
+        wiring.muhenkan = crate::state::calibrated_mode_key::apply_calibration_override(
+            wiring.muhenkan,
+            app.calibrated_mode_key_for(ModeKeyCandidate::Muhenkan.vk()),
         );
         warn_thumb_key_toggle_if_needed(app, wiring.warning, wiring.muhenkan);
 

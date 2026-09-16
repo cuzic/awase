@@ -964,6 +964,29 @@ pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
     let delegate_assignment =
         crate::msime_key_assignment::read_delegate_to_open_axis_assignment_from_registry();
     tracing::info!("[msime-keyassign] delegate-to-open-axis assignment: {delegate_assignment:?}");
+    // ADR-176決定5（176-T4）: 確定済み較正結果があれば、レジストリ由来の
+    // 分類そのものを差し替える。GJI側（gji_charset_autodetect.rs、176-T3）と
+    // 同じapply_calibration_overrideを使う——型は`ShadowImeAction`と
+    // `ImeToggleKind`を相互変換して合わせる（同型3値、
+    // `shadow_action_to_ime_toggle_kind`/`ime_toggle_kind_to_shadow_action_direct`
+    // 参照）。下記`mask_auto_detect_for_explicit_config`より前に置くことで、
+    // 較正結果も明示config設定済みキーではmaskされる（176-T5と整合）。
+    let delegate_assignment = crate::msime_key_assignment::MsImeDelegateToOpenAxisAssignment {
+        muhenkan: crate::state::calibrated_mode_key::apply_calibration_override(
+            delegate_assignment
+                .muhenkan
+                .map(crate::gji_charset_autodetect::shadow_action_to_ime_toggle_kind),
+            app.calibrated_mode_key_for(crate::vk::VK_NONCONVERT),
+        )
+        .map(crate::gji_charset_autodetect::ime_toggle_kind_to_shadow_action_direct),
+        henkan: crate::state::calibrated_mode_key::apply_calibration_override(
+            delegate_assignment
+                .henkan
+                .map(crate::gji_charset_autodetect::shadow_action_to_ime_toggle_kind),
+            app.calibrated_mode_key_for(crate::vk::VK_CONVERT),
+        )
+        .map(crate::gji_charset_autodetect::ime_toggle_kind_to_shadow_action_direct),
+    };
     // ADR-153 決定1 M15対策: 明示config設定済みキーにはレジストリ由来の
     // delegateもarmedにしない（下記shadow_overrideと同じ理由）。
     let muhenkan_delegate = super::mask_auto_detect_for_explicit_config(
