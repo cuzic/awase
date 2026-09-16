@@ -7,6 +7,7 @@ related_adr:
   - "ADR-092"
   - "ADR-115"
   - "ADR-119"
+  - "ADR-125"
   - "ADR-135"
   - "ADR-140"
   - "ADR-141"
@@ -260,19 +261,43 @@ toggleディスパッチを呼んでいない」ことを固定できないか�
 
 ## フェーズ4: 観測・UI（awase-settings側）
 
-### 176-T9（決定3）: `ImmGetOpenStatus`ポーリングループ
+### 176-T9（決定3）: 較正専用ネイティブウィンドウ＋`WM_IME_CONTROL`ポーリングループ
 
-**内容**: `awase-settings`プロセス内に、自身のウィンドウに対する
-`ImmGetOpenStatus`を短い間隔でポーリングするループを新設する。
-`crates/awase-settings/Cargo.toml`に`Win32_UI_Input_Ime`等必要な
-featuresを追加する（round4レビューM2が指摘：現状無い）。
+**2026-09-16実機スパイクで判明した制約**: `awase-settings`は
+eguiバックエンド`winit`を使っており、[ADR-125](125-egui-winit-dynamic-ime-association-focus-model-gap.md)
+が実証済みのとおり`winit`の`set_ime_allowed(false)`が
+`ImmAssociateContextEx(hwnd, 0, IACE_CHILDREN)`でIMEコンテキストを
+デタッチするため、**eguiのメインウィンドウHWNDに対して直接
+`ImmGetOpenStatus`/`WM_IME_CONTROL`をポーリングしても機能しない**
+（旧版の本タスク記述はこの制約を見落としていた）。一方、実機スパイク
+（`crates/awase-windows/examples/ime_observation_spike.rs`）で、
+eguiを介さない生の`CreateWindowExW`ウィンドウ上では
+`ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`（手法B、awase本体の
+`imm.rs::probe_ime_control`と同型）が実際のIME ON/OFF切替を正しく
+追跡することを確認済み。
+
+**内容**: `awase-settings`プロセス内に、**較正専用の本物のネイティブ
+Win32子ウィンドウ**（`CreateWindowExW`で作成し`winit`が管理しない
+独立HWND、`EDIT`コントロールを1つ持つ——較正パネル表示中のみ
+生成/表示し、egui本体のウィンドウとは別のHWNDとして扱う）を新設し、
+そのHWNDに対して`ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`/
+`IMC_GETOPENSTATUS`をタイマーで短い間隔でポーリングするループを
+実装する。`crates/awase-settings/Cargo.toml`に`windows-rs`の
+`Win32_UI_Input_Ime`/`Win32_UI_WindowsAndMessaging`等必要なfeaturesを
+追加する（round4レビューM2が指摘：現状無い）。ウィンドウ作成・
+メッセージポンプの実装はスパイク（`ime_observation_spike.rs`の
+`create_window`/`window_proc`/`method_b_wm_ime_control`）をそのまま
+移植できる。TSF/COMは使わない（決定3、非スコープ——実測でTSF
+グローバルコンパートメントが状態変化を反映しないことを確認済み）。
 
 **実測が必要な値**（`tuning-constants.md`対象）: ポーリング間隔・
-タイムアウト。awase-settings上で対象キー押下からGJI/MS-IMEが実際に
-IME状態を変えるまでの実測msを取ってから決定する。
+タイムアウト。較正専用ウィンドウ上で対象キー押下からGJI/MS-IMEが
+実際にIME状態を変えるまでの実測msを取ってから決定する（スパイクの
+250msポーリングでも遷移を取りこぼさなかったが、確定値は本タスクで
+実測する）。
 
 **受け入れ基準**: Windows実機で、較正フロー中にIME状態変化を正しく
-検知できることを確認する。TSF/COMは使わない（決定3、非スコープ）。
+検知できることを確認する。
 
 **依存**: 176-T6（バイパスが効いた状態で測定する必要があるため）。
 

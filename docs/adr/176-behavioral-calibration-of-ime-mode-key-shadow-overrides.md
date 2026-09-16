@@ -4,8 +4,57 @@ title: |-
   awase-settingsの明示的な較正UIでモードキーの実効果を測定し、
   未登録時に静的分類を補完する
 status: |-
-  **2026-09-16: round1〜4でBlocker計17件検出、v5で全件へ対応方針を
-  確定（opus-adversarial-consult round5未実施、実装着手前）。**
+  **2026-09-16: 技術スパイク実施・IME状態観測手法を実測で確定
+  （round1〜4のBlocker計17件はv5で対応方針確定済み、v6は観測手法の
+  実装詳細をスパイク結果で補強。opus-adversarial-consult round5
+  未実施、実装着手前）。**
+
+  round4完了後、v5のタスクリストレビュー（`176-implementation-
+  tasks.md`）で7件のBlockerが新たに見つかり、うち最重要のもの
+  （T9のImmGetOpenStatusポーリング方式が
+  [ADR-125](125-egui-winit-dynamic-ime-association-focus-model-gap.md)
+  で既に反証済み——`awase-settings.exe`はeguiバックエンド`winit`の
+  `set_ime_allowed(false)`が`ImmAssociateContextEx(hwnd,0,
+  IACE_CHILDREN)`を呼びIMEコンテキストをデタッチするため
+  `ImmGetContext`が常にHIMC=0を返す）が、紙の設計イテレーションでは
+  解決できない実装可否の問題だったため、実機ミニアプリ
+  （`crates/awase-windows/examples/ime_observation_spike.rs`）を
+  作り、IME状態観測3手法（A: `ImmGetContext`+`ImmGetOpenStatus`直接、
+  B: `ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`——awase本体の`imm.rs::
+  probe_ime_control`と同型、C: TSF `ITfThreadMgr`
+  `GUID_COMPARTMENT_KEYBOARD_OPENCLOSE`）を同時に検証した。
+
+  **実機結果（2026-09-16、実際のGJI IME ON/OFF切替を反復）**:
+  手法A・Bは完全に一致してIME状態変化を追跡した（false→true→false
+  の遷移を全て正しく検出、`disable_apps`でawase自身をこのプロセスへの
+  介入から完全にバイパスした状態で確認）。**手法Cは観測開始から
+  終了まで一度もtrueにならず、実際のIME ON/OFF切替を全く反映
+  しなかった**（`ITfCompartment::GetValue()`は成功しVARIANTは
+  `VT_I4`値0を返し続けた——エラーではなく「常に閉」という値がTSFの
+  グローバルコンパートメントから返る。GJIはこの非TSFネイティブな
+  ウィンドウに対してTSF経由でIME状態を公開していないと解釈できる）。
+  このスパイクは本物のWin32 `EDIT`コントロールを持つ生ウィンドウ
+  （eguiを介さない）であり、ADR-125が示した「eguiはIMEコンテキストを
+  デタッチする」問題の影響を受けない。
+
+  **v6への反映（本ファイルの決定3・実装タスクT9を更新）**:
+  1. 採用手法は**B**（`ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`）に確定
+     ——awase本体の既存実装と完全に同型のコードを較正UIでも使う
+     （新規API不要）。
+  2. TSFは**理論上の懸念ではなく実測で不採用が確定**——決定3・
+     非スコープ節の記述を「懸念があるため避ける」から「実測の結果、
+     機能しないことを確認済み」に更新する。
+  3. **ADR-125の問題（egui/winitのIMEコンテキストデタッチ）への
+     対処方針を確定**: 較正UIの観測・物理キーフォーカス受けは、
+     `awase-settings`のeguiメインウィンドウでは行わず、較正専用の
+     **本物のネイティブWin32子ウィンドウ**
+     （`CreateWindowExW`で作成、eguiの`winit`が管理しない独立HWND）
+     で行う。これによりADR-125の問題を回避しつつ、B案の
+     `ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`をそのまま使える
+     （TSFへの迂回は不要だった）。
+
+  round1〜4の経緯（計17件のBlocker）は本ファイル過去版・関連レビュー
+  に記録済み。以下は要約:
 
   round1〜3の経緯（計13件のBlocker、「バックグラウンド受動学習」から
   「awase-settingsでの明示的な較正UI」への転換）は本ファイル過去版・
@@ -50,10 +99,11 @@ status: |-
      格上げ**: 較正により新たに`TurnOn`と判定されるVKが増える以上、
      この機構を踏む打鍵は確実に増える。実機A/Bで「@」が再発しないことを
      確認するまで、較正結果の適用を既定ONにしない。
-  5. （望ましい）TSF/COM観測案を非スコープへ——「@」の機序は
-     ハングリスクだけでなくGJIのTSFキー横取りとの競合であり、
-     awase-settings自身のウィンドウでも危険は減らない。
-     `ImmGetOpenStatus`ポーリングのみに限定する。
+  5. （2026-09-16実機スパイクで確定に格上げ）TSF/COM観測案は非
+     スコープ——「@」の機序への懸念だけでなく、TSFグローバル
+     コンパートメント自体が実際のIME状態変化を一切反映しないことを
+     実測で確認した。`ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`
+     ポーリング（awase本体と同型）のみを使う。詳細は決定3参照。
   6. （望ましい）較正レコードに測定時点の`config1.db`/レジストリの
      フィンガープリントを同梱し、現在の値と食い違えばstaleとして
      無効化・再較正を促す。
@@ -76,6 +126,7 @@ related_adr:
   - "ADR-092"
   - "ADR-115"
   - "ADR-119"
+  - "ADR-125"
   - "ADR-135"
   - "ADR-140"
   - "ADR-141"
@@ -190,12 +241,36 @@ awase-settings側はegui標準のテキスト入力やGetAsyncKeyStateに頼ら�
 （前者は変換/無変換に対応するegui::Keyが無く、後者は非注入判定が
 できないため）。
 
-### 3. 観測はImmGetOpenStatusポーリングに限定する（TSF/COM非スコープ）
+### 3. 観測は`ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`ポーリングに限定する（TSF/COM非スコープ、専用ネイティブウィンドウで実施）
 
-awase-settings自身のウィンドウに対する`ImmGetOpenStatus`
-ポーリングのみを使う。TSF/COMインターフェース（`ITfThreadMgr`等）は
-「@」の機序（GJIの`ITfKeyEventSink`によるキー横取りとの競合、
-ハングリスクだけの問題ではない）と衝突しうるため非スコープとする。
+**2026-09-16実機スパイクで確定**（`crates/awase-windows/examples/
+ime_observation_spike.rs`、詳細はfrontmatter status参照）:
+`ImmGetContext`+`ImmGetOpenStatus`（手法A）と`ImmGetDefaultIMEWnd`+
+`WM_IME_CONTROL`/`IMC_GETOPENSTATUS`（手法B、awase本体の`imm.rs::
+probe_ime_control`と同型）は、本物のネイティブWin32ウィンドウ上で
+実際のIME ON/OFF切替を完全に一致して正しく追跡した。**TSF
+`ITfThreadMgr`のグローバルコンパートメント
+（`GUID_COMPARTMENT_KEYBOARD_OPENCLOSE`）は観測期間中一度も実際の
+IME状態変化を反映しなかった**（値は常に0で固定——このウィンドウは
+TSFネイティブではないためGJIがTSF経由で状態を公開していないと
+解釈できる）。したがってTSF/COMは「危険を避けるための不採用」
+ではなく「実測で機能しないことを確認した不採用」に格上げする。
+
+採用するのは**手法B**（awase本体と同一実装、新規APIを増やさない）。
+
+**ADR-125への対応**: [ADR-125](125-egui-winit-dynamic-ime-association-focus-model-gap.md)
+は`awase-settings.exe`のeguiメインウィンドウ（`winit`管理下）で
+`ImmGetContext`が常にHIMC=0を返すことを既に実証済み（`winit`の
+`set_ime_allowed(false)`が`ImmAssociateContextEx(hwnd, 0,
+IACE_CHILDREN)`でIMEコンテキストをデタッチするため）。スパイクは
+この問題を回避するために**eguiを介さない生の`CreateWindowExW`
+ウィンドウ**として実装されており、それゆえ手法Bが正常動作した。
+よって較正UIの観測・物理キーフォーカス受けは、**awase-settingsの
+eguiメインウィンドウ上では行わず、較正専用の本物のネイティブWin32
+子ウィンドウ**（`CreateWindowExW`で作成し`winit`が管理しない独立
+HWND、`EDIT`コントロールを1つ持つ）**で行う**。これによりTSFへの
+迂回なしに、awase本体と同一のIMM32 API呼び出しがそのまま使える。
+
 ポーリング間隔・タイムアウトは実機実測の上`tuning-constants.md`に
 従い定数化する。
 
@@ -283,7 +358,9 @@ belief の inactive→active 遷移で無条件に`SetOpen(true)`を発行する
   却下済み）。
 - ON→OFF方向・Toggle意味論の較正（v5もOFF→ON方向の較正に集中する）。
 - `VK_KANA`等「固定方向のはず」のキーの較正。
-- TSF/COMインターフェースによる観測（上記「決定3」）。
+- TSF/COMインターフェースによる観測（上記「決定3」——2026-09-16実機
+  スパイクで、TSFグローバルコンパートメントが実際のIME状態変化を
+  一切反映しないことを実測確認済み）。
 - `ActivationSync`の冪等性チェック自体の実装（上記「決定8」で必須の
   前提条件と位置づけるが、本ADRの実装スコープ自体には含めない——
   別途対応する）。
@@ -298,5 +375,8 @@ action`機構そのもの、「actuation-autoへの二重登録」棄却の先�
 ADR-149（`VK_IME_ON`重複送信の根本原因調査、`ActivationSync`再送信の
 既存文脈）、ADR-153（明示config）、ADR-174/BUG-143（本ADRの直接の
 動機）、ADR-175（BUG-142、「固定方向のはず」を信じすぎる失敗モードの
-先例）、BUG-140（同じVKが2つの意味づけ機構に登録されると暴発する、
-「優先順位ではなく構造的除外」という対処方針の先例）。
+先例）、ADR-125（`awase-settings.exe`のeguiバックエンド`winit`が
+IMEコンテキストをデタッチするため`ImmGetContext`が常にHIMC=0を返す、
+決定3の「較正専用ネイティブウィンドウ」の直接の根拠）、BUG-140
+（同じVKが2つの意味づけ機構に登録されると暴発する、「優先順位では
+なく構造的除外」という対処方針の先例）。
