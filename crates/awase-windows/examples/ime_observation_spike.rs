@@ -1,6 +1,8 @@
-//! ADR-176 技術スパイク: awase-settings相当の生ウィンドウ（TextEdit非フォーカス、
-//! egui/winit不使用）に対して、IME open/close状態を観測する3手法を同時に監視し、
-//! どれが確実に機能するかを1回の実機操作で確定する。
+//! ADR-176 技術スパイク: 生ウィンドウ（egui/winit不使用）に対して、
+//! IME open/close状態を観測する3手法を同時に監視し、どれが確実に機能するかを
+//! 1回の実機操作で確定する。実際のテキスト入力欄（標準EDITコントロール）を
+//! 持たせフォーカスを当てた状態で計測する（「入力欄が無いと機能しない
+//! のでは」というユーザー指摘を受けて追加）。
 //!
 //! - **手法A**: `ImmGetContext(hwnd)` → `ImmGetOpenStatus(himc)`。
 //!   ADR-125（BUG-107調査）がawase-settings.exeでは`himc=0x0`固定と実測した経路。
@@ -18,9 +20,10 @@
 //! 1. Windows実機でビルド: `cargo build --example ime_observation_spike -p awase-windows`
 //! 2. `target/debug/examples/ime_observation_spike.exe`を実行する
 //!    （コンソールが自動的に開き、ログがそこに出力される）。
-//! 3. 表示されたウィンドウ（テキスト入力欄は無い、ボタン等も無い、較正パネルの
-//!    「ボタンとラベルの画面」を模したもの）にフォーカスする。
+//! 3. 表示されたウィンドウ内のテキスト入力欄をクリックしてフォーカスする
+//!    （起動直後は自動でフォーカスされている）。
 //! 4. GJIまたはMS-IMEを手動でON/OFF切り替える（半角/全角キー等）。
+//!    ついでに何か文字を入力してみてもよい。
 //! 5. コンソールに出力される3手法それぞれの値の変化を確認する。
 //!    250msごとにポーリングし、いずれかの値が変化したときだけログを出す。
 //!
@@ -40,13 +43,15 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::Ime::{
     ImmGetContext, ImmGetDefaultIMEWnd, ImmGetOpenStatus, ImmReleaseContext,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetFocus, SetFocus};
 use windows::Win32::UI::TextServices::{
     CLSID_TF_ThreadMgr, ITfCompartmentMgr, ITfThreadMgr, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, KillTimer, PostQuitMessage,
     RegisterClassW, SendMessageTimeoutW, SetTimer, TranslateMessage, CW_USEDEFAULT, MSG,
-    SMTO_ABORTIFHUNG, WM_DESTROY, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    SMTO_ABORTIFHUNG, WM_DESTROY, WM_SETFOCUS, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CHILD,
+    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 
 const WM_IME_CONTROL: u32 = 0x0283;
@@ -70,6 +75,11 @@ thread_local! {
     // タプル自体をOptionで包む）。
     static LAST_SEEN: RefCell<Option<Observation>> = const { RefCell::new(None) };
     static TICK_COUNT: RefCell<u64> = const { RefCell::new(0) };
+    // ユーザー指摘: テキスト入力欄が無いと、GJI/TSFがこのウィンドウを
+    // 「入力を受け付ける気がある」とみなさず、そもそもIME状態を追従しない
+    // 可能性がある。実際のEDITコントロールを持たせ、そこにフォーカスを
+    // 当てた状態で計測できるようにする。
+    static EDIT_HWND: RefCell<Option<HWND>> = const { RefCell::new(None) };
 }
 
 /// 手法A: `ImmGetContext` + `ImmGetOpenStatus`。
@@ -156,8 +166,15 @@ fn fmt(v: Option<bool>) -> &'static str {
 fn on_timer(hwnd: HWND) {
     use std::io::Write as _;
 
-    let a = method_a_imm_get_open_status(hwnd);
-    let b = method_b_wm_ime_control(hwnd);
+    // フォーカスされているウィンドウ（通常はEDITコントロール）を対象に
+    // IME状態を読む。IME状態は「入力フォーカスを持つウィンドウ」に
+    // 紐づくため、トップレベルウィンドウ自身ではなく実際にフォーカスを
+    // 持つ子ウィンドウを使う方が正確。
+    let target = unsafe { GetFocus() };
+    let target = if target.0.is_null() { hwnd } else { target };
+
+    let a = method_a_imm_get_open_status(target);
+    let b = method_b_wm_ime_control(target);
     let c = method_c_tsf_compartment();
 
     let changed = LAST_SEEN.with(|last| {
@@ -200,6 +217,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 on_timer(hwnd);
                 LRESULT(0)
             }
+            WM_SETFOCUS => {
+                // トップレベルウィンドウがフォーカスを得たら、常にEDIT
+                // コントロールへ委譲する（実際のテキスト入力欄にフォーカスが
+                // 無いとGJI/TSFが入力対象とみなさない可能性への対策）。
+                if let Some(edit) = EDIT_HWND.with(|e| *e.borrow()) {
+                    let _ = SetFocus(Some(edit));
+                }
+                LRESULT(0)
+            }
             WM_DESTROY => {
                 let _ = KillTimer(Some(hwnd), TIMER_ID);
                 PostQuitMessage(0);
@@ -224,7 +250,7 @@ fn create_window() -> WinResult<HWND> {
         let hwnd = CreateWindowExW(
             windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE::default(),
             class_name,
-            w!("IME Observation Spike (ADR-176) - no TextEdit, focus me and toggle IME"),
+            w!("IME Observation Spike (ADR-176) - type in the box and toggle IME"),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
@@ -235,6 +261,28 @@ fn create_window() -> WinResult<HWND> {
             Some(instance.into()),
             None,
         )?;
+
+        // 実際のテキスト入力欄（標準EDITコントロール）を子ウィンドウとして
+        // 追加する。ここにフォーカスを当てた状態で計測することで、
+        // 「入力を受け付ける気があるウィンドウ」かどうかによる挙動の違いを
+        // 検証する（ユーザー指摘）。
+        let edit_hwnd = CreateWindowExW(
+            windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE::default(),
+            w!("EDIT"),
+            w!(""),
+            WS_CHILD | WS_VISIBLE | WS_BORDER,
+            10,
+            10,
+            520,
+            60,
+            Some(hwnd),
+            None,
+            Some(instance.into()),
+            None,
+        )?;
+        EDIT_HWND.with(|e| *e.borrow_mut() = Some(edit_hwnd));
+        let _ = SetFocus(Some(edit_hwnd));
+
         Ok(hwnd)
     }
 }
@@ -268,8 +316,8 @@ fn main() -> WinResult<()> {
     }
     let _ = std::io::stdout().flush();
 
-    println!("ウィンドウにフォーカスして、GJI/MS-IMEを手動でON/OFF切り替えてください。");
-    println!("このウィンドウにはテキスト入力欄がありません（較正パネルの想定に近い状態）。");
+    println!("ウィンドウ内のテキスト入力欄（起動直後は自動フォーカス）に");
+    println!("フォーカスした状態で、GJI/MS-IMEを手動でON/OFF切り替えてください。");
     println!("値が変化したときだけログが出ます。Ctrl+C または ウィンドウを閉じて終了。");
     println!();
 
