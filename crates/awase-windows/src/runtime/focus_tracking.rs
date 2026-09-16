@@ -15,6 +15,14 @@ use win32_async;
 
 const EXPLICIT_OFF_CACHE_SUPPRESS_MS: u64 = 10_000;
 
+/// ADR-176 176-T6（決定1、round6 B3対応）: 較正モードのバイパスが
+/// awase-settings側の応答無しに残り続けないための上限。この値は実測
+/// レイテンシに対する安全マージンではなく、awase-settingsの
+/// クラッシュ/強制終了を検知する生存監視のためのポリシー値なので、
+/// 実測msの記載を必須とする`tuning.rs`（`.claude/rules/tuning-constants.md`
+/// 参照）には置かない。
+const CALIBRATION_BYPASS_TIMEOUT_MS: u64 = 30_000;
+
 /// `apply_focus_probe_result` 内部で使うフォーカス分類結果。
 pub(super) struct ClassifiedFocus {
     pub hwnd: HWND,
@@ -550,6 +558,66 @@ impl Runtime {
         tracing::info!(
             "[app-disable] {transition:?}: process_id={process_id} disabled={is_disabled}"
         );
+    }
+
+    /// ADR-176 176-T6: 較正モード開始（176-T7以降のIPCハンドラから呼ぶ想定、
+    /// 現時点では呼び出し元は無い）。`process_exe`（`awase-settings.exe`）を
+    /// 一時的に`disable_apps`と同様のバイパス対象へ加え、現在のフォーカス先で
+    /// 即座に再評価する。`apply_config_update`のreload経路
+    /// （`self.platform.focus.is_focused()` → `apply_app_disable_transition`）と
+    /// 同じ呼び出し方にすることで、較正モード開始時点でawase-settingsが
+    /// 既にフォーカスを持っている場合でも即座にバイパスが効く
+    /// （round6 m4対応）。
+    pub(crate) fn begin_calibration_bypass(
+        &mut self,
+        process_exe: &str,
+        now: crate::state::TickMs,
+    ) {
+        self.platform
+            .focus
+            .set_calibration_bypass_process(Some(process_exe.to_string()));
+        self.calibration_bypass_deadline =
+            Some(crate::state::TickMs(now.0 + CALIBRATION_BYPASS_TIMEOUT_MS));
+        if self.platform.focus.is_focused() {
+            let pid = self.platform.focus.pid();
+            self.apply_app_disable_transition(pid, false);
+        }
+    }
+
+    /// ADR-176 176-T6: 較正モード終了（正常終了・UIでのキャンセル・
+    /// 176-T9のPID不一致検知・タイムアウトのいずれからも呼ぶ想定）。
+    /// バイパスを解除し、現在のフォーカス先で再評価する。
+    pub(crate) fn end_calibration_bypass(&mut self) {
+        self.platform.focus.set_calibration_bypass_process(None);
+        self.calibration_bypass_deadline = None;
+        if self.platform.focus.is_focused() {
+            let pid = self.platform.focus.pid();
+            self.apply_app_disable_transition(pid, false);
+        }
+    }
+
+    /// ADR-176 176-T6: 較正モードのバイパスが有効中か。
+    #[must_use]
+    pub(crate) fn calibration_bypass_is_active(&self) -> bool {
+        self.calibration_bypass_deadline.is_some()
+    }
+
+    /// ADR-176 176-T6（round6 B3対応）: `now`が較正モードのタイムアウト
+    /// 期限を過ぎていれば自動的に`end_calibration_bypass`を呼ぶ
+    /// （awase-settingsのクラッシュ・強制終了でバイパスが解除されない
+    /// まま残る事故を防ぐ）。`handle_wm_timer`のTIMER_IME_REFRESH tickから
+    /// 毎回呼ぶ想定。
+    pub(crate) fn check_calibration_bypass_timeout(&mut self, now: crate::state::TickMs) {
+        let Some(deadline) = self.calibration_bypass_deadline else {
+            return;
+        };
+        if crate::state::calibrated_mode_key::calibration_bypass_timed_out(now, deadline) {
+            tracing::warn!(
+                "[calibration-bypass] タイムアウト（{CALIBRATION_BYPASS_TIMEOUT_MS}ms）超過、\
+                 awase-settingsからの応答が無いためバイパスを自動解除します"
+            );
+            self.end_calibration_bypass();
+        }
     }
 
     /// プロセス変更時の後処理（ログ・タイムスタンプ・output 通知・IME キャッシュ復元等）。

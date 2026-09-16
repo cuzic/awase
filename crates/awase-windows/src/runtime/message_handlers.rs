@@ -478,6 +478,7 @@ pub(crate) unsafe fn handle_wm_timer(
     let logical_id = app.platform.timer.resolve(wparam);
     match logical_id {
         Some(id) if id == TIMER_IME_REFRESH => {
+            app.check_calibration_bypass_timeout(crate::state::TickMs(hook::current_tick_ms()));
             if app.platform_state.gate.sync_key_gate.is_active()
                 || app.platform_state.gate.sync_key_gate.has_deferred_keys()
             {

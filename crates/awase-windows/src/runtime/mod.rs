@@ -285,6 +285,11 @@ pub struct Runtime {
     /// 出力を差し替えるために参照する。
     calibrated_mode_keys:
         std::collections::HashMap<VkCode, crate::state::calibrated_mode_key::CalibratedModeKey>,
+    /// ADR-176 176-T6: 較正モードのバイパスタイムアウト期限
+    /// （`None`=非アクティブ）。`focus_tracking.rs`の
+    /// `begin_calibration_bypass`/`end_calibration_bypass`/
+    /// `check_calibration_bypass_timeout`が管理する。
+    calibration_bypass_deadline: Option<crate::state::TickMs>,
     /// GJI config1.db から検出した Hiragana/Katakana の shadow_action override。
     /// 適用可否（現在親指キーでないこと）は消費時に判定する。
     gji_hiragana_shadow_override: Option<awase::types::ShadowImeAction>,
@@ -1545,6 +1550,7 @@ impl Runtime {
             space_is_thumb_key: false,
             gji_thumb_key_ime_toggle_opt_in: false,
             calibrated_mode_keys: std::collections::HashMap::new(),
+            calibration_bypass_deadline: None,
             gji_hiragana_shadow_override: None,
             gji_katakana_shadow_override: None,
             henkan_shadow_override: None,

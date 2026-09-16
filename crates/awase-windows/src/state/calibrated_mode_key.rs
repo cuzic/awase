@@ -11,6 +11,7 @@
 
 use crate::gji_charset_autodetect::ImeToggleKind;
 use crate::state::ime_kind::ImeKindId;
+use crate::state::TickMs;
 use crate::vk::VkCodeExt as _;
 use awase::config::ImeDetectConfig;
 use awase::types::VkCode;
@@ -74,6 +75,16 @@ pub(crate) fn apply_calibration_override(
     calibrated: Option<&CalibratedModeKey>,
 ) -> Option<ImeToggleKind> {
     calibrated.map(|c| c.result).or(static_result)
+}
+
+/// `176-T6`（ADR-176決定1、round6 B3対応）: 較正モードのバイパスが
+/// awase-settings側の応答無しに残り続けないためのタイムアウト判定。
+/// `now`が`deadline`以降なら`true`（バイパスを自動解除すべき）。
+/// `runtime/focus_tracking.rs::check_calibration_bypass_timeout`から呼ぶ。
+/// 純粋関数のためLinux上でユニットテスト可能。
+#[must_use]
+pub(crate) const fn calibration_bypass_timed_out(now: TickMs, deadline: TickMs) -> bool {
+    now.0 >= deadline.0
 }
 
 /// `176-T5`（ADR-176決定7、B4対応）: 較正対象VKが明示configに既に
@@ -321,5 +332,22 @@ mod tests {
         let ime_on = vec!["変換".to_string()];
         let result = explicit_config_conflict_reason(muhenkan(), &ime_detect, &ime_on, &[], &[]);
         assert_eq!(result, None);
+    }
+
+    // ── 176-T6: calibration_bypass_timed_out ────────────────────────────
+
+    #[test]
+    fn calibration_bypass_not_timed_out_before_deadline() {
+        assert!(!calibration_bypass_timed_out(TickMs(999), TickMs(1_000)));
+    }
+
+    #[test]
+    fn calibration_bypass_timed_out_at_deadline() {
+        assert!(calibration_bypass_timed_out(TickMs(1_000), TickMs(1_000)));
+    }
+
+    #[test]
+    fn calibration_bypass_timed_out_after_deadline() {
+        assert!(calibration_bypass_timed_out(TickMs(1_001), TickMs(1_000)));
     }
 }
