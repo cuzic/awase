@@ -60,9 +60,16 @@ struct TsfState {
     compartment_mgr: ITfCompartmentMgr,
 }
 
+/// 3手法それぞれの観測値（`None`=取得失敗）。
+type Observation = (Option<bool>, Option<bool>, Option<bool>);
+
 thread_local! {
     static TSF_STATE: RefCell<Option<TsfState>> = const { RefCell::new(None) };
-    static LAST_SEEN: RefCell<(Option<bool>, Option<bool>, Option<bool>)> = const { RefCell::new((None, None, None)) };
+    // `None` = まだ1回も観測していない（初回は必ず印字する、実際の観測値が
+    // たまたま全部Noneだった場合と区別するため、番兵として`(Option<bool>,...)`の
+    // タプル自体をOptionで包む）。
+    static LAST_SEEN: RefCell<Option<Observation>> = const { RefCell::new(None) };
+    static TICK_COUNT: RefCell<u64> = const { RefCell::new(0) };
 }
 
 /// 手法A: `ImmGetContext` + `ImmGetOpenStatus`。
@@ -147,29 +154,42 @@ fn fmt(v: Option<bool>) -> &'static str {
 }
 
 fn on_timer(hwnd: HWND) {
+    use std::io::Write as _;
+
     let a = method_a_imm_get_open_status(hwnd);
     let b = method_b_wm_ime_control(hwnd);
     let c = method_c_tsf_compartment();
 
     let changed = LAST_SEEN.with(|last| {
         let mut last = last.borrow_mut();
-        let changed = *last != (a, b, c);
-        *last = (a, b, c);
+        let changed = *last != Some((a, b, c));
+        *last = Some((a, b, c));
         changed
     });
 
-    if changed {
+    // 20tick(=5秒)ごとに強制的にheartbeatを出す。プロセス自体が生きている
+    // ことと、タイマーが実際に動いていることを、値の変化が無い場合でも
+    // 確認できるようにするため。
+    let heartbeat = TICK_COUNT.with(|c| {
+        let mut c = c.borrow_mut();
+        *c += 1;
+        *c % 20 == 0
+    });
+
+    if changed || heartbeat {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
         println!(
-            "[{:>10}.{:03}] A(ImmGetOpenStatus)={} B(WM_IME_CONTROL)={} C(TSF compartment)={}",
+            "[{:>10}.{:03}]{} A(ImmGetOpenStatus)={} B(WM_IME_CONTROL)={} C(TSF compartment)={}",
             now.as_secs(),
             now.subsec_millis(),
+            if changed { "" } else { " [heartbeat]" },
             fmt(a),
             fmt(b),
             fmt(c),
         );
+        let _ = std::io::stdout().flush();
     }
 }
 
@@ -220,20 +240,33 @@ fn create_window() -> WinResult<HWND> {
 }
 
 fn main() -> WinResult<()> {
+    use std::io::Write as _;
+
     println!("=== ADR-176 IME observation spike ===");
     println!("手法A: ImmGetContext + ImmGetOpenStatus");
     println!("手法B: ImmGetDefaultIMEWnd + WM_IME_CONTROL/IMC_GETOPENSTATUS（awase本体と同型）");
     println!("手法C: TSF GUID_COMPARTMENT_KEYBOARD_OPENCLOSE（COM、HIMC非依存）");
     println!();
+    let _ = std::io::stdout().flush();
 
     if let Err(e) = init_tsf() {
         println!("[init] TSF初期化に失敗しました（手法Cはこのプロセスでは使えません）: {e}");
+        let _ = std::io::stdout().flush();
     }
 
-    let hwnd = create_window()?;
+    let hwnd = match create_window() {
+        Ok(hwnd) => hwnd,
+        Err(e) => {
+            eprintln!("[fatal] ウィンドウ作成に失敗しました: {e}");
+            let _ = std::io::stdout().flush();
+            return Err(e);
+        }
+    };
+    println!("[init] ウィンドウ作成OK, hwnd={hwnd:?}");
     unsafe {
         SetTimer(Some(hwnd), TIMER_ID, TIMER_INTERVAL_MS, None);
     }
+    let _ = std::io::stdout().flush();
 
     println!("ウィンドウにフォーカスして、GJI/MS-IMEを手動でON/OFF切り替えてください。");
     println!("このウィンドウにはテキスト入力欄がありません（較正パネルの想定に近い状態）。");
