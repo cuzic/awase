@@ -100,6 +100,9 @@ pub mod actuation_decision_record;
 pub mod evidence;
 pub mod force_guard;
 pub mod ime_event;
+// ADR-176決定6。`gji_charset_autodetect::ImeToggleKind`/`ime_kind::ImeKindId`
+// に依存する純粋データ構造で、ImeModelのbeliefとは別の較正記録。
+pub(crate) mod calibrated_mode_key;
 // ADR-089 §2.8「K 軸の型」。`caps(p, k)` の導入（Phase C）に先立ち、Linux で
 // 全数テストできる ungated な IME 種別を置く。変換は `tsf/observer.rs` の
 // `From<ActiveImeKind>` 1 箇所のみ。
