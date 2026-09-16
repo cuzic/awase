@@ -11,6 +11,8 @@
 
 use crate::gji_charset_autodetect::ImeToggleKind;
 use crate::state::ime_kind::ImeKindId;
+use crate::vk::VkCodeExt as _;
+use awase::config::ImeDetectConfig;
 use awase::types::VkCode;
 
 /// GJI/MS-IMEの`config1.db`/レジストリの、較正時点でのフィンガープリント。
@@ -72,6 +74,49 @@ pub(crate) fn apply_calibration_override(
     calibrated: Option<&CalibratedModeKey>,
 ) -> Option<ImeToggleKind> {
     calibrated.map(|c| c.result).or(static_result)
+}
+
+/// `176-T5`（ADR-176決定7、B4対応）: 較正対象VKが明示configに既に
+/// 登録されているかを判定し、登録されていれば較正UI（`176-T10`）が
+/// 表示すべき警告理由を返す。`None`なら較正してよい。
+///
+/// BUG-140（`docs/known-bugs/BUG-140.md`）と同じ「優先順位ではなく
+/// 構造的除外」の方針を取る: `apply_calibration_override`は較正結果を
+/// 無条件に最優先採用する（`176-T2`）ため、既に明示config済みのVKを
+/// 較正すると、ユーザーが意図して書いた設定を較正UIが無断で上書きする
+/// ことになる。値の優劣や後勝ちで解決するのではなく、較正の実行自体を
+/// 拒否して構造的に衝突を起こさせない。
+///
+/// `awase-settings`から呼び出せるよう`pub`（`awase_windows`クレートの
+/// 公開関数）。Windows APIには依存しない純粋関数のため、Linux上で
+/// ユニットテストできる。
+#[must_use]
+pub fn explicit_config_conflict_reason(
+    vk: VkCode,
+    ime_detect: &ImeDetectConfig,
+    ime_on: &[String],
+    ime_off: &[String],
+    ime_toggle: &[String],
+) -> Option<&'static str> {
+    let in_ime_detect = [&ime_detect.toggle, &ime_detect.on, &ime_detect.off]
+        .into_iter()
+        .flatten()
+        .filter_map(|s| VkCode::from_name(s))
+        .any(|registered| registered == vk);
+    if in_ime_detect {
+        return Some("keys.ime_detect（IME検出用シャドウ追跡キー）に既に登録されているキーです");
+    }
+
+    let bare_vk_registered = [ime_on, ime_off, ime_toggle]
+        .into_iter()
+        .flatten()
+        .filter_map(|s| crate::vk::parse_key_combo(s))
+        .any(|combo| combo.vk == vk && !combo.ctrl && !combo.shift && !combo.alt);
+    if bare_vk_registered {
+        return Some("keys.ime_on/ime_off/ime_toggle に修飾キー無しで既に登録されているキーです");
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -185,5 +230,96 @@ mod tests {
         };
         let record = sample(recorded);
         assert!(is_stale(&record, &current));
+    }
+
+    // ── 176-T5: explicit_config_conflict_reason ─────────────────────────
+
+    fn muhenkan() -> VkCode {
+        VkCode::from_name("無変換").expect("VK_NONCONVERT should parse")
+    }
+
+    fn empty_ime_detect() -> ImeDetectConfig {
+        ImeDetectConfig {
+            toggle: vec![],
+            on: vec![],
+            off: vec![],
+        }
+    }
+
+    #[test]
+    fn no_conflict_when_vk_absent_from_all_lists() {
+        let ime_detect = ImeDetectConfig {
+            toggle: vec![],
+            on: vec!["IMEオン".to_string()],
+            off: vec!["IMEオフ".to_string()],
+        };
+        let result = explicit_config_conflict_reason(muhenkan(), &ime_detect, &[], &[], &[]);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn conflicts_when_vk_registered_in_ime_detect_on() {
+        let ime_detect = ImeDetectConfig {
+            toggle: vec![],
+            on: vec!["IMEオン".to_string(), "無変換".to_string()],
+            off: vec![],
+        };
+        let result = explicit_config_conflict_reason(muhenkan(), &ime_detect, &[], &[], &[]);
+        assert!(result.is_some(), "keys.ime_detect.on との衝突を検出すべき");
+    }
+
+    #[test]
+    fn conflicts_when_vk_registered_in_ime_detect_toggle() {
+        let ime_detect = ImeDetectConfig {
+            toggle: vec!["無変換".to_string()],
+            on: vec![],
+            off: vec![],
+        };
+        let result = explicit_config_conflict_reason(muhenkan(), &ime_detect, &[], &[], &[]);
+        assert!(
+            result.is_some(),
+            "keys.ime_detect.toggle との衝突を検出すべき"
+        );
+    }
+
+    #[test]
+    fn conflicts_when_vk_registered_bare_in_ime_on() {
+        let ime_detect = empty_ime_detect();
+        let ime_on = vec!["無変換".to_string()];
+        let result = explicit_config_conflict_reason(muhenkan(), &ime_detect, &ime_on, &[], &[]);
+        assert!(
+            result.is_some(),
+            "keys.ime_on への修飾キー無し登録との衝突を検出すべき（src/config.rs:601-609の実害と同型）"
+        );
+    }
+
+    #[test]
+    fn conflicts_when_vk_registered_bare_in_ime_toggle() {
+        let ime_detect = empty_ime_detect();
+        let ime_toggle = vec!["無変換".to_string()];
+        let result =
+            explicit_config_conflict_reason(muhenkan(), &ime_detect, &[], &[], &ime_toggle);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn no_conflict_when_vk_registered_with_modifier_in_ime_off() {
+        // 修飾キー付き（例: Ctrl+無変換）は Phase 1 で無条件消費しないため、
+        // BUG-140/実害報告と同種の衝突ではない。構造的除外の対象外。
+        let ime_detect = empty_ime_detect();
+        let ime_off = vec!["Ctrl+無変換".to_string()];
+        let result = explicit_config_conflict_reason(muhenkan(), &ime_detect, &[], &ime_off, &[]);
+        assert_eq!(
+            result, None,
+            "修飾キー付き登録は構造的除外の対象外（優先順位の問題であり本判定の対象外）"
+        );
+    }
+
+    #[test]
+    fn no_conflict_when_different_vk_registered() {
+        let ime_detect = empty_ime_detect();
+        let ime_on = vec!["変換".to_string()];
+        let result = explicit_config_conflict_reason(muhenkan(), &ime_detect, &ime_on, &[], &[]);
+        assert_eq!(result, None);
     }
 }
