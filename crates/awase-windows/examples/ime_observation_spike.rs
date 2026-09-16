@@ -1,17 +1,18 @@
-//! ADR-176 技術スパイク: 生ウィンドウ（egui/winit不使用）に対して、
+//! ADR-176 技術スパイク: 単一のWin32ウィンドウ（コンソール無し）に対して、
 //! IME open/close状態を観測する3手法を同時に監視し、どれが確実に機能するかを
-//! 1回の実機操作で確定する。実際のテキスト入力欄（標準EDITコントロール）を
-//! 持たせフォーカスを当てた状態で計測する（「入力欄が無いと機能しない
-//! のでは」というユーザー指摘を受けて追加）。
+//! 1回の実機操作で確定する。
+//!
+//! **コンソールを使わない理由**: 最初の版はコンソールにログを出力していたが、
+//! ユーザー指摘により「コンソール（別ウィンドウ、Windows Terminalホスト＝
+//! TsfNativeアプリの可能性がある）を使う設計自体が紛らわしい」と判明した。
+//! `#![windows_subsystem = "windows"]`でコンソール自体を作らず、単一の
+//! Win32ウィンドウの中にテキスト入力欄とログ表示欄を両方置く。
 //!
 //! - **手法A**: `ImmGetContext(hwnd)` → `ImmGetOpenStatus(himc)`。
 //!   ADR-125（BUG-107調査）がawase-settings.exeでは`himc=0x0`固定と実測した経路。
-//!   このスパイクは素のWin32ウィンドウ（winitのIME明示デタッチが無い）なので、
-//!   ADR-125とは異なる結果になりうる（比較対象として有用）。
 //! - **手法B**: `ImmGetDefaultIMEWnd(hwnd)` → `SendMessageTimeoutW(WM_IME_CONTROL,
 //!   IMC_GETOPENSTATUS)`。awase本体が実際に使っている経路
-//!   （`crates/awase-windows/src/imm.rs::probe_ime_control`と同型、ADR-125が
-//!   awase-settings.exeで機能することを実測済み）。
+//!   （`crates/awase-windows/src/imm.rs::probe_ime_control`と同型）。
 //! - **手法C**: TSF `ITfThreadMgr::GetGlobalCompartment()` →
 //!   `GUID_COMPARTMENT_KEYBOARD_OPENCLOSE`の`ITfCompartment::GetValue()`。
 //!   HIMCにもクロスプロセスメッセージにも依存しない、COMベースの第3の経路。
@@ -19,20 +20,18 @@
 //! ## 使い方
 //! 1. Windows実機でビルド: `cargo build --example ime_observation_spike -p awase-windows`
 //! 2. `target/debug/examples/ime_observation_spike.exe`を実行する
-//!    （コンソールが自動的に開き、ログがそこに出力される）。
-//! 3. 表示されたウィンドウ内のテキスト入力欄をクリックしてフォーカスする
-//!    （起動直後は自動でフォーカスされている）。
-//! 4. GJIまたはMS-IMEを手動でON/OFF切り替える（半角/全角キー等）。
-//!    ついでに何か文字を入力してみてもよい。
-//! 5. コンソールに出力される3手法それぞれの値の変化を確認する。
-//!    250msごとにポーリングし、いずれかの値が変化したときだけログを出す。
-//!
-//! 各手法が`None`（取得失敗）を返す場合と、値は取れるが実際のIME操作と
-//! 相関しない場合の両方を区別できるよう、`None`/`Some(bool)`をそのまま表示する。
+//!    （コンソールは開かない、ウィンドウが1つだけ表示される）。
+//! 3. 上段のテキスト入力欄（起動直後は自動でフォーカスされている）に
+//!    フォーカスした状態で、GJIまたはMS-IMEを手動でON/OFF切り替える
+//!    （半角/全角キー等）。ついでに何か文字を入力してみてもよい。
+//! 4. 下段のログ表示欄に、3手法それぞれの値が変化したときだけ1行追加される。
+//!    ログ欄の内容はそのまま選択・コピーできる。
 
+#![windows_subsystem = "windows"]
 #![allow(unsafe_code)]
 
 use std::cell::RefCell;
+use std::fmt::Write as _;
 
 use windows::core::{w, Result as WinResult};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
@@ -49,15 +48,23 @@ use windows::Win32::UI::TextServices::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, KillTimer, PostQuitMessage,
-    RegisterClassW, SendMessageTimeoutW, SetTimer, TranslateMessage, CW_USEDEFAULT, MSG,
-    SMTO_ABORTIFHUNG, WM_DESTROY, WM_SETFOCUS, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CHILD,
-    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    RegisterClassW, SendMessageTimeoutW, SendMessageW, SetTimer, ShowWindow, TranslateMessage,
+    CW_USEDEFAULT, MSG, SMTO_ABORTIFHUNG, SW_SHOW, WINDOW_STYLE, WM_DESTROY, WM_SETFOCUS, WM_TIMER,
+    WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
 };
 
 const WM_IME_CONTROL: u32 = 0x0283;
 const IMC_GETOPENSTATUS: usize = 0x0005;
 const TIMER_ID: usize = 1;
 const TIMER_INTERVAL_MS: u32 = 250;
+const ES_MULTILINE: u32 = 0x0004;
+const ES_READONLY: u32 = 0x0800;
+const ES_AUTOVSCROLL: u32 = 0x0040;
+const MAX_LOG_CHARS: usize = 12_000;
+// `Win32_UI_Controls` featureを新たに有効化せずに済むよう、EMメッセージは
+// 定数値を直書きする（標準Win32ヘッダの既知の固定値）。
+const EM_SETSEL: u32 = 177;
+const EM_REPLACESEL: u32 = 194;
 
 struct TsfState {
     // ITfThreadMgr自体は保持し続けないとCOMオブジェクトが解放される。
@@ -70,16 +77,11 @@ type Observation = (Option<bool>, Option<bool>, Option<bool>);
 
 thread_local! {
     static TSF_STATE: RefCell<Option<TsfState>> = const { RefCell::new(None) };
-    // `None` = まだ1回も観測していない（初回は必ず印字する、実際の観測値が
-    // たまたま全部Noneだった場合と区別するため、番兵として`(Option<bool>,...)`の
-    // タプル自体をOptionで包む）。
     static LAST_SEEN: RefCell<Option<Observation>> = const { RefCell::new(None) };
     static TICK_COUNT: RefCell<u64> = const { RefCell::new(0) };
-    // ユーザー指摘: テキスト入力欄が無いと、GJI/TSFがこのウィンドウを
-    // 「入力を受け付ける気がある」とみなさず、そもそもIME状態を追従しない
-    // 可能性がある。実際のEDITコントロールを持たせ、そこにフォーカスを
-    // 当てた状態で計測できるようにする。
     static EDIT_HWND: RefCell<Option<HWND>> = const { RefCell::new(None) };
+    static LOG_HWND: RefCell<Option<HWND>> = const { RefCell::new(None) };
+    static LOG_BUF: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
 /// 手法A: `ImmGetContext` + `ImmGetOpenStatus`。
@@ -150,26 +152,67 @@ fn init_tsf() -> WinResult<()> {
                 compartment_mgr,
             });
         });
-        println!("[init] TSF ITfThreadMgr activated, GetGlobalCompartment OK");
     }
     Ok(())
 }
 
 fn fmt(v: Option<bool>) -> &'static str {
     match v {
-        Some(true) => "Some(true)",
-        Some(false) => "Some(false)",
-        None => "None       ",
+        Some(true) => "true ",
+        Some(false) => "false",
+        None => "None ",
+    }
+}
+
+/// ログ表示欄（下段のEDIT）へ1行追記する。バッファが大きくなりすぎたら
+/// 先頭側を捨てる（`EM_REPLACESEL`で末尾に追記、`SetWindowTextW`は使わない
+/// ——毎回全体を再セットするとスクロール位置が飛ぶ）。
+fn append_log(line: &str) {
+    LOG_BUF.with(|buf| {
+        let mut buf = buf.borrow_mut();
+        buf.push_str(line);
+        buf.push_str("\r\n");
+        if buf.len() > MAX_LOG_CHARS {
+            let cut = buf.len() - MAX_LOG_CHARS;
+            let cut = buf
+                .char_indices()
+                .map(|(i, _)| i)
+                .find(|&i| i >= cut)
+                .unwrap_or(0);
+            buf.drain(0..cut);
+        }
+    });
+    let Some(log_hwnd) = LOG_HWND.with(|h| *h.borrow()) else {
+        return;
+    };
+    unsafe {
+        // 末尾へキャレットを移動してから追記する（EM_SETSEL(-1,-1) → EM_REPLACESEL）。
+        let _ = SendMessageW(
+            log_hwnd,
+            EM_SETSEL,
+            Some(WPARAM(usize::MAX)),
+            Some(LPARAM(-1)),
+        );
+        let mut wide: Vec<u16> = line
+            .encode_utf16()
+            .chain(std::iter::once(u16::from(b'\r')))
+            .chain(std::iter::once(u16::from(b'\n')))
+            .collect();
+        wide.push(0);
+        let _ = SendMessageW(
+            log_hwnd,
+            EM_REPLACESEL,
+            Some(WPARAM(1)),
+            Some(LPARAM(wide.as_ptr() as isize)),
+        );
     }
 }
 
 fn on_timer(hwnd: HWND) {
-    use std::io::Write as _;
-
-    // フォーカスされているウィンドウ（通常はEDITコントロール）を対象に
-    // IME状態を読む。IME状態は「入力フォーカスを持つウィンドウ」に
-    // 紐づくため、トップレベルウィンドウ自身ではなく実際にフォーカスを
-    // 持つ子ウィンドウを使う方が正確。
+    // フォーカスされているウィンドウ（通常は上段のEDIT）を対象にIME状態を
+    // 読む。IME状態は「入力フォーカスを持つウィンドウ」に紐づくため、
+    // トップレベルウィンドウ自身ではなく実際にフォーカスを持つ子ウィンドウを
+    // 使う方が正確。
     let target = unsafe { GetFocus() };
     let target = if target.0.is_null() { hwnd } else { target };
 
@@ -184,29 +227,31 @@ fn on_timer(hwnd: HWND) {
         changed
     });
 
-    // 20tick(=5秒)ごとに強制的にheartbeatを出す。プロセス自体が生きている
+    // 40tick(=10秒)ごとに強制的にheartbeatを出す。プロセス自体が生きている
     // ことと、タイマーが実際に動いていることを、値の変化が無い場合でも
     // 確認できるようにするため。
     let heartbeat = TICK_COUNT.with(|c| {
         let mut c = c.borrow_mut();
         *c += 1;
-        *c % 20 == 0
+        *c % 40 == 0
     });
 
     if changed || heartbeat {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
-        println!(
-            "[{:>10}.{:03}]{} A(ImmGetOpenStatus)={} B(WM_IME_CONTROL)={} C(TSF compartment)={}",
+        let mut line = String::new();
+        let _ = write!(
+            line,
+            "[{:>10}.{:03}]{} A={} B={} C={}",
             now.as_secs(),
             now.subsec_millis(),
-            if changed { "" } else { " [heartbeat]" },
+            if changed { "" } else { " (heartbeat)" },
             fmt(a),
             fmt(b),
             fmt(c),
         );
-        let _ = std::io::stdout().flush();
+        append_log(&line);
     }
 }
 
@@ -218,9 +263,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
             WM_SETFOCUS => {
-                // トップレベルウィンドウがフォーカスを得たら、常にEDIT
-                // コントロールへ委譲する（実際のテキスト入力欄にフォーカスが
-                // 無いとGJI/TSFが入力対象とみなさない可能性への対策）。
+                // トップレベルウィンドウがフォーカスを得たら、常に上段の
+                // 入力欄へ委譲する。
                 if let Some(edit) = EDIT_HWND.with(|e| *e.borrow()) {
                     let _ = SetFocus(Some(edit));
                 }
@@ -233,6 +277,34 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
+    }
+}
+
+fn create_child_edit(
+    parent: HWND,
+    instance: windows::Win32::Foundation::HMODULE,
+    style_extra: u32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) -> WinResult<HWND> {
+    unsafe {
+        let style = (WS_CHILD | WS_VISIBLE | WS_BORDER).0 | style_extra;
+        CreateWindowExW(
+            windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE::default(),
+            w!("EDIT"),
+            w!(""),
+            WINDOW_STYLE(style),
+            x,
+            y,
+            w,
+            h,
+            Some(parent),
+            None,
+            Some(instance.into()),
+            None,
+        )
     }
 }
 
@@ -250,76 +322,56 @@ fn create_window() -> WinResult<HWND> {
         let hwnd = CreateWindowExW(
             windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE::default(),
             class_name,
-            w!("IME Observation Spike (ADR-176) - type in the box and toggle IME"),
+            w!("ADR-176 IME observation spike"),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
-            560,
-            200,
+            700,
+            480,
             None,
             None,
             Some(instance.into()),
             None,
         )?;
 
-        // 実際のテキスト入力欄（標準EDITコントロール）を子ウィンドウとして
-        // 追加する。ここにフォーカスを当てた状態で計測することで、
-        // 「入力を受け付ける気があるウィンドウ」かどうかによる挙動の違いを
-        // 検証する（ユーザー指摘）。
-        let edit_hwnd = CreateWindowExW(
-            windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE::default(),
-            w!("EDIT"),
-            w!(""),
-            WS_CHILD | WS_VISIBLE | WS_BORDER,
-            10,
-            10,
-            520,
-            60,
-            Some(hwnd),
-            None,
-            Some(instance.into()),
-            None,
-        )?;
+        // 上段: 実際に打鍵する入力欄。
+        let edit_hwnd = create_child_edit(hwnd, instance, 0, 10, 10, 660, 30)?;
         EDIT_HWND.with(|e| *e.borrow_mut() = Some(edit_hwnd));
-        let _ = SetFocus(Some(edit_hwnd));
 
+        // 下段: ログ表示欄（複数行・読み取り専用・縦スクロール）。
+        let log_hwnd = create_child_edit(
+            hwnd,
+            instance,
+            ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL.0,
+            10,
+            50,
+            660,
+            380,
+        )?;
+        LOG_HWND.with(|h| *h.borrow_mut() = Some(log_hwnd));
+
+        let _ = SetFocus(Some(edit_hwnd));
+        let _ = ShowWindow(hwnd, SW_SHOW);
         Ok(hwnd)
     }
 }
 
 fn main() -> WinResult<()> {
-    use std::io::Write as _;
+    let tsf_ok = init_tsf().is_ok();
 
-    println!("=== ADR-176 IME observation spike ===");
-    println!("手法A: ImmGetContext + ImmGetOpenStatus");
-    println!("手法B: ImmGetDefaultIMEWnd + WM_IME_CONTROL/IMC_GETOPENSTATUS（awase本体と同型）");
-    println!("手法C: TSF GUID_COMPARTMENT_KEYBOARD_OPENCLOSE（COM、HIMC非依存）");
-    println!();
-    let _ = std::io::stdout().flush();
+    let hwnd = create_window()?;
 
-    if let Err(e) = init_tsf() {
-        println!("[init] TSF初期化に失敗しました（手法Cはこのプロセスでは使えません）: {e}");
-        let _ = std::io::stdout().flush();
+    append_log("=== ADR-176 IME observation spike ===");
+    append_log("A = ImmGetContext+ImmGetOpenStatus / B = ImmGetDefaultIMEWnd+WM_IME_CONTROL(awase本体と同型) / C = TSF GUID_COMPARTMENT_KEYBOARD_OPENCLOSE");
+    if !tsf_ok {
+        append_log("[init] TSF初期化に失敗しました（Cは使えません）");
     }
+    append_log("上段の入力欄にフォーカスした状態でIMEをON/OFF切り替えてください。");
+    append_log("");
 
-    let hwnd = match create_window() {
-        Ok(hwnd) => hwnd,
-        Err(e) => {
-            eprintln!("[fatal] ウィンドウ作成に失敗しました: {e}");
-            let _ = std::io::stdout().flush();
-            return Err(e);
-        }
-    };
-    println!("[init] ウィンドウ作成OK, hwnd={hwnd:?}");
     unsafe {
         SetTimer(Some(hwnd), TIMER_ID, TIMER_INTERVAL_MS, None);
     }
-    let _ = std::io::stdout().flush();
-
-    println!("ウィンドウ内のテキスト入力欄（起動直後は自動フォーカス）に");
-    println!("フォーカスした状態で、GJI/MS-IMEを手動でON/OFF切り替えてください。");
-    println!("値が変化したときだけログが出ます。Ctrl+C または ウィンドウを閉じて終了。");
-    println!();
 
     let mut msg = MSG::default();
     unsafe {
