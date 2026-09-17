@@ -5,7 +5,7 @@ title: |-
 summary: |-
   ユーザー報告「バージョンアップすると既存の設定が失われる」の原因調査と対策。**round1 Opus premortemで「MSI経路は保護されている」という当初前提が誤りと判明**: `wix/main.wxs`の`<MajorUpgrade>`に`Schedule`属性が無く既定値`afterInstallValidate`のため、新バージョンのファイルインストールより前に旧バージョンが完全アンインストールされ、`ConfigFile`コンポーネントの`NeverOverwrite="yes"`(KeyPathはレジストリ値でファイルではない)は無力化される(F1、MSIでインストールした全ユーザーが対象、最優先で修正)。加えてZIP配布の2箇所と実装共通の1箇所: (F2)`scripts/uninstall.ps1`が`%LOCALAPPDATA%\awase`を無条件再帰削除、(F3)`scripts/install.ps1`が`config.toml`は「既存なら上書きしない」のに`layout/*`は無条件`-Force`上書き(`awase-yab-editor`はawase-settingsの「配列編集」タブとして統合済みと判明、GUI編集ユーザー全員が対象)、(F4・最重要)`awase-settings`の`AppConfig::load()`失敗時に`default_config()`へ静かにフォールバックし「適用」でconfig.tomlへ永続化(`AppConfig::general`に`#[serde(default)]`が無く`[general]`欠落だけでparse失敗する点も発見、F5としてpaths.rsのCWDフォールバックも関連リスクとして記録)。決定0〜8: `<MajorUpgrade Schedule="afterInstallExecute">`＋`NicolaYab`コンポーネントへの`NeverOverwrite="yes"`追加(最優先、round2でMSI上書き経路と削除経路が別物と判明し拡張)、uninstall.ps1のユーザーデータ削除を`-Purge`明示フラグへ分離、install.ps1は`layout/`のみ非破壊化(`data/`はプログラム資産として対象外のまま維持しMSIと挙動を揃える)、`AppConfig::save()`をfsync+リトライ付きアトミック書き込み化、awase-settingsに`NotFound`/`Dangerous`(NotFound以外は全て危険側に倒す明示ルール)分類のload状態を追加しegui内製の確認UIで警告・一度限りバックアップ、`general`フィールドへの`#[serde(default)]`付与、パス解決フォールバックへの診断ログ追加、`wix/main.wxs`のGUID/Schedule/NeverOverwrite不変条件を機械的に固定するguard test新設。schema_versionマイグレーション機構の新設は不採用(既存方針に整合)
 status: |-
-  **実装済み(2026-08-21)**。round1(6 must-fix)→round2(実コード裏取りで4 must-fix、うちMSIの`layout/nicola.yab`保護漏れ等)→round3(round2 must-fix4件の反映確認)の3ラウンドOpus premortemを経て実装。cargo test(800件超)・fmt・CI相当clippy・`cargo xwin check/clippy/build --tests`(実Windowsターゲット)全緑。実装後Opusコードレビューで2件のCONFIRMEDバグ(guard testが自分のコメント文言で無効化・`.bak`コピー失敗時も保存続行)を検出・修正済み。2026-09-17、[ADR-177](177-msi-restart-manager-graceful-shutdown.md)のround2 MF-4実機検証(常駐状態でのアップグレード)で解消——config.tomlが上書きされずに保持されることも確認済み。ただしADR-177の検証はRestart Manager/プロセス再起動が主目的で、ユーザーが実際に編集したconfig.toml/layoutでの網羅的な確認はまだ
+  **実装済み(2026-08-21)**。round1(6 must-fix)→round2(実コード裏取りで4 must-fix、うちMSIの`layout/nicola.yab`保護漏れ等)→round3(round2 must-fix4件の反映確認)の3ラウンドOpus premortemを経て実装。cargo test(800件超)・fmt・CI相当clippy・`cargo xwin check/clippy/build --tests`(実Windowsターゲット)全緑。実装後Opusコードレビューで2件のCONFIRMEDバグ(guard testが自分のコメント文言で無効化・`.bak`コピー失敗時も保存続行)を検出・修正済み。2026-09-17、[ADR-177](177-msi-restart-manager-graceful-shutdown.md)のround2実機検証(常駐状態のままconfig.toml/layout/nicola_keytop.yabを編集→UI付き`msiexec /i`でアップグレード)で解消——編集内容が上書きされずに保持されることを実機で確認済み。ただしZIP版install.ps1/uninstall.ps1の`-Purge`挙動やawase-settings.exe常駐時のケース等、ADR-099が挙げる検証チェックリストの全項目を網羅したものではない
 related_adr:
   - "ADR-092"
   - "ADR-177"
@@ -16,12 +16,16 @@ related_adr:
 ## ステータス
 
 **実装済み（2026-08-21）。Windows 実機でのアップグレード検証は
-[ADR-177](177-msi-restart-manager-graceful-shutdown.md)（2026-09-17）で
-実施済み** — 常駐状態のまま新バージョンMSIをサイレントアップグレードし、
-`config.toml`が上書きされずに保持されること、Restart Manager経由での
-シャットダウン・ファイル置換・再起動が正常に完了することを確認した
-（ただしユーザーが実際に編集した`config.toml`/`layout/`での網羅的な
-確認はまだ、ADR-177「未解決事項」参照）。
+[ADR-177](177-msi-restart-manager-graceful-shutdown.md)（2026-09-17、
+round1・round2の2ラウンド）で実施済み** — 常駐状態のまま
+`config.toml`（`simultaneous_threshold_ms`変更）と
+`layout/nicola_keytop.yab`（追記）を編集した上で、UI付き
+（`msiexec /i`、`/qn`無し、実配布経路の再現）でメジャーアップグレードを
+実行し、**編集内容が両方とも上書きされずに保持される**こと、
+Restart Manager経由でのシャットダウン・ファイル置換・再起動が正常に
+完了することを確認した（ZIP版install.ps1/uninstall.ps1の`-Purge`挙動、
+`awase-settings.exe`常駐時のケース等はADR-177の検証範囲外、
+ADR-177「検証の限界」参照）。
 Opus premortem round1（2026-08-21）で6件の must-fix・7件の should-fix を
 受領し、本文へ反映済み。**round1 で「MSI 経路は保護されている」という
 当初の前提が誤りと判明し、根本的に書き直した**（旧 決定1〜5 は 決定0〜8
