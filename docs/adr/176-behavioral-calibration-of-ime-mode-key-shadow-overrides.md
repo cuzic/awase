@@ -476,9 +476,13 @@ status参照）:
   チョークポイント、新規APIを増やさない。較正probe専用の薄いラッパ
   `probe_ime_open_for_calibration`経由）を、観測tickごとに
   ライブなフォーカス先のHWNDに対して呼び出し、IME状態をポーリングする。
-- 観測結果（VK・物理キー検知タイムスタンプ・観測したIME状態の遷移）を
-  同じ`WM_APP+N`応答でawase-settingsへ返す（176-T9b、本セクション執筆
-  時点では未実装）。
+- 確定/却下の結果（`ImeToggleKind::On`確定、または`Toggle`の決定的証拠
+  による却下）を、新規`WM_CALIBRATION_RESULT`（`WM_APP+31`）で
+  awase-settingsへ返す（176-T9b、実装済み）。HWNDと同じ理由で
+  こちらもIPCでHWNDを運ばず、awase-settings側に新設した固定クラス名の
+  メッセージ専用ウィンドウを`FindWindowW`で探して送る（round8で
+  「`with_msg_hook`はOS由来のモーダルループに脆い」と判明したため、
+  `HWND_MESSAGE`の自前ウィンドウ+専用WndProcを採用）。
 
 **round6 B2の対応（`send_health`汚染）**: `imm.rs:263`の
 `send_health::record`は probe/actuation を問わず無条件に走る。

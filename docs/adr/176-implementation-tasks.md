@@ -431,7 +431,47 @@ ADR-153/BUG-113）。
 `disable_apps`バイパスの有無に関係しない仕様上の挙動である。
 
 **依存**: 176-T6（バイパスが効いた状態で測定する必要があるため）、
-176-T7（HWND・PIDの受け渡し）。
+176-T7（PIDの受け渡し。HWNDはIPCで運ばない——round9訂正、上記参照）。
+
+**実装状況（2026-09-17追記）**: awase.exe内で完結する部分（probe実装・
+ポーリング・押下起点の確定ロジック）は176-T9aとして実装済み
+（opus-adversarial-consultレビューround9でBlocker5件を検出・反映、
+特にT0未完のまま`Runtime::set_calibrated_mode_key`を呼ばない方針に
+変更——決定結果は`tracing::info!`でログ記録するのみ）。
+awase-settingsへの結果返却IPCは176-T9bとして分離した（下記参照、
+round8/round9の議論で、T7の`WM_CALIBRATION_RESULT`先送りと同じ理由
+——受け入れ側の設計が固まる前にペイロード形式を決めると作り直しに
+なる——による）。
+
+### 176-T9b（決定3、176-T9からの分離）: awase-settingsへの較正結果返却IPC
+
+**内容**: awase.exe本体（176-T9aの較正probeループ）が確定/却下した
+結果を、`WM_CALIBRATION_RESULT`（`WM_APP+31`）で`awase-settings`へ
+返す。opus-adversarial-consultレビューround8で確定した設計を採る:
+
+- **awase-settings側にメッセージ専用ウィンドウ（`HWND_MESSAGE`）を
+  新設する**（`with_msg_hook`は不採用——round8の実機コード調査で、
+  winitの`dispatch_peeked_messages`という特定のPeekMessage呼び出しの
+  中でしか呼ばれず、OS由来のモーダルループ（サイズ変更・システム
+  メニュー等）に対して構造的に脆いと判明したため）。固定クラス名
+  （`calibration_ipc::CALIBRATION_RESULT_WINDOW_CLASS_NAME`）を
+  `main()`冒頭・`eframe`のイベントループ開始前に1回だけ登録する
+  （winitと同一スレッドのメッセージキューに自動的に相乗りする、
+  Windowsのメッセージキューはスレッド単位でありウィンドウ単位では
+  ないため）。
+- **awase.exe側はHWNDをIPCで受け取らず、`FindWindowW`で固定クラス名を
+  探して送る**（round7 S1・round9 N5と同じ方針。`awase_tray_window`と
+  同型）。
+- ペイロードは`calibration_ipc::CalibrationResultPayload{vk, kind}`
+  （`kind`は`ConfirmedOn`/`Rejected`の2値、`Undetermined`は送らない）。
+- 確定/却下はセッション中1回だけ送る（`CalibrationConfirmState`は
+  確定後も同じverdictを返し続けるため、送信側でガードする）。
+
+**受け入れ基準**: awase.exeのログで較正が確定/却下されたことを確認した
+上で、awase-settings側のログにも同じ結果が届いていることを確認する
+（T10未実装のため、受信側は現時点ではログ出力のみ）。
+
+**依存**: 176-T9a。
 
 ### 176-T10（決定4・7）: 較正パネルUI
 

@@ -12,6 +12,8 @@ use awase_windows::scancode_map::{ScancodeMapPreset, ScancodeMapSelection};
 use awase_windows::vk::VkCodeExt as _;
 
 mod bug_report;
+#[cfg(target_os = "windows")]
+mod calibration_result_window;
 mod scancode_map_admin;
 mod startup_failure;
 mod update_check;
@@ -364,6 +366,12 @@ fn main() -> eframe::Result<()> {
         };
         std::process::exit(scancode_map_admin::run_elevated_worker(selection));
     }
+
+    // ADR-176 176-T9b: eframeのイベントループが同一スレッドで動き出す前に、
+    // 較正結果受信用のメッセージ専用ウィンドウを1回だけ作成する
+    // （`calibration_result_window`のモジュールdoc参照）。
+    #[cfg(target_os = "windows")]
+    calibration_result_window::create();
 
     let viewport = egui::ViewportBuilder::default()
         // 幅 760: サイドパネル(100) + 配列編集タブの最も幅を要する行（JIS 最上段

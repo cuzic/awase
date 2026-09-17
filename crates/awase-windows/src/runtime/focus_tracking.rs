@@ -676,6 +676,9 @@ impl Runtime {
             let mut tracker = crate::state::calibrated_mode_key::TrialTracker::new();
             let mut confirm = crate::state::calibrated_mode_key::CalibrationConfirmState::new();
             let mut consecutive_failures: u32 = 0;
+            // ADR-176 176-T9b: 確定/却下の通知をセッション中1回に限る
+            // （`spawn_calibration_probe_loop`のdoc参照）。
+            let mut result_notified = false;
 
             loop {
                 win32_async::sleep_ms(crate::tuning::CALIBRATION_PROBE_POLL_INTERVAL_MS as u32)
@@ -762,23 +765,54 @@ impl Runtime {
                     crate::tuning::CALIBRATION_TRIAL_SETTLE_WINDOW_MS,
                 ) {
                     crate::state::calibrated_mode_key::TrialTick::Completed { pre, post } => {
-                        match confirm.record_trial(pre, post) {
+                        let verdict = confirm.record_trial(pre, post);
+                        // ADR-176 176-T9b: 確定/却下はセッション中1回だけ通知する
+                        // （`CalibrationConfirmState`は確定後も同じverdictを
+                        // 返し続けるため、送信をガードしないと後続の試行の
+                        // たびに同じ結果を何度もawase-settingsへ送ってしまう）。
+                        if result_notified {
+                            continue;
+                        }
+                        match verdict {
                             crate::state::calibrated_mode_key::CalibrationVerdict::ConfirmedOn => {
-                                let _ = crate::with_app(|app| {
-                                    if app.calibration_epoch() == epoch {
-                                        tracing::info!(
-                                            "[calibration] 確定: vk={:?} ImeToggleKind::On \
-                                             (pre={pre} post={post})",
-                                            app.calibration_session_vk()
-                                        );
+                                let sent = crate::with_app(|app| {
+                                    if app.calibration_epoch() != epoch {
+                                        return false;
                                     }
+                                    let Some(vk) = app.calibration_session_vk() else {
+                                        return false;
+                                    };
+                                    tracing::info!(
+                                        "[calibration] 確定: vk={vk:?} ImeToggleKind::On \
+                                         (pre={pre} post={post})"
+                                    );
+                                    notify_calibration_result(
+                                        vk,
+                                        crate::calibration_ipc::CalibrationResultKind::ConfirmedOn,
+                                    );
+                                    true
                                 });
+                                result_notified = sent == Some(true);
                             }
                             crate::state::calibrated_mode_key::CalibrationVerdict::Rejected => {
-                                tracing::info!(
-                                    "[calibration] 却下: pre={pre} post={post} はToggleの\
-                                     決定的証拠のため確定しません"
-                                );
+                                let sent = crate::with_app(|app| {
+                                    if app.calibration_epoch() != epoch {
+                                        return false;
+                                    }
+                                    let Some(vk) = app.calibration_session_vk() else {
+                                        return false;
+                                    };
+                                    tracing::info!(
+                                        "[calibration] 却下: vk={vk:?} pre={pre} post={post} \
+                                         はToggleの決定的証拠のため確定しません"
+                                    );
+                                    notify_calibration_result(
+                                        vk,
+                                        crate::calibration_ipc::CalibrationResultKind::Rejected,
+                                    );
+                                    true
+                                });
+                                result_notified = sent == Some(true);
                             }
                             crate::state::calibrated_mode_key::CalibrationVerdict::Undetermined => {
                             }
@@ -1116,6 +1150,47 @@ impl From<&FocusIdentity> for crate::journal::FocusEndpoint {
             app_kind: format!("{:?}", identity.app_kind),
             focus_kind: format!("{:?}", identity.focus_kind),
         }
+    }
+}
+
+/// ADR-176 176-T9b: 較正結果をawase-settingsへ通知する。
+///
+/// 固定クラス名のメッセージ専用ウィンドウ
+/// （`calibration_ipc::CALIBRATION_RESULT_WINDOW_CLASS_NAME`）を
+/// `FindWindowW`で探し、見つかった場合のみ`PostMessageW`で
+/// `WM_CALIBRATION_RESULT`を送る。HWNDはIPCで受け取らず毎回このように
+/// 探す（round7 S1・round9 N5の方針をawase.exe→awase-settings方向にも
+/// 適用、`send_reload_config_message`の逆方向と同型のパターン）。
+/// 見つからない場合（awase-settingsが較正結果受信ウィンドウをまだ
+/// 作っていない、または既に終了している）は送信を諦めてログのみ残す。
+fn notify_calibration_result(
+    vk: awase::types::VkCode,
+    kind: crate::calibration_ipc::CalibrationResultKind,
+) {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+
+    let class_name_wide =
+        crate::win32::to_wide(crate::calibration_ipc::CALIBRATION_RESULT_WINDOW_CLASS_NAME);
+    // SAFETY: class_name_wide はこの呼び出しの間ずっと生存するNUL終端UTF-16文字列。
+    let hwnd = unsafe { FindWindowW(PCWSTR(class_name_wide.as_ptr()), None) };
+    let Ok(hwnd) = hwnd else {
+        tracing::warn!(
+            "[calibration] 結果通知先ウィンドウ\
+             ({})が見つかりません（awase-settingsが起動していないか、\
+             較正結果受信ウィンドウをまだ作成していない可能性があります）",
+            crate::calibration_ipc::CALIBRATION_RESULT_WINDOW_CLASS_NAME
+        );
+        return;
+    };
+    let payload = crate::calibration_ipc::CalibrationResultPayload { vk, kind };
+    let wparam = WPARAM(crate::calibration_ipc::pack_result(payload));
+    // SAFETY: hwnd は直前の FindWindowW が返した有効なウィンドウハンドル。
+    if let Err(err) =
+        unsafe { PostMessageW(Some(hwnd), crate::WM_CALIBRATION_RESULT, wparam, LPARAM(0)) }
+    {
+        tracing::warn!("[calibration] 結果通知の送信に失敗しました（PostMessageW失敗）: {err}");
     }
 }
 

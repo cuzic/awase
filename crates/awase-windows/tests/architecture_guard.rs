@@ -5161,3 +5161,21 @@ fn calibration_probe_loop_does_not_touch_belief() {
         );
     }
 }
+
+/// ADR-176 176-T9b: `notify_calibration_result(`（awase.exe→
+/// awase-settingsへの較正結果送信、唯一のチョークポイント）の実呼び出しが
+/// `spawn_calibration_probe_loop`内の`ConfirmedOn`/`Rejected`の2箇所
+/// だけであることを固定する。将来別の箇所から直接`FindWindowW`/
+/// `PostMessageW`で較正結果を送る経路が増えないようにするガード。
+#[test]
+fn notify_calibration_result_call_sites_are_limited_to_confirm_and_reject() {
+    let content = read_crate_file("src/runtime/focus_tracking.rs");
+    let production = production_code_only(&content);
+    assert_eq!(
+        count_real_calls(production, "notify_calibration_result("),
+        2,
+        "notify_calibration_result の呼び出し箇所が想定と異なります。\
+         spawn_calibration_probe_loop内のConfirmedOn/Rejectedの2箇所に\
+         限定すること"
+    );
+}
