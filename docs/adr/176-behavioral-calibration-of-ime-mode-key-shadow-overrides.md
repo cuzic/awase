@@ -4,6 +4,14 @@ title: |-
   awase-settingsの明示的な較正UIでモードキーの実効果を測定し、
   未登録時に静的分類を補完する
 status: |-
+  **2026-09-17: 176-T0の設計案（`handle_engine_activation_sync`等への
+  早期return）をopus-adversarial-consultレビューで棄却。** T0は現状
+  「前提条件」として位置づけられているが、提案設計はBUG-113の実送信を
+  止められず、正しい場所に置き直してもADR-149が実機ログ解析で棄却済みの
+  「案B」と同型の結末に落ちることが判明した。詳細・今後の方向性は
+  [176-implementation-tasks.md](176-implementation-tasks.md)のT0節
+  「設計案の棄却」を参照。T0は未実装のまま。
+
   **2026-09-17: 176-T8/T9a/T9bの実機検証完了（dragonflyg4）。**
   較正モード中に物理VK_NONCONVERTをIME ON状態で2回押下（各3秒の
   settle window経過までフォーカス保持）し、awase.exe側で

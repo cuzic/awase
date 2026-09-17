@@ -96,6 +96,47 @@ related_adr:
 **依存**: なし（独立して着手可能、他のADR-176タスクより先に完了させる
 ことを推奨）。
 
+**設計案の棄却（2026-09-17、opus-adversarial-consult）**: 上記内容
+（`handle_engine_activation_sync`または`transition_activation`への
+早期returnによる冪等性チェック）は実装前レビューでBlocker多数により
+棄却された。指摘全文は`/tmp/opus-review-adr176-t0-design.md`
+（セッション内スクラッチパス、以後のセッションでは再現不可）。要点:
+
+1. **置き場所が誤り**: `handle_engine_activation_sync`の早期returnは
+   belief記帳（`ImeApplyRequested`のdispatch等）を止めるだけで、
+   実際の`SendInput`（`decision.effects`に残る`SetOpen`、
+   `kp_stage_execute`経由で無条件実行）は止まらない。むしろ`applied`が
+   `Confirmed`へ昇格しなくなり、既存の`gji_direct_already_matches`
+   dedupが壊れて送信が**増える**方向に倒れる（2026-07-05に一度踏んだ
+   既知の失敗、`key_pipeline.rs:426-440`のコメント参照）。
+2. **述語がBUG-113の再現経路で発火しない**: ADR-149実機ログ上、
+   問題の送信時点で`shadow_on=Some(false)`・`target=true`であり、
+   `applied`ベースのどんな一致判定も偽になる。BUG-113の本質は
+   「GJI自身が物理キーに反応して既にONにしたが、awase（TsfNative×GJIは
+   `FeedbackPolicy::Blind`）にはその証拠が無い」ことであり、`applied`
+   （awase自身が最後に送ったコマンドの記録）にはこの情報が原理的に
+   入らない。
+3. **正しい場所に置き直しても、ADR-149が実機ログ解析の上で棄却済みの
+   「案B」と同型の結末**（3回→2回にしかならず108msずれるだけ、加えて
+   `apply_force_on_for_imm_broken`の誤発火リスク）に落ちる。
+4. OFF方向への適用はBUG-141/ADR-171の再演になるため不可（ON方向限定）。
+   `handle_engine_set_open`（ユーザー明示操作側）への適用も、
+   BUG-037/BUG-141の実害と同型になるため不可。
+5. **受け入れ基準にも検出力が無い**: BUG-113は2026-09-07時点で既に
+   「@」非再発を確認済み（A群0件）のため、この基準では効果の有無を
+   区別できない。1タップあたりの`VK_IME_ON`送信回数を主指標にすべき。
+
+**今後の方向性（実装未着手）**: 置くなら`state/ime_actuation_decision.rs`
+の`decide_gate`/`decide_attempt`（既存`already_matched`と同じ入力・
+同じ場所）、ON方向限定、`Optimistic`は除外。ただし目的記述
+（「較正でTurnOnキーが増える」ことへの対処としての前提条件、という
+位置づけ）自体もB2を踏まえて再評価が必要——較正で増える経路
+（物理キー→shadow-toggle→belief OFF→ON→ActivationSync）では
+`applied`は常に不一致側にあるため、このT0では対処できない。
+送信回数を本当に減らしたいなら、ADR-149が「別ADR起票の価値がある」と
+した案C（delegateとshadow-toggleの排他性修復、送信3の発生自体を
+止める）の方が対象を取り違えていない可能性がある。
+
 ---
 
 ## フェーズ1: スキーマ確定
