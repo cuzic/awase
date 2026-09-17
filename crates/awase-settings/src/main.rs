@@ -5321,14 +5321,13 @@ fn cli_arg_config_path() -> Option<std::path::PathBuf> {
     None
 }
 
-/// 開発ビルド（`current_exe()`の祖先に`target`を含む）かどうかを判定する
-/// （ADR-178 決定2）。`crates/awase-windows/src/app/mod.rs::is_dev_build`と
-/// 同型実装（2クレートに分かれている既知の重複、共通化は別課題）。
+/// 開発ビルドかどうかを判定する（ADR-178 決定2）。実体は
+/// `awase::paths::is_dev_build()`（`resolve_relative_to_exe`のワークスペース
+/// ルート解決と同じ判定基準を共有する、ADR-178 v14 opusレビューM6対応
+/// ——旧実装は`crates/awase-windows/src/app/mod.rs::is_dev_build`との2クレート
+/// 重複だった）。
 fn is_dev_build() -> bool {
-    std::env::current_exe().is_ok_and(|exe| {
-        exe.ancestors()
-            .any(|a| a.file_name().is_some_and(|n| n == "target"))
-    })
+    awase::paths::is_dev_build()
 }
 
 /// `config.toml`が実行ファイルの隣に無ければ、埋め込み既定値から生成する

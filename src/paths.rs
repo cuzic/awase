@@ -14,6 +14,30 @@
 
 use std::path::{Path, PathBuf};
 
+/// `exe`の祖先に`target`という名前のディレクトリがあれば、そのディレクトリ自体を
+/// 返す。「開発ビルドかどうか」の判定（[`is_dev_build`]）と「ワークスペース
+/// ルートの解決」（[`resolve_relative_to`]）の両方が同じ基準を共有する、唯一の
+/// 判定ロジック（ADR-178 v14 opusレビューM6対応——旧実装では`awase-windows`・
+/// `awase-settings`の`is_dev_build()`とこの関数の3箇所に同型ロジックが分散して
+/// おり、片方だけ条件を変えると「読み取り先はワークスペースルートを見るのに
+/// 生成は`exe_dir`に書く」という新しい非対称を生みうる状態だった）。
+pub(crate) fn find_target_ancestor(exe: &Path) -> Option<&Path> {
+    exe.ancestors()
+        .find(|a| a.file_name().is_some_and(|n| n == "target"))
+}
+
+/// 開発ビルド（`current_exe()`の祖先に`target`という名前のディレクトリを含む）
+/// かどうかを判定する。
+///
+/// ADR-178決定2（`ensure_config_exists`/`ensure_layouts_exist`
+/// の自己修復を開発ビルドでは呼ばない）が使う。`current_exe()`が取得できない
+/// 場合は`false`（開発ビルドではない）を返す——`exe_dir`が使えないなら生成先も
+/// 導出できず、自己修復自体が発火しないため実害はない。
+#[must_use]
+pub fn is_dev_build() -> bool {
+    std::env::current_exe().is_ok_and(|exe| find_target_ancestor(&exe).is_some())
+}
+
 /// 相対パスを解決する。
 ///
 /// 1. 絶対パスならそのまま返す。
@@ -41,11 +65,7 @@ fn resolve_relative_to(exe: &Path, path: &str) -> PathBuf {
             return candidate;
         }
     }
-    if let Some(workspace_root) = exe
-        .ancestors()
-        .find(|a| a.file_name().is_some_and(|n| n == "target"))
-        .and_then(Path::parent)
-    {
+    if let Some(workspace_root) = find_target_ancestor(exe).and_then(Path::parent) {
         let candidate = workspace_root.join(path);
         if candidate.exists() {
             return candidate;
@@ -66,8 +86,31 @@ fn resolve_relative_to(exe: &Path, path: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_relative_to, resolve_relative_to_exe, Path, PathBuf};
+    use super::{find_target_ancestor, resolve_relative_to, resolve_relative_to_exe, Path, PathBuf};
     use std::fs;
+
+    #[test]
+    fn find_target_ancestor_detects_target_dir_in_ancestry() {
+        let exe = Path::new("/workspace/target/release/awase.exe");
+        assert_eq!(
+            find_target_ancestor(exe),
+            Some(Path::new("/workspace/target"))
+        );
+    }
+
+    #[test]
+    fn find_target_ancestor_none_when_no_target_dir_in_ancestry() {
+        let exe = Path::new("/opt/awase/awase.exe");
+        assert_eq!(find_target_ancestor(exe), None);
+    }
+
+    #[test]
+    fn find_target_ancestor_does_not_match_target_as_file_stem() {
+        // "target" というディレクトリ名だけを見る。ファイル名の一部に
+        // "target" が含まれるだけ（例: exe自身の名前）ではマッチしない。
+        let exe = Path::new("/opt/mytarget/awase.exe");
+        assert_eq!(find_target_ancestor(exe), None);
+    }
 
     fn unique_temp_dir(name: &str) -> PathBuf {
         let mut dir = std::env::temp_dir();

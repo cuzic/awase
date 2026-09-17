@@ -28,6 +28,17 @@ if ($Purge) {
         Remove-Item -Recurse -Force $installDir
         Write-Host "Removed $installDir (including config.toml and layout/)"
     }
+    # MSI版でインストールした環境では、config.toml/*.yabの7コンポーネントが
+    # Permanent="yes"（ADR-178決定1）のためHKCU\Software\awaseにKeyPath
+    # レジストリ値が残る。フォルダだけ削除してこのレジストリを残すと、
+    # NeverOverwriteによりKeyPathが「既にある」と判定され、次のインストールで
+    # config.toml/*.yabが二度と再配置されない（round1 B1シナリオ）。
+    # ZIP版利用者には無関係な値だが、Test-Pathで存在確認してから消すため
+    # ZIP版のみの利用でも無害。
+    if (Test-Path "HKCU:\Software\awase") {
+        Remove-Item -Recurse -Force "HKCU:\Software\awase"
+        Write-Host "Removed HKCU:\Software\awase (MSI Permanent component registry entries)"
+    }
 } else {
     # 既定: プログラム本体（exe・プログラム資産）のみ削除し、
     # config.toml・layout/ は残す。
