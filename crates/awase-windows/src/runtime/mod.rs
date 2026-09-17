@@ -298,6 +298,14 @@ pub struct Runtime {
     /// ADR-176 176-T7: 較正対象VK（`None`=非アクティブ）。176-T8/T9が
     /// 参照する想定、現時点では呼び出し元は無い。
     calibration_session_vk: Option<VkCode>,
+    /// ADR-176 176-T9a: 較正probeループの世代カウンタ。`begin_calibration_
+    /// bypass`/`end_calibration_bypass`の**両方**が無条件にインクリメント
+    /// する（開始・再武装・終了のいずれでも前の世代を無効化する）。
+    /// `spawn_calibration_probe_loop`が起動時にこの値を捕捉し、毎tick
+    /// 値が変わっていないか確認することで、古いループを安全に停止する
+    /// （`output/probe_io.rs::start_ms_ime_ready_poll`と同じ世代照合
+    /// パターン）。
+    calibration_epoch: u64,
     /// GJI config1.db から検出した Hiragana/Katakana の shadow_action override。
     /// 適用可否（現在親指キーでないこと）は消費時に判定する。
     gji_hiragana_shadow_override: Option<awase::types::ShadowImeAction>,
@@ -1561,6 +1569,7 @@ impl Runtime {
             calibration_bypass_deadline: None,
             calibration_session_pid: None,
             calibration_session_vk: None,
+            calibration_epoch: 0,
             gji_hiragana_shadow_override: None,
             gji_katakana_shadow_override: None,
             henkan_shadow_override: None,

@@ -109,6 +109,9 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
             "detect_ime_open_for_hwnd",
             "detect_ime_conversion_for_hwnd",
             "read_ime_state_fast",
+            // ADR-176 176-T9a（決定3 round6 M5対応）: 較正probe専用の
+            // 薄いラッパから呼ぶ。新規追加（棚卸しではない）。
+            "probe_ime_open_for_calibration",
         ],
     ),
     // apply_ime_open_with_view: ADR-159段階0のもう1つの合流点。fix-requires-evidence.mdの

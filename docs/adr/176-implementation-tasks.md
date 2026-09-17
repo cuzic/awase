@@ -317,19 +317,20 @@ belief更新に一切触れていないこと」「検知コードが`focus_app_
 記述はopus round5レビューでBlocker指摘され、2026-09-16の追加実機検証
 （`awase-settings.exe`の実際のバグ報告画面に約28秒間フォーカスした
 状態で手法Bを観測、タイムアウト無しで正しく追跡し続けた）で誤りと
-確定した。**v7**でawase.exe本体がawase-settingsのHWNDを直接観測する
-設計に単純化したが、opus round6レビューで観測をawase.exe本体へ移した
-ことによる新規の衝突（Blocker4件）が見つかった。詳細はADR本文
-「決定3」参照。以下はv8での対応を反映した内容。
+確定した。**v7**でawase.exe本体がawase-settingsのPID（HWNDは運ばない、
+ライブなフォーカス追跡を使う——round9訂正）を基準に観測する設計に
+単純化したが、opus round6レビューで観測をawase.exe本体へ移したことに
+よる新規の衝突（Blocker4件）が見つかった。詳細はADR本文「決定3」参照。
+以下はv8での対応を反映した内容。
 
 **内容**: 較正専用ウィンドウは新設しない。**awase.exe本体**が
-176-T7のIPCで受け取った`awase-settings`のHWND・PID（eguiのメイン
-ウィンドウそのもの）に対し、既存の`imm.rs::probe_ime_control`
-（`awase-windows`クレート内の唯一のチョークポイント、新規APIを増やさ
-ない）を使ってポーリングする。較正モード状態は176-T8のとおり
-`HOOK_STATE`側に置き、観測ループ（ランタイム側`spawn_local`タイマー）
-はこれを読み取るだけにする（round6 M6対応）。観測結果を176-T7の
-同じIPC応答でawase-settingsへ返す。
+176-T7のIPCで受け取った`awase-settings`のPID（HWNDは運ばない、
+ライブなフォーカス追跡を使う——round9訂正）を基準に、既存の
+`imm.rs::probe_ime_control`（`awase-windows`クレート内の唯一の
+チョークポイント、新規APIを増やさない）を使ってポーリングする。
+較正モード状態は176-T8のとおり`HOOK_STATE`側に置き、観測ループ
+（ランタイム側`spawn_local`タイマー）はこれを読み取るだけにする
+（round6 M6対応）。観測結果を176-T7の同じIPC応答でawase-settingsへ返す。
 
 **round6 B1対応（`app_disabled`ゲートとの衝突）**: 較正probeは
 `ime_refresh.rs:70-78`の`app_disabled`早期return（probeを含む全停止）
@@ -350,10 +351,11 @@ belief書き込みAPI（`ImeModel`のsetter等）が呼ばれていないこと�
 コミット本文に理由を残す。
 
 **round6 B3対応（他プロセスHWNDのライフサイクル）**: 観測tickごとに
-`GetWindowThreadProcessId(hwnd)`が176-T7受信時に記録したPIDと一致する
-ことを確認する。不一致（awase-settingsの終了・HWND再利用）なら較正
-モードを即座に中止し、176-T6のタイムアウト機構と同じ経路で
-`disable_apps`を解除する。
+`self.platform.focus.pid()`/`process_name`が較正セッションのPID/
+`awase-settings.exe`と一致することを確認する（round9訂正、HWNDは
+運ばないためHWND再利用の懸念自体が構造的に発生しない）。不一致
+（awase-settingsの終了・PID再利用）なら較正モードを即座に中止し、
+176-T6のタイムアウト機構と同じ経路で`disable_apps`を解除する。
 
 **round6 M2対応（probeを出すスレッド）**: awase.exe本体は単一
 スレッド・メッセージループ駆動で、そのスレッドがLLキーボードフックの

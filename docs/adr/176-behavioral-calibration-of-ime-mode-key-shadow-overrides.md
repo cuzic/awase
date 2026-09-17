@@ -458,19 +458,27 @@ status参照）:
    v6が主張した「eguiメインウィンドウでは機能しない」は**誤りだった**
    （opus round5 B1指摘）。
 
-**採用する設計（v8）**: 較正専用のネイティブウィンドウは新設しない。
-決定2で確立したIPC経路（awase-settings→`WM_APP+N`→awase.exe本体）を
-そのまま延長し、**awase.exe本体が物理キー検知と観測の両方を兼務する**。
+**採用する設計（v8、round7/round9で訂正）**: 較正専用のネイティブ
+ウィンドウは新設しない。決定2で確立したIPC経路（awase-settings→
+`WM_APP+N`→awase.exe本体）をそのまま延長し、**awase.exe本体が物理キー
+検知と観測の両方を兼務する**。
 
-- 較正モード開始時、awase-settingsは自身の**PID**と**トップレベル
-  HWND**（決定2参照、`GetActiveWindow`で取得——手法Bが直接機能する
-  ことを上記2で確認済み）をIPCメッセージに含めてawase.exe本体へ渡す。
+- 較正モード開始時、awase-settingsは自身の**PID**（`WM_CALIBRATION_
+  START`）をIPCメッセージに含めてawase.exe本体へ渡す。**HWNDは運ばない**
+  ——176-T7実装時のopus-adversarial-consultレビュー（round7 S1）で、
+  較正の測定はそもそも「awase-settingsにフォーカスがある間」しか
+  成立しないため、対象HWNDはawase.exe自身のライブなフォーカス追跡
+  （`self.platform.focus.current.root_hwnd`）から取れば足り、IPCで
+  送るとstaleness軸が増えるだけと判断したため（決定2も同じ理由で
+  同様に訂正済み）。
 - awase.exe本体は、決定2の物理キー検知に加えて、`imm.rs::
   probe_ime_control`（`awase-windows`クレート内の既存の唯一の
-  チョークポイント、新規APIを増やさない）をこのHWNDに対してそのまま
-  呼び出し、IME状態をポーリングする。
+  チョークポイント、新規APIを増やさない。較正probe専用の薄いラッパ
+  `probe_ime_open_for_calibration`経由）を、観測tickごとに
+  ライブなフォーカス先のHWNDに対して呼び出し、IME状態をポーリングする。
 - 観測結果（VK・物理キー検知タイムスタンプ・観測したIME状態の遷移）を
-  同じ`WM_APP+N`応答でawase-settingsへ返す。
+  同じ`WM_APP+N`応答でawase-settingsへ返す（176-T9b、本セクション執筆
+  時点では未実装）。
 
 **round6 B2の対応（`send_health`汚染）**: `imm.rs:263`の
 `send_health::record`は probe/actuation を問わず無条件に走る。
@@ -484,15 +492,22 @@ status参照）:
 自体は変更せず、較正probe専用の薄いラッパ、または`record`呼び出しを
 スキップするフラグ引数を追加する形で対応する（実装方式はT9で決定）。
 
-**round6 B3の対応（他プロセスHWNDのライフサイクル）**:
-- IPCメッセージにawase-settingsの**PID**を含める（上記）。
-- awase.exe本体は観測tickごとに`GetWindowThreadProcessId(hwnd)`が
-  開始時に記録したPIDと一致することを確認し、不一致（プロセス終了・
-  HWND再利用）なら較正モードを即座に中止し`disable_apps`バイパスを
-  解除する。
-- 較正モード全体にタイムアウトを設け、awase-settingsからの応答が
-  一定時間無い場合は自動的に`disable_apps`を戻し較正モードを解除する
-  （awase-settingsのクラッシュ/強制終了への対策）。
+**round6 B3の対応（他プロセスHWNDのライフサイクル、round9で訂正）**:
+HWNDをIPCで運ばずライブなフォーカス追跡から都度取得する設計
+（上記）にしたことで、「キャッシュしたHWNDが別ウィンドウに化ける」
+というHWND再利用そのものの懸念は構造的に発生しない。ただし別の2つの
+懸念が残るため、観測tickごとに以下を確認する（opus-adversarial-consult
+レビューround9 S7対応）:
+- **同一PID・別HWND**: awase-settingsがネイティブのファイルダイアログ
+  等を開き、同一PIDのまま別ウィンドウにフォーカスが移るケース。
+  該当tickの試行を破棄する（中止はしない）。
+- **PID再利用**: awase-settingsが落ちて同じPIDが別プロセスに再利用
+  されるケース。`focus.process_name`が`awase-settings.exe`と一致する
+  ことも併せて確認する（`calibration_ipc::is_awase_settings_process_
+  name`を流用）。不一致なら較正モードを中止する。
+- 較正モード全体のタイムアウト（176-T6/T7で実装済み）は、awase-settings
+  からのSTART再送（keepalive）が一定時間無い場合に自動的に
+  `disable_apps`を戻し較正モードを解除する。
 
 **round6 M2の対応（probeを出す側のスレッド）**: 決着実験
 （`spike_egui_ime_control_probe.rs`）はLLキーボードフックを持たない

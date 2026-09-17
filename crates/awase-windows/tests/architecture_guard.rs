@@ -5116,3 +5116,48 @@ fn calibration_key_detected_handler_does_not_touch_belief() {
         );
     }
 }
+
+/// ADR-176 176-T9a（round8→round9レビュー指摘S9対応）: `SendHealthFeed::
+/// Skip`を渡す呼び出しが`imm.rs`の`probe_ime_open_for_calibration`
+/// 1箇所だけであることを固定する。`send_ime_control_raw`のdocが謳う
+/// 「probe/actuate双方の計測はすべてここに集約する」という不変条件を
+/// 較正probeに限り意図的に緩めている（B2対応）ため、この緩和が
+/// 較正probe以外へ拡散しないことを固定するガード。
+#[test]
+fn send_health_feed_skip_is_used_at_exactly_one_call_site() {
+    let content = read_crate_file("src/imm.rs");
+    let production = production_code_only(&content);
+    assert_eq!(
+        count_real_calls(production, "SendHealthFeed::Skip"),
+        1,
+        "SendHealthFeed::Skip の使用箇所が想定と異なります。較正probe専用の\
+         probe_ime_open_for_calibration以外でsend_healthを迂回してはならない\
+         （ADR-176 176-T9a round8 B2対応）"
+    );
+}
+
+/// ADR-176 176-T9a（決定3 round6 B1対応）: 較正probeループ
+/// （`spawn_calibration_probe_loop`）がbelief書き込みAPIに一切触れない
+/// ことを固定する。較正probeの観測はImeModel/observation_storeへは
+/// 一切dispatchしない、通常のIME belief更新パイプラインとは完全に
+/// 独立したデータパスでなければならない。
+#[test]
+fn calibration_probe_loop_does_not_touch_belief() {
+    let content = read_crate_file("src/runtime/focus_tracking.rs");
+    let production = production_code_only(&content);
+    let body = extract_fn_body(production, "fn spawn_calibration_probe_loop(&self) {");
+    for forbidden in [
+        "dispatch_event(",
+        "observation_store",
+        "reduce(",
+        "ImeModel",
+        "ImeEvent",
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "spawn_calibration_probe_loop が `{forbidden}` に触れています\
+             （ADR-176決定3 round6 B1対応: 較正probeはbelief更新から\
+             完全に独立したデータパスでなければならない）"
+        );
+    }
+}

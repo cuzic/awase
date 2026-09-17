@@ -23,6 +23,16 @@ const EXPLICIT_OFF_CACHE_SUPPRESS_MS: u64 = 10_000;
 /// 参照）には置かない。
 const CALIBRATION_BYPASS_TIMEOUT_MS: u64 = 30_000;
 
+/// ADR-176 176-T9a（決定3 round9 B4対応）: 較正probeが連続でこの回数
+/// 失敗（`open=None`）したら較正モードを中止する。較正probeは
+/// `send_health`のサーキットブレーカを意図的に迂回する（round6 B2）ため、
+/// 本番のブレーキが一切効かない——このローカルなカウンタが唯一の歯止め。
+/// 実測msに基づく値ではなく、`CALIBRATION_BYPASS_TIMEOUT_MS`と同種の
+/// ポリシー値（IMEがハングしている状態でポーリングを無限に続けない
+/// ための上限）のため`tuning.rs`には置かない。
+/// `CALIBRATION_PROBE_POLL_INTERVAL_MS`（100ms）×10 = 約1秒相当。
+const MAX_CONSECUTIVE_CALIBRATION_PROBE_FAILURES: u32 = 10;
+
 /// `apply_focus_probe_result` 内部で使うフォーカス分類結果。
 pub(super) struct ClassifiedFocus {
     pub hwnd: HWND,
@@ -588,6 +598,13 @@ impl Runtime {
         self.calibration_session_pid = Some(pid);
         self.calibration_session_vk = Some(vk);
         crate::hook::set_calibration_target(Some(vk));
+        // ADR-176 176-T9a: 新しい世代を発行し、較正probeループを起動する。
+        // 再武装（同じpidでの再呼び出し、VK変更を含む）でも無条件に世代を
+        // 進めることで、古いループの確定状態（TrialTracker/
+        // CalibrationConfirmState）が新しいVKの試行に混ざらないようにする
+        // （opus-adversarial-consultレビューround9 S6対応）。
+        self.calibration_epoch = self.calibration_epoch.wrapping_add(1);
+        self.spawn_calibration_probe_loop();
         if self.platform.focus.is_focused() {
             let focused_pid = self.platform.focus.pid();
             self.apply_app_disable_transition(focused_pid, false);
@@ -603,6 +620,9 @@ impl Runtime {
         self.calibration_session_pid = None;
         self.calibration_session_vk = None;
         crate::hook::set_calibration_target(None);
+        // ADR-176 176-T9a: 世代を進め、生きている較正probeループ
+        // （もしあれば）を次tickで停止させる。
+        self.calibration_epoch = self.calibration_epoch.wrapping_add(1);
         if self.platform.focus.is_focused() {
             let pid = self.platform.focus.pid();
             self.apply_app_disable_transition(pid, false);
@@ -630,6 +650,150 @@ impl Runtime {
     #[must_use]
     pub(crate) fn calibration_session_vk(&self) -> Option<awase::types::VkCode> {
         self.calibration_session_vk
+    }
+
+    /// ADR-176 176-T9a: 較正probeループの現在の世代。
+    #[must_use]
+    pub(crate) fn calibration_epoch(&self) -> u64 {
+        self.calibration_epoch
+    }
+
+    /// ADR-176 176-T9a（決定3）: 較正probeの非同期ポーリングループを起動する。
+    /// `begin_calibration_bypass`の中だけから呼ぶこと（世代を捕捉する
+    /// タイミングがそこでしか正しくないため）。
+    ///
+    /// メインスレッドを`run_with_timeout`でブロックせず
+    /// `win32_async::offload_timeout`+`spawn_local`で完全非同期に回す
+    /// （opus-adversarial-consultレビューround9 B4/S5対応: `run_with_timeout`
+    /// は`LEAKED_THREADS`（プロセス全体で共有、上限8）を消費するため、
+    /// IMEがハングした状態で100ms間隔のポーリングを回すと較正以外の
+    /// フォーカス検出・IME状態読み取りまで巻き込んで枯渇させてしまう）。
+    /// probeは常に直列1本（前のprobeの完了を待ってから次のsleep+probeへ
+    /// 進む）。
+    fn spawn_calibration_probe_loop(&self) {
+        let epoch = self.calibration_epoch;
+        win32_async::spawn_local(async move {
+            let mut tracker = crate::state::calibrated_mode_key::TrialTracker::new();
+            let mut confirm = crate::state::calibrated_mode_key::CalibrationConfirmState::new();
+            let mut consecutive_failures: u32 = 0;
+
+            loop {
+                win32_async::sleep_ms(crate::tuning::CALIBRATION_PROBE_POLL_INTERVAL_MS as u32)
+                    .await;
+
+                // 世代照合とフォーカス/セッション情報の取得を1回のwith_appに
+                // まとめる。外側のOption<..>はwith_app自体が再入でNoneを
+                // 返した場合（=Runtimeが他所でborrow中）で、この場合は
+                // セッション終了ではなく単に今tickをスキップして次へ進む。
+                // 内側のOption<..>が世代不一致/セッション不在を表し、この
+                // 場合はループ自体を終了する。
+                let outer = crate::with_app(|app| {
+                    if app.calibration_epoch() != epoch {
+                        return None;
+                    }
+                    app.calibration_session_pid().map(|session_pid| {
+                        (
+                            app.platform.focus.current.root_hwnd,
+                            app.platform.focus.current.pid,
+                            app.platform.focus.current.process_name.clone(),
+                            session_pid,
+                        )
+                    })
+                });
+                let (hwnd_addr, focus_pid, focus_process_name, session_pid) = match outer {
+                    None => continue,
+                    Some(None) => return,
+                    Some(Some(ctx)) => ctx,
+                };
+
+                // round9 S7対応: PID一致に加えてプロセス名も確認する
+                // （PID再利用で無関係な別プロセスに化けるケースを塞ぐ）。
+                // 一致しない場合はセッションを中止せず、この試行だけを
+                // 破棄する（同一PIDのまま較正対象以外のウィンドウ
+                // ——ネイティブダイアログ等——へ一時的にフォーカスが
+                // 移るケースを想定、round9 S7）。
+                if focus_pid != session_pid
+                    || !crate::calibration_ipc::is_awase_settings_process_name(&focus_process_name)
+                {
+                    continue;
+                }
+
+                let now_ms = crate::hook::current_tick_ms();
+                let press_seq = crate::hook::calibration_press_seq();
+                let probe_result = win32_async::offload_timeout(
+                    crate::tuning::CALIBRATION_PROBE_TIMEOUT_MS,
+                    move || unsafe {
+                        crate::imm::probe_ime_open_for_calibration(
+                            hwnd_addr,
+                            crate::tuning::CALIBRATION_PROBE_TIMEOUT_MS,
+                        )
+                    },
+                )
+                .await
+                .flatten();
+
+                if probe_result.is_some() {
+                    consecutive_failures = 0;
+                } else {
+                    consecutive_failures += 1;
+                    // round9 B4対応: 較正probeはsend_healthを迂回する
+                    // ため（B2）、本番のサーキットブレーカに頼れない。
+                    // ローカルな連続失敗カウンタで、IMEがハングして
+                    // いる間ポーリングを無限に続けないようにする。
+                    if consecutive_failures >= MAX_CONSECUTIVE_CALIBRATION_PROBE_FAILURES {
+                        let _ = crate::with_app(|app| {
+                            if app.calibration_epoch() == epoch {
+                                tracing::warn!(
+                                    "[calibration] probe連続失敗（{consecutive_failures}回）\
+                                     のため較正モードを中止します"
+                                );
+                                app.end_calibration_bypass();
+                            }
+                        });
+                        return;
+                    }
+                    continue;
+                }
+
+                match tracker.tick(
+                    press_seq,
+                    now_ms,
+                    probe_result,
+                    crate::tuning::CALIBRATION_TRIAL_SETTLE_WINDOW_MS,
+                ) {
+                    crate::state::calibrated_mode_key::TrialTick::Completed { pre, post } => {
+                        match confirm.record_trial(pre, post) {
+                            crate::state::calibrated_mode_key::CalibrationVerdict::ConfirmedOn => {
+                                let _ = crate::with_app(|app| {
+                                    if app.calibration_epoch() == epoch {
+                                        tracing::info!(
+                                            "[calibration] 確定: vk={:?} ImeToggleKind::On \
+                                             (pre={pre} post={post})",
+                                            app.calibration_session_vk()
+                                        );
+                                    }
+                                });
+                            }
+                            crate::state::calibrated_mode_key::CalibrationVerdict::Rejected => {
+                                tracing::info!(
+                                    "[calibration] 却下: pre={pre} post={post} はToggleの\
+                                     決定的証拠のため確定しません"
+                                );
+                            }
+                            crate::state::calibrated_mode_key::CalibrationVerdict::Undetermined => {
+                            }
+                        }
+                    }
+                    crate::state::calibrated_mode_key::TrialTick::Discarded => {
+                        tracing::debug!(
+                            "[calibration] 試行を破棄しました（settle window中にprobe失敗、\
+                             または押下が重複）"
+                        );
+                    }
+                    crate::state::calibrated_mode_key::TrialTick::Pending => {}
+                }
+            }
+        });
     }
 
     /// ADR-176 176-T6（round6 B3対応）: `now`が較正モードのタイムアウト
