@@ -560,27 +560,36 @@ impl Runtime {
         );
     }
 
-    /// ADR-176 176-T6: 較正モード開始（176-T7以降のIPCハンドラから呼ぶ想定、
-    /// 現時点では呼び出し元は無い）。`process_exe`（`awase-settings.exe`）を
-    /// 一時的に`disable_apps`と同様のバイパス対象へ加え、現在のフォーカス先で
-    /// 即座に再評価する。`apply_config_update`のreload経路
-    /// （`self.platform.focus.is_focused()` → `apply_app_disable_transition`）と
-    /// 同じ呼び出し方にすることで、較正モード開始時点でawase-settingsが
-    /// 既にフォーカスを持っている場合でも即座にバイパスが効く
-    /// （round6 m4対応）。
+    /// ADR-176 176-T6/T7: 較正モード開始/再武装（keepalive）。
+    /// `awase-settings.exe`を一時的に`disable_apps`と同様のバイパス対象へ
+    /// 加え、現在のフォーカス先で即座に再評価する。`apply_config_update`の
+    /// reload経路（`self.platform.focus.is_focused()` →
+    /// `apply_app_disable_transition`）と同じ呼び出し方にすることで、
+    /// 較正モード開始時点でawase-settingsが既にフォーカスを持っている
+    /// 場合でも即座にバイパスが効く（round6 m4対応）。
+    ///
+    /// 冪等——同じ`pid`から再度呼ぶと単にタイムアウト期限と`vk`が更新
+    /// される（176-T7、round7 B1対応: `WM_CALIBRATION_START`をkeepaliveと
+    /// して繰り返し送る設計のための再武装経路）。呼び出し元
+    /// （`message_handlers.rs::handle_wm_calibration_start`）が
+    /// 別セッションのPIDと衝突しないことを確認済みである前提で呼ぶこと
+    /// （このメソッド自体はPID所有権チェックを行わない）。
     pub(crate) fn begin_calibration_bypass(
         &mut self,
-        process_exe: &str,
+        vk: awase::types::VkCode,
+        pid: u32,
         now: crate::state::TickMs,
     ) {
         self.platform
             .focus
-            .set_calibration_bypass_process(Some(process_exe.to_string()));
+            .set_calibration_bypass_process(Some("awase-settings.exe".to_string()));
         self.calibration_bypass_deadline =
             Some(crate::state::TickMs(now.0 + CALIBRATION_BYPASS_TIMEOUT_MS));
+        self.calibration_session_pid = Some(pid);
+        self.calibration_session_vk = Some(vk);
         if self.platform.focus.is_focused() {
-            let pid = self.platform.focus.pid();
-            self.apply_app_disable_transition(pid, false);
+            let focused_pid = self.platform.focus.pid();
+            self.apply_app_disable_transition(focused_pid, false);
         }
     }
 
@@ -590,6 +599,8 @@ impl Runtime {
     pub(crate) fn end_calibration_bypass(&mut self) {
         self.platform.focus.set_calibration_bypass_process(None);
         self.calibration_bypass_deadline = None;
+        self.calibration_session_pid = None;
+        self.calibration_session_vk = None;
         if self.platform.focus.is_focused() {
             let pid = self.platform.focus.pid();
             self.apply_app_disable_transition(pid, false);
@@ -600,6 +611,14 @@ impl Runtime {
     #[must_use]
     pub(crate) fn calibration_bypass_is_active(&self) -> bool {
         self.calibration_bypass_deadline.is_some()
+    }
+
+    /// ADR-176 176-T7: 現在進行中の較正セッションのPID
+    /// （`None`=非アクティブ）。`message_handlers.rs`のSTART/ENDハンドラが
+    /// セッション所有権の検証に使う（round7 S4対応）。
+    #[must_use]
+    pub(crate) fn calibration_session_pid(&self) -> Option<u32> {
+        self.calibration_session_pid
     }
 
     /// ADR-176 176-T6（round6 B3対応）: `now`が較正モードのタイムアウト

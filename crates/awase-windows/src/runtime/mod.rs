@@ -290,6 +290,14 @@ pub struct Runtime {
     /// `begin_calibration_bypass`/`end_calibration_bypass`/
     /// `check_calibration_bypass_timeout`が管理する。
     calibration_bypass_deadline: Option<crate::state::TickMs>,
+    /// ADR-176 176-T7: 較正セッションを開始したawase-settingsのPID
+    /// （`None`=非アクティブ）。STARTの再武装/ENDがこのPIDと一致する
+    /// 場合のみ有効（round7 S4対応: 別プロセスからのSTART/ENDが進行中
+    /// セッションを乗っ取れないようにする）。
+    calibration_session_pid: Option<u32>,
+    /// ADR-176 176-T7: 較正対象VK（`None`=非アクティブ）。176-T8/T9が
+    /// 参照する想定、現時点では呼び出し元は無い。
+    calibration_session_vk: Option<VkCode>,
     /// GJI config1.db から検出した Hiragana/Katakana の shadow_action override。
     /// 適用可否（現在親指キーでないこと）は消費時に判定する。
     gji_hiragana_shadow_override: Option<awase::types::ShadowImeAction>,
@@ -1551,6 +1559,8 @@ impl Runtime {
             gji_thumb_key_ime_toggle_opt_in: false,
             calibrated_mode_keys: std::collections::HashMap::new(),
             calibration_bypass_deadline: None,
+            calibration_session_pid: None,
+            calibration_session_vk: None,
             gji_hiragana_shadow_override: None,
             gji_katakana_shadow_override: None,
             henkan_shadow_override: None,

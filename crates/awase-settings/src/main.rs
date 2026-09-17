@@ -16,9 +16,10 @@ mod scancode_map_admin;
 mod startup_failure;
 mod update_check;
 
-/// 設定リロード用カスタムメッセージ ID（awase 本体側の `WM_APP + 10` と一致させる）
+/// 設定リロード用カスタムメッセージ。`awase_windows::WM_RELOAD_CONFIG`と
+/// 同じ値を使う。
 #[cfg(target_os = "windows")]
-const WM_RELOAD_CONFIG: u32 = 0x8000 + 10; // WM_APP = 0x8000
+use awase_windows::WM_RELOAD_CONFIG;
 
 /// awase のホームページ URL（`crates/awase-windows/src/tray.rs` の
 /// `HOMEPAGE_URL` と同じ値。crate を跨ぐため定数を共有できず文字列直書き）。
@@ -5526,6 +5527,68 @@ fn send_reload_config_message() {
                     "設定リロード通知の送信先ウィンドウ (awase_tray_window) が見つかりません。\
                      awase.exe が起動していないか、権限レベルが異なる可能性があります。"
                 );
+            }
+        }
+    }
+}
+
+/// ADR-176 176-T7: 較正モード開始/再武装（keepalive）要求を送る。
+/// `vk`のみを引数に取り、送信元PIDは自プロセスの`std::process::id()`を
+/// 使う。まだ較正パネルUI（176-T10）から呼ばれておらず未配線
+/// （176-T1〜T6の`set_calibrated_mode_key`等と同型の意図的なdead_code
+/// 警告——176-T10でUIボタンから呼ぶ想定）。
+#[allow(dead_code)]
+fn send_calibration_start(vk: awase::types::VkCode) {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+        use windows::core::w;
+        unsafe {
+            let hwnd = FindWindowW(w!("awase_tray_window"), None);
+            if let Ok(hwnd) = hwnd {
+                let payload = awase_windows::calibration_ipc::CalibrationIpcPayload {
+                    vk,
+                    pid: std::process::id(),
+                };
+                let wparam = windows::Win32::Foundation::WPARAM(
+                    awase_windows::calibration_ipc::pack(payload),
+                );
+                let lparam = windows::Win32::Foundation::LPARAM(0);
+                let _ = PostMessageW(hwnd, awase_windows::WM_CALIBRATION_START, wparam, lparam);
+            } else {
+                tracing::warn!(
+                    "較正モード開始通知の送信先ウィンドウ (awase_tray_window) が見つかりません。\
+                     awase.exe が起動していないか、権限レベルが異なる可能性があります。"
+                );
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = vk;
+    }
+}
+
+/// ADR-176 176-T7: 較正モード終了要求を送る。まだ呼び出し元は無い
+/// （176-T10で配線）。
+#[allow(dead_code)]
+fn send_calibration_end() {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+        use windows::core::w;
+        unsafe {
+            let hwnd = FindWindowW(w!("awase_tray_window"), None);
+            if let Ok(hwnd) = hwnd {
+                let payload = awase_windows::calibration_ipc::CalibrationIpcPayload {
+                    vk: awase::types::VkCode::from(0u16),
+                    pid: std::process::id(),
+                };
+                let wparam = windows::Win32::Foundation::WPARAM(
+                    awase_windows::calibration_ipc::pack(payload),
+                );
+                let lparam = windows::Win32::Foundation::LPARAM(0);
+                let _ = PostMessageW(hwnd, awase_windows::WM_CALIBRATION_END, wparam, lparam);
             }
         }
     }

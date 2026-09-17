@@ -478,7 +478,6 @@ pub(crate) unsafe fn handle_wm_timer(
     let logical_id = app.platform.timer.resolve(wparam);
     match logical_id {
         Some(id) if id == TIMER_IME_REFRESH => {
-            app.check_calibration_bypass_timeout(crate::state::TickMs(hook::current_tick_ms()));
             if app.platform_state.gate.sync_key_gate.is_active()
                 || app.platform_state.gate.sync_key_gate.has_deferred_keys()
             {
@@ -647,6 +646,7 @@ pub(crate) unsafe fn handle_wm_timer(
             }
         }
         Some(id) if id == TIMER_HOOK_WATCHDOG => {
+            app.check_calibration_bypass_timeout(crate::state::TickMs(hook::current_tick_ms()));
             let last_activity = hook::hook_alive_tick_ms();
             let now = hook::current_tick_ms();
             let stale_ms = now.saturating_sub(last_activity);
@@ -1226,6 +1226,59 @@ pub(crate) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usiz
 /// WM_HOTKEY ハンドラ (HOTKEY_ID_TOGGLE)
 pub(crate) unsafe fn handle_wm_hotkey_toggle(app: &mut Runtime) {
     app.toggle_engine();
+}
+
+/// WM_CALIBRATION_START ハンドラ（ADR-176 176-T7）。
+pub(crate) unsafe fn handle_wm_calibration_start(app: &mut Runtime, wparam: WPARAM) {
+    let payload = crate::calibration_ipc::unpack(wparam.0);
+    if !sender_is_awase_settings(payload.pid) {
+        tracing::warn!(
+            "[calibration] WM_CALIBRATION_START pid={}がawase-settings.exeと\
+             確認できないため拒否します",
+            payload.pid
+        );
+        return;
+    }
+    if let Some(active_pid) = app.calibration_session_pid() {
+        if active_pid != payload.pid {
+            tracing::warn!(
+                "[calibration] 別セッション(pid={active_pid})が進行中のため、\
+                 pid={}からのSTARTを無視します",
+                payload.pid
+            );
+            return;
+        }
+    }
+    tracing::info!(
+        "[calibration] 較正モード開始/再武装: vk={:?} pid={}",
+        payload.vk,
+        payload.pid
+    );
+    app.begin_calibration_bypass(
+        payload.vk,
+        payload.pid,
+        crate::state::TickMs(hook::current_tick_ms()),
+    );
+}
+
+/// WM_CALIBRATION_END ハンドラ（ADR-176 176-T7）。
+pub(crate) unsafe fn handle_wm_calibration_end(app: &mut Runtime, wparam: WPARAM) {
+    let pid = crate::calibration_ipc::unpack(wparam.0).pid;
+    if app.calibration_session_pid() == Some(pid) {
+        tracing::info!("[calibration] 較正モード終了: pid={pid}");
+        app.end_calibration_bypass();
+    } else {
+        tracing::debug!(
+            "[calibration] pid={pid}からのENDは現在のセッションと一致しないため無視します"
+        );
+    }
+}
+
+/// `pid`が実際に`awase-settings.exe`であるかを検証する（round7 N2対応、
+/// `disable_apps`と同じ名前ベースの信頼モデル）。
+fn sender_is_awase_settings(pid: u32) -> bool {
+    let name = crate::focus::classify::get_process_name(pid);
+    crate::calibration_ipc::is_awase_settings_process_name(&name)
 }
 
 /// WM_HOTKEY ハンドラ (HOTKEY_ID_FOCUS_OVERRIDE)

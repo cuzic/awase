@@ -4969,3 +4969,34 @@ fn tuning_constants_all_have_measured_attribute() {
          (.claude/rules/tuning-constants.md)。"
     );
 }
+
+/// ADR-176 176-T7（opus-adversarial-consultレビューround7 B2指摘）:
+/// `check_calibration_bypass_timeout`の唯一の正しい呼び出し元は
+/// `TIMER_HOOK_WATCHDOG`アーム（`start_hook_watchdog`が張る、
+/// `app_disabled`早期returnの影響を受けない真の周期タイマー）。
+/// `TIMER_IME_REFRESH`アームは`ir_execute`の`app_disabled`早期returnの
+/// 手前で`reschedule_ime_refresh`に依存するため、較正バイパス中は
+/// 再武装されず、タイムアウト監視が二度と走らなくなる回帰を防ぐ。
+#[test]
+fn calibration_bypass_timeout_check_runs_from_hook_watchdog_not_ime_refresh() {
+    let content = read_crate_file("src/runtime/message_handlers.rs");
+    let ime_refresh_pos = content
+        .find("id == TIMER_IME_REFRESH =>")
+        .expect("TIMER_IME_REFRESH arm marker not found");
+    let watchdog_pos = content
+        .find("id == TIMER_HOOK_WATCHDOG =>")
+        .expect("TIMER_HOOK_WATCHDOG arm marker not found");
+    let call_pos = content
+        .find("check_calibration_bypass_timeout(")
+        .expect("check_calibration_bypass_timeout call not found");
+    assert!(
+        watchdog_pos > ime_refresh_pos,
+        "アームの出現順の前提（TIMER_IME_REFRESHの方が先）が変わった。\
+         このテストのロジックを見直すこと"
+    );
+    assert!(
+        call_pos > watchdog_pos,
+        "check_calibration_bypass_timeoutはTIMER_HOOK_WATCHDOGアーム以降に\
+         あるべき（呼び出し位置={call_pos}, watchdogアーム位置={watchdog_pos}）"
+    );
+}

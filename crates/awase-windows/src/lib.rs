@@ -22,6 +22,7 @@
 
 // ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
 pub mod bug_report;
+pub mod calibration_ipc;
 pub mod focus;
 pub mod focus_resync;
 pub mod gji_charset_autodetect;
@@ -353,6 +354,21 @@ pub const WM_KANA_LOCK_WARNING_CHANGED: u32 = windows::Win32::UI::WindowsAndMess
 /// hook の IME-mode 診断ログを journal へ吸い上げる契機。
 #[cfg(windows)]
 pub const WM_HOOK_IME_MODE_DIAGNOSTIC: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 27;
+/// 較正モード開始/再武装（keepalive）要求。awase-settings → awase.exe。
+///
+/// ADR-176 176-T7。冪等——較正セッション中、awase-settings側が同じ
+/// メッセージを繰り返し送ることでタイムアウト（`CALIBRATION_BYPASS_
+/// TIMEOUT_MS`）の再武装を兼ねる（round7 B1対応: 単発だと較正セッションが
+/// 30秒を超えるユーザー操作でバイパスが失効し、awase自身のIME actuationが
+/// 較正結果に混入する）。`calibration_ipc::pack`/`unpack`でエンコードする。
+/// HWNDは運ばない（round7 S1、`calibration_ipc`のdoc参照）。
+#[cfg(windows)]
+pub const WM_CALIBRATION_START: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 28;
+/// 較正モード終了要求。awase-settings → awase.exe。ADR-176 176-T7。
+/// `calibration_ipc::CalibrationIpcPayload`の`vk`は使わない（`pid`のみで
+/// セッションを識別する）。
+#[cfg(windows)]
+pub const WM_CALIBRATION_END: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 29;
 
 // ── RawKeyEventExt ───────────────────────────────────────────────────────────────
 
