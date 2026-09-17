@@ -67,7 +67,7 @@ related_adr:
 
 ## フェーズ0: 前提条件
 
-### 176-T0（決定8、必須の前提条件）: `ActivationSync`のSetOpen冪等性チェック
+### 176-T0（決定8、2026-09-17見送り・独立クリーンアップへ降格）: `ActivationSync`のSetOpen冪等性チェック
 
 **内容**: `Engine::transition_activation`（`src/engine/engine.rs:456-483`）
 がbeliefのinactive→active遷移で無条件に`Effect::Ime(ImeEffect::SetOpen
@@ -136,6 +136,61 @@ related_adr:
 送信回数を本当に減らしたいなら、ADR-149が「別ADR起票の価値がある」と
 した案C（delegateとshadow-toggleの排他性修復、送信3の発生自体を
 止める）の方が対象を取り違えていない可能性がある。
+
+**round2レビュー（2026-09-17、置き場所を修正した第2案の検証）**:
+上記の懸念を踏まえ、「`handle_engine_activation_sync`は一切触らず、
+`decision.effects`から`ActivationSync`由来の`SetOpen(true)`だけを、
+`Decision::find_ime_set_open_with_origin()`（core側に既存）を使って
+belief確定後・実行前に取り除く」という第2案を作りコードで裏取りした
+上で同じレビュアー（opus）へ再相談した。指摘全文は
+`/tmp/opus-review-adr176-t0-design-round2.md`（セッション内スクラッチ
+パス、以後のセッションでは再現不可）。結論:
+
+- **方向性は妥当**（round1のB1/B3/B4/B9/B10は解消）だが、提示した
+  呼び出し位置（`kp_stage_post_decision`より前）では`kp_stage_post_
+  decision`自体が`find_ime_set_open_with_origin()`の`Some`を入口条件と
+  しているため、beliefの書き込みごと丸ごと消えてB5/B6/B7が復活する
+  ——正しい位置は`kp_stage_post_decision`の**後**・`kp_stage_execute`の
+  **前**（非キーボード経路`execute_from_loop`はbelief側の対応処理が
+  そもそも無いため既存位置のままでよい、キーボード経路と非対称になる
+  理由をdoc化必須）。
+- 実装草案の`retain`が全`SetOpen`を無差別に消すバグがあり、
+  ExplicitUserAction由来のSetOpen（無変換/変換ソロタップのdelegate
+  経路、まさに較正が対象とするキー）を巻き添えにする恐れがあった
+  （originまで含めた完全一致に修正要）。
+- belief側を残す設計にすると、対応するapplyが永久に起きない
+  「幽霊pending」が最大8秒（`IME_APPLY_PENDING_TIMEOUT_MS`）残り、
+  warnスパム・誤ったgeneration紐付け・`applied`のOptimisticへの後退
+  （フィルタの自己無効化）を引き起こす。対策には
+  `handle_engine_activation_sync`に`will_actuate: bool`を足して
+  `ImeApplyRequested`のdispatchだけを条件分岐させる等の追加設計が要る。
+- **本質的なトレードオフ**: TsfNative×GJI（BUG-113の環境そのもの）は
+  `FeedbackPolicy::Blind`のため、`applied`（awase自身が最後に送った
+  コマンドの記録）は「実際にIMEが開いた」ことの証拠にならない。この
+  条件でSetOpenを止めると、前提が誤っていた場合にON方向の唯一の
+  是正手段（`apply_force_on_for_imm_broken`）が同じ条件で既に止まって
+  いるため構造的にゼロになる。緩和策（`Confirmed`のタイムスタンプに
+  年齢上限を設ける、またはフォーカスごとに最初の1回は必ず通す）の
+  どちらかが必要。
+- 効く範囲は実質`NotRomajiInput`/`NotJapaneseIme`経由のInactive→
+  Active往復のみで、`ImeOff`/`UserDisabled`復帰経路では発火しない
+  （＝較正が増やす送信には当たらない、B2の裏取り）。
+- 受け入れ基準は「@」の非再発（検出力ゼロ）ではなく、既存の
+  `[apply-ime]`/`[tsf-eager-warmup]`ログ行とjournalの
+  `ActuationDecision`を突き合わせた「1タップあたりの`VK_IME_ON`
+  実送信本数」を主指標にすべき。判定述語は`state/`側の純粋関数に
+  置かないと`cargo test --lib`がLinux上で実行されない
+  （`runtime/`配下は`#[cfg(windows)]`ゲート）。
+
+**T0の見送り（2026-09-17、ユーザー判断）**: round2で技術的には
+実現可能な設計に到達したが、効果範囲が「BUG-113にもほぼ寄与しない
+狭い独立クリーンアップ」に留まることが判明したため、今回はT0自体の
+実装を見送ることにした。ADR-176決定8の「必須の前提条件」という位置
+づけも撤回し、較正機能の実質的な安全装置は既存のopt-inゲート（既定
+OFF、実機A/B確認まで適用しない）とする（詳細はADR本文「決定8」参照）。
+較正機能（T8〜T10、結果はログのみでIME制御には未反映）はT0を待たずに
+現状のまま進める。将来、較正が増やす送信への対策が必要になった場合は
+ADR-149の案C（delegateとshadow-toggleの排他性修復）を優先候補とする。
 
 ---
 

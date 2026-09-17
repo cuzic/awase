@@ -4,13 +4,24 @@ title: |-
   awase-settingsの明示的な較正UIでモードキーの実効果を測定し、
   未登録時に静的分類を補完する
 status: |-
-  **2026-09-17: 176-T0の設計案（`handle_engine_activation_sync`等への
-  早期return）をopus-adversarial-consultレビューで棄却。** T0は現状
-  「前提条件」として位置づけられているが、提案設計はBUG-113の実送信を
-  止められず、正しい場所に置き直してもADR-149が実機ログ解析で棄却済みの
-  「案B」と同型の結末に落ちることが判明した。詳細・今後の方向性は
-  [176-implementation-tasks.md](176-implementation-tasks.md)のT0節
-  「設計案の棄却」を参照。T0は未実装のまま。
+  **2026-09-17: 176-T0を「較正機能の必須の前提条件」という決定8の位置づけ
+  から外し、実装自体を見送り。** opus-adversarial-consultによる2ラウンドの
+  レビューの結果、(1)当初案（`handle_engine_activation_sync`への早期
+  return）はBUG-113の実送信を止められず既存dedupを壊す、(2)置き場所を
+  修正した第2案（`decision.effects`からのstrip）は方向性としては妥当だが、
+  較正機能が実際に増やす送信経路（`applied`が構造的に不一致側にある）には
+  そもそも当たらず、効く範囲は`NotRomajiInput`/`NotJapaneseIme`経由の
+  Inactive→Active往復という極めて狭いケースのみ、(3)Blind環境
+  （TsfNative×GJI、BUG-113の環境そのもの）では`applied`一致を根拠に
+  SetOpenを止めると、その前提が誤っていた場合にON方向の是正手段が
+  構造的にゼロになる、という3点が判明した。較正機能の実質的な安全装置は
+  T0ではなく既存のopt-in（既定OFF、実機A/B確認まで結果を適用しない）
+  ゲートであり、これは維持する。較正機能（T8〜T10、結果はログのみで
+  IME制御には未反映）はT0を待たずに現状のまま進めてよい。較正が実際に
+  増やす送信への対策が必要になった場合は、ADR-149が「別ADR起票の価値が
+  ある」とした案C（delegateとshadow-toggleの排他性修復）を優先候補とする。
+  詳細は[176-implementation-tasks.md](176-implementation-tasks.md)のT0節
+  「設計案の棄却」「T0の見送り」を参照。T0はコード変更ゼロのまま。
 
   **2026-09-17: 176-T8/T9a/T9bの実機検証完了（dragonflyg4）。**
   較正モード中に物理VK_NONCONVERTをIME ON状態で2回押下（各3秒の
@@ -667,18 +678,35 @@ BUG-140と同じ「構造的除外」に揃える——対象VKが`keys.ime_dete
 （Engine Phase 1が較正結果より先に消費するため——`src/config.rs:
 601-609`の実害報告例参照）。
 
-### 8. `ActivationSync`冪等性チェック（必須の前提条件）
+### 8. `ActivationSync`冪等性チェック（前提条件から撤回、opt-inゲートを実質的な安全装置とする）
 
 `Engine::transition_activation`（`src/engine/engine.rs:456-483`）が
 belief の inactive→active 遷移で無条件に`SetOpen(true)`を発行する
 （BUG-113 ADR-149追記が実機で2〜3回の`VK_IME_ON`送信を確認済み）。
-本ADRは較正によって`TurnOn`と判定されるVKを増やす（＝この経路を
-踏む打鍵を増やす）ことが目的であるため、**この冗長送信に対する
-冪等性チェック（beliefが既に高信頼度で実状態と一致していれば
-`SetOpen`を再送しない）を、本ADRの実装より先に、または同時に
-入れることを必須の前提条件とする**。これが実機A/Bで「@」が
-再発しないことを確認できるまで、較正結果の適用は既定OFF
-（opt-in）とする。
+当初は本ADRが較正によって`TurnOn`と判定されるVKを増やす（＝この経路を
+踏む打鍵を増やす）ことを理由に、この冗長送信への冪等性チェック
+（176-T0）を実装より先に入れる必須の前提条件としていた。
+
+**2026-09-17、opus-adversarial-consultによる2ラウンドのレビューで
+この因果関係自体が成立しないと判明し、前提条件から外した**
+（詳細は[176-implementation-tasks.md](176-implementation-tasks.md)の
+T0節）。較正が実際に増やす送信経路（物理キー→shadow-toggle→belief
+false→true→`ActivationSync`）では、その時点の`applied`（awase自身が
+最後に送ったコマンドの記録）は常に不一致側にあり、`applied`一致を
+根拠とする冪等性チェックは構造的に発火しない。加えてTsfNative×GJI
+（BUG-113の環境そのもの）は`FeedbackPolicy::Blind`のため、`applied`は
+「実際にIMEが開いた」ことの証拠にはならず、これを根拠にSetOpenを
+止めるとON方向の是正手段（`apply_force_on_for_imm_broken`）が同じ
+条件で既に止まっているため構造的にゼロになるリスクがある。
+
+**較正結果の適用が実機A/Bで「@」が再発しないことを確認できるまで
+既定OFF（opt-in）とする**、という条項は維持する——これが本ADRの
+実質的な安全装置であり、T0の有無に依存しない。176-T0自体
+（ActivationSyncの冗長SetOpen抑止、効果範囲は`NotRomajiInput`/
+`NotJapaneseIme`経由のInactive→Active往復のみに限られる独立した
+クリーンアップ）は今回見送り、実装しない。較正が実際に増やす送信への
+対策が必要になった場合は、ADR-149の案C（delegateとshadow-toggleの
+排他性修復）を優先候補とする。
 
 ## 未解決点（実装タスクリストで詳細化）
 
@@ -706,9 +734,8 @@ belief の inactive→active 遷移で無条件に`SetOpen(true)`を発行する
   観測が常に0を返すことを確認したが、これはスコープの取り違えの
   可能性が高く「TSFでは観測不能」の証明ではない——採用しない理由は
   あくまで「@」機序）。
-- `ActivationSync`の冪等性チェック自体の実装（上記「決定8」で必須の
-  前提条件と位置づけるが、本ADRの実装スコープ自体には含めない——
-  別途対応する）。
+- `ActivationSync`の冪等性チェック（176-T0）自体の実装。上記「決定8」
+  参照のとおり2026-09-17に前提条件から外し、見送りとした。
 
 ## 関連
 
