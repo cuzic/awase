@@ -709,54 +709,67 @@ impl Runtime {
                     Some(Some(ctx)) => ctx,
                 };
 
-                // round9 S7対応: PID一致に加えてプロセス名も確認する
-                // （PID再利用で無関係な別プロセスに化けるケースを塞ぐ）。
-                // 一致しない場合はセッションを中止せず、この試行だけを
-                // 破棄する（同一PIDのまま較正対象以外のウィンドウ
-                // ——ネイティブダイアログ等——へ一時的にフォーカスが
-                // 移るケースを想定、round9 S7）。
-                if focus_pid != session_pid
-                    || !crate::calibration_ipc::is_awase_settings_process_name(&focus_process_name)
-                {
-                    continue;
-                }
-
                 let now_ms = crate::hook::current_tick_ms();
                 let press_seq = crate::hook::calibration_press_seq();
-                let probe_result = win32_async::offload_timeout(
-                    crate::tuning::CALIBRATION_PROBE_TIMEOUT_MS,
-                    move || unsafe {
-                        crate::imm::probe_ime_open_for_calibration(
-                            hwnd_addr,
-                            crate::tuning::CALIBRATION_PROBE_TIMEOUT_MS,
-                        )
-                    },
-                )
-                .await
-                .flatten();
 
-                if probe_result.is_some() {
-                    consecutive_failures = 0;
-                } else {
-                    consecutive_failures += 1;
-                    // round9 B4対応: 較正probeはsend_healthを迂回する
-                    // ため（B2）、本番のサーキットブレーカに頼れない。
-                    // ローカルな連続失敗カウンタで、IMEがハングして
-                    // いる間ポーリングを無限に続けないようにする。
-                    if consecutive_failures >= MAX_CONSECUTIVE_CALIBRATION_PROBE_FAILURES {
-                        let _ = crate::with_app(|app| {
-                            if app.calibration_epoch() == epoch {
-                                tracing::warn!(
-                                    "[calibration] probe連続失敗（{consecutive_failures}回）\
-                                     のため較正モードを中止します"
-                                );
-                                app.end_calibration_bypass();
-                            }
-                        });
-                        return;
+                // round9 S7対応: PID一致に加えてプロセス名も確認する
+                // （PID再利用で無関係な別プロセスに化けるケースを塞ぐ）。
+                // 一致しない場合はセッションを中止せず、probe自体を
+                // スキップする（同一PIDのまま較正対象以外のウィンドウ
+                // ——ネイティブダイアログ等——へ一時的にフォーカスが
+                // 移るケースを想定、round9 S7）。
+                //
+                // コードレビュー指摘（2026-09-17）: 以前はここで`continue`
+                // していたため、settle window中にフォーカスが外れると
+                // `tracker.tick()`自体が呼ばれず、期限（`deadline_ms`）が
+                // 一度も評価されないまま試行が`active`に残り続けた。
+                // その後フォーカスが戻ってprobeが成功すると、window外
+                // （フォーカス喪失中）の値がそのまま`post`として採用され、
+                // 「計測中は常にフォーカスを保持」というT9/T10の前提に
+                // 反する誤った`Completed`が生じ得た。フォーカス不一致時も
+                // `probe_result = None`のまま下の`tracker.tick()`を必ず
+                // 通すことで、期限超過を確実に検知させる
+                // （`focus_pid`一致時のみ実際にprobeを発行する）。
+                let probe_result = if focus_pid == session_pid
+                    && crate::calibration_ipc::is_awase_settings_process_name(&focus_process_name)
+                {
+                    let result = win32_async::offload_timeout(
+                        crate::tuning::CALIBRATION_PROBE_TIMEOUT_MS,
+                        move || unsafe {
+                            crate::imm::probe_ime_open_for_calibration(
+                                hwnd_addr,
+                                crate::tuning::CALIBRATION_PROBE_TIMEOUT_MS,
+                            )
+                        },
+                    )
+                    .await
+                    .flatten();
+
+                    if result.is_some() {
+                        consecutive_failures = 0;
+                    } else {
+                        consecutive_failures += 1;
+                        // round9 B4対応: 較正probeはsend_healthを迂回する
+                        // ため（B2）、本番のサーキットブレーカに頼れない。
+                        // ローカルな連続失敗カウンタで、IMEがハングして
+                        // いる間ポーリングを無限に続けないようにする。
+                        if consecutive_failures >= MAX_CONSECUTIVE_CALIBRATION_PROBE_FAILURES {
+                            let _ = crate::with_app(|app| {
+                                if app.calibration_epoch() == epoch {
+                                    tracing::warn!(
+                                        "[calibration] probe連続失敗（{consecutive_failures}回）\
+                                         のため較正モードを中止します"
+                                    );
+                                    app.end_calibration_bypass();
+                                }
+                            });
+                            return;
+                        }
                     }
-                    continue;
-                }
+                    result
+                } else {
+                    None
+                };
 
                 match tracker.tick(
                     press_seq,
