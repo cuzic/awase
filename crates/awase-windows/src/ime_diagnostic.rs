@@ -255,12 +255,20 @@ fn capture_imc(focus_hwnd_raw: usize) -> (Option<bool>, Option<u32>) {
             let Some(ime_wnd) = crate::imm::get_ime_wnd(hwnd) else {
                 return (None, None);
             };
-            let open =
-                crate::imm::probe_ime_control(ime_wnd, crate::imm::ProbeCmd::GetOpenStatus, 50)
-                    .map(|v| v != 0);
-            let conv =
-                crate::imm::probe_ime_control(ime_wnd, crate::imm::ProbeCmd::GetConversionMode, 50)
-                    .map(|v| v as u32);
+            let open = crate::imm::probe_ime_control(
+                ime_wnd,
+                crate::imm::ProbeCmd::GetOpenStatus,
+                50,
+                crate::imm::SendHealthFeed::Record,
+            )
+            .map(|v| v != 0);
+            let conv = crate::imm::probe_ime_control(
+                ime_wnd,
+                crate::imm::ProbeCmd::GetConversionMode,
+                50,
+                crate::imm::SendHealthFeed::Record,
+            )
+            .map(|v| v as u32);
             (open, conv)
         }
     })

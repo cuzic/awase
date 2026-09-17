@@ -67,7 +67,7 @@ related_adr:
 
 ## フェーズ0: 前提条件
 
-### 176-T0（決定8、必須の前提条件）: `ActivationSync`のSetOpen冪等性チェック
+### 176-T0（決定8、2026-09-17見送り・独立クリーンアップへ降格）: `ActivationSync`のSetOpen冪等性チェック
 
 **内容**: `Engine::transition_activation`（`src/engine/engine.rs:456-483`）
 がbeliefのinactive→active遷移で無条件に`Effect::Ime(ImeEffect::SetOpen
@@ -95,6 +95,102 @@ related_adr:
 
 **依存**: なし（独立して着手可能、他のADR-176タスクより先に完了させる
 ことを推奨）。
+
+**設計案の棄却（2026-09-17、opus-adversarial-consult）**: 上記内容
+（`handle_engine_activation_sync`または`transition_activation`への
+早期returnによる冪等性チェック）は実装前レビューでBlocker多数により
+棄却された。指摘全文は`/tmp/opus-review-adr176-t0-design.md`
+（セッション内スクラッチパス、以後のセッションでは再現不可）。要点:
+
+1. **置き場所が誤り**: `handle_engine_activation_sync`の早期returnは
+   belief記帳（`ImeApplyRequested`のdispatch等）を止めるだけで、
+   実際の`SendInput`（`decision.effects`に残る`SetOpen`、
+   `kp_stage_execute`経由で無条件実行）は止まらない。むしろ`applied`が
+   `Confirmed`へ昇格しなくなり、既存の`gji_direct_already_matches`
+   dedupが壊れて送信が**増える**方向に倒れる（2026-07-05に一度踏んだ
+   既知の失敗、`key_pipeline.rs:426-440`のコメント参照）。
+2. **述語がBUG-113の再現経路で発火しない**: ADR-149実機ログ上、
+   問題の送信時点で`shadow_on=Some(false)`・`target=true`であり、
+   `applied`ベースのどんな一致判定も偽になる。BUG-113の本質は
+   「GJI自身が物理キーに反応して既にONにしたが、awase（TsfNative×GJIは
+   `FeedbackPolicy::Blind`）にはその証拠が無い」ことであり、`applied`
+   （awase自身が最後に送ったコマンドの記録）にはこの情報が原理的に
+   入らない。
+3. **正しい場所に置き直しても、ADR-149が実機ログ解析の上で棄却済みの
+   「案B」と同型の結末**（3回→2回にしかならず108msずれるだけ、加えて
+   `apply_force_on_for_imm_broken`の誤発火リスク）に落ちる。
+4. OFF方向への適用はBUG-141/ADR-171の再演になるため不可（ON方向限定）。
+   `handle_engine_set_open`（ユーザー明示操作側）への適用も、
+   BUG-037/BUG-141の実害と同型になるため不可。
+5. **受け入れ基準にも検出力が無い**: BUG-113は2026-09-07時点で既に
+   「@」非再発を確認済み（A群0件）のため、この基準では効果の有無を
+   区別できない。1タップあたりの`VK_IME_ON`送信回数を主指標にすべき。
+
+**今後の方向性（実装未着手）**: 置くなら`state/ime_actuation_decision.rs`
+の`decide_gate`/`decide_attempt`（既存`already_matched`と同じ入力・
+同じ場所）、ON方向限定、`Optimistic`は除外。ただし目的記述
+（「較正でTurnOnキーが増える」ことへの対処としての前提条件、という
+位置づけ）自体もB2を踏まえて再評価が必要——較正で増える経路
+（物理キー→shadow-toggle→belief OFF→ON→ActivationSync）では
+`applied`は常に不一致側にあるため、このT0では対処できない。
+送信回数を本当に減らしたいなら、ADR-149が「別ADR起票の価値がある」と
+した案C（delegateとshadow-toggleの排他性修復、送信3の発生自体を
+止める）の方が対象を取り違えていない可能性がある。
+
+**round2レビュー（2026-09-17、置き場所を修正した第2案の検証）**:
+上記の懸念を踏まえ、「`handle_engine_activation_sync`は一切触らず、
+`decision.effects`から`ActivationSync`由来の`SetOpen(true)`だけを、
+`Decision::find_ime_set_open_with_origin()`（core側に既存）を使って
+belief確定後・実行前に取り除く」という第2案を作りコードで裏取りした
+上で同じレビュアー（opus）へ再相談した。指摘全文は
+`/tmp/opus-review-adr176-t0-design-round2.md`（セッション内スクラッチ
+パス、以後のセッションでは再現不可）。結論:
+
+- **方向性は妥当**（round1のB1/B3/B4/B9/B10は解消）だが、提示した
+  呼び出し位置（`kp_stage_post_decision`より前）では`kp_stage_post_
+  decision`自体が`find_ime_set_open_with_origin()`の`Some`を入口条件と
+  しているため、beliefの書き込みごと丸ごと消えてB5/B6/B7が復活する
+  ——正しい位置は`kp_stage_post_decision`の**後**・`kp_stage_execute`の
+  **前**（非キーボード経路`execute_from_loop`はbelief側の対応処理が
+  そもそも無いため既存位置のままでよい、キーボード経路と非対称になる
+  理由をdoc化必須）。
+- 実装草案の`retain`が全`SetOpen`を無差別に消すバグがあり、
+  ExplicitUserAction由来のSetOpen（無変換/変換ソロタップのdelegate
+  経路、まさに較正が対象とするキー）を巻き添えにする恐れがあった
+  （originまで含めた完全一致に修正要）。
+- belief側を残す設計にすると、対応するapplyが永久に起きない
+  「幽霊pending」が最大8秒（`IME_APPLY_PENDING_TIMEOUT_MS`）残り、
+  warnスパム・誤ったgeneration紐付け・`applied`のOptimisticへの後退
+  （フィルタの自己無効化）を引き起こす。対策には
+  `handle_engine_activation_sync`に`will_actuate: bool`を足して
+  `ImeApplyRequested`のdispatchだけを条件分岐させる等の追加設計が要る。
+- **本質的なトレードオフ**: TsfNative×GJI（BUG-113の環境そのもの）は
+  `FeedbackPolicy::Blind`のため、`applied`（awase自身が最後に送った
+  コマンドの記録）は「実際にIMEが開いた」ことの証拠にならない。この
+  条件でSetOpenを止めると、前提が誤っていた場合にON方向の唯一の
+  是正手段（`apply_force_on_for_imm_broken`）が同じ条件で既に止まって
+  いるため構造的にゼロになる。緩和策（`Confirmed`のタイムスタンプに
+  年齢上限を設ける、またはフォーカスごとに最初の1回は必ず通す）の
+  どちらかが必要。
+- 効く範囲は実質`NotRomajiInput`/`NotJapaneseIme`経由のInactive→
+  Active往復のみで、`ImeOff`/`UserDisabled`復帰経路では発火しない
+  （＝較正が増やす送信には当たらない、B2の裏取り）。
+- 受け入れ基準は「@」の非再発（検出力ゼロ）ではなく、既存の
+  `[apply-ime]`/`[tsf-eager-warmup]`ログ行とjournalの
+  `ActuationDecision`を突き合わせた「1タップあたりの`VK_IME_ON`
+  実送信本数」を主指標にすべき。判定述語は`state/`側の純粋関数に
+  置かないと`cargo test --lib`がLinux上で実行されない
+  （`runtime/`配下は`#[cfg(windows)]`ゲート）。
+
+**T0の見送り（2026-09-17、ユーザー判断）**: round2で技術的には
+実現可能な設計に到達したが、効果範囲が「BUG-113にもほぼ寄与しない
+狭い独立クリーンアップ」に留まることが判明したため、今回はT0自体の
+実装を見送ることにした。ADR-176決定8の「必須の前提条件」という位置
+づけも撤回し、較正機能の実質的な安全装置は既存のopt-inゲート（既定
+OFF、実機A/B確認まで適用しない）とする（詳細はADR本文「決定8」参照）。
+較正機能（T8〜T10、結果はログのみでIME制御には未反映）はT0を待たずに
+現状のまま進める。将来、較正が増やす送信への対策が必要になった場合は
+ADR-149の案C（delegateとshadow-toggleの排他性修復）を優先候補とする。
 
 ---
 
@@ -293,11 +389,23 @@ staticより既存singletonへの集約を優先する」方針に従い、新�
 一切入らないことをコードレビューで確認する**（B1対策の核心）。
 
 **受け入れ基準**: Windows実機で、較正モード中に対象キーを押すと
-awase-settings側が検知結果を受け取ることを確認する。`architecture_
-guard`相当のテキスト走査で「較正モードの検知コードが通常のshadow-
-toggleディスパッチを呼んでいない」ことを固定できないか検討する。
+awase.exeのログ（`tracing::info!`、`[calibration] 対象キー押下を検知`）に
+記録されることを確認する（awase-settingsへの返却は176-T9の結果チャネルで
+まとめて設計・実装する——opus-adversarial-consultレビュー round8 B3対応:
+T7が`WM_CALIBRATION_RESULT`の型を先送りしたのと同じ理由で、T8時点では
+awase-settings側の受信チャネルを新設しない）。`architecture_guard`の
+テキスト走査で「較正モードの検知コードが通常のshadow-toggleディスパッチ・
+belief更新に一切触れていないこと」「検知コードが`focus_app_disabled`
+早期returnより手前に置かれていること」「状態のミラー書き込み口が
+`begin_calibration_bypass`/`end_calibration_bypass`の2箇所に限定されている
+こと」を固定する。
 
 **依存**: 176-T6、176-T7。
+
+**実機検証（2026-09-17、dragonflyg4）**: 較正モード中に物理VK_NONCONVERTを
+押下し、awase.exeのログに`[calibration] 対象キー押下を検知`が記録される
+ことを確認した。176-T9a/T9bと合わせたエンドツーエンド検証は下記
+176-T9bの実機検証節を参照。
 
 ---
 
@@ -310,19 +418,20 @@ toggleディスパッチを呼んでいない」ことを固定できないか�
 記述はopus round5レビューでBlocker指摘され、2026-09-16の追加実機検証
 （`awase-settings.exe`の実際のバグ報告画面に約28秒間フォーカスした
 状態で手法Bを観測、タイムアウト無しで正しく追跡し続けた）で誤りと
-確定した。**v7**でawase.exe本体がawase-settingsのHWNDを直接観測する
-設計に単純化したが、opus round6レビューで観測をawase.exe本体へ移した
-ことによる新規の衝突（Blocker4件）が見つかった。詳細はADR本文
-「決定3」参照。以下はv8での対応を反映した内容。
+確定した。**v7**でawase.exe本体がawase-settingsのPID（HWNDは運ばない、
+ライブなフォーカス追跡を使う——round9訂正）を基準に観測する設計に
+単純化したが、opus round6レビューで観測をawase.exe本体へ移したことに
+よる新規の衝突（Blocker4件）が見つかった。詳細はADR本文「決定3」参照。
+以下はv8での対応を反映した内容。
 
 **内容**: 較正専用ウィンドウは新設しない。**awase.exe本体**が
-176-T7のIPCで受け取った`awase-settings`のHWND・PID（eguiのメイン
-ウィンドウそのもの）に対し、既存の`imm.rs::probe_ime_control`
-（`awase-windows`クレート内の唯一のチョークポイント、新規APIを増やさ
-ない）を使ってポーリングする。較正モード状態は176-T8のとおり
-`HOOK_STATE`側に置き、観測ループ（ランタイム側`spawn_local`タイマー）
-はこれを読み取るだけにする（round6 M6対応）。観測結果を176-T7の
-同じIPC応答でawase-settingsへ返す。
+176-T7のIPCで受け取った`awase-settings`のPID（HWNDは運ばない、
+ライブなフォーカス追跡を使う——round9訂正）を基準に、既存の
+`imm.rs::probe_ime_control`（`awase-windows`クレート内の唯一の
+チョークポイント、新規APIを増やさない）を使ってポーリングする。
+較正モード状態は176-T8のとおり`HOOK_STATE`側に置き、観測ループ
+（ランタイム側`spawn_local`タイマー）はこれを読み取るだけにする
+（round6 M6対応）。観測結果を176-T7の同じIPC応答でawase-settingsへ返す。
 
 **round6 B1対応（`app_disabled`ゲートとの衝突）**: 較正probeは
 `ime_refresh.rs:70-78`の`app_disabled`早期return（probeを含む全停止）
@@ -343,10 +452,11 @@ belief書き込みAPI（`ImeModel`のsetter等）が呼ばれていないこと�
 コミット本文に理由を残す。
 
 **round6 B3対応（他プロセスHWNDのライフサイクル）**: 観測tickごとに
-`GetWindowThreadProcessId(hwnd)`が176-T7受信時に記録したPIDと一致する
-ことを確認する。不一致（awase-settingsの終了・HWND再利用）なら較正
-モードを即座に中止し、176-T6のタイムアウト機構と同じ経路で
-`disable_apps`を解除する。
+`self.platform.focus.pid()`/`process_name`が較正セッションのPID/
+`awase-settings.exe`と一致することを確認する（round9訂正、HWNDは
+運ばないためHWND再利用の懸念自体が構造的に発生しない）。不一致
+（awase-settingsの終了・PID再利用）なら較正モードを即座に中止し、
+176-T6のタイムアウト機構と同じ経路で`disable_apps`を解除する。
 
 **round6 M2対応（probeを出すスレッド）**: awase.exe本体は単一
 スレッド・メッセージループ駆動で、そのスレッドがLLキーボードフックの
@@ -422,7 +532,71 @@ ADR-153/BUG-113）。
 `disable_apps`バイパスの有無に関係しない仕様上の挙動である。
 
 **依存**: 176-T6（バイパスが効いた状態で測定する必要があるため）、
-176-T7（HWND・PIDの受け渡し）。
+176-T7（PIDの受け渡し。HWNDはIPCで運ばない——round9訂正、上記参照）。
+
+**実装状況（2026-09-17追記）**: awase.exe内で完結する部分（probe実装・
+ポーリング・押下起点の確定ロジック）は176-T9aとして実装済み
+（opus-adversarial-consultレビューround9でBlocker5件を検出・反映、
+特にT0未完のまま`Runtime::set_calibrated_mode_key`を呼ばない方針に
+変更——決定結果は`tracing::info!`でログ記録するのみ）。
+awase-settingsへの結果返却IPCは176-T9bとして分離した（下記参照、
+round8/round9の議論で、T7の`WM_CALIBRATION_RESULT`先送りと同じ理由
+——受け入れ側の設計が固まる前にペイロード形式を決めると作り直しに
+なる——による）。
+
+### 176-T9b（決定3、176-T9からの分離）: awase-settingsへの較正結果返却IPC
+
+**内容**: awase.exe本体（176-T9aの較正probeループ）が確定/却下した
+結果を、`WM_CALIBRATION_RESULT`（`WM_APP+31`）で`awase-settings`へ
+返す。opus-adversarial-consultレビューround8で確定した設計を採る:
+
+- **awase-settings側にメッセージ専用ウィンドウ（`HWND_MESSAGE`）を
+  新設する**（`with_msg_hook`は不採用——round8の実機コード調査で、
+  winitの`dispatch_peeked_messages`という特定のPeekMessage呼び出しの
+  中でしか呼ばれず、OS由来のモーダルループ（サイズ変更・システム
+  メニュー等）に対して構造的に脆いと判明したため）。固定クラス名
+  （`calibration_ipc::CALIBRATION_RESULT_WINDOW_CLASS_NAME`）を
+  `main()`冒頭・`eframe`のイベントループ開始前に1回だけ登録する
+  （winitと同一スレッドのメッセージキューに自動的に相乗りする、
+  Windowsのメッセージキューはスレッド単位でありウィンドウ単位では
+  ないため）。
+- **awase.exe側はHWNDをIPCで受け取らず、`FindWindowW`で固定クラス名を
+  探して送る**（round7 S1・round9 N5と同じ方針。`awase_tray_window`と
+  同型）。
+- ペイロードは`calibration_ipc::CalibrationResultPayload{vk, kind}`
+  （`kind`は`ConfirmedOn`/`Rejected`の2値、`Undetermined`は送らない）。
+- 確定/却下はセッション中1回だけ送る（`CalibrationConfirmState`は
+  確定後も同じverdictを返し続けるため、送信側でガードする）。
+
+**受け入れ基準**: awase.exeのログで較正が確定/却下されたことを確認した
+上で、awase-settings側のログにも同じ結果が届いていることを確認する
+（T10未実装のため、受信側は現時点ではログ出力のみ）。
+
+**依存**: 176-T9a。
+
+**実機検証完了（2026-09-17、dragonflyg4）**: 176-T8/T9a/T9bのエンドツー
+エンドを実機で確認した。較正モード中に物理VK_NONCONVERTキーをIME ON
+状態で2回押下（各押下後3秒のsettle windowが経過するまでフォーカス保持）
+した結果、awase.exe側で`[calibration] 確定: vk=VkCode(29)
+ImeToggleKind::On (pre=true post=true)`、同時刻にawase-settings.log側で
+`[calibration] 結果を受信: vk=VkCode(29) kind=ConfirmedOn`を確認した
+（受信からログ出力まで1ms）。
+
+検証で判明した、176-T10設計時に踏まえるべき2点:
+1. **フォーカス保持要件の再確認**: 押下後settle window（3秒、
+   `CALIBRATION_TRIAL_SETTLE_WINDOW_MS`）の間、awase-settingsの
+   テキスト入力欄にキーボードフォーカスが無いと`spawn_calibration_
+   probe_loop`のフォーカス一致チェックに阻まれ試行が完了しない
+   （既知要件、決着実験v2/round6 M1と同じ制約を実機で再確認）。
+2. **`begin_calibration_bypass`の無条件epoch更新への対応**: 同一pid・
+   同一VKでの再武装（例: UIがセッション維持のため定期的にkeepalive
+   送信する設計にした場合）でも`calibration_epoch`が無条件に進み、
+   `TrialTracker`/`CalibrationConfirmState`の蓄積が失われる
+   （round9 S6の意図的設計、VK変更時の混入防止が目的）。176-T10が
+   セッション維持のkeepaliveを送る設計にする場合は、進行中の試行の
+   蓄積が失われないよう間隔を調整するか、`begin_calibration_bypass`
+   側に「進行中の試行がある間は再武装しない」ガードの追加を検討する
+   こと。
 
 ### 176-T10（決定4・7）: 較正パネルUI
 
@@ -466,6 +640,33 @@ request_focus(id))`等）。ユーザーが誤って別ウィジェットへフ�
 
 **依存**: 176-T1。
 
+**実装完了（2026-09-17）**: `src/config.rs`（`awase`本体、プラット
+フォーム非依存）に`CalibrationEntry`構造体と`AppConfig::calibration:
+Vec<CalibrationEntry>`フィールドを追加した。`KeysConfig`の`ime_on:
+Vec<String>`等と同じ「Windows固有のenumは文字列で橋渡しする」パターンに
+揃え、`ImeToggleKind`/`ImeKindId`/`ConfigFingerprint`は使わずSerialize/
+Deserialize可能な`String`/`Option<i64>`/`Option<String>`/`Option<u64>`
+のみで構成（`vk: VkCode`は`awase`本体で定義済みの型のためそのまま使用）。
+`ValidatedConfig`/`From<ValidatedConfig> for AppConfig`にも
+`keystroke_macro`と同型の単純転送で配線した（検証は行わない）。
+
+`awase-windows`側（`state/calibrated_mode_key.rs`）に
+`CalibratedModeKey::to_config_entry`/`calibrated_mode_key_from_config_
+entry`の相互変換関数を追加し、6件のラウンドトリップテスト
+（GJI/MS-IME双方の正常系、実際の`toml::to_string`/`from_str`を通した
+シリアライズ、不正な`result`/`fingerprint_kind`文字列の拒否）を追加。
+`cargo test -p awase-windows --lib`でLinux上で実行可能。
+
+**未着手（T11のスコープ外、T12以降で対応）**: `Runtime.calibrated_
+mode_keys`への起動時ロード・保存時の書き出し配線、および
+`176-T9a`が確定結果を`set_calibrated_mode_key`へ実際に書き込む配線
+（現状はログ・IPC通知のみで、確定してもメモリ上のマップにすら入らない）。
+T0を前提条件から外した（上記T0節参照）ため、この配線自体は技術的には
+着手可能——ただしこの配線を追加する際は、決定8が維持するopt-inの趣旨
+（既定では較正結果を実際のIME判定へ反映しない）をどう実現するか
+（設定ファイルに明示的なopt-inフラグを追加するか、当面は
+`set_calibrated_mode_key`自体を呼ばないままにするか）を別途決めること。
+
 ### 176-T12（決定6）: stale検出とリロード連携
 
 **内容**: awase.exeの設定リロード時（`reload_config()`、`app/mod.rs:
@@ -481,7 +682,122 @@ request_focus(id))`等）。ユーザーが誤って別ウィジェットへフ�
 **受け入れ基準**: Windows実機で、config1.dbを意図的に変更した後
 較正結果が正しく無効化されることを確認する。
 
+**実装完了（2026-09-17、core部分）**: stale判定を実際のGJI/MS-IME同期
+経路へ配線した。`176-T1`の`is_stale`をラップした
+`fresh_or_none(record, current) -> Option<&CalibratedModeKey>`
+（`state/calibrated_mode_key.rs`）を新設し、`apply_calibration_override`
+へ渡す前に必ず通す:
+
+- **GJI側**（`gji_charset_autodetect.rs::sync_gji_charset_autodetect`）:
+  `ModeKeyCandidate::current_fingerprint`が、その時点で読んだ
+  `config1.db`（`raw: GjiRawConfig`）から`ConfigFingerprint::Gji{
+  session_keymap, relevant_row }`を都度再構築する。`relevant_row`は
+  新設の`awase_gji_config::keymap::relevant_rows_for_vk(table, vk_name)`
+  （`custom_keymap_table`から対象VKに対応する行だけを抽出・正規化して
+  結合、複数行あればソート済みで結合。既存の`mozc_key_to_vk_name`を
+  再利用するため`extract_ime_keys`と同じ「修飾キー付き行は対象外」扱い
+  になる）。
+- **MS-IME側**（`message_handlers.rs::sync_ime_toggle_auto_detect`）:
+  新設の`msime_key_assignment::current_registry_fingerprint_hash(vk)`が
+  `IsKeyAssignmentEnabled`/`KeyAssignmentMuhenkan`/`KeyAssignmentHenkan`
+  の生のDWORD値（`read_delegate_to_open_axis_assignment_from_registry`が
+  返す解釈済み値ではなく、未知の値も区別できる生値）から
+  `ConfigFingerprint::MsIme{ registry_value_hash }`を都度計算する。
+
+いずれも「設定リロード時」だけでなく、既存の同期呼び出し（GJI/MS-IME
+確定のたびに再計算する`sync_gji_charset_autodetect`/`sync_ime_toggle_
+auto_detect`自体の通常呼び出し）にも自然に乗る形にした——`reload_config`
+専用の別経路を新設していない。
+
+**未実装（実機A/B含む、次のタスク）**:
+1. **`awase-settings`側のUI案内**（GJI再同期条件を満たさない場合の
+   「対象アプリへフォーカスを戻してください」、`FindWindowW`失敗時の
+   「次回起動時に反映されます」）は未着手。これらは較正結果が実際に
+   ロード・保存・opt-in適用される一連の配線（下記2参照）が無いと
+   ユーザーに見せる意味が無いため、その配線と合わせて実装するのが
+   自然。
+2. **実機A/B検証は未実施**。前提として、`Runtime.calibrated_mode_keys`
+   への起動時ロード・実際の書き込み（`176-T9a`から`set_calibrated_
+   mode_key`を呼ぶ配線、`176-T11`のギャップ節参照）がまだ無いため、
+   現時点ではstale判定ロジックはユニットテストでのみ検証されており、
+   実機では常に空のマップに対して動作する（＝実害ゼロだが、実機での
+   staleフォールバック自体を観察することもできない）。この配線が
+   入るまで受け入れ基準の実機確認は意味を持たない。
+
 **依存**: 176-T3、176-T4、176-T11。
+
+**最終配線（2026-09-17完了、上記「未実装」節を解消）**: T9a確定
+（`ConfirmedOn`）が実際にconfig.tomlへ保存され、起動時・設定リロード時に
+読み込まれ、opt-inフラグで実際のIME判定へ反映されるところまでの
+エンドツーエンドの配線を完了した。
+
+- **IPCペイロード拡張**（`calibration_ipc.rs`）: `CalibrationResultPayload`
+  に`active_ime_kind: ImeKindId`を追加（wparamの32-47bit）。
+  awase-settingsが`ConfirmedOn`を受けてどちら（GJI/MS-IME）の
+  フィンガープリントを読み直すべきか判断するために必要。
+- **T9a側**（`focus_tracking.rs::notify_calibration_result`）: 確定時点で
+  `tsf::observer::tsf_obs().active_ime_kind()`を読み、ペイロードに含める。
+- **新設`pub`関数**（`gji_charset_autodetect.rs::build_confirmed_
+  calibration_entry(vk, active_ime_kind) -> Option<CalibrationEntry>`）:
+  `awase-settings`（別クレート）から直接呼べる、awase-windows内で完結する
+  唯一の関数。config1.db/レジストリを読み直してフィンガープリントを
+  構築し、`CalibratedModeKey{ result: On, confirmed_at_epoch_ms: now,
+  .. }.to_config_entry()`を返す。`VK_NONCONVERT`/`VK_CONVERT`以外は
+  `None`（`apply_calibration_override`が消費するのはこの2キーのみ
+  ——他のIME_MODE_KEY_OPTIONS候補（VK_KANJI等）を較正パネルUIで選んでも
+  保存されない既知の制約、UIの選択肢自体は絞り込んでいない）。
+- **awase-settings側**（`main.rs::persist_confirmed_calibration`、
+  `tab_calibration`から`ConfirmedOn`受信時に呼ぶ）: **意図的に
+  config.tomlを直接読み直して書く**（UIの編集中in-memory状態
+  `self.config`は使わない）——ユーザーが他タブで未保存の編集をしている
+  最中に較正が確定しても、その未保存編集を巻き込んで保存しないように
+  するため。書き込み後`self.config.calibration`にも反映し（次に通常の
+  保存操作をしてもこの較正結果が失われないように）、
+  `send_reload_config_message()`でawase.exeへリロードを要求する。
+- **opt-inフラグ**（`GeneralConfig::apply_calibrated_mode_keys`、
+  既定`false`）: `tab_calibration`にチェックボックス
+  「確定した較正結果を実際のIME判定に反映する（自己責任）」を追加。
+  `Runtime::calibrated_mode_key_for`がこのフラグを見て、`false`なら
+  config.tomlに保存されていても常に`None`を返す（決定8が求める
+  opt-inの実体）。
+- **起動時・リロード時ロード**（`Runtime::apply_config_update`から
+  `reload_calibrated_mode_keys(&config.calibration)`を呼ぶ）:
+  差分更新ではなく毎回`clear`してから`config.calibration`全体を
+  再構築する（手動削除・置き換えが古い内容を残さないように）。
+  パースできないエントリは警告ログでスキップし起動を落とさない。
+
+**実機A/B検証完了（2026-09-17、dragonflyg4、T10の実UIで実施）**:
+デバッグパッチ不要でT10の較正パネルUIから直接、以下の一連の流れを
+実機確認した:
+
+1. 「IMEキー較正」タブで無変換キーを選択し「較正開始」→物理キーを
+   2回押下（各回IME ON状態でsettle window分フォーカス保持）→
+   awase.exe側で`[calibration] 確定: vk=VkCode(29) ImeToggleKind::On`。
+2. awase-settings.log側で`[calibration] 結果を受信: ...
+   active_ime_kind=Gji`→`vk=VkCode(29)の較正結果をconfig.tomlへ
+   保存しました`。実際の`config.toml`に
+   `[[calibration]] vk=29 result="On" active_ime_kind="Gji"
+   fingerprint_kind="Gji" gji_session_keymap=2`が書き込まれたことを
+   確認（`gji_relevant_row`は該当行が無く省略、想定どおり）。
+3. opt-inチェックボックスをONにして通常の保存操作→
+   `apply_calibrated_mode_keys = true`が`config.toml`に反映され、
+   `Config reloaded successfully`ログを確認（較正確定時のリロードと
+   合わせて計2回のリロードが正しいタイミングで発火）。
+4. **決定的な確認**: 別のテキストアプリでGJIのIMEをOFF（直接入力）に
+   した状態で無変換キーを単独タップしたところ、**IMEがONになり
+   NICOLAエンジンも正しく活性化した**（ユーザー実機確認）。
+   session_keymap=2（MSIMEプリセット）の静的分類では無変換キーは
+   `None`（割当てなし）のはずであり、この挙動変化は較正結果が
+   `apply_calibration_override`経由で実際にIME判定を上書きしている
+   ことの直接的な証拠である。
+
+これにより176-T8〜T12の実装（物理キー検知→確定→config.toml永続化→
+opt-in適用→実際のIME/エンジン制御への反映）がエンドツーエンドで
+実機動作することを確認した。
+
+**残る未実装**: `awase-settings`側のUI案内（GJI再同期条件を満たさない
+場合の案内、`FindWindowW`失敗時の案内）のみ。優先度は低い
+（無くても機能する、ユーザー体験の改善項目）。
 
 ---
 

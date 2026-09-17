@@ -425,6 +425,17 @@ pub struct GeneralConfig {
     /// （`false`のまま矛盾を検出した場合は`tracing::warn!`で対処法を案内する）。
     #[serde(default)]
     pub gji_thumb_key_ime_toggle: bool,
+    /// ADR-176決定8: `[[calibration]]`（較正パネルUIが確定した較正結果）を
+    /// 実際のIME判定（`apply_calibration_override`経由でのGJI/MS-IME
+    /// 側の自動検出結果の差し替え）へ反映するかどうか。**既定`false`**
+    /// （opt-in）——BUG-113の再発リスクを実機A/Bで確認できるまで、較正
+    /// 結果は`config.toml`には保存されるが実際のキー選択には影響しない
+    /// ようにする安全装置（`ActivationSync`冪等性チェック=176-T0を前提
+    /// 条件から外した経緯参照、`docs/adr/176-implementation-tasks.md`の
+    /// T0節）。`true`にすると較正結果がGJI/MS-IME両方の自動検出結果を
+    /// 上書きするようになる。
+    #[serde(default)]
+    pub apply_calibrated_mode_keys: bool,
     /// ADR-153 決定1: 無変換単独タップ確定時に、素の `VK_NONCONVERT` の代わりに
     /// awase 自身が直接 IME を ON/OFF/Toggle する（隠し設定、上級者向け）。
     /// `None`（既定）なら無効で、従来どおり GJI/MS-IME 自動検出
@@ -505,6 +516,7 @@ impl Default for GeneralConfig {
             enter_thumb_shift_literal: true,
             swallow_alt_kana_input_method_switch: true,
             gji_thumb_key_ime_toggle: false,
+            apply_calibrated_mode_keys: false,
             muhenkan_solo_tap_ime_action: None,
             henkan_solo_tap_ime_action: None,
         }
@@ -801,6 +813,44 @@ pub struct PostBypassRule {
     pub class: String,
 }
 
+/// `[[calibration]]` モードキー較正結果1件の永続化用表現（ADR-176 決定6、176-T11）。
+///
+/// このクレート（`awase`本体）はプラットフォーム非依存（ADR-019）のため、
+/// `awase-windows`側の`ImeToggleKind`/`ImeKindId`/`ConfigFingerprint`を
+/// 直接使わず、`KeysConfig`の`ime_on: Vec<String>`等と同じ「文字列で橋渡し
+/// する」パターンに揃える。`vk`は`VkCode`（このクレートで定義済み、
+/// `u16`のnewtypeとして透過的にシリアライズされる）をそのまま使う——
+/// 名前文字列との相互変換（`VkCode::from_name`相当）はGUI/awase-windows
+/// 側の責務であり、ここでは生のVKコード値をそのまま保持するだけで済む。
+///
+/// 実際のパース・妥当性検証（`result`/`fingerprint_kind`が既知の値か等）は
+/// `awase-windows`側（`state/calibrated_mode_key.rs`）が担い、このクレート
+/// 自身は構造をそのまま読み書きするだけで意味解釈は行わない。
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CalibrationEntry {
+    /// 較正対象の物理VKコード。
+    pub vk: VkCode,
+    /// 較正結果（v8時点のスコープでは`"On"`のみが実際に書き込まれる想定）。
+    pub result: String,
+    /// 較正時点で使われていたIME種別（`"Gji"`/`"MsIme"`）。
+    pub active_ime_kind: String,
+    /// 較正時点のconfig1.db/レジストリのフィンガープリント種別
+    /// （`"Gji"`/`"MsIme"`、`active_ime_kind`と同じ値になる想定）。
+    pub fingerprint_kind: String,
+    /// GJI較正時: `session_keymap`フィールドの値。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gji_session_keymap: Option<i64>,
+    /// GJI較正時: `custom_keymap_table`の該当行（無ければ`None`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gji_relevant_row: Option<String>,
+    /// MS-IME較正時: 較正に関連するレジストリ値のハッシュ。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ms_ime_registry_value_hash: Option<u64>,
+    /// 較正が確定した時刻（Unix epoch ms、プロセス再起動をまたいでも
+    /// 意味を持つ形式で保持する）。
+    pub confirmed_at_epoch_ms: u64,
+}
+
 /// アプリケーション設定ファイル (config.toml) のトップレベル構造
 ///
 /// レイアウト定義は .yab ファイルから読み込むため、
@@ -821,6 +871,9 @@ pub struct AppConfig {
     /// 名前付き打鍵列マクロ一覧（ADR-115 決定2b）。
     #[serde(default)]
     pub keystroke_macro: Vec<KeystrokeMacro>,
+    /// モードキー較正結果一覧（ADR-176 決定6、176-T11）。
+    #[serde(default)]
+    pub calibration: Vec<CalibrationEntry>,
 }
 
 /// `AppConfig::load` の失敗を UI 側の扱い分けができる粒度に分類した結果
@@ -946,6 +999,10 @@ pub struct ValidatedConfig {
     /// 転送するのみで検証は行わない（`steps` の中身の妥当性は
     /// `resolve_keystroke_syntax` が読み込み時に判定し警告する、決定3）。
     pub keystroke_macro: Vec<KeystrokeMacro>,
+    /// モードキー較正結果一覧（ADR-176 決定6、176-T11）。`keystroke_macro`と
+    /// 同様、`AppConfig`から単純に転送するのみで検証は行わない（意味解釈は
+    /// `awase-windows`側の責務）。
+    pub calibration: Vec<CalibrationEntry>,
 }
 
 impl From<ValidatedConfig> for AppConfig {
@@ -964,6 +1021,7 @@ impl From<ValidatedConfig> for AppConfig {
             keymaps: v.keymaps,
             post_bypass: v.post_bypass,
             keystroke_macro: v.keystroke_macro,
+            calibration: v.calibration,
         }
     }
 }
@@ -1328,6 +1386,7 @@ impl AppConfig {
                 keymaps: self.keymaps,
                 post_bypass: self.post_bypass,
                 keystroke_macro: self.keystroke_macro,
+                calibration: self.calibration,
             },
             warnings,
         )

@@ -972,19 +972,39 @@ pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
     // `shadow_action_to_ime_toggle_kind`/`ime_toggle_kind_to_shadow_action_direct`
     // 参照）。下記`mask_auto_detect_for_explicit_config`より前に置くことで、
     // 較正結果も明示config設定済みキーではmaskされる（176-T5と整合）。
+    // 176-T12: 現在のレジストリ内容に対してstaleな較正結果はfresh_or_noneで
+    // 「較正結果なし」に落とし、静的分類へフォールバックさせる
+    // （GJI側と同じ`fresh_or_none`、フィンガープリントはレジストリの生値
+    // ハッシュ、`msime_key_assignment::current_registry_fingerprint_hash`）。
+    let muhenkan_fingerprint = crate::state::calibrated_mode_key::ConfigFingerprint::MsIme {
+        registry_value_hash: crate::msime_key_assignment::current_registry_fingerprint_hash(
+            crate::vk::VK_NONCONVERT,
+        ),
+    };
+    let henkan_fingerprint = crate::state::calibrated_mode_key::ConfigFingerprint::MsIme {
+        registry_value_hash: crate::msime_key_assignment::current_registry_fingerprint_hash(
+            crate::vk::VK_CONVERT,
+        ),
+    };
     let delegate_assignment = crate::msime_key_assignment::MsImeDelegateToOpenAxisAssignment {
         muhenkan: crate::state::calibrated_mode_key::apply_calibration_override(
             delegate_assignment
                 .muhenkan
                 .map(crate::gji_charset_autodetect::shadow_action_to_ime_toggle_kind),
-            app.calibrated_mode_key_for(crate::vk::VK_NONCONVERT),
+            crate::state::calibrated_mode_key::fresh_or_none(
+                app.calibrated_mode_key_for(crate::vk::VK_NONCONVERT),
+                &muhenkan_fingerprint,
+            ),
         )
         .map(crate::gji_charset_autodetect::ime_toggle_kind_to_shadow_action_direct),
         henkan: crate::state::calibrated_mode_key::apply_calibration_override(
             delegate_assignment
                 .henkan
                 .map(crate::gji_charset_autodetect::shadow_action_to_ime_toggle_kind),
-            app.calibrated_mode_key_for(crate::vk::VK_CONVERT),
+            crate::state::calibrated_mode_key::fresh_or_none(
+                app.calibrated_mode_key_for(crate::vk::VK_CONVERT),
+                &henkan_fingerprint,
+            ),
         )
         .map(crate::gji_charset_autodetect::ime_toggle_kind_to_shadow_action_direct),
     };
@@ -1226,6 +1246,32 @@ pub(crate) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usiz
 /// WM_HOTKEY ハンドラ (HOTKEY_ID_TOGGLE)
 pub(crate) unsafe fn handle_wm_hotkey_toggle(app: &mut Runtime) {
     app.toggle_engine();
+}
+
+/// WM_CALIBRATION_KEY_DETECTED ハンドラ（ADR-176 176-T8）。
+///
+/// **belief書き込みAPI（`ImeModel`のsetter・`dispatch_event`・
+/// `observation_store`・`reduce(`等）を一切呼ばないこと**
+/// （ADR-176決定1の点2、`architecture_guard.rs`の
+/// `calibration_key_detected_handler_does_not_touch_belief`が固定する）。
+pub(crate) fn handle_wm_calibration_key_detected(app: &Runtime) {
+    let Some(session_pid) = app.calibration_session_pid() else {
+        return;
+    };
+    let focus_pid = app.platform.focus.pid();
+    if focus_pid != session_pid {
+        tracing::debug!(
+            "[calibration] キー検知を受信したが、現在のフォーカス先(pid={focus_pid})が\
+             較正セッション(pid={session_pid})と一致しないため無視します"
+        );
+        return;
+    }
+    let seq = hook::calibration_press_seq();
+    let press_ms = hook::calibration_last_press_ms();
+    tracing::info!(
+        "[calibration] 対象キー押下を検知: vk={:?} seq={seq} press_ms={press_ms}",
+        app.calibration_session_vk()
+    );
 }
 
 /// WM_CALIBRATION_START ハンドラ（ADR-176 176-T7）。

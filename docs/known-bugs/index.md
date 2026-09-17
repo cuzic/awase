@@ -145,6 +145,7 @@
 | [BUG-141](BUG-141.md) | gji_direct_already_matchesがcandidate_was_seen desync証拠を無視し2・3回目のCtrl+無変換を無送信で握り潰す（ADR-171「案Z」で修正案起草済み） |
 | [BUG-142](BUG-142.md) | Windows Terminal + GJI、物理半角/全角キーの繰り返し押下でIME ON/Engine ONに固着。原因はshadow-toggleの固定方向no-op誤判定、keys.ime_detect.toggleでToggle解決に変えると実機A/Bで解消確定（ADR-175） |
 | [BUG-143](BUG-143.md) | classify_mode_key_ime_actionがsession_keymap==CUSTOM以外ではcustom_keymap_tableを一切参照せず、実在するHenkan=IMEOn設定を無視していた（ADR-174、修正済み） |
+| [BUG-144](BUG-144.md) | 較正probeループがフォーカス不一致時にtracker.tick()をスキップし、settle window外の値がpostとして混入しうる（ADR-176 176-T9a、コードレビューで発見・修正済み） |
 
 ## その他の資料
 

@@ -248,6 +248,24 @@ impl ModeKeyCandidate {
         VkCode::from_name(self.vk_name())
             .unwrap_or_else(|| unreachable!("ModeKeyCandidate::vk_name always resolves"))
     }
+
+    /// ADR-176決定6（176-T12）: 現在の`config1.db`内容から、このキーの
+    /// 較正フィンガープリントを構築する。
+    /// `state::calibrated_mode_key::fresh_or_none`によるstale判定専用
+    /// ——値の意味解釈は[`classify_mode_key_ime_action`]が別途行う。
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn current_fingerprint(
+        self,
+        raw: &awase_gji_config::wire::GjiRawConfig,
+    ) -> crate::state::calibrated_mode_key::ConfigFingerprint {
+        let relevant_row = raw.custom_keymap_table.as_deref().and_then(|table| {
+            awase_gji_config::keymap::relevant_rows_for_vk(table, self.vk_name())
+        });
+        crate::state::calibrated_mode_key::ConfigFingerprint::Gji {
+            session_keymap: raw.session_keymap,
+            relevant_row,
+        }
+    }
 }
 
 /// [`ModeKeyCandidate`]の現在のGJI設定によるIME意味論を判定する（BUG-115）。
@@ -666,6 +684,10 @@ pub(crate) fn resolve_hiragana_katakana_thumb_vks(
     (hiragana_vk, katakana_vk)
 }
 
+/// ADR-176: `awase-settings`（別クレート）から直接呼べるよう`pub`で
+/// 再エクスポートする（`build_confirmed_calibration_entry`のdoc参照）。
+#[cfg(windows)]
+pub use windows_impl::build_confirmed_calibration_entry;
 #[cfg(windows)]
 pub(crate) use windows_impl::{
     is_configured_thumb_key, read_config1_db, reset_streak_latch_for_reload,
@@ -795,13 +817,23 @@ mod windows_impl {
         // gate_thumb_key_ime_actionsの出力そのものを差し替える。
         // route_thumb_key_action以降のthumb/非thumb振り分け・
         // mask_auto_detect_for_explicit_config等は変更せずそのまま効く。
+        // 176-T12: 現在のconfig1.db内容に対してstaleな較正結果は
+        // fresh_or_noneで「較正結果なし」に落とし、静的分類へ
+        // フォールバックさせる。
+        let raw_for_fingerprint = raw.as_ref().unwrap_or(&default_raw);
         wiring.henkan = crate::state::calibrated_mode_key::apply_calibration_override(
             wiring.henkan,
-            app.calibrated_mode_key_for(ModeKeyCandidate::Henkan.vk()),
+            crate::state::calibrated_mode_key::fresh_or_none(
+                app.calibrated_mode_key_for(ModeKeyCandidate::Henkan.vk()),
+                &ModeKeyCandidate::Henkan.current_fingerprint(raw_for_fingerprint),
+            ),
         );
         wiring.muhenkan = crate::state::calibrated_mode_key::apply_calibration_override(
             wiring.muhenkan,
-            app.calibrated_mode_key_for(ModeKeyCandidate::Muhenkan.vk()),
+            crate::state::calibrated_mode_key::fresh_or_none(
+                app.calibrated_mode_key_for(ModeKeyCandidate::Muhenkan.vk()),
+                &ModeKeyCandidate::Muhenkan.current_fingerprint(raw_for_fingerprint),
+            ),
         );
         warn_thumb_key_toggle_if_needed(app, wiring.warning, wiring.muhenkan);
 
@@ -1061,6 +1093,59 @@ mod windows_impl {
     pub(crate) fn read_config1_db() -> Option<Vec<u8>> {
         let path = config1_db_path()?;
         std::fs::read(&path).ok()
+    }
+
+    /// ADR-176（T9a確定結果のconfig.toml永続化、最終配線）:
+    /// `awase-settings`が`WM_CALIBRATION_RESULT`（`ConfirmedOn`）を受けて
+    /// config.tomlへ書き込む際に呼ぶ。
+    ///
+    /// awase-settings自身はGJI/レジストリ読み取りロジックを持たないため、
+    /// この関数（`awase-windows`クレート内、awase-settingsからも呼べる
+    /// `pub`関数）が代わりに`config1.db`/レジストリを読み直して
+    /// フィンガープリントを構築する——結果が確定した直後に呼ばれる想定
+    /// のため、確定に使われた値と同じ内容が読めるはずである。
+    /// `VK_NONCONVERT`/`VK_CONVERT`以外（`apply_calibration_override`が
+    /// 消費するのはこの2キーのみ）、またはGJI選択時に`config1.db`が
+    /// 読めない場合は`None`（呼び出し元は保存をスキップし警告すること）。
+    #[must_use]
+    pub fn build_confirmed_calibration_entry(
+        vk: VkCode,
+        active_ime_kind: crate::state::ime_kind::ImeKindId,
+    ) -> Option<awase::config::CalibrationEntry> {
+        use crate::state::ime_kind::ImeKindId;
+
+        let candidate = if vk == crate::vk::VK_CONVERT {
+            ModeKeyCandidate::Henkan
+        } else if vk == crate::vk::VK_NONCONVERT {
+            ModeKeyCandidate::Muhenkan
+        } else {
+            return None;
+        };
+        let config_fingerprint = match active_ime_kind {
+            ImeKindId::Gji => {
+                let bytes = read_config1_db()?;
+                let raw = awase_gji_config::wire::parse_top_level(&bytes)?;
+                candidate.current_fingerprint(&raw)
+            }
+            ImeKindId::MsIme => crate::state::calibrated_mode_key::ConfigFingerprint::MsIme {
+                registry_value_hash: crate::msime_key_assignment::current_registry_fingerprint_hash(
+                    vk,
+                ),
+            },
+        };
+        let confirmed_at_epoch_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        Some(
+            crate::state::calibrated_mode_key::CalibratedModeKey {
+                vk,
+                result: ImeToggleKind::On,
+                active_ime_kind,
+                config_fingerprint,
+                confirmed_at_epoch_ms,
+            }
+            .to_config_entry(),
+        )
     }
 }
 

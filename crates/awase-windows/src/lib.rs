@@ -369,6 +369,24 @@ pub const WM_CALIBRATION_START: u32 = windows::Win32::UI::WindowsAndMessaging::W
 /// セッションを識別する）。
 #[cfg(windows)]
 pub const WM_CALIBRATION_END: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 29;
+/// ADR-176 176-T8: 較正対象キーの物理KeyDown検知をフックスレッドから
+/// メインスレッドへ知らせる、awase.exeプロセス内専用のシグナル
+/// （`WM_CALIBRATION_START`/`END`とは異なり、他プロセスへは一切送らない）。
+///
+/// ペイロードは運ばない——実際の値（時刻・通算回数）は
+/// `hook::calibration_press_seq()`/`calibration_last_press_ms()`から
+/// ディスパッチ時にライブで読む（`WM_KANA_LOCK_WARNING_CHANGED`と同じ方針）。
+#[cfg(windows)]
+pub const WM_CALIBRATION_KEY_DETECTED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 30;
+/// ADR-176 176-T9b: 較正結果通知（awase.exe → awase-settings）。
+///
+/// awase-settings側は固定クラス名のメッセージ専用ウィンドウ
+/// （`calibration_ipc::CALIBRATION_RESULT_WINDOW_CLASS_NAME`）を
+/// `FindWindowW`で探して送る（HWNDはIPCで運ばない、round7 S1・round9
+/// N5と同じ方針）。ペイロードは`calibration_ipc::pack_result`/
+/// `unpack_result`でエンコードする。
+#[cfg(windows)]
+pub const WM_CALIBRATION_RESULT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 31;
 
 // ── RawKeyEventExt ───────────────────────────────────────────────────────────────
 

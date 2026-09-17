@@ -4,6 +4,46 @@ title: |-
   awase-settingsの明示的な較正UIでモードキーの実効果を測定し、
   未登録時に静的分類を補完する
 status: |-
+  **2026-09-17: 実機A/B検証完了。ADR-176の較正機能（176-T8〜T12）が
+  エンドツーエンドで実機動作することを確認した。** T10の較正パネルUIから
+  無変換キーを較正→`ConfirmedOn`確定→`config.toml`へ永続化→
+  opt-inチェックボックスON→設定リロード→**実際にGJIのIME OFF状態で
+  無変換キー単独タップがIME ON+NICOLAエンジン活性化を引き起こすように
+  なった**（session_keymap=2の静的分類ではNone=無割当てのはずのキーが、
+  較正結果で上書きされたことの直接的な実機証拠）。詳細は
+  [176-implementation-tasks.md](176-implementation-tasks.md)のT12節
+  「実機A/B検証完了」を参照。残るのはawase-settings側のUI案内
+  （優先度低、無くても機能する）のみ。
+
+  **2026-09-17: 176-T0を「較正機能の必須の前提条件」という決定8の位置づけ
+  から外し、実装自体を見送り。** opus-adversarial-consultによる2ラウンドの
+  レビューの結果、(1)当初案（`handle_engine_activation_sync`への早期
+  return）はBUG-113の実送信を止められず既存dedupを壊す、(2)置き場所を
+  修正した第2案（`decision.effects`からのstrip）は方向性としては妥当だが、
+  較正機能が実際に増やす送信経路（`applied`が構造的に不一致側にある）には
+  そもそも当たらず、効く範囲は`NotRomajiInput`/`NotJapaneseIme`経由の
+  Inactive→Active往復という極めて狭いケースのみ、(3)Blind環境
+  （TsfNative×GJI、BUG-113の環境そのもの）では`applied`一致を根拠に
+  SetOpenを止めると、その前提が誤っていた場合にON方向の是正手段が
+  構造的にゼロになる、という3点が判明した。較正機能の実質的な安全装置は
+  T0ではなく既存のopt-in（既定OFF、実機A/B確認まで結果を適用しない）
+  ゲートであり、これは維持する。較正機能（T8〜T10、結果はログのみで
+  IME制御には未反映）はT0を待たずに現状のまま進めてよい。較正が実際に
+  増やす送信への対策が必要になった場合は、ADR-149が「別ADR起票の価値が
+  ある」とした案C（delegateとshadow-toggleの排他性修復）を優先候補とする。
+  詳細は[176-implementation-tasks.md](176-implementation-tasks.md)のT0節
+  「設計案の棄却」「T0の見送り」を参照。T0はコード変更ゼロのまま。
+
+  **2026-09-17: 176-T8/T9a/T9bの実機検証完了（dragonflyg4）。**
+  較正モード中に物理VK_NONCONVERTをIME ON状態で2回押下（各3秒の
+  settle window経過までフォーカス保持）し、awase.exe側で
+  `[calibration] 確定: vk=VkCode(29) ImeToggleKind::On`、
+  awase-settings.log側で`[calibration] 結果を受信: kind=ConfirmedOn`
+  （1ms後）を確認、押下検知→試行確定→IPC通知のエンドツーエンドを
+  実機で確認した。詳細は
+  [176-implementation-tasks.md](176-implementation-tasks.md)の
+  176-T9b節「実機検証完了」を参照。次は176-T10（較正パネルUI）。
+
   **2026-09-16: v8のround6残論点（M1〜M4）を決着実験v2で実機確定、
   実装着手（T1から）。**
 
@@ -404,15 +444,20 @@ awase.exe本体は:
   （`WM_APP+N`応答、または共有メモリ/一時ファイル等、実装タスクで
   詳細化）。
 
-**較正モード状態の所有者（round6 M6対応）**: 物理キー検知は
+**較正モード状態の所有者（round6 M6対応、round8で訂正）**: 物理キー検知は
 `HOOK_STATE`（LLフックコールバック側、atomicsで管理される既存の
 世界）で行い、観測ポーリング（決定3）はランタイム側
 （`AppState`/`spawn_local`タイマー）で行う——実行文脈が異なる2つの
 処理を1つの新しい裸のグローバルstaticにまとめない。較正モードの
-ON/OFFと対象VK・PID・HWNDは`HOOK_STATE`側に持たせ（フックコールバックが
-`app_disabled`判定と同じタイミングで読む必要があるため）、ランタイム側の
-観測ループはこの状態を都度読み取るだけの関係にする（ADR-164が集約した
-「裸のグローバルstaticより既存singletonへの集約を優先する」方針に
+ON/OFFと対象VKは`HOOK_STATE`側に持たせる（フックコールバックが
+`app_disabled`判定と同じタイミングで読む必要があるため）。**PID・HWNDは
+`HOOK_STATE`には持たせない**（round8訂正: フックコールバックがPID/HWNDを
+使う場面は無く、フォーカス検証はメインスレッドが`Runtime::
+calibration_session_pid()`/`platform.focus.pid()`で行う。HOOK_STATEに
+不要な状態を増やすとtorn readの軸が増えるだけでなく、176-T7 round7 S1が
+「HWNDは運ばない」と決めた結論とも整合しない）。ランタイム側の観測ループは
+`HOOK_STATE`の較正対象VKの状態を都度読み取るだけの関係にする（ADR-164が
+集約した「裸のグローバルstaticより既存singletonへの集約を優先する」方針に
 従う）。
 
 awase-settings側はegui標準のテキスト入力やGetAsyncKeyStateに頼らない
@@ -453,19 +498,31 @@ status参照）:
    v6が主張した「eguiメインウィンドウでは機能しない」は**誤りだった**
    （opus round5 B1指摘）。
 
-**採用する設計（v8）**: 較正専用のネイティブウィンドウは新設しない。
-決定2で確立したIPC経路（awase-settings→`WM_APP+N`→awase.exe本体）を
-そのまま延長し、**awase.exe本体が物理キー検知と観測の両方を兼務する**。
+**採用する設計（v8、round7/round9で訂正）**: 較正専用のネイティブ
+ウィンドウは新設しない。決定2で確立したIPC経路（awase-settings→
+`WM_APP+N`→awase.exe本体）をそのまま延長し、**awase.exe本体が物理キー
+検知と観測の両方を兼務する**。
 
-- 較正モード開始時、awase-settingsは自身の**PID**と**トップレベル
-  HWND**（決定2参照、`GetActiveWindow`で取得——手法Bが直接機能する
-  ことを上記2で確認済み）をIPCメッセージに含めてawase.exe本体へ渡す。
+- 較正モード開始時、awase-settingsは自身の**PID**（`WM_CALIBRATION_
+  START`）をIPCメッセージに含めてawase.exe本体へ渡す。**HWNDは運ばない**
+  ——176-T7実装時のopus-adversarial-consultレビュー（round7 S1）で、
+  較正の測定はそもそも「awase-settingsにフォーカスがある間」しか
+  成立しないため、対象HWNDはawase.exe自身のライブなフォーカス追跡
+  （`self.platform.focus.current.root_hwnd`）から取れば足り、IPCで
+  送るとstaleness軸が増えるだけと判断したため（決定2も同じ理由で
+  同様に訂正済み）。
 - awase.exe本体は、決定2の物理キー検知に加えて、`imm.rs::
   probe_ime_control`（`awase-windows`クレート内の既存の唯一の
-  チョークポイント、新規APIを増やさない）をこのHWNDに対してそのまま
-  呼び出し、IME状態をポーリングする。
-- 観測結果（VK・物理キー検知タイムスタンプ・観測したIME状態の遷移）を
-  同じ`WM_APP+N`応答でawase-settingsへ返す。
+  チョークポイント、新規APIを増やさない。較正probe専用の薄いラッパ
+  `probe_ime_open_for_calibration`経由）を、観測tickごとに
+  ライブなフォーカス先のHWNDに対して呼び出し、IME状態をポーリングする。
+- 確定/却下の結果（`ImeToggleKind::On`確定、または`Toggle`の決定的証拠
+  による却下）を、新規`WM_CALIBRATION_RESULT`（`WM_APP+31`）で
+  awase-settingsへ返す（176-T9b、実装済み）。HWNDと同じ理由で
+  こちらもIPCでHWNDを運ばず、awase-settings側に新設した固定クラス名の
+  メッセージ専用ウィンドウを`FindWindowW`で探して送る（round8で
+  「`with_msg_hook`はOS由来のモーダルループに脆い」と判明したため、
+  `HWND_MESSAGE`の自前ウィンドウ+専用WndProcを採用）。
 
 **round6 B2の対応（`send_health`汚染）**: `imm.rs:263`の
 `send_health::record`は probe/actuation を問わず無条件に走る。
@@ -479,15 +536,22 @@ status参照）:
 自体は変更せず、較正probe専用の薄いラッパ、または`record`呼び出しを
 スキップするフラグ引数を追加する形で対応する（実装方式はT9で決定）。
 
-**round6 B3の対応（他プロセスHWNDのライフサイクル）**:
-- IPCメッセージにawase-settingsの**PID**を含める（上記）。
-- awase.exe本体は観測tickごとに`GetWindowThreadProcessId(hwnd)`が
-  開始時に記録したPIDと一致することを確認し、不一致（プロセス終了・
-  HWND再利用）なら較正モードを即座に中止し`disable_apps`バイパスを
-  解除する。
-- 較正モード全体にタイムアウトを設け、awase-settingsからの応答が
-  一定時間無い場合は自動的に`disable_apps`を戻し較正モードを解除する
-  （awase-settingsのクラッシュ/強制終了への対策）。
+**round6 B3の対応（他プロセスHWNDのライフサイクル、round9で訂正）**:
+HWNDをIPCで運ばずライブなフォーカス追跡から都度取得する設計
+（上記）にしたことで、「キャッシュしたHWNDが別ウィンドウに化ける」
+というHWND再利用そのものの懸念は構造的に発生しない。ただし別の2つの
+懸念が残るため、観測tickごとに以下を確認する（opus-adversarial-consult
+レビューround9 S7対応）:
+- **同一PID・別HWND**: awase-settingsがネイティブのファイルダイアログ
+  等を開き、同一PIDのまま別ウィンドウにフォーカスが移るケース。
+  該当tickの試行を破棄する（中止はしない）。
+- **PID再利用**: awase-settingsが落ちて同じPIDが別プロセスに再利用
+  されるケース。`focus.process_name`が`awase-settings.exe`と一致する
+  ことも併せて確認する（`calibration_ipc::is_awase_settings_process_
+  name`を流用）。不一致なら較正モードを中止する。
+- 較正モード全体のタイムアウト（176-T6/T7で実装済み）は、awase-settings
+  からのSTART再送（keepalive）が一定時間無い場合に自動的に
+  `disable_apps`を戻し較正モードを解除する。
 
 **round6 M2の対応（probeを出す側のスレッド）**: 決着実験
 （`spike_egui_ime_control_probe.rs`）はLLキーボードフックを持たない
@@ -625,18 +689,35 @@ BUG-140と同じ「構造的除外」に揃える——対象VKが`keys.ime_dete
 （Engine Phase 1が較正結果より先に消費するため——`src/config.rs:
 601-609`の実害報告例参照）。
 
-### 8. `ActivationSync`冪等性チェック（必須の前提条件）
+### 8. `ActivationSync`冪等性チェック（前提条件から撤回、opt-inゲートを実質的な安全装置とする）
 
 `Engine::transition_activation`（`src/engine/engine.rs:456-483`）が
 belief の inactive→active 遷移で無条件に`SetOpen(true)`を発行する
 （BUG-113 ADR-149追記が実機で2〜3回の`VK_IME_ON`送信を確認済み）。
-本ADRは較正によって`TurnOn`と判定されるVKを増やす（＝この経路を
-踏む打鍵を増やす）ことが目的であるため、**この冗長送信に対する
-冪等性チェック（beliefが既に高信頼度で実状態と一致していれば
-`SetOpen`を再送しない）を、本ADRの実装より先に、または同時に
-入れることを必須の前提条件とする**。これが実機A/Bで「@」が
-再発しないことを確認できるまで、較正結果の適用は既定OFF
-（opt-in）とする。
+当初は本ADRが較正によって`TurnOn`と判定されるVKを増やす（＝この経路を
+踏む打鍵を増やす）ことを理由に、この冗長送信への冪等性チェック
+（176-T0）を実装より先に入れる必須の前提条件としていた。
+
+**2026-09-17、opus-adversarial-consultによる2ラウンドのレビューで
+この因果関係自体が成立しないと判明し、前提条件から外した**
+（詳細は[176-implementation-tasks.md](176-implementation-tasks.md)の
+T0節）。較正が実際に増やす送信経路（物理キー→shadow-toggle→belief
+false→true→`ActivationSync`）では、その時点の`applied`（awase自身が
+最後に送ったコマンドの記録）は常に不一致側にあり、`applied`一致を
+根拠とする冪等性チェックは構造的に発火しない。加えてTsfNative×GJI
+（BUG-113の環境そのもの）は`FeedbackPolicy::Blind`のため、`applied`は
+「実際にIMEが開いた」ことの証拠にはならず、これを根拠にSetOpenを
+止めるとON方向の是正手段（`apply_force_on_for_imm_broken`）が同じ
+条件で既に止まっているため構造的にゼロになるリスクがある。
+
+**較正結果の適用が実機A/Bで「@」が再発しないことを確認できるまで
+既定OFF（opt-in）とする**、という条項は維持する——これが本ADRの
+実質的な安全装置であり、T0の有無に依存しない。176-T0自体
+（ActivationSyncの冗長SetOpen抑止、効果範囲は`NotRomajiInput`/
+`NotJapaneseIme`経由のInactive→Active往復のみに限られる独立した
+クリーンアップ）は今回見送り、実装しない。較正が実際に増やす送信への
+対策が必要になった場合は、ADR-149の案C（delegateとshadow-toggleの
+排他性修復）を優先候補とする。
 
 ## 未解決点（実装タスクリストで詳細化）
 
@@ -664,9 +745,8 @@ belief の inactive→active 遷移で無条件に`SetOpen(true)`を発行する
   観測が常に0を返すことを確認したが、これはスコープの取り違えの
   可能性が高く「TSFでは観測不能」の証明ではない——採用しない理由は
   あくまで「@」機序）。
-- `ActivationSync`の冪等性チェック自体の実装（上記「決定8」で必須の
-  前提条件と位置づけるが、本ADRの実装スコープ自体には含めない——
-  別途対応する）。
+- `ActivationSync`の冪等性チェック（176-T0）自体の実装。上記「決定8」
+  参照のとおり2026-09-17に前提条件から外し、見送りとした。
 
 ## 関連
 
