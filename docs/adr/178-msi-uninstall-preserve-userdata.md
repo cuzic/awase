@@ -5,11 +5,10 @@ title: |-
 status: |-
   **起草中（v14、全面差し替え）。v1〜v13（バックアップ+復元方式、12ラウンド・
   Blocker20件）を破棄し、round1が当初提案していた方向へ回帰した、
-  よりシンプルな設計に作り直した。実装済み・実機検証1〜3完了（round1 B2の
-  既存ユーザー遡及効果を含めPermanent="yes"の効果を確認）、実機検証で
-  「読み取り先/書き込み先」バグを1件発見・修正済み（.yab自己修復の
-  生成先がCWD相対に落ちる不具合）、修正後の再検証待ち。
-  opus-adversarial-consultレビュー未実施。**
+  よりシンプルな設計に作り直した。実装済み・実機検証4項目すべて完了
+  （round1 B2の既存ユーザー遡及効果を含めPermanent="yes"の効果を確認、
+  かつ実機検証中に発見した「読み取り先/書き込み先」バグ1件を修正し
+  修正後も実機確認済み）。opus-adversarial-consultレビュー未実施。**
 related_adr:
   - "ADR-099"
   - "ADR-177"
@@ -20,8 +19,7 @@ related_adr:
 ## ステータス
 
 **起草中v14（2026-09-17）。方針転換により全面差し替え。実装済み。実機検証
-（dragonflyg4）で1〜3完了、4は`.yab`側のバグ修正後の再検証待ち。
-opus-adversarial-consultレビューはこれから。**
+（dragonflyg4）4項目すべて完了。opus-adversarial-consultレビューはこれから。**
 
 ## 方針転換の経緯（重要、実装者は必ず読むこと）
 
@@ -281,10 +279,9 @@ round1 m3が指摘済み、英語版も対象）。ZIP版`scripts/uninstall.ps1 
 - `--bug-report`等の非GUIサブコマンド経路では呼ばれないことを確認する
   （v13 round9 M1の教訓を維持）。
 
-**実機確認（自動化不可）**: **1〜3は完了（2026-09-17、dragonflyg4、
+**実機確認（自動化不可）**: **1〜4すべて完了（2026-09-17、dragonflyg4、
 awase-1.20.6-x64.msi＝Permanentなし旧版、awase-1.20.7-x64.msi＝Permanent
-付きv14版）。4はconfig.toml側のみ確認済み、`.yab`側は上記のバグ修正後の
-再検証が必要。**
+付きv14版・バグ入り、awase-1.20.8-x64.msi＝`.yab`自己修復バグ修正後）。**
 
 1. **round1 B2の検証（既存ユーザーへの遡及効果）— 完了・成功**: 現行の
    （Permanentなし）1.20.6をクリーンインストールし`config.toml`を編集
@@ -301,16 +298,21 @@ awase-1.20.6-x64.msi＝Permanentなし旧版、awase-1.20.7-x64.msi＝Permanent
 3. **削除される想定のファイルが実際に削除されることの確認 — 完了・成功**:
    `awase.exe`・`data/ngram_hiragana.csv.gz`は手順1・2のアンインストール後
    いずれも削除されていた（`Test-Path`＝`False`）。
-4. **完全削除→再インストールでの自己修復ロジックの確認 — 部分的に完了**:
-   1.20.7を再インストール（`config.toml`はNeverOverwriteによりPermanent化前の
-   内容のまま残存＝round1 B1が懸念したシナリオを模した状態）→
+4. **完全削除→再インストールでの自己修復ロジックの確認 — 完了・成功**:
+   初回（バグ発見時、1.20.7=バグ入りコード）: 1.20.7を再インストール
+   （`config.toml`はNeverOverwriteによりPermanent化前の内容のまま残存＝
+   round1 B1が懸念したシナリオを模した状態）→
    `%LOCALAPPDATA%\awase\config.toml`と`layout\`を手動削除 →
-   `awase.exe`を起動 → **`config.toml`は埋め込み既定値から正しく再生成
-   された**（自己修復ロジックの効果を実機で確認）。**一方`layout\`は
-   生成されなかった**——これが上記「生成先パスの決め方」節で記録した
-   バグの発見経緯そのものであり、修正はコード上で完了しているが、
-   修正後の再実機確認（`layout\`が正しく`exe_dir`直下に生成されること）
-   はまだ実施していない。次のアクション参照。
+   `awase.exe`を起動 → `config.toml`は埋め込み既定値から正しく再生成
+   された（自己修復ロジックの効果を確認）が、**`layout\`は生成されな
+   かった**——これが上記「生成先パスの決め方」節のバグ発見経緯。
+   修正後（1.20.8）の再検証: `%LOCALAPPDATA%\awase`と
+   `HKCU\Software\awase`を完全削除 → 1.20.8をクリーンインストール →
+   `config.toml`と`layout\nicola.yab`が存在することを確認 →
+   `config.toml`と`layout\`を手動削除 → `awase.exe`を起動 → 4秒後、
+   **`config.toml`と`layout\`の両方が生成され、`layout\`には同梱6
+   ファイルすべて（`Get-ChildItem`のCount=6）が正しく揃っていることを
+   確認した**。バグ修正が実機で有効であることが確定した。
 
 ## この設計で解決されること・されないこと
 
@@ -351,14 +353,11 @@ awase-1.20.6-x64.msi＝Permanentなし旧版、awase-1.20.7-x64.msi＝Permanent
 ## 未解決事項 / 次のアクション
 
 1. opus-adversarial-consultによる新方針（v14）のレビュー。
-2. **実機確認4（`.yab`自己修復）の再検証**: `ensure_default_layouts_exist`
-   の生成先パスバグ修正（`resolve_relative`ではなく`exe_dir.join(生文字列)`
-   固定に変更）後、`layout`ディレクトリを削除した状態で`awase.exe`を
-   起動し、`%LOCALAPPDATA%\awase\layout`に同梱6ファイルが正しく生成
-   されることを確認する。実機確認1〜3は完了済み（上記参照）。
+2. 実機確認4項目すべて完了（上記参照、`.yab`自己修復バグの修正・再検証
+   含む）。
 3. `ensure_config_exists`/`ensure_layouts_exist`の実装・呼び出し位置は
-   完了（`awase.exe`・`awase-settings.exe`の両方、コンパイル・単体テスト
-   確認済み）。
+   完了（`awase.exe`・`awase-settings.exe`の両方、コンパイル・単体テスト・
+   実機確認済み）。
 4. `wix_installer_guard.rs`の`Permanent="yes"`固定テスト追加、GUID固定テストの
    抜け（`NicolaKb232Yab`・`NicolaKakuteiYab`）の解消は完了。
 5. `docs/index.html`・`docs/index.en.html`へのアンインストール手順節の新設
