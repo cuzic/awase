@@ -3,9 +3,10 @@ id: ADR-178
 title: |-
   MSIアンインストール時のユーザーデータ喪失を自己修復（バックアップ+復元）で無害化する
 status: |-
-  **起草中（v2）。opus-adversarial-consult round1で採用案（Permanent="yes")を
-  Blocker2件で却下、round2としてMSI非依存の自己修復方式へ全面差し替え。
-  レビューはこれから。**
+  **起草中（v3）。opus-adversarial-consult round2でBlocker3件
+  （復元が主要シナリオで発火しない／復元先パスがCWDになりうる／
+  バックアップ対象が絞られておらず汚染しうる）を検出、決定文を修正。
+  round3レビュー待ち。**
 related_adr:
   - "ADR-099"
   - "ADR-177"
@@ -15,7 +16,7 @@ related_adr:
 
 ## ステータス
 
-**起草中v2（2026-09-17）。opus-adversarial-consultによるレビューはこれから。**
+**起草中v3（2026-09-17）。opus-adversarial-consultによるレビュー継続中。**
 
 ## コンテキスト
 
@@ -24,147 +25,250 @@ related_adr:
 `layout/*.yab`を削除することが判明した。これは[ADR-099](099-config-preservation-on-upgrade.md)
 決定1がZIP版（`scripts/uninstall.ps1`）に定めた「既定では残す、完全消去は
 `-Purge`明示フラグが必要」という方針と非対称であり、ユーザーから
-「ユーザーデータ削除するのおかしいね。残してほしい」との明示的な要望があった。
+「ユーザーデータ削除するのおかしいね。残してほしい」との明示的な要望が
+あった。
 
-### v1（採用案: `Permanent="yes"`）が却下された経緯
+### v1（`Permanent="yes"`）が却下された経緯
 
-当初、`NeverOverwrite="yes"`が付いている7コンポーネント（`ConfigFile`・
-`NicolaYab`等、`wix/main.wxs`）にWiXの`Permanent="yes"`属性を追加する案を
-起草したが、opus-adversarial-consult round1でBlocker 2件により却下された:
+対象7コンポーネントにWiXの`Permanent="yes"`を追加する案を最初に検討したが、
+opus-adversarial-consult round1でBlocker2件（`NeverOverwrite`との衝突で
+再インストール不能になりうる／既存ユーザーへの効果が未検証）により却下した。
+代替の「MSIコンポーネント自体を`wix/main.wxs`から削除する」案も、次の
+メジャーアップグレードで新バージョンが参照しなくなったコンポーネントが
+自動削除されるという既知のMSI挙動により、既存ユーザーのデータが一斉に
+失われる別のリスクを持つため不採用とした。
 
-- **B1**: `Permanent`はコンポーネント**全体**（ファイル＋KeyPathレジストリ値）
-  に効く。perUserインストールの制約（ICE38）でKeyPathは必ずレジストリ値
-  になるため、アンインストール後も`HKCU\Software\awase\ConfigFile`等7つの
-  レジストリ値が残る。この状態で将来ユーザーが手動で`%LOCALAPPDATA%\awase`
-  だけを削除して再インストールすると、`NeverOverwrite`が「KeyPathが既に
-  存在する＝インストール済み」と誤判定し、**`config.toml`も6本の`.yab`も
-  一切配置されず、awase.exeが起動しなくなる**。しかも`Permanent`は
-  実質不可逆（一度出荷すると次バージョンで戻しても既存環境には反映
-  されない）ため、この不具合は恒久的に残る。
-- **B2**: 既にPermanent無しでインストール済みの既存ユーザーに、この
-  変更が後から効くかどうか自体が未検証だった。
+### v2（自己修復・MSI管理外バックアップ）方針への転換
 
-さらに検討した結果、代替として「MSIコンポーネント自体を`wix/main.wxs`
-から削除する」案（当初「選択肢D」と呼んだもの）も、Windows Installerの
-一般的挙動として**次のメジャーアップグレードで新バージョンが参照しなく
-なったコンポーネントは自動的に削除される**ため、既存ユーザーのデータが
-一斉に失われるという別のBlocker級の問題を持つことが判明し、不採用と
-した（Microsoft公式ブログのタイトルもずばり「removal of a component
-from a feature is not supported」）。
+ユーザーの方針判断（「Permanent="yes"はないんじゃないか。自己修復ロジックを
+メインの導線にする」）を受け、**`wix/main.wxs`は一切変更せず**、アプリ自身
+（`awase.exe`/`awase-settings.exe`）が設定データの保存・復元責任を持つ
+自己修復方式に転換した。この方向性自体はopus-adversarial-consult round2で
+支持されたが、決定文の詳細にBlocker3件が見つかり、本v3で反映した。
 
-### 方針転換: MSI（`wix/main.wxs`）を一切変更しない
+### v2で見つかったBlocker3件（v3での対応）
 
-上記の検討を経て、**`wix/main.wxs`のコンポーネント構成は一切変更しない**
-（メジャーアップグレード時の既存の保護＝ADR-099決定0をそのまま維持し、
-新たなリスクを持ち込まない）方針とし、代わりに**アプリ自身
-（`awase.exe`/`awase-settings.exe`）が設定データの保存・復元責任を持つ**
-自己修復方式に転換する。
+1. **復元トリガが「存在しない」だけでは、主要シナリオ（MSIアンインストール
+   →再インストール）で一度も発火しない。** 7コンポーネントのKeyPathは
+   アンインストールで削除される（Permanentを付けていないため）。その結果
+   次のインストールは「KeyPathが無い＝真の新規インストール」として扱われ、
+   `NeverOverwrite`は効かず、**MSIが`config.toml`/`*.yab`を出荷時の既定値で
+   再配置してしまう**。awase.exe起動時点で該当ファイルは「存在する」ため、
+   「存在しなければ復元」という条件は発火せず、ユーザーは気づかないまま
+   既定値を使い続ける——本ADRの目的が達成されない。
+   → **v3対応**: 決定2を参照。
+2. **復元先パスが未定義のまま実装すると`C:\Windows\system32`等へ書き込む
+   おそれがある。** 復元ロジックが動くのは「ファイルが exe隣にもワーク
+   スペースルート相対にも見つからない」場合のみであり、これは
+   `src/paths.rs::resolve_relative_to_exe()`が最終手段としてCWD相対の
+   裸パスを返すケースそのもの。awase.exeの自動起動（`HKCU\...\Run`）は
+   作業ディレクトリを指定しないため、起動方法によって書き込み先が変わる
+   （ショートカット経由なら`INSTALLDIR`、Runキー経由なら`system32`等）。
+   → **v3対応**: 決定2に専用パス解決関数を追加。
+3. **`layout_write_to_path()`の成功後に無条件でコピーすると、「名前を
+   付けて保存」等`layouts_dir`外への保存もバックアップに混入し、復元時に
+   ユーザーの本番配列を無関係なファイルで上書きしうる。**
+   → **v3対応**: 決定1にバックアップ対象の絞り込みを追加。
 
 ## 決定
 
-### 決定1: 保存の都度、MSI管理外のディレクトリへ自動バックアップする
+### 決定1: バックアップ対象を絞り込んだ上で、保存の都度と起動時ロードの都度にMSI管理外へバックアップする
 
-`config.toml`/`layout/*.yab`が実際に書き換えられるタイミングで、
-`%LOCALAPPDATA%\awase-backup\`（`awase`ディレクトリの兄弟、MSIの
-コンポーネント管理下に一切無い）へ自動的にコピーする。
+**バックアップ先**: `<exe_dir>\backup\`（例: `%LOCALAPPDATA%\awase\backup\`）。
+`%LOCALAPPDATA%`直下の兄弟ディレクトリ（`awase-backup`）ではなく
+**`INSTALLDIR`配下のサブディレクトリ**にする——理由は以下。
 
-- `config.toml`: `AppConfig::save()`（`src/config.rs:890`）の書き込み
-  成功後にコピーする。呼び出し元は`awase-settings`（`main.rs:818`の
-  `clone.save(&config_path)`）と`awase.exe`（`tray.rs:1041`の
-  `save_auto_start_config` → `AppConfig::save_auto_start`）の両方が
-  あるため、バックアップ処理は`AppConfig::save()`自身、または
-  両呼び出し元が共通して通る箇所に実装し、重複実装を避ける。
-- `layout/*.yab`: `layout_write_to_path()`
-  （`crates/awase-settings/src/main.rs:1598`、配列編集タブの保存処理）
-  の書き込み成功後にコピーする。
+- ポータブルZIP版はexe相対で完結する設計（`src/paths.rs`）であり、
+  `%LOCALAPPDATA%`固定のバックアップ先だとポータブル運用のユーザーが
+  意図せずホストPCのユーザープロファイルに設定を書き残す。
+- MSI版とZIP版、複数バージョンの併用時に、`%LOCALAPPDATA%`直下の共有
+  ディレクトリだと相互汚染しうる。exe相対なら起きない。
+- `INSTALLDIR`配下（`%LOCALAPPDATA%\awase\backup\`）は、MSIの
+  `RemoveFolder`（「ディレクトリが空のときだけ削除」）の対象外の
+  ファイル群（`cache.toml`・`awase.log`等、ADR-177実機検証で確認済み）
+  と同様に、アンインストールを生き延びる。MSIの`File`/`RemoveFile`
+  テーブルに載っていないため、MSIからは一切関知されない。
+- 完全削除の案内（決定4）が「`%LOCALAPPDATA%\awase`を丸ごと削除」の
+  1行で済む（`backup\`もその配下にあるため）。
 
-バックアップはベストエフォート（失敗してもログに警告を出すのみで、
-本処理〈設定の保存〉の成否には影響させない）。
+**バックアップ契機と対象範囲**:
 
-### 決定2: 起動時、ファイルが存在しなければバックアップまたは埋め込み既定値から復元する
+1. `config.toml`: `AppConfig::save()`成功後。ただし**保存先パスが
+   `find_config_path()`の自動解決結果（exe隣）と一致する場合のみ**
+   バックアップする（CLI引数で明示された任意パスへの保存はバックアップ
+   しない）。
+2. `layout/*.yab`: `layout_write_to_path()`成功後。ただし**保存先が
+   現在の`layouts_dir`配下であり、かつファイル名が同梱6ファイル
+   （`nicola.yab`・`nicola_keytop.yab`・`nicola_us.yab`・`nicola_f.yab`・
+   `nicola_kb232.yab`・`nicola_kakutei.yab`）のいずれかと一致する場合のみ**
+   バックアップする。「名前を付けて保存」で`layouts_dir`外や任意ファイル名
+   に保存したケースは対象外とする。
+3. **起動時、`AppConfig::load()`/`.yab`読み込みが成功した時点でも**、
+   内容がバックアップと異なればバックアップを更新する。これにより
+   テキストエディタでの手編集（`AppConfig::save()`を経由しない）も
+   次回起動時に捕捉できる。
 
-`config.toml`が存在しない場合:
+バックアップ処理はベストエフォート（失敗してもログ警告のみ）。ただし
+毎回警告が出て`awase.log`を埋めないよう、同一原因の失敗はプロセス内で
+一度警告したら以降は抑制する。
 
-1. `%LOCALAPPDATA%\awase-backup\config.toml`が存在すれば、そこから
-   コピーして復元する（ユーザーが編集した内容を実質的に保持する）。
-2. バックアップも無ければ、埋め込み既定値（`include_str!`でビルド時に
-   `config.toml`を取り込んだもの）から生成する。
+**実装配置**: バックアップ処理は`AppConfig::save()`自身（`src/config.rs`）
+に**暗黙の副作用として組み込まない**。理由:
 
-`layout/*.yab`（6ファイル: `nicola.yab`・`nicola_keytop.yab`・
-`nicola_us.yab`・`nicola_f.yab`・`nicola_kb232.yab`・`nicola_kakutei.yab`）
-も同様に、個別ファイル単位でバックアップ→埋め込み既定値の順に復元する
-（`layouts_dir`ディレクトリ自体が存在しなければ`create_dir_all`で作成）。
+- コア`awase`クレートはOS非依存原則（ADR-019、CLAUDE.md）があり、
+  `%LOCALAPPDATA%`解決はWindows固有。
+- `save()`を呼ぶ既存ユニットテスト（`src/config.rs`）が実行環境の
+  `%LOCALAPPDATA%`を汚染する副作用を持ってしまう。
 
-実装箇所（同一ロジックが複数箇所に重複しないよう、共通ヘルパーへの
-切り出しを実装時に検討する）:
+代わりに、(a) `awase-windows`/`awase-settings`それぞれに共通の
+プラットフォーム側ヘルパーを置くか、(b) コア側に置くなら退避先を
+引数で受け取る純粋関数（`fn backup_to(&self, dir: &Path) -> Result<()>`）
+にし、パス解決は呼び出し元に残す。実装時にどちらを取るか決める。
 
-- `crates/awase-windows/src/app/mod.rs::find_config_path()`
-  （現状は存在しなければ`bail!`するのみ、ここに復元ロジックを追加）
-- `crates/awase-settings/src/main.rs::find_config_path()`
-  （同型ロジック、awase.exe側と同じ変更を加える）
-- `crates/awase-windows/src/app/bootstrap.rs`（237行目付近、
-  `layouts_dir`をディレクトリスキャンして`*.yab`を読み込む処理。
-  現状はディレクトリが無い/空なら`show_no_layouts_dialog`で
-  エラーダイアログを出して終了するため、スキャンの**前**に
-  復元ロジックを挟む）
+### 決定2: 復元ロジックは専用の起動時ステップとして実装し、「既定値と一致」も復元条件に含める
+
+**発火条件の拡張**: 「ファイルが存在しない」**または**「ファイルの内容が
+埋め込み既定値とバイト一致し、かつバックアップが存在し、かつバックアップの
+内容が既定値と異なる」場合に復元する。後者が、MSI再インストールが
+既定値ファイルを先に配置してしまうシナリオ（Blocker1）への対応。
+「既定値と一致する」は「ユーザーが一度も編集していない、またはMSIが
+今しがた書き戻した」状態を意味するため、バックアップを優先しても
+実害が出るケースはほぼ無い（唯一の例外「ユーザーが意図的に既定値へ
+戻した直後」は決定6の通知と組み合わせて許容する）。
+
+**復元先パスの限定**: 復元は`current_exe().parent()`から構成した
+**絶対パス**（exe隣）にのみ行い、`resolve_relative_to_exe()`がCWD
+フォールバックとして返す裸パスには**決して書き込まない**。このため
+`src/paths.rs`に、存在チェックをせずexe隣の絶対パスを構成するだけの
+関数（例: `resolve_next_to_exe()`）を新設し、復元専用に使う。
+`layouts_dir`側（`bootstrap.rs`の`resolve_relative(&config.general.layouts_dir)`）
+も同じ関数を通すことで同じ罠を避ける。
+
+**発火対象の限定**: 復元は「CLI引数が無く、自動解決（exe隣）に落ちた
+場合」に限定する。CLI引数で明示されたパス（`awase.exe D:\tmp\test.toml`等）
+には復元を発火させない。
+
+**実装配置**: 復元は`find_config_path()`の内部に置かない。この関数は
+起動シーケンス以外からも呼ばれる（`read_bug_report_attachments()` —
+不具合報告の添付作成、`tray.rs`のトレイ自動起動トグル、
+`awase-settings::update_check.rs`の更新チェック）。これらの呼び出しで
+副作用的にファイルが生成・書き換えられるのは呼び出し元の期待に反する
+（特に不具合報告は「現状を採取する」ことが目的であり、採取行為が状態を
+変えてはならない）。
+
+代わりに、起動シーケンス（`bootstrap.rs`）の先頭で1回だけ呼ぶ明示的な
+関数（例: `ensure_user_data_present()`）として実装する。`find_config_path()`
+自身は「パスを解決するだけ」の純粋な関数のまま維持する。`awase-settings`
+側も同様の構成にする。
+
+**書き込み方式**: 復元の書き込みは`crate::fs_atomic::write_atomic`
+（`src/fs_atomic.rs`、一時ファイル+fsync+rename、ADR-099決定3）を使う。
+`awase.exe`と`awase-settings.exe`が同時に起動し双方が復元を試みる
+競合（awase.exe自身が`warn_layout_fallback`経由で設定画面を起動する
+経路があるため実在しうる）でも、読み手が書きかけの内容を読まないように
+するため。`layout_write_to_path()`側（現状`std::fs::write`直書き）を
+同じ経路に寄せるかは実装時に判断する。
 
 ### 決定3: 埋め込み既定値はビルド時にリポジトリのファイルから直接取り込む
 
 `include_str!("../../config.toml")` / `include_str!("../../layout/nicola.yab")`
-のように、リポジトリルートの実ファイルを直接参照する（値をコピーして
-二重管理しない）。これにより、リポジトリの既定値を更新すれば埋め込み
-既定値も自動的に追従する。
+のように、リポジトリルートの実ファイルを直接参照する。ただし、実際に
+出荷されるのは`.github/workflows/release.yml`が`dist/`へコピーしたもの
+（現状は加工なしの単純コピー）であるため、**この経路に将来加工を挟まない**
+ことを制約とする（加工を挟むと、決定2の「既定値とのバイト比較」が壊れる）。
+
+`layout/`ディレクトリの実ファイル一覧・`wix/main.wxs`のコンポーネント・
+`include_str!`の埋め込みリスト・決定2の復元対象リストの4箇所が同期して
+いることを確認する回帰テストを設ける（決定7参照）。
 
 ### 決定4: 「完全に削除したい」場合の案内を更新する
 
-MSI版・ZIP版ともに、完全削除の案内を「`%LOCALAPPDATA%\awase`と
-`%LOCALAPPDATA%\awase-backup`の両方を削除してください」に更新する
-（ZIP版`scripts/uninstall.ps1 -Purge`の対象にも`awase-backup`を追加する）。
+MSI版・ZIP版ともに、完全削除の案内を「`%LOCALAPPDATA%\awase`を削除
+してください」に更新する（決定1により`backup\`もこの配下にあるため、
+追加の言及は不要）。案内先は`docs/index.html`・`docs/index.en.html`に
+アンインストール手順の節を新設する（現状どちらにも存在しない）。ZIP版
+`scripts/uninstall.ps1 -Purge`は既に`$installDir`全体を削除しているため
+変更不要（`backup\`がその配下にある限り自動的に含まれる）。
 
-### 決定5: `wix/main.wxs`は変更しない
+### 決定5: `ConfigLoadState`（ADR-099決定4）との統合
 
-決定1〜4はいずれもアプリ側（Rustコード）の変更のみで完結し、MSIの
-コンポーネント構成・`Permanent`属性・GUID等には一切触れない。ADR-099
-決定0が担うアップグレード時の保護は現状のまま維持される。
+`classify_load_error`は`io::ErrorKind::NotFound`のみ`NotFound`に分類し、
+それ以外（parse error・`PermissionDenied`等）は`Dangerous`に分類する。
+決定2の復元は`NotFound`相当のケース（またはB1が拡張した「既定値と一致」
+ケース）のみを扱い、**`Dangerous`（ファイルは存在するが壊れている）の
+場合は自動復元しない**。理由: ユーザーが手編集中の（構文が一時的に
+壊れた）ファイルを、確認なく上書きしてはならないため。
+
+`Dangerous`時は、既存の`config.toml.bak`退避（`crates/awase-settings/src/main.rs`、
+壊れた時点の内容を1回だけ退避）に加えて、`awase-settings`のUIで
+「バックアップ（`backup\config.toml`、最後に正常だった内容）から復元
+しますか？」とユーザーに提案する形にする。`config.toml.bak`
+（壊れた版、1回きり）と`backup\config.toml`（正常版、都度更新）の
+役割の違いをコード内コメントに明記する。
+
+`ConfigLoadState::NotFound`分岐は決定2導入後ほぼ到達しなくなる
+（復元が先に走るため）。この分岐を残すか削除するかは実装時に判断する
+（`awase-settings::main.rs`のUI分岐が対象）。
+
+### 決定6: 復元・生成をユーザーに通知する
+
+無言でバックアップから書き戻す、または既定値を生成すると、「設定した
+覚えのない値になっている」という問い合わせを生む。`tracing::info!`に
+加えて、トレイ通知または`awase-settings`のステータス欄で
+「設定ファイルを再作成しました（バックアップから復元／既定値で生成）」
+を1行表示する。
+
+### 決定7: 回帰テスト
+
+- 決定1・決定3が挙げる「4箇所の同期」（`wix/main.wxs`のコンポーネント・
+  `include_str!`埋め込みリスト・決定2の復元対象リスト・`layout/`
+  ディレクトリの実ファイル）を確認するテキスト/ディレクトリ走査テスト
+  （`crates/awase-windows/tests/wix_installer_guard.rs`と同型）。
+- Blocker1の直接再現: MSIインストール→設定編集→`msiexec /x`→**同じMSIを
+  再インストール**→起動→編集内容が復元されていることを確認する
+  （「アンインストール後、再インストールせずに起動」ではこのシナリオを
+  検出できない点に注意）。
+- Blocker2の直接再現: スタートメニューのショートカットではなく
+  **ログオン時の自動起動（Runキー）経由**で起動し、復元先が正しく
+  `%LOCALAPPDATA%\awase\config.toml`になっていること（CWDに誤って
+  生成されていないこと）を確認する。
+- Blocker3の直接再現: 配列編集タブで「名前を付けて保存」を`layouts_dir`
+  外の同名ファイルに対して行った後、`backup\`が汚染されていないことを
+  確認する。
+- 手編集した`config.toml`（`AppConfig::save()`を経由しない）が、次回
+  起動時にバックアップへ捕捉されることを確認する（決定1の3番目の契機）。
 
 ## この設計で解決されること・されないこと
 
 **解決されること**:
-- MSIアンインストール→再インストール後、`config.toml`/`layout/*.yab`が
-  MSI側の挙動によって物理的に削除されても、次回起動時にバックアップ
-  から実質的に復元される。
-- v1で問題になった「レジストリKeyPathだけ残って再インストールで
-  ファイルが配置されない」というシナリオ自体が発生しない
-  （`wix/main.wxs`を変更しないため、`NeverOverwrite`とPermanentの
-  衝突が起きようがない）。
-- 何らかの理由で`config.toml`/`layout/*.yab`がファイルシステムから
-  消えた場合（ユーザーの誤削除、破損等）、アプリが起動不能になる
-  という最悪の事態を防げる（ADR-099 F4が扱った「load失敗」とは別の、
-  「そもそもファイルが無い」ケースへの防御）。
+- MSIアンインストール→再インストール（本ADRが解決したい主要シナリオ）
+  後、`config.toml`/`layout/*.yab`が出荷時の既定値で再配置されても、
+  次回起動時にバックアップから実質的に復元される（決定2のB1対応により、
+  v2で見つかった「復元が発火しない」問題を解消）。
+- 何らかの理由でファイルシステムから該当ファイルが消えた場合に、
+  アプリが起動不能になる事態を防げる。
+- テキストエディタでの手編集も、次回起動時のロード成功をトリガーに
+  バックアップへ捕捉される（決定1の3番目の契機）。
 
 **解決されないこと**:
 - MSIのアンインストール自体は引き続き`config.toml`/`layout/*.yab`を
   削除する（`wix/main.wxs`を変更しないため）。「MSIレベルで保護する」
-  というADR-099決定1がZIP版に対して実現した体験そのものではなく、
-  「消えても実害が出ないようにアプリ側で補う」という間接的な解決。
-- バックアップ自体は`%LOCALAPPDATA%`配下にあるため、ユーザーがOSの
-  ユーザープロファイルごと初期化する場合はバックアップも失われる
-  （これはZIP版の`-Purge`と同じ扱いであり、後退ではない）。
-- バックアップと本体のタイミングがずれるケース（保存直後にクラッシュ
-  した等）では、最新の編集内容が反映されない可能性がある。
+  のではなく「消えても実害が出ないようアプリ側で補う」という間接的な
+  解決である。
+- `Dangerous`分類（ファイルは存在するが壊れている）のケースは自動
+  復元されない（決定5、ユーザーの手編集中データを守るための意図的な
+  非対応）。
+- ポータブルZIP運用でexeごと別の場所へ移動すると、`backup\`もその
+  exeに付随して移動するため、旧場所のバックアップは参照されなくなる
+  （これは意図した挙動であり、ZIP版の既存の「exe相対で完結する」設計
+  との整合を優先した結果）。
 
 ## 未解決事項 / 次のアクション
 
-1. opus-adversarial-consultによるレビュー。
-2. `AppConfig::save()`/`layout_write_to_path()`双方から呼ばれる共通
-   バックアップヘルパーの配置（プラットフォーム非依存の`src/config.rs`
-   に置くか、`awase-windows`/`awase-settings`それぞれに置くか）の設計。
-3. `awase-backup`ディレクトリの権限・エラーハンドリング（書き込み
-   失敗時のログレベル、繰り返し失敗した場合の扱い）。
-4. 既存の`ConfigLoadState`/`classify_load_error`（ADR-099決定4）との
-   統合方法——「ファイルが存在しない」は現状`NotFound`分類だが、
-   復元ロジックが割り込むことで、ユーザーから見た挙動（警告ダイアログ
-   の有無等）がどう変わるかの整理。
-5. 回帰テスト（`crates/awase-windows/tests/`または`src/config.rs`内の
-   ユニットテスト）: バックアップ→削除→復元のラウンドトリップ検証。
-6. 実機検証: MSIアンインストール→再インストール→復元されることの確認。
+1. opus-adversarial-consult round3。
+2. 決定1のバックアップ処理配置（(a) プラットフォーム側ヘルパー／
+   (b) コア側の純粋関数）をどちらにするか実装時に確定する。
+3. 決定5の`ConfigLoadState::NotFound`分岐を残すか削除するかの判断。
+4. `layout_write_to_path()`を`write_atomic`経由にするかどうかの判断
+   （決定2でconfig側は`write_atomic`使用を決定済み、layoutは実装時判断）。
+5. 実機検証（決定7のテスト方針に基づく）。
