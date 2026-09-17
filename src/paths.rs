@@ -99,7 +99,9 @@ fn resolve_relative_to(exe: &Path, path: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_target_ancestor, resolve_relative_to, resolve_relative_to_exe, Path, PathBuf};
+    use super::{
+        find_target_ancestor, resolve_relative_to, resolve_relative_to_exe, Path, PathBuf,
+    };
     use std::fs;
 
     #[test]
