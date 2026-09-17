@@ -234,8 +234,8 @@ pub(super) fn init_engine_validated(
             config.general.right_thumb_key
         ))?;
 
+    ensure_default_layouts_exist(&config.general.layouts_dir);
     let layouts_dir = resolve_relative(&config.general.layouts_dir);
-    ensure_default_layouts_exist(&layouts_dir);
     let layouts = LayoutEntry::scan_all(
         &layouts_dir,
         diag,

@@ -552,7 +552,7 @@ impl SettingsApp {
             }
         };
         if cli_arg_config_path().is_none() {
-            ensure_default_layouts_exist(&resolve_layouts_dir(&config.general.layouts_dir));
+            ensure_default_layouts_exist(&config.general.layouts_dir);
         }
         let available_layouts = scan_layout_names(&config.general.layouts_dir);
         let config_loaded_model = config.general.keyboard_model;
@@ -5326,14 +5326,19 @@ fn is_dev_build() -> bool {
 
 /// `config.toml`が実行ファイルの隣に無ければ、埋め込み既定値から生成する
 /// （ADR-178 決定2）。
+/// `current_exe()`の親ディレクトリ。開発ビルドではないことを呼び出し元が
+/// 保証していること（`is_dev_build()`）。
+fn exe_dir() -> Option<std::path::PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
+}
+
 fn ensure_default_config_exists() {
     if is_dev_build() {
         return;
     }
-    let Some(exe_dir) = std::env::current_exe()
-        .ok()
-        .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
-    else {
+    let Some(exe_dir) = exe_dir() else {
         return;
     };
     let config_path = exe_dir.join("config.toml");
@@ -5350,13 +5355,23 @@ fn resolve_layouts_dir(layouts_dir: &str) -> std::path::PathBuf {
     awase::paths::resolve_relative_to_exe(layouts_dir)
 }
 
-/// `layouts_dir`に有効な`.yab`が1本も無ければ、同梱6ファイルを埋め込み
-/// 既定値から生成する（ADR-178 決定2）。
-fn ensure_default_layouts_exist(layouts_dir: &std::path::Path) {
+/// `layouts_dir_raw`（`config.general.layouts_dir`の生文字列）に有効な
+/// `.yab`が1本も無ければ、同梱6ファイルを埋め込み既定値から生成する
+/// （ADR-178 決定2）。生成先は`exe_dir.join(layouts_dir_raw)`に固定し、
+/// `resolve_layouts_dir()`（＝`resolve_relative_to_exe`）の結果を使わない
+/// ——exe隣に存在しない場合はCWD相対の裸パスへフォールバックするため、
+/// 生成前に呼ぶと生成先がCWD相対になってしまう（`crates/awase-windows/src/app/mod.rs::ensure_default_layouts_exist`
+/// で2026-09-17の実機検証により確認した実害と同型）。呼び出し元はこの
+/// 関数の**後**で`resolve_layouts_dir`を呼んで読み取り先を解決すること。
+fn ensure_default_layouts_exist(layouts_dir_raw: &str) {
     if is_dev_build() {
         return;
     }
-    if let Err(e) = awase::config::ensure_layouts_exist(layouts_dir) {
+    let Some(exe_dir) = exe_dir() else {
+        return;
+    };
+    let target_dir = exe_dir.join(layouts_dir_raw);
+    if let Err(e) = awase::config::ensure_layouts_exist(&target_dir) {
         tracing::warn!("Failed to create default layout files: {e}");
     }
 }
