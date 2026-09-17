@@ -404,15 +404,20 @@ awase.exe本体は:
   （`WM_APP+N`応答、または共有メモリ/一時ファイル等、実装タスクで
   詳細化）。
 
-**較正モード状態の所有者（round6 M6対応）**: 物理キー検知は
+**較正モード状態の所有者（round6 M6対応、round8で訂正）**: 物理キー検知は
 `HOOK_STATE`（LLフックコールバック側、atomicsで管理される既存の
 世界）で行い、観測ポーリング（決定3）はランタイム側
 （`AppState`/`spawn_local`タイマー）で行う——実行文脈が異なる2つの
 処理を1つの新しい裸のグローバルstaticにまとめない。較正モードの
-ON/OFFと対象VK・PID・HWNDは`HOOK_STATE`側に持たせ（フックコールバックが
-`app_disabled`判定と同じタイミングで読む必要があるため）、ランタイム側の
-観測ループはこの状態を都度読み取るだけの関係にする（ADR-164が集約した
-「裸のグローバルstaticより既存singletonへの集約を優先する」方針に
+ON/OFFと対象VKは`HOOK_STATE`側に持たせる（フックコールバックが
+`app_disabled`判定と同じタイミングで読む必要があるため）。**PID・HWNDは
+`HOOK_STATE`には持たせない**（round8訂正: フックコールバックがPID/HWNDを
+使う場面は無く、フォーカス検証はメインスレッドが`Runtime::
+calibration_session_pid()`/`platform.focus.pid()`で行う。HOOK_STATEに
+不要な状態を増やすとtorn readの軸が増えるだけでなく、176-T7 round7 S1が
+「HWNDは運ばない」と決めた結論とも整合しない）。ランタイム側の観測ループは
+`HOOK_STATE`の較正対象VKの状態を都度読み取るだけの関係にする（ADR-164が
+集約した「裸のグローバルstaticより既存singletonへの集約を優先する」方針に
 従う）。
 
 awase-settings側はegui標準のテキスト入力やGetAsyncKeyStateに頼らない

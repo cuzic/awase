@@ -293,9 +293,16 @@ staticより既存singletonへの集約を優先する」方針に従い、新�
 一切入らないことをコードレビューで確認する**（B1対策の核心）。
 
 **受け入れ基準**: Windows実機で、較正モード中に対象キーを押すと
-awase-settings側が検知結果を受け取ることを確認する。`architecture_
-guard`相当のテキスト走査で「較正モードの検知コードが通常のshadow-
-toggleディスパッチを呼んでいない」ことを固定できないか検討する。
+awase.exeのログ（`tracing::info!`、`[calibration] 対象キー押下を検知`）に
+記録されることを確認する（awase-settingsへの返却は176-T9の結果チャネルで
+まとめて設計・実装する——opus-adversarial-consultレビュー round8 B3対応:
+T7が`WM_CALIBRATION_RESULT`の型を先送りしたのと同じ理由で、T8時点では
+awase-settings側の受信チャネルを新設しない）。`architecture_guard`の
+テキスト走査で「較正モードの検知コードが通常のshadow-toggleディスパッチ・
+belief更新に一切触れていないこと」「検知コードが`focus_app_disabled`
+早期returnより手前に置かれていること」「状態のミラー書き込み口が
+`begin_calibration_bypass`/`end_calibration_bypass`の2箇所に限定されている
+こと」を固定する。
 
 **依存**: 176-T6、176-T7。
 

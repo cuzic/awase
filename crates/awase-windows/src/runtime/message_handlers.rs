@@ -1228,6 +1228,32 @@ pub(crate) unsafe fn handle_wm_hotkey_toggle(app: &mut Runtime) {
     app.toggle_engine();
 }
 
+/// WM_CALIBRATION_KEY_DETECTED ハンドラ（ADR-176 176-T8）。
+///
+/// **belief書き込みAPI（`ImeModel`のsetter・`dispatch_event`・
+/// `observation_store`・`reduce(`等）を一切呼ばないこと**
+/// （ADR-176決定1の点2、`architecture_guard.rs`の
+/// `calibration_key_detected_handler_does_not_touch_belief`が固定する）。
+pub(crate) fn handle_wm_calibration_key_detected(app: &Runtime) {
+    let Some(session_pid) = app.calibration_session_pid() else {
+        return;
+    };
+    let focus_pid = app.platform.focus.pid();
+    if focus_pid != session_pid {
+        tracing::debug!(
+            "[calibration] キー検知を受信したが、現在のフォーカス先(pid={focus_pid})が\
+             較正セッション(pid={session_pid})と一致しないため無視します"
+        );
+        return;
+    }
+    let seq = hook::calibration_press_seq();
+    let press_ms = hook::calibration_last_press_ms();
+    tracing::info!(
+        "[calibration] 対象キー押下を検知: vk={:?} seq={seq} press_ms={press_ms}",
+        app.calibration_session_vk()
+    );
+}
+
 /// WM_CALIBRATION_START ハンドラ（ADR-176 176-T7）。
 pub(crate) unsafe fn handle_wm_calibration_start(app: &mut Runtime, wparam: WPARAM) {
     let payload = crate::calibration_ipc::unpack(wparam.0);

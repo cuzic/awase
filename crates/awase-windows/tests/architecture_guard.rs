@@ -5000,3 +5000,119 @@ fn calibration_bypass_timeout_check_runs_from_hook_watchdog_not_ime_refresh() {
          あるべき（呼び出し位置={call_pos}, watchdogアーム位置={watchdog_pos}）"
     );
 }
+
+// ── ADR-176 176-T8: 較正キー検知 ────────────────────────────────────────
+
+/// 較正キー検知が通常のディスパッチ・belief更新に一切触れないことを固定する
+/// （ADR-176決定1、176-T8受け入れ基準が直接求めるガード）。
+#[test]
+fn calibration_key_detection_does_not_touch_normal_dispatch() {
+    let src = read_crate_file("src/hook.rs");
+    let production = production_code_only(&src);
+    let body = extract_fn_body(production, "fn notify_calibration_key_if_target(");
+    for forbidden in [
+        "HOOK_KEYS",
+        "request_engine_wake",
+        "post_to_main_thread_with(",
+        "send_input_safe",
+        "apply_alt_impersonation",
+        "shadow",
+        "classify_",
+        "ImeEvent",
+        "dispatch",
+        "CallNextHookEx",
+        "LRESULT",
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "較正キー検知が `{forbidden}` に触れています（ADR-176決定1: \
+             較正検知は通常パイプライン・belief更新から完全に独立した\
+             データパスでなければならない）"
+        );
+    }
+    assert_eq!(
+        count_real_calls(body, "post_to_main_thread_quiet("),
+        1,
+        "較正キー検知からの合図は post_to_main_thread_quiet 1本だけであるべき"
+    );
+}
+
+/// 較正キー検知の呼び出しが`focus_app_disabled`早期returnより手前に
+/// 置かれていることをファイル内オフセットで固定する（ADR-176決定1:
+/// 後ろに置くと較正中は一度も実行されない）。
+#[test]
+fn calibration_detection_precedes_focus_app_disabled_early_return() {
+    let content = read_crate_file("src/hook.rs");
+    let src = production_code_only(&content);
+    let detect = src
+        .find("notify_calibration_key_if_target(vk, is_keydown, was_down)")
+        .expect("較正キー検知の呼び出しが hook_callback に見つかりません");
+    let gate = src
+        .find("HOOK_STATE.focus_app_disabled.load(Ordering::Relaxed)")
+        .expect("focus_app_disabled 早期return が見つかりません");
+    assert!(
+        detect < gate,
+        "較正キー検知は focus_app_disabled 早期return より手前に置くこと\
+         （ADR-176決定1: 後ろに置くと較正中は一度も実行されない）"
+    );
+}
+
+/// `set_calibration_target(`の実呼び出しが`begin_calibration_bypass`/
+/// `end_calibration_bypass`の中の2箇所だけであることを固定する
+/// （round8 S4対応: 較正状態のミラー書き込み口が散るとドリフトする）。
+#[test]
+fn set_calibration_target_call_sites_are_limited_to_bypass_lifecycle() {
+    const NEEDLE: &str = "set_calibration_target(";
+    let known_sites: &[(&str, usize)] = &[("src/runtime/focus_tracking.rs", 2)];
+
+    let all_files = list_src_files();
+    let mut files_with_calls: Vec<(String, usize)> = Vec::new();
+    for path in &all_files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, NEEDLE);
+        if count > 0 {
+            files_with_calls.push((path.clone(), count));
+        }
+    }
+    files_with_calls.sort();
+
+    let mut expected: Vec<(String, usize)> = known_sites
+        .iter()
+        .map(|(p, c)| ((*p).to_string(), *c))
+        .collect();
+    expected.sort();
+
+    assert_eq!(
+        files_with_calls, expected,
+        "set_calibration_target の呼び出し箇所が想定と異なります。\
+         begin_calibration_bypass/end_calibration_bypass の中だけに\
+         限定すること（新しい呼び出し元を意図的に追加した場合は\
+         known_sites を更新すること）"
+    );
+}
+
+/// `handle_wm_calibration_key_detected`がbelief書き込みAPIに触れないことを
+/// 固定する（ADR-176決定1の点2）。
+#[test]
+fn calibration_key_detected_handler_does_not_touch_belief() {
+    let src = read_crate_file("src/runtime/message_handlers.rs");
+    let production = production_code_only(&src);
+    let body = extract_fn_body(
+        production,
+        "pub(crate) fn handle_wm_calibration_key_detected(",
+    );
+    for forbidden in [
+        "dispatch_event(",
+        "observation_store",
+        "reduce(",
+        "ImeModel",
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "handle_wm_calibration_key_detected が `{forbidden}` に触れています\
+             （ADR-176決定1の点2: 較正キー検知の結果はImeModel/observation_store\
+             へ一切dispatchしない）"
+        );
+    }
+}

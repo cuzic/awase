@@ -587,6 +587,7 @@ impl Runtime {
             Some(crate::state::TickMs(now.0 + CALIBRATION_BYPASS_TIMEOUT_MS));
         self.calibration_session_pid = Some(pid);
         self.calibration_session_vk = Some(vk);
+        crate::hook::set_calibration_target(Some(vk));
         if self.platform.focus.is_focused() {
             let focused_pid = self.platform.focus.pid();
             self.apply_app_disable_transition(focused_pid, false);
@@ -601,6 +602,7 @@ impl Runtime {
         self.calibration_bypass_deadline = None;
         self.calibration_session_pid = None;
         self.calibration_session_vk = None;
+        crate::hook::set_calibration_target(None);
         if self.platform.focus.is_focused() {
             let pid = self.platform.focus.pid();
             self.apply_app_disable_transition(pid, false);
@@ -620,6 +622,14 @@ impl Runtime {
     #[must_use]
     pub(crate) fn calibration_session_pid(&self) -> Option<u32> {
         self.calibration_session_pid
+    }
+
+    /// ADR-176 176-T8: 現在進行中の較正セッションの対象VK
+    /// （`None`=非アクティブ）。`message_handlers.rs`の
+    /// `handle_wm_calibration_key_detected`がログ出力に使う。
+    #[must_use]
+    pub(crate) fn calibration_session_vk(&self) -> Option<awase::types::VkCode> {
+        self.calibration_session_vk
     }
 
     /// ADR-176 176-T6（round6 B3対応）: `now`が較正モードのタイムアウト
