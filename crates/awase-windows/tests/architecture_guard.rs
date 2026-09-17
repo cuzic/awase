@@ -5039,7 +5039,10 @@ mod adr178_self_heal_wiring {
     #[test]
     fn find_config_path_has_no_self_heal_side_effect() {
         let content = read_crate_file("src/app/mod.rs");
-        let body = extract_fn_body(&content, "pub(crate) fn find_config_path() -> Result<PathBuf> {");
+        let body = extract_fn_body(
+            &content,
+            "pub(crate) fn find_config_path() -> Result<PathBuf> {",
+        );
         assert!(
             !body.contains("ensure_default_config_exists"),
             "app/mod.rs::find_config_path()にensure_default_config_exists()の\
@@ -5085,10 +5088,7 @@ mod adr178_self_heal_wiring {
     #[test]
     fn ensure_functions_never_use_resolve_relative_as_write_target() {
         for (file, fn_signature) in [
-            (
-                "src/app/mod.rs",
-                "fn ensure_default_config_exists() {",
-            ),
+            ("src/app/mod.rs", "fn ensure_default_config_exists() {"),
             (
                 "src/app/mod.rs",
                 "pub(super) fn ensure_default_layouts_exist(layouts_dir_raw: &str) {",
@@ -5096,7 +5096,11 @@ mod adr178_self_heal_wiring {
         ] {
             let content = read_crate_file(file);
             let body = extract_fn_body(&content, fn_signature);
-            for forbidden in ["resolve_relative(", "resolve_relative_to_exe(", "resolve_layouts_dir("] {
+            for forbidden in [
+                "resolve_relative(",
+                "resolve_relative_to_exe(",
+                "resolve_layouts_dir(",
+            ] {
                 assert!(
                     !body.contains(forbidden),
                     "{file}の`{fn_signature}`の本体に{forbidden}が出現する。\
@@ -5117,7 +5121,10 @@ mod adr178_self_heal_wiring {
     #[test]
     fn settings_app_new_calls_both_ensure_functions() {
         let content = read_crate_file("../awase-settings/src/main.rs");
-        let body = extract_fn_body(&content, "fn new(cc: &eframe::CreationContext<'_>) -> Self {");
+        let body = extract_fn_body(
+            &content,
+            "fn new(cc: &eframe::CreationContext<'_>) -> Self {",
+        );
         assert!(
             body.contains("ensure_default_config_exists();"),
             "crates/awase-settings/src/main.rs::SettingsApp::new()にensure_default_config_exists()\
