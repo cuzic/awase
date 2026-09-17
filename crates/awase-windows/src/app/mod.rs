@@ -158,8 +158,10 @@ pub(crate) fn find_config_path() -> Result<PathBuf> {
             let _ = args.next(); // value をスキップ
             continue;
         }
+        // CLI引数でパスが明示されている場合は自己修復しない（ADR-178 決定2）。
         return Ok(PathBuf::from(arg));
     }
+    ensure_default_config_exists();
     let resolved = resolve_relative("config.toml");
     if resolved.exists() {
         return Ok(resolved);
@@ -168,6 +170,45 @@ pub(crate) fn find_config_path() -> Result<PathBuf> {
         "Config file not found. Place config.toml next to the executable, \
          or specify path as command line argument."
     )
+}
+
+/// 開発ビルド（`current_exe()`の祖先に`target`という名前のディレクトリを
+/// 含む）かどうかを判定する（ADR-178 決定2）。開発ビルドでは
+/// `ensure_config_exists`/`ensure_layouts_exist`を呼ばない——ワークスペース
+/// ルートのリポジトリ追跡対象ファイルをそのまま使うため。
+fn is_dev_build() -> bool {
+    std::env::current_exe().is_ok_and(|exe| {
+        exe.ancestors()
+            .any(|a| a.file_name().is_some_and(|n| n == "target"))
+    })
+}
+
+/// `config.toml`が実行ファイルの隣に無ければ、埋め込み既定値から生成する
+/// （ADR-178 決定2）。
+fn ensure_default_config_exists() {
+    if is_dev_build() {
+        return;
+    }
+    let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(std::path::Path::to_path_buf)) else {
+        return;
+    };
+    let config_path = exe_dir.join("config.toml");
+    if let Err(e) = awase::config::ensure_config_exists(&config_path) {
+        tracing::warn!("Failed to create default config.toml: {e}");
+    }
+}
+
+/// `layouts_dir`に有効な`.yab`が1本も無ければ、同梱6ファイルを埋め込み
+/// 既定値から生成する（ADR-178 決定2）。`LayoutEntry::scan_all`を呼ぶ前に
+/// 使うことで、通常時（既にファイルがある）は追加の`scan_all`呼び出しを
+/// 発生させない。
+pub(super) fn ensure_default_layouts_exist(layouts_dir: &std::path::Path) {
+    if is_dev_build() {
+        return;
+    }
+    if let Err(e) = awase::config::ensure_layouts_exist(layouts_dir) {
+        tracing::warn!("Failed to create default layout files: {e}");
+    }
 }
 
 /// 相対パスを実行ファイルのディレクトリ基準で解決する
