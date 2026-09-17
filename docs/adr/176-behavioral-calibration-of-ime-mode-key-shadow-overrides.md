@@ -4,13 +4,16 @@ title: |-
   awase-settingsの明示的な較正UIでモードキーの実効果を測定し、
   未登録時に静的分類を補完する
 status: |-
-  **2026-09-17: 較正結果のconfig.toml永続化・opt-in適用までの最終配線を
-  完了。** T9a確定（`ConfirmedOn`）→`config.toml`保存→起動時/リロード時
-  ロード→`GeneralConfig::apply_calibrated_mode_keys`（既定`false`）
-  opt-inフラグでの実IME判定への反映、までのエンドツーエンドの配線が
-  完成した。詳細は[176-implementation-tasks.md](176-implementation-tasks.md)
-  のT12節「最終配線」を参照。残るのはawase-settings側のUI案内と実機A/B
-  検証のみ。
+  **2026-09-17: 実機A/B検証完了。ADR-176の較正機能（176-T8〜T12）が
+  エンドツーエンドで実機動作することを確認した。** T10の較正パネルUIから
+  無変換キーを較正→`ConfirmedOn`確定→`config.toml`へ永続化→
+  opt-inチェックボックスON→設定リロード→**実際にGJIのIME OFF状態で
+  無変換キー単独タップがIME ON+NICOLAエンジン活性化を引き起こすように
+  なった**（session_keymap=2の静的分類ではNone=無割当てのはずのキーが、
+  較正結果で上書きされたことの直接的な実機証拠）。詳細は
+  [176-implementation-tasks.md](176-implementation-tasks.md)のT12節
+  「実機A/B検証完了」を参照。残るのはawase-settings側のUI案内
+  （優先度低、無くても機能する）のみ。
 
   **2026-09-17: 176-T0を「較正機能の必須の前提条件」という決定8の位置づけ
   から外し、実装自体を見送り。** opus-adversarial-consultによる2ラウンドの

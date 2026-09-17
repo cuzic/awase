@@ -766,11 +766,38 @@ auto_detect`自体の通常呼び出し）にも自然に乗る形にした—�
   再構築する（手動削除・置き換えが古い内容を残さないように）。
   パースできないエントリは警告ログでスキップし起動を落とさない。
 
+**実機A/B検証完了（2026-09-17、dragonflyg4、T10の実UIで実施）**:
+デバッグパッチ不要でT10の較正パネルUIから直接、以下の一連の流れを
+実機確認した:
+
+1. 「IMEキー較正」タブで無変換キーを選択し「較正開始」→物理キーを
+   2回押下（各回IME ON状態でsettle window分フォーカス保持）→
+   awase.exe側で`[calibration] 確定: vk=VkCode(29) ImeToggleKind::On`。
+2. awase-settings.log側で`[calibration] 結果を受信: ...
+   active_ime_kind=Gji`→`vk=VkCode(29)の較正結果をconfig.tomlへ
+   保存しました`。実際の`config.toml`に
+   `[[calibration]] vk=29 result="On" active_ime_kind="Gji"
+   fingerprint_kind="Gji" gji_session_keymap=2`が書き込まれたことを
+   確認（`gji_relevant_row`は該当行が無く省略、想定どおり）。
+3. opt-inチェックボックスをONにして通常の保存操作→
+   `apply_calibrated_mode_keys = true`が`config.toml`に反映され、
+   `Config reloaded successfully`ログを確認（較正確定時のリロードと
+   合わせて計2回のリロードが正しいタイミングで発火）。
+4. **決定的な確認**: 別のテキストアプリでGJIのIMEをOFF（直接入力）に
+   した状態で無変換キーを単独タップしたところ、**IMEがONになり
+   NICOLAエンジンも正しく活性化した**（ユーザー実機確認）。
+   session_keymap=2（MSIMEプリセット）の静的分類では無変換キーは
+   `None`（割当てなし）のはずであり、この挙動変化は較正結果が
+   `apply_calibration_override`経由で実際にIME判定を上書きしている
+   ことの直接的な証拠である。
+
+これにより176-T8〜T12の実装（物理キー検知→確定→config.toml永続化→
+opt-in適用→実際のIME/エンジン制御への反映）がエンドツーエンドで
+実機動作することを確認した。
+
 **残る未実装**: `awase-settings`側のUI案内（GJI再同期条件を満たさない
-場合の案内、`FindWindowW`失敗時の案内、上記1参照）、および実機A/B検証
-（上記2参照）。配線自体は完了したため、次にADR-176へ戻る際は実機での
-一連の動作確認（較正確定→config.toml保存→リロード→opt-in ON→
-実際のIME判定に反映されることの確認）から始めるのが自然。
+場合の案内、`FindWindowW`失敗時の案内）のみ。優先度は低い
+（無くても機能する、ユーザー体験の改善項目）。
 
 ---
 
