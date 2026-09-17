@@ -51,7 +51,7 @@ related_adr:
 176-T8（awase.exe側の物理キー検知）
 
 **フェーズ4（観測・UI、awase-settings側）**:
-176-T9（`ImmGetOpenStatus`ポーリングループ）→
+176-T9（awase.exe本体による`WM_IME_CONTROL`ポーリング）→
 176-T10（較正パネルUI）
 
 **フェーズ5（永続化・反映）**:
@@ -209,31 +209,65 @@ result)`で足りるはずだが、念のため両者が一致する場合の扱
 ### 176-T6（決定1、B1/B2対応）: `disable_apps`較正モードの適用
 
 **内容**: 較正モード開始時、`awase-settings.exe`を対象に
-`HOOK_STATE.focus_app_disabled`（`hook.rs:1103-1105`）と同型の
+`HOOK_STATE.focus_app_disabled`（`hook.rs:1102-1104`）と同型の
 バイパスを一時的に有効化する仕組みを追加する。既存の`disable_apps`
 設定機構（`app_overrides.disable_apps`相当）を流用できるか、較正専用の
 一時フラグを新設するかを実装時に決定する（既存機構の流用を優先——
-`.claude/rules/complexity-budget.md`の精神）。
+`.claude/rules/complexity-budget.md`の精神。既存の`disable_apps`＋
+reload経路（`runtime/mod.rs:1988-1991`、フォーカス変更が無くても
+現在のフォーカス先で再評価する）を流用すれば、較正モードが
+「awase-settingsが既にフォーカスを持っている状態」で始まっても
+バイパスが即座に効く——較正専用の一時フラグを新設する場合は、この
+再評価配線を自前で用意する必要がある。round6 m4対応）。
+
+**較正モードの解除（round6 m4/B3対応）**: 較正終了時（正常終了・
+UIでのキャンセル・176-T9のPID不一致検知）に確実に`disable_apps`を
+元に戻すこと。加えて較正モード全体にタイムアウトを設け、
+awase-settingsからの応答が一定時間無い場合（クラッシュ・強制終了）は
+自動的にバイパスを解除する（round6 B3対応、awase-settingsが死んだ
+状態でawaseが効かなくなり続ける事故を防ぐ）。
 
 **受け入れ基準**: Windows実機で、較正モード中に対象キーを押しても
 awase側の`[shadow-toggle]`等のログが一切出力されないことを確認する
-（=完全バイパスできていることの確認）。
+（=通常のIME belief更新・actuationパイプラインから完全バイパス
+できていることの確認——較正専用の検知・観測コード自体はADR決定1の
+訂正どおりこのバイパスの外で動く、混同しないこと）。異常終了
+シナリオ（awase-settingsを較正中に強制終了する）でタイムアウトにより
+バイパスが自動解除されることも確認する。
 
 **依存**: なし。
 
-### 176-T7（決定2）: awase.exe⇔awase-settings間のIPC
+### 176-T7（決定2・3）: awase.exe⇔awase-settings間のIPC（較正モード開始・自PID/HWND通知・結果返却）
 
 **内容**: 既存の`WM_APP+N`パターン（`crates/awase-windows/src/lib.rs:
-299-355`に列挙）に、較正モード開始・対象キー検知結果通知の新しい
-メッセージを追加する。`awase-settings`側は`main.rs`の
+299-355`に列挙）に、較正モード開始・対象キー検知結果＋観測結果通知の
+新しいメッセージを追加する。`awase-settings`側は`main.rs`の
 `send_reload_config_message()`と同型の`FindWindowW`+`PostMessageW`
 定型を流用する。
 
+較正モード開始メッセージには、対象VKに加えて**awase-settings自身の
+PID**と**トップレベルHWND**を含める（176-T9でawase.exe本体がこの
+HWNDに対して`imm.rs::probe_ime_control`を呼ぶために必要、PIDは
+HWND再利用検知に必要——2026-09-16の実機検証で、`awase-settings.exe`
+のeguiメインウィンドウ（`winit`管理下）に対しても`ImmGetDefaultIMEWnd`
++`WM_IME_CONTROL`が正しく機能することを確認済み、
+[ADR-125](125-egui-winit-dynamic-ime-association-focus-model-gap.md)
+実機検証ログ2の再現）。
+
+**awase-settings側の新規作業（round6 B4対応、旧版で漏れていた）**:
+UIスレッドから`GetActiveWindow`（`windows` 0.58の既存feature
+`Win32_UI_WindowsAndMessaging`で足り、新規feature追加は不要）で
+自身のトップレベルHWNDを取得する。**`FindWindowW`によるクラス名
+検索は採らない**——winitの既定クラス名は汎用の`"Window Class"`で
+あり、`focus/imm_learning.rs:22-23`がBUG-107の文脈で「プロセス間で
+衝突する」と明記している。
+
 **具体的に決める必要がある事項**（未解決点2）:
-- 較正モード開始時に渡す対象VK情報の伝達方法（`WM_APP+N`の
-  `wparam`/`lparam`だけで足りるか、共有メモリ等が必要か）。
-- 検知結果（タイムスタンプ等）の返却方法（コールバック的な
-  `PostMessage`か、ポーリングで別途取得するか）。
+- 較正モード開始時に渡す対象VK・自PID・自HWND情報の伝達方法
+  （`WM_APP+N`の`wparam`/`lparam`だけで足りるか、共有メモリ等が
+  必要か）。
+- 検知結果・観測結果（タイムスタンプ、観測したIME状態遷移）の返却
+  方法（コールバック的な`PostMessage`か、ポーリングで別途取得するか）。
 
 **受け入れ基準**: Windows実機で、awase-settingsからの較正モード開始
 要求がawase.exe側に届き、awase.exe側が較正モードへ遷移することを
@@ -245,10 +279,18 @@ awase側の`[shadow-toggle]`等のログが一切出力されないことを確�
 
 **内容**: 較正モード中、awase.exeの既存フック（`hook.rs`）に、対象VKの
 物理（非注入）・修飾キー無しKeyDownを検知して176-T7のIPC経由で
-awase-settingsへ通知する分岐を追加する。**176-T6の`disable_apps`
-バイパスが有効な間は、この検知は通常のshadow-toggle等の処理
-パイプラインに一切入らないことをコードレビューで確認する**（B1対策の
-核心）。
+awase-settingsへ通知する分岐を追加する。**この検知コードは
+`hook.rs:1102`の`app_disabled`早期returnより手前に置く**——既存の
+`physical_key_state`更新ブロック（`hook.rs:1094-1097`）と同じ配置
+パターンで、このバイパスが較正検知も含めて全停止させる不変条件
+（round6 B1/m3対応）を踏まえた上での**明示的な例外**として位置づける。
+較正モードのON/OFF・対象VK・PID・HWNDは`HOOK_STATE`側の状態として
+持たせる（round6 M6対応、フックコールバックが`app_disabled`判定と
+同じタイミングで読む必要があるため。ADR-164が集約した「裸のグローバル
+staticより既存singletonへの集約を優先する」方針に従い、新しい裸の
+グローバルstaticを生やさない）。**176-T6の`disable_apps`バイパスが
+有効な間は、この検知は通常のshadow-toggle等の処理パイプラインに
+一切入らないことをコードレビューで確認する**（B1対策の核心）。
 
 **受け入れ基準**: Windows実機で、較正モード中に対象キーを押すと
 awase-settings側が検知結果を受け取ることを確認する。`architecture_
@@ -259,47 +301,128 @@ toggleディスパッチを呼んでいない」ことを固定できないか�
 
 ---
 
-## フェーズ4: 観測・UI（awase-settings側）
+## フェーズ4: 観測・UI
 
-### 176-T9（決定3）: 較正専用ネイティブウィンドウ＋`WM_IME_CONTROL`ポーリングループ
+### 176-T9（決定3）: awase.exe本体による`WM_IME_CONTROL`ポーリング（較正専用ウィンドウ不要、v8で衝突対応を追加）
 
-**2026-09-16実機スパイクで判明した制約**: `awase-settings`は
-eguiバックエンド`winit`を使っており、[ADR-125](125-egui-winit-dynamic-ime-association-focus-model-gap.md)
-が実証済みのとおり`winit`の`set_ime_allowed(false)`が
-`ImmAssociateContextEx(hwnd, 0, IACE_CHILDREN)`でIMEコンテキストを
-デタッチするため、**eguiのメインウィンドウHWNDに対して直接
-`ImmGetOpenStatus`/`WM_IME_CONTROL`をポーリングしても機能しない**
-（旧版の本タスク記述はこの制約を見落としていた）。一方、実機スパイク
-（`crates/awase-windows/examples/ime_observation_spike.rs`）で、
-eguiを介さない生の`CreateWindowExW`ウィンドウ上では
-`ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`（手法B、awase本体の
-`imm.rs::probe_ime_control`と同型）が実際のIME ON/OFF切替を正しく
-追跡することを確認済み。
+**v6（撤回済み）**——「eguiのメインウィンドウでは`WM_IME_CONTROL`も
+機能しないため較正専用のネイティブWin32子ウィンドウが要る」という
+記述はopus round5レビューでBlocker指摘され、2026-09-16の追加実機検証
+（`awase-settings.exe`の実際のバグ報告画面に約28秒間フォーカスした
+状態で手法Bを観測、タイムアウト無しで正しく追跡し続けた）で誤りと
+確定した。**v7**でawase.exe本体がawase-settingsのHWNDを直接観測する
+設計に単純化したが、opus round6レビューで観測をawase.exe本体へ移した
+ことによる新規の衝突（Blocker4件）が見つかった。詳細はADR本文
+「決定3」参照。以下はv8での対応を反映した内容。
 
-**内容**: `awase-settings`プロセス内に、**較正専用の本物のネイティブ
-Win32子ウィンドウ**（`CreateWindowExW`で作成し`winit`が管理しない
-独立HWND、`EDIT`コントロールを1つ持つ——較正パネル表示中のみ
-生成/表示し、egui本体のウィンドウとは別のHWNDとして扱う）を新設し、
-そのHWNDに対して`ImmGetDefaultIMEWnd`+`WM_IME_CONTROL`/
-`IMC_GETOPENSTATUS`をタイマーで短い間隔でポーリングするループを
-実装する。`crates/awase-settings/Cargo.toml`に`windows-rs`の
-`Win32_UI_Input_Ime`/`Win32_UI_WindowsAndMessaging`等必要なfeaturesを
-追加する（round4レビューM2が指摘：現状無い）。ウィンドウ作成・
-メッセージポンプの実装はスパイク（`ime_observation_spike.rs`の
-`create_window`/`window_proc`/`method_b_wm_ime_control`）をそのまま
-移植できる。TSF/COMは使わない（決定3、非スコープ——実測でTSF
-グローバルコンパートメントが状態変化を反映しないことを確認済み）。
+**内容**: 較正専用ウィンドウは新設しない。**awase.exe本体**が
+176-T7のIPCで受け取った`awase-settings`のHWND・PID（eguiのメイン
+ウィンドウそのもの）に対し、既存の`imm.rs::probe_ime_control`
+（`awase-windows`クレート内の唯一のチョークポイント、新規APIを増やさ
+ない）を使ってポーリングする。較正モード状態は176-T8のとおり
+`HOOK_STATE`側に置き、観測ループ（ランタイム側`spawn_local`タイマー）
+はこれを読み取るだけにする（round6 M6対応）。観測結果を176-T7の
+同じIPC応答でawase-settingsへ返す。
+
+**round6 B1対応（`app_disabled`ゲートとの衝突）**: 較正probeは
+`ime_refresh.rs:70-78`の`app_disabled`早期return（probeを含む全停止）
+の**明示的な例外**として実装する。この経路の観測結果は`ImeModel`/
+`observation_store`へ**一切dispatchしない**——通常のIME belief更新
+パイプラインとは完全に独立したデータパスにする。可能であれば
+`architecture_guard`相当のテキスト走査で「較正probeのコードから
+belief書き込みAPI（`ImeModel`のsetter等）が呼ばれていないこと」を
+固定する。
+
+**round6 B2対応（`send_health`汚染の回避）**: `imm.rs:263`の
+`send_health::record`は較正probeでは**呼ばない**。
+`runtime/executor.rs:986-995`に記録されている「診断専用probeが
+`send_health`を誤作動させたため削除された」前例と同じ轍を踏まない
+ため、`send_ime_control_raw`自体は変更せず、較正probe専用の薄い
+ラッパ関数（`record`を呼ばない）を新設するか、`record`呼び出しに
+スキップフラグを追加する。どちらを採るかを本タスクの実装時に決定し、
+コミット本文に理由を残す。
+
+**round6 B3対応（他プロセスHWNDのライフサイクル）**: 観測tickごとに
+`GetWindowThreadProcessId(hwnd)`が176-T7受信時に記録したPIDと一致する
+ことを確認する。不一致（awase-settingsの終了・HWND再利用）なら較正
+モードを即座に中止し、176-T6のタイムアウト機構と同じ経路で
+`disable_apps`を解除する。
+
+**round6 M2対応（probeを出すスレッド）**: awase.exe本体は単一
+スレッド・メッセージループ駆動で、そのスレッドがLLキーボードフックの
+コールバックスレッドでもある。同一スレッドから同期
+`SendMessageTimeoutW`を出すとフックコールバックの応答が遅れ
+`LowLevelHooksTimeout`（既定~300ms）超過でフックが外されるリスクが
+ある（BUG-34、`SMTO_ABORTIFHUNG`はハング開始後の相手には効かない）。
+較正probeは`win32_async::run_with_timeout`/offload経由でワーカー
+スレッドに出す。
+
+**round6 M4対応（観測の基準点・`None`の扱い）**: 観測ポーリングは
+較正モード開始（176-T7のIPC受信）と同時に開始し、押下前の`open`値を
+基準点として保持する。`open=None`（`SendMessageTimeoutW`失敗）は
+「変化なし」と区別し再試行として扱う（決定4参照）。
+
+**round6 M5対応（dylint許可リスト）**: `lints/actuation_call_guard/
+src/lib.rs`の`probe_ime_control`許可呼び出し元リスト（現行6件）に
+較正probeの呼び出し元を追加する。コミット本文に「棚卸しではなく
+新規追加」であることを明記する（`.claude/rules/complexity-budget.md`
+1-in-1-out対象、未発効だが前例として残す）。
+
+`awase-settings`側の変更は、新しいWin32ウィンドウ・新しい
+`crates/awase-settings/Cargo.toml`のwindows-rs feature・新しい
+`SendMessageTimeoutW`呼び出しという意味では**不要**（旧版が要求
+していた`Win32_UI_Input_Ime`等の追加は撤回）——ただし自PID/HWND取得
+のための`GetActiveWindow`呼び出し（176-T7）は別途必要。TSF/COMは
+使わない（決定3、非スコープ——「@」機序という独立した理由、
+ADR-153/BUG-113）。
 
 **実測が必要な値**（`tuning-constants.md`対象）: ポーリング間隔・
-タイムアウト。較正専用ウィンドウ上で対象キー押下からGJI/MS-IMEが
-実際にIME状態を変えるまでの実測msを取ってから決定する（スパイクの
-250msポーリングでも遷移を取りこぼさなかったが、確定値は本タスクで
-実測する）。
+タイムアウト。決着実験（`spike_egui_ime_control_probe.rs`の
+`POLL_INTERVAL_MS=100`/`SEND_IME_CONTROL_TIMEOUT_MS=50`、egui環境で
+実際に確認済み——`ime_observation_spike.rs`の250msはwinit/eguiを
+含まない環境の値のため根拠に使わない、round6 M3対応）を出発点とし、
+対象キー押下からGJI/MS-IMEが実際にIME状態を変えるまでの実測msを
+取ってから確定する。
 
-**受け入れ基準**: Windows実機で、較正フロー中にIME状態変化を正しく
-検知できることを確認する。
+**受け入れ基準**（round6 M1対応、決着実験の手順を移植）:
+1. awase.exeを`[ime-io] cross_process ... kind=probe`のdebugログが
+   出る水準で起動する（`imm.rs:254-259`が既にこのログを出す）。
+2. 較正モードを開始する（176-T7）。
+3. awase-settingsを前面にしたまま、言語バーまたは物理キーでGJIを
+   OFF→ON→OFFと3回手動で切り替える。
+4. awase.exe側のログで`open`の遷移が3回とも観測され、`elapsed_ms`の
+   最大が`send_health::SLOW_THRESHOLD_MS`（100ms）を下回ることを
+   確認する（B2のブレーカ誤作動が起きない余裕があることの確認を
+   兼ねる）。
+5. **（2026-09-16決着実験v2で確定）** (3)(4)は較正パネルの**テキスト
+   入力欄に実際にフォーカスした状態**でのみ成立する。テキスト欄以外の
+   ウィジェット（ボタン・チェックボックス等）にフォーカスがある状態
+   では、GJIは生の物理キーに一切反応せず`open`値は変化しない
+   （`disable_apps`でawaseを完全バイパスした状態でも同じ——awaseの
+   自作自演ではなくGJI自身がテキスト入力コンテキストの有無で挙動を
+   変えている。当初「awase自身のActivationSyncが原因では」という
+   仮説を立てたが決着実験v2で否定された）。したがって受け入れ基準は
+   「テキスト欄フォーカス時に正しく検知できる」ことに加え、
+   「テキスト欄以外フォーカス時は変化が観測されない（これが正しい
+   仕様上の挙動）」ことも確認する——後者を異常と誤診断しないこと。
+6. 可能なら`spike_egui_ime_control_probe`を同時に走らせ、awase.exeが
+   見た遷移列とspikeが見た遷移列が一致することを確認する（採る場合は
+   本タスクの依存にspikeのビルドが加わる）。
+7. `disable_apps`が実際に`awase-settings.exe`へ適用された状態で
+   上記1〜6を実施する（2026-09-16決着実験v2で確認済み——
+   `crates/awase-windows/examples/spike_calibration_decisive_v2.rs`、
+   ADR本文frontmatter status参照。実測レイテンシ247〜2295ms、
+   `elapsed_ms`は全サンプル20ms未満）。
 
-**依存**: 176-T6（バイパスが効いた状態で測定する必要があるため）。
+**round6 M1対応・v2決着実験で確定した新規要件**: 較正専用UIは、
+測定区間中ずっと**実際のテキスト入力ウィジェットにキーボードフォーカス
+を保持し続ける**設計にすること（176-T10で詳細化）。単にawase-settings
+のウィンドウを前面にするだけでは不十分——GJIがIME入力コンテキストを
+持つのはテキスト入力欄にフォーカスがある間だけであり、これは
+`disable_apps`バイパスの有無に関係しない仕様上の挙動である。
+
+**依存**: 176-T6（バイパスが効いた状態で測定する必要があるため）、
+176-T7（HWND・PIDの受け渡し）。
 
 ### 176-T10（決定4・7）: 較正パネルUI
 
@@ -307,10 +430,24 @@ Win32子ウィンドウ**（`CreateWindowExW`で作成し`winit`が管理しな�
 進捗表示・結果確認ダイアログ）を新設する。176-T5の警告判定を
 呼び出し、該当する場合は較正開始前に警告を表示して中断する。
 2回一致確定ロジック（決定4）と「変化なし/Toggle判別不能は保存
-しない」ロジック（決定7）をここに実装する。
+しない」ロジック（決定7）は、176-T9からIPC経由で返る観測結果を
+消費する形でここに実装する（判定ロジック自体はUI層ではなく
+Linux上でテスト可能な純粋関数として176-T1近辺に置くことが望ましい
+——実装時に検討）。
+
+**round6 M1/決着実験v2で確定した必須要件**: 較正パネルには実際の
+`egui::TextEdit`（既存のバグ報告画面の説明欄と同種のウィジェット）を
+1つ配置し、較正開始ボタン押下から結果確定までの間、**このウィジェット
+にキーボードフォーカスを保持し続ける**（`ui.memory_mut(|m| m.
+request_focus(id))`等）。ユーザーが誤って別ウィジェットへフォーカスを
+移してしまった場合は測定を一時停止し、「テキスト入力欄にフォーカスを
+戻してください」と案内する（GJIはテキスト入力コンテキストが無いと
+物理キーに反応しないため、フォーカスが外れた状態での測定は静かに
+失敗し続ける——2026-09-16決着実験v2で実測確認済み）。
 
 **受け入れ基準**: 手動UIテスト（awase-settingsを実機で起動し
-一連のフローを確認）。
+一連のフローを確認）。テキスト欄からフォーカスを意図的に外した状態で
+較正を試み、上記の案内が正しく表示されることも確認する。
 
 **依存**: 176-T5、176-T7、176-T8、176-T9。
 

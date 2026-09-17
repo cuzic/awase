@@ -646,6 +646,7 @@ pub(crate) unsafe fn handle_wm_timer(
             }
         }
         Some(id) if id == TIMER_HOOK_WATCHDOG => {
+            app.check_calibration_bypass_timeout(crate::state::TickMs(hook::current_tick_ms()));
             let last_activity = hook::hook_alive_tick_ms();
             let now = hook::current_tick_ms();
             let stale_ms = now.saturating_sub(last_activity);
@@ -964,6 +965,29 @@ pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
     let delegate_assignment =
         crate::msime_key_assignment::read_delegate_to_open_axis_assignment_from_registry();
     tracing::info!("[msime-keyassign] delegate-to-open-axis assignment: {delegate_assignment:?}");
+    // ADR-176決定5（176-T4）: 確定済み較正結果があれば、レジストリ由来の
+    // 分類そのものを差し替える。GJI側（gji_charset_autodetect.rs、176-T3）と
+    // 同じapply_calibration_overrideを使う——型は`ShadowImeAction`と
+    // `ImeToggleKind`を相互変換して合わせる（同型3値、
+    // `shadow_action_to_ime_toggle_kind`/`ime_toggle_kind_to_shadow_action_direct`
+    // 参照）。下記`mask_auto_detect_for_explicit_config`より前に置くことで、
+    // 較正結果も明示config設定済みキーではmaskされる（176-T5と整合）。
+    let delegate_assignment = crate::msime_key_assignment::MsImeDelegateToOpenAxisAssignment {
+        muhenkan: crate::state::calibrated_mode_key::apply_calibration_override(
+            delegate_assignment
+                .muhenkan
+                .map(crate::gji_charset_autodetect::shadow_action_to_ime_toggle_kind),
+            app.calibrated_mode_key_for(crate::vk::VK_NONCONVERT),
+        )
+        .map(crate::gji_charset_autodetect::ime_toggle_kind_to_shadow_action_direct),
+        henkan: crate::state::calibrated_mode_key::apply_calibration_override(
+            delegate_assignment
+                .henkan
+                .map(crate::gji_charset_autodetect::shadow_action_to_ime_toggle_kind),
+            app.calibrated_mode_key_for(crate::vk::VK_CONVERT),
+        )
+        .map(crate::gji_charset_autodetect::ime_toggle_kind_to_shadow_action_direct),
+    };
     // ADR-153 決定1 M15対策: 明示config設定済みキーにはレジストリ由来の
     // delegateもarmedにしない（下記shadow_overrideと同じ理由）。
     let muhenkan_delegate = super::mask_auto_detect_for_explicit_config(
@@ -1202,6 +1226,59 @@ pub(crate) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usiz
 /// WM_HOTKEY ハンドラ (HOTKEY_ID_TOGGLE)
 pub(crate) unsafe fn handle_wm_hotkey_toggle(app: &mut Runtime) {
     app.toggle_engine();
+}
+
+/// WM_CALIBRATION_START ハンドラ（ADR-176 176-T7）。
+pub(crate) unsafe fn handle_wm_calibration_start(app: &mut Runtime, wparam: WPARAM) {
+    let payload = crate::calibration_ipc::unpack(wparam.0);
+    if !sender_is_awase_settings(payload.pid) {
+        tracing::warn!(
+            "[calibration] WM_CALIBRATION_START pid={}がawase-settings.exeと\
+             確認できないため拒否します",
+            payload.pid
+        );
+        return;
+    }
+    if let Some(active_pid) = app.calibration_session_pid() {
+        if active_pid != payload.pid {
+            tracing::warn!(
+                "[calibration] 別セッション(pid={active_pid})が進行中のため、\
+                 pid={}からのSTARTを無視します",
+                payload.pid
+            );
+            return;
+        }
+    }
+    tracing::info!(
+        "[calibration] 較正モード開始/再武装: vk={:?} pid={}",
+        payload.vk,
+        payload.pid
+    );
+    app.begin_calibration_bypass(
+        payload.vk,
+        payload.pid,
+        crate::state::TickMs(hook::current_tick_ms()),
+    );
+}
+
+/// WM_CALIBRATION_END ハンドラ（ADR-176 176-T7）。
+pub(crate) unsafe fn handle_wm_calibration_end(app: &mut Runtime, wparam: WPARAM) {
+    let pid = crate::calibration_ipc::unpack(wparam.0).pid;
+    if app.calibration_session_pid() == Some(pid) {
+        tracing::info!("[calibration] 較正モード終了: pid={pid}");
+        app.end_calibration_bypass();
+    } else {
+        tracing::debug!(
+            "[calibration] pid={pid}からのENDは現在のセッションと一致しないため無視します"
+        );
+    }
+}
+
+/// `pid`が実際に`awase-settings.exe`であるかを検証する（round7 N2対応、
+/// `disable_apps`と同じ名前ベースの信頼モデル）。
+fn sender_is_awase_settings(pid: u32) -> bool {
+    let name = crate::focus::classify::get_process_name(pid);
+    crate::calibration_ipc::is_awase_settings_process_name(&name)
 }
 
 /// WM_HOTKEY ハンドラ (HOTKEY_ID_FOCUS_OVERRIDE)
