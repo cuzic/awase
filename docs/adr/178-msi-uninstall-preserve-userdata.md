@@ -431,6 +431,16 @@ awase-1.20.6-x64.msi＝Permanentなし旧版、awase-1.20.7-x64.msi＝Permanent
      テスト・ソーススキャンガードでの確認に留め、個別の実機確認は
      省略した（ロジックとしては単純な条件分岐・委譲・PowerShellスクリプト
      の追記であり、B2ほどの実機固有のリスクを持たないため）。
+   - **`/code-review`指摘反映（M5の部分失敗リカバリ・M6のログ追加）と
+     `origin/develop`マージ後の統合実機確認（2026-09-17、dragonflyg4・
+     awase-1.20.10-x64.msi）**: developにマージされたADR-176（IMEモード
+     キー較正機能）と同時にビルド・クリーンインストールし、
+     `config.toml`/`layout/nicola.yab`が自己修復で正しく配置されること、
+     `awase.exe`が正常に起動しADR-176の較正・IME制御ログを含めて通常
+     運転することを確認した。develop統合によるコンフリクトは
+     `crates/awase-windows/tests/architecture_guard.rs`のみ（テスト
+     モジュール2つを両方保持する形で機械的に解消、実装コード側の
+     コンフリクトは無し）。
 3. `ensure_config_exists`/`ensure_layouts_exist`の実装・呼び出し位置は
    完了（`awase.exe`・`awase-settings.exe`の両方、コンパイル・単体テスト・
    実機確認済み）。
