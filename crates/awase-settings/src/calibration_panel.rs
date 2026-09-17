@@ -21,6 +21,24 @@ pub(crate) enum CalibrationPanelState {
     Confirmed(CalibrationResultKind),
 }
 
+/// ガイド付き較正ウィザードの1キー分の結果（最終サマリー表示用）。
+/// `CalibrationResultKind`と同型だが、ウィザードのサマリー表示専用の
+/// 名前を持たせて用途を明確にする。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GuidedCalibrationOutcome {
+    ConfirmedOn,
+    Rejected,
+}
+
+impl From<CalibrationResultKind> for GuidedCalibrationOutcome {
+    fn from(kind: CalibrationResultKind) -> Self {
+        match kind {
+            CalibrationResultKind::ConfirmedOn => Self::ConfirmedOn,
+            CalibrationResultKind::Rejected => Self::Rejected,
+        }
+    }
+}
+
 /// 開始ボタン押下時の遷移。`blocked`はT5の
 /// `explicit_config_conflict_reason`が`Some`を返したかどうか。
 pub(crate) fn on_start_pressed(blocked: bool) -> CalibrationPanelState {

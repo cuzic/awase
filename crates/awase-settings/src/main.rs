@@ -533,6 +533,11 @@ struct SettingsApp {
     /// 計測中フォーカスを保持し続けるテキスト入力欄のバッファ
     /// （中身は使わない、フォーカス保持だけが目的）。
     calibration_text_buf: String,
+    /// ガイド付き較正ウィザードの現在のステップ（`GUIDED_CALIBRATION_KEYS`
+    /// のインデックス）。`None`なら通常の手動較正UIを表示する。
+    guided_calibration_step: Option<usize>,
+    /// ガイド付き較正の各ステップの結果（最終サマリー表示用）。
+    guided_calibration_results: Vec<(&'static str, calibration_panel::GuidedCalibrationOutcome)>,
 }
 
 /// バックグラウンドスレッドで実行する保存処理の結果。
@@ -631,6 +636,8 @@ impl SettingsApp {
             calibration_state: crate::calibration_panel::CalibrationPanelState::Idle,
             calibration_target_vk: "VK_NONCONVERT".to_string(),
             calibration_text_buf: String::new(),
+            guided_calibration_step: None,
+            guided_calibration_results: Vec::new(),
         };
         app.recompute_diagnostics();
         app
@@ -2793,8 +2800,17 @@ impl SettingsApp {
         );
     }
 
+    /// ADR-176: ガイド付き較正ウィザードの対象キー一覧（表示名, 内部VK名）。
+    /// 無変換/変換の単独打鍵のみ（Ctrl/Shift組み合わせ・漢字/英数/かなは
+    /// 対象外——後者3キーは`ImeKeyKind::from_vk`で既に静的に意味確定済み、
+    /// 前者はユーザー判断によりスコープ外とした）。
+    const GUIDED_CALIBRATION_KEYS: &'static [(&'static str, &'static str)] =
+        &[("無変換", "VK_NONCONVERT"), ("変換", "VK_CONVERT")];
+
     /// 較正結果の受信ポーリングと`calibration_state`の更新。確定した
-    /// 場合は`persist_confirmed_calibration`も呼ぶ。
+    /// 場合は`persist_confirmed_calibration`も呼ぶ。手動較正UI
+    /// （`tab_calibration`）とガイド付きウィザード（`tab_calibration_
+    /// guided`）で共有する。
     fn poll_calibration_result(&mut self, vk: Option<VkCode>) {
         use calibration_panel::CalibrationPanelState;
         if !matches!(
@@ -2825,9 +2841,9 @@ impl SettingsApp {
     }
 
     /// 計測中〜結果確定までの状態表示・フォーカス保持用テキスト欄の描画。
-    /// `poll_calibration_result`の後に呼ぶこと。`measuring_label`は
-    /// `Measuring`状態のときの案内文（呼び出し元ごとに文言が異なるため
-    /// 引数化）。
+    /// `poll_calibration_result`の後に呼ぶこと。手動UIとガイド付き
+    /// ウィザードで共有する。`measuring_label`は`Measuring`状態のときの
+    /// 案内文（対象キー名を含めるかどうかが呼び出し元で異なるため引数化）。
     fn render_calibration_progress(&mut self, ui: &mut egui::Ui, measuring_label: &str) {
         use calibration_panel::CalibrationPanelState;
 
@@ -2871,6 +2887,7 @@ impl SettingsApp {
             calibration_panel::on_focus_changed(self.calibration_state, response.has_focus());
     }
 
+    #[expect(clippy::too_many_lines)]
     fn tab_calibration(&mut self, ui: &mut egui::Ui) {
         use calibration_panel::CalibrationPanelState;
 
@@ -2892,6 +2909,26 @@ impl SettingsApp {
         );
         ui.add_space(8.0);
 
+        if ui
+            .add_enabled(
+                self.calibration_state == CalibrationPanelState::Idle,
+                egui::Button::new("案内どおりに確認する（無変換→変換の順に案内します）"),
+            )
+            .clicked()
+        {
+            self.guided_calibration_step = Some(0);
+            self.guided_calibration_results.clear();
+        }
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        if let Some(step) = self.guided_calibration_step {
+            self.tab_calibration_guided(ui, step);
+            return;
+        }
+
+        ui.label("手動でキーを選んで確認することもできます:");
         ui.horizontal(|ui| {
             ui.label("対象キー");
             engine_key_combo(
@@ -2964,6 +3001,104 @@ impl SettingsApp {
         {
             send_calibration_end();
             self.calibration_state = calibration_panel::on_cancel_or_close();
+        }
+    }
+
+    /// ADR-176: ガイド付き較正ウィザードの描画。`step`は`GUIDED_
+    /// CALIBRATION_KEYS`のインデックス（範囲外なら完了サマリーを表示）。
+    /// 受動的なユーザーが「指示されるがまま」進められるよう、対象キーの
+    /// 選択・IME状態の確認・開始操作を毎ステップこちらが案内する。
+    fn tab_calibration_guided(&mut self, ui: &mut egui::Ui, step: usize) {
+        use calibration_panel::CalibrationPanelState;
+
+        let Some(&(key_label, key_vk_name)) = Self::GUIDED_CALIBRATION_KEYS.get(step) else {
+            ui.heading("動作確認: 完了");
+            if self.guided_calibration_results.is_empty() {
+                ui.label("確認結果はありません。");
+            }
+            for (label, outcome) in &self.guided_calibration_results {
+                let text = match outcome {
+                    calibration_panel::GuidedCalibrationOutcome::ConfirmedOn => {
+                        format!("{label}: 確定しました（IMEをONにします）")
+                    }
+                    calibration_panel::GuidedCalibrationOutcome::Rejected => {
+                        format!("{label}: 判定不能でした（トグルキーの可能性）")
+                    }
+                };
+                ui.label(text);
+            }
+            ui.add_space(8.0);
+            if ui.button("閉じる").clicked() {
+                self.guided_calibration_step = None;
+            }
+            return;
+        };
+
+        ui.heading(format!(
+            "動作確認 {}/{}: 「{key_label}」キー",
+            step + 1,
+            Self::GUIDED_CALIBRATION_KEYS.len()
+        ));
+
+        let vk = VkCode::from_name(key_vk_name);
+
+        if self.calibration_state == CalibrationPanelState::Idle {
+            ui.label(
+                "1. GJIのIME入力方式アイコンが「A」（直接入力、IME OFF）に\n\
+                 なっていることを確認してください（ONになっていたら、いった\n\
+                 ん無変換/変換以外の方法でOFFにしてください）。\n\
+                 2. 準備ができたら下のボタンを押してください。",
+            );
+            ui.add_space(8.0);
+            if ui.button("準備できました（確認を開始）").clicked()
+                && let Some(vk) = vk
+            {
+                send_calibration_start(vk);
+                self.calibration_text_buf.clear();
+                self.calibration_state = calibration_panel::on_start_pressed(false);
+            }
+            ui.add_space(8.0);
+            if ui.button("ガイドを中止").clicked() {
+                self.guided_calibration_step = None;
+            }
+            return;
+        }
+
+        self.poll_calibration_result(vk);
+
+        ui.add_space(8.0);
+        self.render_calibration_progress(
+            ui,
+            &format!(
+                "計測中です。次の順番で「{key_label}」キーを押してください:\n\
+                 1. 今のIME OFFの状態のまま1回押す（ONになるか確認します）。\n\
+                 2. IMEがONになったら、ONのままもう一度押す（ONのままキープ\n\
+                 されるか確認します）。"
+            ),
+        );
+
+        ui.add_space(4.0);
+        if matches!(
+            self.calibration_state,
+            CalibrationPanelState::WaitingFocus
+                | CalibrationPanelState::Measuring
+                | CalibrationPanelState::FocusLost
+        ) {
+            if ui.button("中止（ガイドも終了）").clicked() {
+                send_calibration_end();
+                self.calibration_state = calibration_panel::on_cancel_or_close();
+                self.guided_calibration_step = None;
+            }
+        } else if let CalibrationPanelState::Confirmed(kind) = self.calibration_state {
+            // ボタンクリックを待たず自動で次のキーへ進む——ユーザーが
+            // 次々に物理キーを押すだけで一連の確認が完結するようにする
+            // （「次へ」クリックのために操作を止める必要をなくす）。
+            send_calibration_end();
+            self.guided_calibration_results
+                .push((key_label, kind.into()));
+            self.calibration_state = calibration_panel::on_cancel_or_close();
+            self.guided_calibration_step = Some(step + 1);
+            ui.ctx().request_repaint();
         }
     }
 
@@ -5909,6 +6044,8 @@ mod layout_tab_repro {
             calibration_state: crate::calibration_panel::CalibrationPanelState::Idle,
             calibration_target_vk: "VK_NONCONVERT".to_string(),
             calibration_text_buf: String::new(),
+            guided_calibration_step: None,
+            guided_calibration_results: Vec::new(),
         }
     }
 
