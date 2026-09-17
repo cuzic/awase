@@ -556,6 +556,10 @@ enum PendingSaveResult {
 impl SettingsApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_fonts(&cc.egui_ctx);
+        // CLI引数でconfigパスが明示されている場合は自己修復しない（ADR-178 決定2）。
+        if cli_arg_config_path().is_none() {
+            ensure_default_config_exists();
+        }
         let config_path = find_config_path();
         let (config, config_load_state) = match awase::config::AppConfig::load(&config_path) {
             Ok(cfg) => (cfg, awase::config::ConfigLoadState::Loaded),
@@ -565,6 +569,16 @@ impl SettingsApp {
                 (default_config(), state)
             }
         };
+        // config_load_state == Loadedのときのみ発火する（round v14 B2対応）:
+        // 読み込みに失敗しdefault_config()にフォールバックした場合、
+        // GeneralConfig::default()のlayouts_dirは"config"（出荷値"layout"とは
+        // 別物、src/config.rs参照）であり、これを書き込み先に使うと
+        // %LOCALAPPDATA%\awase\config\に同梱6ファイルを誤生成してしまう。
+        if cli_arg_config_path().is_none()
+            && config_load_state == awase::config::ConfigLoadState::Loaded
+        {
+            ensure_default_layouts_exist(&config.general.layouts_dir);
+        }
         let available_layouts = scan_layout_names(&config.general.layouts_dir);
         let config_loaded_model = config.general.keyboard_model;
 
@@ -5462,15 +5476,56 @@ fn empty_yab_layout() -> YabLayout {
 /// しまい、「設定画面で保存しても awase.exe に反映されない」という実機バグの
 /// 原因になる（2026-07-19 に実際に発生し確認済み）。
 fn find_config_path() -> std::path::PathBuf {
+    cli_arg_config_path().unwrap_or_else(|| awase::paths::resolve_relative_to_exe("config.toml"))
+}
+
+/// CLI引数でconfigパスが明示されていればそれを返す（`--flag`/`--flag value`
+/// 形式はスキップ）。`ensure_default_config_exists`を呼んでよいかどうかの
+/// 判定（ADR-178 決定2、CLI指定時は自己修復しない）に`find_config_path`とは
+/// 独立して使う——`find_config_path`自体は`update_check.rs`やテストコード
+/// からも呼ばれるため、そちらに自己修復を仕込むと意図しない箇所で発火する。
+fn cli_arg_config_path() -> Option<std::path::PathBuf> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg.starts_with("--") {
             let _ = args.next(); // value をスキップ
             continue;
         }
-        return std::path::PathBuf::from(arg);
+        return Some(std::path::PathBuf::from(arg));
     }
-    awase::paths::resolve_relative_to_exe("config.toml")
+    None
+}
+
+/// 開発ビルドかどうかを判定する（ADR-178 決定2）。実体は
+/// `awase::paths::is_dev_build()`（`resolve_relative_to_exe`のワークスペース
+/// ルート解決と同じ判定基準を共有する、ADR-178 v14 opusレビューM6対応
+/// ——旧実装は`crates/awase-windows/src/app/mod.rs::is_dev_build`との2クレート
+/// 重複だった）。
+fn is_dev_build() -> bool {
+    awase::paths::is_dev_build()
+}
+
+/// `config.toml`が実行ファイルの隣に無ければ、埋め込み既定値から生成する
+/// （ADR-178 決定2）。
+/// `current_exe()`の親ディレクトリ。開発ビルドではないことを呼び出し元が
+/// 保証していること（`is_dev_build()`）。
+fn exe_dir() -> Option<std::path::PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
+}
+
+fn ensure_default_config_exists() {
+    if is_dev_build() {
+        return;
+    }
+    let Some(exe_dir) = exe_dir() else {
+        return;
+    };
+    let config_path = exe_dir.join("config.toml");
+    if let Err(e) = awase::config::ensure_config_exists(&config_path) {
+        tracing::warn!("Failed to create default config.toml: {e}");
+    }
 }
 
 /// `layouts_dir` を解決する。実行ファイル隣・`cargo run` 時のワークスペース
@@ -5479,6 +5534,27 @@ fn find_config_path() -> std::path::PathBuf {
 /// ワークスペースルート直下の `layout/` を見つけられなかった）。
 fn resolve_layouts_dir(layouts_dir: &str) -> std::path::PathBuf {
     awase::paths::resolve_relative_to_exe(layouts_dir)
+}
+
+/// `layouts_dir_raw`（`config.general.layouts_dir`の生文字列）に有効な
+/// `.yab`が1本も無ければ、同梱6ファイルを埋め込み既定値から生成する
+/// （ADR-178 決定2）。生成先は`exe_dir.join(layouts_dir_raw)`に固定し、
+/// `resolve_layouts_dir()`（＝`resolve_relative_to_exe`）の結果を使わない
+/// ——exe隣に存在しない場合はCWD相対の裸パスへフォールバックするため、
+/// 生成前に呼ぶと生成先がCWD相対になってしまう（`crates/awase-windows/src/app/mod.rs::ensure_default_layouts_exist`
+/// で2026-09-17の実機検証により確認した実害と同型）。呼び出し元はこの
+/// 関数の**後**で`resolve_layouts_dir`を呼んで読み取り先を解決すること。
+fn ensure_default_layouts_exist(layouts_dir_raw: &str) {
+    if is_dev_build() {
+        return;
+    }
+    let Some(exe_dir) = exe_dir() else {
+        return;
+    };
+    let target_dir = exe_dir.join(layouts_dir_raw);
+    if let Err(e) = awase::config::ensure_layouts_exist(&target_dir) {
+        tracing::warn!("Failed to create default layout files: {e}");
+    }
 }
 
 /// `dir` 内の全 `.yab` を読込失敗（UTF-8デコード失敗含む）と

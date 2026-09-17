@@ -110,8 +110,15 @@
       </Component>
       <!-- この GUID を変更すると ADR-099 決定0 が意図するアップグレード時の
            ユーザー設定保護が壊れる。
-           crates/awase-windows/tests/wix_installer_guard.rs（決定8）参照。 -->
-      <Component Id="ConfigFile" Guid="57E95F1F-4785-40B7-A4E7-16613080C938" NeverOverwrite="yes">
+           crates/awase-windows/tests/wix_installer_guard.rs（決定8）参照。
+           Permanent="yes"（ADR-178 決定1、2026-09-17）: アンインストール時に
+           このコンポーネント（ファイル本体＋KeyPathレジストリ値）を削除
+           しないようにする。ファイル・レジストリの内容には一切触れないため
+           既存ユーザーの設定は無傷で残る。将来 Permanent="no" に戻しても
+           既にインストール済みの環境には反映されない（不可逆、
+           docs/adr/178-msi-uninstall-preserve-userdata.md「解決されない
+           こと」参照）。 -->
+      <Component Id="ConfigFile" Guid="57E95F1F-4785-40B7-A4E7-16613080C938" NeverOverwrite="yes" Permanent="yes">
         <File Source="dist\config.toml" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="ConfigFile"
                        Type="string" Value="" KeyPath="yes" />
@@ -130,8 +137,13 @@
            コンポーネントとして扱われることによるユーザーデータ保持）が
            構造的に壊れる。crates/awase-windows/tests/wix_installer_guard.rs
            （ADR-099 決定8）がこの GUID・NeverOverwrite・Schedule の3点を
-           固定しており、変更する場合はテストごと意図的に更新すること。 -->
-      <Component Id="NicolaYab" Guid="9690990E-0D11-425B-B60C-AF23D5E87226" NeverOverwrite="yes">
+           固定しており、変更する場合はテストごと意図的に更新すること。
+           Permanent="yes"（ADR-178 決定1）: ConfigFileと同じ理由。
+           RemoveFolder Id="RemoveLayoutDir" はPermanentコンポーネントが
+           アンインストール時に削除方向へ遷移しないため実行されなくなる
+           （MSI仕様上の帰結、意図通り——中身の.yabが残るならディレクトリ
+           自体も残ってよい）。 -->
+      <Component Id="NicolaYab" Guid="9690990E-0D11-425B-B60C-AF23D5E87226" NeverOverwrite="yes" Permanent="yes">
         <File Source="dist\layout\nicola.yab" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="NicolaYab"
                        Type="string" Value="" KeyPath="yes" />
@@ -145,8 +157,9 @@
            存在する場合の上書きだけを抑止し、KeyPath が存在しない真の新規
            インストールには影響しない（2026-08-31 Opusレビュー指摘・訂正:
            「NeverOverwriteを付けると新規インストールにも改善が届かなくなる」
-           という当初のコメントはMSIのセマンティクスとして誤りだった）。 -->
-      <Component Id="NicolaKeytopYab" Guid="5B75B3B2-A53D-493E-BB62-81AE2B17D8ED" NeverOverwrite="yes">
+           という当初のコメントはMSIのセマンティクスとして誤りだった）。
+           Permanent="yes"（ADR-178 決定1）: NicolaYabと同じ理由。 -->
+      <Component Id="NicolaKeytopYab" Guid="5B75B3B2-A53D-493E-BB62-81AE2B17D8ED" NeverOverwrite="yes" Permanent="yes">
         <File Source="dist\layout\nicola_keytop.yab" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="NicolaKeytopYab"
                        Type="string" Value="" KeyPath="yes" />
@@ -158,21 +171,22 @@
            していた）。NicolaYab と同じくユーザーが配列編集タブでその場編集
            しうるデータのため NeverOverwrite="yes" にする（DataFiles とは
            異なり、これらは default_layout の切り替え先として README が
-           明示的に案内するファイルであり、GUI 編集の対象になりうる）。 -->
-      <Component Id="NicolaUsYab" Guid="48AA34CA-3723-4B7D-B624-6E0E9C29032C" NeverOverwrite="yes">
+           明示的に案内するファイルであり、GUI 編集の対象になりうる）。
+           Permanent="yes"（ADR-178 決定1）: NicolaYabと同じ理由。 -->
+      <Component Id="NicolaUsYab" Guid="48AA34CA-3723-4B7D-B624-6E0E9C29032C" NeverOverwrite="yes" Permanent="yes">
         <File Source="dist\layout\nicola_us.yab" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="NicolaUsYab"
                        Type="string" Value="" KeyPath="yes" />
       </Component>
-      <Component Id="NicolaFYab" Guid="523F3EB9-8E27-4312-A6D1-822D1BF7785F" NeverOverwrite="yes">
+      <Component Id="NicolaFYab" Guid="523F3EB9-8E27-4312-A6D1-822D1BF7785F" NeverOverwrite="yes" Permanent="yes">
         <File Source="dist\layout\nicola_f.yab" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="NicolaFYab"
                        Type="string" Value="" KeyPath="yes" />
       </Component>
       <!-- layout/nicola_kb232.yab（富士通純正キーボード「FMV-KB232」向け、
            report 01M15R86FJW24278GGD3ETS9QX）。NicolaUsYab/NicolaFYabと同じ
-           理由でNeverOverwrite="yes"。 -->
-      <Component Id="NicolaKb232Yab" Guid="1E99EC47-D079-4BBB-83E3-781EE85357A6" NeverOverwrite="yes">
+           理由でNeverOverwrite="yes"。Permanent="yes"（ADR-178 決定1）も同じ理由。 -->
+      <Component Id="NicolaKb232Yab" Guid="1E99EC47-D079-4BBB-83E3-781EE85357A6" NeverOverwrite="yes" Permanent="yes">
         <File Source="dist\layout\nicola_kb232.yab" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="NicolaKb232Yab"
                        Type="string" Value="" KeyPath="yes" />
@@ -181,8 +195,8 @@
            Ctrl+M確定を送るnicola_keytop.yabの派生版）。README.md/README.en.md
            がdefault_layoutの切り替え先として案内するファイルであり、
            NicolaUsYab/NicolaFYab/NicolaKb232Yabと同じ理由でNeverOverwrite="yes"
-           にする。 -->
-      <Component Id="NicolaKakuteiYab" Guid="D860117F-60C7-45C7-AB47-96F6E51B4F87" NeverOverwrite="yes">
+           にする。Permanent="yes"（ADR-178 決定1）も同じ理由。 -->
+      <Component Id="NicolaKakuteiYab" Guid="D860117F-60C7-45C7-AB47-96F6E51B4F87" NeverOverwrite="yes" Permanent="yes">
         <File Source="dist\layout\nicola_kakutei.yab" />
         <RegistryValue Root="HKCU" Key="Software\awase" Name="NicolaKakuteiYab"
                        Type="string" Value="" KeyPath="yes" />

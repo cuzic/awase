@@ -182,6 +182,7 @@
 | [175](175-physical-dbe-key-stuck-direction-recovery.md) | 物理半角/全角キー(VK_DBE_SBCSCHAR/DBCSCHAR)の固定方向マッピングをやめToggle解決に変えIME ON固着を解消(BUG-142)。config変更のみで実機A/B確定済み | opus-adversarial-consult round5で収束・実装着手可（Blockerなし） |
 | [176](176-behavioral-calibration-of-ime-mode-key-shadow-overrides.md) | awase-settingsに専用較正UIを新設し、モードキーの実効果をユーザー協力の下で明示的に測定、gate_thumb_key_ime_actions出力を差し替えて静的分類を補完する。BUG-143の静的パースの限界を補完 | round1〜4で計17件のBlocker検出、v6/v7/v8とopus round5・6で設計修正を重ねた後、決着実験v2でGJIの生キー反応はテキスト入力欄フォーカス時のみ本物と確定(awase自作自演説は否定)、実装着手(T1から) |
 | [177](177-msi-restart-manager-graceful-shutdown.md) | 常駐中のMSIアップグレードは実機検証の結果コード変更不要と判明(Restart Managerが現状コードのまま自律的にシャットダウン・再起動を処理、UI付き・データ保持も確認)。副産物でMSIアンインストール時のユーザーデータ削除を発見 | 確定・opus round1〜4(4ラウンド)を経て収束・ADR-099 MF-4解消 |
+| [178](178-msi-uninstall-preserve-userdata.md) | MSIアンインストール時のユーザーデータ喪失をPermanent="yes"+アプリ側自己修復(無ければ埋め込み既定値から生成)で防ぐ。v1〜v13の「バックアップ+復元」方式(12ラウンド・Blocker20件)は複雑化しすぎたため破棄し全面差し替え | 起草中v14・実装/実機検証/opusレビュー完了(Blocker2件反映済み)、フォローアップ項目のみ残る |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
@@ -341,6 +342,8 @@ ADR-032 で IME 状態モデルが reducer 化されたあと、運用で見つ�
 | [158-complexity-inventory-2026-09-10.md](158-complexity-inventory-2026-09-10.md) | ADR-158 複雑性インベントリ | [158](158-complexity-reduction-north-star.md) |
 | [163-implementation-tasks.md](163-implementation-tasks.md) | ADR-163 実装タスクリスト | [163](163-actuation-decision-io-separation-and-replay-harness.md) |
 | [176-implementation-tasks.md](176-implementation-tasks.md) | ADR-176 実装タスクリスト | [176](176-behavioral-calibration-of-ime-mode-key-shadow-overrides.md) |
+| [178-opus-review-round1.md](178-opus-review-round1.md)〜[round12.md](178-opus-review-round12.md) | ADR-178 v1〜v13（バックアップ+復元方式、破棄済み）敵対的レビュー記録（Opus round1〜12） | [178](178-msi-uninstall-preserve-userdata.md) |
+| [178-opus-review-v14.md](178-opus-review-v14.md) | ADR-178 v14（Permanent+自己修復方式、現行）敵対的レビュー記録 | [178](178-msi-uninstall-preserve-userdata.md) |
 
 ---
 
