@@ -1384,6 +1384,12 @@ pub fn ensure_config_exists(config_path: &Path) -> Result<()> {
 /// （シンプルさを優先、v13が持っていた`KeyboardModel`全バリアント試行の
 /// ような複雑な検証は行わない）。
 ///
+/// 途中（3本目等）で書き込みが失敗した場合、**それまでに書いた分を削除して
+/// エラーを返す**（`/code-review`指摘、v14 opusレビューMajor M5対応）——
+/// 中途半端な本数のまま抜けると、次回起動時に`has_any_yab`が`true`になり
+/// 「1本でもあれば何もしない」判定で永久に残り4本が生成されなくなる。
+/// 全滅させて0本に戻すことで、次回起動時に全6本の生成を再試行できる。
+///
 /// # Errors
 ///
 /// ディレクトリ作成・書き込みに失敗した場合にエラーを返す。呼び出し元は
@@ -1403,8 +1409,16 @@ pub fn ensure_layouts_exist(layouts_dir: &Path) -> Result<()> {
     }
     std::fs::create_dir_all(layouts_dir)
         .with_context(|| format!("Failed to create {}", layouts_dir.display()))?;
+    let mut written = Vec::with_capacity(EMBEDDED_LAYOUTS.len());
     for (name, content) in EMBEDDED_LAYOUTS {
-        crate::fs_atomic::write_atomic(&layouts_dir.join(name), content.as_bytes())?;
+        let path = layouts_dir.join(name);
+        if let Err(e) = crate::fs_atomic::write_atomic(&path, content.as_bytes()) {
+            for p in &written {
+                let _ = std::fs::remove_file(p);
+            }
+            return Err(e);
+        }
+        written.push(path);
     }
     Ok(())
 }
@@ -2561,6 +2575,55 @@ steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]
             1,
             "1本でも.yabが存在するなら同梱6ファイルを生成してはならない（ADR-178 決定2）"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_layouts_exist_cleans_up_partial_writes_on_failure() {
+        // /code-review指摘（v14 opusレビューMajor M5対応）: 3本目の書き込みを
+        // write_atomicの内部で使う一時ファイル名（<target>.tmp.<pid>）を狙って
+        // 失敗させる。同名のディレクトリを事前に置くと`File::create`が
+        // 失敗する。（3本目**そのもの**の名前にディレクトリを置く方式だと
+        // has_any_yabの拡張子判定に引っかかり「1本でもある」扱いで
+        // ensure_layouts_existが即Ok(())で返ってしまうため使えない。）
+        // 途中まで書いた分（1・2本目）が削除され、次回呼び出しで再度0本から
+        // 全6本の生成を試みられる状態に戻ることを確認する。
+        let dir = unique_temp_dir("layouts_partial_failure");
+        let layouts_dir = dir.join("layout");
+        std::fs::create_dir_all(&layouts_dir).unwrap();
+        let third_name = EMBEDDED_LAYOUTS[2].0;
+        let blocked_tmp = layouts_dir.join(format!("{third_name}.tmp.{}", std::process::id()));
+        std::fs::create_dir_all(&blocked_tmp).unwrap();
+
+        let result = ensure_layouts_exist(&layouts_dir);
+        assert!(
+            result.is_err(),
+            "3本目の一時ファイル名がディレクトリで塞がれているので失敗するはず"
+        );
+
+        for (i, (name, _)) in EMBEDDED_LAYOUTS.iter().enumerate() {
+            if i < 2 {
+                assert!(
+                    !layouts_dir.join(name).exists(),
+                    "{name}（{i}本目）は途中失敗時に片付けられているべき（ADR-178 v14 M5）"
+                );
+            }
+        }
+        assert!(
+            !layouts_dir.join(third_name).exists(),
+            "3本目自体はFile::create段階で失敗しているので書き込まれていないはず"
+        );
+
+        // 次回呼び出しで「0本」から全6本の再生成を試みられることを確認する
+        // （塞いでいた一時ファイル名のディレクトリを除去してから再実行）。
+        std::fs::remove_dir_all(&blocked_tmp).unwrap();
+        ensure_layouts_exist(&layouts_dir).unwrap();
+        for (name, content) in EMBEDDED_LAYOUTS {
+            assert_eq!(
+                std::fs::read_to_string(layouts_dir.join(name)).unwrap(),
+                *content
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

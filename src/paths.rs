@@ -33,9 +33,22 @@ pub(crate) fn find_target_ancestor(exe: &Path) -> Option<&Path> {
 /// の自己修復を開発ビルドでは呼ばない）が使う。`current_exe()`が取得できない
 /// 場合は`false`（開発ビルドではない）を返す——`exe_dir`が使えないなら生成先も
 /// 導出できず、自己修復自体が発火しないため実害はない。
+///
+/// `true`の場合は`tracing::debug!`を1行出す（`/code-review`指摘、v14
+/// opusレビューMajor M6対応）——実際の本番インストール先が`D:\target\awase`
+/// のように祖先に`target`という名前のディレクトリを偶然含む場合、自己修復が
+/// 無警告で無効化される（開発ビルドと誤判定される）ことがある。無警告のまま
+/// だと実機で踏んだときに原因究明が難しいため、最低限の手掛かりを残す。
 #[must_use]
 pub fn is_dev_build() -> bool {
-    std::env::current_exe().is_ok_and(|exe| find_target_ancestor(&exe).is_some())
+    let result = std::env::current_exe().is_ok_and(|exe| find_target_ancestor(&exe).is_some());
+    if result {
+        tracing::debug!(
+            "is_dev_build: true (current_exe ancestry contains a directory named \"target\"; \
+             ADR-178 self-heal is disabled for this process)"
+        );
+    }
+    result
 }
 
 /// 相対パスを解決する。
