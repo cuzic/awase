@@ -2891,7 +2891,11 @@ impl SettingsApp {
             }
             CalibrationPanelState::Measuring => {
                 ui.label(
-                    "計測中です。対象キーを押してください（IMEがONの状態で押すのが望ましいです）。",
+                    "計測中です。次の順番で対象キーを押してください:\n\
+                     1. IMEがOFF(直接入力)の状態で1回押す（ONになるか確認します）。\n\
+                     2. 続けてIMEがON(ひらがな)の状態でもう一度押す（ONのままキープ\n\
+                     されるか確認します。OFFの状態でしか押さないと、このキーが\n\
+                     実際にIMEをONにできるか確認できません）。",
                 );
             }
             CalibrationPanelState::FocusLost => {
