@@ -609,6 +609,7 @@ impl Runtime {
 
     /// ADR-176 176-T6: 較正モードのバイパスが有効中か。
     #[must_use]
+    #[allow(dead_code)] // 176-T8以降で呼び出し
     pub(crate) fn calibration_bypass_is_active(&self) -> bool {
         self.calibration_bypass_deadline.is_some()
     }
