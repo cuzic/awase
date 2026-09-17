@@ -640,6 +640,33 @@ request_focus(id))`等）。ユーザーが誤って別ウィジェットへフ�
 
 **依存**: 176-T1。
 
+**実装完了（2026-09-17）**: `src/config.rs`（`awase`本体、プラット
+フォーム非依存）に`CalibrationEntry`構造体と`AppConfig::calibration:
+Vec<CalibrationEntry>`フィールドを追加した。`KeysConfig`の`ime_on:
+Vec<String>`等と同じ「Windows固有のenumは文字列で橋渡しする」パターンに
+揃え、`ImeToggleKind`/`ImeKindId`/`ConfigFingerprint`は使わずSerialize/
+Deserialize可能な`String`/`Option<i64>`/`Option<String>`/`Option<u64>`
+のみで構成（`vk: VkCode`は`awase`本体で定義済みの型のためそのまま使用）。
+`ValidatedConfig`/`From<ValidatedConfig> for AppConfig`にも
+`keystroke_macro`と同型の単純転送で配線した（検証は行わない）。
+
+`awase-windows`側（`state/calibrated_mode_key.rs`）に
+`CalibratedModeKey::to_config_entry`/`calibrated_mode_key_from_config_
+entry`の相互変換関数を追加し、6件のラウンドトリップテスト
+（GJI/MS-IME双方の正常系、実際の`toml::to_string`/`from_str`を通した
+シリアライズ、不正な`result`/`fingerprint_kind`文字列の拒否）を追加。
+`cargo test -p awase-windows --lib`でLinux上で実行可能。
+
+**未着手（T11のスコープ外、T12以降で対応）**: `Runtime.calibrated_
+mode_keys`への起動時ロード・保存時の書き出し配線、および
+`176-T9a`が確定結果を`set_calibrated_mode_key`へ実際に書き込む配線
+（現状はログ・IPC通知のみで、確定してもメモリ上のマップにすら入らない）。
+T0を前提条件から外した（上記T0節参照）ため、この配線自体は技術的には
+着手可能——ただしこの配線を追加する際は、決定8が維持するopt-inの趣旨
+（既定では較正結果を実際のIME判定へ反映しない）をどう実現するか
+（設定ファイルに明示的なopt-inフラグを追加するか、当面は
+`set_calibrated_mode_key`自体を呼ばないままにするか）を別途決めること。
+
 ### 176-T12（決定6）: stale検出とリロード連携
 
 **内容**: awase.exeの設定リロード時（`reload_config()`、`app/mod.rs:

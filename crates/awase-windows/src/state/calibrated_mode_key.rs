@@ -63,6 +63,103 @@ pub(crate) fn is_stale(record: &CalibratedModeKey, current: &ConfigFingerprint) 
     record.config_fingerprint != *current
 }
 
+/// `176-T11`（ADR-176決定6）: `config.toml`への永続化用の文字列橋渡し。
+/// `awase`本体（`src/config.rs`）はプラットフォーム非依存のため、
+/// `ImeToggleKind`/`ImeKindId`/`ConfigFingerprint`を直接使えない
+/// ——`KeysConfig`の`ime_on: Vec<String>`等と同じ「文字列で橋渡しする」
+/// パターンに揃え、意味解釈はこのモジュール側で行う。
+impl CalibratedModeKey {
+    #[must_use]
+    #[allow(dead_code)] // 176-T12（起動時保存）で呼び出し
+    pub(crate) fn to_config_entry(&self) -> awase::config::CalibrationEntry {
+        let result = ime_toggle_kind_to_str(self.result);
+        let active_ime_kind = ime_kind_id_to_str(self.active_ime_kind);
+        let (fingerprint_kind, gji_session_keymap, gji_relevant_row, ms_ime_registry_value_hash) =
+            match &self.config_fingerprint {
+                ConfigFingerprint::Gji {
+                    session_keymap,
+                    relevant_row,
+                } => ("Gji", *session_keymap, relevant_row.clone(), None),
+                ConfigFingerprint::MsIme {
+                    registry_value_hash,
+                } => ("MsIme", None, None, Some(*registry_value_hash)),
+            };
+        awase::config::CalibrationEntry {
+            vk: self.vk,
+            result: result.to_string(),
+            active_ime_kind: active_ime_kind.to_string(),
+            fingerprint_kind: fingerprint_kind.to_string(),
+            gji_session_keymap,
+            gji_relevant_row,
+            ms_ime_registry_value_hash,
+            confirmed_at_epoch_ms: self.confirmed_at_epoch_ms,
+        }
+    }
+}
+
+/// `awase::config::CalibrationEntry`から`CalibratedModeKey`へ変換する
+/// （176-T11）。未知の`result`/`active_ime_kind`/`fingerprint_kind`文字列、
+/// または`fingerprint_kind`が要求するフィールドが欠けている場合は`None`
+/// を返す（呼び出し元がログへ警告を残し、そのエントリを無視することを
+/// 想定——手書き編集された`config.toml`が壊れていても起動を落とさない）。
+#[must_use]
+#[allow(dead_code)] // 176-T12（起動時ロード）で呼び出し
+pub(crate) fn calibrated_mode_key_from_config_entry(
+    entry: &awase::config::CalibrationEntry,
+) -> Option<CalibratedModeKey> {
+    let result = ime_toggle_kind_from_str(&entry.result)?;
+    let active_ime_kind = ime_kind_id_from_str(&entry.active_ime_kind)?;
+    let config_fingerprint = match entry.fingerprint_kind.as_str() {
+        "Gji" => ConfigFingerprint::Gji {
+            session_keymap: entry.gji_session_keymap,
+            relevant_row: entry.gji_relevant_row.clone(),
+        },
+        "MsIme" => ConfigFingerprint::MsIme {
+            registry_value_hash: entry.ms_ime_registry_value_hash?,
+        },
+        _ => return None,
+    };
+    Some(CalibratedModeKey {
+        vk: entry.vk,
+        result,
+        active_ime_kind,
+        config_fingerprint,
+        confirmed_at_epoch_ms: entry.confirmed_at_epoch_ms,
+    })
+}
+
+const fn ime_toggle_kind_to_str(kind: ImeToggleKind) -> &'static str {
+    match kind {
+        ImeToggleKind::On => "On",
+        ImeToggleKind::Off => "Off",
+        ImeToggleKind::Toggle => "Toggle",
+    }
+}
+
+fn ime_toggle_kind_from_str(s: &str) -> Option<ImeToggleKind> {
+    match s {
+        "On" => Some(ImeToggleKind::On),
+        "Off" => Some(ImeToggleKind::Off),
+        "Toggle" => Some(ImeToggleKind::Toggle),
+        _ => None,
+    }
+}
+
+const fn ime_kind_id_to_str(kind: ImeKindId) -> &'static str {
+    match kind {
+        ImeKindId::Gji => "Gji",
+        ImeKindId::MsIme => "MsIme",
+    }
+}
+
+fn ime_kind_id_from_str(s: &str) -> Option<ImeKindId> {
+    match s {
+        "Gji" => Some(ImeKindId::Gji),
+        "MsIme" => Some(ImeKindId::MsIme),
+        _ => None,
+    }
+}
+
 /// `176-T2`（ADR-176決定5）: `gate_thumb_key_ime_actions`が返す
 /// `wiring.henkan`/`wiring.muhenkan`（`static_result`）を、確定済み較正結果
 /// （`calibrated`）があればそれで差し替える純粋関数。
@@ -424,6 +521,90 @@ mod tests {
         };
         let record = sample(recorded);
         assert!(is_stale(&record, &current));
+    }
+
+    // ── 176-T11: config.toml永続化のラウンドトリップ ────────────────────
+
+    #[test]
+    fn gji_entry_round_trips_through_config_entry() {
+        let fp = ConfigFingerprint::Gji {
+            session_keymap: Some(1),
+            relevant_row: Some("DirectInput\tHenkan\tIMEOn".to_string()),
+        };
+        let record = sample(fp);
+        let entry = record.to_config_entry();
+        assert_eq!(entry.vk, record.vk);
+        assert_eq!(entry.result, "On");
+        assert_eq!(entry.active_ime_kind, "Gji");
+        assert_eq!(entry.fingerprint_kind, "Gji");
+        assert_eq!(entry.gji_session_keymap, Some(1));
+        assert_eq!(
+            entry.gji_relevant_row.as_deref(),
+            Some("DirectInput\tHenkan\tIMEOn")
+        );
+        assert_eq!(entry.ms_ime_registry_value_hash, None);
+        assert_eq!(
+            calibrated_mode_key_from_config_entry(&entry).as_ref(),
+            Some(&record)
+        );
+    }
+
+    #[test]
+    fn ms_ime_entry_round_trips_through_config_entry() {
+        let mut record = sample(ConfigFingerprint::MsIme {
+            registry_value_hash: 0xDEAD_BEEF,
+        });
+        record.active_ime_kind = ImeKindId::MsIme;
+        let entry = record.to_config_entry();
+        assert_eq!(entry.active_ime_kind, "MsIme");
+        assert_eq!(entry.fingerprint_kind, "MsIme");
+        assert_eq!(entry.gji_session_keymap, None);
+        assert_eq!(entry.gji_relevant_row, None);
+        assert_eq!(entry.ms_ime_registry_value_hash, Some(0xDEAD_BEEF));
+        assert_eq!(
+            calibrated_mode_key_from_config_entry(&entry).as_ref(),
+            Some(&record)
+        );
+    }
+
+    #[test]
+    fn entry_round_trips_through_actual_toml_serialization() {
+        let record = sample(ConfigFingerprint::Gji {
+            session_keymap: None,
+            relevant_row: None,
+        });
+        let entry = record.to_config_entry();
+        let mut config = awase::config::AppConfig::default();
+        config.calibration.push(entry);
+        let toml_str = toml::to_string(&config).expect("serialize AppConfig");
+        let parsed: awase::config::AppConfig =
+            toml::from_str(&toml_str).expect("deserialize AppConfig");
+        assert_eq!(parsed.calibration.len(), 1);
+        assert_eq!(
+            calibrated_mode_key_from_config_entry(&parsed.calibration[0]),
+            Some(record)
+        );
+    }
+
+    #[test]
+    fn unknown_result_string_is_rejected() {
+        let mut entry = sample(ConfigFingerprint::Gji {
+            session_keymap: None,
+            relevant_row: None,
+        })
+        .to_config_entry();
+        entry.result = "Unknown".to_string();
+        assert_eq!(calibrated_mode_key_from_config_entry(&entry), None);
+    }
+
+    #[test]
+    fn ms_ime_fingerprint_without_hash_is_rejected() {
+        let mut entry = sample(ConfigFingerprint::MsIme {
+            registry_value_hash: 1,
+        })
+        .to_config_entry();
+        entry.ms_ime_registry_value_hash = None;
+        assert_eq!(calibrated_mode_key_from_config_entry(&entry), None);
     }
 
     #[test]
