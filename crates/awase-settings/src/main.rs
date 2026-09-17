@@ -2797,7 +2797,7 @@ impl SettingsApp {
     fn tab_calibration(&mut self, ui: &mut egui::Ui) {
         use calibration_panel::CalibrationPanelState;
 
-        ui.heading("IMEキー較正");
+        ui.heading("IMEキーの動作確認");
         ui.label(
             "無変換/変換等のキーがGJI/MS-IMEで実際にIMEをON/OFFするか実機測定します。\n\
              config1.db/レジストリの静的な分類だけでは判別できない環境向けです。",
@@ -2805,12 +2805,12 @@ impl SettingsApp {
         ui.add_space(8.0);
         ui.checkbox(
             &mut self.config.general.apply_calibrated_mode_keys,
-            "確定した較正結果を実際のIME判定に反映する（自己責任）",
+            "確認した結果を実際のIME判定に反映する（自己責任）",
         )
         .on_hover_text(
-            "OFF(既定)の場合、較正を確定してconfig.tomlへ保存はしますが、\n\
-             実際のGJI/MS-IME自動検出結果を上書きしません（測定のみ、\n\
-             安全側）。ONにすると、確定した較正結果がGJI/MS-IME側の\n\
+            "OFF(既定)の場合、確認結果をconfig.tomlへ保存はしますが、\n\
+             実際のGJI/MS-IME自動検出結果を上書きしません（確認のみ、\n\
+             安全側）。ONにすると、確認済みの結果がGJI/MS-IME側の\n\
              自動検出結果を実際に上書きするようになります。",
         );
         ui.add_space(8.0);
@@ -2821,7 +2821,7 @@ impl SettingsApp {
                 ui,
                 "calibration_vk",
                 &mut self.calibration_target_vk,
-                "較正対象のキー",
+                "確認したいキー",
             );
         });
 
@@ -2868,7 +2868,7 @@ impl SettingsApp {
         let start_enabled =
             blocked_reason.is_none() && self.calibration_state == CalibrationPanelState::Idle;
         if ui
-            .add_enabled(start_enabled, egui::Button::new("較正開始"))
+            .add_enabled(start_enabled, egui::Button::new("確認を開始"))
             .clicked()
             && let Some(vk) = vk
         {
@@ -2909,7 +2909,7 @@ impl SettingsApp {
                 awase_windows::calibration_ipc::CalibrationResultKind::Rejected,
             ) => {
                 ui.label(
-                    "判定不能でした（ONの状態で押すとOFFになる=単純なトグルキーである可能性が高い、または再現性のある結果が得られませんでした）。較正は保存されません。",
+                    "判定不能でした（ONの状態で押すとOFFになる=単純なトグルキーである可能性が高い、または再現性のある結果が得られませんでした）。確認結果は保存されません。",
                 );
             }
             CalibrationPanelState::Idle | CalibrationPanelState::Blocked => {}
@@ -3835,7 +3835,7 @@ impl eframe::App for SettingsApp {
                     (Tab::Advanced, "上級者向け設定"),
                     (Tab::DisableApps, "アプリ無効化"),
                     (Tab::Keymap, "ショートカット"),
-                    (Tab::Calibration, "IMEキー較正"),
+                    (Tab::Calibration, "IMEキー動作確認"),
                 ] {
                     if ui.selectable_label(self.active_tab == tab, label).clicked() {
                         self.clear_ime_on_tab_change(tab);
