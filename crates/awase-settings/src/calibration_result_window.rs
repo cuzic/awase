@@ -22,8 +22,15 @@
 //! （`--bug-report`等）の後（`main()`参照）。`run_with_fallback`が
 //! glow→wgpuの順で`eframe::run_native`を最大2回呼ぶが、このウィンドウは
 //! それより前に一度だけ作成するため、二重登録の心配はない。
+//!
+//! T10の較正パネルUIは`take_latest_result`を毎フレーム呼び、ここで受信した
+//! 直近の結果をtake意味論で取り出して表示状態へ反映する。
 
-use awase_windows::calibration_ipc::CALIBRATION_RESULT_WINDOW_CLASS_NAME;
+use std::sync::{Mutex, OnceLock};
+
+use awase_windows::calibration_ipc::{
+    CALIBRATION_RESULT_WINDOW_CLASS_NAME, CalibrationResultPayload,
+};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -32,16 +39,19 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::PCWSTR;
 
+static LATEST_RESULT: OnceLock<Mutex<Option<CalibrationResultPayload>>> = OnceLock::new();
+
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if msg == awase_windows::WM_CALIBRATION_RESULT {
         if let Some(payload) = awase_windows::calibration_ipc::unpack_result(wparam.0) {
-            // T9b時点ではログに残すのみ——T10の較正パネルUIがこの結果を
-            // 画面表示に反映する（進捗表示/確定表示等）。
             tracing::info!(
                 "[calibration] 結果を受信: vk={:?} kind={:?}",
                 payload.vk,
                 payload.kind
             );
+            if let Ok(mut slot) = LATEST_RESULT.get_or_init(|| Mutex::new(None)).lock() {
+                *slot = Some(payload);
+            }
         } else {
             tracing::warn!(
                 "[calibration] 結果通知のペイロードを解釈できませんでした \
@@ -55,6 +65,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     //         転送するだけであり、DefWindowProcWは未処理メッセージの
     //         標準的な処理先。
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// 直近に受信した較正結果を取り出す（一度取り出すと`None`に戻る、
+/// take意味論）。UIスレッドから毎フレーム呼ぶ想定。
+pub(crate) fn take_latest_result() -> Option<CalibrationResultPayload> {
+    LATEST_RESULT
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
 }
 
 /// 較正結果受信用のメッセージ専用ウィンドウを作成する。`main()`冒頭、
