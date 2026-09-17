@@ -8,7 +8,11 @@ status: |-
   よりシンプルな設計に作り直した。実装済み・実機検証4項目すべて完了
   （round1 B2の既存ユーザー遡及効果を含めPermanent="yes"の効果を確認、
   かつ実機検証中に発見した「読み取り先/書き込み先」バグ1件を修正し
-  修正後も実機確認済み）。opus-adversarial-consultレビュー未実施。**
+  修正後も実機確認済み）。opus-adversarial-consultレビュー完了
+  （[178-opus-review-v14.md](178-opus-review-v14.md)、総合判定「実装
+  やり直し不要」）、Blocker2件・Major推奨5件を反映済み。マージ前必須
+  項目は解消、フォローアップ項目（3者同期テスト・is_dev_build一本化等）
+  のみ残る。opusレビュー後の変更分の実機再検証は未実施。**
 related_adr:
   - "ADR-099"
   - "ADR-177"
@@ -19,7 +23,9 @@ related_adr:
 ## ステータス
 
 **起草中v14（2026-09-17）。方針転換により全面差し替え。実装済み。実機検証
-（dragonflyg4）4項目すべて完了。opus-adversarial-consultレビューはこれから。**
+（dragonflyg4）4項目すべて完了。opus-adversarial-consultレビュー完了
+（[178-opus-review-v14.md](178-opus-review-v14.md)）、Blocker2件・
+Major推奨5件を反映済み。フォローアップ項目のみ残る（未解決事項参照）。**
 
 ## 方針転換の経緯（重要、実装者は必ず読むこと）
 
@@ -182,10 +188,15 @@ pub fn ensure_layouts_exist(layouts_dir: &Path) -> Result<()>;
 **`ensure_layouts_exist`**: `layouts_dir`ディレクトリを（無ければ）作成し、
 同梱6ファイル（`nicola.yab`・`nicola_keytop.yab`・`nicola_us.yab`・
 `nicola_f.yab`・`nicola_kb232.yab`・`nicola_kakutei.yab`）のうち、
-`layouts_dir`に**1本も**有効な`.yab`が存在しない場合にのみ、6本全てを埋め込み
-既定値から生成する。1本でも存在すれば何もしない——「ユーザーが同梱配列の一部を
-削除して整理した」状態を復活させないため（v13決定5の救済条件と同じ考え方だが、
-判定はシンプルに「有効な`.yab`が0本かどうか」のみ）。
+`layouts_dir`に**拡張子が`.yab`のファイルが1本も**存在しない場合にのみ、
+6本全てを埋め込み既定値から生成する。1本でも存在すれば何もしない——
+「ユーザーが同梱配列の一部を削除して整理した」状態を復活させないため
+（v13決定5の救済条件と同じ考え方だが、判定はシンプルに「拡張子`.yab`の
+ファイルが0本かどうか」のみ）。**「有効な」（パース可能かどうか）は判定
+しない**（v14 opusレビューM3で訂正——v13が持っていた`KeyboardModel`全
+バリアント試行のような妥当性検証は意図的に持たない。壊れた
+（0バイト・破損等）`.yab`が1本でもあると、拡張子判定は通ってしまい
+自己修復は発動しない。「解決されないこと」参照）。
 
 **呼び出し位置と、生成先パスの決め方（2026-09-17実機検証で修正済み）**:
 `awase.exe`は`find_config_path()`が`bail!`する前
@@ -323,14 +334,20 @@ awase-1.20.6-x64.msi＝Permanentなし旧版、awase-1.20.7-x64.msi＝Permanent
   ファイル・レジストリに一切触れないため無傷で残る。
 - 万一Permanentが効かない環境・レジストリが不整合な環境でも、決定2の
   自己修復ロジックによりアプリが起動不能になることはない。
-- `layouts_dir`に有効な`.yab`が1本も無い状態でアプリが起動不能になる事態を、
-  埋め込み既定値からの復旧で防ぐ（v13決定5と同じ効果を、より単純な条件で
-  達成する）。
+- `layouts_dir`に拡張子`.yab`のファイルが1本も無い状態でアプリが起動不能に
+  なる事態を、埋め込み既定値からの復旧で防ぐ（v13決定5と同じ効果を、より
+  単純な条件で達成する）。
 - v2〜v13が抱えていた「バックアップと実ファイルの整合」という問題は
   構造的に発生しなくなる（バックアップ機構自体が無いため）。ただし
   「生成・書き込み先を存在依存の解決関数に委ねない」という不変条件は
   引き続き必要であり、v14でも一度実機で踏んだ（上記「生成先パスの
   決め方」参照、修正済み）。
+- **`Permanent="yes"`は不可逆な変更であり、その唯一の解毒剤である自己修復
+  配線が壊れると復旧不能になる（v14 opusレビューBlocker B1）。この配線
+  ——`load_config()`/`SettingsApp::new`からの呼び出し、生成順序（生成を
+  `resolve_relative`より前に行う）、生成先が解決関数の結果に依存しない
+  こと——は`crates/awase-windows/tests/architecture_guard.rs`の
+  `adr178_self_heal_wiring`モジュール（5テスト）で機械的に固定されている。**
 
 **解決されないこと**:
 - `Permanent`は不可逆——一度出荷すると、将来`Permanent="no"`に戻しても
@@ -346,23 +363,59 @@ awase-1.20.6-x64.msi＝Permanentなし旧版、awase-1.20.7-x64.msi＝Permanent
   Permanent以前からの既存挙動）。ただし決定2の自己修復ロジックは、
   `config.toml`自体が消えた場合には機能する。
 - ユーザーが`layouts_dir`を明示的に別ディレクトリへ向けている場合、その
-  ディレクトリへの自己修復は行わない対象外とする（同梱6ファイル名のいずれかが
+  ディレクトリへの自己修復は行わない対象外とする（拡張子`.yab`のファイルが
   1本もそのディレクトリに存在しない場合のみ発動するため、実質的にほぼ
   影響しない）。
+- **壊れた（0バイト・破損・途中生成等）`.yab`が1本でもあると、自己修復は
+  発動しない（v14 opusレビューM3）**——拡張子のみで判定し中身の妥当性
+  （パース可能かどうか）は検証しないため。v13決定5が`KeyboardModel`全
+  バリアント試行で対処しようとしていた問題であり、v14はこの複雑さを
+  意図的に持たない。
+- **`ensure_layouts_exist`の書き込みが途中（6本のうち数本）で失敗すると、
+  以後「1本でもあれば何もしない」判定により残りは永久に生成されない
+  （v14 opusレビューM5）**。起動不能にはならないが、`default_layout`が
+  未生成の場合は毎回フォールバック通知モーダルが出る形で固定される。
+- **アンインストール→再インストールで設定を初期状態に戻す、という従来の
+  サポート定型句（「一度アンインストールして入れ直してください」）は
+  この変更で成立しなくなる（v14 opusレビューM8）**——`config.toml`/
+  `layout/*.yab`はPermanentで残り、`NeverOverwrite`で上書きもされない
+  ため。初期化したい場合の正しい手順は「`%LOCALAPPDATA%\awase\config.toml`
+  と`layout\`を削除してから`awase`を再起動する」であり、決定2の自己修復
+  がこれを可能にする（実機検証4番で確認済み）。この手順のドキュメント
+  反映は未解決事項参照。
 
 ## 未解決事項 / 次のアクション
 
-1. opus-adversarial-consultによる新方針（v14）のレビュー。
+1. opus-adversarial-consultによる新方針（v14）のレビュー: **完了**
+   （[178-opus-review-v14.md](178-opus-review-v14.md)）。総合判定は
+   「実装をやり直す必要はない、設計の骨格は正しい」。Blocker2件（B1:
+   自己修復配線を守るテストが無かった、B2: `default_config()`の
+   `layouts_dir = "config"`が`.yab`の誤生成先に使われうる）を検出、
+   いずれも反映済み（B1: `architecture_guard.rs::adr178_self_heal_wiring`
+   モジュール5テスト追加、B2: `awase-settings/src/main.rs`の
+   `ensure_default_layouts_exist`呼び出しを`config_load_state ==
+   Loaded`でゲート）。Major推奨5件（M1: `find_config_path`から副作用を
+   分離、M2: `.yab`側にもCLI引数ゲート追加、M3: ADR本文「有効な.yab」
+   表現の訂正、M5・M8: 「解決されないこと」節への追記）も反映済み。
+   フォローアップ扱い（M4: 埋め込み既定値・MSI同梱・`layout/`実ファイルの
+   3者同期テスト、M6: `is_dev_build`相当の判定が3箇所に分散している
+   一本化、M7: `scripts/uninstall.ps1 -Purge`へのレジストリ削除追加、
+   Minor6件）は未反映——次のADR改訂または別PRで対応する。
 2. 実機確認4項目すべて完了（上記参照、`.yab`自己修復バグの修正・再検証
-   含む）。
+   含む）。**ただしopusレビュー後のB1/B2/M1/M2コード変更は未再検証**
+   （コンパイル・単体テスト・ソーススキャンガードは確認済みだが、実機での
+   動作確認はまだ）。
 3. `ensure_config_exists`/`ensure_layouts_exist`の実装・呼び出し位置は
    完了（`awase.exe`・`awase-settings.exe`の両方、コンパイル・単体テスト・
    実機確認済み）。
 4. `wix_installer_guard.rs`の`Permanent="yes"`固定テスト追加、GUID固定テストの
    抜け（`NicolaKb232Yab`・`NicolaKakuteiYab`）の解消は完了。
-5. `docs/index.html`・`docs/index.en.html`へのアンインストール手順節の新設
-   （レジストリ削除案内込み）。
-6. `purge.ps1`同梱の要否判断（決定4、任意）。
+5. `docs/index.html`・`docs/index.en.html`へのドキュメント更新: opusレビュー
+   Q3の判断により、決定4の「完全削除」案内より**M8の「初期化したい場合」
+   案内を優先する**（実害頻度が高いため）。両方とも未実施。
+6. `purge.ps1`同梱: opusレビューQ3の判断により**不要**。代わりに
+   `scripts/uninstall.ps1 -Purge`へ`Remove-Item HKCU:\Software\awase
+   -Recurse`相当の1行を追加する方が低コストで同じ効果（M7、未実施）。
 7. v2〜v13のレビュー記録（`178-opus-review-round2.md`〜`round13.md`）は
    歴史的記録として残す（削除しない）。index.mdの記述は「v1〜v13の経緯」を
    反映するよう更新する。
