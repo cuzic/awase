@@ -3,13 +3,16 @@ id: ADR-177
 title: |-
   常駐中のMSIアップグレードは実機検証の結果コード変更不要と判明（Restart Managerが自律的に処理）
 status: |-
-  **実機検証2ラウンド完了（2026-09-17）。コード変更不要、ADR-099 MF-4を解消。**
-  opus-adversarial-consult round1でBlocker4件（実機観測ゼロで3変更決定・
-  検証優先を要求）、round2でBlocker3件（サイレントのみ検証・データ保持
-  未検証・実機残留の懸念）を検出、追加実機検証で対応。round3で
-  「B1(計測基準点のズレ・解釈の向きが逆)・B2(実機残留データ未確認)の
-  2件を解消すれば収束」と判定され、両方をログ再解析(実機不要)と
-  実機1分確認で解消。決定1〜3は不採用のまま維持。round4レビュー待ち。
+  **確定（2026-09-17）。コード変更不要、ADR-099 MF-4を解消。**
+  opus-adversarial-consult round1〜4の4ラウンドを経て収束。round1で
+  Blocker4件（実機観測ゼロで3変更決定）、round2でBlocker3件
+  （サイレントのみ検証・データ保持未検証・実機残留の懸念）、round3で
+  Blocker2件（計測基準点のズレ・解釈の向きが逆／実機残留データ未確認）
+  を検出、いずれも追加の実機検証・ログ再解析で解消。round4でBlocker0件
+  となり「コード変更不要」の結論が確定した。決定1〜3は不採用。副産物として
+  「UI付きとサイレントでRMシャットダウンのコードパスが異なる」
+  「MSIアンインストールはユーザーデータを削除する（ZIP版と非対称）」
+  という2つの新知見を得た。
 related_adr:
   - "ADR-099"
 ---
@@ -18,7 +21,7 @@ related_adr:
 
 ## ステータス
 
-**実機検証2ラウンド完了（2026-09-17）。コード変更は行わない。**
+**確定（2026-09-17）。コード変更は行わない。**
 
 当初、`awase.exe`側に`WM_QUERYENDSESSION`/`WM_ENDSESSION`ハンドラや
 `RegisterApplicationRestart`を追加する案（旧決定1〜3）を起草したが、
@@ -115,12 +118,21 @@ awase は `HKCU\...\Run` で自動起動する常駐アプリ（`main.wxs`の`Ma
 
 #### 観測2: バイナリの中身が変わる場合（1.20.2→1.20.3、サイレント）
 
-`upgrade2.log`に以下が明確に記録された:
+`upgrade2.log`の`RESTART MANAGER:`行を全件引用する（`LaunchApplication`
+を含む行は検索していない。M4/限界2参照）:
 
 ```
+[08:25:29:383] RESTART MANAGER: Session opened.
 [08:25:30:062] RESTART MANAGER: Will attempt to shut down and restart applications in no UI modes.
+[08:25:30:070] RESTART MANAGER: Session opened.
 [08:25:30:267] RESTART MANAGER: Successfully shut down all applications in the service's session that held files in use.
+[08:25:30:268] RESTART MANAGER: Successfully shut down all applications that held files in use.
+[08:25:33:889] RESTART MANAGER: Session opened.
 [08:25:35:310] RESTART MANAGER: Previously shut down applications have been restarted.
+[08:25:35:311] RESTART MANAGER: Session closed.
+[08:25:35:319] RESTART MANAGER: Session closed.
+[08:25:35:380] RESTART MANAGER: Previously shut down applications have been restarted.
+[08:25:35:383] RESTART MANAGER: Session closed.
 ```
 
 `Will attempt to shut down...`から`Successfully shut down...`までの
@@ -182,28 +194,40 @@ modes**.`という行があり、シャットダウン成功までの差は205ms
 **一度も出現しない**。つまりUI付き（Full UI）とサイレントでは、
 RMシャットダウンに至る**コードパス自体が異なる**。round1の基準点
 （`Will attempt to shut down...`）がround2には存在しないため、
-205msと19.4秒を単純に並べて比較すること自体ができない。
+205msと以下の秒オーダーの差を単純に並べて比較すること自体ができない。
 
-同じ基準点（`RESTART MANAGER: Session opened.`）で測り直すと:
+`upgrade3.log`の`RESTART MANAGER:`行も全件引用する
+（`LaunchApplication`を含む行は0件だった）:
 
 ```
+[09:51:30:366] RESTART MANAGER: Session opened.
 [09:51:31:395] RESTART MANAGER: Session opened.
 [09:51:50:791] RESTART MANAGER: Successfully shut down all applications in the service's session that held files in use.
+[09:51:50:793] RESTART MANAGER: Successfully shut down all applications that held files in use.
+[09:51:54:172] RESTART MANAGER: Session opened.
+[09:51:55:637] RESTART MANAGER: Previously shut down applications have been restarted.
+[09:51:55:637] RESTART MANAGER: Session closed.
+[09:51:55:644] RESTART MANAGER: Session closed.
+[09:51:55:859] RESTART MANAGER: Previously shut down applications have been restarted.
+[09:51:55:862] RESTART MANAGER: Session closed.
 ```
 
-**約19.4秒**。`Session opened`はインストールの早い段階（コスト計算
-前後）で出るため、この19.4秒には「RMがシャットダウンを試みて待った
-時間」以外に「`RemoveExistingProducts`のスケジューリングや
-`InstallFiles`開始までのMSI自体の処理時間」も含まれている可能性が
-高く、19.4秒のうち何秒がシャットダウン待機なのかはこの2行だけでは
-分離できない。**この差の解釈の向きについても訂正する**: RMの
-シャットダウンは「メッセージを送る→アプリの自発終了を待つ→
-タイムアウトしたら`TerminateProcess`」という流れなので、時間が
-**長いほど「待たされた」＝強制終了に近づいた可能性が上がる**方向に
-解釈するのが筋であり、旧版が書いていた「19.4秒はgraceful待機に近い」
-という解釈は向きが逆だった。ただし上記の通り19.4秒のうちどこまでが
-実際の待機かが未分離なため、これ以上の結論（gracefulか強制終了か）は
-出せない。**この差自体の原因（UI付き特有のコードパスによるものか、
+`Session opened.`は同一ログ内に3回出現する（クライアント/サービス側の
+複数トランザクションに対応するとみられる）。最初の出現を基準にすると
+`Successfully shut down...`までは約20.4秒、2番目の出現を基準にすると
+約19.4秒——**どちらを基準にしても秒オーダーである点は変わらない**。
+`Session opened.`はインストールの早い段階（コスト計算前後）で出るため、
+この約20秒には「RMがシャットダウンを試みて待った時間」以外に
+「`RemoveExistingProducts`のスケジューリングや`InstallFiles`開始までの
+MSI自体の処理時間」も含まれている可能性が高く、そのうち何秒が
+シャットダウン待機なのかはこのログだけでは分離できない。**この差の
+解釈の向きについても訂正する**: RMのシャットダウンは「メッセージを
+送る→アプリの自発終了を待つ→タイムアウトしたら`TerminateProcess`」
+という流れなので、時間が**長いほど「待たされた」＝強制終了に近づいた
+可能性が上がる**方向に解釈するのが筋であり、旧版が書いていた
+「gracefulな待機に近い」という解釈は向きが逆だった。ただし上記の通り
+この約20秒のうちどこまでが実際の待機かが未分離なため、これ以上の
+結論（gracefulか強制終了か）は出せない。**この差自体の原因（UI付き特有のコードパスによるものか、
 実行時の環境差か）は依然として未確定であり、追加調査はしない**
 （実機のログは既に削除済みで、再検証には新たなインストールサイクルが
 必要になる。実害が顕在化した場合に改めて取り組む）。
@@ -248,21 +272,22 @@ RMシャットダウンに至る**コードパス自体が異なる**。round1�
 シャットダウン・ファイル置換・再起動という一連の処理を自律的に行い、
 ユーザーが編集したデータ（`config.toml`/`layout/`）も保持される。**
 
-一方で、round1検証の205ms・round2検証の19.4秒という2つの異なる
-シャットダウン所要時間から、**旧プロセスの終了機序（gracefulな
-`WM_CLOSE`経由か、猶予なしの`TerminateProcess`か）は依然として
-確定できていない**（後述の通り、
-「`WM_QUERYENDSESSION`に既定でTRUEを返すこと」自体はプロセスを
-終了させない。実際に終了させたのは`TerminateProcess`か、
-awase側の既存`WM_CLOSE`ハンドラ（`tray.rs:1093-1102`、
-`PostQuitMessage`）のいずれかで、両者を区別する決め手は
-まだ得られていない）。ただし、いずれの経路であっても
+round1と round2 は RM シャットダウンに至るコードパス自体が異なり
+（観測3参照）、基準点も揃わないため、シャットダウン所要時間として
+単純に比較することはできない。したがって**旧プロセスの終了機序
+（gracefulな`WM_CLOSE`経由か、猶予なしの`TerminateProcess`か）は
+依然として確定できていない**（「`WM_QUERYENDSESSION`に既定でTRUEを
+返すこと」自体はプロセスを終了させない。実際に終了させたのは
+`TerminateProcess`か、awase側の既存`WM_CLOSE`ハンドラ
+（`tray.rs:1093-1102`、`PostQuitMessage`）のいずれかで、両者を
+区別する決め手はまだ得られていない）。ただし、いずれの経路であっても
 **インストール失敗・データ消失は2回の検証を通じて確認されなかった**
-（インストールは両回とも成功コードで完了し、`config.toml`/
-`layout/nicola_keytop.yab`の編集内容は保持され、アンインストール後の
-残留も無かったことを確認済み）。一方、**二重起動時に表示されうる
-バルーンやトレイのゴーストアイコンについては目視確認していないため、
-「実害が無い」とまでは言い切れない**（「検証の限界」2・3参照）。
+（インストーラのログ上は両回とも正常完了と記録され——終了コード自体は
+未記録、「検証の限界」6参照——`config.toml`/`layout/nicola_keytop.yab`
+の編集内容は保持され、アンインストール後の残留も無かったことを
+確認済み）。一方、**二重起動時に表示されうるバルーンやトレイの
+ゴーストアイコンについては目視確認していないため、「実害が無い」
+とまでは言い切れない**（「検証の限界」2・3参照）。
 
 ## 決定
 
@@ -272,7 +297,9 @@ awase側の既存`WM_CLOSE`ハンドラ（`tray.rs:1093-1102`、
 コードのままでもシャットダウン・再起動を完了できることが確認できたため、
 追加のハンドラは不要と判断した。旧プロセスの終了がgraceful/強制終了の
 どちらだったか確定できていない点は残るが、`docs/known-bugs/`には
-計上しない（実害が確認されていないため）。将来、強制終了に起因する
+計上しない（実害を示す兆候〈トレイのゴーストアイコン等〉を確認して
+いないが、確認自体もしていないため、現時点では計上しない。
+「検証の限界」3参照）。将来、強制終了に起因する
 具体的な症状（トレイアイコンのゴースト等）が不具合報告として上がった
 場合に、改めてこの経路を疑うための記録として本ADRを残す。
 
@@ -323,21 +350,54 @@ round2検証で満たしたため、ADR-099のステータス欄も本ADR完了�
 挙げる4段階の検証チェックリスト全項目〈ZIP版install.ps1/uninstall.ps1
 の`-Purge`挙動等〉を網羅したものではない点に注意）。
 
+## 副次的な発見: MSIアンインストールはユーザーデータを削除する（ADR-099決定1との非対称）
+
+本ADRの後片付け（「検証の限界」7）で、`msiexec /x`によるアンインストール
+後に`%LOCALAPPDATA%\awase\config.toml`/`layout/`が**削除されている**
+ことを確認した。これはMSIの標準的な挙動（`RemoveFolder`等）としては
+自然だが、ADR-099が定めたZIP版の方針とは非対称になっている。
+
+| 経路 | アンインストール既定時の`config.toml`/`layout/` |
+| --- | --- |
+| ZIP（`scripts/uninstall.ps1`） | **残す**（消すには`-Purge`明示フラグが必要、ADR-099決定1） |
+| MSI（`msiexec /x`、ARPまたはスタートメニューの「Uninstall awase」） | **消える**（本ADRで実測） |
+
+ADR-099は当時「決定0によってMSI経路は既に保護されるため、決定1（ZIP版の
+非破壊化）はZIP経由の場合に限定される」としてMSI側のアンインストール時
+挙動を検討対象から外していたが、これは「アップグレード時の保護」と
+「アンインストール時の挙動」を混同していたことになる。
+
+実害の筋道は具体的である: `wix/main.wxs:212-215`はスタートメニューに
+「Uninstall awase」ショートカットを置いており、アンインストールは
+ワンクリックで到達できる。不具合対応でよくある案内「一度アンインストール
+して入れ直してください」をMSIユーザーが実行すると、`config.toml`の
+全設定と配列編集タブで作り込んだ`layout/*.yab`が警告なく消え、
+入れ直し後は初期状態になる——これはADR-099を起票させた元のユーザー報告
+「バージョンアップすると既存の設定が失われる」と体感上同じ症状になる。
+
+**この非対称を「バグ」として修正するかどうかは本ADRのスコープ外の
+設計判断**（MSI側に`-Purge`相当の分岐を持たせるかは別途検討が必要）
+とし、ここでは事実の記録に留める。ADR-099の「既知の限界・未検証事項」
+にも同じ内容を追記した。
+
 ## 影響範囲
 
 - コード変更なし。
 - [ADR-099](099-config-preservation-on-upgrade.md)のステータス欄
   （「Windows実機でのアップグレード検証は未実施」の記述を、本ADRの
-  実機検証結果へのリンクで更新する）。
+  実機検証結果へのリンクで更新する）と、「既知の限界・未検証事項」節
+  （1項目目を「ADR-177で実施済み」に更新し、MSIアンインストール時の
+  ユーザーデータ削除を新規項目として追記する）。
 
 ## 検証の限界（未解決のまま残す事項）
 
 1. **旧プロセスの終了機序は未確定**（graceful/強制終了）。round1
    （サイレント、`Will attempt to shut down...`から205ms）と
-   round2（UI付き、この行自体が出現せず`Session opened`から19.4秒）
-   では、シャットダウンに至るコードパス自体が異なることが判明した
-   （「観測3」節参照）。19.4秒には「RMがシャットダウンを試みて待った
-   時間」以外にMSI自体の処理時間も含まれている可能性が高く、この2つを
+   round2（UI付き、この行自体が出現せず`Session opened`から約19〜20秒、
+   基準の取り方で変わる）では、シャットダウンに至るコードパス自体が
+   異なることが判明した（「観測3」節参照）。約19〜20秒には「RMが
+   シャットダウンを試みて待った時間」以外にMSI自体の処理時間も
+   含まれている可能性が高く、この2つを
    単純比較して原因を特定することはできなかった。イベントビューアの
    `Microsoft-Windows-RestartManager/Operational`ログはチャンネル自体
    有効なのに記録が0件で活用できなかった。実害が顕在化しない限り
@@ -353,9 +413,12 @@ round2検証で満たしたため、ADR-099のステータス欄も本ADR完了�
    `exit(1)`し、先行インスタンスへ`WM_DUPLICATE_INSTANCE`を送る設計
    のはず）。この場合に表示される「awase はすでに起動しています」
    バルーン（`message_handlers.rs:1100-1106`）が実際に出たかどうかも、
-   今回は目視確認していない。次に実機を触る機会があれば、
-   `upgrade*.log`の`Action start …: LaunchApplication.`とRM再起動の
-   時刻を突き合わせ、あわせてアップグレード直後の画面を目視すること。
+   今回は目視確認していない。`upgrade.log`/`upgrade2.log`/`upgrade3.log`
+   は既に実機から削除済み（「検証の限界」8）のため、この突き合わせは
+   今回のログでは行えない。**次にこの検証をやり直す際は**、`msiexec`
+   を`/l*v`付きで実行し、`Action start …: LaunchApplication.`とRM再起動
+   の時刻を突き合わせ、あわせてアップグレード直後の通知領域を目視する
+   こと。
 3. **アップグレード直後の通知領域（トレイ）のゴーストアイコンの
    有無は未確認。** 強制終了なら`SystemTray::drop`（`tray.rs:369-379`）
    の`Shell_NotifyIconW(NIM_DELETE)`が走らず死んだアイコンが残る
@@ -390,8 +453,16 @@ round2検証で満たしたため、ADR-099のステータス欄も本ADR完了�
 
 ## 次のアクション
 
-1. opus-adversarial-consult round4（本ADRの再確認）。
+opus-adversarial-consult round4で「コード変更不要」の結論がBlocker 0件
+で確定した（2026-09-17）。
 
-対応済み: ADR-099のステータス欄更新（MSI経路のみ「ADR-177で解消」に
-書き換え、ZIP経路は未検証のまま区別）、`docs/adr/index.md`のADR-177行
-更新（本ADRと同じコミットで実施）。
+対応済み: ADR-099のステータス欄・「既知の限界・未検証事項」節の更新
+（MSI経路のみ「ADR-177で解消」に書き換え、ZIP経路は未検証のまま区別、
+MSIアンインストール時のユーザーデータ削除を新規項目として追記）、
+`docs/adr/index.md`のADR-177行更新（一連のADR-177関連コミットで
+順次実施）。
+
+残タスク（本ADRのスコープ外、別途判断）:
+
+1. MSIアンインストール時のユーザーデータ削除（「副次的な発見」節）を
+   ZIP版と同様に`-Purge`相当の分岐で保護するかどうかの設計判断。
