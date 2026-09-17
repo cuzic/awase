@@ -1,153 +1,170 @@
 ---
 id: ADR-178
 title: |-
-  MSIアンインストール時にユーザーデータ(config.toml/layout/)を残す
+  MSIアンインストール時のユーザーデータ喪失を自己修復（バックアップ+復元）で無害化する
 status: |-
-  **起草中。opus-adversarial-consult未実施。**
+  **起草中（v2）。opus-adversarial-consult round1で採用案（Permanent="yes")を
+  Blocker2件で却下、round2としてMSI非依存の自己修復方式へ全面差し替え。
+  レビューはこれから。**
 related_adr:
   - "ADR-099"
   - "ADR-177"
 ---
 
-# ADR-178: MSIアンインストール時にユーザーデータ(config.toml/layout/)を残す
+# ADR-178: MSIアンインストール時のユーザーデータ喪失を自己修復（バックアップ+復元）で無害化する
 
 ## ステータス
 
-**起草中（2026-09-17）。opus-adversarial-consultによるレビューはこれから。**
+**起草中v2（2026-09-17）。opus-adversarial-consultによるレビューはこれから。**
 
 ## コンテキスト
 
 [ADR-177](177-msi-restart-manager-graceful-shutdown.md)の実機検証で、MSIの
-アンインストール（`msiexec /x`、ARPまたはスタートメニューの「Uninstall
-awase」ショートカット経由）が`%LOCALAPPDATA%\awase\config.toml`/
+アンインストール（`msiexec /x`）が`%LOCALAPPDATA%\awase\config.toml`/
 `layout/*.yab`を削除することが判明した。これは[ADR-099](099-config-preservation-on-upgrade.md)
-決定1がZIP版（`scripts/uninstall.ps1`）に定めた「既定では
-`config.toml`・`layout/`は残す、完全消去は`-Purge`明示フラグが必要」
-という方針と非対称であり、ユーザーから見ると以下のように現状の
-MSI版だけが不利になっている:
+決定1がZIP版（`scripts/uninstall.ps1`）に定めた「既定では残す、完全消去は
+`-Purge`明示フラグが必要」という方針と非対称であり、ユーザーから
+「ユーザーデータ削除するのおかしいね。残してほしい」との明示的な要望があった。
 
-| 経路 | アンインストール既定時の`config.toml`/`layout/` |
-| --- | --- |
-| ZIP（`scripts/uninstall.ps1`） | 残す（消すには`-Purge`明示フラグが必要） |
-| MSI（`msiexec /x`） | **消える**（現状） |
+### v1（採用案: `Permanent="yes"`）が却下された経緯
 
-不具合対応でよくある案内「一度アンインストールして入れ直してください」を
-MSIユーザーが実行すると、`config.toml`の全設定と配列編集タブで作り込んだ
-`layout/*.yab`が警告なく消える。これはADR-099を起票させた元のユーザー
-報告「バージョンアップすると既存の設定が失われる」と体感上同じ症状になる。
+当初、`NeverOverwrite="yes"`が付いている7コンポーネント（`ConfigFile`・
+`NicolaYab`等、`wix/main.wxs`）にWiXの`Permanent="yes"`属性を追加する案を
+起草したが、opus-adversarial-consult round1でBlocker 2件により却下された:
 
-ユーザーから「ユーザーデータ削除するのおかしいね。残してほしい」との
-明示的な要望があり、本ADRで対応方針を検討する。
+- **B1**: `Permanent`はコンポーネント**全体**（ファイル＋KeyPathレジストリ値）
+  に効く。perUserインストールの制約（ICE38）でKeyPathは必ずレジストリ値
+  になるため、アンインストール後も`HKCU\Software\awase\ConfigFile`等7つの
+  レジストリ値が残る。この状態で将来ユーザーが手動で`%LOCALAPPDATA%\awase`
+  だけを削除して再インストールすると、`NeverOverwrite`が「KeyPathが既に
+  存在する＝インストール済み」と誤判定し、**`config.toml`も6本の`.yab`も
+  一切配置されず、awase.exeが起動しなくなる**。しかも`Permanent`は
+  実質不可逆（一度出荷すると次バージョンで戻しても既存環境には反映
+  されない）ため、この不具合は恒久的に残る。
+- **B2**: 既にPermanent無しでインストール済みの既存ユーザーに、この
+  変更が後から効くかどうか自体が未検証だった。
 
-## 検討した選択肢
+さらに検討した結果、代替として「MSIコンポーネント自体を`wix/main.wxs`
+から削除する」案（当初「選択肢D」と呼んだもの）も、Windows Installerの
+一般的挙動として**次のメジャーアップグレードで新バージョンが参照しなく
+なったコンポーネントは自動的に削除される**ため、既存ユーザーのデータが
+一斉に失われるという別のBlocker級の問題を持つことが判明し、不採用と
+した（Microsoft公式ブログのタイトルもずばり「removal of a component
+from a feature is not supported」）。
 
-### 選択肢A: 該当コンポーネントに`Permanent="yes"`を追加する（採用案）
+### 方針転換: MSI（`wix/main.wxs`）を一切変更しない
 
-WiXの`Component/@Permanent`属性（MSIの`msidbComponentAttributesPermanent`
-フラグ）を、既に`NeverOverwrite="yes"`が付いている7コンポーネント
-（`ConfigFile`・`NicolaYab`・`NicolaKeytopYab`・`NicolaUsYab`・
-`NicolaFYab`・`NicolaKb232Yab`・`NicolaKakuteiYab`）に追加する。
-これらは全て「ユーザーが配列編集タブ等でその場編集しうるデータ」という
-同じ分類に属しており、`NeverOverwrite`（上書きされないファイル）と
-`Permanent`（アンインストールで削除されないファイル）は保護したい対象が
-一致する。
-
-**利点**: WiX標準機能で完結し、カスタムアクションが不要。実装は
-属性追加のみで小さい。
-
-**重大なトレードオフ（[Microsoft Q&A](https://learn.microsoft.com/en-us/answers/questions/1602667/recommended-way-to-uninstall-a-file-that-was-confi)・[Microsoft公式ドキュメント](https://learn.microsoft.com/en-us/windows/win32/msi/installing-permanent-components-files-fonts-registry-keys)で確認）**:
-`Permanent`フラグは一度そのコンポーネントがインストールされると、
-その設定が`HKEY_CURRENT_USER\...\Installer\UserData\...\Components\
-<Component GUID>`（perUserインストールの場合）に記録される。**将来
-MSI側で`Permanent="no"`に戻しても、既にこの設定でインストール済みの
-ユーザー環境には反映されない**（レジストリに記録された状態が優先される）。
-つまり、この変更は実質的に不可逆——一度出荷すると、その後どのバージョン
-をインストールしても、対象ファイルはアンインストールで削除されなくなる。
-「完全にawaseを削除したい」ユーザー（PC譲渡前、ディスク容量整理等）は
-手動で`%LOCALAPPDATA%\awase`を削除する以外の手段が無くなる
-（ZIP版の`uninstall.ps1 -Purge`に相当する自動化された完全削除手段は、
-MSI版には用意しない）。
-
-### 選択肢B: カスタムアクションで退避→通常アンインストール→復元
-
-アンインストール開始時にカスタムアクションで対象ファイルを一時退避し、
-標準のアンインストール処理を実行させた後、別のカスタムアクションで
-退避先から`%LOCALAPPDATA%\awase`へ復元する。
-
-**不採用の理由**: カスタムアクションのタイミング制御（`InstallExecuteSequence`
-での正確な位置、ロールバック時の扱い）が複雑で、退避・復元自体が
-失敗した場合にデータを完全に失うリスクを新たに持ち込む。選択肢Aより
-複雑な実装で得られる利点（可逆性）が、実際には運用上ほぼ使われない
-見込み（将来「やはりMSIでも完全削除をデフォルトにしたい」と判断する
-可能性は低い——ZIP版が既にこの方針を採っており、対称性を取るのが目的）。
-
-### 選択肢C: 現状維持、ドキュメントで案内するのみ
-
-「MSI版でアンインストールする場合、設定を残したいなら事前に
-`%LOCALAPPDATA%\awase\config.toml`/`layout/`をバックアップしてください」
-とドキュメントに書くだけで済ませる。
-
-**不採用の理由**: ユーザーから明示的に「残してほしい」という要望があり、
-ZIP版と同じ体験をMSI版でも提供できる技術的手段（選択肢A）が存在するため、
-案内だけで済ませる理由がない。
+上記の検討を経て、**`wix/main.wxs`のコンポーネント構成は一切変更しない**
+（メジャーアップグレード時の既存の保護＝ADR-099決定0をそのまま維持し、
+新たなリスクを持ち込まない）方針とし、代わりに**アプリ自身
+（`awase.exe`/`awase-settings.exe`）が設定データの保存・復元責任を持つ**
+自己修復方式に転換する。
 
 ## 決定
 
-**選択肢Aを採用する。** `ConfigFile`・`NicolaYab`・`NicolaKeytopYab`・
-`NicolaUsYab`・`NicolaFYab`・`NicolaKb232Yab`・`NicolaKakuteiYab`の
-7コンポーネントに`Permanent="yes"`を追加する。
+### 決定1: 保存の都度、MSI管理外のディレクトリへ自動バックアップする
 
-### 影響範囲の確認
+`config.toml`/`layout/*.yab`が実際に書き換えられるタイミングで、
+`%LOCALAPPDATA%\awase-backup\`（`awase`ディレクトリの兄弟、MSIの
+コンポーネント管理下に一切無い）へ自動的にコピーする。
 
-- `NicolaYab`コンポーネントが持つ`RemoveFolder Id="RemoveLayoutDir"
-  Directory="LayoutDir" On="uninstall"`は、コンポーネントがPermanentに
-  なることで実行されなくなる可能性が高い（要実機確認）。これは意図通り
-  ——中身（`*.yab`ファイル）が残るなら、ディレクトリ自体も残ってよい。
-- `MainExe`の`RemoveFolder Id="RemoveInstallDir" Directory="INSTALLDIR"
-  On="uninstall"`はPermanent化しないため引き続き動作するが、
-  `config.toml`や`layout/`が残っている限り`INSTALLDIR`は空にならず、
-  `RemoveFolder`の「ディレクトリが空なら削除」という仕様上、どのみち
-  フォルダごと残る。これも意図通り。
-- `NgramData`（`data/ngram_hiragana.csv.gz`）・`AppShortcut`
-  （スタートメニューショートカット）はプログラム資産のため対象外の
-  まま。アンインストール時に削除される。
-- メジャーアップグレード時（`RemoveExistingProducts`）の挙動は、既に
-  `NeverOverwrite="yes"`+GUID不変+`Schedule="afterInstallExecute"`
-  （ADR-099決定0、ADR-177で実機確認済み）で保護されているため、
-  `Permanent="yes"`の追加による影響はない（アップグレード時は元々
-  該当ファイルへの上書き・削除が発生していなかった）。
+- `config.toml`: `AppConfig::save()`（`src/config.rs:890`）の書き込み
+  成功後にコピーする。呼び出し元は`awase-settings`（`main.rs:818`の
+  `clone.save(&config_path)`）と`awase.exe`（`tray.rs:1041`の
+  `save_auto_start_config` → `AppConfig::save_auto_start`）の両方が
+  あるため、バックアップ処理は`AppConfig::save()`自身、または
+  両呼び出し元が共通して通る箇所に実装し、重複実装を避ける。
+- `layout/*.yab`: `layout_write_to_path()`
+  （`crates/awase-settings/src/main.rs:1598`、配列編集タブの保存処理）
+  の書き込み成功後にコピーする。
 
-### ドキュメントへの追記
+バックアップはベストエフォート（失敗してもログに警告を出すのみで、
+本処理〈設定の保存〉の成否には影響させない）。
 
-「完全にawaseを削除したい場合は、アンインストール後に手動で
-`%LOCALAPPDATA%\awase`フォルダを削除してください」という一文を
-`docs/index.html`（アンインストール手順を案内している箇所）に追記する。
+### 決定2: 起動時、ファイルが存在しなければバックアップまたは埋め込み既定値から復元する
 
-## テスト方針
+`config.toml`が存在しない場合:
 
-[fix-requires-evidence](../../.claude/rules/fix-requires-evidence.md)に
-従い、`crates/awase-windows/tests/wix_installer_guard.rs`に、対象7
-コンポーネントの`Permanent="yes"`存在を固定する回帰テストを追加する
-（既存の`config_file_and_nicola_yab_components_have_never_overwrite`と
-同型のテキスト走査テスト）。
+1. `%LOCALAPPDATA%\awase-backup\config.toml`が存在すれば、そこから
+   コピーして復元する（ユーザーが編集した内容を実質的に保持する）。
+2. バックアップも無ければ、埋め込み既定値（`include_str!`でビルド時に
+   `config.toml`を取り込んだもの）から生成する。
 
-実機検証（clipwire経由、dragonflyg4）:
+`layout/*.yab`（6ファイル: `nicola.yab`・`nicola_keytop.yab`・
+`nicola_us.yab`・`nicola_f.yab`・`nicola_kb232.yab`・`nicola_kakutei.yab`）
+も同様に、個別ファイル単位でバックアップ→埋め込み既定値の順に復元する
+（`layouts_dir`ディレクトリ自体が存在しなければ`create_dir_all`で作成）。
 
-1. MSIをクリーンインストールし、`config.toml`/`layout/nicola_keytop.yab`
-   を編集。
-2. `msiexec /x`でアンインストールし、`%LOCALAPPDATA%\awase\config.toml`/
-   `layout/`が削除されずに残ることを確認。
-3. 削除される想定のファイル（`awase.exe`・`awase-settings.exe`・
-   `data/ngram_hiragana.csv.gz`・スタートメニューショートカット）が
-   実際に削除されることを確認（Permanent化の副作用で意図せず残らないか
-   の確認を兼ねる）。
-4. 同じMSIを再インストールし、`NeverOverwrite`により手順1で編集した
-   内容が保持されたまま起動することを確認（Permanentコンポーネントの
-   再インストール時の扱いに意図しない副作用が無いかの確認）。
+実装箇所（同一ロジックが複数箇所に重複しないよう、共通ヘルパーへの
+切り出しを実装時に検討する）:
+
+- `crates/awase-windows/src/app/mod.rs::find_config_path()`
+  （現状は存在しなければ`bail!`するのみ、ここに復元ロジックを追加）
+- `crates/awase-settings/src/main.rs::find_config_path()`
+  （同型ロジック、awase.exe側と同じ変更を加える）
+- `crates/awase-windows/src/app/bootstrap.rs`（237行目付近、
+  `layouts_dir`をディレクトリスキャンして`*.yab`を読み込む処理。
+  現状はディレクトリが無い/空なら`show_no_layouts_dialog`で
+  エラーダイアログを出して終了するため、スキャンの**前**に
+  復元ロジックを挟む）
+
+### 決定3: 埋め込み既定値はビルド時にリポジトリのファイルから直接取り込む
+
+`include_str!("../../config.toml")` / `include_str!("../../layout/nicola.yab")`
+のように、リポジトリルートの実ファイルを直接参照する（値をコピーして
+二重管理しない）。これにより、リポジトリの既定値を更新すれば埋め込み
+既定値も自動的に追従する。
+
+### 決定4: 「完全に削除したい」場合の案内を更新する
+
+MSI版・ZIP版ともに、完全削除の案内を「`%LOCALAPPDATA%\awase`と
+`%LOCALAPPDATA%\awase-backup`の両方を削除してください」に更新する
+（ZIP版`scripts/uninstall.ps1 -Purge`の対象にも`awase-backup`を追加する）。
+
+### 決定5: `wix/main.wxs`は変更しない
+
+決定1〜4はいずれもアプリ側（Rustコード）の変更のみで完結し、MSIの
+コンポーネント構成・`Permanent`属性・GUID等には一切触れない。ADR-099
+決定0が担うアップグレード時の保護は現状のまま維持される。
+
+## この設計で解決されること・されないこと
+
+**解決されること**:
+- MSIアンインストール→再インストール後、`config.toml`/`layout/*.yab`が
+  MSI側の挙動によって物理的に削除されても、次回起動時にバックアップ
+  から実質的に復元される。
+- v1で問題になった「レジストリKeyPathだけ残って再インストールで
+  ファイルが配置されない」というシナリオ自体が発生しない
+  （`wix/main.wxs`を変更しないため、`NeverOverwrite`とPermanentの
+  衝突が起きようがない）。
+- 何らかの理由で`config.toml`/`layout/*.yab`がファイルシステムから
+  消えた場合（ユーザーの誤削除、破損等）、アプリが起動不能になる
+  という最悪の事態を防げる（ADR-099 F4が扱った「load失敗」とは別の、
+  「そもそもファイルが無い」ケースへの防御）。
+
+**解決されないこと**:
+- MSIのアンインストール自体は引き続き`config.toml`/`layout/*.yab`を
+  削除する（`wix/main.wxs`を変更しないため）。「MSIレベルで保護する」
+  というADR-099決定1がZIP版に対して実現した体験そのものではなく、
+  「消えても実害が出ないようにアプリ側で補う」という間接的な解決。
+- バックアップ自体は`%LOCALAPPDATA%`配下にあるため、ユーザーがOSの
+  ユーザープロファイルごと初期化する場合はバックアップも失われる
+  （これはZIP版の`-Purge`と同じ扱いであり、後退ではない）。
+- バックアップと本体のタイミングがずれるケース（保存直後にクラッシュ
+  した等）では、最新の編集内容が反映されない可能性がある。
 
 ## 未解決事項 / 次のアクション
 
-1. opus-adversarial-consultによるレビュー（不可逆性のトレードオフが
-   本当に許容できるか、他の見落としが無いか）。
-2. 実機検証（上記テスト方針参照）。
-3. `crates/awase-windows/tests/wix_installer_guard.rs`への回帰テスト追加。
+1. opus-adversarial-consultによるレビュー。
+2. `AppConfig::save()`/`layout_write_to_path()`双方から呼ばれる共通
+   バックアップヘルパーの配置（プラットフォーム非依存の`src/config.rs`
+   に置くか、`awase-windows`/`awase-settings`それぞれに置くか）の設計。
+3. `awase-backup`ディレクトリの権限・エラーハンドリング（書き込み
+   失敗時のログレベル、繰り返し失敗した場合の扱い）。
+4. 既存の`ConfigLoadState`/`classify_load_error`（ADR-099決定4）との
+   統合方法——「ファイルが存在しない」は現状`NotFound`分類だが、
+   復元ロジックが割り込むことで、ユーザーから見た挙動（警告ダイアログ
+   の有無等）がどう変わるかの整理。
+5. 回帰テスト（`crates/awase-windows/tests/`または`src/config.rs`内の
+   ユニットテスト）: バックアップ→削除→復元のラウンドトリップ検証。
+6. 実機検証: MSIアンインストール→再インストール→復元されることの確認。
