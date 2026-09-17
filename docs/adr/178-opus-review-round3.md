@@ -1,3 +1,12 @@
+---
+id: ADR-178-companion-178-opus-review-round3
+title: |-
+  ADR-178（MSIアンインストール時のユーザーデータ保護）Opus敵対的レビュー round3
+type: companion-doc
+related_adr:
+  - "ADR-178"
+---
+
 # ADR-178 敵対的レビュー round3（v3: 自己修復方式・Blocker対応版）
 
 対象: `docs/adr/178-msi-uninstall-preserve-userdata.md`（v3、コード未実装）
