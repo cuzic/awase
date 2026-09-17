@@ -10,9 +10,9 @@ status: |-
   かつ実機検証中に発見した「読み取り先/書き込み先」バグ1件を修正し
   修正後も実機確認済み）。opus-adversarial-consultレビュー完了
   （[178-opus-review-v14.md](178-opus-review-v14.md)、総合判定「実装
-  やり直し不要」）、Blocker2件・Major推奨5件を反映済み。マージ前必須
-  項目は解消、フォローアップ項目（3者同期テスト・is_dev_build一本化等）
-  のみ残る。opusレビュー後の変更分の実機再検証は未実施。**
+  やり直し不要」）、Blocker2件・Major推奨5件・フォローアップ3件
+  （M4/M6/M7）すべて反映済み。残るのはMinor6件（任意）と、opusレビュー
+  後のコード変更分の実機再検証のみ。**
 related_adr:
   - "ADR-099"
   - "ADR-177"
@@ -25,7 +25,9 @@ related_adr:
 **起草中v14（2026-09-17）。方針転換により全面差し替え。実装済み。実機検証
 （dragonflyg4）4項目すべて完了。opus-adversarial-consultレビュー完了
 （[178-opus-review-v14.md](178-opus-review-v14.md)）、Blocker2件・
-Major推奨5件を反映済み。フォローアップ項目のみ残る（未解決事項参照）。**
+Major推奨5件・フォローアップ3件（M4/M6/M7）すべて反映済み。残るのは
+Minor6件（任意）とopusレビュー後の変更分の実機再検証のみ（未解決事項
+参照）。**
 
 ## 方針転換の経緯（重要、実装者は必ず読むこと）
 
@@ -397,14 +399,23 @@ awase-1.20.6-x64.msi＝Permanentなし旧版、awase-1.20.7-x64.msi＝Permanent
    Loaded`でゲート）。Major推奨5件（M1: `find_config_path`から副作用を
    分離、M2: `.yab`側にもCLI引数ゲート追加、M3: ADR本文「有効な.yab」
    表現の訂正、M5・M8: 「解決されないこと」節への追記）も反映済み。
-   フォローアップ扱い（M4: 埋め込み既定値・MSI同梱・`layout/`実ファイルの
-   3者同期テスト、M6: `is_dev_build`相当の判定が3箇所に分散している
-   一本化、M7: `scripts/uninstall.ps1 -Purge`へのレジストリ削除追加、
-   Minor6件）は未反映——次のADR改訂または別PRで対応する。
+   フォローアップ扱いだったM4・M6・M7も**反映済み**:
+   - M4: `layout/`実ファイル・`EMBEDDED_LAYOUTS`・`wix/main.wxs`の
+     LayoutFiles ComponentGroupの3集合が一致することを固定する
+     `wix_installer_guard.rs::embedded_layouts_layout_dir_and_wix_components_are_in_sync`
+     を追加。
+   - M6: `is_dev_build()`相当の判定を`src/paths.rs::is_dev_build()`
+     （内部で`resolve_relative_to`のワークスペースルート解決と同じ
+     `find_target_ancestor`を共有）に一本化。`awase-windows`・
+     `awase-settings`双方の`is_dev_build()`はこれへの委譲に変更。
+   - M7: `scripts/uninstall.ps1 -Purge`に`HKCU:\Software\awase`
+     （Permanent化された7コンポーネントのKeyPathレジストリ値）の削除を
+     追加。
+   Minor6件は未反映のまま（次のADR改訂または別PRで対応）。
 2. 実機確認4項目すべて完了（上記参照、`.yab`自己修復バグの修正・再検証
-   含む）。**ただしopusレビュー後のB1/B2/M1/M2コード変更は未再検証**
-   （コンパイル・単体テスト・ソーススキャンガードは確認済みだが、実機での
-   動作確認はまだ）。
+   含む）。**ただしopusレビュー後のB1/B2/M1/M2/M4/M6/M7の全コード変更は
+   未再検証**（コンパイル・単体テスト・ソーススキャンガードは確認済みだが、
+   実機での動作確認はまだ）。
 3. `ensure_config_exists`/`ensure_layouts_exist`の実装・呼び出し位置は
    完了（`awase.exe`・`awase-settings.exe`の両方、コンパイル・単体テスト・
    実機確認済み）。

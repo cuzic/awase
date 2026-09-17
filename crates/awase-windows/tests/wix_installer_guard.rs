@@ -287,3 +287,83 @@ fn vcruntime_launch_condition_present() {
          働いてしまい、既にインストール済みの環境での操作を壊しうる。"
     );
 }
+
+/// ADR-178（MSIアンインストール時のユーザーデータ喪失をPermanent化+自己修復で
+/// 防ぐ）v14 opus敵対的レビュー Major M4対応。
+///
+/// 同梱`.yab`は3箇所に同じ名前の集合として現れる: (1) `layout/`の実ファイル、
+/// (2) コア`awase`クレートの`EMBEDDED_LAYOUTS`（`src/config.rs`、自己修復の
+/// 埋め込み既定値）、(3) `wix/main.wxs`のLayoutFiles ComponentGroup
+/// （MSIが配置し、`Permanent="yes"`で保護する対象）。7本目の`.yab`を追加する
+/// とき、3箇所すべてを更新しないと以下の非対称な帰結を生む:
+/// - `main.wxs`に足し忘れる → その`.yab`はMSIで配置されずアンインストール時に
+///   何の保護もされない。後から`Permanent="yes"`を足しても既存環境には
+///   永久に効かない（不可逆）。
+/// - `EMBEDDED_LAYOUTS`に足し忘れる → 自己修復が不完全な集合しか生成しない。
+///   しかも「1本でもあれば何もしない」判定のため次回以降も永久に補完されない。
+///
+/// このテストは3集合が完全一致することを機械的に固定する。
+#[test]
+fn embedded_layouts_layout_dir_and_wix_components_are_in_sync() {
+    // (1) layout/ の実ファイル名（拡張子 .yab のみ）。
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let layout_dir = Path::new(manifest_dir).join("../../layout");
+    let mut from_layout_dir: Vec<String> = fs::read_dir(&layout_dir)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", layout_dir.display()))
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            (path.extension().is_some_and(|ext| ext == "yab"))
+                .then(|| path.file_name().unwrap().to_string_lossy().into_owned())
+        })
+        .collect();
+    from_layout_dir.sort();
+
+    // (2) EMBEDDED_LAYOUTS（src/config.rs）の名前集合。
+    // `include_str!("../layout/<name>")` というパターンから <name> を抜き出す
+    // （ソーステキストの正規表現的走査、コンパイルは介さない）。
+    let config_rs = read_repo_file("src/config.rs");
+    let mut from_embedded: Vec<String> = Vec::new();
+    let needle = "include_str!(\"../layout/";
+    let mut rest = config_rs.as_str();
+    while let Some(start) = rest.find(needle) {
+        let after = &rest[start + needle.len()..];
+        let end = after
+            .find("\")")
+            .unwrap_or_else(|| panic!("unterminated include_str! layout path near: {after:?}"));
+        from_embedded.push(after[..end].to_string());
+        rest = &after[end..];
+    }
+    from_embedded.sort();
+
+    // (3) wix/main.wxs の LayoutFiles ComponentGroup が配置する .yab 名。
+    let wxs = main_wxs();
+    let mut from_wxs: Vec<String> = Vec::new();
+    let needle = "<File Source=\"dist\\layout\\";
+    let mut rest = wxs.as_str();
+    while let Some(start) = rest.find(needle) {
+        let after = &rest[start + needle.len()..];
+        let end = after
+            .find("\" />")
+            .unwrap_or_else(|| panic!("unterminated <File Source=...> near: {after:?}"));
+        from_wxs.push(after[..end].to_string());
+        rest = &after[end..];
+    }
+    from_wxs.sort();
+
+    assert_eq!(
+        from_layout_dir, from_embedded,
+        "layout/ の実ファイル名集合とsrc/config.rsのEMBEDDED_LAYOUTSの名前集合が \
+         一致しない。7本目の.yabを追加した場合はEMBEDDED_LAYOUTSにも \
+         include_str!(\"../layout/<name>\")を追記すること（ADR-178 v14 M4）。"
+    );
+    assert_eq!(
+        from_layout_dir, from_wxs,
+        "layout/ の実ファイル名集合とwix/main.wxsのLayoutFiles ComponentGroupが \
+         配置する.yab名集合が一致しない。7本目の.yabを追加した場合は \
+         wix/main.wxsにもPermanent=\"yes\"付きの<Component>を追記すること \
+         （ADR-178 v14 M4。足し忘れると、その.yabはアンインストールで \
+         無保護のまま削除され、後からPermanentを足しても既存環境には \
+         不可逆に効かない）。"
+    );
+}

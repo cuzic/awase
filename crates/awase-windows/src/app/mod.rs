@@ -195,15 +195,13 @@ pub(crate) fn find_config_path() -> Result<PathBuf> {
     )
 }
 
-/// 開発ビルド（`current_exe()`の祖先に`target`という名前のディレクトリを
-/// 含む）かどうかを判定する（ADR-178 決定2）。開発ビルドでは
+/// 開発ビルドかどうかを判定する（ADR-178 決定2）。開発ビルドでは
 /// `ensure_config_exists`/`ensure_layouts_exist`を呼ばない——ワークスペース
-/// ルートのリポジトリ追跡対象ファイルをそのまま使うため。
+/// ルートのリポジトリ追跡対象ファイルをそのまま使うため。実体は
+/// `awase::paths::is_dev_build()`（`resolve_relative_to_exe`のワークスペース
+/// ルート解決と同じ判定基準を共有する、ADR-178 v14 opusレビューM6対応）。
 fn is_dev_build() -> bool {
-    std::env::current_exe().is_ok_and(|exe| {
-        exe.ancestors()
-            .any(|a| a.file_name().is_some_and(|n| n == "target"))
-    })
+    awase::paths::is_dev_build()
 }
 
 /// `current_exe()`の親ディレクトリ。開発ビルドではないことを呼び出し元が
