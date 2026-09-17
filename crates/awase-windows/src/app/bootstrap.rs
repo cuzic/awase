@@ -29,10 +29,10 @@ use crate::{with_app, with_app_ref, LayoutEntry, Runtime, RUNTIME};
 
 use super::logging;
 use super::{
-    build_panic_trigger_combos, init_ime_sync_keys, init_ngram_validated, load_config,
-    parse_key_combos, resolve_relative, run_message_loop, set_taskbar_created_msg, HotKeyGuard,
-    RapidPressTracker, StartupDiagnostics, DUMP_TRIGGER, HOTKEY_ID_FOCUS_OVERRIDE,
-    HOTKEY_ID_TOGGLE, RAPID_IME_TIMESTAMPS, WM_DUPLICATE_INSTANCE,
+    build_panic_trigger_combos, ensure_default_layouts_exist, init_ime_sync_keys,
+    init_ngram_validated, load_config, parse_key_combos, resolve_relative, run_message_loop,
+    set_taskbar_created_msg, HotKeyGuard, RapidPressTracker, StartupDiagnostics, DUMP_TRIGGER,
+    HOTKEY_ID_FOCUS_OVERRIDE, HOTKEY_ID_TOGGLE, RAPID_IME_TIMESTAMPS, WM_DUPLICATE_INSTANCE,
 };
 
 fn show_no_layouts_dialog(layouts_dir: &Path) {
@@ -235,6 +235,7 @@ pub(super) fn init_engine_validated(
         ))?;
 
     let layouts_dir = resolve_relative(&config.general.layouts_dir);
+    ensure_default_layouts_exist(&layouts_dir);
     let layouts = LayoutEntry::scan_all(
         &layouts_dir,
         diag,

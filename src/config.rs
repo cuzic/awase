@@ -1334,6 +1334,81 @@ impl AppConfig {
     }
 }
 
+/// コア`awase`クレートに埋め込んだ、出荷時の`config.toml`（ADR-178 決定3）。
+/// `GeneralConfig::default()`のserializeは代用しない
+/// （`GeneralConfig::default()`は`layouts_dir: "config"`だが出荷時は
+/// `"layout"`であり、項目が食い違う）。
+const EMBEDDED_CONFIG_TOML: &str = include_str!("../config.toml");
+
+/// コア`awase`クレートに埋め込んだ、同梱6ファイルの`.yab`（ADR-178 決定3）。
+const EMBEDDED_LAYOUTS: &[(&str, &str)] = &[
+    ("nicola.yab", include_str!("../layout/nicola.yab")),
+    (
+        "nicola_keytop.yab",
+        include_str!("../layout/nicola_keytop.yab"),
+    ),
+    ("nicola_us.yab", include_str!("../layout/nicola_us.yab")),
+    ("nicola_f.yab", include_str!("../layout/nicola_f.yab")),
+    (
+        "nicola_kb232.yab",
+        include_str!("../layout/nicola_kb232.yab"),
+    ),
+    (
+        "nicola_kakutei.yab",
+        include_str!("../layout/nicola_kakutei.yab"),
+    ),
+];
+
+/// `config_path`が存在しなければ、埋め込み既定値（[`EMBEDDED_CONFIG_TOML`]）
+/// から生成する（ADR-178 決定2）。既に存在する場合は内容を一切比較・上書き
+/// せず、何もしない——これが「バックアップと実ファイルの整合を取る」という
+/// 問題自体を発生させない設計の核心（v2〜v13の複雑さの原因だった問題を
+/// 構造的に回避する）。
+///
+/// # Errors
+///
+/// 書き込みに失敗した場合にエラーを返す。呼び出し元は失敗してもpanicせず、
+/// 既存のエラー経路（`find_config_path`の`bail!`等）に委ねること。
+pub fn ensure_config_exists(config_path: &Path) -> Result<()> {
+    if config_path.exists() {
+        return Ok(());
+    }
+    crate::fs_atomic::write_atomic(config_path, EMBEDDED_CONFIG_TOML.as_bytes())
+}
+
+/// `layouts_dir`に`.yab`拡張子のファイルが1本も無い場合、同梱6ファイルを
+/// 埋め込み既定値（[`EMBEDDED_LAYOUTS`]）から生成する（ADR-178 決定2）。
+///
+/// 1本でも存在すれば何もしない——ユーザーが同梱配列の一部を削除して整理した
+/// 状態を復活させないため。中身の妥当性（パース可能かどうか）は判定しない
+/// （シンプルさを優先、v13が持っていた`KeyboardModel`全バリアント試行の
+/// ような複雑な検証は行わない）。
+///
+/// # Errors
+///
+/// ディレクトリ作成・書き込みに失敗した場合にエラーを返す。呼び出し元は
+/// 失敗してもpanicせず、既存のエラー経路（`show_no_layouts_dialog`等）に
+/// 委ねること。
+pub fn ensure_layouts_exist(layouts_dir: &Path) -> Result<()> {
+    let has_any_yab = std::fs::read_dir(layouts_dir).is_ok_and(|entries| {
+        entries.filter_map(std::result::Result::ok).any(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("yab"))
+        })
+    });
+    if has_any_yab {
+        return Ok(());
+    }
+    std::fs::create_dir_all(layouts_dir)
+        .with_context(|| format!("Failed to create {}", layouts_dir.display()))?;
+    for (name, content) in EMBEDDED_LAYOUTS {
+        crate::fs_atomic::write_atomic(&layouts_dir.join(name), content.as_bytes())?;
+    }
+    Ok(())
+}
+
 /// キーコンボ（修飾キー + メインキー）のパース済みデータ。
 ///
 /// プラットフォーム層が `vk_name_to_code` 等で解決して構築する。
@@ -2404,5 +2479,88 @@ steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]
         let round_tripped: AppConfig = validated.into();
         assert_eq!(round_tripped.keystroke_macro.len(), 1);
         assert_eq!(round_tripped.keystroke_macro[0].name, "confirm");
+    }
+
+    // ── ensure_config_exists / ensure_layouts_exist（ADR-178 決定2・決定5）──
+
+    fn unique_temp_dir(name: &str) -> std::path::PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "awase_ensure_user_data_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn ensure_config_exists_creates_file_when_missing() {
+        let dir = unique_temp_dir("config_missing");
+        let path = dir.join("config.toml");
+        assert!(!path.exists());
+
+        ensure_config_exists(&path).unwrap();
+
+        assert!(path.exists());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            EMBEDDED_CONFIG_TOML
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_config_exists_never_touches_existing_file() {
+        let dir = unique_temp_dir("config_existing");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[general]\nsimultaneous_threshold_ms = 777\n").unwrap();
+
+        ensure_config_exists(&path).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[general]\nsimultaneous_threshold_ms = 777\n",
+            "既存ファイルの内容が変わってはならない（ADR-178 決定2: 比較も上書きもしない）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_layouts_exist_creates_all_bundled_files_when_dir_missing() {
+        let dir = unique_temp_dir("layouts_missing");
+        let layouts_dir = dir.join("layout");
+        assert!(!layouts_dir.exists());
+
+        ensure_layouts_exist(&layouts_dir).unwrap();
+
+        for (name, content) in EMBEDDED_LAYOUTS {
+            let path = layouts_dir.join(name);
+            assert!(path.exists(), "{name} が生成されていない");
+            assert_eq!(&std::fs::read_to_string(&path).unwrap(), content);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_layouts_exist_does_nothing_when_one_yab_already_present() {
+        let dir = unique_temp_dir("layouts_one_present");
+        let layouts_dir = dir.join("layout");
+        std::fs::create_dir_all(&layouts_dir).unwrap();
+        std::fs::write(layouts_dir.join("custom.yab"), "user data").unwrap();
+
+        ensure_layouts_exist(&layouts_dir).unwrap();
+
+        let entries: Vec<_> = std::fs::read_dir(&layouts_dir)
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "1本でも.yabが存在するなら同梱6ファイルを生成してはならない（ADR-178 決定2）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -538,6 +538,10 @@ enum PendingSaveResult {
 impl SettingsApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_fonts(&cc.egui_ctx);
+        // CLI引数でconfigパスが明示されている場合は自己修復しない（ADR-178 決定2）。
+        if cli_arg_config_path().is_none() {
+            ensure_default_config_exists();
+        }
         let config_path = find_config_path();
         let (config, config_load_state) = match awase::config::AppConfig::load(&config_path) {
             Ok(cfg) => (cfg, awase::config::ConfigLoadState::Loaded),
@@ -547,6 +551,9 @@ impl SettingsApp {
                 (default_config(), state)
             }
         };
+        if cli_arg_config_path().is_none() {
+            ensure_default_layouts_exist(&resolve_layouts_dir(&config.general.layouts_dir));
+        }
         let available_layouts = scan_layout_names(&config.general.layouts_dir);
         let config_loaded_model = config.general.keyboard_model;
 
@@ -5287,15 +5294,52 @@ fn empty_yab_layout() -> YabLayout {
 /// しまい、「設定画面で保存しても awase.exe に反映されない」という実機バグの
 /// 原因になる（2026-07-19 に実際に発生し確認済み）。
 fn find_config_path() -> std::path::PathBuf {
+    cli_arg_config_path().unwrap_or_else(|| awase::paths::resolve_relative_to_exe("config.toml"))
+}
+
+/// CLI引数でconfigパスが明示されていればそれを返す（`--flag`/`--flag value`
+/// 形式はスキップ）。`ensure_default_config_exists`を呼んでよいかどうかの
+/// 判定（ADR-178 決定2、CLI指定時は自己修復しない）に`find_config_path`とは
+/// 独立して使う——`find_config_path`自体は`update_check.rs`やテストコード
+/// からも呼ばれるため、そちらに自己修復を仕込むと意図しない箇所で発火する。
+fn cli_arg_config_path() -> Option<std::path::PathBuf> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg.starts_with("--") {
             let _ = args.next(); // value をスキップ
             continue;
         }
-        return std::path::PathBuf::from(arg);
+        return Some(std::path::PathBuf::from(arg));
     }
-    awase::paths::resolve_relative_to_exe("config.toml")
+    None
+}
+
+/// 開発ビルド（`current_exe()`の祖先に`target`を含む）かどうかを判定する
+/// （ADR-178 決定2）。`crates/awase-windows/src/app/mod.rs::is_dev_build`と
+/// 同型実装（2クレートに分かれている既知の重複、共通化は別課題）。
+fn is_dev_build() -> bool {
+    std::env::current_exe().is_ok_and(|exe| {
+        exe.ancestors()
+            .any(|a| a.file_name().is_some_and(|n| n == "target"))
+    })
+}
+
+/// `config.toml`が実行ファイルの隣に無ければ、埋め込み既定値から生成する
+/// （ADR-178 決定2）。
+fn ensure_default_config_exists() {
+    if is_dev_build() {
+        return;
+    }
+    let Some(exe_dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
+    else {
+        return;
+    };
+    let config_path = exe_dir.join("config.toml");
+    if let Err(e) = awase::config::ensure_config_exists(&config_path) {
+        tracing::warn!("Failed to create default config.toml: {e}");
+    }
 }
 
 /// `layouts_dir` を解決する。実行ファイル隣・`cargo run` 時のワークスペース
@@ -5304,6 +5348,17 @@ fn find_config_path() -> std::path::PathBuf {
 /// ワークスペースルート直下の `layout/` を見つけられなかった）。
 fn resolve_layouts_dir(layouts_dir: &str) -> std::path::PathBuf {
     awase::paths::resolve_relative_to_exe(layouts_dir)
+}
+
+/// `layouts_dir`に有効な`.yab`が1本も無ければ、同梱6ファイルを埋め込み
+/// 既定値から生成する（ADR-178 決定2）。
+fn ensure_default_layouts_exist(layouts_dir: &std::path::Path) {
+    if is_dev_build() {
+        return;
+    }
+    if let Err(e) = awase::config::ensure_layouts_exist(layouts_dir) {
+        tracing::warn!("Failed to create default layout files: {e}");
+    }
 }
 
 /// `dir` 内の全 `.yab` を読込失敗（UTF-8デコード失敗含む）と

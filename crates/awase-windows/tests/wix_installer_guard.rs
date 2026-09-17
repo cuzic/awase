@@ -91,6 +91,8 @@ fn config_file_and_nicola_yab_components_have_never_overwrite() {
         "NicolaKeytopYab",
         "NicolaUsYab",
         "NicolaFYab",
+        "NicolaKb232Yab",
+        "NicolaKakuteiYab",
     ] {
         let tag = extract_tag(&content, &format!(r#"<Component Id="{component_id}""#));
         assert!(
@@ -99,6 +101,38 @@ fn config_file_and_nicola_yab_components_have_never_overwrite() {
              NeverOverwrite=\"yes\" が見つからない（タグ: {tag:?}、ADR-099 \
              決定0）。{component_id} はユーザーが編集しうるデータのため、\
              アップグレード時に上書きされてはならない。"
+        );
+    }
+}
+
+/// ADR-178 決定1（2026-09-17）: `config.toml`/`layout/*.yab` の7コンポーネント
+/// に `Permanent="yes"` を付け、アンインストール時にも削除されないようにする。
+/// これが消えると `Permanent` を消しても実際に出荷済みの環境の挙動は変わらず
+/// （不可逆）、新規インストール環境だけが「アンインストールで消える」旧挙動に
+/// 戻ってしまう——環境間で挙動が分岐する（round1 m4の教訓）。「外しても実害が
+/// 無さそうだから外す」という判断を招かないよう、このテストで固定する。
+#[test]
+fn config_file_and_nicola_yab_components_have_permanent() {
+    let content = main_wxs();
+    for component_id in [
+        "ConfigFile",
+        "NicolaYab",
+        "NicolaKeytopYab",
+        "NicolaUsYab",
+        "NicolaFYab",
+        "NicolaKb232Yab",
+        "NicolaKakuteiYab",
+    ] {
+        let tag = extract_tag(&content, &format!(r#"<Component Id="{component_id}""#));
+        assert!(
+            tag.contains(r#"Permanent="yes""#),
+            "wix/main.wxs の Component Id=\"{component_id}\" タグ本体に \
+             Permanent=\"yes\" が見つからない（タグ: {tag:?}、ADR-178 決定1）。\
+             {component_id} はアンインストール時に削除されてはならない \
+             ユーザーデータ。Permanent は消しても既に出荷済みの環境には \
+             反映されない不可逆な変更のため、新規インストール環境だけが \
+             別挙動になってしまう。docs/adr/178-msi-uninstall-preserve-userdata.md \
+             を確認せず外さないこと。"
         );
     }
 }
@@ -116,6 +150,8 @@ fn known_component_guids_are_unchanged() {
         ("NicolaKeytopYab", "5B75B3B2-A53D-493E-BB62-81AE2B17D8ED"),
         ("NicolaUsYab", "48AA34CA-3723-4B7D-B624-6E0E9C29032C"),
         ("NicolaFYab", "523F3EB9-8E27-4312-A6D1-822D1BF7785F"),
+        ("NicolaKb232Yab", "1E99EC47-D079-4BBB-83E3-781EE85357A6"),
+        ("NicolaKakuteiYab", "D860117F-60C7-45C7-AB47-96F6E51B4F87"),
         ("NgramData", "DCF4BA85-03F3-4EC7-BF17-D870682FFF5E"),
     ];
     for (component_id, expected_guid) in known_guids {
