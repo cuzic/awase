@@ -2803,6 +2803,17 @@ impl SettingsApp {
              config1.db/レジストリの静的な分類だけでは判別できない環境向けです。",
         );
         ui.add_space(8.0);
+        ui.checkbox(
+            &mut self.config.general.apply_calibrated_mode_keys,
+            "確定した較正結果を実際のIME判定に反映する（自己責任）",
+        )
+        .on_hover_text(
+            "OFF(既定)の場合、較正を確定してconfig.tomlへ保存はしますが、\n\
+             実際のGJI/MS-IME自動検出結果を上書きしません（測定のみ、\n\
+             安全側）。ONにすると、確定した較正結果がGJI/MS-IME側の\n\
+             自動検出結果を実際に上書きするようになります。",
+        );
+        ui.add_space(8.0);
 
         ui.horizontal(|ui| {
             ui.label("対象キー");
@@ -2838,6 +2849,16 @@ impl SettingsApp {
             if let (Some(payload), Some(vk)) = (calibration_result_window::take_latest_result(), vk)
                 && payload.vk == vk
             {
+                if payload.kind
+                    == awase_windows::calibration_ipc::CalibrationResultKind::ConfirmedOn
+                {
+                    persist_confirmed_calibration(
+                        &self.config_path,
+                        vk,
+                        payload.active_ime_kind,
+                        &mut self.config,
+                    );
+                }
                 self.calibration_state =
                     calibration_panel::on_result_received(self.calibration_state, payload.kind);
             }
@@ -5683,6 +5704,57 @@ fn send_reload_config_message() {
             }
         }
     }
+}
+
+/// ADR-176（T9a確定結果のconfig.toml永続化、最終配線）: 較正が`ConfirmedOn`
+/// で確定したら、`awase_windows::gji_charset_autodetect::build_confirmed_
+/// calibration_entry`でエントリを構築し、config.tomlへ書き込んで
+/// awase.exeへリロード要求を送る。
+///
+/// **意図的にconfig.tomlを直接読み直して書く**（`config`引数=UIの
+/// 編集中in-memory状態は使わない）——ユーザーが他のタブで未保存の編集を
+/// している最中に較正が確定しても、その未保存編集を巻き込んで保存
+/// しないようにするため。書き込み後、`config.calibration`だけは
+/// UIの`config`にも反映しておく（次にユーザーが通常の保存操作をしても
+/// この較正結果が失われないように）。
+#[cfg(target_os = "windows")]
+fn persist_confirmed_calibration(
+    config_path: &std::path::Path,
+    vk: awase::types::VkCode,
+    active_ime_kind: awase_windows::state::ime_kind::ImeKindId,
+    config: &mut awase::config::AppConfig,
+) {
+    let Some(entry) = awase_windows::gji_charset_autodetect::build_confirmed_calibration_entry(
+        vk,
+        active_ime_kind,
+    ) else {
+        tracing::warn!(
+            "[calibration] vk={vk:?}（active_ime_kind={active_ime_kind:?}）の\
+             較正結果を保存できませんでした（対象外のキー、または\
+             config1.db/レジストリを読めませんでした）"
+        );
+        return;
+    };
+
+    let mut on_disk = match awase::config::AppConfig::load(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("[calibration] config.tomlの再読み込みに失敗しました: {e}");
+            return;
+        }
+    };
+    on_disk.calibration.retain(|e| e.vk != entry.vk);
+    on_disk.calibration.push(entry.clone());
+    if let Err(e) = on_disk.save(config_path) {
+        tracing::warn!("[calibration] config.tomlへの較正結果の保存に失敗しました: {e}");
+        return;
+    }
+    tracing::info!("[calibration] vk={vk:?}の較正結果をconfig.tomlへ保存しました");
+
+    config.calibration.retain(|e| e.vk != entry.vk);
+    config.calibration.push(entry);
+
+    send_reload_config_message();
 }
 
 /// ADR-176 176-T7: 較正モード開始/再武装（keepalive）要求を送る。

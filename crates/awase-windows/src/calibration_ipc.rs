@@ -6,6 +6,7 @@
 //! 指摘）ため、この1箇所に集約する。Windows APIには依存しない純粋関数
 //! のためLinux上でユニットテスト可能。
 
+use crate::state::ime_kind::ImeKindId;
 use awase::types::VkCode;
 
 /// `WM_CALIBRATION_START`/`WM_CALIBRATION_END`共通のwparamペイロード。
@@ -68,6 +69,13 @@ pub const CALIBRATION_RESULT_WINDOW_CLASS_NAME: &str = "awase_settings_calibrati
 pub struct CalibrationResultPayload {
     pub vk: VkCode,
     pub kind: CalibrationResultKind,
+    /// ADR-176（T9a確定結果のconfig.toml永続化）: 確定時点でawase.exeが
+    /// 観測していたIME種別。`awase-settings`が`ConfirmedOn`を受けて
+    /// `config1.db`かレジストリのどちらを読み直すか決めるために必要
+    /// （`gji_charset_autodetect::build_confirmed_calibration_entry`参照）。
+    /// `Rejected`では未使用だが、ペイロード形状を`kind`で分岐させない
+    /// ために常に含める。
+    pub active_ime_kind: ImeKindId,
 }
 
 /// 較正結果の種別。`Undetermined`（未確定）は送信しない
@@ -98,21 +106,45 @@ impl CalibrationResultKind {
     }
 }
 
-/// `CalibrationResultPayload`をwparamへエンコードする。lparamは未使用
-/// （0固定、`pack`/`unpack`と同じ理由）。
-#[must_use]
-pub const fn pack_result(payload: CalibrationResultPayload) -> usize {
-    (payload.vk.0 as usize) | (payload.kind.to_bits() << 16)
+const fn ime_kind_id_to_bits(kind: ImeKindId) -> usize {
+    match kind {
+        ImeKindId::Gji => 1,
+        ImeKindId::MsIme => 2,
+    }
 }
 
-/// `pack_result`の逆変換。不正な結果種別ビットが渡された場合は`None`
-/// （通信路の破損・将来のバージョン不一致を安全に無視する）。
+const fn ime_kind_id_from_bits(bits: usize) -> Option<ImeKindId> {
+    match bits {
+        1 => Some(ImeKindId::Gji),
+        2 => Some(ImeKindId::MsIme),
+        _ => None,
+    }
+}
+
+/// `CalibrationResultPayload`をwparamへエンコードする。lparamは未使用
+/// （0固定、`pack`/`unpack`と同じ理由）。vk（下位16bit）+ 結果種別
+/// （次の16bit）+ `active_ime_kind`（さらに次の16bit）。
+#[must_use]
+pub const fn pack_result(payload: CalibrationResultPayload) -> usize {
+    (payload.vk.0 as usize)
+        | (payload.kind.to_bits() << 16)
+        | (ime_kind_id_to_bits(payload.active_ime_kind) << 32)
+}
+
+/// `pack_result`の逆変換。不正な結果種別/IME種別ビットが渡された場合は
+/// `None`（通信路の破損・将来のバージョン不一致を安全に無視する）。
 #[must_use]
 pub const fn unpack_result(wparam: usize) -> Option<CalibrationResultPayload> {
     let vk = VkCode((wparam & 0xFFFF) as u16);
-    match CalibrationResultKind::from_bits((wparam >> 16) & 0xFFFF) {
-        Some(kind) => Some(CalibrationResultPayload { vk, kind }),
-        None => None,
+    let kind = CalibrationResultKind::from_bits((wparam >> 16) & 0xFFFF);
+    let active_ime_kind = ime_kind_id_from_bits((wparam >> 32) & 0xFFFF);
+    match (kind, active_ime_kind) {
+        (Some(kind), Some(active_ime_kind)) => Some(CalibrationResultPayload {
+            vk,
+            kind,
+            active_ime_kind,
+        }),
+        _ => None,
     }
 }
 
@@ -161,6 +193,7 @@ mod tests {
         let payload = CalibrationResultPayload {
             vk: VkCode(0x1D),
             kind: CalibrationResultKind::ConfirmedOn,
+            active_ime_kind: ImeKindId::Gji,
         };
         let wparam = pack_result(payload);
         assert_eq!(unpack_result(wparam), Some(payload));
@@ -171,6 +204,7 @@ mod tests {
         let payload = CalibrationResultPayload {
             vk: VkCode(0x1C),
             kind: CalibrationResultKind::Rejected,
+            active_ime_kind: ImeKindId::MsIme,
         };
         let wparam = pack_result(payload);
         assert_eq!(unpack_result(wparam), Some(payload));
@@ -180,6 +214,14 @@ mod tests {
     fn unpack_result_rejects_unknown_kind_bits() {
         // kind bits = 0 は未定義（ConfirmedOn=1, Rejected=2 のみ有効）。
         let wparam = usize::from(VkCode(0x1D).0);
+        assert_eq!(unpack_result(wparam), None);
+    }
+
+    #[test]
+    fn unpack_result_rejects_unknown_active_ime_kind_bits() {
+        // active_ime_kind bits = 0 は未定義（Gji=1, MsIme=2 のみ有効）。
+        let wparam =
+            usize::from(VkCode(0x1D).0) | (CalibrationResultKind::ConfirmedOn.to_bits() << 16);
         assert_eq!(unpack_result(wparam), None);
     }
 }

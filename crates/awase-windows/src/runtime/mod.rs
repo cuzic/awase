@@ -278,13 +278,20 @@ pub struct Runtime {
     /// `gate_thumb_key_ime_actions`を呼ぶ際に参照する。
     gji_thumb_key_ime_toggle_opt_in: bool,
     /// ADR-176決定6（176-T3/T4）: モードキー較正結果（VKごと最大1件）。
-    /// **現時点ではメモリ上のみ**——`config.toml`への永続化（176-T11）・
-    /// 実際に値を書き込む較正フロー（176-T7〜T10）はまだ実装されておらず、
-    /// 常に空のまま。`apply_calibration_override`（`state/
-    /// calibrated_mode_key.rs`）の入力として`gate_thumb_key_ime_actions`の
-    /// 出力を差し替えるために参照する。
+    /// 起動時・設定リロード時に`config.calibration`（`176-T11`の
+    /// `CalibrationEntry`）から読み込む（`apply_config_update`参照）。
+    /// `apply_calibration_override`の入力として`gate_thumb_key_ime_actions`
+    /// の出力を差し替えるために参照するが、実際に差し替えが効くかどうかは
+    /// `apply_calibrated_mode_keys_opt_in`（既定`false`）にも依存する
+    /// （`calibrated_mode_key_for`参照）。
     calibrated_mode_keys:
         std::collections::HashMap<VkCode, crate::state::calibrated_mode_key::CalibratedModeKey>,
+    /// `GeneralConfig.apply_calibrated_mode_keys`のキャッシュ（ADR-176
+    /// 決定8）。`gji_thumb_key_ime_toggle_opt_in`と同じパターン。
+    /// `calibrated_mode_key_for`がこれを見て、`false`なら常に`None`を
+    /// 返す（config.tomlには保存されていても実際のIME判定には反映しない
+    /// 安全装置）。
+    apply_calibrated_mode_keys_opt_in: bool,
     /// ADR-176 176-T6: 較正モードのバイパスタイムアウト期限
     /// （`None`=非アクティブ）。`focus_tracking.rs`の
     /// `begin_calibration_bypass`/`end_calibration_bypass`/
@@ -1566,6 +1573,7 @@ impl Runtime {
             space_is_thumb_key: false,
             gji_thumb_key_ime_toggle_opt_in: false,
             calibrated_mode_keys: std::collections::HashMap::new(),
+            apply_calibrated_mode_keys_opt_in: false,
             calibration_bypass_deadline: None,
             calibration_session_pid: None,
             calibration_session_vk: None,
@@ -1813,16 +1821,32 @@ impl Runtime {
     /// ADR-176決定6（176-T3/T4）: `vk`に対する確定済み較正結果を返す
     /// （未較正/stale解除済みなら`None`）。`gji_charset_autodetect.rs`/
     /// `message_handlers.rs`が`apply_calibration_override`へ渡す。
+    ///
+    /// ADR-176決定8（opt-inゲート）: `apply_calibrated_mode_keys_opt_in`が
+    /// `false`のときは、`config.toml`に較正結果が保存されていても常に
+    /// `None`を返す——「較正結果を実際のIME判定へ反映してよいか」の
+    /// 唯一の判定点をここに集約する（`fresh_or_none`によるstale判定とは
+    /// 独立、両方を通ったものだけが実際に使われる）。
     #[must_use]
     pub(crate) fn calibrated_mode_key_for(
         &self,
         vk: VkCode,
     ) -> Option<&crate::state::calibrated_mode_key::CalibratedModeKey> {
+        if !self.apply_calibrated_mode_keys_opt_in {
+            return None;
+        }
         self.calibrated_mode_keys.get(&vk)
     }
 
-    /// 較正結果を記録する（176-T7〜T10、まだ呼び出し元は無い）。
-    #[allow(dead_code)] // 176-T8以降で呼び出し
+    /// `GeneralConfig.apply_calibrated_mode_keys`のキャッシュを更新する
+    /// （`apply_config_update`から呼ぶ、`set_gji_thumb_key_ime_toggle_
+    /// opt_in`と同じ形式）。
+    pub(crate) fn set_apply_calibrated_mode_keys_opt_in(&mut self, opt_in: bool) {
+        self.apply_calibrated_mode_keys_opt_in = opt_in;
+    }
+
+    /// 較正結果を記録する（`config.calibration`からの読み込み時、および
+    /// `176-T9a`が確定したその場でメモリ上へ反映する場合に呼ぶ）。
     pub(crate) fn set_calibrated_mode_key(
         &mut self,
         record: crate::state::calibrated_mode_key::CalibratedModeKey,
@@ -1830,10 +1854,33 @@ impl Runtime {
         self.calibrated_mode_keys.insert(record.vk, record);
     }
 
-    /// staleな較正結果を無効化する（176-T12、まだ呼び出し元は無い）。
-    #[allow(dead_code)] // 176-T12で呼び出し
-    pub(crate) fn clear_calibrated_mode_key(&mut self, vk: VkCode) {
-        self.calibrated_mode_keys.remove(&vk);
+    /// ADR-176 176-T11/T12: `config.calibration`（起動時・設定リロード時の
+    /// 内容）からメモリ上の較正結果マップを丸ごと作り直す。
+    /// 差分更新ではなく毎回`clear`してから再構築する——ユーザーが
+    /// `config.toml`からエントリを手動削除した場合や、同じVKに対して
+    /// 別のエントリへ置き換えた場合に、古い内容が居座らないようにする
+    /// ため。パースできないエントリ（未知の`result`/`fingerprint_kind`
+    /// 文字列等、手書き編集で壊れたもの）は警告ログを残してスキップする
+    /// （起動を落とさない）。
+    pub(crate) fn reload_calibrated_mode_keys(
+        &mut self,
+        entries: &[awase::config::CalibrationEntry],
+    ) {
+        self.calibrated_mode_keys.clear();
+        for entry in entries {
+            match crate::state::calibrated_mode_key::calibrated_mode_key_from_config_entry(entry) {
+                Some(record) => {
+                    self.set_calibrated_mode_key(record);
+                }
+                None => {
+                    tracing::warn!(
+                        "[calibration] config.tomlの較正エントリ（vk={:?}）を解釈できません\
+                         でした。無視します",
+                        entry.vk
+                    );
+                }
+            }
+        }
     }
 
     /// ADR-153 決定1: ユーザー明示config（`GeneralConfig::
@@ -2028,6 +2075,8 @@ impl Runtime {
             config.general.swallow_alt_kana_input_method_switch,
         );
         self.set_gji_thumb_key_ime_toggle_opt_in(config.general.gji_thumb_key_ime_toggle);
+        self.set_apply_calibrated_mode_keys_opt_in(config.general.apply_calibrated_mode_keys);
+        self.reload_calibrated_mode_keys(&config.calibration);
         self.focus_tracker.sync_toggle_keys = sync_toggle;
         self.focus_tracker.sync_on_keys = sync_on;
         self.focus_tracker.sync_off_keys = sync_off;

@@ -45,9 +45,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     if msg == awase_windows::WM_CALIBRATION_RESULT {
         if let Some(payload) = awase_windows::calibration_ipc::unpack_result(wparam.0) {
             tracing::info!(
-                "[calibration] 結果を受信: vk={:?} kind={:?}",
+                "[calibration] 結果を受信: vk={:?} kind={:?} active_ime_kind={:?}",
                 payload.vk,
-                payload.kind
+                payload.kind,
+                payload.active_ime_kind
             );
             if let Ok(mut slot) = LATEST_RESULT.get_or_init(|| Mutex::new(None)).lock() {
                 *slot = Some(payload);

@@ -4,6 +4,14 @@ title: |-
   awase-settingsの明示的な較正UIでモードキーの実効果を測定し、
   未登録時に静的分類を補完する
 status: |-
+  **2026-09-17: 較正結果のconfig.toml永続化・opt-in適用までの最終配線を
+  完了。** T9a確定（`ConfirmedOn`）→`config.toml`保存→起動時/リロード時
+  ロード→`GeneralConfig::apply_calibrated_mode_keys`（既定`false`）
+  opt-inフラグでの実IME判定への反映、までのエンドツーエンドの配線が
+  完成した。詳細は[176-implementation-tasks.md](176-implementation-tasks.md)
+  のT12節「最終配線」を参照。残るのはawase-settings側のUI案内と実機A/B
+  検証のみ。
+
   **2026-09-17: 176-T0を「較正機能の必須の前提条件」という決定8の位置づけ
   から外し、実装自体を見送り。** opus-adversarial-consultによる2ラウンドの
   レビューの結果、(1)当初案（`handle_engine_activation_sync`への早期

@@ -726,6 +726,52 @@ auto_detect`自体の通常呼び出し）にも自然に乗る形にした—�
 
 **依存**: 176-T3、176-T4、176-T11。
 
+**最終配線（2026-09-17完了、上記「未実装」節を解消）**: T9a確定
+（`ConfirmedOn`）が実際にconfig.tomlへ保存され、起動時・設定リロード時に
+読み込まれ、opt-inフラグで実際のIME判定へ反映されるところまでの
+エンドツーエンドの配線を完了した。
+
+- **IPCペイロード拡張**（`calibration_ipc.rs`）: `CalibrationResultPayload`
+  に`active_ime_kind: ImeKindId`を追加（wparamの32-47bit）。
+  awase-settingsが`ConfirmedOn`を受けてどちら（GJI/MS-IME）の
+  フィンガープリントを読み直すべきか判断するために必要。
+- **T9a側**（`focus_tracking.rs::notify_calibration_result`）: 確定時点で
+  `tsf::observer::tsf_obs().active_ime_kind()`を読み、ペイロードに含める。
+- **新設`pub`関数**（`gji_charset_autodetect.rs::build_confirmed_
+  calibration_entry(vk, active_ime_kind) -> Option<CalibrationEntry>`）:
+  `awase-settings`（別クレート）から直接呼べる、awase-windows内で完結する
+  唯一の関数。config1.db/レジストリを読み直してフィンガープリントを
+  構築し、`CalibratedModeKey{ result: On, confirmed_at_epoch_ms: now,
+  .. }.to_config_entry()`を返す。`VK_NONCONVERT`/`VK_CONVERT`以外は
+  `None`（`apply_calibration_override`が消費するのはこの2キーのみ
+  ——他のIME_MODE_KEY_OPTIONS候補（VK_KANJI等）を較正パネルUIで選んでも
+  保存されない既知の制約、UIの選択肢自体は絞り込んでいない）。
+- **awase-settings側**（`main.rs::persist_confirmed_calibration`、
+  `tab_calibration`から`ConfirmedOn`受信時に呼ぶ）: **意図的に
+  config.tomlを直接読み直して書く**（UIの編集中in-memory状態
+  `self.config`は使わない）——ユーザーが他タブで未保存の編集をしている
+  最中に較正が確定しても、その未保存編集を巻き込んで保存しないように
+  するため。書き込み後`self.config.calibration`にも反映し（次に通常の
+  保存操作をしてもこの較正結果が失われないように）、
+  `send_reload_config_message()`でawase.exeへリロードを要求する。
+- **opt-inフラグ**（`GeneralConfig::apply_calibrated_mode_keys`、
+  既定`false`）: `tab_calibration`にチェックボックス
+  「確定した較正結果を実際のIME判定に反映する（自己責任）」を追加。
+  `Runtime::calibrated_mode_key_for`がこのフラグを見て、`false`なら
+  config.tomlに保存されていても常に`None`を返す（決定8が求める
+  opt-inの実体）。
+- **起動時・リロード時ロード**（`Runtime::apply_config_update`から
+  `reload_calibrated_mode_keys(&config.calibration)`を呼ぶ）:
+  差分更新ではなく毎回`clear`してから`config.calibration`全体を
+  再構築する（手動削除・置き換えが古い内容を残さないように）。
+  パースできないエントリは警告ログでスキップし起動を落とさない。
+
+**残る未実装**: `awase-settings`側のUI案内（GJI再同期条件を満たさない
+場合の案内、`FindWindowW`失敗時の案内、上記1参照）、および実機A/B検証
+（上記2参照）。配線自体は完了したため、次にADR-176へ戻る際は実機での
+一連の動作確認（較正確定→config.toml保存→リロード→opt-in ON→
+実際のIME判定に反映されることの確認）から始めるのが自然。
+
 ---
 
 ## フェーズ6: 回帰テスト・実機検証

@@ -684,6 +684,10 @@ pub(crate) fn resolve_hiragana_katakana_thumb_vks(
     (hiragana_vk, katakana_vk)
 }
 
+/// ADR-176: `awase-settings`（別クレート）から直接呼べるよう`pub`で
+/// 再エクスポートする（`build_confirmed_calibration_entry`のdoc参照）。
+#[cfg(windows)]
+pub use windows_impl::build_confirmed_calibration_entry;
 #[cfg(windows)]
 pub(crate) use windows_impl::{
     is_configured_thumb_key, read_config1_db, reset_streak_latch_for_reload,
@@ -1089,6 +1093,59 @@ mod windows_impl {
     pub(crate) fn read_config1_db() -> Option<Vec<u8>> {
         let path = config1_db_path()?;
         std::fs::read(&path).ok()
+    }
+
+    /// ADR-176（T9a確定結果のconfig.toml永続化、最終配線）:
+    /// `awase-settings`が`WM_CALIBRATION_RESULT`（`ConfirmedOn`）を受けて
+    /// config.tomlへ書き込む際に呼ぶ。
+    ///
+    /// awase-settings自身はGJI/レジストリ読み取りロジックを持たないため、
+    /// この関数（`awase-windows`クレート内、awase-settingsからも呼べる
+    /// `pub`関数）が代わりに`config1.db`/レジストリを読み直して
+    /// フィンガープリントを構築する——結果が確定した直後に呼ばれる想定
+    /// のため、確定に使われた値と同じ内容が読めるはずである。
+    /// `VK_NONCONVERT`/`VK_CONVERT`以外（`apply_calibration_override`が
+    /// 消費するのはこの2キーのみ）、またはGJI選択時に`config1.db`が
+    /// 読めない場合は`None`（呼び出し元は保存をスキップし警告すること）。
+    #[must_use]
+    pub fn build_confirmed_calibration_entry(
+        vk: VkCode,
+        active_ime_kind: crate::state::ime_kind::ImeKindId,
+    ) -> Option<awase::config::CalibrationEntry> {
+        use crate::state::ime_kind::ImeKindId;
+
+        let candidate = if vk == crate::vk::VK_CONVERT {
+            ModeKeyCandidate::Henkan
+        } else if vk == crate::vk::VK_NONCONVERT {
+            ModeKeyCandidate::Muhenkan
+        } else {
+            return None;
+        };
+        let config_fingerprint = match active_ime_kind {
+            ImeKindId::Gji => {
+                let bytes = read_config1_db()?;
+                let raw = awase_gji_config::wire::parse_top_level(&bytes)?;
+                candidate.current_fingerprint(&raw)
+            }
+            ImeKindId::MsIme => crate::state::calibrated_mode_key::ConfigFingerprint::MsIme {
+                registry_value_hash: crate::msime_key_assignment::current_registry_fingerprint_hash(
+                    vk,
+                ),
+            },
+        };
+        let confirmed_at_epoch_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        Some(
+            crate::state::calibrated_mode_key::CalibratedModeKey {
+                vk,
+                result: ImeToggleKind::On,
+                active_ime_kind,
+                config_fingerprint,
+                confirmed_at_epoch_ms,
+            }
+            .to_config_entry(),
+        )
     }
 }
 

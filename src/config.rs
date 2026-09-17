@@ -425,6 +425,17 @@ pub struct GeneralConfig {
     /// （`false`のまま矛盾を検出した場合は`tracing::warn!`で対処法を案内する）。
     #[serde(default)]
     pub gji_thumb_key_ime_toggle: bool,
+    /// ADR-176決定8: `[[calibration]]`（較正パネルUIが確定した較正結果）を
+    /// 実際のIME判定（`apply_calibration_override`経由でのGJI/MS-IME
+    /// 側の自動検出結果の差し替え）へ反映するかどうか。**既定`false`**
+    /// （opt-in）——BUG-113の再発リスクを実機A/Bで確認できるまで、較正
+    /// 結果は`config.toml`には保存されるが実際のキー選択には影響しない
+    /// ようにする安全装置（`ActivationSync`冪等性チェック=176-T0を前提
+    /// 条件から外した経緯参照、`docs/adr/176-implementation-tasks.md`の
+    /// T0節）。`true`にすると較正結果がGJI/MS-IME両方の自動検出結果を
+    /// 上書きするようになる。
+    #[serde(default)]
+    pub apply_calibrated_mode_keys: bool,
     /// ADR-153 決定1: 無変換単独タップ確定時に、素の `VK_NONCONVERT` の代わりに
     /// awase 自身が直接 IME を ON/OFF/Toggle する（隠し設定、上級者向け）。
     /// `None`（既定）なら無効で、従来どおり GJI/MS-IME 自動検出
@@ -505,6 +516,7 @@ impl Default for GeneralConfig {
             enter_thumb_shift_literal: true,
             swallow_alt_kana_input_method_switch: true,
             gji_thumb_key_ime_toggle: false,
+            apply_calibrated_mode_keys: false,
             muhenkan_solo_tap_ime_action: None,
             henkan_solo_tap_ime_action: None,
         }

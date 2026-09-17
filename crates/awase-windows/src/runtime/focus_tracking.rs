@@ -802,6 +802,7 @@ impl Runtime {
                                     notify_calibration_result(
                                         vk,
                                         crate::calibration_ipc::CalibrationResultKind::ConfirmedOn,
+                                        crate::tsf::observer::tsf_obs().active_ime_kind().into(),
                                     );
                                     true
                                 });
@@ -822,6 +823,7 @@ impl Runtime {
                                     notify_calibration_result(
                                         vk,
                                         crate::calibration_ipc::CalibrationResultKind::Rejected,
+                                        crate::tsf::observer::tsf_obs().active_ime_kind().into(),
                                     );
                                     true
                                 });
@@ -1179,6 +1181,7 @@ impl From<&FocusIdentity> for crate::journal::FocusEndpoint {
 fn notify_calibration_result(
     vk: awase::types::VkCode,
     kind: crate::calibration_ipc::CalibrationResultKind,
+    active_ime_kind: crate::state::ime_kind::ImeKindId,
 ) {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{LPARAM, WPARAM};
@@ -1197,7 +1200,11 @@ fn notify_calibration_result(
         );
         return;
     };
-    let payload = crate::calibration_ipc::CalibrationResultPayload { vk, kind };
+    let payload = crate::calibration_ipc::CalibrationResultPayload {
+        vk,
+        kind,
+        active_ime_kind,
+    };
     let wparam = WPARAM(crate::calibration_ipc::pack_result(payload));
     // SAFETY: hwnd は直前の FindWindowW が返した有効なウィンドウハンドル。
     if let Err(err) =

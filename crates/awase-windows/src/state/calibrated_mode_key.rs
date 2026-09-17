@@ -82,7 +82,6 @@ pub(crate) fn fresh_or_none<'a>(
 /// パターンに揃え、意味解釈はこのモジュール側で行う。
 impl CalibratedModeKey {
     #[must_use]
-    #[allow(dead_code)] // 176-T12（起動時保存）で呼び出し
     pub(crate) fn to_config_entry(&self) -> awase::config::CalibrationEntry {
         let result = ime_toggle_kind_to_str(self.result);
         let active_ime_kind = ime_kind_id_to_str(self.active_ime_kind);
@@ -115,7 +114,6 @@ impl CalibratedModeKey {
 /// を返す（呼び出し元がログへ警告を残し、そのエントリを無視することを
 /// 想定——手書き編集された`config.toml`が壊れていても起動を落とさない）。
 #[must_use]
-#[allow(dead_code)] // 176-T12（起動時ロード）で呼び出し
 pub(crate) fn calibrated_mode_key_from_config_entry(
     entry: &awase::config::CalibrationEntry,
 ) -> Option<CalibratedModeKey> {
