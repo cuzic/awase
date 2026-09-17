@@ -306,6 +306,11 @@ belief更新に一切触れていないこと」「検知コードが`focus_app_
 
 **依存**: 176-T6、176-T7。
 
+**実機検証（2026-09-17、dragonflyg4）**: 較正モード中に物理VK_NONCONVERTを
+押下し、awase.exeのログに`[calibration] 対象キー押下を検知`が記録される
+ことを確認した。176-T9a/T9bと合わせたエンドツーエンド検証は下記
+176-T9bの実機検証節を参照。
+
 ---
 
 ## フェーズ4: 観測・UI
@@ -472,6 +477,30 @@ round8/round9の議論で、T7の`WM_CALIBRATION_RESULT`先送りと同じ理由
 （T10未実装のため、受信側は現時点ではログ出力のみ）。
 
 **依存**: 176-T9a。
+
+**実機検証完了（2026-09-17、dragonflyg4）**: 176-T8/T9a/T9bのエンドツー
+エンドを実機で確認した。較正モード中に物理VK_NONCONVERTキーをIME ON
+状態で2回押下（各押下後3秒のsettle windowが経過するまでフォーカス保持）
+した結果、awase.exe側で`[calibration] 確定: vk=VkCode(29)
+ImeToggleKind::On (pre=true post=true)`、同時刻にawase-settings.log側で
+`[calibration] 結果を受信: vk=VkCode(29) kind=ConfirmedOn`を確認した
+（受信からログ出力まで1ms）。
+
+検証で判明した、176-T10設計時に踏まえるべき2点:
+1. **フォーカス保持要件の再確認**: 押下後settle window（3秒、
+   `CALIBRATION_TRIAL_SETTLE_WINDOW_MS`）の間、awase-settingsの
+   テキスト入力欄にキーボードフォーカスが無いと`spawn_calibration_
+   probe_loop`のフォーカス一致チェックに阻まれ試行が完了しない
+   （既知要件、決着実験v2/round6 M1と同じ制約を実機で再確認）。
+2. **`begin_calibration_bypass`の無条件epoch更新への対応**: 同一pid・
+   同一VKでの再武装（例: UIがセッション維持のため定期的にkeepalive
+   送信する設計にした場合）でも`calibration_epoch`が無条件に進み、
+   `TrialTracker`/`CalibrationConfirmState`の蓄積が失われる
+   （round9 S6の意図的設計、VK変更時の混入防止が目的）。176-T10が
+   セッション維持のkeepaliveを送る設計にする場合は、進行中の試行の
+   蓄積が失われないよう間隔を調整するか、`begin_calibration_bypass`
+   側に「進行中の試行がある間は再武装しない」ガードの追加を検討する
+   こと。
 
 ### 176-T10（決定4・7）: 較正パネルUI
 

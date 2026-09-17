@@ -4,6 +4,16 @@ title: |-
   awase-settingsの明示的な較正UIでモードキーの実効果を測定し、
   未登録時に静的分類を補完する
 status: |-
+  **2026-09-17: 176-T8/T9a/T9bの実機検証完了（dragonflyg4）。**
+  較正モード中に物理VK_NONCONVERTをIME ON状態で2回押下（各3秒の
+  settle window経過までフォーカス保持）し、awase.exe側で
+  `[calibration] 確定: vk=VkCode(29) ImeToggleKind::On`、
+  awase-settings.log側で`[calibration] 結果を受信: kind=ConfirmedOn`
+  （1ms後）を確認、押下検知→試行確定→IPC通知のエンドツーエンドを
+  実機で確認した。詳細は
+  [176-implementation-tasks.md](176-implementation-tasks.md)の
+  176-T9b節「実機検証完了」を参照。次は176-T10（較正パネルUI）。
+
   **2026-09-16: v8のround6残論点（M1〜M4）を決着実験v2で実機確定、
   実装着手（T1から）。**
 
