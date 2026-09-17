@@ -5,14 +5,12 @@ title: |-
 status: |-
   **起草中（v14、全面差し替え）。v1〜v13（バックアップ+復元方式、12ラウンド・
   Blocker20件）を破棄し、round1が当初提案していた方向へ回帰した、
-  よりシンプルな設計に作り直した。実装済み・実機検証4項目すべて完了
-  （round1 B2の既存ユーザー遡及効果を含めPermanent="yes"の効果を確認、
-  かつ実機検証中に発見した「読み取り先/書き込み先」バグ1件を修正し
-  修正後も実機確認済み）。opus-adversarial-consultレビュー完了
+  よりシンプルな設計に作り直した。実装・opus-adversarial-consultレビュー
   （[178-opus-review-v14.md](178-opus-review-v14.md)、総合判定「実装
-  やり直し不要」）、Blocker2件・Major推奨5件・フォローアップ3件
-  （M4/M6/M7）すべて反映済み。残るのはMinor6件（任意）と、opusレビュー
-  後のコード変更分の実機再検証のみ。**
+  やり直し不要」）・Blocker2件/Major推奨5件/フォローアップ3件の反映・
+  実機再検証（dragonflyg4、awase-1.20.9-x64.msi、基本動作の回帰無し
+  ＋Blocker B2修正を実機確認）まですべて完了。残るのはMinor6件（任意）
+  とドキュメント更新のみ。**
 related_adr:
   - "ADR-099"
   - "ADR-177"
@@ -23,11 +21,12 @@ related_adr:
 ## ステータス
 
 **起草中v14（2026-09-17）。方針転換により全面差し替え。実装済み。実機検証
-（dragonflyg4）4項目すべて完了。opus-adversarial-consultレビュー完了
+（dragonflyg4）は初回4項目に加え、opusレビュー反映後（B1/B2/M1/M2/M4/M6/M7）
+の最終再検証まで完了（awase-1.20.9-x64.msi、基本動作の回帰無し・Blocker
+B2修正を実機確認）。opus-adversarial-consultレビュー完了
 （[178-opus-review-v14.md](178-opus-review-v14.md)）、Blocker2件・
 Major推奨5件・フォローアップ3件（M4/M6/M7）すべて反映済み。残るのは
-Minor6件（任意）とopusレビュー後の変更分の実機再検証のみ（未解決事項
-参照）。**
+Minor6件（任意）とドキュメント更新のみ（未解決事項参照）。**
 
 ## 方針転換の経緯（重要、実装者は必ず読むこと）
 
@@ -413,9 +412,25 @@ awase-1.20.6-x64.msi＝Permanentなし旧版、awase-1.20.7-x64.msi＝Permanent
      追加。
    Minor6件は未反映のまま（次のADR改訂または別PRで対応）。
 2. 実機確認4項目すべて完了（上記参照、`.yab`自己修復バグの修正・再検証
-   含む）。**ただしopusレビュー後のB1/B2/M1/M2/M4/M6/M7の全コード変更は
-   未再検証**（コンパイル・単体テスト・ソーススキャンガードは確認済みだが、
-   実機での動作確認はまだ）。
+   含む）。**opusレビュー後の全コード変更（B1/B2/M1/M2/M4/M6/M7）は
+   2026-09-17、dragonflyg4・awase-1.20.9-x64.msiで最終再検証済み**:
+   - 基本動作の回帰確認: クリーンインストール→`config.toml`編集→
+     アンインストール→`config.toml`が残り編集内容も保持、`awase.exe`は
+     削除されることを再確認（M1/M2の副作用分離・ゲート追加後も既存の
+     基本動作に回帰が無いことを確認）。
+   - **Blocker B2の実機確認**: クリーンインストール後、`config.toml`を
+     構造的に壊れたTOML（`this is not valid toml [[[`）に書き換えた状態で
+     `awase-settings.exe`を起動 → `%LOCALAPPDATA%\awase\config\`
+     （`default_config()`の`layouts_dir = "config"`が誤って書き込み先に
+     なる場合に生成されるはずのディレクトリ）は生成されず、既存の
+     `layout\nicola.yab`も無事であることを確認した。B2修正が実機で
+     有効であることが確定した。
+   - M1（`find_config_path`の副作用分離）・M2（`.yab`側CLI引数ゲート）・
+     M4（3者同期テスト）・M6（`is_dev_build`一本化）・M7
+     （`uninstall.ps1 -Purge`のレジストリ削除）は、コンパイル・単体
+     テスト・ソーススキャンガードでの確認に留め、個別の実機確認は
+     省略した（ロジックとしては単純な条件分岐・委譲・PowerShellスクリプト
+     の追記であり、B2ほどの実機固有のリスクを持たないため）。
 3. `ensure_config_exists`/`ensure_layouts_exist`の実装・呼び出し位置は
    完了（`awase.exe`・`awase-settings.exe`の両方、コンパイル・単体テスト・
    実機確認済み）。
