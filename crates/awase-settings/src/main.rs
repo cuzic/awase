@@ -2793,7 +2793,84 @@ impl SettingsApp {
         );
     }
 
-    #[expect(clippy::too_many_lines)]
+    /// 較正結果の受信ポーリングと`calibration_state`の更新。確定した
+    /// 場合は`persist_confirmed_calibration`も呼ぶ。
+    fn poll_calibration_result(&mut self, vk: Option<VkCode>) {
+        use calibration_panel::CalibrationPanelState;
+        if !matches!(
+            self.calibration_state,
+            CalibrationPanelState::WaitingFocus
+                | CalibrationPanelState::Measuring
+                | CalibrationPanelState::FocusLost
+        ) {
+            return;
+        }
+        #[cfg(target_os = "windows")]
+        if let (Some(payload), Some(vk)) = (calibration_result_window::take_latest_result(), vk)
+            && payload.vk == vk
+        {
+            if payload.kind == awase_windows::calibration_ipc::CalibrationResultKind::ConfirmedOn {
+                persist_confirmed_calibration(
+                    &self.config_path,
+                    vk,
+                    payload.active_ime_kind,
+                    &mut self.config,
+                );
+            }
+            self.calibration_state =
+                calibration_panel::on_result_received(self.calibration_state, payload.kind);
+        }
+        #[cfg(not(target_os = "windows"))]
+        let _ = vk;
+    }
+
+    /// 計測中〜結果確定までの状態表示・フォーカス保持用テキスト欄の描画。
+    /// `poll_calibration_result`の後に呼ぶこと。`measuring_label`は
+    /// `Measuring`状態のときの案内文（呼び出し元ごとに文言が異なるため
+    /// 引数化）。
+    fn render_calibration_progress(&mut self, ui: &mut egui::Ui, measuring_label: &str) {
+        use calibration_panel::CalibrationPanelState;
+
+        match self.calibration_state {
+            CalibrationPanelState::WaitingFocus => {
+                ui.label("テキスト欄にフォーカスします…");
+            }
+            CalibrationPanelState::Measuring => {
+                ui.label(measuring_label);
+            }
+            CalibrationPanelState::FocusLost => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(200, 60, 60),
+                    "テキスト入力欄からフォーカスが外れました。下のテキスト欄をクリックしてフォーカスを戻してください。",
+                );
+            }
+            CalibrationPanelState::Confirmed(
+                awase_windows::calibration_ipc::CalibrationResultKind::ConfirmedOn,
+            ) => {
+                ui.label("確定: このキーはIMEをONにします。");
+            }
+            CalibrationPanelState::Confirmed(
+                awase_windows::calibration_ipc::CalibrationResultKind::Rejected,
+            ) => {
+                ui.label(
+                    "判定不能でした（ONの状態で押すとOFFになる=単純なトグルキーである可能性が高い、または再現性のある結果が得られませんでした）。確認結果は保存されません。",
+                );
+            }
+            CalibrationPanelState::Idle | CalibrationPanelState::Blocked => {}
+        }
+
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut self.calibration_text_buf)
+                .desired_width(240.0)
+                .hint_text(""),
+        );
+        if self.calibration_state == CalibrationPanelState::WaitingFocus {
+            response.request_focus();
+        }
+        self.calibration_state =
+            calibration_panel::on_focus_changed(self.calibration_state, response.has_focus());
+    }
+
     fn tab_calibration(&mut self, ui: &mut egui::Ui) {
         use calibration_panel::CalibrationPanelState;
 
@@ -2839,30 +2916,7 @@ impl SettingsApp {
             ui.colored_label(egui::Color32::from_rgb(200, 120, 0), reason);
         }
 
-        if matches!(
-            self.calibration_state,
-            CalibrationPanelState::WaitingFocus
-                | CalibrationPanelState::Measuring
-                | CalibrationPanelState::FocusLost
-        ) {
-            #[cfg(target_os = "windows")]
-            if let (Some(payload), Some(vk)) = (calibration_result_window::take_latest_result(), vk)
-                && payload.vk == vk
-            {
-                if payload.kind
-                    == awase_windows::calibration_ipc::CalibrationResultKind::ConfirmedOn
-                {
-                    persist_confirmed_calibration(
-                        &self.config_path,
-                        vk,
-                        payload.active_ime_kind,
-                        &mut self.config,
-                    );
-                }
-                self.calibration_state =
-                    calibration_panel::on_result_received(self.calibration_state, payload.kind);
-            }
-        }
+        self.poll_calibration_result(vk);
 
         ui.add_space(8.0);
         let start_enabled =
@@ -2885,50 +2939,14 @@ impl SettingsApp {
         }
 
         ui.add_space(8.0);
-        match self.calibration_state {
-            CalibrationPanelState::WaitingFocus => {
-                ui.label("テキスト欄にフォーカスします…");
-            }
-            CalibrationPanelState::Measuring => {
-                ui.label(
-                    "計測中です。次の順番で対象キーを押してください:\n\
-                     1. IMEがOFF(直接入力)の状態で1回押す（ONになるか確認します）。\n\
-                     2. 続けてIMEがON(ひらがな)の状態でもう一度押す（ONのままキープ\n\
-                     されるか確認します。OFFの状態でしか押さないと、このキーが\n\
-                     実際にIMEをONにできるか確認できません）。",
-                );
-            }
-            CalibrationPanelState::FocusLost => {
-                ui.colored_label(
-                    egui::Color32::from_rgb(200, 60, 60),
-                    "テキスト入力欄からフォーカスが外れました。下のテキスト欄をクリックしてフォーカスを戻してください。",
-                );
-            }
-            CalibrationPanelState::Confirmed(
-                awase_windows::calibration_ipc::CalibrationResultKind::ConfirmedOn,
-            ) => {
-                ui.label("確定: このキーはIMEをONにします。");
-            }
-            CalibrationPanelState::Confirmed(
-                awase_windows::calibration_ipc::CalibrationResultKind::Rejected,
-            ) => {
-                ui.label(
-                    "判定不能でした（ONの状態で押すとOFFになる=単純なトグルキーである可能性が高い、または再現性のある結果が得られませんでした）。確認結果は保存されません。",
-                );
-            }
-            CalibrationPanelState::Idle | CalibrationPanelState::Blocked => {}
-        }
-
-        let response = ui.add(
-            egui::TextEdit::singleline(&mut self.calibration_text_buf)
-                .desired_width(240.0)
-                .hint_text(""),
+        self.render_calibration_progress(
+            ui,
+            "計測中です。次の順番で対象キーを押してください:\n\
+             1. IMEがOFF(直接入力)の状態で1回押す（ONになるか確認します）。\n\
+             2. 続けてIMEがON(ひらがな)の状態でもう一度押す（ONのままキープ\n\
+             されるか確認します。OFFの状態でしか押さないと、このキーが\n\
+             実際にIMEをONにできるか確認できません）。",
         );
-        if self.calibration_state == CalibrationPanelState::WaitingFocus {
-            response.request_focus();
-        }
-        self.calibration_state =
-            calibration_panel::on_focus_changed(self.calibration_state, response.has_focus());
 
         ui.add_space(4.0);
         if matches!(
