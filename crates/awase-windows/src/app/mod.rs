@@ -137,7 +137,21 @@ pub fn run() -> Result<()> {
 // ── 共有ヘルパー（bootstrap + reload_config から使用）──
 
 /// 設定ファイルを読み込む
+///
+/// `find_config_path()`とは違い、これは`awase.exe`の**起動経路専用**
+/// （`bootstrap::run_all`から呼ばれる）。自己修復（`ensure_default_config_exists`）
+/// はここでのみ発火させる——`find_config_path()`自体は`read_bug_report_attachments`
+/// や`tray.rs::save_auto_start_config`からも呼ばれる観測/再読込用の共有
+/// ヘルパーであり、そこに副作用を置くと「不具合報告を開く」「自動起動を
+/// トグルする」操作がユーザー環境のconfig.tomlを書き換えてしまう
+/// （ADR-178 v14 opusレビュー M1対応。特に不具合報告経路は「config.tomlが
+/// 存在しなかった」という最重要の事実が、報告を開いた瞬間に生成された
+/// 工場出荷値で上書きされ消えてしまう）。
 fn load_config() -> Result<AppConfig> {
+    // CLI引数でパスが明示されている場合は自己修復しない（ADR-178 決定2）。
+    if cli_arg_config_path().is_none() {
+        ensure_default_config_exists();
+    }
     let config_path = find_config_path()?;
     tracing::info!("Loading config from: {}", config_path.display());
     let config = AppConfig::load(&config_path)?;
@@ -149,19 +163,28 @@ fn load_config() -> Result<AppConfig> {
     Ok(config)
 }
 
-/// 設定ファイルのパスを探索する
-pub(crate) fn find_config_path() -> Result<PathBuf> {
-    // `--flag` / `--flag value` 形式をスキップし、最初の非フラグ引数をパスとして扱う
+/// CLI引数でconfigパスが明示されていればそれを返す（`--flag`/`--flag value`
+/// 形式はスキップ）。`find_config_path()`とは独立して使う——`find_config_path`
+/// 自体は複数の呼び出し元から使われる副作用のないヘルパーに保つため
+/// （ADR-178 v14 opusレビュー M1対応）。
+pub(super) fn cli_arg_config_path() -> Option<PathBuf> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg.starts_with("--") {
             let _ = args.next(); // value をスキップ
             continue;
         }
-        // CLI引数でパスが明示されている場合は自己修復しない（ADR-178 決定2）。
-        return Ok(PathBuf::from(arg));
+        return Some(PathBuf::from(arg));
     }
-    ensure_default_config_exists();
+    None
+}
+
+/// 設定ファイルのパスを探索する。**副作用を持たない**（ADR-178 v14 opusレビュー
+/// M1対応）——自己修復が必要な起動経路は`load_config()`を使うこと。
+pub(crate) fn find_config_path() -> Result<PathBuf> {
+    if let Some(path) = cli_arg_config_path() {
+        return Ok(path);
+    }
     let resolved = resolve_relative("config.toml");
     if resolved.exists() {
         return Ok(resolved);

@@ -551,7 +551,14 @@ impl SettingsApp {
                 (default_config(), state)
             }
         };
-        if cli_arg_config_path().is_none() {
+        // config_load_state == Loadedのときのみ発火する（round v14 B2対応）:
+        // 読み込みに失敗しdefault_config()にフォールバックした場合、
+        // GeneralConfig::default()のlayouts_dirは"config"（出荷値"layout"とは
+        // 別物、src/config.rs参照）であり、これを書き込み先に使うと
+        // %LOCALAPPDATA%\awase\config\に同梱6ファイルを誤生成してしまう。
+        if cli_arg_config_path().is_none()
+            && config_load_state == awase::config::ConfigLoadState::Loaded
+        {
             ensure_default_layouts_exist(&config.general.layouts_dir);
         }
         let available_layouts = scan_layout_names(&config.general.layouts_dir);

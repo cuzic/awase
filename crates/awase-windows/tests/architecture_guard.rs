@@ -4969,3 +4969,132 @@ fn tuning_constants_all_have_measured_attribute() {
          (.claude/rules/tuning-constants.md)。"
     );
 }
+/// ADR-178（MSIアンインストール時のユーザーデータ喪失をPermanent化+自己修復で
+/// 防ぐ）v14 opus敵対的レビュー Blocker B1対応。
+///
+/// `wix/main.wxs`の`Permanent="yes"`（7コンポーネント）は
+/// `wix_installer_guard.rs::config_file_and_nicola_yab_components_have_permanent`
+/// で固定されているが、その**唯一の解毒剤**である自己修復の配線
+/// （`ensure_default_config_exists`/`ensure_default_layouts_exist`の
+/// 呼び出しと、生成先を書き込み先として固定する不変条件）を守るテストが
+/// これまで存在しなかった。`Permanent`は不可逆であり、この配線が壊れると
+/// round1 B1の最悪シナリオ（MSI管理外のレジストリKeyPathが残る環境で
+/// 再インストールしてもconfig.tomlが再配置されず起動不能になる）が
+/// 二度と直せない形で復活する。
+mod adr178_self_heal_wiring {
+    use super::{extract_fn_body, read_crate_file};
+
+    /// `app/mod.rs::load_config`本体に`ensure_default_config_exists()`が
+    /// 含まれること。これが消えると、起動時にconfig.tomlが自動生成されず
+    /// round1 B1のシナリオがそのまま復活する。
+    #[test]
+    fn load_config_calls_ensure_default_config_exists() {
+        let content = read_crate_file("src/app/mod.rs");
+        let body = extract_fn_body(&content, "fn load_config() -> Result<AppConfig> {");
+        assert!(
+            body.contains("ensure_default_config_exists();"),
+            "app/mod.rs::load_config()の本体にensure_default_config_exists()の\
+             呼び出しが見つからない。これが無いとPermanent=\"yes\"で保護している\
+             config.tomlが万一消えたとき、再生成されず起動不能になる \
+             （round1 B1が不可逆な形で復活する、ADR-178 v14レビューB1対応）。"
+        );
+    }
+
+    /// `find_config_path`は副作用を持たない設計にした（v14レビューM1対応）
+    /// ——`read_bug_report_attachments`等の観測経路から誤って自己修復を
+    /// 発火させないため。この関数本体にensure系の呼び出しが紛れ込んで
+    /// いないことを固定する。
+    #[test]
+    fn find_config_path_has_no_self_heal_side_effect() {
+        let content = read_crate_file("src/app/mod.rs");
+        let body = extract_fn_body(&content, "pub(crate) fn find_config_path() -> Result<PathBuf> {");
+        assert!(
+            !body.contains("ensure_default_config_exists"),
+            "app/mod.rs::find_config_path()にensure_default_config_exists()の\
+             呼び出しが紛れ込んでいる。この関数はread_bug_report_attachments等\
+             複数の観測経路から呼ばれる副作用のないヘルパーであるべき \
+             （ADR-178 v14レビューM1対応）——不具合報告を開いただけで\
+             ユーザー環境のconfig.tomlが生成されてしまう回帰を防ぐ。"
+        );
+    }
+
+    /// `app/bootstrap.rs::init_engine_validated`内で、`.yab`の自己修復
+    /// （`ensure_default_layouts_exist`）の呼び出しが、読み取り先を解決する
+    /// `resolve_relative`より**前**にあること。順序が入れ替わると、
+    /// 2026-09-17に実機で踏んだバグ（`resolve_relative`がCWD相対の裸パスへ
+    /// フォールバックし、生成先もそこに引きずられて`%LOCALAPPDATA%\awase\layout`
+    /// が生成されない）が再発する。
+    #[test]
+    fn layouts_self_heal_runs_before_resolve_relative() {
+        let content = read_crate_file("src/app/bootstrap.rs");
+        let ensure_pos = content
+            .find("ensure_default_layouts_exist(&config.general.layouts_dir)")
+            .expect("ensure_default_layouts_exist call not found in bootstrap.rs");
+        let resolve_pos = content
+            .find("let layouts_dir = resolve_relative(&config.general.layouts_dir)")
+            .expect("resolve_relative(&config.general.layouts_dir) call not found in bootstrap.rs");
+        assert!(
+            ensure_pos < resolve_pos,
+            "ensure_default_layouts_exist()の呼び出し（位置={ensure_pos}）が\
+             resolve_relative()の呼び出し（位置={resolve_pos}）より後にある。\
+             resolve_relativeは存在依存のフォールバック（exe隣に無ければCWD相対の\
+             裸パスを返す）を持つため、先に呼ぶと自己修復の生成先を\
+             汚染する。2026-09-17実機検証で発見した`.yab`未生成バグが\
+             再発する（ADR-178 v14レビューBlocker B1対応、無警告で起きる\
+             ため気づきにくい）。"
+        );
+    }
+
+    /// `ensure_default_config_exists`/`ensure_default_layouts_exist`の本体に
+    /// `resolve_relative`系の解決関数が出現しないこと（＝生成先を存在依存の
+    /// 解決結果に委ねない、という不変条件そのもの）。v2〜v13で7回、v14でも
+    /// 1回（`3d7a7ece`）再発した「読み取り先/書き込み先」問題の根を、
+    /// これ以上形を変えて再発させないための機械的なガード。
+    #[test]
+    fn ensure_functions_never_use_resolve_relative_as_write_target() {
+        for (file, fn_signature) in [
+            (
+                "src/app/mod.rs",
+                "fn ensure_default_config_exists() {",
+            ),
+            (
+                "src/app/mod.rs",
+                "pub(super) fn ensure_default_layouts_exist(layouts_dir_raw: &str) {",
+            ),
+        ] {
+            let content = read_crate_file(file);
+            let body = extract_fn_body(&content, fn_signature);
+            for forbidden in ["resolve_relative(", "resolve_relative_to_exe(", "resolve_layouts_dir("] {
+                assert!(
+                    !body.contains(forbidden),
+                    "{file}の`{fn_signature}`の本体に{forbidden}が出現する。\
+                     これらの関数は存在に依存したフォールバック（exe隣に無ければ\
+                     CWD相対の裸パスを返す）を持つため、生成先として使うと\
+                     意図しない場所への書き込みが発生する \
+                     （ADR-178 v14レビューBlocker B1・M6が名指しした不変条件）。\
+                     生成先は常にexe_dir.join(生文字列)で明示的に組み立てること。"
+                );
+            }
+        }
+    }
+
+    /// `crates/awase-settings/src/main.rs::SettingsApp::new`に、config.toml・
+    /// `.yab`両方の自己修復呼び出しが含まれること（別クレートだが
+    /// `CARGO_MANIFEST_DIR`からの相対パスで読める。専用の`tests/`を持たない
+    /// `awase-settings`側の唯一の配線ガードをここに置く）。
+    #[test]
+    fn settings_app_new_calls_both_ensure_functions() {
+        let content = read_crate_file("../awase-settings/src/main.rs");
+        let body = extract_fn_body(&content, "fn new(cc: &eframe::CreationContext<'_>) -> Self {");
+        assert!(
+            body.contains("ensure_default_config_exists();"),
+            "crates/awase-settings/src/main.rs::SettingsApp::new()にensure_default_config_exists()\
+             の呼び出しが見つからない（ADR-178 v14レビューB1対応）。"
+        );
+        assert!(
+            body.contains("ensure_default_layouts_exist(&config.general.layouts_dir);"),
+            "crates/awase-settings/src/main.rs::SettingsApp::new()にensure_default_layouts_exist()\
+             の呼び出しが見つからない（ADR-178 v14レビューB1対応）。"
+        );
+    }
+}
