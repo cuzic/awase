@@ -682,6 +682,48 @@ T0を前提条件から外した（上記T0節参照）ため、この配線自�
 **受け入れ基準**: Windows実機で、config1.dbを意図的に変更した後
 較正結果が正しく無効化されることを確認する。
 
+**実装完了（2026-09-17、core部分）**: stale判定を実際のGJI/MS-IME同期
+経路へ配線した。`176-T1`の`is_stale`をラップした
+`fresh_or_none(record, current) -> Option<&CalibratedModeKey>`
+（`state/calibrated_mode_key.rs`）を新設し、`apply_calibration_override`
+へ渡す前に必ず通す:
+
+- **GJI側**（`gji_charset_autodetect.rs::sync_gji_charset_autodetect`）:
+  `ModeKeyCandidate::current_fingerprint`が、その時点で読んだ
+  `config1.db`（`raw: GjiRawConfig`）から`ConfigFingerprint::Gji{
+  session_keymap, relevant_row }`を都度再構築する。`relevant_row`は
+  新設の`awase_gji_config::keymap::relevant_rows_for_vk(table, vk_name)`
+  （`custom_keymap_table`から対象VKに対応する行だけを抽出・正規化して
+  結合、複数行あればソート済みで結合。既存の`mozc_key_to_vk_name`を
+  再利用するため`extract_ime_keys`と同じ「修飾キー付き行は対象外」扱い
+  になる）。
+- **MS-IME側**（`message_handlers.rs::sync_ime_toggle_auto_detect`）:
+  新設の`msime_key_assignment::current_registry_fingerprint_hash(vk)`が
+  `IsKeyAssignmentEnabled`/`KeyAssignmentMuhenkan`/`KeyAssignmentHenkan`
+  の生のDWORD値（`read_delegate_to_open_axis_assignment_from_registry`が
+  返す解釈済み値ではなく、未知の値も区別できる生値）から
+  `ConfigFingerprint::MsIme{ registry_value_hash }`を都度計算する。
+
+いずれも「設定リロード時」だけでなく、既存の同期呼び出し（GJI/MS-IME
+確定のたびに再計算する`sync_gji_charset_autodetect`/`sync_ime_toggle_
+auto_detect`自体の通常呼び出し）にも自然に乗る形にした——`reload_config`
+専用の別経路を新設していない。
+
+**未実装（実機A/B含む、次のタスク）**:
+1. **`awase-settings`側のUI案内**（GJI再同期条件を満たさない場合の
+   「対象アプリへフォーカスを戻してください」、`FindWindowW`失敗時の
+   「次回起動時に反映されます」）は未着手。これらは較正結果が実際に
+   ロード・保存・opt-in適用される一連の配線（下記2参照）が無いと
+   ユーザーに見せる意味が無いため、その配線と合わせて実装するのが
+   自然。
+2. **実機A/B検証は未実施**。前提として、`Runtime.calibrated_mode_keys`
+   への起動時ロード・実際の書き込み（`176-T9a`から`set_calibrated_
+   mode_key`を呼ぶ配線、`176-T11`のギャップ節参照）がまだ無いため、
+   現時点ではstale判定ロジックはユニットテストでのみ検証されており、
+   実機では常に空のマップに対して動作する（＝実害ゼロだが、実機での
+   staleフォールバック自体を観察することもできない）。この配線が
+   入るまで受け入れ基準の実機確認は意味を持たない。
+
 **依存**: 176-T3、176-T4、176-T11。
 
 ---

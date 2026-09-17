@@ -22,7 +22,6 @@ use awase::types::VkCode;
 /// （BUG-143の既知の限界——GUI実装のクリア漏れによる`custom_keymap_table`
 /// 残留——を検出する手段としても機能する、ADR-176決定6）。
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // 176-T8以降で構築（GJI/MS-IME較正時のfingerprint取得）
 pub(crate) enum ConfigFingerprint {
     Gji {
         /// `session_keymap`フィールドの値（`awase-gji-config`のraw値）。
@@ -58,9 +57,22 @@ pub(crate) struct CalibratedModeKey {
 /// `record`の`config_fingerprint`が`current`と食い違っていれば`true`
 /// （stale、静的分類へフォールバックすべき）。
 #[must_use]
-#[allow(dead_code)] // 176-T8以降で呼び出し（較正結果のstale判定）
 pub(crate) fn is_stale(record: &CalibratedModeKey, current: &ConfigFingerprint) -> bool {
     record.config_fingerprint != *current
+}
+
+/// `176-T12`（ADR-176決定6）: `record`が`current`に対してstaleでなければ
+/// そのまま返し、staleなら`None`にする（`apply_calibration_override`への
+/// 入力を「較正結果なし」に落とし、静的分類へフォールバックさせる）。
+/// 呼び出し元（`gji_charset_autodetect.rs`/`message_handlers.rs`）は
+/// `Runtime::calibrated_mode_key_for`が返した値をそのままここへ通すこと
+/// ——staleかどうかの判定はこの関数の外で行わない。
+#[must_use]
+pub(crate) fn fresh_or_none<'a>(
+    record: Option<&'a CalibratedModeKey>,
+    current: &ConfigFingerprint,
+) -> Option<&'a CalibratedModeKey> {
+    record.filter(|r| !is_stale(r, current))
 }
 
 /// `176-T11`（ADR-176決定6）: `config.toml`への永続化用の文字列橋渡し。
@@ -521,6 +533,39 @@ mod tests {
         };
         let record = sample(recorded);
         assert!(is_stale(&record, &current));
+    }
+
+    #[test]
+    fn fresh_or_none_passes_through_matching_fingerprint() {
+        let fp = ConfigFingerprint::Gji {
+            session_keymap: Some(1),
+            relevant_row: None,
+        };
+        let record = sample(fp.clone());
+        assert_eq!(fresh_or_none(Some(&record), &fp), Some(&record));
+    }
+
+    #[test]
+    fn fresh_or_none_drops_stale_fingerprint() {
+        let recorded = ConfigFingerprint::Gji {
+            session_keymap: Some(1),
+            relevant_row: None,
+        };
+        let current = ConfigFingerprint::Gji {
+            session_keymap: Some(2),
+            relevant_row: None,
+        };
+        let record = sample(recorded);
+        assert_eq!(fresh_or_none(Some(&record), &current), None);
+    }
+
+    #[test]
+    fn fresh_or_none_passes_through_none() {
+        let current = ConfigFingerprint::Gji {
+            session_keymap: Some(1),
+            relevant_row: None,
+        };
+        assert_eq!(fresh_or_none(None, &current), None);
     }
 
     // ── 176-T11: config.toml永続化のラウンドトリップ ────────────────────
