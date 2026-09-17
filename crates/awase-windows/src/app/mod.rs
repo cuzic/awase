@@ -183,13 +183,21 @@ fn is_dev_build() -> bool {
     })
 }
 
+/// `current_exe()`の親ディレクトリ。開発ビルドではないことを呼び出し元が
+/// 保証していること（`is_dev_build()`）。
+fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
+}
+
 /// `config.toml`が実行ファイルの隣に無ければ、埋め込み既定値から生成する
 /// （ADR-178 決定2）。
 fn ensure_default_config_exists() {
     if is_dev_build() {
         return;
     }
-    let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(std::path::Path::to_path_buf)) else {
+    let Some(exe_dir) = exe_dir() else {
         return;
     };
     let config_path = exe_dir.join("config.toml");
@@ -198,15 +206,27 @@ fn ensure_default_config_exists() {
     }
 }
 
-/// `layouts_dir`に有効な`.yab`が1本も無ければ、同梱6ファイルを埋め込み
-/// 既定値から生成する（ADR-178 決定2）。`LayoutEntry::scan_all`を呼ぶ前に
-/// 使うことで、通常時（既にファイルがある）は追加の`scan_all`呼び出しを
-/// 発生させない。
-pub(super) fn ensure_default_layouts_exist(layouts_dir: &std::path::Path) {
+/// `layouts_dir_raw`（`config.general.layouts_dir`の生文字列）に有効な`.yab`
+/// が1本も無ければ、同梱6ファイルを埋め込み既定値から生成する（ADR-178
+/// 決定2）。生成先は`exe_dir.join(layouts_dir_raw)`（`layouts_dir_raw`が
+/// 絶対パスならそのまま使われる）に固定し、`resolve_relative()`の結果を
+/// 使わない——`resolve_relative_to_exe`は「exe隣に存在しなければCWD相対の
+/// 裸パスへフォールバックする」ため、生成前に`resolve_relative`を呼ぶと
+/// 生成先がCWD相対になってしまう（実機検証2026-09-17で確認した実害:
+/// `layout`が丸ごと無い状態で`resolve_relative`経由のパスへ生成しようと
+/// すると、`awase.exe`のカレントディレクトリ相対に書き込まれ、
+/// `%LOCALAPPDATA%\awase\layout`には何も作られなかった）。呼び出し元は
+/// この関数の**後**で`resolve_relative`を呼んで読み取り先を解決すること
+/// （生成が成功していれば、exe隣が見つかるようになる）。
+pub(super) fn ensure_default_layouts_exist(layouts_dir_raw: &str) {
     if is_dev_build() {
         return;
     }
-    if let Err(e) = awase::config::ensure_layouts_exist(layouts_dir) {
+    let Some(exe_dir) = exe_dir() else {
+        return;
+    };
+    let target_dir = exe_dir.join(layouts_dir_raw);
+    if let Err(e) = awase::config::ensure_layouts_exist(&target_dir) {
         tracing::warn!("Failed to create default layout files: {e}");
     }
 }

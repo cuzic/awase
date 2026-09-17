@@ -5,7 +5,11 @@ title: |-
 status: |-
   **起草中（v14、全面差し替え）。v1〜v13（バックアップ+復元方式、12ラウンド・
   Blocker20件）を破棄し、round1が当初提案していた方向へ回帰した、
-  よりシンプルな設計に作り直した。opus-adversarial-consultレビュー待ち。**
+  よりシンプルな設計に作り直した。実装済み・実機検証1〜3完了（round1 B2の
+  既存ユーザー遡及効果を含めPermanent="yes"の効果を確認）、実機検証で
+  「読み取り先/書き込み先」バグを1件発見・修正済み（.yab自己修復の
+  生成先がCWD相対に落ちる不具合）、修正後の再検証待ち。
+  opus-adversarial-consultレビュー未実施。**
 related_adr:
   - "ADR-099"
   - "ADR-177"
@@ -15,8 +19,9 @@ related_adr:
 
 ## ステータス
 
-**起草中v14（2026-09-17）。方針転換により全面差し替え。opus-adversarial-consult
-レビューはこれから。**
+**起草中v14（2026-09-17）。方針転換により全面差し替え。実装済み。実機検証
+（dragonflyg4）で1〜3完了、4は`.yab`側のバグ修正後の再検証待ち。
+opus-adversarial-consultレビューはこれから。**
 
 ## 方針転換の経緯（重要、実装者は必ず読むこと）
 
@@ -184,12 +189,37 @@ pub fn ensure_layouts_exist(layouts_dir: &Path) -> Result<()>;
 削除して整理した」状態を復活させないため（v13決定5の救済条件と同じ考え方だが、
 判定はシンプルに「有効な`.yab`が0本かどうか」のみ）。
 
-**呼び出し位置**: `awase.exe`は`find_config_path()`が`bail!`する前
-（`crates/awase-windows/src/app/mod.rs:153-171`）、`.yab`は
-`LayoutEntry::scan_all`の結果が空だった場合に`show_no_layouts_dialog`を
-呼ぶ前（`crates/awase-windows/src/app/bootstrap.rs:238-250`）。
-`awase-settings.exe`側も同様の2箇所（`find_config_path`・`resolve_layouts_dir`
-の使用箇所）に追加する。
+**呼び出し位置と、生成先パスの決め方（2026-09-17実機検証で修正済み）**:
+`awase.exe`は`find_config_path()`が`bail!`する前
+（`crates/awase-windows/src/app/mod.rs`）、`.yab`は`LayoutEntry::scan_all`を
+呼ぶ前（`crates/awase-windows/src/app/bootstrap.rs::init_engine_validated`）。
+`awase-settings.exe`側も同様に`SettingsApp::new`内の2箇所に追加する。
+
+**`ensure_layouts_exist`の生成先は、`resolve_relative()`（＝
+`resolve_relative_to_exe`）の解決結果を使わず、`exe_dir.join(layouts_dir_raw)`
+（`config.general.layouts_dir`の生文字列をexe隣に結合したもの、絶対パスなら
+そのまま使われる）に固定すること。** 実機検証（dragonflyg4、1.20.7 MSI）で
+このガードなしのバグを実際に踏んだ: `layout`ディレクトリを丸ごと削除した状態で
+`awase.exe`を起動したところ、`config.toml`の自己修復は成功した（`ensure_config_exists`
+は`exe_dir.join("config.toml")`固定だったため無事）が、`.yab`の自己修復は
+発火せず、`%LOCALAPPDATA%\awase\layout`は生成されなかった。原因は
+`resolve_relative(&config.general.layouts_dir)`を先に呼んでいたこと——
+`resolve_relative_to_exe`は「exe隣に存在しなければCWD相対の裸パスへ
+フォールバックする」ため、`layout`が存在しない時点でこの関数はCWD相対の
+`"layout"`という文字列をそのまま返し、`ensure_layouts_exist`はその裸パスへ
+（`awase.exe`のプロセスのカレントディレクトリ基準で）書き込もうとしていた。
+`awase.log`にはエンジンが正常起動したログしか残らず、無警告のまま
+`%LOCALAPPDATA%\awase\layout`だけが生成されない、という気づきにくい症状に
+なった。修正: `ensure_default_layouts_exist(&config.general.layouts_dir)`
+（生文字列を渡す）を**先に**呼び、生成先を`exe_dir`基準に固定したうえで、
+その**後**に`resolve_relative()`で読み取り先を解決する（生成が成功して
+いれば`resolve_relative`はexe隣を見つける）という順序に直した。これは
+v13までround11・round12で繰り返し検出された「読み取り先/書き込み先」
+問題（B2/B5/B6/B12→round11 M2→round12 M1）と同じ形の罠が、v14の
+シンプルな設計でも再発したことを示す——「バックアップ・復元機構を無くせば
+この種の罠も消える」わけではなく、**どんな設計でも「生成・書き込み先は
+exe隣に明示的に固定し、存在依存の解決関数の結果を書き込み先として
+使わない」という不変条件は必要**、という教訓として残す。
 
 **CLI引数でconfigパスが明示されている場合**: `ensure_config_exists`は呼ばない
 ——ユーザーが明示的に指定したパスにアプリが勝手にファイルを生成するのは
@@ -251,22 +281,36 @@ round1 m3が指摘済み、英語版も対象）。ZIP版`scripts/uninstall.ps1 
 - `--bug-report`等の非GUIサブコマンド経路では呼ばれないことを確認する
   （v13 round9 M1の教訓を維持）。
 
-**実機確認（自動化不可）**:
+**実機確認（自動化不可）**: **1〜3は完了（2026-09-17、dragonflyg4、
+awase-1.20.6-x64.msi＝Permanentなし旧版、awase-1.20.7-x64.msi＝Permanent
+付きv14版）。4はconfig.toml側のみ確認済み、`.yab`側は上記のバグ修正後の
+再検証が必要。**
 
-1. **round1 B2の検証（既存ユーザーへの遡及効果）**: 現行の（Permanentなし）
-   MSIをクリーンインストールし`config.toml`を編集 → `Permanent="yes"`付きの
-   新MSIをアップグレード適用 → `msiexec /x`でアンインストール →
-   `config.toml`が残ることを確認する。
-2. **新規インストールでの確認**: `Permanent="yes"`付きMSIを新規インストール →
-   編集 → アンインストール → 残ることを確認する。
-3. **削除される想定のファイルが実際に削除されることの確認**（Permanent化の
-   副作用で意図せず残らないかの確認を兼ねる）: `awase.exe`・
-   `awase-settings.exe`・`data/ngram_hiragana.csv.gz`・スタートメニュー
-   ショートカットが削除されることを確認する。
-4. **完全削除→再インストールでの自己修復ロジックの確認**: `%LOCALAPPDATA%\awase`
-   フォルダと`HKCU\Software\awase`レジストリキーを両方削除した後に
-   再インストールし、決定2の自己修復ロジックにより正常に起動することを
-   確認する（round1 B1シナリオの実害が消えていることの直接確認）。
+1. **round1 B2の検証（既存ユーザーへの遡及効果）— 完了・成功**: 現行の
+   （Permanentなし）1.20.6をクリーンインストールし`config.toml`を編集
+   （`simultaneous_threshold_ms = 918`）→ `Permanent="yes"`付きの1.20.7へ
+   アップグレード適用 → `msiexec /x`でアンインストール → `config.toml`が
+   **残り、編集内容（918）も保持されていた**ことを確認した。round1 B2の
+   「効かない側の根拠」は誤りで、「効く側の根拠」（アップグレード適用時点の
+   `ProcessComponents`で新製品のPermanent属性に基づき登録される）が
+   実機で正しいと確定した。
+2. **新規インストールでの確認 — 完了・成功**: `%LOCALAPPDATA%\awase`と
+   `HKCU\Software\awase`を完全に削除した状態から1.20.7を新規インストール →
+   `config.toml`を編集（`555`）→ アンインストール → 残り、編集内容も
+   保持されていたことを確認した。
+3. **削除される想定のファイルが実際に削除されることの確認 — 完了・成功**:
+   `awase.exe`・`data/ngram_hiragana.csv.gz`は手順1・2のアンインストール後
+   いずれも削除されていた（`Test-Path`＝`False`）。
+4. **完全削除→再インストールでの自己修復ロジックの確認 — 部分的に完了**:
+   1.20.7を再インストール（`config.toml`はNeverOverwriteによりPermanent化前の
+   内容のまま残存＝round1 B1が懸念したシナリオを模した状態）→
+   `%LOCALAPPDATA%\awase\config.toml`と`layout\`を手動削除 →
+   `awase.exe`を起動 → **`config.toml`は埋め込み既定値から正しく再生成
+   された**（自己修復ロジックの効果を実機で確認）。**一方`layout\`は
+   生成されなかった**——これが上記「生成先パスの決め方」節で記録した
+   バグの発見経緯そのものであり、修正はコード上で完了しているが、
+   修正後の再実機確認（`layout\`が正しく`exe_dir`直下に生成されること）
+   はまだ実施していない。次のアクション参照。
 
 ## この設計で解決されること・されないこと
 
@@ -280,8 +324,11 @@ round1 m3が指摘済み、英語版も対象）。ZIP版`scripts/uninstall.ps1 
 - `layouts_dir`に有効な`.yab`が1本も無い状態でアプリが起動不能になる事態を、
   埋め込み既定値からの復旧で防ぐ（v13決定5と同じ効果を、より単純な条件で
   達成する）。
-- v2〜v13が抱えていた「バックアップと実ファイルの整合」「読み取り先・
-  書き込み先の一致判定」という問題群が構造的に発生しなくなる。
+- v2〜v13が抱えていた「バックアップと実ファイルの整合」という問題は
+  構造的に発生しなくなる（バックアップ機構自体が無いため）。ただし
+  「生成・書き込み先を存在依存の解決関数に委ねない」という不変条件は
+  引き続き必要であり、v14でも一度実機で踏んだ（上記「生成先パスの
+  決め方」参照、修正済み）。
 
 **解決されないこと**:
 - `Permanent`は不可逆——一度出荷すると、将来`Permanent="no"`に戻しても
@@ -304,11 +351,16 @@ round1 m3が指摘済み、英語版も対象）。ZIP版`scripts/uninstall.ps1 
 ## 未解決事項 / 次のアクション
 
 1. opus-adversarial-consultによる新方針（v14）のレビュー。
-2. 実機検証（決定5の4項目、特にround1 B2の既存ユーザーへの遡及効果）。
-3. `ensure_config_exists`/`ensure_layouts_exist`の実装、呼び出し位置の確定
-   （`awase.exe`・`awase-settings.exe`の両方）。
+2. **実機確認4（`.yab`自己修復）の再検証**: `ensure_default_layouts_exist`
+   の生成先パスバグ修正（`resolve_relative`ではなく`exe_dir.join(生文字列)`
+   固定に変更）後、`layout`ディレクトリを削除した状態で`awase.exe`を
+   起動し、`%LOCALAPPDATA%\awase\layout`に同梱6ファイルが正しく生成
+   されることを確認する。実機確認1〜3は完了済み（上記参照）。
+3. `ensure_config_exists`/`ensure_layouts_exist`の実装・呼び出し位置は
+   完了（`awase.exe`・`awase-settings.exe`の両方、コンパイル・単体テスト
+   確認済み）。
 4. `wix_installer_guard.rs`の`Permanent="yes"`固定テスト追加、GUID固定テストの
-   抜け（`NicolaKb232Yab`・`NicolaKakuteiYab`）の解消。
+   抜け（`NicolaKb232Yab`・`NicolaKakuteiYab`）の解消は完了。
 5. `docs/index.html`・`docs/index.en.html`へのアンインストール手順節の新設
    （レジストリ削除案内込み）。
 6. `purge.ps1`同梱の要否判断（決定4、任意）。
