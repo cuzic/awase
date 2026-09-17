@@ -22,6 +22,7 @@ use awase::types::VkCode;
 /// （BUG-143の既知の限界——GUI実装のクリア漏れによる`custom_keymap_table`
 /// 残留——を検出する手段としても機能する、ADR-176決定6）。
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // 176-T8以降で構築（GJI/MS-IME較正時のfingerprint取得）
 pub(crate) enum ConfigFingerprint {
     Gji {
         /// `session_keymap`フィールドの値（`awase-gji-config`のraw値）。
@@ -57,6 +58,7 @@ pub(crate) struct CalibratedModeKey {
 /// `record`の`config_fingerprint`が`current`と食い違っていれば`true`
 /// （stale、静的分類へフォールバックすべき）。
 #[must_use]
+#[allow(dead_code)] // 176-T8以降で呼び出し（較正結果のstale判定）
 pub(crate) fn is_stale(record: &CalibratedModeKey, current: &ConfigFingerprint) -> bool {
     record.config_fingerprint != *current
 }

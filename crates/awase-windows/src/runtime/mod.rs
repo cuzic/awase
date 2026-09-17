@@ -1813,6 +1813,7 @@ impl Runtime {
     }
 
     /// 較正結果を記録する（176-T7〜T10、まだ呼び出し元は無い）。
+    #[allow(dead_code)] // 176-T8以降で呼び出し
     pub(crate) fn set_calibrated_mode_key(
         &mut self,
         record: crate::state::calibrated_mode_key::CalibratedModeKey,
@@ -1821,6 +1822,7 @@ impl Runtime {
     }
 
     /// staleな較正結果を無効化する（176-T12、まだ呼び出し元は無い）。
+    #[allow(dead_code)] // 176-T12で呼び出し
     pub(crate) fn clear_calibrated_mode_key(&mut self, vk: VkCode) {
         self.calibrated_mode_keys.remove(&vk);
     }
