@@ -3,12 +3,13 @@ id: ADR-178
 title: |-
   MSIアンインストール時のユーザーデータ喪失を自己修復（バックアップ+復元）で無害化する
 status: |-
-  **起草中（v12）。B1前提を実機検証で確定（MSI再インストール時、
-  config.toml/nicola_keytop.yabはMSIパッケージ内蔵の出荷時ファイルと
-  SHA256バイト一致で再配置される）。round11でBlocker2件（B15: 契機1の
-  無条件化とB14のDangerous=Noneが交差しバックアップを破壊、B16:
-  write_path単一経路化がsave_auto_startを見落とし）とMajor5件を検出、
-  v12で反映。round12レビュー待ち。**
+  **起草中（v13）。B1前提とbackup\の生存を実機検証で確定。round12で
+  Blocker2件（B17: round11 B15のゲートload_state==Loadedが本質を
+  捕まえておらず、復元書き込み失敗時や可変フィールド経由の実装で
+  同じ破壊が再現する、B18: UserDataGuardの型仕様がRustの可視性規則上
+  誰でも構築できてしまう）とMajor6件を検出、v13で反映。round13
+  レビュー待ち。round10〜12の3ラウンド連続で「型・ゲートが具体化した
+  瞬間に新しい破壊経路が見える」パターンが続いている。**
 related_adr:
   - "ADR-099"
   - "ADR-177"
@@ -18,12 +19,12 @@ related_adr:
 
 ## ステータス
 
-**起草中v12（2026-09-17）。opus-adversarial-consultによるレビュー継続中
-（round1〜11で計18件のBlockerを段階的に検出・解消、v12で反映）。
-決定7が要求する実機確認（B1前提）はdragonflyg4で実施済み
-（下記「実機検証結果」参照）。round10・round11とも「型が具体化した
-瞬間に新しいBlockerが見える」パターンが続いており、v12反映後も
-実装着手前にもう1ラウンド確認を挟む。**
+**起草中v13（2026-09-17）。opus-adversarial-consultによるレビュー継続中
+（round1〜12で計20件のBlockerを段階的に検出・解消、v13で反映）。
+決定7が要求する実機確認（B1前提・`backup\`生存）はdragonflyg4で実施済み
+（下記「実機検証結果」参照）。round10・round11・round12の3ラウンド
+連続で「型・ゲートが具体化した瞬間に新しい破壊経路が見える」パターンが
+続いており、v13反映後も実装着手前にround13で確認する。**
 
 ## 実機検証結果（2026-09-16、dragonflyg4、1.20.6 MSI）
 
@@ -102,9 +103,9 @@ decision7の実機確認手順どおりに実施した:
 決定1がZIP版に定めた「既定では残す」方針と非対称であり、ユーザーから
 「ユーザーデータ削除するのおかしいね。残してほしい」との要望があった。
 
-opus-adversarial-consultで11ラウンド、計18件のBlockerを検出・解消して
+opus-adversarial-consultで12ラウンド、計20件のBlockerを検出・解消して
 きた。各ラウンドの詳細な指摘は[178-opus-review-round1.md](178-opus-review-round1.md)〜
-[round11.md](178-opus-review-round11.md)としてこのADRと同じディレクトリに
+[round12.md](178-opus-review-round12.md)としてこのADRと同じディレクトリに
 コミットしてある。決定文が変わっても必ず満たすべき制約は、下記
 「実装チェックリスト」に独立して保持する。
 
@@ -116,8 +117,14 @@ opus-adversarial-consultで11ラウンド、計18件のBlockerを検出・解消
    `bootstrap.rs`の起動シーケンス先頭、`awase-settings`側は
    `startup_failure::run_with_fallback`の**外**（呼び出し前）とする
    （round11 m4——クロージャ内に置くと、GUI起動失敗時に復元が走らない
-   ケースが生じるため、外側に置いて常に復元を通す）。**ただし以下は
-   呼ばない**:
+   ケースが生じるため、外側に置いて常に復元を通す）。`EnsureOutcome`は
+   `Clone`を実装し（`AppConfig`・`ConfigLoadState`は既存の`Clone`実装が
+   あり、`RestoreOutcome`にも`#[derive(Clone)]`を追加、`UserDataGuard`は
+   `Copy`）、`run_with_fallback`のクロージャ（`Fn`であり最大2回——glow
+   失敗時にwgpu版へフォールバック——呼ばれうるため`move`できる値は
+   `Clone`が必須、round12 M6）は`clone()`したものを`SettingsApp::new`へ
+   渡す。レンダラーフォールバックで`SettingsApp::new`が2回走りうる点は
+   決定6にも影響する（後述）。**ただし以下は呼ばない**:
    - CLI引数でconfigパスが明示されている場合（下記10）。
    - `--bug-report`・`--check-update`・`--scancode-map`（`main.rs:344`・
      `:348`・`:356`）の3つ、`SettingsApp`を構築せずに早期リターンする
@@ -144,11 +151,15 @@ opus-adversarial-consultで11ラウンド、計18件のBlockerを検出・解消
    この制約の対象外**であり従来どおりでよい。
 4. バックアップの書き込みは、`ensure_user_data_present()`が返す能力
    トークン（`UserDataGuard`）を持つ場合にのみ実行できる。グローバルな
-   暗黙フラグは使わない。**このトークンは`Copy + Send`な非公開フィールド
-   のみを持つunit-like structとする**（`awase-settings`の`config.toml`
-   保存がワーカースレッドで行われるため、トークンをスレッド間で
-   `move`する必要がある。構築手段が`ensure_user_data_present()`のみで
-   あることは`Copy`でも維持できる）。
+   暗黙フラグは使わない。**このトークンは`pub struct UserDataGuard(());`
+   （非公開のtuple struct、フィールドは`()`1個）として定義する
+   （round12 B18）。「非公開フィールドのみを持つunit-like struct」という
+   記述は誤りで、`pub struct UserDataGuard;`や`pub struct UserDataGuard
+   {}`はどちらもRustの可視性規則上フィールドが0個のため他クレートから
+   構築できてしまい、能力トークンとしての保証が消える。「unit-like」
+   という語は使わない。** `Copy + Send`はtuple structのままでも
+   維持できる（`awase-settings`の`config.toml`保存がワーカースレッドで
+   行われるため、トークンをスレッド間で`move`する必要がある）。
 5. バックアップ対象は`config.toml`と同梱6ファイルのみ。ユーザー自作の
    `.yab`は対象外。
 6. `config.toml`の復元条件と`.yab`の復元条件は異なる（後述）。
@@ -201,12 +212,19 @@ opus-adversarial-consultで11ラウンド、計18件のBlockerを検出・解消
     **相対パス**である場合に限る（round10 M1）。絶対パスの環境では
     バックアップ自体を作らない——「バックアップはあるが復元には
     決して使われない」という非対称を避けるため。`config.toml`は
-    常にexe隣固定なので対象外。**この「相対パスである」判定は`AppConfig`
-    が保持する生の設定文字列`general.layouts_dir`に対して行う（round11
-    m2）。`resolve_layouts_dir()`（`awase-settings`側）は相対入力に
-    対しても絶対`PathBuf`を返すため、解決後の値で判定すると条件が
-    恒常的に偽になり、`.yab`のバックアップ・復元が一度も動かないまま
-    無警告になる。**
+    常にexe隣固定なので対象外。**この「相対パスである」という判定
+    だけは`AppConfig`が保持する生の設定文字列`general.layouts_dir`に
+    対して行う（round11 m2）。`resolve_layouts_dir()`（`awase-settings`
+    側）は相対入力に対しても絶対`PathBuf`を返すため、解決後の値で
+    判定すると条件が恒常的に偽になり、`.yab`のバックアップ・復元が
+    一度も動かないまま無警告になる。**
+    **判定と構築を混同しないこと（round12 M2）**: 相対/絶対の**判定**は
+    生文字列で行うが、実際の`.yab`書き込み先パスの**構築**は
+    `validate()`後の`layouts_dir`（`validate_layouts`が`..`を含む値を
+    `"layout"`へ書き戻した後の値）を使う。生文字列をそのまま
+    `exe_dir.join(生文字列)`してパスを組み立てると、`layouts_dir =
+    "../.."`のような値でINSTALLDIRの外へ書き込む一方、アプリ自体は
+    `validate()`後の`"layout"`しか読まない、という無警告のズレが生じる。
 18. 決定1の契機1（`config.toml`保存後のバックアップ）は、保存先パスと
     復元先パスを**比較して**判定しない（round10 M3）。`awase.exe`・
     `awase-settings`の両方が、`AppConfig`の保存先として
@@ -219,7 +237,14 @@ opus-adversarial-consultで11ラウンド、計18件のBlockerを検出・解消
     再解決せず、起動時に保持した`write_path`を使う。契機1は「その
     パスへの保存が成功し、かつチェックリスト#21のゲートを満たせば
     バックアップする」という規則にする（round10 M3で「無条件」とした
-    表現は、round11 B15により#21のゲート必須に訂正）。
+    表現は、round11 B15により#21のゲート必須に訂正）。**`write_path`は
+    常に定義される値でなければならない（round12 M5）**——CLI引数で
+    configパスが指定され`ensure_user_data_present()`をスキップする
+    経路（チェックリスト#10）でも、呼び出し元はCLI指定パスを
+    `write_path`に持つ薄い`EnsureOutcome`（`guard`は`None`、復元・
+    バックアップは動作しない）を構築して使う。こうしないと「`write_path`
+    以外へは書かない」という不変条件がCLI経路で破れ、決定7のソース
+    スキャンテストが実装不能な要求になる。
 19. `Dangerous`時に「バックアップから復元しますか？」を提案するために
     必要な情報（バックアップの有無・妥当性）は、`EnsureOutcome`の
     `RestoreOutcome`にファイル単位で含める（round10 M2 (a)案）。
@@ -231,33 +256,62 @@ opus-adversarial-consultで11ラウンド、計18件のBlockerを検出・解消
     呼び出し元（`bootstrap.rs`／`awase-settings`）が戻り値の`config`に
     対して改めて`validate()`を呼ぶ際に警告を1回だけ出す、という既存の
     責務分担を維持する。
-21. **契機1・契機2は、`load_state == Loaded`（または復元により
-    確定した既知良好状態）の場合に限り発火する（round11 B15）。**
-    `Dangerous`時に`config = None`となり`awase-settings`が
-    `default_config()`にフォールバックした状態で保存されても、その
-    保存はバックアップしない——バックアップしてしまうと、決定5が
-    「復元しますか？」と提案しようとしている唯一の正しいバックアップを
-    既定値相当の内容で上書きしてしまう。この状態健全性ゲートは
-    `UserDataGuard`（プロセスが復元ステップを通ったか）とは独立の
-    追加条件であり、トークンだけでは防げない。
-22. `.yab`側の契機2のパス判定は、契機1と同じ「戻り値由来の書き込み先
-    集合との照合」方式にする（round11 M1）。`EnsureOutcome`は`.yab`の
-    書き込み先候補（`exe_dir.join(layouts_dir_raw).join(名前)`、
-    `layouts_dir_raw`が相対のときのみ存在する集合）を持ち、
-    `layout_write_to_path()`の実際の保存先がこの集合の要素として
-    選ばれた場合にのみバックアップする。既存の`main.rs:752`の
-    `path != default_layout_path`という素の`PathBuf`比較は流用しない
+21. **契機1・契機2のゲートは3条件の連言とする（round12 B17、round11
+    B15の対応を訂正）**:
+    (i) **`EnsureOutcome.load_state`（起動時スナップショット。
+    `awase-settings`が保存成功のたびに書き換える可変フィールド
+    `self.config_load_state`ではない——これをゲートの根拠にすることを
+    名指しで禁止する）が`Loaded`**。
+    (ii) `used_embedded_fallback == false`。
+    (iii) **そのファイルについて復元が発火した場合、その書き込みが
+    成功していること**（`RestoreOutcome`はファイル単位の成否
+    `Restored`/`NotNeeded`/`Failed`を持ち、`Failed`ならそのファイルの
+    バックアップ契機を全部止める）。
+    「（または復元確定後の既知良好状態）」という曖昧な言い換えは使わない。
+    この3条件がすべて揃わない限り、`Dangerous`時に`config = None`と
+    なり`awase-settings`が`default_config()`にフォールバックした状態の
+    保存や、**復元は発火したが`write_atomic`のrenameが失敗し
+    ディスクは工場出荷値のまま残っている状態の保存**（MSI再インストール
+    直後、AVスキャナ・OneDriveの干渉で発生しうる実在の失敗モード、
+    `src/config.rs:877-884`のリトライ付きdocが記録している）のいずれも
+    バックアップしない——バックアップしてしまうと、決定5が「復元し
+    ますか？」と提案しようとしている唯一の正しいバックアップを既定値
+    相当の内容で上書きしてしまう。この状態健全性ゲートは`UserDataGuard`
+    （プロセスが復元ステップを通ったか）とは独立の追加条件であり、
+    トークンだけでは防げない。決定7のB15テストは、保存完了直後に
+    `self.config_load_state`を`Loaded`へ書き換えた状態でもバックアップ
+    が発火しないことを検査すること（`EnsureOutcome`のスナップショット
+    のみを参照している証拠として）。
+22. `.yab`側の契機2は、パスの**比較ではなく選択**にする（round12
+    M3、round11 M1の対応を訂正）。`EnsureOutcome`は
+    `fn yab_write_path_for(&self, file_name: &str) -> Option<PathBuf>`
+    を持ち（同梱6ファイル名のいずれかであり、かつ`layouts_dir_raw`が
+    相対の場合にのみ`Some`）、`awase-settings`は同梱6ファイルを保存
+    するときは必ずこの関数の戻り値へ書く。ユーザーがファイル選択
+    ダイアログで指定した任意パスはこの関数を通らない＝構造的に
+    バックアップ対象外になる、という切り分けを型で作る。既存の
+    `main.rs:752`の`path != default_layout_path`という素の`PathBuf`
+    比較（別目的、「エンジンには反映されません」の案内用）は流用しない
     （大文字小文字・`\\?\`プレフィクス等に弱い問題が契機1と同型で
-    残るため）。
+    残るため）。**セッション中に`layouts_dir`を変更して保存した場合、
+    `yab_write_path_for`は起動時に導出した集合のままなので一致しない
+    （round12 M4）。この窓は「解決されないこと」に明記し、次回起動時の
+    契機3で追いつく。**
 23. `write_path`の導出にも開発ビルド分岐を入れる（round11 M2）。
     `exe_dir`の祖先に`target`が含まれる場合、`write_path`は
-    `exe_dir.join("config.toml")`ではなく、読み取り先と同じ従来の
-    解決結果（`resolve_relative_to_exe()`の結果）にする。これを
-    怠ると、開発ビルドで一度でも設定を保存した時点で
-    `target/debug/config.toml`が新規作成され、以後ワークスペース
-    ルートの`config.toml`（開発者が手編集する対象）が二度と読まれなく
-    なる（B2/B5/B6/B12に続く「読み取り先/書き込み先」ファミリーの
-    6回目の再発）。
+    **`<target ディレクトリの親>/config.toml`（＝ワークスペースルート
+    直下、存在の有無によらず固定するパス）**にする（round12 M1、
+    round11 M2の対応を訂正）。`resolve_relative_to_exe()`の結果を
+    そのまま使うのは誤り——この関数の第4分岐は「exe隣にもワークス
+    ペースルートにも見つからなければCWD相対の裸パスを返す」
+    （`src/paths.rs:52-63`、`tracing::warn!`付き）ため、チェックリスト
+    #11が禁じる「CWD相対の裸パスに書き込む」事故をそのまま再現する。
+    `write_path`は常にワークスペースルート直下に固定し、この第4分岐へ
+    は決して落とさない。これを怠ると、開発ビルドで一度でも設定を
+    保存した時点で`target/debug/config.toml`が新規作成され、以後
+    ワークスペースルートの`config.toml`（開発者が手編集する対象）が
+    二度と読まれなくなる（B2/B5/B6/B12→round11 M2→round12 M1と続く
+    「読み取り先/書き込み先」ファミリーの7回目の再発）。
 24. `ConfigLoadState`（`src/config.rs:829-838`の**3バリアントenum**、
     `Loaded`/`NotFound`/`Dangerous(reason)`。決定1の型定義が
     `struct`と書いているのは誤りで`enum`が正しい）はそのまま使い、
@@ -276,6 +330,41 @@ opus-adversarial-consultで11ラウンド、計18件のBlockerを検出・解消
     「読み取り権限を奪ったファイル」ではなく「構造的に壊れたTOML」を
     既定の再現手段にする（round11 m5）。Linux CIがrootで動く環境では
     パーミッション変更が`PermissionDenied`にならず再現しないため。
+27. 決定7のB9テストは`compile_fail`を**必須**とする（round12 B18）。
+    「型で保証されるためテストは書かず、コードレビュー観点として扱う」
+    という選択肢は削除する——`UserDataGuard`の可視性の欠陥（#4参照）は
+    コードレビューでは気付きにくく、`compile_fail`テストが無ければ
+    検出できない種類の欠陥だったため。
+28. 決定2ステップ2の「`load_state`が`NotFound`または`Loaded`で、かつ
+    復元書き込み自体が失敗しインメモリ既定値で継続する場合」という
+    列挙のうち、**`Loaded`側は論理的に到達不能である**ことを明記する
+    （round12 m1）。`AppConfig::load()`が成功した（＝`Loaded`）なら
+    インメモリ既定値へ落ちる理由が無い。この組み合わせを「存在する」
+    かのように読める書き方が、B17(b)（#21のゲートが`Loaded &&
+    used_embedded_fallback`を通してしまうという誤読）の温床になった。
+29. `save_auto_start()`は戻り値が`Option<Vec<String>>`で、`None`は
+    「読み込み失敗」と「保存失敗」の両方を意味する（`src/config.rs:905-909`
+    のdocが、空の`Vec`と区別するために`Option`にしてあると明記）。
+    契機1（`save_auto_start`経由）は`Some(_)`が返った場合にのみ発火する
+    （round12 m3）。
+30. `save_auto_start()`は`AppConfig::validate()`を通した**正規化後**の
+    値を保存する（`src/config.rs:922-928`、round12 m4）。したがって
+    自動起動トグルを1回操作しただけで、ユーザーが手編集した生の値
+    （範囲外の閾値等）が正規化され、その正規化後の内容がバックアップに
+    捕捉される。「テキストエディタでの手編集もバックアップへ捕捉
+    される」という説明はこの意味で理解すること（生の値そのものが
+    保存されるとは限らない）。
+31. 復元の「読む→判定→書く」はプロセスをまたいで原子的ではない
+    （round12 m5）。`write_atomic`が保証するのは単一の書き込みの
+    アトミック性のみ。`awase.exe`と`awase-settings.exe`がほぼ同時に
+    起動した場合、一方が復元した直後にユーザーが保存し、遅れて起動した
+    他方が起動時に採った古い判断で上書きする窓が理論上ある。書き込み
+    直前に復元条件を再判定する（薄いチェックで足りる）。
+32. `save_auto_start`を`write_path`固定にする際、`tray.rs:1042`の
+    `find_config_path()`失敗時の専用エラー分岐（`config.toml`が見つから
+    ない旨の`bail!`、`app/mod.rs:165-168`）が呼ばれなくなり、代わりに
+    `save_auto_start`の`None`（読み込み失敗）に統合される（round12 m6）。
+    移行時にユーザー向けメッセージの粒度を保つこと。
 
 ## 決定
 
@@ -288,19 +377,23 @@ opus-adversarial-consultで11ラウンド、計18件のBlockerを検出・解消
 **バックアップ契機**（いずれも「実行のゲート」節の対象）:
 
 1. `config.toml`: `AppConfig::save()`**および**`AppConfig::save_auto_start()`
-   （round11 B16、チェックリスト#18）成功後、**かつ`load_state ==
-   Loaded`（または復元確定後の既知良好状態）の場合に限り**（round11
-   B15、チェックリスト#21）バックアップする。パスの比較はしない——
-   `awase.exe`・`awase-settings`の両方が、保存先として
-   `ensure_user_data_present()`の戻り値が示す書き込み（復元）先
-   パスを直接使う設計にすることで、「そのパスへ保存が成功した」こと
-   自体が「復元先へ保存した」ことの証明になる。`Dangerous`状態で
-   `default_config()`にフォールバックした内容が保存された場合は、
-   このゲートによりバックアップされない。
+   （`Some(_)`が返った場合のみ、チェックリスト#29）（round11 B16、
+   チェックリスト#18）成功後、**かつチェックリスト#21の3条件ゲート
+   （起動時スナップショットの`load_state == Loaded`・
+   `used_embedded_fallback == false`・復元が発火していれば成功して
+   いること）を満たす場合に限り**（round12 B17、round11 B15の対応を
+   訂正）バックアップする。パスの比較はしない——`awase.exe`・
+   `awase-settings`の両方が、保存先として`ensure_user_data_present()`の
+   戻り値が示す書き込み（復元）先パスを直接使う設計にすることで、
+   「そのパスへ保存が成功した」こと自体が「復元先へ保存した」ことの
+   証明になる。`Dangerous`状態で`default_config()`にフォールバックした
+   内容の保存、および復元書き込みが失敗しディスクが工場出荷値のまま
+   残っている状態での保存は、いずれもこのゲートによりバックアップ
+   されない。
 2. `layout/*.yab`: `layout_write_to_path()`成功後。保存先が
-   `EnsureOutcome`が示す`.yab`書き込み先候補集合の要素であり
-   （round11 M1、チェックリスト#22）、**かつ`load_state == Loaded`**
-   （チェックリスト#21）の場合のみ。
+   `EnsureOutcome::yab_write_path_for(file_name)`が返すパスと一致し
+   （＝候補集合から**選ばれた**場合、round12 M3、チェックリスト#22）、
+   **かつチェックリスト#21の3条件ゲートを満たす**場合のみ。
 3. 起動時、`ensure_user_data_present()`が内部で読み込んだ
    `config.toml`と同梱6ファイル名（チェックリスト#12・#13の基準で
    パース成功したもの、かつ`.yab`は`layouts_dir`が相対パスの場合のみ
@@ -322,24 +415,30 @@ opus-adversarial-consultで11ラウンド、計18件のBlockerを検出・解消
 実装する。
 
 ```
-pub struct UserDataGuard { /* 非公開・Copy + Send、unit-like struct */ }
+pub struct UserDataGuard(());   // 非公開tuple struct、フィールドは()1個。Copy + Send（round12 B18、「unit-like」ではない）
 pub enum ConfigLoadState { Loaded, NotFound, Dangerous(reason) }   // 既存型（src/config.rs、structではなくenum）。新バリアントは追加しない（round11 M3）
+pub enum FileRestoreState { Restored, NotNeeded, Failed }   // ファイル単位の復元成否（round12 B17、チェックリスト#21）
 pub struct EnsureOutcome {
     pub config: Option<AppConfig>,        // Dangerous時はNone（チェックリスト#16）
-    pub load_state: ConfigLoadState,      // 既存3バリアントのまま（チェックリスト#24）
+    pub load_state: ConfigLoadState,      // 起動時スナップショット、既存3バリアントのまま（チェックリスト#24）
     pub used_embedded_fallback: bool,     // 復元書き込み失敗時のインメモリ既定値継続を区別（round11 M3、チェックリスト#24）
-    pub restore: RestoreOutcome,          // ファイル単位の復元結果+バックアップ利用可否（チェックリスト#19）
-    pub write_path: PathBuf,              // config.tomlの書き込み（復元）先。save()・save_auto_start()の両方が使う（チェックリスト#18）
-    pub yab_write_paths: Vec<PathBuf>,    // .yabの書き込み先候補集合（layouts_dirが相対のときのみ非空、チェックリスト#22）
-    pub guard: UserDataGuard,
+    pub restore: RestoreOutcome,          // ファイル単位のFileRestoreState+バックアップ利用可否（チェックリスト#19・#21）
+    pub write_path: PathBuf,              // config.tomlの書き込み（復元）先。CLI指定時も含め常に定義される（チェックリスト#18）
+    pub guard: Option<UserDataGuard>,     // CLI指定パス経由の薄いEnsureOutcomeではNone（チェックリスト#18）
+}
+impl EnsureOutcome {
+    pub fn yab_write_path_for(&self, file_name: &str) -> Option<PathBuf>   // 選択API、比較しない（round12 M3、チェックリスト#22）
 }
 pub fn ensure_user_data_present(exe_dir: &Path) -> EnsureOutcome
-pub fn backup_config(guard: UserDataGuard, ..)   // トークンなしでは呼べない、かつ呼び出し元がload_state==Loadedを確認済みであること（チェックリスト#21）
+pub fn backup_config(guard: UserDataGuard, ..)   // トークンなしでは呼べない、かつ呼び出し元がチェックリスト#21の3条件を確認済みであること
 pub fn backup_layout(guard: UserDataGuard, ..)
 ```
 
-`UserDataGuard`は`Copy + Send`な非公開フィールドのみを持つunit-like
-structとする（チェックリスト#4）——`awase-settings`の`config.toml`保存
+`UserDataGuard`は非公開のtuple struct（フィールド`()`1個）とし、
+「unit-like struct」とは呼ばない（チェックリスト#4、round12 B18）——
+`pub struct UserDataGuard;`や`pub struct UserDataGuard {}`はいずれも
+Rustの可視性規則上フィールドが0個で他クレートから構築できてしまい、
+能力トークンとしての保証が消える。`awase-settings`の`config.toml`保存
 （`AppConfig::save()`成功後のバックアップ、契機1）はワーカースレッド
 上で行われるため、`SettingsApp`が保持するトークンをそのワーカー
 スレッドへ渡す必要がある。`Copy`にしても、構築手段が
@@ -352,7 +451,9 @@ structとする（チェックリスト#4）——`awase-settings`の`config.tom
 なってバックアップが誤って上書きされる」という損失は、トークンでは
 なくチェックリスト#1（両方が必ず呼ぶ）と#3（戻り値だけを使い、自分で
 改めてloadしない、ただし起動後の意図的な再読み込みは対象外）が防いで
-いる**——両者の役割は異なる。
+いる**——両者の役割は異なる。「復元は通ったが状態が不明なプロセス」を
+止めるのはチェックリスト#21の3条件ゲートであり、トークンの役割ではない
+（round12 B17も同じ非対称を突いたもの）。
 
 （開発ビルドでの実際の挙動: `cargo run`実行時は対象限定判定と既定値
 一致判定の両方により、バックアップも実質的にほとんど動作しない。
@@ -361,19 +462,35 @@ structとする（チェックリスト#4）——`awase-settings`の`config.tom
 ### 決定2: 復元は単一関数として実装し、読み取り先・書き込み先を関数内部で導出し、両バイナリの起動シーケンスから必ず呼ぶ
 
 **呼び出し要件と例外**: チェックリスト#1参照（両バイナリが必ず呼ぶ、
-CLI引数指定時と非GUIサブコマンド経路は除く）。
+非GUIサブコマンド経路は除く）。**CLI引数でconfigパスが明示されている
+場合（チェックリスト#10）は`ensure_user_data_present()`本体を呼ばないが、
+呼び出し元はCLI指定パスを`write_path`に持つ薄い`EnsureOutcome`
+（`config`はCLI指定パスから`AppConfig::load()`した値、`guard = None`、
+`restore`は空、`yab_write_path_for`は常に`None`を返す）を構築して使う
+（round12 M5、チェックリスト#18）——これにより「`write_path`以外へは
+書かない」という不変条件が全経路で成立し、決定7のソーススキャンテストが
+実装可能になる。**
 
 **読み取り先と書き込み先の分離**: 関数は`exe_dir`のみを受け取り、内部で
 以下を導出する（チェックリスト#11）。
 
-- **書き込み（復元）先（`write_path`／`yab_write_paths`）**: 通常は
-  `exe_dir.join("config.toml")`（`.yab`は`exe_dir.join(layouts_dir_raw)
-  .join(名前)`、`layouts_dir_raw`が相対パスの場合のみ集合に含む）。
-  **ただし`exe_dir`の祖先に`target`が含まれる開発ビルドの場合、
-  `write_path`・`yab_write_paths`は下記「読み取り先」と同じ解決結果に
-  する（round11 M2、チェックリスト#23）**——ここを分けないと、開発
-  ビルドで一度保存しただけで`target/debug/config.toml`が新規作成され、
-  以後ワークスペースルートの`config.toml`が読まれなくなる。
+- **書き込み（復元）先（`write_path`）**: 通常は`exe_dir.join("config.toml")`。
+  **`exe_dir`の祖先に`target`が含まれる開発ビルドの場合は、
+  `<target ディレクトリの親>/config.toml`（＝ワークスペースルート直下、
+  存在の有無によらず固定するパス）にする（round12 M1、チェックリスト
+  #23）。`resolve_relative_to_exe()`の結果をそのまま使わない**——
+  この関数の第4分岐（exe隣にもワークスペースルートにも見つからなければ
+  CWD相対の裸パスを返す、`src/paths.rs:52-63`）へ落ちると、#11が禁じる
+  「CWD相対の裸パスへの書き込み」をそのまま再現してしまう。
+- **`.yab`の書き込み先候補**: `EnsureOutcome::yab_write_path_for(name)`
+  が、同梱6ファイル名`name`かつ`layouts_dir_raw`（生の設定文字列）が
+  相対パスの場合にのみ`Some(exe_dir.join(layouts_dir_validated)
+  .join(name))`を返す（round12 M2・M3、チェックリスト#17・#22）。
+  相対/絶対の**判定**は生文字列`layouts_dir_raw`、パスの**構築**は
+  `validate()`後の`layouts_dir_validated`（`..`を含む値が`"layout"`へ
+  書き戻された後の値）を使う——判定・構築の両方を生文字列で行うと、
+  `layouts_dir = "../.."`のような値でINSTALLDIRの外へ書き込みかねない。
+  開発ビルドでは`write_path`と同じ考え方で従来の解決結果に切り替える。
 - **読み取り先**: 復元が発火した場合は上記の書き込み先から読む。復元が
   発火しなかった場合は、従来の`resolve_relative_to_exe()`と同じ解決
   ロジック（exe隣→ワークスペースルート→見つからなければ諦める）の
@@ -403,29 +520,37 @@ enum（`src/config.rs`の`classify_load_error`が返す分類、`Loaded`/
 
 **開発ビルドの除外**: 復元（および決定5の救済）は、引数で渡された
 `exe_dir`の祖先に`target`という名前のディレクトリが含まれる場合には
-行わない。この除外は`write_path`・`yab_write_paths`の導出にも及ぶ
-（上記「読み取り先と書き込み先の分離」参照、round11 M2）。
+行わない。この除外は`write_path`・`yab_write_path_for`の導出にも及ぶ
+（上記「読み取り先と書き込み先の分離」参照、round11 M2・round12 M1）。
 
 **実行順序（関数内部）**:
 
 1. `config.toml`の復元（後述「`config.toml`の復元条件」を満たす場合。
    復元元は、バックアップが存在しかつ妥当ならバックアップ、無ければ
-   埋め込み既定値）。
+   埋め込み既定値）。書き込みの成否を`FileRestoreState`
+   （`Restored`/`NotNeeded`/`Failed`）として`RestoreOutcome`に記録する
+   （round12 B17、チェックリスト#21）——`write_atomic`のrenameが
+   AVスキャナ・OneDrive等の干渉で失敗した場合は`Failed`とする。
 2. `AppConfig::load()` → `clone()` → `validate()` → `classify_load_error`
    相当で`load_state`を得る。`load_state`が`Dangerous`の場合、
    `config = None`、以降の`.yab`復元と決定1の契機3は共にスキップする
    （M2の情報だけはステップ3'として別途埋める、後述）。`load_state`が
-   `NotFound`または`Loaded`で、かつ復元書き込み自体が失敗しインメモリの
-   埋め込み既定値で起動を継続する場合は、`config`にこのインメモリ
-   既定値を入れ、`used_embedded_fallback = true`にする（`load_state`
-   自体は`NotFound`/`Loaded`のまま変えない、round11 M3、チェックリスト
-   #24）。この場合も`.yab`復元と契機3はスキップする（`layouts_dir`が
-   既定値由来のまま書き込みに進むことを避けるため）。
+   `NotFound`で、かつ復元書き込み自体が失敗しインメモリの埋め込み
+   既定値で起動を継続する場合は、`config`にこのインメモリ既定値を
+   入れ、`used_embedded_fallback = true`にする（`load_state`自体は
+   `NotFound`のまま変えない、round11 M3、チェックリスト#24）。
+   **`Loaded`かつ`used_embedded_fallback = true`という組み合わせは
+   論理的に到達不能である（`load()`が成功したならインメモリ既定値へ
+   落ちる理由が無い、round12 m1、チェックリスト#28）**。この場合も
+   `.yab`復元と契機3はスキップする（`layouts_dir`が既定値由来のまま
+   書き込みに進むことを避けるため）。
 3. 上記の可否判定を満たす場合（`Dangerous`でも`used_embedded_fallback`
    でもない場合、＝`load_state == Loaded`かつ埋め込み既定値へフォール
    バックしていない場合）、同梱6ファイルそれぞれについて後述「`.yab`の
    復元条件」を評価し、満たすものを復元する。復元元は、バックアップが
-   存在しかつ妥当ならバックアップ、無ければ埋め込み既定値。
+   存在しかつ妥当ならバックアップ、無ければ埋め込み既定値。書き込みの
+   成否を`FileRestoreState`としてファイルごとに`RestoreOutcome`に記録
+   する（ステップ1と同じ、チェックリスト#21）。
    （**別機構**、決定5参照）上記の復元を行ってもなお有効な`.yab`が
    1本も無い場合にのみ、決定5の救済が発動し、存在しない同梱`.yab`を
    埋め込み既定値から書き戻す。
@@ -437,7 +562,19 @@ enum（`src/config.rs`の`classify_load_error`が返す分類、`Loaded`/
 4. 決定1の契機3（バックアップ更新）を実行する（ステップ2で`Dangerous`
    または`used_embedded_fallback`と判定された場合は行わない）。
 5. `EnsureOutcome { config, load_state, used_embedded_fallback, restore,
-   write_path, yab_write_paths, guard }`を返す。
+   write_path, guard: Some(guard) }`を返す（`guard`は本関数を実際に
+   通った場合は常に`Some`。`None`になるのはチェックリスト#18の
+   CLI経由の薄い`EnsureOutcome`のみ）。
+
+**チェックリスト#21のゲート判定に使う値は、この関数が返す
+`EnsureOutcome`のスナップショット（`load_state`・`used_embedded_fallback`・
+`restore`内の`FileRestoreState`）に限る。`awase-settings`が保存成功のたび
+に書き換える可変フィールド`self.config_load_state`をゲートの根拠にして
+はならない（round12 B17(c)）**——`awase-settings`で契機1を実装する最も
+自然な箇所（保存完了を受け取る`poll_pending_save()`の`Saved`分岐、
+`main.rs:846-874`）は、バックアップを書く直前の行（`main.rs:866`）で
+`self.config_load_state`を`Loaded`へ書き換えるため、ここを参照すると
+ゲートが実装時にno-op化する。
 
 **復元条件は`config.toml`と`.yab`で異なる**:
 
@@ -456,7 +593,11 @@ enum（`src/config.rs`の`classify_load_error`が返す分類、`Loaded`/
 **失敗時の挙動**: 復元の書き込みが失敗しても`panic`せず、ログ警告の
 うえ既存のエラーダイアログ経路に委ねる。書き込みが失敗した場合でも
 埋め込み既定値をインメモリで使って起動を継続するフォールバックを持つ
-（戻り値の扱いはステップ2参照）。
+（戻り値の扱いはステップ2参照）。**この場合`RestoreOutcome`の該当
+ファイルは`FileRestoreState::Failed`になり、チェックリスト#21のゲート
+（iii）がその後のバックアップ契機を止める（round12 B17）——ディスク上
+の内容が工場出荷値のままでも、ゲートは「復元が完了して手元の値が
+ユーザーの本物の設定だと言える」ことまで要求する。**
 
 ### 決定3: 埋め込み既定値はビルド時にリポジトリのファイルから直接取り込み、生成元を`AppConfig::default()`にしない
 
@@ -496,7 +637,7 @@ MSI版・ZIP版ともに、完全削除の案内を「`%LOCALAPPDATA%\awase`を�
 ```
 pub fn ensure_user_data_present(
     exe_dir: &Path,       // OS依存の解決結果（current_exe().parent()）のみ呼び出し元から
-) -> EnsureOutcome        // config, load_state, used_embedded_fallback, restore, write_path, yab_write_paths, guard
+) -> EnsureOutcome        // config, load_state, used_embedded_fallback, restore, write_path, guard: Option<UserDataGuard>
 ```
 
 `backup_dir`は関数内部で`exe_dir.join("backup")`から導出する（round10
@@ -507,15 +648,18 @@ m3、チェックリスト#2）。`config_path`のような読み取り先と書
 `validate()`・`awase::yab`のパース関数・`ConfigLoadState`はいずれも
 コア`awase`クレートにあるため、ADR-019（コアのOS非依存）には抵触しない。
 
-**呼び出し元は`write_path`／`yab_write_paths`を保持し続け、`config.toml`
-を書くすべての経路（`AppConfig::save()`・`AppConfig::save_auto_start()`
-の両方、round11 B16）でこれを使う。** `tray.rs`側の自動起動トグル処理
-（現状`find_config_path()`を再解決している）と`awase-settings`側の
-同等処理を、起動時に`APP`／`SettingsApp`が保持した`write_path`を使う
-形に変更する。これを怠ると、`save_auto_start`が独自解決したパスが
-`write_path`とずれた場合に「復元・バックアップ対象ではないファイルへ
-書く」という無警告の事故が起こる（M3が指摘したフェイルサイレントが
-このバイパス経路で再発する）。
+**呼び出し元は`write_path`と`yab_write_path_for()`を保持し続け、
+`config.toml`を書くすべての経路（`AppConfig::save()`・
+`AppConfig::save_auto_start()`の両方、round11 B16）でこれを使う。**
+`tray.rs`側の自動起動トグル処理（現状`find_config_path()`を再解決して
+いる）と`awase-settings`側の同等処理を、起動時に`APP`／`SettingsApp`が
+保持した`write_path`を使う形に変更する。これを怠ると、`save_auto_start`
+が独自解決したパスが`write_path`とずれた場合に「復元・バックアップ
+対象ではないファイルへ書く」という無警告の事故が起こる（M3が指摘した
+フェイルサイレントがこのバイパス経路で再発する）。CLI引数経由の
+薄い`EnsureOutcome`（チェックリスト#18）も同じ`write_path`を持つため、
+呼び出し元は`ensure_user_data_present()`を実際に呼んだかどうかで
+保存側のコードを分岐させる必要がない。
 
 ### 決定6: 復元・生成をユーザーに通知する
 
@@ -531,6 +675,11 @@ m3、チェックリスト#2）。`config_path`のような読み取り先と書
 経路では扱わない。`awase-settings`起動時に別途「バックアップから復元
 しますか？」の確認UIを出す（決定5参照、`EnsureOutcome.restore`の
 バックアップ有無・妥当性情報を使う）。
+
+**レンダラーフォールバック（glow失敗→wgpu）で`SettingsApp::new`が
+2回走りうる（round12 M6、チェックリスト#1）ため、この通知は冪等にする**
+——同じ`EnsureOutcome`から2回通知が出ても、ユーザーには1回分の情報にしか
+見えないようにする（例: 直前に同一内容を通知済みなら再送しない）。
 
 ### 決定7: 回帰テスト
 
@@ -577,24 +726,42 @@ m3、チェックリスト#2）。`config_path`のような読み取り先と書
 - round11 B16の直接再現: `save_auto_start()`経由の保存が
   `EnsureOutcome.write_path`と異なるパスへ書かない（または書いた場合に
   ソーススキャンで検出される）こと。
-- round11 M1の直接再現: `.yab`の保存先が`yab_write_paths`集合の要素で
-  ない場合（例: ユーザーがファイル選択で別ディレクトリを指定した場合）
-  バックアップされないこと。
+- round11 M1の直接再現: `.yab`の保存先が`yab_write_path_for()`の戻り値と
+  異なる場合（例: ユーザーがファイル選択で別ディレクトリを指定した場合）
+  バックアップされないこと（round12 M3で「選択」APIに訂正）。
 - round11 M2の直接再現: `cargo run`相当（開発ビルド）で設定を1回保存
   しても、次回起動時に読み取り先がワークスペースルートの`config.toml`
   のままであること（`target/debug/config.toml`に切り替わらないこと）。
+- round12 B17の直接再現（3パターン）:
+  (a) 復元条件が成立し復元の書き込みが失敗する状況（`write_atomic`を
+  モック等で失敗させる）を作り、`FileRestoreState::Failed`になり、
+  その後の保存でバックアップが発火しないこと。
+  (b) `awase-settings`が保存完了時に`self.config_load_state`を`Loaded`
+  へ書き換えた**後**でも、ゲートが`EnsureOutcome`起動時スナップショット
+  を見ているためバックアップが発火しないこと。
+  (c) round11 B15の再現手順（`Dangerous`→`default_config()`→1項目
+  直して「適用」）でバックアップが変化しないこと（既存のround11 B15
+  テストを包含・強化する）。
+- round12 B18の直接再現: `pub struct UserDataGuard(());`が、非公開
+  フィールドを持つため他クレートから構築できないことを`compile_fail`
+  テストで検証する（チェックリスト#27、「レビュー観点として扱う」
+  選択肢は削除）。
+- round12 M1の直接再現: ワークスペースルートに`config.toml`が存在しない
+  開発環境（新規チェックアウト相当）でも、`write_path`がCWD相対の裸
+  パスにならず、ワークスペースルート直下の固定パスになること。
+- round12 M2の直接再現: `layouts_dir = "../x"`のconfigで、
+  `yab_write_path_for()`が`exe_dir`配下から出るパスを返さないこと。
+- round12 M5の直接再現: CLI引数でconfigパスを指定した経路でも
+  `write_path`が定義され、決定7のソーススキャンテストが違反として
+  誤検出しないこと。
 - B1の直接再現（config.toml）。
 - B1・B8の直接再現（.yab、バックアップ有りの一般規則経路）。
 - B6の直接再現（バックアップ無し、決定5の救済経路と明示的に分離した
   独立テスト）。
 - B4の直接再現（バックアップ側が上書きされないこと）。
 - B7の直接再現（開発ビルドで復元が発火しないこと）。
-- B9の直接再現: `UserDataGuard`を経由しないとバックアップ書き込み
-  関数を呼べないことは型システムによる保証であり、通常の`#[test]`では
-  検証できない。`trybuild`等のcompile-failテスト、またはdocテストの
-  `` ```compile_fail `` 属性のいずれかで表現するか、「型で保証される
-  ためテストは書かず、コードレビュー観点として扱う」と明示する
-  （実装時に選択）。
+- B9の直接再現（round12 B18によりチェックリスト#27で`compile_fail`必須
+  化、上記round12 B18テストが実質この項目を兼ねる）。
 - B13の直接再現: `keyboard_model = "us"`環境で、同梱JIS用配列
   （列数超過で`Us`モデルでは`parse`が失敗する）をバックアップとして
   持つ状態から復元し、正しく復元されることを確認する（チェックリスト
@@ -618,6 +785,11 @@ m3、チェックリスト#2）。`config_path`のような読み取り先と書
   バックアップへ捕捉されることを確認する。
 - release.ymlに、`dist/`配下と埋め込み既定値のバイト一致を検証する
   ステップを追加する。
+- round12 m3の直接再現: `save_auto_start()`が`None`を返した場合（保存
+  失敗）に契機1が発火しないこと。
+- round12 m4の回帰確認: `save_auto_start()`経由のバックアップに、
+  `validate()`後の正規化された値が入ること（生の手編集値そのままでは
+  ないこと）。
 
 **実機確認（自動化不可）**: **B1前提（出荷時ファイルの再配置）と
 `backup\`のアンインストール生存（round11 M5）は完了**（2026-09-16、
@@ -676,16 +848,26 @@ dragonflyg4、1.20.6 MSI。上記「実機検証結果」参照）。B1修正は
   ファイルの`backup\`削除手順を示す）。
 - インストール先パスに`target`という名前のディレクトリが偶然含まれる
   場合、自己修復機構全体が無効になる（安全側に倒れるため許容）。
+- セッション中に`layouts_dir`を変更して「適用」した直後の`.yab`保存は、
+  起動時に導出した`yab_write_path_for()`の集合と一致しないためバック
+  アップされない（round12 M4）。次回起動時の契機3で追いつく。
+- 復元の「読む→判定→書く」はプロセスをまたいで原子的ではなく、
+  `awase.exe`と`awase-settings.exe`をほぼ同時に起動した場合に理論上の
+  競合窓がある（round12 m5、チェックリスト#31で軽減するが完全には
+  閉じない）。
 
 ## 未解決事項 / 次のアクション
 
-1. opus-adversarial-consult round12（B15・B16・M1〜M5・Minor反映後の
-   確認）。
-2. `RestoreOutcome`の正確な型設計（`EnsureOutcome`の一部として、
-   ファイル単位の「バックアップ利用可否」フィールドを含む形で確定する）。
+1. opus-adversarial-consult round13（B17・B18・Major6件・Minor6件反映後
+   の確認）。round10〜12の3ラウンド連続で「型・ゲートが具体化した瞬間に
+   新しい破壊経路が見える」パターンが出ているため、round13でBlocker
+   ゼロを確認してから実装着手する。
+2. `RestoreOutcome`の正確な型設計（`FileRestoreState`によるファイル単位
+   の成否と、「バックアップ利用可否」の両方を含む形で確定する）。
 3. `layout_write_to_path()`を`write_atomic`経由にするかどうかの判断。
 4. 決定6の通知タイミングの実装方式確定。
-5. 決定7のB9テストの実装方式（compile-fail vs レビュー観点）確定。
+5. 決定7のB9テストは`compile_fail`必須に確定済み（チェックリスト#27、
+   round12 B18）。
 6. `find_config_path()`のCLI引数判定ロジックを`awase::paths`へ共通化
    するかどうかの判断（しない場合は2クレート同時変更を徹底する）。
 7. round10以降のレビュー記録（`178-opus-review-round10.md`以降）にも、
@@ -695,3 +877,6 @@ dragonflyg4、1.20.6 MSI。上記「実機検証結果」参照）。B1修正は
    完了（上記参照）。**残るのは復元ロジック自体の実機確認**（コード
    実装後、MSIアンインストール→再インストール→
    起動→編集内容が実際に復元されることを確認する1回）。
+9. `config.toml`・`layout/*.yab`を`.gitattributes`で`eol=lf`固定する
+   かどうかの判断（round11 M4後半・round12 m2、現状`.gitattributes`は
+   `crates/awase-windows/tests/golden/**`のみ対象）。

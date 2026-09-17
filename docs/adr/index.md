@@ -342,7 +342,7 @@ ADR-032 で IME 状態モデルが reducer 化されたあと、運用で見つ�
 | [158-complexity-inventory-2026-09-10.md](158-complexity-inventory-2026-09-10.md) | ADR-158 複雑性インベントリ | [158](158-complexity-reduction-north-star.md) |
 | [163-implementation-tasks.md](163-implementation-tasks.md) | ADR-163 実装タスクリスト | [163](163-actuation-decision-io-separation-and-replay-harness.md) |
 | [176-implementation-tasks.md](176-implementation-tasks.md) | ADR-176 実装タスクリスト | [176](176-behavioral-calibration-of-ime-mode-key-shadow-overrides.md) |
-| [178-opus-review-round1.md](178-opus-review-round1.md)〜[round11.md](178-opus-review-round11.md) | ADR-178 敵対的レビュー記録（Opus round1〜11） | [178](178-msi-uninstall-preserve-userdata.md) |
+| [178-opus-review-round1.md](178-opus-review-round1.md)〜[round12.md](178-opus-review-round12.md) | ADR-178 敵対的レビュー記録（Opus round1〜12） | [178](178-msi-uninstall-preserve-userdata.md) |
 
 ---
 
