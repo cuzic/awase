@@ -183,7 +183,7 @@
 | [176](176-behavioral-calibration-of-ime-mode-key-shadow-overrides.md) | awase-settingsに専用較正UIを新設し、モードキーの実効果をユーザー協力の下で明示的に測定、gate_thumb_key_ime_actions出力を差し替えて静的分類を補完する。BUG-143の静的パースの限界を補完 | round1〜4で計17件のBlocker検出、v6/v7/v8とopus round5・6で設計修正を重ねた後、決着実験v2でGJIの生キー反応はテキスト入力欄フォーカス時のみ本物と確定(awase自作自演説は否定)、実装着手(T1から) |
 | [177](177-msi-restart-manager-graceful-shutdown.md) | 常駐中のMSIアップグレードは実機検証の結果コード変更不要と判明(Restart Managerが現状コードのまま自律的にシャットダウン・再起動を処理、UI付き・データ保持も確認)。副産物でMSIアンインストール時のユーザーデータ削除を発見 | 確定・opus round1〜4(4ラウンド)を経て収束・ADR-099 MF-4解消 |
 | [178](178-msi-uninstall-preserve-userdata.md) | MSIアンインストール時のユーザーデータ喪失をPermanent="yes"+アプリ側自己修復(無ければ埋め込み既定値から生成)で防ぐ。v1〜v13の「バックアップ+復元」方式(12ラウンド・Blocker20件)は複雑化しすぎたため破棄し全面差し替え | 起草中v14・実装/実機検証/opusレビュー完了(Blocker2件反映済み)、フォローアップ項目のみ残る |
-| [179](179-mode-key-actuation-follow-only-vs-toggle-ownership.md) | 無変換/変換の非親指キー時actuation-autoを撤去し、親指キー時と同じfollow-only経路(shadow_action override)へ一本化。round2調査で既存の親指キー向け経路が親指キー非依存で動くと判明しActivationSync選別(旧決定3)が不要と判明。元178番、developマージ済みの別ADR-178(msi-uninstall)と衝突し179へ採番し直し | round1・round2完了・round3待ち |
+| [179](179-mode-key-actuation-follow-only-vs-toggle-ownership.md) | 無変換/変換の非親指キー時actuation-autoを撤去し`ModeKeyActuationOwner`列挙へ統一。元178番、developマージ済みの別ADR-178(msi-uninstall)と衝突し179へ採番し直し | 収束(opus-adversarial-consult round1〜8)・実装着手可 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
