@@ -2989,8 +2989,24 @@ impl SettingsApp {
                 .desired_width(240.0)
                 .hint_text(""),
         );
-        if self.calibration_state == CalibrationPanelState::WaitingFocus {
+        if matches!(
+            self.calibration_state,
+            CalibrationPanelState::WaitingFocus
+                | CalibrationPanelState::Measuring
+                | CalibrationPanelState::FocusLost
+        ) && !response.has_focus()
+        {
+            // IME診断ボタン（テキスト編集ウィジェットではない）をクリック
+            // すると、egui内部のウィジェットフォーカスがボタン側へ移り
+            // `response.has_focus()`が一時的にfalseになる。これを本物の
+            // 「アプリ外へフォーカスが外れた」（FocusLost）と誤認して
+            // ユーザーを混乱させないよう、計測セッション中は毎フレーム
+            // 明示的にフォーカスを取り戻す（実機検証で、この誤検知による
+            // FocusLost表示に混乱して「中止」を誤って押す事故が発生した
+            // ための対応）。FocusLostからも取り戻すことで、次のフレームで
+            // 自動的にMeasuringへ復帰する。
             response.request_focus();
+            ui.ctx().request_repaint();
         }
         if response.has_focus()
             && let Some((func, open)) = self.pending_ime_open_request.take()
