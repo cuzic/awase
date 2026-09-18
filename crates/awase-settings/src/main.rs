@@ -539,7 +539,16 @@ struct SettingsApp {
     guided_calibration_step: Option<usize>,
     /// ガイド付き較正の各ステップの結果（最終サマリー表示用）。
     guided_calibration_results: Vec<(&'static str, calibration_panel::GuidedCalibrationOutcome)>,
+    /// IME ON/OFF診断ボタンで保留中の要求（手法関数, 目的の open 状態）。
+    /// egui/winitはテキスト編集ウィジェットに実フォーカスが無いとIME
+    /// 関連付けを無効化している可能性があるため、ボタン押下時点では
+    /// 即座に実行せず、次に較正用テキスト欄が実際にフォーカスを得た
+    /// フレームまで遅延させる（`render_calibration_progress`参照）。
+    pending_ime_open_request: Option<PendingImeOpenRequest>,
 }
+
+/// 保留中のIME ON/OFF診断要求（手法関数, 目的の open 状態）。
+type PendingImeOpenRequest = (fn(bool) -> bool, bool);
 
 /// バックグラウンドスレッドで実行する保存処理の結果。
 enum PendingSaveResult {
@@ -639,6 +648,7 @@ impl SettingsApp {
             calibration_text_buf: String::new(),
             guided_calibration_step: None,
             guided_calibration_results: Vec::new(),
+            pending_ime_open_request: None,
         };
         app.recompute_diagnostics();
         app
@@ -2848,8 +2858,16 @@ impl SettingsApp {
     /// 操作できているか不安、という指摘への対応）。表示対象は常に
     /// 「awase-settings自身のウィンドウ」の状態であり、他アプリの状態を
     /// 混同しないよう`ime_state_probe`側でフォーカス確認済み。
+    ///
+    /// ボタン押下時点では即座に実行せず`pending_ime_open_request`へ積む
+    /// だけにする——egui/winitはテキスト編集ウィジェットに実フォーカスが
+    /// 無いとIME関連付けを無効化している可能性があり、ボタン自体は
+    /// テキスト編集ウィジェットではないため、押した瞬間はまさにIMEが
+    /// 無効な状態である疑いがある（ユーザー指摘）。実行は
+    /// `render_calibration_progress`側で較正用テキスト欄が実際に
+    /// フォーカスを得たフレームまで遅延させる。
     #[allow(clippy::type_complexity)]
-    fn render_ime_state_controls(ui: &mut egui::Ui) {
+    fn render_ime_state_controls(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("現在のIME状態:");
             match ime_state_probe::current_ime_open() {
@@ -2867,6 +2885,12 @@ impl SettingsApp {
                 }
             }
         });
+        if self.pending_ime_open_request.is_some() {
+            ui.colored_label(
+                egui::Color32::from_rgb(200, 120, 0),
+                "保留中: 下のテキスト欄にフォーカスが戻り次第実行します。",
+            );
+        }
         ui.label("以下は診断用: どれか効くものを探すため複数手法を並べています。");
         let methods: [(&str, fn(bool) -> bool); 5] = [
             (
@@ -2894,10 +2918,10 @@ impl SettingsApp {
             ui.horizontal(|ui| {
                 ui.add_sized([220.0, 20.0], egui::Label::new(label));
                 if ui.button("OFFにする").clicked() {
-                    func(false);
+                    self.pending_ime_open_request = Some((func, false));
                 }
                 if ui.button("ONにする").clicked() {
-                    func(true);
+                    self.pending_ime_open_request = Some((func, true));
                 }
             });
         }
@@ -2916,7 +2940,7 @@ impl SettingsApp {
                 | CalibrationPanelState::Measuring
                 | CalibrationPanelState::FocusLost
         ) {
-            Self::render_ime_state_controls(ui);
+            self.render_ime_state_controls(ui);
             ui.add_space(4.0);
         }
 
@@ -2955,6 +2979,11 @@ impl SettingsApp {
         );
         if self.calibration_state == CalibrationPanelState::WaitingFocus {
             response.request_focus();
+        }
+        if response.has_focus()
+            && let Some((func, open)) = self.pending_ime_open_request.take()
+        {
+            func(open);
         }
         self.calibration_state =
             calibration_panel::on_focus_changed(self.calibration_state, response.has_focus());
@@ -3121,7 +3150,7 @@ impl SettingsApp {
                  2. 準備ができたら「準備できました」を押してください。",
             );
             ui.add_space(8.0);
-            Self::render_ime_state_controls(ui);
+            self.render_ime_state_controls(ui);
             ui.add_space(8.0);
             if ui.button("準備できました（確認を開始）").clicked()
                 && let Some(vk) = vk
@@ -6119,6 +6148,7 @@ mod layout_tab_repro {
             calibration_text_buf: String::new(),
             guided_calibration_step: None,
             guided_calibration_results: Vec::new(),
+            pending_ime_open_request: None,
         }
     }
 
