@@ -7239,11 +7239,13 @@ mod engine_integration_tests {
 
     /// 無変換単独タップが**確定**（timeout）した時点で `DelegateToOpenAxis` が
     /// 発火し、`Effect::Ime(SetOpen)` が生成され、かつ生 VK_NONCONVERT は
-    /// 送出されない。
+    /// 送出されない。2026-09-18: Suppress設定（既定）はTurnOn/TurnOff/Toggle
+    /// いずれも無条件no-opになったため、delegateが実際に明示actuateする
+    /// 唯一の組み合わせ（Passthrough設定 + Toggle方向）で固定する。
     #[test]
     fn delegate_to_open_axis_fires_on_confirmed_muhenkan_solo_tap() {
-        let mut engine = make_test_engine_with_muhenkan();
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
 
         let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
         assert!(
@@ -7258,7 +7260,10 @@ mod engine_integration_tests {
         let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+            Effect::Ime(ImeEffect::SetOpen {
+                open: false,
+                origin: SetOpenOrigin::ExplicitUserAction
+            })
         )));
         assert!(
             !has_effect(&d, |e| matches!(
@@ -7335,10 +7340,12 @@ mod engine_integration_tests {
     }
 
     /// `ShadowImeAction::Toggle` は確定時点の `ctx.ime_on`（belief）を見て
-    /// 反転方向を決める。
+    /// 反転方向を決める。Toggleは常にawaseが明示actuateするため、
+    /// Suppress/Passthroughいずれの設定でも（Passthrough設定を使えば）
+    /// 発火する——ここではPassthrough設定を使う。
     #[test]
     fn delegate_to_open_axis_toggle_resolves_via_ctx_ime_on() {
-        let mut engine = make_test_engine_with_muhenkan();
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
         engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
@@ -7384,8 +7391,8 @@ mod engine_integration_tests {
     /// と同型のテスト。
     #[test]
     fn delegate_to_open_axis_confirmed_tap_does_not_double_emit_set_open_on_next_input() {
-        let mut engine = make_test_engine_with_muhenkan();
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
         let d1 = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
@@ -7465,11 +7472,12 @@ mod engine_integration_tests {
     /// `delegate_to_open_axis_fires_on_confirmed_muhenkan_solo_tap` の変換
     /// （henkan）版。`resolve_pending_thumb_as_single`のhenkan分岐
     /// （`dedicated_fn_key`は常に`None`、`ModeKeyConfig`のみ）を固定する
-    /// （テストカバレッジ欠落の指摘への対応）。
+    /// （テストカバレッジ欠落の指摘への対応）。2026-09-18: Passthrough設定 +
+    /// Toggle方向（delegateが実際に明示actuateする唯一の組み合わせ）で固定。
     #[test]
     fn delegate_to_open_axis_fires_on_confirmed_henkan_solo_tap() {
-        let mut engine = make_test_engine_with_henkan();
-        engine.set_henkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+        let mut engine = make_test_engine_with_henkan_passthrough();
+        engine.set_henkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
 
         let d = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
         assert!(
@@ -7484,7 +7492,10 @@ mod engine_integration_tests {
         let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+            Effect::Ime(ImeEffect::SetOpen {
+                open: false,
+                origin: SetOpenOrigin::ExplicitUserAction
+            })
         )));
         assert!(
             !has_effect(&d, |e| matches!(
@@ -7495,6 +7506,40 @@ mod engine_integration_tests {
             "raw VK_CONVERT must not be sent when delegated to open axis, got {:?}",
             effects_of(&d)
         );
+    }
+
+    /// 2026-09-18（ユーザー指示）: 親指キー設定 × Suppress設定（既定値）
+    /// では、delegate_to_open_axisが分類した方向（TurnOn/TurnOff/Toggle）
+    /// を問わず単独タップは完全に無視される（生キーも送らず、belief更新も
+    /// actuateもしない）。`make_test_engine_with_muhenkan`/`_henkan`は
+    /// Suppress既定（`ModeKeyConfig::from_legacy_bools(false, true)`）。
+    #[test]
+    fn delegate_to_open_axis_is_fully_ignored_under_suppress_config_regardless_of_direction() {
+        for action in [
+            ShadowImeAction::TurnOn,
+            ShadowImeAction::TurnOff,
+            ShadowImeAction::Toggle,
+        ] {
+            let mut engine = make_test_engine_with_muhenkan();
+            engine.set_muhenkan_delegate_to_open_axis(Some(action));
+
+            let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+            let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+            assert!(
+                !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+                "Suppress設定はaction={action:?}でもIME effectを発行してはならない, got {:?}",
+                effects_of(&d)
+            );
+            assert!(
+                !has_effect(&d, |e| matches!(
+                    e,
+                    Effect::Input(InputEffect::SendKeys(actions))
+                        if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
+                )),
+                "Suppress設定はaction={action:?}でも生キーを送出してはならない, got {:?}",
+                effects_of(&d)
+            );
+        }
     }
 
     // ── delegate_to_open_axis はユーザーの明示的なパススルー設定

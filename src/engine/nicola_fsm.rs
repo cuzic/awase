@@ -1628,6 +1628,19 @@ impl NicolaFsm {
 }
 
 // ── 同時打鍵解決 ──
+
+/// `NicolaFsm::resolve_delegate_to_open_axis`の戻り値。呼び出し元
+/// （`resolve_pending_thumb_as_single`）はこれ1つのmatchで
+/// 「即returnしてよいか」「ModeKeyConfig（優先順位4）へフォール
+/// スルーしつつbelief追随値を持ち越すか」を判断する。
+enum DelegateResolution {
+    /// この結果をそのまま返してよい。
+    Resolve((ResolvedAction, Option<ImeOpenRequest>)),
+    /// `ModeKeyConfig`（優先順位4）へフォールスルーする。`Some`なら
+    /// belief追随（`ImeOpenRequest::FollowOnly`）の値を持ち越す。
+    Fallthrough(Option<crate::types::ShadowImeAction>),
+}
+
 impl NicolaFsm {
     /// 投機出力を取り消して新しい出力に差し替える。
     ///
@@ -2077,6 +2090,102 @@ impl NicolaFsm {
         Some(ImeOpenRequest::Explicit(explicit_action))
     }
 
+    /// `delegate_to_open_axis`（優先順位3、GJI/MS-IME自動検出に基づく
+    /// IME open軸への肩代わり、ADR-092決定D Step4b/ADR-135 Phase 3）の
+    /// 責務分岐（2026-09-18、ユーザー指示、実験的）。
+    ///
+    /// Henkan/Muhenkan（`mode_key_config`がSome、Suppress/Passthroughの
+    /// 選択肢を持つ）とHiragana/Katakana（`mode_key_config`は常にNone
+    /// ——Suppress/Passthroughという選択肢自体が無い）で扱いが異なる。
+    ///
+    /// - **Hiragana/Katakana**: 従来どおり常にawase自身が明示actuateする
+    ///   （ADR-135 Phase 3、変更なし）。
+    /// - **Henkan/Muhenkan、Suppress設定（既定値）**: 単独タップは方向を
+    ///   問わず常に完全な無視（生キーも送らず、belief更新もactuateも
+    ///   しない）。Suppressは元々「生キーを送らない」という意味でしか
+    ///   なかったが、従来はそれでも`delegate_to_open_axis`がGJI/MS-IMEの
+    ///   分類に基づきawase自身が代行actuateしていた（BUG-115対策）。
+    ///   ユーザー判断: 「awaseがswallowした打鍵についてまで代行actuate
+    ///   する必要はない」——Suppressを選んだユーザーは、その単独タップを
+    ///   IME操作としては一切使わないという意図だとみなす。
+    /// - **Henkan/Muhenkan、Passthrough設定**: TurnOn/TurnOff方向
+    ///   （冪等・一方通行）はdelegateを辞退し、`ModeKeyConfig`分岐（生キー
+    ///   そのまま送出）に委ねる。生キーがGJI/MS-IMEへ届き、そちらの反応に
+    ///   任せる。beliefは`ImeOpenRequest::FollowOnly`で追随させる
+    ///   （awase自身の分類に基づき即座にbelief更新、実送信はしない）。
+    ///   **Toggle方向は辞退しない**——Toggleは非冪等（現在の実IME状態
+    ///   次第で結果が変わる）ため、GJI自身のトグルとawaseのbeliefが
+    ///   食い違う余地があり、「awaseが唯一の変更主体であるべき」という
+    ///   ADR-179の原則をここでも踏襲する。
+    ///
+    /// チョードと確定した打鍵はこの関数自体を経由しないため、いずれの
+    /// 設定でも従来どおりawaseが横取りする（`resolve_pending_thumb_as_
+    /// single`は単独タップ確定時にしか呼ばれない）。
+    ///
+    /// 【方向をTurnOnに限定していた旧制約（BUG-119/ADR-147）の撤廃】:
+    /// 従来はTurnOff方向まで辞退させると、`crates/awase-windows::
+    /// gji_charset_autodetect::delegate_owns_mode_key_shadow_toggle`
+    /// （`kp_stage_shadow_ime_toggle`の所有権判定、`mode_key_config`を
+    /// 見ない）が「delegateが処理する」と誤信したまま身を引き、GJI自身が
+    /// 生キーでIMEを切り替える一方awaseのbeliefだけが取り残される
+    /// 「誰も追随しない」窓ができるとしてTurnOn方向のみに限定していた。
+    /// `FollowOnly`（`SetOpenOrigin::PhysicalDeliveryFollow`、beliefのみ
+    /// 即座に更新し実送信はしない）を新設したことでこの懸念は解消した
+    /// ——実機A/Bで検証する。
+    fn resolve_delegate_to_open_axis(
+        special: &ThumbSoloSpecialHandling,
+        injected: bool,
+        composing: bool,
+    ) -> DelegateResolution {
+        let Some(open_axis_action) = special.delegate_to_open_axis else {
+            return DelegateResolution::Fallthrough(None);
+        };
+        let is_fake_injected_solo_tap = special.injected_guarded_delegate && injected;
+        if is_fake_injected_solo_tap {
+            return DelegateResolution::Fallthrough(None);
+        }
+        let explicit_resolve = || {
+            DelegateResolution::Resolve((
+                ResolvedAction {
+                    actions: SmallVec::new(),
+                    output: OutputUpdate::None,
+                },
+                Some(ImeOpenRequest::Explicit(open_axis_action)),
+            ))
+        };
+        match special.mode_key_config {
+            None => {
+                // Hiragana/Katakana。
+                if composing {
+                    return DelegateResolution::Fallthrough(None);
+                }
+                explicit_resolve()
+            }
+            Some(cfg) if !cfg.is_passthrough() => {
+                // Henkan/Muhenkan、Suppress設定: 方向を問わず完全に無視する。
+                DelegateResolution::Resolve(Self::no_op_resolution())
+            }
+            Some(_) => {
+                // Henkan/Muhenkan、Passthrough設定。
+                if matches!(open_axis_action, crate::types::ShadowImeAction::Toggle) {
+                    // composing 中は fail-closed に倒す。誤って true でも
+                    // suppress に落ちるだけだが、誤って false で
+                    // Toggle(→OFF) すると composition を復旧不能に破棄する。
+                    if composing {
+                        return DelegateResolution::Fallthrough(None);
+                    }
+                    explicit_resolve()
+                } else if composing {
+                    DelegateResolution::Fallthrough(None)
+                } else {
+                    // TurnOn/TurnOff: 辞退してModeKeyConfig側の生キー送出に
+                    // 委ねるが、belief追随だけは今ここで確定させる。
+                    DelegateResolution::Fallthrough(Some(open_axis_action))
+                }
+            }
+        }
+    }
+
     /// 保留中の親指キーを単独打鍵として解決し、アクション列と `OutputUpdate` を返す。
     ///
     /// NICOLA では親指キー (無変換 / 変換) は文字キーとの同時打鍵専用であり、
@@ -2224,58 +2333,13 @@ impl NicolaFsm {
         if auto_delegate_open_axis_consumed {
             return Self::no_op_resolution();
         }
-        // 2026-09-18（ユーザー指示、実験的）: ユーザーが`mode_key_config`で
-        // 明示的にPassthrough（無変換/変換キー単独タップの「常に送出する」
-        // 設定）を選んでいる場合、TurnOn/TurnOff方向（冪等・一方通行）に
-        // 限りdelegateを辞退し、下のModeKeyConfig分岐（生キーそのまま送出）
-        // に譲る——単独タップであればawase自身は実actuateせず、生キーを
-        // そのままGJI/MS-IMEへ渡してそちらの反応に委ねる。ただし**Toggle
-        // 方向は辞退しない**——Toggleは非冪等（現在の実IME状態次第で結果が
-        // 変わる）ため、GJI自身のトグルとawaseのbeliefが食い違う余地があり、
-        // 「awaseが唯一の変更主体であるべき」というADR-179の原則をここでも
-        // 踏襲する。チョードと確定した打鍵はこの分岐を経由しないため、
-        // 従来どおりawaseが横取りする。
-        //
-        // 辞退した場合、beliefは`ImeOpenRequest::FollowOnly`で追随させる
-        // （awase自身の分類に基づき即座にbelief更新、実送信はしない）。
-        // 【方向をTurnOnに限定していた旧制約（BUG-119/ADR-147）の撤廃】:
-        // 従来はTurnOff方向まで辞退させると、`crates/awase-windows::
-        // gji_charset_autodetect::delegate_owns_mode_key_shadow_toggle`
-        // （`kp_stage_shadow_ime_toggle`の所有権判定、`mode_key_config`を
-        // 見ない）が「delegateが処理する」と誤信したまま身を引き、GJI自身が
-        // 生キーでIMEを切り替える一方awaseのbeliefだけが取り残される
-        // 「誰も追随しない」窓ができるとしてTurnOn方向のみに限定していた。
-        // `FollowOnly`（`SetOpenOrigin::PhysicalDeliveryFollow`、beliefのみ
-        // 即座に更新し実送信はしない）を新設したことでこの懸念は解消した
-        // ——実機A/Bで検証する。
-        let mut follow_only_belief: Option<crate::types::ShadowImeAction> = None;
-        if let Some(open_axis_action) = special.delegate_to_open_axis {
-            let is_fake_injected_solo_tap = special.injected_guarded_delegate && injected;
-            let user_passthrough_defers_delegate =
-                !matches!(open_axis_action, crate::types::ShadowImeAction::Toggle)
-                    && special
-                        .mode_key_config
-                        .is_some_and(ModeKeyConfig::is_passthrough);
-            if !is_fake_injected_solo_tap && !user_passthrough_defers_delegate {
-                // composing 中は fail-closed に倒す。誤って true でも suppress に落ちるだけだが、
-                // 誤って false で TurnOff/Toggle(→OFF) すると composition を復旧不能に破棄する。
-                if !composing {
-                    return (
-                        ResolvedAction {
-                            actions: SmallVec::new(),
-                            output: OutputUpdate::None,
-                        },
-                        Some(ImeOpenRequest::Explicit(open_axis_action)),
-                    );
-                }
-                // fallthrough: ModeKeyConfig.composing（既定 Suppress）へ委ねる。
-            } else if user_passthrough_defers_delegate && !composing {
-                // 辞退してModeKeyConfig側の生キー送出に委ねるが、belief追随
-                // だけは今ここで確定させる（下のModeKeyConfig分岐の戻り値に
-                // 合流させる）。
-                follow_only_belief = Some(open_axis_action);
-            }
-        }
+        // delegate_to_open_axisの責務分岐（2026-09-18、ユーザー指示、実験的、
+        // 詳細は`resolve_delegate_to_open_axis`のdoc参照）。
+        let follow_only_belief =
+            match Self::resolve_delegate_to_open_axis(&special, injected, composing) {
+                DelegateResolution::Resolve(result) => return result,
+                DelegateResolution::Fallthrough(belief) => belief,
+            };
         if let Some(mode_key_config) = special.mode_key_config {
             let action = SoloTapAction::from(mode_key_config.for_composing(composing));
             let resolved = match action {
@@ -3801,16 +3865,20 @@ mod tests {
     #[test]
     fn auto_delegate_open_axis_consumed_marker_false_still_delegates() {
         // 対照テスト: マーカーが立っていなければ従来どおりdelegateが発火する
-        // （マーカーが常時trueになる実装ミスを検出する）。
+        // （マーカーが常時trueになる実装ミスを検出する）。2026-09-18:
+        // Suppress設定ではTurnOn/TurnOff/Toggleいずれもマーカーの値に
+        // 関わらず常にno-opになったため、marker=falseとの違いを可視化
+        // するにはToggle+Passthrough設定（delegateが実際に発火しうる
+        // 唯一の組み合わせ）を使う。
         let mut fsm = make_test_fsm();
         let muhenkan_vk = VkCode(0x1D);
         fsm.set_thumb_key_solo_tap_config(
             Some(muhenkan_vk),
-            ModeKeyConfig::from_legacy_bools(false, true),
+            ModeKeyConfig::from_legacy_bools(true, false),
             None,
             ModeKeyConfig::from_legacy_bools(false, true),
         );
-        fsm.set_muhenkan_delegate_to_open_axis(Some(crate::types::ShadowImeAction::TurnOn));
+        fsm.set_muhenkan_delegate_to_open_axis(Some(crate::types::ShadowImeAction::Toggle));
         let (_resolved, request) = fsm.resolve_pending_thumb_as_single(
             ScanCode(0x7B),
             muhenkan_vk,
@@ -3823,7 +3891,7 @@ mod tests {
         assert_eq!(
             request,
             Some(ImeOpenRequest::Explicit(
-                crate::types::ShadowImeAction::TurnOn
+                crate::types::ShadowImeAction::Toggle
             )),
             "マーカーが立っていなければdelegateは従来どおり発火するはず"
         );
