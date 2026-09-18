@@ -148,6 +148,32 @@ pub const fn unpack_result(wparam: usize) -> Option<CalibrationResultPayload> {
     }
 }
 
+/// `WM_CALIBRATION_SET_IME_OPEN`のwparamペイロード。送信元awase-settingsの
+/// PID + 設定したいIME open状態。ADR-176ガイド付きウィザードの「IMEを
+/// ON/OFFにする」ボタン専用（`lib.rs`の`WM_CALIBRATION_SET_IME_OPEN`
+/// doc参照）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CalibrationSetImeOpenPayload {
+    pub pid: u32,
+    pub open: bool,
+}
+
+/// `CalibrationSetImeOpenPayload`をwparamへエンコードする（最下位1bit=
+/// open、次の32bit=pid）。
+#[must_use]
+pub const fn pack_set_ime_open(payload: CalibrationSetImeOpenPayload) -> usize {
+    (payload.open as usize) | ((payload.pid as usize) << 1)
+}
+
+/// `pack_set_ime_open`の逆変換。
+#[must_use]
+pub const fn unpack_set_ime_open(wparam: usize) -> CalibrationSetImeOpenPayload {
+    CalibrationSetImeOpenPayload {
+        open: (wparam & 1) != 0,
+        pid: ((wparam >> 1) & 0xFFFF_FFFF) as u32,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +249,27 @@ mod tests {
         let wparam =
             usize::from(VkCode(0x1D).0) | (CalibrationResultKind::ConfirmedOn.to_bits() << 16);
         assert_eq!(unpack_result(wparam), None);
+    }
+
+    // ── ADR-176: pack_set_ime_open/unpack_set_ime_open ───────────────────
+
+    #[test]
+    fn pack_unpack_set_ime_open_round_trips_open() {
+        let payload = CalibrationSetImeOpenPayload {
+            pid: 123_456,
+            open: true,
+        };
+        let wparam = pack_set_ime_open(payload);
+        assert_eq!(unpack_set_ime_open(wparam), payload);
+    }
+
+    #[test]
+    fn pack_unpack_set_ime_open_round_trips_closed_with_max_pid() {
+        let payload = CalibrationSetImeOpenPayload {
+            pid: u32::MAX,
+            open: false,
+        };
+        let wparam = pack_set_ime_open(payload);
+        assert_eq!(unpack_set_ime_open(wparam), payload);
     }
 }

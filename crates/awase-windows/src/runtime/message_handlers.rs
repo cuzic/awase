@@ -1320,6 +1320,33 @@ pub(crate) unsafe fn handle_wm_calibration_end(app: &mut Runtime, wparam: WPARAM
     }
 }
 
+/// WM_CALIBRATION_SET_IME_OPEN ハンドラ（ADR-176）。較正ウィザードの
+/// 「IMEをON/OFFにする」ボタンからの要求を、`UserIntentSource::Command`
+/// 経由の正規のIME actuation（`handle_engine_set_open`）へ渡す。較正
+/// セッションが進行中かどうかは問わない（開始前の前提条件セットアップ
+/// にも使うため）。
+pub(crate) unsafe fn handle_wm_calibration_set_ime_open(app: &mut Runtime, wparam: WPARAM) {
+    let payload = crate::calibration_ipc::unpack_set_ime_open(wparam.0);
+    if !sender_is_awase_settings(payload.pid) {
+        tracing::warn!(
+            "[calibration] WM_CALIBRATION_SET_IME_OPEN pid={}がawase-settings.exeと\
+             確認できないため拒否します",
+            payload.pid
+        );
+        return;
+    }
+    let generation = app.platform_state.ime.allocate_event_generation();
+    let now = crate::state::TickMs(hook::current_tick_ms());
+    tracing::info!(
+        "[calibration] IME状態セットアップ要求: open={} pid={}",
+        payload.open,
+        payload.pid
+    );
+    app.platform_state
+        .ime
+        .handle_engine_set_open(payload.open, false, false, generation, now);
+}
+
 /// `pid`が実際に`awase-settings.exe`であるかを検証する（round7 N2対応、
 /// `disable_apps`と同じ名前ベースの信頼モデル）。
 fn sender_is_awase_settings(pid: u32) -> bool {
