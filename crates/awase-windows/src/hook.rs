@@ -37,11 +37,13 @@ const HOOK_IME_MODE_DIAGNOSTIC_CAP: usize = 64;
 /// 許されない（詳細は ADR-164 フェーズ4「訂正3」参照）。
 ///
 /// `ime_mode_diagnostics` は例外として `Mutex` のまま同居する: 保持区間が
-/// O(1)のdeque操作（`pop_front`/`push_back`、または`drain_hook_ime_mode_diagnostics`
-/// の上限64件`Vec`への`drain(..).collect()`）のみで、ブロッキング処理を含まない
-/// ため`LowLevelHooksTimeout`に対して実害が無い（同居の安全性根拠、ADR-164
-/// フェーズ4「訂正3」round3 M2参照）。この不変条件が崩れる変更（ロック下で
-/// ブロッキング処理や非有界な処理を挟む）は禁止。
+/// `pop_front`/`push_back`/`mem::replace`（`drain_hook_ime_mode_diagnostics`、
+/// 置換用バッファはロック取得前に確保）のみの O(1) 構造体操作で、アロケーション
+/// もブロッキング処理も含まないため`LowLevelHooksTimeout`に対して実害が無い
+/// （同居の安全性根拠、ADR-164 フェーズ4「訂正3」round3 M2、および
+/// opus-adversarial-consultでのアロケーション位置の訂正、
+/// docs/design/opus-review-hook-mutex-safety.md §4参照）。この不変条件が崩れる
+/// 変更（ロック下でブロッキング処理・アロケーション・非有界な処理を挟む）は禁止。
 ///
 /// **フィールドごとの`Ordering`は移行前と完全に同一**（1対1対応、変更禁止）。
 /// 実測: `Relaxed` 49・`Release` 9・`Acquire` 7・`SeqCst` 1（`hook_tid_init_slot`の
@@ -1088,10 +1090,19 @@ fn push_hook_ime_mode_diagnostic(record: crate::journal::HookImeModeDiagnosticRe
 
 pub(crate) fn drain_hook_ime_mode_diagnostics() -> Vec<crate::journal::HookImeModeDiagnosticRecord>
 {
-    let Ok(mut queue) = HOOK_STATE.ime_mode_diagnostics.lock() else {
-        return Vec::new();
+    // 置換用バッファをロック取得より前に確保する。`queue.drain(..).collect()` だと
+    // Vec のアロケーションがロック保持区間の内側で起きてしまい、ADR-164 訂正3の
+    // 不変条件（保持区間はブロッキング処理・非有界処理を含まない O(1) 操作のみ）が
+    // 文字どおりには成立していなかった（opus-adversarial-consult、
+    // docs/design/opus-review-hook-mutex-safety.md §4）。
+    let fresh = VecDeque::with_capacity(HOOK_IME_MODE_DIAGNOSTIC_CAP);
+    let taken = {
+        let Ok(mut queue) = HOOK_STATE.ime_mode_diagnostics.lock() else {
+            return Vec::new();
+        };
+        std::mem::replace(&mut *queue, fresh)
     };
-    queue.drain(..).collect()
+    taken.into_iter().collect()
 }
 
 /// WH_KEYBOARD_LL フックコールバック（専用フックスレッド上で動作）
