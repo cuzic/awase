@@ -1433,6 +1433,19 @@ impl Runtime {
         // `NotAModeKey`と`AwaseExplicit`は3判断とも同一挙動になるが、
         // 将来ケースが増えたときに区別できるよう分けておく（統合しない、
         // ADR-179「実装時に固定する」節参照）。
+        //
+        // 2026-09-18（ユーザー指示、実験的）: 主条件から`!is_configured_
+        // thumb_key`を撤廃した。親指キー設定×belief OFF（`delegate_owned`
+        // が構造的にfalseになる——`current`がfalseの間は`delegate_owned`
+        // 自体が成立しない）は、`Engine`の活性ゲートによりPhase 3（チョード
+        // 判定機構）へそもそも到達しない状態と同じであり、`transport.rs::
+        // plan`はVK_CONVERT/VK_NONCONVERTをthumb key設定に関わらず
+        // 無条件Allowする（M19明示config消費時を除く、同ファイルの
+        // コメント参照）。つまり生キーは元々物理配送されているにも
+        // 関わらず、従来は`AwaseExplicit`として重ねて明示actuateしており
+        // 二重信号になっていた。チョード保護が機能しない状態（IME OFF）
+        // でのみこの一般化が効くため、BUG-115が警告する「チョード中の
+        // 誤actuation」とは無関係。
         let is_target_vk = matches!(
             event.vk_code,
             crate::vk::VK_CONVERT | crate::vk::VK_NONCONVERT
@@ -1442,7 +1455,6 @@ impl Runtime {
         event.ime_relevance.actuation_owner = if delegate_owned {
             ModeKeyActuationOwner::FsmDelegate
         } else if is_target_vk
-            && !crate::gji_charset_autodetect::is_configured_thumb_key(event.vk_code)
             && matches!(
                 shadow_action_kind,
                 Some(ShadowImeAction::TurnOn | ShadowImeAction::TurnOff)
