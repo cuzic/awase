@@ -800,6 +800,57 @@ fn ime_relevance_shadow_action_writes_are_accounted_for() {
     }
 }
 
+/// ADR-179決定2（未解決点5）: `ModeKeyActuationOwner`の計算点を
+/// `kp_stage_shadow_ime_toggle`（`key_pipeline.rs`）内1箇所に固定する。
+/// 計算点が2箇所目・3箇所目と増えると、ADR-119が警告する「合流点は
+/// 複数箇所に配線が要る」問題をこの列挙自身が再発することになる
+/// （設計そのものがこの一元化を前提にしているため）。
+#[test]
+fn actuation_owner_is_computed_in_exactly_one_place() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    let mut total = 0usize;
+    let mut hits: Vec<String> = Vec::new();
+    for path in files {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let content = read_crate_file(&format!("src/{rel}"));
+        let production = production_code_only(&content);
+        // 単純な `.matches("... =")` だと `== ModeKeyActuationOwner::..`
+        // という**読み取り**の比較演算子（`==`）まで拾ってしまう
+        // （"actuation_owner ="が"actuation_owner =="の部分文字列として
+        // 一致する）ため、直後の文字が`=`でない（代入であって`==`比較
+        // ではない）場合のみ数える。
+        const NEEDLE: &str = "ime_relevance.actuation_owner =";
+        let mut count = 0usize;
+        let mut from = 0usize;
+        while let Some(rel_idx) = production[from..].find(NEEDLE) {
+            let idx = from + rel_idx;
+            let after = &production[idx + NEEDLE.len()..];
+            if !after.starts_with('=') {
+                count += 1;
+            }
+            from = idx + NEEDLE.len();
+        }
+        if count > 0 {
+            hits.push(format!("{rel}({count})"));
+        }
+        total += count;
+    }
+    assert_eq!(
+        total, 1,
+        "event.ime_relevance.actuation_owner への本番コードでの書き込み箇所数が \
+         1ではありません(実際: {total}, 内訳: {hits:?})。計算点は \
+         runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle 内1箇所に \
+         限定してください（ADR-179決定2）。"
+    );
+}
+
 /// `write_focus_probe` は実際に FocusProbe（first-key の `read_ime_state_fast`）を
 /// 実行した経路のみが呼べる。
 ///
