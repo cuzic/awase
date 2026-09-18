@@ -2222,41 +2222,36 @@ impl NicolaFsm {
         if auto_delegate_open_axis_consumed {
             return Self::no_op_resolution();
         }
-        if let Some(open_axis_action) = special.delegate_to_open_axis.filter(|action| {
+        if let Some(open_axis_action) = special.delegate_to_open_axis.filter(|_action| {
             // Hiragana/Katakana は MS-IME/CTF から注入されうるため、注入された
             // 偽の単独タップでは delegate を発火させない。ここでは suppress せず
             // 既定分岐へ落とし、キー自体は従来どおり OS へ届く余地を残す。
             //
-            // BUG-119/ADR-147: ユーザーが `mode_key_config` で明示的に
-            // Passthrough（無変換/変換キー単独タップの「常に送出する」設定）を
-            // 選んでいる場合、`TurnOn` 方向に限り delegate を辞退し
-            // `mode_key_config` 側（下の分岐）に譲る。GJI/MS-IME 側の自動検出
-            // （`classify_thumb_key_ime_actions` 等）が delegate を配線しても、
-            // ユーザーが「GJI 自身に物理キーの意味論を委ねたい」と明示している
-            // 場合はそれを尊重する。
+            // 2026-09-18（ユーザー指示、実験的）: ユーザーが `mode_key_config`
+            // で明示的にPassthrough（無変換/変換キー単独タップの「常に送出
+            // する」設定）を選んでいる場合、方向を問わずdelegateを辞退し
+            // `mode_key_config` 側（下の分岐）に譲る——単独タップであれば
+            // awase自身は実actuateせず生キーをそのままGJI/MS-IMEへ渡し、
+            // そちらの反応に委ねる。チョードと確定した打鍵はこの分岐を
+            // 経由しないため、従来どおりawaseが横取りする。
             //
-            // **`TurnOn` 限定である理由（`TurnOff`/`Toggle` に広げてはならない）**:
-            // この安全性は `crates/awase-windows::gji_charset_autodetect::
-            // delegate_owns_mode_key_shadow_toggle`（`kp_stage_shadow_ime_toggle`
-            // の所有権判定）が `mode_key_config` を一切見ない、という
-            // `awase` コアからは見えない外部の不変条件に依存している。
-            // belief OFF 中はその判定が `&& effective_open()` で方向を問わず
-            // false になるため shadow-toggle が常に belief を追随するが、
-            // belief ON 中は「delegate が処理する」と誤信したまま shadow-toggle
-            // が身を引く。`TurnOn` は belief ON 中に発火しても IME 側・belief側
-            // 共に no-op なので害が無いが、`TurnOff`/`Toggle` は belief ON 中に
-            // 実際に状態を反転させるため、ここで辞退すると GJI 自身が実 IME を
-            // 切り替える一方 awase の belief だけが取り残される「誰も追随
-            // しない」窓を新規に作る（ADR-147「消費点と所有権のマトリクス」
-            // 参照）。`TurnOff`/`Toggle` 方向にこの辞退を広げる場合は、まず
-            // `delegate_owns_mode_key_shadow_toggle` 側の対称な配線が必要。
+            // 【方向をTurnOnに限定していた旧制約（BUG-119/ADR-147）の撤廃】:
+            // 従来は`TurnOff`/`Toggle`方向まで辞退させると、
+            // `crates/awase-windows::gji_charset_autodetect::
+            // delegate_owns_mode_key_shadow_toggle`（`kp_stage_shadow_ime_
+            // toggle`の所有権判定、`mode_key_config`を見ない）が「delegateが
+            // 処理する」と誤信したまま身を引き、GJI自身が生キーでIMEを
+            // 切り替える一方awaseのbeliefだけが取り残される「誰も追随しない」
+            // 窓ができるとして`TurnOn`方向のみに限定していた。今回はこの
+            // リスクを承知の上で実機A/B検証のため撤廃する——beliefがstaleに
+            // なっても観測経由（drift correction等）で追従することを
+            // ADR-179のPhysicalDelivery検証で実証済みであり、同じ前提が
+            // 成立するか確かめる。実害が確認されれば`TurnOn`限定に戻す。
             let is_fake_injected_solo_tap = special.injected_guarded_delegate && injected;
-            let user_passthrough_defers_turn_on =
-                matches!(action, crate::types::ShadowImeAction::TurnOn)
-                    && special
-                        .mode_key_config
-                        .is_some_and(ModeKeyConfig::is_passthrough);
-            !is_fake_injected_solo_tap && !user_passthrough_defers_turn_on
+            let user_passthrough_defers_delegate = special
+                .mode_key_config
+                .is_some_and(ModeKeyConfig::is_passthrough);
+            !is_fake_injected_solo_tap && !user_passthrough_defers_delegate
         }) {
             // composing 中は fail-closed に倒す。誤って true でも suppress に落ちるだけだが、
             // 誤って false で TurnOff/Toggle(→OFF) すると composition を復旧不能に破棄する。

@@ -3,6 +3,14 @@ simultaneous_threshold_ms = 100
 engine_toggle_hotkey = "Ctrl+Shift+F12"
 layouts_dir = "layout"
 default_layout = "nicola_keytop.yab"
+# 実機テスト用(一時的): 無変換/変換の単独タップを常にパススルーにし、
+# delegate_to_open_axisがTurnOff/Toggle方向でも辞退するかを検証する
+# （2026-09-18、nicola_fsm.rs::resolve_pending_thumb_as_single参照）。
+# 通常運用ではこの4行を削除し既定値(always_suppress=true)に戻すこと。
+muhenkan_solo_tap_ignore_composing_guard = true
+muhenkan_solo_tap_always_suppress = false
+henkan_solo_tap_ignore_composing_guard = true
+henkan_solo_tap_always_suppress = false
 
 # confirm_mode = "wait"  # wait / speculative / two_phase / adaptive_timing / ngram_predictive
 # speculative_delay_ms = 30
