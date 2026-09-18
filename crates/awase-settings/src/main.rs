@@ -2836,6 +2836,12 @@ impl SettingsApp {
         if let (Some(payload), Some(vk)) = (calibration_result_window::take_latest_result(), vk)
             && payload.vk == vk
         {
+            tracing::info!(
+                "[calibration-ui] poll_calibration_result: 結果受信 vk={vk:?} kind={:?} \
+                 calibration_state(前)={:?}",
+                payload.kind,
+                self.calibration_state
+            );
             if payload.kind == awase_windows::calibration_ipc::CalibrationResultKind::ConfirmedOn {
                 persist_confirmed_calibration(
                     &self.config_path,
@@ -2846,6 +2852,10 @@ impl SettingsApp {
             }
             self.calibration_state =
                 calibration_panel::on_result_received(self.calibration_state, payload.kind);
+            tracing::info!(
+                "[calibration-ui] poll_calibration_result: calibration_state(後)={:?}",
+                self.calibration_state
+            );
         }
         #[cfg(not(target_os = "windows"))]
         let _ = vk;
@@ -2918,9 +2928,11 @@ impl SettingsApp {
             ui.horizontal(|ui| {
                 ui.add_sized([220.0, 20.0], egui::Label::new(label));
                 if ui.button("OFFにする").clicked() {
+                    tracing::info!("[calibration-ui] IME診断ボタン押下: {label} open=false (保留)");
                     self.pending_ime_open_request = Some((func, false));
                 }
                 if ui.button("ONにする").clicked() {
+                    tracing::info!("[calibration-ui] IME診断ボタン押下: {label} open=true (保留)");
                     self.pending_ime_open_request = Some((func, true));
                 }
             });
@@ -2983,10 +2995,23 @@ impl SettingsApp {
         if response.has_focus()
             && let Some((func, open)) = self.pending_ime_open_request.take()
         {
-            func(open);
+            tracing::info!(
+                "[calibration-ui] テキスト欄フォーカス確認、保留中のIME診断要求(open={open})を実行"
+            );
+            let ok = func(open);
+            tracing::info!("[calibration-ui] IME診断要求の実行結果: ok={ok}");
         }
+        let before_state = self.calibration_state;
         self.calibration_state =
             calibration_panel::on_focus_changed(self.calibration_state, response.has_focus());
+        if before_state != self.calibration_state {
+            tracing::info!(
+                "[calibration-ui] calibration_state遷移: {before_state:?} → {:?} \
+                 (has_focus={})",
+                self.calibration_state,
+                response.has_focus()
+            );
+        }
     }
 
     #[expect(clippy::too_many_lines)]
@@ -3018,6 +3043,7 @@ impl SettingsApp {
             )
             .clicked()
         {
+            tracing::info!("[calibration-ui] ガイド付き較正を開始: step=0");
             self.guided_calibration_step = Some(0);
             self.guided_calibration_results.clear();
         }
@@ -3131,6 +3157,7 @@ impl SettingsApp {
             }
             ui.add_space(8.0);
             if ui.button("閉じる").clicked() {
+                tracing::info!("[calibration-ui] 完了画面で「閉じる」押下、ガイド終了");
                 self.guided_calibration_step = None;
             }
             return;
@@ -3155,12 +3182,16 @@ impl SettingsApp {
             if ui.button("準備できました（確認を開始）").clicked()
                 && let Some(vk) = vk
             {
+                tracing::info!(
+                    "[calibration-ui] step={step} vk={vk:?} 較正開始（Idle→WaitingFocus）"
+                );
                 send_calibration_start(vk);
                 self.calibration_text_buf.clear();
                 self.calibration_state = calibration_panel::on_start_pressed(false);
             }
             ui.add_space(8.0);
             if ui.button("ガイドを中止").clicked() {
+                tracing::info!("[calibration-ui] step={step} 開始前画面で「ガイドを中止」押下");
                 self.guided_calibration_step = None;
             }
             return;
@@ -3187,6 +3218,11 @@ impl SettingsApp {
                 | CalibrationPanelState::FocusLost
         ) {
             if ui.button("中止（ガイドも終了）").clicked() {
+                tracing::info!(
+                    "[calibration-ui] step={step} 計測中画面で「中止（ガイドも終了）」押下 \
+                     (calibration_state={:?})",
+                    self.calibration_state
+                );
                 send_calibration_end();
                 self.calibration_state = calibration_panel::on_cancel_or_close();
                 self.guided_calibration_step = None;
@@ -3195,6 +3231,11 @@ impl SettingsApp {
             // ボタンクリックを待たず自動で次のキーへ進む——ユーザーが
             // 次々に物理キーを押すだけで一連の確認が完結するようにする
             // （「次へ」クリックのために操作を止める必要をなくす）。
+            tracing::info!(
+                "[calibration-ui] step={step} 確定/却下(kind={kind:?})→自動で次のstepへ \
+                 (次step={})",
+                step + 1
+            );
             send_calibration_end();
             self.guided_calibration_results
                 .push((key_label, kind.into()));
