@@ -15,6 +15,7 @@ mod bug_report;
 mod calibration_panel;
 #[cfg(target_os = "windows")]
 mod calibration_result_window;
+mod ime_state_probe;
 mod scancode_map_admin;
 mod startup_failure;
 mod update_check;
@@ -2840,12 +2841,56 @@ impl SettingsApp {
         let _ = vk;
     }
 
+    /// 現在のIME ON/OFF状態を表示し、直接切り替えるボタンを描画する。
+    /// タスクバーのGJIアイコンをマウスでクリックする代わりに、この画面内
+    /// だけでIME状態を確認・操作できるようにする（較正の手順どおりに
+    /// 操作できているか不安、という指摘への対応）。表示対象は常に
+    /// 「awase-settings自身のウィンドウ」の状態であり、他アプリの状態を
+    /// 混同しないよう`ime_state_probe`側でフォーカス確認済み。
+    fn render_ime_state_controls(ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("現在のIME状態:");
+            match ime_state_probe::current_ime_open() {
+                Some(true) => {
+                    ui.colored_label(egui::Color32::from_rgb(0, 140, 0), "● ON（ひらがな）");
+                }
+                Some(false) => {
+                    ui.colored_label(egui::Color32::from_rgb(160, 0, 0), "○ OFF（直接入力）");
+                }
+                None => {
+                    ui.colored_label(
+                        egui::Color32::GRAY,
+                        "不明（このウィンドウが最前面にないと分かりません）",
+                    );
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui.button("IMEをOFFにする").clicked() {
+                ime_state_probe::set_ime_open(false);
+            }
+            if ui.button("IMEをONにする").clicked() {
+                ime_state_probe::set_ime_open(true);
+            }
+        });
+    }
+
     /// 計測中〜結果確定までの状態表示・フォーカス保持用テキスト欄の描画。
     /// `poll_calibration_result`の後に呼ぶこと。手動UIとガイド付き
     /// ウィザードで共有する。`measuring_label`は`Measuring`状態のときの
     /// 案内文（対象キー名を含めるかどうかが呼び出し元で異なるため引数化）。
     fn render_calibration_progress(&mut self, ui: &mut egui::Ui, measuring_label: &str) {
         use calibration_panel::CalibrationPanelState;
+
+        if matches!(
+            self.calibration_state,
+            CalibrationPanelState::WaitingFocus
+                | CalibrationPanelState::Measuring
+                | CalibrationPanelState::FocusLost
+        ) {
+            Self::render_ime_state_controls(ui);
+            ui.add_space(4.0);
+        }
 
         match self.calibration_state {
             CalibrationPanelState::WaitingFocus => {
@@ -3044,11 +3089,11 @@ impl SettingsApp {
 
         if self.calibration_state == CalibrationPanelState::Idle {
             ui.label(
-                "1. GJIのIME入力方式アイコンが「A」（直接入力、IME OFF）に\n\
-                 なっていることを確認してください（ONになっていたら、いった\n\
-                 ん無変換/変換以外の方法でOFFにしてください）。\n\
-                 2. 準備ができたら下のボタンを押してください。",
+                "1. 下のボタンでIMEをOFF（直接入力）にしてください。\n\
+                 2. 準備ができたら「準備できました」を押してください。",
             );
+            ui.add_space(8.0);
+            Self::render_ime_state_controls(ui);
             ui.add_space(8.0);
             if ui.button("準備できました（確認を開始）").clicked()
                 && let Some(vk) = vk
