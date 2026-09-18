@@ -589,22 +589,33 @@ impl Engine {
     /// `NicolaFsm::take_ime_open_requested`（ADR-092 決定D Step4b、無変換/変換
     /// 単独タップの IME open 軸への肩代わり）を確認し、あれば `decision` の
     /// 既存の効果（キー抑止・タイマー等）を保ったまま `Effect::Ime(SetOpen)`
-    /// を追加する。`origin: ExplicitUserAction` は `Effect::Ime(SetOpen)` の
-    /// 既存の消費経路（`awase-windows::key_pipeline::kp_stage_post_decision`）
-    /// で `UserIntentSource::Command`（「awase エンジン内部の判断」）として
-    /// 記録される——新しい witness 種別は不要（Opus コードレビュー指摘、
-    /// 当初案の `SyncKey` witness は無変換/変換の毎打鍵で誤発火する致命的な
-    /// 欠陥があった）。
+    /// を追加する。`ImeOpenRequest::Explicit`は`origin: ExplicitUserAction`
+    /// （`Effect::Ime(SetOpen)`の既存の消費経路
+    /// `awase-windows::key_pipeline::kp_stage_post_decision`で
+    /// `UserIntentSource::Command`として記録される——新しいwitness種別は
+    /// 不要、Opusコードレビュー指摘）。`ImeOpenRequest::FollowOnly`
+    /// （2026-09-18追加）は`origin: PhysicalDeliveryFollow`——beliefは
+    /// 同じ経路で更新されるが、Platform層はこのoriginに対して実送信を
+    /// 行わない（`SetOpenOrigin::PhysicalDeliveryFollow`のdoc参照）。
     fn apply_ime_open_request(&mut self, decision: &mut Decision, ctx: &InputContext) {
-        let Some(action) = self.adapter.take_ime_open_requested() else {
+        let Some(request) = self.adapter.take_ime_open_requested() else {
             return;
         };
+        let (action, origin) = match request {
+            super::fsm_types::ImeOpenRequest::Explicit(a) => (a, SetOpenOrigin::ExplicitUserAction),
+            super::fsm_types::ImeOpenRequest::FollowOnly(a) => {
+                (a, SetOpenOrigin::PhysicalDeliveryFollow)
+            }
+        };
         let new_open = action.resolve(ctx.ime_on);
-        tracing::info!("IME open axis delegated (solo tap, key semantics absorption) → {new_open}");
+        tracing::info!(
+            "IME open axis delegated (solo tap, key semantics absorption) → {new_open} \
+             (origin={origin:?})"
+        );
         // ime_on/ime_off コンボキーと同じ `ime_set_open_effects` を経由する
         // （`prev_activation` を進めて次打鍵での重複 SetOpen を防ぐため必須、
         // 直接 push_effect してはならない。上のdoc参照）。
-        for effect in self.ime_set_open_effects(ctx, new_open) {
+        for effect in self.ime_set_open_effects(ctx, new_open, origin) {
             decision.push_effect(effect);
         }
     }
@@ -853,7 +864,12 @@ impl Engine {
     /// `Decision::push_effect` で `SetOpen` を直接追加していたため
     /// `prev_activation` が進まず、次の打鍵で `ActivationSync` 起点の重複
     /// `SetOpen` + 不要な `EngineStateChanged` が再発火する回帰があった）。
-    fn ime_set_open_effects(&mut self, ctx: &InputContext, open: bool) -> EffectVec {
+    fn ime_set_open_effects(
+        &mut self,
+        ctx: &InputContext,
+        open: bool,
+        origin: SetOpenOrigin,
+    ) -> EffectVec {
         let pseudo_ctx = InputContext {
             ime_on: open,
             ..*ctx
@@ -862,22 +878,23 @@ impl Engine {
         let was_active = self.prev_activation.is_active();
         let now_active = new_state.is_active();
 
-        let mut effects = self.transition_activation(new_state, SetOpenOrigin::ExplicitUserAction);
+        let mut effects = self.transition_activation(new_state, origin);
         if was_active == now_active {
             // 状態遷移なし → transition_activation は空 effects を返す。
             // IME 制御の意図 (SetOpen) は明示的に追加する。
-            effects.push(Effect::Ime(ImeEffect::SetOpen {
-                open,
-                origin: SetOpenOrigin::ExplicitUserAction,
-            }));
+            effects.push(Effect::Ime(ImeEffect::SetOpen { open, origin }));
         }
         effects
     }
 
     /// IME ON/OFF コンボキーに対する Decision を構築する（`ime_set_open_effects`
-    /// 参照）。
+    /// 参照）。常に `ExplicitUserAction`（本物のユーザーコンボ操作）。
     fn build_ime_set_open_decision(&mut self, ctx: &InputContext, open: bool) -> Decision {
-        Decision::consumed_with(self.ime_set_open_effects(ctx, open))
+        Decision::consumed_with(self.ime_set_open_effects(
+            ctx,
+            open,
+            SetOpenOrigin::ExplicitUserAction,
+        ))
     }
 
     /// 与えられたイベントが IME OFF コンボキーにマッチするかを副作用なしで返す。

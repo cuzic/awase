@@ -288,7 +288,7 @@ impl FsmAdapter {
     /// IME open 軸への副作用要求を取り出す（1ショット、ADR-092 決定D Step4b）。
     pub(super) const fn take_ime_open_requested(
         &mut self,
-    ) -> Option<crate::types::ShadowImeAction> {
+    ) -> Option<super::fsm_types::ImeOpenRequest> {
         self.fsm.take_ime_open_requested()
     }
 

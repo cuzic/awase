@@ -70,6 +70,14 @@ pub enum SetOpenOrigin {
     /// Engine 内部の active/inactive 遷移（`check_active_transition` 経由）が
     /// 対称性のために自動発行した。ユーザーの明示的意図ではない。
     ActivationSync,
+    /// 2026-09-18（実験的）: 親指キー設定時の無変換/変換単独タップが、
+    /// ユーザー設定（`ModeKeyConfig::is_passthrough`）によりパススルーへ
+    /// 辞退した際の belief 追随専用。`ExplicitUserAction`と同様にユーザーの
+    /// 本物の意図（`last_intent`を設定してよい）だが、**実IME状態の変更は
+    /// 生の物理キーを受けたGJI/MS-IME自身に委ね、awase側は一切actuateしない**
+    /// 点が異なる——`Platform`層（`dispatch_ime_set_open`）はこのoriginの
+    /// `SetOpen`に対して実送信を行ってはならない。belief更新のみ行う。
+    PhysicalDeliveryFollow,
 }
 
 /// UI に関する副作用

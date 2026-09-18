@@ -1881,8 +1881,10 @@ impl Runtime {
             let tick_ms = crate::state::TickMs(hook::current_tick_ms());
             // `origin` で belief 更新の経路を分ける（`SetOpenOrigin` の doc / 2026-08-04
             // 「IME OFF・Engine ON」再発対策参照）。
-            // - ExplicitUserAction: IME/エンジン ON/OFF コンボ等、本物のユーザー操作。
-            //   `last_intent` を設定してよい（`handle_engine_set_open`）。
+            // - ExplicitUserAction / PhysicalDeliveryFollow: 本物のユーザー操作。
+            //   `last_intent` を設定してよい（`handle_engine_set_open`）。両者の違いは
+            //   実送信の有無だけ（`PhysicalDeliveryFollow`は`dispatch_effect`が実送信を
+            //   スキップする、`SetOpenOrigin`のdoc参照）——belief更新の経路は同じでよい。
             // - ActivationSync: `check_active_transition` が対称性のために自動発行した
             //   echo（`ctx.ime_on` の観測駆動な変化だけでも起こりうる）。`last_intent` を
             //   設定すると、この echo が「ユーザーの本物の意図」として固定化され、
@@ -1890,7 +1892,8 @@ impl Runtime {
             //   ON へ戻る再発の根本原因だった）。`handle_engine_activation_sync` で
             //   `desired_open` のみ更新する。
             let applied = match origin {
-                awase::engine::SetOpenOrigin::ExplicitUserAction => {
+                awase::engine::SetOpenOrigin::ExplicitUserAction
+                | awase::engine::SetOpenOrigin::PhysicalDeliveryFollow => {
                     let applied = self.platform_state.ime.handle_engine_set_open(
                         new_ime_on,
                         event.modifier_snapshot.ctrl,
