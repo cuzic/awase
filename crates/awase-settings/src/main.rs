@@ -35,6 +35,9 @@ enum Tab {
     Keys,
     Keymap,
     DisableApps,
+    // ADR-176較正ウィザードのタブをお蔵入りにしたためサイドパネルから外し
+    // 未構築（2026-09-18、実装は保持）。上のタブ一覧のコメント参照。
+    #[allow(dead_code)]
     Calibration,
     // サイドパネルから外しているため未構築（今後の課題として実装は保持）。
     // disable_apps 部分のみ `DisableApps` タブへ切り出し済み（2026-08-26、
@@ -4113,6 +4116,15 @@ impl eframe::App for SettingsApp {
                 // タブ順序は使用頻度順（2026-08-26 見直し）: 全般設定・キー設定・
                 // 配列編集・上級者向け設定を先に置き、日常的に触らない「アプリ無効化」
                 // 「ショートカット」を末尾にまとめる。
+                //
+                // ADR-176較正ウィザードのタブはお蔵入り（コードは削除せず残置、
+                // 2026-09-18）: awase-settings自身のウィンドウに対するIME
+                // ON/OFF直接操作を、belief非依存の強制送信
+                // （`force_set_ime_open_for_calibration_ui`）まで実装しても
+                // 実機で安定して効かず、ガイド付きウィザードの入口ボタン自体も
+                // 反応しない不具合が解消しなかったため、これ以上の追求を止めた。
+                // `Tab::Calibration`/`tab_calibration`/`tab_calibration_guided`/
+                // `ime_state_probe`は将来再挑戦する可能性に備えてそのまま残す。
                 for (tab, label) in [
                     (Tab::Basic, "全般設定"),
                     (Tab::Keys, "キー設定"),
@@ -4120,7 +4132,6 @@ impl eframe::App for SettingsApp {
                     (Tab::Advanced, "上級者向け設定"),
                     (Tab::DisableApps, "アプリ無効化"),
                     (Tab::Keymap, "ショートカット"),
-                    (Tab::Calibration, "IMEキー動作確認"),
                 ] {
                     if ui.selectable_label(self.active_tab == tab, label).clicked() {
                         self.clear_ime_on_tab_change(tab);
