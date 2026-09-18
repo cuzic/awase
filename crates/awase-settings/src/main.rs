@@ -2841,12 +2841,14 @@ impl SettingsApp {
         let _ = vk;
     }
 
-    /// 現在のIME ON/OFF状態を表示し、直接切り替えるボタンを描画する。
+    /// 現在のIME ON/OFF状態を表示し、複数手法での切り替えボタンを描画する
+    /// （診断目的で全手法を並べている、`ime_state_probe`のdoc参照）。
     /// タスクバーのGJIアイコンをマウスでクリックする代わりに、この画面内
     /// だけでIME状態を確認・操作できるようにする（較正の手順どおりに
     /// 操作できているか不安、という指摘への対応）。表示対象は常に
     /// 「awase-settings自身のウィンドウ」の状態であり、他アプリの状態を
     /// 混同しないよう`ime_state_probe`側でフォーカス確認済み。
+    #[allow(clippy::type_complexity)]
     fn render_ime_state_controls(ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("現在のIME状態:");
@@ -2865,14 +2867,40 @@ impl SettingsApp {
                 }
             }
         });
-        ui.horizontal(|ui| {
-            if ui.button("IMEをOFFにする").clicked() {
-                ime_state_probe::set_ime_open(false);
-            }
-            if ui.button("IMEをONにする").clicked() {
-                ime_state_probe::set_ime_open(true);
-            }
-        });
+        ui.label("以下は診断用: どれか効くものを探すため複数手法を並べています。");
+        let methods: [(&str, fn(bool) -> bool); 5] = [
+            (
+                "A: IMM32直接(ImmSetOpenStatus)",
+                ime_state_probe::set_ime_open_immset,
+            ),
+            (
+                "B: WM_IME_CONTROL(cross)",
+                ime_state_probe::set_ime_open_wm_control,
+            ),
+            (
+                "C: VK_IME_ON/OFF送信",
+                ime_state_probe::set_ime_open_dedicated_vk,
+            ),
+            (
+                "D: VK_KANJI送信(トグル)",
+                ime_state_probe::set_ime_open_kanji_toggle,
+            ),
+            (
+                "E: awase.exeへCommand要求",
+                ime_state_probe::set_ime_open_command_ipc,
+            ),
+        ];
+        for (label, func) in methods {
+            ui.horizontal(|ui| {
+                ui.add_sized([220.0, 20.0], egui::Label::new(label));
+                if ui.button("OFFにする").clicked() {
+                    func(false);
+                }
+                if ui.button("ONにする").clicked() {
+                    func(true);
+                }
+            });
+        }
     }
 
     /// 計測中〜結果確定までの状態表示・フォーカス保持用テキスト欄の描画。
