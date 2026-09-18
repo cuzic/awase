@@ -6819,7 +6819,7 @@ mod engine_integration_tests {
     /// 【/code-review 指摘の回帰テスト】`event.injected`な合成イベントは
     /// bare-thumbガードの対象外。手動設定の`keys.ime_off`はユーザーが
     /// マクロツール等から意図的に注入する運用を妨げてはならない
-    /// （`match_ime_on_off_auto`のdoc、BUG-14と同じ原則）。engine活性中に
+    /// （`match_ime_toggle_auto`のdoc、BUG-14と同じ原則）。engine活性中に
     /// 無変換の`injected=true`なKeyDownが来ても、`is_bare_thumb`が
     /// falseを返しPhase 1の`keys.ime_off`が従来どおりマッチすること。
     #[test]
@@ -6985,30 +6985,9 @@ mod engine_integration_tests {
         )));
     }
 
-    // ── ADR-092 決定D Step4c: GJI config1.db 由来の自動検出 IME ON/OFF/
-    //    トグルキー（`ime_on_auto`/`ime_off_auto`/`ime_toggle_auto`） ──
-
-    /// 手動設定（`keys.ime_on`）が空でも、自動検出リスト（`ime_on_auto`）が
-    /// 効く（`ime_on_auto_still_fires_when_manual_ime_on_non_empty` が
-    /// 非空側を担当する）。
-    #[test]
-    fn ime_on_auto_fires_when_manual_ime_on_empty() {
-        let combo = ParsedKeyCombo {
-            ctrl: false,
-            shift: false,
-            alt: false,
-            vk: VK_F21,
-        };
-        let mut engine = make_engine_with_special(empty_special_keys());
-        engine.set_ime_on_auto_keys(vec![combo]);
-
-        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_off_ctx());
-        assert!(d.is_consumed());
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::Ime(ImeEffect::SetOpen { open: true, .. })
-        )));
-    }
+    // ── ADR-092 決定D Step4a: MS-IMEレジストリ由来の自動検出 IME トグル
+    //    キー（`ime_toggle_auto`）。GJI側の自動検出（旧Step4c、
+    //    `ime_on_auto`/`ime_off_auto`）はADR-179で撤去した ──
 
     /// bare-thumbガード(`is_bare_thumb`)は`engine_active &&`という条件付きで
     /// しか`suppress_ime_combos`をtrueにしない。engine非活性(IME OFF)中は
@@ -7047,72 +7026,10 @@ mod engine_integration_tests {
     }
 
     /// 【bare-thumbガード回帰テスト、旧P-9】`match_event`内だけにガードを
-    /// 置くと`.or_else()`で連結される自動検出リスト（`ime_on_auto`）を
+    /// 置くと`.or_else()`で連結される自動検出リスト（`ime_toggle_auto`）を
     /// 素通りしてしまう。`match_special_keys`レベルで一括適用した
     /// `is_bare_thumb`ガードが、手動リストだけでなく自動検出リストにも
-    /// 効いていることを固定する。engine活性中は無変換+Aがチョードとして
-    /// 解決され、`ime_on_auto`にVK_NONCONVERTが入っていても`SetOpen`は
-    /// 出ない。
-    #[test]
-    fn bare_thumb_ime_on_auto_combo_is_suppressed_while_engine_active() {
-        let combo = ParsedKeyCombo {
-            ctrl: false,
-            shift: false,
-            alt: false,
-            vk: VK_NONCONVERT,
-        };
-        let mut engine = make_engine_with_special(empty_special_keys());
-        engine.set_ime_on_auto_keys(vec![combo]);
-
-        let d1 = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ime_on_ctx());
-        let d2 = engine.on_input(Ev::down(VK_A).at(50).build(), &ime_on_ctx());
-
-        assert!(d1.is_consumed());
-        assert!(d2.is_consumed());
-        assert!(
-            has_effect(&d2, |e| matches!(
-                e,
-                Effect::Input(InputEffect::SendKeys(actions))
-                    if actions.iter().any(|a| matches!(a, KeyAction::Char('を')))
-            )),
-            "bare 無変換+A should be handled as a left-thumb chord even with ime_on_auto set, got {:?}",
-            effects_of(&d2)
-        );
-        assert!(
-            !has_effect(&d1, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })))
-                && !has_effect(&d2, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
-            "auto ime_on list must not bypass the bare-thumb guard, d1={:?} d2={:?}",
-            effects_of(&d1),
-            effects_of(&d2)
-        );
-    }
-
-    /// 上記の`ime_off_auto`版。engine活性中はチョード判定を優先し、
-    /// `ime_off_auto`にbare親指キーが入っていても`SetOpen`は出ない。
-    #[test]
-    fn bare_thumb_ime_off_auto_combo_is_suppressed_while_engine_active() {
-        let combo = ParsedKeyCombo {
-            ctrl: false,
-            shift: false,
-            alt: false,
-            vk: VK_NONCONVERT,
-        };
-        let mut engine = make_engine_with_special(empty_special_keys());
-        engine.set_ime_off_auto_keys(vec![combo]);
-
-        let d1 = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ime_on_ctx());
-        let d2 = engine.on_input(Ev::down(VK_A).at(50).build(), &ime_on_ctx());
-
-        assert!(
-            !has_effect(&d1, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })))
-                && !has_effect(&d2, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
-            "auto ime_off list must not bypass the bare-thumb guard, d1={:?} d2={:?}",
-            effects_of(&d1),
-            effects_of(&d2)
-        );
-    }
-
-    /// 上記の`ime_toggle_auto`版。
+    /// 効いていることを固定する。
     #[test]
     fn bare_thumb_ime_toggle_auto_combo_is_suppressed_while_engine_active() {
         let combo = ParsedKeyCombo {
@@ -7134,28 +7051,6 @@ mod engine_integration_tests {
             effects_of(&d1),
             effects_of(&d2)
         );
-    }
-
-    /// 手動設定（`keys.ime_off`）が空でも、自動検出リスト（`ime_off_auto`）が
-    /// 効く（`ime_off_auto_still_fires_when_manual_ime_off_non_empty` が
-    /// 非空側を担当する）。
-    #[test]
-    fn ime_off_auto_fires_when_manual_ime_off_empty() {
-        let combo = ParsedKeyCombo {
-            ctrl: false,
-            shift: false,
-            alt: false,
-            vk: VK_F21,
-        };
-        let mut engine = make_engine_with_special(empty_special_keys());
-        engine.set_ime_off_auto_keys(vec![combo]);
-
-        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_on_ctx());
-        assert!(d.is_consumed());
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
-        )));
     }
 
     /// 手動設定（`keys.ime_toggle`）が空でも、自動検出リスト
@@ -7181,34 +7076,10 @@ mod engine_integration_tests {
         )));
     }
 
-    /// BUG-14 同種のリスク対策（Opus コードレビュー指摘）: `ime_on_auto`/
-    /// `ime_off_auto`は`event.injected`な合成イベントにマッチしない。
-    /// 手動設定の `ime_on`/`ime_off` と異なり、自動検出リストはユーザーが
-    /// 存在を意識せず追加されるため、注入イベントへの露出を正当化する
-    /// 根拠が無い。
-    #[test]
-    fn ime_on_auto_ignores_injected_event() {
-        let combo = ParsedKeyCombo {
-            ctrl: false,
-            shift: false,
-            alt: false,
-            vk: VK_F21,
-        };
-        let mut engine = make_engine_with_special(empty_special_keys());
-        engine.set_ime_on_auto_keys(vec![combo]);
-
-        let d = engine.on_input(
-            Ev::down(VK_F21).at(100).injected(true).build(),
-            &ime_on_ctx(),
-        );
-        assert!(
-            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
-            "injected event must not trigger ime_on_auto, got {:?}",
-            effects_of(&d)
-        );
-    }
-
-    /// 上記の `ime_toggle_auto` 版。
+    /// BUG-14 同種のリスク対策（Opus コードレビュー指摘）: `ime_toggle_auto`
+    /// は`event.injected`な合成イベントにマッチしない。手動設定の
+    /// `ime_toggle` と異なり、自動検出リストはユーザーが存在を意識せず
+    /// 追加されるため、注入イベントへの露出を正当化する根拠が無い。
     #[test]
     fn ime_toggle_auto_ignores_injected_event() {
         let combo = ParsedKeyCombo {
@@ -7231,74 +7102,9 @@ mod engine_integration_tests {
         );
     }
 
-    /// 2026-08-16 ユーザー判断: `keys.ime_on` が非空でも `ime_on_auto`
-    /// （GJI config1.db 宣言等）は追加のキーとして併用され続ける（旧・決定C
-    /// R1「明示>自動」の排他仕様から「明示 ∪ 自動」の union へ変更。既定で
-    /// `ime_on`/`ime_off` が非空（`Ctrl+変換`/`Ctrl+無変換`）なため、旧仕様
-    /// のままだと自動検出が既定設定のユーザーには永久に効かなかった）。
-    /// 手動リストと自動リストに**別のキー**を割り当て、自動側キーの押下でも
-    /// 期待通り `ImeOn` が発火する（consume され `SetOpen{open:true}` が
-    /// 出る）ことを確認する。
-    #[test]
-    fn ime_on_auto_still_fires_when_manual_ime_on_non_empty() {
-        let manual_combo = ParsedKeyCombo {
-            ctrl: true,
-            shift: false,
-            alt: false,
-            vk: VK_SPACE,
-        };
-        let auto_combo = ParsedKeyCombo {
-            ctrl: false,
-            shift: false,
-            alt: false,
-            vk: VK_F21,
-        };
-        let special = SpecialKeyCombos {
-            ime_on: vec![manual_combo],
-            ..empty_special_keys()
-        };
-        let mut engine = make_engine_with_special(special);
-        engine.set_ime_on_auto_keys(vec![auto_combo]);
-
-        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_off_ctx());
-        assert!(d.is_consumed());
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::Ime(ImeEffect::SetOpen { open: true, .. })
-        )));
-    }
-
-    /// `ime_on_auto_still_fires_when_manual_ime_on_non_empty` の `ime_off` 版。
-    #[test]
-    fn ime_off_auto_still_fires_when_manual_ime_off_non_empty() {
-        let manual_combo = ParsedKeyCombo {
-            ctrl: true,
-            shift: false,
-            alt: false,
-            vk: VK_SPACE,
-        };
-        let auto_combo = ParsedKeyCombo {
-            ctrl: false,
-            shift: false,
-            alt: false,
-            vk: VK_F21,
-        };
-        let special = SpecialKeyCombos {
-            ime_off: vec![manual_combo],
-            ..empty_special_keys()
-        };
-        let mut engine = make_engine_with_special(special);
-        engine.set_ime_off_auto_keys(vec![auto_combo]);
-
-        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_on_ctx());
-        assert!(d.is_consumed());
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
-        )));
-    }
-
-    /// `ime_on_auto_still_fires_when_manual_ime_on_non_empty` の `ime_toggle` 版。
+    /// 2026-08-16 ユーザー判断: `keys.ime_toggle` が非空でも `ime_toggle_auto`
+    /// （MS-IMEレジストリ宣言等）は追加のキーとして併用され続ける（旧・決定C
+    /// R1「明示>自動」の排他仕様から「明示 ∪ 自動」の union へ変更）。
     #[test]
     fn ime_toggle_auto_still_fires_when_manual_ime_toggle_non_empty() {
         let manual_combo = ParsedKeyCombo {

@@ -1028,37 +1028,21 @@ pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
     // （`sync_ime_kind_from_observation`がGJI側を先に呼ぶ順序、既存の
     // delegate-to-open-axisと同じ順序依存）。
     //
-    // **重要（/code-review指摘、実装レビューで発見・修正）**: GJI側の
-    // `route_thumb_key_action`は`is_thumb_key`のときだけoverride相当の値を
-    // 返す（非親指キーの場合はactuation-auto側に積まれ、overrideには渡らない
-    // 設計）。ここでも同じ条件を課さないと、無変換/変換を親指キーに
-    // 設定していないMS-IMEユーザーで、レジストリ由来の値が無条件に
-    // overrideへ入ってしまう。すると`is_configured_thumb_key=false`により
-    // `mode_key_delegate_owns_shadow_toggle`がfalseを返し、
-    // `kp_stage_shadow_ime_toggle`が通常の物理IMEキーとして能動的に
-    // actuateする一方、`transport.rs::plan`のfollow-only例外で物理キー
-    // 自体もOSへ届くため、MS-IME自身のネイティブ処理とawaseの能動
-    // actuationが二重に発火する（BUG-46型の新規二重actuation）。
-    let henkan_is_thumb_key =
-        crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_CONVERT);
-    let muhenkan_is_thumb_key =
-        crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_NONCONVERT);
-    // ADR-153 決定1 M15対策: ユーザーが明示config
-    // （`henkan_solo_tap_ime_action`/`muhenkan_solo_tap_ime_action`）を
-    // 設定しているキーについては、レジストリ由来のdelegate/shadow_override
-    // をarmedにしない——GJI側（`gji_charset_autodetect.rs`）と同じ理由
-    // （ADR-119の教訓「gateを1箇所に置いて満足しない」、書き込み点は
-    // 2系統4箇所のうちここが2箇所目）。
+    // ADR-179決定1: かつてはGJI側の`route_thumb_key_action`と対称に
+    // `is_thumb_key`のときだけoverrideへ値を渡していた（非親指キーの場合
+    // 無条件に渡すと、`kp_stage_shadow_ime_toggle`が能動actuateする一方
+    // `transport.rs::plan`のfollow-only例外で物理キーもOSへ届き、
+    // BUG-46型の二重actuationになっていたため）。この二重actuationは
+    // `ModeKeyActuationOwner::PhysicalDelivery`（非親指キー配置の
+    // 無変換/変換On/Off分類時、明示actuateも`ActivationSync`echoも
+    // 一切発行しない）が構造的に防ぐようになったため、is_thumb_keyの
+    // ゲートは不要になった——GJI側と対称に常に渡す。
     let henkan_override = super::mask_auto_detect_for_explicit_config(
-        henkan_is_thumb_key
-            .then_some(delegate_assignment.henkan)
-            .flatten(),
+        delegate_assignment.henkan,
         app.henkan_solo_tap_ime_action(),
     );
     let muhenkan_override = super::mask_auto_detect_for_explicit_config(
-        muhenkan_is_thumb_key
-            .then_some(delegate_assignment.muhenkan)
-            .flatten(),
+        delegate_assignment.muhenkan,
         app.muhenkan_solo_tap_ime_action(),
     );
     app.set_thumb_key_shadow_overrides(henkan_override, muhenkan_override);
@@ -1091,23 +1075,23 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
         }
     }
 
-    // GJI 検出時、config1.db から IME ON/OFF/トグルキー（ADR-092 決定D
-    // Step4c）を自動判定する。MS-IME 割当てチェックと対称に、この「IME
-    // 種別に依存する副作用の単一の合流点」に置き、同じ理由で detected を
-    // 見る（未検出時の active_ime_kind() が安全デフォルトとして
-    // MicrosoftIme を返す実装詳細に暗黙に依存せず、明示的にゲートする）。
+    // GJI 検出時、config1.db から無変換/変換キーのIME on/off/toggle
+    // 意味論（BUG-115、ADR-179）を自動判定する。MS-IME 割当てチェックと
+    // 対称に、この「IME 種別に依存する副作用の単一の合流点」に置き、
+    // 同じ理由で detected を見る（未検出時の active_ime_kind() が安全
+    // デフォルトとして MicrosoftIme を返す実装詳細に暗黙に依存せず、
+    // 明示的にゲートする）。
     //
     // **MS-IME 側（次のブロック）より先に呼ぶこと（Opus コードレビュー
-    // 指摘、意図的な順序）**: `ime_toggle_auto` は GJI/MS-IME 両方の
-    // 自動検出が共有する`Engine`フィールドで、GJI 離脱時に
-    // `sync_gji_charset_autodetect` が（自分専用の`ime_on_auto`/
-    // `ime_off_auto`と一緒に）`ime_toggle_auto`も解除する。GJI→MS-IME の
+    // 指摘、意図的な順序）**: `henkan_shadow_override`/
+    // `muhenkan_shadow_override`/delegate-to-open-axisは GJI/MS-IME 両方の
+    // 自動検出が共有する`Runtime`フィールドで、GJI 離脱時に
+    // `sync_gji_charset_autodetect` がこれらを解除する。GJI→MS-IME の
     // 遷移で MS-IME 側が先に新しい値を設定してしまうと、後から走る GJI
     // 離脱処理がその値を上書き消去してしまう（実際に発生していた回帰、
     // 詳細は`gji_charset_autodetect.rs`のコメント参照）。GJI 側を先に
-    // 走らせれば、GJI→MS-IME遷移時は「GJI離脱で3リストとも解除→直後に
-    // MS-IME側が`ime_toggle_auto`を新しい値で上書き」という正しい順序に
-    // なる。
+    // 走らせれば、GJI→MS-IME遷移時は「GJI離脱で解除→直後にMS-IME側が
+    // 新しい値で上書き」という正しい順序になる。
     //
     // 専用Fnキー変換（ADR-091 §D3.2）の自動判定・設定支援ポップアップ・
     // config1.db書き込みは、実験的機能のまま撤去し忘れて出荷されていた
@@ -1729,24 +1713,20 @@ fn build_bug_report_gji_keymap_summary(
             crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_CONVERT);
         let muhenkan_is_thumb_key =
             crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_NONCONVERT);
-        // /code-review指摘: `route_thumb_key_action`
-        // （`gji_charset_autodetect.rs:522`）を直接呼ばず、その分岐条件
-        // （`is_thumb_key`の真偽のみ、`action`自体は`route_thumb_key_action`
-        // に先んじて`wiring.henkan`/`wiring.muhenkan`から素通し）をここで
-        // 再現している。`route_thumb_key_action`は`on`/`off`/`toggle`の
-        // 3つの`&mut Vec<ParsedKeyCombo>`を要求する副作用ありの関数
-        // （actuation-auto側への追加）で、診断専用のこの経路のためだけに
-        // 使い捨てのVecを渡すのは本末転倒なため。ここで再現しているのは
-        // 「`is_thumb_key`なら`Delegate`、そうでなければ`ActuationAuto`」
-        // という1行の分岐のみで、`ImeToggleKind→ShadowImeAction`の変換
-        // 自体（実際の値の計算）は`gate_thumb_key_ime_actions`にすべて
-        // 委譲済み。この分岐がずれていないことはOpus敵対的コードレビュー
-        // で`route_thumb_key_action`本体と突き合わせ済み（ADR-148参照）。
+        // ADR-179決定1: `sync_gji_charset_autodetect`はis_thumb_keyに
+        // 関わらず常にdelegate-to-open-axisとshadow_action overrideの
+        // 両方へ同じ値を書き込む（旧`route_thumb_key_action`の`is_thumb_key`
+        // 分岐は撤去済み）。実際にどちらが発火するかは打鍵時の
+        // `ModeKeyActuationOwner`が判定するため、ここでの`is_thumb_key`は
+        // 「チョード判別のFSM delegateが所有しうるか」を示す診断用の
+        // ラベルとして引き続き使う（`Delegate`=親指キー配置、
+        // `PhysicalDelivery`=非親指キー配置で物理キー配送のみに委ねる、
+        // `ModeKeyActuationOwner`の variant名に合わせた）。
         let henkan_route = wiring.henkan.map(|_| {
             if henkan_is_thumb_key {
                 "Delegate"
             } else {
-                "ActuationAuto"
+                "PhysicalDelivery"
             }
             .to_owned()
         });
@@ -1754,7 +1734,7 @@ fn build_bug_report_gji_keymap_summary(
             if muhenkan_is_thumb_key {
                 "Delegate"
             } else {
-                "ActuationAuto"
+                "PhysicalDelivery"
             }
             .to_owned()
         });
@@ -1822,18 +1802,14 @@ fn build_bug_report_msime_key_assignment_summary(
 
         let delegate_assignment =
             crate::msime_key_assignment::read_delegate_to_open_axis_assignment_from_registry();
-        let henkan_is_thumb_key =
-            crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_CONVERT);
-        let muhenkan_is_thumb_key =
-            crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_NONCONVERT);
-        let adopted_henkan_delegate = henkan_is_thumb_key
-            .then_some(delegate_assignment.henkan)
-            .flatten()
+        // ADR-179決定1: `sync_ime_toggle_auto_detect`はis_thumb_keyに
+        // 関わらず常にoverrideへ値を渡すため、この診断値もゲートしない。
+        let adopted_henkan_delegate = delegate_assignment
+            .henkan
             .map(shadow_ime_action_str)
             .map(str::to_owned);
-        let adopted_muhenkan_delegate = muhenkan_is_thumb_key
-            .then_some(delegate_assignment.muhenkan)
-            .flatten()
+        let adopted_muhenkan_delegate = delegate_assignment
+            .muhenkan
             .map(shadow_ime_action_str)
             .map(str::to_owned);
         MsImeAdoptedFields {

@@ -1641,41 +1641,6 @@ impl Runtime {
         }
     }
 
-    /// `gji_charset_autodetect` が config1.db から自動検出した IME ON/OFF/
-    /// トグルキーを反映するための入口（ADR-092 決定D Step4c）。`Engine`側
-    /// （`match_ime_on_off_auto`/`match_ime_toggle_auto`）は手動設定
-    /// （`KeysConfig.ime_on`/`ime_off`/`ime_toggle`）の内容に関わらず常に
-    /// 自動リストも併用する（2026-08-16 ユーザー判断、明示 ∪ 自動）ため、
-    /// ここでは手動設定の有無を確認せずそのまま反映してよい
-    /// （`set_muhenkan_dedicated_fn_key_auto`と異なりRuntime側にゲートは不要）。
-    pub(crate) fn set_gji_ime_on_off_toggle_auto_keys(
-        &mut self,
-        on: Vec<awase::config::ParsedKeyCombo>,
-        off: Vec<awase::config::ParsedKeyCombo>,
-        toggle: Vec<awase::config::ParsedKeyCombo>,
-    ) {
-        self.engine.set_ime_on_auto_keys(on);
-        self.engine.set_ime_off_auto_keys(off);
-        self.engine.set_ime_toggle_auto_keys(toggle);
-    }
-
-    /// GJI 離脱時、`ime_on_auto`/`ime_off_auto`/`ime_toggle_auto`を全て解除する。
-    ///
-    /// `ime_toggle_auto`はMS-IME側（`sync_ime_toggle_auto_detect`）とも共有する
-    /// フィールドだが、`message_handlers::sync_ime_kind_from_observation`が
-    /// GJI側の同期をMS-IME側より**先に**呼ぶ順序になっているため
-    /// （Opusコードレビュー指摘で修正、意図的な順序——詳細は呼び出し元の
-    /// コメント参照）、ここで解除してもGJI→MS-IME遷移では直後にMS-IME側が
-    /// 新しい値で上書きするため破綻しない。GJI→(MS-IMEでもGJIでもない状態)
-    /// では、この解除が無いと専用Fnキー同様にF15-F24のバインドが無関係な
-    /// IMEの文脈に残留してしまう（過去のレビューでこの解除漏れが実際の
-    /// バグとして指摘された）。
-    pub(crate) fn clear_gji_ime_on_off_auto_keys(&mut self) {
-        self.engine.set_ime_on_auto_keys(Vec::new());
-        self.engine.set_ime_off_auto_keys(Vec::new());
-        self.engine.set_ime_toggle_auto_keys(Vec::new());
-    }
-
     /// `gji_charset_autodetect`の`classify_thumb_key_ime_actions`/
     /// `gate_thumb_key_ime_actions`（BUG-115）が導出した、無変換/変換キーが
     /// 親指キーの場合のIME open 軸への肩代わりを`Engine`へ反映する
