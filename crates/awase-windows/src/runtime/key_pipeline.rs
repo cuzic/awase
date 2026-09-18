@@ -1684,9 +1684,17 @@ impl Runtime {
         }
 
         // ON→OFF の場合、OS IME を明示的に OFF にする。
-        // activation (inactive→active) が ImeEffect::SetOpen(true) を生成して OS IME を
-        // 強制 ON するのと対称な処理。deactivation は SetOpen(false) を生成しないため、
-        // TSF モード (WezTerm 等) では物理キー reinject だけでは OS IME が OFF にならない。
+        // 【2026-09-17 訂正、ADR-178 round4/round8】旧コメントは「deactivation は
+        // SetOpen(false) を生成しないため、このブロックが必要」としていたが誤り。
+        // `Engine::transition_activation`（`src/engine/engine.rs:456-475`）は
+        // `NotRomajiInput` の場合を除き、active→inactive 遷移でも
+        // `SetOpen(false, origin: ActivationSync)` を発行する（`transition_activation`
+        // の doc「active → inactive: OS IME を強制的に閉じる（対称性のため）」参照）。
+        // つまり `ActivationSync` 経由の自動 echo は deactivation 方向にも存在する。
+        // このブロックが必要な本当の理由は、TSF モード (WezTerm 等) では物理キー
+        // reinject だけでは OS IME が OFF にならない（IME 自身がこの物理キーに
+        // 反応して状態を変えるとは限らない）ため、awase 自身が明示的に actuate する
+        // 経路を用意する必要がある、という点にある。
         //
         // Imm32Unavailable (Chrome/Edge) では VK_KANJI が唯一の IME クローズ手段であり、
         // KanjiToggleStrategy が shadow_on (latch) を見て送信するかを決める。
