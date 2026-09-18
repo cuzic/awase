@@ -387,6 +387,19 @@ pub const WM_CALIBRATION_KEY_DETECTED: u32 = windows::Win32::UI::WindowsAndMessa
 /// `unpack_result`でエンコードする。
 #[cfg(windows)]
 pub const WM_CALIBRATION_RESULT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 31;
+/// ADR-176: 較正ウィザードの「IMEをON/OFFにする」ボタンからの、明示的な
+/// IME open状態セットアップ要求（awase-settings → awase.exe）。
+///
+/// 較正の測定対象そのものではなく、測定前後の前提条件（IME状態）を
+/// ユーザーがボタンで揃えるための操作。`UserIntentSource::Command`
+/// （`state/platform_state.rs::handle_engine_set_open`）経由の正規の
+/// IME actuationを呼ぶ——生の物理キーをSendInputで模倣する方式は、BUG-14
+/// （注入されたIMEモードキーをユーザー意図として扱わない）に意図的に
+/// 拒否されるため使えない（`runtime/key_pipeline.rs`の`[shadow-toggle]`
+/// ログ参照）。ペイロードは`calibration_ipc::pack_set_ime_open`/
+/// `unpack_set_ime_open`でエンコードする。
+#[cfg(windows)]
+pub const WM_CALIBRATION_SET_IME_OPEN: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 32;
 
 // ── RawKeyEventExt ───────────────────────────────────────────────────────────────
 

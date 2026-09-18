@@ -27,11 +27,11 @@ use crate::runtime::message_handlers;
 use crate::vk::VkCodeExt;
 use crate::{
     with_app, with_app_or_repost, with_app_or_repost_with, WM_ASYNC_IME_APPLY_COMPLETE,
-    WM_CALIBRATION_END, WM_CALIBRATION_KEY_DETECTED, WM_CALIBRATION_START, WM_DRAIN_OUTPUT_QUEUE,
-    WM_DUMP_JOURNAL, WM_DUPLICATE_INSTANCE, WM_ENGINE_QUIT_REQUEST, WM_EXECUTE_EFFECTS,
-    WM_FOCUS_KIND_UPDATE, WM_GJI_REINIT_RETRY_COMPLETE, WM_HOOK_IME_MODE_DIAGNOSTIC,
-    WM_IME_KIND_CHANGED, WM_KANA_LOCK_WARNING_CHANGED, WM_KEY_FROM_HOOK, WM_PANIC_RESET,
-    WM_RELOAD_CONFIG,
+    WM_CALIBRATION_END, WM_CALIBRATION_KEY_DETECTED, WM_CALIBRATION_SET_IME_OPEN,
+    WM_CALIBRATION_START, WM_DRAIN_OUTPUT_QUEUE, WM_DUMP_JOURNAL, WM_DUPLICATE_INSTANCE,
+    WM_ENGINE_QUIT_REQUEST, WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE, WM_GJI_REINIT_RETRY_COMPLETE,
+    WM_HOOK_IME_MODE_DIAGNOSTIC, WM_IME_KIND_CHANGED, WM_KANA_LOCK_WARNING_CHANGED,
+    WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_RELOAD_CONFIG,
 };
 
 // ── 定数 ──
@@ -489,6 +489,11 @@ pub(crate) fn dispatch_engine_message(
         WM_CALIBRATION_END => {
             let _ = with_app(|app| unsafe {
                 message_handlers::handle_wm_calibration_end(app, wparam);
+            });
+        }
+        WM_CALIBRATION_SET_IME_OPEN => {
+            let _ = with_app(|app| unsafe {
+                message_handlers::handle_wm_calibration_set_ime_open(app, wparam);
             });
         }
         WM_COMMAND => unsafe {
