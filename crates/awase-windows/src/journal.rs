@@ -770,6 +770,7 @@ fn open_apply_reason_str(r: crate::state::ime_event::OpenApplyReason) -> &'stati
         OpenApplyReason::DriftCorrection => "DriftCorrection",
         OpenApplyReason::ShadowToggle => "ShadowToggle",
         OpenApplyReason::ExplicitKeyReassert => "ExplicitKeyReassert",
+        OpenApplyReason::CalibrationUiCommand => "CalibrationUiCommand",
     }
 }
 
@@ -816,6 +817,7 @@ fn decision_site_str(site: crate::state::ime_actuation_decision::DecisionSite) -
         DecisionSite::ForceOnBootstrap => "ForceOnBootstrap",
         DecisionSite::IdleConvCheckDirectInput => "IdleConvCheckDirectInput",
         DecisionSite::BlacklistDriftCorrection => "BlacklistDriftCorrection",
+        DecisionSite::CalibrationUiCommand => "CalibrationUiCommand",
     }
 }
 

@@ -1101,6 +1101,54 @@ impl Runtime {
         outcome
     }
 
+    /// ADR-176: 較正ウィザードの「IMEをON/OFFにする」ボタン
+    /// （`WM_CALIBRATION_SET_IME_OPEN`）専用の、belief（`shadow_on`等）を
+    /// 信用しない明示的な強制送信。
+    ///
+    /// `force_on_and_correct_romaji`と同じ「`applied=None`のviewで
+    /// `GjiDirectStrategy`の`already matches`スキップを回避する」手法を、
+    /// ON方向専用ではなく`target`が指す方向へ双方向に適用する。
+    /// awase-settings.exe自身のウィンドウはawaseがほとんど信念を追跡
+    /// しない特殊な対象で、通常の`handle_engine_set_open`（belief由来の
+    /// `shadow_on`をそのまま使う）経路では、その信念が実態とズレた
+    /// まま固定されているとGjiDirectStrategyが「既に目的の状態のはず」と
+    /// 誤認してキー送信自体をスキップしてしまう（実機検証でOFF方向が
+    /// 常にこれで無効化されていた）。ここではinput_mode補正
+    /// （`force_on_and_correct_romaji`のromaji復元処理）は行わない——
+    /// これはON方向専用のIMM-broken救済であり、双方向の明示コマンドには
+    /// 不要。
+    pub(crate) fn force_set_ime_open_for_calibration_ui(
+        &mut self,
+        target: bool,
+    ) -> awase::platform::ImeOpenOutcome {
+        let tick_ms = crate::state::TickMs(crate::hook::current_tick_ms());
+        self.platform_state.ime.note_explicit_ime_action(tick_ms);
+        let mut view = self.platform.build_ime_control_view(None);
+        view.belief_input_mode = self.platform_state.ime.input_mode();
+        let belief = crate::output::OpenBelief {
+            effective_open: target,
+            confident: true,
+        };
+        let order = self.issue_actuation_order(target, "force_set_ime_open_for_calibration_ui");
+        let (outcome, mut record) = self.platform.apply_ime_open_with_view(order, &view, belief);
+        record.caller =
+            Some(crate::state::ime_actuation_decision::DecisionSite::CalibrationUiCommand);
+        self.platform_state
+            .ime
+            .journal
+            .record(crate::journal::JournalEntry::ActuationDecision { record });
+        tracing::info!(
+            "[calibration] IME状態セットアップ(強制送信): target={target} → {outcome:?}"
+        );
+        self.on_ime_apply_complete(
+            target,
+            outcome,
+            None,
+            crate::state::ime_event::OpenApplyReason::CalibrationUiCommand,
+        );
+        outcome
+    }
+
     // ── ADR-121: 物理IMEキー no-op 時の冪等再送（BUG-37 部分対策） ──────────
 
     /// settle 中で見送った [`Self::reassert_explicit_physical_key`] の pending
