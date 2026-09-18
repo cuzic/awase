@@ -98,6 +98,9 @@ pub enum DecisionSite {
     ForceOnBootstrap,
     IdleConvCheckDirectInput,
     BlacklistDriftCorrection,
+    /// ADR-176: 較正ウィザードの「IMEをON/OFFにする」ボタンによる強制送信
+    /// （`force_set_ime_open_for_calibration_ui`）。
+    CalibrationUiCommand,
 }
 
 /// 1機構分の「何を送るか」の決定結果（実I/Oは含まない）。

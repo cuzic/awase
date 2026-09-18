@@ -359,6 +359,16 @@ pub enum OpenApplyReason {
     /// （ADR-121 D3 参照）。既存の `ShadowToggle`/`ImmBrokenForceOn` と journal
     /// 上で区別できるよう専用 variant にする。
     ExplicitKeyReassert,
+    /// ADR-176: 較正ウィザードの「IMEをON/OFFにする」ボタン
+    /// （`WM_CALIBRATION_SET_IME_OPEN`）による、belief（`shadow_on`等）を
+    /// 信用しない明示的な強制送信。`ImmBrokenForceOn`と同じ「`applied=None`
+    /// のviewでGjiDirectStrategyの`already matches`スキップを回避する」
+    /// 手法を、ON方向専用ではなく指定方向へ双方向に適用する
+    /// （`force_set_ime_open_for_calibration_ui`参照）。
+    /// awase-settings.exe自身のウィンドウに対するawaseのbelief追跡が
+    /// 信頼できないために必要になった、通常のユーザーキー入力とは異なる
+    /// 経路であることを明示する。
+    CalibrationUiCommand,
 }
 
 /// IME 状態モデルへの全 event。

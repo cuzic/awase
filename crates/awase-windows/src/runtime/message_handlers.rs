@@ -1335,16 +1335,12 @@ pub(crate) unsafe fn handle_wm_calibration_set_ime_open(app: &mut Runtime, wpara
         );
         return;
     }
-    let generation = app.platform_state.ime.allocate_event_generation();
-    let now = crate::state::TickMs(hook::current_tick_ms());
     tracing::info!(
         "[calibration] IME状態セットアップ要求: open={} pid={}",
         payload.open,
         payload.pid
     );
-    app.platform_state
-        .ime
-        .handle_engine_set_open(payload.open, false, false, generation, now);
+    app.force_set_ime_open_for_calibration_ui(payload.open);
 }
 
 /// `pid`が実際に`awase-settings.exe`であるかを検証する（round7 N2対応、

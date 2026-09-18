@@ -124,6 +124,9 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
             "force_on_and_correct_romaji",
             "reassert_explicit_physical_key",
             "apply_ime_open_with_belief",
+            // ADR-176: 較正ウィザードのIME ON/OFFボタン専用の強制送信。
+            // 新規追加（棚卸しではない）。
+            "force_set_ime_open_for_calibration_ui",
         ],
     ),
     // apply_ime_open_with_belief: 同表の2箇所（2026-09-09実測、ADR-158 TB1）。

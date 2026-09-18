@@ -539,16 +539,13 @@ struct SettingsApp {
     guided_calibration_step: Option<usize>,
     /// ガイド付き較正の各ステップの結果（最終サマリー表示用）。
     guided_calibration_results: Vec<(&'static str, calibration_panel::GuidedCalibrationOutcome)>,
-    /// IME ON/OFF診断ボタンで保留中の要求（手法関数, 目的の open 状態）。
-    /// egui/winitはテキスト編集ウィジェットに実フォーカスが無いとIME
-    /// 関連付けを無効化している可能性があるため、ボタン押下時点では
-    /// 即座に実行せず、次に較正用テキスト欄が実際にフォーカスを得た
-    /// フレームまで遅延させる（`render_calibration_progress`参照）。
-    pending_ime_open_request: Option<PendingImeOpenRequest>,
+    /// IME ON/OFFボタンで保留中の要求（目的の open 状態）。egui/winitは
+    /// テキスト編集ウィジェットに実フォーカスが無いとIME関連付けを
+    /// 無効化している可能性があるため、ボタン押下時点では即座に実行せず、
+    /// 次に較正用テキスト欄が実際にフォーカスを得たフレームまで遅延させる
+    /// （`render_calibration_progress`参照）。
+    pending_ime_open_request: Option<bool>,
 }
-
-/// 保留中のIME ON/OFF診断要求（手法関数, 目的の open 状態）。
-type PendingImeOpenRequest = (fn(bool) -> bool, bool);
 
 /// バックグラウンドスレッドで実行する保存処理の結果。
 enum PendingSaveResult {
@@ -2861,13 +2858,12 @@ impl SettingsApp {
         let _ = vk;
     }
 
-    /// 現在のIME ON/OFF状態を表示し、複数手法での切り替えボタンを描画する
-    /// （診断目的で全手法を並べている、`ime_state_probe`のdoc参照）。
-    /// タスクバーのGJIアイコンをマウスでクリックする代わりに、この画面内
-    /// だけでIME状態を確認・操作できるようにする（較正の手順どおりに
-    /// 操作できているか不安、という指摘への対応）。表示対象は常に
-    /// 「awase-settings自身のウィンドウ」の状態であり、他アプリの状態を
-    /// 混同しないよう`ime_state_probe`側でフォーカス確認済み。
+    /// 現在のIME ON/OFF状態を表示し、切り替えボタンを描画する。タスクバーの
+    /// GJIアイコンをマウスでクリックする代わりに、この画面内だけでIME状態を
+    /// 確認・操作できるようにする（較正の手順どおりに操作できているか
+    /// 不安、という指摘への対応）。表示対象は常に「awase-settings自身の
+    /// ウィンドウ」の状態であり、他アプリの状態を混同しないよう
+    /// `ime_state_probe`側でフォーカス確認済み。
     ///
     /// ボタン押下時点では即座に実行せず`pending_ime_open_request`へ積む
     /// だけにする——egui/winitはテキスト編集ウィジェットに実フォーカスが
@@ -2876,7 +2872,6 @@ impl SettingsApp {
     /// 無効な状態である疑いがある（ユーザー指摘）。実行は
     /// `render_calibration_progress`側で較正用テキスト欄が実際に
     /// フォーカスを得たフレームまで遅延させる。
-    #[allow(clippy::type_complexity)]
     fn render_ime_state_controls(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("現在のIME状態:");
@@ -2901,42 +2896,16 @@ impl SettingsApp {
                 "保留中: 下のテキスト欄にフォーカスが戻り次第実行します。",
             );
         }
-        ui.label("以下は診断用: どれか効くものを探すため複数手法を並べています。");
-        let methods: [(&str, fn(bool) -> bool); 5] = [
-            (
-                "A: IMM32直接(ImmSetOpenStatus)",
-                ime_state_probe::set_ime_open_immset,
-            ),
-            (
-                "B: WM_IME_CONTROL(cross)",
-                ime_state_probe::set_ime_open_wm_control,
-            ),
-            (
-                "C: VK_IME_ON/OFF送信",
-                ime_state_probe::set_ime_open_dedicated_vk,
-            ),
-            (
-                "D: VK_KANJI送信(トグル)",
-                ime_state_probe::set_ime_open_kanji_toggle,
-            ),
-            (
-                "E: awase.exeへCommand要求",
-                ime_state_probe::set_ime_open_command_ipc,
-            ),
-        ];
-        for (label, func) in methods {
-            ui.horizontal(|ui| {
-                ui.add_sized([220.0, 20.0], egui::Label::new(label));
-                if ui.button("OFFにする").clicked() {
-                    tracing::info!("[calibration-ui] IME診断ボタン押下: {label} open=false (保留)");
-                    self.pending_ime_open_request = Some((func, false));
-                }
-                if ui.button("ONにする").clicked() {
-                    tracing::info!("[calibration-ui] IME診断ボタン押下: {label} open=true (保留)");
-                    self.pending_ime_open_request = Some((func, true));
-                }
-            });
-        }
+        ui.horizontal(|ui| {
+            if ui.button("IMEをOFFにする").clicked() {
+                tracing::info!("[calibration-ui] 「IMEをOFFにする」押下(保留)");
+                self.pending_ime_open_request = Some(false);
+            }
+            if ui.button("IMEをONにする").clicked() {
+                tracing::info!("[calibration-ui] 「IMEをONにする」押下(保留)");
+                self.pending_ime_open_request = Some(true);
+            }
+        });
     }
 
     /// 計測中〜結果確定までの状態表示・フォーカス保持用テキスト欄の描画。
@@ -2996,8 +2965,8 @@ impl SettingsApp {
                 | CalibrationPanelState::FocusLost
         ) && !response.has_focus()
         {
-            // IME診断ボタン（テキスト編集ウィジェットではない）をクリック
-            // すると、egui内部のウィジェットフォーカスがボタン側へ移り
+            // IME ON/OFFボタン（テキスト編集ウィジェットではない）を
+            // クリックすると、egui内部のウィジェットフォーカスがボタン側へ移り
             // `response.has_focus()`が一時的にfalseになる。これを本物の
             // 「アプリ外へフォーカスが外れた」（FocusLost）と誤認して
             // ユーザーを混乱させないよう、計測セッション中は毎フレーム
@@ -3009,13 +2978,13 @@ impl SettingsApp {
             ui.ctx().request_repaint();
         }
         if response.has_focus()
-            && let Some((func, open)) = self.pending_ime_open_request.take()
+            && let Some(open) = self.pending_ime_open_request.take()
         {
             tracing::info!(
-                "[calibration-ui] テキスト欄フォーカス確認、保留中のIME診断要求(open={open})を実行"
+                "[calibration-ui] テキスト欄フォーカス確認、保留中のIME状態変更要求(open={open})を実行"
             );
-            let ok = func(open);
-            tracing::info!("[calibration-ui] IME診断要求の実行結果: ok={ok}");
+            let ok = ime_state_probe::set_ime_open(open);
+            tracing::info!("[calibration-ui] IME状態変更要求の送信結果: ok={ok}");
         }
         let before_state = self.calibration_state;
         self.calibration_state =

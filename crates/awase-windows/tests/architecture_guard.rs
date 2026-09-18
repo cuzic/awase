@@ -1253,7 +1253,12 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         //
         // **2026-09-08（ADR-121 D3）**: `mod.rs::reassert_explicit_physical_key`
         // （物理IMEキーno-op時の冪等再送、BUG-37部分対策）が新規追加され 3→4。
-        (".apply_ime_open_with_view(", 4),
+        //
+        // **2026-09-18（ADR-176）**: `mod.rs::force_set_ime_open_for_
+        // calibration_ui`（較正ウィザードのIME ON/OFFボタン専用の
+        // belief非依存強制送信、`force_on_and_correct_romaji`と同型だが
+        // 双方向）が新規追加され 4→5。
+        (".apply_ime_open_with_view(", 5),
         // ADR-098 決定2（BUG-69）: 唯一の呼び出し元（ime_refresh.rs の GJI
         // TsfNative 強制 ON ブロック）を撤去し、メソッド自体も削除した。
         (".apply_ime_open_with_applied(", 0),
