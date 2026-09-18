@@ -14,14 +14,24 @@ mod windows_impl {
     use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
     use windows::Win32::System::Threading::GetCurrentProcessId;
     use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
+        VIRTUAL_KEY,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
         GetForegroundWindow, GetWindowThreadProcessId, SMTO_ABORTIFHUNG, SendMessageTimeoutW,
     };
 
     const WM_IME_CONTROL: u32 = 0x0283;
     const IMC_GETOPENSTATUS: usize = 0x0005;
-    const IMC_SETOPENSTATUS: usize = 0x0006;
     const PROBE_TIMEOUT_MS: u32 = 200;
+    /// 漢字キー（`VK_KANJI`）。IME ON/OFFの伝統的なトグルキーで、
+    /// `keys.ime_toggle`の既定値でもある（`src/config.rs`参照）。
+    /// GJIはTSFベースのため`IMC_SETOPENSTATUS`（`WM_IME_CONTROL`経由の直接
+    /// 書き込み）を無視する（`IMC_GETOPENSTATUS`での読み取りはミラーされて
+    /// いて機能するのに対し、書き込みはTSF側のCOMインタフェースを経由しない
+    /// と反映されない）。そのため物理キー相当のSendInputでトグルする。
+    const VK_KANJI: u16 = 0x19;
 
     /// 現在の最前面ウィンドウが自分自身（awase-settings.exe）のものであれば
     /// そのHWNDを返す。他アプリが前面にある場合は`None`。
@@ -66,31 +76,41 @@ mod windows_impl {
         (ok.0 != 0).then_some(result != 0)
     }
 
-    /// IME ON/OFF状態を設定する。自分自身のウィンドウが最前面に無い場合は
-    /// 何もせず`false`を返す。
+    /// IME ON/OFF状態を設定する。既に望む状態であれば何もしない
+    /// （`VK_KANJI`はトグルキーであり、既に目的の状態のまま送ると逆方向に
+    /// 切り替わってしまうため）。現在状態が不明な場合も含め、送信自体は
+    /// 較正バイパス中であればawase自身の通常のキー処理をバイパスして
+    /// GJIへ直接届く（`focus::set_calibration_bypass_process`が
+    /// awase-settings.exeフォーカス中はdisable_apps同様に扱うため）。
     pub(crate) fn set_ime_open(open: bool) -> bool {
-        let Some(hwnd) = own_foreground_hwnd() else {
-            return false;
-        };
-        // SAFETY: hwnd は own_foreground_hwnd が返した有効なハンドル。
-        let ime_wnd = unsafe { ImmGetDefaultIMEWnd(hwnd) };
-        if ime_wnd.0.is_null() {
-            return false;
+        if current_ime_open() == Some(open) {
+            return true;
         }
-        let mut result = 0usize;
-        // SAFETY: ime_wnd は直前に取得した有効なIMEウィンドウハンドル。
-        let ok = unsafe {
-            SendMessageTimeoutW(
-                ime_wnd,
-                WM_IME_CONTROL,
-                WPARAM(IMC_SETOPENSTATUS),
-                LPARAM(isize::from(open)),
-                SMTO_ABORTIFHUNG,
-                PROBE_TIMEOUT_MS,
-                Some(&raw mut result),
-            )
-        };
-        ok.0 != 0
+        let inputs = [key_input(VK_KANJI, false), key_input(VK_KANJI, true)];
+        let size = i32::try_from(size_of::<INPUT>())
+            .expect("size_of::<INPUT>() is a small constant that always fits in i32");
+        // SAFETY: inputs はスタック上の有効な配列で、size は要素の実サイズと一致する。
+        let sent = unsafe { SendInput(&inputs, size) };
+        sent as usize == inputs.len()
+    }
+
+    const fn key_input(vk: u16, is_keyup: bool) -> INPUT {
+        INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    wScan: 0,
+                    dwFlags: if is_keyup {
+                        KEYEVENTF_KEYUP
+                    } else {
+                        KEYBD_EVENT_FLAGS(0)
+                    },
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        }
     }
 }
 
