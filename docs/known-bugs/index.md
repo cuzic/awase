@@ -146,6 +146,8 @@
 | [BUG-142](BUG-142.md) | Windows Terminal + GJI、物理半角/全角キーの繰り返し押下でIME ON/Engine ONに固着。原因はshadow-toggleの固定方向no-op誤判定、keys.ime_detect.toggleでToggle解決に変えると実機A/Bで解消確定（ADR-175） |
 | [BUG-143](BUG-143.md) | classify_mode_key_ime_actionがsession_keymap==CUSTOM以外ではcustom_keymap_tableを一切参照せず、実在するHenkan=IMEOn設定を無視していた（ADR-174、修正済み） |
 | [BUG-144](BUG-144.md) | 較正probeループがフォーカス不一致時にtracker.tick()をスキップし、settle window外の値がpostとして混入しうる（ADR-176 176-T9a、コードレビューで発見・修正済み） |
+| [BUG-145](BUG-145.md) | 文字→無変換/変換の押下間隔が閾値をわずかに超えると、チョードが文字単独+親指単独タップに割れ、生の親指VKがGJIへ届いて半角英数化する（ADR-182、決定1・1b修正済み、1cは実装中） |
+| [BUG-146](BUG-146.md) | 半角英数（ObservedEisu）検出時にawaseがopen軸へfalseを書く（IMEはONのままなのにbelief/intentだけOFF扱い、起票のみ・未修正） |
 
 ## その他の資料
 
