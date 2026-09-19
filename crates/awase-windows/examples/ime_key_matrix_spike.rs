@@ -294,7 +294,7 @@ const KEYS: [(&str, &[u32], bool); 5] = [
     ("変換", &[0x1C], false),
     ("ひらがな", &[0xF2], false),
     (
-        "Shift+カタカナ(カタカナひらがなキーをShift併用)",
+        "Shift+ひらがな(カタカナ入力。0xF1として届く)",
         &[0xF1],
         true,
     ),
