@@ -17,7 +17,7 @@ summary: |-
   **無変換/変換(入力なし)の押下時点のbelief追随だけ**に絞る。かな英数トグルは実機確認まで保留、
   入力中の無変換は現状維持、半角/全角のモデル誤りは別件。
 status: |-
-  **ドラフトv2(opus round1のBlocker3件・Must-fix5件を反映)**。round2で収束確認する。
+  **ドラフトv3(opus round2で収束、Blocker 0)**。round1のBlocker3件・Must-fix5件、round2のMust-fix2件・Should-fix3件を反映。実装可(下記の前提ブランチ待ち)。
   前提ブランチ: ADR-179/184(`feat/adr178-mode-key-actuation-and-tsfnative-rescue-teardown`の未追跡/未マージ
   ファイル)とADR-185(`feat/adr185-directinput-open-axis-write`)は本ブランチ(developの先端)に存在しない。
   実装は上記ブランチのマージ後に行う。
@@ -62,12 +62,13 @@ related_adr:
 |---|---|---|---|---|
 | 直接入力 | IME ON(r1:9, r2:9) | IME ON(r1:19, r2:19) | 変化なし(r1:24, r2:29) | **0xF4**: IME ON(r1:56, r2:39)。0xF3: **有効な測定なし** |
 | ON・入力なし・かな | **IME OFF**(r1:61, r2:44) | **IME OFF**(r1:66, r2:54) | ONのままconv 0x09→0x10(かな→半角英数)(r1:71, r2:64) | **0xF3**: IME OFF(r1:83, r2:75) |
-| ON・変換前(Composition) | ONのままconv→0x10、未確定保持(r2:90) | 変換(comp か→下)(r2:95) | 半角英数トグル(r2/r1で未確認) | **0xF4**: IME OFF、未確定破棄(r2:142) |
-| ON・変換中(Conversion) | **効果なし**(r1:108) | 次候補ページ(comp か→🉑)(r1:113) | conv 0x10→0x19(r1:143)※ | **0xF3**: IME OFF、未確定破棄(r1:160) |
+| ON・変換前(Composition) | ONのままconv→0x10、未確定保持(r2:90) | 変換(comp か→下)(r2:95) | 半角英数トグル(r2/r1で未確認) | **0xF3**: IME OFF、未確定破棄(r1:160) |
+| ON・変換中(Conversion) | **効果なし**(r1:108) | 次候補ページ(comp か→🉑)(r1:113) | conv 0x10→0x19(r1:143)※ | **0xF4**: IME OFF、未確定破棄(r2:142) |
 | ON・入力なし・半角英数 | **IME OFF**(r1:175, r2:152) | **IME OFF**(r1:180, r2:162) | かなに戻る(conv 0x10→0x19)(r1:185) | 未測定 |
 
 ※ `atok.tsv`に`Conversion Kana`行は無いため、この効果はMozcではなくOS/IMM側のDBE効果の可能性がある。
 
+- 決定5の根拠(0xF4がON中に届いてOFFにした実例)は、Conversion状態での1件(`round2:142`)。
 - Shift+無変換: ON・入力なしで、かな⇔半角英数のトグル(conv 0x19⇄0x10)。両ラウンドで確認。
 - **convは開閉遷移をまたいで保存される**。直接入力(conv 0x10)から変換でONにしたとき、conv 0x10のままONに
   なった(`round2:147-151`、同型3件: `147/157/284`)。`IMEOn`は`key.mode`(=直前のvisible conv)を復元する
@@ -113,6 +114,14 @@ related_adr:
 `eisu_reset_on_ime_on`)を抑止する**(ObservedEisuを消さない)。convは開閉をまたいで保存されるため、
 直接入力(半角英数のまま)から無変換でONにしたとき、resetするとEngine ONのまま実IMEが半角英数になり、
 要件の真逆になる。これは既存分岐への条件追加であり、新しい型・フィールドは足さない。
+**入れ場所は`crates/awase-windows/src/runtime/key_pipeline.rs`の`eisu_reset_on_ime_on(applied && new_ime_on, ..)`呼び出し(1911-1915付近)の1箇所**。
+条件は「このイベントが無変換/変換(`VK_NONCONVERT`/`VK_CONVERT`)の修飾なし単独タップのとき」(同スコープの
+`event.vk_code`と`event.modifier_snapshot`で判定できる。IME-ONコンボのCtrl+変換とは区別できる)。
+**「GJI/ATOKなら常に抑止」にしてはならない**: `eisu_reset_on_ime_on`はデッドロック解除でもあり
+(`state/eisu_recovery.rs:3-16`)、Imm32Unavailableアプリ(Chrome/Edge)ではObservedEisuを訂正する観測経路が無く、
+一律に抑止するとEngineが永久にinactiveになる既知バグ(2026-07-06 MS Edge)を再発させる。`SetOpenOrigin`での区別も不可
+(delegateもIME-ON/OFFコンボも同じ`ExplicitUserAction`で、区別には新variantが要る)。
+抑止した後の脱出口: stale なObservedEisuに嵌ったときは、Ctrl+変換(IME-ONコンボ)が従来どおりresetする。
 `state/eisu_recovery.rs`の対応表と`tests/architecture_guard.rs::user_ime_on_paths_are_paired_with_eisu_reset`
 にGJI/ATOK例外を明記する。
 
@@ -146,10 +155,11 @@ delegateはcomposing中に発火しないfail-closedになっている(誤って
 |---|---|---|
 | かな・入力なしで無変換/変換 | IME OFF | belief OFF→Engine OFF(押下時点)。**満たす** |
 | 半角英数ON・入力なしで無変換/変換 | IME OFF | 同上。**満たす** |
-| 直接入力で無変換/変換 | IME ON(convは直前値を復元) | belief ON。eisu reset抑止によりObservedEisuが残ればEngine OFF、かななら Engine ON。**満たす**(決定2の抑止が前提) |
+| 直接入力で無変換/変換 | IME ON(convは直前値を復元) | belief ON。**ObservedEisuが立っていれば**Engine OFF(満たす)。立っていない場合(直前にひらがなキー/Shift+無変換で半角英数に入った等、決定3を保留したため beliefが`AssumedRomaji`のまま)は、抑止してもEngine ONになり**満たさない**(実IMEは半角英数ON)。今日は無変換でbelief openが動かずEngine OFFのままなので、このケースだけ**退行**。 |
 | 入力中(Composition)で無変換 | ONのまま半角英数 | delegate発火せず。遅延観測まで満たさない(既知) |
 | ひらがなキー | かな⇔半角英数 | 満たさない(決定3を保留)。遅延観測のまま |
 | 半角/全角 | ON/OFFトグル | 0xF3は正しい。0xF4はno-op(決定5) |
+| フォーカス遷移直後(settling中) | — | `SetOpen`が2段フィルタ(`executor.rs:156-172`、`platform_state.rs:289-309`)で落ち、物理キーも`Decision::Consume`で中継されないため、**誰も切り替えない完全な空振り**。今日は生キーがGJIに届くので、退行 |
 | belief誤予測時 | — | Toggleなので**逆方向へactuate**。訂正はTsfNative限定(`idle_check.rs`のガード2)で、非TsfNativeでは訂正が来ない。TsfNativeでも、次に500ms以上手が止まり、最後の明示IME操作から1500ms経過するまで続く |
 
 ## リスク(BUG-115が挙げた却下理由と本ADRの実測の関係)
@@ -159,14 +169,22 @@ delegateはcomposing中に発火しないfail-closedになっている(誤って
 残る。特に`config.rs:452-455`が警告する「TSFネイティブアプリ(`FeedbackPolicy::Blind`)では実IME状態を読み戻せない
 ため、beliefがズレると逆方向へ切り替わる」は、決定2の中心的リスクで、ユーザー原則「IME ON/OFFは安定して観測
 できない」と直結する。実機A/Bでbeliefのズレを確認すること。
+また、無変換/変換の単独タップごとに`record_explicit_intent`(`UserIntentSource::Command`)が走り、
+`EXPLICIT_ON_INTENT_TTL_MS = 10_000`(`tuning.rs:467`)の間、open意図がIntentStoreに固定されてdrift correctionより
+優先される(今日はPassthroughのため記録されない新しい露出)。親指キーの単独タップは日常的に起きる。
 
 ## 検証計画
 
 1. 実機A/B(メモ帳・Windows Terminal、awase起動・debug、`gji_thumb_key_ime_toggle = true`):
    無変換/変換の押下から`Engine activated/deactivated`までの時間を、ログの押下時刻で測る(現状=次の打鍵後)。
    直接入力(半角英数のまま)からの無変換で、Engineが誤ってONにならないこと。
+   **加えて、ひらがなキー(またはShift+無変換)で半角英数にした直後に、無変換を2回押して(OFF→ON)も、
+   Engineが誤ってONにならないこと**(決定3を保留したことで生じる退行窓。再現したら、決定2を
+   **ON→OFF方向だけ**に限定する: beliefがONのときだけToggleを採用し、OFFのときは今日どおり生キーをGJIに通す。
+   Engineの安全上重要な方向は「英数のときOFF」で、「かなのときON」の失敗は1打の遅延に留まるため)。
 2. ゴールデン/ユニットテスト: 表の「入力なし」セルについて期待するbelief遷移を固定。eisu reset抑止の
-   回帰テスト(`fix-requires-evidence`の再発ファミリー: IME belief/キー選択に該当するため必須)。
+   回帰テスト(`architecture_guard::user_ime_on_paths_are_paired_with_eisu_reset`は`write_*(`の出現数を数えるだけで
+   eisu resetの条件変更を検出しないため、**この回帰テストが唯一の保護**)(`fix-requires-evidence`の再発ファミリー: IME belief/キー選択に該当するため必須)。
 3. 決定3の前提確認: ひらがなキー押下時、GJIのconvが実際に変わるかをdebugログで確認する。
 
 ## 未解決事項
