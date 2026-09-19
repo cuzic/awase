@@ -19,7 +19,11 @@ status: |-
   事項（実機A/Bの4象限、`schedule_settle_retry`を巻き込まない別関数化、
   `actuation_owner`書き込み点のguard新設、`NotAModeKey`/`AwaseExplicit`
   非統合の固定）は「未解決点」節に記載。`key_pipeline.rs:1688`のコメント
-  訂正〈独立したドキュメント負債〉は2026-09-17に対応済み。実装未着手。**
+  訂正〈独立したドキュメント負債〉は2026-09-17に対応済み。**
+  **【2026-09-19更新】決定1・決定2は実装済み**（`2e8b834b`・`09ea4ce1`）。その後の実機A/Bで
+  実験コミット4件（`b9e45e55`・`176d37af`・`c0814776`・`f0e36b0e`）が追加され、Passthrough設定
+  を前提にした実験が**現在も有効**。**developへマージする前に、実験を撤去して既定（Suppress）へ
+  戻す必要がある**（本文「実装状況と実験コミット」節のマージ前TODOを参照）。
 related_adr:
   - "ADR-092"
   - "ADR-115"
@@ -37,7 +41,7 @@ related_adr:
 
 # ADR-179: 無変換/変換の非親指キー時actuation-autoを撤去し、`ModeKeyActuationOwner`列挙で責務を統一管理する
 
-**8ラウンドのopus-adversarial-consultを経て収束済み。実装着手可。** 設計の
+**8ラウンドのopus-adversarial-consultを経て収束済み。決定1・2は実装済み（2026-09-19時点、実験コミットが未撤去）。** 設計の
 紆余曲折（当初案からの縮小・4ラウンド連続で踏んだ「送信元が移動するだけ」
 という同型の誤り等）は末尾「レビュー経緯」節にまとめてある——まずは
 以下の決定・スコープ・撤去対象を読めば実装に着手できる。
@@ -421,6 +425,38 @@ MS-IME側のコメント（`message_handlers.rs:1031-1064`）には、過去の
   × {ImmCross, TsfNative}の4象限**に拡張し、特にTsfNativeアプリ
   （Windows Terminal/WezTerm等）での無変換/変換の実際の反応を確認する
   ことを受け入れ条件に含める。
+
+## 実装状況と実験コミット（2026-09-19時点）
+
+ブランチ`feat/adr178-mode-key-actuation-and-tsfnative-rescue-teardown`（developには未マージ）。
+
+**実装済み（本ADRの決定）**
+- 決定1（非親指キーactuation-auto〈F15-F24〉の撤去、入口の一本化）: `2e8b834b`
+- 決定2（`ModeKeyActuationOwner`列挙で所有権を一元判定）: `09ea4ce1`。`actuation_owner`書き込み点を
+  1箇所に固定するガード（未解決点5）は`architecture_guard.rs::actuation_owner_is_computed_in_
+  exactly_one_place`として実装済み。
+- 実機A/B用の一時コミット（無変換/変換を非親指キー化→既定へ戻す）: `5db0c2f2`・`43617a1b`。
+  未解決点10（{GJI, MS-IME}×{ImmCross, TsfNative}の4象限）の結果は、本ADRには未記録。
+
+**実験コミット（本ADRの決定ではなく、ユーザー指示による実機での試行。現在も有効）**
+- `b9e45e55` 単独タップpassthrough辞退をTurnOff/Toggleにも拡張（ADR-147の「TurnOn限定」を緩和）
+- `176d37af` FollowOnly belief追随（`SetOpenOrigin::PhysicalDeliveryFollow`、`ImeOpenRequest`）を新設、
+  Toggleは辞退対象から除外
+- `c0814776` 親指キー設定×IME OFF時もPhysicalDeliveryに一般化（`!is_configured_thumb_key`条件を撤廃）
+- `f0e36b0e` Henkan/MuhenkanのSuppress設定は方向を問わず完全に無視（`mode_key_config`がSomeのキー限定）
+
+**マージ前TODO（ユーザー指示、2026-09-19）**: Passthrough設定を前提とした上記の実験は、developへ
+マージする前に撤去し、既定（Suppress）の挙動へ戻す。手順の案:
+1. 実験コミット4件のうち、既定（Suppress）の挙動を変えているもの（`f0e36b0e`のSuppress完全無視、
+   `c0814776`のowner計算）を洗い出し、「マージするもの」と「revertするもの」に分ける。
+   revertするコミットは`.claude/rules/experiment-logging.md`に従い、コミット本文に観測された失敗条件
+   （アプリ・IME・症状）を書き、`docs/experiments.md`に1行追記する（IME actuation/key選択の領域）。
+2. Windows実機の`config.toml`から実験設定（`muhenkan_solo_tap_always_suppress = false`、
+   `henkan_solo_tap_always_suppress = false`等）を削除し、既定値へ戻す。
+3. 既定（Suppress）で`cargo test --lib`と実機A/Bが実験前と同等であることを確認する。
+4. ADR-182（チョード判定の修正、PR #225でマージ済み）はPassthrough設定でも機能する独立した修正だが、
+   テストの一部がPassthrough設定（`make_test_engine_with_muhenkan_passthrough`）を使うので、
+   実験撤去後も通ることを確認する。
 
 ## 未解決点（実装設計で詰める）
 
