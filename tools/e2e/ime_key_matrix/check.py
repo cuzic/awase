@@ -67,9 +67,12 @@ def parse_awase(path):
 
 
 def main():
-    if len(sys.argv) != 3:
+    if len([a for a in sys.argv if a != "--real-only"]) != 3:
         print(__doc__)
         return 2
+    real_only = "--real-only" in sys.argv
+    argv = [a for a in sys.argv if a != "--real-only"]
+    sys.argv = argv
     steps = parse_spike(sys.argv[1])
     events, unwarranted = parse_awase(sys.argv[2])
     fails = 0
@@ -89,7 +92,7 @@ def main():
             )
         after = [(ms - p, k, d) for ms, k, d in events if -20 <= ms - p <= 1500]
         desc = "; ".join(f"{k}@{dt:+.0f}ms" for dt, k, d in after) or "(なし)"
-        if "engine" in exp:
+        if "engine" in exp and not real_only:
             kind, win = exp["engine"]
             if kind == "none":
                 bad = [x for x in after if x[1] == "activated"]
@@ -99,14 +102,14 @@ def main():
                 ok = [x for x in after if x[1] == kind and x[0] <= win]
                 if not ok:
                     problems.append(f"{win}ms以内に{kind}しない")
-        if exp.get("delegate_false"):
+        if exp.get("delegate_false") and not real_only:
             if not [x for x in after if x[1] == "delegate" and x[0] <= 300]:
                 problems.append("delegate → false が出ない")
         verdict = "PASS" if not problems else "FAIL: " + " / ".join(problems)
         fails += bool(problems)
         real = f"open={st['open']} conv=0x{st['conv']:02X}"
         print(f"{n:>4} {real:<16} {desc[:34]:<34} {verdict}")
-    if unwarranted:
+    if unwarranted and not real_only:
         print(f"FAIL: outcome=Unwarranted が {unwarranted} 件")
         fails += 1
     print("結果:", "ALL PASS" if fails == 0 else f"{fails} 件 FAIL")

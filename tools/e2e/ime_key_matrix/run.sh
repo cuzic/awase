@@ -38,5 +38,7 @@ done
 grep -q "全手順完了" "$OUT/spike.log" || { echo "自動実行が完了しませんでした(timeout)。$OUT/spike.log を確認してください"; exit 2; }
 
 "$CW" exec e2e-fetch-awase >"$OUT/awase.log" 2>/dev/null
-python3 "$HERE/check.py" "$OUT/spike.log" "$OUT/awase.log" | tee "$OUT/result.txt"
+# 失敗の原因調査用に、フィルタ前の awase ログも残す(ノイズ行のみ除外)。
+"$CW" exec e2e-fetch-awase-full >"$OUT/awase-full.log" 2>/dev/null
+python3 "$HERE/check.py" ${REAL_ONLY:+--real-only} "$OUT/spike.log" "$OUT/awase.log" | tee "$OUT/result.txt"
 exit "${PIPESTATUS[0]}"
