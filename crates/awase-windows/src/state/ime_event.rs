@@ -265,6 +265,8 @@ pub enum ApplyError {
     UnsafeToToggle,
     /// フォーカス先が入力中継ツールで、awase が IME actuation を所有しないため送らなかった
     NotOwned,
+    /// `issue_open_warrant()` が授権を発行しなかったため送らなかった（ADR-090 A-2）
+    Unwarranted,
     /// その他
     Other,
 }
@@ -608,6 +610,11 @@ impl ImeEvent {
                 target,
                 generation,
                 error: ApplyError::NotOwned,
+            },
+            ImeOpenOutcome::Unwarranted => Self::ImeApplyFailed {
+                target,
+                generation,
+                error: ApplyError::Unwarranted,
             },
         }
     }

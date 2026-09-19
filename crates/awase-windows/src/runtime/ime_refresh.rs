@@ -540,8 +540,12 @@ impl Runtime {
             // ADR-090 §2.A 設計案 3: トレイトメソッド `set_ime_open` には引数を
             // 足せないため inherent な `set_ime_open_ordered` へ移した。
             let order = self.issue_actuation_order(false, "focus_change_enforce_off");
-            let _ = self.platform.set_ime_open_ordered(order);
-            tracing::debug!("[composition] FocusChange: set_ime_open(false) called (applied_open OFF → enforce IME OFF on new window)");
+            let sent = self.platform.set_ime_open_ordered(order);
+            tracing::debug!(
+                "[composition] FocusChange: set_ime_open(false) sent={sent} \
+                 (applied_open OFF → enforce IME OFF on new window; ADR-090 A-2: \
+                 sent=false means warrant was refused, no write happened)"
+            );
         }
     }
 
@@ -860,8 +864,16 @@ impl Runtime {
             // `EventOrigin`（`act_origin`）を持っているので、それをそのまま
             // order の出所として使う（journal の `ImeActuation` と揃う）。
             let order = self.issue_actuation_order_with_origin(desired, act_origin);
-            let _ = self.platform.set_ime_open_ordered(order);
-            self.platform_state.ime.record_optimistic(desired);
+            // ADR-090 §2.A A-2（2026-09-19）: `set_ime_open_ordered`が実際に
+            // 書いたときだけ`applied`を`Optimistic`にする。以前は戻り値を
+            // 無視して無条件に呼んでおり、A-2導入前（常に書き込む shadow
+            // モード）は実害が無かったが、warrant無し（`Unwarranted`）で
+            // 書き込みを拒否した場合に「送っていないのに送った体で記録する」
+            // 欠陥になっていた（ADR-098が警告する「belief をactuationの
+            // 記録として書く」誤用と同型）。
+            if self.platform.set_ime_open_ordered(order) {
+                self.platform_state.ime.record_optimistic(desired);
+            }
         } else {
             // set_ime_open は IMM32専用で Blacklist/TsfNative では no-op のため、
             // apply_force_on_for_imm_broken と同じ strategy chain 経由の実送信を使う。

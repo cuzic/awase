@@ -986,7 +986,9 @@ impl ImeStateHub {
         let Some(generation) = generation else {
             if matches!(
                 outcome,
-                ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned
+                ImeOpenOutcome::UnsafeToToggle
+                    | ImeOpenOutcome::NotOwned
+                    | ImeOpenOutcome::Unwarranted
             ) {
                 return ImeApplyAcceptance::NotSent;
             }
@@ -997,7 +999,9 @@ impl ImeStateHub {
                 | ImeOpenOutcome::AppliedWithoutSendInput
                 | ImeOpenOutcome::AlreadyMatched => open,
                 ImeOpenOutcome::Failed => !open,
-                ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned => {
+                ImeOpenOutcome::UnsafeToToggle
+                | ImeOpenOutcome::NotOwned
+                | ImeOpenOutcome::Unwarranted => {
                     unreachable!("上で早期 return 済み")
                 }
             };

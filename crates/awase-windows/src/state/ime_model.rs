@@ -860,6 +860,7 @@ impl ImeModel {
             }
             ApplyError::UnsafeToToggle => awase::platform::ImeOpenOutcome::UnsafeToToggle,
             ApplyError::NotOwned => awase::platform::ImeOpenOutcome::NotOwned,
+            ApplyError::Unwarranted => awase::platform::ImeOpenOutcome::Unwarranted,
         };
         let acceptance = self.classify_apply_completion(target, outcome, generation);
         if self

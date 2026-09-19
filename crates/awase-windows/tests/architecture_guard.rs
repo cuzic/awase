@@ -4083,14 +4083,19 @@ fn hook_state_struct_has_exactly_one_mutex_field() {
 /// 削除されると、上記テストの`InputRelay`文字列カウント（コメント由来で
 /// 見かけ上は変化しないファイルもある）だけでは検知できない
 /// ——本テストが呼び出し件数そのものを見て埋め合わせる。
+///
+/// **ADR-180決定1（2026-09-19）**: `open_chain.rs`の3箇所は`decide_gate(`を
+/// 直接呼ぶ代わりに、共有ヘルパー`ime_actuation_decision::is_input_relay(`を
+/// 呼ぶ形へ統合した（`with_app`を内包しない、round1 E2形）。ファイル別の
+/// `decide_gate(`出現数だけを見ると`open_chain.rs`が3→0になり、3つの
+/// `.await`境界のうち1つがgate呼び出しを失っても検知できなくなる
+/// （round1 C6が指摘した退行）。そのため`open_chain.rs`側は関数別に
+/// `is_input_relay(`の出現数を固定する形へ作り替えた。
 #[test]
 fn decide_gate_wiring_occurrence_counts_are_pinned() {
-    let expectations: &[(&str, usize)] = &[
-        ("src/ime_controller.rs", 1),
-        ("src/runtime/executor.rs", 1),
-        ("src/runtime/open_chain.rs", 3),
-    ];
-    for (path, expected) in expectations {
+    let direct_decide_gate: &[(&str, usize)] =
+        &[("src/ime_controller.rs", 1), ("src/runtime/executor.rs", 1)];
+    for (path, expected) in direct_decide_gate {
         let content = read_crate_file(path);
         let production = strip_any_test_module(&content);
         let count = production.matches("decide_gate(").count();
@@ -4103,6 +4108,36 @@ fn decide_gate_wiring_occurrence_counts_are_pinned() {
              期待値を更新すること。"
         );
     }
+
+    // open_chain.rs: 3つの`.await`境界それぞれが`is_input_relay(`を
+    // 関数本体内でちょうど1回呼んでいることを固定する（ADR-180決定1）。
+    let open_chain_rs = read_crate_file("src/runtime/open_chain.rs");
+    let production = strip_any_test_module(&open_chain_rs);
+    let per_fn_expectations: &[(&str, usize)] = &[
+        ("fn imm_cross_write", 1),
+        ("fn fallback_write", 1),
+        ("fn run_open_chain_async", 1),
+    ];
+    for (fn_signature_needle, expected) in per_fn_expectations {
+        let body = extract_fn_body(production, fn_signature_needle);
+        let count = body.matches("is_input_relay(").count();
+        assert_eq!(
+            count, *expected,
+            "src/runtime/open_chain.rs の `{fn_signature_needle}` 内で \
+             `is_input_relay(` 呼び出しの出現数が想定({expected})と異なります \
+             (実際: {count})。この関数の`.await`境界でInputRelayゲートの \
+             再検証が失われていないか確認すること。"
+        );
+    }
+    // 上記3関数以外にis_input_relay(が漏れ出していないかも固定する
+    // （合計4件: 上記3 + `ime_actuation_decision.rs`自身の定義1件）。
+    let total_in_open_chain = production.matches("is_input_relay(").count();
+    assert_eq!(
+        total_in_open_chain, 3,
+        "src/runtime/open_chain.rs 全体での `is_input_relay(` 呼び出し数が \
+         想定(3)と異なります(実際: {total_in_open_chain})。新しい呼び出し元が \
+         増えた場合は上記per-fn期待値にも追加すること。"
+    );
 }
 
 /// `DeferredOrigin::RecoveryResend` の本番構築箇所は

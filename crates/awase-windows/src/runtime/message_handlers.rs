@@ -750,6 +750,8 @@ const fn encode_outcome(outcome: ImeOpenOutcome) -> isize {
         // ×ImmCross失敗フォールバック時の随伴warmup重複が直らない
         // （opus-adversarial-consult指摘）。
         ImeOpenOutcome::AppliedWithoutSendInput => 6,
+        // ADR-090 A-2: `issue_open_warrant()` が授権を発行しなかった。
+        ImeOpenOutcome::Unwarranted => 7,
     }
 }
 
@@ -763,6 +765,7 @@ fn decode_outcome(value: isize) -> ImeOpenOutcome {
         4 => ImeOpenOutcome::UnsafeToToggle,
         5 => ImeOpenOutcome::NotOwned,
         6 => ImeOpenOutcome::AppliedWithoutSendInput,
+        7 => ImeOpenOutcome::Unwarranted,
         other => {
             tracing::error!("WM_ASYNC_IME_APPLY_COMPLETE: unknown outcome code {other}");
             ImeOpenOutcome::UnsafeToToggle

@@ -184,6 +184,7 @@
 | [177](177-msi-restart-manager-graceful-shutdown.md) | 常駐中のMSIアップグレードは実機検証の結果コード変更不要と判明(Restart Managerが現状コードのまま自律的にシャットダウン・再起動を処理、UI付き・データ保持も確認)。副産物でMSIアンインストール時のユーザーデータ削除を発見 | 確定・opus round1〜4(4ラウンド)を経て収束・ADR-099 MF-4解消 |
 | [178](178-msi-uninstall-preserve-userdata.md) | MSIアンインストール時のユーザーデータ喪失をPermanent="yes"+アプリ側自己修復(無ければ埋め込み既定値から生成)で防ぐ。v1〜v13の「バックアップ+復元」方式(12ラウンド・Blocker20件)は複雑化しすぎたため破棄し全面差し替え | 起草中v14・実装/実機検証/opusレビュー完了(Blocker2件反映済み)、フォローアップ項目のみ残る |
 | [179](179-mode-key-actuation-follow-only-vs-toggle-ownership.md) | 無変換/変換の非親指キー時actuation-autoを撤去し`ModeKeyActuationOwner`列挙へ統一。元178番、developマージ済みの別ADR-178(msi-uninstall)と衝突し179へ採番し直し | 収束(opus-adversarial-consult round1〜8)・実装着手可 |
+| [180](180-actuation-gate-recheck-deduplication.md) | 領域B(IME actuation合流点)の深い統一を検討、ADR-106決定5が既に軸統合を却下済みと判明し「新fence型ではなく共有ヘルパー関数への機械的重複除去」に縮小 | ドラフト・opus-adversarial-consult round1前 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

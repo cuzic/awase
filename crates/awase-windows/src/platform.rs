@@ -1470,7 +1470,7 @@ impl WindowsPlatform {
         // UnsafeToToggle: 送信しなかったので何もしない（executor 側で早期リターン済みだが念のため）
         if matches!(
             outcome,
-            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned
+            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned | ImeOpenOutcome::Unwarranted
         ) {
             // 同期義務は無い（`legacy_gji_sync_obligation` が `None`）が、
             // settle 済みにしないと `Drop` の `debug_assert` が発火する。
@@ -1483,7 +1483,9 @@ impl WindowsPlatform {
             | ImeOpenOutcome::AppliedWithoutSendInput
             | ImeOpenOutcome::AlreadyMatched => open,
             ImeOpenOutcome::Failed => !open,
-            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned => unreachable!(),
+            ImeOpenOutcome::UnsafeToToggle
+            | ImeOpenOutcome::NotOwned
+            | ImeOpenOutcome::Unwarranted => unreachable!(),
         };
         // IME 状態が変化したので GJI 候補ウィンドウの「見た」フラグをリセットする。
         // これをリセットしないと次の composition 検出で desync と誤判定される。
@@ -1670,7 +1672,15 @@ impl WindowsPlatform {
     /// 死んだ入口になる**（`ime_open_actuation_entry_points_are_accounted_for`
     /// が `.set_ime_open(` の本番呼び出し 0 件を固定する）。
     ///
-    /// A-1 は shadow モードなので、授権が下りていなくても書き込みは止めない。
+    /// ADR-090 §2.A A-2（2026-09-19）: 授権が下りていない場合は書き込まず
+    /// `false` を返す。**この関数は`ImeController::apply`/
+    /// `run_open_chain_async`のチェーンを経由しないため、A-2着手時に
+    /// この3つ目の合流点が見落とされていた**（`log_shadow_warrant`は
+    /// 呼んでいたが`into_actuation()`のチェックが無く、warrantを計算した
+    /// 直後に`drop(order)`で捨てて無条件書き込みしていた）。呼び出し元
+    /// （`ime_refresh.rs`のfocus change強制OFF・drift correctionのImmCross
+    /// 分岐）は既に戻り値を無視していないか確認済み——後者は`record_optimistic`
+    /// を無条件で呼んでいたため、この修正と対で戻り値を見るよう直す。
     pub(crate) fn set_ime_open_ordered(
         &mut self,
         order: crate::state::actuation_chain::ActuationOrder,
@@ -1681,7 +1691,9 @@ impl WindowsPlatform {
         // = 高々 1 回の write という `Actuation` のアフィン性（ADR-089 INV-41）を、
         // チェーンを通らないこの経路でも保つため——参照で受けると同じ order で
         // 2 回書けてしまう。
-        drop(order);
+        if order.into_actuation().is_none() {
+            return false;
+        }
         PlatformRuntime::set_ime_open(self, open)
     }
 

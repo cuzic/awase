@@ -182,6 +182,15 @@ pub enum ImeOpenOutcome {
     /// 機構を一切試行しなかった（issue #136 / BUG-90、`AppImeProfile::InputRelay`）。
     /// `UnsafeToToggle` と同じく「送っていない」ので applied / belief を書かない。
     NotOwned,
+    /// `issue_open_warrant()` が授権を発行しなかったため、機構を一切試行
+    /// しなかった（ADR-090 §2.A A-2、根拠軸）。`NotOwned`（InputRelay、
+    /// プロファイル所有権軸）とは別の理由なので別 variant にする——同じ
+    /// 「送っていない」結果でも診断ログ・journal を読む側が「なぜ」を
+    /// 区別できなくなる（ADR-106決定5が戒める「別目的の値を1つの機構に
+    /// 混ぜる」の逆、ここでは逆に「別目的の結果を1つのvariantに混ぜない」）。
+    /// `UnsafeToToggle`/`NotOwned`と同じく送っていないため applied / belief
+    /// を書かない。
+    Unwarranted,
 }
 
 impl ImeOpenOutcome {
@@ -194,7 +203,11 @@ impl ImeOpenOutcome {
     pub const fn wrote_open_state(self) -> bool {
         match self {
             Self::Applied | Self::FallbackSent | Self::AppliedWithoutSendInput => true,
-            Self::AlreadyMatched | Self::Failed | Self::UnsafeToToggle | Self::NotOwned => false,
+            Self::AlreadyMatched
+            | Self::Failed
+            | Self::UnsafeToToggle
+            | Self::NotOwned
+            | Self::Unwarranted => false,
         }
     }
 }

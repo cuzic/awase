@@ -1091,7 +1091,7 @@ impl DecisionExecutor {
         use awase::platform::ImeOpenOutcome;
         if matches!(
             outcome,
-            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned
+            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned | ImeOpenOutcome::Unwarranted
         ) {
             return;
         }
@@ -1101,7 +1101,9 @@ impl DecisionExecutor {
             | ImeOpenOutcome::AppliedWithoutSendInput
             | ImeOpenOutcome::AlreadyMatched => open,
             ImeOpenOutcome::Failed => !open,
-            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned => unreachable!(),
+            ImeOpenOutcome::UnsafeToToggle
+            | ImeOpenOutcome::NotOwned
+            | ImeOpenOutcome::Unwarranted => unreachable!(),
         };
         self.applied_snapshot = crate::state::AppliedImeState::Confirmed {
             open: effective,

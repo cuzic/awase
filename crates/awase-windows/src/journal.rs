@@ -758,6 +758,7 @@ fn ime_open_outcome_str(o: awase::platform::ImeOpenOutcome) -> &'static str {
         ImeOpenOutcome::Failed => "Failed",
         ImeOpenOutcome::UnsafeToToggle => "UnsafeToToggle",
         ImeOpenOutcome::NotOwned => "NotOwned",
+        ImeOpenOutcome::Unwarranted => "Unwarranted",
     }
 }
 
