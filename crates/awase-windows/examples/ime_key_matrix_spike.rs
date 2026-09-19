@@ -442,6 +442,17 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
             return;
         }
     }
+    // フォーカスが入力欄から外れる(ログ欄へ移る等)と実IME状態が読めず手順が進まなくなる(実機で発生)。
+    // 前面ウィンドウだけでなく、入力欄へのフォーカスも毎回確認して戻す。
+    if let Some(edit) = EDIT_HWND.with(|e| *e.borrow()) {
+        unsafe {
+            if GetFocus() != edit {
+                let _ = SetFocus(Some(edit));
+                AUTO_NEXT.with(|n| *n.borrow_mut() = now + 300);
+                return;
+            }
+        }
+    }
     let si = SCRIPT_IDX.with(|i| *i.borrow());
     if si >= SCRIPT.len() {
         if !AUTO_DONE.with(|d| std::mem::replace(&mut *d.borrow_mut(), true)) {
