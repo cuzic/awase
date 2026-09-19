@@ -1372,7 +1372,7 @@ impl TsfComposition for WindowsPlatform {
     }
 
     fn on_ime_applied(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
-        self.on_ime_applied_inner(open, outcome, true);
+        self.on_ime_applied_inner(open, outcome);
     }
 
     fn on_passthrough_key(
@@ -1454,44 +1454,7 @@ impl TsfComposition for WindowsPlatform {
 }
 
 impl WindowsPlatform {
-    /// ADR-121 D1（/code-review・opus-adversarial-consult指摘、M1）:
-    /// `on_ime_applied` 通常経路は `mark_composition_cold` を無条件で
-    /// 実行するが、これは「非同期apply完了が確定的にIME状態を遷移させた」
-    /// ことを前提にした副作用であり（唯一の既存呼び出し元
-    /// `Runtime::on_ime_apply_complete` は `drives_composition_side_effects()`
-    /// でこの前提をゲートしている）、D1の冪等再送(belief が既に
-    /// effective_open と一致しているno-op分岐からの再送、実際にはIME側で
-    /// 何も遷移していない)には当てはまらない。無条件に適用すると、warm
-    /// だったcompositionをcold化した上でADR-149ゲート（`outcome ==
-    /// Applied`）が随伴warmupの送信を省略し、「coldにした上でwarm化しない」
-    /// 状態を作る——直後の1文字がBUG-02型のリテラル化条件を満たしてしまう
-    /// （従来この打鍵は完全なno-opだったため、これは本ADRが持ち込む純粋な
-    /// 新規リスク）。GJI同期義務（`ActuationReceipt`/`legacy_gji_sync_
-    /// obligation`、ADR-089 INV-42/43）は実送信が起きた事実に基づくため
-    /// D1でも必要——`mark_composition_cold`だけを外し、他の副作用
-    /// （ImeModeFsm invalidate・confirm_gate clear・composition_fsmへの
-    /// イベント供給・GJI sync）はそのまま残す（他3つの類似副作用を残した
-    /// 理由はADR-121ステータス節参照）。
-    ///
-    /// 名前は`open == true`側の`mark_composition_cold(SetOpenTrue)`のみを
-    /// 対象にしている（呼び出し元D1は常に`open == true`）。`open == false`
-    /// 側の`mark_composition_cold(SetOpenFalse)`は抑止しない——将来
-    /// `open == false`でこの経路を使う場合は挙動を再確認すること
-    /// （opus-adversarial-consult round2 N3指摘）。
-    pub(crate) fn on_ime_applied_without_cold_mark(
-        &mut self,
-        open: bool,
-        outcome: awase::platform::ImeOpenOutcome,
-    ) {
-        self.on_ime_applied_inner(open, outcome, false);
-    }
-
-    fn on_ime_applied_inner(
-        &mut self,
-        open: bool,
-        outcome: awase::platform::ImeOpenOutcome,
-        mark_cold: bool,
-    ) {
+    fn on_ime_applied_inner(&mut self, open: bool, outcome: awase::platform::ImeOpenOutcome) {
         use awase::platform::ImeOpenOutcome;
         // ADR-089 §2.4（INV-42/43）: `GjiFsm` 同期義務を `ActuationReceipt` として
         // 明示的に運ぶ。同期の要否を決める式は
@@ -1577,13 +1540,9 @@ impl WindowsPlatform {
             crate::output::WarmupOrigin::Actuated,
         );
         if open {
-            if mark_cold {
-                tracing::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
-                self.output
-                    .mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
-            } else {
-                tracing::debug!("[composition] ImeEffect::SetOpen(true) (冪等再送) → cold化を抑止");
-            }
+            tracing::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
+            self.output
+                .mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
             // `injection_mode` は receipt にも settle の引数にも積まない。
             // `sync_gji` の実装内で settle 時点の値を読む（ADR-089 §2.4 細目2）。
             receipt.settle(self);

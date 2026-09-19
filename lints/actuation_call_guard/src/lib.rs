@@ -115,14 +115,15 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
         ],
     ),
     // apply_ime_open_with_view: ADR-159段階0のもう1つの合流点。fix-requires-evidence.mdの
-    // 「IME actuation合流点」表が挙げる4箇所（2026-09-09実測、ADR-158 TB1）。
+    // 「IME actuation合流点」表（2026-09-09実測、ADR-158 TB1）。
     // `apply_ime_open_with_belief`からの内部委譲1件を含む。
+    // 2026-09-19: reassert_explicit_physical_key（ADR-121、TsfNative向けON方向
+    // 救済の一部）を撤去したため4→3。
     (
         "apply_ime_open_with_view",
         &[
             "dispatch_ime_set_open",
             "force_on_and_correct_romaji",
-            "reassert_explicit_physical_key",
             "apply_ime_open_with_belief",
         ],
     ),
