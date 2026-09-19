@@ -1920,8 +1920,33 @@ impl Runtime {
             // AssumedRomaji にリセットして engine を即座に活性化する。
             // (1500ms 後の idle-conv-check で GJI 実状態を再確認・訂正する)
             // 判定は shadow toggle 経路 (UserImeOnEisuReset) と共通の純関数に集約。
+            // ADR-186: 無変換/変換の修飾なし単独タップ（delegate 経由の SetOpen(true)）では、
+            // GJI(Mozc) の IMEOn が直前 conv を復元するため ObservedEisu は stale ではない。
+            // reset すると Engine ON のまま実 IME が半角英数になるので抑止する。
+            // 判定は `state::eisu_recovery::keeps_eisu_on_solo_mode_key_open`（VK＋修飾なし）。
+            // `origin` は IME-ON/OFF コンボ等と区別できない（全て ExplicitUserAction）ため
+            // VK と修飾キーで判定する（`is_default_ime_on_combo` と同じ材料）。
+            let keep_observed_eisu =
+                matches!(origin, awase::engine::SetOpenOrigin::ExplicitUserAction)
+                    && crate::state::eisu_recovery::keeps_eisu_on_solo_mode_key_open(
+                        event.vk_code,
+                        event.modifier_snapshot.ctrl,
+                        event.modifier_snapshot.shift,
+                        event.modifier_snapshot.alt,
+                        event.modifier_snapshot.win,
+                    );
+            if keep_observed_eisu
+                && applied
+                && new_ime_on
+                && self.platform_state.ime.input_mode() == InputModeState::ObservedEisu
+            {
+                tracing::info!(
+                    "[post-decision] SetOpen(true) + ObservedEisu: 無変換/変換の単独タップのため \
+                     AssumedRomaji への reset を抑止 (ADR-186: GJI の IMEOn は conv を保存)"
+                );
+            }
             if let Some(new_mode) = crate::state::eisu_recovery::eisu_reset_on_ime_on(
-                applied && new_ime_on,
+                applied && new_ime_on && !keep_observed_eisu,
                 self.platform_state.ime.input_mode(),
             ) {
                 // 半角英数持続トグルON中は、通常のObservedEisu→AssumedRomaji書き戻しを
