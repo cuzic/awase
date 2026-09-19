@@ -482,6 +482,7 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
             if let Some(e) = EDIT_HWND.with(|e| *e.borrow()) {
                 let _ = SetFocus(Some(e));
             }
+            append_log("[AUTO] フォーカス復帰(前面ウィンドウ)");
             AUTO_NEXT.with(|n| *n.borrow_mut() = now + 600);
             return;
         }
@@ -492,6 +493,7 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
         unsafe {
             if GetFocus() != edit {
                 let _ = SetFocus(Some(edit));
+                append_log("[AUTO] フォーカス復帰(入力欄)");
                 AUTO_NEXT.with(|n| *n.borrow_mut() = now + 300);
                 return;
             }

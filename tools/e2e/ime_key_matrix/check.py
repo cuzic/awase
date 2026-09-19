@@ -75,6 +75,18 @@ def main():
     sys.argv = argv
     steps = parse_spike(sys.argv[1])
     events, unwarranted = parse_awase(sys.argv[2])
+    # 実行の途中(手順1の記録以降)でスパイクがフォーカスを取り戻していたら、その回は無効(INVALID)。
+    # フォーカス移動は awase の FocusChange(cold化・belief書き換え)を誘発し、結果を汚す。
+    invalid = 0
+    started = False
+    for line in open(sys.argv[1], encoding="utf-8").read().splitlines():
+        if "KEY [SCRIPT 1/10" in line:
+            started = True
+        if started and "[AUTO] フォーカス復帰" in line:
+            invalid += 1
+    if invalid:
+        print(f"INVALID: 実行中にフォーカスが外れた({invalid}回)。この回は判定に使わない")
+        return 3
     fails = 0
     print(f"{'STEP':>4} {'実IME(+400ms)':<16} {'Engine':<34} 判定")
     for n in range(1, 11):
