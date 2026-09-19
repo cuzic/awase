@@ -344,43 +344,78 @@ const ROUND_NAMES: [&str; ROUNDS] = ["EDIT(標準コントロール)", "RichEdit
 const HOLD_MS: u64 = 3000;
 
 /// `--script` の1手順: (表示名, VK, Shift併用, 期待する結果)。
-const SCRIPT: [(&str, u32, bool, &str); 10] = [
+const SCRIPT: [(&str, u32, bool, &str, St); 10] = [
     (
         "ひらがなキー",
         0xF2,
         false,
         "ONのまま半角英数へ(conv 0x10)。Engine OFF(決定3保留のため遅延の可能性あり)",
+        St::OnKana,
     ),
-    ("無変換", 0x1D, false, "IME OFF(直接入力)。Engine OFF"),
+    (
+        "無変換",
+        0x1D,
+        false,
+        "IME OFF(直接入力)。Engine OFF",
+        St::OnAlnum,
+    ),
     (
         "無変換",
         0x1D,
         false,
         "IME ON・半角英数のまま(conv 0x10)。Engine は OFF のまま ← 決定2の核心",
+        St::Direct,
     ),
     (
         "ひらがなキー",
         0xF2,
         false,
         "かなに戻る(conv 0x19)。Engine ON(遅延の可能性あり)",
+        St::OnAlnum,
     ),
-    ("無変換", 0x1D, false, "IME OFF。Engine OFF"),
-    ("無変換", 0x1D, false, "IME ON(かな)。Engine ON"),
+    ("無変換", 0x1D, false, "IME OFF。Engine OFF", St::OnKana),
+    ("無変換", 0x1D, false, "IME ON(かな)。Engine ON", St::Direct),
     (
         "ひらがなキー",
         0xF2,
         false,
         "ONのまま半角英数へ。Engine は(遅延で)OFF",
+        St::OnKana,
     ),
-    ("無変換", 0x1D, false, "IME OFF。Engine OFF"),
+    ("無変換", 0x1D, false, "IME OFF。Engine OFF", St::OnAlnum),
     (
         "無変換",
         0x1D,
         false,
         "IME ON・半角英数のまま。Engine が ON にならないこと ← 退行窓の確認",
+        St::Direct,
     ),
-    ("ひらがなキー", 0xF2, false, "かなに戻る(後片付け)"),
+    (
+        "ひらがなキー",
+        0xF2,
+        false,
+        "かなに戻る(後片付け)",
+        St::OnAlnum,
+    ),
 ];
+
+/// `--script` で、現在状態から手順の必要状態へ向かう準備の案内（awase 起動中の操作）。
+fn script_hint(cur: St, target: St) -> &'static str {
+    match (cur, target) {
+        (St::Unknown, _) => "状態が読めません。入力欄をクリックしてフォーカスしてください",
+        (St::OnKanaComp, _) => "準備: ESC を押して未確定の文字を取り消してください",
+        (St::Direct, St::OnKana) => "準備: 変換 を1回押して IME ON にしてください",
+        (St::Direct, St::OnAlnum) => {
+            "準備: 変換 を1回押して IME ON にしてください(その後 ひらがなキーで半角英数へ)"
+        }
+        (St::OnKana, St::Direct) | (St::OnAlnum, St::Direct) => {
+            "準備: 変換 を1回押して IME OFF(直接入力)にしてください"
+        }
+        (St::OnAlnum, St::OnKana) => "準備: ひらがなキー を1回押して かな に戻してください",
+        (St::OnKana, St::OnAlnum) => "準備: ひらがなキー を1回押して 半角英数 にしてください",
+        _ => "準備: 状態を整えてください",
+    }
+}
 
 /// 現在状態から目標状態へ、次に取るべき 1 手を案内する。
 fn hint(cur: St, target: St) -> &'static str {
@@ -762,8 +797,9 @@ fn on_timer(hwnd: HWND) {
             if SCRIPT_MODE.with(|m| *m.borrow()) {
                 let si = SCRIPT_IDX.with(|i| *i.borrow());
                 if si < SCRIPT.len() && now >= HOLD_UNTIL.with(|h| *h.borrow()) {
-                    let (name, vk, shift, expect) = SCRIPT[si];
+                    let (name, vk, shift, expect, need) = SCRIPT[si];
                     if ev.vk == vk
+                        && before_st == need
                         && ev.shift == shift
                         && !ev.ctrl
                         && !ev.label.contains("(injected)")
@@ -851,9 +887,15 @@ fn on_timer(hwnd: HWND) {
         if si >= SCRIPT.len() {
             "全手順完了です。お疲れさまでした（ログは自動保存済み）".to_string()
         } else {
-            let (name, _, _, expect) = SCRIPT[si];
+            let (name, _, _, expect, need) = SCRIPT[si];
             let action = if now < hold {
                 format!("待機中… あと {:.1} 秒", (hold - now) as f64 / 1000.0)
+            } else if cur != need {
+                format!(
+                    "この手順の前提: {}。{}",
+                    need.label(),
+                    script_hint(cur, need)
+                )
             } else {
                 format!("▶ 今 [{name}] を1回だけ押し、直後に k を1回打って ESC を押してください（未確定を残さない）")
             };
