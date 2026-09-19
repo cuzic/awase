@@ -17,10 +17,9 @@ summary: |-
   **無変換/変換(入力なし)の押下時点のbelief追随だけ**に絞る。かな英数トグルは実機確認まで保留、
   入力中の無変換は現状維持、半角/全角のモデル誤りは別件。
 status: |-
-  **ドラフトv3(opus round2で収束、Blocker 0)**。round1のBlocker3件・Must-fix5件、round2のMust-fix2件・Should-fix3件を反映。実装可(下記の前提ブランチ待ち)。
-  前提ブランチ: ADR-179/184(`feat/adr178-mode-key-actuation-and-tsfnative-rescue-teardown`の未追跡/未マージ
-  ファイル)とADR-185(`feat/adr185-directinput-open-axis-write`)は本ブランチ(developの先端)に存在しない。
-  実装は上記ブランチのマージ後に行う。
+  **ドラフトv3(opus round2で収束、Blocker 0)**。round1のBlocker3件・Must-fix5件、round2のMust-fix2件・Should-fix3件を反映。
+  **決定2の実装済み(ブランチ`feat/adr186-nonconvert-toggle-belief-follow`、eisu reset抑止のみ。実機A/B未実施)**。
+  実装ブランチは`feat/adr185-directinput-open-axis-write`から派生(ADR-185を含む)。ADR-179/184の未追跡ファイルは含まない。
 related_adr:
   - "ADR-090"
   - "ADR-176"
