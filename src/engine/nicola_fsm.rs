@@ -384,6 +384,14 @@ pub struct NicolaFsm {
     /// 行い時間計測はしない、所見S5）。
     own_decision_output: Option<OwnDecisionOutput>,
 
+    /// ADR-182 決定1: `step_pending_char_thumb`の時間超過分岐が「この後`decide`に再入する
+    /// 親指イベントは、文字の単独確定直後の再投入である」ことを次の`decide`へ渡す1イベント寿命の
+    /// マーカー。`decide`の先頭で`thumb_after_char_flush`へ2段で受け渡され、その`decide`内で
+    /// `idle_wait`が`PendingThumbData.after_char_flush`へ転写する。
+    next_thumb_after_char_flush: bool,
+    /// `decide`先頭で`next_thumb_after_char_flush`から受け取った、現在のトークン用の値。
+    pub(crate) thumb_after_char_flush: bool,
+
     /// ADR-120 決定0a 項目2c: Phase2決定直後、残り何打鍵(KeyDown)を「親指の
     /// 有無」観測窓として見るか。2から開始し、通常のCharキーKeyDownで
     /// デクリメント、親指KeyDownが来たら即座に破棄
@@ -533,6 +541,8 @@ impl NicolaFsm {
             retro_eval_stats: RetroEvalStats::default(),
             last_decision: None,
             own_decision_output: None,
+            next_thumb_after_char_flush: false,
+            thumb_after_char_flush: false,
             thumb_watch_window: None,
             backspace_vk: None,
             backspace_down: false,
@@ -618,7 +628,7 @@ impl NicolaFsm {
                         thumb.injected,
                         composing,
                         thumb.explicit_ime_action_consumed,
-                        thumb.auto_delegate_open_axis_consumed,
+                        thumb.suppresses_open_axis_actuation(),
                     ),
                     ThumbRawVkEmission::Denied => (
                         ResolvedAction {
@@ -1296,6 +1306,9 @@ impl ShiftReduceParser for NicolaFsm {
     type ReduceRecord = OutputUpdate;
 
     fn decide(&mut self, token: &ClassifiedEvent) -> TieredParseAction {
+        // ADR-182 決定1: 1イベント寿命のマーカーを2段で受け渡す（`ReduceAndContinue`の再ディスパッチも
+        // 同じ`decide`を通るのでここで確実に消費・クリアされる）。
+        self.thumb_after_char_flush = std::mem::take(&mut self.next_thumb_after_char_flush);
         let local = self.decide_and_transition(token);
         match local {
             ParseAction::Shift { timer } => TieredParseAction::Shift {
@@ -1428,7 +1441,11 @@ impl NicolaFsm {
             return self.handle_bypass(&ev, reason, event.injected);
         }
 
-        self.parse(ev)
+        let result = self.parse(ev);
+        // ADR-182 決定1: `MAX_REDUCE_CONTINUE_STEPS`超過で`parse`が`decide`を呼ばず打ち切られた場合に
+        // マーカーが次のイベントへ漏れないよう無条件にクリアする。
+        self.next_thumb_after_char_flush = false;
+        result
     }
 
     /// 状態とイベントに基づいてアクションを決定し、状態遷移を行う
@@ -1600,7 +1617,7 @@ impl NicolaFsm {
                     thumb.injected,
                     self.phys.composing,
                     thumb.explicit_ime_action_consumed,
-                    thumb.auto_delegate_open_axis_consumed,
+                    thumb.suppresses_open_axis_actuation(),
                 );
                 if ime_open_request.is_some() {
                     self.ime_open_requested = ime_open_request;
@@ -1744,6 +1761,7 @@ impl NicolaFsm {
                     modifier_key: ev.modifier_key,
                     explicit_ime_action_consumed: ev.explicit_ime_action_consumed,
                     auto_delegate_open_axis_consumed: ev.auto_delegate_open_axis_consumed,
+                    after_char_flush: false,
                 },
             );
             return ParseAction::Shift {
@@ -1754,6 +1772,9 @@ impl NicolaFsm {
         // 時間超過 → 前の保留を単独確定し、今回のキーを再処理
         self.go_idle();
         let resolved = self.resolve_pending_char_as_single(&pending);
+        // ADR-182 決定1: 再投入される親指は`PendingThumb`になり、単独タップとして解決されても
+        // IME操作（生の親指VK/delegate）を出さない（`PendingThumbData.after_char_flush`）。
+        self.next_thumb_after_char_flush = true;
         resolved.into_reduce_and_continue(*ev)
     }
 
@@ -1801,7 +1822,7 @@ impl NicolaFsm {
             thumb.injected,
             self.phys.composing,
             thumb.explicit_ime_action_consumed,
-            thumb.auto_delegate_open_axis_consumed,
+            thumb.suppresses_open_axis_actuation(),
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -1820,7 +1841,7 @@ impl NicolaFsm {
             thumb.injected,
             self.phys.composing,
             thumb.explicit_ime_action_consumed,
-            thumb.auto_delegate_open_axis_consumed,
+            thumb.suppresses_open_axis_actuation(),
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -2917,7 +2938,7 @@ impl NicolaFsm {
             thumb.injected,
             self.phys.composing,
             thumb.explicit_ime_action_consumed,
-            thumb.auto_delegate_open_axis_consumed,
+            thumb.suppresses_open_axis_actuation(),
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -2949,7 +2970,7 @@ impl NicolaFsm {
                 thumb.injected,
                 self.phys.composing,
                 thumb.explicit_ime_action_consumed,
-                thumb.auto_delegate_open_axis_consumed,
+                thumb.suppresses_open_axis_actuation(),
             ),
             EngineState::Idle
             | EngineState::PendingCharThumb { .. }
@@ -3076,7 +3097,7 @@ impl NicolaFsm {
             thumb.injected,
             composing,
             thumb.explicit_ime_action_consumed,
-            thumb.auto_delegate_open_axis_consumed,
+            thumb.suppresses_open_axis_actuation(),
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -4056,6 +4077,7 @@ mod tests {
                 modifier_key: None,
                 explicit_ime_action_consumed: false,
                 auto_delegate_open_axis_consumed: false,
+                after_char_flush: false,
             },
             false, // composing
         );
@@ -4087,6 +4109,7 @@ mod tests {
                 modifier_key: None,
                 explicit_ime_action_consumed: false,
                 auto_delegate_open_axis_consumed: false,
+                after_char_flush: false,
             },
             false, // composing
         );
@@ -4483,6 +4506,7 @@ mod tests {
             modifier_key: None,
             explicit_ime_action_consumed: false,
             auto_delegate_open_axis_consumed: false,
+            after_char_flush: false,
         }
     }
 

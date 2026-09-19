@@ -7566,6 +7566,101 @@ mod engine_integration_tests {
         engine
     }
 
+    // ── ADR-182 決定1: 文字→親指の押下間隔が閾値を超えて`PendingChar`が単独確定された直後に
+    //    親指が`PendingThumb`になり、単独タップとして生の親指VKが出る不具合の回帰テスト ──
+
+    /// `decisions`のいずれかが、生の`VK_NONCONVERT`（`Key(VK_NONCONVERT)`）を`SendKeys`で
+    /// 送出しているか。
+    fn any_raw_nonconvert_sent(decisions: &[Decision]) -> bool {
+        decisions.iter().any(|d| {
+            has_effect(d, |e| {
+                matches!(
+                    e,
+                    Effect::Input(InputEffect::SendKeys(actions))
+                        if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
+                )
+            })
+        })
+    }
+
+    /// 文字先押し: `D↓(0) → 無変換↓(108ms、閾値100ms超) → D↑ → 無変換↑`。実機で失敗した
+    /// 打鍵（間隔80〜109ms、重なり0.8〜88ms）の再現。ADR-182以前は文字が単独確定された後、
+    /// 無変換が単独タップとして`Key(VK_NONCONVERT)`を送出していた（GJIが半角英数化する）。
+    #[test]
+    fn char_then_thumb_after_threshold_does_not_leak_raw_nonconvert() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let ds = [
+            engine.on_input(Ev::down(VK_A).at(0).build(), &ctx),
+            engine.on_input(Ev::down(VK_NONCONVERT).at(108_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_A).at(109_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(116_000).build(), &ctx),
+        ];
+        assert!(
+            !any_raw_nonconvert_sent(&ds),
+            "文字先押しで閾値を超えたチョードの無変換は、生のVK_NONCONVERTとして送出してはならない: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+    }
+
+    /// 対照: Idle起点の通常の単独タップ（文字が関与しない）は、従来どおり生の
+    /// `VK_NONCONVERT`を送出する（ADR-179のPassthrough実験の意図した動作）。
+    #[test]
+    fn idle_origin_solo_tap_still_sends_raw_nonconvert() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let ds = [
+            engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ctx),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(60_000).build(), &ctx),
+        ];
+        assert!(
+            any_raw_nonconvert_sent(&ds),
+            "Idle起点の無変換単独タップは生のVK_NONCONVERTを送出するはず: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+    }
+
+    /// 対照: 閾値内（30ms）の文字先押しチョードは従来どおり成立し、生の無変換は出ない。
+    #[test]
+    fn char_then_thumb_within_threshold_is_chord_without_raw_nonconvert() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let ds = [
+            engine.on_input(Ev::down(VK_A).at(0).build(), &ctx),
+            engine.on_input(Ev::down(VK_NONCONVERT).at(30_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_A).at(80_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(90_000).build(), &ctx),
+        ];
+        assert!(
+            !any_raw_nonconvert_sent(&ds),
+            "閾値内のチョードは生のVK_NONCONVERTを送出しない: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+    }
+
+    /// フラグ寿命（決定1）: 失敗した文字先押しの直後に、Idle起点の通常の単独タップを行っても、
+    /// フラグが残って抑止されてはならない（立てっぱなしで以後の単独タップを殺さない）。
+    #[test]
+    fn after_char_flush_flag_does_not_leak_into_next_solo_tap() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let _ = [
+            engine.on_input(Ev::down(VK_A).at(0).build(), &ctx),
+            engine.on_input(Ev::down(VK_NONCONVERT).at(108_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_A).at(109_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(116_000).build(), &ctx),
+        ];
+        let ds = [
+            engine.on_input(Ev::down(VK_NONCONVERT).at(1_000_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(1_060_000).build(), &ctx),
+        ];
+        assert!(
+            any_raw_nonconvert_sent(&ds),
+            "直後のIdle起点の単独タップは従来どおり生のVK_NONCONVERTを送出するはず: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+    }
+
     /// `make_test_engine_with_muhenkan_passthrough` の変換（henkan）版。
     fn make_test_engine_with_henkan_passthrough() -> Engine {
         let mut engine = make_test_engine();
