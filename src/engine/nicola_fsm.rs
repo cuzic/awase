@@ -1793,6 +1793,10 @@ impl NicolaFsm {
         let pending_face = self.resolve_thumb_face(thumb.side(), ev.pos);
         let candidate = pending_face.and_then(|face| self.lookup_face(ev.pos, self.get_face(face)));
         let candidate_kana = candidate.as_ref().and_then(|(_, kana)| *kana);
+        // ADR-182 決定1b: 到着文字に親指面のかなが存在するか。閾値超過の分岐に落ちても、
+        // 再ディスパッチ後の`decide_idle`が同じ`side`・同じ`lookup_face`で`ActiveThumb`と判定し、
+        // `reduce_active_thumb`が親指面のかなを出して親指を消費する。
+        let char_has_thumb_face = candidate.is_some();
 
         if self
             .timing_judge()
@@ -1815,6 +1819,10 @@ impl NicolaFsm {
 
         // 時間超過 or 候補なし → 前の保留を単独確定し、今回のキーを再処理
         self.go_idle();
+        // ADR-182 決定1b: 親指面のかなが出る（＝この親指がshiftとして消費される）のに、同じ押下を
+        // solo tap（生の親指VK/delegate）としても出すのは1打鍵内の自己矛盾（二重使用）。
+        // `Key(親指VK)`だけを抑止し、親指面のかなは変わらない。親指面のかなが無い文字
+        // （`reduce_active_thumb`に入らない）は従来の挙動を維持する。
         let (resolved, ime_open_request) = self.resolve_pending_thumb_as_single(
             thumb.scan_code,
             thumb.vk_code,
@@ -1822,7 +1830,7 @@ impl NicolaFsm {
             thumb.injected,
             self.phys.composing,
             thumb.explicit_ime_action_consumed,
-            thumb.suppresses_open_axis_actuation(),
+            thumb.suppresses_open_axis_actuation() || char_has_thumb_face,
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;

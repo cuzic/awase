@@ -3339,7 +3339,11 @@ fn test_pending_thumb_then_char_after_threshold() {
     // 無変換/変換は「Windows 全般での無変換/変換キー機能」として生 VK が emit される
     // （timeout_pending_thumb と同じ判定を flush 経路にも統一した挙動、composing 中の
     // suppress は resolve_pending_thumb_as_single 参照）。
-    let r = engine.on_event(Ev::down(VK_A).at(200_000).build());
+    //
+    // ADR-182 決定1b: 到着文字に親指面のかなが存在する（`make_layout`ではAは左親指面あり）場合は、
+    // 親指がshiftとして消費されるので生VKを二重に出さない（別テストで固定）。ここでは親指面が
+    // 無い文字（Dは`make_layout`のどの面にも無い）で、従来どおり生VKが出ることを固定する。
+    let r = engine.on_event(Ev::down(VK_D).at(200_000).build());
     r.assert_consumed();
     assert!(
         r.actions
@@ -7661,6 +7665,81 @@ mod engine_integration_tests {
         );
     }
 
+    /// ADR-182 決定1b（親指先押し）: `無変換↓(0) → A↓(108ms、閾値100ms超、Aには左親指面のかな`を`
+    /// がある)`。ADR-182以前は親指が単独タップとして`Key(VK_NONCONVERT)`を送出した後、文字が
+    /// 再ディスパッチされ`reduce_active_thumb`が親指面のかなを出して親指を消費していた
+    /// （同じ押下がsolo tapとshiftの両方に使われる二重使用）。生の無変換だけを抑止し、
+    /// 親指面のかな（`を`）は変わらない。
+    #[test]
+    fn thumb_then_char_after_threshold_keeps_thumb_face_kana_without_raw_nonconvert() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        // 親指が押下中であることをプラットフォームのスナップショットとして渡す
+        // （実機のhookは`InputContext.left_thumb_down`にこれを載せる）。
+        let held = InputContext {
+            left_thumb_down: Some(0),
+            ..ime_on_ctx()
+        };
+        let ds = [
+            engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ctx),
+            engine.on_input(Ev::down(VK_A).at(108_000).build(), &held),
+            engine.on_input(Ev::up(VK_A).at(180_000).build(), &held),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(200_000).build(), &ctx),
+        ];
+        assert!(
+            !any_raw_nonconvert_sent(&ds),
+            "親指面のかなが出る打鍵で、生のVK_NONCONVERTを二重に送出してはならない: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+        assert!(
+            ds.iter().any(|d| has_effect(d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('を')))
+            ))),
+            "親指面のかな（を）は従来どおり出力される: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+    }
+
+    /// 決定1bの対照: 到着文字に親指面のかなが無い（Dは`make_layout`のどの面にも無い）場合は
+    /// `reduce_active_thumb`に入らず親指がshiftとして使われないので、従来どおり生の
+    /// `Key(VK_NONCONVERT)`が出る（二重使用ではない）。
+    #[test]
+    fn thumb_then_char_without_thumb_face_after_threshold_still_sends_raw_nonconvert() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let ds = [
+            engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ctx),
+            engine.on_input(Ev::down(VK_D).at(108_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_D).at(180_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(200_000).build(), &ctx),
+        ];
+        assert!(
+            any_raw_nonconvert_sent(&ds),
+            "親指面のかなが無い文字では従来どおり生のVK_NONCONVERTが出る: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+    }
+
+    /// 決定1bの対照: 閾値内（30ms）の親指先押しは従来どおりチョード成立で、生の無変換は出ない。
+    #[test]
+    fn thumb_then_char_within_threshold_is_chord_without_raw_nonconvert() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let ds = [
+            engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ctx),
+            engine.on_input(Ev::down(VK_A).at(30_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_A).at(100_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(120_000).build(), &ctx),
+        ];
+        assert!(
+            !any_raw_nonconvert_sent(&ds),
+            "閾値内の親指先押しチョードは生のVK_NONCONVERTを送出しない: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+    }
+
     /// `make_test_engine_with_muhenkan_passthrough` の変換（henkan）版。
     fn make_test_engine_with_henkan_passthrough() -> Engine {
         let mut engine = make_test_engine();
@@ -9452,12 +9531,15 @@ mod engine_integration_tests {
         assert!(d1.is_consumed());
 
         // 50ms gap: 変更後の 10ms 閾値なら simultaneous ではない → 親指単独確定。
+        // ADR-182 決定1b: Aには左親指面のかな（を）があるため、親指を単独確定するときも生の
+        // `Key(VK_NONCONVERT)`は出さない（同じ押下をshiftとして使うため）。simultaneousなら
+        // この時点で`Char('を')`が即時出力されるので、その不在で「同時打鍵にならなかった」ことを見る。
         let d2 = engine.on_input(Ev::down(VK_A).at(50_000).build(), &ime_on_ctx());
         assert!(
-            has_effect(&d2, |e| matches!(
+            !has_effect(&d2, |e| matches!(
                 e,
                 Effect::Input(InputEffect::SendKeys(actions))
-                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('を')))
             )),
             "threshold_ms=10 なら 50ms gap は simultaneous にならないはず, got {:?}",
             effects_of(&d2)
