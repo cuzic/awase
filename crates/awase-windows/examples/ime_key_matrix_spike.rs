@@ -26,8 +26,9 @@
 //!    `target/debug/examples/ime_key_matrix_spike.exe` を起動。
 //! 3. 画面中段の案内に従って、状態を作り、指定されたキーを 1 回だけ押す。
 //!    押した後は 3 秒待つ（自動で次のステップを案内する）。
-//!    全 2 ラウンド（標準 EDIT / RichEdit 5.0）× 24 ステップ
-//!    （4 状態 × 6 キー）。そのキーが無い場合は Ctrl+Shift+F12 でスキップ。
+//!    全 2 ラウンド（標準 EDIT / RichEdit 5.0）× 20 ステップ
+//!    （4 状態 × 5 キー）。`--round2` で RichEdit から開始。そのキーが無い場合は
+//!    Ctrl+Shift+F12 でスキップ。
 //! 4. 各キー押下ごとに 1 件がログ欄と `ime_key_matrix_spike.log`（exe と同じ
 //!    ディレクトリ）に追記される。`[STEP ...]` タグ付きが案内どおりの測定、
 //!    `[準備/その他]` は状態を作るための押下。
@@ -283,28 +284,35 @@ struct Step {
     state: St,
     key_name: &'static str,
     vks: &'static [u32],
+    /// Shift 併用の押下も、このステップの押下として受け付ける（カタカナは Shift 併用でのみ届く）。
+    allow_shift: bool,
 }
 
-const KEYS: [(&str, &[u32]); 6] = [
-    ("無変換", &[0x1D]),
-    ("変換", &[0x1C]),
-    ("ひらがな", &[0xF2]),
-    ("英数", &[0xF0]),
-    ("カタカナ", &[0xF1]),
-    ("半角/全角", &[0xF3, 0xF4]),
+/// 英数(0xF0)は ROUND1 でこの環境に物理キーが無いことが分かったため対象外。
+const KEYS: [(&str, &[u32], bool); 5] = [
+    ("無変換", &[0x1D], false),
+    ("変換", &[0x1C], false),
+    ("ひらがな", &[0xF2], false),
+    (
+        "Shift+カタカナ(カタカナひらがなキーをShift併用)",
+        &[0xF1],
+        true,
+    ),
+    ("半角/全角", &[0xF3, 0xF4], false),
 ];
 
 const STATES: [St; 4] = [St::Direct, St::OnKana, St::OnKanaComp, St::OnAlnum];
 
-/// 1 ラウンド分（状態4 × キー6 = 24 ステップ）。
+/// 1 ラウンド分（状態4 × キー5 = 20 ステップ）。
 fn steps() -> Vec<Step> {
     let mut v = Vec::new();
     for st in STATES {
-        for (name, vks) in KEYS {
+        for (name, vks, allow_shift) in KEYS {
             v.push(Step {
                 state: st,
                 key_name: name,
                 vks,
+                allow_shift,
             });
         }
     }
@@ -319,12 +327,12 @@ const HOLD_MS: u64 = 3000;
 fn hint(cur: St, target: St) -> &'static str {
     match (cur, target) {
         (St::Unknown, _) => "状態が読めません。入力欄をクリックしてフォーカスしてください",
-        (St::Direct, _) => "準備: 半角/全角 を1回押して IME ON にしてください",
+        (St::Direct, _) => "準備: 変換 を1回押して IME ON にしてください",
         (St::OnKana | St::OnAlnum, St::Direct) => {
-            "準備: 半角/全角 を1回押して IME OFF(直接入力)にしてください"
+            "準備: 変換 を1回押して IME OFF(直接入力)にしてください"
         }
         (St::OnKana, St::OnKanaComp) => {
-            "準備: ka と入力して未確定のままにしてください(Enter は押さない)"
+            "準備: ka と入力して未確定のままにしてください(Enter/Space は押さない)"
         }
         (St::OnKana, St::OnAlnum) => "準備: Shift+無変換 を1回押して半角英数にしてください",
         (St::OnKanaComp, _) => "準備: ESC を押して入力を取り消してください",
@@ -674,7 +682,11 @@ fn on_timer(hwnd: HWND) {
             let mut tag = String::from("[準備/その他]");
             if idx < total && now >= HOLD_UNTIL.with(|h| *h.borrow()) {
                 let step = &all_steps[idx % per_round];
-                if step.vks.contains(&ev.vk) && !ev.ctrl && !ev.shift && before_st == step.state {
+                if step.vks.contains(&ev.vk)
+                    && !ev.ctrl
+                    && (!ev.shift || step.allow_shift)
+                    && before_st == step.state
+                {
                     tag = format!(
                         "[STEP {}/{} R{} 状態={} キー={}]",
                         idx % per_round + 1,
@@ -953,6 +965,10 @@ fn report_fatal(msg: &str) {
 
 fn run() -> WinResult<()> {
     START.with(|s| *s.borrow_mut() = Some(std::time::Instant::now()));
+    // `--round2`: ROUND1(標準EDIT)を飛ばして RichEdit のラウンドから始める。
+    if std::env::args().any(|a| a == "--round2") {
+        STEP_IDX.with(|i| *i.borrow_mut() = steps().len());
+    }
     // RichEdit 5.0（TSF ネイティブ）のウィンドウクラスは Msftedit.dll が登録する。
     let _ = unsafe { LoadLibraryW(w!("Msftedit.dll")) };
     let tsf_ok = init_tsf();
@@ -966,7 +982,7 @@ fn run() -> WinResult<()> {
     if let Err(e) = tsf_ok {
         append_log(&format!("[init] TSF初期化失敗: {e}（T/Gは使えません）"));
     }
-    append_log("手順: awase を止める → 画面中段の案内に従ってキーを1回ずつ押す（全 2ラウンド×24ステップ、各押下後は3秒待機）");
+    append_log("手順: awase を止める → 画面中段の案内に従ってキーを1回ずつ押す（全 2ラウンド×20ステップ、各押下後は3秒待機）");
     append_log("ROUND1=標準EDIT / ROUND2=RichEdit(TSFネイティブ)。そのキーが無い場合は Ctrl+Shift+F12 でスキップ");
     append_log(&format!("ログファイル: {}", log_file_path().display()));
     append_log("");
