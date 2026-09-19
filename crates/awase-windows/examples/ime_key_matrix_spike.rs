@@ -846,7 +846,7 @@ fn on_timer(hwnd: HWND) {
             let action = if now < hold {
                 format!("待機中… あと {:.1} 秒", (hold - now) as f64 / 1000.0)
             } else {
-                format!("▶ 今 [{name}] を1回だけ押し、直後に k を1回打ってください")
+                format!("▶ 今 [{name}] を1回だけ押し、直後に k を1回打って ESC を押してください（未確定を残さない）")
             };
             format!(
                 "SCRIPT {}/{}  現在の実IME: {}\n{}\n期待: {}",
