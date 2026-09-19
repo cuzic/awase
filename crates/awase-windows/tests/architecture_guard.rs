@@ -754,32 +754,6 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
     }
 }
 
-/// ADR-186: 無変換/変換の修飾なし単独タップが delegate 経由で `SetOpen(true)` を発行したときの
-/// `PostSetOpenEisuReset` 抑止が、`key_pipeline.rs` の Decision 経由 SetOpen(true) 救済の
-/// 呼び出しに配線されていること。`user_ime_on_paths_are_paired_with_eisu_reset` は
-/// `write_*(` の出現数を数えるだけで eisu reset の**条件変更**を検出しないため、この抑止が
-/// 撤去されると「Engine ON のまま実IMEが半角英数」が黙って再発する（要件の真逆）。
-/// 一方、IME種別での一律抑止は ObservedEisu 循環デッドロック（MS Edge）の再発になるため、
-/// 条件は VK+修飾キー（`keeps_eisu_on_solo_mode_key_open`）でなければならない。
-#[test]
-fn solo_mode_key_open_keeps_observed_eisu_is_wired() {
-    let kp = read_crate_file("src/runtime/key_pipeline.rs");
-    assert!(
-        kp.contains("keeps_eisu_on_solo_mode_key_open(")
-            && kp.contains("applied && new_ime_on && !keep_observed_eisu"),
-        "runtime/key_pipeline.rs の Decision 経由 SetOpen(true) の eisu reset に、無変換/変換の \
-         修飾なし単独タップ用の抑止（ADR-186、keeps_eisu_on_solo_mode_key_open）が配線されて \
-         いません。撤去すると、半角英数の直接入力から無変換でONにしたとき Engine ON のまま実IMEが \
-         半角英数になります。IME種別での一律抑止は MS Edge の ObservedEisu 永久inactive バグを \
-         再発させるので、VK+修飾キー判定を保つこと。"
-    );
-    let eisu_recovery = read_crate_file("src/state/eisu_recovery.rs");
-    assert!(
-        eisu_recovery.contains("pub fn keeps_eisu_on_solo_mode_key_open("),
-        "src/state/eisu_recovery.rs に keeps_eisu_on_solo_mode_key_open がありません（ADR-186）。"
-    );
-}
-
 #[test]
 fn ime_relevance_shadow_action_writes_are_accounted_for() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

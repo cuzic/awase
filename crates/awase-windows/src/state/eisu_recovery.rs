@@ -39,12 +39,6 @@
 //! `eisu_reset_on_turn_on_while_open` の呼び出し件数も不変）。新しい行を
 //! 追加する必要はなく、対象VKが増えたことをここに明記するのみ。
 //!
-//! **ADR-186（GJI の IMEOn は conv を復元する）**: 「owned キーの Phase 3 delegate
-//! （`SetOpen(true)`、OFF→ON）」行のうち、**無変換/変換の修飾なし単独タップ**による発火だけは
-//! [`keeps_eisu_on_solo_mode_key_open`] により `PostSetOpenEisuReset` を抑止する（Mozc の `IMEOn`
-//! が直前 conv を復元するため、ObservedEisu は stale ではない）。呼び出し件数は不変で、
-//! 既存呼び出しの第1引数に `&& !keep_observed_eisu` を足すだけの条件追加。
-//!
 //! ## hwnd キャッシュ復元は対応表の対象外（別ガード）
 //!
 //! `apply_hwnd_cache_restore`（`state/platform_state.rs`）が復元する
@@ -77,34 +71,6 @@
 //! `user_ime_on_paths_are_paired_with_eisu_reset` の監視対象にも含めない。
 
 use awase::engine::{AssumedReason, InputModeState};
-use awase::types::VkCode;
-
-use crate::vk::{VK_CONVERT, VK_NONCONVERT};
-
-/// ADR-186: 無変換/変換の**修飾なし単独タップ**が delegate 経由で `SetOpen(true)` を
-/// 発行した場合に、stale `ObservedEisu` 救済（[`eisu_reset_on_ime_on`]）を**抑止**すべきか。
-///
-/// Mozc(GJI)の `IMEOn` は直前の変換モード(conv)を復元する（`session.cc:1023`、
-/// `win32/base/keyevent_handler.cc:700`。実測 `docs/adr/186-measurements/round2-richedit.log:147`）。
-/// つまり半角英数(conv=0x10)の直接入力から無変換でONにすると、IMEは半角英数のままONになる。
-/// この経路でも `ObservedEisu → AssumedRomaji` に reset すると、Engine ONのまま実IMEが
-/// 半角英数になり「英数のときEngine OFF」の要件と逆になる。
-///
-/// 条件は VK（無変換/変換）と「修飾キー無し」だけで決める。`SetOpenOrigin` では
-/// IME-ON/OFFコンボ・EngineOnコンボと区別できず（全て `ExplicitUserAction`）、IME種別での
-/// 一律抑止は ObservedEisu 循環デッドロック（2026-07-09 MS Edge、上記モジュールdoc参照）を
-/// 再発させるため採らない。stale な `ObservedEisu` に嵌った場合の脱出口は、従来どおり
-/// IME-ON コンボ（Ctrl+変換）の reset。
-#[must_use]
-pub fn keeps_eisu_on_solo_mode_key_open(
-    vk: VkCode,
-    ctrl: bool,
-    shift: bool,
-    alt: bool,
-    win: bool,
-) -> bool {
-    (vk == VK_CONVERT || vk == VK_NONCONVERT) && !ctrl && !shift && !alt && !win
-}
 
 /// ユーザー起点で IME が ON になった直後の stale `ObservedEisu` 救済判定。
 ///
@@ -345,58 +311,5 @@ mod tests {
             cache_restore_eisu_guard(InputModeState::Unknown),
             InputModeState::Unknown
         );
-    }
-
-    // ── ADR-186: 無変換/変換の修飾なし単独タップは ObservedEisu を消さない ──
-
-    #[test]
-    fn solo_mode_key_open_keeps_eisu_for_convert_and_nonconvert() {
-        assert!(keeps_eisu_on_solo_mode_key_open(
-            VK_CONVERT, false, false, false, false
-        ));
-        assert!(keeps_eisu_on_solo_mode_key_open(
-            VK_NONCONVERT,
-            false,
-            false,
-            false,
-            false
-        ));
-    }
-
-    #[test]
-    fn solo_mode_key_open_does_not_keep_eisu_with_modifiers() {
-        // Ctrl+変換 は IME-ON コンボ（従来どおり reset して脱出口を残す）。
-        assert!(!keeps_eisu_on_solo_mode_key_open(
-            VK_CONVERT, true, false, false, false
-        ));
-        assert!(!keeps_eisu_on_solo_mode_key_open(
-            VK_CONVERT, false, true, false, false
-        ));
-        assert!(!keeps_eisu_on_solo_mode_key_open(
-            VK_NONCONVERT,
-            false,
-            false,
-            true,
-            false
-        ));
-        assert!(!keeps_eisu_on_solo_mode_key_open(
-            VK_NONCONVERT,
-            false,
-            false,
-            false,
-            true
-        ));
-    }
-
-    #[test]
-    fn solo_mode_key_open_does_not_keep_eisu_for_other_keys() {
-        // 物理ひらがな(0xF2)や任意のキーは対象外（従来どおり reset）。
-        assert!(!keeps_eisu_on_solo_mode_key_open(
-            crate::vk::VK_DBE_HIRAGANA,
-            false,
-            false,
-            false,
-            false
-        ));
     }
 }
