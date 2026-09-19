@@ -18,7 +18,7 @@ mkdir -p "$OUT"
 
 # 実行前にデスクトップがロックされていないか確認する(ロック中は SendInput も前面化も効かない)。
 "$CW" exec e2e-diag-desktop >"$OUT/desktop.txt" 2>&1
-if grep -qE "LockApp|LogonUI: [1-9]" "$OUT/desktop.txt" && grep -q "LockApp" "$OUT/desktop.txt"; then
+if grep -qE "LockApp|foreground: hwnd=0 " "$OUT/desktop.txt"; then
   echo "Windows機がロック画面です。ロックを解除してから、もう一度実行してください。"
   grep -E "foreground:" "$OUT/desktop.txt"
   exit 2
