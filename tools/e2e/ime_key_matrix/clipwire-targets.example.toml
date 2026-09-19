@@ -22,3 +22,10 @@ dir = 'C:\Users\cuzic\scoop\persist\msys2\home\cuzic\awase-spike\target\debug\ex
 script = """
 run_ok(["powershell", "-NonInteractive", "-Command", "[Console]::OutputEncoding=[Text.Encoding]::UTF8; if (Test-Path ime_key_matrix_spike.log) { Get-Content ime_key_matrix_spike.log -Encoding utf8 } else { 'no log' }"]);
 """
+
+# 4. 実行前チェック: デスクトップがロックされていないか、前面ウィンドウは何かを出力する(ロック中は注入が効かない)。
+[targets.e2e-diag-desktop]
+dir = 'C:\Users\cuzic'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "'LogonUI: ' + (Get-Process LogonUI -ErrorAction SilentlyContinue | Measure-Object).Count; Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class FG { [DllImport(\\\"user32.dll\\\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\\\"user32.dll\\\")] public static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n); [DllImport(\\\"user32.dll\\\")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); }'; $h=[FG]::GetForegroundWindow(); $sb=New-Object System.Text.StringBuilder 256; [void][FG]::GetWindowText($h,$sb,256); $p=0; [void][FG]::GetWindowThreadProcessId($h,[ref]$p); 'foreground: hwnd=' + $h + ' title=' + $sb.ToString() + ' pid=' + $p + ' proc=' + (Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName"]);
+"""

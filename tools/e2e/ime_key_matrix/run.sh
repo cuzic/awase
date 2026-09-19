@@ -4,7 +4,7 @@
 #
 # 前提(Windows側): awase が AWASE_TEST_INJECTION=1 かつ RUST_LOG=debug で起動していること
 #   (awase は ADR-186 の実装ブランチのビルド、gji_thumb_key_ime_toggle=true)。
-#   clipwire ターゲット e2e-run / e2e-fetch-awase / e2e-fetch-spike が登録・承認済みであること
+#   clipwire ターゲット e2e-run / e2e-fetch-awase / e2e-fetch-spike / e2e-diag-desktop が登録・承認済みであること
 #   (clipwire-targets.example.toml 参照)。実行中(約40秒)は、Windows機のキーボード・マウスに触らない。
 #
 # 使い方: run.sh [出力ディレクトリ]   終了コード: 0=ALL PASS / 1=FAIL / 2=実行できず
@@ -15,6 +15,14 @@ CW="${CLIPWIRE:-$HOME/powershell-clipd/target/release/clipwire}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-$HERE/out/$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$OUT"
+
+# 実行前にデスクトップがロックされていないか確認する(ロック中は SendInput も前面化も効かない)。
+"$CW" exec e2e-diag-desktop >"$OUT/desktop.txt" 2>&1
+if grep -qE "LockApp|LogonUI: [1-9]" "$OUT/desktop.txt" && grep -q "LockApp" "$OUT/desktop.txt"; then
+  echo "Windows機がロック画面です。ロックを解除してから、もう一度実行してください。"
+  grep -E "foreground:" "$OUT/desktop.txt"
+  exit 2
+fi
 
 "$CW" exec e2e-run >"$OUT/run.txt" 2>&1
 grep -q "spike procs: 1" "$OUT/run.txt" || { echo "スパイクを起動できませんでした:"; cat "$OUT/run.txt"; exit 2; }
