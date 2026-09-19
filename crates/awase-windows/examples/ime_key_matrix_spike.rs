@@ -63,12 +63,13 @@ use windows::Win32::UI::TextServices::{
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW,
     GetForegroundWindow, GetMessageW, GetWindowTextLengthW, GetWindowTextW,
-    GetWindowThreadProcessId, KillTimer, MessageBoxW, PostQuitMessage, RegisterClassW,
-    SendMessageTimeoutW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowTextW,
-    SetWindowsHookExW, ShowWindow, TranslateMessage, CW_USEDEFAULT, KBDLLHOOKSTRUCT, MB_ICONERROR,
-    MB_OK, MSG, SMTO_ABORTIFHUNG, SW_SHOW, WH_KEYBOARD_LL, WINDOW_STYLE, WM_DESTROY, WM_KEYDOWN,
-    WM_KEYUP, WM_SETFOCUS, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CHILD,
-    WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
+    GetWindowThreadProcessId, KillTimer, MessageBoxW, PostMessageW, PostQuitMessage,
+    RegisterClassW, SendMessageTimeoutW, SendMessageW, SetForegroundWindow, SetTimer,
+    SetWindowTextW, SetWindowsHookExW, ShowWindow, TranslateMessage, CW_USEDEFAULT,
+    KBDLLHOOKSTRUCT, MB_ICONERROR, MB_OK, MSG, SMTO_ABORTIFHUNG, SW_SHOW, WH_KEYBOARD_LL,
+    WINDOW_STYLE, WM_CLOSE, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_SETFOCUS, WM_SYSKEYDOWN,
+    WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    WS_VSCROLL,
 };
 
 /// `--auto` が注入するキーの dwExtraInfo（自分の注入を、他の注入と区別してステップ照合に使う）。
@@ -228,6 +229,8 @@ thread_local! {
     static AUTO_TRIES: RefCell<usize> = const { RefCell::new(0) };
     static AUTO_PREP: RefCell<usize> = const { RefCell::new(0) };
     static AUTO_DONE: RefCell<bool> = const { RefCell::new(false) };
+    /// 全手順完了後、この時刻(now_ms)にウィンドウを閉じて終了する(0=予約なし)。
+    static AUTO_CLOSE_AT: RefCell<u64> = const { RefCell::new(0) };
     /// `--script`: ADR-186 の実機A/B用の固定手順（awase 起動中に、押すキーと期待を順に案内）。
     static SCRIPT_MODE: RefCell<bool> = const { RefCell::new(false) };
     static SCRIPT_IDX: RefCell<usize> = const { RefCell::new(0) };
@@ -427,6 +430,15 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
     for (_, vk, down) in due {
         send_key(vk, down);
     }
+    // 全手順完了の少し後に、自動でウィンドウを閉じる(ログはファイルへ保存済み)。
+    let close_at = AUTO_CLOSE_AT.with(|c| *c.borrow());
+    if close_at != 0 && now >= close_at {
+        AUTO_CLOSE_AT.with(|c| *c.borrow_mut() = 0);
+        unsafe {
+            let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+        return;
+    }
     if AUTO_QUEUE.with(|q| !q.borrow().is_empty())
         || now < HOLD_UNTIL.with(|h| *h.borrow())
         || now < AUTO_NEXT.with(|n| *n.borrow())
@@ -474,7 +486,8 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
     let si = SCRIPT_IDX.with(|i| *i.borrow());
     if si >= SCRIPT.len() {
         if !AUTO_DONE.with(|d| std::mem::replace(&mut *d.borrow_mut(), true)) {
-            append_log("[AUTO] 全手順完了");
+            append_log("[AUTO] 全手順完了（1.5秒後に自動で閉じます）");
+            AUTO_CLOSE_AT.with(|c| *c.borrow_mut() = now + 1500);
         }
         return;
     }
