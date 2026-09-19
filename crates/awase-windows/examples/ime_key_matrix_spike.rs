@@ -51,20 +51,26 @@ use windows::Win32::UI::Input::Ime::{
     ImmGetOpenStatus, ImmReleaseContext, IME_COMPOSITION_STRING, IME_CONVERSION_MODE,
     IME_SENTENCE_MODE,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetFocus, SetFocus};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, GetFocus, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
+    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY,
+};
 use windows::Win32::UI::TextServices::{
     CLSID_TF_ThreadMgr, ITfCompartmentMgr, ITfThreadMgr,
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW,
-    GetWindowTextLengthW, GetWindowTextW, KillTimer, MessageBoxW, PostQuitMessage, RegisterClassW,
-    SendMessageTimeoutW, SendMessageW, SetTimer, SetWindowTextW, SetWindowsHookExW, ShowWindow,
-    TranslateMessage, CW_USEDEFAULT, KBDLLHOOKSTRUCT, MB_ICONERROR, MB_OK, MSG, SMTO_ABORTIFHUNG,
-    SW_SHOW, WH_KEYBOARD_LL, WINDOW_STYLE, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_SETFOCUS,
-    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW,
-    WS_VISIBLE, WS_VSCROLL,
+    CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow,
+    GetMessageW, GetWindowTextLengthW, GetWindowTextW, KillTimer, MessageBoxW, PostQuitMessage,
+    RegisterClassW, SendMessageTimeoutW, SendMessageW, SetForegroundWindow, SetTimer,
+    SetWindowTextW, SetWindowsHookExW, ShowWindow, TranslateMessage, CW_USEDEFAULT,
+    KBDLLHOOKSTRUCT, MB_ICONERROR, MB_OK, MSG, SMTO_ABORTIFHUNG, SW_SHOW, WH_KEYBOARD_LL,
+    WINDOW_STYLE, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_SETFOCUS, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WM_TIMER, WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
 };
+
+/// `--auto` が注入するキーの dwExtraInfo（自分の注入を、他の注入と区別してステップ照合に使う）。
+const AUTO_MARKER: usize = 0x5350_494B;
 
 const WM_IME_CONTROL: u32 = 0x0283;
 const IMC_GETCONVERSIONMODE: usize = 0x0001;
@@ -211,6 +217,15 @@ thread_local! {
     /// Ctrl+Shift+F12 によるスキップ要求。
     static SKIP_REQ: RefCell<bool> = const { RefCell::new(false) };
     static LAST_ROUND: RefCell<Option<usize>> = const { RefCell::new(None) };
+    /// `--auto`: 手順のキーをスパイク自身が SendInput で注入する（RPA的な自動実行）。
+    static AUTO_MODE: RefCell<bool> = const { RefCell::new(false) };
+    /// (実行時刻ms, VK, KeyDownか) の注入予約。
+    static AUTO_QUEUE: RefCell<Vec<(u64, u32, bool)>> = const { RefCell::new(Vec::new()) };
+    static AUTO_NEXT: RefCell<u64> = const { RefCell::new(0) };
+    static AUTO_LAST_SI: RefCell<usize> = const { RefCell::new(usize::MAX) };
+    static AUTO_TRIES: RefCell<usize> = const { RefCell::new(0) };
+    static AUTO_PREP: RefCell<usize> = const { RefCell::new(0) };
+    static AUTO_DONE: RefCell<bool> = const { RefCell::new(false) };
     /// `--script`: ADR-186 の実機A/B用の固定手順（awase 起動中に、押すキーと期待を順に案内）。
     static SCRIPT_MODE: RefCell<bool> = const { RefCell::new(false) };
     static SCRIPT_IDX: RefCell<usize> = const { RefCell::new(0) };
@@ -342,6 +357,147 @@ fn steps() -> Vec<Step> {
 const ROUNDS: usize = 2;
 const ROUND_NAMES: [&str; ROUNDS] = ["EDIT(標準コントロール)", "RichEdit 5.0(TSFネイティブ)"];
 const HOLD_MS: u64 = 3000;
+
+/// 物理キーに近いスキャンコードを付けて注入するための対応（JIS配列）。
+fn scan_for(vk: u32) -> u16 {
+    match vk {
+        0x1D => 0x7B,
+        0x1C => 0x79,
+        0xF2 => 0x70,
+        0x4B => 0x25,
+        0x1B => 0x01,
+        _ => 0,
+    }
+}
+
+/// `SendInput` で1イベントを注入する（`AUTO_MARKER` 付き）。
+fn send_key(vk: u32, down: bool) {
+    let input = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(u16::try_from(vk).unwrap_or(0)),
+                wScan: scan_for(vk),
+                dwFlags: if down {
+                    KEYBD_EVENT_FLAGS(0)
+                } else {
+                    KEYEVENTF_KEYUP
+                },
+                time: 0,
+                dwExtraInfo: AUTO_MARKER,
+            },
+        },
+    };
+    unsafe {
+        let _ = SendInput(&[input], size_of::<INPUT>() as i32);
+    }
+}
+
+/// 押して離す（80ms 保持）を、`at` を起点に予約する。
+fn queue_press(at: u64, vk: u32) {
+    AUTO_QUEUE.with(|q| {
+        let mut q = q.borrow_mut();
+        q.push((at, vk, true));
+        q.push((at + 80, vk, false));
+    });
+}
+
+/// 準備の状態遷移に使うキー（`script_hint` と同じ方針）。
+fn auto_hint_vk(cur: St, need: St) -> Option<u32> {
+    match (cur, need) {
+        (St::Unknown, _) => None,
+        (St::OnKanaComp, _) => Some(0x1B),
+        (St::Direct, _) | (St::OnKana | St::OnAlnum, St::Direct) => Some(0x1C),
+        (St::OnAlnum, St::OnKana) | (St::OnKana, St::OnAlnum) => Some(0xF2),
+        _ => None,
+    }
+}
+
+/// `--auto` の1tick分の駆動。予約済みの注入を実行し、次の手順（または準備）を予約する。
+fn auto_drive(now: u64, cur: St, hwnd: HWND) {
+    let due: Vec<(u64, u32, bool)> = AUTO_QUEUE.with(|q| {
+        let mut q = q.borrow_mut();
+        let all: Vec<_> = q.drain(..).collect();
+        let (d, rest): (Vec<_>, Vec<_>) = all.into_iter().partition(|(t, _, _)| *t <= now);
+        *q = rest;
+        d
+    });
+    for (_, vk, down) in due {
+        send_key(vk, down);
+    }
+    if AUTO_QUEUE.with(|q| !q.borrow().is_empty())
+        || now < HOLD_UNTIL.with(|h| *h.borrow())
+        || now < AUTO_NEXT.with(|n| *n.borrow())
+    {
+        return;
+    }
+    // 注入は前面ウィンドウに届くので、スパイクを前面・入力欄フォーカスに保つ。
+    unsafe {
+        if GetForegroundWindow() != hwnd {
+            let _ = SetForegroundWindow(hwnd);
+            if let Some(e) = EDIT_HWND.with(|e| *e.borrow()) {
+                let _ = SetFocus(Some(e));
+            }
+            AUTO_NEXT.with(|n| *n.borrow_mut() = now + 600);
+            return;
+        }
+    }
+    let si = SCRIPT_IDX.with(|i| *i.borrow());
+    if si >= SCRIPT.len() {
+        if !AUTO_DONE.with(|d| std::mem::replace(&mut *d.borrow_mut(), true)) {
+            append_log("[AUTO] 全手順完了");
+        }
+        return;
+    }
+    if AUTO_LAST_SI.with(|l| std::mem::replace(&mut *l.borrow_mut(), si)) != si {
+        AUTO_TRIES.with(|t| *t.borrow_mut() = 0);
+        AUTO_PREP.with(|t| *t.borrow_mut() = 0);
+    }
+    let (name, vk, _, _, need) = SCRIPT[si];
+    if cur != need {
+        let prep = AUTO_PREP.with(|p| {
+            *p.borrow_mut() += 1;
+            *p.borrow()
+        });
+        match auto_hint_vk(cur, need) {
+            Some(h) if prep <= 6 => {
+                append_log(&format!(
+                    "[AUTO] 準備 STEP {}: 現在={} 必要={} → VK 0x{h:02X} を注入",
+                    si + 1,
+                    cur.label(),
+                    need.label()
+                ));
+                queue_press(now, h);
+                AUTO_NEXT.with(|n| *n.borrow_mut() = now + 2500);
+            }
+            _ => {
+                append_log(&format!(
+                    "[AUTO] STEP {} {name}: 前提状態にできずスキップ(現在={})",
+                    si + 1,
+                    cur.label()
+                ));
+                SCRIPT_IDX.with(|i| *i.borrow_mut() = si + 1);
+            }
+        }
+        return;
+    }
+    let tries = AUTO_TRIES.with(|t| {
+        *t.borrow_mut() += 1;
+        *t.borrow()
+    });
+    if tries > 3 {
+        append_log(&format!(
+            "[AUTO] STEP {} {name}: 注入したがステップに一致せず(3回)→スキップ",
+            si + 1
+        ));
+        SCRIPT_IDX.with(|i| *i.borrow_mut() = si + 1);
+        return;
+    }
+    queue_press(now, vk);
+    queue_press(now + 700, 0x4B); // k
+    queue_press(now + 1200, 0x1B); // ESC
+    AUTO_NEXT.with(|n| *n.borrow_mut() = now + 1800);
+}
 
 /// `--script` の1手順: (表示名, VK, Shift併用, 期待する結果)。
 const SCRIPT: [(&str, u32, bool, &str, St); 10] = [
@@ -704,7 +860,9 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                         (false, true) => "Shift+",
                         (false, false) => "",
                     };
-                    let injected = if kb.flags.0 & 0x10 != 0 {
+                    let injected = if kb.dwExtraInfo == AUTO_MARKER {
+                        " (auto)"
+                    } else if kb.flags.0 & 0x10 != 0 {
                         " (injected)"
                     } else {
                         ""
@@ -950,6 +1108,9 @@ fn on_timer(hwnd: HWND) {
         };
         format!("{head}\n{action}\n(そのキーが無い場合: Ctrl+Shift+F12 でスキップ)")
     };
+    if AUTO_MODE.with(|m| *m.borrow()) {
+        auto_drive(now, cur, hwnd);
+    }
     set_status(&guide);
     LAST_SNAP.with(|l| *l.borrow_mut() = snap);
 }
@@ -1107,6 +1268,12 @@ fn report_fatal(msg: &str) {
 
 fn run() -> WinResult<()> {
     START.with(|s| *s.borrow_mut() = Some(std::time::Instant::now()));
+    // `--auto`: --script の手順を、スパイク自身が SendInput で注入して自動実行する。
+    if std::env::args().any(|a| a == "--auto") {
+        AUTO_MODE.with(|m| *m.borrow_mut() = true);
+        SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
+        STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
+    }
     // `--script`: awase 起動中の固定手順（案内は SCRIPT）。
     if std::env::args().any(|a| a == "--script") {
         SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
