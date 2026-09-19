@@ -183,7 +183,7 @@
 | [176](176-behavioral-calibration-of-ime-mode-key-shadow-overrides.md) | awase-settingsに専用較正UIを新設し、モードキーの実効果をユーザー協力の下で明示的に測定、gate_thumb_key_ime_actions出力を差し替えて静的分類を補完する。BUG-143の静的パースの限界を補完 | round1〜4で計17件のBlocker検出、v6/v7/v8とopus round5・6で設計修正を重ねた後、決着実験v2でGJIの生キー反応はテキスト入力欄フォーカス時のみ本物と確定(awase自作自演説は否定)、実装着手(T1から) |
 | [177](177-msi-restart-manager-graceful-shutdown.md) | 常駐中のMSIアップグレードは実機検証の結果コード変更不要と判明(Restart Managerが現状コードのまま自律的にシャットダウン・再起動を処理、UI付き・データ保持も確認)。副産物でMSIアンインストール時のユーザーデータ削除を発見 | 確定・opus round1〜4(4ラウンド)を経て収束・ADR-099 MF-4解消 |
 | [178](178-msi-uninstall-preserve-userdata.md) | MSIアンインストール時のユーザーデータ喪失をPermanent="yes"+アプリ側自己修復(無ければ埋め込み既定値から生成)で防ぐ。v1〜v13の「バックアップ+復元」方式(12ラウンド・Blocker20件)は複雑化しすぎたため破棄し全面差し替え | 起草中v14・実装/実機検証/opusレビュー完了(Blocker2件反映済み)、フォローアップ項目のみ残る |
-| [186](186-gji-atok-mode-key-measured-matrix-and-belief-follow.md) | GJI(ATOK)のモードキー動作を実機で全数測定し、押下時点でbeliefを追随させEngineを「かな=ON・英数=OFF」に保つ | ドラフトv1(実測完了・設計未レビュー) |
+| [186](186-gji-atok-mode-key-measured-matrix-and-belief-follow.md) | GJI(ATOK)のモードキー動作を実機で測定し、無変換/変換(入力なし)の押下時点belief追随だけを既存Toggle経路で行う | ドラフトv2(opus round1反映、round2で収束確認) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

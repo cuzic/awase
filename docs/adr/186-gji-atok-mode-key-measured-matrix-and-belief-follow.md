@@ -1,22 +1,26 @@
 ---
 id: ADR-186
 title: |-
-  GJI(ATOKプリセット)のモードキー動作を実機で全数測定し、awaseは押下時点でbelief(open軸/かな英数軸)を追随させてEngineを「かな=ON・英数(直接入力含む)=OFF」に保つ
+  GJI(ATOKプリセット)のモードキー動作を実機で測定し、無変換/変換の開閉トグルだけを既存のToggle経路で
+  押下時点にbelief追随させる(かな英数トグル・入力中・半角/全角は別扱い)
 summary: |-
-  ADR-184/185の議論は「ATOKの無変換はIME ONのまま半角英数に変える」という前提に立っていたが、
-  awase非依存のスパイク(`crates/awase-windows/examples/ime_key_matrix_spike.rs`)で
-  素のWin32 EDITとRichEdit 5.0(TSFネイティブ)の2コントロールを同一手順で測った結果、
-  **公開Mozcの`atok.tsv`がそのまま実機GJIの動作**だった(2コントロールの全セルが一致)。
-  無変換/変換/半角全角はIME開閉のトグル(ON中→OFF、直接入力→ON)、ひらがなキーと
-  Shift+無変換と「入力中の無変換」はIME ONのままかな⇔半角英数のトグル。
-  「ひらがな中に無変換→IME ON半角英数」という観測は、実際はIME OFF(直接入力)だった可能性が高い
-  (どちらも英字が出るため見分けがつかない)。ユーザー要件は「かなのときEngine ON、英数のとき
-  Engine OFF」。現状はキー押下でbeliefが動かず、遅延観測(`idle-conv-check`、次の打鍵後)でしか
-  Engineが切り替わらないため、押下直後の1打がNICOLAのまま処理される。本ADRは実測表を根拠として固定し、
-  押下時点のbelief追随(open軸は既存のToggle経路、かな英数軸は`apply_input_mode_correction`)で
-  この遅延を埋める最小変更を定める。
+  ADR-184/185は「ATOKの無変換はIME ONのまま半角英数に変える」を前提にしていたが、awase非依存のスパイク
+  (`crates/awase-windows/examples/ime_key_matrix_spike.rs`)で素のWin32 EDITとRichEdit 5.0を測った結果、
+  **公開Mozcの`atok.tsv`が実機GJIの動作**だった(状態を「入力なし/変換前(Composition)/変換中(Conversion)」に
+  分けて読めば矛盾しない)。無変換/変換は入力なしのとき**IME開閉のトグル**(ON中→OFF、直接入力→ON)。
+  入力中(Composition)の無変換だけがONのまま半角英数(ADR-184の症状は、この状態では正しい)。
+  ひらがなキーはかな⇔半角英数のトグルで開閉に触れない。**変換モード(conv)は開閉遷移をまたいで保存される**
+  (IMEOnは直前のconvを復元する。session.cc:1023、keyevent_handler.cc:700)。半角/全角は0xF3/0xF4のどちらも
+  `HANKAKU`に潰され、GJIでは両方**トグル**(ON中に0xF4を押すとOFFになる)。ユーザー要件は「かな=Engine ON、
+  英数(半角英数・直接入力)=Engine OFF」。現状は押下でbeliefが動かず、遅延観測(`idle-conv-check`、
+  次の打鍵後)でしかEngineが切り替わらない。opus round1(Blocker3件)を受け、本ADRの決定は
+  **無変換/変換(入力なし)の押下時点のbelief追随だけ**に絞る。かな英数トグルは実機確認まで保留、
+  入力中の無変換は現状維持、半角/全角のモデル誤りは別件。
 status: |-
-  **ドラフトv1(実測完了・設計は未レビュー)**。実装前にopus敵対レビューを通すこと。
+  **ドラフトv2(opus round1のBlocker3件・Must-fix5件を反映)**。round2で収束確認する。
+  前提ブランチ: ADR-179/184(`feat/adr178-mode-key-actuation-and-tsfnative-rescue-teardown`の未追跡/未マージ
+  ファイル)とADR-185(`feat/adr185-directinput-open-axis-write`)は本ブランチ(developの先端)に存在しない。
+  実装は上記ブランチのマージ後に行う。
 related_adr:
   - "ADR-090"
   - "ADR-176"
@@ -25,109 +29,148 @@ related_adr:
   - "ADR-185"
 ---
 
-# ADR-186: GJI(ATOK)モードキーの実測表と、押下時点のbelief追随
+# ADR-186: GJI(ATOK)モードキーの実測と、無変換/変換の押下時点belief追随
 
 ## 背景
 
-ユーザー要件: **かなのときEngine ON、英数のときEngine OFFを徹底する**。ここで英数は
-「IME ONの半角英数」と「直接入力(IME OFF)」の両方を指す(awaseの挙動はどちらでも同じ=Engine OFFで
-よい、ユーザー確認済み)。
+ユーザー要件: **かなのときEngine ON、英数のときEngine OFFを徹底する**。英数は「IME ONの半角英数」と
+「直接入力(IME OFF)」の両方(awaseの挙動はどちらでも同じ=Engine OFFでよい、ユーザー確認済み)。
 
-現状の弱点: 無変換などの押下は、Passthrough設定では生キーとしてGJIに渡されるだけで、awaseの
-beliefは動かない。Engineが切り替わるのは、次の打鍵の後に`idle-conv-check`が変換モードを読んで
-`ObservedEisu`と判定したとき(遅延観測)。押下直後の最初の1打はEngine ONのままNICOLAで処理される
-(2026-09-19の実機ログ: `Kana/roma → Eisu/roma (source=IdleCheck)`が押下の後の打鍵後に出る)。
-
-これまで「ATOKの無変換はIME ONのまま半角英数にする」を前提に議論していた(ADR-184の症状節、
-ADR-185)。この前提を実測で検証した。
+現状の弱点: 無変換などの押下は生キーとしてGJIに渡されるだけで、awaseのbeliefは動かない。Engineが切り替わる
+のは、次の打鍵の後に`idle-conv-check`が変換モードを読んで`ObservedEisu`と判定したとき(遅延観測)。
+押下直後の最初の1打はEngine ONのままNICOLAで処理される。
 
 ## 実測
 
-- 環境: dragonflyg4、Google日本語入力、`session_keymap = 1`(ATOK、`config1.db`をデコードして確認。
-  オーバーレイなし。同ファイルに残るMS-IME風の`custom_keymap_table`はプリセット選択時は
-  読まれない)、awase停止。
-- 方法: awase非依存のスパイクアプリが`WH_KEYBOARD_LL`でキーを捕捉し、押下前・+400ms・+1500msの
-  観測値を並べて記録(A=`ImmGet*`、B=`WM_IME_CONTROL`、T=TSFスレッドcompartment、
-  G=TSFグローバルcompartment)。状態は変えず、案内に従ってユーザーがキーで作る。
-  観測値A/B/Tは全件一致(Gは常に0で不採用。ADR-176の手法Cは`GetGlobalCompartment`という
-  スコープの誤りだった)。
-- 対象コントロール: 標準EDIT(IMM)とRichEdit 5.0(TSFネイティブ)。**全セルで挙動が一致**。
-- 生ログ: `186-measurements/`(`round1-edit.log`、`round2-richedit.log`、探索時の
-  `adhoc-unguided-run.log`)。
+- 環境: dragonflyg4、Google日本語入力、`session_keymap = 1`(ATOK、`config1.db`をデコードして確認。オーバーレイ
+  なし。同ファイルに残るMS-IME風の`custom_keymap_table`はプリセット選択時は読まれない)、awase停止。
+- 方法: スパイクが`WH_KEYBOARD_LL`でキーを捕捉し、押下前・+400ms・+1500msの観測値を並べて記録
+  (A=`ImmGet*`、B=`WM_IME_CONTROL`、T=TSFスレッドcompartment、G=TSFグローバルcompartment)。状態は
+  変えず、案内に従ってユーザーがキーで作る。**A/B/Tは、フォーカスが入力欄から外れた無効レコード3件
+  (`round1-edit.log:94-96`)を除いて全件一致**。Gは常に0で不採用(ADR-176の手法Cは
+  `GetGlobalCompartment`のスコープの誤り)。
+- 対象: 標準EDITとRichEdit 5.0(TSFネイティブ)。ただし**2ラウンドは別ビルドで走らせた**(round1は24ステップ版、
+  round2は英数を除き、Shift併用を許可した20ステップ版)。両方で測れたセルは、次の表で一致。
+- 注意: ログの時刻は記録完了時刻(押下の約1.5秒後)。押下が1.5秒未満の間隔で続いた箇所は、前のキーの効果が
+  次の記録に混ざる。**+400ms値を優先して読む**(+1500msは後続の押下で汚染されやすい)。
+  `tail`が入力欄以外(ログ欄、ウィンドウタイトル)になっている記録は無効(`round1:242`、`round2:294-318`)。
+- 生ログ: `186-measurements/`。
 
-### 結果(ATOKプリセット)
+### 結果(ATOKプリセット。クリーンな記録のみ。r1/r2=行番号)
 
-| 状態 | 無変換 | 変換 | ひらがな(0xF2) | 半角/全角 |
+| 状態 | 無変換(0x1D) | 変換(0x1C) | ひらがな(0xF2) | 半角/全角(0xF3/0xF4) |
 |---|---|---|---|---|
-| 直接入力 | IME ON | IME ON | 変化なし | IME ON |
-| ON・かな・入力なし | **IME OFF** | **IME OFF** | ONのまま かな→半角英数 | IME OFF |
-| ON・入力中(未確定あり) | ONのまま半角英数へ(未確定保持) | 変換(候補) | ONのまま かな⇔半角英数 | IME OFF(未確定破棄) |
-| ON・半角英数・入力なし | **IME OFF** | **IME OFF** | かなに戻る | 未測定(OFFと推定) |
+| 直接入力 | IME ON(r1:9, r2:9) | IME ON(r1:19, r2:19) | 変化なし(r1:24, r2:29) | **0xF4**: IME ON(r1:56, r2:39)。0xF3: **有効な測定なし** |
+| ON・入力なし・かな | **IME OFF**(r1:61, r2:44) | **IME OFF**(r1:66, r2:54) | ONのままconv 0x09→0x10(かな→半角英数)(r1:71, r2:64) | **0xF3**: IME OFF(r1:83, r2:75) |
+| ON・変換前(Composition) | ONのままconv→0x10、未確定保持(r2:90) | 変換(comp か→下)(r2:95) | 半角英数トグル(r2/r1で未確認) | **0xF4**: IME OFF、未確定破棄(r2:142) |
+| ON・変換中(Conversion) | **効果なし**(r1:108) | 次候補ページ(comp か→🉑)(r1:113) | conv 0x10→0x19(r1:143)※ | **0xF3**: IME OFF、未確定破棄(r1:160) |
+| ON・入力なし・半角英数 | **IME OFF**(r1:175, r2:152) | **IME OFF**(r1:180, r2:162) | かなに戻る(conv 0x10→0x19)(r1:185) | 未測定 |
 
-- Shift+無変換: ON中は、かな⇔半角英数のトグル。
-- 直接入力→ONにしたときのconvは、どのキーでも0x19(ひらがな)に戻る。
-- 未測定: 英数キー(0xF0、この環境に物理キー無し)、Shift+ひらがな(0xF1、カタカナ)のON中の効果、
-  ON・半角英数での半角/全角。ATOKの`atok.tsv`にこれらの行が無いことから、効果なしと推定。
-- 上流`atok.tsv`(Mozc master `13c98988`)との照合: 全セルが一致した。Windowsのキー→Mozcキー名の
-  対応は`win32/base/keyevent_handler.cc`(0x1C=HENKAN、0x1D=MUHENKAN、0xF2=KANA(`"kana"`/`"hiragana"`
-  はどちらも`KeyEvent::KANA`)、0xF3/0xF4=HANKAKU)。IME OFF中にMozcへ届くのは`DirectInput`行の
-  キーのKeyDownだけ(`keyevent_handler.cc:680`)。
+※ `atok.tsv`に`Conversion Kana`行は無いため、この効果はMozcではなくOS/IMM側のDBE効果の可能性がある。
+
+- Shift+無変換: ON・入力なしで、かな⇔半角英数のトグル(conv 0x19⇄0x10)。両ラウンドで確認。
+- **convは開閉遷移をまたいで保存される**。直接入力(conv 0x10)から変換でONにしたとき、conv 0x10のままONに
+  なった(`round2:147-151`、同型3件: `147/157/284`)。`IMEOn`は`key.mode`(=直前のvisible conv)を復元する
+  (`session.cc:1023-1034`、`win32/base/keyevent_handler.cc:700-705`)。
+- 未測定: 英数(0xF0、物理キー無し)、直接入力×0xF3、ON・半角英数×半角/全角、Shift+ひらがな(0xF1、
+  カタカナ)のON中の効果(`atok.tsv`に`Katakana`行が無いので、keymap上は未割当。OS/DBE側の効果は未確認)。
+- 初期convは0x09(NATIVE|FULLSHAPE、ROMANなし)。最初の半角英数往復の後は0x19(+ROMAN)になり戻らない。
+- 上流`atok.tsv`(Mozc master `13c98988`)との照合: **一致する**(Conversion×無変換の行が無い=効果なし、を
+  含む)。ただし「ON・入力中」を、Composition(変換前)とConversion(変換中、Space後)に分けて読む必要がある。
+  round1のSTEP13がConversionだったのは、直前(`round1:103`)のSpace押下と、STEP14の結果(次候補ページ)から。
+  Windowsのキー→Mozcキー名: 0x1C=HENKAN、0x1D=MUHENKAN、0xF2=KANA、**0xF3と0xF4はどちらもHANKAKU**
+  (`keyevent_handler.cc:315-316`)。IME OFF中にMozcへ届くのは`DirectInput`行のキーのKeyDownだけ
+  (`keyevent_handler.cc:680`)。
 
 ## 前提の訂正
 
-1. **「ひらがなからの無変換単独打鍵はIME ONのまま半角英数になる」は誤り**。実測ではIME OFF。
-   過去の観測は、どちらも英字が出るためIME OFFと区別できていなかった可能性が高い。
-   (`gji_thumb_key_ime_toggle=true`で「無変換で半角英数にならない」と見えたのも、awaseが開閉トグルとして
-   IME OFFを送っただけで、この表どおりの動作。)
-2. **「直接入力からの無変換は何も起きない」は、素のWin32/RichEditでは成立しない**(ONになる)。
-   メモ帳・Windows Terminalでの観測との差は未解明(本ADRの未解決事項)。
-3. `classify_mode_key_ime_action`のATOK分類: 無変換/変換=`Toggle`(開閉トグル)は**正しい**。
-   ひらがな=`None`(開閉に影響しない)も正しい。ADR-184議論中の「ATOK判定が誤分類」という
-   疑いは撤回する。
+1. ADR-184の症状「ATOKの無変換はIME ONのまま半角英数」は、**入力中(Composition)のときだけ正しい**。
+   入力なし(Precomposition)や半角英数ONでは、IME OFFになる(`atok.tsv` Precomposition Muhenkan =
+   `CancelAndIMEOff`)。過去の観測は、状態の取り違え、またはIME OFFとの見分けのつかなさによる。
+2. 「直接入力での無変換は何も起きない」は、素のWin32/RichEditでは成立しない(ONになる)。メモ帳・
+   Windows Terminalでの観測との差は未解明(未解決事項)。
+3. `classify_mode_key_ime_action`のATOK分類: 無変換/変換=`Toggle`(開閉トグル)は入力なしのとき正しい。
+   ひらがな=`None`も正しい。
 4. ADR-185(半角英数を検出しても、awaseからIME OFFを送らない)は、この表と矛盾しない。
-   撤去したのは「convからopen軸を推測して書き・送る」こと。キー押下に基づくbelief追随とは別。
+5. **awaseの既存モデルが誤りの箇所**: (a) `vk.rs`は0xF4=`TurnOn`(一方向)としているが、GJIでは0xF3/0xF4とも
+   トグル(`round2:142`: ON中に0xF4でOFF)。(b) `key_pipeline.rs`の「ユーザーがIMEをONにした時点でIMEは
+   ひらがなで再開するため、過去の英数観測はstale」(`eisu_reset_on_ime_on`、`PostSetOpenEisuReset`)は、
+   GJI/ATOKでは成り立たない(convは保存される)。
 
 ## 決定
 
-**決定1 — この表を一次情報として固定する。** 本ADRと`186-measurements/`を、ATOKプリセットの
-動作の根拠とする(公開`atok.tsv`と一致することも確認済み)。ADR-184の症状節の前提は本ADRで訂正する。
+**決定1 — 実測表を一次情報として固定する。** 本ADRと`186-measurements/`を、ATOKプリセットの動作の根拠とする。
+「全セル一致」は撤回し、状態をComposition/Conversionに分けた表(上)を正とする。
 
-**決定2 — open軸トグル(無変換/変換/半角全角、入力なし)は、既存のToggle経路を使う。**
-ADR-179決定2の`resolve_delegate_to_open_axis`のToggle分岐(awaseが自分のbeliefに従って
-ON/OFFを明示actuate)を、ATOKプリセットのPassthrough設定で有効にする(ADR-184の配線)。
-これで押下時点でopen軸のbeliefが動き、Engineが即座に切り替わる。ユーザーの原則
-(トグルはawaseが自分のbeliefに従ってactuate、冪等キーはbelief追随のみ)と一致する。
+**決定2 — 無変換/変換(入力なし)の押下時点のbelief追随は、既存のdelegate-to-open-axis経路を使う。**
+実体は`src/engine/nicola_fsm.rs`の`resolve_pending_thumb_as_single`内の`special.delegate_to_open_axis`分岐
+(Toggleのとき、awaseが自分のbeliefに従って明示ON/OFFをactuate。合成送出なし、物理キーは`Decision::Consume`
+で中継されないため二重actuationにならない)。到達に必要なのは、**`gji_thumb_key_ime_toggle = true`(opt-in)**
+と、**無変換/変換が親指キーとして設定されていること**。この経路はPassthrough(優先順位4)より優先(3)なので、
+発火する状況では「Passthrough設定」は効かなくなる(入力中を除く)。ATOKは無変換と変換の両方をToggleにする。
 
-**決定3 — かな英数軸のトグル(ひらがな、Shift+無変換)は、押下時点でinput_mode beliefを予測反転する。**
-IME ONのとき、かな系(`ObservedRomaji`/`ObservedKana`/`AssumedRomaji`)⇔`ObservedEisu`を、
-既存の`apply_input_mode_correction`で押下時に書く(`InputModeApplyStrategy`に「かな英数トグルキー」
-を1つ追加)。予測が外れたときは、既存の`idle-conv-check`の受動観測が訂正する(安全網は今のまま)。
-IME OFFへの操作は一切しない(ADR-185の原則)。
+さらに決定2に含める: **ATOKプリセットのこの経路では、open遷移時のeisu reset(`PostSetOpenEisuReset`、
+`eisu_reset_on_ime_on`)を抑止する**(ObservedEisuを消さない)。convは開閉をまたいで保存されるため、
+直接入力(半角英数のまま)から無変換でONにしたとき、resetするとEngine ONのまま実IMEが半角英数になり、
+要件の真逆になる。これは既存分岐への条件追加であり、新しい型・フィールドは足さない。
+`state/eisu_recovery.rs`の対応表と`tests/architecture_guard.rs::user_ime_on_paths_are_paired_with_eisu_reset`
+にGJI/ATOK例外を明記する。
 
-**決定4 — 「入力中の無変換」は開閉トグルとして扱う。**
-awaseは入力中かどうかを確実には見られない。入力中の無変換はGJIではかな英数トグル(ONのまま)だが、
-awase側では開閉トグルとして扱うと、どちらでもEngine OFFになる点は一致する。差(IMEがOFFか
-半角英数ONか)は、次の遅延観測が訂正する。
+**決定3 — かな英数トグル(ひらがな、Shift+無変換)の押下時点予測反転は、保留する。**
+物理0xF2がGJIに届くか未確認(`transport.rs:197-206`、GJI戦略で`f2_warmup_owned`のとき物理キーはSuppress)。
+届かなければ、予測反転は常に外れる。実機のdebugログで、ひらがなキー押下時にGJIのconvが実際に変わるかを
+確認してから決める。実装する場合も、新variantは足さず、既存の`InputModeApplyStrategy::
+UserHalfWidthAlnumToggle`(openを動かさずkana⇔eisuのbeliefだけを書く)を再利用し、既存の片方向
+`UserTurnOnEisuReset`を**置き換える**(併存させない)。
+
+**決定4 — 入力中の無変換は、現状維持とする。** `resolve_pending_thumb_as_single`は`composing`を引数に取り、
+delegateはcomposing中に発火しないfail-closedになっている(誤ってfalseでToggle→OFFすると、composition
+を破棄する)。この保護は外さない。入力中の無変換は、ModeKeyConfig(Passthrough/Suppress)に委ねる。
+入力中の効果(ONのまま半角英数)へのEngine追随は、決定3と同じ遅延観測のまま。
+
+**決定5 — 半角/全角(0xF3/0xF4)のモデル誤りは別件として切り出す。** GJI使用時は0xF3/0xF4とも
+`CancelAndIMEOff`/`IMEOn`のトグル(`atok.tsv`の全状態、`keyevent_handler.cc:315-316`)。awaseは
+0xF3=TurnOff、0xF4=TurnOnとしており、物理キーはGJI時に常にSuppressされる(`transport.rs:405-418`)ため、
+0xF4が届いたときはno-opのままになる。IME種別依存なので`vk.rs`の静的表では表現できない。修正箇所
+(`vk.rs::shadow_effect`か`transport.rs`か)は別のBUG/ADRで決める。本ADRでは変更しない。
 
 ## 非決定(やらないこと)
 
-- 新しい型・軸の区別・ウィザード連携は作らない(ADR-184の方針)。
-- 英数キー(0xF0)・カタカナ(Shift+ひらがな)は、未測定のため対象外。
-- MS-IMEプリセットなど他プリセットの表は測っていない(本ADRの対象外。必要なら同じスパイクで測る)。
-- 変換キーは無変換と同じ扱い(表の全セルで同じ結果)。
+- 新しい型・軸の区別・`InputModeApplyStrategy`の新variantは作らない。
+- 英数キー・カタカナ・MS-IMEなど他プリセットは、未測定のため対象外。
+- ADR-179のマージ前TODO(Passthrough実験の撤去)とは衝突しない(決定2はPassthroughを前提としない)。
+
+## 期待される結果と残る限界(決定2のみ実装した場合)
+
+| ユーザー操作 | ATOK実動作 | awaseの結果 |
+|---|---|---|
+| かな・入力なしで無変換/変換 | IME OFF | belief OFF→Engine OFF(押下時点)。**満たす** |
+| 半角英数ON・入力なしで無変換/変換 | IME OFF | 同上。**満たす** |
+| 直接入力で無変換/変換 | IME ON(convは直前値を復元) | belief ON。eisu reset抑止によりObservedEisuが残ればEngine OFF、かななら Engine ON。**満たす**(決定2の抑止が前提) |
+| 入力中(Composition)で無変換 | ONのまま半角英数 | delegate発火せず。遅延観測まで満たさない(既知) |
+| ひらがなキー | かな⇔半角英数 | 満たさない(決定3を保留)。遅延観測のまま |
+| 半角/全角 | ON/OFFトグル | 0xF3は正しい。0xF4はno-op(決定5) |
+| belief誤予測時 | — | Toggleなので**逆方向へactuate**。訂正はTsfNative限定(`idle_check.rs`のガード2)で、非TsfNativeでは訂正が来ない。TsfNativeでも、次に500ms以上手が止まり、最後の明示IME操作から1500ms経過するまで続く |
+
+## リスク(BUG-115が挙げた却下理由と本ADRの実測の関係)
+
+`src/config.rs:410-422`の却下理由4点のうち、本ADRで潰せたのは「4. GJIが本家`atok.tsv`と一致する保証がない」だけ。
+残る「1. Toggleの非冪等性」「2. 親指キー2本への露出倍増」は、opt-in(`gji_thumb_key_ime_toggle`)で緩和するが
+残る。特に`config.rs:452-455`が警告する「TSFネイティブアプリ(`FeedbackPolicy::Blind`)では実IME状態を読み戻せない
+ため、beliefがズレると逆方向へ切り替わる」は、決定2の中心的リスクで、ユーザー原則「IME ON/OFFは安定して観測
+できない」と直結する。実機A/Bでbeliefのズレを確認すること。
 
 ## 検証計画
 
-1. 実機A/B(メモ帳・Windows Terminal、awase起動・debug): 無変換/ひらがな/半角全角の押下から
-   Engine状態の変化までの時間を、ログの押下時刻とEngine activated/deactivatedで測る(現状=次の打鍵後)。
-2. ゴールデン/ユニットテスト: 上の表の各セルについて、期待するbelief遷移を`state/`の純粋関数
-   または`src/engine/tests.rs`に固定する。
-3. `fix-requires-evidence`の再発ファミリー(IME belief/キー選択)に該当するため、回帰テストを必ず添える。
+1. 実機A/B(メモ帳・Windows Terminal、awase起動・debug、`gji_thumb_key_ime_toggle = true`):
+   無変換/変換の押下から`Engine activated/deactivated`までの時間を、ログの押下時刻で測る(現状=次の打鍵後)。
+   直接入力(半角英数のまま)からの無変換で、Engineが誤ってONにならないこと。
+2. ゴールデン/ユニットテスト: 表の「入力なし」セルについて期待するbelief遷移を固定。eisu reset抑止の
+   回帰テスト(`fix-requires-evidence`の再発ファミリー: IME belief/キー選択に該当するため必須)。
+3. 決定3の前提確認: ひらがなキー押下時、GJIのconvが実際に変わるかをdebugログで確認する。
 
 ## 未解決事項
 
-- メモ帳・Windows Terminal(TSFネイティブ)での実測: スパイクではRichEditまでしか測れていない。
-  「直接入力で無変換が効かない」観測との差を、awaseのdebugログか専用のTSFテキストサービス
-  相当で確認する必要がある。
-- 決定2で生キーを消費するか素通しにするか(既存のToggle分岐の挙動)は、実装時に確認して本ADRへ追記する。
-- 入力中の無変換の扱い(決定4)が、実運用で問題になるか。
+- メモ帳・Windows Terminal(TSFネイティブ)での実測(スパイクはRichEditまで)。
+- 直接入力×0xF3の有効な測定(現状は0件)、ON・半角英数×半角/全角、Conversion×ひらがなの由来(Mozcか、OS/DBEか)。
+- 決定2の到達条件(無変換/変換が親指キーとして設定されている前提)が、ユーザーの現在の設定で満たされるか。
