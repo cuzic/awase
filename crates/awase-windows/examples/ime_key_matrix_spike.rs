@@ -24,12 +24,13 @@
 //! 1. **awase を止める**（生キーの GJI 単体挙動を測るため）。
 //! 2. `cargo build --example ime_key_matrix_spike -p awase-windows` を実行し、
 //!    `target/debug/examples/ime_key_matrix_spike.exe` を起動。
-//! 3. 上段の入力欄にフォーカスした状態で、3 状態それぞれで各キーを 1 回ずつ押す。
-//!    - 直接入力: Ctrl+無変換 等で IME OFF にする（下の状態表示が `直接入力`）
-//!    - IME ON・入力なし: かなキー等で ON にする（`IME ON・入力なし`）
-//!    - IME ON・入力中: ひらがなで `ka` と打った未確定状態（`IME ON・入力中`）
-//! 4. 各キー押下ごとに 1 行がログ欄と `ime_key_matrix_spike.log`（exe と同じ
-//!    ディレクトリ）に追記される。
+//! 3. 画面中段の案内に従って、状態を作り、指定されたキーを 1 回だけ押す。
+//!    押した後は 3 秒待つ（自動で次のステップを案内する）。
+//!    全 2 ラウンド（標準 EDIT / RichEdit 5.0）× 24 ステップ
+//!    （4 状態 × 6 キー）。そのキーが無い場合は Ctrl+Shift+F12 でスキップ。
+//! 4. 各キー押下ごとに 1 件がログ欄と `ime_key_matrix_spike.log`（exe と同じ
+//!    ディレクトリ）に追記される。`[STEP ...]` タグ付きが案内どおりの測定、
+//!    `[準備/その他]` は状態を作るための押下。
 
 #![windows_subsystem = "windows"]
 #![allow(unsafe_code)]
@@ -43,7 +44,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmGetDefaultIMEWnd,
     ImmGetOpenStatus, ImmReleaseContext, IME_COMPOSITION_STRING, IME_CONVERSION_MODE,
@@ -118,6 +119,27 @@ impl Snapshot {
         }
     }
 
+    /// マトリクスの状態軸（開閉は A/B 一致、かな/英数は conv の NATIVE ビット）。
+    fn st(&self) -> St {
+        let open = match (self.a_open, self.b_open) {
+            (Some(a), Some(b)) if a == b => Some(a),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            _ => None,
+        };
+        let composing = self.comp.as_deref().is_some_and(|s| !s.is_empty());
+        let conv = self.b_conv.or(self.a_conv);
+        match open {
+            None => St::Unknown,
+            Some(false) => St::Direct,
+            Some(true) if composing => St::OnKanaComp,
+            Some(true) => match conv {
+                Some(c) if c & 1 == 0 => St::OnAlnum,
+                _ => St::OnKana,
+            },
+        }
+    }
+
     fn compact(&self) -> String {
         let mut s = String::new();
         let _ = write!(
@@ -179,7 +201,15 @@ thread_local! {
     /// 直近の周期スナップショット（押下前状態として使う）。
     static LAST_SNAP: RefCell<Snapshot> = RefCell::new(Snapshot::default());
     /// フックが積んだ未処理のキー押下（タイマーで処理する）。
-    static KEY_QUEUE: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static KEY_QUEUE: RefCell<Vec<KeyEvt>> = const { RefCell::new(Vec::new()) };
+    static RICH_HWND: RefCell<Option<HWND>> = const { RefCell::new(None) };
+    /// 全ステップ通しの現在位置（0 始まり。ラウンド = idx / steps().len()）。
+    static STEP_IDX: RefCell<usize> = const { RefCell::new(0) };
+    /// この時刻（now_ms）までは次のステップを案内しない（押下の効果が落ち着くまで待つ）。
+    static HOLD_UNTIL: RefCell<u64> = const { RefCell::new(0) };
+    /// Ctrl+Shift+F12 によるスキップ要求。
+    static SKIP_REQ: RefCell<bool> = const { RefCell::new(false) };
+    static LAST_ROUND: RefCell<Option<usize>> = const { RefCell::new(None) };
     static PENDING: RefCell<Vec<Pending>> = const { RefCell::new(Vec::new()) };
     /// 押下中の VK（オートリピート抑止用）。
     static DOWN_KEYS: RefCell<std::collections::HashSet<u32>> = RefCell::new(std::collections::HashSet::new());
@@ -215,6 +245,94 @@ fn key_name(vk: u32) -> Option<&'static str> {
         0x20 => "Space",
         _ => return None,
     })
+}
+
+// ─── 案内付きステップ ────────────────────────────────────────────────────
+
+/// フックがキューへ積むキー押下。
+struct KeyEvt {
+    label: String,
+    vk: u32,
+    ctrl: bool,
+    shift: bool,
+}
+
+/// マトリクスの「状態」軸。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum St {
+    Direct,
+    OnKana,
+    OnKanaComp,
+    OnAlnum,
+    Unknown,
+}
+
+impl St {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Direct => "直接入力",
+            Self::OnKana => "IME ON・かな・入力なし",
+            Self::OnKanaComp => "IME ON・入力中(未確定あり)",
+            Self::OnAlnum => "IME ON・半角英数・入力なし",
+            Self::Unknown => "不明",
+        }
+    }
+}
+
+struct Step {
+    state: St,
+    key_name: &'static str,
+    vks: &'static [u32],
+}
+
+const KEYS: [(&str, &[u32]); 6] = [
+    ("無変換", &[0x1D]),
+    ("変換", &[0x1C]),
+    ("ひらがな", &[0xF2]),
+    ("英数", &[0xF0]),
+    ("カタカナ", &[0xF1]),
+    ("半角/全角", &[0xF3, 0xF4]),
+];
+
+const STATES: [St; 4] = [St::Direct, St::OnKana, St::OnKanaComp, St::OnAlnum];
+
+/// 1 ラウンド分（状態4 × キー6 = 24 ステップ）。
+fn steps() -> Vec<Step> {
+    let mut v = Vec::new();
+    for st in STATES {
+        for (name, vks) in KEYS {
+            v.push(Step {
+                state: st,
+                key_name: name,
+                vks,
+            });
+        }
+    }
+    v
+}
+
+const ROUNDS: usize = 2;
+const ROUND_NAMES: [&str; ROUNDS] = ["EDIT(標準コントロール)", "RichEdit 5.0(TSFネイティブ)"];
+const HOLD_MS: u64 = 3000;
+
+/// 現在状態から目標状態へ、次に取るべき 1 手を案内する。
+fn hint(cur: St, target: St) -> &'static str {
+    match (cur, target) {
+        (St::Unknown, _) => "状態が読めません。入力欄をクリックしてフォーカスしてください",
+        (St::Direct, _) => "準備: 半角/全角 を1回押して IME ON にしてください",
+        (St::OnKana | St::OnAlnum, St::Direct) => {
+            "準備: 半角/全角 を1回押して IME OFF(直接入力)にしてください"
+        }
+        (St::OnKana, St::OnKanaComp) => {
+            "準備: ka と入力して未確定のままにしてください(Enter は押さない)"
+        }
+        (St::OnKana, St::OnAlnum) => "準備: Shift+無変換 を1回押して半角英数にしてください",
+        (St::OnKanaComp, _) => "準備: ESC を押して入力を取り消してください",
+        (St::OnAlnum, St::OnKana | St::OnKanaComp) => {
+            "準備: Shift+無変換 を1回押してかなに戻してください"
+        }
+        _ => "準備: 状態を整えてください",
+    }
 }
 
 // ─── 観測 ────────────────────────────────────────────────────────────────
@@ -300,10 +418,7 @@ fn observe_tsf() -> (Option<i32>, Option<i32>, Option<i32>, Option<i32>) {
     })
 }
 
-fn edit_tail() -> String {
-    let Some(edit) = EDIT_HWND.with(|e| *e.borrow()) else {
-        return String::new();
-    };
+fn edit_tail(edit: HWND) -> String {
     unsafe {
         let len = usize::try_from(GetWindowTextLengthW(edit)).unwrap_or(0);
         if len == 0 {
@@ -334,7 +449,7 @@ fn take_snapshot(hwnd: HWND) -> Snapshot {
         g_open,
         g_conv,
         comp,
-        edit_tail: edit_tail(),
+        edit_tail: edit_tail(target),
     }
 }
 
@@ -464,9 +579,12 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             // 監視対象のキー、または Ctrl/Shift 併用の何かは記録するが、
             // 通常の文字キーは (テキスト観測は snapshot に含まれるので) 記録しない。
             if first {
-                if let Some(name) = key_name(vk) {
-                    let ctrl = unsafe { GetAsyncKeyState(0x11) } < 0;
-                    let shift = unsafe { GetAsyncKeyState(0x10) } < 0;
+                let ctrl = unsafe { GetAsyncKeyState(0x11) } < 0;
+                let shift = unsafe { GetAsyncKeyState(0x10) } < 0;
+                // Ctrl+Shift+F12: 現在のステップをスキップ（そのキーが無い場合など）。
+                if vk == 0x7B && ctrl && shift {
+                    SKIP_REQ.with(|s| *s.borrow_mut() = true);
+                } else if let Some(name) = key_name(vk) {
                     let mods = match (ctrl, shift) {
                         (true, true) => "Ctrl+Shift+",
                         (true, false) => "Ctrl+",
@@ -474,7 +592,14 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                         (false, false) => "",
                     };
                     let label = format!("{mods}{name} vk=0x{vk:02X} scan=0x{:02X}", kb.scanCode);
-                    KEY_QUEUE.with(|q| q.borrow_mut().push(label));
+                    KEY_QUEUE.with(|q| {
+                        q.borrow_mut().push(KeyEvt {
+                            label,
+                            vk,
+                            ctrl,
+                            shift,
+                        });
+                    });
                 }
             }
         }
@@ -489,13 +614,83 @@ fn on_timer(hwnd: HWND) {
     let now = now_ms();
 
     // キュー→Pending。「押下前」は直近の周期スナップショット（キーの効果が出る前）。
-    let queued: Vec<String> = KEY_QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    let all_steps = steps();
+    let per_round = all_steps.len();
+    let total = per_round * ROUNDS;
+
+    // スキップ要求。
+    if SKIP_REQ.with(|s| std::mem::take(&mut *s.borrow_mut())) {
+        let idx = STEP_IDX.with(|i| *i.borrow());
+        if idx < total {
+            let st = &all_steps[idx % per_round];
+            append_log(&format!(
+                "[SKIP] STEP {}/{} R{} 状態={} キー={}",
+                idx % per_round + 1,
+                per_round,
+                idx / per_round + 1,
+                st.state.label(),
+                st.key_name
+            ));
+            STEP_IDX.with(|i| *i.borrow_mut() = idx + 1);
+            HOLD_UNTIL.with(|h| *h.borrow_mut() = now + 500);
+        }
+    }
+
+    // ラウンドが変わったら、対象コントロールへフォーカスを移す。
+    let idx_now = STEP_IDX.with(|i| *i.borrow());
+    let round_now = (idx_now / per_round).min(ROUNDS - 1);
+    let round_changed = LAST_ROUND.with(|l| {
+        let changed = *l.borrow() != Some(round_now);
+        *l.borrow_mut() = Some(round_now);
+        changed
+    });
+    if round_changed {
+        let target = if round_now == 0 {
+            EDIT_HWND.with(|e| *e.borrow())
+        } else {
+            RICH_HWND.with(|e| *e.borrow())
+        };
+        if let Some(t) = target {
+            unsafe {
+                let _ = SetFocus(Some(t));
+            }
+        }
+        append_log(&format!(
+            "=== ROUND {}/{}: 対象コントロール = {} ===",
+            round_now + 1,
+            ROUNDS,
+            ROUND_NAMES[round_now]
+        ));
+    }
+
+    // キュー→Pending。「押下前」は直近の周期スナップショット（キーの効果が出る前）。
+    let queued: Vec<KeyEvt> = KEY_QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()));
     if !queued.is_empty() {
         let before = LAST_SNAP.with(|l| l.borrow().clone());
-        for label in queued {
+        let before_st = before.st();
+        for mut ev in queued {
+            // 案内中のステップに一致する押下か判定する。
+            let idx = STEP_IDX.with(|i| *i.borrow());
+            let mut tag = String::from("[準備/その他]");
+            if idx < total && now >= HOLD_UNTIL.with(|h| *h.borrow()) {
+                let step = &all_steps[idx % per_round];
+                if step.vks.contains(&ev.vk) && !ev.ctrl && !ev.shift && before_st == step.state {
+                    tag = format!(
+                        "[STEP {}/{} R{} 状態={} キー={}]",
+                        idx % per_round + 1,
+                        per_round,
+                        idx / per_round + 1,
+                        step.state.label(),
+                        step.key_name
+                    );
+                    STEP_IDX.with(|i| *i.borrow_mut() = idx + 1);
+                    HOLD_UNTIL.with(|h| *h.borrow_mut() = now + HOLD_MS);
+                }
+            }
+            ev.label = format!("{tag} {}", ev.label);
             PENDING.with(|p| {
                 p.borrow_mut().push(Pending {
-                    label,
+                    label: ev.label,
                     started_ms: now,
                     before: before.clone(),
                     afters: Vec::new(),
@@ -562,11 +757,46 @@ fn on_timer(hwnd: HWND) {
         ));
     }
 
-    set_status(&format!(
-        "現在の状態: {}   | {}",
-        snap.state_label(),
-        snap.compact()
-    ));
+    // 案内表示。
+    let idx = STEP_IDX.with(|i| *i.borrow());
+    let cur = snap.st();
+    let guide = if idx >= total {
+        "全ステップ完了です。お疲れさまでした（ログは自動保存済み）".to_string()
+    } else {
+        let step = &all_steps[idx % per_round];
+        let hold = HOLD_UNTIL.with(|h| *h.borrow());
+        let head = format!(
+            "ROUND {}/{}({})  STEP {}/{}  (通し {}/{})",
+            idx / per_round + 1,
+            ROUNDS,
+            ROUND_NAMES[(idx / per_round).min(ROUNDS - 1)],
+            idx % per_round + 1,
+            per_round,
+            idx + 1,
+            total
+        );
+        let action = if now < hold {
+            format!(
+                "待機中… あと {:.1} 秒（押した効果が落ち着くのを待っています）",
+                (hold - now) as f64 / 1000.0
+            )
+        } else if cur == step.state {
+            format!(
+                "▶ 今 [{}] を1回だけ押してください（{}の状態）",
+                step.key_name,
+                step.state.label()
+            )
+        } else {
+            format!(
+                "目標状態: {}  現在: {}\n{}",
+                step.state.label(),
+                cur.label(),
+                hint(cur, step.state)
+            )
+        };
+        format!("{head}\n{action}\n(そのキーが無い場合: Ctrl+Shift+F12 でスキップ)")
+    };
+    set_status(&guide);
     LAST_SNAP.with(|l| *l.borrow_mut() = snap);
 }
 
@@ -648,11 +878,24 @@ fn create_window() -> WinResult<HWND> {
             None,
         )?;
 
-        // 上段: 打鍵する入力欄。
-        let edit = create_child(w!("EDIT"), hwnd, instance, WS_BORDER.0, 10, 10, 940, 30)?;
+        // 上段: 打鍵する入力欄1（標準 EDIT）。
+        let edit = create_child(w!("EDIT"), hwnd, instance, WS_BORDER.0, 10, 10, 940, 28)?;
         EDIT_HWND.with(|e| *e.borrow_mut() = Some(edit));
-        // 中段: 現在状態の表示（STATIC、2 行分）。
-        let status = create_child(w!("STATIC"), hwnd, instance, 0, 10, 48, 940, 40)?;
+        // 上段2: 入力欄2（RichEdit 5.0、TSF ネイティブ）。読み込み失敗時は EDIT で代用する。
+        let rich = create_child(
+            w!("RICHEDIT50W"),
+            hwnd,
+            instance,
+            WS_BORDER.0,
+            10,
+            44,
+            940,
+            28,
+        )
+        .or_else(|_| create_child(w!("EDIT"), hwnd, instance, WS_BORDER.0, 10, 44, 940, 28))?;
+        RICH_HWND.with(|e| *e.borrow_mut() = Some(rich));
+        // 中段: 案内表示（STATIC、4 行分）。
+        let status = create_child(w!("STATIC"), hwnd, instance, 0, 10, 80, 940, 80)?;
         STATUS_HWND.with(|h| *h.borrow_mut() = Some(status));
         // 下段: ログ欄。
         let log = create_child(
@@ -661,9 +904,9 @@ fn create_window() -> WinResult<HWND> {
             instance,
             WS_BORDER.0 | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL.0,
             10,
-            96,
+            168,
             940,
-            580,
+            510,
         )?;
         LOG_HWND.with(|h| *h.borrow_mut() = Some(log));
 
@@ -710,6 +953,8 @@ fn report_fatal(msg: &str) {
 
 fn run() -> WinResult<()> {
     START.with(|s| *s.borrow_mut() = Some(std::time::Instant::now()));
+    // RichEdit 5.0（TSF ネイティブ）のウィンドウクラスは Msftedit.dll が登録する。
+    let _ = unsafe { LoadLibraryW(w!("Msftedit.dll")) };
     let tsf_ok = init_tsf();
     let hwnd = create_window()?;
 
@@ -721,8 +966,8 @@ fn run() -> WinResult<()> {
     if let Err(e) = tsf_ok {
         append_log(&format!("[init] TSF初期化失敗: {e}（T/Gは使えません）"));
     }
-    append_log("手順: awase を止める → 3状態(直接入力/IME ON・入力なし/IME ON・入力中)で各キーを1回ずつ押す");
-    append_log("キー: 無変換 変換 ひらがな 英数 カタカナ 半角/全角（Ctrl併用も別途記録される）");
+    append_log("手順: awase を止める → 画面中段の案内に従ってキーを1回ずつ押す（全 2ラウンド×24ステップ、各押下後は3秒待機）");
+    append_log("ROUND1=標準EDIT / ROUND2=RichEdit(TSFネイティブ)。そのキーが無い場合は Ctrl+Shift+F12 でスキップ");
     append_log(&format!("ログファイル: {}", log_file_path().display()));
     append_log("");
 
