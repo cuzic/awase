@@ -22,7 +22,7 @@ summary: |-
   solo tap（`Key(29)`）とshift（親指面のかな）の両方に使われる自己矛盾なので、決定1bとして
   同じフラグで抑止する。
 status: |-
-  **ドラフトv8(round7反映、決定1cをユーザー判断で追加、round8前)**。実装未着手。
+  **ドラフトv9(round1〜8反映。決定1c実装済み、実機A/B前)**。実装未着手。
   ユーザー意図は実機検証（2026-09-19 17:43〜17:46 JST）で確認済み（失敗は全てチョードの意図）。
 related_adr:
   - "ADR-179"
@@ -38,8 +38,9 @@ related_adr:
 
 ## ステータス
 
-**ドラフトv8（2026-09-19）。** 実機ログ解析（「観測」）に基づき、
-`opus-adversarial-consult` round1〜7の指摘とユーザー判断（決定1c）を反映した版。実装未着手。round8で収束確認
+**ドラフトv9（2026-09-19）。** 実機ログ解析（「観測」）に基づき、
+`opus-adversarial-consult` round1〜8の指摘とユーザー判断（決定1c）を反映した版。決定1・1b・1cは実装済み
+（実機A/B前）。round9で収束確認
 してから確定する。
 
 ## 観測（2026-09-19 実機ログ、dragonflyg4）
@@ -331,7 +332,7 @@ open軸で表現できない動作にFollowOnlyを付ける方法が無いので
 親指方向のbaseだけを別に持てば文字同士の誤チョード化を避けられるが、新しいconfig項目が
 増える。決定2の実測後に検討する。
 
-## 決定（ドラフトv8）
+## 決定（ドラフトv9）
 
 **決定1（採用予定）: 選択肢B（二値版）を実装する。**
 
@@ -418,7 +419,8 @@ open軸で表現できない動作にFollowOnlyを付ける方法が無いので
   証拠があるが、これは同じサンドイッチに関する未検証の事項でもある。
   `candidate.is_none()`（親指面にかなが無い文字）の場合は、`reduce_active_thumb`にも
   入らず親指がshiftとして使われないため、従来の挙動（生の親指VKが出る）を維持する。
-  決定1と**別コミット**で実装し、単独でrevertできるようにする。
+  決定1と**別コミット**で実装する（決定1cが決定1bのフラグに依存するため、1bのrevertは1cの効果も
+  消す。1cだけのrevertは安全）。
 - **決定1c（タイマー経路、round6 B10、ユーザー判断（2026-09-19）で(b)を採用）**:
   `consume_thumb`の呼び出し元は1196/1545/1700/1784/2654の5箇所だけで、親指を単独タップとして
   解決する側（`timeout_pending_thumb`3072、`flush_pending`614、1797、1816、`handle_key_up_pending`
@@ -439,31 +441,47 @@ open軸で表現できない動作にFollowOnlyを付ける方法が無いので
     実験）と別ADRが要る。
   - **(c)穴として受容し記録する（当初案、不採用）**: 影響範囲の広い(b)を後回しにする案だったが、
     ユーザーが「今すぐ直す」を選んだ。
-  **採用: (b)を無変換/変換（`ModeKeyConfig`を持つ親指キー）に限定して実装する。** 設計:
-  - `on_timeout`の`PendingThumb`腕で、その親指が無変換/変換（`special.mode_key_config`がSome、
-    専用Fnキー・OS修飾キーではない）なら`timeout_pending_thumb`を呼ばず、`state`を
-    `PendingThumb`のまま戻し、アクション無し（`build_response(SmallVec::new(), true,
-    TimerIntent::CancelAll)`）を返す。**タイムアウトでは単独タップを解決しない。**
-    親指KeyUp（`handle_key_up_pending`→`resolve_pending_thumb_as_single`、生`[Key(vk), KeyUp(vk)]`
-    の連続対）、または次のキー（文字→`step_pending_thumb_char`の時間超過分岐＝決定1b、
-    その他→`decide_pending_thumb`のpassthrough割り込み）で解決する。既存の経路と決定1bの
-    フラグをそのまま再利用し、新しい状態は持たない。
-  - Space/Enter親指（`space_thumb_vk`/`enter_thumb_vk`）は対象外（長押しの意味・オートリピートが
-    変わるため）。`engine_off_solo_repeat_vk`に一致する親指は従来どおりタイムアウトで
-    ソロ連打カウントを行う。
-  - 効果: 無変換を100ms超押したまま文字を打つと、親指面のかなだけが出て生の無変換は出ない
-    （決定1bの二重使用がタイマー経路でも消える）。単独の長押しは、生の無変換が**親指を離す
-    まで**遅れる（レイテンシ増、長押し中の生キーダウンが無くなる）。
-  - 要確認（実装時にテストで固定）: (1) 親指の長押し中にOSのオートリピートで同じ親指のKeyDown
-    が繰り返される場合、`step_pending_thumb_thumb`が単独確定して生キーを出さないか
-    （`observe_thumb_watch_window`のオートリピート判定が先に握りつぶすか）。(2) 親指を離す前に
-    フォーカスが移動した場合の`PendingThumb`の後始末（`flush_pending`614が生キーを出す）。
-  **実験**（サンドイッチの害の確認）は、決定1cを採用したため(c)→(b)の判断入力ではなく、
-  実装後の実機A/B（無変換を150ms以上押したまま文字を打ち、生の無変換が出ず親指面のかなだけが
-  出ること）に置き換える。
-  `flush_pending`（614、`ThumbRawVkEmission::Allowed`）にも形式上同じ構造があるが、フォーカス
-  変更等のコンテキスト境界であり、境界を跨いで同じ親指がshiftとして使われる状況は考えにくいので
-  言及に留める。
+  **採用: (b)を、タイムアウトで生VKを送出する無変換/変換に限定して実装する（実装済み）。** 設計:
+  - `NicolaFsm::defers_solo_until_release(thumb, composing)`: OS修飾キーでなく、
+    `engine_off_solo_repeat_vk`でなく、専用Fnキー・ユーザー明示config（優先順位1・2）・
+    `delegate_to_open_axis`（優先順位3）のいずれも持たず、`mode_key_config`がSomeで
+    `SoloTapAction::Passthrough`（`for_composing(composing)`）のキー。`mode_key_config`がSomeなのは
+    無変換/変換だけなのでSpace/Enter親指は自然に除外される（round8 S29）。**変換に
+    `delegate_to_open_axis`（TurnOn追随）が設定されている場合、その変換は対象外**: タイムアウト時に
+    belief追随/明示actuationが発火する既存契約（ADR-092決定D、ADR-147、ADR-153）と、それを固定する
+    テスト群（17件が失敗した）が「タイムアウトで解決」を前提にしており、送出タイミングを変えない。
+    このため、`delegate`を持つ変換ではタイマー経路の二重使用が**残る**（既知の制約）。
+  - `on_timeout`の`PendingThumb`腕: 上記に該当すれば`timeout_pending_thumb`を呼ばず、`on_timeout`が
+    冒頭で`state`をIdleへ置換しているので`PendingThumb`を**明示的に書き戻し**（round8 S28）、
+    `solo_counter.reset()`（`timeout_pending_thumb`のelse節相当）を行い、アクション無しで
+    `TimerIntent::CancelAll`を返す。解決は親指KeyUp（`handle_key_up_pending`）か次のキー
+    （文字は決定1b、その他は`decide_pending_thumb`）に委ねる。新しい状態は持たない。
+  - **OSオートリピート（round8 B11）**: `observe_thumb_watch_window`は統計専用（戻り値`()`）で
+    抑止しない。オートリピートKeyDownはFSMまで届き、`step_pending_thumb_thumb`が単独確定して生キーを
+    連射する。同じ親指キーのKeyDownで、`defers_solo_until_release`に該当する`PendingThumb`なら
+    `ParseAction::Shift { timer: Keep }`で無視するガードを`step_pending_thumb_thumb`に入れた
+    （対象を限定するのはSpace等のリピート挙動を変えないため）。
+  - 効果: 該当する親指を100ms超押したまま文字を打つと、親指面のかなだけが出て生の無変換は出ない。
+    単独の長押しは、生の無変換が**親指を離すまで**遅れる（オートリピートは無視、離した時点で
+    `[Key, KeyUp]`を1回）。
+  - **新設される取りこぼし窓（round8 M22）**: フォーカス移動（コンテキスト境界）では
+    `flush_pending`が一律`ThumbRawVkEmission::Denied`（engine.rs:393/573/681、623-629の`Denied`腕は
+    無条件suppress）なので、保留された`PendingThumb`は**生キーを出さず黙って消える**。安全側
+    （別ウィンドウへの誤注入は無い）だが、「無変換を押したのに半角英数にならなかった」という
+    今日は存在しない窓（今日は100msで送出済み）。テストで固定した。
+  - `engine_off_solo_repeat`（round8 M23）: 既定は`VK_INSERT`（config.rs:657）、トリガは5回
+    （`SOLO_OFF_TRIGGER_COUNT`）なので、既定では除外条件に当たらず無変換/変換の1cは有効。
+    無変換/変換に設定するとその親指では1cが無効になりタイマー経路の二重使用が残る（既知の制約）。
+  - **決定1bとの結合（round8 S27）**: 1cが行うのは「タイマーで解決しない」だけで、実際に生キーを
+    止めているのは決定1bのフラグ（`step_pending_thumb_char`の時間超過分岐）。**1bをrevertすると
+    1c下でも文字到着時に生`Key`が出て今日と同じ`[Key, Char(親指面のかな)]`に戻る**（悪化はしないが
+    1cの効果も消える。1cだけのrevertは安全）。
+  - bypassキー（round8 S30）: `PendingThumb`の滞在が延びるので、Ctrlを後から足す
+    Ctrl+無変換の`IME OFF (key combo)`では`handle_bypass`の`flush_pending(.., Allowed)`が生Keyを先に出す
+    並びが増える。実機A/Bの観察項目とする。
+  **実機A/Bの合格条件**: 無変換を**150〜400ms程度**（Windowsのオートリピート開始前）押したまま文字を
+  打ち、生の無変換が出ず親指面のかなだけが出ること。保持時間の上限を超える（オートリピート開始後）
+  ケースは、生Keyは離すまで出ない（ガード）が、確認は上限内で行う。
 - **誤診断のリスク（round1 S5、round2 A-3）**: 決定1は「文字を押したまま無変換を叩いてIMEを切り替える」
   運用を握りつぶす。文字の確定（`て`等）は変わらず、ユーザーは文字キーを離してから叩けば回避でき、
   被害は回復可能・回避可能である。**ただし決定1はモードキーの漏出だけを止め、割れたかな自体
@@ -674,3 +692,11 @@ ADR-179との関係、`physical="Allow"`の扱い、`DirectInput`分岐の分離
   「今すぐ直す」と決定。実装は決定1・1b・1cを別コミットで、現ブランチから新しいworktreeで進める。
   BUG-145（本件）を実装コミットで起票、BUG-146（`DirectInput`分岐のopen軸`false`書き込み）は
   起票のみで修正は後回し。
+- **round8（2026-09-19、opus）**: 決定1cの方向性（(b)を無変換/変換に限定、新状態を持たず既存経路と
+  決定1bのフラグを再利用）は妥当。ADR自身が挙げた要確認2点がどちらも予想と逆だった: (1)
+  `observe_thumb_watch_window`は統計専用でオートリピートを抑止せず、`step_pending_thumb_thumb`が
+  同一vkのリピートで生キーを連射する（B11）→同一親指のリピートを無視するガードを追加、
+  (2) フォーカス移動の`flush_pending`は`Denied`で生キーを出さず、単独タップが黙って消える（M22）→
+  「取りこぼし窓」として明記しテストで固定、`engine_off_solo_repeat`既定`VK_INSERT`（M23）、
+  S27〜S30・N9を反映。実装時、`delegate_to_open_axis`を持つ変換は既存の17テストと契約に反するため
+  対象外にした（ADR-092/147/153のタイムアウト時発火を維持）。

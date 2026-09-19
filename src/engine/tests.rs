@@ -528,7 +528,15 @@ fn test_muhenkan_thumb_emits_while_composing_when_guard_enabled() {
     let result = engine.on_event(Ev::down(VK_NONCONVERT).build());
     assert_pending(&result);
 
-    let result = engine.on_timeout_composing(TIMER_PENDING, true);
+    // ADR-182 決定1c: 無変換/変換のPassthrough単独タップはタイムアウトでは単独確定せず、親指を離した
+    // 時点で生VKを送出する（タイムアウト後に文字が来たとき生VKと親指面のかなを二重に出さないため）。
+    let timeout_result = engine.on_timeout_composing(TIMER_PENDING, true);
+    assert!(
+        timeout_result.actions.is_empty(),
+        "タイムアウトでは単独確定しない（親指を離すまで保留）: {:?}",
+        timeout_result.actions
+    );
+    let result = engine.on_event(Ev::up(VK_NONCONVERT).build());
     assert!(
         result
             .actions
@@ -547,7 +555,15 @@ fn test_henkan_thumb_emits_while_composing_when_guard_enabled() {
     let result = engine.on_event(Ev::down(VK_CONVERT).build());
     assert_pending(&result);
 
-    let result = engine.on_timeout_composing(TIMER_PENDING, true);
+    // ADR-182 決定1c: 無変換/変換のPassthrough単独タップはタイムアウトでは単独確定せず、親指を離した
+    // 時点で生VKを送出する（タイムアウト後に文字が来たとき生VKと親指面のかなを二重に出さないため）。
+    let timeout_result = engine.on_timeout_composing(TIMER_PENDING, true);
+    assert!(
+        timeout_result.actions.is_empty(),
+        "タイムアウトでは単独確定しない（親指を離すまで保留）: {:?}",
+        timeout_result.actions
+    );
+    let result = engine.on_event(Ev::up(VK_CONVERT).build());
     assert!(
         result
             .actions
@@ -606,7 +622,15 @@ fn test_muhenkan_always_suppress_false_preserves_legacy_passthrough() {
     let result = engine.on_event(Ev::down(VK_NONCONVERT).build());
     assert_pending(&result);
 
-    let result = engine.on_timeout_composing(TIMER_PENDING, false);
+    // ADR-182 決定1c: 無変換/変換のPassthrough単独タップはタイムアウトでは単独確定せず、親指を離した
+    // 時点で生VKを送出する（タイムアウト後に文字が来たとき生VKと親指面のかなを二重に出さないため）。
+    let timeout_result = engine.on_timeout_composing(TIMER_PENDING, false);
+    assert!(
+        timeout_result.actions.is_empty(),
+        "タイムアウトでは単独確定しない（親指を離すまで保留）: {:?}",
+        timeout_result.actions
+    );
+    let result = engine.on_event(Ev::up(VK_NONCONVERT).build());
     assert!(
         result
             .actions
@@ -697,7 +721,15 @@ fn test_muhenkan_solo_tap_dedicated_fn_key_does_not_affect_henkan() {
     let result = engine.on_event(Ev::down(VK_CONVERT).build());
     assert_pending(&result);
 
-    let result = engine.on_timeout_composing(TIMER_PENDING, false);
+    // ADR-182 決定1c: 無変換/変換のPassthrough単独タップはタイムアウトでは単独確定せず、親指を離した
+    // 時点で生VKを送出する（タイムアウト後に文字が来たとき生VKと親指面のかなを二重に出さないため）。
+    let timeout_result = engine.on_timeout_composing(TIMER_PENDING, false);
+    assert!(
+        timeout_result.actions.is_empty(),
+        "タイムアウトでは単独確定しない（親指を離すまで保留）: {:?}",
+        timeout_result.actions
+    );
+    let result = engine.on_event(Ev::up(VK_CONVERT).build());
     assert!(
         result
             .actions
@@ -795,7 +827,15 @@ fn test_henkan_always_suppress_false_preserves_legacy_passthrough() {
     let result = engine.on_event(Ev::down(VK_CONVERT).build());
     assert_pending(&result);
 
-    let result = engine.on_timeout_composing(TIMER_PENDING, false);
+    // ADR-182 決定1c: 無変換/変換のPassthrough単独タップはタイムアウトでは単独確定せず、親指を離した
+    // 時点で生VKを送出する（タイムアウト後に文字が来たとき生VKと親指面のかなを二重に出さないため）。
+    let timeout_result = engine.on_timeout_composing(TIMER_PENDING, false);
+    assert!(
+        timeout_result.actions.is_empty(),
+        "タイムアウトでは単独確定しない（親指を離すまで保留）: {:?}",
+        timeout_result.actions
+    );
+    let result = engine.on_event(Ev::up(VK_CONVERT).build());
     assert!(
         result
             .actions
@@ -7740,6 +7780,106 @@ mod engine_integration_tests {
         );
     }
 
+    // ── ADR-182 決定1c: 無変換/変換（Passthrough、delegate無し）はタイムアウトでは単独確定しない ──
+
+    /// タイマー経路: `無変換↓ → 100msタイムアウト → A↓（左親指面のかなあり、親指押下中）`。
+    /// ADR-182以前は、タイムアウトで生の`Key(VK_NONCONVERT)`が先に出た後、文字が`ActiveThumb`で
+    /// 親指面のかなを出して親指を消費していた（同じ押下がsolo tapとshiftの両方に使われる）。
+    #[test]
+    fn timer_path_thumb_then_char_keeps_thumb_face_kana_without_raw_nonconvert() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let held = InputContext {
+            left_thumb_down: Some(0),
+            ..ime_on_ctx()
+        };
+        let ds = [
+            engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ctx),
+            engine.on_timeout(TIMER_PENDING, &held),
+            engine.on_input(Ev::down(VK_A).at(150_000).build(), &held),
+            engine.on_input(Ev::up(VK_A).at(220_000).build(), &held),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(260_000).build(), &ctx),
+        ];
+        assert!(
+            !any_raw_nonconvert_sent(&ds),
+            "タイマー経路でも生のVK_NONCONVERTを二重に送出してはならない: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+        assert!(
+            ds.iter().any(|d| has_effect(d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('を')))
+            ))),
+            "親指面のかな（を）は従来どおり出力される: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+    }
+
+    /// タイムアウト後に文字が来ないまま親指を離した場合: 生の`[Key, KeyUp]`は親指を離した時点で出る
+    /// （タイムアウトの時点では出ない）。
+    #[test]
+    fn timer_path_solo_hold_sends_raw_nonconvert_on_release_not_on_timeout() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ctx);
+        let d_timeout = engine.on_timeout(TIMER_PENDING, &ctx);
+        assert!(
+            !any_raw_nonconvert_sent(std::slice::from_ref(&d_timeout)),
+            "タイムアウトでは生VKを送出しない: {:?}",
+            effects_of(&d_timeout)
+        );
+        let d_up = engine.on_input(Ev::up(VK_NONCONVERT).at(300_000).build(), &ctx);
+        assert!(
+            any_raw_nonconvert_sent(std::slice::from_ref(&d_up)),
+            "親指を離した時点で生のVK_NONCONVERTを送出する: {:?}",
+            effects_of(&d_up)
+        );
+    }
+
+    /// OSオートリピート: タイムアウト後に同じ親指のKeyDownが繰り返し届いても、生キーを連射せず、
+    /// 親指を離した時点で1回だけ出す（`observe_thumb_watch_window`は統計専用で抑止しない）。
+    #[test]
+    fn timer_path_auto_repeat_keydowns_do_not_emit_raw_nonconvert_until_release() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let mut ds = vec![
+            engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ctx),
+            engine.on_timeout(TIMER_PENDING, &ctx),
+            engine.on_input(Ev::down(VK_NONCONVERT).at(500_000).build(), &ctx),
+            engine.on_input(Ev::down(VK_NONCONVERT).at(533_000).build(), &ctx),
+            engine.on_input(Ev::down(VK_NONCONVERT).at(566_000).build(), &ctx),
+        ];
+        assert!(
+            !any_raw_nonconvert_sent(&ds),
+            "オートリピート中は生のVK_NONCONVERTを送出しない: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+        ds.push(engine.on_input(Ev::up(VK_NONCONVERT).at(600_000).build(), &ctx));
+        assert!(
+            any_raw_nonconvert_sent(&ds[ds.len() - 1..]),
+            "親指を離した時点で生のVK_NONCONVERTを送出する: {:?}",
+            effects_of(&ds[ds.len() - 1])
+        );
+    }
+
+    /// フォーカス移動（コンテキスト境界）: タイムアウトを保留した`PendingThumb`は、
+    /// `flush_pending(.., Denied)`で黙って消える（生キーは出ない）。今日のタイマー経路は100msで
+    /// 送出済みだったので存在しなかった取りこぼし窓（決定1cの既知の副作用、ADR-182）。
+    #[test]
+    fn timer_path_pending_thumb_is_dropped_silently_on_focus_change() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ctx);
+        let _ = engine.on_timeout(TIMER_PENDING, &ctx);
+        let d = engine.on_command(EngineCommand::FocusChanged, &ctx);
+        assert!(
+            !any_raw_nonconvert_sent(std::slice::from_ref(&d)),
+            "フォーカス移動で生のVK_NONCONVERTが別ウィンドウへ出てはならない: {:?}",
+            effects_of(&d)
+        );
+    }
+
     /// `make_test_engine_with_muhenkan_passthrough` の変換（henkan）版。
     fn make_test_engine_with_henkan_passthrough() -> Engine {
         let mut engine = make_test_engine();
@@ -9469,7 +9609,14 @@ mod engine_integration_tests {
         };
 
         engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &composing_ctx);
-        let d2 = engine.on_timeout(TIMER_PENDING, &composing_ctx);
+        // ADR-182 決定1c: タイムアウトでは単独確定せず、親指を離した時点で生VKを送出する。
+        let d_timeout = engine.on_timeout(TIMER_PENDING, &composing_ctx);
+        assert!(
+            !any_raw_nonconvert_sent(std::slice::from_ref(&d_timeout)),
+            "タイムアウトでは生VKを送出しない: {:?}",
+            effects_of(&d_timeout)
+        );
+        let d2 = engine.on_input(Ev::up(VK_NONCONVERT).at(300_000).build(), &composing_ctx);
         assert!(
             has_effect(&d2, |e| matches!(
                 e,

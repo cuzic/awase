@@ -960,6 +960,41 @@ impl NicolaFsm {
         self.ime_open_requested.take()
     }
 
+    /// ADR-182 決定1c: この`PendingThumb`は、タイムアウトでは単独確定せず、親指KeyUpか次のキーで
+    /// 解決するか。無変換/変換（`ModeKeyConfig`を持つ親指キー）のうち、タイムアウトで**生のVKを
+    /// 送出する**（`SoloTapAction::Passthrough`）ものだけが対象。
+    ///
+    /// タイムアウトで先に生の親指VKを出すと、その後に文字が来たときに`decide_idle`→`ActiveThumb`→
+    /// `reduce_active_thumb`が親指面のかなを出して親指を消費し、同じ押下がsolo tapとshiftの両方に
+    /// 使われる（決定1bと同じ二重使用が2回のディスパッチに分かれる）。
+    ///
+    /// `delegate_to_open_axis`（変換のTurnOn追随など）を持つキーも除外する: タイムアウト時に
+    /// belief追随/明示actuationが発火する既存の契約（ADR-092決定D、ADR-147、ADR-153）と
+    /// 数十のテストが「タイムアウトで解決」を前提にしており、送出タイミングを変えない。
+    /// 除外: OS修飾キー、`engine_off_solo_repeat_vk`（タイムアウトでソロ連打を数える設計。既定は
+    /// `VK_INSERT`なので無変換/変換では通常は当たらないが、無変換/変換に設定するとその親指では
+    /// 1cが無効になる）、専用Fnキー・ユーザー明示config（優先順位1・2、送出タイミングを保つ）。
+    /// Space/Enter親指は`mode_key_config`を持たないので自然に除外される。
+    fn defers_solo_until_release(&self, thumb: &PendingThumbData, composing: bool) -> bool {
+        if thumb.modifier_key.is_some() {
+            return false;
+        }
+        if self.engine_off_solo_repeat_vk.0 != 0 && thumb.vk_code == self.engine_off_solo_repeat_vk
+        {
+            return false;
+        }
+        let special = self.thumb_solo_special_handling(thumb.vk_code);
+        special.dedicated_fn_key.is_none()
+            && special.explicit_ime_action.is_none()
+            && special.delegate_to_open_axis.is_none()
+            && special.mode_key_config.is_some_and(|cfg| {
+                matches!(
+                    SoloTapAction::from(cfg.for_composing(composing)),
+                    SoloTapAction::Passthrough
+                )
+            })
+    }
+
     fn thumb_solo_special_handling(&self, vk_code: VkCode) -> ThumbSoloSpecialHandling {
         if self.muhenkan_vk == Some(vk_code) {
             ThumbSoloSpecialHandling {
@@ -1841,6 +1876,16 @@ impl NicolaFsm {
     /// PendingThumb + 親指キー → 前の保留を単独確定し、今回のキーを再処理
     fn step_pending_thumb_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let thumb = self.state.expect_pending_thumb();
+        // ADR-182 決定1c: 同じ親指キーのOSオートリピートKeyDown（`observe_thumb_watch_window`は
+        // 統計専用で抑止しない）で、タイムアウトを保留した`PendingThumb`を単独確定して生キーを
+        // 連射しない。リピートは無視し、解決は親指KeyUp/次のキーに委ねる。
+        if ev.vk_code == thumb.vk_code
+            && self.defers_solo_until_release(&thumb, self.phys.composing)
+        {
+            return ParseAction::Shift {
+                timer: TimerIntent::Keep,
+            };
+        }
         self.go_idle();
         let (resolved, ime_open_request) = self.resolve_pending_thumb_as_single(
             thumb.scan_code,
@@ -3472,7 +3517,20 @@ impl NicolaFsm {
                 Response::pass_through().with_kill_timer(TIMER_PENDING)
             }
             EngineState::PendingChar(pending) => self.timeout_pending_char(&pending),
-            EngineState::PendingThumb(thumb) => self.timeout_pending_thumb(thumb, composing),
+            EngineState::PendingThumb(thumb) => {
+                if self.defers_solo_until_release(&thumb, composing) {
+                    // ADR-182 決定1c: タイムアウトでは単独確定しない。`on_timeout`は冒頭で`state`を
+                    // Idleへ置換しているので、`PendingThumb`を明示的に書き戻す。解決は親指KeyUp
+                    // （`handle_key_up_pending`）か次のキー（文字は`step_pending_thumb_char`の
+                    // 時間超過分岐＝決定1b、その他は`decide_pending_thumb`）に委ねる。
+                    // `timeout_pending_thumb`が通らないぶん、そこで行う`solo_counter.reset()`もここで行う。
+                    self.state = EngineState::PendingThumb(thumb);
+                    self.solo_counter.reset();
+                    self.build_response(SmallVec::new(), true, TimerIntent::CancelAll)
+                } else {
+                    self.timeout_pending_thumb(thumb, composing)
+                }
+            }
             EngineState::PendingCharThumb {
                 char_key,
                 thumb,
