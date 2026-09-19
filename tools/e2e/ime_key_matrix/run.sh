@@ -19,10 +19,13 @@ mkdir -p "$OUT"
 "$CW" exec e2e-run >"$OUT/run.txt" 2>&1
 grep -q "spike procs: 1" "$OUT/run.txt" || { echo "スパイクを起動できませんでした:"; cat "$OUT/run.txt"; exit 2; }
 
-for _ in $(seq 1 24); do
+# 実行中(約45秒)は Windows 側で何も起動しない: ログ取得の PowerShell 起動がフォーカスを奪い、
+# 注入が入力欄に届かなくなる(実機で発生)。固定時間だけ待ってから取得し、未完了なら少し待って再取得する。
+sleep 50
+for _ in 1 2 3 4; do
   "$CW" exec e2e-fetch-spike >"$OUT/spike.log" 2>/dev/null
   grep -q "全手順完了" "$OUT/spike.log" && break
-  sleep 5
+  sleep 15
 done
 grep -q "全手順完了" "$OUT/spike.log" || { echo "自動実行が完了しませんでした(timeout)。$OUT/spike.log を確認してください"; exit 2; }
 

@@ -46,6 +46,7 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmGetDefaultIMEWnd,
     ImmGetOpenStatus, ImmReleaseContext, IME_COMPOSITION_STRING, IME_CONVERSION_MODE,
@@ -60,13 +61,14 @@ use windows::Win32::UI::TextServices::{
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow,
-    GetMessageW, GetWindowTextLengthW, GetWindowTextW, KillTimer, MessageBoxW, PostQuitMessage,
-    RegisterClassW, SendMessageTimeoutW, SendMessageW, SetForegroundWindow, SetTimer,
-    SetWindowTextW, SetWindowsHookExW, ShowWindow, TranslateMessage, CW_USEDEFAULT,
-    KBDLLHOOKSTRUCT, MB_ICONERROR, MB_OK, MSG, SMTO_ABORTIFHUNG, SW_SHOW, WH_KEYBOARD_LL,
-    WINDOW_STYLE, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_SETFOCUS, WM_SYSKEYDOWN, WM_SYSKEYUP,
-    WM_TIMER, WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
+    BringWindowToTop, CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW,
+    GetForegroundWindow, GetMessageW, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, KillTimer, MessageBoxW, PostQuitMessage, RegisterClassW,
+    SendMessageTimeoutW, SendMessageW, SetForegroundWindow, SetTimer, SetWindowTextW,
+    SetWindowsHookExW, ShowWindow, TranslateMessage, CW_USEDEFAULT, KBDLLHOOKSTRUCT, MB_ICONERROR,
+    MB_OK, MSG, SMTO_ABORTIFHUNG, SW_SHOW, WH_KEYBOARD_LL, WINDOW_STYLE, WM_DESTROY, WM_KEYDOWN,
+    WM_KEYUP, WM_SETFOCUS, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CHILD,
+    WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
 };
 
 /// `--auto` が注入するキーの dwExtraInfo（自分の注入を、他の注入と区別してステップ照合に使う）。
@@ -434,7 +436,23 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
     // 注入は前面ウィンドウに届くので、スパイクを前面・入力欄フォーカスに保つ。
     unsafe {
         if GetForegroundWindow() != hwnd {
+            // バックグラウンドから起動したプロセスは、素の SetForegroundWindow を Windows に拒否される
+            // (フォアグラウンドロック)。前面スレッドへ入力をアタッチしてから前面化する定番の回避策。
+            let fg = GetForegroundWindow();
+            let fg_tid = if fg.0.is_null() {
+                0
+            } else {
+                GetWindowThreadProcessId(fg, None)
+            };
+            let my_tid = GetCurrentThreadId();
+            let attached = fg_tid != 0
+                && fg_tid != my_tid
+                && AttachThreadInput(my_tid, fg_tid, true).as_bool();
+            let _ = BringWindowToTop(hwnd);
             let _ = SetForegroundWindow(hwnd);
+            if attached {
+                let _ = AttachThreadInput(my_tid, fg_tid, false);
+            }
             if let Some(e) = EDIT_HWND.with(|e| *e.borrow()) {
                 let _ = SetFocus(Some(e));
             }
