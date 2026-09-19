@@ -229,6 +229,10 @@ thread_local! {
     static AUTO_TRIES: RefCell<usize> = const { RefCell::new(0) };
     static AUTO_PREP: RefCell<usize> = const { RefCell::new(0) };
     static AUTO_DONE: RefCell<bool> = const { RefCell::new(false) };
+    /// `--hold=NNN`: 注入キーの保持時間ms(既定80)。人の押下(>100ms)でだけ通るタイマー経路を再現する。
+    static HOLD_MS_INJ: RefCell<u64> = const { RefCell::new(80) };
+    /// `--key=henkan`: 手順の「無変換」を「変換」(0x1C)に置き換える。
+    static TOGGLE_VK: RefCell<u32> = const { RefCell::new(0x1D) };
     /// 全手順完了後、この時刻(now_ms)にウィンドウを閉じて終了する(0=予約なし)。
     static AUTO_CLOSE_AT: RefCell<u64> = const { RefCell::new(0) };
     /// `--script`: ADR-186 の実機A/B用の固定手順（awase 起動中に、押すキーと期待を順に案内）。
@@ -398,12 +402,22 @@ fn send_key(vk: u32, down: bool) {
     }
 }
 
-/// 押して離す（80ms 保持）を、`at` を起点に予約する。
+/// `--key=henkan` のとき、手順の無変換(0x1D)を変換(0x1C)に置き換える。
+fn script_vk(vk: u32) -> u32 {
+    if vk == 0x1D {
+        TOGGLE_VK.with(|t| *t.borrow())
+    } else {
+        vk
+    }
+}
+
+/// 押して離す（`--hold` ms 保持）を、`at` を起点に予約する。
 fn queue_press(at: u64, vk: u32) {
     AUTO_QUEUE.with(|q| {
         let mut q = q.borrow_mut();
         q.push((at, vk, true));
-        q.push((at + 80, vk, false));
+        let hold = HOLD_MS_INJ.with(|h| *h.borrow());
+        q.push((at + hold, vk, false));
     });
 }
 
@@ -535,7 +549,7 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
         SCRIPT_IDX.with(|i| *i.borrow_mut() = si + 1);
         return;
     }
-    queue_press(now, vk);
+    queue_press(now, script_vk(vk));
     queue_press(now + 700, 0x4B); // k
     queue_press(now + 1200, 0x1B); // ESC
     AUTO_NEXT.with(|n| *n.borrow_mut() = now + 1800);
@@ -998,7 +1012,7 @@ fn on_timer(hwnd: HWND) {
                 let si = SCRIPT_IDX.with(|i| *i.borrow());
                 if si < SCRIPT.len() && now >= HOLD_UNTIL.with(|h| *h.borrow()) {
                     let (name, vk, shift, expect, need) = SCRIPT[si];
-                    if ev.vk == vk
+                    if ev.vk == script_vk(vk)
                         && before_st == need
                         && ev.shift == shift
                         && !ev.ctrl
@@ -1310,6 +1324,16 @@ fn report_fatal(msg: &str) {
 
 fn run() -> WinResult<()> {
     START.with(|s| *s.borrow_mut() = Some(std::time::Instant::now()));
+    for a in std::env::args() {
+        if let Some(v) = a.strip_prefix("--hold=") {
+            if let Ok(n) = v.parse::<u64>() {
+                HOLD_MS_INJ.with(|h| *h.borrow_mut() = n);
+            }
+        }
+        if a == "--key=henkan" {
+            TOGGLE_VK.with(|t| *t.borrow_mut() = 0x1C);
+        }
+    }
     // `--auto`: --script の手順を、スパイク自身が SendInput で注入して自動実行する。
     if std::env::args().any(|a| a == "--auto") {
         AUTO_MODE.with(|m| *m.borrow_mut() = true);
