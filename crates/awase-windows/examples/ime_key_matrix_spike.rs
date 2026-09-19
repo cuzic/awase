@@ -344,35 +344,33 @@ const ROUND_NAMES: [&str; ROUNDS] = ["EDIT(標準コントロール)", "RichEdit
 const HOLD_MS: u64 = 3000;
 
 /// `--script` の1手順: (表示名, VK, Shift併用, 期待する結果)。
-const SCRIPT: [(&str, u32, bool, &str); 12] = [
-    ("無変換", 0x1D, false, "IME OFF(直接入力)。Engine OFF"),
-    ("無変換", 0x1D, false, "IME ON(かな)。Engine ON"),
-    ("変換", 0x1C, false, "IME OFF。Engine OFF"),
-    ("変換", 0x1C, false, "IME ON(かな)。Engine ON"),
+const SCRIPT: [(&str, u32, bool, &str); 10] = [
     (
-        "Shift+無変換",
-        0x1D,
-        true,
-        "ONのまま半角英数。Engine OFF(遅延の可能性あり)",
+        "ひらがなキー",
+        0xF2,
+        false,
+        "ONのまま半角英数へ(conv 0x10)。Engine OFF(決定3保留のため遅延の可能性あり)",
     ),
-    ("無変換", 0x1D, false, "IME OFF。Engine OFF"),
+    ("無変換", 0x1D, false, "IME OFF(直接入力)。Engine OFF"),
     (
         "無変換",
         0x1D,
         false,
-        "IME ON・半角英数のまま(conv 0x10)。Engine は OFF のまま(ちらつかない) ← 決定2の核心",
-    ),
-    (
-        "Shift+無変換",
-        0x1D,
-        true,
-        "かなに戻る。Engine ON(遅延の可能性あり)",
+        "IME ON・半角英数のまま(conv 0x10)。Engine は OFF のまま ← 決定2の核心",
     ),
     (
         "ひらがなキー",
         0xF2,
         false,
-        "ONのまま半角英数へ。Engine OFF(決定3保留のため遅延の可能性あり)",
+        "かなに戻る(conv 0x19)。Engine ON(遅延の可能性あり)",
+    ),
+    ("無変換", 0x1D, false, "IME OFF。Engine OFF"),
+    ("無変換", 0x1D, false, "IME ON(かな)。Engine ON"),
+    (
+        "ひらがなキー",
+        0xF2,
+        false,
+        "ONのまま半角英数へ。Engine は(遅延で)OFF",
     ),
     ("無変換", 0x1D, false, "IME OFF。Engine OFF"),
     (
@@ -381,7 +379,7 @@ const SCRIPT: [(&str, u32, bool, &str); 12] = [
         false,
         "IME ON・半角英数のまま。Engine が ON にならないこと ← 退行窓の確認",
     ),
-    ("Shift+無変換", 0x1D, true, "かなに戻る(後片付け)"),
+    ("ひらがなキー", 0xF2, false, "かなに戻る(後片付け)"),
 ];
 
 /// 現在状態から目標状態へ、次に取るべき 1 手を案内する。
