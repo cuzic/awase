@@ -75,7 +75,7 @@ const TIMER_ID: usize = 1;
 /// 観測スナップショットを更新する周期。
 const TIMER_INTERVAL_MS: u32 = 50;
 /// 押下後に取る 2 回のスナップショットまでの遅延。
-const AFTER_MS: [u64; 2] = [400, 1500];
+const AFTER_MS: [u64; 3] = [100, 400, 1500];
 
 const ES_MULTILINE: u32 = 0x0004;
 const ES_READONLY: u32 = 0x0800;
@@ -211,6 +211,8 @@ thread_local! {
     /// Ctrl+Shift+F12 によるスキップ要求。
     static SKIP_REQ: RefCell<bool> = const { RefCell::new(false) };
     static LAST_ROUND: RefCell<Option<usize>> = const { RefCell::new(None) };
+    /// `--free`: 案内なしの自由測定モード（awase を起動したまま実IME状態を記録する）。
+    static FREE_MODE: RefCell<bool> = const { RefCell::new(false) };
     static PENDING: RefCell<Vec<Pending>> = const { RefCell::new(Vec::new()) };
     /// 押下中の VK（オートリピート抑止用）。
     static DOWN_KEYS: RefCell<std::collections::HashSet<u32>> = RefCell::new(std::collections::HashSet::new());
@@ -246,6 +248,21 @@ fn key_name(vk: u32) -> Option<&'static str> {
         0x20 => "Space",
         _ => return None,
     })
+}
+
+/// 現在時刻(UTC)を `HH:MM:SS.mmmZ` で返す（awase のログ時刻と突き合わせるため）。
+fn utc_stamp() -> String {
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = t.as_secs() % 86_400;
+    format!(
+        "{:02}:{:02}:{:02}.{:03}Z",
+        secs / 3600,
+        (secs / 60) % 60,
+        secs % 60,
+        t.subsec_millis()
+    )
 }
 
 // ─── 案内付きステップ ────────────────────────────────────────────────────
@@ -599,7 +616,16 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                         (false, true) => "Shift+",
                         (false, false) => "",
                     };
-                    let label = format!("{mods}{name} vk=0x{vk:02X} scan=0x{:02X}", kb.scanCode);
+                    let injected = if kb.flags.0 & 0x10 != 0 {
+                        " (injected)"
+                    } else {
+                        ""
+                    };
+                    let label = format!(
+                        "{mods}{name} vk=0x{vk:02X} scan=0x{:02X} press={}{injected}",
+                        kb.scanCode,
+                        utc_stamp()
+                    );
                     KEY_QUEUE.with(|q| {
                         q.borrow_mut().push(KeyEvt {
                             label,
@@ -731,48 +757,34 @@ fn on_timer(hwnd: HWND) {
         }
     });
     for e in finished {
-        let stamp = {
-            let t = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default();
-            let secs = t.as_secs() % 86_400;
-            format!(
-                "{:02}:{:02}:{:02}.{:03}Z",
-                secs / 3600,
-                (secs / 60) % 60,
-                secs % 60,
-                t.subsec_millis()
-            )
-        };
         append_log(&format!(
-            "[{stamp}] KEY {}  状態={}",
+            "[{}] KEY {}  状態={}",
+            utc_stamp(),
             e.label,
             e.before.state_label()
         ));
         append_log(&format!("    前     : {}", e.before.compact()));
-        append_log(&format!(
-            "    +{}ms: {}",
-            AFTER_MS[0],
-            e.afters[0].compact()
-        ));
-        append_log(&format!(
-            "    +{}ms: {}",
-            AFTER_MS[1],
-            e.afters[1].compact()
-        ));
-        append_log(&format!(
-            "    差分(前→+{}ms): {}   (前→+{}ms): {}",
-            AFTER_MS[0],
-            diff_summary(&e.before, &e.afters[0]),
-            AFTER_MS[1],
-            diff_summary(&e.before, &e.afters[1]),
-        ));
+        for (i, ms) in AFTER_MS.iter().enumerate() {
+            append_log(&format!("    +{ms}ms: {}", e.afters[i].compact()));
+        }
+        let diffs: Vec<String> = AFTER_MS
+            .iter()
+            .enumerate()
+            .map(|(i, ms)| format!("(前→+{ms}ms): {}", diff_summary(&e.before, &e.afters[i])))
+            .collect();
+        append_log(&format!("    差分 {}", diffs.join("   ")));
     }
 
     // 案内表示。
     let idx = STEP_IDX.with(|i| *i.borrow());
     let cur = snap.st();
-    let guide = if idx >= total {
+    let guide = if FREE_MODE.with(|f| *f.borrow()) {
+        format!(
+            "自由測定モード（案内なし）。awase 起動中でも実IME状態を記録します。\n現在: {}\n{}",
+            cur.label(),
+            snap.compact()
+        )
+    } else if idx >= total {
         "全ステップ完了です。お疲れさまでした（ログは自動保存済み）".to_string()
     } else {
         let step = &all_steps[idx % per_round];
@@ -965,6 +977,11 @@ fn report_fatal(msg: &str) {
 
 fn run() -> WinResult<()> {
     START.with(|s| *s.borrow_mut() = Some(std::time::Instant::now()));
+    // `--free`: 案内なしで、押したキーと実IME状態の推移だけを記録する。
+    if std::env::args().any(|a| a == "--free") {
+        FREE_MODE.with(|f| *f.borrow_mut() = true);
+        STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
+    }
     // `--round2`: ROUND1(標準EDIT)を飛ばして RichEdit のラウンドから始める。
     if std::env::args().any(|a| a == "--round2") {
         STEP_IDX.with(|i| *i.borrow_mut() = steps().len());
