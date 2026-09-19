@@ -348,7 +348,7 @@ pub enum OpenApplyReason {
     Bootstrap,
     /// 観測値（conv/IMC 読み取り）と belief の乖離を検出しての是正
     /// （`ir_apply_drift_correction`、`kp_apply_conv_engine_sync` の
-    /// `EngineSync::DirectInput` 分岐）。
+    /// `EngineSync::DirectInput`（ADR-185で撤去済み） 分岐）。
     DriftCorrection,
     /// Shadow IME belief のトグル（`kp_stage_shadow_ime_toggle`）に伴う適用。
     ShadowToggle,

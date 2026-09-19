@@ -167,7 +167,7 @@ impl ImeStateHub {
                     self.last_user_explicit_off_ms = tick_ms.0;
                 }
                 // IntentStore への record() はここでは行わない（BUG-51 追補 v3 で移設）。
-                // Command ソースは conv 由来の内部同期（EngineSync::DirectInput →
+                // Command ソースは conv 由来の内部同期（EngineSync::DirectInput〈ADR-185で撤去済み〉 →
                 // handle_engine_set_open → write_set_open_request）でも dispatch される
                 // ため、このイベントだけでは「本物のユーザー操作」と区別できない。
                 // 記録は実ユーザー操作と確定できる呼び出し元
@@ -1324,7 +1324,7 @@ impl ImeStateHub {
     /// (ADR-087 §5 Phase 1' 配線、BUG-51 追補 v3)。
     ///
     /// `dispatch_event` の `UserImeSetIntent` 分岐で record しないのは、
-    /// `Command` ソースが conv 由来の内部同期（`EngineSync::DirectInput`）でも
+    /// `Command` ソースが conv 由来の内部同期（`EngineSync::DirectInput`（ADR-185で撤去済み））でも
     /// dispatch されるため。呼び出してよいのは以下の3箇所のみ:
     /// - `write_sync_key` / `write_physical_key`（物理 IME キーの shadow toggle。
     ///   `IntentWitness` が「注入されていない実キーイベント」を型で要求する）
@@ -2551,7 +2551,7 @@ mod tests {
 
     /// 修正1b 回帰: 生の `dispatch_event(UserImeSetIntent)` だけでは IntentStore に
     /// 記録されない（`record_explicit_intent` を経由しない限り）。v1 のままだと
-    /// `EngineSync::DirectInput`（conv 由来、`handle_engine_set_open` 経由で
+    /// `EngineSync::DirectInput`（ADR-185で撤去済み）（conv 由来、`handle_engine_set_open` 経由で
     /// `UserImeSetIntent{Command}` を dispatch する）が壊れた conv 読み1件を
     /// FocusChanged を生き延びる偽の明示意図として永続化してしまっていた
     /// （pre-mortem #1 角度2）。

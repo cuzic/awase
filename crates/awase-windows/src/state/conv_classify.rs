@@ -41,10 +41,10 @@ pub enum EngineSync {
     /// にあたるため、BUG-51 追補 v3 で `handle_engine_activation_sync` へ移した
     /// （IntentStore への偽 intent 永続化の防止も兼ねる）。
     SetOpen(ConvSyncReason),
-    /// `ObservedEisu` 観測 → engine OFF + DirectInput。conv の英数モードは IME-ON の
-    /// 確証（conv=0x10 は ROMAN ビット付き半角英数）のため、`effective_open=true` の
-    /// belief を直接注入して apply する。
-    DirectInput,
+    // ADR-185: かつてここに`DirectInput`（`ObservedEisu`観測 → open軸へ`false`を書き、IME OFFを実送信）が
+    // あった。半角英数はIME ONのままなので、open軸の書き込み・actuationは撤去した。`ObservedEisu`は
+    // `input_mode`のbelief更新（`ConvTransition::input_mode_update`）だけで扱い、`engine`は`None`になる。
+    // （GJIの`DirectInput`＝「IMEが本当にOFF」との命名衝突も解消。）
     /// conv ビットが shadow=OFF 中に NATIVE への切替を示した (`NativeToggleShadowOff`)。
     ///
     /// かつては `SetOpen` として `handle_engine_set_open(true)` を直接呼び、
@@ -130,9 +130,9 @@ pub fn classify_conv_transition(
             EngineSync::None
         },
         |new_mode| {
-            if matches!(new_mode, InputModeState::ObservedEisu) {
-                EngineSync::DirectInput
-            } else if !was_romaji_capable && new_mode.is_romaji_capable() && effective_open {
+            // ObservedEisu（NATIVE=0）は`is_romaji_capable()`が偽で`has_native`も偽なので、下のどの分岐
+            // にも当たらず`EngineSync::None`になる（ADR-185: open軸は書かない）。
+            if !was_romaji_capable && new_mode.is_romaji_capable() && effective_open {
                 EngineSync::SetOpen(ConvSyncReason::RomajiRecovered)
             } else if conv_mode_changed && has_native && !effective_open {
                 EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
@@ -232,13 +232,13 @@ mod tests {
         )
     }
 
-    // ── 英数モード検出（ObservedEisu → DirectInput）──────────────────────────────
+    // ── 英数モード検出（ObservedEisu → input_modeのみ、engine同期なし。ADR-185）──────────────────────────────
 
     #[test]
-    fn hanalpha_detected_as_eisu_direct_input() {
+    fn hanalpha_detected_as_eisu_without_engine_sync() {
         let t = classify(CONV_HANALPHA, assumed(), true, true);
         assert_eq!(t.input_mode_update, Some(InputModeState::ObservedEisu));
-        assert_eq!(t.engine, EngineSync::DirectInput);
+        assert_eq!(t.engine, EngineSync::None);
     }
 
     /// fc18cc7 回帰: ROMAN ビット付き半角英数 (conv=0x0010) も英数モードとして扱う。
@@ -246,19 +246,19 @@ mod tests {
     fn eisu_with_roman_bit_0x10_is_still_eisu() {
         let t = classify(CONV_EISU_ROMAN, assumed(), true, true);
         assert_eq!(t.input_mode_update, Some(InputModeState::ObservedEisu));
-        assert_eq!(t.engine, EngineSync::DirectInput);
+        assert_eq!(t.engine, EngineSync::None);
     }
 
     #[test]
-    fn zenalpha_detected_as_eisu_direct_input() {
+    fn zenalpha_detected_as_eisu_without_engine_sync() {
         let t = classify(CONV_ZENALPHA, assumed(), false, true);
         assert_eq!(t.input_mode_update, Some(InputModeState::ObservedEisu));
-        // ObservedEisu は NATIVE=0 なので NativeToggle 系とは排他 → DirectInput のみ。
-        assert_eq!(t.engine, EngineSync::DirectInput);
+        // ObservedEisu は NATIVE=0 なので NativeToggle 系とは排他 → engine同期なし（ADR-185）。
+        assert_eq!(t.engine, EngineSync::None);
     }
 
     #[test]
-    fn eisu_when_belief_already_eisu_no_input_mode_update_but_still_direct_input() {
+    fn eisu_when_belief_already_eisu_no_input_mode_update_and_no_engine_sync() {
         // classify_idle は既に ObservedEisu の場合 None を返すが、それは belief 変化なし
         // であって engine 同期の必要性とは別。conv 不変なら engine も触らない。
         let t = classify(CONV_HANALPHA, InputModeState::ObservedEisu, false, false);
@@ -539,7 +539,7 @@ mod tests {
             false,
         );
         assert_eq!(t.input_mode_update, Some(InputModeState::ObservedEisu));
-        assert_eq!(t.engine, EngineSync::DirectInput);
+        assert_eq!(t.engine, EngineSync::None);
     }
 
     // ── engine None（何も同期しない）ケース ─────────────────────────────────────
@@ -586,13 +586,13 @@ mod tests {
                 for &open in &[false, true] {
                     for &changed in &[false, true] {
                         let t = classify(conv, belief, open, changed);
-                        // 英数モードは常に ObservedEisu → DirectInput（belief が既に Eisu の
-                        // 場合を除く）を返すという不変条件。
+                        // 英数モードは常に ObservedEisu（belief が既に Eisu の場合を除く）で、
+                        // engine同期は行わない（ADR-185: open軸を書かない）という不変条件。
                         if ConvMode::from_u32(conv).is_eisu() {
                             match t.input_mode_update {
                                 Some(m) => {
                                     assert_eq!(m, InputModeState::ObservedEisu);
-                                    assert_eq!(t.engine, EngineSync::DirectInput);
+                                    assert_eq!(t.engine, EngineSync::None);
                                 }
                                 None => {
                                     // belief が既に ObservedEisu のケースのみ。
@@ -663,7 +663,8 @@ mod tests {
                     EngineSync::None
                 }
             }
-            Some(InputModeState::ObservedEisu) => EngineSync::DirectInput,
+            // ADR-185: 半角英数（ObservedEisu）はopen軸を動かさない。
+            Some(InputModeState::ObservedEisu) => EngineSync::None,
             Some(new_mode) => {
                 // engine 既に open 中に romaji 不可 → 可へ回復。
                 let romaji_recovered_while_open =

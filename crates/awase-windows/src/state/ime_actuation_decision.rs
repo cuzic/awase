@@ -96,7 +96,6 @@ pub enum DecisionSite {
     ForceOnRomajiCorrection,
     ShadowToggleOff,
     ForceOnBootstrap,
-    IdleConvCheckDirectInput,
     BlacklistDriftCorrection,
 }
 

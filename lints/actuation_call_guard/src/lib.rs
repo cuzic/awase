@@ -121,10 +121,11 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
     // 救済の一部）を撤去したため4→3。同日、force_on_and_correct_romaji
     // （force-ON実送信、TsfNative向けON方向救済の一部）も撤去したため3→2。
     ("apply_ime_open_with_view", &["dispatch_ime_set_open", "apply_ime_open_with_belief"]),
-    // apply_ime_open_with_belief: 同表の2箇所（2026-09-09実測、ADR-158 TB1）。
+    // apply_ime_open_with_belief: 同表の1箇所（2026-09-09実測、ADR-158 TB1）。2026-09-19（ADR-185）:
+    // `kp_apply_conv_engine_sync`の`DirectInput`分岐（半角英数検出時のIME OFF送信）を撤去したため2→1。
     (
         "apply_ime_open_with_belief",
-        &["kp_apply_conv_engine_sync", "ir_apply_drift_correction"],
+        &["ir_apply_drift_correction"],
     ),
 ];
 

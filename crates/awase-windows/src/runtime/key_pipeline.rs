@@ -1123,60 +1123,18 @@ impl Runtime {
                 );
                 true
             }
-            EngineSync::DirectInput => {
-                tracing::info!("[idle-conv-check] TsfNative: ObservedEisu 検出 → DirectInput (conv=0x{conv:08X})");
-                false
-            }
         };
         self.platform.timer.kill(TIMER_IME_REFRESH);
         let generation = self.platform_state.ime.allocate_event_generation();
-        if matches!(engine, EngineSync::DirectInput) {
-            // DirectInput: desired_open=false の belief 書き込みが
-            // is_eligible_for_ime_force_on() 経由で force-ON 3経路（ADR-086
-            // conv_mode_policy=force 実機ソーク中の経路含む）・
-            // last_user_explicit_off_ms・from_explicit_off_intent を支えている
-            // load-bearing な書き込みのため、従来どおり handle_engine_set_open を使う
-            // （BUG-51 追補 v3 pre-mortem #2、「なぜ DirectInput を変えないか」）。
-            self.platform_state
-                .ime
-                .handle_engine_set_open(target, false, false, generation, now_tick);
-            // conv の英数モード観測は IME-ON の確証。direct belief で already_matched を
-            // バイパスして apply する。
-            let belief = crate::output::OpenBelief {
-                effective_open: true,
-                confident: true,
-            };
-            // ADR-090 §2.A A-1（shadow）。
-            let order = self.issue_actuation_order(false, "idle_conv_check_direct_input");
-            let (outcome, mut record) = self
-                .platform
-                .apply_ime_open_with_belief(order, None, belief);
-            // /code-review指摘（PR #201 wave3）: この同期記録点は`caller`が
-            // 常に`None`のままで、`site=Sync`の他の呼び出し元と記録上区別
-            // できなかった（B-2、PR #201パターンに揃える）。
-            record.caller =
-                Some(crate::state::ime_actuation_decision::DecisionSite::IdleConvCheckDirectInput);
-            self.platform_state
-                .ime
-                .journal
-                .record(crate::journal::JournalEntry::ActuationDecision { record });
-            self.on_ime_apply_complete(
-                false,
-                outcome,
-                None,
-                crate::state::ime_event::OpenApplyReason::DriftCorrection,
-            );
-        } else {
-            // SetOpen(RomajiRecovered): conv 観測からの自動同期であり、ユーザーの
-            // 明示操作ではない。発火条件が effective_open==true を要求するため
-            // desired_open へ書くと desired_open := effective_open という循環 echo
-            // （ime_model.rs の EngineActivationSync arm が明文で禁じるパターン）に
-            // なる。BUG-48 の ActivationSync 経路（last_intent/desired_open/
-            // IntentStore を書かず actuation は同一）を使う（BUG-51 追補 v3）。
-            self.platform_state
-                .ime
-                .handle_engine_activation_sync(target, false, false, generation, now_tick);
-        }
+        // SetOpen(RomajiRecovered): conv 観測からの自動同期であり、ユーザーの
+        // 明示操作ではない。発火条件が effective_open==true を要求するため
+        // desired_open へ書くと desired_open := effective_open という循環 echo
+        // （ime_model.rs の EngineActivationSync arm が明文で禁じるパターン）に
+        // なる。BUG-48 の ActivationSync 経路（last_intent/desired_open/
+        // IntentStore を書かず actuation は同一）を使う（BUG-51 追補 v3）。
+        self.platform_state
+            .ime
+            .handle_engine_activation_sync(target, false, false, generation, now_tick);
     }
 
     /// ADR-153 決定1: 無変換/変換の明示config（`muhenkan_solo_tap_ime_action`/

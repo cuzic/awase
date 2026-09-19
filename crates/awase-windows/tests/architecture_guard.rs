@@ -974,7 +974,7 @@ fn conv_open_inference_source_is_limited_to_report_and_gate() {
 /// `IntentStore::record()` を直接呼んでよいのは `record_explicit_intent`
 /// （本物のユーザー操作と確定できる3箇所からのみ呼ばれる）の内部だけ
 /// （BUG-51 追補 v3）。`dispatch_event` の汎用フックから呼ぶと、conv 由来の
-/// 内部同期（`EngineSync::DirectInput` 等が `UserImeSetIntent{Command}` を
+/// 内部同期（`EngineSync::DirectInput`（ADR-185で撤去済み） 等が `UserImeSetIntent{Command}` を
 /// dispatch する経路）まで「本物のユーザー操作」として永続化してしまう
 /// （pre-mortem #1 角度2）。
 #[test]
@@ -1053,7 +1053,7 @@ fn record_explicit_intent_call_sites_are_limited_to_real_user_actions() {
         "`{NEEDLE}` を含むファイル集合/出現数が想定と異なります。\n\
          想定: {expected:?}\n実際: {files_with_calls:?}\n\
          IntentStore への記録は「本物のユーザー操作」に限定される（BUG-51 追補 v3、\
-         pre-mortem #1 角度2）。conv 由来の内部同期（`EngineSync::DirectInput` 等が \
+         pre-mortem #1 角度2）。conv 由来の内部同期（`EngineSync::DirectInput`（ADR-185で撤去済み） 等が \
          `UserImeSetIntent{{Command}}` を dispatch する経路）からは呼ばないこと。"
     );
 }
@@ -1296,7 +1296,10 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         // **2026-09-08（同日、ケース3撤回）**: 実機A/B実験で「@」再現の
         // 直接原因と確定し撤回したため、表 #12 の入口が消えて 3→2 に戻った
         // （`docs/known-bugs.md` BUG-113節・`docs/experiments.md`エントリ25）。
-        (".apply_ime_open_with_belief(", 2),
+        // **2026-09-19（ADR-185）**: `key_pipeline.rs::kp_apply_conv_engine_sync`の`DirectInput`分岐
+        // （半角英数検出時のIME OFF実送信、BUG-146）を撤去したため 2→1（残りは`ime_refresh.rs`の
+        // drift correction のみ）。
+        (".apply_ime_open_with_belief(", 1),
         // 外部 2（executor.rs engine decision / mod.rs force_on_and_correct_romaji、
         // 表 #1/#6）+ apply_ime_open_with_belief 内部からの委譲 1 = 3。
         // （`apply_ime_open_with_belief` からの委譲であって `apply_ime_open_with_applied`
