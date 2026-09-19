@@ -218,7 +218,7 @@ thread_local! {
     static FREE_MODE: RefCell<bool> = const { RefCell::new(false) };
     static PENDING: RefCell<Vec<Pending>> = const { RefCell::new(Vec::new()) };
     /// 押下中の VK（オートリピート抑止用）。
-    static DOWN_KEYS: RefCell<std::collections::HashSet<u32>> = RefCell::new(std::collections::HashSet::new());
+    static DOWN_KEYS: RefCell<std::collections::HashMap<u32, u64>> = RefCell::new(std::collections::HashMap::new());
     static START: RefCell<Option<std::time::Instant>> = const { RefCell::new(None) };
 }
 
@@ -642,7 +642,18 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 d.borrow_mut().remove(&vk);
             });
         } else if is_down {
-            let first = DOWN_KEYS.with(|d| d.borrow_mut().insert(vk));
+            // ひらがなキーは離したときに 0xF2 の KeyUp が届かず(0xF0 の KeyUp が届く)、KeyUp 待ちだと
+            // 2回目以降の押下を取りこぼす。KeyUp が無くても、前回の KeyDown から 300ms 以上
+            // 空いていれば新しい押下として扱う(オートリピートは約 30ms 間隔なので区別できる)。
+            let now_ms_hook = now_ms();
+            let first = DOWN_KEYS.with(|d| {
+                let mut d = d.borrow_mut();
+                let is_new = d
+                    .get(&vk)
+                    .is_none_or(|last| now_ms_hook.saturating_sub(*last) > 300);
+                d.insert(vk, now_ms_hook);
+                is_new
+            });
             // 監視対象のキー、または Ctrl/Shift 併用の何かは記録するが、
             // 通常の文字キーは (テキスト観測は snapshot に含まれるので) 記録しない。
             if first {
