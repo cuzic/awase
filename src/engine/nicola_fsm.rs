@@ -1345,6 +1345,8 @@ impl ShiftReduceParser for NicolaFsm {
         // 同じ`decide`を通るのでここで確実に消費・クリアされる）。
         self.thumb_after_char_flush = std::mem::take(&mut self.next_thumb_after_char_flush);
         let local = self.decide_and_transition(token);
+        // この`decide`限りの値を残さない（`idle_wait`が`decide`外から呼ばれても古い値を読まない）。
+        self.thumb_after_char_flush = false;
         match local {
             ParseAction::Shift { timer } => TieredParseAction::Shift {
                 timers: self.timer_cmds(timer),
