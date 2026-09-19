@@ -211,6 +211,9 @@ thread_local! {
     /// Ctrl+Shift+F12 によるスキップ要求。
     static SKIP_REQ: RefCell<bool> = const { RefCell::new(false) };
     static LAST_ROUND: RefCell<Option<usize>> = const { RefCell::new(None) };
+    /// `--script`: ADR-186 の実機A/B用の固定手順（awase 起動中に、押すキーと期待を順に案内）。
+    static SCRIPT_MODE: RefCell<bool> = const { RefCell::new(false) };
+    static SCRIPT_IDX: RefCell<usize> = const { RefCell::new(0) };
     /// `--free`: 案内なしの自由測定モード（awase を起動したまま実IME状態を記録する）。
     static FREE_MODE: RefCell<bool> = const { RefCell::new(false) };
     static PENDING: RefCell<Vec<Pending>> = const { RefCell::new(Vec::new()) };
@@ -339,6 +342,47 @@ fn steps() -> Vec<Step> {
 const ROUNDS: usize = 2;
 const ROUND_NAMES: [&str; ROUNDS] = ["EDIT(標準コントロール)", "RichEdit 5.0(TSFネイティブ)"];
 const HOLD_MS: u64 = 3000;
+
+/// `--script` の1手順: (表示名, VK, Shift併用, 期待する結果)。
+const SCRIPT: [(&str, u32, bool, &str); 12] = [
+    ("無変換", 0x1D, false, "IME OFF(直接入力)。Engine OFF"),
+    ("無変換", 0x1D, false, "IME ON(かな)。Engine ON"),
+    ("変換", 0x1C, false, "IME OFF。Engine OFF"),
+    ("変換", 0x1C, false, "IME ON(かな)。Engine ON"),
+    (
+        "Shift+無変換",
+        0x1D,
+        true,
+        "ONのまま半角英数。Engine OFF(遅延の可能性あり)",
+    ),
+    ("無変換", 0x1D, false, "IME OFF。Engine OFF"),
+    (
+        "無変換",
+        0x1D,
+        false,
+        "IME ON・半角英数のまま(conv 0x10)。Engine は OFF のまま(ちらつかない) ← 決定2の核心",
+    ),
+    (
+        "Shift+無変換",
+        0x1D,
+        true,
+        "かなに戻る。Engine ON(遅延の可能性あり)",
+    ),
+    (
+        "ひらがなキー",
+        0xF2,
+        false,
+        "ONのまま半角英数へ。Engine OFF(決定3保留のため遅延の可能性あり)",
+    ),
+    ("無変換", 0x1D, false, "IME OFF。Engine OFF"),
+    (
+        "無変換",
+        0x1D,
+        false,
+        "IME ON・半角英数のまま。Engine が ON にならないこと ← 退行窓の確認",
+    ),
+    ("Shift+無変換", 0x1D, true, "かなに戻る(後片付け)"),
+];
 
 /// 現在状態から目標状態へ、次に取るべき 1 手を案内する。
 fn hint(cur: St, target: St) -> &'static str {
@@ -706,7 +750,21 @@ fn on_timer(hwnd: HWND) {
             // 案内中のステップに一致する押下か判定する。
             let idx = STEP_IDX.with(|i| *i.borrow());
             let mut tag = String::from("[準備/その他]");
-            if idx < total && now >= HOLD_UNTIL.with(|h| *h.borrow()) {
+            if SCRIPT_MODE.with(|m| *m.borrow()) {
+                let si = SCRIPT_IDX.with(|i| *i.borrow());
+                if si < SCRIPT.len() && now >= HOLD_UNTIL.with(|h| *h.borrow()) {
+                    let (name, vk, shift, expect) = SCRIPT[si];
+                    if ev.vk == vk
+                        && ev.shift == shift
+                        && !ev.ctrl
+                        && !ev.label.contains("(injected)")
+                    {
+                        tag = format!("[SCRIPT {}/{} {name} 期待={expect}]", si + 1, SCRIPT.len());
+                        SCRIPT_IDX.with(|i| *i.borrow_mut() = si + 1);
+                        HOLD_UNTIL.with(|h| *h.borrow_mut() = now + HOLD_MS);
+                    }
+                }
+            } else if idx < total && now >= HOLD_UNTIL.with(|h| *h.borrow()) {
                 let step = &all_steps[idx % per_round];
                 if step.vks.contains(&ev.vk)
                     && !ev.ctrl
@@ -778,7 +836,28 @@ fn on_timer(hwnd: HWND) {
     // 案内表示。
     let idx = STEP_IDX.with(|i| *i.borrow());
     let cur = snap.st();
-    let guide = if FREE_MODE.with(|f| *f.borrow()) {
+    let guide = if SCRIPT_MODE.with(|m| *m.borrow()) {
+        let si = SCRIPT_IDX.with(|i| *i.borrow());
+        let hold = HOLD_UNTIL.with(|h| *h.borrow());
+        if si >= SCRIPT.len() {
+            "全手順完了です。お疲れさまでした（ログは自動保存済み）".to_string()
+        } else {
+            let (name, _, _, expect) = SCRIPT[si];
+            let action = if now < hold {
+                format!("待機中… あと {:.1} 秒", (hold - now) as f64 / 1000.0)
+            } else {
+                format!("▶ 今 [{name}] を1回だけ押し、直後に k を1回打ってください")
+            };
+            format!(
+                "SCRIPT {}/{}  現在の実IME: {}\n{}\n期待: {}",
+                si + 1,
+                SCRIPT.len(),
+                cur.label(),
+                action,
+                expect
+            )
+        }
+    } else if FREE_MODE.with(|f| *f.borrow()) {
         format!(
             "自由測定モード（案内なし）。awase 起動中でも実IME状態を記録します。\n現在: {}\n{}",
             cur.label(),
@@ -977,6 +1056,11 @@ fn report_fatal(msg: &str) {
 
 fn run() -> WinResult<()> {
     START.with(|s| *s.borrow_mut() = Some(std::time::Instant::now()));
+    // `--script`: awase 起動中の固定手順（案内は SCRIPT）。
+    if std::env::args().any(|a| a == "--script") {
+        SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
+        STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
+    }
     // `--free`: 案内なしで、押したキーと実IME状態の推移だけを記録する。
     if std::env::args().any(|a| a == "--free") {
         FREE_MODE.with(|f| *f.borrow_mut() = true);
