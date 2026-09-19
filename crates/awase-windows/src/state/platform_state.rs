@@ -756,39 +756,6 @@ impl ImeStateHub {
         }
     }
 
-    /// `belief.is_japanese_ime() && effective_open()` の複合述語。
-    ///
-    /// `apply_force_on_for_imm_broken` / `try_force_on_bootstrap` で重複していたガード条件。
-    /// `engine.is_user_enabled()` と組み合わせて IME force-ON の前提条件として使う。
-    ///
-    /// **belief 由来の暫定ゲート（ADR-087 §5 Phase 3 item15 で
-    /// `issue_open_warrant()` に置換予定、まだ未配線）。** `effective_open()` は
-    /// belief（間違っていても低リスク）であり、actuation の根拠に直接使うべき
-    /// ではない——これはまさに本関数が持つ構造であり、BUG-63 の原因パターンが
-    /// 実 actuation ゲートとして今も本番で使われている状態を示す。呼び出し元は
-    /// 2箇所（`runtime/mod.rs` の `apply_force_on_for_imm_broken` /
-    /// `try_force_on_bootstrap`）。**旧記載の3箇所目 `consume_force_open_pending`
-    /// は ADR-094（2026-08-17、`conv_mode_policy` force-write 機構の全撤去）で
-    /// 削除済み——doc の記載漏れだったため訂正（2026-08-21）。**
-    pub(crate) fn is_eligible_for_ime_force_on(&self) -> bool {
-        self.belief.is_japanese_ime() && self.effective_open()
-    }
-
-    /// force-ON（`apply_force_on_for_imm_broken`）を今送ってよいか（ADR-098 決定1-c、BUG-69）。
-    pub(crate) fn force_on_attempt_allowed(&self, now_ms: u64) -> bool {
-        crate::state::ime_actuation::force_on_attempt_allowed(
-            self.model().applied,
-            self.model().force_on_retry,
-            now_ms,
-            crate::tuning::FORCE_ON_RETRY_COOLDOWN_MS,
-        )
-    }
-
-    /// force-ON を実際に試行したことを記録する（クールダウンの起点、ADR-098 決定1-c）。
-    pub(crate) fn note_force_on_attempt(&mut self, now_ms: u64) {
-        self.shadow_model.force_on_retry.note_attempt(now_ms);
-    }
-
     /// 現在のアプリの focus settle 期間（ms、`AppImePolicy` 由来）。
     ///
     /// settle 中にスキップした force-ON の再試行スケジュールに使う。
@@ -1063,15 +1030,6 @@ impl ImeStateHub {
 // 書き込みはすべてここに集約し、PlatformState からは直接 shadow_model を触らない。
 
 impl ImeStateHub {
-    /// `BrokenAppBootstrap` force-on ガードを追加する。
-    pub(crate) fn set_force_on_broken_app_bootstrap(&mut self) {
-        self.shadow_model.force_guards.add(ForceGuard {
-            reason: ForceOnReason::BrokenAppBootstrap,
-            expires_at: None,
-            generation: self.event_log.next_seq(),
-        });
-    }
-
     /// observe_miss_monitor をリセットし、すべての force-on ガードを解除する。
     ///
     /// ユーザー操作（IME トグル・SetOpen 等）で「意図した状態」が確定したときに呼ぶ。

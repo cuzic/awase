@@ -246,13 +246,6 @@ pub struct ImeModel {
     /// 旧 `applied_open: Option<bool>` + `applied_at_ms: u64` の置換。
     pub applied: AppliedImeState,
 
-    /// `apply_force_on_for_imm_broken` の再試行クールダウン状態（ADR-098 決定1-c、BUG-69）。
-    ///
-    /// `applied` と同じ `FocusChanged` reducer arm でリセットする——予算の単位を
-    /// 「1 フォーカス」に揃え、`applied` だけリセットされ予算はされない窓が
-    /// 構造的に生じないようにするため。
-    pub force_on_retry: crate::state::ime_actuation::ForceOnRetryState,
-
     /// 現在フォーカス中のウィンドウ (ADR-087 §5 Phase 3 item15 前提配線)。
     ///
     /// `FocusChanged` の reducer でのみ更新する。`current_focus()` アクセサ経由で
@@ -288,7 +281,6 @@ impl ImeModel {
             focus_generation_watermark: ApplyGeneration::MIN,
             last_seen_generation: None,
             applied: AppliedImeState::Unknown,
-            force_on_retry: crate::state::ime_actuation::ForceOnRetryState::default(),
             current_focus: None,
         }
     }
@@ -750,11 +742,6 @@ impl ImeModel {
         {
             self.focus_generation_watermark = next_focus_generation;
         }
-        // ADR-098 決定1-c: force-ON の試行予算も同じ「フォーカス」単位で
-        // 戻す。`applied` のリセットと必ず同じ場所に置くこと——予算だけが
-        // 持ち越されると、新しいアプリで初回の force-ON が誤ってクール
-        // ダウン中と判定され飛ばない事故になる。
-        self.force_on_retry = crate::state::ime_actuation::ForceOnRetryState::default();
         // force_guard: 旧アプリ文脈の guard を新アプリに引き継がない
         self.force_guards.clear_for_focus_change();
         // observe_miss_monitor: 旧アプリの miss_count が新アプリで閾値を誤超えしないようリセット
@@ -988,7 +975,6 @@ mod tests {
             // フィクスチャでは意図せずパージされないよう十分先の期限を置く。
             timeout_at: now + std::time::Duration::from_hours(1),
         });
-        model.force_on_retry.note_attempt(1234);
         model.focus_generation_watermark = ApplyGeneration::new(5).expect("nonzero");
         model.last_seen_generation = ApplyGeneration::new(4);
         model.observations.record_replayed(
@@ -1010,7 +996,7 @@ mod tests {
     ///
     /// bootstrap（まだ一度も IME を観測していない時点）で dispatch されるため、
     /// belief を1ビットでも動かすとこの不変条件が壊れる。`FocusChanged` が触る
-    /// `app_policy`/`last_intent`/`applied`/`force_guards`/`force_on_retry`/
+    /// `app_policy`/`last_intent`/`applied`/`force_guards`/
     /// `input_barrier`/`current_focus`/観測プールが巻き添えで初期化されていないか、
     /// モデル全体の `Debug` 表現で機械的に確認する（個別 assert の書き漏れで
     /// 将来フィールドが増えたときに見逃すのを防ぐ）。

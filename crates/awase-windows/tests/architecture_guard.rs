@@ -1308,7 +1308,10 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         // **2026-09-19（領域A撤去、ユーザー指示）**: TsfNative向けON方向救済
         // 4系統（force-on/drift correction/warmup/reassert）のうち reassert
         // （`reassert_explicit_physical_key`）を撤去し、4→3に戻った。
-        (".apply_ime_open_with_view(", 3),
+        //
+        // **2026-09-19（同日、force-on撤去）**: `mod.rs::force_on_and_correct_romaji`
+        // （表 #6、force-ON 実送信の内部委譲元）も撤去し、3→2に戻った。
+        (".apply_ime_open_with_view(", 2),
         // ADR-098 決定2（BUG-69）: 唯一の呼び出し元（ime_refresh.rs の GJI
         // TsfNative 強制 ON ブロック）を撤去し、メソッド自体も削除した。
         (".apply_ime_open_with_applied(", 0),
@@ -1522,41 +1525,11 @@ fn applied_direct_assignments_are_accounted_for() {
     }
 }
 
-/// ADR-098 決定1-c: `apply_force_on_for_imm_broken` の 20ms 無限再試行ループ封鎖
-/// （BUG-69）が `force_on_attempt_allowed`/`note_force_on_attempt` を経由し続けている
-/// ことを固定する。0 になるとループ封鎖そのものが外れる（実装記録「実装順序・
-/// テスト コミット1」の必須回帰テスト）。
-#[test]
-fn force_on_retry_cooldown_gate_call_sites_are_accounted_for() {
-    const GATES: [(&str, usize); 2] = [
-        (".force_on_attempt_allowed(", 1),
-        (".note_force_on_attempt(", 1),
-    ];
-
-    let files = list_src_files();
-    for (needle, expected) in GATES {
-        let mut total = 0usize;
-        let mut breakdown: Vec<(String, usize)> = Vec::new();
-        for path in &files {
-            let content = read_crate_file(path);
-            let production = production_code_only(&content);
-            let count = count_real_calls(production, needle);
-            if count > 0 {
-                total += count;
-                breakdown.push((path.clone(), count));
-            }
-        }
-        assert_eq!(
-            total, expected,
-            "`{needle}` の呼び出し箇所数が想定({expected})と異なります(実際: {total})。\
-             内訳: {breakdown:?}\n\
-             ADR-098 決定1-c（BUG-69 の 20ms 無限再試行ループ封鎖）が\
-             `apply_force_on_for_imm_broken` 内で経由し続けているか確認してください。\
-             0 になるとクールダウンが外れ、TsfNative で cold-mark を伴う実効 50Hz の\
-             再試行ループが再発します。"
-        );
-    }
-}
+// `force_on_retry_cooldown_gate_call_sites_are_accounted_for`（ADR-098 決定1-c、
+// BUG-69 の 20ms 無限再試行ループ封鎖ガード）は削除した。2026-09-19、領域A撤去
+// （ユーザー指示）で `apply_force_on_for_imm_broken`/`force_on_attempt_allowed`/
+// `note_force_on_attempt`/`ForceOnRetryState` を丸ごと撤去したため、このテストが
+// 固定していた「呼び出し箇所数1」という前提自体が意味を失った。
 
 /// `handle_wm_focus_kind_update`（UIA 非同期分類結果のハンドラ、BUG-12 対策）が
 /// belief/state への書き込みを一切行わないことを固定する。
@@ -1815,7 +1788,9 @@ fn actuation_target_capture_call_sites_are_accounted_for() {
         ("src/tsf/warmup/cold_warmup.rs", 1), // ColdWarmupSequence::run_start
         ("src/runtime/executor.rs", 1),      // dispatch_ime_set_open（ImmCross async path）
         ("src/runtime/key_pipeline.rs", 3), // kp_reset_to_hiragana_romaji_capsoff / kp_restore_kana_from_half_width / apply_focus_probe(ImmCrossProbe kana修正)（apply_idle_conv_check の restore_roman(BUG-08 Apply(3))経路は2026-08-17 BUG-61に伴い撤去）
-        ("src/runtime/mod.rs", 1), // try_force_on_bootstrap（BUG-34 横展開 D、2026-08-19: 同期 ImmCrossProcessStrategy::apply 経由の force-on を run_open_chain_async へ移行）
+                                            // 2026-09-19（領域A撤去、ユーザー指示）: `src/runtime/mod.rs` の
+                                            // try_force_on_bootstrap（force-ON bootstrap）を撤去したため、
+                                            // mod.rs のエントリ（1）が消えた。
     ];
 
     let all_files = list_src_files();
@@ -2012,48 +1987,12 @@ fn ir_post_focus_change_snapshot_write_call_sites_are_accounted_for() {
 // 2026-08-17、ADR-094 で `conv_mode_policy`/`Output::is_force_policy()` 自体を
 // 撤去したのに伴い削除した。
 
-/// ADR-087 INV-28（実装記録 §8.10、item16(a)）:
-/// force-write 経路（`force_on_and_correct_romaji` / GJI TsfNative 強制ON）は
-/// `applied` に `None` を渡すことで `GjiDirectStrategy::apply`
-/// （`gji_direct_already_matches`、`shadow_on == Some(true)` のとき
-/// `VK_IME_ON` を no-op skip する）を最初から bypass する設計になっている
-/// （`build_ime_control_view(None)` → `control.shadow_on = None`、
-/// `platform.rs::build_ime_control_view` 参照。`None` は `Some(true)` とも
-/// `Some(false)` とも一致しないため、ON方向・OFF方向のどちらの
-/// already-matched判定もbypassする——BUG-113 修正後もこの性質は保たれる、
-/// `docs/known-bugs.md` BUG-113 参照）。
-///
-/// この不変条件が崩れる（`None` の代わりに実 `applied` 値を渡すよう変更される）と、
-/// force-ON 経路が古い shadow_on=ON を見て no-op に阻まれ、BUG-16 が実装レベルで
-/// 再発しうる。「`applied` を `None` にして bypass する」という意図はコメントでしか
-/// 表現されておらず、コンパイラは強制しないため、テキスト走査で固定する。
-///
-/// **2026-08-21（ADR-098 決定2、BUG-69）**: 旧第2 assertion（`ir_post_focus_change_snapshot`
-/// の `apply_ime_open_with_applied(order, None)` 1件を固定）は撤去した。
-/// TsfNative force-on ブロック（唯一の呼び出し元）を削除したため。決定1適用後は
-/// `shadow_on=false` になった通常 strategy chain と、決定1-c で有界化された
-/// `apply_force_on_for_imm_broken`（本テストが固定する `force_on_and_correct_romaji`
-/// 経由）の両方が INV-28 の bypass を担う——**この関数（`force_on_and_correct_romaji`）
-/// だけが INV-28 の唯一の enforcement 拠点**であることに注意。
-#[test]
-fn force_write_paths_bypass_gji_shadow_on_via_none_applied() {
-    // `.contains()` は文字列リテラル（コメント含む）にもマッチし、
-    // 呼び出し箇所を実際に書き換えても壊れなければ vacuous になる
-    // （2026-08-10 Opus レビュー M1: `ime_refresh.rs:481` の行コメントだけで
-    // 2つ目の assertion が偽陽性に通っていた）。`count_real_calls`
-    // （コメント行除外・`fn` 定義行除外）を使い、かつ関数本体スコープに
-    // 限定することで、実際の呼び出しが変更されたときにだけ検知する。
-    let mod_rs = read_crate_file("src/runtime/mod.rs");
-    let mod_production = production_code_only(&mod_rs);
-    let force_on_body = extract_fn_body(mod_production, "fn force_on_and_correct_romaji");
-    assert_eq!(
-        count_real_calls(force_on_body, "build_ime_control_view(None)"),
-        1,
-        "force_on_and_correct_romaji は build_ime_control_view(None) を経由して \
-         shadow_on=None を作ることで GJI の no-op skip を bypass する設計。\
-         `None` 以外の値を渡すよう変更された場合、ADR-087 INV-28 の前提が崩れる。"
-    );
-}
+// `force_write_paths_bypass_gji_shadow_on_via_none_applied`（ADR-087 INV-28、
+// force_on_and_correct_romaji の build_ime_control_view(None) bypassを固定）は
+// 削除した。2026-09-19、領域A撤去（ユーザー指示）で `force_on_and_correct_romaji`
+// 自体を丸ごと撤去したため、このテストが固定していた「唯一の enforcement 拠点」が
+// 消滅した。INV-28 bypass のもう一方の担い手（`fallback_write`）は次の
+// `fallback_write_bypasses_gji_shadow_on_via_none_override` が引き続き固定する。
 
 /// BUG-113 追補（Opus 敵対的レビューで発見・修正）: `open_chain.rs::fallback_write`
 /// は先行機構（ImmCross）が実際に OS を読み戻して「まだ desired 状態でない」
@@ -2295,12 +2234,16 @@ fn async_imm_cross_actuation_goes_through_the_single_chain_entry() {
         );
     }
 
-    // 3. 非同期チェーンの入口は 1 本（定義 1 + 呼び出し 3）。
+    // 3. 非同期チェーンの入口は 1 本（定義 1 + 呼び出し 2）。
     //
     // **2026-08-19（BUG-34 横展開 D）**: mod.rs::try_force_on_bootstrap が
     // 3本目の呼び出し元として加わった（executor.rs / key_pipeline.rs は既存）。
     // 同期 ImmCrossProcessStrategy::apply（エンジンスレッドを直接ブロックする
     // SendMessageTimeoutW 経路）から、この単一チェーン入口へ移行したもの。
+    //
+    // **2026-09-19（領域A撤去、ユーザー指示）**: try_force_on_bootstrap を
+    // 丸ごと撤去したため、3本目の呼び出し元が消えて 3→2 に戻った
+    // （executor.rs / key_pipeline.rs のみ）。
     let mut entry_calls = 0usize;
     for path in &files {
         let content = read_crate_file(path);
@@ -2308,9 +2251,9 @@ fn async_imm_cross_actuation_goes_through_the_single_chain_entry() {
         entry_calls += count_real_calls(production, "run_open_chain_async(");
     }
     assert_eq!(
-        entry_calls, 3,
-        "`run_open_chain_async(` の呼び出し箇所数が想定(3: executor.rs / \
-         key_pipeline.rs / runtime/mod.rs)と異なります(実際: {entry_calls})。"
+        entry_calls, 2,
+        "`run_open_chain_async(` の呼び出し箇所数が想定(2: executor.rs / \
+         key_pipeline.rs)と異なります(実際: {entry_calls})。"
     );
 }
 

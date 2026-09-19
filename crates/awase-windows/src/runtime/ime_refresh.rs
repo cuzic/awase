@@ -224,8 +224,6 @@ impl Runtime {
     // Phase 5: 次回ポーリングをスケジュール
 
     fn ir_stage_notify(&mut self) {
-        // Phase 4a: IMM-broken アプリの force-ON（Blacklist パス専用）
-        self.apply_force_on_for_imm_broken();
         // Phase 4: Engine に RefreshState（active 遷移検知）
         self.ir_notify_engine_refresh();
         // Phase 4b: desired ≠ observed ドリフト補正（ImmCross / non-ImmCross 両対応）
@@ -400,7 +398,6 @@ impl Runtime {
         );
 
         self.learn_imm_capability_from_miss(miss_before, miss_after);
-        self.try_force_on_bootstrap();
     }
 
     /// [診断] フォーカス変更から 10 秒以内で状態が変わった場合にログ出力。

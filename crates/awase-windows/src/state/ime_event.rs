@@ -472,7 +472,7 @@ pub enum ImeEvent {
     /// いう識別子だけで、IME が ON か OFF かの推測は含まない。reducer 側も
     /// `ObservationStore::establish_initial_fence()`（fence 1 フィールドの差し替え）
     /// しか行わず、`FocusChanged` が触る `app_policy` / `last_intent` / `applied` /
-    /// `force_guards` / `force_on_retry` / `input_barrier` / `current_focus` / 観測
+    /// `force_guards` / `input_barrier` / `current_focus` / 観測
     /// プールのいずれにも触れない。ADR-102 決定3-b の「最初の IME 観測より前に
     /// belief を書き換えない」を守ったまま fence だけを揃えるための専用イベント。
     ///

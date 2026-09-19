@@ -118,15 +118,9 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
     // 「IME actuation合流点」表（2026-09-09実測、ADR-158 TB1）。
     // `apply_ime_open_with_belief`からの内部委譲1件を含む。
     // 2026-09-19: reassert_explicit_physical_key（ADR-121、TsfNative向けON方向
-    // 救済の一部）を撤去したため4→3。
-    (
-        "apply_ime_open_with_view",
-        &[
-            "dispatch_ime_set_open",
-            "force_on_and_correct_romaji",
-            "apply_ime_open_with_belief",
-        ],
-    ),
+    // 救済の一部）を撤去したため4→3。同日、force_on_and_correct_romaji
+    // （force-ON実送信、TsfNative向けON方向救済の一部）も撤去したため3→2。
+    ("apply_ime_open_with_view", &["dispatch_ime_set_open", "apply_ime_open_with_belief"]),
     // apply_ime_open_with_belief: 同表の2箇所（2026-09-09実測、ADR-158 TB1）。
     (
         "apply_ime_open_with_belief",
