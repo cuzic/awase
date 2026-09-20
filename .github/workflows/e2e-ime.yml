@@ -96,23 +96,30 @@ jobs:
             cfg('msime-stale-table', 'pass', check='consistency', args='--walk --key=henkan', toggle='false', keymap=2, custom_table='true'),
             # --- 操作シナリオ(sc-): IMEプリセット × 各種IMEキー × パススルー/抑止設定 × Shift単独打鍵 ---
             # 判定はどれも「実IMEのかな=Engine ON、英数・直接入力=Engine OFF」に追随するか(consistency)。
-            # 結果が出るまでは observe(表に出すだけ)。挙動が確定したら pass/fail に固定する。
+            # GJI は2回のCI(各3回)で全シナリオPASSしたので pass に固定。MS-IME本体は毎回FAILする既知の差(下記)があり observe。
+            #   ・直接入力からの最初のひらがな(0xF2)でIMEが開かない(全シナリオ3/3)
+            #   ・半角/全角は F3=閉/F4=開の決め打ち(GJIのようなトグルではない)なので check=toggle は成立しない
+            # noawase の構成は、それが awase のせいか(MS-IME本体の癖か)を切り分ける対照実験。
             # IME の3通り: msime-native(標準の日本語IME)、gji-msime(GJI + MS-IMEプリセット)、gji-atok(GJI + ATOKプリセット)
             # dbe_mode_key_policy: suppress(既定、DBEレンジ 英数/カタカナ/半角全角 を握りつぶす) / passthrough(そのまま通す)
             # half_width_alnum_toggle: 左Shift単独タップで半角英数(持続トグル)。GJIで使うには all が必要。
-            *[cfg(f'sc-dbe-{ime_name}-{pol}', 'observe', check='consistency', toggle='false', ime=ime, keymap=km,
+            *[cfg(f'sc-dbe-{ime_name}-{pol}', 'observe' if ime == 'msime' else 'pass', check='consistency', toggle='false', ime=ime, keymap=km,
                   args=f'--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2{msime}',
                   general=f'dbe_mode_key_policy = "{pol}"')
               for ime_name, ime, km, msime in SC_IMES for pol in ('suppress', 'passthrough')],
-            *[cfg(f'sc-kanji-{ime_name}', 'observe', check='consistency', toggle='false', ime=ime, keymap=km,
+            *[cfg(f'sc-kanji-{ime_name}', 'observe' if ime == 'msime' else 'pass', check='consistency', toggle='false', ime=ime, keymap=km,
                   args=f'--seq=F2,19,19,16,1A,16,1A,19,F2,1A{msime}')
               for ime_name, ime, km, msime in SC_IMES],
-            *[cfg(f'sc-hz-{ime_name}-{pol}', 'observe', check='toggle', toggle='false', ime=ime, keymap=km,
+            *[cfg(f'sc-hz-{ime_name}-{pol}', 'observe' if ime == 'msime' else 'pass', check='toggle', toggle='false', ime=ime, keymap=km,
                   args=f'--hz{msime}', general=f'dbe_mode_key_policy = "{pol}"')
               for ime_name, ime, km, msime in SC_IMES for pol in ('suppress', 'passthrough')],
-            *[cfg(f'sc-shift-{ime_name}', 'observe', check='consistency', toggle='false', ime=ime, keymap=km,
+            *[cfg(f'sc-shift-{ime_name}', 'observe' if ime == 'msime' else 'pass', check='consistency', toggle='false', ime=ime, keymap=km,
                   args=f'--seq=F2,A0,A0,A0,A1,F2{msime}', general='half_width_alnum_toggle = "all"')
               for ime_name, ime, km, msime in SC_IMES],
+            cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', toggle='false', ime='msime', awase='false',
+                args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
+            cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', toggle='false', ime='msime', awase='false',
+                args='--seq=F3,F3,F4,F4,F3,F4,F4,F3 --msime'),
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
