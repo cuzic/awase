@@ -51,7 +51,7 @@ pub(crate) enum ThumbKeyImeWarning {
     #[default]
     None,
     /// 無変換/変換に状態依存トグル（`Toggle`）を検出したが、
-    /// `gji_thumb_key_ime_toggle`が`false`（既定）のため反映しなかった。
+    /// `gji_thumb_key_ime_toggle`が`false`（ユーザーが明示的に無効化。既定は`true`、ADR-187）のため反映しなかった。
     /// 対処法を案内する`tracing::warn!`が必要。
     ToggleDeclined,
     /// 状態依存トグルを、ユーザーのopt-in設定によりベストエフォートで

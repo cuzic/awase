@@ -63,6 +63,11 @@ jobs:
             cfg('e7-toggle-false', 'fail', toggle='false'),
             # --- プリセット/設定の確認(ビルドは baseline、consistency 判定) ---
             cfg('atok-optin', 'pass', check='consistency', args='--walk'),
+            # 既定(キーを書かない)=Toggleはawaseがactuateする(ADR-187)。明示false(opt-out)の atok-passthrough は追随しない既知の制約
+            cfg('atok-default', 'pass', check='consistency', args='--walk', toggle='default'),
+            cfg('atok-default-henkan', 'pass', check='consistency', args='--walk --key=henkan', toggle='default'),
+            cfg('msime-default', 'observe', check='consistency', args='--walk', toggle='default', keymap=2),
+            cfg('msime-native-default', 'observe', check='consistency', args='--walk --msime', toggle='default', ime='msime'),
             cfg('atok-passthrough', 'fail', check='consistency', args='--walk', toggle='false'),
             cfg('atok-passthrough-henkan', 'fail', check='consistency', args='--walk --key=henkan', toggle='false'),
             cfg('msime', 'pass', check='consistency', args='--walk', toggle='false', keymap=2),
@@ -232,7 +237,11 @@ jobs:
         run: |
           $toggle = '${{ matrix.cfg.toggle }}'
           $cfg = Get-Content dist\config.toml -Raw
-          if ($cfg -match 'gji_thumb_key_ime_toggle *= *(true|false)') { $cfg = $cfg -replace 'gji_thumb_key_ime_toggle *= *(true|false)',"gji_thumb_key_ime_toggle = $toggle" }
+          if ($toggle -eq 'default') {
+            # 設定キーを書かない(既定値=true、ADR-187)。既存のキー行があれば消す。
+            $cfg = $cfg -replace '(?m)^gji_thumb_key_ime_toggle *=.*\r?\n', ''
+          }
+          elseif ($cfg -match 'gji_thumb_key_ime_toggle *= *(true|false)') { $cfg = $cfg -replace 'gji_thumb_key_ime_toggle *= *(true|false)',"gji_thumb_key_ime_toggle = $toggle" }
           else { $cfg = $cfg -replace '(?m)^\[general\]\s*$', "[general]`r`ngji_thumb_key_ime_toggle = $toggle" }
           [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
           # CIランナーは初回のクロスプロセスIMMプローブが遅く(実測22ms)、awase がスパイク窓を「IMM不可」と誤学習して

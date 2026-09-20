@@ -401,29 +401,43 @@ pub struct GeneralConfig {
     /// `ime_on`/`ime_off`/`ime_toggle`の自動検出リスト（チョードキーとして
     /// 設定されていない場合）へベストエフォートで反映するか（BUG-115）。
     ///
-    /// 既定 `false`（反映しない・警告ログのみ）。この状態依存トグルは
-    /// `ShadowImeAction::Toggle`（`!ctx.ime_on`）で技術的には正確に表現
-    /// できる（ATOKプリセットが`DirectInput`状態でHenkan/Muhenkanを
-    /// `IMEOn`、`Precomposition`状態で`CancelAndIMEOff`に割り当てている
-    /// ことを`google/mozc`の`src/data/keymap/atok.tsv`で2026-09-05に確認
-    /// 済み——「表現不能」ではない）が、既定を`true`にしない理由が4つある:
+    /// 既定 `true`（ADR-187）。この状態依存トグルは`ShadowImeAction::Toggle`
+    /// （`!ctx.ime_on`）で表現でき（ATOKプリセットが`DirectInput`状態でHenkan/
+    /// Muhenkanを`IMEOn`、`Precomposition`状態で`CancelAndIMEOff`に割り当てて
+    /// いることを`google/mozc`の`src/data/keymap/atok.tsv`で2026-09-05に確認済み）、
+    /// **Toggleは非冪等なので、awaseが唯一の変更主体として開閉を明示的にactuate
+    /// する**（`ModeKeyActuationOwner::AwaseExplicit`）。生キーはGJIに渡さない。
+    /// 一方、方向が固定のOn/Off割当ては冪等なので、この設定に関わらず生キーを
+    /// パススルーしてbeliefだけ追随する（`FollowOnly`）。
+    ///
+    /// 既定を`false`（BUG-115当初）から`true`へ変えた理由: `false`だと生の
+    /// 無変換/変換がGJIに届き、実IMEは開閉するがawaseのEngineは追随しない
+    /// （IME OFFでもEngine ONのまま直接入力にNICOLA変換が効く）。CIの実機E2E
+    /// （ADR-186、`atok-passthrough`各3/3）で確認し、追随機構を新設する案
+    /// （観測型、ADR-187 round1〜2）は新しい`ImeEvent`・通過マーク・
+    /// `ActivationSync`抑止が要り重いため見送った。`true`はADR-186の実機E2Eと
+    /// CI（`baseline`/`atok-optin`各3/3）で追随を確認済み。
+    ///
+    /// `false`にすると従来どおり反映せず警告ログのみ（ATOK利用者は生キーが
+    /// GJIに届くが、Engineは追随しない）。次の懸念は`true`でも残る:
     ///
     /// 1. `Toggle`は非冪等。無変換/変換の単独タップ確定判定
     ///    （`resolve_pending_thumb_as_single`）はチョード判定に失敗した
     ///    キーからも呼ばれうる経路が複数あり、`TurnOn`/`TurnOff`と違い
-    ///    誤発火が「状態の反転」になり連続誤発火で発振しうる。
+    ///    誤発火が「状態の反転」になり連続誤発火で発振しうる
+    ///    （ADR-186でKeyUp確定+warrantにより実機検証済み）。
     /// 2. ATOKでは変換・無変換の**両方**がToggleになり、NICOLA親指キー
     ///    2本ともIME切替を持つことになり露出が2倍になる。
-    /// 3. ATOKプリセットは（overlayと違い）ユーザーが明示的にONにする
-    ///    ものではなく、キーマップにATOKを選んだだけの全ユーザーに
+    /// 3. ATOKプリセットは、キーマップにATOKを選んだだけの全ユーザーに
     ///    自動適用される（親指シフト利用者と重なりが大きい層）。
     /// 4. GJIはMozcのフォークであり、`atok.tsv`の内容が本家と完全一致
     ///    する保証は無い。
+    /// 5. ATOKのShift+無変換（かな⇔半角英数トグル）は、Toggleとして横取りされる
+    ///    （ADR-186「残る問題2」）。
     ///
-    /// これらのリスクを理解した上で有効化したいユーザーのためのopt-in
-    /// フラグ。`true`にすると`tracing::info!`で反映したことを通知する
-    /// （`false`のまま矛盾を検出した場合は`tracing::warn!`で対処法を案内する）。
-    #[serde(default)]
+    /// これらを避けたいユーザーは`false`にする。反映すると`tracing::info!`で
+    /// 通知する（`false`のまま矛盾を検出した場合は`tracing::warn!`で対処法を案内する）。
+    #[serde(default = "default_gji_thumb_key_ime_toggle")]
     pub gji_thumb_key_ime_toggle: bool,
     /// ADR-176決定8: `[[calibration]]`（較正パネルUIが確定した較正結果）を
     /// 実際のIME判定（`apply_calibration_override`経由でのGJI/MS-IME
@@ -515,7 +529,7 @@ impl Default for GeneralConfig {
             enter_thumb_ignore_composing_guard: true,
             enter_thumb_shift_literal: true,
             swallow_alt_kana_input_method_switch: true,
-            gji_thumb_key_ime_toggle: false,
+            gji_thumb_key_ime_toggle: default_gji_thumb_key_ime_toggle(),
             apply_calibrated_mode_keys: false,
             muhenkan_solo_tap_ime_action: None,
             henkan_solo_tap_ime_action: None,
@@ -777,6 +791,11 @@ impl Default for AppOverrides {
 }
 
 /// `AppOverrides::disable_apps` の既定値。
+/// `GeneralConfig::gji_thumb_key_ime_toggle`の既定値（ADR-187、`true`）。serdeの欠落時とDefaultで同じ値を使う。
+const fn default_gji_thumb_key_ime_toggle() -> bool {
+    true
+}
+
 fn default_disable_apps() -> Vec<String> {
     vec!["mstsc.exe".to_string()]
 }
@@ -1496,6 +1515,20 @@ pub struct ParsedKeyCombo {
 
 #[cfg(test)]
 mod tests {
+    /// ADR-187: `gji_thumb_key_ime_toggle`の既定は`true`（Toggleは非冪等なのでawaseが唯一の変更主体になる）。
+    /// キー欠落・空のconfigでも`true`、明示`false`は尊重される。
+    #[test]
+    fn gji_thumb_key_ime_toggle_defaults_to_true_and_respects_explicit_false() {
+        assert!(GeneralConfig::default().gji_thumb_key_ime_toggle);
+        let omitted: GeneralConfig = toml::from_str("").unwrap();
+        assert!(
+            omitted.gji_thumb_key_ime_toggle,
+            "キー欠落時もDefaultと同じtrue"
+        );
+        let off: GeneralConfig = toml::from_str("gji_thumb_key_ime_toggle = false").unwrap();
+        assert!(!off.gji_thumb_key_ime_toggle, "明示falseは尊重される");
+    }
+
     use super::*;
 
     // vk_name_to_code / parse_hotkey / parse_key_combo テストは awase-windows に移動済み

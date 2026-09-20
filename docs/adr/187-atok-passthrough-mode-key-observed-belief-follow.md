@@ -1,18 +1,20 @@
 ---
 id: ADR-187
 title: |-
-  GJI(ATOK)で無変換/変換をパススルーする設定(`gji_thumb_key_ime_toggle=false`)のとき、生キー通過後に、対象ウィンドウの
-  古い明示意図(IntentStore)を無効化して実IMEを読み直し、Engineを観測に追随させる
+  ATOKの無変換/変換(Toggle)はawaseが唯一の変更主体としてactuateする(`gji_thumb_key_ime_toggle`を既定`true`へ)。
+  方向が固定のOn/Offはパススルーしてbeliefだけ追随する。「パススルー+観測で追随」する案は見送る
 summary: |-
-  CI実機E2E(ADR-186、`atok-passthrough`/`atok-passthrough-henkan`、各3/3)で、ATOKプリセット+パススルー(opt-in無し)では、
-  実IMEはGJIが正しく開閉する(生の無変換/変換が届く)のに**Engineが追随しない**ことを確認した(IME OFFでもEngine ONのまま)。
-  原因は4層: (1)生キー通過後に実IMEを読み直す契機が無い。(2-a)**直前の明示意図(ひらがなキー等、IntentStore、ON 10秒/OFF 30秒)が
-  `effective_open()`を無条件に固定する**ため、観測が入ってもEngineは追随しない(支配的)。(2-b)desired_openと明示意図が残るとドリフト補正が
-  実IMEをONへ戻しに行く。(3)Toggleは非冪等で予測できない(ADR-179/BUG-115)。opusレビューround1の結果、推奨は**古い意図の無効化**:
-  通過した無変換/変換の実送出点(executor)で、対象hwndのIntentStoreエントリを消し、typing-idleガードをバイパスして再読み取りする。
-  観測値を意図として書かない(witness不要・TTL固着なし・権限昇格なし)。追加は「通過マーク+既存API呼び出し」で、新しい型は足さない。
+  CI実機E2E(ADR-186、`atok-passthrough`各3/3)で、ATOK+パススルー(opt-in無し)は実IMEが開閉するのにEngineが追随しない
+  (IME OFFでもEngine ON)ことを確認した。追随機構を新設する観測型(生キー通過後に読み直して意図を無効化/記録)をopusレビュー2ラウンドで
+  検討した結果、(2-a)`IntentStore`と(P1)`ImeModel::last_intent`の二重の固定を外すには新しい`ImeEvent` variantが要り、さらに
+  通過マーク・`ActivationSync`のGJI warmupバースト抑止・ポーリング再開の副作用検証が要ると分かり、ATOKパススルー利用者だけのための
+  機構としては重すぎるため見送った。ユーザー方針: **Toggle(非冪等)ならawaseがactuateする、方向が固定ならfollowするだけ**。
+  Toggleのactuateは既存のopt-in経路(`gji_thumb_key_ime_toggle=true`、ADR-186でKeyUp解決+warrantにより実機/CI検証済み)そのもの
+  なので、**既定を`false`から`true`へ変える**だけで足りる(新しい機構なし)。方向固定のOn/Offは元から冪等でopt-in不要、
+  パススルー+`FollowOnly`(ADR-179)で追随済み。明示`false`はopt-outとして残る。
 status: |-
-  **ドラフトv2 + round2の結果(未収束、方針判断待ち)**。決定2(IntentStoreのみ無効化)では目的を達成しない(round2 B4)ため、観測型を実装するなら新しい`ImeEvent` variantが要り、設計が当初の見積もりより大きい。最小案(ATOKプリセットのopt-in既定化)との比較をユーザーに確認する。
+  **決定(ユーザー方針)・実装済み(未マージ)**。`gji_thumb_key_ime_toggle`の既定を`true`へ。CIの`atok-default`/`atok-default-henkan`
+  (キーを書かない構成)で追随を確認する。観測型(下記の分析)は見送りの記録として残す。
 related_adr:
   - "ADR-090"
   - "ADR-115"
@@ -20,9 +22,34 @@ related_adr:
   - "ADR-186"
 ---
 
-# ADR-187: ATOK+パススルーでの無変換/変換に対するEngine追随(観測型)
+# ADR-187: ATOKの無変換/変換(Toggle)は、awaseが唯一の変更主体としてactuateする
 
-レビュー: [round1](187-opus-review-round1.md)(Blocker 3 / Must-fix 6 / Should-fix 5、v1の前提2つを訂正)、[round2](187-opus-review-round2.md)(Blocker 1 / Must-fix 5 / Should-fix 4、**未収束**、下記「round2の結果」)。
+## 決定
+
+ユーザー方針(2026-09-20): **「toggleであればawaseがactuateする。ime on/offの方向が一定ならfollowするだけで追随する」**。
+
+| 割当て | 冪等性 | awaseの役割 | 実装 |
+|---|---|---|---|
+| **Toggle**(ATOKの無変換/変換、状態依存) | 非冪等 | **awaseが唯一の変更主体としてactuate**。生キーはGJIに渡さない | `gji_thumb_key_ime_toggle`(既定`true`)→`delegate_to_open_axis`(親指キー)/`ime_toggle`リスト。`ModeKeyActuationOwner::AwaseExplicit` |
+| **On/Off**(方向固定、MS-IMEキーマップのひらがな等) | 冪等 | **生キーをパススルー**し、beliefだけ追随(actuateしない) | 既存(opt-in不要、ADR-179の`FollowOnly`/`PhysicalDelivery`) |
+
+変更は1点: **`GeneralConfig::gji_thumb_key_ime_toggle`の既定を`false`→`true`**(`src/config.rs`、serdeの欠落時とDefaultで同値)。
+明示`false`はopt-outとして尊重され、その場合は従来どおり(生キーがGJIに届き実IMEは開閉するがEngineは追随しない、警告ログ)。
+BUG-115が既定`false`にした理由(非冪等・露出2倍・全ATOKユーザーへの自動適用・GJIフォーク)は、ADR-186でKeyUp解決と
+warrantにより非冪等の誤発火が実機/CIで検証され、残りは受容する(configのdocに5点(Shift+無変換の横取りを追加)として残した)。
+
+## 検証
+
+- 既存: CIの`baseline`/`atok-optin`(明示`true`)各3/3追随(ADR-186)。
+- 新規(既定値そのもの): `atok-default`/`atok-default-henkan`(config.tomlにキーを書かない構成、`--walk`+`check_consistency.py`)で3/3追随。
+  `msime-default`/`msime-native-default`(観測)で、MS-IMEキーマップ/MS-IME本体に退行が無いこと。
+- 明示`false`(opt-out)の`atok-passthrough`は追随しない既知の制約として期待`fail`のまま固定。
+- 単体: `config::tests::gji_thumb_key_ime_toggle_defaults_to_true_and_respects_explicit_false`。
+
+## 見送った案: パススルーのまま観測で追随する(観測型)
+
+以下は、生キーをGJIに渡したまま(awaseはactuateしない)Engineを追随させる案の分析と、opusレビュー2ラウンドの結果。
+**実装しない**ことにした根拠として残す(同じ案を再検討する前に読むこと)。
 
 ## 背景
 
