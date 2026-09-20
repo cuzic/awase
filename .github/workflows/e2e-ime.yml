@@ -256,7 +256,7 @@ jobs:
           }
           Pop-Location
           Get-Process awase -ErrorAction SilentlyContinue | Format-Table Name, Id
-          Get-Content dist\awase.log -Encoding utf8 | Where-Object { $_ -match 'Engine (de)?activated|IME open axis delegated|outcome=Unwarranted' } | Set-Content awase-filtered.log -Encoding utf8
+          if (Test-Path dist\awase.log) { Get-Content dist\awase.log -Encoding utf8 | Where-Object { $_ -match 'Engine (de)?activated|IME open axis delegated|outcome=Unwarranted' } | Set-Content awase-filtered.log -Encoding utf8 } else { New-Item -ItemType File -Force awase-filtered.log | Out-Null }
           $env:PYTHONUTF8 = '1'
           # 判定は summary ジョブで集計する。ここでは終了コード(0=PASS, 1=FAIL, 3=INVALID)を記録して成功で終える。
           if ('${{ matrix.cfg.check }}' -eq 'consistency') {
