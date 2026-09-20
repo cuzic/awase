@@ -250,6 +250,8 @@ thread_local! {
     /// `--walk=N`: 固定手順の代わりに、ランダムなキーをN回注入する(効果学習スパイク用)。
     static WALK_N: RefCell<usize> = const { RefCell::new(0) };
     static WALK_DONE: RefCell<usize> = const { RefCell::new(0) };
+    /// `--exp=SCAN:W|N:COUNT`: ROMAN書き込み(W)の有無と scan(16進, 0なら0)で、ひらがなキーの実打鍵結果を比べる実験。
+    static EXP: RefCell<Option<Exp>> = const { RefCell::new(None) };
     /// `--roman`: `--walk` の開始前に IME を ON にし、変換モードを 0x19(ローマ字入力)へ揃える。
     /// awase を止める/バイパスすると IME が JIS かな入力(0x09)のままで、awase 起動時(0x19)と基底状態が
     /// 違ってしまう(A' の実測)ため、基底をそろえて比較するための前処理。
@@ -423,12 +425,17 @@ fn scan_for(vk: u32) -> u16 {
 
 /// `SendInput` で1イベントを注入する（`AUTO_MARKER` 付き）。
 fn send_key(vk: u32, down: bool) {
+    send_key_scan(vk, down, scan_for(vk));
+}
+
+/// scan を明示して注入する（`--exp` で scan=0x70 と scan=0 を比べるため）。
+fn send_key_scan(vk: u32, down: bool, scan: u16) {
     let input = INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
                 wVk: VIRTUAL_KEY(u16::try_from(vk).unwrap_or(0)),
-                wScan: scan_for(vk),
+                wScan: scan,
                 dwFlags: if down {
                     KEYBD_EVENT_FLAGS(0)
                 } else {
@@ -472,6 +479,137 @@ fn auto_hint_vk(cur: St, need: St) -> Option<u32> {
         (St::OnAlnum, St::OnKana) | (St::OnKana, St::OnAlnum) => Some(0xF2),
         _ => None,
     }
+}
+
+/// `--exp` の1ラン(=1条件)の進行状態。
+struct Exp {
+    scan: u16,
+    write: bool,
+    n: usize,
+    trial: usize,
+    phase: u8,
+    prep: usize,
+    pre: (Option<bool>, Option<u32>),
+}
+
+/// `--exp`: 「ON・かな・入力なし」に整える → (条件により)conv=0x19を書く → ひらがなを押す →
+/// 直後に「a」を打って実際の出力を記録する。1条件=1ラン(条件のローテーションはしない)。
+fn exp_drive(now: u64, hwnd: HWND) {
+    const IMC_SETCONVERSIONMODE: usize = 0x0002;
+    let cur = LAST_SNAP.with(|l| l.borrow().st());
+    let mut done_msg: Option<String> = None;
+    let next = EXP.with(|e| {
+        let mut guard = e.borrow_mut();
+        let Some(x) = guard.as_mut() else { return 0 };
+        let cond = format!("scan{:X}/{}", x.scan, if x.write { "write" } else { "nowrite" });
+        match x.phase {
+            0 => {
+                if x.trial >= x.n {
+                    done_msg = Some(format!("[EXP] cond={cond} {}手完了", x.n));
+                    return u64::MAX;
+                }
+                x.prep += 1;
+                if x.prep > 10 {
+                    append_log(&format!("[EXP] cond={cond} trial={} 前提状態にできずスキップ(現在={})", x.trial + 1, cur.label()));
+                    x.trial += 1;
+                    x.prep = 0;
+                    return now + 500;
+                }
+                match cur {
+                    St::OnKana => {
+                        x.phase = 1;
+                        x.prep = 0;
+                        now
+                    }
+                    St::OnKanaComp => {
+                        queue_press(now, 0x1B);
+                        now + 900
+                    }
+                    St::Direct | St::OnAlnum => {
+                        queue_press(now, 0xF2); // scan 0x70: 準備は常に実機と同じ形
+                        now + 1200
+                    }
+                    St::Unknown => now + 500,
+                }
+            }
+            1 => {
+                if x.write {
+                    unsafe {
+                        let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
+                        if !ime_wnd.0.is_null() {
+                            let mut r: usize = 0;
+                            let _ = SendMessageTimeoutW(
+                                ime_wnd,
+                                WM_IME_CONTROL,
+                                WPARAM(IMC_SETCONVERSIONMODE),
+                                LPARAM(0x19),
+                                SMTO_ABORTIFHUNG,
+                                200,
+                                Some(&raw mut r),
+                            );
+                        }
+                    }
+                }
+                x.phase = 2;
+                now + 500
+            }
+            2 => {
+                x.pre = observe_b(hwnd);
+                send_key_scan(0xF2, true, x.scan);
+                x.phase = 3;
+                now + 180
+            }
+            3 => {
+                send_key_scan(0xF2, false, x.scan);
+                x.phase = 4;
+                now + 1000
+            }
+            4 => {
+                let post = take_snapshot(hwnd);
+                append_log(&format!(
+                    "[EXP-POST] cond={cond} trial={} pre(open={} conv={}) post(open={} conv={} comp={:?})",
+                    x.trial + 1,
+                    fmt_bool(x.pre.0),
+                    fmt_hex(x.pre.1),
+                    fmt_bool(post.b_open),
+                    fmt_hex(post.b_conv),
+                    post.comp.as_deref().unwrap_or("?")
+                ));
+                send_key_scan(0x41, true, 0x1E);
+                x.phase = 5;
+                now + 80
+            }
+            5 => {
+                send_key_scan(0x41, false, 0x1E);
+                x.phase = 6;
+                now + 800
+            }
+            _ => {
+                let pr = take_snapshot(hwnd);
+                append_log(&format!(
+                    "[EXP] cond={cond} trial={} probe(a): open={} conv={} comp={:?} tail={:?}",
+                    x.trial + 1,
+                    fmt_bool(pr.b_open),
+                    fmt_hex(pr.b_conv),
+                    pr.comp.as_deref().unwrap_or("?"),
+                    pr.edit_tail
+                ));
+                queue_press(now, 0x1B); // 未確定を消す
+                x.trial += 1;
+                x.phase = 0;
+                x.prep = 0;
+                now + 1000
+            }
+        }
+    });
+    if let Some(m) = done_msg {
+        append_log(&m);
+        if !AUTO_DONE.with(|d| std::mem::replace(&mut *d.borrow_mut(), true)) {
+            AUTO_CLOSE_AT.with(|c| *c.borrow_mut() = now + 1500);
+        }
+        return;
+    }
+    AUTO_NEXT.with(|n| *n.borrow_mut() = next);
 }
 
 /// `--walk` が注入するキーの集合（VK, 表示名）。開閉・変換モード・未確定の各状態に
@@ -619,6 +757,10 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
                 return;
             }
         }
+    }
+    if EXP.with(|e| e.borrow().is_some()) {
+        exp_drive(now, hwnd);
+        return;
     }
     if WALK_N.with(|n| *n.borrow()) > 0 {
         walk_drive(now, hwnd);
@@ -1551,6 +1693,24 @@ fn run() -> WinResult<()> {
                 WALK_RNG.with(|w| *w.borrow_mut() = n);
             }
         }
+        if let Some(v) = a.strip_prefix("--exp=") {
+            let p: Vec<&str> = v.split(':').collect();
+            if p.len() == 3 {
+                if let (Ok(scan), Ok(n)) = (u16::from_str_radix(p[0], 16), p[2].parse::<usize>()) {
+                    EXP.with(|e| {
+                        *e.borrow_mut() = Some(Exp {
+                            scan,
+                            write: p[1] == "w",
+                            n,
+                            trial: 0,
+                            phase: 0,
+                            prep: 0,
+                            pre: (None, None),
+                        });
+                    });
+                }
+            }
+        }
         if a == "--roman" {
             ROMAN_INIT.with(|r| *r.borrow_mut() = true);
         }
@@ -1583,6 +1743,12 @@ fn run() -> WinResult<()> {
         AUTO_MODE.with(|m| *m.borrow_mut() = true);
         SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
         STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
+    }
+    if EXP.with(|e| e.borrow().is_some()) {
+        AUTO_MODE.with(|m| *m.borrow_mut() = true);
+        SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
+        STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
+        SCRIPT_IDX.with(|i| *i.borrow_mut() = SCRIPT.len());
     }
     // `--walk=N`: 固定手順ではなくランダムキー列(--auto と併用しなくてよい)。
     if WALK_N.with(|n| *n.borrow()) > 0 {
