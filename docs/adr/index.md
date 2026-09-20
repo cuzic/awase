@@ -188,6 +188,7 @@
 | [182](182-char-then-thumb-gap-gate-misjudges-modekey-chord-as-solo-tap.md) | 文字→親指(無変換/変換)の押下間隔が閾値をわずかに超えると重なったチョードが「文字単独+無変換単独タップ」に割れ、生の無変換がGJIへ届いて半角英数化・エンジン非活性へ連鎖する不具合 | **ドラフトv9(opus round1〜8反映、決定1・1b・1c実装済み、実機A/B前)**。実装未着手 |
 | [185](185-directinput-open-axis-write-teardown.md) | 半角英数(ObservedEisu)検出時にawase自身がIME OFFを送る`EngineSync::DirectInput`を撤去(BUG-146、ADR-178撤去プロジェクトの領域C) | **実装済み**(`f5338edc`)。実機確認は ADR-186 のE2Eで代替 |
 | [186](186-gji-atok-mode-key-measured-matrix-and-belief-follow.md) | GJI(ATOK)のモードキー動作を実機で測定し、無変換/変換の開閉トグルを「KeyUpで解決する」既存delegate経路で押下時点にbelief追随させる(実機E2E+撤去実験で必要/不要な仕組みを確定) | **v4(実装済み・実機E2E/CIで検証)**。残る問題: 押下の取りこぼし(BUG-147)、Shift+無変換の横取り、TsfNative/Chrome未検証 |
+| [187](187-atok-passthrough-mode-key-observed-belief-follow.md) | GJI(ATOK)で無変換/変換をパススルー(opt-in無し)するとき、生キー通過後に実IMEを読み直し、開閉が変わっていれば観測値を明示意図として記録してEngineを追随させる(予測せず・actuateせず) | **ドラフトv1(未実装、opusレビュー前)**。CIで3/3再現した未解決問題(ADR-186) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
