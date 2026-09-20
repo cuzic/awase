@@ -1062,7 +1062,7 @@ fn on_timer(hwnd: HWND) {
                     {
                         tag = format!("[SCRIPT {}/{} {name} 期待={expect}]", si + 1, SCRIPT.len());
                         SCRIPT_IDX.with(|i| *i.borrow_mut() = si + 1);
-                        HOLD_UNTIL.with(|h| *h.borrow_mut() = now + HOLD_MS);
+                        HOLD_UNTIL.with(|h| *h.borrow_mut() = now + scaled(HOLD_MS));
                     }
                 }
             } else if idx < total && now >= HOLD_UNTIL.with(|h| *h.borrow()) {
@@ -1081,7 +1081,7 @@ fn on_timer(hwnd: HWND) {
                         step.key_name
                     );
                     STEP_IDX.with(|i| *i.borrow_mut() = idx + 1);
-                    HOLD_UNTIL.with(|h| *h.borrow_mut() = now + HOLD_MS);
+                    HOLD_UNTIL.with(|h| *h.borrow_mut() = now + scaled(HOLD_MS));
                 }
             }
             ev.label = format!("{tag} {}", ev.label);
