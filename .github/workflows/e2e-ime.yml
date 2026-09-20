@@ -63,6 +63,9 @@ jobs:
             cfg('e7-toggle-false', 'fail', toggle='false'),
             # --- プリセット/設定の確認(ビルドは baseline、consistency 判定) ---
             cfg('atok-optin', 'pass', check='consistency', args='--walk'),
+            # フォーカス直後(意図なし)にいきなり無変換/変換を押す(--cold=先頭のひらがなを除く)
+            cfg('atok-passthrough-cold', 'observe', check='consistency', args='--walk --cold', toggle='false'),
+            cfg('atok-passthrough-henkan-cold', 'observe', check='consistency', args='--walk --cold --key=henkan', toggle='false'),
             cfg('atok-passthrough', 'fail', check='consistency', args='--walk', toggle='false'),
             cfg('atok-passthrough-henkan', 'fail', check='consistency', args='--walk --key=henkan', toggle='false'),
             cfg('msime', 'pass', check='consistency', args='--walk', toggle='false', keymap=2),
