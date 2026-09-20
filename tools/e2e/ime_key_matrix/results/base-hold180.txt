@@ -1,0 +1,14 @@
+### base-hold180  (mutator=none args=e2e-args-hold180 config=e2e-config-toggle-true base=ac46c20c)
+STEP 実IME(+400ms)     Engine                             判定
+   1 open=1 conv=0x10 deactivated@+73ms                  PASS
+   2 open=0 conv=0x10 (なし)                               PASS
+   3 open=1 conv=0x10 (なし)                               PASS
+   4 open=1 conv=0x10 activated@+2ms; deactivated@+593ms FAIL: 実IME期待 open=1 conv=0x19
+   5 open=0 conv=0x19 delegate@+125ms                    PASS
+   6 open=1 conv=0x19 activated@+1ms                     PASS
+   7 open=1 conv=0x10 deactivated@+71ms                  PASS
+   8 open=0 conv=0x10 (なし)                               PASS
+   9 open=1 conv=0x10 (なし)                               PASS
+  10 open=1 conv=0x19 activated@+1ms                     PASS
+結果: 1 件 FAIL
+exit=1

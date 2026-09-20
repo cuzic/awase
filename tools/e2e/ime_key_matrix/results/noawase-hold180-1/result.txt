@@ -1,0 +1,12 @@
+STEP 実IME(+400ms)     Engine                             判定
+   1 open=1 conv=0x10 (なし)                               FAIL: 300ms以内にdeactivatedしない
+   2 open=0 conv=0x10 (なし)                               PASS
+   3 open=1 conv=0x10 (なし)                               PASS
+   4 open=1 conv=0x19 (なし)                               FAIL: 300ms以内にactivatedしない
+   5 open=0 conv=0x19 (なし)                               FAIL: delegate → false が出ない
+   6 open=1 conv=0x19 (なし)                               FAIL: 300ms以内にactivatedしない
+   7 open=1 conv=0x10 (なし)                               FAIL: 300ms以内にdeactivatedしない
+   8 open=0 conv=0x10 (なし)                               PASS
+   9 open=1 conv=0x10 (なし)                               PASS
+  10 open=1 conv=0x19 (なし)                               FAIL: 300ms以内にactivatedしない
+結果: 6 件 FAIL

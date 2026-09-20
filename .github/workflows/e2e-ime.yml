@@ -1,0 +1,57 @@
+name: e2e-ime (feasibility)
+
+# 実機E2E(GJI ATOK × awase、tools/e2e/ime_key_matrix)を GitHub-hosted の Windows ランナーで回せるかの
+# 実現可能性確認。ci/e2e-ime ブランチへの push と手動起動でだけ動く(通常のCIには影響しない)。
+on:
+  push:
+    branches: [ci/e2e-ime]
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 環境の情報(セッション/デスクトップ/言語)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture | Format-List
+          "UserInteractive: $([Environment]::UserInteractive)"
+          "User: $env:USERNAME  SessionName: $env:SESSIONNAME"
+          query user 2>&1
+          Get-Process explorer, ctfmon -ErrorAction SilentlyContinue | Select-Object Name, Id, SessionId | Format-Table
+          Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips
+          Get-WinDefaultInputMethodOverride 2>&1
+          Get-WindowsCapability -Online -Name 'Language.*ja-JP*' 2>&1 | Format-Table Name, State
+
+      - name: Google 日本語入力をインストール(chocolatey)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          choco install google-japanese-input -y --no-progress 2>&1 | Select-Object -Last 30
+          Get-ChildItem 'C:\Program Files*\Google\Google Japanese Input' -ErrorAction SilentlyContinue | Select-Object FullName | Format-Table
+          Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\*' -ErrorAction SilentlyContinue | Select-Object PSChildName | Format-Table
+
+      - name: 日本語の言語機能とGJIの入力メソッドを追加
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $cap = Get-WindowsCapability -Online | Where-Object { $_.Name -like 'Language.Basic~~~ja-JP*' }
+          $cap | Format-Table Name, State
+          foreach ($c in $cap) { if ($c.State -ne 'Installed') { Add-WindowsCapability -Online -Name $c.Name 2>&1 | Select-Object -Last 3 } }
+          $l = New-WinUserLanguageList ja-JP
+          $l.Add('en-US')
+          Set-WinUserLanguageList $l -Force 2>&1
+          Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips
+
+      - name: ctfmon を起動して TSF の状態を確認
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          Start-Process ctfmon.exe
+          Start-Sleep -Seconds 3
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Format-Table Name, Id, SessionId
+          reg query "HKCU\Software\Microsoft\CTF" /s 2>&1 | Select-Object -First 30
