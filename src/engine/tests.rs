@@ -7351,6 +7351,30 @@ mod engine_integration_tests {
         );
     }
 
+    /// ADR-186 残る問題2: Shift を押したままの無変換/変換は、GJI(ATOK)では「かな⇔半角英数」のトグルで
+    /// あって開閉トグルではない（実機、`186-measurements/`）。単独タップとして`delegate_to_open_axis`
+    /// （→SetOpen(false)）を発火させると、IMEが意図せずOFFになる（実機で確認）。Shift+Space/Enter の
+    /// literal と同じく、Shift 押下中は保留に入れず素通しにする。Shiftなしなら従来どおり委譲する。
+    #[test]
+    fn delegate_to_open_axis_not_fired_when_shift_held() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
+
+        let _ = engine.on_input(Ev::down(VK_LSHIFT).at(50).build(), &ime_on_ctx());
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        assert!(
+            !d.is_consumed(),
+            "Shift+無変換は保留に入れず素通しにするべき, got {:?}",
+            effects_of(&d)
+        );
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(300).build(), &ime_on_ctx());
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "Shift+無変換のKeyUpでSetOpenを発火してはならない, got {:?}",
+            effects_of(&d)
+        );
+    }
+
     /// T-10: engine 活性中でも composing=true なら `DelegateToOpenAxis` は発火せず、
     /// `ModeKeyConfig.composing`（既定 Suppress）へ落ちる。MS-IME の
     /// `KeyAssignmentMuhenkan=1` 相当で、変換中の無変換単独タップが

@@ -33,11 +33,27 @@ def main():
         m = re.match(r"\s+\+1500ms: A\(open=(\d) conv=0x([0-9A-Fa-f]+)\)", line)
         if m:
             cur["after"] = (int(m.group(1)), int(m.group(2), 16))
-    # 押下のみ(auto)を対象に、[準備OFF, 候補, 準備ON, 候補] の4件ずつ
+    # 押下のみ(auto)を対象に、準備キー(VK_IME_OFF=0x1A / VK_IME_ON=0x16)を目印にして候補の押下を切り出す。
+    # スキャンコードだけの注入は OS が別の VK/複数イベントにするため、件数(4件ずつ)では対応付けられない。
     keys = [e for e in events if e["auto"]]
     if len(keys) < 4:
         print("FAIL: 記録された押下が足りない")
         return 1
+    groups = []  # 候補ごとに {"off": イベントのリスト, "on": イベントのリスト}
+    phase = None
+    for e in keys:
+        if e["vk"] == 0x1A:  # 準備OFF = 新しい候補の開始(候補の途中や連続して現れる0x1Aは、起動時の初期化注入なので無視する)
+            if phase in (None, "on"):
+                groups.append({"off": [], "on": []})
+                phase = "prep_off"
+            # それ以外(起動時の初期化注入・awaseの介入で途中に入った0x1A)は候補の切り出しに使わない
+        elif e["vk"] == 0x16 and phase in ("off", "prep_off"):  # 準備ON
+            phase = "on"
+        elif groups and phase in ("prep_off", "off"):
+            groups[-1]["off"].append(e)
+            phase = "off"
+        elif groups and phase == "on":
+            groups[-1]["on"].append(e)
 
     def fmt(e):
         if "before" not in e or "after" not in e:
@@ -46,15 +62,18 @@ def main():
         chg = "変化なし" if (bo, bc) == (ao, ac) else "変化"
         return f"open {bo}→{ao} conv 0x{bc:02X}→0x{ac:02X} ({chg})"
 
-    print(f"{'候補':<34} {'OSが配送したVK/scan':<20} {'IME OFFから':<44} IME ON(かな)から")
+    print(f"{'候補':<34} {'OSが配送したVK/scan':<26} {'IME OFFから':<44} IME ON(かな)から")
     for i, label in enumerate(LABELS):
-        g = keys[i * 4:(i + 1) * 4]
-        if len(g) < 4:
+        if i >= len(groups):
             print(f"{label:<34} (記録なし)")
             continue
-        off_press, on_press = g[1], g[3]
-        seen = f"vk=0x{off_press['vk']:02X} scan=0x{off_press['scan']:02X}"
-        print(f"{label:<34} {seen:<20} {fmt(off_press):<44} {fmt(on_press)}")
+        g = groups[i]
+        off_e, on_e = (g["off"][0] if g["off"] else None), (g["on"][0] if g["on"] else None)
+        seen_src = off_e or on_e
+        seen = "(hookに来ず)" if seen_src is None else "; ".join(
+            f"vk=0x{e['vk']:02X} scan=0x{e['scan']:02X}" for e in g["off"][:2]
+        )
+        print(f"{label:<34} {seen:<26} {fmt(off_e) if off_e else '記録なし':<44} {fmt(on_e) if on_e else '記録なし'}")
     print("結果: 観測")
     return 0
 

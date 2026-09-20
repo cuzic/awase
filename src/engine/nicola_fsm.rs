@@ -1551,8 +1551,28 @@ impl NicolaFsm {
             && matches!(self.enter_thumb_vk, Some(vk) if vk.0 == ev.vk_code.0)
     }
 
+    /// Shift を押したまま、単独タップの委譲（`delegate_to_open_axis`）を持つ無変換/変換を押した場合は、
+    /// 保留にも委譲にも入れず素通しにすべきかを判定する（ADR-186 残る問題2）。
+    ///
+    /// GJI(ATOK)の Shift+無変換/変換 は「かな⇔半角英数」のトグルで、開閉トグルではない。これを単独タップ
+    /// として扱うと、KeyUp で `SetOpen(false)` が発火し、意図せず IME が OFF になる（実機で確認）。
+    /// `is_space_thumb_shift_literal` と同じ理由付け（小指シフト面と親指シフトは組み合わせない設計）。
+    /// Ctrl/Alt/Win は `bypass_reason` の `OsModifierHeld` が既に素通しにする。
+    fn is_mode_key_thumb_shift_passthrough(&self, ev: &ClassifiedEvent) -> bool {
+        self.phys.modifiers.shift
+            && ev.key_class.is_thumb()
+            && self
+                .thumb_solo_special_handling(ev.vk_code)
+                .delegate_to_open_axis
+                .is_some()
+    }
+
     /// Idle 状態でのキー到着時の意図を分類する（純粋関数）。
     fn classify_idle_intent(&self, ev: &ClassifiedEvent) -> IdleIntent {
+        // Shift+無変換/変換: GJI ではかな⇔半角英数トグル。開閉の委譲に化けさせない（ADR-186）。
+        if self.is_mode_key_thumb_shift_passthrough(ev) {
+            return IdleIntent::PassThrough;
+        }
         // Shift+Space literal: 明示的なスペース入力のエスケープハッチ（最優先）。
         if self.is_space_thumb_shift_literal(ev) {
             return IdleIntent::PassThrough;
