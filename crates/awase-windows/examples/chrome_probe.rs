@@ -232,6 +232,8 @@ enum Class {
     RomajiKana,
     /// それ以外のかな（NICOLA の文字、Engine ON）。
     Nicola,
+    /// `kiu` のようなローマ字のまま（IME は英数/直接入力なのに Engine が ON で、NICOLA がローマ字を送っている）。
+    NicolaLiteral,
     Empty,
     Other,
 }
@@ -242,6 +244,7 @@ impl Class {
             Self::Plain => "ka(英数/直接)",
             Self::RomajiKana => "か(かな・Engine素通し)",
             Self::Nicola => "NICOLA文字(Engine ON)",
+            Self::NicolaLiteral => "ローマ字のまま(英数なのにEngine ON=未追随)",
             Self::Empty => "空",
             Self::Other => "その他",
         }
@@ -261,6 +264,9 @@ fn classify(text: &str) -> Class {
     }
     if t.chars().any(|c| ('\u{3040}'..='\u{30FF}').contains(&c)) {
         return Class::Nicola;
+    }
+    if t.len() >= 2 && t.chars().all(|c| c.is_ascii_alphabetic()) {
+        return Class::NicolaLiteral;
     }
     Class::Other
 }
@@ -369,7 +375,7 @@ fn ensure(p: &mut Probe, setup: Setup, awase: bool) -> bool {
         Setup::Alnum => {
             p.press(0xF2, false, 60);
             sleep(500);
-            p.probe_logged("setup:ひらがな(かな→半角英数)後") == Class::Plain
+            matches!(p.probe_logged("setup:ひらがな(かな→半角英数)後"), Class::Plain | Class::NicolaLiteral)
         }
     }
 }
