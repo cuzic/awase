@@ -315,6 +315,8 @@ fn key_name(vk: u32) -> Option<&'static str> {
         0x0D => "Enter",
         0x1B => "ESC",
         0x20 => "Space",
+        0xA0 => "左Shift(0xA0)",
+        0xA1 => "右Shift(0xA1)",
         _ => return None,
     })
 }
@@ -420,6 +422,8 @@ fn scan_for(vk: u32) -> u16 {
         0xF2 | 0x15 | 0xF1 | 0xF5 | 0xF6 => 0x70,
         0xF3 | 0xF4 | 0x19 => 0x29,
         0xF0 => 0x3A,
+        0xA0 => 0x2A,
+        0xA1 => 0x36,
         0x4B => 0x25,
         0x1B => 0x01,
         _ => 0,
@@ -790,9 +794,31 @@ const VKPROBE_CANDIDATES: [u32; 17] = [
     0x1C,             // VK_CONVERT
 ];
 
-/// 現在の手順表(`--walk` なら WALK、なければ SCRIPT)。
+/// `--seq=F2,A0,A0,...` で指定した任意のキー列(VKの16進、`0x`は省略可)。前提状態なしで押し、各押下の実IMEと
+/// Engine の一致を check_consistency.py で見る(ワークフローから、コードを変えずに手順を足せる)。
+static SEQ_TABLE: std::sync::OnceLock<Vec<(&'static str, u32, bool, &'static str, St)>> =
+    std::sync::OnceLock::new();
+
+fn parse_seq(arg: &str) -> Vec<(&'static str, u32, bool, &'static str, St)> {
+    arg.split(',')
+        .filter_map(|t| u32::from_str_radix(t.trim().trim_start_matches("0x"), 16).ok())
+        .map(|vk| {
+            (
+                key_name(vk).unwrap_or("キー"),
+                vk,
+                false,
+                "Engine は実IMEに追随",
+                St::Any,
+            )
+        })
+        .collect()
+}
+
+/// 現在の手順表(`--seq` ならその列、`--walk` なら WALK、なければ SCRIPT)。
 fn script() -> &'static [(&'static str, u32, bool, &'static str, St)] {
-    if HZ_MODE.with(|h| *h.borrow()) {
+    if let Some(seq) = SEQ_TABLE.get() {
+        seq
+    } else if HZ_MODE.with(|h| *h.borrow()) {
         &HZ
     } else if RESYNC_MODE.with(|r| *r.borrow()) {
         &RESYNC
@@ -1278,7 +1304,9 @@ fn on_timer(hwnd: HWND) {
                     let shift_muh = SHIFT_MUH.with(|m| *m.borrow()) && ev.vk == 0x1D;
                     if ev.vk == want_vk
                         && (need == St::Any || before_st == need)
-                        && (ev.shift == shift || (shift_muh && ev.shift))
+                        && (ev.shift == shift
+                            || (shift_muh && ev.shift)
+                            || matches!(want_vk, 0xA0 | 0xA1))
                         && ev.ctrl == want_ctrl
                         && !ev.label.contains("(injected)")
                     {
@@ -1688,6 +1716,9 @@ fn run() -> WinResult<()> {
     }
     if std::env::args().any(|a| a == "--cold") {
         COLD_MODE.with(|c| *c.borrow_mut() = true);
+    }
+    if let Some(v) = std::env::args().find_map(|a| a.strip_prefix("--seq=").map(str::to_owned)) {
+        let _ = SEQ_TABLE.set(parse_seq(&v));
     }
     if std::env::args().any(|a| a == "--hz") {
         HZ_MODE.with(|h| *h.borrow_mut() = true);
