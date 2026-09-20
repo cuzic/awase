@@ -80,7 +80,7 @@ jobs:
           Start-Sleep -Seconds 5
           Get-Process ctfmon, explorer -ErrorAction SilentlyContinue | Format-Table Name, Id, SessionId
 
-      - name: 診断(awase なし): GJI がどのキーで ON になるか
+      - name: 診断(awase なし) GJI がどのキーで ON になるか
         shell: pwsh
         continue-on-error: true
         run: |
