@@ -10,7 +10,7 @@ summary: |-
   連続やF3/F4の順序で「押しても反転しない」(CIの`--hz`: 8手順中4手順が反転せず)。GJIがアクティブなときだけ、`shadow_action`を
   Toggleへ上書きする(`runtime/mod.rs`の既存の上書き点に1つ追加、既存のHiragana/Katakana/Henkan/Muhenkan上書きと同じ様式)。
 status: |-
-  **決定・実装中**。CIの`msime-hz`/`atok-hz`(`check_toggle.py`)で、実装前は各3/3失敗(反転しない)、実装後に各3/3成功を確認する。
+  **決定・実装済み(未マージ)・CI検証済み**。`msime-hz`/`atok-hz`(`check_toggle.py`)は、実装前は8手順中4手順が反転せず、実装後は各3/3で全8手順が反転しEngineも追随。
 related_adr:
   - "ADR-186"
   - "ADR-187"
@@ -46,8 +46,16 @@ awase起動中、GJI(ATOK/MS-IMEキーマップとも)で、半角/全角をVK 0
 - 観測(IMM読み取り)に依存しないので、TsfNative/Chrome等の読めないアプリでも効く。belief(`effective_open`)が実IMEとずれている場合は、
   リセット操作(Ctrl+無変換→Ctrl+変換、ADR-187)で直せる。
 
-## 検証
+## 検証(CI `e2e-ime`、各3回)
 
-- 純関数の単体テスト、`architecture_guard`(shadow_actionの書き込み箇所数は1のまま)。
-- CI `msime-hz`/`atok-hz`(`--hz`、`check_toggle.py`): 各押下で実IMEの開閉が反転し、Engineが追随すること。実装前は各3/3失敗、実装後に各3/3成功。
-- 退行: `baseline`/`atok-optin`/`atok-passthrough(+cold)`/`msime`/`msime-optin`、リセット(`atok-resync`)。
+| 構成 | 実装前 | 実装後 |
+|---|---|---|
+| `msime-hz`(GJIのMS-IMEキーマップ、`--hz`: 0xF3/0xF4の連続・交互8押下) | 8手順中4手順が反転せず(F3,F3 / F4,F4) | **3/3で全8手順が反転、Engineも追随** |
+| `atok-hz`(ATOKプリセット) | 同上 | **3/3で全手順が反転、Engineも追随** |
+| 退行: `baseline`、`atok-optin`、`atok-passthrough`(+cold)、`msime`、`msime-optin` | - | 各3/3 OK |
+
+単体: `resolve_hankaku_zenkaku_shadow_override_for_event`(GJI×0xF3/0xF4のみToggle)、`architecture_guard`(shadow_action書き込み箇所は1のまま)。
+実装は`resolve_hankaku_zenkaku_shadow_override_for_event`(`gji_charset_autodetect.rs`)と、`runtime/mod.rs`の既存の上書き点への`or_else`1つ。
+
+未検証: 実機のキーボードで物理の半角/全角がどのVKを出すか(F3/F4の交互か、KANJIか)。どのVKでもbelief基づくトグルになるので、
+出るVKに依存せず動く。Microsoft IME本体は対象外(静的モデルのまま)。
