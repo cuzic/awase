@@ -1,0 +1,4 @@
+# 実行のたびに増える計測ログ(run*.sh / stat_runs.sh の出力)は追跡しない
+results/
+out/
+__pycache__/
