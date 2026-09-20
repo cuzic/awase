@@ -1,0 +1,35 @@
+2026-09-19T23:04:21.892256Z  INFO awase::engine::engine: Engine deactivated (ime=false, romaji=true, japanese=true, user=true, reason=Inactive(ImeOff))
+2026-09-19T23:04:22.188366Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-19T23:04:24.799484Z  INFO awase::engine::engine: Engine deactivated (ime=true, romaji=false, japanese=true, user=true, reason=Inactive(NotRomajiInput))
+2026-09-19T23:04:34.273719Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-19T23:04:37.556592Z  INFO awase::engine::engine: IME open axis delegated (solo tap, key semantics absorption) → false (origin=ExplicitUserAction)
+2026-09-19T23:04:37.564429Z DEBUG on_ime_apply_complete{open=false outcome=Unwarranted generation=None reason=EngineDecision}: awase::journal: ime open applied seq=444 elapsed_ms=92485 open=false outcome="Unwarranted" reason="EngineDecision"
+2026-09-19T23:04:37.564593Z DEBUG on_ime_apply_complete{open=false outcome=Unwarranted generation=None reason=EngineDecision}: awase_windows::timer: Timer set: logical=101, ms=20, os_id=19464
+2026-09-19T23:04:37.575182Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-19T23:04:40.686362Z  INFO awase::engine::engine: IME open axis delegated (solo tap, key semantics absorption) → false (origin=ExplicitUserAction)
+2026-09-19T23:04:40.694317Z DEBUG on_ime_apply_complete{open=false outcome=Unwarranted generation=None reason=EngineDecision}: awase::journal: ime open applied seq=464 elapsed_ms=95615 open=false outcome="Unwarranted" reason="EngineDecision"
+2026-09-19T23:04:40.694489Z DEBUG on_ime_apply_complete{open=false outcome=Unwarranted generation=None reason=EngineDecision}: awase_windows::timer: Timer set: logical=101, ms=20, os_id=19338
+2026-09-19T23:04:40.741832Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-19T23:04:43.245910Z  INFO awase::engine::engine: IME open axis delegated (solo tap, key semantics absorption) → false (origin=ExplicitUserAction)
+2026-09-19T23:04:43.254440Z DEBUG on_ime_apply_complete{open=false outcome=Unwarranted generation=None reason=EngineDecision}: awase::journal: ime open applied seq=476 elapsed_ms=98175 open=false outcome="Unwarranted" reason="EngineDecision"
+2026-09-19T23:04:43.254535Z DEBUG on_ime_apply_complete{open=false outcome=Unwarranted generation=None reason=EngineDecision}: awase_windows::timer: Timer set: logical=101, ms=20, os_id=19235
+2026-09-19T23:04:43.265885Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-19T23:04:45.808207Z  INFO awase::engine::engine: IME open axis delegated (solo tap, key semantics absorption) → false (origin=ExplicitUserAction)
+2026-09-19T23:04:45.815071Z DEBUG on_ime_apply_complete{open=false outcome=Unwarranted generation=None reason=EngineDecision}: awase::journal: ime open applied seq=489 elapsed_ms=100736 open=false outcome="Unwarranted" reason="EngineDecision"
+2026-09-19T23:04:45.815143Z DEBUG on_ime_apply_complete{open=false outcome=Unwarranted generation=None reason=EngineDecision}: awase_windows::timer: Timer set: logical=101, ms=20, os_id=19130
+2026-09-19T23:04:45.826355Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-19T23:04:48.397310Z  INFO awase::engine::engine: IME open axis delegated (solo tap, key semantics absorption) → false (origin=ExplicitUserAction)
+2026-09-19T23:04:48.404127Z DEBUG on_ime_apply_complete{open=false outcome=Unwarranted generation=None reason=EngineDecision}: awase::journal: ime open applied seq=502 elapsed_ms=103325 open=false outcome="Unwarranted" reason="EngineDecision"
+2026-09-19T23:04:48.404147Z DEBUG on_ime_apply_complete{open=false outcome=Unwarranted generation=None reason=EngineDecision}: awase_windows::timer: Timer set: logical=101, ms=20, os_id=19024
+2026-09-19T23:04:48.404252Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-19T23:04:50.897003Z  INFO awase::engine::engine: IME open axis delegated (solo tap, key semantics absorption) → false (origin=ExplicitUserAction)
+2026-09-19T23:04:50.901608Z DEBUG on_ime_apply_complete{open=false outcome=Unwarranted generation=None reason=EngineDecision}: awase::journal: ime open applied seq=516 elapsed_ms=105822 open=false outcome="Unwarranted" reason="EngineDecision"
+2026-09-19T23:04:50.901740Z DEBUG on_ime_apply_complete{open=false outcome=Unwarranted generation=None reason=EngineDecision}: awase_windows::timer: Timer set: logical=101, ms=20, os_id=18927
+2026-09-19T23:04:50.902014Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-19T23:04:53.384129Z  INFO awase::engine::engine: IME open axis delegated (solo tap, key semantics absorption) → false (origin=ExplicitUserAction)
+2026-09-19T23:04:53.393120Z DEBUG on_ime_apply_complete{open=false outcome=Unwarranted generation=None reason=EngineDecision}: awase::journal: ime open applied seq=529 elapsed_ms=108314 open=false outcome="Unwarranted" reason="EngineDecision"
+2026-09-19T23:04:53.393202Z DEBUG on_ime_apply_complete{open=false outcome=Unwarranted generation=None reason=EngineDecision}: awase_windows::timer: Timer set: logical=101, ms=20, os_id=18828
+2026-09-19T23:04:53.401697Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-19T23:04:55.892614Z  INFO awase::engine::engine: Engine deactivated (ime=true, romaji=false, japanese=true, user=true, reason=Inactive(NotRomajiInput))
+2026-09-19T23:05:05.369794Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+script error: Output type incorrect: bool (expecting ())

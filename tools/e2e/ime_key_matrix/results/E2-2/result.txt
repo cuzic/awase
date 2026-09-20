@@ -1,0 +1,12 @@
+STEP 実IME(+400ms)     Engine                             判定
+   1 open=1 conv=0x10 deactivated@+46ms                  PASS
+   2 open=1 conv=0x10 activated@+0ms; deactivated@+54ms  FAIL: 実IME期待 open=0 conv=0x10 / Engineがactivatedになった(OFFのままの期待)
+   3 記録なし → FAIL
+   4 open=1 conv=0x19 activated@+1ms                     PASS
+   5 open=0 conv=0x19 delegate@+121ms                    PASS
+   6 open=1 conv=0x19 delegate@+126ms                    FAIL: 300ms以内にactivatedしない
+   7 open=1 conv=0x10 deactivated@+33ms                  PASS
+   8 open=1 conv=0x10 activated@+2ms; deactivated@+37ms  FAIL: 実IME期待 open=0 conv=0x10 / Engineがactivatedになった(OFFのままの期待)
+   9 open=1 conv=0x10 delegate@+192ms                    PASS
+  10 open=1 conv=0x19 (なし)                               FAIL: 300ms以内にactivatedしない
+結果: 5 件 FAIL

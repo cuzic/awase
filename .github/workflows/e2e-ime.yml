@@ -1,0 +1,261 @@
+name: e2e-ime
+
+# 実機E2E(GJI ATOK × awase、tools/e2e/ime_key_matrix)を GitHub-hosted の Windows ランナーで回す。
+# 撤去実験(ablations/aN-*.sh)を構成ごとに並列ジョブへ展開し、各構成を RUNS 回ずつ実行して
+# 期待(expect)どおりの結果になるかを最後の summary ジョブで集計する(ADR-186)。
+#
+#   build(構成ごと) → e2e(構成×回数) → summary
+#
+# 通常のCI(ci.yml)には影響しない。ci/e2e-ime ブランチへの関連ファイルの push と手動起動でだけ動く。
+on:
+  push:
+    branches: [ci/e2e-ime]
+    paths:
+      - 'src/**'
+      - 'crates/**'
+      - 'tools/e2e/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/e2e-ime.yml'
+  workflow_dispatch:
+    inputs:
+      only:
+        description: '実行する構成名(カンマ区切り、空なら全構成)。例: baseline,a1-keyup'
+        required: false
+        default: ''
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      configs: ${{ steps.p.outputs.configs }}
+    steps:
+      - id: p
+        shell: python
+        env:
+          ONLY: ${{ inputs.only }}
+        run: |
+          import json, os
+          # name: 構成名 / mutator: ablations/ 下のスクリプト(空=変更なし) / args: スパイクの追加引数
+          # toggle: config.toml の gji_thumb_key_ime_toggle / custom_table: config1.db に古い custom_keymap_table(変換=IMEOn)を残すか / expect: 期待(pass=全回PASS, fail=撤去で壊れる)
+          # 根拠は docs/adr/186-*.md の撤去実験表。a3(eisu reset抑止)は撤去済みのため無い。
+          configs = [
+            dict(name='baseline',         mutator='',                       args='',              toggle='true', custom_table='false',  expect='pass'),
+            dict(name='baseline-henkan',  mutator='',                       args='--key=henkan',  toggle='true', custom_table='true',  expect='pass'),
+            dict(name='a1-keyup',         mutator='a1-revert-keyup.sh',      args='',              toggle='true', custom_table='false',  expect='fail'),
+            dict(name='a2-atok-skip',     mutator='a2-revert-atok-skip.sh',  args='--key=henkan',  toggle='true', custom_table='true',  expect='fail'),
+            dict(name='a4-no-eisu-reset', mutator='a4-no-eisu-reset.sh',     args='',              toggle='true', custom_table='false',  expect='pass'),
+            dict(name='a5-no-refresh20',  mutator='a5-no-refresh20.sh',      args='',              toggle='true', custom_table='false',  expect='fail'),
+            dict(name='a6-no-idle-check', mutator='a6-no-idle-check.sh',     args='',              toggle='true', custom_table='false',  expect='pass'),
+            dict(name='e7-toggle-false',  mutator='',                       args='',              toggle='false', custom_table='false', expect='fail'),
+          ]
+          only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
+          if only:
+            configs = [c for c in configs if c['name'] in only]
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+            f.write('configs=' + json.dumps(configs) + '\n')
+
+  build:
+    needs: plan
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        cfg: ${{ fromJson(needs.plan.outputs.configs) }}
+    steps:
+      - uses: actions/checkout@v4
+      # ソース+撤去スクリプトが同じなら成果物(exe)を使い回し、ビルド自体を飛ばす(ドキュメントだけの変更等)。
+      - name: ビルド済み成果物のキャッシュ
+        id: bin
+        uses: actions/cache@v4
+        with:
+          path: dist
+          key: e2e-bin-${{ matrix.cfg.name }}-${{ hashFiles('src/**', 'crates/**', 'Cargo.toml', 'Cargo.lock', 'config.toml', 'tools/e2e/ime_key_matrix/ablations/**') }}
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.bin.outputs.cache-hit != 'true'
+      # 全構成で同じキー。依存のビルド結果は baseline だけが保存し、他は復元だけする(撤去でコンパイルされ直すのは自クレートのみ)。
+      - uses: Swatinem/rust-cache@v2
+        if: steps.bin.outputs.cache-hit != 'true'
+        with:
+          shared-key: e2e
+          save-if: ${{ matrix.cfg.name == 'baseline' }}
+      - name: 撤去(コード変更)を当てる
+        if: steps.bin.outputs.cache-hit != 'true' && matrix.cfg.mutator != ''
+        shell: bash
+        run: |
+          bash "tools/e2e/ime_key_matrix/ablations/${{ matrix.cfg.mutator }}"
+          git diff --stat
+          test -n "$(git diff --stat)" || { echo "撤去が差分を作らなかった(コードが変わって撤去箇所が消えた?)"; exit 1; }
+      - name: awase とスパイクをビルド
+        if: steps.bin.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --bin awase
+          cargo build -p awase-windows --example ime_key_matrix_spike
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\awase.exe dist\
+          Copy-Item target\debug\examples\ime_key_matrix_spike.exe dist\
+          Copy-Item config.toml dist\ -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.cfg.name }}
+          path: dist
+          retention-days: 3
+
+  e2e:
+    needs: [plan, build]
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        cfg: ${{ fromJson(needs.plan.outputs.configs) }}
+        run: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: bin-${{ matrix.cfg.name }}
+          path: dist
+
+      # 他の方法: winget install --id Google.JapaneseIME(71秒) / scoop bucket add nonportable; scoop install google-japanese-input-np
+      - name: Google 日本語入力をインストール(chocolatey、約30秒)
+        shell: pwsh
+        run: |
+          choco install googlejapaneseinput -y --no-progress 2>&1 | Select-Object -Last 3
+
+      - name: 入力言語をja-JP + GJI に設定、ATOK プリセットの config1.db を書く
+        shell: pwsh
+        run: |
+          $googleImeTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
+          $l = New-WinUserLanguageList ja-JP
+          $l[0].InputMethodTips.Clear()
+          $l[0].InputMethodTips.Add($googleImeTip)
+          Set-WinUserLanguageList $l -Force 2>&1
+          try { Set-WinDefaultInputMethodOverride -InputTip $googleImeTip -ErrorAction Stop }
+          catch { "default input method override FAILED: $($_.Exception.Message)" }
+          # ATOK プリセット(session_keymap = 1): Mozc Config の field 41 (varint) = 1。
+          # field 22 (check_default) = 0 で「既定のIMEにしますか」の初回ダイアログを出さない。
+          $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $bytes = [System.Collections.Generic.List[byte]]::new()
+          $bytes.AddRange([byte[]](0xB0,0x01,0x00,0xC8,0x02,0x01))
+          # 実機の config1.db には、過去にCUSTOMで作った古い custom_keymap_table(field 42)が残っている(ADR-174/186)。
+          # ATOKでは GJI はこれを読まない。awase が読んでしまうと変換が On と誤分類される(撤去実験E2)ので、
+          # それを再現する構成でだけ「DirectInput Henkan IMEOn」を入れる。
+          if ('${{ matrix.cfg.custom_table }}' -eq 'true') {
+            $tbl = [Text.Encoding]::UTF8.GetBytes("status`tkey`tcommand`nDirectInput`tHenkan`tIMEOn`n")
+            $bytes.AddRange([byte[]](0xD2,0x02,[byte]$tbl.Length))
+            $bytes.AddRange($tbl)
+          }
+          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), $bytes.ToArray())
+          # 変換サーバー等はインストール時の既定設定で起動済みで、後から書いた config1.db を読み直さない。
+          # 終了させ、次に使われるとき(TIP が呼ぶとき)に新しい設定で起動し直させる。
+          # インストール直後に起動するツール/ウィザード(googleimejatool.exe)もここで終了する。
+          Get-Process | Where-Object { $_.Name -match 'googleime|mozc' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+
+      - name: awase を起動し、スパイク --auto を実行して判定する
+        id: run
+        shell: pwsh
+        run: |
+          $toggle = '${{ matrix.cfg.toggle }}'
+          $cfg = Get-Content dist\config.toml -Raw
+          if ($cfg -match 'gji_thumb_key_ime_toggle *= *(true|false)') { $cfg = $cfg -replace 'gji_thumb_key_ime_toggle *= *(true|false)',"gji_thumb_key_ime_toggle = $toggle" }
+          else { $cfg = $cfg -replace '(?m)^\[general\]\s*$', "[general]`r`ngji_thumb_key_ime_toggle = $toggle" }
+          [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
+          # CIランナーは初回のクロスプロセスIMMプローブが遅く(実測22ms)、awase がスパイク窓を「IMM不可」と誤学習して
+          # conv を読まなくなる(Engine が半角英数に追従しない)。学習済みキャッシュを事前投入して防ぐ。
+          [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"ime_key_matrix_spike.exe`"]`r`nEdit = `"works`"`r`nRICHEDIT50W = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))
+          $env:RUST_LOG = 'debug'
+          $env:AWASE_TEST_INJECTION = '1'
+          # 順序: スパイクを先に起動し、初期化(TSF/ActivateProfile)が終わってから awase を起動する。
+          # スパイクの初期化中に awase がIMMをプローブすると応答が無く、3回連続の miss で Edit を「IMM不可」と
+          # 誤学習して conv を読まなくなる。--activate-gji はキーフックをawase起動後に遅延インストールし、
+          # 起動後に VK_IME_OFF を1回注入して awase の belief(起動時推定=ON)と実状態(OFF)をそろえる。
+          Push-Location dist
+          Start-Process -FilePath .\ime_key_matrix_spike.exe -ArgumentList '--auto --hold=180 --activate-gji ${{ matrix.cfg.args }}'
+          for ($i = 0; $i -lt 40; $i++) {
+            Start-Sleep -Milliseconds 500
+            if ((Test-Path ime_key_matrix_spike.log) -and (Select-String -Path ime_key_matrix_spike.log -Pattern 'ROUND 2/2' -Quiet)) { break }
+          }
+          Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
+          $deadline = (Get-Date).AddSeconds(150)
+          while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 2
+            if ((Test-Path ime_key_matrix_spike.log) -and (Select-String -Path ime_key_matrix_spike.log -Pattern '全手順完了' -Quiet)) { break }
+          }
+          Pop-Location
+          Get-Process awase -ErrorAction SilentlyContinue | Format-Table Name, Id
+          Get-Content dist\awase.log -Encoding utf8 | Where-Object { $_ -match 'Engine (de)?activated|IME open axis delegated|outcome=Unwarranted' } | Set-Content awase-filtered.log -Encoding utf8
+          $env:PYTHONUTF8 = '1'
+          # 判定は summary ジョブで集計する。ここでは終了コード(0=PASS, 1=FAIL, 3=INVALID)を記録して成功で終える。
+          python tools\e2e\ime_key_matrix\check.py dist\ime_key_matrix_spike.log awase-filtered.log | Tee-Object -FilePath result.txt
+          $rc = $LASTEXITCODE
+          "rc=$rc" | Out-File -FilePath rc.txt -Encoding ascii
+          "exit code: $rc"
+          Get-Process awase, ime_key_matrix_spike -ErrorAction SilentlyContinue | Stop-Process -Force
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: result-${{ matrix.cfg.name }}-${{ matrix.run }}
+          path: |
+            result.txt
+            rc.txt
+            dist/ime_key_matrix_spike.log
+            dist/awase.log
+            awase-stderr.log
+            awase-filtered.log
+          retention-days: 7
+
+  summary:
+    needs: [plan, e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: result-*
+          path: results
+      - name: 構成ごとに集計して期待と照合する
+        shell: python
+        env:
+          CONFIGS: ${{ needs.plan.outputs.configs }}
+        run: |
+          import json, os, re, sys
+          configs = json.loads(os.environ['CONFIGS'])
+          rows, bad = [], False
+          for c in configs:
+            n = dict(pass_=0, fail=0, invalid=0, missing=0)
+            for run in (1, 2, 3):
+              f = f"results/result-{c['name']}-{run}/rc.txt"
+              if not os.path.exists(f):
+                n['missing'] += 1
+                continue
+              rc = int(re.search(r'rc=(\d+)', open(f).read()).group(1))
+              n['pass_' if rc == 0 else 'invalid' if rc == 3 else 'fail'] += 1
+            valid = n['pass_'] + n['fail']
+            # expect=pass: 有効な回にFAILが1つも無い / expect=fail: 有効な回が全部PASSではない(=撤去で壊れた)。
+            # 有効回が無ければ判定不能。
+            if valid == 0:
+              verdict = '判定不能'
+            elif c['expect'] == 'pass':
+              verdict = 'OK' if n['fail'] == 0 else 'NG(期待PASSだがFAIL有り)'
+            else:
+              verdict = 'OK' if n['fail'] > 0 else 'NG(期待FAILだが全PASS=撤去しても壊れない)'
+            bad |= verdict != 'OK'
+            rows.append(f"| {c['name']} | {c['expect']} | {n['pass_']} | {n['fail']} | {n['invalid']} | {n['missing']} | {verdict} |")
+          out = ["## e2e-ime 撤去実験", "", "| 構成 | 期待 | PASS | FAIL | INVALID | 欠落 | 判定 |", "|---|---|---|---|---|---|---|"] + rows
+          open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8').write('\n'.join(out) + '\n')
+          print('\n'.join(out))
+          sys.exit(1 if bad else 0)

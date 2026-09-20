@@ -1,0 +1,4 @@
+SUCCESS: The process "ime_key_matrix_spike.exe" with PID 45556 has been terminated.
+spike procs: 1
+script error: Output type incorrect: bool (expecting ())
+Error: exit code 1
