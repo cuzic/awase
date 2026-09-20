@@ -1965,6 +1965,8 @@ impl Runtime {
             && !event.injected
             && crate::vk::is_ime_mode_key_for_ime(event.vk_code)
             && !event.ime_relevance.may_change_ime
+            // awase が既に IME キーとして扱う(opt-in の Toggle 等、shadow_action を持つ)場合は、従来の経路(shadow-toggle/delegate)に任せる。
+            && event.ime_relevance.shadow_action.is_none()
         {
             let now = crate::hook::current_tick_ms();
             crate::runtime::SPIKE_MODE_KEY_PASS_MS.store(now, std::sync::atomic::Ordering::Relaxed);
