@@ -10,54 +10,60 @@ on:
 jobs:
   probe:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: 環境の情報(セッション/デスクトップ/言語)
+      - name: Google 日本語入力を直接ダウンロードしてサイレントインストール
         shell: pwsh
         continue-on-error: true
+        timeout-minutes: 10
         run: |
-          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture | Format-List
-          "UserInteractive: $([Environment]::UserInteractive)"
-          "User: $env:USERNAME  SessionName: $env:SESSIONNAME"
-          query user 2>&1
-          Get-Process explorer, ctfmon -ErrorAction SilentlyContinue | Select-Object Name, Id, SessionId | Format-Table
-          Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips
-          Get-WinDefaultInputMethodOverride 2>&1
-          Get-WindowsCapability -Online -Name 'Language.*ja-JP*' 2>&1 | Format-Table Name, State
-
-      - name: Google 日本語入力をインストール(chocolatey)
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          choco install google-japanese-input -y --no-progress 2>&1 | Select-Object -Last 30
+          $urls = @(
+            'https://dl.google.com/japanese-ime/latest/GoogleJapaneseInputSetup.exe',
+            'https://dl.google.com/tag/s/appguid%3D%7BDDCCD2A9-025E-4142-BCEB-F467B88CF830%7D%26iid%3D%7B00000000-0000-0000-0000-000000000000%7D%26lang%3Dja%26browser%3D4%26usagestats%3D0%26appname%3DGoogle%2520Japanese%2520Input%26needsadmin%3Dtrue/japanese-ime/GoogleJapaneseInputSetup.exe'
+          )
+          foreach ($u in $urls) {
+            try {
+              Invoke-WebRequest -Uri $u -OutFile gji-setup.exe -UseBasicParsing
+              "downloaded from: $u  size=$((Get-Item gji-setup.exe).Length)"
+              break
+            } catch { "download failed: $u -> $($_.Exception.Message)" }
+          }
+          if (Test-Path gji-setup.exe) {
+            foreach ($args in @('/silent /install', '/silent', '/S')) {
+              "try: gji-setup.exe $args"
+              $p = Start-Process -FilePath .\gji-setup.exe -ArgumentList $args -PassThru -Wait
+              "exit=$($p.ExitCode)"
+              if (Get-ChildItem 'C:\Program Files*\Google\Google Japanese Input' -ErrorAction SilentlyContinue) { break }
+            }
+          }
           Get-ChildItem 'C:\Program Files*\Google\Google Japanese Input' -ErrorAction SilentlyContinue | Select-Object FullName | Format-Table
-          Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\*' -ErrorAction SilentlyContinue | Select-Object PSChildName | Format-Table
+          Get-ChildItem 'C:\Windows\System32\GoogleIme*','C:\Windows\SysWOW64\GoogleIme*' -ErrorAction SilentlyContinue | Select-Object FullName | Format-Table
+          $g='{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}'
+          "TIP registered: $(Test-Path "HKLM:\SOFTWARE\Microsoft\CTF\TIP\$g")"
 
-      - name: 日本語の言語機能を追加(時間がかかるので8分で打ち切る)
-        shell: pwsh
-        continue-on-error: true
-        timeout-minutes: 8
-        run: |
-          $cap = Get-WindowsCapability -Online | Where-Object { $_.Name -like 'Language.Basic~~~ja-JP*' }
-          $cap | Format-Table Name, State
-          foreach ($c in $cap) { if ($c.State -ne 'Installed') { Add-WindowsCapability -Online -Name $c.Name 2>&1 | Select-Object -Last 3 } }
-
-      - name: 入力言語にja-JPを設定
+      - name: 入力言語をja-JP + GJI に設定して ATOK プリセットの設定を書く
         shell: pwsh
         continue-on-error: true
         run: |
+          $tip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
           $l = New-WinUserLanguageList ja-JP
-          $l.Add('en-US')
+          $l[0].InputMethodTips.Clear()
+          $l[0].InputMethodTips.Add($tip)
           Set-WinUserLanguageList $l -Force 2>&1
           Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips
+          # ATOK プリセット(session_keymap = 1): Mozc Config の field 41 (varint) = 1 だけを持つ最小の config1.db
+          $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), [byte[]](0xC8,0x02,0x01))
+          Get-ChildItem $dir | Format-Table Name, Length
 
-      - name: ctfmon を起動して TSF の状態を確認
+      - name: ctfmon の状態と、入力メソッドの確認
         shell: pwsh
         continue-on-error: true
         run: |
-          Start-Process ctfmon.exe
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 3
-          Get-Process ctfmon -ErrorAction SilentlyContinue | Format-Table Name, Id, SessionId
-          reg query "HKCU\Software\Microsoft\CTF" /s 2>&1 | Select-Object -First 30
+          Get-Process ctfmon, explorer -ErrorAction SilentlyContinue | Format-Table Name, Id, SessionId
+          reg query "HKCU\Software\Microsoft\CTF\SortOrder\AssemblyItem\0x00000411" /s 2>&1 | Select-Object -First 30
