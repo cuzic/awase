@@ -219,6 +219,8 @@ impl Runtime {
                     tracing::info!(
                         "[mode-key-follow] observation arrived after mode key pass: intents invalidated"
                     );
+                    // 最初の観測は GJI がキーを処理する前の古い状態を読むことがある。窓が切れるまで読み直す。
+                    self.schedule_ime_refresh(crate::tuning::MODE_KEY_PASS_REREAD_MS);
                 }
             }
         }

@@ -65,13 +65,16 @@ awaseは何も観測していない。
 
 無変換/変換(`vk.rs::is_ime_mode_key_for_ime`)の**生キーをGJIへ通過させた**とき:
 
-1. **通過マークを立てる**: `ImeStateHub`の`ScopedOneShot<ForegroundScope, ModeKeyPassMark>`(窓 `MODE_KEY_PASS_MARK_WINDOW_MS`、
-   フォアグラウンドが変われば`peek`が自動失効するのでFocusChanged配線は不要、一回消費)。
+1. **通過マークを立てる**: `ImeStateHub`の`ScopedOneShot<ForegroundScope, ModeKeyPassMark>`(窓 `MODE_KEY_PASS_MARK_WINDOW_MS`=300ms、
+   フォアグラウンドが変われば`peek`が自動失効するのでFocusChanged配線は不要)。**一回では消費しない**(下記)。
 2. **20ms後にIME再読み取りを予約**する(`TIMER_IME_REFRESH`)。
 3. **再読み取りはtyping-idleガードをバイパス**する(通過マークが有効な間。`explicit_verify`の隣の第2条件)。
 4. **観測が成功した直後に**、対象hwndの`IntentStore`エントリと`last_intent`を捨てる(`ImeEvent::ModeKeyPassedThrough`、`last_intent`のみ書く。
    dispatch元は`ImeStateHub::invalidate_intents_if_mode_key_pass_live`の1箇所)。観測の**後**に捨てるので、beliefが古いdesired_openへ
    一瞬戻ることがない。
+5. **窓が切れるまで`MODE_KEY_PASS_REREAD_MS`(60ms)ごとに読み直す**: 通過から最初の再読み取りまでにGJIがキーを処理し終えているとは限らない
+   (CIの`atok-passthrough-henkan-cold`で、通過から11ms後に古い状態を読み、マークを一回で消費したため追随できなかった回があった)。
+   マークは消費せず、観測が入るたびに再読み取りを予約し、窓(300ms)が切れたら止まる。
 
 **通過点は2つ必要**: (A)FSM経由の送出(`executor::dispatch_effect`の`SendKeys`、Engine ON時の単独タップ確定)と、(B)Engine OFFのとき
 無変換/変換がFSMを通らず`PassThrough`判定でOSへ渡る経路(`key_pipeline`)。(B)は**`shadow_action`が無い(awaseがIMEキーとして扱わない)**
@@ -99,9 +102,9 @@ Engineが約70ms一瞬ONになるため(スパイクv2で確認)。
 - **IMMのクロスプロセス読み取りが効くアプリ**(`profile=ImmCross`/Win32 Edit系、CIの対象)で要件を満たす。TsfNative/Imm32Unavailable
   (メモ帳・Windows Terminal・Chrome/Edge)は`ime_on=None`で読めず、従来どおりidle-conv-check頼み(未検証。BUG-149参照)。
 - **Microsoft IME本体**はCIでawaseのIME ON書き込みが失敗する別の既存の問題(ADR-186)。本変更とは無関係。
-- 観測が空振り(IMM miss)した場合は意図を捨てない(観測成功時のみ)。通過マークは窓(300ms)で失効する。
+- 観測が空振り(IMM miss)した場合は意図を捨てない(観測成功時のみ)。通過マークは窓(300ms)で失効し、それまでは観測のたびに60ms間隔で読み直す。
 - 開閉が変わらない場合(入力中の無変換=半角英数トグル等)も、観測が成功すれば意図は捨てられる(beliefは観測に従う。実IMEと一致するので害は小さい)。
-- 通過マークの窓`MODE_KEY_PASS_MARK_WINDOW_MS`(300ms)は暫定・未実測(`pending`)。CIでは押下後20〜70msに観測が届いた。
+- 通過マークの窓`MODE_KEY_PASS_MARK_WINDOW_MS`(300ms)と読み直し間隔`MODE_KEY_PASS_REREAD_MS`(60ms)は暫定・未実測(`pending`)。CIでは押下後20〜70msにGJIの反応が出た。
 
 ## リスク
 

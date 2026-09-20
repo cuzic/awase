@@ -245,7 +245,6 @@ impl ImeStateHub {
         if !self.mode_key_pass_mark_live_in_scope(now_ms, scope) {
             return false;
         }
-        self.mode_key_pass_mark.disarm();
         if let Some(hwnd) = self.shadow_model.current_focus() {
             self.intent_store.remove(hwnd);
         }
@@ -253,8 +252,10 @@ impl ImeStateHub {
         true
     }
 
-    /// 通過マークが有効なら消費し、対象hwndの`IntentStore`エントリと`last_intent`を捨てる（`ImeEvent::ModeKeyPassedThrough`）。
+    /// 通過マークが有効なら、対象hwndの`IntentStore`エントリと`last_intent`を捨てる（`ImeEvent::ModeKeyPassedThrough`）。
     /// 呼ぶのは**観測が成功した直後**だけ（観測の後に捨てるので、beliefが古いdesired_openへ戻らない）。
+    /// マークは**消費しない**: 通過の直後の最初の観測は、GJIがまだキーを処理する前の古い状態を読むことがある（CIで実測: 通過から11ms後）。
+    /// 窓(`MODE_KEY_PASS_MARK_WINDOW_MS`)が切れるまで、観測のたびに再読み取りを続けて追随させる。
     /// `ModeKeyPassedThrough`を dispatch するのはこの関数だけ（`architecture_guard`で固定）。
     pub(crate) fn invalidate_intents_if_mode_key_pass_live(
         &mut self,
@@ -2606,7 +2607,7 @@ mod tests {
     }
 
     #[test]
-    fn mode_key_pass_invalidation_drops_intents_and_follows_observation_once() {
+    fn mode_key_pass_invalidation_drops_intents_and_follows_observation_within_window() {
         let mut ps = PlatformState::new();
         let scope = test_foreground_scope();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
@@ -2629,9 +2630,17 @@ mod tests {
             "古い意図を捨てた後は観測 true に従う"
         );
         assert!(
-            !ps.ime
+            ps.ime
                 .invalidate_intents_if_mode_key_pass_live_in_scope(141, TickMs(141), scope),
-            "通過マークは一回消費"
+            "窓の間はマークを消費せず、観測のたびに追随を続ける(最初の観測が古い状態を読んでも取りこぼさない)"
+        );
+        assert!(
+            !ps.ime.invalidate_intents_if_mode_key_pass_live_in_scope(
+                125 + crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+                TickMs(500),
+                scope,
+            ),
+            "窓が切れたら止まる"
         );
     }
 
