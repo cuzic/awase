@@ -59,3 +59,15 @@ awase起動中、GJI(ATOK/MS-IMEキーマップとも)で、半角/全角をVK 0
 
 未検証: 実機のキーボードで物理の半角/全角がどのVKを出すか(F3/F4の交互か、KANJIか)。どのVKでもbelief基づくトグルになるので、
 出るVKに依存せず動く。Microsoft IME本体は対象外(静的モデルのまま)。
+
+## 今回の範囲外(将来: ユーザー設定の学習、ユーザー方針 2026-09-20)
+
+TsfNative/Imm32Unavailable(Chrome/Edge/メモ帳/Windows Terminal)での検証、およびawaseが自動では知らないキー(GJIのキーマップで任意のキーに
+IMEOn/IMEOffを割り当てた場合など)への対応は、**較正機能(ADR-176、一度お蔵入り)と別セッションのスパイク実装を組み合わせ、ユーザーの設定を
+学習する仕組みとして別途行う**。本ADR・ADR-187が用意した接続点:
+- **`shadow_action`の上書き点**(`runtime/mod.rs`の`override_action`連鎖、書き込み1箇所): 学習した「このキーは方向固定On/Off/開閉トグル」を
+  ここへ流せる(`resolve_*_shadow_override_for_event`と同じ様式)。
+- **`keys.ime_on`/`ime_off`/`ime_toggle`**(awaseが消費して代行する既存の設定): 任意のキーを登録できる。
+- **リセット操作**(Ctrl+無変換→Ctrl+変換、ADR-187): 学習が外れた・beliefがずれたときの必ず直せる手順。
+- **CIハーネス**(`--walk`/`--resync`/`--hz`、`check_*.py`): 学習結果を検証する手順に流用できる。読めないアプリの検証にはBUG-149の`chrome_probe`が使える。
+- 学習の判定材料(入力中に依存しないか)は、状態ごとに押して実IMEの前後を比べる測定(較正ウィザードの押下→観測)で得られる。
