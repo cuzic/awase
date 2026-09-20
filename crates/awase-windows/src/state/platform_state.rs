@@ -2508,6 +2508,42 @@ mod tests {
         );
     }
 
+    /// BUG-148/ADR-186 の回帰テスト: 起動時に既に前面にあるアプリでは、最初のプロセス
+    /// 切替（`FocusChanged`）が来なくても `current_focus` が設定され、明示意図が
+    /// `IntentStore` に記録される。
+    ///
+    /// 退行の証拠として「初期フォーカス未設定のままだと `record_explicit_intent` が
+    /// 空振りし、壊れた観測1件で effective_open が true に反転する」ことも固定する
+    /// （CI の E2E で委譲 SetOpen が全て Unwarranted になった機序）。
+    #[test]
+    fn initial_focus_hwnd_lets_explicit_intent_be_recorded_before_first_focus_change() {
+        // 初期フォーカス未設定（BUG-148 の状態）: 意図が記録されない。
+        let mut ps = PlatformState::new();
+        assert_eq!(ps.ime.model().current_focus(), None);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        dispatch_conv_open_inference(&mut ps, true, 300);
+        assert!(
+            ps.ime.effective_open_at(TickMs(300)),
+            "退行の証拠: current_focus=None だと record_explicit_intent が空振りし、\
+             明示 OFF 意図が IntentStore に残らない"
+        );
+
+        // 起動時の初期フォーカスを確立した状態: 同じ操作で意図が保持される。
+        let mut ps = PlatformState::new();
+        ps.ime.dispatch_event(
+            ImeEvent::InitialFocusHwndEstablished { hwnd: TARGET_HWND },
+            TickMs(0),
+        );
+        assert_eq!(ps.ime.model().current_focus(), Some(TARGET_HWND));
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        dispatch_conv_open_inference(&mut ps, true, 300);
+        assert!(
+            !ps.ime.effective_open_at(TickMs(300)),
+            "初期フォーカス確立後は明示 OFF 意図が IntentStore に記録され、\
+             open_warrant Step 1 の根拠になる"
+        );
+    }
+
     /// OFF 意図の TTL 超過後は IntentStore もフォールバックする（無期限固着はしない）。
     #[test]
     fn effective_open_intent_store_entry_expires_after_ttl() {
