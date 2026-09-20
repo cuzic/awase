@@ -1,0 +1,657 @@
+2026-09-20T02:15:22.513219Z DEBUG awase_windows::runtime: [focus-sync] hwnd=0x660666 class="ImeKeyMatrixSpikeWindowClass" app_kind=Win32 hint=Default → mode=Unicode
+2026-09-20T02:15:22.513294Z DEBUG awase_windows::tsf::tsf_gate: [tsf-gate] focus change → PendingWarmup (held cleared)
+2026-09-20T02:15:22.708016Z DEBUG awase_windows::runtime: [focus-sync] hwnd=0x4018C0 class="Edit" app_kind=Win32 hint=Default → mode=Unicode
+2026-09-20T02:15:22.708106Z DEBUG awase_windows::output: [tsf-gate] focus change while PendingWarmup — held バッファを保持して再初期化スキップ (Chrome等の連続フォーカスイベント対策)
+2026-09-20T02:15:22.715824Z  INFO apply_focus_probe_result: awase_windows::runtime::focus_tracking: AppKind changed: Uwp → Win32 (class=ImeKeyMatrixSpikeWindowClass)
+2026-09-20T02:15:22.796821Z DEBUG apply_focus_probe_result: awase::journal: focus transition seq=15 elapsed_ms=22154 changed_process=true changed_window=true changed_app_kind=true changed_focus_kind=false dwell_ms=22047 profile="ImmCross"
+2026-09-20T02:15:22.797519Z  INFO apply_focus_probe_result: awase_windows::runtime::focus_tracking: FocusChange [19612→37768] ImeKeyMatrixSpikeWindowClass: stale ime_on=true intent=None mode=ObservedRomaji japanese=true
+2026-09-20T02:15:22.797699Z DEBUG apply_focus_probe_result: awase_windows::tsf::probe: [composition] focus changed → marked cold
+2026-09-20T02:15:22.797792Z DEBUG apply_focus_probe_result: awase_windows::runtime: [keymap] active rules recomputed: 0 rule(s) for process="ime_key_matrix_spike.exe"
+2026-09-20T02:15:22.797837Z DEBUG apply_focus_probe_result: awase_windows::runtime::focus_tracking: [keymap] active rules updated on focus change: 0 rule(s) (hwnd=HWND(0x660666) kind=Undetermined focus_epoch=2)
+2026-09-20T02:15:22.798039Z DEBUG apply_focus_probe_result:reduce: awase_windows::state::ime_model: [explicit-intent] cleared (focus change)
+2026-09-20T02:15:22.798136Z DEBUG apply_focus_probe_result: awase::journal: ime event seq=16 elapsed_ms=22156 event_kind="FocusChanged"
+2026-09-20T02:15:22.798311Z DEBUG apply_focus_probe_result: awase_windows::runtime::focus_tracking: [focus] Imm32Unavailable hard pre-sync applied=true (prevent spurious VK_KANJI on first character key)
+2026-09-20T02:15:22.798438Z DEBUG apply_focus_probe_result:gji_on_event{event=ImeOn { injection_mode: Unicode, gji_idle_ms: 22031 }}: awase_windows::tsf::gji_fsm: [gji-fsm] ImeOn: already on (OnCold(Short)), ignored
+2026-09-20T02:15:22.798537Z DEBUG apply_focus_probe_result: awase::journal: gji fsm transition seq=17 elapsed_ms=22156 trigger="ImeOn(gji_idle_ms=22031)" state_before="OnCold(Short)" state_after="OnCold(Short)"
+2026-09-20T02:15:22.800732Z DEBUG awase_windows::observer::ime_observer: IME snapshot: japanese=Some(true) ime_on=None romaji=None conv=None guard=false
+2026-09-20T02:15:22.800820Z DEBUG awase_windows::runtime::ime_refresh: ObserverPoll +0ms since focus: detection failed (miss=1), stale ime_on=true mode=ObservedRomaji
+2026-09-20T02:15:22.807643Z DEBUG awase_windows::ime_diagnostic: [ime-diag] label=focus_changed t=346556843 hwnd=0x0 pid=0 tid=47372 class="" hkl=04110411 lang=0411 imm_bridge=true imc_open=- imc_conv=- shadow_on=false shadow_romaji=false shadow_jp=false inject=Unknown dt_focus_ms=- dt_activity_ms=-
+2026-09-20T02:15:22.807745Z DEBUG awase_windows::runtime::ime_refresh: [composition] focus change → marking cold
+2026-09-20T02:15:22.807802Z DEBUG awase_windows::tsf::probe: [composition] marked cold reason=FocusChange idle=18446744073709551615ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup
+2026-09-20T02:15:22.807964Z DEBUG gji_on_event{event=FocusChange { injection_mode: Unicode, gji_idle_ms: 22047 }}: awase_windows::tsf::gji_fsm: [gji-fsm] FocusChange gji_idle=22047ms → Long
+2026-09-20T02:15:22.808069Z DEBUG awase_windows::platform: [gji-fsm] CancelProbe probe_id=ProbeId(0)
+2026-09-20T02:15:22.808108Z DEBUG awase_windows::platform: [gji-fsm] StartProbe probe_id=ProbeId(1) forces_f2=true long=true
+2026-09-20T02:15:22.808146Z DEBUG awase_windows::platform: [gji-fsm] Unicode long-cold StartProbe: VK_IME_OFF→VK_IME_ON reinit (chars なし)
+2026-09-20T02:15:22.808174Z DEBUG awase_windows::output::probe_io: [chrome-reinit] cold=0 VK_IME_OFF→VK_IME_ON 強制リセット送信 + IMC ポーリング開始 (write_bytes_baseline=200596747)
+2026-09-20T02:15:22.808225Z DEBUG awase_windows::shadow_send_trace: [shadow-send] channel=SendInput kind=kanji_marker vk=[1A, 16] issue_us=22165913
+2026-09-20T02:15:22.815766Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x1A down self_injected=true injected=true scan=0x0 extra=0x4B45594A since_actuation_us=Some(7533)
+2026-09-20T02:15:22.850369Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x1A up self_injected=true injected=true scan=0x0 extra=0x4B45594A since_actuation_us=Some(42132)
+2026-09-20T02:15:22.868684Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x16 down self_injected=true injected=true scan=0x0 extra=0x4B45594A since_actuation_us=Some(60447)
+2026-09-20T02:15:22.882768Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x16 up self_injected=true injected=true scan=0x0 extra=0x4B45594A since_actuation_us=Some(74535)
+2026-09-20T02:15:22.895834Z DEBUG awase_windows::tsf::ime_mode_fsm: [ime-mode] VK_IME_OFF 送信 → Off (belief, unconfirmed)
+2026-09-20T02:15:22.895914Z DEBUG awase_windows::tsf::ime_mode_fsm: [ime-mode] VK_IME_ON 送信 → Hiragana (belief, unconfirmed)
+2026-09-20T02:15:22.897050Z DEBUG awase_windows::tsf::ime_mode_fsm: [ime-mode] FocusChange (0ms after VK send) → confirmed=false のみ（state=Hiragana 維持）
+2026-09-20T02:15:22.897359Z DEBUG awase::journal: gji fsm transition seq=18 elapsed_ms=22165 trigger="FocusChange(gji_idle_ms=22047)" state_before="OnCold(Short)" state_after="OnCold(Long)"
+2026-09-20T02:15:22.897708Z DEBUG awase::journal: tsf probe completed seq=19 elapsed_ms=22166 outcome="Canceled" cold_seq=18446744073709551615 cold_seq_present=false probe_id=0 probe_id_present=true duration_ms=22047 tick_count=0 gji_state="OnCold(Long)"
+2026-09-20T02:15:22.897770Z DEBUG awase::journal: tsf probe started seq=20 elapsed_ms=22166 source="GjiAction::StartProbe" cold_seq=0 probe_id=1 probe_id_present=true gji_state="OnCold(Long)" consecutive_at_start=0 pending_deferred_len=0
+2026-09-20T02:15:22.897810Z DEBUG awase::journal: gji fsm transition seq=21 elapsed_ms=22254 trigger="WarmupComplete(unicode)" state_before="OnCold(Long)" state_after="OnWarm"
+2026-09-20T02:15:22.897860Z DEBUG awase::journal: tsf probe completed seq=22 elapsed_ms=22254 outcome="UnicodeImmediate" cold_seq=18446744073709551615 cold_seq_present=false probe_id=1 probe_id_present=true duration_ms=78 tick_count=0 gji_state="OnWarm"
+2026-09-20T02:15:22.897958Z DEBUG awase_windows::runtime::ime_refresh: [composition] FocusChange: send_eager_tsf_warmup called (ime_on via warmup_ime_on())
+2026-09-20T02:15:22.900206Z DEBUG awase::journal: hook ime-mode diagnostic seq=23 elapsed_ms=22258 vk_code=26 is_down=true self_injected=true injected=true scan=0
+2026-09-20T02:15:22.900276Z DEBUG awase::journal: hook ime-mode diagnostic seq=24 elapsed_ms=22258 vk_code=26 is_down=false self_injected=true injected=true scan=0
+2026-09-20T02:15:22.900311Z DEBUG awase::journal: hook ime-mode diagnostic seq=25 elapsed_ms=22258 vk_code=22 is_down=true self_injected=true injected=true scan=0
+2026-09-20T02:15:22.900346Z DEBUG awase::journal: hook ime-mode diagnostic seq=26 elapsed_ms=22258 vk_code=22 is_down=false self_injected=true injected=true scan=0
+2026-09-20T02:15:22.902802Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+1 w_KB=+0.0 (r_ops=+1 x_ops=+0 x_KB=+0.0)
+2026-09-20T02:15:22.908106Z DEBUG awase_windows::ime: [idle-conv-check-diag] focused_hwnd=HWND(0x4018c0) ime_wnd=Some(HWND(0x641178))
+2026-09-20T02:15:22.914230Z DEBUG awase::journal: ime event seq=27 elapsed_ms=22272 event_kind="ObserverReported"
+2026-09-20T02:15:22.914304Z DEBUG awase_windows::runtime::focus_tracking: [ImmCrossProbe/focus] child-hwnd IME=true → High confidence 観測記録
+2026-09-20T02:15:22.915514Z  INFO awase_windows::output::probe_io: [chrome-reinit] cold=0 GJI write_bytes 上昇検出: tick=#0 delta=+2B (+0.0KB)
+2026-09-20T02:15:22.919165Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+4 w_KB=+0.1 (r_ops=+9 x_ops=+10 x_KB=+0.0)
+2026-09-20T02:15:22.922262Z DEBUG awase_windows::ime: [idle-conv-check-diag] focused_hwnd=HWND(0x4018c0) ime_wnd=Some(HWND(0x641178))
+2026-09-20T02:15:22.923238Z DEBUG awase_windows::output::probe_io: [chrome-reinit] cold=0 IMC poll #0: conv=0x00000009 NATIVE=true write_delta=+2B
+2026-09-20T02:15:22.923296Z DEBUG awase_windows::output::probe_io: [chrome-reinit] cold=0 stale focus_gen=0 → ポーリング終了
+2026-09-20T02:15:22.923324Z  INFO awase_windows::output::probe_io: [chrome-reinit] cold=0 ポーリング完了: total_write_delta=+60B first_write_tick=Some(1)
+2026-09-20T02:15:22.982245Z DEBUG awase_windows::runtime: [focus-sync] hwnd=0x18D03F8 class="RICHEDIT50W" app_kind=Win32 hint=Default → mode=Unicode
+2026-09-20T02:15:22.982341Z DEBUG awase_windows::tsf::tsf_gate: [tsf-gate] focus change → PendingWarmup (held cleared)
+2026-09-20T02:15:23.022377Z DEBUG awase_windows::runtime: [focus-sync] hwnd=0x4018C0 class="Edit" app_kind=Win32 hint=Default → mode=Unicode
+2026-09-20T02:15:23.022496Z DEBUG awase_windows::output: [tsf-gate] focus change while PendingWarmup — held バッファを保持して再初期化スキップ (Chrome等の連続フォーカスイベント対策)
+2026-09-20T02:15:23.110510Z DEBUG apply_focus_probe_result: awase_windows::runtime::focus_tracking: Focus kind changed: Undetermined → TextInput (reason=KnownTextClass(Edit))
+2026-09-20T02:15:23.110683Z DEBUG apply_focus_probe_result:reduce: awase_windows::state::observation_store: [focus-hwnd-track] update_focus_window: current_fence.hwnd HwndId(6686310) -> HwndId(4200640)
+2026-09-20T02:15:23.110727Z DEBUG apply_focus_probe_result: awase::journal: ime event seq=28 elapsed_ms=22468 event_kind="FocusHwndUpdated"
+2026-09-20T02:15:23.110764Z DEBUG apply_focus_probe_result: awase::journal: focus transition seq=29 elapsed_ms=22468 changed_process=false changed_window=true changed_app_kind=false changed_focus_kind=true dwell_ms=313 profile="ImmCross"
+2026-09-20T02:15:23.110987Z DEBUG awase_windows::state::observation_store: [identity-gate] hwnd不一致で除外: source=ImmCrossProbe obs_hwnd=HwndId(6686310) current_hwnd=HwndId(4200640) confidence=High
+2026-09-20T02:15:23.111003Z DEBUG awase_windows::state::observation_store: [identity-gate] hwnd不一致で除外: source=ImmCrossProbe obs_hwnd=HwndId(6686310) current_hwnd=HwndId(4200640) confidence=High
+2026-09-20T02:15:23.111137Z DEBUG awase_windows::state::observation_store: [identity-gate] hwnd不一致で除外: source=ImmCrossProbe obs_hwnd=HwndId(6686310) current_hwnd=HwndId(4200640) confidence=High
+2026-09-20T02:15:23.111149Z DEBUG awase_windows::state::observation_store: [identity-gate] hwnd不一致で除外: source=ImmCrossProbe obs_hwnd=HwndId(6686310) current_hwnd=HwndId(4200640) confidence=High
+2026-09-20T02:15:23.111170Z DEBUG awase_windows::observer::ime_observer: IME snapshot: japanese=Some(true) ime_on=Some(true) romaji=None conv=Some("0x00000009") guard=false
+2026-09-20T02:15:23.111231Z DEBUG awase::journal: ime event seq=30 elapsed_ms=22469 event_kind="ObserverReported"
+2026-09-20T02:15:23.111244Z DEBUG awase_windows::state::observation_store: [identity-gate] hwnd不一致で除外: source=ImmCrossProbe obs_hwnd=HwndId(6686310) current_hwnd=HwndId(4200640) confidence=High
+2026-09-20T02:15:23.111256Z DEBUG awase_windows::state::observation_store: [identity-gate] hwnd不一致で除外: source=ImmCrossProbe obs_hwnd=HwndId(6686310) current_hwnd=HwndId(4200640) confidence=High
+2026-09-20T02:15:23.111355Z DEBUG awase_windows::state::observation_store: [identity-gate] hwnd不一致で除外: source=ImmCrossProbe obs_hwnd=HwndId(6686310) current_hwnd=HwndId(4200640) confidence=High
+2026-09-20T02:15:23.111380Z DEBUG awase_windows::state::observation_store: [identity-gate] hwnd不一致で除外: source=ImmCrossProbe obs_hwnd=HwndId(6686310) current_hwnd=HwndId(4200640) confidence=High
+2026-09-20T02:15:23.357064Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(548836)
+2026-09-20T02:15:23.357376Z DEBUG awase::journal: hook ime-mode diagnostic seq=31 elapsed_ms=22715 vk_code=242 is_down=true self_injected=false injected=false scan=112
+2026-09-20T02:15:23.357639Z DEBUG awase_windows::state::observation_store: [identity-gate] hwnd不一致で除外: source=ImmCrossProbe obs_hwnd=HwndId(6686310) current_hwnd=HwndId(4200640) confidence=High
+2026-09-20T02:15:23.357688Z DEBUG awase_windows::state::observation_store: [identity-gate] hwnd不一致で除外: source=ImmCrossProbe obs_hwnd=HwndId(6686310) current_hwnd=HwndId(4200640) confidence=High
+2026-09-20T02:15:23.358024Z DEBUG awase_windows::state::observation_store: [identity-gate] hwnd不一致で除外: source=ImmCrossProbe obs_hwnd=HwndId(6686310) current_hwnd=HwndId(4200640) confidence=High
+2026-09-20T02:15:23.358066Z DEBUG awase_windows::state::observation_store: [identity-gate] hwnd不一致で除外: source=ImmCrossProbe obs_hwnd=HwndId(6686310) current_hwnd=HwndId(4200640) confidence=High
+2026-09-20T02:15:23.358136Z  INFO awase_windows::runtime::key_pipeline: [shadow-toggle] intent 昇格: vk=0xF2 scan=0x70 action=TurnOn kind=PhysicalImeKey injected=false true→true w_ops0=119285 x_ops0=264378 x_KB0=24.9
+2026-09-20T02:15:23.358238Z DEBUG awase::journal: ime event seq=32 elapsed_ms=22716 event_kind="UserImeSetIntent"
+2026-09-20T02:15:23.358387Z DEBUG awase_windows::runtime::key_pipeline: [shadow-toggle] no-op: vk=0xF2 action=TurnOn source=PhysicalImeKey effective_open は既に true → apply-ime 見送り
+2026-09-20T02:15:23.358464Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0xF2 KeyDown ts=22714949us delay=1ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:23.358692Z DEBUG awase::journal: key input seq=33 elapsed_ms=22716 vk_code=242 is_down=true injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=22714949 last_elapsed_ms=0
+2026-09-20T02:15:23.358893Z DEBUG awase_windows::runtime::key_pipeline: may_change_ime key passed through → IME refresh scheduled (20ms)
+2026-09-20T02:15:23.359057Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0xf2 down)
+2026-09-20T02:15:23.359535Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0xf2 down (queued passthrough now firing)
+2026-09-20T02:15:23.365930Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=true injected=true scan=0x70 extra=0x4B45594D since_actuation_us=Some(557699)
+2026-09-20T02:15:23.374651Z DEBUG awase::journal: hook ime-mode diagnostic seq=34 elapsed_ms=22732 vk_code=242 is_down=true self_injected=true injected=true scan=112
+2026-09-20T02:15:23.375294Z DEBUG awase::journal: ime event seq=35 elapsed_ms=22733 event_kind="ObserverReported"
+2026-09-20T02:15:23.375660Z  INFO awase_windows::runtime::key_pipeline: FocusProbe +15ms: ime_on=true mode=ObservedRomaji [ime=GoogleJapaneseInput sig1=false gji_io=453ms sig2=false]
+2026-09-20T02:15:23.385264Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.0 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:23.386492Z DEBUG awase::journal: ime event seq=36 elapsed_ms=22744 event_kind="ObserverReported"
+2026-09-20T02:15:23.386538Z DEBUG awase_windows::runtime::key_pipeline: [ImmCrossProbe] child-hwnd IME=true → High confidence 観測記録
+2026-09-20T02:15:23.386574Z DEBUG awase_windows::observer::ime_observer: IME snapshot: japanese=Some(true) ime_on=Some(true) romaji=None conv=Some("0x00000010") guard=false
+2026-09-20T02:15:23.386615Z DEBUG awase::journal: ime event seq=37 elapsed_ms=22744 event_kind="InputModeObserved"
+2026-09-20T02:15:23.394558Z DEBUG awase_windows::runtime::ime_refresh: Explicit intent: bypassing typing-idle guard for IME verify (idle=31ms)
+2026-09-20T02:15:23.394648Z DEBUG awase_windows::observer::ime_observer: IME snapshot: japanese=Some(true) ime_on=Some(true) romaji=None conv=Some("0x00000010") guard=false
+2026-09-20T02:15:23.394776Z DEBUG awase::journal: ime event seq=38 elapsed_ms=22752 event_kind="ObserverReported"
+2026-09-20T02:15:23.394870Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=true input_mode=ObservedEisu
+2026-09-20T02:15:23.394936Z  INFO awase::engine::engine: Engine deactivated (ime=true, romaji=false, japanese=true, user=true, reason=Inactive(NotRomajiInput))
+2026-09-20T02:15:24.055830Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyDown ts=23413306us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:24.055895Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:24.055987Z DEBUG awase::journal: key input seq=39 elapsed_ms=23413 vk_code=75 is_down=true injected=false key_class="Char" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=23413306 last_elapsed_ms=0
+2026-09-20T02:15:24.056149Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x4b down (queued passthrough now firing)
+2026-09-20T02:15:24.069282Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.4 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:24.070252Z  INFO awase_windows::tsf::win_event_obs: [gji-obs] candidate SHOW #1: last_gji_write=0ms ago
+2026-09-20T02:15:24.145828Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyUp ts=23503268us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:24.145877Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:24.145947Z DEBUG awase::journal: key input seq=40 elapsed_ms=23503 vk_code=75 is_down=false injected=false key_class="Char" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=23503268 last_elapsed_ms=0
+2026-09-20T02:15:24.146092Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x4b up (queued passthrough now firing)
+2026-09-20T02:15:24.155379Z DEBUG awase_windows::platform: [gji-fsm] StartComposition (candidate SHOW)
+2026-09-20T02:15:24.155438Z DEBUG gji_on_event{event=StartComposition}: awase_windows::tsf::gji_fsm: [gji-fsm] StartComposition: OnWarm → OnComposing(AlreadyWarm)
+2026-09-20T02:15:24.156281Z DEBUG awase::journal: gji fsm transition seq=41 elapsed_ms=23513 trigger="StartComposition(candidate SHOW)" state_before="OnWarm" state_after="OnComposing(Warm)"
+2026-09-20T02:15:24.651081Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyDown ts=24008390us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:24.651130Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:24.651195Z DEBUG awase::journal: key input seq=42 elapsed_ms=24009 vk_code=27 is_down=true injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=24008390 last_elapsed_ms=0
+2026-09-20T02:15:24.651283Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b down)
+2026-09-20T02:15:24.651359Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b down (queued passthrough now firing)
+2026-09-20T02:15:24.654163Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyUp ts=24011777us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:24.654186Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:24.654226Z DEBUG awase::journal: key input seq=43 elapsed_ms=24012 vk_code=27 is_down=false injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=24011777 last_elapsed_ms=0
+2026-09-20T02:15:24.654501Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b up)
+2026-09-20T02:15:24.654533Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b up (queued passthrough now firing)
+2026-09-20T02:15:24.661770Z  INFO awase_windows::tsf::win_event_obs: [gji-obs] candidate HIDE: last_gji_write=578ms ago
+2026-09-20T02:15:24.662554Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.4 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:26.520453Z DEBUG awase_windows::runtime::key_pipeline: [shadow-toggle] vk=0x1DはFSM delegate所有 → belief書き込み/actuationをスキップ w_ops0=119291 x_ops0=264390 x_KB0=24.9
+2026-09-20T02:15:26.520496Z DEBUG awase_windows::runtime::key_pipeline: [shadow-toggle] no-op: vk=0x1D action=Toggle source=PhysicalImeKey effective_open は既に true → apply-ime 見送り
+2026-09-20T02:15:26.520626Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1D KeyDown ts=25877682us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=Some(25877659) r_thumb=None [diag-
+2026-09-20T02:15:26.520675Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:26.520760Z DEBUG awase::journal: key input seq=44 elapsed_ms=25878 vk_code=29 is_down=true injected=false key_class="LeftThumb" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=25877682 last_elapsed_ms=0
+2026-09-20T02:15:26.520911Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1d down (queued passthrough now firing)
+2026-09-20T02:15:26.526922Z DEBUG awase_windows::platform: [gji-fsm] EndComposition (candidate HIDE) epoch=FocusEpoch(1)
+2026-09-20T02:15:26.527474Z DEBUG awase::journal: gji fsm transition seq=45 elapsed_ms=25884 trigger="EndComposition(candidate HIDE, epoch=FocusEpoch(1))" state_before="OnComposing(Warm)" state_after="OnWarm"
+2026-09-20T02:15:26.534042Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.0 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:26.583521Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1D KeyUp ts=25940858us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:26.583590Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:26.583690Z DEBUG awase::journal: key input seq=46 elapsed_ms=25941 vk_code=29 is_down=false injected=false key_class="LeftThumb" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=25940858 last_elapsed_ms=0
+2026-09-20T02:15:26.584220Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1d up (queued passthrough now firing)
+2026-09-20T02:15:27.204523Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyDown ts=26561881us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:27.204558Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:27.204601Z DEBUG awase::journal: key input seq=47 elapsed_ms=26562 vk_code=75 is_down=true injected=false key_class="Char" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=26561881 last_elapsed_ms=0
+2026-09-20T02:15:27.204671Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x4b down (queued passthrough now firing)
+2026-09-20T02:15:27.266978Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyUp ts=26624530us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:27.267007Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:27.267046Z DEBUG awase::journal: key input seq=48 elapsed_ms=26625 vk_code=75 is_down=false injected=false key_class="Char" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=26624530 last_elapsed_ms=0
+2026-09-20T02:15:27.267117Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x4b up (queued passthrough now firing)
+2026-09-20T02:15:27.703537Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyDown ts=27060945us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:27.703588Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:27.703656Z DEBUG awase::journal: key input seq=49 elapsed_ms=27061 vk_code=27 is_down=true injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=27060945 last_elapsed_ms=0
+2026-09-20T02:15:27.703749Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b down)
+2026-09-20T02:15:27.703822Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b down (queued passthrough now firing)
+2026-09-20T02:15:27.766381Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyUp ts=27123865us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:27.766411Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:27.766449Z DEBUG awase::journal: key input seq=50 elapsed_ms=27124 vk_code=27 is_down=false injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=27123865 last_elapsed_ms=0
+2026-09-20T02:15:27.766500Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b up)
+2026-09-20T02:15:27.766536Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b up (queued passthrough now firing)
+2026-09-20T02:15:29.648413Z DEBUG awase_windows::runtime::key_pipeline: [shadow-toggle] vk=0x1DはFSM delegate所有 → belief書き込み/actuationをスキップ w_ops0=119293 x_ops0=264394 x_KB0=24.9
+2026-09-20T02:15:29.648449Z DEBUG awase_windows::runtime::key_pipeline: [shadow-toggle] no-op: vk=0x1D action=Toggle source=PhysicalImeKey effective_open は既に true → apply-ime 見送り
+2026-09-20T02:15:29.648480Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1D KeyDown ts=29005902us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=Some(29005891) r_thumb=None [diag-
+2026-09-20T02:15:29.648517Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:29.648588Z DEBUG awase::journal: key input seq=51 elapsed_ms=29006 vk_code=29 is_down=true injected=false key_class="LeftThumb" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=29005902 last_elapsed_ms=0
+2026-09-20T02:15:29.648727Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1d down (queued passthrough now firing)
+2026-09-20T02:15:29.661934Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.0 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:29.714425Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1D KeyUp ts=29071835us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:29.714474Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:29.714560Z DEBUG awase::journal: key input seq=52 elapsed_ms=29072 vk_code=29 is_down=false injected=false key_class="LeftThumb" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=29071835 last_elapsed_ms=0
+2026-09-20T02:15:29.714720Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1d up (queued passthrough now firing)
+2026-09-20T02:15:30.288798Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyDown ts=29646306us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:30.288840Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:30.288891Z DEBUG awase::journal: key input seq=53 elapsed_ms=29646 vk_code=75 is_down=true injected=false key_class="Char" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=29646306 last_elapsed_ms=0
+2026-09-20T02:15:30.288988Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x4b down (queued passthrough now firing)
+2026-09-20T02:15:30.302865Z  INFO awase_windows::tsf::win_event_obs: [gji-obs] candidate SHOW #2: last_gji_write=640ms ago
+2026-09-20T02:15:30.303042Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.4 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:30.400332Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyUp ts=29757838us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:30.400379Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:30.400445Z DEBUG awase::journal: key input seq=54 elapsed_ms=29758 vk_code=75 is_down=false injected=false key_class="Char" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=29757838 last_elapsed_ms=0
+2026-09-20T02:15:30.400581Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x4b up (queued passthrough now firing)
+2026-09-20T02:15:30.404400Z DEBUG awase_windows::platform: [gji-fsm] StartComposition (candidate SHOW)
+2026-09-20T02:15:30.404432Z DEBUG gji_on_event{event=StartComposition}: awase_windows::tsf::gji_fsm: [gji-fsm] StartComposition: OnWarm → OnComposing(AlreadyWarm)
+2026-09-20T02:15:30.404592Z DEBUG awase::journal: gji fsm transition seq=55 elapsed_ms=29762 trigger="StartComposition(candidate SHOW)" state_before="OnWarm" state_after="OnComposing(Warm)"
+2026-09-20T02:15:30.786949Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyDown ts=30144335us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:30.787007Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:30.787081Z DEBUG awase::journal: key input seq=56 elapsed_ms=30145 vk_code=27 is_down=true injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=30144335 last_elapsed_ms=0
+2026-09-20T02:15:30.787184Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b down)
+2026-09-20T02:15:30.787261Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b down (queued passthrough now firing)
+2026-09-20T02:15:30.794825Z  INFO awase_windows::tsf::win_event_obs: [gji-obs] candidate HIDE: last_gji_write=500ms ago
+2026-09-20T02:15:30.800379Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.4 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:30.912891Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyUp ts=30270336us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:30.912942Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:30.913016Z DEBUG awase::journal: key input seq=57 elapsed_ms=30270 vk_code=27 is_down=false injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=30270336 last_elapsed_ms=0
+2026-09-20T02:15:30.913118Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b up)
+2026-09-20T02:15:30.913196Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b up (queued passthrough now firing)
+2026-09-20T02:15:30.916089Z DEBUG awase_windows::platform: [gji-fsm] EndComposition (candidate HIDE) epoch=FocusEpoch(2)
+2026-09-20T02:15:30.916264Z DEBUG awase::journal: gji fsm transition seq=58 elapsed_ms=30274 trigger="EndComposition(candidate HIDE, epoch=FocusEpoch(2))" state_before="OnComposing(Warm)" state_after="OnWarm"
+2026-09-20T02:15:32.976829Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF0 up self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(10168613)
+2026-09-20T02:15:32.976945Z DEBUG awase::journal: hook ime-mode diagnostic seq=59 elapsed_ms=32334 vk_code=240 is_down=false self_injected=false injected=false scan=112
+2026-09-20T02:15:32.977162Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0xF0 KeyUp ts=32334647us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:32.977198Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:32.977219Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(10169017)
+2026-09-20T02:15:32.977385Z DEBUG awase::journal: key input seq=60 elapsed_ms=32335 vk_code=240 is_down=false injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Suppress" repeat_count=1 last_timestamp_us=32334647 last_elapsed_ms=0
+2026-09-20T02:15:32.977447Z DEBUG awase_windows::runtime::key_pipeline: [imm-cross] key suppress vk=0xf0 KeyUp (physical disposition)
+2026-09-20T02:15:32.977502Z DEBUG awase::journal: hook ime-mode diagnostic seq=61 elapsed_ms=32335 vk_code=242 is_down=true self_injected=false injected=false scan=112
+2026-09-20T02:15:32.977579Z  INFO awase_windows::runtime::key_pipeline: [shadow-toggle] intent 昇格: vk=0xF2 scan=0x70 action=TurnOn kind=PhysicalImeKey injected=false true→true w_ops0=119299 x_ops0=264406 x_KB0=24.9
+2026-09-20T02:15:32.977619Z DEBUG awase::journal: ime event seq=62 elapsed_ms=32335 event_kind="UserImeSetIntent"
+2026-09-20T02:15:32.977641Z DEBUG awase_windows::runtime::key_pipeline: [shadow-toggle] no-op: vk=0xF2 action=TurnOn source=PhysicalImeKey effective_open は既に true → apply-ime 見送り
+2026-09-20T02:15:32.977670Z DEBUG awase::journal: ime event seq=63 elapsed_ms=32335 event_kind="InputModeApplied"
+2026-09-20T02:15:32.977687Z  INFO awase_windows::runtime::key_pipeline: [shadow-toggle] TurnOn (IME既にopen) + ObservedEisu → AssumedRomaji に リセット (UserTurnOnEisuReset)
+2026-09-20T02:15:32.977706Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0xF2 KeyDown ts=32334978us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:32.977738Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-20T02:15:32.977794Z DEBUG awase::journal: key input seq=64 elapsed_ms=32335 vk_code=242 is_down=true injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThroughWith" physical="Allow" repeat_count=1 last_timestamp_us=32334978 last_elapsed_ms=0
+2026-09-20T02:15:32.977843Z DEBUG awase::journal: ime event seq=65 elapsed_ms=32335 event_kind="EngineActivationSync"
+2026-09-20T02:15:32.977874Z DEBUG awase::journal: ime event seq=66 elapsed_ms=32335 event_kind="ImeApplyRequested"
+2026-09-20T02:15:32.977892Z  INFO awase_windows::runtime::key_pipeline: IME control: preconditions.ime_on = true (SetOpenRequest, origin=ActivationSync), was_open_before=true last_intent_before=Some(true) poll suspended
+2026-09-20T02:15:32.977941Z DEBUG awase_windows::runtime::key_pipeline: may_change_ime key passed through → IME refresh scheduled (20ms)
+2026-09-20T02:15:32.977973Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-flush] PassThroughWith: queue 2 effect(s) + reinject (vk=0xf2 down)
+2026-09-20T02:15:32.978163Z DEBUG execute_one{generation=Some(ApplyGeneration(1))}:dispatch_ime_set_open{open=true generation=Some(ApplyGeneration(1))}: awase_windows::runtime::executor: [dispatch-ime] ImmCross async: optimistic applied_snapshot=true (suppress send_engine_state_ime_key)
+2026-09-20T02:15:32.983681Z DEBUG execute_one{generation=Some(ApplyGeneration(1))}: awase_windows::platform: [engine-state-key] skipped (apply_ime_open aligned ime=true, profile=Standard)
+2026-09-20T02:15:32.983860Z DEBUG execute_one{generation=Some(ApplyGeneration(1))}: awase_windows::runtime::executor: [reinject] vk=0xf2 down (queued passthrough now firing)
+2026-09-20T02:15:32.988505Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF0 up self_injected=true injected=false scan=0x70 extra=0x4B45594D since_actuation_us=Some(10180292)
+2026-09-20T02:15:32.991833Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=true injected=true scan=0x70 extra=0x4B45594D since_actuation_us=Some(10183613)
+2026-09-20T02:15:32.994912Z DEBUG run_open_chain_async: awase_windows::ime_controller: [warrant-shadow] chain=async open=true origin=EventOrigin { source: SelfActuated { strategy: "engine_decision_async" }, epoch: Generation(0) } warranted
+2026-09-20T02:15:32.995033Z  INFO run_open_chain_async:imm_cross_write{open=true}: awase_windows::runtime::open_chain: [apply-ime] ImmCross async: open=true composition_active=false show_seq=0 change_seq=0 (issue #138診断)
+2026-09-20T02:15:32.995371Z DEBUG awase::journal: hook ime-mode diagnostic seq=67 elapsed_ms=32353 vk_code=240 is_down=false self_injected=true injected=false scan=112
+2026-09-20T02:15:32.995414Z DEBUG awase::journal: hook ime-mode diagnostic seq=68 elapsed_ms=32353 vk_code=242 is_down=true self_injected=true injected=true scan=112
+2026-09-20T02:15:32.997878Z DEBUG awase_windows::shadow_send_trace: [shadow-send] channel=ImeControl cmd=0x0006 lparam=1 issue_us=32355355
+2026-09-20T02:15:32.997894Z DEBUG awase_windows::ime: set_ime_open_for_target: hwnd=HWND(0x4018c0) ime_wnd=HWND(0x641178) open=true success=true send_elapsed=0ms candidate_visible=false
+2026-09-20T02:15:32.998123Z DEBUG run_open_chain_async:imm_cross_write{open=true}: awase_windows::ime: [imm-cross-actuate] hwnd=HWND(0x4018c0) open=Written conv=Some(Written)
+2026-09-20T02:15:32.998173Z DEBUG run_open_chain_async:imm_cross_write{open=true}: awase_windows::runtime::open_chain: [apply-ime] ROMAN 補完結果: Written
+2026-09-20T02:15:32.998234Z DEBUG run_open_chain_async: awase::journal: actuation decision seq=69 elapsed_ms=32356 site="DispatchImeSetOpen" caller="None" open=true chain_len=4 attempts_len=1 gate_profile="Standard" gate_kind="Gji" gate_shadow_known=true gate_shadow_on=true gate_input_mode="AssumedR
+2026-09-20T02:15:32.998686Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(1)) reason=EngineDecision}: awase::journal: ime open applied seq=70 elapsed_ms=32356 open=true outcome="AppliedWithoutSendInput" reason="EngineDecision"
+2026-09-20T02:15:32.998791Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(1)) reason=EngineDecision}: awase::journal: ime event seq=71 elapsed_ms=32356 event_kind="ImeApplySucceeded"
+2026-09-20T02:15:32.998880Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(1)) reason=EngineDecision}: awase_windows::tsf::ime_mode_fsm: [ime-mode] SetOpen(true) applied → Hiragana (belief, unconfirmed)
+2026-09-20T02:15:32.998907Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(1)) reason=EngineDecision}: awase_windows::platform: [composition] ImeEffect::SetOpen(true) → marking cold
+2026-09-20T02:15:32.998928Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(1)) reason=EngineDecision}: awase_windows::tsf::probe: [composition] marked cold reason=SetOpenTrue idle=18446744073709551615ms → next VK/TSF output will send VK_DBE_HIRA
+2026-09-20T02:15:32.998975Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(1)) reason=EngineDecision}:gji_on_event{event=ImeOn { injection_mode: Unicode, gji_idle_ms: 2203 }}: awase_windows::tsf::gji_fsm: [gji-fsm] ImeOn: already on (OnWarm), ig
+2026-09-20T02:15:32.999077Z DEBUG awase::journal: gji fsm transition seq=72 elapsed_ms=32356 trigger="ImeOn(gji_idle_ms=2203)" state_before="OnWarm" state_after="OnWarm"
+2026-09-20T02:15:33.056673Z DEBUG awase_windows::runtime::ime_refresh: Explicit intent: bypassing typing-idle guard for IME verify (idle=78ms)
+2026-09-20T02:15:33.056702Z DEBUG awase_windows::observer::ime_observer: IME snapshot: japanese=Some(true) ime_on=Some(true) romaji=None conv=Some("0x00000010") guard=false
+2026-09-20T02:15:33.056744Z DEBUG awase::journal: ime event seq=73 elapsed_ms=32414 event_kind="ObserverReported"
+2026-09-20T02:15:33.056759Z DEBUG awase::journal: ime event seq=74 elapsed_ms=32414 event_kind="InputModeObserved"
+2026-09-20T02:15:33.057074Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=true input_mode=ObservedEisu
+2026-09-20T02:15:33.057105Z  INFO awase::engine::engine: Engine deactivated (ime=true, romaji=false, japanese=true, user=true, reason=Inactive(NotRomajiInput))
+2026-09-20T02:15:33.679388Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyDown ts=33036846us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:33.679439Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:33.679506Z DEBUG awase::journal: key input seq=75 elapsed_ms=33037 vk_code=75 is_down=true injected=false key_class="Char" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=33036846 last_elapsed_ms=0
+2026-09-20T02:15:33.679640Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x4b down (queued passthrough now firing)
+2026-09-20T02:15:33.692305Z  INFO awase_windows::tsf::win_event_obs: [gji-obs] candidate SHOW #3: last_gji_write=2891ms ago
+2026-09-20T02:15:33.692421Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.4 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:33.737495Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyUp ts=33094976us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:33.737541Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:33.737608Z DEBUG awase::journal: key input seq=76 elapsed_ms=33095 vk_code=75 is_down=false injected=false key_class="Char" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=33094976 last_elapsed_ms=0
+2026-09-20T02:15:33.737750Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x4b up (queued passthrough now firing)
+2026-09-20T02:15:33.739404Z DEBUG awase_windows::platform: [gji-fsm] StartComposition (candidate SHOW)
+2026-09-20T02:15:33.739437Z DEBUG gji_on_event{event=StartComposition}: awase_windows::tsf::gji_fsm: [gji-fsm] StartComposition: OnWarm → OnComposing(AlreadyWarm)
+2026-09-20T02:15:33.739510Z DEBUG awase::journal: gji fsm transition seq=77 elapsed_ms=33097 trigger="StartComposition(candidate SHOW)" state_before="OnWarm" state_after="OnComposing(Warm)"
+2026-09-20T02:15:34.180873Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyDown ts=33538359us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:34.180924Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:34.181050Z DEBUG awase::journal: key input seq=78 elapsed_ms=33539 vk_code=27 is_down=true injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=33538359 last_elapsed_ms=0
+2026-09-20T02:15:34.181131Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b down)
+2026-09-20T02:15:34.181190Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b down (queued passthrough now firing)
+2026-09-20T02:15:34.190719Z  INFO awase_windows::tsf::win_event_obs: [gji-obs] candidate HIDE: last_gji_write=500ms ago
+2026-09-20T02:15:34.201708Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.4 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:34.247252Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyUp ts=33604564us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:34.247311Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:34.247424Z DEBUG awase::journal: key input seq=79 elapsed_ms=33605 vk_code=27 is_down=false injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=33604564 last_elapsed_ms=0
+2026-09-20T02:15:34.247533Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b up)
+2026-09-20T02:15:34.247620Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b up (queued passthrough now firing)
+2026-09-20T02:15:34.250197Z DEBUG awase_windows::platform: [gji-fsm] EndComposition (candidate HIDE) epoch=FocusEpoch(3)
+2026-09-20T02:15:34.250299Z DEBUG awase::journal: gji fsm transition seq=80 elapsed_ms=33608 trigger="EndComposition(candidate HIDE, epoch=FocusEpoch(3))" state_before="OnComposing(Warm)" state_after="OnWarm"
+2026-09-20T02:15:36.190706Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(13382491)
+2026-09-20T02:15:36.190877Z DEBUG awase::journal: hook ime-mode diagnostic seq=81 elapsed_ms=35548 vk_code=242 is_down=true self_injected=false injected=false scan=112
+2026-09-20T02:15:36.191064Z  INFO awase_windows::runtime::key_pipeline: [shadow-toggle] intent 昇格: vk=0xF2 scan=0x70 action=TurnOn kind=PhysicalImeKey injected=false true→true w_ops0=119303 x_ops0=264414 x_KB0=24.9
+2026-09-20T02:15:36.191109Z DEBUG awase::journal: ime event seq=82 elapsed_ms=35549 event_kind="UserImeSetIntent"
+2026-09-20T02:15:36.191134Z DEBUG awase_windows::runtime::key_pipeline: [shadow-toggle] no-op: vk=0xF2 action=TurnOn source=PhysicalImeKey effective_open は既に true → apply-ime 見送り
+2026-09-20T02:15:36.191165Z DEBUG awase::journal: ime event seq=83 elapsed_ms=35549 event_kind="InputModeApplied"
+2026-09-20T02:15:36.191181Z  INFO awase_windows::runtime::key_pipeline: [shadow-toggle] TurnOn (IME既にopen) + ObservedEisu → AssumedRomaji に リセット (UserTurnOnEisuReset)
+2026-09-20T02:15:36.191212Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0xF2 KeyDown ts=35548515us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:36.191248Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-20T02:15:36.191318Z DEBUG awase::journal: key input seq=84 elapsed_ms=35549 vk_code=242 is_down=true injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThroughWith" physical="Allow" repeat_count=1 last_timestamp_us=35548515 last_elapsed_ms=0
+2026-09-20T02:15:36.191371Z DEBUG awase::journal: ime event seq=85 elapsed_ms=35549 event_kind="EngineActivationSync"
+2026-09-20T02:15:36.191419Z DEBUG awase::journal: ime event seq=86 elapsed_ms=35549 event_kind="ImeApplyRequested"
+2026-09-20T02:15:36.191437Z  INFO awase_windows::runtime::key_pipeline: IME control: preconditions.ime_on = true (SetOpenRequest, origin=ActivationSync), was_open_before=true last_intent_before=Some(true) poll suspended
+2026-09-20T02:15:36.191480Z DEBUG awase_windows::runtime::key_pipeline: may_change_ime key passed through → IME refresh scheduled (20ms)
+2026-09-20T02:15:36.191515Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-flush] PassThroughWith: queue 2 effect(s) + reinject (vk=0xf2 down)
+2026-09-20T02:15:36.191674Z DEBUG execute_one{generation=Some(ApplyGeneration(2))}:dispatch_ime_set_open{open=true generation=Some(ApplyGeneration(2))}: awase_windows::runtime::executor: [dispatch-ime] ImmCross async: optimistic applied_snapshot=true (suppress send_engine_state_ime_key)
+2026-09-20T02:15:36.193085Z DEBUG execute_one{generation=Some(ApplyGeneration(2))}: awase_windows::platform: [engine-state-key] skipped (apply_ime_open aligned ime=true, profile=Standard)
+2026-09-20T02:15:36.193181Z DEBUG execute_one{generation=Some(ApplyGeneration(2))}: awase_windows::runtime::executor: [reinject] vk=0xf2 down (queued passthrough now firing)
+2026-09-20T02:15:36.193549Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=true injected=true scan=0x70 extra=0x4B45594D since_actuation_us=Some(13385343)
+2026-09-20T02:15:36.198140Z DEBUG awase::journal: hook ime-mode diagnostic seq=87 elapsed_ms=35556 vk_code=242 is_down=true self_injected=true injected=true scan=112
+2026-09-20T02:15:36.198711Z DEBUG run_open_chain_async: awase_windows::ime_controller: [warrant-shadow] chain=async open=true origin=EventOrigin { source: SelfActuated { strategy: "engine_decision_async" }, epoch: Generation(0) } warranted
+2026-09-20T02:15:36.198794Z  INFO run_open_chain_async:imm_cross_write{open=true}: awase_windows::runtime::open_chain: [apply-ime] ImmCross async: open=true composition_active=false show_seq=0 change_seq=0 (issue #138診断)
+2026-09-20T02:15:36.201751Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.0 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:36.207625Z DEBUG awase_windows::shadow_send_trace: [shadow-send] channel=ImeControl cmd=0x0006 lparam=1 issue_us=35560336
+2026-09-20T02:15:36.207642Z DEBUG awase_windows::ime: set_ime_open_for_target: hwnd=HWND(0x4018c0) ime_wnd=HWND(0x641178) open=true success=true send_elapsed=5ms candidate_visible=false
+2026-09-20T02:15:36.208267Z DEBUG run_open_chain_async:imm_cross_write{open=true}: awase_windows::ime: [imm-cross-actuate] hwnd=HWND(0x4018c0) open=Written conv=Some(Written)
+2026-09-20T02:15:36.208323Z DEBUG run_open_chain_async:imm_cross_write{open=true}: awase_windows::runtime::open_chain: [apply-ime] ROMAN 補完結果: Written
+2026-09-20T02:15:36.208385Z DEBUG run_open_chain_async: awase::journal: actuation decision seq=88 elapsed_ms=35566 site="DispatchImeSetOpen" caller="None" open=true chain_len=4 attempts_len=1 gate_profile="Standard" gate_kind="Gji" gate_shadow_known=true gate_shadow_on=true gate_input_mode="AssumedR
+2026-09-20T02:15:36.209426Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(2)) reason=EngineDecision}: awase::journal: ime open applied seq=89 elapsed_ms=35567 open=true outcome="AppliedWithoutSendInput" reason="EngineDecision"
+2026-09-20T02:15:36.209561Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(2)) reason=EngineDecision}: awase::journal: ime event seq=90 elapsed_ms=35567 event_kind="ImeApplySucceeded"
+2026-09-20T02:15:36.209589Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(2)) reason=EngineDecision}: awase_windows::tsf::ime_mode_fsm: [ime-mode] SetOpen(true) applied → Hiragana (belief, unconfirmed)
+2026-09-20T02:15:36.209616Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(2)) reason=EngineDecision}: awase_windows::platform: [composition] ImeEffect::SetOpen(true) → marking cold
+2026-09-20T02:15:36.209637Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(2)) reason=EngineDecision}: awase_windows::tsf::probe: [composition] marked cold reason=SetOpenTrue idle=18446744073709551615ms → next VK/TSF output will send VK_DBE_HIRA
+2026-09-20T02:15:36.209684Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(2)) reason=EngineDecision}:gji_on_event{event=ImeOn { injection_mode: Unicode, gji_idle_ms: 0 }}: awase_windows::tsf::gji_fsm: [gji-fsm] ImeOn: already on (OnWarm), ignor
+2026-09-20T02:15:36.209788Z DEBUG awase::journal: gji fsm transition seq=91 elapsed_ms=35567 trigger="ImeOn(gji_idle_ms=0)" state_before="OnWarm" state_after="OnWarm"
+2026-09-20T02:15:36.239451Z DEBUG awase_windows::runtime::ime_refresh: Explicit intent: bypassing typing-idle guard for IME verify (idle=47ms)
+2026-09-20T02:15:36.239502Z DEBUG awase_windows::observer::ime_observer: IME snapshot: japanese=Some(true) ime_on=Some(true) romaji=Some(true) conv=Some("0x00000019") guard=false
+2026-09-20T02:15:36.239592Z DEBUG awase::journal: ime event seq=92 elapsed_ms=35597 event_kind="ObserverReported"
+2026-09-20T02:15:36.239628Z DEBUG awase::journal: ime event seq=93 elapsed_ms=35597 event_kind="InputModeObserved"
+2026-09-20T02:15:39.005917Z DEBUG awase_windows::runtime::key_pipeline: [shadow-toggle] vk=0x1DはFSM delegate所有 → belief書き込み/actuationをスキップ w_ops0=119305 x_ops0=264418 x_KB0=24.9
+2026-09-20T02:15:39.005939Z DEBUG awase_windows::runtime::key_pipeline: [shadow-toggle] no-op: vk=0x1D action=Toggle source=PhysicalImeKey effective_open は既に true → apply-ime 見送り
+2026-09-20T02:15:39.005959Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1D KeyDown ts=38363415us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=Some(38363402) r_thumb=None [diag-
+2026-09-20T02:15:39.006041Z DEBUG awase::journal: key input seq=94 elapsed_ms=38364 vk_code=29 is_down=true injected=false key_class="LeftThumb" state_before="Idle" state_after="PendingThumb(vk=0x1D,left=true)" decision="Consume" physical="Allow" repeat_count=1 last_timestamp_us=38363415 last_elapse
+2026-09-20T02:15:39.085179Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1D KeyUp ts=38442580us delay=0ms state=PendingThumb(vk=0x1D,left=true) mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_th
+2026-09-20T02:15:39.085238Z  INFO awase::engine::engine: IME open axis delegated (solo tap, key semantics absorption) → false (origin=ExplicitUserAction)
+2026-09-20T02:15:39.085274Z DEBUG awase::journal: key input seq=95 elapsed_ms=38443 vk_code=29 is_down=false injected=false key_class="LeftThumb" state_before="PendingThumb(vk=0x1D,left=true)" state_after="Idle" decision="Consume" physical="Allow" repeat_count=1 last_timestamp_us=38442580 last_elaps
+2026-09-20T02:15:39.085354Z DEBUG awase::journal: ime event seq=96 elapsed_ms=38443 event_kind="UserImeSetIntent"
+2026-09-20T02:15:39.085368Z DEBUG awase::journal: ime event seq=97 elapsed_ms=38443 event_kind="ImeApplyRequested"
+2026-09-20T02:15:39.085377Z  INFO awase_windows::runtime::key_pipeline: IME control: preconditions.ime_on = false (SetOpenRequest, origin=ExplicitUserAction), was_open_before=true last_intent_before=Some(true) poll suspended
+2026-09-20T02:15:39.085811Z DEBUG execute_one{generation=Some(ApplyGeneration(3))}:dispatch_ime_set_open{open=false generation=Some(ApplyGeneration(3))}: awase_windows::runtime::executor: [dispatch-ime] ImmCross async: optimistic applied_snapshot=false (suppress send_engine_state_ime_key)
+2026-09-20T02:15:39.086936Z DEBUG execute_one{generation=Some(ApplyGeneration(3))}: awase_windows::platform: [engine-state-key] skipped (apply_ime_open aligned ime=false, profile=Standard)
+2026-09-20T02:15:39.092179Z DEBUG run_open_chain_async: awase_windows::ime_controller: [warrant-shadow] chain=async open=false origin=EventOrigin { source: SelfActuated { strategy: "engine_decision_async" }, epoch: Generation(0) } warranted
+2026-09-20T02:15:39.092266Z  INFO run_open_chain_async:imm_cross_write{open=false}: awase_windows::runtime::open_chain: [apply-ime] ImmCross async: open=false composition_active=false show_seq=0 change_seq=0 (issue #138診断)
+2026-09-20T02:15:39.099856Z DEBUG awase_windows::shadow_send_trace: [shadow-send] channel=ImeControl cmd=0x0006 lparam=0 issue_us=38453617
+2026-09-20T02:15:39.099873Z DEBUG awase_windows::ime: set_ime_open_for_target: hwnd=HWND(0x4018c0) ime_wnd=HWND(0x641178) open=false success=true send_elapsed=3ms candidate_visible=false
+2026-09-20T02:15:39.102825Z DEBUG run_open_chain_async:imm_cross_write{open=false}: awase_windows::ime: [imm-cross-actuate] hwnd=HWND(0x4018c0) open=Written conv=None
+2026-09-20T02:15:39.102936Z DEBUG run_open_chain_async: awase::journal: actuation decision seq=98 elapsed_ms=38460 site="DispatchImeSetOpen" caller="None" open=false chain_len=4 attempts_len=1 gate_profile="Standard" gate_kind="Gji" gate_shadow_known=true gate_shadow_on=true gate_input_mode="Observe
+2026-09-20T02:15:39.104776Z DEBUG on_ime_apply_complete{open=false outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(3)) reason=EngineDecision}: awase::journal: ime open applied seq=99 elapsed_ms=38462 open=false outcome="AppliedWithoutSendInput" reason="EngineDecision"
+2026-09-20T02:15:39.105140Z DEBUG on_ime_apply_complete{open=false outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(3)) reason=EngineDecision}: awase::journal: ime event seq=100 elapsed_ms=38463 event_kind="ImeApplySucceeded"
+2026-09-20T02:15:39.105171Z DEBUG on_ime_apply_complete{open=false outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(3)) reason=EngineDecision}: awase_windows::tsf::ime_mode_fsm: [ime-mode] SetOpen(false) applied → Off (belief, unconfirmed)
+2026-09-20T02:15:39.105203Z DEBUG on_ime_apply_complete{open=false outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(3)) reason=EngineDecision}: awase_windows::platform: [composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)
+2026-09-20T02:15:39.105225Z DEBUG on_ime_apply_complete{open=false outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(3)) reason=EngineDecision}: awase_windows::tsf::probe: [composition] marked cold reason=SetOpenFalse idle=18446744073709551615ms → next VK/TSF output will send VK_DBE_HI
+2026-09-20T02:15:39.106264Z DEBUG awase::journal: gji fsm transition seq=101 elapsed_ms=38463 trigger="ImeOff" state_before="OnWarm" state_after="OffCold"
+2026-09-20T02:15:39.155476Z DEBUG awase_windows::runtime::ime_refresh: Explicit intent: bypassing typing-idle guard for IME verify (idle=63ms)
+2026-09-20T02:15:39.155538Z DEBUG awase_windows::observer::ime_observer: IME snapshot: japanese=Some(true) ime_on=Some(false) romaji=Some(true) conv=Some("0x00000019") guard=false
+2026-09-20T02:15:39.155663Z DEBUG awase::journal: ime event seq=102 elapsed_ms=38513 event_kind="ObserverReported"
+2026-09-20T02:15:39.155706Z DEBUG awase::journal: ime event seq=103 elapsed_ms=38513 event_kind="InputModeObserved"
+2026-09-20T02:15:39.691467Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyDown ts=39048904us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:39.691576Z DEBUG awase::journal: key input seq=104 elapsed_ms=39049 vk_code=75 is_down=true injected=false key_class="Char" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=39048904 last_elapsed_ms=0
+2026-09-20T02:15:39.691805Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x4b down (queued passthrough now firing)
+2026-09-20T02:15:39.753414Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyUp ts=39110974us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:39.753471Z DEBUG awase::journal: key input seq=105 elapsed_ms=39111 vk_code=75 is_down=false injected=false key_class="Char" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=39110974 last_elapsed_ms=0
+2026-09-20T02:15:39.753686Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x4b up (queued passthrough now firing)
+2026-09-20T02:15:40.189313Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyDown ts=39546720us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:40.189435Z DEBUG awase::journal: key input seq=106 elapsed_ms=39547 vk_code=27 is_down=true injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=39546720 last_elapsed_ms=0
+2026-09-20T02:15:40.189553Z DEBUG execute_from_hook: awase_windows::tsf::probe: [composition] marked cold reason=PassthroughConfirmKey idle=18446744073709551615ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup
+2026-09-20T02:15:40.189594Z DEBUG execute_from_hook: awase_windows::tsf::probe: [mark-send] last_send_ms=346574234
+2026-09-20T02:15:40.189672Z DEBUG execute_from_hook: awase_windows::platform: [composition-fsm] EmitWarmup (ConfirmKeyDown)
+2026-09-20T02:15:40.189703Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b down)
+2026-09-20T02:15:40.189742Z DEBUG awase::journal: gji fsm transition seq=107 elapsed_ms=39547 trigger="CompositionReset(gji_idle_ms=3984)" state_before="OffCold" state_after="OffCold"
+2026-09-20T02:15:40.189836Z DEBUG awase_windows::runtime::executor: [reinject-guard] suspending drain for 50ms (vk=0x1b)
+2026-09-20T02:15:40.249791Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b down (queued passthrough now firing)
+2026-09-20T02:15:40.249946Z DEBUG execute_one{generation=None}: awase_windows::platform: [composition] reinject KeyDown vk=0x1b → marking cold + eager warmup
+2026-09-20T02:15:40.250043Z DEBUG execute_one{generation=None}: awase_windows::tsf::probe: [composition] marked cold reason=ReinjectConfirmKey idle=62ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup
+2026-09-20T02:15:40.250065Z DEBUG execute_one{generation=None}: awase_windows::tsf::probe: [mark-send] last_send_ms=346574296
+2026-09-20T02:15:40.256204Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyUp ts=39610521us delay=3ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:40.256343Z DEBUG awase::journal: key input seq=109 elapsed_ms=39614 vk_code=27 is_down=false injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=39610521 last_elapsed_ms=0
+2026-09-20T02:15:40.256515Z DEBUG execute_from_hook: awase_windows::runtime::transport: [relay-defer] PassThrough deferred: output in-flight (0ms ago), reinject(vk=0x1b up)
+2026-09-20T02:15:40.256625Z DEBUG awase::journal: gji fsm transition seq=108 elapsed_ms=39608 trigger="CompositionReset(gji_idle_ms=4046)" state_before="OffCold" state_after="OffCold"
+2026-09-20T02:15:40.257709Z DEBUG awase_windows::runtime::executor: [reinject-guard] suspending drain for 34ms (vk=0x1b)
+2026-09-20T02:15:40.313573Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b up (queued passthrough now firing)
+2026-09-20T02:15:42.188721Z  INFO awase_windows::runtime::key_pipeline: [shadow-toggle] intent 昇格: vk=0x1D scan=0x7B action=Toggle kind=PhysicalImeKey injected=false false→true w_ops0=119305 x_ops0=264418 x_KB0=24.9
+2026-09-20T02:15:42.188788Z DEBUG awase::journal: ime event seq=110 elapsed_ms=41546 event_kind="UserImeSetIntent"
+2026-09-20T02:15:42.188835Z DEBUG awase_windows::runtime::key_pipeline: Shadow IME toggle: OFF → ON (vk=0x1D, source=PhysicalImeKey)
+2026-09-20T02:15:42.188870Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1D KeyDown ts=41546048us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=Some(41546033) r_thumb=None [diag-
+2026-09-20T02:15:42.188910Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-20T02:15:42.188999Z DEBUG awase::journal: key input seq=111 elapsed_ms=41547 vk_code=29 is_down=true injected=false key_class="LeftThumb" state_before="Idle" state_after="PendingThumb(vk=0x1D,left=true)" decision="Consume" physical="Allow" repeat_count=1 last_timestamp_us=41546048 last_elaps
+2026-09-20T02:15:42.189112Z DEBUG awase::journal: ime event seq=112 elapsed_ms=41547 event_kind="EngineActivationSync"
+2026-09-20T02:15:42.189144Z DEBUG awase::journal: ime event seq=113 elapsed_ms=41547 event_kind="ImeApplyRequested"
+2026-09-20T02:15:42.189159Z  INFO awase_windows::runtime::key_pipeline: IME control: preconditions.ime_on = true (SetOpenRequest, origin=ActivationSync), was_open_before=true last_intent_before=Some(true) poll suspended
+2026-09-20T02:15:42.189424Z DEBUG execute_one{generation=Some(ApplyGeneration(4))}:dispatch_ime_set_open{open=true generation=Some(ApplyGeneration(4))}: awase_windows::runtime::executor: [dispatch-ime] ImmCross async: optimistic applied_snapshot=true (suppress send_engine_state_ime_key)
+2026-09-20T02:15:42.190493Z DEBUG execute_one{generation=Some(ApplyGeneration(4))}: awase_windows::platform: [engine-state-key] skipped (apply_ime_open aligned ime=true, profile=Standard)
+2026-09-20T02:15:42.192475Z DEBUG run_open_chain_async: awase_windows::ime_controller: [warrant-shadow] chain=async open=true origin=EventOrigin { source: SelfActuated { strategy: "engine_decision_async" }, epoch: Generation(0) } warranted
+2026-09-20T02:15:42.192584Z  INFO run_open_chain_async:imm_cross_write{open=true}: awase_windows::runtime::open_chain: [apply-ime] ImmCross async: open=true composition_active=false show_seq=0 change_seq=0 (issue #138診断)
+2026-09-20T02:15:42.196628Z DEBUG awase_windows::shadow_send_trace: [shadow-send] channel=ImeControl cmd=0x0006 lparam=1 issue_us=41552692
+2026-09-20T02:15:42.196645Z DEBUG awase_windows::ime: set_ime_open_for_target: hwnd=HWND(0x4018c0) ime_wnd=HWND(0x641178) open=true success=true send_elapsed=1ms candidate_visible=false
+2026-09-20T02:15:42.201559Z DEBUG run_open_chain_async:imm_cross_write{open=true}: awase_windows::ime: [imm-cross-actuate] hwnd=HWND(0x4018c0) open=Written conv=Some(Written)
+2026-09-20T02:15:42.201627Z DEBUG run_open_chain_async:imm_cross_write{open=true}: awase_windows::runtime::open_chain: [apply-ime] ROMAN 補完結果: Written
+2026-09-20T02:15:42.201692Z DEBUG run_open_chain_async: awase::journal: actuation decision seq=114 elapsed_ms=41559 site="DispatchImeSetOpen" caller="None" open=true chain_len=4 attempts_len=1 gate_profile="Standard" gate_kind="Gji" gate_shadow_known=true gate_shadow_on=false gate_input_mode="Observ
+2026-09-20T02:15:42.204219Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(4)) reason=EngineDecision}: awase::journal: ime open applied seq=115 elapsed_ms=41562 open=true outcome="AppliedWithoutSendInput" reason="EngineDecision"
+2026-09-20T02:15:42.204507Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(4)) reason=EngineDecision}: awase::journal: ime event seq=116 elapsed_ms=41562 event_kind="ImeApplySucceeded"
+2026-09-20T02:15:42.204547Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(4)) reason=EngineDecision}: awase_windows::tsf::ime_mode_fsm: [ime-mode] SetOpen(true) applied → Hiragana (belief, unconfirmed)
+2026-09-20T02:15:42.204575Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(4)) reason=EngineDecision}: awase_windows::platform: [composition] ImeEffect::SetOpen(true) → marking cold
+2026-09-20T02:15:42.204596Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(4)) reason=EngineDecision}: awase_windows::tsf::probe: [composition] marked cold reason=SetOpenTrue idle=1954ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup
+2026-09-20T02:15:42.204643Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(4)) reason=EngineDecision}:gji_on_event{event=ImeOn { injection_mode: Unicode, gji_idle_ms: 6000 }}: awase_windows::tsf::gji_fsm: [gji-fsm] ImeOn gji_idle=6000ms → Short
+2026-09-20T02:15:42.204689Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(4)) reason=EngineDecision}: awase_windows::platform: [gji-fsm] StartProbe probe_id=ProbeId(2) forces_f2=false long=false
+2026-09-20T02:15:42.204855Z DEBUG awase::journal: gji fsm transition seq=117 elapsed_ms=41562 trigger="ImeOn(gji_idle_ms=6000)" state_before="OffCold" state_after="OnCold(Short)"
+2026-09-20T02:15:42.204876Z DEBUG awase::journal: tsf probe started seq=118 elapsed_ms=41562 source="GjiAction::StartProbe" cold_seq=0 probe_id=2 probe_id_present=true gji_state="OnCold(Short)" consecutive_at_start=0 pending_deferred_len=0
+2026-09-20T02:15:42.204897Z DEBUG awase::journal: gji fsm transition seq=119 elapsed_ms=41562 trigger="WarmupComplete(unicode)" state_before="OnCold(Short)" state_after="OnWarm"
+2026-09-20T02:15:42.204912Z DEBUG awase::journal: tsf probe completed seq=120 elapsed_ms=41562 outcome="UnicodeImmediate" cold_seq=18446744073709551615 cold_seq_present=false probe_id=2 probe_id_present=true duration_ms=0 tick_count=0 gji_state="OnWarm"
+2026-09-20T02:15:42.233920Z DEBUG awase_windows::runtime::ime_refresh: Explicit intent: bypassing typing-idle guard for IME verify (idle=47ms)
+2026-09-20T02:15:42.233950Z DEBUG awase_windows::observer::ime_observer: IME snapshot: japanese=Some(true) ime_on=Some(true) romaji=Some(true) conv=Some("0x00000019") guard=false
+2026-09-20T02:15:42.233994Z DEBUG awase::journal: ime event seq=121 elapsed_ms=41592 event_kind="ObserverReported"
+2026-09-20T02:15:42.234009Z DEBUG awase::journal: ime event seq=122 elapsed_ms=41592 event_kind="InputModeObserved"
+2026-09-20T02:15:42.248128Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1D KeyUp ts=41605596us delay=0ms state=PendingThumb(vk=0x1D,left=true) mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_th
+2026-09-20T02:15:42.248253Z DEBUG awase::journal: key input seq=123 elapsed_ms=41606 vk_code=29 is_down=false injected=false key_class="LeftThumb" state_before="PendingThumb(vk=0x1D,left=true)" state_after="Idle" decision="Consume" physical="Allow" repeat_count=1 last_timestamp_us=41605596 last_elap
+2026-09-20T02:15:42.870584Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyDown ts=42228054us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:42.870736Z DEBUG awase::journal: key input seq=124 elapsed_ms=42228 vk_code=75 is_down=true injected=false key_class="Char" state_before="Idle" state_after="PendingChar(vk=0x4B)" decision="Consume" physical="Allow" repeat_count=1 last_timestamp_us=42228054 last_elapsed_ms=0
+2026-09-20T02:15:42.931482Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyUp ts=42288872us delay=0ms state=PendingChar(vk=0x4B) mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [d
+2026-09-20T02:15:42.931654Z DEBUG awase::journal: key input seq=125 elapsed_ms=42289 vk_code=75 is_down=false injected=false key_class="Char" state_before="PendingChar(vk=0x4B)" state_after="Idle" decision="Consume" physical="Allow" repeat_count=1 last_timestamp_us=42288872 last_elapsed_ms=0
+2026-09-20T02:15:42.931964Z DEBUG execute_one{generation=None}: awase_windows::output: send_keys: mode=Unicode actions=[Char('き')] prev_elapsed=2688ms
+2026-09-20T02:15:42.932020Z DEBUG execute_one{generation=None}: awase_windows::tsf::probe: [mark-send] last_send_ms=346576984
+2026-09-20T02:15:42.932061Z DEBUG execute_one{generation=None}: awase_windows::output:   → Char('き') via Unicode
+2026-09-20T02:15:42.937656Z DEBUG execute_one{generation=None}: awase_windows::tsf::probe: [mark-send] last_send_ms=346576984
+2026-09-20T02:15:43.480585Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyDown ts=42837692us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:43.480711Z DEBUG awase::journal: key input seq=126 elapsed_ms=42838 vk_code=27 is_down=true injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=42837692 last_elapsed_ms=0
+2026-09-20T02:15:43.480809Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b down)
+2026-09-20T02:15:43.481118Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b down (queued passthrough now firing)
+2026-09-20T02:15:43.484886Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyUp ts=42839563us delay=3ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:43.485027Z DEBUG awase::journal: key input seq=127 elapsed_ms=42843 vk_code=27 is_down=false injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=42839563 last_elapsed_ms=0
+2026-09-20T02:15:43.485133Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b up)
+2026-09-20T02:15:43.485326Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b up (queued passthrough now firing)
+2026-09-20T02:15:45.529360Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(22721144)
+2026-09-20T02:15:45.529615Z DEBUG awase::journal: hook ime-mode diagnostic seq=128 elapsed_ms=44887 vk_code=242 is_down=true self_injected=false injected=false scan=112
+2026-09-20T02:15:45.530112Z  INFO awase_windows::runtime::key_pipeline: [shadow-toggle] intent 昇格: vk=0xF2 scan=0x70 action=TurnOn kind=PhysicalImeKey injected=false true→true w_ops0=119305 x_ops0=264418 x_KB0=24.9
+2026-09-20T02:15:45.530163Z DEBUG awase::journal: ime event seq=129 elapsed_ms=44888 event_kind="UserImeSetIntent"
+2026-09-20T02:15:45.530234Z DEBUG awase_windows::runtime::key_pipeline: [shadow-toggle] no-op: vk=0xF2 action=TurnOn source=PhysicalImeKey effective_open は既に true → apply-ime 見送り
+2026-09-20T02:15:45.530363Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0xF2 KeyDown ts=44887505us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:45.530479Z DEBUG awase::journal: key input seq=130 elapsed_ms=44888 vk_code=242 is_down=true injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=44887505 last_elapsed_ms=0
+2026-09-20T02:15:45.530543Z DEBUG awase_windows::runtime::key_pipeline: may_change_ime key passed through → IME refresh scheduled (20ms)
+2026-09-20T02:15:45.530616Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0xf2 down)
+2026-09-20T02:15:45.530706Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0xf2 down (queued passthrough now firing)
+2026-09-20T02:15:45.533051Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=true injected=true scan=0x70 extra=0x4B45594D since_actuation_us=Some(22724838)
+2026-09-20T02:15:45.534916Z DEBUG awase::journal: hook ime-mode diagnostic seq=131 elapsed_ms=44892 vk_code=242 is_down=true self_injected=true injected=true scan=112
+2026-09-20T02:15:45.563896Z DEBUG awase_windows::runtime::ime_refresh: Explicit intent: bypassing typing-idle guard for IME verify (idle=31ms)
+2026-09-20T02:15:45.563946Z DEBUG awase_windows::observer::ime_observer: IME snapshot: japanese=Some(true) ime_on=Some(true) romaji=Some(true) conv=Some("0x00000019") guard=false
+2026-09-20T02:15:45.564033Z DEBUG awase::journal: ime event seq=132 elapsed_ms=44922 event_kind="ObserverReported"
+2026-09-20T02:15:45.564068Z DEBUG awase::journal: ime event seq=133 elapsed_ms=44922 event_kind="InputModeObserved"
+2026-09-20T02:15:46.068562Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyDown ts=45425890us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:46.068712Z DEBUG awase::journal: key input seq=134 elapsed_ms=45426 vk_code=75 is_down=true injected=false key_class="Char" state_before="Idle" state_after="PendingChar(vk=0x4B)" decision="Consume" physical="Allow" repeat_count=1 last_timestamp_us=45425890 last_elapsed_ms=0
+2026-09-20T02:15:46.129302Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyUp ts=45486802us delay=0ms state=PendingChar(vk=0x4B) mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [d
+2026-09-20T02:15:46.129411Z DEBUG awase::journal: key input seq=135 elapsed_ms=45487 vk_code=75 is_down=false injected=false key_class="Char" state_before="PendingChar(vk=0x4B)" state_after="Idle" decision="Consume" physical="Allow" repeat_count=1 last_timestamp_us=45486802 last_elapsed_ms=0
+2026-09-20T02:15:46.129556Z DEBUG execute_one{generation=None}: awase_windows::output: send_keys: mode=Unicode actions=[Char('き')] prev_elapsed=3187ms
+2026-09-20T02:15:46.129576Z DEBUG execute_one{generation=None}: awase_windows::tsf::probe: [mark-send] last_send_ms=346580171
+2026-09-20T02:15:46.129590Z DEBUG execute_one{generation=None}: awase_windows::output:   → Char('き') via Unicode
+2026-09-20T02:15:46.131687Z DEBUG execute_one{generation=None}: awase_windows::tsf::probe: [mark-send] last_send_ms=346580171
+2026-09-20T02:15:46.132608Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+1 w_KB=+0.0 (r_ops=+3 x_ops=+2 x_KB=+0.0)
+2026-09-20T02:15:46.149132Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+1 w_KB=+0.3 (r_ops=+1 x_ops=+2 x_KB=+0.0)
+2026-09-20T02:15:46.151671Z  INFO awase_windows::tsf::win_event_obs: [gji-obs] candidate SHOW #4: last_gji_write=0ms ago
+2026-09-20T02:15:46.568977Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyDown ts=45926101us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:46.569081Z DEBUG awase::journal: key input seq=136 elapsed_ms=45927 vk_code=27 is_down=true injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=45926101 last_elapsed_ms=0
+2026-09-20T02:15:46.569171Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b down)
+2026-09-20T02:15:46.569498Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b down (queued passthrough now firing)
+2026-09-20T02:15:46.572589Z DEBUG awase_windows::platform: [gji-fsm] StartComposition (candidate SHOW)
+2026-09-20T02:15:46.572621Z DEBUG gji_on_event{event=StartComposition}: awase_windows::tsf::gji_fsm: [gji-fsm] StartComposition: OnWarm → OnComposing(AlreadyWarm)
+2026-09-20T02:15:46.572692Z DEBUG awase::journal: gji fsm transition seq=137 elapsed_ms=45930 trigger="StartComposition(candidate SHOW)" state_before="OnWarm" state_after="OnComposing(Warm)"
+2026-09-20T02:15:46.577333Z  INFO awase_windows::tsf::win_event_obs: [gji-obs] candidate HIDE: last_gji_write=422ms ago
+2026-09-20T02:15:46.581122Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.3 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:46.629176Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyUp ts=45986511us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:46.629289Z DEBUG awase::journal: key input seq=138 elapsed_ms=45987 vk_code=27 is_down=false injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=45986511 last_elapsed_ms=0
+2026-09-20T02:15:46.629396Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b up)
+2026-09-20T02:15:46.629477Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b up (queued passthrough now firing)
+2026-09-20T02:15:46.632483Z DEBUG awase_windows::platform: [gji-fsm] EndComposition (candidate HIDE) epoch=FocusEpoch(4)
+2026-09-20T02:15:46.632774Z DEBUG awase::journal: gji fsm transition seq=139 elapsed_ms=45990 trigger="EndComposition(candidate HIDE, epoch=FocusEpoch(4))" state_before="OnComposing(Warm)" state_after="OnWarm"
+2026-09-20T02:15:48.623945Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(25815732)
+2026-09-20T02:15:48.624048Z DEBUG awase::journal: hook ime-mode diagnostic seq=140 elapsed_ms=47982 vk_code=242 is_down=true self_injected=false injected=false scan=112
+2026-09-20T02:15:48.624316Z  INFO awase_windows::runtime::key_pipeline: [shadow-toggle] intent 昇格: vk=0xF2 scan=0x70 action=TurnOn kind=PhysicalImeKey injected=false true→true w_ops0=119309 x_ops0=264426 x_KB0=24.9
+2026-09-20T02:15:48.624361Z DEBUG awase::journal: ime event seq=141 elapsed_ms=47982 event_kind="UserImeSetIntent"
+2026-09-20T02:15:48.624385Z DEBUG awase_windows::runtime::key_pipeline: [shadow-toggle] no-op: vk=0xF2 action=TurnOn source=PhysicalImeKey effective_open は既に true → apply-ime 見送り
+2026-09-20T02:15:48.624437Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0xF2 KeyDown ts=47981863us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:48.624529Z DEBUG awase::journal: key input seq=142 elapsed_ms=47982 vk_code=242 is_down=true injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=47981863 last_elapsed_ms=0
+2026-09-20T02:15:48.624594Z DEBUG awase_windows::runtime::key_pipeline: may_change_ime key passed through → IME refresh scheduled (20ms)
+2026-09-20T02:15:48.624669Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0xf2 down)
+2026-09-20T02:15:48.624750Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0xf2 down (queued passthrough now firing)
+2026-09-20T02:15:48.626079Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=true injected=true scan=0x70 extra=0x4B45594D since_actuation_us=Some(25817876)
+2026-09-20T02:15:48.627379Z DEBUG awase::journal: hook ime-mode diagnostic seq=143 elapsed_ms=47985 vk_code=242 is_down=true self_injected=true injected=true scan=112
+2026-09-20T02:15:48.638893Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.0 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:48.656913Z DEBUG awase_windows::runtime::ime_refresh: Explicit intent: bypassing typing-idle guard for IME verify (idle=32ms)
+2026-09-20T02:15:48.656961Z DEBUG awase_windows::observer::ime_observer: IME snapshot: japanese=Some(true) ime_on=Some(true) romaji=None conv=Some("0x00000010") guard=false
+2026-09-20T02:15:48.657046Z DEBUG awase::journal: ime event seq=144 elapsed_ms=48015 event_kind="ObserverReported"
+2026-09-20T02:15:48.657082Z DEBUG awase::journal: ime event seq=145 elapsed_ms=48015 event_kind="InputModeObserved"
+2026-09-20T02:15:48.657137Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=true input_mode=ObservedEisu
+2026-09-20T02:15:48.657258Z  INFO awase::engine::engine: Engine deactivated (ime=true, romaji=false, japanese=true, user=true, reason=Inactive(NotRomajiInput))
+2026-09-20T02:15:51.128751Z DEBUG awase_windows::runtime::key_pipeline: [shadow-toggle] vk=0x1DはFSM delegate所有 → belief書き込み/actuationをスキップ w_ops0=119311 x_ops0=264430 x_KB0=24.9
+2026-09-20T02:15:51.128789Z DEBUG awase_windows::runtime::key_pipeline: [shadow-toggle] no-op: vk=0x1D action=Toggle source=PhysicalImeKey effective_open は既に true → apply-ime 見送り
+2026-09-20T02:15:51.128819Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1D KeyDown ts=50486175us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=Some(50486162) r_thumb=None [diag-
+2026-09-20T02:15:51.128858Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:51.128933Z DEBUG awase::journal: key input seq=146 elapsed_ms=50486 vk_code=29 is_down=true injected=false key_class="LeftThumb" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=50486175 last_elapsed_ms=0
+2026-09-20T02:15:51.129083Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1d down (queued passthrough now firing)
+2026-09-20T02:15:51.142205Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.0 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:51.193125Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1D KeyUp ts=50550550us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:51.193173Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:51.193242Z DEBUG awase::journal: key input seq=147 elapsed_ms=50551 vk_code=29 is_down=false injected=false key_class="LeftThumb" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=50550550 last_elapsed_ms=0
+2026-09-20T02:15:51.193383Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1d up (queued passthrough now firing)
+2026-09-20T02:15:51.814071Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyDown ts=51171542us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:51.814147Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:51.814225Z DEBUG awase::journal: key input seq=148 elapsed_ms=51172 vk_code=75 is_down=true injected=false key_class="Char" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=51171542 last_elapsed_ms=0
+2026-09-20T02:15:51.814406Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x4b down (queued passthrough now firing)
+2026-09-20T02:15:51.877200Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyUp ts=51234646us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:51.877245Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:51.877310Z DEBUG awase::journal: key input seq=149 elapsed_ms=51235 vk_code=75 is_down=false injected=false key_class="Char" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=51234646 last_elapsed_ms=0
+2026-09-20T02:15:51.877478Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x4b up (queued passthrough now firing)
+2026-09-20T02:15:52.312263Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyDown ts=51669636us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:52.312315Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:52.312384Z DEBUG awase::journal: key input seq=150 elapsed_ms=51670 vk_code=27 is_down=true injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=51669636 last_elapsed_ms=0
+2026-09-20T02:15:52.312476Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b down)
+2026-09-20T02:15:52.312549Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b down (queued passthrough now firing)
+2026-09-20T02:15:52.371661Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyUp ts=51729102us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:52.371712Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:52.371788Z DEBUG awase::journal: key input seq=151 elapsed_ms=51729 vk_code=27 is_down=false injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=51729102 last_elapsed_ms=0
+2026-09-20T02:15:52.371885Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b up)
+2026-09-20T02:15:52.372007Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b up (queued passthrough now firing)
+2026-09-20T02:15:54.311832Z DEBUG awase_windows::runtime::key_pipeline: [shadow-toggle] vk=0x1DはFSM delegate所有 → belief書き込み/actuationをスキップ w_ops0=119313 x_ops0=264434 x_KB0=24.9
+2026-09-20T02:15:54.311870Z DEBUG awase_windows::runtime::key_pipeline: [shadow-toggle] no-op: vk=0x1D action=Toggle source=PhysicalImeKey effective_open は既に true → apply-ime 見送り
+2026-09-20T02:15:54.311906Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1D KeyDown ts=53669295us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=Some(53669283) r_thumb=None [diag-
+2026-09-20T02:15:54.311945Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:54.312024Z DEBUG awase::journal: key input seq=152 elapsed_ms=53670 vk_code=29 is_down=true injected=false key_class="LeftThumb" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=53669295 last_elapsed_ms=0
+2026-09-20T02:15:54.312176Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1d down (queued passthrough now firing)
+2026-09-20T02:15:54.324770Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.0 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:54.373433Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1D KeyUp ts=53730797us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:54.373464Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:54.373503Z DEBUG awase::journal: key input seq=153 elapsed_ms=53731 vk_code=29 is_down=false injected=false key_class="LeftThumb" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=53730797 last_elapsed_ms=0
+2026-09-20T02:15:54.373697Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1d up (queued passthrough now firing)
+2026-09-20T02:15:54.996873Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyDown ts=54354290us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:54.996924Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:54.996994Z DEBUG awase::journal: key input seq=154 elapsed_ms=54355 vk_code=75 is_down=true injected=false key_class="Char" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=54354290 last_elapsed_ms=0
+2026-09-20T02:15:54.997131Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x4b down (queued passthrough now firing)
+2026-09-20T02:15:55.008014Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.4 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:55.023274Z  INFO awase_windows::tsf::win_event_obs: [gji-obs] candidate SHOW #5: last_gji_write=16ms ago
+2026-09-20T02:15:55.072441Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyUp ts=54429904us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:55.072487Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:55.072554Z DEBUG awase::journal: key input seq=155 elapsed_ms=54430 vk_code=75 is_down=false injected=false key_class="Char" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=54429904 last_elapsed_ms=0
+2026-09-20T02:15:55.072747Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x4b up (queued passthrough now firing)
+2026-09-20T02:15:55.074461Z DEBUG awase_windows::platform: [gji-fsm] StartComposition (candidate SHOW)
+2026-09-20T02:15:55.074493Z DEBUG gji_on_event{event=StartComposition}: awase_windows::tsf::gji_fsm: [gji-fsm] StartComposition: OnWarm → OnComposing(AlreadyWarm)
+2026-09-20T02:15:55.074576Z DEBUG awase::journal: gji fsm transition seq=156 elapsed_ms=54432 trigger="StartComposition(candidate SHOW)" state_before="OnWarm" state_after="OnComposing(Warm)"
+2026-09-20T02:15:55.493519Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyDown ts=54851010us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:55.493565Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:55.493621Z DEBUG awase::journal: key input seq=157 elapsed_ms=54851 vk_code=27 is_down=true injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=54851010 last_elapsed_ms=0
+2026-09-20T02:15:55.493694Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b down)
+2026-09-20T02:15:55.493748Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b down (queued passthrough now firing)
+2026-09-20T02:15:55.503360Z  INFO awase_windows::tsf::win_event_obs: [gji-obs] candidate HIDE: last_gji_write=484ms ago
+2026-09-20T02:15:55.507453Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.4 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:55.557733Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyUp ts=54915116us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:55.557785Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:55.557865Z DEBUG awase::journal: key input seq=158 elapsed_ms=54915 vk_code=27 is_down=false injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=54915116 last_elapsed_ms=0
+2026-09-20T02:15:55.557972Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b up)
+2026-09-20T02:15:55.558058Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b up (queued passthrough now firing)
+2026-09-20T02:15:55.560723Z DEBUG awase_windows::platform: [gji-fsm] EndComposition (candidate HIDE) epoch=FocusEpoch(5)
+2026-09-20T02:15:55.560869Z DEBUG awase::journal: gji fsm transition seq=159 elapsed_ms=54918 trigger="EndComposition(candidate HIDE, epoch=FocusEpoch(5))" state_before="OnComposing(Warm)" state_after="OnWarm"
+2026-09-20T02:15:57.501047Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF0 up self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(34692828)
+2026-09-20T02:15:57.501253Z DEBUG awase::journal: hook ime-mode diagnostic seq=160 elapsed_ms=56859 vk_code=240 is_down=false self_injected=false injected=false scan=112
+2026-09-20T02:15:57.501349Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(34693147)
+2026-09-20T02:15:57.501451Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0xF0 KeyUp ts=56858881us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:57.501488Z DEBUG awase::engine::engine: [diag-engine-active] ime_on=true なのに非活性: reason=Inactive(NotRomajiInput) romaji_capable=false japanese=true user_enabled=true was_active=false input_mode=ObservedEisu
+2026-09-20T02:15:57.501615Z DEBUG awase::journal: key input seq=161 elapsed_ms=56859 vk_code=240 is_down=false injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Suppress" repeat_count=1 last_timestamp_us=56858881 last_elapsed_ms=0
+2026-09-20T02:15:57.501669Z DEBUG awase_windows::runtime::key_pipeline: [imm-cross] key suppress vk=0xf0 KeyUp (physical disposition)
+2026-09-20T02:15:57.501723Z DEBUG awase::journal: hook ime-mode diagnostic seq=162 elapsed_ms=56859 vk_code=242 is_down=true self_injected=false injected=false scan=112
+2026-09-20T02:15:57.501805Z  INFO awase_windows::runtime::key_pipeline: [shadow-toggle] intent 昇格: vk=0xF2 scan=0x70 action=TurnOn kind=PhysicalImeKey injected=false true→true w_ops0=119319 x_ops0=264446 x_KB0=24.9
+2026-09-20T02:15:57.501848Z DEBUG awase::journal: ime event seq=163 elapsed_ms=56859 event_kind="UserImeSetIntent"
+2026-09-20T02:15:57.501931Z DEBUG awase_windows::runtime::key_pipeline: [shadow-toggle] no-op: vk=0xF2 action=TurnOn source=PhysicalImeKey effective_open は既に true → apply-ime 見送り
+2026-09-20T02:15:57.501968Z DEBUG awase::journal: ime event seq=164 elapsed_ms=56860 event_kind="InputModeApplied"
+2026-09-20T02:15:57.501984Z  INFO awase_windows::runtime::key_pipeline: [shadow-toggle] TurnOn (IME既にopen) + ObservedEisu → AssumedRomaji に リセット (UserTurnOnEisuReset)
+2026-09-20T02:15:57.502003Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0xF2 KeyDown ts=56859108us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:57.502037Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-20T02:15:57.502097Z DEBUG awase::journal: key input seq=165 elapsed_ms=56860 vk_code=242 is_down=true injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThroughWith" physical="Allow" repeat_count=1 last_timestamp_us=56859108 last_elapsed_ms=0
+2026-09-20T02:15:57.502150Z DEBUG awase::journal: ime event seq=166 elapsed_ms=56860 event_kind="EngineActivationSync"
+2026-09-20T02:15:57.502184Z DEBUG awase::journal: ime event seq=167 elapsed_ms=56860 event_kind="ImeApplyRequested"
+2026-09-20T02:15:57.502202Z  INFO awase_windows::runtime::key_pipeline: IME control: preconditions.ime_on = true (SetOpenRequest, origin=ActivationSync), was_open_before=true last_intent_before=Some(true) poll suspended
+2026-09-20T02:15:57.502246Z DEBUG awase_windows::runtime::key_pipeline: may_change_ime key passed through → IME refresh scheduled (20ms)
+2026-09-20T02:15:57.502278Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-flush] PassThroughWith: queue 2 effect(s) + reinject (vk=0xf2 down)
+2026-09-20T02:15:57.502437Z DEBUG execute_one{generation=Some(ApplyGeneration(5))}:dispatch_ime_set_open{open=true generation=Some(ApplyGeneration(5))}: awase_windows::runtime::executor: [dispatch-ime] ImmCross async: optimistic applied_snapshot=true (suppress send_engine_state_ime_key)
+2026-09-20T02:15:57.503997Z DEBUG execute_one{generation=Some(ApplyGeneration(5))}: awase_windows::platform: [engine-state-key] skipped (apply_ime_open aligned ime=true, profile=Standard)
+2026-09-20T02:15:57.504087Z DEBUG execute_one{generation=Some(ApplyGeneration(5))}: awase_windows::runtime::executor: [reinject] vk=0xf2 down (queued passthrough now firing)
+2026-09-20T02:15:57.504386Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF0 up self_injected=true injected=false scan=0x70 extra=0x4B45594D since_actuation_us=Some(34696182)
+2026-09-20T02:15:57.507278Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=true injected=true scan=0x70 extra=0x4B45594D since_actuation_us=Some(34699070)
+2026-09-20T02:15:57.509377Z DEBUG awase::journal: hook ime-mode diagnostic seq=168 elapsed_ms=56867 vk_code=240 is_down=false self_injected=true injected=false scan=112
+2026-09-20T02:15:57.509445Z DEBUG awase::journal: hook ime-mode diagnostic seq=169 elapsed_ms=56867 vk_code=242 is_down=true self_injected=true injected=true scan=112
+2026-09-20T02:15:57.509707Z DEBUG run_open_chain_async: awase_windows::ime_controller: [warrant-shadow] chain=async open=true origin=EventOrigin { source: SelfActuated { strategy: "engine_decision_async" }, epoch: Generation(0) } warranted
+2026-09-20T02:15:57.509823Z  INFO run_open_chain_async:imm_cross_write{open=true}: awase_windows::runtime::open_chain: [apply-ime] ImmCross async: open=true composition_active=false show_seq=0 change_seq=0 (issue #138診断)
+2026-09-20T02:15:57.514469Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.0 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:57.517841Z DEBUG awase_windows::shadow_send_trace: [shadow-send] channel=ImeControl cmd=0x0006 lparam=1 issue_us=56869965
+2026-09-20T02:15:57.517858Z DEBUG awase_windows::ime: set_ime_open_for_target: hwnd=HWND(0x4018c0) ime_wnd=HWND(0x641178) open=true success=true send_elapsed=5ms candidate_visible=false
+2026-09-20T02:15:57.518416Z DEBUG run_open_chain_async:imm_cross_write{open=true}: awase_windows::ime: [imm-cross-actuate] hwnd=HWND(0x4018c0) open=Written conv=Some(Written)
+2026-09-20T02:15:57.518474Z DEBUG run_open_chain_async:imm_cross_write{open=true}: awase_windows::runtime::open_chain: [apply-ime] ROMAN 補完結果: Written
+2026-09-20T02:15:57.518539Z DEBUG run_open_chain_async: awase::journal: actuation decision seq=170 elapsed_ms=56876 site="DispatchImeSetOpen" caller="None" open=true chain_len=4 attempts_len=1 gate_profile="Standard" gate_kind="Gji" gate_shadow_known=true gate_shadow_on=true gate_input_mode="Assumed
+2026-09-20T02:15:57.519337Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(5)) reason=EngineDecision}: awase::journal: ime open applied seq=171 elapsed_ms=56877 open=true outcome="AppliedWithoutSendInput" reason="EngineDecision"
+2026-09-20T02:15:57.519480Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(5)) reason=EngineDecision}: awase::journal: ime event seq=172 elapsed_ms=56877 event_kind="ImeApplySucceeded"
+2026-09-20T02:15:57.519507Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(5)) reason=EngineDecision}: awase_windows::tsf::ime_mode_fsm: [ime-mode] SetOpen(true) applied → Hiragana (belief, unconfirmed)
+2026-09-20T02:15:57.519534Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(5)) reason=EngineDecision}: awase_windows::platform: [composition] ImeEffect::SetOpen(true) → marking cold
+2026-09-20T02:15:57.519555Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(5)) reason=EngineDecision}: awase_windows::tsf::probe: [composition] marked cold reason=SetOpenTrue idle=11391ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup
+2026-09-20T02:15:57.519600Z DEBUG on_ime_apply_complete{open=true outcome=AppliedWithoutSendInput generation=Some(ApplyGeneration(5)) reason=EngineDecision}:gji_on_event{event=ImeOn { injection_mode: Unicode, gji_idle_ms: 0 }}: awase_windows::tsf::gji_fsm: [gji-fsm] ImeOn: already on (OnWarm), ignor
+2026-09-20T02:15:57.519763Z DEBUG awase::journal: gji fsm transition seq=173 elapsed_ms=56877 trigger="ImeOn(gji_idle_ms=0)" state_before="OnWarm" state_after="OnWarm"
+2026-09-20T02:15:57.551311Z DEBUG awase_windows::runtime::ime_refresh: Explicit intent: bypassing typing-idle guard for IME verify (idle=47ms)
+2026-09-20T02:15:57.551360Z DEBUG awase_windows::observer::ime_observer: IME snapshot: japanese=Some(true) ime_on=Some(true) romaji=Some(true) conv=Some("0x00000019") guard=false
+2026-09-20T02:15:57.551446Z DEBUG awase::journal: ime event seq=174 elapsed_ms=56909 event_kind="ObserverReported"
+2026-09-20T02:15:57.551482Z DEBUG awase::journal: ime event seq=175 elapsed_ms=56909 event_kind="InputModeObserved"
+2026-09-20T02:15:58.190195Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyDown ts=57547726us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:58.190279Z DEBUG awase::journal: key input seq=176 elapsed_ms=57548 vk_code=75 is_down=true injected=false key_class="Char" state_before="Idle" state_after="PendingChar(vk=0x4B)" decision="Consume" physical="Allow" repeat_count=1 last_timestamp_us=57547726 last_elapsed_ms=0
+2026-09-20T02:15:58.253232Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x4B KeyUp ts=57610629us delay=0ms state=PendingChar(vk=0x4B) mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [d
+2026-09-20T02:15:58.253421Z DEBUG awase::journal: key input seq=177 elapsed_ms=57611 vk_code=75 is_down=false injected=false key_class="Char" state_before="PendingChar(vk=0x4B)" state_after="Idle" decision="Consume" physical="Allow" repeat_count=1 last_timestamp_us=57610629 last_elapsed_ms=0
+2026-09-20T02:15:58.253736Z DEBUG execute_one{generation=None}: awase_windows::output: send_keys: mode=Unicode actions=[Char('き')] prev_elapsed=12125ms
+2026-09-20T02:15:58.253783Z DEBUG execute_one{generation=None}: awase_windows::tsf::probe: [mark-send] last_send_ms=346592296
+2026-09-20T02:15:58.253812Z DEBUG execute_one{generation=None}: awase_windows::output:   → Char('き') via Unicode
+2026-09-20T02:15:58.258154Z DEBUG execute_one{generation=None}: awase_windows::tsf::probe: [mark-send] last_send_ms=346592312
+2026-09-20T02:15:58.266321Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.3 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:58.280010Z  INFO awase_windows::tsf::win_event_obs: [gji-obs] candidate SHOW #6: last_gji_write=16ms ago
+2026-09-20T02:15:58.690183Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyDown ts=58047354us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_o
+2026-09-20T02:15:58.690379Z DEBUG awase::journal: key input seq=178 elapsed_ms=58048 vk_code=27 is_down=true injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=58047354 last_elapsed_ms=0
+2026-09-20T02:15:58.690540Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b down)
+2026-09-20T02:15:58.690683Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b down (queued passthrough now firing)
+2026-09-20T02:15:58.695142Z DEBUG awase_windows::platform: [gji-fsm] StartComposition (candidate SHOW)
+2026-09-20T02:15:58.695201Z DEBUG gji_on_event{event=StartComposition}: awase_windows::tsf::gji_fsm: [gji-fsm] StartComposition: OnWarm → OnComposing(AlreadyWarm)
+2026-09-20T02:15:58.695343Z DEBUG awase::journal: gji fsm transition seq=179 elapsed_ms=58053 trigger="StartComposition(candidate SHOW)" state_before="OnWarm" state_after="OnComposing(Warm)"
+2026-09-20T02:15:58.702520Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+0.3 (r_ops=+4 x_ops=+4 x_KB=+0.0)
+2026-09-20T02:15:58.703927Z  INFO awase_windows::tsf::win_event_obs: [gji-obs] candidate HIDE: last_gji_write=0ms ago
+2026-09-20T02:15:58.752765Z DEBUG awase_windows::runtime::key_pipeline: [engine-input] vk=0x1B KeyUp ts=58110013us delay=0ms state=Idle mods(c=false s=false a=false w=false) gas_ctrl=false phys_ctrl=false extra=0x5350494B pending_drain=0 gate_active=false l_thumb=None r_thumb=None [diag-ctx] ime_on=
+2026-09-20T02:15:58.752956Z DEBUG awase::journal: key input seq=180 elapsed_ms=58111 vk_code=27 is_down=false injected=false key_class="Passthrough" state_before="Idle" state_after="Idle" decision="PassThrough" physical="Allow" repeat_count=1 last_timestamp_us=58110013 last_elapsed_ms=0
+2026-09-20T02:15:58.753157Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-passthrough] PassThrough idle: direct OS pass-through (vk=0x1b up)
+2026-09-20T02:15:58.753307Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1b up (queued passthrough now firing)
+2026-09-20T02:15:58.757906Z DEBUG awase_windows::platform: [gji-fsm] EndComposition (candidate HIDE) epoch=FocusEpoch(6)
+2026-09-20T02:15:58.758774Z DEBUG awase::journal: gji fsm transition seq=181 elapsed_ms=58116 trigger="EndComposition(candidate HIDE, epoch=FocusEpoch(6))" state_before="OnComposing(Warm)" state_after="OnWarm"
+2026-09-20T02:16:02.164138Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+1 w_KB=+0.0 (r_ops=+2 x_ops=+2 x_KB=+0.0)
+2026-09-20T02:16:02.179491Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] r_ops=+0 w_ops=+0 x_ops=+4 read_KB=+0.0 x_KB=+0.0
+2026-09-20T02:16:02.208797Z DEBUG awase_windows::runtime: [focus-sync] hwnd=0x3042C class="CASCADIA_HOSTING_WINDOW_CLASS" app_kind=Win32 hint=ForceTsf → mode=Tsf
+2026-09-20T02:16:02.208871Z DEBUG awase_windows::runtime: [focus-sync] belief=ON かつ実状態を問い合わせられないプロファイル (profile=Imm32Unavailable) → 次の入力で再プライムするため cold mark
+2026-09-20T02:16:02.208897Z DEBUG awase_windows::tsf::probe: [composition] marked cold reason=FocusChange idle=3938ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup
+2026-09-20T02:16:02.208936Z DEBUG awase_windows::tsf::tsf_gate: [tsf-gate] focus change → PendingWarmup (held cleared)
+2026-09-20T02:16:02.211261Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+2 w_KB=+576.0 (r_ops=+0 x_ops=+9 x_KB=+0.0)
+2026-09-20T02:16:02.220321Z DEBUG awase_windows::runtime: [focus-sync] hwnd=0x30580 class="Windows.UI.Composition.DesktopWindowContentBridge" app_kind=Win32 hint=Default → mode=Unicode
+2026-09-20T02:16:02.220392Z DEBUG awase_windows::output: [tsf-gate] focus change while PendingWarmup — held バッファを保持して再初期化スキップ (Chrome等の連続フォーカスイベント対策)
+2026-09-20T02:16:02.225266Z DEBUG awase_windows::runtime: [focus-sync] hwnd=0x5058A class="Windows.UI.Input.InputSite.WindowClass" app_kind=Uwp hint=ForceTsf → mode=Tsf
+2026-09-20T02:16:02.225298Z DEBUG awase_windows::runtime: [focus-sync] belief=ON かつ実状態を問い合わせられないプロファイル (profile=TsfNative) → 次の入力で再プライムするため cold mark
+2026-09-20T02:16:02.225316Z DEBUG awase_windows::tsf::probe: [composition] marked cold reason=FocusChange idle=3953ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup
+2026-09-20T02:16:02.225332Z DEBUG awase_windows::output: [tsf-gate] focus change while PendingWarmup — held バッファを保持して再初期化スキップ (Chrome等の連続フォーカスイベント対策)
+2026-09-20T02:16:02.226594Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] r_ops=+0 w_ops=+0 x_ops=+74 read_KB=+0.0 x_KB=+0.0
+2026-09-20T02:16:02.294920Z  INFO apply_focus_probe_result: awase_windows::runtime::focus_tracking: AppKind changed: Win32 → Uwp (class=Windows.UI.Input.InputSite.WindowClass)
+2026-09-20T02:16:02.300502Z DEBUG apply_focus_probe_result: awase_windows::runtime::focus_tracking: Focus kind changed: TextInput → Undetermined (reason=Undetermined)
+2026-09-20T02:16:02.300846Z DEBUG apply_focus_probe_result: awase::journal: focus transition seq=182 elapsed_ms=61658 changed_process=true changed_window=true changed_app_kind=true changed_focus_kind=true dwell_ms=39187 profile="TsfNative"
+2026-09-20T02:16:02.301133Z  INFO apply_focus_probe_result: awase_windows::runtime::focus_tracking: FocusChange [37768→19612] Windows.UI.Input.InputSite.WindowClass: stale ime_on=true intent=Some(true) mode=ObservedRomaji japanese=true
+2026-09-20T02:16:02.301164Z DEBUG apply_focus_probe_result: awase_windows::tsf::probe: [composition] focus changed → marked cold
+2026-09-20T02:16:02.301189Z DEBUG apply_focus_probe_result: awase_windows::runtime: [keymap] active rules recomputed: 0 rule(s) for process="windowsterminal.exe"
+2026-09-20T02:16:02.301210Z DEBUG apply_focus_probe_result: awase_windows::runtime::focus_tracking: [keymap] active rules updated on focus change: 0 rule(s) (hwnd=HWND(0x5058a) kind=Undetermined focus_epoch=3)
+2026-09-20T02:16:02.301246Z DEBUG apply_focus_probe_result:reduce: awase_windows::state::ime_model: [explicit-intent] cleared (focus change)
+2026-09-20T02:16:02.301279Z DEBUG apply_focus_probe_result: awase::journal: ime event seq=183 elapsed_ms=61659 event_kind="FocusChanged"
+2026-09-20T02:16:02.301340Z DEBUG apply_focus_probe_result: awase_windows::runtime::focus_tracking: [focus] TsfNative/SSOT: cache restore スキップ (desired_open=true cache_hwnd=Some(329098) new_hwnd=329098) — 最初のキー入力で dispatch_ime が apply
+2026-09-20T02:16:02.301594Z DEBUG awase_windows::runtime::ime_refresh: Skipping IMM query for known-broken class (shadow state SSOT)
+2026-09-20T02:16:02.301610Z DEBUG awase_windows::observer::gji_observer: [gji-poll] GJI I/O 62ms ago predates focus change (62ms before focus) → skipped
+2026-09-20T02:16:02.301633Z DEBUG awase_windows::runtime::ime_refresh: [composition] focus change → marking cold
+2026-09-20T02:16:02.301695Z DEBUG awase_windows::tsf::probe: [composition] marked cold reason=FocusChange idle=4031ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup
+2026-09-20T02:16:02.301739Z DEBUG gji_on_event{event=FocusChange { injection_mode: Tsf, gji_idle_ms: 62 }}: awase_windows::tsf::gji_fsm: [gji-fsm] FocusChange gji_idle=62ms → Short
+2026-09-20T02:16:02.301852Z DEBUG awase_windows::platform: [gji-fsm] StartProbe probe_id=ProbeId(3) forces_f2=false long=false
+2026-09-20T02:16:02.301889Z DEBUG awase_windows::tsf::ime_mode_fsm: [ime-mode] FocusChange → Unknown
+2026-09-20T02:16:02.301936Z DEBUG awase::journal: gji fsm transition seq=184 elapsed_ms=61659 trigger="FocusChange(gji_idle_ms=62)" state_before="OnWarm" state_after="OnCold(Short)"
+2026-09-20T02:16:02.301958Z DEBUG awase::journal: tsf probe started seq=185 elapsed_ms=61660 source="GjiAction::StartProbe" cold_seq=0 probe_id=3 probe_id_present=true gji_state="OnCold(Short)" consecutive_at_start=0 pending_deferred_len=0
+2026-09-20T02:16:02.302055Z DEBUG awase_windows::shadow_send_trace: [shadow-send] channel=SendInput kind=tsf_marker_warmup vk=[16] issue_us=61659743
+2026-09-20T02:16:02.302184Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x16 down self_injected=true injected=true scan=0xF2 extra=0x4B455946 since_actuation_us=Some(148)
+2026-09-20T02:16:02.304021Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x16 up self_injected=true injected=true scan=0xF2 extra=0x4B455946 since_actuation_us=Some(1987)
+2026-09-20T02:16:02.308392Z  INFO awase_windows::output: [tsf-eager-warmup] VK_IME_ON 送信 (origin=gated), eager_warmup_sent_ms=346596359ms
+2026-09-20T02:16:02.308452Z DEBUG awase_windows::runtime::ime_refresh: [composition] FocusChange: send_eager_tsf_warmup called (ime_on via warmup_ime_on())
+2026-09-20T02:16:02.309466Z DEBUG awase_windows::platform: [ime-mode] FocusProbe: GJI actuation との交錯を検知 → hint更新をabandon
+2026-09-20T02:16:02.309514Z DEBUG awase::journal: hook ime-mode diagnostic seq=186 elapsed_ms=61667 vk_code=22 is_down=true self_injected=true injected=true scan=242
+2026-09-20T02:16:02.309540Z DEBUG awase::journal: hook ime-mode diagnostic seq=187 elapsed_ms=61667 vk_code=22 is_down=false self_injected=true injected=true scan=242
+2026-09-20T02:16:02.320446Z DEBUG awase_windows::tsf::gji_monitor: [gji-io] WRITE: w_ops=+1 w_KB=+0.0 (r_ops=+2 x_ops=+2 x_KB=+0.0)
+2026-09-20T02:16:09.727930Z  WARN awase_windows::runtime::message_handlers: Hook watchdog: no activity for 7422ms (OS全体の最終入力は6953ms前、OSも無操作のため単なるアイドルの可能性が高い)
+2026-09-20T02:16:12.740695Z  WARN awase_windows::runtime::message_handlers: Hook watchdog: no activity for 10422ms (OS全体の最終入力は9953ms前、OSも無操作のため単なるアイドルの可能性が高い)
+2026-09-20T02:16:15.733404Z  WARN awase_windows::runtime::message_handlers: Hook watchdog: no activity for 13422ms (OS全体の最終入力は0ms前 → フックにイベントが届いていない疑い(issue #165))
+2026-09-20T02:16:15.733657Z  WARN awase_windows::runtime::message_handlers: Hook watchdog kana lock edge: None → Off (fg_class="CASCADIA_HOSTING_WINDOW_CLASS", own_ui=false, stale_ms=13422, os_idle_ms=0)
+script error: Output type incorrect: bool (expecting ())
