@@ -1,0 +1,7 @@
+2026-09-20T12:15:25.238222Z  INFO awase::engine::engine: Engine deactivated (ime=false, romaji=true, japanese=true, user=true, reason=Inactive(ImeOff))
+2026-09-20T12:15:25.257035Z DEBUG on_ime_apply_complete{open=false outcome=Unwarranted generation=None reason=EngineDecision}: awase::journal: ime open applied seq=28 elapsed_ms=7469 open=false outcome="Unwarranted" reason="EngineDecision"
+2026-09-20T12:15:25.257619Z DEBUG on_ime_apply_complete{open=false outcome=Unwarranted generation=None reason=EngineDecision}: awase_windows::timer: Timer set: logical=101, ms=20, os_id=15213
+2026-09-20T12:15:30.080486Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-20T12:15:31.499275Z  INFO awase::engine::engine: IME open axis delegated (solo tap, key semantics absorption) → false (origin=ExplicitUserAction)
+2026-09-20T12:18:41.186404Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+script error: Output type incorrect: bool (expecting ())
