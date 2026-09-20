@@ -1,0 +1,7 @@
+2026-09-19T23:44:45.689081Z  INFO awase::engine::engine: Engine deactivated (ime=true, romaji=false, japanese=true, user=true, reason=Inactive(NotRomajiInput))
+2026-09-19T23:44:58.257537Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-19T23:45:01.506972Z  INFO awase::engine::engine: IME open axis delegated (solo tap, key semantics absorption) → false (origin=ExplicitUserAction)
+2026-09-19T23:45:05.129604Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-19T23:45:08.278482Z  INFO awase::engine::engine: Engine deactivated (ime=true, romaji=false, japanese=true, user=true, reason=Inactive(NotRomajiInput))
+2026-09-19T23:45:17.692256Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+script error: Output type incorrect: bool (expecting ())

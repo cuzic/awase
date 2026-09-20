@@ -57,8 +57,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY,
 };
 use windows::Win32::UI::TextServices::{
-    CLSID_TF_ThreadMgr, ITfCompartmentMgr, ITfThreadMgr,
-    GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
+    CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfCompartmentMgr,
+    ITfInputProcessorProfileMgr, ITfThreadMgr, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION,
+    GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW,
@@ -1289,6 +1290,35 @@ fn create_window() -> WinResult<HWND> {
     }
 }
 
+/// `--activate-gji`: GJI(Google 日本語入力)のTSFプロファイルを、セッション内でアクティブにする。
+/// CI(GitHub Actions)のように、`Set-WinUserLanguageList`が次回サインインまで有効にならない環境用。
+fn activate_gji_profile() {
+    // GJI(Mozc)のCLSIDとプロファイルGUID、日本語(0x0411)。
+    let clsid = windows::core::GUID::from_u128(0xD5A86FD5_5308_47EA_AD16_9C4EB160EC3C);
+    let profile = windows::core::GUID::from_u128(0x773EB24E_CA1D_4B1B_B420_FA985BB0B80D);
+    const TF_PROFILETYPE_INPUTPROCESSOR: u32 = 1;
+    const TF_IPPMF_ENABLEPROFILE: u32 = 0x1;
+    const TF_IPPMF_FORSESSION: u32 = 0x2000_0000;
+    unsafe {
+        let mgr: WinResult<ITfInputProcessorProfileMgr> =
+            CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER);
+        match mgr {
+            Ok(m) => {
+                let r = m.ActivateProfile(
+                    TF_PROFILETYPE_INPUTPROCESSOR,
+                    0x0411,
+                    &clsid,
+                    &profile,
+                    windows::Win32::UI::Input::KeyboardAndMouse::HKL(std::ptr::null_mut()),
+                    TF_IPPMF_ENABLEPROFILE | TF_IPPMF_FORSESSION,
+                );
+                append_log(&format!("[init] GJIプロファイルをアクティブ化: {r:?}"));
+            }
+            Err(e) => append_log(&format!("[init] ITfInputProcessorProfileMgr取得失敗: {e}")),
+        }
+    }
+}
+
 fn init_tsf() -> WinResult<()> {
     unsafe {
         CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
@@ -1360,6 +1390,11 @@ fn run() -> WinResult<()> {
     let _ = unsafe { LoadLibraryW(w!("Msftedit.dll")) };
     let tsf_ok = init_tsf();
     let hwnd = create_window()?;
+    if std::env::args().any(|a| a == "--activate-gji") {
+        activate_gji_profile();
+        // awase がアクティブなTIPを検出する(ポーリング周期)まで待ってから、手順を始める。
+        AUTO_NEXT.with(|n| *n.borrow_mut() = now_ms() + 8000);
+    }
 
     append_log("=== IME key matrix spike (awase 非依存) ===");
     append_log("観測: A=IMM(ImmGet*) / B=WM_IME_CONTROL / T=TSFスレッドcompartment / G=TSFグローバルcompartment");
