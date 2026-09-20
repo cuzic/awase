@@ -58,18 +58,14 @@ jobs:
         shell: pwsh
         run: |
           $googleImeTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
-          $langs = Get-WinUserLanguageList
-          $ja = $langs | Where-Object LanguageTag -eq 'ja-JP' | Select-Object -First 1
-          if (-not $ja) {
-            $ja = New-WinUserLanguageList 'ja-JP' | Select-Object -First 1
-            $langs.Add($ja)
-          }
-          if ($ja.InputMethodTips -notcontains $googleImeTip) {
-            $ja.InputMethodTips.Add($googleImeTip)
-            Set-WinUserLanguageList $langs -Force
-          }
-          Set-WinDefaultInputMethodOverride -InputTip $googleImeTip
+          $l = New-WinUserLanguageList ja-JP
+          $l[0].InputMethodTips.Clear()
+          $l[0].InputMethodTips.Add($googleImeTip)
+          Set-WinUserLanguageList $l -Force 2>&1
+          try { Set-WinDefaultInputMethodOverride -InputTip $googleImeTip -ErrorAction Stop; 'default input method override: OK' }
+          catch { "default input method override FAILED: $($_.Exception.GetType().Name): $($_.Exception.Message)" }
           Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips
+          Get-WinDefaultInputMethodOverride 2>&1
           # ATOK プリセット(session_keymap = 1): Mozc Config の field 41 (varint) = 1 だけの最小の config1.db
           $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
