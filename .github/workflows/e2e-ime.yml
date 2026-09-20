@@ -40,17 +40,17 @@ jobs:
         run: |
           import json, os
           # name: 構成名 / mutator: ablations/ 下のスクリプト(空=変更なし) / args: スパイクの追加引数
-          # toggle: config.toml の gji_thumb_key_ime_toggle / expect: 期待(pass=全回PASS, fail=撤去で壊れる)
+          # toggle: config.toml の gji_thumb_key_ime_toggle / custom_table: config1.db に古い custom_keymap_table(変換=IMEOn)を残すか / expect: 期待(pass=全回PASS, fail=撤去で壊れる)
           # 根拠は docs/adr/186-*.md の撤去実験表。a3(eisu reset抑止)は撤去済みのため無い。
           configs = [
-            dict(name='baseline',         mutator='',                       args='',              toggle='true',  expect='pass'),
-            dict(name='baseline-henkan',  mutator='',                       args='--key=henkan',  toggle='true',  expect='pass'),
-            dict(name='a1-keyup',         mutator='a1-revert-keyup.sh',      args='',              toggle='true',  expect='fail'),
-            dict(name='a2-atok-skip',     mutator='a2-revert-atok-skip.sh',  args='--key=henkan',  toggle='true',  expect='fail'),
-            dict(name='a4-no-eisu-reset', mutator='a4-no-eisu-reset.sh',     args='',              toggle='true',  expect='pass'),
-            dict(name='a5-no-refresh20',  mutator='a5-no-refresh20.sh',      args='',              toggle='true',  expect='fail'),
-            dict(name='a6-no-idle-check', mutator='a6-no-idle-check.sh',     args='',              toggle='true',  expect='pass'),
-            dict(name='e7-toggle-false',  mutator='',                       args='',              toggle='false', expect='fail'),
+            dict(name='baseline',         mutator='',                       args='',              toggle='true', custom_table='false',  expect='pass'),
+            dict(name='baseline-henkan',  mutator='',                       args='--key=henkan',  toggle='true', custom_table='true',  expect='pass'),
+            dict(name='a1-keyup',         mutator='a1-revert-keyup.sh',      args='',              toggle='true', custom_table='false',  expect='fail'),
+            dict(name='a2-atok-skip',     mutator='a2-revert-atok-skip.sh',  args='--key=henkan',  toggle='true', custom_table='true',  expect='fail'),
+            dict(name='a4-no-eisu-reset', mutator='a4-no-eisu-reset.sh',     args='',              toggle='true', custom_table='false',  expect='pass'),
+            dict(name='a5-no-refresh20',  mutator='a5-no-refresh20.sh',      args='',              toggle='true', custom_table='false',  expect='fail'),
+            dict(name='a6-no-idle-check', mutator='a6-no-idle-check.sh',     args='',              toggle='true', custom_table='false',  expect='pass'),
+            dict(name='e7-toggle-false',  mutator='',                       args='',              toggle='false', custom_table='false', expect='fail'),
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
@@ -142,7 +142,17 @@ jobs:
           # field 22 (check_default) = 0 で「既定のIMEにしますか」の初回ダイアログを出さない。
           $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), [byte[]](0xB0,0x01,0x00,0xC8,0x02,0x01))
+          $bytes = [System.Collections.Generic.List[byte]]::new()
+          $bytes.AddRange([byte[]](0xB0,0x01,0x00,0xC8,0x02,0x01))
+          # 実機の config1.db には、過去にCUSTOMで作った古い custom_keymap_table(field 42)が残っている(ADR-174/186)。
+          # ATOKでは GJI はこれを読まない。awase が読んでしまうと変換が On と誤分類される(撤去実験E2)ので、
+          # それを再現する構成でだけ「DirectInput Henkan IMEOn」を入れる。
+          if ('${{ matrix.cfg.custom_table }}' -eq 'true') {
+            $tbl = [Text.Encoding]::UTF8.GetBytes("status`tkey`tcommand`nDirectInput`tHenkan`tIMEOn`n")
+            $bytes.AddRange([byte[]](0xD2,0x02,[byte]$tbl.Length))
+            $bytes.AddRange($tbl)
+          }
+          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), $bytes.ToArray())
           # 変換サーバー等はインストール時の既定設定で起動済みで、後から書いた config1.db を読み直さない。
           # 終了させ、次に使われるとき(TIP が呼ぶとき)に新しい設定で起動し直させる。
           # インストール直後に起動するツール/ウィザード(googleimejatool.exe)もここで終了する。
