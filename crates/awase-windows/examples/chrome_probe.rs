@@ -399,7 +399,9 @@ fn find_chrome(arg: Option<String>) -> Option<String> {
         return Some(a);
     }
     let local = std::env::var("LOCALAPPDATA").unwrap_or_default();
+    let home = std::env::var("USERPROFILE").unwrap_or_default();
     [
+        format!(r"{home}\scoop\apps\googlechrome\current\chrome.exe"),
         r"C:\Program Files\Google\Chrome\Application\chrome.exe".to_string(),
         r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe".to_string(),
         format!(r"{local}\Google\Chrome\Application\chrome.exe"),
