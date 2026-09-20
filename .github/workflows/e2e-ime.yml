@@ -96,11 +96,19 @@ jobs:
           [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"ime_key_matrix_spike.exe`"]`r`nEdit = `"works`"`r`nRICHEDIT50W = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))
           $env:RUST_LOG = 'debug'
           $env:AWASE_TEST_INJECTION = '1'
-          Start-Process -FilePath "$PWD\dist\awase.exe" -WorkingDirectory "$PWD\dist" -RedirectStandardError "$PWD\awase-stderr.log" -RedirectStandardOutput "$PWD\awase-stdout.log"
-          Start-Sleep -Seconds 5
-          Get-Process awase -ErrorAction SilentlyContinue | Format-Table Name, Id, SessionId
+          # 順序: スパイクを先に起動し、初期化(TSF/ActivateProfile)が終わってから awase を起動する。
+          # スパイクの初期化中に awase がIMMをプローブすると応答が無く(実測50〜60ms・conv=None)、3回連続の
+          # miss で Edit を「IMM不可」と誤学習して conv を読まなくなる(run 35482927411)。
+          # 起動後8秒で VK_IME_OFF を1回注入し、awase の belief(起動時推定=ON)と実状態(OFF)をそろえる。
           Push-Location dist
           Start-Process -FilePath .\ime_key_matrix_spike.exe -ArgumentList '--auto --hold=180 --activate-gji'
+          for ($i = 0; $i -lt 40; $i++) {
+            Start-Sleep -Milliseconds 500
+            if ((Test-Path ime_key_matrix_spike.log) -and (Select-String -Path ime_key_matrix_spike.log -Pattern 'ROUND 2/2' -Quiet)) { break }
+          }
+          Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
+          Start-Sleep -Seconds 2
+          Get-Process awase -ErrorAction SilentlyContinue | Format-Table Name, Id, SessionId
           $deadline = (Get-Date).AddSeconds(150)
           while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 5
