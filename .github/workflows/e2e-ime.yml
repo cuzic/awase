@@ -69,7 +69,11 @@ jobs:
           # ATOK プリセット(session_keymap = 1): Mozc Config の field 41 (varint) = 1 だけの最小の config1.db
           $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), [byte[]](0xC8,0x02,0x01))
+          # field 22 (check_default) = 0 で「既定のIMEにしますか」の初回ダイアログを出さない。field 41 (session_keymap) = 1 (ATOK)。
+          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), [byte[]](0xB0,0x01,0x00,0xC8,0x02,0x01))
+          # インストール直後に起動する GJI のツール/ウィザード(googleimejatool.exe)がフォーカスを持つので終了する。
+          Get-Process | Where-Object { $_.Name -match 'googleime' } | Select-Object Name, Id, MainWindowTitle | Format-Table
+          Get-Process googleimejatool -ErrorAction SilentlyContinue | Stop-Process -Force
           Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep -Seconds 1
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue
