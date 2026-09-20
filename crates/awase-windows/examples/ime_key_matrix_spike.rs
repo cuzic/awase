@@ -490,6 +490,8 @@ struct Exp {
     phase: u8,
     prep: usize,
     pre: (Option<bool>, Option<u32>),
+    /// 開始時のアクティブTIPがGJIか(準備でIMEを開くキーを変えるため)。
+    gji: bool,
 }
 
 /// `--exp`: 「ON・かな・入力なし」に整える → (条件により)conv=0x19を書く → ひらがなを押す →
@@ -505,10 +507,9 @@ fn exp_drive(now: u64, hwnd: HWND) {
         match x.phase {
             0 => {
                 if x.trial == 0 && x.prep == 0 {
-                    log_active_tip("開始時");
+                    x.gji = log_active_tip("開始時");
                 }
                 if x.trial >= x.n {
-                    log_active_tip("終了時");
                     done_msg = Some(format!("[EXP] cond={cond} {}手完了", x.n));
                     return u64::MAX;
                 }
@@ -529,8 +530,14 @@ fn exp_drive(now: u64, hwnd: HWND) {
                         queue_press(now, 0x1B);
                         now + 900
                     }
-                    St::Direct | St::OnAlnum => {
-                        queue_press(now, 0xF2); // scan 0x70: 準備は常に実機と同じ形
+                    St::Direct => {
+                        // GJI(ATOK)はDirectInputのひらがな(Kana)が未定義(Mozc atok.tsv)。IMEを開くのは変換キー。
+                        // MS-IMEはひらがながIMEOn。
+                        queue_press(now, if x.gji { 0x1C } else { 0xF2 });
+                        now + 1200
+                    }
+                    St::OnAlnum => {
+                        queue_press(now, 0xF2); // 半角英数→かな(ATOK: Precomposition Kana=ToggleAlphanumeric)
                         now + 1200
                     }
                     St::Unknown => now + 500,
@@ -611,6 +618,7 @@ fn exp_drive(now: u64, hwnd: HWND) {
         if !AUTO_DONE.with(|d| std::mem::replace(&mut *d.borrow_mut(), true)) {
             AUTO_CLOSE_AT.with(|c| *c.borrow_mut() = now + 1500);
         }
+        AUTO_NEXT.with(|n| *n.borrow_mut() = u64::MAX);
         return;
     }
     AUTO_NEXT.with(|n| *n.borrow_mut() = next);
@@ -1592,21 +1600,27 @@ fn create_window() -> WinResult<HWND> {
 /// `--activate-gji`: GJI(Google 日本語入力)のTSFプロファイルを、セッション内でアクティブにする。
 /// CI(GitHub Actions)のように、`Set-WinUserLanguageList`が次回サインインまで有効にならない環境用。
 /// 現在アクティブなTIP(GJIかMS-IMEか)をログに出す。実験の前提(有効なIME)を記録するため。
-fn log_active_tip(label: &str) {
+fn log_active_tip(label: &str) -> bool {
+    let mut is_gji = false;
     unsafe {
         let mgr: WinResult<ITfInputProcessorProfileMgr> =
             CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER);
         if let Ok(m) = mgr {
             let mut p = windows::Win32::UI::TextServices::TF_INPUTPROCESSORPROFILE::default();
             match m.GetActiveProfile(&GUID_TFCAT_TIP_KEYBOARD, &raw mut p) {
-                Ok(()) => append_log(&format!(
-                    "[TIP] {label}: clsid={:?} profile={:?} lang=0x{:04X}",
-                    p.clsid, p.guidProfile, p.langid
-                )),
+                Ok(()) => {
+                    is_gji = p.clsid
+                        == windows::core::GUID::from_u128(0xD5A86FD5_5308_47EA_AD16_9C4EB160EC3C);
+                    append_log(&format!(
+                        "[TIP] {label}: clsid={:?} profile={:?} lang=0x{:04X} gji={is_gji}",
+                        p.clsid, p.guidProfile, p.langid
+                    ));
+                }
                 Err(e) => append_log(&format!("[TIP] {label}: 取得失敗 {e}")),
             }
         }
     }
+    is_gji
 }
 
 fn activate_gji_profile() {
@@ -1728,6 +1742,7 @@ fn run() -> WinResult<()> {
                             phase: 0,
                             prep: 0,
                             pre: (None, None),
+                            gji: false,
                         });
                     });
                 }

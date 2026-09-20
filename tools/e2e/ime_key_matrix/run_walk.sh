@@ -15,12 +15,12 @@ mkdir -p "$OUT"
 "$CW" exec e2e-diag-desktop >"$OUT/desktop.txt" 2>&1
 if grep -qE "LockApp|foreground: hwnd=0 " "$OUT/desktop.txt"; then echo "LOCKED"; exit 2; fi
 case "$MODE" in
-  A|Ap|Apr) "$CW" exec elw-awase-start-a >"$OUT/awase-start.txt" 2>&1 ;;
-  B) "$CW" exec e2e-awase-start   >"$OUT/awase-start.txt" 2>&1 ;;
-  *) echo "mode must be A|B|Ap|Apr"; exit 2 ;;
+  A|Ap|Apr|Apg|Ag) "$CW" exec elw-awase-start-a >"$OUT/awase-start.txt" 2>&1 ;;
+  B|Bg) "$CW" exec e2e-awase-start   >"$OUT/awase-start.txt" 2>&1 ;;
+  *) echo "mode must be A|B|Ap|Apr|Apg|Ag|Bg"; exit 2 ;;
 esac
 grep -q "procs: 1" "$OUT/awase-start.txt" || { echo "awase起動失敗"; cat "$OUT/awase-start.txt"; exit 2; }
-SUF=""; [ "$MODE" = "Apr" ] && SUF="r"
+SUF=""; [ "$MODE" = "Apr" ] && SUF="r"; case "$MODE" in Apg|Ag|Bg) SUF="g";; esac
 "$CW" exec "elw-args-s${SEED}${SUF}" >"$OUT/args.txt" 2>&1
 "$CW" exec e2e-run >"$OUT/run.txt" 2>&1
 grep -q "spike procs: 1" "$OUT/run.txt" || { echo "スパイク起動失敗"; cat "$OUT/run.txt"; exit 2; }

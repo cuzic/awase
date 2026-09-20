@@ -1,0 +1,9 @@
+== start A 1 06:46:44
+OK A seed=1
+== start B 1 06:50:41
+OK B seed=1
+== start A 2 06:54:35
+OK A seed=2
+== start B 2 06:58:36
+OK B seed=2
+ALL_DONE
