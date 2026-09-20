@@ -73,7 +73,10 @@ impl NicolaFsm {
     /// Idle + Wait モード: 新規キーを保留状態に遷移させタイマーを起動する
     pub(crate) const fn idle_wait(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         if ev.key_class.is_thumb() {
-            self.enter_pending_thumb(PendingThumbData::from_event(ev));
+            let mut thumb = PendingThumbData::from_event(ev);
+            // ADR-182 決定1: 文字の単独確定直後の再投入なら、親指の単独タップ解決でIME操作を出さない。
+            thumb.after_char_flush = self.thumb_after_char_flush;
+            self.enter_pending_thumb(thumb);
         } else {
             self.enter_pending_char(PendingKey::from_event(ev));
         }

@@ -96,7 +96,6 @@ pub enum DecisionSite {
     ForceOnRomajiCorrection,
     ShadowToggleOff,
     ForceOnBootstrap,
-    IdleConvCheckDirectInput,
     BlacklistDriftCorrection,
 }
 
@@ -129,6 +128,17 @@ pub(crate) const fn decide_gate(inputs: DecisionInputs) -> GateResult {
     } else {
         GateResult::Proceed
     }
+}
+
+/// `decide_gate(inputs) == GateResult::NotOwned`の便宜関数（ADR-180決定1、
+/// round1 E2）。`ImeController::apply`/`run_open_chain_async`/
+/// `imm_cross_write`/`fallback_write`が個別に書いていた同一の`matches!`を
+/// 1箇所に集約する。`with_app`・view構築・fail-open処理・レコード組み立ては
+/// 呼び出し元に残す（`with_app`をここへ内包すると`fallback_write`からの
+/// 呼び出しで再入しgateが恒久的に無効化される、ADR-180決定1参照）。
+#[must_use]
+pub(crate) const fn is_input_relay(inputs: DecisionInputs) -> bool {
+    matches!(decide_gate(inputs), GateResult::NotOwned)
 }
 
 /// sync経路（`ImeController::apply`）が使う機構チェーン。

@@ -46,10 +46,9 @@ const STATUSES_WHEN_IME_ON: &[&str] = &[
 ///   ATOKベースからカスタムキーマップを作った場合など）literal に
 ///   含まれうることが判明した（`crates/awase-windows/src/
 ///   gji_charset_autodetect.rs::classify_thumb_key_ime_actions`参照）。
-///   このエイリアス追加自体は、F15-F24限定の既存の安全範囲フィルタ
-///   （`gji_charset_autodetect.rs::is_in_safe_autodetect_range`）には
-///   一切影響しない——`VK_CONVERT`/`VK_NONCONVERT`はその範囲外なので、
-///   Engine側のF15-F24自動検出には従来通り流入しない。
+///   このエイリアス追加自体は、F15-F24限定の専用Fnキー自動検出
+///   （ADR-179で撤去済み）には元々影響していなかった——`VK_CONVERT`/
+///   `VK_NONCONVERT`はその範囲外だったため。
 /// - `"Hiragana"`/`"Katakana"`（BUG-115）はひらがな/カタカナキー。
 ///   Henkan/Muhenkanと同じ理由で、これらのキーが親指シフトキーとして
 ///   設定されているユーザーが、GJIの設定でこれらに状態依存のIME ON/OFFを

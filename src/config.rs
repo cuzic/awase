@@ -401,6 +401,11 @@ pub struct GeneralConfig {
     /// `ime_on`/`ime_off`/`ime_toggle`の自動検出リスト（チョードキーとして
     /// 設定されていない場合）へベストエフォートで反映するか（BUG-115）。
     ///
+    /// `false`（既定）のとき、awaseはこのToggleを反映しない（警告ログのみ）。生の無変換/変換は
+    /// GJIへそのまま届き、GJIがATOKのキーマップどおり開閉する。**awaseは通過直後に実IMEを
+    /// 読み直し、古い明示意図を捨ててEngineを観測に追随させる**（follow方式、ADR-187。IMMで
+    /// 読めるアプリのみ。TsfNative/Chrome等は`ime_on=None`で読めず従来どおり遅延観測）。
+    ///
     /// 既定 `false`（反映しない・警告ログのみ）。この状態依存トグルは
     /// `ShadowImeAction::Toggle`（`!ctx.ime_on`）で技術的には正確に表現
     /// できる（ATOKプリセットが`DirectInput`状態でHenkan/Muhenkanを

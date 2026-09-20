@@ -12,7 +12,7 @@ use super::ime_event::{
 use super::ime_event_log::ImeEventLog;
 use super::ime_model::{AppliedImeState, ImeApplyAcceptance, ImeModel};
 use super::input_barrier::InputBarrier;
-use super::scoped_latch::ScopedOneShot;
+use super::scoped_latch::{ScopeCheck, ScopedOneShot};
 use super::{ApplyGeneration, TickMs};
 use crate::journal::{JournalEntry, UnifiedJournal};
 
@@ -73,6 +73,12 @@ pub(crate) struct ImeStateHub {
     /// 明示意図の優先読み取りに使う。`issue_open_warrant()` への配線は
     /// まだ無く、Phase 3 本体のスコープ。
     intent_store: super::intent_store::IntentStore,
+
+    /// 無変換/変換の生キーを IME 側へ通過させた直後だけ有効な一回マーク。
+    ///
+    /// ADR-187 follow 方式: 生キー配送の結果は awase には分からないため、短時間だけ
+    /// typing-idle ガードを迂回して観測し、観測成功後に古い明示意図を捨てる。
+    mode_key_pass_mark: ScopedOneShot<crate::win32::ForegroundScope, ModeKeyPassMark>,
 
     /// `effective_open()` の IntentStore 分岐が `shadow_model` と異なる値を
     /// 返している（＝実際に override している）間 `true`。遷移時のみ INFO
@@ -135,11 +141,20 @@ impl ImeStateHub {
             last_user_explicit_off_ms: 0,
             last_explicit_ime_action_ms: 0,
             intent_store: super::intent_store::IntentStore::default(),
+            mode_key_pass_mark: ScopedOneShot::new(),
             intent_override_logged: std::cell::Cell::new(false),
             warmup_gate_suppression_logged: std::cell::Cell::new(false),
             generation_alloc: super::GenerationAllocator::new(),
         }
     }
+}
+
+/// 無変換/変換の生キー通過マーク。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ModeKeyPassMark {
+    armed_at_ms: u64,
+    /// 意図の破棄は通過ごとに1回だけ(最初の観測の直後)。窓の間の再読み取りでは、通過より後に記録された意図を捨てない。
+    invalidated: bool,
 }
 
 impl ImeStateHub {
@@ -167,7 +182,7 @@ impl ImeStateHub {
                     self.last_user_explicit_off_ms = tick_ms.0;
                 }
                 // IntentStore への record() はここでは行わない（BUG-51 追補 v3 で移設）。
-                // Command ソースは conv 由来の内部同期（EngineSync::DirectInput →
+                // Command ソースは conv 由来の内部同期（EngineSync::DirectInput〈ADR-185で撤去済み〉 →
                 // handle_engine_set_open → write_set_open_request）でも dispatch される
                 // ため、このイベントだけでは「本物のユーザー操作」と区別できない。
                 // 記録は実ユーザー操作と確定できる呼び出し元
@@ -192,6 +207,76 @@ impl ImeStateHub {
     /// (Step 2B 以降の SSOT。Priority 4-5 observer による上書きを block する根拠。)
     pub(crate) fn explicit_intent(&self) -> Option<bool> {
         self.shadow_model.last_intent.as_ref().map(|i| i.target)
+    }
+
+    /// 無変換/変換の生キーを通過させたら呼ぶ（ADR-187）。現在のフォアグラウンドに対する一回マークを立てる。
+    pub(crate) fn arm_mode_key_pass_mark(&mut self, now_ms: u64) {
+        self.mode_key_pass_mark.arm(
+            crate::win32::foreground_scope(),
+            ModeKeyPassMark {
+                armed_at_ms: now_ms,
+                invalidated: false,
+            },
+        );
+    }
+
+    fn mode_key_pass_mark_live_in_scope(
+        &mut self,
+        now_ms: u64,
+        scope: crate::win32::ForegroundScope,
+    ) -> bool {
+        matches!(
+            self.mode_key_pass_mark.peek(scope),
+            ScopeCheck::Live(mark)
+                if now_ms.saturating_sub(mark.armed_at_ms)
+                    < crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS
+        )
+    }
+
+    /// 通過マークが有効か（消費しない）。フォアグラウンドが変わっていれば`peek`が失効させる。
+    /// typing-idleガードのバイパス判定用（`ir_decide_read_strategy`）。
+    pub(crate) fn mode_key_pass_mark_live(&mut self, now_ms: u64) -> bool {
+        self.mode_key_pass_mark_live_in_scope(now_ms, crate::win32::foreground_scope())
+    }
+
+    fn invalidate_intents_if_mode_key_pass_live_in_scope(
+        &mut self,
+        now_ms: u64,
+        tick_ms: TickMs,
+        scope: crate::win32::ForegroundScope,
+    ) -> bool {
+        let ScopeCheck::Live(mark) = self.mode_key_pass_mark.peek(scope) else {
+            return false;
+        };
+        if now_ms.saturating_sub(mark.armed_at_ms) >= crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS {
+            return false;
+        }
+        if !mark.invalidated {
+            if let Some(hwnd) = self.shadow_model.current_focus() {
+                self.intent_store.remove(hwnd);
+            }
+            self.dispatch_event(ImeEvent::ModeKeyPassedThrough, tick_ms);
+            self.mode_key_pass_mark.arm(
+                scope,
+                ModeKeyPassMark {
+                    invalidated: true,
+                    ..mark
+                },
+            );
+        }
+        true
+    }
+
+    pub(crate) fn invalidate_intents_if_mode_key_pass_live(
+        &mut self,
+        now_ms: u64,
+        tick_ms: TickMs,
+    ) -> bool {
+        self.invalidate_intents_if_mode_key_pass_live_in_scope(
+            now_ms,
+            tick_ms,
+            crate::win32::foreground_scope(),
+        )
     }
 
     /// 非同期送信済み・未確認の actuation を記録する（`applied = Optimistic`）。
@@ -756,39 +841,6 @@ impl ImeStateHub {
         }
     }
 
-    /// `belief.is_japanese_ime() && effective_open()` の複合述語。
-    ///
-    /// `apply_force_on_for_imm_broken` / `try_force_on_bootstrap` で重複していたガード条件。
-    /// `engine.is_user_enabled()` と組み合わせて IME force-ON の前提条件として使う。
-    ///
-    /// **belief 由来の暫定ゲート（ADR-087 §5 Phase 3 item15 で
-    /// `issue_open_warrant()` に置換予定、まだ未配線）。** `effective_open()` は
-    /// belief（間違っていても低リスク）であり、actuation の根拠に直接使うべき
-    /// ではない——これはまさに本関数が持つ構造であり、BUG-63 の原因パターンが
-    /// 実 actuation ゲートとして今も本番で使われている状態を示す。呼び出し元は
-    /// 2箇所（`runtime/mod.rs` の `apply_force_on_for_imm_broken` /
-    /// `try_force_on_bootstrap`）。**旧記載の3箇所目 `consume_force_open_pending`
-    /// は ADR-094（2026-08-17、`conv_mode_policy` force-write 機構の全撤去）で
-    /// 削除済み——doc の記載漏れだったため訂正（2026-08-21）。**
-    pub(crate) fn is_eligible_for_ime_force_on(&self) -> bool {
-        self.belief.is_japanese_ime() && self.effective_open()
-    }
-
-    /// force-ON（`apply_force_on_for_imm_broken`）を今送ってよいか（ADR-098 決定1-c、BUG-69）。
-    pub(crate) fn force_on_attempt_allowed(&self, now_ms: u64) -> bool {
-        crate::state::ime_actuation::force_on_attempt_allowed(
-            self.model().applied,
-            self.model().force_on_retry,
-            now_ms,
-            crate::tuning::FORCE_ON_RETRY_COOLDOWN_MS,
-        )
-    }
-
-    /// force-ON を実際に試行したことを記録する（クールダウンの起点、ADR-098 決定1-c）。
-    pub(crate) fn note_force_on_attempt(&mut self, now_ms: u64) {
-        self.shadow_model.force_on_retry.note_attempt(now_ms);
-    }
-
     /// 現在のアプリの focus settle 期間（ms、`AppImePolicy` 由来）。
     ///
     /// settle 中にスキップした force-ON の再試行スケジュールに使う。
@@ -1019,7 +1071,9 @@ impl ImeStateHub {
         let Some(generation) = generation else {
             if matches!(
                 outcome,
-                ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned
+                ImeOpenOutcome::UnsafeToToggle
+                    | ImeOpenOutcome::NotOwned
+                    | ImeOpenOutcome::Unwarranted
             ) {
                 return ImeApplyAcceptance::NotSent;
             }
@@ -1030,7 +1084,9 @@ impl ImeStateHub {
                 | ImeOpenOutcome::AppliedWithoutSendInput
                 | ImeOpenOutcome::AlreadyMatched => open,
                 ImeOpenOutcome::Failed => !open,
-                ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned => {
+                ImeOpenOutcome::UnsafeToToggle
+                | ImeOpenOutcome::NotOwned
+                | ImeOpenOutcome::Unwarranted => {
                     unreachable!("上で早期 return 済み")
                 }
             };
@@ -1063,15 +1119,6 @@ impl ImeStateHub {
 // 書き込みはすべてここに集約し、PlatformState からは直接 shadow_model を触らない。
 
 impl ImeStateHub {
-    /// `BrokenAppBootstrap` force-on ガードを追加する。
-    pub(crate) fn set_force_on_broken_app_bootstrap(&mut self) {
-        self.shadow_model.force_guards.add(ForceGuard {
-            reason: ForceOnReason::BrokenAppBootstrap,
-            expires_at: None,
-            generation: self.event_log.next_seq(),
-        });
-    }
-
     /// observe_miss_monitor をリセットし、すべての force-on ガードを解除する。
     ///
     /// ユーザー操作（IME トグル・SetOpen 等）で「意図した状態」が確定したときに呼ぶ。
@@ -1362,7 +1409,7 @@ impl ImeStateHub {
     /// (ADR-087 §5 Phase 1' 配線、BUG-51 追補 v3)。
     ///
     /// `dispatch_event` の `UserImeSetIntent` 分岐で record しないのは、
-    /// `Command` ソースが conv 由来の内部同期（`EngineSync::DirectInput`）でも
+    /// `Command` ソースが conv 由来の内部同期（`EngineSync::DirectInput`（ADR-185で撤去済み））でも
     /// dispatch されるため。呼び出してよいのは以下の3箇所のみ:
     /// - `write_sync_key` / `write_physical_key`（物理 IME キーの shadow toggle。
     ///   `IntentWitness` が「注入されていない実キーイベント」を型で要求する）
@@ -2447,6 +2494,7 @@ mod tests {
                 is_ime_mode_key: false,
                 explicit_ime_action_consumed: false,
                 auto_delegate_open_axis_consumed: false,
+                actuation_owner: awase::types::ModeKeyActuationOwner::default(),
             },
             modifier_key: None,
             modifier_snapshot: ModifierState::default(),
@@ -2488,6 +2536,27 @@ mod tests {
             .record_explicit_intent(target, UserIntentSource::Command, TickMs(tick_ms));
     }
 
+    fn arm_mode_key_pass_mark_for_test(
+        ps: &mut PlatformState,
+        scope: crate::win32::ForegroundScope,
+        now_ms: u64,
+    ) {
+        ps.ime.mode_key_pass_mark.arm(
+            scope,
+            ModeKeyPassMark {
+                armed_at_ms: now_ms,
+                invalidated: false,
+            },
+        );
+    }
+
+    fn test_foreground_scope() -> crate::win32::ForegroundScope {
+        crate::win32::ForegroundScope {
+            pid: 42,
+            hwnd: 0x1234,
+        }
+    }
+
     /// 中核の回帰テスト: 明示 OFF → 同一対象への FocusChanged（last_intent 消失）→
     /// 壊れた ConvOpenInference 観測、という実機再現手順で、生の
     /// `ImeModel::effective_open()` は true に反転してしまうが（退行の証拠として
@@ -2526,6 +2595,78 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mode_key_pass_invalidation_without_mark_keeps_intents() {
+        let mut ps = PlatformState::new();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        dispatch_conv_open_inference(&mut ps, true, 120);
+
+        assert!(
+            !ps.ime.invalidate_intents_if_mode_key_pass_live_in_scope(
+                130,
+                TickMs(130),
+                test_foreground_scope(),
+            ),
+            "通過マークがなければ何もしない"
+        );
+        assert_eq!(ps.ime.explicit_intent(), Some(false));
+        assert!(
+            !ps.ime.effective_open_at(TickMs(130)),
+            "IntentStore の OFF 意図も残る"
+        );
+    }
+
+    #[test]
+    fn mode_key_pass_invalidation_drops_intents_and_follows_observation_within_window() {
+        let mut ps = PlatformState::new();
+        let scope = test_foreground_scope();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        dispatch_conv_open_inference(&mut ps, true, 120);
+        assert!(
+            !ps.ime.effective_open_at(TickMs(120)),
+            "破棄前は IntentStore が観測 true より優先される"
+        );
+
+        arm_mode_key_pass_mark_for_test(&mut ps, scope, 125);
+        assert!(
+            ps.ime
+                .invalidate_intents_if_mode_key_pass_live_in_scope(140, TickMs(140), scope),
+            "live な通過マークは観測成功後に一回だけ消費される"
+        );
+        assert_eq!(ps.ime.explicit_intent(), None);
+        assert!(
+            ps.ime.effective_open_at(TickMs(140)),
+            "古い意図を捨てた後は観測 true に従う"
+        );
+        assert!(
+            ps.ime
+                .invalidate_intents_if_mode_key_pass_live_in_scope(141, TickMs(141), scope),
+            "窓の間はマークを消費せず、観測のたびに再読み取りを続ける(最初の観測が古い状態を読んでも取りこぼさない)"
+        );
+        // 通過より後に記録された意図は、2回目以降の観測で捨てない(意図の破棄は通過ごとに1回)。
+        dispatch_and_record_explicit_intent(&mut ps, false, 150);
+        assert!(
+            ps.ime
+                .invalidate_intents_if_mode_key_pass_live_in_scope(160, TickMs(160), scope),
+            "まだ有効"
+        );
+        assert_eq!(
+            ps.ime.explicit_intent(),
+            Some(false),
+            "通過より後に記録された明示意図は残る"
+        );
+        assert!(
+            !ps.ime.invalidate_intents_if_mode_key_pass_live_in_scope(
+                125 + crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+                TickMs(500),
+                scope,
+            ),
+            "窓が切れたら止まる"
+        );
+    }
+
     /// 対象が違えば IntentStore は効かない（ADR-087 INV-24(b) の2段判定、BUG-26 非退行）。
     /// 別ウィンドウへの本物のフォーカス変更では、そのウィンドウ自身の観測に従うべき。
     #[test]
@@ -2542,6 +2683,48 @@ mod tests {
             ps.ime.effective_open_at(TickMs(300)),
             "別ウィンドウへの本物のフォーカス変更では、IntentStore は別対象の \
              エントリを漏らさず、その対象の観測（true）に従う"
+        );
+    }
+
+    /// BUG-148/ADR-186 の回帰テスト: 起動時に既に前面にあるアプリでは、最初のプロセス
+    /// 切替（`FocusChanged`）が来なくても `current_focus` が設定され、明示意図が
+    /// `IntentStore` に記録される。
+    ///
+    /// 退行の証拠として「初期フォーカス未設定のままだと `record_explicit_intent` が
+    /// 空振りし、壊れた観測1件で effective_open が true に反転する」ことも固定する
+    /// （CI の E2E で委譲 SetOpen が全て Unwarranted になった機序）。
+    #[test]
+    fn initial_focus_hwnd_lets_explicit_intent_be_recorded_before_first_focus_change() {
+        // `UserImeSetIntent` はモデルの `last_intent` を書くため、`effective_open` は IntentStore に記録されなくても
+        // 直後は明示意図に固定される。IntentStore への記録の有無は、`FocusChanged`（`last_intent` をクリアする）の
+        // 後に観測が入ったときの `effective_open` で区別する（`effective_open_survives_focus_change_via_intent_store` と同じ観点）。
+
+        // 初期フォーカス未設定（BUG-148 の状態）: 意図が IntentStore に記録されず、FocusChanged で意図が消えると観測に従う。
+        let mut ps = PlatformState::new();
+        assert_eq!(ps.ime.model().current_focus(), None);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 200);
+        dispatch_conv_open_inference(&mut ps, true, 300);
+        assert!(
+            ps.ime.effective_open_at(TickMs(300)),
+            "退行の証拠: current_focus=None のときは record_explicit_intent が空振りし、\
+             明示 OFF 意図が IntentStore に残らない"
+        );
+
+        // 起動時の初期フォーカスを確立した状態: 同じ操作で意図が IntentStore に保持される。
+        let mut ps = PlatformState::new();
+        ps.ime.dispatch_event(
+            ImeEvent::InitialFocusHwndEstablished { hwnd: TARGET_HWND },
+            TickMs(0),
+        );
+        assert_eq!(ps.ime.model().current_focus(), Some(TARGET_HWND));
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 200);
+        dispatch_conv_open_inference(&mut ps, true, 300);
+        assert!(
+            !ps.ime.effective_open_at(TickMs(300)),
+            "初期フォーカス確立後は明示 OFF 意図が IntentStore に記録され、\
+             open_warrant Step 1 の根拠になる"
         );
     }
 
@@ -2588,7 +2771,7 @@ mod tests {
 
     /// 修正1b 回帰: 生の `dispatch_event(UserImeSetIntent)` だけでは IntentStore に
     /// 記録されない（`record_explicit_intent` を経由しない限り）。v1 のままだと
-    /// `EngineSync::DirectInput`（conv 由来、`handle_engine_set_open` 経由で
+    /// `EngineSync::DirectInput`（ADR-185で撤去済み）（conv 由来、`handle_engine_set_open` 経由で
     /// `UserImeSetIntent{Command}` を dispatch する）が壊れた conv 読み1件を
     /// FocusChanged を生き延びる偽の明示意図として永続化してしまっていた
     /// （pre-mortem #1 角度2）。

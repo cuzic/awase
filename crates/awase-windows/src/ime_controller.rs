@@ -645,11 +645,31 @@ impl ImeController {
             );
             return (ImeOpenOutcome::NotOwned, record);
         }
-        // ADR-090 §2.A A-1: 授権は入口側（`ImeStateHub::issue_actuation_order`）で
-        // 発行済み。ここは **shadow モード**なので、授権が下りていなくても
-        // 書き込みは止めず `Authorization::LegacyUnwarranted { would_have_blocked }`
-        // として記録するだけである（止めるのは A-2、入口ごと・実機ソーク必須）。
-        //
+        // ADR-090 §2.A A-2（2026-09-19、ユーザー指示によりリスクを受容し実機
+        // 検証で確認する方針へ切替）: 授権は入口側
+        // （`ImeStateHub::issue_actuation_order`）で発行済み。ADR-178領域A撤去
+        // （`apply_force_on_for_imm_broken`/`try_force_on_bootstrap`の削除）で
+        // 差分オラクルが指摘していた最大の挙動変化（old-1、bootstrapで観測/
+        // 意図/guard皆無のまま`desired_open`へフォールバックする経路）と、
+        // それに次ぐold-2（`BrokenAppBootstrap`guard）の両方が、A-2着手前に
+        // 既に生産コードから消えている。残る差分（old-3はBUG-63安全側、
+        // new-1はTsfNative Blindプロファイルの意図されたOwnSsotフォールバック
+        // 1件のみ）を受容し、`into_actuation()`で実際に強制する。
+        // 警告なし（`None`）の場合は`Unwarranted`を返し、機構チェーンを
+        // 一切試行しない（`NotOwned`と同じ「送っていない」扱い、別variant）。
+        log_shadow_warrant("sync", &order);
+        let chain = caps_chain_for(view);
+        let order_record = ActuationOrderRecord::from(&order);
+        let Some(actuation) = order.into_actuation() else {
+            let record = actuation_decision_record(
+                gate_inputs,
+                order_record,
+                &[],
+                [None; MAX_WRITE_MECHANISMS],
+                0,
+            );
+            return (ImeOpenOutcome::Unwarranted, record);
+        };
         // 宛先: VK 送信機構（GjiDirect / MsImeDirect / KanjiToggle）は SendInput が
         // フォアグラウンドのフォーカスへ配送するため、hwnd を捕獲する余地が
         // 構造的に無い（`SendInput` は宛先引数を取らない）。したがって
@@ -657,12 +677,7 @@ impl ImeController {
         // ある（ADR-089 §9-19 の訂正）。同期経路で hwnd を持つ唯一の write は
         // ROMAN 補完であり、そちらは `apply_mechanism` が
         // `ActuationTarget::capture_blocking` で捕獲する（Phase C item 12）。
-        log_shadow_warrant("sync", &order);
-        let chain = caps_chain_for(view);
-        let order_record = ActuationOrderRecord::from(&order);
-        let actuation = order
-            .into_actuation_shadow()
-            .verify(VerifiedTarget::FocusImplicit);
+        let actuation = actuation.verify(VerifiedTarget::FocusImplicit);
         let mut writer = SyncChainWriter {
             view,
             attempts: [None; MAX_WRITE_MECHANISMS],

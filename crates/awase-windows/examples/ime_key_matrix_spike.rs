@@ -54,7 +54,7 @@ use windows::Win32::UI::Input::Ime::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetFocus, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY,
+    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, VIRTUAL_KEY,
 };
 use windows::Win32::UI::TextServices::{
     CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfCompartmentMgr,
@@ -228,6 +228,10 @@ thread_local! {
     /// (実行時刻ms, VK, KeyDownか) の注入予約。
     static AUTO_QUEUE: RefCell<Vec<(u64, u32, bool)>> = const { RefCell::new(Vec::new()) };
     static AUTO_NEXT: RefCell<u64> = const { RefCell::new(0) };
+    /// `--activate-gji` 時: キーフックをこの時刻(ms)まで遅らせて張る。0=張り済み/不要。
+    /// LLフックは後から張ったものが先に呼ばれる。awase より後に張らないと、awase が消費・再注入した
+    /// キー(自己注入)しか見えず、元の押下を検知できなくてステップが進まない(CI run 35483174264)。
+    static HOOK_AT: RefCell<u64> = const { RefCell::new(0) };
     static AUTO_LAST_SI: RefCell<usize> = const { RefCell::new(usize::MAX) };
     static AUTO_TRIES: RefCell<usize> = const { RefCell::new(0) };
     static AUTO_PREP: RefCell<usize> = const { RefCell::new(0) };
@@ -243,6 +247,18 @@ thread_local! {
     static SPEED: RefCell<u64> = const { RefCell::new(1) };
     /// `--hold=NNN`: 注入キーの保持時間ms(既定80)。人の押下(>100ms)でだけ通るタイマー経路を再現する。
     static HOLD_MS_INJ: RefCell<u64> = const { RefCell::new(80) };
+    /// `--walk`: SCRIPT の代わりに WALK(前提状態なしの固定キー列)を使う。
+    static WALK_MODE: RefCell<bool> = const { RefCell::new(false) };
+    /// `--cold`(`--walk`と併用): 先頭のひらがなを除き、明示意図が無い状態でいきなり無変換/変換を押す手順にする。
+    static COLD_MODE: RefCell<bool> = const { RefCell::new(false) };
+    /// `--resync`: ずれた状態から Ctrl+無変換→Ctrl+変換(または逆)を素早く押して、実IMEとEngineが揃うかを見る手順(RESYNC)。
+    static RESYNC_MODE: RefCell<bool> = const { RefCell::new(false) };
+    /// `--hz`: 半角/全角キー(0xF3/0xF4、GJIではどちらも開閉トグル)を交互・連続で押す手順(HZ)。
+    static HZ_MODE: RefCell<bool> = const { RefCell::new(false) };
+    /// `--resync-gap=NNN`: リセット操作の2打の間隔 ms(1打目のキーを離してから2打目を押すまで)。
+    static RESYNC_GAP_MS: RefCell<u64> = const { RefCell::new(100) };
+    /// `--vkprobe`: 未知のキーも記録する(スキャンコードだけ注入したとき、OSがどのVKに変換するかを見る)。
+    static VKPROBE_MODE: RefCell<bool> = const { RefCell::new(false) };
     /// `--key=henkan`: 手順の「無変換」を「変換」(0x1C)に置き換える。
     static TOGGLE_VK: RefCell<u32> = const { RefCell::new(0x1D) };
     /// 全手順完了後、この時刻(now_ms)にウィンドウを閉じて終了する(0=予約なし)。
@@ -336,6 +352,8 @@ enum St {
     OnKanaComp,
     OnAlnum,
     Unknown,
+    /// `--walk` 用: 前提状態を要求しない(どの状態でも押す)。
+    Any,
 }
 
 impl St {
@@ -346,6 +364,7 @@ impl St {
             Self::OnKanaComp => "IME ON・入力中(未確定あり)",
             Self::OnAlnum => "IME ON・半角英数・入力なし",
             Self::Unknown => "不明",
+            Self::Any => "任意",
         }
     }
 }
@@ -398,7 +417,9 @@ fn scan_for(vk: u32) -> u16 {
     match vk {
         0x1D => 0x7B,
         0x1C => 0x79,
-        0xF2 => 0x70,
+        0xF2 | 0x15 | 0xF1 | 0xF5 | 0xF6 => 0x70,
+        0xF3 | 0xF4 | 0x19 => 0x29,
+        0xF0 => 0x3A,
         0x4B => 0x25,
         0x1B => 0x01,
         _ => 0,
@@ -406,18 +427,31 @@ fn scan_for(vk: u32) -> u16 {
 }
 
 /// `SendInput` で1イベントを注入する（`AUTO_MARKER` 付き）。
+/// `--vkprobe` の候補の符号化: `SCAN_ONLY | scan` はスキャンコードだけ(wVk=0)を注入し、OSのキーボードレイアウトに
+/// VKを決めさせる。`NOSCAN | vk` はVKだけ(wScan=0)を注入する。
+const SCAN_ONLY: u32 = 0x1_0000;
+const NOSCAN: u32 = 0x2_0000;
+
 fn send_key(vk: u32, down: bool) {
+    let up = if down {
+        KEYBD_EVENT_FLAGS(0)
+    } else {
+        KEYEVENTF_KEYUP
+    };
+    let (w_vk, w_scan, flags) = if vk & SCAN_ONLY != 0 {
+        (0, (vk & 0xFF) as u16, KEYEVENTF_SCANCODE | up)
+    } else if vk & NOSCAN != 0 {
+        ((vk & 0xFFFF) as u16, 0, up)
+    } else {
+        (u16::try_from(vk).unwrap_or(0), scan_for(vk), up)
+    };
     let input = INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
-                wVk: VIRTUAL_KEY(u16::try_from(vk).unwrap_or(0)),
-                wScan: scan_for(vk),
-                dwFlags: if down {
-                    KEYBD_EVENT_FLAGS(0)
-                } else {
-                    KEYEVENTF_KEYUP
-                },
+                wVk: VIRTUAL_KEY(w_vk),
+                wScan: w_scan,
+                dwFlags: flags,
                 time: 0,
                 dwExtraInfo: AUTO_MARKER,
             },
@@ -526,7 +560,7 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
         }
     }
     let si = SCRIPT_IDX.with(|i| *i.borrow());
-    if si >= SCRIPT.len() {
+    if si >= script().len() {
         let done = REPEAT_DONE.with(|d| {
             *d.borrow_mut() += 1;
             *d.borrow()
@@ -553,8 +587,8 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
         AUTO_TRIES.with(|t| *t.borrow_mut() = 0);
         AUTO_PREP.with(|t| *t.borrow_mut() = 0);
     }
-    let (name, vk, _, _, need) = SCRIPT[si];
-    if cur != need {
+    let (name, vk, _, _, need) = script()[si];
+    if need != St::Any && cur != need {
         let prep = AUTO_PREP.with(|p| {
             *p.borrow_mut() += 1;
             *p.borrow()
@@ -604,11 +638,173 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
             q.push((now + 40 + hold + 40, 0xA0, false));
         });
     } else {
-        queue_press(now, script_vk(vk));
+        queue_step(now, vk);
     }
-    queue_press(now + scaled(700), 0x4B); // k
-    queue_press(now + scaled(1200), 0x1B); // ESC
-    AUTO_NEXT.with(|n| *n.borrow_mut() = now + scaled(1800));
+    // リセット操作(2打)は約 0.7 秒かかるので、k(Engine状態の確認)/ESC は後ろへずらす。
+    let (k_at, esc_at, next_at) = if vk == RESYNC_ON || vk == RESYNC_OFF {
+        (1200, 1700, 2400)
+    } else {
+        (700, 1200, 1800)
+    };
+    queue_press(now + scaled(k_at), 0x4B); // k
+    queue_press(now + scaled(esc_at), 0x1B); // ESC
+    AUTO_NEXT.with(|n| *n.borrow_mut() = now + scaled(next_at));
+}
+
+/// `--resync` 用の手順コード(VKではない)。RESYNC_ON = Ctrl+無変換 → Ctrl+変換(素早く、Ctrlは押したまま)。終わりはIME ON。
+/// RESYNC_OFF = Ctrl+変換 → Ctrl+無変換。終わりはIME OFF。awase の既定の ime_off(Ctrl+無変換)/ime_on(Ctrl+変換)。
+const RESYNC_ON: u32 = 0xFE01;
+const RESYNC_OFF: u32 = 0xFE02;
+
+/// 手順の「最初の押下」として、フックが手順に対応づけるキー(VK, Ctrl併用か)。
+fn step_first_key(vk: u32) -> (u32, bool) {
+    match vk {
+        RESYNC_ON => (0x1D, true),
+        RESYNC_OFF => (0x1C, true),
+        _ => (script_vk(vk), false),
+    }
+}
+
+/// 手順1件分の注入を予約する。RESYNC は Ctrl を押したまま2つのキーを間隔 `RESYNC_GAP_MS` で押す。
+fn queue_step(now: u64, vk: u32) {
+    if vk != RESYNC_ON && vk != RESYNC_OFF {
+        queue_press(now, script_vk(vk));
+        return;
+    }
+    let (first, second) = if vk == RESYNC_ON {
+        (0x1D, 0x1C)
+    } else {
+        (0x1C, 0x1D)
+    };
+    let hold = HOLD_MS_INJ.with(|h| *h.borrow());
+    let gap = RESYNC_GAP_MS.with(|g| *g.borrow());
+    // Ctrl を先に押し、フックが Ctrl 状態を見られるだけの間(注入は次のtickで実行される)をあけてから1打目を押す。
+    // 間が短いと1打目に Ctrl が付かず、手順に対応づけられない(CIで実測: 15ms では失敗)。
+    let lead = 200;
+    let second_at = now + lead + hold + gap;
+    AUTO_QUEUE.with(|q| q.borrow_mut().push((now, 0x11, true)));
+    queue_press(now + lead, first);
+    queue_press(second_at, second);
+    AUTO_QUEUE.with(|q| q.borrow_mut().push((second_at + hold + 15, 0x11, false)));
+}
+
+/// `--hz` の手順: 半角/全角キーは、GJIではどちらのVK(0xF3/0xF4)も「開なら閉、閉なら開」のトグル(ADR-186)。
+/// awase がVKの種類で方向を決め打つ(0xF3=OFF、0xF4=ON)と、同じVKの連続やF3/F4の順序でずれる。
+const HZ: [(&str, u32, bool, &str, St); 8] = [
+    ("半角全角F3", 0xF3, false, "開閉トグル", St::Any),
+    ("半角全角F3", 0xF3, false, "開閉トグル", St::Any),
+    ("半角全角F4", 0xF4, false, "開閉トグル", St::Any),
+    ("半角全角F4", 0xF4, false, "開閉トグル", St::Any),
+    ("半角全角F3", 0xF3, false, "開閉トグル", St::Any),
+    ("半角全角F4", 0xF4, false, "開閉トグル", St::Any),
+    ("半角全角F4", 0xF4, false, "開閉トグル", St::Any),
+    ("半角全角F3", 0xF3, false, "開閉トグル", St::Any),
+];
+
+/// `--resync` の手順: ずれを起こすキー(無変換/変換)と、リセット操作を交互に押す。
+const RESYNC: [(&str, u32, bool, &str, St); 10] = [
+    ("ひらがなキー", 0xF2, false, "かなON", St::Any),
+    (
+        "無変換",
+        0x1D,
+        false,
+        "実IMEが閉じる。followが無いとEngineだけONのままずれる",
+        St::Any,
+    ),
+    (
+        "resync(ON)",
+        RESYNC_ON,
+        false,
+        "実IME ON(かな) かつ Engine ON",
+        St::Any,
+    ),
+    ("無変換", 0x1D, false, "実IMEが閉じる", St::Any),
+    (
+        "resync(OFF)",
+        RESYNC_OFF,
+        false,
+        "実IME OFF かつ Engine OFF",
+        St::Any,
+    ),
+    (
+        "変換",
+        0x1C,
+        false,
+        "実IMEが開く。followが無いとEngineだけOFFのままずれる",
+        St::Any,
+    ),
+    (
+        "resync(ON)",
+        RESYNC_ON,
+        false,
+        "実IME ON(かな) かつ Engine ON",
+        St::Any,
+    ),
+    ("無変換", 0x1D, false, "実IMEが閉じる", St::Any),
+    (
+        "resync(OFF)",
+        RESYNC_OFF,
+        false,
+        "実IME OFF かつ Engine OFF",
+        St::Any,
+    ),
+    ("ひらがなキー", 0xF2, false, "後片付け", St::Any),
+];
+
+/// `--walk` の手順: プリセット(ATOK/MS-IME等)を問わず、前提状態を要求せずに固定のキー列を押す。
+/// 各押下の +1500ms の実IME状態と awase の Engine 状態が一致するか(check_consistency.py)を見る。
+/// 半角/全角(0xF3/0xF4)は awase のモデル誤り(ADR-186決定5、別件)が混ざるため含めない。
+const WALK: [(&str, u32, bool, &str, St); 12] = [
+    ("ひらがなキー", 0xF2, false, "Engine は実IMEに追随", St::Any),
+    ("無変換", 0x1D, false, "Engine は実IMEに追随", St::Any),
+    ("無変換", 0x1D, false, "Engine は実IMEに追随", St::Any),
+    ("変換", 0x1C, false, "Engine は実IMEに追随", St::Any),
+    ("変換", 0x1C, false, "Engine は実IMEに追随", St::Any),
+    ("ひらがなキー", 0xF2, false, "Engine は実IMEに追随", St::Any),
+    ("無変換", 0x1D, false, "Engine は実IMEに追随", St::Any),
+    ("ひらがなキー", 0xF2, false, "Engine は実IMEに追随", St::Any),
+    ("変換", 0x1C, false, "Engine は実IMEに追随", St::Any),
+    ("無変換", 0x1D, false, "Engine は実IMEに追随", St::Any),
+    ("変換", 0x1C, false, "Engine は実IMEに追随", St::Any),
+    ("ひらがなキー", 0xF2, false, "Engine は実IMEに追随", St::Any),
+];
+
+/// `--vkprobe` の候補。`SCAN_ONLY | scan` = スキャンコードだけ、`NOSCAN | vk` = VKだけ、素の値 = VK+標準スキャン。
+const VKPROBE_CANDIDATES: [u32; 17] = [
+    SCAN_ONLY | 0x70, // ひらがな(カタカナひらがなローマ字)キーの物理スキャンコード
+    0x15,             // VK_KANA
+    0xF1,             // VK_DBE_KATAKANA
+    0xF2,             // VK_DBE_HIRAGANA
+    NOSCAN | 0xF2,    // VK_DBE_HIRAGANA、スキャンコード0
+    0xF5,             // VK_DBE_ROMAN
+    0xF6,             // VK_DBE_NOROMAN
+    SCAN_ONLY | 0x29, // 半角/全角の物理スキャンコード
+    0xF3,             // VK_DBE_SBCSCHAR
+    0xF4,             // VK_DBE_DBCSCHAR
+    0x19,             // VK_KANJI
+    SCAN_ONLY | 0x3A, // 英数の物理スキャンコード
+    0xF0,             // VK_DBE_ALPHANUMERIC
+    NOSCAN | 0x16,    // VK_IME_ON
+    SCAN_ONLY | 0x79, // 変換の物理スキャンコード
+    SCAN_ONLY | 0x7B, // 無変換の物理スキャンコード
+    0x1C,             // VK_CONVERT
+];
+
+/// 現在の手順表(`--walk` なら WALK、なければ SCRIPT)。
+fn script() -> &'static [(&'static str, u32, bool, &'static str, St)] {
+    if HZ_MODE.with(|h| *h.borrow()) {
+        &HZ
+    } else if RESYNC_MODE.with(|r| *r.borrow()) {
+        &RESYNC
+    } else if WALK_MODE.with(|w| *w.borrow()) {
+        if COLD_MODE.with(|c| *c.borrow()) {
+            &WALK[1..]
+        } else {
+            &WALK
+        }
+    } else {
+        &SCRIPT
+    }
 }
 
 /// `--script` の1手順: (表示名, VK, Shift併用, 期待する結果)。
@@ -965,7 +1161,9 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 // Ctrl+Shift+F12: 現在のステップをスキップ（そのキーが無い場合など）。
                 if vk == 0x7B && ctrl && shift {
                     SKIP_REQ.with(|s| *s.borrow_mut() = true);
-                } else if let Some(name) = key_name(vk) {
+                } else if let Some(name) = key_name(vk)
+                    .or_else(|| VKPROBE_MODE.with(|m| *m.borrow()).then_some("不明キー"))
+                {
                     let mods = match (ctrl, shift) {
                         (true, true) => "Ctrl+Shift+",
                         (true, false) => "Ctrl+",
@@ -1004,6 +1202,14 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 fn on_timer(hwnd: HWND) {
     let snap = take_snapshot(hwnd);
     let now = now_ms();
+    let hook_at = HOOK_AT.with(|h| *h.borrow());
+    if hook_at != 0 && now >= hook_at {
+        HOOK_AT.with(|h| *h.borrow_mut() = 0);
+        match unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) } {
+            Ok(_) => append_log("[init] キーフックを遅延インストール(awaseより後=先に呼ばれる)"),
+            Err(e) => append_log(&format!("[init] キーフック失敗: {e}")),
+        }
+    }
 
     // キュー→Pending。「押下前」は直近の周期スナップショット（キーの効果が出る前）。
     let all_steps = steps();
@@ -1066,16 +1272,21 @@ fn on_timer(hwnd: HWND) {
             let mut tag = String::from("[準備/その他]");
             if SCRIPT_MODE.with(|m| *m.borrow()) {
                 let si = SCRIPT_IDX.with(|i| *i.borrow());
-                if si < SCRIPT.len() && now >= HOLD_UNTIL.with(|h| *h.borrow()) {
-                    let (name, vk, shift, expect, need) = SCRIPT[si];
+                if si < script().len() && now >= HOLD_UNTIL.with(|h| *h.borrow()) {
+                    let (name, vk, shift, expect, need) = script()[si];
+                    let (want_vk, want_ctrl) = step_first_key(vk);
                     let shift_muh = SHIFT_MUH.with(|m| *m.borrow()) && ev.vk == 0x1D;
-                    if ev.vk == script_vk(vk)
-                        && before_st == need
+                    if ev.vk == want_vk
+                        && (need == St::Any || before_st == need)
                         && (ev.shift == shift || (shift_muh && ev.shift))
-                        && !ev.ctrl
+                        && ev.ctrl == want_ctrl
                         && !ev.label.contains("(injected)")
                     {
-                        tag = format!("[SCRIPT {}/{} {name} 期待={expect}]", si + 1, SCRIPT.len());
+                        tag = format!(
+                            "[SCRIPT {}/{} {name} 期待={expect}]",
+                            si + 1,
+                            script().len()
+                        );
                         SCRIPT_IDX.with(|i| *i.borrow_mut() = si + 1);
                         HOLD_UNTIL.with(|h| *h.borrow_mut() = now + scaled(HOLD_MS));
                     }
@@ -1155,13 +1366,13 @@ fn on_timer(hwnd: HWND) {
     let guide = if SCRIPT_MODE.with(|m| *m.borrow()) {
         let si = SCRIPT_IDX.with(|i| *i.borrow());
         let hold = HOLD_UNTIL.with(|h| *h.borrow());
-        if si >= SCRIPT.len() {
+        if si >= script().len() {
             "全手順完了です。お疲れさまでした（ログは自動保存済み）".to_string()
         } else {
-            let (name, _, _, expect, need) = SCRIPT[si];
+            let (name, _, _, expect, need) = script()[si];
             let action = if now < hold {
                 format!("待機中… あと {:.1} 秒", (hold - now) as f64 / 1000.0)
-            } else if cur != need {
+            } else if need != St::Any && cur != need {
                 format!(
                     "この手順の前提: {}。{}",
                     need.label(),
@@ -1173,7 +1384,7 @@ fn on_timer(hwnd: HWND) {
             format!(
                 "SCRIPT {}/{}  現在の実IME: {}\n{}\n期待: {}",
                 si + 1,
-                SCRIPT.len(),
+                script().len(),
                 cur.label(),
                 action,
                 expect
@@ -1347,9 +1558,18 @@ fn create_window() -> WinResult<HWND> {
 /// `--activate-gji`: GJI(Google 日本語入力)のTSFプロファイルを、セッション内でアクティブにする。
 /// CI(GitHub Actions)のように、`Set-WinUserLanguageList`が次回サインインまで有効にならない環境用。
 fn activate_gji_profile() {
-    // GJI(Mozc)のCLSIDとプロファイルGUID、日本語(0x0411)。
-    let clsid = windows::core::GUID::from_u128(0xD5A86FD5_5308_47EA_AD16_9C4EB160EC3C);
-    let profile = windows::core::GUID::from_u128(0x773EB24E_CA1D_4B1B_B420_FA985BB0B80D);
+    // 既定は GJI(Mozc)のCLSIDとプロファイルGUID、日本語(0x0411)。`--msime` なら Microsoft IME(日本語)。
+    let (clsid, profile) = if std::env::args().any(|a| a == "--msime") {
+        (
+            windows::core::GUID::from_u128(0x03B5835F_F03C_411B_9CE2_AA23E1171E36),
+            windows::core::GUID::from_u128(0xA76C93D9_5523_4E90_AAFA_4DB112F9AC76),
+        )
+    } else {
+        (
+            windows::core::GUID::from_u128(0xD5A86FD5_5308_47EA_AD16_9C4EB160EC3C),
+            windows::core::GUID::from_u128(0x773EB24E_CA1D_4B1B_B420_FA985BB0B80D),
+        )
+    };
     const TF_PROFILETYPE_INPUTPROCESSOR: u32 = 1;
     const TF_IPPMF_ENABLEPROFILE: u32 = 0x1;
     const TF_IPPMF_FORSESSION: u32 = 0x2000_0000;
@@ -1380,7 +1600,7 @@ fn activate_gji_profile() {
                     windows::Win32::UI::Input::KeyboardAndMouse::HKL(std::ptr::null_mut()),
                     TF_IPPMF_ENABLEPROFILE | TF_IPPMF_FORSESSION,
                 );
-                append_log(&format!("[init] GJIプロファイルをアクティブ化: {r:?}"));
+                append_log(&format!("[init] IMEプロファイルをアクティブ化: {r:?}"));
                 std::thread::sleep(std::time::Duration::from_millis(1500));
                 log_active("後");
             }
@@ -1457,13 +1677,50 @@ fn run() -> WinResult<()> {
         AUTO_MODE.with(|m| *m.borrow_mut() = true);
         SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
         STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
-        SCRIPT_IDX.with(|i| *i.borrow_mut() = SCRIPT.len());
+        SCRIPT_IDX.with(|i| *i.borrow_mut() = script().len());
         let base = now_ms() + 9000;
         for (i, vk) in [0x1C_u32, 0xF4, 0xF3, 0xF2, 0x16, 0x19, 0x1D]
             .iter()
             .enumerate()
         {
             queue_press(base + (i as u64) * 3500, *vk);
+        }
+    }
+    if std::env::args().any(|a| a == "--cold") {
+        COLD_MODE.with(|c| *c.borrow_mut() = true);
+    }
+    if std::env::args().any(|a| a == "--hz") {
+        HZ_MODE.with(|h| *h.borrow_mut() = true);
+    }
+    if std::env::args().any(|a| a == "--resync") {
+        RESYNC_MODE.with(|r| *r.borrow_mut() = true);
+    }
+    for a in std::env::args() {
+        if let Some(v) = a.strip_prefix("--resync-gap=") {
+            if let Ok(n) = v.parse::<u64>() {
+                RESYNC_GAP_MS.with(|g| *g.borrow_mut() = n);
+            }
+        }
+    }
+    // `--walk`: --auto の手順を、前提状態なしの固定キー列(WALK)にする。
+    if std::env::args().any(|a| a == "--walk") {
+        WALK_MODE.with(|w| *w.borrow_mut() = true);
+    }
+    // `--vkprobe`: ひらがな系キーの「正しいVK」を調べる。候補キーごとに、IME OFF→候補、IME ON→候補 を押し、
+    // 実IMEの変化を記録する(スキャンコードだけの注入で、OSがどのVKに変換するかも見る)。
+    if std::env::args().any(|a| a == "--vkprobe") {
+        AUTO_MODE.with(|m| *m.borrow_mut() = true);
+        SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
+        VKPROBE_MODE.with(|m| *m.borrow_mut() = true);
+        STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
+        SCRIPT_IDX.with(|i| *i.borrow_mut() = script().len());
+        let base = now_ms() + 9000;
+        for (i, cand) in VKPROBE_CANDIDATES.iter().enumerate() {
+            let t = base + (i as u64) * 14000;
+            queue_press(t, 0x1A);
+            queue_press(t + 3500, *cand);
+            queue_press(t + 7000, 0x16);
+            queue_press(t + 10500, *cand);
         }
     }
     // `--auto`: --script の手順を、スパイク自身が SendInput で注入して自動実行する。
@@ -1493,7 +1750,12 @@ fn run() -> WinResult<()> {
     if std::env::args().any(|a| a == "--activate-gji") {
         activate_gji_profile();
         // awase がアクティブなTIPを検出する(ポーリング周期)まで待ってから、手順を始める。
-        AUTO_NEXT.with(|n| *n.borrow_mut() = now_ms() + 8000);
+        AUTO_NEXT.with(|n| *n.borrow_mut() = now_ms() + 14000);
+        // awase の belief(起動時の推定=ON)と実状態(新しい窓=OFF)がずれたままだと、最初の押下で awase が逆向きに
+        // actuate して手順が崩れる(CI run 35482240969)。手順の前に VK_IME_OFF を1回注入して、belief も実状態も
+        // OFF にそろえる(awase 起動中は物理IMEキーとして belief を更新する。awase なしでも無害)。
+        queue_press(now_ms() + 12000, 0x1A);
+        HOOK_AT.with(|h| *h.borrow_mut() = now_ms() + 6000);
     }
 
     append_log("=== IME key matrix spike (awase 非依存) ===");
@@ -1509,7 +1771,12 @@ fn run() -> WinResult<()> {
     append_log(&format!("ログファイル: {}", log_file_path().display()));
     append_log("");
 
-    let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) };
+    let hook = if HOOK_AT.with(|h| *h.borrow()) == 0 {
+        unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) }
+    } else {
+        // 遅延インストール(on_timer で張る)。
+        Ok(Default::default())
+    };
     if let Err(e) = &hook {
         append_log(&format!(
             "[init] キーフック失敗: {e}（キー押下が記録されません）"

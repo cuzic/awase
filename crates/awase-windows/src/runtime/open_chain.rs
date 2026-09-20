@@ -241,10 +241,7 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
     let gate = crate::with_app(|app| {
         let view = app.shadow_ime_control_view();
         let inputs = (&view).into();
-        let is_input_relay = matches!(
-            crate::state::ime_actuation_decision::decide_gate(inputs),
-            crate::state::ime_actuation_decision::GateResult::NotOwned
-        );
+        let is_input_relay = crate::state::ime_actuation_decision::is_input_relay(inputs);
         (inputs, is_input_relay)
     });
     let (inputs, is_input_relay) = if let Some((inputs, is_input_relay)) = gate {
@@ -480,10 +477,7 @@ fn fallback_write(
         // フォーカスが await 中に InputRelay へ移った場合もここで再検出できる。
         // `NotOwned` は `falls_through` が偽なので、GjiDirect/MsImeDirect/
         // KanjiToggle を1つずつ試すことなくチェーンをここで止める。
-        if matches!(
-            crate::state::ime_actuation_decision::decide_gate(inputs),
-            crate::state::ime_actuation_decision::GateResult::NotOwned
-        ) {
+        if crate::state::ime_actuation_decision::is_input_relay(inputs) {
             let outcome = ImeOpenOutcome::NotOwned;
             return (
                 outcome,
@@ -583,10 +577,7 @@ pub(crate) async fn run_open_chain_async(
     let gate = crate::with_app(|app| {
         let view = app.shadow_ime_control_view();
         let inputs = (&view).into();
-        let is_input_relay = matches!(
-            crate::state::ime_actuation_decision::decide_gate(inputs),
-            crate::state::ime_actuation_decision::GateResult::NotOwned
-        );
+        let is_input_relay = crate::state::ime_actuation_decision::is_input_relay(inputs);
         (inputs, is_input_relay)
     });
     let (gate_inputs, is_input_relay) = if let Some((inputs, is_input_relay)) = gate {
@@ -629,19 +620,48 @@ pub(crate) async fn run_open_chain_async(
         }
         return ImeOpenOutcome::NotOwned;
     }
-    // ADR-090 §2.A A-1: 授権は起案側（`ImeStateHub::issue_actuation_order`）で
-    // 発行済み。**shadow モード**なので授権が下りていなくても書き込みは
-    // 止めない（止めるのは A-2）。
+    // ADR-090 §2.A A-2（2026-09-19、ユーザー指示によりリスクを受容し実機
+    // 検証で確認する方針へ切替）: 授権は起案側
+    // （`ImeStateHub::issue_actuation_order`）で発行済み。ADR-178領域A撤去で
+    // 差分オラクルの最大リスク（old-1: bootstrap force-ON、old-2:
+    // `BrokenAppBootstrap`guard）の生産コード上の発火源が既に消えている
+    // ため、残る差分（old-3安全側/new-1意図されたTsfNative Blindフォール
+    // バック）を受容し実際に強制する。
     //
     // なお `order` は起案時点の状態に基づくのに write は完了時点で起きる。
     // await をまたいだ失効の扱いは warrant ではなく**チェーンの再抽選**
     // （ADR-090 項 D、実機ソーク必須のため未実装）で行う。
     crate::ime_controller::log_shadow_warrant("async", &order);
-    // S-5: `order`を`into_actuation_shadow()`で消費する前に、記録に必要な
+    // S-5: `order`を`into_actuation()`で消費する前に、記録に必要な
     // 3値だけを`ActuationOrderRecord`として退避する（`order.clone()`で
     // warrantを複製しない）。
     let order_record = ActuationOrderRecord::from(&order);
-    let actuation = order.into_actuation_shadow().verify(imm.verified_target());
+    let Some(actuation) = order.into_actuation() else {
+        if let Some(gate_inputs) = gate_inputs {
+            let record = async_record(
+                site,
+                caller,
+                gate_inputs,
+                order_record,
+                [None; MAX_WRITE_MECHANISMS],
+                0,
+            );
+            if crate::with_app(|app| {
+                app.platform_state
+                    .ime
+                    .journal
+                    .record(crate::journal::JournalEntry::ActuationDecision { record });
+            })
+            .is_none()
+            {
+                record_actuation_decision_skipped(site);
+            }
+        } else {
+            record_actuation_decision_skipped(site);
+        }
+        return ImeOpenOutcome::Unwarranted;
+    };
+    let actuation = actuation.verify(imm.verified_target());
     let mut writer = AsyncChainWriter {
         imm: Some(imm),
         attempts: [None; MAX_WRITE_MECHANISMS],

@@ -1,0 +1,8 @@
+LogonUI: 0
+screensaver: 0
+ USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME
+>cuzic                 console             1  Active      none   2026/09/16 11:00
+
+foreground: hwnd=197676 title=mise pid=19612 proc=WindowsTerminal
+script error: Output type incorrect: bool (expecting ())
+Error: exit code 1

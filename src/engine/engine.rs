@@ -52,10 +52,11 @@ pub(super) enum SpecialKeyMatch {
 pub struct Engine {
     adapter: FsmAdapter,
     special_keys: SpecialKeyCombos,
-    /// 自動検出された IME トグルキー（ADR-092 決定D Step4a/Step4c、MS-IME
-    /// レジストリの `KeyAssignmentCtrlSpace`/`KeyAssignmentShiftSpace`、または
-    /// GJI config1.db の `GjiImeKeys.toggle` 由来。両ソースは排他——呼び出し元
-    /// が IME 種別確定イベントごとにどちらか一方だけを呼ぶ）。
+    /// 自動検出された IME トグルキー（ADR-092 決定D Step4a、MS-IME
+    /// レジストリの `KeyAssignmentCtrlSpace`/`KeyAssignmentShiftSpace` 由来。
+    /// GJI側のconfig1.db由来検出〈旧Step4c〉はADR-179で撤去し、無変換/
+    /// 変換は親指キー配置に関わらず`shadow_action` override経由の
+    /// follow-only経路へ一本化した）。
     /// `special_keys.ime_toggle`（ユーザーが `config.toml` に明示設定した分）
     /// とは別に保持し、`config.toml` へは一切書き込まない（決定C: Manual は
     /// 永続化、AutoDetected はライブ計算のみ）。`special_keys.ime_toggle` の
@@ -64,14 +65,6 @@ pub struct Engine {
     /// 「手動が非空なら自動を一切見ない」仕様のままでは自動検出が既定設定の
     /// ユーザーには永久に効かなかった）。
     ime_toggle_auto: Vec<ParsedKeyCombo>,
-    /// 自動検出された IME ON キー（ADR-092 決定D Step4c、GJI config1.db の
-    /// `GjiImeKeys.on` 由来）。`ime_toggle_auto` と同じ規約
-    /// （`config.toml` 非書き込み、`special_keys.ime_on` の内容に関わらず
-    /// 常に併用）。
-    ime_on_auto: Vec<ParsedKeyCombo>,
-    /// 自動検出された IME OFF キー（ADR-092 決定D Step4c、GJI config1.db の
-    /// `GjiImeKeys.off` 由来）。`ime_on_auto` と対称。
-    ime_off_auto: Vec<ParsedKeyCombo>,
     /// キーの Down/Up ペア追跡
     lifecycle: KeyLifecycle,
     /// 直前の実効状態（遷移検知用）
@@ -88,8 +81,6 @@ impl Engine {
             adapter: FsmAdapter::new(fsm),
             special_keys,
             ime_toggle_auto: Vec::new(),
-            ime_on_auto: Vec::new(),
-            ime_off_auto: Vec::new(),
             lifecycle: KeyLifecycle::new(),
             prev_activation: ActivationState::Inactive(InactiveReason::UserDisabled),
             solo_off_notify: false,
@@ -102,17 +93,6 @@ impl Engine {
     /// 呼ばれるたびに丸ごと置き換わる（決定C R2、計算は毎回やり直す）。
     pub fn set_ime_toggle_auto_keys(&mut self, keys: Vec<ParsedKeyCombo>) {
         self.ime_toggle_auto = keys;
-    }
-
-    /// GJI config1.db（`GjiImeKeys.on`）由来の自動検出 IME ON キーを設定する
-    /// （ADR-092 決定D Step4c）。`set_ime_toggle_auto_keys` と同じ規約。
-    pub fn set_ime_on_auto_keys(&mut self, keys: Vec<ParsedKeyCombo>) {
-        self.ime_on_auto = keys;
-    }
-
-    /// `set_ime_on_auto_keys` と対称（`GjiImeKeys.off` 由来）。
-    pub fn set_ime_off_auto_keys(&mut self, keys: Vec<ParsedKeyCombo>) {
-        self.ime_off_auto = keys;
     }
 
     /// ソロ N 連打でエンジン OFF を発動するキーを設定する。
@@ -934,11 +914,6 @@ impl Engine {
             )
             .or_else(|| {
                 (!suppress_ime_combos)
-                    .then(|| self.match_ime_on_off_auto(ctx, event))
-                    .flatten()
-            })
-            .or_else(|| {
-                (!suppress_ime_combos)
                     .then(|| self.match_ime_toggle_auto(ctx, event))
                     .flatten()
             })
@@ -948,7 +923,7 @@ impl Engine {
     /// 判定が食い違わないよう、親指キーの bare 判定はここに集約する。
     ///
     /// `event.injected` は false 扱いにする（BUG-14 と同じ原則、
-    /// `match_ime_on_off_auto` の doc 参照）。手動設定の `ime_on`/`ime_off`/
+    /// `match_ime_toggle_auto` の doc 参照）。手動設定の `ime_on`/`ime_off`/
     /// `ime_toggle` はユーザーがマクロツール等から意図的に注入する運用を
     /// 妨げてはならないため、注入イベントをこのガードで抑制対象にしない。
     ///
@@ -980,64 +955,17 @@ impl Engine {
             && !m.shift
     }
 
-    /// 自動検出由来の IME ON/OFF キー（`ime_on_auto`/`ime_off_auto`、ADR-092
-    /// 決定D Step4c、GJI config1.db の `GjiImeKeys.on`/`off` 由来）との
-    /// マッチ判定。手動設定（`keys.ime_on`/`ime_off`）の**追加**として働く
-    /// （2026-08-16 ユーザー判断で「明示 > 自動」の排他から「明示 ∪ 自動」の
-    /// 併用へ変更）——`ime_on`/`ime_off` は既定で非空（`Ctrl+変換`/
-    /// `Ctrl+無変換`）なため、旧来の「手動が非空なら自動を一切見ない」規則
-    /// （決定C R1、`match_special_keys` 経由で常に手動リストへ先に照合済み
-    /// だった前提）のままだと、既定設定のユーザーには自動検出（GJI の
-    /// config1.db 宣言キー等）が事実上永久に発火しない死んだ機能になって
-    /// いた。手動リストは `match_event` 内で既にこのメソッドより先に照合
-    /// 済みのため、ここでの追加判定は「手動キーでは一致しなかった押下を
-    /// 自動検出キーでも試す」という素直な union になる。
-    ///
-    /// `event.injected` な合成イベントにはマッチしない（BUG-14: MS-IME/CTF
-    /// 由来の注入イベントを信用してはならない、という既存原則。手動設定の
-    /// `ime_on`/`ime_off`/`engine_on`/`engine_off` は挙動を変えない
-    /// （ユーザーがマクロツール等から意図的に注入する運用を妨げないため）
-    /// が、自動検出リストはユーザーが存在を意識せず追加されるため、
-    /// 注入イベントへの露出を正当化する根拠が無い。Opus コードレビュー
-    /// 指摘）。
-    fn match_ime_on_off_auto(
-        &self,
-        ctx: &InputContext,
-        event: &RawKeyEvent,
-    ) -> Option<SpecialKeyMatch> {
-        // `SpecialKeyCombos::match_event` と同じ理由・同じガード
-        // （2026-08-16、`ime_detect` 側との二重処理防止、doc参照）。
-        if event.injected || event.ime_relevance.sync_direction.is_some() {
-            return None;
-        }
-        if self
-            .ime_on_auto
-            .iter()
-            .any(|k| matches_key_combo(*k, event, ctx.modifiers))
-        {
-            return Some(SpecialKeyMatch::ImeOn);
-        }
-        if self
-            .ime_off_auto
-            .iter()
-            .any(|k| matches_key_combo(*k, event, ctx.modifiers))
-        {
-            return Some(SpecialKeyMatch::ImeOff);
-        }
-        None
-    }
-
-    /// 自動検出由来の IME トグルキー（`ime_toggle_auto`）とのマッチ判定
-    /// （ADR-092 決定D Step4a/Step4c）。`match_ime_on_off_auto`と同じ理由
-    /// （2026-08-16 ユーザー判断）で、手動設定（`keys.ime_toggle`）の
-    /// **追加**として働く（排他ではない）。`event.injected`な合成イベントも
-    /// 対象外（`match_ime_on_off_auto`と同じ理由、doc参照）。
+    /// 自動検出由来の IME トグルキー（`ime_toggle_auto`、MS-IMEレジストリの
+    /// `KeyAssignmentCtrlSpace`/`KeyAssignmentShiftSpace`由来、ADR-092
+    /// 決定D Step4a）とのマッチ判定。2026-08-16 ユーザー判断で、手動設定
+    /// （`keys.ime_toggle`）の**追加**として働く（排他ではない）。
+    /// `event.injected`な合成イベントは対象外（BUG-14と同じ原則、
+    /// `is_bare_thumb`のdoc参照）。
     fn match_ime_toggle_auto(
         &self,
         ctx: &InputContext,
         event: &RawKeyEvent,
     ) -> Option<SpecialKeyMatch> {
-        // `match_ime_on_off_auto`と同じ理由・同じガード（doc参照）。
         if event.injected || event.ime_relevance.sync_direction.is_some() {
             return None;
         }

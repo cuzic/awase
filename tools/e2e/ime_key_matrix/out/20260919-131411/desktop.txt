@@ -1,0 +1,8 @@
+LogonUI: 1
+screensaver: 0
+ USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME
+>cuzic                 console             1  Active      none   2026/09/16 11:00
+
+foreground: hwnd=199072 title=Windows の既定のロック画面 pid=29144 proc=LockApp
+script error: Output type incorrect: bool (expecting ())
+Error: exit code 1

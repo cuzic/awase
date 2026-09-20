@@ -152,7 +152,7 @@ fn broken_conv_inference_alone_does_not_flip_effective_open() {
 /// `IntentStore` に何も残らない（BUG-51 追補 v3 修正1b）。
 ///
 /// v1 では `dispatch_event(UserImeSetIntent{Command})` 自体が record して
-/// いたため、conv 由来の内部同期（`EngineSync::DirectInput` →
+/// いたため、conv 由来の内部同期（`EngineSync::DirectInput`（ADR-185で撤去済み） →
 /// `handle_engine_set_open` → `write_set_open_request`）が「壊れた conv 読み
 /// 1 件」を `FocusChanged` を生き延びる偽の明示意図として永続化していた
 /// （pre-mortem #1 角度2）。

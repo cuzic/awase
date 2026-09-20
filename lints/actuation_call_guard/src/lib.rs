@@ -115,21 +115,17 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
         ],
     ),
     // apply_ime_open_with_view: ADR-159段階0のもう1つの合流点。fix-requires-evidence.mdの
-    // 「IME actuation合流点」表が挙げる4箇所（2026-09-09実測、ADR-158 TB1）。
+    // 「IME actuation合流点」表（2026-09-09実測、ADR-158 TB1）。
     // `apply_ime_open_with_belief`からの内部委譲1件を含む。
-    (
-        "apply_ime_open_with_view",
-        &[
-            "dispatch_ime_set_open",
-            "force_on_and_correct_romaji",
-            "reassert_explicit_physical_key",
-            "apply_ime_open_with_belief",
-        ],
-    ),
-    // apply_ime_open_with_belief: 同表の2箇所（2026-09-09実測、ADR-158 TB1）。
+    // 2026-09-19: reassert_explicit_physical_key（ADR-121、TsfNative向けON方向
+    // 救済の一部）を撤去したため4→3。同日、force_on_and_correct_romaji
+    // （force-ON実送信、TsfNative向けON方向救済の一部）も撤去したため3→2。
+    ("apply_ime_open_with_view", &["dispatch_ime_set_open", "apply_ime_open_with_belief"]),
+    // apply_ime_open_with_belief: 同表の1箇所（2026-09-09実測、ADR-158 TB1）。2026-09-19（ADR-185）:
+    // `kp_apply_conv_engine_sync`の`DirectInput`分岐（半角英数検出時のIME OFF送信）を撤去したため2→1。
     (
         "apply_ime_open_with_belief",
-        &["kp_apply_conv_engine_sync", "ir_apply_drift_correction"],
+        &["ir_apply_drift_correction"],
     ),
 ];
 

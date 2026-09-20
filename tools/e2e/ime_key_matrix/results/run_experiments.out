@@ -1,0 +1,9 @@
+=== E0h (基準(変換キーで検証))
+=== E1 (KeyUp解決を撤去(タイマー経路に戻す))
+=== E2 (ATOKでcustom表を読まない修正を撤去(変換キー))
+=== E3 (eisu reset抑止(ADR-186決定2)を撤去)
+=== E4 (eisu resetの全経路を撤去)
+=== E5 (物理キー後の20ms再読み取りを撤去)
+=== E6 (idle-conv-checkを無効化)
+=== E7 (gji_thumb_key_ime_toggle=false)
+完了: /home/cuzic/rust-nicola-worktrees/spike-ime-key-matrix/tools/e2e/ime_key_matrix/results/SUMMARY.md

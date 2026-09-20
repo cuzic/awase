@@ -246,13 +246,6 @@ pub struct ImeModel {
     /// 旧 `applied_open: Option<bool>` + `applied_at_ms: u64` の置換。
     pub applied: AppliedImeState,
 
-    /// `apply_force_on_for_imm_broken` の再試行クールダウン状態（ADR-098 決定1-c、BUG-69）。
-    ///
-    /// `applied` と同じ `FocusChanged` reducer arm でリセットする——予算の単位を
-    /// 「1 フォーカス」に揃え、`applied` だけリセットされ予算はされない窓が
-    /// 構造的に生じないようにするため。
-    pub force_on_retry: crate::state::ime_actuation::ForceOnRetryState,
-
     /// 現在フォーカス中のウィンドウ (ADR-087 §5 Phase 3 item15 前提配線)。
     ///
     /// `FocusChanged` の reducer でのみ更新する。`current_focus()` アクセサ経由で
@@ -288,7 +281,6 @@ impl ImeModel {
             focus_generation_watermark: ApplyGeneration::MIN,
             last_seen_generation: None,
             applied: AppliedImeState::Unknown,
-            force_on_retry: crate::state::ime_actuation::ForceOnRetryState::default(),
             current_focus: None,
         }
     }
@@ -688,6 +680,20 @@ impl ImeModel {
                 // が固定する）。
                 self.app_policy = AppImePolicy::from_profile(profile);
             }
+            ImeEvent::ModeKeyPassedThrough => {
+                // ADR-187: 明示意図が残ると resolve_open_at の ExplicitIntent 分岐が
+                // 直前の観測を固定してしまうため、観測成功後に意図だけ外す。
+                self.last_intent = None;
+            }
+            ImeEvent::InitialFocusHwndEstablished { hwnd } => {
+                // BUG-148/ADR-186: 起動時に既に前面にあるアプリの hwnd を
+                // `current_focus` に入れる。これが無いと最初のプロセス切替まで
+                // `record_explicit_intent` が空振りし、委譲 SetOpen が全て
+                // Unwarranted になる。`current_focus` のみを書き換え、belief
+                // （`desired_open`/`applied`/観測）には触れない
+                // （`initial_focus_hwnd_established_touches_only_current_focus` が固定する）。
+                self.current_focus = Some(hwnd);
+            }
         }
         // ADR-108 決定4: パージは match の後。期限切れ transition にも、自分自身の
         // 完了で解決される最後の一回を与える。タイムアウトはスロット寿命の上限で
@@ -750,11 +756,6 @@ impl ImeModel {
         {
             self.focus_generation_watermark = next_focus_generation;
         }
-        // ADR-098 決定1-c: force-ON の試行予算も同じ「フォーカス」単位で
-        // 戻す。`applied` のリセットと必ず同じ場所に置くこと——予算だけが
-        // 持ち越されると、新しいアプリで初回の force-ON が誤ってクール
-        // ダウン中と判定され飛ばない事故になる。
-        self.force_on_retry = crate::state::ime_actuation::ForceOnRetryState::default();
         // force_guard: 旧アプリ文脈の guard を新アプリに引き継がない
         self.force_guards.clear_for_focus_change();
         // observe_miss_monitor: 旧アプリの miss_count が新アプリで閾値を誤超えしないようリセット
@@ -873,6 +874,7 @@ impl ImeModel {
             }
             ApplyError::UnsafeToToggle => awase::platform::ImeOpenOutcome::UnsafeToToggle,
             ApplyError::NotOwned => awase::platform::ImeOpenOutcome::NotOwned,
+            ApplyError::Unwarranted => awase::platform::ImeOpenOutcome::Unwarranted,
         };
         let acceptance = self.classify_apply_completion(target, outcome, generation);
         if self
@@ -988,7 +990,6 @@ mod tests {
             // フィクスチャでは意図せずパージされないよう十分先の期限を置く。
             timeout_at: now + std::time::Duration::from_hours(1),
         });
-        model.force_on_retry.note_attempt(1234);
         model.focus_generation_watermark = ApplyGeneration::new(5).expect("nonzero");
         model.last_seen_generation = ApplyGeneration::new(4);
         model.observations.record_replayed(
@@ -1010,7 +1011,7 @@ mod tests {
     ///
     /// bootstrap（まだ一度も IME を観測していない時点）で dispatch されるため、
     /// belief を1ビットでも動かすとこの不変条件が壊れる。`FocusChanged` が触る
-    /// `app_policy`/`last_intent`/`applied`/`force_guards`/`force_on_retry`/
+    /// `app_policy`/`last_intent`/`applied`/`force_guards`/
     /// `input_barrier`/`current_focus`/観測プールが巻き添えで初期化されていないか、
     /// モデル全体の `Debug` 表現で機械的に確認する（個別 assert の書き漏れで
     /// 将来フィールドが増えたときに見逃すのを防ぐ）。
@@ -1102,6 +1103,63 @@ mod tests {
             "InitialAppPolicyEstablished は app_policy 以外を書き換えてはならない \
              (BUG-114/ADR-134 D1c: FocusChanged 以前に belief を書き換えない、\
              ADR-102 決定3-b と同じ規律)"
+        );
+    }
+
+    #[test]
+    fn mode_key_passed_through_touches_only_last_intent() {
+        let now = Instant::now();
+
+        let mut model = fully_populated_model(now);
+        assert!(
+            model.last_intent.is_some(),
+            "フィクスチャは last_intent を持つ"
+        );
+        model.reduce(&envelope(1, ImeEvent::ModeKeyPassedThrough));
+        assert!(
+            model.last_intent.is_none(),
+            "ModeKeyPassedThrough は last_intent だけを捨てる"
+        );
+
+        let mut expected = fully_populated_model(now);
+        expected.last_intent = None;
+        assert_eq!(
+            format!("{model:?}"),
+            format!("{expected:?}"),
+            "ModeKeyPassedThrough は last_intent 以外を書き換えてはならない"
+        );
+    }
+
+    /// BUG-148/ADR-186 の回帰テスト。
+    ///
+    /// `InitialFocusHwndEstablished` は `current_focus` **以外の一切のフィールドに
+    /// 触れない**（`initial_app_policy_established_touches_only_app_policy` と同じ手法）。
+    #[test]
+    fn initial_focus_hwnd_established_touches_only_current_focus() {
+        let now = Instant::now();
+        let hwnd = HwndId(0x7777);
+
+        // (1) 起動直後（current_focus=None）のモデルへ dispatch すると current_focus が設定される。
+        let mut model = ImeModel::new();
+        assert_eq!(
+            model.current_focus(),
+            None,
+            "起動直後は None（BUG-148の前提）"
+        );
+        model.reduce(&envelope(1, ImeEvent::InitialFocusHwndEstablished { hwnd }));
+        assert_eq!(model.current_focus(), Some(hwnd));
+
+        // (2) 既に current_focus がその値のモデルへ同じイベントを流しても、モデル全体の
+        // Debug 表現が1文字も変わらない = current_focus 以外を書いていない。
+        let mut model = fully_populated_model(now);
+        model.current_focus = Some(hwnd);
+        let before = format!("{model:?}");
+        model.reduce(&envelope(1, ImeEvent::InitialFocusHwndEstablished { hwnd }));
+        assert_eq!(
+            format!("{model:?}"),
+            before,
+            "InitialFocusHwndEstablished は current_focus 以外を書き換えてはならない \
+             (ADR-102 決定3-b: 最初の IME 観測より前に belief を書き換えない)"
         );
     }
 

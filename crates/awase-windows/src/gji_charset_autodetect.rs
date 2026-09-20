@@ -22,91 +22,15 @@
 //!   静かに何もしない。`awase-gji-config`crate自体の「パース失敗は常に
 //!   空の結果に静かにフォールバック」という既存方針を踏襲する。
 
-use awase::config::ParsedKeyCombo;
 use awase::types::{ShadowImeAction, VkCode};
 
 use crate::vk::VkCodeExt as _;
 
-/// IME ON/OFF/トグルキーとして自動採用してよいVK名の範囲。
-///
-/// `src/config.rs::validate_dedicated_fn_key`と同じ基準（`VK_F15`-`VK_F24`の
-/// うち`VK_F13`/`VK_F14`を除く）。`VK_F13`/`VK_F14`はターミナルエスケープ
-/// シーケンス漏れが実機確認済み（ADR-057）のため、config1.dbにこれらへの
-/// バインドが見つかっても絶対に採用しない。
-#[cfg_attr(not(windows), allow(dead_code))]
-fn is_in_safe_autodetect_range(vk_name: &str) -> bool {
-    matches!(
-        vk_name,
-        "VK_F15"
-            | "VK_F16"
-            | "VK_F17"
-            | "VK_F18"
-            | "VK_F19"
-            | "VK_F20"
-            | "VK_F21"
-            | "VK_F22"
-            | "VK_F23"
-            | "VK_F24"
-    )
-}
-
-/// `config1.db`の`custom_keymap_table`から、IME ON/OFF/トグルの自動検出用
-/// `ParsedKeyCombo`リストを判定する（ADR-092 決定D Step4c）。戻り値は
-/// `(on, off, toggle)`で、それぞれ`Engine::set_ime_on_auto_keys`等へ渡す。
-///
-/// `awase_gji_config::keymap::extract_ime_keys`が返すVK名は`VK_KANJI`
-/// （Hankaku/Zenkakuも同一）・`VK_IME_ON`・`VK_IME_OFF`・`VK_DBE_ALPHANUMERIC`
-/// （Eisu）を含みうる。これらはBUG-14で確認済みの「MS-IME/CTFが注入する
-/// 合成イベントと衝突しうるキー」であり、`SpecialKeyCombos::match_event`が
-/// `event.injected`を見ずにマッチするため、そのまま採用するとBUG-14と同種の
-/// 誤トグルを招く。[`is_in_safe_autodetect_range`]（専用FnキーF15-F24のみ）
-/// で必ず絞り込み、上記4エイリアスを一律除外する。
-///
-/// GJIが無変換/変換にIME ON/OFF/トグルを割り当てているケースは、本関数
-/// （F15-F24限定の安全範囲フィルタ）の対象外——`Henkan`/`Muhenkan`は
-/// `mozc_key_to_vk_name`で`VK_CONVERT`/`VK_NONCONVERT`に変換されうるが
-/// （BUG-115で追加）、F15-F24範囲外なので[`is_in_safe_autodetect_range`]で
-/// 必ず除外される。この2キーは
-/// [`classify_thumb_key_ime_actions`]・[`gate_thumb_key_ime_actions`]が
-/// 別途分類・opt-inゲートし、`windows_impl::route_thumb_key_action`が
-/// `is_thumb_key`に応じてStep4b delegate-to-open-axisまたは
-/// `ime_on_auto`/`ime_off_auto`/`ime_toggle_auto`へ振り分ける。詳細は
-/// [docs/known-bugs.md BUG-115](../../../../docs/known-bugs.md) 参照。
-#[must_use]
-#[cfg_attr(not(windows), allow(dead_code))]
-fn extract_ime_on_off_toggle_combos(
-    custom_keymap_table: &str,
-) -> (
-    Vec<ParsedKeyCombo>,
-    Vec<ParsedKeyCombo>,
-    Vec<ParsedKeyCombo>,
-) {
-    let keys = awase_gji_config::keymap::extract_ime_keys(custom_keymap_table);
-    let to_combos = |names: &[String]| -> Vec<ParsedKeyCombo> {
-        names
-            .iter()
-            .filter(|name| is_in_safe_autodetect_range(name))
-            .filter_map(|name| VkCode::from_name(name))
-            .map(|vk| ParsedKeyCombo {
-                ctrl: false,
-                shift: false,
-                alt: false,
-                vk,
-            })
-            .collect()
-    };
-    (
-        to_combos(&keys.on),
-        to_combos(&keys.off),
-        to_combos(&keys.toggle),
-    )
-}
-
 /// GJIが無変換/変換キーに割り当てているIME意味論の分類（BUG-115）。
 /// `session_keymap`/`custom_keymap_table`/`overlay_keymaps`のどれ由来でも
-/// 同じ3値に潰す——awase側の反応（delegate-to-open-axisか
-/// `ime_on_auto`/`off_auto`/`toggle_auto`か）は`On`/`Off`なら常に安全
-/// （冪等）、`Toggle`のときだけopt-inゲートの対象になる。
+/// 同じ3値に潰す——awase側の反応（`shadow_action` override経由の
+/// follow-only、ADR-179）は`On`/`Off`なら常に安全（冪等）、`Toggle`のときだけ
+/// opt-inゲートの対象になる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ImeToggleKind {
     /// このキー単独でIMEをONにする。
@@ -363,10 +287,19 @@ pub(crate) fn classify_mode_key_ime_action(
     // ＝割り当てなし」がGJIの実際の意味論であり、他プリセットの静的
     // 知識を借用する根拠が無いため、上のCUSTOM専用分岐のまま`None`を
     // 返す）。
-    if let Some(table) = &raw.custom_keymap_table {
-        let keys = awase_gji_config::keymap::extract_ime_keys(table);
-        if let Some(found) = classify_vk_in_ime_keys(&keys, key.vk_name()) {
-            return Some(found);
+    // ADR-186(実機スパイク、2026-09-20): `session_keymap == ATOK`では、`config1.db`に残る
+    // 古い`custom_keymap_table`は**GJIに使われない**。実機(ATOK)で、表に
+    // `DirectInput\tHenkan\tIMEOn`/`Precomposition\tHenkan\tCompositionModeHiragana`が残って
+    // いても、変換は`atok.tsv`どおり開閉トグル(ON中→OFF)として動いた(`docs/adr/186-measurements/`)。
+    // 表を優先するとHenkanが`On`(冪等・belief追随のみ・生キー素通し)と誤分類され、GJIの実トグル
+    // とbeliefが逆になる(Muhenkanは表に行が無くATOKの`Toggle`になり非対称)。ATOKでは表を読まず
+    // 下のプリセット分岐へ進む。MSIME等はADR-174の実機根拠があるため従来どおり表を優先する。
+    if raw.session_keymap != Some(awase_gji_config::SESSION_KEYMAP_ATOK) {
+        if let Some(table) = &raw.custom_keymap_table {
+            let keys = awase_gji_config::keymap::extract_ime_keys(table);
+            if let Some(found) = classify_vk_in_ime_keys(&keys, key.vk_name()) {
+                return Some(found);
+            }
         }
     }
     match raw.session_keymap {
@@ -602,65 +535,19 @@ pub(crate) fn resolve_henkan_muhenkan_shadow_override_for_event(
     }
 }
 
-/// 無変換/変換キーのGJI検出値を、親指キーかどうかで
-/// delegate-to-open-axis（親指キー）とactuation-auto（非親指キー、
-/// `on`/`off`/`toggle`への追加）に振り分ける（BUG-115 F7）。
-/// Hiragana/Katakana側の`resolve_mode_key_shadow_override_for_event`/
-/// `delegate_owns_mode_key_shadow_toggle`と対になる、無変換/変換専用の
-/// 振り分けロジック。プラットフォーム非依存の純粋関数として
-/// `windows_impl`の外に置き、Linux上でテスト可能にする
-/// （元は`windows_impl`内のprivate関数だったため、decision table
-/// テストで到達できなかった——`route_thumb_key_action`という同名のまま
-/// 引き上げた）。
-///
-/// `explicit_config`（ADR-153決定1 M15対策、/code-review指摘で追加）:
-/// このVKに`muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`が
-/// 設定されている場合、`on`/`off`/`toggle`へは一切積まない（`None`を返す）。
-/// 親指キー側（`is_thumb_key=true`）の分岐は呼び出し元
-/// （`sync_gji_charset_autodetect`）が別途`mask_auto_detect_for_explicit_
-/// config`でdelegate値をマスクしているが、**このVKが現在の
-/// `left_thumb_key`/`right_thumb_key`と一致しない場合**（`is_thumb_key=
-/// false`）は従来ここでマスクされずに`on`/`off`/`toggle`（Engineの
-/// Phase 1が無条件で消費する、親指キーとは独立の自動actuation経路）へ
-/// 積まれてしまい、`key_pipeline.rs`の明示config経路（ケース2/3改、VK
-/// を直接見るだけでthumb key設定を見ない）と独立に二重actuationしうる
-/// ——1回の物理打鍵に対しGJI自動検出由来のSetOpenと明示config由来の
-/// actuationが両方発火し、BUG-113/BUG-124と同型の「二重信号で@」を
-/// 誘発する。ここでマスクすることで、親指キー設定の有無に関わらず
-/// 明示config対象VKが`on`/`off`/`toggle`に載らないことを保証する。
+/// ADR-189: GJIでは半角/全角のVK(0xF3/0xF4)はどちらも開閉トグル。
+/// GJIがアクティブなときToggleを返す。
+#[must_use]
 #[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn route_thumb_key_action(
-    action: Option<ImeToggleKind>,
-    is_thumb_key: bool,
+pub(crate) fn resolve_hankaku_zenkaku_shadow_override_for_event(
     vk: VkCode,
-    explicit_config: Option<ShadowImeAction>,
-    on: &mut Vec<ParsedKeyCombo>,
-    off: &mut Vec<ParsedKeyCombo>,
-    toggle: &mut Vec<ParsedKeyCombo>,
+    gji_active: bool,
 ) -> Option<ShadowImeAction> {
-    let action = action?;
-    if is_thumb_key {
-        // `action`は呼び出し元（`gate_thumb_key_ime_actions`）で既にToggleの
-        // opt-inゲートを通過済みなので、ここでは`opt_in=true`固定で
-        // `ime_toggle_kind_to_shadow_action`に委譲し、On/Off/Toggleの
-        // 変換ロジックを二重管理しない（/code-review指摘）。
-        return ime_toggle_kind_to_shadow_action(action, true);
+    if gji_active && (vk == crate::vk::VK_DBE_SBCSCHAR || vk == crate::vk::VK_DBE_DBCSCHAR) {
+        Some(ShadowImeAction::Toggle)
+    } else {
+        None
     }
-    if explicit_config.is_some() {
-        return None;
-    }
-    let combo = ParsedKeyCombo {
-        ctrl: false,
-        shift: false,
-        alt: false,
-        vk,
-    };
-    match action {
-        ImeToggleKind::On => on.push(combo),
-        ImeToggleKind::Off => off.push(combo),
-        ImeToggleKind::Toggle => toggle.push(combo),
-    }
-    None
 }
 
 /// `left_thumb_key`/`right_thumb_key`のうちHiragana/Katakanaに一致する方の
@@ -701,9 +588,8 @@ mod windows_impl {
     use crate::runtime::Runtime;
 
     use super::{
-        classify_mode_key_ime_action, classify_thumb_key_ime_actions,
-        extract_ime_on_off_toggle_combos, gate_thumb_key_ime_actions,
-        resolve_gji_mode_key_shadow_overrides, route_thumb_key_action, ImeToggleKind,
+        classify_mode_key_ime_action, classify_thumb_key_ime_actions, gate_thumb_key_ime_actions,
+        ime_toggle_kind_to_shadow_action, resolve_gji_mode_key_shadow_overrides, ImeToggleKind,
         ModeKeyCandidate, ThumbKeyImeWarning,
     };
 
@@ -722,35 +608,21 @@ mod windows_impl {
 
     /// `runtime::message_handlers::sync_ime_kind_from_observation`から呼ぶ、
     /// GJI検出/離脱の唯一の合流点（`msime_key_assignment::check_and_warn`と対）。
-    /// IME ON/OFF/トグルキー（ADR-092 Step4c）と、無変換/変換キーの
-    /// IME on/off/toggle意味論（BUG-115）の自動判定を行う。
+    /// 無変換/変換キーのIME on/off/toggle意味論（BUG-115、ADR-179）の
+    /// 自動判定を行う。
     ///
     /// - **GJI以外への遷移**: 直前がGJI継続区間だった場合のみ、自動検出して
-    ///   いた`ime_on_auto`/`ime_off_auto`/`ime_toggle_auto`を解除する
-    ///   （delegate-to-open-axisは解除しない——GJI以外への遷移では必ず
-    ///   MS-IME側の`sync_ime_toggle_auto_detect`が無条件で上書きするため
-    ///   冪等で、この関数で解除するのは冗長。ただし`ActiveImeKind`が
-    ///   将来3値以上に増えた場合はこの前提が崩れる点に注意）。
-    /// - **GJIへの新規遷移**: `config1.db`を読み、宣言されているIME ON/OFF/
-    ///   トグルキー（安全範囲内のみ）と、無変換/変換キーの割当てを
-    ///   `Engine`へ反映する。既にこのGJI継続区間でチェック済みなら（ラッチが
-    ///   `GJI_CHECKED`のまま）何もしない——継続的なポーリングをしないため。
+    ///   いたshadow_action override・delegate-to-open-axisを解除する。
+    /// - **GJIへの新規遷移**: `config1.db`を読み、無変換/変換キーの
+    ///   割当てを`Engine`へ反映する。既にこのGJI継続区間でチェック済み
+    ///   なら（ラッチが`GJI_CHECKED`のまま）何もしない——継続的な
+    ///   ポーリングをしないため。
     pub(crate) fn sync_gji_charset_autodetect(app: &mut Runtime, is_gji: bool) {
         if !is_gji {
             if app.swap_gji_charset_streak_checked(false) {
                 tracing::info!(
-                    "[gji-charset-autodetect] GJI から離脱: 自動検出したIME ON/OFFキーを解除"
+                    "[gji-charset-autodetect] GJI から離脱: 自動検出したIME関連キーを解除"
                 );
-                // ime_on_auto/ime_off_auto/ime_toggle_auto を全て解除する
-                // （さもないと GJI 離脱後も別アプリ/別IMEの文脈にF15-F24の
-                // バインドや、無変換/変換の非親指キー扱い分（BUG-115）が
-                // 残留してしまう）。ime_toggle_auto は MS-IME 側
-                // （sync_ime_toggle_auto_detect）とも共有するフィールドだが、
-                // 呼び出し元（message_handlers::sync_ime_kind_from_observation）
-                // が GJI 側の同期を MS-IME 側より**先に**呼ぶ順序になっている
-                // ため、GJI→MS-IME遷移ではここで解除した直後に MS-IME 側が
-                // 新しい値で上書きし、破綻しない（Opus コードレビュー指摘）。
-                app.clear_gji_ime_on_off_auto_keys();
                 app.set_gji_mode_key_shadow_overrides(None, None);
                 app.set_gji_mode_key_delegate_to_open_axis(None, None);
                 // ADR-141: 無変換/変換のshadow_action overrideも同様に解除
@@ -777,7 +649,6 @@ mod windows_impl {
         }
 
         let bytes = read_config1_db();
-        let bytes_read_ok = bytes.is_some();
         let raw = bytes
             .as_deref()
             .and_then(awase_gji_config::wire::parse_top_level);
@@ -794,17 +665,13 @@ mod windows_impl {
         );
         warn_mode_key_thumb_key_unsupported_if_needed(app, raw.as_ref());
 
-        // BUG-115（F2、must-fix）: 無変換/変換のIME意味論は、あらゆる早期
-        // return（config1.dbが読めない・session_keymap!=CUSTOMゲート）より
-        // **前**に、無条件で計算・反映する。理由はMozcのoverlay_keymaps/
+        // BUG-115（F2、must-fix）: 無変換/変換のIME意味論は、config1.dbが
+        // 読めない場合も無条件で計算・反映する。理由はMozcのoverlay_keymaps/
         // session_keymap意味論のためだけでなく、MS-IME→GJI遷移時に
         // MS-IMEレジストリ由来の値（`sync_ime_toggle_auto_detect`が
         // セットしたもの）を上書きする**唯一の書き込み点**がここだから
         // （MS-IME側の同期は`kind == MicrosoftIme`でしか走らない、
-        // `message_handlers.rs`参照）。ここより後ろに動かすと、
-        // 「MS-IMEでKeyAssignmentMuhenkan=1設定→GJIへ切替→config1.dbが
-        // 読めない」という経路で無変換がMS-IME由来のTurnOffのまま
-        // GJI上で発火する回帰が復活する。
+        // `message_handlers.rs`参照）。
         let default_raw = awase_gji_config::wire::GjiRawConfig::default();
         let (henkan_kind, muhenkan_kind) =
             classify_thumb_key_ime_actions(raw.as_ref().unwrap_or(&default_raw));
@@ -815,7 +682,6 @@ mod windows_impl {
         );
         // ADR-176決定5（176-T3）: 確定済み較正結果があれば、
         // gate_thumb_key_ime_actionsの出力そのものを差し替える。
-        // route_thumb_key_action以降のthumb/非thumb振り分け・
         // mask_auto_detect_for_explicit_config等は変更せずそのまま効く。
         // 176-T12: 現在のconfig1.db内容に対してstaleな較正結果は
         // fresh_or_noneで「較正結果なし」に落とし、静的分類へ
@@ -837,35 +703,22 @@ mod windows_impl {
         );
         warn_thumb_key_toggle_if_needed(app, wiring.warning, wiring.muhenkan);
 
-        // BUG-115（F7）: 無変換/変換が親指シフトのチョードキーとして
-        // 設定されている場合のみ、Step4bと同じdelegate-to-open-axis
-        // （単独タップ確定経路のみで発火、チョード打鍵とは物理的に
-        // 衝突しない）に載せる。設定されていない場合、その物理キーは
-        // NICOLAの保留状態機械を一切通らない素のキーなので、代わりに
-        // Step4cと同じ`ime_on_auto`/`ime_off_auto`/`ime_toggle_auto`
-        // （押されたら常にactuationしてよい、既存のBUG-14
-        // injected除外もそのまま効く）に載せる。
-        let mut on = Vec::new();
-        let mut off = Vec::new();
-        let mut toggle = Vec::new();
-        let henkan_delegate = route_thumb_key_action(
-            wiring.henkan,
-            is_configured_thumb_key(ModeKeyCandidate::Henkan.vk()),
-            ModeKeyCandidate::Henkan.vk(),
-            app.henkan_solo_tap_ime_action(),
-            &mut on,
-            &mut off,
-            &mut toggle,
-        );
-        let muhenkan_delegate = route_thumb_key_action(
-            wiring.muhenkan,
-            is_configured_thumb_key(ModeKeyCandidate::Muhenkan.vk()),
-            ModeKeyCandidate::Muhenkan.vk(),
-            app.muhenkan_solo_tap_ime_action(),
-            &mut on,
-            &mut off,
-            &mut toggle,
-        );
+        // ADR-179 決定1: 無変換/変換が親指シフトのチョードキーとして
+        // 設定されているかどうかに関わらず、分類結果（On/Off/Toggle）は
+        // 常に`ime_toggle_kind_to_shadow_action`経由で`henkan_shadow_
+        // override`/`muhenkan_shadow_override`へ渡す。かつては非親指キー
+        // 配置時だけ別の能動actuation経路（`ime_on_auto`/`ime_off_auto`
+        // へのVec push）を使っていたが、これは無変換/変換向けに既に実装・
+        // 検証済みのfollow-only経路（`shadow_action` override）を使わず
+        // 別経路を再発明していただけだったと判明したため撤去した
+        // （`ModeKeyActuationOwner`が実際の所有権判定を担う、
+        // `runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle`参照）。
+        let henkan_shadow = wiring
+            .henkan
+            .and_then(|a| ime_toggle_kind_to_shadow_action(a, true));
+        let muhenkan_shadow = wiring
+            .muhenkan
+            .and_then(|a| ime_toggle_kind_to_shadow_action(a, true));
         // ADR-153 決定1 M15対策: ユーザーが明示config
         // （`henkan_solo_tap_ime_action`/`muhenkan_solo_tap_ime_action`）を
         // 設定しているキーについては、GJI自動検出由来のdelegate/
@@ -878,95 +731,33 @@ mod windows_impl {
         // （GJI側=ここ、MS-IME側=`message_handlers.rs::
         // sync_ime_toggle_auto_detect`）、両方に同じ無効化を適用する
         // （ADR-119の教訓「gateを1箇所に置いて満足しない」）。
-        let henkan_delegate = crate::runtime::mask_auto_detect_for_explicit_config(
-            henkan_delegate,
+        let henkan_shadow = crate::runtime::mask_auto_detect_for_explicit_config(
+            henkan_shadow,
             app.henkan_solo_tap_ime_action(),
         );
-        let muhenkan_delegate = crate::runtime::mask_auto_detect_for_explicit_config(
-            muhenkan_delegate,
+        let muhenkan_shadow = crate::runtime::mask_auto_detect_for_explicit_config(
+            muhenkan_shadow,
             app.muhenkan_solo_tap_ime_action(),
         );
-        app.set_gji_thumb_key_delegate_to_open_axis(henkan_delegate, muhenkan_delegate);
+        // `set_gji_thumb_key_delegate_to_open_axis`は非親指キー配置時にも
+        // 同じ値を渡すが無害——`resolve_pending_thumb_as_single`自体が
+        // `muhenkan_vk == Some(vk)`（＝親指キー設定）を要求するため、
+        // 非親指キーのdelegate値はどのみち消費されない（ADR-179参照）。
+        app.set_gji_thumb_key_delegate_to_open_axis(henkan_shadow, muhenkan_shadow);
         // ADR-141（C2対策）: delegateと同じ値をshadow_action overrideにも
-        // 常時反映する。非親指キー（delegateがNone）の場合は
-        // resolve_henkan_muhenkan_shadow_override_for_eventが何もしない
-        // ので無害——`ime_on_auto`等（actuation-auto）が既に非親指キーを
-        // カバーしている。親指キーの場合、delegateとoverrideの両方に
+        // 常時反映する。親指キーの場合、delegateとoverrideの両方に
         // 同じ値が登録され、`&& effective_open()`ゲート
         // （`mode_key_delegate_owns_shadow_toggle`）が実行時に排他的に
         // 切り替える——belief ON中はdelegateが、belief OFF中は
         // shadow-toggle（belief追随のみ）が処理する。上記M15対策の
         // 上書き後の値をそのまま使うため、明示config対象キーはここでも
         // Noneのまま。
-        app.set_thumb_key_shadow_overrides(henkan_delegate, muhenkan_delegate);
+        app.set_thumb_key_shadow_overrides(henkan_shadow, muhenkan_shadow);
 
         // BUG-115 Phase 2/3: Hiragana/Katakana は actuation-auto には載せない。
         // 非親指キーでは Runtime::enrich_ime_relevance の shadow_action
         // override、親指キーでは resolve_pending_thumb_as_single の
         // delegate-to-open-axis が担当する。
-
-        let Some(raw) = raw else {
-            // /code-review指摘（PR #168）: 「ファイルが読めない」（GJI未
-            // インストール等、平常運転で起きうる）と「読めたがwire-format
-            // 解析に失敗した」（このPR自身が実際に踏んだfield番号ズレ
-            // ————22→41修正参照————のような、将来のMozc/GJI側スキーマ変更を
-            // 示唆する異常事態）を同じデバッグメッセージに畳んでしまうと、
-            // 後者が発生した際に次の調査が誤って「未インストール」方向へ
-            // 誘導される。以前のコードは後者を無言でreturnしていたが、
-            // 今回は明示的に区別してログする。
-            if bytes_read_ok {
-                tracing::debug!(
-                    "[gji-charset-autodetect] config1.db は読めましたがwire-format \
-                     解析に失敗しました（Mozc/GJI側のスキーマ変更の可能性。\
-                     docs/known-bugs.md BUG-115のfield番号ズレ修正経緯を参照）"
-                );
-            } else {
-                tracing::debug!(
-                    "[gji-charset-autodetect] config1.db を読めませんでした \
-                     （GJI 未インストール、または初回起動でまだ作成されていない等）"
-                );
-            }
-            app.set_gji_ime_on_off_toggle_auto_keys(on, off, toggle);
-            return;
-        };
-        if raw.session_keymap != Some(awase_gji_config::SESSION_KEYMAP_CUSTOM) {
-            // session_keymap が CUSTOM でなければ（ATOK/MS-IME 等のプリセット
-            // 選択中）、custom_keymap_table に何が残っていても GJI はそれを
-            // 参照しない。古いカスタムテーブルの残骸を誤って有効と判定しない
-            // ための必須ガード（Opus レビュー指摘）。上の無変換/変換の
-            // IME意味論判定はこのreturnより前に既に完了しているため、
-            // ここでの early returnはF15-F24自動検出だけをスキップする
-            // （BUG-115、Step4c fix#4と同型の再発条件——配置順は
-            // 回帰テストで固定）。
-            tracing::debug!(
-                "[gji-charset-autodetect] session_keymap が CUSTOM ではないため \
-                 F15-F24自動判定をスキップ: {:?}",
-                raw.session_keymap
-            );
-            app.set_gji_ime_on_off_toggle_auto_keys(on, off, toggle);
-            return;
-        }
-        let Some(table) = raw.custom_keymap_table else {
-            app.set_gji_ime_on_off_toggle_auto_keys(on, off, toggle);
-            return;
-        };
-
-        // ADR-092 決定D Step4c: 2026-08-16 ユーザー判断:
-        // `Engine::match_ime_on_off_auto`/`match_ime_toggle_auto`は
-        // `special_keys.ime_on/ime_off/ime_toggle`が非空でも自動リストを
-        // 併用する（明示 ∪ 自動、手動排他ではない）ため、ここでの事前
-        // チェックは元々不要（Step4aと同じ規約）。
-        let (f_on, f_off, f_toggle) = extract_ime_on_off_toggle_combos(&table);
-        on.extend(f_on);
-        off.extend(f_off);
-        toggle.extend(f_toggle);
-        if !on.is_empty() || !off.is_empty() || !toggle.is_empty() {
-            tracing::info!(
-                "[gji-charset-autodetect] config1.db から IME ON/OFF/トグルキーを \
-                 自動検出しました: on={on:?} off={off:?} toggle={toggle:?}"
-            );
-        }
-        app.set_gji_ime_on_off_toggle_auto_keys(on, off, toggle);
     }
 
     /// `vk`が現在`left_thumb_key`/`right_thumb_key`のいずれかに設定されて
@@ -1151,96 +942,18 @@ mod windows_impl {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_ime_on_off_toggle_combos;
-    use crate::vk::VkCodeExt as _;
-    use awase::types::VkCode;
-
-    // ── extract_ime_on_off_toggle_combos (ADR-092 決定D Step4c) ──
-
-    fn combo(vk_name: &str) -> awase::config::ParsedKeyCombo {
-        awase::config::ParsedKeyCombo {
-            ctrl: false,
-            shift: false,
-            alt: false,
-            vk: VkCode::from_name(vk_name).unwrap(),
-        }
-    }
-
-    #[test]
-    fn no_bindings_yields_all_empty() {
-        let (on, off, toggle) = extract_ime_on_off_toggle_combos("");
-        assert_eq!(on, vec![]);
-        assert_eq!(off, vec![]);
-        assert_eq!(toggle, vec![]);
-    }
-
-    /// `awase-gji-config::keymap`側の`extracts_toggle_on_off_from_fixture`と
-    /// 同じフィクスチャ。安全範囲外（F13/`VK_DBE_ALPHANUMERIC`/`VK_IME_ON`/
-    /// `VK_IME_OFF`/`VK_KANJI`）は全て除外され、F15-F24範囲内のF21/F22だけが
-    /// 残ることを確認する（BUG-14 注入イベント衝突リスクの回避、Opusレビュー
-    /// 指摘の反映）。
-    #[test]
-    fn filters_out_bug14_risky_aliases_and_out_of_range_fn_keys() {
-        let table = "status\tkey\tcommand
-Composition\tHankaku/Zenkaku\tIMEOff
-Conversion\tHankaku/Zenkaku\tIMEOff
-DirectInput\tHankaku/Zenkaku\tIMEOn
-Precomposition\tHankaku/Zenkaku\tIMEOff
-Composition\tKanji\tIMEOff
-Conversion\tKanji\tIMEOff
-DirectInput\tKanji\tIMEOn
-Precomposition\tKanji\tIMEOff
-DirectInput\tF13\tIMEOn
-DirectInput\tF21\tIMEOn
-Precomposition\tF21\tIMEOn
-Composition\tF21\tIMEOn
-Conversion\tF21\tIMEOn
-Precomposition\tF22\tIMEOff
-Composition\tF22\tIMEOff
-Conversion\tF22\tIMEOff
-Composition\tON\tIMEOn
-Composition\tOFF\tIMEOff
-Conversion\tON\tIMEOn
-Conversion\tOFF\tIMEOff
-DirectInput\tON\tIMEOn
-Precomposition\tON\tIMEOn
-Precomposition\tOFF\tIMEOff
-DirectInput\tEisu\tIMEOn
-Composition\tEisu\tToggleAlphanumericMode
-Conversion\tEisu\tToggleAlphanumericMode
-Precomposition\tEisu\tToggleAlphanumericMode
-";
-        let (on, off, toggle) = extract_ime_on_off_toggle_combos(table);
-        // 生の GjiImeKeys.on は [VK_DBE_ALPHANUMERIC, VK_F13, VK_F21, VK_IME_ON]
-        // だが、安全範囲(F15-F24)外を全て除外すると VK_F21 のみ残る。
-        assert_eq!(on, vec![combo("VK_F21")]);
-        // 生の GjiImeKeys.off は [VK_F22, VK_IME_OFF] だが VK_IME_OFF は除外。
-        assert_eq!(off, vec![combo("VK_F22")]);
-        // 生の GjiImeKeys.toggle は [VK_KANJI] のみで、安全範囲外のため全除外。
-        assert_eq!(toggle, vec![]);
-    }
-
-    /// 安全範囲内（F15-F24）のトグルキーはそのまま採用される。
-    #[test]
-    fn safe_range_toggle_key_is_kept() {
-        let table = "status\tkey\tcommand\nDirectInput\tF20\tIMEOn\nPrediction\tF20\tIMEOff\n";
-        let (on, off, toggle) = extract_ime_on_off_toggle_combos(table);
-        assert_eq!(on, vec![]);
-        assert_eq!(off, vec![]);
-        assert_eq!(toggle, vec![combo("VK_F20")]);
-    }
-
     // ── classify_thumb_key_ime_actions / gate_thumb_key_ime_actions (BUG-115) ──
 
     use super::{
         classify_mode_key_ime_action, classify_thumb_key_ime_actions,
         delegate_owns_mode_key_shadow_toggle, gate_thumb_key_ime_actions,
         ime_toggle_kind_to_shadow_action, resolve_gji_mode_key_shadow_overrides,
+        resolve_hankaku_zenkaku_shadow_override_for_event,
         resolve_henkan_muhenkan_shadow_override_for_event,
-        resolve_mode_key_shadow_override_for_event, route_thumb_key_action, ImeToggleKind,
-        ModeKeyCandidate, ThumbKeyImeWarning,
+        resolve_mode_key_shadow_override_for_event, ImeToggleKind, ModeKeyCandidate,
+        ThumbKeyImeWarning,
     };
-    use awase::types::ShadowImeAction;
+    use awase::types::{ShadowImeAction, VkCode};
     use awase_gji_config::wire::GjiRawConfig;
 
     fn raw_with_overlay() -> GjiRawConfig {
@@ -1361,6 +1074,40 @@ Precomposition\tEisu\tToggleAlphanumericMode
         // 無関係なキーの判定を壊さないことの固定。
         assert_eq!(
             classify_mode_key_ime_action(ModeKeyCandidate::Hiragana, &raw),
+            Some(ImeToggleKind::On)
+        );
+    }
+
+    /// ADR-186(実機スパイク、2026-09-20): ATOKプリセットでは、`config1.db`に残る古い
+    /// `custom_keymap_table`(実機に実在した`DirectInput\tHenkan\tIMEOn`等)を読まない。
+    /// 変換・無変換ともATOKの`Toggle`(開閉トグル)になる。MSIME(ADR-174)は表を優先するまま。
+    #[test]
+    fn classify_atok_session_keymap_ignores_stale_custom_table() {
+        let table = "status\tkey\tcommand\n\
+            DirectInput\tHenkan\tIMEOn\n\
+            Precomposition\tHenkan\tCompositionModeHiragana\n\
+            Composition\tHenkan\tCompositionModeHiragana\n";
+        let atok = GjiRawConfig {
+            session_keymap: Some(awase_gji_config::SESSION_KEYMAP_ATOK),
+            custom_keymap_table: Some(table.to_string()),
+            ..GjiRawConfig::default()
+        };
+        assert_eq!(
+            classify_mode_key_ime_action(ModeKeyCandidate::Henkan, &atok),
+            Some(ImeToggleKind::Toggle)
+        );
+        assert_eq!(
+            classify_mode_key_ime_action(ModeKeyCandidate::Muhenkan, &atok),
+            Some(ImeToggleKind::Toggle)
+        );
+        // 同じ表でもMSIMEでは従来どおり表を優先する（ADR-174の回帰防止）。
+        let msime = GjiRawConfig {
+            session_keymap: Some(awase_gji_config::SESSION_KEYMAP_MSIME),
+            custom_keymap_table: Some(table.to_string()),
+            ..GjiRawConfig::default()
+        };
+        assert_eq!(
+            classify_mode_key_ime_action(ModeKeyCandidate::Henkan, &msime),
             Some(ImeToggleKind::On)
         );
     }
@@ -1652,6 +1399,33 @@ Precomposition\tEisu\tToggleAlphanumericMode
     }
 
     #[test]
+    fn hankaku_zenkaku_shadow_override_toggles_only_for_gji_dbe_width_keys() {
+        assert_eq!(
+            resolve_hankaku_zenkaku_shadow_override_for_event(crate::vk::VK_DBE_SBCSCHAR, true),
+            Some(ShadowImeAction::Toggle)
+        );
+        assert_eq!(
+            resolve_hankaku_zenkaku_shadow_override_for_event(crate::vk::VK_DBE_DBCSCHAR, true),
+            Some(ShadowImeAction::Toggle)
+        );
+        assert_eq!(
+            resolve_hankaku_zenkaku_shadow_override_for_event(crate::vk::VK_DBE_SBCSCHAR, false),
+            None
+        );
+        for vk in [
+            crate::vk::VK_KANJI,
+            crate::vk::VK_DBE_HIRAGANA,
+            ModeKeyCandidate::Henkan.vk(),
+        ] {
+            assert_eq!(
+                resolve_hankaku_zenkaku_shadow_override_for_event(vk, true),
+                None,
+                "{vk:?}はADR-189の半角/全角override対象外"
+            );
+        }
+    }
+
+    #[test]
     fn mode_key_delegate_ownership_is_thumb_key_times_delegate_armed() {
         let hiragana = ModeKeyCandidate::Hiragana.vk();
         assert!(!delegate_owns_mode_key_shadow_toggle(
@@ -1728,18 +1502,25 @@ Precomposition\tEisu\tToggleAlphanumericMode
     }
 
     // ── GJI検出→反映の全体パイプライン decision table（ユーザー依頼、
-    // 2026-09-05）──
+    // 2026-09-05。ADR-179決定1でHenkan/Muhenkanのactuation-auto撤去に
+    // 伴い2026-09-18更新）──
     //
-    // Phase 1〜3を通じて何度も見落とされてきた「非親指キーはactuation-auto/
-    // shadow_actionオーバーライド、親指キーはdelegate-to-open-axis」という
-    // 振り分けと、「Toggleだけopt-inでゲートする」という規則を、4キー
-    // （Henkan/Muhenkan/Hiragana/Katakana）×GJI判定値（None/On/Off/Toggle）
-    // ×opt_in×is_thumbの全組み合わせ（4×4×2×2=64通り）に対して、実際の
-    // 本番用純粋関数（`classify_mode_key_ime_action`/
-    // `classify_thumb_key_ime_actions`/`gate_thumb_key_ime_actions`/
-    // `route_thumb_key_action`/`ime_toggle_kind_to_shadow_action`/
+    // Phase 1〜3を通じて何度も見落とされてきた「Toggleだけopt-inで
+    // ゲートする」という規則を、4キー（Henkan/Muhenkan/Hiragana/
+    // Katakana）×GJI判定値（None/On/Off/Toggle）×opt_in×is_thumbの
+    // 全組み合わせ（4×4×2×2=64通り）に対して、実際の本番用純粋関数
+    // （`classify_mode_key_ime_action`/`classify_thumb_key_ime_actions`/
+    // `gate_thumb_key_ime_actions`/`ime_toggle_kind_to_shadow_action`/
     // `resolve_mode_key_shadow_override_for_event`/
     // `delegate_owns_mode_key_shadow_toggle`）を呼び出して検証する。
+    //
+    // ADR-179決定1により、Henkan/Muhenkanは「非親指キーはactuation-auto、
+    // 親指キーはdelegate-to-open-axis」という振り分けを撤去し、
+    // is_thumbに関わらず常にdelegate-to-open-axisとshadow_action
+    // overrideの両方に同じ値を反映するようになった（実際にどちらが
+    // 発火するかは`ModeKeyActuationOwner`が打鍵時に判定する、
+    // `runtime/key_pipeline.rs`参照——本decision tableは
+    // `sync_gji_charset_autodetect`が計算する値までを検証対象とする）。
     //
     // 64通りは全数（exhaustive）であり、その部分集合として任意の2軸間の
     // 全組（pairwise）も自動的に網羅される——4値軸(Key)×4値軸(Classify)
@@ -1781,9 +1562,10 @@ Precomposition\tEisu\tToggleAlphanumericMode
     }
 
     /// パイプラインの最終的な帰結。4キー共通の型で表す
-    /// （Henkan/Muhenkanは`ActuationAuto`、Hiragana/Katakanaは
-    /// `ShadowOverride`が非親指キー側の帰結になる——キー族によって
-    /// 消費先の機構自体が異なるため区別する）。
+    /// （ADR-179決定1により、Henkan/Muhenkanはis_thumbに関わらず常に
+    /// `DelegateAndShadowOverride`、Hiragana/Katakanaは非親指キー側だけ
+    /// `ShadowOverride`——キー族によって消費先の機構自体が異なるため
+    /// 区別する）。
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum PipelineOutcome {
         /// GJI判定がNone、またはToggleでopt-in未設定のため何も反映されない。
@@ -1800,9 +1582,6 @@ Precomposition\tEisu\tToggleAlphanumericMode
         /// 静的`shadow_action`を持たないHenkan/MuhenkanはHiragana/
         /// Katakanaと異なりこの二重登録が必要（C2対策）。
         DelegateAndShadowOverride(ShadowImeAction),
-        /// 非親指キーのHenkan/Muhenkan: Step4c実効automation
-        /// （`ime_on_auto`/`ime_off_auto`/`ime_toggle_auto`）へ積まれる。
-        ActuationAuto(ImeToggleKind),
         /// 非親指キーのHiragana/Katakana: 静的`shadow_action`を
         /// オーバーライドする。
         ShadowOverride(ShadowImeAction),
@@ -1846,32 +1625,37 @@ Precomposition\tEisu\tToggleAlphanumericMode
             ImeToggleKind::Off => ShadowImeAction::TurnOff,
             ImeToggleKind::Toggle => ShadowImeAction::Toggle,
         };
-        if is_thumb {
-            // ADR-141: Henkan/Muhenkanは親指キーの場合、delegateと
+        match family {
+            // ADR-179決定1: Henkan/Muhenkanはis_thumbに関わらず常にdelegateと
             // shadow_action overrideの両方に同じ値が登録される
             // （`&& effective_open()`ゲートが実行時に排他的に切り替える）。
-            // Hiragana/Katakanaは静的shadow_actionを守るためdelegateのみ
-            // （overrideは「親指キーならNone」で適用されない、Opus再レビュー
-            // Must-fix #2で明確化）。
-            return match family {
-                KeyFamily::HenkanMuhenkan => PipelineOutcome::DelegateAndShadowOverride(action),
-                KeyFamily::HiraganaKatakana => PipelineOutcome::Delegate(action),
-            };
-        }
-        match family {
-            KeyFamily::HenkanMuhenkan => PipelineOutcome::ActuationAuto(kind),
-            KeyFamily::HiraganaKatakana => PipelineOutcome::ShadowOverride(action),
+            KeyFamily::HenkanMuhenkan => PipelineOutcome::DelegateAndShadowOverride(action),
+            KeyFamily::HiraganaKatakana => {
+                // Hiragana/Katakanaは静的shadow_actionを守るため、親指キー
+                // 側はdelegateのみ（overrideは「親指キーならNone」で適用
+                // されない、Opus再レビューMust-fix #2で明確化）。この軸は
+                // ADR-179のスコープ外で変更していない。
+                if is_thumb {
+                    PipelineOutcome::Delegate(action)
+                } else {
+                    PipelineOutcome::ShadowOverride(action)
+                }
+            }
         }
     }
 
     /// Henkan/Muhenkan側の実際のパイプラインを本番関数だけで辿って
     /// 帰結を得る（`classify_thumb_key_ime_actions` →
-    /// `gate_thumb_key_ime_actions` → `route_thumb_key_action`）。
+    /// `gate_thumb_key_ime_actions` → `ime_toggle_kind_to_shadow_action`、
+    /// ADR-179決定1）。`is_thumb`はもはや`sync_gji_charset_autodetect`の
+    /// 計算に影響しない（打鍵時の`ModeKeyActuationOwner`判定でのみ使う）
+    /// ため引数から外した——呼び出し元のdecision tableループは両方の
+    /// is_thumb値で同じ`expected`と突き合わせることで、この軸が
+    /// 無関係になったこと自体を検証する。
     fn actual_outcome_henkan_muhenkan(
         target: ModeKeyCandidate,
         raw: &GjiRawConfig,
         opt_in: bool,
-        is_thumb: bool,
     ) -> PipelineOutcome {
         let (henkan_c, muhenkan_c) = classify_thumb_key_ime_actions(raw);
         let wiring = gate_thumb_key_ime_actions(henkan_c, muhenkan_c, opt_in);
@@ -1880,59 +1664,33 @@ Precomposition\tEisu\tToggleAlphanumericMode
             ModeKeyCandidate::Muhenkan => wiring.muhenkan,
             _ => unreachable!("this helper is Henkan/Muhenkan専用"),
         };
-        let mut on = Vec::new();
-        let mut off = Vec::new();
-        let mut toggle = Vec::new();
-        // このdecision tableは明示config（ADR-153決定1 M15）の次元を
-        // 対象外としている（GJI検出値×opt_in×親指キー判定の組み合わせが
-        // 検証対象）。明示config併用時のマスク動作は
-        // `route_thumb_key_action_masks_actuation_auto_when_explicit_
-        // config_is_set`で別途固定する。
-        let delegate = route_thumb_key_action(
-            gated,
-            is_thumb,
+        let Some(action) = gated.and_then(|k| ime_toggle_kind_to_shadow_action(k, true)) else {
+            return PipelineOutcome::Nothing;
+        };
+        // ADR-141: 本番の`sync_gji_charset_autodetect`はdelegateと
+        // 同じ値を`set_thumb_key_shadow_overrides`にも渡す
+        // （`henkan_shadow`/`muhenkan_shadow`をそのまま再利用）。
+        // ここでは対象キー自身のoverrideスロットにのみ値を入れて
+        // `resolve_henkan_muhenkan_shadow_override_for_event`を呼び、
+        // 本番配線を再現する（他方のキーの値は本ヘルパーの対象外なので
+        // Noneのままでよい——vk一致判定にしか影響しない）。
+        let (henkan_override, muhenkan_override) = match target {
+            ModeKeyCandidate::Henkan => (Some(action), None),
+            ModeKeyCandidate::Muhenkan => (None, Some(action)),
+            _ => unreachable!("this helper is Henkan/Muhenkan専用"),
+        };
+        let shadow_override = resolve_henkan_muhenkan_shadow_override_for_event(
             target.vk(),
-            None,
-            &mut on,
-            &mut off,
-            &mut toggle,
+            henkan_override,
+            muhenkan_override,
         );
-        if let Some(action) = delegate {
-            // ADR-141: 本番の`sync_gji_charset_autodetect`はdelegateと
-            // 同じ値を`set_thumb_key_shadow_overrides`にも渡す
-            // （`henkan_delegate`/`muhenkan_delegate`をそのまま再利用）。
-            // ここでは対象キー自身のoverrideスロットにのみ`delegate`を
-            // 入れて`resolve_henkan_muhenkan_shadow_override_for_event`を
-            // 呼び、本番配線を再現する（他方のキーの値は本ヘルパーの
-            // 対象外なのでNoneのままでよい——vk一致判定にしか影響しない）。
-            let (henkan_override, muhenkan_override) = match target {
-                ModeKeyCandidate::Henkan => (delegate, None),
-                ModeKeyCandidate::Muhenkan => (None, delegate),
-                _ => unreachable!("this helper is Henkan/Muhenkan専用"),
-            };
-            let shadow_override = resolve_henkan_muhenkan_shadow_override_for_event(
-                target.vk(),
-                henkan_override,
-                muhenkan_override,
-            );
-            assert_eq!(
-                shadow_override,
-                Some(action),
-                "delegateがSomeならshadow_action overrideも同じ値でSomeになるはず \
-                 （両方に登録する設計、ADR-141）"
-            );
-            return PipelineOutcome::DelegateAndShadowOverride(action);
-        }
-        if !on.is_empty() {
-            return PipelineOutcome::ActuationAuto(ImeToggleKind::On);
-        }
-        if !off.is_empty() {
-            return PipelineOutcome::ActuationAuto(ImeToggleKind::Off);
-        }
-        if !toggle.is_empty() {
-            return PipelineOutcome::ActuationAuto(ImeToggleKind::Toggle);
-        }
-        PipelineOutcome::Nothing
+        assert_eq!(
+            shadow_override,
+            Some(action),
+            "delegateがSomeならshadow_action overrideも同じ値でSomeになるはず \
+             （両方に登録する設計、ADR-141）"
+        );
+        PipelineOutcome::DelegateAndShadowOverride(action)
     }
 
     /// Hiragana/Katakana側の実際のパイプラインを本番関数だけで辿って
@@ -2025,7 +1783,7 @@ Precomposition\tEisu\tToggleAlphanumericMode
                         let expected = expected_outcome(classify, opt_in, is_thumb, family);
                         let actual = match family {
                             KeyFamily::HenkanMuhenkan => {
-                                actual_outcome_henkan_muhenkan(key, &raw, opt_in, is_thumb)
+                                actual_outcome_henkan_muhenkan(key, &raw, opt_in)
                             }
                             KeyFamily::HiraganaKatakana => {
                                 actual_outcome_hiragana_katakana(key, &raw, opt_in, is_thumb)
@@ -2045,59 +1803,6 @@ Precomposition\tEisu\tToggleAlphanumericMode
             checked,
             KEYS.len() * CLASSIFY_VALUES.len() * BOOLS.len() * BOOLS.len(),
             "4x4x2x2=64通りを全数網羅したことの自己点検"
-        );
-    }
-
-    /// /code-review指摘（2026-09-08）: `route_thumb_key_action`は親指キー
-    /// 側（`is_thumb_key=true`）のdelegate値は呼び出し元
-    /// （`sync_gji_charset_autodetect`）が`mask_auto_detect_for_explicit_
-    /// config`で別途マスクしているが、**このVKが現在の`left_thumb_key`/
-    /// `right_thumb_key`と一致しない場合**（`is_thumb_key=false`）は
-    /// マスクされずに`on`/`off`/`toggle`（Engine Phase 1が無条件で消費する
-    /// 自動actuation経路）へ積まれてしまい、ADR-153決定1の明示config
-    /// 経路（`key_pipeline.rs`、VKを直接見るだけでthumb key設定を見ない）
-    /// と独立に二重actuationしうる漏れがあった——1回の物理打鍵に対し
-    /// GJI自動検出由来のSetOpenと明示config由来のactuationが両方発火し、
-    /// BUG-113/BUG-124と同型の「二重信号で@」を誘発する経路。
-    /// `explicit_config`引数を追加してこの漏れを塞いだことを固定する。
-    #[test]
-    fn route_thumb_key_action_masks_actuation_auto_when_explicit_config_is_set() {
-        let vk = ModeKeyCandidate::Muhenkan.vk();
-        let mut on = Vec::new();
-        let mut off = Vec::new();
-        let mut toggle = Vec::new();
-
-        // 明示config未設定なら従来どおりactuation-autoへ積まれる（回帰確認）。
-        let delegate = route_thumb_key_action(
-            Some(ImeToggleKind::On),
-            false, // is_thumb_key=false（現在の thumb key 設定と不一致）
-            vk,
-            None,
-            &mut on,
-            &mut off,
-            &mut toggle,
-        );
-        assert_eq!(delegate, None);
-        assert_eq!(on.len(), 1, "明示config未設定ならon-autoへ積まれるはず");
-
-        // 明示config設定済みなら、is_thumb_key=falseでもactuation-autoへ
-        // 積まれてはならない（本テストの主目的）。
-        on.clear();
-        let delegate = route_thumb_key_action(
-            Some(ImeToggleKind::On),
-            false,
-            vk,
-            Some(ShadowImeAction::TurnOn),
-            &mut on,
-            &mut off,
-            &mut toggle,
-        );
-        assert_eq!(delegate, None);
-        assert!(
-            on.is_empty() && off.is_empty() && toggle.is_empty(),
-            "明示config設定済みのVKはactuation-auto(on/off/toggle)へ \
-             一切積まれてはならない（二重actuation防止）。実際: \
-             on={on:?} off={off:?} toggle={toggle:?}"
         );
     }
 }

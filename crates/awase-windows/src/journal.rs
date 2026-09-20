@@ -740,6 +740,8 @@ fn ime_event_kind_str(e: &crate::state::ime_event::ImeEvent) -> &'static str {
         ImeEvent::FocusHwndUpdated { .. } => "FocusHwndUpdated",
         ImeEvent::InitialFocusFenceEstablished { .. } => "InitialFocusFenceEstablished",
         ImeEvent::InitialAppPolicyEstablished { .. } => "InitialAppPolicyEstablished",
+        ImeEvent::ModeKeyPassedThrough => "ModeKeyPassedThrough",
+        ImeEvent::InitialFocusHwndEstablished { .. } => "InitialFocusHwndEstablished",
         ImeEvent::ChordEnded { .. } => "ChordEnded",
         ImeEvent::DriftDetected { .. } => "DriftDetected",
         ImeEvent::InputModeObserved { .. } => "InputModeObserved",
@@ -758,6 +760,7 @@ fn ime_open_outcome_str(o: awase::platform::ImeOpenOutcome) -> &'static str {
         ImeOpenOutcome::Failed => "Failed",
         ImeOpenOutcome::UnsafeToToggle => "UnsafeToToggle",
         ImeOpenOutcome::NotOwned => "NotOwned",
+        ImeOpenOutcome::Unwarranted => "Unwarranted",
     }
 }
 
@@ -814,7 +817,6 @@ fn decision_site_str(site: crate::state::ime_actuation_decision::DecisionSite) -
         DecisionSite::ForceOnRomajiCorrection => "ForceOnRomajiCorrection",
         DecisionSite::ShadowToggleOff => "ShadowToggleOff",
         DecisionSite::ForceOnBootstrap => "ForceOnBootstrap",
-        DecisionSite::IdleConvCheckDirectInput => "IdleConvCheckDirectInput",
         DecisionSite::BlacklistDriftCorrection => "BlacklistDriftCorrection",
     }
 }

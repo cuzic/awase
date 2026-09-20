@@ -344,65 +344,6 @@ pub const DRIFT_CORRECTION_OBS_MAX_AGE_MS: u64 = 1_500;
 #[measured_macro::measured(pending = true)]
 pub const DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS: u64 = 3_000;
 
-/// `apply_force_on_for_imm_broken` の再試行クールダウン (ms)（ADR-098 決定1-c、BUG-69）。
-///
-/// ADR-098 決定1-a により TsfNative の `applied` はフォーカス入場後 `Unknown`
-/// のまま残るようになる。従来のスパムガード（`applied` が ON 相当なら送らない）
-/// は、strategy chain が `Failed` を返した場合に生成される `Confirmed{open:false}`
-/// を素通ししてしまい、`post_ime_refresh()` が outcome によらず無条件に張る
-/// 20ms タイマーと、TsfNative ではそれを上書きする周期ポーリングが無いことが
-/// 組み合わさって、実効 50Hz の無限再試行ループ（打鍵中かどうかを問わず
-/// `mark_composition_cold` を伴う、BUG-31 族の最悪形）を開く。
-///
-/// # 実測値ではなくレート制限ポリシーである
-///
-/// `DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS`（直上）と同じ位置づけであり、
-/// `.claude/rules/tuning-constants.md` の実測義務は「OS の準備が整うまで何 ms
-/// 待つか」という待機定数に対するもので、本定数は「壊れた再試行を何 Hz に
-/// 制限するか」という上限——値を変えても機能の成否（初回 force-ON が飛ぶか）
-/// は変わらず、変わるのは再試行の密度だけである。
-///
-/// # なぜ試行回数の上限を設けず、クールダウンのみにするのか
-///
-/// `FocusChanged` はプロセス変更時にしか発火しない（`focus_tracking.rs` の
-/// PID 比較）。同一プロセス内のウィンドウ/タブ切替では 1 フォーカスセッションが
-/// 数十分続きうる。その間 `applied` は drift correction・ユーザー明示操作等で
-/// 繰り返し blocking 状態から外れる。1 フォーカスあたりの試行回数に上限を
-/// 設けると、observer の揺れ（実測: GJI VK 受付 181ms・Chrome TSF 再初期化
-/// 326ms・F22 コールド ~750ms）がクールダウン窓より長く続いた場合に予算を
-/// 使い切り、そのプロセスに居る限り force-ON が二度と飛ばなくなる——BUG-16
-/// の原症状（settle 明け再試行の恒久 no-op）を作り直すことになる（設計討議
-/// ラウンド3のレビューで発見・rejected）。止めるべきは再試行そのものではなく
-/// 再試行密度であり、クールダウン単独で十分（50Hz → 1/3Hz 未満に落ちれば
-/// cold-mark の連打は消える）。
-///
-/// # 再武装はイベント駆動であり周期的ではない（2026-08-21 追記）
-///
-/// 上記「1/3Hz 未満に落ちる」という表現は周期ポーリングを連想させるが、
-/// 実態は違う。TsfNative では `reschedule_ime_refresh`（`runtime/mod.rs`）が
-/// 早期 return するため、cooldown 満了後の次回試行は「`may_change_ime` キー
-/// の passthrough」（`key_pipeline.rs` の `schedule_ime_refresh(20)`）または
-/// BUG-51 の `ReportOpenInference` 経由の同呼び出しでのみ再武装される。
-/// **ユーザーが打鍵を止めている間は自動的な再試行が発生しない。** これは
-/// 修正前（`mirror_applied_open` の偽装により force-ON が実質恒久的に不発
-/// だった状態）からの後退ではなく厳密な改善だが、継続的な打鍵がある限り
-/// 「最短 cooldown 間隔」であって「cooldown 間隔ちょうどに周期実行される」
-/// わけではない点に注意（詳細は ADR-098「既知の限界・未検証事項」）。
-///
-/// # 値の根拠
-///
-/// `DRIFT_CORRECTION_BLIND_REARM_COOLDOWN_MS` と同値・同根拠を援用した。新規の
-/// 未実測値を発明せず、既存 in-tree の前例（同種のランナウェイ再試行対策）に
-/// 揃えることを優先した。
-///
-/// # ソークで測ること（値を改訂する条件）
-///
-/// `force-ON (ImmBrokenForceOn): apply_ime_open(true) → Failed` の連続回数と
-/// 間隔。安定して収束するなら短縮を検討してよいが、実測を伴わない短縮は
-/// 行わないこと。
-#[measured_macro::measured(pending = true)]
-pub const FORCE_ON_RETRY_COOLDOWN_MS: u64 = 3_000;
-
 /// `PHYSICAL_KEY_STATE[VK_LWIN/VK_RWIN]` が「押されたまま」と信頼できる最大保持時間 (ms)。
 ///
 /// これより長く「押されたまま」の値が続いている場合は、KeyUp が
@@ -500,6 +441,28 @@ pub const EXPLICIT_ON_INTENT_TTL_MS: u64 = 10_000;
 /// 外側で最大1時間 IntentStore 由来の値が生き残る経路が別途存在する）。
 #[measured_macro::measured(pending = true)]
 pub const EXPLICIT_OFF_INTENT_TTL_MS: u64 = 30_000;
+
+/// 無変換/変換の生キーを GJI へ通過させた後、再読み取りを続け、最初の観測の直後に古い明示意図を
+/// 破棄する窓 (ms)（ADR-187）。窓が切れたら止まる（マークは一回で消費しない）。
+///
+/// **実測**（CI `e2e-ime`、ATOK パススルー、GitHub-hosted Windows ランナー、6 実行×8 押下=48 押下）:
+/// 生キー通過（awase のフック到達）から、実 IME の変化が IMM の再読み取り（`IME snapshot`）に現れるまで
+/// min 21ms / median 33ms / p90 33ms / max 62ms。別の 1 回で、通過から 11ms 後の最初の再読み取りが
+/// GJI の処理前の古い状態を読んだ（この回は追随できなかった）。
+/// **導出**: 実測最大 62ms の約 5 倍の 300ms を窓とする（再読み取りが数回走り、フォーカス移動等で長引いても覆う）。
+/// 窓が長すぎると通過より後の無関係な観測までバイパスされるため、無限にはしない。
+/// 計測はランナー環境のもの。実機での再測定と、`commit` 紐付け（`#[measured(value_ms, commit)]`）は未了のため `pending`。
+#[measured_macro::measured(pending = true)]
+pub const MODE_KEY_PASS_MARK_WINDOW_MS: u64 = 300;
+
+/// 無変換/変換の生キー通過後、窓が有効な間の再読み取り間隔 (ms)（ADR-187）。
+///
+/// 最初の再読み取り（20ms）は、GJI の処理前の古い状態を読むことがある（上記、11ms 後の 1 回）。
+/// **導出**: 上記の実測最大 62ms に相当する 60ms を間隔とする。古い状態を読んだ回（例: 通過から 11ms 後）でも、
+/// 次の読み取り（約 71ms 後）が実測の最大反応時間（62ms）を覆う。窓（300ms）の間に最大 5 回程度。
+/// 実機での再測定は未了のため `pending`。
+#[measured_macro::measured(pending = true)]
+pub const MODE_KEY_PASS_REREAD_MS: u64 = 60;
 
 /// `ImeModel.pending`（`ImeApplyRequested` で立てる apply transaction）の
 /// タイムアウト（BUG-34 横展開 D-prep、2026-08-19）。
