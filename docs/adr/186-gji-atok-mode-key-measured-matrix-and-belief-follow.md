@@ -15,11 +15,13 @@ summary: |-
   belief書き込み・明示意図の記録を持つキーボード経路を通らず、warrantが`Unwarranted`でOFFを拒否していた。
   修正は述語1つの変更(delegateを持つ親指もKeyUpで解決)。加えて変換の分類(ATOKでは古いcustom表を読まない)。
   撤去実験(各3回、実機)で、KeyUp解決・ATOK分類修正・物理キー後の20ms再読み取り・opt-inフラグは**必須**、
-  eisu reset抑止(旧決定2の一部)は**不要**と確認し、削除した。残る問題: awase起動中は、まれに(1押下あたり約5%)
-  押下がGJIに届かない回があり、GJI単体では起きない(別件、BUG起票)。
+  eisu reset抑止(旧決定2の一部)は**不要**と確認し、削除した。Shift+無変換がawaseに横取りされる問題(かなON中にOFF、OFF中にON)は
+  修飾キー付きを分類・単独タップ委譲の対象から外して修正した。押下の取りこぼし(BUG-147)は、混入を除いたクリーンな
+  条件では再現しなかった。
 status: |-
   **v4(実装済み・実機E2Eで検証、撤去実験の結果を反映)**。実装ブランチ`feat/adr186-nonconvert-toggle-belief-follow`。
-  E2Eの再現性: 条件が良いとき連続11回ALL PASS。押下の取りこぼしによる失敗が残る(下記「残る問題」)。
+  E2Eの再現性: クリーンな条件で連続ALL PASS(高速ハーネスで基準0/24失敗)。Shift+無変換の横取りは修正済み(`b195b47a`)。
+  押下の取りこぼし(BUG-147)は再現せず、旧A/Bの結論は撤回した(下記「残る問題」)。
   GitHub Actionsの実機E2E(`.github/workflows/e2e-ime.yml`)で、撤去実験の8構成×3回が実機と同じ結果になることを確認済み
   (下記「CIでの再現」)。
 related_adr:
@@ -228,16 +230,25 @@ step1でawaseが物理キーを消費して再注入(`scan=0`の注入VK)し、`
 
 ## 残る問題
 
-1. **押下の取りこぼし(awase起動中のみ)**。同じE2Eで、**GJI単体(awase停止)は5/5で全手順の実IMEが期待どおり**だったのに、
-   awase起動中は、まれに1押下がGJIに届かない回がある(1回の実行で1手順だけ、失敗する手順は毎回違う: 無変換のOFF、
-   ひらがなの切り替え)。失われた押下のログでは、awaseは`PassThrough`→`[reinject] vk=0x1d down`と正常に再注入
-   しているがGJIが反応していない。有効な回の失敗率: 最新実装(抑止なし) 4/8(INVALID 4件除く)。条件が良いとき
-    (Windowsを放置)は、連続11回ALL PASSした。原因は未特定(awaseの通過→再注入経路、TSF warmup/cold、
-   フォーカス移動時のcold化のいずれか)。ADR-186の変更が原因かの切り分けとして、eisu reset抑止あり/なしの比較を
-   取った(下記)。別件として[BUG-147](../known-bugs/BUG-147.md)に起票した(CIでは再現していない)。
-2. **Shift+無変換が開閉トグルとして横取りされる**(`gji_thumb_key_ime_toggle=true`のとき、`action=Toggle`)。
-   GJIのShift+無変換はかな⇔半角英数トグル。opt-in有効時は使えなくなる。
-3. **TsfNative(メモ帳、Windows Terminal)・Chrome/Edgeは未検証**(上記)。
+1. **押下の取りこぼし(BUG-147) — 再現せず、結論を撤回**。旧E2Eでは「GJI単体0/12対awase起動6/12失敗」だったが、
+   awaseログの物理キー(`extra=0x0`)を見ると24回中7回に人の物理入力の混入があり、GJI単体側は検査できていなかった。
+   高速ハーネス(`tools/e2e/ime_key_matrix/run_loop.sh`、混入回は無効判定)のクリーンな条件では、基準ビルド0/24・
+   A7(再注入でスキャンコード引き継ぎ)0/48で再現しない。「awaseだけが原因」は撤回し、修正は入れていない
+   ([BUG-147](../known-bugs/BUG-147.md)に否定できた仮説とMozc静読の結果を記録)。
+2. **Shift+無変換の横取り — 修正済み(`b195b47a`)**。実機(`spike --shiftmuh`、24押下)で、awaseは(a)かなON中に
+   単独タップの委譲で`SetOpen(false)`を発火しIMEをOFFにし(4/4件)、(b)IME OFF中にshadow-toggleが`intent昇格(Toggle)`で
+   ONにしていた(4件)。GJI(ATOK)のShift+無変換はかな⇔半角英数のトグルで、直接入力では何もしない。修正は
+   `nicola_fsm.rs::is_mode_key_thumb_shift_passthrough`(Shift+Space/Enter literalと同じ形)と、`runtime/mod.rs::
+   enrich_ime_relevance`が修飾キー付きの無変換/変換に分類の上書きを当てないこと。修正後の実機24押下は、開閉が変わった0件・
+   委譲0件・昇格0件、かなON中は半角英数に切り替わる(GJI本来の動作)。通常の10手順の回帰(倍速12回)は12/12 PASS。
+   回帰テスト: `delegate_to_open_axis_not_fired_when_shift_held`(修正を外すと落ちる)。
+3. **TsfNative: Chromeを実測(2026-09-20)、メモ帳・Windows Terminal・Edgeは未検証**。`chrome_probe`(Chrome専用プロファイル+検証ページ+
+   `SendInput`、打った文字でNICOLA/`か`/`ka`/`kiu`を判定)で8ケース×3周: 無変換/変換のON/OFFとShift+無変換のOFF中は18/18 PASS、
+   **かな→半角英数(ひらがなキー、Shift+無変換)はEngineがOFFにならず6/6失敗**(`kiu`)。awase停止の対照は24/24 PASSでGJI自身は正しい。
+   決定3(ひらがなキーの予測反転)を「不要」とした根拠(20ms再読み取り)は、TsfNativeでは`SkipTyping`で読まれず成り立たない
+   ([BUG-149](../known-bugs/BUG-149.md))。原因は特定済み: Chromeは`Imm32Unavailable`で、`idle-conv-check`のガード2
+   (TsfNativeのみ、許可クラスはWezTerm/Windows Terminal等5つ)に入らず、20ms再読み取りも`SkipTyping`で読まれない。
+   Chromeのconvは読めるのに、convだけを変えるキーの後に読みに行く経路が無い。**決定3の再検討が必要**。
 
 ## 期待される結果(決定2〜4を実装した場合)
 
@@ -275,9 +286,8 @@ step1でawaseが物理キーを消費して再注入(`scan=0`の注入VK)し、`
 
 ## 未解決事項
 
-- メモ帳・Windows Terminal・Chrome/Edgeでの同じE2E(TsfNative/Imm32Unavailable)。eisu reset3経路とidle-conv-checkの
+- メモ帳・Windows Terminal・Edgeでの同じE2E(TsfNative/Imm32Unavailable、Chromeは実測済み=BUG-149)。eisu reset3経路とidle-conv-checkの
   統合可否は、これが済んでから判断する。
-- 「残る問題1」(押下の取りこぼし)の原因特定(BUG-147、別セッションで調査中)。
+- 押下の取りこぼし(BUG-147)は再現していない。再発したら、失敗時にWindows機のCPU負荷・ユーザー入力・他プロセスの状態を同時に記録して切り分ける。
 - ATOK + パススルー(opt-in無し)で、無変換/変換によるIME開閉にEngineが追随しない(上記)。opt-inを既定にするか、パススルー時も物理キー通過後の再読み取りでbeliefを更新するかの判断。
 - Microsoft IME本体で、`ImmCross`のON書き込みが失敗し物理キーが消える点が実機でも起きるか(CIでは148msでtimeout)。
-- Shift+無変換の横取りへの対処(delegateを修飾キー付きで発火させない、など)。

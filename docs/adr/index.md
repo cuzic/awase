@@ -187,7 +187,7 @@
 | [180](180-actuation-gate-recheck-deduplication.md) | 領域B(IME actuation合流点)の深い統一を検討、ADR-106決定5が既に軸統合を却下済みと判明し「新fence型ではなく共有ヘルパー関数への機械的重複除去」に縮小 | ドラフト・opus-adversarial-consult round1前 |
 | [182](182-char-then-thumb-gap-gate-misjudges-modekey-chord-as-solo-tap.md) | 文字→親指(無変換/変換)の押下間隔が閾値をわずかに超えると重なったチョードが「文字単独+無変換単独タップ」に割れ、生の無変換がGJIへ届いて半角英数化・エンジン非活性へ連鎖する不具合 | **ドラフトv9(opus round1〜8反映、決定1・1b・1c実装済み、実機A/B前)**。実装未着手 |
 | [185](185-directinput-open-axis-write-teardown.md) | 半角英数(ObservedEisu)検出時にawase自身がIME OFFを送る`EngineSync::DirectInput`を撤去(BUG-146、ADR-178撤去プロジェクトの領域C) | **実装済み**(`f5338edc`)。実機確認は ADR-186 のE2Eで代替 |
-| [186](186-gji-atok-mode-key-measured-matrix-and-belief-follow.md) | GJI(ATOK)のモードキー動作を実機で測定し、無変換/変換の開閉トグルを「KeyUpで解決する」既存delegate経路で押下時点にbelief追随させる(実機E2E+撤去実験で必要/不要な仕組みを確定) | **v4(実装済み・実機E2E/CIで検証)**。残る問題: 押下の取りこぼし(BUG-147)、Shift+無変換の横取り、TsfNative/Chrome未検証 |
+| [186](186-gji-atok-mode-key-measured-matrix-and-belief-follow.md) | GJI(ATOK)のモードキー動作を実機で測定し、無変換/変換の開閉トグルを「KeyUpで解決する」既存delegate経路で押下時点にbelief追随させる(実機E2E+撤去実験で必要/不要な仕組みを確定) | **v4(実装済み・実機E2E/CIで検証)**。Shift+無変換の横取りは修正済み(`b195b47a`)、BUG-147は再現せず。残り: TsfNative/Chrome未検証 |
 | [187](187-atok-passthrough-mode-key-observed-belief-follow.md) | ATOKの無変換/変換(Toggle)はawaseが唯一の変更主体としてactuateする(`gji_thumb_key_ime_toggle`既定を`true`へ)。方向固定のOn/Offはパススルー+followのみ。観測型の追随は見送り(opus 2ラウンド) | **決定・実装済み(未マージ)**。CIの`atok-default`で確認 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029

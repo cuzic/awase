@@ -1107,6 +1107,9 @@ open軸へdelegate）を実機で試すと動かず、E2Eハーネス（`tools/e
 | 2026-09-20 | 物理IMEキー通過後の20ms IME再読み取りは、ひらがなキー後のEngine追随に必要 | 同上 | E5: `schedule_ime_refresh(20)`を撤去 | 3/3 FAIL（手順7・9のEngine追随なし） | **必須**（決定3の予測反転は不要と確定） |
 | 2026-09-20 | idle-conv-checkも不要では | 同上 | E6: `idle_check.rs`を常にfalse | 3/3 ALL PASS | TsfNative限定機構でEDITでは未使用のため**検証不能**。統合しない |
 | 2026-09-20 | opt-in `gji_thumb_key_ime_toggle=true`は不要では | 同上 | E7b: falseで実行 | 3/3 FAIL（`delegated`=0、手順5・6） | **必須** |
+| 2026-09-20 | 押下の取りこぼし(BUG-147)はawase起動時だけ起きる(GJI単体0/12、awase起動6/12失敗) | Win32 EDIT × GJI(ATOK) | 旧A/Bの再検証: 高速ハーネス(`run_loop.sh`、awaseログの物理キー混入を無効判定)で基準ビルド・A7ビルドを測定 | 基準0/24、A7 0/48失敗で再現せず。旧A/Bはawaseログに人の物理入力の混入が7/24回あり、GJI単体側は検査不能で非対称だった。A7(`reinject`の`wScan`引き継ぎ)は採用せず | **旧結論を撤回**(混入が原因の可能性、awase固有ではない) |
+| 2026-09-20 | Shift+無変換はGJI(ATOK)でかな⇔半角英数トグルだが、awaseが開閉トグルとして横取りする | 同上、`gji_thumb_key_ime_toggle=true`、`spike --shiftmuh` 24押下 | 修正前: かなON中に委譲でSetOpen(false)(4/4)、IME OFF中にintent昇格でON(4)。修正: FSMのShift素通し+修飾キー付きは分類上書きなし(`b195b47a`) | 修正後24押下: 開閉が変わった0件・委譲0・昇格0、かなON中は半角英数へ(GJI本来)。通常10手順の回帰12/12 PASS | **採用**(修正済み) |
+| 2026-09-20 | Win32 EDITで通ったモードキーの追随は、TsfNative(Chrome)でも同じ | Chrome(専用プロファイル、scoop版) × GJI(ATOK)、awase起動(Shift修正入り)、`chrome_probe`で8ケース×3周 | 新規: 打った文字で状態を判定するプローブ(`k`,`a`→NICOLA/`か`/`ka`/`kiu`) | 無変換/変換・Shift+無変換のOFF中は18/18 PASS。かな→半角英数(ひらがな/Shift+無変換)はEngine未追随で6/6失敗(`kiu`)。awase停止24/24 PASS。待ち2秒でも4/4失敗(抑止窓1500msでは説明できない) | **BUG-149起票**(決定3の再検討が必要、未修正) |
 
 **学び**:
 - **opusレビューが「問題なし」と判定した実装も、実機E2Eで反証された。** 決定2は押下時点のbelief追随を
