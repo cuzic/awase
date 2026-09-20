@@ -1,0 +1,2 @@
+script error: Syntax error: Invalid escape sequence: '\Us' (line 1, position 176)
+Error: exit code 1

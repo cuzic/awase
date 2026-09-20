@@ -16,7 +16,7 @@ $enc = New-Object System.Text.UTF8Encoding($false)
 for ($i = 1; $i -le $N; $i++) {
   Stop-Process -Name ime_key_matrix_spike -Force -ErrorAction SilentlyContinue
   Remove-Item 'ime_key_matrix_spike.log' -ErrorAction SilentlyContinue
-  [IO.File]::AppendAllText($multi, "[RUN $i/$N 開始]`n", $enc)
+  [IO.File]::AppendAllText($multi, "[RUN $i/$N START]`n", $enc)
   $p = Start-Process -FilePath .\ime_key_matrix_spike.exe -ArgumentList $SpikeArgs.Split(' ') -PassThru
   if (-not $p.WaitForExit(120000)) { Stop-Process -Id $p.Id -Force; [IO.File]::AppendAllText($multi, "[RUN $i/$N timeout]`n", $enc) }
   if (Test-Path 'ime_key_matrix_spike.log') { [IO.File]::AppendAllText($multi, ([IO.File]::ReadAllText((Join-Path $dir 'ime_key_matrix_spike.log'), $enc)), $enc) }

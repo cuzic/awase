@@ -19,7 +19,7 @@ TS = re.compile(r"^\[([\d:.]+)Z\]")
 def split_runs(lines):
     runs, cur = [], None
     for ln in lines:
-        m = re.match(r"\[RUN (\d+)/(\d+) 開始\]", ln)
+        m = re.match(r"\[RUN (\d+)/(\d+) (?!完了|timeout)", ln)  # 開始/START/文字化け(PowerShell 5の.ps1は非BOMをANSI解釈)のいずれでも
         if m:
             cur = {"n": int(m.group(1)), "lines": []}
             runs.append(cur)
@@ -76,8 +76,16 @@ def main():
         t0 = min(v["press"] for v in st.values()) - 3000
         t1 = max(v["press"] for v in st.values()) + 2000
         reasons = []
-        if any("[AUTO] フォーカス復帰" in ln for ln in r["lines"]):
-            reasons.append("フォーカス復帰")
+        # 起動直後のフォーカス取得は正常。手順1の記録以降にフォーカスが外れた回だけ無効(check.py と同じ条件)。
+        started = False
+        lost = 0
+        for ln in r["lines"]:
+            if "KEY [SCRIPT 1/10" in ln:
+                started = True
+            if started and "[AUTO] フォーカス復帰" in ln:
+                lost += 1
+        if lost:
+            reasons.append(f"実行中にフォーカス復帰{lost}回")
         if any(re.search(r"\] KEY \[", ln) and not re.search(r"\((auto|injected)\)", ln) for ln in r["lines"]):
             reasons.append("スパイクが物理キーを観測")
         ph = phys_in_awase(args[1], t0, t1)
