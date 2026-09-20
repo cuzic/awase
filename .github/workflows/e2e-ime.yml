@@ -7,69 +7,114 @@ on:
     branches: [ci/e2e-ime]
   workflow_dispatch:
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  install-gji:
-    name: GJI install via ${{ matrix.method }}
+  # ビルドは1回だけ(以後の行列ジョブが成果物を使い回す)。cargo は Swatinem/rust-cache でキャッシュ。
+  build:
     runs-on: windows-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        method: [winget, choco, scoop]
+    timeout-minutes: 40
     steps:
-      - name: winget
-        if: matrix.method == 'winget'
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: awase とスパイクをビルド
         shell: pwsh
-        continue-on-error: true
         run: |
-          $sw = [Diagnostics.Stopwatch]::StartNew()
-          Get-Command winget -ErrorAction SilentlyContinue | Select-Object Source, Version | Format-List
-          winget --version
-          winget search "Google Japanese" --accept-source-agreements 2>&1 | Select-Object -First 15
-          winget install --id Google.JapaneseIME -e --silent --accept-package-agreements --accept-source-agreements 2>&1 | Select-Object -Last 15
-          "elapsed=$([int]$sw.Elapsed.TotalSeconds)s"
+          cargo build -p awase-windows --bin awase
+          cargo build -p awase-windows --example ime_key_matrix_spike
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\awase.exe dist\
+          Copy-Item target\debug\examples\ime_key_matrix_spike.exe dist\
+          Copy-Item config.toml dist\ -ErrorAction SilentlyContinue
+          Get-ChildItem dist | Select-Object Name, Length | Format-Table
+      - uses: actions/upload-artifact@v4
+        with:
+          name: e2e-binaries
+          path: dist
 
-      - name: choco
-        if: matrix.method == 'choco'
+  e2e:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-binaries
+          path: dist
+
+      - name: Google 日本語入力をインストール(chocolatey)
         shell: pwsh
-        continue-on-error: true
         run: |
           $sw = [Diagnostics.Stopwatch]::StartNew()
-          choco search google-japanese 2>&1 | Select-Object -First 10
-          choco search japanese-ime 2>&1 | Select-Object -First 10
-          choco search googlejapaneseinput 2>&1 | Select-Object -First 10
-          foreach ($id in 'googlejapaneseinput','google-japanese-ime','googlejapaneseime','google-japanese-input') {
-            "--- try $id"
-            choco install $id -y --no-progress 2>&1 | Select-Object -Last 8
-            if (Test-Path 'C:\Program Files*\Google\Google Japanese Input') { break }
+          choco install googlejapaneseinput -y --no-progress 2>&1 | Select-Object -Last 4
+          "gji install: $([int]$sw.Elapsed.TotalSeconds)s"
+          "TIP_REGISTERED=$(Test-Path 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}')"
+
+      - name: 入力言語をja-JP + GJI に設定、ATOK プリセットの config1.db を書く
+        shell: pwsh
+        run: |
+          $tip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
+          $l = New-WinUserLanguageList ja-JP
+          $l[0].InputMethodTips.Clear()
+          $l[0].InputMethodTips.Add($tip)
+          Set-WinUserLanguageList $l -Force 2>&1
+          Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips
+          # ATOK プリセット(session_keymap = 1): Mozc Config の field 41 (varint) = 1 だけの最小の config1.db
+          $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), [byte[]](0xC8,0x02,0x01))
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+          Get-Process ctfmon, explorer -ErrorAction SilentlyContinue | Format-Table Name, Id, SessionId
+
+      - name: awase を起動(AWASE_TEST_INJECTION=1、gji_thumb_key_ime_toggle=true)
+        shell: pwsh
+        run: |
+          $cfg = Get-Content dist\config.toml -Raw
+          if ($cfg -match 'gji_thumb_key_ime_toggle *= *(true|false)') { $cfg = $cfg -replace 'gji_thumb_key_ime_toggle *= *(true|false)','gji_thumb_key_ime_toggle = true' }
+          else { $cfg = $cfg -replace '(?m)^\[general\]\s*$', "[general]`r`ngji_thumb_key_ime_toggle = true" }
+          [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
+          $env:RUST_LOG = 'debug'
+          $env:AWASE_TEST_INJECTION = '1'
+          Start-Process -FilePath "$PWD\dist\awase.exe" -WorkingDirectory "$PWD\dist" -RedirectStandardError "$PWD\awase-stderr.log" -RedirectStandardOutput "$PWD\awase-stdout.log"
+          Start-Sleep -Seconds 5
+          Get-Process awase -ErrorAction SilentlyContinue | Format-Table Name, Id, SessionId
+
+      - name: スパイク --auto を実行
+        shell: pwsh
+        run: |
+          Set-Location dist
+          Start-Process -FilePath .\ime_key_matrix_spike.exe -ArgumentList '--auto --hold=180'
+          $deadline = (Get-Date).AddSeconds(150)
+          while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 5
+            if ((Test-Path ime_key_matrix_spike.log) -and (Select-String -Path ime_key_matrix_spike.log -Pattern '全手順完了' -Quiet)) { break }
           }
-          "elapsed=$([int]$sw.Elapsed.TotalSeconds)s"
+          if (Test-Path ime_key_matrix_spike.log) { Get-Content ime_key_matrix_spike.log -Encoding utf8 | Select-String -Pattern 'AUTO|KEY \[SCRIPT' | Select-Object -First 30 | ForEach-Object { $_.Line.Substring(0,[Math]::Min(150,$_.Line.Length)) } }
+          else { 'spike log なし' }
 
-      - name: scoop
-        if: matrix.method == 'scoop'
+      - name: 判定(check.py)
         shell: pwsh
         continue-on-error: true
         run: |
-          $sw = [Diagnostics.Stopwatch]::StartNew()
-          Invoke-Expression "& {$(Invoke-RestMethod get.scoop.sh)} -RunAsAdmin"
-          $env:PATH = "$env:USERPROFILE\scoop\shims;$env:PATH"
-          scoop bucket add extras 2>&1 | Select-Object -Last 3
-          scoop bucket add nonportable 2>&1 | Select-Object -Last 3
-          scoop bucket add japanese https://github.com/Ash258/Scoop-JP 2>&1 | Select-Object -Last 3
-          scoop search google-japanese 2>&1 | Select-Object -First 10
-          scoop search japanese 2>&1 | Select-Object -First 15
-          foreach ($id in 'google-japanese-ime','googlejapaneseinput','google-japanese-input') {
-            "--- try $id"
-            scoop install $id 2>&1 | Select-Object -Last 8
-            if (Test-Path 'C:\Program Files*\Google\Google Japanese Input') { break }
-          }
-          "elapsed=$([int]$sw.Elapsed.TotalSeconds)s"
+          $log = Get-ChildItem -Recurse -Filter awase.log -ErrorAction SilentlyContinue | Select-Object -First 1
+          "awase.log: $($log.FullName)"
+          Get-Process awase, ime_key_matrix_spike -ErrorAction SilentlyContinue | Format-Table Name, Id
+          if ($log) {
+            Get-Content $log.FullName -Encoding utf8 | Where-Object { $_ -match 'Engine (de)?activated|IME open axis delegated|outcome=Unwarranted' } | Set-Content awase-filtered.log -Encoding utf8
+            python tools\e2e\ime_key_matrix\check.py dist\ime_key_matrix_spike.log awase-filtered.log
+          } else { 'awase.log が見つからない(awase の起動に失敗した可能性)' }
 
-      - name: 結果の確認(インストール先とTSFのTIP登録)
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          Get-ChildItem 'C:\Program Files*\Google\Google Japanese Input','C:\Windows\System32\GoogleIme*' -ErrorAction SilentlyContinue | Select-Object FullName | Format-Table
-          $g='{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}'
-          "INSTALLED_DIR=$([bool](Get-ChildItem 'C:\Program Files*\Google\Google Japanese Input' -ErrorAction SilentlyContinue))"
-          "TIP_REGISTERED=$(Test-Path "HKLM:\SOFTWARE\Microsoft\CTF\TIP\$g")"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-logs
+          path: |
+            dist/ime_key_matrix_spike.log
+            awase-stderr.log
+            awase-stdout.log
+            awase-filtered.log
+            **/awase.log
