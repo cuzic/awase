@@ -242,7 +242,11 @@ step1でawaseが物理キーを消費して再注入(`scan=0`の注入VK)し、`
    enrich_ime_relevance`が修飾キー付きの無変換/変換に分類の上書きを当てないこと。修正後の実機24押下は、開閉が変わった0件・
    委譲0件・昇格0件、かなON中は半角英数に切り替わる(GJI本来の動作)。通常の10手順の回帰(倍速12回)は12/12 PASS。
    回帰テスト: `delegate_to_open_axis_not_fired_when_shift_held`(修正を外すと落ちる)。
-3. **TsfNative(メモ帳、Windows Terminal)・Chrome/Edgeは未検証**(上記)。
+3. **TsfNative: Chromeを実測(2026-09-20)、メモ帳・Windows Terminal・Edgeは未検証**。`chrome_probe`(Chrome専用プロファイル+検証ページ+
+   `SendInput`、打った文字でNICOLA/`か`/`ka`/`kiu`を判定)で8ケース×3周: 無変換/変換のON/OFFとShift+無変換のOFF中は18/18 PASS、
+   **かな→半角英数(ひらがなキー、Shift+無変換)はEngineがOFFにならず6/6失敗**(`kiu`)。awase停止の対照は24/24 PASSでGJI自身は正しい。
+   決定3(ひらがなキーの予測反転)を「不要」とした根拠(20ms再読み取り)は、TsfNativeでは`SkipTyping`で読まれず成り立たない
+   ([BUG-149](../known-bugs/BUG-149.md))。**決定3の再検討が必要**。
 
 ## 期待される結果(決定2〜4を実装した場合)
 
@@ -280,7 +284,7 @@ step1でawaseが物理キーを消費して再注入(`scan=0`の注入VK)し、`
 
 ## 未解決事項
 
-- メモ帳・Windows Terminal・Chrome/Edgeでの同じE2E(TsfNative/Imm32Unavailable)。eisu reset3経路とidle-conv-checkの
+- メモ帳・Windows Terminal・Edgeでの同じE2E(TsfNative/Imm32Unavailable、Chromeは実測済み=BUG-149)。eisu reset3経路とidle-conv-checkの
   統合可否は、これが済んでから判断する。
 - 押下の取りこぼし(BUG-147)は再現していない。再発したら、失敗時にWindows機のCPU負荷・ユーザー入力・他プロセスの状態を同時に記録して切り分ける。
 - ATOK + パススルー(opt-in無し)で、無変換/変換によるIME開閉にEngineが追随しない(上記)。opt-inを既定にするか、パススルー時も物理キー通過後の再読み取りでbeliefを更新するかの判断。
