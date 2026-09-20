@@ -226,6 +226,10 @@ thread_local! {
     /// (実行時刻ms, VK, KeyDownか) の注入予約。
     static AUTO_QUEUE: RefCell<Vec<(u64, u32, bool)>> = const { RefCell::new(Vec::new()) };
     static AUTO_NEXT: RefCell<u64> = const { RefCell::new(0) };
+    /// `--activate-gji` 時: キーフックをこの時刻(ms)まで遅らせて張る。0=張り済み/不要。
+    /// LLフックは後から張ったものが先に呼ばれる。awase より後に張らないと、awase が消費・再注入した
+    /// キー(自己注入)しか見えず、元の押下を検知できなくてステップが進まない(CI run 35483174264)。
+    static HOOK_AT: RefCell<u64> = const { RefCell::new(0) };
     static AUTO_LAST_SI: RefCell<usize> = const { RefCell::new(usize::MAX) };
     static AUTO_TRIES: RefCell<usize> = const { RefCell::new(0) };
     static AUTO_PREP: RefCell<usize> = const { RefCell::new(0) };
@@ -951,6 +955,14 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 fn on_timer(hwnd: HWND) {
     let snap = take_snapshot(hwnd);
     let now = now_ms();
+    let hook_at = HOOK_AT.with(|h| *h.borrow());
+    if hook_at != 0 && now >= hook_at {
+        HOOK_AT.with(|h| *h.borrow_mut() = 0);
+        match unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) } {
+            Ok(_) => append_log("[init] キーフックを遅延インストール(awaseより後=先に呼ばれる)"),
+            Err(e) => append_log(&format!("[init] キーフック失敗: {e}")),
+        }
+    }
 
     // キュー→Pending。「押下前」は直近の周期スナップショット（キーの効果が出る前）。
     let all_steps = steps();
@@ -1428,6 +1440,7 @@ fn run() -> WinResult<()> {
         // actuate して手順が崩れる(CI run 35482240969)。手順の前に VK_IME_OFF を1回注入して、belief も実状態も
         // OFF にそろえる(awase 起動中は物理IMEキーとして belief を更新する。awase なしでも無害)。
         queue_press(now_ms() + 8000, 0x1A);
+        HOOK_AT.with(|h| *h.borrow_mut() = now_ms() + 6000);
     }
 
     append_log("=== IME key matrix spike (awase 非依存) ===");
@@ -1443,7 +1456,12 @@ fn run() -> WinResult<()> {
     append_log(&format!("ログファイル: {}", log_file_path().display()));
     append_log("");
 
-    let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) };
+    let hook = if HOOK_AT.with(|h| *h.borrow()) == 0 {
+        unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), None, 0) }
+    } else {
+        // 遅延インストール(on_timer で張る)。
+        Ok(Default::default())
+    };
     if let Err(e) = &hook {
         append_log(&format!(
             "[init] キーフック失敗: {e}（キー押下が記録されません）"
