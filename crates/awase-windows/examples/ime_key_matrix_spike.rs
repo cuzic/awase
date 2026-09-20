@@ -85,7 +85,9 @@ const TIMER_ID: usize = 1;
 /// 観測スナップショットを更新する周期。
 const TIMER_INTERVAL_MS: u32 = 50;
 /// 押下後に取る 2 回のスナップショットまでの遅延。
-const AFTER_MS: [u64; 3] = [100, 400, 1500];
+const AFTER_MS_FULL: [u64; 3] = [100, 400, 1500];
+/// `--fast` 用: 判定に使わない +1500ms の観測を省く。
+const AFTER_MS_FAST: [u64; 2] = [100, 400];
 
 const ES_MULTILINE: u32 = 0x0004;
 const ES_READONLY: u32 = 0x0800;
@@ -230,6 +232,13 @@ thread_local! {
     static AUTO_TRIES: RefCell<usize> = const { RefCell::new(0) };
     static AUTO_PREP: RefCell<usize> = const { RefCell::new(0) };
     static AUTO_DONE: RefCell<bool> = const { RefCell::new(false) };
+    /// `--repeat=N`: 全手順をこのプロセス内でN回繰り返す(起動・終了・ログ取得の往復を省く)。
+    static REPEAT_N: RefCell<usize> = const { RefCell::new(1) };
+    static REPEAT_DONE: RefCell<usize> = const { RefCell::new(0) };
+    /// `--fast`: +1500ms の観測を省く。
+    static FAST_MODE: RefCell<bool> = const { RefCell::new(false) };
+    /// `--speed=K`: 手順間の待ち時間をK倍速にする(既定1=従来どおり)。
+    static SPEED: RefCell<u64> = const { RefCell::new(1) };
     /// `--hold=NNN`: 注入キーの保持時間ms(既定80)。人の押下(>100ms)でだけ通るタイマー経路を再現する。
     static HOLD_MS_INJ: RefCell<u64> = const { RefCell::new(80) };
     /// `--key=henkan`: 手順の「無変換」を「変換」(0x1C)に置き換える。
@@ -245,6 +254,20 @@ thread_local! {
     /// 押下中の VK（オートリピート抑止用）。
     static DOWN_KEYS: RefCell<std::collections::HashMap<u32, u64>> = RefCell::new(std::collections::HashMap::new());
     static START: RefCell<Option<std::time::Instant>> = const { RefCell::new(None) };
+}
+
+/// 押下後の観測時点(ms)。`--fast` なら +1500ms を省く。
+fn after_ms() -> &'static [u64] {
+    if FAST_MODE.with(|f| *f.borrow()) {
+        &AFTER_MS_FAST
+    } else {
+        &AFTER_MS_FULL
+    }
+}
+
+/// `--speed=K` で手順間の待ち時間を縮める。
+fn scaled(ms: u64) -> u64 {
+    ms / SPEED.with(|s| *s.borrow()).max(1)
 }
 
 fn now_ms() -> u64 {
@@ -502,6 +525,22 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
     }
     let si = SCRIPT_IDX.with(|i| *i.borrow());
     if si >= SCRIPT.len() {
+        let done = REPEAT_DONE.with(|d| {
+            *d.borrow_mut() += 1;
+            *d.borrow()
+        });
+        let total = REPEAT_N.with(|n| *n.borrow());
+        if done < total {
+            append_log(&format!("[RUN {done}/{total} 完了]"));
+            SCRIPT_IDX.with(|i| *i.borrow_mut() = 0);
+            AUTO_LAST_SI.with(|l| *l.borrow_mut() = usize::MAX);
+            append_log(&format!("[RUN {}/{total} 開始]", done + 1));
+            AUTO_NEXT.with(|n| *n.borrow_mut() = now + scaled(1500));
+            return;
+        }
+        if total > 1 {
+            append_log(&format!("[RUN {done}/{total} 完了]"));
+        }
         if !AUTO_DONE.with(|d| std::mem::replace(&mut *d.borrow_mut(), true)) {
             append_log("[AUTO] 全手順完了（1.5秒後に自動で閉じます）");
             AUTO_CLOSE_AT.with(|c| *c.borrow_mut() = now + 1500);
@@ -527,7 +566,7 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
                     need.label()
                 ));
                 queue_press(now, h);
-                AUTO_NEXT.with(|n| *n.borrow_mut() = now + 2500);
+                AUTO_NEXT.with(|n| *n.borrow_mut() = now + scaled(2500));
             }
             _ => {
                 append_log(&format!(
@@ -553,9 +592,9 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
         return;
     }
     queue_press(now, script_vk(vk));
-    queue_press(now + 700, 0x4B); // k
-    queue_press(now + 1200, 0x1B); // ESC
-    AUTO_NEXT.with(|n| *n.borrow_mut() = now + 1800);
+    queue_press(now + scaled(700), 0x4B); // k
+    queue_press(now + scaled(1200), 0x1B); // ESC
+    AUTO_NEXT.with(|n| *n.borrow_mut() = now + scaled(1800));
 }
 
 /// `--script` の1手順: (表示名, VK, Shift併用, 期待する結果)。
@@ -1063,13 +1102,13 @@ fn on_timer(hwnd: HWND) {
         let mut p = p.borrow_mut();
         for e in p.iter_mut() {
             let idx = e.afters.len();
-            if idx < AFTER_MS.len() && now >= e.started_ms + AFTER_MS[idx] {
+            if idx < after_ms().len() && now >= e.started_ms + after_ms()[idx] {
                 e.afters.push(snap.clone());
             }
         }
         let mut i = 0;
         while i < p.len() {
-            if p[i].afters.len() >= AFTER_MS.len() {
+            if p[i].afters.len() >= after_ms().len() {
                 finished.push(p.remove(i));
             } else {
                 i += 1;
@@ -1084,10 +1123,10 @@ fn on_timer(hwnd: HWND) {
             e.before.state_label()
         ));
         append_log(&format!("    前     : {}", e.before.compact()));
-        for (i, ms) in AFTER_MS.iter().enumerate() {
+        for (i, ms) in after_ms().iter().enumerate() {
             append_log(&format!("    +{ms}ms: {}", e.afters[i].compact()));
         }
-        let diffs: Vec<String> = AFTER_MS
+        let diffs: Vec<String> = after_ms()
             .iter()
             .enumerate()
             .map(|(i, ms)| format!("(前→+{ms}ms): {}", diff_summary(&e.before, &e.afters[i])))
@@ -1377,6 +1416,19 @@ fn run() -> WinResult<()> {
             if let Ok(n) = v.parse::<u64>() {
                 HOLD_MS_INJ.with(|h| *h.borrow_mut() = n);
             }
+        }
+        if let Some(v) = a.strip_prefix("--repeat=") {
+            if let Ok(n) = v.parse::<usize>() {
+                REPEAT_N.with(|r| *r.borrow_mut() = n.max(1));
+            }
+        }
+        if let Some(v) = a.strip_prefix("--speed=") {
+            if let Ok(n) = v.parse::<u64>() {
+                SPEED.with(|r| *r.borrow_mut() = n.max(1));
+            }
+        }
+        if a == "--fast" {
+            FAST_MODE.with(|f| *f.borrow_mut() = true);
         }
         if a == "--key=henkan" {
             TOGGLE_VK.with(|t| *t.borrow_mut() = 0x1C);
