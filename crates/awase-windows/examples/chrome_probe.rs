@@ -507,6 +507,30 @@ fn main() {
         .find_map(|a| a.strip_prefix("--shift-tail=").and_then(|v| v.parse().ok()))
         .unwrap_or(40);
     let mut p = Probe { shift_tail_ms, shared, log, focus_lost: false };
+    // `--storm=N`: 親指キー(無変換, NICOLAの既定の親指シフト)を使った通常タイピングをN回行う(BUG-149 レビューB1の確認用)。
+    // 文字の判定はせず、awaseログの強制conv読み取りの件数を見る。
+    if let Some(n) = args.iter().find_map(|a| a.strip_prefix("--storm=").and_then(|v| v.parse::<usize>().ok())) {
+        bring_to_front();
+        let _ = ensure(&mut p, Setup::Kana, awase);
+        p.log.line(&format!("STORM start n={n}"));
+        for i in 0..n {
+            // 親指(無変換)を押したまま文字キー(J)を押して離し、親指を離す。その後 450ms 止まる(文節の切れ目相当)。
+            send_key(0x1D, true);
+            sleep(40);
+            send_key(0x4A, true);
+            sleep(40);
+            send_key(0x4A, false);
+            sleep(30);
+            send_key(0x1D, false);
+            p.log.line(&format!("STORM {i} thumb+J"));
+            sleep(450);
+        }
+        let _ = p.command("clear", "cleared");
+        p.log.line("STORM end");
+        p.log.line("=== 全ケース完了 ===");
+        let _ = child.kill();
+        return;
+    }
     let mut pass = 0usize;
     let mut fail = 0usize;
     let mut invalid = 0usize;
