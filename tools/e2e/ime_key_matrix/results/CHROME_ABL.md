@@ -4,3 +4,5 @@
 | E1-widen-guard2 | PASS=18 RECOVER=6 FAIL=0 INVALID=0 | 3(かな→ひらがな)=['RECOVER', 'RECOVER', 'RECOVER'] | 7(かな→Shift+無変換)=['RECOVER', 'RECOVER', 'RECOVER'] |
 | E2-150ms | PASS=21 RECOVER=3 FAIL=0 INVALID=0 | 3(かな→ひらがな)=['PASS', 'PASS', 'PASS'] | 7(かな→Shift+無変換)=['RECOVER', 'RECOVER', 'RECOVER'] |
 | E2-300ms | PASS=24 RECOVER=0 FAIL=0 INVALID=0 | 3(かな→ひらがな)=['PASS', 'PASS', 'PASS'] | 7(かな→Shift+無変換)=['PASS', 'PASS', 'PASS'] |
+| E3-300ms-shifttail700 | PASS=16 RECOVER=0 FAIL=0 INVALID=0 | 3(かな→ひらがな)=['PASS', 'PASS'] | 7(かな→Shift+無変換)=['PASS', 'PASS'] |
+| E3-300ms | PASS=24 RECOVER=0 FAIL=0 INVALID=0 | 3=['PASS', 'PASS', 'PASS'] | 7=['PASS', 'PASS', 'PASS'] |
