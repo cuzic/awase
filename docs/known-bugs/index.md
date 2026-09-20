@@ -151,6 +151,7 @@
 | [BUG-147](BUG-147.md) | awase起動中、まれに物理キー1押下がGJI(ATOKプリセット)に届かない（awase側ログは正常な通過→再注入。クリーンな条件では再現せず、原因未確定、ADR-186） |
 | [BUG-148](BUG-148.md) | awase起動時に既にフォーカスがあるアプリでは、プロセス切替まで明示IME意図が記録されず、FSM委譲のSetOpenが全てUnwarrantedでキーが飲み込まれる |
 | [BUG-149](BUG-149.md) | Chrome(TsfNative)で、ひらがなキー/Shift+無変換によるかな→半角英数のあと、EngineがOFFにならず英数なのにNICOLAが動き続ける（3/3再現、awase停止の対照は正常、原因は一部のみ特定、未修正、ADR-186） |
+| [BUG-150](BUG-150.md) | ATOKプリセットで無変換/変換をパススルーする設定(既定)では、実IMEはGJIが開閉するのにEngineが追随しない（IME OFFでもEngine ONのまま） |
 
 ## その他の資料
 
