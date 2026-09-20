@@ -815,7 +815,7 @@ impl DecisionExecutor {
             let passes_mode_key = actions.iter().any(|action| {
                 matches!(
                     action,
-                    awase::types::KeyAction::Key(vk) if vk.is_ime_mode_key_for_ime()
+                    awase::types::KeyAction::Key(vk) if crate::vk::is_convert_or_nonconvert(*vk)
                 )
             });
             if passes_mode_key {

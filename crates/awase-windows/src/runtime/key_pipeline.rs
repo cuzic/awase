@@ -1961,8 +1961,7 @@ impl Runtime {
         if !decision.is_consumed()
             && matches!(event.event_type, KeyEventType::KeyDown)
             && !event.injected
-            && crate::vk::is_ime_mode_key_for_ime(event.vk_code)
-            && !event.ime_relevance.may_change_ime
+            && crate::vk::is_convert_or_nonconvert(event.vk_code)
             && event.ime_relevance.shadow_action.is_none()
         {
             let now = hook::current_tick_ms();
