@@ -29,3 +29,116 @@ dir = 'C:\Users\cuzic'
 script = """
 run_ok(["powershell", "-NonInteractive", "-Command", "'LogonUI: ' + (Get-Process LogonUI -ErrorAction SilentlyContinue | Measure-Object).Count; Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class FG { [DllImport(\\\"user32.dll\\\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\\\"user32.dll\\\")] public static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n); [DllImport(\\\"user32.dll\\\")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); }'; $h=[FG]::GetForegroundWindow(); $sb=New-Object System.Text.StringBuilder 256; [void][FG]::GetWindowText($h,$sb,256); $p=0; [void][FG]::GetWindowThreadProcessId($h,[ref]$p); 'foreground: hwnd=' + $h + ' title=' + $sb.ToString() + ' pid=' + $p + ' proc=' + (Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName"]);
 """
+
+# ── 高速版(run_loop.sh / run_multi.sh)・Chrome プローブ(chrome_probe)・awase の停止/起動 用 ──
+# (パスの `cuzic` と `awase-spike` の場所は環境に合わせて書き換えること。)
+
+[targets.e2e-fetch-awase-full]
+dir = 'C:\Users\cuzic\scoop\persist\msys2\home\cuzic\awase'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $t=(Get-Content C:/Users/cuzic/e2e-since.txt).Trim(); Get-Content target/debug/awase.log -Encoding utf8 -ReadCount 0 | ForEach-Object { $_ } | Where-Object { $_.Length -gt 30 -and $_.Substring(11,8) -ge $t -and $_ -notmatch 'Timer|timer|relay-guard|drain-start|output-gate|probe_bridge|ime-io|read_ime_state|MSAA|UIA|uia|classify_focus|injection_hint|force-tsf|hwnd_cache|actuation-record|stage-observe|notify-refresh' } | ForEach-Object { $_.Substring(0,[Math]::Min(300,$_.Length)) }"]);
+"""
+
+[targets.e2e-args-default]
+dir = 'C:\Users\cuzic'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "Set-Content C:/Users/cuzic/e2e-args.txt '--auto'; 'args=' + (Get-Content C:/Users/cuzic/e2e-args.txt)"]);
+"""
+
+[targets.e2e-args-hold180]
+dir = 'C:\Users\cuzic'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "Set-Content C:/Users/cuzic/e2e-args.txt '--auto --hold=180'; 'args=' + (Get-Content C:/Users/cuzic/e2e-args.txt)"]);
+"""
+
+[targets.e2e-args-loop-fast2x]
+dir = 'C:\Users\cuzic'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "Set-Content C:/Users/cuzic/e2e-args.txt '--auto --fast --speed=2'; 'args=' + (Get-Content C:/Users/cuzic/e2e-args.txt)"]);
+"""
+
+[targets.e2e-loop-n12]
+dir = 'C:\Users\cuzic'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "Set-Content C:/Users/cuzic/e2e-loop-n.txt '12'; 'n=' + (Get-Content C:/Users/cuzic/e2e-loop-n.txt)"]);
+"""
+
+[targets.e2e-loop-start]
+dir = 'C:\\Users\\cuzic'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "Start-Process -FilePath powershell -ArgumentList '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File','C:/Users/cuzic/scoop/persist/msys2/home/cuzic/awase-spike/tools/e2e/ime_key_matrix/e2e-loop.ps1' -WindowStyle Hidden; 'loop started'"]);
+"""
+
+[targets.e2e-fetch-multi]
+dir = 'C:\Users\cuzic\scoop\persist\msys2\home\cuzic\awase-spike\target\debug\examples'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "[Console]::OutputEncoding=[Text.Encoding]::UTF8; if (Test-Path ime_key_matrix_spike.multi.log) { Get-Content ime_key_matrix_spike.multi.log -Encoding utf8 }; if (Test-Path ime_key_matrix_spike.multi.done) { '[LOOP DONE]' }"]);
+"""
+
+[targets.chrome-probe-build]
+dir = 'C:\Users\cuzic'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "Stop-Process -Name chrome_probe -Force -ErrorAction SilentlyContinue; Set-Location C:/Users/cuzic/scoop/persist/msys2/home/cuzic/awase-spike; git fetch origin spike/ime-key-matrix 2>&1 | Select-Object -Last 1; git checkout -B spike/ime-key-matrix origin/spike/ime-key-matrix 2>&1 | Select-Object -Last 1; cargo build --example chrome_probe -p awase-windows 2>&1 | Select-Object -Last 4; Get-ChildItem target/debug/examples/chrome_probe.exe | ForEach-Object { 'EXE ' + $_.LastWriteTime }"]);
+"""
+
+[targets.chrome-probe-args-awase]
+dir = 'C:\Users\cuzic'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "Set-Content C:/Users/cuzic/chrome-probe-args.txt '--repeat=3'; 'args=' + (Get-Content C:/Users/cuzic/chrome-probe-args.txt)"]);
+"""
+
+[targets.chrome-probe-args-noawase]
+dir = 'C:\Users\cuzic'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "Set-Content C:/Users/cuzic/chrome-probe-args.txt '--repeat=3 --no-awase'; 'args=' + (Get-Content C:/Users/cuzic/chrome-probe-args.txt)"]);
+"""
+
+[targets.chrome-probe-args-smoke]
+dir = 'C:\Users\cuzic'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "Set-Content C:/Users/cuzic/chrome-probe-args.txt '--repeat=1'; 'args=' + (Get-Content C:/Users/cuzic/chrome-probe-args.txt)"]);
+"""
+
+[targets.chrome-probe-args-shifttail]
+dir = 'C:\Users\cuzic'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "Set-Content C:/Users/cuzic/chrome-probe-args.txt '--repeat=2 --shift-tail=700'; 'args=' + (Get-Content C:/Users/cuzic/chrome-probe-args.txt)"]);
+"""
+
+[targets.chrome-probe-args-storm]
+dir = 'C:\Users\cuzic'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "Set-Content C:/Users/cuzic/chrome-probe-args.txt '--storm=15'; 'args=' + (Get-Content C:/Users/cuzic/chrome-probe-args.txt)"]);
+"""
+
+[targets.chrome-probe-args-settle2000]
+dir = 'C:\Users\cuzic'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "Set-Content C:/Users/cuzic/chrome-probe-args.txt '--repeat=2 --settle=2000'; 'args=' + (Get-Content C:/Users/cuzic/chrome-probe-args.txt)"]);
+"""
+
+[targets.chrome-probe-start]
+dir = 'C:/Users/cuzic/scoop/persist/msys2/home/cuzic/awase-spike/target/debug/examples'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "Remove-Item chrome_probe.log -ErrorAction SilentlyContinue; Set-Content C:/Users/cuzic/e2e-since.txt ((Get-Date).ToUniversalTime().ToString('HH:mm:ss')); $a=(Get-Content C:/Users/cuzic/chrome-probe-args.txt).Trim(); Start-Process -FilePath ./chrome_probe.exe -ArgumentList $a.Split(' ') -WindowStyle Hidden; Start-Sleep -Seconds 2; 'probe procs: ' + (Get-Process chrome_probe -ErrorAction SilentlyContinue | Measure-Object).Count + ' args=' + $a"]);
+"""
+
+[targets.chrome-probe-fetch]
+dir = 'C:/Users/cuzic/scoop/persist/msys2/home/cuzic/awase-spike/target/debug/examples'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "[Console]::OutputEncoding=[Text.Encoding]::UTF8; if (Test-Path chrome_probe.log) { Get-Content chrome_probe.log -Encoding utf8 } else { 'no log' }"]);
+"""
+
+[targets.e2e-awase-start]
+dir = 'C:\Users\cuzic\scoop\persist\msys2\home\cuzic\awase'
+script = """
+run_ok(["taskkill", "/f", "/im", "awase.exe"]);
+run(["powershell", "-NonInteractive", "-Command", "Start-Sleep -Seconds 1; Remove-Item target/debug/awase.log -ErrorAction SilentlyContinue; $env:RUST_LOG='debug'; $env:AWASE_TEST_INJECTION='1'; Start-Process -FilePath 'target/debug/awase.exe' -WindowStyle Hidden; Start-Sleep -Seconds 4; 'awase procs: ' + (Get-Process awase -ErrorAction SilentlyContinue | Measure-Object).Count"]);
+"""
+
+[targets.e2e-awase-stop]
+dir = 'C:\Users\cuzic\scoop\persist\msys2\home\cuzic\awase'
+script = """
+run_ok(["taskkill", "/f", "/im", "awase.exe"]);
+run(["powershell", "-NonInteractive", "-Command", "Start-Sleep -Seconds 1; 'awase procs: ' + (Get-Process awase -ErrorAction SilentlyContinue | Measure-Object).Count"]);
+"""

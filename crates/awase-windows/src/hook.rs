@@ -1072,16 +1072,26 @@ fn build_raw_key_event(
     }
 }
 
-/// テストドライバ（`examples/ime_key_matrix_spike.rs --auto`）が注入するキーの `dwExtraInfo`。
-const TEST_INJECTION_MARKER: usize = 0x5350_494B;
+/// テストドライバ（`examples/ime_key_matrix_spike.rs`、`examples/chrome_probe.rs`）が注入するキーの `dwExtraInfo`。
+/// ドライバ側はこの定数を参照する（二重定義しない）。
+pub const TEST_INJECTION_MARKER: usize = 0x5350_494B;
 
 /// `AWASE_TEST_INJECTION=1` が設定されているとき、かつ目印が一致するときだけ true。
 /// 環境変数はプロセス生存期間中1回だけ読む。
+///
+/// **デバッグビルドでのみ有効**。リリースビルドでは常に false（環境変数が設定されても
+/// `LLKHF_INJECTED` の判定を迂回しない）。実機E2Eは `cargo build`（デバッグ）の awase を使う。
+#[cfg(debug_assertions)]
 fn is_test_injection(extra_info: usize) -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     extra_info == TEST_INJECTION_MARKER
         && *ENABLED
             .get_or_init(|| std::env::var_os("AWASE_TEST_INJECTION").is_some_and(|v| v == "1"))
+}
+
+#[cfg(not(debug_assertions))]
+const fn is_test_injection(_extra_info: usize) -> bool {
+    false
 }
 
 /// 自己注入キーかどうかを判定する（無限ループ防止）。
