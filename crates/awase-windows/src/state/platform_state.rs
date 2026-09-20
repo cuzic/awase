@@ -2695,18 +2695,23 @@ mod tests {
     /// （CI の E2E で委譲 SetOpen が全て Unwarranted になった機序）。
     #[test]
     fn initial_focus_hwnd_lets_explicit_intent_be_recorded_before_first_focus_change() {
-        // 初期フォーカス未設定（BUG-148 の状態）: 意図が記録されない。
+        // `UserImeSetIntent` はモデルの `last_intent` を書くため、`effective_open` は IntentStore に記録されなくても
+        // 直後は明示意図に固定される。IntentStore への記録の有無は、`FocusChanged`（`last_intent` をクリアする）の
+        // 後に観測が入ったときの `effective_open` で区別する（`effective_open_survives_focus_change_via_intent_store` と同じ観点）。
+
+        // 初期フォーカス未設定（BUG-148 の状態）: 意図が IntentStore に記録されず、FocusChanged で意図が消えると観測に従う。
         let mut ps = PlatformState::new();
         assert_eq!(ps.ime.model().current_focus(), None);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 200);
         dispatch_conv_open_inference(&mut ps, true, 300);
         assert!(
             ps.ime.effective_open_at(TickMs(300)),
-            "退行の証拠: current_focus=None だと record_explicit_intent が空振りし、\
+            "退行の証拠: current_focus=None のときは record_explicit_intent が空振りし、\
              明示 OFF 意図が IntentStore に残らない"
         );
 
-        // 起動時の初期フォーカスを確立した状態: 同じ操作で意図が保持される。
+        // 起動時の初期フォーカスを確立した状態: 同じ操作で意図が IntentStore に保持される。
         let mut ps = PlatformState::new();
         ps.ime.dispatch_event(
             ImeEvent::InitialFocusHwndEstablished { hwnd: TARGET_HWND },
@@ -2714,6 +2719,7 @@ mod tests {
         );
         assert_eq!(ps.ime.model().current_focus(), Some(TARGET_HWND));
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 200);
         dispatch_conv_open_inference(&mut ps, true, 300);
         assert!(
             !ps.ime.effective_open_at(TickMs(300)),
