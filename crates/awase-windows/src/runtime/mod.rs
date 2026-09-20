@@ -556,11 +556,10 @@ impl Runtime {
     /// 実処理は [`focus_tracker::FocusTracker::enrich_ime_relevance`] に委譲する。
     pub fn enrich_ime_relevance(&self, event: &mut RawKeyEvent) {
         self.focus_tracker.enrich_ime_relevance(event);
-        // Hiragana/Katakana と 無変換/変換（ADR-141、C2対策）の2ソースは
-        // 対象VKが重複しないため（前者は`ModeKeyCandidate::Hiragana/
-        // Katakana`、後者は`Henkan/Muhenkan`）、どちらの順で評価しても
-        // 高々一方だけがSomeを返す。書き込み箇所を1箇所に保つため
-        // `or_else`で合成してから1回だけ書く
+        // Hiragana/Katakana、無変換/変換（ADR-141、C2対策）、
+        // 半角/全角（ADR-188）の各ソースは対象VKが重複しないため、
+        // どの順で評価しても高々一方だけがSomeを返す。書き込み箇所を
+        // 1箇所に保つため`or_else`で合成してから1回だけ書く
         // （`tests/architecture_guard.rs::
         // ime_relevance_shadow_action_writes_are_accounted_for`が
         // このファイル内の書き込み箇所数を1に固定している）。
@@ -590,6 +589,21 @@ impl Runtime {
                     event.vk_code,
                     self.henkan_shadow_override,
                     self.muhenkan_shadow_override,
+                )
+            })
+            .or_else(|| {
+                // ADR-188: GJIの半角/全角(0xF3/0xF4)は方向固定ではなく開閉トグル。
+                // 修飾付きはGJI側で別意味を持ちうるため、無修飾の物理キーだけ
+                // beliefベースのshadow-toggle経路へ載せる。
+                let m = event.modifier_snapshot;
+                if m.ctrl || m.alt || m.shift || m.win {
+                    return None;
+                }
+                let gji_active = crate::tsf::observer::tsf_obs().active_ime_kind()
+                    == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput;
+                crate::gji_charset_autodetect::resolve_hankaku_zenkaku_shadow_override_for_event(
+                    event.vk_code,
+                    gji_active,
                 )
             });
         if let Some(action) = override_action {
