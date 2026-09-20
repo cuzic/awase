@@ -24,3 +24,6 @@ src/engine/repomix-output.md
 mutants.out/
 services/report-worker/node_modules/
 services/report-worker/.wrangler/
+
+__pycache__/
+*.pyc

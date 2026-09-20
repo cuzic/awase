@@ -99,10 +99,12 @@ def main():
         got = engine_after(probes, st["press"])
         real = f"open={st['open']} conv=0x{st['conv']:02X}"
         # 最終手順はスパイクがk入力の前に閉じることがあり、Engine状態が読めない(?)。判定不能として失敗にしない。
-        ok = got == want or (got is None and st['n'] == total)
+        undecided = got is None and st['n'] == total
+        ok = got == want or undecided
         fails += not ok
         got_s = "?" if got is None else ("ON" if got else "OFF")
-        print(f"{st['n']:>4} {st['name']:<8} {real:<18} {'ON' if want else 'OFF':<10} {got_s:<8} {'PASS' if ok else 'FAIL: 実IMEに追随していない'}")
+        verdict = "判定不能(最終手順、kが取れなかった)" if undecided else ("PASS" if ok else "FAIL: 実IMEに追随していない")
+        print(f"{st['n']:>4} {st['name']:<8} {real:<18} {'ON' if want else 'OFF':<10} {got_s:<8} {verdict}")
     if len(steps) < total:
         print(f"FAIL: 記録された手順が {len(steps)}/{total} 件しかない")
         fails += 1

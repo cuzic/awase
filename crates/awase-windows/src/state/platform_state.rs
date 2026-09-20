@@ -153,6 +153,8 @@ impl ImeStateHub {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ModeKeyPassMark {
     armed_at_ms: u64,
+    /// 意図の破棄は通過ごとに1回だけ(最初の観測の直後)。窓の間の再読み取りでは、通過より後に記録された意図を捨てない。
+    invalidated: bool,
 }
 
 impl ImeStateHub {
@@ -213,6 +215,7 @@ impl ImeStateHub {
             crate::win32::foreground_scope(),
             ModeKeyPassMark {
                 armed_at_ms: now_ms,
+                invalidated: false,
             },
         );
     }
@@ -242,21 +245,28 @@ impl ImeStateHub {
         tick_ms: TickMs,
         scope: crate::win32::ForegroundScope,
     ) -> bool {
-        if !self.mode_key_pass_mark_live_in_scope(now_ms, scope) {
+        let ScopeCheck::Live(mark) = self.mode_key_pass_mark.peek(scope) else {
+            return false;
+        };
+        if now_ms.saturating_sub(mark.armed_at_ms) >= crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS {
             return false;
         }
-        if let Some(hwnd) = self.shadow_model.current_focus() {
-            self.intent_store.remove(hwnd);
+        if !mark.invalidated {
+            if let Some(hwnd) = self.shadow_model.current_focus() {
+                self.intent_store.remove(hwnd);
+            }
+            self.dispatch_event(ImeEvent::ModeKeyPassedThrough, tick_ms);
+            self.mode_key_pass_mark.arm(
+                scope,
+                ModeKeyPassMark {
+                    invalidated: true,
+                    ..mark
+                },
+            );
         }
-        self.dispatch_event(ImeEvent::ModeKeyPassedThrough, tick_ms);
         true
     }
 
-    /// 通過マークが有効なら、対象hwndの`IntentStore`エントリと`last_intent`を捨てる（`ImeEvent::ModeKeyPassedThrough`）。
-    /// 呼ぶのは**観測が成功した直後**だけ（観測の後に捨てるので、beliefが古いdesired_openへ戻らない）。
-    /// マークは**消費しない**: 通過の直後の最初の観測は、GJIがまだキーを処理する前の古い状態を読むことがある（CIで実測: 通過から11ms後）。
-    /// 窓(`MODE_KEY_PASS_MARK_WINDOW_MS`)が切れるまで、観測のたびに再読み取りを続けて追随させる。
-    /// `ModeKeyPassedThrough`を dispatch するのはこの関数だけ（`architecture_guard`で固定）。
     pub(crate) fn invalidate_intents_if_mode_key_pass_live(
         &mut self,
         now_ms: u64,
@@ -2535,6 +2545,7 @@ mod tests {
             scope,
             ModeKeyPassMark {
                 armed_at_ms: now_ms,
+                invalidated: false,
             },
         );
     }
@@ -2632,7 +2643,19 @@ mod tests {
         assert!(
             ps.ime
                 .invalidate_intents_if_mode_key_pass_live_in_scope(141, TickMs(141), scope),
-            "窓の間はマークを消費せず、観測のたびに追随を続ける(最初の観測が古い状態を読んでも取りこぼさない)"
+            "窓の間はマークを消費せず、観測のたびに再読み取りを続ける(最初の観測が古い状態を読んでも取りこぼさない)"
+        );
+        // 通過より後に記録された意図は、2回目以降の観測で捨てない(意図の破棄は通過ごとに1回)。
+        dispatch_and_record_explicit_intent(&mut ps, false, 150);
+        assert!(
+            ps.ime
+                .invalidate_intents_if_mode_key_pass_live_in_scope(160, TickMs(160), scope),
+            "まだ有効"
+        );
+        assert_eq!(
+            ps.ime.explicit_intent(),
+            Some(false),
+            "通過より後に記録された明示意図は残る"
         );
         assert!(
             !ps.ime.invalidate_intents_if_mode_key_pass_live_in_scope(

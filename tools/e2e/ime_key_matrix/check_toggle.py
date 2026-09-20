@@ -35,13 +35,14 @@ def main():
         flipped = st["open"] != prev_open
         want_engine = bool(st["open"]) and bool(st["conv"] & 1)
         got = engine_after(probes, st["press"])
-        eng_ok = got == want_engine or (got is None and st["n"] == st["total"])
+        undecided = got is None and st["n"] == st["total"]  # 最終手順は k が取れないことがある(判定不能、失敗にはしない)
+        eng_ok = got == want_engine or undecided
         ok = flipped and eng_ok
         fails += not ok
         real = f"open={st['open']} conv=0x{st['conv']:02X}"
         got_s = "?" if got is None else ("ON" if got else "OFF")
         why = [] if ok else (["開閉が反転していない"] if not flipped else []) + (["Engineが実IMEに追随していない"] if not eng_ok else [])
-        print(f"{st['n']:>4} {st['name']:<10} {real:<18} {'○' if flipped else '×':<6} {got_s:<7} {'PASS' if ok else 'FAIL: ' + ' / '.join(why)}")
+        print(f"{st['n']:>4} {st['name']:<10} {real:<18} {'○' if flipped else '×':<6} {got_s:<7} {('判定不能(最終手順)' if ok and undecided else 'PASS') if ok else 'FAIL: ' + ' / '.join(why)}")
         prev_open = st["open"]
     if len(steps) < steps[0]["total"]:
         print(f"FAIL: 記録された手順が {len(steps)}/{steps[0]['total']} 件しかない")

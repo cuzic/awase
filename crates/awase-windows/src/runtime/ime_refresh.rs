@@ -304,6 +304,8 @@ impl Runtime {
     // 最後のキー活動（物理キー押下 または VK/TSF 出力）から TYPING_IDLE_MS 以内は
     // IMM との SendMessage を一切行わない。
 
+    /// `&mut self` なのは、通過マーク(`ModeKeyPassMark`、`ScopedOneShot::peek`)がフォアグラウンド変更を見て自動失効させるため
+    /// （ADR-187）。読み取り方針の決定そのものは副作用を持たない（失効は「マークが無効になった」という事実の反映だけ）。
     fn ir_decide_read_strategy(&mut self, skip_imm_query: bool) -> ImeReadStrategy {
         let last_activity = self.platform_state.gate.last_hook_activity_ms.max(
             crate::tsf::probe_bridge::OUTPUT_GATE

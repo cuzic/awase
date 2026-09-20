@@ -595,6 +595,13 @@ impl Runtime {
                 // ADR-188: GJIの半角/全角(0xF3/0xF4)は方向固定ではなく開閉トグル。
                 // 修飾付きはGJI側で別意味を持ちうるため、無修飾の物理キーだけ
                 // beliefベースのshadow-toggle経路へ載せる。
+                // 全打鍵で通る経路なので、VK(0xF3/0xF4)を先に見て、それ以外はオブザーバの参照をしない。
+                if !matches!(
+                    event.vk_code,
+                    crate::vk::VK_DBE_SBCSCHAR | crate::vk::VK_DBE_DBCSCHAR
+                ) {
+                    return None;
+                }
                 let m = event.modifier_snapshot;
                 if m.ctrl || m.alt || m.shift || m.win {
                     return None;
@@ -907,6 +914,17 @@ impl Runtime {
             .current_app_profile()
             .is_effectively_tsf_native(self.platform.focus.class_name());
         if is_tsf_native || self.platform_state.ime.explicit_intent().is_some() {
+            return;
+        }
+        // ADR-187: 無変換/変換の生キー通過後、窓が有効な間は follow の読み直しタイマー
+        // (`MODE_KEY_PASS_REREAD_MS`)を、通常のポーリング間隔で上書きしない。意図を捨てた後は
+        // `explicit_intent()`が`None`になるため、ここで上書きすると読み直しが窓(300ms)より後(既定500ms)に
+        // 飛び、最初の観測が古い状態を読んだ回で追随できない(コードレビュー指摘、CIの取りこぼしの原因)。
+        if self
+            .platform_state
+            .ime
+            .mode_key_pass_mark_live(crate::hook::current_tick_ms())
+        {
             return;
         }
         self.schedule_ime_refresh(u64::from(self.platform_state.focus.ime_poll_interval_ms));
