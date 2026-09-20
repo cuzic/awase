@@ -858,19 +858,7 @@ impl ImeStateHub {
     ) -> super::actuation_chain::ActuationOrder {
         let target = self.shadow_model.current_focus().unwrap_or(HwndId::NULL);
         let ctx = self.warrant_context(now, now_ms);
-        let order = super::actuation_chain::ActuationOrder::issue(open, target, &ctx, origin);
-        if order.would_have_blocked() {
-            // 一時診断(CI E2E): どの Step で授権が下りなかったかを残す。
-            tracing::info!(
-                "[warrant-diag] open={open} target={target:?} japanese={} intent={:?} override={:?} actuating={} desired={}",
-                ctx.is_japanese_ime,
-                ctx.intent_store.lookup(target, now_ms),
-                ctx.guards.active_override_reason(),
-                ctx.obs.derive_actuating(now).is_some(),
-                ctx.desired_open,
-            );
-        }
-        order
+        super::actuation_chain::ActuationOrder::issue(open, target, &ctx, origin)
     }
 
     // ── Desired state / drift correction ──
