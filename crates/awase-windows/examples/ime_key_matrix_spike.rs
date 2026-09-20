@@ -59,7 +59,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::TextServices::{
     CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfCompartmentMgr,
     ITfInputProcessorProfileMgr, ITfThreadMgr, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION,
-    GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
+    GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, GUID_TFCAT_TIP_KEYBOARD,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW,
@@ -1304,6 +1304,20 @@ fn activate_gji_profile() {
             CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER);
         match mgr {
             Ok(m) => {
+                let log_active = |label: &str| {
+                    let mut p =
+                        windows::Win32::UI::TextServices::TF_INPUTPROCESSORPROFILE::default();
+                    match m.GetActiveProfile(&GUID_TFCAT_TIP_KEYBOARD, &raw mut p) {
+                        Ok(()) => append_log(&format!(
+                            "[init] アクティブTIP({label}): clsid={:?} profile={:?} lang=0x{:04X}",
+                            p.clsid, p.guidProfile, p.langid
+                        )),
+                        Err(e) => {
+                            append_log(&format!("[init] アクティブTIP({label})取得失敗: {e}"))
+                        }
+                    }
+                };
+                log_active("前");
                 let r = m.ActivateProfile(
                     TF_PROFILETYPE_INPUTPROCESSOR,
                     0x0411,
@@ -1313,6 +1327,8 @@ fn activate_gji_profile() {
                     TF_IPPMF_ENABLEPROFILE | TF_IPPMF_FORSESSION,
                 );
                 append_log(&format!("[init] GJIプロファイルをアクティブ化: {r:?}"));
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+                log_active("後");
             }
             Err(e) => append_log(&format!("[init] ITfInputProcessorProfileMgr取得失敗: {e}")),
         }
