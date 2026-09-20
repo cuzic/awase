@@ -535,7 +535,7 @@ pub(crate) fn resolve_henkan_muhenkan_shadow_override_for_event(
     }
 }
 
-/// ADR-188: GJIでは半角/全角のVK(0xF3/0xF4)はどちらも開閉トグル。
+/// ADR-189: GJIでは半角/全角のVK(0xF3/0xF4)はどちらも開閉トグル。
 /// GJIがアクティブなときToggleを返す。
 #[must_use]
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -1420,7 +1420,7 @@ mod tests {
             assert_eq!(
                 resolve_hankaku_zenkaku_shadow_override_for_event(vk, true),
                 None,
-                "{vk:?}はADR-188の半角/全角override対象外"
+                "{vk:?}はADR-189の半角/全角override対象外"
             );
         }
     }

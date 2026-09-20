@@ -1134,5 +1134,5 @@ Passthroughにする設定(`muhenkan_solo_tap_always_suppress = false`等)を前
 
 **学び**:
 - FollowOnly(方向固定のTurnOn/TurnOffだけbeliefを予測で書く)は、ATOKの状態依存(入力中は開閉が変わらない)のToggleには使えないと分かり、
-  Toggleは観測に基づくfollow(ADR-187)へ、方向固定のキーはbeliefトグル(ADR-188、GJIの半角/全角)へ分けた。
+  Toggleは観測に基づくfollow(ADR-187)へ、方向固定のキーはbeliefトグル(ADR-189、GJIの半角/全角)へ分けた。
 - 実験コミットをdevelopへ入れる前に撤去する運用(このエントリ)は、同種の実験(Passthrough等)が本決定と混ざらないようにする。

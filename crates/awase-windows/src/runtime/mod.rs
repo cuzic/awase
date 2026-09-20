@@ -557,7 +557,7 @@ impl Runtime {
     pub fn enrich_ime_relevance(&self, event: &mut RawKeyEvent) {
         self.focus_tracker.enrich_ime_relevance(event);
         // Hiragana/Katakana、無変換/変換（ADR-141、C2対策）、
-        // 半角/全角（ADR-188）の各ソースは対象VKが重複しないため、
+        // 半角/全角（ADR-189）の各ソースは対象VKが重複しないため、
         // どの順で評価しても高々一方だけがSomeを返す。書き込み箇所を
         // 1箇所に保つため`or_else`で合成してから1回だけ書く
         // （`tests/architecture_guard.rs::
@@ -592,7 +592,7 @@ impl Runtime {
                 )
             })
             .or_else(|| {
-                // ADR-188: GJIの半角/全角(0xF3/0xF4)は方向固定ではなく開閉トグル。
+                // ADR-189: GJIの半角/全角(0xF3/0xF4)は方向固定ではなく開閉トグル。
                 // 修飾付きはGJI側で別意味を持ちうるため、無修飾の物理キーだけ
                 // beliefベースのshadow-toggle経路へ載せる。
                 // 全打鍵で通る経路なので、VK(0xF3/0xF4)を先に見て、それ以外はオブザーバの参照をしない。

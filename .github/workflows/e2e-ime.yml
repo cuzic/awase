@@ -66,7 +66,7 @@ jobs:
             # フォーカス直後(意図なし)にいきなり無変換/変換を押す(--cold=先頭のひらがなを除く)
             cfg('atok-passthrough-cold', 'pass', check='consistency', args='--walk --cold', toggle='false'),
             cfg('atok-passthrough-henkan-cold', 'pass', check='consistency', args='--walk --cold --key=henkan', toggle='false'),
-            # 半角/全角(0xF3/0xF4、GJIではどちらも開閉トグル)。awaseがVKで方向を決め打つとずれる(ADR-186決定5、ADR-188)
+            # 半角/全角(0xF3/0xF4、GJIではどちらも開閉トグル)。awaseがVKで方向を決め打つとずれる(ADR-186決定5、ADR-189)
             cfg('msime-hz', 'pass', check='toggle', args='--hz', toggle='false', keymap=2),
             cfg('atok-hz', 'pass', check='toggle', args='--hz', toggle='false'),
             # リセット操作(Ctrl+無変換→Ctrl+変換 / 逆)で必ず揃うか(--resync)。nofollow は followを無効化してずれを意図的に起こす

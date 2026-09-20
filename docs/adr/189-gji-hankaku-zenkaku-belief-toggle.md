@@ -1,5 +1,5 @@
 ---
-id: ADR-188
+id: ADR-189
 title: |-
   GJIの半角/全角キー(VK_DBE_SBCSCHAR 0xF3 / VK_DBE_DBCSCHAR 0xF4)を、VKで方向を決め打たず「beliefに基づく開閉トグル」としてawaseがactuateする
 summary: |-
@@ -17,7 +17,7 @@ related_adr:
   - "ADR-179"
 ---
 
-# ADR-188: GJIの半角/全角キーをbeliefに基づく開閉トグルとして扱う
+# ADR-189: GJIの半角/全角キーをbeliefに基づく開閉トグルとして扱う
 
 ## 背景
 

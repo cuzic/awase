@@ -37,3 +37,17 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 - **`check.py` の `EXPECT` は ADR-186(GJI ATOK の無変換/変換の押下時点 belief 追随)を実装した awase の挙動に対する期待表。**
   そうでない awase では FAIL する項目がある。判定の追加・変更は `EXPECT` を編集する
   (`engine=("none", 1500)` = 押下後1500ms Engine が activated にならない、`("activated", 300)` = 300ms 以内に activated)。
+
+## ADR-186/187/189 で追加した判定・モード(GitHub Actions `e2e-ime` ワークフローでも使う)
+| ファイル / 引数 | 役割 |
+|---|---|
+| `--walk` / `--cold` | ひらがな/無変換/変換の固定キー列(前提状態なし)を押す。`--cold`は先頭のひらがなを除く(明示意図のない状態でいきなり押す) |
+| `--resync` / `--resync-gap=N` | ずれを起こしたあと、Ctrl+無変換→Ctrl+変換(または逆)を素早く押してリセットできるかを見る |
+| `--hz` | 半角/全角(0xF3/0xF4、GJIではどちらも開閉トグル)の連続・交互押下 |
+| `--vkprobe` | 各VK候補を注入して、実IMEの変化とOSが配送するVKを記録する(awaseなしの対照実験向け) |
+| `--msime` / `--activate-gji` | 使うIMEのTSFプロファイルをアクティブ化(Microsoft IME / GJI) |
+| `check_consistency.py` | プリセット非依存: 実IMEのかな=Engine ON、英数/直接入力=Engine OFF に追随するか(Engineは各押下の700ms後の`k`の扱いで読む) |
+| `check_resync.py` | リセット操作の後に実IMEとEngineが揃うか |
+| `check_toggle.py` | 開閉トグルキーが押すたびに反転し、Engineが追随するか |
+| `ablations/a*.sh` | 撤去実験(ミューテーター)。`a7-no-follow.sh`はfollow(ADR-187)を無効化してずれを起こす |
+
