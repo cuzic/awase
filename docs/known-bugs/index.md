@@ -148,6 +148,7 @@
 | [BUG-144](BUG-144.md) | 較正probeループがフォーカス不一致時にtracker.tick()をスキップし、settle window外の値がpostとして混入しうる（ADR-176 176-T9a、コードレビューで発見・修正済み） |
 | [BUG-145](BUG-145.md) | 文字→無変換/変換の押下間隔が閾値をわずかに超えると、チョードが文字単独+親指単独タップに割れ、生の親指VKがGJIへ届いて半角英数化する（ADR-182、決定1・1b・1c修正済み） |
 | [BUG-146](BUG-146.md) | 半角英数（ObservedEisu）検出時にawaseがopen軸へfalseを書く（IMEはONのままなのにbelief/intentだけOFF扱い、起票のみ・未修正） |
+| [BUG-147](BUG-147.md) | awase起動中のみ、まれに物理キー1押下がGJI(ATOKプリセット)に届かない（awase側ログは正常な通過→再注入、原因未特定・未修正、ADR-186） |
 
 ## その他の資料
 
