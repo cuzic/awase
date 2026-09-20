@@ -120,6 +120,11 @@ jobs:
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', toggle='false', ime='msime', awase='false',
                 args='--seq=F3,F3,F4,F4,F3,F4,F4,F3 --msime'),
+            # MS-IME本体の失敗の原因切り分け: ImmCross失敗後の盲目的な VK_KANJI トグルを撤去(a8)すると Engine ON + IME OFF が消えるか
+            cfg('sc-dbe-msime-native-a8', 'observe', mutator='a8-no-kanji-toggle-fallback.sh', check='consistency', toggle='false', ime='msime',
+                args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
+            cfg('sc-kanji-msime-native-a8', 'observe', bin='sc-dbe-msime-native-a8', check='consistency', toggle='false', ime='msime',
+                args='--seq=F2,19,19,16,1A,16,1A,19,F2,1A --msime'),
             # MS-IME本体で、スキャンコード付き/無しの注入(NOSCAN|0xF2 等)がIMEを開くか(awase の再注入は scan=0)
             cfg('sc-probe-vk-msime-native', 'observe', check='vkprobe', args='--vkprobe --msime', ime='msime', awase='false'),
           ]
