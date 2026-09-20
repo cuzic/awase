@@ -196,7 +196,6 @@ ImeController::apply(desired_open, view)
 |------------------|---------------|
 | `Applied` | 停止（確認済み成功） |
 | `AlreadyMatched` | 停止（no-op） |
-| `FallbackSent` | 停止（旧VK_KANJI機構の outcome。variant は第2弾まで残す） |
 | `Failed` | 次の戦略へ進む |
 | `UnsafeToToggle`（将来追加） | 停止・guard 設定 |
 

@@ -237,9 +237,8 @@ pub fn legacy_gji_sync_obligation(open: bool, outcome: ImeOpenOutcome) -> Option
 mod tests {
     use super::*;
 
-    const ALL_OUTCOMES: [ImeOpenOutcome; 6] = [
+    const ALL_OUTCOMES: [ImeOpenOutcome; 5] = [
         ImeOpenOutcome::Applied,
-        ImeOpenOutcome::FallbackSent,
         ImeOpenOutcome::AlreadyMatched,
         ImeOpenOutcome::Failed,
         ImeOpenOutcome::UnsafeToToggle,
@@ -278,7 +277,6 @@ mod tests {
         );
         for outcome in [
             ImeOpenOutcome::Applied,
-            ImeOpenOutcome::FallbackSent,
             ImeOpenOutcome::AlreadyMatched,
             ImeOpenOutcome::Failed,
         ] {

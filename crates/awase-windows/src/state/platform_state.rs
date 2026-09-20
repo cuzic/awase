@@ -1080,7 +1080,6 @@ impl ImeStateHub {
 
             let effective = match outcome {
                 ImeOpenOutcome::Applied
-                | ImeOpenOutcome::FallbackSent
                 | ImeOpenOutcome::AppliedWithoutSendInput
                 | ImeOpenOutcome::AlreadyMatched => open,
                 ImeOpenOutcome::Failed => !open,

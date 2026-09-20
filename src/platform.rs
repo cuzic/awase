@@ -155,12 +155,10 @@ pub enum ImeOpenOutcome {
     /// 実 `SendInput`（VK送信）を伴って確実に設定できた（`GjiDirectStrategy`/
     /// `MsImeDirectStrategy`）。
     Applied,
-    /// フォールバック（VK_KANJI 等）を送信済み。OS 処理完了まで不確定
-    FallbackSent,
     /// `ImmSetOpenStatus`（クロスプロセスIMM32 API）のみで設定できた。VK は
     /// 一切送っていない（ADR-167）。`ImmCrossProcessStrategy`（`Standard`
     /// プロファイル限定）専用。旧実装ではこのケースも`Applied`に潰していたが、
-    /// 「`Applied`/`FallbackSent` == 実SendInputを伴う」という
+    /// 「`Applied` == 実SendInputを伴う」という
     /// [`should_send_accompanying_warmup`] の前提が`ImmCrossProcessStrategy`
     /// には成立しないため、この専用variantに分離した（ADR-149の随伴warmup
     /// ゲートがStandardプロファイル全体を無条件例外にしていたことで、
@@ -195,14 +193,14 @@ pub enum ImeOpenOutcome {
 
 impl ImeOpenOutcome {
     /// この outcome が「実際に何らかの機構で open 軸へ書き込んだ」ことを
-    /// 意味するか（`Applied`/`FallbackSent`/`AppliedWithoutSendInput`の3つ、
+    /// 意味するか（`Applied`/`AppliedWithoutSendInput`の2つ、
     /// ADR-167）。網羅 `match` で書くことで、将来 variant を追加した際に
     /// このヘルパーの呼び出し元全てがコンパイルエラーで追随を強制される
     /// （非網羅な `matches!` の書き直しを1箇所に集約する狙い）。
     #[must_use]
     pub const fn wrote_open_state(self) -> bool {
         match self {
-            Self::Applied | Self::FallbackSent | Self::AppliedWithoutSendInput => true,
+            Self::Applied | Self::AppliedWithoutSendInput => true,
             Self::AlreadyMatched
             | Self::Failed
             | Self::UnsafeToToggle
@@ -215,7 +213,7 @@ impl ImeOpenOutcome {
 /// `on_ime_applied` の随伴 eager TSF warmup を送るべきか（ADR-149、BUG-113）。
 ///
 /// 戦略（`ImeOpenStrategy`）が今回の `apply` 呼び出しで実際に `SendInput`
-/// を試みた場合（`Applied`/`FallbackSent`）は、同じ意味の warmup を重ねて
+/// を試みた場合（`Applied`）は、同じ意味の warmup を重ねて
 /// 送らない——1回の物理キー押下に対し `VK_IME_ON` を最大3回重複送信して
 /// いたことが、Windows Terminal + GJI で「@」が単発出力される BUG-113 の
 /// 確立済み必要条件（重複 SendInput が GJI の TSF composition 追跡を乱す）
@@ -247,10 +245,7 @@ impl ImeOpenOutcome {
 /// この関数の呼び出し元はプロファイルを一切参照する必要がなくなった。
 #[must_use]
 pub const fn should_send_accompanying_warmup(outcome: ImeOpenOutcome) -> bool {
-    !matches!(
-        outcome,
-        ImeOpenOutcome::Applied | ImeOpenOutcome::FallbackSent
-    )
+    !matches!(outcome, ImeOpenOutcome::Applied)
 }
 
 /// eager TSF warmup に渡す「IME が開いている」という根拠（ADR-098 決定1-b、BUG-69）。
@@ -548,9 +543,6 @@ mod tests {
     fn should_send_accompanying_warmup_skips_when_strategy_actually_sent() {
         // ADR-149/BUG-113: 戦略が実送信した場合は随伴warmupを重ねない。
         assert!(!should_send_accompanying_warmup(ImeOpenOutcome::Applied));
-        assert!(!should_send_accompanying_warmup(
-            ImeOpenOutcome::FallbackSent
-        ));
     }
 
     #[test]
@@ -578,7 +570,6 @@ mod tests {
         // 「実SendInputを伴ったか」（should_send_accompanying_warmupの否定）は
         // AppliedWithoutSendInputだけ異なる、という非対称性を固定する。
         assert!(ImeOpenOutcome::Applied.wrote_open_state());
-        assert!(ImeOpenOutcome::FallbackSent.wrote_open_state());
         assert!(ImeOpenOutcome::AppliedWithoutSendInput.wrote_open_state());
         assert!(!ImeOpenOutcome::AlreadyMatched.wrote_open_state());
         assert!(!ImeOpenOutcome::Failed.wrote_open_state());

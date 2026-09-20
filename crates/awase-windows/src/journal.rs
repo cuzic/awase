@@ -754,7 +754,6 @@ fn ime_open_outcome_str(o: awase::platform::ImeOpenOutcome) -> &'static str {
     use awase::platform::ImeOpenOutcome;
     match o {
         ImeOpenOutcome::Applied => "Applied",
-        ImeOpenOutcome::FallbackSent => "FallbackSent",
         ImeOpenOutcome::AppliedWithoutSendInput => "AppliedWithoutSendInput",
         ImeOpenOutcome::AlreadyMatched => "AlreadyMatched",
         ImeOpenOutcome::Failed => "Failed",

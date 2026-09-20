@@ -737,7 +737,6 @@ pub(crate) unsafe fn handle_wm_execute_effects(app: &mut Runtime) {
 const fn encode_outcome(outcome: ImeOpenOutcome) -> isize {
     match outcome {
         ImeOpenOutcome::Applied => 0,
-        ImeOpenOutcome::FallbackSent => 1,
         ImeOpenOutcome::AlreadyMatched => 2,
         ImeOpenOutcome::Failed => 3,
         ImeOpenOutcome::UnsafeToToggle => 4,
@@ -759,7 +758,7 @@ const fn encode_outcome(outcome: ImeOpenOutcome) -> isize {
 fn decode_outcome(value: isize) -> ImeOpenOutcome {
     match value {
         0 => ImeOpenOutcome::Applied,
-        1 => ImeOpenOutcome::FallbackSent,
+        // Code 1 is reserved for a removed outcome; keep the wire gap.
         2 => ImeOpenOutcome::AlreadyMatched,
         3 => ImeOpenOutcome::Failed,
         4 => ImeOpenOutcome::UnsafeToToggle,
@@ -2097,7 +2096,6 @@ mod tests {
         // should_send_accompanying_warmupの区別が非同期経路だけ効かなくなる。
         for outcome in [
             super::ImeOpenOutcome::Applied,
-            super::ImeOpenOutcome::FallbackSent,
             super::ImeOpenOutcome::AppliedWithoutSendInput,
             super::ImeOpenOutcome::AlreadyMatched,
             super::ImeOpenOutcome::Failed,
