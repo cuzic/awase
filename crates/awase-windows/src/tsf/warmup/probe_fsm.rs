@@ -1290,7 +1290,8 @@ mod tests {
         // 猶予期間（EPOCH_FENCE_GRACE_MS）が過ぎても gji_last_write_ms は追いつかない
         // （前世代の残存 GJI I/O のまま）ため、次 tick で StaleConfirm に確定する。
         std::thread::sleep(std::time::Duration::from_millis(
-            LiteralDetector::EPOCH_FENCE_GRACE_MS + 10,
+            // BUG-130 と同型: GetTickCount64 の量子化(~15.6ms)を吸収するため +50ms(+10ms では windows-build CI で稀に flake した)。
+            LiteralDetector::EPOCH_FENCE_GRACE_MS + 50,
         ));
         let actions_after_stale = machine.tick(TsfEnvSnapshot {
             gji_active: true,
