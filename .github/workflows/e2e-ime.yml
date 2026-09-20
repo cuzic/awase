@@ -125,6 +125,15 @@ jobs:
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-kanji-msime-native-a8', 'observe', bin='sc-dbe-msime-native-a8', check='consistency', toggle='false', ime='msime',
                 args='--seq=F2,19,19,16,1A,16,1A,19,F2,1A --msime'),
+            # a9: ImmCross失敗後を、非冪等な VK_KANJI ではなく冪等な VK_IME_ON/OFF(MsImeDirect)にする(a8より根本的な直し方の検証)
+            cfg('sc-dbe-msime-native-a9', 'observe', mutator='a9-msime-direct-after-immcross.sh', check='consistency', toggle='false', ime='msime',
+                args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
+            cfg('sc-kanji-msime-native-a9', 'observe', bin='sc-dbe-msime-native-a9', check='consistency', toggle='false', ime='msime',
+                args='--seq=F2,19,19,16,1A,16,1A,19,F2,1A --msime'),
+            cfg('sc-shift-msime-native-a9', 'observe', bin='sc-dbe-msime-native-a9', check='consistency', toggle='false', ime='msime',
+                args='--seq=F2,A0,A0,A0,A1,F2 --msime', general='half_width_alnum_toggle = "all"'),
+            cfg('sc-hz-msime-native-a9', 'observe', bin='sc-dbe-msime-native-a9', check='toggle', toggle='false', ime='msime',
+                args='--hz --msime'),
             # MS-IME本体で、スキャンコード付き/無しの注入(NOSCAN|0xF2 等)がIMEを開くか(awase の再注入は scan=0)
             cfg('sc-probe-vk-msime-native', 'observe', check='vkprobe', args='--vkprobe --msime', ime='msime', awase='false'),
           ]
