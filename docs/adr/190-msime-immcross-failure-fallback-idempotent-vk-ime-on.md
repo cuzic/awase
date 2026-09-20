@@ -11,7 +11,7 @@ summary: |-
   `[ImmCross, MsImeDirect]`にし、述語を`kind==MsIme`だけにする(同時にしか入れられない)。`KanjiToggle`(非冪等な機構)は到達不能になるので**同じ変更で撤去する**
   (ユーザー判断: VK_IME_ON/OFFはIME種別によらず同じ挙動で常に安全。`ImeKeyKind::KanjiToggle`=物理VK_KANJIキーの分類は別物で残す)。
 status: |-
-  **確定(実装に進んでよい)**。opus round1〜3で収束(round3: Blocker無し)、KanjiToggle撤去をユーザー判断で決定に追加。未実装、実機未検証。CI検証済み(a8: run 35515406371、a9: run 35516320434)。実機(dragonflyg4)未検証。
+  **実装済み(未マージ)・CI実機E2Eで検証済み**。opus round1〜3で収束(round3: Blocker無し)、KanjiToggle撤去をユーザー判断で決定に追加。実装はfeb49ffd(決定1〜4)・ef2d73a7(FallbackSent削除)・c2163b69(CI判定窓)。CI実機(run 35545478699): sc-dbe/sc-shift-msime-native 各3/3 PASS、sc-kanji-msime-native 3回目はスパイク側のkが+6.9s遅れて判定窓を超えた「?」だったのでチェッカーを直した(窓の上限=次の手順の押下)。実機(dragonflyg4)・windows-build CI(cfg(windows)のgolden等)未検証。CI検証済み(a8: run 35515406371、a9: run 35516320434)。実機(dragonflyg4)未検証。
 related_adr:
   - "ADR-063"
   - "ADR-089"

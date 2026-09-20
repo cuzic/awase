@@ -10,7 +10,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from check_consistency import engine_after, parse_engine, parse_spike  # noqa: E402
+from check_consistency import engine_after, next_press, parse_engine, parse_spike  # noqa: E402
 
 
 def main():
@@ -34,7 +34,7 @@ def main():
         if "open" not in st:
             print(f"{st['n']:>4} {st['name']:<14} 記録なし")
             continue
-        got = engine_after(probes, st["press"], used)
+        got = engine_after(probes, st["press"], used, next_press(steps, st))
         real = f"open={st['open']} conv=0x{st['conv']:02X}"
         got_s = "?" if got is None else ("ON" if got else "OFF")
         is_last = st["n"] == st["total"]

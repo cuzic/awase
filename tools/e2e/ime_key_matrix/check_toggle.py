@@ -9,7 +9,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from check_consistency import engine_after, parse_engine, parse_spike  # noqa: E402
+from check_consistency import engine_after, next_press, parse_engine, parse_spike  # noqa: E402
 
 
 def main():
@@ -35,7 +35,7 @@ def main():
             continue
         flipped = st["open"] != prev_open
         want_engine = bool(st["open"]) and bool(st["conv"] & 1)
-        got = engine_after(probes, st["press"], used)
+        got = engine_after(probes, st["press"], used, next_press(steps, st))
         undecided = got is None and st["n"] == st["total"]  # 最終手順は k が取れないことがある(判定不能、失敗にはしない)
         eng_ok = got == want_engine or undecided
         ok = flipped and eng_ok
