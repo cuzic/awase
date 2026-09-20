@@ -20,6 +20,8 @@ summary: |-
 status: |-
   **v4(実装済み・実機E2Eで検証、撤去実験の結果を反映)**。実装ブランチ`feat/adr186-nonconvert-toggle-belief-follow`。
   E2Eの再現性: 条件が良いとき連続11回ALL PASS。押下の取りこぼしによる失敗が残る(下記「残る問題」)。
+  GitHub Actionsの実機E2E(`.github/workflows/e2e-ime.yml`)で、撤去実験の8構成×3回が実機と同じ結果になることを確認済み
+  (下記「CIでの再現」)。
 related_adr:
   - "ADR-090"
   - "ADR-176"
@@ -175,6 +177,35 @@ delegateはcomposing中に発火しないfail-closedになっている(誤って
   Win32 EDITではIMMの再読み取りが同じ役割を果たすため、E4は通る。**Chrome/Edge/TsfNative(メモ帳、Windows
   Terminal)は、このスパイクでは測れない**。統合(撤去)は、これらのアプリで同じE2Eを回せるようになるまで**しない**。
 
+## CIでの再現(GitHub Actions、Windowsランナー)
+
+実機を占有せずに撤去実験を並列で回すため、`.github/workflows/e2e-ime.yml`でE2Eを`windows-latest`上で実行する。
+`plan`(構成表)→`build`(構成ごとに撤去を当てビルド、ソースのハッシュで成果物をキャッシュ)→`e2e`(構成×3回、別ランナー)
+→`summary`(有効回のPASS/FAILを期待と照合)。GJIはchocolateyで入れ(約30秒)、入力言語をja-JP+GJIにし、ATOKプリセットの
+`config1.db`(field 41=1)を書いて変換サーバーを再起動する。全体で約4分(ビルド成果物のキャッシュが効いた回)。
+
+| 構成 | 期待 | 結果(run 35485279828) |
+|---|---|---|
+| baseline / baseline-henkan | PASS | 3/3 PASS ×2 |
+| a1 KeyUp解決を撤去 | FAIL | 3/3 FAIL |
+| a2 ATOK分類修正を撤去(変換、古いcustom表あり) | FAIL | 3/3 FAIL |
+| a4 eisu reset全経路を撤去 / a6 idle-conv-checkを無効化 | PASS | 3/3 PASS ×2 |
+| a5 20ms再読み取りを撤去 | FAIL | 3/3 FAIL |
+| e7 `gji_thumb_key_ime_toggle=false` | FAIL | 3/3 FAIL |
+
+実機の結果(E1/E2/E5/E7bが必須、E4/E6は不変)と全構成で一致した。CI固有の前提(実機では暗黙に満たされていた):
+
+- a2は、`config1.db`に古い`custom_keymap_table`(`DirectInput Henkan IMEOn`)を入れた構成でだけ差が出る
+  (実機には過去のCUSTOM設定の表が残っている。CIの素の`config1.db`では撤去しても壊れず、3/3 PASSした)。
+- awase起動時のbelief(ON推定)と実状態(OFF)をそろえるため、起動後にVK_IME_OFFを1回注入する(スパイクの`--activate-gji`)。
+- スパイクの初期化中にawaseがIMMをプローブすると`Edit`を「IMM不可」と誤学習するため、初期化後にawaseを起動し、
+  学習済みキャッシュ(`cache.toml`)を事前投入する。
+- LLフックは後から張ったものが先に呼ばれるため、スパイクのフックはawase起動後に遅延インストールする。
+- **BUG-148**: awase起動時に既に対象アプリが前面にあると`current_focus`が最初のプロセス切替まで`None`のままで、
+  委譲SetOpenが全て`Unwarranted`になり無変換がGJIに届かなかった。CIで発見し、起動時の初期フォーカスで
+  `current_focus`を設定して修正した([BUG-148](../known-bugs/BUG-148.md)、`9ac77696`)。修正後は、以前必要だった
+  「notepadを起動してフォーカスを移す」回避策なしでbaselineが3/3 PASSする。
+
 ## 残る問題
 
 1. **押下の取りこぼし(awase起動中のみ)**。同じE2Eで、**GJI単体(awase停止)は5/5で全手順の実IMEが期待どおり**だったのに、
@@ -183,7 +214,7 @@ delegateはcomposing中に発火しないfail-closedになっている(誤って
    しているがGJIが反応していない。有効な回の失敗率: 最新実装(抑止なし) 4/8(INVALID 4件除く)。条件が良いとき
     (Windowsを放置)は、連続11回ALL PASSした。原因は未特定(awaseの通過→再注入経路、TSF warmup/cold、
    フォーカス移動時のcold化のいずれか)。ADR-186の変更が原因かの切り分けとして、eisu reset抑止あり/なしの比較を
-   取った(下記)。別件としてBUGを起票する。
+   取った(下記)。別件として[BUG-147](../known-bugs/BUG-147.md)に起票した(CIでは再現していない)。
 2. **Shift+無変換が開閉トグルとして横取りされる**(`gji_thumb_key_ime_toggle=true`のとき、`action=Toggle`)。
    GJIのShift+無変換はかな⇔半角英数トグル。opt-in有効時は使えなくなる。
 3. **TsfNative(メモ帳、Windows Terminal)・Chrome/Edgeは未検証**(上記)。
@@ -217,6 +248,7 @@ delegateはcomposing中に発火しないfail-closedになっている(誤って
 2. `tools/e2e/ime_key_matrix/clipwire-targets.example.toml`のターゲットを登録し、`./run.sh`(約50秒。実行中はWindows機の
    キーボード・マウスに触らず、ロックさせない)。`ALL PASS`(終了コード0)が合格。
 3. 撤去・統合の実験: `run_experiments.sh`(結果は`results/SUMMARY.md`)、`stat_runs.sh <label> <N>`(有効回N回の集計)。
+   GitHub Actionsでは`e2e-ime`ワークフロー(`workflow_dispatch`の`only`入力で構成を絞れる)。
 4. ユニット/ガード: `cargo test --lib`、`cargo test -p awase-windows --lib --test architecture_guard`、
    `nicola_fsm`の`delegate_to_open_axis_solo_tap_resolves_at_key_up_not_at_timeout`(KeyUp解決の契約)、
    `classify_atok_session_keymap_ignores_stale_custom_table`(ATOK分類)。
@@ -225,5 +257,5 @@ delegateはcomposing中に発火しないfail-closedになっている(誤って
 
 - メモ帳・Windows Terminal・Chrome/Edgeでの同じE2E(TsfNative/Imm32Unavailable)。eisu reset3経路とidle-conv-checkの
   統合可否は、これが済んでから判断する。
-- 「残る問題1」(押下の取りこぼし)の原因特定とBUG起票。
+- 「残る問題1」(押下の取りこぼし)の原因特定(BUG-147、別セッションで調査中)。
 - Shift+無変換の横取りへの対処(delegateを修飾キー付きで発火させない、など)。
