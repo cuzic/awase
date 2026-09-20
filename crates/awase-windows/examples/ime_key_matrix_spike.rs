@@ -1382,6 +1382,20 @@ fn run() -> WinResult<()> {
             TOGGLE_VK.with(|t| *t.borrow_mut() = 0x1C);
         }
     }
+    // `--diag`: どのキーで GJI が ON になるかを診断する(CI用)。各キーを3.5秒間隔で注入して状態を記録し、閉じる。
+    if std::env::args().any(|a| a == "--diag") {
+        AUTO_MODE.with(|m| *m.borrow_mut() = true);
+        SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
+        STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
+        SCRIPT_IDX.with(|i| *i.borrow_mut() = SCRIPT.len());
+        let base = now_ms() + 9000;
+        for (i, vk) in [0x1C_u32, 0xF4, 0xF3, 0xF2, 0x16, 0x19, 0x1D]
+            .iter()
+            .enumerate()
+        {
+            queue_press(base + (i as u64) * 3500, *vk);
+        }
+    }
     // `--auto`: --script の手順を、スパイク自身が SendInput で注入して自動実行する。
     if std::env::args().any(|a| a == "--auto") {
         AUTO_MODE.with(|m| *m.borrow_mut() = true);
