@@ -811,6 +811,26 @@ impl DecisionExecutor {
         }
         // send_engine_state_ime_key に渡す applied 値をトレイトオブジェクト取得前に確定する。
         let applied_for_engine_key = self.applied_snapshot.applied_open();
+        // SPIKE(ADR-187 follow方式): 無変換/変換の生キーをGJIへ通過させたら、(1)古い明示意図を捨て、(2)typing-idleガードを
+        // バイパスする通過マークを立て、(3)20ms後にIME再読み取りを予約する。awaseはactuateしない(観測に委ねる)。
+        if let Effect::Input(InputEffect::SendKeys(actions)) = &effect {
+            let passes_mode_key = actions.iter().any(
+                |a| matches!(a, awase::types::KeyAction::Key(vk) if vk.is_ime_mode_key_for_ime()),
+            );
+            if passes_mode_key {
+                let now = crate::hook::current_tick_ms();
+                crate::runtime::SPIKE_MODE_KEY_PASS_MS
+                    .store(now, std::sync::atomic::Ordering::Relaxed);
+                ime.spike_invalidate_intents_on_mode_key_pass(crate::state::TickMs(now));
+                platform.timer.set(
+                    crate::TIMER_IME_REFRESH,
+                    std::time::Duration::from_millis(20),
+                );
+                tracing::info!(
+                    "[spike-follow] mode key passed through: intents invalidated, refresh in 20ms"
+                );
+            }
+        }
         let platform_rt: &mut dyn PlatformRuntime = platform;
         match effect {
             Effect::Input(ie) => match ie {

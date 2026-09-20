@@ -670,6 +670,10 @@ impl ImeModel {
                 // が固定する）。
                 self.observations.establish_initial_fence(fence);
             }
+            ImeEvent::ModeKeyPassedThrough => {
+                // SPIKE: 明示意図(last_intent)が観測を固定する(`resolve_open_at`のExplicitIntent分岐)のを外す。
+                self.last_intent = None;
+            }
             ImeEvent::InitialAppPolicyEstablished { profile } => {
                 // BUG-114 根本原因1（ADR-134 D1c）: 起動から最初のプロセス
                 // 切替まで `app_policy` が既定値 `Read` のまま固定される

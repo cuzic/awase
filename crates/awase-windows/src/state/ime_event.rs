@@ -531,6 +531,10 @@ pub enum ImeEvent {
     /// が固定）を持ち、他の書き込みを一切混ぜてはならないため。
     InitialAppPolicyEstablished { profile: ImePolicyProfile },
 
+    /// **SPIKE(ADR-187 follow方式の実験)**: 無変換/変換の生キーをGJIへ通過させた。結果の開閉状態はawaseには
+    /// 分からないため、`last_intent`(明示意図)を捨てて観測に委ねる。`last_intent`以外は書かない。
+    ModeKeyPassedThrough,
+
     /// 起動直後の初回フォーカス確立時、`current_focus` を bootstrap で確立した
     /// 前面 hwnd に設定する（BUG-148、ADR-186）。`establish_initial_focus_scope` からのみ
     /// dispatch される。

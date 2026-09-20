@@ -2060,3 +2060,7 @@ mod layout_entry_tests {
         );
     }
 }
+
+/// SPIKE(ADR-187 follow方式): 無変換/変換の生キーを最後に通過させた時刻(ms)。typing-idleガードのバイパス判定に使う。
+pub(crate) static SPIKE_MODE_KEY_PASS_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);

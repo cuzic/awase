@@ -150,6 +150,14 @@ impl ImeStateHub {
     ///
     /// `tick_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来）。
     /// state/ 層が `hook::current_tick_ms()` を直接呼ばないよう注入する。
+    /// **SPIKE(ADR-187 follow方式)**: 無変換/変換の生キー通過時に、対象hwndの`IntentStore`エントリと`last_intent`を捨てる。
+    pub(crate) fn spike_invalidate_intents_on_mode_key_pass(&mut self, tick_ms: TickMs) {
+        if let Some(hwnd) = self.shadow_model.current_focus() {
+            self.intent_store.remove(hwnd);
+        }
+        self.dispatch_event(ImeEvent::ModeKeyPassedThrough, tick_ms);
+    }
+
     pub(crate) fn dispatch_event(&mut self, event: ImeEvent, tick_ms: TickMs) {
         // ユーザー明示の IME OFF/ON を永続タイムスタンプに反映する。
         // FocusChanged で last_intent がクリアされても guard が機能し続けるよう、

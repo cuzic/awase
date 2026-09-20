@@ -305,10 +305,15 @@ impl Runtime {
             // ImmCross async が "成功" 扱いでも組み合わせ中は IME が閉じないことがあるため、
             // タイピングアイドルガードを回避して OsPoll を先行させる。
             // TsfNative/Blacklist アプリは skip_imm_query=true で弾かれるため対象外。
+            // SPIKE(ADR-187): 無変換/変換の生キー通過後300ms以内は、通過マークで再読み取りを許す。
+            let pass_mark_live = crate::hook::current_tick_ms().saturating_sub(
+                crate::runtime::SPIKE_MODE_KEY_PASS_MS.load(std::sync::atomic::Ordering::Relaxed),
+            ) < 300;
             let explicit_verify = !skip_imm_query
-                && self.platform_state.ime.explicit_intent().is_some()
-                && self.platform_state.ime.model().applied
-                    != crate::state::ime_model::AppliedImeState::Unknown;
+                && (pass_mark_live
+                    || (self.platform_state.ime.explicit_intent().is_some()
+                        && self.platform_state.ime.model().applied
+                            != crate::state::ime_model::AppliedImeState::Unknown));
             if !explicit_verify {
                 tracing::debug!("Skipping observer/SSOT write: typing active (idle={idle_ms}ms)");
                 return ImeReadStrategy::SkipTyping;
