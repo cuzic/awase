@@ -680,6 +680,15 @@ impl ImeModel {
                 // が固定する）。
                 self.app_policy = AppImePolicy::from_profile(profile);
             }
+            ImeEvent::InitialFocusHwndEstablished { hwnd } => {
+                // BUG-148/ADR-186: 起動時に既に前面にあるアプリの hwnd を
+                // `current_focus` に入れる。これが無いと最初のプロセス切替まで
+                // `record_explicit_intent` が空振りし、委譲 SetOpen が全て
+                // Unwarranted になる。`current_focus` のみを書き換え、belief
+                // （`desired_open`/`applied`/観測）には触れない
+                // （`initial_focus_hwnd_established_touches_only_current_focus` が固定する）。
+                self.current_focus = Some(hwnd);
+            }
         }
         // ADR-108 決定4: パージは match の後。期限切れ transition にも、自分自身の
         // 完了で解決される最後の一回を与える。タイムアウトはスロット寿命の上限で
@@ -1089,6 +1098,39 @@ mod tests {
             "InitialAppPolicyEstablished は app_policy 以外を書き換えてはならない \
              (BUG-114/ADR-134 D1c: FocusChanged 以前に belief を書き換えない、\
              ADR-102 決定3-b と同じ規律)"
+        );
+    }
+
+    /// BUG-148/ADR-186 の回帰テスト。
+    ///
+    /// `InitialFocusHwndEstablished` は `current_focus` **以外の一切のフィールドに
+    /// 触れない**（`initial_app_policy_established_touches_only_app_policy` と同じ手法）。
+    #[test]
+    fn initial_focus_hwnd_established_touches_only_current_focus() {
+        let now = Instant::now();
+        let hwnd = HwndId(0x7777);
+
+        // (1) 起動直後（current_focus=None）のモデルへ dispatch すると current_focus が設定される。
+        let mut model = ImeModel::new();
+        assert_eq!(
+            model.current_focus(),
+            None,
+            "起動直後は None（BUG-148の前提）"
+        );
+        model.reduce(&envelope(1, ImeEvent::InitialFocusHwndEstablished { hwnd }));
+        assert_eq!(model.current_focus(), Some(hwnd));
+
+        // (2) 既に current_focus がその値のモデルへ同じイベントを流しても、モデル全体の
+        // Debug 表現が1文字も変わらない = current_focus 以外を書いていない。
+        let mut model = fully_populated_model(now);
+        model.current_focus = Some(hwnd);
+        let before = format!("{model:?}");
+        model.reduce(&envelope(1, ImeEvent::InitialFocusHwndEstablished { hwnd }));
+        assert_eq!(
+            format!("{model:?}"),
+            before,
+            "InitialFocusHwndEstablished は current_focus 以外を書き換えてはならない \
+             (ADR-102 決定3-b: 最初の IME 観測より前に belief を書き換えない)"
         );
     }
 
