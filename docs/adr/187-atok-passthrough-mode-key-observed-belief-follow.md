@@ -13,8 +13,8 @@ summary: |-
   なので、**既定を`false`から`true`へ変える**だけで足りる(新しい機構なし)。方向固定のOn/Offは元から冪等でopt-in不要、
   パススルー+`FollowOnly`(ADR-179)で追随済み。明示`false`はopt-outとして残る。
 status: |-
-  **決定(ユーザー方針)・実装済み(未マージ)**。`gji_thumb_key_ime_toggle`の既定を`true`へ。CIの`atok-default`/`atok-default-henkan`
-  (キーを書かない構成)で追随を確認する。観測型(下記の分析)は見送りの記録として残す。
+  **決定(ユーザー方針)・実装済み(未マージ)・CI検証済み**。`gji_thumb_key_ime_toggle`の既定を`true`へ。`atok-default`/`atok-default-henkan`
+  (キーを書かない構成)で各3/3追随。観測型(下記の分析)は見送りの記録として残す。
 related_adr:
   - "ADR-090"
   - "ADR-115"
@@ -38,13 +38,18 @@ related_adr:
 BUG-115が既定`false`にした理由(非冪等・露出2倍・全ATOKユーザーへの自動適用・GJIフォーク)は、ADR-186でKeyUp解決と
 warrantにより非冪等の誤発火が実機/CIで検証され、残りは受容する(configのdocに5点(Shift+無変換の横取りを追加)として残した)。
 
-## 検証
+## 検証(CI run 35490899254、各3回)
 
-- 既存: CIの`baseline`/`atok-optin`(明示`true`)各3/3追随(ADR-186)。
-- 新規(既定値そのもの): `atok-default`/`atok-default-henkan`(config.tomlにキーを書かない構成、`--walk`+`check_consistency.py`)で3/3追随。
-  `msime-default`/`msime-native-default`(観測)で、MS-IMEキーマップ/MS-IME本体に退行が無いこと。
-- 明示`false`(opt-out)の`atok-passthrough`は追随しない既知の制約として期待`fail`のまま固定。
-- 単体: `config::tests::gji_thumb_key_ime_toggle_defaults_to_true_and_respects_explicit_false`。
+| 構成 | 結果 |
+|---|---|
+| `baseline`(明示`true`、ATOK用期待表) | 3/3 PASS |
+| **`atok-default`**(config.tomlにキーを書かない、`--walk`) | **3/3 追随**(無変換/変換で実IMEが開閉しEngineも追随) |
+| **`atok-default-henkan`**(変換キー) | **3/3 追随** |
+| `msime-default`(GJIのMS-IMEキーマップ、既定) | 3/3 追随(退行なし) |
+| `atok-passthrough`(明示`false`=opt-out) | 3/3 不追随(既知の制約として期待`fail`で固定) |
+| `msime-native-default`(Microsoft IME本体、既定) | 3/3 不追随。**本変更とは無関係の既存の問題**(step1〜3で実IMEがOFFのままEngineだけON、`ImmCross`のON書き込みが148msで失敗、ADR-186「CIでの再現」参照。既定`true`でも`false`でも同じ) |
+
+単体: `config::tests::gji_thumb_key_ime_toggle_defaults_to_true_and_respects_explicit_false`。
 
 ## 見送った案: パススルーのまま観測で追随する(観測型)
 
