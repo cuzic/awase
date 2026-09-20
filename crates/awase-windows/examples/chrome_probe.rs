@@ -442,6 +442,11 @@ fn main() {
         .find_map(|a| a.strip_prefix("--repeat=").and_then(|v| v.parse().ok()))
         .unwrap_or(3);
     let awase = !args.iter().any(|a| a == "--no-awase");
+    // モードキーを押してから `k`,`a` を打つまでの待ち(ms)。EXPLICIT_IME_SUPPRESS_MS(1500)の内外を比べる用。
+    let settle_ms: u64 = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--settle=").and_then(|v| v.parse().ok()))
+        .unwrap_or(500);
     let chrome_arg = args.iter().find_map(|a| a.strip_prefix("--chrome=").map(str::to_string));
     let log_path = args
         .iter()
@@ -467,7 +472,7 @@ fn main() {
         });
     }
     let profile = std::env::temp_dir().join(format!("chrome_probe_profile_{port}"));
-    log.line(&format!("chrome={chrome} port={port} awase={awase} repeat={repeat}"));
+    log.line(&format!("chrome={chrome} port={port} awase={awase} repeat={repeat} settle={settle_ms}ms"));
     let mut child = std::process::Command::new(&chrome)
         .args([
             &format!("--user-data-dir={}", profile.display()),
@@ -513,7 +518,7 @@ fn main() {
                 continue;
             }
             p.press(c.vk, c.shift, 120);
-            sleep(500);
+            sleep(settle_ms);
             let got = p.probe_logged("action後");
             let want_ok = if c.expect_kana {
                 if awase { got == Class::Nicola } else { got == Class::RomajiKana }

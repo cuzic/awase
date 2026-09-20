@@ -1,0 +1,317 @@
+[04:46:26.622Z] chrome=C:\Users\cuzic\scoop\apps\googlechrome\current\chrome.exe port=55262 awase=false repeat=3
+[04:46:29.552Z] 前面化: true
+[04:46:30.353Z] [CASE 1/8 run 1/3] かな→無変換=IME OFF
+[04:46:30.400Z] KEY vk=0x16 (auto)
+[04:46:30.941Z] KEY vk=0x4B (auto)
+[04:46:31.007Z] KEY vk=0x41 (auto)
+[04:46:31.589Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:46:31.712Z] KEY vk=0x1D (auto)
+[04:46:32.246Z] KEY vk=0x4B (auto)
+[04:46:32.310Z] KEY vk=0x41 (auto)
+[04:46:32.873Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=false
+[04:46:32.874Z] RESULT PASS
+[04:46:32.875Z] [CASE 2/8 run 1/3] 直接入力→無変換=かなON
+[04:46:32.925Z] KEY vk=0x16 (auto)
+[04:46:33.491Z] KEY vk=0x4B (auto)
+[04:46:33.555Z] KEY vk=0x41 (auto)
+[04:46:34.138Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:46:34.182Z] KEY vk=0x1A (auto)
+[04:46:34.717Z] KEY vk=0x4B (auto)
+[04:46:34.780Z] KEY vk=0x41 (auto)
+[04:46:35.343Z] PROBE setup:IME_OFF後: ka(英数/直接) text="ka" Process(229)=false
+[04:46:35.466Z] KEY vk=0x1D (auto)
+[04:46:36.005Z] KEY vk=0x4B (auto)
+[04:46:36.070Z] KEY vk=0x41 (auto)
+[04:46:36.653Z] PROBE action後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:46:36.653Z] RESULT PASS
+[04:46:36.654Z] [CASE 3/8 run 1/3] かな→ひらがな=半角英数
+[04:46:36.699Z] KEY vk=0x16 (auto)
+[04:46:37.231Z] KEY vk=0x4B (auto)
+[04:46:37.309Z] KEY vk=0x41 (auto)
+[04:46:37.949Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:46:38.074Z] KEY vk=0xF2 (auto)
+[04:46:38.611Z] KEY vk=0x4B (auto)
+[04:46:38.675Z] KEY vk=0x41 (auto)
+[04:46:39.236Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=true
+[04:46:39.237Z] RESULT PASS
+[04:46:39.237Z] [CASE 4/8 run 1/3] 半角英数→ひらがな=かな
+[04:46:39.283Z] KEY vk=0x16 (auto)
+[04:46:39.816Z] KEY vk=0x4B (auto)
+[04:46:39.880Z] KEY vk=0x41 (auto)
+[04:46:40.483Z] PROBE setup:IME_ON後: ka(英数/直接) text="ka" Process(229)=true
+[04:46:40.547Z] KEY vk=0xF2 (auto)
+[04:46:41.124Z] KEY vk=0x4B (auto)
+[04:46:41.191Z] KEY vk=0x41 (auto)
+[04:46:41.795Z] PROBE setup:ひらがな後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:46:41.860Z] KEY vk=0xF2 (auto)
+[04:46:42.413Z] KEY vk=0x4B (auto)
+[04:46:42.478Z] KEY vk=0x41 (auto)
+[04:46:43.062Z] PROBE setup:ひらがな(かな→半角英数)後: ka(英数/直接) text="ka" Process(229)=true
+[04:46:43.189Z] KEY vk=0xF2 (auto)
+[04:46:43.723Z] KEY vk=0x4B (auto)
+[04:46:43.786Z] KEY vk=0x41 (auto)
+[04:46:44.370Z] PROBE action後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:46:44.370Z] RESULT PASS
+[04:46:44.371Z] [CASE 5/8 run 1/3] かな→変換=IME OFF
+[04:46:44.417Z] KEY vk=0x16 (auto)
+[04:46:44.961Z] KEY vk=0x4B (auto)
+[04:46:45.024Z] KEY vk=0x41 (auto)
+[04:46:45.608Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:46:45.734Z] KEY vk=0x1C (auto)
+[04:46:46.269Z] KEY vk=0x4B (auto)
+[04:46:46.333Z] KEY vk=0x41 (auto)
+[04:46:46.896Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=false
+[04:46:46.897Z] RESULT PASS
+[04:46:46.898Z] [CASE 6/8 run 1/3] 直接入力→変換=かなON
+[04:46:46.944Z] KEY vk=0x16 (auto)
+[04:46:47.478Z] KEY vk=0x4B (auto)
+[04:46:47.541Z] KEY vk=0x41 (auto)
+[04:46:48.103Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:46:48.150Z] KEY vk=0x1A (auto)
+[04:46:48.684Z] KEY vk=0x4B (auto)
+[04:46:48.747Z] KEY vk=0x41 (auto)
+[04:46:49.310Z] PROBE setup:IME_OFF後: ka(英数/直接) text="ka" Process(229)=false
+[04:46:49.434Z] KEY vk=0x1C (auto)
+[04:46:49.970Z] KEY vk=0x4B (auto)
+[04:46:50.033Z] KEY vk=0x41 (auto)
+[04:46:50.616Z] PROBE action後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:46:50.617Z] RESULT PASS
+[04:46:50.618Z] [CASE 7/8 run 1/3] かな→Shift+無変換=半角英数
+[04:46:50.664Z] KEY vk=0x16 (auto)
+[04:46:51.197Z] KEY vk=0x4B (auto)
+[04:46:51.260Z] KEY vk=0x41 (auto)
+[04:46:51.843Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:46:52.052Z] KEY vk=0x1D +Shift (auto)
+[04:46:52.618Z] KEY vk=0x4B (auto)
+[04:46:52.697Z] KEY vk=0x41 (auto)
+[04:46:53.301Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=true
+[04:46:53.302Z] RESULT PASS
+[04:46:53.303Z] [CASE 8/8 run 1/3] 直接入力→Shift+無変換=直接入力のまま
+[04:46:53.350Z] KEY vk=0x16 (auto)
+[04:46:53.884Z] KEY vk=0x4B (auto)
+[04:46:53.947Z] KEY vk=0x41 (auto)
+[04:46:54.550Z] PROBE setup:IME_ON後: ka(英数/直接) text="ka" Process(229)=true
+[04:46:54.613Z] KEY vk=0xF2 (auto)
+[04:46:55.149Z] KEY vk=0x4B (auto)
+[04:46:55.217Z] KEY vk=0x41 (auto)
+[04:46:55.840Z] PROBE setup:ひらがな後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:46:55.886Z] KEY vk=0x1A (auto)
+[04:46:56.421Z] KEY vk=0x4B (auto)
+[04:46:56.485Z] KEY vk=0x41 (auto)
+[04:46:57.048Z] PROBE setup:IME_OFF後: ka(英数/直接) text="ka" Process(229)=false
+[04:46:57.257Z] KEY vk=0x1D +Shift (auto)
+[04:46:57.791Z] KEY vk=0x4B (auto)
+[04:46:57.854Z] KEY vk=0x41 (auto)
+[04:46:58.438Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=false
+[04:46:58.439Z] RESULT PASS
+[04:46:58.440Z] [CASE 1/8 run 2/3] かな→無変換=IME OFF
+[04:46:58.495Z] KEY vk=0x16 (auto)
+[04:46:59.077Z] KEY vk=0x4B (auto)
+[04:46:59.143Z] KEY vk=0x41 (auto)
+[04:46:59.726Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:46:59.850Z] KEY vk=0x1D (auto)
+[04:47:00.384Z] KEY vk=0x4B (auto)
+[04:47:00.448Z] KEY vk=0x41 (auto)
+[04:47:01.012Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=false
+[04:47:01.013Z] RESULT PASS
+[04:47:01.013Z] [CASE 2/8 run 2/3] 直接入力→無変換=かなON
+[04:47:01.064Z] KEY vk=0x16 (auto)
+[04:47:01.646Z] KEY vk=0x4B (auto)
+[04:47:01.734Z] KEY vk=0x41 (auto)
+[04:47:02.339Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:02.383Z] KEY vk=0x1A (auto)
+[04:47:02.917Z] KEY vk=0x4B (auto)
+[04:47:02.980Z] KEY vk=0x41 (auto)
+[04:47:03.543Z] PROBE setup:IME_OFF後: ka(英数/直接) text="ka" Process(229)=false
+[04:47:03.667Z] KEY vk=0x1D (auto)
+[04:47:04.245Z] KEY vk=0x4B (auto)
+[04:47:04.308Z] KEY vk=0x41 (auto)
+[04:47:04.932Z] PROBE action後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:04.932Z] RESULT PASS
+[04:47:04.933Z] [CASE 3/8 run 2/3] かな→ひらがな=半角英数
+[04:47:04.995Z] KEY vk=0x16 (auto)
+[04:47:05.529Z] KEY vk=0x4B (auto)
+[04:47:05.592Z] KEY vk=0x41 (auto)
+[04:47:06.174Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:06.297Z] KEY vk=0xF2 (auto)
+[04:47:06.836Z] KEY vk=0x4B (auto)
+[04:47:06.899Z] KEY vk=0x41 (auto)
+[04:47:07.483Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=true
+[04:47:07.483Z] RESULT PASS
+[04:47:07.484Z] [CASE 4/8 run 2/3] 半角英数→ひらがな=かな
+[04:47:07.529Z] KEY vk=0x16 (auto)
+[04:47:08.083Z] KEY vk=0x4B (auto)
+[04:47:08.155Z] KEY vk=0x41 (auto)
+[04:47:08.717Z] PROBE setup:IME_ON後: ka(英数/直接) text="ka" Process(229)=true
+[04:47:08.781Z] KEY vk=0xF2 (auto)
+[04:47:09.314Z] KEY vk=0x4B (auto)
+[04:47:09.377Z] KEY vk=0x41 (auto)
+[04:47:09.940Z] PROBE setup:ひらがな後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:10.004Z] KEY vk=0xF2 (auto)
+[04:47:10.579Z] KEY vk=0x4B (auto)
+[04:47:10.672Z] KEY vk=0x41 (auto)
+[04:47:11.298Z] PROBE setup:ひらがな(かな→半角英数)後: ka(英数/直接) text="ka" Process(229)=true
+[04:47:11.421Z] KEY vk=0xF2 (auto)
+[04:47:11.966Z] KEY vk=0x4B (auto)
+[04:47:12.030Z] KEY vk=0x41 (auto)
+[04:47:12.593Z] PROBE action後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:12.593Z] RESULT PASS
+[04:47:12.594Z] [CASE 5/8 run 2/3] かな→変換=IME OFF
+[04:47:12.638Z] KEY vk=0x16 (auto)
+[04:47:13.172Z] KEY vk=0x4B (auto)
+[04:47:13.236Z] KEY vk=0x41 (auto)
+[04:47:13.841Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:13.967Z] KEY vk=0x1C (auto)
+[04:47:14.501Z] KEY vk=0x4B (auto)
+[04:47:14.565Z] KEY vk=0x41 (auto)
+[04:47:15.148Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=false
+[04:47:15.149Z] RESULT PASS
+[04:47:15.151Z] [CASE 6/8 run 2/3] 直接入力→変換=かなON
+[04:47:15.202Z] KEY vk=0x16 (auto)
+[04:47:15.739Z] KEY vk=0x4B (auto)
+[04:47:15.802Z] KEY vk=0x41 (auto)
+[04:47:16.386Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:16.432Z] KEY vk=0x1A (auto)
+[04:47:16.976Z] KEY vk=0x4B (auto)
+[04:47:17.049Z] KEY vk=0x41 (auto)
+[04:47:17.612Z] PROBE setup:IME_OFF後: ka(英数/直接) text="ka" Process(229)=false
+[04:47:17.736Z] KEY vk=0x1C (auto)
+[04:47:18.303Z] KEY vk=0x4B (auto)
+[04:47:18.371Z] KEY vk=0x41 (auto)
+[04:47:18.954Z] PROBE action後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:18.954Z] RESULT PASS
+[04:47:18.955Z] [CASE 7/8 run 2/3] かな→Shift+無変換=半角英数
+[04:47:19.013Z] KEY vk=0x16 (auto)
+[04:47:19.576Z] KEY vk=0x4B (auto)
+[04:47:19.648Z] KEY vk=0x41 (auto)
+[04:47:20.253Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:20.461Z] KEY vk=0x1D +Shift (auto)
+[04:47:21.001Z] KEY vk=0x4B (auto)
+[04:47:21.064Z] KEY vk=0x41 (auto)
+[04:47:21.647Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=true
+[04:47:21.648Z] RESULT PASS
+[04:47:21.648Z] [CASE 8/8 run 2/3] 直接入力→Shift+無変換=直接入力のまま
+[04:47:21.695Z] KEY vk=0x16 (auto)
+[04:47:22.229Z] KEY vk=0x4B (auto)
+[04:47:22.294Z] KEY vk=0x41 (auto)
+[04:47:22.877Z] PROBE setup:IME_ON後: ka(英数/直接) text="ka" Process(229)=true
+[04:47:22.940Z] KEY vk=0xF2 (auto)
+[04:47:23.484Z] KEY vk=0x4B (auto)
+[04:47:23.547Z] KEY vk=0x41 (auto)
+[04:47:24.110Z] PROBE setup:ひらがな後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:24.154Z] KEY vk=0x1A (auto)
+[04:47:24.688Z] KEY vk=0x4B (auto)
+[04:47:24.751Z] KEY vk=0x41 (auto)
+[04:47:25.336Z] PROBE setup:IME_OFF後: ka(英数/直接) text="ka" Process(229)=false
+[04:47:25.544Z] KEY vk=0x1D +Shift (auto)
+[04:47:26.081Z] KEY vk=0x4B (auto)
+[04:47:26.150Z] KEY vk=0x41 (auto)
+[04:47:26.713Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=false
+[04:47:26.714Z] RESULT PASS
+[04:47:26.714Z] [CASE 1/8 run 3/3] かな→無変換=IME OFF
+[04:47:26.762Z] KEY vk=0x16 (auto)
+[04:47:27.299Z] KEY vk=0x4B (auto)
+[04:47:27.362Z] KEY vk=0x41 (auto)
+[04:47:27.946Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:28.070Z] KEY vk=0x1D (auto)
+[04:47:28.604Z] KEY vk=0x4B (auto)
+[04:47:28.669Z] KEY vk=0x41 (auto)
+[04:47:29.253Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=false
+[04:47:29.254Z] RESULT PASS
+[04:47:29.255Z] [CASE 2/8 run 3/3] 直接入力→無変換=かなON
+[04:47:29.314Z] KEY vk=0x16 (auto)
+[04:47:29.851Z] KEY vk=0x4B (auto)
+[04:47:29.914Z] KEY vk=0x41 (auto)
+[04:47:30.498Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:30.542Z] KEY vk=0x1A (auto)
+[04:47:31.076Z] KEY vk=0x4B (auto)
+[04:47:31.140Z] KEY vk=0x41 (auto)
+[04:47:31.703Z] PROBE setup:IME_OFF後: ka(英数/直接) text="ka" Process(229)=false
+[04:47:31.835Z] KEY vk=0x1D (auto)
+[04:47:32.392Z] KEY vk=0x4B (auto)
+[04:47:32.455Z] KEY vk=0x41 (auto)
+[04:47:33.037Z] PROBE action後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:33.037Z] RESULT PASS
+[04:47:33.038Z] [CASE 3/8 run 3/3] かな→ひらがな=半角英数
+[04:47:33.085Z] KEY vk=0x16 (auto)
+[04:47:33.637Z] KEY vk=0x4B (auto)
+[04:47:33.700Z] KEY vk=0x41 (auto)
+[04:47:34.284Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:34.406Z] KEY vk=0xF2 (auto)
+[04:47:34.987Z] KEY vk=0x4B (auto)
+[04:47:35.051Z] KEY vk=0x41 (auto)
+[04:47:35.654Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=true
+[04:47:35.655Z] RESULT PASS
+[04:47:35.655Z] [CASE 4/8 run 3/3] 半角英数→ひらがな=かな
+[04:47:35.702Z] KEY vk=0x16 (auto)
+[04:47:36.238Z] KEY vk=0x4B (auto)
+[04:47:36.303Z] KEY vk=0x41 (auto)
+[04:47:36.888Z] PROBE setup:IME_ON後: ka(英数/直接) text="ka" Process(229)=true
+[04:47:36.953Z] KEY vk=0xF2 (auto)
+[04:47:37.494Z] KEY vk=0x4B (auto)
+[04:47:37.558Z] KEY vk=0x41 (auto)
+[04:47:38.232Z] PROBE setup:ひらがな後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:38.295Z] KEY vk=0xF2 (auto)
+[04:47:38.860Z] KEY vk=0x4B (auto)
+[04:47:38.923Z] KEY vk=0x41 (auto)
+[04:47:39.506Z] PROBE setup:ひらがな(かな→半角英数)後: ka(英数/直接) text="ka" Process(229)=true
+[04:47:39.632Z] KEY vk=0xF2 (auto)
+[04:47:40.168Z] KEY vk=0x4B (auto)
+[04:47:40.231Z] KEY vk=0x41 (auto)
+[04:47:40.794Z] PROBE action後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:40.794Z] RESULT PASS
+[04:47:40.797Z] [CASE 5/8 run 3/3] かな→変換=IME OFF
+[04:47:40.855Z] KEY vk=0x16 (auto)
+[04:47:41.431Z] KEY vk=0x4B (auto)
+[04:47:41.500Z] KEY vk=0x41 (auto)
+[04:47:42.084Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:42.212Z] KEY vk=0x1C (auto)
+[04:47:42.747Z] KEY vk=0x4B (auto)
+[04:47:42.812Z] KEY vk=0x41 (auto)
+[04:47:43.375Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=false
+[04:47:43.376Z] RESULT PASS
+[04:47:43.377Z] [CASE 6/8 run 3/3] 直接入力→変換=かなON
+[04:47:43.426Z] KEY vk=0x16 (auto)
+[04:47:43.966Z] KEY vk=0x4B (auto)
+[04:47:44.032Z] KEY vk=0x41 (auto)
+[04:47:44.594Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:44.637Z] KEY vk=0x1A (auto)
+[04:47:45.171Z] KEY vk=0x4B (auto)
+[04:47:45.236Z] KEY vk=0x41 (auto)
+[04:47:45.820Z] PROBE setup:IME_OFF後: ka(英数/直接) text="ka" Process(229)=false
+[04:47:45.945Z] KEY vk=0x1C (auto)
+[04:47:46.482Z] KEY vk=0x4B (auto)
+[04:47:46.546Z] KEY vk=0x41 (auto)
+[04:47:47.150Z] PROBE action後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:47.151Z] RESULT PASS
+[04:47:47.152Z] [CASE 7/8 run 3/3] かな→Shift+無変換=半角英数
+[04:47:47.198Z] KEY vk=0x16 (auto)
+[04:47:47.777Z] KEY vk=0x4B (auto)
+[04:47:47.851Z] KEY vk=0x41 (auto)
+[04:47:48.435Z] PROBE setup:IME_ON後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:48.641Z] KEY vk=0x1D +Shift (auto)
+[04:47:49.188Z] KEY vk=0x4B (auto)
+[04:47:49.251Z] KEY vk=0x41 (auto)
+[04:47:49.813Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=true
+[04:47:49.814Z] RESULT PASS
+[04:47:49.815Z] [CASE 8/8 run 3/3] 直接入力→Shift+無変換=直接入力のまま
+[04:47:49.861Z] KEY vk=0x16 (auto)
+[04:47:50.449Z] KEY vk=0x4B (auto)
+[04:47:50.537Z] KEY vk=0x41 (auto)
+[04:47:51.122Z] PROBE setup:IME_ON後: ka(英数/直接) text="ka" Process(229)=true
+[04:47:51.187Z] KEY vk=0xF2 (auto)
+[04:47:51.724Z] KEY vk=0x4B (auto)
+[04:47:51.788Z] KEY vk=0x41 (auto)
+[04:47:52.392Z] PROBE setup:ひらがな後: か(かな・Engine素通し) text="か" Process(229)=true
+[04:47:52.436Z] KEY vk=0x1A (auto)
+[04:47:52.972Z] KEY vk=0x4B (auto)
+[04:47:53.035Z] KEY vk=0x41 (auto)
+[04:47:53.620Z] PROBE setup:IME_OFF後: ka(英数/直接) text="ka" Process(229)=false
+[04:47:53.833Z] KEY vk=0x1D +Shift (auto)
+[04:47:54.369Z] KEY vk=0x4B (auto)
+[04:47:54.434Z] KEY vk=0x41 (auto)
+[04:47:55.018Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=false
+[04:47:55.018Z] RESULT PASS
+[04:47:55.019Z] SUMMARY PASS=24 FAIL=0 INVALID=0
+[04:47:55.019Z] === 全ケース完了 ===
+script error: Output type incorrect: bool (expecting ())
