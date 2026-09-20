@@ -84,22 +84,6 @@ jobs:
           Start-Sleep -Seconds 5
           Get-Process ctfmon, explorer -ErrorAction SilentlyContinue | Format-Table Name, Id, SessionId
 
-      - name: 診断(awase なし) GJI がどのキーで ON になるか
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          Set-Location dist
-          Start-Process -FilePath .\ime_key_matrix_spike.exe -ArgumentList '--diag --activate-gji'
-          $deadline = (Get-Date).AddSeconds(90)
-          while ((Get-Date) -lt $deadline) {
-            Start-Sleep -Seconds 4
-            if ((Test-Path ime_key_matrix_spike.log) -and (Select-String -Path ime_key_matrix_spike.log -Pattern '全手順完了' -Quiet)) { break }
-          }
-          Get-Content ime_key_matrix_spike.log -Encoding utf8 | Select-String -Pattern 'init\]|KEY \[|前 +:|\+1500ms' | ForEach-Object { $_.Line.Substring(0,[Math]::Min(120,$_.Line.Length)) }
-          Remove-Item ime_key_matrix_spike.log -ErrorAction SilentlyContinue
-          Get-Process ime_key_matrix_spike -ErrorAction SilentlyContinue | Stop-Process -Force
-
-      # awase・スパイク・判定は同じステップで行う(別ステップにすると、ステップ終了時のプロセス掃除で awase が終了する)。
       - name: awase を起動し、スパイク --auto を実行して判定する(AWASE_TEST_INJECTION=1、gji_thumb_key_ime_toggle=true)
         shell: pwsh
         run: |
