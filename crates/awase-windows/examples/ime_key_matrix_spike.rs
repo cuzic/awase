@@ -304,6 +304,9 @@ fn key_name(vk: u32) -> Option<&'static str> {
         0x0D => "Enter",
         0x1B => "ESC",
         0x20 => "Space",
+        // `--walk` が注入する英字。記録しないと未確定文字列の発生(状態遷移)が表に載らない。
+        0x41 => "a",
+        0x4B => "k",
         _ => return None,
     })
 }
