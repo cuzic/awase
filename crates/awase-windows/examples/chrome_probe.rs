@@ -134,7 +134,10 @@ fn handle(mut s: TcpStream, shared: &Arc<Mutex<Shared>>) {
             let head = String::from_utf8_lossy(&buf[..p]).to_lowercase();
             let cl = head
                 .lines()
-                .find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                .find_map(|l| {
+                    l.strip_prefix("content-length:")
+                        .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                })
                 .unwrap_or(0);
             break (p + 4, cl);
         }
@@ -148,7 +151,9 @@ fn handle(mut s: TcpStream, shared: &Arc<Mutex<Shared>>) {
     let head = String::from_utf8_lossy(&buf[..head_end]).into_owned();
     let first = head.lines().next().unwrap_or("");
     let path = first.split_whitespace().nth(1).unwrap_or("/");
-    let body = String::from_utf8_lossy(&buf[head_end..head_end + content_len.min(buf.len() - head_end)]).into_owned();
+    let body =
+        String::from_utf8_lossy(&buf[head_end..head_end + content_len.min(buf.len() - head_end)])
+            .into_owned();
     let (ctype, resp): (&str, String) = if path == "/log" {
         if let Some(e) = parse_event(&body) {
             shared.lock().unwrap().events.push(e);
@@ -200,7 +205,11 @@ fn send_key(vk: u32, down: bool) {
             ki: KEYBDINPUT {
                 wVk: VIRTUAL_KEY(u16::try_from(vk).unwrap_or(0)),
                 wScan: scan_for(vk),
-                dwFlags: if down { KEYBD_EVENT_FLAGS(0) } else { KEYEVENTF_KEYUP },
+                dwFlags: if down {
+                    KEYBD_EVENT_FLAGS(0)
+                } else {
+                    KEYEVENTF_KEYUP
+                },
                 time: 0,
                 dwExtraInfo: AUTO_MARKER,
             },
@@ -292,7 +301,10 @@ impl Probe {
             sleep(self.shift_tail_ms);
             send_key(0xA0, false);
         }
-        self.log.line(&format!("KEY vk=0x{vk:02X}{} (auto)", if shift { " +Shift" } else { "" }));
+        self.log.line(&format!(
+            "KEY vk=0x{vk:02X}{} (auto)",
+            if shift { " +Shift" } else { "" }
+        ));
     }
 
     fn last_n(&self) -> u64 {
@@ -339,8 +351,10 @@ impl Probe {
 
     fn probe_logged(&mut self, what: &str) -> Class {
         let (c, text, process) = self.probe();
-        self.log
-            .line(&format!("PROBE {what}: {} text={text:?} Process(229)={process}", c.label()));
+        self.log.line(&format!(
+            "PROBE {what}: {} text={text:?} Process(229)={process}",
+            c.label()
+        ));
         c
     }
 }
@@ -354,7 +368,13 @@ enum Setup {
 
 /// 状態を「かな」「直接入力」「半角英数」に持っていく。状態はプローブ(打った文字)で確認する。
 fn ensure(p: &mut Probe, setup: Setup, awase: bool) -> bool {
-    let kana_ok = |c: Class| if awase { c == Class::Nicola } else { c == Class::RomajiKana };
+    let kana_ok = |c: Class| {
+        if awase {
+            c == Class::Nicola
+        } else {
+            c == Class::RomajiKana
+        }
+    };
     // 1) かなにする: IME ON → ダメならひらがなキーでかな⇔半角英数を切り替える。
     p.press(0x16, false, 40); // VK_IME_ON(冪等)
     sleep(500);
@@ -377,7 +397,10 @@ fn ensure(p: &mut Probe, setup: Setup, awase: bool) -> bool {
         Setup::Alnum => {
             p.press(0xF2, false, 60);
             sleep(500);
-            matches!(p.probe_logged("setup:ひらがな(かな→半角英数)後"), Class::Plain | Class::NicolaLiteral)
+            matches!(
+                p.probe_logged("setup:ひらがな(かな→半角英数)後"),
+                Class::Plain | Class::NicolaLiteral
+            )
         }
     }
 }
@@ -392,14 +415,62 @@ struct Case {
 }
 
 const CASES: [Case; 8] = [
-    Case { name: "かな→無変換=IME OFF", setup: Setup::Kana, vk: 0x1D, shift: false, expect_kana: false },
-    Case { name: "直接入力→無変換=かなON", setup: Setup::Off, vk: 0x1D, shift: false, expect_kana: true },
-    Case { name: "かな→ひらがな=半角英数", setup: Setup::Kana, vk: 0xF2, shift: false, expect_kana: false },
-    Case { name: "半角英数→ひらがな=かな", setup: Setup::Alnum, vk: 0xF2, shift: false, expect_kana: true },
-    Case { name: "かな→変換=IME OFF", setup: Setup::Kana, vk: 0x1C, shift: false, expect_kana: false },
-    Case { name: "直接入力→変換=かなON", setup: Setup::Off, vk: 0x1C, shift: false, expect_kana: true },
-    Case { name: "かな→Shift+無変換=半角英数", setup: Setup::Kana, vk: 0x1D, shift: true, expect_kana: false },
-    Case { name: "直接入力→Shift+無変換=直接入力のまま", setup: Setup::Off, vk: 0x1D, shift: true, expect_kana: false },
+    Case {
+        name: "かな→無変換=IME OFF",
+        setup: Setup::Kana,
+        vk: 0x1D,
+        shift: false,
+        expect_kana: false,
+    },
+    Case {
+        name: "直接入力→無変換=かなON",
+        setup: Setup::Off,
+        vk: 0x1D,
+        shift: false,
+        expect_kana: true,
+    },
+    Case {
+        name: "かな→ひらがな=半角英数",
+        setup: Setup::Kana,
+        vk: 0xF2,
+        shift: false,
+        expect_kana: false,
+    },
+    Case {
+        name: "半角英数→ひらがな=かな",
+        setup: Setup::Alnum,
+        vk: 0xF2,
+        shift: false,
+        expect_kana: true,
+    },
+    Case {
+        name: "かな→変換=IME OFF",
+        setup: Setup::Kana,
+        vk: 0x1C,
+        shift: false,
+        expect_kana: false,
+    },
+    Case {
+        name: "直接入力→変換=かなON",
+        setup: Setup::Off,
+        vk: 0x1C,
+        shift: false,
+        expect_kana: true,
+    },
+    Case {
+        name: "かな→Shift+無変換=半角英数",
+        setup: Setup::Kana,
+        vk: 0x1D,
+        shift: true,
+        expect_kana: false,
+    },
+    Case {
+        name: "直接入力→Shift+無変換=直接入力のまま",
+        setup: Setup::Off,
+        vk: 0x1D,
+        shift: true,
+        expect_kana: false,
+    },
 ];
 
 fn find_chrome(arg: Option<String>) -> Option<String> {
@@ -425,9 +496,14 @@ fn bring_to_front() -> bool {
             return false;
         }
         let fg = GetForegroundWindow();
-        let fg_tid = if fg.0.is_null() { 0 } else { GetWindowThreadProcessId(fg, None) };
+        let fg_tid = if fg.0.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(fg, None)
+        };
         let my_tid = GetCurrentThreadId();
-        let attached = fg_tid != 0 && fg_tid != my_tid && AttachThreadInput(my_tid, fg_tid, true).as_bool();
+        let attached =
+            fg_tid != 0 && fg_tid != my_tid && AttachThreadInput(my_tid, fg_tid, true).as_bool();
         let _ = BringWindowToTop(hwnd);
         let ok = SetForegroundWindow(hwnd).as_bool();
         if attached {
@@ -449,7 +525,9 @@ fn main() {
         .iter()
         .find_map(|a| a.strip_prefix("--settle=").and_then(|v| v.parse().ok()))
         .unwrap_or(500);
-    let chrome_arg = args.iter().find_map(|a| a.strip_prefix("--chrome=").map(str::to_string));
+    let chrome_arg = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--chrome=").map(str::to_string));
     let log_path = args
         .iter()
         .find_map(|a| a.strip_prefix("--log=").map(str::to_string))
@@ -461,7 +539,10 @@ fn main() {
         log.line("Chrome が見つかりません(--chrome=<path> で指定)");
         return;
     };
-    let shared = Arc::new(Mutex::new(Shared { events: Vec::new(), cmd: None }));
+    let shared = Arc::new(Mutex::new(Shared {
+        events: Vec::new(),
+        cmd: None,
+    }));
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port();
     {
@@ -474,7 +555,9 @@ fn main() {
         });
     }
     let profile = std::env::temp_dir().join(format!("chrome_probe_profile_{port}"));
-    log.line(&format!("chrome={chrome} port={port} awase={awase} repeat={repeat} settle={settle_ms}ms"));
+    log.line(&format!(
+        "chrome={chrome} port={port} awase={awase} repeat={repeat} settle={settle_ms}ms"
+    ));
     let mut child = std::process::Command::new(&chrome)
         .args([
             &format!("--user-data-dir={}", profile.display()),
@@ -489,7 +572,13 @@ fn main() {
 
     // ページの ready を待つ。
     let start = Instant::now();
-    while !shared.lock().unwrap().events.iter().any(|e| e.kind == "ready") {
+    while !shared
+        .lock()
+        .unwrap()
+        .events
+        .iter()
+        .any(|e| e.kind == "ready")
+    {
         if start.elapsed() > Duration::from_secs(40) {
             log.line("ページが読み込まれませんでした(timeout)");
             let _ = child.kill();
@@ -506,10 +595,18 @@ fn main() {
         .iter()
         .find_map(|a| a.strip_prefix("--shift-tail=").and_then(|v| v.parse().ok()))
         .unwrap_or(40);
-    let mut p = Probe { shift_tail_ms, shared, log, focus_lost: false };
+    let mut p = Probe {
+        shift_tail_ms,
+        shared,
+        log,
+        focus_lost: false,
+    };
     // `--storm=N`: 親指キー(無変換, NICOLAの既定の親指シフト)を使った通常タイピングをN回行う(BUG-149 レビューB1の確認用)。
     // 文字の判定はせず、awaseログの強制conv読み取りの件数を見る。
-    if let Some(n) = args.iter().find_map(|a| a.strip_prefix("--storm=").and_then(|v| v.parse::<usize>().ok())) {
+    if let Some(n) = args.iter().find_map(|a| {
+        a.strip_prefix("--storm=")
+            .and_then(|v| v.parse::<usize>().ok())
+    }) {
         bring_to_front();
         let _ = ensure(&mut p, Setup::Kana, awase);
         p.log.line(&format!("STORM start n={n}"));
@@ -537,7 +634,12 @@ fn main() {
     let mut recover = 0usize;
     for r in 1..=repeat {
         for (i, c) in CASES.iter().enumerate() {
-            p.log.line(&format!("[CASE {}/{} run {r}/{repeat}] {}", i + 1, CASES.len(), c.name));
+            p.log.line(&format!(
+                "[CASE {}/{} run {r}/{repeat}] {}",
+                i + 1,
+                CASES.len(),
+                c.name
+            ));
             p.focus_lost = false;
             if !bring_to_front() {
                 p.log.line("前面化に失敗");
@@ -552,7 +654,11 @@ fn main() {
             sleep(settle_ms);
             let got = p.probe_logged("action後");
             let want_ok = if c.expect_kana {
-                if awase { got == Class::Nicola } else { got == Class::RomajiKana }
+                if awase {
+                    got == Class::Nicola
+                } else {
+                    got == Class::RomajiKana
+                }
             } else {
                 got == Class::Plain
             };
@@ -567,20 +673,33 @@ fn main() {
                 sleep(400);
                 let again = p.probe_logged("action後2回目");
                 if c.expect_kana {
-                    if awase { again == Class::Nicola } else { again == Class::RomajiKana }
+                    if awase {
+                        again == Class::Nicola
+                    } else {
+                        again == Class::RomajiKana
+                    }
                 } else {
                     again == Class::Plain
                 }
             } {
-                p.log.line(&format!("RESULT RECOVER: 1回目は{}、2回目で追随", got.label()));
+                p.log.line(&format!(
+                    "RESULT RECOVER: 1回目は{}、2回目で追随",
+                    got.label()
+                ));
                 recover += 1;
             } else {
-                p.log.line(&format!("RESULT FAIL: 期待={} 実際={}", if c.expect_kana { "かな" } else { "ka" }, got.label()));
+                p.log.line(&format!(
+                    "RESULT FAIL: 期待={} 実際={}",
+                    if c.expect_kana { "かな" } else { "ka" },
+                    got.label()
+                ));
                 fail += 1;
             }
         }
     }
-    p.log.line(&format!("SUMMARY PASS={pass} RECOVER={recover} FAIL={fail} INVALID={invalid}"));
+    p.log.line(&format!(
+        "SUMMARY PASS={pass} RECOVER={recover} FAIL={fail} INVALID={invalid}"
+    ));
     p.log.line("=== 全ケース完了 ===");
     let _ = child.kill();
 }
