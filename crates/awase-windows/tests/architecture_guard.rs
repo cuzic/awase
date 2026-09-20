@@ -2987,6 +2987,8 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
         // BUG-114 根本原因1（ADR-134 D1c）で追加した app_policy 初期化ヘルパー。
         // `sync_initial_focus_fence` と同じ理由で dispatch_event(` 1件だけ例外化する。
         ("sync_initial_app_policy", "dispatch_event("),
+        // BUG-148/ADR-186: current_focus 初期化ヘルパー（同上、dispatch_event( 1件だけ例外）。
+        ("sync_initial_focus_hwnd", "dispatch_event("),
     ];
 
     let content = read_crate_file("src/runtime/focus_tracking.rs");
@@ -3029,6 +3031,11 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
         (
             "sync_initial_app_policy",
             extract_fn_body(&content, "fn sync_initial_app_policy"),
+        ),
+        // BUG-148/ADR-186 で追加した current_focus 初期化ヘルパー。同じ理由で対象に加える。
+        (
+            "sync_initial_focus_hwnd",
+            extract_fn_body(&content, "fn sync_initial_focus_hwnd"),
         ),
     ];
     for forbidden in [
@@ -3077,6 +3084,20 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
         non_comment_lines(app_policy_sync_body).contains("ImeEvent::InitialAppPolicyEstablished"),
         "sync_initial_app_policy の唯一の dispatch は \
          ImeEvent::InitialAppPolicyEstablished であること"
+    );
+
+    // BUG-148/ADR-186: `sync_initial_focus_hwnd` も dispatch_event ちょうど1件、
+    // `InitialFocusHwndEstablished` のみであること。
+    let focus_hwnd_sync_body = extract_fn_body(&content, "fn sync_initial_focus_hwnd");
+    assert_eq!(
+        count_real_calls(focus_hwnd_sync_body, "dispatch_event("),
+        1,
+        "sync_initial_focus_hwnd の dispatch_event はちょうど1件（current_focus 初期化のみ）"
+    );
+    assert!(
+        non_comment_lines(focus_hwnd_sync_body).contains("ImeEvent::InitialFocusHwndEstablished"),
+        "sync_initial_focus_hwnd の唯一の dispatch は \
+         ImeEvent::InitialFocusHwndEstablished であること"
     );
 
     // `establish_initial_focus_scope` は `sync_initial_app_policy` をちょうど1回、
@@ -3336,6 +3357,55 @@ fn initial_app_policy_event_only_touches_app_policy() {
                 count, expected_count,
                 "src/{rel} 内の {needle} の出現数が想定と異なります(期待: \
                  {expected_count}, 実際: {count})。ADR-134 D1c 参照。"
+            );
+        }
+    }
+}
+
+/// BUG-148/ADR-186: `ImeEvent::InitialFocusHwndEstablished` は bootstrap 専用であり、
+/// dispatch 元は `sync_initial_focus_hwnd` の1箇所だけ。reducer 側のアームは
+/// `self.current_focus = Some(hwnd)`（current_focus 1フィールドの差し替え）しか行わない。
+///
+/// `initial_app_policy_event_only_touches_app_policy` と同じ構造の監視テスト。
+/// アーム本体が current_focus 以外に触れないことは
+/// `state::ime_model::tests::initial_focus_hwnd_established_touches_only_current_focus`
+/// が実行時に固定し、ここでは「増えていないこと」だけを見る。
+#[test]
+fn initial_focus_hwnd_event_only_touches_current_focus() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = Path::new(manifest_dir).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    let checks: &[(&str, &[(&str, usize)])] = &[(
+        "InitialFocusHwndEstablished",
+        &[
+            ("runtime/focus_tracking.rs", 1),
+            ("state/ime_model.rs", 1),
+            ("state/ime_event.rs", 1),
+            // journal.rs::ime_event_kind_str の判別子文字列（belief には触れない）。
+            // matchアームと戻り値の文字列リテラルの両方で現れるため2。
+            ("journal.rs", 2),
+        ],
+    )];
+    for path in &files {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let content = fs::read_to_string(path).unwrap();
+        let production = non_comment_lines(production_code_only(&content));
+        for (needle, expected) in checks {
+            let count = production.matches(needle).count();
+            let expected_count = expected
+                .iter()
+                .find(|(f, _)| *f == rel)
+                .map_or(0, |(_, n)| *n);
+            assert_eq!(
+                count, expected_count,
+                "src/{rel} 内の {needle} の出現数が想定と異なります(期待: \
+                 {expected_count}, 実際: {count})。BUG-148/ADR-186 参照。"
             );
         }
     }

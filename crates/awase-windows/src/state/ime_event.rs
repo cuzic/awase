@@ -531,6 +531,21 @@ pub enum ImeEvent {
     /// が固定）を持ち、他の書き込みを一切混ぜてはならないため。
     InitialAppPolicyEstablished { profile: ImePolicyProfile },
 
+    /// 起動直後の初回フォーカス確立時、`current_focus` を bootstrap で確立した
+    /// 前面 hwnd に設定する（BUG-148、ADR-186）。`establish_initial_focus_scope` からのみ
+    /// dispatch される。
+    ///
+    /// `ImeModel::current_focus` の書き込み口は従来 `FocusChanged`（プロセス変更時のみ）
+    /// しかなかった。起動時に既に対象アプリが前面にあると、最初のプロセス切替まで
+    /// `None` のままになり、`record_explicit_intent`（`current_focus()` が `None` だと
+    /// 何もしない）が空振り→`issue_open_warrant` Step 1 が外れ、委譲 SetOpen が全て
+    /// `Unwarranted` になってキーが飲み込まれる。
+    ///
+    /// **`current_focus` 以外の一切のフィールドに触れない**（belief を書かない）。
+    /// `InitialFocusFenceEstablished`/`InitialAppPolicyEstablished` と同じ理由で
+    /// 別イベントにする——あちらは1フィールドだけの差し替えという不変条件を持つ。
+    InitialFocusHwndEstablished { hwnd: HwndId },
+
     // 旧 ChordStarted は 2026-07-06 到達不能パス監査 B2 で撤去 — production の
     // dispatch サイトがなく（chord 開始は ImeApplyRequested { target:false,
     // ctrl_held:true } の内部で行われる）、golden テストだけが生かしていた。

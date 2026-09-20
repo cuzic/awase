@@ -1,0 +1,31 @@
+# run.sh が使う clipwire ターゲット(~/.config/clipwire/targets.toml へ追記して、Windows側で承認する)。
+# dir / パスは環境に合わせて書き換えること。
+
+# 1. スパイクを --auto で起動し、その起動時刻(UTC)を C:/Users/cuzic/e2e-since.txt に書く。
+[targets.e2e-run]
+dir = 'C:\Users\cuzic\scoop\persist\msys2\home\cuzic\awase-spike\target\debug\examples'
+script = """
+run_ok(["taskkill", "/f", "/im", "ime_key_matrix_spike.exe"]);
+run_ok(["powershell", "-NonInteractive", "-Command", "Set-Content C:/Users/cuzic/e2e-since.txt ((Get-Date).ToUniversalTime().ToString('HH:mm:ss')); Move-Item -Force ime_key_matrix_spike.log ime_key_matrix_spike.prev-e2e.log -ErrorAction SilentlyContinue; Start-Process -FilePath ./ime_key_matrix_spike.exe -ArgumentList '--auto'; Start-Sleep -Seconds 2; 'spike procs: ' + (Get-Process ime_key_matrix_spike -ErrorAction SilentlyContinue | Measure-Object).Count"]);
+"""
+
+# 2. awase のデバッグログから、上の起動時刻以降の必要な行だけを抜粋して出力する。
+[targets.e2e-fetch-awase]
+dir = 'C:\Users\cuzic\scoop\persist\msys2\home\cuzic\awase'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "[Console]::OutputEncoding=[Text.Encoding]::UTF8; $t=(Get-Content C:/Users/cuzic/e2e-since.txt).Trim(); Get-Content target/debug/awase.log -Encoding utf8 -ReadCount 0 | ForEach-Object { $_ } | Where-Object { $_.Length -gt 30 -and $_.Substring(11,8) -ge $t -and ($_ -match 'Engine (de)?activated|IME open axis delegated|outcome=Unwarranted') } | ForEach-Object { $_.Substring(0,[Math]::Min(260,$_.Length)) }"]);
+"""
+
+# 3. スパイクのログ(自動実行の記録)を出力する。
+[targets.e2e-fetch-spike]
+dir = 'C:\Users\cuzic\scoop\persist\msys2\home\cuzic\awase-spike\target\debug\examples'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "[Console]::OutputEncoding=[Text.Encoding]::UTF8; if (Test-Path ime_key_matrix_spike.log) { Get-Content ime_key_matrix_spike.log -Encoding utf8 } else { 'no log' }"]);
+"""
+
+# 4. 実行前チェック: デスクトップがロックされていないか、前面ウィンドウは何かを出力する(ロック中は注入が効かない)。
+[targets.e2e-diag-desktop]
+dir = 'C:\Users\cuzic'
+script = """
+run_ok(["powershell", "-NonInteractive", "-Command", "'LogonUI: ' + (Get-Process LogonUI -ErrorAction SilentlyContinue | Measure-Object).Count; Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class FG { [DllImport(\\\"user32.dll\\\")] public static extern IntPtr GetForegroundWindow(); [DllImport(\\\"user32.dll\\\")] public static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n); [DllImport(\\\"user32.dll\\\")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p); }'; $h=[FG]::GetForegroundWindow(); $sb=New-Object System.Text.StringBuilder 256; [void][FG]::GetWindowText($h,$sb,256); $p=0; [void][FG]::GetWindowThreadProcessId($h,[ref]$p); 'foreground: hwnd=' + $h + ' title=' + $sb.ToString() + ' pid=' + $p + ' proc=' + (Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName"]);
+"""

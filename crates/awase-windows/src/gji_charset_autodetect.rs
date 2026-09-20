@@ -287,10 +287,19 @@ pub(crate) fn classify_mode_key_ime_action(
     // ＝割り当てなし」がGJIの実際の意味論であり、他プリセットの静的
     // 知識を借用する根拠が無いため、上のCUSTOM専用分岐のまま`None`を
     // 返す）。
-    if let Some(table) = &raw.custom_keymap_table {
-        let keys = awase_gji_config::keymap::extract_ime_keys(table);
-        if let Some(found) = classify_vk_in_ime_keys(&keys, key.vk_name()) {
-            return Some(found);
+    // ADR-186(実機スパイク、2026-09-20): `session_keymap == ATOK`では、`config1.db`に残る
+    // 古い`custom_keymap_table`は**GJIに使われない**。実機(ATOK)で、表に
+    // `DirectInput\tHenkan\tIMEOn`/`Precomposition\tHenkan\tCompositionModeHiragana`が残って
+    // いても、変換は`atok.tsv`どおり開閉トグル(ON中→OFF)として動いた(`docs/adr/186-measurements/`)。
+    // 表を優先するとHenkanが`On`(冪等・belief追随のみ・生キー素通し)と誤分類され、GJIの実トグル
+    // とbeliefが逆になる(Muhenkanは表に行が無くATOKの`Toggle`になり非対称)。ATOKでは表を読まず
+    // 下のプリセット分岐へ進む。MSIME等はADR-174の実機根拠があるため従来どおり表を優先する。
+    if raw.session_keymap != Some(awase_gji_config::SESSION_KEYMAP_ATOK) {
+        if let Some(table) = &raw.custom_keymap_table {
+            let keys = awase_gji_config::keymap::extract_ime_keys(table);
+            if let Some(found) = classify_vk_in_ime_keys(&keys, key.vk_name()) {
+                return Some(found);
+            }
         }
     }
     match raw.session_keymap {
@@ -1049,6 +1058,40 @@ mod tests {
         // 無関係なキーの判定を壊さないことの固定。
         assert_eq!(
             classify_mode_key_ime_action(ModeKeyCandidate::Hiragana, &raw),
+            Some(ImeToggleKind::On)
+        );
+    }
+
+    /// ADR-186(実機スパイク、2026-09-20): ATOKプリセットでは、`config1.db`に残る古い
+    /// `custom_keymap_table`(実機に実在した`DirectInput\tHenkan\tIMEOn`等)を読まない。
+    /// 変換・無変換ともATOKの`Toggle`(開閉トグル)になる。MSIME(ADR-174)は表を優先するまま。
+    #[test]
+    fn classify_atok_session_keymap_ignores_stale_custom_table() {
+        let table = "status\tkey\tcommand\n\
+            DirectInput\tHenkan\tIMEOn\n\
+            Precomposition\tHenkan\tCompositionModeHiragana\n\
+            Composition\tHenkan\tCompositionModeHiragana\n";
+        let atok = GjiRawConfig {
+            session_keymap: Some(awase_gji_config::SESSION_KEYMAP_ATOK),
+            custom_keymap_table: Some(table.to_string()),
+            ..GjiRawConfig::default()
+        };
+        assert_eq!(
+            classify_mode_key_ime_action(ModeKeyCandidate::Henkan, &atok),
+            Some(ImeToggleKind::Toggle)
+        );
+        assert_eq!(
+            classify_mode_key_ime_action(ModeKeyCandidate::Muhenkan, &atok),
+            Some(ImeToggleKind::Toggle)
+        );
+        // 同じ表でもMSIMEでは従来どおり表を優先する（ADR-174の回帰防止）。
+        let msime = GjiRawConfig {
+            session_keymap: Some(awase_gji_config::SESSION_KEYMAP_MSIME),
+            custom_keymap_table: Some(table.to_string()),
+            ..GjiRawConfig::default()
+        };
+        assert_eq!(
+            classify_mode_key_ime_action(ModeKeyCandidate::Henkan, &msime),
             Some(ImeToggleKind::On)
         );
     }

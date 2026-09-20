@@ -1,0 +1,136 @@
+diff --git a/crates/awase-windows/src/lib.rs b/crates/awase-windows/src/lib.rs
+index 6852286e..524bac42 100644
+--- a/crates/awase-windows/src/lib.rs
++++ b/crates/awase-windows/src/lib.rs
+@@ -289,6 +289,7 @@ pub const TIMER_IME_OFF_RESCUE: usize = 107;
+ pub const TIMER_GJI_LONG_IDLE: usize = 108;
+ /// フォーカス復帰後 resync のハード期限タイマー ID（report `01M0VGJ2M5KQHD1D9V7HAMBHNT`）
+ pub const TIMER_FOCUS_RESYNC: usize = 109;
++pub const TIMER_MODEKEY_CONV: usize = 110;
+ 
+ // ── Windows メッセージ定数 ──────────────────────────────────────────────────────
+ 
+diff --git a/crates/awase-windows/src/runtime/key_pipeline.rs b/crates/awase-windows/src/runtime/key_pipeline.rs
+index 4a5f5f83..1864e1d6 100644
+--- a/crates/awase-windows/src/runtime/key_pipeline.rs
++++ b/crates/awase-windows/src/runtime/key_pipeline.rs
+@@ -609,9 +609,44 @@ impl Runtime {
+     /// awase が一度でも warmup を行い `ImmSetConversionStatus(conv | ROMAN)` を確立した後は
+     /// ROMAN ビット変化を「ユーザーによるモード切替」として信頼できる。
+     fn kp_stage_idle_conv_check(&mut self, event: &RawKeyEvent) {
++        if matches!(event.event_type, KeyEventType::KeyDown)
++            && event.ime_relevance.is_ime_mode_key
++            && !event.injected
++        {
++            self.platform_state.gate.pending_modekey_event = Some(*event);
++            self.platform
++                .timer
++                .set(crate::TIMER_MODEKEY_CONV, std::time::Duration::from_millis(300));
++        }
+         let _ = self.kp_stage_idle_conv_check_inner(event, false, None);
+     }
+ 
++    /// E2: モードキーの後の遅延conv読み取り(ガードを無視して1回)。
++    pub(crate) fn run_modekey_conv_check(&mut self) {
++        if (self.platform_state.gate.half_width_alnum.is_guard_pending()
++            || self.platform_state.gate.half_width_alnum.is_toggle_active())
++            && self.platform_state.gate.modekey_retries < 30
++        {
++            self.platform_state.gate.modekey_retries += 1;
++            tracing::debug!(
++                "[E3] shift関連ガード中 → 100ms後に再試行 ({}回目)",
++                self.platform_state.gate.modekey_retries
++            );
++            self.platform
++                .timer
++                .set(crate::TIMER_MODEKEY_CONV, std::time::Duration::from_millis(100));
++            return;
++        }
++        self.platform_state.gate.modekey_retries = 0;
++        let Some(mut ev) = self.platform_state.gate.pending_modekey_event.take() else {
++            return;
++        };
++        tracing::debug!("[E3] 強制conv読み取りを実行");
++        ev.ime_relevance.is_ime_mode_key = false;
++        self.platform_state.gate.force_conv_check = true;
++        let _ = self.kp_stage_idle_conv_check_inner(&ev, false, None);
++    }
++
+     /// フォーカス復帰後 resync（report `01M0VGJ2M5KQHD1D9V7HAMBHNT`）のトリガー用。
+     ///
+     /// `app/mod.rs` の trigger 分岐で `RawKeyEvent::starts_focus_resync()` が true の
+@@ -663,17 +698,26 @@ impl Runtime {
+             self.close_focus_resync_gate_if_current(resync_generation);
+             return false;
+         }
+-        let output_idle_ms_at_spawn = self.platform.output_in_flight_ms();
++        let force = std::mem::take(&mut self.platform_state.gate.force_conv_check);
++        let output_idle_ms_at_spawn = if force {
++            u64::MAX
++        } else {
++            self.platform.output_in_flight_ms()
++        };
+         let now_tick_at_spawn = crate::state::TickMs(hook::current_tick_ms());
+         let explicit_action_ms_at_spawn = self.platform_state.ime.last_explicit_ime_action_ms_raw();
+-        let explicit_age = self
+-            .platform_state
+-            .ime
+-            .explicit_ime_action_age_ms(now_tick_at_spawn);
+-        let is_tsf_native = self
+-            .platform
+-            .current_app_profile()
+-            .is_effectively_tsf_native(self.platform.focus.class_name());
++        let explicit_age = if force {
++            u64::MAX
++        } else {
++            self.platform_state
++                .ime
++                .explicit_ime_action_age_ms(now_tick_at_spawn)
++        };
++        let is_tsf_native = force
++            || self
++                .platform
++                .current_app_profile()
++                .is_effectively_tsf_native(self.platform.focus.class_name());
+         if !awase::engine::should_run_idle_conv_check(
+             matches!(event.event_type, KeyEventType::KeyDown),
+             is_tsf_native,
+diff --git a/crates/awase-windows/src/runtime/message_handlers.rs b/crates/awase-windows/src/runtime/message_handlers.rs
+index af99264d..b4b7daaf 100644
+--- a/crates/awase-windows/src/runtime/message_handlers.rs
++++ b/crates/awase-windows/src/runtime/message_handlers.rs
+@@ -485,6 +485,10 @@ pub(crate) unsafe fn handle_wm_timer(
+             // async タスクをスポーン（with_app を解放してから fetch）。
+             app.spawn_ime_refresh();
+         }
++        Some(id) if id == crate::TIMER_MODEKEY_CONV => {
++            app.platform.timer.kill(crate::TIMER_MODEKEY_CONV);
++            app.run_modekey_conv_check();
++        }
+         Some(id) if id == TIMER_POWER_RESUME => {
+             app.platform.timer.kill(TIMER_POWER_RESUME);
+             tracing::info!("Power resume recovery");
+diff --git a/crates/awase-windows/src/state/platform_state.rs b/crates/awase-windows/src/state/platform_state.rs
+index 21b20136..7b08bd20 100644
+--- a/crates/awase-windows/src/state/platform_state.rs
++++ b/crates/awase-windows/src/state/platform_state.rs
+@@ -1595,6 +1595,9 @@ pub(crate) struct GateStore {
+     /// [`IDLE_CONV_CHECK_IN_FLIGHT_STALE_MS`] を超えていれば in-flight とはみなさず
+     /// 新規 spawn を許可する（完了取りこぼし時の自己回復）。
+     pub idle_conv_check_in_flight_since_ms: Option<u64>,
++    pub force_conv_check: bool,
++    pub modekey_retries: u8,
++    pub pending_modekey_event: Option<awase::types::RawKeyEvent>,
+     /// BUG-116/ADR-137 決定2: 物理 `VK_DBE_HIRAGANA` KeyDown によるひらがな復元
+     /// 注入（`kp_restore_hiragana_for_suppressed_mode_key`）が、対応する KeyUp
+     /// 前の auto-repeat KeyDown で重複発火しないようにする latch。
+@@ -1652,6 +1655,9 @@ impl GateStore {
+             sync_key_gate: SyncKeyGate::new(),
+             half_width_alnum: crate::state::half_width_alnum::HalfWidthAlnumState::default(),
+             idle_conv_check_in_flight_since_ms: None,
++            force_conv_check: false,
++            modekey_retries: 0,
++            pending_modekey_event: None,
+             kana_mode_restore_key_down: None,
+         }
+     }

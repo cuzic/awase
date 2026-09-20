@@ -159,6 +159,9 @@ impl Runtime {
         // 呼ぶこと。これより前だと `current_app_profile()` がまだ正しい
         // 値を返さない。
         self.sync_initial_app_policy(tick_ms);
+        // BUG-148/ADR-186: `current_focus` も起動時の前面 hwnd で初期化する
+        // （最初のプロセス切替まで `None` のままだと明示意図が記録されない）。
+        self.sync_initial_focus_hwnd(&classified, tick_ms);
 
         // injection_mode の再計算は呼び出し元に残す（指摘9: `on_focus_process_changed`
         // とは呼び出し順序が異なるため `enter_focus_scope` には含めない）。
@@ -258,6 +261,22 @@ impl Runtime {
         tracing::debug!("[app-policy] bootstrap initial app_policy: profile={profile:?}");
         self.platform_state.ime.dispatch_event(
             crate::state::ime_event::ImeEvent::InitialAppPolicyEstablished { profile },
+            tick_ms,
+        );
+    }
+
+    /// BUG-148/ADR-186: 起動直後の初回フォーカス確立時に `current_focus` を前面 hwnd で
+    /// 初期化する。`on_focus_process_changed` の `FocusChanged` と同じ `HwndId` の導出
+    /// （`classified.hwnd`）を使う。belief は書かない（`current_focus` のみ）。
+    fn sync_initial_focus_hwnd(
+        &mut self,
+        classified: &ClassifiedFocus,
+        tick_ms: crate::state::TickMs,
+    ) {
+        let hwnd = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);
+        tracing::debug!("[focus] bootstrap initial current_focus: {hwnd:?}");
+        self.platform_state.ime.dispatch_event(
+            crate::state::ime_event::ImeEvent::InitialFocusHwndEstablished { hwnd },
             tick_ms,
         );
     }

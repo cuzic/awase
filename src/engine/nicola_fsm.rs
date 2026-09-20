@@ -968,9 +968,13 @@ impl NicolaFsm {
     /// `reduce_active_thumb`が親指面のかなを出して親指を消費し、同じ押下がsolo tapとshiftの両方に
     /// 使われる（決定1bと同じ二重使用が2回のディスパッチに分かれる）。
     ///
-    /// `delegate_to_open_axis`（変換のTurnOn追随など）を持つキーも除外する: タイムアウト時に
-    /// belief追随/明示actuationが発火する既存の契約（ADR-092決定D、ADR-147、ADR-153）と
-    /// 数十のテストが「タイムアウトで解決」を前提にしており、送出タイミングを変えない。
+    /// `delegate_to_open_axis`（belief追随/明示actuation）を持つキーも対象にする（ADR-186）:
+    /// タイムアウトで解決した`SetOpen`は非キーボード経路（`execute_from_loop`）で実行され、
+    /// belief書き込み（`handle_engine_set_open`）・明示意図の記録・eisu resetを持つキーボード経路
+    /// （`kp_stage_post_decision`）を通らない。親指の押下が100msを超える通常のタップでは、
+    /// Toggle OFFが古い明示ON意図に対するwarrantで`Unwarranted`になり実行されず、awaseが
+    /// ONを再送していた（実機、2026-09-20）。KeyUpで解決すればキーボード経路を通るので、
+    /// 既存の処理がそのまま働く。
     /// 除外: OS修飾キー、`engine_off_solo_repeat_vk`（タイムアウトでソロ連打を数える設計。既定は
     /// `VK_INSERT`なので無変換/変換では通常は当たらないが、無変換/変換に設定するとその親指では
     /// 1cが無効になる）、専用Fnキー・ユーザー明示config（優先順位1・2、送出タイミングを保つ）。
@@ -986,13 +990,13 @@ impl NicolaFsm {
         let special = self.thumb_solo_special_handling(thumb.vk_code);
         special.dedicated_fn_key.is_none()
             && special.explicit_ime_action.is_none()
-            && special.delegate_to_open_axis.is_none()
-            && special.mode_key_config.is_some_and(|cfg| {
-                matches!(
-                    SoloTapAction::from(cfg.for_composing(composing)),
-                    SoloTapAction::Passthrough
-                )
-            })
+            && (special.delegate_to_open_axis.is_some()
+                || special.mode_key_config.is_some_and(|cfg| {
+                    matches!(
+                        SoloTapAction::from(cfg.for_composing(composing)),
+                        SoloTapAction::Passthrough
+                    )
+                }))
     }
 
     fn thumb_solo_special_handling(&self, vk_code: VkCode) -> ThumbSoloSpecialHandling {
@@ -1547,8 +1551,28 @@ impl NicolaFsm {
             && matches!(self.enter_thumb_vk, Some(vk) if vk.0 == ev.vk_code.0)
     }
 
+    /// Shift を押したまま、単独タップの委譲（`delegate_to_open_axis`）を持つ無変換/変換を押した場合は、
+    /// 保留にも委譲にも入れず素通しにすべきかを判定する（ADR-186 残る問題2）。
+    ///
+    /// GJI(ATOK)の Shift+無変換/変換 は「かな⇔半角英数」のトグルで、開閉トグルではない。これを単独タップ
+    /// として扱うと、KeyUp で `SetOpen(false)` が発火し、意図せず IME が OFF になる（実機で確認）。
+    /// `is_space_thumb_shift_literal` と同じ理由付け（小指シフト面と親指シフトは組み合わせない設計）。
+    /// Ctrl/Alt/Win は `bypass_reason` の `OsModifierHeld` が既に素通しにする。
+    fn is_mode_key_thumb_shift_passthrough(&self, ev: &ClassifiedEvent) -> bool {
+        self.phys.modifiers.shift
+            && ev.key_class.is_thumb()
+            && self
+                .thumb_solo_special_handling(ev.vk_code)
+                .delegate_to_open_axis
+                .is_some()
+    }
+
     /// Idle 状態でのキー到着時の意図を分類する（純粋関数）。
     fn classify_idle_intent(&self, ev: &ClassifiedEvent) -> IdleIntent {
+        // Shift+無変換/変換: GJI ではかな⇔半角英数トグル。開閉の委譲に化けさせない（ADR-186）。
+        if self.is_mode_key_thumb_shift_passthrough(ev) {
+            return IdleIntent::PassThrough;
+        }
         // Shift+Space literal: 明示的なスペース入力のエスケープハッチ（最優先）。
         if self.is_space_thumb_shift_literal(ev) {
             return IdleIntent::PassThrough;

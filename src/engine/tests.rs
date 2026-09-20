@@ -7301,7 +7301,7 @@ mod engine_integration_tests {
             "IME effect must not fire before solo tap is confirmed"
         );
 
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Ime(ImeEffect::SetOpen {
@@ -7316,6 +7316,67 @@ mod engine_integration_tests {
                     if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
             )),
             "raw VK_NONCONVERT must not be sent when delegated to open axis, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// ADR-186: `delegate_to_open_axis`を持つ無変換/変換の単独タップは、タイムアウトでは解決せず
+    /// （`SetOpen`を出さない）、親指KeyUpで**1回だけ**解決する。タイムアウトで解決した`SetOpen`は
+    /// キーボード経路（belief書き込み・明示意図の記録・eisu reset）を通らず、実機でToggle OFFが
+    /// `Unwarranted`になって実行されなかった（2026-09-20）。
+    #[test]
+    fn delegate_to_open_axis_solo_tap_resolves_at_key_up_not_at_timeout() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
+
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        // しきい値超過のタイムアウトでは単独確定しない（SetOpenも生キー送出も出さない）。
+        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "timeout must not resolve the delegate solo tap, got {:?}",
+            effects_of(&d)
+        );
+        // 親指KeyUpで1回だけ解決する。
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(300).build(), &ime_on_ctx());
+        let set_opens: Vec<_> = effects_of(&d)
+            .into_iter()
+            .filter(|e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })))
+            .collect();
+        assert_eq!(
+            set_opens.len(),
+            1,
+            "KeyUp must resolve the delegate solo tap exactly once, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// ADR-186 残る問題2: Shift を押したままの無変換/変換は、GJI(ATOK)では「かな⇔半角英数」のトグルで
+    /// あって開閉トグルではない（実機、`186-measurements/`）。単独タップとして`delegate_to_open_axis`
+    /// （→SetOpen(false)）を発火させると、IMEが意図せずOFFになる（実機で確認）。Shift+Space/Enter の
+    /// literal と同じく、Shift 押下中は保留に入れず素通しにする。Shiftなしなら従来どおり委譲する。
+    #[test]
+    fn delegate_to_open_axis_not_fired_when_shift_held() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
+
+        let shift_ctx = InputContext {
+            modifiers: ModifierState {
+                shift: true,
+                ..ime_on_ctx().modifiers
+            },
+            ..ime_on_ctx()
+        };
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &shift_ctx);
+        assert!(
+            !d.is_consumed(),
+            "Shift+無変換は保留に入れず素通しにするべき, got {:?}",
+            effects_of(&d)
+        );
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(300).build(), &shift_ctx);
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "Shift+無変換のKeyUpでSetOpenを発火してはならない, got {:?}",
             effects_of(&d)
         );
     }
@@ -7393,7 +7454,7 @@ mod engine_integration_tests {
         engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(
             has_effect(&d, |e| matches!(
                 e,
@@ -7439,7 +7500,7 @@ mod engine_integration_tests {
         engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d1 = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d1 = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert_eq!(
             count_set_open_effects(&d1),
             1,
@@ -7533,7 +7594,7 @@ mod engine_integration_tests {
             "IME effect must not fire before solo tap is confirmed"
         );
 
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_CONVERT).at(200).build(), &ime_on_ctx());
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Ime(ImeEffect::SetOpen {
@@ -7914,7 +7975,7 @@ mod engine_integration_tests {
         engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOn));
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(
             has_follow_only_set_open(&d, true),
             "TurnOn delegate must defer to user passthrough with belief follow, got {:?}",
@@ -7939,7 +8000,7 @@ mod engine_integration_tests {
         engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(
             has_follow_only_set_open(&d, false),
             "TurnOff delegate must defer to user passthrough with belief follow, got {:?}",
@@ -7964,7 +8025,7 @@ mod engine_integration_tests {
         engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(
             has_effect(&d, |e| matches!(
                 e,
@@ -7996,7 +8057,7 @@ mod engine_integration_tests {
         engine.set_henkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOn));
 
         let _ = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_CONVERT).at(200).build(), &ime_on_ctx());
         assert!(
             has_follow_only_set_open(&d, true),
             "TurnOn delegate must defer to user passthrough with belief follow (henkan), got {:?}",
@@ -8019,7 +8080,7 @@ mod engine_integration_tests {
         engine.set_henkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
 
         let _ = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_CONVERT).at(200).build(), &ime_on_ctx());
         assert!(
             has_follow_only_set_open(&d, false),
             "TurnOff delegate must defer to user passthrough with belief follow (henkan), got {:?}",
@@ -8042,7 +8103,7 @@ mod engine_integration_tests {
         engine.set_henkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
 
         let _ = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_CONVERT).at(200).build(), &ime_on_ctx());
         assert!(
             has_effect(&d, |e| matches!(
                 e,
@@ -8084,7 +8145,7 @@ mod engine_integration_tests {
         engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOn));
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(
             has_follow_only_set_open(&d, true),
             "TurnOn delegate must defer when idle side is Passthrough even in the \
