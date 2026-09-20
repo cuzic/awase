@@ -91,6 +91,9 @@ jobs:
           if ($cfg -match 'gji_thumb_key_ime_toggle *= *(true|false)') { $cfg = $cfg -replace 'gji_thumb_key_ime_toggle *= *(true|false)','gji_thumb_key_ime_toggle = true' }
           else { $cfg = $cfg -replace '(?m)^\[general\]\s*$', "[general]`r`ngji_thumb_key_ime_toggle = true" }
           [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
+          # CIランナーは初回のクロスプロセスIMMプローブが遅く(実測22ms)、awase がスパイク窓を「IMM不可」と誤学習して
+          # conv を読まなくなる(Engine が半角英数に追従しない。run 35482719494)。学習済みキャッシュを事前投入して防ぐ。
+          [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"ime_key_matrix_spike.exe`"]`r`nEdit = `"works`"`r`nRICHEDIT50W = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))
           $env:RUST_LOG = 'debug'
           $env:AWASE_TEST_INJECTION = '1'
           Start-Process -FilePath "$PWD\dist\awase.exe" -WorkingDirectory "$PWD\dist" -RedirectStandardError "$PWD\awase-stderr.log" -RedirectStandardOutput "$PWD\awase-stdout.log"
