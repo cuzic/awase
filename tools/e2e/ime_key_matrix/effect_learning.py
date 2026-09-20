@@ -250,12 +250,17 @@ def eval_spec(paths):
                 belief = q if q is not None else a400
 
     def acc(d, m):
-        ok, ng = d[(m, "ok")], d[(m, "ng")]
-        return f"{ok}/{ok + ng}={ok / max(ok + ng, 1):.1%}"
+        # 分母は全押下で共通にする(学習表の未学習セルは誤答扱い)。既知セルだけの正答率は別に示す。
+        ok, ng, un = d[(m, "ok")], d[(m, "ng")], d[(m, "unseen")]
+        tot = ok + ng + un
+        return f"{ok}/{tot}={ok / max(tot, 1):.1%}"
 
     n = sum(len(r) for r in runs)
-    print(f"押下{n}件  一段: 仕様モデル {acc(one, 'spec')} / 学習表(他ラン学習) {acc(one, 'learned')} 未学習{one[('learned', 'unseen')]}")
-    print(f"        開ループ: 仕様モデル {acc(loop, 'spec')} / 学習表 {acc(loop, 'learned')}")
+    kn = one[("learned", "ok")] + one[("learned", "ng")]
+    print(f"押下{n}件  一段(共通分母): 仕様モデル {acc(one, 'spec')} / 学習表(他ラン学習、未学習は誤答) {acc(one, 'learned')}"
+          f"  [学習表の既知セルのみ {one[('learned', 'ok')]}/{kn}={one[('learned', 'ok')] / max(kn, 1):.1%}, 未学習{one[('learned', 'unseen')]}]")
+    print(f"        開ループ: 仕様モデル {acc(loop, 'spec')} / 学習表 {acc(loop, 'learned')}"
+          "  (★連鎖の再同期の回数に強く依存し、条件間の比較には使えない。1手の誤りの連鎖の脆さを見るだけ)")
 
 
 def main(paths):
