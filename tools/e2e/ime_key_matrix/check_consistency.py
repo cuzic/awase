@@ -8,7 +8,8 @@ Engine の状態は、スパイクが各押下の700ms後に打つ `k` を awase
 `PassThrough` なら Engine OFF(そのまま入力される)、それ以外(Consume 等)なら Engine ON(NICOLA変換の対象)。
 「Engine activated/deactivated」のログは、delegate経由のOFFでは出ないため状態の根拠にしない。
 
-使い方: check_consistency.py <スパイク(--walk)のlog> <awaseのフルデバッグlog(RUST_LOG=debug)>
+使い方: check_consistency.py [--real-only] <スパイク(--walk)のlog> <awaseのフルデバッグlog(RUST_LOG=debug)>
+--real-only: Engine は見ず、実IMEの推移だけを出す(awase を起動しない対照実験用、常に終了コード0/INVALIDのみ3)
 終了コード: 0=全手順で追随 / 1=追随しない手順あり / 3=実行中にフォーカスが外れた(INVALID) / 2=使い方の誤り
 """
 import re
@@ -66,11 +67,13 @@ def engine_after(probes, press):
 
 
 def main():
+    real_only = "--real-only" in sys.argv
+    sys.argv = [a for a in sys.argv if a != "--real-only"]
     if len(sys.argv) != 3:
         print(__doc__)
         return 2
     steps, invalid = parse_spike(sys.argv[1])
-    probes, unwarranted = parse_engine(sys.argv[2])
+    probes, unwarranted = parse_engine(sys.argv[2]) if not real_only else ([], 0)
     if invalid:
         print(f"INVALID: 実行中にフォーカスが外れた({invalid}回)。この回は判定に使わない")
         return 3
@@ -78,6 +81,13 @@ def main():
         print("FAIL: 手順の記録が1件もない(--walk が動かなかった)")
         return 1
     total = steps[0]["total"]
+    if real_only:
+        print(f"{'STEP':>4} {'押下':<8} 実IME(+1500ms)")
+        for st in steps:
+            r = f"open={st['open']} conv=0x{st['conv']:02X}" if "open" in st else "記録なし"
+            print(f"{st['n']:>4} {st['name']:<8} {r}")
+        print("結果: 対照実験(awase なし)")
+        return 0
     fails = 0
     print(f"{'STEP':>4} {'押下':<8} {'実IME(+1500ms)':<18} {'期待Engine':<10} {'実Engine':<8} 判定")
     for st in steps:

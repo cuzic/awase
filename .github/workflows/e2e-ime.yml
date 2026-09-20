@@ -48,9 +48,9 @@ jobs:
           # expect: pass=全回PASS / fail=撤去で壊れる / observe=結果を表に出すだけ(期待が未確定の観測用)
           # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME)
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
-          def cfg(name, expect, mutator='', args='', toggle='true', keymap=1, custom_table='false', check='expect', bin=None, ime='gji'):
+          def cfg(name, expect, mutator='', args='', toggle='true', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true'):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args, toggle=toggle,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase)
           configs = [
             # --- 撤去実験(ATOK、実機E1〜E7bと同じ) ---
             cfg('baseline', 'pass'),
@@ -71,6 +71,9 @@ jobs:
             cfg('msime-native', 'observe', check='consistency', args='--walk --msime', toggle='false', ime='msime'),
             cfg('msime-native-henkan', 'observe', check='consistency', args='--walk --msime --key=henkan', toggle='false', ime='msime'),
             cfg('msime-native-optin', 'observe', check='consistency', args='--walk --msime', toggle='true', ime='msime'),
+            # 対照実験: awase を起動せず、同じキー列で実IMEだけを見る(実IMEの推移がawaseのせいかCI環境の癖かを分ける)
+            cfg('msime-native-noawase', 'observe', check='consistency', args='--walk --msime', ime='msime', awase='false'),
+            cfg('atok-noawase', 'observe', check='consistency', args='--walk', awase='false'),
             cfg('msime-stale-table', 'observe', check='consistency', args='--walk --key=henkan', toggle='false', keymap=2, custom_table='true'),
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
@@ -243,7 +246,9 @@ jobs:
             Start-Sleep -Milliseconds 500
             if ((Test-Path ime_key_matrix_spike.log) -and (Select-String -Path ime_key_matrix_spike.log -Pattern 'ROUND 2/2' -Quiet)) { break }
           }
-          Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
+          if ('${{ matrix.cfg.awase }}' -ne 'false') {
+            Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
+          }
           $deadline = (Get-Date).AddSeconds(240)
           while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 2
@@ -255,7 +260,9 @@ jobs:
           $env:PYTHONUTF8 = '1'
           # 判定は summary ジョブで集計する。ここでは終了コード(0=PASS, 1=FAIL, 3=INVALID)を記録して成功で終える。
           if ('${{ matrix.cfg.check }}' -eq 'consistency') {
-            python tools\e2e\ime_key_matrix\check_consistency.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
+            $chkArgs = @()
+            if ('${{ matrix.cfg.awase }}' -eq 'false') { $chkArgs += '--real-only' }
+            python tools\e2e\ime_key_matrix\check_consistency.py @chkArgs dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } else {
             python tools\e2e\ime_key_matrix\check.py dist\ime_key_matrix_spike.log awase-filtered.log | Tee-Object -FilePath result.txt
           }
