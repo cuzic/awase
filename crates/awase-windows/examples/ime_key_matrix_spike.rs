@@ -54,7 +54,7 @@ use windows::Win32::UI::Input::Ime::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, GetFocus, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY,
+    KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, VIRTUAL_KEY,
 };
 use windows::Win32::UI::TextServices::{
     CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfCompartmentMgr,
@@ -238,6 +238,8 @@ thread_local! {
     static HOLD_MS_INJ: RefCell<u64> = const { RefCell::new(80) };
     /// `--walk`: SCRIPT の代わりに WALK(前提状態なしの固定キー列)を使う。
     static WALK_MODE: RefCell<bool> = const { RefCell::new(false) };
+    /// `--vkprobe`: 未知のキーも記録する(スキャンコードだけ注入したとき、OSがどのVKに変換するかを見る)。
+    static VKPROBE_MODE: RefCell<bool> = const { RefCell::new(false) };
     /// `--key=henkan`: 手順の「無変換」を「変換」(0x1C)に置き換える。
     static TOGGLE_VK: RefCell<u32> = const { RefCell::new(0x1D) };
     /// 全手順完了後、この時刻(now_ms)にウィンドウを閉じて終了する(0=予約なし)。
@@ -382,7 +384,9 @@ fn scan_for(vk: u32) -> u16 {
     match vk {
         0x1D => 0x7B,
         0x1C => 0x79,
-        0xF2 => 0x70,
+        0xF2 | 0x15 | 0xF1 | 0xF5 | 0xF6 => 0x70,
+        0xF3 | 0xF4 | 0x19 => 0x29,
+        0xF0 => 0x3A,
         0x4B => 0x25,
         0x1B => 0x01,
         _ => 0,
@@ -390,18 +394,31 @@ fn scan_for(vk: u32) -> u16 {
 }
 
 /// `SendInput` で1イベントを注入する（`AUTO_MARKER` 付き）。
+/// `--vkprobe` の候補の符号化: `SCAN_ONLY | scan` はスキャンコードだけ(wVk=0)を注入し、OSのキーボードレイアウトに
+/// VKを決めさせる。`NOSCAN | vk` はVKだけ(wScan=0)を注入する。
+const SCAN_ONLY: u32 = 0x1_0000;
+const NOSCAN: u32 = 0x2_0000;
+
 fn send_key(vk: u32, down: bool) {
+    let up = if down {
+        KEYBD_EVENT_FLAGS(0)
+    } else {
+        KEYEVENTF_KEYUP
+    };
+    let (w_vk, w_scan, flags) = if vk & SCAN_ONLY != 0 {
+        (0, (vk & 0xFF) as u16, KEYEVENTF_SCANCODE | up)
+    } else if vk & NOSCAN != 0 {
+        ((vk & 0xFFFF) as u16, 0, up)
+    } else {
+        (u16::try_from(vk).unwrap_or(0), scan_for(vk), up)
+    };
     let input = INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
-                wVk: VIRTUAL_KEY(u16::try_from(vk).unwrap_or(0)),
-                wScan: scan_for(vk),
-                dwFlags: if down {
-                    KEYBD_EVENT_FLAGS(0)
-                } else {
-                    KEYEVENTF_KEYUP
-                },
+                wVk: VIRTUAL_KEY(w_vk),
+                wScan: w_scan,
+                dwFlags: flags,
                 time: 0,
                 dwExtraInfo: AUTO_MARKER,
             },
@@ -583,6 +600,27 @@ const WALK: [(&str, u32, bool, &str, St); 12] = [
     ("無変換", 0x1D, false, "Engine は実IMEに追随", St::Any),
     ("変換", 0x1C, false, "Engine は実IMEに追随", St::Any),
     ("ひらがなキー", 0xF2, false, "Engine は実IMEに追随", St::Any),
+];
+
+/// `--vkprobe` の候補。`SCAN_ONLY | scan` = スキャンコードだけ、`NOSCAN | vk` = VKだけ、素の値 = VK+標準スキャン。
+const VKPROBE_CANDIDATES: [u32; 17] = [
+    SCAN_ONLY | 0x70, // ひらがな(カタカナひらがなローマ字)キーの物理スキャンコード
+    0x15,             // VK_KANA
+    0xF1,             // VK_DBE_KATAKANA
+    0xF2,             // VK_DBE_HIRAGANA
+    NOSCAN | 0xF2,    // VK_DBE_HIRAGANA、スキャンコード0
+    0xF5,             // VK_DBE_ROMAN
+    0xF6,             // VK_DBE_NOROMAN
+    SCAN_ONLY | 0x29, // 半角/全角の物理スキャンコード
+    0xF3,             // VK_DBE_SBCSCHAR
+    0xF4,             // VK_DBE_DBCSCHAR
+    0x19,             // VK_KANJI
+    SCAN_ONLY | 0x3A, // 英数の物理スキャンコード
+    0xF0,             // VK_DBE_ALPHANUMERIC
+    NOSCAN | 0x16,    // VK_IME_ON
+    SCAN_ONLY | 0x79, // 変換の物理スキャンコード
+    SCAN_ONLY | 0x7B, // 無変換の物理スキャンコード
+    0x1C,             // VK_CONVERT
 ];
 
 /// 現在の手順表(`--walk` なら WALK、なければ SCRIPT)。
@@ -948,7 +986,9 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
                 // Ctrl+Shift+F12: 現在のステップをスキップ（そのキーが無い場合など）。
                 if vk == 0x7B && ctrl && shift {
                     SKIP_REQ.with(|s| *s.borrow_mut() = true);
-                } else if let Some(name) = key_name(vk) {
+                } else if let Some(name) = key_name(vk)
+                    .or_else(|| VKPROBE_MODE.with(|m| *m.borrow()).then_some("不明キー"))
+                {
                     let mods = match (ctrl, shift) {
                         (true, true) => "Ctrl+Shift+",
                         (true, false) => "Ctrl+",
@@ -1456,6 +1496,23 @@ fn run() -> WinResult<()> {
     // `--walk`: --auto の手順を、前提状態なしの固定キー列(WALK)にする。
     if std::env::args().any(|a| a == "--walk") {
         WALK_MODE.with(|w| *w.borrow_mut() = true);
+    }
+    // `--vkprobe`: ひらがな系キーの「正しいVK」を調べる。候補キーごとに、IME OFF→候補、IME ON→候補 を押し、
+    // 実IMEの変化を記録する(スキャンコードだけの注入で、OSがどのVKに変換するかも見る)。
+    if std::env::args().any(|a| a == "--vkprobe") {
+        AUTO_MODE.with(|m| *m.borrow_mut() = true);
+        SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
+        VKPROBE_MODE.with(|m| *m.borrow_mut() = true);
+        STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
+        SCRIPT_IDX.with(|i| *i.borrow_mut() = script().len());
+        let base = now_ms() + 9000;
+        for (i, cand) in VKPROBE_CANDIDATES.iter().enumerate() {
+            let t = base + (i as u64) * 14000;
+            queue_press(t, 0x1A);
+            queue_press(t + 3500, *cand);
+            queue_press(t + 7000, 0x16);
+            queue_press(t + 10500, *cand);
+        }
     }
     // `--auto`: --script の手順を、スパイク自身が SendInput で注入して自動実行する。
     if std::env::args().any(|a| a == "--auto") {

@@ -74,6 +74,10 @@ jobs:
             # 対照実験: awase を起動せず、同じキー列で実IMEだけを見る(実IMEの推移がawaseのせいかCI環境の癖かを分ける)
             cfg('msime-native-noawase', 'observe', check='consistency', args='--walk --msime', ime='msime', awase='false'),
             cfg('atok-noawase', 'observe', check='consistency', args='--walk', awase='false'),
+            # --- ひらがなキーの正しいVK調べ(--vkprobe、awaseなし) ---
+            cfg('probe-vk-gji-atok', 'observe', check='vkprobe', args='--vkprobe', awase='false'),
+            cfg('probe-vk-gji-msime', 'observe', check='vkprobe', args='--vkprobe', keymap=2, awase='false'),
+            cfg('probe-vk-msime-native', 'observe', check='vkprobe', args='--vkprobe --msime', ime='msime', awase='false'),
             cfg('msime-stale-table', 'pass', check='consistency', args='--walk --key=henkan', toggle='false', keymap=2, custom_table='true'),
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
@@ -249,7 +253,7 @@ jobs:
           if ('${{ matrix.cfg.awase }}' -ne 'false') {
             Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
           }
-          $deadline = (Get-Date).AddSeconds(240)
+          $deadline = (Get-Date).AddSeconds(330)
           while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 2
             if ((Test-Path ime_key_matrix_spike.log) -and (Select-String -Path ime_key_matrix_spike.log -Pattern '全手順完了' -Quiet)) { break }
@@ -259,7 +263,9 @@ jobs:
           if (Test-Path dist\awase.log) { Get-Content dist\awase.log -Encoding utf8 | Where-Object { $_ -match 'Engine (de)?activated|IME open axis delegated|outcome=Unwarranted' } | Set-Content awase-filtered.log -Encoding utf8 } else { New-Item -ItemType File -Force awase-filtered.log | Out-Null }
           $env:PYTHONUTF8 = '1'
           # 判定は summary ジョブで集計する。ここでは終了コード(0=PASS, 1=FAIL, 3=INVALID)を記録して成功で終える。
-          if ('${{ matrix.cfg.check }}' -eq 'consistency') {
+          if ('${{ matrix.cfg.check }}' -eq 'vkprobe') {
+            python tools\e2e\ime_key_matrix\vkprobe_report.py dist\ime_key_matrix_spike.log | Tee-Object -FilePath result.txt
+          } elseif ('${{ matrix.cfg.check }}' -eq 'consistency') {
             $chkArgs = @()
             if ('${{ matrix.cfg.awase }}' -eq 'false') { $chkArgs += '--real-only' }
             python tools\e2e\ime_key_matrix\check_consistency.py @chkArgs dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
