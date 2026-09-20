@@ -8,10 +8,10 @@ summary: |-
   タイムアウトで`success=false`、(2)`imm_cross_write`は事後読み取りが`None`(不明)でも`Failed`にする、(3)`ImmCross × MsIme`のチェーンは
   `[ImmCross, KanjiToggle]`(ADR-089)で、物理F2(ImmCrossでもAllowされOSに届く)が既に開けたIMEを、awaseの非冪等なVK_KANJIが閉じる(BUG-46型の二重actuation)。
   検証: KanjiToggle撤去(a8)で各3/3 ALL PASS、MsImeDirectへ差し替え(a9)で実IMEが全手順で正しい。決定: `ImmCross × MsIme`のチェーンを
-  `[ImmCross, MsImeDirect]`にし、述語を`kind==MsIme`だけにする(同時にしか入れられない)。`KanjiToggle`は到達不能になり、ATOK等をMS-IMEと誤推定した環境の
-  「Win32 Edit × ImmCross失敗」時のフォールバックは無くなる(受容、削除は実機確認後の別ADR)。
+  `[ImmCross, MsImeDirect]`にし、述語を`kind==MsIme`だけにする(同時にしか入れられない)。`KanjiToggle`(非冪等な機構)は到達不能になるので**同じ変更で撤去する**
+  (ユーザー判断: VK_IME_ON/OFFはIME種別によらず同じ挙動で常に安全。`ImeKeyKind::KanjiToggle`=物理VK_KANJIキーの分類は別物で残す)。
 status: |-
-  **ドラフト v2(未実装)**。opus round1(Blocker2/Must-fix4/Should-fix6)を反映。CI検証済み(a8: run 35515406371、a9: run 35516320434)。実機(dragonflyg4)・ATOK未検証。
+  **ドラフト v3(未実装)**。opus round1(Blocker2/Must-fix4/Should-fix6)を反映、KanjiToggle撤去をユーザー判断で決定に追加(round2確認待ち)。CI検証済み(a8: run 35515406371、a9: run 35516320434)。実機(dragonflyg4)未検証。
 related_adr:
   - "ADR-063"
   - "ADR-089"
@@ -77,12 +77,18 @@ ADR-089自身が「`KanjiToggle`が到達するのは`ImmCross × MsIme`の1組�
    (`open_chain.rs`モジュールdoc、`chain_len=4`)ので効くのは決定2だけ。同期チェーン(`ImeController::apply`→`caps_chain_for`→`run_chain`)は
    チェーン定数を使うので決定1が要る。片方だけだと`caps_chain_matches_legacy_all_scan`(`ime_controller.rs:1006`)が落ちる(ALL走査とcapsの不一致を検出する安全網)。
    `transport.rs:386`は`can_use_imm32_cross_process()`が真の腕を先に処理する`else`内なので判定結果は変わらない(検証済み)。
-3. **`KanjiToggle`は到達不能になる。これを受容する**(削除はしない)。`ImeKindId`は`Gji`/`MsIme`の2値のみで、決定1・2の後は同期(chainに現れない)・非同期
-   (`GjiDirect`/`MsImeDirect`が必ずapplicableなので`Failed`にならず、`KanjiToggle`の腕に入らない)のどちらでも到達しない。**フォールバックが消える影響**:
-   ATOK等(`ActiveImeKind`はGJI非検出=MS-IMEと*推定*)が**Win32 Edit(Standard)でImmCrossがタイムアウトしたとき**、今日届いている`VK_KANJI`が届かなくなる。
-   ATOKが`Imm32Unavailable`/`TsfNative`のアプリを使う場合は今日既に`[MsImeDirect]`なので退行面はこの1組に限る。実機でATOK+`VK_IME_ON/OFF`を確認するまでドラフトのままにする。
-   `KanjiToggleStrategy`/`WriteMechanism::KanjiToggle`/`PostKanjiToggle`/`post_kanji_toggle_to_focused`/`architecture_guard.rs`のガードの**削除は別ADR**
-   (到達不能になったことを実機で確認した後)。この変更では**古くなるdocだけ直す**(下記)。
+3. **`WriteMechanism::KanjiToggle`(非冪等な`VK_KANJI`トグル機構)を撤去する。** 決定1・2の後は同期(chainに現れない)・非同期(`GjiDirect`/`MsImeDirect`が
+   必ずapplicableなので`Failed`にならず`KanjiToggle`の腕に入らない)のどちらでも到達しない(`ImeKindId`は`Gji`/`MsIme`の2値のみ)。到達不能のまま残すと
+   「保険に見えて実際は死んでいる」(opus round1 B1)ので、同じ変更で消す。**ユーザー判断(2026-09-20): `VK_IME_ON/OFF`はどんなIMEでも同じ挙動で、
+   `VK_KANJI`トグルの代わりに送るのは常に安全**。したがって「ATOK等をMS-IMEと誤推定した環境でフォールバックが消える」懸念(round1 B1の帰結)は採らない。
+   撤去範囲(`grep`で確認、約27ファイル): `KanjiToggleStrategy`と`KANJI_STRATEGY`/`strategy_for`の腕、`WriteMechanism::KanjiToggle`(`WriteMechanism::ALL`は4→3、
+   `may_return_failed`等の網羅)、`MechanismCommand::PostKanjiToggle`と`decide_attempt`の腕、`ime::post_kanji_toggle_to_focused`と`apply_mechanism`の腕、
+   `architecture_guard.rs`の`post_kanji_toggle_to_focused`のVK_KANJI送信回数ガード(1,1)と`raw_mechanism_write_sites_are_confined_to_chain_writers`等の件数、
+   `state/ime_profile_driver.rs`/`state/actuation_decision_record.rs`/`journal.rs`のKanjiToggle言及、goldenの`KanjiToggle`行。
+   **残すもの(別物)**: `vk.rs`の`ImeKeyKind::KanjiToggle`(物理`VK_KANJI`キーの分類、shadow-toggleの入力側)、`AppImeProfile::uses_kanji_toggle()`
+   (`platform.rs:1302`のmode-key送信スキップ判定。名前が古いだけで機構とは無関係、改名は別件)、`vk.rs`の`ImeKeyKind::KanjiToggle`を根拠にしたdoc。
+   **再生フィクスチャ**: `tests/journals/`のJSONに`WriteMechanism::KanjiToggle`が含まれていないことを実装前に確認する(含まれるなら列挙値のデシリアライズが壊れる)。
+   なお`GjiDirect`と`MsImeDirect`はどちらも`VK_IME_ON/OFF`を送る冪等キーになり、差は適用条件(GJI検出/MS-IME推定)だけになる。統合は別ADRの候補(今回はやらない)。
 4. **`imm_cross_write`の`None`=`Failed`は変えない**。`MsImeDirect`は冪等なので、不明を「開いていない」と扱っても逆転しない。`fallback_write`のdocは実装に合わせて直す。
 5. **ROMAN補完の挙動差分を受容する(実測を残す)。** `apply_mechanism`は先頭で`romaji_pre_write`を呼び、`decide_needs_romaji_pre_write`は
    `open && {ImmCross, MsImeDirect} && kind==MsIme && belief!=ObservedKana`で真。変更前のfallback(`KanjiToggle`)では偽だったが、変更後(`MsImeDirect`)は真になり、
@@ -124,9 +130,11 @@ ADR-089自身が「`KanjiToggle`が到達するのは`ImmCross × MsIme`の1組�
 - テスト/golden: `crates/awase-windows/tests/golden/ime_key_sequences.txt`(`MS-IME	Standard	async_fallback	KanjiToggle`→`MsImeDirect`、本文の「`!can_use_imm32_cross_process()`」説明、
   KanjiToggle節の「稀にしか到達しない」)、`tests/ime_key_sequence_golden.rs:211-215`(**`#![cfg(windows)]`で、Linuxのtestジョブでは0 tests。更新漏れはwindows-build CIまで気付けない**)、
   `state/key_sequence_policy.rs:205-222`の4アサーション、`state/app_ime_policy.rs`の`caps_chains_match_the_adr089_table`と定数名、`ime_controller.rs:1006`の`caps_chain_matches_legacy_all_scan`。
-- 古くなるdoc: `ime_controller.rs`冒頭(13-14/24-28行)、`KanjiToggleStrategy`のdoc、`open_chain.rs`の`fallback_write`のdoc(`:434-437`、`:446-449`、`:465-468`)、
-  `app_ime_policy.rs:60-62`、`focus/class_names.rs`の`uses_kanji_toggle`のdoc、`architecture_guard.rs`の「生きている`post_kanji_toggle_to_focused`」、
-  `transport.rs`の`plan`doc(ImmCross×F2の例外)。
+- 直すdoc: `ime_controller.rs`冒頭(13-14/24-28行、「冪等VK_DBE_*」の記述も)、`open_chain.rs`の`fallback_write`のdoc(`:434-437`、`:446-449`、`:465-468`)、
+  `app_ime_policy.rs:60-62`、`focus/class_names.rs`の`uses_kanji_toggle`のdoc、`focus/tracker.rs:204`・`runtime/key_pipeline.rs:1682-1689`・`runtime/focus_tracking.rs:1043`の
+  KanjiToggle言及、`transport.rs`の`plan`doc(ImmCross×F2の例外)。`KanjiToggleStrategy`とそのdoc、`architecture_guard.rs`の`post_kanji_toggle_to_focused`ガードは**撤去**。
+- ADR/文書: `docs/ime-control-overview.md`・`docs/windows-api-constraints.md`・`docs/app-onboarding-checklist.md`・`docs/workarounds.md`・`CLAUDE.md`・
+  `.claude/rules/fix-requires-evidence.md`のKanjiToggle言及(機構としての記述)を更新。`docs/experiments.md`は過去の実験記録なので触らない。
 - ADR-089 §2.8: 表と「入れない理由」節は**削除せず「2026-09-20、BUG-152により覆した。当時の理由は実測ではなく実装の書き写しだった」と経緯を残す**(追記済み)。
 - CI: `sc-dbe/kanji/shift-msime-native`を`observe`→`pass`、`check_consistency.py`の判定窓。
 
@@ -135,9 +143,10 @@ ADR-089自身が「`KanjiToggle`が到達するのは`ImmCross × MsIme`の1組�
 - 回帰テスト: 上記のgolden/単体テスト(`ImmCross × MsIme`のImmCross失敗後が`MsImeDirect`)。
 - CI実機E2E: 本変更のビルドで`sc-dbe/kanji/shift-msime-native`が各3/3 PASS。`sc-dbe-msime-native-noawase`との一致。
 - 実機(dragonflyg4、Microsoft IME): (a)**物理キーを伴わないopen**(engine起点)でImmCrossを失敗させ、`VK_IME_ON`だけで開くか(a9が示せなかった点)、
-  (b)決定5のレイテンシ、(c)ATOK等で`VK_IME_ON/OFF`が効くか(決定3の受容の妥当性)。
+  (b)決定5のレイテンシ、(c)`KanjiToggle`が到達しなかった既存経路(Chrome/Edge等)が撤去前後で同じ挙動か(golden)。
 
 ## 残る限界
 
 - MS-IME本体の半角/全角(0xF3/0xF4)は静的モデル(F3=OFF、F4=ON)のままで、同じVKの連続で反転しない(ADR-189が対象外にした範囲、別件)。
-- `KanjiToggle`関連コードは到達不能のまま残る(削除は別ADR)。
+- `GjiDirect`/`MsImeDirect`の統合(どちらも`VK_IME_ON/OFF`)は別ADRの候補。
+- `uses_kanji_toggle()`の名前が古い(機構撤去後は意味とずれる)。改名は別件。
