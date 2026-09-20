@@ -240,6 +240,10 @@ thread_local! {
     static WALK_MODE: RefCell<bool> = const { RefCell::new(false) };
     /// `--cold`(`--walk`と併用): 先頭のひらがなを除き、明示意図が無い状態でいきなり無変換/変換を押す手順にする。
     static COLD_MODE: RefCell<bool> = const { RefCell::new(false) };
+    /// `--resync`: ずれた状態から Ctrl+無変換→Ctrl+変換(または逆)を素早く押して、実IMEとEngineが揃うかを見る手順(RESYNC)。
+    static RESYNC_MODE: RefCell<bool> = const { RefCell::new(false) };
+    /// `--resync-gap=NNN`: リセット操作の2打の間隔 ms(1打目のキーを離してから2打目を押すまで)。
+    static RESYNC_GAP_MS: RefCell<u64> = const { RefCell::new(100) };
     /// `--vkprobe`: 未知のキーも記録する(スキャンコードだけ注入したとき、OSがどのVKに変換するかを見る)。
     static VKPROBE_MODE: RefCell<bool> = const { RefCell::new(false) };
     /// `--key=henkan`: 手順の「無変換」を「変換」(0x1C)に置き換える。
@@ -580,11 +584,95 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
         SCRIPT_IDX.with(|i| *i.borrow_mut() = si + 1);
         return;
     }
-    queue_press(now, script_vk(vk));
+    queue_step(now, vk);
     queue_press(now + 700, 0x4B); // k
     queue_press(now + 1200, 0x1B); // ESC
     AUTO_NEXT.with(|n| *n.borrow_mut() = now + 1800);
 }
+
+/// `--resync` 用の手順コード(VKではない)。RESYNC_ON = Ctrl+無変換 → Ctrl+変換(素早く、Ctrlは押したまま)。終わりはIME ON。
+/// RESYNC_OFF = Ctrl+変換 → Ctrl+無変換。終わりはIME OFF。awase の既定の ime_off(Ctrl+無変換)/ime_on(Ctrl+変換)。
+const RESYNC_ON: u32 = 0xFE01;
+const RESYNC_OFF: u32 = 0xFE02;
+
+/// 手順の「最初の押下」として、フックが手順に対応づけるキー(VK, Ctrl併用か)。
+fn step_first_key(vk: u32) -> (u32, bool) {
+    match vk {
+        RESYNC_ON => (0x1D, true),
+        RESYNC_OFF => (0x1C, true),
+        _ => (script_vk(vk), false),
+    }
+}
+
+/// 手順1件分の注入を予約する。RESYNC は Ctrl を押したまま2つのキーを間隔 `RESYNC_GAP_MS` で押す。
+fn queue_step(now: u64, vk: u32) {
+    if vk != RESYNC_ON && vk != RESYNC_OFF {
+        queue_press(now, script_vk(vk));
+        return;
+    }
+    let (first, second) = if vk == RESYNC_ON {
+        (0x1D, 0x1C)
+    } else {
+        (0x1C, 0x1D)
+    };
+    let hold = HOLD_MS_INJ.with(|h| *h.borrow());
+    let gap = RESYNC_GAP_MS.with(|g| *g.borrow());
+    let second_at = now + 15 + hold + gap;
+    AUTO_QUEUE.with(|q| q.borrow_mut().push((now, 0x11, true)));
+    queue_press(now + 15, first);
+    queue_press(second_at, second);
+    AUTO_QUEUE.with(|q| q.borrow_mut().push((second_at + hold + 15, 0x11, false)));
+}
+
+/// `--resync` の手順: ずれを起こすキー(無変換/変換)と、リセット操作を交互に押す。
+const RESYNC: [(&str, u32, bool, &str, St); 10] = [
+    ("ひらがなキー", 0xF2, false, "かなON", St::Any),
+    (
+        "無変換",
+        0x1D,
+        false,
+        "実IMEが閉じる。followが無いとEngineだけONのままずれる",
+        St::Any,
+    ),
+    (
+        "resync(ON)",
+        RESYNC_ON,
+        false,
+        "実IME ON(かな) かつ Engine ON",
+        St::Any,
+    ),
+    ("無変換", 0x1D, false, "実IMEが閉じる", St::Any),
+    (
+        "resync(OFF)",
+        RESYNC_OFF,
+        false,
+        "実IME OFF かつ Engine OFF",
+        St::Any,
+    ),
+    (
+        "変換",
+        0x1C,
+        false,
+        "実IMEが開く。followが無いとEngineだけOFFのままずれる",
+        St::Any,
+    ),
+    (
+        "resync(ON)",
+        RESYNC_ON,
+        false,
+        "実IME ON(かな) かつ Engine ON",
+        St::Any,
+    ),
+    ("無変換", 0x1D, false, "実IMEが閉じる", St::Any),
+    (
+        "resync(OFF)",
+        RESYNC_OFF,
+        false,
+        "実IME OFF かつ Engine OFF",
+        St::Any,
+    ),
+    ("ひらがなキー", 0xF2, false, "後片付け", St::Any),
+];
 
 /// `--walk` の手順: プリセット(ATOK/MS-IME等)を問わず、前提状態を要求せずに固定のキー列を押す。
 /// 各押下の +1500ms の実IME状態と awase の Engine 状態が一致するか(check_consistency.py)を見る。
@@ -627,7 +715,9 @@ const VKPROBE_CANDIDATES: [u32; 17] = [
 
 /// 現在の手順表(`--walk` なら WALK、なければ SCRIPT)。
 fn script() -> &'static [(&'static str, u32, bool, &'static str, St)] {
-    if WALK_MODE.with(|w| *w.borrow()) {
+    if RESYNC_MODE.with(|r| *r.borrow()) {
+        &RESYNC
+    } else if WALK_MODE.with(|w| *w.borrow()) {
         if COLD_MODE.with(|c| *c.borrow()) {
             &WALK[1..]
         } else {
@@ -1105,10 +1195,11 @@ fn on_timer(hwnd: HWND) {
                 let si = SCRIPT_IDX.with(|i| *i.borrow());
                 if si < script().len() && now >= HOLD_UNTIL.with(|h| *h.borrow()) {
                     let (name, vk, shift, expect, need) = script()[si];
-                    if ev.vk == script_vk(vk)
+                    let (want_vk, want_ctrl) = step_first_key(vk);
+                    if ev.vk == want_vk
                         && (need == St::Any || before_st == need)
                         && ev.shift == shift
-                        && !ev.ctrl
+                        && ev.ctrl == want_ctrl
                         && !ev.label.contains("(injected)")
                     {
                         tag = format!(
@@ -1501,6 +1592,16 @@ fn run() -> WinResult<()> {
     }
     if std::env::args().any(|a| a == "--cold") {
         COLD_MODE.with(|c| *c.borrow_mut() = true);
+    }
+    if std::env::args().any(|a| a == "--resync") {
+        RESYNC_MODE.with(|r| *r.borrow_mut() = true);
+    }
+    for a in std::env::args() {
+        if let Some(v) = a.strip_prefix("--resync-gap=") {
+            if let Ok(n) = v.parse::<u64>() {
+                RESYNC_GAP_MS.with(|g| *g.borrow_mut() = n);
+            }
+        }
     }
     // `--walk`: --auto の手順を、前提状態なしの固定キー列(WALK)にする。
     if std::env::args().any(|a| a == "--walk") {

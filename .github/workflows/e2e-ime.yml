@@ -66,6 +66,11 @@ jobs:
             # フォーカス直後(意図なし)にいきなり無変換/変換を押す(--cold=先頭のひらがなを除く)
             cfg('atok-passthrough-cold', 'pass', check='consistency', args='--walk --cold', toggle='false'),
             cfg('atok-passthrough-henkan-cold', 'pass', check='consistency', args='--walk --cold --key=henkan', toggle='false'),
+            # リセット操作(Ctrl+無変換→Ctrl+変換 / 逆)で必ず揃うか(--resync)。nofollow は followを無効化してずれを意図的に起こす
+            cfg('atok-resync', 'observe', check='resync', args='--resync', toggle='false'),
+            cfg('atok-resync-nofollow', 'observe', mutator='a7-no-follow.sh', check='resync', args='--resync', toggle='false'),
+            cfg('atok-resync-gap40', 'observe', check='resync', args='--resync --resync-gap=40', toggle='false'),
+            cfg('atok-resync-gap300', 'observe', check='resync', args='--resync --resync-gap=300', toggle='false'),
             cfg('atok-passthrough', 'pass', check='consistency', args='--walk', toggle='false'),
             cfg('atok-passthrough-henkan', 'pass', check='consistency', args='--walk --key=henkan', toggle='false'),
             cfg('msime', 'pass', check='consistency', args='--walk', toggle='false', keymap=2),
@@ -266,7 +271,9 @@ jobs:
           if (Test-Path dist\awase.log) { Get-Content dist\awase.log -Encoding utf8 | Where-Object { $_ -match 'Engine (de)?activated|IME open axis delegated|outcome=Unwarranted' } | Set-Content awase-filtered.log -Encoding utf8 } else { New-Item -ItemType File -Force awase-filtered.log | Out-Null }
           $env:PYTHONUTF8 = '1'
           # 判定は summary ジョブで集計する。ここでは終了コード(0=PASS, 1=FAIL, 3=INVALID)を記録して成功で終える。
-          if ('${{ matrix.cfg.check }}' -eq 'vkprobe') {
+          if ('${{ matrix.cfg.check }}' -eq 'resync') {
+            python tools\e2e\ime_key_matrix\check_resync.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
+          } elseif ('${{ matrix.cfg.check }}' -eq 'vkprobe') {
             python tools\e2e\ime_key_matrix\vkprobe_report.py dist\ime_key_matrix_spike.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'consistency') {
             $chkArgs = @()
