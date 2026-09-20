@@ -504,6 +504,7 @@ fn main() {
     let mut pass = 0usize;
     let mut fail = 0usize;
     let mut invalid = 0usize;
+    let mut recover = 0usize;
     for r in 1..=repeat {
         for (i, c) in CASES.iter().enumerate() {
             p.log.line(&format!("[CASE {}/{} run {r}/{repeat}] {}", i + 1, CASES.len(), c.name));
@@ -531,13 +532,25 @@ fn main() {
             } else if want_ok {
                 p.log.line("RESULT PASS");
                 pass += 1;
+            } else if {
+                // 1回目が失敗でも、2回目の試行で期待どおりになるか(=読み取りが遅れて追随したか)を記録する。
+                sleep(400);
+                let again = p.probe_logged("action後2回目");
+                if c.expect_kana {
+                    if awase { again == Class::Nicola } else { again == Class::RomajiKana }
+                } else {
+                    again == Class::Plain
+                }
+            } {
+                p.log.line(&format!("RESULT RECOVER: 1回目は{}、2回目で追随", got.label()));
+                recover += 1;
             } else {
                 p.log.line(&format!("RESULT FAIL: 期待={} 実際={}", if c.expect_kana { "かな" } else { "ka" }, got.label()));
                 fail += 1;
             }
         }
     }
-    p.log.line(&format!("SUMMARY PASS={pass} FAIL={fail} INVALID={invalid}"));
+    p.log.line(&format!("SUMMARY PASS={pass} RECOVER={recover} FAIL={fail} INVALID={invalid}"));
     p.log.line("=== 全ケース完了 ===");
     let _ = child.kill();
 }
