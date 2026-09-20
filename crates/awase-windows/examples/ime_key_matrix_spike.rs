@@ -235,6 +235,8 @@ thread_local! {
     /// `--repeat=N`: 全手順をこのプロセス内でN回繰り返す(起動・終了・ログ取得の往復を省く)。
     static REPEAT_N: RefCell<usize> = const { RefCell::new(1) };
     static REPEAT_DONE: RefCell<usize> = const { RefCell::new(0) };
+    /// `--shiftmuh`: 手順の「無変換」押下を Shift+無変換 にする(ADR-186 残る問題2の観測用)。
+    static SHIFT_MUH: RefCell<bool> = const { RefCell::new(false) };
     /// `--fast`: +1500ms の観測を省く。
     static FAST_MODE: RefCell<bool> = const { RefCell::new(false) };
     /// `--speed=K`: 手順間の待ち時間をK倍速にする(既定1=従来どおり)。
@@ -591,7 +593,19 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
         SCRIPT_IDX.with(|i| *i.borrow_mut() = si + 1);
         return;
     }
-    queue_press(now, script_vk(vk));
+    if SHIFT_MUH.with(|m| *m.borrow()) && script_vk(vk) == 0x1D {
+        // Shift を先に押し、無変換を押して離し、その後 Shift を離す(LShift = 0xA0)。
+        let hold = HOLD_MS_INJ.with(|h| *h.borrow());
+        AUTO_QUEUE.with(|q| {
+            let mut q = q.borrow_mut();
+            q.push((now, 0xA0, true));
+            q.push((now + 40, 0x1D, true));
+            q.push((now + 40 + hold, 0x1D, false));
+            q.push((now + 40 + hold + 40, 0xA0, false));
+        });
+    } else {
+        queue_press(now, script_vk(vk));
+    }
     queue_press(now + scaled(700), 0x4B); // k
     queue_press(now + scaled(1200), 0x1B); // ESC
     AUTO_NEXT.with(|n| *n.borrow_mut() = now + scaled(1800));
@@ -1054,9 +1068,10 @@ fn on_timer(hwnd: HWND) {
                 let si = SCRIPT_IDX.with(|i| *i.borrow());
                 if si < SCRIPT.len() && now >= HOLD_UNTIL.with(|h| *h.borrow()) {
                     let (name, vk, shift, expect, need) = SCRIPT[si];
+                    let shift_muh = SHIFT_MUH.with(|m| *m.borrow()) && ev.vk == 0x1D;
                     if ev.vk == script_vk(vk)
                         && before_st == need
-                        && ev.shift == shift
+                        && (ev.shift == shift || (shift_muh && ev.shift))
                         && !ev.ctrl
                         && !ev.label.contains("(injected)")
                     {
@@ -1426,6 +1441,9 @@ fn run() -> WinResult<()> {
             if let Ok(n) = v.parse::<u64>() {
                 SPEED.with(|r| *r.borrow_mut() = n.max(1));
             }
+        }
+        if a == "--shiftmuh" {
+            SHIFT_MUH.with(|m| *m.borrow_mut() = true);
         }
         if a == "--fast" {
             FAST_MODE.with(|f| *f.borrow_mut() = true);
