@@ -958,6 +958,10 @@ pub const fn caps(p: ImePolicyProfile, k: ImeKindId) -> Caps { /* match */ }
 | `TsfNative` | `Gji` | `[GjiDirect]` | `BLIND` | 200 |
 | `TsfNative` | `MsIme` | `[MsImeDirect]` | `BLIND` | 200 |
 
+> **【2026-09-20 追記・ADR-190で覆す】** 下記の理由は「当時の実装の書き写し」で、この組(`ImmCross × MsIme`)で`VK_IME_ON/OFF`が危険という実測ではなかった。
+> CI実機E2Eで、この組の`KanjiToggle`(非冪等)が、ImmCross失敗時に既に開いたIMEを閉じるバグ(BUG-152)を起こすと確認したため、
+> [ADR-190](190-msime-immcross-failure-fallback-idempotent-vk-ime-on.md)で`[ImmCross, MsImeDirect]`へ変更する(未実装、ドラフト)。
+
 **`ImmCross × MsIme` に `MsImeDirect` を入れない理由**:
 `MsImeDirectStrategy::is_applicable` の条件は
 `active_ime_kind == MicrosoftIme && !can_use_imm32_cross_process()` である
