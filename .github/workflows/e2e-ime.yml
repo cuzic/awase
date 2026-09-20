@@ -68,8 +68,8 @@ jobs:
             cfg('atok-passthrough-henkan-cold', 'pass', check='consistency', args='--walk --cold --key=henkan', toggle='false'),
             # リセット操作(Ctrl+無変換→Ctrl+変換 / 逆)で必ず揃うか(--resync)。nofollow は followを無効化してずれを意図的に起こす
             # 半角/全角(0xF3/0xF4、GJIではどちらも開閉トグル)。awaseがVKで方向を決め打つとずれる(ADR-186決定5、ADR-188)
-            cfg('msime-hz', 'fail', check='toggle', args='--hz', toggle='false', keymap=2),
-            cfg('atok-hz', 'fail', check='toggle', args='--hz', toggle='false'),
+            cfg('msime-hz', 'pass', check='toggle', args='--hz', toggle='false', keymap=2),
+            cfg('atok-hz', 'pass', check='toggle', args='--hz', toggle='false'),
             cfg('atok-resync', 'observe', check='resync', args='--resync', toggle='false'),
             cfg('atok-resync-nofollow', 'observe', mutator='a7-no-follow.sh', check='resync', args='--resync', toggle='false'),
             cfg('atok-resync-gap40', 'observe', check='resync', args='--resync --resync-gap=40', toggle='false'),
