@@ -1,0 +1,8 @@
+LogonUI: 0
+screensaver: 0
+ USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME
+>cuzic                 console             1  Active      none   2026/09/16 11:00
+
+foreground: hwnd=918192 title=1on1 管理ダッシュボード - Google Chrome pid=38700 proc=chrome
+script error: Output type incorrect: bool (expecting ())
+Error: exit code 1

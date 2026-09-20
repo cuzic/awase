@@ -272,6 +272,8 @@ fn classify(text: &str) -> Class {
 }
 
 struct Probe {
+    /// Shift+キーの押下で、キーを離してから Shift を離すまでの待ち(ms)。人は Shift を長く押す。
+    shift_tail_ms: u64,
     shared: Arc<Mutex<Shared>>,
     log: Log,
     focus_lost: bool,
@@ -287,7 +289,7 @@ impl Probe {
         sleep(hold_ms);
         send_key(vk, false);
         if shift {
-            sleep(40);
+            sleep(self.shift_tail_ms);
             send_key(0xA0, false);
         }
         self.log.line(&format!("KEY vk=0x{vk:02X}{} (auto)", if shift { " +Shift" } else { "" }));
@@ -500,7 +502,11 @@ fn main() {
     log.line(&format!("前面化: {fronted}"));
     sleep(800);
 
-    let mut p = Probe { shared, log, focus_lost: false };
+    let shift_tail_ms: u64 = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--shift-tail=").and_then(|v| v.parse().ok()))
+        .unwrap_or(40);
+    let mut p = Probe { shift_tail_ms, shared, log, focus_lost: false };
     let mut pass = 0usize;
     let mut fail = 0usize;
     let mut invalid = 0usize;
