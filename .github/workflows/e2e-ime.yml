@@ -93,16 +93,11 @@ jobs:
           [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
           $env:RUST_LOG = 'debug'
           $env:AWASE_TEST_INJECTION = '1'
-          # 順序が重要: awase は起動時にフォーカス窓のIME状態から belief を作る。先に awase を起動すると
-          # コンソール窓(IME ON)を読んで belief=ON になり、直後に開くスパイク窓(IME OFF)との差を
-          # drift補正が7秒間 Unwarranted で繰り返し、VK_IME_OFF を自己注入して手順が崩れた(run 35482240969)。
-          # そこで、スパイクを先に起動して(--activate-gji で8秒待つ)IME OFF の窓を前面にしてから awase を起動する。
+          Start-Process -FilePath "$PWD\dist\awase.exe" -WorkingDirectory "$PWD\dist" -RedirectStandardError "$PWD\awase-stderr.log" -RedirectStandardOutput "$PWD\awase-stdout.log"
+          Start-Sleep -Seconds 5
+          Get-Process awase -ErrorAction SilentlyContinue | Format-Table Name, Id, SessionId
           Push-Location dist
           Start-Process -FilePath .\ime_key_matrix_spike.exe -ArgumentList '--auto --hold=180 --activate-gji'
-          Start-Sleep -Seconds 2
-          Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
-          Start-Sleep -Seconds 3
-          Get-Process awase -ErrorAction SilentlyContinue | Format-Table Name, Id, SessionId
           $deadline = (Get-Date).AddSeconds(150)
           while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 5
