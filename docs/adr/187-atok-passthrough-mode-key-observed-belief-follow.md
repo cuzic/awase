@@ -12,7 +12,7 @@ summary: |-
   通過した無変換/変換の実送出点(executor)で、対象hwndのIntentStoreエントリを消し、typing-idleガードをバイパスして再読み取りする。
   観測値を意図として書かない(witness不要・TTL固着なし・権限昇格なし)。追加は「通過マーク+既存API呼び出し」で、新しい型は足さない。
 status: |-
-  **ドラフトv2(未実装、opusレビューround1反映、round2待ち)**。決定2'(無効化)を第一候補とし、desired_openの扱いで詰まる場合のみ決定2(観測を意図として記録)へ戻る。実験1〜4(下記)で確定する。
+  **ドラフトv2 + round2の結果(未収束、方針判断待ち)**。決定2(IntentStoreのみ無効化)では目的を達成しない(round2 B4)ため、観測型を実装するなら新しい`ImeEvent` variantが要り、設計が当初の見積もりより大きい。最小案(ATOKプリセットのopt-in既定化)との比較をユーザーに確認する。
 related_adr:
   - "ADR-090"
   - "ADR-115"
@@ -22,7 +22,7 @@ related_adr:
 
 # ADR-187: ATOK+パススルーでの無変換/変換に対するEngine追随(観測型)
 
-レビュー: [187-opus-review-round1.md](187-opus-review-round1.md)(Blocker 3 / Must-fix 6 / Should-fix 5、v1の前提2つを訂正)。
+レビュー: [round1](187-opus-review-round1.md)(Blocker 3 / Must-fix 6 / Should-fix 5、v1の前提2つを訂正)、[round2](187-opus-review-round2.md)(Blocker 1 / Must-fix 5 / Should-fix 4、**未収束**、下記「round2の結果」)。
 
 ## 背景
 
@@ -96,6 +96,43 @@ delegate経路は送出が無い/別経路のため対象外。`FollowOnly`は�
 **受け入れ基準(適用範囲)。** IMMのクロスプロセス読み取りが効くアプリ(`profile=ImmCross`/Win32 Edit系)でのみ要件を満たす。
 TsfNative/Imm32Unavailable(メモ帳・Windows Terminal・Chrome/Edge)は`ime_on=None`で読めず、`idle-conv-check`(次の打鍵後、
 TsfNative限定)が担う現状のまま(未検証)。将来の候補として`[gji-io] WRITE`(GJIが打鍵に反応した独立証拠、方向は不明)を残す。
+
+## round2の結果(v2の決定2・4は成立しない)
+
+- **B4(Blocker)**: 明示意図の固定は**2重**。P1=`ImeModel::resolve_open_at`(`ime_model.rs:390`)が`last_intent.is_some()`(TTL無し、
+  `FocusChanged`でのみクリア)だけで`desired_open`を観測より優先する。P2=`IntentStore`(v2が消す対象)。**P2だけ消してもEngineは
+  追随しない**。`last_intent`は`reduce()`経由でしか書けないため、消すには**新しい`ImeEvent` variantが1つ要る**(決定4「新variantを
+  足さない」と衝突)。前例: `PanicReset`/`HwndCacheRestored`は`last_intent`を設定しない`desired_open`直接書き込みの隔離された例外で、
+  `apply_hwnd_cache_restore`は「desired_open書き換え+IntentStore無効化」を既にproductionで行っている。3つ目の系列として足す形になる。
+  更新が要るもの: `lints/ime_event_guard`の`RESTRICTED_VARIANTS`、`tests/architecture_guard.rs`の構築箇所数ガード、
+  ime-belief-architectureの「3つ目のescape hatch」の正当化。
+- **M8**: `last_intent`を消す副作用(消費者4箇所): `explicit_verify`が偽になる(決定3の通過マークが必須になる)/
+  `reschedule_ime_refresh`の停止が解除され**500ms周期のIMMポーリングが全プロファイルで再開**/ドリフト補正のしきい値0→400ms/
+  `force_guards.resolve`のヒューリスティックguardがoverrideできるようになる。
+- **M9(ActivationSyncは確実に起きる)**: 観測でEngineが活性化すると`check_active_transition`が必ず`SetOpen{ActivationSync}`を
+  発行する(抑止は`Inactive(NotRomajiInput)`のみ)。既存の`strip_...`のproduction呼び出し元は`key_pipeline.rs:458`の1箇所で、
+  この経路(`execute_from_loop`)を通らず、条件も両方偽。warrantも止めない(観測から導いた値なのでStep 3と一致)。実体は
+  「VK_IME_ONの二重送信」ではなく**IMM write+完了通知から走るGJI warmupバースト(VK_IME_OFF→VK_IME_ON)**で、開けたばかりの
+  GJIにVK_IME_OFFを送る形になりBUG-113系に触れる。**新しい呼び出し点と条件が要る**(ADR-119型の合流点追加)。
+- **M10**: 観測源は`ObserverPoll`のMedium(basisは`SingleIndirect`、Highではない)。`derive_actuating`が空のとき、
+  `FeedbackPolicy::Blind`(TsfNative/Imm32Unavailable)ではStep 4c `OwnSsot(desired_open)`でwarrantが出て、awaseがIMEをONへ戻す。
+  適用範囲(ImmCross=Read)ではStep 4cは発火しない(テストで固定済み)が、範囲外では戻りうる。
+- **S6(通過マークの最小配線)**: `GateStore`に`ScopedOneShot<ForegroundScope, PassMark>`を1フィールド(`post_bypass`と同型、`peek`が
+  スコープ失効を自動処理するので`FocusChanged`配線は不要)。`ir_decide_read_strategy`/`ir_stage_strategy`を`&mut self`に。
+- S8: `last_intent`を消すとbelief側は`derive_any`(Medium単独合意も採用)で決まる。ADR-087は「belief側は許容、actuation側だけ禁じる」と
+  明文化している(`open_warrant.rs`のmodule doc)。
+
+**結論**: 観測型(選択肢E)を実装するなら、新`ImeEvent` variant 1個+`PassMark`1個+`ActivationSync`の新しい抑止点(合流点追加)+
+ポーリング再開の副作用検証、が要る。当初の「通過マーク+既存API呼び出し」より大きく、ATOKパススルーの利用者だけのための機構としては重い。
+
+## 方針の分岐(ユーザー判断)
+
+- **F1. 観測型(選択肢E)を実装する。** 上記の追加物と、CIでの実験(ポーリング再開・warmupバースト・フォーカス直後)が要る。
+  パススルー設定は保たれ、awaseはactuateしない。
+- **F2. ATOKプリセットのopt-inを既定にする**(選択肢C)。新しい機構は不要で、CI(`baseline`/`atok-optin`、3/3)で追随が確認済み。
+  BUG-115が既定opt-in無しにした理由1〜4のうち、1(非冪等)はKeyUp解決+warrantで実機/CI検証済み(ADR-186)、2(露出2倍)・
+  3(全ATOKユーザーへの自動適用)・4(GJIフォーク)は残る。ユーザーが明示的に選んだパススルー設定は変わる(awaseがactuateする)。
+- **F3. 現状維持+文書化。** ATOK+パススルーは追随しない既知の制約として、設定画面/ドキュメントで案内し、opt-inを推奨する。
 
 ## 決定しないこと(意図的)
 
