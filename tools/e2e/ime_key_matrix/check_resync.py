@@ -27,6 +27,7 @@ def main():
         return 1
     fails = 0
     drift = 0
+    resync_seen = 0
     print(f"{'STEP':>4} {'押下':<14} {'実IME(+1500ms)':<18} {'Engine':<7} 判定")
     for st in steps:
         if "open" not in st:
@@ -37,6 +38,7 @@ def main():
         got_s = "?" if got is None else ("ON" if got else "OFF")
         is_last = st["n"] == st["total"]
         if st["name"].startswith("resync("):
+            resync_seen += 1
             want_on = st["name"] == "resync(ON)"
             real_ok = bool(st["open"]) and bool(st["conv"] & 1) if want_on else not st["open"]
             eng_ok = got == want_on
@@ -49,6 +51,9 @@ def main():
             drift += mismatch
             note = "ずれ(実IMEとEngineが不一致)" if mismatch else "-"
         print(f"{st['n']:>4} {st['name']:<14} {real:<18} {got_s:<7} {note}")
+    if resync_seen < 4:
+        print(f"FAIL: リセット手順が {resync_seen}/4 件しか記録されていない(1打目に Ctrl が付かない等で手順に対応づけられなかった)")
+        fails += 1
     print(f"ずれ: {drift} 件(リセットの前提として起きたか。followがある構成では0でもよい)")
     print("結果:", "ALL PASS(リセット成功)" if fails == 0 else f"{fails} 件 FAIL(リセット失敗)")
     return 0 if fails == 0 else 1

@@ -585,9 +585,15 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
         return;
     }
     queue_step(now, vk);
-    queue_press(now + 700, 0x4B); // k
-    queue_press(now + 1200, 0x1B); // ESC
-    AUTO_NEXT.with(|n| *n.borrow_mut() = now + 1800);
+    // リセット操作(2打)は約 0.7 秒かかるので、k(Engine状態の確認)/ESC は後ろへずらす。
+    let (k_at, esc_at, next_at) = if vk == RESYNC_ON || vk == RESYNC_OFF {
+        (1200, 1700, 2400)
+    } else {
+        (700, 1200, 1800)
+    };
+    queue_press(now + k_at, 0x4B); // k
+    queue_press(now + esc_at, 0x1B); // ESC
+    AUTO_NEXT.with(|n| *n.borrow_mut() = now + next_at);
 }
 
 /// `--resync` 用の手順コード(VKではない)。RESYNC_ON = Ctrl+無変換 → Ctrl+変換(素早く、Ctrlは押したまま)。終わりはIME ON。
@@ -617,9 +623,12 @@ fn queue_step(now: u64, vk: u32) {
     };
     let hold = HOLD_MS_INJ.with(|h| *h.borrow());
     let gap = RESYNC_GAP_MS.with(|g| *g.borrow());
-    let second_at = now + 15 + hold + gap;
+    // Ctrl を先に押し、フックが Ctrl 状態を見られるだけの間(注入は次のtickで実行される)をあけてから1打目を押す。
+    // 間が短いと1打目に Ctrl が付かず、手順に対応づけられない(CIで実測: 15ms では失敗)。
+    let lead = 200;
+    let second_at = now + lead + hold + gap;
     AUTO_QUEUE.with(|q| q.borrow_mut().push((now, 0x11, true)));
-    queue_press(now + 15, first);
+    queue_press(now + lead, first);
     queue_press(second_at, second);
     AUTO_QUEUE.with(|q| q.borrow_mut().push((second_at + hold + 15, 0x11, false)));
 }
