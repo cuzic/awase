@@ -73,7 +73,11 @@ jobs:
           [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), [byte[]](0xB0,0x01,0x00,0xC8,0x02,0x01))
           # インストール直後に起動する GJI のツール/ウィザード(googleimejatool.exe)がフォーカスを持つので終了する。
           Get-Process | Where-Object { $_.Name -match 'googleime' } | Select-Object Name, Id, MainWindowTitle | Format-Table
-          Get-Process googleimejatool -ErrorAction SilentlyContinue | Stop-Process -Force
+          # 変換サーバー等はインストール時に既定の設定で起動済みで、後から書いた config1.db を読み直さない。
+          # 終了させ、次に使われるとき(TIP が呼ぶとき)に新しい設定で起動し直させる。
+          Get-Process | Where-Object { $_.Name -match 'googleime|mozc' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Get-Process | Where-Object { $_.Name -match 'googleime|mozc' } | Select-Object Name, Id | Format-Table
           Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep -Seconds 1
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue
