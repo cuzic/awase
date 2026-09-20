@@ -46,10 +46,11 @@ jobs:
           # (変換=IMEOn)を残すか / check: expect=ATOK前提の期待表(check.py)、consistency=プリセット非依存で
           # 「実IMEのかな=Engine ON、英数・直接入力=Engine OFF」に追随するか(check_consistency.py、--walk)
           # expect: pass=全回PASS / fail=撤去で壊れる / observe=結果を表に出すだけ(期待が未確定の観測用)
+          # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME)
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
-          def cfg(name, expect, mutator='', args='', toggle='true', keymap=1, custom_table='false', check='expect', bin=None):
+          def cfg(name, expect, mutator='', args='', toggle='true', keymap=1, custom_table='false', check='expect', bin=None, ime='gji'):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args, toggle=toggle,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime)
           configs = [
             # --- 撤去実験(ATOK、実機E1〜E7bと同じ) ---
             cfg('baseline', 'pass'),
@@ -66,6 +67,10 @@ jobs:
             cfg('atok-passthrough-henkan', 'observe', check='consistency', args='--walk --key=henkan', toggle='false'),
             cfg('msime', 'observe', check='consistency', args='--walk', toggle='false', keymap=2),
             cfg('msime-optin', 'observe', check='consistency', args='--walk', toggle='true', keymap=2),
+            # --- Microsoft IME 本体(GJI を入れず、ja-JP の言語を追加して標準の日本語IMEを使う) ---
+            cfg('msime-native', 'observe', check='consistency', args='--walk --msime', toggle='false', ime='msime'),
+            cfg('msime-native-henkan', 'observe', check='consistency', args='--walk --msime --key=henkan', toggle='false', ime='msime'),
+            cfg('msime-native-optin', 'observe', check='consistency', args='--walk --msime', toggle='true', ime='msime'),
             cfg('msime-stale-table', 'observe', check='consistency', args='--walk --key=henkan', toggle='false', keymap=2, custom_table='true'),
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
@@ -145,11 +150,13 @@ jobs:
 
       # 他の方法: winget install --id Google.JapaneseIME(71秒) / scoop bucket add nonportable; scoop install google-japanese-input-np
       - name: Google 日本語入力をインストール(chocolatey、約30秒)
+        if: matrix.cfg.ime != 'msime'
         shell: pwsh
         run: |
           choco install googlejapaneseinput -y --no-progress 2>&1 | Select-Object -Last 3
 
       - name: 入力言語をja-JP + GJI に設定、キーマッププリセット(ATOK/MS-IME)の config1.db を書く
+        if: matrix.cfg.ime != 'msime'
         shell: pwsh
         run: |
           $googleImeTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
@@ -179,6 +186,34 @@ jobs:
           # インストール直後に起動するツール/ウィザード(googleimejatool.exe)もここで終了する。
           Get-Process | Where-Object { $_.Name -match 'googleime|mozc' } | Stop-Process -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 2
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+
+      # Microsoft IME 本体: ja-JP の言語を追加すると標準の日本語IME(Microsoft IME)が入る。
+      - name: 入力言語に ja-JP を追加して Microsoft IME を使えるようにする
+        if: matrix.cfg.ime == 'msime'
+        shell: pwsh
+        run: |
+          $msimeTip = '0411:{03B5835F-F03C-411B-9CE2-AA23E1171E36}{A76C93D9-5523-4E90-AAFA-4DB112F9AC76}'
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $list = Get-WinUserLanguageList
+          $list.Add("ja-JP")
+          Set-WinUserLanguageList -LanguageList $list -Force
+          "Set-WinUserLanguageList: $([int]$sw.Elapsed.TotalSeconds)s"
+          # 言語機能(Microsoft IME)の導入は非同期のことがある。TIP が登録されるまで待つ(最大5分)。
+          $tipKey = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{03B5835F-F03C-411B-9CE2-AA23E1171E36}'
+          for ($i = 0; $i -lt 60 -and -not (Test-Path $tipKey); $i++) { Start-Sleep -Seconds 5 }
+          "TIP_REGISTERED=$(Test-Path $tipKey) after $([int]$sw.Elapsed.TotalSeconds)s"
+          if (-not (Test-Path $tipKey)) {
+            Get-WindowsCapability -Online -Name 'Language.*ja-JP*' | Format-Table Name, State
+            Add-WindowsCapability -Online -Name 'Language.Basic~~~ja-JP~0.0.1.0' 2>&1 | Select-Object -Last 3
+            "TIP_REGISTERED(after capability)=$(Test-Path $tipKey) after $([int]$sw.Elapsed.TotalSeconds)s"
+          }
+          try { Set-WinDefaultInputMethodOverride -InputTip $msimeTip -ErrorAction Stop }
+          catch { "default input method override FAILED: $($_.Exception.Message)" }
+          Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips
           Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep -Seconds 1
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue

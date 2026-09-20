@@ -1341,9 +1341,18 @@ fn create_window() -> WinResult<HWND> {
 /// `--activate-gji`: GJI(Google 日本語入力)のTSFプロファイルを、セッション内でアクティブにする。
 /// CI(GitHub Actions)のように、`Set-WinUserLanguageList`が次回サインインまで有効にならない環境用。
 fn activate_gji_profile() {
-    // GJI(Mozc)のCLSIDとプロファイルGUID、日本語(0x0411)。
-    let clsid = windows::core::GUID::from_u128(0xD5A86FD5_5308_47EA_AD16_9C4EB160EC3C);
-    let profile = windows::core::GUID::from_u128(0x773EB24E_CA1D_4B1B_B420_FA985BB0B80D);
+    // 既定は GJI(Mozc)のCLSIDとプロファイルGUID、日本語(0x0411)。`--msime` なら Microsoft IME(日本語)。
+    let (clsid, profile) = if std::env::args().any(|a| a == "--msime") {
+        (
+            windows::core::GUID::from_u128(0x03B5835F_F03C_411B_9CE2_AA23E1171E36),
+            windows::core::GUID::from_u128(0xA76C93D9_5523_4E90_AAFA_4DB112F9AC76),
+        )
+    } else {
+        (
+            windows::core::GUID::from_u128(0xD5A86FD5_5308_47EA_AD16_9C4EB160EC3C),
+            windows::core::GUID::from_u128(0x773EB24E_CA1D_4B1B_B420_FA985BB0B80D),
+        )
+    };
     const TF_PROFILETYPE_INPUTPROCESSOR: u32 = 1;
     const TF_IPPMF_ENABLEPROFILE: u32 = 0x1;
     const TF_IPPMF_FORSESSION: u32 = 0x2000_0000;
@@ -1374,7 +1383,7 @@ fn activate_gji_profile() {
                     windows::Win32::UI::Input::KeyboardAndMouse::HKL(std::ptr::null_mut()),
                     TF_IPPMF_ENABLEPROFILE | TF_IPPMF_FORSESSION,
                 );
-                append_log(&format!("[init] GJIプロファイルをアクティブ化: {r:?}"));
+                append_log(&format!("[init] IMEプロファイルをアクティブ化: {r:?}"));
                 std::thread::sleep(std::time::Duration::from_millis(1500));
                 log_active("後");
             }
