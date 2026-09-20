@@ -242,6 +242,8 @@ thread_local! {
     static COLD_MODE: RefCell<bool> = const { RefCell::new(false) };
     /// `--resync`: ずれた状態から Ctrl+無変換→Ctrl+変換(または逆)を素早く押して、実IMEとEngineが揃うかを見る手順(RESYNC)。
     static RESYNC_MODE: RefCell<bool> = const { RefCell::new(false) };
+    /// `--hz`: 半角/全角キー(0xF3/0xF4、GJIではどちらも開閉トグル)を交互・連続で押す手順(HZ)。
+    static HZ_MODE: RefCell<bool> = const { RefCell::new(false) };
     /// `--resync-gap=NNN`: リセット操作の2打の間隔 ms(1打目のキーを離してから2打目を押すまで)。
     static RESYNC_GAP_MS: RefCell<u64> = const { RefCell::new(100) };
     /// `--vkprobe`: 未知のキーも記録する(スキャンコードだけ注入したとき、OSがどのVKに変換するかを見る)。
@@ -633,6 +635,19 @@ fn queue_step(now: u64, vk: u32) {
     AUTO_QUEUE.with(|q| q.borrow_mut().push((second_at + hold + 15, 0x11, false)));
 }
 
+/// `--hz` の手順: 半角/全角キーは、GJIではどちらのVK(0xF3/0xF4)も「開なら閉、閉なら開」のトグル(ADR-186)。
+/// awase がVKの種類で方向を決め打つ(0xF3=OFF、0xF4=ON)と、同じVKの連続やF3/F4の順序でずれる。
+const HZ: [(&str, u32, bool, &str, St); 8] = [
+    ("半角全角F3", 0xF3, false, "開閉トグル", St::Any),
+    ("半角全角F3", 0xF3, false, "開閉トグル", St::Any),
+    ("半角全角F4", 0xF4, false, "開閉トグル", St::Any),
+    ("半角全角F4", 0xF4, false, "開閉トグル", St::Any),
+    ("半角全角F3", 0xF3, false, "開閉トグル", St::Any),
+    ("半角全角F4", 0xF4, false, "開閉トグル", St::Any),
+    ("半角全角F4", 0xF4, false, "開閉トグル", St::Any),
+    ("半角全角F3", 0xF3, false, "開閉トグル", St::Any),
+];
+
 /// `--resync` の手順: ずれを起こすキー(無変換/変換)と、リセット操作を交互に押す。
 const RESYNC: [(&str, u32, bool, &str, St); 10] = [
     ("ひらがなキー", 0xF2, false, "かなON", St::Any),
@@ -724,7 +739,9 @@ const VKPROBE_CANDIDATES: [u32; 17] = [
 
 /// 現在の手順表(`--walk` なら WALK、なければ SCRIPT)。
 fn script() -> &'static [(&'static str, u32, bool, &'static str, St)] {
-    if RESYNC_MODE.with(|r| *r.borrow()) {
+    if HZ_MODE.with(|h| *h.borrow()) {
+        &HZ
+    } else if RESYNC_MODE.with(|r| *r.borrow()) {
         &RESYNC
     } else if WALK_MODE.with(|w| *w.borrow()) {
         if COLD_MODE.with(|c| *c.borrow()) {
@@ -1601,6 +1618,9 @@ fn run() -> WinResult<()> {
     }
     if std::env::args().any(|a| a == "--cold") {
         COLD_MODE.with(|c| *c.borrow_mut() = true);
+    }
+    if std::env::args().any(|a| a == "--hz") {
+        HZ_MODE.with(|h| *h.borrow_mut() = true);
     }
     if std::env::args().any(|a| a == "--resync") {
         RESYNC_MODE.with(|r| *r.borrow_mut() = true);
