@@ -1958,6 +1958,26 @@ impl Runtime {
             tracing::debug!("may_change_ime key passed through → IME refresh scheduled (20ms)");
         }
 
+        // SPIKE(ADR-187 follow方式): Engine OFF(IME OFF)のとき、無変換/変換は FSM を通らず `PassThrough` でそのままOSへ渡る。
+        // FSM経由の送出(`executor::dispatch_effect`のSendKeys)と同じく、古い明示意図を捨て、通過マークを立て、20ms後に再読み取りする。
+        if !decision.is_consumed()
+            && matches!(event.event_type, KeyEventType::KeyDown)
+            && !event.injected
+            && crate::vk::is_ime_mode_key_for_ime(event.vk_code)
+            && !event.ime_relevance.may_change_ime
+        {
+            let now = crate::hook::current_tick_ms();
+            crate::runtime::SPIKE_MODE_KEY_PASS_MS.store(now, std::sync::atomic::Ordering::Relaxed);
+            self.platform_state
+                .ime
+                .spike_invalidate_intents_on_mode_key_pass(crate::state::TickMs(now));
+            self.schedule_ime_refresh(20);
+            tracing::info!(
+                "[spike-follow] mode key PassThrough(vk=0x{:02X}): intents invalidated, refresh in 20ms",
+                event.vk_code.0
+            );
+        }
+
         self.kp_stage_shift_conv_guard(event);
     }
 
