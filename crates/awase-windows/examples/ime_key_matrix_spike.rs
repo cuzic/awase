@@ -238,6 +238,8 @@ thread_local! {
     static HOLD_MS_INJ: RefCell<u64> = const { RefCell::new(80) };
     /// `--walk`: SCRIPT の代わりに WALK(前提状態なしの固定キー列)を使う。
     static WALK_MODE: RefCell<bool> = const { RefCell::new(false) };
+    /// `--cold`(`--walk`と併用): 先頭のひらがなを除き、明示意図が無い状態でいきなり無変換/変換を押す手順にする。
+    static COLD_MODE: RefCell<bool> = const { RefCell::new(false) };
     /// `--vkprobe`: 未知のキーも記録する(スキャンコードだけ注入したとき、OSがどのVKに変換するかを見る)。
     static VKPROBE_MODE: RefCell<bool> = const { RefCell::new(false) };
     /// `--key=henkan`: 手順の「無変換」を「変換」(0x1C)に置き換える。
@@ -626,7 +628,11 @@ const VKPROBE_CANDIDATES: [u32; 17] = [
 /// 現在の手順表(`--walk` なら WALK、なければ SCRIPT)。
 fn script() -> &'static [(&'static str, u32, bool, &'static str, St)] {
     if WALK_MODE.with(|w| *w.borrow()) {
-        &WALK
+        if COLD_MODE.with(|c| *c.borrow()) {
+            &WALK[1..]
+        } else {
+            &WALK
+        }
     } else {
         &SCRIPT
     }
@@ -1492,6 +1498,9 @@ fn run() -> WinResult<()> {
         {
             queue_press(base + (i as u64) * 3500, *vk);
         }
+    }
+    if std::env::args().any(|a| a == "--cold") {
+        COLD_MODE.with(|c| *c.borrow_mut() = true);
     }
     // `--walk`: --auto の手順を、前提状態なしの固定キー列(WALK)にする。
     if std::env::args().any(|a| a == "--walk") {
