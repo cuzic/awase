@@ -33,7 +33,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 /// スパイクと同じ目印。`AWASE_TEST_INJECTION=1` の awase は、この目印の注入を物理キーとして扱う。
-const AUTO_MARKER: usize = 0x5350_494B;
+const AUTO_MARKER: usize = awase_windows::hook::TEST_INJECTION_MARKER;
 
 const PAGE: &str = r#"<!doctype html><meta charset="utf-8"><title>IMEPROBE</title>
 <style>body{font:14px sans-serif;margin:8px}textarea{width:95%;height:140px;font-size:18px}</style>

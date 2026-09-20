@@ -74,7 +74,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 /// `--auto` が注入するキーの dwExtraInfo（自分の注入を、他の注入と区別してステップ照合に使う）。
-const AUTO_MARKER: usize = 0x5350_494B;
+const AUTO_MARKER: usize = awase_windows::hook::TEST_INJECTION_MARKER;
 
 const WM_IME_CONTROL: u32 = 0x0283;
 const IMC_GETCONVERSIONMODE: usize = 0x0001;
