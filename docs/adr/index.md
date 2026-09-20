@@ -191,7 +191,7 @@
 | [187](187-atok-passthrough-mode-key-observed-belief-follow.md) | ATOKで無変換/変換をパススルーするとき、生キー通過直後に実IMEを読み直し、古い明示意図を捨ててEngineを観測に追随させる(follow方式、awaseはactuateしない)。Toggleをactuateする案(PR #227)はcomposingが推定でしかないため見送り | **決定・実装済み(未マージ)**。スパイクCIで全12手順追随(各3/3)・cold各3/3 |
 | [188](188-tsfnative-conv-only-mode-key-engine-follow.md) | Chrome等(Imm32Unavailable/TsfNative)で、convだけを変えるモードキー(ひらがな、Shift+無変換)の後にEngineを追随させる(モードキー後の遅延conv読み取り、実機A/Bで4案を比較) | 別セッション(BUG-149)。詳細はADR本文 |
 | [189](189-gji-hankaku-zenkaku-belief-toggle.md) | GJIの半角/全角キー(0xF3/0xF4)をVKで方向を決め打たず、beliefに基づく開閉トグルとしてawaseがactuateする(同じVKの連続で反転しない問題、CI `--hz`で4/8手順) | **決定・実装済み(未マージ)・CI検証済み** |
-| [190](190-msime-immcross-failure-fallback-idempotent-vk-ime-on.md) | Microsoft IMEでImmCrossが失敗したとき、非冪等なVK_KANJIトグルでなく冪等なVK_IME_ON/OFF(MsImeDirect)へフォールバックする(BUG-152) | **ドラフト v3(未実装)**。opus round1反映+KanjiToggle撤去を決定に追加(round2確認待ち)。CI(a8/a9)検証済み、実機未 |
+| [190](190-msime-immcross-failure-fallback-idempotent-vk-ime-on.md) | Microsoft IMEでImmCrossが失敗したとき、非冪等なVK_KANJIトグルでなく冪等なVK_IME_ON/OFF(MsImeDirect)へフォールバックする(BUG-152) | **ドラフト v4(未実装)**。opus round1/2反映(撤去範囲の漏れ10件・数値誤り3件)+KanjiToggle撤去を決定に追加(round3確認待ち)。CI(a8/a9)検証済み、実機未 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
