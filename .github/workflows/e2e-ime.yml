@@ -129,11 +129,17 @@ jobs:
         shell: pwsh
         continue-on-error: true
         run: |
-          $log = Get-ChildItem -Recurse -Filter awase.log -ErrorAction SilentlyContinue | Select-Object -First 1
-          "awase.log: $($log.FullName)"
-          Get-Process awase, ime_key_matrix_spike -ErrorAction SilentlyContinue | Format-Table Name, Id
+          $log = Get-Item dist\awase.log -ErrorAction SilentlyContinue
+          "awase.log: $($log.FullName) lines=$((Get-Content $log.FullName).Count) last=$($log.LastWriteTime)"
+          "--- awase の生存確認"
+          Get-Process awase -ErrorAction SilentlyContinue | Format-Table Name, Id
+          "--- awase.log の末尾"
+          Get-Content $log.FullName -Tail 6 -Encoding utf8 | ForEach-Object { $_.Substring(0,[Math]::Min(200,$_.Length)) }
+          "--- Application イベントログ(awase のクラッシュ)"
+          Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-15)} -ErrorAction SilentlyContinue | Where-Object { $_.Message -match 'awase' } | Select-Object -First 3 | ForEach-Object { $_.Message.Substring(0,[Math]::Min(300,$_.Message.Length)) }
           if ($log) {
             Get-Content $log.FullName -Encoding utf8 | Where-Object { $_ -match 'Engine (de)?activated|IME open axis delegated|outcome=Unwarranted' } | Set-Content awase-filtered.log -Encoding utf8
+            $env:PYTHONUTF8 = '1'
             python tools\e2e\ime_key_matrix\check.py dist\ime_key_matrix_spike.log awase-filtered.log
           } else { 'awase.log が見つからない(awase の起動に失敗した可能性)' }
 
