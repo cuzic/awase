@@ -27,7 +27,7 @@ done
 echo "$out" | grep -q "BUILD_OK_STARTED_TESTINJ" || { echo "$LABEL: ビルド待ちtimeout"; exit 2; }
 sleep 6
 "$CW" exec e2e-diag-desktop >"$OUT/desktop.txt" 2>&1
-"$CW" exec chrome-probe-args-awase >/dev/null 2>&1
+"$CW" exec "${ARGS_TARGET:-chrome-probe-args-awase}" >/dev/null 2>&1
 "$CW" exec chrome-probe-start >"$OUT/start.txt" 2>&1
 sleep 250
 for _ in $(seq 1 12); do
