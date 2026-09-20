@@ -8,62 +8,68 @@ on:
   workflow_dispatch:
 
 jobs:
-  probe:
+  install-gji:
+    name: GJI install via ${{ matrix.method }}
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        method: [winget, choco, scoop]
     steps:
-      - uses: actions/checkout@v4
-
-      - name: 配布URLの確認(HEAD)とインストーラーのログ診断
+      - name: winget
+        if: matrix.method == 'winget'
         shell: pwsh
         continue-on-error: true
-        timeout-minutes: 6
         run: |
-          $cands = @(
-            'https://dl.google.com/japanese-ime/latest/GoogleJapaneseInput64.msi',
-            'https://dl.google.com/japanese-ime/latest/GoogleJapaneseInput.msi',
-            'https://dl.google.com/japanese-ime/latest/GoogleJapaneseInputSetup.exe',
-            'https://dl.google.com/tag/s/appguid%3D%7BDDCCD2A9-025E-4142-BCEB-F467B88CF830%7D%26iid%3D%7B00000000-0000-0000-0000-000000000000%7D%26lang%3Dja%26browser%3D4%26usagestats%3D0%26appname%3DGoogle%2520Japanese%2520Input%26needsadmin%3Dtrue/japanese-ime/GoogleJapaneseInputSetup.exe',
-            'https://www.google.co.jp/ime/GoogleJapaneseInputSetup.exe',
-            'https://dl.google.com/japanese-ime/dev/GoogleJapaneseInputSetup.exe'
-          )
-          foreach ($u in $cands) {
-            try { $r = Invoke-WebRequest -Uri $u -Method Head -UseBasicParsing -MaximumRedirection 5; "OK  $($r.StatusCode) $($r.Headers['Content-Length']) $u" }
-            catch { "NG  $($_.Exception.Message) $u" }
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          Get-Command winget -ErrorAction SilentlyContinue | Select-Object Source, Version | Format-List
+          winget --version
+          winget search "Google Japanese" --accept-source-agreements 2>&1 | Select-Object -First 15
+          winget install --id Google.JapaneseIME -e --silent --accept-package-agreements --accept-source-agreements 2>&1 | Select-Object -Last 15
+          "elapsed=$([int]$sw.Elapsed.TotalSeconds)s"
+
+      - name: choco
+        if: matrix.method == 'choco'
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          choco search google-japanese 2>&1 | Select-Object -First 10
+          choco search japanese-ime 2>&1 | Select-Object -First 10
+          choco search googlejapaneseinput 2>&1 | Select-Object -First 10
+          foreach ($id in 'googlejapaneseinput','google-japanese-ime','googlejapaneseime','google-japanese-input') {
+            "--- try $id"
+            choco install $id -y --no-progress 2>&1 | Select-Object -Last 8
+            if (Test-Path 'C:\Program Files*\Google\Google Japanese Input') { break }
           }
-          "--- installer を実行して 90 秒観察 ---"
-          $u = $cands[3]
-          Invoke-WebRequest -Uri $u -OutFile gji-setup.exe -UseBasicParsing
-          $p = Start-Process -FilePath .\gji-setup.exe -ArgumentList '/silent /install' -PassThru
-          Start-Sleep -Seconds 90
-          "installer exited: $($p.HasExited)"
-          Get-Process | Where-Object { $_.Name -match 'gji|updater|GoogleUpdate|msiexec|Google' } | Select-Object Name, Id, StartTime | Format-Table
-          Get-ChildItem 'C:\Program Files (x86)\Google','C:\Program Files\Google' -ErrorAction SilentlyContinue | Select-Object FullName | Format-Table
-          Get-ChildItem "$env:TEMP","$env:LOCALAPPDATA\Temp" -Filter *oogle* -ErrorAction SilentlyContinue | Select-Object FullName, Length | Format-Table
-          Get-ChildItem 'C:\Program Files (x86)\Google\Update\Log','C:\ProgramData\Google\Update\Log' -Filter *.log -Recurse -ErrorAction SilentlyContinue | ForEach-Object { "=== $($_.FullName)"; Get-Content $_.FullName -Tail 25 }
-          Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='MsiInstaller'} -MaxEvents 8 -ErrorAction SilentlyContinue | Format-List TimeCreated, Message
+          "elapsed=$([int]$sw.Elapsed.TotalSeconds)s"
 
-      - name: 入力言語をja-JP + GJI に設定して ATOK プリセットの設定を書く
+      - name: scoop
+        if: matrix.method == 'scoop'
         shell: pwsh
         continue-on-error: true
         run: |
-          $tip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
-          $l = New-WinUserLanguageList ja-JP
-          $l[0].InputMethodTips.Clear()
-          $l[0].InputMethodTips.Add($tip)
-          Set-WinUserLanguageList $l -Force 2>&1
-          Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips
-          # ATOK プリセット(session_keymap = 1): Mozc Config の field 41 (varint) = 1 だけを持つ最小の config1.db
-          $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), [byte[]](0xC8,0x02,0x01))
-          Get-ChildItem $dir | Format-Table Name, Length
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          Invoke-Expression "& {$(Invoke-RestMethod get.scoop.sh)} -RunAsAdmin"
+          $env:PATH = "$env:USERPROFILE\scoop\shims;$env:PATH"
+          scoop bucket add extras 2>&1 | Select-Object -Last 3
+          scoop bucket add nonportable 2>&1 | Select-Object -Last 3
+          scoop bucket add japanese https://github.com/Ash258/Scoop-JP 2>&1 | Select-Object -Last 3
+          scoop search google-japanese 2>&1 | Select-Object -First 10
+          scoop search japanese 2>&1 | Select-Object -First 15
+          foreach ($id in 'google-japanese-ime','googlejapaneseinput','google-japanese-input') {
+            "--- try $id"
+            scoop install $id 2>&1 | Select-Object -Last 8
+            if (Test-Path 'C:\Program Files*\Google\Google Japanese Input') { break }
+          }
+          "elapsed=$([int]$sw.Elapsed.TotalSeconds)s"
 
-      - name: ctfmon の状態と、入力メソッドの確認
+      - name: 結果の確認(インストール先とTSFのTIP登録)
         shell: pwsh
         continue-on-error: true
         run: |
-          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 3
-          Get-Process ctfmon, explorer -ErrorAction SilentlyContinue | Format-Table Name, Id, SessionId
-          reg query "HKCU\Software\Microsoft\CTF\SortOrder\AssemblyItem\0x00000411" /s 2>&1 | Select-Object -First 30
+          Get-ChildItem 'C:\Program Files*\Google\Google Japanese Input','C:\Windows\System32\GoogleIme*' -ErrorAction SilentlyContinue | Select-Object FullName | Format-Table
+          $g='{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}'
+          "INSTALLED_DIR=$([bool](Get-ChildItem 'C:\Program Files*\Google\Google Japanese Input' -ErrorAction SilentlyContinue))"
+          "TIP_REGISTERED=$(Test-Path "HKLM:\SOFTWARE\Microsoft\CTF\TIP\$g")"
