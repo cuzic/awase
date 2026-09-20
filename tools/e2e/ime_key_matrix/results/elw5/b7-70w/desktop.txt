@@ -1,0 +1,8 @@
+LogonUI: 0
+screensaver: 0
+ USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME
+>cuzic                 console             1  Active      none   2026/09/20 21:40
+
+foreground: hwnd=197406 title=~/clipwire pid=19092 proc=WindowsTerminal
+script error: Output type incorrect: bool (expecting ())
+Error: exit code 1

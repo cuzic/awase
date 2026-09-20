@@ -1,0 +1,346 @@
+=== IME key matrix spike (awase 非依存) ===
+観測: A=IMM(ImmGet*) / B=WM_IME_CONTROL / T=TSFスレッドcompartment / G=TSFグローバルcompartment
+conv の目安: 0x19=ひらがな(NATIVE|FULLSHAPE|ROMAN) 0x10=半角英数(ROMAN) 0x00=直接入力系
+手順: awase を止める → 画面中段の案内に従ってキーを1回ずつ押す（全 2ラウンド×20ステップ、各押下後は3秒待機）
+ROUND1=標準EDIT / ROUND2=RichEdit(TSFネイティブ)。そのキーが無い場合は Ctrl+Shift+F12 でスキップ
+ログファイル: C:\Users\cuzic\scoop\persist\msys2\home\cuzic\awase-spike\target\debug\examples\ime_key_matrix_spike.log
+
+=== ROUND 2/2: 対象コントロール = RichEdit 5.0(TSFネイティブ) ===
+[AUTO] フォーカス復帰(入力欄)
+[14:03:05.740Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x70 press=14:03:04.132Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x00) G(open=0 conv=0x00) comp="" tail=""
+    +100ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail=""
+    +400ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail=""
+    +1500ms: A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail=""
+    差分 (前→+100ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x00→0x09   (前→+400ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x00→0x09   (前→+1500ms): Δ open A:0→1 B:0→1 / tsf-thread open:0→1 conv:0x00→0x19
+[EXP-POST] cond=scan0/write trial=1 pre(open=1 conv=0x19) post(open=0 conv=0x19 comp="")
+[14:03:07.510Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x00 press=14:03:05.930Z (auto)  状態=IME ON・入力なし
+    前     : A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail=""
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail=""
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail=""
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="a"
+    差分 (前→+100ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+400ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+1500ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19 / tail:""→"a"
+[EXP] cond=scan0/write trial=1 probe(a): open=0 conv=0x19 comp="" tail="a"
+[14:03:08.757Z] KEY [準備/その他] a vk=0x41 scan=0x1E press=14:03:07.151Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail=""
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="a"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="a"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="a"
+    差分 (前→+100ms): Δ tail:""→"a"   (前→+400ms): Δ tail:""→"a"   (前→+1500ms): Δ tail:""→"a"
+[14:03:09.757Z] KEY [準備/その他] ESC vk=0x1B scan=0x01 press=14:03:08.142Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="a"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="a"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="a"
+    +1500ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="a"
+    差分 (前→+100ms): Δなし   (前→+400ms): Δなし   (前→+1500ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09
+[14:03:10.772Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x70 press=14:03:09.199Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="a"
+    +100ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="a"
+    +400ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="a"
+    +1500ms: A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="a"
+    差分 (前→+100ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+400ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+1500ms): Δ open A:0→1 B:0→1 / tsf-thread open:0→1 conv:0x19→0x19
+[EXP-POST] cond=scan0/write trial=2 pre(open=1 conv=0x19) post(open=0 conv=0x19 comp="")
+[14:03:12.537Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x00 press=14:03:10.962Z (auto)  状態=IME ON・入力なし
+    前     : A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="a"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="a"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="a"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aa"
+    差分 (前→+100ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+400ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+1500ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19 / tail:"a"→"aa"
+[EXP] cond=scan0/write trial=2 probe(a): open=0 conv=0x19 comp="" tail="aa"
+[14:03:13.726Z] KEY [準備/その他] a vk=0x41 scan=0x1E press=14:03:12.185Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="a"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aa"
+    差分 (前→+100ms): Δ tail:"a"→"aa"   (前→+400ms): Δ tail:"a"→"aa"   (前→+1500ms): Δ tail:"a"→"aa"
+[14:03:14.739Z] KEY [準備/その他] ESC vk=0x1B scan=0x01 press=14:03:13.166Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aa"
+    +1500ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aa"
+    差分 (前→+100ms): Δなし   (前→+400ms): Δなし   (前→+1500ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09
+[14:03:15.797Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x70 press=14:03:14.229Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aa"
+    +100ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aa"
+    +400ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aa"
+    +1500ms: A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aa"
+    差分 (前→+100ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+400ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+1500ms): Δ open A:0→1 B:0→1 / tsf-thread open:0→1 conv:0x19→0x19
+[EXP-POST] cond=scan0/write trial=3 pre(open=1 conv=0x19) post(open=0 conv=0x19 comp="")
+[14:03:17.549Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x00 press=14:03:15.985Z (auto)  状態=IME ON・入力なし
+    前     : A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaa"
+    差分 (前→+100ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+400ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+1500ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19 / tail:"aa"→"aaa"
+[EXP] cond=scan0/write trial=3 probe(a): open=0 conv=0x19 comp="" tail="aaa"
+[14:03:18.813Z] KEY [準備/その他] a vk=0x41 scan=0x1E press=14:03:17.262Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaa"
+    差分 (前→+100ms): Δ tail:"aa"→"aaa"   (前→+400ms): Δ tail:"aa"→"aaa"   (前→+1500ms): Δ tail:"aa"→"aaa"
+[14:03:19.814Z] KEY [準備/その他] ESC vk=0x1B scan=0x01 press=14:03:18.247Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaa"
+    +1500ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaa"
+    差分 (前→+100ms): Δなし   (前→+400ms): Δなし   (前→+1500ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09
+[14:03:20.839Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x70 press=14:03:19.254Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaa"
+    +100ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaa"
+    +400ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaa"
+    +1500ms: A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaa"
+    差分 (前→+100ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+400ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+1500ms): Δ open A:0→1 B:0→1 / tsf-thread open:0→1 conv:0x19→0x19
+[EXP-POST] cond=scan0/write trial=4 pre(open=1 conv=0x19) post(open=0 conv=0x19 comp="")
+[14:03:22.529Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x00 press=14:03:20.964Z (auto)  状態=IME ON・入力なし
+    前     : A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaa"
+    差分 (前→+100ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+400ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+1500ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19 / tail:"aaa"→"aaaa"
+[EXP] cond=scan0/write trial=4 probe(a): open=0 conv=0x19 comp="" tail="aaaa"
+[14:03:23.778Z] KEY [準備/その他] a vk=0x41 scan=0x1E press=14:03:22.228Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaa"
+    差分 (前→+100ms): Δ tail:"aaa"→"aaaa"   (前→+400ms): Δ tail:"aaa"→"aaaa"   (前→+1500ms): Δ tail:"aaa"→"aaaa"
+[14:03:24.783Z] KEY [準備/その他] ESC vk=0x1B scan=0x01 press=14:03:23.211Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaa"
+    +1500ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaa"
+    差分 (前→+100ms): Δなし   (前→+400ms): Δなし   (前→+1500ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09
+[14:03:25.792Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x70 press=14:03:24.221Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaa"
+    +100ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaa"
+    +400ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaa"
+    +1500ms: A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaa"
+    差分 (前→+100ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+400ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+1500ms): Δ open A:0→1 B:0→1 / tsf-thread open:0→1 conv:0x19→0x19
+[EXP-POST] cond=scan0/write trial=5 pre(open=1 conv=0x19) post(open=0 conv=0x19 comp="")
+[14:03:27.556Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x00 press=14:03:25.977Z (auto)  状態=IME ON・入力なし
+    前     : A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaa"
+    差分 (前→+100ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+400ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+1500ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19 / tail:"aaaa"→"aaaaa"
+[EXP] cond=scan0/write trial=5 probe(a): open=0 conv=0x19 comp="" tail="aaaaa"
+[14:03:28.752Z] KEY [準備/その他] a vk=0x41 scan=0x1E press=14:03:27.208Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaa"
+    差分 (前→+100ms): Δ tail:"aaaa"→"aaaaa"   (前→+400ms): Δ tail:"aaaa"→"aaaaa"   (前→+1500ms): Δ tail:"aaaa"→"aaaaa"
+[14:03:29.811Z] KEY [準備/その他] ESC vk=0x1B scan=0x01 press=14:03:28.188Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaa"
+    +1500ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaa"
+    差分 (前→+100ms): Δなし   (前→+400ms): Δなし   (前→+1500ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09
+[14:03:30.806Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x70 press=14:03:29.191Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaa"
+    +100ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaa"
+    +400ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaa"
+    +1500ms: A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaa"
+    差分 (前→+100ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+400ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+1500ms): Δ open A:0→1 B:0→1 / tsf-thread open:0→1 conv:0x19→0x19
+[EXP-POST] cond=scan0/write trial=6 pre(open=1 conv=0x19) post(open=0 conv=0x19 comp="")
+[14:03:32.510Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x00 press=14:03:30.932Z (auto)  状態=IME ON・入力なし
+    前     : A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaa"
+    差分 (前→+100ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+400ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+1500ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19 / tail:"aaaaa"→"aaaaaa"
+[EXP] cond=scan0/write trial=6 probe(a): open=0 conv=0x19 comp="" tail="aaaaaa"
+[14:03:33.701Z] KEY [準備/その他] a vk=0x41 scan=0x1E press=14:03:32.153Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaa"
+    差分 (前→+100ms): Δ tail:"aaaaa"→"aaaaaa"   (前→+400ms): Δ tail:"aaaaa"→"aaaaaa"   (前→+1500ms): Δ tail:"aaaaa"→"aaaaaa"
+[14:03:34.700Z] KEY [準備/その他] ESC vk=0x1B scan=0x01 press=14:03:33.137Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaa"
+    +1500ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaa"
+    差分 (前→+100ms): Δなし   (前→+400ms): Δなし   (前→+1500ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09
+[14:03:35.700Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x70 press=14:03:34.139Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaa"
+    +100ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaa"
+    +400ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaa"
+    +1500ms: A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaa"
+    差分 (前→+100ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+400ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+1500ms): Δ open A:0→1 B:0→1 / tsf-thread open:0→1 conv:0x19→0x19
+[EXP-POST] cond=scan0/write trial=7 pre(open=1 conv=0x19) post(open=0 conv=0x19 comp="")
+[14:03:37.465Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x00 press=14:03:35.889Z (auto)  状態=IME ON・入力なし
+    前     : A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaa"
+    差分 (前→+100ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+400ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+1500ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19 / tail:"aaaaaa"→"aaaaaaa"
+[EXP] cond=scan0/write trial=7 probe(a): open=0 conv=0x19 comp="" tail="aaaaaaa"
+[14:03:38.657Z] KEY [準備/その他] a vk=0x41 scan=0x1E press=14:03:37.114Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaa"
+    差分 (前→+100ms): Δ tail:"aaaaaa"→"aaaaaaa"   (前→+400ms): Δ tail:"aaaaaa"→"aaaaaaa"   (前→+1500ms): Δ tail:"aaaaaa"→"aaaaaaa"
+[14:03:39.659Z] KEY [準備/その他] ESC vk=0x1B scan=0x01 press=14:03:38.095Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaa"
+    +1500ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaaa"
+    差分 (前→+100ms): Δなし   (前→+400ms): Δなし   (前→+1500ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09
+[14:03:40.716Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x70 press=14:03:39.098Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaa"
+    +100ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaaa"
+    +400ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaaa"
+    +1500ms: A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaa"
+    差分 (前→+100ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+400ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+1500ms): Δ open A:0→1 B:0→1 / tsf-thread open:0→1 conv:0x19→0x19
+[EXP-POST] cond=scan0/write trial=8 pre(open=1 conv=0x19) post(open=0 conv=0x19 comp="")
+[14:03:42.467Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x00 press=14:03:40.842Z (auto)  状態=IME ON・入力なし
+    前     : A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+400ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+1500ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19 / tail:"aaaaaaa"→"aaaaaaaa"
+[EXP] cond=scan0/write trial=8 probe(a): open=0 conv=0x19 comp="" tail="aaaaaaaa"
+[14:03:43.665Z] KEY [準備/その他] a vk=0x41 scan=0x1E press=14:03:42.114Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δ tail:"aaaaaaa"→"aaaaaaaa"   (前→+400ms): Δ tail:"aaaaaaa"→"aaaaaaaa"   (前→+1500ms): Δ tail:"aaaaaaa"→"aaaaaaaa"
+[14:03:44.677Z] KEY [準備/その他] ESC vk=0x1B scan=0x01 press=14:03:43.102Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δなし   (前→+400ms): Δなし   (前→+1500ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09
+[14:03:45.689Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x70 press=14:03:44.117Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +100ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+400ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+1500ms): Δ open A:0→1 B:0→1 / tsf-thread open:0→1 conv:0x19→0x19
+[EXP-POST] cond=scan0/write trial=9 pre(open=1 conv=0x19) post(open=0 conv=0x19 comp="")
+[14:03:47.506Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x00 press=14:03:45.879Z (auto)  状態=IME ON・入力なし
+    前     : A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+400ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+1500ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19
+[EXP] cond=scan0/write trial=9 probe(a): open=0 conv=0x19 comp="" tail="aaaaaaaa"
+[14:03:48.697Z] KEY [準備/その他] a vk=0x41 scan=0x1E press=14:03:47.153Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δなし   (前→+400ms): Δなし   (前→+1500ms): Δなし
+[14:03:49.756Z] KEY [準備/その他] ESC vk=0x1B scan=0x01 press=14:03:48.134Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δなし   (前→+400ms): Δなし   (前→+1500ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09
+[14:03:50.762Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x70 press=14:03:49.197Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +100ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+400ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+1500ms): Δ open A:0→1 B:0→1 / tsf-thread open:0→1 conv:0x19→0x19
+[EXP-POST] cond=scan0/write trial=10 pre(open=1 conv=0x19) post(open=0 conv=0x19 comp="")
+[14:03:52.533Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x00 press=14:03:50.952Z (auto)  状態=IME ON・入力なし
+    前     : A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+400ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+1500ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19
+[EXP] cond=scan0/write trial=10 probe(a): open=0 conv=0x19 comp="" tail="aaaaaaaa"
+[14:03:53.739Z] KEY [準備/その他] a vk=0x41 scan=0x1E press=14:03:52.178Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δなし   (前→+400ms): Δなし   (前→+1500ms): Δなし
+[14:03:54.737Z] KEY [準備/その他] ESC vk=0x1B scan=0x01 press=14:03:53.160Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δなし   (前→+400ms): Δなし   (前→+1500ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09
+[14:03:55.794Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x70 press=14:03:54.176Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +100ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+400ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+1500ms): Δ open A:0→1 B:0→1 / tsf-thread open:0→1 conv:0x19→0x19
+[EXP-POST] cond=scan0/write trial=11 pre(open=1 conv=0x19) post(open=0 conv=0x19 comp="")
+[14:03:57.545Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x00 press=14:03:55.920Z (auto)  状態=IME ON・入力なし
+    前     : A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+400ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+1500ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19
+[EXP] cond=scan0/write trial=11 probe(a): open=0 conv=0x19 comp="" tail="aaaaaaaa"
+[14:03:58.790Z] KEY [準備/その他] a vk=0x41 scan=0x1E press=14:03:57.172Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δなし   (前→+400ms): Δなし   (前→+1500ms): Δなし
+[14:03:59.726Z] KEY [準備/その他] ESC vk=0x1B scan=0x01 press=14:03:58.162Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δなし   (前→+400ms): Δなし   (前→+1500ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09
+[14:04:00.799Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x70 press=14:03:59.231Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +100ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=1 conv=0x09) B(open=1 conv=0x09) T(open=1 conv=0x09) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+400ms): Δ open A:0→1 B:0→1 / conv A:0x19→0x09 B:0x19→0x09 / tsf-thread open:0→1 conv:0x19→0x09   (前→+1500ms): Δ open A:0→1 B:0→1 / tsf-thread open:0→1 conv:0x19→0x19
+[EXP-POST] cond=scan0/write trial=12 pre(open=1 conv=0x19) post(open=0 conv=0x19 comp="")
+[14:04:02.602Z] KEY [準備/その他] ひらがな(0xF2) vk=0xF2 scan=0x00 press=14:04:00.988Z (auto)  状態=IME ON・入力なし
+    前     : A(open=1 conv=0x19) B(open=1 conv=0x19) T(open=1 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+400ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19   (前→+1500ms): Δ open A:1→0 B:1→0 / tsf-thread open:1→0 conv:0x19→0x19
+[EXP] cond=scan0/write trial=12 probe(a): open=0 conv=0x19 comp="" tail="aaaaaaaa"
+[14:04:03.802Z] KEY [準備/その他] a vk=0x41 scan=0x1E press=14:04:02.240Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δなし   (前→+400ms): Δなし   (前→+1500ms): Δなし
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[14:04:04.804Z] KEY [準備/その他] ESC vk=0x1B scan=0x01 press=14:04:03.237Z (auto)  状態=直接入力
+    前     : A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +100ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +400ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    +1500ms: A(open=0 conv=0x19) B(open=0 conv=0x19) T(open=0 conv=0x19) G(open=0 conv=0x00) comp="" tail="aaaaaaaa"
+    差分 (前→+100ms): Δなし   (前→+400ms): Δなし   (前→+1500ms): Δなし
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+[EXP] cond=scan0/write 12手完了
+script error: Output type incorrect: bool (expecting ())

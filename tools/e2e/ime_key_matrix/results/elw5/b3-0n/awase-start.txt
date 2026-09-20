@@ -1,0 +1,2 @@
+SUCCESS: The process "awase.exe" with PID 18940 has been terminated.
+awase(A) procs: 1
