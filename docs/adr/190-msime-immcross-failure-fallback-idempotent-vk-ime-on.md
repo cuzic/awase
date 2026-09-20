@@ -11,7 +11,7 @@ summary: |-
   `[ImmCross, MsImeDirect]`にし、述語を`kind==MsIme`だけにする(同時にしか入れられない)。`KanjiToggle`(非冪等な機構)は到達不能になるので**同じ変更で撤去する**
   (ユーザー判断: VK_IME_ON/OFFはIME種別によらず同じ挙動で常に安全。`ImeKeyKind::KanjiToggle`=物理VK_KANJIキーの分類は別物で残す)。
 status: |-
-  **ドラフト v4(未実装)**。opus round1・round2(撤去範囲の漏れ10件、数値の誤り3件)を反映、KanjiToggle撤去をユーザー判断で決定に追加(round3確認待ち)。CI検証済み(a8: run 35515406371、a9: run 35516320434)。実機(dragonflyg4)未検証。
+  **確定(実装に進んでよい)**。opus round1〜3で収束(round3: Blocker無し)、KanjiToggle撤去をユーザー判断で決定に追加。未実装、実機未検証。CI検証済み(a8: run 35515406371、a9: run 35516320434)。実機(dragonflyg4)未検証。
 related_adr:
   - "ADR-063"
   - "ADR-089"
@@ -22,7 +22,7 @@ related_adr:
 
 # ADR-190: MS-IMEのImmCross失敗後は冪等なVK_IME_ON/OFFへフォールバックする
 
-関連: [BUG-152](../known-bugs/BUG-152.md)、レビュー: [round1](190-opus-review-round1.md)、[round2](190-opus-review-round2.md)。
+関連: [BUG-152](../known-bugs/BUG-152.md)、レビュー: [round1](190-opus-review-round1.md)、[round2](190-opus-review-round2.md)、[round3](190-opus-review-round3.md)(Blocker無し)。
 
 ## 背景と症状
 
@@ -88,7 +88,9 @@ ADR-089自身が「`KanjiToggle`が到達するのは`ImmCross × MsIme`の1組�
      `decide_attempt`の腕、`ime::post_kanji_toggle_to_focused`と`apply_mechanism`の腕。
    - `lints/actuation_call_guard/src/lib.rs:77`の`RESTRICTED_CALLS`(`send_input_safe`)の許可呼び出し元`"post_kanji_toggle_to_focused"`(actuation合流点の許可リストから1件減る)。
    - `ImeOpenOutcome::FallbackSent`: 唯一の生成元(`ime_controller.rs:357`の`PostKanjiToggle`の腕)が消えるので到達不能なvariantになる。**同じ変更で消す**(別コミット):
-     コア`src/platform.rs`(定義と`wrote_open_state`等)、`crates/awase-windows/src/platform.rs`、`runtime/message_handlers.rs`(`ImeOpenOutcome`↔u8のワイヤ符号化、プロセス内なので互換性問題なし)、
+     **`runtime/message_handlers.rs`の`encode_outcome`/`decode_outcome`は`FallbackSent => 1`の行だけ消し、2〜7は動かさない(1を欠番にする)**: `decode_outcome`は数値matchでcatch-all(`other=>UnsafeToToggle`)を持つため、
+     番号を詰めて片方だけ直すとコンパイルは通り、実行時に全outcomeが黙って`UnsafeToToggle`(送っていない扱い)に倒れる。`encode_decode_outcome_roundtrips_for_all_variants`(`:2090`付近)のリストから`FallbackSent`を1件削る。
+     コア`src/platform.rs`(定義と`wrote_open_state`等。`should_send_accompanying_warmup`(`:249-254`)の腕削除はBUG-113/ADR-149の随伴warmupファミリーに触れるが**挙動不変**(到達不能アームの削除のみ))、`crates/awase-windows/src/platform.rs`、`runtime/message_handlers.rs`(`ImeOpenOutcome`↔u8のワイヤ符号化、プロセス内なので互換性問題なし)、
      `state/ime_event.rs`/`platform_state.rs`/`executor.rs`/`journal.rs`/`gji_direct_mechanism.rs`/`actuation_chain.rs`の`may_return_failed`表と`ALL_OUTCOMES`。
    - `state/actuation_decision_record.rs`の`MAX_WRITE_MECHANISMS`(4→3)と、境界テスト`deserialize_rejects_chain_longer_than_max_write_mechanisms`のフィクスチャ
      (`"KanjiToggle"`が未知variantになって「長さ超過」ではなく「デシリアライズ不能」でerrになり**恒真化する**ので、`["ImmCross","GjiDirect","MsImeDirect","ImmCross"]`(4件>3)に書き換える)、
@@ -109,8 +111,8 @@ ADR-089自身が「`KanjiToggle`が到達するのは`ImmCross × MsIme`の1組�
    **`tests/e2e_windows.rs`の`e2e_gji_vk_kanji_toggle_hazard_interactive`/`e2e_msime_vk_kanji_toggle_hazard_interactive`**(`WriteMechanism`を使わず生のVK_KANJIを送って「非冪等」を実機で示す。
    撤去後は`VK_KANJI`が非冪等だという唯一の実行可能な証拠になるので掃除で巻き込まない)。
    **再生フィクスチャ**: `tests/journals/`に`KanjiToggle`を含むものは**確認済みで0件**(`WriteMechanism`が載るのは`ime_apply/adr108-focus-crossing-success.json`の`ImmCross`/`MsImeDirect`のみ)。
-   一方`WriteMechanism`は`Serialize/Deserialize`で、`ActuationDecisionRecord`はbug reportの`journal_json`に相乗りする(ADR-095)ので、**撤去前に収集された`"KanjiToggle"`を含む旧reportは再生できなくなる**
-   (現コーパス`bug-131-report-*.json`には無く実害なし)。`#[serde(other)]`相当の受け口は型を足すので採らず、旧reportの再生は諦める。
+   一方`WriteMechanism`は`Serialize/Deserialize`で、`ActuationDecisionRecord`はbug reportの`journal_json`に相乗りする(ADR-095)ので、**撤去前に収集された`"KanjiToggle"`(と、`ImeOpenOutcome`も同じくserde derive(`src/platform.rs:152`)で`AttemptRecord.outcome`として載るので`"FallbackSent"`)を含む旧reportは再生できなくなる**
+   (現コーパス`bug-131-report-*.json`は両方0件、確認済みで実害なし)。`#[serde(other)]`相当の受け口は型を足すので採らず、旧reportの再生は諦める。
    なお`GjiDirect`と`MsImeDirect`はどちらも`VK_IME_ON/OFF`を送る冪等キーになり、差は適用条件(GJI検出/MS-IME推定)だけになる。統合は別ADRの候補(今回はやらない)。
    **tripwire**: 「`KanjiToggle`が不要」という結論は**`ImeKindId`が2値**(`GjiDirect⟺kind==Gji`、`MsImeDirect⟺kind==MsIme`)で全(profile,kind)に少なくとも1機構がapplicableであることに依存する。
    3値目を足すと、非同期チェーンで適用可能な機構が無く無音で`Failed`になる。`ImeKindId::ALL`のテスト(`caps_chains_match_the_adr089_table`)に落ちる先を残す。
@@ -178,6 +180,13 @@ Plain/Unknown(構造的に到達不能)。`imm_cross_is_first_applicable`は全�
 - CI: `sc-dbe/kanji/shift-msime-native`を`observe`→`pass`、`check_consistency.py`の判定窓。
 
 ## 検証計画
+
+- **`#[cfg(windows)]`で隠れる範囲(実装時の罠)**: `ime_controller`(`lib.rs:50-51`)・`ime`・`runtime`(`transport.rs`/`message_handlers.rs`/`open_chain.rs`)・`platform`・`journal`・`win32`・`output`・`imm`は
+  Linuxで1行もコンパイルされない。よって**決定2の安全網`caps_chain_matches_legacy_all_scan`(`ime_controller.rs:1006`)はwindows-build CIでしか作動しない**。
+  撤去差分の大半はhost targetの`cargo check`では検証できないので、`cargo check --target x86_64-pc-windows-msvc -p awase -p awase-windows --tests --lib`(リンカ不要)を必ず通す。
+  Linuxで走る(壊れれば即検出される)のは`state/`配下: `actuation_chain.rs`の4本、`app_ime_policy.rs`のcaps全数テスト、`actuation_decision_record.rs`の境界テスト、
+  `ime_profile_driver.rs`の不変条件テスト、`gji_direct_mechanism.rs`、コア`src/platform.rs`。`ALL_OUTCOMES`(`actuation_chain.rs:665` 7→6、`gji_direct_mechanism.rs:239` 6→5と`:279-284`の4→3)は長さ注記があるのでLinuxのコンパイルで必ず検出される。
+  **windows-build CIまで気付けない**: `ime_key_sequence_golden.rs`、`ime_controller.rs`の全テスト、`message_handlers.rs`のroundtripテスト、`runtime/transport.rs`の`plan`テスト(決定2で呼び出し形を変える先)。
 
 - 回帰テスト: 上記のgolden/単体テスト(`ImmCross × MsIme`のImmCross失敗後が`MsImeDirect`)。
 - CI実機E2E: 本変更のビルドで`sc-dbe/kanji/shift-msime-native`が各3/3 PASS。`sc-dbe-msime-native-noawase`との一致。
