@@ -11,11 +11,11 @@ set -u
 CW="${CLIPWIRE:-$HOME/powershell-clipd/target/release/clipwire}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ARGS="${1:?argsターゲット}"; OUT="${2:-$HERE/results/multi-$(date +%Y%m%d-%H%M%S)}"; PER="${3:-32}"
-N=12
 mkdir -p "$OUT"
 "$CW" exec e2e-diag-desktop >"$OUT/desktop.txt" 2>&1
 if grep -qE "LockApp|foreground: hwnd=0 " "$OUT/desktop.txt"; then echo "Windows機がロック画面です"; exit 2; fi
 "$CW" exec "$ARGS" >"$OUT/args.txt" 2>&1
+N=$(grep -o -- '--repeat=[0-9]*' "$OUT/args.txt" | head -1 | cut -d= -f2); N="${N:-12}"   # 待ち時間は args target の --repeat から取る
 "$CW" exec e2e-run >"$OUT/run.txt" 2>&1
 grep -q "spike procs: 1" "$OUT/run.txt" || { echo "スパイクを起動できません"; cat "$OUT/run.txt"; exit 2; }
 sleep $((N * PER + 10))

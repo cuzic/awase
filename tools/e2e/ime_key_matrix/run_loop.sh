@@ -8,15 +8,15 @@ set -u
 : "${CLIPD_HOST:=dragonflyg4}"; export CLIPD_HOST
 CW="${CLIPWIRE:-$HOME/powershell-clipd/target/release/clipwire}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ARGS="${1:?argsターゲット}"; OUT="${2:-$HERE/results/loop-$(date +%Y%m%d-%H%M%S)}"; PER="${3:-40}"; N=12
+ARGS="${1:?argsターゲット}"; OUT="${2:-$HERE/results/loop-$(date +%Y%m%d-%H%M%S)}"; PER="${3:-40}"; N="${N:-12}"   # 回数。Windows側の target `e2e-loop-n<N>`(clipwire-targets.example.toml)と一致させる
 mkdir -p "$OUT"
 "$CW" exec e2e-diag-desktop >"$OUT/desktop.txt" 2>&1
 if grep -qE "LockApp|foreground: hwnd=0 " "$OUT/desktop.txt"; then echo "Windows機がロック画面です"; exit 2; fi
 "$CW" exec "$ARGS" >"$OUT/args.txt" 2>&1
-"$CW" exec e2e-loop-n12 >/dev/null 2>&1
+"$CW" exec "e2e-loop-n$N" 2>&1 | grep -q "n=$N" || { echo "clipwire target e2e-loop-n$N が無い/未承認です(clipwire-targets.example.toml を参照)"; exit 2; }
 "$CW" exec e2e-loop-start >"$OUT/start.txt" 2>&1
 sleep $((N * PER))
-for _ in $(seq 1 20); do
+for _ in $(seq 1 $((N * 2 + 8))); do
   "$CW" exec e2e-fetch-multi >"$OUT/spike.log" 2>/dev/null
   grep -q "LOOP DONE" "$OUT/spike.log" && break
   sleep 15
