@@ -18,6 +18,7 @@ def main():
         return 2
     steps, invalid = parse_spike(sys.argv[1])
     probes, _ = parse_engine(sys.argv[2])
+    used = set()  # 1つの k を複数の手順に数えない
     if invalid:
         print(f"INVALID: 実行中にフォーカスが外れた({invalid}回)。この回は判定に使わない")
         return 3
@@ -34,7 +35,7 @@ def main():
             continue
         flipped = st["open"] != prev_open
         want_engine = bool(st["open"]) and bool(st["conv"] & 1)
-        got = engine_after(probes, st["press"])
+        got = engine_after(probes, st["press"], used)
         undecided = got is None and st["n"] == st["total"]  # 最終手順は k が取れないことがある(判定不能、失敗にはしない)
         eng_ok = got == want_engine or undecided
         ok = flipped and eng_ok

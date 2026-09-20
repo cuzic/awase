@@ -96,44 +96,29 @@ jobs:
             cfg('msime-stale-table', 'pass', check='consistency', args='--walk --key=henkan', toggle='false', keymap=2, custom_table='true'),
             # --- 操作シナリオ(sc-): IMEプリセット × 各種IMEキー × パススルー/抑止設定 × Shift単独打鍵 ---
             # 判定はどれも「実IMEのかな=Engine ON、英数・直接入力=Engine OFF」に追随するか(consistency)。
-            # GJI は2回のCI(各3回)で全シナリオPASSしたので pass に固定。MS-IME本体は毎回FAILする既知の差(下記)があり observe。
-            #   ・直接入力からの最初のひらがな(0xF2)でIMEが開かない(全シナリオ3/3)
-            #   ・半角/全角は F3=閉/F4=開の決め打ち(GJIのようなトグルではない)なので check=toggle は成立しない
+            # 全シナリオ pass(MS-IME本体もADR-190/BUG-152の修正後はPASS。修正前は直接入力からの最初のひらがな(0xF2)でIMEが開かず3/3 FAILだった)。
+            # ただし MS-IME本体の半角/全角(sc-hz-msime-native-*)は observe: F3=閉/F4=開の静的モデルでGJIのようなトグルではない(ADR-189が対象外にした範囲)。
             # noawase の構成は、それが awase のせいか(MS-IME本体の癖か)を切り分ける対照実験。
             # IME の3通り: msime-native(標準の日本語IME)、gji-msime(GJI + MS-IMEプリセット)、gji-atok(GJI + ATOKプリセット)
             # dbe_mode_key_policy: suppress(既定、DBEレンジ 英数/カタカナ/半角全角 を握りつぶす) / passthrough(そのまま通す)
             # half_width_alnum_toggle: 左Shift単独タップで半角英数(持続トグル)。GJIで使うには all が必要。
-            *[cfg(f'sc-dbe-{ime_name}-{pol}', 'observe' if ime == 'msime' else 'pass', check='consistency', toggle='false', ime=ime, keymap=km,
+            *[cfg(f'sc-dbe-{ime_name}-{pol}', 'pass', check='consistency', toggle='false', ime=ime, keymap=km,
                   args=f'--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2{msime}',
                   general=f'dbe_mode_key_policy = "{pol}"')
               for ime_name, ime, km, msime in SC_IMES for pol in ('suppress', 'passthrough')],
-            *[cfg(f'sc-kanji-{ime_name}', 'observe' if ime == 'msime' else 'pass', check='consistency', toggle='false', ime=ime, keymap=km,
+            *[cfg(f'sc-kanji-{ime_name}', 'pass', check='consistency', toggle='false', ime=ime, keymap=km,
                   args=f'--seq=F2,19,19,16,1A,16,1A,19,F2,1A{msime}')
               for ime_name, ime, km, msime in SC_IMES],
             *[cfg(f'sc-hz-{ime_name}-{pol}', 'observe' if ime == 'msime' else 'pass', check='toggle', toggle='false', ime=ime, keymap=km,
                   args=f'--hz{msime}', general=f'dbe_mode_key_policy = "{pol}"')
               for ime_name, ime, km, msime in SC_IMES for pol in ('suppress', 'passthrough')],
-            *[cfg(f'sc-shift-{ime_name}', 'observe' if ime == 'msime' else 'pass', check='consistency', toggle='false', ime=ime, keymap=km,
+            *[cfg(f'sc-shift-{ime_name}', 'pass', check='consistency', toggle='false', ime=ime, keymap=km,
                   args=f'--seq=F2,A0,A0,A0,A1,F2{msime}', general='half_width_alnum_toggle = "all"')
               for ime_name, ime, km, msime in SC_IMES],
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', toggle='false', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', toggle='false', ime='msime', awase='false',
                 args='--seq=F3,F3,F4,F4,F3,F4,F4,F3 --msime'),
-            # MS-IME本体の失敗の原因切り分け: ImmCross失敗後の盲目的な VK_KANJI トグルを撤去(a8)すると Engine ON + IME OFF が消えるか
-            cfg('sc-dbe-msime-native-a8', 'observe', mutator='a8-no-kanji-toggle-fallback.sh', check='consistency', toggle='false', ime='msime',
-                args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
-            cfg('sc-kanji-msime-native-a8', 'observe', bin='sc-dbe-msime-native-a8', check='consistency', toggle='false', ime='msime',
-                args='--seq=F2,19,19,16,1A,16,1A,19,F2,1A --msime'),
-            # a9: ImmCross失敗後を、非冪等な VK_KANJI ではなく冪等な VK_IME_ON/OFF(MsImeDirect)にする(a8より根本的な直し方の検証)
-            cfg('sc-dbe-msime-native-a9', 'observe', mutator='a9-msime-direct-after-immcross.sh', check='consistency', toggle='false', ime='msime',
-                args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
-            cfg('sc-kanji-msime-native-a9', 'observe', bin='sc-dbe-msime-native-a9', check='consistency', toggle='false', ime='msime',
-                args='--seq=F2,19,19,16,1A,16,1A,19,F2,1A --msime'),
-            cfg('sc-shift-msime-native-a9', 'observe', bin='sc-dbe-msime-native-a9', check='consistency', toggle='false', ime='msime',
-                args='--seq=F2,A0,A0,A0,A1,F2 --msime', general='half_width_alnum_toggle = "all"'),
-            cfg('sc-hz-msime-native-a9', 'observe', bin='sc-dbe-msime-native-a9', check='toggle', toggle='false', ime='msime',
-                args='--hz --msime'),
             # MS-IME本体で、スキャンコード付き/無しの注入(NOSCAN|0xF2 等)がIMEを開くか(awase の再注入は scan=0)
             cfg('sc-probe-vk-msime-native', 'observe', check='vkprobe', args='--vkprobe --msime', ime='msime', awase='false'),
           ]

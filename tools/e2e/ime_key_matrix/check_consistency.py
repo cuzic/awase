@@ -58,13 +58,21 @@ def parse_engine(path):
     return sorted(probes), unwarranted
 
 
-def engine_after(probes, press):
+def engine_after(probes, press, used=None):
     """押下の後、最初の k(KeyDown) の decision から Engine 状態を返す(PassThrough/PassThroughWith=OFF)。無ければ None。
 
 PassThroughWith は「そのまま通しつつ副作用(effects)も実行」で、Engineは変換していない(OFF)。
-Shift単独タップの半角英数(shift-conv-guard)後などで出る。"""
-    for ms, decision in probes:
-        if press < ms <= press + 2500:
+Shift単独タップの半角英数(shift-conv-guard)後などで出る。
+
+判定窓は +5000ms(ADR-190): CIランナーではスパイク側のタイマーが遅れ、step1 の k が +1.1〜1.6s、まれに +3.7〜4.6s かかる
+(+2500ms だと「?」になり、しかも次の手順の窓が遅れた k を横取りしていた)。`used` に消費済みの k の添字を渡すと、
+1つの k が複数の手順に数えられない(手順を順に呼ぶ側が同じ set を渡す)。"""
+    for i, (ms, decision) in enumerate(probes):
+        if used is not None and i in used:
+            continue
+        if press < ms <= press + 5000:
+            if used is not None:
+                used.add(i)
             return not decision.startswith("PassThrough")
     return None
 
@@ -77,6 +85,7 @@ def main():
         return 2
     steps, invalid = parse_spike(sys.argv[1])
     probes, unwarranted = parse_engine(sys.argv[2]) if not real_only else ([], 0)
+    used = set()  # 1つの k を複数の手順に数えない
     if invalid:
         print(f"INVALID: 実行中にフォーカスが外れた({invalid}回)。この回は判定に使わない")
         return 3
@@ -99,7 +108,7 @@ def main():
             fails += 1
             continue
         want = bool(st["open"]) and bool(st["conv"] & 1)
-        got = engine_after(probes, st["press"])
+        got = engine_after(probes, st["press"], used)
         real = f"open={st['open']} conv=0x{st['conv']:02X}"
         # 最終手順はスパイクがk入力の前に閉じることがあり、Engine状態が読めない(?)。判定不能として失敗にしない。
         undecided = got is None and st['n'] == total
