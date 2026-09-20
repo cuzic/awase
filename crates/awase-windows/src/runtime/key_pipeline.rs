@@ -1391,19 +1391,6 @@ impl Runtime {
         // `NotAModeKey`と`AwaseExplicit`は3判断とも同一挙動になるが、
         // 将来ケースが増えたときに区別できるよう分けておく（統合しない、
         // ADR-179「実装時に固定する」節参照）。
-        //
-        // 2026-09-18（ユーザー指示、実験的）: 主条件から`!is_configured_
-        // thumb_key`を撤廃した。親指キー設定×belief OFF（`delegate_owned`
-        // が構造的にfalseになる——`current`がfalseの間は`delegate_owned`
-        // 自体が成立しない）は、`Engine`の活性ゲートによりPhase 3（チョード
-        // 判定機構）へそもそも到達しない状態と同じであり、`transport.rs::
-        // plan`はVK_CONVERT/VK_NONCONVERTをthumb key設定に関わらず
-        // 無条件Allowする（M19明示config消費時を除く、同ファイルの
-        // コメント参照）。つまり生キーは元々物理配送されているにも
-        // 関わらず、従来は`AwaseExplicit`として重ねて明示actuateしており
-        // 二重信号になっていた。チョード保護が機能しない状態（IME OFF）
-        // でのみこの一般化が効くため、BUG-115が警告する「チョード中の
-        // 誤actuation」とは無関係。
         let is_target_vk = matches!(
             event.vk_code,
             crate::vk::VK_CONVERT | crate::vk::VK_NONCONVERT
@@ -1413,6 +1400,7 @@ impl Runtime {
         event.ime_relevance.actuation_owner = if delegate_owned {
             ModeKeyActuationOwner::FsmDelegate
         } else if is_target_vk
+            && !crate::gji_charset_autodetect::is_configured_thumb_key(event.vk_code)
             && matches!(
                 shadow_action_kind,
                 Some(ShadowImeAction::TurnOn | ShadowImeAction::TurnOff)
@@ -1819,10 +1807,8 @@ impl Runtime {
             let tick_ms = crate::state::TickMs(hook::current_tick_ms());
             // `origin` で belief 更新の経路を分ける（`SetOpenOrigin` の doc / 2026-08-04
             // 「IME OFF・Engine ON」再発対策参照）。
-            // - ExplicitUserAction / PhysicalDeliveryFollow: 本物のユーザー操作。
-            //   `last_intent` を設定してよい（`handle_engine_set_open`）。両者の違いは
-            //   実送信の有無だけ（`PhysicalDeliveryFollow`は`dispatch_effect`が実送信を
-            //   スキップする、`SetOpenOrigin`のdoc参照）——belief更新の経路は同じでよい。
+            // - ExplicitUserAction: IME/エンジン ON/OFF コンボ等、本物のユーザー操作。
+            //   `last_intent` を設定してよい（`handle_engine_set_open`）。
             // - ActivationSync: `check_active_transition` が対称性のために自動発行した
             //   echo（`ctx.ime_on` の観測駆動な変化だけでも起こりうる）。`last_intent` を
             //   設定すると、この echo が「ユーザーの本物の意図」として固定化され、
@@ -1830,8 +1816,7 @@ impl Runtime {
             //   ON へ戻る再発の根本原因だった）。`handle_engine_activation_sync` で
             //   `desired_open` のみ更新する。
             let applied = match origin {
-                awase::engine::SetOpenOrigin::ExplicitUserAction
-                | awase::engine::SetOpenOrigin::PhysicalDeliveryFollow => {
+                awase::engine::SetOpenOrigin::ExplicitUserAction => {
                     let applied = self.platform_state.ime.handle_engine_set_open(
                         new_ime_on,
                         event.modifier_snapshot.ctrl,

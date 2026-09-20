@@ -41,7 +41,7 @@ related_adr:
 
 # ADR-179: 無変換/変換の非親指キー時actuation-autoを撤去し、`ModeKeyActuationOwner`列挙で責務を統一管理する
 
-**8ラウンドのopus-adversarial-consultを経て収束済み。決定1・2は実装済み（2026-09-19時点、実験コミットが未撤去）。** 設計の
+**8ラウンドのopus-adversarial-consultを経て収束済み。決定1・2は実装済み（実験コミット4件は2026-09-20に撤去済み）。** 設計の
 紆余曲折（当初案からの縮小・4ラウンド連続で踏んだ「送信元が移動するだけ」
 という同型の誤り等）は末尾「レビュー経緯」節にまとめてある——まずは
 以下の決定・スコープ・撤去対象を読めば実装に着手できる。
@@ -445,18 +445,11 @@ MS-IME側のコメント（`message_handlers.rs:1031-1064`）には、過去の
 - `c0814776` 親指キー設定×IME OFF時もPhysicalDeliveryに一般化（`!is_configured_thumb_key`条件を撤廃）
 - `f0e36b0e` Henkan/MuhenkanのSuppress設定は方向を問わず完全に無視（`mode_key_config`がSomeのキー限定）
 
-**マージ前TODO（ユーザー指示、2026-09-19）**: Passthrough設定を前提とした上記の実験は、developへ
-マージする前に撤去し、既定（Suppress）の挙動へ戻す。手順の案:
-1. 実験コミット4件のうち、既定（Suppress）の挙動を変えているもの（`f0e36b0e`のSuppress完全無視、
-   `c0814776`のowner計算）を洗い出し、「マージするもの」と「revertするもの」に分ける。
-   revertするコミットは`.claude/rules/experiment-logging.md`に従い、コミット本文に観測された失敗条件
-   （アプリ・IME・症状）を書き、`docs/experiments.md`に1行追記する（IME actuation/key選択の領域）。
-2. Windows実機の`config.toml`から実験設定（`muhenkan_solo_tap_always_suppress = false`、
-   `henkan_solo_tap_always_suppress = false`等）を削除し、既定値へ戻す。
-3. 既定（Suppress）で`cargo test --lib`と実機A/Bが実験前と同等であることを確認する。
-4. ADR-182（チョード判定の修正、PR #225でマージ済み）はPassthrough設定でも機能する独立した修正だが、
-   テストの一部がPassthrough設定（`make_test_engine_with_muhenkan_passthrough`）を使うので、
-   実験撤去後も通ることを確認する。
+**実験コミット4件は撤去済み（2026-09-20、developマージ前、ユーザー指示）**: `f0e36b0e`・`c0814776`・`176d37af`・`b9e45e55`を
+この順にrevertした（衝突なし。`cargo test --lib`・`awase-windows`のlib/architecture_guard/layer_boundary_guard/golden_scenarios・
+`--test scenarios`・clippyが通る）。既定（Suppress）の挙動へ戻る。Windows実機の`config.toml`の実験設定
+（`muhenkan_solo_tap_always_suppress = false`等）は、実機側で別途戻す（このリポジトリの変更では戻らない）。
+`docs/experiments.md`エントリ27に記録した。ADR-182（チョード判定の修正）のテストはrevert後も通る。
 
 ## 未解決点（実装設計で詰める）
 

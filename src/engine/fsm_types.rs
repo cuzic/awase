@@ -694,38 +694,6 @@ impl From<GuardAction> for SoloTapAction {
     }
 }
 
-/// `resolve_pending_thumb_as_single` が生成する、IME open 軸への副作用要求
-/// （`NicolaFsm::ime_open_requested`/`take_ime_open_requested`で運ぶ）。
-///
-/// 2026-09-18追加: 単独タップ確定時、awase自身が実IME状態を変える
-/// （`Explicit`）か、生の物理キーをパススルーしGJI/MS-IME自身に委ねつつ
-/// beliefだけ追随させる（`FollowOnly`）かを区別する。`Option<bool>`等で
-/// 表現せず独立したvariantにする——将来ケースが増えても`_`に吸収されず、
-/// match網羅性が効くようにするため（`ModeKeyActuationOwner`と同じ設計判断）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImeOpenRequest {
-    /// awase自身が実IME状態を変える（明示actuate）。専用Fnキー・
-    /// ユーザー明示config（優先順位2）・delegate_to_open_axisが
-    /// パススルーへ辞退しなかった場合（優先順位3）に使う。
-    Explicit(crate::types::ShadowImeAction),
-    /// beliefだけ追随させる。実IME状態の変更は、既にパススルーした生の
-    /// 物理キーを受けたGJI/MS-IME自身に委ね、awaseは一切actuateしない。
-    /// `delegate_to_open_axis`がユーザー設定（`ModeKeyConfig::
-    /// is_passthrough`）によりパススルーへ辞退した場合（TurnOn/TurnOff
-    /// 方向のみ、Toggleは非冪等なため常に`Explicit`のまま）に使う。
-    FollowOnly(crate::types::ShadowImeAction),
-}
-
-impl ImeOpenRequest {
-    /// この要求が要求する`ShadowImeAction`（責務の種別を問わない）。
-    #[must_use]
-    pub const fn action(self) -> crate::types::ShadowImeAction {
-        match self {
-            Self::Explicit(a) | Self::FollowOnly(a) => a,
-        }
-    }
-}
-
 /// Space/Enter 親指キー（IME の正規機能を持つキー）の設定（ADR-092 決定B）。
 /// 無変換/変換（`ModeKeyConfig`、IME モードキー）とは異なり、composing 中も
 /// 既定で素通しする正規機能のキーのため、`ignore_composing_guard`/

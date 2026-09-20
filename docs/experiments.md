@@ -1121,3 +1121,18 @@ open軸へdelegate）を実機で試すと動かず、E2Eハーネス（`tools/e
   デッドコードと証明できたが、E4/E6はEDITでは使われないだけで、TsfNative/Chromeでの要否は未確認のまま残した。
 - 撤去実験は`tools/e2e/ime_key_matrix/ablations/`と`.github/workflows/e2e-ime.yml`（GitHub-hostedのWindowsランナー、
   `ci/e2e-ime`ブランチ）で再実行できる。実機を占有せず、構成×3回を並列に回せる。
+
+## エントリ 27: ADR-179 Passthrough設定の実験4件(FollowOnly belief追随等)を、developマージ前に撤去(revert)
+
+**背景**: `feat/adr178-mode-key-actuation-and-tsfnative-rescue-teardown`上で、ユーザー指示により、無変換/変換の単独タップを
+Passthroughにする設定(`muhenkan_solo_tap_always_suppress = false`等)を前提とした実験コミット4件を、実機で試していた。
+本ADR(ADR-179)の決定ではない実験のため、developへマージする前に撤去し、既定(Suppress)の挙動へ戻す(ADR-179「実装状況と実験コミット」節のマージ前TODO)。
+
+| 日付 | 仮説 | 環境 | 変更 | 観測結果 | 判定 |
+| --- | --- | --- | --- | --- | --- |
+| 2026-09-19 | 単独タップpassthrough辞退をTurnOff/Toggleにも拡張(`b9e45e55`)、FollowOnly belief追随を新設しToggleは辞退対象から除外(`176d37af`)、親指キー設定×IME OFF時もPhysicalDeliveryに一般化(`c0814776`)、Henkan/MuhenkanのSuppress設定は方向を問わず完全に無視(`f0e36b0e`)すれば、Passthrough設定でもEngineがIME状態に追随する | Windows実機(dragonflyg4)、GJI、Passthrough設定(`*_solo_tap_always_suppress=false`) | 上記4コミット | 実機で試行(ユーザー指示)。**失敗条件の観測は無い**(本ADRの決定ではなく、developへ入れない実験のため撤去する)。ATOKのPassthroughでEngineが追随しない問題は、ADR-186/187のCI実機E2Eで原因(意図の固定・読み直しの契機なし・typing-idleガード)を特定し、別の実装(通過マーク+観測+意図の無効化、`shadow_action`なしのキーに限定)で解決した | 撤回(revert)。ADR-187のfollow方式に置き換え |
+
+**学び**:
+- FollowOnly(方向固定のTurnOn/TurnOffだけbeliefを予測で書く)は、ATOKの状態依存(入力中は開閉が変わらない)のToggleには使えないと分かり、
+  Toggleは観測に基づくfollow(ADR-187)へ、方向固定のキーはbeliefトグル(ADR-188、GJIの半角/全角)へ分けた。
+- 実験コミットをdevelopへ入れる前に撤去する運用(このエントリ)は、同種の実験(Passthrough等)が本決定と混ざらないようにする。

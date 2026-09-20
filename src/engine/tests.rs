@@ -7283,13 +7283,11 @@ mod engine_integration_tests {
 
     /// 無変換単独タップが**確定**（timeout）した時点で `DelegateToOpenAxis` が
     /// 発火し、`Effect::Ime(SetOpen)` が生成され、かつ生 VK_NONCONVERT は
-    /// 送出されない。2026-09-18: Suppress設定（既定）はTurnOn/TurnOff/Toggle
-    /// いずれも無条件no-opになったため、delegateが実際に明示actuateする
-    /// 唯一の組み合わせ（Passthrough設定 + Toggle方向）で固定する。
+    /// 送出されない。
     #[test]
     fn delegate_to_open_axis_fires_on_confirmed_muhenkan_solo_tap() {
-        let mut engine = make_test_engine_with_muhenkan_passthrough();
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
+        let mut engine = make_test_engine_with_muhenkan();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
 
         let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
         assert!(
@@ -7304,10 +7302,7 @@ mod engine_integration_tests {
         let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ime(ImeEffect::SetOpen {
-                open: false,
-                origin: SetOpenOrigin::ExplicitUserAction
-            })
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
         )));
         assert!(
             !has_effect(&d, |e| matches!(
@@ -7445,12 +7440,10 @@ mod engine_integration_tests {
     }
 
     /// `ShadowImeAction::Toggle` は確定時点の `ctx.ime_on`（belief）を見て
-    /// 反転方向を決める。Toggleは常にawaseが明示actuateするため、
-    /// Suppress/Passthroughいずれの設定でも（Passthrough設定を使えば）
-    /// 発火する——ここではPassthrough設定を使う。
+    /// 反転方向を決める。
     #[test]
     fn delegate_to_open_axis_toggle_resolves_via_ctx_ime_on() {
-        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let mut engine = make_test_engine_with_muhenkan();
         engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
@@ -7496,8 +7489,8 @@ mod engine_integration_tests {
     /// と同型のテスト。
     #[test]
     fn delegate_to_open_axis_confirmed_tap_does_not_double_emit_set_open_on_next_input() {
-        let mut engine = make_test_engine_with_muhenkan_passthrough();
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
+        let mut engine = make_test_engine_with_muhenkan();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
         let d1 = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
@@ -7577,12 +7570,11 @@ mod engine_integration_tests {
     /// `delegate_to_open_axis_fires_on_confirmed_muhenkan_solo_tap` の変換
     /// （henkan）版。`resolve_pending_thumb_as_single`のhenkan分岐
     /// （`dedicated_fn_key`は常に`None`、`ModeKeyConfig`のみ）を固定する
-    /// （テストカバレッジ欠落の指摘への対応）。2026-09-18: Passthrough設定 +
-    /// Toggle方向（delegateが実際に明示actuateする唯一の組み合わせ）で固定。
+    /// （テストカバレッジ欠落の指摘への対応）。
     #[test]
     fn delegate_to_open_axis_fires_on_confirmed_henkan_solo_tap() {
-        let mut engine = make_test_engine_with_henkan_passthrough();
-        engine.set_henkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
+        let mut engine = make_test_engine_with_henkan();
+        engine.set_henkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
 
         let d = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
         assert!(
@@ -7597,10 +7589,7 @@ mod engine_integration_tests {
         let d = engine.on_input(Ev::up(VK_CONVERT).at(200).build(), &ime_on_ctx());
         assert!(has_effect(&d, |e| matches!(
             e,
-            Effect::Ime(ImeEffect::SetOpen {
-                open: false,
-                origin: SetOpenOrigin::ExplicitUserAction
-            })
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
         )));
         assert!(
             !has_effect(&d, |e| matches!(
@@ -7613,48 +7602,11 @@ mod engine_integration_tests {
         );
     }
 
-    /// 2026-09-18（ユーザー指示）: 親指キー設定 × Suppress設定（既定値）
-    /// では、delegate_to_open_axisが分類した方向（TurnOn/TurnOff/Toggle）
-    /// を問わず単独タップは完全に無視される（生キーも送らず、belief更新も
-    /// actuateもしない）。`make_test_engine_with_muhenkan`/`_henkan`は
-    /// Suppress既定（`ModeKeyConfig::from_legacy_bools(false, true)`）。
-    #[test]
-    fn delegate_to_open_axis_is_fully_ignored_under_suppress_config_regardless_of_direction() {
-        for action in [
-            ShadowImeAction::TurnOn,
-            ShadowImeAction::TurnOff,
-            ShadowImeAction::Toggle,
-        ] {
-            let mut engine = make_test_engine_with_muhenkan();
-            engine.set_muhenkan_delegate_to_open_axis(Some(action));
-
-            let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-            let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
-            assert!(
-                !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
-                "Suppress設定はaction={action:?}でもIME effectを発行してはならない, got {:?}",
-                effects_of(&d)
-            );
-            assert!(
-                !has_effect(&d, |e| matches!(
-                    e,
-                    Effect::Input(InputEffect::SendKeys(actions))
-                        if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
-                )),
-                "Suppress設定はaction={action:?}でも生キーを送出してはならない, got {:?}",
-                effects_of(&d)
-            );
-        }
-    }
-
-    // ── delegate_to_open_axis はユーザーの明示的なパススルー設定
-    // （ModeKeyConfig::is_passthrough）に、TurnOn/TurnOff方向（冪等）
-    // に限り道を譲る。旧BUG-119/ADR-147ではTurnOn限定だったが、
-    // 2026-09-18にユーザー指示でTurnOffにも拡張した。ただしToggle方向
-    // （非冪等、awaseが唯一の変更主体であるべき——ADR-179と同じ原則）は
-    // 辞退しない。辞退した場合、beliefは`SetOpenOrigin::
-    // PhysicalDeliveryFollow`で追随させる（実送信はしない）
-    // （実機A/B検証中、nicola_fsm.rsの該当doc参照）。
+    // ── BUG-119/ADR-147: delegate_to_open_axis はユーザーの明示的な
+    // パススルー設定（ModeKeyConfig::is_passthrough）に道を譲るべきだが、
+    // TurnOn 方向に限定する（TurnOff/Toggle まで広げると
+    // `delegate_owns_mode_key_shadow_toggle` 側との整合が崩れる、ADR-147
+    // 「消費点と所有権のマトリクス」参照）。
 
     /// `muhenkan_vk` を設定し、単独タップ設定を「常に送出する（パススルー）」
     /// にした `Engine` を返す（`always_suppress=false`,
@@ -7953,22 +7905,9 @@ mod engine_integration_tests {
         engine
     }
 
-    /// `d`から`Ime(SetOpen{open, origin: PhysicalDeliveryFollow})`を探す。
-    fn has_follow_only_set_open(d: &Decision, expect_open: bool) -> bool {
-        has_effect(d, |e| {
-            matches!(
-                e,
-                Effect::Ime(ImeEffect::SetOpen { open, origin })
-                    if *open == expect_open
-                        && matches!(origin, SetOpenOrigin::PhysicalDeliveryFollow)
-            )
-        })
-    }
-
     /// BUG-119の退行そのもの: `TurnOn`方向のdelegateは、ユーザーが明示的に
     /// パススルーを選んでいれば辞退し、生の`VK_NONCONVERT`がそのまま
-    /// 送出される。belief追随用に`PhysicalDeliveryFollow`のSetOpenは
-    /// 発行される（実送信はしない、`origin`で区別）。
+    /// 送出される（`SetOpen`は発行されない）。
     #[test]
     fn delegate_to_open_axis_turn_on_defers_to_user_passthrough_muhenkan() {
         let mut engine = make_test_engine_with_muhenkan_passthrough();
@@ -7977,8 +7916,8 @@ mod engine_integration_tests {
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
         let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(
-            has_follow_only_set_open(&d, true),
-            "TurnOn delegate must defer to user passthrough with belief follow, got {:?}",
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "TurnOn delegate must defer to user passthrough, got {:?}",
             effects_of(&d)
         );
         assert!(
@@ -7992,33 +7931,40 @@ mod engine_integration_tests {
         );
     }
 
-    /// 2026-09-18変更: `TurnOff`方向のdelegateも、パススルー設定なら
-    /// 辞退し、生キーがそのまま送出される（belief追随のみ、実送信はしない）。
+    /// Blocker再発防止（ADR-147）: `TurnOff`方向のdelegateは、パススルー
+    /// 設定であっても**辞退しない**（従来どおり発火し、生キーはSuppressされる）。
+    /// TurnOff/Toggleまで辞退させると、`kp_stage_shadow_ime_toggle`の
+    /// 所有権判定（`delegate_owns_mode_key_shadow_toggle`、`mode_key_config`
+    /// を見ない）が「delegateが処理する」と誤信したまま身を引き、GJI自身が
+    /// 生キーでIMEを切り替える一方awaseのbeliefだけが取り残される
+    /// 「誰も追随しない」窓ができる。
     #[test]
-    fn delegate_to_open_axis_turn_off_defers_to_user_passthrough_muhenkan() {
+    fn delegate_to_open_axis_turn_off_still_wins_over_user_passthrough_muhenkan() {
         let mut engine = make_test_engine_with_muhenkan_passthrough();
         engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
         let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(
-            has_follow_only_set_open(&d, false),
-            "TurnOff delegate must defer to user passthrough with belief follow, got {:?}",
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+            )),
+            "TurnOff delegate must still fire even with user passthrough configured, got {:?}",
             effects_of(&d)
         );
         assert!(
-            has_effect(&d, |e| matches!(
+            !has_effect(&d, |e| matches!(
                 e,
                 Effect::Input(InputEffect::SendKeys(actions))
                     if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
             )),
-            "raw VK_NONCONVERT must be passed through when TurnOff delegate defers, got {:?}",
+            "raw VK_NONCONVERT must not be sent when TurnOff delegate wins, got {:?}",
             effects_of(&d)
         );
     }
 
-    /// `Toggle`方向は非冪等なため、パススルー設定であっても**辞退しない**
-    /// （従来どおりawase自身が明示actuateし、生キーはSuppressされる）。
+    /// 上記TurnOffテストの`Toggle`版（同じくパススルー設定でも辞退しない）。
     #[test]
     fn delegate_to_open_axis_toggle_still_wins_over_user_passthrough_muhenkan() {
         let mut engine = make_test_engine_with_muhenkan_passthrough();
@@ -8027,15 +7973,8 @@ mod engine_integration_tests {
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
         let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(
-            has_effect(&d, |e| matches!(
-                e,
-                Effect::Ime(ImeEffect::SetOpen {
-                    open: false,
-                    origin: SetOpenOrigin::ExplicitUserAction
-                })
-            )),
-            "Toggle delegate must still fire explicitly even with user passthrough configured, \
-             got {:?}",
+            has_effect(&d, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
+            "Toggle delegate must still fire even with user passthrough configured, got {:?}",
             effects_of(&d)
         );
         assert!(
@@ -8059,8 +7998,8 @@ mod engine_integration_tests {
         let _ = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
         let d = engine.on_input(Ev::up(VK_CONVERT).at(200).build(), &ime_on_ctx());
         assert!(
-            has_follow_only_set_open(&d, true),
-            "TurnOn delegate must defer to user passthrough with belief follow (henkan), got {:?}",
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "TurnOn delegate must defer to user passthrough (henkan), got {:?}",
             effects_of(&d)
         );
         assert!(
@@ -8075,24 +8014,27 @@ mod engine_integration_tests {
     }
 
     #[test]
-    fn delegate_to_open_axis_turn_off_defers_to_user_passthrough_henkan() {
+    fn delegate_to_open_axis_turn_off_still_wins_over_user_passthrough_henkan() {
         let mut engine = make_test_engine_with_henkan_passthrough();
         engine.set_henkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
 
         let _ = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
         let d = engine.on_input(Ev::up(VK_CONVERT).at(200).build(), &ime_on_ctx());
         assert!(
-            has_follow_only_set_open(&d, false),
-            "TurnOff delegate must defer to user passthrough with belief follow (henkan), got {:?}",
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+            )),
+            "TurnOff delegate must still fire even with user passthrough configured (henkan), got {:?}",
             effects_of(&d)
         );
         assert!(
-            has_effect(&d, |e| matches!(
+            !has_effect(&d, |e| matches!(
                 e,
                 Effect::Input(InputEffect::SendKeys(actions))
                     if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_CONVERT))
             )),
-            "raw VK_CONVERT must be passed through when TurnOff delegate defers (henkan), got {:?}",
+            "raw VK_CONVERT must not be sent when TurnOff delegate wins (henkan), got {:?}",
             effects_of(&d)
         );
     }
@@ -8105,15 +8047,8 @@ mod engine_integration_tests {
         let _ = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
         let d = engine.on_input(Ev::up(VK_CONVERT).at(200).build(), &ime_on_ctx());
         assert!(
-            has_effect(&d, |e| matches!(
-                e,
-                Effect::Ime(ImeEffect::SetOpen {
-                    open: false,
-                    origin: SetOpenOrigin::ExplicitUserAction
-                })
-            )),
-            "Toggle delegate must still fire explicitly even with user passthrough configured \
-             (henkan), got {:?}",
+            has_effect(&d, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
+            "Toggle delegate must still fire even with user passthrough configured (henkan), got {:?}",
             effects_of(&d)
         );
         assert!(
@@ -8147,7 +8082,7 @@ mod engine_integration_tests {
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
         let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(
-            has_follow_only_set_open(&d, true),
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
             "TurnOn delegate must defer when idle side is Passthrough even in the \
              asymmetric ModeKeyConfig case, got {:?}",
             effects_of(&d)
@@ -8180,9 +8115,9 @@ mod engine_integration_tests {
         // （`step_pending_thumb_thumb`、`on_timeout`を経由しない即時確定経路）。
         let d = engine.on_input(Ev::down(VK_CONVERT).at(50).build(), &ime_on_ctx());
         assert!(
-            has_follow_only_set_open(&d, true),
-            "TurnOn delegate must defer to user passthrough via step_pending_thumb_thumb \
-             with belief follow, got {:?}",
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "TurnOn delegate must defer to user passthrough via step_pending_thumb_thumb, \
+             got {:?}",
             effects_of(&d)
         );
         assert!(

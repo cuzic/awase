@@ -780,19 +780,7 @@ impl DecisionExecutor {
         // ImeEffect::SetOpen は ImmCross-first か否かで async / sync を分岐するため
         // 先に処理する（後段の `let platform_rt = platform` が `platform`
         // を独占する前に `build_ime_control_view` を呼ぶ必要がある）。
-        //
-        // `origin: PhysicalDeliveryFollow`（2026-09-18追加）は belief 追随専用
-        // （`kp_stage_post_decision` が既に belief を更新済み）——実IME状態の
-        // 変更は生の物理キーを受けたGJI/MS-IME自身に委ね、ここでの実送信は
-        // 一切行わない（`SetOpenOrigin`のdoc参照）。
-        if let Effect::Ime(ImeEffect::SetOpen { open, origin }) = effect {
-            if origin == SetOpenOrigin::PhysicalDeliveryFollow {
-                tracing::debug!(
-                    "[mode-key-actuation] PhysicalDeliveryFollow: SetOpen({open}) の実送信を \
-                     スキップ（belief追随のみ、物理キー配送のみに委ねる）"
-                );
-                return None;
-            }
+        if let Effect::Ime(ImeEffect::SetOpen { open, .. }) = effect {
             return self.dispatch_ime_set_open(platform, ime, open, generation);
         }
         // EngineStateChanged: エンジン ON/OFF に連動して conv mutation ゲートを更新する。
