@@ -504,7 +504,11 @@ fn exp_drive(now: u64, hwnd: HWND) {
         let cond = format!("scan{:X}/{}", x.scan, if x.write { "write" } else { "nowrite" });
         match x.phase {
             0 => {
+                if x.trial == 0 && x.prep == 0 {
+                    log_active_tip("開始時");
+                }
                 if x.trial >= x.n {
+                    log_active_tip("終了時");
                     done_msg = Some(format!("[EXP] cond={cond} {}手完了", x.n));
                     return u64::MAX;
                 }
@@ -1587,6 +1591,24 @@ fn create_window() -> WinResult<HWND> {
 
 /// `--activate-gji`: GJI(Google 日本語入力)のTSFプロファイルを、セッション内でアクティブにする。
 /// CI(GitHub Actions)のように、`Set-WinUserLanguageList`が次回サインインまで有効にならない環境用。
+/// 現在アクティブなTIP(GJIかMS-IMEか)をログに出す。実験の前提(有効なIME)を記録するため。
+fn log_active_tip(label: &str) {
+    unsafe {
+        let mgr: WinResult<ITfInputProcessorProfileMgr> =
+            CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER);
+        if let Ok(m) = mgr {
+            let mut p = windows::Win32::UI::TextServices::TF_INPUTPROCESSORPROFILE::default();
+            match m.GetActiveProfile(&GUID_TFCAT_TIP_KEYBOARD, &raw mut p) {
+                Ok(()) => append_log(&format!(
+                    "[TIP] {label}: clsid={:?} profile={:?} lang=0x{:04X}",
+                    p.clsid, p.guidProfile, p.langid
+                )),
+                Err(e) => append_log(&format!("[TIP] {label}: 取得失敗 {e}")),
+            }
+        }
+    }
+}
+
 fn activate_gji_profile() {
     // GJI(Mozc)のCLSIDとプロファイルGUID、日本語(0x0411)。
     let clsid = windows::core::GUID::from_u128(0xD5A86FD5_5308_47EA_AD16_9C4EB160EC3C);
