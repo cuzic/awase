@@ -1,20 +1,18 @@
 ---
 id: ADR-187
 title: |-
-  GJI(ATOK)で無変換/変換をパススルーする設定(`gji_thumb_key_ime_toggle=false`)のとき、生キー通過後に実IMEを読み直し、
-  開閉が変わっていればそれをユーザーの明示意図として記録してEngineを追随させる
+  GJI(ATOK)で無変換/変換をパススルーする設定(`gji_thumb_key_ime_toggle=false`)のとき、生キー通過後に、対象ウィンドウの
+  古い明示意図(IntentStore)を無効化して実IMEを読み直し、Engineを観測に追随させる
 summary: |-
   CI実機E2E(ADR-186、`atok-passthrough`/`atok-passthrough-henkan`、各3/3)で、ATOKプリセット+パススルー(opt-in無し)では、
-  実IMEはGJIが正しく開閉する(生の無変換/変換が届く)のに**Engineが追随しない**ことを確認した(IME OFFでもEngine ONのまま=
-  直接入力にNICOLA変換が効く)。原因は3層: (1)生キー通過後に実IMEを読み直す契機が無い(`may_change_ime`は無変換/変換を
-  意図的に含まず、親指キーはKeyDownをFSMがConsumeするため通過後の20ms再読み取りも発火しない)。(2)読み直しだけでは足りない
-  可能性が高い: 実IMEがOFFなのに`desired_open`と明示ON意図(IntentStore、10秒)が残ると、ドリフト補正がIMEをONへ戻しに行く
-  (未検証、下記の実験1で確認する)。(3)無変換/変換のToggleは非冪等で、「!belief」の予測はComposition中(半角英数トグルで開閉
-  不変)などで外れる(BUG-115が既定opt-in無しにした理由1)。推奨は**観測型の追随**: 通過後に実IMEを読み、開閉が変化していれば
-  その観測値を`PhysicalImeKey`由来の明示意図として既存の単一書き込み口(`write_physical_key`相当)で記録する。予測せず、
-  actuateせず、新しい型・フィールドを増やさない。
+  実IMEはGJIが正しく開閉する(生の無変換/変換が届く)のに**Engineが追随しない**ことを確認した(IME OFFでもEngine ONのまま)。
+  原因は4層: (1)生キー通過後に実IMEを読み直す契機が無い。(2-a)**直前の明示意図(ひらがなキー等、IntentStore、ON 10秒/OFF 30秒)が
+  `effective_open()`を無条件に固定する**ため、観測が入ってもEngineは追随しない(支配的)。(2-b)desired_openと明示意図が残るとドリフト補正が
+  実IMEをONへ戻しに行く。(3)Toggleは非冪等で予測できない(ADR-179/BUG-115)。opusレビューround1の結果、推奨は**古い意図の無効化**:
+  通過した無変換/変換の実送出点(executor)で、対象hwndのIntentStoreエントリを消し、typing-idleガードをバイパスして再読み取りする。
+  観測値を意図として書かない(witness不要・TTL固着なし・権限昇格なし)。追加は「通過マーク+既存API呼び出し」で、新しい型は足さない。
 status: |-
-  **ドラフトv1(未実装、opusレビュー前)**。実機/CIでの検証は実験1〜3(下記)。設計はopus-adversarial-consultで収束させてから実装する。
+  **ドラフトv2(未実装、opusレビューround1反映、round2待ち)**。決定2'(無効化)を第一候補とし、desired_openの扱いで詰まる場合のみ決定2(観測を意図として記録)へ戻る。実験1〜4(下記)で確定する。
 related_adr:
   - "ADR-090"
   - "ADR-115"
@@ -24,13 +22,15 @@ related_adr:
 
 # ADR-187: ATOK+パススルーでの無変換/変換に対するEngine追随(観測型)
 
+レビュー: [187-opus-review-round1.md](187-opus-review-round1.md)(Blocker 3 / Must-fix 6 / Should-fix 5、v1の前提2つを訂正)。
+
 ## 背景
 
 ユーザー要件(ADR-186): **かな=Engine ON、英数(半角英数・直接入力)=Engine OFF、押下直後から**。
 
-ADR-186は、`gji_thumb_key_ime_toggle=true`(opt-in)なら無変換/変換の開閉トグルにEngineが押下時点で追随することを
-実機とCIで確認した。一方、**opt-in無し(既定、パススルー)のATOKユーザーは未解決**として残した。CI(run 35486929410)の
-`--walk`(ひらがな/無変換/変換の固定12押下)で、`atok-passthrough`と`atok-passthrough-henkan`は各3/3が次の型で失敗した:
+ADR-186は、`gji_thumb_key_ime_toggle=true`(opt-in)なら無変換/変換の開閉トグルにEngineが押下時点で追随することを実機とCIで
+確認した。**opt-in無し(既定、パススルー)のATOKユーザーは未解決**として残した。CI(run 35486929410)の`--walk`
+(ひらがな/無変換/変換の固定12押下)で、`atok-passthrough`と`atok-passthrough-henkan`は各3/3が次の型で失敗した:
 
 | 押下 | 実IME(+1500ms) | Engine |
 |---|---|---|
@@ -38,88 +38,111 @@ ADR-186は、`gji_thumb_key_ime_toggle=true`(opt-in)なら無変換/変換の開
 | 変換(かなON→) | open=0 | **ON のまま** |
 | 無変換/変換(OFF→) | open=1 | ON(実IMEと一致) |
 
-実IMEは正しい(生キーがGJIに届き、GJIがATOKのキーマップどおり開閉する)。Engineだけが追随しない。ONのまま直接入力になると
-NICOLA変換が効き続け、直接入力にかなが出る。awase起動中のこの状態はユーザーの要件を直接破る。
+実IMEは正しい(生キーがGJIに届く)。Engineだけが追随せず、ONのまま直接入力になるとNICOLA変換が効き続ける。
 
-ログ(CI run 35486929410 `result-atok-passthrough-1`、無変換): 物理KeyDownは`PendingThumb`でConsume、100ms後のタイマーと
-KeyUpで単独タップ確定→`send_keys: Key(0x1D)`で**生キーをそのまま送出**→その後4秒間、`IME snapshot`/`stage-observe`/
-`notify-refresh`/`drift`/`Engine (de)activated`のいずれも出ない。awaseは何も観測していない。
+ログ(`result-atok-passthrough-1`、無変換): KeyDownは`PendingThumb`でConsume→**KeyUpで**単独タップ確定(タイマーではない。
+パススルー設定の親指は既に`defers_solo_until_release`の対象)→`send_keys: Key(0x1D)`で生キー送出→その後4秒間、`IME snapshot`/
+`stage-observe`/`drift`/`Engine (de)activated`のいずれも出ない。awaseは何も観測していない。
 
-## 原因(3層)
+## 原因(4層)
 
 1. **通過後に読み直す契機が無い。** 物理IMEキーの通過後20ms再読み取り(`key_pipeline.rs`、`!decision.is_consumed() &&
-   ime_relevance.may_change_ime && KeyDown`)は、(a)`may_change_ime`が無変換/変換を意図的に含まず(`vk.rs`のテストが
-   「第3の軸」として固定)、(b)親指キーのKeyDownはFSMがConsumeするため、二重に発火しない。生キーは単独タップ確定時
-   (KeyUp/タイマー)に別経路で送出される。
-2. **読み直すだけでは足りない(仮説)。** 実IMEがOFFになった後に観測が入ると、`desired_open`は直前の明示ON(ひらがな等、
-   IntentStoreに10秒)のままなので`desired≠observed`となり、`check_drift_correction`は強い意図が一致する場合しきい値0で
-   即時補正へ進む。warrantのStep 1(IntentStore)が「ONの意図あり」と判定すると、awase自身がIMEをONへ戻す。
-   ADR-186決定2の根本原因(明示意図が記録されないとwarrantが`Unwarranted`で外れる)の鏡像。
-3. **Toggleは非冪等。** 「!belief」の予測(`FollowOnly(Toggle)`、`ModeKeyActuationOwner::PhysicalDelivery`のToggle版)は、
-   ATOKの状態依存(DirectInput→IMEOn、Precomposition→CancelAndIMEOff、**Composition→半角英数トグルで開閉不変**)で外れる。
-   beliefが外れるとドリフト補正が実IMEと逆へ書く(BUG-113系)。ADR-179が`FollowOnly`をTurnOn/TurnOffに限りToggleを
-   常に`Explicit`にした理由、BUG-115が既定opt-in無しにした理由1と同じ。
+   may_change_ime && KeyDown`)は、`may_change_ime`が無変換/変換を意図的に含まず(`vk.rs`の「第3の軸」テスト)、親指キーの
+   KeyDownはFSMがConsumeするため発火しない。生キーはKeyUp確定時に別経路(`execute_one`→`output::send_keys`)で出る。
+2. **(2-a)直前の明示意図がEngineの見る値を固定する(支配的)。** `effective_open_at`(`platform_state.rs:674`)は
+   `IntentStore::resolve_effective_open`(`intent_store.rs:158`)を通り、対象hwndに意図が**有れば観測を無視してその値を返す**。
+   ひらがなキー(`shadow-toggle`→`write_physical_key`→`record_explicit_intent`)は10秒のON意図をhwndに残す
+   (`EXPLICIT_ON_INTENT_TTL_MS`)。この間、実IMEがOFFになって観測が入っても`ctx.ime_on`は動かない。**読み直しだけでは
+   Engineは原理的に追随しない**。OFF意図は30秒(`EXPLICIT_OFF_INTENT_TTL_MS`)。
+   **(2-b)ドリフト補正。** `desired_open`(ひらがなで`true`)と明示意図が一致する場合、`check_drift_correction`はしきい値0で
+   即補正に進み、warrant Step 1(意図)が出て、awase自身がIMEをONへ戻す。起動直後のCIログ98行目に同経路の実例がある。
+3. **Toggleは非冪等。** 「!belief」の予測は、ATOKの状態依存(DirectInput→IMEOn、Precomposition→CancelAndIMEOff、
+   **Composition→半角英数トグルで開閉不変**)で外れる。ADR-179が`FollowOnly`をTurnOn/TurnOffに限った理由、
+   BUG-115の理由1と同じ。
+4. **観測を意図として書く案は、`from_physical`が受理しない。** `IntentWitness::from_physical`(`evidence.rs:369`)は
+   `shadow_action`が有る物理キーだけを受理し、0x1C/0x1D(変換/無変換)は`ImeKeyKind::from_vk`に含まれない。ATOKパススルーでは
+   自動検出の`shadow_action`もopt-in無しで`None`(`gate_thumb_key_ime_actions`)。よって`write_physical_key`は黙って空振りする
+   (`evidence.rs:356`のdocが記録する2026-09-08の実機回帰と同型)。
 
 ## 選択肢
 
-- **A. 通過後の再読み取りだけ足す**(`schedule_ime_refresh(20)`)。最小だが原因2で、実IMEを再びONへ戻す恐れがある
-  (実験1で確認)。単独では採らない。
-- **B. Toggleを予測してbeliefを書く**(`!belief`)。原因3で却下。ADR-179/BUG-115の設計判断と衝突する。
-- **C. opt-inを既定`true`にする**(awaseがactuate)。BUG-115の理由(非冪等、露出2倍、全ATOKユーザーへの自動適用、GJIフォーク)が
-  そのまま残る。ユーザーが選んだ「パススルー」設定を尊重しない。
-- **D(推奨). 観測型の追随**: 通過した無変換/変換の**直後に実IMEを読み、開閉が変わっていれば、その観測値を明示意図として記録する**。
-  予測しない・actuateしない・生キーはGJIにそのまま届く。
+- **A. 通過後の再読み取りだけ足す。** 原因2-aで効かない。却下。
+- **B. Toggleを予測してbeliefを書く**(`FollowOnly(Toggle)`)。原因3で却下(ADR-179/BUG-115)。`FollowOnly`は再利用しない。
+- **C. opt-inを既定`true`にする**(awaseがactuate)。BUG-115の理由がそのまま残り、ユーザーが選んだパススルーを尊重しない。
+- **D. 観測値を明示意図として記録する**(v1の決定2)。原因4の`from_physical`拡張+`architecture_guard`2本の更新が要り、
+  OFF意図が30秒固着し(M3)、Medium観測が明示意図としてHigh観測より強い権限を持つ(M5、ime-belief-architectureが禁じる
+  「観測をユーザー意図に偽装する」に構造的に近い)、`ActivationSync`のechoで二重actuationにもなる(M4)。
+- **E(推奨). 古い意図を無効化する。** 「ユーザーがIME操作をした。結果は分からないので、古い意図を根拠にせず観測に委ねる」。
+  値を書かない。witness不要、TTL固着なし、権限昇格なし、warrant Step 1が外れてStep 3(観測)が根拠になる。
 
-## 決定(ドラフト)
+## 決定(ドラフトv2)
 
-**決定1 — 生キー通過後の再読み取りを、単独タップ確定で通過した無変換/変換に対して発火させる。**
-`is_ime_mode_key_for_ime`(既存の第3の軸、`vk.rs`)に該当する生キーを、FSMの単独タップPassthroughとして**実際に送出した**直後に、
-既存の`schedule_ime_refresh`(20ms)を呼ぶ。`may_change_ime`は広げない(`vk.rs`の「widenして代用してはならない」を守る)。
-チョード(親指+文字)・Suppress・delegate経路は対象外(送出が無い/別経路で意図が記録される)。
+**決定1 — 通過した無変換/変換の実送出点で、再読み取りを発火させる。**
+`execute_one`→`output::send_keys`が生キー(`is_ime_mode_key_for_ime`、`vk.rs`の既存の第3の軸)を実際に送出した直後(プラット
+フォーム層、ADR-019に抵触しない。engine→platformの通知・新variantは不要)。`may_change_ime`は広げない。チョード・Suppress・
+delegate経路は送出が無い/別経路のため対象外。`FollowOnly`は拡張しない(選択肢B)。
 
-**決定2 — 再読み取りの結果、開閉が通過前から変わっていれば、観測値を`PhysicalImeKey`由来の明示意図として記録する。**
-書き込みは既存の単一口(`write_physical_key`、`IntentWitness::from_physical`が要る)を使い、`reduce()`以外でbeliefを書かない
-(`.claude/rules/ime-belief-architecture.md`)。対象は「通過前のbelief.open ≠ 観測open」のときだけ。Composition中の無変換
-(半角英数トグル、開閉不変)は差が出ないので記録されない=誤って意図を作らない。窓は短く(通過から数百ms)、他要因による
-開閉変化を巻き込まないよう、通過をマークした押下に紐づける。
+**決定2 — 同じ点で、対象hwndの`IntentStore`エントリを消す**(`IntentStore::remove`、`intent_store.rs:215`、既存API)。
+以後`effective_open()`は観測の導出結果になり、warrant Step 1が外れて、ドリフト補正が古いON意図でIMEを戻すことも止まる。
+消す対象は通過をマークした押下のhwndだけ(`current_focus`)。値は書かない。
 
-**決定3 — 新しい型・フィールド・variantは足さない(目標)。** 通過マーカーは既存の`ime_relevance`/`ModeKeyActuationOwner`の
-再利用、または通過した押下のwitnessと通過前beliefを1つ持つ最小のローカル状態で表す。予測(`FollowOnly(Toggle)`)は追加しない。
+**決定3 — 再読み取りはtyping-idleガードをバイパスする。** `ir_decide_read_strategy`(`ime_refresh.rs:294`)は、20ms後は
+必ず`idle<500ms`なので、`explicit_verify`(`explicit_intent().is_some() && applied!=Unknown`)が偽だと`SkipTyping`で
+**観測しない**。CIのwalkは先にひらがなを押すため偶然通るが、フォーカス直後にいきなり無変換を押す通常の使い方では空振りする。
+通過マークを第2のバイパス条件にする(有効期間は短い窓で1回だけ消費、`FocusChanged`でクリア)。
+
+**決定4 — 新しい型・フィールド・variantは足さない(目標)。** 追加は「通過マーク1個(窓・一回消費)」と、決定1〜3の既存API呼び出しだけ。
+
+**受け入れ基準(適用範囲)。** IMMのクロスプロセス読み取りが効くアプリ(`profile=ImmCross`/Win32 Edit系)でのみ要件を満たす。
+TsfNative/Imm32Unavailable(メモ帳・Windows Terminal・Chrome/Edge)は`ime_on=None`で読めず、`idle-conv-check`(次の打鍵後、
+TsfNative限定)が担う現状のまま(未検証)。将来の候補として`[gji-io] WRITE`(GJIが打鍵に反応した独立証拠、方向は不明)を残す。
 
 ## 決定しないこと(意図的)
 
-- TsfNative/Imm32Unavailable(メモ帳・Windows Terminal・Chrome/Edge)。IMMで開閉を読めない(`ime_on=None`)ため、決定1の
-  再読み取りは効かず、`idle-conv-check`(次の打鍵後、TsfNative限定)が担う現状のまま。未検証。
-- MS-IMEキーマップ/MS-IME本体。無変換/変換は開閉を変えないので、再読み取りは変化なしで終わる(害は追加の読み取りのみ)。
-  IME種別で分岐する新しい軸は足さない。
+- MS-IMEキーマップ/MS-IME本体。無変換/変換は開閉を変えないので、再読み取りは変化なしで終わる(害は追加の読み取りとIntent無効化のみ。
+  MS-IME側でIntentを消して困る場面が無いかを実験3で確認する)。IME種別で分岐する軸は足さない。
 - 半角/全角(0xF3/0xF4)のモデル誤り(ADR-186決定5)。
+
+## 未解決(実験で確定)
+
+- **`desired_open`が古いまま残る**(決定2の弱点、レビューS4)。決定2はIntentStoreだけを消し、`shadow_model.desired_open`と
+  `last_intent`は触らない。`desired_open`(true)と観測(false)の乖離はドリフト補正へ進むが、`last_intent`を残す限りしきい値は
+  0で、warrantはStep 1が外れStep 3(High観測=OFF)と要求ON不一致で`None`(Unwarranted、A-2強制済み、`c8bc1adc`)となり
+  書き込まれない、というのが期待。これが成り立たず補正が実IMEをONへ戻す、またはEngineが追随しない場合に限り、決定2(観測を
+  意図として記録、選択肢D)へ戻る。その場合はM1〜M6(`from_physical`拡張、TTL短縮、観測ソースallowlist=High
+  (`ImmGetOpenStatus`/`ImmCrossProbe`)のみ、`ActivationSync`のstrip=`strip_activation_sync_set_open_for_physical_delivery`再利用、
+  `record_explicit_intent`の呼び出し元件数ガード更新、`current_focus`がNoneのときの空振り)を全て設計に含める。
+- `ActivationSync`のechoが、観測由来のEngine活性化(実IME OFF→ONの回)でVK_IME_ONを二重に送らないか(ひらがな押下では
+  `[ime-io] actuation SendInput kind=kanji_marker vk=[1A,16]`が実際に出ている)。出るなら`strip_...`を再利用する。
 
 ## 検証計画(実験)
 
-CIの`--walk`+`check_consistency.py`(既存)をそのまま使う。`atok-passthrough`/`-henkan`の期待を`fail`→`pass`へ変える。
+CIの`--walk`+`check_consistency.py`を使う。`atok-passthrough`/`-henkan`の期待を`fail`→`pass`へ変える。判定はログ証拠3点で見る
+(実IMEがONへ戻るかだけでは、Engineが追随しない場合も「戻らなかった」となり判定できない)。
 
-1. **実験1(原因2の確認)**: 決定1だけ入れた仮ビルド(記録なし)で、`atok-passthrough`の各押下+1500msで実IMEが**ONへ戻される**か
-   (ドリフト補正/warrantの挙動)を見る。戻れば決定2が必須と確定、戻らなければ決定2は簡素化できる。
-2. **実験2**: 決定1+2で`atok-passthrough(-henkan)`が3/3追随、かつ`atok-optin`/`baseline`(opt-in)が退行しないこと。
-3. **実験3(押下保持の影響)**: `--hold`を80/180/400msで振り、再読み取り(20ms)が間に合うかを見る(通過は単独タップ確定後で、
-   ひらがなキーの30〜70msより遅れる可能性)。間に合わなければ再読み取りを2段(20ms+100ms)にするが、根拠(実測ms)を
-   コミットに残す(`tuning-constants.md`)。
+1. **実験1(決定1のみ)**: 再読み取りだけ入れた仮ビルドで、`[stage-observe] strategy=OsPoll`が20ms後に出るか(`SkipTyping`でないか)、
+   `ObserverReported`が記録されるか、`[notify-refresh] ctx.ime_on`が実IMEと一致するか(IntentStoreのpinを受けていないか)。
+   2-aにより一致しないと予測する(予測が外れたら原因2-aの前提を見直す)。
+2. **実験2(決定1+2+3)**: `atok-passthrough(-henkan)`が3/3追随。`atok-optin`/`baseline`(opt-in)が退行しない。
+   上記の`desired_open`の扱い(補正が実IMEを戻さないか)と`ActivationSync`のechoを、ログ(`[drift]`、`origin=ActivationSync`)で確認。
+3. **実験3(MS-IMEへの影響)**: MS-IMEキーマップ3構成・MS-IME本体で、退行しないこと。
+4. **実験4(フォーカス直後)**: `--walk`の先頭をひらがなでなく無変換にした構成(`--walk-cold`相当、意図が無い状態)を追加し、
+   決定3のバイパスが効くこと。`--hold`を80/180/400msで振り、20msの再読み取りが間に合うかも見る(間に合わなければ2段にするが、
+   実測msをコミットに残す、`tuning-constants.md`)。
 
-回帰テスト: 純関数(通過前belief・観測open→記録するか)の単体テスト。`platform_state`側の記録テストはWindows専用。
+回帰テスト: 純関数(通過マークの窓・一回消費・FocusChangedでのクリア、`ir_decide_read_strategy`のバイパス条件)の単体テスト。
+`platform_state`側のIntentStore無効化テストはWindows専用(`windows-build` CI)。
 
 ## リスク
 
-- 開閉が変わる別要因(ユーザーが同時にマウスでIMEを切り替える等)を意図と誤記録する。窓を通過直後に限り、対象を「変化した」
-  場合だけにして影響を局所化する。誤記録の最悪は「観測値どおりの意図」(実IMEと一致)で、ドリフト補正が実IMEと逆へ書くことはない。
-- 単独タップ確定がタイマー(100ms)経路のとき、物理イベントが無くwitnessが取れない(ADR-186決定2bと同型)。
-  KeyUp確定へ揃える(`defers_solo_until_release`をPassthrough設定の親指にも広げる)か、KeyDownのwitnessを持ち回るかを決める
-  (前者は全パススルー利用者のタップ確定タイミングを変えるため影響が大きい)。**最大の未決事項**。
+- 通過マークの窓が長いと、無関係な観測をバイパスさせる。窓は短く、1回で消費する。
+- IntentStoreを消すと、直前の明示ON意図に守られていた「観測が誤って揺れる」場面(BUG-63型、ConvOpenInference)で、
+  Engineが誤OFFになりうる。無効化するのは無変換/変換の生キー通過時だけで、対象はIMMで開閉を読めるアプリに限る。
 - 追加の読み取り(クロスプロセスIMM、`run_with_timeout`)が、孤立した無変換/変換タップごとに1回増える。
-- ADR-186のE1〜E7bと同様、必須/不要の判断は実機/CIのN回で行い、少数回の結果で決めない。
+- ADR-186のE1〜E7bと同様、必須/不要はCIのN回で判断し、少数回で決めない。
 
-## 未決事項(opusレビューで確認したい)
+## 未決事項(opus round2で確認したい)
 
-1. 原因2(ドリフト補正が実IMEをONへ戻す)は本当に起きるか。起きないなら決定2は不要にならないか。
-2. witnessの取り方(KeyUp確定へ寄せる/KeyDownから持ち回る)。
-3. 決定1の発火点は、実際の生キー送出の直後(executor)か、FSMの解決結果(engine→platformの通知)か。ADR-019(コアはVKを分岐しない)との整合。
-4. 「開閉が変わったときだけ意図を記録する」で、Composition中の無変換(半角英数トグル)と、GJIが変換を受けてもIMEを閉じないケースを漏れなく除けるか。
+1. 決定2(IntentStoreのみ無効化)で、`desired_open`/`last_intent`が残ってもドリフト補正が実IMEを戻さない、というwarrant Step 3の読みは正しいか。
+2. 決定3の通過マークを、`ir_decide_read_strategy`にどう1条件で渡すか(既存の`explicit_verify`の隣)。
+3. 通過マークの窓・消費・`FocusChanged`クリアの置き場所(既存の状態に載せられるか)。
