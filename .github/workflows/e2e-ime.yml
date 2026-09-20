@@ -54,19 +54,28 @@ jobs:
           "gji install: $([int]$sw.Elapsed.TotalSeconds)s"
           "TIP_REGISTERED=$(Test-Path 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}')"
 
-      - name: 入力言語をja-JP + GJI に設定、ATOK プリセットの config1.db を書く
+      - name: 入力言語をja-JP + GJI に設定(既定の入力メソッドもGJIに)、ATOK プリセットの config1.db を書く
         shell: pwsh
         run: |
-          $tip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
-          $l = New-WinUserLanguageList ja-JP
-          $l[0].InputMethodTips.Clear()
-          $l[0].InputMethodTips.Add($tip)
-          Set-WinUserLanguageList $l -Force 2>&1
+          $googleImeTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
+          $langs = Get-WinUserLanguageList
+          $ja = $langs | Where-Object LanguageTag -eq 'ja-JP' | Select-Object -First 1
+          if (-not $ja) {
+            $ja = New-WinUserLanguageList 'ja-JP' | Select-Object -First 1
+            $langs.Add($ja)
+          }
+          if ($ja.InputMethodTips -notcontains $googleImeTip) {
+            $ja.InputMethodTips.Add($googleImeTip)
+            Set-WinUserLanguageList $langs -Force
+          }
+          Set-WinDefaultInputMethodOverride -InputTip $googleImeTip
           Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips
           # ATOK プリセット(session_keymap = 1): Mozc Config の field 41 (varint) = 1 だけの最小の config1.db
           $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), [byte[]](0xC8,0x02,0x01))
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
           Get-Process ctfmon, explorer -ErrorAction SilentlyContinue | Format-Table Name, Id, SessionId
@@ -94,7 +103,7 @@ jobs:
             Start-Sleep -Seconds 5
             if ((Test-Path ime_key_matrix_spike.log) -and (Select-String -Path ime_key_matrix_spike.log -Pattern '全手順完了' -Quiet)) { break }
           }
-          if (Test-Path ime_key_matrix_spike.log) { Get-Content ime_key_matrix_spike.log -Encoding utf8 | Select-String -Pattern 'AUTO|KEY \[SCRIPT' | Select-Object -First 30 | ForEach-Object { $_.Line.Substring(0,[Math]::Min(150,$_.Line.Length)) } }
+          if (Test-Path ime_key_matrix_spike.log) { Get-Content ime_key_matrix_spike.log -Encoding utf8 | Select-String -Pattern 'init\]|AUTO|KEY \[SCRIPT' | Select-Object -First 30 | ForEach-Object { $_.Line.Substring(0,[Math]::Min(150,$_.Line.Length)) } }
           else { 'spike log なし' }
 
       - name: 判定(check.py)
