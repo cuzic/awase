@@ -59,10 +59,13 @@ def parse_engine(path):
 
 
 def engine_after(probes, press):
-    """押下の後、最初の k(KeyDown) の decision から Engine 状態を返す(PassThrough=OFF)。無ければ None。"""
+    """押下の後、最初の k(KeyDown) の decision から Engine 状態を返す(PassThrough/PassThroughWith=OFF)。無ければ None。
+
+PassThroughWith は「そのまま通しつつ副作用(effects)も実行」で、Engineは変換していない(OFF)。
+Shift単独タップの半角英数(shift-conv-guard)後などで出る。"""
     for ms, decision in probes:
         if press < ms <= press + 2500:
-            return decision != "PassThrough"
+            return not decision.startswith("PassThrough")
     return None
 
 
