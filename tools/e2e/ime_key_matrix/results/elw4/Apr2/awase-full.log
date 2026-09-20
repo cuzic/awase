@@ -1,0 +1,162 @@
+2026-09-20T13:23:46.858324Z  WARN awase_windows::runtime::message_handlers: Hook watchdog: no activity for 5953ms (OS全体の最終入力は5953ms前、OSも無操作のため単なるアイドルの可能性が高い)
+2026-09-20T13:23:47.276719Z DEBUG awase_windows::runtime: [focus-sync] hwnd=0x120082 class="ImeKeyMatrixSpikeWindowClass" app_kind=Win32 hint=Default → mode=Unicode
+2026-09-20T13:23:47.276800Z DEBUG awase_windows::tsf::tsf_gate: [tsf-gate] focus change → PendingWarmup (held cleared)
+2026-09-20T13:23:47.320003Z DEBUG awase_windows::runtime: [focus-sync] hwnd=0x800D2 class="Edit" app_kind=Win32 hint=Default → mode=Unicode
+2026-09-20T13:23:47.320076Z DEBUG awase_windows::output: [tsf-gate] focus change while PendingWarmup — held バッファを保持して再初期化スキップ (Chrome等の連続フォーカスイベント対策)
+2026-09-20T13:23:47.383468Z  INFO apply_focus_probe_result: awase_windows::runtime::focus_tracking: AppKind changed: Uwp → Win32 (class=Edit)
+2026-09-20T13:23:47.383781Z DEBUG apply_focus_probe_result: awase_windows::runtime::focus_tracking: Focus kind changed: Undetermined → TextInput (reason=KnownTextClass(Edit))
+2026-09-20T13:23:47.383860Z  INFO apply_focus_probe_result: awase_windows::hook: [app-disable] Enter: hook latches をクリア
+2026-09-20T13:23:47.383944Z  INFO apply_focus_probe_result: awase_windows::runtime::focus_tracking: [app-disable] Enter: process_id=8316 disabled=true
+2026-09-20T13:23:47.383962Z DEBUG apply_focus_probe_result: awase::journal: focus transition seq=11 elapsed_ms=6655 changed_process=true changed_window=true changed_app_kind=true changed_focus_kind=true dwell_ms=6531 profile="ImmCross"
+2026-09-20T13:23:47.384097Z  INFO apply_focus_probe_result: awase_windows::runtime::focus_tracking: FocusChange [19092→8316] Edit: stale ime_on=true intent=None mode=ObservedRomaji japanese=true
+2026-09-20T13:23:47.384111Z DEBUG apply_focus_probe_result: awase_windows::tsf::probe: [composition] focus changed → marked cold
+2026-09-20T13:23:47.384122Z DEBUG apply_focus_probe_result: awase_windows::runtime: [keymap] active rules recomputed: 0 rule(s) for process="ime_key_matrix_spike.exe"
+2026-09-20T13:23:47.384131Z DEBUG apply_focus_probe_result: awase_windows::runtime::focus_tracking: [keymap] active rules updated on focus change: 0 rule(s) (hwnd=HWND(0x800d2) kind=TextInput focus_epoch=2)
+2026-09-20T13:23:47.384147Z DEBUG apply_focus_probe_result:reduce: awase_windows::state::ime_model: [explicit-intent] cleared (focus change)
+2026-09-20T13:23:47.384159Z DEBUG apply_focus_probe_result: awase::journal: ime event seq=12 elapsed_ms=6655 event_kind="FocusChanged"
+2026-09-20T13:23:47.384188Z DEBUG apply_focus_probe_result: awase_windows::runtime::focus_tracking: [focus] Imm32Unavailable hard pre-sync applied=true (prevent spurious VK_KANJI on first character key)
+2026-09-20T13:23:47.384941Z DEBUG awase::journal: ime event seq=13 elapsed_ms=6656 event_kind="ObserverReported"
+2026-09-20T13:23:47.384953Z DEBUG awase_windows::runtime::focus_tracking: [ImmCrossProbe/focus] child-hwnd IME=false → High confidence 観測記録
+2026-09-20T13:23:47.425581Z DEBUG awase_windows::runtime: [focus-sync] hwnd=0x14006A class="RICHEDIT50W" app_kind=Win32 hint=Default → mode=Unicode
+2026-09-20T13:23:47.425652Z DEBUG awase_windows::tsf::tsf_gate: [tsf-gate] focus change → PendingWarmup (held cleared)
+2026-09-20T13:23:47.441236Z DEBUG awase_windows::runtime: [focus-sync] hwnd=0x800D2 class="Edit" app_kind=Win32 hint=Default → mode=Unicode
+2026-09-20T13:23:47.441320Z DEBUG awase_windows::output: [tsf-gate] focus change while PendingWarmup — held バッファを保持して再初期化スキップ (Chrome等の連続フォーカスイベント対策)
+2026-09-20T13:23:51.247267Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(10345146)
+2026-09-20T13:23:51.247451Z DEBUG awase::journal: hook ime-mode diagnostic seq=14 elapsed_ms=10520 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:23:59.003056Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF3 up self_injected=false injected=false scan=0x29 extra=0x5350494B since_actuation_us=Some(18100928)
+2026-09-20T13:23:59.003281Z DEBUG awase::journal: hook ime-mode diagnostic seq=15 elapsed_ms=18278 vk_code=243 is_down=false self_injected=false injected=false scan=41
+2026-09-20T13:23:59.004083Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF4 down self_injected=false injected=true scan=0x29 extra=0x5350494B since_actuation_us=Some(18101979)
+2026-09-20T13:23:59.004231Z DEBUG awase::journal: hook ime-mode diagnostic seq=16 elapsed_ms=18279 vk_code=244 is_down=true self_injected=false injected=true scan=41
+2026-09-20T13:24:06.778466Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF0 up self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(25876343)
+2026-09-20T13:24:06.778675Z DEBUG awase::journal: hook ime-mode diagnostic seq=17 elapsed_ms=26056 vk_code=240 is_down=false self_injected=false injected=false scan=112
+2026-09-20T13:24:06.779333Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(25877230)
+2026-09-20T13:24:06.779427Z DEBUG awase::journal: hook ime-mode diagnostic seq=18 elapsed_ms=26057 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:24:10.666134Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(29764006)
+2026-09-20T13:24:10.666330Z DEBUG awase::journal: hook ime-mode diagnostic seq=19 elapsed_ms=29945 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:24:12.609182Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF0 up self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(31707057)
+2026-09-20T13:24:12.609400Z DEBUG awase::journal: hook ime-mode diagnostic seq=20 elapsed_ms=31889 vk_code=240 is_down=false self_injected=false injected=false scan=112
+2026-09-20T13:24:12.610026Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(31707923)
+2026-09-20T13:24:12.610147Z DEBUG awase::journal: hook ime-mode diagnostic seq=21 elapsed_ms=31890 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:24:14.509442Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(33607305)
+2026-09-20T13:24:14.509621Z DEBUG awase::journal: hook ime-mode diagnostic seq=22 elapsed_ms=33790 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:24:18.388689Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(37486568)
+2026-09-20T13:24:18.388891Z DEBUG awase::journal: hook ime-mode diagnostic seq=23 elapsed_ms=37670 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:24:20.335037Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF0 up self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(39432904)
+2026-09-20T13:24:20.335226Z DEBUG awase::journal: hook ime-mode diagnostic seq=24 elapsed_ms=39617 vk_code=240 is_down=false self_injected=false injected=false scan=112
+2026-09-20T13:24:20.335682Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(39433583)
+2026-09-20T13:24:20.335773Z DEBUG awase::journal: hook ime-mode diagnostic seq=25 elapsed_ms=39618 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:24:33.933885Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF0 up self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(53031759)
+2026-09-20T13:24:33.934099Z DEBUG awase::journal: hook ime-mode diagnostic seq=26 elapsed_ms=53221 vk_code=240 is_down=false self_injected=false injected=false scan=112
+2026-09-20T13:24:33.934676Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(53032572)
+2026-09-20T13:24:33.934789Z DEBUG awase::journal: hook ime-mode diagnostic seq=27 elapsed_ms=53221 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:24:41.686519Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(60784405)
+2026-09-20T13:24:41.686633Z DEBUG awase::journal: hook ime-mode diagnostic seq=28 elapsed_ms=60976 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:24:45.557755Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF4 up self_injected=false injected=false scan=0x29 extra=0x5350494B since_actuation_us=Some(64655644)
+2026-09-20T13:24:45.557886Z DEBUG awase::journal: hook ime-mode diagnostic seq=29 elapsed_ms=64848 vk_code=244 is_down=false self_injected=false injected=false scan=41
+2026-09-20T13:24:45.558345Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF3 down self_injected=false injected=true scan=0x29 extra=0x5350494B since_actuation_us=Some(64656245)
+2026-09-20T13:24:45.558436Z DEBUG awase::journal: hook ime-mode diagnostic seq=30 elapsed_ms=64849 vk_code=243 is_down=true self_injected=false injected=true scan=41
+2026-09-20T13:24:55.276108Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF3 up self_injected=false injected=false scan=0x29 extra=0x5350494B since_actuation_us=Some(74373986)
+2026-09-20T13:24:55.276297Z DEBUG awase::journal: hook ime-mode diagnostic seq=31 elapsed_ms=74570 vk_code=243 is_down=false self_injected=false injected=false scan=41
+2026-09-20T13:24:55.276926Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF4 down self_injected=false injected=true scan=0x29 extra=0x5350494B since_actuation_us=Some(74374826)
+2026-09-20T13:24:55.277036Z DEBUG awase::journal: hook ime-mode diagnostic seq=32 elapsed_ms=74571 vk_code=244 is_down=true self_injected=false injected=true scan=41
+2026-09-20T13:25:10.810703Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF3 up self_injected=false injected=false scan=0x29 extra=0x5350494B since_actuation_us=Some(89908572)
+2026-09-20T13:25:10.810972Z DEBUG awase::journal: hook ime-mode diagnostic seq=33 elapsed_ms=90110 vk_code=243 is_down=false self_injected=false injected=false scan=41
+2026-09-20T13:25:10.811634Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF4 down self_injected=false injected=true scan=0x29 extra=0x5350494B since_actuation_us=Some(89909526)
+2026-09-20T13:25:10.811778Z DEBUG awase::journal: hook ime-mode diagnostic seq=34 elapsed_ms=90111 vk_code=244 is_down=true self_injected=false injected=true scan=41
+2026-09-20T13:25:22.462704Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF0 up self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(101560560)
+2026-09-20T13:25:22.462904Z DEBUG awase::journal: hook ime-mode diagnostic seq=35 elapsed_ms=101766 vk_code=240 is_down=false self_injected=false injected=false scan=112
+2026-09-20T13:25:22.463585Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(101561483)
+2026-09-20T13:25:22.463691Z DEBUG awase::journal: hook ime-mode diagnostic seq=36 elapsed_ms=101766 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:25:26.355082Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF4 up self_injected=false injected=false scan=0x29 extra=0x5350494B since_actuation_us=Some(105452963)
+2026-09-20T13:25:26.355233Z DEBUG awase::journal: hook ime-mode diagnostic seq=37 elapsed_ms=105659 vk_code=244 is_down=false self_injected=false injected=false scan=41
+2026-09-20T13:25:26.355716Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF3 down self_injected=false injected=true scan=0x29 extra=0x5350494B since_actuation_us=Some(105453619)
+2026-09-20T13:25:26.355780Z DEBUG awase::journal: hook ime-mode diagnostic seq=38 elapsed_ms=105660 vk_code=243 is_down=true self_injected=false injected=true scan=41
+2026-09-20T13:25:38.022073Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF0 up self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(117119950)
+2026-09-20T13:25:38.022219Z DEBUG awase::journal: hook ime-mode diagnostic seq=39 elapsed_ms=117330 vk_code=240 is_down=false self_injected=false injected=false scan=112
+2026-09-20T13:25:38.022794Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(117120690)
+2026-09-20T13:25:38.022879Z DEBUG awase::journal: hook ime-mode diagnostic seq=40 elapsed_ms=117331 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:25:39.972255Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF4 up self_injected=false injected=false scan=0x29 extra=0x5350494B since_actuation_us=Some(119070133)
+2026-09-20T13:25:39.972426Z DEBUG awase::journal: hook ime-mode diagnostic seq=41 elapsed_ms=119281 vk_code=244 is_down=false self_injected=false injected=false scan=41
+2026-09-20T13:25:39.973151Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF3 down self_injected=false injected=true scan=0x29 extra=0x5350494B since_actuation_us=Some(119071046)
+2026-09-20T13:25:39.973253Z DEBUG awase::journal: hook ime-mode diagnostic seq=42 elapsed_ms=119282 vk_code=243 is_down=true self_injected=false injected=true scan=41
+2026-09-20T13:25:41.912335Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF3 up self_injected=false injected=false scan=0x29 extra=0x5350494B since_actuation_us=Some(121010217)
+2026-09-20T13:25:41.912525Z DEBUG awase::journal: hook ime-mode diagnostic seq=43 elapsed_ms=121222 vk_code=243 is_down=false self_injected=false injected=false scan=41
+2026-09-20T13:25:41.913164Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF4 down self_injected=false injected=true scan=0x29 extra=0x5350494B since_actuation_us=Some(121011062)
+2026-09-20T13:25:41.913286Z DEBUG awase::journal: hook ime-mode diagnostic seq=44 elapsed_ms=121223 vk_code=244 is_down=true self_injected=false injected=true scan=41
+2026-09-20T13:25:43.872394Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(122970261)
+2026-09-20T13:25:43.872691Z DEBUG awase::journal: hook ime-mode diagnostic seq=45 elapsed_ms=123183 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:25:45.810450Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF0 up self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(124908319)
+2026-09-20T13:25:45.810687Z DEBUG awase::journal: hook ime-mode diagnostic seq=46 elapsed_ms=125121 vk_code=240 is_down=false self_injected=false injected=false scan=112
+2026-09-20T13:25:45.811337Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(124909233)
+2026-09-20T13:25:45.811440Z DEBUG awase::journal: hook ime-mode diagnostic seq=47 elapsed_ms=125122 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:25:49.683176Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(128781050)
+2026-09-20T13:25:49.683376Z DEBUG awase::journal: hook ime-mode diagnostic seq=48 elapsed_ms=128995 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:25:57.441624Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF4 up self_injected=false injected=false scan=0x29 extra=0x5350494B since_actuation_us=Some(136539497)
+2026-09-20T13:25:57.441853Z DEBUG awase::journal: hook ime-mode diagnostic seq=49 elapsed_ms=136756 vk_code=244 is_down=false self_injected=false injected=false scan=41
+2026-09-20T13:25:57.442435Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF3 down self_injected=false injected=true scan=0x29 extra=0x5350494B since_actuation_us=Some(136540331)
+2026-09-20T13:25:57.442525Z DEBUG awase::journal: hook ime-mode diagnostic seq=50 elapsed_ms=136757 vk_code=243 is_down=true self_injected=false injected=true scan=41
+2026-09-20T13:26:05.208645Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF3 up self_injected=false injected=false scan=0x29 extra=0x5350494B since_actuation_us=Some(144306519)
+2026-09-20T13:26:05.208859Z DEBUG awase::journal: hook ime-mode diagnostic seq=51 elapsed_ms=144526 vk_code=243 is_down=false self_injected=false injected=false scan=41
+2026-09-20T13:26:05.209341Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF4 down self_injected=false injected=true scan=0x29 extra=0x5350494B since_actuation_us=Some(144307240)
+2026-09-20T13:26:05.209411Z DEBUG awase::journal: hook ime-mode diagnostic seq=52 elapsed_ms=144526 vk_code=244 is_down=true self_injected=false injected=true scan=41
+2026-09-20T13:26:09.105679Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(148203559)
+2026-09-20T13:26:09.105865Z DEBUG awase::journal: hook ime-mode diagnostic seq=53 elapsed_ms=148424 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:26:12.987526Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF0 up self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(152085392)
+2026-09-20T13:26:12.987686Z DEBUG awase::journal: hook ime-mode diagnostic seq=54 elapsed_ms=152307 vk_code=240 is_down=false self_injected=false injected=false scan=112
+2026-09-20T13:26:12.988152Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(152086055)
+2026-09-20T13:26:12.988260Z DEBUG awase::journal: hook ime-mode diagnostic seq=55 elapsed_ms=152308 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:26:24.620925Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(163718788)
+2026-09-20T13:26:24.621082Z DEBUG awase::journal: hook ime-mode diagnostic seq=56 elapsed_ms=163945 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:26:30.449850Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF0 up self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(169547740)
+2026-09-20T13:26:30.449962Z DEBUG awase::journal: hook ime-mode diagnostic seq=57 elapsed_ms=169775 vk_code=240 is_down=false self_injected=false injected=false scan=112
+2026-09-20T13:26:30.450363Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(169548261)
+2026-09-20T13:26:30.450432Z DEBUG awase::journal: hook ime-mode diagnostic seq=58 elapsed_ms=169776 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:26:36.300183Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(175398068)
+2026-09-20T13:26:36.300328Z DEBUG awase::journal: hook ime-mode diagnostic seq=59 elapsed_ms=175628 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:26:49.865834Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF4 up self_injected=false injected=false scan=0x29 extra=0x5350494B since_actuation_us=Some(188963713)
+2026-09-20T13:26:49.865998Z DEBUG awase::journal: hook ime-mode diagnostic seq=60 elapsed_ms=189198 vk_code=244 is_down=false self_injected=false injected=false scan=41
+2026-09-20T13:26:49.866580Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF3 down self_injected=false injected=true scan=0x29 extra=0x5350494B since_actuation_us=Some(188964474)
+2026-09-20T13:26:49.866666Z DEBUG awase::journal: hook ime-mode diagnostic seq=61 elapsed_ms=189199 vk_code=243 is_down=true self_injected=false injected=true scan=41
+2026-09-20T13:26:55.714296Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF0 up self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(194812168)
+2026-09-20T13:26:55.714500Z DEBUG awase::journal: hook ime-mode diagnostic seq=62 elapsed_ms=195048 vk_code=240 is_down=false self_injected=false injected=false scan=112
+2026-09-20T13:26:55.715299Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(194813193)
+2026-09-20T13:26:55.715458Z DEBUG awase::journal: hook ime-mode diagnostic seq=63 elapsed_ms=195049 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:26:57.658774Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=true scan=0x70 extra=0x5350494B since_actuation_us=Some(196756657)
+2026-09-20T13:26:57.658928Z DEBUG awase::journal: hook ime-mode diagnostic seq=64 elapsed_ms=196994 vk_code=242 is_down=true self_injected=false injected=true scan=112
+2026-09-20T13:27:04.938128Z DEBUG awase_windows::runtime: [focus-sync] hwnd=0x3031E class="CASCADIA_HOSTING_WINDOW_CLASS" app_kind=Win32 hint=ForceTsf → mode=Tsf
+2026-09-20T13:27:04.938253Z DEBUG awase_windows::tsf::tsf_gate: [tsf-gate] focus change → PendingWarmup (held cleared)
+2026-09-20T13:27:04.938697Z DEBUG awase_windows::runtime: [focus-sync] hwnd=0x40048 class="Windows.UI.Composition.DesktopWindowContentBridge" app_kind=Win32 hint=Default → mode=Unicode
+2026-09-20T13:27:04.938730Z DEBUG awase_windows::output: [tsf-gate] focus change while PendingWarmup — held バッファを保持して再初期化スキップ (Chrome等の連続フォーカスイベント対策)
+2026-09-20T13:27:04.939154Z DEBUG awase_windows::runtime: [focus-sync] hwnd=0x200C8 class="Windows.UI.Input.InputSite.WindowClass" app_kind=Uwp hint=ForceTsf → mode=Tsf
+2026-09-20T13:27:04.939706Z DEBUG awase_windows::output: [tsf-gate] focus change while PendingWarmup — held バッファを保持して再初期化スキップ (Chrome等の連続フォーカスイベント対策)
+2026-09-20T13:27:05.020433Z  INFO apply_focus_probe_result: awase_windows::runtime::focus_tracking: AppKind changed: Win32 → Uwp (class=Windows.UI.Input.InputSite.WindowClass)
+2026-09-20T13:27:05.023524Z DEBUG apply_focus_probe_result: awase_windows::runtime::focus_tracking: Focus kind changed: TextInput → Undetermined (reason=Undetermined)
+2026-09-20T13:27:05.023741Z  INFO apply_focus_probe_result: awase_windows::hook: [app-disable] Leave: Ctrl/Shift の PHYSICAL_KEY_STATE をクリア（BUG-78対策）
+2026-09-20T13:27:05.023751Z  INFO apply_focus_probe_result: awase_windows::hook: [app-disable] Leave: hook latches をクリア
+2026-09-20T13:27:05.023759Z  INFO apply_focus_probe_result: awase_windows::runtime::focus_tracking: [app-disable] Leave: process_id=19092 disabled=false
+2026-09-20T13:27:05.023778Z DEBUG apply_focus_probe_result: awase::journal: focus transition seq=65 elapsed_ms=204361 changed_process=true changed_window=true changed_app_kind=true changed_focus_kind=true dwell_ms=197641 profile="TsfNative"
+2026-09-20T13:27:05.023908Z  INFO apply_focus_probe_result: awase_windows::runtime::focus_tracking: FocusChange [8316→19092] Windows.UI.Input.InputSite.WindowClass: stale ime_on=false intent=None mode=ObservedRomaji japanese=true
+2026-09-20T13:27:05.023925Z DEBUG apply_focus_probe_result: awase_windows::tsf::probe: [composition] focus changed → marked cold
+2026-09-20T13:27:05.023939Z DEBUG apply_focus_probe_result: awase_windows::runtime: [keymap] active rules recomputed: 0 rule(s) for process="windowsterminal.exe"
+2026-09-20T13:27:05.023947Z DEBUG apply_focus_probe_result: awase_windows::runtime::focus_tracking: [keymap] active rules updated on focus change: 0 rule(s) (hwnd=HWND(0x200c8) kind=Undetermined focus_epoch=3)
+2026-09-20T13:27:05.023965Z DEBUG apply_focus_probe_result:reduce: awase_windows::state::ime_model: [explicit-intent] cleared (focus change)
+2026-09-20T13:27:05.023978Z DEBUG apply_focus_probe_result: awase::journal: ime event seq=66 elapsed_ms=204361 event_kind="FocusChanged"
+2026-09-20T13:27:05.024004Z DEBUG apply_focus_probe_result: awase_windows::runtime::focus_tracking: [focus] TsfNative/SSOT: cache restore スキップ (desired_open=true cache_hwnd=Some(131272) new_hwnd=131272) — 最初のキー入力で dispatch_ime が apply
+2026-09-20T13:27:05.024188Z DEBUG awase_windows::runtime::ime_refresh: Skipping IMM query for known-broken class (shadow state SSOT)
+2026-09-20T13:27:05.024203Z DEBUG awase_windows::runtime::ime_refresh: [composition] focus change → marking cold
+2026-09-20T13:27:05.024211Z DEBUG awase_windows::tsf::probe: [composition] marked cold reason=FocusChange idle=18446744073709551615ms → next VK/TSF output will send VK_DBE_HIRAGANA warmup
+2026-09-20T13:27:05.024260Z DEBUG awase_windows::tsf::ime_mode_fsm: [ime-mode] FocusChange → Unknown
+2026-09-20T13:27:05.024297Z DEBUG awase::journal: gji fsm transition seq=7 elapsed_ms=177 trigger="ImeOn(gji_idle_ms=2631953)" state_before="OffCold" state_after="OnCold(Long)"
+2026-09-20T13:27:05.024317Z DEBUG awase::journal: tsf probe started seq=8 elapsed_ms=178 source="GjiAction::StartProbe" cold_seq=0 probe_id=0 probe_id_present=true gji_state="OnCold(Long)" consecutive_at_start=0 pending_deferred_len=0
+2026-09-20T13:27:05.024332Z DEBUG awase::journal: gji fsm transition seq=67 elapsed_ms=204361 trigger="FocusChange(gji_idle_ms=204110)" state_before="MsImeStrategy" state_after="MsImeStrategy"
+2026-09-20T13:27:05.024350Z DEBUG awase_windows::runtime::ime_refresh: [composition] FocusChange: send_eager_tsf_warmup called (ime_on via warmup_ime_on())
+2026-09-20T13:27:05.025065Z DEBUG awase_windows::ime: [idle-conv-check-diag] focused_hwnd=HWND(0x200c8) ime_wnd=Some(HWND(0x304b8))
+2026-09-20T13:27:05.025219Z DEBUG awase_windows::tsf::ime_mode_fsm: [ime-mode] cold hint: Unknown → Hiragana (conv=0x00000009, unconfirmed)
+2026-09-20T13:27:07.862105Z  WARN awase_windows::runtime::message_handlers: Hook watchdog: no activity for 6203ms (OS全体の最終入力は6203ms前、OSも無操作のため単なるアイドルの可能性が高い)
+2026-09-20T13:27:10.862580Z  WARN awase_windows::runtime::message_handlers: Hook watchdog: no activity for 9203ms (OS全体の最終入力は9203ms前、OSも無操作のため単なるアイドルの可能性が高い)
+2026-09-20T13:27:13.853528Z  WARN awase_windows::runtime::message_handlers: Hook watchdog: no activity for 12203ms (OS全体の最終入力は12203ms前、OSも無操作のため単なるアイドルの可能性が高い)
+2026-09-20T13:27:16.853220Z  WARN awase_windows::runtime::message_handlers: Hook watchdog: no activity for 15203ms (OS全体の最終入力は15203ms前、OSも無操作のため単なるアイドルの可能性が高い)
+2026-09-20T13:27:19.863399Z  WARN awase_windows::runtime::message_handlers: Hook watchdog: no activity for 18203ms (OS全体の最終入力は18203ms前、OSも無操作のため単なるアイドルの可能性が高い)
+2026-09-20T13:27:22.862877Z  WARN awase_windows::runtime::message_handlers: Hook watchdog: no activity for 21203ms (OS全体の最終入力は21203ms前、OSも無操作のため単なるアイドルの可能性が高い)
+2026-09-20T13:27:25.855538Z  WARN awase_windows::runtime::message_handlers: Hook watchdog: no activity for 24203ms (OS全体の最終入力は24203ms前、OSも無操作のため単なるアイドルの可能性が高い)
+script error: Output type incorrect: bool (expecting ())

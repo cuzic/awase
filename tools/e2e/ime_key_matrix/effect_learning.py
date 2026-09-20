@@ -22,6 +22,7 @@ comp は未確定文字列の有無。観測時点は押下 +400ms（settle 済�
     B = awase起動・AWASE_TEST_INJECTION=1(注入キーを物理キー扱い)=awase+IMEの最終結果
     差分 = awase自身がIME状態に与えた影響(awase起因のずれ)。
 """
+import os
 import re
 import sys
 from collections import Counter, defaultdict
@@ -60,7 +61,9 @@ def parse_snap(text):
     conv = h(bc) if h(bc) is not None else h(ac)
     if open_ is None or conv is None or comp == "?":
         return None
-    return (open_, conv & 1, comp != '""', (conv & 0x10) != 0)
+    # ROMANビットはawaseが書くフラグでGJI自身は報告しない(A'実測)ため、既定では状態に含めない。
+    roman = (conv & 0x10) != 0 if os.environ.get('WITH_ROMAN') else True
+    return (open_, conv & 1, comp != '""', roman)
 
 
 def parse(path):
