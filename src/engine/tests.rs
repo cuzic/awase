@@ -7360,14 +7360,20 @@ mod engine_integration_tests {
         let mut engine = make_test_engine_with_muhenkan_passthrough();
         engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
 
-        let _ = engine.on_input(Ev::down(VK_LSHIFT).at(50).build(), &ime_on_ctx());
-        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let shift_ctx = InputContext {
+            modifiers: ModifierState {
+                shift: true,
+                ..ime_on_ctx().modifiers
+            },
+            ..ime_on_ctx()
+        };
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &shift_ctx);
         assert!(
             !d.is_consumed(),
             "Shift+無変換は保留に入れず素通しにするべき, got {:?}",
             effects_of(&d)
         );
-        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(300).build(), &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(300).build(), &shift_ctx);
         assert!(
             !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
             "Shift+無変換のKeyUpでSetOpenを発火してはならない, got {:?}",

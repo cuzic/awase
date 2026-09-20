@@ -578,6 +578,14 @@ impl Runtime {
                 crate::hook::thumb_vk_codes(),
             )
             .or_else(|| {
+                // ADR-186 残る問題2: 修飾キー(Shift等)を押したままの無変換/変換は、GJI(ATOK)では
+                // 開閉トグルではない(Shift+無変換=かな⇔半角英数、直接入力では何もしない、実機で確認)。
+                // 修飾なしのキーに対する分類を、修飾付きの押下へ当てはめない。Ctrl+無変換などのconfig
+                // 由来のIME操作は`sync_direction`/明示configの別経路で扱われ、ここには影響しない。
+                let m = event.modifier_snapshot;
+                if m.ctrl || m.alt || m.shift || m.win {
+                    return None;
+                }
                 crate::gji_charset_autodetect::resolve_henkan_muhenkan_shadow_override_for_event(
                     event.vk_code,
                     self.henkan_shadow_override,
