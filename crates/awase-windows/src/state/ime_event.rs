@@ -531,6 +531,15 @@ pub enum ImeEvent {
     /// が固定）を持ち、他の書き込みを一切混ぜてはならないため。
     InitialAppPolicyEstablished { profile: ImePolicyProfile },
 
+    /// 無変換/変換の生キーを GJI へ通過させた（ADR-187 follow 方式）。
+    ///
+    /// 実 IME の開閉は GJI 側が決めるため、awase は結果の開閉状態を知らない。
+    /// 古い明示意図（`last_intent`）だけを捨て、直前に得た観測へ解決を委ねる。
+    /// reducer は `last_intent` のみを書き、`desired_open` / `applied` / 観測 /
+    /// `current_focus` などには触れない。dispatch 元は
+    /// `ImeStateHub::invalidate_intents_if_mode_key_pass_live` の1箇所に限定する。
+    ModeKeyPassedThrough,
+
     /// 起動直後の初回フォーカス確立時、`current_focus` を bootstrap で確立した
     /// 前面 hwnd に設定する（BUG-148、ADR-186）。`establish_initial_focus_scope` からのみ
     /// dispatch される。

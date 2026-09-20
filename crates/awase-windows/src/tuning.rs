@@ -442,6 +442,28 @@ pub const EXPLICIT_ON_INTENT_TTL_MS: u64 = 10_000;
 #[measured_macro::measured(pending = true)]
 pub const EXPLICIT_OFF_INTENT_TTL_MS: u64 = 30_000;
 
+/// 無変換/変換の生キーを GJI へ通過させた後、再読み取りを続け、最初の観測の直後に古い明示意図を
+/// 破棄する窓 (ms)（ADR-187）。窓が切れたら止まる（マークは一回で消費しない）。
+///
+/// **実測**（CI `e2e-ime`、ATOK パススルー、GitHub-hosted Windows ランナー、6 実行×8 押下=48 押下）:
+/// 生キー通過（awase のフック到達）から、実 IME の変化が IMM の再読み取り（`IME snapshot`）に現れるまで
+/// min 21ms / median 33ms / p90 33ms / max 62ms。別の 1 回で、通過から 11ms 後の最初の再読み取りが
+/// GJI の処理前の古い状態を読んだ（この回は追随できなかった）。
+/// **導出**: 実測最大 62ms の約 5 倍の 300ms を窓とする（再読み取りが数回走り、フォーカス移動等で長引いても覆う）。
+/// 窓が長すぎると通過より後の無関係な観測までバイパスされるため、無限にはしない。
+/// 計測はランナー環境のもの。実機での再測定と、`commit` 紐付け（`#[measured(value_ms, commit)]`）は未了のため `pending`。
+#[measured_macro::measured(pending = true)]
+pub const MODE_KEY_PASS_MARK_WINDOW_MS: u64 = 300;
+
+/// 無変換/変換の生キー通過後、窓が有効な間の再読み取り間隔 (ms)（ADR-187）。
+///
+/// 最初の再読み取り（20ms）は、GJI の処理前の古い状態を読むことがある（上記、11ms 後の 1 回）。
+/// **導出**: 上記の実測最大 62ms に相当する 60ms を間隔とする。古い状態を読んだ回（例: 通過から 11ms 後）でも、
+/// 次の読み取り（約 71ms 後）が実測の最大反応時間（62ms）を覆う。窓（300ms）の間に最大 5 回程度。
+/// 実機での再測定は未了のため `pending`。
+#[measured_macro::measured(pending = true)]
+pub const MODE_KEY_PASS_REREAD_MS: u64 = 60;
+
 /// `ImeModel.pending`（`ImeApplyRequested` で立てる apply transaction）の
 /// タイムアウト（BUG-34 横展開 D-prep、2026-08-19）。
 ///

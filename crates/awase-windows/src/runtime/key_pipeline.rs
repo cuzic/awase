@@ -1958,6 +1958,21 @@ impl Runtime {
             tracing::debug!("may_change_ime key passed through → IME refresh scheduled (20ms)");
         }
 
+        if !decision.is_consumed()
+            && matches!(event.event_type, KeyEventType::KeyDown)
+            && !event.injected
+            && crate::vk::is_convert_or_nonconvert(event.vk_code)
+            && event.ime_relevance.shadow_action.is_none()
+        {
+            let now = hook::current_tick_ms();
+            self.platform_state.ime.arm_mode_key_pass_mark(now);
+            self.schedule_ime_refresh(20);
+            tracing::info!(
+                "[mode-key-follow] mode key PassThrough(vk=0x{:02X}): IME refresh scheduled (20ms)",
+                event.vk_code.0
+            );
+        }
+
         self.kp_stage_shift_conv_guard(event);
     }
 

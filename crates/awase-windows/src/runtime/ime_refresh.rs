@@ -132,7 +132,7 @@ impl Runtime {
 
     // ── Stage 2: 読み取り方針の決定 ──
 
-    fn ir_stage_strategy(&self, focus: &FocusInfo) -> ImeReadStrategy {
+    fn ir_stage_strategy(&mut self, focus: &FocusInfo) -> ImeReadStrategy {
         self.ir_decide_read_strategy(focus.skip_imm_query)
     }
 
@@ -209,6 +209,19 @@ impl Runtime {
             ImeReadStrategy::OsPoll => {
                 let miss_before = self.platform_state.ime.detect_miss_count();
                 self.ir_poll_and_learn(miss_before, ime_snap);
+                let now = crate::hook::current_tick_ms();
+                if self.platform_state.ime.detect_miss_count() == miss_before
+                    && self
+                        .platform_state
+                        .ime
+                        .invalidate_intents_if_mode_key_pass_live(now, crate::state::TickMs(now))
+                {
+                    tracing::info!(
+                        "[mode-key-follow] observation arrived after mode key pass: intents invalidated"
+                    );
+                    // 最初の観測は GJI がキーを処理する前の古い状態を読むことがある。窓が切れるまで読み直す。
+                    self.schedule_ime_refresh(crate::tuning::MODE_KEY_PASS_REREAD_MS);
+                }
             }
         }
 
@@ -291,13 +304,16 @@ impl Runtime {
     // 最後のキー活動（物理キー押下 または VK/TSF 出力）から TYPING_IDLE_MS 以内は
     // IMM との SendMessage を一切行わない。
 
-    fn ir_decide_read_strategy(&self, skip_imm_query: bool) -> ImeReadStrategy {
+    /// `&mut self` なのは、通過マーク(`ModeKeyPassMark`、`ScopedOneShot::peek`)がフォアグラウンド変更を見て自動失効させるため
+    /// （ADR-187）。読み取り方針の決定そのものは副作用を持たない（失効は「マークが無効になった」という事実の反映だけ）。
+    fn ir_decide_read_strategy(&mut self, skip_imm_query: bool) -> ImeReadStrategy {
         let last_activity = self.platform_state.gate.last_hook_activity_ms.max(
             crate::tsf::probe_bridge::OUTPUT_GATE
                 .last_vk_output_ms
                 .load(std::sync::atomic::Ordering::Relaxed),
         );
-        let idle_ms = crate::hook::current_tick_ms().saturating_sub(last_activity);
+        let now = crate::hook::current_tick_ms();
+        let idle_ms = now.saturating_sub(last_activity);
         let is_typing = idle_ms < TYPING_IDLE_MS;
 
         if is_typing {
@@ -305,10 +321,12 @@ impl Runtime {
             // ImmCross async が "成功" 扱いでも組み合わせ中は IME が閉じないことがあるため、
             // タイピングアイドルガードを回避して OsPoll を先行させる。
             // TsfNative/Blacklist アプリは skip_imm_query=true で弾かれるため対象外。
+            let mode_key_pass_live = self.platform_state.ime.mode_key_pass_mark_live(now);
             let explicit_verify = !skip_imm_query
-                && self.platform_state.ime.explicit_intent().is_some()
-                && self.platform_state.ime.model().applied
-                    != crate::state::ime_model::AppliedImeState::Unknown;
+                && (mode_key_pass_live
+                    || (self.platform_state.ime.explicit_intent().is_some()
+                        && self.platform_state.ime.model().applied
+                            != crate::state::ime_model::AppliedImeState::Unknown));
             if !explicit_verify {
                 tracing::debug!("Skipping observer/SSOT write: typing active (idle={idle_ms}ms)");
                 return ImeReadStrategy::SkipTyping;

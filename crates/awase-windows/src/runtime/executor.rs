@@ -811,6 +811,25 @@ impl DecisionExecutor {
         }
         // send_engine_state_ime_key に渡す applied 値をトレイトオブジェクト取得前に確定する。
         let applied_for_engine_key = self.applied_snapshot.applied_open();
+        if let Effect::Input(InputEffect::SendKeys(actions)) = &effect {
+            let passes_mode_key = actions.iter().any(|action| {
+                matches!(
+                    action,
+                    awase::types::KeyAction::Key(vk) if crate::vk::is_convert_or_nonconvert(*vk)
+                )
+            });
+            if passes_mode_key {
+                let now = crate::hook::current_tick_ms();
+                ime.arm_mode_key_pass_mark(now);
+                platform.timer.set(
+                    crate::TIMER_IME_REFRESH,
+                    std::time::Duration::from_millis(20),
+                );
+                tracing::info!(
+                    "[mode-key-follow] mode key sent through FSM: IME refresh scheduled (20ms)"
+                );
+            }
+        }
         let platform_rt: &mut dyn PlatformRuntime = platform;
         match effect {
             Effect::Input(ie) => match ie {

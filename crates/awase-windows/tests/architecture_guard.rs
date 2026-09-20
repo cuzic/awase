@@ -3362,6 +3362,40 @@ fn initial_app_policy_event_only_touches_app_policy() {
     }
 }
 
+/// ADR-187: `ImeEvent::ModeKeyPassedThrough` は、無変換/変換の生キー通過後に
+/// 観測成功を確認した `ImeStateHub::invalidate_intents_if_mode_key_pass_live` だけが
+/// dispatch する。reducer は `last_intent` だけを捨てる。
+#[test]
+fn mode_key_passed_through_event_is_dispatched_from_one_place() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = Path::new(manifest_dir).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    for path in &files {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let content = fs::read_to_string(path).unwrap();
+        let production = non_comment_lines(production_code_only(&content));
+        let count = production.matches("ModeKeyPassedThrough").count();
+        let expected = match rel.as_str() {
+            "state/platform_state.rs" => 1,
+            "state/ime_model.rs" => 1,
+            "state/ime_event.rs" => 1,
+            "journal.rs" => 2,
+            _ => 0,
+        };
+        assert_eq!(
+            count, expected,
+            "src/{rel} 内の ModeKeyPassedThrough の出現数が想定と異なります(期待: \
+             {expected}, 実際: {count})。ADR-187 の dispatch 元は1箇所に限定すること。"
+        );
+    }
+}
+
 /// BUG-148/ADR-186: `ImeEvent::InitialFocusHwndEstablished` は bootstrap 専用であり、
 /// dispatch 元は `sync_initial_focus_hwnd` の1箇所だけ。reducer 側のアームは
 /// `self.current_focus = Some(hwnd)`（current_focus 1フィールドの差し替え）しか行わない。

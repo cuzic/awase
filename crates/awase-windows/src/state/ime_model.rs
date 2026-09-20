@@ -680,6 +680,11 @@ impl ImeModel {
                 // が固定する）。
                 self.app_policy = AppImePolicy::from_profile(profile);
             }
+            ImeEvent::ModeKeyPassedThrough => {
+                // ADR-187: 明示意図が残ると resolve_open_at の ExplicitIntent 分岐が
+                // 直前の観測を固定してしまうため、観測成功後に意図だけ外す。
+                self.last_intent = None;
+            }
             ImeEvent::InitialFocusHwndEstablished { hwnd } => {
                 // BUG-148/ADR-186: 起動時に既に前面にあるアプリの hwnd を
                 // `current_focus` に入れる。これが無いと最初のプロセス切替まで
@@ -1098,6 +1103,30 @@ mod tests {
             "InitialAppPolicyEstablished は app_policy 以外を書き換えてはならない \
              (BUG-114/ADR-134 D1c: FocusChanged 以前に belief を書き換えない、\
              ADR-102 決定3-b と同じ規律)"
+        );
+    }
+
+    #[test]
+    fn mode_key_passed_through_touches_only_last_intent() {
+        let now = Instant::now();
+
+        let mut model = fully_populated_model(now);
+        assert!(
+            model.last_intent.is_some(),
+            "フィクスチャは last_intent を持つ"
+        );
+        model.reduce(&envelope(1, ImeEvent::ModeKeyPassedThrough));
+        assert!(
+            model.last_intent.is_none(),
+            "ModeKeyPassedThrough は last_intent だけを捨てる"
+        );
+
+        let mut expected = fully_populated_model(now);
+        expected.last_intent = None;
+        assert_eq!(
+            format!("{model:?}"),
+            format!("{expected:?}"),
+            "ModeKeyPassedThrough は last_intent 以外を書き換えてはならない"
         );
     }
 

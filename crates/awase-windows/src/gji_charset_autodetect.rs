@@ -535,6 +535,21 @@ pub(crate) fn resolve_henkan_muhenkan_shadow_override_for_event(
     }
 }
 
+/// ADR-188: GJIでは半角/全角のVK(0xF3/0xF4)はどちらも開閉トグル。
+/// GJIがアクティブなときToggleを返す。
+#[must_use]
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn resolve_hankaku_zenkaku_shadow_override_for_event(
+    vk: VkCode,
+    gji_active: bool,
+) -> Option<ShadowImeAction> {
+    if gji_active && (vk == crate::vk::VK_DBE_SBCSCHAR || vk == crate::vk::VK_DBE_DBCSCHAR) {
+        Some(ShadowImeAction::Toggle)
+    } else {
+        None
+    }
+}
+
 /// `left_thumb_key`/`right_thumb_key`のうちHiragana/Katakanaに一致する方の
 /// VKを解決する（`NicolaFsm::set_hiragana_katakana_thumb_key_config`へ渡す
 /// 値）。起動時（`app/bootstrap.rs`）とreload時
@@ -933,6 +948,7 @@ mod tests {
         classify_mode_key_ime_action, classify_thumb_key_ime_actions,
         delegate_owns_mode_key_shadow_toggle, gate_thumb_key_ime_actions,
         ime_toggle_kind_to_shadow_action, resolve_gji_mode_key_shadow_overrides,
+        resolve_hankaku_zenkaku_shadow_override_for_event,
         resolve_henkan_muhenkan_shadow_override_for_event,
         resolve_mode_key_shadow_override_for_event, ImeToggleKind, ModeKeyCandidate,
         ThumbKeyImeWarning,
@@ -1380,6 +1396,33 @@ mod tests {
             ),
             Some(ShadowImeAction::Toggle)
         );
+    }
+
+    #[test]
+    fn hankaku_zenkaku_shadow_override_toggles_only_for_gji_dbe_width_keys() {
+        assert_eq!(
+            resolve_hankaku_zenkaku_shadow_override_for_event(crate::vk::VK_DBE_SBCSCHAR, true),
+            Some(ShadowImeAction::Toggle)
+        );
+        assert_eq!(
+            resolve_hankaku_zenkaku_shadow_override_for_event(crate::vk::VK_DBE_DBCSCHAR, true),
+            Some(ShadowImeAction::Toggle)
+        );
+        assert_eq!(
+            resolve_hankaku_zenkaku_shadow_override_for_event(crate::vk::VK_DBE_SBCSCHAR, false),
+            None
+        );
+        for vk in [
+            crate::vk::VK_KANJI,
+            crate::vk::VK_DBE_HIRAGANA,
+            ModeKeyCandidate::Henkan.vk(),
+        ] {
+            assert_eq!(
+                resolve_hankaku_zenkaku_shadow_override_for_event(vk, true),
+                None,
+                "{vk:?}はADR-188の半角/全角override対象外"
+            );
+        }
     }
 
     #[test]
