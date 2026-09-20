@@ -35,13 +35,19 @@ jobs:
           Get-ChildItem 'C:\Program Files*\Google\Google Japanese Input' -ErrorAction SilentlyContinue | Select-Object FullName | Format-Table
           Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\*' -ErrorAction SilentlyContinue | Select-Object PSChildName | Format-Table
 
-      - name: 日本語の言語機能とGJIの入力メソッドを追加
+      - name: 日本語の言語機能を追加(時間がかかるので8分で打ち切る)
         shell: pwsh
         continue-on-error: true
+        timeout-minutes: 8
         run: |
           $cap = Get-WindowsCapability -Online | Where-Object { $_.Name -like 'Language.Basic~~~ja-JP*' }
           $cap | Format-Table Name, State
           foreach ($c in $cap) { if ($c.State -ne 'Installed') { Add-WindowsCapability -Online -Name $c.Name 2>&1 | Select-Object -Last 3 } }
+
+      - name: 入力言語にja-JPを設定
+        shell: pwsh
+        continue-on-error: true
+        run: |
           $l = New-WinUserLanguageList ja-JP
           $l.Add('en-US')
           Set-WinUserLanguageList $l -Force 2>&1
