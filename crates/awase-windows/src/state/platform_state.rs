@@ -12,7 +12,7 @@ use super::ime_event::{
 use super::ime_event_log::ImeEventLog;
 use super::ime_model::{AppliedImeState, ImeApplyAcceptance, ImeModel};
 use super::input_barrier::InputBarrier;
-use super::scoped_latch::ScopedOneShot;
+use super::scoped_latch::{ScopeCheck, ScopedOneShot};
 use super::{ApplyGeneration, TickMs};
 use crate::journal::{JournalEntry, UnifiedJournal};
 
@@ -73,6 +73,12 @@ pub(crate) struct ImeStateHub {
     /// 明示意図の優先読み取りに使う。`issue_open_warrant()` への配線は
     /// まだ無く、Phase 3 本体のスコープ。
     intent_store: super::intent_store::IntentStore,
+
+    /// 無変換/変換の生キーを IME 側へ通過させた直後だけ有効な一回マーク。
+    ///
+    /// ADR-187 follow 方式: 生キー配送の結果は awase には分からないため、短時間だけ
+    /// typing-idle ガードを迂回して観測し、観測成功後に古い明示意図を捨てる。
+    mode_key_pass_mark: ScopedOneShot<crate::win32::ForegroundScope, ModeKeyPassMark>,
 
     /// `effective_open()` の IntentStore 分岐が `shadow_model` と異なる値を
     /// 返している（＝実際に override している）間 `true`。遷移時のみ INFO
@@ -135,11 +141,18 @@ impl ImeStateHub {
             last_user_explicit_off_ms: 0,
             last_explicit_ime_action_ms: 0,
             intent_store: super::intent_store::IntentStore::default(),
+            mode_key_pass_mark: ScopedOneShot::new(),
             intent_override_logged: std::cell::Cell::new(false),
             warmup_gate_suppression_logged: std::cell::Cell::new(false),
             generation_alloc: super::GenerationAllocator::new(),
         }
     }
+}
+
+/// 無変換/変換の生キー通過マーク。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ModeKeyPassMark {
+    armed_at_ms: u64,
 }
 
 impl ImeStateHub {
@@ -192,6 +205,67 @@ impl ImeStateHub {
     /// (Step 2B 以降の SSOT。Priority 4-5 observer による上書きを block する根拠。)
     pub(crate) fn explicit_intent(&self) -> Option<bool> {
         self.shadow_model.last_intent.as_ref().map(|i| i.target)
+    }
+
+    /// 無変換/変換の生キーを通過させたら呼ぶ（ADR-187）。現在のフォアグラウンドに対する一回マークを立てる。
+    pub(crate) fn arm_mode_key_pass_mark(&mut self, now_ms: u64) {
+        self.mode_key_pass_mark.arm(
+            crate::win32::foreground_scope(),
+            ModeKeyPassMark {
+                armed_at_ms: now_ms,
+            },
+        );
+    }
+
+    fn mode_key_pass_mark_live_in_scope(
+        &mut self,
+        now_ms: u64,
+        scope: crate::win32::ForegroundScope,
+    ) -> bool {
+        matches!(
+            self.mode_key_pass_mark.peek(scope),
+            ScopeCheck::Live(mark)
+                if now_ms.saturating_sub(mark.armed_at_ms)
+                    < crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS
+        )
+    }
+
+    /// 通過マークが有効か（消費しない）。フォアグラウンドが変わっていれば`peek`が失効させる。
+    /// typing-idleガードのバイパス判定用（`ir_decide_read_strategy`）。
+    pub(crate) fn mode_key_pass_mark_live(&mut self, now_ms: u64) -> bool {
+        self.mode_key_pass_mark_live_in_scope(now_ms, crate::win32::foreground_scope())
+    }
+
+    fn invalidate_intents_if_mode_key_pass_live_in_scope(
+        &mut self,
+        now_ms: u64,
+        tick_ms: TickMs,
+        scope: crate::win32::ForegroundScope,
+    ) -> bool {
+        if !self.mode_key_pass_mark_live_in_scope(now_ms, scope) {
+            return false;
+        }
+        self.mode_key_pass_mark.disarm();
+        if let Some(hwnd) = self.shadow_model.current_focus() {
+            self.intent_store.remove(hwnd);
+        }
+        self.dispatch_event(ImeEvent::ModeKeyPassedThrough, tick_ms);
+        true
+    }
+
+    /// 通過マークが有効なら消費し、対象hwndの`IntentStore`エントリと`last_intent`を捨てる（`ImeEvent::ModeKeyPassedThrough`）。
+    /// 呼ぶのは**観測が成功した直後**だけ（観測の後に捨てるので、beliefが古いdesired_openへ戻らない）。
+    /// `ModeKeyPassedThrough`を dispatch するのはこの関数だけ（`architecture_guard`で固定）。
+    pub(crate) fn invalidate_intents_if_mode_key_pass_live(
+        &mut self,
+        now_ms: u64,
+        tick_ms: TickMs,
+    ) -> bool {
+        self.invalidate_intents_if_mode_key_pass_live_in_scope(
+            now_ms,
+            tick_ms,
+            crate::win32::foreground_scope(),
+        )
     }
 
     /// 非同期送信済み・未確認の actuation を記録する（`applied = Optimistic`）。
@@ -2451,6 +2525,26 @@ mod tests {
             .record_explicit_intent(target, UserIntentSource::Command, TickMs(tick_ms));
     }
 
+    fn arm_mode_key_pass_mark_for_test(
+        ps: &mut PlatformState,
+        scope: crate::win32::ForegroundScope,
+        now_ms: u64,
+    ) {
+        ps.ime.mode_key_pass_mark.arm(
+            scope,
+            ModeKeyPassMark {
+                armed_at_ms: now_ms,
+            },
+        );
+    }
+
+    fn test_foreground_scope() -> crate::win32::ForegroundScope {
+        crate::win32::ForegroundScope {
+            pid: 42,
+            hwnd: 0x1234,
+        }
+    }
+
     /// 中核の回帰テスト: 明示 OFF → 同一対象への FocusChanged（last_intent 消失）→
     /// 壊れた ConvOpenInference 観測、という実機再現手順で、生の
     /// `ImeModel::effective_open()` は true に反転してしまうが（退行の証拠として
@@ -2486,6 +2580,58 @@ mod tests {
             !ps.ime.effective_open_at(TickMs(300)),
             "IntentStore 込みの PlatformState::effective_open() は同一対象なら \
              明示 OFF 意図を維持し、Engine の ctx.ime_on が誤って true に反転しない"
+        );
+    }
+
+    #[test]
+    fn mode_key_pass_invalidation_without_mark_keeps_intents() {
+        let mut ps = PlatformState::new();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        dispatch_conv_open_inference(&mut ps, true, 120);
+
+        assert!(
+            !ps.ime.invalidate_intents_if_mode_key_pass_live_in_scope(
+                130,
+                TickMs(130),
+                test_foreground_scope(),
+            ),
+            "通過マークがなければ何もしない"
+        );
+        assert_eq!(ps.ime.explicit_intent(), Some(false));
+        assert!(
+            !ps.ime.effective_open_at(TickMs(130)),
+            "IntentStore の OFF 意図も残る"
+        );
+    }
+
+    #[test]
+    fn mode_key_pass_invalidation_drops_intents_and_follows_observation_once() {
+        let mut ps = PlatformState::new();
+        let scope = test_foreground_scope();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        dispatch_conv_open_inference(&mut ps, true, 120);
+        assert!(
+            !ps.ime.effective_open_at(TickMs(120)),
+            "破棄前は IntentStore が観測 true より優先される"
+        );
+
+        arm_mode_key_pass_mark_for_test(&mut ps, scope, 125);
+        assert!(
+            ps.ime
+                .invalidate_intents_if_mode_key_pass_live_in_scope(140, TickMs(140), scope),
+            "live な通過マークは観測成功後に一回だけ消費される"
+        );
+        assert_eq!(ps.ime.explicit_intent(), None);
+        assert!(
+            ps.ime.effective_open_at(TickMs(140)),
+            "古い意図を捨てた後は観測 true に従う"
+        );
+        assert!(
+            !ps.ime
+                .invalidate_intents_if_mode_key_pass_live_in_scope(141, TickMs(141), scope),
+            "通過マークは一回消費"
         );
     }
 

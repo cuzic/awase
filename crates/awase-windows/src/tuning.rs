@@ -442,6 +442,15 @@ pub const EXPLICIT_ON_INTENT_TTL_MS: u64 = 10_000;
 #[measured_macro::measured(pending = true)]
 pub const EXPLICIT_OFF_INTENT_TTL_MS: u64 = 30_000;
 
+/// 無変換/変換の生キーを GJI へ通過させた後、観測成功時に古い明示意図を
+/// 破棄できる猶予 (ms)。
+///
+/// 通過 → 20ms 後の再読み取り → IMM クロスプロセス読み取り（実測 20〜60ms 程度）
+/// の完了までを覆う暫定値。未実測・暫定のため、値を変更する場合は
+/// `.claude/rules/tuning-constants.md` に従うこと。
+#[measured_macro::measured(pending = true)]
+pub const MODE_KEY_PASS_MARK_WINDOW_MS: u64 = 300;
+
 /// `ImeModel.pending`（`ImeApplyRequested` で立てる apply transaction）の
 /// タイムアウト（BUG-34 横展開 D-prep、2026-08-19）。
 ///
