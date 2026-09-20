@@ -1435,11 +1435,11 @@ fn run() -> WinResult<()> {
     if std::env::args().any(|a| a == "--activate-gji") {
         activate_gji_profile();
         // awase がアクティブなTIPを検出する(ポーリング周期)まで待ってから、手順を始める。
-        AUTO_NEXT.with(|n| *n.borrow_mut() = now_ms() + 11000);
+        AUTO_NEXT.with(|n| *n.borrow_mut() = now_ms() + 14000);
         // awase の belief(起動時の推定=ON)と実状態(新しい窓=OFF)がずれたままだと、最初の押下で awase が逆向きに
         // actuate して手順が崩れる(CI run 35482240969)。手順の前に VK_IME_OFF を1回注入して、belief も実状態も
         // OFF にそろえる(awase 起動中は物理IMEキーとして belief を更新する。awase なしでも無害)。
-        queue_press(now_ms() + 8000, 0x1A);
+        queue_press(now_ms() + 12000, 0x1A);
         HOOK_AT.with(|h| *h.borrow_mut() = now_ms() + 6000);
     }
 

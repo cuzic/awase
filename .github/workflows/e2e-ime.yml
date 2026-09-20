@@ -109,6 +109,12 @@ jobs:
           Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
           Start-Sleep -Seconds 2
           Get-Process awase -ErrorAction SilentlyContinue | Format-Table Name, Id, SessionId
+          # awase の current_focus は「プロセスが変わったとき」(FocusChanged)にしか設定されない。起動時に既にスパイクが
+          # 前面だと一度も設定されず、明示意図が記録されないため、委譲の SetOpen が全て Unwarranted になりキーが
+          # 飲み込まれる(run 35484080057、target=HwndId(0))。別プロセス(notepad)へ一度フォーカスを移して設定させる。
+          Start-Process notepad.exe
+          Start-Sleep -Seconds 3
+          Get-Process notepad -ErrorAction SilentlyContinue | Stop-Process -Force
           $deadline = (Get-Date).AddSeconds(150)
           while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 5
