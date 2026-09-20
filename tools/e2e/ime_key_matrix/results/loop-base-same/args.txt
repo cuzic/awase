@@ -1,0 +1,3 @@
+args=--auto
+script error: Output type incorrect: bool (expecting ())
+Error: exit code 1
