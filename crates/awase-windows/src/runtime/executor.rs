@@ -821,13 +821,12 @@ impl DecisionExecutor {
                 let now = crate::hook::current_tick_ms();
                 crate::runtime::SPIKE_MODE_KEY_PASS_MS
                     .store(now, std::sync::atomic::Ordering::Relaxed);
-                ime.spike_invalidate_intents_on_mode_key_pass(crate::state::TickMs(now));
                 platform.timer.set(
                     crate::TIMER_IME_REFRESH,
                     std::time::Duration::from_millis(20),
                 );
                 tracing::info!(
-                    "[spike-follow] mode key passed through: intents invalidated, refresh in 20ms"
+                    "[spike-follow] mode key passed through: refresh in 20ms (intents are invalidated when the observation arrives)"
                 );
             }
         }

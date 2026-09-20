@@ -1968,12 +1968,9 @@ impl Runtime {
         {
             let now = crate::hook::current_tick_ms();
             crate::runtime::SPIKE_MODE_KEY_PASS_MS.store(now, std::sync::atomic::Ordering::Relaxed);
-            self.platform_state
-                .ime
-                .spike_invalidate_intents_on_mode_key_pass(crate::state::TickMs(now));
             self.schedule_ime_refresh(20);
             tracing::info!(
-                "[spike-follow] mode key PassThrough(vk=0x{:02X}): intents invalidated, refresh in 20ms",
+                "[spike-follow] mode key PassThrough(vk=0x{:02X}): refresh in 20ms (intents are invalidated when the observation arrives)",
                 event.vk_code.0
             );
         }

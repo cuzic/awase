@@ -209,6 +209,22 @@ impl Runtime {
             ImeReadStrategy::OsPoll => {
                 let miss_before = self.platform_state.ime.detect_miss_count();
                 self.ir_poll_and_learn(miss_before, ime_snap);
+                // SPIKE(ADR-187): 無変換/変換の生キー通過後の最初の観測が成功したら、古い明示意図(IntentStore/last_intent)を捨てる。
+                // 観測が入った**後**に捨てるので、belief は「古いdesired_openへ一瞬戻る」ことなく、直前に記録した観測に従う。
+                let mark = crate::runtime::SPIKE_MODE_KEY_PASS_MS
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let now = crate::hook::current_tick_ms();
+                if mark != 0
+                    && now.saturating_sub(mark) < 300
+                    && self.platform_state.ime.detect_miss_count() == miss_before
+                {
+                    crate::runtime::SPIKE_MODE_KEY_PASS_MS
+                        .store(0, std::sync::atomic::Ordering::Relaxed);
+                    self.platform_state
+                        .ime
+                        .spike_invalidate_intents_on_mode_key_pass(crate::state::TickMs(now));
+                    tracing::info!("[spike-follow] observation arrived after mode key pass: intents invalidated");
+                }
             }
         }
 
