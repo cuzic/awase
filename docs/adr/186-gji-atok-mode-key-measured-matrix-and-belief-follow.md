@@ -193,6 +193,26 @@ delegateはcomposing中に発火しないfail-closedになっている(誤って
 | a5 20ms再読み取りを撤去 | FAIL | 3/3 FAIL |
 | e7 `gji_thumb_key_ime_toggle=false` | FAIL | 3/3 FAIL |
 
+### プリセット・設定ごとの追随確認(`--walk`、run 35486929410)
+
+ATOK用の期待表ではなく、「かな=Engine ON、半角英数・直接入力=Engine OFF」に追随するかだけを見る
+(`check_consistency.py`、スパイク`--walk`: ひらがな/無変換/変換の固定キー列12押下。Engineの状態は各押下の700ms後に打つ`k`の
+`decision`で読む。`PassThrough`=OFF。delegate経由のOFFは「Engine deactivated」ログを出さないため、ログは根拠にしない)。各3回。
+
+| 構成 | 結果 | 読み |
+|---|---|---|
+| GJI ATOK + opt-in(`gji_thumb_key_ime_toggle=true`) | 3/3 追随 | 問題なし |
+| GJI ATOK + パススルー(opt-in無し、無変換 / 変換) | **3/3 不追随** | 実IMEはGJIが正しく開閉する(生キーが届く)が、**Engineは追随しない**(無変換/変換でIME OFFになってもEngine ON=直接入力にNICOLA変換が効く)。opt-in必須の理由(E7b)と同じ。既定(opt-in無し)のATOKユーザーは未解決 |
+| GJI MS-IMEキーマップ(session_keymap=2) + パススルー / opt-in / 変換キー+古いcustom表 | 各3/3 追随 | 問題なし。ただしこの歩行ではMS-IMEキーマップの無変換/変換はIMEを閉じず、実IMEが常にかなONのままなので、OFF方向の追随は試せていない |
+| Microsoft IME本体(`Set-WinUserLanguageList`でja-JP追加) | **不安定(0〜1/3)** | 下記 |
+
+**Microsoft IME本体**: 対照実験(awaseなし、同じキー列)では、step1のひらがなキーで実IMEがONになる(2/2)。awaseありでは、
+step1でawaseが物理キーを消費して再注入(`scan=0`の注入VK)し、`ImmCross`のON書き込み(`WM_IME_CONTROL`、cmd 0x0006)が
+**148msで`success=false`**、続くフォールバック(GjiDirect/MsImeDirect)は「not applicable」で失敗し、実IMEがOFFのままEngineだけONになる
+(step1〜3。step4の変換でMS-IME自身がONにして追随する)。CIのMS-IMEは新規プロファイルの初回起動で、IMEウィンドウの応答が
+遅い可能性があり、**CI環境の癖かawaseの実欠陥かは未切り分け**(1/3の回は成功)。実機のMS-IME(温まった状態)での確認と、
+`ImmCross`失敗時に物理キーが消えたままになる点(awaseが消費して再注入も効かない)の検討が残る。
+
 実機の結果(E1/E2/E5/E7bが必須、E4/E6は不変)と全構成で一致した。CI固有の前提(実機では暗黙に満たされていた):
 
 - a2は、`config1.db`に古い`custom_keymap_table`(`DirectInput Henkan IMEOn`)を入れた構成でだけ差が出る
@@ -258,4 +278,6 @@ delegateはcomposing中に発火しないfail-closedになっている(誤って
 - メモ帳・Windows Terminal・Chrome/Edgeでの同じE2E(TsfNative/Imm32Unavailable)。eisu reset3経路とidle-conv-checkの
   統合可否は、これが済んでから判断する。
 - 「残る問題1」(押下の取りこぼし)の原因特定(BUG-147、別セッションで調査中)。
+- ATOK + パススルー(opt-in無し)で、無変換/変換によるIME開閉にEngineが追随しない(上記)。opt-inを既定にするか、パススルー時も物理キー通過後の再読み取りでbeliefを更新するかの判断。
+- Microsoft IME本体で、`ImmCross`のON書き込みが失敗し物理キーが消える点が実機でも起きるか(CIでは148msでtimeout)。
 - Shift+無変換の横取りへの対処(delegateを修飾キー付きで発火させない、など)。
