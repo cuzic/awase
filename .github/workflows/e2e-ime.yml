@@ -45,6 +45,7 @@ jobs:
           name: e2e-binaries
           path: dist
 
+      # 他の方法: winget install --id Google.JapaneseIME(71秒) / scoop bucket add nonportable; scoop install google-japanese-input-np
       - name: Google 日本語入力をインストール(chocolatey)
         shell: pwsh
         run: |
@@ -87,7 +88,7 @@ jobs:
         shell: pwsh
         run: |
           Set-Location dist
-          Start-Process -FilePath .\ime_key_matrix_spike.exe -ArgumentList '--auto --hold=180'
+          Start-Process -FilePath .\ime_key_matrix_spike.exe -ArgumentList '--auto --hold=180 --activate-gji'
           $deadline = (Get-Date).AddSeconds(150)
           while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 5
