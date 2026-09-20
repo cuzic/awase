@@ -99,7 +99,8 @@ jobs:
           Remove-Item ime_key_matrix_spike.log -ErrorAction SilentlyContinue
           Get-Process ime_key_matrix_spike -ErrorAction SilentlyContinue | Stop-Process -Force
 
-      - name: awase を起動(AWASE_TEST_INJECTION=1、gji_thumb_key_ime_toggle=true)
+      # awase・スパイク・判定は同じステップで行う(別ステップにすると、ステップ終了時のプロセス掃除で awase が終了する)。
+      - name: awase を起動し、スパイク --auto を実行して判定する(AWASE_TEST_INJECTION=1、gji_thumb_key_ime_toggle=true)
         shell: pwsh
         run: |
           $cfg = Get-Content dist\config.toml -Raw
@@ -111,37 +112,22 @@ jobs:
           Start-Process -FilePath "$PWD\dist\awase.exe" -WorkingDirectory "$PWD\dist" -RedirectStandardError "$PWD\awase-stderr.log" -RedirectStandardOutput "$PWD\awase-stdout.log"
           Start-Sleep -Seconds 5
           Get-Process awase -ErrorAction SilentlyContinue | Format-Table Name, Id, SessionId
-
-      - name: スパイク --auto を実行
-        shell: pwsh
-        run: |
-          Set-Location dist
+          Push-Location dist
           Start-Process -FilePath .\ime_key_matrix_spike.exe -ArgumentList '--auto --hold=180 --activate-gji'
           $deadline = (Get-Date).AddSeconds(150)
           while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 5
             if ((Test-Path ime_key_matrix_spike.log) -and (Select-String -Path ime_key_matrix_spike.log -Pattern '全手順完了' -Quiet)) { break }
           }
-          if (Test-Path ime_key_matrix_spike.log) { Get-Content ime_key_matrix_spike.log -Encoding utf8 | Select-String -Pattern 'init\]|AUTO|KEY \[SCRIPT' | Select-Object -First 30 | ForEach-Object { $_.Line.Substring(0,[Math]::Min(150,$_.Line.Length)) } }
-          else { 'spike log なし' }
-
-      - name: 判定(check.py)
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          $log = Get-Item dist\awase.log -ErrorAction SilentlyContinue
-          "awase.log: $($log.FullName) lines=$((Get-Content $log.FullName).Count) last=$($log.LastWriteTime)"
+          Pop-Location
           "--- awase の生存確認"
           Get-Process awase -ErrorAction SilentlyContinue | Format-Table Name, Id
-          "--- awase.log の末尾"
-          Get-Content $log.FullName -Tail 6 -Encoding utf8 | ForEach-Object { $_.Substring(0,[Math]::Min(200,$_.Length)) }
-          "--- Application イベントログ(awase のクラッシュ)"
-          Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-15)} -ErrorAction SilentlyContinue | Where-Object { $_.Message -match 'awase' } | Select-Object -First 3 | ForEach-Object { $_.Message.Substring(0,[Math]::Min(300,$_.Message.Length)) }
-          if ($log) {
-            Get-Content $log.FullName -Encoding utf8 | Where-Object { $_ -match 'Engine (de)?activated|IME open axis delegated|outcome=Unwarranted' } | Set-Content awase-filtered.log -Encoding utf8
-            $env:PYTHONUTF8 = '1'
-            python tools\e2e\ime_key_matrix\check.py dist\ime_key_matrix_spike.log awase-filtered.log
-          } else { 'awase.log が見つからない(awase の起動に失敗した可能性)' }
+          Get-Content dist\awase.log -Encoding utf8 | Where-Object { $_ -match 'Engine (de)?activated|IME open axis delegated|outcome=Unwarranted' } | Set-Content awase-filtered.log -Encoding utf8
+          $env:PYTHONUTF8 = '1'
+          python tools\e2e\ime_key_matrix\check.py dist\ime_key_matrix_spike.log awase-filtered.log
+          $rc = $LASTEXITCODE
+          Get-Process awase, ime_key_matrix_spike -ErrorAction SilentlyContinue | Stop-Process -Force
+          exit $rc
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -149,7 +135,7 @@ jobs:
           name: e2e-logs
           path: |
             dist/ime_key_matrix_spike.log
+            dist/awase.log
             awase-stderr.log
             awase-stdout.log
             awase-filtered.log
-            **/awase.log
