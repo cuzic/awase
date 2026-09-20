@@ -155,6 +155,19 @@ impl Runtime {
             self.platform_state.ime.effective_open(),
             self.platform_state.ime.explicit_intent(),
         );
+        if self.platform_state.gate.pending_modekey_event.is_some() {
+            if self.platform_state.gate.half_width_alnum.is_guard_pending()
+                || self.platform_state.gate.half_width_alnum.is_toggle_active()
+            {
+                tracing::debug!("[E4] shift関連ガード中 → 100ms後のrefreshで再試行");
+                self.schedule_ime_refresh(100);
+            } else if let Some(mut ev) = self.platform_state.gate.pending_modekey_event.take() {
+                ev.ime_relevance.is_ime_mode_key = false;
+                self.platform_state.gate.force_conv_check = true;
+                tracing::debug!("[E4] refresh内で強制conv読み取りを実行");
+                let _ = self.kp_stage_idle_conv_check_inner(&ev, false, None);
+            }
+        }
         match strategy {
             ImeReadStrategy::SkipTyping => {}
             ImeReadStrategy::Blacklist => {

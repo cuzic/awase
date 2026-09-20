@@ -646,7 +646,7 @@ impl Runtime {
             resync_generation = resync_generation
         )
     )]
-    fn kp_stage_idle_conv_check_inner(
+    pub(crate) fn kp_stage_idle_conv_check_inner(
         &mut self,
         event: &RawKeyEvent,
         is_first_key_after_focus: bool,
@@ -663,17 +663,26 @@ impl Runtime {
             self.close_focus_resync_gate_if_current(resync_generation);
             return false;
         }
-        let output_idle_ms_at_spawn = self.platform.output_in_flight_ms();
+        let force = std::mem::take(&mut self.platform_state.gate.force_conv_check);
+        let output_idle_ms_at_spawn = if force {
+            u64::MAX
+        } else {
+            self.platform.output_in_flight_ms()
+        };
         let now_tick_at_spawn = crate::state::TickMs(hook::current_tick_ms());
         let explicit_action_ms_at_spawn = self.platform_state.ime.last_explicit_ime_action_ms_raw();
-        let explicit_age = self
-            .platform_state
-            .ime
-            .explicit_ime_action_age_ms(now_tick_at_spawn);
-        let is_tsf_native = self
-            .platform
-            .current_app_profile()
-            .is_effectively_tsf_native(self.platform.focus.class_name());
+        let explicit_age = if force {
+            u64::MAX
+        } else {
+            self.platform_state
+                .ime
+                .explicit_ime_action_age_ms(now_tick_at_spawn)
+        };
+        let is_tsf_native = force
+            || self
+                .platform
+                .current_app_profile()
+                .is_effectively_tsf_native(self.platform.focus.class_name());
         if !awase::engine::should_run_idle_conv_check(
             matches!(event.event_type, KeyEventType::KeyDown),
             is_tsf_native,
@@ -1950,7 +1959,16 @@ impl Runtime {
             }
         }
 
-        if !decision.is_consumed()
+        let follow_key = !decision.is_consumed()
+            && matches!(event.event_type, KeyEventType::KeyDown)
+            && event.ime_relevance.is_ime_mode_key
+            && event.ime_relevance.shadow_action.is_none()
+            && event.ime_relevance.sync_direction.is_none();
+        if follow_key {
+            self.platform_state.gate.pending_modekey_event = Some(*event);
+            self.schedule_ime_refresh(150);
+            tracing::debug!("[E4] mode key passed through → follow refresh scheduled");
+        } else if !decision.is_consumed()
             && event.ime_relevance.may_change_ime
             && matches!(event.event_type, KeyEventType::KeyDown)
         {
