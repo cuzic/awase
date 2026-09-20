@@ -84,6 +84,10 @@ def parse(path):
             cur["a400"] = parse_snap(s)
         elif s.startswith("+1500ms"):
             cur["a1500"] = parse_snap(s)
+    # 半角/全角は押すたびにOSが0xF3/0xF4を交互に見せる(awaseの加工ではない)ので同じキーとして扱う。
+    for r in rows:
+        if r["vk"] == 0xF4:
+            r["vk"] = 0xF3
     return [
         (r["vk"], r.get("before"), r.get("a400"), r.get("a1500"), r["press"])
         for r in rows
@@ -192,6 +196,68 @@ def naive_static(st, vk):
     return st
 
 
+# ---- Mozc仕様モデル(学習不要) ----------------------------------------------------------------
+# google/mozc の src/data/keymap/atok.tsv と src/win32/base/keyevent_handler.cc(VK→KeyEvent)だけから作る。
+# ★注意: このモデルは elw2/elw8 のデータを見た後に書いた(未見データでの検証ではない)。
+#   未見データでの評価は、このコミット後に新しいシードで取ったランで行う(results/elw9)。
+# 状態=(open, native, comp, _)。Precomposition=open&!comp、Composition=open&comp、DirectInput=!open。
+def spec_atok(st, vk):
+    o, n, c, r = st
+    tog = lambda x: 0 if x else 1
+    if vk == 0x1D:  # Muhenkan: Direct=IMEOn / Precomposition=CancelAndIMEOff / Composition=ToggleAlphanumericMode
+        if not o:
+            return (True, n, False, r)
+        return (False, n, False, r) if not c else (True, tog(n), True, r)
+    if vk == 0x1C:  # Henkan: Direct=IMEOn / Precomposition=CancelAndIMEOff / Composition=Convert
+        if not o:
+            return (True, n, False, r)
+        return (False, n, False, r) if not c else (True, n, True, r)
+    if vk == 0xF2:  # Kana(ひらがな): Direct=未定義 / Precomposition,Composition=ToggleAlphanumericMode
+        return st if not o else (True, tog(n), c, r)
+    if vk == 0xF3:  # Hankaku/Zenkaku(0xF3/0xF4): Direct=IMEOn / それ以外=CancelAndIMEOff
+        return (True, n, False, r) if not o else (False, n, False, r)
+    if vk in (0x4B, 0x41):
+        return st if not o else (True, n, True, r)
+    if vk in (0x0D, 0x1B):  # Enter=Commit / ESC=Cancel (Composition)
+        return (o, n, False, r) if o else st
+    return st
+
+
+def eval_spec(paths):
+    """Mozc仕様モデルと学習表(他ラン学習)の一段/開ループ精度。"""
+    runs = [parse(p) for p in paths]
+    one, loop = Counter(), Counter()
+    for i, rows in enumerate(runs):
+        tr = learn([r for j, r in enumerate(runs) if j != i]) if len(runs) > 1 else None
+        for model, fn in (("spec", spec_atok), ("learned", (lambda st, vk, t=tr: predict(t, st, vk)) if tr else None)):
+            if fn is None:
+                continue
+            belief = prev = None
+            for vk, before, a400, *_ in rows:
+                if not (before and a400):
+                    belief = prev = None
+                    continue
+                p = fn(before, vk)
+                if p is not None:
+                    one[(model, "ok" if p == a400 else "ng")] += 1
+                elif model == "learned":
+                    one[(model, "unseen")] += 1
+                if belief is None or before != prev:
+                    belief = before
+                prev = a400
+                q = fn(belief, vk)
+                loop[(model, "ok" if q == a400 else "ng")] += 1
+                belief = q if q is not None else a400
+
+    def acc(d, m):
+        ok, ng = d[(m, "ok")], d[(m, "ng")]
+        return f"{ok}/{ok + ng}={ok / max(ok + ng, 1):.1%}"
+
+    n = sum(len(r) for r in runs)
+    print(f"押下{n}件  一段: 仕様モデル {acc(one, 'spec')} / 学習表(他ラン学習) {acc(one, 'learned')} 未学習{one[('learned', 'unseen')]}")
+    print(f"        開ループ: 仕様モデル {acc(loop, 'spec')} / 学習表 {acc(loop, 'learned')}")
+
+
 def main(paths):
     runs = [parse(p) for p in paths]
     for p, r in zip(paths, runs):
@@ -285,6 +351,9 @@ def main(paths):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "--spec":
+        eval_spec(sys.argv[2:])
+        sys.exit(0)
     if len(sys.argv) == 4 and sys.argv[1] == "--drift":
         drift(sys.argv[2], sys.argv[3])
         sys.exit(0)
