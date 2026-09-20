@@ -2,7 +2,8 @@
 # IMEキー効果学習スパイク: awase を A/B で起動して --walk を1回流し、ログを回収する。
 #   A = awase起動・AWASE_TEST_INJECTIONなし(注入は外部注入として素通し)
 #   B = awase起動・AWASE_TEST_INJECTION=1(注入を物理キー扱い)
-# 使い方: run_walk.sh <A|B> <seed(1|2)> <出力ディレクトリ>
+#   Ap = A' = A と同じ起動だが、config.toml の disable_apps にスパイクを入れて awase を完全バイパス(要 elw-bypass-on)
+# 使い方: run_walk.sh <A|B|Ap> <seed(1|2)> <出力ディレクトリ>
 # 前提: clipwire ターゲット elw-* / e2e-run / e2e-fetch-spike / e2e-fetch-awase / e2e-awase-start が登録・承認済み。
 # 実行中(約4分)は Windows 機のキーボード・マウスに触らない/ロックしない。
 set -u
@@ -13,9 +14,9 @@ mkdir -p "$OUT"
 "$CW" exec e2e-diag-desktop >"$OUT/desktop.txt" 2>&1
 if grep -qE "LockApp|foreground: hwnd=0 " "$OUT/desktop.txt"; then echo "LOCKED"; exit 2; fi
 case "$MODE" in
-  A) "$CW" exec elw-awase-start-a >"$OUT/awase-start.txt" 2>&1 ;;
+  A|Ap) "$CW" exec elw-awase-start-a >"$OUT/awase-start.txt" 2>&1 ;;
   B) "$CW" exec e2e-awase-start   >"$OUT/awase-start.txt" 2>&1 ;;
-  *) echo "mode must be A|B"; exit 2 ;;
+  *) echo "mode must be A|B|Ap"; exit 2 ;;
 esac
 grep -q "procs: 1" "$OUT/awase-start.txt" || { echo "awase起動失敗"; cat "$OUT/awase-start.txt"; exit 2; }
 "$CW" exec "elw-args-s$SEED" >"$OUT/args.txt" 2>&1
@@ -29,4 +30,5 @@ for _ in $(seq 1 24); do
 done
 grep -q "手完了" "$OUT/spike.log" || { echo "完了せず(timeout)"; exit 2; }
 "$CW" exec e2e-fetch-awase >"$OUT/awase.log" 2>/dev/null
+"$CW" exec e2e-fetch-awase-full >"$OUT/awase-full.log" 2>/dev/null
 echo "OK $MODE seed=$SEED"
