@@ -28,7 +28,7 @@
 //!    受け、走査・フォールスルー判定・アフィン性だけを本モジュールが持つ。
 //!    これにより chain の走査規則は Linux で全数テストできる。
 //! 2. **同期版と非同期版の 2 本を提供する。** ADR は `run_chain` を async 1 本に
-//!    しているが、GJI / MS-IME / KanjiToggle は `SendInput` のみで非ブロッキング
+//!    しているが、GJI / MS-IME は `SendInput` のみで非ブロッキング
 //!    であり、これらを await 越しにすると打鍵ホットパスのレイテンシが変わる
 //!    （ADR-089 §8.2 が「Phase B の実機ソークでレイテンシを測ること」と書いて
 //!    いる軸）。実機ソークができない状態でホットパスの同期/非同期を変えないため、
@@ -122,7 +122,7 @@ use super::open_warrant::{issue_open_warrant, OpenWarrant, WarrantContext};
 
 // ── WriteMechanism ────────────────────────────────────────────────────────────
 
-/// IME open を実際に書き込む機構。`ime_controller.rs` の 4 戦略と 1:1。
+/// IME open を実際に書き込む機構。`ime_controller.rs` の 3 戦略と 1:1。
 ///
 /// **キー値（VK）は持たない**——`state/key_sequence_policy.rs::ime_key_for` が
 /// SSOT のままである（ADR-089 §2.8、INV-44。`docs/experiments.md` エントリ01 の
@@ -135,8 +135,6 @@ pub enum WriteMechanism {
     GjiDirect,
     /// MS-IME 向けの冪等キー（`VK_IME_ON` / `VK_IME_OFF`）。
     MsImeDirect,
-    /// 非冪等な `VK_KANJI` トグル。最終フォールバック。
-    KanjiToggle,
 }
 
 impl WriteMechanism {
@@ -147,7 +145,6 @@ impl WriteMechanism {
             Self::ImmCross => "ImmCrossProcess",
             Self::GjiDirect => "GjiDirect",
             Self::MsImeDirect => "MsImeDirect",
-            Self::KanjiToggle => "KanjiToggle",
         }
     }
 
@@ -159,12 +156,7 @@ impl WriteMechanism {
     /// あり、`ALL` を直接 chain として使ってよいのは
     /// 「起案時点の (p, k) を固定できない経路」だけである
     /// （`runtime/open_chain.rs` の非同期チェーン。同モジュール doc 参照）。
-    pub const ALL: [Self; 4] = [
-        Self::ImmCross,
-        Self::GjiDirect,
-        Self::MsImeDirect,
-        Self::KanjiToggle,
-    ];
+    pub const ALL: [Self; 3] = [Self::ImmCross, Self::GjiDirect, Self::MsImeDirect];
 
     /// この機構が [`ImeOpenOutcome::Failed`] を返しうるか
     /// （= 後続要素へフォールスルーしうるか）。
@@ -176,7 +168,6 @@ impl WriteMechanism {
     /// | `ImmCross` | `Applied` / **`Failed`**（`set_ime_open_cross_process` の失敗） |
     /// | `GjiDirect` | `AlreadyMatched` / `Applied` / `UnsafeToToggle` |
     /// | `MsImeDirect` | `Applied` / `UnsafeToToggle` |
-    /// | `KanjiToggle` | `FallbackSent` のみ |
     ///
     /// **`caps(p, k).chain` の末尾以外の要素は、必ずこれが真でなければならない**
     /// ——偽の機構の後ろに要素を置くと、その要素は現行のフォールスルー述語
@@ -189,8 +180,8 @@ impl WriteMechanism {
     /// `ime_controller.rs::caps_chain_matches_legacy_all_scan` が
     /// （`is_applicable` × フォールスルー述語の実挙動と突き合わせる形で）固定する。
     /// 将来 `GjiDirectStrategy` / `MsImeDirectStrategy` が `Failed` を返すように
-    /// 変わったら、ここを更新したうえで `caps` の末尾に `KanjiToggle` を足すか
-    /// どうかを**実機ソーク付きで**判断すること
+    /// 変わったら、ここを更新したうえで `caps` の到達可能性を
+    /// **実機ソーク付きで**判断すること
     /// （`.claude/rules/fix-requires-evidence.md` の「キー選択」ファミリー）。
     #[must_use]
     pub const fn may_return_failed(self) -> bool {
@@ -204,9 +195,9 @@ impl WriteMechanism {
 /// `Failed` のときだけ。
 ///
 /// **`UnsafeToToggle` を含めてはならない。** `UnsafeToToggle` は「Win キー押下中で
-/// `send_ime_mode_key` が未送信」の意であり、ここでフォールスルーさせると
-/// **Win キー押下中に非冪等な `VK_KANJI` を送る新経路**が生まれる
-/// （ADR-089 §2.3・§4.9）。
+/// `send_ime_mode_key` が未送信」の意であり、`applied_snapshot` をラッチさせない
+/// ための未適用シグナルである。次の機構へ進む根拠にはならない
+/// （BUG-16 追補、ADR-089 §2.3・§4.9）。
 #[must_use]
 pub const fn falls_through(outcome: ImeOpenOutcome) -> bool {
     matches!(outcome, ImeOpenOutcome::Failed)
@@ -234,7 +225,7 @@ pub enum VerifiedTarget {
     /// 取り出せない」ことを型で保証しており（ADR-086 §6 段1）、その保証を
     /// 迂回するアクセサを生やさないため。
     Captured,
-    /// VK 送信機構（GjiDirect / MsImeDirect / KanjiToggle）はフォアグラウンドの
+    /// VK 送信機構（GjiDirect / MsImeDirect）はフォアグラウンドの
     /// フォーカスへ送るため hwnd を捕獲しない。
     ///
     /// **これは ADR-086 INV-14 の未移行分である**（ADR-089 §6 Phase C item 12）。
@@ -748,15 +739,16 @@ mod tests {
         }
     }
 
-    /// **`UnsafeToToggle` はフォールスルーしない**（§2.3・§4.9: Win キー押下中に
-    /// 非冪等な `VK_KANJI` を送る新経路を作らない）。
+    /// **`UnsafeToToggle` はフォールスルーしない**（§2.3・§4.9: 未送信なので
+    /// 次の機構へ進む根拠にならない）。
     #[test]
-    fn unsafe_to_toggle_stops_the_chain_before_kanji_toggle() {
+    fn unsafe_to_toggle_stops_the_chain_before_next_mechanism() {
         let mut writer = FakeWriter::new(
-            &[WriteMechanism::GjiDirect, WriteMechanism::KanjiToggle],
+            &[WriteMechanism::GjiDirect, WriteMechanism::MsImeDirect],
             &[ImeOpenOutcome::UnsafeToToggle],
         );
-        let outcome = verified(true).run_chain(&WriteMechanism::ALL, &mut writer);
+        let chain = [WriteMechanism::GjiDirect, WriteMechanism::MsImeDirect];
+        let outcome = verified(true).run_chain(&chain, &mut writer);
         assert_eq!(outcome, ImeOpenOutcome::UnsafeToToggle);
         assert_eq!(writer.calls, vec![(WriteMechanism::GjiDirect, true)]);
     }
@@ -782,13 +774,11 @@ mod tests {
     /// 適用不能な機構は呼ばれない（`apply_iter` の `is_applicable` と同値）。
     #[test]
     fn inapplicable_mechanisms_are_skipped() {
-        let mut writer = FakeWriter::new(
-            &[WriteMechanism::KanjiToggle],
-            &[ImeOpenOutcome::FallbackSent],
-        );
+        let mut writer =
+            FakeWriter::new(&[WriteMechanism::MsImeDirect], &[ImeOpenOutcome::Applied]);
         let outcome = verified(true).run_chain(&WriteMechanism::ALL, &mut writer);
-        assert_eq!(outcome, ImeOpenOutcome::FallbackSent);
-        assert_eq!(writer.calls, vec![(WriteMechanism::KanjiToggle, true)]);
+        assert_eq!(outcome, ImeOpenOutcome::Applied);
+        assert_eq!(writer.calls, vec![(WriteMechanism::MsImeDirect, true)]);
     }
 
     /// 適用可能な機構が無ければ `Failed`（現行 `apply_iter` の末尾と同じ）。
@@ -805,12 +795,12 @@ mod tests {
     /// 全機構が `Failed` を返したら `Failed`。
     #[test]
     fn all_failed_yields_failed() {
-        let mut writer = FakeWriter::new(&WriteMechanism::ALL, &[ImeOpenOutcome::Failed; 4]);
+        let mut writer = FakeWriter::new(&WriteMechanism::ALL, &[ImeOpenOutcome::Failed; 3]);
         assert_eq!(
             verified(true).run_chain(&WriteMechanism::ALL, &mut writer),
             ImeOpenOutcome::Failed
         );
-        assert_eq!(writer.calls.len(), 4);
+        assert_eq!(writer.calls.len(), 3);
     }
 
     /// 非同期版と同期版の走査結果が全 outcome 組み合わせで一致すること
@@ -931,7 +921,7 @@ mod tests {
     fn mechanism_names_match_strategy_names() {
         assert_eq!(
             WriteMechanism::ALL.map(WriteMechanism::name),
-            ["ImmCrossProcess", "GjiDirect", "MsImeDirect", "KanjiToggle"]
+            ["ImmCrossProcess", "GjiDirect", "MsImeDirect"]
         );
     }
 }

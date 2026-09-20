@@ -827,7 +827,6 @@ fn write_mechanism_str(mechanism: crate::state::actuation_chain::WriteMechanism)
         WriteMechanism::ImmCross => "ImmCross",
         WriteMechanism::GjiDirect => "GjiDirect",
         WriteMechanism::MsImeDirect => "MsImeDirect",
-        WriteMechanism::KanjiToggle => "KanjiToggle",
     }
 }
 
@@ -842,7 +841,6 @@ fn mechanism_command_str(
         }
         Some(MechanismCommand::SetOpenThenConvForTarget { .. }) => "SetOpenThenConvForTarget",
         Some(MechanismCommand::SendVk(_)) => "SendVk",
-        Some(MechanismCommand::PostKanjiToggle) => "PostKanjiToggle",
         None => "None",
     }
 }

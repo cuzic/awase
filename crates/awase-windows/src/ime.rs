@@ -98,107 +98,6 @@ pub unsafe fn set_ime_open_for_target(hwnd: HWND, open: bool) -> bool {
     success
 }
 
-/// IMM32 クロスプロセス制御が使えないアプリ（Chrome/Edge 等）向け IME トグル実装。
-///
-/// `WM_IME_CONTROL` が効かない `Imm32Unavailable` アプリに対して `SendInput(VK_KANJI)` で IME をトグルする。
-///
-/// VK_KANJI はトグルキーのため **呼び出し元は last_applied_ime_on != desired を事前確認すること**。
-/// `dwExtraInfo` に `IME_KANJI_MARKER` を付けるため awase 自身のフックが再インターセプトしない
-/// （フック先頭の自己注入チェックで即パススルー、shadow toggle もスキップ）。
-///
-/// Ctrl/Shift/Alt が押下中の場合、VK_KANJI を bare（修飾なし）で届けるために先に KeyUp を注入し、
-/// 送信後も物理的に押下中の修飾キーは KeyDown で復元する。
-///
-/// 候補ウィンドウ表示中は VK_KANJI が候補窓に吸われて IME OFF に失敗する場合があるが、
-/// 以前の「Ctrl+Enter で候補確定後に VK_KANJI」方式は Chrome フォームを submit させる
-/// 副作用があったため廃止。GJI 環境では GjiDirectStrategy (VK_IME_OFF) が先行するため、
-/// この関数に到達するのは GJI 以外か GJI fallback 時のみ。
-///
-/// # Safety
-/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-// 変数名が意図的に似ているため similar_names を抑制する（gas_lctrl/gks_lctrl 等）。
-#[expect(clippy::similar_names)]
-pub unsafe fn post_kanji_toggle_to_focused() {
-    use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-    use crate::vk::{
-        VK_CONTROL, VK_KANJI, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_RCONTROL, VK_RMENU, VK_RSHIFT,
-    };
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetKeyState};
-
-    let held = HeldModifiers::read();
-
-    // 診断: L/R 個別キー状態（VK_KANJI 受信時の Edge 挙動把握用）
-    // GetAsyncKeyState = 物理キー状態、GetKeyState = メッセージキュー処理済み状態。
-    let (
-        gas_lctrl,
-        gas_rctrl,
-        gks_ctrl,
-        gks_lctrl,
-        gks_rctrl,
-        gas_lshift,
-        gas_rshift,
-        gas_lalt,
-        gas_ralt,
-    ) = (
-        unsafe { GetAsyncKeyState(i32::from(VK_LCONTROL.0)) } < 0,
-        unsafe { GetAsyncKeyState(i32::from(VK_RCONTROL.0)) } < 0,
-        unsafe { GetKeyState(i32::from(VK_CONTROL.0)) } < 0,
-        unsafe { GetKeyState(i32::from(VK_LCONTROL.0)) } < 0,
-        unsafe { GetKeyState(i32::from(VK_RCONTROL.0)) } < 0,
-        unsafe { GetAsyncKeyState(i32::from(VK_LSHIFT.0)) } < 0,
-        unsafe { GetAsyncKeyState(i32::from(VK_RSHIFT.0)) } < 0,
-        unsafe { GetAsyncKeyState(i32::from(VK_LMENU.0)) } < 0,
-        unsafe { GetAsyncKeyState(i32::from(VK_RMENU.0)) } < 0,
-    );
-    tracing::debug!(
-        "[ime-fallback] key-state pre-send: \
-         ctrl(gas={} L={gas_lctrl} R={gas_rctrl}) \
-         gks(ctrl={gks_ctrl} L={gks_lctrl} R={gks_rctrl}) \
-         shift(gas={} L={gas_lshift} R={gas_rshift}) \
-         alt(gas={} L={gas_lalt} R={gas_ralt})",
-        held.ctrl,
-        held.shift,
-        held.alt
-    );
-
-    let mut inputs = Vec::with_capacity(8);
-    held.push_release(&mut inputs, IME_KANJI_MARKER);
-    inputs.push(make_key_input_ex(VK_KANJI, false, IME_KANJI_MARKER));
-    inputs.push(make_key_input_ex(VK_KANJI, true, IME_KANJI_MARKER));
-
-    // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼び出せる。
-    let still = unsafe { held.push_restore(&mut inputs, IME_KANJI_MARKER) };
-
-    tracing::debug!(
-        "[ime-fallback] SendInput VK_KANJI toggle: \
-         release(ctrl={} shift={} alt={}) \
-         restore(ctrl={} shift={} alt={}) total={} events",
-        held.ctrl,
-        held.shift,
-        held.alt,
-        still.ctrl,
-        still.shift,
-        still.alt,
-        inputs.len()
-    );
-    let candidate_pre = crate::tsf::observer::gji_candidate_visible_now();
-    let t_send = std::time::Instant::now();
-    let sent = crate::win32::send_input_safe(&inputs);
-    let send_elapsed = t_send.elapsed();
-    let candidate_post = crate::tsf::observer::gji_candidate_visible_now();
-    tracing::debug!(
-        "[ime-fallback] SendInput VK_KANJI done: send_elapsed={}ms candidate_pre={candidate_pre} candidate_post={candidate_post} sent={sent}/{}",
-        send_elapsed.as_millis(),
-        inputs.len()
-    );
-    if sent as usize != inputs.len() {
-        tracing::warn!(
-            "[ime-fallback] SendInput(VK_KANJI) sent {sent}/{} events",
-            inputs.len()
-        );
-    }
-}
-
 /// IME モード切り替えキーを `SendInput` で送信する。
 ///
 /// Engine ON/OFF 時に IME の入力モードを強制切り替えするために使う。
@@ -213,7 +112,7 @@ pub unsafe fn post_kanji_toggle_to_focused() {
 /// その Ctrl がまだ OS に保持されている瞬間）、修飾なしで mode key を届けるために
 /// 先に KeyUp を注入し、送信後に物理的に押下中の修飾キーは KeyDown で復元する。
 /// これを行わないと OS/IME/アプリが `Ctrl+<mode key>` の組み合わせとして解釈し、
-/// 想定外のショートカット発火を招く（`post_kanji_toggle_to_focused` と同じ理由）。
+/// 想定外のショートカット発火を招く。
 ///
 /// 戻り値: 実際に注入した場合 `true`。Win キー押下中でスキップした場合 `false`。
 /// **呼び出し元は `false` を「apply していない」として扱うこと** — スキップを

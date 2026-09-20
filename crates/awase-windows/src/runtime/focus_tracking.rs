@@ -1035,12 +1035,11 @@ impl Runtime {
             }
         }
 
-        // 非 TsfNative（Standard/ImmCross/Plain/Unknown）: VK_KANJI はトグルのため、
-        // desired=true でキャッシュが ON なら applied=true に先同期して冗長な
-        // VK_KANJI を防ぐ（ADR-098 決定5: 旧コメント「Imm32Unavailable (Chrome 等)
-        // のみ」は実際のガード条件 `!is_effectively_tsf_native` と食い違っていた
-        // ため訂正——`Standard`+MS-IME の `CHAIN_IMM_CROSS_THEN_KANJI` が今も
-        // `KanjiToggle` を含むため、この pre-sync は Standard でも引き続き必要）。
+        // 非 TsfNative（Standard/ImmCross/Plain/Unknown）では、フォーカス直後の
+        // OS 観測値を applied に先同期して、直後の Engine ON が古い applied を
+        // 根拠に不要な再送へ進むことを防ぐ。KanjiToggle 機構は撤去済みだが、
+        // applied_snapshot を未更新のままにすると focus-resync / force-on の
+        // 判断が古い状態を参照するため、この pre-sync は Standard でも必要。
         // TsfNative は SSOT model: applied=Unknown のまま維持し、最初のキーで
         // SetOpen が VK_DBE_HIRAGANA/ALPHANUMERIC (SET、トグルでない) を発行する。
         //

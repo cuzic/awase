@@ -205,8 +205,7 @@ pub const fn is_convert_or_nonconvert(vk_code: VkCode) -> bool {
 ///   ひらがな/半角/全角/ローマ字/かな直接の各モード切替）。
 /// - `false`（open-only、無害）: `VK_IME_ON`（0x16）・`VK_IME_OFF`（0x1A）・
 ///   `VK_KANJI`（0x19）——これらは IME の開閉のみを切り替え、conv ワードには
-///   触れない（`KanjiToggleStrategy`/`MsImeDirectStrategy` が根拠に使う
-///   前提と同じ）。`VK_NONCONVERT`（0x1D）も対象外——composition のキャンセル
+///   触れない。`VK_NONCONVERT`（0x1D）も対象外——composition のキャンセル
 ///   キーであり mode 選択キーではない。
 ///
 /// `send_ime_mode_key`（`ime.rs`）はユーザー設定 VK（`engine_on_ime_vk`/

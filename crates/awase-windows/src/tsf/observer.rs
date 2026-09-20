@@ -177,8 +177,7 @@ pub struct TsfObservations {
     /// 「shadow=OFF なのに候補ウィンドウが表示された（desync）」ことがあったかを記録するラッチ。
     ///
     /// `EVENT_OBJECT_SHOW` で `true` に、`reset_candidate_was_seen()` 呼び出し時に `false` にリセット。
-    /// `KanjiToggleStrategy` と `GjiDirectStrategy`（ADR-171）が shadow=false でも desync を検出して
-    /// 必要な再送を行えるようにする。
+    /// `GjiDirectStrategy`（ADR-171）が shadow=false でも desync を検出して必要な再送を行えるようにする。
     pub(super) candidate_was_seen: AtomicBool,
 
     /// `LiteralDetectCore` が最後に `CompositionConfirmed`（かつ非 partial-literal）を
@@ -516,7 +515,7 @@ pub(crate) fn reset_namechange_seq() {
 
 /// GJI candidate が SHOW になってから次の `reset_candidate_was_seen()` まで `true`。
 ///
-/// `KanjiToggleStrategy` と `GjiDirectStrategy`（ADR-171）が shadow=false でも desync を検出するために使う。
+/// `GjiDirectStrategy`（ADR-171）が shadow=false でも desync を検出するために使う。
 pub(crate) fn candidate_was_seen() -> bool {
     TSF_OBS.candidate_was_seen.load(Ordering::Relaxed)
 }

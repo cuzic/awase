@@ -113,16 +113,8 @@ GJI の composition 動作の実際の挙動に依存した最適化。削除す
 
 ## カテゴリ 4: IME 戦略フォールバック
 
-### 4-1. `post_kanji_toggle_to_focused`（VK_KANJI フォールバック）
-
-**場所:** `crates/awase-windows/src/ime.rs:156-175`
-
-**内容:** GJI 非稼働時（MS-IME 等）の最終フォールバック。旧実装は候補ウィンドウ表示中に `Ctrl+Enter` で候補を確定してから `VK_KANJI` を送っていたが、Chrome フォームを submit させる副作用があり廃止（`1d7315e`）。現在は bare `VK_KANJI` のみを送り、候補ウィンドウへの吸われは許容する。
-
-**判定: 削除不可（すでにクリーン）**  
-コメントは「Ctrl+Enter 廃止済みの経緯」として適切。コードも現在の仕様を正確に反映している。
-
----
+ADR-190 で `post_kanji_toggle_to_focused`（VK_KANJI フォールバック）は撤去済み。
+MS-IME 系の ImmCross 失敗後は冪等な `MsImeDirect`（VK_IME_ON/OFF）へ落とす。
 
 ### 4-2. GJI 全プロファイル共通戦略
 
@@ -191,7 +183,7 @@ GJI の composition 動作の実際の挙動に依存した最適化。削除す
 
 **場所:** `crates/awase-windows/src/runtime/executor.rs:800-840`
 
-**内容:** フォーカス変更直後や起動時に実 IME 状態が unknown になり、`applied_snapshot=None` のまま IME が ON になっていることがある。この状態で `KanjiToggle/GjiDirect` が「`shadow=desired` → スキップ」してしまい Ctrl+無変換 が効かなくなる。ユーザーの明示的操作（`EngineIntent`）では shadow desync を無視して必ず送信することで対処する。
+**内容:** フォーカス変更直後や起動時に実 IME 状態が unknown になり、`applied_snapshot=None` のまま IME が ON になっていることがある。この状態で `GjiDirect` が「`shadow=desired` → スキップ」してしまい Ctrl+無変換 が効かなくなる。ユーザーの明示的操作（`EngineIntent`）では shadow desync を無視して必ず送信することで対処する。
 
 スキップ判定は方向で異なる:
 - `SetOpen(false)` 方向: `applied_at_ms > 0`（実 apply 確認済み）なら永続スキップ → 定常状態での VK_KANJI 二重送信防止
@@ -215,7 +207,7 @@ GJI の composition 動作の実際の挙動に依存した最適化。削除す
 
 **場所:** `crates/awase-windows/src/runtime/mod.rs:498-504`
 
-**内容:** 物理 KANJI キーは `apply_ime_open` を経由しないため `last_applied` が更新されない。このまま Engine が activate → `SetOpen(true)` → `KanjiToggleStrategy` が `last_applied(false) != desired(true)` と判定して VK_KANJI を余分に送信し、Chrome で IME が逆転する。`process_deferred_effects` 完了後に OS 観測値で `mirror_applied_open` を呼び同期する。
+**内容:** 物理 KANJI キーは `apply_ime_open` を経由しないため `last_applied` が更新されない。このまま Engine が activate → `SetOpen(true)` へ進むと、直後の force-on / focus-resync が古い状態を根拠に動く。`process_deferred_effects` 完了後に OS 観測値で `mirror_applied_open` を呼び同期する。
 
 **判定: 削除不可**（物理 KANJI キーが `apply_ime_open` を迂回することへの対応）
 

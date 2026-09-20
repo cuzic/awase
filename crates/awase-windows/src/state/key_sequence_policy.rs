@@ -14,8 +14,6 @@
 //!     （[`ime_key_for`]）。キーは必ず [`crate::vk`] の名前付き定数（VK hex 直書き禁止, D-1）。
 //! - **担わない（呼び出し側 = `ime_controller.rs` に現行ロジックを残す動的判断）**:
 //!   - `ImmCrossProcessStrategy` の `ImmSetOpenStatus` クロスプロセス API（VK を送らない）。
-//!   - `KanjiToggleStrategy` の `post_kanji_toggle_to_focused`（VK_KANJI をフォーカス窓へ送る
-//!     専用経路。`send_ime_mode_key` とは送信機構が異なるためこの表には載せない）。
 //!   - `shadow_on` スキップ（GjiDirect ON）・ROMAN pre-mode（`set_ime_romaji_mode`）・
 //!     フォールバック前の実状態確認（`3510a08`, [[feedback_immcross_fallback_state_check]]）。
 //!     いずれも observation 依存の動的判断。MsImeDirect ON はかつて `VK_DBE_HIRAGANA`
@@ -52,16 +50,11 @@ pub(crate) const fn gji_direct_applicable(kind: ImeKindId) -> bool {
     matches!(kind, ImeKindId::Gji)
 }
 
-/// `MsImeDirectStrategy` の適用条件: MS-IME 検出済み かつ IMM32 クロスプロセス不可。
-///
-/// `#[track_caller]`（opus code review S3で追加、理由は`imm_cross_applicable`と同じ）。
+/// `MsImeDirectStrategy` の適用条件: MS-IME 検出済み。
 #[must_use]
-#[track_caller]
-pub(crate) fn ms_ime_direct_applicable(kind: ImeKindId, profile: AppImeProfile) -> bool {
-    matches!(kind, ImeKindId::MsIme) && !profile.can_use_imm32_cross_process()
+pub(crate) const fn ms_ime_direct_applicable(kind: ImeKindId) -> bool {
+    matches!(kind, ImeKindId::MsIme)
 }
-
-// KanjiToggleStrategy は最終フォールバックで常に true。自明なため述語関数は設けない。
 
 // ── 送信キー表（冪等モードキー機構）──────────────────────────────────────────────
 
@@ -90,8 +83,7 @@ impl ImeOperation {
 
 /// `send_ime_mode_key` で冪等モードキーを送る適用機構。
 ///
-/// `ImmCrossProcessStrategy`（API 呼び出し）と `KanjiToggleStrategy`（専用フォーカス窓経路）は
-/// 送信機構が異なるためこの enum に含めない。
+/// `ImmCrossProcessStrategy`（API 呼び出し）は送信機構が異なるためこの enum に含めない。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum KeyMechanism {
     /// `GjiDirectStrategy`: VK_IME_ON / VK_IME_OFF（GJI が TSF 層で処理する冪等キー）。
@@ -202,23 +194,9 @@ mod tests {
     }
 
     #[test]
-    fn ms_ime_direct_requires_non_imm_cross() {
-        // MS-IME × 非 Standard のみ true。
-        assert!(ms_ime_direct_applicable(
-            ImeKindId::MsIme,
-            AppImeProfile::Imm32Unavailable
-        ));
-        assert!(ms_ime_direct_applicable(
-            ImeKindId::MsIme,
-            AppImeProfile::TsfNative
-        ));
-        assert!(!ms_ime_direct_applicable(
-            ImeKindId::MsIme,
-            AppImeProfile::Standard
-        ));
-        assert!(!ms_ime_direct_applicable(
-            ImeKindId::Gji,
-            AppImeProfile::TsfNative
-        ));
+    fn ms_ime_direct_requires_ms_ime_kind() {
+        // profile には依存しない。ImmCross × MsIme のフォールバックでも使う。
+        assert!(ms_ime_direct_applicable(ImeKindId::MsIme));
+        assert!(!ms_ime_direct_applicable(ImeKindId::Gji));
     }
 }

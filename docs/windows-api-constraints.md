@@ -7,31 +7,30 @@
 
 ## 1. IME 制御：アプリ別の API 対応状況
 
-### 1-1. Chrome/Edge では VK_IME_ON/OFF が無効
+### 1-1. Chrome/Edge では ImmCross 読み戻しが使えない
 
-**症状:** `ImmSetOpenStatus` や `VK_IME_ON (0x16)` / `VK_IME_OFF (0x1A)` を送っても Chrome の IME 状態が変わらない。
+**症状:** `ImmSetOpenStatus` の読み書きが Chrome の IME 状態に届かない。
 
-**原因:** `Chrome_WidgetWin_1` クラスは IMM-broken (ImmSetOpenStatus が届かない)。Chrome の TSF 実装は `WM_IME_CONTROL` も `VK_IME_ON/OFF` も処理しない。
+**原因:** `Chrome_WidgetWin_1` クラスは IMM-broken (ImmSetOpenStatus が届かない)。
 
-**解法:** `VK_KANJI (0x19)` の `SendInput` のみ有効。  
-ただし VK_KANJI はトグルキーのため、送信前に `shadow_ime_on != desired` を確認して二重トグルを防ぐ。
+**解法:** 現行の機構チェーンでは GJI/MS-IME の冪等 direct キー（`VK_IME_ON/OFF`）を使う。  
+物理 `VK_KANJI (0x19)` はトグルキーとして分類・検証には残るが、awase の fallback 機構としては使わない（ADR-190）。
 
-**実機確認:** 2026-05-22  
-**実装:** `ime.rs::post_kanji_toggle_to_focused()`、`ime_controller.rs::KanjiToggleStrategy::apply`
+**実機確認:** 2026-05-22、ADR-190
 
 ---
 
-### 1-2. Chrome：候補ウィンドウ表示中は bare VK_KANJI でトグルされない
+### 1-2. Chrome：候補ウィンドウ表示中の bare VK_KANJI は履歴上の罠
 
 **症状:** 変換候補ウィンドウが表示中に `VK_KANJI` を送ると IME がトグルされず、候補ウィンドウが閉じるだけになる。
 
 **原因:** Chrome の KANJI 処理が候補ウィンドウ表示中とそれ以外で動作が異なる。
 
-**解法:** `gji_candidate_visible() == true` のときは、先に `VK_RETURN (0x0D)` を注入して composition をコミットしてから `VK_KANJI` を送る。  
-`VK_ESCAPE` は composition をキャンセルして入力テキストが消えるため **使用禁止**。
+**解法:** 現行実装では awase の fallback 機構として `VK_KANJI` を送らない。  
+物理キー分類やE2E hazard検証ではこの非冪等性を引き続き扱う。
 
 **実機確認:** 2026-05-24  
-**実装:** `ime_controller.rs::KanjiToggleStrategy::apply`
+**状態:** ADR-190 で機構撤去済み。
 
 ---
 

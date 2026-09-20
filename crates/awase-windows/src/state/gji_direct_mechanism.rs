@@ -203,7 +203,7 @@ impl Drop for ActuationReceipt {
 /// `WindowsPlatform::on_ime_applied`（`platform.rs`）の実装をそのまま反映する:
 /// `outcome == UnsafeToToggle` / `NotOwned` の場合のみ同期しない（送信していないため）。**それ以外は
 /// `open` の値だけを見て無条件に同期する** — どの戦略（ImmCross / GjiDirect /
-/// MsImeDirect / KanjiToggle）で actuate したか、ひいてはどの `ImeProfileDriver` を
+/// MsImeDirect）で actuate したか、ひいてはどの `ImeProfileDriver` を
 /// 経由したかは一切問わない。
 ///
 /// # profile 軸 / K 軸でゲートしてはならない（ADR-089 §4.3、INV-42）
