@@ -60,7 +60,7 @@ def parse_snap(text):
     conv = h(bc) if h(bc) is not None else h(ac)
     if open_ is None or conv is None or comp == "?":
         return None
-    return (open_, conv & 1, comp != '""')
+    return (open_, conv & 1, comp != '""', (conv & 0x10) != 0)
 
 
 def parse(path):
@@ -154,8 +154,8 @@ def compare(a_log, b_log):
 def fmt(st):
     if st is None:
         return "?"
-    o, n, c = st
-    return ("ON" if o else "OFF") + ("/かな" if n else "/英数") + ("/入力中" if c else "")
+    o, n, c, r = st
+    return ("ON" if o else "OFF") + ("/かな" if n else "/英数") + ("/入力中" if c else "") + ("" if r else "/非ローマ字")
 
 
 def learn(runs):
@@ -175,17 +175,17 @@ def predict(table, st, vk):
 def naive_static(st, vk):
     """公開Mozc既定に近い素朴モデル: 無変換/変換=ON、ひらがな=ON+かな、半角/全角=開閉トグル、
     k/a=入力中(ONのとき)、Enter/Esc=未確定を消す。conv は開閉をまたいで保存しない(=ON時にかな)。"""
-    o, n, c = st
+    o, n, c, r = st
     if vk in (0x1D, 0x1C):
-        return (True, n if o else 1, c)
+        return (True, n if o else 1, c, r)
     if vk == 0xF2:
-        return (True, 1, c)
+        return (True, 1, c, r)
     if vk == 0xF3:
-        return (not o, n, False if o else c)
+        return (not o, n, False if o else c, r)
     if vk in (0x4B, 0x41):
-        return (o, n, True if o else c)
+        return (o, n, True if o else c, r)
     if vk in (0x0D, 0x1B):
-        return (o, n, False)
+        return (o, n, False, r)
     return st
 
 

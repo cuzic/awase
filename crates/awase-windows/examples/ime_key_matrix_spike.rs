@@ -250,6 +250,11 @@ thread_local! {
     /// `--walk=N`: 固定手順の代わりに、ランダムなキーをN回注入する(効果学習スパイク用)。
     static WALK_N: RefCell<usize> = const { RefCell::new(0) };
     static WALK_DONE: RefCell<usize> = const { RefCell::new(0) };
+    /// `--roman`: `--walk` の開始前に IME を ON にし、変換モードを 0x19(ローマ字入力)へ揃える。
+    /// awase を止める/バイパスすると IME が JIS かな入力(0x09)のままで、awase 起動時(0x19)と基底状態が
+    /// 違ってしまう(A' の実測)ため、基底をそろえて比較するための前処理。
+    static ROMAN_INIT: RefCell<bool> = const { RefCell::new(false) };
+    static ROMAN_DONE: RefCell<bool> = const { RefCell::new(false) };
     /// `--seed=S`: `--walk` の乱数シード(線形合同法)。
     static WALK_RNG: RefCell<u64> = const { RefCell::new(1) };
     /// `--script`: ADR-186 の実機A/B用の固定手順（awase 起動中に、押すキーと期待を順に案内）。
@@ -492,8 +497,46 @@ fn walk_next_index() -> usize {
     })
 }
 
+/// `--roman`: IME を開き、変換モードを 0x19(NATIVE|FULLSHAPE|ROMAN)へ書く。前後の値をログに残す。
+fn roman_init(hwnd: HWND) {
+    const IMC_SETCONVERSIONMODE: usize = 0x0002;
+    const IMC_SETOPENSTATUS: usize = 0x0006;
+    let (o0, c0) = observe_b(hwnd);
+    unsafe {
+        let ime_wnd = ImmGetDefaultIMEWnd(hwnd);
+        if !ime_wnd.0.is_null() {
+            let mut r: usize = 0;
+            for (cmd, val) in [(IMC_SETOPENSTATUS, 1isize), (IMC_SETCONVERSIONMODE, 0x19)] {
+                let _ = SendMessageTimeoutW(
+                    ime_wnd,
+                    WM_IME_CONTROL,
+                    WPARAM(cmd),
+                    LPARAM(val),
+                    SMTO_ABORTIFHUNG,
+                    200,
+                    Some(&raw mut r),
+                );
+            }
+        }
+    }
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let (o1, c1) = observe_b(hwnd);
+    append_log(&format!(
+        "[ROMAN] 前 open={} conv={} → 後 open={} conv={}",
+        fmt_bool(o0),
+        fmt_hex(c0),
+        fmt_bool(o1),
+        fmt_hex(c1)
+    ));
+}
+
 /// `--walk` の1手: ランダムなキーを1つ注入し、効果が落ち着くまで待つ。
-fn walk_drive(now: u64) {
+fn walk_drive(now: u64, hwnd: HWND) {
+    if ROMAN_INIT.with(|r| *r.borrow()) && !ROMAN_DONE.with(|d| std::mem::replace(&mut *d.borrow_mut(), true)) {
+        roman_init(hwnd);
+        AUTO_NEXT.with(|n| *n.borrow_mut() = now + scaled(1500));
+        return;
+    }
     let done = WALK_DONE.with(|d| *d.borrow());
     let total = WALK_N.with(|n| *n.borrow());
     if done >= total {
@@ -578,7 +621,7 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
         }
     }
     if WALK_N.with(|n| *n.borrow()) > 0 {
-        walk_drive(now);
+        walk_drive(now, hwnd);
         return;
     }
     let si = SCRIPT_IDX.with(|i| *i.borrow());
@@ -1507,6 +1550,9 @@ fn run() -> WinResult<()> {
             if let Ok(n) = v.parse::<u64>() {
                 WALK_RNG.with(|w| *w.borrow_mut() = n);
             }
+        }
+        if a == "--roman" {
+            ROMAN_INIT.with(|r| *r.borrow_mut() = true);
         }
         if a == "--shiftmuh" {
             SHIFT_MUH.with(|m| *m.borrow_mut() = true);
