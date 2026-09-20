@@ -236,6 +236,8 @@ thread_local! {
     static AUTO_DONE: RefCell<bool> = const { RefCell::new(false) };
     /// `--hold=NNN`: 注入キーの保持時間ms(既定80)。人の押下(>100ms)でだけ通るタイマー経路を再現する。
     static HOLD_MS_INJ: RefCell<u64> = const { RefCell::new(80) };
+    /// `--walk`: SCRIPT の代わりに WALK(前提状態なしの固定キー列)を使う。
+    static WALK_MODE: RefCell<bool> = const { RefCell::new(false) };
     /// `--key=henkan`: 手順の「無変換」を「変換」(0x1C)に置き換える。
     static TOGGLE_VK: RefCell<u32> = const { RefCell::new(0x1D) };
     /// 全手順完了後、この時刻(now_ms)にウィンドウを閉じて終了する(0=予約なし)。
@@ -315,6 +317,8 @@ enum St {
     OnKanaComp,
     OnAlnum,
     Unknown,
+    /// `--walk` 用: 前提状態を要求しない(どの状態でも押す)。
+    Any,
 }
 
 impl St {
@@ -325,6 +329,7 @@ impl St {
             Self::OnKanaComp => "IME ON・入力中(未確定あり)",
             Self::OnAlnum => "IME ON・半角英数・入力なし",
             Self::Unknown => "不明",
+            Self::Any => "任意",
         }
     }
 }
@@ -505,7 +510,7 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
         }
     }
     let si = SCRIPT_IDX.with(|i| *i.borrow());
-    if si >= SCRIPT.len() {
+    if si >= script().len() {
         if !AUTO_DONE.with(|d| std::mem::replace(&mut *d.borrow_mut(), true)) {
             append_log("[AUTO] 全手順完了（1.5秒後に自動で閉じます）");
             AUTO_CLOSE_AT.with(|c| *c.borrow_mut() = now + 1500);
@@ -516,8 +521,8 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
         AUTO_TRIES.with(|t| *t.borrow_mut() = 0);
         AUTO_PREP.with(|t| *t.borrow_mut() = 0);
     }
-    let (name, vk, _, _, need) = SCRIPT[si];
-    if cur != need {
+    let (name, vk, _, _, need) = script()[si];
+    if need != St::Any && cur != need {
         let prep = AUTO_PREP.with(|p| {
             *p.borrow_mut() += 1;
             *p.borrow()
@@ -560,6 +565,33 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
     queue_press(now + 700, 0x4B); // k
     queue_press(now + 1200, 0x1B); // ESC
     AUTO_NEXT.with(|n| *n.borrow_mut() = now + 1800);
+}
+
+/// `--walk` の手順: プリセット(ATOK/MS-IME等)を問わず、前提状態を要求せずに固定のキー列を押す。
+/// 各押下の +1500ms の実IME状態と awase の Engine 状態が一致するか(check_consistency.py)を見る。
+/// 半角/全角(0xF3/0xF4)は awase のモデル誤り(ADR-186決定5、別件)が混ざるため含めない。
+const WALK: [(&str, u32, bool, &str, St); 12] = [
+    ("ひらがなキー", 0xF2, false, "Engine は実IMEに追随", St::Any),
+    ("無変換", 0x1D, false, "Engine は実IMEに追随", St::Any),
+    ("無変換", 0x1D, false, "Engine は実IMEに追随", St::Any),
+    ("変換", 0x1C, false, "Engine は実IMEに追随", St::Any),
+    ("変換", 0x1C, false, "Engine は実IMEに追随", St::Any),
+    ("ひらがなキー", 0xF2, false, "Engine は実IMEに追随", St::Any),
+    ("無変換", 0x1D, false, "Engine は実IMEに追随", St::Any),
+    ("ひらがなキー", 0xF2, false, "Engine は実IMEに追随", St::Any),
+    ("変換", 0x1C, false, "Engine は実IMEに追随", St::Any),
+    ("無変換", 0x1D, false, "Engine は実IMEに追随", St::Any),
+    ("変換", 0x1C, false, "Engine は実IMEに追随", St::Any),
+    ("ひらがなキー", 0xF2, false, "Engine は実IMEに追随", St::Any),
+];
+
+/// 現在の手順表(`--walk` なら WALK、なければ SCRIPT)。
+fn script() -> &'static [(&'static str, u32, bool, &'static str, St)] {
+    if WALK_MODE.with(|w| *w.borrow()) {
+        &WALK
+    } else {
+        &SCRIPT
+    }
 }
 
 /// `--script` の1手順: (表示名, VK, Shift併用, 期待する結果)。
@@ -1025,15 +1057,19 @@ fn on_timer(hwnd: HWND) {
             let mut tag = String::from("[準備/その他]");
             if SCRIPT_MODE.with(|m| *m.borrow()) {
                 let si = SCRIPT_IDX.with(|i| *i.borrow());
-                if si < SCRIPT.len() && now >= HOLD_UNTIL.with(|h| *h.borrow()) {
-                    let (name, vk, shift, expect, need) = SCRIPT[si];
+                if si < script().len() && now >= HOLD_UNTIL.with(|h| *h.borrow()) {
+                    let (name, vk, shift, expect, need) = script()[si];
                     if ev.vk == script_vk(vk)
-                        && before_st == need
+                        && (need == St::Any || before_st == need)
                         && ev.shift == shift
                         && !ev.ctrl
                         && !ev.label.contains("(injected)")
                     {
-                        tag = format!("[SCRIPT {}/{} {name} 期待={expect}]", si + 1, SCRIPT.len());
+                        tag = format!(
+                            "[SCRIPT {}/{} {name} 期待={expect}]",
+                            si + 1,
+                            script().len()
+                        );
                         SCRIPT_IDX.with(|i| *i.borrow_mut() = si + 1);
                         HOLD_UNTIL.with(|h| *h.borrow_mut() = now + HOLD_MS);
                     }
@@ -1113,13 +1149,13 @@ fn on_timer(hwnd: HWND) {
     let guide = if SCRIPT_MODE.with(|m| *m.borrow()) {
         let si = SCRIPT_IDX.with(|i| *i.borrow());
         let hold = HOLD_UNTIL.with(|h| *h.borrow());
-        if si >= SCRIPT.len() {
+        if si >= script().len() {
             "全手順完了です。お疲れさまでした（ログは自動保存済み）".to_string()
         } else {
-            let (name, _, _, expect, need) = SCRIPT[si];
+            let (name, _, _, expect, need) = script()[si];
             let action = if now < hold {
                 format!("待機中… あと {:.1} 秒", (hold - now) as f64 / 1000.0)
-            } else if cur != need {
+            } else if need != St::Any && cur != need {
                 format!(
                     "この手順の前提: {}。{}",
                     need.label(),
@@ -1131,7 +1167,7 @@ fn on_timer(hwnd: HWND) {
             format!(
                 "SCRIPT {}/{}  現在の実IME: {}\n{}\n期待: {}",
                 si + 1,
-                SCRIPT.len(),
+                script().len(),
                 cur.label(),
                 action,
                 expect
@@ -1399,7 +1435,7 @@ fn run() -> WinResult<()> {
         AUTO_MODE.with(|m| *m.borrow_mut() = true);
         SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
         STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
-        SCRIPT_IDX.with(|i| *i.borrow_mut() = SCRIPT.len());
+        SCRIPT_IDX.with(|i| *i.borrow_mut() = script().len());
         let base = now_ms() + 9000;
         for (i, vk) in [0x1C_u32, 0xF4, 0xF3, 0xF2, 0x16, 0x19, 0x1D]
             .iter()
@@ -1407,6 +1443,10 @@ fn run() -> WinResult<()> {
         {
             queue_press(base + (i as u64) * 3500, *vk);
         }
+    }
+    // `--walk`: --auto の手順を、前提状態なしの固定キー列(WALK)にする。
+    if std::env::args().any(|a| a == "--walk") {
+        WALK_MODE.with(|w| *w.borrow_mut() = true);
     }
     // `--auto`: --script の手順を、スパイク自身が SendInput で注入して自動実行する。
     if std::env::args().any(|a| a == "--auto") {

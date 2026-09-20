@@ -32,6 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       configs: ${{ steps.p.outputs.configs }}
+      builds: ${{ steps.p.outputs.builds }}
     steps:
       - id: p
         shell: python
@@ -39,24 +40,44 @@ jobs:
           ONLY: ${{ inputs.only }}
         run: |
           import json, os
-          # name: 構成名 / mutator: ablations/ 下のスクリプト(空=変更なし) / args: スパイクの追加引数
-          # toggle: config.toml の gji_thumb_key_ime_toggle / custom_table: config1.db に古い custom_keymap_table(変換=IMEOn)を残すか / expect: 期待(pass=全回PASS, fail=撤去で壊れる)
-          # 根拠は docs/adr/186-*.md の撤去実験表。a3(eisu reset抑止)は撤去済みのため無い。
+          # name: 構成名 / bin: 使うビルド成果物(撤去なしの構成は baseline を使い回す) / mutator: ablations/ 下のスクリプト
+          # (空=変更なし) / args: スパイクの追加引数 / toggle: config.toml の gji_thumb_key_ime_toggle /
+          # keymap: GJI の session_keymap(1=ATOK, 2=MS-IME) / custom_table: config1.db に古い custom_keymap_table
+          # (変換=IMEOn)を残すか / check: expect=ATOK前提の期待表(check.py)、consistency=プリセット非依存で
+          # 「実IMEのかな=Engine ON、英数・直接入力=Engine OFF」に追随するか(check_consistency.py、--walk)
+          # expect: pass=全回PASS / fail=撤去で壊れる / observe=結果を表に出すだけ(期待が未確定の観測用)
+          # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
+          def cfg(name, expect, mutator='', args='', toggle='true', keymap=1, custom_table='false', check='expect', bin=None):
+            return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args, toggle=toggle,
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect)
           configs = [
-            dict(name='baseline',         mutator='',                       args='',              toggle='true', custom_table='false',  expect='pass'),
-            dict(name='baseline-henkan',  mutator='',                       args='--key=henkan',  toggle='true', custom_table='true',  expect='pass'),
-            dict(name='a1-keyup',         mutator='a1-revert-keyup.sh',      args='',              toggle='true', custom_table='false',  expect='fail'),
-            dict(name='a2-atok-skip',     mutator='a2-revert-atok-skip.sh',  args='--key=henkan',  toggle='true', custom_table='true',  expect='fail'),
-            dict(name='a4-no-eisu-reset', mutator='a4-no-eisu-reset.sh',     args='',              toggle='true', custom_table='false',  expect='pass'),
-            dict(name='a5-no-refresh20',  mutator='a5-no-refresh20.sh',      args='',              toggle='true', custom_table='false',  expect='fail'),
-            dict(name='a6-no-idle-check', mutator='a6-no-idle-check.sh',     args='',              toggle='true', custom_table='false',  expect='pass'),
-            dict(name='e7-toggle-false',  mutator='',                       args='',              toggle='false', custom_table='false', expect='fail'),
+            # --- 撤去実験(ATOK、実機E1〜E7bと同じ) ---
+            cfg('baseline', 'pass'),
+            cfg('baseline-henkan', 'pass', args='--key=henkan', custom_table='true'),
+            cfg('a1-keyup', 'fail', mutator='a1-revert-keyup.sh'),
+            cfg('a2-atok-skip', 'fail', mutator='a2-revert-atok-skip.sh', args='--key=henkan', custom_table='true'),
+            cfg('a4-no-eisu-reset', 'pass', mutator='a4-no-eisu-reset.sh'),
+            cfg('a5-no-refresh20', 'fail', mutator='a5-no-refresh20.sh'),
+            cfg('a6-no-idle-check', 'pass', mutator='a6-no-idle-check.sh'),
+            cfg('e7-toggle-false', 'fail', toggle='false'),
+            # --- プリセット/設定の確認(ビルドは baseline、consistency 判定) ---
+            cfg('atok-optin', 'observe', check='consistency', args='--walk'),
+            cfg('atok-passthrough', 'observe', check='consistency', args='--walk', toggle='false'),
+            cfg('atok-passthrough-henkan', 'observe', check='consistency', args='--walk --key=henkan', toggle='false'),
+            cfg('msime', 'observe', check='consistency', args='--walk', toggle='false', keymap=2),
+            cfg('msime-optin', 'observe', check='consistency', args='--walk', toggle='true', keymap=2),
+            cfg('msime-stale-table', 'observe', check='consistency', args='--walk --key=henkan', toggle='false', keymap=2, custom_table='true'),
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
             configs = [c for c in configs if c['name'] in only]
+          # ビルドは bin ごとに1回(撤去なしの構成は baseline を共有)
+          builds = [c for c in configs if c['bin'] == c['name']]
+          if not any(c['bin'] == 'baseline' and c['name'] == 'baseline' for c in builds):
+            builds.insert(0, cfg('baseline', 'pass'))
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
             f.write('configs=' + json.dumps(configs) + '\n')
+            f.write('builds=' + json.dumps(builds) + '\n')
 
   build:
     needs: plan
@@ -65,7 +86,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        cfg: ${{ fromJson(needs.plan.outputs.configs) }}
+        cfg: ${{ fromJson(needs.plan.outputs.builds) }}
     steps:
       - uses: actions/checkout@v4
       # ソース+撤去スクリプトが同じなら成果物(exe)を使い回し、ビルド自体を飛ばす(ドキュメントだけの変更等)。
@@ -119,7 +140,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: bin-${{ matrix.cfg.name }}
+          name: bin-${{ matrix.cfg.bin }}
           path: dist
 
       # 他の方法: winget install --id Google.JapaneseIME(71秒) / scoop bucket add nonportable; scoop install google-japanese-input-np
@@ -128,7 +149,7 @@ jobs:
         run: |
           choco install googlejapaneseinput -y --no-progress 2>&1 | Select-Object -Last 3
 
-      - name: 入力言語をja-JP + GJI に設定、ATOK プリセットの config1.db を書く
+      - name: 入力言語をja-JP + GJI に設定、キーマッププリセット(ATOK/MS-IME)の config1.db を書く
         shell: pwsh
         run: |
           $googleImeTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
@@ -138,12 +159,12 @@ jobs:
           Set-WinUserLanguageList $l -Force 2>&1
           try { Set-WinDefaultInputMethodOverride -InputTip $googleImeTip -ErrorAction Stop }
           catch { "default input method override FAILED: $($_.Exception.Message)" }
-          # ATOK プリセット(session_keymap = 1): Mozc Config の field 41 (varint) = 1。
+          # キーマッププリセット(session_keymap): Mozc Config の field 41 (varint)。1=ATOK, 2=MS-IME。
           # field 22 (check_default) = 0 で「既定のIMEにしますか」の初回ダイアログを出さない。
           $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           $bytes = [System.Collections.Generic.List[byte]]::new()
-          $bytes.AddRange([byte[]](0xB0,0x01,0x00,0xC8,0x02,0x01))
+          $bytes.AddRange([byte[]](0xB0,0x01,0x00,0xC8,0x02,[byte]${{ matrix.cfg.keymap }}))
           # 実機の config1.db には、過去にCUSTOMで作った古い custom_keymap_table(field 42)が残っている(ADR-174/186)。
           # ATOKでは GJI はこれを読まない。awase が読んでしまうと変換が On と誤分類される(撤去実験E2)ので、
           # それを再現する構成でだけ「DirectInput Henkan IMEOn」を入れる。
@@ -188,7 +209,7 @@ jobs:
             if ((Test-Path ime_key_matrix_spike.log) -and (Select-String -Path ime_key_matrix_spike.log -Pattern 'ROUND 2/2' -Quiet)) { break }
           }
           Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
-          $deadline = (Get-Date).AddSeconds(150)
+          $deadline = (Get-Date).AddSeconds(240)
           while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 2
             if ((Test-Path ime_key_matrix_spike.log) -and (Select-String -Path ime_key_matrix_spike.log -Pattern '全手順完了' -Quiet)) { break }
@@ -198,7 +219,11 @@ jobs:
           Get-Content dist\awase.log -Encoding utf8 | Where-Object { $_ -match 'Engine (de)?activated|IME open axis delegated|outcome=Unwarranted' } | Set-Content awase-filtered.log -Encoding utf8
           $env:PYTHONUTF8 = '1'
           # 判定は summary ジョブで集計する。ここでは終了コード(0=PASS, 1=FAIL, 3=INVALID)を記録して成功で終える。
-          python tools\e2e\ime_key_matrix\check.py dist\ime_key_matrix_spike.log awase-filtered.log | Tee-Object -FilePath result.txt
+          if ('${{ matrix.cfg.check }}' -eq 'consistency') {
+            python tools\e2e\ime_key_matrix\check_consistency.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
+          } else {
+            python tools\e2e\ime_key_matrix\check.py dist\ime_key_matrix_spike.log awase-filtered.log | Tee-Object -FilePath result.txt
+          }
           $rc = $LASTEXITCODE
           "rc=$rc" | Out-File -FilePath rc.txt -Encoding ascii
           "exit code: $rc"
@@ -249,13 +274,15 @@ jobs:
             # 有効回が無ければ判定不能。
             if valid == 0:
               verdict = '判定不能'
+            elif c['expect'] == 'observe':
+              verdict = '観測'
             elif c['expect'] == 'pass':
               verdict = 'OK' if n['fail'] == 0 else 'NG(期待PASSだがFAIL有り)'
             else:
               verdict = 'OK' if n['fail'] > 0 else 'NG(期待FAILだが全PASS=撤去しても壊れない)'
-            bad |= verdict != 'OK'
-            rows.append(f"| {c['name']} | {c['expect']} | {n['pass_']} | {n['fail']} | {n['invalid']} | {n['missing']} | {verdict} |")
-          out = ["## e2e-ime 撤去実験", "", "| 構成 | 期待 | PASS | FAIL | INVALID | 欠落 | 判定 |", "|---|---|---|---|---|---|---|"] + rows
+            bad |= verdict not in ('OK', '観測')
+            rows.append(f"| {c['name']} | {c['expect']} | {c.get('check','expect')} | {n['pass_']} | {n['fail']} | {n['invalid']} | {n['missing']} | {verdict} |")
+          out = ["## e2e-ime 撤去実験", "", "| 構成 | 期待 | 判定方式 | PASS | FAIL | INVALID | 欠落 | 判定 |", "|---|---|---|---|---|---|---|---|"] + rows
           open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8').write('\n'.join(out) + '\n')
           print('\n'.join(out))
           sys.exit(1 if bad else 0)
