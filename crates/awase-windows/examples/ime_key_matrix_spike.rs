@@ -247,6 +247,11 @@ thread_local! {
     static TOGGLE_VK: RefCell<u32> = const { RefCell::new(0x1D) };
     /// 全手順完了後、この時刻(now_ms)にウィンドウを閉じて終了する(0=予約なし)。
     static AUTO_CLOSE_AT: RefCell<u64> = const { RefCell::new(0) };
+    /// `--walk=N`: 固定手順の代わりに、ランダムなキーをN回注入する(効果学習スパイク用)。
+    static WALK_N: RefCell<usize> = const { RefCell::new(0) };
+    static WALK_DONE: RefCell<usize> = const { RefCell::new(0) };
+    /// `--seed=S`: `--walk` の乱数シード(線形合同法)。
+    static WALK_RNG: RefCell<u64> = const { RefCell::new(1) };
     /// `--script`: ADR-186 の実機A/B用の固定手順（awase 起動中に、押すキーと期待を順に案内）。
     static SCRIPT_MODE: RefCell<bool> = const { RefCell::new(false) };
     static SCRIPT_IDX: RefCell<usize> = const { RefCell::new(0) };
@@ -400,6 +405,9 @@ fn scan_for(vk: u32) -> u16 {
         0x1C => 0x79,
         0xF2 => 0x70,
         0x4B => 0x25,
+        0x41 => 0x1E,
+        0x0D => 0x1C,
+        0xF3 => 0x29,
         0x1B => 0x01,
         _ => 0,
     }
@@ -456,6 +464,47 @@ fn auto_hint_vk(cur: St, need: St) -> Option<u32> {
         (St::OnAlnum, St::OnKana) | (St::OnKana, St::OnAlnum) => Some(0xF2),
         _ => None,
     }
+}
+
+/// `--walk` が注入するキーの集合（VK, 表示名）。開閉・変換モード・未確定の各状態に
+/// 自然に遷移するよう、IMEキー4種 + 入力(k,a) + 確定/取消(Enter,Esc)。
+const WALK_KEYS: [(u32, &str); 8] = [
+    (0x1D, "無変換"),
+    (0x1C, "変換"),
+    (0xF2, "ひらがな"),
+    (0xF3, "半角/全角"),
+    (0x4B, "k"),
+    (0x41, "a"),
+    (0x0D, "Enter"),
+    (0x1B, "Esc"),
+];
+
+fn walk_next_index() -> usize {
+    WALK_RNG.with(|r| {
+        let mut r = r.borrow_mut();
+        *r = r
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((*r >> 33) as usize) % WALK_KEYS.len()
+    })
+}
+
+/// `--walk` の1手: ランダムなキーを1つ注入し、効果が落ち着くまで待つ。
+fn walk_drive(now: u64) {
+    let done = WALK_DONE.with(|d| *d.borrow());
+    let total = WALK_N.with(|n| *n.borrow());
+    if done >= total {
+        if !AUTO_DONE.with(|d| std::mem::replace(&mut *d.borrow_mut(), true)) {
+            append_log(&format!("[WALK] {total}手完了（1.5秒後に自動で閉じます）"));
+            AUTO_CLOSE_AT.with(|c| *c.borrow_mut() = now + 1500);
+        }
+        return;
+    }
+    let (vk, name) = WALK_KEYS[walk_next_index()];
+    append_log(&format!("[WALK {}/{total}] 注入: {name} vk=0x{vk:02X}", done + 1));
+    queue_press(now, vk);
+    WALK_DONE.with(|d| *d.borrow_mut() = done + 1);
+    AUTO_NEXT.with(|n| *n.borrow_mut() = now + scaled(1900));
 }
 
 /// `--auto` の1tick分の駆動。予約済みの注入を実行し、次の手順（または準備）を予約する。
@@ -524,6 +573,10 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
                 return;
             }
         }
+    }
+    if WALK_N.with(|n| *n.borrow()) > 0 {
+        walk_drive(now);
+        return;
     }
     let si = SCRIPT_IDX.with(|i| *i.borrow());
     if si >= SCRIPT.len() {
@@ -1442,6 +1495,16 @@ fn run() -> WinResult<()> {
                 SPEED.with(|r| *r.borrow_mut() = n.max(1));
             }
         }
+        if let Some(v) = a.strip_prefix("--walk=") {
+            if let Ok(n) = v.parse::<usize>() {
+                WALK_N.with(|w| *w.borrow_mut() = n);
+            }
+        }
+        if let Some(v) = a.strip_prefix("--seed=") {
+            if let Ok(n) = v.parse::<u64>() {
+                WALK_RNG.with(|w| *w.borrow_mut() = n);
+            }
+        }
         if a == "--shiftmuh" {
             SHIFT_MUH.with(|m| *m.borrow_mut() = true);
         }
@@ -1471,6 +1534,13 @@ fn run() -> WinResult<()> {
         AUTO_MODE.with(|m| *m.borrow_mut() = true);
         SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
         STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
+    }
+    // `--walk=N`: 固定手順ではなくランダムキー列(--auto と併用しなくてよい)。
+    if WALK_N.with(|n| *n.borrow()) > 0 {
+        AUTO_MODE.with(|m| *m.borrow_mut() = true);
+        SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
+        STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
+        SCRIPT_IDX.with(|i| *i.borrow_mut() = SCRIPT.len());
     }
     // `--script`: awase 起動中の固定手順（案内は SCRIPT）。
     if std::env::args().any(|a| a == "--script") {
