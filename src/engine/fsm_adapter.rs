@@ -194,36 +194,6 @@ impl FsmAdapter {
         self.fsm.take_engine_off_requested()
     }
 
-    /// 無変換/変換キー単独タップの IME open 軸への肩代わり（ADR-092 決定D
-    /// Step4b）を設定する。
-    pub(super) const fn set_muhenkan_delegate_to_open_axis(
-        &mut self,
-        action: Option<crate::types::ShadowImeAction>,
-    ) {
-        self.fsm.set_muhenkan_delegate_to_open_axis(action);
-    }
-
-    /// `set_muhenkan_delegate_to_open_axis` と対称（変換キー用）。
-    pub(super) const fn set_henkan_delegate_to_open_axis(
-        &mut self,
-        action: Option<crate::types::ShadowImeAction>,
-    ) {
-        self.fsm.set_henkan_delegate_to_open_axis(action);
-    }
-
-    /// ADR-141: Hiragana/Katakanaの対称なgetterと同型。
-    pub(super) const fn muhenkan_delegate_to_open_axis(
-        &self,
-    ) -> Option<crate::types::ShadowImeAction> {
-        self.fsm.muhenkan_delegate_to_open_axis()
-    }
-
-    pub(super) const fn henkan_delegate_to_open_axis(
-        &self,
-    ) -> Option<crate::types::ShadowImeAction> {
-        self.fsm.henkan_delegate_to_open_axis()
-    }
-
     /// ADR-153 決定1: ユーザー明示config（`*_solo_tap_ime_action`）を設定する。
     pub(super) const fn set_muhenkan_solo_tap_ime_action(
         &mut self,
@@ -248,41 +218,6 @@ impl FsmAdapter {
 
     pub(super) const fn henkan_solo_tap_ime_action(&self) -> Option<crate::types::ShadowImeAction> {
         self.fsm.henkan_solo_tap_ime_action()
-    }
-
-    pub(super) const fn set_hiragana_katakana_thumb_key_config(
-        &mut self,
-        hiragana_vk: Option<crate::types::VkCode>,
-        katakana_vk: Option<crate::types::VkCode>,
-    ) {
-        self.fsm
-            .set_hiragana_katakana_thumb_key_config(hiragana_vk, katakana_vk);
-    }
-
-    pub(super) const fn set_hiragana_delegate_to_open_axis(
-        &mut self,
-        action: Option<crate::types::ShadowImeAction>,
-    ) {
-        self.fsm.set_hiragana_delegate_to_open_axis(action);
-    }
-
-    pub(super) const fn set_katakana_delegate_to_open_axis(
-        &mut self,
-        action: Option<crate::types::ShadowImeAction>,
-    ) {
-        self.fsm.set_katakana_delegate_to_open_axis(action);
-    }
-
-    pub(super) const fn hiragana_delegate_to_open_axis(
-        &self,
-    ) -> Option<crate::types::ShadowImeAction> {
-        self.fsm.hiragana_delegate_to_open_axis()
-    }
-
-    pub(super) const fn katakana_delegate_to_open_axis(
-        &self,
-    ) -> Option<crate::types::ShadowImeAction> {
-        self.fsm.katakana_delegate_to_open_axis()
     }
 
     /// IME open 軸への副作用要求を取り出す（1ショット、ADR-092 決定D Step4b）。
