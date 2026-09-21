@@ -77,12 +77,15 @@ def score(table, paths):
             key = KEYS[vk]
             op, conv, comp = b
             if not op:
-                cands = [v for k, v in table.items() if k.startswith("off-") and k.endswith("|" + key) and len(v) == 1]
-                res = cands[0] if cands else None
-                if res is None:
+                # 予測器(key_effect_table.rs)と同じ引き方: 閉状態は変換モードを問わず、段階は none だけ
+                # (predict() が !open のとき stage を None に固定する)。全convでセルが一意かつ開閉の結果が一致するときだけ予測がある
+                # (gen_key_effect_table.py::finalize が閉セルを畳む条件と同じ。食い違えば「予測なし」)。
+                cands = [v for k, v in table.items() if k.startswith("off-") and k.endswith("-none|" + key)]
+                opens = {majority(v).startswith("ON") for v in cands if len(v) == 1}
+                if not cands or any(len(v) != 1 for v in cands) or len(opens) != 1:
                     unseen += 1
                     continue
-                exp_open = majority(res).startswith("ON")
+                exp_open = next(iter(opens))
                 good = a[0] == exp_open
             else:
                 stage = "none"
