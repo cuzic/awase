@@ -127,6 +127,13 @@ mod store {
             let len = i32::try_from(self.st.borrow().text.len()).unwrap_or(i32::MAX);
             p.clamp(0, len)
         }
+
+        /// `[start, end)` を文字数の範囲に丸め、逆順なら入れ替えた `(start, end)` を返す。
+        /// TIP が逆順の範囲を渡しても `Vec::splice` でパニックしない（COM コールバックの外へ unwind させない）。
+        fn ordered(&self, a: i32, b: i32) -> (i32, i32) {
+            let (a, b) = (self.clamp(a), self.clamp(b));
+            (a.min(b), a.max(b))
+        }
     }
 
     impl ITextStoreACP_Impl for Store_Impl {
@@ -187,6 +194,8 @@ mod store {
                 std::thread::sleep(Duration::from_millis(self.lock_delay_ms));
             }
             let mut flags = dwlockflags & !1;
+            // 最初の（呼び出し元の要求に対する）OnLockGranted の結果。TSF の仕様上、これが RequestLock の phrSession になる。
+            let mut first_hr: Option<HRESULT> = None;
             loop {
                 let sink = {
                     let mut st = self.st.borrow_mut();
@@ -196,7 +205,13 @@ mod store {
                 self.rec("OnLockGranted", format!("flags=0x{flags:X}"));
                 if let Some(sink) = sink {
                     // SAFETY: sink は AdviseSink で受け取った有効な COM 参照。呼び出し中に RefCell を借りない。
-                    let _ = unsafe { sink.OnLockGranted(TEXT_STORE_LOCK_FLAGS(flags)) };
+                    let r = unsafe { sink.OnLockGranted(TEXT_STORE_LOCK_FLAGS(flags)) };
+                    let hr = r.as_ref().map_or_else(|e| e.code(), |()| HRESULT(0));
+                    if hr.is_err() {
+                        // 失敗を握りつぶすと、TIP 側の編集セッション失敗が正常に見えて測定を誤読する。
+                        self.rec("OnLockGranted-ERR", format!("flags=0x{flags:X} hr=0x{:08X}", hr.0));
+                    }
+                    first_hr.get_or_insert(hr);
                 }
                 let (next, text) = {
                     let mut st = self.st.borrow_mut();
@@ -209,7 +224,7 @@ mod store {
                     None => break,
                 }
             }
-            Ok(HRESULT(0))
+            Ok(first_hr.unwrap_or(HRESULT(0)))
         }
 
         fn GetStatus(&self) -> windows::core::Result<TS_STATUS> {
@@ -282,7 +297,7 @@ mod store {
             // SAFETY: pselection は ulcount 個の有効な要素を指す(ulcount>0 のとき)。
             if ulcount > 0 && !pselection.is_null() {
                 let sel = unsafe { *pselection };
-                let (s, e) = (self.clamp(sel.acpStart), self.clamp(sel.acpEnd));
+                let (s, e) = self.ordered(sel.acpStart, sel.acpEnd);
                 self.rec("SetSelection", format!("{s}..{e}"));
                 self.st.borrow_mut().sel = (s, e);
             }
@@ -348,7 +363,7 @@ mod store {
             cch: u32,
         ) -> windows::core::Result<TS_TEXTCHANGE> {
             self.need_write("SetText")?;
-            let (s, e) = (self.clamp(acpstart), self.clamp(acpend));
+            let (s, e) = self.ordered(acpstart, acpend);
             // SAFETY: pchtext は cch 個の UTF-16 を指す(cch>0 のとき)。
             let new: Vec<u16> = if cch > 0 && !pchtext.is_null() {
                 unsafe { std::slice::from_raw_parts(pchtext.0, cch as usize) }.to_vec()
@@ -423,7 +438,8 @@ mod store {
             } else {
                 Vec::new()
             };
-            let (s, e) = self.st.borrow().sel;
+            let (s0, e0) = self.st.borrow().sel;
+            let (s, e) = self.ordered(s0, e0);
             let new_end = s + i32::try_from(new.len()).unwrap_or(0);
             self.rec(
                 "InsertTextAtSelection",
