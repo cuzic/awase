@@ -5369,3 +5369,45 @@ fn notify_calibration_result_call_sites_are_limited_to_confirm_and_reject() {
          限定すること"
     );
 }
+
+/// ADR-191 決定3: `ImeEvent::KeyEffectPredicted`（打鍵時点の予測を belief へ反映する、観測でも意図でもない
+/// 専用イベント）の構築は `ImeStateHub::apply_key_effect_prediction` の1箇所に限る。ここが増えると
+/// 「観測の偽装」や「ユーザー意図の偽装」への近道になりうる（`ime-belief-architecture.md`）。
+/// また `desired_open` を書かない（ドリフト補正がIMEへ書き戻して「awaseは書かない」に反する）ことを
+/// reduce 側のアームで固定する。
+#[test]
+fn key_effect_predicted_event_is_constructed_only_in_apply_key_effect_prediction() {
+    let platform_state = read_crate_file("src/state/platform_state.rs");
+    let production = production_code_only(&platform_state);
+    assert_eq!(
+        count_real_calls(production, "ImeEvent::KeyEffectPredicted {"),
+        1,
+        "KeyEffectPredicted の構築は platform_state.rs::apply_key_effect_prediction の1箇所だけ"
+    );
+    for path in [
+        "src/runtime/key_pipeline.rs",
+        "src/runtime/ime_refresh.rs",
+        "src/runtime/mod.rs",
+        "src/runtime/executor.rs",
+    ] {
+        let content = read_crate_file(path);
+        assert_eq!(
+            count_real_calls(production_code_only(&content), "ImeEvent::KeyEffectPredicted"),
+            0,
+            "{path} から KeyEffectPredicted を直接 dispatch しない（apply_key_effect_prediction 経由）"
+        );
+    }
+    // reduce のアームは desired_open を書かない。
+    let model = read_crate_file("src/state/ime_model.rs");
+    let arm = model
+        .split("ImeEvent::KeyEffectPredicted { open, mode } => {")
+        .nth(1)
+        .expect("reduce に KeyEffectPredicted のアームがある")
+        .split("ImeEvent::ModeKeyPassedThrough")
+        .next()
+        .unwrap();
+    assert!(
+        !arm.contains("desired_open"),
+        "KeyEffectPredicted は desired_open を書かない"
+    );
+}

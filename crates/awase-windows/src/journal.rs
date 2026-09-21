@@ -741,6 +741,7 @@ fn ime_event_kind_str(e: &crate::state::ime_event::ImeEvent) -> &'static str {
         ImeEvent::InitialFocusFenceEstablished { .. } => "InitialFocusFenceEstablished",
         ImeEvent::InitialAppPolicyEstablished { .. } => "InitialAppPolicyEstablished",
         ImeEvent::ModeKeyPassedThrough => "ModeKeyPassedThrough",
+        ImeEvent::KeyEffectPredicted { .. } => "KeyEffectPredicted",
         ImeEvent::InitialFocusHwndEstablished { .. } => "InitialFocusHwndEstablished",
         ImeEvent::ChordEnded { .. } => "ChordEnded",
         ImeEvent::DriftDetected { .. } => "DriftDetected",

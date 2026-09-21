@@ -540,6 +540,19 @@ pub enum ImeEvent {
     /// `ImeStateHub::invalidate_intents_if_mode_key_pass_live` の1箇所に限定する。
     ModeKeyPassedThrough,
 
+    /// 物理モードキーの打鍵時点で、キーマップの表（`key_effect_table`）から予測した効果を
+    /// beliefへ反映する（ADR-191 決定3）。**観測ではなく予測**で、awaseはIMEへ書かない。
+    ///
+    /// reducerは`key_effect`（予測の記録とfence）を書き、`mode`があれば`input_mode`を先に動かす。
+    /// 開閉（`open`）は`desired_open`を書かず、`resolve_open_at`が予測を最優先の観測の代わりに使う
+    /// （`desired_open`を書くと、ドリフト補正がIMEへ書き戻して「awaseは書かない」に反するため）。
+    /// settle後に始まった観測が来たら予測と照合して観測が勝つ。dispatch元は
+    /// `ImeStateHub::apply_key_effect_prediction`の1箇所に限定する。
+    KeyEffectPredicted {
+        open: Option<bool>,
+        mode: Option<InputModeState>,
+    },
+
     /// 起動直後の初回フォーカス確立時、`current_focus` を bootstrap で確立した
     /// 前面 hwnd に設定する（BUG-148、ADR-186）。`establish_initial_focus_scope` からのみ
     /// dispatch される。

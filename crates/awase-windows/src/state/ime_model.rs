@@ -79,6 +79,8 @@ pub struct DecidedBy {
 pub enum BaseDecision {
     /// `has_user_explicit_intent()==true`、`desired_open` を採用。
     ExplicitIntent,
+    /// 物理モードキーの打鍵時点の予測（ADR-191 決定3）。settle 後の観測が来るまで採用。
+    KeyEffectPrediction,
     /// `derive_any()` / `derive_actuating()` が High confidence 単独ソースで確定。
     DeriveHigh(ObservationSource),
     /// `derive_any()` / `derive_actuating()` が Medium+ の無競合多数決で確定。
@@ -255,6 +257,33 @@ pub struct ImeModel {
     /// （`WarrantContext.target` 用の `issue_open_warrant()` への実配線は
     /// 依然 Phase 3 本体のスコープ）。
     current_focus: Option<HwndId>,
+
+    /// 打鍵時点の予測（ADR-191 決定3）。`reduce()`（`KeyEffectPredicted`/観測の照合/フォーカス変更/明示意図）
+    /// だけが書く private フィールド。読み取りは`key_effect()`。
+    key_effect: Option<KeyEffectPrediction>,
+}
+
+/// 物理モードキーの打鍵時点で表から予測した効果（ADR-191 決定3）と、その fence。
+///
+/// `at_ms`は**最新の打鍵の時刻**。これより`KEY_EFFECT_SETTLE_MS`以内の観測は、IMEがキーを処理する前の
+/// 古い状態を読んでいる恐れがあるため、予測を上書きも消しもしない（fence）。settle後の観測だけが
+/// 予測と照合され（食い違いは`[key-effect-miss]`）、予測を消す。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyEffectPrediction {
+    pub at_ms: u64,
+    pub open: Option<bool>,
+    pub mode: Option<InputModeState>,
+}
+
+impl KeyEffectPrediction {
+    /// 両軸とも照合済み（`None`）なら予測ごと捨てる。
+    const fn into_live(self) -> Option<Self> {
+        if self.open.is_none() && self.mode.is_none() {
+            None
+        } else {
+            Some(self)
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -282,6 +311,7 @@ impl ImeModel {
             last_seen_generation: None,
             applied: AppliedImeState::Unknown,
             current_focus: None,
+            key_effect: None,
         }
     }
 
@@ -292,6 +322,12 @@ impl ImeModel {
     #[must_use]
     pub const fn current_focus(&self) -> Option<HwndId> {
         self.current_focus
+    }
+
+    /// 打鍵時点の予測（読み取り専用アクセサ、ADR-191 決定3）。
+    #[must_use]
+    pub const fn key_effect(&self) -> Option<KeyEffectPrediction> {
+        self.key_effect
     }
 
     /// awase が IME をこうしたい状態（読み取り専用アクセサ）。
@@ -391,6 +427,8 @@ impl ImeModel {
         let has_explicit_intent = self.has_user_explicit_intent();
         let (base, decided_by) = if has_explicit_intent {
             (self.desired_open, BaseDecision::ExplicitIntent)
+        } else if let Some(predicted) = self.key_effect.and_then(|p| p.open) {
+            (predicted, BaseDecision::KeyEffectPrediction)
         } else if let Some(outcome) = self.observations.derive_any(now) {
             let decided_by = match outcome {
                 DeriveOutcome::HighSingle { source, .. } => BaseDecision::DeriveHigh(source),
@@ -524,6 +562,74 @@ impl Default for ImeModel {
 }
 
 impl ImeModel {
+    /// 観測（開閉）を、打鍵時点の予測と照合する（ADR-191 決定3）。
+    ///
+    /// fence: 最新の打鍵から`KEY_EFFECT_SETTLE_MS`以内の観測は、IMEがキーを処理する前の古い状態を
+    /// 読んでいる恐れがあるため、予測に触れない（観測プールには記録済みだが、`resolve_open_at`は
+    /// 予測を優先する）。settle後の観測（Medium以上）が予測と照合され、食い違いは
+    /// `[key-effect-miss]`（較正材料）。どちらでも予測の開閉は消え、観測が勝つ。
+    fn reconcile_key_effect_open(
+        &mut self,
+        observed_open: bool,
+        confidence: ObservationConfidence,
+        now_ms: u64,
+    ) {
+        let Some(pred) = self.key_effect else {
+            return;
+        };
+        let Some(predicted) = pred.open else {
+            return;
+        };
+        if confidence < ObservationConfidence::Medium {
+            return;
+        }
+        if now_ms.saturating_sub(pred.at_ms) < crate::tuning::KEY_EFFECT_SETTLE_MS {
+            tracing::debug!(
+                "[key-effect-fence] axis=open stale observation ignored: observed={observed_open} \
+                 predicted={predicted} age_ms={}",
+                now_ms.saturating_sub(pred.at_ms)
+            );
+            return;
+        }
+        if predicted == observed_open {
+            tracing::debug!("[key-effect-confirmed] axis=open value={observed_open}");
+        } else {
+            tracing::info!(
+                "[key-effect-miss] axis=open predicted={predicted} observed={observed_open}"
+            );
+        }
+        self.key_effect = KeyEffectPrediction { open: None, ..pred }.into_live();
+    }
+
+    /// 観測（入力モード、Medium以上）を打鍵時点の予測と照合する。戻り値は「この観測を採用してよいか」
+    /// （fence内の古い観測は`false`）。settle後の観測は予測を消し、食い違いは`[key-effect-miss]`。
+    fn reconcile_key_effect_mode(&mut self, observed: InputModeState, now_ms: u64) -> bool {
+        let Some(pred) = self.key_effect else {
+            return true;
+        };
+        let Some(predicted) = pred.mode else {
+            return true;
+        };
+        if now_ms.saturating_sub(pred.at_ms) < crate::tuning::KEY_EFFECT_SETTLE_MS {
+            tracing::debug!(
+                "[key-effect-fence] axis=mode stale observation ignored: observed={observed:?} \
+                 predicted={predicted:?} age_ms={}",
+                now_ms.saturating_sub(pred.at_ms)
+            );
+            return false;
+        }
+        // 予測は「eisuか否か」までしか確度が無い（ObservedRomaji/Kana/AssumedRomaji は同じ扱い）。
+        if predicted.is_romaji_capable() == observed.is_romaji_capable() {
+            tracing::debug!("[key-effect-confirmed] axis=mode value={observed:?}");
+        } else {
+            tracing::info!(
+                "[key-effect-miss] axis=mode predicted={predicted:?} observed={observed:?}"
+            );
+        }
+        self.key_effect = KeyEffectPrediction { mode: None, ..pred }.into_live();
+        true
+    }
+
     /// `UserImeToggleIntent`/`UserImeSetIntent` 共通の `last_intent` 記録。
     fn record_intent(&mut self, target: bool, source: UserIntentSource, at_ms: u64) {
         self.last_intent = Some(RecordedIntent {
@@ -549,11 +655,13 @@ impl ImeModel {
     pub fn reduce(&mut self, envelope: &ImeEventEnvelope) {
         match envelope.event {
             ImeEvent::UserImeToggleIntent { source } => {
+                self.key_effect = None;
                 let target = !self.desired_open;
                 self.desired_open = target;
                 self.record_intent(target, source, envelope.time.tick_ms);
             }
             ImeEvent::UserImeSetIntent { target, source } => {
+                self.key_effect = None;
                 self.desired_open = target;
                 self.record_intent(target, source, envelope.time.tick_ms);
             }
@@ -601,6 +709,11 @@ impl ImeModel {
                     observed.open(),
                     envelope.time.monotonic,
                 );
+                self.reconcile_key_effect_open(
+                    observed.open(),
+                    observed.confidence(),
+                    envelope.time.tick_ms,
+                );
             }
             ImeEvent::FocusChanged {
                 profile,
@@ -632,12 +745,19 @@ impl ImeModel {
                 self.applied = AppliedImeState::Optimistic(desired);
             }
             ImeEvent::InputModeObserved {
-                mode, confidence, ..
+                mode,
+                confidence,
+                at,
+                ..
             } => {
                 // ON/OFF の derive_any() と同じ考え方: Low confidence 単独では
                 // belief を動かさない（記録のみ）。Medium+ のみ input_mode を上書きする。
                 if confidence >= ObservationConfidence::Medium {
-                    self.input_mode = mode;
+                    // fence（ADR-191 決定3）: 最新の打鍵から settle 以内の観測は、IME がキーを処理する
+                    // 前の古い状態を読んでいる恐れがあるため、予測した入力モードを上書きしない。
+                    if self.reconcile_key_effect_mode(mode, at.0) {
+                        self.input_mode = mode;
+                    }
                 } else {
                     tracing::debug!(
                         "[input-mode] Low confidence observation 無視: {mode:?} (confidence={confidence:?})"
@@ -679,6 +799,18 @@ impl ImeModel {
                 // 触らない——`initial_app_policy_event_only_touches_app_policy`
                 // が固定する）。
                 self.app_policy = AppImePolicy::from_profile(profile);
+            }
+            ImeEvent::KeyEffectPredicted { open, mode } => {
+                // 新しい打鍵が fence を進める。未照合の古い予測は、新しい予測が触れない軸だけ残す。
+                let prev = self.key_effect;
+                self.key_effect = Some(KeyEffectPrediction {
+                    at_ms: envelope.time.tick_ms,
+                    open: open.or(prev.and_then(|p| p.open)),
+                    mode: mode.or(prev.and_then(|p| p.mode)),
+                });
+                if let Some(mode) = mode {
+                    self.input_mode = mode;
+                }
             }
             ImeEvent::ModeKeyPassedThrough => {
                 // ADR-187: 明示意図が残ると resolve_open_at の ExplicitIntent 分岐が
@@ -738,6 +870,8 @@ impl ImeModel {
         // フォーカス変更で intent / observation / applied / force_guard / drift は clear する
         // (旧アプリの観測値が新アプリで有効と勘違いされないため)
         self.last_intent = None;
+        // 打鍵時点の予測も旧アプリの文脈のものなので捨てる。
+        self.key_effect = None;
         // 新しい epoch/hwnd を store に伝える。derive_any() はこれ以降、
         // 古い epoch/hwnd の ImmCrossProbe / FocusProbe を無視する
         // （ADR-106 決定3）。
@@ -1464,6 +1598,175 @@ mod tests {
             model.effective_open(),
             "Medium confidence の derive_any() 結果が Low fallback より常に優先される"
         );
+    }
+
+    // ── ADR-191 決定3: 打鍵時点の予測（KeyEffectPredicted）と fence ────────────────
+
+    fn observe_open(
+        model: &mut ImeModel,
+        seq: u64,
+        tick_ms: u64,
+        open: bool,
+        c: ObservationConfidence,
+    ) {
+        model.reduce(&envelope_at(
+            seq,
+            Instant::now(),
+            tick_ms,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                open,
+                ObservationSource::ObserverPoll,
+                HwndId::NULL,
+                c,
+                0,
+            )),
+        ));
+    }
+
+    fn predict(
+        model: &mut ImeModel,
+        tick_ms: u64,
+        open: Option<bool>,
+        mode: Option<InputModeState>,
+    ) {
+        model.reduce(&envelope_at(
+            100,
+            Instant::now(),
+            tick_ms,
+            ImeEvent::KeyEffectPredicted { open, mode },
+        ));
+    }
+
+    #[test]
+    fn key_effect_prediction_moves_open_and_mode_without_touching_desired_open() {
+        let mut model = ImeModel::new();
+        observe_open(&mut model, 1, 0, true, ObservationConfidence::Medium);
+        predict(
+            &mut model,
+            1000,
+            Some(false),
+            Some(InputModeState::ObservedEisu),
+        );
+        assert!(!model.effective_open(), "予測が観測より優先される");
+        assert_eq!(model.input_mode(), InputModeState::ObservedEisu);
+        assert!(
+            model.desired_open(),
+            "desired_open は書かない（ドリフト補正がIMEへ書き戻さないため）"
+        );
+        assert!(model.last_intent.is_none(), "明示意図を偽装しない");
+    }
+
+    #[test]
+    fn stale_observation_within_settle_does_not_override_prediction() {
+        // fence: 打鍵より前に読み取りを始めた古い観測（settle 以内に届いたもの）は、予測を上書きも消しもしない。
+        let mut model = ImeModel::new();
+        predict(
+            &mut model,
+            1000,
+            Some(false),
+            Some(InputModeState::ObservedEisu),
+        );
+        let stale = 1000 + crate::tuning::KEY_EFFECT_SETTLE_MS - 1;
+        observe_open(&mut model, 2, stale, true, ObservationConfidence::Medium);
+        model.reduce(&envelope_at(
+            3,
+            Instant::now(),
+            stale,
+            ImeEvent::InputModeObserved {
+                mode: InputModeState::ObservedRomaji,
+                source: ObservationSource::ObserverPoll,
+                confidence: ObservationConfidence::Medium,
+                at: crate::state::TickMs(stale),
+            },
+        ));
+        assert!(!model.effective_open(), "古い観測は予測を上書きしない");
+        assert_eq!(
+            model.input_mode(),
+            InputModeState::ObservedEisu,
+            "古い観測は予測した入力モードを上書きしない"
+        );
+        assert!(model.key_effect().is_some(), "予測は照合されず残る");
+    }
+
+    #[test]
+    fn observation_after_settle_wins_and_clears_prediction() {
+        let mut model = ImeModel::new();
+        predict(
+            &mut model,
+            1000,
+            Some(false),
+            Some(InputModeState::ObservedEisu),
+        );
+        let at = 1000 + crate::tuning::KEY_EFFECT_SETTLE_MS;
+        // 予測（閉）と食い違う観測（開）。観測が勝つ。
+        observe_open(&mut model, 2, at, true, ObservationConfidence::Medium);
+        model.reduce(&envelope_at(
+            3,
+            Instant::now(),
+            at,
+            ImeEvent::InputModeObserved {
+                mode: InputModeState::ObservedRomaji,
+                source: ObservationSource::ObserverPoll,
+                confidence: ObservationConfidence::Medium,
+                at: crate::state::TickMs(at),
+            },
+        ));
+        assert!(model.effective_open(), "settle 後の観測が勝つ");
+        assert_eq!(model.input_mode(), InputModeState::ObservedRomaji);
+        assert!(
+            model.key_effect().is_none(),
+            "両軸とも照合済みなら予測は消える"
+        );
+    }
+
+    #[test]
+    fn low_confidence_observation_never_reconciles_prediction() {
+        let mut model = ImeModel::new();
+        predict(&mut model, 1000, Some(false), None);
+        observe_open(&mut model, 2, 5000, true, ObservationConfidence::Low);
+        assert!(!model.effective_open());
+        assert!(model.key_effect().is_some());
+    }
+
+    #[test]
+    fn prediction_survives_without_observations_for_unreadable_apps() {
+        // TsfNative 等: 観測が来ないので、予測が唯一の信号として残る。
+        let mut model = ImeModel::new();
+        predict(&mut model, 1000, Some(false), None);
+        assert!(!model.effective_open());
+        // 次の打鍵の予測は、触れない軸の未照合の予測を残す。
+        predict(&mut model, 2000, None, Some(InputModeState::ObservedEisu));
+        let p = model.key_effect().unwrap();
+        assert_eq!(p.open, Some(false));
+        assert_eq!(p.mode, Some(InputModeState::ObservedEisu));
+        assert_eq!(p.at_ms, 2000, "fence は最新の打鍵に進む");
+    }
+
+    #[test]
+    fn explicit_intent_and_focus_change_supersede_prediction() {
+        let mut model = ImeModel::new();
+        predict(&mut model, 1000, Some(false), None);
+        model.reduce(&envelope(
+            5,
+            ImeEvent::UserImeSetIntent {
+                target: true,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        assert!(model.key_effect().is_none());
+        assert!(model.effective_open());
+
+        predict(&mut model, 2000, Some(false), None);
+        model.reduce(&envelope(
+            6,
+            ImeEvent::FocusChanged {
+                from: None,
+                to: HwndId::NULL,
+                profile: ImePolicyProfile::ImmCross,
+                focus_epoch: FocusEpoch::MIN,
+            },
+        ));
+        assert!(model.key_effect().is_none(), "フォーカス変更で予測は捨てる");
     }
 
     // ── resolve_open_at / DecidedBy（ADR-087 §5 Phase 0a item2/3） ──────────────

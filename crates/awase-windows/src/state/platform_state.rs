@@ -209,6 +209,27 @@ impl ImeStateHub {
         self.shadow_model.last_intent.as_ref().map(|i| i.target)
     }
 
+    /// 物理モードキーの打鍵時点で、表から予測した効果をbeliefへ反映する（ADR-191 決定3）。
+    ///
+    /// `ImeEvent::KeyEffectPredicted`の**唯一のdispatch元**。awaseはIMEへ書かない（生キーはそのまま通る）。
+    /// 後から来る観測（settle後）が照合し、食い違えば観測が勝つ（`ImeModel::reduce`のfence）。
+    pub(crate) fn apply_key_effect_prediction(
+        &mut self,
+        effect: crate::state::key_effect_table::PredictedEffect,
+        tick_ms: TickMs,
+    ) {
+        if effect.is_noop() {
+            return;
+        }
+        self.dispatch_event(
+            ImeEvent::KeyEffectPredicted {
+                open: effect.open,
+                mode: effect.mode,
+            },
+            tick_ms,
+        );
+    }
+
     /// 無変換/変換の生キーを通過させたら呼ぶ（ADR-187）。現在のフォアグラウンドに対する一回マークを立てる。
     pub(crate) fn arm_mode_key_pass_mark(&mut self, now_ms: u64) {
         self.mode_key_pass_mark.arm(
