@@ -41,15 +41,15 @@ jobs:
         run: |
           import json, os
           # name: 構成名 / bin: 使うビルド成果物(撤去なしの構成は baseline を使い回す) / mutator: ablations/ 下のスクリプト
-          # (空=変更なし) / args: スパイクの追加引数 / toggle: config.toml の gji_thumb_key_ime_toggle /
+          # (空=変更なし) / args: スパイクの追加引数 /
           # keymap: GJI の session_keymap(1=ATOK, 2=MS-IME) / custom_table: config1.db に古い custom_keymap_table
           # (変換=IMEOn)を残すか / check: expect=ATOK前提の期待表(check.py)、consistency=プリセット非依存で
           # 「実IMEのかな=Engine ON、英数・直接入力=Engine OFF」に追随するか(check_consistency.py、--walk)
           # expect: pass=全回PASS / fail=撤去や設定で壊れる(既知の問題を固定) / observe=結果を表に出すだけ(不安定・未確定の観測用)
           # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME)
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
-          def cfg(name, expect, mutator='', args='', toggle='true', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true'):
-            return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args, toggle=toggle,
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true'):
+            return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
                         keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase)
           configs = [
             # --- 撤去実験(ATOK、実機E1〜E7bと同じ) ---
@@ -60,28 +60,24 @@ jobs:
             cfg('a4-no-eisu-reset', 'pass', mutator='a4-no-eisu-reset.sh'),
             cfg('a5-no-refresh20', 'fail', mutator='a5-no-refresh20.sh'),
             cfg('a6-no-idle-check', 'pass', mutator='a6-no-idle-check.sh'),
-            cfg('e7-toggle-false', 'fail', toggle='false'),
             # --- プリセット/設定の確認(ビルドは baseline、consistency 判定) ---
-            cfg('atok-optin', 'pass', check='consistency', args='--walk'),
             # フォーカス直後(意図なし)にいきなり無変換/変換を押す(--cold=先頭のひらがなを除く)
-            cfg('atok-passthrough-cold', 'pass', check='consistency', args='--walk --cold', toggle='false'),
-            cfg('atok-passthrough-henkan-cold', 'pass', check='consistency', args='--walk --cold --key=henkan', toggle='false'),
+            cfg('atok-passthrough-cold', 'pass', check='consistency', args='--walk --cold'),
+            cfg('atok-passthrough-henkan-cold', 'pass', check='consistency', args='--walk --cold --key=henkan'),
             # 半角/全角(0xF3/0xF4、GJIではどちらも開閉トグル)。awaseがVKで方向を決め打つとずれる(ADR-186決定5、ADR-189)
-            cfg('msime-hz', 'pass', check='toggle', args='--hz', toggle='false', keymap=2),
-            cfg('atok-hz', 'pass', check='toggle', args='--hz', toggle='false'),
+            cfg('msime-hz', 'pass', check='toggle', args='--hz', keymap=2),
+            cfg('atok-hz', 'pass', check='toggle', args='--hz'),
             # リセット操作(Ctrl+無変換→Ctrl+変換 / 逆)で必ず揃うか(--resync)。nofollow は followを無効化してずれを意図的に起こす
-            cfg('atok-resync', 'observe', check='resync', args='--resync', toggle='false'),
-            cfg('atok-resync-nofollow', 'observe', mutator='a7-no-follow.sh', check='resync', args='--resync', toggle='false'),
-            cfg('atok-resync-gap40', 'observe', check='resync', args='--resync --resync-gap=40', toggle='false'),
-            cfg('atok-resync-gap300', 'observe', check='resync', args='--resync --resync-gap=300', toggle='false'),
-            cfg('atok-passthrough', 'pass', check='consistency', args='--walk', toggle='false'),
-            cfg('atok-passthrough-henkan', 'pass', check='consistency', args='--walk --key=henkan', toggle='false'),
-            cfg('msime', 'pass', check='consistency', args='--walk', toggle='false', keymap=2),
-            cfg('msime-optin', 'pass', check='consistency', args='--walk', toggle='true', keymap=2),
+            cfg('atok-resync', 'observe', check='resync', args='--resync'),
+            cfg('atok-resync-nofollow', 'observe', mutator='a7-no-follow.sh', check='resync', args='--resync'),
+            cfg('atok-resync-gap40', 'observe', check='resync', args='--resync --resync-gap=40'),
+            cfg('atok-resync-gap300', 'observe', check='resync', args='--resync --resync-gap=300'),
+            cfg('atok-passthrough', 'pass', check='consistency', args='--walk'),
+            cfg('atok-passthrough-henkan', 'pass', check='consistency', args='--walk --key=henkan'),
+            cfg('msime', 'pass', check='consistency', args='--walk', keymap=2),
             # --- Microsoft IME 本体(GJI を入れず、ja-JP の言語を追加して標準の日本語IMEを使う) ---
-            cfg('msime-native', 'observe', check='consistency', args='--walk --msime', toggle='false', ime='msime'),
-            cfg('msime-native-henkan', 'observe', check='consistency', args='--walk --msime --key=henkan', toggle='false', ime='msime'),
-            cfg('msime-native-optin', 'observe', check='consistency', args='--walk --msime', toggle='true', ime='msime'),
+            cfg('msime-native', 'observe', check='consistency', args='--walk --msime', ime='msime'),
+            cfg('msime-native-henkan', 'observe', check='consistency', args='--walk --msime --key=henkan', ime='msime'),
             # 対照実験: awase を起動せず、同じキー列で実IMEだけを見る(実IMEの推移がawaseのせいかCI環境の癖かを分ける)
             cfg('msime-native-noawase', 'observe', check='consistency', args='--walk --msime', ime='msime', awase='false'),
             cfg('atok-noawase', 'observe', check='consistency', args='--walk', awase='false'),
@@ -89,7 +85,7 @@ jobs:
             cfg('probe-vk-gji-atok', 'observe', check='vkprobe', args='--vkprobe', awase='false'),
             cfg('probe-vk-gji-msime', 'observe', check='vkprobe', args='--vkprobe', keymap=2, awase='false'),
             cfg('probe-vk-msime-native', 'observe', check='vkprobe', args='--vkprobe --msime', ime='msime', awase='false'),
-            cfg('msime-stale-table', 'pass', check='consistency', args='--walk --key=henkan', toggle='false', keymap=2, custom_table='true'),
+            cfg('msime-stale-table', 'pass', check='consistency', args='--walk --key=henkan', keymap=2, custom_table='true'),
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
@@ -241,10 +237,7 @@ jobs:
         id: run
         shell: pwsh
         run: |
-          $toggle = '${{ matrix.cfg.toggle }}'
           $cfg = Get-Content dist\config.toml -Raw
-          if ($cfg -match 'gji_thumb_key_ime_toggle *= *(true|false)') { $cfg = $cfg -replace 'gji_thumb_key_ime_toggle *= *(true|false)',"gji_thumb_key_ime_toggle = $toggle" }
-          else { $cfg = $cfg -replace '(?m)^\[general\]\s*$', "[general]`r`ngji_thumb_key_ime_toggle = $toggle" }
           [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
           # CIランナーは初回のクロスプロセスIMMプローブが遅く(実測22ms)、awase がスパイク窓を「IMM不可」と誤学習して
           # conv を読まなくなる(Engine が半角英数に追従しない)。学習済みキャッシュを事前投入して防ぐ。
