@@ -40,10 +40,9 @@ mod store {
     use windows::Win32::UI::TextServices::{
         ITextStoreACP, ITextStoreACPSink, ITextStoreACP_Impl, ITfCompositionView,
         ITfContextOwnerCompositionSink, ITfContextOwnerCompositionSink_Impl, ITfRange,
-        TsActiveSelEnd, TEXT_STORE_LOCK_FLAGS, TS_ATTRVAL, TS_AE_END, TS_E_NOLOCK, TS_E_SYNCHRONOUS,
-        TS_IAS_QUERYONLY,
-        TS_RT_PLAIN, TS_RUNINFO, TS_SELECTION_ACP, TS_SELECTIONSTYLE, TS_STATUS, TS_S_ASYNC,
-        TS_TEXTCHANGE,
+        TsActiveSelEnd, TEXT_STORE_LOCK_FLAGS, TS_AE_END, TS_ATTRVAL, TS_E_NOLOCK,
+        TS_E_SYNCHRONOUS, TS_IAS_QUERYONLY, TS_RT_PLAIN, TS_RUNINFO, TS_SELECTIONSTYLE,
+        TS_SELECTION_ACP, TS_STATUS, TS_S_ASYNC, TS_TEXTCHANGE,
     };
     use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
 
@@ -126,7 +125,10 @@ mod store {
         fn need_write(&self, name: &'static str) -> windows::core::Result<()> {
             let locked = self.st.borrow().locked;
             if locked & 4 == 0 {
-                self.rec("ERR", format!("{name}: 書き込みロックなし (locked=0x{locked:X})"));
+                self.rec(
+                    "ERR",
+                    format!("{name}: 書き込みロックなし (locked=0x{locked:X})"),
+                );
                 return Err(TS_E_NOLOCK.into());
             }
             Ok(())
@@ -135,7 +137,10 @@ mod store {
         fn need_read(&self, name: &'static str) -> windows::core::Result<()> {
             let locked = self.st.borrow().locked;
             if locked & 2 == 0 {
-                self.rec("ERR", format!("{name}: 読み取りロックなし (locked=0x{locked:X})"));
+                self.rec(
+                    "ERR",
+                    format!("{name}: 読み取りロックなし (locked=0x{locked:X})"),
+                );
                 return Err(TS_E_NOLOCK.into());
             }
             Ok(())
@@ -165,7 +170,9 @@ mod store {
             let iid = unsafe { riid.as_ref() }.copied().unwrap_or_default();
             self.rec("AdviseSink", format!("iid={iid:?} mask=0x{dwmask:X}"));
             if iid != ITextStoreACPSink::IID {
-                return Err(windows::core::Error::from(windows::Win32::Foundation::E_INVALIDARG));
+                return Err(windows::core::Error::from(
+                    windows::Win32::Foundation::E_INVALIDARG,
+                ));
             }
             let sink = punk.ok()?.cast::<ITextStoreACPSink>()?;
             self.st.borrow_mut().sink = Some(sink);
@@ -190,7 +197,10 @@ mod store {
                 ),
             );
             if self.deny_sync && sync {
-                self.rec("RequestLock", "→ TS_E_SYNCHRONOUS (--deny-sync)".to_string());
+                self.rec(
+                    "RequestLock",
+                    "→ TS_E_SYNCHRONOUS (--deny-sync)".to_string(),
+                );
                 return Ok(TS_E_SYNCHRONOUS);
             }
             {
@@ -205,7 +215,10 @@ mod store {
                     // 複数の非同期要求は上書きせず、フラグの和にする（READWRITE は READ を含むので、どちらの要求も満たす）。
                     st.pending = Some(st.pending.unwrap_or(0) | (dwlockflags & !1));
                     drop(st);
-                    self.rec("RequestLock", "→ TS_S_ASYNC (ロック中、後で付与)".to_string());
+                    self.rec(
+                        "RequestLock",
+                        "→ TS_S_ASYNC (ロック中、後で付与)".to_string(),
+                    );
                     return Ok(TS_S_ASYNC);
                 }
             }
@@ -228,7 +241,10 @@ mod store {
                     let hr = r.as_ref().map_or_else(|e| e.code(), |()| HRESULT(0));
                     if hr.is_err() {
                         // 失敗を握りつぶすと、TIP 側の編集セッション失敗が正常に見えて測定を誤読する。
-                        self.rec("OnLockGranted-ERR", format!("flags=0x{flags:X} hr=0x{:08X}", hr.0));
+                        self.rec(
+                            "OnLockGranted-ERR",
+                            format!("flags=0x{flags:X} hr=0x{:08X}", hr.0),
+                        );
                     }
                     first_hr.get_or_insert(hr);
                 }
@@ -262,7 +278,10 @@ mod store {
             pacpresultstart: *mut i32,
             pacpresultend: *mut i32,
         ) -> windows::core::Result<()> {
-            self.rec("QueryInsert", format!("{acpteststart}..{acptestend} cch={cch}"));
+            self.rec(
+                "QueryInsert",
+                format!("{acpteststart}..{acptestend} cch={cch}"),
+            );
             let (s, e) = (self.clamp(acpteststart), self.clamp(acptestend));
             // SAFETY: 出力ポインタは呼び出し元が用意した有効な領域(null なら書かない)。
             unsafe {
@@ -286,7 +305,10 @@ mod store {
             self.need_read("GetSelection")?;
             let (s, e) = self.st.borrow().sel;
             let ase = self.st.borrow().sel_ase;
-            self.rec("GetSelection", format!("idx=0x{ulindex:X} count={ulcount} → {s}..{e}"));
+            self.rec(
+                "GetSelection",
+                format!("idx=0x{ulindex:X} count={ulcount} → {s}..{e}"),
+            );
             // SAFETY: 出力ポインタは呼び出し元が用意した有効な領域。
             unsafe {
                 if ulcount > 0 && !pselection.is_null() {
@@ -347,13 +369,20 @@ mod store {
             let (s, e) = (self.clamp(acpstart), self.clamp(end));
             let avail = usize::try_from((e - s).max(0)).unwrap_or(0);
             let n = avail.min(cchplainreq as usize);
-            self.rec("GetText", format!("{acpstart}..{acpend} req={cchplainreq} → {n}文字"));
+            self.rec(
+                "GetText",
+                format!("{acpstart}..{acpend} req={cchplainreq} → {n}文字"),
+            );
             // SAFETY: 出力バッファは呼び出し元が cchplainreq / cruninforeq 分を用意している。
             unsafe {
                 if !pchplain.is_null() && n > 0 {
                     let st = self.st.borrow();
                     let start = usize::try_from(s).unwrap_or(0);
-                    std::ptr::copy_nonoverlapping(st.text[start..start + n].as_ptr(), pchplain.0, n);
+                    std::ptr::copy_nonoverlapping(
+                        st.text[start..start + n].as_ptr(),
+                        pchplain.0,
+                        n,
+                    );
                 }
                 if !pcchplainret.is_null() {
                     *pcchplainret = u32::try_from(n).unwrap_or(0);
@@ -398,7 +427,10 @@ mod store {
             );
             let new_end = s + i32::try_from(new.len()).unwrap_or(0);
             let mut st = self.st.borrow_mut();
-            let (us, ue) = (usize::try_from(s).unwrap_or(0), usize::try_from(e).unwrap_or(0));
+            let (us, ue) = (
+                usize::try_from(s).unwrap_or(0),
+                usize::try_from(e).unwrap_or(0),
+            );
             st.text.splice(us..ue, new);
             st.sel = (new_end, new_end);
             Ok(TS_TEXTCHANGE {
@@ -455,7 +487,10 @@ mod store {
             self.need_write("InsertTextAtSelection")?;
             // `--panic-test`: COM コールバック内の panic（非 unwind ABI の境界で abort になる）で、
             // panic フックがタイムラインを残すかを確かめるための意図的な panic。
-            assert!(!self.panic_test, "--panic-test: InsertTextAtSelection で意図的に panic");
+            assert!(
+                !self.panic_test,
+                "--panic-test: InsertTextAtSelection で意図的に panic"
+            );
             // TS_IAS_NOQUERY=0x1（通常の挿入）、TS_IAS_QUERYONLY=0x2（範囲の問い合わせのみ）。取り違えない。
             let query_only = dwflags & TS_IAS_QUERYONLY != 0;
             // SAFETY: pchtext は cch 個の UTF-16 を指す(cch>0 のとき)。
@@ -477,7 +512,10 @@ mod store {
             );
             if !query_only {
                 let mut st = self.st.borrow_mut();
-                let (us, ue) = (usize::try_from(s).unwrap_or(0), usize::try_from(e).unwrap_or(0));
+                let (us, ue) = (
+                    usize::try_from(s).unwrap_or(0),
+                    usize::try_from(e).unwrap_or(0),
+                );
                 st.text.splice(us..ue, new);
                 st.sel = (new_end, new_end);
             }
@@ -518,7 +556,10 @@ mod store {
             cfilterattrs: u32,
             _pafilterattrs: *const GUID,
         ) -> windows::core::Result<()> {
-            self.rec("RequestSupportedAttrs", format!("flags=0x{dwflags:X} n={cfilterattrs}"));
+            self.rec(
+                "RequestSupportedAttrs",
+                format!("flags=0x{dwflags:X} n={cfilterattrs}"),
+            );
             Ok(())
         }
 
@@ -529,7 +570,10 @@ mod store {
             _pafilterattrs: *const GUID,
             _dwflags: u32,
         ) -> windows::core::Result<()> {
-            self.rec("RequestAttrsAtPosition", format!("pos={acppos} n={cfilterattrs}"));
+            self.rec(
+                "RequestAttrsAtPosition",
+                format!("pos={acppos} n={cfilterattrs}"),
+            );
             Ok(())
         }
 
@@ -661,7 +705,10 @@ mod store {
             &self,
             _pcomposition: Ref<ITfCompositionView>,
         ) -> windows::core::Result<BOOL> {
-            self.rec("COMPOSITION-START", format!("text={:?}", text_of(&self.st.borrow().text)));
+            self.rec(
+                "COMPOSITION-START",
+                format!("text={:?}", text_of(&self.st.borrow().text)),
+            );
             Ok(BOOL(1))
         }
 
@@ -670,7 +717,10 @@ mod store {
             _pcomposition: Ref<ITfCompositionView>,
             _prangenew: Ref<ITfRange>,
         ) -> windows::core::Result<()> {
-            self.rec("COMPOSITION-UPDATE", format!("text={:?}", text_of(&self.st.borrow().text)));
+            self.rec(
+                "COMPOSITION-UPDATE",
+                format!("text={:?}", text_of(&self.st.borrow().text)),
+            );
             Ok(())
         }
 
@@ -678,7 +728,10 @@ mod store {
             &self,
             _pcomposition: Ref<ITfCompositionView>,
         ) -> windows::core::Result<()> {
-            self.rec("COMPOSITION-END", format!("text={:?}", text_of(&self.st.borrow().text)));
+            self.rec(
+                "COMPOSITION-END",
+                format!("text={:?}", text_of(&self.st.borrow().text)),
+            );
             Ok(())
         }
     }
@@ -703,14 +756,15 @@ mod app {
         VIRTUAL_KEY,
     };
     use windows::Win32::UI::TextServices::{
-        ITfContext, ITfInputProcessorProfileMgr, ITfThreadMgr, CLSID_TF_InputProcessorProfiles,
-        CLSID_TF_ThreadMgr, GUID_TFCAT_TIP_KEYBOARD, TF_INPUTPROCESSORPROFILE,
+        CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfContext,
+        ITfInputProcessorProfileMgr, ITfThreadMgr, GUID_TFCAT_TIP_KEYBOARD,
+        TF_INPUTPROCESSORPROFILE,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow,
         GetMessageW, GetWindowThreadProcessId, PostMessageW, PostQuitMessage, RegisterClassExW,
-        SetForegroundWindow, ShowWindow, TranslateMessage, CW_USEDEFAULT, MSG, SW_SHOW, WM_CLOSE,
-        WM_CHAR, WM_DESTROY, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_NOTIFY,
+        SetForegroundWindow, ShowWindow, TranslateMessage, CW_USEDEFAULT, MSG, SW_SHOW, WM_CHAR,
+        WM_CLOSE, WM_DESTROY, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_NOTIFY,
         WM_IME_STARTCOMPOSITION, WM_INPUTLANGCHANGE, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN,
         WNDCLASSEXW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
@@ -817,7 +871,12 @@ mod app {
                 _ => None,
             };
             if let Some(name) = name {
-                push(log, *t0, "WNDMSG", format!("{name} wp=0x{:X} lp=0x{:X}", wp.0, lp.0));
+                push(
+                    log,
+                    *t0,
+                    "WNDMSG",
+                    format!("{name} wp=0x{:X} lp=0x{:X}", wp.0, lp.0),
+                );
             }
             if msg == WM_CHAR && u8::try_from(wp.0).is_ok_and(|c| c.is_ascii_alphabetic()) {
                 LIT_CHARS.fetch_add(1, Ordering::SeqCst);
@@ -854,7 +913,11 @@ mod app {
                 s.push_str("(ログのロックを取得できなかった)\n");
             }
             eprintln!("{s}");
-            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&path)
+            {
                 let _ = f.write_all(s.as_bytes());
             }
         }));
@@ -899,7 +962,9 @@ mod app {
             match u32::from_str_radix(tok.trim(), 16) {
                 Ok(v) => seq.push(v),
                 Err(_) => {
-                    eprintln!("--seq の要素 {tok:?} は16進のVKとして解釈できません(--seq={seq_arg})");
+                    eprintln!(
+                        "--seq の要素 {tok:?} は16進のVKとして解釈できません(--seq={seq_arg})"
+                    );
                     std::process::exit(2);
                 }
             }
@@ -982,9 +1047,16 @@ mod app {
                 .expect("CreateContext");
             let ctx = ctx.expect("ITfContext");
             doc.Push(&ctx).expect("Push");
-            let _prev = thread_mgr.AssociateFocus(top, &doc).expect("AssociateFocus");
+            let _prev = thread_mgr
+                .AssociateFocus(top, &doc)
+                .expect("AssociateFocus");
             let _ = thread_mgr.SetFocus(&doc);
-            push(&log, t0, "SETUP", "DocumentMgr/Context を作成し窓に関連付けた".to_string());
+            push(
+                &log,
+                t0,
+                "SETUP",
+                "DocumentMgr/Context を作成し窓に関連付けた".to_string(),
+            );
             (thread_mgr, doc, ctx)
         };
         out(&format!("アクティブTIP: {}", active_tip()));
@@ -998,7 +1070,12 @@ mod app {
             'run: {
                 // キー注入の前に、前面窓がプローブ窓であることを確かめる。
                 if !fronted || unsafe { GetForegroundWindow() } != top {
-                    push(&worker_log, t0, "ABORT", "前面化に失敗したためキーを注入しない".to_string());
+                    push(
+                        &worker_log,
+                        t0,
+                        "ABORT",
+                        "前面化に失敗したためキーを注入しない".to_string(),
+                    );
                     break 'run;
                 }
                 for vk in &seq {
