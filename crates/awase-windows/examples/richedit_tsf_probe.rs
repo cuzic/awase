@@ -229,6 +229,18 @@ fn main() {
     let log_path = arg_value(&args, "--log=").unwrap_or_else(|| "richedit_tsf_probe.log".into());
     let _ = std::fs::remove_file(&log_path);
     let mut log = Log(std::fs::File::create(&log_path).expect("log"));
+    // panic フック: ワーカー/メインスレッドの panic の内容をログに残す(ログは1行ずつ書き出しているので、
+    // panic した時点までの記録は失われず、原因の行だけが欠けるのを防ぐ)。
+    {
+        let path = log_path.clone();
+        std::panic::set_hook(Box::new(move |info| {
+            let s = format!("PANIC: {info}\n");
+            eprintln!("{s}");
+            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&path) {
+                let _ = f.write_all(s.as_bytes());
+            }
+        }));
+    }
 
     unsafe {
         // Msftedit.dll が RICHEDIT50W を登録する。
