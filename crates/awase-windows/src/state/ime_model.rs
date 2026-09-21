@@ -865,7 +865,7 @@ impl ImeModel {
                     }
                 }
             }
-            ImeEvent::ModeKeyPassedThrough => {
+            ImeEvent::ModeKeyPassedThrough { align_desired } => {
                 // ADR-187: 明示意図が残ると resolve_open_at の ExplicitIntent 分岐が
                 // 直前の観測を固定してしまうため、観測成功後に意図だけ外す。
                 self.last_intent = None;
@@ -875,8 +875,10 @@ impl ImeModel {
                 // 実IMEへ書き戻す（BUG-157: 起動直後にVK_IME_OFFで閉じた後のひらがな=開を閉じ直した）。
                 // 観測から導ける開閉（derive_any、`effective_open`と同じ導出）があれば、それを
                 // ユーザーの結果として`desired_open`へ採る。観測が無ければ（読めない窓）書かない。
-                if let Some(outcome) = self.observations.derive_any(envelope.time.monotonic) {
-                    self.desired_open = outcome.value();
+                if align_desired {
+                    if let Some(outcome) = self.observations.derive_any(envelope.time.monotonic) {
+                        self.desired_open = outcome.value();
+                    }
                 }
             }
             ImeEvent::InitialFocusHwndEstablished { hwnd } => {
@@ -1318,7 +1320,12 @@ mod tests {
             !model.desired_open,
             "フィクスチャは desired_open=false で、観測(ObserverPoll)は open=true"
         );
-        model.reduce(&envelope(1, ImeEvent::ModeKeyPassedThrough));
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: true,
+            },
+        ));
         assert!(
             model.last_intent.is_none(),
             "ModeKeyPassedThrough は last_intent を捨てる"
@@ -1344,11 +1351,36 @@ mod tests {
         let now = Instant::now();
         let mut model = fully_populated_model(now);
         model.observations = ObservationStore::default();
-        model.reduce(&envelope(1, ImeEvent::ModeKeyPassedThrough));
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: true,
+            },
+        ));
         assert!(model.last_intent.is_none());
         assert!(
             !model.desired_open,
             "観測が無ければ desired_open は書かない"
+        );
+    }
+
+    /// レビュー round2 A-N1: 観測が成功しないまま窓が切れた破棄（`align_desired == false`）は、観測プールに
+    /// 打鍵より前の観測が残っていても `desired_open` を書かず、`last_intent` だけを捨てる。
+    #[test]
+    fn mode_key_passed_through_expiry_drops_intent_but_never_aligns_desired() {
+        let now = Instant::now();
+        let mut model = fully_populated_model(now);
+        assert!(!model.desired_open, "観測(ObserverPoll)は open=true");
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: false,
+            },
+        ));
+        assert!(model.last_intent.is_none(), "意図は捨てる");
+        assert!(
+            !model.desired_open,
+            "観測があっても、窓の終了時の破棄では desired_open を書かない（打鍵より前の値を採らない）"
         );
     }
 

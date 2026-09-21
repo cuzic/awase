@@ -1886,7 +1886,10 @@ impl Runtime {
             return;
         }
         let now = hook::current_tick_ms();
-        self.platform_state.ime.arm_mode_key_pass_mark(now);
+        let readable = self.can_use_imm32_cross_process();
+        self.platform_state
+            .ime
+            .arm_mode_key_pass_mark(now, readable);
         self.schedule_ime_refresh(20);
         tracing::info!(
             "[mode-key-follow] mode key PassThrough(vk=0x{:02X}): IME refresh scheduled (20ms)",

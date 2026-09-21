@@ -161,6 +161,9 @@ pub(crate) struct ModeKeyPassMark {
     /// 通過より後に、awase自身が実際にIMEへ書いた（`record_optimistic`/`record_confirmed`）か。書いたなら実IMEが
     /// 書いた値と違っても信用せず、揃えずにdrift correctionへ任せる。
     awase_wrote: bool,
+    /// 通過を立てた時点で、その窓が読める窓（`can_use_imm32_cross_process`）だったか。窓の途中で`imm-learning`が
+    /// 降格させても、立てた時点で読めたなら窓の終了時に古い意図を捨てる（BUG-151原因③、レビュー round2 A-N2）。
+    readable_at_arm: bool,
 }
 
 impl ImeStateHub {
@@ -249,7 +252,7 @@ impl ImeStateHub {
     }
 
     /// 無変換/変換の生キーを通過させたら呼ぶ（ADR-187）。現在のフォアグラウンドに対する一回マークを立てる。
-    pub(crate) fn arm_mode_key_pass_mark(&mut self, now_ms: u64) {
+    pub(crate) fn arm_mode_key_pass_mark(&mut self, now_ms: u64, readable: bool) {
         self.mode_key_pass_mark.arm(
             crate::win32::foreground_scope(),
             ModeKeyPassMark {
@@ -257,8 +260,26 @@ impl ImeStateHub {
                 invalidated: false,
                 aligned: false,
                 awase_wrote: false,
+                readable_at_arm: readable,
             },
         );
+    }
+
+    /// 立てた時点で読める窓だった通過マークが、窓の終了を待っているとき、その残り時間(ms)。
+    /// 通過の途中で窓が読めなくなった（降格した）場合に、窓の終了時に`expire_mode_key_pass_mark`を呼ぶための
+    /// 起床時刻に使う（読めない窓の`reschedule_ime_refresh`は通過マークが有効な間は何も予約しないため）。
+    pub(crate) fn mode_key_pass_expiry_wait_ms(&mut self, now_ms: u64) -> Option<u64> {
+        let scope = crate::win32::foreground_scope();
+        let ScopeCheck::Live(mark) = self.mode_key_pass_mark.peek(scope) else {
+            return None;
+        };
+        if !mark.readable_at_arm || mark.invalidated {
+            return None;
+        }
+        crate::state::force_guard::mode_key_pass_window_remaining_ms(
+            now_ms.saturating_sub(mark.armed_at_ms),
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+        )
     }
 
     /// awaseが実際にIMEへ書いた（`applied`を更新した）ことを、有効な通過マークへ記録する（BUG-158追補2）。
@@ -354,6 +375,7 @@ impl ImeStateHub {
             now_ms.saturating_sub(mark.armed_at_ms),
             mark.invalidated,
             on_expiry,
+            mark.readable_at_arm,
             crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
         ) {
             return false;
@@ -380,7 +402,8 @@ impl ImeStateHub {
             );
         }
         if align {
-            self.pass_through_observed(tick_ms);
+            // 窓の終了時の破棄（`on_expiry`）は観測を得ていない: 意図だけ捨て、desired は書かない（A-N1）。
+            self.pass_through_observed(tick_ms, !on_expiry);
         }
         true
     }
@@ -388,8 +411,8 @@ impl ImeStateHub {
     /// `ModeKeyPassedThrough` のdispatch元（ADR-187の「1箇所に限定」）。reducerは`last_intent`を捨て、
     /// `desired_open`を観測から導ける開閉へ揃える（BUG-157）。窓の間の揃えと、窓が切れた後の最初の成功観測での
     /// 揃え（BUG-158追補2）の両方がここを通る。
-    fn pass_through_observed(&mut self, tick_ms: TickMs) {
-        self.dispatch_event(ImeEvent::ModeKeyPassedThrough, tick_ms);
+    fn pass_through_observed(&mut self, tick_ms: TickMs, align_desired: bool) {
+        self.dispatch_event(ImeEvent::ModeKeyPassedThrough { align_desired }, tick_ms);
     }
 
     /// 通過マークの窓が**切れた後**の最初の成功観測で、`desired_open`を観測へ揃える（BUG-158追補2）。
@@ -433,7 +456,7 @@ impl ImeStateHub {
                 ..mark
             },
         );
-        self.pass_through_observed(tick_ms);
+        self.pass_through_observed(tick_ms, true);
         true
     }
 
@@ -2744,6 +2767,7 @@ mod tests {
                 invalidated: false,
                 aligned: false,
                 awase_wrote: false,
+                readable_at_arm: true,
             },
         );
     }

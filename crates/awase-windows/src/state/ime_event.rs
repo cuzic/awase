@@ -539,9 +539,14 @@ pub enum ImeEvent {
     /// （BUG-157: 通過させたモードキーの結果は実IMEが決めた。`desired_open` が古いままだと
     /// `check_drift_correction` がユーザーの操作を書き戻す）。観測が無い窓では `desired_open` に触れない。
     /// reducer は `last_intent` と `desired_open` 以外（`applied` / 観測 / `current_focus`
-    /// など）には触れない。dispatch 元は
-    /// `ImeStateHub::invalidate_intents_if_mode_key_pass_live` の1箇所に限定する。
-    ModeKeyPassedThrough,
+    /// など）には触れない。dispatch 元は `ImeStateHub::pass_through_observed` の1箇所に限定する
+    /// （`desired_open` を書ける口なので dylint `ime_event_guard` の designated 関数に登録、レビュー round2 NB2。
+    /// 構造体形式の variant にしているのは、unit variant では dylint の構築検出〈`ExprKind::Struct`〉に掛からないため）。
+    ///
+    /// `align_desired == false` は、観測が一度も成功しないまま窓が切れた破棄（BUG-158）用: `last_intent` だけを捨て、
+    /// `desired_open` は書かない。観測プールに残る打鍵**より前**の値を「ユーザーの結果」として採らないため
+    /// （レビュー round2 A-N1）。
+    ModeKeyPassedThrough { align_desired: bool },
 
     /// 物理モードキーの打鍵時点で、キーマップの表（`key_effect_table`）から予測した効果を
     /// beliefへ反映する（ADR-191 決定3）。**観測ではなく予測**で、awaseはIMEへ書かない。

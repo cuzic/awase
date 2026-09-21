@@ -251,7 +251,11 @@ pub(crate) const fn poll_counted_no_new_miss(miss_before: u32, miss_after: u32) 
 ///
 /// - `on_expiry == false`（観測が成功したとき）: 窓の間（`age_ms < window_ms`）だけ。
 /// - `on_expiry == true`（窓の終了時、BUG-158）: 窓が切れて（`age_ms >= window_ms`）、まだ一度も観測で
-///   捨てていない（`!invalidated`）ときだけ。窓の間・捨て済みは何もしない。
+///   捨てていない（`!invalidated`）、かつ**通過を立てた時点で読める窓だった**（`readable_at_arm`）ときだけ。
+///   窓の間・捨て済みは何もしない。通過の途中で`imm-learning`が窓を降格させても、立てた時点で読める窓なら
+///   破棄する（「今読めるか」で判定すると、降格を跨いだ通過の後始末をする者がいなくなり、古い意図が残って
+///   ポーリングが止まる＝BUG-151原因③、レビュー round2 A-N2）。読めない窓（立てた時点から読めない）は
+///   意図がbeliefの唯一の手がかりなので捨てない（BUG-158の見直し）。
 ///
 /// 判定を純関数にして、`#[cfg(windows)]`配下の`platform_state`のテストに頼らずLinuxで固定する。
 #[must_use]
@@ -259,11 +263,12 @@ pub(crate) const fn should_drop_intents_for_mode_key_pass(
     age_ms: u64,
     invalidated: bool,
     on_expiry: bool,
+    readable_at_arm: bool,
     window_ms: u64,
 ) -> bool {
     let expired = age_ms >= window_ms;
     if on_expiry {
-        expired && !invalidated
+        expired && !invalidated && readable_at_arm
     } else {
         !expired
     }
@@ -344,8 +349,11 @@ pub(crate) const fn send_failure_is_timeout(
 
 /// IME状態の読み取りの空振り（`ime_on`が`None`）を、`imm-learning`の「IMMが使えない」証拠（miss）に数えるか。
 ///
-/// **時間切れ**（遅い応答。負荷・忙しいIME・CIの遅いランナー）は証拠ではない（判定保留=数えない）。
-/// **即時の拒否**（`ERROR_ACCESS_DENIED`、IME窓なし=`ImmGetDefaultIMEWnd`=NULL、即時の失敗）は従来どおり数える。
+/// **個別の`SendMessageTimeout`の時間切れ**（遅い応答。負荷・忙しいIME・CIの遅いランナー、(b)）は証拠ではない
+/// （判定保留=数えない）。
+/// **即時の拒否**（`ERROR_ACCESS_DENIED`、IME窓なし=`ImmGetDefaultIMEWnd`=NULL、即時の失敗）と、
+/// **読み取り全体のワーカータイムアウト（300ms、(d)）**は従来どおり数える（後者は本当に応答しない窓＝hung を
+/// 降格させる唯一の経路で、外すと探索が止まらない）。
 /// `IME_DETECT_MISS_THRESHOLD`（連続3回で`Unavailable`を学習）の値は変えない（tuning-constants: 盲目的な引き上げをしない）。
 #[must_use]
 pub(crate) const fn read_miss_is_imm_evidence(probe_timed_out: bool) -> bool {
@@ -697,23 +705,46 @@ mod tests {
     fn should_drop_intents_for_mode_key_pass_distinguishes_observation_and_expiry() {
         let w = 300;
         // 観測が成功したとき: 窓の間だけ捨てる。
-        assert!(should_drop_intents_for_mode_key_pass(0, false, false, w));
+        assert!(should_drop_intents_for_mode_key_pass(
+            0, false, false, true, w
+        ));
         assert!(
-            should_drop_intents_for_mode_key_pass(299, true, false, w),
+            should_drop_intents_for_mode_key_pass(299, true, false, true, w),
             "2回目以降の観測でも(desired揃え)"
         );
-        assert!(!should_drop_intents_for_mode_key_pass(300, false, false, w));
+        assert!(!should_drop_intents_for_mode_key_pass(
+            300, false, false, true, w
+        ));
         // 窓の終了時: 窓の間は何もしない(最初のtickで早すぎる破棄をしない。CIで実際に起きたバグ)。
         assert!(
-            !should_drop_intents_for_mode_key_pass(142, false, true, w),
+            !should_drop_intents_for_mode_key_pass(142, false, true, true, w),
             "窓の間は捨てない"
         );
-        assert!(!should_drop_intents_for_mode_key_pass(299, false, true, w));
+        assert!(!should_drop_intents_for_mode_key_pass(
+            299, false, true, true, w
+        ));
         // 窓が切れて未破棄なら捨てる。
-        assert!(should_drop_intents_for_mode_key_pass(300, false, true, w));
-        assert!(should_drop_intents_for_mode_key_pass(5000, false, true, w));
+        assert!(should_drop_intents_for_mode_key_pass(
+            300, false, true, true, w
+        ));
+        assert!(should_drop_intents_for_mode_key_pass(
+            5000, false, true, true, w
+        ));
         // 観測の成功で既に捨てたなら、窓が切れても捨てない(通過より後の明示意図を守る)。
-        assert!(!should_drop_intents_for_mode_key_pass(300, true, true, w));
+        assert!(!should_drop_intents_for_mode_key_pass(
+            300, true, true, true, w
+        ));
+        // レビュー round2 A-N2: 立てた時点で読めない窓（blind）は、窓が切れても意図を捨てない（beliefの唯一の手がかり）。
+        assert!(!should_drop_intents_for_mode_key_pass(
+            300, false, true, false, w
+        ));
+        assert!(!should_drop_intents_for_mode_key_pass(
+            5000, false, true, false, w
+        ));
+        // 観測成功時の破棄（窓の間）は、立てた時点の読める/読めないに依らない（既存の挙動）。
+        assert!(should_drop_intents_for_mode_key_pass(
+            0, false, false, false, w
+        ));
     }
 
     /// BUG-158: 通過マークの窓の間の読み直し間隔。成功なら再読み取り間隔、失敗なら窓の終了時の1回だけ。

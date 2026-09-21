@@ -780,7 +780,10 @@ impl DecisionExecutor {
             });
             if passes_mode_key {
                 let now = crate::hook::current_tick_ms();
-                ime.arm_mode_key_pass_mark(now);
+                ime.arm_mode_key_pass_mark(
+                    now,
+                    platform.current_app_profile().can_use_imm32_cross_process(),
+                );
                 platform.timer.set(
                     crate::TIMER_IME_REFRESH,
                     std::time::Duration::from_millis(20),

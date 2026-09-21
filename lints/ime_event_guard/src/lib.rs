@@ -17,9 +17,9 @@ dylint_linting::declare_late_lint! {
     /// ### What it does
     ///
     /// Flags construction of `ImeEvent::PanicReset`, `ImeEvent::HwndCacheRestored`,
-    /// `ImeEvent::EngineActivationSync`, or `ImeEvent::KeyEffectPredicted` outside their
+    /// `ImeEvent::EngineActivationSync`, or `ImeEvent::KeyEffectPredicted`, or `ImeEvent::ModeKeyPassedThrough` outside their
     /// single designated call site (`apply_panic_reset` / `apply_hwnd_cache_restore` /
-    /// `handle_engine_activation_sync` / `apply_key_effect_prediction`).
+    /// `handle_engine_activation_sync` / `apply_key_effect_prediction` / `pass_through_observed`).
     /// `KeyEffectPredicted` writes the belief from a table prediction (ADR-191), neither
     /// an observation nor a user intent, so it is the same kind of direct-write escape hatch.
     ///
@@ -64,7 +64,7 @@ dylint_linting::declare_late_lint! {
     /// ```
     pub RESTRICTED_IME_EVENT_CONSTRUCTION,
     Warn,
-    "ImeEvent::PanicReset/HwndCacheRestored/EngineActivationSync/KeyEffectPredicted constructed outside its designated function"
+    "ImeEvent::PanicReset/HwndCacheRestored/EngineActivationSync/KeyEffectPredicted/ModeKeyPassedThrough constructed outside its designated function"
 }
 
 const ALLOWED_FNS: &[&str] = &[
@@ -72,12 +72,14 @@ const ALLOWED_FNS: &[&str] = &[
     "apply_hwnd_cache_restore",
     "handle_engine_activation_sync",
     "apply_key_effect_prediction",
+    "pass_through_observed",
 ];
 const RESTRICTED_VARIANTS: &[&str] = &[
     "PanicReset",
     "HwndCacheRestored",
     "EngineActivationSync",
     "KeyEffectPredicted",
+    "ModeKeyPassedThrough",
 ];
 
 impl<'tcx> rustc_lint::LateLintPass<'tcx> for RestrictedImeEventConstruction {

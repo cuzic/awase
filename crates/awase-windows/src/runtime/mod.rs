@@ -818,6 +818,13 @@ impl Runtime {
         // 破棄するとCIのblind条件でEngineずれが0→22〜25%に悪化した）。
         let now_ms = crate::hook::current_tick_ms();
         if !self.can_use_imm32_cross_process() {
+            // 立てた時点で読めた通過が、途中の降格で読めない窓になったときは、窓の終了時に1回だけ起こして
+            // 古い意図を捨てる（`ir_stage_notify`）。起こさないと通過マークが有効な間は何も予約されず、
+            // 意図が残ってポーリングが止まる（BUG-151原因③、レビュー round2 A-N2）。
+            if let Some(remaining) = self.platform_state.ime.mode_key_pass_expiry_wait_ms(now_ms) {
+                self.schedule_ime_refresh(remaining + 1);
+                return;
+            }
             // 読めない窓は従来どおり（ADR-187）: 明示意図があれば停止、通過マークが有効な間は上書きしない。
             if self.platform_state.ime.explicit_intent().is_some()
                 || self.platform_state.ime.mode_key_pass_mark_live(now_ms)
