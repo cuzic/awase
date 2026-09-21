@@ -14,7 +14,7 @@ summary: |-
   (5)予測は物理キーの打鍵時点でbeliefへ反映し（`KeyEffectPredicted`、settle基準のfence）、観測は確認と訂正に回す。観測できないアプリ（TsfNative）では予測が唯一の信号になる。
   (6)成功基準は撤去量（追加は削除と対）。実装は`feat/adr191-remove-hardcoded-mode-keys`（develop未マージ）、実験の経緯と実測は補助資料[191-calibration-experiments.md]に置く。
 status: |-
-  **草案（2026-09-21）。opus敵対レビューround1〜4を実施。round1・2の指摘は反映済み、round3・4の指摘のうち停止条件・中止基準と複雑さの収支は本文に未反映。**
+  **草案（2026-09-21）。opus敵対レビューround1〜4を実施し、指摘への対応を本文末尾の表にまとめた（停止条件・中止基準・複雑さの収支を含む）。実装は撤去ブランチ（未マージ）。**
   決め打ちの撤去・打鍵時予測・ADR-189の復元は撤去ブランチ`feat/adr191-remove-hardcoded-mode-keys`で実装済み（develop未マージ、CIで検証: 観測あり・読めない条件とも400ms以降ずれ0%）。
   決定2（BUG-151の最小修正）は別PR #238（draft）。実機（Windows）での撤去後の動作確認は未実施。
 related_adr:
@@ -37,8 +37,8 @@ related_adr:
 ## ステータス
 
 草案（2026-09-21）。opus敵対レビューをround1〜4まで実施した（round1: Blocker7・Major14・Minor6、round2・3・4も同様に新規指摘）。round1・2の指摘のうちコードとログで独立に確認できたものは本文へ反映済み。
-**round3・4の指摘のうち、停止条件・中止基準（RB1/RB2）と、撤去した行を較正基盤が再実装する複雑さの収支は、本文に未反映**（決定5の見積もりに反映する作業が残っている）。round4の「ADR-192決定3b」の指摘は
-ADR-192側で訂正済み。
+round3・4の指摘への対応（反映・既に反映済み・見送り）は、本文末尾「Opus round3・4 の指摘への対応」の表にある。停止条件・中止基準は決定1、複雑さの収支は決定5に置いた。
+round4の「ADR-192決定3b」の指摘はADR-192側で訂正済み。
 - 実装: 決め打ちの撤去・打鍵時予測・ADR-189の固定セットの復元は、撤去ブランチ`feat/adr191-remove-hardcoded-mode-keys`にある（**develop未マージ**、下記「実装の現状」）。決定2（BUG-151の最小修正）は、
   撤去と切り離してdevelop上に新規実装し、別PR #238（draft）にした。
 - 測定の出典: 初期の実測（決定の根拠）は`spike/ime-effect-learning`ブランチ（`tools/e2e/ime_key_matrix/`、結果は`results/elw2`・`elw8`・`elw9`）。格子・通知・検証ラウンドのCI測定は、
@@ -58,7 +58,7 @@ awaseの最大の難所は、IMEのON/OFF/変換モードの追跡である。�
 
 実機（GJI×ATOKプリセット、スパイクの標準Edit入力欄。実打鍵の結果を記録）。**B（awase経由）の測定に使ったawaseは`e2e/ablation`（コミット5f11a872、ADR-186＋実験用の変更）で、
 ADR-187（follow）・ADR-188・ADR-189（半角/全角のToggle上書き）の実装を含まない**（developの現行とは違う）。Bの結果をdevelopの現行の性質として読まない。ログの「ROUND 2/2: RichEdit」の見出しは、フォーカス制御が入力欄（Edit）へ戻すので実態を
-表さない（awaseの`imm-cross-actuate`の対象は`class="Edit"`、確定文字は`Edit`の内容に入る。レビューが「RichEditで測っていた」としたのはこの見出しの読み違い）。
+表さない（awaseの`imm-cross-actuate`の対象は`class="Edit"`、確定文字は`Edit`の内容に入る。レビューが「RichEditで測っていた」としたのはこの見出しの読み違い）。**測定台は標準Edit（ImmCross）1種類のみで、RichEditや他の`AppImeProfile`のデータは存在しない**（表を全アプリへ適用してよい根拠の限界）。
 
 1. **IME単体は仕様どおり。** `--exp`（ON・かなでひらがな0xF2→`a`）は、awase完全バイパス（A'）・再注入あり（A）・awase経由（B）の全条件で12/12「ONのまま半角英数へトグル」。
    Mozcの`atok.tsv`（Precomposition `Kana`=ToggleAlphanumericMode、DirectInputの`Kana`は未定義）と一致。0xF2はMozcの`KeyEvent::KANA`（`keyevent_handler.cc`）。
@@ -81,6 +81,10 @@ ADR-187（follow）・ADR-188・ADR-189（半角/全角のToggle上書き）の�
    バイパスして測ったときだけIMEの表になる**（決定4がA'を要求する理由）。(c)A'とAの差は統計的に区別できない。(d)実効標本は押下数ではなくセル数（約40）に近い。(e)elw2は起動時のTIPを一次記録して
    いない（遷移パターンからの事後同定）。TIPを一次記録したのはelw8以降。(f)**開ループ追随は指標として壊れている**（連鎖の再同期の回数に強く依存し、A'で84.5→64.0%、未見で37〜56%と条件間で
    単調でない）。言えるのは「1手の誤りが後続へ連鎖し、開ループ単独には頼れない（観測が要る）」ことだけで、条件間の比較には使わない。
+2b. **Engineと実IMEの一致（押下+400ms、`--drift`。opus round3が既存ログから算出、未再検証）**: A'はEngineが無いので測定不能。A（素通し・観測ポーリングのみ）はずれ48%（A1）／63%（A2）、
+   B（awase経由、ablationビルド）は22%（B1）／18%（B2）。**上の「Engine/実IMEのずれ19〜23%」は手元の全条件で最良の値**で、決定1の動機として「Bが悪い」とは読まない。Aの48/63%は、(i)スパイクのキーが`injected`で
+   `kp_stage_mode_key_follow`が`event.injected`で早期returnするためfollowが構造的に発火しない、(ii)測定窓+400msが`TYPING_IDLE_MS`=500より短く、定義上まだ一度も読めていない、の2つによる
+   「20msの再読み取りが無いときの床」であり、素通し追随の性能ではない。素通し追随の測り方は決定1の「条件C」。
 3. **表だけでは決まらない分岐が少数ある**（入力中の無変換など）。Mozcのキーマップはstatusを`DirectInput`/`Precomposition`/`Composition`/`Conversion`/`Suggestion`/`Prediction`に分け、
    バインドがstatusごとに違う。私の状態の分け方（開閉・かな/英数・入力中）にはConversion/Suggestion/Predictionが無く、これが分岐の原因の候補（候補ウィンドウの有無で
    区別できる。決定4）。
@@ -127,6 +131,9 @@ ADR-187（follow）・ADR-188・ADR-189（半角/全角のToggle上書き）の�
   設定から読んだ分類と実測が食い違うセルは、実測を採り、書かない側（追随）に倒す。カスタムキーマップのユーザーは、この較正で初めて(a)(b)と確定できる。
 - **順序（opus round4の循環の指摘への答え）**: 決定1の書き込みの例外は、この表ができてから有効にする。撤去は表の後、または表が無いセルは「追随」で動くので撤去は先行してもよい（例外を後から足す）。
 
+**`VK_IME_ON`/`VK_IME_OFF`が「開閉だけ」なのは経験的な例外（opus round4 QB3）**: ATOKでは`VK_IME_OFF`は`CancelAndIMEOff`（入力中の文字列を破棄）、MS-IMEプリセットでは`IMEOff`（確定）で、作用はpresetごとに違う。
+固定セット（ADR-189）は「CI実測で動くことが確認済みの経験的な例外」として据え置き、表駆動への一般化（分類a〜e）は、表と較正ができてから有効にする。
+
 **例外は2段。いずれも「トグル」（押した結果が今の実状態に依存して反転するキー）だけが対象。**
 1. **固定の例外（撤去はいったん行ったが、誤りと分かり復元した。下記「実装の現状」参照）**: ADR-189のセット（`VK_KANJI`0x19・`VK_DBE_SBCSCHAR`0xF3・`VK_DBE_DBCSCHAR`0xF4。撤去ブランチでは0x19はどのIMEでも、0xF3/0xF4はGJIとMS-IME本体で、無修飾のときbeliefに基づく開閉トグル）と、ユーザー設定`keys.ime_toggle`。
    awaseが物理キーをSuppressし、beliefから目標（`!belief`）を決めて冪等な`VK_IME_ON`/`VK_IME_OFF`で書く。観測に依存しないのでTsfNativeでも効く。根拠はADR-189自身のCI実測（実装前は8手順中4手順が反転せず、
@@ -143,6 +150,20 @@ ADR-187（follow）・ADR-188・ADR-189（半角/全角のToggle上書き）の�
      ATOKの入力モード軸は、生キーを通して観測に追随する）。ユーザー指示のかな⇔英数の冪等化は、Set型のあるIME（MS-IMEプリセットの`CompositionModeHiragana`等）で有効になる。
    - **確定条件（未測定）**: このうち追加分（2）は、実機で「素通し追随」（生キーを通してADR-187型のfollow）と「beliefに基づく送信」を比較し、後者が明確に減らすと確認できてから有効にする
      （ADR-189の実測は静的なSuppress+固定方向との比較で、素通し追随との比較は一度も無い）。確認までは、追加分は無効（1だけが有効）。
+
+**固定の例外と表が矛盾したとき（round3 RM3）**: **固定が常に勝つ**。表が固定セットのキーを「トグルでない」と判定しても動作は変えず、警告をログに出すだけにする（分岐を増やさない。カスタムキーマップの
+ユーザーで固定セットが誤っていれば、ADR-192の検出・警告の対象になる）。
+
+**条件C（素通し追随・予測の測り方、round3 RB2）**: `AWASE_TEST_INJECTION=1`（スパイクのキーを物理扱いにする）＋ 素通し設定 ＋ 評価対象のビルド。**条件A/A'では測れない**: 条件Aでは注入キーが外部注入として扱われ
+`kp_stage_mode_key_follow`が`event.injected`で早期returnし、followがどのビルドでも発火しない。撤去ブランチのCI `cal-verify-*`（`AWASE_TEST_INJECTION=1`、撤去ブランチのビルド）は実質的にこの条件Cで、
+観測あり400ms以降0%・読めない条件0%（[補助資料](191-calibration-experiments.md)）。**未測定**: developビルドの条件C（撤去前との比較）。
+
+**中止条件（決定1本体、round3 RB1。数値は暫定で、根拠は本ADR時点の実測）**: 次のいずれかに当たれば、撤去ブランチはdevelopへマージしない（マージ後なら撤去をrevertする。ADR-189の固定セットは撤去していないので戻す範囲は限られる）。
+- CI `cal-verify-obs`（観測あり）の押下+400ms以降のEngine/実IMEのずれが**5%を超える**（基準0%、2 seed×約100押下。5%は決定2の合格ラインと同じ暫定値）。
+- CI `cal-verify-blind`（読めない条件）の押下+1500msのずれが**20%を超える**（基準0%。第3版の表を入れる前の値9〜20%を「戻す」境界にした暫定値。TsfNativeは自己責任・ベストエフォートなので厳しくしない）。
+- `[key-effect-miss]`が観測ありで**200押下あたり10件以上**（第2版の表で10〜11件だった水準。基準0件）。
+- windows-build CI（`transport.rs::plan_tests`など`#[cfg(windows)]`のテスト）が落ちる、または実機のA/Bで英数・カタカナ・半角/全角が「効かない」と確認される。
+- 実際のTsfNativeアプリ（Chrome等）の実打鍵で、強制ON/OFFの打鍵（開閉軸）でも回復できない固まりが1件でも再現される。
 
 **書き込みの規則（1・2共通）**:
 - 書き込みの入口は既存の1つ（`dispatch_ime_set_open`相当）に集約し、経路を増やさない。送った後は観測で確認し、食い違えば観測が勝つ（決定3。IMMで読めるアプリ）。
@@ -169,8 +190,14 @@ ADR-187（follow）・ADR-188・ADR-189（半角/全角のToggle上書き）の�
   から、通過マークが意図を捨てても安全である（「意図が無いから」ではない。武装位置をno-op分岐より前へ動かさないこと）。
 - **ケース3改（`ExplicitImeActionOutcome::SuppressOnly`、BUG-124対策）は`key_pipeline.rs`でno-op分岐より前に`return false`する**ので、この修正は触らない。「@」の再発経路は構造的に回避されている。
   武装をこのreturnより前へ動かさない。
-- **武装条件に「飛行中のactuationが無いこと」を足す**（`ime_refresh.rs`の`actuation.attempts`で判定）。通過マークの観測は`invalidate_intents_if_mode_key_pass_live`（`intent_store.remove(hwnd)`、
+- **武装条件に「awaseが書いて結果待ちの窓ではないこと」を足す**（round3 RM1で訂正）。判定材料は`applied_state()`が`AppliedImeState::Optimistic`（awaseが書いたが未確認）でないこと。
+  `active_actuation`/`attempts`は使わない: 設定する唯一の場所`actuation_for`の呼び出し元は`ime_refresh.rs`の`ir_apply_drift_correction`の1箇所だけで、守りたいシナリオ
+  （Ctrl+変換の`dispatch_ime_set_open`の非同期ImmCross write）を表さない。**PR #238は、この節の旧記述どおり`attempts`で判定している**ので、`Optimistic`への差し替えが要る（PR #238側で扱う）。
+  BUG-151のcoldケースは`applied=Unknown`なので通る。通過マークの観測は`invalidate_intents_if_mode_key_pass_live`（`intent_store.remove(hwnd)`、
   **窓単位**で意図を全部消す）を呼ぶので、直前の明示IME操作（Ctrl+変換）のImmCross書き込みが飛行中に無関係な意図まで巻き添えにしない。
+- **武装は`!delegate_owned`に限る**（round3 RM2）。no-op分岐は`if !delegate_owned { … 意図の書き込み … }`ブロックの外側にあり、`delegate_owned`のときはこの打鍵の意図が書かれていないので、上の「理由」が成立しない。
+- **予測との関係（round4 QM3）**: 通過マークの観測は窓単位で意図を全消しする（`invalidate_intents_if_mode_key_pass_live`）。撤去ブランチはfollowを全モードキーへ広げたので通過マークはほぼ毎打鍵立つが、
+  打鍵時予測（決定3）は意図でなく`KeyEffectPredicted`（`desired_open`は書かない、`resolve_open_at`の専用枠）なのでこの全消しの対象外。最初の20msの再読み取りはsettle（100ms）内で予測を訂正しない。
 - **やらないこと**: `explicit_verify`の`applied != Unknown`分岐の削除（第2項の内側の条件で、消すと「通過マーク無し・`explicit_intent`だけ」の打鍵でタイピング中のクロスプロセス読み取りが走る＝「@」の
   独立した十分条件に触れる）。`is_convert_or_nonconvert`の`is_ime_mode_key`への差し替え（`vk.rs`のdocがコードレビュー指摘で却下済み: 明示意図を守るべきキーの意図まで捨てる）。この関数は縮小案でも使い続ける。
 - 回帰テスト（`golden_scenarios`か`journal_replay`）か`docs/known-bugs/BUG-151.md`への修正履歴の追記が必須（`.claude/rules/fix-requires-evidence.md`、IME belief・キー選択の再発ファミリー）。
@@ -195,6 +222,10 @@ ADR-187（follow）・ADR-188・ADR-189（半角/全角のToggle上書き）の�
   状態依存のキー（入力中かどうかで結果が変わる）ではずれが積み上がる。これは受け入れ済みの範囲で、強制ON/OFFの打鍵（ADR-192）で立て直す。冪等なキーは予測が外れても次の打鍵で収束する。
 - **注意（実測済み）**: 予測を観測なしで連鎖させる（開ループ）のは信頼できない。ずれは1打では2%未満（表の1手予測は約98.5%、トグルキー52/52）でも、連鎖で積み上がる。だから予測は観測が読める限り毎回照合し、連鎖させるのは観測できないアプリだけにする。
 - 既存のepoch/fence（`ImeModel`の意図・生成番号、`FocusHwndUpdated`の`current_fence`）の流用可否は実装前に確認する。新しい機構を増やさず、既存の照合の入口に「読み取り開始時刻が最新打鍵より後か」の条件を1つ足す形を第一候補とする。
+- **実装での単純化（round4 QB1・QB2）**: 予測は`ImeEvent::KeyEffectPredicted`で書き、開閉は`resolve_open_at`に「明示意図の次、観測の前」の枠を足した（`UserImeSetIntent`だと明示意図でポーリングが止まる問題〈BUG-151原因③〉を全モードキーへ広げ、
+  `desired_open`への新イベントだと`resolve_open_at`で観測に負ける、の両方を避けた。`17f91966`、`cb6c8ebd`）。fenceは新しいepochを作らず、reducerが観測を受けた時刻が最新打鍵から`KEY_EFFECT_SETTLE_MS`=100ms以内なら
+  予測を上書きも消しもしない（ADR-187の20ms再読み取りが最大62ms古い値を返す実測＋マージン）。`probe_actuation_fence`（ADR-140）はawase自身のactuationを数えるもので、生キー通過後のIME反応遅延の判定に合わず流用しなかった。
+  **限界**: 読み取りの開始時刻でなく到着時刻で判定するので、settle直前に始まり直後に終わる読み取りが照合されうる。`GetTickCount64`は約15.6ms粒度。
 
 **実装の現状（2026-09-21、撤去ブランチ）**:
 - 表は手書きせず、格子第3版（全状態をキーだけで作る）の結果から`tools/e2e/ime_key_matrix/gen_key_effect_table.py`が`state/key_effect_data.rs`を生成する（生成元は`grid-tables/{atok,msime}.json`）。
@@ -216,6 +247,13 @@ ADR-176（ユーザーが物理キーを押す方式）を、明示的なセッ�
   測るならBUG-107/125のegui窓のプロセス間汚染の上で測ることになる）。TsfNativeアプリへ生キーが届く経路が無いので、BUG-113の機序（TIPのキー横取り）は成立しない。実測（自身の入力欄への大量注入で「@」が出ない）は
   機序の不成立の証明にならないので根拠にしない。出荷前に較正窓での実機A/B（GJI・MS-IME）を条件とする。**キーマップはIMEのプロパティなので窓に依らないが、composition状態は窓ごと**なので、
   較正窓の表を全アプリへ適用してよい根拠は「キーマップの効果は窓に依らない」ことに置き、composition状態は観測で扱う。
+- **配置（暫定、round3 RM4/RM5）**: 較正窓とcompartment sinkは、awase.exe側の**専用スレッド（自前のメッセージループ）**に置く案を第一候補とする。compartmentの`AdviseSink`と`ITfThreadMgr::Activate()`はスレッド単位で効くので、
+  awase-settingsのeguiスレッドに置くと、(1)awase-settings.exeにTSF/COM面が新設される、(2)`Activate()`がegui側のIME入力に影響しうる（未検証）。awase.exeには`tsf/`とwindows-rs 0.62の前例があり、ADR-176 v7の分担
+  （awase-settingsはUI＋IPC、観測はawase.exe）を延長できる。awase-settings側に置く場合はADR-176 v7を覆すことを明示し、既存のegui入力に影響しないことをスパイクで確認する。
+- **同型の機能が出荷されて失敗した前例（round4 QM7）**: 撤去前の`gji_charset_autodetect.rs`のモジュールdocに、専用Fnキー変換の自動判定・設定支援ポップアップ・`config1.db`書き込みが「実験的機能のまま撤去し忘れて出荷され、
+  実機でユーザーの混乱を招いた（GJIのキー設定が実際にはカスタムなのに『カスタム以外』と誤診断される等）」ため2026-09-02に全撤去した、という記録があった。キーマップの自動診断をユーザーに提示する点で、本決定とADR-192の警告は同じ形。
+  **今回の違い**は、設定の読み取りだけで断定せず、注入で実IMEに当てた実測と突き合わせ、食い違えば実測を採り「書かず追随」に倒すこと（決定1）。ただし誤診断が起きないことの証明ではないので、警告は判定根拠を載せ、
+  ブロックせず、判定できないキーは警告しない（ADR-192）。
 - awaseは既存のIPC（`WM_CALIBRATION_START`、送信元PIDの検証あり）で較正窓を**完全バイパス**する（窓/プロセス単位、実測でA'は自己操作0）。マーカー（`dwExtraInfo`のnonce）は使わない
   （全LLフックから読めるので偽装対策にならない。バイパスは窓単位で、キー単位の識別が不要）。awaseを通す条件（B）は製品には持ち込まない（測定用のスパイクだけ）。
 - 対象は「状態×キー」の**全掃引**（ランダム押下列はセルを網羅できない: 未学習約13%）。**未確定文字列を作ってから押すComposition・変換中のConversionも必ず含める**（含めない掃引では、変換キーが「閉→開、開→閉」の完全なトグルに見えて誤判定する。決定1の状態完備の条件）。
@@ -265,8 +303,24 @@ P50=1ms・P95=34ms（10件、通知が来なかったキーは6/16=38%）。GJI�
   `ir_apply_drift_correction`（TsfNative救済の最後の1本、BUG-20）は、`--walk`では明示意図のシナリオを測れないので、撤去前に明示意図の回復シナリオのテストを用意する。
   `dispatch_ime_set_open`のEngineDecision系は、単独タップのopt-in経路と分離するには`SetOpen`に発生元の軸が要り、削除でなく追加になる。分離の是非を調査してから。
 - 撤去に数えないもの: `classify_mode_key_ime_action`（表生成側へ移設されるだけ）、`ModeKeyConfig`/`muhenkan_solo_tap_dedicated_fn_key`（ユーザー設定で表とは別軸。決定6）。
-- 複雑性収支の見積（レビュー）: 較正基盤の追加は数千行、撤去は現実的に数百〜約二千行。純増になりうるので、較正はP1・P2の撤去が頭打ちになってから、追加は削除と対で出す。
+- **決定の依存順（round4 QM2、循環の解消）**: 予測表（決定3）→ 書き込みの線引き（決定1、分類a〜eは表から引く）→ 撤去（決定5・6）。表が無い・非決定のセルは「書かずに追随」で動くので、**撤去は表の完成を待たずに先行してよい**
+  （例外の一般化は後から足す）。実際の順序: 撤去ブランチは、生成した表（格子第3版）と打鍵時予測を含めて実装済み。
+- **複雑性の収支（実数、2026-09-21、`git diff --shortstat origin/develop...origin/feat/adr191-remove-hardcoded-mode-keys`）**: 全体43ファイル、+3,977/−4,519行。`crates`と`src`だけで+2,368/−4,461行（差し引き−2,093行、
+  うち`crates/awase-windows/src`は+2,244/−2,872）。
+  | 区分 | 行数 | 戻ってくるか |
+  |---|---|---|
+  | 削除: `gji_charset_autodetect.rs` | −1,301（+35） | **決定3(a)が再実装する対象**（`config1.db`/Mozcキーマップの読み取り）。現状の表は格子の生成データで、実行時の設定読み取りは未実装（製品化で新規に作る。再実装は分類a〜eに要る最小の範囲に限る） |
+  | 削除: `calibrated_mode_key.rs` ほか較正結果の適用 | −254（+7）、適用の削除−165 | **決定4が再実装する**（ユーザー判断: 削除して製品化で新規に作る） |
+  | 削除: 単独タップ代行・delegate・opt-in設定・`transport.rs`のDBE分岐 | `nicola_fsm.rs`−556、`transport.rs`−561（+173）、`runtime/mod.rs`−345、`src/engine/tests.rs`−615（指標1の分母の外） | 戻らない（純粋な撤去） |
+  | 追加: 予測器`key_effect_table.rs` | +828 | 決定3の本体 |
+  | 追加: 生成データ`key_effect_data.rs` | +336 | 格子の生成物（手書きセルは無い） |
+  | 追加: `ime_model.rs`（`KeyEffectPredicted`・追跡・fence）＋`platform_state.rs` | +440＋84 | 決定3の本体 |
+  | 別クレート: `awase-calibration`（巡回・シミュレータ。改名作業中） | +3,406（`crates/awase-windows/src`の外） | 製品化の土台。指標1の対象外 |
+  撤去した約4,500行のうち、再実装が要るのは`gji_charset_autodetect.rs`と較正結果の適用の合計約1,700行で、戻ってくる量は**未確定**（設定読み取りの範囲次第）。指標1（`crates/awase-windows/src`の追加−削除がP0〜P2の末で負）は現時点で−628行で満たす。
   [ADR-162](162-governance-reversal.md) E1（複雑性予算1-in-1-out、未発効）と同じ向き。
+- **削る・見送るもの（round4 D）**: (1)較正セッションは「学習した表の生成と読み込み」に絞り、ADR-176のウィザードの「適用」配線は削除済み。(2)設定の読み取りは、分類a〜eに要る最小（`config1.db`の`session_keymap`・
+  `custom_keymap_table`・`overlay_keymaps`とMozc公開キーマップ）に限り、charset自動検出や設定への上書きは作らない。(3)`ITfUIElementSink`は採らない（決定4）。(4)ADR-192決定3bは、前提を訂正して最小に絞った
+  （削除案はユーザーの要望で見送り）。(5)予測の対象軸を開閉に絞る案は、入力モード軸も含めて実測で効果（400ms以降0%）を確認済みのため縮小しない。ただし一般の表は作らず、到達できる変換モードの値だけを持つ。
 
 ### 決定6: モードキーは決め打ちせず、学習結果で統一的に扱う
 
@@ -299,13 +353,14 @@ P50=1ms・P95=34ms（10件、通知が来なかったキーは6/16=38%）。GJI�
 
 - **通常実行時のバックグラウンド注入・受動学習**: ADR-176が却下済み。維持する。
 - **静的表だけ（較正なし）**: カスタムキーマップと`session_keymap`/`custom_keymap_table`の食い違い（BUG-143）で破綻する。
-- **学習表だけで開ループ追随**: 1手の誤りが連鎖し（A'で64%）頼れない。観測との併用が要る。
-- **トグルも生キーを通して観測追随だけにする（例外なし）**: トグルは実状態依存で反転しない/二重に反転するずれの温床（ADR-189の実測）。ユーザー方針で例外を採る。
+- **学習表だけで開ループ追随**: 1手の誤りが後続へ連鎖するので、開ループ単独には頼れない（観測が要る。実測2(f)のとおり開ループ%は指標として壊れているので数値は根拠にしない）。
+- **トグルも生キーを通して観測追随だけにする（例外なし）**: 素通し追随との比較は未測定（条件Cで測る）。固定の例外（1）はADR-189のCI実測（静的な固定方向との比較）を根拠に採り、追加分（2）は条件Cの結果が出るまで無効。
+  ユーザー方針で例外を採ること自体は正当だが、根拠にできる実測とそうでない実測を混ぜない（round3 RM6）。
 - **一括の大規模撤去・較正基盤の先行**: 複雑化と純増の危険。撤去を先に、1つずつ。
 
 ## 検証計画
 
-各撤去・統合の前後で、スパイクの`--exp`と`--walk`（A'/A/B、有効TIPを記録）を実機で流し、(a)BUG-151再現0/12、(b)BのEngine/実IMEずれ率、(c)決定5の指標、を記録する。
+各撤去・統合の前後で、スパイクの`--walk`（A'/A/B、有効TIPを記録。`--exp`は現行のCI道具には無い）を流し、素通し追随・予測の評価は**条件C**（決定1）で行う（条件A/A'ではfollowが発火しない）。CIでは`cal-verify-{obs,blind}`を使い、(a)BUG-151再現0/12、(b)BのEngine/実IMEずれ率、(c)決定5の指標、を記録する。
 TsfNative（Chrome）は実打鍵の結果で別途確認する。
 
 ## 関連
@@ -342,7 +397,7 @@ BUG-113/124（TsfNative×GJIの「@」）、BUG-143（`session_keymap`と`custom
 観測できないアプリ（`Imm32Unavailable`・`TsfNative`・`InputRelay`）では、IMEの状態を一切読まず、TsfNativeでは`reschedule_ime_refresh`がポーリングを予約せずに戻る（コードで確認）。「観測に追随」は
 そこでは定義できず、決め打ちの撤去により、状態依存のキー（入力中かどうかで結果が変わるキー）を使うユーザーには、モードずれが起きるようになる。これを**受け入れる**（ユーザー判断）:
 - 冪等なキー（`VK_IME_ON`/`VK_IME_OFF`）はずれない。ずれるのは状態依存のキーを使うユーザーだけ。
-- ずれは、(a)**IMトグルのawaseによる書き込み（ADR-189。残す機能）**、(b)**awaseが強制的にactuateする強制ON/OFFの打鍵**（`keys.ime_on`/`keys.ime_off`。既定値がCtrl+変換/Ctrl+無変換というだけで、configで別のキーに上書きしていればそのキーになる）で、強制的に解消できる。実用上の問題はない。
+- ずれは、(a)**IMトグルのawaseによる書き込み（ADR-189。残す機能）**、(b)**awaseが強制的にactuateする強制ON/OFFの打鍵**（`keys.ime_on`/`keys.ime_off`。既定値がCtrl+変換/Ctrl+無変換というだけで、configで別のキーに上書きしていればそのキーになる）で、**開閉軸は**強制的に解消できる。**かな/英数軸の回復経路は無い**（ATOKには入力モードをSet指定するキーが0件。`VK_IME_ON`は`composition_mode`を指定しないと入力モードを戻さない〈Mozc `session.cc`〉、実機確認は未了）。TsfNativeで`ToggleAlphanumericMode`系のキー（ATOKの`Kana`）を使うユーザーは、フォーカスを移すか、IMEを一度OFF/ONするしかない。これも自己責任・ベストエフォートの範囲とする（round4 QM1）。
 - 状態依存のキーを使うユーザーは**自己責任・ベストエフォート**とし、その手助け（検出・警告・冪等なキーへの置き換えの案内）は**別ADR（[ADR-192](192-state-dependent-mode-key-warning-and-guided-override.md)）**で扱う。
 - **ADR-189のトグル（0x19/0xF3/0xF4）の書き込みは撤去しない**（撤去ブランチで誤って撤去したが、`651cab8d`で復元した）。TsfNativeでのEngineの追随は、これに依る。
 
@@ -351,3 +406,33 @@ BUG-113/124（TsfNative×GJIの「@」）、BUG-143（`session_keymap`と`custom
 - 既存の手当てを使う: 前回そのhwndで持っていたbeliefの復元（`HwndCacheRestored`、`focus`のhwndキャッシュ）。WindowsはIME状態をhwnd（入力コンテキスト）ごとに持つので、復元でかなり追随できる。
 - 新しい窓は分からない: 既定の仮定（IME ONかつローマ字入力。TsfNativeでは`AssumedRomaji`）から始める。予測の表は現在の入力モードを前提にするので、**入力モードが不明のままでは予測が始まらない**（CIの読めない条件で、beliefがmode=Noneのまま予測が動かずEngineが活性化しなかった）。既定の仮定を必ず種にする。
 - 学習で精度を上げられるか: (プロセス, クラス)ごとの「新しい窓の初期状態」の事前分布は、読めるアプリなら観測で学習できる。読めないアプリには正解が無いので、**強制ON/OFFの打鍵の直後に「beliefが違っていた」という証拠**（同期イベント）から間接的にしか学べない。まず頻度（切替直後のずれの割合）を測ってから、学習が要るかを判断する。今は作らない。
+
+## Opus round3・4 の指摘への対応
+
+判定は「反映」（本文を直した）、「反映済み」（既に本文または撤去ブランチに入っていた）、「見送り」（理由つき）。教訓（複雑化を招く型・仕組みの追加は避け、削れるものを採る）に従い、対応は記述の修正にとどめた。
+
+| 指摘 | 判定 | 対応（本文の場所） |
+|---|---|---|
+| round3 RB1 Engine/実IMEの一致の併記と中止条件 | 反映 | 実測2b、決定1「中止条件」 |
+| round3 RB2 素通し追随の測定構成（条件C） | 反映 | 決定1「条件C」、検証計画。撤去ブランチのCI `cal-verify-*`が実質条件C。developビルドの条件Cは未測定 |
+| round3 RM1 武装条件を`Optimistic`へ | 反映（本ADR）／要対応（PR #238） | 決定2。PR #238は旧記述の`attempts`のまま |
+| round3 RM2 武装は`!delegate_owned`に限る | 反映（本ADR）／要確認（PR #238） | 決定2 |
+| round3 RM3 固定の例外と表の矛盾 | 反映（「固定が常に勝つ」に倒し分岐を増やさない） | 決定1 |
+| round3 RM4・RM5 較正窓・sinkの配置と`Activate()` | 反映（awase.exe側の専用スレッドを第一候補、暫定） | 決定4 |
+| round3 RM6・RM7 却下案の根拠の自己矛盾 | 反映 | 却下した代替案 |
+| round3 RM8 測定台は標準Edit 1種類 | 反映 | 実測 |
+| round3 NB10残り 書き込みを単一の関数に集約 | 反映済み | 撤去ブランチで書き込み点は1箇所（実装の現状2） |
+| round4 QB1 予測の書き込み口 | 反映済み | 決定3の実装での単純化（`KeyEffectPredicted`＋`resolve_open_at`の枠、`17f91966`・`cb6c8ebd`） |
+| round4 QB2 fenceの判定式 | 反映 | 決定3（settle 100ms、`probe_actuation_fence`は流用せず、限界を明記） |
+| round4 QB3 「開閉だけ」の線引きがATOKで反証 | 反映（経験的例外と明記）／一般化は表・較正の後 | 決定1。線引きの節そのものは、ユーザーが「表から引く」と決めたので残す |
+| round4 QB4 ADR-192決定3bの前提 | 見送り（削除案）／訂正済み | ADR-192で前提を訂正し、ユーザーの要望（親指キーを強制ON/OFFにしたい人がいる）で残した。QM4・QM5の制約は実装前に確認する |
+| round4 QM1 TsfNativeの回復経路 | 反映 | TsfNativeの節（開閉軸のみ、かな/英数軸は回復不能） |
+| round4 QM2 決定1が決定3に依存する循環 | 反映 | 決定5「決定の依存順」 |
+| round4 QM3 予測と通過マークの意図全消し | 反映 | 決定2（予測は意図でなく専用枠なので対象外、最初の再読み取りは訂正しない） |
+| round4 QM4・QM5 決定3bの適用条件 | 見送り | ADR-192に「実装前に`resolve_pending_thumb_as_single`で確認」と明記済み |
+| round4 QM6 複雑性収支の対応表 | 反映 | 決定5の収支表（実数） |
+| round4 QM7 同型機能の出荷失敗の前例 | 反映 | 決定4（ADR-192にも1行） |
+| round4 D 削れるもの | 一部反映 | 決定5「削る・見送るもの」 |
+
+集計（上の20行、指摘の束）: 反映15、反映済み2（NB10残り・QB1）、見送り2（QB4・QM4/QM5）、一部反映1（D）。事実誤認と判定した指摘は無い（RM1はコードで確認: `actuation_for`の呼び出し元は`ir_apply_drift_correction`の1箇所）。
+
