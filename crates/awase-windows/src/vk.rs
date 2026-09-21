@@ -214,6 +214,22 @@ pub const fn is_ime_mode_key_for_ime(vk_code: VkCode) -> bool {
     matches!(vk_code.0, 0x1C | 0x1D) // VK_CONVERT / VK_NONCONVERT
 }
 
+/// 通した生キーを再注入（`RawKeyEvent::reinject`）するときの`wScan`。
+///
+/// IMEモードキー（`is_ime_mode_key_for_ime`: 全角/半角・英数・かな・カタカナ・変換・無変換など）は元の
+/// スキャンコードを保つ。**`wScan=0`で再注入すると、実機のGJI（MS-IMEプリセット）で、awase無しなら
+/// IMEを開くひらがな（0xF2）が開かなくなった**（BUG-154、ADR-191 実機検証: awase経由の閉→開が0/6、
+/// スキャンコードを保つと4/4）。拡張キー（矢印など）は`KEYEVENTF_EXTENDEDKEY`無しのscan付き再注入が
+/// 別のキー（テンキー）に化けうるので、従来どおり0のままにする。
+#[must_use]
+pub const fn reinject_scan_code(vk_code: VkCode, scan_code: u32) -> u16 {
+    if is_ime_mode_key_for_ime(vk_code) {
+        scan_code as u16
+    } else {
+        0
+    }
+}
+
 /// 生キーを通した直後に実IMEを読み直して追随する（ADR-187のfollow）対象のIMEモードキーか。
 ///
 /// ADR-191: IMEモードキー（`is_ime_mode_key_for_ime`）のうち、awase自身が意図を持って書く
@@ -880,10 +896,24 @@ pub(crate) fn build_symbol_to_vk() -> HashMap<char, (VkCode, bool)> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn reinject_keeps_scan_code_only_for_ime_mode_keys() {
+        // かな(0xF2)・英数(0xF0)・半角/全角(0xF4)・無変換・変換は元のscanを保つ。
+        assert_eq!(reinject_scan_code(VkCode(0xF2), 0x70), 0x70);
+        assert_eq!(reinject_scan_code(VkCode(0xF0), 0x3A), 0x3A);
+        assert_eq!(reinject_scan_code(VkCode(0xF4), 0x29), 0x29);
+        assert_eq!(reinject_scan_code(VkCode(0x1D), 0x7B), 0x7B);
+        assert_eq!(reinject_scan_code(VkCode(0x1C), 0x79), 0x79);
+        // 通常キー・拡張キー（矢印: VK_LEFT=0x25）は従来どおり0。
+        assert_eq!(reinject_scan_code(VkCode(0x41), 0x1E), 0);
+        assert_eq!(reinject_scan_code(VkCode(0x25), 0x4B), 0);
+    }
+
     use super::{
         ascii_to_vk, build_symbol_to_vk, is_ime_mode_key_for_ime, is_synthetic_dbe_ime_hotkey,
-        may_change_ime, should_upgrade_is_japanese_ime, vk_may_mutate_conv, vk_pair_to_ascii,
-        ImeKeyKind, VkCode, VK_A, VK_RETURN, VK_SPACE,
+        may_change_ime, reinject_scan_code, should_upgrade_is_japanese_ime, vk_may_mutate_conv,
+        vk_pair_to_ascii, ImeKeyKind, VkCode, VK_A, VK_RETURN, VK_SPACE,
     };
 
     /// `vk_pair_to_ascii` は `ascii_to_vk` の厳密な逆写像である
