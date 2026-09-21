@@ -254,17 +254,6 @@ pub struct Runtime {
     /// 不要（2026-08-16 ユーザー判断: 明示設定は自動検出キーと併用され、
     /// 一方を排他しない）。
     space_is_thumb_key: bool,
-    /// ADR-176決定6（176-T3/T4）: モードキー較正結果（VKごと最大1件）。
-    /// 起動時・設定リロード時に`config.calibration`（`176-T11`の
-    /// `CalibrationEntry`）から読み込む（`apply_config_update`参照）。
-    /// ADR-191で、較正結果によるIME判定の差し替え（旧`apply_calibration_override`）を撤去したため、
-    /// 現在この値を読む経路は無い（保持しているだけ。読む経路を作るかは製品化の設計で決める）。
-    calibrated_mode_keys:
-        std::collections::HashMap<VkCode, crate::state::calibrated_mode_key::CalibratedModeKey>,
-    /// `GeneralConfig.apply_calibrated_mode_keys`のキャッシュ（ADR-176
-    /// 決定8）。上の`calibrated_mode_keys`と同じく、ADR-191で差し替えの経路を撤去したため、
-    /// 現在この値を読む経路は無い。
-    apply_calibrated_mode_keys_opt_in: bool,
     /// ADR-176 176-T6: 較正モードのバイパスタイムアウト期限
     /// （`None`=非アクティブ）。`focus_tracking.rs`の
     /// `begin_calibration_bypass`/`end_calibration_bypass`/
@@ -1090,8 +1079,6 @@ impl Runtime {
             dbe_mode_key_policy: awase::config::DbeModeKeyPolicy::default(),
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
-            calibrated_mode_keys: std::collections::HashMap::new(),
-            apply_calibrated_mode_keys_opt_in: false,
             calibration_bypass_deadline: None,
             calibration_session_pid: None,
             calibration_session_vk: None,
@@ -1181,50 +1168,6 @@ impl Runtime {
     /// `apply_config_update`（reload 時）の両方から呼ぶ。
     pub(crate) fn set_space_is_thumb_key(&mut self, space_is_thumb_key: bool) {
         self.space_is_thumb_key = space_is_thumb_key;
-    }
-
-    /// `GeneralConfig.apply_calibrated_mode_keys`のキャッシュを更新する
-    /// （`apply_config_update`から呼ぶ）。
-    pub(crate) fn set_apply_calibrated_mode_keys_opt_in(&mut self, opt_in: bool) {
-        self.apply_calibrated_mode_keys_opt_in = opt_in;
-    }
-
-    /// 較正結果を記録する（`config.calibration`からの読み込み時、および
-    /// `176-T9a`が確定したその場でメモリ上へ反映する場合に呼ぶ）。
-    pub(crate) fn set_calibrated_mode_key(
-        &mut self,
-        record: crate::state::calibrated_mode_key::CalibratedModeKey,
-    ) {
-        self.calibrated_mode_keys.insert(record.vk, record);
-    }
-
-    /// ADR-176 176-T11/T12: `config.calibration`（起動時・設定リロード時の
-    /// 内容）からメモリ上の較正結果マップを丸ごと作り直す。
-    /// 差分更新ではなく毎回`clear`してから再構築する——ユーザーが
-    /// `config.toml`からエントリを手動削除した場合や、同じVKに対して
-    /// 別のエントリへ置き換えた場合に、古い内容が居座らないようにする
-    /// ため。パースできないエントリ（未知の`result`/`fingerprint_kind`
-    /// 文字列等、手書き編集で壊れたもの）は警告ログを残してスキップする
-    /// （起動を落とさない）。
-    pub(crate) fn reload_calibrated_mode_keys(
-        &mut self,
-        entries: &[awase::config::CalibrationEntry],
-    ) {
-        self.calibrated_mode_keys.clear();
-        for entry in entries {
-            match crate::state::calibrated_mode_key::calibrated_mode_key_from_config_entry(entry) {
-                Some(record) => {
-                    self.set_calibrated_mode_key(record);
-                }
-                None => {
-                    tracing::warn!(
-                        "[calibration] config.tomlの較正エントリ（vk={:?}）を解釈できません\
-                         でした。無視します",
-                        entry.vk
-                    );
-                }
-            }
-        }
     }
 
     /// ADR-153 決定1: ユーザー明示config（`GeneralConfig::
@@ -1403,8 +1346,6 @@ impl Runtime {
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,
         );
-        self.set_apply_calibrated_mode_keys_opt_in(config.general.apply_calibrated_mode_keys);
-        self.reload_calibrated_mode_keys(&config.calibration);
         self.focus_tracker.sync_toggle_keys = sync_toggle;
         self.focus_tracker.sync_on_keys = sync_on;
         self.focus_tracker.sync_off_keys = sync_off;

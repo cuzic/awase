@@ -18,9 +18,10 @@ use awase::types::VkCode;
 
 /// GJI/MS-IMEの`config1.db`/レジストリの、較正時点でのフィンガープリント。
 ///
-/// `is_stale`がこれを現在値と比較し、食い違えば較正結果を無効化する
-/// （BUG-143の既知の限界——GUI実装のクリア漏れによる`custom_keymap_table`
-/// 残留——を検出する手段としても機能する、ADR-176決定6）。
+/// 較正結果の保存（`to_config_entry`）に含め、将来の読み込み側が現在値と比較して食い違えば較正結果を
+/// 無効化するための材料にする（BUG-143の既知の限界——GUI実装のクリア漏れによる`custom_keymap_table`
+/// 残留——を検出する手段としても機能する、ADR-176決定6）。比較して無効化する側（旧`is_stale`）は
+/// ADR-191で撤去済みで、製品化（`awase-calibration`）で新規に作る。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ConfigFingerprint {
     Gji {
@@ -87,36 +88,6 @@ impl CalibratedModeKey {
     }
 }
 
-/// `awase::config::CalibrationEntry`から`CalibratedModeKey`へ変換する
-/// （176-T11）。未知の`result`/`active_ime_kind`/`fingerprint_kind`文字列、
-/// または`fingerprint_kind`が要求するフィールドが欠けている場合は`None`
-/// を返す（呼び出し元がログへ警告を残し、そのエントリを無視することを
-/// 想定——手書き編集された`config.toml`が壊れていても起動を落とさない）。
-#[must_use]
-pub(crate) fn calibrated_mode_key_from_config_entry(
-    entry: &awase::config::CalibrationEntry,
-) -> Option<CalibratedModeKey> {
-    let result = ime_toggle_kind_from_str(&entry.result)?;
-    let active_ime_kind = ime_kind_id_from_str(&entry.active_ime_kind)?;
-    let config_fingerprint = match entry.fingerprint_kind.as_str() {
-        "Gji" => ConfigFingerprint::Gji {
-            session_keymap: entry.gji_session_keymap,
-            relevant_row: entry.gji_relevant_row.clone(),
-        },
-        "MsIme" => ConfigFingerprint::MsIme {
-            registry_value_hash: entry.ms_ime_registry_value_hash?,
-        },
-        _ => return None,
-    };
-    Some(CalibratedModeKey {
-        vk: entry.vk,
-        result,
-        active_ime_kind,
-        config_fingerprint,
-        confirmed_at_epoch_ms: entry.confirmed_at_epoch_ms,
-    })
-}
-
 const fn ime_toggle_kind_to_str(kind: ImeToggleKind) -> &'static str {
     match kind {
         ImeToggleKind::On => "On",
@@ -125,27 +96,10 @@ const fn ime_toggle_kind_to_str(kind: ImeToggleKind) -> &'static str {
     }
 }
 
-fn ime_toggle_kind_from_str(s: &str) -> Option<ImeToggleKind> {
-    match s {
-        "On" => Some(ImeToggleKind::On),
-        "Off" => Some(ImeToggleKind::Off),
-        "Toggle" => Some(ImeToggleKind::Toggle),
-        _ => None,
-    }
-}
-
 const fn ime_kind_id_to_str(kind: ImeKindId) -> &'static str {
     match kind {
         ImeKindId::Gji => "Gji",
         ImeKindId::MsIme => "MsIme",
-    }
-}
-
-fn ime_kind_id_from_str(s: &str) -> Option<ImeKindId> {
-    match s {
-        "Gji" => Some(ImeKindId::Gji),
-        "MsIme" => Some(ImeKindId::MsIme),
-        _ => None,
     }
 }
 
@@ -466,10 +420,6 @@ mod tests {
             Some("DirectInput\tHenkan\tIMEOn")
         );
         assert_eq!(entry.ms_ime_registry_value_hash, None);
-        assert_eq!(
-            calibrated_mode_key_from_config_entry(&entry).as_ref(),
-            Some(&record)
-        );
     }
 
     #[test]
@@ -484,10 +434,6 @@ mod tests {
         assert_eq!(entry.gji_session_keymap, None);
         assert_eq!(entry.gji_relevant_row, None);
         assert_eq!(entry.ms_ime_registry_value_hash, Some(0xDEAD_BEEF));
-        assert_eq!(
-            calibrated_mode_key_from_config_entry(&entry).as_ref(),
-            Some(&record)
-        );
     }
 
     #[test]
@@ -503,31 +449,7 @@ mod tests {
         let parsed: awase::config::AppConfig =
             toml::from_str(&toml_str).expect("deserialize AppConfig");
         assert_eq!(parsed.calibration.len(), 1);
-        assert_eq!(
-            calibrated_mode_key_from_config_entry(&parsed.calibration[0]),
-            Some(record)
-        );
-    }
-
-    #[test]
-    fn unknown_result_string_is_rejected() {
-        let mut entry = sample(ConfigFingerprint::Gji {
-            session_keymap: None,
-            relevant_row: None,
-        })
-        .to_config_entry();
-        entry.result = "Unknown".to_string();
-        assert_eq!(calibrated_mode_key_from_config_entry(&entry), None);
-    }
-
-    #[test]
-    fn ms_ime_fingerprint_without_hash_is_rejected() {
-        let mut entry = sample(ConfigFingerprint::MsIme {
-            registry_value_hash: 1,
-        })
-        .to_config_entry();
-        entry.ms_ime_registry_value_hash = None;
-        assert_eq!(calibrated_mode_key_from_config_entry(&entry), None);
+        assert_eq!(parsed.calibration[0], record.to_config_entry());
     }
 
     // ── 176-T5: explicit_config_conflict_reason ─────────────────────────

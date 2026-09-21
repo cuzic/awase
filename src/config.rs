@@ -394,17 +394,6 @@ pub struct GeneralConfig {
     /// 使いたい場合（= awase の Engine を OFF にして使う想定）のみ `false` にする。
     pub swallow_alt_kana_input_method_switch: bool,
 
-    /// ADR-176決定8: `[[calibration]]`（較正パネルUIが確定した較正結果）を
-    /// 実際のIME判定（旧`apply_calibration_override`経由でのGJI/MS-IME
-    /// 側の自動検出結果の差し替え。ADR-191で撤去済みで、現在この設定を読む経路は無い）へ反映するかどうか。**既定`false`**
-    /// （opt-in）——BUG-113の再発リスクを実機A/Bで確認できるまで、較正
-    /// 結果は`config.toml`には保存されるが実際のキー選択には影響しない
-    /// ようにする安全装置（`ActivationSync`冪等性チェック=176-T0を前提
-    /// 条件から外した経緯参照、`docs/adr/176-implementation-tasks.md`の
-    /// T0節）。`true`にすると較正結果がGJI/MS-IME両方の自動検出結果を
-    /// 上書きするようになる。
-    #[serde(default)]
-    pub apply_calibrated_mode_keys: bool,
     /// ADR-153 決定1: 無変換単独タップ確定時に、素の `VK_NONCONVERT` の代わりに
     /// awase 自身が直接 IME を ON/OFF/Toggle する（隠し設定、上級者向け）。
     /// `None`（既定）なら無効で、従来どおり GJI/MS-IME 自動検出
@@ -484,7 +473,6 @@ impl Default for GeneralConfig {
             enter_thumb_ignore_composing_guard: true,
             enter_thumb_shift_literal: true,
             swallow_alt_kana_input_method_switch: true,
-            apply_calibrated_mode_keys: false,
             muhenkan_solo_tap_ime_action: None,
             henkan_solo_tap_ime_action: None,
         }
@@ -2221,6 +2209,19 @@ ime_toggle = []
     // parse_key_combo テストは awase-windows に移動済み
 
     // ── engine_on/off_keys デフォルトテスト ──
+
+    /// ADR-191で`apply_calibrated_mode_keys`設定を撤去した。既存の`config.toml`に古いキーが残っていても、
+    /// 起動時に読み込みエラーにならず、無視されて他の設定が読める（`deny_unknown_fields`を付けていない）。
+    #[test]
+    fn test_removed_apply_calibrated_mode_keys_key_is_ignored_on_load() {
+        let toml_str = r#"
+[general]
+apply_calibrated_mode_keys = true
+left_thumb_key = "無変換"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).expect("旧キーが残っていても読める");
+        assert_eq!(config.general.left_thumb_key, "無変換");
+    }
 
     #[test]
     fn test_engine_toggle_key_defaults() {

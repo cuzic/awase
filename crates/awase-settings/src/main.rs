@@ -2817,16 +2817,6 @@ impl SettingsApp {
              config1.db/レジストリの静的な分類だけでは判別できない環境向けです。",
         );
         ui.add_space(8.0);
-        ui.checkbox(
-            &mut self.config.general.apply_calibrated_mode_keys,
-            "確定した較正結果を実際のIME判定に反映する（自己責任）",
-        )
-        .on_hover_text(
-            "OFF(既定)の場合、較正を確定してconfig.tomlへ保存はしますが、\n\
-             実際のGJI/MS-IME自動検出結果を上書きしません（測定のみ、\n\
-             安全側）。ONにすると、確定した較正結果がGJI/MS-IME側の\n\
-             自動検出結果を実際に上書きするようになります。",
-        );
         ui.add_space(8.0);
 
         ui.horizontal(|ui| {

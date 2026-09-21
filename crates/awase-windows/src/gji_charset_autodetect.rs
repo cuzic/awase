@@ -132,7 +132,7 @@ impl ModeKeyCandidate {
 
     /// ADR-176決定6（176-T12）: 現在の`config1.db`内容から、このキーの
     /// 較正フィンガープリントを構築する。
-    /// `state::calibrated_mode_key::fresh_or_none`によるstale判定専用
+    /// 較正結果の保存時に、`state::calibrated_mode_key::ConfigFingerprint`として保存する（旧stale判定は撤去済み、ADR-191）
     /// ——値の意味解釈は[`classify_mode_key_ime_action`]が別途行う。
     #[cfg_attr(not(windows), allow(dead_code))]
     fn current_fingerprint(
