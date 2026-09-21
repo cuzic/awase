@@ -1,0 +1,290 @@
+[07:07:00.392Z] chrome=C:\Users\cuzic\scoop\apps\googlechrome\current\chrome.exe port=60989 awase=true repeat=3 settle=500ms
+[07:07:03.332Z] 前面化: true
+[07:07:04.133Z] [CASE 1/8 run 1/3] かな→無変換=IME OFF
+[07:07:04.184Z] KEY vk=0x16 (auto)
+[07:07:04.718Z] KEY vk=0x4B (auto)
+[07:07:04.787Z] KEY vk=0x41 (auto)
+[07:07:05.370Z] PROBE setup:IME_ON後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:07:05.492Z] KEY vk=0x1D (auto)
+[07:07:06.024Z] KEY vk=0x4B (auto)
+[07:07:06.085Z] KEY vk=0x41 (auto)
+[07:07:06.668Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=false
+[07:07:06.669Z] RESULT PASS
+[07:07:06.669Z] [CASE 2/8 run 1/3] 直接入力→無変換=かなON
+[07:07:06.716Z] KEY vk=0x16 (auto)
+[07:07:07.249Z] KEY vk=0x4B (auto)
+[07:07:07.327Z] KEY vk=0x41 (auto)
+[07:07:07.889Z] PROBE setup:IME_ON後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:07:07.931Z] KEY vk=0x1A (auto)
+[07:07:08.463Z] KEY vk=0x4B (auto)
+[07:07:08.524Z] KEY vk=0x41 (auto)
+[07:07:09.107Z] PROBE setup:IME_OFF後: ka(英数/直接) text="ka" Process(229)=false
+[07:07:09.229Z] KEY vk=0x1D (auto)
+[07:07:09.760Z] KEY vk=0x4B (auto)
+[07:07:09.830Z] KEY vk=0x41 (auto)
+[07:07:10.413Z] PROBE action後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:07:10.414Z] RESULT PASS
+[07:07:10.415Z] [CASE 3/8 run 1/3] かな→ひらがな=半角英数
+[07:07:10.465Z] KEY vk=0x16 (auto)
+[07:07:10.998Z] KEY vk=0x4B (auto)
+[07:07:11.084Z] KEY vk=0x41 (auto)
+[07:07:11.690Z] PROBE setup:IME_ON後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:07:11.814Z] KEY vk=0xF2 (auto)
+[07:07:12.346Z] KEY vk=0x4B (auto)
+[07:07:12.409Z] KEY vk=0x41 (auto)
+[07:07:12.971Z] PROBE action後: ローマ字のまま(英数なのにEngine ON=未追随) text="kiu" Process(229)=true
+[07:07:13.403Z] KEY vk=0x4B (auto)
+[07:07:13.465Z] KEY vk=0x41 (auto)
+[07:07:14.068Z] PROBE action後2回目: ローマ字のまま(英数なのにEngine ON=未追随) text="kiu" Process(229)=true
+[07:07:14.069Z] RESULT FAIL: 期待=ka 実際=ローマ字のまま(英数なのにEngine ON=未追随)
+[07:07:14.070Z] [CASE 4/8 run 1/3] 半角英数→ひらがな=かな
+[07:07:14.121Z] KEY vk=0x16 (auto)
+[07:07:14.658Z] KEY vk=0x4B (auto)
+[07:07:14.727Z] KEY vk=0x41 (auto)
+[07:07:15.311Z] PROBE setup:IME_ON後: ローマ字のまま(英数なのにEngine ON=未追随) text="kiu" Process(229)=true
+[07:07:15.373Z] KEY vk=0xF2 (auto)
+[07:07:15.906Z] KEY vk=0x4B (auto)
+[07:07:15.984Z] KEY vk=0x41 (auto)
+[07:07:16.609Z] PROBE setup:ひらがな後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:07:16.676Z] KEY vk=0xF2 (auto)
+[07:07:17.209Z] KEY vk=0x4B (auto)
+[07:07:17.277Z] KEY vk=0x41 (auto)
+[07:07:17.881Z] PROBE setup:ひらがな(かな→半角英数)後: ローマ字のまま(英数なのにEngine ON=未追随) text="kiu" Process(229)=true
+[07:07:18.005Z] KEY vk=0xF2 (auto)
+[07:07:18.537Z] KEY vk=0x4B (auto)
+[07:07:18.627Z] KEY vk=0x41 (auto)
+[07:07:19.272Z] PROBE action後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:07:19.273Z] RESULT PASS
+[07:07:19.275Z] [CASE 5/8 run 1/3] かな→変換=IME OFF
+[07:07:19.342Z] KEY vk=0x16 (auto)
+[07:07:19.875Z] KEY vk=0x4B (auto)
+[07:07:19.936Z] KEY vk=0x41 (auto)
+[07:07:20.520Z] PROBE setup:IME_ON後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:07:20.642Z] KEY vk=0x1C (auto)
+[07:07:21.176Z] KEY vk=0x4B (auto)
+[07:07:21.239Z] KEY vk=0x41 (auto)
+[07:07:21.821Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=false
+[07:07:21.822Z] RESULT PASS
+[07:07:21.823Z] [CASE 6/8 run 1/3] 直接入力→変換=かなON
+[07:07:21.875Z] KEY vk=0x16 (auto)
+[07:07:22.407Z] KEY vk=0x4B (auto)
+[07:07:22.480Z] KEY vk=0x41 (auto)
+[07:07:23.084Z] PROBE setup:IME_ON後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:07:23.128Z] KEY vk=0x1A (auto)
+[07:07:23.662Z] KEY vk=0x4B (auto)
+[07:07:23.725Z] KEY vk=0x41 (auto)
+[07:07:24.309Z] PROBE setup:IME_OFF後: ka(英数/直接) text="ka" Process(229)=false
+[07:07:24.433Z] KEY vk=0x1C (auto)
+[07:07:24.965Z] KEY vk=0x4B (auto)
+[07:07:25.046Z] KEY vk=0x41 (auto)
+[07:07:25.653Z] PROBE action後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:07:25.655Z] RESULT PASS
+[07:07:25.659Z] [CASE 7/8 run 1/3] かな→Shift+無変換=半角英数
+[07:07:25.726Z] KEY vk=0x16 (auto)
+[07:07:26.259Z] KEY vk=0x4B (auto)
+[07:07:26.352Z] KEY vk=0x41 (auto)
+[07:07:26.936Z] PROBE setup:IME_ON後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:07:27.144Z] KEY vk=0x1D +Shift (auto)
+[07:07:27.693Z] KEY vk=0x4B (auto)
+[07:07:27.771Z] KEY vk=0x41 (auto)
+[07:07:28.376Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=true
+[07:07:28.377Z] RESULT PASS
+[07:07:28.378Z] [CASE 8/8 run 1/3] 直接入力→Shift+無変換=直接入力のまま
+[07:07:28.433Z] KEY vk=0x16 (auto)
+[07:07:28.969Z] KEY vk=0x4B (auto)
+[07:07:29.034Z] KEY vk=0x41 (auto)
+[07:07:30.696Z] PROBE setup:IME_ON後: 空 text="" Process(229)=false
+[07:07:30.758Z] KEY vk=0xF2 (auto)
+[07:07:31.294Z] KEY vk=0x4B (auto)
+[07:07:31.362Z] KEY vk=0x41 (auto)
+[07:07:33.720Z] PROBE setup:ひらがな後: 空 text="" Process(229)=false
+[07:07:33.721Z] RESULT INVALID: 前提状態にできなかった
+[07:07:33.728Z] [CASE 1/8 run 2/3] かな→無変換=IME OFF
+[07:07:34.235Z] KEY vk=0x16 (auto)
+[07:07:34.770Z] KEY vk=0x4B (auto)
+[07:07:34.833Z] KEY vk=0x41 (auto)
+[07:07:36.699Z] PROBE setup:IME_ON後: 空 text="" Process(229)=false
+[07:07:36.767Z] KEY vk=0xF2 (auto)
+[07:07:37.300Z] KEY vk=0x4B (auto)
+[07:07:37.369Z] KEY vk=0x41 (auto)
+[07:07:39.709Z] PROBE setup:ひらがな後: 空 text="" Process(229)=false
+[07:07:39.710Z] RESULT INVALID: 前提状態にできなかった
+[07:07:39.710Z] [CASE 2/8 run 2/3] 直接入力→無変換=かなON
+[07:07:39.950Z] KEY vk=0x16 (auto)
+[07:07:40.490Z] KEY vk=0x4B (auto)
+[07:07:40.559Z] KEY vk=0x41 (auto)
+[07:07:41.123Z] PROBE setup:IME_ON後: 空 text="" Process(229)=false
+[07:07:41.191Z] KEY vk=0xF2 (auto)
+[07:07:41.728Z] KEY vk=0x4B (auto)
+[07:07:41.792Z] KEY vk=0x41 (auto)
+[07:07:43.701Z] PROBE setup:ひらがな後: 空 text="" Process(229)=false
+[07:07:43.701Z] RESULT INVALID: 前提状態にできなかった
+[07:07:43.702Z] [CASE 3/8 run 2/3] かな→ひらがな=半角英数
+[07:07:43.938Z] KEY vk=0x16 (auto)
+[07:07:44.474Z] KEY vk=0x4B (auto)
+[07:07:44.547Z] KEY vk=0x41 (auto)
+[07:07:45.476Z] PROBE setup:IME_ON後: 空 text="" Process(229)=false
+[07:07:45.545Z] KEY vk=0xF2 (auto)
+[07:07:46.086Z] KEY vk=0x4B (auto)
+[07:07:46.148Z] KEY vk=0x41 (auto)
+[07:07:46.732Z] PROBE setup:ひらがな後: 空 text="" Process(229)=false
+[07:07:46.732Z] RESULT INVALID: 前提状態にできなかった
+[07:07:46.733Z] [CASE 4/8 run 2/3] 半角英数→ひらがな=かな
+[07:07:46.782Z] KEY vk=0x16 (auto)
+[07:07:47.314Z] KEY vk=0x4B (auto)
+[07:07:47.377Z] KEY vk=0x41 (auto)
+[07:07:47.960Z] PROBE setup:IME_ON後: NICOLA文字(Engine ON) text="きうきう" Process(229)=true
+[07:07:48.024Z] KEY vk=0xF2 (auto)
+[07:07:48.557Z] KEY vk=0x4B (auto)
+[07:07:48.654Z] KEY vk=0x41 (auto)
+[07:07:49.241Z] PROBE setup:ひらがな(かな→半角英数)後: ローマ字のまま(英数なのにEngine ON=未追随) text="kiu" Process(229)=true
+[07:07:49.365Z] KEY vk=0xF2 (auto)
+[07:07:49.898Z] KEY vk=0x4B (auto)
+[07:07:49.973Z] KEY vk=0x41 (auto)
+[07:07:50.556Z] PROBE action後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:07:50.557Z] RESULT PASS
+[07:07:50.557Z] [CASE 5/8 run 2/3] かな→変換=IME OFF
+[07:07:50.606Z] KEY vk=0x16 (auto)
+[07:07:51.141Z] KEY vk=0x4B (auto)
+[07:07:51.217Z] KEY vk=0x41 (auto)
+[07:07:51.843Z] PROBE setup:IME_ON後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:07:51.966Z] KEY vk=0x1C (auto)
+[07:07:52.499Z] KEY vk=0x4B (auto)
+[07:07:52.561Z] KEY vk=0x41 (auto)
+[07:07:53.125Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=false
+[07:07:53.126Z] RESULT PASS
+[07:07:53.127Z] [CASE 6/8 run 2/3] 直接入力→変換=かなON
+[07:07:53.176Z] KEY vk=0x16 (auto)
+[07:07:53.712Z] KEY vk=0x4B (auto)
+[07:07:53.793Z] KEY vk=0x41 (auto)
+[07:07:54.396Z] PROBE setup:IME_ON後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:07:54.439Z] KEY vk=0x1A (auto)
+[07:07:54.972Z] KEY vk=0x4B (auto)
+[07:07:55.038Z] KEY vk=0x41 (auto)
+[07:07:55.621Z] PROBE setup:IME_OFF後: ka(英数/直接) text="ka" Process(229)=false
+[07:07:55.755Z] KEY vk=0x1C (auto)
+[07:07:56.291Z] KEY vk=0x4B (auto)
+[07:07:56.358Z] KEY vk=0x41 (auto)
+[07:07:57.023Z] PROBE action後: その他 text="k" Process(229)=false
+[07:07:57.472Z] KEY vk=0x4B (auto)
+[07:07:57.537Z] KEY vk=0x41 (auto)
+[07:07:58.121Z] PROBE action後2回目: NICOLA文字(Engine ON) text="うきう" Process(229)=true
+[07:07:58.122Z] RESULT RECOVER: 1回目はその他、2回目で追随
+[07:07:58.123Z] [CASE 7/8 run 2/3] かな→Shift+無変換=半角英数
+[07:07:58.170Z] KEY vk=0x16 (auto)
+[07:07:58.705Z] KEY vk=0x4B (auto)
+[07:07:58.793Z] KEY vk=0x41 (auto)
+[07:07:59.397Z] PROBE setup:IME_ON後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:07:59.605Z] KEY vk=0x1D +Shift (auto)
+[07:08:00.165Z] KEY vk=0x4B (auto)
+[07:08:00.230Z] KEY vk=0x41 (auto)
+[07:08:00.833Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=true
+[07:08:00.834Z] RESULT PASS
+[07:08:00.836Z] [CASE 8/8 run 2/3] 直接入力→Shift+無変換=直接入力のまま
+[07:08:00.885Z] KEY vk=0x16 (auto)
+[07:08:01.418Z] KEY vk=0x4B (auto)
+[07:08:01.488Z] KEY vk=0x41 (auto)
+[07:08:02.091Z] PROBE setup:IME_ON後: ローマ字のまま(英数なのにEngine ON=未追随) text="kiu" Process(229)=true
+[07:08:02.153Z] KEY vk=0xF2 (auto)
+[07:08:02.685Z] KEY vk=0x4B (auto)
+[07:08:02.754Z] KEY vk=0x41 (auto)
+[07:08:03.358Z] PROBE setup:ひらがな後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:08:03.404Z] KEY vk=0x1A (auto)
+[07:08:03.941Z] KEY vk=0x4B (auto)
+[07:08:04.015Z] KEY vk=0x41 (auto)
+[07:08:04.599Z] PROBE setup:IME_OFF後: ka(英数/直接) text="ka" Process(229)=false
+[07:08:04.805Z] KEY vk=0x1D +Shift (auto)
+[07:08:05.337Z] KEY vk=0x4B (auto)
+[07:08:05.402Z] KEY vk=0x41 (auto)
+[07:08:05.964Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=false
+[07:08:05.965Z] RESULT PASS
+[07:08:05.965Z] [CASE 1/8 run 3/3] かな→無変換=IME OFF
+[07:08:06.013Z] KEY vk=0x16 (auto)
+[07:08:06.547Z] KEY vk=0x4B (auto)
+[07:08:06.643Z] KEY vk=0x41 (auto)
+[07:08:07.269Z] PROBE setup:IME_ON後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:08:07.391Z] KEY vk=0x1D (auto)
+[07:08:07.925Z] KEY vk=0x4B (auto)
+[07:08:07.990Z] KEY vk=0x41 (auto)
+[07:08:08.573Z] PROBE action後: ka(英数/直接) text="ka" Process(229)=false
+[07:08:08.573Z] RESULT PASS
+[07:08:08.574Z] [CASE 2/8 run 3/3] 直接入力→無変換=かなON
+[07:08:08.621Z] KEY vk=0x16 (auto)
+[07:08:09.154Z] KEY vk=0x4B (auto)
+[07:08:09.230Z] KEY vk=0x41 (auto)
+[07:08:09.836Z] PROBE setup:IME_ON後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:08:09.883Z] KEY vk=0x1A (auto)
+[07:08:10.432Z] KEY vk=0x4B (auto)
+[07:08:10.522Z] KEY vk=0x41 (auto)
+[07:08:11.107Z] PROBE setup:IME_OFF後: ka(英数/直接) text="ka" Process(229)=false
+[07:08:11.232Z] KEY vk=0x1D (auto)
+[07:08:11.780Z] KEY vk=0x4B (auto)
+[07:08:11.877Z] KEY vk=0x41 (auto)
+[07:08:12.502Z] PROBE action後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:08:12.503Z] RESULT PASS
+[07:08:12.505Z] [CASE 3/8 run 3/3] かな→ひらがな=半角英数
+[07:08:12.551Z] KEY vk=0x16 (auto)
+[07:08:13.083Z] KEY vk=0x4B (auto)
+[07:08:13.157Z] KEY vk=0x41 (auto)
+[07:08:13.761Z] PROBE setup:IME_ON後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:08:13.885Z] KEY vk=0xF2 (auto)
+[07:08:14.419Z] KEY vk=0x4B (auto)
+[07:08:14.488Z] KEY vk=0x41 (auto)
+[07:08:15.112Z] PROBE action後: ローマ字のまま(英数なのにEngine ON=未追随) text="kiu" Process(229)=true
+[07:08:15.551Z] KEY vk=0x4B (auto)
+[07:08:15.617Z] KEY vk=0x41 (auto)
+[07:08:16.181Z] PROBE action後2回目: ローマ字のまま(英数なのにEngine ON=未追随) text="kiu" Process(229)=false
+[07:08:16.182Z] RESULT FAIL: 期待=ka 実際=ローマ字のまま(英数なのにEngine ON=未追随)
+[07:08:16.190Z] [CASE 4/8 run 3/3] 半角英数→ひらがな=かな
+[07:08:16.252Z] KEY vk=0x16 (auto)
+[07:08:16.785Z] KEY vk=0x4B (auto)
+[07:08:16.848Z] KEY vk=0x41 (auto)
+[07:08:17.410Z] PROBE setup:IME_ON後: 空 text="" Process(229)=false
+[07:08:17.473Z] KEY vk=0xF2 (auto)
+[07:08:18.006Z] KEY vk=0x4B (auto)
+[07:08:18.069Z] KEY vk=0x41 (auto)
+[07:08:18.632Z] PROBE setup:ひらがな後: 空 text="" Process(229)=false
+[07:08:18.633Z] RESULT INVALID: 前提状態にできなかった
+[07:08:18.634Z] [CASE 5/8 run 3/3] かな→変換=IME OFF
+[07:08:18.698Z] KEY vk=0x16 (auto)
+[07:08:19.231Z] KEY vk=0x4B (auto)
+[07:08:19.297Z] KEY vk=0x41 (auto)
+[07:08:19.881Z] PROBE setup:IME_ON後: 空 text="" Process(229)=false
+[07:08:19.944Z] KEY vk=0xF2 (auto)
+[07:08:20.481Z] KEY vk=0x4B (auto)
+[07:08:20.548Z] KEY vk=0x41 (auto)
+[07:08:21.131Z] PROBE setup:ひらがな後: ローマ字のまま(英数なのにEngine ON=未追随) text="kiu" Process(229)=false
+[07:08:21.131Z] RESULT INVALID: 前提状態にできなかった
+[07:08:21.132Z] [CASE 6/8 run 3/3] 直接入力→変換=かなON
+[07:08:21.184Z] KEY vk=0x16 (auto)
+[07:08:21.717Z] KEY vk=0x4B (auto)
+[07:08:21.779Z] KEY vk=0x41 (auto)
+[07:08:22.341Z] PROBE setup:IME_ON後: 空 text="" Process(229)=false
+[07:08:22.405Z] KEY vk=0xF2 (auto)
+[07:08:22.938Z] KEY vk=0x4B (auto)
+[07:08:23.000Z] KEY vk=0x41 (auto)
+[07:08:23.585Z] PROBE setup:ひらがな後: 空 text="" Process(229)=false
+[07:08:23.585Z] RESULT INVALID: 前提状態にできなかった
+[07:08:23.586Z] [CASE 7/8 run 3/3] かな→Shift+無変換=半角英数
+[07:08:23.633Z] KEY vk=0x16 (auto)
+[07:08:24.167Z] KEY vk=0x4B (auto)
+[07:08:24.230Z] KEY vk=0x41 (auto)
+[07:08:24.813Z] PROBE setup:IME_ON後: 空 text="" Process(229)=false
+[07:08:24.877Z] KEY vk=0xF2 (auto)
+[07:08:25.409Z] KEY vk=0x4B (auto)
+[07:08:25.481Z] KEY vk=0x41 (auto)
+[07:08:26.065Z] PROBE setup:ひらがな後: ローマ字のまま(英数なのにEngine ON=未追随) text="ki" Process(229)=false
+[07:08:26.066Z] RESULT INVALID: 前提状態にできなかった
+[07:08:26.075Z] [CASE 8/8 run 3/3] 直接入力→Shift+無変換=直接入力のまま
+[07:08:26.126Z] KEY vk=0x16 (auto)
+[07:08:26.659Z] KEY vk=0x4B (auto)
+[07:08:26.735Z] KEY vk=0x41 (auto)
+[07:08:27.339Z] PROBE setup:IME_ON後: ローマ字のまま(英数なのにEngine ON=未追随) text="iu" Process(229)=false
+[07:08:27.401Z] KEY vk=0xF2 (auto)
+[07:08:27.933Z] KEY vk=0x4B (auto)
+[07:08:27.997Z] KEY vk=0x41 (auto)
+[07:08:28.581Z] PROBE setup:ひらがな後: 空 text="" Process(229)=false
+[07:08:28.582Z] RESULT INVALID: 前提状態にできなかった
+[07:08:28.584Z] SUMMARY PASS=12 RECOVER=1 FAIL=2 INVALID=9
+[07:08:28.584Z] === 全ケース完了 ===
+script error: Output type incorrect: bool (expecting ())

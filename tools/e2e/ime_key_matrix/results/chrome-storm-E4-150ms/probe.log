@@ -1,0 +1,25 @@
+[07:14:39.364Z] chrome=C:\Users\cuzic\scoop\apps\googlechrome\current\chrome.exe port=61484 awase=true repeat=3 settle=500ms
+[07:14:43.207Z] 前面化: true
+[07:14:44.055Z] KEY vk=0x16 (auto)
+[07:14:44.587Z] KEY vk=0x4B (auto)
+[07:14:44.655Z] KEY vk=0x41 (auto)
+[07:14:45.218Z] PROBE setup:IME_ON後: NICOLA文字(Engine ON) text="きう" Process(229)=true
+[07:14:45.218Z] STORM start n=15
+[07:14:45.331Z] STORM 0 thumb+J
+[07:14:45.914Z] STORM 1 thumb+J
+[07:14:46.490Z] STORM 2 thumb+J
+[07:14:47.071Z] STORM 3 thumb+J
+[07:14:47.642Z] STORM 4 thumb+J
+[07:14:48.229Z] STORM 5 thumb+J
+[07:14:48.798Z] STORM 6 thumb+J
+[07:14:49.381Z] STORM 7 thumb+J
+[07:14:49.954Z] STORM 8 thumb+J
+[07:14:50.528Z] STORM 9 thumb+J
+[07:14:51.109Z] STORM 10 thumb+J
+[07:14:51.678Z] STORM 11 thumb+J
+[07:14:52.252Z] STORM 12 thumb+J
+[07:14:52.815Z] STORM 13 thumb+J
+[07:14:53.380Z] STORM 14 thumb+J
+[07:14:53.872Z] STORM end
+[07:14:53.873Z] === 全ケース完了 ===
+script error: Output type incorrect: bool (expecting ())
