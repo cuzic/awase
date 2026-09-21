@@ -1,0 +1,472 @@
+{
+ "off-c10-none|bs": {
+  "OFF/0x19": 2
+ },
+ "off-c10-none|eisu": {
+  "OFF/0x19": 2
+ },
+ "off-c10-none|enter": {
+  "OFF/0x10": 2
+ },
+ "off-c10-none|esc": {
+  "OFF/0x19": 2
+ },
+ "off-c10-none|hankaku-zenkaku": {
+  "ON/0x19": 2
+ },
+ "off-c10-none|henkan": {
+  "ON/0x19": 2
+ },
+ "off-c10-none|hiragana": {
+  "OFF/0x10": 2
+ },
+ "off-c10-none|ime-off": {
+  "OFF/0x10": 2
+ },
+ "off-c10-none|ime-on": {
+  "ON/0x19": 2
+ },
+ "off-c10-none|kanji": {
+  "ON/0x10": 2
+ },
+ "off-c10-none|katakana": {
+  "OFF/0x10": 2
+ },
+ "off-c10-none|muhenkan": {
+  "ON/0x10": 2
+ },
+ "off-c10-none|space": {
+  "OFF/0x10": 2
+ },
+ "off-c19-none|bs": {
+  "OFF/0x19": 2
+ },
+ "off-c19-none|eisu": {
+  "OFF/0x19": 2
+ },
+ "off-c19-none|enter": {
+  "OFF/0x19": 2
+ },
+ "off-c19-none|esc": {
+  "OFF/0x19": 2
+ },
+ "off-c19-none|hankaku-zenkaku": {
+  "ON/0x19": 2
+ },
+ "off-c19-none|henkan": {
+  "ON/0x19": 2
+ },
+ "off-c19-none|hiragana": {
+  "OFF/0x19": 2
+ },
+ "off-c19-none|ime-off": {
+  "OFF/0x19": 2
+ },
+ "off-c19-none|ime-on": {
+  "ON/0x19": 2
+ },
+ "off-c19-none|kanji": {
+  "ON/0x19": 2
+ },
+ "off-c19-none|katakana": {
+  "OFF/0x19": 2
+ },
+ "off-c19-none|muhenkan": {
+  "ON/0x19": 2
+ },
+ "off-c19-none|space": {
+  "OFF/0x19": 2
+ },
+ "on-c10-conv-henkan|bs": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-conv-henkan|eisu": {
+  "ON/0x19/保持": 2
+ },
+ "on-c10-conv-henkan|enter": {
+  "ON/0x10/確定": 2
+ },
+ "on-c10-conv-henkan|esc": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-conv-henkan|hankaku-zenkaku": {
+  "OFF/0x10/破棄": 2
+ },
+ "on-c10-conv-henkan|henkan": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-conv-henkan|hiragana": {
+  "ON/0x19/保持": 2
+ },
+ "on-c10-conv-henkan|ime-off": {
+  "OFF/0x10/破棄": 2
+ },
+ "on-c10-conv-henkan|ime-on": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-conv-henkan|kanji": {
+  "OFF/0x10/確定": 2
+ },
+ "on-c10-conv-henkan|katakana": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-conv-henkan|muhenkan": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-conv-henkan|space": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-conv-muhenkan|bs": {
+  "ON/0x10/破棄": 2
+ },
+ "on-c10-conv-muhenkan|eisu": {
+  "ON/0x19/保持": 2
+ },
+ "on-c10-conv-muhenkan|enter": {
+  "ON/0x10/確定": 2
+ },
+ "on-c10-conv-muhenkan|esc": {
+  "ON/0x10/破棄": 2
+ },
+ "on-c10-conv-muhenkan|hankaku-zenkaku": {
+  "OFF/0x10/破棄": 2
+ },
+ "on-c10-conv-muhenkan|ime-off": {
+  "OFF/0x10/破棄": 2
+ },
+ "on-c10-conv-muhenkan|ime-on": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-conv-muhenkan|kanji": {
+  "OFF/0x10/確定": 2
+ },
+ "on-c10-conv-muhenkan|katakana": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-conv-space|bs": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-conv-space|eisu": {
+  "ON/0x19/保持": 2
+ },
+ "on-c10-conv-space|enter": {
+  "ON/0x10/確定": 2
+ },
+ "on-c10-conv-space|esc": {
+  "ON/0x10/破棄": 2
+ },
+ "on-c10-conv-space|hankaku-zenkaku": {
+  "OFF/0x10/破棄": 2
+ },
+ "on-c10-conv-space|henkan": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-conv-space|hiragana": {
+  "ON/0x19/保持": 2
+ },
+ "on-c10-conv-space|ime-off": {
+  "OFF/0x10/破棄": 2
+ },
+ "on-c10-conv-space|ime-on": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-conv-space|kanji": {
+  "OFF/0x10/確定": 2
+ },
+ "on-c10-conv-space|katakana": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-conv-space|muhenkan": {
+  "ON/0x19/保持": 2
+ },
+ "on-c10-conv-space|space": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-none|bs": {
+  "ON/0x10": 2
+ },
+ "on-c10-none|eisu": {
+  "ON/0x19": 2
+ },
+ "on-c10-none|enter": {
+  "ON/0x10": 2
+ },
+ "on-c10-none|esc": {
+  "ON/0x10": 2
+ },
+ "on-c10-none|hankaku-zenkaku": {
+  "OFF/0x10": 2
+ },
+ "on-c10-none|henkan": {
+  "OFF/0x10": 2
+ },
+ "on-c10-none|hiragana": {
+  "ON/0x19": 2
+ },
+ "on-c10-none|ime-off": {
+  "OFF/0x10": 2
+ },
+ "on-c10-none|ime-on": {
+  "ON/0x10": 2
+ },
+ "on-c10-none|kanji": {
+  "OFF/0x10": 2
+ },
+ "on-c10-none|katakana": {
+  "ON/0x10": 2
+ },
+ "on-c10-none|muhenkan": {
+  "OFF/0x10": 2
+ },
+ "on-c10-none|space": {
+  "ON/0x10": 2
+ },
+ "on-c10-typing|bs": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-typing|eisu": {
+  "ON/0x19/保持": 2
+ },
+ "on-c10-typing|enter": {
+  "ON/0x10/確定": 2
+ },
+ "on-c10-typing|esc": {
+  "ON/0x10/破棄": 2
+ },
+ "on-c10-typing|hankaku-zenkaku": {
+  "OFF/0x10/破棄": 2
+ },
+ "on-c10-typing|henkan": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-typing|hiragana": {
+  "ON/0x19/保持": 2
+ },
+ "on-c10-typing|ime-off": {
+  "OFF/0x10/破棄": 2
+ },
+ "on-c10-typing|ime-on": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-typing|kanji": {
+  "OFF/0x10/確定": 2
+ },
+ "on-c10-typing|katakana": {
+  "ON/0x10/保持": 2
+ },
+ "on-c10-typing|muhenkan": {
+  "ON/0x19/保持": 2
+ },
+ "on-c10-typing|space": {
+  "ON/0x10/保持": 2
+ },
+ "on-c19-conv-henkan|bs": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-henkan|eisu": {
+  "ON/0x10/保持": 2
+ },
+ "on-c19-conv-henkan|enter": {
+  "ON/0x19/確定": 2
+ },
+ "on-c19-conv-henkan|esc": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-henkan|hankaku-zenkaku": {
+  "OFF/0x19/破棄": 2
+ },
+ "on-c19-conv-henkan|henkan": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-henkan|hiragana": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-henkan|ime-off": {
+  "OFF/0x19/破棄": 2
+ },
+ "on-c19-conv-henkan|ime-on": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-henkan|kanji": {
+  "OFF/0x19/確定": 2
+ },
+ "on-c19-conv-henkan|katakana": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-henkan|muhenkan": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-henkan|space": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-muhenkan|bs": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-muhenkan|eisu": {
+  "ON/0x10/保持": 2
+ },
+ "on-c19-conv-muhenkan|enter": {
+  "ON/0x19/確定": 2
+ },
+ "on-c19-conv-muhenkan|esc": {
+  "ON/0x19/破棄": 2
+ },
+ "on-c19-conv-muhenkan|hankaku-zenkaku": {
+  "OFF/0x19/破棄": 2
+ },
+ "on-c19-conv-muhenkan|henkan": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-muhenkan|hiragana": {
+  "ON/0x10/保持": 2
+ },
+ "on-c19-conv-muhenkan|ime-off": {
+  "OFF/0x19/破棄": 2
+ },
+ "on-c19-conv-muhenkan|ime-on": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-muhenkan|kanji": {
+  "OFF/0x19/確定": 2
+ },
+ "on-c19-conv-muhenkan|katakana": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-muhenkan|muhenkan": {
+  "ON/0x10/保持": 2
+ },
+ "on-c19-conv-muhenkan|space": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-space|bs": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-space|eisu": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-space|enter": {
+  "ON/0x19/確定": 2
+ },
+ "on-c19-conv-space|esc": {
+  "ON/0x19/破棄": 1,
+  "ON/0x19/保持": 1
+ },
+ "on-c19-conv-space|hankaku-zenkaku": {
+  "OFF/0x19/破棄": 2
+ },
+ "on-c19-conv-space|henkan": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-space|hiragana": {
+  "ON/0x10/保持": 2
+ },
+ "on-c19-conv-space|ime-off": {
+  "OFF/0x19/破棄": 2
+ },
+ "on-c19-conv-space|ime-on": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-space|kanji": {
+  "OFF/0x19/確定": 2
+ },
+ "on-c19-conv-space|katakana": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-space|muhenkan": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-conv-space|space": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-none|bs": {
+  "ON/0x19": 2
+ },
+ "on-c19-none|eisu": {
+  "ON/0x19": 2
+ },
+ "on-c19-none|enter": {
+  "ON/0x19": 2
+ },
+ "on-c19-none|esc": {
+  "ON/0x19": 2
+ },
+ "on-c19-none|hankaku-zenkaku": {
+  "OFF/0x19": 2
+ },
+ "on-c19-none|henkan": {
+  "OFF/0x19": 2
+ },
+ "on-c19-none|hiragana": {
+  "ON/0x19": 2
+ },
+ "on-c19-none|ime-off": {
+  "OFF/0x19": 2
+ },
+ "on-c19-none|ime-on": {
+  "ON/0x19": 2
+ },
+ "on-c19-none|kanji": {
+  "OFF/0x19": 2
+ },
+ "on-c19-none|katakana": {
+  "ON/0x19": 2
+ },
+ "on-c19-none|muhenkan": {
+  "OFF/0x19": 2
+ },
+ "on-c19-none|space": {
+  "ON/0x19": 2
+ },
+ "on-c19-typing|bs": {
+  "ON/0x19/保持": 1,
+  "ON/0x19/破棄": 1
+ },
+ "on-c19-typing|eisu": {
+  "ON/0x10/保持": 2
+ },
+ "on-c19-typing|enter": {
+  "ON/0x19/確定": 2
+ },
+ "on-c19-typing|esc": {
+  "ON/0x19/破棄": 2
+ },
+ "on-c19-typing|hankaku-zenkaku": {
+  "OFF/0x19/破棄": 2
+ },
+ "on-c19-typing|henkan": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-typing|hiragana": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-typing|ime-off": {
+  "OFF/0x19/破棄": 2
+ },
+ "on-c19-typing|ime-on": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-typing|kanji": {
+  "OFF/0x19/確定": 2
+ },
+ "on-c19-typing|katakana": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-typing|muhenkan": {
+  "ON/0x10/保持": 2
+ },
+ "on-c19-typing|space": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-typing-prev-esc|esc": {
+  "ON/0x19/破棄": 2
+ },
+ "on-c19-typing-prev-esc|muhenkan": {
+  "ON/0x19/保持": 2
+ },
+ "on-c19-typing-prev-hiragana|esc": {
+  "ON/0x19/破棄": 2
+ },
+ "on-c19-typing-prev-hiragana|muhenkan": {
+  "ON/0x10/保持": 2
+ }
+}

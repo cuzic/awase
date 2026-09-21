@@ -1,0 +1,3 @@
+# 前回の表で結果が割れたセル(state|key)。gen_grid_nondet.py で生成
+on-c19-conv-space|esc
+on-c19-typing|bs
