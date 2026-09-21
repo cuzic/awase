@@ -235,6 +235,9 @@ pub struct Runtime {
     conv_drift_latch: Option<crate::state::ime_actuation::ConvDriftEpisode>,
     /// `config1.db` のキーマップ（打鍵時予測用）のキャッシュ。打鍵ごとに読み直さない。
     key_effect_keymap: crate::state::key_effect_table::KeymapCache,
+    /// 直前のOS読み取り（`OsPoll`）で観測（`ime_on`）を得られたか。時間切れ・空振りは`false`。
+    /// 通過マークの窓の間の読み直し間隔（成功なら60ms、失敗なら窓の終了時の1回）に使う。
+    last_ime_read_ok: bool,
     /// Microsoft IME本体用（レジストリのキー割り当ての版で読み直す。GJIの`key_effect_keymap`とは別のキャッシュ）。
     key_effect_keymap_native: crate::state::key_effect_table::KeymapCache,
     /// BUG-52 の DBE レンジ Suppress（`VK_DBE_ALPHANUMERIC`/`KATAKANA`/
@@ -828,9 +831,8 @@ impl Runtime {
             .ime
             .mode_key_pass_window_remaining_ms(now_ms)
         {
-            let last_read_succeeded = self.platform_state.ime.detect_miss_count() == 0;
             self.schedule_ime_refresh(crate::state::force_guard::mode_key_pass_next_read_ms(
-                last_read_succeeded,
+                self.last_ime_read_ok,
                 remaining,
                 crate::tuning::MODE_KEY_PASS_REREAD_MS,
             ));
@@ -1104,6 +1106,7 @@ impl Runtime {
             active_actuation: None,
             conv_drift_latch: None,
             key_effect_keymap: crate::state::key_effect_table::KeymapCache::default(),
+            last_ime_read_ok: true,
             key_effect_keymap_native: crate::state::key_effect_table::KeymapCache::default(),
             dbe_mode_key_policy: awase::config::DbeModeKeyPolicy::default(),
             muhenkan_dedicated_fn_key_vk: None,

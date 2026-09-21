@@ -301,6 +301,33 @@ pub(crate) const fn mode_key_pass_next_read_ms(
     }
 }
 
+/// `SendMessageTimeoutW`が失敗（戻り値0）したとき、それが**時間切れ**か**即時の拒否**かを分類する純関数。
+///
+/// - `ERROR_TIMEOUT`(1460)、または宣言したタイムアウト以上かかっている: 時間切れ（遅い応答。負荷・忙しいIME）。
+/// - それ以外（`ERROR_ACCESS_DENIED`=昇格プロセスへのUIPI拒否、即時の失敗）: 拒否（IMMが使えない証拠になりうる）。
+///
+/// 実測（CI、MS-IME本体、awase.logの`[ime-io]`）: 成功は 0〜20ms、時間切れは 50〜100ms（宣言50ms+スケジューリング）の
+/// 二峰性で、`elapsed_us >= timeout_ms*1000`で時間切れと判別できる。
+#[must_use]
+pub(crate) const fn send_failure_is_timeout(
+    last_error: u32,
+    elapsed_us: u64,
+    timeout_ms: u32,
+) -> bool {
+    const ERROR_TIMEOUT: u32 = 1460;
+    last_error == ERROR_TIMEOUT || elapsed_us >= (timeout_ms as u64) * 1000
+}
+
+/// IME状態の読み取りの空振り（`ime_on`が`None`）を、`imm-learning`の「IMMが使えない」証拠（miss）に数えるか。
+///
+/// **時間切れ**（遅い応答。負荷・忙しいIME・CIの遅いランナー）は証拠ではない（判定保留=数えない）。
+/// **即時の拒否**（`ERROR_ACCESS_DENIED`、IME窓なし=`ImmGetDefaultIMEWnd`=NULL、即時の失敗）は従来どおり数える。
+/// `IME_DETECT_MISS_THRESHOLD`（連続3回で`Unavailable`を学習）の値は変えない（tuning-constants: 盲目的な引き上げをしない）。
+#[must_use]
+pub(crate) const fn read_miss_is_imm_evidence(probe_timed_out: bool) -> bool {
+    !probe_timed_out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -673,5 +700,51 @@ mod tests {
         assert_eq!(mode_key_pass_window_remaining_ms(20, 300), Some(280));
         assert_eq!(mode_key_pass_window_remaining_ms(300, 300), None);
         assert_eq!(mode_key_pass_window_remaining_ms(301, 300), None);
+    }
+
+    /// `imm-learning`の入口の意味: 時間切れは「IMMが使えない」証拠に数えない。本当に使えないパターン
+    /// （即時の拒否・IME窓なしが連続）は従来どおり閾値で降格する。
+    #[test]
+    fn timeouts_are_not_imm_evidence_but_immediate_refusals_are() {
+        // 分類: 実測(CI、MS-IME本体)の二峰性。成功は0〜20ms、時間切れは50〜100ms。
+        assert!(send_failure_is_timeout(1460, 51_000, 50));
+        assert!(
+            send_failure_is_timeout(0, 50_953, 50),
+            "GetLastErrorが0でも50ms以上なら時間切れ"
+        );
+        assert!(
+            send_failure_is_timeout(1460, 300, 50),
+            "ERROR_TIMEOUTなら短くても時間切れ"
+        );
+        assert!(
+            !send_failure_is_timeout(5, 120, 50),
+            "ERROR_ACCESS_DENIED(昇格プロセスのUIPI拒否)は時間切れではない"
+        );
+        assert!(
+            !send_failure_is_timeout(0, 800, 50),
+            "即時の失敗は時間切れではない"
+        );
+        // 数え方: 3連続のシミュレーション。時間切れ3連続は数えず(降格しない)、即時の拒否3連続は数える(降格する)。
+        let count = |seq: &[bool]| -> u32 {
+            // seq の各要素 = そのreadが時間切れか。時間切れは数えない(カウントも変えない)。
+            seq.iter()
+                .filter(|&&timed_out| read_miss_is_imm_evidence(timed_out))
+                .count() as u32
+        };
+        assert_eq!(
+            count(&[true, true, true]),
+            0,
+            "時間切れの連続は降格の材料にならない(CI MS-IME本体)"
+        );
+        assert_eq!(
+            count(&[false, false, false]),
+            3,
+            "即時の拒否が3連続なら閾値(3)に届く(本当にIMM不可のアプリ)"
+        );
+        assert_eq!(
+            count(&[true, false, true, false]),
+            2,
+            "混在は即時の拒否だけを数える"
+        );
     }
 }
