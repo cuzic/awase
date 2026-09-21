@@ -40,7 +40,8 @@ mod store {
     use windows::Win32::UI::TextServices::{
         ITextStoreACP, ITextStoreACPSink, ITextStoreACP_Impl, ITfCompositionView,
         ITfContextOwnerCompositionSink, ITfContextOwnerCompositionSink_Impl, ITfRange,
-        TEXT_STORE_LOCK_FLAGS, TS_ATTRVAL, TS_AE_END, TS_E_NOLOCK, TS_E_SYNCHRONOUS,
+        TsActiveSelEnd, TEXT_STORE_LOCK_FLAGS, TS_ATTRVAL, TS_AE_END, TS_E_NOLOCK, TS_E_SYNCHRONOUS,
+        TS_IAS_QUERYONLY,
         TS_RT_PLAIN, TS_RUNINFO, TS_SELECTION_ACP, TS_SELECTIONSTYLE, TS_STATUS, TS_S_ASYNC,
         TS_TEXTCHANGE,
     };
@@ -71,6 +72,8 @@ mod store {
     struct State {
         text: Vec<u16>,
         sel: (i32, i32),
+        /// 選択の active end（`TsActiveSelEnd` の生値）。`SetSelection` で受け取ったものを `GetSelection` で返す。
+        sel_ase: i32,
         sink: Option<ITextStoreACPSink>,
         /// 現在付与中のロック（0=なし）。
         locked: u32,
@@ -97,7 +100,10 @@ mod store {
             panic_test: bool,
         ) -> Self {
             Self {
-                st: RefCell::new(State::default()),
+                st: RefCell::new(State {
+                    sel_ase: TS_AE_END.0,
+                    ..State::default()
+                }),
                 log,
                 t0,
                 lock_delay_ms,
@@ -196,7 +202,8 @@ mod store {
                         self.rec("RequestLock", "→ TS_E_SYNCHRONOUS (ロック中)".to_string());
                         return Ok(TS_E_SYNCHRONOUS);
                     }
-                    st.pending = Some(dwlockflags & !1);
+                    // 複数の非同期要求は上書きせず、フラグの和にする（READWRITE は READ を含むので、どちらの要求も満たす）。
+                    st.pending = Some(st.pending.unwrap_or(0) | (dwlockflags & !1));
                     drop(st);
                     self.rec("RequestLock", "→ TS_S_ASYNC (ロック中、後で付与)".to_string());
                     return Ok(TS_S_ASYNC);
@@ -278,6 +285,7 @@ mod store {
         ) -> windows::core::Result<()> {
             self.need_read("GetSelection")?;
             let (s, e) = self.st.borrow().sel;
+            let ase = self.st.borrow().sel_ase;
             self.rec("GetSelection", format!("idx=0x{ulindex:X} count={ulcount} → {s}..{e}"));
             // SAFETY: 出力ポインタは呼び出し元が用意した有効な領域。
             unsafe {
@@ -286,7 +294,7 @@ mod store {
                         acpStart: s,
                         acpEnd: e,
                         style: TS_SELECTIONSTYLE {
-                            ase: TS_AE_END,
+                            ase: TsActiveSelEnd(ase),
                             fInterimChar: BOOL(0),
                         },
                     };
@@ -310,8 +318,10 @@ mod store {
             if ulcount > 0 && !pselection.is_null() {
                 let sel = unsafe { *pselection };
                 let (s, e) = self.ordered(sel.acpStart, sel.acpEnd);
-                self.rec("SetSelection", format!("{s}..{e}"));
-                self.st.borrow_mut().sel = (s, e);
+                self.rec("SetSelection", format!("{s}..{e} ase={}", sel.style.ase.0));
+                let mut st = self.st.borrow_mut();
+                st.sel = (s, e);
+                st.sel_ase = sel.style.ase.0;
             }
             Ok(())
         }
@@ -446,7 +456,8 @@ mod store {
             // `--panic-test`: COM コールバック内の panic（非 unwind ABI の境界で abort になる）で、
             // panic フックがタイムラインを残すかを確かめるための意図的な panic。
             assert!(!self.panic_test, "--panic-test: InsertTextAtSelection で意図的に panic");
-            let query_only = dwflags & 1 != 0; // TS_IAS_QUERYONLY
+            // TS_IAS_NOQUERY=0x1（通常の挿入）、TS_IAS_QUERYONLY=0x2（範囲の問い合わせのみ）。取り違えない。
+            let query_only = dwflags & TS_IAS_QUERYONLY != 0;
             // SAFETY: pchtext は cch 個の UTF-16 を指す(cch>0 のとき)。
             let new: Vec<u16> = if cch > 0 && !pchtext.is_null() {
                 unsafe { std::slice::from_raw_parts(pchtext.0, cch as usize) }.to_vec()
