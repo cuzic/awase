@@ -280,7 +280,9 @@ fn classify_vk_in_ime_keys(
 #[cfg(windows)]
 pub use windows_impl::build_confirmed_calibration_entry;
 #[cfg(windows)]
-pub(crate) use windows_impl::{is_configured_thumb_key, read_config1_db, read_key_effect_keymap};
+pub(crate) use windows_impl::{
+    config1_db_stamp, is_configured_thumb_key, read_config1_db, read_key_effect_keymap,
+};
 
 #[cfg(windows)]
 mod windows_impl {
@@ -320,8 +322,20 @@ mod windows_impl {
         std::fs::read(&path).ok()
     }
 
+    /// `config1.db`の版（更新時刻のナノ秒+長さ）。読めなければ`None`。`KeymapCache`が
+    /// 打鍵ごとに全体を読み直さないための判定材料（statだけ）。
+    pub(crate) fn config1_db_stamp() -> Option<(u64, u64)> {
+        let meta = std::fs::metadata(config1_db_path()?).ok()?;
+        let modified = meta
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        Some((u64::try_from(modified.as_nanos()).ok()?, meta.len()))
+    }
+
     /// ADR-191 決定3: `config1.db`から、打鍵時点の予測（`key_effect_table`）に使うキーマップを読む。
-    /// 試作のため呼び出しごとに読む（モードキーの打鍵時だけ。数KBのファイル）。読めない/未対応の
+    /// 呼び出しは`KeymapCache`が版の変化時だけに絞る（打鍵ごとに読まない）。読めない/未対応の
     /// プリセットは`None`（予測しない）。
     pub(crate) fn read_key_effect_keymap() -> Option<crate::state::key_effect_table::KeyEffectKeymap>
     {

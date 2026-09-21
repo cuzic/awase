@@ -377,6 +377,65 @@ pub struct KeyEffectKeymap {
     has_overlay: bool,
 }
 
+/// 修飾キーを押したままの打鍵では予測・追跡をしない（レビュー指摘A-B3。旧`enrich_ime_relevance`の
+/// 修飾キーガード〈ADR-186 残る問題2: Shift+変換はATOKで開閉トグルではない〉の置き換え）。
+/// 表が持つキー（モードキー・Space/Esc/Enter/BS）はShift/Ctrl/Alt/Winのどれかで抑止する
+/// （Shift+Spaceなど表のセルは「素のキー」の結果）。表に無い文字キーはShift（大文字入力）を許し、
+/// Ctrl/Alt/Win（ショートカット。入力中にならない）だけ抑止する。
+#[must_use]
+pub const fn modifiers_suppress_prediction(
+    in_table: bool,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    win: bool,
+) -> bool {
+    if in_table {
+        ctrl || alt || shift || win
+    } else {
+        ctrl || alt || win
+    }
+}
+
+/// `config1.db`から作ったキーマップのキャッシュ（打鍵ごとの同期fs読み取り+パースを避ける。
+/// レビュー指摘A-B1）。`RECHECK_MS`ごとに、ファイルの版（更新時刻+長さ）だけを問い合わせ、
+/// 変わったときだけ読み直す。判定は純関数で、fs/時計は呼び出し側が渡す。
+#[derive(Debug, Default)]
+pub struct KeymapCache {
+    checked_at_ms: Option<u64>,
+    stamp: Option<(u64, u64)>,
+    keymap: Option<KeyEffectKeymap>,
+}
+
+impl KeymapCache {
+    /// 版の再確認の間隔。キーマップの変更（GJI設定画面）は打鍵より遅い操作なので数秒遅れてよい。
+    pub const RECHECK_MS: u64 = 2000;
+
+    /// キャッシュしたキーマップを返す。再確認の時刻なら`stamp`（更新時刻+長さ。読めなければ`None`）で
+    /// 版を確かめ、初回または版が変わったときだけ`load`で読み直す。`load`は`None`（GJI未導入・
+    /// 未対応プリセット）も正常系として保持する。
+    pub fn get(
+        &mut self,
+        now_ms: u64,
+        stamp: impl FnOnce() -> Option<(u64, u64)>,
+        load: impl FnOnce() -> Option<KeyEffectKeymap>,
+    ) -> Option<&KeyEffectKeymap> {
+        let first = self.checked_at_ms.is_none();
+        let due = self
+            .checked_at_ms
+            .is_none_or(|t| now_ms.saturating_sub(t) >= Self::RECHECK_MS);
+        if due {
+            self.checked_at_ms = Some(now_ms);
+            let now_stamp = stamp();
+            if first || now_stamp != self.stamp {
+                self.stamp = now_stamp;
+                self.keymap = load();
+            }
+        }
+        self.keymap.as_ref()
+    }
+}
+
 /// Mozc `SessionKeymap`: `NONE=-1, CUSTOM=0, ATOK=1, MSIME=2`（`awase-gji-config`の定数と同じ値）。
 const SESSION_KEYMAP_NONE: i64 = -1;
 const SESSION_KEYMAP_ATOK: i64 = 1;
@@ -456,6 +515,127 @@ pub fn custom_table_overrides(custom_table: &str, vk: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn modifiers_suppress_prediction_for_table_keys_and_shortcuts() {
+        // 表のキー: 修飾なしだけ予測する。
+        assert!(!modifiers_suppress_prediction(
+            true, false, false, false, false
+        ));
+        for (c, a, sh, w) in [
+            (true, false, false, false),
+            (false, true, false, false),
+            (false, false, true, false),
+            (false, false, false, true),
+        ] {
+            assert!(
+                modifiers_suppress_prediction(true, c, a, sh, w),
+                "表のキーは修飾付きで予測しない"
+            );
+        }
+        // 文字キー: Shift（大文字）は追跡する、Ctrl/Alt/Win（ショートカット）は追跡しない。
+        assert!(!modifiers_suppress_prediction(
+            false, false, false, false, false
+        ));
+        assert!(!modifiers_suppress_prediction(
+            false, false, false, true, false
+        ));
+        assert!(modifiers_suppress_prediction(
+            false, true, false, false, false
+        ));
+        assert!(modifiers_suppress_prediction(
+            false, false, true, false, false
+        ));
+        assert!(modifiers_suppress_prediction(
+            false, false, false, false, true
+        ));
+    }
+
+    #[test]
+    fn keymap_cache_loads_once_and_rechecks_by_stamp() {
+        use std::cell::Cell;
+        let loads = Cell::new(0u32);
+        let stamps = Cell::new(0u32);
+        let mut cache = KeymapCache::default();
+        let load = || {
+            loads.set(loads.get() + 1);
+            KeyEffectKeymap::from_config(Some(1), None, &[])
+        };
+        // 初回は読む。
+        assert!(cache
+            .get(
+                0,
+                || {
+                    stamps.set(stamps.get() + 1);
+                    Some((1, 10))
+                },
+                load
+            )
+            .is_some());
+        assert_eq!((loads.get(), stamps.get()), (1, 1));
+        // 再確認の間隔内（文字キーの連打）はfsに触れない（stampもloadも呼ばない）。
+        for t in [1, 500, 1999] {
+            assert!(cache
+                .get(
+                    t,
+                    || {
+                        stamps.set(stamps.get() + 1);
+                        Some((1, 10))
+                    },
+                    load
+                )
+                .is_some());
+        }
+        assert_eq!((loads.get(), stamps.get()), (1, 1), "間隔内はfsを読まない");
+        // 間隔を過ぎても版が同じなら読み直さない（statだけ）。
+        assert!(cache
+            .get(
+                2000,
+                || {
+                    stamps.set(stamps.get() + 1);
+                    Some((1, 10))
+                },
+                load
+            )
+            .is_some());
+        assert_eq!((loads.get(), stamps.get()), (1, 2));
+        // 版が変わったら読み直す。
+        assert!(cache
+            .get(
+                4000,
+                || {
+                    stamps.set(stamps.get() + 1);
+                    Some((2, 10))
+                },
+                load
+            )
+            .is_some());
+        assert_eq!((loads.get(), stamps.get()), (2, 3));
+    }
+
+    #[test]
+    fn keymap_cache_keeps_absent_keymap_without_rereading() {
+        use std::cell::Cell;
+        let loads = Cell::new(0u32);
+        let mut cache = KeymapCache::default();
+        for t in [0, 100, 2500] {
+            assert!(cache
+                .get(
+                    t,
+                    || None,
+                    || {
+                        loads.set(loads.get() + 1);
+                        None
+                    }
+                )
+                .is_none());
+        }
+        assert_eq!(
+            loads.get(),
+            1,
+            "GJI未導入（stamp=None）は版が変わらない限り読み直さない"
+        );
+    }
+
     use super::*;
 
     fn input(open: bool, mode: InputModeState, composing: bool, track: KeyTrack) -> PredictInput {

@@ -1934,6 +1934,8 @@ impl Runtime {
     }
 
     /// 物理キーの押下ごとに、打鍵時点の予測と隠れ状態の追跡（`kp_predict_key_effect`）を呼ぶ。
+    /// 修飾キー付きの打鍵は予測・追跡しない（`modifiers_suppress_prediction`）。キーマップは
+    /// `KeymapCache`が版の変化時だけ読む（打鍵ごとにconfig1.dbを読まない）。
     /// - 表が持つキー（モードキー、Space/Esc/Enter/BS等）: エンジンが消費せずIMEへ通したときだけ。
     ///   ADR-189の固定セット（`shadow_action`）と同期キー（`sync_direction`）は従来の経路に任せる。
     /// - 表に無いキー（文字キー）: エンジンが消費しても（ローマ字をIMEへ再注入して入力中にするため）
@@ -1950,6 +1952,13 @@ impl Runtime {
             return;
         }
         let in_table = crate::state::key_effect_table::TableKey::from_vk(event.vk_code.0).is_some();
+        let m = event.modifier_snapshot;
+        if crate::state::key_effect_table::modifiers_suppress_prediction(
+            in_table, m.ctrl, m.alt, m.shift, m.win,
+        ) {
+            // Shift+変換（ATOKで開閉トグルではない）やCtrl+文字（ショートカット）は「素のキー」の結果と違う。
+            return;
+        }
         if in_table
             && (decision.is_consumed()
                 || event.ime_relevance.shadow_action.is_some()
@@ -1975,7 +1984,11 @@ impl Runtime {
         {
             return;
         }
-        let Some(keymap) = crate::gji_charset_autodetect::read_key_effect_keymap() else {
+        let Some(keymap) = self.key_effect_keymap.get(
+            hook::current_tick_ms(),
+            crate::gji_charset_autodetect::config1_db_stamp,
+            crate::gji_charset_autodetect::read_key_effect_keymap,
+        ) else {
             return;
         };
         let ime = &self.platform_state.ime;
