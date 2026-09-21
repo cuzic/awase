@@ -8,9 +8,13 @@ related_adr:
   - "ADR-186"
 ---
 
-# ADR-193 実装タスク一覧
+# ADR-193 実装タスク一覧（保留・参考）
 
-[ADR-193](193-extend-existing-e2e-harness-for-chromium-coldstart.md)決定4を、実装可能な単位に分割したタスクリスト。
+> **状態: 保留（2026-09-21）。** 実機で BUG-002 型の症状が再現しなかった（ADR-193 決定3）ため、以下の Chrome cold-start 用 idle 掃引の設計は**実施しない**。
+> **症状が再現した場合にだけ**設計案として使う。5ラウンドのレビューで得た事実（しきい値の帰属、`activate_gji_profile` の中身、`gji_idle_ms` の観測不能性など）は
+> 再利用できる。ただし設計2の「`[vk-send]` の `elapsed` を掃引点と突き合わせる」は実機で `elapsed=0ms` が出て**成立しなかった**。
+
+[ADR-193](193-richedit-superclass-tsf-native-e2e-target.md)決定4を、実装可能な単位に分割したタスクリスト。
 形式は[163-implementation-tasks.md](163-implementation-tasks.md)を踏襲する（内容・変更ファイル・受け入れ基準・依存）。
 各タスクは個別のコミットにすること。**未検証の前提には「(未確認)」を付けた**。
 
