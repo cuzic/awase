@@ -215,16 +215,18 @@ impl ImeStateHub {
     /// 後から来る観測（settle後）が照合し、食い違えば観測が勝つ（`ImeModel::reduce`のfence）。
     pub(crate) fn apply_key_effect_prediction(
         &mut self,
-        effect: crate::state::key_effect_table::PredictedEffect,
+        prediction: crate::state::key_effect_table::Prediction,
         tick_ms: TickMs,
     ) {
-        if effect.is_noop() {
+        // 開閉・入力モードも追跡状態も変わらない打鍵は何もしない。
+        if prediction.effect.is_noop() && prediction.track == self.shadow_model.key_track() {
             return;
         }
         self.dispatch_event(
             ImeEvent::KeyEffectPredicted {
-                open: effect.open,
-                mode: effect.mode,
+                open: prediction.effect.open,
+                mode: prediction.effect.mode,
+                track: prediction.track,
             },
             tick_ms,
         );

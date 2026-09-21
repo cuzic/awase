@@ -551,6 +551,9 @@ pub enum ImeEvent {
     KeyEffectPredicted {
         open: Option<bool>,
         mode: Option<InputModeState>,
+        /// 打鍵履歴から追跡する隠れ状態（変換モード5種・変換中の段階）。開閉/入力モードに変化が
+        /// 無くても、追跡状態が変わる打鍵ではこのイベントを送る。
+        track: crate::state::key_effect_table::KeyTrack,
     },
 
     /// 起動直後の初回フォーカス確立時、`current_focus` を bootstrap で確立した

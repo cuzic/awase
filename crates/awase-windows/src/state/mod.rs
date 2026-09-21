@@ -118,6 +118,7 @@ pub mod ime_model;
 // する。runtime への配線（既存 `ImeModel.last_intent` との統合）はまだ無い
 // （配線は ADR-087 Phase 3 のスコープ、§7 round3 S4 参照）。
 pub mod intent_store;
+mod key_effect_data;
 pub mod key_effect_table;
 // ADR-087 Phase 2'/3 試験実装。intent_store と同じ ungated・未配線パターン。
 pub mod open_warrant;

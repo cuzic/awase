@@ -5400,7 +5400,7 @@ fn key_effect_predicted_event_is_constructed_only_in_apply_key_effect_prediction
     // reduce のアームは desired_open を書かない。
     let model = read_crate_file("src/state/ime_model.rs");
     let arm = model
-        .split("ImeEvent::KeyEffectPredicted { open, mode } => {")
+        .split("ImeEvent::KeyEffectPredicted { open, mode, track } => {")
         .nth(1)
         .expect("reduce に KeyEffectPredicted のアームがある")
         .split("ImeEvent::ModeKeyPassedThrough")

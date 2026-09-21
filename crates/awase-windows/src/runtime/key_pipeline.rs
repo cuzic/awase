@@ -1923,6 +1923,7 @@ impl Runtime {
         }
 
         self.kp_stage_mode_key_follow(decision, event);
+        self.kp_stage_key_effect_track(decision, event);
 
         self.kp_stage_shift_conv_guard(event);
     }
@@ -2019,17 +2020,45 @@ impl Runtime {
             "[mode-key-follow] mode key PassThrough(vk=0x{:02X}): IME refresh scheduled (20ms)",
             event.vk_code.0
         );
-        self.kp_predict_mode_key_effect(event.vk_code);
     }
 
-    /// ADR-191 決定3: 通したモードキーの効果を、キーマップの表から**打鍵の時点で**予測してbeliefへ反映する
-    /// （awaseはIMEへ書かない）。観測を待たないので、読めないアプリ（TsfNative等）でもEngineが即追随する。
-    /// 後続の観測（`MODE_KEY_PASS_*`の読み直し）がsettle後に照合し、食い違えば観測が勝つ
+    /// 物理キーの押下ごとに、打鍵時点の予測と隠れ状態の追跡（`kp_predict_key_effect`）を呼ぶ。
+    /// - 表が持つキー（モードキー、Space/Esc/Enter/BS等）: エンジンが消費せずIMEへ通したときだけ。
+    ///   ADR-189の固定セット（`shadow_action`）と同期キー（`sync_direction`）は従来の経路に任せる。
+    /// - 表に無いキー（文字キー）: エンジンが消費しても（ローマ字をIMEへ再注入して入力中にするため）
+    ///   変換中の段階を戻す追跡だけを更新する。修飾キー単体は対象外。
+    fn kp_stage_key_effect_track(
+        &mut self,
+        decision: &awase::engine::Decision,
+        event: &RawKeyEvent,
+    ) {
+        if !matches!(event.event_type, KeyEventType::KeyDown)
+            || event.injected
+            || matches!(event.vk_code.0, 0x10..=0x12 | 0x5B | 0x5C | 0xA0..=0xA5)
+        {
+            return;
+        }
+        let in_table = crate::state::key_effect_table::TableKey::from_vk(event.vk_code.0).is_some();
+        if in_table
+            && (decision.is_consumed()
+                || event.ime_relevance.shadow_action.is_some()
+                || event.ime_relevance.sync_direction.is_some())
+        {
+            return;
+        }
+        self.kp_predict_key_effect(event.vk_code);
+    }
+
+    /// ADR-191 決定3・4: 通したキーの効果を、学習した表（`key_effect_table`）から**打鍵の時点で**予測して
+    /// beliefへ反映する（awaseはIMEへ書かない）。観測を待たないので、読めないアプリ（TsfNative等）でも
+    /// Engineが即追随する。後続の観測（`MODE_KEY_PASS_*`の読み直し）がsettle後に照合し、食い違えば観測が勝つ
     /// （`ImeModel`のfence、`[key-effect-miss]`）。GJI以外・表に無い・非決定のセルは予測しない。
     ///
+    /// 変換モード5種・変換中の段階は`ImeModel::key_track`（隠れ状態）で追跡する。モードキーだけでなく、
+    /// Space/Esc/Enter/BS・文字キーも通して追跡状態を更新する（変換中の出入りが打鍵履歴で決まるため）。
     /// ADR-189の固定セット（半角/全角）は`shadow_action`を持つ間この関数に来ない（呼び出し側が除外）。
-    fn kp_predict_mode_key_effect(&mut self, vk: awase::types::VkCode) {
-        use crate::state::key_effect_table::KeyStatus;
+    fn kp_predict_key_effect(&mut self, vk: awase::types::VkCode) {
+        use crate::state::key_effect_table::PredictInput;
         if crate::tsf::observer::tsf_obs().active_ime_kind()
             != crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
         {
@@ -2038,36 +2067,38 @@ impl Runtime {
         let Some(keymap) = crate::gji_charset_autodetect::read_key_effect_keymap() else {
             return;
         };
-        let status = if !self.platform_state.ime.effective_open() {
-            KeyStatus::Direct
-        } else if crate::tsf::observer::ime_composition_active_now() {
-            KeyStatus::Composing
-        } else {
-            KeyStatus::Pre
+        let ime = &self.platform_state.ime;
+        let input = PredictInput {
+            open: ime.effective_open(),
+            mode: ime.input_mode(),
+            conv_raw: self.platform_state.ime.belief.prev_conversion_mode(),
+            composing: crate::tsf::observer::ime_composition_active_now(),
+            track: ime.model().key_track(),
         };
-        let mode = self.platform_state.ime.input_mode();
-        let Some(effect) = keymap.predict(vk.0, status, mode) else {
+        let Some(prediction) = keymap.predict(vk.0, &input) else {
             tracing::debug!(
-                "[key-effect-predict] vk=0x{:02X} status={status:?}: no prediction",
-                vk.0
+                "[key-effect-predict] vk=0x{:02X} open={} composing={}: no prediction",
+                vk.0,
+                input.open,
+                input.composing
             );
             return;
         };
-        if effect.is_noop() {
-            return;
-        }
         tracing::info!(
-            "[key-effect-predict] vk=0x{:02X} status={status:?} open={:?} mode={:?}",
+            "[key-effect-predict] vk=0x{:02X} open={:?} mode={:?} track={:?}",
             vk.0,
-            effect.open,
-            effect.mode
+            prediction.effect.open,
+            prediction.effect.mode,
+            prediction.track
         );
         let tick = crate::state::TickMs(hook::current_tick_ms());
         self.platform_state
             .ime
-            .apply_key_effect_prediction(effect, tick);
+            .apply_key_effect_prediction(prediction, tick);
         // 予測をEngineへ即反映する（active遷移の検知）。
-        self.notify_engine_refresh();
+        if !prediction.effect.is_noop() {
+            self.notify_engine_refresh();
+        }
     }
 
     /// 左Shift単独タップによる「IME-ON 半角英数」持続トグル判定

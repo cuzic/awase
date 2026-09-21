@@ -261,6 +261,9 @@ pub struct ImeModel {
     /// 打鍵時点の予測（ADR-191 決定3）。`reduce()`（`KeyEffectPredicted`/観測の照合/フォーカス変更/明示意図）
     /// だけが書く private フィールド。読み取りは`key_effect()`。
     key_effect: Option<KeyEffectPrediction>,
+    /// 打鍵履歴から追跡する隠れ状態（ADR-191 決定3・4: 変換モード5種・変換中の段階）。`reduce()`だけが書く
+    /// private フィールド（`KeyEffectPredicted`/フォーカス変更/明示意図/観測）。読み取りは`key_track()`。
+    key_track: crate::state::key_effect_table::KeyTrack,
 }
 
 /// 物理モードキーの打鍵時点で表から予測した効果（ADR-191 決定3）と、その fence。
@@ -312,6 +315,10 @@ impl ImeModel {
             applied: AppliedImeState::Unknown,
             current_focus: None,
             key_effect: None,
+            key_track: crate::state::key_effect_table::KeyTrack {
+                conv: None,
+                stage: crate::state::key_effect_table::Stage::None,
+            },
         }
     }
 
@@ -328,6 +335,12 @@ impl ImeModel {
     #[must_use]
     pub const fn key_effect(&self) -> Option<KeyEffectPrediction> {
         self.key_effect
+    }
+
+    /// 打鍵履歴から追跡している隠れ状態（変換モード5種・変換中の段階）。
+    #[must_use]
+    pub const fn key_track(&self) -> crate::state::key_effect_table::KeyTrack {
+        self.key_track
     }
 
     /// awase が IME をこうしたい状態（読み取り専用アクセサ）。
@@ -656,12 +669,14 @@ impl ImeModel {
         match envelope.event {
             ImeEvent::UserImeToggleIntent { source } => {
                 self.key_effect = None;
+                self.key_track.stage = crate::state::key_effect_table::Stage::None;
                 let target = !self.desired_open;
                 self.desired_open = target;
                 self.record_intent(target, source, envelope.time.tick_ms);
             }
             ImeEvent::UserImeSetIntent { target, source } => {
                 self.key_effect = None;
+                self.key_track.stage = crate::state::key_effect_table::Stage::None;
                 self.desired_open = target;
                 self.record_intent(target, source, envelope.time.tick_ms);
             }
@@ -757,6 +772,8 @@ impl ImeModel {
                     // 前の古い状態を読んでいる恐れがあるため、予測した入力モードを上書きしない。
                     if self.reconcile_key_effect_mode(mode, at.0) {
                         self.input_mode = mode;
+                        // 観測が来たので、変換モードの追跡は観測（`prev_conversion_mode`）へ戻す。
+                        self.key_track.conv = None;
                     }
                 } else {
                     tracing::debug!(
@@ -800,14 +817,18 @@ impl ImeModel {
                 // が固定する）。
                 self.app_policy = AppImePolicy::from_profile(profile);
             }
-            ImeEvent::KeyEffectPredicted { open, mode } => {
-                // 新しい打鍵が fence を進める。未照合の古い予測は、新しい予測が触れない軸だけ残す。
-                let prev = self.key_effect;
-                self.key_effect = Some(KeyEffectPrediction {
-                    at_ms: envelope.time.tick_ms,
-                    open: open.or_else(|| prev.and_then(|p| p.open)),
-                    mode: mode.or_else(|| prev.and_then(|p| p.mode)),
-                });
+            ImeEvent::KeyEffectPredicted { open, mode, track } => {
+                self.key_track = track;
+                // 追跡状態だけが変わる打鍵（開閉・入力モードは不変）は fence を進めない。
+                if open.is_some() || mode.is_some() {
+                    // 新しい打鍵が fence を進める。未照合の古い予測は、新しい予測が触れない軸だけ残す。
+                    let prev = self.key_effect;
+                    self.key_effect = Some(KeyEffectPrediction {
+                        at_ms: envelope.time.tick_ms,
+                        open: open.or_else(|| prev.and_then(|p| p.open)),
+                        mode: mode.or_else(|| prev.and_then(|p| p.mode)),
+                    });
+                }
                 if let Some(mode) = mode {
                     self.input_mode = mode;
                 }
@@ -870,8 +891,9 @@ impl ImeModel {
         // フォーカス変更で intent / observation / applied / force_guard / drift は clear する
         // (旧アプリの観測値が新アプリで有効と勘違いされないため)
         self.last_intent = None;
-        // 打鍵時点の予測も旧アプリの文脈のものなので捨てる。
+        // 打鍵時点の予測・追跡状態も旧アプリの文脈のものなので捨てる。
         self.key_effect = None;
+        self.key_track = crate::state::key_effect_table::KeyTrack::default();
         // 新しい epoch/hwnd を store に伝える。derive_any() はこれ以降、
         // 古い epoch/hwnd の ImmCrossProbe / FocusProbe を無視する
         // （ADR-106 決定3）。
@@ -1633,7 +1655,11 @@ mod tests {
             100,
             Instant::now(),
             tick_ms,
-            ImeEvent::KeyEffectPredicted { open, mode },
+            ImeEvent::KeyEffectPredicted {
+                open,
+                mode,
+                track: crate::state::key_effect_table::KeyTrack::default(),
+            },
         ));
     }
 
@@ -1654,6 +1680,87 @@ mod tests {
             "desired_open は書かない（ドリフト補正がIMEへ書き戻さないため）"
         );
         assert!(model.last_intent.is_none(), "明示意図を偽装しない");
+    }
+
+    fn predict_with_track(
+        model: &mut ImeModel,
+        tick_ms: u64,
+        track: crate::state::key_effect_table::KeyTrack,
+    ) {
+        model.reduce(&envelope_at(
+            100,
+            Instant::now(),
+            tick_ms,
+            ImeEvent::KeyEffectPredicted {
+                open: None,
+                mode: None,
+                track,
+            },
+        ));
+    }
+
+    #[test]
+    fn key_track_is_written_by_prediction_and_reset_by_focus_change_and_intent() {
+        use crate::state::key_effect_table::{Conv, KeyTrack, Stage};
+        let track = KeyTrack {
+            conv: Some(Conv::C1B),
+            stage: Stage::ConvHenkan,
+        };
+        let mut model = ImeModel::new();
+        predict_with_track(&mut model, 1000, track);
+        assert_eq!(model.key_track(), track);
+        // 追跡状態だけの更新は、開閉・入力モードの予測（fence）を作らない。
+        assert!(model.key_effect().is_none());
+        // 明示意図（半角/全角のトグル等）は変換中の段階だけ捨てる。
+        model.reduce(&envelope(
+            2,
+            ImeEvent::UserImeSetIntent {
+                target: true,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        assert_eq!(
+            model.key_track(),
+            KeyTrack {
+                conv: Some(Conv::C1B),
+                stage: Stage::None
+            }
+        );
+        // フォーカス変更は旧アプリの文脈なので全部捨てる。
+        predict_with_track(&mut model, 1100, track);
+        model.reduce(&focus_changed_event(3));
+        assert_eq!(model.key_track(), KeyTrack::default());
+    }
+
+    #[test]
+    fn medium_mode_observation_returns_conv_tracking_to_observed_value() {
+        use crate::state::key_effect_table::{Conv, KeyTrack, Stage};
+        let mut model = ImeModel::new();
+        predict_with_track(
+            &mut model,
+            1000,
+            KeyTrack {
+                conv: Some(Conv::C10),
+                stage: Stage::Typing,
+            },
+        );
+        model.reduce(&envelope_at(
+            2,
+            Instant::now(),
+            5000,
+            ImeEvent::InputModeObserved {
+                mode: InputModeState::ObservedRomaji,
+                source: ObservationSource::ObserverPoll,
+                confidence: ObservationConfidence::Medium,
+                at: crate::state::TickMs(5000),
+            },
+        ));
+        assert_eq!(model.key_track().conv, None, "観測が来たら追跡は観測へ戻る");
+        assert_eq!(
+            model.key_track().stage,
+            Stage::Typing,
+            "段階は観測できないので残す"
+        );
     }
 
     #[test]

@@ -1,26 +1,28 @@
-//! ADR-191 決定3: 「打鍵の時点で、表(状態, キー)→効果からbeliefを予測する」ための純粋な表。
+//! ADR-191 決定3・4: 「打鍵の時点で、表(状態, キー)→効果からbeliefを予測する」ための純粋な表と規則。
 //!
 //! awaseはIMEへ書かない。生キーはそのままIMEへ通り、ここでは**その結果を先取りして**beliefへ
 //! 反映するための予測だけを返す（観測は後から確認・訂正する。`ime_model.rs`の`KeyEffectPredicted`）。
 //!
-//! # 出所（静的な初期仮説）
+//! # 出所（学習結果だけ）
 //!
-//! Mozc公開キーマップ（`atok.tsv` / `ms-ime.tsv`）を、`keyevent_handler.cc`のVK→`KeyEvent`
-//! 対応と`key_parser.cc`のトークン別名（`kana`=`hiragana`、`hankaku`=`zenkaku`=`hankaku/zenkaku`）で
-//! 引いた結果。Mozcの`status`は次のとおり（awaseが分かる範囲に丸める）:
-//! IME閉 → `DirectInput` / 開・入力中でない → `Precomposition` / 開・入力中 → `Composition`か
-//! `Conversion`（区別できないので、両者の効果が一致するときだけ予測する）。
+//! 表の中身は**手で書かない**。`tools/e2e/ime_key_matrix/gen_key_effect_table.py`が、CI実機の
+//! `--grid`学習（awaseを完全にバイパスした注入。`grid-tables/{atok,msime}.json`）から生成する
+//! `key_effect_data.rs`だけがデータ源である（ADR-191の3段階ラウンド: 設定の読み取り→学習→検証）。
+//! MS-IMEは「GJIのMS-IMEプリセット」の表で、Microsoft IME本体ではない。
+//!
+//! # 状態
+//!
+//! `(開閉, 変換モード5種, 入力中の段階)`。入力中の段階のうち**変換中（`Conversion`）は観測できない
+//! 隠れ状態**なので、打鍵履歴から`KeyTrack`が追跡する（変換/無変換/Spaceで入り、Esc/Enter/文字入力等で出る）。
+//! 変換モード5種は`Conv`（ROMANビットを除いたconvの生値）。
 //!
 //! **カスタムキーマップ・overlayが対象キーの行を上書きしている場合は予測しない**（`None`、観測に任せる）。
-//! 学習（ADR-191 決定4の較正）で置き換わるまでの、静的な初期仮説である。
 //!
 //! # 予測しないもの
 //!
-//! - 表に無い・非決定のセル（`Unknown`）は`None`（観測が唯一の信号になる）。
-//! - `IMEOn`が復元する入力モード（直前のモードを覚えている）は予測しない（`open`だけ）。
-//! - ADR-189の固定セット（`VK_KANJI`0x19・半角/全角0xF3/0xF4）: 0xF3/0xF4はここに行を持つが、
-//!   ADR-189のbeliefトグル（`shadow_action`）が有効なときは呼び出し側が`shadow_action.is_some()`で
-//!   除外する（二重に効かせない）。0x19は表に無い。
+//! - 表に無い・非決定のセル（生成時に除外）は`None`（観測が唯一の信号になる）。
+//! - ADR-189の固定セット（半角/全角0xF3/0xF4・漢字0x19）: 呼び出し側が`shadow_action.is_some()`で
+//!   除外する（二重に効かせない）。0x16/0x1A（`VK_IME_ON`/`OFF`）は呼び出し側が追随の対象にしない。
 
 use awase::engine::{AssumedReason, InputModeState};
 
@@ -28,35 +30,173 @@ use awase::engine::{AssumedReason, InputModeState};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeymapPreset {
     Atok,
+    /// GJIのMS-IMEプリセット（Microsoft IME本体ではない）。
     MsIme,
 }
 
-/// Mozcの`status`をawaseが分かる範囲に丸めたもの。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyStatus {
-    /// IMEが閉じている（Mozcの`DirectInput`）。
-    Direct,
-    /// IMEが開いていて入力中でない（`Precomposition`）。
-    Pre,
-    /// IMEが開いていて入力中（`Composition`または`Conversion`）。
-    Composing,
+/// 変換モード（`conv`の生値からROMANビットを除いた5種）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum Conv {
+    /// 半角英数
+    C10,
+    /// 半角カタカナ
+    C13,
+    /// 全角英数
+    C18,
+    /// ひらがな
+    C19,
+    /// 全角カタカナ
+    C1B,
 }
 
-/// 1打鍵の（IME側の）効果。Mozcのコマンドを、awaseのbeliefが持つ軸だけに畳んだもの。
+impl Conv {
+    /// `conv`の生値（IMEのconversion mode）から。NATIVE(1)・KATAKANA(2)・FULLSHAPE(8)だけを見る
+    /// （ROMAN(0x10)はGJIが報告しない）。5種以外の組み合わせは`None`。
+    #[must_use]
+    pub const fn from_raw(raw: u32) -> Option<Self> {
+        match raw & 0x0B {
+            0x00 => Some(Self::C10),
+            0x03 => Some(Self::C13),
+            0x08 => Some(Self::C18),
+            0x09 => Some(Self::C19),
+            0x0B => Some(Self::C1B),
+            _ => None,
+        }
+    }
+
+    /// かな入力系（NATIVEビットあり）か。EngineはこのときだけNICOLAを有効にする。
+    #[must_use]
+    pub const fn is_native(self) -> bool {
+        matches!(self, Self::C13 | Self::C19 | Self::C1B)
+    }
+}
+
+/// 入力中の段階。`None`は入力中でない。`Typing`と変換中3種のうち、変換中は打鍵履歴からの追跡（隠れ状態）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+pub enum Stage {
+    #[default]
+    None,
+    /// 未確定文字列がある（変換前）。
+    Typing,
+    /// Spaceで変換中（候補選択）。
+    ConvSpace,
+    /// 変換キーで変換中。
+    ConvHenkan,
+    /// 無変換で入る英数変換中（`ToggleAlphanumericMode`の変換系状態）。
+    ConvMuhenkan,
+}
+
+/// 表が持つキー（学習した13種）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyEffect {
-    /// 開閉も入力モードも変わらない（未割り当て、変換系など）。
-    NoChange,
-    /// IMEを開く（`IMEOn`）。入力モードは変えない（直前のモードが復元される）。
-    ImeOn,
-    /// IMEを閉じる（`IMEOff`/`CancelAndIMEOff`）。
+pub enum TableKey {
+    Bs,
+    Eisu,
+    Enter,
+    Esc,
+    HankakuZenkaku,
+    Henkan,
+    Hiragana,
     ImeOff,
-    /// 半角英数⇔かなの切り替え（`ToggleAlphanumericMode`）。開閉は変えない。
-    ToggleAlnum,
-    /// かな系の入力モードに固定する（`CompositionModeHiragana`/`FullKatakana`）。
-    SetKana,
-    /// 効果が状態・文脈で決まらない（`Reconvert`/`SwitchKanaType`等）。予測しない。
-    Unknown,
+    ImeOn,
+    Kanji,
+    Katakana,
+    Muhenkan,
+    Space,
+}
+
+impl TableKey {
+    /// VKから。表に無いキー（文字キー等）は`None`。
+    #[must_use]
+    pub const fn from_vk(vk: u16) -> Option<Self> {
+        Some(match vk {
+            0x08 => Self::Bs,
+            0xF0 => Self::Eisu,
+            0x0D => Self::Enter,
+            0x1B => Self::Esc,
+            0xF3 | 0xF4 => Self::HankakuZenkaku,
+            0x1C => Self::Henkan,
+            0xF2 => Self::Hiragana,
+            0x1A => Self::ImeOff,
+            0x16 => Self::ImeOn,
+            0x19 => Self::Kanji,
+            0xF1 => Self::Katakana,
+            0x1D => Self::Muhenkan,
+            0x20 => Self::Space,
+            _ => return None,
+        })
+    }
+}
+
+/// 入力中の文字列の行方（押下後）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disp {
+    /// 入力中でなかった（行方なし）。
+    None,
+    /// 保持（入力中/変換中のまま）。
+    Kept,
+    /// 破棄。
+    Discarded,
+    /// 確定。
+    Committed,
+}
+
+/// 学習した1セル: 押下前の状態とキー → 押下後の開閉・変換モード・入力中の行方。
+#[derive(Debug, Clone, Copy)]
+pub struct Cell {
+    open: bool,
+    conv: Conv,
+    stage: Stage,
+    key: TableKey,
+    after_open: bool,
+    after_conv: Conv,
+    disp: Disp,
+}
+
+/// `key_effect_data.rs`（生成物）が使うセル構築子。
+#[must_use]
+pub const fn cell(
+    open: bool,
+    conv: Conv,
+    stage: Stage,
+    key: TableKey,
+    after_open: bool,
+    after_conv: Conv,
+    disp: Disp,
+) -> Cell {
+    Cell {
+        open,
+        conv,
+        stage,
+        key,
+        after_open,
+        after_conv,
+        disp,
+    }
+}
+
+fn find(
+    preset: KeymapPreset,
+    open: bool,
+    conv: Conv,
+    stage: Stage,
+    key: TableKey,
+) -> Option<&'static Cell> {
+    let table = match preset {
+        KeymapPreset::Atok => super::key_effect_data::ATOK,
+        KeymapPreset::MsIme => super::key_effect_data::MSIME,
+    };
+    table
+        .iter()
+        .find(|c| c.open == open && c.conv == conv && c.stage == stage && c.key == key)
+}
+
+/// 打鍵履歴から追跡する隠れ状態（`ImeModel`が`KeyEffectPredicted`で持つ）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+pub struct KeyTrack {
+    /// 直近の予測が示した変換モード。`None`なら観測（`prev_conversion_mode`）か既定から引く。
+    pub conv: Option<Conv>,
+    /// 入力中の段階（入力中でないときは無視され、`None`扱い）。
+    pub stage: Stage,
 }
 
 /// 表から予測した、beliefへの反映内容。
@@ -76,29 +216,118 @@ impl PredictedEffect {
     }
 }
 
-/// `(プリセット, キー, status)`ごとの効果。`vk`は`vk.rs::is_followed_mode_key`の集合。
-/// 行は`atok.tsv`/`ms-ime.tsv`から生成（並びは`[Direct, Pre, Composition, Conversion]`）。
-const fn lookup(preset: KeymapPreset, vk: u16) -> Option<[KeyEffect; 4]> {
-    use KeyEffect::{ImeOff, ImeOn, NoChange, SetKana, ToggleAlnum, Unknown};
-    let row = match (preset, vk) {
-        // 0xF0 VK_DBE_ALPHANUMERIC → Eisu / 0xF2 VK_DBE_HIRAGANA → Kana(=Hiragana)
-        // （ATOK はどちらも英数⇔かなのトグル。Direct は Eisu だけ未割り当てで NoChange）
-        (KeymapPreset::Atok, 0xF0 | 0xF2) => [NoChange, ToggleAlnum, ToggleAlnum, ToggleAlnum],
-        (KeymapPreset::MsIme, 0xF0) => [ImeOn, ToggleAlnum, ToggleAlnum, ToggleAlnum],
-        // 0xF1 VK_DBE_KATAKANA → Katakana（MS-IME は Hiragana(0xF2) と同じくかな固定）
-        (KeymapPreset::Atok, 0xF1) => [NoChange, NoChange, NoChange, NoChange],
-        (KeymapPreset::MsIme, 0xF1 | 0xF2) => [ImeOn, SetKana, SetKana, SetKana],
-        // 0xF3/0xF4 VK_DBE_SBCSCHAR/DBCSCHAR → Hankaku/Zenkaku
-        (KeymapPreset::Atok | KeymapPreset::MsIme, 0xF3 | 0xF4) => [ImeOn, ImeOff, ImeOff, ImeOff],
-        // 0x1C VK_CONVERT → Henkan
-        (KeymapPreset::Atok, 0x1C) => [ImeOn, ImeOff, NoChange, NoChange],
-        (KeymapPreset::MsIme, 0x1C) => [Unknown, Unknown, NoChange, NoChange],
-        // 0x1D VK_NONCONVERT → Muhenkan
-        (KeymapPreset::Atok, 0x1D) => [ImeOn, ImeOff, ToggleAlnum, NoChange],
-        (KeymapPreset::MsIme, 0x1D) => [NoChange, Unknown, Unknown, Unknown],
-        _ => return None,
+/// 予測結果: beliefへの反映と、更新後の追跡状態。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Prediction {
+    pub effect: PredictedEffect,
+    pub track: KeyTrack,
+}
+
+/// 予測の入力（打鍵前の、awaseが知っている状態）。
+#[derive(Debug, Clone, Copy)]
+pub struct PredictInput {
+    /// 打鍵前のbeliefの開閉。
+    pub open: bool,
+    /// 打鍵前のbeliefの入力モード。`Unknown`のときは既定（ひらがな）を種にして予測を始める。
+    pub mode: InputModeState,
+    /// 直近に観測した`conv`の生値（読めるアプリのみ）。
+    pub conv_raw: Option<u32>,
+    /// 入力中（未確定文字列あり）か（TSFの観測）。
+    pub composing: bool,
+    /// 追跡中の隠れ状態。
+    pub track: KeyTrack,
+}
+
+const fn kana_mode() -> InputModeState {
+    InputModeState::AssumedRomaji {
+        reason: AssumedReason::KeyEffectPrediction,
+    }
+}
+
+/// 入力モードのbelief（Eisuか否か）が、変換モード`conv`と食い違うときだけ、反映すべき値を返す。
+/// `Unknown`は既定の種として必ず返す（読めない/不明のときも、予測を始められるように）。
+fn mode_effect(current: InputModeState, conv: Conv) -> Option<InputModeState> {
+    let target = if conv.is_native() {
+        kana_mode()
+    } else {
+        InputModeState::ObservedEisu
     };
-    Some(row)
+    let current_native = !matches!(current, InputModeState::ObservedEisu);
+    if matches!(current, InputModeState::Unknown) || current_native != conv.is_native() {
+        Some(target)
+    } else {
+        None
+    }
+}
+
+/// 入力中の段階の遷移（キー種別の小さな規則）。表が持つのは「保持/破棄/確定」だけ。
+const fn next_stage(prev: Stage, key: TableKey, disp: Disp, open_after: bool) -> Stage {
+    if !open_after {
+        return Stage::None;
+    }
+    match disp {
+        Disp::None | Disp::Discarded | Disp::Committed => Stage::None,
+        Disp::Kept => match key {
+            TableKey::Henkan => Stage::ConvHenkan,
+            TableKey::Muhenkan => Stage::ConvMuhenkan,
+            TableKey::Space => Stage::ConvSpace,
+            TableKey::Esc => Stage::None,
+            _ => prev,
+        },
+    }
+}
+
+/// 表を引いて予測を返す。予測できない（表に無い・非決定・プリセット外）ときは`None`。
+///
+/// 表に無いキー（文字キー等）は、開閉・入力モードを変えないが、変換中の段階だけは`Typing`へ戻す
+/// （変換中に文字を打つと確定して新しい入力中になる）。
+#[must_use]
+pub fn predict(preset: KeymapPreset, vk: u16, input: &PredictInput) -> Option<Prediction> {
+    let seeded = matches!(input.mode, InputModeState::Unknown);
+    let conv = input
+        .track
+        .conv
+        .or_else(|| input.conv_raw.and_then(Conv::from_raw))
+        .unwrap_or(if matches!(input.mode, InputModeState::ObservedEisu) {
+            Conv::C10
+        } else {
+            Conv::C19
+        });
+    let stage = if input.open && input.composing {
+        match input.track.stage {
+            Stage::None => Stage::Typing,
+            s => s,
+        }
+    } else {
+        Stage::None
+    };
+    let Some(key) = TableKey::from_vk(vk) else {
+        // 文字キー等: 変換中の段階だけ戻す。種（Unknown）は必ず反映する。
+        let new_stage = if matches!(input.track.stage, Stage::None) {
+            Stage::None
+        } else {
+            Stage::Typing
+        };
+        let track = KeyTrack {
+            conv: input.track.conv,
+            stage: new_stage,
+        };
+        let effect = PredictedEffect {
+            open: None,
+            mode: if seeded { Some(kana_mode()) } else { None },
+        };
+        return (!effect.is_noop() || track != input.track).then_some(Prediction { effect, track });
+    };
+    let c = find(preset, input.open, conv, stage, key)?;
+    let effect = PredictedEffect {
+        open: (c.after_open != input.open).then_some(c.after_open),
+        mode: mode_effect(input.mode, c.after_conv),
+    };
+    let track = KeyTrack {
+        conv: Some(c.after_conv),
+        stage: next_stage(stage, key, c.disp, c.after_open),
+    };
+    Some(Prediction { effect, track })
 }
 
 /// `config1.db`から得た、予測に使うキーマップ（プリセット+カスタム上書きの検出材料）。
@@ -139,12 +368,7 @@ impl KeyEffectKeymap {
     /// このキーマップでの、`vk`の打鍵の予測。カスタム表がそのキーの行を持つ、または overlay がある
     /// （無変換/変換は overlay `HENKAN_MUHENKAN_TO_IME_ON_OFF` が上書きしうる）ときは`None`。
     #[must_use]
-    pub fn predict(
-        &self,
-        vk: u16,
-        status: KeyStatus,
-        current_mode: InputModeState,
-    ) -> Option<PredictedEffect> {
+    pub fn predict(&self, vk: u16, input: &PredictInput) -> Option<Prediction> {
         if self
             .custom_table
             .as_deref()
@@ -155,7 +379,7 @@ impl KeyEffectKeymap {
         if self.has_overlay && matches!(vk, 0x1C | 0x1D) {
             return None;
         }
-        predict(self.preset, vk, status, current_mode)
+        predict(self.preset, vk, input)
     }
 }
 
@@ -169,6 +393,10 @@ const fn mozc_tokens(vk: u16) -> &'static [&'static str] {
         0xF3 | 0xF4 => &["hankaku", "zenkaku", "hankaku/zenkaku"],
         0x1C => &["henkan"],
         0x1D => &["muhenkan"],
+        0x08 => &["backspace"],
+        0x0D => &["enter"],
+        0x1B => &["escape"],
+        0x20 => &["space"],
         _ => &[],
     }
 }
@@ -187,197 +415,224 @@ pub fn custom_table_overrides(custom_table: &str, vk: u16) -> bool {
     })
 }
 
-/// 表を引いて予測を返す。予測できない（表に無い・非決定・状態が曖昧）ときは`None`。
-///
-/// `current_mode`は`ToggleAlnum`の反転元。`ObservedEisu`なら「かな」へ、かな系なら「英数」へ。
-/// それ以外（`Unknown`等）は反転先が決まらないので`None`。
-#[must_use]
-pub fn predict(
-    preset: KeymapPreset,
-    vk: u16,
-    status: KeyStatus,
-    current_mode: InputModeState,
-) -> Option<PredictedEffect> {
-    let row = lookup(preset, vk)?;
-    let effect = match status {
-        KeyStatus::Direct => row[0],
-        KeyStatus::Pre => row[1],
-        // Composition と Conversion は区別できない。効果が同じときだけ予測する。
-        KeyStatus::Composing => {
-            if row[2] == row[3] {
-                row[2]
-            } else {
-                return None;
-            }
-        }
-    };
-    let kana = InputModeState::AssumedRomaji {
-        reason: AssumedReason::KeyEffectPrediction,
-    };
-    let predicted = match effect {
-        KeyEffect::NoChange => PredictedEffect {
-            open: None,
-            mode: None,
-        },
-        KeyEffect::ImeOn => PredictedEffect {
-            open: Some(true),
-            mode: None,
-        },
-        KeyEffect::ImeOff => PredictedEffect {
-            open: Some(false),
-            mode: None,
-        },
-        KeyEffect::SetKana => PredictedEffect {
-            open: None,
-            mode: Some(kana),
-        },
-        KeyEffect::ToggleAlnum => {
-            let mode = match current_mode {
-                InputModeState::ObservedEisu => kana,
-                InputModeState::ObservedRomaji
-                | InputModeState::ObservedKana
-                | InputModeState::AssumedRomaji { .. } => InputModeState::ObservedEisu,
-                InputModeState::Unknown => return None,
-            };
-            PredictedEffect {
-                open: None,
-                mode: Some(mode),
-            }
-        }
-        KeyEffect::Unknown => return None,
-    };
-    Some(predicted)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const ROMAJI: InputModeState = InputModeState::ObservedRomaji;
-
-    fn kana_pred() -> InputModeState {
-        InputModeState::AssumedRomaji {
-            reason: AssumedReason::KeyEffectPrediction,
+    fn input(open: bool, mode: InputModeState, composing: bool, track: KeyTrack) -> PredictInput {
+        PredictInput {
+            open,
+            mode,
+            conv_raw: None,
+            composing,
+            track,
         }
     }
 
+    const ROMAJI: InputModeState = InputModeState::ObservedRomaji;
+    const NOTRACK: KeyTrack = KeyTrack {
+        conv: None,
+        stage: Stage::None,
+    };
+
     #[test]
-    fn atok_hiragana_toggles_alnum_when_open() {
-        // 実測: ATOK Precomposition Kana=ToggleAlphanumericMode（ひらがな→英数）。
-        let p = predict(KeymapPreset::Atok, 0xF2, KeyStatus::Pre, ROMAJI).unwrap();
-        assert_eq!(p.open, None);
-        assert_eq!(p.mode, Some(InputModeState::ObservedEisu));
-        // 英数から押すとかなへ戻る。
+    fn atok_hiragana_toggles_to_halfwidth_alnum_and_back_to_hiragana_from_katakana() {
+        // 実測(grid): ATOK ひらがな(0xF2)。開・ひらがな(0x19)→半角英数(0x10)。全角カタカナ(0x1B)→ひらがな(0x19)。
         let p = predict(
             KeymapPreset::Atok,
             0xF2,
-            KeyStatus::Pre,
-            InputModeState::ObservedEisu,
+            &input(true, ROMAJI, false, NOTRACK),
         )
         .unwrap();
-        assert_eq!(p.mode, Some(kana_pred()));
-    }
-
-    #[test]
-    fn atok_hiragana_in_direct_input_is_undefined_so_nothing_changes() {
-        // ATOK DirectInput に Kana の行は無い（実測: IME OFF でひらがなを押しても開かない）。
-        let p = predict(KeymapPreset::Atok, 0xF2, KeyStatus::Direct, ROMAJI).unwrap();
-        assert!(p.is_noop());
-    }
-
-    #[test]
-    fn atok_muhenkan_depends_on_status() {
-        let mode = ROMAJI;
-        let d = predict(KeymapPreset::Atok, 0x1D, KeyStatus::Direct, mode).unwrap();
-        assert_eq!(d.open, Some(true));
-        let p = predict(KeymapPreset::Atok, 0x1D, KeyStatus::Pre, mode).unwrap();
-        assert_eq!(p.open, Some(false));
-        // Composition は ToggleAlnum、Conversion は NoChange で食い違う → 予測しない。
+        assert_eq!(p.effect.open, None);
+        assert_eq!(p.effect.mode, Some(InputModeState::ObservedEisu));
+        assert_eq!(p.track.conv, Some(Conv::C10));
+        let kata = KeyTrack {
+            conv: Some(Conv::C1B),
+            stage: Stage::None,
+        };
+        let p = predict(KeymapPreset::Atok, 0xF2, &input(true, ROMAJI, false, kata)).unwrap();
+        assert_eq!(p.track.conv, Some(Conv::C19));
         assert_eq!(
-            predict(KeymapPreset::Atok, 0x1D, KeyStatus::Composing, mode),
-            None
+            p.effect.mode, None,
+            "かな系のまま(かな→かな)は入力モードの区分が変わらない"
         );
     }
 
     #[test]
-    fn atok_henkan_while_composing_is_no_change() {
-        // Composition=Convert / Conversion=ConvertNextPage は、どちらも開閉・モードを変えない。
-        let p = predict(KeymapPreset::Atok, 0x1C, KeyStatus::Composing, ROMAJI).unwrap();
-        assert!(p.is_noop());
+    fn atok_hiragana_in_direct_input_changes_nothing() {
+        // 実測: IME OFFでひらがなを押しても開かない・conv不変。
+        let p = predict(
+            KeymapPreset::Atok,
+            0xF2,
+            &input(false, ROMAJI, false, NOTRACK),
+        )
+        .unwrap();
+        assert!(p.effect.is_noop());
     }
 
     #[test]
-    fn hankaku_zenkaku_opens_when_closed_and_closes_otherwise() {
-        for vk in [0xF3, 0xF4] {
-            for preset in [KeymapPreset::Atok, KeymapPreset::MsIme] {
-                let d = predict(preset, vk, KeyStatus::Direct, ROMAJI).unwrap();
-                assert_eq!(d.open, Some(true));
-                let c = predict(preset, vk, KeyStatus::Composing, ROMAJI).unwrap();
-                assert_eq!(c.open, Some(false));
-            }
+    fn atok_muhenkan_and_henkan_close_when_open_and_idle_and_open_when_closed() {
+        for vk in [0x1D, 0x1C] {
+            let closed = predict(
+                KeymapPreset::Atok,
+                vk,
+                &input(false, ROMAJI, false, NOTRACK),
+            )
+            .unwrap();
+            assert_eq!(closed.effect.open, Some(true), "vk=0x{vk:02X}");
+            let open =
+                predict(KeymapPreset::Atok, vk, &input(true, ROMAJI, false, NOTRACK)).unwrap();
+            assert_eq!(open.effect.open, Some(false), "vk=0x{vk:02X}");
         }
     }
 
     #[test]
-    fn msime_hiragana_sets_kana_and_opens_from_direct() {
-        let p = predict(
-            KeymapPreset::MsIme,
-            0xF2,
-            KeyStatus::Pre,
-            InputModeState::ObservedEisu,
+    fn conversion_stage_is_tracked_from_key_history_and_changes_what_esc_does() {
+        // 変換(入力中)→変換中(ConvHenkan)へ入る。その後のEscは入力中に戻るだけ(保持)。
+        let typing = input(true, ROMAJI, true, NOTRACK);
+        let p1 = predict(KeymapPreset::Atok, 0x1C, &typing).unwrap();
+        assert_eq!(p1.track.stage, Stage::ConvHenkan);
+        let p2 = predict(
+            KeymapPreset::Atok,
+            0x1B,
+            &input(true, ROMAJI, true, p1.track),
         )
         .unwrap();
-        assert_eq!(p.mode, Some(kana_pred()));
-        let d = predict(KeymapPreset::MsIme, 0xF2, KeyStatus::Direct, ROMAJI).unwrap();
-        assert_eq!(d.open, Some(true));
+        assert_eq!(
+            p2.track.stage,
+            Stage::None,
+            "変換中のEscは入力中(Typing)に戻る"
+        );
+        // 入力中(Typing)のEscは破棄(入力中でなくなる)。
+        let p3 = predict(KeymapPreset::Atok, 0x1B, &typing).unwrap();
+        assert_eq!(p3.track.stage, Stage::None);
     }
 
     #[test]
-    fn non_deterministic_cells_return_none() {
-        // MS-IME の Henkan は Precomposition で Reconvert（効果が文脈依存）。
-        assert_eq!(
-            predict(KeymapPreset::MsIme, 0x1C, KeyStatus::Pre, ROMAJI),
-            None
-        );
-        // 入力モードが不明なときのトグルは反転先が決まらない。
+    fn typing_a_character_leaves_the_conversion_stage() {
+        let conv = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::ConvSpace,
+        };
+        let p = predict(KeymapPreset::Atok, 0x41, &input(true, ROMAJI, true, conv)).unwrap();
+        assert_eq!(p.track.stage, Stage::Typing);
+        assert!(p.effect.is_noop());
+        // 変換中でなければ何も更新しない(予測なし)。
         assert_eq!(
             predict(
                 KeymapPreset::Atok,
-                0xF2,
-                KeyStatus::Pre,
-                InputModeState::Unknown
+                0x41,
+                &input(true, ROMAJI, true, NOTRACK)
             ),
             None
         );
-        // 表に無いキー（VK_KANJI 0x19 = ADR-189 の固定セット、VK_IME_ON 等）。
+    }
+
+    #[test]
+    fn unknown_mode_is_seeded_with_kana_so_prediction_can_start() {
+        // 入力モード不明(読めない窓の起動直後)でも、既定のひらがなを種にして予測を始める。
+        let p = predict(
+            KeymapPreset::Atok,
+            0x1C,
+            &input(false, InputModeState::Unknown, false, NOTRACK),
+        )
+        .unwrap();
+        assert_eq!(p.effect.open, Some(true));
+        assert_eq!(p.effect.mode, Some(kana_mode()));
+        // 表に無いキー(文字)でも種は反映する。
+        let p = predict(
+            KeymapPreset::Atok,
+            0x41,
+            &input(true, InputModeState::Unknown, false, NOTRACK),
+        )
+        .unwrap();
+        assert_eq!(p.effect.mode, Some(kana_mode()));
+    }
+
+    #[test]
+    fn observed_conv_raw_selects_the_katakana_state() {
+        // 観測したconv(0x1B=全角カタカナ)が追跡に無いときの初期値になる。
+        let mut i = input(true, ROMAJI, false, NOTRACK);
+        i.conv_raw = Some(0x1B);
+        let p = predict(KeymapPreset::Atok, 0xF2, &i).unwrap();
+        assert_eq!(p.track.conv, Some(Conv::C19));
+        assert_eq!(Conv::from_raw(0x19), Some(Conv::C19));
+        assert_eq!(Conv::from_raw(0x00), Some(Conv::C10));
+        assert_eq!(Conv::from_raw(0x02), None, "5種以外");
+    }
+
+    #[test]
+    fn grid_facts_are_reproduced_by_the_generated_table() {
+        // 実測(CI --grid): ATOK 入力中の無変換は ToggleAlphanumericMode の変換系の段階へ入り、
+        // ひらがな(0x19)のまま入力中を保持する。もう一度無変換を押すと半角英数(0x10)になる。
+        let typing = input(true, ROMAJI, true, NOTRACK);
+        let p1 = predict(KeymapPreset::Atok, 0x1D, &typing).unwrap();
+        assert_eq!(p1.track.stage, Stage::ConvMuhenkan);
+        assert_eq!(p1.track.conv, Some(Conv::C19));
+        let p2 = predict(
+            KeymapPreset::Atok,
+            0x1D,
+            &input(true, ROMAJI, true, p1.track),
+        )
+        .unwrap();
+        assert_eq!(p2.track.conv, Some(Conv::C10));
+        assert_eq!(p2.effect.mode, Some(InputModeState::ObservedEisu));
+        // 半角/全角: 開なら閉じて入力中は破棄、閉なら開く。
+        let hz = predict(KeymapPreset::Atok, 0xF3, &typing).unwrap();
+        assert_eq!(hz.effect.open, Some(false));
+        assert_eq!(hz.track.stage, Stage::None);
+        let opened = predict(
+            KeymapPreset::Atok,
+            0xF4,
+            &input(false, ROMAJI, false, NOTRACK),
+        )
+        .unwrap();
+        assert_eq!(opened.effect.open, Some(true));
+        // 非決定セル（ATOK 英数キーの一部）は生成時に除外され、予測しない。
         assert_eq!(
-            predict(KeymapPreset::Atok, 0x19, KeyStatus::Pre, ROMAJI),
+            predict(
+                KeymapPreset::Atok,
+                0xF0,
+                &input(true, ROMAJI, false, NOTRACK)
+            ),
             None
         );
+    }
+
+    #[test]
+    fn msime_preset_uses_its_own_table() {
+        // MS-IMEプリセット: 開・ひらがなでひらがな(0xF2)は0x19のまま/カタカナ(0xF1)は0x1Bへ、など
+        // atokと別の表であること(同一入力で結果が食い違うセルがある)。
+        let differs = [0xF0, 0xF1, 0xF2, 0x1C, 0x1D].iter().any(|&vk| {
+            let a = predict(KeymapPreset::Atok, vk, &input(true, ROMAJI, false, NOTRACK));
+            let m = predict(
+                KeymapPreset::MsIme,
+                vk,
+                &input(true, ROMAJI, false, NOTRACK),
+            );
+            a != m
+        });
+        assert!(differs);
     }
 
     #[test]
     fn keymap_from_config_selects_preset_and_respects_overrides() {
+        let base = input(true, ROMAJI, false, NOTRACK);
         let atok = KeyEffectKeymap::from_config(Some(1), None, &[]).unwrap();
-        assert!(atok.predict(0xF2, KeyStatus::Pre, ROMAJI).is_some());
-        // 不在/NONE は MSIME 相当。
-        let ms = KeyEffectKeymap::from_config(None, None, &[]).unwrap();
-        assert_eq!(
-            ms.predict(0xF2, KeyStatus::Direct, ROMAJI).unwrap().open,
-            Some(true)
-        );
+        assert!(atok.predict(0xF2, &base).is_some());
         // CUSTOM・MOBILE 等は基準の表が無い。
         assert!(KeyEffectKeymap::from_config(Some(0), None, &[]).is_none());
         assert!(KeyEffectKeymap::from_config(Some(4), None, &[]).is_none());
-        // ATOK + カスタム表が無変換の行を持つ → 無変換だけ予測しない（実機の構成: ATOK + custom、Kanaの行なし）。
+        // ATOK + カスタム表が無変換の行を持つ → 無変換だけ予測しない。
         let table = "Precomposition\tMuhenkan\tIMEOn\n".to_string();
         let custom = KeyEffectKeymap::from_config(Some(1), Some(table), &[]).unwrap();
-        assert_eq!(custom.predict(0x1D, KeyStatus::Pre, ROMAJI), None);
-        assert!(custom.predict(0xF2, KeyStatus::Pre, ROMAJI).is_some());
+        assert_eq!(custom.predict(0x1D, &base), None);
+        assert!(custom.predict(0xF2, &base).is_some());
         // overlay があると 無変換/変換 だけ予測しない。
         let ov = KeyEffectKeymap::from_config(Some(1), None, &[100]).unwrap();
-        assert_eq!(ov.predict(0x1C, KeyStatus::Pre, ROMAJI), None);
-        assert!(ov.predict(0xF2, KeyStatus::Pre, ROMAJI).is_some());
+        assert_eq!(ov.predict(0x1C, &base), None);
+        assert!(ov.predict(0xF2, &base).is_some());
     }
 
     #[test]
@@ -386,9 +641,12 @@ mod tests {
             "status\tkey\tcommand\nDirectInput\tF15\tIMEOn\nPrecomposition\tMuhenkan\tIMEOff\n";
         assert!(custom_table_overrides(table, 0x1D));
         assert!(!custom_table_overrides(table, 0x1C));
-        // 別名（Hiragana と Kana は同じキーイベント）。
         let alias = "Composition\tHiragana\tCancel\n";
         assert!(custom_table_overrides(alias, 0xF2));
         assert!(!custom_table_overrides(alias, 0xF0));
+        assert!(custom_table_overrides(
+            "Composition\tEscape\tCancel\n",
+            0x1B
+        ));
     }
 }
