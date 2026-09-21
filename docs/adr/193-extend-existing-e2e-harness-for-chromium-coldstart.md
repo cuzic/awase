@@ -20,7 +20,7 @@ summary: |-
   判定スクリプトの3点)。`bあ`(`9a7e699`)はBUG-002ではなく別バグなので分離する。
 status: |-
   **提案(ドラフトv4、opus round1(Blocker4・Major8・Minor5)・round2(新規Blocker1・Major4)反映済み、
-  round3(Blocker解消・Major3)・実施計画レビューround1(Blocker1・Major4・Minor11)・round2(Blocker1・Major2・Minor7)反映済み、
+  round3(Blocker解消・Major3)・実施計画レビューround1(Blocker1・Major4・Minor11)・round2(Blocker1・Major2・Minor7)・round3(Major2・Minor8)反映済み、
   再確認待ち)**。未実装。**検知対象の不具合(BUG-002型)が
   現行コードで再現するかが未確認**で、再現しなければ本ADRの目標は「再発の予防(回帰検知)」へ変質する
   (2026-07-18の機構削除後、数日の実機ソークで genuine な部分リテラルはゼロ件だった、`docs/experiments.md`)。
