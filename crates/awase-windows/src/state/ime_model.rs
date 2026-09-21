@@ -574,6 +574,16 @@ impl Default for ImeModel {
     }
 }
 
+/// 入力モードの予測が観測と合ったか。予測は「eisuか否か」までしか確度が無いので、`ObservedEisu`かどうかだけを
+/// 比べる（`ObservedRomaji`/`ObservedKana`/`AssumedRomaji`は同じ扱い）。以前は`is_romaji_capable`で比べていたため、
+/// 予測=英数・観測=かな入力を「合った」とし、予測=ひらがな(AssumedRomaji)・観測=かな入力を「外れた」としていた
+/// （`[key-effect-miss]`は較正材料・CIの停止条件なので、表の誤りを覆い隠す/偽の外れを作る、レビュー指摘A-M4）。
+#[must_use]
+const fn key_effect_mode_confirmed(predicted: InputModeState, observed: InputModeState) -> bool {
+    matches!(predicted, InputModeState::ObservedEisu)
+        == matches!(observed, InputModeState::ObservedEisu)
+}
+
 impl ImeModel {
     /// 観測（開閉）を、打鍵時点の予測と照合する（ADR-191 決定3）。
     ///
@@ -631,8 +641,7 @@ impl ImeModel {
             );
             return false;
         }
-        // 予測は「eisuか否か」までしか確度が無い（ObservedRomaji/Kana/AssumedRomaji は同じ扱い）。
-        if predicted.is_romaji_capable() == observed.is_romaji_capable() {
+        if key_effect_mode_confirmed(predicted, observed) {
             tracing::debug!("[key-effect-confirmed] axis=mode value={observed:?}");
         } else {
             tracing::info!(
@@ -1800,6 +1809,24 @@ mod tests {
             },
             "開閉を動かさない予測（追跡だけ）: 記録は保つ"
         );
+    }
+
+    #[test]
+    fn key_effect_mode_confirmation_compares_eisu_only() {
+        use awase::engine::AssumedReason;
+        let eisu = InputModeState::ObservedEisu;
+        let kana = InputModeState::ObservedKana;
+        let romaji = InputModeState::ObservedRomaji;
+        let assumed = InputModeState::AssumedRomaji {
+            reason: AssumedReason::KeyEffectPrediction,
+        };
+        // 予測=英数・観測=かな入力: 外れ（以前は「合った」と誤判定していた）
+        assert!(!key_effect_mode_confirmed(eisu, kana));
+        // 予測=ひらがな(AssumedRomaji)・観測=かな入力: 英数ではないので合った（以前は「外れ」と誤判定）
+        assert!(key_effect_mode_confirmed(assumed, kana));
+        assert!(key_effect_mode_confirmed(assumed, romaji));
+        assert!(key_effect_mode_confirmed(eisu, eisu));
+        assert!(!key_effect_mode_confirmed(assumed, eisu));
     }
 
     #[test]
