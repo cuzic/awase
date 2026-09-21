@@ -32,11 +32,12 @@
 //! ## ログのタグ
 //! - `KEY [...]`: 押下 1 件の記録(押下前と +100/+400/+1500ms の A/B/T/G 観測。`--fast` は +1500ms なし)。
 //! - `[GRID-BEGIN]`/`[GRID-PRE]`(セットアップ検証)/`[GRID-SKIP]`(セットアップ不能・到達不能で飛ばした)/`[GRID-PRUNE]`
-//!   (到達不能状態の試行を実行前に除外)/`[GRID-ABORT]`(セットアップに1度も成功しないまま打ち切り。CI では rc=3=INVALID)/
+//!   (到達不能状態の試行を実行前に除外)/`[GRID-ABORT]`(セットアップが連続 20 回不能で打ち切り。CI では rc=3=INVALID)/
 //!   `[GRID-RESET]`(リセット結果)/`[GRID-EXPLORE]`・`[GRID-SETUP]`・`[GRID-EDGE]`(キー到達の探索と遷移グラフ)/
 //!   `[GRID-ADAPTIVE]`(適応再試行の内訳)/`[GRID]`(完了)。
 //! - `[NOTIFY]`(compartment 通知の受信・購読)/`[NOTIFY-STATS]`(通知で早く終わった待ち・変化なしで終わった待ち・上限まで待った待ち)/
-//!   `[COMP]`(`--notify-comp` の WM_IME_*/EN_CHANGE 記録)/`[WALK]`(walk 完了)/`[AUTO]`(自動手順中のフォーカス復帰など)。
+//!   `[COMP]`(`--notify-comp` の WM_IME_*/EN_CHANGE 記録)/`[WALK]`(walk 完了)/`[AUTO]`(自動手順中のフォーカス復帰など)/`[FATAL]`(panic・引数エラー。`--auto` ではモーダルを出さずログだけ)/
+//!   `[init]`(起動時の情報・警告。未知の引数は警告、`--grid=`/`--grid-setup=`/数値の不正は `[FATAL] 引数エラー` で終了)。
 //!
 //! ## 実行例
 //! - 学習(awase なし、ATOK): `ime_key_matrix_spike.exe --auto --hold=180 --activate-gji --grid=s1 --grid-setup=keys --fast --notify --grid-adaptive`
@@ -180,7 +181,8 @@ mod notify_sink {
                 Some(g) if *g == GUID_COMPARTMENT_KEYBOARD_INPUTMODE_SENTENCE => "SENTENCE",
                 _ => "OTHER",
             };
-            super::note_notify(name);
+            // extern "system"(非 unwind ABI)なので、panic が越境すると abort する。ここで止める。
+            let _ = std::panic::catch_unwind(|| super::note_notify(name));
             Ok(())
         }
     }
@@ -1115,17 +1117,22 @@ struct GridRun {
     retried: Vec<String>,
     /// セットアップ不能だった状態(同じ状態の残りの試行は、同じ理由で失敗するので飛ばす)。
     failed_states: Vec<String>,
-    /// セットアップに成功して押下まで進んだ試行の数。0のまま `GRID_ABORT_FAILED_STATES` 状態が失敗したら打ち切る。
+    /// セットアップに成功して押下まで進んだ試行の数(統計)。
     setup_ok: u32,
+    /// セットアップ不能の連続回数(成功したら0に戻る)。`GRID_ABORT_CONSEC_FAILS` に達したら打ち切る。
+    consec_fail: u32,
     /// 探索の後に、到達不能な状態の試行を外したか。
     pruned: bool,
     /// 最初の tick で1回だけ出す、適応的な試行の内訳。
     note: Option<String>,
 }
 
-/// 1つもセットアップに成功しないまま、この数の状態でセットアップ不能になったら格子を打ち切る
-/// (リセット基準の食い違い等で全状態が失敗するのに、CIを無駄に走らせない)。一部の状態だけ失敗する通常の実行では打ち切らない。
-const GRID_ABORT_FAILED_STATES: usize = 3;
+/// セットアップの試行(同じ状態の2回目以降は飛ばすので、実質は別々の状態)が連続してこの回数失敗したら格子を打ち切る
+/// (リセット基準の食い違い等で全状態が失敗するのに、CIを無駄に走らせない)。1度でも成功すれば数え直すので、途中から全部失敗する
+/// 場合も検出でき、冒頭の数状態(入力中/変換中など)だけが作れない通常の実行(ATOK)では打ち切らない。
+/// 20 の根拠(実測): ATOK の実ログ(fastgrid 8 本・notifygrid 5 本、成功した完走ラン)で、押下に進まないセットアップ不能が連続した最大は 9 回
+/// (on-c09 と conv-muhenkan 系のキー×状態)。その 2 倍強。8 で打ち切ると通常の ATOK も中断された(fastgrid の初回 CI、8 連続)。
+const GRID_ABORT_CONSEC_FAILS: u32 = 20;
 
 /// `--grid-setup=keys` の探索(BFS): リセット状態(IME_OFF→IME_ON)から、キーを押して到達できる(開閉, 変換モード)を集める。
 #[derive(Default)]
@@ -1245,6 +1252,9 @@ fn grid_build(
     adaptive: Option<&GridAdaptive>,
 ) -> (Vec<GridTrial>, Option<String>) {
     let keys = grid_shard_keys(shard);
+    if adaptive.is_some() && cap.is_some_and(|c| c != 1) {
+        append_log("[GRID-ADAPTIVE] 注: --grid-adaptive は --grid-trials を無視して1パス目を各セル1回にする");
+    }
     let cap = if adaptive.is_some() { Some(1) } else { cap };
     let mut states: Vec<(bool, u32, GComp)> = Vec::new();
     for &conv in &GRID_CONVS {
@@ -1543,7 +1553,7 @@ fn grid_explore_step(
                 queue.push((now + scaled(350) * i as u64, vk));
             }
             let last_key = now + scaled(350) * (path.len() as u64).saturating_sub(1);
-            *next = notify_settle_next(last_key, now + 350 * path.len() as u64 + 900);
+            *next = notify_settle_next(last_key, now + scaled(350 * path.len() as u64 + 900));
             e.phase = 3;
         }
         3 => {
@@ -1622,7 +1632,7 @@ fn grid_explore_step(
 
 /// `--grid` の1tick分の駆動。1試行 = 後始末→IME状態を書く→入力中の段階を作る→検証×2→キーを押す→観測を待つ。
 /// セットアップ不能を記録する。その状態の残りの試行は飛ばす(適応モードでは、最初に失敗したセルだけ末尾へ1回再試行)。
-/// 1度も成功しないまま複数の状態で失敗したら格子を打ち切る(呼び出し側が直後に `r.idx += 1` するので、`idx = len` にしておけば全手順完了へ進む)。
+/// セットアップが連続して失敗したら格子を打ち切る(呼び出し側が直後に `r.idx += 1` するので、`idx = len` にしておけば全手順完了へ進む)。
 fn grid_setup_failed(r: &mut GridRun, tr: GridTrial, log: &mut Vec<String>) {
     let state = grid_state_key(tr.open, tr.conv, tr.comp);
     let cell = format!("{state}|{}", grid_key_name(tr.key));
@@ -1637,9 +1647,12 @@ fn grid_setup_failed(r: &mut GridRun, tr: GridTrial, log: &mut Vec<String>) {
             ..tr
         });
     }
-    if r.setup_ok == 0 && r.failed_states.len() >= GRID_ABORT_FAILED_STATES {
+    r.consec_fail += 1;
+    if r.consec_fail >= GRID_ABORT_CONSEC_FAILS {
         log.push(format!(
-            "[GRID-ABORT] reason=セットアップに1度も成功しないまま{}状態で不能(リセット基準の食い違い等)",
+            "[GRID-ABORT] reason=セットアップが連続して{}回不能(成功{}回、不能な状態{}個。リセット基準の食い違い等)",
+            r.consec_fail,
+            r.setup_ok,
             r.failed_states.len()
         ));
         r.idx = r.trials.len();
@@ -1805,8 +1818,9 @@ fn grid_drive(now: u64, hwnd: HWND) {
                     for (i, &vk) in ks.iter().enumerate() {
                         queue.push((now + scaled(350) * i as u64, vk));
                     }
-                    let last_key = now + scaled(350) * (ks.len() as u64).saturating_sub(1);
-                    next = notify_settle_next(last_key, now + scaled(350 * ks.len() as u64 + 700));
+                    // 入力中/変換中の生成は compartment 通知が来ない(冒頭docのとおり固定待ち)ので notify_settle_next は使わない。
+                    // 使うと待ちが最後のキー+150ms に縮み、GJI の未確定文字列生成が間に合わないセルが [GRID-PRE] 不合格→SKIP で表から消える。
+                    next = now + scaled(350 * ks.len() as u64 + 700);
                 }
                 r.phase = 3;
             }
@@ -1832,6 +1846,7 @@ fn grid_drive(now: u64, hwnd: HWND) {
                 ));
                 if ok {
                     r.setup_ok += 1;
+                    r.consec_fail = 0;
                     press = Some((
                         t.key,
                         format!(
@@ -1948,8 +1963,9 @@ fn parse_seq(arg: &str) -> Vec<(&'static str, u32, bool, &'static str, St)> {
     arg.split(',')
         .map(|t| {
             // 打ち間違いを黙って捨てると手順が短くなり、それでもPASSしうる。即エラーにする。
-            u32::from_str_radix(t.trim().trim_start_matches("0x"), 16)
-                .unwrap_or_else(|_| panic!("--seq のVKが16進数でない: {t:?} (全体: {arg:?})"))
+            u32::from_str_radix(t.trim().trim_start_matches("0x"), 16).unwrap_or_else(|_| {
+                arg_error(&format!("--seq のVKが16進数でない: {t:?} (全体: {arg:?})"))
+            })
         })
         .map(|vk| {
             (
@@ -2840,6 +2856,11 @@ fn init_tsf() -> WinResult<()> {
 }
 
 fn report_fatal(msg: &str) {
+    // ログには必ず残す。--auto(CI・自動実行)では MessageBoxW のモーダルで止めない(誰も閉じられず wait を使い切って rc が誤る)。
+    let _ = std::panic::catch_unwind(|| append_log(&format!("[FATAL] {msg}")));
+    if std::env::args().any(|a| a == "--auto") {
+        return;
+    }
     let title: Vec<u16> = "ime_key_matrix_spike: fatal error"
         .encode_utf16()
         .chain(std::iter::once(0))
@@ -2855,8 +2876,86 @@ fn report_fatal(msg: &str) {
     }
 }
 
+/// 引数の誤りをログに残して終了する(rc は 2)。CI では完走マーカーが無いので collect の判定が INVALID(rc=3)になる。
+fn arg_error(msg: &str) -> ! {
+    append_log(&format!("[FATAL] 引数エラー: {msg}"));
+    eprintln!("ime_key_matrix_spike: 引数エラー: {msg}");
+    std::process::exit(2);
+}
+
+/// 起動時に引数を検証する。未知の `--` 引数は警告(綴り間違いを黙って無視しない)、値が不正なものは終了する
+/// (`--grid-setup=` の綴り間違いが「学習に使ってはいけない」IMM 版へ、`--grid=s5` が0試行の緑へ、無言で化けるのを防ぐ)。
+fn validate_args() {
+    const FLAGS: &[&str] = &[
+        "--activate-gji",
+        "--auto",
+        "--cold",
+        "--diag",
+        "--fast",
+        "--free",
+        "--grid-adaptive",
+        "--hz",
+        "--msime",
+        "--notify",
+        "--notify-comp",
+        "--resync",
+        "--round2",
+        "--script",
+        "--shiftmuh",
+        "--snap100",
+        "--vkprobe",
+        "--walk",
+        "--key=henkan",
+    ];
+    const VALUE_FLAGS: &[&str] = &[
+        "--hold=",
+        "--repeat=",
+        "--speed=",
+        "--notify-quiet=",
+        "--notify-nochg=",
+        "--grid=",
+        "--grid-trials=",
+        "--grid-setup=",
+        "--grid-retry-file=",
+        "--grid-audit-pct=",
+        "--walk=",
+        "--seed=",
+        "--seq=",
+        "--resync-gap=",
+    ];
+    for a in std::env::args().skip(1) {
+        if !a.starts_with("--") || FLAGS.contains(&a.as_str()) {
+            continue;
+        }
+        let Some(&pre) = VALUE_FLAGS.iter().find(|p| a.starts_with(**p)) else {
+            append_log(&format!("[init] 警告: 未知の引数を無視した: {a}"));
+            continue;
+        };
+        let v = &a[pre.len()..];
+        match pre {
+            "--grid=" if !matches!(v, "s1" | "s2" | "s3" | "s4") => {
+                arg_error(&format!("--grid= は s1..s4 のいずれか: {a}"))
+            }
+            "--grid-setup=" if !matches!(v, "keys" | "keys-immreset" | "imm") => arg_error(
+                &format!("--grid-setup= は keys / keys-immreset / imm のいずれか: {a}"),
+            ),
+            "--hold=" | "--repeat=" | "--speed=" | "--notify-quiet=" | "--notify-nochg="
+            | "--grid-trials=" | "--grid-audit-pct=" | "--walk=" | "--seed=" | "--resync-gap="
+                if v.parse::<u64>().is_err() =>
+            {
+                arg_error(&format!("数値でない値: {a}"))
+            }
+            "--grid-retry-file=" if std::fs::read_to_string(v).is_err() => {
+                arg_error(&format!("--grid-retry-file を読めない: {a}"))
+            }
+            _ => {}
+        }
+    }
+}
+
 fn run() -> WinResult<()> {
     START.with(|s| *s.borrow_mut() = Some(std::time::Instant::now()));
+    validate_args();
     for a in std::env::args() {
         if let Some(v) = a.strip_prefix("--hold=") {
             if let Ok(n) = v.parse::<u64>() {
@@ -2954,6 +3053,7 @@ fn run() -> WinResult<()> {
                     retried: Vec::new(),
                     failed_states: Vec::new(),
                     setup_ok: 0,
+                    consec_fail: 0,
                     pruned: false,
                     note,
                     idx: 0,
@@ -3092,7 +3192,22 @@ fn run() -> WinResult<()> {
             DispatchMessageW(&raw const msg);
         }
     }
+    teardown_tsf();
     Ok(())
+}
+
+/// メッセージループ終了後に、compartment の購読を解除(UnadviseSink)し、ITfThreadMgr を Deactivate する。
+/// 購読を生かしたまま TLS 破棄で ITfThreadMgr が Release されると、解体中に OnChange が来て破棄済みの TLS を触りうる。
+fn teardown_tsf() {
+    let sinks = NOTIFY_SINKS.with(|v| std::mem::take(&mut *v.borrow_mut()));
+    for (source, cookie, _sink) in sinks {
+        // SAFETY: source はメインスレッド(STA)で AdviseSink した ITfSource、cookie はその戻り値。
+        let _ = unsafe { source.UnadviseSink(cookie) };
+    }
+    if let Some(st) = TSF_STATE.with(|s| s.borrow_mut().take()) {
+        // SAFETY: Activate したメインスレッドで、ループ終了後に1回だけ呼ぶ。
+        let _ = unsafe { st._thread_mgr.Deactivate() };
+    }
 }
 
 fn main() {
