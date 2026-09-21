@@ -534,9 +534,12 @@ pub enum ImeEvent {
     /// 無変換/変換の生キーを GJI へ通過させた（ADR-187 follow 方式）。
     ///
     /// 実 IME の開閉は GJI 側が決めるため、awase は結果の開閉状態を知らない。
-    /// 古い明示意図（`last_intent`）だけを捨て、直前に得た観測へ解決を委ねる。
-    /// reducer は `last_intent` のみを書き、`desired_open` / `applied` / 観測 /
-    /// `current_focus` などには触れない。dispatch 元は
+    /// 古い明示意図（`last_intent`）を捨て、直前に得た観測へ解決を委ねる。
+    /// さらに、観測から導ける開閉（`derive_any`）があるときは、`desired_open` をそれへ揃える
+    /// （BUG-157: 通過させたモードキーの結果は実IMEが決めた。`desired_open` が古いままだと
+    /// `check_drift_correction` がユーザーの操作を書き戻す）。観測が無い窓では `desired_open` に触れない。
+    /// reducer は `last_intent` と `desired_open` 以外（`applied` / 観測 / `current_focus`
+    /// など）には触れない。dispatch 元は
     /// `ImeStateHub::invalidate_intents_if_mode_key_pass_live` の1箇所に限定する。
     ModeKeyPassedThrough,
 

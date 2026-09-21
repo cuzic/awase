@@ -158,6 +158,7 @@
 | [BUG-154](BUG-154.md) | awaseが通したIMEモードキー（ひらがな0xF2など）の再注入が`wScan=0`で、実機のGJI（MS-IMEプリセット）ではIMEを開かない（ADR-191の撤去後、awase無しなら開くF2が閉→開に失敗） |
 | [BUG-155](BUG-155.md) | 通過マークの追随（意図の破棄と60ms読み直し）が、直前の読み取り失敗から今回成功して観測失敗カウントがリセットされると黙って止まり、予測がfenceで無視されたまま約12秒Engineが固まる（ADR-191、実機co… |
 | [BUG-156](BUG-156.md) | 予測(KeyEffectPredicted)がbeliefだけを動かしても、awaseの書き込み記録(applied)が古いまま残り、GjiDirectのalready-matched判定が古い記録で書き込みを省く（半角… |
+| [BUG-157](BUG-157.md) | 通過させたモードキーの結果(実IMEの開閉)を desired_open へ採らず、ドリフト補正がユーザーの操作(ひらがなで開いたIME)を閉じ直す |
 
 ## その他の資料
 

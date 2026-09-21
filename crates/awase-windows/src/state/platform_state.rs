@@ -284,11 +284,11 @@ impl ImeStateHub {
         if now_ms.saturating_sub(mark.armed_at_ms) >= crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS {
             return false;
         }
-        if !mark.invalidated {
+        let first = !mark.invalidated;
+        if first {
             if let Some(hwnd) = self.shadow_model.current_focus() {
                 self.intent_store.remove(hwnd);
             }
-            self.dispatch_event(ImeEvent::ModeKeyPassedThrough, tick_ms);
             self.mode_key_pass_mark.arm(
                 scope,
                 ModeKeyPassMark {
@@ -296,6 +296,12 @@ impl ImeStateHub {
                     ..mark
                 },
             );
+        }
+        // reducerは`last_intent`を捨て、`desired_open`を観測から導ける開閉へ揃える（BUG-157）。
+        // 最初の観測はGJIがキーを処理する前の古い状態のことがあるので、窓の間は観測が届くたびに
+        // 揃え直す。ただし通過より後に記録された明示意図（`last_intent`）は、2回目以降では捨てない。
+        if first || self.shadow_model.last_intent.is_none() {
+            self.dispatch_event(ImeEvent::ModeKeyPassedThrough, tick_ms);
         }
         true
     }
@@ -2500,6 +2506,21 @@ mod tests {
         );
     }
 
+    /// 強い（High）open 観測を1件流し込む（IMM 直接読み取り相当）。テスト専用の再生口
+    /// （`AnyObservation::restored_from_journal`）を使う。
+    fn write_open_observation_high(ps: &mut PlatformState, open: bool, tick_ms: u64) {
+        ps.ime.dispatch_event(
+            ImeEvent::ObserverReported(evidence::AnyObservation::restored_from_journal(
+                open,
+                ObservationSource::ImmGetOpenStatus,
+                TARGET_HWND,
+                ObservationConfidence::High,
+                1,
+            )),
+            TickMs(tick_ms),
+        );
+    }
+
     /// `IntentWitness`（ADR-089 §2.2）を作るための「注入されていない実キー
     /// イベント」。`write_sync_key` / `write_physical_key` は witness 無しには
     /// 呼べないため、テストからもこの経路を通す。
@@ -2746,6 +2767,68 @@ mod tests {
                 scope,
             ),
             "窓が切れたら止まる"
+        );
+    }
+
+    /// BUG-157 の回帰テスト: 起動直後のVK_IME_OFF（desired=false）の後、ユーザーのひらがなキーで
+    /// 実IMEが開いた。通過マークの観測がこれを確認したら、`desired_open`は開へ揃い、drift correction は
+    /// ユーザーの操作を閉じ直さない（修正前は desired=false のまま「観測 true ≠ desired false」で発火した）。
+    #[test]
+    fn mode_key_pass_observation_aligns_desired_so_drift_correction_does_not_revert_user_key() {
+        let mut ps = PlatformState::new();
+        let scope = test_foreground_scope();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        // 起動直後の明示OFF（スパイク/ユーザー）。desired=false、意図あり。
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        // ユーザーの物理ひらがな（通過）→ 実IMEが開き、強い観測（High、ImmCross読み取り）が届く。
+        arm_mode_key_pass_mark_for_test(&mut ps, scope, 125);
+        write_open_observation_high(&mut ps, true, 130);
+        assert!(ps
+            .ime
+            .invalidate_intents_if_mode_key_pass_live_in_scope(140, TickMs(140), scope));
+        assert!(
+            ps.ime.shadow_model.desired_open(),
+            "通過したモードキーの結果（開）を desired として採る"
+        );
+        let now = std::time::Instant::now();
+        assert!(
+            ps.ime
+                .check_drift_correction(now, ps.ime.explicit_intent())
+                .is_none(),
+            "揃った後は、観測 == desired なので drift correction は発火しない"
+        );
+    }
+
+    /// 観測が無い窓（読めない窓）では、通過マークがあっても `desired_open` を書かない。
+    #[test]
+    fn mode_key_pass_without_observation_keeps_desired() {
+        let mut ps = PlatformState::new();
+        let scope = test_foreground_scope();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        arm_mode_key_pass_mark_for_test(&mut ps, scope, 125);
+        assert!(ps
+            .ime
+            .invalidate_intents_if_mode_key_pass_live_in_scope(140, TickMs(140), scope));
+        assert!(
+            !ps.ime.shadow_model.desired_open(),
+            "観測が無ければ desired は書かない（awaseが最後に書こうとした意図のまま）"
+        );
+    }
+
+    /// awase が書いた意図（通過マーク無し）が実IMEに届かなかった場合は、従来どおり drift correction が
+    /// 訂正する（BUG-157 の修正が、この必要な訂正を止めない）。
+    #[test]
+    fn drift_correction_still_fires_for_awase_write_without_mode_key_pass() {
+        let mut ps = PlatformState::new();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, true, 100);
+        write_open_observation_high(&mut ps, false, 130);
+        let now = std::time::Instant::now();
+        let drift = ps.ime.check_drift_correction(now, ps.ime.explicit_intent());
+        assert!(
+            matches!(drift, Some(DriftCorrection { desired: true, observed: false, .. })),
+            "通過マークが無ければ desired（awaseの意図）と観測の乖離は従来どおり補正される: {drift:?}"
         );
     }
 

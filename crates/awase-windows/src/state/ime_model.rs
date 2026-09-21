@@ -854,6 +854,15 @@ impl ImeModel {
                 // ADR-187: 明示意図が残ると resolve_open_at の ExplicitIntent 分岐が
                 // 直前の観測を固定してしまうため、観測成功後に意図だけ外す。
                 self.last_intent = None;
+                // ADR-191 決定1（IMEが状態の正）: 通過させたモードキーの結果は実IMEが決めた。
+                // `desired_open`（awaseが最後に書こうとした意図）を古い値のまま残すと、
+                // `check_drift_correction` が「観測 ≠ desired」と見てユーザーの操作を約0.5〜1.3秒後に
+                // 実IMEへ書き戻す（BUG-157: 起動直後にVK_IME_OFFで閉じた後のひらがな=開を閉じ直した）。
+                // 観測から導ける開閉（derive_any、`effective_open`と同じ導出）があれば、それを
+                // ユーザーの結果として`desired_open`へ採る。観測が無ければ（読めない窓）書かない。
+                if let Some(outcome) = self.observations.derive_any(envelope.time.monotonic) {
+                    self.desired_open = outcome.value();
+                }
             }
             ImeEvent::InitialFocusHwndEstablished { hwnd } => {
                 // BUG-148/ADR-186: 起動時に既に前面にあるアプリの hwnd を
@@ -1279,8 +1288,10 @@ mod tests {
         );
     }
 
+    /// `ModeKeyPassedThrough` が書くのは `last_intent` と、観測から導ける開閉があるときの
+    /// `desired_open`（BUG-157: 通過させたモードキーの結果を、ユーザーの結果として採る）だけ。
     #[test]
-    fn mode_key_passed_through_touches_only_last_intent() {
+    fn mode_key_passed_through_touches_only_last_intent_and_desired_open() {
         let now = Instant::now();
 
         let mut model = fully_populated_model(now);
@@ -1288,18 +1299,41 @@ mod tests {
             model.last_intent.is_some(),
             "フィクスチャは last_intent を持つ"
         );
+        assert!(
+            !model.desired_open,
+            "フィクスチャは desired_open=false で、観測(ObserverPoll)は open=true"
+        );
         model.reduce(&envelope(1, ImeEvent::ModeKeyPassedThrough));
         assert!(
             model.last_intent.is_none(),
-            "ModeKeyPassedThrough は last_intent だけを捨てる"
+            "ModeKeyPassedThrough は last_intent を捨てる"
+        );
+        assert!(
+            model.desired_open,
+            "観測から導ける開閉(true)を desired_open へ採る"
         );
 
         let mut expected = fully_populated_model(now);
         expected.last_intent = None;
+        expected.desired_open = true;
         assert_eq!(
             format!("{model:?}"),
             format!("{expected:?}"),
-            "ModeKeyPassedThrough は last_intent 以外を書き換えてはならない"
+            "ModeKeyPassedThrough は last_intent と desired_open 以外を書き換えてはならない"
+        );
+    }
+
+    /// 観測が無いとき（読めない窓）は `last_intent` だけを捨て、`desired_open` は書かない。
+    #[test]
+    fn mode_key_passed_through_without_observation_only_drops_last_intent() {
+        let now = Instant::now();
+        let mut model = fully_populated_model(now);
+        model.observations = ObservationStore::default();
+        model.reduce(&envelope(1, ImeEvent::ModeKeyPassedThrough));
+        assert!(model.last_intent.is_none());
+        assert!(
+            !model.desired_open,
+            "観測が無ければ desired_open は書かない"
         );
     }
 
