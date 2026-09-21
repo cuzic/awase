@@ -22,7 +22,7 @@ def to_ms(t: str) -> float:
 
 
 def parse_spike(path):
-    steps = []  # {n, name, press, open, conv}
+    steps = []  # {n, name, press, open, conv, before_open}(before_open=その押下の直前の実IME開閉。「前」行。無ければ欠落)
     cur = None
     invalid = 0
     started = False
@@ -35,6 +35,9 @@ def parse_spike(path):
             continue
         if started and "[AUTO] フォーカス復帰" in line:
             invalid += 1
+        m = re.match(r"\s+前\s*: A\(open=(\d) conv=0x([0-9A-Fa-f]+)\)", line)
+        if m and cur is not None and "before_open" not in cur and "open" not in cur:
+            cur["before_open"] = int(m.group(1))
         m = re.match(r"\s+\+1500ms: A\(open=(\d) conv=0x([0-9A-Fa-f]+)\)", line)
         if m and cur is not None and "open" not in cur:
             cur["open"] = int(m.group(1))
