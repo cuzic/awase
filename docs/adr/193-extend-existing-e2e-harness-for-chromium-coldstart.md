@@ -20,7 +20,10 @@ summary: |-
   判定スクリプトの3点)。`bあ`(`9a7e699`)はBUG-002ではなく別バグなので分離する。
 status: |-
   **提案(ドラフトv4、opus round1(Blocker4・Major8・Minor5)・round2(新規Blocker1・Major4)反映済み、
-  round3と実施計画のレビュー待ち)**。未実装。撤去対象の機構は未特定(ステップ0の結果待ち)。
+  round3(Blocker解消・Major3)反映済み、実施計画のレビュー待ち)**。未実装。**検知対象の不具合(BUG-002型)が
+  現行コードで再現するかが未確認**で、再現しなければ本ADRの目標は「再発の予防(回帰検知)」へ変質する
+  (2026-07-18の機構削除後、数日の実機ソークで genuine な部分リテラルはゼロ件だった、`docs/experiments.md`)。
+  撤去対象の機構は未特定(ステップ0の結果待ち)。
   詳細設計と着手順序は[193-implementation-tasks.md](193-implementation-tasks.md)。未確認事項は末尾に列挙した。
 related_adr:
   - "ADR-0002"
@@ -64,8 +67,8 @@ related_adr:
   可能になるまで実測181ms)の症状。BUG-002は`という→toいう`(`b101153`/`79134f5`)。
 - **BUG-002の対策機構は削除済み**: `BUG-002.md`の「現在の対策」表(`CHROME_PROBE_MIN/MAX_MS`、
   `CHROME_PROBE_LONG_IDLE_MIN/MAX_MS`)は`tuning.rs`に存在しない。2026-07-18のBUG-24対応で、Chromeの
-  F2事前送信・probe事前待機が削除され、per-VK confirm(`tsf/warmup/probe_coro_state.rs::run_per_vk_confirm`、
-  `tsf/warmup/literal_detect_fsm.rs`)に一本化された(`output/vk_send.rs`の`[h1-probe] … F2/probe待機省略
+  F2事前送信・probe事前待機が削除され、per-VK confirm(`tsf/warmup/probe_fsm.rs::run_per_vk_confirm`(`:454`)、
+  部分リテラル判定は`tsf/warmup/literal_detect_fsm.rs`)に一本化された(`output/vk_send.rs`の`[h1-probe] … F2/probe待機省略
   → per-VK confirmへ`)。したがって「BUG-002の修正定数を旧値へ戻す」撤去は成立しない。
 - **long-idleの閾値**: Chrome(VK)は`CHROME_LONG_IDLE_MS`=5s(`tuning.rs:100`、`gji_fsm.rs::long_idle_ms_for`が
   `InjectionMode::Vk`で参照)。GJI/TSF経路は`LONG_IDLE_MS`=10s、その間に`MEDIUM_IDLE_PROBE_MS`=7s(`tuning.rs:148`)。
@@ -73,12 +76,18 @@ related_adr:
 
 ### 既存資産でまだできていないこと
 
-`chrome_probe`はlong-idleを作れないわけではない。`--settle=<ms>`でモードキー後の待ちを任意に伸ばせる
-(コード変更なしに`--settle=6000`や`--settle=11000`を渡せる)。足りないのは次の3点である:
+`chrome_probe`はlong-idleを作れないわけではない。`--settle=<ms>`は**モードキー押下の後**に`k`,`a`を打つまでの待ちで、
+この間はキーもGJI I/Oも発生しないため、**keyboard idleとGJI idleが同時に進む**。したがって「両方long」
+(旧BUG-002対策表の「keyboard long idle (>10s)」側)は今日コード変更なしに作れる(`--settle=11000`等)。
+足りないのは次の3点である:
 
-1. GJI休眠の制御(GJIセッションを意図的に休眠させる手段)。
-2. 物理F2相当(目印付き`SendInput`のF2)とプログラム的F2の打ち分け。
-3. literal化の**自動判定**(`という→toいう`型の検出)と、それを判定するチェッカー。
+1. **keyboard idleとGJI idleの分離**: 旧表のもう一方の分岐「keyboard short idle かつ GJI long idle」(物理F2+GJI休眠)は、
+   待ちをモードキー押下の**前**に入れる(長く待つ→F2→即座に打鍵)必要があり、`chrome_probe`にその位置のフラグ
+   (`--pre-settle`相当)が無い。なおChromeのprogrammatic F2事前送信は削除済み(`vk_send.rs:274`)なので、打ち分けの対象は
+   「物理F2を押すか否か」だけになる。
+2. **入力列の拡張**: 現行の判定入力は`k`,`a`の2打で、先頭1モーラだけがリテラル化する部分リテラル(`という→toいう`)を
+   表現できない。自動判定を作る段で多モーラ列(`toiu`→`という`等)へ拡張する。
+3. literal化の**自動判定**と、それを判定するチェッカー。
 
 加えて`chrome_probe`は`e2e-ime.yml`から呼ばれていない(`.github/`に参照なし。参照は
 `tools/e2e/ime_key_matrix/README.md`と`clipwire-targets.example.toml`の手動実行のみ)。
@@ -119,17 +128,28 @@ ImmCross経路で、awaseのTsfNative政策経路(Vk注入・force-on・warmup)�
 
 (詳細設計・タスク分割・着手順序・判定ゲートは[193-implementation-tasks.md](193-implementation-tasks.md)。以下はその要旨。)
 
-0. **ステップ0(先にやる): 既存`chrome_probe --settle=<閾値超>`でBUG-002の症状が現行コードで今も出るかを確認する**。
-   `--settle`を、Chrome(VK)の`CHROME_LONG_IDLE_MS`=5sの内外、`MEDIUM_IDLE_PROBE_MS`=7s、`LONG_IDLE_MS`=10s
-   の3閾値をまたぐ点(例: 3s/6s/8s/11s)で掃引する。目的は、症状が今も出るか、出るならどの機構が防いでいるかを
-   特定すること。
-   - 出ない → per-VK confirmが既に十分に防いでおり、BUG-002型は現行では再現しない。撤去実験の対象は
-     現行機構(per-VK confirm側)に取り直すか、本ADRの成功基準を「再現しないこと自体の回帰検知」に改める。
-   - 出る → 出た条件から、撤去すると症状が戻る現行機構を特定する。
+0. **ステップ0(先にやる): 既存`chrome_probe`でBUG-002の症状が現行コードで今も出るかを確認する**。
+   既存ケース4(`半角英数→ひらがな=かな`、F2→待ち→打鍵でBUG-002の形と一致)を`--settle`で掃引する
+   (Chrome(VK)の`CHROME_LONG_IDLE_MS`=5s、`MEDIUM_IDLE_PROBE_MS`=7s、`LONG_IDLE_MS`=10sの3閾値をまたぐ3s/6s/8s/11s)。
+   **見るのは`Class`ではなくログの生の`t.value`**(`Class`は`k`,`a`の2打で部分リテラルを`Other`等に落とす)。
+   コード変更は要らない。目的は、症状が今も出るか、出るならどの機構が防いでいるかの特定。
+   **「出ない」公算が高い**(2026-07-18の機構削除後、実機ソークでgenuineゼロ件、`docs/experiments.md`)ため、
+   「出ない」側を先に設計する:
+   - 出る → 出た条件から、撤去すると症状が戻る現行機構を特定する(探索範囲は`probe_fsm.rs::run_per_vk_confirm`、
+     `literal_detect_fsm.rs`の部分リテラル判定、`vk_send.rs:279`周辺のcold分岐)。
+   - 出ない → 「出ないこと」を成功基準にするのは、次の**3つをすべて満たす場合のみ**CIに載せる。
+     不在のassertは、awase未起動・`AWASE_TEST_INJECTION`付け忘れ・Chrome非前面・キー未到達でも緑になるため。
+     (a) **ablationは必須**: 現行機構のいずれかを撤去すると症状が戻ることを示す(戻らないなら、そのassertは
+     何も守っていないのでCIに載せない)。
+     (b) **陽性対照を同一実行内に含める**: `--no-awase`腕(awase停止時は`か`)か、`e2e_windows.rs:2820-2838`型の
+     ASCII canary(素のASCIIが届いたかを先に確認)。対照が取れなければFAILではなく**INVALID**(`chrome_probe`の語彙)。
+     (c) INVALID条件を維持する(`前提状態にできなかった`・`focus_lost`・物理キー混入=`check_multi.py`)。
 1. **BUG-002型シナリオの拡張**(ステップ0で必要と分かった分のみ): 上記「まだできていないこと」の
-   GJI休眠制御・物理F2/プログラム的F2の打ち分け・literal化の自動判定。
+   keyboard idleとGJI idleの分離(`--pre-settle`)・多モーラ入力列・literal化の自動判定。
    実idleの見積もりは**ケース数 × idle秒 × マトリクス**で明示する(`e2e-ime.yml`は`matrix.cfg` × `run:[1,2,3]`で
    展開され`timeout-minutes: 25`。構成を1つ足すと3ジョブ増える)。載せる前にこの見積もりを出す。
+   **`timeout-minutes: 25`を超える場合の方針**: 掃引点を減らす → 構成を分ける → `run:[1,2,3]`を減らす、の順に対処する
+   (別ワークフロー化は最後)。
 2. **`chrome_probe`を`e2e-ime.yml`に接続する**。次の3点セットで、1行の追加では済まない:
    - ビルド: `cargo build … --example chrome_probe`の追加(現状は`ime_key_matrix_spike`のみ)。
    - runステップ: `ime_key_matrix_spike`用にハードコードされた起動引数と、`cache.toml`への
@@ -175,10 +195,10 @@ ImmCross経路で、awaseのTsfNative政策経路(Vk注入・force-on・warmup)�
 
 ## 未確認事項
 
+- **現行コードでBUG-002型が再現するか**(ステップ0)。再現しなければ、目標は回帰検知へ変質し、決定4-0の3条件が要る。
+- keyboard idleとGJI idleを**分離**できるか(`--pre-settle`)、およびCIの25分枠に収まるか。
 - `windows-latest`にChrome/Edgeが同梱されているか(GitHubのrunner imageは同梱している想定だが、リポジトリ内では
   実証されていない。決定4-2の`Test-Path`で確認する)。
 - `chrome_probe`のイベント記録は`seq`連番付きなので到着順の乱れは受信側で直せる。残る本物の懸念は、
   POST(`fetch(..., {keepalive:true})`)の発行自体がレンダラの処理を遅らせ、cold-startのタイミングを
   変えないか、の1点。
-- 現行コードでBUG-002型が再現するか(ステップ0)。再現しない場合、成功基準の前提が変わる。
-- 実idleと、GJI休眠をCI上で再現できるか(GJI・実機依存が強い)。
