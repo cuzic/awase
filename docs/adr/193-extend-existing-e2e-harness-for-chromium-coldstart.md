@@ -19,8 +19,9 @@ summary: |-
   「撤去あり=FAIL/なし=PASS」の実証と、`chrome_probe`の`e2e-ime.yml`への接続(ビルド・runステップ・
   判定スクリプトの3点)。`bあ`(`9a7e699`)はBUG-002ではなく別バグなので分離する。
 status: |-
-  **提案(ドラフトv3、opus round1(Blocker4・Major8・Minor5)・round2(新規Blocker1・Major4)反映済み、
-  round3再確認待ち)**。未実装。撤去対象の機構は未特定(ステップ0の結果待ち)。未確認事項は末尾に列挙した。
+  **提案(ドラフトv4、opus round1(Blocker4・Major8・Minor5)・round2(新規Blocker1・Major4)反映済み、
+  round3と実施計画のレビュー待ち)**。未実装。撤去対象の機構は未特定(ステップ0の結果待ち)。
+  詳細設計と着手順序は[193-implementation-tasks.md](193-implementation-tasks.md)。未確認事項は末尾に列挙した。
 related_adr:
   - "ADR-0002"
   - "ADR-0003"
@@ -115,6 +116,8 @@ ImmCross経路で、awaseのTsfNative政策経路(Vk注入・force-on・warmup)�
   `chrome_probe.rs`が既に持つ独自の前面化(`AttachThreadInput`版)を使い、**3つ目のコピーは作らない**。
 
 ### 決定4: 追加する差分と検証方法
+
+(詳細設計・タスク分割・着手順序・判定ゲートは[193-implementation-tasks.md](193-implementation-tasks.md)。以下はその要旨。)
 
 0. **ステップ0(先にやる): 既存`chrome_probe --settle=<閾値超>`でBUG-002の症状が現行コードで今も出るかを確認する**。
    `--settle`を、Chrome(VK)の`CHROME_LONG_IDLE_MS`=5sの内外、`MEDIUM_IDLE_PROBE_MS`=7s、`LONG_IDLE_MS`=10s
