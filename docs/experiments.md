@@ -846,6 +846,28 @@ docsの巻き戻し）が大きくなる。特にこの変更は Windows Termina
 虚心に見直すべきサインだった——今回は debug ログ1回の取得で全く別の、
 より深刻な機構（無限に近い再送ループ）を発見できた。
 
+**追記（2026-09-15、BUG-114除去後のクリーンな条件で再検証・反証を確定）**:
+上表の否定的結果は、同時発生していたBUG-114（drift correctionの無限に
+近いバースト）に汚染されており、「実scanでも効かない」のか「バースト
+という別の交絡因子にかき消されただけ」なのかを当時は区別できていなかった
+——本エントリの「学び」自体もこの点には触れていなかった。BUG-114修正後、
+実scan送信を単発クリーンな条件で再テストしたことは一度もなかったため、
+BUG-033のTsfNative「@」再発調査（2026-09-15、`send_chrome_gji_reinit_
+and_poll`も同じ`wScan=0`固定を使っていたと判明したことがきっかけ）を機に
+再検証した。
+
+| 日付 | 仮説 | 環境（アプリ×IME） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-15 | BUG-114除去後のクリーンな条件なら、`wScan=0`→実scan送信で「@」が再現しなくなるはず | Windows Terminal × Google 日本語入力、dragonflyg4実機、`spike/bug033-realscan-ime-mode-key`ブランチ（`send_ime_mode_key`・`send_chrome_gji_reinit_and_poll`の両方の`make_key_input_ex`を`make_scan_key_input`へ差し替え） | 物理半角/全角キー単独タップ | 「あいうab@cあいう」——「あいうabcあいう」と打ったつもりが`b`/`c`間に「@」が混入。エントリ20と異なりBUG-114は既に修正済みのため交絡なし | 反証を確定。`wScan=0`は「@」の必要条件ではないとクリーンな条件で確定した（VK値・`SendInput`バッチ形状に続き、scanコードも機構から除外） | （スパイクのみ、マージなし。`spike/bug033-realscan-ime-mode-key`は結果記録後に破棄） |
+
+**学び（追記）**: 一度「反証された」と記録された仮説でも、その実験に
+既知の別バグが混入していた場合は「本当に反証されたのか」を疑ってよい
+——今回はBUG-033の別調査から偶然この混入に気づけたが、`docs/experiments.md`
+に「この実験は他の未修正バグと同時発生していた」という注記を残す習慣が
+あれば、もっと早く気づけたはずだった。今後、実験結果を記録する際は
+「その試行中に他の既知/未知の異常ログが出ていなかったか」を明記する
+ことを検討する。
+
 ---
 
 ## エントリ 21: BUG-113「Windows Terminal + GJI で余分な@」— バッチ形状・VK値の両仮説を実機A/Bで反証、PSReadLine相互作用を発見するも「awase側のバグではない」という結論はユーザーレビューで撤回
@@ -1067,3 +1089,50 @@ BUG-124として詳細を記録した。この実験ログに実測済みの事�
 書かれていたにも関わらず参照せず早合点したこと自体が教訓——
 実験結果は「その場で使う」だけでなく「次の設計変更の前に読み返す」
 ためのものであることを再確認した。
+
+## エントリ 26: ADR-186「GJI(ATOK)無変換/変換の押下時点belief追随」— 実機E2Eの撤去実験で、必須の仕組み4つ・不要の仕組み1つ・検証不能の領域を確定
+
+**背景**: ADR-184/185/179決定2は「ATOKの無変換はIME ONのまま半角英数にする」を前提に設計していたが、
+awase非依存のスパイク（`crates/awase-windows/examples/ime_key_matrix_spike.rs`）で測ると、実機GJIは公開Mozcの
+`atok.tsv`どおり（入力なしの無変換/変換=開閉トグル、ひらがな=かな⇔半角英数トグル）だった。決定2（親指の単独タップで
+open軸へdelegate）を実機で試すと動かず、E2Eハーネス（`tools/e2e/ime_key_matrix`、SendInput注入+awaseログ照合）で
+切り分けた。以下は実装ブランチにコード撤去（`ablations/`）を当てた実機A/B。
+
+| 日付 | 仮説 | 環境 | 変更 | 観測結果 | 判定 |
+| --- | --- | --- | --- | --- | --- |
+| 2026-09-20 | 決定2が動かない原因は、タイマー(100ms)で解決した単独タップのSetOpenがbelief書き込み・明示意図の記録を持つキーボード経路を通らず、warrantが`Unwarranted`でOFFを拒否すること | Win32 EDIT×GJI(ATOKプリセット)、押下保持180ms、各3回 | E1: delegateを持つ親指の単独タップをKeyUpで解決する述語を元に戻す(`defers_solo_until_release`) | 3/3 FAIL（手順5のOFFが効かず、awaseがONを再送） | **必須**（採用、`2b93e185`） |
+| 2026-09-20 | ATOKでは古い`custom_keymap_table`（`DirectInput Henkan IMEOn`）を読んではいけない | 同上、変換キー | E2: ATOK分類修正(`gji_charset_autodetect.rs`)を戻す | 3/3 FAIL（各5件、変換が`On`と誤分類されbeliefが実IMEのOFFに追随しない） | **必須**（採用、`bff621b5`） |
+| 2026-09-20 | eisu reset抑止（直接入力から無変換でONにしたとき`PostSetOpenEisuReset`でEngineがONになるのを防ぐ、`f5f78dfb`）は必要 | 同上 | E3: 抑止を撤去 | 3/3 ALL PASS。抑止ログ（`reset を抑止`）はE2E全実行で1度も発火せず | **不要**、削除（`3f9b313e`、デッドコード） |
+| 2026-09-20 | eisu resetの全経路(3種)も不要では | 同上 | E4: `eisu_reset_on_ime_on`/`_on_turn_on_while_open`を常にNone | 3/3 ALL PASS | Win32では不要だが**検証不能**（Edge/TsfNative向けの循環デッドロック対策を兼ねる。IMMでconvを読めるEDITでは再読み取りが同じ役割を果たす）。**統合しない** |
+| 2026-09-20 | 物理IMEキー通過後の20ms IME再読み取りは、ひらがなキー後のEngine追随に必要 | 同上 | E5: `schedule_ime_refresh(20)`を撤去 | 3/3 FAIL（手順7・9のEngine追随なし） | **必須**（決定3の予測反転は不要と確定） |
+| 2026-09-20 | idle-conv-checkも不要では | 同上 | E6: `idle_check.rs`を常にfalse | 3/3 ALL PASS | TsfNative限定機構でEDITでは未使用のため**検証不能**。統合しない |
+| 2026-09-20 | opt-in `gji_thumb_key_ime_toggle=true`は不要では | 同上 | E7b: falseで実行 | 3/3 FAIL（`delegated`=0、手順5・6） | **必須** |
+| 2026-09-20 | 押下の取りこぼし(BUG-147)はawase起動時だけ起きる(GJI単体0/12、awase起動6/12失敗) | Win32 EDIT × GJI(ATOK) | 旧A/Bの再検証: 高速ハーネス(`run_loop.sh`、awaseログの物理キー混入を無効判定)で基準ビルド・A7ビルドを測定 | 基準0/24、A7 0/48失敗で再現せず。旧A/Bはawaseログに人の物理入力の混入が7/24回あり、GJI単体側は検査不能で非対称だった。A7(`reinject`の`wScan`引き継ぎ)は採用せず | **旧結論を撤回**(混入が原因の可能性、awase固有ではない) |
+| 2026-09-20 | Shift+無変換はGJI(ATOK)でかな⇔半角英数トグルだが、awaseが開閉トグルとして横取りする | 同上、`gji_thumb_key_ime_toggle=true`、`spike --shiftmuh` 24押下 | 修正前: かなON中に委譲でSetOpen(false)(4/4)、IME OFF中にintent昇格でON(4)。修正: FSMのShift素通し+修飾キー付きは分類上書きなし(`b195b47a`) | 修正後24押下: 開閉が変わった0件・委譲0・昇格0、かなON中は半角英数へ(GJI本来)。通常10手順の回帰12/12 PASS | **採用**(修正済み) |
+| 2026-09-20 | Win32 EDITで通ったモードキーの追随は、TsfNative(Chrome)でも同じ | Chrome(専用プロファイル、scoop版) × GJI(ATOK)、awase起動(Shift修正入り)、`chrome_probe`で8ケース×3周 | 新規: 打った文字で状態を判定するプローブ(`k`,`a`→NICOLA/`か`/`ka`/`kiu`) | 無変換/変換・Shift+無変換のOFF中は18/18 PASS。かな→半角英数(ひらがな/Shift+無変換)はEngine未追随で6/6失敗(`kiu`)。awase停止24/24 PASS。待ち2秒でも4/4失敗(抑止窓1500msでは説明できない) | **BUG-149起票**(決定3の再検討が必要、未修正) |
+
+**学び**:
+- **opusレビューが「問題なし」と判定した実装も、実機E2Eで反証された。** 決定2は押下時点のbelief追随を
+  前提にレビューされたが、実際の失敗はタイマー経路（`execute_from_loop`）に限って起きていた。押下時点/タイマー経路の
+  両方を実機で通すE2Eを持たないと、この差は見えない。
+- **少数回のPASS/FAILで撤去の是非を決めない。** 基準構成にも約27%のフレークがあった（原因は別件、BUG-147、
+  awase起動中のみ物理キー1押下がGJIに届かない）。有効な回（INVALID＝フォーカス移動や物理入力の混入を除く）を数えること。
+- **撤去実験で「効いていない」機構は、効いていないことと検証できないことを分けて書く。** E3は発火ログ0件で
+  デッドコードと証明できたが、E4/E6はEDITでは使われないだけで、TsfNative/Chromeでの要否は未確認のまま残した。
+- 撤去実験は`tools/e2e/ime_key_matrix/ablations/`と`.github/workflows/e2e-ime.yml`（GitHub-hostedのWindowsランナー、
+  `ci/e2e-ime`ブランチ）で再実行できる。実機を占有せず、構成×3回を並列に回せる。
+
+## エントリ 27: ADR-179 Passthrough設定の実験4件(FollowOnly belief追随等)を、developマージ前に撤去(revert)
+
+**背景**: `feat/adr178-mode-key-actuation-and-tsfnative-rescue-teardown`上で、ユーザー指示により、無変換/変換の単独タップを
+Passthroughにする設定(`muhenkan_solo_tap_always_suppress = false`等)を前提とした実験コミット4件を、実機で試していた。
+本ADR(ADR-179)の決定ではない実験のため、developへマージする前に撤去し、既定(Suppress)の挙動へ戻す(ADR-179「実装状況と実験コミット」節のマージ前TODO)。
+
+| 日付 | 仮説 | 環境 | 変更 | 観測結果 | 判定 |
+| --- | --- | --- | --- | --- | --- |
+| 2026-09-19 | 単独タップpassthrough辞退をTurnOff/Toggleにも拡張(`b9e45e55`)、FollowOnly belief追随を新設しToggleは辞退対象から除外(`176d37af`)、親指キー設定×IME OFF時もPhysicalDeliveryに一般化(`c0814776`)、Henkan/MuhenkanのSuppress設定は方向を問わず完全に無視(`f0e36b0e`)すれば、Passthrough設定でもEngineがIME状態に追随する | Windows実機(dragonflyg4)、GJI、Passthrough設定(`*_solo_tap_always_suppress=false`) | 上記4コミット | 実機で試行(ユーザー指示)。**失敗条件の観測は無い**(本ADRの決定ではなく、developへ入れない実験のため撤去する)。ATOKのPassthroughでEngineが追随しない問題は、ADR-186/187のCI実機E2Eで原因(意図の固定・読み直しの契機なし・typing-idleガード)を特定し、別の実装(通過マーク+観測+意図の無効化、`shadow_action`なしのキーに限定)で解決した | 撤回(revert)。ADR-187のfollow方式に置き換え |
+
+**学び**:
+- FollowOnly(方向固定のTurnOn/TurnOffだけbeliefを予測で書く)は、ATOKの状態依存(入力中は開閉が変わらない)のToggleには使えないと分かり、
+  Toggleは観測に基づくfollow(ADR-187)へ、方向固定のキーはbeliefトグル(ADR-189、GJIの半角/全角)へ分けた。
+- 実験コミットをdevelopへ入れる前に撤去する運用(このエントリ)は、同種の実験(Passthrough等)が本決定と混ざらないようにする。

@@ -209,13 +209,13 @@ pub struct BugReportStateSnapshot {
 ///
 /// `ime_on_keys`/`ime_off_keys`/`ime_toggle_keys`は
 /// `awase_gji_config::keymap::extract_ime_keys`の抽出結果をそのまま
-/// 反映したものであり、awase本体が実際にIME ON/OFF自動検出へ採用する
-/// 際にさらに適用する安全範囲フィルタ（`gji_charset_autodetect.rs::
-/// is_in_safe_autodetect_range`、F15-F24限定、`VK_KANJI`等はBUG-14
-/// 対策で除外）は通していない。したがって、ここに`"VK_KANJI"`等
-/// フィルタで除外されるはずのVK名が現れても、それは「awaseがその
-/// キーを誤って自動検出に採用した」ことを意味しない——`config1.db`側の
-/// 生の宣言をそのまま見せているだけである。
+/// 反映したものである。ADR-179以前はawase本体がこれらをさらにF15-F24
+/// 限定の安全範囲フィルタ（BUG-14対策で`VK_KANJI`等を除外）に通してから
+/// 専用Fnキーとして自動採用していたが、ADR-179でこの採用機構自体を
+/// 撤去した（無変換/変換のIME意味論は`classify_thumb_key_ime_actions`/
+/// `gate_thumb_key_ime_actions`が別途扱う）。したがって、ここに含まれる
+/// VK名は`config1.db`側の生の宣言をそのまま見せているだけであり、
+/// awaseが実際に何かを採用したことを意味しない。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct BugReportGjiKeymapSummary {
     /// `"NotFound"` / `"ParseFailed"` / `"Ok"`。
@@ -248,7 +248,7 @@ pub struct BugReportGjiKeymapSummary {
     /// のときのみ`Some`。
     pub henkan_adopted_kind: Option<String>,
     pub muhenkan_adopted_kind: Option<String>,
-    /// `"Delegate"` / `"ActuationAuto"`。`ime_kind == Gji`のときのみ`Some`。
+    /// `"Delegate"` / `"PhysicalDelivery"`。`ime_kind == Gji`のときのみ`Some`。
     pub henkan_adopted_route: Option<String>,
     pub muhenkan_adopted_route: Option<String>,
     /// `"ToggleDeclined"` / `"ToggleHonored"`。`ime_kind == Gji`のときのみ
@@ -866,8 +866,8 @@ mod tests {
             muhenkan_classified_kind: Some("Off".to_owned()),
             henkan_adopted_kind: Some("On".to_owned()),
             muhenkan_adopted_kind: Some("Off".to_owned()),
-            henkan_adopted_route: Some("ActuationAuto".to_owned()),
-            muhenkan_adopted_route: Some("ActuationAuto".to_owned()),
+            henkan_adopted_route: Some("PhysicalDelivery".to_owned()),
+            muhenkan_adopted_route: Some("PhysicalDelivery".to_owned()),
             thumb_key_ime_warning: None,
             muhenkan_dedicated_fn_key_configured: false,
         }

@@ -473,7 +473,6 @@ pub(crate) unsafe fn handle_wm_timer(
     wparam: usize,
     msg: &windows::Win32::UI::WindowsAndMessaging::MSG,
 ) {
-    use crate::state::scoped_latch::ScopeCheck;
     use windows::Win32::UI::WindowsAndMessaging::DispatchMessageW;
     let logical_id = app.platform.timer.resolve(wparam);
     match logical_id {
@@ -484,84 +483,7 @@ pub(crate) unsafe fn handle_wm_timer(
                 app.process_deferred_keys();
             }
             // async タスクをスポーン（with_app を解放してから fetch）。
-            //
-            // ADR-121 D1（/code-review指摘で順序を訂正）: この直後の
-            // pending_explicit_reassert 消費ブロックより**前**に呼ぶこと。
-            // `spawn_ime_refresh()` 冒頭は無条件で `TIMER_IME_REFRESH` を
-            // kill するため、後ろで呼ぶと直前に `schedule_settle_retry` が
-            // 再武装したばかりのタイマーを同一tick内で自ら握り潰し、
-            // pending 値が二度と消費されず永久に取り残される
-            // （`reschedule_ime_refresh()` もこの打鍵で立った
-            // `explicit_intent()` により自己抑制するため、他の経路からの
-            // 再武装も期待できない）。この順序なら `schedule_settle_retry`
-            // が新しく張るタイマーは kill されずに残る。
             app.spawn_ime_refresh();
-            // ADR-121 D1: settle 中に見送った物理IMEキーの冪等再送を、settle
-            // 明けのこの既存リフレッシュ tick で1回だけ消費する
-            // （schedule_settle_retry が使うのと同じタイマー、新規タイマーは
-            // 増やさない）。まだ settle 中なら黙って捨てず再度先送りする
-            // （round 2 premortem R2-4: 黙って失うと「明示訂正が消える」という
-            // 本 ADR が解消しようとした症状そのものが再現する）。
-            //
-            // opus-adversarial-consult round1 S1/S4指摘: 打鍵時点の6条件
-            // すべてがsettle明けに再検証されるわけではない。武装スコープ
-            // （`ForegroundScope`、`peek_pending_explicit_reassert`が判定）
-            // に加え、状態が変わりうる3条件（プロファイル・delegate所有権・
-            // 半角英数トグル）をここで再検証する。VK/action/kindの3条件は
-            // 武装時点で確定済みのため不要。
-            match app.peek_pending_explicit_reassert() {
-                ScopeCheck::NotArmed => {}
-                ScopeCheck::Expired => {
-                    tracing::debug!(
-                        "[explicit-reassert] settle待機中にフォーカスが別ウィンドウへ \
-                         移ったため破棄(無関係なウィンドウへの誤actuateを防止、S1)"
-                    );
-                }
-                ScopeCheck::Live(open) => {
-                    if app.ime_apply_should_defer() {
-                        // peek は消費しない（disarm しない限り armed のまま）ので
-                        // 再セット不要——schedule_settle_retry だけで良い。
-                        app.schedule_settle_retry("explicit_key_reassert still settling");
-                    } else {
-                        app.disarm_pending_explicit_reassert();
-                        let delegate_owned = app
-                            .mode_key_delegate_owns_shadow_toggle(crate::vk::VK_DBE_HIRAGANA)
-                            && app.platform_state.ime.effective_open();
-                        if app.can_use_imm32_cross_process() {
-                            // /code-review指摘: settle待機中にフォーカス/プロファイル
-                            // が変わり、再送発火時点では元のBlacklist前提が崩れて
-                            // いる場合がある。ここで再確認せず送ると、現在フォーカス
-                            // 中の無関係なウィンドウ（ImmCross対応アプリ）へ古い
-                            // open値を誤actuateしてしまう。D1条件2の再検証として
-                            // 破棄する。
-                            tracing::debug!(
-                                "[explicit-reassert] settle明けの再確認でImmCross対応アプリへ \
-                                 フォーカスが変わっていたため破棄 (open={open})"
-                            );
-                        } else if delegate_owned {
-                            // S4: settle待機中にconfig reload等でFSM delegateが
-                            // shadow-toggleを所有するように変わっていた場合、
-                            // awase側も送ると二重actuationになる（ADR-141 C1が
-                            // 構造的に防ごうとした状態そのもの）。
-                            tracing::debug!(
-                                "[explicit-reassert] settle明けの再確認でFSM delegateが \
-                                 shadow-toggleを所有していたため破棄 (open={open})"
-                            );
-                        } else if app.platform_state.gate.half_width_alnum.is_toggle_active() {
-                            // S4: settle待機中に半角英数トグルが立った場合、D6が
-                            // 避けようとした「半角英数トグル中にVK_IME_ONを送る」
-                            // 状態になる。
-                            tracing::debug!(
-                                "[explicit-reassert] settle明けの再確認で半角英数トグル中 \
-                                 だったため破棄 (open={open})"
-                            );
-                        } else {
-                            let tick_ms = crate::state::TickMs(hook::current_tick_ms());
-                            app.reassert_explicit_physical_key(open, tick_ms);
-                        }
-                    }
-                }
-            }
         }
         Some(id) if id == TIMER_POWER_RESUME => {
             app.platform.timer.kill(TIMER_POWER_RESUME);
@@ -646,6 +568,7 @@ pub(crate) unsafe fn handle_wm_timer(
             }
         }
         Some(id) if id == TIMER_HOOK_WATCHDOG => {
+            app.check_calibration_bypass_timeout(crate::state::TickMs(hook::current_tick_ms()));
             let last_activity = hook::hook_alive_tick_ms();
             let now = hook::current_tick_ms();
             let stale_ms = now.saturating_sub(last_activity);
@@ -658,15 +581,22 @@ pub(crate) unsafe fn handle_wm_timer(
                 match hook::os_last_input_tick_ms() {
                     Some(os_last_input) => {
                         let os_idle_ms = now.saturating_sub(os_last_input);
+                        let hook_starved = os_idle_ms < 5000;
                         tracing::warn!(
                             "Hook watchdog: no activity for {stale_ms}ms (OS全体の最終入力は\
                              {os_idle_ms}ms前{})",
-                            if os_idle_ms < 5000 {
+                            if hook_starved {
                                 " → フックにイベントが届いていない疑い(issue #165)"
                             } else {
                                 "、OSも無操作のため単なるアイドルの可能性が高い"
                             }
                         );
+                        if hook_starved {
+                            // SAFETY: WM_TIMER ハンドラはメッセージループスレッド上で実行される。
+                            unsafe {
+                                sample_watchdog_kana_lock_edge(app, stale_ms, os_idle_ms);
+                            }
+                        }
                     }
                     None => {
                         tracing::warn!(
@@ -753,6 +683,35 @@ pub(crate) unsafe fn handle_wm_timer(
     recover_pending_drain_request();
 }
 
+/// hook watchdog が「フック詰まり」を検知した瞬間、OS のかな入力ロック状態を
+/// 受動サンプルする（issue #137/BUG-106追補5）。値が前回サンプルから変化した
+/// ときだけ1行ログする。belief には一切触れない（`Runtime::watchdog_kana_edge`
+/// への読み書きのみ）。`kana_lock_hysteresis`（1打鍵1サンプル前提で較正済み）
+/// とは完全に独立させること——混ぜると無打鍵でもトレイ警告が誤発火する。
+///
+/// # Safety
+/// `read_kana_lock`/`foreground_class_name` はメッセージループスレッド上から
+/// 呼ぶこと（`TIMER_HOOK_WATCHDOG` 分岐、`handle_wm_timer` 経由）。
+unsafe fn sample_watchdog_kana_lock_edge(app: &mut Runtime, stale_ms: u64, os_idle_ms: u64) {
+    let reading = unsafe { crate::observer::kana_lock::read_kana_lock() };
+    let previous = app.watchdog_kana_edge;
+    if previous == Some(reading) {
+        return;
+    }
+    // fg_class は今読んだ新鮮な値、process_name() は FocusTracker の追跡値で
+    // 出所が異なるが、is_own_ui_window は OR 判定のタグ付け（gateではない）
+    // なので、ずれても過剰タグ方向にしか効かず実害はない（新しい syscall を
+    // 足してまで揃える必要はない）。
+    let fg_class = unsafe { crate::observer::kana_lock::foreground_class_name() };
+    let own_ui =
+        crate::focus::class_names::is_own_ui_window(&fg_class, app.platform.focus.process_name());
+    tracing::warn!(
+        "Hook watchdog kana lock edge: {previous:?} → {reading:?} \
+         (fg_class={fg_class:?}, own_ui={own_ui}, stale_ms={stale_ms}, os_idle_ms={os_idle_ms})"
+    );
+    app.watchdog_kana_edge = Some(reading);
+}
+
 /// WM_EXECUTE_EFFECTS ハンドラ
 pub(crate) unsafe fn handle_wm_execute_effects(app: &mut Runtime) {
     let outcomes = app
@@ -778,7 +737,6 @@ pub(crate) unsafe fn handle_wm_execute_effects(app: &mut Runtime) {
 const fn encode_outcome(outcome: ImeOpenOutcome) -> isize {
     match outcome {
         ImeOpenOutcome::Applied => 0,
-        ImeOpenOutcome::FallbackSent => 1,
         ImeOpenOutcome::AlreadyMatched => 2,
         ImeOpenOutcome::Failed => 3,
         ImeOpenOutcome::UnsafeToToggle => 4,
@@ -791,6 +749,8 @@ const fn encode_outcome(outcome: ImeOpenOutcome) -> isize {
         // ×ImmCross失敗フォールバック時の随伴warmup重複が直らない
         // （opus-adversarial-consult指摘）。
         ImeOpenOutcome::AppliedWithoutSendInput => 6,
+        // ADR-090 A-2: `issue_open_warrant()` が授権を発行しなかった。
+        ImeOpenOutcome::Unwarranted => 7,
     }
 }
 
@@ -798,12 +758,13 @@ const fn encode_outcome(outcome: ImeOpenOutcome) -> isize {
 fn decode_outcome(value: isize) -> ImeOpenOutcome {
     match value {
         0 => ImeOpenOutcome::Applied,
-        1 => ImeOpenOutcome::FallbackSent,
+        // Code 1 is reserved for a removed outcome; keep the wire gap.
         2 => ImeOpenOutcome::AlreadyMatched,
         3 => ImeOpenOutcome::Failed,
         4 => ImeOpenOutcome::UnsafeToToggle,
         5 => ImeOpenOutcome::NotOwned,
         6 => ImeOpenOutcome::AppliedWithoutSendInput,
+        7 => ImeOpenOutcome::Unwarranted,
         other => {
             tracing::error!("WM_ASYNC_IME_APPLY_COMPLETE: unknown outcome code {other}");
             ImeOpenOutcome::UnsafeToToggle
@@ -928,6 +889,49 @@ pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
     let delegate_assignment =
         crate::msime_key_assignment::read_delegate_to_open_axis_assignment_from_registry();
     tracing::info!("[msime-keyassign] delegate-to-open-axis assignment: {delegate_assignment:?}");
+    // ADR-176決定5（176-T4）: 確定済み較正結果があれば、レジストリ由来の
+    // 分類そのものを差し替える。GJI側（gji_charset_autodetect.rs、176-T3）と
+    // 同じapply_calibration_overrideを使う——型は`ShadowImeAction`と
+    // `ImeToggleKind`を相互変換して合わせる（同型3値、
+    // `shadow_action_to_ime_toggle_kind`/`ime_toggle_kind_to_shadow_action_direct`
+    // 参照）。下記`mask_auto_detect_for_explicit_config`より前に置くことで、
+    // 較正結果も明示config設定済みキーではmaskされる（176-T5と整合）。
+    // 176-T12: 現在のレジストリ内容に対してstaleな較正結果はfresh_or_noneで
+    // 「較正結果なし」に落とし、静的分類へフォールバックさせる
+    // （GJI側と同じ`fresh_or_none`、フィンガープリントはレジストリの生値
+    // ハッシュ、`msime_key_assignment::current_registry_fingerprint_hash`）。
+    let muhenkan_fingerprint = crate::state::calibrated_mode_key::ConfigFingerprint::MsIme {
+        registry_value_hash: crate::msime_key_assignment::current_registry_fingerprint_hash(
+            crate::vk::VK_NONCONVERT,
+        ),
+    };
+    let henkan_fingerprint = crate::state::calibrated_mode_key::ConfigFingerprint::MsIme {
+        registry_value_hash: crate::msime_key_assignment::current_registry_fingerprint_hash(
+            crate::vk::VK_CONVERT,
+        ),
+    };
+    let delegate_assignment = crate::msime_key_assignment::MsImeDelegateToOpenAxisAssignment {
+        muhenkan: crate::state::calibrated_mode_key::apply_calibration_override(
+            delegate_assignment
+                .muhenkan
+                .map(crate::gji_charset_autodetect::shadow_action_to_ime_toggle_kind),
+            crate::state::calibrated_mode_key::fresh_or_none(
+                app.calibrated_mode_key_for(crate::vk::VK_NONCONVERT),
+                &muhenkan_fingerprint,
+            ),
+        )
+        .map(crate::gji_charset_autodetect::ime_toggle_kind_to_shadow_action_direct),
+        henkan: crate::state::calibrated_mode_key::apply_calibration_override(
+            delegate_assignment
+                .henkan
+                .map(crate::gji_charset_autodetect::shadow_action_to_ime_toggle_kind),
+            crate::state::calibrated_mode_key::fresh_or_none(
+                app.calibrated_mode_key_for(crate::vk::VK_CONVERT),
+                &henkan_fingerprint,
+            ),
+        )
+        .map(crate::gji_charset_autodetect::ime_toggle_kind_to_shadow_action_direct),
+    };
     // ADR-153 決定1 M15対策: 明示config設定済みキーにはレジストリ由来の
     // delegateもarmedにしない（下記shadow_overrideと同じ理由）。
     let muhenkan_delegate = super::mask_auto_detect_for_explicit_config(
@@ -948,37 +952,21 @@ pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
     // （`sync_ime_kind_from_observation`がGJI側を先に呼ぶ順序、既存の
     // delegate-to-open-axisと同じ順序依存）。
     //
-    // **重要（/code-review指摘、実装レビューで発見・修正）**: GJI側の
-    // `route_thumb_key_action`は`is_thumb_key`のときだけoverride相当の値を
-    // 返す（非親指キーの場合はactuation-auto側に積まれ、overrideには渡らない
-    // 設計）。ここでも同じ条件を課さないと、無変換/変換を親指キーに
-    // 設定していないMS-IMEユーザーで、レジストリ由来の値が無条件に
-    // overrideへ入ってしまう。すると`is_configured_thumb_key=false`により
-    // `mode_key_delegate_owns_shadow_toggle`がfalseを返し、
-    // `kp_stage_shadow_ime_toggle`が通常の物理IMEキーとして能動的に
-    // actuateする一方、`transport.rs::plan`のfollow-only例外で物理キー
-    // 自体もOSへ届くため、MS-IME自身のネイティブ処理とawaseの能動
-    // actuationが二重に発火する（BUG-46型の新規二重actuation）。
-    let henkan_is_thumb_key =
-        crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_CONVERT);
-    let muhenkan_is_thumb_key =
-        crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_NONCONVERT);
-    // ADR-153 決定1 M15対策: ユーザーが明示config
-    // （`henkan_solo_tap_ime_action`/`muhenkan_solo_tap_ime_action`）を
-    // 設定しているキーについては、レジストリ由来のdelegate/shadow_override
-    // をarmedにしない——GJI側（`gji_charset_autodetect.rs`）と同じ理由
-    // （ADR-119の教訓「gateを1箇所に置いて満足しない」、書き込み点は
-    // 2系統4箇所のうちここが2箇所目）。
+    // ADR-179決定1: かつてはGJI側の`route_thumb_key_action`と対称に
+    // `is_thumb_key`のときだけoverrideへ値を渡していた（非親指キーの場合
+    // 無条件に渡すと、`kp_stage_shadow_ime_toggle`が能動actuateする一方
+    // `transport.rs::plan`のfollow-only例外で物理キーもOSへ届き、
+    // BUG-46型の二重actuationになっていたため）。この二重actuationは
+    // `ModeKeyActuationOwner::PhysicalDelivery`（非親指キー配置の
+    // 無変換/変換On/Off分類時、明示actuateも`ActivationSync`echoも
+    // 一切発行しない）が構造的に防ぐようになったため、is_thumb_keyの
+    // ゲートは不要になった——GJI側と対称に常に渡す。
     let henkan_override = super::mask_auto_detect_for_explicit_config(
-        henkan_is_thumb_key
-            .then_some(delegate_assignment.henkan)
-            .flatten(),
+        delegate_assignment.henkan,
         app.henkan_solo_tap_ime_action(),
     );
     let muhenkan_override = super::mask_auto_detect_for_explicit_config(
-        muhenkan_is_thumb_key
-            .then_some(delegate_assignment.muhenkan)
-            .flatten(),
+        delegate_assignment.muhenkan,
         app.muhenkan_solo_tap_ime_action(),
     );
     app.set_thumb_key_shadow_overrides(henkan_override, muhenkan_override);
@@ -1011,23 +999,23 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
         }
     }
 
-    // GJI 検出時、config1.db から IME ON/OFF/トグルキー（ADR-092 決定D
-    // Step4c）を自動判定する。MS-IME 割当てチェックと対称に、この「IME
-    // 種別に依存する副作用の単一の合流点」に置き、同じ理由で detected を
-    // 見る（未検出時の active_ime_kind() が安全デフォルトとして
-    // MicrosoftIme を返す実装詳細に暗黙に依存せず、明示的にゲートする）。
+    // GJI 検出時、config1.db から無変換/変換キーのIME on/off/toggle
+    // 意味論（BUG-115、ADR-179）を自動判定する。MS-IME 割当てチェックと
+    // 対称に、この「IME 種別に依存する副作用の単一の合流点」に置き、
+    // 同じ理由で detected を見る（未検出時の active_ime_kind() が安全
+    // デフォルトとして MicrosoftIme を返す実装詳細に暗黙に依存せず、
+    // 明示的にゲートする）。
     //
     // **MS-IME 側（次のブロック）より先に呼ぶこと（Opus コードレビュー
-    // 指摘、意図的な順序）**: `ime_toggle_auto` は GJI/MS-IME 両方の
-    // 自動検出が共有する`Engine`フィールドで、GJI 離脱時に
-    // `sync_gji_charset_autodetect` が（自分専用の`ime_on_auto`/
-    // `ime_off_auto`と一緒に）`ime_toggle_auto`も解除する。GJI→MS-IME の
+    // 指摘、意図的な順序）**: `henkan_shadow_override`/
+    // `muhenkan_shadow_override`/delegate-to-open-axisは GJI/MS-IME 両方の
+    // 自動検出が共有する`Runtime`フィールドで、GJI 離脱時に
+    // `sync_gji_charset_autodetect` がこれらを解除する。GJI→MS-IME の
     // 遷移で MS-IME 側が先に新しい値を設定してしまうと、後から走る GJI
     // 離脱処理がその値を上書き消去してしまう（実際に発生していた回帰、
     // 詳細は`gji_charset_autodetect.rs`のコメント参照）。GJI 側を先に
-    // 走らせれば、GJI→MS-IME遷移時は「GJI離脱で3リストとも解除→直後に
-    // MS-IME側が`ime_toggle_auto`を新しい値で上書き」という正しい順序に
-    // なる。
+    // 走らせれば、GJI→MS-IME遷移時は「GJI離脱で解除→直後にMS-IME側が
+    // 新しい値で上書き」という正しい順序になる。
     //
     // 専用Fnキー変換（ADR-091 §D3.2）の自動判定・設定支援ポップアップ・
     // config1.db書き込みは、実験的機能のまま撤去し忘れて出荷されていた
@@ -1168,6 +1156,85 @@ pub(crate) unsafe fn handle_wm_hotkey_toggle(app: &mut Runtime) {
     app.toggle_engine();
 }
 
+/// WM_CALIBRATION_KEY_DETECTED ハンドラ（ADR-176 176-T8）。
+///
+/// **belief書き込みAPI（`ImeModel`のsetter・`dispatch_event`・
+/// `observation_store`・`reduce(`等）を一切呼ばないこと**
+/// （ADR-176決定1の点2、`architecture_guard.rs`の
+/// `calibration_key_detected_handler_does_not_touch_belief`が固定する）。
+pub(crate) fn handle_wm_calibration_key_detected(app: &Runtime) {
+    let Some(session_pid) = app.calibration_session_pid() else {
+        return;
+    };
+    let focus_pid = app.platform.focus.pid();
+    if focus_pid != session_pid {
+        tracing::debug!(
+            "[calibration] キー検知を受信したが、現在のフォーカス先(pid={focus_pid})が\
+             較正セッション(pid={session_pid})と一致しないため無視します"
+        );
+        return;
+    }
+    let seq = hook::calibration_press_seq();
+    let press_ms = hook::calibration_last_press_ms();
+    tracing::info!(
+        "[calibration] 対象キー押下を検知: vk={:?} seq={seq} press_ms={press_ms}",
+        app.calibration_session_vk()
+    );
+}
+
+/// WM_CALIBRATION_START ハンドラ（ADR-176 176-T7）。
+pub(crate) unsafe fn handle_wm_calibration_start(app: &mut Runtime, wparam: WPARAM) {
+    let payload = crate::calibration_ipc::unpack(wparam.0);
+    if !sender_is_awase_settings(payload.pid) {
+        tracing::warn!(
+            "[calibration] WM_CALIBRATION_START pid={}がawase-settings.exeと\
+             確認できないため拒否します",
+            payload.pid
+        );
+        return;
+    }
+    if let Some(active_pid) = app.calibration_session_pid() {
+        if active_pid != payload.pid {
+            tracing::warn!(
+                "[calibration] 別セッション(pid={active_pid})が進行中のため、\
+                 pid={}からのSTARTを無視します",
+                payload.pid
+            );
+            return;
+        }
+    }
+    tracing::info!(
+        "[calibration] 較正モード開始/再武装: vk={:?} pid={}",
+        payload.vk,
+        payload.pid
+    );
+    app.begin_calibration_bypass(
+        payload.vk,
+        payload.pid,
+        crate::state::TickMs(hook::current_tick_ms()),
+    );
+}
+
+/// WM_CALIBRATION_END ハンドラ（ADR-176 176-T7）。
+pub(crate) unsafe fn handle_wm_calibration_end(app: &mut Runtime, wparam: WPARAM) {
+    let pid = crate::calibration_ipc::unpack(wparam.0).pid;
+    if app.calibration_session_pid() == Some(pid) {
+        tracing::info!("[calibration] 較正モード終了: pid={pid}");
+        app.end_calibration_bypass();
+    } else {
+        tracing::debug!(
+            "[calibration] pid={pid}からのENDは現在のセッションと一致しないため無視します"
+        );
+    }
+}
+
+/// `pid`が実際に`awase-settings.exe`であるかを検証する（round7 N2対応、
+/// `disable_apps`と同じ名前ベースの信頼モデル）。
+fn sender_is_awase_settings(pid: u32) -> bool {
+    let name = crate::focus::classify::get_process_name(pid);
+    crate::calibration_ipc::is_awase_settings_process_name(&name)
+}
+
 /// WM_HOTKEY ハンドラ (HOTKEY_ID_FOCUS_OVERRIDE)
 pub(crate) unsafe fn handle_wm_hotkey_focus_override(app: &mut Runtime) {
     app.toggle_app_override();
@@ -1257,10 +1324,15 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
                         tick_ms: hook::current_tick_ms(),
                         hook_us: hook::now_timestamp_us(),
                     });
-                app.platform_state
-                    .ime
-                    .journal
-                    .record(crate::journal::JournalEntry::DumpTriggered);
+                let evicted = app.platform_state.ime.journal.evicted_by_lane();
+                app.platform_state.ime.journal.record(
+                    crate::journal::JournalEntry::DumpTriggered {
+                        evicted_state: evicted.state,
+                        evicted_timing: evicted.timing,
+                        evicted_actuation: evicted.actuation,
+                        evicted_key_input: evicted.key_input,
+                    },
+                );
                 let dump_result = app
                     .platform_state
                     .ime
@@ -1565,24 +1637,20 @@ fn build_bug_report_gji_keymap_summary(
             crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_CONVERT);
         let muhenkan_is_thumb_key =
             crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_NONCONVERT);
-        // /code-review指摘: `route_thumb_key_action`
-        // （`gji_charset_autodetect.rs:522`）を直接呼ばず、その分岐条件
-        // （`is_thumb_key`の真偽のみ、`action`自体は`route_thumb_key_action`
-        // に先んじて`wiring.henkan`/`wiring.muhenkan`から素通し）をここで
-        // 再現している。`route_thumb_key_action`は`on`/`off`/`toggle`の
-        // 3つの`&mut Vec<ParsedKeyCombo>`を要求する副作用ありの関数
-        // （actuation-auto側への追加）で、診断専用のこの経路のためだけに
-        // 使い捨てのVecを渡すのは本末転倒なため。ここで再現しているのは
-        // 「`is_thumb_key`なら`Delegate`、そうでなければ`ActuationAuto`」
-        // という1行の分岐のみで、`ImeToggleKind→ShadowImeAction`の変換
-        // 自体（実際の値の計算）は`gate_thumb_key_ime_actions`にすべて
-        // 委譲済み。この分岐がずれていないことはOpus敵対的コードレビュー
-        // で`route_thumb_key_action`本体と突き合わせ済み（ADR-148参照）。
+        // ADR-179決定1: `sync_gji_charset_autodetect`はis_thumb_keyに
+        // 関わらず常にdelegate-to-open-axisとshadow_action overrideの
+        // 両方へ同じ値を書き込む（旧`route_thumb_key_action`の`is_thumb_key`
+        // 分岐は撤去済み）。実際にどちらが発火するかは打鍵時の
+        // `ModeKeyActuationOwner`が判定するため、ここでの`is_thumb_key`は
+        // 「チョード判別のFSM delegateが所有しうるか」を示す診断用の
+        // ラベルとして引き続き使う（`Delegate`=親指キー配置、
+        // `PhysicalDelivery`=非親指キー配置で物理キー配送のみに委ねる、
+        // `ModeKeyActuationOwner`の variant名に合わせた）。
         let henkan_route = wiring.henkan.map(|_| {
             if henkan_is_thumb_key {
                 "Delegate"
             } else {
-                "ActuationAuto"
+                "PhysicalDelivery"
             }
             .to_owned()
         });
@@ -1590,7 +1658,7 @@ fn build_bug_report_gji_keymap_summary(
             if muhenkan_is_thumb_key {
                 "Delegate"
             } else {
-                "ActuationAuto"
+                "PhysicalDelivery"
             }
             .to_owned()
         });
@@ -1658,18 +1726,14 @@ fn build_bug_report_msime_key_assignment_summary(
 
         let delegate_assignment =
             crate::msime_key_assignment::read_delegate_to_open_axis_assignment_from_registry();
-        let henkan_is_thumb_key =
-            crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_CONVERT);
-        let muhenkan_is_thumb_key =
-            crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_NONCONVERT);
-        let adopted_henkan_delegate = henkan_is_thumb_key
-            .then_some(delegate_assignment.henkan)
-            .flatten()
+        // ADR-179決定1: `sync_ime_toggle_auto_detect`はis_thumb_keyに
+        // 関わらず常にoverrideへ値を渡すため、この診断値もゲートしない。
+        let adopted_henkan_delegate = delegate_assignment
+            .henkan
             .map(shadow_ime_action_str)
             .map(str::to_owned);
-        let adopted_muhenkan_delegate = muhenkan_is_thumb_key
-            .then_some(delegate_assignment.muhenkan)
-            .flatten()
+        let adopted_muhenkan_delegate = delegate_assignment
+            .muhenkan
             .map(shadow_ime_action_str)
             .map(str::to_owned);
         MsImeAdoptedFields {
@@ -2032,7 +2096,6 @@ mod tests {
         // should_send_accompanying_warmupの区別が非同期経路だけ効かなくなる。
         for outcome in [
             super::ImeOpenOutcome::Applied,
-            super::ImeOpenOutcome::FallbackSent,
             super::ImeOpenOutcome::AppliedWithoutSendInput,
             super::ImeOpenOutcome::AlreadyMatched,
             super::ImeOpenOutcome::Failed,
@@ -2046,6 +2109,21 @@ mod tests {
                 "roundtrip failed for {outcome:?} (encoded as {encoded})"
             );
         }
+    }
+
+    /// 欠番になった符号(旧 `FallbackSent` = 1、ADR-190)や未知値は、apply を行わない
+    /// 安全側の `UnsafeToToggle` に倒れること。番号を詰めると全 outcome がこの値に
+    /// 化けるので、欠番のまま残す規則をここで固定する。
+    #[test]
+    fn retired_or_unknown_outcome_codes_decode_to_unsafe_to_toggle() {
+        assert_eq!(
+            super::decode_outcome(1),
+            super::ImeOpenOutcome::UnsafeToToggle
+        );
+        assert_eq!(
+            super::decode_outcome(99),
+            super::ImeOpenOutcome::UnsafeToToggle
+        );
     }
 
     #[test]
@@ -2103,10 +2181,16 @@ pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
             tick_ms: hook::current_tick_ms(),
             hook_us: hook::now_timestamp_us(),
         });
+    let evicted = app.platform_state.ime.journal.evicted_by_lane();
     app.platform_state
         .ime
         .journal
-        .record(crate::journal::JournalEntry::DumpTriggered);
+        .record(crate::journal::JournalEntry::DumpTriggered {
+            evicted_state: evicted.state,
+            evicted_timing: evicted.timing,
+            evicted_actuation: evicted.actuation,
+            evicted_key_input: evicted.key_input,
+        });
     match app.platform_state.ime.journal.dump_to_file() {
         Ok(path) => {
             tracing::info!("[journal] ダンプ完了: {}", path.display());

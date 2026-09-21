@@ -177,7 +177,7 @@ pub struct TsfObservations {
     /// 「shadow=OFF なのに候補ウィンドウが表示された（desync）」ことがあったかを記録するラッチ。
     ///
     /// `EVENT_OBJECT_SHOW` で `true` に、`reset_candidate_was_seen()` 呼び出し時に `false` にリセット。
-    /// `KanjiToggleStrategy` が shadow=false でも desync を検出して VK_KANJI を送れるようにする。
+    /// `GjiDirectStrategy`（ADR-171）が shadow=false でも desync を検出して必要な再送を行えるようにする。
     pub(super) candidate_was_seen: AtomicBool,
 
     /// `LiteralDetectCore` が最後に `CompositionConfirmed`（かつ非 partial-literal）を
@@ -515,7 +515,7 @@ pub(crate) fn reset_namechange_seq() {
 
 /// GJI candidate が SHOW になってから次の `reset_candidate_was_seen()` まで `true`。
 ///
-/// `KanjiToggleStrategy` が shadow=false でも desync を検出するために使う。
+/// `GjiDirectStrategy`（ADR-171）が shadow=false でも desync を検出するために使う。
 pub(crate) fn candidate_was_seen() -> bool {
     TSF_OBS.candidate_was_seen.load(Ordering::Relaxed)
 }
@@ -737,5 +737,47 @@ mod tests {
         reset_literal_session_confirmed();
 
         assert!(!literal_session_confirmed(Generation::new(301)));
+    }
+
+    // ── ADR-171: candidate_was_seen の同期消費 ──────────────────────────
+
+    /// ADR-171「BUG-113再導入にならない理由」の前提: `reset_candidate_was_seen()`
+    /// は呼び出しと同時に（次の drain/timer 等を待たず）`candidate_was_seen()`
+    /// を `false` へ切り替える。`ime_controller.rs::apply_mechanism` の
+    /// GjiDirect アームは、override 送信（`send_ime_mode_key`）が成功した
+    /// 直後にこの関数を呼ぶことで、同一バッチ内の2つ目の `SetOpen` effect が
+    /// 新しく構築する `view` が同じ desync 証拠を再度読んでしまう
+    /// （BUG-113型の二重送信を再導入する）ことを防いでいる。
+    ///
+    /// このテストは `apply_mechanism` 自体（実 Win32 `SendInput` を伴うため
+    /// このモジュールの `#[cfg(test)]` からは意図的に呼ばない、
+    /// `ime_controller.rs` 側のテストが `shadow_on=None`/`Some(false)` の
+    /// 組み合わせで一貫して実送信を避けている設計と同じ理由）ではなく、
+    /// その前提となる「消費が同期的であること」自体を固定する
+    /// （/code-review指摘: この保証を検証する自動テストが無かった）。
+    /// 将来 `reset_candidate_was_seen()` が非同期化・遅延化されると、
+    /// この保証が崩れ2つ目のeffectが二重送信しうる——その変化をこのテストが
+    /// 検知する。
+    #[test]
+    fn reset_candidate_was_seen_takes_effect_synchronously() {
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        // EVENT_OBJECT_SHOW 相当（win_event_obs.rs が実際に立てる値）を模擬する。
+        TSF_OBS.candidate_was_seen.store(true, Ordering::Relaxed);
+        assert!(candidate_was_seen());
+
+        // apply_mechanism の GjiDirect アームが override 送信成功直後に呼ぶ。
+        reset_candidate_was_seen();
+
+        // 呼び出し直後（他のイベント処理を挟まず）に false が読める必要がある
+        // ——これが同一バッチ内の2つ目の effect が正しく AlreadyMatched に
+        // 落ちるための前提。
+        assert!(
+            !candidate_was_seen(),
+            "reset_candidate_was_seen() は同期的に candidate_was_seen() へ反映されなければ \
+             ならない（次の apply の view 構築が古い desync 証拠を再度読んでしまう）"
+        );
     }
 }

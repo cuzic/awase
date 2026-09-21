@@ -5,16 +5,27 @@ title: |-
 summary: |-
   ユーザー報告「バージョンアップすると既存の設定が失われる」の原因調査と対策。**round1 Opus premortemで「MSI経路は保護されている」という当初前提が誤りと判明**: `wix/main.wxs`の`<MajorUpgrade>`に`Schedule`属性が無く既定値`afterInstallValidate`のため、新バージョンのファイルインストールより前に旧バージョンが完全アンインストールされ、`ConfigFile`コンポーネントの`NeverOverwrite="yes"`(KeyPathはレジストリ値でファイルではない)は無力化される(F1、MSIでインストールした全ユーザーが対象、最優先で修正)。加えてZIP配布の2箇所と実装共通の1箇所: (F2)`scripts/uninstall.ps1`が`%LOCALAPPDATA%\awase`を無条件再帰削除、(F3)`scripts/install.ps1`が`config.toml`は「既存なら上書きしない」のに`layout/*`は無条件`-Force`上書き(`awase-yab-editor`はawase-settingsの「配列編集」タブとして統合済みと判明、GUI編集ユーザー全員が対象)、(F4・最重要)`awase-settings`の`AppConfig::load()`失敗時に`default_config()`へ静かにフォールバックし「適用」でconfig.tomlへ永続化(`AppConfig::general`に`#[serde(default)]`が無く`[general]`欠落だけでparse失敗する点も発見、F5としてpaths.rsのCWDフォールバックも関連リスクとして記録)。決定0〜8: `<MajorUpgrade Schedule="afterInstallExecute">`＋`NicolaYab`コンポーネントへの`NeverOverwrite="yes"`追加(最優先、round2でMSI上書き経路と削除経路が別物と判明し拡張)、uninstall.ps1のユーザーデータ削除を`-Purge`明示フラグへ分離、install.ps1は`layout/`のみ非破壊化(`data/`はプログラム資産として対象外のまま維持しMSIと挙動を揃える)、`AppConfig::save()`をfsync+リトライ付きアトミック書き込み化、awase-settingsに`NotFound`/`Dangerous`(NotFound以外は全て危険側に倒す明示ルール)分類のload状態を追加しegui内製の確認UIで警告・一度限りバックアップ、`general`フィールドへの`#[serde(default)]`付与、パス解決フォールバックへの診断ログ追加、`wix/main.wxs`のGUID/Schedule/NeverOverwrite不変条件を機械的に固定するguard test新設。schema_versionマイグレーション機構の新設は不採用(既存方針に整合)
 status: |-
-  **実装済み(2026-08-21)**。round1(6 must-fix)→round2(実コード裏取りで4 must-fix、うちMSIの`layout/nicola.yab`保護漏れ等)→round3(round2 must-fix4件の反映確認)の3ラウンドOpus premortemを経て実装。cargo test(800件超)・fmt・CI相当clippy・`cargo xwin check/clippy/build --tests`(実Windowsターゲット)全緑。実装後Opusコードレビューで2件のCONFIRMEDバグ(guard testが自分のコメント文言で無効化・`.bak`コピー失敗時も保存続行)を検出・修正済み。Windows実機でのアップグレード検証は未実施
+  **実装済み(2026-08-21)**。round1(6 must-fix)→round2(実コード裏取りで4 must-fix、うちMSIの`layout/nicola.yab`保護漏れ等)→round3(round2 must-fix4件の反映確認)の3ラウンドOpus premortemを経て実装。cargo test(800件超)・fmt・CI相当clippy・`cargo xwin check/clippy/build --tests`(実Windowsターゲット)全緑。実装後Opusコードレビューで2件のCONFIRMEDバグ(guard testが自分のコメント文言で無効化・`.bak`コピー失敗時も保存続行)を検出・修正済み。2026-09-17、[ADR-177](177-msi-restart-manager-graceful-shutdown.md)のround2実機検証(常駐状態のままconfig.toml/layout/nicola_keytop.yabを編集→UI付き`msiexec /i`でアップグレード)で解消——編集内容が上書きされずに保持されることを実機で確認済み。ただしZIP版install.ps1/uninstall.ps1の`-Purge`挙動やawase-settings.exe常駐時のケース等、ADR-099が挙げる検証チェックリストの全項目を網羅したものではない
 related_adr:
   - "ADR-092"
+  - "ADR-177"
 ---
 
 # ADR-099: バージョンアップ時の設定消失を防ぐ — MSI/ZIP インストーラーのユーザーデータ分離と load-failure セーフティネット
 
 ## ステータス
 
-**実装済み（2026-08-21）。Windows 実機でのアップグレード検証は未実施。**
+**実装済み（2026-08-21）。Windows 実機でのアップグレード検証は
+[ADR-177](177-msi-restart-manager-graceful-shutdown.md)（2026-09-17、
+round1・round2の2ラウンド）で実施済み** — 常駐状態のまま
+`config.toml`（`simultaneous_threshold_ms`変更）と
+`layout/nicola_keytop.yab`（追記）を編集した上で、UI付き
+（`msiexec /i`、`/qn`無し、実配布経路の再現）でメジャーアップグレードを
+実行し、**編集内容が両方とも上書きされずに保持される**こと、
+Restart Manager経由でのシャットダウン・ファイル置換・再起動が正常に
+完了することを確認した（ZIP版install.ps1/uninstall.ps1の`-Purge`挙動、
+`awase-settings.exe`常駐時のケース等はADR-177の検証範囲外、
+ADR-177「検証の限界」参照）。
 Opus premortem round1（2026-08-21）で6件の must-fix・7件の should-fix を
 受領し、本文へ反映済み。**round1 で「MSI 経路は保護されている」という
 当初の前提が誤りと判明し、根本的に書き直した**（旧 決定1〜5 は 決定0〜8
@@ -701,10 +712,21 @@ guard test で固定する
 ## 既知の限界・未検証事項
 
 - Windows 実機での MSI メジャーアップグレード（決定0適用後、実際に
-  `config.toml`/`layout/nicola.yab` が保持されることの実機確認は未実施。
-  **本 ADR で最も検証優先度が高い項目**。
+  `config.toml`/`layout/nicola.yab` が保持されることの実機確認）は
+  **[ADR-177](177-msi-restart-manager-graceful-shutdown.md)（2026-09-17）
+  で実施済み** — 常駐状態のまま編集した`config.toml`/`layout/`が
+  UI付きメジャーアップグレード後も保持されることを確認した。
+  → ADR-177「実機検証の結果」節参照。
 - Windows 実機での ZIP 版アップグレード手順（決定1・2適用後）の実機
   確認は未実施。
+- **（ADR-177の実機検証で新規発見、2026-09-17）MSIのアンインストール
+  （`msiexec /x`）は`config.toml`/`layout/`を削除する。** これは
+  決定1がZIP版（`scripts/uninstall.ps1`）に定めた「既定では残す、
+  完全消去は`-Purge`明示フラグ」という方針と非対称であり、
+  「決定0によってMSI経路は保護されるため決定1はZIP経由に限定される」
+  としていた当時の判断は「アップグレード時の保護」と「アンインストール
+  時の挙動」を混同していたことになる。MSI側に`-Purge`相当の分岐を
+  設けるかどうかは未判断（ADR-177「副次的な発見」節参照）。
 - 決定3のリトライ幅（初回試行の後、50ms間隔で最大4回＝最大200ms
   ブロック、初回と合わせて最大5回試行。**コードレビュー訂正**:
   当初「50ms×5=250ms」と記載していたが、実装は最終試行後にスリープ

@@ -15,6 +15,24 @@ use win32_async;
 
 const EXPLICIT_OFF_CACHE_SUPPRESS_MS: u64 = 10_000;
 
+/// ADR-176 176-T6（決定1、round6 B3対応）: 較正モードのバイパスが
+/// awase-settings側の応答無しに残り続けないための上限。この値は実測
+/// レイテンシに対する安全マージンではなく、awase-settingsの
+/// クラッシュ/強制終了を検知する生存監視のためのポリシー値なので、
+/// 実測msの記載を必須とする`tuning.rs`（`.claude/rules/tuning-constants.md`
+/// 参照）には置かない。
+const CALIBRATION_BYPASS_TIMEOUT_MS: u64 = 30_000;
+
+/// ADR-176 176-T9a（決定3 round9 B4対応）: 較正probeが連続でこの回数
+/// 失敗（`open=None`）したら較正モードを中止する。較正probeは
+/// `send_health`のサーキットブレーカを意図的に迂回する（round6 B2）ため、
+/// 本番のブレーキが一切効かない——このローカルなカウンタが唯一の歯止め。
+/// 実測msに基づく値ではなく、`CALIBRATION_BYPASS_TIMEOUT_MS`と同種の
+/// ポリシー値（IMEがハングしている状態でポーリングを無限に続けない
+/// ための上限）のため`tuning.rs`には置かない。
+/// `CALIBRATION_PROBE_POLL_INTERVAL_MS`（100ms）×10 = 約1秒相当。
+const MAX_CONSECUTIVE_CALIBRATION_PROBE_FAILURES: u32 = 10;
+
 /// `apply_focus_probe_result` 内部で使うフォーカス分類結果。
 pub(super) struct ClassifiedFocus {
     pub hwnd: HWND,
@@ -141,6 +159,9 @@ impl Runtime {
         // 呼ぶこと。これより前だと `current_app_profile()` がまだ正しい
         // 値を返さない。
         self.sync_initial_app_policy(tick_ms);
+        // BUG-148/ADR-186: `current_focus` も起動時の前面 hwnd で初期化する
+        // （最初のプロセス切替まで `None` のままだと明示意図が記録されない）。
+        self.sync_initial_focus_hwnd(&classified, tick_ms);
 
         // injection_mode の再計算は呼び出し元に残す（指摘9: `on_focus_process_changed`
         // とは呼び出し順序が異なるため `enter_focus_scope` には含めない）。
@@ -240,6 +261,22 @@ impl Runtime {
         tracing::debug!("[app-policy] bootstrap initial app_policy: profile={profile:?}");
         self.platform_state.ime.dispatch_event(
             crate::state::ime_event::ImeEvent::InitialAppPolicyEstablished { profile },
+            tick_ms,
+        );
+    }
+
+    /// BUG-148/ADR-186: 起動直後の初回フォーカス確立時に `current_focus` を前面 hwnd で
+    /// 初期化する。`on_focus_process_changed` の `FocusChanged` と同じ `HwndId` の導出
+    /// （`classified.hwnd`）を使う。belief は書かない（`current_focus` のみ）。
+    fn sync_initial_focus_hwnd(
+        &mut self,
+        classified: &ClassifiedFocus,
+        tick_ms: crate::state::TickMs,
+    ) {
+        let hwnd = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);
+        tracing::debug!("[focus] bootstrap initial current_focus: {hwnd:?}");
+        self.platform_state.ime.dispatch_event(
+            crate::state::ime_event::ImeEvent::InitialFocusHwndEstablished { hwnd },
             tick_ms,
         );
     }
@@ -552,6 +589,299 @@ impl Runtime {
         );
     }
 
+    /// ADR-176 176-T6/T7: 較正モード開始/再武装（keepalive）。
+    /// `awase-settings.exe`を一時的に`disable_apps`と同様のバイパス対象へ
+    /// 加え、現在のフォーカス先で即座に再評価する。`apply_config_update`の
+    /// reload経路（`self.platform.focus.is_focused()` →
+    /// `apply_app_disable_transition`）と同じ呼び出し方にすることで、
+    /// 較正モード開始時点でawase-settingsが既にフォーカスを持っている
+    /// 場合でも即座にバイパスが効く（round6 m4対応）。
+    ///
+    /// 冪等——同じ`pid`から再度呼ぶと単にタイムアウト期限と`vk`が更新
+    /// される（176-T7、round7 B1対応: `WM_CALIBRATION_START`をkeepaliveと
+    /// して繰り返し送る設計のための再武装経路）。呼び出し元
+    /// （`message_handlers.rs::handle_wm_calibration_start`）が
+    /// 別セッションのPIDと衝突しないことを確認済みである前提で呼ぶこと
+    /// （このメソッド自体はPID所有権チェックを行わない）。
+    pub(crate) fn begin_calibration_bypass(
+        &mut self,
+        vk: awase::types::VkCode,
+        pid: u32,
+        now: crate::state::TickMs,
+    ) {
+        self.platform
+            .focus
+            .set_calibration_bypass_process(Some("awase-settings.exe".to_string()));
+        self.calibration_bypass_deadline =
+            Some(crate::state::TickMs(now.0 + CALIBRATION_BYPASS_TIMEOUT_MS));
+        self.calibration_session_pid = Some(pid);
+        self.calibration_session_vk = Some(vk);
+        crate::hook::set_calibration_target(Some(vk));
+        // ADR-176 176-T9a: 新しい世代を発行し、較正probeループを起動する。
+        // 再武装（同じpidでの再呼び出し、VK変更を含む）でも無条件に世代を
+        // 進めることで、古いループの確定状態（TrialTracker/
+        // CalibrationConfirmState）が新しいVKの試行に混ざらないようにする
+        // （opus-adversarial-consultレビューround9 S6対応）。
+        self.calibration_epoch = self.calibration_epoch.wrapping_add(1);
+        self.spawn_calibration_probe_loop();
+        if self.platform.focus.is_focused() {
+            let focused_pid = self.platform.focus.pid();
+            self.apply_app_disable_transition(focused_pid, false);
+        }
+    }
+
+    /// ADR-176 176-T6: 較正モード終了（正常終了・UIでのキャンセル・
+    /// 176-T9のPID不一致検知・タイムアウトのいずれからも呼ぶ想定）。
+    /// バイパスを解除し、現在のフォーカス先で再評価する。
+    pub(crate) fn end_calibration_bypass(&mut self) {
+        self.platform.focus.set_calibration_bypass_process(None);
+        self.calibration_bypass_deadline = None;
+        self.calibration_session_pid = None;
+        self.calibration_session_vk = None;
+        crate::hook::set_calibration_target(None);
+        // ADR-176 176-T9a: 世代を進め、生きている較正probeループ
+        // （もしあれば）を次tickで停止させる。
+        self.calibration_epoch = self.calibration_epoch.wrapping_add(1);
+        if self.platform.focus.is_focused() {
+            let pid = self.platform.focus.pid();
+            self.apply_app_disable_transition(pid, false);
+        }
+    }
+
+    /// ADR-176 176-T6: 較正モードのバイパスが有効中か。
+    #[must_use]
+    #[allow(dead_code)] // 176-T8以降で呼び出し
+    pub(crate) fn calibration_bypass_is_active(&self) -> bool {
+        self.calibration_bypass_deadline.is_some()
+    }
+
+    /// ADR-176 176-T7: 現在進行中の較正セッションのPID
+    /// （`None`=非アクティブ）。`message_handlers.rs`のSTART/ENDハンドラが
+    /// セッション所有権の検証に使う（round7 S4対応）。
+    #[must_use]
+    pub(crate) fn calibration_session_pid(&self) -> Option<u32> {
+        self.calibration_session_pid
+    }
+
+    /// ADR-176 176-T8: 現在進行中の較正セッションの対象VK
+    /// （`None`=非アクティブ）。`message_handlers.rs`の
+    /// `handle_wm_calibration_key_detected`がログ出力に使う。
+    #[must_use]
+    pub(crate) fn calibration_session_vk(&self) -> Option<awase::types::VkCode> {
+        self.calibration_session_vk
+    }
+
+    /// ADR-176 176-T9a: 較正probeループの現在の世代。
+    #[must_use]
+    pub(crate) fn calibration_epoch(&self) -> u64 {
+        self.calibration_epoch
+    }
+
+    /// ADR-176 176-T9a（決定3）: 較正probeの非同期ポーリングループを起動する。
+    /// `begin_calibration_bypass`の中だけから呼ぶこと（世代を捕捉する
+    /// タイミングがそこでしか正しくないため）。
+    ///
+    /// メインスレッドを`run_with_timeout`でブロックせず
+    /// `win32_async::offload_timeout`+`spawn_local`で完全非同期に回す
+    /// （opus-adversarial-consultレビューround9 B4/S5対応: `run_with_timeout`
+    /// は`LEAKED_THREADS`（プロセス全体で共有、上限8）を消費するため、
+    /// IMEがハングした状態で100ms間隔のポーリングを回すと較正以外の
+    /// フォーカス検出・IME状態読み取りまで巻き込んで枯渇させてしまう）。
+    /// probeは常に直列1本（前のprobeの完了を待ってから次のsleep+probeへ
+    /// 進む）。
+    fn spawn_calibration_probe_loop(&self) {
+        let epoch = self.calibration_epoch;
+        win32_async::spawn_local(async move {
+            let mut tracker = crate::state::calibrated_mode_key::TrialTracker::new();
+            let mut confirm = crate::state::calibrated_mode_key::CalibrationConfirmState::new();
+            let mut consecutive_failures: u32 = 0;
+            // ADR-176 176-T9b: 確定/却下の通知をセッション中1回に限る
+            // （`spawn_calibration_probe_loop`のdoc参照）。
+            let mut result_notified = false;
+
+            loop {
+                win32_async::sleep_ms(crate::tuning::CALIBRATION_PROBE_POLL_INTERVAL_MS as u32)
+                    .await;
+
+                // 世代照合とフォーカス/セッション情報の取得を1回のwith_appに
+                // まとめる。外側のOption<..>はwith_app自体が再入でNoneを
+                // 返した場合（=Runtimeが他所でborrow中）で、この場合は
+                // セッション終了ではなく単に今tickをスキップして次へ進む。
+                // 内側のOption<..>が世代不一致/セッション不在を表し、この
+                // 場合はループ自体を終了する。
+                let outer = crate::with_app(|app| {
+                    if app.calibration_epoch() != epoch {
+                        return None;
+                    }
+                    app.calibration_session_pid().map(|session_pid| {
+                        (
+                            app.platform.focus.current.root_hwnd,
+                            app.platform.focus.current.pid,
+                            app.platform.focus.current.process_name.clone(),
+                            session_pid,
+                        )
+                    })
+                });
+                let (hwnd_addr, focus_pid, focus_process_name, session_pid) = match outer {
+                    None => continue,
+                    Some(None) => return,
+                    Some(Some(ctx)) => ctx,
+                };
+
+                let now_ms = crate::hook::current_tick_ms();
+                let press_seq = crate::hook::calibration_press_seq();
+
+                // round9 S7対応: PID一致に加えてプロセス名も確認する
+                // （PID再利用で無関係な別プロセスに化けるケースを塞ぐ）。
+                // 一致しない場合はセッションを中止せず、probe自体を
+                // スキップする（同一PIDのまま較正対象以外のウィンドウ
+                // ——ネイティブダイアログ等——へ一時的にフォーカスが
+                // 移るケースを想定、round9 S7）。
+                //
+                // コードレビュー指摘（2026-09-17）: 以前はここで`continue`
+                // していたため、settle window中にフォーカスが外れると
+                // `tracker.tick()`自体が呼ばれず、期限（`deadline_ms`）が
+                // 一度も評価されないまま試行が`active`に残り続けた。
+                // その後フォーカスが戻ってprobeが成功すると、window外
+                // （フォーカス喪失中）の値がそのまま`post`として採用され、
+                // 「計測中は常にフォーカスを保持」というT9/T10の前提に
+                // 反する誤った`Completed`が生じ得た。フォーカス不一致時も
+                // `probe_result = None`のまま下の`tracker.tick()`を必ず
+                // 通すことで、期限超過を確実に検知させる
+                // （`focus_pid`一致時のみ実際にprobeを発行する）。
+                let probe_result = if focus_pid == session_pid
+                    && crate::calibration_ipc::is_awase_settings_process_name(&focus_process_name)
+                {
+                    let result = win32_async::offload_timeout(
+                        crate::tuning::CALIBRATION_PROBE_TIMEOUT_MS,
+                        move || unsafe {
+                            crate::imm::probe_ime_open_for_calibration(
+                                hwnd_addr,
+                                crate::tuning::CALIBRATION_PROBE_TIMEOUT_MS,
+                            )
+                        },
+                    )
+                    .await
+                    .flatten();
+
+                    if result.is_some() {
+                        consecutive_failures = 0;
+                    } else {
+                        consecutive_failures += 1;
+                        // round9 B4対応: 較正probeはsend_healthを迂回する
+                        // ため（B2）、本番のサーキットブレーカに頼れない。
+                        // ローカルな連続失敗カウンタで、IMEがハングして
+                        // いる間ポーリングを無限に続けないようにする。
+                        if consecutive_failures >= MAX_CONSECUTIVE_CALIBRATION_PROBE_FAILURES {
+                            let _ = crate::with_app(|app| {
+                                if app.calibration_epoch() == epoch {
+                                    tracing::warn!(
+                                        "[calibration] probe連続失敗（{consecutive_failures}回）\
+                                         のため較正モードを中止します"
+                                    );
+                                    app.end_calibration_bypass();
+                                }
+                            });
+                            return;
+                        }
+                    }
+                    result
+                } else {
+                    None
+                };
+
+                match tracker.tick(
+                    press_seq,
+                    now_ms,
+                    probe_result,
+                    crate::tuning::CALIBRATION_TRIAL_SETTLE_WINDOW_MS,
+                ) {
+                    crate::state::calibrated_mode_key::TrialTick::Completed { pre, post } => {
+                        let verdict = confirm.record_trial(pre, post);
+                        // ADR-176 176-T9b: 確定/却下はセッション中1回だけ通知する
+                        // （`CalibrationConfirmState`は確定後も同じverdictを
+                        // 返し続けるため、送信をガードしないと後続の試行の
+                        // たびに同じ結果を何度もawase-settingsへ送ってしまう）。
+                        if result_notified {
+                            continue;
+                        }
+                        match verdict {
+                            crate::state::calibrated_mode_key::CalibrationVerdict::ConfirmedOn => {
+                                let sent = crate::with_app(|app| {
+                                    if app.calibration_epoch() != epoch {
+                                        return false;
+                                    }
+                                    let Some(vk) = app.calibration_session_vk() else {
+                                        return false;
+                                    };
+                                    tracing::info!(
+                                        "[calibration] 確定: vk={vk:?} ImeToggleKind::On \
+                                         (pre={pre} post={post})"
+                                    );
+                                    notify_calibration_result(
+                                        vk,
+                                        crate::calibration_ipc::CalibrationResultKind::ConfirmedOn,
+                                        crate::tsf::observer::tsf_obs().active_ime_kind().into(),
+                                    );
+                                    true
+                                });
+                                result_notified = sent == Some(true);
+                            }
+                            crate::state::calibrated_mode_key::CalibrationVerdict::Rejected => {
+                                let sent = crate::with_app(|app| {
+                                    if app.calibration_epoch() != epoch {
+                                        return false;
+                                    }
+                                    let Some(vk) = app.calibration_session_vk() else {
+                                        return false;
+                                    };
+                                    tracing::info!(
+                                        "[calibration] 却下: vk={vk:?} pre={pre} post={post} \
+                                         はToggleの決定的証拠のため確定しません"
+                                    );
+                                    notify_calibration_result(
+                                        vk,
+                                        crate::calibration_ipc::CalibrationResultKind::Rejected,
+                                        crate::tsf::observer::tsf_obs().active_ime_kind().into(),
+                                    );
+                                    true
+                                });
+                                result_notified = sent == Some(true);
+                            }
+                            crate::state::calibrated_mode_key::CalibrationVerdict::Undetermined => {
+                            }
+                        }
+                    }
+                    crate::state::calibrated_mode_key::TrialTick::Discarded => {
+                        tracing::debug!(
+                            "[calibration] 試行を破棄しました（settle window中にprobe失敗、\
+                             または押下が重複）"
+                        );
+                    }
+                    crate::state::calibrated_mode_key::TrialTick::Pending => {}
+                }
+            }
+        });
+    }
+
+    /// ADR-176 176-T6（round6 B3対応）: `now`が較正モードのタイムアウト
+    /// 期限を過ぎていれば自動的に`end_calibration_bypass`を呼ぶ
+    /// （awase-settingsのクラッシュ・強制終了でバイパスが解除されない
+    /// まま残る事故を防ぐ）。`handle_wm_timer`のTIMER_IME_REFRESH tickから
+    /// 毎回呼ぶ想定。
+    pub(crate) fn check_calibration_bypass_timeout(&mut self, now: crate::state::TickMs) {
+        let Some(deadline) = self.calibration_bypass_deadline else {
+            return;
+        };
+        if crate::state::calibrated_mode_key::calibration_bypass_timed_out(now, deadline) {
+            tracing::warn!(
+                "[calibration-bypass] タイムアウト（{CALIBRATION_BYPASS_TIMEOUT_MS}ms）超過、\
+                 awase-settingsからの応答が無いためバイパスを自動解除します"
+            );
+            self.end_calibration_bypass();
+        }
+    }
+
     /// プロセス変更時の後処理（ログ・タイムスタンプ・output 通知・IME キャッシュ復元等）。
     #[expect(clippy::cognitive_complexity)]
     fn on_focus_process_changed(
@@ -705,12 +1035,11 @@ impl Runtime {
             }
         }
 
-        // 非 TsfNative（Standard/ImmCross/Plain/Unknown）: VK_KANJI はトグルのため、
-        // desired=true でキャッシュが ON なら applied=true に先同期して冗長な
-        // VK_KANJI を防ぐ（ADR-098 決定5: 旧コメント「Imm32Unavailable (Chrome 等)
-        // のみ」は実際のガード条件 `!is_effectively_tsf_native` と食い違っていた
-        // ため訂正——`Standard`+MS-IME の `CHAIN_IMM_CROSS_THEN_KANJI` が今も
-        // `KanjiToggle` を含むため、この pre-sync は Standard でも引き続き必要）。
+        // 非 TsfNative（Standard/ImmCross/Plain/Unknown）では、フォーカス直後の
+        // OS 観測値を applied に先同期して、直後の Engine ON が古い applied を
+        // 根拠に不要な再送へ進むことを防ぐ。KanjiToggle 機構は撤去済みだが、
+        // applied_snapshot を未更新のままにすると focus-resync / force-on の
+        // 判断が古い状態を参照するため、この pre-sync は Standard でも必要。
         // TsfNative は SSOT model: applied=Unknown のまま維持し、最初のキーで
         // SetOpen が VK_DBE_HIRAGANA/ALPHANUMERIC (SET、トグルでない) を発行する。
         //
@@ -854,6 +1183,52 @@ impl From<&FocusIdentity> for crate::journal::FocusEndpoint {
             app_kind: format!("{:?}", identity.app_kind),
             focus_kind: format!("{:?}", identity.focus_kind),
         }
+    }
+}
+
+/// ADR-176 176-T9b: 較正結果をawase-settingsへ通知する。
+///
+/// 固定クラス名のメッセージ専用ウィンドウ
+/// （`calibration_ipc::CALIBRATION_RESULT_WINDOW_CLASS_NAME`）を
+/// `FindWindowW`で探し、見つかった場合のみ`PostMessageW`で
+/// `WM_CALIBRATION_RESULT`を送る。HWNDはIPCで受け取らず毎回このように
+/// 探す（round7 S1・round9 N5の方針をawase.exe→awase-settings方向にも
+/// 適用、`send_reload_config_message`の逆方向と同型のパターン）。
+/// 見つからない場合（awase-settingsが較正結果受信ウィンドウをまだ
+/// 作っていない、または既に終了している）は送信を諦めてログのみ残す。
+fn notify_calibration_result(
+    vk: awase::types::VkCode,
+    kind: crate::calibration_ipc::CalibrationResultKind,
+    active_ime_kind: crate::state::ime_kind::ImeKindId,
+) {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+
+    let class_name_wide =
+        crate::win32::to_wide(crate::calibration_ipc::CALIBRATION_RESULT_WINDOW_CLASS_NAME);
+    // SAFETY: class_name_wide はこの呼び出しの間ずっと生存するNUL終端UTF-16文字列。
+    let hwnd = unsafe { FindWindowW(PCWSTR(class_name_wide.as_ptr()), None) };
+    let Ok(hwnd) = hwnd else {
+        tracing::warn!(
+            "[calibration] 結果通知先ウィンドウ\
+             ({})が見つかりません（awase-settingsが起動していないか、\
+             較正結果受信ウィンドウをまだ作成していない可能性があります）",
+            crate::calibration_ipc::CALIBRATION_RESULT_WINDOW_CLASS_NAME
+        );
+        return;
+    };
+    let payload = crate::calibration_ipc::CalibrationResultPayload {
+        vk,
+        kind,
+        active_ime_kind,
+    };
+    let wparam = WPARAM(crate::calibration_ipc::pack_result(payload));
+    // SAFETY: hwnd は直前の FindWindowW が返した有効なウィンドウハンドル。
+    if let Err(err) =
+        unsafe { PostMessageW(Some(hwnd), crate::WM_CALIBRATION_RESULT, wparam, LPARAM(0)) }
+    {
+        tracing::warn!("[calibration] 結果通知の送信に失敗しました（PostMessageW失敗）: {err}");
     }
 }
 

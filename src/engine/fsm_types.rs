@@ -521,6 +521,13 @@ pub struct PendingThumbData {
     /// （delegate）を発火させずスキップする（`kp_stage_shadow_ime_toggle`が
     /// 既にbeliefをOFF→ONへ動かしているため）。
     pub auto_delegate_open_axis_consumed: bool,
+    /// ADR-182 決定1: この親指は、文字キー保留中に到着し、その文字が時間超過で単独確定された
+    /// 結果として`PendingThumb`になった（`step_pending_char_thumb`の時間超過分岐）。
+    /// 文字が既に単独確定済みで、親指をIME操作（生の親指VK／delegate）としても出すと、
+    /// チョードのつもりの打鍵が意図しない単独タップ（半角英数化等）になるため、
+    /// `resolve_pending_thumb_as_single`は優先順位3・4を抑止する
+    /// （`suppresses_open_axis_actuation`）。Idle起点の親指ではfalse。
+    pub after_char_flush: bool,
 }
 
 impl PendingThumbData {
@@ -535,7 +542,17 @@ impl PendingThumbData {
             modifier_key: ev.modifier_key,
             explicit_ime_action_consumed: ev.explicit_ime_action_consumed,
             auto_delegate_open_axis_consumed: ev.auto_delegate_open_axis_consumed,
+            after_char_flush: false,
         }
+    }
+
+    /// `resolve_pending_thumb_as_single`の`auto_delegate_open_axis_consumed`引数に渡す値。
+    /// 既存の同名マーカー（ADR-154）と、`after_char_flush`（ADR-182決定1）のどちらでも、
+    /// 優先順位3（delegate）と4（`ModeKeyConfig`のPassthrough）を抑止する。優先順位1
+    /// （専用Fnキー）・2（ユーザー明示config）には影響しない。
+    #[must_use]
+    pub const fn suppresses_open_axis_actuation(self) -> bool {
+        self.auto_delegate_open_axis_consumed || self.after_char_flush
     }
 
     /// この親指キーに対応する `Face` を返す。
@@ -770,6 +787,7 @@ mod tests {
         modifier_key: Option<ModifierKey>,
     ) -> RawKeyEvent {
         RawKeyEvent {
+            was_down: false,
             vk_code: VkCode(0x41),
             scan_code: ScanCode(0x1E),
             event_type,
@@ -1069,6 +1087,7 @@ mod tests {
             modifier_key: None,
             explicit_ime_action_consumed: false,
             auto_delegate_open_axis_consumed: false,
+            after_char_flush: false,
         }
     }
 

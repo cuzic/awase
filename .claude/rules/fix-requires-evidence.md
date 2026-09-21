@@ -45,7 +45,7 @@
 ## テストの置き場所（このリポジトリの既存資産）
 
 - `crates/awase-windows/tests/ime_key_sequence_golden.rs` — 戦略選択（ImmCross →
-  GjiDirect → MsImeDirect → KanjiToggle）と送信キー列の golden。キー選択を変える
+  GjiDirect → MsImeDirect）と送信キー列の golden。キー選択を変える
   fix はここに期待値を足す。`ime_controller.rs::characterize_strategy` が SSOT。
 - `crates/awase-windows/tests/golden_scenarios.rs` と `crates/awase-windows/tests/golden/` —
   シナリオ golden。

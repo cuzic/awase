@@ -74,7 +74,6 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
             "reinject",
             "transmit",
             "send_keymap_target",
-            "post_kanji_toggle_to_focused",
             "send_ime_mode_key",
             "send_ime_mode_key_with_shift_release_prefix",
             "toggle_caps_lock",
@@ -92,42 +91,40 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
         ],
     ),
     // send_ime_control（imm.rs）: ADR-159段階0のもう一方の送信側対象。
-    // `SendMessageTimeoutW`の唯一のチョークポイント。関数名だけではactuation
-    // （cmd=IMC_SETOPENSTATUS/IMC_SETCONVERSIONMODE、7件中2件のみ:
-    // set_ime_open_for_target・modify_conv_mode）とprobe（cmd=IMC_GET*、残り）を
-    // 区別できないため（ADR-159 TB0 MF2、dylintでの(関数,cmd)粒度は未実装）、
-    // このリストは両方を含む「既知の正当な呼び出し元」全件（7つ）を宣言する運用
-    // 規約で代替する——probe専用の呼び出し元がここに含まれることはSSOTの希釈だが、
-    // 「無宣言の新規呼び出し元」を防ぐという本lintの主目的（RC4対策）は両方に対して
-    // 変わらず機能する。2026-09-09実測。
+    // ADR-168でactuate/probeの2関数に分割し、ADR-159 TB0 MF2が受容していた
+    // SSOT希釈（関数名だけではcmdの種類を区別できない）を解消した。
+    // `modify_conv_mode`はread-modify-writeのため、probe用の読み取りと
+    // actuate用の書き込みの両方を呼ぶ（両エントリに現れるのは重複ではなく実態）。
     (
-        "send_ime_control",
+        "actuate_ime_control",
+        &["set_ime_open_for_target", "modify_conv_mode"],
+    ),
+    (
+        "probe_ime_control",
         &[
             "capture_imc",
-            "set_ime_open_for_target",
             "get_ime_conversion_mode_for_hwnd",
             "modify_conv_mode",
             "detect_ime_open_for_hwnd",
             "detect_ime_conversion_for_hwnd",
             "read_ime_state_fast",
+            // ADR-176 176-T9a（決定3 round6 M5対応）: 較正probe専用の
+            // 薄いラッパから呼ぶ。新規追加（棚卸しではない）。
+            "probe_ime_open_for_calibration",
         ],
     ),
     // apply_ime_open_with_view: ADR-159段階0のもう1つの合流点。fix-requires-evidence.mdの
-    // 「IME actuation合流点」表が挙げる4箇所（2026-09-09実測、ADR-158 TB1）。
+    // 「IME actuation合流点」表（2026-09-09実測、ADR-158 TB1）。
     // `apply_ime_open_with_belief`からの内部委譲1件を含む。
-    (
-        "apply_ime_open_with_view",
-        &[
-            "dispatch_ime_set_open",
-            "force_on_and_correct_romaji",
-            "reassert_explicit_physical_key",
-            "apply_ime_open_with_belief",
-        ],
-    ),
-    // apply_ime_open_with_belief: 同表の2箇所（2026-09-09実測、ADR-158 TB1）。
+    // 2026-09-19: reassert_explicit_physical_key（ADR-121、TsfNative向けON方向
+    // 救済の一部）を撤去したため4→3。同日、force_on_and_correct_romaji
+    // （force-ON実送信、TsfNative向けON方向救済の一部）も撤去したため3→2。
+    ("apply_ime_open_with_view", &["dispatch_ime_set_open", "apply_ime_open_with_belief"]),
+    // apply_ime_open_with_belief: 同表の1箇所（2026-09-09実測、ADR-158 TB1）。2026-09-19（ADR-185）:
+    // `kp_apply_conv_engine_sync`の`DirectInput`分岐（半角英数検出時のIME OFF送信）を撤去したため2→1。
     (
         "apply_ime_open_with_belief",
-        &["kp_apply_conv_engine_sync", "ir_apply_drift_correction"],
+        &["ir_apply_drift_correction"],
     ),
 ];
 

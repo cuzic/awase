@@ -126,6 +126,7 @@ mod tests {
 
     fn evt(ts: u64) -> RawKeyEvent {
         RawKeyEvent {
+            was_down: false,
             vk_code: VkCode(0x41),
             scan_code: ScanCode(0x1E),
             event_type: KeyEventType::KeyDown,

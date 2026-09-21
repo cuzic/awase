@@ -800,6 +800,57 @@ fn ime_relevance_shadow_action_writes_are_accounted_for() {
     }
 }
 
+/// ADR-179決定2（未解決点5）: `ModeKeyActuationOwner`の計算点を
+/// `kp_stage_shadow_ime_toggle`（`key_pipeline.rs`）内1箇所に固定する。
+/// 計算点が2箇所目・3箇所目と増えると、ADR-119が警告する「合流点は
+/// 複数箇所に配線が要る」問題をこの列挙自身が再発することになる
+/// （設計そのものがこの一元化を前提にしているため）。
+#[test]
+fn actuation_owner_is_computed_in_exactly_one_place() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    let mut total = 0usize;
+    let mut hits: Vec<String> = Vec::new();
+    for path in files {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let content = read_crate_file(&format!("src/{rel}"));
+        let production = production_code_only(&content);
+        // 単純な `.matches("... =")` だと `== ModeKeyActuationOwner::..`
+        // という**読み取り**の比較演算子（`==`）まで拾ってしまう
+        // （"actuation_owner ="が"actuation_owner =="の部分文字列として
+        // 一致する）ため、直後の文字が`=`でない（代入であって`==`比較
+        // ではない）場合のみ数える。
+        const NEEDLE: &str = "ime_relevance.actuation_owner =";
+        let mut count = 0usize;
+        let mut from = 0usize;
+        while let Some(rel_idx) = production[from..].find(NEEDLE) {
+            let idx = from + rel_idx;
+            let after = &production[idx + NEEDLE.len()..];
+            if !after.starts_with('=') {
+                count += 1;
+            }
+            from = idx + NEEDLE.len();
+        }
+        if count > 0 {
+            hits.push(format!("{rel}({count})"));
+        }
+        total += count;
+    }
+    assert_eq!(
+        total, 1,
+        "event.ime_relevance.actuation_owner への本番コードでの書き込み箇所数が \
+         1ではありません(実際: {total}, 内訳: {hits:?})。計算点は \
+         runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle 内1箇所に \
+         限定してください（ADR-179決定2）。"
+    );
+}
+
 /// `write_focus_probe` は実際に FocusProbe（first-key の `read_ime_state_fast`）を
 /// 実行した経路のみが呼べる。
 ///
@@ -923,7 +974,7 @@ fn conv_open_inference_source_is_limited_to_report_and_gate() {
 /// `IntentStore::record()` を直接呼んでよいのは `record_explicit_intent`
 /// （本物のユーザー操作と確定できる3箇所からのみ呼ばれる）の内部だけ
 /// （BUG-51 追補 v3）。`dispatch_event` の汎用フックから呼ぶと、conv 由来の
-/// 内部同期（`EngineSync::DirectInput` 等が `UserImeSetIntent{Command}` を
+/// 内部同期（`EngineSync::DirectInput`（ADR-185で撤去済み） 等が `UserImeSetIntent{Command}` を
 /// dispatch する経路）まで「本物のユーザー操作」として永続化してしまう
 /// （pre-mortem #1 角度2）。
 #[test]
@@ -1002,7 +1053,7 @@ fn record_explicit_intent_call_sites_are_limited_to_real_user_actions() {
         "`{NEEDLE}` を含むファイル集合/出現数が想定と異なります。\n\
          想定: {expected:?}\n実際: {files_with_calls:?}\n\
          IntentStore への記録は「本物のユーザー操作」に限定される（BUG-51 追補 v3、\
-         pre-mortem #1 角度2）。conv 由来の内部同期（`EngineSync::DirectInput` 等が \
+         pre-mortem #1 角度2）。conv 由来の内部同期（`EngineSync::DirectInput`（ADR-185で撤去済み） 等が \
          `UserImeSetIntent{{Command}}` を dispatch する経路）からは呼ばないこと。"
     );
 }
@@ -1245,7 +1296,10 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         // **2026-09-08（同日、ケース3撤回）**: 実機A/B実験で「@」再現の
         // 直接原因と確定し撤回したため、表 #12 の入口が消えて 3→2 に戻った
         // （`docs/known-bugs.md` BUG-113節・`docs/experiments.md`エントリ25）。
-        (".apply_ime_open_with_belief(", 2),
+        // **2026-09-19（ADR-185）**: `key_pipeline.rs::kp_apply_conv_engine_sync`の`DirectInput`分岐
+        // （半角英数検出時のIME OFF実送信、BUG-146）を撤去したため 2→1（残りは`ime_refresh.rs`の
+        // drift correction のみ）。
+        (".apply_ime_open_with_belief(", 1),
         // 外部 2（executor.rs engine decision / mod.rs force_on_and_correct_romaji、
         // 表 #1/#6）+ apply_ime_open_with_belief 内部からの委譲 1 = 3。
         // （`apply_ime_open_with_belief` からの委譲であって `apply_ime_open_with_applied`
@@ -1253,7 +1307,14 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         //
         // **2026-09-08（ADR-121 D3）**: `mod.rs::reassert_explicit_physical_key`
         // （物理IMEキーno-op時の冪等再送、BUG-37部分対策）が新規追加され 3→4。
-        (".apply_ime_open_with_view(", 4),
+        //
+        // **2026-09-19（領域A撤去、ユーザー指示）**: TsfNative向けON方向救済
+        // 4系統（force-on/drift correction/warmup/reassert）のうち reassert
+        // （`reassert_explicit_physical_key`）を撤去し、4→3に戻った。
+        //
+        // **2026-09-19（同日、force-on撤去）**: `mod.rs::force_on_and_correct_romaji`
+        // （表 #6、force-ON 実送信の内部委譲元）も撤去し、3→2に戻った。
+        (".apply_ime_open_with_view(", 2),
         // ADR-098 決定2（BUG-69）: 唯一の呼び出し元（ime_refresh.rs の GJI
         // TsfNative 強制 ON ブロック）を撤去し、メソッド自体も削除した。
         (".apply_ime_open_with_applied(", 0),
@@ -1351,50 +1412,71 @@ fn applied_state_recorders_call_sites_are_accounted_for() {
     }
 }
 
-/// ADR-121 D3: reassert 専用の apply-complete 後処理
-/// (`reassert_ime_apply_complete_without_belief_write`) が、意図的に
-/// `record_ime_apply_result`（`applied` belief の書き込み）を呼ばないことと、
-/// 唯一の呼び出し元（`reassert_explicit_physical_key`、`generation==None` の
-/// 同期経路）だけに保たれていることを固定する。
+// ADR-121 D3のreassert_ime_apply_complete_without_belief_write専用テスト
+// （reassert_ime_apply_complete_skips_belief_write）は、2026-09-19に
+// reassert機構自体（`reassert_explicit_physical_key`、TsfNative向けON方向
+// 救済4系統の1つ）を撤去したため削除した。詳細はdocs/known-bugs/参照。
+
+/// ADR-170 決定1: `ImeModel::reduce()` の大きい分岐を private ヘルパー
+/// (`reduce_*`) へ抽出した。`.claude/rules/ime-belief-architecture.md` の
+/// 「belief を書くのは reduce() だけ」という前提は、Rust の private が
+/// モジュールスコープでしかない以上コンパイラでは強制されない
+/// (opus-adversarial-consult round1 F2)。ヘルパーが `reduce()` の**本体内**
+/// からのみ呼ばれることを、`reduce()` 本体スコープでの出現数とファイル全体
+/// での出現数を突き合わせる二重固定で検証する——「ファイル内で件数1」だけの
+/// 検証では、`reduce()` を経由しない別の呼び出し元1件を見逃せてしまう
+/// (round2 R2-2)。ヘルパー名は `fn reduce_` 定義をファイルから自動抽出する
+/// ため、新しいヘルパーを追加してもこのテスト自体の更新は不要
+/// (round2 R2-3)。
 ///
-/// reassert は効果不明の best-effort な追加試行であり、確認できていない
-/// 書き込みに `applied = Confirmed{..}` という確定した観測であるかのような
-/// 値を記録すると BUG-69（TsfNative force-on の belief 偽装）と同型の危険を
-/// 持ち込む（round 2 premortem R2-1）。呼び出し元が増えた場合、それが本当に
-/// `generation==None` の同期経路かを確認すること（round 3 architect R3-2:
-/// generation 付き完了には `dispatch_event`/pending 解放という別の副作用が
-/// あり、それを飛ばすと event dispatch の欠落・pending 固着という別種の
-/// 重大バグになる）。
+/// 抽出条件は可視性修飾子(`pub`/`pub(crate)`)を剥がしてから`fn reduce_`と
+/// 照合する——剥がさないと、ヘルパーに可視性を付けた瞬間そのヘルパーだけが
+/// 自動抽出から静かに漏れてガード対象外になる(まさにこのガードが検知
+/// すべき「reduce()以外から呼べるようになった」瞬間に自分が無効化される、
+/// round3 R3-1)。
 #[test]
-fn reassert_ime_apply_complete_skips_belief_write() {
-    let path = "src/runtime/mod.rs";
+fn reduce_helpers_are_called_only_from_reduce_body() {
+    let path = "src/state/ime_model.rs";
     let content = read_crate_file(path);
     let production = production_code_only(&content);
+    let reduce_body = extract_fn_body(production, "pub fn reduce(");
 
-    let body = extract_fn_body(
-        production,
-        "fn reassert_ime_apply_complete_without_belief_write",
-    );
+    let helper_names: Vec<String> = production
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            let without_vis = trimmed
+                .strip_prefix("pub(crate) ")
+                .or_else(|| trimmed.strip_prefix("pub "))
+                .unwrap_or(trimmed);
+            let rest = without_vis.strip_prefix("fn reduce_")?;
+            let end = rest.find('(')?;
+            Some(format!("reduce_{}", &rest[..end]))
+        })
+        .collect();
     assert!(
-        !body.contains(".record_ime_apply_result("),
-        "{path} の reassert_ime_apply_complete_without_belief_write が \
-         record_ime_apply_result を呼んでいます。ADR-121 D3 の意図（applied \
-         belief を書かない）に反するか、意図的な変更であれば根拠を \
-         known-bugs.md/ADR-121 に追記した上でこのテストを更新してください。"
+        !helper_names.is_empty(),
+        "{path} に ADR-170 の reduce_* ヘルパーが1つも見つかりません \
+         (命名規約 `fn reduce_*` が変わった場合はこのテストの抽出条件も \
+         見直してください)。"
     );
 
-    let call_count = count_real_calls(
-        production,
-        ".reassert_ime_apply_complete_without_belief_write(",
-    );
-    assert_eq!(
-        call_count, 1,
-        "reassert_ime_apply_complete_without_belief_write の呼び出し元が \
-         想定(1、reassert_explicit_physical_key のみ)と異なります(実際: \
-         {call_count})。新しい呼び出し元が generation==None の同期経路で \
-         あることを確認した上でこの期待値を更新してください（ADR-121 D3 \
-         R3-2）。"
-    );
+    for helper in &helper_names {
+        let needle = format!("self.{helper}(");
+        let in_body = count_real_calls(reduce_body, &needle);
+        let in_whole_file = count_real_calls(production, &needle);
+        assert_eq!(
+            in_body, 1,
+            "ADR-170: {helper} は reduce() 本体内から1回呼ばれるはずですが \
+             {in_body} 回でした。"
+        );
+        assert_eq!(
+            in_whole_file, in_body,
+            "ADR-170: {helper} が reduce() の外からも呼ばれています \
+             (本体内 {in_body} 回 / ファイル全体 {in_whole_file} 回)。belief を \
+             書くヘルパーは reduce() 本体からのみ呼ぶこと。"
+        );
+    }
 }
 
 /// ADR-108 証拠義務(a-2): `ImeModel.applied` はまだ `pub` のため、reducer 外からの
@@ -1446,41 +1528,11 @@ fn applied_direct_assignments_are_accounted_for() {
     }
 }
 
-/// ADR-098 決定1-c: `apply_force_on_for_imm_broken` の 20ms 無限再試行ループ封鎖
-/// （BUG-69）が `force_on_attempt_allowed`/`note_force_on_attempt` を経由し続けている
-/// ことを固定する。0 になるとループ封鎖そのものが外れる（実装記録「実装順序・
-/// テスト コミット1」の必須回帰テスト）。
-#[test]
-fn force_on_retry_cooldown_gate_call_sites_are_accounted_for() {
-    const GATES: [(&str, usize); 2] = [
-        (".force_on_attempt_allowed(", 1),
-        (".note_force_on_attempt(", 1),
-    ];
-
-    let files = list_src_files();
-    for (needle, expected) in GATES {
-        let mut total = 0usize;
-        let mut breakdown: Vec<(String, usize)> = Vec::new();
-        for path in &files {
-            let content = read_crate_file(path);
-            let production = production_code_only(&content);
-            let count = count_real_calls(production, needle);
-            if count > 0 {
-                total += count;
-                breakdown.push((path.clone(), count));
-            }
-        }
-        assert_eq!(
-            total, expected,
-            "`{needle}` の呼び出し箇所数が想定({expected})と異なります(実際: {total})。\
-             内訳: {breakdown:?}\n\
-             ADR-098 決定1-c（BUG-69 の 20ms 無限再試行ループ封鎖）が\
-             `apply_force_on_for_imm_broken` 内で経由し続けているか確認してください。\
-             0 になるとクールダウンが外れ、TsfNative で cold-mark を伴う実効 50Hz の\
-             再試行ループが再発します。"
-        );
-    }
-}
+// `force_on_retry_cooldown_gate_call_sites_are_accounted_for`（ADR-098 決定1-c、
+// BUG-69 の 20ms 無限再試行ループ封鎖ガード）は削除した。2026-09-19、領域A撤去
+// （ユーザー指示）で `apply_force_on_for_imm_broken`/`force_on_attempt_allowed`/
+// `note_force_on_attempt`/`ForceOnRetryState` を丸ごと撤去したため、このテストが
+// 固定していた「呼び出し箇所数1」という前提自体が意味を失った。
 
 /// `handle_wm_focus_kind_update`（UIA 非同期分類結果のハンドラ、BUG-12 対策）が
 /// belief/state への書き込みを一切行わないことを固定する。
@@ -1630,91 +1682,6 @@ fn bug_report_journal_truncation_does_not_slice_from_the_front() {
     }
 }
 
-/// GJI/MS-IME の IME ON/OFF/フォールバックが送信する VK コードを、実装ソースの
-/// テキスト走査で固定する。
-///
-/// `docs/experiments.md` エントリ01: 「IME OFF に何のキーを送るか」で5日間に6回、
-/// 採用と撤回が反転した（`534051a` → `098c663` → `adb856c` → `b271aee` → … →
-/// `489cdf1`）。最終結論は「GJI/MS-IME いずれも IME ON/OFF は冪等 VK_IME_ON (0x16) /
-/// VK_IME_OFF (0x1A) を送る `post_ime_on_direct()`/`post_ime_off_direct()` 経由
-/// （VK_KANJI トグルには戻さない）」（根拠: `489cdf1`, `48a667a`、ON 側は
-/// `2026-08-06` に BUG-50 根治として同じキーへ統一）。
-///
-/// `tests/ime_key_sequence_golden.rs` の `KEY_DOC` はこの結論をコメントとして固定して
-/// いるが、その本文はハードコードされた定数文字列同士の突き合わせ（自己参照）であり、
-/// 各 `post_*` 関数の実装が別の VK コードに戻ってもゴールデンは通ってしまう。この
-/// テストは `src/ime.rs` の実関数本体を直接検査し、送信 VK コードの回帰を検知する。
-/// Win32 呼び出しを伴わないテキスト走査のみのため Linux 上でもそのまま実行できる。
-#[test]
-fn ime_open_close_functions_send_expected_vk_codes() {
-    let path = "src/ime.rs";
-    let content = read_crate_file(path);
-    let production = production_code_only(&content);
-
-    // 冪等 IME ON: VK_IME_ON。VK_KANJI（非冪等トグル）・VK_DBE_HIRAGANA（MS-IME専用）が
-    // 混入すると shadow desync や環境依存の不具合を再導入する。
-    let on_direct = extract_fn_body(production, "pub unsafe fn post_ime_on_direct(");
-    assert!(
-        on_direct.contains("VK_IME_ON"),
-        "{path} の post_ime_on_direct が VK_IME_ON を送っていません。"
-    );
-    for forbidden in ["VK_KANJI", "VK_DBE_HIRAGANA", "VK_DBE_ALPHANUMERIC"] {
-        assert!(
-            !on_direct.contains(forbidden),
-            "{path} の post_ime_on_direct に {forbidden} が混入しています。冪等 IME ON は \
-             VK_IME_ON 単独であるべきです。"
-        );
-    }
-
-    // 冪等 IME OFF: VK_IME_OFF。docs/experiments.md エントリ01「IME OFF に何のキーを
-    // 送るか」で5日間に6回反転した最終結論（534051a→098c663→adb856c→b271aee→…→
-    // 489cdf1、根拠48a667a）。
-    let off_direct = extract_fn_body(production, "pub unsafe fn post_ime_off_direct(");
-    assert!(
-        off_direct.contains("VK_IME_OFF"),
-        "{path} の post_ime_off_direct が VK_IME_OFF を送っていません。docs/experiments.md \
-         エントリ01 の6回反転（534051a→098c663→adb856c→b271aee→…→489cdf1）の最終結論から \
-         の回帰です。"
-    );
-    for forbidden in ["VK_KANJI", "VK_DBE_ALPHANUMERIC", "VK_DBE_HIRAGANA"] {
-        assert!(
-            !off_direct.contains(forbidden),
-            "{path} の post_ime_off_direct に {forbidden} が混入しています。docs/experiments.md \
-             エントリ01 で撤回済みの選択肢への回帰の可能性があります。"
-        );
-    }
-
-    // GJI/MS-IME 共用エイリアスは post_ime_on_direct/post_ime_off_direct への委譲のみである
-    // こと。独自の VK 送信を再実装すると、6回反転の教訓を踏まえない別経路が生まれる。
-    // （2026-08-06: MsImeDirectStrategy の ON も VK_DBE_HIRAGANA → VK_IME_ON へ移行し
-    // GjiDirectStrategy と同じキーになったため、MS-IME 専用の post_ms_ime_on/off は
-    // 呼び出し元を失い削除した。BUG-50 参照）
-    let gji_on = extract_fn_body(production, "pub unsafe fn post_gji_ime_on(");
-    assert!(
-        gji_on.contains("post_ime_on_direct()"),
-        "{path} の post_gji_ime_on が post_ime_on_direct() に委譲していません。"
-    );
-    let gji_off = extract_fn_body(production, "pub unsafe fn post_gji_ime_off(");
-    assert!(
-        gji_off.contains("post_ime_off_direct()"),
-        "{path} の post_gji_ime_off が post_ime_off_direct() に委譲していません。"
-    );
-
-    // 最終フォールバック: VK_KANJI トグルを down/up ちょうど1回ずつ送る。
-    // （関数本体には import 文・診断ログ・コメントにも `VK_KANJI` という部分文字列が
-    // 複数回出現するため、実際に SendInput へ push する `make_key_input_ex(VK_KANJI, ..)`
-    // の down/up 引数だけを数える。ヘルパー名のリネームにも意味論的に頑健。）
-    let kanji_toggle = extract_fn_body(production, "pub unsafe fn post_kanji_toggle_to_focused(");
-    let down_count = kanji_toggle.matches("VK_KANJI, false").count();
-    let up_count = kanji_toggle.matches("VK_KANJI, true").count();
-    assert_eq!(
-        (down_count, up_count),
-        (1, 1),
-        "{path} の post_kanji_toggle_to_focused 内 VK_KANJI down/up 送信回数が想定(1, 1)と \
-         異なります(実際: ({down_count}, {up_count}))。"
-    );
-}
-
 /// ADR-086 §4 INV-14/INV-19（2026-08-08、全 6 経路の移行完了に伴い更新）:
 /// `set_ime_romaji_mode_with_target`/`_async`（実行時に `get_focused_hwnd()` を
 /// ライブクエリして書き込み先を決める、ターゲット同一性を持たない低レベル API）
@@ -1786,7 +1753,9 @@ fn actuation_target_capture_call_sites_are_accounted_for() {
         ("src/tsf/warmup/cold_warmup.rs", 1), // ColdWarmupSequence::run_start
         ("src/runtime/executor.rs", 1),      // dispatch_ime_set_open（ImmCross async path）
         ("src/runtime/key_pipeline.rs", 3), // kp_reset_to_hiragana_romaji_capsoff / kp_restore_kana_from_half_width / apply_focus_probe(ImmCrossProbe kana修正)（apply_idle_conv_check の restore_roman(BUG-08 Apply(3))経路は2026-08-17 BUG-61に伴い撤去）
-        ("src/runtime/mod.rs", 1), // try_force_on_bootstrap（BUG-34 横展開 D、2026-08-19: 同期 ImmCrossProcessStrategy::apply 経由の force-on を run_open_chain_async へ移行）
+                                            // 2026-09-19（領域A撤去、ユーザー指示）: `src/runtime/mod.rs` の
+                                            // try_force_on_bootstrap（force-ON bootstrap）を撤去したため、
+                                            // mod.rs のエントリ（1）が消えた。
     ];
 
     let all_files = list_src_files();
@@ -1983,48 +1952,12 @@ fn ir_post_focus_change_snapshot_write_call_sites_are_accounted_for() {
 // 2026-08-17、ADR-094 で `conv_mode_policy`/`Output::is_force_policy()` 自体を
 // 撤去したのに伴い削除した。
 
-/// ADR-087 INV-28（実装記録 §8.10、item16(a)）:
-/// force-write 経路（`force_on_and_correct_romaji` / GJI TsfNative 強制ON）は
-/// `applied` に `None` を渡すことで `GjiDirectStrategy::apply`
-/// （`gji_direct_already_matches`、`shadow_on == Some(true)` のとき
-/// `VK_IME_ON` を no-op skip する）を最初から bypass する設計になっている
-/// （`build_ime_control_view(None)` → `control.shadow_on = None`、
-/// `platform.rs::build_ime_control_view` 参照。`None` は `Some(true)` とも
-/// `Some(false)` とも一致しないため、ON方向・OFF方向のどちらの
-/// already-matched判定もbypassする——BUG-113 修正後もこの性質は保たれる、
-/// `docs/known-bugs.md` BUG-113 参照）。
-///
-/// この不変条件が崩れる（`None` の代わりに実 `applied` 値を渡すよう変更される）と、
-/// force-ON 経路が古い shadow_on=ON を見て no-op に阻まれ、BUG-16 が実装レベルで
-/// 再発しうる。「`applied` を `None` にして bypass する」という意図はコメントでしか
-/// 表現されておらず、コンパイラは強制しないため、テキスト走査で固定する。
-///
-/// **2026-08-21（ADR-098 決定2、BUG-69）**: 旧第2 assertion（`ir_post_focus_change_snapshot`
-/// の `apply_ime_open_with_applied(order, None)` 1件を固定）は撤去した。
-/// TsfNative force-on ブロック（唯一の呼び出し元）を削除したため。決定1適用後は
-/// `shadow_on=false` になった通常 strategy chain と、決定1-c で有界化された
-/// `apply_force_on_for_imm_broken`（本テストが固定する `force_on_and_correct_romaji`
-/// 経由）の両方が INV-28 の bypass を担う——**この関数（`force_on_and_correct_romaji`）
-/// だけが INV-28 の唯一の enforcement 拠点**であることに注意。
-#[test]
-fn force_write_paths_bypass_gji_shadow_on_via_none_applied() {
-    // `.contains()` は文字列リテラル（コメント含む）にもマッチし、
-    // 呼び出し箇所を実際に書き換えても壊れなければ vacuous になる
-    // （2026-08-10 Opus レビュー M1: `ime_refresh.rs:481` の行コメントだけで
-    // 2つ目の assertion が偽陽性に通っていた）。`count_real_calls`
-    // （コメント行除外・`fn` 定義行除外）を使い、かつ関数本体スコープに
-    // 限定することで、実際の呼び出しが変更されたときにだけ検知する。
-    let mod_rs = read_crate_file("src/runtime/mod.rs");
-    let mod_production = production_code_only(&mod_rs);
-    let force_on_body = extract_fn_body(mod_production, "fn force_on_and_correct_romaji");
-    assert_eq!(
-        count_real_calls(force_on_body, "build_ime_control_view(None)"),
-        1,
-        "force_on_and_correct_romaji は build_ime_control_view(None) を経由して \
-         shadow_on=None を作ることで GJI の no-op skip を bypass する設計。\
-         `None` 以外の値を渡すよう変更された場合、ADR-087 INV-28 の前提が崩れる。"
-    );
-}
+// `force_write_paths_bypass_gji_shadow_on_via_none_applied`（ADR-087 INV-28、
+// force_on_and_correct_romaji の build_ime_control_view(None) bypassを固定）は
+// 削除した。2026-09-19、領域A撤去（ユーザー指示）で `force_on_and_correct_romaji`
+// 自体を丸ごと撤去したため、このテストが固定していた「唯一の enforcement 拠点」が
+// 消滅した。INV-28 bypass のもう一方の担い手（`fallback_write`）は次の
+// `fallback_write_bypasses_gji_shadow_on_via_none_override` が引き続き固定する。
 
 /// BUG-113 追補（Opus 敵対的レビューで発見・修正）: `open_chain.rs::fallback_write`
 /// は先行機構（ImmCross）が実際に OS を読み戻して「まだ desired 状態でない」
@@ -2046,8 +1979,8 @@ fn fallback_write_bypasses_gji_shadow_on_via_none_override() {
         count_real_calls(fallback_write_body, "view.control.shadow_on = None"),
         1,
         "fallback_write は view.control.shadow_on = None で GjiDirect の \
-         already-matched skip を bypass する設計（BUG-113 追補、MsImeDirect/\
-         KanjiToggleはshadow_onをskip判定に使わないため無関係）。この上書きが \
+         already-matched skip を bypass する設計（BUG-113 追補、MsImeDirectは\
+         shadow_onをskip判定に使わないため無関係）。この上書きが \
          削除・変更されると、ImmCross Failed 後のフォールバックが \
          pre-actuation write を読み返して自分の送信を握り潰す回帰が再発する。"
     );
@@ -2266,12 +2199,16 @@ fn async_imm_cross_actuation_goes_through_the_single_chain_entry() {
         );
     }
 
-    // 3. 非同期チェーンの入口は 1 本（定義 1 + 呼び出し 3）。
+    // 3. 非同期チェーンの入口は 1 本（定義 1 + 呼び出し 2）。
     //
     // **2026-08-19（BUG-34 横展開 D）**: mod.rs::try_force_on_bootstrap が
     // 3本目の呼び出し元として加わった（executor.rs / key_pipeline.rs は既存）。
     // 同期 ImmCrossProcessStrategy::apply（エンジンスレッドを直接ブロックする
     // SendMessageTimeoutW 経路）から、この単一チェーン入口へ移行したもの。
+    //
+    // **2026-09-19（領域A撤去、ユーザー指示）**: try_force_on_bootstrap を
+    // 丸ごと撤去したため、3本目の呼び出し元が消えて 3→2 に戻った
+    // （executor.rs / key_pipeline.rs のみ）。
     let mut entry_calls = 0usize;
     for path in &files {
         let content = read_crate_file(path);
@@ -2279,9 +2216,9 @@ fn async_imm_cross_actuation_goes_through_the_single_chain_entry() {
         entry_calls += count_real_calls(production, "run_open_chain_async(");
     }
     assert_eq!(
-        entry_calls, 3,
-        "`run_open_chain_async(` の呼び出し箇所数が想定(3: executor.rs / \
-         key_pipeline.rs / runtime/mod.rs)と異なります(実際: {entry_calls})。"
+        entry_calls, 2,
+        "`run_open_chain_async(` の呼び出し箇所数が想定(2: executor.rs / \
+         key_pipeline.rs)と異なります(実際: {entry_calls})。"
     );
 }
 
@@ -2384,9 +2321,9 @@ fn per_source_fields_are_not_assigned_directly() {
 /// `async_imm_cross_actuation_goes_through_the_single_chain_entry`（非同期入口数）は
 /// **チェーンの入口だけ**を数えており、`apply_mechanism` の呼び出し元は誰も
 /// 数えていなかった。`apply_mechanism` は `Actuation` 型状態チェーンを一切構築せずに
-/// `SendInput` / `post_kanji_toggle_to_focused` / `ImmSetOpenStatus` を起こせる。
+/// `SendInput` / `ImmSetOpenStatus` を起こせる。
 /// ここに 3 本目の呼び出し元が生えると、`falls_through` 規則（次へ進むのは `Failed`
-/// のときだけ、特に `UnsafeToToggle` で `VK_KANJI` へ落ちない）も `Actuation` の
+/// のときだけ、特に `UnsafeToToggle` で次の機構へ落ちない）も `Actuation` の
 /// アフィン性（1 値 = 高々 1 回の成功 write、INV-41）も通らない write 経路になる。
 ///
 /// # なぜ型で閉じないのか
@@ -2466,7 +2403,6 @@ fn raw_mechanism_write_sites_are_confined_to_chain_writers() {
         "struct ImmCrossProcessStrategy",
         "struct GjiDirectStrategy",
         "struct MsImeDirectStrategy",
-        "struct KanjiToggleStrategy",
     ] {
         let line = controller
             .lines()
@@ -2478,6 +2414,40 @@ fn raw_mechanism_write_sites_are_confined_to_chain_writers() {
              実際の宣言: {line}"
         );
     }
+}
+
+/// ADR-171: `candidate_was_seen` を消費する呼び出し箇所を固定する。
+///
+/// ADR-171 対象は2箇所: `platform.rs::on_ime_applied_inner` の既存リセットと、
+/// `ime_controller.rs::apply_mechanism` の GjiDirect OFF 方向 override 送信直後の
+/// リセット。`runtime/focus_tracking.rs` にもフォーカス変更時のキャリーオーバー
+/// 防止用リセットが1箇所あるが、これは本ADRのスコープ外なので意図的に除外する。
+#[test]
+fn candidate_was_seen_consumption_sites_are_pinned_for_adr171() {
+    const NEEDLE: &str = "crate::tsf::observer::reset_candidate_was_seen(";
+    let mut breakdown: Vec<(String, usize)> = Vec::new();
+    for path in list_src_files() {
+        if path == "src/runtime/focus_tracking.rs" {
+            continue;
+        }
+        let content = read_crate_file(&path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, NEEDLE);
+        if count > 0 {
+            breakdown.push((path, count));
+        }
+    }
+    breakdown.sort();
+    assert_eq!(
+        breakdown,
+        vec![
+            ("src/ime_controller.rs".to_string(), 1),
+            ("src/platform.rs".to_string(), 1),
+        ],
+        "`reset_candidate_was_seen(` の ADR-171 対象呼び出し箇所は \
+         `platform.rs` と `ime_controller.rs` の2箇所に固定されています。\
+         実際: {breakdown:?}"
+    );
 }
 
 /// `count_real_calls` に加えて、tracing フォーマット文字列中の言及
@@ -2978,6 +2948,8 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
         // BUG-114 根本原因1（ADR-134 D1c）で追加した app_policy 初期化ヘルパー。
         // `sync_initial_focus_fence` と同じ理由で dispatch_event(` 1件だけ例外化する。
         ("sync_initial_app_policy", "dispatch_event("),
+        // BUG-148/ADR-186: current_focus 初期化ヘルパー（同上、dispatch_event( 1件だけ例外）。
+        ("sync_initial_focus_hwnd", "dispatch_event("),
     ];
 
     let content = read_crate_file("src/runtime/focus_tracking.rs");
@@ -3020,6 +2992,11 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
         (
             "sync_initial_app_policy",
             extract_fn_body(&content, "fn sync_initial_app_policy"),
+        ),
+        // BUG-148/ADR-186 で追加した current_focus 初期化ヘルパー。同じ理由で対象に加える。
+        (
+            "sync_initial_focus_hwnd",
+            extract_fn_body(&content, "fn sync_initial_focus_hwnd"),
         ),
     ];
     for forbidden in [
@@ -3068,6 +3045,20 @@ fn establish_initial_focus_scope_does_not_write_ime_belief() {
         non_comment_lines(app_policy_sync_body).contains("ImeEvent::InitialAppPolicyEstablished"),
         "sync_initial_app_policy の唯一の dispatch は \
          ImeEvent::InitialAppPolicyEstablished であること"
+    );
+
+    // BUG-148/ADR-186: `sync_initial_focus_hwnd` も dispatch_event ちょうど1件、
+    // `InitialFocusHwndEstablished` のみであること。
+    let focus_hwnd_sync_body = extract_fn_body(&content, "fn sync_initial_focus_hwnd");
+    assert_eq!(
+        count_real_calls(focus_hwnd_sync_body, "dispatch_event("),
+        1,
+        "sync_initial_focus_hwnd の dispatch_event はちょうど1件（current_focus 初期化のみ）"
+    );
+    assert!(
+        non_comment_lines(focus_hwnd_sync_body).contains("ImeEvent::InitialFocusHwndEstablished"),
+        "sync_initial_focus_hwnd の唯一の dispatch は \
+         ImeEvent::InitialFocusHwndEstablished であること"
     );
 
     // `establish_initial_focus_scope` は `sync_initial_app_policy` をちょうど1回、
@@ -3327,6 +3318,89 @@ fn initial_app_policy_event_only_touches_app_policy() {
                 count, expected_count,
                 "src/{rel} 内の {needle} の出現数が想定と異なります(期待: \
                  {expected_count}, 実際: {count})。ADR-134 D1c 参照。"
+            );
+        }
+    }
+}
+
+/// ADR-187: `ImeEvent::ModeKeyPassedThrough` は、無変換/変換の生キー通過後に
+/// 観測成功を確認した `ImeStateHub::invalidate_intents_if_mode_key_pass_live` だけが
+/// dispatch する。reducer は `last_intent` だけを捨てる。
+#[test]
+fn mode_key_passed_through_event_is_dispatched_from_one_place() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = Path::new(manifest_dir).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    for path in &files {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let content = fs::read_to_string(path).unwrap();
+        let production = non_comment_lines(production_code_only(&content));
+        let count = production.matches("ModeKeyPassedThrough").count();
+        let expected = match rel.as_str() {
+            "state/platform_state.rs" => 1,
+            "state/ime_model.rs" => 1,
+            "state/ime_event.rs" => 1,
+            "journal.rs" => 2,
+            _ => 0,
+        };
+        assert_eq!(
+            count, expected,
+            "src/{rel} 内の ModeKeyPassedThrough の出現数が想定と異なります(期待: \
+             {expected}, 実際: {count})。ADR-187 の dispatch 元は1箇所に限定すること。"
+        );
+    }
+}
+
+/// BUG-148/ADR-186: `ImeEvent::InitialFocusHwndEstablished` は bootstrap 専用であり、
+/// dispatch 元は `sync_initial_focus_hwnd` の1箇所だけ。reducer 側のアームは
+/// `self.current_focus = Some(hwnd)`（current_focus 1フィールドの差し替え）しか行わない。
+///
+/// `initial_app_policy_event_only_touches_app_policy` と同じ構造の監視テスト。
+/// アーム本体が current_focus 以外に触れないことは
+/// `state::ime_model::tests::initial_focus_hwnd_established_touches_only_current_focus`
+/// が実行時に固定し、ここでは「増えていないこと」だけを見る。
+#[test]
+fn initial_focus_hwnd_event_only_touches_current_focus() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = Path::new(manifest_dir).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    let checks: &[(&str, &[(&str, usize)])] = &[(
+        "InitialFocusHwndEstablished",
+        &[
+            ("runtime/focus_tracking.rs", 1),
+            ("state/ime_model.rs", 1),
+            ("state/ime_event.rs", 1),
+            // journal.rs::ime_event_kind_str の判別子文字列（belief には触れない）。
+            // matchアームと戻り値の文字列リテラルの両方で現れるため2。
+            ("journal.rs", 2),
+        ],
+    )];
+    for path in &files {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let content = fs::read_to_string(path).unwrap();
+        let production = non_comment_lines(production_code_only(&content));
+        for (needle, expected) in checks {
+            let count = production.matches(needle).count();
+            let expected_count = expected
+                .iter()
+                .find(|(f, _)| *f == rel)
+                .map_or(0, |(_, n)| *n);
+            assert_eq!(
+                count, expected_count,
+                "src/{rel} 内の {needle} の出現数が想定と異なります(期待: \
+                 {expected_count}, 実際: {count})。BUG-148/ADR-186 参照。"
             );
         }
     }
@@ -4077,14 +4151,19 @@ fn hook_state_struct_has_exactly_one_mutex_field() {
 /// 削除されると、上記テストの`InputRelay`文字列カウント（コメント由来で
 /// 見かけ上は変化しないファイルもある）だけでは検知できない
 /// ——本テストが呼び出し件数そのものを見て埋め合わせる。
+///
+/// **ADR-180決定1（2026-09-19）**: `open_chain.rs`の3箇所は`decide_gate(`を
+/// 直接呼ぶ代わりに、共有ヘルパー`ime_actuation_decision::is_input_relay(`を
+/// 呼ぶ形へ統合した（`with_app`を内包しない、round1 E2形）。ファイル別の
+/// `decide_gate(`出現数だけを見ると`open_chain.rs`が3→0になり、3つの
+/// `.await`境界のうち1つがgate呼び出しを失っても検知できなくなる
+/// （round1 C6が指摘した退行）。そのため`open_chain.rs`側は関数別に
+/// `is_input_relay(`の出現数を固定する形へ作り替えた。
 #[test]
 fn decide_gate_wiring_occurrence_counts_are_pinned() {
-    let expectations: &[(&str, usize)] = &[
-        ("src/ime_controller.rs", 1),
-        ("src/runtime/executor.rs", 1),
-        ("src/runtime/open_chain.rs", 3),
-    ];
-    for (path, expected) in expectations {
+    let direct_decide_gate: &[(&str, usize)] =
+        &[("src/ime_controller.rs", 1), ("src/runtime/executor.rs", 1)];
+    for (path, expected) in direct_decide_gate {
         let content = read_crate_file(path);
         let production = strip_any_test_module(&content);
         let count = production.matches("decide_gate(").count();
@@ -4097,6 +4176,36 @@ fn decide_gate_wiring_occurrence_counts_are_pinned() {
              期待値を更新すること。"
         );
     }
+
+    // open_chain.rs: 3つの`.await`境界それぞれが`is_input_relay(`を
+    // 関数本体内でちょうど1回呼んでいることを固定する（ADR-180決定1）。
+    let open_chain_rs = read_crate_file("src/runtime/open_chain.rs");
+    let production = strip_any_test_module(&open_chain_rs);
+    let per_fn_expectations: &[(&str, usize)] = &[
+        ("fn imm_cross_write", 1),
+        ("fn fallback_write", 1),
+        ("fn run_open_chain_async", 1),
+    ];
+    for (fn_signature_needle, expected) in per_fn_expectations {
+        let body = extract_fn_body(production, fn_signature_needle);
+        let count = body.matches("is_input_relay(").count();
+        assert_eq!(
+            count, *expected,
+            "src/runtime/open_chain.rs の `{fn_signature_needle}` 内で \
+             `is_input_relay(` 呼び出しの出現数が想定({expected})と異なります \
+             (実際: {count})。この関数の`.await`境界でInputRelayゲートの \
+             再検証が失われていないか確認すること。"
+        );
+    }
+    // 上記3関数以外にis_input_relay(が漏れ出していないかも固定する
+    // （合計4件: 上記3 + `ime_actuation_decision.rs`自身の定義1件）。
+    let total_in_open_chain = production.matches("is_input_relay(").count();
+    assert_eq!(
+        total_in_open_chain, 3,
+        "src/runtime/open_chain.rs 全体での `is_input_relay(` 呼び出し数が \
+         想定(3)と異なります(実際: {total_in_open_chain})。新しい呼び出し元が \
+         増えた場合は上記per-fn期待値にも追加すること。"
+    );
 }
 
 /// `DeferredOrigin::RecoveryResend` の本番構築箇所は
@@ -4771,6 +4880,54 @@ fn journal_emit_tracing_has_no_debug_display_sigils_or_wildcards() {
     );
 }
 
+/// ADR-169: `UnifiedJournal::record_key_input` の OS auto-repeat 畳み込みは
+/// 「`key_input` レーンの `buffer.back()` は直前に記録した `KeyInput` である」
+/// という不変条件に依存する。この不変条件は `JournalEntry::KeyInput {` の
+/// 本番構築点が `runtime/key_pipeline.rs` の1箇所だけであることが前提
+/// （複数箇所から構築される、または `absorb()` 経由の遅延 envelope が
+/// このレーンに混ざると、`back()` が「直前の KeyInput」でなくなり、
+/// 無関係なエントリへ `repeat_count` が誤って加算される——時系列の
+/// 捏造）。新しい構築箇所を追加する前に、`record_key_input` の doc comment
+/// （`journal.rs`）を読み、この不変条件への影響を確認すること。
+#[test]
+fn journal_key_input_construction_is_limited_to_key_pipeline() {
+    // フルパス（`crate::journal::` 修飾）でのみ数える: `journal.rs` 自身の
+    // 内部コードは同モジュール内なので `JournalEntry::KeyInput` を無修飾で
+    // 参照する（`record_key_input` 内部の分解パターン等、これらは新規
+    // construction ではなく既存エントリの読み取りであり対象外）。
+    // 外部（他モジュール）からの construction は必ずこのフルパス表記に
+    // なるため、これで実質的に「外部からの構築箇所」だけを数えられる。
+    const NEEDLE: &str = "crate::journal::JournalEntry::KeyInput {";
+    const EXPECTED_PATH: &str = "src/runtime/key_pipeline.rs";
+
+    let files = list_src_files();
+    let mut total = 0usize;
+    let mut breakdown: Vec<(String, usize)> = Vec::new();
+    for path in &files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = production.matches(NEEDLE).count();
+        if count > 0 {
+            total += count;
+            breakdown.push((path.clone(), count));
+        }
+    }
+    assert_eq!(
+        total, 1,
+        "`{NEEDLE}` の本番コードでの構築箇所数が想定(1)と異なります(実際: {total})。\
+         内訳: {breakdown:?}\n\
+         想定される唯一の構築箇所は `{EXPECTED_PATH}` の `kp_run_inner` です。\
+         この不変条件が崩れると `UnifiedJournal::record_key_input`（ADR-169）の \
+         auto-repeat 畳み込みが無関係なエントリへ誤って合流します。"
+    );
+    assert_eq!(
+        breakdown,
+        vec![(EXPECTED_PATH.to_owned(), 1)],
+        "`{NEEDLE}` の構築箇所は `{EXPECTED_PATH}` である想定でしたが、\
+         実際の内訳は {breakdown:?} でした。"
+    );
+}
+
 /// Windows Defenderの`Behavior:Win32/Persistence.A!.ml`誤検知対策
 /// （`docs/known-bugs.md` BUG-120、2026-09-07）: HKCU Runキーへの登録/解除
 /// (`autostart::register()`/`autostart::unregister()`)は、ユーザーの
@@ -4870,5 +5027,352 @@ fn tuning_constants_all_have_measured_attribute() {
          新しい定数を追加した場合は、実測済みなら#[measured(value_ms=.., commit=\"..\")]、\
          未実測ならせめて#[measured(pending = true)]を付けること \
          (.claude/rules/tuning-constants.md)。"
+    );
+}
+
+/// ADR-176 176-T7（opus-adversarial-consultレビューround7 B2指摘）:
+/// `check_calibration_bypass_timeout`の唯一の正しい呼び出し元は
+/// `TIMER_HOOK_WATCHDOG`アーム（`start_hook_watchdog`が張る、
+/// `app_disabled`早期returnの影響を受けない真の周期タイマー）。
+/// `TIMER_IME_REFRESH`アームは`ir_execute`の`app_disabled`早期returnの
+/// 手前で`reschedule_ime_refresh`に依存するため、較正バイパス中は
+/// 再武装されず、タイムアウト監視が二度と走らなくなる回帰を防ぐ。
+#[test]
+fn calibration_bypass_timeout_check_runs_from_hook_watchdog_not_ime_refresh() {
+    let content = read_crate_file("src/runtime/message_handlers.rs");
+    let ime_refresh_pos = content
+        .find("id == TIMER_IME_REFRESH =>")
+        .expect("TIMER_IME_REFRESH arm marker not found");
+    let watchdog_pos = content
+        .find("id == TIMER_HOOK_WATCHDOG =>")
+        .expect("TIMER_HOOK_WATCHDOG arm marker not found");
+    let call_pos = content
+        .find("check_calibration_bypass_timeout(")
+        .expect("check_calibration_bypass_timeout call not found");
+    assert!(
+        watchdog_pos > ime_refresh_pos,
+        "アームの出現順の前提（TIMER_IME_REFRESHの方が先）が変わった。\
+         このテストのロジックを見直すこと"
+    );
+    assert!(
+        call_pos > watchdog_pos,
+        "check_calibration_bypass_timeoutはTIMER_HOOK_WATCHDOGアーム以降に\
+         あるべき（呼び出し位置={call_pos}, watchdogアーム位置={watchdog_pos}）"
+    );
+}
+
+/// ADR-178（MSIアンインストール時のユーザーデータ喪失をPermanent化+自己修復で
+/// 防ぐ）v14 opus敵対的レビュー Blocker B1対応。
+///
+/// `wix/main.wxs`の`Permanent="yes"`（7コンポーネント）は
+/// `wix_installer_guard.rs::config_file_and_nicola_yab_components_have_permanent`
+/// で固定されているが、その**唯一の解毒剤**である自己修復の配線
+/// （`ensure_default_config_exists`/`ensure_default_layouts_exist`の
+/// 呼び出しと、生成先を書き込み先として固定する不変条件）を守るテストが
+/// これまで存在しなかった。`Permanent`は不可逆であり、この配線が壊れると
+/// round1 B1の最悪シナリオ（MSI管理外のレジストリKeyPathが残る環境で
+/// 再インストールしてもconfig.tomlが再配置されず起動不能になる）が
+/// 二度と直せない形で復活する。
+mod adr178_self_heal_wiring {
+    use super::{extract_fn_body, read_crate_file};
+
+    /// `app/mod.rs::load_config`本体に`ensure_default_config_exists()`が
+    /// 含まれること。これが消えると、起動時にconfig.tomlが自動生成されず
+    /// round1 B1のシナリオがそのまま復活する。
+    #[test]
+    fn load_config_calls_ensure_default_config_exists() {
+        let content = read_crate_file("src/app/mod.rs");
+        let body = extract_fn_body(&content, "fn load_config() -> Result<AppConfig> {");
+        assert!(
+            body.contains("ensure_default_config_exists();"),
+            "app/mod.rs::load_config()の本体にensure_default_config_exists()の\
+             呼び出しが見つからない。これが無いとPermanent=\"yes\"で保護している\
+             config.tomlが万一消えたとき、再生成されず起動不能になる \
+             （round1 B1が不可逆な形で復活する、ADR-178 v14レビューB1対応）。"
+        );
+    }
+
+    /// `find_config_path`は副作用を持たない設計にした（v14レビューM1対応）
+    /// ——`read_bug_report_attachments`等の観測経路から誤って自己修復を
+    /// 発火させないため。この関数本体にensure系の呼び出しが紛れ込んで
+    /// いないことを固定する。
+    #[test]
+    fn find_config_path_has_no_self_heal_side_effect() {
+        let content = read_crate_file("src/app/mod.rs");
+        let body = extract_fn_body(
+            &content,
+            "pub(crate) fn find_config_path() -> Result<PathBuf> {",
+        );
+        assert!(
+            !body.contains("ensure_default_config_exists"),
+            "app/mod.rs::find_config_path()にensure_default_config_exists()の\
+             呼び出しが紛れ込んでいる。この関数はread_bug_report_attachments等\
+             複数の観測経路から呼ばれる副作用のないヘルパーであるべき \
+             （ADR-178 v14レビューM1対応）——不具合報告を開いただけで\
+             ユーザー環境のconfig.tomlが生成されてしまう回帰を防ぐ。"
+        );
+    }
+
+    /// `app/bootstrap.rs::init_engine_validated`内で、`.yab`の自己修復
+    /// （`ensure_default_layouts_exist`）の呼び出しが、読み取り先を解決する
+    /// `resolve_relative`より**前**にあること。順序が入れ替わると、
+    /// 2026-09-17に実機で踏んだバグ（`resolve_relative`がCWD相対の裸パスへ
+    /// フォールバックし、生成先もそこに引きずられて`%LOCALAPPDATA%\awase\layout`
+    /// が生成されない）が再発する。
+    #[test]
+    fn layouts_self_heal_runs_before_resolve_relative() {
+        let content = read_crate_file("src/app/bootstrap.rs");
+        let ensure_pos = content
+            .find("ensure_default_layouts_exist(&config.general.layouts_dir)")
+            .expect("ensure_default_layouts_exist call not found in bootstrap.rs");
+        let resolve_pos = content
+            .find("let layouts_dir = resolve_relative(&config.general.layouts_dir)")
+            .expect("resolve_relative(&config.general.layouts_dir) call not found in bootstrap.rs");
+        assert!(
+            ensure_pos < resolve_pos,
+            "ensure_default_layouts_exist()の呼び出し（位置={ensure_pos}）が\
+             resolve_relative()の呼び出し（位置={resolve_pos}）より後にある。\
+             resolve_relativeは存在依存のフォールバック（exe隣に無ければCWD相対の\
+             裸パスを返す）を持つため、先に呼ぶと自己修復の生成先を\
+             汚染する。2026-09-17実機検証で発見した`.yab`未生成バグが\
+             再発する（ADR-178 v14レビューBlocker B1対応、無警告で起きる\
+             ため気づきにくい）。"
+        );
+    }
+
+    /// `ensure_default_config_exists`/`ensure_default_layouts_exist`の本体に
+    /// `resolve_relative`系の解決関数が出現しないこと（＝生成先を存在依存の
+    /// 解決結果に委ねない、という不変条件そのもの）。v2〜v13で7回、v14でも
+    /// 1回（`3d7a7ece`）再発した「読み取り先/書き込み先」問題の根を、
+    /// これ以上形を変えて再発させないための機械的なガード。
+    #[test]
+    fn ensure_functions_never_use_resolve_relative_as_write_target() {
+        for (file, fn_signature) in [
+            ("src/app/mod.rs", "fn ensure_default_config_exists() {"),
+            (
+                "src/app/mod.rs",
+                "pub(super) fn ensure_default_layouts_exist(layouts_dir_raw: &str) {",
+            ),
+        ] {
+            let content = read_crate_file(file);
+            let body = extract_fn_body(&content, fn_signature);
+            for forbidden in [
+                "resolve_relative(",
+                "resolve_relative_to_exe(",
+                "resolve_layouts_dir(",
+            ] {
+                assert!(
+                    !body.contains(forbidden),
+                    "{file}の`{fn_signature}`の本体に{forbidden}が出現する。\
+                     これらの関数は存在に依存したフォールバック（exe隣に無ければ\
+                     CWD相対の裸パスを返す）を持つため、生成先として使うと\
+                     意図しない場所への書き込みが発生する \
+                     （ADR-178 v14レビューBlocker B1・M6が名指しした不変条件）。\
+                     生成先は常にexe_dir.join(生文字列)で明示的に組み立てること。"
+                );
+            }
+        }
+    }
+
+    /// `crates/awase-settings/src/main.rs::SettingsApp::new`に、config.toml・
+    /// `.yab`両方の自己修復呼び出しが含まれること（別クレートだが
+    /// `CARGO_MANIFEST_DIR`からの相対パスで読める。専用の`tests/`を持たない
+    /// `awase-settings`側の唯一の配線ガードをここに置く）。
+    #[test]
+    fn settings_app_new_calls_both_ensure_functions() {
+        let content = read_crate_file("../awase-settings/src/main.rs");
+        let body = extract_fn_body(
+            &content,
+            "fn new(cc: &eframe::CreationContext<'_>) -> Self {",
+        );
+        assert!(
+            body.contains("ensure_default_config_exists();"),
+            "crates/awase-settings/src/main.rs::SettingsApp::new()にensure_default_config_exists()\
+             の呼び出しが見つからない（ADR-178 v14レビューB1対応）。"
+        );
+        assert!(
+            body.contains("ensure_default_layouts_exist(&config.general.layouts_dir);"),
+            "crates/awase-settings/src/main.rs::SettingsApp::new()にensure_default_layouts_exist()\
+             の呼び出しが見つからない（ADR-178 v14レビューB1対応）。"
+        );
+    }
+}
+
+// ── ADR-176 176-T8: 較正キー検知 ────────────────────────────────────────
+
+/// 較正キー検知が通常のディスパッチ・belief更新に一切触れないことを固定する
+/// （ADR-176決定1、176-T8受け入れ基準が直接求めるガード）。
+#[test]
+fn calibration_key_detection_does_not_touch_normal_dispatch() {
+    let src = read_crate_file("src/hook.rs");
+    let production = production_code_only(&src);
+    let body = extract_fn_body(production, "fn notify_calibration_key_if_target(");
+    for forbidden in [
+        "HOOK_KEYS",
+        "request_engine_wake",
+        "post_to_main_thread_with(",
+        "send_input_safe",
+        "apply_alt_impersonation",
+        "shadow",
+        "classify_",
+        "ImeEvent",
+        "dispatch",
+        "CallNextHookEx",
+        "LRESULT",
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "較正キー検知が `{forbidden}` に触れています（ADR-176決定1: \
+             較正検知は通常パイプライン・belief更新から完全に独立した\
+             データパスでなければならない）"
+        );
+    }
+    assert_eq!(
+        count_real_calls(body, "post_to_main_thread_quiet("),
+        1,
+        "較正キー検知からの合図は post_to_main_thread_quiet 1本だけであるべき"
+    );
+}
+
+/// 較正キー検知の呼び出しが`focus_app_disabled`早期returnより手前に
+/// 置かれていることをファイル内オフセットで固定する（ADR-176決定1:
+/// 後ろに置くと較正中は一度も実行されない）。
+#[test]
+fn calibration_detection_precedes_focus_app_disabled_early_return() {
+    let content = read_crate_file("src/hook.rs");
+    let src = production_code_only(&content);
+    let detect = src
+        .find("notify_calibration_key_if_target(vk, is_keydown, was_down)")
+        .expect("較正キー検知の呼び出しが hook_callback に見つかりません");
+    let gate = src
+        .find("HOOK_STATE.focus_app_disabled.load(Ordering::Relaxed)")
+        .expect("focus_app_disabled 早期return が見つかりません");
+    assert!(
+        detect < gate,
+        "較正キー検知は focus_app_disabled 早期return より手前に置くこと\
+         （ADR-176決定1: 後ろに置くと較正中は一度も実行されない）"
+    );
+}
+
+/// `set_calibration_target(`の実呼び出しが`begin_calibration_bypass`/
+/// `end_calibration_bypass`の中の2箇所だけであることを固定する
+/// （round8 S4対応: 較正状態のミラー書き込み口が散るとドリフトする）。
+#[test]
+fn set_calibration_target_call_sites_are_limited_to_bypass_lifecycle() {
+    const NEEDLE: &str = "set_calibration_target(";
+    let known_sites: &[(&str, usize)] = &[("src/runtime/focus_tracking.rs", 2)];
+
+    let all_files = list_src_files();
+    let mut files_with_calls: Vec<(String, usize)> = Vec::new();
+    for path in &all_files {
+        let content = read_crate_file(path);
+        let production = production_code_only(&content);
+        let count = count_real_calls(production, NEEDLE);
+        if count > 0 {
+            files_with_calls.push((path.clone(), count));
+        }
+    }
+    files_with_calls.sort();
+
+    let mut expected: Vec<(String, usize)> = known_sites
+        .iter()
+        .map(|(p, c)| ((*p).to_string(), *c))
+        .collect();
+    expected.sort();
+
+    assert_eq!(
+        files_with_calls, expected,
+        "set_calibration_target の呼び出し箇所が想定と異なります。\
+         begin_calibration_bypass/end_calibration_bypass の中だけに\
+         限定すること（新しい呼び出し元を意図的に追加した場合は\
+         known_sites を更新すること）"
+    );
+}
+
+/// `handle_wm_calibration_key_detected`がbelief書き込みAPIに触れないことを
+/// 固定する（ADR-176決定1の点2）。
+#[test]
+fn calibration_key_detected_handler_does_not_touch_belief() {
+    let src = read_crate_file("src/runtime/message_handlers.rs");
+    let production = production_code_only(&src);
+    let body = extract_fn_body(
+        production,
+        "pub(crate) fn handle_wm_calibration_key_detected(",
+    );
+    for forbidden in [
+        "dispatch_event(",
+        "observation_store",
+        "reduce(",
+        "ImeModel",
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "handle_wm_calibration_key_detected が `{forbidden}` に触れています\
+             （ADR-176決定1の点2: 較正キー検知の結果はImeModel/observation_store\
+             へ一切dispatchしない）"
+        );
+    }
+}
+
+/// ADR-176 176-T9a（round8→round9レビュー指摘S9対応）: `SendHealthFeed::
+/// Skip`を渡す呼び出しが`imm.rs`の`probe_ime_open_for_calibration`
+/// 1箇所だけであることを固定する。`send_ime_control_raw`のdocが謳う
+/// 「probe/actuate双方の計測はすべてここに集約する」という不変条件を
+/// 較正probeに限り意図的に緩めている（B2対応）ため、この緩和が
+/// 較正probe以外へ拡散しないことを固定するガード。
+#[test]
+fn send_health_feed_skip_is_used_at_exactly_one_call_site() {
+    let content = read_crate_file("src/imm.rs");
+    let production = production_code_only(&content);
+    assert_eq!(
+        count_real_calls(production, "SendHealthFeed::Skip"),
+        1,
+        "SendHealthFeed::Skip の使用箇所が想定と異なります。較正probe専用の\
+         probe_ime_open_for_calibration以外でsend_healthを迂回してはならない\
+         （ADR-176 176-T9a round8 B2対応）"
+    );
+}
+
+/// ADR-176 176-T9a（決定3 round6 B1対応）: 較正probeループ
+/// （`spawn_calibration_probe_loop`）がbelief書き込みAPIに一切触れない
+/// ことを固定する。較正probeの観測はImeModel/observation_storeへは
+/// 一切dispatchしない、通常のIME belief更新パイプラインとは完全に
+/// 独立したデータパスでなければならない。
+#[test]
+fn calibration_probe_loop_does_not_touch_belief() {
+    let content = read_crate_file("src/runtime/focus_tracking.rs");
+    let production = production_code_only(&content);
+    let body = extract_fn_body(production, "fn spawn_calibration_probe_loop(&self) {");
+    for forbidden in [
+        "dispatch_event(",
+        "observation_store",
+        "reduce(",
+        "ImeModel",
+        "ImeEvent",
+    ] {
+        assert!(
+            !body.contains(forbidden),
+            "spawn_calibration_probe_loop が `{forbidden}` に触れています\
+             （ADR-176決定3 round6 B1対応: 較正probeはbelief更新から\
+             完全に独立したデータパスでなければならない）"
+        );
+    }
+}
+
+/// ADR-176 176-T9b: `notify_calibration_result(`（awase.exe→
+/// awase-settingsへの較正結果送信、唯一のチョークポイント）の実呼び出しが
+/// `spawn_calibration_probe_loop`内の`ConfirmedOn`/`Rejected`の2箇所
+/// だけであることを固定する。将来別の箇所から直接`FindWindowW`/
+/// `PostMessageW`で較正結果を送る経路が増えないようにするガード。
+#[test]
+fn notify_calibration_result_call_sites_are_limited_to_confirm_and_reject() {
+    let content = read_crate_file("src/runtime/focus_tracking.rs");
+    let production = production_code_only(&content);
+    assert_eq!(
+        count_real_calls(production, "notify_calibration_result("),
+        2,
+        "notify_calibration_result の呼び出し箇所が想定と異なります。\
+         spawn_calibration_probe_loop内のConfirmedOn/Rejectedの2箇所に\
+         限定すること"
     );
 }

@@ -48,6 +48,10 @@ pub struct DecisionInputs {
     /// `ControlLog.shadow_on`。`None` = 未知（BUG-113: `bool`に潰さないこと）。
     pub shadow_on: Option<bool>,
     pub belief_input_mode: InputModeState,
+    /// GJI candidate SHOW の desync 証拠（`tsf::observer::candidate_was_seen()`）。
+    /// ADR-163 決定D8: PII を含まない bool 1 個。
+    #[serde(default)]
+    pub candidate_was_seen: bool,
 }
 
 /// `ImeController::apply`/`run_open_chain_async`/`dispatch_ime_set_open`冒頭の
@@ -92,7 +96,6 @@ pub enum DecisionSite {
     ForceOnRomajiCorrection,
     ShadowToggleOff,
     ForceOnBootstrap,
-    IdleConvCheckDirectInput,
     BlacklistDriftCorrection,
 }
 
@@ -112,8 +115,6 @@ pub enum MechanismCommand {
     },
     /// `send_ime_mode_key(vk)`相当（GjiDirect/MsImeDirect）。
     SendVk(VkCode),
-    /// `post_kanji_toggle_to_focused()`相当。
-    PostKanjiToggle,
 }
 
 /// `ImeController::apply`/`run_open_chain_async`/`dispatch_ime_set_open`冒頭の
@@ -125,6 +126,17 @@ pub(crate) const fn decide_gate(inputs: DecisionInputs) -> GateResult {
     } else {
         GateResult::Proceed
     }
+}
+
+/// `decide_gate(inputs) == GateResult::NotOwned`の便宜関数（ADR-180決定1、
+/// round1 E2）。`ImeController::apply`/`run_open_chain_async`/
+/// `imm_cross_write`/`fallback_write`が個別に書いていた同一の`matches!`を
+/// 1箇所に集約する。`with_app`・view構築・fail-open処理・レコード組み立ては
+/// 呼び出し元に残す（`with_app`をここへ内包すると`fallback_write`からの
+/// 呼び出しで再入しgateが恒久的に無効化される、ADR-180決定1参照）。
+#[must_use]
+pub(crate) const fn is_input_relay(inputs: DecisionInputs) -> bool {
+    matches!(decide_gate(inputs), GateResult::NotOwned)
 }
 
 /// sync経路（`ImeController::apply`）が使う機構チェーン。
@@ -139,8 +151,12 @@ pub(crate) fn decide_chain(inputs: DecisionInputs) -> &'static [WriteMechanism] 
 /// `GjiDirectStrategy::apply`のalready-matched判定
 /// （旧`ime_controller.rs::gji_direct_already_matches`と同一）。
 #[must_use]
-const fn gji_direct_already_matches(shadow_on: Option<bool>, open: bool) -> bool {
-    matches!(shadow_on, Some(v) if v == open)
+const fn gji_direct_already_matches(
+    shadow_on: Option<bool>,
+    open: bool,
+    candidate_was_seen: bool,
+) -> bool {
+    matches!(shadow_on, Some(v) if v == open) && (open || !candidate_was_seen)
 }
 
 /// IME ON の直前に ROMAN ビットを補完する同期 IMC write が要るか
@@ -176,7 +192,7 @@ const fn gji_direct_already_matches(shadow_on: Option<bool>, open: bool) -> bool
 ///
 /// - `open == true` のときだけ（OFF 方向は ROMAN を触らない）。
 /// - 機構が `ImmCross` または `MsImeDirect` のときだけ
-///   （`GjiDirect` / `KanjiToggle` は元から ROMAN を書かない）。
+///   （`GjiDirect` は元から ROMAN を書かない）。
 /// - `kind == MsIme` のときだけ。旧 `ImmCrossProcessStrategy` は
 ///   `active_ime_kind == MicrosoftIme` を明示的に見ており、旧
 ///   `MsImeDirectStrategy` は見ていなかったが、`MsImeDirect` の
@@ -247,7 +263,7 @@ pub(crate) fn decide_attempt(
         }
         (WriteMechanism::ImmCross, _) => None,
         (WriteMechanism::GjiDirect, _) => {
-            if gji_direct_already_matches(inputs.shadow_on, open) {
+            if gji_direct_already_matches(inputs.shadow_on, open, inputs.candidate_was_seen) {
                 None
             } else {
                 Some(MechanismCommand::SendVk(key_sequence_policy::ime_key_for(
@@ -262,7 +278,6 @@ pub(crate) fn decide_attempt(
                 ImeOperation::from_open(open),
             )))
         }
-        (WriteMechanism::KanjiToggle, _) => Some(MechanismCommand::PostKanjiToggle),
     };
     (romaji_pre_write, command)
 }
@@ -282,6 +297,7 @@ mod tests {
             kind,
             shadow_on,
             belief_input_mode,
+            candidate_was_seen: false,
         }
     }
 
@@ -378,15 +394,13 @@ mod tests {
     /// GJI 経路では ROMAN 補完を一切行わない（Phase C 以前も同じ）。
     #[test]
     fn needs_romaji_pre_write_never_fires_for_gji_mechanisms() {
-        for mechanism in [WriteMechanism::GjiDirect, WriteMechanism::KanjiToggle] {
-            for kind in ImeKindId::ALL {
-                assert!(!decide_needs_romaji_pre_write(
-                    mechanism,
-                    true,
-                    kind,
-                    InputModeState::Unknown
-                ));
-            }
+        for kind in ImeKindId::ALL {
+            assert!(!decide_needs_romaji_pre_write(
+                WriteMechanism::GjiDirect,
+                true,
+                kind,
+                InputModeState::Unknown
+            ));
         }
     }
 
@@ -443,6 +457,39 @@ mod tests {
             decide_dispatch_conv_after_open(i, true),
             ConvAfterOpenId::Skip
         );
+    }
+
+    /// `decide_needs_romaji_pre_write`と`decide_dispatch_conv_after_open`は、どちらも
+    /// 「ROMAN補完要否」を独立に判定する意図的に別の条件式である（ADR-163 round2 R5が
+    /// 統合を検討した上で「統合すると差分が出そうという予測だけで」非統合のまま
+    /// 放置、とdocコメントに明記）。この関係を、統合はせず全数の含意として固定する:
+    /// **`pre_write`がtrueなら`conv_after_open`は常に`Write(None)`になる**
+    /// （狭い側は`pre_write`、広い側は`conv_after_open`、差は`mechanism`/`kind`の2条件）。
+    /// 逆（`conv_after_open`がtrueでも`pre_write`はfalseになりうる）の証人は
+    /// 直後の`dispatch_conv_after_open_ignores_mechanism_and_kind_unlike_decide_needs_romaji_pre_write`
+    /// が既に固定している——含意が厳密（同値ではない）ことの証拠として参照する。
+    #[test]
+    fn needs_romaji_pre_write_implies_dispatch_conv_after_open_writes() {
+        for mechanism in WriteMechanism::ALL {
+            for open in [true, false] {
+                for kind in ImeKindId::ALL {
+                    for mode in ALL_INPUT_MODES {
+                        let pre_write = decide_needs_romaji_pre_write(mechanism, open, kind, mode);
+                        if !pre_write {
+                            continue;
+                        }
+                        let i = inputs(AppImeProfile::Standard, kind, None, mode);
+                        assert_eq!(
+                            decide_dispatch_conv_after_open(i, open),
+                            ConvAfterOpenId::Write(None),
+                            "{mechanism:?} open={open} {kind:?} {mode:?}: \
+                             decide_needs_romaji_pre_write=true なのに \
+                             decide_dispatch_conv_after_open が Write(None) を返しません。"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -535,6 +582,38 @@ mod tests {
     }
 
     #[test]
+    fn gji_direct_resends_when_candidate_was_seen_despite_shadow_match() {
+        let mut i = inputs(
+            AppImeProfile::Standard,
+            ImeKindId::Gji,
+            Some(false),
+            InputModeState::Unknown,
+        );
+        i.candidate_was_seen = true;
+        let (_, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::GjiDirect, false);
+        assert_eq!(
+            cmd,
+            Some(MechanismCommand::SendVk(key_sequence_policy::ime_key_for(
+                KeyMechanism::GjiDirect,
+                ImeOperation::Close
+            )))
+        );
+    }
+
+    #[test]
+    fn gji_direct_open_direction_ignores_candidate_was_seen() {
+        let mut i = inputs(
+            AppImeProfile::Standard,
+            ImeKindId::Gji,
+            Some(true),
+            InputModeState::Unknown,
+        );
+        i.candidate_was_seen = true;
+        let (_, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::GjiDirect, true);
+        assert_eq!(cmd, None);
+    }
+
+    #[test]
     fn gji_direct_sends_vk_when_shadow_unknown_close_direction() {
         // BUG-113 Blocker: shadow_on == None（未知）は open=false 方向でも
         // 「確認済みOFF」と誤認してはならない。`unwrap_or(false)` で bool に
@@ -583,20 +662,6 @@ mod tests {
         }
     }
 
-    // ── decide_attempt: KanjiToggle（常に送信）──────────────────────────────
-
-    #[test]
-    fn kanji_toggle_always_sends() {
-        let i = inputs(
-            AppImeProfile::Standard,
-            ImeKindId::MsIme,
-            Some(true),
-            InputModeState::Unknown,
-        );
-        let (_, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::KanjiToggle, true);
-        assert_eq!(cmd, Some(MechanismCommand::PostKanjiToggle));
-    }
-
     // ── decide_attempt: ImmCross ─────────────────────────────────────────
 
     #[test]
@@ -642,7 +707,6 @@ mod tests {
             WriteMechanism::ImmCross,
             WriteMechanism::GjiDirect,
             WriteMechanism::MsImeDirect,
-            WriteMechanism::KanjiToggle,
         ] {
             for kind in ImeKindId::ALL {
                 for open in [true, false] {

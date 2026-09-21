@@ -27,10 +27,11 @@ use crate::runtime::message_handlers;
 use crate::vk::VkCodeExt;
 use crate::{
     with_app, with_app_or_repost, with_app_or_repost_with, WM_ASYNC_IME_APPLY_COMPLETE,
-    WM_DRAIN_OUTPUT_QUEUE, WM_DUMP_JOURNAL, WM_DUPLICATE_INSTANCE, WM_ENGINE_QUIT_REQUEST,
-    WM_EXECUTE_EFFECTS, WM_FOCUS_KIND_UPDATE, WM_GJI_REINIT_RETRY_COMPLETE,
-    WM_HOOK_IME_MODE_DIAGNOSTIC, WM_IME_KIND_CHANGED, WM_KANA_LOCK_WARNING_CHANGED,
-    WM_KEY_FROM_HOOK, WM_PANIC_RESET, WM_RELOAD_CONFIG,
+    WM_CALIBRATION_END, WM_CALIBRATION_KEY_DETECTED, WM_CALIBRATION_START, WM_DRAIN_OUTPUT_QUEUE,
+    WM_DUMP_JOURNAL, WM_DUPLICATE_INSTANCE, WM_ENGINE_QUIT_REQUEST, WM_EXECUTE_EFFECTS,
+    WM_FOCUS_KIND_UPDATE, WM_GJI_REINIT_RETRY_COMPLETE, WM_HOOK_IME_MODE_DIAGNOSTIC,
+    WM_IME_KIND_CHANGED, WM_KANA_LOCK_WARNING_CHANGED, WM_KEY_FROM_HOOK, WM_PANIC_RESET,
+    WM_RELOAD_CONFIG,
 };
 
 // ── 定数 ──
@@ -137,7 +138,21 @@ pub fn run() -> Result<()> {
 // ── 共有ヘルパー（bootstrap + reload_config から使用）──
 
 /// 設定ファイルを読み込む
+///
+/// `find_config_path()`とは違い、これは`awase.exe`の**起動経路専用**
+/// （`bootstrap::run_all`から呼ばれる）。自己修復（`ensure_default_config_exists`）
+/// はここでのみ発火させる——`find_config_path()`自体は`read_bug_report_attachments`
+/// や`tray.rs::save_auto_start_config`からも呼ばれる観測/再読込用の共有
+/// ヘルパーであり、そこに副作用を置くと「不具合報告を開く」「自動起動を
+/// トグルする」操作がユーザー環境のconfig.tomlを書き換えてしまう
+/// （ADR-178 v14 opusレビュー M1対応。特に不具合報告経路は「config.tomlが
+/// 存在しなかった」という最重要の事実が、報告を開いた瞬間に生成された
+/// 工場出荷値で上書きされ消えてしまう）。
 fn load_config() -> Result<AppConfig> {
+    // CLI引数でパスが明示されている場合は自己修復しない（ADR-178 決定2）。
+    if cli_arg_config_path().is_none() {
+        ensure_default_config_exists();
+    }
     let config_path = find_config_path()?;
     tracing::info!("Loading config from: {}", config_path.display());
     let config = AppConfig::load(&config_path)?;
@@ -149,16 +164,27 @@ fn load_config() -> Result<AppConfig> {
     Ok(config)
 }
 
-/// 設定ファイルのパスを探索する
-pub(crate) fn find_config_path() -> Result<PathBuf> {
-    // `--flag` / `--flag value` 形式をスキップし、最初の非フラグ引数をパスとして扱う
+/// CLI引数でconfigパスが明示されていればそれを返す（`--flag`/`--flag value`
+/// 形式はスキップ）。`find_config_path()`とは独立して使う——`find_config_path`
+/// 自体は複数の呼び出し元から使われる副作用のないヘルパーに保つため
+/// （ADR-178 v14 opusレビュー M1対応）。
+pub(super) fn cli_arg_config_path() -> Option<PathBuf> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg.starts_with("--") {
             let _ = args.next(); // value をスキップ
             continue;
         }
-        return Ok(PathBuf::from(arg));
+        return Some(PathBuf::from(arg));
+    }
+    None
+}
+
+/// 設定ファイルのパスを探索する。**副作用を持たない**（ADR-178 v14 opusレビュー
+/// M1対応）——自己修復が必要な起動経路は`load_config()`を使うこと。
+pub(crate) fn find_config_path() -> Result<PathBuf> {
+    if let Some(path) = cli_arg_config_path() {
+        return Ok(path);
     }
     let resolved = resolve_relative("config.toml");
     if resolved.exists() {
@@ -168,6 +194,63 @@ pub(crate) fn find_config_path() -> Result<PathBuf> {
         "Config file not found. Place config.toml next to the executable, \
          or specify path as command line argument."
     )
+}
+
+/// 開発ビルドかどうかを判定する（ADR-178 決定2）。開発ビルドでは
+/// `ensure_config_exists`/`ensure_layouts_exist`を呼ばない——ワークスペース
+/// ルートのリポジトリ追跡対象ファイルをそのまま使うため。実体は
+/// `awase::paths::is_dev_build()`（`resolve_relative_to_exe`のワークスペース
+/// ルート解決と同じ判定基準を共有する、ADR-178 v14 opusレビューM6対応）。
+fn is_dev_build() -> bool {
+    awase::paths::is_dev_build()
+}
+
+/// `current_exe()`の親ディレクトリ。開発ビルドではないことを呼び出し元が
+/// 保証していること（`is_dev_build()`）。
+fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
+}
+
+/// `config.toml`が実行ファイルの隣に無ければ、埋め込み既定値から生成する
+/// （ADR-178 決定2）。
+fn ensure_default_config_exists() {
+    if is_dev_build() {
+        return;
+    }
+    let Some(exe_dir) = exe_dir() else {
+        return;
+    };
+    let config_path = exe_dir.join("config.toml");
+    if let Err(e) = awase::config::ensure_config_exists(&config_path) {
+        tracing::warn!("Failed to create default config.toml: {e}");
+    }
+}
+
+/// `layouts_dir_raw`（`config.general.layouts_dir`の生文字列）に有効な`.yab`
+/// が1本も無ければ、同梱6ファイルを埋め込み既定値から生成する（ADR-178
+/// 決定2）。生成先は`exe_dir.join(layouts_dir_raw)`（`layouts_dir_raw`が
+/// 絶対パスならそのまま使われる）に固定し、`resolve_relative()`の結果を
+/// 使わない——`resolve_relative_to_exe`は「exe隣に存在しなければCWD相対の
+/// 裸パスへフォールバックする」ため、生成前に`resolve_relative`を呼ぶと
+/// 生成先がCWD相対になってしまう（実機検証2026-09-17で確認した実害:
+/// `layout`が丸ごと無い状態で`resolve_relative`経由のパスへ生成しようと
+/// すると、`awase.exe`のカレントディレクトリ相対に書き込まれ、
+/// `%LOCALAPPDATA%\awase\layout`には何も作られなかった）。呼び出し元は
+/// この関数の**後**で`resolve_relative`を呼んで読み取り先を解決すること
+/// （生成が成功していれば、exe隣が見つかるようになる）。
+pub(super) fn ensure_default_layouts_exist(layouts_dir_raw: &str) {
+    if is_dev_build() {
+        return;
+    }
+    let Some(exe_dir) = exe_dir() else {
+        return;
+    };
+    let target_dir = exe_dir.join(layouts_dir_raw);
+    if let Err(e) = awase::config::ensure_layouts_exist(&target_dir) {
+        tracing::warn!("Failed to create default layout files: {e}");
+    }
 }
 
 /// 相対パスを実行ファイルのディレクトリ基準で解決する
@@ -414,6 +497,11 @@ pub(crate) fn dispatch_engine_message(
             // docs/design/opus-review-hook-mutex-safety.md §3）。
             let _ = with_app(message_handlers::handle_wm_hook_ime_mode_diagnostic);
         }
+        WM_CALIBRATION_KEY_DETECTED => {
+            with_app_or_repost(WM_CALIBRATION_KEY_DETECTED, |app| {
+                message_handlers::handle_wm_calibration_key_detected(app);
+            });
+        }
         WM_PANIC_RESET => {
             with_app_or_repost(WM_PANIC_RESET, |app| unsafe {
                 message_handlers::handle_wm_panic_reset(app);
@@ -478,6 +566,16 @@ pub(crate) fn dispatch_engine_message(
         },
         WM_RELOAD_CONFIG => {
             message_handlers::handle_wm_reload_config();
+        }
+        WM_CALIBRATION_START => {
+            let _ = with_app(|app| unsafe {
+                message_handlers::handle_wm_calibration_start(app, wparam);
+            });
+        }
+        WM_CALIBRATION_END => {
+            let _ = with_app(|app| unsafe {
+                message_handlers::handle_wm_calibration_end(app, wparam);
+            });
         }
         WM_COMMAND => unsafe {
             message_handlers::handle_wm_command(wparam);

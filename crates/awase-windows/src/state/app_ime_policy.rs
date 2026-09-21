@@ -41,11 +41,9 @@ const IME_ACTUATION_BLIND_MAX_ATTEMPTS: u32 = 5;
 pub struct Caps {
     /// 試す機構の順序。`Failed` のときだけ次へ進む（`actuation_chain::falls_through`）。
     ///
-    /// **到達不能な末尾要素を並べてはならない**（INV-44）。特に `GjiDirect` /
-    /// `MsImeDirect` の後ろに `KanjiToggle` を置かないこと——両者は `Failed` を
-    /// 返さないため到達不能であり、到達させるには `UnsafeToToggle` を
-    /// フォールスルー対象に含めるしかなく、それは Win キー押下中に非冪等な
-    /// `VK_KANJI` を送る新経路の新設である（ADR-089 §2.3・§4.9）。
+    /// **到達不能な末尾要素を並べてはならない**（INV-44）。`GjiDirect` /
+    /// `MsImeDirect` は `Failed` を返さないため、その後ろに置いた機構は
+    /// 現行のフォールスルー述語では到達不能になる。
     /// この規則は `caps_chains_have_no_unreachable_trailing_element` が固定する。
     pub chain: &'static [WriteMechanism],
     /// actuation の収束確認方針（ADR-080）。
@@ -57,12 +55,10 @@ pub struct Caps {
 /// `ImmCross` プロファイル × GJI。ImmCross が `Failed` を返したら GJI 冪等キーへ。
 const CHAIN_IMM_CROSS_THEN_GJI: &[WriteMechanism] =
     &[WriteMechanism::ImmCross, WriteMechanism::GjiDirect];
-/// `ImmCross` プロファイル × MS-IME。`MsImeDirect` は
-/// `!can_use_imm32_cross_process()` を要求するため適用されず、最終フォールバックの
-/// `KanjiToggle` が受ける（ADR-089 §2.8「`ImmCross × MsIme` に `MsImeDirect` を
-/// 入れない理由」）。
-const CHAIN_IMM_CROSS_THEN_KANJI: &[WriteMechanism] =
-    &[WriteMechanism::ImmCross, WriteMechanism::KanjiToggle];
+/// `ImmCross` プロファイル × MS-IME。ImmCross が `Failed` を返したら
+/// MS-IME の冪等キーへフォールバックする（ADR-190）。
+const CHAIN_IMM_CROSS_THEN_MS_IME: &[WriteMechanism] =
+    &[WriteMechanism::ImmCross, WriteMechanism::MsImeDirect];
 /// IMM32 クロスプロセス不可 × GJI。
 const CHAIN_GJI_ONLY: &[WriteMechanism] = &[WriteMechanism::GjiDirect];
 /// IMM32 クロスプロセス不可 × MS-IME。
@@ -92,8 +88,8 @@ const FEEDBACK_BLIND: FeedbackPolicy = FeedbackPolicy::Blind {
 /// `AppImePolicy::standard()` = `from_profile(ImmCross)` である。
 /// この 2 profile は「将来配線されたときのための安全デフォルト」であり、
 /// **`ImmCross` 行と同一内容でなければならない**（INV-44、§4.5）。別扱いにすると
-/// 起動直後 × MS-IME で非冪等な `VK_KANJI` へ直行する shadow desync 経路が
-/// 生まれる。`plain_and_unknown_caps_are_identical_to_imm_cross` が固定する。
+/// 起動直後 × MS-IME のフォールバック順序が分岐する。
+/// `plain_and_unknown_caps_are_identical_to_imm_cross` が固定する。
 ///
 /// # K（IME 種別）依存性
 ///
@@ -121,7 +117,7 @@ pub const fn caps(profile: ImePolicyProfile, kind: ImeKindId) -> Caps {
             ImePolicyProfile::ImmCross | ImePolicyProfile::Plain | ImePolicyProfile::Unknown,
             ImeKindId::MsIme,
         ) => Caps {
-            chain: CHAIN_IMM_CROSS_THEN_KANJI,
+            chain: CHAIN_IMM_CROSS_THEN_MS_IME,
             feedback: FEEDBACK_READ,
             focus_settle_ms: 100,
         },
@@ -319,7 +315,7 @@ mod tests {
             (
                 ImePolicyProfile::ImmCross,
                 ImeKindId::MsIme,
-                CHAIN_IMM_CROSS_THEN_KANJI,
+                CHAIN_IMM_CROSS_THEN_MS_IME,
             ),
             (
                 ImePolicyProfile::Plain,
@@ -329,7 +325,7 @@ mod tests {
             (
                 ImePolicyProfile::Plain,
                 ImeKindId::MsIme,
-                CHAIN_IMM_CROSS_THEN_KANJI,
+                CHAIN_IMM_CROSS_THEN_MS_IME,
             ),
             (
                 ImePolicyProfile::Unknown,
@@ -339,7 +335,7 @@ mod tests {
             (
                 ImePolicyProfile::Unknown,
                 ImeKindId::MsIme,
-                CHAIN_IMM_CROSS_THEN_KANJI,
+                CHAIN_IMM_CROSS_THEN_MS_IME,
             ),
             (
                 ImePolicyProfile::Imm32Unavailable,
@@ -369,7 +365,7 @@ mod tests {
     ///
     /// 「次の要素へ進めるのは直前の機構が `Failed` を返しうるときだけ」なので、
     /// 末尾以外の全要素が [`WriteMechanism::may_return_failed`] を満たす必要がある。
-    /// この検査があるため、`GjiDirect` / `MsImeDirect` の後ろに `KanjiToggle` を
+    /// この検査があるため、`GjiDirect` / `MsImeDirect` の後ろに要素を
     /// 足した瞬間にテストが落ちる（ADR-089 §4.9 の r3 の誤りの再発防止）。
     #[test]
     fn caps_chains_have_no_unreachable_trailing_element() {

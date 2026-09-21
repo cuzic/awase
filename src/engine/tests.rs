@@ -181,6 +181,7 @@ impl EvBuilder {
     fn build(self) -> RawKeyEvent {
         let (kc, pos) = classify_test_key(self.vk, self.scan);
         RawKeyEvent {
+            was_down: false,
             vk_code: self.vk,
             scan_code: self.scan,
             event_type: self.event_type,
@@ -527,7 +528,15 @@ fn test_muhenkan_thumb_emits_while_composing_when_guard_enabled() {
     let result = engine.on_event(Ev::down(VK_NONCONVERT).build());
     assert_pending(&result);
 
-    let result = engine.on_timeout_composing(TIMER_PENDING, true);
+    // ADR-182 決定1c: 無変換/変換のPassthrough単独タップはタイムアウトでは単独確定せず、親指を離した
+    // 時点で生VKを送出する（タイムアウト後に文字が来たとき生VKと親指面のかなを二重に出さないため）。
+    let timeout_result = engine.on_timeout_composing(TIMER_PENDING, true);
+    assert!(
+        timeout_result.actions.is_empty(),
+        "タイムアウトでは単独確定しない（親指を離すまで保留）: {:?}",
+        timeout_result.actions
+    );
+    let result = engine.on_event(Ev::up(VK_NONCONVERT).build());
     assert!(
         result
             .actions
@@ -546,7 +555,15 @@ fn test_henkan_thumb_emits_while_composing_when_guard_enabled() {
     let result = engine.on_event(Ev::down(VK_CONVERT).build());
     assert_pending(&result);
 
-    let result = engine.on_timeout_composing(TIMER_PENDING, true);
+    // ADR-182 決定1c: 無変換/変換のPassthrough単独タップはタイムアウトでは単独確定せず、親指を離した
+    // 時点で生VKを送出する（タイムアウト後に文字が来たとき生VKと親指面のかなを二重に出さないため）。
+    let timeout_result = engine.on_timeout_composing(TIMER_PENDING, true);
+    assert!(
+        timeout_result.actions.is_empty(),
+        "タイムアウトでは単独確定しない（親指を離すまで保留）: {:?}",
+        timeout_result.actions
+    );
+    let result = engine.on_event(Ev::up(VK_CONVERT).build());
     assert!(
         result
             .actions
@@ -605,7 +622,15 @@ fn test_muhenkan_always_suppress_false_preserves_legacy_passthrough() {
     let result = engine.on_event(Ev::down(VK_NONCONVERT).build());
     assert_pending(&result);
 
-    let result = engine.on_timeout_composing(TIMER_PENDING, false);
+    // ADR-182 決定1c: 無変換/変換のPassthrough単独タップはタイムアウトでは単独確定せず、親指を離した
+    // 時点で生VKを送出する（タイムアウト後に文字が来たとき生VKと親指面のかなを二重に出さないため）。
+    let timeout_result = engine.on_timeout_composing(TIMER_PENDING, false);
+    assert!(
+        timeout_result.actions.is_empty(),
+        "タイムアウトでは単独確定しない（親指を離すまで保留）: {:?}",
+        timeout_result.actions
+    );
+    let result = engine.on_event(Ev::up(VK_NONCONVERT).build());
     assert!(
         result
             .actions
@@ -696,7 +721,15 @@ fn test_muhenkan_solo_tap_dedicated_fn_key_does_not_affect_henkan() {
     let result = engine.on_event(Ev::down(VK_CONVERT).build());
     assert_pending(&result);
 
-    let result = engine.on_timeout_composing(TIMER_PENDING, false);
+    // ADR-182 決定1c: 無変換/変換のPassthrough単独タップはタイムアウトでは単独確定せず、親指を離した
+    // 時点で生VKを送出する（タイムアウト後に文字が来たとき生VKと親指面のかなを二重に出さないため）。
+    let timeout_result = engine.on_timeout_composing(TIMER_PENDING, false);
+    assert!(
+        timeout_result.actions.is_empty(),
+        "タイムアウトでは単独確定しない（親指を離すまで保留）: {:?}",
+        timeout_result.actions
+    );
+    let result = engine.on_event(Ev::up(VK_CONVERT).build());
     assert!(
         result
             .actions
@@ -794,7 +827,15 @@ fn test_henkan_always_suppress_false_preserves_legacy_passthrough() {
     let result = engine.on_event(Ev::down(VK_CONVERT).build());
     assert_pending(&result);
 
-    let result = engine.on_timeout_composing(TIMER_PENDING, false);
+    // ADR-182 決定1c: 無変換/変換のPassthrough単独タップはタイムアウトでは単独確定せず、親指を離した
+    // 時点で生VKを送出する（タイムアウト後に文字が来たとき生VKと親指面のかなを二重に出さないため）。
+    let timeout_result = engine.on_timeout_composing(TIMER_PENDING, false);
+    assert!(
+        timeout_result.actions.is_empty(),
+        "タイムアウトでは単独確定しない（親指を離すまで保留）: {:?}",
+        timeout_result.actions
+    );
+    let result = engine.on_event(Ev::up(VK_CONVERT).build());
     assert!(
         result
             .actions
@@ -847,6 +888,7 @@ fn test_ctrl_alt_win_thumb_key_never_enters_pending_due_to_os_modifier_bypass() 
         };
 
         let down = RawKeyEvent {
+            was_down: false,
             vk_code: vk,
             scan_code: scan,
             event_type: KeyEventType::KeyDown,
@@ -894,6 +936,7 @@ fn test_thumb_alone_timeout_suppressed_when_thumb_is_os_modifier() {
     };
 
     let down = RawKeyEvent {
+        was_down: false,
         vk_code: VK_LSHIFT,
         scan_code: vk_to_scan(VK_LSHIFT),
         event_type: KeyEventType::KeyDown,
@@ -1131,6 +1174,7 @@ fn make_engine_with_enter_thumb(ignore_composing_guard: bool, shift_literal: boo
 fn enter_thumb_down_event(ts: Timestamp) -> RawKeyEvent {
     use crate::types::{ImeRelevance, KeyClassification, KeyEventType, ModifierState};
     RawKeyEvent {
+        was_down: false,
         vk_code: VK_RETURN,
         scan_code: vk_to_scan(VK_RETURN),
         event_type: KeyEventType::KeyDown,
@@ -3013,6 +3057,7 @@ fn test_nicola_state_stores_scan_code() {
 
     // Create a key event with a specific scan code
     let event = RawKeyEvent {
+        was_down: false,
         vk_code: VK_A,
         scan_code: ScanCode(0x1E), // A key scan code
         event_type: KeyEventType::KeyDown,
@@ -3048,6 +3093,7 @@ fn test_pending_char_thumb_stores_char_scan() {
     let mut engine = make_engine();
 
     let char_event = RawKeyEvent {
+        was_down: false,
         vk_code: VK_A,
         scan_code: ScanCode(0x1E),
         event_type: KeyEventType::KeyDown,
@@ -3065,6 +3111,7 @@ fn test_pending_char_thumb_stores_char_scan() {
     engine.on_event(char_event);
 
     let thumb_event = RawKeyEvent {
+        was_down: false,
         vk_code: VK_CONVERT,
         scan_code: ScanCode(0x79), // Convert key scan code
         event_type: KeyEventType::KeyDown,
@@ -3332,7 +3379,11 @@ fn test_pending_thumb_then_char_after_threshold() {
     // 無変換/変換は「Windows 全般での無変換/変換キー機能」として生 VK が emit される
     // （timeout_pending_thumb と同じ判定を flush 経路にも統一した挙動、composing 中の
     // suppress は resolve_pending_thumb_as_single 参照）。
-    let r = engine.on_event(Ev::down(VK_A).at(200_000).build());
+    //
+    // ADR-182 決定1b: 到着文字に親指面のかなが存在する（`make_layout`ではAは左親指面あり）場合は、
+    // 親指がshiftとして消費されるので生VKを二重に出さない（別テストで固定）。ここでは親指面が
+    // 無い文字（Dは`make_layout`のどの面にも無い）で、従来どおり生VKが出ることを固定する。
+    let r = engine.on_event(Ev::down(VK_D).at(200_000).build());
     r.assert_consumed();
     assert!(
         r.actions
@@ -6812,7 +6863,7 @@ mod engine_integration_tests {
     /// 【/code-review 指摘の回帰テスト】`event.injected`な合成イベントは
     /// bare-thumbガードの対象外。手動設定の`keys.ime_off`はユーザーが
     /// マクロツール等から意図的に注入する運用を妨げてはならない
-    /// （`match_ime_on_off_auto`のdoc、BUG-14と同じ原則）。engine活性中に
+    /// （`match_ime_toggle_auto`のdoc、BUG-14と同じ原則）。engine活性中に
     /// 無変換の`injected=true`なKeyDownが来ても、`is_bare_thumb`が
     /// falseを返しPhase 1の`keys.ime_off`が従来どおりマッチすること。
     #[test]
@@ -6978,30 +7029,9 @@ mod engine_integration_tests {
         )));
     }
 
-    // ── ADR-092 決定D Step4c: GJI config1.db 由来の自動検出 IME ON/OFF/
-    //    トグルキー（`ime_on_auto`/`ime_off_auto`/`ime_toggle_auto`） ──
-
-    /// 手動設定（`keys.ime_on`）が空でも、自動検出リスト（`ime_on_auto`）が
-    /// 効く（`ime_on_auto_still_fires_when_manual_ime_on_non_empty` が
-    /// 非空側を担当する）。
-    #[test]
-    fn ime_on_auto_fires_when_manual_ime_on_empty() {
-        let combo = ParsedKeyCombo {
-            ctrl: false,
-            shift: false,
-            alt: false,
-            vk: VK_F21,
-        };
-        let mut engine = make_engine_with_special(empty_special_keys());
-        engine.set_ime_on_auto_keys(vec![combo]);
-
-        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_off_ctx());
-        assert!(d.is_consumed());
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::Ime(ImeEffect::SetOpen { open: true, .. })
-        )));
-    }
+    // ── ADR-092 決定D Step4a: MS-IMEレジストリ由来の自動検出 IME トグル
+    //    キー（`ime_toggle_auto`）。GJI側の自動検出（旧Step4c、
+    //    `ime_on_auto`/`ime_off_auto`）はADR-179で撤去した ──
 
     /// bare-thumbガード(`is_bare_thumb`)は`engine_active &&`という条件付きで
     /// しか`suppress_ime_combos`をtrueにしない。engine非活性(IME OFF)中は
@@ -7040,72 +7070,10 @@ mod engine_integration_tests {
     }
 
     /// 【bare-thumbガード回帰テスト、旧P-9】`match_event`内だけにガードを
-    /// 置くと`.or_else()`で連結される自動検出リスト（`ime_on_auto`）を
+    /// 置くと`.or_else()`で連結される自動検出リスト（`ime_toggle_auto`）を
     /// 素通りしてしまう。`match_special_keys`レベルで一括適用した
     /// `is_bare_thumb`ガードが、手動リストだけでなく自動検出リストにも
-    /// 効いていることを固定する。engine活性中は無変換+Aがチョードとして
-    /// 解決され、`ime_on_auto`にVK_NONCONVERTが入っていても`SetOpen`は
-    /// 出ない。
-    #[test]
-    fn bare_thumb_ime_on_auto_combo_is_suppressed_while_engine_active() {
-        let combo = ParsedKeyCombo {
-            ctrl: false,
-            shift: false,
-            alt: false,
-            vk: VK_NONCONVERT,
-        };
-        let mut engine = make_engine_with_special(empty_special_keys());
-        engine.set_ime_on_auto_keys(vec![combo]);
-
-        let d1 = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ime_on_ctx());
-        let d2 = engine.on_input(Ev::down(VK_A).at(50).build(), &ime_on_ctx());
-
-        assert!(d1.is_consumed());
-        assert!(d2.is_consumed());
-        assert!(
-            has_effect(&d2, |e| matches!(
-                e,
-                Effect::Input(InputEffect::SendKeys(actions))
-                    if actions.iter().any(|a| matches!(a, KeyAction::Char('を')))
-            )),
-            "bare 無変換+A should be handled as a left-thumb chord even with ime_on_auto set, got {:?}",
-            effects_of(&d2)
-        );
-        assert!(
-            !has_effect(&d1, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })))
-                && !has_effect(&d2, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
-            "auto ime_on list must not bypass the bare-thumb guard, d1={:?} d2={:?}",
-            effects_of(&d1),
-            effects_of(&d2)
-        );
-    }
-
-    /// 上記の`ime_off_auto`版。engine活性中はチョード判定を優先し、
-    /// `ime_off_auto`にbare親指キーが入っていても`SetOpen`は出ない。
-    #[test]
-    fn bare_thumb_ime_off_auto_combo_is_suppressed_while_engine_active() {
-        let combo = ParsedKeyCombo {
-            ctrl: false,
-            shift: false,
-            alt: false,
-            vk: VK_NONCONVERT,
-        };
-        let mut engine = make_engine_with_special(empty_special_keys());
-        engine.set_ime_off_auto_keys(vec![combo]);
-
-        let d1 = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ime_on_ctx());
-        let d2 = engine.on_input(Ev::down(VK_A).at(50).build(), &ime_on_ctx());
-
-        assert!(
-            !has_effect(&d1, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })))
-                && !has_effect(&d2, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
-            "auto ime_off list must not bypass the bare-thumb guard, d1={:?} d2={:?}",
-            effects_of(&d1),
-            effects_of(&d2)
-        );
-    }
-
-    /// 上記の`ime_toggle_auto`版。
+    /// 効いていることを固定する。
     #[test]
     fn bare_thumb_ime_toggle_auto_combo_is_suppressed_while_engine_active() {
         let combo = ParsedKeyCombo {
@@ -7127,28 +7095,6 @@ mod engine_integration_tests {
             effects_of(&d1),
             effects_of(&d2)
         );
-    }
-
-    /// 手動設定（`keys.ime_off`）が空でも、自動検出リスト（`ime_off_auto`）が
-    /// 効く（`ime_off_auto_still_fires_when_manual_ime_off_non_empty` が
-    /// 非空側を担当する）。
-    #[test]
-    fn ime_off_auto_fires_when_manual_ime_off_empty() {
-        let combo = ParsedKeyCombo {
-            ctrl: false,
-            shift: false,
-            alt: false,
-            vk: VK_F21,
-        };
-        let mut engine = make_engine_with_special(empty_special_keys());
-        engine.set_ime_off_auto_keys(vec![combo]);
-
-        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_on_ctx());
-        assert!(d.is_consumed());
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
-        )));
     }
 
     /// 手動設定（`keys.ime_toggle`）が空でも、自動検出リスト
@@ -7174,34 +7120,10 @@ mod engine_integration_tests {
         )));
     }
 
-    /// BUG-14 同種のリスク対策（Opus コードレビュー指摘）: `ime_on_auto`/
-    /// `ime_off_auto`は`event.injected`な合成イベントにマッチしない。
-    /// 手動設定の `ime_on`/`ime_off` と異なり、自動検出リストはユーザーが
-    /// 存在を意識せず追加されるため、注入イベントへの露出を正当化する
-    /// 根拠が無い。
-    #[test]
-    fn ime_on_auto_ignores_injected_event() {
-        let combo = ParsedKeyCombo {
-            ctrl: false,
-            shift: false,
-            alt: false,
-            vk: VK_F21,
-        };
-        let mut engine = make_engine_with_special(empty_special_keys());
-        engine.set_ime_on_auto_keys(vec![combo]);
-
-        let d = engine.on_input(
-            Ev::down(VK_F21).at(100).injected(true).build(),
-            &ime_on_ctx(),
-        );
-        assert!(
-            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
-            "injected event must not trigger ime_on_auto, got {:?}",
-            effects_of(&d)
-        );
-    }
-
-    /// 上記の `ime_toggle_auto` 版。
+    /// BUG-14 同種のリスク対策（Opus コードレビュー指摘）: `ime_toggle_auto`
+    /// は`event.injected`な合成イベントにマッチしない。手動設定の
+    /// `ime_toggle` と異なり、自動検出リストはユーザーが存在を意識せず
+    /// 追加されるため、注入イベントへの露出を正当化する根拠が無い。
     #[test]
     fn ime_toggle_auto_ignores_injected_event() {
         let combo = ParsedKeyCombo {
@@ -7224,74 +7146,9 @@ mod engine_integration_tests {
         );
     }
 
-    /// 2026-08-16 ユーザー判断: `keys.ime_on` が非空でも `ime_on_auto`
-    /// （GJI config1.db 宣言等）は追加のキーとして併用され続ける（旧・決定C
-    /// R1「明示>自動」の排他仕様から「明示 ∪ 自動」の union へ変更。既定で
-    /// `ime_on`/`ime_off` が非空（`Ctrl+変換`/`Ctrl+無変換`）なため、旧仕様
-    /// のままだと自動検出が既定設定のユーザーには永久に効かなかった）。
-    /// 手動リストと自動リストに**別のキー**を割り当て、自動側キーの押下でも
-    /// 期待通り `ImeOn` が発火する（consume され `SetOpen{open:true}` が
-    /// 出る）ことを確認する。
-    #[test]
-    fn ime_on_auto_still_fires_when_manual_ime_on_non_empty() {
-        let manual_combo = ParsedKeyCombo {
-            ctrl: true,
-            shift: false,
-            alt: false,
-            vk: VK_SPACE,
-        };
-        let auto_combo = ParsedKeyCombo {
-            ctrl: false,
-            shift: false,
-            alt: false,
-            vk: VK_F21,
-        };
-        let special = SpecialKeyCombos {
-            ime_on: vec![manual_combo],
-            ..empty_special_keys()
-        };
-        let mut engine = make_engine_with_special(special);
-        engine.set_ime_on_auto_keys(vec![auto_combo]);
-
-        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_off_ctx());
-        assert!(d.is_consumed());
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::Ime(ImeEffect::SetOpen { open: true, .. })
-        )));
-    }
-
-    /// `ime_on_auto_still_fires_when_manual_ime_on_non_empty` の `ime_off` 版。
-    #[test]
-    fn ime_off_auto_still_fires_when_manual_ime_off_non_empty() {
-        let manual_combo = ParsedKeyCombo {
-            ctrl: true,
-            shift: false,
-            alt: false,
-            vk: VK_SPACE,
-        };
-        let auto_combo = ParsedKeyCombo {
-            ctrl: false,
-            shift: false,
-            alt: false,
-            vk: VK_F21,
-        };
-        let special = SpecialKeyCombos {
-            ime_off: vec![manual_combo],
-            ..empty_special_keys()
-        };
-        let mut engine = make_engine_with_special(special);
-        engine.set_ime_off_auto_keys(vec![auto_combo]);
-
-        let d = engine.on_input(Ev::down(VK_F21).at(100).build(), &ime_on_ctx());
-        assert!(d.is_consumed());
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
-        )));
-    }
-
-    /// `ime_on_auto_still_fires_when_manual_ime_on_non_empty` の `ime_toggle` 版。
+    /// 2026-08-16 ユーザー判断: `keys.ime_toggle` が非空でも `ime_toggle_auto`
+    /// （MS-IMEレジストリ宣言等）は追加のキーとして併用され続ける（旧・決定C
+    /// R1「明示>自動」の排他仕様から「明示 ∪ 自動」の union へ変更）。
     #[test]
     fn ime_toggle_auto_still_fires_when_manual_ime_toggle_non_empty() {
         let manual_combo = ParsedKeyCombo {
@@ -7442,7 +7299,7 @@ mod engine_integration_tests {
             "IME effect must not fire before solo tap is confirmed"
         );
 
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Ime(ImeEffect::SetOpen { open: false, .. })
@@ -7454,6 +7311,67 @@ mod engine_integration_tests {
                     if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
             )),
             "raw VK_NONCONVERT must not be sent when delegated to open axis, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// ADR-186: `delegate_to_open_axis`を持つ無変換/変換の単独タップは、タイムアウトでは解決せず
+    /// （`SetOpen`を出さない）、親指KeyUpで**1回だけ**解決する。タイムアウトで解決した`SetOpen`は
+    /// キーボード経路（belief書き込み・明示意図の記録・eisu reset）を通らず、実機でToggle OFFが
+    /// `Unwarranted`になって実行されなかった（2026-09-20）。
+    #[test]
+    fn delegate_to_open_axis_solo_tap_resolves_at_key_up_not_at_timeout() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
+
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        // しきい値超過のタイムアウトでは単独確定しない（SetOpenも生キー送出も出さない）。
+        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "timeout must not resolve the delegate solo tap, got {:?}",
+            effects_of(&d)
+        );
+        // 親指KeyUpで1回だけ解決する。
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(300).build(), &ime_on_ctx());
+        let set_opens: Vec<_> = effects_of(&d)
+            .into_iter()
+            .filter(|e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })))
+            .collect();
+        assert_eq!(
+            set_opens.len(),
+            1,
+            "KeyUp must resolve the delegate solo tap exactly once, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// ADR-186 残る問題2: Shift を押したままの無変換/変換は、GJI(ATOK)では「かな⇔半角英数」のトグルで
+    /// あって開閉トグルではない（実機、`186-measurements/`）。単独タップとして`delegate_to_open_axis`
+    /// （→SetOpen(false)）を発火させると、IMEが意図せずOFFになる（実機で確認）。Shift+Space/Enter の
+    /// literal と同じく、Shift 押下中は保留に入れず素通しにする。Shiftなしなら従来どおり委譲する。
+    #[test]
+    fn delegate_to_open_axis_not_fired_when_shift_held() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
+
+        let shift_ctx = InputContext {
+            modifiers: ModifierState {
+                shift: true,
+                ..ime_on_ctx().modifiers
+            },
+            ..ime_on_ctx()
+        };
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &shift_ctx);
+        assert!(
+            !d.is_consumed(),
+            "Shift+無変換は保留に入れず素通しにするべき, got {:?}",
+            effects_of(&d)
+        );
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(300).build(), &shift_ctx);
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "Shift+無変換のKeyUpでSetOpenを発火してはならない, got {:?}",
             effects_of(&d)
         );
     }
@@ -7529,7 +7447,7 @@ mod engine_integration_tests {
         engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(
             has_effect(&d, |e| matches!(
                 e,
@@ -7575,7 +7493,7 @@ mod engine_integration_tests {
         engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d1 = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d1 = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert_eq!(
             count_set_open_effects(&d1),
             1,
@@ -7668,7 +7586,7 @@ mod engine_integration_tests {
             "IME effect must not fire before solo tap is confirmed"
         );
 
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_CONVERT).at(200).build(), &ime_on_ctx());
         assert!(has_effect(&d, |e| matches!(
             e,
             Effect::Ime(ImeEffect::SetOpen { open: false, .. })
@@ -7705,6 +7623,276 @@ mod engine_integration_tests {
         engine
     }
 
+    // ── ADR-182 決定1: 文字→親指の押下間隔が閾値を超えて`PendingChar`が単独確定された直後に
+    //    親指が`PendingThumb`になり、単独タップとして生の親指VKが出る不具合の回帰テスト ──
+
+    /// `decisions`のいずれかが、生の`VK_NONCONVERT`（`Key(VK_NONCONVERT)`）を`SendKeys`で
+    /// 送出しているか。
+    fn any_raw_nonconvert_sent(decisions: &[Decision]) -> bool {
+        decisions.iter().any(|d| {
+            has_effect(d, |e| {
+                matches!(
+                    e,
+                    Effect::Input(InputEffect::SendKeys(actions))
+                        if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
+                )
+            })
+        })
+    }
+
+    /// 文字先押し: `D↓(0) → 無変換↓(108ms、閾値100ms超) → D↑ → 無変換↑`。実機で失敗した
+    /// 打鍵（間隔80〜109ms、重なり0.8〜88ms）の再現。ADR-182以前は文字が単独確定された後、
+    /// 無変換が単独タップとして`Key(VK_NONCONVERT)`を送出していた（GJIが半角英数化する）。
+    #[test]
+    fn char_then_thumb_after_threshold_does_not_leak_raw_nonconvert() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let ds = [
+            engine.on_input(Ev::down(VK_A).at(0).build(), &ctx),
+            engine.on_input(Ev::down(VK_NONCONVERT).at(108_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_A).at(109_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(116_000).build(), &ctx),
+        ];
+        assert!(
+            !any_raw_nonconvert_sent(&ds),
+            "文字先押しで閾値を超えたチョードの無変換は、生のVK_NONCONVERTとして送出してはならない: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+    }
+
+    /// 対照: Idle起点の通常の単独タップ（文字が関与しない）は、従来どおり生の
+    /// `VK_NONCONVERT`を送出する（ADR-179のPassthrough実験の意図した動作）。
+    #[test]
+    fn idle_origin_solo_tap_still_sends_raw_nonconvert() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let ds = [
+            engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ctx),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(60_000).build(), &ctx),
+        ];
+        assert!(
+            any_raw_nonconvert_sent(&ds),
+            "Idle起点の無変換単独タップは生のVK_NONCONVERTを送出するはず: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+    }
+
+    /// 対照: 閾値内（30ms）の文字先押しチョードは従来どおり成立し、生の無変換は出ない。
+    #[test]
+    fn char_then_thumb_within_threshold_is_chord_without_raw_nonconvert() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let ds = [
+            engine.on_input(Ev::down(VK_A).at(0).build(), &ctx),
+            engine.on_input(Ev::down(VK_NONCONVERT).at(30_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_A).at(80_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(90_000).build(), &ctx),
+        ];
+        assert!(
+            !any_raw_nonconvert_sent(&ds),
+            "閾値内のチョードは生のVK_NONCONVERTを送出しない: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+    }
+
+    /// フラグ寿命（決定1）: 失敗した文字先押しの直後に、Idle起点の通常の単独タップを行っても、
+    /// フラグが残って抑止されてはならない（立てっぱなしで以後の単独タップを殺さない）。
+    #[test]
+    fn after_char_flush_flag_does_not_leak_into_next_solo_tap() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let _ = [
+            engine.on_input(Ev::down(VK_A).at(0).build(), &ctx),
+            engine.on_input(Ev::down(VK_NONCONVERT).at(108_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_A).at(109_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(116_000).build(), &ctx),
+        ];
+        let ds = [
+            engine.on_input(Ev::down(VK_NONCONVERT).at(1_000_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(1_060_000).build(), &ctx),
+        ];
+        assert!(
+            any_raw_nonconvert_sent(&ds),
+            "直後のIdle起点の単独タップは従来どおり生のVK_NONCONVERTを送出するはず: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+    }
+
+    /// ADR-182 決定1b（親指先押し）: `無変換↓(0) → A↓(108ms、閾値100ms超、Aには左親指面のかな`を`
+    /// がある)`。ADR-182以前は親指が単独タップとして`Key(VK_NONCONVERT)`を送出した後、文字が
+    /// 再ディスパッチされ`reduce_active_thumb`が親指面のかなを出して親指を消費していた
+    /// （同じ押下がsolo tapとshiftの両方に使われる二重使用）。生の無変換だけを抑止し、
+    /// 親指面のかな（`を`）は変わらない。
+    #[test]
+    fn thumb_then_char_after_threshold_keeps_thumb_face_kana_without_raw_nonconvert() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        // 親指が押下中であることをプラットフォームのスナップショットとして渡す
+        // （実機のhookは`InputContext.left_thumb_down`にこれを載せる）。
+        let held = InputContext {
+            left_thumb_down: Some(0),
+            ..ime_on_ctx()
+        };
+        let ds = [
+            engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ctx),
+            engine.on_input(Ev::down(VK_A).at(108_000).build(), &held),
+            engine.on_input(Ev::up(VK_A).at(180_000).build(), &held),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(200_000).build(), &ctx),
+        ];
+        assert!(
+            !any_raw_nonconvert_sent(&ds),
+            "親指面のかなが出る打鍵で、生のVK_NONCONVERTを二重に送出してはならない: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+        assert!(
+            ds.iter().any(|d| has_effect(d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('を')))
+            ))),
+            "親指面のかな（を）は従来どおり出力される: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+    }
+
+    /// 決定1bの対照: 到着文字に親指面のかなが無い（Dは`make_layout`のどの面にも無い）場合は
+    /// `reduce_active_thumb`に入らず親指がshiftとして使われないので、従来どおり生の
+    /// `Key(VK_NONCONVERT)`が出る（二重使用ではない）。
+    #[test]
+    fn thumb_then_char_without_thumb_face_after_threshold_still_sends_raw_nonconvert() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let ds = [
+            engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ctx),
+            engine.on_input(Ev::down(VK_D).at(108_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_D).at(180_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(200_000).build(), &ctx),
+        ];
+        assert!(
+            any_raw_nonconvert_sent(&ds),
+            "親指面のかなが無い文字では従来どおり生のVK_NONCONVERTが出る: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+    }
+
+    /// 決定1bの対照: 閾値内（30ms）の親指先押しは従来どおりチョード成立で、生の無変換は出ない。
+    #[test]
+    fn thumb_then_char_within_threshold_is_chord_without_raw_nonconvert() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let ds = [
+            engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ctx),
+            engine.on_input(Ev::down(VK_A).at(30_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_A).at(100_000).build(), &ctx),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(120_000).build(), &ctx),
+        ];
+        assert!(
+            !any_raw_nonconvert_sent(&ds),
+            "閾値内の親指先押しチョードは生のVK_NONCONVERTを送出しない: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+    }
+
+    // ── ADR-182 決定1c: 無変換/変換（Passthrough、delegate無し）はタイムアウトでは単独確定しない ──
+
+    /// タイマー経路: `無変換↓ → 100msタイムアウト → A↓（左親指面のかなあり、親指押下中）`。
+    /// ADR-182以前は、タイムアウトで生の`Key(VK_NONCONVERT)`が先に出た後、文字が`ActiveThumb`で
+    /// 親指面のかなを出して親指を消費していた（同じ押下がsolo tapとshiftの両方に使われる）。
+    #[test]
+    fn timer_path_thumb_then_char_keeps_thumb_face_kana_without_raw_nonconvert() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let held = InputContext {
+            left_thumb_down: Some(0),
+            ..ime_on_ctx()
+        };
+        let ds = [
+            engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ctx),
+            engine.on_timeout(TIMER_PENDING, &held),
+            engine.on_input(Ev::down(VK_A).at(150_000).build(), &held),
+            engine.on_input(Ev::up(VK_A).at(220_000).build(), &held),
+            engine.on_input(Ev::up(VK_NONCONVERT).at(260_000).build(), &ctx),
+        ];
+        assert!(
+            !any_raw_nonconvert_sent(&ds),
+            "タイマー経路でも生のVK_NONCONVERTを二重に送出してはならない: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+        assert!(
+            ds.iter().any(|d| has_effect(d, |e| matches!(
+                e,
+                Effect::Input(InputEffect::SendKeys(actions))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('を')))
+            ))),
+            "親指面のかな（を）は従来どおり出力される: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+    }
+
+    /// タイムアウト後に文字が来ないまま親指を離した場合: 生の`[Key, KeyUp]`は親指を離した時点で出る
+    /// （タイムアウトの時点では出ない）。
+    #[test]
+    fn timer_path_solo_hold_sends_raw_nonconvert_on_release_not_on_timeout() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ctx);
+        let d_timeout = engine.on_timeout(TIMER_PENDING, &ctx);
+        assert!(
+            !any_raw_nonconvert_sent(std::slice::from_ref(&d_timeout)),
+            "タイムアウトでは生VKを送出しない: {:?}",
+            effects_of(&d_timeout)
+        );
+        let d_up = engine.on_input(Ev::up(VK_NONCONVERT).at(300_000).build(), &ctx);
+        assert!(
+            any_raw_nonconvert_sent(std::slice::from_ref(&d_up)),
+            "親指を離した時点で生のVK_NONCONVERTを送出する: {:?}",
+            effects_of(&d_up)
+        );
+    }
+
+    /// OSオートリピート: タイムアウト後に同じ親指のKeyDownが繰り返し届いても、生キーを連射せず、
+    /// 親指を離した時点で1回だけ出す（`observe_thumb_watch_window`は統計専用で抑止しない）。
+    #[test]
+    fn timer_path_auto_repeat_keydowns_do_not_emit_raw_nonconvert_until_release() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let mut ds = vec![
+            engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ctx),
+            engine.on_timeout(TIMER_PENDING, &ctx),
+            engine.on_input(Ev::down(VK_NONCONVERT).at(500_000).build(), &ctx),
+            engine.on_input(Ev::down(VK_NONCONVERT).at(533_000).build(), &ctx),
+            engine.on_input(Ev::down(VK_NONCONVERT).at(566_000).build(), &ctx),
+        ];
+        assert!(
+            !any_raw_nonconvert_sent(&ds),
+            "オートリピート中は生のVK_NONCONVERTを送出しない: {:?}",
+            ds.iter().map(effects_of).collect::<Vec<_>>()
+        );
+        ds.push(engine.on_input(Ev::up(VK_NONCONVERT).at(600_000).build(), &ctx));
+        assert!(
+            any_raw_nonconvert_sent(&ds[ds.len() - 1..]),
+            "親指を離した時点で生のVK_NONCONVERTを送出する: {:?}",
+            effects_of(&ds[ds.len() - 1])
+        );
+    }
+
+    /// フォーカス移動（コンテキスト境界）: タイムアウトを保留した`PendingThumb`は、
+    /// `flush_pending(.., Denied)`で黙って消える（生キーは出ない）。今日のタイマー経路は100msで
+    /// 送出済みだったので存在しなかった取りこぼし窓（決定1cの既知の副作用、ADR-182）。
+    #[test]
+    fn timer_path_pending_thumb_is_dropped_silently_on_focus_change() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let ctx = ime_on_ctx();
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ctx);
+        let _ = engine.on_timeout(TIMER_PENDING, &ctx);
+        let d = engine.on_command(EngineCommand::FocusChanged, &ctx);
+        assert!(
+            !any_raw_nonconvert_sent(std::slice::from_ref(&d)),
+            "フォーカス移動で生のVK_NONCONVERTが別ウィンドウへ出てはならない: {:?}",
+            effects_of(&d)
+        );
+    }
+
     /// `make_test_engine_with_muhenkan_passthrough` の変換（henkan）版。
     fn make_test_engine_with_henkan_passthrough() -> Engine {
         let mut engine = make_test_engine();
@@ -7726,7 +7914,7 @@ mod engine_integration_tests {
         engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOn));
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(
             !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
             "TurnOn delegate must defer to user passthrough, got {:?}",
@@ -7756,7 +7944,7 @@ mod engine_integration_tests {
         engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(
             has_effect(&d, |e| matches!(
                 e,
@@ -7783,7 +7971,7 @@ mod engine_integration_tests {
         engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(
             has_effect(&d, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
             "Toggle delegate must still fire even with user passthrough configured, got {:?}",
@@ -7808,7 +7996,7 @@ mod engine_integration_tests {
         engine.set_henkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOn));
 
         let _ = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_CONVERT).at(200).build(), &ime_on_ctx());
         assert!(
             !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
             "TurnOn delegate must defer to user passthrough (henkan), got {:?}",
@@ -7831,7 +8019,7 @@ mod engine_integration_tests {
         engine.set_henkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
 
         let _ = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_CONVERT).at(200).build(), &ime_on_ctx());
         assert!(
             has_effect(&d, |e| matches!(
                 e,
@@ -7857,7 +8045,7 @@ mod engine_integration_tests {
         engine.set_henkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
 
         let _ = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_CONVERT).at(200).build(), &ime_on_ctx());
         assert!(
             has_effect(&d, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
             "Toggle delegate must still fire even with user passthrough configured (henkan), got {:?}",
@@ -7892,7 +8080,7 @@ mod engine_integration_tests {
         engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOn));
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(
             !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
             "TurnOn delegate must defer when idle side is Passthrough even in the \
@@ -9417,7 +9605,14 @@ mod engine_integration_tests {
         };
 
         engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &composing_ctx);
-        let d2 = engine.on_timeout(TIMER_PENDING, &composing_ctx);
+        // ADR-182 決定1c: タイムアウトでは単独確定せず、親指を離した時点で生VKを送出する。
+        let d_timeout = engine.on_timeout(TIMER_PENDING, &composing_ctx);
+        assert!(
+            !any_raw_nonconvert_sent(std::slice::from_ref(&d_timeout)),
+            "タイムアウトでは生VKを送出しない: {:?}",
+            effects_of(&d_timeout)
+        );
+        let d2 = engine.on_input(Ev::up(VK_NONCONVERT).at(300_000).build(), &composing_ctx);
         assert!(
             has_effect(&d2, |e| matches!(
                 e,
@@ -9479,12 +9674,15 @@ mod engine_integration_tests {
         assert!(d1.is_consumed());
 
         // 50ms gap: 変更後の 10ms 閾値なら simultaneous ではない → 親指単独確定。
+        // ADR-182 決定1b: Aには左親指面のかな（を）があるため、親指を単独確定するときも生の
+        // `Key(VK_NONCONVERT)`は出さない（同じ押下をshiftとして使うため）。simultaneousなら
+        // この時点で`Char('を')`が即時出力されるので、その不在で「同時打鍵にならなかった」ことを見る。
         let d2 = engine.on_input(Ev::down(VK_A).at(50_000).build(), &ime_on_ctx());
         assert!(
-            has_effect(&d2, |e| matches!(
+            !has_effect(&d2, |e| matches!(
                 e,
                 Effect::Input(InputEffect::SendKeys(actions))
-                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
+                    if actions.iter().any(|a| matches!(a, KeyAction::Char('を')))
             )),
             "threshold_ms=10 なら 50ms gap は simultaneous にならないはず, got {:?}",
             effects_of(&d2)

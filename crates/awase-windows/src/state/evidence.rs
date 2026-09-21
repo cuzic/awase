@@ -533,6 +533,7 @@ mod tests {
             ShadowImeAction, VkCode,
         };
         awase::types::RawKeyEvent {
+            was_down: false,
             vk_code: VkCode(0xF2),
             scan_code: ScanCode(0),
             event_type: KeyEventType::KeyDown,
@@ -549,6 +550,7 @@ mod tests {
                 is_ime_mode_key: false,
                 explicit_ime_action_consumed,
                 auto_delegate_open_axis_consumed: false,
+                actuation_owner: awase::types::ModeKeyActuationOwner::default(),
             },
             modifier_key: None,
             modifier_snapshot: ModifierState::default(),

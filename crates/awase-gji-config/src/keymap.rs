@@ -46,10 +46,9 @@ const STATUSES_WHEN_IME_ON: &[&str] = &[
 ///   ATOKベースからカスタムキーマップを作った場合など）literal に
 ///   含まれうることが判明した（`crates/awase-windows/src/
 ///   gji_charset_autodetect.rs::classify_thumb_key_ime_actions`参照）。
-///   このエイリアス追加自体は、F15-F24限定の既存の安全範囲フィルタ
-///   （`gji_charset_autodetect.rs::is_in_safe_autodetect_range`）には
-///   一切影響しない——`VK_CONVERT`/`VK_NONCONVERT`はその範囲外なので、
-///   Engine側のF15-F24自動検出には従来通り流入しない。
+///   このエイリアス追加自体は、F15-F24限定の専用Fnキー自動検出
+///   （ADR-179で撤去済み）には元々影響していなかった——`VK_CONVERT`/
+///   `VK_NONCONVERT`はその範囲外だったため。
 /// - `"Hiragana"`/`"Katakana"`（BUG-115）はひらがな/カタカナキー。
 ///   Henkan/Muhenkanと同じ理由で、これらのキーが親指シフトキーとして
 ///   設定されているユーザーが、GJIの設定でこれらに状態依存のIME ON/OFFを
@@ -149,6 +148,32 @@ pub fn extract_ime_keys(custom_keymap_table: &str) -> GjiImeKeys {
     result.toggle.sort_unstable();
     result.toggle.dedup();
     result
+}
+
+/// ADR-176決定6（176-T12）: `custom_keymap_table`の中から`vk_name`に
+/// 対応する行だけを抽出し、結合したテキストを返す。
+///
+/// `vk_name`は[`mozc_key_to_vk_name`]が返す形式（例: `"VK_CONVERT"`）。
+/// 各行は`status\tkey\tcommand`形式に正規化し、複数行あれば行順を
+/// 安定させるためソートしてから`\n`区切りで結合する（該当行が無ければ
+/// `None`）。較正結果のstale判定用フィンガープリント
+/// （`ConfigFingerprint::Gji::relevant_row`）専用——値そのものの意味解釈は
+/// せず、変化検知にのみ使う。`key`に空白を含む行（修飾キー付き）は
+/// [`mozc_key_to_vk_name`]が対応表に見つけられず自然に除外される
+/// （[`extract_ime_keys`]と同じ扱い）。
+#[must_use]
+pub fn relevant_rows_for_vk(custom_keymap_table: &str, vk_name: &str) -> Option<String> {
+    let rows = parse_custom_keymap_table(custom_keymap_table);
+    let mut matched: Vec<String> = rows
+        .iter()
+        .filter(|row| mozc_key_to_vk_name(&row.key).as_deref() == Some(vk_name))
+        .map(|row| format!("{}\t{}\t{}", row.status, row.key, row.command))
+        .collect();
+    if matched.is_empty() {
+        return None;
+    }
+    matched.sort();
+    Some(matched.join("\n"))
 }
 
 /// `custom_keymap_table` の TSV 文字列から [`GjiModeKeys`] を構築する。
@@ -292,9 +317,42 @@ fn classify_and_push(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_ime_keys, extract_mode_keys, mozc_key_to_vk_name, GjiImeKeys, GjiModeKeys,
+        extract_ime_keys, extract_mode_keys, mozc_key_to_vk_name, relevant_rows_for_vk, GjiImeKeys,
+        GjiModeKeys,
     };
     use crate::command::GjiCompositionMode;
+
+    #[test]
+    fn relevant_rows_for_vk_finds_matching_row() {
+        let table = "status\tkey\tcommand\nDirectInput\tHenkan\tIMEOn\n";
+        assert_eq!(
+            relevant_rows_for_vk(table, "VK_CONVERT").as_deref(),
+            Some("DirectInput\tHenkan\tIMEOn")
+        );
+    }
+
+    #[test]
+    fn relevant_rows_for_vk_returns_none_when_no_match() {
+        let table = "status\tkey\tcommand\nDirectInput\tHenkan\tIMEOn\n";
+        assert_eq!(relevant_rows_for_vk(table, "VK_NONCONVERT"), None);
+    }
+
+    #[test]
+    fn relevant_rows_for_vk_joins_multiple_matching_rows_sorted() {
+        let table = "status\tkey\tcommand\n\
+                      Conversion\tMuhenkan\tIMEOff\n\
+                      Composition\tMuhenkan\tIMEOff\n";
+        assert_eq!(
+            relevant_rows_for_vk(table, "VK_NONCONVERT").as_deref(),
+            Some("Composition\tMuhenkan\tIMEOff\nConversion\tMuhenkan\tIMEOff")
+        );
+    }
+
+    #[test]
+    fn relevant_rows_for_vk_ignores_modifier_rows() {
+        let table = "status\tkey\tcommand\nDirectInput\tCtrl Muhenkan\tIMEOff\n";
+        assert_eq!(relevant_rows_for_vk(table, "VK_NONCONVERT"), None);
+    }
 
     #[test]
     fn f_key_tokens_map_to_vk_names() {

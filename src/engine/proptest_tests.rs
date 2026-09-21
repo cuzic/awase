@@ -213,6 +213,7 @@ fn classify_modifier(vk: VkCode) -> Option<ModifierKey> {
 fn build_event(vk: VkCode, event_type: KeyEventType, timestamp: u64) -> RawKeyEvent {
     let (kc, pos) = classify_vk(vk);
     RawKeyEvent {
+        was_down: false,
         vk_code: vk,
         scan_code: ScanCode(0),
         event_type,

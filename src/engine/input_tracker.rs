@@ -214,6 +214,7 @@ mod tests {
 
     fn make_event(event_type: KeyEventType) -> RawKeyEvent {
         RawKeyEvent {
+            was_down: false,
             vk_code: VkCode(0),
             scan_code: ScanCode(0),
             event_type,

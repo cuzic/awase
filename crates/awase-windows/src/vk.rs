@@ -184,6 +184,14 @@ pub const fn is_ime_mode_key_for_ime(vk_code: VkCode) -> bool {
     matches!(vk_code.0, 0x1C | 0x1D) // VK_CONVERT / VK_NONCONVERT
 }
 
+/// 無変換(0x1D)/変換(0x1C)か。ADR-187 の follow(生キー通過後に実IMEを読み直す)の対象キー。
+/// `is_ime_mode_key_for_ime` は 0x15-0x1A・0xF0-0xF6 も含む(awase が方向を決めて自分で書くキー)ため、
+/// follow の対象には使わない(コードレビュー指摘: 明示意図を守るべきキーの意図まで捨ててしまう)。
+#[must_use]
+pub const fn is_convert_or_nonconvert(vk_code: VkCode) -> bool {
+    matches!(vk_code.0, 0x1C | 0x1D)
+}
+
 /// この VK が IME conv-mode ワード（NATIVE/KATAKANA/FULLSHAPE/ROMAN、
 /// `imm.rs::IME_CMODE_*`）を変えうるかどうかを判定する（BUG-34 横展開
 /// Step0-a、`conv_mutation::bump()` の唯一のゲート）。
@@ -197,8 +205,7 @@ pub const fn is_ime_mode_key_for_ime(vk_code: VkCode) -> bool {
 ///   ひらがな/半角/全角/ローマ字/かな直接の各モード切替）。
 /// - `false`（open-only、無害）: `VK_IME_ON`（0x16）・`VK_IME_OFF`（0x1A）・
 ///   `VK_KANJI`（0x19）——これらは IME の開閉のみを切り替え、conv ワードには
-///   触れない（`KanjiToggleStrategy`/`MsImeDirectStrategy` が根拠に使う
-///   前提と同じ）。`VK_NONCONVERT`（0x1D）も対象外——composition のキャンセル
+///   触れない。`VK_NONCONVERT`（0x1D）も対象外——composition のキャンセル
 ///   キーであり mode 選択キーではない。
 ///
 /// `send_ime_mode_key`（`ime.rs`）はユーザー設定 VK（`engine_on_ime_vk`/

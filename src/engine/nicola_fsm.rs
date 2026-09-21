@@ -382,6 +382,14 @@ pub struct NicolaFsm {
     /// 行い時間計測はしない、所見S5）。
     own_decision_output: Option<OwnDecisionOutput>,
 
+    /// ADR-182 決定1: `step_pending_char_thumb`の時間超過分岐が「この後`decide`に再入する
+    /// 親指イベントは、文字の単独確定直後の再投入である」ことを次の`decide`へ渡す1イベント寿命の
+    /// マーカー。`decide`の先頭で`thumb_after_char_flush`へ2段で受け渡され、その`decide`内で
+    /// `idle_wait`が`PendingThumbData.after_char_flush`へ転写する。
+    next_thumb_after_char_flush: bool,
+    /// `decide`先頭で`next_thumb_after_char_flush`から受け取った、現在のトークン用の値。
+    pub(crate) thumb_after_char_flush: bool,
+
     /// ADR-120 決定0a 項目2c: Phase2決定直後、残り何打鍵(KeyDown)を「親指の
     /// 有無」観測窓として見るか。2から開始し、通常のCharキーKeyDownで
     /// デクリメント、親指KeyDownが来たら即座に破棄
@@ -531,6 +539,8 @@ impl NicolaFsm {
             retro_eval_stats: RetroEvalStats::default(),
             last_decision: None,
             own_decision_output: None,
+            next_thumb_after_char_flush: false,
+            thumb_after_char_flush: false,
             thumb_watch_window: None,
             backspace_vk: None,
             backspace_down: false,
@@ -616,7 +626,7 @@ impl NicolaFsm {
                         thumb.injected,
                         composing,
                         thumb.explicit_ime_action_consumed,
-                        thumb.auto_delegate_open_axis_consumed,
+                        thumb.suppresses_open_axis_actuation(),
                     ),
                     ThumbRawVkEmission::Denied => (
                         ResolvedAction {
@@ -946,6 +956,45 @@ impl NicolaFsm {
     /// `on_timeout` が呼ぶ。
     pub const fn take_ime_open_requested(&mut self) -> Option<crate::types::ShadowImeAction> {
         self.ime_open_requested.take()
+    }
+
+    /// ADR-182 決定1c: この`PendingThumb`は、タイムアウトでは単独確定せず、親指KeyUpか次のキーで
+    /// 解決するか。無変換/変換（`ModeKeyConfig`を持つ親指キー）のうち、タイムアウトで**生のVKを
+    /// 送出する**（`SoloTapAction::Passthrough`）ものだけが対象。
+    ///
+    /// タイムアウトで先に生の親指VKを出すと、その後に文字が来たときに`decide_idle`→`ActiveThumb`→
+    /// `reduce_active_thumb`が親指面のかなを出して親指を消費し、同じ押下がsolo tapとshiftの両方に
+    /// 使われる（決定1bと同じ二重使用が2回のディスパッチに分かれる）。
+    ///
+    /// `delegate_to_open_axis`（belief追随/明示actuation）を持つキーも対象にする（ADR-186）:
+    /// タイムアウトで解決した`SetOpen`は非キーボード経路（`execute_from_loop`）で実行され、
+    /// belief書き込み（`handle_engine_set_open`）・明示意図の記録・eisu resetを持つキーボード経路
+    /// （`kp_stage_post_decision`）を通らない。親指の押下が100msを超える通常のタップでは、
+    /// Toggle OFFが古い明示ON意図に対するwarrantで`Unwarranted`になり実行されず、awaseが
+    /// ONを再送していた（実機、2026-09-20）。KeyUpで解決すればキーボード経路を通るので、
+    /// 既存の処理がそのまま働く。
+    /// 除外: OS修飾キー、`engine_off_solo_repeat_vk`（タイムアウトでソロ連打を数える設計。既定は
+    /// `VK_INSERT`なので無変換/変換では通常は当たらないが、無変換/変換に設定するとその親指では
+    /// 1cが無効になる）、専用Fnキー・ユーザー明示config（優先順位1・2、送出タイミングを保つ）。
+    /// Space/Enter親指は`mode_key_config`を持たないので自然に除外される。
+    fn defers_solo_until_release(&self, thumb: &PendingThumbData, composing: bool) -> bool {
+        if thumb.modifier_key.is_some() {
+            return false;
+        }
+        if self.engine_off_solo_repeat_vk.0 != 0 && thumb.vk_code == self.engine_off_solo_repeat_vk
+        {
+            return false;
+        }
+        let special = self.thumb_solo_special_handling(thumb.vk_code);
+        special.dedicated_fn_key.is_none()
+            && special.explicit_ime_action.is_none()
+            && (special.delegate_to_open_axis.is_some()
+                || special.mode_key_config.is_some_and(|cfg| {
+                    matches!(
+                        SoloTapAction::from(cfg.for_composing(composing)),
+                        SoloTapAction::Passthrough
+                    )
+                }))
     }
 
     fn thumb_solo_special_handling(&self, vk_code: VkCode) -> ThumbSoloSpecialHandling {
@@ -1294,7 +1343,12 @@ impl ShiftReduceParser for NicolaFsm {
     type ReduceRecord = OutputUpdate;
 
     fn decide(&mut self, token: &ClassifiedEvent) -> TieredParseAction {
+        // ADR-182 決定1: 1イベント寿命のマーカーを2段で受け渡す（`ReduceAndContinue`の再ディスパッチも
+        // 同じ`decide`を通るのでここで確実に消費・クリアされる）。
+        self.thumb_after_char_flush = std::mem::take(&mut self.next_thumb_after_char_flush);
         let local = self.decide_and_transition(token);
+        // この`decide`限りの値を残さない（`idle_wait`が`decide`外から呼ばれても古い値を読まない）。
+        self.thumb_after_char_flush = false;
         match local {
             ParseAction::Shift { timer } => TieredParseAction::Shift {
                 timers: self.timer_cmds(timer),
@@ -1426,7 +1480,11 @@ impl NicolaFsm {
             return self.handle_bypass(&ev, reason, event.injected);
         }
 
-        self.parse(ev)
+        let result = self.parse(ev);
+        // ADR-182 決定1: `MAX_REDUCE_CONTINUE_STEPS`超過で`parse`が`decide`を呼ばず打ち切られた場合に
+        // マーカーが次のイベントへ漏れないよう無条件にクリアする。
+        self.next_thumb_after_char_flush = false;
+        result
     }
 
     /// 状態とイベントに基づいてアクションを決定し、状態遷移を行う
@@ -1491,8 +1549,28 @@ impl NicolaFsm {
             && matches!(self.enter_thumb_vk, Some(vk) if vk.0 == ev.vk_code.0)
     }
 
+    /// Shift を押したまま、単独タップの委譲（`delegate_to_open_axis`）を持つ無変換/変換を押した場合は、
+    /// 保留にも委譲にも入れず素通しにすべきかを判定する（ADR-186 残る問題2）。
+    ///
+    /// GJI(ATOK)の Shift+無変換/変換 は「かな⇔半角英数」のトグルで、開閉トグルではない。これを単独タップ
+    /// として扱うと、KeyUp で `SetOpen(false)` が発火し、意図せず IME が OFF になる（実機で確認）。
+    /// `is_space_thumb_shift_literal` と同じ理由付け（小指シフト面と親指シフトは組み合わせない設計）。
+    /// Ctrl/Alt/Win は `bypass_reason` の `OsModifierHeld` が既に素通しにする。
+    fn is_mode_key_thumb_shift_passthrough(&self, ev: &ClassifiedEvent) -> bool {
+        self.phys.modifiers.shift
+            && ev.key_class.is_thumb()
+            && self
+                .thumb_solo_special_handling(ev.vk_code)
+                .delegate_to_open_axis
+                .is_some()
+    }
+
     /// Idle 状態でのキー到着時の意図を分類する（純粋関数）。
     fn classify_idle_intent(&self, ev: &ClassifiedEvent) -> IdleIntent {
+        // Shift+無変換/変換: GJI ではかな⇔半角英数トグル。開閉の委譲に化けさせない（ADR-186）。
+        if self.is_mode_key_thumb_shift_passthrough(ev) {
+            return IdleIntent::PassThrough;
+        }
         // Shift+Space literal: 明示的なスペース入力のエスケープハッチ（最優先）。
         if self.is_space_thumb_shift_literal(ev) {
             return IdleIntent::PassThrough;
@@ -1598,7 +1676,7 @@ impl NicolaFsm {
                     thumb.injected,
                     self.phys.composing,
                     thumb.explicit_ime_action_consumed,
-                    thumb.auto_delegate_open_axis_consumed,
+                    thumb.suppresses_open_axis_actuation(),
                 );
                 if ime_open_request.is_some() {
                     self.ime_open_requested = ime_open_request;
@@ -1729,6 +1807,7 @@ impl NicolaFsm {
                     modifier_key: ev.modifier_key,
                     explicit_ime_action_consumed: ev.explicit_ime_action_consumed,
                     auto_delegate_open_axis_consumed: ev.auto_delegate_open_axis_consumed,
+                    after_char_flush: false,
                 },
             );
             return ParseAction::Shift {
@@ -1739,6 +1818,9 @@ impl NicolaFsm {
         // 時間超過 → 前の保留を単独確定し、今回のキーを再処理
         self.go_idle();
         let resolved = self.resolve_pending_char_as_single(&pending);
+        // ADR-182 決定1: 再投入される親指は`PendingThumb`になり、単独タップとして解決されても
+        // IME操作（生の親指VK/delegate）を出さない（`PendingThumbData.after_char_flush`）。
+        self.next_thumb_after_char_flush = true;
         resolved.into_reduce_and_continue(*ev)
     }
 
@@ -1757,6 +1839,10 @@ impl NicolaFsm {
         let pending_face = self.resolve_thumb_face(thumb.side(), ev.pos);
         let candidate = pending_face.and_then(|face| self.lookup_face(ev.pos, self.get_face(face)));
         let candidate_kana = candidate.as_ref().and_then(|(_, kana)| *kana);
+        // ADR-182 決定1b: 到着文字に親指面のかなが存在するか。閾値超過の分岐に落ちても、
+        // 再ディスパッチ後の`decide_idle`が同じ`side`・同じ`lookup_face`で`ActiveThumb`と判定し、
+        // `reduce_active_thumb`が親指面のかなを出して親指を消費する。
+        let char_has_thumb_face = candidate.is_some();
 
         if self
             .timing_judge()
@@ -1779,6 +1865,10 @@ impl NicolaFsm {
 
         // 時間超過 or 候補なし → 前の保留を単独確定し、今回のキーを再処理
         self.go_idle();
+        // ADR-182 決定1b: 親指面のかなが出る（＝この親指がshiftとして消費される）のに、同じ押下を
+        // solo tap（生の親指VK/delegate）としても出すのは1打鍵内の自己矛盾（二重使用）。
+        // `Key(親指VK)`だけを抑止し、親指面のかなは変わらない。親指面のかなが無い文字
+        // （`reduce_active_thumb`に入らない）は従来の挙動を維持する。
         let (resolved, ime_open_request) = self.resolve_pending_thumb_as_single(
             thumb.scan_code,
             thumb.vk_code,
@@ -1786,7 +1876,7 @@ impl NicolaFsm {
             thumb.injected,
             self.phys.composing,
             thumb.explicit_ime_action_consumed,
-            thumb.auto_delegate_open_axis_consumed,
+            thumb.suppresses_open_axis_actuation() || char_has_thumb_face,
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -1797,6 +1887,16 @@ impl NicolaFsm {
     /// PendingThumb + 親指キー → 前の保留を単独確定し、今回のキーを再処理
     fn step_pending_thumb_thumb(&mut self, ev: &ClassifiedEvent) -> ParseAction {
         let thumb = self.state.expect_pending_thumb();
+        // ADR-182 決定1c: 同じ親指キーのOSオートリピートKeyDown（`observe_thumb_watch_window`は
+        // 統計専用で抑止しない）で、タイムアウトを保留した`PendingThumb`を単独確定して生キーを
+        // 連射しない。リピートは無視し、解決は親指KeyUp/次のキーに委ねる。
+        if ev.vk_code == thumb.vk_code
+            && self.defers_solo_until_release(&thumb, self.phys.composing)
+        {
+            return ParseAction::Shift {
+                timer: TimerIntent::Keep,
+            };
+        }
         self.go_idle();
         let (resolved, ime_open_request) = self.resolve_pending_thumb_as_single(
             thumb.scan_code,
@@ -1805,7 +1905,7 @@ impl NicolaFsm {
             thumb.injected,
             self.phys.composing,
             thumb.explicit_ime_action_consumed,
-            thumb.auto_delegate_open_axis_consumed,
+            thumb.suppresses_open_axis_actuation(),
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -2848,7 +2948,7 @@ impl NicolaFsm {
             thumb.injected,
             self.phys.composing,
             thumb.explicit_ime_action_consumed,
-            thumb.auto_delegate_open_axis_consumed,
+            thumb.suppresses_open_axis_actuation(),
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -2880,7 +2980,7 @@ impl NicolaFsm {
                 thumb.injected,
                 self.phys.composing,
                 thumb.explicit_ime_action_consumed,
-                thumb.auto_delegate_open_axis_consumed,
+                thumb.suppresses_open_axis_actuation(),
             ),
             EngineState::Idle
             | EngineState::PendingCharThumb { .. }
@@ -3007,7 +3107,7 @@ impl NicolaFsm {
             thumb.injected,
             composing,
             thumb.explicit_ime_action_consumed,
-            thumb.auto_delegate_open_axis_consumed,
+            thumb.suppresses_open_axis_actuation(),
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -3374,7 +3474,20 @@ impl NicolaFsm {
                 Response::pass_through().with_kill_timer(TIMER_PENDING)
             }
             EngineState::PendingChar(pending) => self.timeout_pending_char(&pending),
-            EngineState::PendingThumb(thumb) => self.timeout_pending_thumb(thumb, composing),
+            EngineState::PendingThumb(thumb) => {
+                if self.defers_solo_until_release(&thumb, composing) {
+                    // ADR-182 決定1c: タイムアウトでは単独確定しない。`on_timeout`は冒頭で`state`を
+                    // Idleへ置換しているので、`PendingThumb`を明示的に書き戻す。解決は親指KeyUp
+                    // （`handle_key_up_pending`）か次のキー（文字は`step_pending_thumb_char`の
+                    // 時間超過分岐＝決定1b、その他は`decide_pending_thumb`）に委ねる。
+                    // `timeout_pending_thumb`が通らないぶん、そこで行う`solo_counter.reset()`もここで行う。
+                    self.state = EngineState::PendingThumb(thumb);
+                    self.solo_counter.reset();
+                    self.build_response(SmallVec::new(), true, TimerIntent::CancelAll)
+                } else {
+                    self.timeout_pending_thumb(thumb, composing)
+                }
+            }
             EngineState::PendingCharThumb {
                 char_key,
                 thumb,
@@ -3966,6 +4079,7 @@ mod tests {
                 modifier_key: None,
                 explicit_ime_action_consumed: false,
                 auto_delegate_open_axis_consumed: false,
+                after_char_flush: false,
             },
             false, // composing
         );
@@ -3997,6 +4111,7 @@ mod tests {
                 modifier_key: None,
                 explicit_ime_action_consumed: false,
                 auto_delegate_open_axis_consumed: false,
+                after_char_flush: false,
             },
             false, // composing
         );
@@ -4093,6 +4208,7 @@ mod tests {
                 action,
             });
             let ev = RawKeyEvent {
+                was_down: false,
                 vk_code: VkCode(0x41),
                 scan_code: scan,
                 event_type: KeyEventType::KeyUp,
@@ -4390,6 +4506,7 @@ mod tests {
             modifier_key: None,
             explicit_ime_action_consumed: false,
             auto_delegate_open_axis_consumed: false,
+            after_char_flush: false,
         }
     }
 

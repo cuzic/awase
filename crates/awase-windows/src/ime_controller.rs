@@ -8,10 +8,8 @@
 //! # 戦略リスト（優先順）
 //! 1. `ImmCrossProcessStrategy` — IMM-bridge が生きているウィンドウ向け（Imm32Unavailable は skip）
 //! 2. `GjiDirectStrategy`       — GJI 検出済み時の一方向制御（VK_IME_ON/OFF）。全プロファイルで適用
-//! 3. `MsImeDirectStrategy`     — MS-IME 環境の TSF アプリ向け（VK_IME_ON/OFF 冪等制御。
+//! 3. `MsImeDirectStrategy`     — MS-IME 環境向け（VK_IME_ON/OFF 冪等制御。
 //!    2026-08-06 まで ON は `VK_DBE_HIRAGANA` だった、BUG-50 参照）
-//! 4. `KanjiToggleStrategy`     — 最終フォールバック。実到達は「Standard プロファイル ×
-//!    MS-IME × ImmCross 非同期失敗後（apply_skipping_imm）」の 1 組み合わせのみ
 //!
 //! `ImmCrossProcessStrategy` が `Failed` を返した場合（例: `SendMessageTimeout` タイムアウト）、
 //! `ImeController` は次の適用可能な戦略へフォールスルーする。
@@ -21,16 +19,18 @@
 //! VK_IME_ON (0x16) / VK_IME_OFF (0x1A) は Windows 標準の冪等キーで GJI がネイティブに処理する。
 //! IME 層で処理されるためフォアグラウンドアプリのプロファイルに依存しない。
 //! Chrome / WezTerm / Windows Terminal すべてで動作確認済み（2026-06-28）。
-//! GJI が起動していない環境（MS-IME 等）では `MsImeDirectStrategy`（冪等 VK_DBE_*）が先行する。
+//! GJI が起動していない環境（MS-IME 等）では `MsImeDirectStrategy`（冪等 VK_IME_ON/OFF）が先行する。
 //! 注: `ActiveImeKind` は GJI / MS-IME の 2 値で「IME 種別不明」という状態は存在しない
-//! （未検出時は MicrosoftIme を安全デフォルトとして返す）。`KanjiToggleStrategy` に
-//! 到達するのは Standard プロファイル × MS-IME で ImmCross 非同期適用が Failed した
-//! 後（`apply_skipping_imm`）だけである（golden の戦略選択テーブルと一致、2026-07-06 監査）。
+//! （未検出時は MicrosoftIme を安全デフォルトとして返す）。
 //!
 //! ## アーキテクチャ制約
 //! このモジュールは観測値を自ら読んではいけない。
 //! すべての観測値は `ImeControlView` 経由で受け取ること。
 //! `crate::tsf::observer::tsf_obs()` の直接呼び出し禁止（スナップショット経由で受け取ること）。
+//! **例外（ADR-171）**: `crate::tsf::observer::reset_candidate_was_seen()`
+//! の呼び出しはこの制約の対象外——読み取りではなく書き込みであり、
+//! `GjiDirectStrategy` の OFF 方向 override 送信を消費する専用の1箇所
+//! （`apply_mechanism` の GjiDirect アーム）に限定する。
 
 use awase::platform::ImeOpenOutcome;
 
@@ -50,7 +50,7 @@ use crate::tsf::observer::ActiveImeKind;
 /// **このモジュールの外へは出さない**（ADR-089 §2.3、Phase B 追随）。
 /// `pub(crate)` のままだと `GjiDirectStrategy.apply(open, &view)` と書くだけで
 /// `Actuation` 型状態チェーンを一切構築せずに 1 機構分の実 write
-/// （`SendInput` / `post_kanji_toggle_to_focused`）を起こせてしまう。
+/// （`SendInput`）を起こせてしまう。
 /// crate 内の唯一の write 入口は `apply_mechanism`（呼び出し元 2 箇所を
 /// `tests/architecture_guard.rs` の
 /// `raw_mechanism_write_sites_are_confined_to_chain_writers` が固定）である。
@@ -111,10 +111,10 @@ impl ImeOpenStrategy for GjiDirectStrategy {
 
 // ── MsImeDirectStrategy ──────────────────────────────────────────
 
-/// MS-IME 向けの冪等 IME 制御戦略（TsfNative アプリ用）。
+/// MS-IME 向けの冪等 IME 制御戦略。
 ///
 /// CLSID ベースで MS-IME（または互換 IME）がアクティブと判定された場合に、
-/// IMM32 クロスプロセス制御が使えない TSF アプリ（Windows Terminal 等）への制御を担う。
+/// Standard の ImmCross 失敗後を含む MS-IME（または互換 IME）の制御を担う。
 ///
 /// - ON  → `VK_IME_ON` (0x16) — DirectInput → IME ON（conv-mode には一切触れない）。
 /// - OFF → `VK_IME_OFF` (0x1A) — DirectInput（直接入力）へ移行。MS-IME がネイティブに処理する冪等キー。
@@ -134,35 +134,11 @@ impl ImeOpenStrategy for GjiDirectStrategy {
 ///
 /// 適用条件:
 /// - `active_ime_kind == MicrosoftIme` (CLSID ベース判定)
-/// - `can_use_imm32_cross_process() == false`（IMM32 が使えない TSF アプリ）
 struct MsImeDirectStrategy;
 
 impl ImeOpenStrategy for MsImeDirectStrategy {
     fn is_applicable(&self, view: &ImeControlView<'_>) -> bool {
-        key_sequence_policy::ms_ime_direct_applicable(
-            view.observed.active_ime_kind.into(),
-            view.focus.profile,
-        )
-    }
-}
-
-// ── KanjiToggleStrategy ──────────────────────────────────────────
-
-/// `SendInput(VK_KANJI)` トグルを使う最終フォールバック戦略。
-///
-/// 実際に到達する組み合わせは 1 つだけ: **Standard プロファイル × MS-IME ×
-/// ImmCross 非同期適用の失敗後（`apply_skipping_imm`）**。
-/// `ActiveImeKind` は GJI / MS-IME の 2 値のため「IME 種別不明」は存在せず、
-/// 通常の `apply` では ImmCross（Standard）か GJI/MsImeDirect（非 Standard）が
-/// 必ず先に捕捉する（golden の戦略選択テーブル参照、2026-07-06 監査で確認）。
-///
-/// VK_KANJI はトグルキーのため冪等ではなく、`already_matched` の判定は行わず送信する。
-/// GJI / MS-IME 環境では前段の戦略が処理するため、このフォールバックは稀にしか使われない。
-struct KanjiToggleStrategy;
-
-impl ImeOpenStrategy for KanjiToggleStrategy {
-    fn is_applicable(&self, _view: &ImeControlView<'_>) -> bool {
-        true // 汎用フォールバック: IME 種別不明環境 + ImmCross 失敗時の代替
+        key_sequence_policy::ms_ime_direct_applicable(view.observed.active_ime_kind.into())
     }
 }
 
@@ -171,7 +147,6 @@ impl ImeOpenStrategy for KanjiToggleStrategy {
 static IMM_STRATEGY: ImmCrossProcessStrategy = ImmCrossProcessStrategy;
 static GJI_STRATEGY: GjiDirectStrategy = GjiDirectStrategy;
 static MS_IME_STRATEGY: MsImeDirectStrategy = MsImeDirectStrategy;
-static KANJI_STRATEGY: KanjiToggleStrategy = KanjiToggleStrategy;
 
 /// `WriteMechanism` から実装戦略を引く唯一の写像。
 ///
@@ -183,7 +158,6 @@ const fn strategy_for(mechanism: WriteMechanism) -> &'static dyn ImeOpenStrategy
         WriteMechanism::ImmCross => &IMM_STRATEGY,
         WriteMechanism::GjiDirect => &GJI_STRATEGY,
         WriteMechanism::MsImeDirect => &MS_IME_STRATEGY,
-        WriteMechanism::KanjiToggle => &KANJI_STRATEGY,
     }
 }
 
@@ -200,7 +174,7 @@ pub(crate) fn mechanism_is_applicable(
 /// # 呼び出してよい場所（ADR-089 §2.3、Phase B 追随）
 ///
 /// **この関数は `Actuation` 型状態チェーンを構築せずに実 write
-/// （`SendInput` / `post_kanji_toggle_to_focused` / `ImmSetOpenStatus`）を起こせる
+/// （`SendInput` / `ImmSetOpenStatus`）を起こせる
 /// 唯一の口である。** 呼んでよいのは
 /// `MechanismWriter` / `AsyncMechanismWriter` の `write` 実装
 /// （= `run_chain` / `run_chain_async` が駆動する write ステップそのもの）だけ:
@@ -216,7 +190,7 @@ pub(crate) fn mechanism_is_applicable(
 /// 同じパターン）。ここを増やすと、`falls_through` 規則も
 /// `Actuation` のアフィン性（1 値 = 高々 1 回の成功 write、INV-41）も通らない
 /// 3 本目の write 経路になる。
-// ADR-163 TH1b-2b: 旧`ImeOpenStrategy::apply`4実装（各々に
+// ADR-163 TH1b-2b: 旧`ImeOpenStrategy::apply`実装（各々に
 // `#[tracing::instrument]`付き）が持っていたログ・分岐をこの1関数に
 // 集約したため複雑度が閾値を超える。`journal.rs`/`runtime/ime_refresh.rs`
 // に既存の同種の許可があり（ログ付きdispatchテーブルは分割しても
@@ -239,7 +213,7 @@ pub(crate) fn apply_mechanism(
     // 2箇所からのみ呼ばれ、いずれも `WriteMechanism::ImmCross` を渡すのは
     // 同期経路（`SyncChainWriter`）からだけである。そのため `site` は常に
     // `DecisionSite::Sync` を渡してよい——`decide_attempt` が site を見るのは
-    // ImmCross のときだけであり、GjiDirect/MsImeDirect/KanjiToggle は site に
+    // ImmCross のときだけであり、GjiDirect/MsImeDirect は site に
     // 依存しない（ADR-163 round3 U1 の設計）。
     let (_, command) = decide_attempt(view.into(), DecisionSite::Sync, mechanism, open);
     match command {
@@ -274,6 +248,25 @@ pub(crate) fn apply_mechanism(
             tracing::debug!("[apply-ime] GJI direct: send {vk:#06X} (open={open})");
             // SAFETY: 同上。
             if unsafe { crate::ime::send_ime_mode_key(vk) } {
+                if !open {
+                    // ADR-171: この override 送信が候補ウィンドウ再表示という
+                    // desync 証拠(candidate_was_seen)を消費したことを示す。
+                    // 送信時に即座に消費することで、次回 apply がリセット
+                    // タイミング依存で同じ証拠を再度読んでしまう BUG-113 型の
+                    // 二重送信を防ぐ（ADR-171「BUG-113再導入にならない理由」）。
+                    //
+                    // 既知の限界（ADR-171 round4 M4、/code-review指摘で明文化）:
+                    // この消費は「SendInput の発行に成功した」時点で行われ、
+                    // GJI が実際に候補ウィンドウを閉じたことの確認を待たない。
+                    // このため、この override が効かず候補ウィンドウが開いた
+                    // ままで新しい EVENT_OBJECT_SHOW が発火しない場合、次回の
+                    // 押下では candidate_was_seen が既に false に戻っており
+                    // 再び AlreadyMatched へ落ちる（＝1回の desync 証拠につき
+                    // 再送は1回だけが保証される）。恒久的な解（候補が開いた
+                    // ままであることを継続的に検知する）は本 ADR のスコープ外
+                    // （ADR-171「残る既知の限界」節参照）。
+                    crate::tsf::observer::reset_candidate_was_seen();
+                }
                 ImeOpenOutcome::Applied
             } else {
                 // Win キー押下中で未送信。Applied 扱いにすると applied_snapshot がラッチされ
@@ -315,23 +308,6 @@ pub(crate) fn apply_mechanism(
                 );
                 ImeOpenOutcome::UnsafeToToggle
             }
-        }
-        Some(MechanismCommand::PostKanjiToggle) => {
-            tracing::info!(
-                "[apply-ime] shadow={:?} candidate={} was_seen={} profile={:?} \
-                 composition_active={} show_seq={} change_seq={} → desired={open}: \
-                 SendInput VK_KANJI (issue #138診断)",
-                view.control.shadow_on,
-                view.observed.candidate_visible,
-                view.observed.candidate_was_seen,
-                view.focus.profile,
-                view.observed.composition_active,
-                view.observed.ime_show_seq,
-                view.observed.ime_change_seq,
-            );
-            // SAFETY: 同上。
-            unsafe { crate::ime::post_kanji_toggle_to_focused() };
-            ImeOpenOutcome::FallbackSent
         }
         Some(
             MechanismCommand::SetOpenThenConvForTarget { .. }
@@ -622,24 +598,39 @@ impl ImeController {
             );
             return (ImeOpenOutcome::NotOwned, record);
         }
-        // ADR-090 §2.A A-1: 授権は入口側（`ImeStateHub::issue_actuation_order`）で
-        // 発行済み。ここは **shadow モード**なので、授権が下りていなくても
-        // 書き込みは止めず `Authorization::LegacyUnwarranted { would_have_blocked }`
-        // として記録するだけである（止めるのは A-2、入口ごと・実機ソーク必須）。
-        //
-        // 宛先: VK 送信機構（GjiDirect / MsImeDirect / KanjiToggle）は SendInput が
+        // ADR-090 §2.A A-2（2026-09-19、ユーザー指示によりリスクを受容し実機
+        // 検証で確認する方針へ切替）: 授権は入口側
+        // （`ImeStateHub::issue_actuation_order`）で発行済み。ADR-178領域A撤去
+        // （`apply_force_on_for_imm_broken`/`try_force_on_bootstrap`の削除）で
+        // 差分オラクルが指摘していた最大の挙動変化（old-1、bootstrapで観測/
+        // 意図/guard皆無のまま`desired_open`へフォールバックする経路）と、
+        // それに次ぐold-2（`BrokenAppBootstrap`guard）の両方が、A-2着手前に
+        // 既に生産コードから消えている。残る差分（old-3はBUG-63安全側、
+        // new-1はTsfNative Blindプロファイルの意図されたOwnSsotフォールバック
+        // 1件のみ）を受容し、`into_actuation()`で実際に強制する。
+        // 警告なし（`None`）の場合は`Unwarranted`を返し、機構チェーンを
+        // 一切試行しない（`NotOwned`と同じ「送っていない」扱い、別variant）。
+        log_shadow_warrant("sync", &order);
+        let chain = caps_chain_for(view);
+        let order_record = ActuationOrderRecord::from(&order);
+        let Some(actuation) = order.into_actuation() else {
+            let record = actuation_decision_record(
+                gate_inputs,
+                order_record,
+                &[],
+                [None; MAX_WRITE_MECHANISMS],
+                0,
+            );
+            return (ImeOpenOutcome::Unwarranted, record);
+        };
+        // 宛先: VK 送信機構（GjiDirect / MsImeDirect）は SendInput が
         // フォアグラウンドのフォーカスへ配送するため、hwnd を捕獲する余地が
         // 構造的に無い（`SendInput` は宛先引数を取らない）。したがって
         // `FocusImplicit` はこの経路では「未移行」ではなく**機構固有の性質**で
         // ある（ADR-089 §9-19 の訂正）。同期経路で hwnd を持つ唯一の write は
         // ROMAN 補完であり、そちらは `apply_mechanism` が
         // `ActuationTarget::capture_blocking` で捕獲する（Phase C item 12）。
-        log_shadow_warrant("sync", &order);
-        let chain = caps_chain_for(view);
-        let order_record = ActuationOrderRecord::from(&order);
-        let actuation = order
-            .into_actuation_shadow()
-            .verify(VerifiedTarget::FocusImplicit);
+        let actuation = actuation.verify(VerifiedTarget::FocusImplicit);
         let mut writer = SyncChainWriter {
             view,
             attempts: [None; MAX_WRITE_MECHANISMS],

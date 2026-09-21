@@ -265,6 +265,8 @@ pub enum ApplyError {
     UnsafeToToggle,
     /// フォーカス先が入力中継ツールで、awase が IME actuation を所有しないため送らなかった
     NotOwned,
+    /// `issue_open_warrant()` が授権を発行しなかったため送らなかった（ADR-090 A-2）
+    Unwarranted,
     /// その他
     Other,
 }
@@ -346,7 +348,7 @@ pub enum OpenApplyReason {
     Bootstrap,
     /// 観測値（conv/IMC 読み取り）と belief の乖離を検出しての是正
     /// （`ir_apply_drift_correction`、`kp_apply_conv_engine_sync` の
-    /// `EngineSync::DirectInput` 分岐）。
+    /// `EngineSync::DirectInput`（ADR-185で撤去済み） 分岐）。
     DriftCorrection,
     /// Shadow IME belief のトグル（`kp_stage_shadow_ime_toggle`）に伴う適用。
     ShadowToggle,
@@ -472,7 +474,7 @@ pub enum ImeEvent {
     /// いう識別子だけで、IME が ON か OFF かの推測は含まない。reducer 側も
     /// `ObservationStore::establish_initial_fence()`（fence 1 フィールドの差し替え）
     /// しか行わず、`FocusChanged` が触る `app_policy` / `last_intent` / `applied` /
-    /// `force_guards` / `force_on_retry` / `input_barrier` / `current_focus` / 観測
+    /// `force_guards` / `input_barrier` / `current_focus` / 観測
     /// プールのいずれにも触れない。ADR-102 決定3-b の「最初の IME 観測より前に
     /// belief を書き換えない」を守ったまま fence だけを揃えるための専用イベント。
     ///
@@ -528,6 +530,30 @@ pub enum ImeEvent {
     /// （ADR-102 決定3-b、`initial_focus_fence_event_only_touches_the_fence`
     /// が固定）を持ち、他の書き込みを一切混ぜてはならないため。
     InitialAppPolicyEstablished { profile: ImePolicyProfile },
+
+    /// 無変換/変換の生キーを GJI へ通過させた（ADR-187 follow 方式）。
+    ///
+    /// 実 IME の開閉は GJI 側が決めるため、awase は結果の開閉状態を知らない。
+    /// 古い明示意図（`last_intent`）だけを捨て、直前に得た観測へ解決を委ねる。
+    /// reducer は `last_intent` のみを書き、`desired_open` / `applied` / 観測 /
+    /// `current_focus` などには触れない。dispatch 元は
+    /// `ImeStateHub::invalidate_intents_if_mode_key_pass_live` の1箇所に限定する。
+    ModeKeyPassedThrough,
+
+    /// 起動直後の初回フォーカス確立時、`current_focus` を bootstrap で確立した
+    /// 前面 hwnd に設定する（BUG-148、ADR-186）。`establish_initial_focus_scope` からのみ
+    /// dispatch される。
+    ///
+    /// `ImeModel::current_focus` の書き込み口は従来 `FocusChanged`（プロセス変更時のみ）
+    /// しかなかった。起動時に既に対象アプリが前面にあると、最初のプロセス切替まで
+    /// `None` のままになり、`record_explicit_intent`（`current_focus()` が `None` だと
+    /// 何もしない）が空振り→`issue_open_warrant` Step 1 が外れ、委譲 SetOpen が全て
+    /// `Unwarranted` になってキーが飲み込まれる。
+    ///
+    /// **`current_focus` 以外の一切のフィールドに触れない**（belief を書かない）。
+    /// `InitialFocusFenceEstablished`/`InitialAppPolicyEstablished` と同じ理由で
+    /// 別イベントにする——あちらは1フィールドだけの差し替えという不変条件を持つ。
+    InitialFocusHwndEstablished { hwnd: HwndId },
 
     // 旧 ChordStarted は 2026-07-06 到達不能パス監査 B2 で撤去 — production の
     // dispatch サイトがなく（chord 開始は ImeApplyRequested { target:false,
@@ -591,7 +617,6 @@ impl ImeEvent {
         use awase::platform::ImeOpenOutcome;
         match outcome {
             ImeOpenOutcome::Applied
-            | ImeOpenOutcome::FallbackSent
             | ImeOpenOutcome::AppliedWithoutSendInput
             | ImeOpenOutcome::AlreadyMatched => Self::ImeApplySucceeded { target, generation },
             ImeOpenOutcome::Failed => Self::ImeApplyFailed {
@@ -608,6 +633,11 @@ impl ImeEvent {
                 target,
                 generation,
                 error: ApplyError::NotOwned,
+            },
+            ImeOpenOutcome::Unwarranted => Self::ImeApplyFailed {
+                target,
+                generation,
+                error: ApplyError::Unwarranted,
             },
         }
     }

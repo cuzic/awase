@@ -12,13 +12,17 @@ use awase_windows::scancode_map::{ScancodeMapPreset, ScancodeMapSelection};
 use awase_windows::vk::VkCodeExt as _;
 
 mod bug_report;
+mod calibration_panel;
+#[cfg(target_os = "windows")]
+mod calibration_result_window;
 mod scancode_map_admin;
 mod startup_failure;
 mod update_check;
 
-/// 設定リロード用カスタムメッセージ ID（awase 本体側の `WM_APP + 10` と一致させる）
+/// 設定リロード用カスタムメッセージ。`awase_windows::WM_RELOAD_CONFIG`と
+/// 同じ値を使う。
 #[cfg(target_os = "windows")]
-const WM_RELOAD_CONFIG: u32 = 0x8000 + 10; // WM_APP = 0x8000
+use awase_windows::WM_RELOAD_CONFIG;
 
 /// awase のホームページ URL（`crates/awase-windows/src/tray.rs` の
 /// `HOMEPAGE_URL` と同じ値。crate を跨ぐため定数を共有できず文字列直書き）。
@@ -30,6 +34,7 @@ enum Tab {
     Keys,
     Keymap,
     DisableApps,
+    Calibration,
     // サイドパネルから外しているため未構築（今後の課題として実装は保持）。
     // disable_apps 部分のみ `DisableApps` タブへ切り出し済み（2026-08-26、
     // BUG-90）。残る force_text/force_bypass/force_vk/force_tsf は
@@ -364,6 +369,12 @@ fn main() -> eframe::Result<()> {
         std::process::exit(scancode_map_admin::run_elevated_worker(selection));
     }
 
+    // ADR-176 176-T9b: eframeのイベントループが同一スレッドで動き出す前に、
+    // 較正結果受信用のメッセージ専用ウィンドウを1回だけ作成する
+    // （`calibration_result_window`のモジュールdoc参照）。
+    #[cfg(target_os = "windows")]
+    calibration_result_window::create();
+
     let viewport = egui::ViewportBuilder::default()
         // 幅 760: サイドパネル(100) + 配列編集タブの最も幅を要する行（JIS 最上段
         // 13キー、ボタン min_size 40px + item_spacing 8px ≈ 616px）+ 余白/
@@ -515,6 +526,13 @@ struct SettingsApp {
     /// `recompute_diagnostics()`（`apply_autostart_toggle` 末尾からも呼ばれる）
     /// でのみ更新する（Opus敵対的レビュー指摘、2026-09-07）。
     auto_start_registered: bool,
+    calibration_state: calibration_panel::CalibrationPanelState,
+    /// 較正対象VKの内部表記（`engine_key_combo`が読み書きする文字列、
+    /// 例: "VK_NONCONVERT"）。
+    calibration_target_vk: String,
+    /// 計測中フォーカスを保持し続けるテキスト入力欄のバッファ
+    /// （中身は使わない、フォーカス保持だけが目的）。
+    calibration_text_buf: String,
 }
 
 /// バックグラウンドスレッドで実行する保存処理の結果。
@@ -538,6 +556,10 @@ enum PendingSaveResult {
 impl SettingsApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_fonts(&cc.egui_ctx);
+        // CLI引数でconfigパスが明示されている場合は自己修復しない（ADR-178 決定2）。
+        if cli_arg_config_path().is_none() {
+            ensure_default_config_exists();
+        }
         let config_path = find_config_path();
         let (config, config_load_state) = match awase::config::AppConfig::load(&config_path) {
             Ok(cfg) => (cfg, awase::config::ConfigLoadState::Loaded),
@@ -547,6 +569,16 @@ impl SettingsApp {
                 (default_config(), state)
             }
         };
+        // config_load_state == Loadedのときのみ発火する（round v14 B2対応）:
+        // 読み込みに失敗しdefault_config()にフォールバックした場合、
+        // GeneralConfig::default()のlayouts_dirは"config"（出荷値"layout"とは
+        // 別物、src/config.rs参照）であり、これを書き込み先に使うと
+        // %LOCALAPPDATA%\awase\config\に同梱6ファイルを誤生成してしまう。
+        if cli_arg_config_path().is_none()
+            && config_load_state == awase::config::ConfigLoadState::Loaded
+        {
+            ensure_default_layouts_exist(&config.general.layouts_dir);
+        }
         let available_layouts = scan_layout_names(&config.general.layouts_dir);
         let config_loaded_model = config.general.keyboard_model;
 
@@ -610,6 +642,9 @@ impl SettingsApp {
             startup_diagnostics: Vec::new(),
             // recompute_diagnostics() が直後に実体で上書きする。
             auto_start_registered: false,
+            calibration_state: crate::calibration_panel::CalibrationPanelState::Idle,
+            calibration_target_vk: "VK_NONCONVERT".to_string(),
+            calibration_text_buf: String::new(),
         };
         app.recompute_diagnostics();
         app
@@ -2773,6 +2808,158 @@ impl SettingsApp {
     }
 
     #[expect(clippy::too_many_lines)]
+    fn tab_calibration(&mut self, ui: &mut egui::Ui) {
+        use calibration_panel::CalibrationPanelState;
+
+        ui.heading("IMEキー較正");
+        ui.label(
+            "無変換/変換等のキーがGJI/MS-IMEで実際にIMEをON/OFFするか実機測定します。\n\
+             config1.db/レジストリの静的な分類だけでは判別できない環境向けです。",
+        );
+        ui.add_space(8.0);
+        ui.checkbox(
+            &mut self.config.general.apply_calibrated_mode_keys,
+            "確定した較正結果を実際のIME判定に反映する（自己責任）",
+        )
+        .on_hover_text(
+            "OFF(既定)の場合、較正を確定してconfig.tomlへ保存はしますが、\n\
+             実際のGJI/MS-IME自動検出結果を上書きしません（測定のみ、\n\
+             安全側）。ONにすると、確定した較正結果がGJI/MS-IME側の\n\
+             自動検出結果を実際に上書きするようになります。",
+        );
+        ui.add_space(8.0);
+
+        ui.horizontal(|ui| {
+            ui.label("対象キー");
+            engine_key_combo(
+                ui,
+                "calibration_vk",
+                &mut self.calibration_target_vk,
+                "較正対象のキー",
+            );
+        });
+
+        let vk = VkCode::from_name(&self.calibration_target_vk);
+        let blocked_reason = vk.and_then(|vk| {
+            awase_windows::state::calibrated_mode_key::explicit_config_conflict_reason(
+                vk,
+                &self.config.keys.ime_detect,
+                &self.config.keys.ime_on,
+                &self.config.keys.ime_off,
+                &self.config.keys.ime_toggle,
+            )
+        });
+        if let Some(reason) = blocked_reason {
+            ui.colored_label(egui::Color32::from_rgb(200, 120, 0), reason);
+        }
+
+        if matches!(
+            self.calibration_state,
+            CalibrationPanelState::WaitingFocus
+                | CalibrationPanelState::Measuring
+                | CalibrationPanelState::FocusLost
+        ) {
+            #[cfg(target_os = "windows")]
+            if let (Some(payload), Some(vk)) = (calibration_result_window::take_latest_result(), vk)
+                && payload.vk == vk
+            {
+                if payload.kind
+                    == awase_windows::calibration_ipc::CalibrationResultKind::ConfirmedOn
+                {
+                    persist_confirmed_calibration(
+                        &self.config_path,
+                        vk,
+                        payload.active_ime_kind,
+                        &mut self.config,
+                    );
+                }
+                self.calibration_state =
+                    calibration_panel::on_result_received(self.calibration_state, payload.kind);
+            }
+        }
+
+        ui.add_space(8.0);
+        let start_enabled =
+            blocked_reason.is_none() && self.calibration_state == CalibrationPanelState::Idle;
+        if ui
+            .add_enabled(start_enabled, egui::Button::new("較正開始"))
+            .clicked()
+            && let Some(vk) = vk
+        {
+            send_calibration_start(vk);
+            self.calibration_text_buf.clear();
+            self.calibration_state = calibration_panel::on_start_pressed(blocked_reason.is_some());
+        }
+
+        if matches!(
+            self.calibration_state,
+            CalibrationPanelState::Idle | CalibrationPanelState::Blocked
+        ) {
+            return;
+        }
+
+        ui.add_space(8.0);
+        match self.calibration_state {
+            CalibrationPanelState::WaitingFocus => {
+                ui.label("テキスト欄にフォーカスします…");
+            }
+            CalibrationPanelState::Measuring => {
+                ui.label(
+                    "計測中です。対象キーを押してください（IMEがONの状態で押すのが望ましいです）。",
+                );
+            }
+            CalibrationPanelState::FocusLost => {
+                ui.colored_label(
+                    egui::Color32::from_rgb(200, 60, 60),
+                    "テキスト入力欄からフォーカスが外れました。下のテキスト欄をクリックしてフォーカスを戻してください。",
+                );
+            }
+            CalibrationPanelState::Confirmed(
+                awase_windows::calibration_ipc::CalibrationResultKind::ConfirmedOn,
+            ) => {
+                ui.label("確定: このキーはIMEをONにします。");
+            }
+            CalibrationPanelState::Confirmed(
+                awase_windows::calibration_ipc::CalibrationResultKind::Rejected,
+            ) => {
+                ui.label(
+                    "判定不能でした（ONの状態で押すとOFFになる=単純なトグルキーである可能性が高い、または再現性のある結果が得られませんでした）。較正は保存されません。",
+                );
+            }
+            CalibrationPanelState::Idle | CalibrationPanelState::Blocked => {}
+        }
+
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut self.calibration_text_buf)
+                .desired_width(240.0)
+                .hint_text(""),
+        );
+        if self.calibration_state == CalibrationPanelState::WaitingFocus {
+            response.request_focus();
+        }
+        self.calibration_state =
+            calibration_panel::on_focus_changed(self.calibration_state, response.has_focus());
+
+        ui.add_space(4.0);
+        if matches!(
+            self.calibration_state,
+            CalibrationPanelState::WaitingFocus
+                | CalibrationPanelState::Measuring
+                | CalibrationPanelState::FocusLost
+        ) {
+            if ui.button("中止").clicked() {
+                send_calibration_end();
+                self.calibration_state = calibration_panel::on_cancel_or_close();
+            }
+        } else if matches!(self.calibration_state, CalibrationPanelState::Confirmed(_))
+            && ui.button("閉じる").clicked()
+        {
+            send_calibration_end();
+            self.calibration_state = calibration_panel::on_cancel_or_close();
+        }
+    }
+
+    #[expect(clippy::too_many_lines)]
     fn tab_app_rules(&mut self, ui: &mut egui::Ui) {
         ui.heading("アプリ別オーバーライド");
         ui.label(
@@ -3492,8 +3679,10 @@ impl SettingsApp {
             "OFF(既定)の場合、GJIのキーマップ設定（ATOKプリセット、または\n\
              カスタムキーマップでの同種の割当て）が無変換/変換/ひらがな/\n\
              カタカナキー単体に状態依存のIME ON/OFFトグルを割り当てていても、\n\
-             awaseはそれに追従せず、ログで警告のみ行います。ONにすると、\n\
-             その割当てをベストエフォートで反映します。\n\
+             awaseはIMEの開閉を代行せず、ログで警告のみ行います（生キーは\n\
+             GJIに届き、awaseは結果を読み取ってEngineを追従させます。\n\
+             IMMで読めるアプリのみ）。ONにすると、その割当てを\n\
+             ベストエフォートで反映します（awaseが代わりに開閉します）。\n\
              この種のトグルは非冪等（誤って発火すると意図せずIME状態が\n\
              反転する）なので、既定ではOFFにしています。\n\
              （On/Offの割当ては非冪等ではないため、この設定に関わらず\n\
@@ -3506,6 +3695,8 @@ impl SettingsApp {
         );
         ui.add_space(4.0);
         half_width_alnum_toggle_checkbox(ui, &mut self.config.general.half_width_alnum_toggle);
+        ui.add_space(4.0);
+        keystroke_sequence_checkbox(ui, &mut self.config.general.keystroke_sequence);
         ui.add_space(8.0);
         // n-gram はタイブレーク（3キー分岐・重なり不足判定・2キーしきい値の
         // 動的調整）に confirm_mode を問わず常に使われる（ngram_file が
@@ -3660,6 +3851,7 @@ impl eframe::App for SettingsApp {
                     (Tab::Advanced, "上級者向け設定"),
                     (Tab::DisableApps, "アプリ無効化"),
                     (Tab::Keymap, "ショートカット"),
+                    (Tab::Calibration, "IMEキー較正"),
                 ] {
                     if ui.selectable_label(self.active_tab == tab, label).clicked() {
                         self.clear_ime_on_tab_change(tab);
@@ -3732,6 +3924,7 @@ impl eframe::App for SettingsApp {
                     Tab::Keys => self.tab_keys(ui),
                     Tab::Keymap => self.tab_keymap(ui),
                     Tab::DisableApps => self.tab_disable_apps(ui),
+                    Tab::Calibration => self.tab_calibration(ui),
                     Tab::AppRules => self.tab_app_rules(ui),
                     Tab::Layout => self.tab_layout(ui),
                     Tab::Advanced => self.tab_advanced(ui),
@@ -3973,31 +4166,77 @@ impl SoloTapSuppressMode {
 /// 「左Shift単独タップで半角英数トグルを有効にする」チェックボックス。
 /// `Off`/`All`の二択として操作する（`MsImeOnly`はGUIからは選べない中間値、
 /// チェックボックスに触れなければ既存の`MsImeOnly`設定は変更されない）。
+/// 「二値enumをチェックボックス1個で切り替える」という、この画面に複数ある
+/// 定型パターンの共通実装。`on_value`/`off_value` のどちらでもない中間値
+/// （例: `HalfWidthAlnumTogglePolicy::MsImeOnly`）を持つ enum でも、チェック
+/// 済み判定は `*policy == on_value` のみで行うため、中間値は「未チェック」
+/// 側に表示されるだけで壊れない（ユーザーがチェックボックスを操作しない限り
+/// 値は変わらない）。
+fn enum_toggle_checkbox<T: Copy + PartialEq>(
+    ui: &mut egui::Ui,
+    policy: &mut T,
+    on_value: T,
+    off_value: T,
+    label: &str,
+    hover_text: &str,
+) {
+    let mut enabled = *policy == on_value;
+    if ui
+        .checkbox(&mut enabled, label)
+        .on_hover_text(hover_text)
+        .changed()
+    {
+        *policy = if enabled { on_value } else { off_value };
+    }
+}
+
 fn half_width_alnum_toggle_checkbox(
     ui: &mut egui::Ui,
     policy: &mut awase::config::HalfWidthAlnumTogglePolicy,
 ) {
-    let mut enabled = *policy == awase::config::HalfWidthAlnumTogglePolicy::All;
-    if ui
-        .checkbox(
-            &mut enabled,
-            "左Shift単独タップで半角英数トグルを有効にする",
-        )
-        .on_hover_text(
-            "ONにすると: 左Shiftキーを他のキーを介さずに単独でタップすると、\n\
-             IMEをONにしたまま半角英数入力に切り替わります（もう一度タップ、\n\
-             または右Shiftタップで解除）。MS-IME・Google 日本語入力の\n\
-             両方で有効になります（実機ソーク中の機能、BUG-25 参照）。\n\
-             OFFにすると: この機能全体を無効化します。",
-        )
-        .changed()
-    {
-        *policy = if enabled {
-            awase::config::HalfWidthAlnumTogglePolicy::All
-        } else {
-            awase::config::HalfWidthAlnumTogglePolicy::Off
-        };
-    }
+    enum_toggle_checkbox(
+        ui,
+        policy,
+        awase::config::HalfWidthAlnumTogglePolicy::All,
+        awase::config::HalfWidthAlnumTogglePolicy::Off,
+        "左Shift単独タップで半角英数トグルを有効にする",
+        "ONにすると: 左Shiftキーを他のキーを介さずに単独でタップすると、\n\
+         IMEをONにしたまま半角英数入力に切り替わります（もう一度タップ、\n\
+         または右Shiftタップで解除）。MS-IME・Google 日本語入力の\n\
+         両方で有効になります（実機ソーク中の機能、BUG-25 参照）。\n\
+         OFFにすると: この機能全体を無効化します。",
+    );
+}
+
+/// 打鍵列機能（`.yab` の `CtrlChord`/`InlineSequence`/`MacroRef`、ADR-115）の
+/// 有効化チェックボックス。既定 On（2026-09-13〜、ADR-115 決定8追補）。
+/// `CV`+16進数2桁・セル内 `+` 区切り・`@`+マクロ名はいずれも偶然一致するには
+/// 十分特殊な文字列であり、`layout/nicola_kakutei.yab`（句読点で確定）を含め
+/// 素の目的で使われるのが通常のため常時有効にした。OFFはあくまで、この解釈
+/// 自体を望まないユーザー向けの明示的オプトアウト。
+fn keystroke_sequence_checkbox(
+    ui: &mut egui::Ui,
+    policy: &mut awase::config::KeystrokeSequencePolicy,
+) {
+    enum_toggle_checkbox(
+        ui,
+        policy,
+        awase::config::KeystrokeSequencePolicy::On,
+        awase::config::KeystrokeSequencePolicy::Off,
+        "打鍵列機能を有効にする",
+        "ON(既定)の場合: .yab の1セルに複数のキー操作を割り当てる打鍵列構文\n\
+         （Ctrl+キー送信・セル内 `+` 区切りの複数アクション・`@`マクロ参照）\n\
+         が有効です。例: 「レイアウト」で `nicola_kakutei.yab` を選ぶと、\n\
+         句読点「。」「、」を入力した直後に Ctrl+M（IME の全確定ショート\n\
+         カット）を送ります（やまぶき／DvorakJ の「句読点で確定」相当）。\n\
+         確定に使う Ctrl+M は使用する IME（Google 日本語入力/MS-IME）側で\n\
+         「全確定」に割り当てられている必要があります。他のアプリで\n\
+         Ctrl+M が別機能に割り当てられている場合は競合します。\n\
+         OFFにすると: この構文（`CV`+16進数2桁・セル内 `+`・`@`マクロ）を\n\
+         解釈せず、セルの生テキストをそのままリテラル文字列として扱う\n\
+         （打鍵列機能導入前の挙動）に戻します。この構文の解釈自体を\n\
+         望まない場合のみ OFF にしてください。",
+    );
 }
 
 /// 無変換/変換キー単独タップの抑制方針コンボボックス。`key_label`は
@@ -5239,15 +5478,56 @@ fn empty_yab_layout() -> YabLayout {
 /// しまい、「設定画面で保存しても awase.exe に反映されない」という実機バグの
 /// 原因になる（2026-07-19 に実際に発生し確認済み）。
 fn find_config_path() -> std::path::PathBuf {
+    cli_arg_config_path().unwrap_or_else(|| awase::paths::resolve_relative_to_exe("config.toml"))
+}
+
+/// CLI引数でconfigパスが明示されていればそれを返す（`--flag`/`--flag value`
+/// 形式はスキップ）。`ensure_default_config_exists`を呼んでよいかどうかの
+/// 判定（ADR-178 決定2、CLI指定時は自己修復しない）に`find_config_path`とは
+/// 独立して使う——`find_config_path`自体は`update_check.rs`やテストコード
+/// からも呼ばれるため、そちらに自己修復を仕込むと意図しない箇所で発火する。
+fn cli_arg_config_path() -> Option<std::path::PathBuf> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         if arg.starts_with("--") {
             let _ = args.next(); // value をスキップ
             continue;
         }
-        return std::path::PathBuf::from(arg);
+        return Some(std::path::PathBuf::from(arg));
     }
-    awase::paths::resolve_relative_to_exe("config.toml")
+    None
+}
+
+/// 開発ビルドかどうかを判定する（ADR-178 決定2）。実体は
+/// `awase::paths::is_dev_build()`（`resolve_relative_to_exe`のワークスペース
+/// ルート解決と同じ判定基準を共有する、ADR-178 v14 opusレビューM6対応
+/// ——旧実装は`crates/awase-windows/src/app/mod.rs::is_dev_build`との2クレート
+/// 重複だった）。
+fn is_dev_build() -> bool {
+    awase::paths::is_dev_build()
+}
+
+/// `config.toml`が実行ファイルの隣に無ければ、埋め込み既定値から生成する
+/// （ADR-178 決定2）。
+/// `current_exe()`の親ディレクトリ。開発ビルドではないことを呼び出し元が
+/// 保証していること（`is_dev_build()`）。
+fn exe_dir() -> Option<std::path::PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(std::path::Path::to_path_buf))
+}
+
+fn ensure_default_config_exists() {
+    if is_dev_build() {
+        return;
+    }
+    let Some(exe_dir) = exe_dir() else {
+        return;
+    };
+    let config_path = exe_dir.join("config.toml");
+    if let Err(e) = awase::config::ensure_config_exists(&config_path) {
+        tracing::warn!("Failed to create default config.toml: {e}");
+    }
 }
 
 /// `layouts_dir` を解決する。実行ファイル隣・`cargo run` 時のワークスペース
@@ -5256,6 +5536,27 @@ fn find_config_path() -> std::path::PathBuf {
 /// ワークスペースルート直下の `layout/` を見つけられなかった）。
 fn resolve_layouts_dir(layouts_dir: &str) -> std::path::PathBuf {
     awase::paths::resolve_relative_to_exe(layouts_dir)
+}
+
+/// `layouts_dir_raw`（`config.general.layouts_dir`の生文字列）に有効な
+/// `.yab`が1本も無ければ、同梱6ファイルを埋め込み既定値から生成する
+/// （ADR-178 決定2）。生成先は`exe_dir.join(layouts_dir_raw)`に固定し、
+/// `resolve_layouts_dir()`（＝`resolve_relative_to_exe`）の結果を使わない
+/// ——exe隣に存在しない場合はCWD相対の裸パスへフォールバックするため、
+/// 生成前に呼ぶと生成先がCWD相対になってしまう（`crates/awase-windows/src/app/mod.rs::ensure_default_layouts_exist`
+/// で2026-09-17の実機検証により確認した実害と同型）。呼び出し元はこの
+/// 関数の**後**で`resolve_layouts_dir`を呼んで読み取り先を解決すること。
+fn ensure_default_layouts_exist(layouts_dir_raw: &str) {
+    if is_dev_build() {
+        return;
+    }
+    let Some(exe_dir) = exe_dir() else {
+        return;
+    };
+    let target_dir = exe_dir.join(layouts_dir_raw);
+    if let Err(e) = awase::config::ensure_layouts_exist(&target_dir) {
+        tracing::warn!("Failed to create default layout files: {e}");
+    }
 }
 
 /// `dir` 内の全 `.yab` を読込失敗（UTF-8デコード失敗含む）と
@@ -5483,6 +5784,113 @@ fn send_reload_config_message() {
     }
 }
 
+/// ADR-176（T9a確定結果のconfig.toml永続化、最終配線）: 較正が`ConfirmedOn`
+/// で確定したら、`awase_windows::gji_charset_autodetect::build_confirmed_
+/// calibration_entry`でエントリを構築し、config.tomlへ書き込んで
+/// awase.exeへリロード要求を送る。
+///
+/// **意図的にconfig.tomlを直接読み直して書く**（`config`引数=UIの
+/// 編集中in-memory状態は使わない）——ユーザーが他のタブで未保存の編集を
+/// している最中に較正が確定しても、その未保存編集を巻き込んで保存
+/// しないようにするため。書き込み後、`config.calibration`だけは
+/// UIの`config`にも反映しておく（次にユーザーが通常の保存操作をしても
+/// この較正結果が失われないように）。
+#[cfg(target_os = "windows")]
+fn persist_confirmed_calibration(
+    config_path: &std::path::Path,
+    vk: awase::types::VkCode,
+    active_ime_kind: awase_windows::state::ime_kind::ImeKindId,
+    config: &mut awase::config::AppConfig,
+) {
+    let Some(entry) = awase_windows::gji_charset_autodetect::build_confirmed_calibration_entry(
+        vk,
+        active_ime_kind,
+    ) else {
+        tracing::warn!(
+            "[calibration] vk={vk:?}（active_ime_kind={active_ime_kind:?}）の\
+             較正結果を保存できませんでした（対象外のキー、または\
+             config1.db/レジストリを読めませんでした）"
+        );
+        return;
+    };
+
+    let mut on_disk = match awase::config::AppConfig::load(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("[calibration] config.tomlの再読み込みに失敗しました: {e}");
+            return;
+        }
+    };
+    on_disk.calibration.retain(|e| e.vk != entry.vk);
+    on_disk.calibration.push(entry.clone());
+    if let Err(e) = on_disk.save(config_path) {
+        tracing::warn!("[calibration] config.tomlへの較正結果の保存に失敗しました: {e}");
+        return;
+    }
+    tracing::info!("[calibration] vk={vk:?}の較正結果をconfig.tomlへ保存しました");
+
+    config.calibration.retain(|e| e.vk != entry.vk);
+    config.calibration.push(entry);
+
+    send_reload_config_message();
+}
+
+/// ADR-176 176-T7: 較正モード開始/再武装（keepalive）要求を送る。
+/// `vk`のみを引数に取り、送信元PIDは自プロセスの`std::process::id()`を使う。
+fn send_calibration_start(vk: awase::types::VkCode) {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+        use windows::core::w;
+        unsafe {
+            let hwnd = FindWindowW(w!("awase_tray_window"), None);
+            if let Ok(hwnd) = hwnd {
+                let payload = awase_windows::calibration_ipc::CalibrationIpcPayload {
+                    vk,
+                    pid: std::process::id(),
+                };
+                let wparam = windows::Win32::Foundation::WPARAM(
+                    awase_windows::calibration_ipc::pack(payload),
+                );
+                let lparam = windows::Win32::Foundation::LPARAM(0);
+                let _ = PostMessageW(hwnd, awase_windows::WM_CALIBRATION_START, wparam, lparam);
+            } else {
+                tracing::warn!(
+                    "較正モード開始通知の送信先ウィンドウ (awase_tray_window) が見つかりません。\
+                     awase.exe が起動していないか、権限レベルが異なる可能性があります。"
+                );
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = vk;
+    }
+}
+
+/// ADR-176 176-T7: 較正モード終了要求を送る。
+fn send_calibration_end() {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+        use windows::core::w;
+        unsafe {
+            let hwnd = FindWindowW(w!("awase_tray_window"), None);
+            if let Ok(hwnd) = hwnd {
+                let payload = awase_windows::calibration_ipc::CalibrationIpcPayload {
+                    vk: awase::types::VkCode::from(0u16),
+                    pid: std::process::id(),
+                };
+                let wparam = windows::Win32::Foundation::WPARAM(
+                    awase_windows::calibration_ipc::pack(payload),
+                );
+                let lparam = windows::Win32::Foundation::LPARAM(0);
+                let _ = PostMessageW(hwnd, awase_windows::WM_CALIBRATION_END, wparam, lparam);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod layout_tab_repro {
     use super::{
@@ -5554,6 +5962,9 @@ mod layout_tab_repro {
             scancode_map_last_message: None,
             startup_diagnostics: Vec::new(),
             auto_start_registered: false,
+            calibration_state: crate::calibration_panel::CalibrationPanelState::Idle,
+            calibration_target_vk: "VK_NONCONVERT".to_string(),
+            calibration_text_buf: String::new(),
         }
     }
 

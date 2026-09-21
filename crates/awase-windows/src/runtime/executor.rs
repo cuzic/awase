@@ -12,7 +12,7 @@
 use std::collections::VecDeque;
 
 use awase::engine::{
-    Decision, Effect, ImeEffect, InputEffect, InputModeState, TimerEffect, UiEffect,
+    Decision, Effect, ImeEffect, InputEffect, InputModeState, SetOpenOrigin, TimerEffect, UiEffect,
 };
 use awase::platform::{PlatformRuntime, TsfComposition};
 use awase::types::RawKeyEvent;
@@ -167,6 +167,34 @@ pub(crate) fn strip_ime_set_open_if_settling(
     tracing::debug!(
         "[focus-settle] SetOpen({target}) effect stripped from decision \
          (focus transition barrier still settling)"
+    );
+    Some(target)
+}
+
+/// ADR-179決定2: `ModeKeyActuationOwner::PhysicalDelivery`のとき、
+/// `ActivationSync`由来の`SetOpen` effectを`decision.effects`から取り除く。
+/// 明示actuate（`kp_stage_shadow_ime_toggle`側で別途ゲート済み）と、この
+/// `ActivationSync`自動echoの両方を止めることで、awase側の送信をゼロに
+/// する——実IME状態の変更はGJI/MS-IME自身の物理キー反応にのみ委ねる
+/// 設計のため。
+///
+/// **`strip_ime_set_open_if_settling`とは意図的に別関数にする**
+/// （ADR-179「消費点」節）: settleは一時的な保留であり明けたら
+/// `schedule_settle_retry`で再試行するが、`PhysicalDelivery`のstripは
+/// 恒久的にawase側からは送らない設計であり、再試行を呼んではならない。
+pub(crate) fn strip_activation_sync_set_open_for_physical_delivery(
+    decision: &mut Decision,
+) -> Option<bool> {
+    let (target, origin) = decision.find_ime_set_open_with_origin()?;
+    if origin != SetOpenOrigin::ActivationSync {
+        return None;
+    }
+    decision
+        .effects_mut()
+        .retain(|e| !matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })));
+    tracing::debug!(
+        "[mode-key-actuation] PhysicalDelivery: ActivationSync由来のSetOpen({target}) \
+         effectを除去（物理キー配送のみに委ねる、awase側の送信ゼロ）"
     );
     Some(target)
 }
@@ -771,6 +799,25 @@ impl DecisionExecutor {
         }
         // send_engine_state_ime_key に渡す applied 値をトレイトオブジェクト取得前に確定する。
         let applied_for_engine_key = self.applied_snapshot.applied_open();
+        if let Effect::Input(InputEffect::SendKeys(actions)) = &effect {
+            let passes_mode_key = actions.iter().any(|action| {
+                matches!(
+                    action,
+                    awase::types::KeyAction::Key(vk) if crate::vk::is_convert_or_nonconvert(*vk)
+                )
+            });
+            if passes_mode_key {
+                let now = crate::hook::current_tick_ms();
+                ime.arm_mode_key_pass_mark(now);
+                platform.timer.set(
+                    crate::TIMER_IME_REFRESH,
+                    std::time::Duration::from_millis(20),
+                );
+                tracing::info!(
+                    "[mode-key-follow] mode key sent through FSM: IME refresh scheduled (20ms)"
+                );
+            }
+        }
         let platform_rt: &mut dyn PlatformRuntime = platform;
         match effect {
             Effect::Input(ie) => match ie {
@@ -812,7 +859,7 @@ impl DecisionExecutor {
     ///
     /// `ImmCrossProcessStrategy` が現在のコンテキストで最初に適用可能な場合は
     /// `win32_async::spawn_local` で非同期実行し `None` を返す（spawn 済み）。
-    /// それ以外（GjiDirect / KanjiToggle 経路）はキー注入のみで非ブロッキングなため
+    /// それ以外（GjiDirect / MsImeDirect 経路）はキー注入のみで非ブロッキングなため
     /// 既存の同期 chain を維持し、`Some(..)` を返す。
     #[tracing::instrument(level = "debug", skip_all, fields(open = open, ?generation))]
     fn dispatch_ime_set_open(
@@ -1051,17 +1098,18 @@ impl DecisionExecutor {
         use awase::platform::ImeOpenOutcome;
         if matches!(
             outcome,
-            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned
+            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned | ImeOpenOutcome::Unwarranted
         ) {
             return;
         }
         let effective = match outcome {
             ImeOpenOutcome::Applied
-            | ImeOpenOutcome::FallbackSent
             | ImeOpenOutcome::AppliedWithoutSendInput
             | ImeOpenOutcome::AlreadyMatched => open,
             ImeOpenOutcome::Failed => !open,
-            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned => unreachable!(),
+            ImeOpenOutcome::UnsafeToToggle
+            | ImeOpenOutcome::NotOwned
+            | ImeOpenOutcome::Unwarranted => unreachable!(),
         };
         self.applied_snapshot = crate::state::AppliedImeState::Confirmed {
             open: effective,
@@ -1368,5 +1416,60 @@ mod tests {
             stripped.is_some(),
             "SetOpen を握りつぶしたら再試行が必要という事実を呼び出し元へ伝える"
         );
+    }
+
+    // ── strip_activation_sync_set_open_for_physical_delivery (ADR-179決定2) ──
+
+    fn set_open_effect_with_origin(open: bool, origin: SetOpenOrigin) -> Effect {
+        Effect::Ime(ImeEffect::SetOpen { open, origin })
+    }
+
+    // ActivationSync 由来の SetOpen effect は除去され、除去した目標値が返る。
+    #[test]
+    fn physical_delivery_strip_removes_activation_sync_set_open() {
+        let mut decision = Decision::consumed_with(
+            vec![set_open_effect_with_origin(
+                false,
+                SetOpenOrigin::ActivationSync,
+            )]
+            .into(),
+        );
+        let stripped = super::strip_activation_sync_set_open_for_physical_delivery(&mut decision);
+        assert!(
+            decision.find_ime_set_open().is_none(),
+            "ActivationSync 由来の SetOpen は除去される"
+        );
+        assert_eq!(stripped, Some(false));
+    }
+
+    // ExplicitUserAction 由来（明示actuate）は対象外——このstripは
+    // ActivationSyncの自動echoだけを狙う。明示actuate自体は
+    // kp_stage_shadow_ime_toggle側のowner gateで既に止まっているはず
+    // だが、万一残っていても誤って握り潰さないことを固定する。
+    #[test]
+    fn physical_delivery_strip_ignores_explicit_user_action_set_open() {
+        let mut decision = Decision::consumed_with(
+            vec![set_open_effect_with_origin(
+                false,
+                SetOpenOrigin::ExplicitUserAction,
+            )]
+            .into(),
+        );
+        let stripped = super::strip_activation_sync_set_open_for_physical_delivery(&mut decision);
+        assert_eq!(
+            decision.find_ime_set_open(),
+            Some(false),
+            "ExplicitUserAction 由来は保持される"
+        );
+        assert_eq!(stripped, None);
+    }
+
+    // SetOpen effect が無ければ何もしない。
+    #[test]
+    fn physical_delivery_strip_returns_none_when_no_set_open_effect() {
+        let mut decision =
+            Decision::consumed_with(vec![Effect::Timer(TimerEffect::Kill(0))].into());
+        let stripped = super::strip_activation_sync_set_open_for_physical_delivery(&mut decision);
+        assert_eq!(stripped, None);
     }
 }

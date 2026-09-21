@@ -16,7 +16,7 @@ use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS, WM_KANA_LOCK_WARNING_CHANGED};
 use awase::engine::{Effect, InputEffect, InputModeState, KanaLockStreak, WarnAction};
 use awase::platform::TsfComposition as _;
-use awase::types::{KeyAction, KeyEventType, RawKeyEvent, ShadowImeAction};
+use awase::types::{KeyAction, KeyEventType, ModeKeyActuationOwner, RawKeyEvent, ShadowImeAction};
 
 /// Shadow IME トグルの意図ソース (この pipeline 内のローカル routing 用)。
 #[derive(Debug, Clone, Copy)]
@@ -445,6 +445,22 @@ impl Runtime {
             // （2026-07-08: GjiFsm が resync できず「このせっけい」の文字欠落に至った実機ログから判明）。
             self.schedule_settle_retry("SetOpen stripped from kp_run_inner decision");
         }
+        // ADR-179決定2、消費点2: `PhysicalDelivery`のとき`ActivationSync`
+        // 由来のSetOpen effectを取り除く。`shadow_toggled`
+        // （この打鍵自身が実際にIME ON/OFFを変化させたか）を条件に含める
+        // ——`owner`単独条件だと、この打鍵とは無関係な観測駆動のbelief
+        // 変化（`kp_stage_focus_probe`/`kp_stage_idle_conv_check`）に
+        // 起因する`ActivationSync`まで誤って除去してしまう。上のsettle
+        // stripとは異なり`schedule_settle_retry`は呼ばない（恒久的に
+        // awase側からは送らない設計、`strip_activation_sync_set_open_
+        // for_physical_delivery`のdoc参照）。
+        if shadow_toggled
+            && event.ime_relevance.actuation_owner == ModeKeyActuationOwner::PhysicalDelivery
+        {
+            crate::runtime::executor::strip_activation_sync_set_open_for_physical_delivery(
+                &mut decision,
+            );
+        }
         let state_after = self.engine.debug_state_label();
         // 配送判断(physical)をここで一度だけ確定させ、KeyInput journal 記録と
         // kp_stage_execute の実処理の両方に同じ値を渡す（BUG-90 調査: 以前は
@@ -480,10 +496,13 @@ impl Runtime {
             half_width_alnum_toggle_before,
             is_configured_thumb_key,
         );
-        self.platform_state
-            .ime
-            .journal
-            .record(crate::journal::JournalEntry::KeyInput {
+        // ADR-169: JournalEntry::KeyInput の本番構築点はここ1箇所のみ
+        // （`tests/architecture_guard.rs` の出現数固定テストで保証）。
+        // OS auto-repeat の畳み込み判定に使う `was_down` は
+        // `event.was_down`（`hook.rs::HOOK_STATE.physical_key_state` の
+        // `swap` 由来、capture時点のスナップショット）をそのまま使う。
+        self.platform_state.ime.journal.record_key_input(
+            crate::journal::JournalEntry::KeyInput {
                 event: crate::journal::KeyEventSummary::from_raw(&event),
                 state_before,
                 state_after,
@@ -491,7 +510,15 @@ impl Runtime {
                 physical: crate::journal::PhysicalDispositionSummary::new(
                     physical.suppress_reason(&event, profile),
                 ),
-            });
+                // プレースホルダー値: record_key_input() が
+                // MergeIntoPrevious/NewEntry いずれの経路でも上書きするため
+                // ここでの実際の値は意味を持たない（呼び出し規約）。
+                repeat_count: 1,
+                last_timestamp_us: event.timestamp,
+                last_elapsed_ms: 0,
+            },
+            event.was_down,
+        );
 
         self.kp_stage_post_decision(&decision, &event, focus_transition_was_pending);
 
@@ -1096,60 +1123,18 @@ impl Runtime {
                 );
                 true
             }
-            EngineSync::DirectInput => {
-                tracing::info!("[idle-conv-check] TsfNative: ObservedEisu 検出 → DirectInput (conv=0x{conv:08X})");
-                false
-            }
         };
         self.platform.timer.kill(TIMER_IME_REFRESH);
         let generation = self.platform_state.ime.allocate_event_generation();
-        if matches!(engine, EngineSync::DirectInput) {
-            // DirectInput: desired_open=false の belief 書き込みが
-            // is_eligible_for_ime_force_on() 経由で force-ON 3経路（ADR-086
-            // conv_mode_policy=force 実機ソーク中の経路含む）・
-            // last_user_explicit_off_ms・from_explicit_off_intent を支えている
-            // load-bearing な書き込みのため、従来どおり handle_engine_set_open を使う
-            // （BUG-51 追補 v3 pre-mortem #2、「なぜ DirectInput を変えないか」）。
-            self.platform_state
-                .ime
-                .handle_engine_set_open(target, false, false, generation, now_tick);
-            // conv の英数モード観測は IME-ON の確証。direct belief で already_matched を
-            // バイパスして apply する。
-            let belief = crate::output::OpenBelief {
-                effective_open: true,
-                confident: true,
-            };
-            // ADR-090 §2.A A-1（shadow）。
-            let order = self.issue_actuation_order(false, "idle_conv_check_direct_input");
-            let (outcome, mut record) = self
-                .platform
-                .apply_ime_open_with_belief(order, None, belief);
-            // /code-review指摘（PR #201 wave3）: この同期記録点は`caller`が
-            // 常に`None`のままで、`site=Sync`の他の呼び出し元と記録上区別
-            // できなかった（B-2、PR #201パターンに揃える）。
-            record.caller =
-                Some(crate::state::ime_actuation_decision::DecisionSite::IdleConvCheckDirectInput);
-            self.platform_state
-                .ime
-                .journal
-                .record(crate::journal::JournalEntry::ActuationDecision { record });
-            self.on_ime_apply_complete(
-                false,
-                outcome,
-                None,
-                crate::state::ime_event::OpenApplyReason::DriftCorrection,
-            );
-        } else {
-            // SetOpen(RomajiRecovered): conv 観測からの自動同期であり、ユーザーの
-            // 明示操作ではない。発火条件が effective_open==true を要求するため
-            // desired_open へ書くと desired_open := effective_open という循環 echo
-            // （ime_model.rs の EngineActivationSync arm が明文で禁じるパターン）に
-            // なる。BUG-48 の ActivationSync 経路（last_intent/desired_open/
-            // IntentStore を書かず actuation は同一）を使う（BUG-51 追補 v3）。
-            self.platform_state
-                .ime
-                .handle_engine_activation_sync(target, false, false, generation, now_tick);
-        }
+        // SetOpen(RomajiRecovered): conv 観測からの自動同期であり、ユーザーの
+        // 明示操作ではない。発火条件が effective_open==true を要求するため
+        // desired_open へ書くと desired_open := effective_open という循環 echo
+        // （ime_model.rs の EngineActivationSync arm が明文で禁じるパターン）に
+        // なる。BUG-48 の ActivationSync 経路（last_intent/desired_open/
+        // IntentStore を書かず actuation は同一）を使う（BUG-51 追補 v3）。
+        self.platform_state
+            .ime
+            .handle_engine_activation_sync(target, false, false, generation, now_tick);
     }
 
     /// ADR-153 決定1: 無変換/変換の明示config（`muhenkan_solo_tap_ime_action`/
@@ -1397,6 +1382,46 @@ impl Runtime {
         // 呼んでいた（間に belief を書き換える処理は無い）ため、1回にまとめる。
         let current = self.platform_state.ime.effective_open();
         let delegate_owned = delegate_armed && current;
+        // ADR-179決定2: `ModeKeyActuationOwner`を計算する唯一の場所
+        // （`tests/architecture_guard.rs`が書き込み箇所数を1に固定）。
+        // ここでは`delegate_armed`・`current`（ライブbelief）・
+        // `event.ime_relevance.sync_direction`/`shadow_action`が全て
+        // 手元に揃っている。
+        //
+        // `NotAModeKey`と`AwaseExplicit`は3判断とも同一挙動になるが、
+        // 将来ケースが増えたときに区別できるよう分けておく（統合しない、
+        // ADR-179「実装時に固定する」節参照）。
+        let is_target_vk = matches!(
+            event.vk_code,
+            crate::vk::VK_CONVERT | crate::vk::VK_NONCONVERT
+        );
+        let shadow_action_kind = event.ime_relevance.shadow_action;
+        let sync_direction_kind = event.ime_relevance.sync_direction;
+        event.ime_relevance.actuation_owner = if delegate_owned {
+            ModeKeyActuationOwner::FsmDelegate
+        } else if is_target_vk
+            && !crate::gji_charset_autodetect::is_configured_thumb_key(event.vk_code)
+            && matches!(
+                shadow_action_kind,
+                Some(ShadowImeAction::TurnOn | ShadowImeAction::TurnOff)
+            )
+        {
+            // 主条件（対象VK・On/Off分類・非親指キー設定）を満たす。
+            // `sync_direction`は修飾としてのみ扱う: 方向が食い違う場合は
+            // 保守的に`NotAModeKey`へ倒す（beliefと実IMEが逆方向に乖離し
+            // 恒久固着しうるため、ADR-179「ownerの定義」参照）。
+            match sync_direction_kind {
+                None => ModeKeyActuationOwner::PhysicalDelivery,
+                Some(sync) if Some(sync) == shadow_action_kind => {
+                    ModeKeyActuationOwner::PhysicalDelivery
+                }
+                Some(_) => ModeKeyActuationOwner::NotAModeKey,
+            }
+        } else if sync_direction_kind.is_none() && shadow_action_kind.is_some() {
+            ModeKeyActuationOwner::AwaseExplicit
+        } else {
+            ModeKeyActuationOwner::NotAModeKey
+        };
         // 同期キー (config sync_direction) > 物理 KANJI (Japanese 限定、GJI/
         // MS-IME自動検出由来のshadow_action) > ADR-153決定1の明示config
         // （`explicit_action_for_pipeline`、GJI/MS-IME自動検出とは独立）の
@@ -1582,7 +1607,6 @@ impl Runtime {
             } else {
                 action
             };
-            let mut half_width_restore_fired = false;
             if let Some(new_mode) = crate::state::eisu_recovery::eisu_reset_on_turn_on_while_open(
                 matches!(turn_on_direction, ShadowImeAction::TurnOn),
                 self.platform_state.ime.input_mode(),
@@ -1596,7 +1620,6 @@ impl Runtime {
                         "[shadow-toggle] TurnOn（半角英数トグルON中）→ トグルOFF処理へ委譲"
                     );
                     self.kp_restore_kana_from_half_width(false);
-                    half_width_restore_fired = true;
                 } else {
                     self.apply_input_mode_correction(
                         new_mode,
@@ -1607,36 +1630,6 @@ impl Runtime {
                         "[shadow-toggle] TurnOn (IME既にopen) + ObservedEisu → AssumedRomaji に \
                          リセット (UserTurnOnEisuReset)"
                     );
-                }
-            }
-            // ADR-121 D1（BUG-37部分対策）: 物理VK_DBE_HIRAGANAのTurnOn方向が
-            // belief一致でno-opになったとき、Blacklistプロファイル限定で
-            // VK_IME_ONの冪等な追加再送を1回試みる。`delegate_owned`の場合は
-            // 上のbelief書き込み自体が最初から行われておらず(この関数冒頭の
-            // `if !delegate_owned {...write...}`参照)、actuation責務がFSM
-            // delegate側にあるため対象外(D1はIntentKind::PhysicalImeKeyに
-            // 限定、"未解決のまま残る問題"節参照)。`kind ==
-            // IntentKind::PhysicalImeKey`のチェックが必須——VK_DBE_HIRAGANAが
-            // config `keys.ime_detect`等でsync keyとしても設定されている
-            // 場合、`intent_kind`解決順序(同期キー優先)により`kind ==
-            // IntentKind::SyncKey`になりうる(/code-review指摘、当初はこの
-            // 区別を欠いておりD1のスコープ限定コメントと実装が矛盾していた)。
-            // D2(auto-repeat時のデバウンス)は実機でVK_DBE_HIRAGANAの
-            // KeyDownがauto-repeatするか未確認のため、ADR-121が明記する
-            // 「最も安全な選択」に従い現時点ではデバウンスを新設しない——
-            // 実機確認後に必要と判明すれば追加する。
-            if !delegate_owned
-                && event.vk_code == crate::vk::VK_DBE_HIRAGANA
-                && action == ShadowImeAction::TurnOn
-                && matches!(kind, IntentKind::PhysicalImeKey)
-                && !self.can_use_imm32_cross_process()
-                && !half_width_restore_fired
-            {
-                if self.ime_apply_should_defer() {
-                    self.set_pending_explicit_reassert(new_val);
-                    self.schedule_settle_retry("explicit_key_reassert deferred (settling)");
-                } else {
-                    self.reassert_explicit_physical_key(new_val, tick_ms);
                 }
             }
             return false;
@@ -1673,20 +1666,36 @@ impl Runtime {
         }
 
         // ON→OFF の場合、OS IME を明示的に OFF にする。
-        // activation (inactive→active) が ImeEffect::SetOpen(true) を生成して OS IME を
-        // 強制 ON するのと対称な処理。deactivation は SetOpen(false) を生成しないため、
-        // TSF モード (WezTerm 等) では物理キー reinject だけでは OS IME が OFF にならない。
+        // 【2026-09-17 訂正、ADR-178 round4/round8】旧コメントは「deactivation は
+        // SetOpen(false) を生成しないため、このブロックが必要」としていたが誤り。
+        // `Engine::transition_activation`（`src/engine/engine.rs:456-475`）は
+        // `NotRomajiInput` の場合を除き、active→inactive 遷移でも
+        // `SetOpen(false, origin: ActivationSync)` を発行する（`transition_activation`
+        // の doc「active → inactive: OS IME を強制的に閉じる（対称性のため）」参照）。
+        // つまり `ActivationSync` 経由の自動 echo は deactivation 方向にも存在する。
+        // このブロックが必要な本当の理由は、TSF モード (WezTerm 等) では物理キー
+        // reinject だけでは OS IME が OFF にならない（IME 自身がこの物理キーに
+        // 反応して状態を変えるとは限らない）ため、awase 自身が明示的に actuate する
+        // 経路を用意する必要がある、という点にある。
         //
-        // Imm32Unavailable (Chrome/Edge) では VK_KANJI が唯一の IME クローズ手段であり、
-        // KanjiToggleStrategy が shadow_on (latch) を見て送信するかを決める。
-        // ここでは latch が true のうちに strategy chain を起動することで VK_KANJI が
-        // 確実に送られる。
+        // Imm32Unavailable (Chrome/Edge) では読み戻しができないため、latch が true の
+        // うちに strategy chain を起動して、冪等な直接キー送信へつなぐ。
         //
         // IMM クロスプロセス対応アプリ (WezTerm 等の TSF mode) は SendMessageTimeoutW を
         // 含む sync `set_ime_open_cross_process` がフック内で `with_app` 再入を引き起こす
         // ため、async に spawn_local + OutputActiveGuard で dispatch する。
-        // それ以外 (GjiDirect / KanjiToggle) は SendInput-only で非ブロッキングなので sync。
-        if !self.platform_state.ime.effective_open() {
+        // それ以外 (GjiDirect / MsImeDirect) は SendInput-only で非ブロッキングなので sync。
+        //
+        // ADR-179決定2: `PhysicalDelivery`のときはこの明示actuateを一切
+        // 発行しない——実IME状態の変更はGJI/MS-IME自身の物理キー反応に
+        // 委ね、awase側の送信をゼロにする設計。`FsmDelegate`はbeliefを
+        // 書かないため直前の no-op 早期returnで既にここへ到達しないが、
+        // 列挙値の意味を素直に反映するため明示的に除外する。
+        let owner_permits_explicit_off_actuate = !matches!(
+            event.ime_relevance.actuation_owner,
+            ModeKeyActuationOwner::FsmDelegate | ModeKeyActuationOwner::PhysicalDelivery
+        );
+        if !self.platform_state.ime.effective_open() && owner_permits_explicit_off_actuate {
             let view = self.shadow_ime_control_view();
             let imm_first =
                 crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
@@ -1932,6 +1941,8 @@ impl Runtime {
             tracing::debug!("may_change_ime key passed through → IME refresh scheduled (20ms)");
         }
 
+        self.kp_stage_mode_key_follow(decision, event);
+
         self.kp_stage_shift_conv_guard(event);
     }
 
@@ -1999,6 +2010,33 @@ impl Runtime {
                 );
             }
         });
+    }
+
+    /// ADR-187 follow: Engine OFF のとき、無変換/変換は FSM を通らず `PassThrough` 判定でそのまま OS へ渡る。
+    /// FSM 経由の送出（`executor::dispatch_effect` の `SendKeys`）と同じく、通過マークを立てて 20ms 後に
+    /// IME を読み直す（古い明示意図は観測の直後に捨てる、`ir_stage_observe`）。awase が既に IME キーとして
+    /// 扱う（`shadow_action` を持つ、opt-in の Toggle 等）キーは従来の経路に任せる。
+    /// `kp_stage_post_decision` の cognitive_complexity 上限のため別関数にしている。
+    fn kp_stage_mode_key_follow(
+        &mut self,
+        decision: &awase::engine::Decision,
+        event: &RawKeyEvent,
+    ) {
+        if decision.is_consumed()
+            || !matches!(event.event_type, KeyEventType::KeyDown)
+            || event.injected
+            || !crate::vk::is_convert_or_nonconvert(event.vk_code)
+            || event.ime_relevance.shadow_action.is_some()
+        {
+            return;
+        }
+        let now = hook::current_tick_ms();
+        self.platform_state.ime.arm_mode_key_pass_mark(now);
+        self.schedule_ime_refresh(20);
+        tracing::info!(
+            "[mode-key-follow] mode key PassThrough(vk=0x{:02X}): IME refresh scheduled (20ms)",
+            event.vk_code.0
+        );
     }
 
     /// 左Shift単独タップによる「IME-ON 半角英数」持続トグル判定
@@ -3081,6 +3119,7 @@ impl Runtime {
                                         ime.is_force_on_guard_active(),
                                         ime.input_mode(),
                                         ime.belief.prev_conversion_mode(),
+                                        app.platform.focus.process_name(),
                                     );
                                 if let Some(mode) = update.new_input_mode {
                                     use crate::state::ime_event::{

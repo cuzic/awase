@@ -9,8 +9,8 @@ use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 
 use crate::focus::class_names::is_tsf_native_window;
 use crate::imm::{
-    IMC_GETCONVERSIONMODE, IMC_GETOPENSTATUS, IMC_SETCONVERSIONMODE, IMC_SETOPENSTATUS,
-    IME_CMODE_FULLSHAPE, IME_CMODE_KATAKANA, IME_CMODE_NATIVE, IME_CMODE_ROMAN,
+    ActuateCmd, ProbeCmd, IME_CMODE_FULLSHAPE, IME_CMODE_KATAKANA, IME_CMODE_NATIVE,
+    IME_CMODE_ROMAN,
 };
 use crate::output::held_modifiers::HeldModifiers;
 use crate::state::conv_after_open::ConvAfterOpenId;
@@ -83,7 +83,7 @@ pub unsafe fn set_ime_open_for_target(hwnd: HWND, open: bool) -> bool {
     // 維持し、Set 系のみ余裕を持たせる。
     let t_send = std::time::Instant::now();
     let success =
-        unsafe { crate::imm::send_ime_control(ime_wnd, IMC_SETOPENSTATUS, isize::from(open), 150) }
+        unsafe { crate::imm::actuate_ime_control(ime_wnd, ActuateCmd::SetOpenStatus(open), 150) }
             .is_some();
     let send_elapsed = t_send.elapsed();
     // 診断: Ctrl+無変換 で前文字消失調査用。タイムアウトに近いケースと partial commit の
@@ -96,148 +96,6 @@ pub unsafe fn set_ime_open_for_target(hwnd: HWND, open: bool) -> bool {
         send_elapsed.as_millis()
     );
     success
-}
-
-/// IMM32 クロスプロセス制御が使えないアプリ（Chrome/Edge 等）向け IME トグル実装。
-///
-/// `WM_IME_CONTROL` が効かない `Imm32Unavailable` アプリに対して `SendInput(VK_KANJI)` で IME をトグルする。
-///
-/// VK_KANJI はトグルキーのため **呼び出し元は last_applied_ime_on != desired を事前確認すること**。
-/// `dwExtraInfo` に `IME_KANJI_MARKER` を付けるため awase 自身のフックが再インターセプトしない
-/// （フック先頭の自己注入チェックで即パススルー、shadow toggle もスキップ）。
-///
-/// Ctrl/Shift/Alt が押下中の場合、VK_KANJI を bare（修飾なし）で届けるために先に KeyUp を注入し、
-/// 送信後も物理的に押下中の修飾キーは KeyDown で復元する。
-///
-/// 候補ウィンドウ表示中は VK_KANJI が候補窓に吸われて IME OFF に失敗する場合があるが、
-/// 以前の「Ctrl+Enter で候補確定後に VK_KANJI」方式は Chrome フォームを submit させる
-/// 副作用があったため廃止。GJI 環境では GjiDirectStrategy (VK_IME_OFF) が先行するため、
-/// この関数に到達するのは GJI 以外か GJI fallback 時のみ。
-///
-/// # Safety
-/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-// 変数名が意図的に似ているため similar_names を抑制する（gas_lctrl/gks_lctrl 等）。
-#[expect(clippy::similar_names)]
-pub unsafe fn post_kanji_toggle_to_focused() {
-    use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER};
-    use crate::vk::{
-        VK_CONTROL, VK_KANJI, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_RCONTROL, VK_RMENU, VK_RSHIFT,
-    };
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetKeyState};
-
-    let held = HeldModifiers::read();
-
-    // 診断: L/R 個別キー状態（VK_KANJI 受信時の Edge 挙動把握用）
-    // GetAsyncKeyState = 物理キー状態、GetKeyState = メッセージキュー処理済み状態。
-    let (
-        gas_lctrl,
-        gas_rctrl,
-        gks_ctrl,
-        gks_lctrl,
-        gks_rctrl,
-        gas_lshift,
-        gas_rshift,
-        gas_lalt,
-        gas_ralt,
-    ) = (
-        unsafe { GetAsyncKeyState(i32::from(VK_LCONTROL.0)) } < 0,
-        unsafe { GetAsyncKeyState(i32::from(VK_RCONTROL.0)) } < 0,
-        unsafe { GetKeyState(i32::from(VK_CONTROL.0)) } < 0,
-        unsafe { GetKeyState(i32::from(VK_LCONTROL.0)) } < 0,
-        unsafe { GetKeyState(i32::from(VK_RCONTROL.0)) } < 0,
-        unsafe { GetAsyncKeyState(i32::from(VK_LSHIFT.0)) } < 0,
-        unsafe { GetAsyncKeyState(i32::from(VK_RSHIFT.0)) } < 0,
-        unsafe { GetAsyncKeyState(i32::from(VK_LMENU.0)) } < 0,
-        unsafe { GetAsyncKeyState(i32::from(VK_RMENU.0)) } < 0,
-    );
-    tracing::debug!(
-        "[ime-fallback] key-state pre-send: \
-         ctrl(gas={} L={gas_lctrl} R={gas_rctrl}) \
-         gks(ctrl={gks_ctrl} L={gks_lctrl} R={gks_rctrl}) \
-         shift(gas={} L={gas_lshift} R={gas_rshift}) \
-         alt(gas={} L={gas_lalt} R={gas_ralt})",
-        held.ctrl,
-        held.shift,
-        held.alt
-    );
-
-    let mut inputs = Vec::with_capacity(8);
-    held.push_release(&mut inputs, IME_KANJI_MARKER);
-    inputs.push(make_key_input_ex(VK_KANJI, false, IME_KANJI_MARKER));
-    inputs.push(make_key_input_ex(VK_KANJI, true, IME_KANJI_MARKER));
-
-    // SAFETY: GetAsyncKeyState はスレッドセーフで任意のスレッドから呼び出せる。
-    let still = unsafe { held.push_restore(&mut inputs, IME_KANJI_MARKER) };
-
-    tracing::debug!(
-        "[ime-fallback] SendInput VK_KANJI toggle: \
-         release(ctrl={} shift={} alt={}) \
-         restore(ctrl={} shift={} alt={}) total={} events",
-        held.ctrl,
-        held.shift,
-        held.alt,
-        still.ctrl,
-        still.shift,
-        still.alt,
-        inputs.len()
-    );
-    let candidate_pre = crate::tsf::observer::gji_candidate_visible_now();
-    let t_send = std::time::Instant::now();
-    let sent = crate::win32::send_input_safe(&inputs);
-    let send_elapsed = t_send.elapsed();
-    let candidate_post = crate::tsf::observer::gji_candidate_visible_now();
-    tracing::debug!(
-        "[ime-fallback] SendInput VK_KANJI done: send_elapsed={}ms candidate_pre={candidate_pre} candidate_post={candidate_post} sent={sent}/{}",
-        send_elapsed.as_millis(),
-        inputs.len()
-    );
-    if sent as usize != inputs.len() {
-        tracing::warn!(
-            "[ime-fallback] SendInput(VK_KANJI) sent {sent}/{} events",
-            inputs.len()
-        );
-    }
-}
-
-/// 冪等 IME ON: VK_IME_ON (0x16) を送信して DirectInput → IME ON に切り替える。
-///
-/// GJI・MS-IME ともにネイティブに処理する Windows 標準キー。
-/// 既に ON の場合は no-op（冪等）。VK_KANJI トグルと異なり shadow desync の影響を受けない。
-///
-/// # Safety
-/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn post_ime_on_direct() {
-    // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
-    let _ = unsafe { send_ime_mode_key(crate::vk::VK_IME_ON) };
-}
-
-/// 冪等 IME OFF: VK_IME_OFF (0x1A) を送信して DirectInput（直接入力）へ移行する。
-///
-/// GJI・MS-IME ともにネイティブに処理する Windows 標準キー。
-/// 既に DirectInput の場合は no-op（冪等）。VK_KANJI トグルと異なり shadow desync の影響を受けない。
-/// Chrome/Edge など Imm32Unavailable アプリは VK_IME_OFF を無視するため KanjiToggleStrategy が担当する。
-///
-/// # Safety
-/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn post_ime_off_direct() {
-    // SAFETY: send_ime_mode_key は Win32 API を呼び出す unsafe fn。
-    let _ = unsafe { send_ime_mode_key(crate::vk::VK_IME_OFF) };
-}
-
-/// GJI 専用 IME ON（後方互換エイリアス）。新規コードは `post_ime_on_direct` を使うこと。
-///
-/// # Safety
-/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn post_gji_ime_on() {
-    unsafe { post_ime_on_direct() }
-}
-
-/// GJI 専用 IME OFF（後方互換エイリアス）。新規コードは `post_ime_off_direct` を使うこと。
-///
-/// # Safety
-/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-pub unsafe fn post_gji_ime_off() {
-    unsafe { post_ime_off_direct() }
 }
 
 /// IME モード切り替えキーを `SendInput` で送信する。
@@ -254,7 +112,7 @@ pub unsafe fn post_gji_ime_off() {
 /// その Ctrl がまだ OS に保持されている瞬間）、修飾なしで mode key を届けるために
 /// 先に KeyUp を注入し、送信後に物理的に押下中の修飾キーは KeyDown で復元する。
 /// これを行わないと OS/IME/アプリが `Ctrl+<mode key>` の組み合わせとして解釈し、
-/// 想定外のショートカット発火を招く（`post_kanji_toggle_to_focused` と同じ理由）。
+/// 想定外のショートカット発火を招く。
 ///
 /// 戻り値: 実際に注入した場合 `true`。Win キー押下中でスキップした場合 `false`。
 /// **呼び出し元は `false` を「apply していない」として扱うこと** — スキップを
@@ -467,8 +325,15 @@ unsafe fn get_ime_conversion_mode_for_hwnd(hwnd: HWND, timeout_ms: u32) -> Optio
     let ime_wnd = ime_wnd?;
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
     //         send_ime_control は SendMessageTimeoutW のラッパーで、timeout_ms 内に制御が戻ることが保証される。
-    unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, timeout_ms) }
-        .map(|v| v as u32)
+    unsafe {
+        crate::imm::probe_ime_control(
+            ime_wnd,
+            ProbeCmd::GetConversionMode,
+            timeout_ms,
+            crate::imm::SendHealthFeed::Record,
+        )
+    }
+    .map(|v| v as u32)
 }
 
 /// フォアグラウンドウィンドウのクラス名を返す（H1 診断ログ専用）。
@@ -509,7 +374,14 @@ unsafe fn modify_conv_mode(
 ) -> Option<(u32, u32, bool, bool)> {
     // SAFETY: ime_wnd は呼び出し元が get_ime_wnd から取得した有効な IME ウィンドウハンドル。
     //         タイムアウト 50ms 内に制御が戻ることが保証される。
-    let current = unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) }?;
+    let current = unsafe {
+        crate::imm::probe_ime_control(
+            ime_wnd,
+            ProbeCmd::GetConversionMode,
+            50,
+            crate::imm::SendHealthFeed::Record,
+        )
+    }?;
     let conv = current as u32;
     let new_conv = f(conv);
     if new_conv == conv {
@@ -518,7 +390,7 @@ unsafe fn modify_conv_mode(
     // SAFETY: ime_wnd は呼び出し元が get_ime_wnd から取得した有効な IME ウィンドウハンドル。
     //         new_conv は取得した conv を f で変換した値であり有効な変換モード値。
     let success = unsafe {
-        crate::imm::send_ime_control(ime_wnd, IMC_SETCONVERSIONMODE, new_conv as isize, 50)
+        crate::imm::actuate_ime_control(ime_wnd, ActuateCmd::SetConversionMode(new_conv), 50)
     }
     .is_some();
     Some((conv, new_conv, true, success))
@@ -548,7 +420,14 @@ unsafe fn detect_ime_open_for_hwnd(hwnd: HWND) -> Option<bool> {
     let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) }?;
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
     //         タイムアウト 50ms 付きで呼び出しているため応答なしプロセスでもブロックしない。
-    let result = unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETOPENSTATUS, 0, 50) }?;
+    let result = unsafe {
+        crate::imm::probe_ime_control(
+            ime_wnd,
+            ProbeCmd::GetOpenStatus,
+            50,
+            crate::imm::SendHealthFeed::Record,
+        )
+    }?;
     tracing::trace!("CrossProcess(hwndFocus): ime_wnd={ime_wnd:?} open={result}");
     Some(result != 0)
 }
@@ -559,7 +438,15 @@ unsafe fn detect_ime_conversion_for_hwnd(hwnd: HWND) -> Option<u32> {
     let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) }?;
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
     //         タイムアウト 50ms 付きで呼び出しているため応答なしプロセスでもブロックしない。
-    unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 50) }.map(|v| v as u32)
+    unsafe {
+        crate::imm::probe_ime_control(
+            ime_wnd,
+            ProbeCmd::GetConversionMode,
+            50,
+            crate::imm::SendHealthFeed::Record,
+        )
+    }
+    .map(|v| v as u32)
 }
 
 unsafe fn detect_kana_for_hwnd(hwnd: HWND) -> Option<bool> {
@@ -616,6 +503,14 @@ pub struct ImeSnapshot {
     /// TSF ネイティブウィンドウのため検出をスキップした（true = IMM32 未使用）。
     /// タイムアウト等の一時的失敗と区別し、miss_count を増やさないために使う。
     pub is_tsf_native: bool,
+    /// 観測対象ウィンドウのクラス名（`None` = フォーカスウィンドウ不明）。
+    ///
+    /// `classify_ime_snapshot` の呼び出し元が「この観測はawase自身のUI
+    /// （トレイ／設定画面）を読んだものではないか」を判定するための付随情報
+    /// （`focus::class_names::is_own_ui_window`、BUG-106追補3・4）。
+    /// 新しい Win32 呼び出しは増えない — `read_ime_state_full` が既に計算している
+    /// クラス名を保持するだけ。
+    pub focused_class: Option<String>,
 }
 
 /// `read_ime_state_full` をワーカースレッドでタイムアウト付きで実行する。
@@ -640,6 +535,7 @@ pub unsafe fn read_ime_state_full_with_timeout(timeout: std::time::Duration) -> 
                 is_romaji: None,
                 conversion_mode: None,
                 is_tsf_native: false,
+                focused_class: None,
             }
         },
     )
@@ -676,21 +572,20 @@ pub unsafe fn read_ime_state_full() -> ImeSnapshot {
 
     // 1b. TSF-native ウィンドウ（Windows Terminal の InputSite 等）は IMM32 を使わないため
     // imc_open=false を返すが、これは IME が OFF であることを意味しない。
-    {
-        let class = crate::focus::classify::get_class_name_string(focused_hwnd);
-        tracing::debug!("read_ime_state_full: focused_hwnd={focused_hwnd:?} class={class:?}");
-        if is_tsf_native_window(&class) {
-            tracing::debug!(
-                "read_ime_state_full: TSF-native window ({class}) → ime_on=None (preserving state)"
-            );
-            return ImeSnapshot {
-                is_japanese_ime: Some(is_japanese_ime),
-                ime_on: None,
-                is_romaji: None,
-                conversion_mode: None,
-                is_tsf_native: true,
-            };
-        }
+    let class = crate::focus::classify::get_class_name_string(focused_hwnd);
+    tracing::debug!("read_ime_state_full: focused_hwnd={focused_hwnd:?} class={class:?}");
+    if is_tsf_native_window(&class) {
+        tracing::debug!(
+            "read_ime_state_full: TSF-native window ({class}) → ime_on=None (preserving state)"
+        );
+        return ImeSnapshot {
+            is_japanese_ime: Some(is_japanese_ime),
+            ime_on: None,
+            is_romaji: None,
+            conversion_mode: None,
+            is_tsf_native: true,
+            focused_class: Some(class),
+        };
     }
 
     // 2. Cross-process IME ON/OFF → ime_on (using focused hwnd)
@@ -736,6 +631,7 @@ pub unsafe fn read_ime_state_full() -> ImeSnapshot {
         is_romaji,
         conversion_mode,
         is_tsf_native: false,
+        focused_class: Some(class),
     }
 }
 
@@ -1005,16 +901,28 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
         };
     };
 
-    let imc_open =
-        unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETOPENSTATUS, 0, 20) }.map(|v| v != 0);
+    let imc_open = unsafe {
+        crate::imm::probe_ime_control(
+            ime_wnd,
+            ProbeCmd::GetOpenStatus,
+            20,
+            crate::imm::SendHealthFeed::Record,
+        )
+    }
+    .map(|v| v != 0);
 
     // 通常パス: conversion mode → 診断ログのみ（is_romaji 更新は read_ime_state_full に委ねる）
     // IMM32 ブリッジは WezTerm 等の TSF アプリでローマ字モードでも ROMAN ビットを
     // 報告しないことがある。ROMAN ビット不在を「かな入力」と断定するのは誤検出を招く。
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。タイムアウト 20ms 付き。
-    if let Some(conv) =
-        unsafe { crate::imm::send_ime_control(ime_wnd, IMC_GETCONVERSIONMODE, 0, 20) }
-    {
+    if let Some(conv) = unsafe {
+        crate::imm::probe_ime_control(
+            ime_wnd,
+            ProbeCmd::GetConversionMode,
+            20,
+            crate::imm::SendHealthFeed::Record,
+        )
+    } {
         let conv = conv as u32;
         let is_native = conv & IME_CMODE_NATIVE != 0;
         let is_roman = conv & IME_CMODE_ROMAN != 0;

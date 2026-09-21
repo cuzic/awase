@@ -162,6 +162,44 @@ impl ShadowImeAction {
     }
 }
 
+/// ADR-179決定2: `shadow_action`由来のintentについて、beliefを書く責務・
+/// 実IMEを変える責務（明示actuate/`ActivationSync`echo）のどちらを
+/// この打鍵が持つかを表す。計算は`kp_stage_shadow_ime_toggle`
+/// （`awase-windows::runtime::key_pipeline`）内1箇所のみ。
+///
+/// **このenumは所有権の唯一のSSOTではない**: `shadow_action`由来の
+/// intentだけをカバーする。explicit config（ADR-153、
+/// `explicit_ime_action_target`/`explicit_ime_action_consumed`）や
+/// 物理配送のSuppress/Allow判定（`transport.rs::plan`）は、この列挙の
+/// 外側で従来どおり独立に決まる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModeKeyActuationOwner {
+    /// この打鍵はshadow_action由来のintentを採用していない
+    /// （`sync_direction`/明示configが優先された、またはそもそも
+    /// モードキーではない）。beliefを書くか・明示actuateするか・
+    /// `ActivationSync`を通すか、の3判断とも従来どおりの既存ロジックに
+    /// 委ねる。`Option`で表現せず独立したvariantにする——将来variantが
+    /// 増えても黙って`_`に吸収されず、match網羅性がコンパイル時に効く
+    /// ようにするため。
+    #[default]
+    NotAModeKey,
+    /// FSM delegate（`resolve_pending_thumb_as_single`）が単独タップ
+    /// 確定時に own する。親指キー配置時、belief ON中のみ
+    /// （`delegate_owns_mode_key_shadow_toggle && effective_open()`）。
+    /// beliefは書かず、明示actuateもしないが、`ActivationSync`は通す。
+    FsmDelegate,
+    /// awase自身がbelief書き込み・実actuationの両方を行う。静的
+    /// `shadow_action`（Hiragana/Katakana/Alphanumeric/DBE系）、および
+    /// 無変換/変換のToggle分類（非冪等、awaseが唯一の変更主体で
+    /// あるべき）はここに属する。
+    AwaseExplicit,
+    /// beliefはawaseが書くが、実IME状態の変更は物理キー配送により
+    /// GJI/MS-IME自身が行う。awaseは明示actuateも`ActivationSync`の
+    /// 自動echoも一切発行しない。無変換/変換のOn/Off分類（非親指キー
+    /// 設定時）専用。
+    PhysicalDelivery,
+}
+
 /// キーの IME 関連情報（プラットフォーム層が事前分類）
 #[allow(clippy::struct_excessive_bools)]
 // 各フィールドは独立の判定軸を1:1で表現（enum化はwiden/意味混同のリスクを増やす）
@@ -232,6 +270,9 @@ pub struct ImeRelevance {
     /// `PendingThumb`経由で運ばれるだけで物理配送に影響しないためKeyUpペアリングは
     /// 不要（意図的な非対称）。
     pub auto_delegate_open_axis_consumed: bool,
+    /// ADR-179決定2: この打鍵の`shadow_action`由来intentのactuation
+    /// 所有者。`kp_stage_shadow_ime_toggle`内1箇所でのみ書き込む。
+    pub actuation_owner: ModeKeyActuationOwner,
 }
 
 // ── キーイベント ──
@@ -311,6 +352,30 @@ pub struct RawKeyEvent {
     /// に昇格させてはならない（BUG-14: 外部注入 VK_DBE_HIRAGANA を物理かなキーと誤読し
     /// ユーザーの IME OFF を Engine ON で上書きし続けた）。
     pub injected: bool,
+    /// このイベント（KeyDown・KeyUp いずれも）の直前に、同じ `vk_code` が
+    /// 物理的に押されたままだったか（[ADR-169](../docs/adr/169-journal-key-input-repeat-coalescing.md)）。
+    ///
+    /// **KeyDown/KeyUp 両方のイベントで更新・設定される点に注意。** ごく
+    /// 普通の1回のタップ（KeyDown→KeyUp）でも、KeyUp イベント時点では
+    /// 直前は「押されていた」ので `was_down: true` になる——これは
+    /// auto-repeat（同一キーの連続 KeyDown）の証拠では**ない**。呼び出し側
+    /// （journal の OS auto-repeat 判定）は `was_down` の値だけに頼らず、
+    /// 必ず「このイベント自体が KeyDown であること」も併せて確認すること
+    /// （`journal_policy::KeyInputIdentity::is_down` 参照。この確認漏れは
+    /// 実装時に一度実際に発生し、通常の単発タップの大半が「押しっぱなしで
+    /// 一度も離されていない」という誤った journal 記録になる回帰を招いた）。
+    ///
+    /// **診断専用フィールドであり、core（本クレート）のどのロジックも参照しない。**
+    /// `injected`/`modifier_snapshot` 等（core が実際に読んで判断に使う値）とは
+    /// 性質が異なる。`injected` なイベントはこのビットを更新しないため、常に
+    /// 直前の非 injected 状態を反映する（呼び出し側は `was_down` の値だけに
+    /// 頼らず、必ず `!injected` も併せて確認すること）。
+    ///
+    /// `modifier_snapshot`/`left_thumb_down_snapshot` と同じ理由（capture 時点で
+    /// 埋め込み、`INPUT_DEFER`/`OUTPUT_PENDING_QUEUE` の drain replay 時にライブ
+    /// 再取得しない）でこのフィールドを持つ——ADR-129 が扱った「replay を実行している
+    /// "今" の値を誤って読む」事故と同型の罠を避けるため。
+    pub was_down: bool,
 }
 
 impl RawKeyEvent {
@@ -447,6 +512,7 @@ mod tests {
             left_thumb_down_snapshot: None,
             right_thumb_down_snapshot: None,
             injected,
+            was_down: false,
         }
     }
 

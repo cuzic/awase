@@ -131,6 +131,27 @@ struct HookState {
     alt_l_was_down: AtomicBool,
     /// 右 Alt が直前のイベント時点で物理的に押下中だったか（左版と対称）。
     alt_r_was_down: AtomicBool,
+    /// ADR-176 176-T8: 較正モードの対象VK（`VkCode(0)`=非アクティブの
+    /// 番兵値）。`Runtime::begin_calibration_bypass`/`end_calibration_bypass`
+    /// （唯一の書き込み元、`set_calibration_target`経由）がメインスレッドから
+    /// 書き、`hook_callback`（フックスレッド）が読む。単一の値に
+    /// パックしているわけではなく、`VkCode(0)`を「非アクティブ」の番兵と
+    /// する設計（このリポジトリで確立済みの規約、
+    /// `src/engine/consecutive_counter.rs`の`VkCode(0)`＝「未記録」と同型）。
+    calibration_target_vk: AtomicU32,
+    /// ADR-176 176-T8（round8 B2対応）: 較正対象キーの直近の物理KeyDown
+    /// 検知時刻（`current_tick_ms`値、0=未検知）。`post_to_main_thread_quiet`
+    /// がwparam/lparamを運べないため、値はここに置きメインスレッドが
+    /// ディスパッチ時に読み直す（`WM_KANA_LOCK_WARNING_CHANGED`と同じ方針、
+    /// `lib.rs`のdoc参照）。`calibration_press_seq`より**先に**書く
+    /// （Release）——メインスレッド側が`calibration_press_seq`をAcquireで
+    /// 読んでからこちらを読めば、この値が書き終わっていることが保証される。
+    calibration_last_press_ms: AtomicU64,
+    /// ADR-176 176-T8（round8 B2対応）: 較正対象キーの検知通算回数。
+    /// メインスレッドは前回読み取り時との差分で取りこぼし・重複を
+    /// 判定できる（0=未検知）。`calibration_last_press_ms`を書いた**後**に
+    /// `fetch_add(1, Release)`する。
+    calibration_press_seq: AtomicU32,
 }
 
 impl HookState {
@@ -156,6 +177,9 @@ impl HookState {
             alt_r_impersonating: AtomicBool::new(false),
             alt_l_was_down: AtomicBool::new(false),
             alt_r_was_down: AtomicBool::new(false),
+            calibration_target_vk: AtomicU32::new(0),
+            calibration_last_press_ms: AtomicU64::new(0),
+            calibration_press_seq: AtomicU32::new(0),
         }
     }
 }
@@ -165,8 +189,8 @@ use crate::scanmap::scan_to_pos;
 use crate::HookConfig;
 use awase::scanmap::PhysicalPos;
 use awase::types::{
-    ImeRelevance, KeyClassification, KeyEventType, RawKeyEvent, ScanCode, ShadowImeAction,
-    Timestamp, VkCode,
+    ImeRelevance, KeyClassification, KeyEventType, ModeKeyActuationOwner, RawKeyEvent, ScanCode,
+    ShadowImeAction, Timestamp, VkCode,
 };
 
 /// Windows VK + ScanCode からキー分類と物理位置を生成する
@@ -287,6 +311,9 @@ pub fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
         // ADR-154: kp_stage_shadow_ime_toggleが実際にbeliefをOFF→ONへ動かした
         // 打鍵についてのみ後から立てるマーカー。分類の時点では常にfalse。
         auto_delegate_open_axis_consumed: false,
+        // ADR-179決定2: kp_stage_shadow_ime_toggle内1箇所でのみ書き込む。
+        // 分類の時点では常にNotAModeKey（既定値）。
+        actuation_owner: ModeKeyActuationOwner::default(),
     }
 }
 
@@ -399,6 +426,66 @@ pub fn alt_key_held() -> bool {
         physical_key_held_ms(VK_RMENU),
         crate::tuning::WIN_KEY_HELD_STALE_MS,
     )
+}
+
+/// ADR-176 176-T8（round8 S1/S2対応）: 較正キー検知専用の「修飾キーが
+/// 何も押されていないか」判定。`observer::focus_observer::read_os_modifiers()`
+/// はdocが「メインスレッドから呼ぶこと」という安全性契約を明記しており
+/// フックスレッドから呼ぶのは契約違反のため使わない。汎用VK
+/// （`VK_CONTROL`/`VK_SHIFT`）・左右specific双方を見る——
+/// `KBDLLHOOKSTRUCT.vkCode`は環境によって汎用形で届くことがあるため
+/// （`LLKHF_EXTENDED`のdoc参照）、`alt_key_held()`が汎用`VK_MENU`も
+/// 見ているのと同じ理由。
+#[must_use]
+fn calibration_modifier_free() -> bool {
+    use crate::vk::{
+        VK_CONTROL, VK_LCONTROL, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RSHIFT, VK_RWIN, VK_SHIFT,
+    };
+    let ctrl = is_physical_key_down(VK_CONTROL)
+        || is_physical_key_down(VK_LCONTROL)
+        || is_physical_key_down(VK_RCONTROL);
+    let shift = is_physical_key_down(VK_SHIFT)
+        || is_physical_key_down(VK_LSHIFT)
+        || is_physical_key_down(VK_RSHIFT);
+    let win = is_physical_key_down(VK_LWIN) || is_physical_key_down(VK_RWIN);
+    !ctrl && !shift && !win && !alt_key_held()
+}
+
+/// ADR-176 176-T8（決定2）: 較正モード中、対象VKの物理・修飾キー無し
+/// 新規KeyDown（auto-repeatを除く）を検知し、メインスレッドへ合図する。
+/// 呼び出し元（`hook_callback`）が既に`!is_injected`を確認済みの
+/// コンテキストからのみ呼ぶこと（この関数自身は再確認しない）。
+///
+/// **この関数は通常のshadow-toggle等のディスパッチに一切触れてはならない**
+/// （ADR-176決定1、`architecture_guard.rs`の
+/// `calibration_key_detection_does_not_touch_normal_dispatch`が固定する）。
+/// `HOOK_STATE.focus_app_disabled`が真であることを前提条件に含める
+/// （round8 B1対応）——较正バイパスが効いていない状態（＝通常の
+/// actuationパイプラインが動きうる状態）での押下は較正サンプルとして
+/// 採用してはならない。
+fn notify_calibration_key_if_target(vk: VkCode, is_keydown: bool, was_down: bool) {
+    if !is_keydown || was_down {
+        return;
+    }
+    let focus_app_disabled = &HOOK_STATE.focus_app_disabled;
+    if !focus_app_disabled.load(Ordering::Relaxed) {
+        return;
+    }
+    let target = HOOK_STATE.calibration_target_vk.load(Ordering::Relaxed);
+    if target == 0 || target != u32::from(vk.0) {
+        return;
+    }
+    if !calibration_modifier_free() {
+        return;
+    }
+    let now_ms = current_tick_ms();
+    HOOK_STATE
+        .calibration_last_press_ms
+        .store(now_ms, Ordering::Release);
+    HOOK_STATE
+        .calibration_press_seq
+        .fetch_add(1, Ordering::Release);
+    crate::win32::post_to_main_thread_quiet(crate::WM_CALIBRATION_KEY_DETECTED);
 }
 
 /// 合成 IME モードキー（`VK_DBE_*`/`VK_KANJI` 等）を注入してよいかの
@@ -658,6 +745,34 @@ pub fn set_focus_app_disabled(disabled: bool) {
 #[must_use]
 pub fn is_focus_app_disabled() -> bool {
     HOOK_STATE.focus_app_disabled.load(Ordering::Acquire)
+}
+
+/// ADR-176 176-T8: 較正モードの対象VKを設定/解除する。
+/// `Runtime::begin_calibration_bypass`/`end_calibration_bypass`の
+/// **メソッド本体の中だけ**から呼ぶこと（呼び出し元を分散させない —
+/// `architecture_guard.rs`の`set_calibration_target_call_sites_are_
+/// limited_to_bypass_lifecycle`が呼び出し箇所数を固定する）。
+pub(crate) fn set_calibration_target(vk: Option<VkCode>) {
+    let packed = vk.map_or(0, |v| u32::from(v.0));
+    HOOK_STATE
+        .calibration_target_vk
+        .store(packed, Ordering::Release);
+}
+
+/// ADR-176 176-T8（round8 B2対応）: 較正対象キーの検知通算回数を読む。
+/// メインスレッドの`WM_CALIBRATION_KEY_DETECTED`ハンドラが使う。
+/// `calibration_last_press_ms`より**先に**読むこと（Acquire、doc参照）。
+#[must_use]
+pub(crate) fn calibration_press_seq() -> u32 {
+    HOOK_STATE.calibration_press_seq.load(Ordering::Acquire)
+}
+
+/// ADR-176 176-T8（round8 B2対応）: 較正対象キーの直近検知時刻
+/// （`current_tick_ms`値、0=未検知）を読む。`calibration_press_seq()`を
+/// 先に読んだ**後**で呼ぶこと。
+#[must_use]
+pub(crate) fn calibration_last_press_ms() -> u64 {
+    HOOK_STATE.calibration_last_press_ms.load(Ordering::Relaxed)
 }
 
 /// `GeneralConfig::swallow_alt_kana_input_method_switch` を設定する（config 読み込み後に呼ぶ）。
@@ -934,6 +1049,7 @@ fn build_raw_key_event(
     left_thumb_down_snapshot: Option<Timestamp>,
     right_thumb_down_snapshot: Option<Timestamp>,
     injected: bool,
+    was_down: bool,
 ) -> RawKeyEvent {
     use crate::vk::VkCodeExt;
     RawKeyEvent {
@@ -954,7 +1070,30 @@ fn build_raw_key_event(
         left_thumb_down_snapshot,
         right_thumb_down_snapshot,
         injected,
+        was_down,
     }
+}
+
+/// テストドライバ（`examples/ime_key_matrix_spike.rs`、`examples/chrome_probe.rs`）が注入するキーの `dwExtraInfo`。
+/// ドライバ側はこの定数を参照する（二重定義しない）。
+pub const TEST_INJECTION_MARKER: usize = 0x5350_494B;
+
+/// `AWASE_TEST_INJECTION=1` が設定されているとき、かつ目印が一致するときだけ true。
+/// 環境変数はプロセス生存期間中1回だけ読む。
+///
+/// **デバッグビルドでのみ有効**。リリースビルドでは常に false（環境変数が設定されても
+/// `LLKHF_INJECTED` の判定を迂回しない）。実機E2Eは `cargo build`（デバッグ）の awase を使う。
+#[cfg(debug_assertions)]
+fn is_test_injection(extra_info: usize) -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    extra_info == TEST_INJECTION_MARKER
+        && *ENABLED
+            .get_or_init(|| std::env::var_os("AWASE_TEST_INJECTION").is_some_and(|v| v == "1"))
+}
+
+#[cfg(not(debug_assertions))]
+const fn is_test_injection(_extra_info: usize) -> bool {
+    false
 }
 
 /// 自己注入キーかどうかを判定する（無限ループ防止）。
@@ -1017,7 +1156,10 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     let is_keydown = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
     let self_injected = is_self_injected(kb.dwExtraInfo);
 
-    let is_injected = (kb.flags.0 & LLKHF_INJECTED) != 0;
+    // テスト専用（実機E2Eの自動化、ADR-186）: 環境変数 `AWASE_TEST_INJECTION=1` のときだけ、
+    // テストドライバの目印（`TEST_INJECTION_MARKER`）を付けた注入を物理キーとして扱う。
+    // 本番では環境変数が無いため常に従来どおり（`LLKHF_INJECTED` = 注入）。
+    let is_injected = (kb.flags.0 & LLKHF_INJECTED) != 0 && !is_test_injection(kb.dwExtraInfo);
 
     // IME モードキー (VK_KANA/IME_ON/JUNJA/KANJI/IME_OFF/VK_DBE_*) 診断ログ。
     // 「Ctrl+無変換→Ctrl+変換 で IME-OFF Engine-ON になる」報告 (2026-07-06) の切り分け用:
@@ -1074,9 +1216,14 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // HOOK_STATE.physical_key_state はハードウェア由来のイベントのみで更新する。
     // LLKHF_INJECTED 付き（X サーバー・他ツールの synthetic）はスキップし、
     // stuck modifier による汚染を防ぐ。自前の synthetic は上の is_self_injected で既に除外済み。
+    // ADR-169: journal の KeyInput auto-repeat 畳み込み判定に使う「このイベント
+    // 直前の物理押下状態」。injected イベントはこのビットを更新しない（BUG-90/
+    // issue #136 系の foreign-injected 連打を誤って auto-repeat とみなさないよう、
+    // 呼び出し側は was_down の値に関わらず injected を常に非畳み込みとして扱う）。
+    let mut was_down = false;
     if !is_injected {
         if let Some(slot) = HOOK_STATE.physical_key_state.get(vk.0 as usize) {
-            slot.store(is_keydown, Ordering::Relaxed);
+            was_down = slot.swap(is_keydown, Ordering::Relaxed);
         }
         if let Some(slot) = HOOK_STATE.physical_key_down_at_ms.get(vk.0 as usize) {
             // 同一 VK の auto-repeat KeyDown では down_at を上書きしない
@@ -1093,6 +1240,10 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             };
             slot.store(new_value, Ordering::Relaxed);
         }
+        // ADR-176 176-T8（決定2）: 較正モード中の対象キー検知。
+        // `!is_injected`ブロックの中に置くことで、注入イベントを
+        // 較正サンプルとして扱わないことを構造的に保証する。
+        notify_calibration_key_if_target(vk, is_keydown, was_down);
     }
 
     // `disable_apps`（既定 mstsc.exe）にマッチするアプリへフォーカス中は、
@@ -1327,6 +1478,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         left_thumb_down_snapshot,
         right_thumb_down_snapshot,
         is_injected,
+        was_down,
     );
 
     let produce_result = crate::hook_channel::HOOK_KEYS.produce(event);

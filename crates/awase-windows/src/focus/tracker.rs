@@ -29,6 +29,12 @@ pub(crate) struct FocusTracker {
     imm_learning: ImmCapabilityStore,
     injection_mode_store: InjectionModeStore,
     hwnd_ime_cache: HwndImeCache,
+    /// ADR-176 176-T6: 較正モード中に一時的にバイパス対象へ加えるプロセス名
+    /// （`awase-settings.exe`想定）。`disable_apps`設定そのものは変更せず、
+    /// `is_app_disabled()`にOR条件として追加する——既存の`disable_apps`
+    /// エッジ検出・latch解放経路（`Runtime::apply_app_disable_transition`）を
+    /// そのまま流用するための最小追加（ADR-176決定1、round6 B1/B2対応）。
+    calibration_bypass_process: Option<String>,
 }
 
 impl std::fmt::Debug for FocusTracker {
@@ -52,6 +58,7 @@ impl FocusTracker {
             imm_learning,
             injection_mode_store,
             hwnd_ime_cache: HwndImeCache::new(),
+            calibration_bypass_process: None,
         }
     }
 
@@ -194,7 +201,7 @@ impl FocusTracker {
     ///
     /// これにより静的リストに載っていない IMM-broken アプリ（`ImmGetDefaultIMEWnd`
     /// が NULL / IME 検出ミスが閾値超え）でも、ImmCross の無駄な
-    /// `SendMessageTimeoutW` を踏まずに MsImeDirect / GjiDirect / KanjiToggle 系へ
+    /// `SendMessageTimeoutW` を踏まずに MsImeDirect / GjiDirect 系へ
     /// 直行できる。学習の書き手は `focus/imm_learning.rs`（フォーカス時の
     /// `ImmGetDefaultIMEWnd` 判定）と `Runtime::learn_imm_capability_from_miss`
     /// （IME 検出ミス数の閾値超え/回復）。`Works` 回復学習で store が更新されれば
@@ -223,9 +230,20 @@ impl FocusTracker {
     }
 
     /// 現在フォーカス中のプロセスが `disable_apps` にマッチしているか
-    /// （BUG-78 対策、`runtime/focus_tracking.rs` から呼ぶ）。
+    /// （BUG-78 対策、`runtime/focus_tracking.rs` から呼ぶ）。ADR-176
+    /// 176-T6: `calibration_bypass_process`が設定されていれば、それとの
+    /// マッチもOR条件で追加する（較正モード中の一時バイパス）。
     pub(crate) fn is_app_disabled(&self) -> bool {
         self.overrides.is_app_disabled(&self.current.process_name)
+            || self
+                .calibration_bypass_process
+                .as_ref()
+                .is_some_and(|target| {
+                    crate::state::app_suppression::matches_disabled_app(
+                        std::slice::from_ref(target),
+                        &self.current.process_name,
+                    )
+                })
     }
 
     pub(crate) fn cache_insert(
@@ -246,6 +264,12 @@ impl FocusTracker {
     /// アプリオーバーライド設定を差し替える（設定リロード時）。
     pub(crate) fn reset_overrides(&mut self, overrides: ForceOverrides) {
         self.overrides = overrides;
+    }
+
+    /// ADR-176 176-T6: 較正モードのバイパス対象プロセスを設定/解除する。
+    /// `Runtime::begin_calibration_bypass`/`end_calibration_bypass`専用。
+    pub(crate) fn set_calibration_bypass_process(&mut self, process: Option<String>) {
+        self.calibration_bypass_process = process;
     }
 
     // ── IME 状態の保存/復元 ─────────────────────────────────────────────────

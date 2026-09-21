@@ -46,9 +46,7 @@
 //!   （`apply_skipping_imm`）と同じく「完了時点の状態で残り機構を選ぶ」。
 //! - ここに起案時点の `caps(p, k).chain` を渡すと、await 中に profile が
 //!   変わった場合に「完了時点では適用可能な機構が chain に載っていない」
-//!   という新しい取りこぼしが生まれる（例: 起案時 Standard × MS-IME の
-//!   chain は `[ImmCross, KanjiToggle]`。await 中に TsfNative へ移ると
-//!   旧実装は `MsImeDirect` を選ぶが、固定 chain では `KanjiToggle` を送る）。
+//!   という新しい取りこぼしが生まれる。
 //! - `ImeKindId` は推測値である（INV-45 / P20）。await をまたいで K を
 //!   固定するのは「推測値に安全側でないゲートを掛ける」に当たる。
 //!
@@ -228,7 +226,7 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
     // 一切参照しないため、`run_open_chain_async` 冒頭の gate が `with_app` の
     // 再入失敗で fail-open した場合、この関数まで到達すると以前は無条件で
     // ImmCross write を実行していた。ここで fresh な view を取り直して
-    // 再検出する（`fallback_write` が GjiDirect/MsImeDirect/KanjiToggle に
+    // 再検出する（`fallback_write` が GjiDirect/MsImeDirect に
     // 対して行っているのと同じ防御をImmCrossにも及ぼす）。
     // /code-review指摘（PR #201 B-1）: `with_app`がNone（再入）を返した場合、
     // developの元実装は`.unwrap_or(false)`でfail-open（is_input_relay=false、
@@ -241,10 +239,7 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
     let gate = crate::with_app(|app| {
         let view = app.shadow_ime_control_view();
         let inputs = (&view).into();
-        let is_input_relay = matches!(
-            crate::state::ime_actuation_decision::decide_gate(inputs),
-            crate::state::ime_actuation_decision::GateResult::NotOwned
-        );
+        let is_input_relay = crate::state::ime_actuation_decision::is_input_relay(inputs);
         (inputs, is_input_relay)
     });
     let (inputs, is_input_relay) = if let Some((inputs, is_input_relay)) = gate {
@@ -434,7 +429,7 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
 /// ここで `shadow_ime_control_view()` が構築する view の `composition_active`/
 /// `ime_show_seq`/`ime_change_seq` は、Standard×MS-IME で ImmCross が `Failed` を
 /// 返した直後（＝`imm_cross_write` の `.await` が完了した後）の live 値である。
-/// これから送る `KanjiToggleStrategy` にとっては「送信前」の値だが、**直前の
+/// これから送る後続機構にとっては「送信前」の値だが、**直前の
 /// ImmCross 試行にとっては「送信後」（tear-down 済みかもしれない）の値でもある**。
 /// ログを見る側は「この値がどちらの送信に対応するか」を混同しないこと
 /// （`imm_cross_write` 冒頭の live 読み取りが ImmCross 自身の送信前の値）。
@@ -447,9 +442,9 @@ fn fallback_write(
         let mut view = app.shadow_ime_control_view();
         let shadow_on_before_bug113_override = view.control.shadow_on;
         // BUG-113 追補（Opus 敵対的レビューで発見）: この関数は先行機構が
-        // `Failed` を返した後にしか呼ばれず、`imm_cross_write` の `Failed` は
-        // `read_ime_state_fast()` で「OS はまだ desired 状態でない」ことを
-        // 実際に確認した場合だけ返る（`imm_cross_write` 参照）。したがって
+        // `Failed` を返した後にしか呼ばれない。`imm_cross_write` の `Failed` は
+        // `read_ime_state_fast()` が `Some` で不一致を確認した場合だけでなく、
+        // `None`（不明）でも返る。したがって
         // この時点で shadow ベースの already-matched skip
         // （`gji_direct_already_matches`）を適用する根拠は無い。
         // `key_pipeline.rs::kp_stage_shadow_ime_toggle` の ImmCross 経路は
@@ -465,10 +460,7 @@ fn fallback_write(
         // 未知に上書きする（`belief_input_mode`/`focus.profile` 等の他
         // フィールドは `shadow_ime_control_view()` のまま活かす）。
         //
-        // 副産物: `KanjiToggleStrategy`（`fallback_write` が唯一の到達経路、
-        // ADR-117 issue #138診断）の `shadow=` ログフィールドが、この上書き後は
-        // 常に `None` になり診断価値を失う。上書き前の値をここで1行記録して
-        // 補う（Opus敵対的レビューround3 提案）。
+        // 上書き前の値は診断用にここで1行記録する（Opus敵対的レビューround3 提案）。
         tracing::debug!(
             "[apply-ime] fallback_write: shadow_on={:?} → None で bypass (mechanism={mechanism:?})",
             view.control.shadow_on
@@ -478,12 +470,9 @@ fn fallback_write(
         // issue #136 / BUG-90 決定4: view はこの関数が完了時点で作り直す
         // （モジュール doc 参照）ため、起案時点では InputRelay でなかった
         // フォーカスが await 中に InputRelay へ移った場合もここで再検出できる。
-        // `NotOwned` は `falls_through` が偽なので、GjiDirect/MsImeDirect/
-        // KanjiToggle を1つずつ試すことなくチェーンをここで止める。
-        if matches!(
-            crate::state::ime_actuation_decision::decide_gate(inputs),
-            crate::state::ime_actuation_decision::GateResult::NotOwned
-        ) {
+        // `NotOwned` は `falls_through` が偽なので、GjiDirect/MsImeDirect を
+        // 1つずつ試すことなくチェーンをここで止める。
+        if crate::state::ime_actuation_decision::is_input_relay(inputs) {
             let outcome = ImeOpenOutcome::NotOwned;
             return (
                 outcome,
@@ -583,10 +572,7 @@ pub(crate) async fn run_open_chain_async(
     let gate = crate::with_app(|app| {
         let view = app.shadow_ime_control_view();
         let inputs = (&view).into();
-        let is_input_relay = matches!(
-            crate::state::ime_actuation_decision::decide_gate(inputs),
-            crate::state::ime_actuation_decision::GateResult::NotOwned
-        );
+        let is_input_relay = crate::state::ime_actuation_decision::is_input_relay(inputs);
         (inputs, is_input_relay)
     });
     let (gate_inputs, is_input_relay) = if let Some((inputs, is_input_relay)) = gate {
@@ -629,19 +615,48 @@ pub(crate) async fn run_open_chain_async(
         }
         return ImeOpenOutcome::NotOwned;
     }
-    // ADR-090 §2.A A-1: 授権は起案側（`ImeStateHub::issue_actuation_order`）で
-    // 発行済み。**shadow モード**なので授権が下りていなくても書き込みは
-    // 止めない（止めるのは A-2）。
+    // ADR-090 §2.A A-2（2026-09-19、ユーザー指示によりリスクを受容し実機
+    // 検証で確認する方針へ切替）: 授権は起案側
+    // （`ImeStateHub::issue_actuation_order`）で発行済み。ADR-178領域A撤去で
+    // 差分オラクルの最大リスク（old-1: bootstrap force-ON、old-2:
+    // `BrokenAppBootstrap`guard）の生産コード上の発火源が既に消えている
+    // ため、残る差分（old-3安全側/new-1意図されたTsfNative Blindフォール
+    // バック）を受容し実際に強制する。
     //
     // なお `order` は起案時点の状態に基づくのに write は完了時点で起きる。
     // await をまたいだ失効の扱いは warrant ではなく**チェーンの再抽選**
     // （ADR-090 項 D、実機ソーク必須のため未実装）で行う。
     crate::ime_controller::log_shadow_warrant("async", &order);
-    // S-5: `order`を`into_actuation_shadow()`で消費する前に、記録に必要な
+    // S-5: `order`を`into_actuation()`で消費する前に、記録に必要な
     // 3値だけを`ActuationOrderRecord`として退避する（`order.clone()`で
     // warrantを複製しない）。
     let order_record = ActuationOrderRecord::from(&order);
-    let actuation = order.into_actuation_shadow().verify(imm.verified_target());
+    let Some(actuation) = order.into_actuation() else {
+        if let Some(gate_inputs) = gate_inputs {
+            let record = async_record(
+                site,
+                caller,
+                gate_inputs,
+                order_record,
+                [None; MAX_WRITE_MECHANISMS],
+                0,
+            );
+            if crate::with_app(|app| {
+                app.platform_state
+                    .ime
+                    .journal
+                    .record(crate::journal::JournalEntry::ActuationDecision { record });
+            })
+            .is_none()
+            {
+                record_actuation_decision_skipped(site);
+            }
+        } else {
+            record_actuation_decision_skipped(site);
+        }
+        return ImeOpenOutcome::Unwarranted;
+    };
+    let actuation = actuation.verify(imm.verified_target());
     let mut writer = AsyncChainWriter {
         imm: Some(imm),
         attempts: [None; MAX_WRITE_MECHANISMS],
@@ -711,6 +726,7 @@ mod tests {
             kind: ImeKindId::Gji,
             shadow_on: None,
             belief_input_mode: InputModeState::Unknown,
+            candidate_was_seen: false,
         };
         let order_record = ActuationOrderRecord {
             open: true,

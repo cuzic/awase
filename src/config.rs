@@ -60,15 +60,22 @@ pub enum DbeModeKeyPolicy {
 
 /// 打鍵列機能（`.yab` の `CtrlChord`/`InlineSequence`/`MacroRef`）を有効化するか。
 ///
-/// ADR-115 決定8。既定 `Off`。`.yab` パーサ自体は常に新構文を認識するが、
-/// `Off` のとき解決パス（`resolve_keystroke_syntax`）が
+/// ADR-115 決定8は既定 `Off` だったが、2026-09-13 に既定 `On` へ変更した
+/// （経緯は ADR-115 決定8追補・ADR-109 参照）。
+/// `CV`+16進数2桁（`CtrlChord`）・セル内 `+` 区切り（`InlineSequence`）・
+/// `@`+マクロ名（`MacroRef`）はいずれも偶然一致しうるほど一般的な文字列ではなく、
+/// 既存のやまぶき派生レイアウトでこの語彙を使うユーザー（Issue #118 報告者）に
+/// とっては「意図しない暴発」ではなく素の目的（`layout/nicola_kakutei.yab` の
+/// 句読点確定を含む）そのものである。`.yab` パーサ自体は常に新構文を認識するが、
+/// `Off` にすると解決パス（`resolve_keystroke_syntax`）が
 /// `CtrlChord`/`InlineSequence`/`MacroRef` を保持している元のセル
-/// 生テキストから `Literal` へ差し替え、今日と同じ挙動に復元する。
+/// 生テキストから `Literal` へ差し替え、この機能導入前の挙動に戻す
+/// （Ctrl+チョード等の解釈自体を望まないユーザー向けの明示的オプトアウト）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum KeystrokeSequencePolicy {
-    #[default]
     Off,
+    #[default]
     On,
 }
 
@@ -328,9 +335,11 @@ pub struct GeneralConfig {
     /// 既存ユーザーの config.toml に残っている場合のみ意味を持つ
     /// （チェックボックスを一切操作しなければ値は変わらない）。
     pub half_width_alnum_toggle: HalfWidthAlnumTogglePolicy,
-    /// 打鍵列機能（ADR-115）の有効化。既定 `Off`（隠し設定、config.toml
-    /// 手動編集のみで有効化できるオプトイン。実機ソークが積み上がるまで
-    /// 設定 GUI には出さない）。
+    /// 打鍵列機能（ADR-115）の有効化。既定 `On`（2026-09-13〜、ADR-115 決定8
+    /// 追補）。設定GUI（上級者向け設定）から `off`/`on` の二択チェックボックス
+    /// として操作できる。`off` はこの構文（`.yab` の `CtrlChord`/
+    /// `InlineSequence`/`MacroRef`）の解釈自体を望まないユーザー向けの
+    /// 明示的オプトアウト。
     pub keystroke_sequence: KeystrokeSequencePolicy,
     /// `left_thumb_key`/`right_thumb_key` に変換(`VK_CONVERT`)を割り当てている
     /// 場合に限り効く設定。無変換キーや Space 等他の VK には一切影響しない。
@@ -392,6 +401,11 @@ pub struct GeneralConfig {
     /// `ime_on`/`ime_off`/`ime_toggle`の自動検出リスト（チョードキーとして
     /// 設定されていない場合）へベストエフォートで反映するか（BUG-115）。
     ///
+    /// `false`（既定）のとき、awaseはこのToggleを反映しない（警告ログのみ）。生の無変換/変換は
+    /// GJIへそのまま届き、GJIがATOKのキーマップどおり開閉する。**awaseは通過直後に実IMEを
+    /// 読み直し、古い明示意図を捨ててEngineを観測に追随させる**（follow方式、ADR-187。IMMで
+    /// 読めるアプリのみ。TsfNative/Chrome等は`ime_on=None`で読めず従来どおり遅延観測）。
+    ///
     /// 既定 `false`（反映しない・警告ログのみ）。この状態依存トグルは
     /// `ShadowImeAction::Toggle`（`!ctx.ime_on`）で技術的には正確に表現
     /// できる（ATOKプリセットが`DirectInput`状態でHenkan/Muhenkanを
@@ -416,6 +430,17 @@ pub struct GeneralConfig {
     /// （`false`のまま矛盾を検出した場合は`tracing::warn!`で対処法を案内する）。
     #[serde(default)]
     pub gji_thumb_key_ime_toggle: bool,
+    /// ADR-176決定8: `[[calibration]]`（較正パネルUIが確定した較正結果）を
+    /// 実際のIME判定（`apply_calibration_override`経由でのGJI/MS-IME
+    /// 側の自動検出結果の差し替え）へ反映するかどうか。**既定`false`**
+    /// （opt-in）——BUG-113の再発リスクを実機A/Bで確認できるまで、較正
+    /// 結果は`config.toml`には保存されるが実際のキー選択には影響しない
+    /// ようにする安全装置（`ActivationSync`冪等性チェック=176-T0を前提
+    /// 条件から外した経緯参照、`docs/adr/176-implementation-tasks.md`の
+    /// T0節）。`true`にすると較正結果がGJI/MS-IME両方の自動検出結果を
+    /// 上書きするようになる。
+    #[serde(default)]
+    pub apply_calibrated_mode_keys: bool,
     /// ADR-153 決定1: 無変換単独タップ確定時に、素の `VK_NONCONVERT` の代わりに
     /// awase 自身が直接 IME を ON/OFF/Toggle する（隠し設定、上級者向け）。
     /// `None`（既定）なら無効で、従来どおり GJI/MS-IME 自動検出
@@ -489,13 +514,14 @@ impl Default for GeneralConfig {
             muhenkan_solo_tap_dedicated_fn_key: None,
             dbe_mode_key_policy: DbeModeKeyPolicy::Suppress,
             half_width_alnum_toggle: HalfWidthAlnumTogglePolicy::MsImeOnly,
-            keystroke_sequence: KeystrokeSequencePolicy::Off,
+            keystroke_sequence: KeystrokeSequencePolicy::On,
             henkan_solo_tap_ignore_composing_guard: false,
             henkan_solo_tap_always_suppress: true,
             enter_thumb_ignore_composing_guard: true,
             enter_thumb_shift_literal: true,
             swallow_alt_kana_input_method_switch: true,
             gji_thumb_key_ime_toggle: false,
+            apply_calibrated_mode_keys: false,
             muhenkan_solo_tap_ime_action: None,
             henkan_solo_tap_ime_action: None,
         }
@@ -792,6 +818,44 @@ pub struct PostBypassRule {
     pub class: String,
 }
 
+/// `[[calibration]]` モードキー較正結果1件の永続化用表現（ADR-176 決定6、176-T11）。
+///
+/// このクレート（`awase`本体）はプラットフォーム非依存（ADR-019）のため、
+/// `awase-windows`側の`ImeToggleKind`/`ImeKindId`/`ConfigFingerprint`を
+/// 直接使わず、`KeysConfig`の`ime_on: Vec<String>`等と同じ「文字列で橋渡し
+/// する」パターンに揃える。`vk`は`VkCode`（このクレートで定義済み、
+/// `u16`のnewtypeとして透過的にシリアライズされる）をそのまま使う——
+/// 名前文字列との相互変換（`VkCode::from_name`相当）はGUI/awase-windows
+/// 側の責務であり、ここでは生のVKコード値をそのまま保持するだけで済む。
+///
+/// 実際のパース・妥当性検証（`result`/`fingerprint_kind`が既知の値か等）は
+/// `awase-windows`側（`state/calibrated_mode_key.rs`）が担い、このクレート
+/// 自身は構造をそのまま読み書きするだけで意味解釈は行わない。
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CalibrationEntry {
+    /// 較正対象の物理VKコード。
+    pub vk: VkCode,
+    /// 較正結果（v8時点のスコープでは`"On"`のみが実際に書き込まれる想定）。
+    pub result: String,
+    /// 較正時点で使われていたIME種別（`"Gji"`/`"MsIme"`）。
+    pub active_ime_kind: String,
+    /// 較正時点のconfig1.db/レジストリのフィンガープリント種別
+    /// （`"Gji"`/`"MsIme"`、`active_ime_kind`と同じ値になる想定）。
+    pub fingerprint_kind: String,
+    /// GJI較正時: `session_keymap`フィールドの値。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gji_session_keymap: Option<i64>,
+    /// GJI較正時: `custom_keymap_table`の該当行（無ければ`None`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gji_relevant_row: Option<String>,
+    /// MS-IME較正時: 較正に関連するレジストリ値のハッシュ。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ms_ime_registry_value_hash: Option<u64>,
+    /// 較正が確定した時刻（Unix epoch ms、プロセス再起動をまたいでも
+    /// 意味を持つ形式で保持する）。
+    pub confirmed_at_epoch_ms: u64,
+}
+
 /// アプリケーション設定ファイル (config.toml) のトップレベル構造
 ///
 /// レイアウト定義は .yab ファイルから読み込むため、
@@ -812,6 +876,9 @@ pub struct AppConfig {
     /// 名前付き打鍵列マクロ一覧（ADR-115 決定2b）。
     #[serde(default)]
     pub keystroke_macro: Vec<KeystrokeMacro>,
+    /// モードキー較正結果一覧（ADR-176 決定6、176-T11）。
+    #[serde(default)]
+    pub calibration: Vec<CalibrationEntry>,
 }
 
 /// `AppConfig::load` の失敗を UI 側の扱い分けができる粒度に分類した結果
@@ -937,6 +1004,10 @@ pub struct ValidatedConfig {
     /// 転送するのみで検証は行わない（`steps` の中身の妥当性は
     /// `resolve_keystroke_syntax` が読み込み時に判定し警告する、決定3）。
     pub keystroke_macro: Vec<KeystrokeMacro>,
+    /// モードキー較正結果一覧（ADR-176 決定6、176-T11）。`keystroke_macro`と
+    /// 同様、`AppConfig`から単純に転送するのみで検証は行わない（意味解釈は
+    /// `awase-windows`側の責務）。
+    pub calibration: Vec<CalibrationEntry>,
 }
 
 impl From<ValidatedConfig> for AppConfig {
@@ -955,6 +1026,7 @@ impl From<ValidatedConfig> for AppConfig {
             keymaps: v.keymaps,
             post_bypass: v.post_bypass,
             keystroke_macro: v.keystroke_macro,
+            calibration: v.calibration,
         }
     }
 }
@@ -1179,7 +1251,7 @@ impl AppConfig {
 
         let jis_only_default = matches!(
             g.default_layout.trim_end_matches(".yab"),
-            "nicola" | "nicola_keytop" | "nicola_f" | "nicola_kb232"
+            "nicola" | "nicola_keytop" | "nicola_f" | "nicola_kb232" | "nicola_kakutei"
         );
         if jis_only_default {
             w.push(format!(
@@ -1319,10 +1391,100 @@ impl AppConfig {
                 keymaps: self.keymaps,
                 post_bypass: self.post_bypass,
                 keystroke_macro: self.keystroke_macro,
+                calibration: self.calibration,
             },
             warnings,
         )
     }
+}
+
+/// コア`awase`クレートに埋め込んだ、出荷時の`config.toml`（ADR-178 決定3）。
+/// `GeneralConfig::default()`のserializeは代用しない
+/// （`GeneralConfig::default()`は`layouts_dir: "config"`だが出荷時は
+/// `"layout"`であり、項目が食い違う）。
+const EMBEDDED_CONFIG_TOML: &str = include_str!("../config.toml");
+
+/// コア`awase`クレートに埋め込んだ、同梱6ファイルの`.yab`（ADR-178 決定3）。
+const EMBEDDED_LAYOUTS: &[(&str, &str)] = &[
+    ("nicola.yab", include_str!("../layout/nicola.yab")),
+    (
+        "nicola_keytop.yab",
+        include_str!("../layout/nicola_keytop.yab"),
+    ),
+    ("nicola_us.yab", include_str!("../layout/nicola_us.yab")),
+    ("nicola_f.yab", include_str!("../layout/nicola_f.yab")),
+    (
+        "nicola_kb232.yab",
+        include_str!("../layout/nicola_kb232.yab"),
+    ),
+    (
+        "nicola_kakutei.yab",
+        include_str!("../layout/nicola_kakutei.yab"),
+    ),
+];
+
+/// `config_path`が存在しなければ、埋め込み既定値（[`EMBEDDED_CONFIG_TOML`]）
+/// から生成する（ADR-178 決定2）。既に存在する場合は内容を一切比較・上書き
+/// せず、何もしない——これが「バックアップと実ファイルの整合を取る」という
+/// 問題自体を発生させない設計の核心（v2〜v13の複雑さの原因だった問題を
+/// 構造的に回避する）。
+///
+/// # Errors
+///
+/// 書き込みに失敗した場合にエラーを返す。呼び出し元は失敗してもpanicせず、
+/// 既存のエラー経路（`find_config_path`の`bail!`等）に委ねること。
+pub fn ensure_config_exists(config_path: &Path) -> Result<()> {
+    if config_path.exists() {
+        return Ok(());
+    }
+    crate::fs_atomic::write_atomic(config_path, EMBEDDED_CONFIG_TOML.as_bytes())
+}
+
+/// `layouts_dir`に`.yab`拡張子のファイルが1本も無い場合、同梱6ファイルを
+/// 埋め込み既定値（[`EMBEDDED_LAYOUTS`]）から生成する（ADR-178 決定2）。
+///
+/// 1本でも存在すれば何もしない——ユーザーが同梱配列の一部を削除して整理した
+/// 状態を復活させないため。中身の妥当性（パース可能かどうか）は判定しない
+/// （シンプルさを優先、v13が持っていた`KeyboardModel`全バリアント試行の
+/// ような複雑な検証は行わない）。
+///
+/// 途中（3本目等）で書き込みが失敗した場合、**それまでに書いた分を削除して
+/// エラーを返す**（`/code-review`指摘、v14 opusレビューMajor M5対応）——
+/// 中途半端な本数のまま抜けると、次回起動時に`has_any_yab`が`true`になり
+/// 「1本でもあれば何もしない」判定で永久に残り4本が生成されなくなる。
+/// 全滅させて0本に戻すことで、次回起動時に全6本の生成を再試行できる。
+///
+/// # Errors
+///
+/// ディレクトリ作成・書き込みに失敗した場合にエラーを返す。呼び出し元は
+/// 失敗してもpanicせず、既存のエラー経路（`show_no_layouts_dialog`等）に
+/// 委ねること。
+pub fn ensure_layouts_exist(layouts_dir: &Path) -> Result<()> {
+    let has_any_yab = std::fs::read_dir(layouts_dir).is_ok_and(|entries| {
+        entries.filter_map(std::result::Result::ok).any(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("yab"))
+        })
+    });
+    if has_any_yab {
+        return Ok(());
+    }
+    std::fs::create_dir_all(layouts_dir)
+        .with_context(|| format!("Failed to create {}", layouts_dir.display()))?;
+    let mut written = Vec::with_capacity(EMBEDDED_LAYOUTS.len());
+    for (name, content) in EMBEDDED_LAYOUTS {
+        let path = layouts_dir.join(name);
+        if let Err(e) = crate::fs_atomic::write_atomic(&path, content.as_bytes()) {
+            for p in &written {
+                let _ = std::fs::remove_file(p);
+            }
+            return Err(e);
+        }
+        written.push(path);
+    }
+    Ok(())
 }
 
 /// キーコンボ（修飾キー + メインキー）のパース済みデータ。
@@ -1558,6 +1720,30 @@ engine_off_solo_repeat = "VK_F15"
 [general]
 keyboard_model = "us"
 default_layout = "nicola_kb232.yab"
+left_thumb_key = "VK_F16"
+right_thumb_key = "VK_F17"
+
+[keys]
+engine_on = ["Ctrl+Shift+VK_F13"]
+engine_off = ["Ctrl+Shift+VK_F14"]
+ime_on = ["Ctrl+VK_F13"]
+ime_off = ["Ctrl+VK_F14"]
+engine_off_solo_repeat = "VK_F15"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(warnings.iter().any(|w| w.contains("nicola_us.yab")));
+    }
+
+    #[test]
+    fn test_validate_us_keyboard_with_nicola_kakutei_default_layout_warns() {
+        // /code-review指摘（PR #217）: nicola_kb232.yab追加時に一度発生した
+        // 「JIS専用一覧への追記漏れ」（PR #132）と同型の見落としを、
+        // nicola_kakutei.yab追加時にも繰り返しかけていた。
+        let toml_str = r#"
+[general]
+keyboard_model = "us"
+default_layout = "nicola_kakutei.yab"
 left_thumb_key = "VK_F16"
 right_thumb_key = "VK_F17"
 
@@ -2291,11 +2477,12 @@ right_thumb_key = "VK_KANA"
     // ── ADR-115: 打鍵列機能 ──
 
     #[test]
-    fn test_keystroke_sequence_defaults_to_off() {
+    fn test_keystroke_sequence_defaults_to_on() {
+        // 2026-09-13 に既定 Off → On へ変更（ADR-115 決定8追補）。
         let config = AppConfig::default();
         assert_eq!(
             config.general.keystroke_sequence,
-            KeystrokeSequencePolicy::Off
+            KeystrokeSequencePolicy::On
         );
     }
 
@@ -2370,5 +2557,137 @@ steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]
         let round_tripped: AppConfig = validated.into();
         assert_eq!(round_tripped.keystroke_macro.len(), 1);
         assert_eq!(round_tripped.keystroke_macro[0].name, "confirm");
+    }
+
+    // ── ensure_config_exists / ensure_layouts_exist（ADR-178 決定2・決定5）──
+
+    fn unique_temp_dir(name: &str) -> std::path::PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "awase_ensure_user_data_test_{name}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn ensure_config_exists_creates_file_when_missing() {
+        let dir = unique_temp_dir("config_missing");
+        let path = dir.join("config.toml");
+        assert!(!path.exists());
+
+        ensure_config_exists(&path).unwrap();
+
+        assert!(path.exists());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            EMBEDDED_CONFIG_TOML
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_config_exists_never_touches_existing_file() {
+        let dir = unique_temp_dir("config_existing");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[general]\nsimultaneous_threshold_ms = 777\n").unwrap();
+
+        ensure_config_exists(&path).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[general]\nsimultaneous_threshold_ms = 777\n",
+            "既存ファイルの内容が変わってはならない（ADR-178 決定2: 比較も上書きもしない）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_layouts_exist_creates_all_bundled_files_when_dir_missing() {
+        let dir = unique_temp_dir("layouts_missing");
+        let layouts_dir = dir.join("layout");
+        assert!(!layouts_dir.exists());
+
+        ensure_layouts_exist(&layouts_dir).unwrap();
+
+        for (name, content) in EMBEDDED_LAYOUTS {
+            let path = layouts_dir.join(name);
+            assert!(path.exists(), "{name} が生成されていない");
+            assert_eq!(&std::fs::read_to_string(&path).unwrap(), content);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_layouts_exist_does_nothing_when_one_yab_already_present() {
+        let dir = unique_temp_dir("layouts_one_present");
+        let layouts_dir = dir.join("layout");
+        std::fs::create_dir_all(&layouts_dir).unwrap();
+        std::fs::write(layouts_dir.join("custom.yab"), "user data").unwrap();
+
+        ensure_layouts_exist(&layouts_dir).unwrap();
+
+        let entries: Vec<_> = std::fs::read_dir(&layouts_dir)
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "1本でも.yabが存在するなら同梱6ファイルを生成してはならない（ADR-178 決定2）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_layouts_exist_cleans_up_partial_writes_on_failure() {
+        // /code-review指摘（v14 opusレビューMajor M5対応）: 3本目の書き込みを
+        // write_atomicの内部で使う一時ファイル名（<target>.tmp.<pid>）を狙って
+        // 失敗させる。同名のディレクトリを事前に置くと`File::create`が
+        // 失敗する。（3本目**そのもの**の名前にディレクトリを置く方式だと
+        // has_any_yabの拡張子判定に引っかかり「1本でもある」扱いで
+        // ensure_layouts_existが即Ok(())で返ってしまうため使えない。）
+        // 途中まで書いた分（1・2本目）が削除され、次回呼び出しで再度0本から
+        // 全6本の生成を試みられる状態に戻ることを確認する。
+        let dir = unique_temp_dir("layouts_partial_failure");
+        let layouts_dir = dir.join("layout");
+        std::fs::create_dir_all(&layouts_dir).unwrap();
+        let third_name = EMBEDDED_LAYOUTS[2].0;
+        let blocked_tmp = layouts_dir.join(format!("{third_name}.tmp.{}", std::process::id()));
+        std::fs::create_dir_all(&blocked_tmp).unwrap();
+
+        let result = ensure_layouts_exist(&layouts_dir);
+        assert!(
+            result.is_err(),
+            "3本目の一時ファイル名がディレクトリで塞がれているので失敗するはず"
+        );
+
+        for (i, (name, _)) in EMBEDDED_LAYOUTS.iter().enumerate() {
+            if i < 2 {
+                assert!(
+                    !layouts_dir.join(name).exists(),
+                    "{name}（{i}本目）は途中失敗時に片付けられているべき（ADR-178 v14 M5）"
+                );
+            }
+        }
+        assert!(
+            !layouts_dir.join(third_name).exists(),
+            "3本目自体はFile::create段階で失敗しているので書き込まれていないはず"
+        );
+
+        // 次回呼び出しで「0本」から全6本の再生成を試みられることを確認する
+        // （塞いでいた一時ファイル名のディレクトリを除去してから再実行）。
+        std::fs::remove_dir_all(&blocked_tmp).unwrap();
+        ensure_layouts_exist(&layouts_dir).unwrap();
+        for (name, content) in EMBEDDED_LAYOUTS {
+            assert_eq!(
+                std::fs::read_to_string(layouts_dir.join(name)).unwrap(),
+                *content
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

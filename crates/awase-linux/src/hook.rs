@@ -259,6 +259,7 @@ impl EvdevInput {
                     let (key_classification, physical_pos) = classify_key(keycode);
 
                     let raw_event = RawKeyEvent {
+                        was_down: false,
                         vk_code: vk,
                         scan_code: scan,
                         event_type,

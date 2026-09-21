@@ -91,6 +91,8 @@ fn config_file_and_nicola_yab_components_have_never_overwrite() {
         "NicolaKeytopYab",
         "NicolaUsYab",
         "NicolaFYab",
+        "NicolaKb232Yab",
+        "NicolaKakuteiYab",
     ] {
         let tag = extract_tag(&content, &format!(r#"<Component Id="{component_id}""#));
         assert!(
@@ -99,6 +101,38 @@ fn config_file_and_nicola_yab_components_have_never_overwrite() {
              NeverOverwrite=\"yes\" が見つからない（タグ: {tag:?}、ADR-099 \
              決定0）。{component_id} はユーザーが編集しうるデータのため、\
              アップグレード時に上書きされてはならない。"
+        );
+    }
+}
+
+/// ADR-178 決定1（2026-09-17）: `config.toml`/`layout/*.yab` の7コンポーネント
+/// に `Permanent="yes"` を付け、アンインストール時にも削除されないようにする。
+/// これが消えると `Permanent` を消しても実際に出荷済みの環境の挙動は変わらず
+/// （不可逆）、新規インストール環境だけが「アンインストールで消える」旧挙動に
+/// 戻ってしまう——環境間で挙動が分岐する（round1 m4の教訓）。「外しても実害が
+/// 無さそうだから外す」という判断を招かないよう、このテストで固定する。
+#[test]
+fn config_file_and_nicola_yab_components_have_permanent() {
+    let content = main_wxs();
+    for component_id in [
+        "ConfigFile",
+        "NicolaYab",
+        "NicolaKeytopYab",
+        "NicolaUsYab",
+        "NicolaFYab",
+        "NicolaKb232Yab",
+        "NicolaKakuteiYab",
+    ] {
+        let tag = extract_tag(&content, &format!(r#"<Component Id="{component_id}""#));
+        assert!(
+            tag.contains(r#"Permanent="yes""#),
+            "wix/main.wxs の Component Id=\"{component_id}\" タグ本体に \
+             Permanent=\"yes\" が見つからない（タグ: {tag:?}、ADR-178 決定1）。\
+             {component_id} はアンインストール時に削除されてはならない \
+             ユーザーデータ。Permanent は消しても既に出荷済みの環境には \
+             反映されない不可逆な変更のため、新規インストール環境だけが \
+             別挙動になってしまう。docs/adr/178-msi-uninstall-preserve-userdata.md \
+             を確認せず外さないこと。"
         );
     }
 }
@@ -116,6 +150,8 @@ fn known_component_guids_are_unchanged() {
         ("NicolaKeytopYab", "5B75B3B2-A53D-493E-BB62-81AE2B17D8ED"),
         ("NicolaUsYab", "48AA34CA-3723-4B7D-B624-6E0E9C29032C"),
         ("NicolaFYab", "523F3EB9-8E27-4312-A6D1-822D1BF7785F"),
+        ("NicolaKb232Yab", "1E99EC47-D079-4BBB-83E3-781EE85357A6"),
+        ("NicolaKakuteiYab", "D860117F-60C7-45C7-AB47-96F6E51B4F87"),
         ("NgramData", "DCF4BA85-03F3-4EC7-BF17-D870682FFF5E"),
     ];
     for (component_id, expected_guid) in known_guids {
@@ -192,6 +228,7 @@ fn nicola_us_f_kb232_yab_are_bundled_in_msi() {
         ("NicolaUsYab", r"dist\layout\nicola_us.yab"),
         ("NicolaFYab", r"dist\layout\nicola_f.yab"),
         ("NicolaKb232Yab", r"dist\layout\nicola_kb232.yab"),
+        ("NicolaKakuteiYab", r"dist\layout\nicola_kakutei.yab"),
     ] {
         assert!(
             content.contains(&format!(r#"<Component Id="{component_id}""#)),
@@ -248,5 +285,85 @@ fn vcruntime_launch_condition_present() {
          （要素: {condition:?}）。Installed を条件に含めないと、\
          修復・アップグレード・アンインストール時にもこのチェックが \
          働いてしまい、既にインストール済みの環境での操作を壊しうる。"
+    );
+}
+
+/// ADR-178（MSIアンインストール時のユーザーデータ喪失をPermanent化+自己修復で
+/// 防ぐ）v14 opus敵対的レビュー Major M4対応。
+///
+/// 同梱`.yab`は3箇所に同じ名前の集合として現れる: (1) `layout/`の実ファイル、
+/// (2) コア`awase`クレートの`EMBEDDED_LAYOUTS`（`src/config.rs`、自己修復の
+/// 埋め込み既定値）、(3) `wix/main.wxs`のLayoutFiles ComponentGroup
+/// （MSIが配置し、`Permanent="yes"`で保護する対象）。7本目の`.yab`を追加する
+/// とき、3箇所すべてを更新しないと以下の非対称な帰結を生む:
+/// - `main.wxs`に足し忘れる → その`.yab`はMSIで配置されずアンインストール時に
+///   何の保護もされない。後から`Permanent="yes"`を足しても既存環境には
+///   永久に効かない（不可逆）。
+/// - `EMBEDDED_LAYOUTS`に足し忘れる → 自己修復が不完全な集合しか生成しない。
+///   しかも「1本でもあれば何もしない」判定のため次回以降も永久に補完されない。
+///
+/// このテストは3集合が完全一致することを機械的に固定する。
+#[test]
+fn embedded_layouts_layout_dir_and_wix_components_are_in_sync() {
+    // (1) layout/ の実ファイル名（拡張子 .yab のみ）。
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let layout_dir = Path::new(manifest_dir).join("../../layout");
+    let mut from_layout_dir: Vec<String> = fs::read_dir(&layout_dir)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", layout_dir.display()))
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            (path.extension().is_some_and(|ext| ext == "yab"))
+                .then(|| path.file_name().unwrap().to_string_lossy().into_owned())
+        })
+        .collect();
+    from_layout_dir.sort();
+
+    // (2) EMBEDDED_LAYOUTS（src/config.rs）の名前集合。
+    // `include_str!("../layout/<name>")` というパターンから <name> を抜き出す
+    // （ソーステキストの正規表現的走査、コンパイルは介さない）。
+    let config_rs = read_repo_file("src/config.rs");
+    let mut from_embedded: Vec<String> = Vec::new();
+    let needle = "include_str!(\"../layout/";
+    let mut rest = config_rs.as_str();
+    while let Some(start) = rest.find(needle) {
+        let after = &rest[start + needle.len()..];
+        let end = after
+            .find("\")")
+            .unwrap_or_else(|| panic!("unterminated include_str! layout path near: {after:?}"));
+        from_embedded.push(after[..end].to_string());
+        rest = &after[end..];
+    }
+    from_embedded.sort();
+
+    // (3) wix/main.wxs の LayoutFiles ComponentGroup が配置する .yab 名。
+    let wxs = main_wxs();
+    let mut from_wxs: Vec<String> = Vec::new();
+    let needle = "<File Source=\"dist\\layout\\";
+    let mut rest = wxs.as_str();
+    while let Some(start) = rest.find(needle) {
+        let after = &rest[start + needle.len()..];
+        let end = after
+            .find("\" />")
+            .unwrap_or_else(|| panic!("unterminated <File Source=...> near: {after:?}"));
+        from_wxs.push(after[..end].to_string());
+        rest = &after[end..];
+    }
+    from_wxs.sort();
+
+    assert_eq!(
+        from_layout_dir, from_embedded,
+        "layout/ の実ファイル名集合とsrc/config.rsのEMBEDDED_LAYOUTSの名前集合が \
+         一致しない。7本目の.yabを追加した場合はEMBEDDED_LAYOUTSにも \
+         include_str!(\"../layout/<name>\")を追記すること（ADR-178 v14 M4）。"
+    );
+    assert_eq!(
+        from_layout_dir, from_wxs,
+        "layout/ の実ファイル名集合とwix/main.wxsのLayoutFiles ComponentGroupが \
+         配置する.yab名集合が一致しない。7本目の.yabを追加した場合は \
+         wix/main.wxsにもPermanent=\"yes\"付きの<Component>を追記すること \
+         （ADR-178 v14 M4。足し忘れると、その.yabはアンインストールで \
+         無保護のまま削除され、後からPermanentを足しても既存環境には \
+         不可逆に効かない）。"
     );
 }
