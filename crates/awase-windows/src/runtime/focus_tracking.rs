@@ -1097,6 +1097,8 @@ impl Runtime {
                 fence: self.focus_fence(),
             };
             win32_async::spawn_local(async move {
+                // 読み取りの開始時刻を観測の時刻にする（key_pipeline.rs の ImmCrossProbe と同じ、レビュー指摘A-M2）。
+                let read_started = crate::state::TickMs(crate::hook::current_tick_ms());
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
                     let _ = crate::with_app(|app| {
@@ -1106,10 +1108,11 @@ impl Runtime {
                             "[ImmCrossProbe/focus] epoch rejected \
                              (transient window — focus changed since probe spawn)",
                             |app, accepted| {
-                                let now_tick = crate::state::TickMs(crate::hook::current_tick_ms());
-                                app.platform_state
-                                    .ime
-                                    .write_imm_cross_probe(open, now_tick, accepted);
+                                app.platform_state.ime.write_imm_cross_probe(
+                                    open,
+                                    read_started,
+                                    accepted,
+                                );
                                 tracing::debug!(
                                     "[ImmCrossProbe/focus] child-hwnd IME={open} → \
                                      High confidence 観測記録"

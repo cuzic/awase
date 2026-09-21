@@ -3041,6 +3041,10 @@ impl Runtime {
                 fence: accepted.fence,
             };
             win32_async::spawn_local(async move {
+                // 読み取りの**開始時刻**を観測の時刻にする（レビュー指摘A-M2）。await の後に取ると、最大300msの
+                // 不応答窓を挟んだ場合に「届いた時刻」になり、打鍵直後（IMEがキーを処理する前）の古い読み取りが
+                // 予測の fence（`KEY_EFFECT_SETTLE_MS`）を通過して予測を誤って照合・上書きする。OsPoll 経路と同じ規律。
+                let read_started = crate::state::TickMs(hook::current_tick_ms());
                 // SAFETY: read_ime_state_full_async は offload 済み — メインスレッド不要。
                 let snap = crate::ime::read_ime_state_full_async().await;
                 if let Some(open) = snap.ime_on {
@@ -3050,7 +3054,7 @@ impl Runtime {
                             ticket,
                             "[ImmCrossProbe] epoch rejected (focus changed since probe spawn)",
                             |app, inner_accepted| {
-                                let tick_ms = crate::state::TickMs(hook::current_tick_ms());
+                                let tick_ms = read_started;
                                 let ime = &mut app.platform_state.ime;
                                 // ON/OFF: High confidence (ImmCrossProbe source)
                                 ime.write_imm_cross_probe(open, tick_ms, inner_accepted);
