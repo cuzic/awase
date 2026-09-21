@@ -18,17 +18,18 @@ $doneMark = [regex]::Unescape('\u5168\u624b\u9806\u5b8c\u4e86')  # all steps don
 $seqIme   = '--seq=1A,16,1A,16,1A,16,1A'
 # name, variant(bin dir), spike args, config extra lines (;-separated)
 $plan = @(
-  @('gji-dbe-suppress',     'baseline', "$seqDbe",   'dbe_mode_key_policy = "suppress"'),
-  @('gji-dbe-passthrough',  'baseline', "$seqDbe",   'dbe_mode_key_policy = "passthrough"'),
+  # ADR-191 で設定 dbe_mode_key_policy(suppress/passthrough)は撤去した。以前の gji-dbe-suppress と gji-dbe-passthrough は
+  # 同じ構成になるので1つにした（旧キーは config.toml に残っても無視される。round2 C-N4）。
+  @('gji-dbe',              'baseline', "$seqDbe",   ''),
   @('gji-kanji',            'baseline', "$seqKanji", ''),
   @('gji-shift',            'baseline', "$seqShift", 'half_width_alnum_toggle = "all"'),
   @('gji-hz',               'baseline', "--hz",      ''),
-  @('msime-dbe',            'baseline', "$seqDbe --msime",          'dbe_mode_key_policy = "suppress"'),
+  @('msime-dbe',            'baseline', "$seqDbe --msime",          ''),
   @('msime-kanji',          'baseline', "$seqKanji --msime",        ''),
   @('msime-shift',          'baseline', "$seqShift --msime",        'half_width_alnum_toggle = "all"'),
   @('msime-ime-a10',        'a10',      "$seqIme --msime",          ''),
   @('msime-kanji-a10',      'a10',      "$seqKanji --msime",        ''),
-  @('msime-dbe-a10',        'a10',      "$seqDbe --msime",          'dbe_mode_key_policy = "suppress"'),
+  @('msime-dbe-a10',        'a10',      "$seqDbe --msime",          ''),
   @('gji-restore',          'baseline', "--seq=1A",  '')
 )
 foreach ($p in $plan) {

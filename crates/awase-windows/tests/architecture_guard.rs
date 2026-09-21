@@ -5276,7 +5276,7 @@ fn key_effect_predicted_event_is_constructed_only_in_apply_key_effect_prediction
 /// 生成物を手で編集すると、表が黙って学習結果と食い違う（読めないアプリでは観測で訂正されない）。
 /// スクリプトの `--check` でコミット済みの生成物と一致することを機械的に検査する。
 ///
-/// `python3` が無い環境（ローカルの最小構成等）ではスキップする。CI（ubuntu）には有る。
+/// `python3` が無い環境では失敗する（`AWASE_ALLOW_SKIP_GENERATED_CHECK` を立てたときだけスキップ）。CI（ubuntu・windows）には有る。
 #[test]
 fn key_effect_data_matches_generator() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
@@ -5293,6 +5293,13 @@ fn key_effect_data_matches_generator() {
     {
         Ok(out) => out,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // 無言でスキップすると、ランナーから python3 が消えたときに緑のまま検査が消える（round2 C-N7）。
+            // 明示的に許可した環境（ローカルの最小構成）でだけスキップし、CI では失敗させる。
+            assert!(
+                std::env::var_os("AWASE_ALLOW_SKIP_GENERATED_CHECK").is_some(),
+                "python3 が見つからないため key_effect_data.rs の生成物検査ができません。python3 を入れるか、\
+                 ローカルだけ AWASE_ALLOW_SKIP_GENERATED_CHECK=1 でスキップしてください"
+            );
             eprintln!("python3 が無いため key_effect_data.rs の生成物検査をスキップします");
             return;
         }
