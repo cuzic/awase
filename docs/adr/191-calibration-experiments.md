@@ -169,7 +169,7 @@ Engineと実IMEのずれ（押下+Nms時点で、Engineの活性が「実IMEが�
 
 ## 8. 成果物の所在
 - 撤去ブランチ（決め打ちの撤去・打鍵時予測・ADR-189の復元）: `feat/adr191-remove-hardcoded-mode-keys`（develop未マージ）。
-- PR #237（CI道具: 格子・通知・解析スクリプト、`chore/e2e-calibration-tooling`）、PR #238（BUG-151の最小修正、draft）。
+- PR #237（CI道具: 格子・通知・解析スクリプト、`chore/e2e-calibration-tooling`）、PR #238（BUG-151の最小修正。Opusレビューで取り下げ、close済み。BUG-151は撤去ブランチで扱う）。
 - 巡回シミュレータ: `crates/awase-calibration`（`feat/awase-calibration`）。
 - 初期の実験結果とスパイク: `origin/spike/ime-effect-learning`。CI実験用ブランチ: `ci/e2e-adr191`・`ci/e2e-fastgrid`・`ci/e2e-notifygrid`・`ci/e2e-notifyprobe`・`ci/e2e-calibration`（マージ後に整理）。
 - 関連BUG: [BUG-151](../known-bugs/BUG-151.md)（起動直後のEngine固まり）、BUG-153（撤去後の英数・カタカナ握りつぶしの疑い、撤去ブランチ上）。

@@ -8,7 +8,7 @@ summary: |-
   ほぼ予測でき（98.5%）、awaseを通すと仕様から外れる（84.5%、Engine/実IMEのずれ19〜23%）。方針: (1)IMEを状態の正とし、通常はawaseがIME状態を書かず、生キーを通して観測に追随する。
   (2)awaseが書いてよいのは、押した結果がIMEの開閉だけに作用するキー（冪等な`VK_IME_ON/OFF`、beliefに基づく開閉トグル=ADR-189の漢字0x19・GJI/MS-IME本体の半角/全角0xF3/0xF4）だけ。
   ひらがな・カタカナ・英数・無変換・変換など、入力モードや入力中文字列にも作用しうるキーは書かず追随する。線引きはキーのVKでなく、表（IME種別×プリセット×status）の作用分類(a〜e)で決める。
-  (3)BUG-151の最小修正（決定2、shadow-toggleがno-opで終わった打鍵に通過マークを立てる）は、撤去と切り離してdevelop上に新規実装する（PR #238、draft）。
+  (3)BUG-151の最小修正（決定2）を`develop`上で単独に先行させる案（PR #238）は、Opusレビューで取り下げた（2026-09-21、下記決定2）。BUG-151は撤去ブランチ（追随を全モードキーへ広げる`c949ba33`＋打鍵時予測）で扱う。
   (4)キー効果は(状態,キー)→効果の表として持つ。表は、設定の読み取り→awaseを完全バイパスした注入学習（格子第3版=全状態をキーだけで作る）→独立walkでの検証、の3段階ラウンドで作る。
   カスタムキーマップに対応することが目的なので、隠れ状態（入力中の段階）も固定の名前・規則でなく学習した最小のMealy機械として持つ（現実装は暫定の固定段階）。
   (5)予測は物理キーの打鍵時点でbeliefへ反映し（`KeyEffectPredicted`、settle基準のfence）、観測は確認と訂正に回す。観測できないアプリ（TsfNative）では予測が唯一の信号になる。
@@ -16,7 +16,7 @@ summary: |-
 status: |-
   **草案（2026-09-21）。opus敵対レビューround1〜4を実施し、指摘への対応を本文末尾の表にまとめた（停止条件・中止基準・複雑さの収支を含む）。実装は撤去ブランチ（未マージ）。**
   決め打ちの撤去・打鍵時予測・ADR-189の復元は撤去ブランチ`feat/adr191-remove-hardcoded-mode-keys`で実装済み（develop未マージ、CIで検証: 観測あり・読めない条件とも400ms以降ずれ0%）。
-  決定2（BUG-151の最小修正）は別PR #238（draft）。実機（Windows）での撤去後の動作確認は未実施。
+  決定2（BUG-151の最小修正）の単独先行（PR #238）は取り下げ、撤去ブランチで扱う。実機（Windows）での撤去後の動作確認は未実施。
 related_adr:
   - "ADR-138"
   - "ADR-162"
@@ -40,7 +40,7 @@ related_adr:
 round3・4の指摘への対応（反映・既に反映済み・見送り）は、本文末尾「Opus round3・4 の指摘への対応」の表にある。停止条件・中止基準は決定1、複雑さの収支は決定5に置いた。
 round4の「ADR-192決定3b」の指摘はADR-192側で訂正済み。
 - 実装: 決め打ちの撤去・打鍵時予測・ADR-189の固定セットの復元は、撤去ブランチ`feat/adr191-remove-hardcoded-mode-keys`にある（**develop未マージ**、下記「実装の現状」）。決定2（BUG-151の最小修正）は、
-  撤去と切り離してdevelop上に新規実装し、別PR #238（draft）にした。
+  撤去と切り離してdevelop上に新規実装しようとしたが、Opusレビューで取り下げた（PR #238はclose、下記決定2）。
 - 測定の出典: 初期の実測（決定の根拠）は`spike/ime-effect-learning`ブランチ（`tools/e2e/ime_key_matrix/`、結果は`results/elw2`・`elw8`・`elw9`）。格子・通知・検証ラウンドのCI測定は、
   補助資料[191-calibration-experiments.md](191-calibration-experiments.md)にrun URL付きでまとめた。スパイクの`--exp`は`spike/ime-effect-learning`の`91f17341`時点にだけ存在し、現行のCI道具PR（#237）には無い
   （BUG-151.mdの再現手順の`--exp=70:n:12`は、現行コードでは実行できない）。
@@ -181,8 +181,10 @@ ADR-187（follow）・ADR-188・ADR-189（半角/全角のToggle上書き）の�
 
 **実装状況（2026-09-21）**: 決定2の最小修正は、`develop`にも撤去ブランチにも、これまで**実装されていなかった**。撤去ブランチのBUG-151修正コミット`c949ba33`は決定2の縮小案とは別物で、
 追随の対象を`VK_IME_ON`/`VK_IME_OFF`以外の全モードキーへ広げる変更（`is_followed_mode_key`）であり、静的な`shadow_action`の撤去が前提のため、`develop`に単独では当たらない
-（`develop`ではひらがな0xF2が`shadow_effect`で`TurnOn`の`shadow_action`を持ち、追随の対象から外れる）。そのため決定2どおりの最小修正を`develop`上で新規に実装し、PR #238（draft）にした
-（検証はCIの`atok-passthrough-cold`系のA/Bで代替中、決定的な再検証は道具PR #237のマージ後）。撤去ブランチをマージするときは、`c949ba33`と重なるので、この分岐が不要になるかを整理する。
+（`develop`ではひらがな0xF2が`shadow_effect`で`TurnOn`の`shadow_action`を持ち、追随の対象から外れる）。そのため決定2どおりの最小修正を`develop`上で新規に実装し、PR #238（draft）にしたが、**Opusレビュー（Blocker 3件・Major 6件）を受け、ユーザー判断で取り下げ、PR #238はcloseした（2026-09-21）**。
+主な指摘: (a)no-op分岐は親指キー×belief ONの`delegate_owned`で毎打鍵通り、武装が広すぎて`reschedule_ime_refresh`が早期returnしIMEポーリングが止まる、(b)`arm`と20ms refresh予約が対になっていない（無変換/変換は`may_change_ime`対象外で、親指キーは`Decision::Consume`のため予約が走らない）、
+(c)飛行中actuationのgate（`attempts`）が恒真（`actuation_for`の呼び出し元がdrift correction 1箇所のみ）。**BUG-151は撤去ブランチで扱う**（`delegate_owned`は撤去ブランチで削除済みなので(a)の前提が消え、追随は全モードキーへ広げてあり、CIで観測あり400ms以降0%・読めない条件0%を確認済み）。
+以下は、単独先行案の設計記述（履歴）として残す。
 
 `kp_stage_shadow_ime_toggle`が**no-op（`effective_open() == current`、awaseは書き込む必要が無かった）で終わった打鍵**にだけ、通過マーク（`arm_mode_key_pass_mark`）を立てる
 （`key_pipeline.rs`のno-op分岐、10行程度）。20ms後の再読み取りは通過マークでtyping-idleガードを越え、`applied`がUnknownでも実IMEを読む。
@@ -192,7 +194,7 @@ ADR-187（follow）・ADR-188・ADR-189（半角/全角のToggle上書き）の�
   武装をこのreturnより前へ動かさない。
 - **武装条件に「awaseが書いて結果待ちの窓ではないこと」を足す**（round3 RM1で訂正）。判定材料は`applied_state()`が`AppliedImeState::Optimistic`（awaseが書いたが未確認）でないこと。
   `active_actuation`/`attempts`は使わない: 設定する唯一の場所`actuation_for`の呼び出し元は`ime_refresh.rs`の`ir_apply_drift_correction`の1箇所だけで、守りたいシナリオ
-  （Ctrl+変換の`dispatch_ime_set_open`の非同期ImmCross write）を表さない。**PR #238は、この節の旧記述どおり`attempts`で判定している**ので、`Optimistic`への差し替えが要る（PR #238側で扱う）。
+  （Ctrl+変換の`dispatch_ime_set_open`の非同期ImmCross write）を表さない。PR #238（close済み）は、この節の旧記述どおり`attempts`で判定していた（Opusレビューの指摘(c)）。単独先行案を再開する場合は`Optimistic`（または`last_explicit_ime_action_ms`）への差し替えが要る。
   BUG-151のcoldケースは`applied=Unknown`なので通る。通過マークの観測は`invalidate_intents_if_mode_key_pass_live`（`intent_store.remove(hwnd)`、
   **窓単位**で意図を全部消す）を呼ぶので、直前の明示IME操作（Ctrl+変換）のImmCross書き込みが飛行中に無関係な意図まで巻き添えにしない。
 - **武装は`!delegate_owned`に限る**（round3 RM2）。no-op分岐は`if !delegate_owned { … 意図の書き込み … }`ブロックの外側にあり、`delegate_owned`のときはこの打鍵の意図が書かれていないので、上の「理由」が成立しない。
