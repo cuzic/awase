@@ -667,10 +667,24 @@ mod app {
         BringWindowToTop, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow,
         GetMessageW, GetWindowThreadProcessId, PostMessageW, PostQuitMessage, RegisterClassExW,
         SetForegroundWindow, ShowWindow, TranslateMessage, CW_USEDEFAULT, MSG, SW_SHOW, WM_CLOSE,
-        WM_DESTROY, WNDCLASSEXW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+        WM_CHAR, WM_DESTROY, WM_IME_COMPOSITION, WM_IME_ENDCOMPOSITION, WM_IME_NOTIFY,
+        WM_IME_STARTCOMPOSITION, WM_INPUTLANGCHANGE, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN,
+        WNDCLASSEXW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
     };
 
     use super::store::{push, Log, Rec, Store, TOP};
+
+    /// 窓に届いたメッセージを記録するための、ログと起点時刻(ウィンドウプロシージャから参照する)。
+    static WND_LOG: std::sync::OnceLock<(Log, Instant)> = std::sync::OnceLock::new();
+
+    fn scan_for(vk: u32) -> u16 {
+        match vk {
+            0x4B => 0x25, // K
+            0x41 => 0x1E, // A
+            0x0D => 0x1C, // Enter
+            _ => 0,
+        }
+    }
 
     /// スパイク/chrome_probe と同じ目印。`AWASE_TEST_INJECTION=1` の awase は、この目印の注入を物理キーとして扱う。
     const AUTO_MARKER: usize = awase_windows::hook::TEST_INJECTION_MARKER;
@@ -694,7 +708,7 @@ mod app {
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
                     wVk: VIRTUAL_KEY(u16::try_from(vk).unwrap_or(0)),
-                    wScan: 0,
+                    wScan: scan_for(vk),
                     dwFlags: if down {
                         KEYBD_EVENT_FLAGS(0)
                     } else {
@@ -734,6 +748,24 @@ mod app {
     }
 
     unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+        // 届いたキー/IME メッセージを記録する(キーが窓に届いているか、IMM 経路の composition が来るかの切り分け用)。
+        if let Some((log, t0)) = WND_LOG.get() {
+            let name = match msg {
+                WM_KEYDOWN => Some("WM_KEYDOWN"),
+                WM_KEYUP => Some("WM_KEYUP"),
+                WM_SYSKEYDOWN => Some("WM_SYSKEYDOWN"),
+                WM_CHAR => Some("WM_CHAR"),
+                WM_IME_STARTCOMPOSITION => Some("WM_IME_STARTCOMPOSITION"),
+                WM_IME_COMPOSITION => Some("WM_IME_COMPOSITION"),
+                WM_IME_ENDCOMPOSITION => Some("WM_IME_ENDCOMPOSITION"),
+                WM_IME_NOTIFY => Some("WM_IME_NOTIFY"),
+                WM_INPUTLANGCHANGE => Some("WM_INPUTLANGCHANGE"),
+                _ => None,
+            };
+            if let Some(name) = name {
+                push(log, *t0, "WNDMSG", format!("{name} wp=0x{:X} lp=0x{:X}", wp.0, lp.0));
+            }
+        }
         // SAFETY: ウィンドウプロシージャ。DefWindowProcW/PostQuitMessage は任意の引数で安全。
         unsafe {
             if msg == WM_DESTROY {
@@ -808,6 +840,7 @@ mod app {
 
         let t0 = Instant::now();
         let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let _ = WND_LOG.set((Arc::clone(&log), t0));
 
         // SAFETY: メインスレッド(STA)で COM/TSF と窓を初期化する。以降の COM 呼び出しは同じスレッドから行う。
         let (thread_mgr, _doc, _ctx) = unsafe {
@@ -920,8 +953,9 @@ mod app {
         out("--- 集計 ---");
         let count = |tag: &str| recs.iter().filter(|r| r.tag == tag).count();
         out(&format!(
-            "KEY={} COMPOSITION-START={} COMPOSITION-UPDATE={} COMPOSITION-END={} RequestLock={} InsertTextAtSelection={} SetText={}",
+            "KEY={} WNDMSG={} COMPOSITION-START={} COMPOSITION-UPDATE={} COMPOSITION-END={} RequestLock={} InsertTextAtSelection={} SetText={}",
             count("KEY"),
+            count("WNDMSG"),
             count("COMPOSITION-START"),
             count("COMPOSITION-UPDATE"),
             count("COMPOSITION-END"),
