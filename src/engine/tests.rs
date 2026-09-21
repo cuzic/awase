@@ -7246,6 +7246,91 @@ mod engine_integration_tests {
         engine
     }
 
+    // ── M2 回帰防止（`discard_ime_open_request`）: 明示config `muhenkan_solo_tap_ime_action`
+    //    （優先順位2、ADR-191で残した唯一の open 軸 actuation 供給元）が立てた
+    //    `ime_open_requested` が、ToggleEngine/SwapLayout の内部 flush 経由で後続キーへ漏れない ──
+    //    撤去コミット 983a6bdf の本文が「後続で書き直す」と宣言していたテスト（レビュー指摘C-M1）。
+    //    旧テストは撤去済みの `set_muhenkan_delegate_to_open_axis` を使っていたので、
+    //    残った setter `set_muhenkan_solo_tap_ime_action` に置き換えた。
+
+    /// `muhenkan_vk` を設定し、無変換の単独タップに明示config `TurnOff` を持たせた `Engine`。
+    fn make_test_engine_with_muhenkan_solo_tap_turn_off() -> Engine {
+        let mut engine = make_test_engine();
+        engine.set_thumb_key_solo_tap_config(
+            Some(VK_NONCONVERT),
+            ModeKeyConfig::from_legacy_bools(false, true),
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        engine.set_muhenkan_solo_tap_ime_action(Some(ShadowImeAction::TurnOff));
+        engine
+    }
+
+    /// 対照: 上の設定で無変換が単独タップ確定すると `SetOpen(false)` が出る（＝以下の
+    /// 「漏れない」テストが、そもそも ime_open_requested が立つ設定で走っていることの裏付け）。
+    #[test]
+    fn muhenkan_solo_tap_ime_action_fires_set_open_on_confirmed_solo_tap() {
+        let mut engine = make_test_engine_with_muhenkan_solo_tap_turn_off();
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+            )),
+            "confirmed solo tap with muhenkan_solo_tap_ime_action=TurnOff must emit SetOpen(false), got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// 無変換が物理的に押下中（`PendingThumb`、まだ単独タップ確定前）に
+    /// `EngineCommand::ToggleEngine` が届くと、`toggle_enabled()` 内部の flush が
+    /// `ThumbRawVkEmission::Allowed` で保留キーを強制的に単独タップ確定させ、
+    /// `ime_open_requested` をセットしうる。この「確定」はユーザーが実際に無変換をタップした
+    /// のではなくトレイ操作等の無関係な外部イベントによる強制解決であり、素通りさせると
+    /// 無関係な次の打鍵でスプリアスな `SetOpen` が発火する。`discard_ime_open_request`
+    /// （`engine.rs`）で捨てることを固定する。
+    #[test]
+    fn toggle_engine_discards_pending_ime_open_request_not_leak_to_later_key() {
+        let mut engine = make_test_engine_with_muhenkan_solo_tap_turn_off();
+
+        // 無変換を物理的に押下（まだ単独タップ確定前、PendingThumb）。
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+
+        // トレイ操作等で ToggleEngine が届く → 内部 flush で強制的に単独タップ確定 →
+        // ime_open_requested がセットされうる。もう一度 ToggleEngine を呼んで元の enabled へ戻す。
+        let _ = engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx());
+        let _ = engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx());
+
+        // 無関係な後続キー入力に、捨てられたはずの ime_open_requested に由来する SetOpen が漏れないこと。
+        let d = engine.on_input(Ev::down(VK_A).at(9000).build(), &ime_on_ctx());
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "stale ime_open_requested from ToggleEngine's internal flush must not leak \
+             into an unrelated later key, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// M2 回帰防止（`SwapLayout` 版、上記 `ToggleEngine` 版と対称）。
+    #[test]
+    fn swap_layout_discards_pending_ime_open_request_not_leak_to_later_key() {
+        let mut engine = make_test_engine_with_muhenkan_solo_tap_turn_off();
+
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+
+        let new_layout = make_layout();
+        let _ = engine.on_command(EngineCommand::SwapLayout(new_layout), &ime_on_ctx());
+
+        let d = engine.on_input(Ev::down(VK_A).at(9000).build(), &ime_on_ctx());
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "stale ime_open_requested from SwapLayout's internal flush must not leak \
+             into an unrelated later key, got {:?}",
+            effects_of(&d)
+        );
+    }
+
     // ── ADR-182 決定1: 文字→親指の押下間隔が閾値を超えて`PendingChar`が単独確定された直後に
     //    親指が`PendingThumb`になり、単独タップとして生の親指VKが出る不具合の回帰テスト ──
 
