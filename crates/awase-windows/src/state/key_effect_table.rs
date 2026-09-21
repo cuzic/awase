@@ -81,15 +81,13 @@ impl PredictedEffect {
 const fn lookup(preset: KeymapPreset, vk: u16) -> Option<[KeyEffect; 4]> {
     use KeyEffect::{ImeOff, ImeOn, NoChange, SetKana, ToggleAlnum, Unknown};
     let row = match (preset, vk) {
-        // 0xF0 VK_DBE_ALPHANUMERIC → Eisu
-        (KeymapPreset::Atok, 0xF0) => [NoChange, ToggleAlnum, ToggleAlnum, ToggleAlnum],
+        // 0xF0 VK_DBE_ALPHANUMERIC → Eisu / 0xF2 VK_DBE_HIRAGANA → Kana(=Hiragana)
+        // （ATOK はどちらも英数⇔かなのトグル。Direct は Eisu だけ未割り当てで NoChange）
+        (KeymapPreset::Atok, 0xF0 | 0xF2) => [NoChange, ToggleAlnum, ToggleAlnum, ToggleAlnum],
         (KeymapPreset::MsIme, 0xF0) => [ImeOn, ToggleAlnum, ToggleAlnum, ToggleAlnum],
-        // 0xF1 VK_DBE_KATAKANA → Katakana
+        // 0xF1 VK_DBE_KATAKANA → Katakana（MS-IME は Hiragana(0xF2) と同じくかな固定）
         (KeymapPreset::Atok, 0xF1) => [NoChange, NoChange, NoChange, NoChange],
-        (KeymapPreset::MsIme, 0xF1) => [ImeOn, SetKana, SetKana, SetKana],
-        // 0xF2 VK_DBE_HIRAGANA → Kana(=Hiragana)
-        (KeymapPreset::Atok, 0xF2) => [NoChange, ToggleAlnum, ToggleAlnum, ToggleAlnum],
-        (KeymapPreset::MsIme, 0xF2) => [ImeOn, SetKana, SetKana, SetKana],
+        (KeymapPreset::MsIme, 0xF1 | 0xF2) => [ImeOn, SetKana, SetKana, SetKana],
         // 0xF3/0xF4 VK_DBE_SBCSCHAR/DBCSCHAR → Hankaku/Zenkaku
         (KeymapPreset::Atok | KeymapPreset::MsIme, 0xF3 | 0xF4) => [ImeOn, ImeOff, ImeOff, ImeOff],
         // 0x1C VK_CONVERT → Henkan

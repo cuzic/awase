@@ -805,8 +805,8 @@ impl ImeModel {
                 let prev = self.key_effect;
                 self.key_effect = Some(KeyEffectPrediction {
                     at_ms: envelope.time.tick_ms,
-                    open: open.or(prev.and_then(|p| p.open)),
-                    mode: mode.or(prev.and_then(|p| p.mode)),
+                    open: open.or_else(|| prev.and_then(|p| p.open)),
+                    mode: mode.or_else(|| prev.and_then(|p| p.mode)),
                 });
                 if let Some(mode) = mode {
                     self.input_mode = mode;
