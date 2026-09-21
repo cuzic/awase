@@ -1,0 +1,39 @@
+2026-09-21T03:27:47.105147Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-21T03:27:47.109089Z  INFO awase::engine::engine: Engine deactivated (ime=false, romaji=true, japanese=true, user=true, reason=Inactive(ImeOff))
+2026-09-21T03:27:51.554778Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-21T03:27:51.559509Z DEBUG on_ime_apply_complete{open=true outcome=Unwarranted generation=None reason=EngineDecision}: awase::journal: ime open applied seq=115 elapsed_ms=15884 open=true outcome="Unwarranted" reason="EngineDecision"
+2026-09-21T03:27:51.559546Z DEBUG on_ime_apply_complete{open=true outcome=Unwarranted generation=None reason=EngineDecision}: awase_windows::timer: Timer set: logical=101, ms=20, os_id=10241
+2026-09-21T03:27:57.408242Z  INFO awase::engine::engine: Engine deactivated (ime=false, romaji=true, japanese=true, user=true, reason=Inactive(ImeOff))
+2026-09-21T03:28:03.232927Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-21T03:28:05.138828Z  INFO awase::engine::engine: Engine deactivated (ime=true, romaji=false, japanese=true, user=true, reason=Inactive(NotRomajiInput))
+2026-09-21T03:28:09.013634Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-21T03:28:10.959521Z  INFO awase::engine::engine: Engine deactivated (ime=true, romaji=false, japanese=true, user=true, reason=Inactive(NotRomajiInput))
+2026-09-21T03:28:12.907608Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-21T03:28:16.784819Z  INFO awase::engine::engine: Engine deactivated (ime=true, romaji=false, japanese=true, user=true, reason=Inactive(NotRomajiInput))
+2026-09-21T03:28:18.720757Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-21T03:28:32.284205Z  INFO awase::engine::engine: Engine deactivated (ime=true, romaji=false, japanese=true, user=true, reason=Inactive(NotRomajiInput))
+2026-09-21T03:28:40.025914Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-21T03:28:43.942584Z  INFO awase::engine::engine: Engine deactivated (ime=false, romaji=true, japanese=true, user=true, reason=Inactive(ImeOff))
+2026-09-21T03:28:53.599307Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-21T03:29:09.135716Z  INFO awase::engine::engine: Engine deactivated (ime=false, romaji=true, japanese=true, user=true, reason=Inactive(ImeOff))
+2026-09-21T03:29:16.823614Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-21T03:29:16.828587Z DEBUG on_ime_apply_complete{open=true outcome=Unwarranted generation=None reason=EngineDecision}: awase::journal: ime open applied seq=620 elapsed_ms=101156 open=true outcome="Unwarranted" reason="EngineDecision"
+2026-09-21T03:29:16.828624Z DEBUG on_ime_apply_complete{open=true outcome=Unwarranted generation=None reason=EngineDecision}: awase_windows::timer: Timer set: logical=101, ms=20, os_id=9921
+2026-09-21T03:29:20.724924Z  INFO awase::engine::engine: Engine deactivated (ime=true, romaji=false, japanese=true, user=true, reason=Inactive(NotRomajiInput))
+2026-09-21T03:29:32.480997Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-21T03:29:36.258123Z  INFO awase::engine::engine: Engine deactivated (ime=true, romaji=false, japanese=true, user=true, reason=Inactive(NotRomajiInput))
+2026-09-21T03:29:42.083588Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-21T03:29:44.036801Z  INFO awase::engine::engine: Engine deactivated (ime=true, romaji=false, japanese=true, user=true, reason=Inactive(NotRomajiInput))
+2026-09-21T03:29:47.921376Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-21T03:29:55.723788Z  INFO awase::engine::engine: Engine deactivated (ime=false, romaji=true, japanese=true, user=true, reason=Inactive(ImeOff))
+2026-09-21T03:29:59.567783Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-21T03:29:59.572407Z DEBUG on_ime_apply_complete{open=true outcome=Unwarranted generation=None reason=EngineDecision}: awase::journal: ime open applied seq=913 elapsed_ms=143901 open=true outcome="Unwarranted" reason="EngineDecision"
+2026-09-21T03:29:59.572611Z DEBUG on_ime_apply_complete{open=true outcome=Unwarranted generation=None reason=EngineDecision}: awase_windows::timer: Timer set: logical=101, ms=20, os_id=9724
+2026-09-21T03:30:03.486412Z  INFO awase::engine::engine: Engine deactivated (ime=false, romaji=true, japanese=true, user=true, reason=Inactive(ImeOff))
+2026-09-21T03:30:13.158054Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-21T03:30:13.165045Z DEBUG on_ime_apply_complete{open=true outcome=Unwarranted generation=None reason=EngineDecision}: awase::journal: ime open applied seq=1024 elapsed_ms=157494 open=true outcome="Unwarranted" reason="EngineDecision"
+2026-09-21T03:30:13.165261Z DEBUG on_ime_apply_complete{open=true outcome=Unwarranted generation=None reason=EngineDecision}: awase_windows::timer: Timer set: logical=101, ms=20, os_id=9665
+2026-09-21T03:30:22.858708Z  INFO awase::engine::engine: Engine deactivated (ime=true, romaji=false, japanese=true, user=true, reason=Inactive(NotRomajiInput))
+2026-09-21T03:30:28.666690Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+2026-09-21T03:30:34.445612Z  INFO awase::engine::engine: Engine deactivated (ime=true, romaji=false, japanese=true, user=true, reason=Inactive(NotRomajiInput))
+script error: Output type incorrect: bool (expecting ())

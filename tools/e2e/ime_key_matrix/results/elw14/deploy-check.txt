@@ -1,0 +1,8 @@
+build: BUILD_OK
+head: 775b72a4 fix(adr-191): clippy謖・遭(or_fun_call縲∝酔荳譛ｬ菴薙・match閻・繧堤峩縺・
+   Compiling awase-windows v1.20.1 (C:\Users\cuzic\scoop\persist\msys2\home\cuzic\awase\crates\awase-windows)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 33.16s
+branch: feat/adr191-remove-hardcoded-mode-keys
+exe: 09/21/2026 12:22:48
+script error: Output type incorrect: bool (expecting ())
+Error: exit code 1

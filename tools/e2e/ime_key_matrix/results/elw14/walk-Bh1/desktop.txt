@@ -1,0 +1,8 @@
+LogonUI: 0
+screensaver: 0
+ USERNAME              SESSIONNAME        ID  STATE   IDLE TIME  LOGON TIME
+>cuzic                 console             1  Active      none   2026/09/20 21:40
+
+foreground: hwnd=461018 title=perplexity のクレジットを使った記憶が全然ないんだけど。 - 職場 - Microsoft? Edge pid=17424 proc=msedge
+script error: Output type incorrect: bool (expecting ())
+Error: exit code 1

@@ -1,0 +1,3 @@
+args=--walk=100 --seed=1 --hold=180 --activate-gji --delay=22000
+script error: Output type incorrect: bool (expecting ())
+Error: exit code 1
