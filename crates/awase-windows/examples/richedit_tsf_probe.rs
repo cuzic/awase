@@ -27,10 +27,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClassInfoExW,
     GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GetWindowThreadProcessId,
-    PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW, SetForegroundWindow,
-    ShowWindow, TranslateMessage, CW_USEDEFAULT, GUITHREADINFO, MSG, SW_SHOW, WM_CLOSE,
-    WM_DESTROY, WM_GETTEXT, WM_GETTEXTLENGTH, WM_SETTEXT, WNDCLASSEXW, WS_BORDER, WS_CHILD,
-    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW, SetForegroundWindow, ShowWindow,
+    TranslateMessage, CW_USEDEFAULT, GUITHREADINFO, MSG, SW_SHOW, WM_CLOSE, WM_DESTROY, WM_GETTEXT,
+    WM_GETTEXTLENGTH, WM_SETTEXT, WNDCLASSEXW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW,
+    WS_VISIBLE,
 };
 
 /// スパイク/chrome_probe と同じ目印。`AWASE_TEST_INJECTION=1` の awase は、この目印の注入を物理キーとして扱う。
@@ -132,6 +132,39 @@ fn bring_to_front(hwnd: HWND) -> bool {
     }
 }
 
+/// 前面窓が `top`、かつそのスレッドのフォーカスが `rich` にあるか。
+/// `GetGUIThreadInfo` が失敗した場合は false（フォーカスを確認できないままキーを送らない）。
+fn focus_on_probe(top: HWND, rich: HWND) -> bool {
+    unsafe {
+        if GetForegroundWindow() != top {
+            return false;
+        }
+        let mut gi = GUITHREADINFO {
+            cbSize: size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        GetGUIThreadInfo(0, &raw mut gi).is_ok() && gi.hwndFocus == rich
+    }
+}
+
+/// ログ用: 前面窓とフォーカス窓のクラス名、および `focus_on_probe` の判定。
+fn focus_report(top: HWND, rich: HWND) -> String {
+    unsafe {
+        let fg = GetForegroundWindow();
+        let mut gi = GUITHREADINFO {
+            cbSize: size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        let got = GetGUIThreadInfo(0, &raw mut gi).is_ok();
+        format!(
+            "FG class={} / focus class={} (GetGUIThreadInfo ok={got}, on_probe={})",
+            class_of(fg),
+            class_of(gi.hwndFocus),
+            focus_on_probe(top, rich)
+        )
+    }
+}
+
 fn read_text(h: HWND) -> String {
     unsafe {
         let len = SendMessageW(h, WM_GETTEXTLENGTH, None, None).0;
@@ -151,12 +184,7 @@ fn read_text(h: HWND) -> String {
 fn clear_text(h: HWND) {
     unsafe {
         let empty = wide("");
-        let _ = SendMessageW(
-            h,
-            WM_SETTEXT,
-            None,
-            Some(LPARAM(empty.as_ptr() as isize)),
-        );
+        let _ = SendMessageW(h, WM_SETTEXT, None, Some(LPARAM(empty.as_ptr() as isize)));
     }
 }
 
@@ -196,6 +224,22 @@ fn main() {
     let log_path = arg_value(&args, "--log=").unwrap_or_else(|| "richedit_tsf_probe.log".into());
     let _ = std::fs::remove_file(&log_path);
     let mut log = Log(std::fs::File::create(&log_path).expect("log"));
+    // panic フック: ワーカー/メインスレッドの panic の内容をログに残す(ログは1行ずつ書き出しているので、
+    // panic した時点までの記録は失われず、原因の行だけが欠けるのを防ぐ)。
+    {
+        let path = log_path.clone();
+        std::panic::set_hook(Box::new(move |info| {
+            let s = format!("PANIC: {info}\n");
+            eprintln!("{s}");
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&path)
+            {
+                let _ = f.write_all(s.as_bytes());
+            }
+        }));
+    }
 
     unsafe {
         // Msftedit.dll が RICHEDIT50W を登録する。
@@ -283,45 +327,49 @@ fn main() {
     let worker = std::thread::spawn(move || {
         let top = hwnd_of(&TOP);
         let rich = hwnd_of(&RICH);
-        let mut log = Log(
-            std::fs::OpenOptions::new()
-                .append(true)
-                .open(arg_value(&std::env::args().collect::<Vec<_>>(), "--log=").unwrap_or_else(
-                    || "richedit_tsf_probe.log".into(),
-                ))
-                .expect("log"),
-        );
+        let mut log = Log(std::fs::OpenOptions::new()
+            .append(true)
+            .open(
+                arg_value(&std::env::args().collect::<Vec<_>>(), "--log=")
+                    .unwrap_or_else(|| "richedit_tsf_probe.log".into()),
+            )
+            .expect("log"));
         sleep(1500);
         let fronted = bring_to_front(top);
         log.line(&format!("前面化: {fronted}"));
         sleep(800);
-        unsafe {
-            let fg = GetForegroundWindow();
-            let mut gi = GUITHREADINFO {
-                cbSize: size_of::<GUITHREADINFO>() as u32,
-                ..Default::default()
-            };
-            let _ = GetGUIThreadInfo(0, &raw mut gi);
-            log.line(&format!(
-                "FG class={} / focus class={}",
-                class_of(fg),
-                class_of(gi.hwndFocus)
-            ));
-        }
-        for i in 1..=repeat {
-            clear_text(rich);
-            sleep(200);
-            press(0x16, 40); // VK_IME_ON(冪等)
-            sleep(500);
-            if idle_ms > 0 {
-                sleep(idle_ms);
+        log.line(&focus_report(top, rich));
+        // キーを注入する前に、前面かつフォーカスがプローブの RichEdit にあることを確かめる。
+        // 満たさないままキーを送ると、ユーザーの実際のウィンドウに IME ON と `ka` が入ってしまう。
+        'trials: {
+            if !fronted || !focus_on_probe(top, rich) {
+                log.line("ABORT: 前面化またはフォーカスに失敗したためキーを注入しない");
+                break 'trials;
             }
-            press(0x4B, 30); // K
-            sleep(30);
-            press(0x41, 30); // A
-            sleep(700);
-            let text = read_text(rich);
-            log.line(&format!("TEXT n={i} idle={idle_ms}ms text={text:?}"));
+            for i in 1..=repeat {
+                clear_text(rich);
+                sleep(200);
+                if !focus_on_probe(top, rich) {
+                    log.line(&format!("ABORT n={i}: 注入前にフォーカスが外れた"));
+                    break 'trials;
+                }
+                press(0x16, 40); // VK_IME_ON(冪等)
+                sleep(500);
+                if idle_ms > 0 {
+                    sleep(idle_ms);
+                }
+                // idle 中にユーザーが別窓へ切り替えた場合に備え、打鍵の直前にも確認する。
+                if !focus_on_probe(top, rich) {
+                    log.line(&format!("ABORT n={i}: idle 後にフォーカスが外れた"));
+                    break 'trials;
+                }
+                press(0x4B, 30); // K
+                sleep(30);
+                press(0x41, 30); // A
+                sleep(700);
+                let text = read_text(rich);
+                log.line(&format!("TEXT n={i} idle={idle_ms}ms text={text:?}"));
+            }
         }
         log.line("=== 完了 ===");
         unsafe {
