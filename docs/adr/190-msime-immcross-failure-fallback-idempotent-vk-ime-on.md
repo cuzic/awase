@@ -11,7 +11,7 @@ summary: |-
   `[ImmCross, MsImeDirect]`にし、述語を`kind==MsIme`だけにする(同時にしか入れられない)。`KanjiToggle`(非冪等な機構)は到達不能になるので**同じ変更で撤去する**
   (ユーザー判断: VK_IME_ON/OFFはIME種別によらず同じ挙動で常に安全。`ImeKeyKind::KanjiToggle`=物理VK_KANJIキーの分類は別物で残す)。
 status: |-
-  **実装済み(未マージ)・CI実機E2Eで検証済み**。opus round1〜3で収束(round3: Blocker無し)、KanjiToggle撤去をユーザー判断で決定に追加。実装はfeb49ffd(決定1〜4)・ef2d73a7(FallbackSent削除)・c2163b69(CI判定窓)。CI実機(run 35545478699): sc-dbe/sc-shift-msime-native 各3/3 PASS、sc-kanji-msime-native 3回目はスパイク側のkが+6.9s遅れて判定窓を超えた「?」だったのでチェッカーを直した(窓の上限=次の手順の押下)。PR #231のCI(windows-build含む全ジョブ)PASS、`/code-review low`の指摘4件のうち実害のある2件(--seq不正トークン、欠番符号のテスト)を修正。実機(dragonflyg4)未検証。CI検証済み(a8: run 35515406371、a9: run 35516320434)。実機(dragonflyg4)未検証。
+  **実装済み(未マージ)・CI実機E2Eで検証済み**。opus round1〜3で収束(round3: Blocker無し)、KanjiToggle撤去をユーザー判断で決定に追加。実装はfeb49ffd(決定1〜4)・ef2d73a7(FallbackSent削除)・c2163b69(CI判定窓)。CI実機(run 35545478699): sc-dbe/sc-shift-msime-native 各3/3 PASS、sc-kanji-msime-native 3回目はスパイク側のkが+6.9s遅れて判定窓を超えた「?」だったのでチェッカーを直した(窓の上限=次の手順の押下)。PR #231のCI(windows-build含む全ジョブ)PASS、`/code-review low`の指摘4件のうち実害のある2件(--seq不正トークン、欠番符号のテスト)を修正。実機(dragonflyg4)検証済み(下記「実機検証結果」)。CI検証済み(a8: run 35515406371、a9: run 35516320434)。実機(dragonflyg4)検証済み(下記「実機検証結果」)。
 related_adr:
   - "ADR-063"
   - "ADR-089"
@@ -192,6 +192,25 @@ Plain/Unknown(構造的に到達不能)。`imm_cross_is_first_applicable`は全�
 - CI実機E2E: 本変更のビルドで`sc-dbe/kanji/shift-msime-native`が各3/3 PASS。`sc-dbe-msime-native-noawase`との一致。
 - 実機(dragonflyg4、Microsoft IME): (a)**物理キーを伴わないopen**(engine起点)でImmCrossを失敗させ、`VK_IME_ON`だけで開くか(a9が示せなかった点)、
   (b)決定5のレイテンシ、(c)`KanjiToggle`が到達しなかった既存経路(Chrome/Edge等)が撤去前後で同じ挙動か(golden)。
+
+## 実機検証結果(dragonflyg4、2026-09-21、`ci/e2e-scenarios`ビルド、`tools/e2e/ime_key_matrix/device/`)
+
+実機のIMEはGJI(実環境)とMicrosoft IME本体(スパイクが`--msime`でアクティブ化、終了後にGJIへ復帰)。awaseはユーザーの`config.toml`(`gji_thumb_key_ime_toggle=true`等)を渡して別worktreeのバイナリを起動。
+
+| シナリオ | 結果 | 備考 |
+|---|---|---|
+| GJI × DBE(suppress/passthrough)、漢字/IME ON・OFF、Shift単独 | **全PASS** | 退行なし(GJIのチェーンは不変) |
+| MS-IME本体 × 漢字/IME ON・OFF、Shift単独 | **全PASS** | |
+| MS-IME本体 × DBE(英数/カタカナ/ひらがな) | 2手順FAIL(5・9手目) | **本PRの経路ではない**: awaseは`shadow-toggle no-op`(belief既にON)で物理F2をPassThroughし、実MS-IMEがF2で閉じた(apply-imeの発行なし)。実機のMS-IMEは`conv=0x09`(かな入力)で、キー割り当て等の実機固有の可能性。観測を正とする設計(ADR-191)の領域 |
+| GJI × 半角/全角(`--hz`) | 4/8 FAIL(F3が反転しない) | GJIのチェーンは不変で本PR無関係。開始時にbelief ON(true→false)と実IME OFFがずれた状態でF3を押す形。別件(ADR-189の初期状態の同期) |
+| **a10(ImmCrossを強制失敗)** × MS-IME本体 | フォールバックが実機で動作 | 下記 |
+
+a10(`ImmCross`を常に`Failed`にする実験ビルド、`open_chain.rs`のミューテーション)で、検証計画(a)「物理キーを伴わないopen(engine起点)で`VK_IME_ON`だけで開くか」を確認した:
+- ログ: `ImmCross failed → GjiDirect not applicable → MsImeDirect: [apply-ime] MS-IME direct: send 0x0016 (IME ON)`、`ImmCross failed`から`send`まで約**1.6ms**(`romaji_pre_write`は`belief=ObservedKana`のため発火せず、決定5の最悪130msは今回の実機では未発生)。
+- `sc-kanji`の2・3手目: 物理`VK_KANJI`はImmCrossプロファイルでSuppressされる(OSに届かない)ので、awaseの`VK_IME_OFF`だけで閉じ、続いて`VK_IME_ON`だけで開いた(実IME open 1→0→1)。**冪等キーが、物理キー無しで実機のMS-IMEを開閉できる**ことを確認。
+- a10でEngineが実IMEに追随しない手順が出たのは、a10がImmCrossの`ROMAN補完`(conv書き込み)を丸ごと飛ばすため、実機のMS-IME(`conv=0x09`、ROMANなし)で`Inactive(NotRomajiInput)`になる人工的な副作用で、本PRの通常経路ではない。ただし副産物として、この状態(Engine非活性)で物理`VK_IME_ON`がSuppressされ、awaseも代替actuationを行わず、IMEが閉じたままになる手順を観測した(a10 step6)。ImmCrossが成功する通常経路(baseline)では`ROMAN補完`でEngineが活性化し発生しない。BUG-46型のファミリーとして記録に留める。
+
+未実施: 対照(PR前のビルドでの同シナリオ)。上記の失敗2件はログ上、本PRの変更箇所を通らないことを確認した(実行したコードパス: `shadow-toggle no-op`→PassThrough、GJIのチェーン)。
 
 ## 残る限界
 
