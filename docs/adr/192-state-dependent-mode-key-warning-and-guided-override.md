@@ -11,7 +11,9 @@ summary: |-
   (3)置き換えは新機構を作らず、既存のユーザー明示config（`keys.ime_on/ime_off/ime_toggle`、`*_solo_tap_ime_action`）をawase-settingsで案内・設定する形にする。
   (4)`[[keymap]]`（ADR-114）は親指キー・IME制御VKを扱えないので使わない。GJIの`config1.db`の書き換えはしない。
 status: |-
-  **草案（2026-09-21、未レビュー）。** 実装前にopus-adversarial-consultで収束させる。ADR-191から分離した（ユーザー指示）。
+  **草案（2026-09-21、一部レビュー済み・未実装）。** ADR-191から分離した（ユーザー指示）。opus敵対レビューround4（ADR-191と同時）で決定3bの前提の誤りを指摘され、訂正済み
+  （エンジンOFF中は親指キー単体の`keys.ime_on`が既に動く。穴はエンジン活性中の単独打鍵だけ。正規化先`*_solo_tap_ime_action`の制約はコードで未確認）。
+  決定1〜3（検出・警告・置き換えの案内）は単独のレビュー・実装ともに未着手。
 related_adr:
   - "ADR-092"
   - "ADR-153"

@@ -1,18 +1,22 @@
 ---
 id: ADR-191
 title: |-
-  IMEの状態はIME自身を正とし、awaseは書き込まず観測に追随する（設計転換）。ただしトグル系のキーだけはbeliefに基づいて送る（conv軸はIMEが正、開閉軸はトグルキーに限りawaseが正）。キー効果は注入で学習・検証し、成功基準は撤去量で測る
+  IMEの状態はIME自身を正とし、awaseは書き込まず観測・予測に追随する（設計転換）。開閉のみに作用するキー（冪等ON/OFF・トグル）だけはawaseが書いてよい。キー効果は設定の読み取り・注入学習・検証の3段階ラウンドで表にする
 summary: |-
   awaseはIMEの開閉・変換モードを書き込む経路を累積させ、その書き込みがIME自身の動きから外れてモードずれ（IMEは半角英数なのにEngineがON、等）を生んできた。
-  実機計測（GJI×ATOK、スパイクの`--walk`/`--exp`）で、IME単体の一段の効果はMozcの公開キーマップからほぼ予測でき（98.5%）、awaseを通すと仕様から外れる（84.5%、
-  Engine/実IMEのずれ19〜23%）。方針: (1)IMEを状態の正とし、通常はawaseがIME状態を書かず、生キーを通して観測に追随する（対象はIMMで読めるアプリ。TsfNativeは範囲外）。
-  **(2)唯一の例外はトグル系のキー: 固定のADR-189セット（半角/全角・漢字、TsfNativeでも従来どおり）は変えず、学習表が状態完備で「トグル」と判定した追加キー（開閉軸、および入力モード軸は
-  Set型キーが表にある場合のみ）は、実機で素通し追随より有効と確認できてから、beliefに基づいて（低信頼のときは素通しで）送る。**
-  (3)BUG-151は最小修正（shadow-toggleがno-opで終わった打鍵に通過マークを立てる）で先に直す。(4)キー効果は(状態,キー)→効果の表として持ち、静的な初期仮説と注入学習
-  （カスタムキーマップ・MS-IMEでは必須）で作る。観測にはIMEの実状態・実打鍵結果に加えTSFのスレッドcompartmentの変更通知（開閉・かな⇔英数のpush）を使う。
-  (5)較正導入後、変換・無変換・かな・英数・半角全角・漢字などは決め打ちせず表で統一的に扱う。(6)成功基準は撤去量（追加は削除と対）。
+  実機計測（GJI×ATOK、スパイクの`--walk`。`--exp`は`spike/ime-effect-learning`の`91f17341`時点にだけ存在し、現行のCI道具PR#237には無い）で、IME単体の一段の効果はMozcの公開キーマップから
+  ほぼ予測でき（98.5%）、awaseを通すと仕様から外れる（84.5%、Engine/実IMEのずれ19〜23%）。方針: (1)IMEを状態の正とし、通常はawaseがIME状態を書かず、生キーを通して観測に追随する。
+  (2)awaseが書いてよいのは、押した結果がIMEの開閉だけに作用するキー（冪等な`VK_IME_ON/OFF`、beliefに基づく開閉トグル=ADR-189の漢字0x19・GJI/MS-IME本体の半角/全角0xF3/0xF4）だけ。
+  ひらがな・カタカナ・英数・無変換・変換など、入力モードや入力中文字列にも作用しうるキーは書かず追随する。線引きはキーのVKでなく、表（IME種別×プリセット×status）の作用分類(a〜e)で決める。
+  (3)BUG-151の最小修正（決定2、shadow-toggleがno-opで終わった打鍵に通過マークを立てる）は、撤去と切り離してdevelop上に新規実装する（PR #238、draft）。
+  (4)キー効果は(状態,キー)→効果の表として持つ。表は、設定の読み取り→awaseを完全バイパスした注入学習（格子第3版=全状態をキーだけで作る）→独立walkでの検証、の3段階ラウンドで作る。
+  カスタムキーマップに対応することが目的なので、隠れ状態（入力中の段階）も固定の名前・規則でなく学習した最小のMealy機械として持つ（現実装は暫定の固定段階）。
+  (5)予測は物理キーの打鍵時点でbeliefへ反映し（`KeyEffectPredicted`、settle基準のfence）、観測は確認と訂正に回す。観測できないアプリ（TsfNative）では予測が唯一の信号になる。
+  (6)成功基準は撤去量（追加は削除と対）。実装は`feat/adr191-remove-hardcoded-mode-keys`（develop未マージ）、実験の経緯と実測は補助資料[191-calibration-experiments.md]に置く。
 status: |-
-  **草案（2026-09-21、opus敵対レビューround2まで反映済み、round3待ち）。ユーザー指示（2026-09-21）で、決め打ちの撤去（決定6の一部）と決定2の一般化を先行して実装済み（`feat/adr191-remove-hardcoded-mode-keys`、未マージ）。** 決定2（BUG-151の最小修正）は独立に先行してよい。他は実装前にレビューを収束させる。
+  **草案（2026-09-21）。opus敵対レビューround1〜4を実施。round1・2の指摘は反映済み、round3・4の指摘のうち停止条件・中止基準と複雑さの収支は本文に未反映。**
+  決め打ちの撤去・打鍵時予測・ADR-189の復元は撤去ブランチ`feat/adr191-remove-hardcoded-mode-keys`で実装済み（develop未マージ、CIで検証: 観測あり・読めない条件とも400ms以降ずれ0%）。
+  決定2（BUG-151の最小修正）は別PR #238（draft）。実機（Windows）での撤去後の動作確認は未実施。
 related_adr:
   - "ADR-138"
   - "ADR-162"
@@ -21,15 +25,25 @@ related_adr:
   - "ADR-187"
   - "ADR-188"
   - "ADR-189"
+  - "ADR-190"
   - "ADR-192"
+  - "ADR-193"
 ---
 
-# ADR-191: IMEの状態はIME自身を正とし、awaseは書き込まず観測に追随する
+# ADR-191: IMEの状態はIME自身を正とし、awaseは書き込まず観測・予測に追随する（開閉のみに作用するキーは例外）
+
+> ファイル名の`observe-not-write`は初期のスローガンで、決定1の例外（開閉のみに作用するキーはawaseが書いてよい）と、決定3の打鍵時予測（観測を待たずbeliefを更新する）を含まない。リンクを壊さないため、ファイル名は変えていない。
 
 ## ステータス
 
-草案。opus敵対レビューround1（Blocker7・Major14・Minor6）の指摘のうち、コードとログで独立に確認できたものを反映した（確認できなかった1件は下記「実測」で理由を記す）。
-測定の出典は`spike/ime-effect-learning`ブランチ（`tools/e2e/ime_key_matrix/`、結果は`results/elw2`・`elw8`・`elw9`）。
+草案（2026-09-21）。opus敵対レビューをround1〜4まで実施した（round1: Blocker7・Major14・Minor6、round2・3・4も同様に新規指摘）。round1・2の指摘のうちコードとログで独立に確認できたものは本文へ反映済み。
+**round3・4の指摘のうち、停止条件・中止基準（RB1/RB2）と、撤去した行を較正基盤が再実装する複雑さの収支は、本文に未反映**（決定5の見積もりに反映する作業が残っている）。round4の「ADR-192決定3b」の指摘は
+ADR-192側で訂正済み。
+- 実装: 決め打ちの撤去・打鍵時予測・ADR-189の固定セットの復元は、撤去ブランチ`feat/adr191-remove-hardcoded-mode-keys`にある（**develop未マージ**、下記「実装の現状」）。決定2（BUG-151の最小修正）は、
+  撤去と切り離してdevelop上に新規実装し、別PR #238（draft）にした。
+- 測定の出典: 初期の実測（決定の根拠）は`spike/ime-effect-learning`ブランチ（`tools/e2e/ime_key_matrix/`、結果は`results/elw2`・`elw8`・`elw9`）。格子・通知・検証ラウンドのCI測定は、
+  補助資料[191-calibration-experiments.md](191-calibration-experiments.md)にrun URL付きでまとめた。スパイクの`--exp`は`spike/ime-effect-learning`の`91f17341`時点にだけ存在し、現行のCI道具PR（#237）には無い
+  （BUG-151.mdの再現手順の`--exp=70:n:12`は、現行コードでは実行できない）。
 
 ## 背景
 
@@ -144,6 +158,11 @@ ADR-187（follow）・ADR-188・ADR-189（半角/全角のToggle上書き）の�
 
 ### 決定2: BUG-151の最小修正（独立に先行、ADR不要の修正）
 
+**実装状況（2026-09-21）**: 決定2の最小修正は、`develop`にも撤去ブランチにも、これまで**実装されていなかった**。撤去ブランチのBUG-151修正コミット`c949ba33`は決定2の縮小案とは別物で、
+追随の対象を`VK_IME_ON`/`VK_IME_OFF`以外の全モードキーへ広げる変更（`is_followed_mode_key`）であり、静的な`shadow_action`の撤去が前提のため、`develop`に単独では当たらない
+（`develop`ではひらがな0xF2が`shadow_effect`で`TurnOn`の`shadow_action`を持ち、追随の対象から外れる）。そのため決定2どおりの最小修正を`develop`上で新規に実装し、PR #238（draft）にした
+（検証はCIの`atok-passthrough-cold`系のA/Bで代替中、決定的な再検証は道具PR #237のマージ後）。撤去ブランチをマージするときは、`c949ba33`と重なるので、この分岐が不要になるかを整理する。
+
 `kp_stage_shadow_ime_toggle`が**no-op（`effective_open() == current`、awaseは書き込む必要が無かった）で終わった打鍵**にだけ、通過マーク（`arm_mode_key_pass_mark`）を立てる
 （`key_pipeline.rs`のno-op分岐、10行程度）。20ms後の再読み取りは通過マークでtyping-idleガードを越え、`applied`がUnknownでも実IMEを読む。
 - **理由（正確に）**: この打鍵の意図は、no-op判定の**前**に`intent_store`/`last_intent`へ既に記録されている。no-opの時点で**beliefが既に目標と一致しており、意図を捨てても失う情報が無い**
@@ -177,6 +196,18 @@ ADR-187（follow）・ADR-188・ADR-189（半角/全角のToggle上書き）の�
 - **注意（実測済み）**: 予測を観測なしで連鎖させる（開ループ）のは信頼できない。ずれは1打では2%未満（表の1手予測は約98.5%、トグルキー52/52）でも、連鎖で積み上がる。だから予測は観測が読める限り毎回照合し、連鎖させるのは観測できないアプリだけにする。
 - 既存のepoch/fence（`ImeModel`の意図・生成番号、`FocusHwndUpdated`の`current_fence`）の流用可否は実装前に確認する。新しい機構を増やさず、既存の照合の入口に「読み取り開始時刻が最新打鍵より後か」の条件を1つ足す形を第一候補とする。
 
+**実装の現状（2026-09-21、撤去ブランチ）**:
+- 表は手書きせず、格子第3版（全状態をキーだけで作る）の結果から`tools/e2e/ime_key_matrix/gen_key_effect_table.py`が`state/key_effect_data.rs`を生成する（生成元は`grid-tables/{atok,msime}.json`）。
+  格子第1版はIMM書き込みで変換モードの状態を作ったため、キーで入った状態と別物になり、ATOKのひらがなが0x19↔0x10の純粋トグルなのに「不変」と誤学習した。第2版（キー到達、リセットのみIMM）を経て、
+  第3版でリセットもキーだけにした（経緯は補助資料）。「MS-IME」の表はGJIのMS-IMEプリセットの表で、Microsoft IME本体の表ではない。
+- 変換モード軸は、キーで到達できる値だけを持つ（ATOK: 0x19・0x10、GJIのMS-IMEプリセット: 0x19・0x1B〈自然状態0x09は0x19と同一視〉）。到達できない0x13・0x18等はセルに入れない（予測なし）。
+  閉状態の変換モードは、読み取りが不安定なので追わず、開閉だけを予測する。
+- 隠れ状態「入力中の段階」（なし/入力中/変換中〈Space・変換キー・無変換で入る〉）は、現実装では固定の段階を打鍵履歴から追跡する（`ImeModel::key_track`、暫定）。**目標は、固定の名前・規則でなく、
+  学習した最小のMealy機械として持つこと**（カスタムキーマップに対応するのがこの機能の目的なので必須。Spaceや変換キーの意味がユーザーのキーマップで変わるため、規則をコードに書けない）。
+  同じ応答をする状態は統合し、識別プローブ（Esc/Enter/BS/Space）への応答の違いで同定する。
+- 予測の書き込みは`ImeEvent::KeyEffectPredicted`（`desired_open`は書かない）。開閉は`resolve_open_at`に「明示意図の次、観測の前」の枠を足した。fenceは`KEY_EFFECT_SETTLE_MS=100`（実測最大62ms＋マージン）。
+  開閉を予測したら同じ対象の古い明示意図を捨てる（読めないアプリで予測が古い意図に負けないように）。
+
 ### 決定4: 較正セッション（注入による自動学習）
 
 ADR-176（ユーザーが物理キーを押す方式）を、明示的なセッションでの自動注入へ拡張する。**これはADR-176の免責条件（「awase自身はキーを送信しない」）の拡張で、本ADRが明示的に判断する**
@@ -206,6 +237,13 @@ ADR-176（ユーザーが物理キーを押す方式）を、明示的なセッ�
 - 各ラウンドの指標: 設定=Sの網羅、学習=網羅・決定性・一段予測、検証=開ループの一致率と最初に外れる原因セル。外れた原因セルが、次の改善（状態の表現・観測項目・表）の入力になる。
 - **最初の知見（4ランの実測）**: 学習表の非決定セル3件（入力中のEsc・無変換）は、**隠れ状態「変換中（Mozcの`Conversion`）」**を、打鍵履歴（変換キーを入力中に押した後）から追跡すると、決定性が98.5%→99.8%に上がり非決定セルが1件に減る。
   状態に「変換中」を加える（学習側の観測の状態表現、予測側のbelief）のが最初の改善候補。ただし標本は4ランで少ない。
+
+**待ちの短縮（通知の購読、2026-09-21）**: 学習の固定待ちを、IMEの状態変化の通知を待つ形に置き換えた（スパイクの`--notify`、CI道具PR #237）。開閉と変換モードの変化は、TSFスレッドcompartmentの
+変更通知（`ITfCompartmentEventSink`）を購読し、最後の通知から40ms静かなら確定する。通知が来なければ150msで「変化なし」とみなす。入力中・変換中・確定の待ちは固定待ち（`--fast`の700ms相当）のまま。
+効果: ATOKの格子1シャードのスパイク本体が、遅い版の1,287〜1,693秒から224〜306秒へ（約5〜6倍、表の差分0）。通知の遅延は、ATOKの1回・16キーの測定で押下から最初の通知まで
+P50=1ms・P95=34ms（10件、通知が来なかったキーは6/16=38%）。GJIとEdit窓では`WM_IME_STARTCOMPOSITION`/`COMPOSITION`/`ENDCOMPOSITION`も0〜5msで届き、入力中・確定のイベント化も可能と見える
+（実測が限られるので未検証の範囲あり）。詳細は補助資料。学習の設計（巡回による測定数の削減、異常時のリセット、統計的な訪問回数）は、`crates/awase-calibration`（Rust、`feat/awase-calibration`）の
+シミュレータで検討中。
 
 ### 決定5: 成功基準は撤去量。追加は削除と対にする
 
@@ -240,6 +278,9 @@ ADR-176（ユーザーが物理キーを押す方式）を、明示的なセッ�
 - 撤去対象（決め打ちの箇所）: `vk.rs::ImeKeyKind::shadow_effect`（VK別の静的効果、①の役割）、`runtime/mod.rs`の`shadow_action`上書きのうち**ADR-189の固定セット（0x19/0xF3/0xF4）は撤去しない**（TsfNativeで効いている例外そのもの）。上書き点は1箇所だが、供給元が約8箇所
   `set_thumb_key_shadow_overrides`等にあり、複雑性は供給元側（固定セット以外を対象にする）、`dbe_mode_key_policy`（半角/全角の一律Suppress/Allow）。いずれも既定表（データ）で同じ挙動が再現できることを`--walk`/`--exp`で確認してから。
 - 表が空の環境は同梱の既定表を使う（従来の直書きの意味づけを、同じ内容のデータへ移す）。撤去量は「コードの分岐・行の削除」で数える。
+- **（2026-09-21）ADR-189の固定セットは撤去ブランチで復元済み**（`651cab8d`）。漢字0x19はどのIMEでも開閉トグル、半角/全角0xF3/0xF4は`ImeKeyKind::is_open_toggle_for(ImeKindId)`でGJIとMS-IME本体の両方を
+  開閉トグルとして扱う（ADR-190のCI実測: awaseなしではF0/F3/F4がトグルする。「F3=OFF・F4=ON」はawase側の静的モデルで、実IMEの挙動ではない）。`dbe_mode_key_policy = Suppress`の対象は、awaseが実際に書く
+  0xF3/0xF4だけに縮小した（`73877f52`。英数0xF0・カタカナ0xF1は素通し。BUG-153）。
 
 ## リスク・未解決
 
@@ -276,20 +317,25 @@ BUG-113/124（TsfNative×GJIの「@」）、BUG-143（`session_keymap`と`custom
 
 ## 実装の現状（2026-09-21、`feat/adr191-remove-hardcoded-mode-keys`、develop未マージ）
 
-ユーザー指示: **GJI/MS-IMEの設定どおりに動かすことを優先する。これまでの挙動はMS-IMEプリセット前提だったため、変換・無変換・かな・英数・半角/全角の決め打ちを撤去し、awaseなしで学習した結果に従う。
-実測の外れ31件のグループ1（ひらがなをOFFで押すとON）・2（入力中の無変換/変換でIME OFF）・3（半角/全角の方向固定）の機構を撤去する。** これにより、上の決定1の「固定の例外（ADR-189）」も撤去した
-（TsfNativeでのEngine追随の退行は実機A/Bで確認する。未確認）。実装した範囲（develop比: 15ファイル、追加62行・削除3,014行）:
-1. `vk.rs::ImeKeyKind::shadow_effect`を`VK_IME_ON`/`VK_IME_OFF`（Windows標準の冪等キー）だけに（他は`None`）。`ShadowImeEffect::Toggle`を削除。
-2. `enrich_ime_relevance`の`shadow_action`上書き連鎖3系統（ひらがな/カタカナ、無変換/変換、ADR-189の半角/全角）を削除。
-3. 追随（ADR-187 follow）を`is_followed_mode_key`（IMEモードキーから`VK_IME_ON`/`VK_IME_OFF`を除く全て）へ一般化（BUG-151の修正。決定2の縮小案A1ではなく、静的な`shadow_action`の撤去で「`shadow_action`を持つキーは追随しない」
-   条件がそのまま働く形）。
+ユーザー指示: **GJI/MS-IMEの設定どおりに動かすことを優先する。これまでの挙動はMS-IMEプリセット前提だったため、変換・無変換・かな・英数・半角/全角の決め打ちを撤去し、awaseなしで学習した結果に従う。**
+実測の外れ31件のグループ1（ひらがなをOFFで押すとON）・2（入力中の無変換/変換でIME OFF）・3（半角/全角の方向固定）の機構を撤去した。この節は**撤去ブランチ**の現状で、`develop`の実体とは異なる
+（`develop`には未反映）。規模（`develop`比、`crates`と`src`のみ）: 34ファイル、追加2,283行・削除4,165行（差し引き約1,900行減。`tools/`と`docs/`は別に+1,591行）。
+1. `vk.rs::ImeKeyKind::shadow_effect`は`ImeOn`/`ImeOff`/`KanjiToggle`の3つだけ`Some`（`TurnOn`/`TurnOff`/`Toggle`）。半角/全角（0xF3/0xF4）は`is_open_toggle_for(ImeKindId)`で判定する。
+   `ShadowImeEffect::Toggle`は、漢字0x19のためにコード上に現存する（当初の「削除」は誤りで、ADR-189の固定セットを復元した際に戻った）。
+2. `enrich_ime_relevance`の`shadow_action`上書き連鎖のうち、ひらがな/カタカナ・無変換/変換の2系統を削除。ADR-189の半角/全角・漢字のbeliefトグルは、無修飾の物理キーだけ復元した（書き込み点は1箇所、TsfNativeでも効く）。
+3. 追随（ADR-187 follow）を`is_followed_mode_key`（IMEモードキーから`VK_IME_ON`/`VK_IME_OFF`を除く全て）へ一般化（`c949ba33`、BUG-151の別の修正。決定2の最小修正とは別物。決定2の項を参照）。
 4. エンジン本体から、無変換/変換/ひらがな/カタカナの単独タップ代行（`*_delegate_to_open_axis`）、ひらがな/カタカナ親指キー設定、Shift+代行キーの素通し判定を削除。単独タップは専用Fnキー→ユーザー明示config→`ModeKeyConfig`
    （ユーザー設定のSuppress/Passthrough）の順で解決する。ADR-182決定1bの抑止は残した。
-5. Windows側のGJI/MS-IMEの設定からの自動検出・配線（`sync_gji_charset_autodetect`、MS-IMEレジストリ由来のdelegate/override）と、較正結果を分類へ反映する関数を削除（較正の永続化・IPCは残る）。
-6. 撤去した機能の単体テスト約75本を削除（うち2本の「保留中のIME開閉要求が漏れない」は書き直しが要る）。
-**未実装（続くコミット）**: `kp_stage_shadow_ime_toggle`の代行所有権の分岐（現在は定数で偽）、`transport.rs::plan`のDBEキー・Suppress分岐と約25本のテスト、設定`gji_thumb_key_ime_toggle`/`dbe_mode_key_policy`と設定UI、
-`auto_delegate_open_axis_consumed`マーカー、`ModeKeyActuationOwner::FsmDelegate`。**実機A/B（develop+本ブランチのビルド、`--exp`/`--walk`のA'/B）は未実施。**
-
+5. Windows側のGJI/MS-IMEの設定からの自動検出・配線と、較正結果を分類へ反映する関数を削除（較正の永続化・IPCは残る）。旧関数名`sync_gji_charset_autodetect`は、定義が消えた後もdocコメントに
+   3ファイルの参照が残っている（掃除が必要。`gji_charset_autodetect.rs`は名前と違い、現在はthumbキー/変換・無変換の分類だけを持つ）。
+6. 撤去した機能の単体テスト約75本を削除。到達不能になった`delegate_owned`の分岐、`ModeKeyActuationOwner::FsmDelegate`、`auto_delegate_open_axis_consumed`（`076f29c3`）と、opt-in設定
+   `gji_thumb_key_ime_toggle`（ゲート・警告・設定画面を含む、`78e22861`）も削除した。
+7. 打鍵時予測（決定3）: `state/key_effect_table.rs`（予測器）と生成データ`state/key_effect_data.rs`、`ImeEvent::KeyEffectPredicted`、`platform_state.rs`の反映、`kp_stage_mode_key_follow`から呼ぶ。
+   CI検証（run 35585712177）で、観測あり・読めない条件とも400ms以降のずれ0%、`[key-effect-miss]`0件。
+8. `dbe_mode_key_policy = Suppress`の対象を0xF3/0xF4だけに縮小（`73877f52`）。英数0xF0・カタカナ0xF1は素通しで、実イベントでは元から`shadow_action`を持たず素通しだった
+  （握りつぶしていたのは合成イベントの死んだ分岐だけ）。`shift_katakana_passthrough`と`DbeModeKeyContext`は削除。`transport.rs::plan`のDBE分岐・`dbe_mode_key_policy`（約25テスト）は機能しているので残した。
+**残り**: 実機（Windows）でのA/B（英数・カタカナ・半角/全角の動作、MS-IME本体の半角/全角のbeliefトグル）、`transport.rs::plan_tests`の新テストのwindows-build CIでの初回実行（`#[cfg(windows)]`配下でLinuxでは
+走らない）、bug report（ADR-148）のスキーマに残る採用系フィールドの整理、旧名のdocコメントの掃除。
 
 ## TsfNative（観測できないアプリ）の扱い（2026-09-21、ユーザー整理）
 
