@@ -1479,7 +1479,6 @@ impl WindowsPlatform {
         }
         let effective = match outcome {
             ImeOpenOutcome::Applied
-            | ImeOpenOutcome::FallbackSent
             | ImeOpenOutcome::AppliedWithoutSendInput
             | ImeOpenOutcome::AlreadyMatched => open,
             ImeOpenOutcome::Failed => !open,
@@ -1497,7 +1496,7 @@ impl WindowsPlatform {
         // AlreadyMatched は状態不変（確認済み belief を降格させない）、Failed は
         // 実状態が不明のため belief を汚さない。`AppliedWithoutSendInput`
         // （ADR-167、ImmCrossProcessStrategy経由）も実際に適用が走った
-        // ケースなので`Applied`/`FallbackSent`と同じ扱いにする。
+        // ケースなので`Applied`と同じ扱いにする。
         if outcome.wrote_open_state() {
             self.output
                 .ime_mode_fsm
@@ -1549,7 +1548,7 @@ impl WindowsPlatform {
             // `sync_gji` の実装内で settle 時点の値を読む（ADR-089 §2.4 細目2）。
             receipt.settle(self);
             // ADR-149/BUG-113: 戦略（`ImeOpenStrategy`）が今回の apply で実際に
-            // `VK_IME_ON` を送っている場合（`Applied`/`FallbackSent`）は、この
+            // `VK_IME_ON` を送っている場合（`Applied`）は、この
             // 随伴 warmup を重ねて送らない。1打鍵あたり最大3回の重複 SendInput
             // が「@」の確立済み必要条件を満たしていた（実機ログで確認済み）。
             //

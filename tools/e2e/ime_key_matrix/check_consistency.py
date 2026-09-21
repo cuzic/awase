@@ -58,11 +58,30 @@ def parse_engine(path):
     return sorted(probes), unwarranted
 
 
-def engine_after(probes, press):
-    """押下の後、最初の k(KeyDown) の decision から Engine 状態を返す(PassThrough=OFF)。無ければ None。"""
-    for ms, decision in probes:
-        if press < ms <= press + 2500:
-            return decision != "PassThrough"
+def next_press(steps, st):
+    """次の手順の押下時刻(最後の手順なら None)。engine_after の窓の上限に使う。"""
+    i = steps.index(st)
+    return steps[i + 1]["press"] if i + 1 < len(steps) else None
+
+
+def engine_after(probes, press, used=None, until=None):
+    """押下の後、最初の未消費の k(KeyDown) の decision から Engine 状態を返す(PassThrough/PassThroughWith=OFF)。無ければ None。
+
+PassThroughWith は「そのまま通しつつ副作用(effects)も実行」で、Engineは変換していない(OFF)。
+Shift単独タップの半角英数(shift-conv-guard)後などで出る。
+
+窓は (press, until] で、until は次の手順の押下(ADR-190)。CIランナーではMS-IME本体の最初の操作が数秒ブロックし、
+スパイク側の k の注入が遅れる(step1 の k が +1.1〜1.6s、まれに +4.6s〜+6.9s)ので、固定の窓だと「?」になる。
+until が無いとき(最後の手順)は +5000ms。`used` に消費済みの k の添字を渡すと、1つの k が複数の手順に数えられない
+(手順を順に呼ぶ側が同じ set を渡す)。"""
+    limit = until if until is not None else press + 5000
+    for i, (ms, decision) in enumerate(probes):
+        if used is not None and i in used:
+            continue
+        if press < ms <= limit:
+            if used is not None:
+                used.add(i)
+            return not decision.startswith("PassThrough")
     return None
 
 
@@ -74,6 +93,7 @@ def main():
         return 2
     steps, invalid = parse_spike(sys.argv[1])
     probes, unwarranted = parse_engine(sys.argv[2]) if not real_only else ([], 0)
+    used = set()  # 1つの k を複数の手順に数えない
     if invalid:
         print(f"INVALID: 実行中にフォーカスが外れた({invalid}回)。この回は判定に使わない")
         return 3
@@ -96,7 +116,7 @@ def main():
             fails += 1
             continue
         want = bool(st["open"]) and bool(st["conv"] & 1)
-        got = engine_after(probes, st["press"])
+        got = engine_after(probes, st["press"], used, next_press(steps, st))
         real = f"open={st['open']} conv=0x{st['conv']:02X}"
         # 最終手順はスパイクがk入力の前に閉じることがあり、Engine状態が読めない(?)。判定不能として失敗にしない。
         undecided = got is None and st['n'] == total

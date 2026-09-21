@@ -1119,9 +1119,9 @@ impl Runtime {
 
         // LastAppliedImeState を OS 観測値に同期する。
         // 物理 Kanji キー（sync key）は apply_ime_open を経由しないため last_applied が更新されない。
-        // last_applied が stale なまま Engine が activate → SetOpen(true) → KanjiToggleStrategy が
-        // last_applied(false) != desired(true) と判定して VK_KANJI を余分に送信し、
-        // Chrome では IME が逆転するバグを防ぐ。
+        // last_applied が stale なまま Engine が activate → SetOpen(true) へ進むと、
+        // 直後の force-on / focus-resync が古い状態を根拠に動く。観測済みのOS状態で
+        // mirrorしてから戻すことで、物理キー起点の状態変化をモデルへ反映する。
         //
         // ADR-098 決定5: この関数（`process_deferred_keys`）自体は `SyncKeyGate::
         // activate()`/`try_push()` の呼び出し元が現状ゼロのため本番到達不能——

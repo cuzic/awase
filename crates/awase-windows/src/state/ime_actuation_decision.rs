@@ -115,8 +115,6 @@ pub enum MechanismCommand {
     },
     /// `send_ime_mode_key(vk)`相当（GjiDirect/MsImeDirect）。
     SendVk(VkCode),
-    /// `post_kanji_toggle_to_focused()`相当。
-    PostKanjiToggle,
 }
 
 /// `ImeController::apply`/`run_open_chain_async`/`dispatch_ime_set_open`冒頭の
@@ -194,7 +192,7 @@ const fn gji_direct_already_matches(
 ///
 /// - `open == true` のときだけ（OFF 方向は ROMAN を触らない）。
 /// - 機構が `ImmCross` または `MsImeDirect` のときだけ
-///   （`GjiDirect` / `KanjiToggle` は元から ROMAN を書かない）。
+///   （`GjiDirect` は元から ROMAN を書かない）。
 /// - `kind == MsIme` のときだけ。旧 `ImmCrossProcessStrategy` は
 ///   `active_ime_kind == MicrosoftIme` を明示的に見ており、旧
 ///   `MsImeDirectStrategy` は見ていなかったが、`MsImeDirect` の
@@ -280,7 +278,6 @@ pub(crate) fn decide_attempt(
                 ImeOperation::from_open(open),
             )))
         }
-        (WriteMechanism::KanjiToggle, _) => Some(MechanismCommand::PostKanjiToggle),
     };
     (romaji_pre_write, command)
 }
@@ -397,15 +394,13 @@ mod tests {
     /// GJI 経路では ROMAN 補完を一切行わない（Phase C 以前も同じ）。
     #[test]
     fn needs_romaji_pre_write_never_fires_for_gji_mechanisms() {
-        for mechanism in [WriteMechanism::GjiDirect, WriteMechanism::KanjiToggle] {
-            for kind in ImeKindId::ALL {
-                assert!(!decide_needs_romaji_pre_write(
-                    mechanism,
-                    true,
-                    kind,
-                    InputModeState::Unknown
-                ));
-            }
+        for kind in ImeKindId::ALL {
+            assert!(!decide_needs_romaji_pre_write(
+                WriteMechanism::GjiDirect,
+                true,
+                kind,
+                InputModeState::Unknown
+            ));
         }
     }
 
@@ -667,20 +662,6 @@ mod tests {
         }
     }
 
-    // ── decide_attempt: KanjiToggle（常に送信）──────────────────────────────
-
-    #[test]
-    fn kanji_toggle_always_sends() {
-        let i = inputs(
-            AppImeProfile::Standard,
-            ImeKindId::MsIme,
-            Some(true),
-            InputModeState::Unknown,
-        );
-        let (_, cmd) = decide_attempt(i, DecisionSite::Sync, WriteMechanism::KanjiToggle, true);
-        assert_eq!(cmd, Some(MechanismCommand::PostKanjiToggle));
-    }
-
     // ── decide_attempt: ImmCross ─────────────────────────────────────────
 
     #[test]
@@ -726,7 +707,6 @@ mod tests {
             WriteMechanism::ImmCross,
             WriteMechanism::GjiDirect,
             WriteMechanism::MsImeDirect,
-            WriteMechanism::KanjiToggle,
         ] {
             for kind in ImeKindId::ALL {
                 for open in [true, false] {

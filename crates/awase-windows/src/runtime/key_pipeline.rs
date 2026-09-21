@@ -1678,15 +1678,13 @@ impl Runtime {
         // 反応して状態を変えるとは限らない）ため、awase 自身が明示的に actuate する
         // 経路を用意する必要がある、という点にある。
         //
-        // Imm32Unavailable (Chrome/Edge) では VK_KANJI が唯一の IME クローズ手段であり、
-        // KanjiToggleStrategy が shadow_on (latch) を見て送信するかを決める。
-        // ここでは latch が true のうちに strategy chain を起動することで VK_KANJI が
-        // 確実に送られる。
+        // Imm32Unavailable (Chrome/Edge) では読み戻しができないため、latch が true の
+        // うちに strategy chain を起動して、冪等な直接キー送信へつなぐ。
         //
         // IMM クロスプロセス対応アプリ (WezTerm 等の TSF mode) は SendMessageTimeoutW を
         // 含む sync `set_ime_open_cross_process` がフック内で `with_app` 再入を引き起こす
         // ため、async に spawn_local + OutputActiveGuard で dispatch する。
-        // それ以外 (GjiDirect / KanjiToggle) は SendInput-only で非ブロッキングなので sync。
+        // それ以外 (GjiDirect / MsImeDirect) は SendInput-only で非ブロッキングなので sync。
         //
         // ADR-179決定2: `PhysicalDelivery`のときはこの明示actuateを一切
         // 発行しない——実IME状態の変更はGJI/MS-IME自身の物理キー反応に

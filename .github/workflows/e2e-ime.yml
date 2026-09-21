@@ -7,9 +7,11 @@ name: e2e-ime
 #   build(構成ごと) → e2e(構成×回数) → summary
 #
 # 通常のCI(ci.yml)には影響しない。ci/e2e-ime ブランチへの関連ファイルの push と手動起動でだけ動く。
+# ci/e2e-scenarios ブランチへの push は、操作シナリオ(名前が sc- で始まる構成、下のplan参照)だけを回す。
+# (workflow_dispatch は既定ブランチにワークフローが無いと使えないので、構成を絞るには only 入力かこのブランチを使う)
 on:
   push:
-    branches: [ci/e2e-ime]
+    branches: [ci/e2e-ime, ci/e2e-scenarios]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -20,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: '実行する構成名(カンマ区切り、空なら全構成)。例: baseline,a1-keyup'
+        description: '実行する構成名(カンマ区切り、空なら全構成、末尾*は前方一致)。例: baseline,a1-keyup,sc-*'
         required: false
         default: ''
 
@@ -37,7 +39,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*' || '') }}
         run: |
           import json, os
           # name: 構成名 / bin: 使うビルド成果物(撤去なしの構成は baseline を使い回す) / mutator: ablations/ 下のスクリプト
@@ -48,9 +50,11 @@ jobs:
           # expect: pass=全回PASS / fail=撤去や設定で壊れる(既知の問題を固定) / observe=結果を表に出すだけ(不安定・未確定の観測用)
           # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME)
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
-          def cfg(name, expect, mutator='', args='', toggle='true', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true'):
+          # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'dbe_mode_key_policy = "passthrough"'
+          def cfg(name, expect, mutator='', args='', toggle='true', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', general=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args, toggle=toggle,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, general=general)
+          SC_IMES = [('msime-native', 'msime', 1, ' --msime'), ('gji-msime', 'gji', 2, ''), ('gji-atok', 'gji', 1, '')]
           configs = [
             # --- 撤去実験(ATOK、実機E1〜E7bと同じ) ---
             cfg('baseline', 'pass'),
@@ -90,10 +94,37 @@ jobs:
             cfg('probe-vk-gji-msime', 'observe', check='vkprobe', args='--vkprobe', keymap=2, awase='false'),
             cfg('probe-vk-msime-native', 'observe', check='vkprobe', args='--vkprobe --msime', ime='msime', awase='false'),
             cfg('msime-stale-table', 'pass', check='consistency', args='--walk --key=henkan', toggle='false', keymap=2, custom_table='true'),
+            # --- 操作シナリオ(sc-): IMEプリセット × 各種IMEキー × パススルー/抑止設定 × Shift単独打鍵 ---
+            # 判定はどれも「実IMEのかな=Engine ON、英数・直接入力=Engine OFF」に追随するか(consistency)。
+            # 全シナリオ pass(MS-IME本体もADR-190/BUG-152の修正後はPASS。修正前は直接入力からの最初のひらがな(0xF2)でIMEが開かず3/3 FAILだった)。
+            # ただし MS-IME本体の半角/全角(sc-hz-msime-native-*)は observe: F3=閉/F4=開の静的モデルでGJIのようなトグルではない(ADR-189が対象外にした範囲)。
+            # noawase の構成は、それが awase のせいか(MS-IME本体の癖か)を切り分ける対照実験。
+            # IME の3通り: msime-native(標準の日本語IME)、gji-msime(GJI + MS-IMEプリセット)、gji-atok(GJI + ATOKプリセット)
+            # dbe_mode_key_policy: suppress(既定、DBEレンジ 英数/カタカナ/半角全角 を握りつぶす) / passthrough(そのまま通す)
+            # half_width_alnum_toggle: 左Shift単独タップで半角英数(持続トグル)。GJIで使うには all が必要。
+            *[cfg(f'sc-dbe-{ime_name}-{pol}', 'pass', check='consistency', toggle='false', ime=ime, keymap=km,
+                  args=f'--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2{msime}',
+                  general=f'dbe_mode_key_policy = "{pol}"')
+              for ime_name, ime, km, msime in SC_IMES for pol in ('suppress', 'passthrough')],
+            *[cfg(f'sc-kanji-{ime_name}', 'pass', check='consistency', toggle='false', ime=ime, keymap=km,
+                  args=f'--seq=F2,19,19,16,1A,16,1A,19,F2,1A{msime}')
+              for ime_name, ime, km, msime in SC_IMES],
+            *[cfg(f'sc-hz-{ime_name}-{pol}', 'observe' if ime == 'msime' else 'pass', check='toggle', toggle='false', ime=ime, keymap=km,
+                  args=f'--hz{msime}', general=f'dbe_mode_key_policy = "{pol}"')
+              for ime_name, ime, km, msime in SC_IMES for pol in ('suppress', 'passthrough')],
+            *[cfg(f'sc-shift-{ime_name}', 'pass', check='consistency', toggle='false', ime=ime, keymap=km,
+                  args=f'--seq=F2,A0,A0,A0,A1,F2{msime}', general='half_width_alnum_toggle = "all"')
+              for ime_name, ime, km, msime in SC_IMES],
+            cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', toggle='false', ime='msime', awase='false',
+                args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
+            cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', toggle='false', ime='msime', awase='false',
+                args='--seq=F3,F3,F4,F4,F3,F4,F4,F3 --msime'),
+            # MS-IME本体で、スキャンコード付き/無しの注入(NOSCAN|0xF2 等)がIMEを開くか(awase の再注入は scan=0)
+            cfg('sc-probe-vk-msime-native', 'observe', check='vkprobe', args='--vkprobe --msime', ime='msime', awase='false'),
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
-            configs = [c for c in configs if c['name'] in only]
+            configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
           # ビルドは bin ごとに1回(撤去なしの構成は baseline を共有)
           builds = [c for c in configs if c['bin'] == c['name']]
           if not any(c['bin'] == 'baseline' and c['name'] == 'baseline' for c in builds):
@@ -245,7 +276,15 @@ jobs:
           $cfg = Get-Content dist\config.toml -Raw
           if ($cfg -match 'gji_thumb_key_ime_toggle *= *(true|false)') { $cfg = $cfg -replace 'gji_thumb_key_ime_toggle *= *(true|false)',"gji_thumb_key_ime_toggle = $toggle" }
           else { $cfg = $cfg -replace '(?m)^\[general\]\s*$', "[general]`r`ngji_thumb_key_ime_toggle = $toggle" }
+          # [general] への追加設定(;区切りの `key = value`)。既にあれば値を置き換え、無ければ [general] の直後に足す。
+          $general = '${{ matrix.cfg.general }}'
+          foreach ($line in ($general -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+            $key = ($line -split '=')[0].Trim()
+            if ($cfg -match "(?m)^$key *=") { $cfg = $cfg -replace "(?m)^$key *=.*$", $line }
+            else { $cfg = $cfg -replace '(?m)^\[general\]\s*$', "[general]`r`n$line" }
+          }
           [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
+          Select-String -Path "$PWD\dist\config.toml" -Pattern 'gji_thumb_key_ime_toggle|dbe_mode_key_policy|half_width_alnum_toggle'
           # CIランナーは初回のクロスプロセスIMMプローブが遅く(実測22ms)、awase がスパイク窓を「IMM不可」と誤学習して
           # conv を読まなくなる(Engine が半角英数に追従しない)。学習済みキャッシュを事前投入して防ぐ。
           [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"ime_key_matrix_spike.exe`"]`r`nEdit = `"works`"`r`nRICHEDIT50W = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))

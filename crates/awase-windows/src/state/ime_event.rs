@@ -617,7 +617,6 @@ impl ImeEvent {
         use awase::platform::ImeOpenOutcome;
         match outcome {
             ImeOpenOutcome::Applied
-            | ImeOpenOutcome::FallbackSent
             | ImeOpenOutcome::AppliedWithoutSendInput
             | ImeOpenOutcome::AlreadyMatched => Self::ImeApplySucceeded { target, generation },
             ImeOpenOutcome::Failed => Self::ImeApplyFailed {

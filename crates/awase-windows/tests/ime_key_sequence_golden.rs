@@ -2,7 +2,7 @@
 //! P2-1: IME キー戦略のキャラクタライゼーション（ゴールデン）テスト。
 //!
 //! # 目的
-//! `ime_controller.rs` の 4 戦略と `output/probe_io.rs` の warmup キー分岐は、実機での
+//! `ime_controller.rs` の 3 戦略と `output/probe_io.rs` の warmup キー分岐は、実機での
 //! 試行錯誤と revert を繰り返して現在の姿に落ち着いた（`git log --oneline | grep -i revert`
 //! で 24 件）。今後これらを宣言的テーブル（KeySequencePolicy, P2-2/P2-3）へリファクタする
 //! 前提として、**現在の挙動をキャラクタライゼーションテストとして固定**する。
@@ -88,7 +88,7 @@ const KEY_DOC: &str = "\
 #   GJI+TsfNative の OFF は旧 VK_KANJI から VK_IME_OFF へ移行済み（489cdf1）。
 #   （履歴: adb856c で一時 VK_KANJI フォールバックへ戻したが 489cdf1 で VK_IME_OFF に再修正）
 #
-# MsImeDirect (is_applicable: active_ime_kind==MicrosoftIme && !can_use_imm32_cross_process()):
+# MsImeDirect (is_applicable: active_ime_kind==MicrosoftIme):
 #   ON  → （belief!=ObservedKana のとき romaji_pre_write() 後）
 #         VK_IME_ON (0x16) = ime::send_ime_mode_key(VK_IME_ON) → Applied。conv-mode に触れないため
 #         AlreadyMatched スキップは不要（2026-08-06 まで VK_DBE_HIRAGANA を使っており、現 conv が
@@ -100,11 +100,6 @@ const KEY_DOC: &str = "\
 #   留まるため不可、VK_KANJI はトグルのため不可。
 #   （履歴: 9c3f11e→668a131 revert、be3b056 で一時 VK_KANJI、48a667a で VK_IME_OFF に確定、
 #   2026-08-06 に ON も VK_DBE_HIRAGANA → VK_IME_ON へ移行し OFF と対称化・BUG-50 根治）
-#
-# KanjiToggle (is_applicable: 常に true / 最終フォールバック):
-#   ON/OFF ともに VK_KANJI トグル = ime::post_kanji_toggle_to_focused() → FallbackSent。
-#   冪等でないトグルのため already_matched 判定はせず送信する。GJI/MS-IME 環境では前段が
-#   処理するため稀にしか到達しない。
 ";
 
 const WARMUP_DOC: &str = "\
@@ -208,10 +203,10 @@ fn strategy_selection_invariants() {
         "MsImeDirect"
     );
 
-    // MS-IME × Standard で IMM を飛ばすと最終フォールバック KanjiToggle まで落ちる。
+    // MS-IME × Standard で IMM を飛ばすと冪等な MsImeDirect へ落ちる。
     assert_eq!(
         characterize_strategy(false, "Standard", true),
-        "KanjiToggle"
+        "MsImeDirect"
     );
 }
 

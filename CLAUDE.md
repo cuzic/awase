@@ -143,7 +143,7 @@ here caused silent state corruption.
 - `crates/awase-windows/tests/architecture_guard.rs`, `layer_boundary_guard.rs` — source-scanning
   guard tests enforcing the layer rules above; run on Linux (text-based, no real Win32 needed).
 - `ime_key_sequence_golden.rs` — golden tests for strategy selection (ImmCross → GjiDirect →
-  MsImeDirect → KanjiToggle) and exact key sequences sent; `#![cfg(windows)]`, Windows-only.
+  MsImeDirect) and exact key sequences sent; `#![cfg(windows)]`, Windows-only.
 - `golden_scenarios.rs` / `tests/golden/` — scenario goldens, cross-platform.
 - `e2e_windows.rs` — real end-to-end tests against actual HWNDs; deterministic subset runs in CI,
   interactive/SendInput-dependent subset is `continue-on-error` (non-deterministic under CI focus).

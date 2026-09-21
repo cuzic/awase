@@ -737,7 +737,6 @@ pub(crate) unsafe fn handle_wm_execute_effects(app: &mut Runtime) {
 const fn encode_outcome(outcome: ImeOpenOutcome) -> isize {
     match outcome {
         ImeOpenOutcome::Applied => 0,
-        ImeOpenOutcome::FallbackSent => 1,
         ImeOpenOutcome::AlreadyMatched => 2,
         ImeOpenOutcome::Failed => 3,
         ImeOpenOutcome::UnsafeToToggle => 4,
@@ -759,7 +758,7 @@ const fn encode_outcome(outcome: ImeOpenOutcome) -> isize {
 fn decode_outcome(value: isize) -> ImeOpenOutcome {
     match value {
         0 => ImeOpenOutcome::Applied,
-        1 => ImeOpenOutcome::FallbackSent,
+        // Code 1 is reserved for a removed outcome; keep the wire gap.
         2 => ImeOpenOutcome::AlreadyMatched,
         3 => ImeOpenOutcome::Failed,
         4 => ImeOpenOutcome::UnsafeToToggle,
@@ -2097,7 +2096,6 @@ mod tests {
         // should_send_accompanying_warmupの区別が非同期経路だけ効かなくなる。
         for outcome in [
             super::ImeOpenOutcome::Applied,
-            super::ImeOpenOutcome::FallbackSent,
             super::ImeOpenOutcome::AppliedWithoutSendInput,
             super::ImeOpenOutcome::AlreadyMatched,
             super::ImeOpenOutcome::Failed,
@@ -2111,6 +2109,21 @@ mod tests {
                 "roundtrip failed for {outcome:?} (encoded as {encoded})"
             );
         }
+    }
+
+    /// 欠番になった符号(旧 `FallbackSent` = 1、ADR-190)や未知値は、apply を行わない
+    /// 安全側の `UnsafeToToggle` に倒れること。番号を詰めると全 outcome がこの値に
+    /// 化けるので、欠番のまま残す規則をここで固定する。
+    #[test]
+    fn retired_or_unknown_outcome_codes_decode_to_unsafe_to_toggle() {
+        assert_eq!(
+            super::decode_outcome(1),
+            super::ImeOpenOutcome::UnsafeToToggle
+        );
+        assert_eq!(
+            super::decode_outcome(99),
+            super::ImeOpenOutcome::UnsafeToToggle
+        );
     }
 
     #[test]

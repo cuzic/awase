@@ -92,7 +92,7 @@ impl ImeModeFsm {
     }
 
     /// `ImeEffect::SetOpen` の適用完了時に呼ぶ（機構は ImmCross / MsImeDirect /
-    /// GjiDirect / KanjiToggle のいずれでもよい）。belief を即時更新し unconfirmed にする。
+    /// GjiDirect / MsImeDirect のいずれでもよい）。belief を即時更新し unconfirmed にする。
     ///
     /// MsImeDirect（VK_DBE_HIRAGANA / VK_IME_OFF を `send_ime_mode_key` で送る）は
     /// `on_f21_sent` / `on_f22_sent` を経由しないため、ここが唯一の invalidate 点になる。

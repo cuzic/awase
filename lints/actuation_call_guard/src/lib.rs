@@ -74,7 +74,6 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
             "reinject",
             "transmit",
             "send_keymap_target",
-            "post_kanji_toggle_to_focused",
             "send_ime_mode_key",
             "send_ime_mode_key_with_shift_release_prefix",
             "toggle_caps_lock",

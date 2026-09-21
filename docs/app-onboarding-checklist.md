@@ -76,7 +76,7 @@ awase は「どのアプリか」を複数の軸で分類する。新アプリ�
 ## Step 4: 戦略テーブルとテストに反映する
 
 - [ ] IME 固有の制御が必要なら、戦略チェーンに位置づける（ADR-063）:
-      `ImmCross → GjiDirect → MsImeDirect → KanjiToggle`。新 IME 用の
+      `ImmCross → GjiDirect → MsImeDirect`。新 IME 用の
       `*DirectStrategy` を足す場合は `is_applicable` の条件（active_ime_kind、
       IMM 制御可否）を明示する。
 - [ ] warmup 戦略の分岐（`set_active_ime_kind()`）に新 IME を登録する

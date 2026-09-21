@@ -54,7 +54,7 @@ use super::event_origin::{EventOrigin, EventSource, Generation};
 use super::ime_actuation_decision::{DecisionInputs, DecisionSite, MechanismCommand};
 
 /// ADR-163 D2: `WriteMechanism::ALL`と同じ最大attempt数。
-pub const MAX_WRITE_MECHANISMS: usize = 4;
+pub const MAX_WRITE_MECHANISMS: usize = 3;
 
 /// `Option<Option<bool>>` の3値（未記録／記録済みだが値不明／記録済みで既知）を
 /// `{"recorded":bool,"value":Option<bool>}` という常に固定サイズのオブジェクトへ
@@ -717,7 +717,7 @@ mod tests {
             "site": "Sync",
             "gate_inputs": {"profile":"Standard","kind":"Gji","shadow_on":null,"belief_input_mode":"Unknown"},
             "order": {"open":true,"would_have_blocked":false,"origin":{"source":"Physical","epoch":0}},
-            "chain": ["ImmCross","GjiDirect","MsImeDirect","KanjiToggle","ImmCross"],
+            "chain": ["ImmCross","GjiDirect","MsImeDirect","ImmCross"],
             "attempts": [],
             "caller": null
         }"#;
@@ -753,7 +753,7 @@ mod tests {
             InputModeState::Unknown,
         );
         let (chain, chain_len) = chain_from_slice(decide_chain(gate_inputs));
-        // 実運用で最頻出と見込む構成: attemptsは1件のみ埋まり残り3スロットは
+        // 実運用で最頻出と見込む構成: attemptsは1件のみ埋まり残り2スロットは
         // null（GjiDirect/MsImeDirectはchain中1機構だけで already-matched/
         // 送信が決まることが多い）。
         let record = ActuationDecisionRecord {

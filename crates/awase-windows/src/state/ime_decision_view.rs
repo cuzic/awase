@@ -50,7 +50,7 @@ pub(crate) struct ObservedState {
     /// `GjiDirectStrategy` の `is_applicable` ゲートに使用する。
     pub gji_monitor_ok: bool,
     /// GJI candidate が SHOW になってから次の `apply_ime_open` 完了まで `true`。
-    /// `shadow=false` なのに candidate が表示された desync を `KanjiToggleStrategy` と
+    /// `shadow=false` なのに candidate が表示された desync を
     /// `GjiDirectStrategy`（ADR-171、OFF方向の already-matched 判定の上書き）が検出するために使う。
     pub candidate_was_seen: bool,
     /// 現在使用中の IME 種別（`gji_monitor_ok` から派生）。
