@@ -9,10 +9,11 @@
 //! `ITfThreadMgr::AssociateFocus` で関連付ける。窓にフォーカスが来ると TIP がこのストアに接続し、
 //! テキストの読み書き（`GetText` / `InsertTextAtSelection` / `SetText`）と composition を行う。
 //!
-//! 使い方: `text_store_probe [--seq=16,4B,41,0D] [--gap=1200] [--lock-delay=MS] [--deny-sync] [--log=<path>]`
+//! 使い方: `text_store_probe [--seq=16,4B,41,0D] [--gap=1200] [--lock-delay=MS] [--deny-sync] [--no-scan] [--log=<path>]`
 //!   `--seq`: 注入する VK（16進）。既定は IME ON → `k` → `a` → Enter（composition を確定）。
 //!   `--lock-delay`: `RequestLock` の同期応答を指定 ms 遅らせる（Chrome の遅いロックの模擬。0で無効）。
 //!   `--deny-sync`: 同期ロック要求に `TS_E_SYNCHRONOUS` を返す（非同期のみ許す模擬）。
+//!   `--no-scan`: 文字キーにスキャンコードを付けずに注入する（付けたときとの差を測る）。
 //! キーは `SendInput`（`AWASE_TEST_INJECTION=1` の awase が物理キー扱いする目印付き）で注入する。
 //! awase を止めた状態（IME 単体）が基本。前面窓がプローブ窓でないときは注入しない。
 //! 実行中は Windows 機のキーボード・マウスに触らない。
@@ -677,7 +678,13 @@ mod app {
     /// 窓に届いたメッセージを記録するための、ログと起点時刻(ウィンドウプロシージャから参照する)。
     static WND_LOG: std::sync::OnceLock<(Log, Instant)> = std::sync::OnceLock::new();
 
+    /// `--no-scan` 指定時は文字キーにもスキャンコードを付けない（付けたときとの差を測るため）。
+    static NO_SCAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
     fn scan_for(vk: u32) -> u16 {
+        if NO_SCAN.load(Ordering::SeqCst) {
+            return 0;
+        }
         match vk {
             0x4B => 0x25, // K
             0x41 => 0x1E, // A
@@ -831,6 +838,7 @@ mod app {
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
         let deny_sync = args.iter().any(|a| a == "--deny-sync");
+        NO_SCAN.store(args.iter().any(|a| a == "--no-scan"), Ordering::SeqCst);
         let log_path = arg_value(&args, "--log=").unwrap_or_else(|| "text_store_probe.log".into());
         let mut file = std::fs::File::create(&log_path).expect("log");
         let mut out = |s: &str| {
