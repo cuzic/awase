@@ -162,6 +162,16 @@ jobs:
                   args=f'--grid=s{n} --grid-setup=keys --fast --speed=2 --grid-adaptive --notify '
                        '--grid-retry-file=@REPO@/tools/e2e/ime_key_matrix/grid-tables/nondet-atok.txt')
               for n in (1, 2, 3, 4)],
+            # --- MS-IME本体(Microsoft IME、ImeKind=MicrosoftIme)の学習ラウンド(ADR-191、撤去版レビュー指摘B Blocker の対処(2)) ---
+            # cal-notify-msimenative-s{1..4}: cal-notify-atok-s*(--fast --speed=2 --grid-adaptive --notify)の MS-IME本体版(--msime、awase なし、状態はキーのみで作る)。
+            # 前回の表(retry-file)が無いので --grid-retry-file は付けない(1パス目は全セル1回、2パス目は履歴依存ブロック+10%の監査標本)。
+            # cal-msnative-walk-s{3,4}: 表の一段予測を採点する独立ラン(awase なし、--msime)。学習(格子)とは別のキー列。
+            *[cfg(f'cal-notify-msimenative-s{n}', 'observe', check='collect', ime='msime', awase='false', runs=1, wait=1500,
+                  args=f'--grid=s{n} --grid-setup=keys --fast --speed=2 --grid-adaptive --notify --msime')
+              for n in (1, 2, 3, 4)],
+            *[cfg(f'cal-msnative-walk-s{n}', 'observe', check='collect', ime='msime', awase='false', runs=1,
+                  args=f'--walk=100 --seed={n} --msime')
+              for n in (3, 4)],
             # --- 高速な学習ラウンド(ci/e2e-calibration) ---
             # --fast(押下後の待ち 2300→700ms。+400ms と +1500ms で表が変わらないことを264試行で確認済み) と --speed=2、
             # 探索後に到達不能な試行を外す([GRID-PRUNE])、--grid-adaptive(1パス目は全セル1回、2パス目は前回の表で非決定だったセル+履歴依存+10%の監査標本)、
