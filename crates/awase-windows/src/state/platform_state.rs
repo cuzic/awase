@@ -302,14 +302,17 @@ impl ImeStateHub {
         now_ms: u64,
         tick_ms: TickMs,
         scope: crate::win32::ForegroundScope,
-        allow_expired: bool,
+        on_expiry: bool,
     ) -> bool {
         let ScopeCheck::Live(mark) = self.mode_key_pass_mark.peek(scope) else {
             return false;
         };
-        let expired =
-            now_ms.saturating_sub(mark.armed_at_ms) >= crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS;
-        if expired && (!allow_expired || mark.invalidated) {
+        if !crate::state::force_guard::should_drop_intents_for_mode_key_pass(
+            now_ms.saturating_sub(mark.armed_at_ms),
+            mark.invalidated,
+            on_expiry,
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+        ) {
             return false;
         }
         let first = !mark.invalidated;

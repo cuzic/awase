@@ -247,6 +247,28 @@ pub(crate) const fn poll_counted_no_new_miss(miss_before: u32, miss_after: u32) 
     miss_after <= miss_before
 }
 
+/// 通過マーク（ADR-187）に対して、古い明示意図を捨ててよいか（`age_ms` = 通過からの経過）。
+///
+/// - `on_expiry == false`（観測が成功したとき）: 窓の間（`age_ms < window_ms`）だけ。
+/// - `on_expiry == true`（窓の終了時、BUG-158）: 窓が切れて（`age_ms >= window_ms`）、まだ一度も観測で
+///   捨てていない（`!invalidated`）ときだけ。窓の間・捨て済みは何もしない。
+///
+/// 判定を純関数にして、`#[cfg(windows)]`配下の`platform_state`のテストに頼らずLinuxで固定する。
+#[must_use]
+pub(crate) const fn should_drop_intents_for_mode_key_pass(
+    age_ms: u64,
+    invalidated: bool,
+    on_expiry: bool,
+    window_ms: u64,
+) -> bool {
+    let expired = age_ms >= window_ms;
+    if on_expiry {
+        expired && !invalidated
+    } else {
+        !expired
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -585,5 +607,29 @@ mod tests {
             "今回新しく失敗したら追随しない"
         );
         assert!(!poll_counted_no_new_miss(1, 2));
+    }
+
+    /// BUG-158: 意図の破棄の判定。観測成功時は窓の間だけ、窓の終了時は窓が切れて未破棄のときだけ。
+    #[test]
+    fn should_drop_intents_for_mode_key_pass_distinguishes_observation_and_expiry() {
+        let w = 300;
+        // 観測が成功したとき: 窓の間だけ捨てる。
+        assert!(should_drop_intents_for_mode_key_pass(0, false, false, w));
+        assert!(
+            should_drop_intents_for_mode_key_pass(299, true, false, w),
+            "2回目以降の観測でも(desired揃え)"
+        );
+        assert!(!should_drop_intents_for_mode_key_pass(300, false, false, w));
+        // 窓の終了時: 窓の間は何もしない(最初のtickで早すぎる破棄をしない。CIで実際に起きたバグ)。
+        assert!(
+            !should_drop_intents_for_mode_key_pass(142, false, true, w),
+            "窓の間は捨てない"
+        );
+        assert!(!should_drop_intents_for_mode_key_pass(299, false, true, w));
+        // 窓が切れて未破棄なら捨てる。
+        assert!(should_drop_intents_for_mode_key_pass(300, false, true, w));
+        assert!(should_drop_intents_for_mode_key_pass(5000, false, true, w));
+        // 観測の成功で既に捨てたなら、窓が切れても捨てない(通過より後の明示意図を守る)。
+        assert!(!should_drop_intents_for_mode_key_pass(300, true, true, w));
     }
 }
