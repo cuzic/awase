@@ -319,7 +319,7 @@ jobs:
       # cargo-mutants は既定の `cargo test` を使うため、この2経路では引き続き
       # 本ロックが唯一の防御。ブロック化（continue-on-errorなし）は維持する。
       - name: Run lib unit tests (Windows)
-        run: cargo nextest run --lib -p awase-windows
+        run: cargo nextest run --lib -p awase-windows --no-fail-fast
 
       # ime_key_sequence_golden は #![cfg(windows)] のため Linux の test ジョブでは
       # 0 tests になり、実質どこでも走っていなかった。ここ（実 Windows）で初めて
@@ -332,7 +332,7 @@ jobs:
       # 検出できない。2026-08-20 の独立レビューで発覚、追加）。
       # これらは決定的（環境非依存）なのでブロック化する（continue-on-error なし）。
       - name: Run golden / architecture guard tests (Windows)
-        run: cargo nextest run -p awase-windows --test architecture_guard --test golden_scenarios --test layer_boundary_guard --test ime_key_sequence_golden --test thumb_context_guard
+        run: cargo nextest run -p awase-windows --test architecture_guard --test golden_scenarios --test layer_boundary_guard --test ime_key_sequence_golden --test thumb_context_guard --no-fail-fast
 
       # E2E の決定的テスト（純 Engine の in-process ロジック + SendMessage/WM_CHAR）は
       # フォアグラウンドフォーカス非依存で、実 HWND 生成に失敗しても early-return で

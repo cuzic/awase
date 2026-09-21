@@ -1451,7 +1451,11 @@ mod plan_tests {
         ];
         let relevant: Vec<&PlanRow> = rows
             .iter()
-            .filter(|r| dbe_family.contains(&r.vk_label) && r.event_type == KeyEventType::KeyUp)
+            .filter(|r| {
+                // ラベルは "VK_DBE_SBCSCHAR (0xF3)" のように16進を後置している
+                dbe_family.iter().any(|f| r.vk_label.starts_with(f))
+                    && r.event_type == KeyEventType::KeyUp
+            })
             .collect();
         assert!(!relevant.is_empty());
 
