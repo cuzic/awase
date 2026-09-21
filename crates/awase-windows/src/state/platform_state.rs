@@ -160,6 +160,9 @@ pub(crate) struct ModeKeyPassMark {
     aligned: bool,
     /// 通過より後に、awase自身が実際にIMEへ書いた（`record_optimistic`/`record_confirmed`）か。書いたなら実IMEが
     /// 書いた値と違っても信用せず、揃えずにdrift correctionへ任せる。
+    /// **過大に数える**: `record_confirmed` の呼び出し元には actuation を伴わない belief ミラー（フォーカス変更時の
+    /// ミラー等、ADR-098決定5）も含まれ、それらも `true` にする。安全側（揃えない）にだけ倒れるので実害は薄いが、
+    /// 追補4の揃えが「awaseが書いた」とは無関係な理由で効かなくなりうる（round2 A-N6）。
     awase_wrote: bool,
     /// 通過を立てた時点で、その窓が読める窓（`can_use_imm32_cross_process`）だったか。窓の途中で`imm-learning`が
     /// 降格させても、立てた時点で読めたなら窓の終了時に古い意図を捨てる（BUG-151原因③、レビュー round2 A-N2）。

@@ -1140,10 +1140,16 @@ mod plan_tests {
         }
     }
 
-    /// awase が書く半角/全角（0xF3/0xF4、GJI・MS-IME本体の両方）は、Shift の有無に依らず
-    /// Suppress される（Shift は 0xF1 の特例の名残で、もう何の意味も持たない）。
+    /// `plan()` の判定そのもの: `shadow_action=Some(Toggle)` を持つ半角/全角（0xF3/0xF4、GJI・MS-IME本体の両方）は、
+    /// `modifier_snapshot.shift` の値に依らず Suppress される（`plan()` は Shift を見ない）。
+    ///
+    /// **本番ではこの組み合わせ（shift=true かつ shadow_action あり）は生成されない**: `enrich_ime_relevance` は
+    /// 修飾キー付きの物理キーに `shadow_action` を付けないので、Shift+半角/全角は `is_kanji_event=false` で **Allow**
+    /// （IME 側で別の意味を持ちうるため）。この名前を「Shift+半角/全角も Suppress される」と読まないこと（round2 B-NB4）。
+    /// なお修飾キーを途中で押す/離すと、同じ物理キーの KeyDown（無修飾で Suppress）と KeyUp（修飾ありで Allow）の
+    /// 配送が非対称になりうる（実害未確認、稀な操作）。
     #[test]
-    fn hankaku_zenkaku_keydown_suppressed_for_gji_and_msime_regardless_of_shift() {
+    fn plan_suppresses_toggle_hankaku_zenkaku_keydown_regardless_of_modifier_snapshot() {
         for (vk, action, vk_label) in dbe_written_vks() {
             for (profile, active_ime_kind, label) in owned_actuation_cases() {
                 for shift in [false, true] {
@@ -1168,6 +1174,10 @@ mod plan_tests {
             }
         }
     }
+
+    // 決定表の絞り込みを書くときは「対象行が空でないこと」を assert すること。ラベルを完全一致で絞り、実際のラベルが
+    // `"VK_DBE_SBCSCHAR (0xF3)"` のように後置きを持つために対象行が0件になったテストが、Linux では走らず
+    // windows-build で初めて失敗した実例がある（`kanji_family_keyup_suppress_verdict_is_independent_of_specific_vk`）。
 
     // ── ADR-166: plan() の全数決定表 ──
     //

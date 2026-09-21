@@ -386,6 +386,10 @@ pub struct KeyEffectKeymap {
 
 /// 修飾キーを押したままの打鍵では予測・追跡をしない。
 ///
+/// **限界（round2 A-N10）**: 表のキー（Space/Esc/Enter/BS等）を修飾付きで押すと`Stage`の追跡も更新されないので、
+/// 変換中の Shift+Enter 等で実 IME が変換を抜けても追跡は`ConvSpace`等のまま残りうる（読めない窓では観測で直らない）。
+/// 誤りの種類を「修飾付きを素のキーとして予測」から「追跡の取り残し」へ入れ替えたもので、実害は未確認。
+///
 /// レビュー指摘A-B3。旧`enrich_ime_relevance`の修飾キーガード〈ADR-186 残る問題2: Shift+変換はATOKで
 /// 開閉トグルではない〉の置き換え。表が持つキー（モードキー・Space/Esc/Enter/BS）はShift/Ctrl/Alt/Winのどれかで抑止する
 /// （Shift+Spaceなど表のセルは「素のキー」の結果）。表に無い文字キーはShift（大文字入力）を許し、
@@ -548,6 +552,32 @@ pub fn custom_table_overrides(custom_table: &str, vk: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// 通過マーク（`kp_stage_mode_key_follow`、BUG-157の`desired_open`の揃え）を立てるのは`is_followed_mode_key`のキーだけ。
+    /// 予測が開閉を動かすキーがそれと食い違うと、そのキーで動いた`open`は`desired_open`へ揃わず、BUG-157が黙って退行する。
+    /// 表のうち通過マークの対象でないキー（Space/Esc/Enter/BS）が開閉を変えるセルを持たないことを、全表で固定する
+    /// （将来の格子で「入力中のEscで閉じる」等が学習されたら、ここで気付く。round2 A-N9）。
+    #[test]
+    fn table_keys_outside_the_followed_mode_keys_never_change_open() {
+        for preset in [
+            KeymapPreset::Atok,
+            KeymapPreset::MsIme,
+            KeymapPreset::MsImeNative,
+        ] {
+            for c in table_of(preset) {
+                if matches!(
+                    c.key,
+                    TableKey::Space | TableKey::Esc | TableKey::Enter | TableKey::Bs
+                ) {
+                    assert_eq!(
+                        c.after_open, c.open,
+                        "{preset:?}: {:?} が開閉を変える（通過マークの対象外のキーなので BUG-157 の揃えが効かない）",
+                        c.key
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn modifiers_suppress_prediction_for_table_keys_and_shortcuts() {
         // 表のキー: 修飾なしだけ予測する。
