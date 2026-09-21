@@ -1815,7 +1815,11 @@ fn run() -> WinResult<()> {
     if std::env::args().any(|a| a == "--activate-gji") {
         activate_gji_profile();
         // awase がアクティブなTIPを検出する(ポーリング周期)まで待ってから、手順を始める。
-        AUTO_NEXT.with(|n| *n.borrow_mut() = now_ms() + 8000);
+        // `--delay=MS`: 手順の開始までの待ち。awase を初期化の後に起動する運用(誤学習の回避)では長くする。
+        let delay = std::env::args()
+            .find_map(|a| a.strip_prefix("--delay=").and_then(|v| v.parse::<u64>().ok()))
+            .unwrap_or(8000);
+        AUTO_NEXT.with(|n| *n.borrow_mut() = now_ms() + delay);
     }
 
     append_log("=== IME key matrix spike (awase 非依存) ===");
