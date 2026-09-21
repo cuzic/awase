@@ -5,7 +5,7 @@ title: |-
 summary: |-
   IMEを状態の正とし、awaseは書き込まず観測に追随する方針（ADR-191）では、キーの結果が「入力中か・変換中か」などの状態で変わるキー
   （ATOKの無変換/変換など）を使うユーザーだけが、モードずれ（EngineがONのままIMEはOFF、等）を受ける。冪等なキー（`VK_IME_ON`/`VK_IME_OFF`）ではずれない。
-  特に観測できないアプリ（TsfNative）ではずれが残るが、awaseのIMトグル書き込み（ADR-189）とCtrl+無変換/Ctrl+変換の強制ON/OFFで強制的に解消でき、
+  特に観測できないアプリ（TsfNative）ではずれが残るが、awaseのIMトグル書き込み（ADR-189）と強制ON/OFFの打鍵（`keys.ime_on`/`keys.ime_off`、既定Ctrl+変換/Ctrl+無変換、上書き可）で強制的に解消でき、
   ベストエフォート・ユーザー責任で足りる（ユーザー判断、2026-09-21）。本ADRは、そのユーザーを手助けする層を定める:
   (1)IMEのキーマップ（GJIは`config1.db`、MS-IMEはレジストリ）から、状態依存のキーを機械的に検出する。(2)検出したら一度だけ警告し、「冪等なキーへの変更」を推奨する。
   (3)置き換えは新機構を作らず、既存のユーザー明示config（`keys.ime_on/ime_off/ime_toggle`、`*_solo_tap_ime_action`）をawase-settingsで案内・設定する形にする。
@@ -26,7 +26,7 @@ related_adr:
 
 [ADR-191](191-ime-is-source-of-truth-observe-not-write.md)は、awaseがIMEの状態を書かず、生キーを通して観測に追随する方針をとる。ユーザーの整理（2026-09-21）:
 - **冪等なキーではモードずれは起きない**。ずれるのは、結果が状態（入力中・変換中・IME ON/OFF）で変わるキーを使うユーザーだけ。
-- 観測できないアプリ（TsfNative）ではずれが残るが、(a)IMトグルはawaseが書く（ADR-189）、(b)Ctrl+無変換/Ctrl+変換による強制ON/OFFがある、の2つでずれは強制的に解消できる。
+- 観測できないアプリ（TsfNative）ではずれが残るが、(a)IMトグルはawaseが書く（ADR-189）、(b)awaseが強制的にactuateする強制ON/OFFの打鍵（`keys.ime_on`/`keys.ime_off`。既定がCtrl+変換/Ctrl+無変換というだけで、configで上書きしたキーがそのまま使われる）がある、の2つでずれは強制的に解消できる。
   よって**状態依存のキーを使うユーザーは自己責任・ベストエフォート**で足りる。
 - そのうえで、ユーザーを手助けする現実的な手段（警告・キーの抑止・上書き）を用意したい。
 

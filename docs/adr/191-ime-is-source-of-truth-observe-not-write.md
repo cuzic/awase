@@ -261,6 +261,6 @@ BUG-113/124（TsfNative×GJIの「@」）、BUG-143（`session_keymap`と`custom
 観測できないアプリ（`Imm32Unavailable`・`TsfNative`・`InputRelay`）では、IMEの状態を一切読まず、TsfNativeでは`reschedule_ime_refresh`がポーリングを予約せずに戻る（コードで確認）。「観測に追随」は
 そこでは定義できず、決め打ちの撤去により、状態依存のキー（入力中かどうかで結果が変わるキー）を使うユーザーには、モードずれが起きるようになる。これを**受け入れる**（ユーザー判断）:
 - 冪等なキー（`VK_IME_ON`/`VK_IME_OFF`）はずれない。ずれるのは状態依存のキーを使うユーザーだけ。
-- ずれは、(a)**IMトグルのawaseによる書き込み（ADR-189。残す機能）**、(b)**Ctrl+無変換/Ctrl+変換による強制ON/OFF**（明示config）で、強制的に解消できる。実用上の問題はない。
+- ずれは、(a)**IMトグルのawaseによる書き込み（ADR-189。残す機能）**、(b)**awaseが強制的にactuateする強制ON/OFFの打鍵**（`keys.ime_on`/`keys.ime_off`。既定値がCtrl+変換/Ctrl+無変換というだけで、configで別のキーに上書きしていればそのキーになる）で、強制的に解消できる。実用上の問題はない。
 - 状態依存のキーを使うユーザーは**自己責任・ベストエフォート**とし、その手助け（検出・警告・冪等なキーへの置き換えの案内）は**別ADR（[ADR-192](192-state-dependent-mode-key-warning-and-guided-override.md)）**で扱う。
 - **ADR-189のトグル（0x19/0xF3/0xF4）の書き込みは撤去しない**（実装ブランチで誤って撤去したので復元する）。TsfNativeでのEngineの追随は、これに依る。
