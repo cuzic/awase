@@ -132,6 +132,39 @@ fn bring_to_front(hwnd: HWND) -> bool {
     }
 }
 
+/// 前面窓が `top`、かつそのスレッドのフォーカスが `rich` にあるか。
+/// `GetGUIThreadInfo` が失敗した場合は false（フォーカスを確認できないままキーを送らない）。
+fn focus_on_probe(top: HWND, rich: HWND) -> bool {
+    unsafe {
+        if GetForegroundWindow() != top {
+            return false;
+        }
+        let mut gi = GUITHREADINFO {
+            cbSize: size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        GetGUIThreadInfo(0, &raw mut gi).is_ok() && gi.hwndFocus == rich
+    }
+}
+
+/// ログ用: 前面窓とフォーカス窓のクラス名、および `focus_on_probe` の判定。
+fn focus_report(top: HWND, rich: HWND) -> String {
+    unsafe {
+        let fg = GetForegroundWindow();
+        let mut gi = GUITHREADINFO {
+            cbSize: size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        let got = GetGUIThreadInfo(0, &raw mut gi).is_ok();
+        format!(
+            "FG class={} / focus class={} (GetGUIThreadInfo ok={got}, on_probe={})",
+            class_of(fg),
+            class_of(gi.hwndFocus),
+            focus_on_probe(top, rich)
+        )
+    }
+}
+
 fn read_text(h: HWND) -> String {
     unsafe {
         let len = SendMessageW(h, WM_GETTEXTLENGTH, None, None).0;
@@ -295,33 +328,38 @@ fn main() {
         let fronted = bring_to_front(top);
         log.line(&format!("前面化: {fronted}"));
         sleep(800);
-        unsafe {
-            let fg = GetForegroundWindow();
-            let mut gi = GUITHREADINFO {
-                cbSize: size_of::<GUITHREADINFO>() as u32,
-                ..Default::default()
-            };
-            let _ = GetGUIThreadInfo(0, &raw mut gi);
-            log.line(&format!(
-                "FG class={} / focus class={}",
-                class_of(fg),
-                class_of(gi.hwndFocus)
-            ));
-        }
-        for i in 1..=repeat {
-            clear_text(rich);
-            sleep(200);
-            press(0x16, 40); // VK_IME_ON(冪等)
-            sleep(500);
-            if idle_ms > 0 {
-                sleep(idle_ms);
+        log.line(&focus_report(top, rich));
+        // キーを注入する前に、前面かつフォーカスがプローブの RichEdit にあることを確かめる。
+        // 満たさないままキーを送ると、ユーザーの実際のウィンドウに IME ON と `ka` が入ってしまう。
+        'trials: {
+            if !fronted || !focus_on_probe(top, rich) {
+                log.line("ABORT: 前面化またはフォーカスに失敗したためキーを注入しない");
+                break 'trials;
             }
-            press(0x4B, 30); // K
-            sleep(30);
-            press(0x41, 30); // A
-            sleep(700);
-            let text = read_text(rich);
-            log.line(&format!("TEXT n={i} idle={idle_ms}ms text={text:?}"));
+            for i in 1..=repeat {
+                clear_text(rich);
+                sleep(200);
+                if !focus_on_probe(top, rich) {
+                    log.line(&format!("ABORT n={i}: 注入前にフォーカスが外れた"));
+                    break 'trials;
+                }
+                press(0x16, 40); // VK_IME_ON(冪等)
+                sleep(500);
+                if idle_ms > 0 {
+                    sleep(idle_ms);
+                }
+                // idle 中にユーザーが別窓へ切り替えた場合に備え、打鍵の直前にも確認する。
+                if !focus_on_probe(top, rich) {
+                    log.line(&format!("ABORT n={i}: idle 後にフォーカスが外れた"));
+                    break 'trials;
+                }
+                press(0x4B, 30); // K
+                sleep(30);
+                press(0x41, 30); // A
+                sleep(700);
+                let text = read_text(rich);
+                log.line(&format!("TEXT n={i} idle={idle_ms}ms text={text:?}"));
+            }
         }
         log.line("=== 完了 ===");
         unsafe {
