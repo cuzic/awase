@@ -58,7 +58,8 @@ jobs:
           # (空=変更なし) / args: スパイクの追加引数 / toggle: config.toml の gji_thumb_key_ime_toggle /
           # keymap: GJI の session_keymap(1=ATOK, 2=MS-IME) / custom_table: config1.db に古い custom_keymap_table
           # (変換=IMEOn)を残すか / check: expect=ATOK前提の期待表(check.py)、consistency=プリセット非依存で
-          # 「実IMEのかな=Engine ON、英数・直接入力=Engine OFF」に追随するか(check_consistency.py、--walk)
+          # 「実IMEのかな=Engine ON、英数・直接入力=Engine OFF」に追随するか(check_consistency.py、--walk)、
+          # collect=判定せずログを回収し、[GRID-ABORT] の打ち切り(rc=3=INVALID)だけを検出する(cal-* 用。expect=observe と組み合わせる。解析はローカル)
           # expect: pass=全回PASS / fail=撤去や設定で壊れる(既知の問題を固定) / observe=結果を表に出すだけ(不安定・未確定の観測用)
           # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME)
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
@@ -105,57 +106,57 @@ jobs:
             cfg('probe-vk-gji-atok', 'observe', check='vkprobe', args='--vkprobe', awase='false'),
             cfg('probe-vk-gji-msime', 'observe', check='vkprobe', args='--vkprobe', keymap=2, awase='false'),
             cfg('probe-vk-msime-native', 'observe', check='vkprobe', args='--vkprobe --msime', ime='msime', awase='false'),
-            # --- ADR-191 の検証ラウンド(ci/e2e-calibration ブランチ。check='calibration'=判定なし・ログ回収のみ。cal-verify-* は打鍵時予測を持つ awase のビルドで意味を持つ) ---
+            # --- ADR-191 の検証ラウンド(ci/e2e-calibration ブランチ。check='collect'=判定せずログを回収し、[GRID-ABORT] による打ち切り(rc=3=INVALID)だけを検出する。cal-verify-* は打鍵時予測を持つ awase のビルドで意味を持つ) ---
             # walk: 撤去ブランチ(打鍵時予測ビルド)+ AWASE_TEST_INJECTION=1 でランダムなキー列を流し、Engine と実IMEのずれを
             # ローカルで解析する(effect_learning.py --drift、DRIFT_OFF=100/400/1500)。cache=works は観測あり、
             # cache=unavailable は awase が IME を読めないアプリ相当(スパイク窓を「IMM不可」に固定)で、予測だけが Engine を動かす。
-            *[cfg(f'cal-verify-{kind}-s{seed}', 'observe', check='calibration', toggle='false', cache=cache, runs=1,
+            *[cfg(f'cal-verify-{kind}-s{seed}', 'observe', check='collect', toggle='false', cache=cache, runs=1,
                   args=f'--walk=100 --seed={seed}')
               for kind, cache in (('obs', 'works'), ('blind', 'unavailable')) for seed in (1, 2)],
-            cfg('cal-walk-noawase-s5', 'observe', check='calibration', awase='false', runs=1, args='--walk=100 --seed=5'),
+            cfg('cal-walk-noawase-s5', 'observe', check='collect', awase='false', runs=1, args='--walk=100 --seed=5'),
             # --- ADR-191 学習ラウンド: 状態(開閉×入力モード×入力中の段階=30状態)を IMM で決定的に作り、キーの効果を格子状に網羅する ---
             # (awase なし=IME単体の効果。--grid=シャード、キーのグループで4分割。プリセット ATOK=keymap 1 / MS-IME=keymap 2)
             # cal-grid-smoke は動作確認用(各セル1回)。所要は約 20〜35 分/シャード(wait=秒)。
-            cfg('cal-grid-smoke', 'observe', check='calibration', awase='false', runs=1, wait=1500, args='--grid=s4 --grid-trials=1'),
-            *[cfg(f'cal-grid-{pre}-{sh}', 'observe', check='calibration', awase='false', runs=1, wait=3300, keymap=km,
+            cfg('cal-grid-smoke', 'observe', check='collect', awase='false', runs=1, wait=1500, args='--grid=s4 --grid-trials=1'),
+            *[cfg(f'cal-grid-{pre}-{sh}', 'observe', check='collect', awase='false', runs=1, wait=3300, keymap=km,
                   args=f'--grid={sh}')
               for pre, km in (('atok', 1), ('msime', 2)) for sh in ('s1', 's2', 's3', 's4')],
             # 第3版: 全ての状態をキーだけで作る(--grid-setup=keys。リセットも IMM を使わず、観測しながら IME_ON/ひらがなで(開,0x19)へ戻す)。
             # 第2版(リセットだけ IMM=--grid-setup=keys-immreset)は、IMM で書いた 0x19 が GJI の内部状態と食い違い、モード切替キーの結果が実際と違った。
             # smoke は受け入れ基準の確認用: ATOK s1(ひらがな 0x19→0x10、0x10→0x19)、MS-IME s2(カタカナ 0x19→0x1B)。
-            cfg('cal-gridk3-smoke-atok', 'observe', check='calibration', awase='false', runs=1, wait=1800, keymap=1,
+            cfg('cal-gridk3-smoke-atok', 'observe', check='collect', awase='false', runs=1, wait=1800, keymap=1,
                 args='--grid=s1 --grid-setup=keys --grid-trials=1'),
-            cfg('cal-gridk3-smoke-msime', 'observe', check='calibration', awase='false', runs=1, wait=1800, keymap=2,
+            cfg('cal-gridk3-smoke-msime', 'observe', check='collect', awase='false', runs=1, wait=1800, keymap=2,
                 args='--grid=s2 --grid-setup=keys --grid-trials=1'),
-            *[cfg(f'cal-gridk3-{pre}-{sh}', 'observe', check='calibration', awase='false', runs=1, wait=3300, keymap=km,
+            *[cfg(f'cal-gridk3-{pre}-{sh}', 'observe', check='collect', awase='false', runs=1, wait=3300, keymap=km,
                   args=f'--grid={sh} --grid-setup=keys --grid-trials=2')
               for pre, km in (('atok', 1), ('msime', 2)) for sh in ('s1', 's2', 's3', 's4')],
             # 高速化の検証(ci/e2e-calibration): 固定待ちを縮める --fast(+1500ms の観測を省く) と --speed=K(手順間の待ちをK倍速)。
             # 既存 CI ログ584押下で、(開閉,変換モード,入力中,入力欄末尾) は +100ms と +1500ms で 99.8% 一致(唯一の例外は次試行の準備操作の混入)。
             # cal-gridk3-atok-s1(遅い版)と同じ入力(--grid=s1 --grid-trials=2)で、所要時間と grid_learn.py --at=400 のセル表を比べる。
-            *[cfg(f'cal-gridk3-fast-atok-s1-sp{k}', 'observe', check='calibration', awase='false', runs=1, wait=1800, keymap=1,
+            *[cfg(f'cal-gridk3-fast-atok-s1-sp{k}', 'observe', check='collect', awase='false', runs=1, wait=1800, keymap=1,
                   args=f'--grid=s1 --grid-setup=keys --grid-trials=2 --fast --speed={k}')
               for k in (2, 4)],
             # --- ADR-191/193: 格子の待ちを compartment 変更通知の購読に置き換えられるか(ci/e2e-calibration) ---
             # cal-notify-probe-*: compartment_notify_probe(awase なし)で、キー→NOTIFY/POLL の遅延を測る(ATOKのみ、gap=1500/600)。
             # seq: IME_ON, ひらがな×2, カタカナ, 英数, 無変換, 変換, 半角/全角×2, Esc, k, a(入力中), Space(変換中), Enter, IME_OFF, IME_ON
-            *[cfg(f'cal-notify-probe-atok-g{g}', 'observe', check='calibration', awase='false', runs=1, wait=240, keymap=1,
+            *[cfg(f'cal-notify-probe-atok-g{g}', 'observe', check='collect', awase='false', runs=1, wait=240, keymap=1,
                   probe=f'--seq=16,F2,F2,F1,F0,1D,1C,F3,F3,1B,4B,41,20,0D,1A,16 --gap={g} --poll=50')
               for g in (1500, 600)],
             # cal-notify-probe-diag: 前面化の戦略 S0〜S3 を順に試して DIAG 行に残す診断コピー(ADR-193 の本体は編集しない)。
-            cfg('cal-notify-probe-diag', 'observe', check='calibration', awase='false', runs=1, wait=240, keymap=1,
+            cfg('cal-notify-probe-diag', 'observe', check='collect', awase='false', runs=1, wait=240, keymap=1,
                 probe_bin='compartment_notify_probe_diag',
                 probe='--seq=16,F2,F2,F1,F0,1D,1C,F3,F3,1B,4B,41,20,0D,1A,16 --gap=1500 --poll=50'),
             # cal-notify-comp-s1: 入力中/変換中/確定のイベント(WM_IME_*/EN_CHANGE)も待ちの静止判定に使い、観測を +100ms だけにする(--snap100)。
             # cal-notify-atok-s1(--notify のみ)と表(grid_learn.py --at=100)・所要時間を比べる。
-            cfg('cal-notify-comp-s1', 'observe', check='calibration', awase='false', runs=1, wait=1500, keymap=1,
+            cfg('cal-notify-comp-s1', 'observe', check='collect', awase='false', runs=1, wait=1500, keymap=1,
                 args='--grid=s1 --grid-setup=keys --fast --speed=2 --grid-adaptive --notify --notify-comp --snap100 '
                      '--grid-retry-file=@REPO@/tools/e2e/ime_key_matrix/grid-tables/nondet-atok.txt'),
             # cal-notify-comp-atok: 入力中/変換中/確定のイベント(WM_IME_*, EN_CHANGE)が CI(GJI・Edit)で届くか(--notify-comp)。
-            cfg('cal-notify-comp-atok', 'observe', check='calibration', awase='false', runs=1, wait=900, keymap=1,
+            cfg('cal-notify-comp-atok', 'observe', check='collect', awase='false', runs=1, wait=900, keymap=1,
                 args='--grid=s4 --grid-setup=keys --grid-trials=1 --fast --speed=2 --notify --notify-comp'),
             # cal-notify-atok-s{1..4}: cal-fast-atok-s*(--fast --speed=2 --grid-adaptive)に --notify を足した構成。所要時間・表の一致を遅い版/高速版と比べる。
-            *[cfg(f'cal-notify-atok-s{n}', 'observe', check='calibration', awase='false', runs=1, wait=1500, keymap=1,
+            *[cfg(f'cal-notify-atok-s{n}', 'observe', check='collect', awase='false', runs=1, wait=1500, keymap=1,
                   args=f'--grid=s{n} --grid-setup=keys --fast --speed=2 --grid-adaptive --notify '
                        '--grid-retry-file=@REPO@/tools/e2e/ime_key_matrix/grid-tables/nondet-atok.txt')
               for n in (1, 2, 3, 4)],
@@ -164,15 +165,15 @@ jobs:
             # 探索後に到達不能な試行を外す([GRID-PRUNE])、--grid-adaptive(1パス目は全セル1回、2パス目は前回の表で非決定だったセル+履歴依存+10%の監査標本)、
             # セットアップ不能の連続で打ち切り([GRID-ABORT]→rc=3)。本番シャードは同じプリセットの smoke が成功してから中身を実行する(gate)。
             # cal-fast-val-* は速度の妥当性の比較用: 遅い版 cal-gridk3-atok-s1(--grid-trials=2)と同じ入力で --speed=1/4 を比べる。
-            *[cfg(f'cal-fast-smoke-{pre}', 'observe', check='calibration', awase='false', runs=1, wait=900, keymap=km,
+            *[cfg(f'cal-fast-smoke-{pre}', 'observe', check='collect', awase='false', runs=1, wait=900, keymap=km,
                   args=f'--grid={sh} --grid-setup=keys --fast --speed=2 --grid-trials=1')
               for pre, km, sh in (('atok', 1, 's1'), ('msime', 2, 's2'))],
-            *[cfg(f'cal-fast-{pre}-{sh}', 'observe', check='calibration', awase='false', runs=1, wait=1500, keymap=km,
+            *[cfg(f'cal-fast-{pre}-{sh}', 'observe', check='collect', awase='false', runs=1, wait=1500, keymap=km,
                   gate=f'cal-fast-smoke-{pre}',
                   args=f'--grid={sh} --grid-setup=keys --fast --speed=2 --grid-adaptive '
                        f'--grid-retry-file=@REPO@/tools/e2e/ime_key_matrix/grid-tables/nondet-{pre}.txt')
               for pre, km in (('atok', 1), ('msime', 2)) for sh in ('s1', 's2', 's3', 's4')],
-            *[cfg(f'cal-fast-val-atok-s1-k{k}', 'observe', check='calibration', awase='false', runs=1, wait=1500, keymap=1,
+            *[cfg(f'cal-fast-val-atok-s1-k{k}', 'observe', check='collect', awase='false', runs=1, wait=1500, keymap=1,
                   args=f'--grid=s1 --grid-setup=keys --grid-trials=2 --fast --speed={k}')
               for k in (1, 4)],
             cfg('msime-stale-table', 'pass', check='consistency', args='--walk --key=henkan', toggle='false', keymap=2, custom_table='true'),
@@ -475,12 +476,12 @@ jobs:
             python tools\e2e\ime_key_matrix\check_toggle.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'resync') {
             python tools\e2e\ime_key_matrix\check_resync.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
-          } elseif ('${{ matrix.cfg.check }}' -eq 'calibration') {
+          } elseif ('${{ matrix.cfg.check }}' -eq 'collect') {
             if (Select-String -Path dist\ime_key_matrix_spike.log -Pattern 'GRID-ABORT' -Quiet) {
-              'calibration: [GRID-ABORT] で打ち切られた(INVALID)。ログの [GRID-ABORT] reason を参照' | Tee-Object -FilePath result.txt
+              'collect: [GRID-ABORT] で打ち切られた(INVALID, rc=3)。ログの [GRID-ABORT] reason を参照' | Tee-Object -FilePath result.txt
               $global:LASTEXITCODE = 3
             } else {
-              'calibration: 判定なし(ログ回収のみ。解析はローカルで effect_learning.py / cycle.py)' | Tee-Object -FilePath result.txt
+              'collect: 判定なし(ログ回収のみ, rc=0)。解析はローカルで grid_learn.py / effect_learning.py / cycle.py' | Tee-Object -FilePath result.txt
               $global:LASTEXITCODE = 0
             }
           } elseif ('${{ matrix.cfg.check }}' -eq 'vkprobe') {
