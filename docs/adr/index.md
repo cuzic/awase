@@ -359,6 +359,7 @@ ADR-032 で IME 状態モデルが reducer 化されたあと、運用で見つ�
 | [176-implementation-tasks.md](176-implementation-tasks.md) | ADR-176 実装タスクリスト | [176](176-behavioral-calibration-of-ime-mode-key-shadow-overrides.md) |
 | [193-implementation-tasks.md](193-implementation-tasks.md) | ADR-193 実装タスクリスト（Chrome idle-sweep E2E、保留・参考） | [193](193-richedit-superclass-tsf-native-e2e-target.md) |
 | [191-calibration-experiments.md](191-calibration-experiments.md) | ADR-191 較正・予測の実験の経緯と実測結果（格子・通知購読・CI高速化・文献調査・巡回シミュレータ） | [191](191-ime-is-source-of-truth-observe-not-write.md) |
+| [191-gji-state-scope-spec.md](191-gji-state-scope-spec.md) | ADR-191 GJI/MS-IME の開閉・変換モードの保持範囲（仕様調査：Mozc読解とCI実測） | [191](191-ime-is-source-of-truth-observe-not-write.md) |
 | [178-opus-review-round1.md](178-opus-review-round1.md)〜[round12.md](178-opus-review-round12.md) | ADR-178 v1〜v13（バックアップ+復元方式、破棄済み）敵対的レビュー記録（Opus round1〜12） | [178](178-msi-uninstall-preserve-userdata.md) |
 | [178-opus-review-v14.md](178-opus-review-v14.md) | ADR-178 v14（Permanent+自己修復方式、現行）敵対的レビュー記録 | [178](178-msi-uninstall-preserve-userdata.md) |
 
