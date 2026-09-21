@@ -212,8 +212,8 @@ pub struct BugReportStateSnapshot {
 /// 反映したものである。ADR-179以前はawase本体がこれらをさらにF15-F24
 /// 限定の安全範囲フィルタ（BUG-14対策で`VK_KANJI`等を除外）に通してから
 /// 専用Fnキーとして自動採用していたが、ADR-179でこの採用機構自体を
-/// 撤去した（無変換/変換のIME意味論は`classify_thumb_key_ime_actions`/
-/// `gate_thumb_key_ime_actions`が別途扱う）。したがって、ここに含まれる
+/// 撤去した（無変換/変換のIME意味論は`classify_thumb_key_ime_actions`が
+/// 診断用に分類するだけ）。したがって、ここに含まれる
 /// VK名は`config1.db`側の生の宣言をそのまま見せているだけであり、
 /// awaseが実際に何かを採用したことを意味しない。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -244,8 +244,7 @@ pub struct BugReportGjiKeymapSummary {
     /// `"Toggle"`。
     pub henkan_classified_kind: Option<String>,
     pub muhenkan_classified_kind: Option<String>,
-    /// `gate_thumb_key_ime_actions`（gate後）の結果。`ime_kind == Gji`
-    /// のときのみ`Some`。
+    /// ADR-191で採用の機構を撤去したため、常に`None`（互換のためスキーマに残す）。
     pub henkan_adopted_kind: Option<String>,
     pub muhenkan_adopted_kind: Option<String>,
     /// `"Delegate"` / `"PhysicalDelivery"`。`ime_kind == Gji`のときのみ`Some`。

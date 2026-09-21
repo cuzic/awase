@@ -37,24 +37,6 @@ pub(crate) enum ImeToggleKind {
     Toggle,
 }
 
-/// [`classify_thumb_key_ime_actions`]の判定結果に付随する、ユーザーへの
-/// 通知要否（BUG-115）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(windows, repr(u8))]
-pub(crate) enum ThumbKeyImeWarning {
-    /// 通知不要（矛盾なし、または`On`/`Off`のみで冪等、あるいは
-    /// overlayにより既に解決済み）。
-    #[default]
-    None,
-    /// 無変換/変換に状態依存トグル（`Toggle`）を検出したが、
-    /// `gji_thumb_key_ime_toggle`が`false`（既定）のため反映しなかった。
-    /// 対処法を案内する`tracing::warn!`が必要。
-    ToggleDeclined,
-    /// 状態依存トグルを、ユーザーのopt-in設定によりベストエフォートで
-    /// 反映した。`tracing::info!`で通知する。
-    ToggleHonored,
-}
-
 /// GJIの現在の設定（`config1.db`）が、無変換/変換キー単体にどのIME意味論
 /// （[`ImeToggleKind`]）を割り当てているかを判定する（BUG-115）。
 /// `config1.db`の3つの独立した情報源を、優先順位付きで1つの結論に
@@ -102,14 +84,8 @@ pub(crate) enum ThumbKeyImeWarning {
 ///    （`config_handler.cc`で確認済み）により実質MSIME相当なので、この
 ///    fail-closedな既定は実際のGJI挙動とも一致する。
 ///
-/// **`Toggle`は「表現不能」ではなく「opt-inで提供する」設計判断**である
-/// ことに注意。既定でopt-inしない理由は
-/// `GeneralConfig::gji_thumb_key_ime_toggle`のdocコメント、および
-/// [docs/known-bugs.md BUG-115](../../../../docs/known-bugs.md)参照
-/// （要旨: `Toggle`の非冪等性・親指キー2本への露出倍増・非opt-in・GJIが
-/// Mozcのフォークである不確実性の4点）。将来この関数を見て「Toggleで
-/// 書けるから既定ONにできるのでは」と再検討する場合は、必ず上記
-/// ドキュメントの「なぜ既定OFFにしたか」を先に読むこと。
+/// ADR-191: この分類は、bug report（ADR-148）の診断表示と較正結果の保存にだけ使う。awaseが
+/// この結果からIMEの開閉を代行・上書きすることはない（`gji_thumb_key_ime_toggle`設定と採用機構は撤去済み）。
 #[must_use]
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn classify_thumb_key_ime_actions(
@@ -221,14 +197,8 @@ impl ModeKeyCandidate {
 ///    確認済み）により実質MSIME相当なので、`MSIME`の分岐へ委ねる
 ///    fail-closedな既定が実際のGJI挙動とも一致する。
 ///
-/// **`Toggle`は「表現不能」ではなく「opt-inで提供する」設計判断**である
-/// ことに注意。既定でopt-inしない理由は
-/// `GeneralConfig::gji_thumb_key_ime_toggle`のdocコメント、および
-/// [docs/known-bugs.md BUG-115](../../../../docs/known-bugs.md)参照
-/// （要旨: `Toggle`の非冪等性・親指キー2本への露出倍増・非opt-in・GJIが
-/// Mozcのフォークである不確実性の4点）。将来この関数を見て「Toggleで
-/// 書けるから既定ONにできるのでは」と再検討する場合は、必ず上記
-/// ドキュメントの「なぜ既定OFFにしたか」を先に読むこと。
+/// ADR-191: この分類は、bug report（ADR-148）の診断表示と較正結果の保存にだけ使う。awaseが
+/// この結果からIMEの開閉を代行・上書きすることはない（`gji_thumb_key_ime_toggle`設定と採用機構は撤去済み）。
 #[must_use]
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn classify_mode_key_ime_action(
@@ -303,52 +273,6 @@ fn classify_vk_in_ime_keys(
         Some(ImeToggleKind::Off)
     } else {
         None
-    }
-}
-
-/// [`classify_thumb_key_ime_actions`]の結果にopt-inゲートを適用した最終判定。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) struct ThumbKeyImeWiring {
-    pub henkan: Option<ImeToggleKind>,
-    pub muhenkan: Option<ImeToggleKind>,
-    pub warning: ThumbKeyImeWarning,
-}
-
-/// `atok_opt_in`（`GeneralConfig::gji_thumb_key_ime_toggle`）を
-/// [`classify_thumb_key_ime_actions`]の結果へ適用する（BUG-115）。
-/// `Toggle`（非冪等）のみゲート対象——`On`/`Off`は常にそのまま反映してよい。
-/// Henkan/Muhenkanそれぞれ独立にゲートする（一方だけ`Toggle`の場合もある）。
-#[must_use]
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn gate_thumb_key_ime_actions(
-    henkan: Option<ImeToggleKind>,
-    muhenkan: Option<ImeToggleKind>,
-    opt_in: bool,
-) -> ThumbKeyImeWiring {
-    let henkan_is_toggle = matches!(henkan, Some(ImeToggleKind::Toggle));
-    let muhenkan_is_toggle = matches!(muhenkan, Some(ImeToggleKind::Toggle));
-    let any_toggle = henkan_is_toggle || muhenkan_is_toggle;
-
-    let warning = if !any_toggle {
-        ThumbKeyImeWarning::None
-    } else if opt_in {
-        ThumbKeyImeWarning::ToggleHonored
-    } else {
-        ThumbKeyImeWarning::ToggleDeclined
-    };
-
-    let gate = |action: Option<ImeToggleKind>, is_toggle: bool| {
-        if is_toggle && !opt_in {
-            None
-        } else {
-            action
-        }
-    };
-    ThumbKeyImeWiring {
-        henkan: gate(henkan, henkan_is_toggle),
-        muhenkan: gate(muhenkan, muhenkan_is_toggle),
-        warning,
     }
 }
 
@@ -468,11 +392,11 @@ mod windows_impl {
 
 #[cfg(test)]
 mod tests {
-    // ── classify_thumb_key_ime_actions / gate_thumb_key_ime_actions (BUG-115) ──
+    // ── classify_thumb_key_ime_actions (BUG-115) ──
 
     use super::{
-        classify_mode_key_ime_action, classify_thumb_key_ime_actions, gate_thumb_key_ime_actions,
-        ImeToggleKind, ModeKeyCandidate, ThumbKeyImeWarning,
+        classify_mode_key_ime_action, classify_thumb_key_ime_actions, ImeToggleKind,
+        ModeKeyCandidate,
     };
     use awase_gji_config::wire::GjiRawConfig;
 
@@ -621,57 +545,6 @@ mod tests {
     // ── classify_mode_key_ime_action: Hiragana/Katakana (BUG-115、ひらがな
     // キーを親指シフトキーに設定しているユーザー向けエッジケース) ──
 
-    #[test]
-    fn gate_on_off_is_never_declined_regardless_of_opt_in() {
-        for opt_in in [false, true] {
-            let wiring = gate_thumb_key_ime_actions(
-                Some(ImeToggleKind::On),
-                Some(ImeToggleKind::Off),
-                opt_in,
-            );
-            assert_eq!(wiring.henkan, Some(ImeToggleKind::On));
-            assert_eq!(wiring.muhenkan, Some(ImeToggleKind::Off));
-            assert_eq!(wiring.warning, ThumbKeyImeWarning::None);
-        }
-    }
-
-    #[test]
-    fn gate_toggle_without_opt_in_is_declined() {
-        let wiring = gate_thumb_key_ime_actions(
-            Some(ImeToggleKind::Toggle),
-            Some(ImeToggleKind::Toggle),
-            false,
-        );
-        assert_eq!(wiring.henkan, None);
-        assert_eq!(wiring.muhenkan, None);
-        assert_eq!(wiring.warning, ThumbKeyImeWarning::ToggleDeclined);
-    }
-
-    #[test]
-    fn gate_toggle_with_opt_in_is_honored() {
-        let wiring = gate_thumb_key_ime_actions(
-            Some(ImeToggleKind::Toggle),
-            Some(ImeToggleKind::Toggle),
-            true,
-        );
-        assert_eq!(wiring.henkan, Some(ImeToggleKind::Toggle));
-        assert_eq!(wiring.muhenkan, Some(ImeToggleKind::Toggle));
-        assert_eq!(wiring.warning, ThumbKeyImeWarning::ToggleHonored);
-    }
-
-    /// 片方だけToggleの場合も、opt-inゲートは独立にキーごとへ適用される。
-    #[test]
-    fn gate_applies_independently_per_key() {
-        let wiring = gate_thumb_key_ime_actions(
-            Some(ImeToggleKind::Toggle),
-            Some(ImeToggleKind::Off),
-            false,
-        );
-        assert_eq!(wiring.henkan, None); // Toggleはopt-inなしで却下
-        assert_eq!(wiring.muhenkan, Some(ImeToggleKind::Off)); // Offはそのまま反映
-        assert_eq!(wiring.warning, ThumbKeyImeWarning::ToggleDeclined);
-    }
-
     // ── GJI検出→反映の全体パイプライン decision table（ユーザー依頼、
     // 2026-09-05。ADR-179決定1でHenkan/Muhenkanのactuation-auto撤去に
     // 伴い2026-09-18更新）──
@@ -681,7 +554,7 @@ mod tests {
     // Katakana）×GJI判定値（None/On/Off/Toggle）×opt_in×is_thumbの
     // 全組み合わせ（4×4×2×2=64通り）に対して、実際の本番用純粋関数
     // （`classify_mode_key_ime_action`/`classify_thumb_key_ime_actions`/
-    // `gate_thumb_key_ime_actions`/`ime_toggle_kind_to_shadow_action`/
+    // `ime_toggle_kind_to_shadow_action`/
     // `resolve_mode_key_shadow_override_for_event`/
     // `delegate_owns_mode_key_shadow_toggle`）を呼び出して検証する。
     //

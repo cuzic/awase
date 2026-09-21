@@ -392,44 +392,6 @@ pub struct GeneralConfig {
     /// 使いたい場合（= awase の Engine を OFF にして使う想定）のみ `false` にする。
     pub swallow_alt_kana_input_method_switch: bool,
 
-    /// GJI（Google 日本語入力）の設定（`config1.db`。ATOKプリセットの
-    /// `session_keymap`、またはカスタムキーマップ内の literal な
-    /// `Henkan`/`Muhenkan`トークン）が、無変換/変換キー単体に状態依存の
-    /// IME ON/OFFトグル動作を割り当てている場合に、それを awase の
-    /// delegate-to-open-axis（無変換/変換が親指シフトのチョードキーとして
-    /// 設定されている場合。ADR-092 決定D Step4bと同じ機構）または
-    /// `ime_on`/`ime_off`/`ime_toggle`の自動検出リスト（チョードキーとして
-    /// 設定されていない場合）へベストエフォートで反映するか（BUG-115）。
-    ///
-    /// `false`（既定）のとき、awaseはこのToggleを反映しない（警告ログのみ）。生の無変換/変換は
-    /// GJIへそのまま届き、GJIがATOKのキーマップどおり開閉する。**awaseは通過直後に実IMEを
-    /// 読み直し、古い明示意図を捨ててEngineを観測に追随させる**（follow方式、ADR-187。IMMで
-    /// 読めるアプリのみ。TsfNative/Chrome等は`ime_on=None`で読めず従来どおり遅延観測）。
-    ///
-    /// 既定 `false`（反映しない・警告ログのみ）。この状態依存トグルは
-    /// `ShadowImeAction::Toggle`（`!ctx.ime_on`）で技術的には正確に表現
-    /// できる（ATOKプリセットが`DirectInput`状態でHenkan/Muhenkanを
-    /// `IMEOn`、`Precomposition`状態で`CancelAndIMEOff`に割り当てている
-    /// ことを`google/mozc`の`src/data/keymap/atok.tsv`で2026-09-05に確認
-    /// 済み——「表現不能」ではない）が、既定を`true`にしない理由が4つある:
-    ///
-    /// 1. `Toggle`は非冪等。無変換/変換の単独タップ確定判定
-    ///    （`resolve_pending_thumb_as_single`）はチョード判定に失敗した
-    ///    キーからも呼ばれうる経路が複数あり、`TurnOn`/`TurnOff`と違い
-    ///    誤発火が「状態の反転」になり連続誤発火で発振しうる。
-    /// 2. ATOKでは変換・無変換の**両方**がToggleになり、NICOLA親指キー
-    ///    2本ともIME切替を持つことになり露出が2倍になる。
-    /// 3. ATOKプリセットは（overlayと違い）ユーザーが明示的にONにする
-    ///    ものではなく、キーマップにATOKを選んだだけの全ユーザーに
-    ///    自動適用される（親指シフト利用者と重なりが大きい層）。
-    /// 4. GJIはMozcのフォークであり、`atok.tsv`の内容が本家と完全一致
-    ///    する保証は無い。
-    ///
-    /// これらのリスクを理解した上で有効化したいユーザーのためのopt-in
-    /// フラグ。`true`にすると`tracing::info!`で反映したことを通知する
-    /// （`false`のまま矛盾を検出した場合は`tracing::warn!`で対処法を案内する）。
-    #[serde(default)]
-    pub gji_thumb_key_ime_toggle: bool,
     /// ADR-176決定8: `[[calibration]]`（較正パネルUIが確定した較正結果）を
     /// 実際のIME判定（`apply_calibration_override`経由でのGJI/MS-IME
     /// 側の自動検出結果の差し替え）へ反映するかどうか。**既定`false`**
@@ -456,7 +418,7 @@ pub struct GeneralConfig {
     /// `Toggle` は belief（awase が推定する現在の IME 状態）依存であり、
     /// TSF ネイティブアプリ（Windows Terminal 等、`FeedbackPolicy::Blind`）
     /// では実際の IME 状態を読み戻せないため、belief がズレていると逆方向へ
-    /// 切り替わりうる（`gji_thumb_key_ime_toggle` の doc と同じ注意）。
+    /// 切り替わりうる。
     ///
     /// `kp_stage_shadow_ime_toggle` の intent 昇格（ケース2/3）は
     /// `is_japanese_ime()` を要求するが、この belief はスリープ復帰/フォーカス
@@ -520,7 +482,6 @@ impl Default for GeneralConfig {
             enter_thumb_ignore_composing_guard: true,
             enter_thumb_shift_literal: true,
             swallow_alt_kana_input_method_switch: true,
-            gji_thumb_key_ime_toggle: false,
             apply_calibrated_mode_keys: false,
             muhenkan_solo_tap_ime_action: None,
             henkan_solo_tap_ime_action: None,

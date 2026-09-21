@@ -3671,29 +3671,6 @@ impl SettingsApp {
              して使う場合など）のみ OFF にしてください。",
         );
         ui.add_space(4.0);
-        ui.checkbox(
-            &mut self.config.general.gji_thumb_key_ime_toggle,
-            "GJI（Google 日本語入力）の無変換/変換/ひらがな/カタカナキーの状態依存トグルをベストエフォートで追従する（自己責任）",
-        )
-        .on_hover_text(
-            "OFF(既定)の場合、GJIのキーマップ設定（ATOKプリセット、または\n\
-             カスタムキーマップでの同種の割当て）が無変換/変換/ひらがな/\n\
-             カタカナキー単体に状態依存のIME ON/OFFトグルを割り当てていても、\n\
-             awaseはIMEの開閉を代行せず、ログで警告のみ行います（生キーは\n\
-             GJIに届き、awaseは結果を読み取ってEngineを追従させます。\n\
-             IMMで読めるアプリのみ）。ONにすると、その割当てを\n\
-             ベストエフォートで反映します（awaseが代わりに開閉します）。\n\
-             この種のトグルは非冪等（誤って発火すると意図せずIME状態が\n\
-             反転する）なので、既定ではOFFにしています。\n\
-             （On/Offの割当ては非冪等ではないため、この設定に関わらず\n\
-             常に反映します。この設定が影響するのはToggle割当ての場合\n\
-             だけです。またひらがな/カタカナキーが親指シフトキーとして\n\
-             設定されている場合は、この設定に関わらず単独タップ確定時に\n\
-             安全に反映されます——チョード判定と衝突しない専用の仕組みを\n\
-             使うため。詳細は docs/known-bugs.md の BUG-115 を参照して\n\
-             ください。）",
-        );
-        ui.add_space(4.0);
         half_width_alnum_toggle_checkbox(ui, &mut self.config.general.half_width_alnum_toggle);
         ui.add_space(4.0);
         keystroke_sequence_checkbox(ui, &mut self.config.general.keystroke_sequence);

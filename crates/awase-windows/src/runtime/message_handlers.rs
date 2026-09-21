@@ -1383,7 +1383,7 @@ fn current_bug_report_diagnostics(
     let mut competing_software = crate::app::detect_conflicting_software();
     competing_software.extend(crate::app::detect_relay_or_remap_software());
     // ADR-148: GJI/MS-IMEのキーマップ・キー割当て設定。
-    let gji_keymap = Some(build_bug_report_gji_keymap_summary(app, ime_kind));
+    let gji_keymap = Some(build_bug_report_gji_keymap_summary(app));
     let msime_key_assignment = Some(build_bug_report_msime_key_assignment_summary(app, ime_kind));
     // ADR-148 Phase 2: 旧UI（互換モード）の詳細キーカスタマイズ。
     let legacy_msime_keymap = Some(build_bug_report_legacy_msime_keymap_summary());
@@ -1452,9 +1452,7 @@ struct MsImeAdoptedFields {
 
 /// GJI（`config1.db`）から、無変換/変換キーのIME意味論・キーマップ設定を
 /// 要約する（ADR-148）。「生値・分類系」は`ime_kind`に関わらず常に計算し、
-/// 「採用系」は`ime_kind == Gji`のときのみ計算する（Opus敵対的レビュー
-/// G1: GJIが非アクティブなら、これらの値は`sync_gji_charset_autodetect`
-/// により既に解除済みのため）。
+/// 「採用系」は、ADR-191で採用（代行・上書き）の機構を撤去したため常に`None`。
 ///
 /// `sync_gji_charset_autodetect`とは独立に、報告生成時点の`config1.db`を
 /// 都度読み直す（Runtime側に`GjiRawConfig`のキャッシュは存在しないため。
@@ -1462,7 +1460,6 @@ struct MsImeAdoptedFields {
 /// 限界については ADR-148「実装スコープの訂正」参照）。
 fn build_bug_report_gji_keymap_summary(
     app: &Runtime,
-    ime_kind: crate::bug_report::BugReportImeKind,
 ) -> crate::bug_report::BugReportGjiKeymapSummary {
     let bytes = crate::gji_charset_autodetect::read_config1_db();
     let bytes_read_ok = bytes.is_some();
@@ -1539,51 +1536,9 @@ fn build_bug_report_gji_keymap_summary(
 
     let muhenkan_dedicated_fn_key_configured = app.muhenkan_dedicated_fn_key_configured();
 
-    let adopted_fields = if ime_kind == crate::bug_report::BugReportImeKind::Gji {
-        let wiring = crate::gji_charset_autodetect::gate_thumb_key_ime_actions(
-            henkan_classified,
-            muhenkan_classified,
-            app.gji_thumb_key_ime_toggle_opt_in(),
-        );
-        let henkan_is_thumb_key =
-            crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_CONVERT);
-        let muhenkan_is_thumb_key =
-            crate::gji_charset_autodetect::is_configured_thumb_key(crate::vk::VK_NONCONVERT);
-        // ADR-179決定1: `sync_gji_charset_autodetect`はis_thumb_keyに
-        // 関わらず常にdelegate-to-open-axisとshadow_action overrideの
-        // 両方へ同じ値を書き込む（旧`route_thumb_key_action`の`is_thumb_key`
-        // 分岐は撤去済み）。実際にどちらが発火するかは打鍵時の
-        // `ModeKeyActuationOwner`が判定するため、ここでの`is_thumb_key`は
-        // 「チョード判別のFSM delegateが所有しうるか」を示す診断用の
-        // ラベルとして引き続き使う（`Delegate`=親指キー配置、
-        // `PhysicalDelivery`=非親指キー配置で物理キー配送のみに委ねる、
-        // `ModeKeyActuationOwner`の variant名に合わせた）。
-        let henkan_route = wiring.henkan.map(|_| {
-            if henkan_is_thumb_key {
-                "Delegate"
-            } else {
-                "PhysicalDelivery"
-            }
-            .to_owned()
-        });
-        let muhenkan_route = wiring.muhenkan.map(|_| {
-            if muhenkan_is_thumb_key {
-                "Delegate"
-            } else {
-                "PhysicalDelivery"
-            }
-            .to_owned()
-        });
-        GjiAdoptedFields {
-            henkan_adopted_kind: wiring.henkan.map(ime_toggle_kind_str).map(str::to_owned),
-            muhenkan_adopted_kind: wiring.muhenkan.map(ime_toggle_kind_str).map(str::to_owned),
-            henkan_adopted_route: henkan_route,
-            muhenkan_adopted_route: muhenkan_route,
-            thumb_key_ime_warning: thumb_key_ime_warning_str(wiring.warning).map(str::to_owned),
-        }
-    } else {
-        GjiAdoptedFields::default()
-    };
+    // ADR-191: GJI/MS-IMEの設定からの自動採用（代行・上書き）は撤去した。`*_adopted_*`/
+    // `thumb_key_ime_warning`は互換のためスキーマに残すが、常に`None`（採用の概念が無い）。
+    let adopted_fields = GjiAdoptedFields::default();
     let GjiAdoptedFields {
         henkan_adopted_kind,
         muhenkan_adopted_kind,
@@ -1696,17 +1651,6 @@ fn ime_toggle_kind_str(kind: crate::gji_charset_autodetect::ImeToggleKind) -> &'
         ImeToggleKind::On => "On",
         ImeToggleKind::Off => "Off",
         ImeToggleKind::Toggle => "Toggle",
-    }
-}
-
-fn thumb_key_ime_warning_str(
-    warning: crate::gji_charset_autodetect::ThumbKeyImeWarning,
-) -> Option<&'static str> {
-    use crate::gji_charset_autodetect::ThumbKeyImeWarning;
-    match warning {
-        ThumbKeyImeWarning::None => None,
-        ThumbKeyImeWarning::ToggleDeclined => Some("ToggleDeclined"),
-        ThumbKeyImeWarning::ToggleHonored => Some("ToggleHonored"),
     }
 }
 

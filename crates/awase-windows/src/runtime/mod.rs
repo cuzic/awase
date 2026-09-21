@@ -254,22 +254,16 @@ pub struct Runtime {
     /// 不要（2026-08-16 ユーザー判断: 明示設定は自動検出キーと併用され、
     /// 一方を排他しない）。
     space_is_thumb_key: bool,
-    /// `GeneralConfig.gji_thumb_key_ime_toggle`のキャッシュ（BUG-115）。
-    /// `gji_charset_autodetect::sync_gji_charset_autodetect`が
-    /// `gate_thumb_key_ime_actions`を呼ぶ際に参照する。
-    gji_thumb_key_ime_toggle_opt_in: bool,
     /// ADR-176決定6（176-T3/T4）: モードキー較正結果（VKごと最大1件）。
     /// 起動時・設定リロード時に`config.calibration`（`176-T11`の
     /// `CalibrationEntry`）から読み込む（`apply_config_update`参照）。
-    /// `apply_calibration_override`の入力として`gate_thumb_key_ime_actions`
-    /// の出力を差し替えるために参照するが、実際に差し替えが効くかどうかは
+    /// `apply_calibration_override`の入力として参照するが、実際に差し替えが効くかどうかは
     /// `apply_calibrated_mode_keys_opt_in`（既定`false`）にも依存する
     /// （`calibrated_mode_key_for`参照）。
     calibrated_mode_keys:
         std::collections::HashMap<VkCode, crate::state::calibrated_mode_key::CalibratedModeKey>,
     /// `GeneralConfig.apply_calibrated_mode_keys`のキャッシュ（ADR-176
-    /// 決定8）。`gji_thumb_key_ime_toggle_opt_in`と同じパターン。
-    /// `calibrated_mode_key_for`がこれを見て、`false`なら常に`None`を
+    /// 決定8）。`calibrated_mode_key_for`がこれを見て、`false`なら常に`None`を
     /// 返す（config.tomlには保存されていても実際のIME判定には反映しない
     /// 安全装置）。
     apply_calibrated_mode_keys_opt_in: bool,
@@ -1098,7 +1092,6 @@ impl Runtime {
             dbe_mode_key_policy: awase::config::DbeModeKeyPolicy::default(),
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
-            gji_thumb_key_ime_toggle_opt_in: false,
             calibrated_mode_keys: std::collections::HashMap::new(),
             apply_calibrated_mode_keys_opt_in: false,
             calibration_bypass_deadline: None,
@@ -1192,23 +1185,8 @@ impl Runtime {
         self.space_is_thumb_key = space_is_thumb_key;
     }
 
-    /// `config.general.gji_thumb_key_ime_toggle`のキャッシュを更新する
-    /// （BUG-115）。起動時（`bootstrap.rs`）と`apply_config_update`
-    /// （reload時）の両方から呼ぶ。
-    pub(crate) fn set_gji_thumb_key_ime_toggle_opt_in(&mut self, opt_in: bool) {
-        self.gji_thumb_key_ime_toggle_opt_in = opt_in;
-    }
-
-    /// `gji_charset_autodetect::sync_gji_charset_autodetect`が
-    /// `gate_thumb_key_ime_actions`へ渡す値（BUG-115）。
-    #[must_use]
-    pub(crate) const fn gji_thumb_key_ime_toggle_opt_in(&self) -> bool {
-        self.gji_thumb_key_ime_toggle_opt_in
-    }
-
     /// `GeneralConfig.apply_calibrated_mode_keys`のキャッシュを更新する
-    /// （`apply_config_update`から呼ぶ、`set_gji_thumb_key_ime_toggle_
-    /// opt_in`と同じ形式）。
+    /// （`apply_config_update`から呼ぶ）。
     pub(crate) fn set_apply_calibrated_mode_keys_opt_in(&mut self, opt_in: bool) {
         self.apply_calibrated_mode_keys_opt_in = opt_in;
     }
@@ -1254,7 +1232,7 @@ impl Runtime {
     /// ADR-153 決定1: ユーザー明示config（`GeneralConfig::
     /// muhenkan_solo_tap_ime_action`）を`Engine`へ設定する。`Engine::adapter`
     /// が private なため、`bootstrap.rs`/`apply_config`双方から呼べる薄い
-    /// ラッパーを公開する（`set_gji_thumb_key_ime_toggle_opt_in`と同じ形式）。
+    /// ラッパーを公開する。
     pub(crate) fn set_muhenkan_solo_tap_ime_action(
         &mut self,
         action: Option<awase::types::ShadowImeAction>,
@@ -1427,7 +1405,6 @@ impl Runtime {
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,
         );
-        self.set_gji_thumb_key_ime_toggle_opt_in(config.general.gji_thumb_key_ime_toggle);
         self.set_apply_calibrated_mode_keys_opt_in(config.general.apply_calibrated_mode_keys);
         self.reload_calibrated_mode_keys(&config.calibration);
         self.focus_tracker.sync_toggle_keys = sync_toggle;
