@@ -92,6 +92,8 @@ def finalize(cs):
     """(open, conv, stage, key, after_open, after_conv, disp) → 閉セルをconv非依存に畳み、押下後convが不明なセルを None にする。"""
     open_cells, closed = [], {}
     for o, c, st, k, o2, c2, dp in cs:
+        if o and c not in REPRESENTABLE:
+            continue  # 押す前の変換モードが表現できない(0x13 半角カタカナ、0x18 全角英数 等。Rust側 Conv に無い)状態のセルは予測しない
         after = c2 if (o2 and c2 in REPRESENTABLE and o) else None
         if o:
             open_cells.append((True, c, st, k, o2, after, dp))

@@ -484,6 +484,24 @@ mod tests {
     }
 
     #[test]
+    fn msime_katakana_from_hiragana_goes_to_fullwidth_katakana() {
+        // 実測(grid第3版、MS-IMEプリセット、全状態をキーだけで作る): カタカナ(0xF1)は 0x19→0x1B、ひらがな(0xF2)は 0x1B→0x19。
+        // 第2版はIMMで作った0x19から「不変」と誤っていた。
+        let hira = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::None,
+        };
+        let p = predict(KeymapPreset::MsIme, 0xF1, &input(true, ROMAJI, false, hira)).unwrap();
+        assert_eq!(p.track.conv, Some(Conv::C1B));
+        let kata = KeyTrack {
+            conv: Some(Conv::C1B),
+            stage: Stage::None,
+        };
+        let p = predict(KeymapPreset::MsIme, 0xF2, &input(true, ROMAJI, false, kata)).unwrap();
+        assert_eq!(p.track.conv, Some(Conv::C19));
+    }
+
+    #[test]
     fn atok_hiragana_in_direct_input_changes_nothing() {
         // 実測: IME OFFでひらがなを押しても開かない・conv不変。
         let p = predict(
