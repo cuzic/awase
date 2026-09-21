@@ -113,7 +113,6 @@ pub enum ImeKeyKind {
 pub enum ShadowImeEffect {
     TurnOn,
     TurnOff,
-    Toggle,
 }
 
 impl ImeKeyKind {
@@ -136,17 +135,23 @@ impl ImeKeyKind {
     }
 
     /// このキーが shadow IME 状態に与える効果。
+    ///
+    /// ADR-191: Windows標準で冪等と定められている`VK_IME_ON`/`VK_IME_OFF`だけを静的に扱う。
+    /// ひらがな・カタカナ・英数・半角/全角・漢字・`VK_KANA`など、効果がIMEの種類・キーマップ・
+    /// 状態で変わるキーは静的に決め打ちしない（`None`）。生のままIMEへ通し、結果を観測して追随する。
     #[must_use]
-    pub const fn shadow_effect(&self) -> ShadowImeEffect {
+    pub const fn shadow_effect(&self) -> Option<ShadowImeEffect> {
         match self {
+            Self::ImeOn => Some(ShadowImeEffect::TurnOn),
+            Self::ImeOff => Some(ShadowImeEffect::TurnOff),
             Self::Kana
-            | Self::ImeOn
             | Self::Junja
+            | Self::KanjiToggle
+            | Self::Alphanumeric
             | Self::Katakana
             | Self::Activate
-            | Self::ActivatePair => ShadowImeEffect::TurnOn,
-            Self::ImeOff | Self::Alphanumeric | Self::Deactivate => ShadowImeEffect::TurnOff,
-            Self::KanjiToggle => ShadowImeEffect::Toggle,
+            | Self::Deactivate
+            | Self::ActivatePair => None,
         }
     }
 }

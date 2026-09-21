@@ -556,66 +556,9 @@ impl Runtime {
     /// 実処理は [`focus_tracker::FocusTracker::enrich_ime_relevance`] に委譲する。
     pub fn enrich_ime_relevance(&self, event: &mut RawKeyEvent) {
         self.focus_tracker.enrich_ime_relevance(event);
-        // Hiragana/Katakana、無変換/変換（ADR-141、C2対策）、
-        // 半角/全角（ADR-189）の各ソースは対象VKが重複しないため、
-        // どの順で評価しても高々一方だけがSomeを返す。書き込み箇所を
-        // 1箇所に保つため`or_else`で合成してから1回だけ書く
-        // （`tests/architecture_guard.rs::
-        // ime_relevance_shadow_action_writes_are_accounted_for`が
-        // このファイル内の書き込み箇所数を1に固定している）。
-        // 無変換/変換はHiragana/Katakanaと異なり守るべき静的
-        // shadow_actionを持たないため、親指キーとして設定されている
-        // 場合でもoverrideを差す（「親指キーならNone」の早期returnは
-        // 適用しない）。実際にdelegateとshadow-toggleのどちらが処理する
-        // かは`mode_key_delegate_owns_shadow_toggle`の
-        // `&& effective_open()`ゲートが実行時に排他的に決める。
-        let override_action =
-            crate::gji_charset_autodetect::resolve_mode_key_shadow_override_for_event(
-                event.vk_code,
-                self.gji_hiragana_shadow_override,
-                self.gji_katakana_shadow_override,
-                crate::hook::thumb_vk_codes(),
-            )
-            .or_else(|| {
-                // ADR-186 残る問題2: 修飾キー(Shift等)を押したままの無変換/変換は、GJI(ATOK)では
-                // 開閉トグルではない(Shift+無変換=かな⇔半角英数、直接入力では何もしない、実機で確認)。
-                // 修飾なしのキーに対する分類を、修飾付きの押下へ当てはめない。Ctrl+無変換などのconfig
-                // 由来のIME操作は`sync_direction`/明示configの別経路で扱われ、ここには影響しない。
-                let m = event.modifier_snapshot;
-                if m.ctrl || m.alt || m.shift || m.win {
-                    return None;
-                }
-                crate::gji_charset_autodetect::resolve_henkan_muhenkan_shadow_override_for_event(
-                    event.vk_code,
-                    self.henkan_shadow_override,
-                    self.muhenkan_shadow_override,
-                )
-            })
-            .or_else(|| {
-                // ADR-189: GJIの半角/全角(0xF3/0xF4)は方向固定ではなく開閉トグル。
-                // 修飾付きはGJI側で別意味を持ちうるため、無修飾の物理キーだけ
-                // beliefベースのshadow-toggle経路へ載せる。
-                // 全打鍵で通る経路なので、VK(0xF3/0xF4)を先に見て、それ以外はオブザーバの参照をしない。
-                if !matches!(
-                    event.vk_code,
-                    crate::vk::VK_DBE_SBCSCHAR | crate::vk::VK_DBE_DBCSCHAR
-                ) {
-                    return None;
-                }
-                let m = event.modifier_snapshot;
-                if m.ctrl || m.alt || m.shift || m.win {
-                    return None;
-                }
-                let gji_active = crate::tsf::observer::tsf_obs().active_ime_kind()
-                    == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput;
-                crate::gji_charset_autodetect::resolve_hankaku_zenkaku_shadow_override_for_event(
-                    event.vk_code,
-                    gji_active,
-                )
-            });
-        if let Some(action) = override_action {
-            event.ime_relevance.shadow_action = Some(action);
-        }
+        // ADR-191: IMEモードキー（ひらがな・カタカナ・無変換・変換・英数・半角/全角・漢字）に、
+        // GJI/MS-IMEの設定や静的な意味づけから`shadow_action`を上書きする経路は持たない。
+        // これらのキーは生のままIMEへ通し、実IMEを読み直して追随する（ADR-187のfollow）。
     }
 
     /// Decision の副作用を実行する（メッセージループ用）。
