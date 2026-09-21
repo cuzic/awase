@@ -1654,7 +1654,6 @@ impl NicolaFsm {
                     injected: ev.injected,
                     modifier_key: ev.modifier_key,
                     explicit_ime_action_consumed: ev.explicit_ime_action_consumed,
-                    auto_delegate_open_axis_consumed: ev.auto_delegate_open_axis_consumed,
                     after_char_flush: false,
                 },
             );
@@ -2065,8 +2064,7 @@ impl NicolaFsm {
     /// `self.ime_open_requested` へセットすること（このメソッド自体は `&self`
     /// のため直接セットできない）。
     ///
-    /// `injected`/`composing`/`explicit_action_consumed`/
-    /// `auto_delegate_open_axis_consumed`の4個のboolはそれぞれ独立した
+    /// `injected`/`composing`/`explicit_action_consumed`の3個のboolはそれぞれ独立した
     /// 分類・マーカーであり、two-variant enum化は不自然（opus-adversarial-
     /// consult、ADR-153/ADR-154で検討済み）。呼び出し元は`PendingThumbData`
     /// のフィールドをそのまま渡すため、まとめて1つの構造体にする案も
@@ -2849,13 +2847,8 @@ impl NicolaFsm {
 
     /// PendingThumb タイムアウト：親指キーを単独打鍵として確定する
     ///
-    /// ADR-154: 引数を`PendingThumbData`1個にまとめてある。以前は
-    /// `scan_code`/`vk_code`/`timestamp`/`modifier_key`/`injected`/
-    /// `explicit_ime_action_consumed`を個別引数で受けていたが、いずれも
-    /// `PendingThumbData`のフィールドをそのまま渡しているだけであり、
-    /// `auto_delegate_open_axis_consumed`を追加すると`&mut self`込みで
-    /// 9個になり`clippy::too_many_arguments`（`clippy.toml`の閾値8）と
-    /// `clippy::fn_params_excessive_bools`（bool 4個）の両方に抵触する。
+    /// ADR-154: 引数を`PendingThumbData`1個にまとめてある。いずれも
+    /// `PendingThumbData`のフィールドをそのまま渡しているだけのため。
     fn timeout_pending_thumb(&mut self, thumb: PendingThumbData, composing: bool) -> Resp {
         // ソロ連打によるエンジン OFF トリガーチェック
         if self.engine_off_solo_repeat_vk.0 != 0 && thumb.vk_code == self.engine_off_solo_repeat_vk
@@ -3975,7 +3968,6 @@ mod tests {
             injected: false,
             modifier_key: None,
             explicit_ime_action_consumed: false,
-            auto_delegate_open_axis_consumed: false,
             after_char_flush: false,
         }
     }

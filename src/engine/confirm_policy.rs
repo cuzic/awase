@@ -215,7 +215,6 @@ mod tests {
             is_ime_control: false,
             modifier_key: None,
             explicit_ime_action_consumed: false,
-            auto_delegate_open_axis_consumed: false,
         }
     }
 
@@ -230,7 +229,6 @@ mod tests {
             is_ime_control: false,
             modifier_key: None,
             explicit_ime_action_consumed: false,
-            auto_delegate_open_axis_consumed: false,
         }
     }
 
@@ -245,7 +243,6 @@ mod tests {
             is_ime_control: false,
             modifier_key: None,
             explicit_ime_action_consumed: false,
-            auto_delegate_open_axis_consumed: false,
         }
     }
 

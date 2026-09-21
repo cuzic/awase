@@ -40,13 +40,9 @@ impl KeyClass {
 
 /// classify() の結果。キー分類と物理位置を一度に計算する。
 ///
-/// `injected`/`is_ime_control`/`explicit_ime_action_consumed`/
-/// `auto_delegate_open_axis_consumed`の4個のboolは、それぞれ独立した
-/// プラットフォーム層の分類結果（互いに排他でも状態遷移でもない）であり、
-/// 状態機械やtwo-variant enumへの統合は不自然。`RawKeyEvent`（この型の
-/// 変換元）からそのまま引き継ぐ以上、こちら側だけ型を変えると変換箇所で
-/// 逆に複雑化する。
-#[expect(clippy::struct_excessive_bools)]
+/// `injected`/`is_ime_control`/`explicit_ime_action_consumed`の3個のboolは、それぞれ独立した
+/// プラットフォーム層の分類結果（互いに排他でも状態遷移でもない）。`RawKeyEvent`（この型の
+/// 変換元）からそのまま引き継ぐ。
 #[derive(Debug, Clone, Copy)]
 pub struct ClassifiedEvent {
     pub key_class: KeyClass,
@@ -77,12 +73,6 @@ pub struct ClassifiedEvent {
     /// `resolve_pending_thumb_as_single`（ケース1）が同じ打鍵を二重
     /// 評価しないためのガードに使われる。
     pub explicit_ime_action_consumed: bool,
-    /// ADR-154: `RawKeyEvent.ime_relevance.auto_delegate_open_axis_consumed`を
-    /// そのまま引き継ぐ。`kp_stage_shadow_ime_toggle`（消費点2）が既にこの打鍵で
-    /// beliefをOFF→ONへ動かしたなら true——`PendingThumbData`へ格納され、
-    /// 100ms後の`resolve_pending_thumb_as_single`（消費点1）が優先順位3
-    /// （delegate）を二重に発火させないためのガードに使われる。
-    pub auto_delegate_open_axis_consumed: bool,
 }
 
 impl ClassifiedEvent {
@@ -99,7 +89,6 @@ impl ClassifiedEvent {
             is_ime_control: false,
             modifier_key: None,
             explicit_ime_action_consumed: false,
-            auto_delegate_open_axis_consumed: false,
         }
     }
 }
@@ -494,10 +483,9 @@ impl PendingKey {
 
 /// 保留中の親指キーデータ
 ///
-/// `ClassifiedEvent`と同じ理由（`#[expect(clippy::struct_excessive_bools)]`
-/// 参照）で、`is_left`/`injected`/`explicit_ime_action_consumed`/
-/// `auto_delegate_open_axis_consumed`は独立した分類結果であり、
-/// `ClassifiedEvent`からそのまま引き継ぐ。
+/// `is_left`/`injected`/`explicit_ime_action_consumed`/`after_char_flush`は独立した分類結果で
+/// あり（互いに排他でも状態遷移でもない）、状態機械やenumへの統合は不自然なため
+/// `#[expect(clippy::struct_excessive_bools)]`で許容する。`ClassifiedEvent`の値をそのまま引き継ぐ。
 #[expect(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy)]
 pub struct PendingThumbData {
@@ -516,11 +504,6 @@ pub struct PendingThumbData {
     /// はこの打鍵の `explicit_ime_action` を読まずスキップする
     /// （`kp_stage_shadow_ime_toggle` のケース2が既に処理済みのため）。
     pub explicit_ime_action_consumed: bool,
-    /// ADR-154: `ClassifiedEvent.auto_delegate_open_axis_consumed`を引き継ぐ。
-    /// true なら `resolve_pending_thumb_as_single` はこの打鍵で優先順位3
-    /// （delegate）を発火させずスキップする（`kp_stage_shadow_ime_toggle`が
-    /// 既にbeliefをOFF→ONへ動かしているため）。
-    pub auto_delegate_open_axis_consumed: bool,
     /// ADR-182 決定1: この親指は、文字キー保留中に到着し、その文字が時間超過で単独確定された
     /// 結果として`PendingThumb`になった（`step_pending_char_thumb`の時間超過分岐）。
     /// 文字が既に単独確定済みで、親指をIME操作（生の親指VK／delegate）としても出すと、
@@ -541,18 +524,16 @@ impl PendingThumbData {
             injected: ev.injected,
             modifier_key: ev.modifier_key,
             explicit_ime_action_consumed: ev.explicit_ime_action_consumed,
-            auto_delegate_open_axis_consumed: ev.auto_delegate_open_axis_consumed,
             after_char_flush: false,
         }
     }
 
-    /// `resolve_pending_thumb_as_single`の`auto_delegate_open_axis_consumed`引数に渡す値。
-    /// 既存の同名マーカー（ADR-154）と、`after_char_flush`（ADR-182決定1）のどちらでも、
-    /// 優先順位3（delegate）と4（`ModeKeyConfig`のPassthrough）を抑止する。優先順位1
-    /// （専用Fnキー）・2（ユーザー明示config）には影響しない。
+    /// `resolve_pending_thumb_as_single`の抑止引数に渡す値。`after_char_flush`（ADR-182決定1）のとき、
+    /// `ModeKeyConfig`のPassthrough（優先順位4）を抑止する。優先順位1（専用Fnキー）・2（ユーザー
+    /// 明示config）には影響しない。
     #[must_use]
     pub const fn suppresses_open_axis_actuation(self) -> bool {
-        self.auto_delegate_open_axis_consumed || self.after_char_flush
+        self.after_char_flush
     }
 
     /// この親指キーに対応する `Face` を返す。
@@ -1086,7 +1067,6 @@ mod tests {
             injected: false,
             modifier_key: None,
             explicit_ime_action_consumed: false,
-            auto_delegate_open_axis_consumed: false,
             after_char_flush: false,
         }
     }
@@ -1368,7 +1348,6 @@ mod tests {
             is_ime_control: false,
             modifier_key: None,
             explicit_ime_action_consumed: false,
-            auto_delegate_open_axis_consumed: false,
         };
         assert_eq!(ev.key_class, KeyClass::Char);
         assert!(ev.pos.is_some());
@@ -1387,7 +1366,6 @@ mod tests {
             is_ime_control: false,
             modifier_key: None,
             explicit_ime_action_consumed: false,
-            auto_delegate_open_axis_consumed: false,
         };
         assert!(ev.key_class.is_thumb());
         assert!(ev.pos.is_none());
@@ -1405,7 +1383,6 @@ mod tests {
             is_ime_control: true,
             modifier_key: None,
             explicit_ime_action_consumed: false,
-            auto_delegate_open_axis_consumed: false,
         };
         assert!(ev.is_ime_control);
     }
@@ -1503,7 +1480,6 @@ mod tests {
             is_ime_control: false,
             modifier_key: None,
             explicit_ime_action_consumed: false,
-            auto_delegate_open_axis_consumed: false,
         };
         let pa = ParseAction::ReduceAndContinue {
             actions: smallvec::smallvec![KeyAction::Suppress],

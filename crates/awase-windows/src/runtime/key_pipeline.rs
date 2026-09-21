@@ -1365,28 +1365,12 @@ impl Runtime {
                 return false;
             }
         }
-        // Phase 3 delegate が「所有」するのは、親指キー×delegate armed に加えて
-        // エンジンが活性(=belief ON)である場合だけ（C1、Opus実装レビュー指摘）。
-        // `resolve_pending_thumb_as_single`（delegateの唯一の発火点）は
-        // `NicolaFsm::on_input`経由でしか呼ばれず、`Engine::on_input_body`の
-        // 活性ゲート（`compute_state`が`!ctx.ime_on`ならInactiveReason::ImeOff
-        // でPassThrough、`engine.rs:264-275`/`:506-517`）を通過しない限り
-        // 到達しない。つまりbelief OFFの間、delegateは構造的に発火できない。
-        // ここでbelief状態を見ずに「親指キー×armed」だけでshadow-toggleを
-        // 止めると、delegateも発火せずshadow-toggleも止まる「誰も何も
-        // しない」状態を作り、IME OFFからひらがな/カタカナ親指キーで
-        // 復帰できなくなる（BUG-115の元症状そのものの再現、観測できない
-        // アプリ——UWP等——では恒久的に固着する）。
-        // ADR-191: 単独タップの代行(delegate)は撤去した。所有権判定は常に「所有しない」（掃除は別コミット）。
-        let delegate_armed = false;
         // /code-review指摘: 直後の`current`と同じ`effective_open()`を2回
         // 呼んでいた（間に belief を書き換える処理は無い）ため、1回にまとめる。
         let current = self.platform_state.ime.effective_open();
-        let delegate_owned = delegate_armed && current;
         // ADR-179決定2: `ModeKeyActuationOwner`を計算する唯一の場所
         // （`tests/architecture_guard.rs`が書き込み箇所数を1に固定）。
-        // ここでは`delegate_armed`・`current`（ライブbelief）・
-        // `event.ime_relevance.sync_direction`/`shadow_action`が全て
+        // ここでは`event.ime_relevance.sync_direction`/`shadow_action`が
         // 手元に揃っている。
         //
         // `NotAModeKey`と`AwaseExplicit`は3判断とも同一挙動になるが、
@@ -1398,15 +1382,12 @@ impl Runtime {
         );
         let shadow_action_kind = event.ime_relevance.shadow_action;
         let sync_direction_kind = event.ime_relevance.sync_direction;
-        event.ime_relevance.actuation_owner = if delegate_owned {
-            ModeKeyActuationOwner::FsmDelegate
-        } else if is_target_vk
+        event.ime_relevance.actuation_owner = if is_target_vk
             && !crate::gji_charset_autodetect::is_configured_thumb_key(event.vk_code)
             && matches!(
                 shadow_action_kind,
                 Some(ShadowImeAction::TurnOn | ShadowImeAction::TurnOff)
-            )
-        {
+            ) {
             // 主条件（対象VK・On/Off分類・非親指キー設定）を満たす。
             // `sync_direction`は修飾としてのみ扱う: 方向が食い違う場合は
             // 保守的に`NotAModeKey`へ倒す（beliefと実IMEが逆方向に乖離し
@@ -1459,101 +1440,47 @@ impl Runtime {
         // 戻る" 再発報告の切り分け用): このステージが last_intent を書き換える唯一
         // 経路の一つでありながら、従来ここには INFO ログが一切無く、実機ログだけでは
         // どの VK がこの昇格を発火させたか判別できなかった。挙動は変更しない。
-        if delegate_owned {
-            // Phase 3 delegate が実際に所有する入力空間
-            // (現在の親指キー && delegate armed && belief ON、C1参照) だけで
-            // shadow-toggle の belief 書き込み/actuationを止める。delegate
-            // armed 単独で止めると、非親指キー向け Phase 2 shadow_action
-            // override の実効ケースまで消してしまう。
-            // `IntentKind::SyncKey`（config `keys.ime_detect`の
-            // sync_on/off/toggle_keys）にも同様に適用する——この親指キーが
-            // 同時にsync keyとしても設定されていた場合、ここを
-            // PhysicalImeKeyだけに限定するとwrite_sync_keyがdelegateの
-            // 発火と二重にbeliefを書き込む（/code-review指摘、issue #136/
-            // ADR-119と同型の合流点漏れ）。
-            // C1修正後はbelief ONの間（＝チョード入力中）毎打鍵this分岐を
-            // 通るため、triage用の「intent 昇格」ログ（下のelse節、INFO）と
-            // 違いdebugに留める——delegate側の「IME open axis delegated」
-            // INFOログでtriageに必要な情報はカバーされる（Opusレビュー指摘）。
-            // 2026-09-07 実験追加: こちらも awase が actuate しない委譲シナリオ
-            // （Phase 3 delegate、無変換/変換のチョード中等）——上記と同じ
-            // 理由でベースラインを残す。
-            tracing::debug!(
-                "[shadow-toggle] vk=0x{:02X}はFSM delegate所有 → \
-                 belief書き込み/actuationをスキップ w_ops0={} x_ops0={} x_KB0={:.1}",
-                event.vk_code,
-                crate::tsf::observer::gji_write_ops(),
-                crate::tsf::observer::gji_other_ops(),
-                crate::tsf::observer::gji_other_bytes() as f64 / 1024.0,
-            );
-        } else {
-            // 2026-09-07 実験追加: awase が actuate しない委譲シナリオ
-            // （半角/全角キー等、この関数は belief 追随のみ行いactuationは
-            // しない）で、GJI 自身がこの物理キーに反応したかを事後に
-            // gji_write_ops/gji_other_ops のバックグラウンドポーリング
-            // （`[gji-io]`、tsf/gji_monitor.rs）と突き合わせて検証できる
-            // よう、判断時点の累積値をベースラインとして残す（診断専用、
-            // 判定ロジックには使わない。project_adr151_force_on_rescue_
-            // observation_experiment_2026_09_07 参照）。
-            tracing::info!(
-                "[shadow-toggle] intent 昇格: vk=0x{:02X} scan=0x{:02X} action={:?} \
-                 kind={:?} injected={} {}→{} w_ops0={} x_ops0={} x_KB0={:.1}",
-                event.vk_code,
-                event.scan_code,
-                action,
-                kind,
-                event.injected,
-                current,
-                new_val,
-                crate::tsf::observer::gji_write_ops(),
-                crate::tsf::observer::gji_other_ops(),
-                crate::tsf::observer::gji_other_bytes() as f64 / 1024.0,
-            );
-        }
+        // 2026-09-07 実験追加: awase が actuate しない委譲シナリオ
+        // （半角/全角キー等、この関数は belief 追随のみ行いactuationは
+        // しない）で、GJI 自身がこの物理キーに反応したかを事後に
+        // gji_write_ops/gji_other_ops のバックグラウンドポーリング
+        // （`[gji-io]`、tsf/gji_monitor.rs）と突き合わせて検証できる
+        // よう、判断時点の累積値をベースラインとして残す（診断専用、
+        // 判定ロジックには使わない。project_adr151_force_on_rescue_
+        // observation_experiment_2026_09_07 参照）。
+        tracing::info!(
+            "[shadow-toggle] intent 昇格: vk=0x{:02X} scan=0x{:02X} action={:?} \
+             kind={:?} injected={} {}→{} w_ops0={} x_ops0={} x_KB0={:.1}",
+            event.vk_code,
+            event.scan_code,
+            action,
+            kind,
+            event.injected,
+            current,
+            new_val,
+            crate::tsf::observer::gji_write_ops(),
+            crate::tsf::observer::gji_other_ops(),
+            crate::tsf::observer::gji_other_bytes() as f64 / 1024.0,
+        );
         // witness は「注入されていない実キーイベント」の存在証明（BUG-14 の
         // 型化、ADR-089 §2.2）。上の `event.injected` 早期 return と同じ条件を
         // 型側でも要求するため、ここで None になることは無い。
-        if !delegate_owned {
-            match kind {
-                IntentKind::SyncKey => {
-                    let Some(witness) = IntentWitness::from_sync_key(event) else {
-                        return false;
-                    };
-                    self.platform_state
-                        .ime
-                        .write_sync_key(witness, new_val, tick_ms);
-                }
-                IntentKind::PhysicalImeKey => {
-                    let Some(witness) = IntentWitness::from_physical(event) else {
-                        return false;
-                    };
-                    self.platform_state
-                        .ime
-                        .write_physical_key(witness, new_val, tick_ms);
-                }
+        match kind {
+            IntentKind::SyncKey => {
+                let Some(witness) = IntentWitness::from_sync_key(event) else {
+                    return false;
+                };
+                self.platform_state
+                    .ime
+                    .write_sync_key(witness, new_val, tick_ms);
             }
-            // ADR-154: delegate が armed なのに `!delegate_owned` だった＝
-            // この時点で belief は OFF であり、消費点2 がこの打鍵の open 軸を
-            // 裁定した。belief が実際に OFF→ON へ動いた場合に限りマーカーを
-            // 立て、100ms 後の `resolve_pending_thumb_as_single`（消費点1）が
-            // 同じ打鍵で優先順位3（delegate）を二重に発火させるのを止める。
-            //
-            // 書き込み後の`effective_open()`（意図ではなく実際にreducerが
-            // 受理した結果）を見るのは、直後の`:1460`の既存no-op検出と同じ
-            // idiom。「beliefがONになった場合のみ」立てる理由: マーカーは
-            // `PendingThumb`に載って最大100ms（`simultaneous_threshold_ms`
-            // 既定値）生き残る。beliefが動かなかった打鍵（GJI既定の
-            // 無変換=TurnOff×IME既にOFFが最頻）でマーカーを立てると、その
-            // 100msの窓の間に`ir_apply_drift_correction`等の別経路がbelief
-            // をONにした場合、タイムアウト時にはengineが活性になっており、
-            // 本来発火すべきdelegateを誤って握り潰す。
-            //
-            // /code-review指摘: この`if`ブロックは`!delegate_owned`
-            // （＝`!(delegate_armed && current)`）の内側にあるため、
-            // `delegate_armed`が真なら`current`は必ず偽——`!current`は
-            // このスコープでは常に真となる冗長な項だったため削除した。
-            if delegate_armed && self.platform_state.ime.effective_open() {
-                event.ime_relevance.auto_delegate_open_axis_consumed = true;
+            IntentKind::PhysicalImeKey => {
+                let Some(witness) = IntentWitness::from_physical(event) else {
+                    return false;
+                };
+                self.platform_state
+                    .ime
+                    .write_physical_key(witness, new_val, tick_ms);
             }
         }
         if self.platform_state.ime.effective_open() == current {
@@ -1578,16 +1505,8 @@ impl Runtime {
             // で実発生: IME open のまま conv だけ Eisu に固着すると、ひらがなキーを
             // 押しても復帰できなかった）。
             //
-            // delegate_owned の場合、`action` はVKの固定ハードウェア分類
-            // （Hiragana/Katakana親指キーは常にTurnOn）のままで、CUSTOM
-            // keymapで実際にFSM delegateへ配線された方向（TurnOff/Toggleも
-            // ありうる）とは独立に決まる（/code-review指摘）。ここでの
-            // 方向判定は実際に発火する方向（FSM delegateの配線先）を
-            // 見なければ、TurnOff方向のdelegateなのにTurnOn向けのeisu
-            // 救済を誤って走らせてしまう。
-            let turn_on_direction = action;
             if let Some(new_mode) = crate::state::eisu_recovery::eisu_reset_on_turn_on_while_open(
-                matches!(turn_on_direction, ShadowImeAction::TurnOn),
+                matches!(action, ShadowImeAction::TurnOn),
                 self.platform_state.ime.input_mode(),
             ) {
                 // 半角英数持続トグルON中は、通常のObservedEisu→AssumedRomaji書き戻しを
@@ -1669,12 +1588,10 @@ impl Runtime {
         //
         // ADR-179決定2: `PhysicalDelivery`のときはこの明示actuateを一切
         // 発行しない——実IME状態の変更はGJI/MS-IME自身の物理キー反応に
-        // 委ね、awase側の送信をゼロにする設計。`FsmDelegate`はbeliefを
-        // 書かないため直前の no-op 早期returnで既にここへ到達しないが、
-        // 列挙値の意味を素直に反映するため明示的に除外する。
+        // 委ね、awase側の送信をゼロにする設計。
         let owner_permits_explicit_off_actuate = !matches!(
             event.ime_relevance.actuation_owner,
-            ModeKeyActuationOwner::FsmDelegate | ModeKeyActuationOwner::PhysicalDelivery
+            ModeKeyActuationOwner::PhysicalDelivery
         );
         if !self.platform_state.ime.effective_open() && owner_permits_explicit_off_actuate {
             let view = self.shadow_ime_control_view();
