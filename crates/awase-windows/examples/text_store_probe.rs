@@ -9,11 +9,14 @@
 //! `ITfThreadMgr::AssociateFocus` で関連付ける。窓にフォーカスが来ると TIP がこのストアに接続し、
 //! テキストの読み書き（`GetText` / `InsertTextAtSelection` / `SetText`）と composition を行う。
 //!
-//! 使い方: `text_store_probe [--seq=16,4B,41,0D] [--gap=1200] [--lock-delay=MS] [--deny-sync] [--no-scan] [--panic-test] [--log=<path>]`
+//! 使い方: `text_store_probe [--seq=16,4B,41,0D] [--gap=1200] [--lock-delay=MS] [--deny-sync] [--no-scan] [--class=NAME] [--tail=MS] [--panic-test] [--log=<path>]`
 //!   `--seq`: 注入する VK（16進）。既定は IME ON → `k` → `a` → Enter（composition を確定）。
 //!   `--lock-delay`: `RequestLock` の同期応答を指定 ms 遅らせる（Chrome の遅いロックの模擬。0で無効）。
 //!   `--deny-sync`: 同期ロック要求に `TS_E_SYNCHRONOUS` を返す（非同期のみ許す模擬）。
 //!   `--no-scan`: 文字キーにスキャンコードを付けずに注入する（付けたときとの差を測る）。
+//!   `--class=<クラス名>`: 窓のクラス名（既定 `TextStoreProbeTop`）。awase は分類をクラス名の文字列一致で行うので、
+//!     `Chrome_RenderWidgetHostHWND` にすると awase から見て TsfNative（Vk 注入・per-VK confirm・literal 回収の経路）になる。
+//!   `--tail=MS`: 最後のキーの後、終了までに待つ時間（既定600）。awase の literal 回収（ESC/BS の再送）を見るには数秒に伸ばす。
 //!   `--panic-test`: `InsertTextAtSelection` で意図的に panic する（panic フックがタイムラインを残すかの確認用）。
 //! キーは `SendInput`（`AWASE_TEST_INJECTION=1` の awase が物理キー扱いする目印付き）で注入する。
 //! awase を止めた状態（IME 単体）が基本。前面窓がプローブ窓でないときは注入しない。
@@ -703,6 +706,11 @@ mod app {
 
     use super::store::{push, Log, Rec, Store, TOP};
 
+    /// 窓に届いた「素の」入力の集計（IME が composition にせず素通しした = リテラル、および awase の回収キー）。
+    static LIT_CHARS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static BS_KEYS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    static ESC_KEYS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
     /// 窓に届いたメッセージを記録するための、ログと起点時刻(ウィンドウプロシージャから参照する)。
     static WND_LOG: std::sync::OnceLock<(Log, Instant)> = std::sync::OnceLock::new();
 
@@ -800,6 +808,15 @@ mod app {
             if let Some(name) = name {
                 push(log, *t0, "WNDMSG", format!("{name} wp=0x{:X} lp=0x{:X}", wp.0, lp.0));
             }
+            if msg == WM_CHAR && u8::try_from(wp.0).is_ok_and(|c| c.is_ascii_alphabetic()) {
+                LIT_CHARS.fetch_add(1, Ordering::SeqCst);
+            }
+            if msg == WM_KEYDOWN && wp.0 == 0x08 {
+                BS_KEYS.fetch_add(1, Ordering::SeqCst);
+            }
+            if msg == WM_KEYDOWN && wp.0 == 0x1B {
+                ESC_KEYS.fetch_add(1, Ordering::SeqCst);
+            }
         }
         // SAFETY: ウィンドウプロシージャ。DefWindowProcW/PostQuitMessage は任意の引数で安全。
         unsafe {
@@ -888,6 +905,11 @@ mod app {
             .unwrap_or(0);
         let deny_sync = args.iter().any(|a| a == "--deny-sync");
         let panic_test = args.iter().any(|a| a == "--panic-test");
+        let class_name =
+            arg_value(&args, "--class=").unwrap_or_else(|| "TextStoreProbeTop".to_string());
+        let tail_ms: u64 = arg_value(&args, "--tail=")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(600);
         NO_SCAN.store(args.iter().any(|a| a == "--no-scan"), Ordering::SeqCst);
         let log_path = arg_value(&args, "--log=").unwrap_or_else(|| "text_store_probe.log".into());
         let mut file = std::fs::File::create(&log_path).expect("log");
@@ -912,7 +934,7 @@ mod app {
             let client_id = thread_mgr.Activate().expect("Activate");
 
             let instance = GetModuleHandleW(None).expect("module");
-            let cls = wide("TextStoreProbeTop");
+            let cls = wide(&class_name);
             let wc = WNDCLASSEXW {
                 cbSize: size_of::<WNDCLASSEXW>() as u32,
                 lpfnWndProc: Some(wndproc),
@@ -984,7 +1006,7 @@ mod app {
                     send_key(*vk, false);
                     sleep(gap_ms);
                 }
-                sleep(600);
+                sleep(tail_ms);
             }
             // SAFETY: top は有効な窓。WM_CLOSE でメインのメッセージループを終わらせる。
             unsafe {
@@ -1021,6 +1043,12 @@ mod app {
             count("RequestLock"),
             count("InsertTextAtSelection"),
             count("SetText")
+        ));
+        out(&format!(
+            "窓に届いた素の英字(WM_CHAR)={} BS(WM_KEYDOWN)={} ESC(WM_KEYDOWN)={}  ※IME が composition にせず素通しした=リテラル、BS/ESC は awase の回収の可能性",
+            LIT_CHARS.load(Ordering::SeqCst),
+            BS_KEYS.load(Ordering::SeqCst),
+            ESC_KEYS.load(Ordering::SeqCst)
         ));
         let final_text = recs
             .iter()
