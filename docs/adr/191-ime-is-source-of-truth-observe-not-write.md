@@ -307,7 +307,7 @@ P50=1ms・P95=34ms（10件、通知が来なかったキーは6/16=38%）。GJI�
 - 撤去に数えないもの: `classify_mode_key_ime_action`（表生成側へ移設されるだけ）、`ModeKeyConfig`/`muhenkan_solo_tap_dedicated_fn_key`（ユーザー設定で表とは別軸。決定6）。
 - **決定の依存順（round4 QM2、循環の解消）**: 予測表（決定3）→ 書き込みの線引き（決定1、分類a〜eは表から引く）→ 撤去（決定5・6）。表が無い・非決定のセルは「書かずに追随」で動くので、**撤去は表の完成を待たずに先行してよい**
   （例外の一般化は後から足す）。実際の順序: 撤去ブランチは、生成した表（格子第3版）と打鍵時予測を含めて実装済み。
-- **複雑性の収支（実数、2026-09-21、`git diff --shortstat origin/develop...origin/feat/adr191-remove-hardcoded-mode-keys`）**: 全体47ファイル、+3,481/−4,630行（`develop`のmerge後、2026-09-21のPR時点）。`crates`と`src`だけで+2,524/−4,470行（差し引き−1,946行、
+- **複雑性の収支（実数、2026-09-21、`git diff --shortstat origin/develop...origin/feat/adr191-remove-hardcoded-mode-keys`）**: 全体約50ファイル、約+3,500/−4,600行（docs含む、`develop`のmerge後、2026-09-21のPR時点）。`crates`と`src`だけで+2,524/−4,470行（差し引き−1,946行、
   うち`crates/awase-windows/src`は+2,397/−2,880）。
   | 区分 | 行数 | 戻ってくるか |
   |---|---|---|
