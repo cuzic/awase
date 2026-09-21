@@ -1,0 +1,4 @@
+ERROR: The process "ime_key_matrix_spike.exe" not found.
+spike procs: 1 args=--walk=100 --seed=5 --hold=180 --activate-gji
+script error: Output type incorrect: bool (expecting ())
+Error: exit code 1
