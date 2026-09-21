@@ -75,37 +75,40 @@ pub const VK_NONAME: VkCode = VkCode(0xFC);
 
 // ── IME キー種別 ──────────────────────────────────────────
 
-/// IME の ON/OFF 状態を変更するキーの種別。
+/// IME のモード/開閉に関係しうる物理キーの**同定**（このVKは何のキーか）。
 ///
-/// raw な VK コード (0xF2, 0x19 等) の代わりにパターンマッチで使う。
+/// raw な VK コード (0xF2, 0x19 等) の代わりにパターンマッチで使う。variant 名は VK の名前どおりで、
+/// **効果（ON にする/OFF にする等）を意味しない**。押したときに何が起きるかは IME 種別・キーマップ・状態で変わる
+/// ので、ここでは決め打たず、予測表（`state/key_effect_data.rs`、格子で学習した結果から生成）と観測から引く
+/// （ADR-191 決定6）。効果を静的に持つのは [`ImeKeyKind::shadow_effect`]（IME種別に依らず確定しているキーだけ）と
+/// [`ImeKeyKind::is_open_toggle_for`]（IME種別ごとに開閉トグルと確定しているキーだけ）に限る。
+///
+/// 旧名（ADR-191 以前）: `KanjiToggle`→`Kanji`、`Alphanumeric`→`DbeAlphanumeric`、`Katakana`→`DbeKatakana`、
+/// `Activate`→`DbeHiragana`、`Deactivate`→`DbeSbcsChar`、`ActivatePair`→`DbeDbcsChar`。
+/// 旧名は効果を名前に埋め込んでいた（例: 0xF3 を「IME OFF にするキー」と呼ぶ）が、実IMEでは 0xF3/0xF4 は
+/// どちらも開閉トグルである（ADR-186/190）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImeKeyKind {
-    /// VK_KANA (0x15) — カタカナ/ひらがなキー
-    ///
-    /// Microsoft 公式: "The IME On key has the virtual key code VK_KANA (0x15)".
-    /// 単独押下でひらがな入力モードに入る（IME ON）。Shift+ で カタカナモード。
-    /// トグルではなく常に IME ON にする動作。
-    /// wezterm 等のアプリで IME ON キーとして使われる。
+    /// VK_KANA (0x15)。日本語キーボードの「かな」キー。
     Kana,
     /// VK_IME_ON (0x16)
     ImeOn,
-    /// VK_JUNJA (0x17) — IME on 系
+    /// VK_JUNJA (0x17)
     Junja,
-    /// VK_KANJI (0x19) — 半角/全角キー
-    /// 多くの JIS キーボードでは IME ON/OFF のトグルとして動作する。
-    KanjiToggle,
+    /// VK_KANJI (0x19)。「漢字」キー（0xF3/0xF4 の「半角/全角」とは別のVK）。
+    Kanji,
     /// VK_IME_OFF (0x1A)
     ImeOff,
-    /// VK_DBE_ALPHANUMERIC / VK_OEM_ATTN (0xF0) — 英数モード（IME OFF 扱い）
-    Alphanumeric,
-    /// VK_DBE_KATAKANA (0xF1) — カタカナモード（IME ON）
-    Katakana,
-    /// VK_DBE_HIRAGANA (0xF2) — ひらがなモード（IME ON）
-    Activate,
-    /// VK_DBE_SBCSCHAR / VK_OEM_AUTO (0xF3) — 半角モード（IME OFF 扱い）
-    Deactivate,
-    /// VK_DBE_DBCSCHAR / VK_OEM_ENLW (0xF4) — 全角モード（IME ON）
-    ActivatePair,
+    /// VK_DBE_ALPHANUMERIC / VK_OEM_ATTN (0xF0)。「英数」キー。
+    DbeAlphanumeric,
+    /// VK_DBE_KATAKANA (0xF1)。「カタカナ」キー。
+    DbeKatakana,
+    /// VK_DBE_HIRAGANA (0xF2)。「ひらがな」キー。
+    DbeHiragana,
+    /// VK_DBE_SBCSCHAR / VK_OEM_AUTO (0xF3)。「半角/全角」キーの一方（OSが押すたびに 0xF3/0xF4 を交互に見せる）。
+    DbeSbcsChar,
+    /// VK_DBE_DBCSCHAR / VK_OEM_ENLW (0xF4)。「半角/全角」キーのもう一方。
+    DbeDbcsChar,
 }
 
 /// `ImeKeyKind` が IME 状態に与える効果。
@@ -125,13 +128,13 @@ impl ImeKeyKind {
             0x15 => Some(Self::Kana),
             0x16 => Some(Self::ImeOn),
             0x17 => Some(Self::Junja),
-            0x19 => Some(Self::KanjiToggle),
+            0x19 => Some(Self::Kanji),
             0x1A => Some(Self::ImeOff),
-            0xF0 => Some(Self::Alphanumeric),
-            0xF1 => Some(Self::Katakana),
-            0xF2 => Some(Self::Activate),
-            0xF3 => Some(Self::Deactivate),
-            0xF4 => Some(Self::ActivatePair),
+            0xF0 => Some(Self::DbeAlphanumeric),
+            0xF1 => Some(Self::DbeKatakana),
+            0xF2 => Some(Self::DbeHiragana),
+            0xF3 => Some(Self::DbeSbcsChar),
+            0xF4 => Some(Self::DbeDbcsChar),
             _ => None,
         }
     }
@@ -149,14 +152,14 @@ impl ImeKeyKind {
         match self {
             Self::ImeOn => Some(ShadowImeEffect::TurnOn),
             Self::ImeOff => Some(ShadowImeEffect::TurnOff),
-            Self::KanjiToggle => Some(ShadowImeEffect::Toggle),
+            Self::Kanji => Some(ShadowImeEffect::Toggle),
             Self::Kana
             | Self::Junja
-            | Self::Alphanumeric
-            | Self::Katakana
-            | Self::Activate
-            | Self::Deactivate
-            | Self::ActivatePair => None,
+            | Self::DbeAlphanumeric
+            | Self::DbeKatakana
+            | Self::DbeHiragana
+            | Self::DbeSbcsChar
+            | Self::DbeDbcsChar => None,
         }
     }
 
@@ -172,7 +175,7 @@ impl ImeKeyKind {
         use crate::state::ime_kind::ImeKindId;
         match ime {
             ImeKindId::Gji | ImeKindId::MsIme => {
-                matches!(self, Self::Deactivate | Self::ActivatePair)
+                matches!(self, Self::DbeSbcsChar | Self::DbeDbcsChar)
             }
         }
     }
@@ -278,11 +281,11 @@ pub const fn is_synthetic_dbe_ime_hotkey(vk_code: VkCode) -> bool {
     matches!(
         ImeKeyKind::from_vk(vk_code),
         Some(
-            ImeKeyKind::Alphanumeric
-                | ImeKeyKind::Katakana
-                | ImeKeyKind::Activate
-                | ImeKeyKind::Deactivate
-                | ImeKeyKind::ActivatePair
+            ImeKeyKind::DbeAlphanumeric
+                | ImeKeyKind::DbeKatakana
+                | ImeKeyKind::DbeHiragana
+                | ImeKeyKind::DbeSbcsChar
+                | ImeKeyKind::DbeDbcsChar
         )
     )
 }
@@ -1189,15 +1192,15 @@ mod tests {
         use super::ShadowImeEffect::{Toggle, TurnOff, TurnOn};
         assert_eq!(ImeKeyKind::ImeOn.shadow_effect(), Some(TurnOn));
         assert_eq!(ImeKeyKind::ImeOff.shadow_effect(), Some(TurnOff));
-        assert_eq!(ImeKeyKind::KanjiToggle.shadow_effect(), Some(Toggle));
+        assert_eq!(ImeKeyKind::Kanji.shadow_effect(), Some(Toggle));
         for k in [
             ImeKeyKind::Kana,
             ImeKeyKind::Junja,
-            ImeKeyKind::Alphanumeric,
-            ImeKeyKind::Katakana,
-            ImeKeyKind::Activate,
-            ImeKeyKind::Deactivate,
-            ImeKeyKind::ActivatePair,
+            ImeKeyKind::DbeAlphanumeric,
+            ImeKeyKind::DbeKatakana,
+            ImeKeyKind::DbeHiragana,
+            ImeKeyKind::DbeSbcsChar,
+            ImeKeyKind::DbeDbcsChar,
         ] {
             assert_eq!(k.shadow_effect(), None, "{k:?} は静的に決め打ちしない");
         }
@@ -1209,18 +1212,18 @@ mod tests {
     fn open_toggle_applies_to_hankaku_zenkaku_for_every_known_ime_kind() {
         use crate::state::ime_kind::ImeKindId;
         for ime in ImeKindId::ALL {
-            for k in [ImeKeyKind::Deactivate, ImeKeyKind::ActivatePair] {
+            for k in [ImeKeyKind::DbeSbcsChar, ImeKeyKind::DbeDbcsChar] {
                 assert!(k.is_open_toggle_for(ime), "{k:?} × {ime:?}");
             }
             for k in [
                 ImeKeyKind::Kana,
                 ImeKeyKind::ImeOn,
                 ImeKeyKind::Junja,
-                ImeKeyKind::KanjiToggle,
+                ImeKeyKind::Kanji,
                 ImeKeyKind::ImeOff,
-                ImeKeyKind::Alphanumeric,
-                ImeKeyKind::Katakana,
-                ImeKeyKind::Activate,
+                ImeKeyKind::DbeAlphanumeric,
+                ImeKeyKind::DbeKatakana,
+                ImeKeyKind::DbeHiragana,
             ] {
                 assert!(
                     !k.is_open_toggle_for(ime),

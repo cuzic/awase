@@ -4817,10 +4817,10 @@ const KEYMAP_MAIN_KEYS: &[(&str, &str)] = &[
 ];
 
 /// `KEYMAP_MAIN_KEYS` から、対応する物理キーが存在しない IME 仮想キー
-/// （`ImeKeyKind::ImeOn`/`ImeOff`/`Alphanumeric`/`Katakana`/`Activate`/
-/// `Deactivate`/`ActivatePair`）だけを除いた候補一覧。
+/// （`ImeKeyKind::ImeOn`/`ImeOff`/`DbeAlphanumeric`/`DbeKatakana`/`DbeHiragana`/
+/// `DbeSbcsChar`/`DbeDbcsChar`）だけを除いた候補一覧。
 ///
-/// `かな`(`ImeKeyKind::Kana`)・`漢字`(`ImeKeyKind::KanjiToggle`) は実在する
+/// `かな`(`ImeKeyKind::Kana`)・`漢字`(`ImeKeyKind::Kanji`) は実在する
 /// 物理キーなので除外しない——`ImeKeyKind::from_vk(vk).is_some()` 全体を
 /// 除外条件にすると、この2つも誤って弾いてしまう（コードレビュー指摘）。
 ///
@@ -4839,11 +4839,11 @@ fn physical_key_options() -> impl Iterator<Item = &'static (&'static str, &'stat
                 Some(
                     awase_windows::vk::ImeKeyKind::ImeOn
                         | awase_windows::vk::ImeKeyKind::ImeOff
-                        | awase_windows::vk::ImeKeyKind::Alphanumeric
-                        | awase_windows::vk::ImeKeyKind::Katakana
-                        | awase_windows::vk::ImeKeyKind::Activate
-                        | awase_windows::vk::ImeKeyKind::Deactivate
-                        | awase_windows::vk::ImeKeyKind::ActivatePair
+                        | awase_windows::vk::ImeKeyKind::DbeAlphanumeric
+                        | awase_windows::vk::ImeKeyKind::DbeKatakana
+                        | awase_windows::vk::ImeKeyKind::DbeHiragana
+                        | awase_windows::vk::ImeKeyKind::DbeSbcsChar
+                        | awase_windows::vk::ImeKeyKind::DbeDbcsChar
                 )
             )
         })
