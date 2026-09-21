@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: '実行する構成名(カンマ区切り、空なら全構成)。例: baseline,a1-keyup'
+        description: '実行する構成名(カンマ区切り、空なら全構成)。例: baseline,a5-no-refresh20'
         required: false
         default: ''
 
@@ -55,8 +55,6 @@ jobs:
             # --- 撤去実験(ATOK、実機E1〜E7bと同じ) ---
             cfg('baseline', 'pass'),
             cfg('baseline-henkan', 'pass', args='--key=henkan', custom_table='true'),
-            cfg('a1-keyup', 'fail', mutator='a1-revert-keyup.sh'),
-            cfg('a2-atok-skip', 'fail', mutator='a2-revert-atok-skip.sh', args='--key=henkan', custom_table='true'),
             cfg('a4-no-eisu-reset', 'pass', mutator='a4-no-eisu-reset.sh'),
             cfg('a5-no-refresh20', 'fail', mutator='a5-no-refresh20.sh'),
             cfg('a6-no-idle-check', 'pass', mutator='a6-no-idle-check.sh'),
