@@ -33,9 +33,11 @@ permissions:
   actions: read
 
 # 同じ ref への push が続いたとき、古い run(重複実行)を止める。
+# ただし ci/e2e-calibration では、小さな push(README・スクリプトの修正)で走行中の長い(最大55分の)学習ジョブ群を
+# 全部キャンセルしないよう、cancel-in-progress を無効にする。
 concurrency:
   group: e2e-ime-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref_name != 'ci/e2e-calibration' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -52,6 +54,9 @@ jobs:
         shell: python
         env:
           ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || '' }}
+          # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)を除く。
+          # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
+          EXCLUDE_CAL_WHEN_EMPTY: '1'
         run: |
           import json, os
           # name: 構成名 / bin: 使うビルド成果物(撤去なしの構成は baseline を使い回す) / mutator: ablations/ 下のスクリプト
@@ -59,7 +64,7 @@ jobs:
           # keymap: GJI の session_keymap(1=ATOK, 2=MS-IME) / custom_table: config1.db に古い custom_keymap_table
           # (変換=IMEOn)を残すか / check: expect=ATOK前提の期待表(check.py)、consistency=プリセット非依存で
           # 「実IMEのかな=Engine ON、英数・直接入力=Engine OFF」に追随するか(check_consistency.py、--walk)、
-          # collect=判定せずログを回収し、[GRID-ABORT] の打ち切り(rc=3=INVALID)だけを検出する(cal-* 用。expect=observe と組み合わせる。解析はローカル)
+          # collect=判定せずログを回収し、「実行できなかった」(GRID-ABORT・完走マーカー無し・KEY 行0件)だけを rc=3=INVALID にする(cal-* 用。expect=observe と組み合わせる。解析はローカル)
           # expect: pass=全回PASS / fail=撤去や設定で壊れる(既知の問題を固定) / observe=結果を表に出すだけ(不安定・未確定の観測用)
           # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME)
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
@@ -106,7 +111,7 @@ jobs:
             cfg('probe-vk-gji-atok', 'observe', check='vkprobe', args='--vkprobe', awase='false'),
             cfg('probe-vk-gji-msime', 'observe', check='vkprobe', args='--vkprobe', keymap=2, awase='false'),
             cfg('probe-vk-msime-native', 'observe', check='vkprobe', args='--vkprobe --msime', ime='msime', awase='false'),
-            # --- ADR-191 の検証ラウンド(ci/e2e-calibration ブランチ。check='collect'=判定せずログを回収し、[GRID-ABORT] による打ち切り(rc=3=INVALID)だけを検出する。cal-verify-* は打鍵時予測を持つ awase のビルドで意味を持つ) ---
+            # --- ADR-191 の検証ラウンド(ci/e2e-calibration ブランチ。check='collect'=判定せずログを回収し、「実行できなかった」(GRID-ABORT・完走マーカー無し・KEY 行0件)だけを rc=3=INVALID にする。cal-verify-* は打鍵時予測を持つ awase のビルドで意味を持つ) ---
             # walk: 撤去ブランチ(打鍵時予測ビルド)+ AWASE_TEST_INJECTION=1 でランダムなキー列を流し、Engine と実IMEのずれを
             # ローカルで解析する(effect_learning.py --drift、DRIFT_OFF=100/400/1500)。cache=works は観測あり、
             # cache=unavailable は awase が IME を読めないアプリ相当(スパイク窓を「IMM不可」に固定)で、予測だけが Engine を動かす。
@@ -114,7 +119,8 @@ jobs:
                   args=f'--walk=100 --seed={seed}')
               for kind, cache in (('obs', 'works'), ('blind', 'unavailable')) for seed in (1, 2)],
             cfg('cal-walk-noawase-s5', 'observe', check='collect', awase='false', runs=1, args='--walk=100 --seed=5'),
-            # --- ADR-191 学習ラウンド: 状態(開閉×入力モード×入力中の段階=30状態)を IMM で決定的に作り、キーの効果を格子状に網羅する ---
+            # --- ADR-191 学習ラウンド 第1版(cal-grid-*): 状態を IMM で書いて作る。**学習に使ってはいけない**(IMM で書いた変換モードは、キーで入った状態と別物で、ATOK のひらがなが「不変」と誤学習される。比較・経緯の記録用。学習は cal-gridk3-* / cal-fast-* / cal-notify-*)。 ---
+            # (状態: 開閉×入力モード×入力中の段階=30状態を IMM で決定的に作り、キーの効果を格子状に網羅する)
             # (awase なし=IME単体の効果。--grid=シャード、キーのグループで4分割。プリセット ATOK=keymap 1 / MS-IME=keymap 2)
             # cal-grid-smoke は動作確認用(各セル1回)。所要は約 20〜35 分/シャード(wait=秒)。
             cfg('cal-grid-smoke', 'observe', check='collect', awase='false', runs=1, wait=1500, args='--grid=s4 --grid-trials=1'),
@@ -138,9 +144,11 @@ jobs:
                   args=f'--grid=s1 --grid-setup=keys --grid-trials=2 --fast --speed={k}')
               for k in (2, 4)],
             # --- ADR-191/193: 格子の待ちを compartment 変更通知の購読に置き換えられるか(ci/e2e-calibration) ---
-            # cal-notify-probe-*: compartment_notify_probe(awase なし)で、キー→NOTIFY/POLL の遅延を測る(ATOKのみ、gap=1500/600)。
+            # cal-notify-probe-*: 前面化の失敗(WM_SETFOCUS 未処理)を直した診断コピー compartment_notify_probe_diag(awase なし)で、キー→NOTIFY/POLL の遅延を測る(ATOKのみ、gap=1500/600)。
+            # 本体の compartment_notify_probe は ADR-193 の成果物で、CI では前面化に失敗して ABORT(キー0件)になる(patches/ の修正案が未適用)ので、本体を使う構成は置かない。
             # seq: IME_ON, ひらがな×2, カタカナ, 英数, 無変換, 変換, 半角/全角×2, Esc, k, a(入力中), Space(変換中), Enter, IME_OFF, IME_ON
             *[cfg(f'cal-notify-probe-atok-g{g}', 'observe', check='collect', awase='false', runs=1, wait=240, keymap=1,
+                  probe_bin='compartment_notify_probe_diag',
                   probe=f'--seq=16,F2,F2,F1,F0,1D,1C,F3,F3,1B,4B,41,20,0D,1A,16 --gap={g} --poll=50')
               for g in (1500, 600)],
             # cal-notify-probe-diag: 前面化の戦略 S0〜S3 を順に試して DIAG 行に残す診断コピー(ADR-193 の本体は編集しない)。
@@ -208,6 +216,9 @@ jobs:
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
             configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
+          elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
+            # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
+            configs = [c for c in configs if not c['name'].startswith('cal-')]
           # ビルドは bin ごとに1回(撤去なしの構成は baseline を共有)
           builds = [c for c in configs if c['bin'] == c['name']]
           if not any(c['bin'] == 'baseline' and c['name'] == 'baseline' for c in builds):
@@ -365,9 +376,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GATE: ${{ matrix.cfg.gate }}
         run: |
+          # fail-open の条件: 5分待っても smoke ジョブが見つからない(この run に smoke が無い、または API が読めない)ときは
+          # 通常どおり中身を実行する(ゲートは「smoke が失敗した」ことを確認できたときだけ本番を止める)。
+          # ジョブ一覧は --paginate で全件読む(全構成 run は 200 ジョブ超で、1ページ 100 件では smoke が見つからない)。
           verdict=notfound
           for i in $(seq 1 90); do
-            row=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+            row=$(gh api --paginate "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
               -q ".jobs[] | select(.name | startswith(\"e2e ($GATE,\")) | \"\(.status) \(.conclusion)\"" 2>/dev/null | head -1 || true)
             case "$row" in
               "completed success") verdict=success; break ;;
@@ -470,18 +484,34 @@ jobs:
           $env:PYTHONUTF8 = '1'
           # 判定は summary ジョブで集計する。ここでは終了コード(0=PASS, 1=FAIL, 3=INVALID)を記録して成功で終える。
           if ('${{ matrix.cfg.probe }}' -ne '') {
-            'probe: 判定なし(ログ回収のみ。解析は notify_latency.py)' | Tee-Object -FilePath result.txt
-            $global:LASTEXITCODE = 0
+            # プローブ: 測定内容は判定しないが、「実行できなかった」は INVALID(rc=3)にする(完走マーカー・ABORT・KEY 行数)。
+            $plog = "dist\${{ matrix.cfg.probe_bin }}.log"
+            $pdone = (Test-Path $plog) -and (Select-String -Path $plog -Pattern '=== 完了 ===' -Quiet)
+            $pabort = (Test-Path $plog) -and (Select-String -Path $plog -Pattern 'ABORT' -Quiet)
+            $pkeys = if (Test-Path $plog) { @(Select-String -Path $plog -Pattern 'ms KEY ').Count } else { 0 }
+            if (-not $pdone -or $pabort -or $pkeys -eq 0) {
+              "probe: 実行できなかった(INVALID, rc=3) 完走マーカー=$pdone ABORT=$pabort KEY行=$pkeys。ログ $plog を参照" | Tee-Object -FilePath result.txt
+              $global:LASTEXITCODE = 3
+            } else {
+              "probe: 判定なし(ログ回収のみ, rc=0) KEY行=$pkeys。解析は notify_latency.py" | Tee-Object -FilePath result.txt
+              $global:LASTEXITCODE = 0
+            }
           } elseif ('${{ matrix.cfg.check }}' -eq 'toggle') {
             python tools\e2e\ime_key_matrix\check_toggle.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'resync') {
             python tools\e2e\ime_key_matrix\check_resync.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'collect') {
-            if (Select-String -Path dist\ime_key_matrix_spike.log -Pattern 'GRID-ABORT' -Quiet) {
-              'collect: [GRID-ABORT] で打ち切られた(INVALID, rc=3)。ログの [GRID-ABORT] reason を参照' | Tee-Object -FilePath result.txt
+            # 判定はしないが、「実行できなかった」は INVALID(rc=3)にする: (1)[GRID-ABORT]、(2)完走マーカー(全手順完了)が無い
+            # (前面化失敗などで進まずに wait を使い切った)、(3)測定(KEY 行)が0件。
+            $slog = 'dist\ime_key_matrix_spike.log'
+            $sabort = (Test-Path $slog) -and (Select-String -Path $slog -Pattern 'GRID-ABORT' -Quiet)
+            $sdone = (Test-Path $slog) -and (Select-String -Path $slog -Pattern '全手順完了' -Quiet)
+            $skeys = if (Test-Path $slog) { @(Select-String -Path $slog -Pattern '\] KEY ').Count } else { 0 }
+            if ($sabort -or -not $sdone -or $skeys -eq 0) {
+              "collect: 実行できなかった(INVALID, rc=3) GRID-ABORT=$sabort 完走マーカー=$sdone KEY行=$skeys。ログの [GRID-ABORT] reason 等を参照" | Tee-Object -FilePath result.txt
               $global:LASTEXITCODE = 3
             } else {
-              'collect: 判定なし(ログ回収のみ, rc=0)。解析はローカルで grid_learn.py / effect_learning.py / cycle.py' | Tee-Object -FilePath result.txt
+              "collect: 判定なし(ログ回収のみ, rc=0) KEY行=$skeys。解析はローカルで grid_learn.py / effect_learning.py / cycle.py" | Tee-Object -FilePath result.txt
               $global:LASTEXITCODE = 0
             }
           } elseif ('${{ matrix.cfg.check }}' -eq 'vkprobe') {
