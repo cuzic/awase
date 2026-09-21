@@ -6,7 +6,7 @@
 //! スレッド compartment を読む、実測で全件一致）と同じ。ここに `ITfSource::AdviseSink(ITfCompartmentEventSink)` を足す。
 //! 購読対象は `KEYBOARD_OPENCLOSE` / `KEYBOARD_INPUTMODE_CONVERSION` / `KEYBOARD_INPUTMODE_SENTENCE`。
 //!
-//! 使い方: `compartment_notify_probe [--seq=16,1A,F2,F2,1D] [--gap=1500] [--poll=50] [--richedit] [--log=<path>]`
+//! 使い方: `compartment_notify_probe [--seq=16,1A,F2,F2,1D,1C] [--gap=1500] [--poll=50] [--richedit] [--log=<path>]`
 //!   `--seq`: 注入する VK（16進、カンマ区切り）。既定は IME ON → IME OFF → ひらがな×2 → 無変換 → 変換。
 //!   `--gap`: キー間隔(ms)。`--poll`: 比較用に、メインスレッドのタイマーで compartment を読む間隔(ms、0で無効)。
 //!   `--richedit`: 入力欄を素の `EDIT` でなく `RICHEDIT50W` にする。
@@ -298,11 +298,22 @@ mod app {
 
     pub(crate) fn main() {
         let args: Vec<String> = std::env::args().collect();
-        let seq: Vec<u32> = arg_value(&args, "--seq=")
-            .unwrap_or_else(|| "16,1A,F2,F2,1D,1C".to_string())
-            .split(',')
-            .filter_map(|s| u32::from_str_radix(s.trim(), 16).ok())
-            .collect();
+        // 不正な要素や空の列は、測定と誤読されないよう黙って捨てずに終了する。
+        let seq_arg = arg_value(&args, "--seq=").unwrap_or_else(|| "16,1A,F2,F2,1D,1C".to_string());
+        let mut seq: Vec<u32> = Vec::new();
+        for tok in seq_arg.split(',') {
+            match u32::from_str_radix(tok.trim(), 16) {
+                Ok(v) => seq.push(v),
+                Err(_) => {
+                    eprintln!("--seq の要素 {tok:?} は16進のVKとして解釈できません(--seq={seq_arg})");
+                    std::process::exit(2);
+                }
+            }
+        }
+        if seq.is_empty() {
+            eprintln!("--seq が空です");
+            std::process::exit(2);
+        }
         let gap_ms: u64 = arg_value(&args, "--gap=")
             .and_then(|v| v.parse().ok())
             .unwrap_or(1500);
@@ -504,7 +515,8 @@ mod app {
             // SAFETY: cookie は AdviseSink が返した有効な cookie。
             let _ = unsafe { source.UnadviseSink(*cookie) };
         }
-        drop(thread_mgr);
+        // SAFETY: 上の Activate と対で、同じスレッドから呼ぶ。
+        let _ = unsafe { thread_mgr.Deactivate() };
 
         // 集計: 各 KEY の直後に最初に来た NOTIFY / POLL までの遅延。
         let ev = events.lock().map(|e| e.clone()).unwrap_or_default();
