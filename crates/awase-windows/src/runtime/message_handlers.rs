@@ -1575,22 +1575,13 @@ fn build_bug_report_msime_key_assignment_summary(
         let adopted_ime_toggle_combos =
             Some(combos.iter().copied().map(parsed_key_combo_label).collect());
 
-        let delegate_assignment =
-            crate::msime_key_assignment::read_delegate_to_open_axis_assignment_from_registry();
-        // ADR-179決定1: `sync_ime_toggle_auto_detect`はis_thumb_keyに
-        // 関わらず常にoverrideへ値を渡すため、この診断値もゲートしない。
-        let adopted_henkan_delegate = delegate_assignment
-            .henkan
-            .map(shadow_ime_action_str)
-            .map(str::to_owned);
-        let adopted_muhenkan_delegate = delegate_assignment
-            .muhenkan
-            .map(shadow_ime_action_str)
-            .map(str::to_owned);
+        // ADR-191: 無変換/変換の「open軸への肩代わり(delegate)」採用は撤去した。
+        // 互換のためスキーマには残すが常に`None`（以前はレジストリ値から「採用した」と
+        // 称して値を返しており、ADR-148 の診断を誤らせた、レビュー指摘C-M5）。
         MsImeAdoptedFields {
             adopted_ime_toggle_combos,
-            adopted_muhenkan_delegate,
-            adopted_henkan_delegate,
+            adopted_muhenkan_delegate: None,
+            adopted_henkan_delegate: None,
         }
     } else {
         MsImeAdoptedFields::default()
@@ -1646,14 +1637,6 @@ fn gji_composition_mode_str(mode: awase_gji_config::command::GjiCompositionMode)
         GjiCompositionMode::HalfKatakana => "HalfKatakana",
         GjiCompositionMode::FullAlphanumeric => "FullAlphanumeric",
         GjiCompositionMode::HalfAlphanumeric => "HalfAlphanumeric",
-    }
-}
-
-fn shadow_ime_action_str(action: awase::types::ShadowImeAction) -> &'static str {
-    match action {
-        awase::types::ShadowImeAction::TurnOn => "TurnOn",
-        awase::types::ShadowImeAction::TurnOff => "TurnOff",
-        awase::types::ShadowImeAction::Toggle => "Toggle",
     }
 }
 

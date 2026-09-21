@@ -75,22 +75,6 @@ impl MsImeToggleAssignment {
     }
 }
 
-/// `KeyAssignmentMuhenkan`/`KeyAssignmentHenkan` を `ShadowImeAction` として
-/// 解釈した結果（ADR-092 決定A・決定D Step4b）。
-///
-/// 実測で確認済みの値（2026-07-06・2026-08-15 実機 dragonflyg4）:
-/// Muhenkan `{1: TurnOff, 2: Toggle}`、Henkan `{1: TurnOn, 2: Toggle}`。
-/// それ以外の値・未読み取りは「宣言なし」として `None` に倒す（決定C R3、
-/// 推測しない）。`Some(0)`（既定のかな切替/再変換）も `None` として扱う——
-/// これは「open 軸の宣言が無い」ことを意味するのであって、`ModeKeyConfig`
-/// による既存の抑止判断（`mode_key_muhenkan`/`mode_key_henkan`）は
-/// このAPIとは独立に維持される。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct MsImeDelegateToOpenAxisAssignment {
-    pub muhenkan: Option<awase::types::ShadowImeAction>,
-    pub henkan: Option<awase::types::ShadowImeAction>,
-}
-
 /// bug report用（ADR-148）: `MSIME`直下の5つのDWORD値を解釈せず生のまま
 /// 返す。`MsImeKeyAssignment`等の解釈済み型（`== Some(1)`/`== Some(2)`で
 /// 分岐、それ以外は「宣言なし」に潰す）と違い、未知の値（将来値`3`以降等）
@@ -243,8 +227,7 @@ mod windows_impl {
 
     /// bug report用（ADR-148）: 5つのDWORD値を解釈せず生のまま読む。
     /// マスタースイッチの値に関わらず個々の値を読む（`read_toggle_
-    /// assignment_from_registry`/`read_delegate_to_open_axis_assignment_
-    /// from_registry`と違い、マスタースイッチOFF時の実際の登録値を
+    /// assignment_from_registry`と違い、マスタースイッチOFF時の実際の登録値を
     /// 隠さないため）。
     #[must_use]
     pub(crate) fn read_raw_key_assignment_dwords() -> super::RawKeyAssignmentDwords {
@@ -284,33 +267,9 @@ mod windows_impl {
         ))
     }
 
-    /// レジストリから `KeyAssignmentMuhenkan`/`KeyAssignmentHenkan` を
-    /// `ShadowImeAction` として読み取る（ADR-092 決定A・決定D Step4b）。
-    #[must_use]
-    pub(crate) fn read_delegate_to_open_axis_assignment_from_registry(
-    ) -> super::MsImeDelegateToOpenAxisAssignment {
-        use awase::types::ShadowImeAction;
-        use windows::core::w;
-        if read_dword(w!("IsKeyAssignmentEnabled")) != Some(1) {
-            return super::MsImeDelegateToOpenAxisAssignment::default();
-        }
-        let muhenkan = match read_dword(w!("KeyAssignmentMuhenkan")) {
-            Some(1) => Some(ShadowImeAction::TurnOff),
-            Some(2) => Some(ShadowImeAction::Toggle),
-            _ => None,
-        };
-        let henkan = match read_dword(w!("KeyAssignmentHenkan")) {
-            Some(1) => Some(ShadowImeAction::TurnOn),
-            Some(2) => Some(ShadowImeAction::Toggle),
-            _ => None,
-        };
-        super::MsImeDelegateToOpenAxisAssignment { muhenkan, henkan }
-    }
-
     /// ADR-176決定6（176-T12）: `vk`（`VK_NONCONVERT`/`VK_CONVERT`）に関連する
     /// レジストリ値から較正フィンガープリント用のハッシュを計算する。
-    /// `read_delegate_to_open_axis_assignment_from_registry`が返す解釈済みの
-    /// `Option<ShadowImeAction>`（未知の生値を`None`に潰す）ではなく、
+    /// 解釈済みの値（未知の生値を「宣言なし」に潰す）ではなく、
     /// `read_dword`の生の戻り値をそのままハッシュに含める——フィンガープリント
     /// としての感度を優先し、意味的に同じ扱いに潰される前の値の変化も
     /// 検知できるようにするため。対象外のVKは`None`扱い（`IsKeyAssignment
@@ -395,9 +354,8 @@ mod windows_impl {
 #[cfg(windows)]
 pub(crate) use windows_impl::{
     check_and_warn, current_registry_fingerprint_hash, native_assignment_stamp,
-    read_delegate_to_open_axis_assignment_from_registry, read_key_effect_keymap_native,
-    read_raw_key_assignment_dwords, read_toggle_assignment_from_registry,
-    spawn_yes_open_ime_settings_dialog,
+    read_key_effect_keymap_native, read_raw_key_assignment_dwords,
+    read_toggle_assignment_from_registry, spawn_yes_open_ime_settings_dialog,
 };
 
 #[cfg(test)]

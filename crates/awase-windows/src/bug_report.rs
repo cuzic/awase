@@ -191,7 +191,7 @@ pub struct BugReportStateSnapshot {
 ///   `henkan_adopted_route`/`muhenkan_adopted_route`/
 ///   `thumb_key_ime_warning`）: ADR-191で採用（代行・上書き）の機構を撤去したため、
 ///   GJI側は常に`None`。報告のスキーマ互換のためにフィールドだけ残している
-///   （MS-IME側の採用系は別経路で、まだ残っている）。
+///   （MS-IME側の`adopted_*_delegate`も同様に常に`None`。`adopted_ime_toggle_combos`だけが残る）。
 ///
 /// # この型の安全性が依存している前提（レビューF7・S-2）
 ///
@@ -245,16 +245,15 @@ pub struct BugReportGjiKeymapSummary {
     /// ADR-191で採用の機構を撤去したため、常に`None`（互換のためスキーマに残す）。
     pub henkan_adopted_kind: Option<String>,
     pub muhenkan_adopted_kind: Option<String>,
-    /// `"Delegate"` / `"PhysicalDelivery"`。`ime_kind == Gji`のときのみ`Some`。
+    /// ADR-191で採用の機構を撤去したため、常に`None`（互換のためスキーマに残す）。
     pub henkan_adopted_route: Option<String>,
     pub muhenkan_adopted_route: Option<String>,
-    /// `"ToggleDeclined"` / `"ToggleHonored"`。`ime_kind == Gji`のときのみ
-    /// `Some`（警告不要なら`None`）。
+    /// ADR-191で採用の機構を撤去したため、常に`None`（互換のためスキーマに残す）。
     pub thumb_key_ime_warning: Option<String>,
     /// `muhenkan_solo_tap_dedicated_fn_key`が設定済みか。`true`の場合、
-    /// `muhenkan_adopted_route == Some("Delegate")`であっても実際には
-    /// 発火しない（優先順位で専用Fnキーが勝つ）。GJI/MS-IME共通の
-    /// 意味を持つため両summary型に同じフィールドを持たせる。
+    /// GJI/MS-IME共通の意味を持つため両summary型に同じフィールドを持たせる
+    /// （ADR-191で`*_adopted_route`は常に`None`になったが、専用Fnキーの有無自体は
+    /// 診断に有用なので残す）。
     pub muhenkan_dedicated_fn_key_configured: bool,
 }
 
@@ -263,8 +262,9 @@ pub struct BugReportGjiKeymapSummary {
 ///
 /// フィールドの生値/採用系の区別は[`BugReportGjiKeymapSummary`]と同じ
 /// 考え方: 生のDWORD5個は`ime_kind`に関わらず常に読む。`adopted_*`は
-/// `ime_kind == MsIme`のときのみ`Some`（MS-IMEが非アクティブなら、その
-/// レジストリ値をawaseは採用していない）。
+/// `adopted_ime_toggle_combos`は`ime_kind == MsIme`のときのみ`Some`（MS-IMEが
+/// 非アクティブなら、そのレジストリ値をawaseは採用していない）。
+/// `adopted_*_delegate`はADR-191で撤去したため常に`None`。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct BugReportMsImeKeyAssignmentSummary {
     pub is_key_assignment_enabled: Option<u32>,
@@ -275,8 +275,8 @@ pub struct BugReportMsImeKeyAssignmentSummary {
     /// `"Ctrl+Space"`/`"Shift+Space"`のような表現。`ime_kind == MsIme`の
     /// ときのみ`Some`。
     pub adopted_ime_toggle_combos: Option<Vec<String>>,
-    /// `ShadowImeAction`の文字列表現。`ime_kind == MsIme`かつ対象キーが
-    /// 親指キーとして設定されているときのみ`Some`。
+    /// ADR-191で無変換/変換のdelegate採用を撤去したため、常に`None`
+    /// （互換のためスキーマに残す）。
     pub adopted_muhenkan_delegate: Option<String>,
     pub adopted_henkan_delegate: Option<String>,
     /// [`BugReportGjiKeymapSummary::muhenkan_dedicated_fn_key_configured`]
@@ -863,8 +863,8 @@ mod tests {
             muhenkan_classified_kind: Some("Off".to_owned()),
             henkan_adopted_kind: Some("On".to_owned()),
             muhenkan_adopted_kind: Some("Off".to_owned()),
-            henkan_adopted_route: Some("PhysicalDelivery".to_owned()),
-            muhenkan_adopted_route: Some("PhysicalDelivery".to_owned()),
+            henkan_adopted_route: None,
+            muhenkan_adopted_route: None,
             thumb_key_ime_warning: None,
             muhenkan_dedicated_fn_key_configured: false,
         }
