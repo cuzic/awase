@@ -1,4 +1,4 @@
-//! 戦略 S0〜S7(文献調査の(c))。どれも同じ `Executor` と事前モデル(`Prior`)を使い、各セルを `k` 回測る(S7は矛盾したセルだけ増やす)。
+//! 戦略 S0〜S9(文献調査の(c))の**定義の正**(READMEはここを参照する)。どれも同じ `Executor` と事前モデル(`Prior`)を使い、各セルを `k` 回測る(S7〜S9は矛盾したセルなどを増やす)。
 //!
 //! - S0 現状: 試行ごとにリセット→キー列で状態を作る→押す(作る間の押下は記録しない)。
 //! - S1 ランダムウォーク: 確率 `restart` でリセット。
@@ -8,8 +8,8 @@
 //! - S5 status付きtour: S3 + 各statusを初めて見たときだけ2経路で読む(R2)。
 //! - S6 部分1-switch: 直前キーが疑わしいキー集合のときだけ、文脈つきの拡大グラフで巡る。
 //! - S7 適応: S5を別経路で2周し、矛盾したセルだけ `adaptive_n` 回まで増やす。
-//! - S9 全セルn回: 1周ごとに巡回の順序を変えて(別経路)、全セルの観測回数を1回ずつ増やし `adaptive_n` 回まで。
 //! - S8 S6+適応: 文脈つきグラフでS6の巡回をした後、矛盾したセルだけ `adaptive_n` 回まで増やす。
+//! - S9 全セルn回: 1周ごとに巡回の順序を変えて(別経路)、全セルの観測回数を1回ずつ増やし `adaptive_n` 回まで。
 
 use crate::cost::CostModel;
 use crate::exec::{Executor, PressInfo, ReadPolicy};
@@ -415,7 +415,7 @@ mod tests {
     use super::*;
     use crate::anomaly::AnomalyPolicy;
     use crate::metrics::evaluate;
-    use crate::models::atok_like;
+    use crate::sample_models::atok_like;
     use crate::sim::{SimConfig, SimIme};
 
     fn run_strategy(
