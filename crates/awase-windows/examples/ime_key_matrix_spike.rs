@@ -1,5 +1,50 @@
 //! IME モードキー動作マトリクス計測スパイク（awase 非依存）。
 //!
+//! **名前は「spike」だが、現在は CI（`.github/workflows/e2e-ime.yml`）の全構成が使う実質的な本番ハーネス**である
+//! （ADR-186 の実機E2E、ADR-190 の操作シナリオ、ADR-191 の学習/検証ラウンドを、フラグで切り替えて1つの exe が担う）。
+//! ファイル名の改名は、CI 構成・ドキュメントからの参照が多いため行っていない（改名案: `ime_key_harness` 等）。
+//! 以下の「フラグ一覧」が現行の全 CLI フラグ（`run()` の引数解析と一致させること。フラグを足したらここも更新する）。
+//!
+//! ## フラグ一覧
+//! 区分: [ADR-186] 実機E2E(判定は check*.py) / [ADR-190] 操作シナリオ / [学習] 格子・通知(ADR-191、判定せず
+//! ログ回収、解析は tools/e2e/ime_key_matrix/grid_learn.py 等) / [検証] 打鍵時予測の検証 walk / [共通]。
+//! - 手順の選択: `--script`(固定手順を案内、awase 起動中の A/B) / `--auto`(固定手順をスパイク自身が SendInput で注入) /
+//!   `--free`(案内なし、押したキーと実 IME 状態の推移だけ記録) / `--round2`(RichEdit のラウンドから開始) [ADR-186]
+//! - `--seq=F2,F0,A0,...`(VK16進の任意キー列。前提状態なしで押す) / `--hz`(半角/全角 0xF3/0xF4 の交互・連続) /
+//!   `--resync`, `--resync-gap=MS`(Ctrl+無変換/変換のリセット操作の2打間隔。既定100) / `--cold`(`--walk` と併用: 明示意図なしで
+//!   いきなり無変換/変換) / `--key=henkan`(手順の「無変換」を「変換」に) / `--shiftmuh`(無変換を Shift+無変換に) /
+//!   `--vkprobe`(ひらがな系の正しい VK 調べ) / `--diag`(どのキーで GJI が ON になるかの診断) [ADR-186/190]
+//! - `--walk`(値なし: ADR-186 の固定キー列 WALK) / `--walk=N --seed=S`(ランダムなキーを N 回注入。seed は線形合同法。
+//!   awase 有り=検証ラウンド `cal-verify-*`、awase 無し=学習ログ) [検証/学習]
+//! - `--grid=s1..s4`(状態×キーの格子。各シャードは状態×キーの部分集合)、`--grid-trials=N`(各セルの試行数上限)、
+//!   `--grid-setup=keys|keys-immreset`(状態のセットアップ方式。省略=IMM 書き込みで作る第1版(誤りを含むので学習には使わない)、
+//!   `keys`=リセットも含めキーだけで到達(第3版)、`keys-immreset`=リセットだけ IMM(第2版))、
+//!   `--grid-adaptive`(1パス目は全セル1回、2パス目は前回の非決定セル・監査標本・履歴依存ブロックだけ再試行)、
+//!   `--grid-retry-file=PATH`(再試行対象セルの一覧、grid-tables/nondet-*.txt)、`--grid-audit-pct=N`(監査標本の割合。既定10) [学習]
+//! - 高速化: `--fast`(+1500ms の観測を省く) / `--speed=K`(手順間の待ちを K 倍速。既定1) /
+//!   `--snap100`(観測を +100ms だけにして、通知の静止で待ちを終える) [学習]
+//! - 通知: `--notify`(TSF スレッド compartment の変更通知を待ちの終了条件に使う。開閉/変換モードの待ちだけ) /
+//!   `--notify-quiet=MS`(最後の通知からこの間静かなら確定。既定40) / `--notify-nochg=MS`(通知が来なければ「変化なし」と見なす待ち。
+//!   既定150) / `--notify-comp`(入力中/変換中/確定のイベント=WM_IME_*/EN_CHANGE を記録する。ログだけ) [学習]
+//! - 共通: `--activate-gji`(CI 用: GJI プロファイルを有効化し、フックを遅延して張る) / `--msime`(有効化する IME を Microsoft IME に) /
+//!   `--hold=MS`(注入キーの保持時間。既定80) / `--repeat=N`(全手順をこのプロセス内で N 回繰り返す)
+//!
+//! ## ログのタグ
+//! - `KEY [...]`: 押下 1 件の記録(押下前と +100/+400/+1500ms の A/B/T/G 観測。`--fast` は +1500ms なし)。
+//! - `[GRID-BEGIN]`/`[GRID-PRE]`(セットアップ検証)/`[GRID-SKIP]`(セットアップ不能・到達不能で飛ばした)/`[GRID-PRUNE]`
+//!   (到達不能状態の試行を実行前に除外)/`[GRID-ABORT]`(セットアップに1度も成功しないまま打ち切り。CI では rc=3=INVALID)/
+//!   `[GRID-RESET]`(リセット結果)/`[GRID-EXPLORE]`・`[GRID-SETUP]`・`[GRID-EDGE]`(キー到達の探索と遷移グラフ)/
+//!   `[GRID-ADAPTIVE]`(適応再試行の内訳)/`[GRID]`(完了)。
+//! - `[NOTIFY]`(compartment 通知の受信・購読)/`[NOTIFY-STATS]`(通知で早く終わった待ち・変化なしで終わった待ち・上限まで待った待ち)/
+//!   `[COMP]`(`--notify-comp` の WM_IME_*/EN_CHANGE 記録)/`[WALK]`(walk 完了)/`[AUTO]`(自動手順中のフォーカス復帰など)。
+//!
+//! ## 実行例
+//! - 学習(awase なし、ATOK): `ime_key_matrix_spike.exe --auto --hold=180 --activate-gji --grid=s1 --grid-setup=keys --fast --notify --grid-adaptive`
+//! - 検証(awase 有り、`AWASE_TEST_INJECTION=1`): `ime_key_matrix_spike.exe --auto --hold=180 --activate-gji --walk=100 --seed=1`
+//!
+//! ---
+//! 以下は、もともとの「対話的な実機計測スパイク」としての説明（`--script`/`--free` 系の使い方）。
+//!
 //! 目的: 「直接入力 / IME ON・入力なし / IME ON・入力中」の各状態で、無変換・変換・
 //! ひらがな・英数・カタカナ・半角/全角などのキーを押したとき、GJI の
 //! **IME 開閉**と**変換モード（ひらがな/半角英数など）**がどう変化するかを、
