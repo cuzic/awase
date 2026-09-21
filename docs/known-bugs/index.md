@@ -160,6 +160,7 @@
 | [BUG-156](BUG-156.md) | 予測(KeyEffectPredicted)がbeliefだけを動かしても、awaseの書き込み記録(applied)が古いまま残り、GjiDirectのalready-matched判定が古い記録で書き込みを省く（半角… |
 | [BUG-157](BUG-157.md) | 通過させたモードキーの結果(実IMEの開閉)を desired_open へ採らず、ドリフト補正がユーザーの操作(ひらがなで開いたIME)を閉じ直す |
 | [BUG-158](BUG-158.md) | 通過させたモードキーの直後の読み取りが空振り(MS-IME本体のime_on=None)だと、古い明示意図が残りポーリングが止まったまま次のモードキーまでEngineが固まる |
+| [BUG-159](BUG-159.md) | GJIで英数のまま半角/全角を閉→開すると、awaseが入力モードを英数→ひらがなに直し、Engineだけ ON になる(読めない窓) |
 
 ## その他の資料
 

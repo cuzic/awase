@@ -5278,7 +5278,10 @@ fn key_effect_predicted_event_is_constructed_only_in_apply_key_effect_prediction
 fn key_effect_data_matches_generator() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
     let script = repo.join("tools/e2e/ime_key_matrix/gen_key_effect_table.py");
-    assert!(script.exists(), "生成スクリプトが見つかりません: {script:?}");
+    assert!(
+        script.exists(),
+        "生成スクリプトが見つかりません: {script:?}"
+    );
     let out = match std::process::Command::new("python3")
         .arg(&script)
         .arg("--check")

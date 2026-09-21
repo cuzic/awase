@@ -1484,9 +1484,20 @@ impl Runtime {
         // engine が永久に inactive のままになる（2026-07-06 MS Edge で実発生）。
         // ユーザーが明示的に IME を ON にした時点で IME はひらがなモードで再開する
         // ため、過去の英数観測は stale（eisu guard の保護対象と衝突しない）。
+        //
+        // ただし GJI は閉→開で変換モードを保持する（`docs/adr/191-gji-state-scope-spec.md`、BUG-159）。
+        // 追跡中の変換モードが英数と既知なら、ひらがなに直さず保持した英数のままにする
+        // （`gji_retains_tracked_eisu`。MS-IME 本体は 0x19 へ戻るので従来どおりリセット）。
+        let mode_retained = crate::state::eisu_recovery::gji_retains_tracked_eisu(
+            crate::state::ime_kind::ImeKindId::from(
+                crate::tsf::observer::tsf_obs().active_ime_kind(),
+            ),
+            self.platform_state.ime.model().key_track().conv,
+        );
         if let Some(new_mode) = crate::state::eisu_recovery::eisu_reset_on_ime_on(
             !current && self.platform_state.ime.effective_open(),
             self.platform_state.ime.input_mode(),
+            mode_retained,
         ) {
             // 半角英数持続トグルON中は、通常のObservedEisu→AssumedRomaji書き戻しを
             // スキップしてトグルOFF処理そのものを呼ぶ（E節の理由は上の分岐と同じ）。
@@ -1738,6 +1749,7 @@ impl Runtime {
             if let Some(new_mode) = crate::state::eisu_recovery::eisu_reset_on_ime_on(
                 applied && new_ime_on,
                 self.platform_state.ime.input_mode(),
+                false,
             ) {
                 // 半角英数持続トグルON中は、通常のObservedEisu→AssumedRomaji書き戻しを
                 // スキップしてトグルOFF処理そのものを呼ぶ（E節、shadow_ime_toggle側の
