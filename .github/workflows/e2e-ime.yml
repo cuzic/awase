@@ -68,7 +68,7 @@ jobs:
           # expect: pass=全回PASS / fail=撤去や設定で壊れる(既知の問題を固定) / observe=結果を表に出すだけ(不安定・未確定の観測用)
           # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME)
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
-          # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'dbe_mode_key_policy = "passthrough"'
+          # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
           def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe'):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
                         keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin)
@@ -195,18 +195,18 @@ jobs:
             # ただし MS-IME本体の半角/全角(sc-hz-msime-native-*)は observe: F3=閉/F4=開の静的モデルでGJIのようなトグルではない(ADR-189が対象外にした範囲)。
             # noawase の構成は、それが awase のせいか(MS-IME本体の癖か)を切り分ける対照実験。
             # IME の3通り: msime-native(標準の日本語IME)、gji-msime(GJI + MS-IMEプリセット)、gji-atok(GJI + ATOKプリセット)
-            # dbe_mode_key_policy: suppress(既定、DBEレンジ 英数/カタカナ/半角全角 を握りつぶす) / passthrough(そのまま通す)
+            # 設定 dbe_mode_key_policy(suppress/passthrough)は ADR-191 で撤去した(Passthroughを選んでも挙動が変わらない実質死んだ設定だった)。
+            # 以前の -suppress/-passthrough の2構成は同じ挙動を測るだけなので1構成にした(構成名は sc-dbe-<ime>・sc-hz-<ime>)。
             # half_width_alnum_toggle: 左Shift単独タップで半角英数(持続トグル)。GJIで使うには all が必要。
-            *[cfg(f'sc-dbe-{ime_name}-{pol}', 'pass', check='consistency', ime=ime, keymap=km,
-                  args=f'--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2{msime}',
-                  general=f'dbe_mode_key_policy = "{pol}"')
-              for ime_name, ime, km, msime in SC_IMES for pol in ('suppress', 'passthrough')],
+            *[cfg(f'sc-dbe-{ime_name}', 'pass', check='consistency', ime=ime, keymap=km,
+                  args=f'--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2{msime}')
+              for ime_name, ime, km, msime in SC_IMES],
             *[cfg(f'sc-kanji-{ime_name}', 'pass', check='consistency', ime=ime, keymap=km,
                   args=f'--seq=F2,19,19,16,1A,16,1A,19,F2,1A{msime}')
               for ime_name, ime, km, msime in SC_IMES],
-            *[cfg(f'sc-hz-{ime_name}-{pol}', 'observe' if ime == 'msime' else 'pass', check='toggle', ime=ime, keymap=km,
-                  args=f'--hz{msime}', general=f'dbe_mode_key_policy = "{pol}"')
-              for ime_name, ime, km, msime in SC_IMES for pol in ('suppress', 'passthrough')],
+            *[cfg(f'sc-hz-{ime_name}', 'observe' if ime == 'msime' else 'pass', check='toggle', ime=ime, keymap=km,
+                  args=f'--hz{msime}')
+              for ime_name, ime, km, msime in SC_IMES],
             *[cfg(f'sc-shift-{ime_name}', 'pass', check='consistency', ime=ime, keymap=km,
                   args=f'--seq=F2,A0,A0,A0,A1,F2{msime}', general='half_width_alnum_toggle = "all"')
               for ime_name, ime, km, msime in SC_IMES],
@@ -415,7 +415,7 @@ jobs:
             else { $cfg = $cfg -replace '(?m)^\[general\]\s*$', "[general]`r`n$line" }
           }
           [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
-          Select-String -Path "$PWD\dist\config.toml" -Pattern 'dbe_mode_key_policy|half_width_alnum_toggle'
+          Select-String -Path "$PWD\dist\config.toml" -Pattern 'half_width_alnum_toggle'
           # CIランナーは初回のクロスプロセスIMMプローブが遅く(実測22ms)、awase がスパイク窓を「IMM不可」と誤学習して
           # conv を読まなくなる(Engine が半角英数に追従しない)。学習済みキャッシュを事前投入して防ぐ。
           [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"ime_key_matrix_spike.exe`"]`r`nEdit = `"${{ matrix.cfg.cache }}`"`r`nRICHEDIT50W = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))
