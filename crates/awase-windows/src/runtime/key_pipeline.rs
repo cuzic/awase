@@ -16,7 +16,7 @@ use crate::win32::post_to_main_thread;
 use crate::{Runtime, TIMER_IME_REFRESH, WM_EXECUTE_EFFECTS, WM_KANA_LOCK_WARNING_CHANGED};
 use awase::engine::{Effect, InputEffect, InputModeState, KanaLockStreak, WarnAction};
 use awase::platform::TsfComposition as _;
-use awase::types::{KeyAction, KeyEventType, ModeKeyActuationOwner, RawKeyEvent, ShadowImeAction};
+use awase::types::{KeyAction, KeyEventType, RawKeyEvent, ShadowImeAction};
 
 /// Shadow IME トグルの意図ソース (この pipeline 内のローカル routing 用)。
 #[derive(Debug, Clone, Copy)]
@@ -444,22 +444,6 @@ impl Runtime {
             // パターンで確実に一度だけ再同期する
             // （2026-07-08: GjiFsm が resync できず「このせっけい」の文字欠落に至った実機ログから判明）。
             self.schedule_settle_retry("SetOpen stripped from kp_run_inner decision");
-        }
-        // ADR-179決定2、消費点2: `PhysicalDelivery`のとき`ActivationSync`
-        // 由来のSetOpen effectを取り除く。`shadow_toggled`
-        // （この打鍵自身が実際にIME ON/OFFを変化させたか）を条件に含める
-        // ——`owner`単独条件だと、この打鍵とは無関係な観測駆動のbelief
-        // 変化（`kp_stage_focus_probe`/`kp_stage_idle_conv_check`）に
-        // 起因する`ActivationSync`まで誤って除去してしまう。上のsettle
-        // stripとは異なり`schedule_settle_retry`は呼ばない（恒久的に
-        // awase側からは送らない設計、`strip_activation_sync_set_open_
-        // for_physical_delivery`のdoc参照）。
-        if shadow_toggled
-            && event.ime_relevance.actuation_owner == ModeKeyActuationOwner::PhysicalDelivery
-        {
-            crate::runtime::executor::strip_activation_sync_set_open_for_physical_delivery(
-                &mut decision,
-            );
         }
         let state_after = self.engine.debug_state_label();
         // 配送判断(physical)をここで一度だけ確定させ、KeyInput journal 記録と
@@ -1363,42 +1347,6 @@ impl Runtime {
         // /code-review指摘: 直後の`current`と同じ`effective_open()`を2回
         // 呼んでいた（間に belief を書き換える処理は無い）ため、1回にまとめる。
         let current = self.platform_state.ime.effective_open();
-        // ADR-179決定2: `ModeKeyActuationOwner`を計算する唯一の場所
-        // （`tests/architecture_guard.rs`が書き込み箇所数を1に固定）。
-        // ここでは`event.ime_relevance.sync_direction`/`shadow_action`が
-        // 手元に揃っている。
-        //
-        // `NotAModeKey`と`AwaseExplicit`は3判断とも同一挙動になるが、
-        // 将来ケースが増えたときに区別できるよう分けておく（統合しない、
-        // ADR-179「実装時に固定する」節参照）。
-        let is_target_vk = matches!(
-            event.vk_code,
-            crate::vk::VK_CONVERT | crate::vk::VK_NONCONVERT
-        );
-        let shadow_action_kind = event.ime_relevance.shadow_action;
-        let sync_direction_kind = event.ime_relevance.sync_direction;
-        event.ime_relevance.actuation_owner = if is_target_vk
-            && !crate::gji_charset_autodetect::is_configured_thumb_key(event.vk_code)
-            && matches!(
-                shadow_action_kind,
-                Some(ShadowImeAction::TurnOn | ShadowImeAction::TurnOff)
-            ) {
-            // 主条件（対象VK・On/Off分類・非親指キー設定）を満たす。
-            // `sync_direction`は修飾としてのみ扱う: 方向が食い違う場合は
-            // 保守的に`NotAModeKey`へ倒す（beliefと実IMEが逆方向に乖離し
-            // 恒久固着しうるため、ADR-179「ownerの定義」参照）。
-            match sync_direction_kind {
-                None => ModeKeyActuationOwner::PhysicalDelivery,
-                Some(sync) if Some(sync) == shadow_action_kind => {
-                    ModeKeyActuationOwner::PhysicalDelivery
-                }
-                Some(_) => ModeKeyActuationOwner::NotAModeKey,
-            }
-        } else if sync_direction_kind.is_none() && shadow_action_kind.is_some() {
-            ModeKeyActuationOwner::AwaseExplicit
-        } else {
-            ModeKeyActuationOwner::NotAModeKey
-        };
         // 同期キー (config sync_direction) > 物理 KANJI (Japanese 限定、GJI/
         // MS-IME自動検出由来のshadow_action) > ADR-153決定1の明示config
         // （`explicit_action_for_pipeline`、GJI/MS-IME自動検出とは独立）の
@@ -1579,14 +1527,7 @@ impl Runtime {
         // ため、async に spawn_local + OutputActiveGuard で dispatch する。
         // それ以外 (GjiDirect / MsImeDirect) は SendInput-only で非ブロッキングなので sync。
         //
-        // ADR-179決定2: `PhysicalDelivery`のときはこの明示actuateを一切
-        // 発行しない——実IME状態の変更はGJI/MS-IME自身の物理キー反応に
-        // 委ね、awase側の送信をゼロにする設計。
-        let owner_permits_explicit_off_actuate = !matches!(
-            event.ime_relevance.actuation_owner,
-            ModeKeyActuationOwner::PhysicalDelivery
-        );
-        if !self.platform_state.ime.effective_open() && owner_permits_explicit_off_actuate {
+        if !self.platform_state.ime.effective_open() {
             let view = self.shadow_ime_control_view();
             let imm_first =
                 crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);

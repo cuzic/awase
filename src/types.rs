@@ -162,39 +162,6 @@ impl ShadowImeAction {
     }
 }
 
-/// ADR-179決定2: `shadow_action`由来のintentについて、beliefを書く責務・
-/// 実IMEを変える責務（明示actuate/`ActivationSync`echo）のどちらを
-/// この打鍵が持つかを表す。計算は`kp_stage_shadow_ime_toggle`
-/// （`awase-windows::runtime::key_pipeline`）内1箇所のみ。
-///
-/// **このenumは所有権の唯一のSSOTではない**: `shadow_action`由来の
-/// intentだけをカバーする。explicit config（ADR-153、
-/// `explicit_ime_action_target`/`explicit_ime_action_consumed`）や
-/// 物理配送のSuppress/Allow判定（`transport.rs::plan`）は、この列挙の
-/// 外側で従来どおり独立に決まる。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ModeKeyActuationOwner {
-    /// この打鍵はshadow_action由来のintentを採用していない
-    /// （`sync_direction`/明示configが優先された、またはそもそも
-    /// モードキーではない）。beliefを書くか・明示actuateするか・
-    /// `ActivationSync`を通すか、の3判断とも従来どおりの既存ロジックに
-    /// 委ねる。`Option`で表現せず独立したvariantにする——将来variantが
-    /// 増えても黙って`_`に吸収されず、match網羅性がコンパイル時に効く
-    /// ようにするため。
-    #[default]
-    NotAModeKey,
-    /// awase自身がbelief書き込み・実actuationの両方を行う。静的
-    /// `shadow_action`（Hiragana/Katakana/Alphanumeric/DBE系）、および
-    /// 無変換/変換のToggle分類（非冪等、awaseが唯一の変更主体で
-    /// あるべき）はここに属する。
-    AwaseExplicit,
-    /// beliefはawaseが書くが、実IME状態の変更は物理キー配送により
-    /// GJI/MS-IME自身が行う。awaseは明示actuateも`ActivationSync`の
-    /// 自動echoも一切発行しない。無変換/変換のOn/Off分類（非親指キー
-    /// 設定時）専用。
-    PhysicalDelivery,
-}
-
 /// キーの IME 関連情報（プラットフォーム層が事前分類）
 #[allow(clippy::struct_excessive_bools)]
 // 各フィールドは独立の判定軸を1:1で表現（enum化はwiden/意味混同のリスクを増やす）
@@ -237,9 +204,6 @@ pub struct ImeRelevance {
     /// 常にこのイベント1回限りの値（次のKeyDownでは
     /// `RawKeyEvent::ime_relevance` が新規に構築され直す）。
     pub explicit_ime_action_consumed: bool,
-    /// ADR-179決定2: この打鍵の`shadow_action`由来intentのactuation
-    /// 所有者。`kp_stage_shadow_ime_toggle`内1箇所でのみ書き込む。
-    pub actuation_owner: ModeKeyActuationOwner,
 }
 
 // ── キーイベント ──

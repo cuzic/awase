@@ -187,8 +187,8 @@ use crate::scanmap::scan_to_pos;
 use crate::HookConfig;
 use awase::scanmap::PhysicalPos;
 use awase::types::{
-    ImeRelevance, KeyClassification, KeyEventType, ModeKeyActuationOwner, RawKeyEvent, ScanCode,
-    ShadowImeAction, Timestamp, VkCode,
+    ImeRelevance, KeyClassification, KeyEventType, RawKeyEvent, ScanCode, ShadowImeAction,
+    Timestamp, VkCode,
 };
 
 /// Windows VK + ScanCode からキー分類と物理位置を生成する
@@ -308,9 +308,6 @@ pub fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
         explicit_ime_action_consumed: false,
         // ADR-154: kp_stage_shadow_ime_toggleが実際にbeliefをOFF→ONへ動かした
         // 打鍵についてのみ後から立てるマーカー。分類の時点では常にfalse。
-        // ADR-179決定2: kp_stage_shadow_ime_toggle内1箇所でのみ書き込む。
-        // 分類の時点では常にNotAModeKey（既定値）。
-        actuation_owner: ModeKeyActuationOwner::default(),
     }
 }
 
