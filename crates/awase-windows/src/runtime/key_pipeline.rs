@@ -1876,6 +1876,15 @@ impl Runtime {
         {
             return;
         }
+        // 修飾キー付き（Shift+無変換/変換 = ATOK ではかな⇔半角英数で開閉を変えない、ADR-186 残る問題2 等）は
+        // 通過マークを立てない。立てると観測の直後に明示意図を捨て、desired を観測へ書き換える
+        // （予測側の `kp_stage_key_effect_track` と同じ判定。レビュー round2 A-N3。両方の合流点に効かせる）。
+        let m = event.modifier_snapshot;
+        if crate::state::key_effect_table::modifiers_suppress_prediction(
+            true, m.ctrl, m.alt, m.shift, m.win,
+        ) {
+            return;
+        }
         let now = hook::current_tick_ms();
         self.platform_state.ime.arm_mode_key_pass_mark(now);
         self.schedule_ime_refresh(20);

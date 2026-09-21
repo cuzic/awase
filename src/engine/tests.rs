@@ -7283,6 +7283,34 @@ mod engine_integration_tests {
         );
     }
 
+    /// ADR-186 残る問題2（レビュー round2 C-N1）: Shift を押したままの無変換/変換は、GJI(ATOK)では
+    /// 「かな⇔半角英数」のトグルで開閉トグルではない（実機で確認）。明示config `muhenkan_solo_tap_ime_action`
+    /// を持つユーザーでも、Shift 押下中は単独タップとして扱わず（→`SetOpen`を発火させず）素通しにする。
+    /// Shift なしなら従来どおり明示configが発火する（対照）。
+    #[test]
+    fn muhenkan_solo_tap_ime_action_not_fired_when_shift_held() {
+        let mut engine = make_test_engine_with_muhenkan_solo_tap_turn_off();
+        let shift_ctx = InputContext {
+            modifiers: ModifierState {
+                shift: true,
+                ..ime_on_ctx().modifiers
+            },
+            ..ime_on_ctx()
+        };
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &shift_ctx);
+        assert!(
+            !d.is_consumed(),
+            "Shift+無変換は保留に入れず素通しにするべき, got {:?}",
+            effects_of(&d)
+        );
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(300).build(), &shift_ctx);
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
+            "Shift+無変換のKeyUpで明示configのSetOpenを発火してはならない, got {:?}",
+            effects_of(&d)
+        );
+    }
+
     /// 無変換が物理的に押下中（`PendingThumb`、まだ単独タップ確定前）に
     /// `EngineCommand::ToggleEngine` が届くと、`toggle_enabled()` 内部の flush が
     /// `ThumbRawVkEmission::Allowed` で保留キーを強制的に単独タップ確定させ、

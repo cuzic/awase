@@ -1415,8 +1415,29 @@ impl NicolaFsm {
             && matches!(self.enter_thumb_vk, Some(vk) if vk.0 == ev.vk_code.0)
     }
 
+    /// Shift を押したまま、単独タップの明示config（`*_solo_tap_ime_action`）を持つ無変換/変換を押した場合は、
+    /// 保留にも明示configにも入れず素通しにすべきかを判定する（ADR-186 残る問題2、レビュー round2 C-N1）。
+    ///
+    /// GJI(ATOK)の Shift+無変換/変換 は「かな⇔半角英数」のトグルで、開閉トグルではない。これを単独タップ
+    /// として扱うと、KeyUp で明示config（例: `"off"`）の `SetOpen(false)` が発火し、意図せず IME が OFF になる
+    /// （実機で確認）。`is_os_modifier_held` は Shift を含まない（親指シフト面のため）ので `OsModifierHeld`
+    /// にも落ちない。撤去した `delegate_to_open_axis` 版の同名ガードの、明示configへの付け替え。
+    /// 明示configを持たない無変換/変換（＝親指シフトキーとして使う通常の構成）には影響しない。
+    fn is_mode_key_thumb_shift_passthrough(&self, ev: &ClassifiedEvent) -> bool {
+        self.phys.modifiers.shift
+            && ev.key_class.is_thumb()
+            && self
+                .thumb_solo_special_handling(ev.vk_code)
+                .explicit_ime_action
+                .is_some()
+    }
+
     /// Idle 状態でのキー到着時の意図を分類する（純粋関数）。
     fn classify_idle_intent(&self, ev: &ClassifiedEvent) -> IdleIntent {
+        // Shift+無変換/変換: GJI ではかな⇔半角英数トグル。明示configの開閉に化けさせない（ADR-186）。
+        if self.is_mode_key_thumb_shift_passthrough(ev) {
+            return IdleIntent::PassThrough;
+        }
         // Shift+Space literal: 明示的なスペース入力のエスケープハッチ（最優先）。
         if self.is_space_thumb_shift_literal(ev) {
             return IdleIntent::PassThrough;
