@@ -192,6 +192,8 @@
 | [188](188-tsfnative-conv-only-mode-key-engine-follow.md) | Chrome等(Imm32Unavailable/TsfNative)で、convだけを変えるモードキー(ひらがな、Shift+無変換)の後にEngineを追随させる(モードキー後の遅延conv読み取り、実機A/Bで4案を比較) | 別セッション(BUG-149)。詳細はADR本文 |
 | [189](189-gji-hankaku-zenkaku-belief-toggle.md) | GJIの半角/全角キー(0xF3/0xF4)をVKで方向を決め打たず、beliefに基づく開閉トグルとしてawaseがactuateする(同じVKの連続で反転しない問題、CI `--hz`で4/8手順) | **決定・実装済み(未マージ)・CI検証済み** |
 | [190](190-msime-immcross-failure-fallback-idempotent-vk-ime-on.md) | Microsoft IMEでImmCrossが失敗したとき、非冪等なVK_KANJIトグルでなく冪等なVK_IME_ON/OFF(MsImeDirect)へフォールバックする(BUG-152) | **実装済み(未マージ)・CI実機E2E検証済み**。opus round1〜3で収束+KanjiToggle撤去。windows-build CI・実機未。CI(a8/a9)検証済み、実機未 |
+||||||| 1751a08f
+| [191](191-ime-is-source-of-truth-observe-not-write.md) | IMEの状態はIME自身を正とし、awaseは書き込まず観測に追随する（設計転換）。キー効果は注入で学習・検証、成功基準は撤去量 | 草案（未レビュー） |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
