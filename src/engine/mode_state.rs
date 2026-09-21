@@ -33,6 +33,9 @@ pub enum AssumedReason {
     /// awase 自身が VK_DBE_HIRAGANA 注入 + conv 復元 write でかな入力へ戻した
     /// 直後の仮定値（後続の観測が再確認・再訂正する）。
     UserHalfWidthAlnumToggleOff,
+    /// 物理モードキーの打鍵時点で、キーマップの表から予測した入力モード（ADR-191 決定3）。
+    /// 観測ではない。settle 後の観測が確認・訂正する（読めないアプリでは予測が残る）。
+    KeyEffectPrediction,
 }
 
 impl InputModeState {
