@@ -1116,12 +1116,6 @@ pub(super) fn run_all() -> Result<()> {
             config.general.henkan_solo_tap_always_suppress,
         ),
     );
-    let (hiragana_vk, katakana_vk) =
-        crate::gji_charset_autodetect::resolve_hiragana_katakana_thumb_vks(
-            left_thumb_vk,
-            right_thumb_vk,
-        );
-    engine.set_hiragana_katakana_thumb_key_config(hiragana_vk, katakana_vk);
 
     // 同様に、left/right のいずれかが Enter に割り当てられている場合、その VK を
     // 伝える（config.rs の enter_thumb_ignore_composing_guard/enter_thumb_shift_literal

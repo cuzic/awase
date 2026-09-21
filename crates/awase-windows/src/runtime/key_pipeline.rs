@@ -1377,7 +1377,8 @@ impl Runtime {
         // しない」状態を作り、IME OFFからひらがな/カタカナ親指キーで
         // 復帰できなくなる（BUG-115の元症状そのものの再現、観測できない
         // アプリ——UWP等——では恒久的に固着する）。
-        let delegate_armed = self.mode_key_delegate_owns_shadow_toggle(event.vk_code);
+        // ADR-191: 単独タップの代行(delegate)は撤去した。所有権判定は常に「所有しない」（掃除は別コミット）。
+        let delegate_armed = false;
         // /code-review指摘: 直後の`current`と同じ`effective_open()`を2回
         // 呼んでいた（間に belief を書き換える処理は無い）ため、1回にまとめる。
         let current = self.platform_state.ime.effective_open();
@@ -1584,29 +1585,7 @@ impl Runtime {
             // 方向判定は実際に発火する方向（FSM delegateの配線先）を
             // 見なければ、TurnOff方向のdelegateなのにTurnOn向けのeisu
             // 救済を誤って走らせてしまう。
-            let turn_on_direction = if delegate_owned {
-                match event.vk_code {
-                    vk if vk == crate::vk::VK_DBE_HIRAGANA => {
-                        self.engine.hiragana_delegate_to_open_axis()
-                    }
-                    vk if vk == crate::vk::VK_DBE_KATAKANA => {
-                        self.engine.katakana_delegate_to_open_axis()
-                    }
-                    // ADR-141: 無変換/変換もHiragana/Katakanaと対称に、
-                    // 実際に発火するdelegateの配線先を見る（CUSTOM keymap
-                    // でOff/Toggleに配線されている場合もあるため、VKの
-                    // 固定ハードウェア分類=actionをそのまま使ってはならない、
-                    // 上のコメント参照）。
-                    vk if vk == crate::vk::VK_CONVERT => self.engine.henkan_delegate_to_open_axis(),
-                    vk if vk == crate::vk::VK_NONCONVERT => {
-                        self.engine.muhenkan_delegate_to_open_axis()
-                    }
-                    _ => None,
-                }
-                .unwrap_or(action)
-            } else {
-                action
-            };
+            let turn_on_direction = action;
             if let Some(new_mode) = crate::state::eisu_recovery::eisu_reset_on_turn_on_while_open(
                 matches!(turn_on_direction, ShadowImeAction::TurnOn),
                 self.platform_state.ime.input_mode(),

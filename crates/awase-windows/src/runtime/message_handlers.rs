@@ -886,91 +886,8 @@ pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
     let skip_shift_space = app.space_is_thumb_key();
     app.engine
         .set_ime_toggle_auto_keys(toggle_assignment.to_combos(skip_shift_space));
-
-    let delegate_assignment =
-        crate::msime_key_assignment::read_delegate_to_open_axis_assignment_from_registry();
-    tracing::info!("[msime-keyassign] delegate-to-open-axis assignment: {delegate_assignment:?}");
-    // ADR-176決定5（176-T4）: 確定済み較正結果があれば、レジストリ由来の
-    // 分類そのものを差し替える。GJI側（gji_charset_autodetect.rs、176-T3）と
-    // 同じapply_calibration_overrideを使う——型は`ShadowImeAction`と
-    // `ImeToggleKind`を相互変換して合わせる（同型3値、
-    // `shadow_action_to_ime_toggle_kind`/`ime_toggle_kind_to_shadow_action_direct`
-    // 参照）。下記`mask_auto_detect_for_explicit_config`より前に置くことで、
-    // 較正結果も明示config設定済みキーではmaskされる（176-T5と整合）。
-    // 176-T12: 現在のレジストリ内容に対してstaleな較正結果はfresh_or_noneで
-    // 「較正結果なし」に落とし、静的分類へフォールバックさせる
-    // （GJI側と同じ`fresh_or_none`、フィンガープリントはレジストリの生値
-    // ハッシュ、`msime_key_assignment::current_registry_fingerprint_hash`）。
-    let muhenkan_fingerprint = crate::state::calibrated_mode_key::ConfigFingerprint::MsIme {
-        registry_value_hash: crate::msime_key_assignment::current_registry_fingerprint_hash(
-            crate::vk::VK_NONCONVERT,
-        ),
-    };
-    let henkan_fingerprint = crate::state::calibrated_mode_key::ConfigFingerprint::MsIme {
-        registry_value_hash: crate::msime_key_assignment::current_registry_fingerprint_hash(
-            crate::vk::VK_CONVERT,
-        ),
-    };
-    let delegate_assignment = crate::msime_key_assignment::MsImeDelegateToOpenAxisAssignment {
-        muhenkan: crate::state::calibrated_mode_key::apply_calibration_override(
-            delegate_assignment
-                .muhenkan
-                .map(crate::gji_charset_autodetect::shadow_action_to_ime_toggle_kind),
-            crate::state::calibrated_mode_key::fresh_or_none(
-                app.calibrated_mode_key_for(crate::vk::VK_NONCONVERT),
-                &muhenkan_fingerprint,
-            ),
-        )
-        .map(crate::gji_charset_autodetect::ime_toggle_kind_to_shadow_action_direct),
-        henkan: crate::state::calibrated_mode_key::apply_calibration_override(
-            delegate_assignment
-                .henkan
-                .map(crate::gji_charset_autodetect::shadow_action_to_ime_toggle_kind),
-            crate::state::calibrated_mode_key::fresh_or_none(
-                app.calibrated_mode_key_for(crate::vk::VK_CONVERT),
-                &henkan_fingerprint,
-            ),
-        )
-        .map(crate::gji_charset_autodetect::ime_toggle_kind_to_shadow_action_direct),
-    };
-    // ADR-153 決定1 M15対策: 明示config設定済みキーにはレジストリ由来の
-    // delegateもarmedにしない（下記shadow_overrideと同じ理由）。
-    let muhenkan_delegate = super::mask_auto_detect_for_explicit_config(
-        delegate_assignment.muhenkan,
-        app.muhenkan_solo_tap_ime_action(),
-    );
-    let henkan_delegate = super::mask_auto_detect_for_explicit_config(
-        delegate_assignment.henkan,
-        app.henkan_solo_tap_ime_action(),
-    );
-    app.engine
-        .set_muhenkan_delegate_to_open_axis(muhenkan_delegate);
-    app.engine.set_henkan_delegate_to_open_axis(henkan_delegate);
-    // ADR-141（C2対策）: delegateと同じ値をshadow_action overrideにも
-    // 反映する。GJI側の`sync_gji_charset_autodetect`と同じ共有フィールド
-    // （`Runtime::henkan_shadow_override`/`muhenkan_shadow_override`）に
-    // 書き込むため、GJI→MS-IME遷移時はこの呼び出しが必ず後から上書きする
-    // （`sync_ime_kind_from_observation`がGJI側を先に呼ぶ順序、既存の
-    // delegate-to-open-axisと同じ順序依存）。
-    //
-    // ADR-179決定1: かつてはGJI側の`route_thumb_key_action`と対称に
-    // `is_thumb_key`のときだけoverrideへ値を渡していた（非親指キーの場合
-    // 無条件に渡すと、`kp_stage_shadow_ime_toggle`が能動actuateする一方
-    // `transport.rs::plan`のfollow-only例外で物理キーもOSへ届き、
-    // BUG-46型の二重actuationになっていたため）。この二重actuationは
-    // `ModeKeyActuationOwner::PhysicalDelivery`（非親指キー配置の
-    // 無変換/変換On/Off分類時、明示actuateも`ActivationSync`echoも
-    // 一切発行しない）が構造的に防ぐようになったため、is_thumb_keyの
-    // ゲートは不要になった——GJI側と対称に常に渡す。
-    let henkan_override = super::mask_auto_detect_for_explicit_config(
-        delegate_assignment.henkan,
-        app.henkan_solo_tap_ime_action(),
-    );
-    let muhenkan_override = super::mask_auto_detect_for_explicit_config(
-        delegate_assignment.muhenkan,
-        app.muhenkan_solo_tap_ime_action(),
-    );
-    app.set_thumb_key_shadow_overrides(henkan_override, muhenkan_override);
+    // ADR-191: 無変換/変換の単独タップの代行（delegate）とshadow_action overrideは撤去した。
+    // MS-IMEのレジストリ由来の割り当ては、IMEが自身で処理する（awaseは書き込まず観測に追随する）。
 }
 
 /// IME 種別を観測値から pull し、warmup 戦略切替 + MS-IME 割当てチェックに反映する。
@@ -1023,14 +940,8 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
     // ため2026-09-02に全撤去した（未実装の再検討はADR-091追補参照）。
     // `muhenkan_solo_tap_dedicated_fn_key` の手動設定（config.toml）による
     // 内部配線は残っている。
-    crate::gji_charset_autodetect::sync_gji_charset_autodetect(
-        app,
-        detected
-            && matches!(
-                kind,
-                crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
-            ),
-    );
+    // ADR-191: GJI検出時にconfig1.dbから無変換/変換/ひらがな/カタカナの意味論を自動判定して
+    // awase自身が代行・上書きする経路は撤去した（GJIの設定どおりにGJI自身が動く）。
 
     // MS-IME と確定したら、無変換/変換キーの IME オン/オフ割り当て（awase と
     // 競合し belief 乖離を起こす）をチェックして解除を案内する

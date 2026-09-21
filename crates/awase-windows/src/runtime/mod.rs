@@ -1207,53 +1207,6 @@ impl Runtime {
         }
     }
 
-    /// `gji_charset_autodetect`の`classify_thumb_key_ime_actions`/
-    /// `gate_thumb_key_ime_actions`（BUG-115）が導出した、無変換/変換キーが
-    /// 親指キーの場合のIME open 軸への肩代わりを`Engine`へ反映する
-    /// 入口。MS-IME側の`sync_ime_toggle_auto_detect`（レジストリ由来）と
-    /// 同じ`set_muhenkan/henkan_delegate_to_open_axis`APIを共有するため、
-    /// GJI→MS-IME遷移時はMS-IME側の値が必ず後から上書きする
-    /// （`message_handlers.rs`の呼び出し順序参照）。
-    pub(crate) fn set_gji_thumb_key_delegate_to_open_axis(
-        &mut self,
-        henkan: Option<awase::types::ShadowImeAction>,
-        muhenkan: Option<awase::types::ShadowImeAction>,
-    ) {
-        self.engine.set_henkan_delegate_to_open_axis(henkan);
-        self.engine.set_muhenkan_delegate_to_open_axis(muhenkan);
-    }
-
-    pub(crate) fn set_gji_mode_key_shadow_overrides(
-        &mut self,
-        hiragana: Option<awase::types::ShadowImeAction>,
-        katakana: Option<awase::types::ShadowImeAction>,
-    ) {
-        self.gji_hiragana_shadow_override = hiragana;
-        self.gji_katakana_shadow_override = katakana;
-    }
-
-    pub(crate) fn set_gji_mode_key_delegate_to_open_axis(
-        &mut self,
-        hiragana: Option<awase::types::ShadowImeAction>,
-        katakana: Option<awase::types::ShadowImeAction>,
-    ) {
-        self.engine.set_hiragana_delegate_to_open_axis(hiragana);
-        self.engine.set_katakana_delegate_to_open_axis(katakana);
-    }
-
-    /// ADR-141: 無変換/変換の shadow_action override を設定する。GJI
-    /// （`sync_gji_charset_autodetect`）と MS-IME（`sync_ime_toggle_auto_
-    /// detect`）の両方から共通で呼ばれる（`gji_`接頭辞を付けない理由は
-    /// フィールドのdoc参照）。
-    pub(crate) fn set_thumb_key_shadow_overrides(
-        &mut self,
-        henkan: Option<awase::types::ShadowImeAction>,
-        muhenkan: Option<awase::types::ShadowImeAction>,
-    ) {
-        self.henkan_shadow_override = henkan;
-        self.muhenkan_shadow_override = muhenkan;
-    }
-
     /// GJI継続区間の判定済みラッチを`checked`に更新し、更新前の値を返す
     /// （ADR-164フェーズ1、旧`LAST_GJI_STREAK_CHECKED`のswap操作に対応）。
     pub(crate) fn swap_gji_charset_streak_checked(&mut self, checked: bool) -> bool {
@@ -1299,22 +1252,6 @@ impl Runtime {
     /// 戻す（ADR-164フェーズ2、旧`LAST_WARNED`のstore(NOT_WARNED)に対応）。
     pub(crate) fn reset_msime_key_assignment_warned(&mut self) {
         self.msime_key_assignment_warned = None;
-    }
-
-    #[must_use]
-    pub(crate) fn mode_key_delegate_owns_shadow_toggle(&self, vk: VkCode) -> bool {
-        // 親指キー判定は`gji_charset_autodetect::is_configured_thumb_key`と
-        // 共有し、`hook::thumb_vk_codes()`の展開を2箇所で重複させない
-        // （/code-review指摘）。
-        crate::gji_charset_autodetect::delegate_owns_mode_key_shadow_toggle(
-            vk,
-            crate::gji_charset_autodetect::is_configured_thumb_key(vk),
-            self.engine.hiragana_delegate_to_open_axis(),
-            self.engine.katakana_delegate_to_open_axis(),
-            self.engine.henkan_delegate_to_open_axis(),
-            self.engine.muhenkan_delegate_to_open_axis(),
-            self.muhenkan_dedicated_fn_key_configured(),
-        )
     }
 
     /// `muhenkan_solo_tap_dedicated_fn_key`（config.tomlによる手動設定）が
@@ -1666,10 +1603,6 @@ impl Runtime {
                     config.general.henkan_solo_tap_always_suppress,
                 ),
             );
-            let (hiragana_vk, katakana_vk) =
-                crate::gji_charset_autodetect::resolve_hiragana_katakana_thumb_vks(left, right);
-            self.engine
-                .set_hiragana_katakana_thumb_key_config(hiragana_vk, katakana_vk);
             let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
             self.set_muhenkan_dedicated_fn_key_config(resolve_dedicated_fn_key(manual_fn_key));
             // ADR-153 決定1: ユーザー明示config。config.toml 由来のため毎回の
