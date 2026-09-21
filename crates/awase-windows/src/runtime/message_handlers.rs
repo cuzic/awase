@@ -2111,6 +2111,21 @@ mod tests {
         }
     }
 
+    /// 欠番になった符号(旧 `FallbackSent` = 1、ADR-190)や未知値は、apply を行わない
+    /// 安全側の `UnsafeToToggle` に倒れること。番号を詰めると全 outcome がこの値に
+    /// 化けるので、欠番のまま残す規則をここで固定する。
+    #[test]
+    fn retired_or_unknown_outcome_codes_decode_to_unsafe_to_toggle() {
+        assert_eq!(
+            super::decode_outcome(1),
+            super::ImeOpenOutcome::UnsafeToToggle
+        );
+        assert_eq!(
+            super::decode_outcome(99),
+            super::ImeOpenOutcome::UnsafeToToggle
+        );
+    }
+
     #[test]
     fn drain_pending_reentrant_request_is_recovered_by_next_handler() {
         super::drain_pending_test_api::reset();

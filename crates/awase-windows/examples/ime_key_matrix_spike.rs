@@ -801,7 +801,11 @@ static SEQ_TABLE: std::sync::OnceLock<Vec<(&'static str, u32, bool, &'static str
 
 fn parse_seq(arg: &str) -> Vec<(&'static str, u32, bool, &'static str, St)> {
     arg.split(',')
-        .filter_map(|t| u32::from_str_radix(t.trim().trim_start_matches("0x"), 16).ok())
+        .map(|t| {
+            // 打ち間違いを黙って捨てると手順が短くなり、それでもPASSしうる。即エラーにする。
+            u32::from_str_radix(t.trim().trim_start_matches("0x"), 16)
+                .unwrap_or_else(|_| panic!("--seq のVKが16進数でない: {t:?} (全体: {arg:?})"))
+        })
         .map(|vk| {
             (
                 key_name(vk).unwrap_or("キー"),
