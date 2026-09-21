@@ -4510,7 +4510,7 @@ fn half_width_alnum_toggle_policy_is_wired_at_bootstrap_and_reload() {
     );
 }
 
-/// ADR-191: `dbe_mode_key_policy = Suppress` が握りつぶすのは「awase が実際に書くキー」だけ
+/// ADR-191: `plan()` の DBE 分岐が KeyDown を無条件に握りつぶすのは「awase が実際に書くキー」だけ
 /// （`ImeKeyKind::is_open_toggle_for`、GJI・MS-IME本体の半角/全角）であること、および
 /// BUG-116/ADR-137 決定2 の安全ガードが本番コードから消えていないことを固定する。
 /// `transport.rs::plan_tests` / `key_pipeline.rs` 内のユニットテストは
@@ -4533,6 +4533,9 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
         "VK_DBE_KATAKANA",
         "fn shift_katakana_passthrough",
         "DbeModeKeyContext",
+        // 設定 `dbe_mode_key_policy` は撤去済み（Passthrough が実質死んでいたため、B-M3）。
+        // 復活させるなら 0xF3/0xF4 の `shadow_toggled` Suppress との関係を決め直すこと。
+        "DbeModeKeyPolicy",
     ] {
         assert!(
             !transport.contains(token),

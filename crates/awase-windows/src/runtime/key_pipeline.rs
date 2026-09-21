@@ -479,7 +479,6 @@ impl Runtime {
             self.platform.is_tsf_mode(),
             self.platform.output.f2_warmup_owned(),
             active_ime_kind,
-            self.dbe_mode_key_policy,
         );
         // BUG-116/ADR-137 決定2: `plan()` が Suppress と判定した物理かなキーの
         // 埋め合わせ。`kp_stage_execute`（下記）より前で評価すること

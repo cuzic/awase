@@ -240,12 +240,6 @@ pub struct Runtime {
     last_ime_read_ok: bool,
     /// Microsoft IME本体用（レジストリのキー割り当ての版で読み直す。GJIの`key_effect_keymap`とは別のキャッシュ）。
     key_effect_keymap_native: crate::state::key_effect_table::KeymapCache,
-    /// BUG-52 の DBE レンジ Suppress（`VK_DBE_ALPHANUMERIC`/`KATAKANA`/
-    /// `SBCSCHAR`/`DBCSCHAR`）を無条件のままにするか、パススルーを許すか。
-    /// `config.general.dbe_mode_key_policy` から `apply_config_update`/起動時の
-    /// `set_dbe_mode_key_policy` で反映される（ADR-091 §D3.6、既定は `Suppress`
-    /// で現状維持）。`PhysicalKeyDisposition::plan` が参照する。
-    dbe_mode_key_policy: awase::config::DbeModeKeyPolicy,
     /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091
     /// §D3.2、config.toml による手動設定のみ）が現在有効なら、その vk。
     /// `recompute_active_keymaps` が `[[keymap]]` との衝突チェックに使う
@@ -1108,7 +1102,6 @@ impl Runtime {
             key_effect_keymap: crate::state::key_effect_table::KeymapCache::default(),
             last_ime_read_ok: true,
             key_effect_keymap_native: crate::state::key_effect_table::KeymapCache::default(),
-            dbe_mode_key_policy: awase::config::DbeModeKeyPolicy::default(),
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
             calibration_bypass_deadline: None,
@@ -1135,13 +1128,6 @@ impl Runtime {
 
     pub(crate) const fn set_update_check_enabled(&mut self, enabled: bool) {
         self.update_check_enabled = enabled;
-    }
-
-    /// `config.general.dbe_mode_key_policy` を反映する。起動時
-    /// （`bootstrap.rs`、`conv_mode.set_policy` と同じ post-construction 経路）と
-    /// `apply_config_update`（reload 時）の両方から呼ぶ。
-    pub(crate) fn set_dbe_mode_key_policy(&mut self, policy: awase::config::DbeModeKeyPolicy) {
-        self.dbe_mode_key_policy = policy;
     }
 
     /// `config.general.half_width_alnum_toggle` を反映する。起動時と reload 時の
@@ -1373,7 +1359,6 @@ impl Runtime {
         self.platform_state.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
         self.set_keyboard_model(config.general.keyboard_model);
         self.set_update_check_enabled(config.general.update_check);
-        self.set_dbe_mode_key_policy(config.general.dbe_mode_key_policy);
         self.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,

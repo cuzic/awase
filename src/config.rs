@@ -23,43 +23,6 @@ use crate::types::VkCode;
 // (scanmap の JIS/US テーブル分離・layout/nicola_us.yab 追加) と合わせて
 // 実際に配線した上で再導入した。旧 config.toml の "jis"/"us" はそのまま解釈される。
 
-/// BUG-52 の「DBE レンジ」キーをパススルーしてよいかどうか（隠し設定、上級者向け）。
-///
-/// **対象は、awase が beliefに基づく開閉トグルとして書く半角/全角
-/// （`VK_DBE_SBCSCHAR` / `VK_DBE_DBCSCHAR`、GJI・MS-IME本体の両方、ADR-189/191）だけ**
-/// （`crates/awase-windows/src/runtime/transport.rs`）。awase が書かない英数
-/// （`VK_DBE_ALPHANUMERIC`）・カタカナ（`VK_DBE_KATAKANA`）・ひらがな（`VK_DBE_HIRAGANA`）は、
-/// この設定に関わらず常に IME へ素通しされる（ADR-191、BUG-153）。
-///
-/// `VK_DBE_HIRAGANA`（かな入力キー本来の VK、F2 warmup 関連）はこの設定の
-/// 対象外（別分岐で処理される、`transport.rs` 参照）。
-///
-/// 素のパススルーは、MS-IME の既定キー割当て（無変換単独打鍵→かな切替相当）や
-/// OS 側キーボードレイアウト変換層の状態依存トグル（物理「IME ON」キーが
-/// `VK_DBE_HIRAGANA` の代わりに `VK_DBE_KATAKANA` を生成することがある）に
-/// 横取りされ、awase の管理外で IME モードが切り替わるリスクがある
-/// （2026-08-05 実機、`docs/known-bugs.md` BUG-52）。既定値は `Suppress`
-/// （常に抑制、現状維持）。
-///
-/// **`Passthrough` が実際に緩めるのは限定的**: `shadow_toggle` が発火した
-/// KeyDown（awase 自身が意図した切替）と全 KeyUp は `Passthrough` でも
-/// 引き続き Suppress される（`transport.rs::plan` 参照）。緩むのは
-/// `shadow_toggle` 不発の KeyDown（＝ IME が既に目的の状態にあるのに OS が
-/// 状態依存で `VK_DBE_*` を誤生成したケース、BUG-52 の再現条件そのもの）に
-/// 限られる。また `ImmCross` プロファイル（LINE/Qt 等）では `plan` が
-/// この判定に到達する前に別分岐で Suppress を決定するため、この設定は
-/// そもそも無視される。[ADR-091](../docs/adr/091-idempotent-charset-axis-gji-recommended-msime-self-responsibility.md)
-/// §D3.6 参照。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum DbeModeKeyPolicy {
-    /// 常に抑制する（OS に一切送出しない、従来動作）。
-    #[default]
-    Suppress,
-    /// 素の VK をパススルーする（BUG-52 のリスクを引き受ける、上級者向け）。
-    Passthrough,
-}
-
 /// 打鍵列機能（`.yab` の `CtrlChord`/`InlineSequence`/`MacroRef`）を有効化するか。
 ///
 /// ADR-115 決定8は既定 `Off` だったが、2026-09-13 に既定 `On` へ変更した
@@ -325,10 +288,6 @@ pub struct GeneralConfig {
     /// [ADR-091](../docs/adr/091-idempotent-charset-axis-gji-recommended-msime-self-responsibility.md)
     /// §D3.2 参照。
     pub muhenkan_solo_tap_dedicated_fn_key: Option<String>,
-    /// BUG-52 の DBE レンジ Suppress（awase が書く半角/全角 `SBCSCHAR`/`DBCSCHAR` だけ。
-    /// 英数・カタカナ・ひらがなは対象外で常に素通し）を無条件抑制のままにするか、
-    /// パススルーを許すか（隠し設定、上級者向け）。既定値・リスクは [`DbeModeKeyPolicy`] 参照。
-    pub dbe_mode_key_policy: DbeModeKeyPolicy,
     /// 左Shift単独タップによる「IME-ON 半角英数」持続トグルの許可範囲。
     ///
     /// 既定 `ms_ime_only` は従来動作を維持する。設定GUI（上級者向け設定）
@@ -465,7 +424,6 @@ impl Default for GeneralConfig {
             muhenkan_solo_tap_ignore_composing_guard: false,
             muhenkan_solo_tap_always_suppress: true,
             muhenkan_solo_tap_dedicated_fn_key: None,
-            dbe_mode_key_policy: DbeModeKeyPolicy::Suppress,
             half_width_alnum_toggle: HalfWidthAlnumTogglePolicy::MsImeOnly,
             keystroke_sequence: KeystrokeSequencePolicy::On,
             henkan_solo_tap_ignore_composing_guard: false,
@@ -2217,6 +2175,21 @@ ime_toggle = []
         let toml_str = r#"
 [general]
 apply_calibrated_mode_keys = true
+left_thumb_key = "無変換"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).expect("旧キーが残っていても読める");
+        assert_eq!(config.general.left_thumb_key, "無変換");
+    }
+
+    /// ADR-191で`dbe_mode_key_policy`（BUG-52のDBEキー Suppress を外す隠し設定）と
+    /// `gji_thumb_key_ime_toggle`を撤去した（レビュー指摘B-M3）。旧`config.toml`にキーが残っていても、
+    /// 読み込みエラーにも警告にもならず、無視されて他の設定が読める。
+    #[test]
+    fn test_removed_dbe_mode_key_policy_and_gji_thumb_key_ime_toggle_are_ignored_on_load() {
+        let toml_str = r#"
+[general]
+dbe_mode_key_policy = "passthrough"
+gji_thumb_key_ime_toggle = true
 left_thumb_key = "無変換"
 "#;
         let config: AppConfig = toml::from_str(toml_str).expect("旧キーが残っていても読める");
