@@ -307,8 +307,8 @@ P50=1ms・P95=34ms（10件、通知が来なかったキーは6/16=38%）。GJI�
 - 撤去に数えないもの: `classify_mode_key_ime_action`（表生成側へ移設されるだけ）、`ModeKeyConfig`/`muhenkan_solo_tap_dedicated_fn_key`（ユーザー設定で表とは別軸。決定6）。
 - **決定の依存順（round4 QM2、循環の解消）**: 予測表（決定3）→ 書き込みの線引き（決定1、分類a〜eは表から引く）→ 撤去（決定5・6）。表が無い・非決定のセルは「書かずに追随」で動くので、**撤去は表の完成を待たずに先行してよい**
   （例外の一般化は後から足す）。実際の順序: 撤去ブランチは、生成した表（格子第3版）と打鍵時予測を含めて実装済み。
-- **複雑性の収支（実数、2026-09-21、`git diff --shortstat origin/develop...origin/feat/adr191-remove-hardcoded-mode-keys`）**: 全体43ファイル、+3,977/−4,519行。`crates`と`src`だけで+2,368/−4,461行（差し引き−2,093行、
-  うち`crates/awase-windows/src`は+2,244/−2,872）。
+- **複雑性の収支（実数、2026-09-21、`git diff --shortstat origin/develop...origin/feat/adr191-remove-hardcoded-mode-keys`）**: 全体47ファイル、+3,481/−4,630行（`develop`のmerge後、2026-09-21のPR時点）。`crates`と`src`だけで+2,524/−4,470行（差し引き−1,946行、
+  うち`crates/awase-windows/src`は+2,397/−2,880）。
   | 区分 | 行数 | 戻ってくるか |
   |---|---|---|
   | 削除: `gji_charset_autodetect.rs` | −1,301（+35） | **決定3(a)が再実装する対象**（`config1.db`/Mozcキーマップの読み取り）。現状の表は格子の生成データで、実行時の設定読み取りは未実装（製品化で新規に作る。再実装は分類a〜eに要る最小の範囲に限る） |
@@ -317,7 +317,7 @@ P50=1ms・P95=34ms（10件、通知が来なかったキーは6/16=38%）。GJI�
   | 追加: 予測器`key_effect_table.rs` | +828 | 決定3の本体 |
   | 追加: 生成データ`key_effect_data.rs` | +336 | 格子の生成物（手書きセルは無い） |
   | 追加: `ime_model.rs`（`KeyEffectPredicted`・追跡・fence）＋`platform_state.rs` | +440＋84 | 決定3の本体 |
-  | 別クレート: `awase-calibration`（巡回・シミュレータ。改名作業中） | +3,406（`crates/awase-windows/src`の外） | 製品化の土台。指標1の対象外 |
+  | 別クレート: `awase-keymap-learn`（旧名`awase-calibration`。巡回・シミュレータ。`feat/awase-calibration`ブランチで改名済み・未マージ） | +3,406（`crates/awase-windows/src`の外） | 製品化の土台。指標1の対象外 |
   撤去した約4,500行のうち、再実装が要るのは`gji_charset_autodetect.rs`と較正結果の適用の合計約1,700行で、戻ってくる量は**未確定**（設定読み取りの範囲次第）。指標1（`crates/awase-windows/src`の追加−削除がP0〜P2の末で負）は現時点で−628行で満たす。
   [ADR-162](162-governance-reversal.md) E1（複雑性予算1-in-1-out、未発効）と同じ向き。
 - **削る・見送るもの（round4 D）**: (1)較正セッションは「学習した表の生成と読み込み」に絞り、ADR-176のウィザードの「適用」配線は削除済み。(2)設定の読み取りは、分類a〜eに要る最小（`config1.db`の`session_keymap`・

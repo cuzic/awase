@@ -134,7 +134,7 @@ Engineと実IMEのずれ（押下+Nms時点で、Engineの活性が「実IMEが�
 - **「各セル2回」は統計的にほぼ無意味**（rule of three: n=2の非決定率の95%上限は150%）。同じ経路の反復では履歴依存は原理的に検出できない。別経路で2周、矛盾したセルと履歴依存の候補だけ10〜20回まで適応的に増やす。
 - 未確認: Aho 1991、Chow 1978、Edmonds & Johnson 1973は本文を入手できず二次資料に依拠。センチネル方式がIMEの順序保証のもとで成立するかは実機で未検証。
 
-### 巡回シミュレータ（`crates/awase-calibration`、`feat/awase-calibration`のコミット`1add5e65`・`f492813c`・`321fd4dc`）
+### 巡回シミュレータ（`crates/awase-keymap-learn`〈旧名`awase-calibration`〉、`feat/awase-calibration`のコミット`1add5e65`・`f492813c`・`321fd4dc`）
 純Rust・OS非依存。Mealy機械のモデル、`SimIme`（遅延・キー欠落・観測不一致・非決定を注入）、戦略S0〜S9（S0=現状の毎回リセット、S3=有向CPP、S6=疑わしいキーだけ部分1-switch、S9=全セルを別経路で12回、等）、指標を持つ。`cargo test` 32件が通る。
 モデルの仮定と限界: ATOK風モデルの観測層（開閉・変換モード）は格子の実測どおり。入力中の段階の遷移規則は撤去ブランチの追跡規則に基づく**仮定**で、実機で全てを確かめていない。合成モデルの隠れ状態・非決定は乱数で、遅延は
 対数正規（中央値60ms）の仮定。
@@ -170,6 +170,6 @@ Engineと実IMEのずれ（押下+Nms時点で、Engineの活性が「実IMEが�
 ## 8. 成果物の所在
 - 撤去ブランチ（決め打ちの撤去・打鍵時予測・ADR-189の復元）: `feat/adr191-remove-hardcoded-mode-keys`（develop未マージ）。
 - PR #237（CI道具: 格子・通知・解析スクリプト、`chore/e2e-calibration-tooling`）、PR #238（BUG-151の最小修正。Opusレビューで取り下げ、close済み。BUG-151は撤去ブランチで扱う）。
-- 巡回シミュレータ: `crates/awase-calibration`（`feat/awase-calibration`）。
+- 巡回シミュレータ: `crates/awase-keymap-learn`（旧名`awase-calibration`、`feat/awase-calibration`ブランチ。ADR-176の較正UIと語が衝突するため改名。未マージ）。
 - 初期の実験結果とスパイク: `origin/spike/ime-effect-learning`。CI実験用ブランチ: `ci/e2e-adr191`・`ci/e2e-fastgrid`・`ci/e2e-notifygrid`・`ci/e2e-notifyprobe`・`ci/e2e-calibration`（マージ後に整理）。
 - 関連BUG: [BUG-151](../known-bugs/BUG-151.md)（起動直後のEngine固まり）、BUG-153（撤去後の英数・カタカナ握りつぶしの疑い、撤去ブランチ上）。
