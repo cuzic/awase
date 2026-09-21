@@ -1972,23 +1972,34 @@ impl Runtime {
     /// ADR-191 決定3・4: 通したキーの効果を、学習した表（`key_effect_table`）から**打鍵の時点で**予測して
     /// beliefへ反映する（awaseはIMEへ書かない）。観測を待たないので、読めないアプリ（TsfNative等）でも
     /// Engineが即追随する。後続の観測（`MODE_KEY_PASS_*`の読み直し）がsettle後に照合し、食い違えば観測が勝つ
-    /// （`ImeModel`のfence、`[key-effect-miss]`）。GJI以外・表に無い・非決定のセルは予測しない。
+    /// （`ImeModel`のfence、`[key-effect-miss]`）。GJI/Microsoft IME本体（明示検出）以外・表に無い・非決定のセルは予測しない。
     ///
     /// 変換モード5種・変換中の段階は`ImeModel::key_track`（隠れ状態）で追跡する。モードキーだけでなく、
     /// Space/Esc/Enter/BS・文字キーも通して追跡状態を更新する（変換中の出入りが打鍵履歴で決まるため）。
     /// ADR-189の固定セット（半角/全角）は`shadow_action`を持つ間この関数に来ない（呼び出し側が除外）。
     fn kp_predict_key_effect(&mut self, vk: awase::types::VkCode) {
         use crate::state::key_effect_table::PredictInput;
-        if crate::tsf::observer::tsf_obs().active_ime_kind()
-            != crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
-        {
-            return;
-        }
-        let Some(keymap) = self.key_effect_keymap.get(
-            hook::current_tick_ms(),
-            crate::gji_charset_autodetect::config1_db_stamp,
-            crate::gji_charset_autodetect::read_key_effect_keymap,
-        ) else {
+        use crate::tsf::observer::{tsf_obs, ActiveImeKind};
+        let obs = tsf_obs();
+        let now_ms = hook::current_tick_ms();
+        // GJI: config1.db のキーマップ。Microsoft IME本体: **明示検出したときだけ**（未検出は安全デフォルトの
+        // MicrosoftImeを返すので、ATOK等の互換IMEに本体の表を当てない）レジストリのキー割り当て。
+        let keymap = match obs.active_ime_kind() {
+            ActiveImeKind::GoogleJapaneseInput => self.key_effect_keymap.get(
+                now_ms,
+                crate::gji_charset_autodetect::config1_db_stamp,
+                crate::gji_charset_autodetect::read_key_effect_keymap,
+            ),
+            ActiveImeKind::MicrosoftIme if obs.ime_kind_detected() => {
+                self.key_effect_keymap_native.get(
+                    now_ms,
+                    crate::msime_key_assignment::native_assignment_stamp,
+                    crate::msime_key_assignment::read_key_effect_keymap_native,
+                )
+            }
+            ActiveImeKind::MicrosoftIme => return,
+        };
+        let Some(keymap) = keymap else {
             return;
         };
         let ime = &self.platform_state.ime;

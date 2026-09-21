@@ -36,6 +36,8 @@ pub enum KeymapPreset {
     Atok,
     /// GJIのMS-IMEプリセット（Microsoft IME本体ではない）。
     MsIme,
+    /// Microsoft IME本体（`ActiveImeKind::MicrosoftIme`を明示検出したときだけ。ADR-191、CI `cal-notify-msimenative-*`）。
+    MsImeNative,
 }
 
 /// 変換モード（`conv`の生値からROMANビットを除いた、キーで到達できる3種）。
@@ -196,6 +198,7 @@ const fn table_of(preset: KeymapPreset) -> &'static [Cell] {
     match preset {
         KeymapPreset::Atok => super::key_effect_data::ATOK,
         KeymapPreset::MsIme => super::key_effect_data::MSIME,
+        KeymapPreset::MsImeNative => super::key_effect_data::MSIME_NATIVE,
     }
 }
 
@@ -375,6 +378,10 @@ pub struct KeyEffectKeymap {
     preset: KeymapPreset,
     custom_table: Option<String>,
     has_overlay: bool,
+    /// Microsoft IME本体のキー割り当て（レジストリ`KeyAssignmentHenkan`/`Muhenkan`）が既定（再変換/かな切替）から
+    /// 変えられている。その変換/無変換の打鍵は予測しない（GJIのoverlay/カスタム上書きと同じ安全側）。
+    henkan_reassigned: bool,
+    muhenkan_reassigned: bool,
 }
 
 /// 修飾キーを押したままの打鍵では予測・追跡をしない（レビュー指摘A-B3。旧`enrich_ime_relevance`の
@@ -460,7 +467,29 @@ impl KeyEffectKeymap {
             preset,
             custom_table,
             has_overlay: !overlay_keymaps.is_empty(),
+            henkan_reassigned: false,
+            muhenkan_reassigned: false,
         })
+    }
+
+    /// Microsoft IME本体のキーマップ。`assignment_enabled`は`IsKeyAssignmentEnabled == 1`、`henkan`/`muhenkan`は
+    /// `KeyAssignmentHenkan`/`KeyAssignmentMuhenkan`の値（不在=既定=`None`、`0`=既定〈再変換/かな切替〉、
+    /// 非0=IME-オン/オフ等に再割り当て）。マスタースイッチが無効なら割り当ては効かない（既定のキー設定）。
+    /// Ctrl+Space/Shift+Spaceは修飾キー付きなので`modifiers_suppress_prediction`が抑止する。
+    #[must_use]
+    pub fn for_msime_native(
+        assignment_enabled: bool,
+        henkan: Option<u32>,
+        muhenkan: Option<u32>,
+    ) -> Self {
+        let reassigned = |v: Option<u32>| assignment_enabled && v.is_some_and(|x| x != 0);
+        Self {
+            preset: KeymapPreset::MsImeNative,
+            custom_table: None,
+            has_overlay: false,
+            henkan_reassigned: reassigned(henkan),
+            muhenkan_reassigned: reassigned(muhenkan),
+        }
     }
 
     /// このキーマップでの、`vk`の打鍵の予測。カスタム表がそのキーの行を持つ、または overlay がある
@@ -474,7 +503,10 @@ impl KeyEffectKeymap {
         {
             return None;
         }
-        if self.has_overlay && matches!(vk, 0x1C | 0x1D) {
+        if (self.has_overlay && matches!(vk, 0x1C | 0x1D))
+            || (self.henkan_reassigned && vk == 0x1C)
+            || (self.muhenkan_reassigned && vk == 0x1D)
+        {
             return None;
         }
         predict(self.preset, vk, input)
@@ -1024,5 +1056,80 @@ mod tests {
             "Composition\tEscape\tCancel\n",
             0x1B
         ));
+    }
+
+    // ---- Microsoft IME 本体(ImeKind=MicrosoftIme。CI cal-notify-msimenative-s{1..4}、独立walkで一段予測 99.1%) ----
+
+    #[test]
+    fn msime_native_hiragana_opens_from_direct_input() {
+        // 実測(grid、--msime、awase なし): 閉(直接入力)でひらがな(0xF2)を押すと開く。撤去版CIで最初のF2が Engine に
+        // 反映されなかった実害(msime-native/sc-* が3/3 FAIL)の予測側の対処。
+        let km = KeyEffectKeymap::for_msime_native(false, None, None);
+        let p = km
+            .predict(0xF2, &input(false, ROMAJI, false, NOTRACK))
+            .expect("MS-IME本体のひらがなは予測する");
+        assert_eq!(p.effect.open, Some(true));
+    }
+
+    #[test]
+    fn msime_native_eisu_closes_ime_and_hankaku_zenkaku_toggles() {
+        // 実測: MS-IME本体の英数(0xF0)は開いていて入力中でなければ IME オフ(0x10)、半角/全角は開→閉・閉→開。
+        let km = KeyEffectKeymap::for_msime_native(false, None, None);
+        let hira = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::None,
+        };
+        let eisu = km.predict(0xF0, &input(true, ROMAJI, false, hira)).unwrap();
+        assert_eq!(eisu.effect.open, Some(false));
+        let hz_open = km.predict(0xF3, &input(true, ROMAJI, false, hira)).unwrap();
+        assert_eq!(hz_open.effect.open, Some(false));
+        let hz_closed = km
+            .predict(0xF3, &input(false, ROMAJI, false, NOTRACK))
+            .unwrap();
+        assert_eq!(hz_closed.effect.open, Some(true));
+    }
+
+    #[test]
+    fn msime_native_muhenkan_rotates_conversion_mode() {
+        // 実測: 無変換(既定=かな切替)は 0x19→0x1B。
+        let km = KeyEffectKeymap::for_msime_native(false, None, None);
+        let hira = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::None,
+        };
+        let p = km.predict(0x1D, &input(true, ROMAJI, false, hira)).unwrap();
+        assert_eq!(p.track.conv, Some(Conv::C1B));
+    }
+
+    #[test]
+    fn msime_native_henkan_none_and_typing_esc_are_not_predicted() {
+        // 独立walkで入力欄の中身/候補ウィンドウ依存と判明したセルは「予測なし」(再変換は入力欄に確定済み文字列があると入力中になる)。
+        let km = KeyEffectKeymap::for_msime_native(false, None, None);
+        let hira = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::None,
+        };
+        assert_eq!(km.predict(0x1C, &input(true, ROMAJI, false, hira)), None);
+        let typing = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::Typing,
+        };
+        assert_eq!(km.predict(0x1B, &input(true, ROMAJI, true, typing)), None);
+    }
+
+    #[test]
+    fn msime_native_reassigned_keys_are_not_predicted() {
+        // レジストリのキー割り当て(IsKeyAssignmentEnabled=1)で変換/無変換が IME オン/オフ等に変えられていれば、その打鍵は予測しない。
+        let closed = input(false, ROMAJI, false, NOTRACK);
+        let km = KeyEffectKeymap::for_msime_native(true, Some(1), Some(1));
+        assert_eq!(km.predict(0x1C, &closed), None);
+        assert_eq!(km.predict(0x1D, &closed), None);
+        assert!(km.predict(0xF2, &closed).is_some(), "他のキーは予測する");
+        // マスタースイッチが無効なら割り当ては効かない(既定のキー設定)。
+        let km = KeyEffectKeymap::for_msime_native(false, Some(1), Some(1));
+        assert!(km.predict(0x1D, &closed).is_some());
+        // 値0は既定(再変換/かな切替)。
+        let km = KeyEffectKeymap::for_msime_native(true, Some(0), Some(0));
+        assert!(km.predict(0x1D, &closed).is_some());
     }
 }
