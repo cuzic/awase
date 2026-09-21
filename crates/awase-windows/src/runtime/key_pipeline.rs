@@ -2014,7 +2014,7 @@ impl Runtime {
         });
     }
 
-    /// ADR-187 follow: Engine OFF のとき、無変換/変換は FSM を通らず `PassThrough` 判定でそのまま OS へ渡る。
+    /// ADR-187 follow（ADR-191で全IMEモードキーへ一般化）: Engine OFF のとき、モードキーは FSM を通らず `PassThrough` 判定でそのまま OS へ渡る。
     /// FSM 経由の送出（`executor::dispatch_effect` の `SendKeys`）と同じく、通過マークを立てて 20ms 後に
     /// IME を読み直す（古い明示意図は観測の直後に捨てる、`ir_stage_observe`）。awase が既に IME キーとして
     /// 扱う（`shadow_action` を持つ、opt-in の Toggle 等）キーは従来の経路に任せる。
@@ -2027,8 +2027,9 @@ impl Runtime {
         if decision.is_consumed()
             || !matches!(event.event_type, KeyEventType::KeyDown)
             || event.injected
-            || !crate::vk::is_convert_or_nonconvert(event.vk_code)
+            || !crate::vk::is_followed_mode_key(event.vk_code)
             || event.ime_relevance.shadow_action.is_some()
+            || event.ime_relevance.sync_direction.is_some()
         {
             return;
         }

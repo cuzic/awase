@@ -189,12 +189,17 @@ pub const fn is_ime_mode_key_for_ime(vk_code: VkCode) -> bool {
     matches!(vk_code.0, 0x1C | 0x1D) // VK_CONVERT / VK_NONCONVERT
 }
 
-/// 無変換(0x1D)/変換(0x1C)か。ADR-187 の follow(生キー通過後に実IMEを読み直す)の対象キー。
-/// `is_ime_mode_key_for_ime` は 0x15-0x1A・0xF0-0xF6 も含む(awase が方向を決めて自分で書くキー)ため、
-/// follow の対象には使わない(コードレビュー指摘: 明示意図を守るべきキーの意図まで捨ててしまう)。
+/// 生キーを通した直後に実IMEを読み直して追随する（ADR-187のfollow）対象のIMEモードキーか。
+///
+/// ADR-191: IMEモードキー（`is_ime_mode_key_for_ime`）のうち、awase自身が意図を持って書く
+/// （Windows標準で冪等な）`VK_IME_ON`(0x16)/`VK_IME_OFF`(0x1A)を除く全て。無変換・変換・かな・カタカナ・
+/// 英数・半角/全角・漢字などは、静的に意味を決めずIMEへ通し、結果を観測して追随する。
+/// （旧`is_convert_or_nonconvert`は、awaseが方向を決めて書くキーの明示意図まで捨てないよう
+/// 無変換/変換に限っていた。そのキー群は静的な`shadow_action`の撤去で、`shadow_action`を持たない
+/// キーだけがここに来る。呼び出し側は`shadow_action.is_none()`も併せて確認する。）
 #[must_use]
-pub const fn is_convert_or_nonconvert(vk_code: VkCode) -> bool {
-    matches!(vk_code.0, 0x1C | 0x1D)
+pub const fn is_followed_mode_key(vk_code: VkCode) -> bool {
+    is_ime_mode_key_for_ime(vk_code) && !matches!(vk_code.0, 0x16 | 0x1A)
 }
 
 /// この VK が IME conv-mode ワード（NATIVE/KATAKANA/FULLSHAPE/ROMAN、

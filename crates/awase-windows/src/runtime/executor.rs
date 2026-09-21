@@ -803,7 +803,7 @@ impl DecisionExecutor {
             let passes_mode_key = actions.iter().any(|action| {
                 matches!(
                     action,
-                    awase::types::KeyAction::Key(vk) if crate::vk::is_convert_or_nonconvert(*vk)
+                    awase::types::KeyAction::Key(vk) if crate::vk::is_followed_mode_key(*vk)
                 )
             });
             if passes_mode_key {
