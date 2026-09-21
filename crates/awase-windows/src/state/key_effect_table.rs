@@ -279,6 +279,11 @@ const fn next_stage(prev: Stage, key: TableKey, disp: Disp, open_after: bool) ->
     }
 }
 
+/// 文字を入力するキー（英数字・記号）か。開いている間に押すと未確定文字列ができる（入力中になる）。
+const fn is_char_vk(vk: u16) -> bool {
+    matches!(vk, 0x30..=0x39 | 0x41..=0x5A | 0xBA..=0xC0 | 0xDB..=0xDF)
+}
+
 /// 表を引いて予測を返す。予測できない（表に無い・非決定・プリセット外）ときは`None`。
 ///
 /// 表に無いキー（文字キー等）は、開閉・入力モードを変えないが、変換中の段階だけは`Typing`へ戻す
@@ -295,17 +300,22 @@ pub fn predict(preset: KeymapPreset, vk: u16, input: &PredictInput) -> Option<Pr
         } else {
             Conv::C19
         });
-    let stage = if input.open && input.composing {
+    // 入力中（未確定文字列あり）か。観測（TSF）が読めるアプリでは`composing`が真になる。読めないアプリでは
+    // 観測が無いので、追跡した段階（文字キーで`Typing`、変換系キーで変換中）を正とする（開いている間だけ）。
+    let stage = if input.open {
         match input.track.stage {
-            Stage::None => Stage::Typing,
+            Stage::None if input.composing => Stage::Typing,
             s => s,
         }
     } else {
         Stage::None
     };
     let Some(key) = TableKey::from_vk(vk) else {
-        // 文字キー等: 変換中の段階だけ戻す。種（Unknown）は必ず反映する。
-        let new_stage = if matches!(input.track.stage, Stage::None) {
+        // 文字キー等: 開いていれば入力中（`Typing`）になる（変換中に打てば確定して新しい入力中）。閉なら段階なし。
+        // 種（Unknown）は必ず反映する。
+        let new_stage = if input.open && is_char_vk(vk) {
+            Stage::Typing
+        } else if matches!(input.track.stage, Stage::None) {
             Stage::None
         } else {
             Stage::Typing
@@ -441,6 +451,50 @@ mod tests {
         stage: Stage::None,
     };
 
+    /// 読めないアプリ（観測の`composing`が常に偽）でも、文字キーで入力中を追跡し、その後の無変換/Escが
+    /// 「入力中」のセルを引く（CI blind: `k`のあとの無変換が「入力中でない」セルを引いてOFFと予測していた）。
+    #[test]
+    fn typed_char_tracks_typing_without_composing_observation() {
+        let eisu = KeyTrack {
+            conv: Some(Conv::C10),
+            stage: Stage::None,
+        };
+        // 'k'(0x4B)を開いた状態で打つ。観測(composing)は偽のまま。
+        let p = predict(
+            KeymapPreset::Atok,
+            0x4B,
+            &input(true, InputModeState::ObservedEisu, false, eisu),
+        )
+        .expect("文字キーで追跡が更新される");
+        assert_eq!(p.track.stage, Stage::Typing);
+        assert_eq!(p.effect.open, None);
+
+        // 続く無変換は「入力中」のセル（ATOKでは入力中の無変換はOFFにならない）を引く。
+        let m = predict(
+            KeymapPreset::Atok,
+            0x1D,
+            &input(true, InputModeState::ObservedEisu, false, p.track),
+        );
+        assert!(
+            m.is_none_or(|m| m.effect.open != Some(false)),
+            "入力中の無変換は開閉を閉じない（追跡した入力中で引く）: {m:?}"
+        );
+    }
+
+    /// 閉じているときの文字キーは入力中にならない。
+    #[test]
+    fn typed_char_while_closed_does_not_start_typing() {
+        let p = predict(
+            KeymapPreset::Atok,
+            0x4B,
+            &input(false, InputModeState::ObservedRomaji, false, NOTRACK),
+        );
+        assert!(
+            p.is_none_or(|p| p.track.stage == Stage::None),
+            "閉のときの文字キーで入力中の段階を作らない: {p:?}"
+        );
+    }
+
     #[test]
     fn atok_hiragana_returns_to_hiragana_from_key_entered_halfwidth_alnum() {
         // 実測(grid第2版、変換モードをキーで到達): ATOK ひらがな(0xF2)。キーで入った半角英数(0x10)→ひらがな(0x19)。
@@ -560,13 +614,22 @@ mod tests {
         let p = predict(KeymapPreset::Atok, 0x41, &input(true, ROMAJI, true, conv)).unwrap();
         assert_eq!(p.track.stage, Stage::Typing);
         assert!(p.effect.is_noop());
-        // 変換中でなければ何も更新しない(予測なし)。
+        // 追跡が段階なしでも、開いている間の文字キーは入力中(Typing)を追跡する(読めないアプリでは観測が無い)。
+        let p = predict(
+            KeymapPreset::Atok,
+            0x41,
+            &input(true, ROMAJI, true, NOTRACK),
+        )
+        .unwrap();
+        assert_eq!(p.track.stage, Stage::Typing);
+        assert!(p.effect.is_noop());
+        // 追跡が既に入力中なら何も更新しない(予測なし)。
+        let typing = KeyTrack {
+            conv: None,
+            stage: Stage::Typing,
+        };
         assert_eq!(
-            predict(
-                KeymapPreset::Atok,
-                0x41,
-                &input(true, ROMAJI, true, NOTRACK)
-            ),
+            predict(KeymapPreset::Atok, 0x41, &input(true, ROMAJI, true, typing)),
             None
         );
     }

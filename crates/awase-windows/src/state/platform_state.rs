@@ -230,6 +230,16 @@ impl ImeStateHub {
             },
             tick_ms,
         );
+        // 開閉の予測は、この対象に残る古い明示意図（例: 起動直後の明示IME OFF）を置き換える。
+        // `IntentStore`は`effective_open()`で`shadow_model`より優先されるので、消さないと予測が効かない
+        // （読めないアプリでは観測が来ず、意図のTTL〈約30秒〉が切れるまで開閉の予測が無視される）。
+        // 「同一対象では最新の決定が古い意図を置換する」という`IntentStore`自身の設計と、通過マークの
+        // 観測（`consume_mode_key_pass_mark`）が同じ対象の意図を消す扱いに揃える。
+        if prediction.effect.open.is_some() {
+            if let Some(hwnd) = self.shadow_model.current_focus() {
+                self.intent_store.remove(hwnd);
+            }
+        }
     }
 
     /// 無変換/変換の生キーを通過させたら呼ぶ（ADR-187）。現在のフォアグラウンドに対する一回マークを立てる。
@@ -2615,6 +2625,57 @@ mod tests {
             !ps.ime.effective_open_at(TickMs(300)),
             "IntentStore 込みの PlatformState::effective_open() は同一対象なら \
              明示 OFF 意図を維持し、Engine の ctx.ime_on が誤って true に反転しない"
+        );
+    }
+
+    /// 読めないアプリ（観測が来ない）で、起動直後の明示OFF意図が開閉の予測を無視させ続けない
+    /// （CI blind: `intent-store` の上書きが約30秒続き、予測でopenにしてもEngineが動かなかった）。
+    #[test]
+    fn key_effect_open_prediction_replaces_stale_explicit_off_intent() {
+        use crate::state::key_effect_table::{KeyTrack, PredictedEffect, Prediction, Stage};
+        let mut ps = PlatformState::new();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        assert!(!ps.ime.effective_open_at(TickMs(110)), "明示OFF直後はfalse");
+
+        let open = Prediction {
+            effect: PredictedEffect {
+                open: Some(true),
+                mode: None,
+            },
+            track: KeyTrack {
+                conv: None,
+                stage: Stage::None,
+            },
+        };
+        ps.ime.apply_key_effect_prediction(open, TickMs(120));
+        assert!(
+            ps.ime.effective_open_at(TickMs(130)),
+            "開閉の予測は、同じ対象の古い明示OFF意図（IntentStore）を置き換えてEngineへ効く"
+        );
+    }
+
+    /// 開閉を変えない予測（変換モードだけ等）は、明示意図を消さない。
+    #[test]
+    fn key_effect_prediction_without_open_keeps_explicit_intent() {
+        use crate::state::key_effect_table::{KeyTrack, PredictedEffect, Prediction, Stage};
+        let mut ps = PlatformState::new();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        let no_open = Prediction {
+            effect: PredictedEffect {
+                open: None,
+                mode: None,
+            },
+            track: KeyTrack {
+                conv: None,
+                stage: Stage::Typing,
+            },
+        };
+        ps.ime.apply_key_effect_prediction(no_open, TickMs(120));
+        assert!(
+            !ps.ime.effective_open_at(TickMs(130)),
+            "開閉を予測しない打鍵では、明示OFF意図は残る"
         );
     }
 
