@@ -49,6 +49,16 @@ KNOWN_UNSTABLE = {
     "on-c10-typing|esc",      # 独立walk(ATOK)で 破棄 と 入力中のまま が割れた
 }
 
+# GJI の MS-IME プリセット(msime.json)も各セル2試行で、非決定セルを検出しきれない(`nondeterministic: 0`は「割れない」でなく「n=2では見えない」)。
+# 実機ユーザーの構成がまさにこの表なので、ATOK の第2版(各セル4試行)で割れた「変換中のEsc・入力中のBS/Esc」は、プリセットが違っても
+# 同じキー・同じ段階なので、変換モード(0x19/0x09/0x1B/0x0B)を問わず「予測なし」にする(観測で追随する)。再学習(試行を増やす)で確定させるまでの暫定
+# (レビュー round2 A-M5。試行を増やせる適応学習 cal-fast-msime-* での確定は未実施)。
+KNOWN_UNSTABLE_MSIME = {
+    f"on-c{c}-{stage}|{key}"
+    for c in ("19", "09", "1B", "0B", "10")
+    for stage, key in (("conv-space", "esc"), ("typing", "bs"), ("typing", "esc"))
+}
+
 # Microsoft IME 本体(msime-native.json、CI cal-notify-msimenative-s{1..4}+独立walk cal-msnative-walk-s{3,4}で採点)で、格子の状態と独立walkの実際の状態が
 # 食い違ったセルは「予測なし」にする(開閉・変換モードは合うが、入力中の有無が入力欄の中身に依存する):
 # - `on-c*-none|henkan`: 変換キーは MS-IME 本体では再変換。入力欄に確定済みの文字列があると入力中になる(格子の空の入力欄では 保持しない)。
@@ -135,12 +145,14 @@ def main():
 // 全試行で結果が一致したセルだけを含む（非決定セル・未観測セル・履歴依存の追加ブロックは「予測なし」）。
 // 閉(OFF)のセルは変換モードを問わない（conv=None）。押下後convが不明なセルは after_conv=None（追跡を捨てる）。
 // MSIME は「GJI の MS-IME プリセット」の表（Microsoft IME 本体ではない）。MSIME_NATIVE が Microsoft IME 本体の表。
+// MSIME は各セル2試行で非決定を検出しきれないため、ATOK で割れた変換中のEsc・入力中のBS/Escは変換モードを問わず除外した。
+// MSIME_NATIVE は206/227セルが1試行のみ（独立walkの採点で確認、非決定6セルは除外済み）。
 
 use super::key_effect_table::{cell, Cell, Conv, Disp, Stage, TableKey};
 """]
     report = []
     for name, f in (("ATOK", "atok.json"), ("MSIME", "msime.json"), ("MSIME_NATIVE", "msime-native.json")):
-        unstable = {"ATOK": KNOWN_UNSTABLE, "MSIME_NATIVE": KNOWN_UNSTABLE_NATIVE}.get(name, frozenset())
+        unstable = {"ATOK": KNOWN_UNSTABLE, "MSIME": KNOWN_UNSTABLE_MSIME, "MSIME_NATIVE": KNOWN_UNSTABLE_NATIVE}.get(name, frozenset())
         cs, sk = cells(os.path.join(HERE, "grid-tables", f), unstable)
         parts.append(emit(name, cs))
         report.append(f"{name}: {len(cs)}セル採用、除外 {sk}")

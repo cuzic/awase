@@ -3,6 +3,8 @@
 // 全試行で結果が一致したセルだけを含む（非決定セル・未観測セル・履歴依存の追加ブロックは「予測なし」）。
 // 閉(OFF)のセルは変換モードを問わない（conv=None）。押下後convが不明なセルは after_conv=None（追跡を捨てる）。
 // MSIME は「GJI の MS-IME プリセット」の表（Microsoft IME 本体ではない）。MSIME_NATIVE が Microsoft IME 本体の表。
+// MSIME は各セル2試行で非決定を検出しきれないため、ATOK で割れた変換中のEsc・入力中のBS/Escは変換モードを問わず除外した。
+// MSIME_NATIVE は206/227セルが1試行のみ（独立walkの採点で確認、非決定6セルは除外済み）。
 
 use super::key_effect_table::{cell, Cell, Conv, Disp, Stage, TableKey};
 
@@ -154,7 +156,6 @@ pub(super) const MSIME: &[Cell] = &[
     cell(true, Some(Conv::C10), Stage::ConvSpace, TableKey::Bs, true, Some(Conv::C10), Disp::Kept),
     cell(true, Some(Conv::C10), Stage::ConvSpace, TableKey::Eisu, true, Some(Conv::C19), Disp::Kept),
     cell(true, Some(Conv::C10), Stage::ConvSpace, TableKey::Enter, true, Some(Conv::C10), Disp::Committed),
-    cell(true, Some(Conv::C10), Stage::ConvSpace, TableKey::Esc, true, Some(Conv::C10), Disp::Discarded),
     cell(true, Some(Conv::C10), Stage::ConvSpace, TableKey::HankakuZenkaku, false, None, Disp::Committed),
     cell(true, Some(Conv::C10), Stage::ConvSpace, TableKey::Henkan, true, Some(Conv::C10), Disp::Kept),
     cell(true, Some(Conv::C10), Stage::ConvSpace, TableKey::Hiragana, true, Some(Conv::C19), Disp::Kept),
@@ -177,10 +178,8 @@ pub(super) const MSIME: &[Cell] = &[
     cell(true, Some(Conv::C10), Stage::None, TableKey::Katakana, true, Some(Conv::C1B), Disp::None),
     cell(true, Some(Conv::C10), Stage::None, TableKey::Muhenkan, true, Some(Conv::C10), Disp::None),
     cell(true, Some(Conv::C10), Stage::None, TableKey::Space, true, Some(Conv::C10), Disp::None),
-    cell(true, Some(Conv::C10), Stage::Typing, TableKey::Bs, true, Some(Conv::C10), Disp::Kept),
     cell(true, Some(Conv::C10), Stage::Typing, TableKey::Eisu, true, Some(Conv::C19), Disp::Kept),
     cell(true, Some(Conv::C10), Stage::Typing, TableKey::Enter, true, Some(Conv::C10), Disp::Committed),
-    cell(true, Some(Conv::C10), Stage::Typing, TableKey::Esc, true, Some(Conv::C10), Disp::Discarded),
     cell(true, Some(Conv::C10), Stage::Typing, TableKey::HankakuZenkaku, false, None, Disp::Committed),
     cell(true, Some(Conv::C10), Stage::Typing, TableKey::Henkan, true, Some(Conv::C10), Disp::Kept),
     cell(true, Some(Conv::C10), Stage::Typing, TableKey::Hiragana, true, Some(Conv::C19), Disp::Kept),
@@ -219,7 +218,6 @@ pub(super) const MSIME: &[Cell] = &[
     cell(true, Some(Conv::C19), Stage::ConvSpace, TableKey::Bs, true, Some(Conv::C19), Disp::Kept),
     cell(true, Some(Conv::C19), Stage::ConvSpace, TableKey::Eisu, true, Some(Conv::C10), Disp::Kept),
     cell(true, Some(Conv::C19), Stage::ConvSpace, TableKey::Enter, true, Some(Conv::C19), Disp::Committed),
-    cell(true, Some(Conv::C19), Stage::ConvSpace, TableKey::Esc, true, Some(Conv::C19), Disp::Kept),
     cell(true, Some(Conv::C19), Stage::ConvSpace, TableKey::HankakuZenkaku, false, None, Disp::Committed),
     cell(true, Some(Conv::C19), Stage::ConvSpace, TableKey::Henkan, true, Some(Conv::C19), Disp::Kept),
     cell(true, Some(Conv::C19), Stage::ConvSpace, TableKey::Hiragana, true, Some(Conv::C19), Disp::Kept),
@@ -242,10 +240,8 @@ pub(super) const MSIME: &[Cell] = &[
     cell(true, Some(Conv::C19), Stage::None, TableKey::Katakana, true, Some(Conv::C1B), Disp::None),
     cell(true, Some(Conv::C19), Stage::None, TableKey::Muhenkan, true, Some(Conv::C1B), Disp::None),
     cell(true, Some(Conv::C19), Stage::None, TableKey::Space, true, Some(Conv::C19), Disp::None),
-    cell(true, Some(Conv::C19), Stage::Typing, TableKey::Bs, true, Some(Conv::C19), Disp::Discarded),
     cell(true, Some(Conv::C19), Stage::Typing, TableKey::Eisu, true, Some(Conv::C10), Disp::Kept),
     cell(true, Some(Conv::C19), Stage::Typing, TableKey::Enter, true, Some(Conv::C19), Disp::Committed),
-    cell(true, Some(Conv::C19), Stage::Typing, TableKey::Esc, true, Some(Conv::C19), Disp::Discarded),
     cell(true, Some(Conv::C19), Stage::Typing, TableKey::HankakuZenkaku, false, None, Disp::Committed),
     cell(true, Some(Conv::C19), Stage::Typing, TableKey::Henkan, true, Some(Conv::C19), Disp::Kept),
     cell(true, Some(Conv::C19), Stage::Typing, TableKey::Hiragana, true, Some(Conv::C19), Disp::Kept),
@@ -284,7 +280,6 @@ pub(super) const MSIME: &[Cell] = &[
     cell(true, Some(Conv::C1B), Stage::ConvSpace, TableKey::Bs, true, Some(Conv::C1B), Disp::Kept),
     cell(true, Some(Conv::C1B), Stage::ConvSpace, TableKey::Eisu, true, Some(Conv::C19), Disp::Kept),
     cell(true, Some(Conv::C1B), Stage::ConvSpace, TableKey::Enter, true, Some(Conv::C1B), Disp::Committed),
-    cell(true, Some(Conv::C1B), Stage::ConvSpace, TableKey::Esc, true, Some(Conv::C1B), Disp::Kept),
     cell(true, Some(Conv::C1B), Stage::ConvSpace, TableKey::HankakuZenkaku, false, None, Disp::Committed),
     cell(true, Some(Conv::C1B), Stage::ConvSpace, TableKey::Henkan, true, Some(Conv::C1B), Disp::Kept),
     cell(true, Some(Conv::C1B), Stage::ConvSpace, TableKey::Hiragana, true, Some(Conv::C19), Disp::Kept),
@@ -307,10 +302,8 @@ pub(super) const MSIME: &[Cell] = &[
     cell(true, Some(Conv::C1B), Stage::None, TableKey::Katakana, true, Some(Conv::C1B), Disp::None),
     cell(true, Some(Conv::C1B), Stage::None, TableKey::Muhenkan, true, None, Disp::None),
     cell(true, Some(Conv::C1B), Stage::None, TableKey::Space, true, Some(Conv::C1B), Disp::None),
-    cell(true, Some(Conv::C1B), Stage::Typing, TableKey::Bs, true, Some(Conv::C1B), Disp::Discarded),
     cell(true, Some(Conv::C1B), Stage::Typing, TableKey::Eisu, true, Some(Conv::C19), Disp::Kept),
     cell(true, Some(Conv::C1B), Stage::Typing, TableKey::Enter, true, Some(Conv::C1B), Disp::Committed),
-    cell(true, Some(Conv::C1B), Stage::Typing, TableKey::Esc, true, Some(Conv::C1B), Disp::Discarded),
     cell(true, Some(Conv::C1B), Stage::Typing, TableKey::HankakuZenkaku, false, None, Disp::Committed),
     cell(true, Some(Conv::C1B), Stage::Typing, TableKey::Henkan, true, Some(Conv::C1B), Disp::Kept),
     cell(true, Some(Conv::C1B), Stage::Typing, TableKey::Hiragana, true, Some(Conv::C19), Disp::Kept),
