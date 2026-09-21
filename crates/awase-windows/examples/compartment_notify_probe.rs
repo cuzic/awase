@@ -27,8 +27,8 @@ mod sink {
     use windows::core::{implement, GUID};
     use windows::Win32::UI::TextServices::{
         ITfCompartmentEventSink, ITfCompartmentEventSink_Impl, ITfCompartmentMgr,
-        GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_SENTENCE,
-        GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
+        GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION,
+        GUID_COMPARTMENT_KEYBOARD_INPUTMODE_SENTENCE, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
     };
 
     #[derive(Clone, Debug)]
@@ -110,10 +110,11 @@ mod app {
         KEYEVENTF_KEYUP, VIRTUAL_KEY,
     };
     use windows::Win32::UI::TextServices::{
-        ITfCompartmentEventSink, ITfCompartmentMgr, ITfInputProcessorProfileMgr, ITfSource,
-        ITfThreadMgr, CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr,
-        GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_SENTENCE,
-        GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, GUID_TFCAT_TIP_KEYBOARD, TF_INPUTPROCESSORPROFILE,
+        CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfCompartmentEventSink,
+        ITfCompartmentMgr, ITfInputProcessorProfileMgr, ITfSource, ITfThreadMgr,
+        GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION,
+        GUID_COMPARTMENT_KEYBOARD_INPUTMODE_SENTENCE, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
+        GUID_TFCAT_TIP_KEYBOARD, TF_INPUTPROCESSORPROFILE,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow,
@@ -305,13 +306,20 @@ mod app {
             // panic が push 中に起きた場合にデッドロックしないよう try_lock を使う。
             if let Ok(ev) = events.try_lock() {
                 for e in ev.iter() {
-                    s.push_str(&format!("+{:>6}ms {:<6} {:<10} {:?}\n", e.at_ms, e.kind, e.name, e.value));
+                    s.push_str(&format!(
+                        "+{:>6}ms {:<6} {:<10} {:?}\n",
+                        e.at_ms, e.kind, e.name, e.value
+                    ));
                 }
             } else {
                 s.push_str("(イベントのロックを取得できなかった)\n");
             }
             eprintln!("{s}");
-            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&path)
+            {
                 let _ = f.write_all(s.as_bytes());
             }
         }));
@@ -326,7 +334,9 @@ mod app {
             match u32::from_str_radix(tok.trim(), 16) {
                 Ok(v) => seq.push(v),
                 Err(_) => {
-                    eprintln!("--seq の要素 {tok:?} は16進のVKとして解釈できません(--seq={seq_arg})");
+                    eprintln!(
+                        "--seq の要素 {tok:?} は16進のVKとして解釈できません(--seq={seq_arg})"
+                    );
                     std::process::exit(2);
                 }
             }
@@ -549,7 +559,8 @@ mod app {
                 e.at_ms,
                 e.kind,
                 e.name,
-                e.value.map_or(String::new(), |v| format!("= {v} (0x{v:X})"))
+                e.value
+                    .map_or(String::new(), |v| format!("= {v} (0x{v:X})"))
             ));
         }
         out("--- キーごとの遅延(押下→最初の通知/ポーリング検出) ---");

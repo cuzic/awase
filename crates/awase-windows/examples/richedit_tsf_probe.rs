@@ -27,10 +27,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetClassInfoExW,
     GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GetWindowThreadProcessId,
-    PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW, SetForegroundWindow,
-    ShowWindow, TranslateMessage, CW_USEDEFAULT, GUITHREADINFO, MSG, SW_SHOW, WM_CLOSE,
-    WM_DESTROY, WM_GETTEXT, WM_GETTEXTLENGTH, WM_SETTEXT, WNDCLASSEXW, WS_BORDER, WS_CHILD,
-    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW, SetForegroundWindow, ShowWindow,
+    TranslateMessage, CW_USEDEFAULT, GUITHREADINFO, MSG, SW_SHOW, WM_CLOSE, WM_DESTROY, WM_GETTEXT,
+    WM_GETTEXTLENGTH, WM_SETTEXT, WNDCLASSEXW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW,
+    WS_VISIBLE,
 };
 
 /// スパイク/chrome_probe と同じ目印。`AWASE_TEST_INJECTION=1` の awase は、この目印の注入を物理キーとして扱う。
@@ -151,12 +151,7 @@ fn read_text(h: HWND) -> String {
 fn clear_text(h: HWND) {
     unsafe {
         let empty = wide("");
-        let _ = SendMessageW(
-            h,
-            WM_SETTEXT,
-            None,
-            Some(LPARAM(empty.as_ptr() as isize)),
-        );
+        let _ = SendMessageW(h, WM_SETTEXT, None, Some(LPARAM(empty.as_ptr() as isize)));
     }
 }
 
@@ -283,14 +278,13 @@ fn main() {
     let worker = std::thread::spawn(move || {
         let top = hwnd_of(&TOP);
         let rich = hwnd_of(&RICH);
-        let mut log = Log(
-            std::fs::OpenOptions::new()
-                .append(true)
-                .open(arg_value(&std::env::args().collect::<Vec<_>>(), "--log=").unwrap_or_else(
-                    || "richedit_tsf_probe.log".into(),
-                ))
-                .expect("log"),
-        );
+        let mut log = Log(std::fs::OpenOptions::new()
+            .append(true)
+            .open(
+                arg_value(&std::env::args().collect::<Vec<_>>(), "--log=")
+                    .unwrap_or_else(|| "richedit_tsf_probe.log".into()),
+            )
+            .expect("log"));
         sleep(1500);
         let fronted = bring_to_front(top);
         log.line(&format!("前面化: {fronted}"));
