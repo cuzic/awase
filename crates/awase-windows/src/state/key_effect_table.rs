@@ -460,6 +460,30 @@ mod tests {
     }
 
     #[test]
+    fn atok_hiragana_is_a_pure_toggle_between_hiragana_and_halfwidth_alnum() {
+        // 実測(grid第3版、全状態をキーだけで作る): ATOK ひらがな(0xF2)は 0x19→0x10、0x10→0x19 の純粋なトグル
+        // (独立walkの 0x19→0x10 20/20、0x10→0x19 19/19と一致)。第2版はIMMで作った0x19から「不変」と誤っていた。
+        let hira = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::None,
+        };
+        let p = predict(KeymapPreset::Atok, 0xF2, &input(true, ROMAJI, false, hira)).unwrap();
+        assert_eq!(p.track.conv, Some(Conv::C10));
+        assert_eq!(p.effect.mode, Some(InputModeState::ObservedEisu));
+        let eisu = KeyTrack {
+            conv: Some(Conv::C10),
+            stage: Stage::None,
+        };
+        let p = predict(
+            KeymapPreset::Atok,
+            0xF2,
+            &input(true, InputModeState::ObservedEisu, false, eisu),
+        )
+        .unwrap();
+        assert_eq!(p.track.conv, Some(Conv::C19));
+    }
+
+    #[test]
     fn atok_hiragana_in_direct_input_changes_nothing() {
         // 実測: IME OFFでひらがなを押しても開かない・conv不変。
         let p = predict(
