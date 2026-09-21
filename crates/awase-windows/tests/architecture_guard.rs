@@ -5376,3 +5376,43 @@ fn notify_calibration_result_call_sites_are_limited_to_confirm_and_reject() {
          限定すること"
     );
 }
+
+/// BUG-151/ADR-191 決定2: `kp_stage_shadow_ime_toggle` の no-op 分岐（belief が既に目標と一致）にだけ
+/// 生キー通過マーク（`arm_mode_key_pass_mark`）を立てる。位置の制約をソース走査で固定する。
+///
+/// - `key_pipeline.rs` の `arm_mode_key_pass_mark(` 呼び出しは、ADR-187 follow（`kp_stage_mode_key_follow`）と
+///   この no-op 分岐の**2箇所だけ**。
+/// - no-op 分岐の武装は、ケース3改（`ExplicitImeActionOutcome::SuppressOnly`）の `return false` **より後**にあり
+///   （BUG-124「@」対策: 武装をそのreturnより前へ動かさない）、`noop_mode_key_pass_mark_warranted` で
+///   飛行中の actuation を除外している。
+#[test]
+fn bug151_noop_pass_mark_is_armed_only_in_noop_branch_after_case3_and_gated_by_actuation() {
+    let content = read_crate_file("src/runtime/key_pipeline.rs");
+    let prod = production_code_only(&content);
+    assert_eq!(
+        prod.matches("arm_mode_key_pass_mark(").count(),
+        2,
+        "arm_mode_key_pass_mark の呼び出しは kp_stage_mode_key_follow と shadow-toggle の no-op 分岐の2箇所だけ"
+    );
+    let shadow_fn = prod
+        .find("fn kp_stage_shadow_ime_toggle(")
+        .expect("kp_stage_shadow_ime_toggle が見つからない");
+    let body = &prod[shadow_fn..];
+    let case3 = body
+        .find("ExplicitImeActionOutcome::SuppressOnly")
+        .expect("ケース3改の SuppressOnly 分岐が見つからない");
+    let noop_log = body
+        .find("[shadow-toggle] no-op: vk=")
+        .expect("no-op 分岐の診断ログが見つからない");
+    let arm = body
+        .find("arm_mode_key_pass_mark(")
+        .expect("no-op 分岐の通過マーク武装が見つからない");
+    let gate = body
+        .find("noop_mode_key_pass_mark_warranted(")
+        .expect("飛行中 actuation の除外(noop_mode_key_pass_mark_warranted)が見つからない");
+    assert!(
+        case3 < noop_log && noop_log < gate && gate < arm,
+        "武装は SuppressOnly の後・no-op 分岐の中・飛行中 actuation の判定の後でなければならない \
+         (case3={case3}, noop_log={noop_log}, gate={gate}, arm={arm})"
+    );
+}

@@ -1570,6 +1570,27 @@ impl Runtime {
                 current,
             );
 
+            // BUG-151/ADR-191 決定2: awase が書かなかった（belief が既に目標）物理モードキーでも、生キーは
+            // IME へ通る。cold（awase がまだ IME を書いていない）では `applied` が Unknown のままで、20ms 後の
+            // 再読み取りが typing-idle ガードに捨てられ（`explicit_verify` が偽）、ひらがなキーによる
+            // かな→半角英数に Engine が追随しない（`--exp` の B cold で 12/12）。通過マークを立てて、再読み取りが
+            // ガードを越えて実 IME を読むようにする。
+            // - 意図はこの no-op 判定より前に intent_store/last_intent へ記録済みで、belief は既に目標と一致して
+            //   いるので、通過マークが後で意図を捨てても失う情報は無い（武装位置をここより前へ動かさない）。
+            // - ケース3改（SuppressOnly、BUG-124/「@」対策）は上流で `return false` 済みでここへ来ない。
+            // - 飛行中の actuation があるときは武装しない（直前の明示IME操作の書き込みが着地する前に読んで
+            //   belief を落とさないため、`noop_mode_key_pass_mark_warranted` 参照）。
+            let actuation_attempts = self.active_actuation.as_ref().map(|a| a.attempts);
+            if crate::state::ime_actuation::noop_mode_key_pass_mark_warranted(actuation_attempts) {
+                self.platform_state
+                    .ime
+                    .arm_mode_key_pass_mark(hook::current_tick_ms());
+                tracing::info!(
+                    "[shadow-toggle] no-op モードキー vk=0x{:02X}: 通過マークを立てて20ms後の再読み取りで実IMEに追随 (BUG-151)",
+                    event.vk_code,
+                );
+            }
+
             // TurnOn 系キー（ひらがな/かな 等）は IME が既に open でも「英数から
             // ひらがなへ戻す」ユーザー操作として意味を持つ。OFF→ON 遷移が起きない
             // ためこの上の eisu_reset_on_ime_on（UserImeOnEisuReset）は発火しないので、

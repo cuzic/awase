@@ -438,8 +438,44 @@ pub const fn decide_conv_inference_drift(
     }
 }
 
+/// BUG-151/ADR-191 決定2: `kp_stage_shadow_ime_toggle` の no-op 分岐（belief が既に目標と一致し、
+/// awase は書き込む必要が無かった物理モードキー）で、生キー通過マーク（`arm_mode_key_pass_mark`）を
+/// 立ててよいか。`runtime`層がLinuxでテストできないため、判定だけを`state`層に切り出す。
+///
+/// 通過マークは、20ms後の再読み取りで typing-idle ガードを越えて実 IME を読ませ（cold で `applied` が
+/// Unknown のままでも）、`ir_stage_observe` が**窓単位で明示意図を全部捨てる**
+/// （`invalidate_intents_if_mode_key_pass_live`）。飛行中の actuation（`attempts > 0`、送信済みで
+/// 収束未確認）があるとき、直前の明示IME操作（Ctrl+変換）の書き込みがまだ IME に着地していない
+/// うちに読み取りが走り、古い状態を観測して belief を落としうる。よって `attempts` が 0 でない
+/// 試行が残っている間は武装しない。actuation が無い（`None`）か、まだ何も送っていない（`Some(0)`）なら武装してよい。
+///
+/// 武装位置の制約（この関数の外）: ケース3改（`ExplicitImeActionOutcome::SuppressOnly`、BUG-124対策）は
+/// no-op 分岐より前に `return false` するので、ここへ到達しない。武装をそのreturnより前へ動かさないこと。
+#[must_use]
+pub const fn noop_mode_key_pass_mark_warranted(actuation_attempts: Option<u32>) -> bool {
+    matches!(actuation_attempts, None | Some(0))
+}
+
 #[cfg(test)]
 mod tests {
+    /// BUG-151: no-op モードキーの通過マークは、飛行中（送信済み・未確認）の actuation が無いときだけ立てる。
+    #[test]
+    fn noop_pass_mark_is_armed_only_when_no_actuation_is_in_flight() {
+        assert!(
+            noop_mode_key_pass_mark_warranted(None),
+            "actuation 無し(cold)は武装してよい"
+        );
+        assert!(
+            noop_mode_key_pass_mark_warranted(Some(0)),
+            "まだ何も送っていない試行は飛行中ではない"
+        );
+        assert!(
+            !noop_mode_key_pass_mark_warranted(Some(1)),
+            "明示IME操作の書き込みが飛行中(attempts>0)なら武装しない(意図を巻き添えにして belief を落とさない)"
+        );
+        assert!(!noop_mode_key_pass_mark_warranted(Some(3)));
+    }
+
     use super::*;
 
     fn blind(max_attempts: u32) -> FeedbackPolicy {
