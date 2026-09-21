@@ -125,7 +125,8 @@ fn find_gji_clsid(
 /// 現在アクティブな TIP の CLSID から IME 種別を返す。
 ///
 /// - プロセス内キャッシュ済み GJI CLSID と一致 → `GoogleJapaneseInput`
-/// - それ以外の TIP または IMM32 HKL → `MicrosoftIme`
+/// - それ以外の TIP または IMM32 HKL → `MicrosoftIme`（**Microsoft IME 本体とは限らない**。CLSID が
+///   Microsoft IME のものと一致したかは別に `TSF_OBS.ms_ime_native_identified()` に残す）
 /// - 取得失敗 → `None`（呼び出し元はフォールバック値を使う）
 pub(super) fn query_active_kind(mgr: &ITfInputProcessorProfileMgr) -> Option<ActiveImeKind> {
     unsafe {
@@ -135,17 +136,24 @@ pub(super) fn query_active_kind(mgr: &ITfInputProcessorProfileMgr) -> Option<Act
             .ok()?;
 
         if prof.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR {
-            // IMM32 ベースの HKL → MS-IME 系とみなす
+            // IMM32 ベースの HKL → MS-IME 系とみなす（種別は互換のため MicrosoftIme のまま。
+            // ただし Microsoft IME 本体とは同定しない）
             TSF_OBS.set_ime_product_name(None);
+            TSF_OBS.set_ms_ime_native_identified(false);
             return Some(ActiveImeKind::MicrosoftIme);
         }
 
         TSF_OBS.set_ime_product_name(cached_profile_description(&prof));
 
-        if let Some(gji_clsid) = GJI_CLSID.get() {
-            if prof.clsid == *gji_clsid {
-                return Some(ActiveImeKind::GoogleJapaneseInput);
-            }
+        let identity = crate::state::ime_kind::identify_tip(
+            Some(prof.clsid.to_u128()),
+            GJI_CLSID.get().map(GUID::to_u128),
+        );
+        TSF_OBS.set_ms_ime_native_identified(
+            identity == crate::state::ime_kind::TipIdentity::MsImeNative,
+        );
+        if identity == crate::state::ime_kind::TipIdentity::Gji {
+            return Some(ActiveImeKind::GoogleJapaneseInput);
         }
         Some(ActiveImeKind::MicrosoftIme)
     }

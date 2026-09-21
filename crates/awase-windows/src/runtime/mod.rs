@@ -498,9 +498,11 @@ impl Runtime {
         if m.ctrl || m.alt || m.shift || m.win {
             return;
         }
-        let ime = crate::state::ime_kind::ImeKindId::from(
-            crate::tsf::observer::tsf_obs().active_ime_kind(),
-        );
+        // 表の適用範囲と揃える: GJI と、CLSID で同定できた Microsoft IME 本体だけ。GJI 未検出・第三者 IME・
+        // IMM32 HKL のみでは付けず、生キーを通して観測に追随する（レビュー round2 NB3）。
+        let Some(ime) = crate::tsf::observer::tsf_obs().table_ime_kind() else {
+            return;
+        };
         if key.is_open_toggle_for(ime) {
             event.ime_relevance.shadow_action = Some(awase::types::ShadowImeAction::Toggle);
         }
