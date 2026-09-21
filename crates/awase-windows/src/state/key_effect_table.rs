@@ -184,7 +184,7 @@ fn find(
     key: TableKey,
 ) -> Option<&'static Cell> {
     table_of(preset).iter().find(|c| {
-        c.open == open && c.conv.map_or(true, |cv| cv == conv) && c.stage == stage && c.key == key
+        c.open == open && c.conv.is_none_or(|cv| cv == conv) && c.stage == stage && c.key == key
     })
 }
 
@@ -340,7 +340,7 @@ pub fn predict(preset: KeymapPreset, vk: u16, input: &PredictInput) -> Option<Pr
     let stage_modeled = |st: Stage| {
         table_of(preset)
             .iter()
-            .any(|c| c.open == input.open && c.conv.map_or(true, |cv| cv == conv) && c.stage == st)
+            .any(|c| c.open == input.open && c.conv.is_none_or(|cv| cv == conv) && c.stage == st)
     };
     let c = find(preset, input.open, conv, stage, key).or_else(|| {
         (matches!(
