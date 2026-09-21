@@ -832,6 +832,12 @@ impl ImeModel {
                 if let Some(mode) = mode {
                     self.input_mode = mode;
                 }
+                // 物理のモードキーが開閉を動かす予測は、それより古い明示意図（awase自身の書き込みや
+                // 注入キー由来）を上書きする。残すと`resolve_open_at`の明示意図が予測より優先され、
+                // 読めないアプリ（観測で意図を外せない）では予測が永久に効かない（CIのblind構成で確認）。
+                if open.is_some() {
+                    self.last_intent = None;
+                }
             }
             ImeEvent::ModeKeyPassedThrough => {
                 // ADR-187: 明示意図が残ると resolve_open_at の ExplicitIntent 分岐が
@@ -1760,6 +1766,28 @@ mod tests {
             model.key_track().stage,
             Stage::Typing,
             "段階は観測できないので残す"
+        );
+    }
+
+    #[test]
+    fn open_prediction_supersedes_an_older_explicit_intent() {
+        // 読めないアプリでは観測で明示意図を外せない。物理モードキーの予測が古い意図を上書きしないと、
+        // resolve_open_at が意図を優先して予測が効かない。
+        let mut model = ImeModel::new();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        assert!(!model.effective_open());
+        predict(&mut model, 1000, Some(true), None);
+        assert!(model.effective_open(), "予測が古い明示意図に勝つ");
+        assert!(model.last_intent.is_none());
+        assert!(
+            !model.desired_open(),
+            "desired_open は書かない（意図が捨てられるだけ）"
         );
     }
 
