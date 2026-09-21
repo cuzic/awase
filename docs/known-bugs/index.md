@@ -153,6 +153,7 @@
 | [BUG-149](BUG-149.md) | Chrome(TsfNative)で、ひらがなキー/Shift+無変換によるかな→半角英数のあと、EngineがOFFにならず英数なのにNICOLAが動き続ける（3/3再現、awase停止の対照は正常、原因は一部のみ特定、未修正、ADR-186） |
 | [BUG-150](BUG-150.md) | ATOKプリセットで無変換/変換をパススルーする設定(既定)では、実IMEはGJIが開閉するのにEngineが追随しない（IME OFFでもEngine ONのまま） |
 | [BUG-151](BUG-151.md) | cold(awaseがまだIMEを書き込んでいない)状態で、ひらがなキーによるかな→半角英数の後にEngineがOFFにならないことがある(20ms再読み取りがSkipTyping、起票のみ・未修正) |
+| [BUG-153](BUG-153.md) | ADR-191の撤去後、awaseが書かない英数(0xF0)・カタカナ(0xF1)をdbe_mode_key_policy=Suppressが握りつぶす疑い(Suppress対象を狭めた) |
 
 ## その他の資料
 
