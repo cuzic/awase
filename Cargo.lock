@@ -463,15 +463,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "awase-calibration"
-version = "0.1.0"
-
-[[package]]
 name = "awase-gji-config"
 version = "0.1.0"
 dependencies = [
  "tracing",
 ]
+
+[[package]]
+name = "awase-keymap-learn"
+version = "0.1.0"
 
 [[package]]
 name = "awase-linux"

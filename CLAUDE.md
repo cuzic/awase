@@ -93,7 +93,7 @@ crates/win32-worker/          Worker-thread primitives used by win32-async
 crates/awase-settings/        Settings GUI (eframe/egui) — separate binary, awase-settings.exe
 crates/awase-gji-config/      GJI (Google 日本語入力) config file handling
 crates/awase-vkmap/           VK code / scan code mapping tables
-crates/awase-calibration/     IME key-effect calibration: traversal planner + offline simulator (pure logic, OS-independent, ADR-191)
+crates/awase-keymap-learn/     IME key-effect learning (not the ADR-176 calibration UI): traversal planner + offline simulator (pure logic, OS-independent, ADR-191)
 crates/awase-build-support/   Shared build.rs logic (manifest embedding etc.)
 crates/timed-fsm/             Standalone timer-aware FSM framework (published to crates.io independently)
 ```

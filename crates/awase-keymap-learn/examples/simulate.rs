@@ -1,16 +1,16 @@
-//! 巡回戦略 S0〜S7 のオフライン比較。`cargo run --release -p awase-calibration --example simulate`
+//! 巡回戦略 S0〜S7 のオフライン比較。`cargo run --release -p awase-keymap-learn --example simulate`
 //! 各モデル×条件×待ちの方式で、戦略ごとに指標(M1〜M9)を出す(乱数シード5本の平均)。
 
-use awase_calibration::anomaly::AnomalyPolicy;
-use awase_calibration::cost::CostModel;
-use awase_calibration::exec::{Executor, ReadPolicy};
-use awase_calibration::graph::Prior;
-use awase_calibration::metrics::{evaluate, mean, Metrics};
-use awase_calibration::model::Machine;
-use awase_calibration::models::{atok_like, synthetic};
-use awase_calibration::rng::Rng;
-use awase_calibration::sim::{SimConfig, SimIme};
-use awase_calibration::strategy::{run, Req, Strategy};
+use awase_keymap_learn::anomaly::AnomalyPolicy;
+use awase_keymap_learn::cost::CostModel;
+use awase_keymap_learn::exec::{Executor, ReadPolicy};
+use awase_keymap_learn::graph::Prior;
+use awase_keymap_learn::metrics::{evaluate, mean, Metrics};
+use awase_keymap_learn::model::Machine;
+use awase_keymap_learn::models::{atok_like, synthetic};
+use awase_keymap_learn::rng::Rng;
+use awase_keymap_learn::sim::{SimConfig, SimIme};
+use awase_keymap_learn::strategy::{run, Req, Strategy};
 
 const SEEDS: u64 = 5;
 

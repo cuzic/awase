@@ -1,5 +1,5 @@
 [package]
-name = "awase-calibration"
+name = "awase-keymap-learn"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
@@ -7,7 +7,7 @@ description = "IMEキー効果の学習(較正)の巡回プランナとシミュ
 publish = false
 
 [lib]
-name = "awase_calibration"
+name = "awase_keymap_learn"
 path = "src/lib.rs"
 
 [dependencies]

@@ -1,4 +1,4 @@
-# awase-calibration
+# awase-keymap-learn
 
 IMEキー効果の学習(較正)の**巡回プランナ**と**オフラインシミュレータ**(ADR-191)。OS非依存の純粋Rust(Windows API・VKコードを持たない)で、Linuxで `cargo test` が回る。
 実機のIMEを「観測できる部分(status: 開閉・変換モード・入力中の有無)と、観測できない隠れ状態(例: 変換中かどうか)を持つMealy機械」とみなし、
@@ -19,7 +19,7 @@ IMEキー効果の学習(較正)の**巡回プランナ**と**オフラインシ
 | `metrics` | 指標(時間・押下・リセット・網羅・経路多様性・同期喪失・非決定/履歴依存の検出・精度) |
 | `models` | 合成ランダムモデルと、ATOK風モデル |
 
-`cargo run --release -p awase-calibration --example simulate` で下の表を再生成できる(約3分、シード5本の平均)。
+`cargo run --release -p awase-keymap-learn --example simulate` で下の表を再生成できる(約3分、シード5本の平均)。
 
 ## 戦略
 
