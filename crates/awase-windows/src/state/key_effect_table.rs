@@ -183,13 +183,16 @@ fn find(
     stage: Stage,
     key: TableKey,
 ) -> Option<&'static Cell> {
-    let table = match preset {
-        KeymapPreset::Atok => super::key_effect_data::ATOK,
-        KeymapPreset::MsIme => super::key_effect_data::MSIME,
-    };
-    table.iter().find(|c| {
+    table_of(preset).iter().find(|c| {
         c.open == open && c.conv.map_or(true, |cv| cv == conv) && c.stage == stage && c.key == key
     })
+}
+
+const fn table_of(preset: KeymapPreset) -> &'static [Cell] {
+    match preset {
+        KeymapPreset::Atok => super::key_effect_data::ATOK,
+        KeymapPreset::MsIme => super::key_effect_data::MSIME,
+    }
 }
 
 /// 打鍵履歴から追跡する隠れ状態（`ImeModel`が`KeyEffectPredicted`で持つ）。
@@ -330,7 +333,23 @@ pub fn predict(preset: KeymapPreset, vk: u16, input: &PredictInput) -> Option<Pr
         };
         return (!effect.is_noop() || track != input.track).then_some(Prediction { effect, track });
     };
-    let c = find(preset, input.open, conv, stage, key)?;
+    // 追跡した変換中の段階が、この表に**行として全く無い**とき（例: ATOKに`ConvMuhenkan`の行は無い）は、
+    // 「入力中」の行で代用する。代用しないと予測が返らず、追跡した段階が古いまま残って以後の打鍵の予測が
+    // 全て外れる（CI blind: ATOKで入力中の無変換の後、Enter/半角全角が予測なしのまま OFF/ON がずれ続けた）。
+    // 段階の行はあるが、そのキーのセルだけが非決定で除外されている場合は代用しない（予測なしのまま）。
+    let stage_modeled = |st: Stage| {
+        table_of(preset)
+            .iter()
+            .any(|c| c.open == input.open && c.conv.map_or(true, |cv| cv == conv) && c.stage == st)
+    };
+    let c = find(preset, input.open, conv, stage, key).or_else(|| {
+        (matches!(
+            stage,
+            Stage::ConvSpace | Stage::ConvHenkan | Stage::ConvMuhenkan
+        ) && !stage_modeled(stage))
+        .then(|| find(preset, input.open, conv, Stage::Typing, key))
+        .flatten()
+    })?;
     // 押下後の変換モードが不明（閉になる/開く遷移など）のときは、追跡を捨てる。入力モードは種（Unknown）だけ反映する。
     let effect = PredictedEffect {
         open: (c.after_open != input.open).then_some(c.after_open),
@@ -479,6 +498,22 @@ mod tests {
             m.is_none_or(|m| m.effect.open != Some(false)),
             "入力中の無変換は開閉を閉じない（追跡した入力中で引く）: {m:?}"
         );
+    }
+
+    /// ATOKの表に`ConvMuhenkan`の行は無い。入力中の無変換で入った変換中の段階の後も、Enter・半角/全角は
+    /// 「入力中」の行で予測し、追跡した段階を更新する（予測なしで古い段階が残らない）。
+    #[test]
+    fn atok_conv_muhenkan_stage_falls_back_to_typing_row() {
+        let conv = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::ConvMuhenkan,
+        };
+        let enter = predict(KeymapPreset::Atok, 0x0D, &input(true, ROMAJI, false, conv))
+            .expect("ConvMuhenkanの行が無くても入力中の行で予測する");
+        assert_eq!(enter.track.stage, Stage::None, "確定して入力中でなくなる");
+        let hz = predict(KeymapPreset::Atok, 0xF3, &input(true, ROMAJI, false, conv))
+            .expect("半角/全角も予測する");
+        assert_eq!(hz.effect.open, Some(false));
     }
 
     /// 閉じているときの文字キーは入力中にならない。
