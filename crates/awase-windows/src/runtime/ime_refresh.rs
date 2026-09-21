@@ -1007,6 +1007,10 @@ impl Runtime {
 
     // ── Engine 通知 ──
 
+    pub(super) fn notify_engine_refresh(&mut self) {
+        self.ir_notify_engine_refresh();
+    }
+
     fn ir_notify_engine_refresh(&mut self) {
         let ctx = self.build_ctx();
         tracing::debug!(

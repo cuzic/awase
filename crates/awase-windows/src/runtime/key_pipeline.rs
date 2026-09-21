@@ -2019,6 +2019,55 @@ impl Runtime {
             "[mode-key-follow] mode key PassThrough(vk=0x{:02X}): IME refresh scheduled (20ms)",
             event.vk_code.0
         );
+        self.kp_predict_mode_key_effect(event.vk_code);
+    }
+
+    /// ADR-191 決定3: 通したモードキーの効果を、キーマップの表から**打鍵の時点で**予測してbeliefへ反映する
+    /// （awaseはIMEへ書かない）。観測を待たないので、読めないアプリ（TsfNative等）でもEngineが即追随する。
+    /// 後続の観測（`MODE_KEY_PASS_*`の読み直し）がsettle後に照合し、食い違えば観測が勝つ
+    /// （`ImeModel`のfence、`[key-effect-miss]`）。GJI以外・表に無い・非決定のセルは予測しない。
+    ///
+    /// ADR-189の固定セット（半角/全角）は`shadow_action`を持つ間この関数に来ない（呼び出し側が除外）。
+    fn kp_predict_mode_key_effect(&mut self, vk: awase::types::VkCode) {
+        use crate::state::key_effect_table::KeyStatus;
+        if crate::tsf::observer::tsf_obs().active_ime_kind()
+            != crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
+        {
+            return;
+        }
+        let Some(keymap) = crate::gji_charset_autodetect::read_key_effect_keymap() else {
+            return;
+        };
+        let status = if !self.platform_state.ime.effective_open() {
+            KeyStatus::Direct
+        } else if crate::tsf::observer::ime_composition_active_now() {
+            KeyStatus::Composing
+        } else {
+            KeyStatus::Pre
+        };
+        let mode = self.platform_state.ime.input_mode();
+        let Some(effect) = keymap.predict(vk.0, status, mode) else {
+            tracing::debug!(
+                "[key-effect-predict] vk=0x{:02X} status={status:?}: no prediction",
+                vk.0
+            );
+            return;
+        };
+        if effect.is_noop() {
+            return;
+        }
+        tracing::info!(
+            "[key-effect-predict] vk=0x{:02X} status={status:?} open={:?} mode={:?}",
+            vk.0,
+            effect.open,
+            effect.mode
+        );
+        let tick = crate::state::TickMs(hook::current_tick_ms());
+        self.platform_state
+            .ime
+            .apply_key_effect_prediction(effect, tick);
+        // 予測をEngineへ即反映する（active遷移の検知）。
+        self.notify_engine_refresh();
     }
 
     /// 左Shift単独タップによる「IME-ON 半角英数」持続トグル判定

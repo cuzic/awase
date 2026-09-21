@@ -357,7 +357,7 @@ pub(crate) fn gate_thumb_key_ime_actions(
 #[cfg(windows)]
 pub use windows_impl::build_confirmed_calibration_entry;
 #[cfg(windows)]
-pub(crate) use windows_impl::{is_configured_thumb_key, read_config1_db};
+pub(crate) use windows_impl::{is_configured_thumb_key, read_config1_db, read_key_effect_keymap};
 
 #[cfg(windows)]
 mod windows_impl {
@@ -396,6 +396,20 @@ mod windows_impl {
     pub(crate) fn read_config1_db() -> Option<Vec<u8>> {
         let path = config1_db_path()?;
         std::fs::read(&path).ok()
+    }
+
+    /// ADR-191 決定3: `config1.db`から、打鍵時点の予測（`key_effect_table`）に使うキーマップを読む。
+    /// 試作のため呼び出しごとに読む（モードキーの打鍵時だけ。数KBのファイル）。読めない/未対応の
+    /// プリセットは`None`（予測しない）。
+    pub(crate) fn read_key_effect_keymap() -> Option<crate::state::key_effect_table::KeyEffectKeymap>
+    {
+        let bytes = read_config1_db()?;
+        let raw = awase_gji_config::wire::parse_top_level(&bytes)?;
+        crate::state::key_effect_table::KeyEffectKeymap::from_config(
+            raw.session_keymap,
+            raw.custom_keymap_table,
+            &raw.overlay_keymaps,
+        )
     }
 
     /// ADR-176（T9a確定結果のconfig.toml永続化、最終配線）:
