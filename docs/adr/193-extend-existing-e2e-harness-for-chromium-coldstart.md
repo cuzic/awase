@@ -20,7 +20,8 @@ summary: |-
   判定スクリプトの3点)。`bあ`(`9a7e699`)はBUG-002ではなく別バグなので分離する。
 status: |-
   **提案(ドラフトv4、opus round1(Blocker4・Major8・Minor5)・round2(新規Blocker1・Major4)反映済み、
-  round3(Blocker解消・Major3)反映済み、実施計画のレビュー待ち)**。未実装。**検知対象の不具合(BUG-002型)が
+  round3(Blocker解消・Major3)・実施計画レビューround1(Blocker1・Major4・Minor11)反映済み、
+  再確認待ち)**。未実装。**検知対象の不具合(BUG-002型)が
   現行コードで再現するかが未確認**で、再現しなければ本ADRの目標は「再発の予防(回帰検知)」へ変質する
   (2026-07-18の機構削除後、数日の実機ソークで genuine な部分リテラルはゼロ件だった、`docs/experiments.md`)。
   撤去対象の機構は未特定(ステップ0の結果待ち)。
@@ -42,8 +43,11 @@ related_adr:
   2026-07-18に機構ごと物理削除済み(`tuning.rs:87-96`、`docs/known-bugs/BUG-024.md`)で、
   `BUG-002.md`の「現在の対策」表が古いまま(stale)だった。v1が実装資産を棚卸ししなかったのと同型の誤りで、
   今度は**docsの記述が現役か**を確認していなかった(round2、`193-opus-review-round2.md`)。
-- 教訓(本ADRの規律): **known-bugsの「現在の対策」は、必ず現行の`tuning.rs`/実装で存在を裏取りしてから
-  使う**。以下は裏取り済みの事実に基づく。
+- v3までは、`tuning.rs:88-90`のdocコメント(「`CHROME_LONG_IDLE_MS`(5s)が`ColdKind::classify`のcutoffになる」)を
+  実装で裏取りせず引いた。実際は`ColdKind::classify`は7s/10sしか見ておらず、docが古かった。round2のレビュー指摘も
+  同じdocに依拠しており、実装計画のレビュー(`193-opus-review-plan-round1.md`)で判明した(3回目)。
+- 教訓(本ADRの規律): **known-bugsの「現在の対策」だけでなく、`tuning.rs`等のdocコメントも、必ず現行の実装で
+  存在・挙動を裏取りしてから使う**。以下は裏取り済みの事実に基づく。
 
 ## 背景: 既存資産の棚卸し
 
@@ -70,9 +74,12 @@ related_adr:
   F2事前送信・probe事前待機が削除され、per-VK confirm(`tsf/warmup/probe_fsm.rs::run_per_vk_confirm`(`:454`)、
   部分リテラル判定は`tsf/warmup/literal_detect_fsm.rs`)に一本化された(`output/vk_send.rs`の`[h1-probe] … F2/probe待機省略
   → per-VK confirmへ`)。したがって「BUG-002の修正定数を旧値へ戻す」撤去は成立しない。
-- **long-idleの閾値**: Chrome(VK)は`CHROME_LONG_IDLE_MS`=5s(`tuning.rs:100`、`gji_fsm.rs::long_idle_ms_for`が
-  `InjectionMode::Vk`で参照)。GJI/TSF経路は`LONG_IDLE_MS`=10s、その間に`MEDIUM_IDLE_PROBE_MS`=7s(`tuning.rs:148`)。
-  `BUG-002.md`の「>10s」は旧記述で、Chrome(VK)の`ColdKind`分岐のcutoffは5s。
+- **idleの閾値と、測る量**: awaseがcold種別の判定に使う量はkeyboard idleではなく`gji_idle_ms`(`tsf::observer::gji_idle_ms()`、
+  GJIのI/O観測からの経過時間)。`ColdKind::classify`(`gji_fsm.rs:127-136`)のcutoffは`MEDIUM_IDLE_PROBE_MS`=7s(Medium、
+  `forces_prepend_f2`=true)と`LONG_IDLE_MS`=10s(Long)のみで、injection modeに依存しない。`CHROME_LONG_IDLE_MS`=5sは
+  cutoffではなく、`transition_to_warm`がOnWarm→OnColdへ落とすまでのタイマー長(`gji_fsm.rs:470-479`、`long_idle_ms_for`経由)。
+  `tuning.rs:88-90`のdocは「`ColdKind::classify`のcutoffになる」と書いており**実装と食い違うstale記述**(v3までのADRとround2のレビュー指摘は
+  これを鵜呑みにしていた。実装計画T6で直す)。`BUG-002.md`の「>10s」も旧記述。
 
 ### 既存資産でまだできていないこと
 
@@ -130,9 +137,11 @@ ImmCross経路で、awaseのTsfNative政策経路(Vk注入・force-on・warmup)�
 
 0. **ステップ0(先にやる): 既存`chrome_probe`でBUG-002の症状が現行コードで今も出るかを確認する**。
    既存ケース4(`半角英数→ひらがな=かな`、F2→待ち→打鍵でBUG-002の形と一致)を`--settle`で掃引する
-   (Chrome(VK)の`CHROME_LONG_IDLE_MS`=5s、`MEDIUM_IDLE_PROBE_MS`=7s、`LONG_IDLE_MS`=10sの3閾値をまたぐ3s/6s/8s/11s)。
+   (`gji_idle_ms`の4帯 <5s / 5〜7s / 7〜10s / ≥10s を踏む3s/6s/8s/11s/14s)。
    **見るのは`Class`ではなくログの生の`t.value`**(`Class`は`k`,`a`の2打で部分リテラルを`Other`等に落とす)。
    コード変更は要らない。目的は、症状が今も出るか、出るならどの機構が防いでいるかの特定。
+   **ただし`--settle`は「モードキー押下の後」の待ちで、モードキー直後にGJIがwarmへ戻っている可能性を区別できない。
+   ステップ0の結論でG0(出る/出ない)を確定させず、確定はidle-sweep(実装計画T1b)の結果で行う。**
    **「出ない」公算が高い**(2026-07-18の機構削除後、実機ソークでgenuineゼロ件、`docs/experiments.md`)ため、
    「出ない」側を先に設計する:
    - 出る → 出た条件から、撤去すると症状が戻る現行機構を特定する(探索範囲は`probe_fsm.rs::run_per_vk_confirm`、
