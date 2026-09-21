@@ -210,13 +210,15 @@ impl Runtime {
                 let miss_before = self.platform_state.ime.detect_miss_count();
                 self.ir_poll_and_learn(miss_before, ime_snap);
                 let now = crate::hook::current_tick_ms();
-                if crate::state::force_guard::poll_counted_no_new_miss(
+                let observed = crate::state::force_guard::poll_counted_no_new_miss(
                     miss_before,
                     self.platform_state.ime.detect_miss_count(),
-                ) && self
-                    .platform_state
-                    .ime
-                    .invalidate_intents_if_mode_key_pass_live(now, crate::state::TickMs(now))
+                );
+                if observed
+                    && self
+                        .platform_state
+                        .ime
+                        .invalidate_intents_if_mode_key_pass_live(now, crate::state::TickMs(now))
                 {
                     tracing::info!(
                         "[mode-key-follow] observation arrived after mode key pass: intents invalidated"
@@ -241,6 +243,19 @@ impl Runtime {
     fn ir_stage_notify(&mut self) {
         // Phase 4: Engine に RefreshState（active 遷移検知）
         self.ir_notify_engine_refresh();
+        // Phase 4a: 通過マークの窓が切れても観測が一度も成功しなかったなら、古い明示意図を捨てる
+        // （意図が残るとポーリングが止まったままになる。BUG-158）。戦略（OsPoll/SkipTyping等）によらず
+        // 毎tick確認する。窓の間は`reschedule_ime_refresh`が読み直しを予約し続けるので、窓の直後に必ずここへ来る。
+        let now = crate::hook::current_tick_ms();
+        if self
+            .platform_state
+            .ime
+            .expire_mode_key_pass_mark(now, crate::state::TickMs(now))
+        {
+            tracing::info!(
+                "[mode-key-follow] window expired without a successful observation: intents invalidated"
+            );
+        }
         // Phase 4b: desired ≠ observed ドリフト補正（ImmCross / non-ImmCross 両対応）
         self.ir_apply_drift_correction();
         // Phase 5: 次回ポーリングをスケジュール

@@ -800,18 +800,24 @@ impl Runtime {
             .platform
             .current_app_profile()
             .is_effectively_tsf_native(self.platform.focus.class_name());
-        if is_tsf_native || self.platform_state.ime.explicit_intent().is_some() {
+        if is_tsf_native {
             return;
         }
-        // ADR-187: 無変換/変換の生キー通過後、窓が有効な間は follow の読み直しタイマー
-        // (`MODE_KEY_PASS_REREAD_MS`)を、通常のポーリング間隔で上書きしない。意図を捨てた後は
+        // ADR-187: 無変換/変換の生キー通過後、窓が有効な間は follow の読み直しを予約し続ける
+        // (`MODE_KEY_PASS_REREAD_MS`)。通常のポーリング間隔で上書きしない。意図を捨てた後は
         // `explicit_intent()`が`None`になるため、ここで上書きすると読み直しが窓(300ms)より後(既定500ms)に
         // 飛び、最初の観測が古い状態を読んだ回で追随できない(コードレビュー指摘、CIの取りこぼしの原因)。
+        // 明示意図が残っていても（観測が空振りで捨てられていなくても）窓の間は読み直しを止めない。
+        // 窓が切れた直後のtickで`ir_stage_notify`が意図を捨てる（BUG-158）ので、ポーリングは固まらない。
         if self
             .platform_state
             .ime
             .mode_key_pass_mark_live(crate::hook::current_tick_ms())
         {
+            self.schedule_ime_refresh(crate::tuning::MODE_KEY_PASS_REREAD_MS);
+            return;
+        }
+        if self.platform_state.ime.explicit_intent().is_some() {
             return;
         }
         self.schedule_ime_refresh(u64::from(self.platform_state.focus.ime_poll_interval_ms));

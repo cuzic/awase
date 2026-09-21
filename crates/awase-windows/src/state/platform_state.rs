@@ -278,10 +278,38 @@ impl ImeStateHub {
         tick_ms: TickMs,
         scope: crate::win32::ForegroundScope,
     ) -> bool {
+        self.drop_intents_for_mode_key_pass_in_scope(now_ms, tick_ms, scope, false)
+    }
+
+    /// 通過マークの窓が切れても、観測が一度も成功しなかった（`invalidated`のまま）ときに、古い明示意図を捨てる。
+    ///
+    /// 通過マークは「ユーザーの物理モードキーが通った。結果は分からないので、古い意図を根拠にしない」
+    /// という事実そのものである。意図の破棄を観測の成功だけに頼ると、読み取りが失敗し続ける環境
+    /// （MS-IME本体の`ime_on=None`）で意図が残り、`reschedule_ime_refresh`の早期returnでポーリングが止まったまま
+    /// 次のモードキーまで固まる（BUG-151 原因③の再発、BUG-158）。窓の終了で必ず捨て、ポーリングを再開させる。
+    /// 既に観測の成功で捨てた（`invalidated`）/窓の間は何もしない。
+    pub(crate) fn expire_mode_key_pass_mark(&mut self, now_ms: u64, tick_ms: TickMs) -> bool {
+        self.drop_intents_for_mode_key_pass_in_scope(
+            now_ms,
+            tick_ms,
+            crate::win32::foreground_scope(),
+            true,
+        )
+    }
+
+    fn drop_intents_for_mode_key_pass_in_scope(
+        &mut self,
+        now_ms: u64,
+        tick_ms: TickMs,
+        scope: crate::win32::ForegroundScope,
+        allow_expired: bool,
+    ) -> bool {
         let ScopeCheck::Live(mark) = self.mode_key_pass_mark.peek(scope) else {
             return false;
         };
-        if now_ms.saturating_sub(mark.armed_at_ms) >= crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS {
+        let expired =
+            now_ms.saturating_sub(mark.armed_at_ms) >= crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS;
+        if expired && (!allow_expired || mark.invalidated) {
             return false;
         }
         let first = !mark.invalidated;
@@ -2790,6 +2818,15 @@ mod tests {
             ps.ime.shadow_model.desired_open(),
             "通過したモードキーの結果（開）を desired として採る"
         );
+        // 乖離の継続時間が閾値を超えていても（drift.started_at をバックデートして模す）、
+        // 観測 == desired なので drift correction は発火しない（揃える前は desired=false ≠ 観測 true で発火した）。
+        ps.ime.shadow_model.observations.drift = Some(ImeDrift {
+            started_at: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_millis(
+                    crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS + 50,
+                ))
+                .expect("test instant can be backdated"),
+        });
         let now = std::time::Instant::now();
         assert!(
             ps.ime
@@ -2829,6 +2866,67 @@ mod tests {
         assert!(
             matches!(drift, Some(DriftCorrection { desired: true, observed: false, .. })),
             "通過マークが無ければ desired（awaseの意図）と観測の乖離は従来どおり補正される: {drift:?}"
+        );
+    }
+
+    /// BUG-158: 通過マークの窓が切れても観測が一度も成功しなかったとき（読み取りが失敗し続ける環境）、
+    /// 古い明示意図を捨てる（捨てないと `reschedule_ime_refresh` の早期returnでポーリングが止まったままになる）。
+    #[test]
+    fn mode_key_pass_expiry_drops_intents_when_no_observation_succeeded() {
+        let mut ps = PlatformState::new();
+        let scope = test_foreground_scope();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        arm_mode_key_pass_mark_for_test(&mut ps, scope, 125);
+        let window = crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS;
+        // 窓の間は捨てない（観測の成功を待つ）。
+        assert!(!ps
+            .ime
+            .drop_intents_for_mode_key_pass_in_scope(140, TickMs(140), scope, true));
+        assert_eq!(ps.ime.explicit_intent(), Some(false));
+        // 窓が切れたら、観測が成功していなくても捨てる（一度だけ）。
+        assert!(ps.ime.drop_intents_for_mode_key_pass_in_scope(
+            125 + window,
+            TickMs(125 + window),
+            scope,
+            true
+        ));
+        assert_eq!(
+            ps.ime.explicit_intent(),
+            None,
+            "意図が残らないのでポーリングが再開する"
+        );
+        assert!(!ps.ime.drop_intents_for_mode_key_pass_in_scope(
+            126 + window,
+            TickMs(126 + window),
+            scope,
+            true
+        ));
+    }
+
+    /// 観測の成功で既に捨てた通過マークは、窓の終了で再度捨てない（通過より後の明示意図を守る）。
+    #[test]
+    fn mode_key_pass_expiry_does_nothing_after_successful_invalidation() {
+        let mut ps = PlatformState::new();
+        let scope = test_foreground_scope();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        arm_mode_key_pass_mark_for_test(&mut ps, scope, 125);
+        assert!(ps
+            .ime
+            .invalidate_intents_if_mode_key_pass_live_in_scope(140, TickMs(140), scope));
+        dispatch_and_record_explicit_intent(&mut ps, true, 150);
+        let window = crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS;
+        assert!(!ps.ime.drop_intents_for_mode_key_pass_in_scope(
+            125 + window,
+            TickMs(125 + window),
+            scope,
+            true
+        ));
+        assert_eq!(
+            ps.ime.explicit_intent(),
+            Some(true),
+            "通過より後の意図は残る"
         );
     }
 
