@@ -17,9 +17,11 @@ dylint_linting::declare_late_lint! {
     /// ### What it does
     ///
     /// Flags construction of `ImeEvent::PanicReset`, `ImeEvent::HwndCacheRestored`,
-    /// or `ImeEvent::EngineActivationSync` outside their single designated call site
-    /// (`apply_panic_reset` / `apply_hwnd_cache_restore` /
-    /// `handle_engine_activation_sync`).
+    /// `ImeEvent::EngineActivationSync`, or `ImeEvent::KeyEffectPredicted` outside their
+    /// single designated call site (`apply_panic_reset` / `apply_hwnd_cache_restore` /
+    /// `handle_engine_activation_sync` / `apply_key_effect_prediction`).
+    /// `KeyEffectPredicted` writes the belief from a table prediction (ADR-191), neither
+    /// an observation nor a user intent, so it is the same kind of direct-write escape hatch.
     ///
     /// ### Why is this bad?
     ///
@@ -62,15 +64,21 @@ dylint_linting::declare_late_lint! {
     /// ```
     pub RESTRICTED_IME_EVENT_CONSTRUCTION,
     Warn,
-    "ImeEvent::PanicReset/HwndCacheRestored/EngineActivationSync constructed outside its designated function"
+    "ImeEvent::PanicReset/HwndCacheRestored/EngineActivationSync/KeyEffectPredicted constructed outside its designated function"
 }
 
 const ALLOWED_FNS: &[&str] = &[
     "apply_panic_reset",
     "apply_hwnd_cache_restore",
     "handle_engine_activation_sync",
+    "apply_key_effect_prediction",
 ];
-const RESTRICTED_VARIANTS: &[&str] = &["PanicReset", "HwndCacheRestored", "EngineActivationSync"];
+const RESTRICTED_VARIANTS: &[&str] = &[
+    "PanicReset",
+    "HwndCacheRestored",
+    "EngineActivationSync",
+    "KeyEffectPredicted",
+];
 
 impl<'tcx> rustc_lint::LateLintPass<'tcx> for RestrictedImeEventConstruction {
     fn check_fn(
