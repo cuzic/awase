@@ -146,13 +146,14 @@ use super::key_effect_table::{cell, Cell, Conv, Disp, Stage, TableKey};
         report.append(f"{name}: {len(cs)}セル採用、除外 {sk}")
     text = "\n".join(parts) + "\n"
     if "--check" in sys.argv[1:]:
-        with open(OUT, encoding="utf-8", newline="") as fh:
-            committed = fh.read()
+        # Windows の checkout(core.autocrlf)は CRLF になりうるので、改行の違いは比べない。
+        with open(OUT, encoding="utf-8") as fh:
+            committed = fh.read().replace("\r\n", "\n")
         if committed != text:
             print("key_effect_data.rs が gen_key_effect_table.py の生成結果と一致しない(手編集、または grid-tables/*.json・スクリプトの変更後に再生成していない)。"
                   "`python3 tools/e2e/ime_key_matrix/gen_key_effect_table.py` で再生成すること。", file=sys.stderr)
             return 1
-        print("OK: key_effect_data.rs は生成結果と一致\n" + "\n".join(report))
+        print("OK: key_effect_data.rs matches the generator output")  # 標準出力の文字コードが不明(Windows)でも落ちないよう ASCII だけ
         return 0
     with open(OUT, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)

@@ -5285,6 +5285,7 @@ fn key_effect_data_matches_generator() {
     let out = match std::process::Command::new("python3")
         .arg(&script)
         .arg("--check")
+        .env("PYTHONUTF8", "1")
         .output()
     {
         Ok(out) => out,
