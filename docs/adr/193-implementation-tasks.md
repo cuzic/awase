@@ -18,7 +18,7 @@ related_adr:
 見つかり、全指摘を実コードで裏取りして反映した改訂版（v2）。主な訂正は次の通り。
 - **PB1**: ビルドキャッシュの`hashFiles`にworkflow自身が入っておらず、T3aは`chrome_probe.exe`が無いまま走る。
 - **PM1**: `ColdKind::classify`は`CHROME_LONG_IDLE_MS`(5s)ではなく7s/10sのみを見る（`tuning.rs`のdocがstale）。
-- **PM2**: 測るのはkeyboard idleではなく`gji_idle_ms`。GJI休眠の有無は`idle_at_cold`で直接測れる。
+- **PM2**: 測るのはkeyboard idleではなく`gji_idle_ms`（ただし打鍵時点では直接観測できない。計画round4のPB3を参照）。
 - **PM3**: 45試行がrcのANDに潰れ、flakeと撤去効果を分離できない → 試行単位のTALLYと率で判定。
 - **PM4**: `chrome_probe`に既存ワークフローが必要とするbelief合わせ（`--activate-gji`相当）が無い。
 
@@ -28,8 +28,15 @@ related_adr:
 - **PM6**: 設計4の試行数（45 vs 135）が矛盾し、fail率2%は実質0件要求。ベースライン≦10%・撤去≧50%・比4倍以上へ。
 
 計画round3で、さらに Major2件・Minor8件が見つかり反映した（v4）。Blockerは無し。
-- **PM7**: `gji_idle_ms()`はGJI監視が未アタッチだとマシン稼働時間を返し（`observer.rs:434-442`）、掃引の全点が`Long`に潰れる。`idle_at_cold`を「並べる」のでなく「検証する」。
+- **PM7**: `gji_idle_ms()`はGJI監視が未アタッチだとマシン稼働時間を返し（`observer.rs:434-442`）、掃引の全点が`Long`に潰れる。測定の成立を「並べる」のでなく「検証する」（手段はround4で`[vk-send]`に差し替え）。
 - **PM8**: `ensure()`は`kあ`を`Nicola`として合格させるため`expect`自身が部分リテラルでありうる。第0条`BAD_EXPECT`を追加。
+
+計画round4で、Blocker1件・Major1件・Minor6件が見つかり反映した（v5）。
+- **PB3（レビュアー側の誤りに起因）**: `[h1-probe]`の`idle_at_cold`は`gji_idle_ms`ではなく、cold**マーク時点**（`ensure()`の最中）の`ms_since_last_send()`
+  （`tsf/probe.rs:358-380`）。sleep後の打鍵時点の値ではないので、`|idle_at_cold − 掃引点|`のassertは全試行が範囲外になる。
+  → 打鍵時点で無条件に出る`[vk-send]`行（`vk_send.rs:240`）の`elapsed`/`prepend_f2_warmup`に差し替える。
+- **PM9**: `[h1-probe]`（`prepend_f2_warmup`分岐）は全掃引点で出る（`COMPOSITION_TIMEOUT_MS`=2000により3000msでも`session_expired`）。
+  `WarmthContext::prepend_f2_warmup`と`ColdKind::forces_prepend_f2`は別述語。T4候補1の有効域は全点、判定帯はn=45に戻す。
 
 ## 目的と非目的
 
@@ -62,12 +69,16 @@ related_adr:
   2. `text`が空 → **`process`の値によらず`INVALID`（`EMPTY_PENDING`）**。`probe()`は`k`,`a`の後350msしか待たない（`:332-334`）ため、`process=true`の空は
      「compositionがまだ確定していない」タイミングの問題である可能性が高く、BUG-002型（リテラルが**出てしまう**）とは逆向き。FAILに入れると率にノイズが乗る。
      発生率が高ければ待ち時間を延ばす。
+  （第3条の`expect != "か"`ガードは、第0条と`ensure()`の`kana_ok`により`awase=true`では常に真で冗長だが無害。裏返しに、`k`,`a`のNICOLA出力がちょうど`"か"`になる
+  配列・設定では`ensure()`が永久にfalseを返し`PRECOND_FAIL`が全件になる=R6の別の顔。）
   3. **`text == "か"`かつ`expect != "か"` → `ENGINE_OFF`（INVALID）**。idle中にawaseが落ちた・フックが外れた・Engineが非活性になった状態
      （既存`classify()`の`RomajiKana`=Engine素通し）で、症状ではなくハーネス故障。FAILにすると撤去実験の率を汚す。
   4. 英字`[A-Za-z]`を含む → `process=true`なら`PARTIAL_LITERAL`（英字とかな等の混在）または`LITERAL`（英字のみ）=FAIL（BUG-002型）、
      `process=false`なら`PRECONDITION_DRIFT`（INVALID。IMEがキーを見ていない）。
   5. 上記以外（`expect`と異なり英字も含まない。例: 1文字欠落）→ `MISMATCH`（FAIL）。
-  さらに**測定の成立を試行ごとにassertする**（PM7、設計2）: `idle_at_cold`が期待範囲外なら`INVALID`（`IDLE_MISMEASURED`）。
+  **第−1条（最初に評価）: 前提チェック**。`focus_lost`・`前面化に失敗`・物理キー混入・起動フラグ欠落・`IDLE_MISMEASURED`（設計2の`[vk-send]`突き合わせ）の
+  いずれかなら`INVALID`。これを先に置かないと、測定が成立していない試行やフォーカスを失った試行が第1条の`text == expect`で`PASS`になる。
+  `TALLY`の`mismeasured`は`invalid`の**内数**（内訳カウンタ）で、率の分母は`pass+fail`（`summary`の合算も同じ規約）。
   `awase=false`（`--no-awase`の陽性対照腕）のとき: `text == "か"`（ローマ字かな変換そのまま）→ `PASS`、他は`INVALID`（ハーネス自体が
   キー注入・読み取りできていない証拠）。ただしIME自身がリテラルを出した場合は`control_literal`として別バケットに数える
   （`ch-idle-noawase`が全INVALIDのとき「対照が取れていない」のか「環境が壊れている」のかを区別するため。`text`も`TALLY`に添える）。
@@ -77,7 +88,7 @@ related_adr:
 - checkerは試行単位の集計行を**stdoutに**出す（runステップが`| Tee-Object -FilePath result.txt`でstdoutを`result.txt`に落とし、`summary`が
   artifactのそれを読む）: `TALLY pass=N fail=N invalid=N mismeasured=N total=N`と、掃引点別の`TALLY idle=8000 pass=N fail=N invalid=N mismeasured=N`（T4の判定に使う、設計4）。
 - `utc_stamp()`（`HH:MM:SS.mmmZ`、日付なし）は`check.to_ms`と互換（`check.py:29-31`）。ただし日付を持たないため、**UTC 0時をまたぐ実行では
-  `idle_at_cold`の突き合わせが壊れる**（既存ハーネスと同じ性質。対処する場合は負の差分に+86400000msする）。1ジョブ3.5〜4分なので通常は問題にならない。
+  `[vk-send]`行の突き合わせが壊れる**（既存ハーネスと同じ性質。対処する場合は負の差分に+86400000msする）。1ジョブ3.5〜4分なので通常は問題にならない。
 
 ### 2. 測る量は`gji_idle_ms`、掃引点は4帯を踏む
 
@@ -95,23 +106,29 @@ awaseがcold判定に使う量は**keyboard idleではなく`gji_idle_ms`**（`t
 Short/Medium/Long重症度分岐のcutoffになる」）は実装と食い違っており**stale**（T6で直す）。
 掃引点 **3000 / 6000 / 8000 / 11000 / 14000 ms** は、この4帯（<5 / 5–7 / 7–10 / ≥10）を過不足なく踏む。
 
-- **`gji_idle_ms`は`ensure()`直後のGJI I/Oからの経過**であり、掃引点と一致するとは限らない（何かの拍子にGJI I/Oが走るとリセットされる）。
-  さらに**GJI監視（`gji_monitor`）が未アタッチだと`gji_last_io_ms`が0のままで、`gji_idle_ms()`は`current_tick_ms()`=マシン稼働時間を返し**
-  （`tsf/observer.rs:434-442`）、掃引の全点が`Long`（≥10s）に潰れる。`e2e-ime.yml:231`はセットアップでGJIプロセスを意図的に落とす
+- **`gji_idle_ms`は打鍵時点では直接観測できない**。`[h1-probe] … idle_at_cold=…ms`（`vk_send.rs:279`）が出す値は`gji_idle_ms`ではなく、cold**マーク時点**
+  （掃引の`sleep(idle)`より前=`ensure()`の最中）の`ms_since_last_send()`（`tsf/probe.rs:358-380`）で、14000msの試行でも数百msのまま出る。
+  `gji_idle_ms`を打鍵時点で見る手段は無く（journalの`GjiFsmTransition`のtrigger文字列`gji_idle_ms=`とColdKind帯を使う案は将来）、
+  **GJI休眠（~12s）そのものは観測せず、掃引が制御している量（awaseの最後の出力からの経過）が意図どおりかだけを検証する**。R2の範囲はここまでとする。
+- さらに**GJI監視（`gji_monitor`）が未アタッチだと`gji_last_io_ms`が0のままで、`gji_idle_ms()`は`current_tick_ms()`=マシン稼働時間を返し**
+  （`tsf/observer.rs:434-442`）、`ColdKind::classify`が常に`Long`（≥10s）になる。`e2e-ime.yml:231`はセットアップでGJIプロセスを意図的に落とす
   （`Stop-Process`）ので、awase起動時点でGJIプロセスが不在で`try_attach`が失敗し、`gji_monitor_ok=false`のまま始まる現実味がある
-  （`tsf/gji_monitor.rs:401-421`）。放置すると、**測定が一度も成立していないのに、G0が「出ない」で確定しうる**。
-  したがって`idle_at_cold`は「記録する」のでなく**「検証する」**（不一致はINVALID）:
+  （`tsf/gji_monitor.rs:401-421`）。放置すると、**測定が成立していないのに、G0が「出ない」で確定しうる**。
+  したがって測定の成立を「記録する」のでなく**「検証する」**（不一致はINVALID）:
   1. **掃引開始前の前提**: awaseログに`[gji-monitor] attached to GJI process (I/O monitoring enabled)`（`gji_monitor.rs:401`）が無ければ、
      そのrun全体を`INVALID`。`chrome_probe`側は`--activate-gji`の後に1打鍵してGJIプロセスを立ち上げてから掃引に入る（`ensure()`が実質兼ねるが明示）。
-  2. **試行ごとの突き合わせ**: `IDLE`行のUTCで、awaseログの`[h1-probe] cold=… idle_at_cold=…ms`（`vk_send.rs:279`）を突き合わせ、
-     `|idle_at_cold − 掃引点| ≤ max(掃引点の30%, 1500ms)`（初期案、T3bで較正）を要求する。範囲外は`INVALID`（`IDLE_MISMEASURED`、TALLYの`mismeasured`）。
-     `[h1-probe]`はcold経路（`prepend_f2_warmup`）でしか出ないため、行が無い場合は掃引点が7s以上のときだけ`IDLE_MISMEASURED`とし、
-     それ未満は許容する（5s未満はOnWarmでcold経路に入らない。**未確認**、T0/T3bの実測で較正）。
-  3. **G0の確定条件**: `mismeasured`が過半（初期案: 20%以上）の間は「出ない」を確定させない（判定不能）。
-  この仕組みは、`--settle`/`--pre-settle`/ポーリング（R8）が`gji_idle_ms`に与える影響の検出にもなる。
-  GJI休眠（~12s）が実際に起きているかも、これで直接測れる。
-- T4候補1（`prepend_f2_warmup`撤去）が効くのは`gji_idle_ms`≥7s（`forces_prepend_f2`）＝掃引点8000/11000/14000。
-  3000/6000で差が出ないのは正常。
+  2. **試行ごとの突き合わせ（`[vk-send]`行）**: 打鍵時点で**cold/warm両経路で無条件に**出る`[vk-send] romaji=… warm=… elapsed=…ms session_expired=… prepend_f2_warmup=…`
+     （`output/vk_send.rs:236-243`、`elapsed`=`ms_since_last_send()`を`assess_warmth()`（`output/mod.rs:1426-1437`）が打鍵時点で評価した値）を、
+     `IDLE`行のUTC（`k`押下時刻）以降で最初の行として突き合わせる。期待: **`elapsed`が`[掃引点, 掃引点+1500ms]`**（`probe()`末尾の350ms+150ms=約+500msの系統的な
+     バイアスを見込む。初期案、T3bで較正）、**全掃引点で`prepend_f2_warmup=true`**。範囲外・行が無い・`elapsed`が`u64::MAX`（未送信）は
+     `INVALID`（`IDLE_MISMEASURED`、TALLYの`mismeasured`）。`warm`は観測値として記録するが、assertしない
+     （3000msでは`warm=true`だが`elapsed`>`COMPOSITION_TIMEOUT_MS`(2000ms、`tuning.rs:106`)で`session_expired=true`となり`prepend_f2_warmup`は真、6000ms以上は`warm=false`）。
+  3. **G0の確定条件**: `mismeasured`が20%以上（初期案）の間は「出ない」を確定させない（判定不能）。
+  この仕組みは、`--settle`/`--pre-settle`/ポーリング（R8）が掃引の意図に与える影響の検出にもなる。
+- **2つの`prepend_f2`述語は別物**: `vk_send.rs:256`が分岐に使うのは`WarmthContext::prepend_f2_warmup`（`(!warm || session_expired) && needs_f2_probe()`、
+  composition warmth由来）で、上の4帯表の`ColdKind::forces_prepend_f2()`（`gji_fsm.rs:111-114`、`gji_idle_ms`の帯、`probe_params()`経由でGjiFsmのprobe経路に効く）とは
+  入力も参照経路も違う。4帯表は`ColdKind`の帯として正しいが、`vk_send`のcold分岐の可否とは別。**どの現行機構がどの帯で効くかは、T1b/T3bの実測で決める（現時点では未特定）**。
+  T4候補1（`prepend_f2_warmup`分岐の撤去）の有効域は、`elapsed`が`COMPOSITION_TIMEOUT_MS`を超える**全掃引点**（3000msを含む）。
 
 ### 3. GJIのアクティブ化とbelief合わせ（`--activate-gji`を`chrome_probe`へ写す）
 
@@ -147,10 +164,12 @@ Short/Medium/Long重症度分岐のcutoffになる」）は実装と食い違っ
 rcのANDに潰れると、ベースラインの1回のflakeで`NG`、撤去側は環境flakeだけで`OK`になり、「撤去に検出力がある」ことを示せない。
 
 - checkerの`TALLY`行（構成全体と掃引点別、設計1）を`summary`が合算する（`TALLY`が無い既存構成は従来のrc集計にフォールバック）。
-- 撤去が効くはずの帯（候補1なら8/11/14s）に絞ると、実効n = 3掃引点×3反復×3run = **27試行**。
-- 採否は**率の対比**（初期案）: **ベースラインfail率≦10%**（27試行で2件まで）、**撤去ありfail率≧50%**、**両者の比が4倍以上**（比が小さければ環境要因を疑う）。
-  n=27・p=0.5のとき撤去側のFAIL件数が2件以下になる確率は事実上0なので、ベースラインを10%に緩めても検出力は落ちない。
+- 判定帯は**既定で全5点（n=45）**。T4候補1の有効域は全点（設計2）。実測で「ある帯でしか効かない」と分かった候補だけ、その帯に絞る
+  （3掃引点×3反復×3run = n=27）。
+- 採否は**率の対比**（初期案）: **ベースラインfail率≦10%**（n=45で4件まで、n=27で2件まで）、**撤去ありfail率≧50%**、**両者の比が4倍以上**（比が小さければ環境要因を疑う）。
+  p=0.5のとき撤去側のFAIL件数が上記の上限以下になる確率は事実上0なので、ベースラインを10%に緩めても検出力は落ちない。
   fail率2%は27〜45試行で上限0.5〜0.9件=**0件要求**と同義で、1件のflakeでベースラインが恒常的に`NG`になり対照が成立しない。
+  率の分母は`pass+fail`（`invalid`・`mismeasured`は含めない）。
   **T3bの`observe`実行で得た実測のflake率から較正するが、較正後も「ベースライン0件要求」にはしない**（PM3の再発防止）。
   「135」は「CI実行3回分を合算する」場合の数で、単一のCI実行の基準には使わない。
 - 満たせない撤去候補は「E2Eで検出力を示せない」として`docs/experiments.md`に記録し、別候補へ移る（`--idle-repeat`を増やすのは最後の手段）。
@@ -192,11 +211,11 @@ rcのANDに潰れると、ベースラインの1回のflakeで`NG`、撤去側�
   `setup:…`・`action後2回目`行も同じ`PROBE `接頭辞なので`action後:`だけを絞る）。
 - **実行時間**: `chrome_probe`にケース選択のフラグは無く、常に8ケース全部を回し（`for (i, c) in CASES.iter().enumerate()`）、`--settle`は全ケースに効く。
   `--repeat=1`を明記する（8ケース×(`ensure`1.2〜2.6s + settle + probe0.6〜1.1s)。settle14sで約2.4分/回×掃引6点≒15分。`--repeat`既定3だと3倍）。
-- ログ回収: `chrome_probe.log`と、`idle_at_cold`突き合わせ用の`awase.log`の**両方**を回収する
+- ログ回収: `chrome_probe.log`と、`[vk-send]`行（`elapsed`/`warm`/`prepend_f2_warmup`）突き合わせ用の`awase.log`の**両方**を回収する
   （`clipwire-targets.example.toml`の`Get-Content chrome_probe.log`の系統）。
 - 実施: clipwireで実機へ（push→Windows側チェックアウトブランチ確認→ビルド→実行）。
 - 成果物: 結果表を`tools/e2e/ime_key_matrix/results/`に置く。ADR-193へ「症状の兆候の有無」を追記（**G0は確定しない**）。
-- 受け入れ基準: 掃引点ごとに`text`と`idle_at_cold`が記録される。
+- 受け入れ基準: 掃引点ごとに`text`と、対応する`[vk-send]`の`elapsed`/`warm`/`prepend_f2_warmup`が記録される。
 - 依存: なし。
 
 ### T2: checker（Python）を書く
@@ -206,11 +225,12 @@ rcのANDに潰れると、ベースラインの1回のflakeで`NG`、撤去側�
 - 内容: 2モード。
   - `cases`: 既存ログの`SUMMARY PASS=n RECOVER=n FAIL=n INVALID=n`と`RESULT`行を読む。`=== 全ケース完了 ===`が無ければ`INVALID`（rc=3）。
     終了コードは既存`check_multi.py`と同じ（有効回すべてPASS=0 / FAILあり=1 / 有効回なし=3）。`TALLY`行も出す。
-  - `idle`: 設計1の判定。`idle_at_cold`をawaseログから`utc`で突き合わせて併記する。
+  - `idle`: 設計1の判定。awaseログの`[vk-send]`行を`utc`（`k`押下時刻）以降の最初の行として突き合わせ、`elapsed`/`warm`/`prepend_f2_warmup`を併記する。
+    `elapsed`が`u64::MAX`（18446744073709551615、未送信）の場合は`INVALID`（`--no-awase`腕や、awase起動直後の初回試行でありうる）。
 - 受け入れ基準: fixture（PASS / PARTIAL_LITERAL / LITERAL / PRECONDITION_DRIFT / INVALID（完了マーカー欠落・期待フラグが起動ログに無い）各1件、実機ログ由来が理想）で
   単体テストが通る。`chrome_probe`の`utc_stamp()`は`check.to_ms`と互換（`check.py:29-31`、確認済み）。fixtureでも確認する。
   fixtureに`ENGINE_OFF`（`text="か"`）・`MISMATCH`（1文字欠落）・`BAD_EXPECT`（`expect="kあ"`かつ`text="kあ"`がPASSにならないこと）・
-  `EMPTY_PENDING`・`IDLE_MISMEASURED`（`idle_at_cold`が掃引点と大きくずれる）・`gji_monitor`未アタッチのrun（全体INVALID）と、
+  `EMPTY_PENDING`・`IDLE_MISMEASURED`（`[vk-send]`の`elapsed`が範囲外、`prepend_f2_warmup=false`、`elapsed=u64::MAX`、行が無い）・`gji_monitor`未アタッチのrun（全体INVALID）と、
   `awase=false`腕のPASS/INVALID/`control_literal`を含める。
 - 依存: なし（T0と並行可）。
 
@@ -261,7 +281,8 @@ rcのANDに潰れると、ベースラインの1回のflakeで`NG`、撤去側�
   Chrome側のidle挙動（TSF composition contextの破棄・再初期化）を歪めうる。**まず現状（30ms）で測り、結果が不安定なら間引き版
   （idle中のみ1000ms、停止はしない=`snap`/`clear`が届かなくなる）と比較する**。
 - 受け入れ基準: `cargo check … --examples`が通る。実機で`--idle-sweep=3000,11000 --idle-repeat=2`が完走し`IDLE`行が出力される。
-  T2の`idle`モードがその実機ログをパースでき、`idle_at_cold`が掃引点と突き合わせられる。
+  T2の`idle`モードがその実機ログをパースでき、`[vk-send]`の`elapsed`が掃引点と突き合わせられる。
+  **`ensure()`の戻り値変更後も、既存8ケース経路（T3aの`ch-smoke`相当）が引き続き完走する**（`--activate-gji`付きで再確認）。
 - 依存: T2（入力形式の固定）、T3a（CI smokeで土台が動くことを確認してから）。
 
 ### T3b: `ch-idle`構成を追加
@@ -285,11 +306,11 @@ rcのANDに潰れると、ベースラインの1回のflakeで`NG`、撤去側�
   `e2e-ime.yml`の`plan`に`cfg('ch-a8-…', 'fail', mutator='a8-….sh', driver='chrome', check='chrome-idle', …)`。
 - 撤去対象の候補（**どれが症状を防いでいるかはT1b/T3bの結果で決める。現時点では未特定**）:
   1. `output/vk_send.rs`のcold-start分岐（`prepend_f2_warmup`、`:256`。定義`output/mod.rs:405`、条件`:1435`）を無効化する。
-     **有効域は`gji_idle_ms`≥7s**（`forces_prepend_f2`）＝掃引点8000/11000/14000のみ。3000/6000で差が出ないのは正常。
+     **有効域は全掃引点**（`WarmthContext::prepend_f2_warmup`はcomposition warmth由来で、`ColdKind::forces_prepend_f2`とは別述語。3000msは`session_expired`経由、設計2）。
   2. `tsf/warmup/probe_fsm.rs::run_per_vk_confirm`（**`:454`**）が各VKを即confirm扱いにする。
   3. `RawTsfLiteralRecovery`の回収分岐: **所在を確定してから**候補にする（`literal_detect_fsm.rs`には無い。出現は
      `output/tsf_warmup_coord.rs:411,607,633`、`output/mod.rs:309,314,1827,1982,1985`）。どのファイルのどの分岐を撤去するかを先に特定する。
-- 採否基準: 設計4（試行単位のTALLY、ベースラインfail率≦10%・撤去ありfail率≧50%・比4倍以上、撤去が効くはずの帯（n=27）で差が出ること。数値はT3bで較正し、0件要求にはしない）。
+- 採否基準: 設計4（試行単位のTALLY、ベースラインfail率≦10%・撤去ありfail率≧50%・比4倍以上、撤去が効くはずの帯（既定は全5点でn=45、候補が特定の帯でしか効かないと実測で分かった場合のみ絞る）で差が出ること。数値はT3bで較正し、0件要求にはしない）。
   満たせない候補は`docs/experiments.md`に記録して別候補へ。
 - 受け入れ基準: `summary`で撤去構成が`OK`（期待FAILで実際にFAIL）、ベースライン構成が`OK`（期待PASS）を、**別々の2回のCI実行で再現**する。
 - 依存: T3b、G0。
@@ -332,20 +353,22 @@ ADR・本計画のdevelopへの反映を先に行う。CI実行は`ci/e2e-chrome
 - 本ADRが自ら掲げる規律: **known-bugsの「現在の対策」だけでなく、`tuning.rs`等のdocコメントも、workflow（`e2e-ime.yml`）のコメントも、
   現行実装で裏取りしてから前提にする**（PM1でdocコメントの鵜呑みが計画・ADR・レビュアー自身の指摘にまで伝播し、PB2で`e2e-ime.yml`のコメントだけを読んで
   `--activate-gji`の本質を取り違えた。同型の誤りは、既存資産・known-bugs・`tuning.rs`のdoc・ymlのコメントと4回続いた）。
+  **さらに、レビュー指摘の根拠も採用前に実装で裏取りする**（計画round3のPM7が提案した`idle_at_cold`は、`record_cold`の呼び出し元を読まずに「`gji_idle_ms`のスナップショット」と
+  推測した指摘で、そのまま実装すると`mismeasured`がほぼ100%になり実験が恒久停止するところだった。同型の誤りの5回目で、発生源はレビュアー側）。
 
 ## リスク
 
 | # | リスク | 対策 |
 |---|---|---|
 | R1 | `chrome_probe`はCIで一度も実行されておらず、Chromeの前面化・初回起動ダイアログ・ループバックHTTPがランナーで動くか不明 | T3aのsmokeを先行し、G1で原因を分解して判断する |
-| R2 | GJI休眠（~12s）が実際に起きているか、`gji_idle_ms`が掃引と連動しているか | `idle_at_cold`を試行ごとに**検証**（範囲外はINVALID、`mismeasured`をTALLY・summaryに出す、設計2） |
+| R2 | GJI休眠（~12s）が実際に起きているか、`gji_idle_ms`が掃引と連動しているか | 打鍵時点の`[vk-send]`の`elapsed`/`prepend_f2_warmup`を試行ごとに**検証**（範囲外はINVALID、`mismeasured`をTALLY・summaryに出す、設計2）。`gji_idle_ms`そのものは打鍵時点で観測できないので、GJI休眠の有無は直接は測れない |
 | R3 | 実IMEのflake（1回の失敗で判定が揺れる） | 試行単位のTALLYと率で判定（設計4）。`observe`から始め、ベースラインflake率を測って数値を較正 |
 | R4 | e2e-ime.ymlの共通ステップ切り出しで既存構成が壊れる | 機械的抽出に限定し、T3a前後で`baseline`の結果を比較 |
 | R5 | T0の`--settle`は「モードキー後の間隔」で、キー無入力idleとは別物 | T0はG0を確定させず、確定はT1b |
-| R6 | NICOLA出力の文字が配列・設定に依存する | 判定を「ASCII英字を含まない」にし、特定のかな範囲を要求しない |
+| R6 | NICOLA出力の文字が配列・設定に依存する（`k`,`a`の出力がちょうど`か`になる配列では`ensure()`が永久にfalse） | `expect`との突き合わせで特定のかなをハードコードしない。`PRECOND_FAIL`が全件なら配列を疑う |
 | R7 | GJIが非アクティブTIP、またはbeliefのずれで全試行が`INVALID`になり、G1で誤診する | `--activate-gji`（`ActivateProfile`+VK_IME_OFF、T1a）、`ActivateProfile`のHRESULTログと`PRECOND_FAIL`カウントで原因を分解 |
 | R8 | ページの30msポーリングがChromeのidle挙動を歪める | まず現状で測り、不安定なら間引き版と比較（T1b） |
 | R9 | ビルドキャッシュが古いままT3aを走らせる | `hashFiles`にworkflowを追加、`Test-Path dist\chrome_probe.exe`を受け入れ基準に（PB1） |
 | R10 | `ActivateProfile(FORSESSION)`を別プロセスの`chrome_probe`から呼んで、後から起動するChromeに効くか不明 | T3aで`GetActiveProfile`ログと`ensure()`成否を確認。効かなければChrome起動後にactivateする順序を試す |
 | R11 | idle中にawaseが落ちる・Engineが非活性になり、`か`がPASS扱いになる | `expect`との突き合わせで`ENGINE_OFF`（INVALID）に落とす（設計1） |
-| R12 | GJI監視（`gji_monitor`）が未アタッチで`gji_idle_ms()`がマシン稼働時間を返し、全点が`Long`に潰れる（`e2e-ime.yml:231`がGJIを落とす） | 掃引前に`[gji-monitor] attached`を確認（無ければrun INVALID）、`idle_at_cold`の突き合わせ、`mismeasured`過半ならG0を確定しない |
+| R12 | GJI監視（`gji_monitor`）が未アタッチで`gji_idle_ms()`がマシン稼働時間を返し、全点が`Long`に潰れる（`e2e-ime.yml:231`がGJIを落とす） | 掃引前に`[gji-monitor] attached`を確認（無ければrun INVALID）、`[vk-send]`の`elapsed`突き合わせ、`mismeasured`20%以上ならG0を確定しない |
