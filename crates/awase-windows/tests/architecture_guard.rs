@@ -5266,3 +5266,34 @@ fn key_effect_predicted_event_is_constructed_only_in_apply_key_effect_prediction
         "KeyEffectPredicted は desired_open を書かない"
     );
 }
+
+/// ADR-191 決定3・4（レビュー指摘C-M3）: `state/key_effect_data.rs`（打鍵時予測の表）は
+/// `tools/e2e/ime_key_matrix/gen_key_effect_table.py` が `grid-tables/*.json` から生成する
+/// 「手で編集しない」ファイルである。生成元 JSON・スクリプトを変えて再生成し忘れる、または
+/// 生成物を手で編集すると、表が黙って学習結果と食い違う（読めないアプリでは観測で訂正されない）。
+/// スクリプトの `--check` でコミット済みの生成物と一致することを機械的に検査する。
+///
+/// `python3` が無い環境（ローカルの最小構成等）ではスキップする。CI（ubuntu）には有る。
+#[test]
+fn key_effect_data_matches_generator() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+    let script = repo.join("tools/e2e/ime_key_matrix/gen_key_effect_table.py");
+    assert!(script.exists(), "生成スクリプトが見つかりません: {script:?}");
+    let out = match std::process::Command::new("python3")
+        .arg(&script)
+        .arg("--check")
+        .output()
+    {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("python3 が無いため key_effect_data.rs の生成物検査をスキップします");
+            return;
+        }
+        Err(e) => panic!("python3 の起動に失敗: {e}"),
+    };
+    assert!(
+        out.status.success(),
+        "state/key_effect_data.rs が生成結果と一致しません:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

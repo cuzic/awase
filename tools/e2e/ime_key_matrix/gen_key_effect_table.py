@@ -2,6 +2,8 @@
 """格子第3版(--grid-setup=keys、全状態をキーだけで作る=リセットもIMM無し)の学習結果から、打鍵時予測の表(Rustのデータ)を生成する(ADR-191 決定3・4)。
 
   gen_key_effect_table.py            grid-tables/{atok,msime,msime-native}.json → crates/awase-windows/src/state/key_effect_data.rs
+  gen_key_effect_table.py --check    何も書かず、コミット済みの key_effect_data.rs が生成結果と一致するか検査する(不一致なら終了コード1)。
+                                     `crates/awase-windows/tests/architecture_guard.rs` の `key_effect_data_matches_generator` が呼ぶ。
 
 `msime.json` は「GJI の MS-IME プリセット」、`msime-native.json` は「Microsoft IME 本体」(スパイク `--msime`、CI `cal-notify-msimenative-s{1..4}`)の学習結果。
 
@@ -142,8 +144,18 @@ use super::key_effect_table::{cell, Cell, Conv, Disp, Stage, TableKey};
         cs, sk = cells(os.path.join(HERE, "grid-tables", f), unstable)
         parts.append(emit(name, cs))
         report.append(f"{name}: {len(cs)}セル採用、除外 {sk}")
-    with open(OUT, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(parts) + "\n")
+    text = "\n".join(parts) + "\n"
+    if "--check" in sys.argv[1:]:
+        with open(OUT, encoding="utf-8", newline="") as fh:
+            committed = fh.read()
+        if committed != text:
+            print("key_effect_data.rs が gen_key_effect_table.py の生成結果と一致しない(手編集、または grid-tables/*.json・スクリプトの変更後に再生成していない)。"
+                  "`python3 tools/e2e/ime_key_matrix/gen_key_effect_table.py` で再生成すること。", file=sys.stderr)
+            return 1
+        print("OK: key_effect_data.rs は生成結果と一致\n" + "\n".join(report))
+        return 0
+    with open(OUT, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
     print("\n".join(report))
 
 
