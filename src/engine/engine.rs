@@ -875,7 +875,7 @@ impl Engine {
     /// `general.left_thumb_key`/`right_thumb_key` に設定した**任意の** VK に
     /// 対して `LeftThumb`/`RightThumb` を返す（`hook.rs::classify_key`）。
     /// 一方 `resolve_pending_thumb_as_single`（`nicola_fsm.rs`）が
-    /// `delegate_to_open_axis`/`dedicated_fn_key` 等の特別扱いをするのは
+    /// `dedicated_fn_key`/明示config 等の特別扱いをするのは
     /// `muhenkan_vk`/`henkan_vk` が `Some` のとき、すなわち
     /// `bootstrap.rs`/`runtime/mod.rs` が `VK_NONCONVERT`/`VK_CONVERT`
     /// **限定**でフィルタして設定した場合のみ。無変換/変換以外を

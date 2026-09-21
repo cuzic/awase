@@ -876,9 +876,7 @@ pub(crate) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
 ///
 /// `Engine` 側は `special_keys.ime_toggle`（手動設定）の内容に関わらず常に
 /// `set_ime_toggle_auto_keys` の結果も併用する（2026-08-16 ユーザー判断、
-/// 明示 ∪ 自動）ため、ここでは無条件に呼んでよい。`set_muhenkan/henkan_delegate_to_open_axis`は
-/// `muhenkan_solo_tap_dedicated_fn_key`（専用Fnキー）が設定されていれば
-/// `Engine`側でそちらが優先されるため、こちらも無条件に呼んでよい。
+/// 明示 ∪ 自動）ため、ここでは無条件に呼んでよい。
 pub(crate) fn sync_ime_toggle_auto_detect(app: &mut Runtime) {
     let toggle_assignment = crate::msime_key_assignment::read_toggle_assignment_from_registry();
     tracing::info!("[msime-keyassign] toggle assignment: {toggle_assignment:?}");

@@ -290,18 +290,16 @@ pub struct NicolaFsm {
 
     /// ADR-153 決定1: `GeneralConfig::muhenkan_solo_tap_ime_action`
     /// （ユーザーが直接指定する、上級者向け隠し設定）に対応する。`Some(action)`
-    /// なら、`muhenkan_solo_tap_dedicated_fn_key` の次・
-    /// `muhenkan_delegate_to_open_axis`（GJI/MS-IME自動検出）より前に評価される
+    /// なら、`muhenkan_solo_tap_dedicated_fn_key` の次に評価される
     /// （優先順位表、`resolve_pending_thumb_as_single` 参照）。
-    /// `muhenkan_delegate_to_open_axis` と同じ理由で `ModeKeyConfig` には
-    /// 統合しない——ただし自動検出由来ではなく config.toml 由来の値なので、
+    /// `ModeKeyConfig` には統合しない——config.toml 由来の値なので、
     /// config reload のたびに再設定される（消去はされない）。
     muhenkan_solo_tap_ime_action: Option<crate::types::ShadowImeAction>,
 
     /// `muhenkan_solo_tap_ime_action` と対称（変換キー用）。
     henkan_solo_tap_ime_action: Option<crate::types::ShadowImeAction>,
 
-    /// `resolve_pending_thumb_as_single` が `DelegateToOpenAxis` 相当の判定を
+    /// `resolve_pending_thumb_as_single` が明示config（`*_solo_tap_ime_action`）の判定を
     /// 下した直後、`Engine` 層が次の `on_input`/`on_timeout` で取り出すまで
     /// 保持するワンショットの副作用要求（ADR-092 決定D Step4b）。
     /// `engine_off_requested`（`:119`、`take_engine_off_requested`）と同型。
@@ -387,8 +385,7 @@ pub struct NicolaFsm {
 
 struct ThumbSoloSpecialHandling {
     dedicated_fn_key: Option<VkCode>,
-    /// ADR-153 決定1: ユーザー明示config（優先順位2、`dedicated_fn_key` の
-    /// 次・`delegate_to_open_axis` の前）。
+    /// ADR-153 決定1: ユーザー明示config（優先順位2、`dedicated_fn_key` の次）。
     explicit_ime_action: Option<crate::types::ShadowImeAction>,
     mode_key_config: Option<ModeKeyConfig>,
 }
@@ -591,7 +588,7 @@ impl NicolaFsm {
                         thumb.modifier_key,
                         composing,
                         thumb.explicit_ime_action_consumed,
-                        thumb.suppresses_open_axis_actuation(),
+                        thumb.suppresses_solo_output(),
                     ),
                     ThumbRawVkEmission::Denied => (
                         ResolvedAction {
@@ -858,7 +855,7 @@ impl NicolaFsm {
     /// `reduce_active_thumb`が親指面のかなを出して親指を消費し、同じ押下がsolo tapとshiftの両方に
     /// 使われる（決定1bと同じ二重使用が2回のディスパッチに分かれる）。
     ///
-    /// `delegate_to_open_axis`（belief追随/明示actuation）を持つキーも対象にする（ADR-186）:
+    /// 明示config（`*_solo_tap_ime_action`、belief追随/明示actuation）を持つキーも対象にする（ADR-186）:
     /// タイムアウトで解決した`SetOpen`は非キーボード経路（`execute_from_loop`）で実行され、
     /// belief書き込み（`handle_engine_set_open`）・明示意図の記録・eisu resetを持つキーボード経路
     /// （`kp_stage_post_decision`）を通らない。親指の押下が100msを超える通常のタップでは、
@@ -1524,7 +1521,7 @@ impl NicolaFsm {
                     thumb.modifier_key,
                     self.phys.composing,
                     thumb.explicit_ime_action_consumed,
-                    thumb.suppresses_open_axis_actuation(),
+                    thumb.suppresses_solo_output(),
                 );
                 if ime_open_request.is_some() {
                     self.ime_open_requested = ime_open_request;
@@ -1651,7 +1648,6 @@ impl NicolaFsm {
                     vk_code: ev.vk_code,
                     is_left: ev.key_class.is_left_thumb(),
                     timestamp: ev.timestamp,
-                    injected: ev.injected,
                     modifier_key: ev.modifier_key,
                     explicit_ime_action_consumed: ev.explicit_ime_action_consumed,
                     after_char_flush: false,
@@ -1721,7 +1717,7 @@ impl NicolaFsm {
             thumb.modifier_key,
             self.phys.composing,
             thumb.explicit_ime_action_consumed,
-            thumb.suppresses_open_axis_actuation() || char_has_thumb_face,
+            thumb.suppresses_solo_output() || char_has_thumb_face,
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -1749,7 +1745,7 @@ impl NicolaFsm {
             thumb.modifier_key,
             self.phys.composing,
             thumb.explicit_ime_action_consumed,
-            thumb.suppresses_open_axis_actuation(),
+            thumb.suppresses_solo_output(),
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -1967,8 +1963,7 @@ impl NicolaFsm {
     /// キーには、composing の有無に関わらずこの明示config自体を発火
     /// させない。
     ///
-    /// composing 中は fail-closed に倒す（delegate_to_open_axis と同じ
-    /// 方針）——`None` を返し、優先順位3（delegate）・4（ModeKeyConfig）へ
+    /// composing 中は fail-closed に倒す——`None` を返し、優先順位3（ModeKeyConfig）へ
     /// フォールスルーさせる。
     /// `resolve_pending_thumb_as_single` 内で繰り返し使う
     /// 「何もしない（actions空・IME open軸要求なし）」の戻り値。行数削減の
@@ -2058,13 +2053,12 @@ impl NicolaFsm {
     /// 別キー割り込みで Space が消えることがあった（この不整合を解消するために
     /// `composing`/`modifier_key` を明示的に受け取る形にした）。
     ///
-    /// 戻り値の第2要素は、無変換/変換単独タップが IME open 軸への肩代わり
-    /// （ADR-092 決定D Step4b、`DelegateToOpenAxis`）に該当した場合の
-    /// `ShadowImeAction`。呼び出し元（`&mut self` のメソッド）はこれを
+    /// 戻り値の第2要素は、無変換/変換単独タップが明示config（`*_solo_tap_ime_action`、
+    /// 優先順位2）に該当した場合の `ShadowImeAction`。呼び出し元（`&mut self` のメソッド）はこれを
     /// `self.ime_open_requested` へセットすること（このメソッド自体は `&self`
     /// のため直接セットできない）。
     ///
-    /// `injected`/`composing`/`explicit_action_consumed`の3個のboolはそれぞれ独立した
+    /// `composing`/`explicit_action_consumed`/`suppress_solo_output`の3個のboolはそれぞれ独立した
     /// 分類・マーカーであり、two-variant enum化は不自然（opus-adversarial-
     /// consult、ADR-153/ADR-154で検討済み）。呼び出し元は`PendingThumbData`
     /// のフィールドをそのまま渡すため、まとめて1つの構造体にする案も
@@ -2087,14 +2081,11 @@ impl NicolaFsm {
         // 無変換/変換の優先順位（ADR-092 決定B/決定D Step4b、ADR-153決定1）:
         // 1. 専用Fnキー（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091 §D3.2）
         // 2. ★ユーザー明示config（`*_solo_tap_ime_action`、ADR-153決定1）
-        // 3. IME open 軸への肩代わり（`*_delegate_to_open_axis`、決定D Step4b、
-        //    GJI/MS-IME自動検出）
-        // 4. `ModeKeyConfig` ベースの Suppress/Passthrough
-        // 1・2・3 はいずれも `ModeKeyConfig` の外側で独立に判定する——config
-        // reload で `ModeKeyConfig` が丸ごと再設定されても、自動検出由来や
-        // ユーザー明示config由来のこれらの値が消去されないようにするため
-        // （2は config.toml から毎回再読込されるため実際には消去されて
-        // 構わないが、3と同じ独立フィールドに揃えることで実装を単純化する）。
+        // 3. `ModeKeyConfig` ベースの Suppress/Passthrough
+        // （旧優先順位3の GJI/MS-IME 自動検出由来の「IME open 軸への肩代わり」
+        // `*_delegate_to_open_axis` は ADR-191 で撤去した。）
+        // 1・2 は `ModeKeyConfig` の外側で独立に判定する——config reload で
+        // `ModeKeyConfig` が丸ごと再設定されても、専用Fnキーが消去されないようにするため。
         // GJI の config1.db にこの Fn キーを Composition/Conversion 時の
         // `SwitchKanaType` としてバインドしておくことで、GJI が自身の内部
         // 状態を見てかな形状をトグルする（awase 側は belief を持たない）。
@@ -2125,8 +2116,8 @@ impl NicolaFsm {
             );
         }
         // BUG-123（2026-09-08、実機確認）: `explicit_action_consumed` なら
-        // ケース2（windows runtime）が既にIME open軸を処理済み。優先順位3/4
-        // （delegate_to_open_axis/ModeKeyConfig Passthrough）へフォール
+        // ケース2（windows runtime）が既にIME open軸を処理済み。優先順位3
+        // （ModeKeyConfig Passthrough）へフォール
         // スルーすると、`*_solo_tap_always_suppress=false`環境で生キーが
         // GJIへ二重送出され、かな⇄カタカナ切替と誤認される
         // （`explicit_ime_action_consumed_marker_suppresses_mode_key_
@@ -2725,7 +2716,7 @@ impl NicolaFsm {
             thumb.modifier_key,
             self.phys.composing,
             thumb.explicit_ime_action_consumed,
-            thumb.suppresses_open_axis_actuation(),
+            thumb.suppresses_solo_output(),
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -2756,7 +2747,7 @@ impl NicolaFsm {
                 thumb.modifier_key,
                 self.phys.composing,
                 thumb.explicit_ime_action_consumed,
-                thumb.suppresses_open_axis_actuation(),
+                thumb.suppresses_solo_output(),
             ),
             EngineState::Idle
             | EngineState::PendingCharThumb { .. }
@@ -2877,7 +2868,7 @@ impl NicolaFsm {
             thumb.modifier_key,
             composing,
             thumb.explicit_ime_action_consumed,
-            thumb.suppresses_open_axis_actuation(),
+            thumb.suppresses_solo_output(),
         );
         if ime_open_request.is_some() {
             self.ime_open_requested = ime_open_request;
@@ -3368,7 +3359,7 @@ mod tests {
         // ケース2（`kp_stage_shadow_ime_toggle`）が既にこの打鍵のIME open軸
         // actuationを発行済み（`explicit_action_consumed=true`）なら、
         // ケース1（明示config自体の再評価）はスキップし、かつ
-        // delegate_to_open_axis/ModeKeyConfigへのフォールスルーも行わず
+        // ModeKeyConfigへのフォールスルーも行わず
         // 打鍵をそのまま「処理済み・何もしない」として終える（BUG-123、
         // B13/B14対策の直接検証。フォールスルーしてはならない理由は
         // `explicit_ime_action_consumed_marker_suppresses_mode_key_
@@ -3397,7 +3388,7 @@ mod tests {
         assert!(
             resolved.actions.is_empty(),
             "explicit_action_consumedのため打鍵はここで打ち切られ、\
-             delegate_to_open_axis/mode_key_configへはフォールスルーしない \
+             mode_key_configへはフォールスルーしない \
              のでactionsは空のはず、実際: {:?}",
             resolved.actions
         );
@@ -3408,7 +3399,7 @@ mod tests {
         // BUG-123（2026-09-08、実機確認）: `mode_key_config`が`*_solo_tap_
         // always_suppress = false`（idle=Passthrough）に設定されたユーザー
         // 環境で、ケース2が既にこの打鍵を処理済み（`explicit_action_
-        // consumed=true`）にも関わらず、以前の実装は delegate_to_open_axis/
+        // consumed=true`）にも関わらず、以前の実装は（旧delegate_to_open_axisも含め）
         // ModeKeyConfigへフォールスルーしていたため、`SoloTapAction::
         // Passthrough`分岐が生の`VK_NONCONVERT`を**もう一度**送出していた。
         // 実機では「ケース2のactuationでIMEがONになった直後、この二重目の
@@ -3495,8 +3486,7 @@ mod tests {
 
     #[test]
     fn explicit_ime_action_fails_closed_while_composing() {
-        // composing中はfail-closedでフォールスルーする（delegate_to_open_axisと
-        // 同じ方針）。
+        // composing中はfail-closedでフォールスルーする。
         let mut fsm = make_test_fsm();
         let muhenkan_vk = VkCode(0x1D);
         fsm.set_thumb_key_solo_tap_config(
@@ -3583,13 +3573,6 @@ mod tests {
         assert!(matches!(resolved.actions.as_slice(), [KeyAction::Key(vk)] if *vk == fn_key));
     }
 
-    // `timeout_pending_thumb`（PendingThumbタイムアウト経路）は
-    // `resolve_pending_thumb_as_single`とは別の呼び出し口であり、
-    // `PendingThumbData::injected`を正しく引き継がないと、注入された
-    // 偽の単独タップがタイムアウト経由でdelegateを発火させてしまう
-    // （/codex-review指摘、"pending-thumb timeout path"でのBUG-14
-    // ガードバイパス）。直接呼び出し経路（上記テスト群）だけでなく、
-    // タイムアウト経路も独立して固定する。
     #[test]
     fn lookup_kana_at_returns_kana_for_romaji_value_on_normal_face() {
         // lookup_kana_at -> None に置換されても、Some(Default::default())
@@ -3965,7 +3948,6 @@ mod tests {
             vk_code: VkCode(0xA0),
             is_left: true,
             timestamp: 1_000,
-            injected: false,
             modifier_key: None,
             explicit_ime_action_consumed: false,
             after_char_flush: false,

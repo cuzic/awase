@@ -98,22 +98,10 @@ pub(crate) fn classify_thumb_key_ime_actions(
 
 /// GJIがIME on/off意味論を割り当てうる候補キー（BUG-115）。
 ///
-/// **注意（2026-09-05訂正、[ADR-135](../../../../docs/adr/135-generic-thumb-key-ime-toggle-delegate.md)
-/// 「Phase 2の撤回」参照）**: 以前このdocコメントには「Hiragana/Katakana
-/// にはdelegate-to-open-axis相当の安全な自動反映手段が存在しない」と
-/// 書かれていたが、これは誤りだった。実際には
-/// `crate::vk::ImeKeyKind::from_vk`→`hook.rs`の`shadow_action`→
-/// `runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle`という別の
-/// 既存機構が既にHiragana/Katakana/Eisu/Kanji等の追従を担当している。
-/// `Henkan`/`Muhenkan`（`VK_CONVERT`/`VK_NONCONVERT`）だけが
-/// `ImeKeyKind::from_vk`に含まれず、それゆえStep4b
-/// delegate-to-open-axis（`henkan_delegate_to_open_axis`/
-/// `muhenkan_delegate_to_open_axis`、`src/engine/nicola_fsm.rs`の専用
-/// フィールド2つ）が必要だった。`Hiragana`/`Katakana`バリアントと
-/// [`classify_mode_key_ime_action`]は、無変換/変換向けの既存delegateに加え、
-/// ADR-135 Phase 2/3でHiragana/Katakanaのshadow_action overrideと
-/// delegate-to-open-axisにも使う。Hiragana/Katakanaをactuation-autoへ
-/// 載せる処理は、既存shadow-toggleとの二重actuationを作るため採用しない。
+/// 無変換(`Muhenkan`)・変換(`Henkan`)だけを扱う（`ImeKeyKind::from_vk`に含まれないキー）。
+/// ADR-191で、この分類結果を awase が自動採用する機構（`*_delegate_to_open_axis`、
+/// shadow_action override）は撤去した。分類は較正結果の記録（`build_confirmed_calibration_entry`）
+/// と bug report の診断（[`classify_mode_key_ime_action`]）に使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) enum ModeKeyCandidate {

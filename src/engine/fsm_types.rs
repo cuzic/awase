@@ -493,9 +493,6 @@ pub struct PendingThumbData {
     pub vk_code: VkCode,
     pub is_left: bool,
     pub timestamp: Timestamp,
-    /// この親指キーイベントが注入由来か。Hiragana/Katakana delegate は
-    /// injected=true の単独タップを IME open 軸へ昇格させない。
-    pub injected: bool,
     /// この親指キーが OS 修飾キー（Ctrl/Shift/Alt/Meta）に割り当てられているか。
     /// `NicolaFsm::timeout_pending_thumb` 参照。
     pub modifier_key: Option<ModifierKey>,
@@ -506,10 +503,10 @@ pub struct PendingThumbData {
     pub explicit_ime_action_consumed: bool,
     /// ADR-182 決定1: この親指は、文字キー保留中に到着し、その文字が時間超過で単独確定された
     /// 結果として`PendingThumb`になった（`step_pending_char_thumb`の時間超過分岐）。
-    /// 文字が既に単独確定済みで、親指をIME操作（生の親指VK／delegate）としても出すと、
+    /// 文字が既に単独確定済みで、親指を生のIME操作キーとしても出すと、
     /// チョードのつもりの打鍵が意図しない単独タップ（半角英数化等）になるため、
-    /// `resolve_pending_thumb_as_single`は優先順位3・4を抑止する
-    /// （`suppresses_open_axis_actuation`）。Idle起点の親指ではfalse。
+    /// `resolve_pending_thumb_as_single`は`ModeKeyConfig`のPassthrough（優先順位3）を抑止する
+    /// （`suppresses_solo_output`）。Idle起点の親指ではfalse。
     pub after_char_flush: bool,
 }
 
@@ -521,7 +518,6 @@ impl PendingThumbData {
             vk_code: ev.vk_code,
             is_left: ev.key_class.is_left_thumb(),
             timestamp: ev.timestamp,
-            injected: ev.injected,
             modifier_key: ev.modifier_key,
             explicit_ime_action_consumed: ev.explicit_ime_action_consumed,
             after_char_flush: false,
@@ -529,10 +525,10 @@ impl PendingThumbData {
     }
 
     /// `resolve_pending_thumb_as_single`の抑止引数に渡す値。`after_char_flush`（ADR-182決定1）のとき、
-    /// `ModeKeyConfig`のPassthrough（優先順位4）を抑止する。優先順位1（専用Fnキー）・2（ユーザー
+    /// `ModeKeyConfig`のPassthrough（優先順位3）を抑止する。優先順位1（専用Fnキー）・2（ユーザー
     /// 明示config）には影響しない。
     #[must_use]
-    pub const fn suppresses_open_axis_actuation(self) -> bool {
+    pub const fn suppresses_solo_output(self) -> bool {
         self.after_char_flush
     }
 
@@ -644,15 +640,12 @@ impl ModeKeyConfig {
 /// `resolve_pending_thumb_as_single` の戻り値の中間表現。`DedicatedFnKey`
 /// は `ModeKeyConfig` を経由せず独立に優先される（上記 doc 参照）。
 ///
-/// ADR-092 決定Bが4つ目の variant として定義していた `DelegateToOpenAxis
-/// (ShadowImeAction)`（MS-IME/GJI 宣言に基づく IME open 軸への肩代わり、
-/// 決定D Step4b）は、この enum には**追加しない**（Step4b 実装時の設計判断）。
-/// `DedicatedFnKey` と同様「`ModeKeyConfig` を経由せず独立に優先される」
-/// 自動検出由来の上書きであり、`NicolaFsm` の独立フィールド
-/// （`muhenkan_delegate_to_open_axis`/`henkan_delegate_to_open_axis`）として
-/// 保持し、`resolve_pending_thumb_as_single` が `SoloTapAction` を構築する
-/// **前**に判定する（`dedicated_fn_key` と同じ理由: config reload で
-/// `ModeKeyConfig` が丸ごと再設定されても自動検出値を消さないため）。
+/// ユーザー明示config（`*_solo_tap_ime_action`、ADR-153）による IME open 軸への
+/// 副作用（旧ADR-092 決定Bの `DelegateToOpenAxis` 相当）は、この enum には**追加しない**。
+/// `DedicatedFnKey` と同様「`ModeKeyConfig` を経由せず独立に優先される」上書きであり、
+/// `NicolaFsm` の独立フィールドとして保持し、`resolve_pending_thumb_as_single` が
+/// `SoloTapAction` を構築する**前**に判定する。GJI/MS-IME の設定からの自動採用
+/// （旧 `*_delegate_to_open_axis`）は ADR-191 で撤去した。
 /// IME open 軸への副作用要求は `ResolvedAction` を経由せず、
 /// `NicolaFsm::ime_open_requested`（`take_engine_off_requested` と同型の
 /// ワンショットチャネル）で `Engine` 層へ伝える。
@@ -1064,7 +1057,6 @@ mod tests {
             vk_code: VkCode(0x20),
             is_left,
             timestamp: 2000,
-            injected: false,
             modifier_key: None,
             explicit_ime_action_consumed: false,
             after_char_flush: false,

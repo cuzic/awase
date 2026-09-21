@@ -355,9 +355,8 @@ pub struct GeneralConfig {
 
     /// ADR-153 決定1: 無変換単独タップ確定時に、素の `VK_NONCONVERT` の代わりに
     /// awase 自身が直接 IME を ON/OFF/Toggle する（隠し設定、上級者向け）。
-    /// `None`（既定）なら無効で、従来どおり GJI/MS-IME 自動検出
-    /// （`muhenkan_delegate_to_open_axis`）または `ModeKeyConfig` の
-    /// 抑制/パススルー判定に委ねる。
+    /// `None`（既定）なら無効で、従来どおり `ModeKeyConfig` の
+    /// 抑制/パススルー判定に委ねる（GJI/MS-IME 設定からの自動採用は ADR-191 で撤去した）。
     ///
     /// GJI 自身が無変換/変換に何らかの IME 制御コマンドを割り当てていると、
     /// GJI の TSF キー横取り（`ITfKeyEventSink`）が発火し「@」等の疑似文字が
