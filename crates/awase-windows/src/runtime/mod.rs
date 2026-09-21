@@ -235,6 +235,8 @@ pub struct Runtime {
     conv_drift_latch: Option<crate::state::ime_actuation::ConvDriftEpisode>,
     /// `config1.db` のキーマップ（打鍵時予測用）のキャッシュ。打鍵ごとに読み直さない。
     key_effect_keymap: crate::state::key_effect_table::KeymapCache,
+    /// Microsoft IME本体用（レジストリのキー割り当ての版で読み直す。GJIの`key_effect_keymap`とは別のキャッシュ）。
+    key_effect_keymap_native: crate::state::key_effect_table::KeymapCache,
     /// BUG-52 の DBE レンジ Suppress（`VK_DBE_ALPHANUMERIC`/`KATAKANA`/
     /// `SBCSCHAR`/`DBCSCHAR`）を無条件のままにするか、パススルーを許すか。
     /// `config.general.dbe_mode_key_policy` から `apply_config_update`/起動時の
@@ -1092,6 +1094,7 @@ impl Runtime {
             active_actuation: None,
             conv_drift_latch: None,
             key_effect_keymap: crate::state::key_effect_table::KeymapCache::default(),
+            key_effect_keymap_native: crate::state::key_effect_table::KeymapCache::default(),
             dbe_mode_key_policy: awase::config::DbeModeKeyPolicy::default(),
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,

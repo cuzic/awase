@@ -258,6 +258,32 @@ mod windows_impl {
         }
     }
 
+    /// ADR-191: Microsoft IME本体の打鍵時予測（`key_effect_table`）に使うキーマップを、キー割り当て
+    /// （`IsKeyAssignmentEnabled`/`KeyAssignmentHenkan`/`KeyAssignmentMuhenkan`）から作る。
+    /// 呼び出しは`KeymapCache`が版（[`native_assignment_stamp`]）の変化時だけに絞る。
+    pub(crate) fn read_key_effect_keymap_native(
+    ) -> Option<crate::state::key_effect_table::KeyEffectKeymap> {
+        let raw = read_raw_key_assignment_dwords();
+        Some(
+            crate::state::key_effect_table::KeyEffectKeymap::for_msime_native(
+                raw.is_key_assignment_enabled == Some(1),
+                raw.key_assignment_henkan,
+                raw.key_assignment_muhenkan,
+            ),
+        )
+    }
+
+    /// `read_key_effect_keymap_native`の版。3つのDWORDの値（不在は`u32::MAX`で表す）を詰めた値
+    /// （レジストリの再読み取りだけで、ファイルは読まない）。
+    pub(crate) fn native_assignment_stamp() -> Option<(u64, u64)> {
+        let raw = read_raw_key_assignment_dwords();
+        let v = |x: Option<u32>| u64::from(x.unwrap_or(u32::MAX));
+        Some((
+            v(raw.is_key_assignment_enabled),
+            (v(raw.key_assignment_henkan) << 32) | v(raw.key_assignment_muhenkan),
+        ))
+    }
+
     /// レジストリから `KeyAssignmentMuhenkan`/`KeyAssignmentHenkan` を
     /// `ShadowImeAction` として読み取る（ADR-092 決定A・決定D Step4b）。
     #[must_use]
@@ -368,9 +394,10 @@ mod windows_impl {
 
 #[cfg(windows)]
 pub(crate) use windows_impl::{
-    check_and_warn, current_registry_fingerprint_hash,
-    read_delegate_to_open_axis_assignment_from_registry, read_raw_key_assignment_dwords,
-    read_toggle_assignment_from_registry, spawn_yes_open_ime_settings_dialog,
+    check_and_warn, current_registry_fingerprint_hash, native_assignment_stamp,
+    read_delegate_to_open_axis_assignment_from_registry, read_key_effect_keymap_native,
+    read_raw_key_assignment_dwords, read_toggle_assignment_from_registry,
+    spawn_yes_open_ime_settings_dialog,
 };
 
 #[cfg(test)]
