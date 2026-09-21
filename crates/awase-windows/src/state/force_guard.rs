@@ -269,6 +269,38 @@ pub(crate) const fn should_drop_intents_for_mode_key_pass(
     }
 }
 
+/// 通過マークの窓が切れるまでの残り時間(ms)。窓が切れていれば`None`。
+#[must_use]
+pub(crate) const fn mode_key_pass_window_remaining_ms(age_ms: u64, window_ms: u64) -> Option<u64> {
+    if age_ms >= window_ms {
+        None
+    } else {
+        Some(window_ms - age_ms)
+    }
+}
+
+/// 通過マークの窓の間、次のIME読み取りを何ms後に予約するか（BUG-158）。
+///
+/// - 直前の読み取りが**成功**した（連続失敗カウント0）: ADR-187どおり`reread_ms`ごとに読み直す
+///   （最初の観測はGJI/IMEがキーを処理する前の古い状態のことがある）。
+/// - 直前の読み取りが**失敗**した（`ime_on=None`等）: 読み直しを窓の終了時の1回に絞る（`remaining_ms + 1`）。
+///   失敗する環境（MS-IME本体のIMMクロスプロセスprobeが50〜100ms）で60msごとに読み直すと、probeが重なって
+///   連続失敗を積み上げ、`IME_DETECT_MISS_THRESHOLD`(3)で`imm-learning`が窓を`Imm32Unavailable`へ誤って降格する
+///   （CI `ci/e2e-msime-native-e`）。窓の終了時の読み取りの後、`ir_stage_notify`が古い意図を捨てて通常の
+///   ポーリングへ戻る。
+#[must_use]
+pub(crate) const fn mode_key_pass_next_read_ms(
+    last_read_succeeded: bool,
+    remaining_ms: u64,
+    reread_ms: u64,
+) -> u64 {
+    if last_read_succeeded {
+        reread_ms
+    } else {
+        remaining_ms.saturating_add(1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,5 +663,15 @@ mod tests {
         assert!(should_drop_intents_for_mode_key_pass(5000, false, true, w));
         // 観測の成功で既に捨てたなら、窓が切れても捨てない(通過より後の明示意図を守る)。
         assert!(!should_drop_intents_for_mode_key_pass(300, true, true, w));
+    }
+
+    /// BUG-158: 通過マークの窓の間の読み直し間隔。成功なら再読み取り間隔、失敗なら窓の終了時の1回だけ。
+    #[test]
+    fn mode_key_pass_next_read_ms_backs_off_after_failed_read() {
+        assert_eq!(mode_key_pass_next_read_ms(true, 280, 60), 60);
+        assert_eq!(mode_key_pass_next_read_ms(false, 280, 60), 281);
+        assert_eq!(mode_key_pass_window_remaining_ms(20, 300), Some(280));
+        assert_eq!(mode_key_pass_window_remaining_ms(300, 300), None);
+        assert_eq!(mode_key_pass_window_remaining_ms(301, 300), None);
     }
 }

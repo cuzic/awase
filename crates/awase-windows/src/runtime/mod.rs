@@ -803,18 +803,25 @@ impl Runtime {
         if is_tsf_native {
             return;
         }
-        // ADR-187: 無変換/変換の生キー通過後、窓が有効な間は follow の読み直しを予約し続ける
-        // (`MODE_KEY_PASS_REREAD_MS`)。通常のポーリング間隔で上書きしない。意図を捨てた後は
-        // `explicit_intent()`が`None`になるため、ここで上書きすると読み直しが窓(300ms)より後(既定500ms)に
-        // 飛び、最初の観測が古い状態を読んだ回で追随できない(コードレビュー指摘、CIの取りこぼしの原因)。
-        // 明示意図が残っていても（観測が空振りで捨てられていなくても）窓の間は読み直しを止めない。
-        // 窓が切れた直後のtickで`ir_stage_notify`が意図を捨てる（BUG-158）ので、ポーリングは固まらない。
-        if self
+        // ADR-187: 無変換/変換の生キー通過後、窓が有効な間は follow の読み直しを予約する。通常のポーリング間隔で
+        // 上書きしない。意図を捨てた後は`explicit_intent()`が`None`になるため、ここで上書きすると読み直しが
+        // 窓(300ms)より後(既定500ms)に飛び、最初の観測が古い状態を読んだ回で追随できない。
+        // 直前の読み取りが成功したなら`MODE_KEY_PASS_REREAD_MS`ごと、失敗したなら窓の終了時の1回に絞る
+        // （`mode_key_pass_next_read_ms`。失敗する環境で60msごとに読むとprobeが重なり、3回連続失敗で
+        // `imm-learning`が窓を誤って降格する。BUG-158）。窓が切れた直後のtickで`ir_stage_notify`が古い意図を
+        // 捨てる（意図が残ってポーリングが止まらない）。
+        let now_ms = crate::hook::current_tick_ms();
+        if let Some(remaining) = self
             .platform_state
             .ime
-            .mode_key_pass_mark_live(crate::hook::current_tick_ms())
+            .mode_key_pass_window_remaining_ms(now_ms)
         {
-            self.schedule_ime_refresh(crate::tuning::MODE_KEY_PASS_REREAD_MS);
+            let last_read_succeeded = self.platform_state.ime.detect_miss_count() == 0;
+            self.schedule_ime_refresh(crate::state::force_guard::mode_key_pass_next_read_ms(
+                last_read_succeeded,
+                remaining,
+                crate::tuning::MODE_KEY_PASS_REREAD_MS,
+            ));
             return;
         }
         if self.platform_state.ime.explicit_intent().is_some() {

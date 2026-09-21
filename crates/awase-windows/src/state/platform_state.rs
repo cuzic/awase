@@ -266,6 +266,19 @@ impl ImeStateHub {
         )
     }
 
+    /// 通過マークの窓が切れるまでの残り時間(ms)。マークが無い/フォアグラウンドが変わった/窓が切れていれば`None`。
+    /// 観測が失敗した通過の後、読み直しを窓の終了時の1回に絞るために使う（BUG-158）。
+    pub(crate) fn mode_key_pass_window_remaining_ms(&mut self, now_ms: u64) -> Option<u64> {
+        let scope = crate::win32::foreground_scope();
+        let ScopeCheck::Live(mark) = self.mode_key_pass_mark.peek(scope) else {
+            return None;
+        };
+        crate::state::force_guard::mode_key_pass_window_remaining_ms(
+            now_ms.saturating_sub(mark.armed_at_ms),
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+        )
+    }
+
     /// 通過マークが有効か（消費しない）。フォアグラウンドが変わっていれば`peek`が失効させる。
     /// typing-idleガードのバイパス判定用（`ir_decide_read_strategy`）。
     pub(crate) fn mode_key_pass_mark_live(&mut self, now_ms: u64) -> bool {
