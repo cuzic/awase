@@ -650,7 +650,9 @@ mod app {
         let _ = unsafe { thread_mgr.Deactivate() };
 
         // 集計: 各 KEY の直後に最初に来た NOTIFY / POLL までの遅延。
-        let ev = events.lock().map(|e| e.clone()).unwrap_or_default();
+        let mut ev = events.lock().map(|e| e.clone()).unwrap_or_default();
+        // 時刻の採取とロック取得の間にスレッドが競合して順序が入れ替わりうるので、集計前に時刻順に整える(安定ソート)。
+        ev.sort_by_key(|e| e.at_ms);
         out("--- タイムライン(ms は起動からの経過) ---");
         for e in &ev {
             out(&format!(
@@ -678,7 +680,14 @@ mod app {
                 ev[i + 1..]
                     .iter()
                     .find(|x| x.kind == kind && x.at_ms < next_key)
-                    .map(|x| format!("{}ms ({} {:?})", x.at_ms - e.at_ms, x.name, x.value))
+                    .map(|x| {
+                        format!(
+                            "{}ms ({} {:?})",
+                            x.at_ms.saturating_sub(e.at_ms),
+                            x.name,
+                            x.value
+                        )
+                    })
             };
             out(&format!(
                 "KEY {}: NOTIFY={} POLL={}",
