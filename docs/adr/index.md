@@ -194,6 +194,7 @@
 | [190](190-msime-immcross-failure-fallback-idempotent-vk-ime-on.md) | Microsoft IMEでImmCrossが失敗したとき、非冪等なVK_KANJIトグルでなく冪等なVK_IME_ON/OFF(MsImeDirect)へフォールバックする(BUG-152) | **実装済み(未マージ)・CI実機E2E検証済み**。opus round1〜3で収束+KanjiToggle撤去。PR CI全PASS、実機(dragonflyg4)検証済み。CI(a8/a9)検証済み、実機未 |
 | [191](191-ime-is-source-of-truth-observe-not-write.md) | IMEの状態はIME自身を正とし、awaseは書き込まず観測に追随する（設計転換）。キー効果は注入で学習・検証、成功基準は撤去量 | 草案（未レビュー） |
 | [192](192-state-dependent-mode-key-warning-and-guided-override.md) | 状態依存のIMEモードキーを検出して警告し、awaseの明示config（冪等なON/OFF）への置き換えを案内する | 草案（未レビュー） |
+| [193](193-tsf-native-and-chromium-e2e-targets.md) | TSFネイティブ入力先(自プロセスRichEdit)と実Chrome/Edge(静的HTML+title回収)を実機E2Eの検証対象に加える | 提案（未実装・未検証） |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
