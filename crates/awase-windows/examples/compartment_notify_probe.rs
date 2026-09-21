@@ -110,9 +110,10 @@ mod app {
         KEYEVENTF_KEYUP, VIRTUAL_KEY,
     };
     use windows::Win32::UI::TextServices::{
-        ITfCompartmentEventSink, ITfCompartmentMgr, ITfSource, ITfThreadMgr, CLSID_TF_ThreadMgr,
+        ITfCompartmentEventSink, ITfCompartmentMgr, ITfInputProcessorProfileMgr, ITfSource,
+        ITfThreadMgr, CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr,
         GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_SENTENCE,
-        GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
+        GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, GUID_TFCAT_TIP_KEYBOARD, TF_INPUTPROCESSORPROFILE,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         BringWindowToTop, CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow,
@@ -146,6 +147,37 @@ mod app {
         &GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION,
         &GUID_COMPARTMENT_KEYBOARD_INPUTMODE_SENTENCE,
     ];
+
+    /// アクティブなキーボード TIP を「GJI / MS-IME / その他」で返す。
+    /// 測定結果がどの IME のものか分からないと、IME を取り違えた結論になる（実際に MS-IME を GJI と誤認した前例がある）。
+    fn active_tip() -> String {
+        // GJI(Google 日本語入力)と Microsoft IME(日本語)の TIP CLSID。
+        const GJI: GUID = GUID::from_u128(0xD5A86FD5_5308_47EA_AD16_9C4EB160EC3C);
+        const MSIME: GUID = GUID::from_u128(0x03B5835F_F03C_411B_9CE2_AA23E1171E36);
+        // SAFETY: STA スレッドで CoInitializeEx 済みの後に呼ぶ。GetActiveProfile は out 構造体に書き込む。
+        unsafe {
+            let mgr: windows::core::Result<ITfInputProcessorProfileMgr> =
+                CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER);
+            let Ok(mgr) = mgr else {
+                return "取得失敗(ProfileMgr)".to_string();
+            };
+            let mut p = TF_INPUTPROCESSORPROFILE::default();
+            if mgr
+                .GetActiveProfile(&GUID_TFCAT_TIP_KEYBOARD, &raw mut p)
+                .is_err()
+            {
+                return "取得失敗(GetActiveProfile)".to_string();
+            }
+            let kind = if p.clsid == GJI {
+                "GJI"
+            } else if p.clsid == MSIME {
+                "MS-IME"
+            } else {
+                "その他"
+            };
+            format!("{kind} clsid={:?} langid=0x{:X}", p.clsid, p.langid)
+        }
+    }
 
     fn hwnd_of(v: &AtomicIsize) -> HWND {
         HWND(v.load(Ordering::SeqCst) as *mut core::ffi::c_void)
@@ -389,6 +421,7 @@ mod app {
             (cmgr, thread_mgr, cookies)
         };
 
+        out(&format!("アクティブTIP: {}", active_tip()));
         let initial: Vec<String> = GUIDS
             .iter()
             .map(|g| format!("{}={:?}", name_of(g), read_value(&cmgr, g)))
