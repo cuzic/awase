@@ -234,7 +234,7 @@ impl Executor {
 mod tests {
     use super::*;
     use crate::cost::CostModel;
-    use crate::models::{atok_keys, atok_like};
+    use crate::sample_models::{atok_keys, atok_like};
     use crate::sim::SimConfig;
 
     fn exec(cfg: SimConfig) -> Executor {

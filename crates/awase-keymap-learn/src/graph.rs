@@ -563,7 +563,7 @@ fn euler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::atok_like;
+    use crate::sample_models::atok_like;
 
     fn graph() -> (Graph, Prior) {
         let m = atok_like();

@@ -1,4 +1,4 @@
-//! 巡回戦略 S0〜S7 のオフライン比較。`cargo run --release -p awase-keymap-learn --example simulate`
+//! 巡回戦略 S0〜S9 のオフライン比較。`cargo run --release -p awase-keymap-learn --example simulate`
 //! 各モデル×条件×待ちの方式で、戦略ごとに指標(M1〜M9)を出す(乱数シード5本の平均)。
 
 use awase_keymap_learn::anomaly::AnomalyPolicy;
@@ -7,8 +7,8 @@ use awase_keymap_learn::exec::{Executor, ReadPolicy};
 use awase_keymap_learn::graph::Prior;
 use awase_keymap_learn::metrics::{evaluate, mean, Metrics};
 use awase_keymap_learn::model::Machine;
-use awase_keymap_learn::models::{atok_like, synthetic};
 use awase_keymap_learn::rng::Rng;
+use awase_keymap_learn::sample_models::{atok_like, synthetic};
 use awase_keymap_learn::sim::{SimConfig, SimIme};
 use awase_keymap_learn::strategy::{run, Req, Strategy};
 
