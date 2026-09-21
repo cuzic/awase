@@ -1,0 +1,2 @@
+2026-09-21T01:22:55.000227Z  INFO awase::engine::engine: Engine activated (ime=true, romaji=true, japanese=true, user=true, reason=Active)
+script error: Output type incorrect: bool (expecting ())

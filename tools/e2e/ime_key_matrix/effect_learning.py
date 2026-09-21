@@ -120,10 +120,13 @@ def drift(spike_log, awase_log):
     tot = bad = 0
     by = Counter()
     detail = []
-    for vk, before, a400, _, press in rows:
-        if not a400 or press + 400 < ev[0][0]:
+    off = int(os.environ.get("DRIFT_OFF", "400"))
+    for vk, before, a400, a1500, press in rows:
+        if off >= 1500:
+            a400 = a1500
+        if not a400 or press + off < ev[0][0]:
             continue
-        eng = [k for ms, k in ev if ms <= press + 400]
+        eng = [k for ms, k in ev if ms <= press + off]
         eng_on = eng[-1] == "activated"
         want = a400[0] and a400[1] == 1
         tot += 1

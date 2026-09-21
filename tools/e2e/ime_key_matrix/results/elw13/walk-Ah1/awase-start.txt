@@ -1,0 +1,2 @@
+ERROR: The process "awase.exe" not found.
+awase(A) procs: 1

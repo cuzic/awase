@@ -1,0 +1,2 @@
+SUCCESS: The process "awase.exe" with PID 8028 has been terminated.
+awase procs: 1
