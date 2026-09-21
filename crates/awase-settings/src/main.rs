@@ -2814,9 +2814,9 @@ impl SettingsApp {
         ui.heading("IMEキー較正");
         ui.label(
             "無変換/変換等のキーがGJI/MS-IMEで実際にIMEをON/OFFするか実機測定します。\n\
-             config1.db/レジストリの静的な分類だけでは判別できない環境向けです。",
+             config1.db/レジストリの静的な分類だけでは判別できない環境向けです。\n\
+             測定結果は保存されますが、現バージョンでは実際のIME判定には適用されません（測定のみ）。",
         );
-        ui.add_space(8.0);
         ui.add_space(8.0);
 
         ui.horizontal(|ui| {

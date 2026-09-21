@@ -1136,3 +1136,16 @@ Passthroughにする設定(`muhenkan_solo_tap_always_suppress = false`等)を前
 - FollowOnly(方向固定のTurnOn/TurnOffだけbeliefを予測で書く)は、ATOKの状態依存(入力中は開閉が変わらない)のToggleには使えないと分かり、
   Toggleは観測に基づくfollow(ADR-187)へ、方向固定のキーはbeliefトグル(ADR-189、GJIの半角/全角)へ分けた。
 - 実験コミットをdevelopへ入れる前に撤去する運用(このエントリ)は、同種の実験(Passthrough等)が本決定と混ざらないようにする。
+
+## エントリ 28: ADR-191 半角/全角トグルの「appliedとbeliefの食い違い時は shadow_action を付けず生キーを通す」ガード(`b28c8b9f`)を撤回(`4378b061`)
+
+**背景**: `cal-verify-blind`(Edit→Imm32Unavailable、GJI)のずれが 0%→10〜15% に悪化した(BUG-155)。切り分けで、実IMEが変わらなかった7押下のうち5件は、
+belief=実IME(ON)でトグル(true→false)を決めたのに、GjiDirect が「shadow already OFF, skip」で VK_IME_OFF を送らず、物理キーは Suppress 済みのため実IMEが変わらない、ことが分かった。
+`4378b061` は revert コミットで、本文が `git revert` 自動生成のままだった(experiment-logging 違反)。履歴は書き換えず、失敗条件をここに補う(レビュー指摘B-m1/C-M2)。
+
+| 日付 | 仮説 | 環境 | 変更 | 観測結果 | 判定 |
+| --- | --- | --- | --- | --- | --- |
+| 2026-09-21 | `enrich_ime_relevance` で `belief_conflicts_with_applied`(applied 既知かつ belief と不一致)のとき 0xF3/0xF4 に Toggle の shadow_action を付けず、生キーを IME へ通せば、読めない窓のずれが消える(`b28c8b9f`) | GJI(MS-IME プリセット)、`cal-verify-blind`(Edit→Imm32Unavailable、読めない窓)、awase 起動、半角/全角を交互に押す。失敗した状態: applied=OFF(前回の書込み)のまま belief が予測(`KeyEffectPredicted`)で ON へ動いた後の押下 | 上記ガードを追加(純関数1つ+条件1つ) | ガードは症状(トグルが飛ぶ)を隠すだけで、原因(予測が belief だけを動かし `applied` が古いまま残る=already-matched 判定が誤る)は残った。ユーザー判断「ズレの原因を直すべき(ガードではない)」により撤回し、根本の `ImeModel::reduce` の `KeyEffectPredicted` で `applied` を Unknown に落とす修正(`ba6144a6`、BUG-156)に置き換えた | **撤回**(`4378b061`)。同じ「beliefが怪しいときトグルをやめる」ガードを再導入しないこと |
+
+**学び**:
+- 「送信を省略してよいか」の判定は陽性の確認済み証拠(`applied` の確認済み値)にのみ基づかせる。予測が belief を動かすなら、`applied` も同時に「未知」へ落とす(ADR-098 決定1-b の罠と同型)。

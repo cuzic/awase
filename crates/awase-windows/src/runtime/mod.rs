@@ -488,6 +488,12 @@ impl Runtime {
         // （`tests/architecture_guard.rs::ime_relevance_shadow_action_writes_are_accounted_for`が
         // このファイル内の書き込み箇所数を1に固定している）。ひらがな・カタカナ・英数・無変換・変換は
         // 入力モードも動かしうるので上書きせず、生のままIMEへ通して追随する（ADR-187のfollow）。
+        //
+        // 全打鍵で通る経路なので、VK が IME キーでないものは修飾キーと IME 種別を見る前に抜ける
+        // （develop の同関数が明示していた評価順、レビュー指摘B-m10）。
+        let Some(key) = event.vk_code.ime_kind() else {
+            return;
+        };
         let m = event.modifier_snapshot;
         if m.ctrl || m.alt || m.shift || m.win {
             return;
@@ -495,11 +501,7 @@ impl Runtime {
         let ime = crate::state::ime_kind::ImeKindId::from(
             crate::tsf::observer::tsf_obs().active_ime_kind(),
         );
-        if event
-            .vk_code
-            .ime_kind()
-            .is_some_and(|k| k.is_open_toggle_for(ime))
-        {
+        if key.is_open_toggle_for(ime) {
             event.ime_relevance.shadow_action = Some(awase::types::ShadowImeAction::Toggle);
         }
     }

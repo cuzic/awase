@@ -168,8 +168,16 @@ impl ImeKeyKind {
     /// 半角/全角(0xF3/0xF4)は、GJIでは0x19と同じく「開なら閉、閉なら開」のトグル
     /// （ADR-186の表、CIの`--hz`）。Microsoft IME本体でも、awaseなしで同じキー列を流すとトグルする
     /// （ADR-190、`sc-hz-msime-native-noawase`）。awase側の静的モデル（0xF3=OFF、0xF4=ON）が
-    /// 実IMEと食い違っていただけである。**IME種別を足すときは、ここで必ず適用可否を決める**
-    /// （`match`を網羅にして、決め忘れをコンパイルエラーにする）。
+    /// 実IMEと食い違っていただけである。
+    ///
+    /// **GJIとMS-IME本体の両方に適用するのはユーザー決定**（ADR-189は元々GJIのみ、ADR-191で
+    /// MS-IME本体へ拡張）。`ImeKindId::MsIme`は「GJIを検出できなかった」も兼ねる
+    /// （`state/ime_kind.rs`、ADR-089 §1.3(g)）ので、GJI起動直後の未検出窓や第三者日本語IMEでも
+    /// `true`になる。読めない窓では観測で訂正できないため、DBEの意味（0xF3=SBCS固定・0xF4=DBCS固定）
+    /// に従うIMEでは belief が実IMEとずれうる（既知の制約、BUG-155/156・ADR-191決定5）。
+    ///
+    /// `match`は`ImeKindId`について網羅なので、**IME種別を足すとここがコンパイルエラーになり、
+    /// 適用可否を決め忘れない**（両アームが同じ値でも、この性質のために1本の`match`のまま残す）。
     #[must_use]
     pub const fn is_open_toggle_for(&self, ime: crate::state::ime_kind::ImeKindId) -> bool {
         use crate::state::ime_kind::ImeKindId;
@@ -219,8 +227,10 @@ pub const fn is_ime_mode_key_for_ime(vk_code: VkCode) -> bool {
 /// IMEモードキー（`is_ime_mode_key_for_ime`: 全角/半角・英数・かな・カタカナ・変換・無変換など）は元の
 /// スキャンコードを保つ。**`wScan=0`で再注入すると、実機のGJI（MS-IMEプリセット）で、awase無しなら
 /// IMEを開くひらがな（0xF2）が開かなくなった**（BUG-154、ADR-191 実機検証: awase経由の閉→開が0/6、
-/// スキャンコードを保つと4/4）。拡張キー（矢印など）は`KEYEVENTF_EXTENDEDKEY`無しのscan付き再注入が
-/// 別のキー（テンキー）に化けうるので、従来どおり0のままにする。
+/// スキャンコードを保つと4/4）。それ以外のキー（矢印などの拡張キー）は`KEYEVENTF_EXTENDEDKEY`無しの
+/// scan付き再注入が別のキー（テンキー）に化けうるので、従来どおり0のままにする。
+/// なお判定は**拡張フラグではなくVKの集合**（`is_ime_mode_key_for_ime`）で行う。IMEモードキー
+/// （0x15-0x1A・0x1C・0x1D・0xF0-0xF6）はJIS配列で拡張キーにならないので、VK集合で代用できている。
 #[must_use]
 pub const fn reinject_scan_code(vk_code: VkCode, scan_code: u32) -> u16 {
     if is_ime_mode_key_for_ime(vk_code) {
