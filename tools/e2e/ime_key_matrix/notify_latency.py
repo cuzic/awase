@@ -63,7 +63,11 @@ def report(path):
         pf = poll[0][0] if poll else None
         pl = poll[-1][0] if poll else None
         kinds = ",".join(f"{n}@{d}" for d, n, _ in notif) or "なし"
-        print(f"  {nm:8} 通知: 最初{f}ms 最後{l}ms ({kinds})  POLL: 最初{pf}ms 最後{pl}ms")
+        fs = "なし" if f is None else f"{f}ms"
+        ls = "なし" if l is None else f"{l}ms"
+        pfs = "なし" if pf is None else f"{pf}ms"
+        pls = "なし" if pl is None else f"{pl}ms"
+        print(f"  {nm:8} 通知: 最初{fs} 最後{ls} ({kinds})  POLL: 最初{pfs} 最後{pls}")
         if notif:
             first.append(f)
             last.append(l)
@@ -80,6 +84,9 @@ def report(path):
             pfirst.append(pf)
             plast.append(pl)
     n = max(len(rows), 1)
+    if not rows:
+        print("エラー: KEY 行が0件(プローブが ABORT した/キーを1本も注入しなかった)。遅延は測れていない(「通知なし0/0=0%」ではない)", file=sys.stderr)
+        sys.exit(2)
     print(f"\n[通知] 最初の通知までの遅延 ms: P50={pct(first,50)} P95={pct(first,95)} max={max(first) if first else None} (通知ありのキー{len(first)}件)")
     print(f"[通知] 最後の通知までの遅延 ms: P50={pct(last,50)} P95={pct(last,95)} max={max(last) if last else None}")
     print(f"[通知] 複数回来たキー{len(quiet)}件の「最初→最後」の幅 ms: P50={pct(quiet,50)} max={max(quiet) if quiet else None}")

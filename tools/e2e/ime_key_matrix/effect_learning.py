@@ -59,27 +59,35 @@ def parse_snap(text):
         return None  # A/B 不一致は観測不能として除外
     open_ = a_open if a_open is not None else b_open
     conv = h(bc) if h(bc) is not None else h(ac)
-    if open_ is None or conv is None or comp == "?":
+    if open_ is None or conv is None or comp in ("?", '"?"'):
         return None
     # ROMANビットはawaseが書くフラグでGJI自身は報告しない(A'実測)ため、既定では状態に含めない。
     roman = (conv & 0x10) != 0 if os.environ.get('WITH_ROMAN') else True
     return (open_, conv & 1, comp != '""', roman)
 
 
-def parse(path):
-    """→ [(vk, before, after400, after1500)]  (どれか観測不能なら None)"""
+def parse(path, with100=False):
+    """→ [(vk, before, after400, after1500, press)]  (どれか観測不能なら None)。
+    with100=True のときは末尾に after100(+100ms 行。--snap100 のログにだけある)を足した6要素にする。"""
     rows, cur = [], None
-    for line in open(path, encoding="utf-8").read().splitlines():
+    for line in open(path, encoding="utf-8", errors="replace").read().splitlines():
         m = KEY_RE.match(line)
         if m:
             cur = {"vk": int(m.group(1), 16), "press": to_ms(m.group(2))}
             rows.append(cur)
+            continue
+        if line.startswith("["):
+            # 別のログ行(注記のない KEY 行=人の物理打鍵、[GRID-..] 等)=この押下のスナップショットブロックの終わり。
+            # これが無いと、次のブロックの 前/+400ms 行を直前の押下の観測として取り込んで上書きする。
+            cur = None
             continue
         if cur is None:
             continue
         s = line.strip()
         if s.startswith("前"):
             cur["before"] = parse_snap(s)
+        elif s.startswith("+100ms"):
+            cur["a100"] = parse_snap(s)
         elif s.startswith("+400ms"):
             cur["a400"] = parse_snap(s)
         elif s.startswith("+1500ms"):
@@ -88,6 +96,12 @@ def parse(path):
     for r in rows:
         if r["vk"] == 0xF4:
             r["vk"] = 0xF3
+    if with100:
+        return [
+            (r["vk"], r.get("before"), r.get("a400"), r.get("a1500"), r["press"], r.get("a100"))
+            for r in rows
+            if r["vk"] in NAMES
+        ]
     return [
         (r["vk"], r.get("before"), r.get("a400"), r.get("a1500"), r["press"])
         for r in rows
@@ -111,30 +125,37 @@ def parse_engine(path):
 
 
 def drift(spike_log, awase_log):
-    """押下 +400ms 時点の Engine 状態と、実IME状態から期待される Engine 状態(open かつ かな)を比べる。"""
-    rows = parse(spike_log)
+    """押下から DRIFT_OFF ms 後の Engine 状態と、同じ時点の実IME状態から期待される Engine 状態(open かつ かな)を比べる。
+    実IME状態は DRIFT_OFF 以下で最も遅い観測時点(+100/+400/+1500ms)の行を使う(100→+100ms、400→+400ms、1500以上→+1500ms)。
+    その時点の観測がログに無い(--fast は +1500ms なし、通常のログは +100ms なし)ときはエラーにする(別の時点で代用しない)。"""
+    rows = parse(spike_log, with100=True)
     ev = parse_engine(awase_log)
     if not ev:
         print("awase ログに Engine activated/deactivated が無い(RUST_LOG=debug か確認)")
         return
+    off = int(os.environ.get("DRIFT_OFF", "400"))
+    snap_t = 100 if off < 400 else 400 if off < 1500 else 1500
+    idx = {100: 5, 400: 2, 1500: 3}[snap_t]
+    if not any(r[idx] for r in rows):
+        print(f"エラー: 押下 +{snap_t}ms の観測がログに無い(DRIFT_OFF={off})。--snap100 のログは DRIFT_OFF=100、--fast は 400 以下を使う", file=sys.stderr)
+        sys.exit(2)
     tot = bad = 0
     by = Counter()
     detail = []
-    off = int(os.environ.get("DRIFT_OFF", "400"))
-    for vk, before, a400, a1500, press in rows:
-        if off >= 1500:
-            a400 = a1500
-        if not a400 or press + off < ev[0][0]:
+    for r in rows:
+        vk, before, press = r[0], r[1], r[4]
+        st = r[idx]
+        if not st or press + off < ev[0][0]:
             continue
         eng = [k for ms, k in ev if ms <= press + off]
         eng_on = eng[-1] == "activated"
-        want = a400[0] and a400[1] == 1
+        want = st[0] and st[1] == 1
         tot += 1
         if eng_on != want:
             bad += 1
-            by[(NAMES[vk], fmt(before), fmt(a400), eng_on)] += 1
-            detail.append((press, NAMES[vk], fmt(before), fmt(a400), eng_on))
-    print(f"押下 {tot} 件中、Engine と実IMEのずれ {bad} 件 ({bad / max(tot, 1):.1%})")
+            by[(NAMES[vk], fmt(before), fmt(st), eng_on)] += 1
+            detail.append((press, NAMES[vk], fmt(before), fmt(st), eng_on))
+    print(f"押下 {tot} 件中(実IME +{snap_t}ms と Engine +{off}ms を比較)、Engine と実IMEのずれ {bad} 件 ({bad / max(tot, 1):.1%})")
     for (k, b, a, e), n in by.most_common():
         print(f"  {k:6} {b:16} → 実{a:16} でEngine={'ON' if e else 'OFF'}(期待と逆) ×{n}")
 
@@ -158,7 +179,10 @@ def compare(a_log, b_log):
             diff += 1
             mark = "★差分"
         print(f"{fmt(k[0]):16} {NAMES[k[1]]:6} {fmt(pa):30} {fmt(pb):30} {mark}")
-    print(f"一致 {same} / 差分 {diff} / 片側のみ {only}  (差分=awaseがIME状態に与えた影響)")
+    print(f"一致 {same} / 差分 {diff} / 片側のみ {only}  (差分=awaseがIME状態に与えた影響。共通セル {same + diff})")
+    if same + diff == 0:
+        print("警告: A と B に共通セルが無く、比較できていない(「差分0=awaseは影響しない」ではない)。入力ログを確認すること", file=sys.stderr)
+        sys.exit(2)
 
 
 def fmt(st):
@@ -271,7 +295,12 @@ def main(paths):
     for p, r in zip(paths, runs):
         usable = sum(1 for _, b, a, *_ in r if b and a)
         print(f"{p}: 押下{len(r)}件、状態が取れた{usable}件")
+    if not any(b and a for r in runs for _, b, a, *_ in r):
+        print("エラー: 使える観測(押下前と +400ms の状態)が0件。--snap100/--fast(+400ms 行が無い)のログは、このツールでは学習できない(grid_learn.py --at を使う)", file=sys.stderr)
+        sys.exit(2)
     table = learn(runs)
+    if len(runs) == 1:
+        print("注: ログが1本だけなので、以降の「leave-one-run-out」は学習=検証(train==test)になる。決定性以外の精度は過大評価")
 
     print("\n== 1. 決定性（全ランを学習に使った表） ==")
     total = det = 0

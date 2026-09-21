@@ -26,6 +26,9 @@ def run(paths, variant):
     for k, c in tab.items():
         n = sum(c.values()); top = c.most_common(1)[0][1]; tot += n; det += top
         if top < n: nd.append((k, c))
+    if tot == 0:
+        print(f"[{variant}] エラー: 使える観測が0件(押下前と +400ms の状態が無い。--fast/--snap100 のログは対象外)", file=sys.stderr)
+        sys.exit(2)
     print(f"[{variant}] セル={len(tab)} 決定性 {det}/{tot}={det/tot:.1%} 非決定セル={len(nd)}")
     for ((st, fl), vk), c in nd:
         print(f"    {e.fmt(st)}{'[変換中]' if fl else ''} + {e.NAMES[vk]} → " + " / ".join(f"{e.fmt(k)}×{v}" for k, v in c.most_common()))

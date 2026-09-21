@@ -54,6 +54,7 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 ## ADR-191/193: 学習ラウンド(格子)・検証ラウンド(walk)・通知の計測ツール(ワークフローの `cal-*` 構成 = `check: collect`)
 `cal-*` 構成は判定せずログを回収し、`[GRID-ABORT]` による打ち切り(rc=3=INVALID)だけを検出する(解析は下のツールでローカルに行う)。
 スパイクの全フラグとログタグは `ime_key_matrix_spike.rs` の冒頭docが一覧(`--grid`/`--grid-setup`/`--grid-adaptive`/`--fast`/`--speed`/`--notify`/`--notify-comp`/`--snap100`、`--walk=N --seed=S` を含む)。
+**観測時点(`--at`)に注意**: `grid_learn.py` の既定は、ログにある最も遅い観測時点(通常 +1500ms、`--fast` は +400ms、`--snap100` は +100ms)。`--at=N` を指定してその時点の観測が0件ならエラー終了する(`--fast` のログに `--at=1500` を渡すと空の表になり、`--diff` が「差分0」になる偽陽性を防ぐ)。`--diff`/`effect_learning.py --compare` は共通セルが0件なら警告して非ゼロ終了する。「差分0」を引用するときは共通セル数を併記すること。`effect_learning.py --drift` は `DRIFT_OFF`(100/400/1500)に対応する観測時点(+100/+400/+1500ms)のIME状態と、その時点のEngine状態を比べる(該当観測が無ければエラー)。
 **注意: `--walk`(値なし)は ADR-186 の固定キー列、`--walk=N --seed=S` はランダムなキーをN回注入する ADR-191 の walk で、別物。**
 
 | ファイル | 役割 |
