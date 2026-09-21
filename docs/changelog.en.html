@@ -110,6 +110,48 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.21.0] - 2026-09-21</h2>
+<h3>Added</h3>
+<ul>
+<li><strong>Added the layout `nicola_kakutei.yab`, which confirms the current IME composition the moment you type a punctuation key ("&#12290;" / "&#12289;")</strong><ul>
+<li>Just pick it under "Layout" in the settings window. It is identical to `nicola_keytop.yab` except for the two punctuation keys, and implements the same "confirm on punctuation" behavior as Yamabuki / DvorakJ using keystroke-sequence syntax (`&#12290;+CV4D`)</li>
+<li>Confirmation requires Ctrl+M to be bound to "commit all" in your IME. If Ctrl+M is bound to something else in other applications (e.g. Word's paragraph-style shortcut), remove that binding or don't use this layout</li>
+<li>Verified on real hardware with both Google Japanese Input and Microsoft IME that typing "&#12290;" confirms the composition (checked in a standard edit control; behavior in other applications was not checked individually)</li>
+</ul>
+</li>
+<li><strong>Added a checkbox for keystroke-sequence syntax (`keystroke_sequence`) to the "Advanced" tab of the settings window</strong></li>
+</ul>
+<h3>Changed</h3>
+<ul>
+<li><strong>Keystroke-sequence syntax in layout files (`CV4D`, `+`-separated cells, `@macro` names, etc.) is now interpreted by default</strong> (it was off by default)<ul>
+<li>This affects every `.yab` file that is loaded. The syntax is specific enough that accidental matches are unlikely, but if you have hand-edited `.yab` files, please review them. To turn it off, use the "Advanced" tab or set `keystroke_sequence = "off"` in `config.toml`</li>
+</ul>
+</li>
+<li><strong>Uninstalling the MSI no longer deletes `config.toml` and the layout files (`.yab`)</strong> (now the same as the ZIP version)<ul>
+<li>Previously, uninstalling wiped your customizations. The files now remain after uninstall, and reinstalling reuses the existing files as they are</li>
+</ul>
+</li>
+<li><strong>Collapsed consecutive key auto-repeats in the input history attached to bug reports, so they no longer fill up the recording window</strong> (internal diagnostics improvement)</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed a case with Google Japanese Input where pressing Ctrl+Muhenkan a second or later time did not turn the IME off, so typing kept producing candidate windows</strong><ul>
+<li>Symptom: in Microsoft Edge and similar apps (`Chrome_WidgetWin_1`), typing right after Ctrl+Muhenkan showed conversion candidates, and pressing Ctrl+Muhenkan again sent nothing and did not turn the IME off</li>
+<li>Cause: the internal check "the IME should already be off" ignored evidence that a candidate window was actually being shown (i.e. that the real IME state disagreed), and skipped sending the key</li>
+<li>Fix: when a candidate window has been observed, the state is no longer treated as "already matching", and the key is sent</li>
+</ul>
+</li>
+<li><strong>Fixed Google Japanese Input ignoring an existing `custom_keymap_table` (e.g. one that maps the Conversion key to IME-on) whenever the keymap preset was anything other than "Custom", so a solo tap of the Conversion key did not activate the NICOLA engine</strong><ul>
+<li>Symptom: in Windows Terminal + Google Japanese Input, tapping the Conversion key alone from direct-input mode switched Google Japanese Input itself to hiragana, but awase did not notice and the NICOLA layout stayed inactive (confirmed on real hardware)</li>
+<li>Fix: if the `custom_keymap_table` has a matching row, it now takes precedence regardless of the keymap preset value</li>
+</ul>
+</li>
+<li><strong>Fixed awase starting but being unable to use the NICOLA layout (the engine never ran) when the layout directory (`layout/`) or `config.toml` was missing</strong><ul>
+<li>Symptom: in environments where `layout/` was deleted by hand, or where an older MSI was uninstalled and then reinstalled, startup warned "layout directory not found" and NICOLA input did not work</li>
+<li>Fix: at startup, `config.toml` is now generated from the built-in defaults if missing, and the six bundled layout files (`.yab`) are generated if there are no `.yab` files at all (existing files are never touched)</li>
+</ul>
+</li>
+</ul>
 <h2>[1.20.1] - 2026-09-13</h2>
 <h3>Fixed</h3>
 <ul>
