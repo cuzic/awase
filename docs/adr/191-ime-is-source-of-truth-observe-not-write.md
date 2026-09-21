@@ -16,7 +16,9 @@ summary: |-
 status: |-
   **草案（2026-09-21）。opus敵対レビューround1〜4を実施し、指摘への対応を本文末尾の表にまとめた（停止条件・中止基準・複雑さの収支を含む）。実装は撤去ブランチ（未マージ）。**
   決め打ちの撤去・打鍵時予測・ADR-189の復元は撤去ブランチ`feat/adr191-remove-hardcoded-mode-keys`で実装済み（develop未マージ、CIで検証: 観測あり・読めない条件とも400ms以降ずれ0%）。
-  決定2（BUG-151の最小修正）の単独先行（PR #238）は取り下げ、撤去ブランチで扱う。実機（Windows）での撤去後の動作確認は未実施。
+  決定2（BUG-151の最小修正）の単独先行（PR #238）は取り下げ、撤去ブランチで扱う。
+  実機（ユーザー実機、MS-IMEプリセットのGJI、本番config、hands-off注入）で撤去版の`sc-dbe`/`sc-kanji`/`sc-shift`はALL PASS（BUG-153〜155、2026-09-21）。
+  **実機で未確認**: Microsoft IME本体、TsfNative（Chrome・VS Code等）、Shift+モードキー、専用Fnキー経路。CIで確認済み: MS-IME本体の全25構成rc=0（BUG-158）、GJI側の観測あり・読めない条件のずれ0〜3%。
 related_adr:
   - "ADR-138"
   - "ADR-162"
@@ -307,18 +309,18 @@ P50=1ms・P95=34ms（10件、通知が来なかったキーは6/16=38%）。GJI�
 - 撤去に数えないもの: `classify_mode_key_ime_action`（表生成側へ移設されるだけ）、`ModeKeyConfig`/`muhenkan_solo_tap_dedicated_fn_key`（ユーザー設定で表とは別軸。決定6）。
 - **決定の依存順（round4 QM2、循環の解消）**: 予測表（決定3）→ 書き込みの線引き（決定1、分類a〜eは表から引く）→ 撤去（決定5・6）。表が無い・非決定のセルは「書かずに追随」で動くので、**撤去は表の完成を待たずに先行してよい**
   （例外の一般化は後から足す）。実際の順序: 撤去ブランチは、生成した表（格子第3版）と打鍵時予測を含めて実装済み。
-- **複雑性の収支（実数、2026-09-21、`git diff --shortstat origin/develop...origin/feat/adr191-remove-hardcoded-mode-keys`）**: 全体約50ファイル、約+3,500/−4,600行（docs含む、`develop`のmerge後、2026-09-21のPR時点）。`crates`と`src`だけで+2,524/−4,470行（差し引き−1,946行、
-  うち`crates/awase-windows/src`は+2,397/−2,880）。
+- **複雑性の収支（実数、2026-09-21、`git diff --shortstat origin/develop...origin/feat/adr191-remove-hardcoded-mode-keys`）**: 全体約50ファイル、約+3,500/−4,600行（docs含む、`develop`のmerge後、2026-09-21のPR時点）。PR作成時は`crates`と`src`だけで+2,524/−4,470行（差し引き−1,946行、
+  うち`crates/awase-windows/src`は+2,397/−2,880＝−483）。その後の追加で、現在は`crates`と`src`が+4,163/−5,111（−948）、うち`crates/awase-windows/src`は+3,917/−3,383（+534）。
   | 区分 | 行数 | 戻ってくるか |
   |---|---|---|
   | 削除: `gji_charset_autodetect.rs` | −1,301（+35） | **決定3(a)が再実装する対象**（`config1.db`/Mozcキーマップの読み取り）。現状の表は格子の生成データで、実行時の設定読み取りは未実装（製品化で新規に作る。再実装は分類a〜eに要る最小の範囲に限る） |
   | 削除: `calibrated_mode_key.rs` ほか較正結果の適用 | −254（+7）、適用の削除−165 | **決定4が再実装する**（ユーザー判断: 削除して製品化で新規に作る） |
   | 削除: 単独タップ代行・delegate・opt-in設定・`transport.rs`のDBE分岐 | `nicola_fsm.rs`−556、`transport.rs`−561（+173）、`runtime/mod.rs`−345、`src/engine/tests.rs`−615（指標1の分母の外） | 戻らない（純粋な撤去） |
-  | 追加: 予測器`key_effect_table.rs` | +828 | 決定3の本体 |
-  | 追加: 生成データ`key_effect_data.rs` | +336 | 格子の生成物（手書きセルは無い） |
-  | 追加: `ime_model.rs`（`KeyEffectPredicted`・追跡・fence）＋`platform_state.rs` | +440＋84 | 決定3の本体 |
+  | 追加: 予測器`key_effect_table.rs` | +1,135（MS-IME本体の表引き・修飾キー抑止・キャッシュ込み） | 決定3の本体 |
+  | 追加: 生成データ`key_effect_data.rs` | +478（MS-IME本体の表`MSIME_NATIVE`込み） | 格子の生成物（手書きセルは無い。`gen_key_effect_table.py --check`が一致を検査） |
+  | 追加: `ime_model.rs`（`KeyEffectPredicted`・追跡・fence）＋`platform_state.rs` | +567＋450（通過マーク・意図の破棄・desired揃え=BUG-155/157/158込み） | 決定3の本体と、その周辺の訂正 |
   | 別クレート: `awase-keymap-learn`（旧名`awase-calibration`。巡回・シミュレータ。`feat/awase-calibration`ブランチで改名済み・未マージ） | +3,406（`crates/awase-windows/src`の外） | 製品化の土台。指標1の対象外 |
-  撤去した約4,500行のうち、再実装が要るのは`gji_charset_autodetect.rs`と較正結果の適用の合計約1,700行で、戻ってくる量は**未確定**（設定読み取りの範囲次第）。指標1（`crates/awase-windows/src`の追加−削除がP0〜P2の末で負）は現時点で−628行で満たす。
+  撤去した約4,500行のうち、再実装が要るのは`gji_charset_autodetect.rs`と較正結果の適用の合計約1,700行で、戻ってくる量は**未確定**（設定読み取りの範囲次第）。**指標1（`crates/awase-windows/src`の追加−削除がP0〜P2の末で負）は、現時点（2026-09-21、レビュー指摘対応後）で+3,917/−3,383＝+534行で満たしていない**（PR作成時の−483行から、MS-IME本体の表、BUG-155〜159の修正〈通過マーク・desired揃え・imm-learning〉、それらのテストで増えた）。`crates`と`src`の合計では+4,163/−5,111＝−948行（`src`は−1,373）。撤去量を成功基準にするなら、この超過は次の削除（決定5の残る撤去候補、`ir_apply_drift_correction`等）で返す前提で、マージ可否はユーザーが判断する。
   [ADR-162](162-governance-reversal.md) E1（複雑性予算1-in-1-out、未発効）と同じ向き。
 - **削る・見送るもの（round4 D）**: (1)較正セッションは「学習した表の生成と読み込み」に絞り、ADR-176のウィザードの「適用」配線は削除済み。(2)設定の読み取りは、分類a〜eに要る最小（`config1.db`の`session_keymap`・
   `custom_keymap_table`・`overlay_keymaps`とMozc公開キーマップ）に限り、charset自動検出や設定への上書きは作らない。(3)`ITfUIElementSink`は採らない（決定4）。(4)ADR-192決定3bは、前提を訂正して最小に絞った
@@ -385,14 +387,17 @@ BUG-113/124（TsfNative×GJIの「@」）、BUG-143（`session_keymap`と`custom
    （ユーザー設定のSuppress/Passthrough）の順で解決する。ADR-182決定1bの抑止は残した。
 5. Windows側のGJI/MS-IMEの設定からの自動検出・配線と、較正結果を分類へ反映する関数を削除（較正の永続化・IPCは残る）。旧関数名`sync_gji_charset_autodetect`は、定義が消えた後もdocコメントに
    3ファイルの参照が残っている（掃除が必要。`gji_charset_autodetect.rs`は名前と違い、現在はthumbキー/変換・無変換の分類だけを持つ）。
-6. 撤去した機能の単体テスト約75本を削除。到達不能になった`delegate_owned`の分岐、`ModeKeyActuationOwner::FsmDelegate`、`auto_delegate_open_axis_consumed`（`076f29c3`）と、opt-in設定
+6. 撤去した機能の単体テスト約75本を削除（うち「保留中のIME開閉要求が後続キーに漏れない」2本は`muhenkan_solo_tap_ime_action`版に書き直した）。到達不能になった`delegate_owned`の分岐、`ModeKeyActuationOwner`列挙そのもの（`PhysicalDelivery`は0x1C/0x1Dに`shadow_action`を与える経路が無くなり到達不能。`actuation_owner`フィールド・strip関数・消費点も撤去、レビュー指摘B-M2）、`auto_delegate_open_axis_consumed`（`076f29c3`）と、opt-in設定
    `gji_thumb_key_ime_toggle`（ゲート・警告・設定画面を含む、`78e22861`）も削除した。
 7. 打鍵時予測（決定3）: `state/key_effect_table.rs`（予測器）と生成データ`state/key_effect_data.rs`、`ImeEvent::KeyEffectPredicted`、`platform_state.rs`の反映、`kp_stage_mode_key_follow`から呼ぶ。
    CI検証（run 35585712177）で、観測あり・読めない条件とも400ms以降のずれ0%、`[key-effect-miss]`0件。
-8. `dbe_mode_key_policy = Suppress`の対象を0xF3/0xF4だけに縮小（`73877f52`）。英数0xF0・カタカナ0xF1は素通しで、実イベントでは元から`shadow_action`を持たず素通しだった
-  （握りつぶしていたのは合成イベントの死んだ分岐だけ）。`shift_katakana_passthrough`と`DbeModeKeyContext`は削除。`transport.rs::plan`のDBE分岐・`dbe_mode_key_policy`（約25テスト）は機能しているので残した。
-**残り**: 実機（Windows）でのA/B（英数・カタカナ・半角/全角の動作、MS-IME本体の半角/全角のbeliefトグル）、`transport.rs::plan_tests`の新テストのwindows-build CIでの初回実行（`#[cfg(windows)]`配下でLinuxでは
-走らない）、bug report（ADR-148）のスキーマに残る採用系フィールドの整理、旧名のdocコメントの掃除。
+8. `transport.rs::plan`のDBEのSuppressの対象を0xF3/0xF4だけに縮小（`73877f52`）。英数0xF0・カタカナ0xF1は素通しで、実イベントでは元から`shadow_action`を持たず素通しだった
+  （握りつぶしていたのは合成イベントの死んだ分岐だけ）。`shift_katakana_passthrough`と`DbeModeKeyContext`は削除。**設定`dbe_mode_key_policy`は撤去した**（`090c13d0`、レビュー指摘B-M3。0xF3/0xF4は`enrich_ime_relevance`で必ずToggleの`shadow_action`を持ち`shadow_toggled`でSuppressされるため、Passthroughを選んでも変わらず、それ以外のキーには効かない、実質死んだ設定だった。旧config.tomlにキーが残っていても読める）。
+  0xF3/0xF4のKeyDownの無条件Suppress自体（BUG-46/52の二重actuation防止）は残した。
+9. **ADR-189の適用範囲の拡張**: ADR-189は「GJIのみ、GJI以外は静的モデルのまま」だったが、`is_open_toggle_for`はGJIとMS-IME本体の両方に適用する（ユーザー決定、MS-IME本体もawaseなしで0xF3/0xF4がトグルすることをCI `sc-hz-msime-native-noawase`で確認、ADR-190）。`ImeKindId::MsIme`は「GJI未検出」も兼ねるので、未検出窓・第三者IMEでも適用される既知の制約（読めない窓では観測で訂正できない）。
+10. **GJIは閉→開で変換モードを保持する**（`191-gji-state-scope-spec.md`）ので、トグルON経路の`eisu_reset_on_ime_on`は、GJIかつ追跡中の変換モードが英数と既知のときはひらがなに直さない（BUG-159。MS-IME本体は従来どおり0x19へ戻る前提）。
+**残り**: 実機（Windows）での、Microsoft IME本体・TsfNative・Shift+モードキーの確認、`transport.rs::plan_tests`のwindows-build CIでの実行（`#[cfg(windows)]`配下でLinuxでは走らない）、
+bug report（ADR-148）のスキーマに残る採用系フィールド（常に`None`）の整理。
 
 ## TsfNative（観測できないアプリ）の扱い（2026-09-21、ユーザー整理）
 
