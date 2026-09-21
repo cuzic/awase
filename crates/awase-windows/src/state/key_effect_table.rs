@@ -811,6 +811,26 @@ mod tests {
         assert!(ov.predict(0xF2, &base).is_some());
     }
 
+    /// 実機(ADR-191 実機検証、GJI + MS-IMEプリセット `session_keymap=2` + 既存の `custom_keymap_table` 175行)の
+    /// キーマップの代表行。GJIは`CUSTOM`以外ではこの表を使わずプリセットで動く(実機: 変換は直接入力から何もしない)が、
+    /// awaseは表が該当キーの行を持つ変換(Henkan)を予測しない(安全側)。ひらがな・英数・カタカナ・無変換は予測する。
+    #[test]
+    fn realdev_msime_preset_with_stale_custom_table() {
+        let table = "status\tkey\tcommand\nDirectInput\tEisu\tIMEOn\nDirectInput\tHenkan\tIMEOn\n\
+                     Precomposition\tEisu\tToggleAlphanumericMode\nPrecomposition\tHenkan\tCompositionModeHiragana\n\
+                     Precomposition\tF15\tCompositionModeHiragana\nComposition\tShift Henkan\tCompositionModeFullKatakana\n"
+            .to_string();
+        let km = KeyEffectKeymap::from_config(Some(2), Some(table), &[]).unwrap();
+        let closed = input(false, ROMAJI, false, NOTRACK);
+        // 変換: 表が行を持つので予測しない(観測に追随)。
+        assert_eq!(km.predict(0x1C, &closed), None);
+        // ひらがな(0xF2): 閉から開く(実機の awase 無し実測: open 0→1、conv 0x09→0x19)。
+        let hira = km.predict(0xF2, &closed).expect("ひらがなは予測する");
+        assert_eq!(hira.effect.open, Some(true));
+        // 英数(0xF0): 表(カスタム)にEisu行があるので予測しない。
+        assert_eq!(km.predict(0xF0, &closed), None);
+    }
+
     #[test]
     fn custom_table_rows_for_the_key_disable_prediction() {
         let table =
