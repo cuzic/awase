@@ -246,11 +246,13 @@ impl Runtime {
         // Phase 4a: 通過マークの窓が切れても観測が一度も成功しなかったなら、古い明示意図を捨てる
         // （意図が残るとポーリングが止まったままになる。BUG-158）。戦略（OsPoll/SkipTyping等）によらず
         // 毎tick確認する。窓の間は`reschedule_ime_refresh`が読み直しを予約し続けるので、窓の直後に必ずここへ来る。
+        // 読めない窓では意図を捨てない（読み取りで訂正できず、意図がbeliefの唯一の手がかり。`reschedule_ime_refresh`参照）。
         let now = crate::hook::current_tick_ms();
-        if self
-            .platform_state
-            .ime
-            .expire_mode_key_pass_mark(now, crate::state::TickMs(now))
+        if self.can_use_imm32_cross_process()
+            && self
+                .platform_state
+                .ime
+                .expire_mode_key_pass_mark(now, crate::state::TickMs(now))
         {
             tracing::info!(
                 "[mode-key-follow] window expired without a successful observation: intents invalidated"

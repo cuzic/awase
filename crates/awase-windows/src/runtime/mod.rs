@@ -812,8 +812,18 @@ impl Runtime {
         // （`mode_key_pass_next_read_ms`。失敗する環境で60msごとに読むとprobeが重なり、3回連続失敗で
         // `imm-learning`が窓を誤って降格する。BUG-158）。窓が切れた直後のtickで`ir_stage_notify`が古い意図を
         // 捨てる（意図が残ってポーリングが止まらない）。
+        // 読めない窓（`Imm32Unavailable`等）では読み取り自体ができず、意図が読み取りで訂正される見込みが無い
+        // ので、通過マークの読み直しも窓終了時の意図の破棄もしない（意図はbeliefの唯一の手がかりとして残る。
+        // 破棄するとCIのblind条件でEngineずれが0→22〜25%に悪化した）。
         let now_ms = crate::hook::current_tick_ms();
-        if let Some(remaining) = self
+        if !self.can_use_imm32_cross_process() {
+            // 読めない窓は従来どおり（ADR-187）: 明示意図があれば停止、通過マークが有効な間は上書きしない。
+            if self.platform_state.ime.explicit_intent().is_some()
+                || self.platform_state.ime.mode_key_pass_mark_live(now_ms)
+            {
+                return;
+            }
+        } else if let Some(remaining) = self
             .platform_state
             .ime
             .mode_key_pass_window_remaining_ms(now_ms)
