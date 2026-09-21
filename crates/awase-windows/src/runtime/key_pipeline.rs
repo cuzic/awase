@@ -1945,8 +1945,8 @@ impl Runtime {
             ActiveImeKind::MicrosoftIme if obs.ime_kind_detected() => {
                 self.key_effect_keymap_native.get(
                     now_ms,
-                    crate::msime_key_assignment::native_assignment_stamp,
-                    crate::msime_key_assignment::read_key_effect_keymap_native,
+                    || Some(crate::msime_key_assignment::native_assignment_stamp()),
+                    || Some(crate::msime_key_assignment::read_key_effect_keymap_native()),
                 )
             }
             ActiveImeKind::MicrosoftIme => return,

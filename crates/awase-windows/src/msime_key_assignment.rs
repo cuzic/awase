@@ -244,27 +244,25 @@ mod windows_impl {
     /// ADR-191: Microsoft IME本体の打鍵時予測（`key_effect_table`）に使うキーマップを、キー割り当て
     /// （`IsKeyAssignmentEnabled`/`KeyAssignmentHenkan`/`KeyAssignmentMuhenkan`）から作る。
     /// 呼び出しは`KeymapCache`が版（[`native_assignment_stamp`]）の変化時だけに絞る。
-    pub(crate) fn read_key_effect_keymap_native(
-    ) -> Option<crate::state::key_effect_table::KeyEffectKeymap> {
+    pub(crate) fn read_key_effect_keymap_native() -> crate::state::key_effect_table::KeyEffectKeymap
+    {
         let raw = read_raw_key_assignment_dwords();
-        Some(
-            crate::state::key_effect_table::KeyEffectKeymap::for_msime_native(
-                raw.is_key_assignment_enabled == Some(1),
-                raw.key_assignment_henkan,
-                raw.key_assignment_muhenkan,
-            ),
+        crate::state::key_effect_table::KeyEffectKeymap::for_msime_native(
+            raw.is_key_assignment_enabled == Some(1),
+            raw.key_assignment_henkan,
+            raw.key_assignment_muhenkan,
         )
     }
 
     /// `read_key_effect_keymap_native`の版。3つのDWORDの値（不在は`u32::MAX`で表す）を詰めた値
     /// （レジストリの再読み取りだけで、ファイルは読まない）。
-    pub(crate) fn native_assignment_stamp() -> Option<(u64, u64)> {
+    pub(crate) fn native_assignment_stamp() -> (u64, u64) {
         let raw = read_raw_key_assignment_dwords();
         let v = |x: Option<u32>| u64::from(x.unwrap_or(u32::MAX));
-        Some((
+        (
             v(raw.is_key_assignment_enabled),
             (v(raw.key_assignment_henkan) << 32) | v(raw.key_assignment_muhenkan),
-        ))
+        )
     }
 
     /// ADR-176決定6（176-T12）: `vk`（`VK_NONCONVERT`/`VK_CONVERT`）に関連する

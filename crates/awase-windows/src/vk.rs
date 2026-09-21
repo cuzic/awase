@@ -144,6 +144,7 @@ impl ImeKeyKind {
     /// ADR-191: 開閉だけに作用し、どのIMEでも結果が同じキーだけを静的に扱う。
     /// - `VK_IME_ON`/`VK_IME_OFF`: Windows標準で冪等。
     /// - `VK_KANJI`(0x19): どのIMEでも開閉トグル（ADR-189、`keys.ime_toggle`の既定）。
+    ///
     /// ひらがな・カタカナ・英数・`VK_KANA`など、入力モードも動かしうる/IMEの種類・キーマップ・
     /// 状態で変わるキーは静的に決め打ちしない（`None`）。生のままIMEへ通し、結果を観測して追随する。
     /// 半角/全角(0xF3/0xF4)はIME種別ごとの判定が要るため[`Self::is_open_toggle_for`]で扱う。

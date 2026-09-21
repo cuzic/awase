@@ -673,6 +673,12 @@ impl ImeModel {
     // ImeEventを`event_kind = "UserImeToggleIntent"`のような判別子文字列で
     // 出しているのに対し、ここでDebugフォーマットすると`event=UserImeToggleIntent
     // { source: SyncKey }`という別の語彙が並び立ち、triageを混乱させる）。
+    //
+    // `ImeEvent` の全 variant を1つの `match` で振り分ける reducer で、分岐の数がそのまま複雑度になる。
+    // 本体が長い分岐はヘルパーへ抽出済み（ADR-170）。`KeyEffectPredicted`/`ModeKeyPassedThrough` の
+    // アームは `tests/architecture_guard.rs` がアーム本文を直接検査する（belief 書き込み口の固定）ので
+    // ここへ残し、複雑度の警告だけを抑制する。
+    #[expect(clippy::cognitive_complexity)]
     #[tracing::instrument(level = "debug", skip_all)]
     pub fn reduce(&mut self, envelope: &ImeEventEnvelope) {
         match envelope.event {

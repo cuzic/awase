@@ -384,9 +384,10 @@ pub struct KeyEffectKeymap {
     muhenkan_reassigned: bool,
 }
 
-/// 修飾キーを押したままの打鍵では予測・追跡をしない（レビュー指摘A-B3。旧`enrich_ime_relevance`の
-/// 修飾キーガード〈ADR-186 残る問題2: Shift+変換はATOKで開閉トグルではない〉の置き換え）。
-/// 表が持つキー（モードキー・Space/Esc/Enter/BS）はShift/Ctrl/Alt/Winのどれかで抑止する
+/// 修飾キーを押したままの打鍵では予測・追跡をしない。
+///
+/// レビュー指摘A-B3。旧`enrich_ime_relevance`の修飾キーガード〈ADR-186 残る問題2: Shift+変換はATOKで
+/// 開閉トグルではない〉の置き換え。表が持つキー（モードキー・Space/Esc/Enter/BS）はShift/Ctrl/Alt/Winのどれかで抑止する
 /// （Shift+Spaceなど表のセルは「素のキー」の結果）。表に無い文字キーはShift（大文字入力）を許し、
 /// Ctrl/Alt/Win（ショートカット。入力中にならない）だけ抑止する。
 #[must_use]

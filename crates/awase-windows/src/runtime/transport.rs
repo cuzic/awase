@@ -160,11 +160,6 @@ impl PhysicalKeyDisposition {
     /// `profile.should_pass_physical_key()`（TsfNative で常に true）のみで判定しており、
     /// 「TSF が KANJI を正しく処理する」という前提が `GjiDirectStrategy` の全プロファイル
     /// 適用化（`ime_controller.rs`）より前のまま残っていたことが原因だった。
-    // 物理キーのSuppress/Allow判断は分岐が本質的に多い（プロファイル×VK種別×
-    // 各種例外の組み合わせ）。分割は挙動変更リスクが高い「reincidence family」
-    // （`.claude/rules/fix-requires-evidence.md`のtransport.rs::plan行参照）
-    // のため、複雑度警告のみ抑制する（`kp_stage_shadow_ime_toggle`と同じ方針）。
-    #[expect(clippy::cognitive_complexity)]
     #[tracing::instrument(
         level = "debug",
         skip_all,

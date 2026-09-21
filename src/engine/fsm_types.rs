@@ -483,10 +483,9 @@ impl PendingKey {
 
 /// 保留中の親指キーデータ
 ///
-/// `is_left`/`injected`/`explicit_ime_action_consumed`/`after_char_flush`は独立した分類結果で
-/// あり（互いに排他でも状態遷移でもない）、状態機械やenumへの統合は不自然なため
-/// `#[expect(clippy::struct_excessive_bools)]`で許容する。`ClassifiedEvent`の値をそのまま引き継ぐ。
-#[expect(clippy::struct_excessive_bools)]
+/// `is_left`/`explicit_ime_action_consumed`/`after_char_flush`は独立した分類結果で
+/// あり（互いに排他でも状態遷移でもない）、状態機械やenumへの統合は不自然。
+/// `ClassifiedEvent`の値をそのまま引き継ぐ。
 #[derive(Debug, Clone, Copy)]
 pub struct PendingThumbData {
     pub scan_code: ScanCode,

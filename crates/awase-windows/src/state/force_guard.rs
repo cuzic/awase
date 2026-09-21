@@ -280,6 +280,7 @@ pub(crate) const fn should_drop_intents_for_mode_key_pass(
 ///   drift correctionが訂正すべきなので、実IMEを信用しない）
 /// - 通過より後に記録された明示意図が無い（`!has_intent`。`ModeKeyPassedThrough`は`last_intent`を捨てるので、
 ///   新しい意図を巻き添えにしない）
+///
 /// 揃えた後は通常のdrift correctionに戻る（永続的に無効化しない）。
 #[must_use]
 pub(crate) const fn should_align_after_expired_mode_key_pass(
