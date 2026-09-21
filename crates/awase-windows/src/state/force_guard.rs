@@ -574,16 +574,16 @@ mod tests {
     /// 予測が、以後の打鍵中（typing-idleガード）に訂正されず約12秒Engineが固まる。
     #[test]
     fn poll_counted_no_new_miss_continues_follow_after_recovery() {
-        assert!(super::poll_counted_no_new_miss(0, 0), "失敗なし");
+        assert!(poll_counted_no_new_miss(0, 0), "失敗なし");
         assert!(
-            super::poll_counted_no_new_miss(1, 0),
+            poll_counted_no_new_miss(1, 0),
             "直前の失敗から成功で復帰(リセット)しても追随は続ける"
         );
-        assert!(super::poll_counted_no_new_miss(2, 1));
+        assert!(poll_counted_no_new_miss(2, 1));
         assert!(
-            !super::poll_counted_no_new_miss(0, 1),
+            !poll_counted_no_new_miss(0, 1),
             "今回新しく失敗したら追随しない"
         );
-        assert!(!super::poll_counted_no_new_miss(1, 2));
+        assert!(!poll_counted_no_new_miss(1, 2));
     }
 }
