@@ -499,9 +499,27 @@ impl Runtime {
     /// 実処理は [`focus_tracker::FocusTracker::enrich_ime_relevance`] に委譲する。
     pub fn enrich_ime_relevance(&self, event: &mut RawKeyEvent) {
         self.focus_tracker.enrich_ime_relevance(event);
-        // ADR-191: IMEモードキー（ひらがな・カタカナ・無変換・変換・英数・半角/全角・漢字）に、
-        // GJI/MS-IMEの設定や静的な意味づけから`shadow_action`を上書きする経路は持たない。
-        // これらのキーは生のままIMEへ通し、実IMEを読み直して追随する（ADR-187のfollow）。
+        // ADR-189/191: 半角/全角(0xF3/0xF4)は、IME種別ごとに「開閉だけに作用するトグル」と確定して
+        // いるとき（`ImeKeyKind::is_open_toggle_for`）だけ、方向固定でなく beliefに基づくトグルにする。
+        // 修飾付きはIME側で別意味を持ちうるので、無修飾の物理キーだけ。観測に依存しないので、
+        // 読めないアプリ（TsfNative）でも効く。これが`shadow_action`の唯一の上書き点
+        // （`tests/architecture_guard.rs::ime_relevance_shadow_action_writes_are_accounted_for`が
+        // このファイル内の書き込み箇所数を1に固定している）。ひらがな・カタカナ・英数・無変換・変換は
+        // 入力モードも動かしうるので上書きせず、生のままIMEへ通して追随する（ADR-187のfollow）。
+        let m = event.modifier_snapshot;
+        if m.ctrl || m.alt || m.shift || m.win {
+            return;
+        }
+        let ime = crate::state::ime_kind::ImeKindId::from(
+            crate::tsf::observer::tsf_obs().active_ime_kind(),
+        );
+        if event
+            .vk_code
+            .ime_kind()
+            .is_some_and(|k| k.is_open_toggle_for(ime))
+        {
+            event.ime_relevance.shadow_action = Some(awase::types::ShadowImeAction::Toggle);
+        }
     }
 
     /// Decision の副作用を実行する（メッセージループ用）。

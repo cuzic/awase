@@ -289,6 +289,7 @@ pub fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
     let shadow_action = ime_key.and_then(|k| k.shadow_effect()).map(|e| match e {
         vk::ShadowImeEffect::TurnOn => ShadowImeAction::TurnOn,
         vk::ShadowImeEffect::TurnOff => ShadowImeAction::TurnOff,
+        vk::ShadowImeEffect::Toggle => ShadowImeAction::Toggle,
     });
 
     // Note: is_sync_key and sync_direction are set later by the runtime

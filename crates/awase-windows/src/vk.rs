@@ -113,6 +113,8 @@ pub enum ImeKeyKind {
 pub enum ShadowImeEffect {
     TurnOn,
     TurnOff,
+    /// 押すたびに開閉が反転する（beliefから目標を決めて冪等な VK_IME_ON/OFF で書く）。
+    Toggle,
 }
 
 impl ImeKeyKind {
@@ -134,24 +136,44 @@ impl ImeKeyKind {
         }
     }
 
-    /// このキーが shadow IME 状態に与える効果。
+    /// このキーが shadow IME 状態に与える効果（IME種別に依らず静的に確定しているものだけ）。
     ///
-    /// ADR-191: Windows標準で冪等と定められている`VK_IME_ON`/`VK_IME_OFF`だけを静的に扱う。
-    /// ひらがな・カタカナ・英数・半角/全角・漢字・`VK_KANA`など、効果がIMEの種類・キーマップ・
+    /// ADR-191: 開閉だけに作用し、どのIMEでも結果が同じキーだけを静的に扱う。
+    /// - `VK_IME_ON`/`VK_IME_OFF`: Windows標準で冪等。
+    /// - `VK_KANJI`(0x19): どのIMEでも開閉トグル（ADR-189、`keys.ime_toggle`の既定）。
+    /// ひらがな・カタカナ・英数・`VK_KANA`など、入力モードも動かしうる/IMEの種類・キーマップ・
     /// 状態で変わるキーは静的に決め打ちしない（`None`）。生のままIMEへ通し、結果を観測して追随する。
+    /// 半角/全角(0xF3/0xF4)はIME種別ごとの判定が要るため[`Self::is_open_toggle_for`]で扱う。
     #[must_use]
     pub const fn shadow_effect(&self) -> Option<ShadowImeEffect> {
         match self {
             Self::ImeOn => Some(ShadowImeEffect::TurnOn),
             Self::ImeOff => Some(ShadowImeEffect::TurnOff),
+            Self::KanjiToggle => Some(ShadowImeEffect::Toggle),
             Self::Kana
             | Self::Junja
-            | Self::KanjiToggle
             | Self::Alphanumeric
             | Self::Katakana
             | Self::Activate
             | Self::Deactivate
             | Self::ActivatePair => None,
+        }
+    }
+
+    /// ADR-189/191: このIME種別で、このキーが「開閉だけに作用するトグル」と確定しているか。
+    ///
+    /// 半角/全角(0xF3/0xF4)は、GJIでは0x19と同じく「開なら閉、閉なら開」のトグル
+    /// （ADR-186の表、CIの`--hz`）。Microsoft IME本体でも、awaseなしで同じキー列を流すとトグルする
+    /// （ADR-190、`sc-hz-msime-native-noawase`）。awase側の静的モデル（0xF3=OFF、0xF4=ON）が
+    /// 実IMEと食い違っていただけである。**IME種別を足すときは、ここで必ず適用可否を決める**
+    /// （`match`を網羅にして、決め忘れをコンパイルエラーにする）。
+    #[must_use]
+    pub const fn is_open_toggle_for(&self, ime: crate::state::ime_kind::ImeKindId) -> bool {
+        use crate::state::ime_kind::ImeKindId;
+        match ime {
+            ImeKindId::Gji | ImeKindId::MsIme => {
+                matches!(self, Self::Deactivate | Self::ActivatePair)
+            }
         }
     }
 }
@@ -1155,6 +1177,54 @@ mod tests {
                     "keys側の既定コンボ {a:?} と ime_detect側の既定コンボ {p:?} が \
                      同じキーを指している（二重処理で押しても IME が動かない \
                      キーになる）"
+                );
+            }
+        }
+    }
+
+    /// ADR-191: 静的に確定しているのは `VK_IME_ON`/`VK_IME_OFF`（冪等）と `VK_KANJI`（トグル、ADR-189）だけ。
+    /// 入力モードも動かしうるキー（ひらがな・カタカナ・英数・かな）と半角/全角は静的に決め打ちしない。
+    #[test]
+    fn shadow_effect_is_static_only_for_ime_on_off_and_kanji_toggle() {
+        use super::ShadowImeEffect::{Toggle, TurnOff, TurnOn};
+        assert_eq!(ImeKeyKind::ImeOn.shadow_effect(), Some(TurnOn));
+        assert_eq!(ImeKeyKind::ImeOff.shadow_effect(), Some(TurnOff));
+        assert_eq!(ImeKeyKind::KanjiToggle.shadow_effect(), Some(Toggle));
+        for k in [
+            ImeKeyKind::Kana,
+            ImeKeyKind::Junja,
+            ImeKeyKind::Alphanumeric,
+            ImeKeyKind::Katakana,
+            ImeKeyKind::Activate,
+            ImeKeyKind::Deactivate,
+            ImeKeyKind::ActivatePair,
+        ] {
+            assert_eq!(k.shadow_effect(), None, "{k:?} は静的に決め打ちしない");
+        }
+    }
+
+    /// ADR-189/191: 半角/全角(0xF3/0xF4)だけが、GJI・MS-IME本体のどちらでも開閉トグルとして扱われる。
+    /// ひらがな・カタカナ・英数など入力モードも動かしうるキーは、どのIMEでもトグル扱いにしない。
+    #[test]
+    fn open_toggle_applies_to_hankaku_zenkaku_for_every_known_ime_kind() {
+        use crate::state::ime_kind::ImeKindId;
+        for ime in ImeKindId::ALL {
+            for k in [ImeKeyKind::Deactivate, ImeKeyKind::ActivatePair] {
+                assert!(k.is_open_toggle_for(ime), "{k:?} × {ime:?}");
+            }
+            for k in [
+                ImeKeyKind::Kana,
+                ImeKeyKind::ImeOn,
+                ImeKeyKind::Junja,
+                ImeKeyKind::KanjiToggle,
+                ImeKeyKind::ImeOff,
+                ImeKeyKind::Alphanumeric,
+                ImeKeyKind::Katakana,
+                ImeKeyKind::Activate,
+            ] {
+                assert!(
+                    !k.is_open_toggle_for(ime),
+                    "{k:?} × {ime:?} はトグル扱いにしない"
                 );
             }
         }

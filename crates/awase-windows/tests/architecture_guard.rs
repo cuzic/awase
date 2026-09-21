@@ -766,9 +766,11 @@ fn ime_relevance_shadow_action_writes_are_accounted_for() {
             1,
             "hook::classify_ime_relevance が静的 ImeKeyKind から初期値を書く",
         ),
-        // ADR-191: `Runtime::enrich_ime_relevance` による GJI/MS-IME 設定・静的な意味づけ由来の
-        // shadow_action 上書き（ひらがな・カタカナ・無変換・変換・半角/全角）は撤去した。
-        // 書き込み点は hook 側の静的分類（VK_IME_ON/VK_IME_OFF のみ）1箇所だけ。
+        (
+            "runtime/mod.rs",
+            1,
+            "Runtime::enrich_ime_relevance が半角/全角(0xF3/0xF4)を、IME種別ごとの開閉トグル(ADR-189/191)として消費時に上書きする",
+        ),
     ];
 
     for path in files {
@@ -792,7 +794,8 @@ fn ime_relevance_shadow_action_writes_are_accounted_for() {
             count, expected_count,
             "src/{rel} の event.ime_relevance.shadow_action 書き込み箇所数が想定\
              ({expected_count})と異なります(実際: {count})。本番の書き込み点は \
-             hook::classify_ime_relevance の1箇所に限定してください（ADR-191）。"
+             hook::classify_ime_relevance と Runtime::enrich_ime_relevance の2箇所に\
+             限定してください（ADR-191）。"
         );
     }
 }
