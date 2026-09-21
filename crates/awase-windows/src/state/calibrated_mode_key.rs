@@ -54,27 +54,6 @@ pub(crate) struct CalibratedModeKey {
     pub(crate) confirmed_at_epoch_ms: u64,
 }
 
-/// `record`の`config_fingerprint`が`current`と食い違っていれば`true`
-/// （stale、静的分類へフォールバックすべき）。
-#[must_use]
-pub(crate) fn is_stale(record: &CalibratedModeKey, current: &ConfigFingerprint) -> bool {
-    record.config_fingerprint != *current
-}
-
-/// `176-T12`（ADR-176決定6）: `record`が`current`に対してstaleでなければ
-/// そのまま返し、staleなら`None`にする（`apply_calibration_override`への
-/// 入力を「較正結果なし」に落とし、静的分類へフォールバックさせる）。
-/// 呼び出し元（`gji_charset_autodetect.rs`/`message_handlers.rs`）は
-/// `Runtime::calibrated_mode_key_for`が返した値をそのままここへ通すこと
-/// ——staleかどうかの判定はこの関数の外で行わない。
-#[must_use]
-pub(crate) fn fresh_or_none<'a>(
-    record: Option<&'a CalibratedModeKey>,
-    current: &ConfigFingerprint,
-) -> Option<&'a CalibratedModeKey> {
-    record.filter(|r| !is_stale(r, current))
-}
-
 /// `176-T11`（ADR-176決定6）: `config.toml`への永続化用の文字列橋渡し。
 /// `awase`本体（`src/config.rs`）はプラットフォーム非依存のため、
 /// `ImeToggleKind`/`ImeKindId`/`ConfigFingerprint`を直接使えない
@@ -168,22 +147,6 @@ fn ime_kind_id_from_str(s: &str) -> Option<ImeKindId> {
         "MsIme" => Some(ImeKindId::MsIme),
         _ => None,
     }
-}
-
-/// `176-T2`（ADR-176決定5）: `gate_thumb_key_ime_actions`が返す
-/// `wiring.henkan`/`wiring.muhenkan`（`static_result`）を、確定済み較正結果
-/// （`calibrated`）があればそれで差し替える純粋関数。
-///
-/// `calibrated`はstale判定済みの値を渡すこと（stale/未較正なら呼び出し側で
-/// `None`にしてから渡す——このモジュールの`is_stale`を使う）。
-/// この関数自体は「較正結果があれば最優先」という単純な優先順位だけを持ち、
-/// staleかどうかの判断はここでは行わない。
-#[must_use]
-pub(crate) fn apply_calibration_override(
-    static_result: Option<ImeToggleKind>,
-    calibrated: Option<&CalibratedModeKey>,
-) -> Option<ImeToggleKind> {
-    calibrated.map(|c| c.result).or(static_result)
 }
 
 /// `176-T6`（ADR-176決定1、round6 B3対応）: 較正モードのバイパスが
@@ -483,89 +446,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn matching_fingerprint_is_not_stale() {
-        let fp = ConfigFingerprint::Gji {
-            session_keymap: Some(1),
-            relevant_row: Some("DirectInput\tHenkan\tIMEOn".to_string()),
-        };
-        let record = sample(fp.clone());
-        assert!(!is_stale(&record, &fp));
-    }
-
-    #[test]
-    fn differing_session_keymap_is_stale() {
-        let recorded = ConfigFingerprint::Gji {
-            session_keymap: Some(1),
-            relevant_row: None,
-        };
-        let current = ConfigFingerprint::Gji {
-            session_keymap: Some(2),
-            relevant_row: None,
-        };
-        let record = sample(recorded);
-        assert!(is_stale(&record, &current));
-    }
-
-    #[test]
-    fn differing_relevant_row_is_stale_even_with_same_session_keymap() {
-        let recorded = ConfigFingerprint::Gji {
-            session_keymap: Some(1),
-            relevant_row: Some("DirectInput\tHenkan\tIMEOn".to_string()),
-        };
-        let current = ConfigFingerprint::Gji {
-            session_keymap: Some(1),
-            relevant_row: Some("DirectInput\tHenkan\tIMEOff".to_string()),
-        };
-        let record = sample(recorded);
-        assert!(is_stale(&record, &current));
-    }
-
-    #[test]
-    fn ms_ime_hash_mismatch_is_stale() {
-        let recorded = ConfigFingerprint::MsIme {
-            registry_value_hash: 111,
-        };
-        let current = ConfigFingerprint::MsIme {
-            registry_value_hash: 222,
-        };
-        let record = sample(recorded);
-        assert!(is_stale(&record, &current));
-    }
-
-    #[test]
-    fn fresh_or_none_passes_through_matching_fingerprint() {
-        let fp = ConfigFingerprint::Gji {
-            session_keymap: Some(1),
-            relevant_row: None,
-        };
-        let record = sample(fp.clone());
-        assert_eq!(fresh_or_none(Some(&record), &fp), Some(&record));
-    }
-
-    #[test]
-    fn fresh_or_none_drops_stale_fingerprint() {
-        let recorded = ConfigFingerprint::Gji {
-            session_keymap: Some(1),
-            relevant_row: None,
-        };
-        let current = ConfigFingerprint::Gji {
-            session_keymap: Some(2),
-            relevant_row: None,
-        };
-        let record = sample(recorded);
-        assert_eq!(fresh_or_none(Some(&record), &current), None);
-    }
-
-    #[test]
-    fn fresh_or_none_passes_through_none() {
-        let current = ConfigFingerprint::Gji {
-            session_keymap: Some(1),
-            relevant_row: None,
-        };
-        assert_eq!(fresh_or_none(None, &current), None);
-    }
-
     // ── 176-T11: config.toml永続化のラウンドトリップ ────────────────────
 
     #[test]
@@ -648,55 +528,6 @@ mod tests {
         .to_config_entry();
         entry.ms_ime_registry_value_hash = None;
         assert_eq!(calibrated_mode_key_from_config_entry(&entry), None);
-    }
-
-    #[test]
-    fn override_falls_back_to_static_when_no_calibration() {
-        let result = apply_calibration_override(Some(ImeToggleKind::Off), None);
-        assert_eq!(result, Some(ImeToggleKind::Off));
-    }
-
-    #[test]
-    fn override_falls_back_to_static_when_calibration_absent_and_static_none() {
-        let result = apply_calibration_override(None, None);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn override_prefers_calibration_over_static() {
-        let fp = ConfigFingerprint::Gji {
-            session_keymap: Some(1),
-            relevant_row: None,
-        };
-        let calibrated = sample(fp);
-        // static_resultが較正結果と異なっていても、較正結果が優先される。
-        let result = apply_calibration_override(Some(ImeToggleKind::Off), Some(&calibrated));
-        assert_eq!(result, Some(ImeToggleKind::On));
-    }
-
-    #[test]
-    fn override_prefers_calibration_even_without_static_result() {
-        let fp = ConfigFingerprint::MsIme {
-            registry_value_hash: 1,
-        };
-        let calibrated = sample(fp);
-        let result = apply_calibration_override(None, Some(&calibrated));
-        assert_eq!(result, Some(ImeToggleKind::On));
-    }
-
-    #[test]
-    fn mismatched_ime_kind_variant_is_stale() {
-        // GJIで較正したレコードを、MS-IMEのfingerprintと突き合わせる
-        // （較正時と反映時でactive_ime_kindが変わった異常系）。
-        let recorded = ConfigFingerprint::Gji {
-            session_keymap: Some(1),
-            relevant_row: None,
-        };
-        let current = ConfigFingerprint::MsIme {
-            registry_value_hash: 0,
-        };
-        let record = sample(recorded);
-        assert!(is_stale(&record, &current));
     }
 
     // ── 176-T5: explicit_config_conflict_reason ─────────────────────────

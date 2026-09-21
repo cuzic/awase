@@ -22,10 +22,6 @@
 //!   静かに何もしない。`awase-gji-config`crate自体の「パース失敗は常に
 //!   空の結果に静かにフォールバック」という既存方針を踏襲する。
 
-use awase::types::{ShadowImeAction, VkCode};
-
-use crate::vk::VkCodeExt as _;
-
 /// GJIが無変換/変換キーに割り当てているIME意味論の分類（BUG-115）。
 /// `session_keymap`/`custom_keymap_table`/`overlay_keymaps`のどれ由来でも
 /// 同じ3値に潰す——awase側の反応（`shadow_action` override経由の
@@ -148,8 +144,6 @@ pub(crate) fn classify_thumb_key_ime_actions(
 pub(crate) enum ModeKeyCandidate {
     Henkan,
     Muhenkan,
-    Hiragana,
-    Katakana,
 }
 
 impl ModeKeyCandidate {
@@ -158,19 +152,7 @@ impl ModeKeyCandidate {
         match self {
             Self::Henkan => "VK_CONVERT",
             Self::Muhenkan => "VK_NONCONVERT",
-            Self::Hiragana => "VK_DBE_HIRAGANA",
-            Self::Katakana => "VK_DBE_KATAKANA",
         }
-    }
-
-    /// [`Self::vk_name`]が指すVK値そのもの。全バリアントの文字列は
-    /// `VkCode::from_name`が受理する静的に既知の値のみなので`unreachable!`
-    /// に到達しない（`tests::mode_key_candidate_vk_resolves_for_all_variants`
-    /// が全バリアントを網羅して固定）。
-    #[cfg_attr(not(windows), allow(dead_code))]
-    fn vk(self) -> VkCode {
-        VkCode::from_name(self.vk_name())
-            .unwrap_or_else(|| unreachable!("ModeKeyCandidate::vk_name always resolves"))
     }
 
     /// ADR-176決定6（176-T12）: 現在の`config1.db`内容から、このキーの
@@ -260,9 +242,6 @@ pub(crate) fn classify_mode_key_ime_action(
         match key {
             ModeKeyCandidate::Henkan => return Some(ImeToggleKind::On),
             ModeKeyCandidate::Muhenkan => return Some(ImeToggleKind::Off),
-            ModeKeyCandidate::Hiragana | ModeKeyCandidate::Katakana => {
-                // overlayはHenkan/Muhenkanのみ対象。次のソースへ。
-            }
         }
     }
     if raw.session_keymap == Some(awase_gji_config::SESSION_KEYMAP_CUSTOM) {
@@ -303,27 +282,9 @@ pub(crate) fn classify_mode_key_ime_action(
         }
     }
     match raw.session_keymap {
-        Some(v) if v == awase_gji_config::SESSION_KEYMAP_ATOK => match key {
-            ModeKeyCandidate::Henkan | ModeKeyCandidate::Muhenkan => Some(ImeToggleKind::Toggle),
-            ModeKeyCandidate::Hiragana | ModeKeyCandidate::Katakana => None,
-        },
-        Some(v)
-            if v == awase_gji_config::SESSION_KEYMAP_MSIME
-                || v == awase_gji_config::SESSION_KEYMAP_MOBILE =>
-        {
-            match key {
-                ModeKeyCandidate::Hiragana | ModeKeyCandidate::Katakana => Some(ImeToggleKind::On),
-                ModeKeyCandidate::Henkan | ModeKeyCandidate::Muhenkan => None,
-            }
-        }
-        // フィールド不在/NONE はWindows版GJIでは実質MSIME相当
-        // （`config_handler.cc::GetDefaultKeyMap()`）なので、MSIMEと同じ
-        // 結論（Hiragana/Katakanaのみ`On`）にfail-closedで倒す。
-        None => match key {
-            ModeKeyCandidate::Hiragana | ModeKeyCandidate::Katakana => Some(ImeToggleKind::On),
-            ModeKeyCandidate::Henkan | ModeKeyCandidate::Muhenkan => None,
-        },
-        Some(_) => None, // KOTOERI/CHROMEOS/未知の値
+        Some(v) if v == awase_gji_config::SESSION_KEYMAP_ATOK => Some(ImeToggleKind::Toggle),
+        // MSIME/MOBILE/フィールド不在(実質MSIME相当)/KOTOERI/CHROMEOS/未知の値: 無変換/変換は静的には決めない。
+        Some(_) | None => None,
     }
 }
 
@@ -389,129 +350,6 @@ pub(crate) fn gate_thumb_key_ime_actions(
         muhenkan: gate(muhenkan, muhenkan_is_toggle),
         warning,
     }
-}
-
-#[must_use]
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) const fn ime_toggle_kind_to_shadow_action(
-    kind: ImeToggleKind,
-    opt_in: bool,
-) -> Option<ShadowImeAction> {
-    match kind {
-        ImeToggleKind::On => Some(ShadowImeAction::TurnOn),
-        ImeToggleKind::Off => Some(ShadowImeAction::TurnOff),
-        ImeToggleKind::Toggle if opt_in => Some(ShadowImeAction::Toggle),
-        ImeToggleKind::Toggle => None,
-    }
-}
-
-/// `ImeToggleKind`と`ShadowImeAction`は同型（On/Off/Toggleの3値）だが、
-/// GJI由来の分類（`ImeToggleKind`）とMS-IMEレジストリ由来の分類
-/// （`ShadowImeAction`、`msime_key_assignment.rs`）で別の型として扱われて
-/// いる。ADR-176（較正結果の適用、176-T4）はどちらの経路でも同じ
-/// `CalibratedModeKey::result: ImeToggleKind`を使うため、opt-in条件を
-/// 挟まない直接の相互変換をここに用意する（`ime_toggle_kind_to_shadow_action`
-/// と違い`Toggle`を無条件に変換する——opt-inによる`Toggle`抑制は
-/// 呼び出し元がこの関数を使う前/後に別途行う）。
-#[must_use]
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) const fn shadow_action_to_ime_toggle_kind(action: ShadowImeAction) -> ImeToggleKind {
-    match action {
-        ShadowImeAction::TurnOn => ImeToggleKind::On,
-        ShadowImeAction::TurnOff => ImeToggleKind::Off,
-        ShadowImeAction::Toggle => ImeToggleKind::Toggle,
-    }
-}
-
-/// [`shadow_action_to_ime_toggle_kind`]の逆変換。
-#[must_use]
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) const fn ime_toggle_kind_to_shadow_action_direct(
-    kind: ImeToggleKind,
-) -> ShadowImeAction {
-    match kind {
-        ImeToggleKind::On => ShadowImeAction::TurnOn,
-        ImeToggleKind::Off => ShadowImeAction::TurnOff,
-        ImeToggleKind::Toggle => ShadowImeAction::Toggle,
-    }
-}
-
-#[must_use]
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn resolve_gji_mode_key_shadow_overrides(
-    is_gji: bool,
-    raw: Option<&awase_gji_config::wire::GjiRawConfig>,
-    opt_in: bool,
-) -> (Option<ShadowImeAction>, Option<ShadowImeAction>) {
-    if !is_gji {
-        return (None, None);
-    }
-    let Some(raw) = raw else {
-        return (None, None);
-    };
-    let hiragana = classify_mode_key_ime_action(ModeKeyCandidate::Hiragana, raw)
-        .and_then(|kind| ime_toggle_kind_to_shadow_action(kind, opt_in));
-    let katakana = classify_mode_key_ime_action(ModeKeyCandidate::Katakana, raw)
-        .and_then(|kind| ime_toggle_kind_to_shadow_action(kind, opt_in));
-    (hiragana, katakana)
-}
-
-/// この関数が見ていない「`resolve_pending_thumb_as_single`側でdelegateが
-/// 実際には発火しない条件」は現在2つある: (1) 専用Fnキー設定
-/// （`muhenkan_dedicated_fn_key_configured`引数で対処済み）、(2) ユーザーの
-/// 単独タップ「パススルー」設定（BUG-119/ADR-147、`TurnOn`方向のみ辞退。
-/// `TurnOn`分類は`crates/awase-gji-config/src/keymap.rs::classify_and_push`
-/// の構造上、全状態でOFFにならないことが保証されるため配線不要——詳細は
-/// ADR-147「消費点と所有権のマトリクス」参照）。3つ目の「黙って辞退する
-/// 条件」を`resolve_pending_thumb_as_single`側に足す場合は、この関数側も
-/// 対称に配線が必要かどうか（=belief ON中に実際に状態を反転させうる方向
-/// かどうか）を必ず検討すること。
-#[must_use]
-#[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn delegate_owns_mode_key_shadow_toggle(
-    vk: VkCode,
-    is_configured_thumb_key: bool,
-    hiragana_delegate: Option<ShadowImeAction>,
-    katakana_delegate: Option<ShadowImeAction>,
-    henkan_delegate: Option<ShadowImeAction>,
-    muhenkan_delegate: Option<ShadowImeAction>,
-    muhenkan_dedicated_fn_key_configured: bool,
-) -> bool {
-    is_configured_thumb_key
-        && ((vk == ModeKeyCandidate::Hiragana.vk() && hiragana_delegate.is_some())
-            || (vk == ModeKeyCandidate::Katakana.vk() && katakana_delegate.is_some())
-            || (vk == ModeKeyCandidate::Henkan.vk() && henkan_delegate.is_some())
-            // ADR-141実装レビュー(/code-review指摘): `muhenkan_solo_tap_
-            // dedicated_fn_key`が設定済みだと、`resolve_pending_thumb_
-            // as_single`の優先順位（専用Fnキー > delegate）でdelegateが
-            // 実際には発火しない（BUG-115「専用Fnキーとの非対称」節）。
-            // それを見ずにここが true を返すと、shadow-toggleが「delegate
-            // が処理する」と誤信して身を引き、delegateも発火しないため
-            // 「誰も何もしない」C2と同型の穴が専用Fnキー設定時に再発する。
-            || (vk == ModeKeyCandidate::Muhenkan.vk()
-                && muhenkan_delegate.is_some()
-                && !muhenkan_dedicated_fn_key_configured))
-}
-
-/// `left_thumb_key`/`right_thumb_key`のうちHiragana/Katakanaに一致する方の
-/// VKを解決する（`NicolaFsm::set_hiragana_katakana_thumb_key_config`へ渡す
-/// 値）。起動時（`app/bootstrap.rs`）とreload時
-/// （`runtime/mod.rs::apply_config_update`）の両方から呼び、同じ導出
-/// ロジックを2箇所で重複させない（/code-review指摘——`space_is_thumb_key`/
-/// `muhenkan_dedicated_fn_key`が過去に同種のboot/reload重複から実際に
-/// 乖離した前例があるため、共有ヘルパーへ揃える）。
-#[must_use]
-pub(crate) fn resolve_hiragana_katakana_thumb_vks(
-    left: VkCode,
-    right: VkCode,
-) -> (Option<VkCode>, Option<VkCode>) {
-    let hiragana_vk = [left, right]
-        .into_iter()
-        .find(|&vk| vk == crate::vk::VK_DBE_HIRAGANA);
-    let katakana_vk = [left, right]
-        .into_iter()
-        .find(|&vk| vk == crate::vk::VK_DBE_KATAKANA);
-    (hiragana_vk, katakana_vk)
 }
 
 /// ADR-176: `awase-settings`（別クレート）から直接呼べるよう`pub`で
@@ -619,11 +457,9 @@ mod tests {
     // ── classify_thumb_key_ime_actions / gate_thumb_key_ime_actions (BUG-115) ──
 
     use super::{
-        classify_mode_key_ime_action, classify_thumb_key_ime_actions,
-        delegate_owns_mode_key_shadow_toggle, gate_thumb_key_ime_actions,
-        resolve_gji_mode_key_shadow_overrides, ImeToggleKind, ModeKeyCandidate, ThumbKeyImeWarning,
+        classify_mode_key_ime_action, classify_thumb_key_ime_actions, gate_thumb_key_ime_actions,
+        ImeToggleKind, ModeKeyCandidate, ThumbKeyImeWarning,
     };
-    use awase::types::ShadowImeAction;
     use awase_gji_config::wire::GjiRawConfig;
 
     fn raw_with_overlay() -> GjiRawConfig {
@@ -708,46 +544,6 @@ mod tests {
         assert_eq!(muhenkan, None);
     }
 
-    /// ADR-174実機検証（2026-09-15、dragonflyg4）: `session_keymap`が
-    /// `MSIME`（実機で値2を確認）のままでも、`custom_keymap_table`に
-    /// `DirectInput\tHenkan\tIMEOn`という実際のユーザー上書きが残って
-    /// いれば、プリセット静的知識（Henkan/Muhenkanは`None`）より
-    /// 優先されるべき。旧実装ではこの場合`custom_keymap_table`を一切
-    /// 参照せず`None`を返し、GJIが実際にIMEを開いてもawaseのbeliefが
-    /// 追従しなかった（ユーザー報告、実機ログで`[shadow-toggle]`行が
-    /// 一切出力されないことを確認済み）。実機の`config1.db`はこれ以外にも
-    /// `Composition Henkan CompositionModeHiragana`等の行やF15-F19の
-    /// SetMode割り当てを含む（本テストはHenkan/Muhenkan分類に関係する
-    /// 部分のみ再現）。
-    #[test]
-    fn classify_msime_session_keymap_with_populated_custom_table_prefers_table() {
-        let table = "status\tkey\tcommand\n\
-            DirectInput\tHenkan\tIMEOn\n\
-            Composition\tHenkan\tCompositionModeHiragana\n";
-        let raw = GjiRawConfig {
-            session_keymap: Some(awase_gji_config::SESSION_KEYMAP_MSIME),
-            custom_keymap_table: Some(table.to_string()),
-            ..GjiRawConfig::default()
-        };
-        assert_eq!(
-            classify_mode_key_ime_action(ModeKeyCandidate::Henkan, &raw),
-            Some(ImeToggleKind::On)
-        );
-        // Muhenkanはテーブルに該当行が無いため、プリセット静的知識
-        // （MSIMEはMuhenkanに割り当てなし）へフォールスルーする。
-        assert_eq!(
-            classify_mode_key_ime_action(ModeKeyCandidate::Muhenkan, &raw),
-            None
-        );
-        // Hiragana/Katakanaはテーブルに該当行が無いため、MSIMEプリセット
-        // 静的知識（`On`）へフォールスルーする——テーブルの存在が
-        // 無関係なキーの判定を壊さないことの固定。
-        assert_eq!(
-            classify_mode_key_ime_action(ModeKeyCandidate::Hiragana, &raw),
-            Some(ImeToggleKind::On)
-        );
-    }
-
     /// ADR-186(実機スパイク、2026-09-20): ATOKプリセットでは、`config1.db`に残る古い
     /// `custom_keymap_table`(実機に実在した`DirectInput\tHenkan\tIMEOn`等)を読まない。
     /// 変換・無変換ともATOKの`Toggle`(開閉トグル)になる。MSIME(ADR-174)は表を優先するまま。
@@ -811,133 +607,6 @@ mod tests {
     // ── classify_mode_key_ime_action: Hiragana/Katakana (BUG-115、ひらがな
     // キーを親指シフトキーに設定しているユーザー向けエッジケース) ──
 
-    /// MSIME/MOBILEプリセットは`DirectInput`状態でHiragana/Katakana双方を
-    /// `IMEOn`に割り当てている（本家tsv、2026-09-05確認済み）。
-    /// Henkan/Muhenkanはこれらのプリセットでは無関係のまま(`None`)。
-    #[test]
-    fn classify_msime_mobile_preset_yields_on_for_hiragana_katakana() {
-        for value in [
-            awase_gji_config::SESSION_KEYMAP_MSIME,
-            awase_gji_config::SESSION_KEYMAP_MOBILE,
-        ] {
-            let raw = raw_with_session_keymap(value);
-            assert_eq!(
-                classify_mode_key_ime_action(ModeKeyCandidate::Hiragana, &raw),
-                Some(ImeToggleKind::On),
-                "session_keymap={value}"
-            );
-            assert_eq!(
-                classify_mode_key_ime_action(ModeKeyCandidate::Katakana, &raw),
-                Some(ImeToggleKind::On),
-                "session_keymap={value}"
-            );
-            assert_eq!(
-                classify_mode_key_ime_action(ModeKeyCandidate::Henkan, &raw),
-                None
-            );
-            assert_eq!(
-                classify_mode_key_ime_action(ModeKeyCandidate::Muhenkan, &raw),
-                None
-            );
-        }
-    }
-
-    /// フィールド不在はWindows版GJIの実質既定(MSIME)に倣い、
-    /// Hiragana/Katakanaは`On`にfail-closedで倒す
-    /// （`config_handler.cc::GetDefaultKeyMap()`で確認済み）。
-    #[test]
-    fn classify_absent_session_keymap_yields_on_for_hiragana_katakana() {
-        let raw = GjiRawConfig::default();
-        assert_eq!(
-            classify_mode_key_ime_action(ModeKeyCandidate::Hiragana, &raw),
-            Some(ImeToggleKind::On)
-        );
-        assert_eq!(
-            classify_mode_key_ime_action(ModeKeyCandidate::Katakana, &raw),
-            Some(ImeToggleKind::On)
-        );
-    }
-
-    /// ATOKプリセットにはHiragana/Katakanaへの割当てが無い（本家tsvに
-    /// 該当行なし、2026-09-05確認済み）。
-    #[test]
-    fn classify_atok_preset_yields_none_for_hiragana_katakana() {
-        let raw = raw_with_session_keymap(awase_gji_config::SESSION_KEYMAP_ATOK);
-        assert_eq!(
-            classify_mode_key_ime_action(ModeKeyCandidate::Hiragana, &raw),
-            None
-        );
-        assert_eq!(
-            classify_mode_key_ime_action(ModeKeyCandidate::Katakana, &raw),
-            None
-        );
-    }
-
-    /// KOTOERI/CHROMEOSはHiragana/Katakana関連行が無い。
-    #[test]
-    fn classify_kotoeri_chromeos_yield_none_for_hiragana_katakana() {
-        for value in [3, 5] {
-            let raw = raw_with_session_keymap(value);
-            assert_eq!(
-                classify_mode_key_ime_action(ModeKeyCandidate::Hiragana, &raw),
-                None,
-                "session_keymap={value}"
-            );
-            assert_eq!(
-                classify_mode_key_ime_action(ModeKeyCandidate::Katakana, &raw),
-                None,
-                "session_keymap={value}"
-            );
-        }
-    }
-
-    /// BUG-115: CUSTOMキーマップにliteralなHiraganaトークンが含まれる場合も
-    /// `extract_ime_keys`経由で分類される（Henkan/Muhenkanと同じ経路）。
-    #[test]
-    fn classify_custom_keymap_with_literal_hiragana_token() {
-        let table = "status\tkey\tcommand\nDirectInput\tHiragana\tIMEOn\n";
-        let raw = GjiRawConfig {
-            session_keymap: Some(awase_gji_config::SESSION_KEYMAP_CUSTOM),
-            custom_keymap_table: Some(table.to_string()),
-            ..GjiRawConfig::default()
-        };
-        assert_eq!(
-            classify_mode_key_ime_action(ModeKeyCandidate::Hiragana, &raw),
-            Some(ImeToggleKind::On)
-        );
-        assert_eq!(
-            classify_mode_key_ime_action(ModeKeyCandidate::Katakana, &raw),
-            None
-        );
-    }
-
-    /// overlay(Henkan/Muhenkan専用)はHiragana/Katakanaには効かない——
-    /// overlay該当時でも次のソース(session_keymap)へフォールスルーする。
-    #[test]
-    fn classify_overlay_does_not_affect_hiragana_katakana() {
-        let raw = raw_with_overlay(); // session_keymap不在 + overlay=100
-        assert_eq!(
-            classify_mode_key_ime_action(ModeKeyCandidate::Hiragana, &raw),
-            Some(ImeToggleKind::On), // overlayではなく、フィールド不在→MSIME既定経由
-        );
-    }
-
-    /// `ModeKeyCandidate::vk()`が全バリアントで`VkCode::from_name`の
-    /// 解決に失敗しない（`unreachable!`に到達しない）ことを固定する。
-    #[test]
-    fn mode_key_candidate_vk_resolves_for_all_variants() {
-        use crate::vk::VkCodeExt as _;
-        use awase::types::VkCode;
-        for key in [
-            ModeKeyCandidate::Henkan,
-            ModeKeyCandidate::Muhenkan,
-            ModeKeyCandidate::Hiragana,
-            ModeKeyCandidate::Katakana,
-        ] {
-            assert_eq!(Some(key.vk()), VkCode::from_name(key.vk_name()), "{key:?}");
-        }
-    }
-
     #[test]
     fn gate_on_off_is_never_declined_regardless_of_opt_in() {
         for opt_in in [false, true] {
@@ -987,126 +656,6 @@ mod tests {
         assert_eq!(wiring.henkan, None); // Toggleはopt-inなしで却下
         assert_eq!(wiring.muhenkan, Some(ImeToggleKind::Off)); // Offはそのまま反映
         assert_eq!(wiring.warning, ThumbKeyImeWarning::ToggleDeclined);
-    }
-
-    #[test]
-    fn mode_key_shadow_override_skips_when_raw_is_unavailable() {
-        assert_eq!(
-            resolve_gji_mode_key_shadow_overrides(true, None, true),
-            (None, None)
-        );
-    }
-
-    #[test]
-    fn mode_key_shadow_override_skips_when_classifier_returns_none() {
-        let raw = raw_with_session_keymap(awase_gji_config::SESSION_KEYMAP_ATOK);
-        assert_eq!(
-            resolve_gji_mode_key_shadow_overrides(true, Some(&raw), true),
-            (None, None)
-        );
-    }
-
-    #[test]
-    fn mode_key_shadow_override_gates_toggle_by_opt_in() {
-        let table = "status\tkey\tcommand\nDirectInput\tHiragana\tIMEOn\nPrecomposition\tHiragana\tIMEOff\n";
-        let raw = GjiRawConfig {
-            session_keymap: Some(awase_gji_config::SESSION_KEYMAP_CUSTOM),
-            custom_keymap_table: Some(table.to_string()),
-            ..GjiRawConfig::default()
-        };
-        assert_eq!(
-            resolve_gji_mode_key_shadow_overrides(true, Some(&raw), false),
-            (None, None)
-        );
-        assert_eq!(
-            resolve_gji_mode_key_shadow_overrides(true, Some(&raw), true),
-            (Some(ShadowImeAction::Toggle), None)
-        );
-    }
-
-    #[test]
-    fn mode_key_shadow_override_clears_when_not_gji() {
-        let raw = raw_with_session_keymap(awase_gji_config::SESSION_KEYMAP_MSIME);
-        assert_eq!(
-            resolve_gji_mode_key_shadow_overrides(false, Some(&raw), true),
-            (None, None)
-        );
-    }
-
-    #[test]
-    fn mode_key_delegate_ownership_is_thumb_key_times_delegate_armed() {
-        let hiragana = ModeKeyCandidate::Hiragana.vk();
-        assert!(!delegate_owns_mode_key_shadow_toggle(
-            hiragana,
-            false,
-            Some(ShadowImeAction::TurnOn),
-            None,
-            None,
-            None,
-            false,
-        ));
-        assert!(!delegate_owns_mode_key_shadow_toggle(
-            hiragana, true, None, None, None, None, false,
-        ));
-        assert!(delegate_owns_mode_key_shadow_toggle(
-            hiragana,
-            true,
-            Some(ShadowImeAction::TurnOn),
-            None,
-            None,
-            None,
-            false,
-        ));
-        // ADR-141: Henkan/Muhenkanも同じ関数で判定される。
-        let henkan = ModeKeyCandidate::Henkan.vk();
-        assert!(!delegate_owns_mode_key_shadow_toggle(
-            henkan,
-            false,
-            None,
-            None,
-            Some(ShadowImeAction::TurnOn),
-            None,
-            false,
-        ));
-        assert!(delegate_owns_mode_key_shadow_toggle(
-            henkan,
-            true,
-            None,
-            None,
-            Some(ShadowImeAction::TurnOn),
-            None,
-            false,
-        ));
-    }
-
-    /// /code-review指摘（実装レビューで発見）: `muhenkan_solo_tap_dedicated_
-    /// fn_key`が設定済みだと`resolve_pending_thumb_as_single`の優先順位で
-    /// delegateが実際には発火しない（専用Fnキーが勝つ）ため、delegateが
-    /// armedでもownershipはfalseを返すべき（さもないとshadow-toggleが
-    /// 「delegateが処理する」と誤信して身を引き、どちらも処理しない
-    /// C2型の穴が再発する）。Henkanには専用Fnキーの概念自体が無いため
-    /// 対象外（既存の非対称、BUG-115「専用Fnキーとの非対称」節）。
-    #[test]
-    fn muhenkan_dedicated_fn_key_configured_blocks_delegate_ownership() {
-        let muhenkan = ModeKeyCandidate::Muhenkan.vk();
-        assert!(delegate_owns_mode_key_shadow_toggle(
-            muhenkan,
-            true,
-            None,
-            None,
-            None,
-            Some(ShadowImeAction::TurnOff),
-            false,
-        ));
-        assert!(!delegate_owns_mode_key_shadow_toggle(
-            muhenkan,
-            true,
-            None,
-            None,
-            None,
-            Some(ShadowImeAction::TurnOff),
-            true,
-        ));
     }
 
     // ── GJI検出→反映の全体パイプライン decision table（ユーザー依頼、

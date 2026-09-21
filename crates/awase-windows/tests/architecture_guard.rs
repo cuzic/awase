@@ -3761,49 +3761,6 @@ fn strip_any_test_module(content: &str) -> &str {
     content
 }
 
-/// ADR-153 決定1 M15対策: 明示config（`muhenkan_solo_tap_ime_action`/
-/// `henkan_solo_tap_ime_action`）設定済みキーには、GJI/MS-IME自動検出由来の
-/// delegate/shadow_overrideをarmedにしない。書き込み点は2系統4箇所
-/// （GJI側=`gji_charset_autodetect.rs`、MS-IME側=`message_handlers.rs`）——
-/// ADR-119の教訓「gateを1箇所に置いて満足しない」のとおり、両ファイルに
-/// 同じ無効化ロジックが存在することを固定する。
-#[test]
-fn explicit_ime_action_masks_autodetect_delegate_in_both_gji_and_msime() {
-    // `_solo_tap_ime_action()`（明示config読み取り）の出現数と、実際に
-    // マスキングを行う共有ヘルパー `mask_auto_detect_for_explicit_config`
-    // （/code-review指摘、PR #185で4+箇所の重複if/else・filter実装を
-    // 統一）の呼び出し数の両方を固定する——前者だけだと「値は読んでいるが
-    // マスキングには使っていない」退行を見逃す。
-    let expectations: &[(&str, usize, usize)] = &[
-        ("src/gji_charset_autodetect.rs", 2, 2),
-        ("src/runtime/message_handlers.rs", 4, 4),
-    ];
-    for (path, expected_reads, expected_masks) in expectations {
-        let content = read_crate_file(path);
-        let production = strip_any_test_module(&content);
-        let read_count = production.matches("_solo_tap_ime_action()").count();
-        assert!(
-            read_count >= *expected_reads,
-            "{path} 内で `*_solo_tap_ime_action()`（明示config読み取り）の本番 \
-             コードでの出現数が想定({expected_reads}以上)を下回ります \
-             (実際: {read_count})。ADR-153決定1 M15対策（GJI/MS-IME自動検出由来の\
-             delegate/shadow_overrideを明示config設定済みキーではarmedに \
-             しない）が欠落していないか確認すること。"
-        );
-        let mask_count = production
-            .matches("mask_auto_detect_for_explicit_config(")
-            .count();
-        assert!(
-            mask_count >= *expected_masks,
-            "{path} 内で `mask_auto_detect_for_explicit_config(`（M15マスキング \
-             共有ヘルパー）の呼び出し数が想定({expected_masks}以上)を下回ります \
-             (実際: {mask_count})。GJI側・MS-IME側の両方、かつdelegate/\
-             shadow_overrideの両方に適用する必要がある（ADR-119の教訓 \
-             「gateを1箇所に置いて満足しない」）。"
-        );
-    }
-}
-
 /// ADR-153 決定1「ケース3」（"off"×belief既にOFFの強制actuate）再導入
 /// 防止ガード（2026-09-08、実機A/B実験で「@」再現の直接原因と確定、
 /// `docs/known-bugs.md` BUG-113節・`docs/experiments.md`エントリ25参照）。

@@ -6296,13 +6296,6 @@ mod engine_integration_tests {
         }
     }
 
-    fn ime_on_composing_ctx() -> InputContext {
-        InputContext {
-            composing: true,
-            ..ime_on_ctx()
-        }
-    }
-
     fn ime_off_ctx() -> InputContext {
         InputContext {
             ime_on: false,
@@ -7254,33 +7247,6 @@ mod engine_integration_tests {
     // キー割当て処理（`KeyAssignmentHenkan=1` 等）にそのまま委ねられる形に
     // なる。以下のテストは全て `ime_on_ctx()`（engine active）を前提にする。
 
-    /// `muhenkan_vk` を設定した `Engine` を返す（`delegate_to_open_axis` テスト用）。
-    fn make_test_engine_with_muhenkan() -> Engine {
-        let mut engine = make_test_engine();
-        engine.set_thumb_key_solo_tap_config(
-            Some(VK_NONCONVERT),
-            ModeKeyConfig::from_legacy_bools(false, true),
-            None,
-            ModeKeyConfig::from_legacy_bools(false, true),
-        );
-        engine
-    }
-
-    /// `henkan_vk` を設定した `Engine` を返す（`delegate_to_open_axis` テスト用、
-    /// `make_test_engine_with_muhenkan` の対称版。Opus コードレビュー指摘:
-    /// 既存の `delegate_to_open_axis_*` 系テストは全て無変換のみで、変換側の
-    /// `resolve_pending_thumb_as_single` の分岐が未検証だった）。
-    fn make_test_engine_with_henkan() -> Engine {
-        let mut engine = make_test_engine();
-        engine.set_thumb_key_solo_tap_config(
-            None,
-            ModeKeyConfig::from_legacy_bools(false, true),
-            Some(VK_CONVERT),
-            ModeKeyConfig::from_legacy_bools(false, true),
-        );
-        engine
-    }
-
     // ── BUG-119/ADR-147: delegate_to_open_axis はユーザーの明示的な
     // パススルー設定（ModeKeyConfig::is_passthrough）に道を譲るべきだが、
     // TurnOn 方向に限定する（TurnOff/Toggle まで広げると
@@ -7570,18 +7536,6 @@ mod engine_integration_tests {
             "フォーカス移動で生のVK_NONCONVERTが別ウィンドウへ出てはならない: {:?}",
             effects_of(&d)
         );
-    }
-
-    /// `make_test_engine_with_muhenkan_passthrough` の変換（henkan）版。
-    fn make_test_engine_with_henkan_passthrough() -> Engine {
-        let mut engine = make_test_engine();
-        engine.set_thumb_key_solo_tap_config(
-            None,
-            ModeKeyConfig::from_legacy_bools(false, true),
-            Some(VK_CONVERT),
-            ModeKeyConfig::from_legacy_bools(true, false),
-        );
-        engine
     }
 
     // 二重 enqueue 回帰防止: IME OFF コンボ後の次キーで SetOpen が再発行されないこと。

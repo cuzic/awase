@@ -2071,7 +2071,6 @@ impl NicolaFsm {
     /// consult、ADR-153/ADR-154で検討済み）。呼び出し元は`PendingThumbData`
     /// のフィールドをそのまま渡すため、まとめて1つの構造体にする案も
     /// 呼び出し元7箇所+テスト側の書き換えコストに見合わないと判断した。
-    #[expect(clippy::fn_params_excessive_bools)]
     fn resolve_pending_thumb_as_single(
         &self,
         scan_code: ScanCode,
