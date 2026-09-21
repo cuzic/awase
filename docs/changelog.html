@@ -110,6 +110,48 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.21.0] - 2026-09-21</h2>
+<h3>追加</h3>
+<ul>
+<li><strong>句読点（「。」「、」）を打った瞬間にIMEの入力を確定するレイアウト <code>nicola_kakutei.yab</code> を追加した</strong><ul>
+<li>設定画面の「レイアウト」から選ぶだけで使える（<code>nicola_keytop.yab</code> と「。」「、」の2キー以外は同一）。やまぶき／DvorakJの「句読点で確定」と同じ仕組みを、打鍵列構文（<code>。+CV4D</code>）で実現している</li>
+<li>確定にはIME側で Ctrl+M が「全確定」になっている必要がある。他のアプリで Ctrl+M に別の機能（Wordの改行スタイル変更など）が割り当てられている場合は、そちらの割り当てを外すか、このレイアウトを使わないこと</li>
+<li>実機（Google 日本語入力・Microsoft IME）で、「。」を打つと変換中の文字列が確定されることを確認した（標準の編集コントロールでの確認。他のアプリでの動作は個別には確認していない）</li>
+</ul>
+</li>
+<li><strong>設定画面の「上級者向け設定」タブに、打鍵列構文（<code>keystroke_sequence</code>）のON/OFFチェックボックスを追加した</strong></li>
+</ul>
+<h3>変更</h3>
+<ul>
+<li><strong>打鍵列構文（配列ファイルの <code>CV4D</code> や <code>+</code> 区切り、<code>@マクロ名</code> などの記法）の解釈を、既定で有効にした</strong>（従来は既定でOFF）<ul>
+<li>読み込む全ての <code>.yab</code> に影響する。これらの記法は偶然一致するには特殊なため実害は小さいと判断したが、<code>.yab</code> を独自編集している場合は内容を確認すること。無効にしたい場合は設定画面の「上級者向け設定」または <code>config.toml</code> の <code>keystroke_sequence = &quot;off&quot;</code></li>
+</ul>
+</li>
+<li><strong>MSIをアンインストールしても、<code>config.toml</code> と配列ファイル（<code>.yab</code>）を削除しないようにした</strong>（ZIP版と同じ扱い）<ul>
+<li>従来はアンインストールでこれらのカスタマイズ内容が消えていた。アンインストール後もファイルが残るようになる。再インストールでは既存のファイルをそのまま使う</li>
+</ul>
+</li>
+<li><strong>不具合報告に添付する入力履歴の記録で、キーの自動リピートによって記録枠が埋まってしまわないよう、連続リピートを畳み込むようにした</strong>（内部の診断機能の改善）</li>
+</ul>
+<h3>修正</h3>
+<ul>
+<li><strong>Google 日本語入力で、Ctrl+無変換 を2回目以降に押してもIME OFFにならず、そのまま入力が候補ウィンドウに出てしまうことがある不具合を修正</strong><ul>
+<li>症状: Microsoft Edge など（<code>Chrome_WidgetWin_1</code>）で、Ctrl+無変換 の直後に文字を打つと変換候補が出て、Ctrl+無変換 を押し直しても何も送られずIME OFFにならなかった</li>
+<li>原因: 「すでにIME OFFになっているはず」という内部の判断が、実際には候補ウィンドウが表示されている（IMEの状態と食い違っている）という証拠を無視して、キー送信を省略していた</li>
+<li>修正: 候補ウィンドウの表示を検知していた場合は「一致している」と判断せず、キーを送信するようにした</li>
+</ul>
+</li>
+<li><strong>Google 日本語入力で、キーマップのプリセットが「カスタム」以外に設定されていると、実在する <code>custom_keymap_table</code>（変換キーを IME ON に割り当てた設定など）が無視され、変換キーを単独タップしてもNICOLAエンジンが有効にならない不具合を修正</strong><ul>
+<li>症状: Windows Terminal + Google 日本語入力で、直接入力状態から変換キーを単独タップするとGoogle 日本語入力自身はひらがなに切り替わるが、awase側がそれを認識せずNICOLA配列が効かないままだった（実機で確認）</li>
+<li>修正: <code>custom_keymap_table</code> に該当する行があれば、キーマップのプリセットの値に関わらずその内容を優先するようにした</li>
+</ul>
+</li>
+<li><strong>配列ファイル（<code>layout/</code>）や <code>config.toml</code> が無い環境で、awase が起動してもNICOLA配列が使えない（Engineが動かない）不具合を修正</strong><ul>
+<li>症状: <code>layout/</code> を手動で削除した環境や、旧版のMSIをアンインストールしてから再インストールした環境などで、起動時に「レイアウトディレクトリが見つかりません」と警告され、NICOLA入力ができなかった</li>
+<li>修正: 起動時に、<code>config.toml</code> が無ければ既定の内容で、配列ファイル（<code>.yab</code>）が1本も無ければ同梱の6本を、それぞれ生成するようにした（既にあるファイルには一切触らない）</li>
+</ul>
+</li>
+</ul>
 <h2>[1.20.1] - 2026-09-13</h2>
 <h3>修正</h3>
 <ul>

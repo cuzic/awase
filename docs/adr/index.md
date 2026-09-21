@@ -184,14 +184,20 @@
 | [177](177-msi-restart-manager-graceful-shutdown.md) | 常駐中のMSIアップグレードは実機検証の結果コード変更不要と判明(Restart Managerが現状コードのまま自律的にシャットダウン・再起動を処理、UI付き・データ保持も確認)。副産物でMSIアンインストール時のユーザーデータ削除を発見 | 確定・opus round1〜4(4ラウンド)を経て収束・ADR-099 MF-4解消 |
 | [178](178-msi-uninstall-preserve-userdata.md) | MSIアンインストール時のユーザーデータ喪失をPermanent="yes"+アプリ側自己修復(無ければ埋め込み既定値から生成)で防ぐ。v1〜v13の「バックアップ+復元」方式(12ラウンド・Blocker20件)は複雑化しすぎたため破棄し全面差し替え | 起草中v14・実装/実機検証/opusレビュー完了(Blocker2件反映済み)、フォローアップ項目のみ残る |
 | [179](179-mode-key-actuation-follow-only-vs-toggle-ownership.md) | 無変換/変換の非親指キー時actuation-autoを撤去し`ModeKeyActuationOwner`列挙へ統一。元178番、developマージ済みの別ADR-178(msi-uninstall)と衝突し179へ採番し直し | 収束(opus-adversarial-consult round1〜8)・実装着手可 |
-| [180](180-actuation-gate-recheck-deduplication.md) | 領域B(IME actuation合流点)の深い統一を検討、ADR-106決定5が既に軸統合を却下済みと判明し「新fence型ではなく共有ヘルパー関数への機械的重複除去」に縮小 | ドラフト・opus-adversarial-consult round1前 |
+| [180](180-actuation-gate-recheck-deduplication.md) | 領域B(IME actuation合流点)の深い統一を検討、ADR-106決定5が既に軸統合を却下済みと判明し「新fence型ではなく共有ヘルパー関数への機械的重複除去」に縮小 | decision1(gate再検証の重複除去)実装・push済み、decision2(レコード統一)は3ラウンド検証の結果コスト超過で見送り確定 |
+| [181](181-gji-atok-keymap-hiragana-key-external-echo-reverts-ime-off.md) | GJI(ATOKキーマッププリセット)がVK_DBE_HIRAGANAを自己注入マーカー無しで周期送信し、IME OFF直後にkp_stage_shadow_ime_toggleが誤って物理意図として再actuateしIME ONへ戻る不具合 | ドラフト・opus-adversarial-consult round1前 |
 | [182](182-char-then-thumb-gap-gate-misjudges-modekey-chord-as-solo-tap.md) | 文字→親指(無変換/変換)の押下間隔が閾値をわずかに超えると重なったチョードが「文字単独+無変換単独タップ」に割れ、生の無変換がGJIへ届いて半角英数化・エンジン非活性へ連鎖する不具合 | **ドラフトv9(opus round1〜8反映、決定1・1b・1c実装済み、実機A/B前)**。実装未着手 |
+| [183](183-vk-kana-physical-delivery-passthrough.md) | VK_KANA(かなキー)をADR-179の`PhysicalDelivery`へ合流させKeyUp無条件Suppressの非対称を解消する設計 | **撤回(2026-09-19)**。実機検証で対象VKは`VK_DBE_HIRAGANA`と判明し前提誤り、症状も再現せず |
+| [184](184-gji-atok-muhenkan-toggle-awase-owned-eisu-hiragana.md) | GJI(ATOKキーマップ)の無変換/変換Toggleを、ADR-179決定2の既存分岐へ配線し直すだけの最小修正 | **方針転換・簡素化(2026-09-19)**。opus round1〜6で複雑化したため最小配線変更へ縮小、実機検証で問題が出たものだけ個別対処 |
 | [185](185-directinput-open-axis-write-teardown.md) | 半角英数(ObservedEisu)検出時にawase自身がIME OFFを送る`EngineSync::DirectInput`を撤去(BUG-146、ADR-178撤去プロジェクトの領域C) | **実装済み**(`f5338edc`)。実機確認は ADR-186 のE2Eで代替 |
 | [186](186-gji-atok-mode-key-measured-matrix-and-belief-follow.md) | GJI(ATOK)のモードキー動作を実機で測定し、無変換/変換の開閉トグルを「KeyUpで解決する」既存delegate経路で押下時点にbelief追随させる(実機E2E+撤去実験で必要/不要な仕組みを確定) | **v4(実装済み・実機E2E/CIで検証)**。Shift+無変換の横取りは修正済み(`b195b47a`)、BUG-147は再現せず。残り: TsfNative/Chrome未検証 |
 | [187](187-atok-passthrough-mode-key-observed-belief-follow.md) | ATOKで無変換/変換をパススルーするとき、生キー通過直後に実IMEを読み直し、古い明示意図を捨ててEngineを観測に追随させる(follow方式、awaseはactuateしない)。Toggleをactuateする案(PR #227)はcomposingが推定でしかないため見送り | **決定・実装済み(未マージ)**。スパイクCIで全12手順追随(各3/3)・cold各3/3 |
 | [188](188-tsfnative-conv-only-mode-key-engine-follow.md) | Chrome等(Imm32Unavailable/TsfNative)で、convだけを変えるモードキー(ひらがな、Shift+無変換)の後にEngineを追随させる(モードキー後の遅延conv読み取り、実機A/Bで4案を比較) | 別セッション(BUG-149)。詳細はADR本文 |
 | [189](189-gji-hankaku-zenkaku-belief-toggle.md) | GJIの半角/全角キー(0xF3/0xF4)をVKで方向を決め打たず、beliefに基づく開閉トグルとしてawaseがactuateする(同じVKの連続で反転しない問題、CI `--hz`で4/8手順) | **決定・実装済み(未マージ)・CI検証済み** |
-| [191](191-ime-is-source-of-truth-observe-not-write.md) | IMEの状態はIME自身を正とし、awaseは書き込まず観測に追随する（設計転換）。キー効果は注入で学習・検証、成功基準は撤去量 | 草案（未レビュー） |
+| [190](190-msime-immcross-failure-fallback-idempotent-vk-ime-on.md) | Microsoft IMEでImmCrossが失敗したとき、非冪等なVK_KANJIトグルでなく冪等なVK_IME_ON/OFF(MsImeDirect)へフォールバックする(BUG-152) | **実装済み(未マージ)・CI実機E2E検証済み**。opus round1〜3で収束+KanjiToggle撤去。PR CI全PASS、実機(dragonflyg4)検証済み。CI(a8/a9)検証済み、実機未 |
+| [191](191-ime-is-source-of-truth-observe-not-write.md) | IMEの状態はIME自身を正とし、awaseは書き込まず観測・予測に追随する（開閉のみに作用するキーは例外）。キー効果は設定読取・注入学習・検証の3段階で表にする | 草案（opus round1〜4対応済み、実装は撤去ブランチ〈未マージ〉） |
+| [192](192-state-dependent-mode-key-warning-and-guided-override.md) | 状態依存のIMEモードキーを検出して警告し、awaseの明示config（冪等なON/OFF）への置き換えを案内する | 草案（決定3bはopus round4で訂正済み、未実装） |
+| [193](193-richedit-superclass-tsf-native-e2e-target.md) | TSFネイティブ相当の入力先を RichEdit のスーパークラス化で決定的に用意する（実機E2Eの検証対象拡張） | 採用（スパイク成功） |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
@@ -351,6 +357,8 @@ ADR-032 で IME 状態モデルが reducer 化されたあと、運用で見つ�
 | [158-complexity-inventory-2026-09-10.md](158-complexity-inventory-2026-09-10.md) | ADR-158 複雑性インベントリ | [158](158-complexity-reduction-north-star.md) |
 | [163-implementation-tasks.md](163-implementation-tasks.md) | ADR-163 実装タスクリスト | [163](163-actuation-decision-io-separation-and-replay-harness.md) |
 | [176-implementation-tasks.md](176-implementation-tasks.md) | ADR-176 実装タスクリスト | [176](176-behavioral-calibration-of-ime-mode-key-shadow-overrides.md) |
+| [193-implementation-tasks.md](193-implementation-tasks.md) | ADR-193 実装タスクリスト（Chrome idle-sweep E2E、保留・参考） | [193](193-richedit-superclass-tsf-native-e2e-target.md) |
+| [191-calibration-experiments.md](191-calibration-experiments.md) | ADR-191 較正・予測の実験の経緯と実測結果（格子・通知購読・CI高速化・文献調査・巡回シミュレータ） | [191](191-ime-is-source-of-truth-observe-not-write.md) |
 | [178-opus-review-round1.md](178-opus-review-round1.md)〜[round12.md](178-opus-review-round12.md) | ADR-178 v1〜v13（バックアップ+復元方式、破棄済み）敵対的レビュー記録（Opus round1〜12） | [178](178-msi-uninstall-preserve-userdata.md) |
 | [178-opus-review-v14.md](178-opus-review-v14.md) | ADR-178 v14（Permanent+自己修復方式、現行）敵対的レビュー記録 | [178](178-msi-uninstall-preserve-userdata.md) |
 

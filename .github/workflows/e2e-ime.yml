@@ -7,9 +7,12 @@ name: e2e-ime
 #   build(構成ごと) → e2e(構成×回数) → summary
 #
 # 通常のCI(ci.yml)には影響しない。ci/e2e-ime ブランチへの関連ファイルの push と手動起動でだけ動く。
+# ci/e2e-scenarios ブランチへの push は、操作シナリオ(名前が sc- で始まる構成、下のplan参照)だけを回す。
+# ci/e2e-calibration ブランチへの push は、ADR-191 の学習/検証ラウンド(名前が cal- で始まる構成)だけを回す。
+# (workflow_dispatch は既定ブランチにワークフローが無いと使えないので、構成を絞るには only 入力かこのブランチを使う)
 on:
   push:
-    branches: [ci/e2e-ime]
+    branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -20,9 +23,21 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: '実行する構成名(カンマ区切り、空なら全構成)。例: baseline,a5-no-refresh20'
+        description: '実行する構成名(カンマ区切り、空なら全構成、末尾*は前方一致)。例: baseline,a5-no-refresh20,sc-*'
         required: false
         default: ''
+
+# smoke ゲート(下の gate ステップ)が同じ run のジョブ一覧を読むため actions: read が要る。
+permissions:
+  contents: read
+  actions: read
+
+# 同じ ref への push が続いたとき、古い run(重複実行)を止める。
+# ただし ci/e2e-calibration では、小さな push(README・スクリプトの修正)で走行中の長い(最大55分の)学習ジョブ群を
+# 全部キャンセルしないよう、cancel-in-progress を無効にする。
+concurrency:
+  group: e2e-ime-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_name != 'ci/e2e-calibration' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,24 +48,31 @@ jobs:
     outputs:
       configs: ${{ steps.p.outputs.configs }}
       builds: ${{ steps.p.outputs.builds }}
+      jobs: ${{ steps.p.outputs.jobs }}
     steps:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || '' }}
+          # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)を除く。
+          # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
+          EXCLUDE_CAL_WHEN_EMPTY: '1'
         run: |
           import json, os
           # name: 構成名 / bin: 使うビルド成果物(撤去なしの構成は baseline を使い回す) / mutator: ablations/ 下のスクリプト
-          # (空=変更なし) / args: スパイクの追加引数 /
+          # (空=変更なし) / args: スパイクの追加引数
           # keymap: GJI の session_keymap(1=ATOK, 2=MS-IME) / custom_table: config1.db に古い custom_keymap_table
           # (変換=IMEOn)を残すか / check: expect=ATOK前提の期待表(check.py)、consistency=プリセット非依存で
-          # 「実IMEのかな=Engine ON、英数・直接入力=Engine OFF」に追随するか(check_consistency.py、--walk)
+          # 「実IMEのかな=Engine ON、英数・直接入力=Engine OFF」に追随するか(check_consistency.py、--walk)、
+          # collect=判定せずログを回収し、「実行できなかった」(GRID-ABORT・完走マーカー無し・KEY 行0件)だけを rc=3=INVALID にする(cal-* 用。expect=observe と組み合わせる。解析はローカル)
           # expect: pass=全回PASS / fail=撤去や設定で壊れる(既知の問題を固定) / observe=結果を表に出すだけ(不安定・未確定の観測用)
           # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME)
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true'):
+          # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'dbe_mode_key_policy = "passthrough"'
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe'):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin)
+          SC_IMES = [('msime-native', 'msime', 1, ' --msime'), ('gji-msime', 'gji', 2, ''), ('gji-atok', 'gji', 1, '')]
           configs = [
             # --- 撤去実験(ATOK、実機E1〜E7bと同じ) ---
             cfg('baseline', 'pass'),
@@ -83,11 +105,114 @@ jobs:
             cfg('probe-vk-gji-atok', 'observe', check='vkprobe', args='--vkprobe', awase='false'),
             cfg('probe-vk-gji-msime', 'observe', check='vkprobe', args='--vkprobe', keymap=2, awase='false'),
             cfg('probe-vk-msime-native', 'observe', check='vkprobe', args='--vkprobe --msime', ime='msime', awase='false'),
+            # --- ADR-191 の検証ラウンド(ci/e2e-calibration ブランチ。check='collect'=判定せずログを回収し、「実行できなかった」(GRID-ABORT・完走マーカー無し・KEY 行0件)だけを rc=3=INVALID にする。cal-verify-* は打鍵時予測を持つ awase のビルドで意味を持つ) ---
+            # walk: 撤去ブランチ(打鍵時予測ビルド)+ AWASE_TEST_INJECTION=1 でランダムなキー列を流し、Engine と実IMEのずれを
+            # ローカルで解析する(effect_learning.py --drift、DRIFT_OFF=100/400/1500)。cache=works は観測あり、
+            # cache=unavailable は awase が IME を読めないアプリ相当(スパイク窓を「IMM不可」に固定)で、予測だけが Engine を動かす。
+            *[cfg(f'cal-verify-{kind}-s{seed}', 'observe', check='collect', cache=cache, runs=1,
+                  args=f'--walk=100 --seed={seed}')
+              for kind, cache in (('obs', 'works'), ('blind', 'unavailable')) for seed in (1, 2)],
+            cfg('cal-walk-noawase-s5', 'observe', check='collect', awase='false', runs=1, args='--walk=100 --seed=5'),
+            # --- ADR-191 学習ラウンド 第1版(cal-grid-*): 状態を IMM で書いて作る。**学習に使ってはいけない**(IMM で書いた変換モードは、キーで入った状態と別物で、ATOK のひらがなが「不変」と誤学習される。比較・経緯の記録用。学習は cal-gridk3-* / cal-fast-* / cal-notify-*)。 ---
+            # (状態: 開閉×入力モード×入力中の段階=30状態を IMM で決定的に作り、キーの効果を格子状に網羅する)
+            # (awase なし=IME単体の効果。--grid=シャード、キーのグループで4分割。プリセット ATOK=keymap 1 / MS-IME=keymap 2)
+            # cal-grid-smoke は動作確認用(各セル1回)。所要は約 20〜35 分/シャード(wait=秒)。
+            cfg('cal-grid-smoke', 'observe', check='collect', awase='false', runs=1, wait=1500, args='--grid=s4 --grid-trials=1'),
+            *[cfg(f'cal-grid-{pre}-{sh}', 'observe', check='collect', awase='false', runs=1, wait=3300, keymap=km,
+                  args=f'--grid={sh}')
+              for pre, km in (('atok', 1), ('msime', 2)) for sh in ('s1', 's2', 's3', 's4')],
+            # 第3版: 全ての状態をキーだけで作る(--grid-setup=keys。リセットも IMM を使わず、観測しながら IME_ON/ひらがなで(開,0x19)へ戻す)。
+            # 第2版(リセットだけ IMM=--grid-setup=keys-immreset)は、IMM で書いた 0x19 が GJI の内部状態と食い違い、モード切替キーの結果が実際と違った。
+            # smoke は受け入れ基準の確認用: ATOK s1(ひらがな 0x19→0x10、0x10→0x19)、MS-IME s2(カタカナ 0x19→0x1B)。
+            cfg('cal-gridk3-smoke-atok', 'observe', check='collect', awase='false', runs=1, wait=1800, keymap=1,
+                args='--grid=s1 --grid-setup=keys --grid-trials=1'),
+            cfg('cal-gridk3-smoke-msime', 'observe', check='collect', awase='false', runs=1, wait=1800, keymap=2,
+                args='--grid=s2 --grid-setup=keys --grid-trials=1'),
+            *[cfg(f'cal-gridk3-{pre}-{sh}', 'observe', check='collect', awase='false', runs=1, wait=3300, keymap=km,
+                  args=f'--grid={sh} --grid-setup=keys --grid-trials=2')
+              for pre, km in (('atok', 1), ('msime', 2)) for sh in ('s1', 's2', 's3', 's4')],
+            # 高速化の検証(ci/e2e-calibration): 固定待ちを縮める --fast(+1500ms の観測を省く) と --speed=K(手順間の待ちをK倍速)。
+            # 既存 CI ログ584押下で、(開閉,変換モード,入力中,入力欄末尾) は +100ms と +1500ms で 99.8% 一致(唯一の例外は次試行の準備操作の混入)。
+            # cal-gridk3-atok-s1(遅い版)と同じ入力(--grid=s1 --grid-trials=2)で、所要時間と grid_learn.py --at=400 のセル表を比べる。
+            *[cfg(f'cal-gridk3-fast-atok-s1-sp{k}', 'observe', check='collect', awase='false', runs=1, wait=1800, keymap=1,
+                  args=f'--grid=s1 --grid-setup=keys --grid-trials=2 --fast --speed={k}')
+              for k in (2, 4)],
+            # --- ADR-191/193: 格子の待ちを compartment 変更通知の購読に置き換えられるか(ci/e2e-calibration) ---
+            # cal-notify-probe-*: 前面化の失敗(WM_SETFOCUS 未処理)を直した診断コピー compartment_notify_probe_diag(awase なし)で、キー→NOTIFY/POLL の遅延を測る(ATOKのみ、gap=1500/600)。
+            # 本体の compartment_notify_probe は ADR-193 の成果物で、CI では前面化に失敗して ABORT(キー0件)になる(patches/ の修正案が未適用)ので、本体を使う構成は置かない。
+            # seq: IME_ON, ひらがな×2, カタカナ, 英数, 無変換, 変換, 半角/全角×2, Esc, k, a(入力中), Space(変換中), Enter, IME_OFF, IME_ON
+            *[cfg(f'cal-notify-probe-atok-g{g}', 'observe', check='collect', awase='false', runs=1, wait=240, keymap=1,
+                  probe_bin='compartment_notify_probe_diag',
+                  probe=f'--seq=16,F2,F2,F1,F0,1D,1C,F3,F3,1B,4B,41,20,0D,1A,16 --gap={g} --poll=50')
+              for g in (1500, 600)],
+            # cal-notify-probe-diag: 前面化の戦略 S0〜S3 を順に試して DIAG 行に残す診断コピー(ADR-193 の本体は編集しない)。
+            cfg('cal-notify-probe-diag', 'observe', check='collect', awase='false', runs=1, wait=240, keymap=1,
+                probe_bin='compartment_notify_probe_diag',
+                probe='--seq=16,F2,F2,F1,F0,1D,1C,F3,F3,1B,4B,41,20,0D,1A,16 --gap=1500 --poll=50'),
+            # cal-notify-comp-s1: 入力中/変換中/確定のイベント(WM_IME_*/EN_CHANGE)も待ちの静止判定に使い、観測を +100ms だけにする(--snap100)。
+            # cal-notify-atok-s1(--notify のみ)と表(grid_learn.py --at=100)・所要時間を比べる。
+            cfg('cal-notify-comp-s1', 'observe', check='collect', awase='false', runs=1, wait=1500, keymap=1,
+                args='--grid=s1 --grid-setup=keys --fast --speed=2 --grid-adaptive --notify --notify-comp --snap100 '
+                     '--grid-retry-file=@REPO@/tools/e2e/ime_key_matrix/grid-tables/nondet-atok.txt'),
+            # cal-notify-comp-atok: 入力中/変換中/確定のイベント(WM_IME_*, EN_CHANGE)が CI(GJI・Edit)で届くか(--notify-comp)。
+            cfg('cal-notify-comp-atok', 'observe', check='collect', awase='false', runs=1, wait=900, keymap=1,
+                args='--grid=s4 --grid-setup=keys --grid-trials=1 --fast --speed=2 --notify --notify-comp'),
+            # cal-notify-atok-s{1..4}: cal-fast-atok-s*(--fast --speed=2 --grid-adaptive)に --notify を足した構成。所要時間・表の一致を遅い版/高速版と比べる。
+            *[cfg(f'cal-notify-atok-s{n}', 'observe', check='collect', awase='false', runs=1, wait=1500, keymap=1,
+                  args=f'--grid=s{n} --grid-setup=keys --fast --speed=2 --grid-adaptive --notify '
+                       '--grid-retry-file=@REPO@/tools/e2e/ime_key_matrix/grid-tables/nondet-atok.txt')
+              for n in (1, 2, 3, 4)],
+            # --- 高速な学習ラウンド(ci/e2e-calibration) ---
+            # --fast(押下後の待ち 2300→700ms。+400ms と +1500ms で表が変わらないことを264試行で確認済み) と --speed=2、
+            # 探索後に到達不能な試行を外す([GRID-PRUNE])、--grid-adaptive(1パス目は全セル1回、2パス目は前回の表で非決定だったセル+履歴依存+10%の監査標本)、
+            # セットアップ不能の連続で打ち切り([GRID-ABORT]→rc=3)。本番シャードは同じプリセットの smoke が成功してから中身を実行する(gate)。
+            # cal-fast-val-* は速度の妥当性の比較用: 遅い版 cal-gridk3-atok-s1(--grid-trials=2)と同じ入力で --speed=1/4 を比べる。
+            *[cfg(f'cal-fast-smoke-{pre}', 'observe', check='collect', awase='false', runs=1, wait=900, keymap=km,
+                  args=f'--grid={sh} --grid-setup=keys --fast --speed=2 --grid-trials=1')
+              for pre, km, sh in (('atok', 1, 's1'), ('msime', 2, 's2'))],
+            *[cfg(f'cal-fast-{pre}-{sh}', 'observe', check='collect', awase='false', runs=1, wait=1500, keymap=km,
+                  gate=f'cal-fast-smoke-{pre}',
+                  args=f'--grid={sh} --grid-setup=keys --fast --speed=2 --grid-adaptive '
+                       f'--grid-retry-file=@REPO@/tools/e2e/ime_key_matrix/grid-tables/nondet-{pre}.txt')
+              for pre, km in (('atok', 1), ('msime', 2)) for sh in ('s1', 's2', 's3', 's4')],
+            *[cfg(f'cal-fast-val-atok-s1-k{k}', 'observe', check='collect', awase='false', runs=1, wait=1500, keymap=1,
+                  args=f'--grid=s1 --grid-setup=keys --grid-trials=2 --fast --speed={k}')
+              for k in (1, 4)],
             cfg('msime-stale-table', 'pass', check='consistency', args='--walk --key=henkan', keymap=2, custom_table='true'),
+            # --- 操作シナリオ(sc-): IMEプリセット × 各種IMEキー × パススルー/抑止設定 × Shift単独打鍵 ---
+            # 判定はどれも「実IMEのかな=Engine ON、英数・直接入力=Engine OFF」に追随するか(consistency)。
+            # 全シナリオ pass(MS-IME本体もADR-190/BUG-152の修正後はPASS。修正前は直接入力からの最初のひらがな(0xF2)でIMEが開かず3/3 FAILだった)。
+            # ただし MS-IME本体の半角/全角(sc-hz-msime-native-*)は observe: F3=閉/F4=開の静的モデルでGJIのようなトグルではない(ADR-189が対象外にした範囲)。
+            # noawase の構成は、それが awase のせいか(MS-IME本体の癖か)を切り分ける対照実験。
+            # IME の3通り: msime-native(標準の日本語IME)、gji-msime(GJI + MS-IMEプリセット)、gji-atok(GJI + ATOKプリセット)
+            # dbe_mode_key_policy: suppress(既定、DBEレンジ 英数/カタカナ/半角全角 を握りつぶす) / passthrough(そのまま通す)
+            # half_width_alnum_toggle: 左Shift単独タップで半角英数(持続トグル)。GJIで使うには all が必要。
+            *[cfg(f'sc-dbe-{ime_name}-{pol}', 'pass', check='consistency', ime=ime, keymap=km,
+                  args=f'--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2{msime}',
+                  general=f'dbe_mode_key_policy = "{pol}"')
+              for ime_name, ime, km, msime in SC_IMES for pol in ('suppress', 'passthrough')],
+            *[cfg(f'sc-kanji-{ime_name}', 'pass', check='consistency', ime=ime, keymap=km,
+                  args=f'--seq=F2,19,19,16,1A,16,1A,19,F2,1A{msime}')
+              for ime_name, ime, km, msime in SC_IMES],
+            *[cfg(f'sc-hz-{ime_name}-{pol}', 'observe' if ime == 'msime' else 'pass', check='toggle', ime=ime, keymap=km,
+                  args=f'--hz{msime}', general=f'dbe_mode_key_policy = "{pol}"')
+              for ime_name, ime, km, msime in SC_IMES for pol in ('suppress', 'passthrough')],
+            *[cfg(f'sc-shift-{ime_name}', 'pass', check='consistency', ime=ime, keymap=km,
+                  args=f'--seq=F2,A0,A0,A0,A1,F2{msime}', general='half_width_alnum_toggle = "all"')
+              for ime_name, ime, km, msime in SC_IMES],
+            cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
+                args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
+            cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
+                args='--seq=F3,F3,F4,F4,F3,F4,F4,F3 --msime'),
+            # MS-IME本体で、スキャンコード付き/無しの注入(NOSCAN|0xF2 等)がIMEを開くか(awase の再注入は scan=0)
+            cfg('sc-probe-vk-msime-native', 'observe', check='vkprobe', args='--vkprobe --msime', ime='msime', awase='false'),
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
-            configs = [c for c in configs if c['name'] in only]
+            configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
+          elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
+            # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
+            configs = [c for c in configs if not c['name'].startswith('cal-')]
           # ビルドは bin ごとに1回(撤去なしの構成は baseline を共有)
           builds = [c for c in configs if c['bin'] == c['name']]
           if not any(c['bin'] == 'baseline' and c['name'] == 'baseline' for c in builds):
@@ -95,6 +220,7 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
             f.write('configs=' + json.dumps(configs) + '\n')
             f.write('builds=' + json.dumps(builds) + '\n')
+            f.write('jobs=' + json.dumps([dict(cfg=c, run=r) for c in configs for r in range(1, c['runs'] + 1)]) + '\n')
 
   build:
     needs: plan
@@ -134,9 +260,13 @@ jobs:
         run: |
           cargo build -p awase-windows --bin awase
           cargo build -p awase-windows --example ime_key_matrix_spike
+          cargo build -p awase-windows --example compartment_notify_probe
+          cargo build -p awase-windows --example compartment_notify_probe_diag
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target\debug\awase.exe dist\
           Copy-Item target\debug\examples\ime_key_matrix_spike.exe dist\
+          Copy-Item target\debug\examples\compartment_notify_probe.exe dist\
+          Copy-Item target\debug\examples\compartment_notify_probe_diag.exe dist\
           Copy-Item config.toml dist\ -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         with:
@@ -147,12 +277,11 @@ jobs:
   e2e:
     needs: [plan, build]
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 80
     strategy:
       fail-fast: false
       matrix:
-        cfg: ${{ fromJson(needs.plan.outputs.configs) }}
-        run: [1, 2, 3]
+        include: ${{ fromJson(needs.plan.outputs.jobs) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -231,15 +360,55 @@ jobs:
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
 
+      # smoke ゲート: 本番シャードは、同じ run 内の smoke ジョブ(matrix.cfg.gate)が成功するまで待ち、失敗したら中身を実行しない。
+      # smoke と同時に起動する(GJI導入・言語設定は smoke と並行して済ませる)ので、待ちは smoke の残り時間だけで済む。
+      - name: smoke の成功を待つ(ゲート)
+        id: gate
+        if: matrix.cfg.gate != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE: ${{ matrix.cfg.gate }}
+        run: |
+          # fail-open の条件: 5分待っても smoke ジョブが見つからない(この run に smoke が無い、または API が読めない)ときは
+          # 通常どおり中身を実行する(ゲートは「smoke が失敗した」ことを確認できたときだけ本番を止める)。
+          # ジョブ一覧は --paginate で全件読む(全構成 run は 200 ジョブ超で、1ページ 100 件では smoke が見つからない)。
+          verdict=notfound
+          for i in $(seq 1 90); do
+            row=$(gh api --paginate "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?per_page=100" \
+              -q ".jobs[] | select(.name | startswith(\"e2e ($GATE,\")) | \"\(.status) \(.conclusion)\"" 2>/dev/null | head -1 || true)
+            case "$row" in
+              "completed success") verdict=success; break ;;
+              "completed "*) verdict=failed; break ;;
+              "") [ "$i" -ge 15 ] && break ;;  # 5分待っても smoke ジョブが見つからない(この run に smoke が無い)なら通常どおり実行
+            esac
+            sleep 20
+          done
+          echo "gate=$GATE verdict=$verdict ($row)"
+          if [ "$verdict" = failed ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "smoke ($GATE) が失敗したため中身を実行しない" | tee result.txt
+            echo "rc=3" > rc.txt
+          fi
+
       - name: awase を起動し、スパイク --auto を実行して判定する
         id: run
+        if: steps.gate.outputs.skip != 'true'
         shell: pwsh
         run: |
           $cfg = Get-Content dist\config.toml -Raw
+          # [general] への追加設定(;区切りの `key = value`)。既にあれば値を置き換え、無ければ [general] の直後に足す。
+          $general = '${{ matrix.cfg.general }}'
+          foreach ($line in ($general -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+            $key = ($line -split '=')[0].Trim()
+            if ($cfg -match "(?m)^$key *=") { $cfg = $cfg -replace "(?m)^$key *=.*$", $line }
+            else { $cfg = $cfg -replace '(?m)^\[general\]\s*$', "[general]`r`n$line" }
+          }
           [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
+          Select-String -Path "$PWD\dist\config.toml" -Pattern 'dbe_mode_key_policy|half_width_alnum_toggle'
           # CIランナーは初回のクロスプロセスIMMプローブが遅く(実測22ms)、awase がスパイク窓を「IMM不可」と誤学習して
           # conv を読まなくなる(Engine が半角英数に追従しない)。学習済みキャッシュを事前投入して防ぐ。
-          [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"ime_key_matrix_spike.exe`"]`r`nEdit = `"works`"`r`nRICHEDIT50W = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))
+          [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"ime_key_matrix_spike.exe`"]`r`nEdit = `"${{ matrix.cfg.cache }}`"`r`nRICHEDIT50W = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))
           $env:RUST_LOG = 'debug'
           $env:AWASE_TEST_INJECTION = '1'
           # 順序: スパイクを先に起動し、初期化(TSF/ActivateProfile)が終わってから awase を起動する。
@@ -247,7 +416,46 @@ jobs:
           # 誤学習して conv を読まなくなる。--activate-gji はキーフックをawase起動後に遅延インストールし、
           # 起動後に VK_IME_OFF を1回注入して awase の belief(起動時推定=ON)と実状態(OFF)をそろえる。
           Push-Location dist
-          Start-Process -FilePath .\ime_key_matrix_spike.exe -ArgumentList '--auto --hold=180 --activate-gji ${{ matrix.cfg.args }}'
+          if ('${{ matrix.cfg.probe }}' -ne '') {
+            # ADR-193 の compartment_notify_probe(awase なし)。キー→通知の遅延を測る。ログは dist\compartment_notify_probe.log。
+            # プローブは自前の前面化に CI で失敗する(ABORT 前面化またはフォーカスに失敗)ので、外側から前面化する
+            # (スパイクと同じ AttachThreadInput の定番の回避策。プローブは 2.3 秒待ってから前面化を確かめるので間に合う)。
+            $probeBin = '${{ matrix.cfg.probe_bin }}'
+            Add-Type -TypeDefinition '
+            using System;
+            using System.Runtime.InteropServices;
+            public class FgHelper {
+              [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+              [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+              [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+              [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+              [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint a, uint b, bool attach);
+              [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+              public static bool Front(IntPtr h) {
+                IntPtr fg = GetForegroundWindow(); uint pid; uint ft = fg == IntPtr.Zero ? 0 : GetWindowThreadProcessId(fg, out pid);
+                uint me = GetCurrentThreadId(); bool att = ft != 0 && ft != me && AttachThreadInput(me, ft, true);
+                BringWindowToTop(h); bool ok = SetForegroundWindow(h);
+                if (att) AttachThreadInput(me, ft, false);
+                return ok || GetForegroundWindow() == h;
+              }
+            }
+            '
+            $probe = Start-Process -FilePath ".\$probeBin.exe" -ArgumentList "${{ matrix.cfg.probe }} --log=$probeBin.log" -PassThru
+            if ($probeBin -eq 'compartment_notify_probe') {
+              for ($i = 0; $i -lt 12; $i++) {
+                Start-Sleep -Milliseconds 150
+                $probe.Refresh()
+                if ($probe.MainWindowHandle -ne [IntPtr]::Zero) { [void][FgHelper]::Front($probe.MainWindowHandle) }
+              }
+            }
+            $deadline = (Get-Date).AddSeconds(${{ matrix.cfg.wait }})
+            while ((Get-Date) -lt $deadline) {
+              Start-Sleep -Seconds 2
+              if ((Test-Path "$probeBin.log") -and (Select-String -Path "$probeBin.log" -Pattern '=== 完了 ===' -Quiet)) { break }
+            }
+          } else {
+          $spikeArgs = '--auto --hold=180 --activate-gji ${{ matrix.cfg.args }}'.Replace('@REPO@', $env:GITHUB_WORKSPACE.Replace('\', '/'))
+          Start-Process -FilePath .\ime_key_matrix_spike.exe -ArgumentList $spikeArgs
           for ($i = 0; $i -lt 40; $i++) {
             Start-Sleep -Milliseconds 500
             if ((Test-Path ime_key_matrix_spike.log) -and (Select-String -Path ime_key_matrix_spike.log -Pattern 'ROUND 2/2' -Quiet)) { break }
@@ -255,20 +463,48 @@ jobs:
           if ('${{ matrix.cfg.awase }}' -ne 'false') {
             Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
           }
-          $deadline = (Get-Date).AddSeconds(330)
+          $deadline = (Get-Date).AddSeconds(${{ matrix.cfg.wait }})
           while ((Get-Date) -lt $deadline) {
             Start-Sleep -Seconds 2
             if ((Test-Path ime_key_matrix_spike.log) -and (Select-String -Path ime_key_matrix_spike.log -Pattern '全手順完了' -Quiet)) { break }
+          }
           }
           Pop-Location
           Get-Process awase -ErrorAction SilentlyContinue | Format-Table Name, Id
           if (Test-Path dist\awase.log) { Get-Content dist\awase.log -Encoding utf8 | Where-Object { $_ -match 'Engine (de)?activated|IME open axis delegated|outcome=Unwarranted' } | Set-Content awase-filtered.log -Encoding utf8 } else { New-Item -ItemType File -Force awase-filtered.log | Out-Null }
           $env:PYTHONUTF8 = '1'
           # 判定は summary ジョブで集計する。ここでは終了コード(0=PASS, 1=FAIL, 3=INVALID)を記録して成功で終える。
-          if ('${{ matrix.cfg.check }}' -eq 'toggle') {
+          if ('${{ matrix.cfg.probe }}' -ne '') {
+            # プローブ: 測定内容は判定しないが、「実行できなかった」は INVALID(rc=3)にする(完走マーカー・ABORT・KEY 行数)。
+            $plog = "dist\${{ matrix.cfg.probe_bin }}.log"
+            $pdone = (Test-Path $plog) -and (Select-String -Path $plog -Pattern '=== 完了 ===' -Quiet)
+            $pabort = (Test-Path $plog) -and (Select-String -Path $plog -Pattern 'ABORT' -Quiet)
+            $pkeys = if (Test-Path $plog) { @(Select-String -Path $plog -Pattern 'ms KEY ').Count } else { 0 }
+            if (-not $pdone -or $pabort -or $pkeys -eq 0) {
+              "probe: 実行できなかった(INVALID, rc=3) 完走マーカー=$pdone ABORT=$pabort KEY行=$pkeys。ログ $plog を参照" | Tee-Object -FilePath result.txt
+              $global:LASTEXITCODE = 3
+            } else {
+              "probe: 判定なし(ログ回収のみ, rc=0) KEY行=$pkeys。解析は notify_latency.py" | Tee-Object -FilePath result.txt
+              $global:LASTEXITCODE = 0
+            }
+          } elseif ('${{ matrix.cfg.check }}' -eq 'toggle') {
             python tools\e2e\ime_key_matrix\check_toggle.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'resync') {
             python tools\e2e\ime_key_matrix\check_resync.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
+          } elseif ('${{ matrix.cfg.check }}' -eq 'collect') {
+            # 判定はしないが、「実行できなかった」は INVALID(rc=3)にする: (1)[GRID-ABORT]、(2)完走マーカー(全手順完了)が無い
+            # (前面化失敗などで進まずに wait を使い切った)、(3)測定(KEY 行)が0件。
+            $slog = 'dist\ime_key_matrix_spike.log'
+            $sabort = (Test-Path $slog) -and (Select-String -Path $slog -Pattern 'GRID-ABORT' -Quiet)
+            $sdone = (Test-Path $slog) -and (Select-String -Path $slog -Pattern '全手順完了' -Quiet)
+            $skeys = if (Test-Path $slog) { @(Select-String -Path $slog -Pattern '\] KEY ').Count } else { 0 }
+            if ($sabort -or -not $sdone -or $skeys -eq 0) {
+              "collect: 実行できなかった(INVALID, rc=3) GRID-ABORT=$sabort 完走マーカー=$sdone KEY行=$skeys。ログの [GRID-ABORT] reason 等を参照" | Tee-Object -FilePath result.txt
+              $global:LASTEXITCODE = 3
+            } else {
+              "collect: 判定なし(ログ回収のみ, rc=0) KEY行=$skeys。解析はローカルで grid_learn.py / effect_learning.py / cycle.py" | Tee-Object -FilePath result.txt
+              $global:LASTEXITCODE = 0
+            }
           } elseif ('${{ matrix.cfg.check }}' -eq 'vkprobe') {
             python tools\e2e\ime_key_matrix\vkprobe_report.py dist\ime_key_matrix_spike.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'consistency') {
@@ -281,7 +517,7 @@ jobs:
           $rc = $LASTEXITCODE
           "rc=$rc" | Out-File -FilePath rc.txt -Encoding ascii
           "exit code: $rc"
-          Get-Process awase, ime_key_matrix_spike -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process awase, ime_key_matrix_spike, compartment_notify_probe, compartment_notify_probe_diag -ErrorAction SilentlyContinue | Stop-Process -Force
           exit 0
 
       - uses: actions/upload-artifact@v4
@@ -292,6 +528,8 @@ jobs:
             result.txt
             rc.txt
             dist/ime_key_matrix_spike.log
+            dist/compartment_notify_probe.log
+            dist/compartment_notify_probe_diag.log
             dist/awase.log
             awase-stderr.log
             awase-filtered.log
@@ -316,7 +554,7 @@ jobs:
           rows, bad = [], False
           for c in configs:
             n = dict(pass_=0, fail=0, invalid=0, missing=0)
-            for run in (1, 2, 3):
+            for run in range(1, c.get('runs', 3) + 1):
               f = f"results/result-{c['name']}-{run}/rc.txt"
               if not os.path.exists(f):
                 n['missing'] += 1

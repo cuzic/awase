@@ -859,7 +859,7 @@ impl DecisionExecutor {
     ///
     /// `ImmCrossProcessStrategy` が現在のコンテキストで最初に適用可能な場合は
     /// `win32_async::spawn_local` で非同期実行し `None` を返す（spawn 済み）。
-    /// それ以外（GjiDirect / KanjiToggle 経路）はキー注入のみで非ブロッキングなため
+    /// それ以外（GjiDirect / MsImeDirect 経路）はキー注入のみで非ブロッキングなため
     /// 既存の同期 chain を維持し、`Some(..)` を返す。
     #[tracing::instrument(level = "debug", skip_all, fields(open = open, ?generation))]
     fn dispatch_ime_set_open(
@@ -1104,7 +1104,6 @@ impl DecisionExecutor {
         }
         let effective = match outcome {
             ImeOpenOutcome::Applied
-            | ImeOpenOutcome::FallbackSent
             | ImeOpenOutcome::AppliedWithoutSendInput
             | ImeOpenOutcome::AlreadyMatched => open,
             ImeOpenOutcome::Failed => !open,

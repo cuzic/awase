@@ -302,14 +302,16 @@ impl PhysicalKeyDisposition {
             return Self::Allow;
         }
         let suppress = if profile.can_use_imm32_cross_process() {
-            // ImmCross: KANJI 関連 VK は Down/Up 共に Suppress
+            // ImmCross: KANJI 関連 VK は原則 Down/Up 共に Suppress。
+            // ただし 0xF2 HIRAGANA は上の専用分岐で先に Allow になる場合がある
+            // （MS-IME 本体が物理 F2 で開く経路を残す、ADR-190）。
             true
         } else {
             // apply-ime が GjiDirect/MsImeDirect で実際に actuate する場合のみ、
             // shadow_toggle 発火時 KeyDown + 全 KeyUp を Suppress（BUG-46）。
             let kind: crate::state::ime_kind::ImeKindId = active_ime_kind.into();
             let ime_actuation_owned = key_sequence_policy::gji_direct_applicable(kind)
-                || key_sequence_policy::ms_ime_direct_applicable(kind, profile);
+                || key_sequence_policy::ms_ime_direct_applicable(kind);
             // 半角/全角 (0xF3 SBCSCHAR / 0xF4 DBCSCHAR。0xF2 HIRAGANA は上の専用分岐で
             // 既に処理済みのためここには来ない) の KeyDown は、**awase が beliefに基づく
             // 開閉トグルとして書くキー**（`ImeKeyKind::is_open_toggle_for`、ADR-189/191。

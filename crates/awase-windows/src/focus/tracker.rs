@@ -201,7 +201,7 @@ impl FocusTracker {
     ///
     /// これにより静的リストに載っていない IMM-broken アプリ（`ImmGetDefaultIMEWnd`
     /// が NULL / IME 検出ミスが閾値超え）でも、ImmCross の無駄な
-    /// `SendMessageTimeoutW` を踏まずに MsImeDirect / GjiDirect / KanjiToggle 系へ
+    /// `SendMessageTimeoutW` を踏まずに MsImeDirect / GjiDirect 系へ
     /// 直行できる。学習の書き手は `focus/imm_learning.rs`（フォーカス時の
     /// `ImmGetDefaultIMEWnd` 判定）と `Runtime::learn_imm_capability_from_miss`
     /// （IME 検出ミス数の閾値超え/回復）。`Works` 回復学習で store が更新されれば

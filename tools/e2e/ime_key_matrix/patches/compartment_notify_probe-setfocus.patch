@@ -1,0 +1,28 @@
+--- a/crates/awase-windows/examples/compartment_notify_probe.rs
++++ b/crates/awase-windows/examples/compartment_notify_probe.rs
+@@ -121,7 +121,7 @@
+         GetGUIThreadInfo, GetMessageW, GetWindowThreadProcessId, KillTimer, PostMessageW,
+         PostQuitMessage, RegisterClassExW, SetForegroundWindow, SetTimer, ShowWindow,
+         TranslateMessage, CW_USEDEFAULT, GUITHREADINFO, MSG, SW_SHOW, WM_CLOSE, WM_DESTROY,
+-        WM_TIMER, WNDCLASSEXW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
++        WM_SETFOCUS, WM_TIMER, WNDCLASSEXW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+     };
+ 
+     use super::sink::{name_of, read_value, CompSink, Event, Events};
+@@ -269,6 +269,16 @@
+                     poll_once();
+                     LRESULT(0)
+                 }
++                WM_SETFOCUS => {
++                    // 前面化(SetForegroundWindow)されるとフォーカスがトップ窓へ移り、子の入力欄から外れる。
++                    // CI(ヘッドレスのランナー)では起動時に SetFocus(edit) が窓の非アクティブ中に効かず、前面化後に
++                    // focus_on_probe(hwndFocus == edit)が false になって ABORT する。入力欄へ戻す(ime_key_matrix_spike と同じ)。
++                    let edit = hwnd_of(&EDIT);
++                    if !edit.0.is_null() {
++                        let _ = SetFocus(Some(edit));
++                    }
++                    LRESULT(0)
++                }
+                 _ => DefWindowProcW(hwnd, msg, wp, lp),
+             }
+         }

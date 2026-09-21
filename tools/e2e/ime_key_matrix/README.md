@@ -8,7 +8,7 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 
 | ファイル | 役割 |
 |---|---|
-| `crates/awase-windows/examples/ime_key_matrix_spike.rs` | 自前ウィンドウ(EDIT/RichEdit)を開き、実 IME の状態(`ImmGet*` / `WM_IME_CONTROL` / TSF compartment)を押下前・+100/+400/+1500ms で記録する。`--auto`(キー自動注入)、`--repeat=N`(1プロセスでN回)、`--fast`(+1500msを省く)、`--speed=K`(手順間をK倍速)、`--shiftmuh`(無変換をShift+無変換で注入)、`--free`/`--script`(手動) |
+| `crates/awase-windows/examples/ime_key_matrix_spike.rs` | 自前ウィンドウ(EDIT/RichEdit)を開き、実 IME の状態(`ImmGet*` / `WM_IME_CONTROL` / TSF compartment)を押下前・+100/+400/+1500ms で記録する。`--auto`(キー自動注入)、`--repeat=N`(1プロセスでN回)、`--fast`(+1500msを省く)、`--speed=K`(手順間をK倍速)、`--shiftmuh`(無変換をShift+無変換で注入)、`--free`/`--script`(手動)。ADR-191 の学習/検証用フラグ(`--grid`/`--notify` 等)と全フラグ・ログタグの一覧は同ファイル冒頭doc |
 | `crates/awase-windows/examples/chrome_probe.rs` | 専用プロファイルの **Chrome**(TsfNative)で同じキーを打ち、`k`,`a` の出力(NICOLA文字/`か`/`ka`/`kiu`)で状態を判定する。ローカルHTTP+検証ページ(`keydown`/`composition*`/`beforeinput` を記録)。`--repeat`・`--no-awase`・`--settle=MS`・`--shift-tail=MS`・`--storm=N` |
 | `check.py` | スパイクのログと awase のデバッグログを突き合わせ、`EXPECT`(期待表)で PASS/FAIL 判定 |
 | `check_multi.py` | `--repeat`/ループ実行のログを実行(RUN)ごとに切り出して判定。人の物理入力の混入(スパイク側+awaseログの `extra=0x0`)を無効(INVALID)にする |
@@ -51,3 +51,20 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 | `check_toggle.py` | 開閉トグルキーが押すたびに反転し、Engineが追随するか |
 | `ablations/a*.sh` | 撤去実験(ミューテーター)。`a7-no-follow.sh`はfollow(ADR-187)を無効化してずれを起こす |
 
+## ADR-191/193: 学習ラウンド(格子)・検証ラウンド(walk)・通知の計測ツール(ワークフローの `cal-*` 構成 = `check: collect`)
+`cal-*` 構成は判定せずログを回収し、`[GRID-ABORT]` による打ち切り(rc=3=INVALID)だけを検出する(解析は下のツールでローカルに行う)。
+スパイクの全フラグとログタグは `ime_key_matrix_spike.rs` の冒頭docが一覧(`--grid`/`--grid-setup`/`--grid-adaptive`/`--fast`/`--speed`/`--notify`/`--notify-comp`/`--snap100`、`--walk=N --seed=S` を含む)。
+**観測時点(`--at`)に注意**: `grid_learn.py` の既定は、ログにある最も遅い観測時点(通常 +1500ms、`--fast` は +400ms、`--snap100` は +100ms)。`--at=N` を指定してその時点の観測が0件ならエラー終了する(`--fast` のログに `--at=1500` を渡すと空の表になり、`--diff` が「差分0」になる偽陽性を防ぐ)。`--diff`/`effect_learning.py --compare` は共通セルが0件なら警告して非ゼロ終了する。「差分0」を引用するときは共通セル数を併記すること。`effect_learning.py --drift` は `DRIFT_OFF`(100/400/1500)に対応する観測時点(+100/+400/+1500ms)のIME状態と、その時点のEngine状態を比べる(該当観測が無ければエラー)。
+**注意: `--walk`(値なし)は ADR-186 の固定キー列、`--walk=N --seed=S` はランダムなキーをN回注入する ADR-191 の walk で、別物。**
+
+| ファイル | 役割 |
+|---|---|
+| `grid_learn.py` | `--grid` のログ(`ime_key_matrix_spike.log`)を集計し、セル(状態×キー)ごとの結果の分布・決定性・入力中の行方・セットアップ不能を出す。`--json` で表(セル→結果の分布)、`--graph` でキー到達の遷移グラフ、`--diff` で keys 版と imm 版のセル差分 |
+| `effect_learning.py` | 名前は「学習」だが実体は次の4つ: (1)walk ログから表を学習し決定性を出す、(2)一段予測・開ループ予測の精度(既定。`--spec` は Mozc 仕様モデルの評価)、(3)awase 起動時の Engine と実 IME のずれ(`--drift <spike.log> <awase.log>`、`DRIFT_OFF=100/400/1500` で判定時刻を選ぶ)、(4)A/B 条件の表の差分(`--compare`) |
+| `cycle.py` | 3段階ラウンド(設定の読み取り・学習・検証)のオフライン計測。`all <学習ログ> -- <検証ログ>` で、設定由来の表 S・学習した表 L・合成 M を、学習に使っていない walk の開ループ連鎖で採点する |
+| `conv_exp.py` | 隠れ状態「変換中(Conversion)」を打鍵履歴から追跡すると、入力中の Esc・無変換の非決定セルが決定的になるかの検証実験(研究用。製品コードは使わない) |
+| `score_walk.py` | 格子から作った予測表(JSON)を、独立した walk(キーで到達した状態)で一段予測として採点し、不一致セルを列挙する |
+| `gen_grid_nondet.py` | 前回の格子の表(`grid-tables/*.json`)から、結果が割れたセルの一覧(`grid-tables/nondet-*.txt`)を作る。`--grid-adaptive` の2パス目(`--grid-retry-file`)が再試行する対象になる |
+| `notify_latency.py` | `compartment_notify_probe`(ADR-193)のログから、キー→TSF compartment 変更通知の遅延(P50/P95/最大)、通知が来なかったキーの割合、通知の順序、周期読み取りとの比較を集計する |
+| `grid-tables/` | 格子(`--grid`)の学習結果の参照データ(`atok.json`/`msime.json`: セル→結果の分布)と、`--grid-adaptive` の再試行対象(`nondet-*.txt`)。予測表の生成元は撤去ブランチ側 |
+| `patches/compartment_notify_probe-setfocus.patch` | ADR-193 の `compartment_notify_probe.rs` **本体**への修正案(`WM_SETFOCUS` で入力欄へフォーカスを戻す1アーム。CI で前面化に失敗する原因の対処)。**未適用**(本体は別セッションの成果物) |

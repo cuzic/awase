@@ -1684,44 +1684,6 @@ fn bug_report_journal_truncation_does_not_slice_from_the_front() {
     }
 }
 
-/// GJI/MS-IME のフォールバック（VK_KANJI トグル）が送信する VK コードを、実装ソースの
-/// テキスト走査で固定する。
-///
-/// `docs/experiments.md` エントリ01: 「IME OFF に何のキーを送るか」で5日間に6回、
-/// 採用と撤回が反転した（`534051a` → `098c663` → `adb856c` → `b271aee` → … →
-/// `489cdf1`）。最終結論（GJI/MS-IME いずれも IME ON/OFF は冪等 VK_IME_ON (0x16) /
-/// VK_IME_OFF (0x1A)、VK_KANJI トグルには戻さない）は、現在は
-/// `state/key_sequence_policy.rs::{gji_direct_keys, ms_ime_direct_keys}`
-/// （真の SSOT `ime_key_for` の全4アームをピン留め）が回帰検知を担っている。
-///
-/// 旧 `post_ime_on_direct`/`post_ime_off_direct`/`post_gji_ime_on`/`post_gji_ime_off`は
-/// `ime_controller.rs` が `send_ime_mode_key` を直接呼ぶようになった後も本番呼び出し元ゼロの
-/// まま残っており（ADR-088:901 が発見・記録した上で「削除するな」と決定していたが、当時は
-/// 上記の後継テストが無く、削除すると回帰検知そのものが消えるためだった）、その後継テストが
-/// 揃った ADR-168 で削除した——このテストが検査していた `post_ime_on_direct`/
-/// `post_ime_off_direct`/`post_gji_ime_on`/`post_gji_ime_off` 部分もそれに伴い削除し、
-/// 生きている `post_kanji_toggle_to_focused`（フォールバック）の検査だけを残す。
-#[test]
-fn kanji_toggle_fallback_sends_expected_vk_codes() {
-    let path = "src/ime.rs";
-    let content = read_crate_file(path);
-    let production = production_code_only(&content);
-
-    // 最終フォールバック: VK_KANJI トグルを down/up ちょうど1回ずつ送る。
-    // （関数本体には import 文・診断ログ・コメントにも `VK_KANJI` という部分文字列が
-    // 複数回出現するため、実際に SendInput へ push する `make_key_input_ex(VK_KANJI, ..)`
-    // の down/up 引数だけを数える。ヘルパー名のリネームにも意味論的に頑健。）
-    let kanji_toggle = extract_fn_body(production, "pub unsafe fn post_kanji_toggle_to_focused(");
-    let down_count = kanji_toggle.matches("VK_KANJI, false").count();
-    let up_count = kanji_toggle.matches("VK_KANJI, true").count();
-    assert_eq!(
-        (down_count, up_count),
-        (1, 1),
-        "{path} の post_kanji_toggle_to_focused 内 VK_KANJI down/up 送信回数が想定(1, 1)と \
-         異なります(実際: ({down_count}, {up_count}))。"
-    );
-}
-
 /// ADR-086 §4 INV-14/INV-19（2026-08-08、全 6 経路の移行完了に伴い更新）:
 /// `set_ime_romaji_mode_with_target`/`_async`（実行時に `get_focused_hwnd()` を
 /// ライブクエリして書き込み先を決める、ターゲット同一性を持たない低レベル API）
@@ -2019,8 +1981,8 @@ fn fallback_write_bypasses_gji_shadow_on_via_none_override() {
         count_real_calls(fallback_write_body, "view.control.shadow_on = None"),
         1,
         "fallback_write は view.control.shadow_on = None で GjiDirect の \
-         already-matched skip を bypass する設計（BUG-113 追補、MsImeDirect/\
-         KanjiToggleはshadow_onをskip判定に使わないため無関係）。この上書きが \
+         already-matched skip を bypass する設計（BUG-113 追補、MsImeDirectは\
+         shadow_onをskip判定に使わないため無関係）。この上書きが \
          削除・変更されると、ImmCross Failed 後のフォールバックが \
          pre-actuation write を読み返して自分の送信を握り潰す回帰が再発する。"
     );
@@ -2361,9 +2323,9 @@ fn per_source_fields_are_not_assigned_directly() {
 /// `async_imm_cross_actuation_goes_through_the_single_chain_entry`（非同期入口数）は
 /// **チェーンの入口だけ**を数えており、`apply_mechanism` の呼び出し元は誰も
 /// 数えていなかった。`apply_mechanism` は `Actuation` 型状態チェーンを一切構築せずに
-/// `SendInput` / `post_kanji_toggle_to_focused` / `ImmSetOpenStatus` を起こせる。
+/// `SendInput` / `ImmSetOpenStatus` を起こせる。
 /// ここに 3 本目の呼び出し元が生えると、`falls_through` 規則（次へ進むのは `Failed`
-/// のときだけ、特に `UnsafeToToggle` で `VK_KANJI` へ落ちない）も `Actuation` の
+/// のときだけ、特に `UnsafeToToggle` で次の機構へ落ちない）も `Actuation` の
 /// アフィン性（1 値 = 高々 1 回の成功 write、INV-41）も通らない write 経路になる。
 ///
 /// # なぜ型で閉じないのか
@@ -2443,7 +2405,6 @@ fn raw_mechanism_write_sites_are_confined_to_chain_writers() {
         "struct ImmCrossProcessStrategy",
         "struct GjiDirectStrategy",
         "struct MsImeDirectStrategy",
-        "struct KanjiToggleStrategy",
     ] {
         let line = controller
             .lines()

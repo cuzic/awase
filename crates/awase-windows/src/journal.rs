@@ -755,7 +755,6 @@ fn ime_open_outcome_str(o: awase::platform::ImeOpenOutcome) -> &'static str {
     use awase::platform::ImeOpenOutcome;
     match o {
         ImeOpenOutcome::Applied => "Applied",
-        ImeOpenOutcome::FallbackSent => "FallbackSent",
         ImeOpenOutcome::AppliedWithoutSendInput => "AppliedWithoutSendInput",
         ImeOpenOutcome::AlreadyMatched => "AlreadyMatched",
         ImeOpenOutcome::Failed => "Failed",
@@ -828,7 +827,6 @@ fn write_mechanism_str(mechanism: crate::state::actuation_chain::WriteMechanism)
         WriteMechanism::ImmCross => "ImmCross",
         WriteMechanism::GjiDirect => "GjiDirect",
         WriteMechanism::MsImeDirect => "MsImeDirect",
-        WriteMechanism::KanjiToggle => "KanjiToggle",
     }
 }
 
@@ -843,7 +841,6 @@ fn mechanism_command_str(
         }
         Some(MechanismCommand::SetOpenThenConvForTarget { .. }) => "SetOpenThenConvForTarget",
         Some(MechanismCommand::SendVk(_)) => "SendVk",
-        Some(MechanismCommand::PostKanjiToggle) => "PostKanjiToggle",
         None => "None",
     }
 }

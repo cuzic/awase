@@ -27,3 +27,6 @@ services/report-worker/.wrangler/
 
 __pycache__/
 *.pyc
+
+# lints/* は workspace exclude の独立クレート(dylint)。ビルドで生成される Cargo.lock は追跡しない
+/lints/*/Cargo.lock

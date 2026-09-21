@@ -312,55 +312,6 @@ mod tests {
         }
     }
 
-    /// 不変条件2（**ADR-090 決定 F-2' で作り直した**）: 物理 KANJI を所有する
-    /// プロファイルは、その物理キーの代わりに送る**一次機構**として
-    /// `KanjiToggle` を使わない。
-    ///
-    /// # なぜ作り直したのか — 旧 assert は恒真だった
-    ///
-    /// 旧 `invariant_2_kanji_owning_drivers_use_non_kanji_mechanism` は
-    /// `matches!(driver.ime_open_mechanism(open), CrossProcessApi | SharedImeKeyDispatch)`
-    /// を assert していたが、`ImeOpenMechanism` はこの 2 variant しか持たない
-    /// ため**どう実装を壊しても落ちない**。「代替なしに消える契約」ではなく
-    /// 「元から効いていなかった契約」だったので、意図を実際に検査する形へ
-    /// 移した（ADR-090 §2.F 決定 F-2'）。
-    ///
-    /// # なぜ「先頭」なのか
-    ///
-    /// `(ImmCross, MsIme)` の chain は `[ImmCross, KanjiToggle]` なので、
-    /// **末尾**を条件にすると成立しない。末尾の `KanjiToggle` は `ImmCross` が
-    /// `Failed` を返したときのフォールバックであり、INV-44 の到達可能性検査
-    /// （`caps_chains_have_no_unreachable_trailing_element`）が正当化している。
-    #[test]
-    fn invariant_2_kanji_owning_profiles_do_not_lead_with_kanji_toggle() {
-        use crate::state::actuation_chain::WriteMechanism;
-        let mut checked = 0usize;
-        for profile in ALL_PROFILES {
-            if !driver_for(profile).owns_physical_kanji() {
-                continue;
-            }
-            for kind in ImeKindId::ALL {
-                let chain = caps(profile, kind).chain;
-                assert_ne!(
-                    chain.first(),
-                    Some(&WriteMechanism::KanjiToggle),
-                    "{profile:?} × {kind:?}: 物理 KANJI を所有するプロファイルの一次機構が \
-                     KanjiToggle になっている（物理キーを抑止したうえで同じ非冪等トグルを \
-                     自分で送ることになる）"
-                );
-                checked += 1;
-            }
-        }
-        // 恒真化の防止: 実際に検査対象が存在したことを固定する
-        // （`owns_physical_kanji` が全 false になれば loop が空回りする）。
-        assert_eq!(
-            checked,
-            4 * ImeKindId::ALL.len(),
-            "owns_physical_kanji=true のプロファイルは ImmCross/Imm32Unavailable/\
-             Plain/Unknown の 4 つ（TsfNative のみ false）"
-        );
-    }
-
     /// 不変条件3（**ADR-090 決定 F-2 で駆動元を `caps(p, k).feedback` へ差し替えた**）:
     /// `Blind` は `max_attempts` で厳密に打ち切り、observation を書かずに終端する
     /// （BUG-33 型の収束偽装防止）。

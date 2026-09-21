@@ -191,11 +191,10 @@ impl AppImeProfile {
         }
     }
 
-    /// VK_KANJI トグルキーで IME を制御するプロファイルか。
+    /// 物理 KANJI 系キーを awase 側で特別扱いするプロファイルか。
     ///
     /// `Imm32Unavailable`（Chrome/Edge 等）のみ `true`。
-    /// GJI 稼働時は `GjiDirectStrategy`（VK_IME_ON/OFF）が優先されるため、
-    /// このフラグは主に `send_engine_state_ime_key` での mode-key 送信スキップ判定に使用する。
+    /// 名前は古いが、現在は `send_engine_state_ime_key` での mode-key 送信スキップ判定に使用する。
     #[must_use]
     pub const fn uses_kanji_toggle(&self) -> bool {
         match self {

@@ -94,6 +94,9 @@ def score(table, paths):
                     unseen += 1
                     continue
                 m = majority(res).split("/")
+                if len(m) < 2 or m[1] in ("None", "?"):
+                    unseen += 1  # 観測不能を結果として持つセル(旧版の grid_learn が作った表)は採点しない
+                    continue
                 good = a[0] == (m[0] == "ON") and (not a[0] or a[1] == int(m[1], 16)) and (a[2] == (len(m) > 2 and m[2] == "保持"))
                 if not a[0]:
                     good = m[0] == "OFF"
@@ -107,8 +110,11 @@ def score(table, paths):
 
 
 if __name__ == "__main__":
-    table = json.load(open(sys.argv[1]))
+    table = json.load(open(sys.argv[1], encoding="utf-8"))
     ok, ng, unseen, bad = score(table, sys.argv[2:])
+    if ok + ng + unseen == 0:
+        print("エラー: 採点できた押下が0件(ログに +1500ms の観測が無い?。--fast/--snap100 のログは採点できない)", file=sys.stderr)
+        sys.exit(2)
     print(f"一段予測: 一致 {ok} / 不一致 {ng} / 表に無い・非決定 {unseen}  正答率 {ok / max(ok + ng, 1):.1%}")
     for (st, comp, k, pred, act), n in bad.most_common():
         print(f"   不一致: {st} {comp} + {k}: 表={pred} 実際={act} ×{n}")

@@ -218,10 +218,9 @@ fn ime_actuation_marker_kind(input: &INPUT) -> Option<&'static str> {
 /// actuation」の内訳（`docs/adr/149-physical-ime-key-activation-defers-forced-set-open.md`
 /// 参照）を後から実機ログで追跡するための恒久診断。
 ///
-/// `kind=kanji_marker` は `send_ime_mode_key`（GjiDirect/MsImeDirect の
-/// VK_IME_ON=0x16/VK_IME_OFF=0x1A）と `post_kanji_toggle_to_focused`
-/// （KanjiToggle の VK_KANJI=0x19）の両方が同じマーカーを使うため区別できない。
-/// 実 VK 値はこの3値が互いに異なるため、ここで戦略を一意に判別できる。
+/// `kind=kanji_marker` は現在 `send_ime_mode_key`（GjiDirect/MsImeDirect の
+/// VK_IME_ON=0x16/VK_IME_OFF=0x1A）からだけ使われる。
+/// 実 VK 値はこの2値が互いに異なるため、ここで戦略を一意に判別できる。
 fn actuation_vks(inputs: &[INPUT]) -> Vec<u16> {
     let mut vks = Vec::new();
     for input in inputs {

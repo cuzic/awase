@@ -1,5 +1,51 @@
 //! IME モードキー動作マトリクス計測スパイク（awase 非依存）。
 //!
+//! **名前は「spike」だが、現在は CI（`.github/workflows/e2e-ime.yml`）の全構成が使う実質的な本番ハーネス**である
+//! （ADR-186 の実機E2E、ADR-190 の操作シナリオ、ADR-191 の学習/検証ラウンドを、フラグで切り替えて1つの exe が担う）。
+//! ファイル名の改名は、CI 構成・ドキュメントからの参照が多いため行っていない（改名案: `ime_key_harness` 等）。
+//! 以下の「フラグ一覧」が現行の全 CLI フラグ（`run()` の引数解析と一致させること。フラグを足したらここも更新する）。
+//!
+//! ## フラグ一覧
+//! 区分: [ADR-186] 実機E2E(判定は check*.py) / [ADR-190] 操作シナリオ / [学習] 格子・通知(ADR-191、判定せず
+//! ログ回収、解析は tools/e2e/ime_key_matrix/grid_learn.py 等) / [検証] 打鍵時予測の検証 walk / [共通]。
+//! - 手順の選択: `--script`(固定手順を案内、awase 起動中の A/B) / `--auto`(固定手順をスパイク自身が SendInput で注入) /
+//!   `--free`(案内なし、押したキーと実 IME 状態の推移だけ記録) / `--round2`(RichEdit のラウンドから開始) [ADR-186]
+//! - `--seq=F2,F0,A0,...`(VK16進の任意キー列。前提状態なしで押す) / `--hz`(半角/全角 0xF3/0xF4 の交互・連続) /
+//!   `--resync`, `--resync-gap=MS`(Ctrl+無変換/変換のリセット操作の2打間隔。既定100) / `--cold`(`--walk` と併用: 明示意図なしで
+//!   いきなり無変換/変換) / `--key=henkan`(手順の「無変換」を「変換」に) / `--shiftmuh`(無変換を Shift+無変換に) /
+//!   `--vkprobe`(ひらがな系の正しい VK 調べ) / `--diag`(どのキーで GJI が ON になるかの診断) [ADR-186/190]
+//! - `--walk`(値なし: ADR-186 の固定キー列 WALK) / `--walk=N --seed=S`(ランダムなキーを N 回注入。seed は線形合同法。
+//!   awase 有り=検証ラウンド `cal-verify-*`、awase 無し=学習ログ) [検証/学習]
+//! - `--grid=s1..s4`(状態×キーの格子。各シャードは状態×キーの部分集合)、`--grid-trials=N`(各セルの試行数上限)、
+//!   `--grid-setup=keys|keys-immreset`(状態のセットアップ方式。省略=IMM 書き込みで作る第1版(誤りを含むので学習には使わない)、
+//!   `keys`=リセットも含めキーだけで到達(第3版)、`keys-immreset`=リセットだけ IMM(第2版))、
+//!   `--grid-adaptive`(1パス目は全セル1回、2パス目は前回の非決定セル・監査標本・履歴依存ブロックだけ再試行)、
+//!   `--grid-retry-file=PATH`(再試行対象セルの一覧、grid-tables/nondet-*.txt)、`--grid-audit-pct=N`(監査標本の割合。既定10) [学習]
+//! - 高速化: `--fast`(+1500ms の観測を省く) / `--speed=K`(手順間の待ちを K 倍速。既定1) /
+//!   `--snap100`(観測を +100ms だけにして、通知の静止で待ちを終える) [学習]
+//! - 通知: `--notify`(TSF スレッド compartment の変更通知を待ちの終了条件に使う。開閉/変換モードの待ちだけ) /
+//!   `--notify-quiet=MS`(最後の通知からこの間静かなら確定。既定40) / `--notify-nochg=MS`(通知が来なければ「変化なし」と見なす待ち。
+//!   既定150) / `--notify-comp`(入力中/変換中/確定のイベント=WM_IME_*/EN_CHANGE を記録する。ログだけ) [学習]
+//! - 共通: `--activate-gji`(CI 用: GJI プロファイルを有効化し、フックを遅延して張る) / `--msime`(有効化する IME を Microsoft IME に) /
+//!   `--hold=MS`(注入キーの保持時間。既定80) / `--repeat=N`(全手順をこのプロセス内で N 回繰り返す)
+//!
+//! ## ログのタグ
+//! - `KEY [...]`: 押下 1 件の記録(押下前と +100/+400/+1500ms の A/B/T/G 観測。`--fast` は +1500ms なし)。
+//! - `[GRID-BEGIN]`/`[GRID-PRE]`(セットアップ検証)/`[GRID-SKIP]`(セットアップ不能・到達不能で飛ばした)/`[GRID-PRUNE]`
+//!   (到達不能状態の試行を実行前に除外)/`[GRID-ABORT]`(セットアップが連続 20 回不能で打ち切り。CI では rc=3=INVALID)/
+//!   `[GRID-RESET]`(リセット結果)/`[GRID-EXPLORE]`・`[GRID-SETUP]`・`[GRID-EDGE]`(キー到達の探索と遷移グラフ)/
+//!   `[GRID-ADAPTIVE]`(適応再試行の内訳)/`[GRID]`(完了)。
+//! - `[NOTIFY]`(compartment 通知の受信・購読)/`[NOTIFY-STATS]`(通知で早く終わった待ち・変化なしで終わった待ち・上限まで待った待ち)/
+//!   `[COMP]`(`--notify-comp` の WM_IME_*/EN_CHANGE 記録)/`[WALK]`(walk 完了)/`[AUTO]`(自動手順中のフォーカス復帰など)/`[FATAL]`(panic・引数エラー。`--auto` ではモーダルを出さずログだけ)/
+//!   `[init]`(起動時の情報・警告。未知の引数は警告、`--grid=`/`--grid-setup=`/数値の不正は `[FATAL] 引数エラー` で終了)。
+//!
+//! ## 実行例
+//! - 学習(awase なし、ATOK): `ime_key_matrix_spike.exe --auto --hold=180 --activate-gji --grid=s1 --grid-setup=keys --fast --notify --grid-adaptive`
+//! - 検証(awase 有り、`AWASE_TEST_INJECTION=1`): `ime_key_matrix_spike.exe --auto --hold=180 --activate-gji --walk=100 --seed=1`
+//!
+//! ---
+//! 以下は、もともとの「対話的な実機計測スパイク」としての説明（`--script`/`--free` 系の使い方）。
+//!
 //! 目的: 「直接入力 / IME ON・入力なし / IME ON・入力中」の各状態で、無変換・変換・
 //! ひらがな・英数・カタカナ・半角/全角などのキーを押したとき、GJI の
 //! **IME 開閉**と**変換モード（ひらがな/半角英数など）**がどう変化するかを、
@@ -61,16 +107,125 @@ use windows::Win32::UI::TextServices::{
     ITfInputProcessorProfileMgr, ITfThreadMgr, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION,
     GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, GUID_TFCAT_TIP_KEYBOARD,
 };
+
+/// `--notify-comp`(ADR-191/193): 入力中/変換中/確定のイベントが CI(GJI・標準 Edit)で届くかを測るログだけを出す
+/// (WM_IME_STARTCOMPOSITION/COMPOSITION/ENDCOMPOSITION/NOTIFY を Edit のサブクラスで、EN_CHANGE を親の WM_COMMAND で受ける)。
+static NOTIFY_COMP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static EDIT_ORIG_PROC: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+extern "system" fn edit_sub_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let name = match msg {
+        0x010D => Some("WM_IME_STARTCOMPOSITION"),
+        0x010E => Some("WM_IME_ENDCOMPOSITION"),
+        0x010F => Some("WM_IME_COMPOSITION"),
+        0x0282 => Some("WM_IME_NOTIFY"),
+        0x0281 => Some("WM_IME_SETCONTEXT"),
+        0x0286 => Some("WM_IME_CHAR"),
+        _ => None,
+    };
+    if let Some(n) = name {
+        if NOTIFY_COMP.load(std::sync::atomic::Ordering::Relaxed) {
+            append_log(&format!(
+                "[COMP] {n} wp=0x{:X} lp=0x{:X} t={}",
+                wparam.0,
+                lparam.0,
+                now_ms()
+            ));
+            // composition の開始/更新/終了も「通知」として待ちの静止判定に使う(--notify と併用時)。
+            if matches!(msg, 0x010D..=0x010F) {
+                NOTIFY_LAST.with(|n| *n.borrow_mut() = now_ms());
+            }
+        }
+    }
+    let orig = EDIT_ORIG_PROC.load(std::sync::atomic::Ordering::Relaxed);
+    // SAFETY: orig は SetWindowLongPtrW が返した元のウィンドウプロシージャ(0 なら既定へ)。
+    unsafe {
+        if orig == 0 {
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        } else {
+            CallWindowProcW(
+                Some(std::mem::transmute::<
+                    isize,
+                    unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT,
+                >(orig)),
+                hwnd,
+                msg,
+                wparam,
+                lparam,
+            )
+        }
+    }
+}
+
+/// `--notify`(ADR-191/193): TSF スレッド compartment の変更通知(`ITfCompartmentEventSink`)を購読し、
+/// キー注入後の固定待ちを「通知が来て静かになるまで(上限は従来の固定待ち)」に置き換える。
+/// 開閉/変換モードだけが対象。入力中・変換中・確定(composition と入力欄末尾)は compartment に出ないので固定待ちのまま。
+#[allow(clippy::ref_as_ptr, clippy::inline_always)]
+mod notify_sink {
+    use windows::core::{implement, Interface, GUID};
+    use windows::Win32::UI::TextServices::{
+        ITfCompartmentEventSink, ITfCompartmentEventSink_Impl, ITfCompartmentMgr, ITfSource,
+        GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION,
+        GUID_COMPARTMENT_KEYBOARD_INPUTMODE_SENTENCE, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
+    };
+
+    #[implement(ITfCompartmentEventSink)]
+    pub(crate) struct NotifySink;
+
+    impl ITfCompartmentEventSink_Impl for NotifySink_Impl {
+        fn OnChange(&self, rguid: *const GUID) -> windows::core::Result<()> {
+            // SAFETY: rguid はこのコールバックの実行中のみ有効な、TSF ランタイムが用意したポインタ。
+            let name = match unsafe { rguid.as_ref() } {
+                Some(g) if *g == GUID_COMPARTMENT_KEYBOARD_OPENCLOSE => "OPENCLOSE",
+                Some(g) if *g == GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION => "CONVERSION",
+                Some(g) if *g == GUID_COMPARTMENT_KEYBOARD_INPUTMODE_SENTENCE => "SENTENCE",
+                _ => "OTHER",
+            };
+            // extern "system"(非 unwind ABI)なので、panic が越境すると abort する。ここで止める。
+            let _ = std::panic::catch_unwind(|| super::note_notify(name));
+            Ok(())
+        }
+    }
+
+    /// 3つの compartment に購読する。返す値(source, cookie, sink)を保持し続けないと購読が切れる。
+    pub(crate) fn advise(
+        cmgr: &ITfCompartmentMgr,
+    ) -> Vec<(ITfSource, u32, ITfCompartmentEventSink)> {
+        let mut v = Vec::new();
+        for g in [
+            &GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
+            &GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION,
+            &GUID_COMPARTMENT_KEYBOARD_INPUTMODE_SENTENCE,
+        ] {
+            // SAFETY: cmgr は有効な COM 参照(メインスレッドの STA)。
+            unsafe {
+                let Ok(comp) = cmgr.GetCompartment(g) else {
+                    continue;
+                };
+                let Ok(source) = comp.cast::<ITfSource>() else {
+                    continue;
+                };
+                let sink: ITfCompartmentEventSink = NotifySink.into();
+                if let Ok(cookie) =
+                    source.AdviseSink(&<ITfCompartmentEventSink as Interface>::IID, &sink)
+                {
+                    v.push((source, cookie, sink));
+                }
+            }
+        }
+        v
+    }
+}
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-    GetForegroundWindow, GetMessageW, GetWindowTextLengthW, GetWindowTextW,
+    BringWindowToTop, CallNextHookEx, CallWindowProcW, CreateWindowExW, DefWindowProcW,
+    DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindowTextLengthW, GetWindowTextW,
     GetWindowThreadProcessId, KillTimer, MessageBoxW, PostMessageW, PostQuitMessage,
     RegisterClassW, SendMessageTimeoutW, SendMessageW, SetForegroundWindow, SetTimer,
-    SetWindowTextW, SetWindowsHookExW, ShowWindow, TranslateMessage, CW_USEDEFAULT,
-    KBDLLHOOKSTRUCT, MB_ICONERROR, MB_OK, MSG, SMTO_ABORTIFHUNG, SW_SHOW, WH_KEYBOARD_LL,
-    WINDOW_STYLE, WM_CLOSE, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_SETFOCUS, WM_SYSKEYDOWN,
-    WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
-    WS_VSCROLL,
+    SetWindowLongPtrW, SetWindowTextW, SetWindowsHookExW, ShowWindow, TranslateMessage,
+    CW_USEDEFAULT, GWLP_WNDPROC, KBDLLHOOKSTRUCT, MB_ICONERROR, MB_OK, MSG, SMTO_ABORTIFHUNG,
+    SW_SHOW, WH_KEYBOARD_LL, WINDOW_STYLE, WM_CLOSE, WM_DESTROY, WM_KEYDOWN, WM_KEYUP, WM_SETFOCUS,
+    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW,
+    WS_VISIBLE, WS_VSCROLL,
 };
 
 /// `--auto` が注入するキーの dwExtraInfo（自分の注入を、他の注入と区別してステップ照合に使う）。
@@ -243,10 +398,35 @@ thread_local! {
     static SHIFT_MUH: RefCell<bool> = const { RefCell::new(false) };
     /// `--fast`: +1500ms の観測を省く。
     static FAST_MODE: RefCell<bool> = const { RefCell::new(false) };
+    /// `--snap100`: 観測を +100ms だけにする(CI の格子ログで +100ms と +400ms の値が一致 99.8%)。押下後の待ちは通知の静止で終える。
+    static SNAP100: RefCell<bool> = const { RefCell::new(false) };
     /// `--speed=K`: 手順間の待ち時間をK倍速にする(既定1=従来どおり)。
     static SPEED: RefCell<u64> = const { RefCell::new(1) };
+    /// `--notify`: compartment 変更通知を待ちの終了条件に使う(開閉/変換モードの待ちだけ。上限は従来の固定待ち)。
+    static NOTIFY_MODE: RefCell<bool> = const { RefCell::new(false) };
+    /// `--notify-quiet=MS`: 最後の通知からこの時間なにも来なければ確定(既定40)。
+    static NOTIFY_QUIET_MS: RefCell<u64> = const { RefCell::new(40) };
+    /// `--notify-nochg=MS`: 最後のキーの後この時間通知が来なければ「変化なし」と見なす(既定150。CI実測のP99×1.5以上にする)。
+    static NOTIFY_NOCHG_MS: RefCell<u64> = const { RefCell::new(150) };
+    /// 直近の通知の時刻(now_ms)。
+    static NOTIFY_LAST: RefCell<u64> = const { RefCell::new(0) };
+    /// 待ち中の通知待ち: (最後のキーの時刻, 従来の固定待ちの終了時刻=上限)。
+    static NOTIFY_WAIT: RefCell<Option<(u64, u64)>> = const { RefCell::new(None) };
+    /// 購読を保持する(解放すると購読が切れる)。
+    static NOTIFY_SINKS: RefCell<Vec<(windows::Win32::UI::TextServices::ITfSource, u32, windows::Win32::UI::TextServices::ITfCompartmentEventSink)>> = const { RefCell::new(Vec::new()) };
+    /// 統計: 通知で早く終わった待ち / 通知が来ず「変化なし」で終わった待ち / 上限まで待った待ち。
+    static NOTIFY_STATS: RefCell<[u32; 3]> = const { RefCell::new([0, 0, 0]) };
     /// `--hold=NNN`: 注入キーの保持時間ms(既定80)。人の押下(>100ms)でだけ通るタイマー経路を再現する。
     static HOLD_MS_INJ: RefCell<u64> = const { RefCell::new(80) };
+    /// `--grid=SHARD`: 状態(開閉×入力モード×入力中の段階)を IMM で決定的に作り、キーを押して効果を記録する(ADR-191 学習ラウンド)。
+    static GRID: RefCell<Option<GridRun>> = const { RefCell::new(None) };
+    /// 次に検知するテスト対象キー(VK)と、その KEY 行に付けるタグ。
+    static GRID_TAG: RefCell<Option<(u32, String)>> = const { RefCell::new(None) };
+    /// `--walk=N`: 固定手順の代わりに、ランダムなキーをN回注入する(効果学習・検証ラウンド用。ADR-191)。
+    static WALK_N: RefCell<usize> = const { RefCell::new(0) };
+    static WALK_DONE: RefCell<usize> = const { RefCell::new(0) };
+    /// `--seed=S`: `--walk=N` の乱数シード(線形合同法)。
+    static WALK_RNG: RefCell<u64> = const { RefCell::new(1) };
     /// `--walk`: SCRIPT の代わりに WALK(前提状態なしの固定キー列)を使う。
     static WALK_MODE: RefCell<bool> = const { RefCell::new(false) };
     /// `--cold`(`--walk`と併用): 先頭のひらがなを除き、明示意図が無い状態でいきなり無変換/変換を押す手順にする。
@@ -276,7 +456,9 @@ thread_local! {
 
 /// 押下後の観測時点(ms)。`--fast` なら +1500ms を省く。
 fn after_ms() -> &'static [u64] {
-    if FAST_MODE.with(|f| *f.borrow()) {
+    if SNAP100.with(|f| *f.borrow()) {
+        &[100]
+    } else if FAST_MODE.with(|f| *f.borrow()) {
         &AFTER_MS_FAST
     } else {
         &AFTER_MS_FULL
@@ -288,6 +470,47 @@ fn scaled(ms: u64) -> u64 {
     ms / SPEED.with(|s| *s.borrow()).max(1)
 }
 
+/// compartment 変更通知を受けた(メインスレッドの sink から)。
+fn note_notify(name: &str) {
+    let t = now_ms();
+    NOTIFY_LAST.with(|n| *n.borrow_mut() = t);
+    append_log(&format!("[NOTIFY] {name} t={t}"));
+}
+
+/// キー注入後の待ちの終了時刻を返す。`--notify` でなければ従来の固定待ち(`cap_next`)。
+/// `--notify` なら、最後のキー(`last_key_at`)の後 nochg ms 通知が来なければ終わる暫定の時刻を返し、
+/// tick 側(`notify_tick_waiting`)が「通知が来たら静かになるまで、上限は `cap_next`」を判定する。
+fn notify_settle_next(last_key_at: u64, cap_next: u64) -> u64 {
+    if !NOTIFY_MODE.with(|m| *m.borrow()) {
+        return cap_next;
+    }
+    let nochg = NOTIFY_NOCHG_MS.with(|n| *n.borrow());
+    NOTIFY_WAIT.with(|w| *w.borrow_mut() = Some((last_key_at, cap_next)));
+    cap_next.min(last_key_at + nochg)
+}
+
+/// `--notify` の待ちがまだ続くか(true=まだ待つ)。`AUTO_NEXT` を過ぎた後にだけ呼ぶ。
+fn notify_tick_waiting(now: u64) -> bool {
+    let Some((key_at, cap)) = NOTIFY_WAIT.with(|w| *w.borrow()) else {
+        return false;
+    };
+    let quiet = NOTIFY_QUIET_MS.with(|n| *n.borrow());
+    let nochg = NOTIFY_NOCHG_MS.with(|n| *n.borrow());
+    let last = NOTIFY_LAST.with(|n| *n.borrow());
+    let (done, kind) = if now >= cap {
+        (true, 2)
+    } else if last >= key_at {
+        (now >= last + quiet, 0)
+    } else {
+        (now >= key_at + nochg, 1)
+    };
+    if done {
+        NOTIFY_WAIT.with(|w| *w.borrow_mut() = None);
+        NOTIFY_STATS.with(|s| s.borrow_mut()[kind] += 1);
+    }
+    !done
+}
+
 fn now_ms() -> u64 {
     START.with(|s| {
         s.borrow().map_or(0, |t| {
@@ -297,6 +520,14 @@ fn now_ms() -> u64 {
 }
 
 fn key_name(vk: u32) -> Option<&'static str> {
+    // `--walk=N` が注入する英字。記録しないと未確定文字列の発生(状態遷移)が表に載らない。既存の手順のログは変えない。
+    if WALK_N.with(|n| *n.borrow()) > 0 {
+        match vk {
+            0x41 => return Some("a"),
+            0x4B => return Some("k"),
+            _ => {}
+        }
+    }
     Some(match vk {
         0x1C => "変換",
         0x1D => "無変換",
@@ -315,6 +546,8 @@ fn key_name(vk: u32) -> Option<&'static str> {
         0x0D => "Enter",
         0x1B => "ESC",
         0x20 => "Space",
+        0xA0 => "左Shift(0xA0)",
+        0xA1 => "右Shift(0xA1)",
         _ => return None,
     })
 }
@@ -420,7 +653,13 @@ fn scan_for(vk: u32) -> u16 {
         0xF2 | 0x15 | 0xF1 | 0xF5 | 0xF6 => 0x70,
         0xF3 | 0xF4 | 0x19 => 0x29,
         0xF0 => 0x3A,
+        0xA0 => 0x2A,
+        0xA1 => 0x36,
         0x4B => 0x25,
+        0x41 => 0x1E,
+        0x0D => 0x1C,
+        0x20 => 0x39,
+        0x08 => 0x0E,
         0x1B => 0x01,
         _ => 0,
     }
@@ -516,6 +755,7 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
     if AUTO_QUEUE.with(|q| !q.borrow().is_empty())
         || now < HOLD_UNTIL.with(|h| *h.borrow())
         || now < AUTO_NEXT.with(|n| *n.borrow())
+        || notify_tick_waiting(now)
     {
         return;
     }
@@ -558,6 +798,14 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
                 return;
             }
         }
+    }
+    if GRID.with(|g| g.borrow().is_some()) {
+        grid_drive(now, hwnd);
+        return;
+    }
+    if WALK_N.with(|n| *n.borrow()) > 0 {
+        walk_drive(now);
+        return;
     }
     let si = SCRIPT_IDX.with(|i| *i.borrow());
     if si >= script().len() {
@@ -751,6 +999,922 @@ const RESYNC: [(&str, u32, bool, &str, St); 10] = [
     ("ひらがなキー", 0xF2, false, "後片付け", St::Any),
 ];
 
+/// `--walk=N` が注入するキーの集合（VK, 表示名）。開閉・変換モード・未確定の各状態に
+/// 自然に遷移するよう、IMEキー4種 + 入力(k,a) + 確定/取消(Enter,Esc)。
+const WALK_KEYS: [(u32, &str); 8] = [
+    (0x1D, "無変換"),
+    (0x1C, "変換"),
+    (0xF2, "ひらがな"),
+    (0xF3, "半角/全角"),
+    (0x4B, "k"),
+    (0x41, "a"),
+    (0x0D, "Enter"),
+    (0x1B, "Esc"),
+];
+
+fn walk_next_index() -> usize {
+    WALK_RNG.with(|r| {
+        let mut r = r.borrow_mut();
+        *r = r
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        ((*r >> 33) as usize) % WALK_KEYS.len()
+    })
+}
+
+/// `--walk=N` の1手: ランダムなキーを1つ注入し、効果が落ち着くまで待つ。
+fn walk_drive(now: u64) {
+    let done = WALK_DONE.with(|d| *d.borrow());
+    let total = WALK_N.with(|n| *n.borrow());
+    if done >= total {
+        if !AUTO_DONE.with(|d| std::mem::replace(&mut *d.borrow_mut(), true)) {
+            append_log(&format!(
+                "[WALK] {total}手完了（全手順完了。1.5秒後に自動で閉じます）"
+            ));
+            AUTO_CLOSE_AT.with(|c| *c.borrow_mut() = now + 1500);
+        }
+        return;
+    }
+    let (vk, name) = WALK_KEYS[walk_next_index()];
+    append_log(&format!(
+        "[WALK {}/{total}] 注入: {name} vk=0x{vk:02X}",
+        done + 1
+    ));
+    queue_press(now, vk);
+    WALK_DONE.with(|d| *d.borrow_mut() = done + 1);
+    AUTO_NEXT.with(|n| *n.borrow_mut() = now + scaled(1900));
+}
+
+// ─── --grid: 状態を決定的に作って、キーの効果を格子状に網羅する(ADR-191 学習ラウンド) ─────────
+
+/// 入力中の段階。`k`,`a` で「か」の未確定を作り、続くキーで変換系の段階に入る。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GComp {
+    None,
+    Typing,
+    ConvSpace,
+    ConvHenkan,
+    ConvMuhenkan,
+    /// 履歴依存の確認用: 入力中に ひらがな を押した直後。
+    PrevHiragana,
+    /// 履歴依存の確認用: 入力中に Esc で消して、入れ直した直後(直前キーは a)。
+    PrevEsc,
+}
+
+impl GComp {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Typing => "typing",
+            Self::ConvSpace => "conv-space",
+            Self::ConvHenkan => "conv-henkan",
+            Self::ConvMuhenkan => "conv-muhenkan",
+            Self::PrevHiragana => "typing-prev-hiragana",
+            Self::PrevEsc => "typing-prev-esc",
+        }
+    }
+    /// この段階を作るキー列(VK)。
+    fn keys(self) -> &'static [u32] {
+        match self {
+            Self::None => &[],
+            Self::Typing => &[0x4B, 0x41],
+            Self::ConvSpace => &[0x4B, 0x41, 0x20],
+            Self::ConvHenkan => &[0x4B, 0x41, 0x1C],
+            Self::ConvMuhenkan => &[0x4B, 0x41, 0x1D],
+            Self::PrevHiragana => &[0x4B, 0x41, 0xF2],
+            Self::PrevEsc => &[0x4B, 0x41, 0x1B, 0x4B, 0x41],
+        }
+    }
+}
+
+#[derive(Clone)]
+struct GridTrial {
+    open: bool,
+    conv: u32,
+    comp: GComp,
+    key: u32,
+    trial: usize,
+}
+
+struct GridRun {
+    shard: String,
+    trials: Vec<GridTrial>,
+    idx: usize,
+    phase: u8,
+    attempt: u8,
+    /// 直近の検証(settle 直後)で目標と一致したか。
+    verify1_ok: bool,
+    /// `--grid-setup=keys`: 変換モードを IMM で書かず、キー列で到達する(探索の結果 `expl.known` の経路を使う)。
+    keys_mode: bool,
+    /// `--grid-setup=keys-immreset`(第2版): リセットだけ IMM で(開,0x19)へ書く。既定の `keys` は第3版=リセットもキーのみ。
+    reset_imm: bool,
+    /// 第3版のキーのみリセットの試行回数(観測→キー→観測…)。
+    rs_tries: u8,
+    expl: GridExplore,
+    /// `--grid-adaptive`: 実行中に、セットアップ不能だったセルを1回だけ末尾へ再試行する。
+    adaptive: bool,
+    /// 実行中に再試行へ回したセル("state|key")。同じセルは1回だけ。
+    retried: Vec<String>,
+    /// セットアップ不能だった状態(同じ状態の残りの試行は、同じ理由で失敗するので飛ばす)。
+    failed_states: Vec<String>,
+    /// セットアップに成功して押下まで進んだ試行の数(統計)。
+    setup_ok: u32,
+    /// セットアップ不能の連続回数(成功したら0に戻る)。`GRID_ABORT_CONSEC_FAILS` に達したら打ち切る。
+    consec_fail: u32,
+    /// 探索の後に、到達不能な状態の試行を外したか。
+    pruned: bool,
+    /// 最初の tick で1回だけ出す、適応的な試行の内訳。
+    note: Option<String>,
+}
+
+/// セットアップの試行(同じ状態の2回目以降は飛ばすので、実質は別々の状態)が連続してこの回数失敗したら格子を打ち切る
+/// (リセット基準の食い違い等で全状態が失敗するのに、CIを無駄に走らせない)。1度でも成功すれば数え直すので、途中から全部失敗する
+/// 場合も検出でき、冒頭の数状態(入力中/変換中など)だけが作れない通常の実行(ATOK)では打ち切らない。
+/// 20 の根拠(実測): ATOK の実ログ(fastgrid 8 本・notifygrid 5 本、成功した完走ラン)で、押下に進まないセットアップ不能が連続した最大は 9 回
+/// (on-c09 と conv-muhenkan 系のキー×状態)。その 2 倍強。8 で打ち切ると通常の ATOK も中断された(fastgrid の初回 CI、8 連続)。
+const GRID_ABORT_CONSEC_FAILS: u32 = 20;
+
+/// `--grid-setup=keys` の探索(BFS): リセット状態(IME_OFF→IME_ON)から、キーを押して到達できる(開閉, 変換モード)を集める。
+#[derive(Default)]
+struct GridExplore {
+    started: bool,
+    done: bool,
+    /// (状態, リセットからの経路)。先に見つかった(=短い)経路を残す。
+    known: Vec<((bool, u32), Vec<u32>)>,
+    /// 未実行の探索(経路, 期待する経路後の状態, 押すキー)。`None` = リセット状態そのものの観測。
+    queue: std::collections::VecDeque<(Vec<u32>, Option<(bool, u32)>, Option<u32>)>,
+    cur: Option<(Vec<u32>, Option<(bool, u32)>, Option<u32>)>,
+    phase: u8,
+    probes: usize,
+    from_state: Option<(bool, u32)>,
+}
+
+/// 探索で押すキー(遷移グラフの辺)。テスト対象のモード系・開閉系。
+const GRID_EXPLORE_KEYS: [u32; 9] = [0xF2, 0xF1, 0xF0, 0xF3, 0x19, 0x16, 0x1A, 0x1D, 0x1C];
+const GRID_EXPLORE_DEPTH: usize = 3;
+const GRID_EXPLORE_MAX_PROBES: usize = 130;
+
+fn grid_state_name(st: (bool, u32)) -> String {
+    format!("{}-c{:02X}", if st.0 { "on" } else { "off" }, st.1)
+}
+
+fn grid_path_name(path: &[u32]) -> String {
+    path.iter()
+        .map(|&k| grid_key_name(k))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// 観測から (開閉, 変換モード) を作る。閉じている間は conv が読めなければ `fallback` を使う。
+fn grid_state_of(s: &Snapshot, fallback: u32) -> Option<(bool, u32)> {
+    let open = grid_open_of(s)?;
+    let conv = s.b_conv.or(s.a_conv).unwrap_or(fallback);
+    Some((open, conv))
+}
+
+/// シャードごとのテスト対象キー。各シャードの所要時間が近くなるように分ける。
+fn grid_shard_keys(shard: &str) -> &'static [u32] {
+    match shard {
+        "s1" => &[0x1D, 0x1C, 0xF2],       // 無変換 変換 ひらがな
+        "s2" => &[0xF1, 0xF0, 0x20],       // カタカナ 英数 Space
+        "s3" => &[0x1B, 0x0D, 0x08],       // Esc Enter BS
+        "s4" => &[0xF3, 0x19, 0x16, 0x1A], // 半角全角 漢字 IME_ON IME_OFF
+        _ => &[],
+    }
+}
+
+/// 試行回数: 入力中・変換中で結果が割れうるキーは4回、開閉系は2回(再現性)。
+fn grid_trials_for(key: u32) -> usize {
+    match key {
+        0xF3 | 0x19 | 0x16 | 0x1A => 2,
+        _ => 4,
+    }
+}
+
+fn grid_key_name(vk: u32) -> &'static str {
+    match vk {
+        0x1D => "muhenkan",
+        0x1C => "henkan",
+        0xF2 => "hiragana",
+        0xF1 => "katakana",
+        0xF0 => "eisu",
+        0xF3 => "hankaku-zenkaku",
+        0x19 => "kanji",
+        0x16 => "ime-on",
+        0x1A => "ime-off",
+        0x1B => "esc",
+        0x0D => "enter",
+        0x20 => "space",
+        0x08 => "bs",
+        _ => "?",
+    }
+}
+
+const GRID_CONVS: [u32; 7] = [0x19, 0x1B, 0x13, 0x18, 0x10, 0x09, 0x0B];
+const GRID_COMPS: [GComp; 5] = [
+    GComp::None,
+    GComp::Typing,
+    GComp::ConvSpace,
+    GComp::ConvHenkan,
+    GComp::ConvMuhenkan,
+];
+
+/// `--grid=SHARD` の試行列を作る。同じセルの繰り返しは時間的に離す(試行番号が外側のループ)。
+fn grid_cell_hash(s: &str) -> u64 {
+    // FNV-1a。決定性の監査用の標本(10%)を、セル名だけから決める(実行ごとに変わらない)。
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    h
+}
+
+fn grid_state_key(open: bool, conv: u32, comp: GComp) -> String {
+    format!(
+        "{}-c{:02X}-{}",
+        if open { "on" } else { "off" },
+        conv,
+        comp.name()
+    )
+}
+
+/// `--grid-adaptive`: 1パス目は全セル1回。2パス目は (i)前回の表で非決定だったセル(`retry_cells`)、(ii)履歴依存ブロック、
+/// (iii)決定的なセルの `audit_pct`% の標本、だけを再試行する。(ii)のセットアップ不能は実行中に足す(GridRun::retried)。
+struct GridAdaptive {
+    retry_cells: Vec<String>,
+    audit_pct: u64,
+}
+
+fn grid_build(
+    shard: &str,
+    cap: Option<usize>,
+    adaptive: Option<&GridAdaptive>,
+) -> (Vec<GridTrial>, Option<String>) {
+    let keys = grid_shard_keys(shard);
+    if adaptive.is_some() && cap.is_some_and(|c| c != 1) {
+        append_log("[GRID-ADAPTIVE] 注: --grid-adaptive は --grid-trials を無視して1パス目を各セル1回にする");
+    }
+    let cap = if adaptive.is_some() { Some(1) } else { cap };
+    let mut states: Vec<(bool, u32, GComp)> = Vec::new();
+    for &conv in &GRID_CONVS {
+        for &comp in &GRID_COMPS {
+            states.push((true, conv, comp));
+        }
+    }
+    for &conv in &GRID_CONVS {
+        states.push((false, conv, GComp::None));
+    }
+    let mut v = Vec::new();
+    let max_n = keys.iter().map(|&k| grid_trials_for(k)).max().unwrap_or(0);
+    for t in 0..max_n {
+        for &(open, conv, comp) in &states {
+            for &key in keys {
+                if t < cap.map_or(usize::MAX, |c| c).min(grid_trials_for(key)) {
+                    v.push(GridTrial {
+                        open,
+                        conv,
+                        comp,
+                        key,
+                        trial: t + 1,
+                    });
+                }
+            }
+        }
+    }
+    // 履歴依存の確認(直前キーが結果を変えるか): 入力中で 直前=ひらがな/Esc → Esc・無変換。
+    // 適応モードでも、履歴依存は割れうるので4回のまま(cap の1回制限を受けない)。
+    let mut note = None;
+    if shard == "s3" {
+        let n = if adaptive.is_some() {
+            4
+        } else {
+            cap.map_or(4, |c| c.min(4))
+        };
+        for t in 0..n {
+            for comp in [GComp::PrevHiragana, GComp::PrevEsc] {
+                for key in [0x1B_u32, 0x1D] {
+                    v.push(GridTrial {
+                        open: true,
+                        conv: 0x19,
+                        comp,
+                        key,
+                        trial: t + 1,
+                    });
+                }
+            }
+        }
+    }
+    if let Some(a) = adaptive {
+        // 2パス目。試行番号が外側のループ(同じセルの繰り返しを時間的に離す)。
+        let (mut nondet, mut audit) = (0usize, 0usize);
+        let max_n = keys.iter().map(|&k| grid_trials_for(k)).max().unwrap_or(0);
+        for t in 1..max_n {
+            for &(open, conv, comp) in &states {
+                for &key in keys {
+                    let cell = format!(
+                        "{}|{}",
+                        grid_state_key(open, conv, comp),
+                        grid_key_name(key)
+                    );
+                    let is_nondet = a.retry_cells.iter().any(|c| *c == cell);
+                    let want = if is_nondet {
+                        t < grid_trials_for(key)
+                    } else {
+                        t == 1 && grid_cell_hash(&cell) % 100 < a.audit_pct
+                    };
+                    if want {
+                        v.push(GridTrial {
+                            open,
+                            conv,
+                            comp,
+                            key,
+                            trial: t + 1,
+                        });
+                        if is_nondet {
+                            nondet += 1;
+                        } else {
+                            audit += 1;
+                        }
+                    }
+                }
+            }
+        }
+        note = Some(format!(
+            "[GRID-ADAPTIVE] pass1=全セル1回 pass2: 前回の非決定セル{}件の再試行 + 監査標本{}件({}%) + 履歴依存ブロック(s3のみ) / 実行中のセットアップ不能セルは末尾に1回だけ再試行",
+            nondet, audit, a.audit_pct
+        ));
+    }
+    (v, note)
+}
+
+/// 状態を IMM(WM_IME_CONTROL)で書く。閉じる場合は先に変換モードを書いてから閉じる。
+fn grid_set_ime(target: HWND, open: bool, conv: u32) {
+    const IMC_SETCONVERSIONMODE: usize = 0x0002;
+    const IMC_SETOPENSTATUS: usize = 0x0006;
+    unsafe {
+        let ime_wnd = ImmGetDefaultIMEWnd(target);
+        if ime_wnd.0.is_null() {
+            return;
+        }
+        let mut r: usize = 0;
+        let seq: [(usize, isize); 2] = if open {
+            [
+                (IMC_SETOPENSTATUS, 1),
+                (IMC_SETCONVERSIONMODE, conv as isize),
+            ]
+        } else {
+            [
+                (IMC_SETCONVERSIONMODE, conv as isize),
+                (IMC_SETOPENSTATUS, 0),
+            ]
+        };
+        for (cmd, val) in seq {
+            let _ = SendMessageTimeoutW(
+                ime_wnd,
+                WM_IME_CONTROL,
+                WPARAM(cmd),
+                LPARAM(val),
+                SMTO_ABORTIFHUNG,
+                200,
+                Some(&raw mut r),
+            );
+        }
+    }
+}
+
+/// 第3版のキーのみリセット: IMM を一切使わず、観測しながら IME_ON(0x16)/ひらがな(0xF2) を押して(開,0x19)へ戻す。
+/// IMM で書いた 0x19 は GJI の内部状態と食い違い、モード切替キーの結果が実際と違った(第2版で実測)ため、キーで戻す。
+/// `Some(true)` = (開,0x19) に到達 / `Some(false)` = 試行上限で失敗 / `None` = 続行(`next` に次の観測時刻を入れる)。
+fn grid_key_reset_step(
+    tries: &mut u8,
+    now: u64,
+    hwnd: HWND,
+    queue: &mut Vec<(u64, u32)>,
+    log: &mut Vec<String>,
+    next: &mut u64,
+) -> Option<bool> {
+    let s = take_snapshot(hwnd);
+    let st = grid_state_of(&s, 0x19);
+    // 基準 = (開, かな入力)。ATOK は 0x19(ローマ字)、MS-IME プリセットの GJI は自然状態が 0x09(ROMANビット無し)で、
+    // ひらがなキーは Set 型なので 0x19 へは行かない(CI実測)。どちらもキーだけで戻せる「ひらがな」状態を基準にする。
+    if matches!(st, Some((true, 0x19 | 0x09))) {
+        log.push(format!("[GRID-RESET] ok tries={}", *tries));
+        *tries = 0;
+        return Some(true);
+    }
+    if *tries >= 6 {
+        log.push(format!(
+            "[GRID-RESET] 失敗 tries={} 最後の観測={}",
+            *tries,
+            grid_obs(&s)
+        ));
+        *tries = 0;
+        return Some(false);
+    }
+    *tries += 1;
+    match st {
+        // 閉 → IME_ON。効かない(MS-IMEプリセットで閉じた 0x1B から、CI実測)ときは半角/全角(閉なら開く)に切り替える。
+        Some((false, _)) => queue.push((now, if *tries % 2 == 1 { 0x16 } else { 0xF3 })),
+        Some((true, _)) => queue.push((now, 0xF2)), // 開で 0x19 でない → ひらがな(ATOKはトグル、MS-IMEはSet)
+        None => {}
+    }
+    *next = notify_settle_next(now, now + scaled(1300));
+    None
+}
+
+fn grid_open_of(s: &Snapshot) -> Option<bool> {
+    match (s.a_open, s.b_open) {
+        (Some(a), Some(b)) if a == b => Some(a),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        _ => None,
+    }
+}
+
+/// 目標の状態と一致しているか(閉じている状態は conv を問わない)。
+fn grid_matches(s: &Snapshot, t: &GridTrial) -> bool {
+    let composing = s.comp.as_deref().is_some_and(|c| !c.is_empty());
+    if grid_open_of(s) != Some(t.open) || composing != (t.comp != GComp::None) {
+        return false;
+    }
+    !t.open || s.b_conv.or(s.a_conv) == Some(t.conv)
+}
+
+fn grid_obs(s: &Snapshot) -> String {
+    format!(
+        "open={} conv={} comp={:?} tail={:?}",
+        fmt_bool(grid_open_of(s)),
+        fmt_hex(s.b_conv.or(s.a_conv)),
+        s.comp.as_deref().unwrap_or("?"),
+        s.edit_tail
+    )
+}
+
+/// 探索(BFS)の1tick分。1探索 = 後始末→リセット(IMMで開,0x19)→経路のキー→観測→(キーを1つ押す→観測)。
+fn grid_explore_step(
+    r: &mut GridRun,
+    now: u64,
+    hwnd: HWND,
+    log: &mut Vec<String>,
+    queue: &mut Vec<(u64, u32)>,
+    next: &mut u64,
+) {
+    let target = {
+        let f = unsafe { GetFocus() };
+        if f.0.is_null() {
+            hwnd
+        } else {
+            f
+        }
+    };
+    let e = &mut r.expl;
+    if !e.started {
+        e.started = true;
+        e.queue.push_back((Vec::new(), None, None));
+        log.push(format!(
+            "[GRID-EXPLORE] 開始(リセット={}、探索キー9種、深さ<=3)",
+            if r.reset_imm {
+                "IMMで(開,0x19)=第2版"
+            } else {
+                "キーのみ=第3版"
+            }
+        ));
+    }
+    match e.phase {
+        0 => {
+            let Some(item) = e.queue.pop_front() else {
+                e.done = true;
+                let mut known = e.known.clone();
+                known.sort_by_key(|(st, _)| *st);
+                for (st, path) in &known {
+                    log.push(format!(
+                        "[GRID-SETUP] state={} path={}",
+                        grid_state_name(*st),
+                        grid_path_name(path)
+                    ));
+                }
+                for &open in &[true, false] {
+                    for &conv in &GRID_CONVS {
+                        if !known.iter().any(|(st, _)| *st == (open, conv)) {
+                            log.push(format!(
+                                "[GRID-SETUP] state={} 到達不能",
+                                grid_state_name((open, conv))
+                            ));
+                        }
+                    }
+                }
+                log.push(format!(
+                    "[GRID-EXPLORE] 完了 probes={} 到達状態={}",
+                    e.probes,
+                    known.len()
+                ));
+                *next = now + scaled(200);
+                return;
+            };
+            if e.probes >= GRID_EXPLORE_MAX_PROBES {
+                e.queue.clear();
+                *next = now + scaled(100);
+                return;
+            }
+            e.probes += 1;
+            e.cur = Some(item);
+            queue.push((now, 0x1B));
+            queue.push((now + scaled(400), 0x1B));
+            unsafe {
+                let _ = SetWindowTextW(target, w!(""));
+            }
+            *next = now + scaled(1100);
+            e.phase = 1;
+        }
+        1 if !r.reset_imm => {
+            // 第3版: リセットもキーのみ。(開,0x19) を観測で確認してから経路のキーを押す。
+            match grid_key_reset_step(&mut r.rs_tries, now, hwnd, queue, log, next) {
+                None => {}
+                Some(true) => {
+                    *next = now + scaled(300);
+                    e.phase = 2;
+                }
+                Some(false) => {
+                    e.phase = 0;
+                    *next = now + scaled(100);
+                }
+            }
+        }
+        1 => {
+            // 第2版(--grid-setup=keys-immreset): 開始状態を揃えるためだけに IMM で (開, 0x19) へ書く。
+            grid_set_ime(target, true, 0x19);
+            *next = now + scaled(1000);
+            e.phase = 2;
+        }
+        2 => {
+            let path = e.cur.as_ref().map(|c| c.0.clone()).unwrap_or_default();
+            for (i, &vk) in path.iter().enumerate() {
+                queue.push((now + scaled(350) * i as u64, vk));
+            }
+            let last_key = now + scaled(350) * (path.len() as u64).saturating_sub(1);
+            *next = notify_settle_next(last_key, now + scaled(350 * path.len() as u64 + 900));
+            e.phase = 3;
+        }
+        3 => {
+            let s = take_snapshot(hwnd);
+            let (path, expect, key) = e.cur.clone().unwrap_or_default();
+            let fb = expect.map_or(0x19, |x| x.1);
+            let st = grid_state_of(&s, fb);
+            let Some(st) = st else {
+                log.push(format!(
+                    "[GRID-EDGE] path={} 観測不能(A/B不一致)",
+                    grid_path_name(&path)
+                ));
+                e.phase = 0;
+                *next = now + scaled(100);
+                return;
+            };
+            match key {
+                None => {
+                    // リセット状態そのものを登録する。
+                    log.push(format!("[GRID-EDGE] reset -> {}", grid_state_name(st)));
+                    e.known.push((st, Vec::new()));
+                    for &k in &GRID_EXPLORE_KEYS {
+                        e.queue.push_back((Vec::new(), Some(st), Some(k)));
+                    }
+                    e.phase = 0;
+                    *next = now + scaled(100);
+                }
+                Some(k) => {
+                    if expect.is_some_and(|x| x != st) {
+                        log.push(format!(
+                            "[GRID-EDGE] path={} 経路後の状態が不一致 expect={} got={}(この探索は捨てる)",
+                            grid_path_name(&path),
+                            expect.map_or(String::new(), grid_state_name),
+                            grid_state_name(st)
+                        ));
+                        e.phase = 0;
+                        *next = now + scaled(100);
+                        return;
+                    }
+                    e.from_state = Some(st);
+                    queue.push((now, k));
+                    *next = notify_settle_next(now, now + scaled(1400));
+                    e.phase = 4;
+                }
+            }
+        }
+        _ => {
+            let s = take_snapshot(hwnd);
+            let (path, _, key) = e.cur.clone().unwrap_or_default();
+            let from = e.from_state.unwrap_or((true, 0x19));
+            let k = key.unwrap_or(0);
+            if let Some(st2) = grid_state_of(&s, from.1) {
+                log.push(format!(
+                    "[GRID-EDGE] from={} key={} to={} path={}",
+                    grid_state_name(from),
+                    grid_key_name(k),
+                    grid_state_name(st2),
+                    grid_path_name(&path)
+                ));
+                if !e.known.iter().any(|(x, _)| *x == st2) {
+                    let mut np = path.clone();
+                    np.push(k);
+                    e.known.push((st2, np.clone()));
+                    if np.len() < GRID_EXPLORE_DEPTH {
+                        for &k2 in &GRID_EXPLORE_KEYS {
+                            e.queue.push_back((np.clone(), Some(st2), Some(k2)));
+                        }
+                    }
+                }
+            }
+            e.phase = 0;
+            *next = now + scaled(100);
+        }
+    }
+}
+
+/// `--grid` の1tick分の駆動。1試行 = 後始末→IME状態を書く→入力中の段階を作る→検証×2→キーを押す→観測を待つ。
+/// セットアップ不能を記録する。その状態の残りの試行は飛ばす(適応モードでは、最初に失敗したセルだけ末尾へ1回再試行)。
+/// セットアップが連続して失敗したら格子を打ち切る(呼び出し側が直後に `r.idx += 1` するので、`idx = len` にしておけば全手順完了へ進む)。
+fn grid_setup_failed(r: &mut GridRun, tr: GridTrial, log: &mut Vec<String>) {
+    let state = grid_state_key(tr.open, tr.conv, tr.comp);
+    let cell = format!("{state}|{}", grid_key_name(tr.key));
+    if !r.failed_states.contains(&state) {
+        r.failed_states.push(state);
+    }
+    if r.adaptive && !r.retried.contains(&cell) {
+        log.push(format!("[GRID-ADAPTIVE] retry-setup cell={cell}"));
+        r.retried.push(cell);
+        r.trials.push(GridTrial {
+            trial: tr.trial + 1,
+            ..tr
+        });
+    }
+    r.consec_fail += 1;
+    if r.consec_fail >= GRID_ABORT_CONSEC_FAILS {
+        log.push(format!(
+            "[GRID-ABORT] reason=セットアップが連続して{}回不能(成功{}回、不能な状態{}個。リセット基準の食い違い等)",
+            r.consec_fail,
+            r.setup_ok,
+            r.failed_states.len()
+        ));
+        r.idx = r.trials.len();
+    }
+}
+
+fn grid_drive(now: u64, hwnd: HWND) {
+    let target = {
+        let f = unsafe { GetFocus() };
+        if f.0.is_null() {
+            hwnd
+        } else {
+            f
+        }
+    };
+    let mut next = now + scaled(200);
+    let mut finish = false;
+    let mut log: Vec<String> = Vec::new();
+    let mut press: Option<(u32, String)> = None;
+    let mut queue: Vec<(u64, u32)> = Vec::new();
+    GRID.with(|g| {
+        let mut guard = g.borrow_mut();
+        let Some(r) = guard.as_mut() else { return };
+        if r.idx >= r.trials.len() {
+            finish = true;
+            return;
+        }
+        if let Some(n) = r.note.take() {
+            log.push(n);
+        }
+        if r.keys_mode && !r.expl.done {
+            grid_explore_step(r, now, hwnd, &mut log, &mut queue, &mut next);
+            return;
+        }
+        if r.keys_mode && !r.pruned {
+            // 探索が終わったら、到達不能な状態の試行を先に外す(各試行が Esc 待ちの約1.1秒を無駄にするため)。
+            r.pruned = true;
+            let known: Vec<(bool, u32)> = r.expl.known.iter().map(|(st, _)| *st).collect();
+            if known.is_empty() {
+                log.push("[GRID-ABORT] reason=探索で到達できた状態が0(リセット基準に戻れない等)".to_string());
+                r.idx = r.trials.len();
+                finish = true;
+                return;
+            }
+            let before = r.trials.len();
+            r.trials.retain(|t| known.contains(&(t.open, t.conv)));
+            log.push(format!(
+                "[GRID-PRUNE] 到達不能な状態の試行を外した {before}→{} (到達状態={})",
+                r.trials.len(),
+                known.len()
+            ));
+            if r.idx >= r.trials.len() {
+                finish = true;
+                return;
+            }
+        }
+        let t = &r.trials[r.idx];
+        let id = format!("G{:04}", r.idx + 1);
+        let state = format!(
+            "{}-{}-{}",
+            if t.open { "on" } else { "off" },
+            format_args!("c{:02X}", t.conv),
+            t.comp.name()
+        );
+        if r.phase == 0 && r.attempt == 0 {
+            let st_key = grid_state_key(t.open, t.conv, t.comp);
+            let cell = format!("{st_key}|{}", grid_key_name(t.key));
+            if r.failed_states.contains(&st_key) && !r.retried.contains(&cell) {
+                log.push(format!(
+                    "[GRID-SKIP] id={id} state={state} key={} trial={} 同じ状態で既にセットアップ不能(飛ばす)",
+                    grid_key_name(t.key),
+                    t.trial
+                ));
+                r.idx += 1;
+                next = now + scaled(50);
+                return;
+            }
+        }
+        match r.phase {
+            0 => {
+                if r.attempt == 0 {
+                    log.push(format!(
+                        "[GRID-BEGIN] id={id} shard={} n={}/{} state={state} key={} trial={}",
+                        r.shard,
+                        r.idx + 1,
+                        r.trials.len(),
+                        grid_key_name(t.key),
+                        t.trial
+                    ));
+                }
+                // 未確定を空にし、入力欄のテキストも空にする(確定の判定を tail の変化で見るため)。
+                queue.push((now, 0x1B));
+                queue.push((now + scaled(400), 0x1B));
+                unsafe {
+                    let _ = SetWindowTextW(target, w!(""));
+                }
+                next = now + scaled(1100);
+                r.phase = 1;
+            }
+            1 if r.keys_mode => {
+                // キーで到達: リセット(IME_OFF→IME_ON)のあと、探索で見つけた経路のキーを押す。
+                let path = r
+                    .expl
+                    .known
+                    .iter()
+                    .find(|(st, _)| *st == (t.open, t.conv))
+                    .map(|(_, p)| p.clone());
+                if let Some(path) = path {
+                    let mut base = scaled(1000);
+                    let mut go = true;
+                    if r.reset_imm {
+                        grid_set_ime(target, true, 0x19); // 第2版のリセット(探索と同じ開始状態)
+                    } else {
+                        match grid_key_reset_step(&mut r.rs_tries, now, hwnd, &mut queue, &mut log, &mut next) {
+                            None => go = false, // 観測を続ける(次の tick も phase 1)
+                            Some(true) => base = scaled(300),
+                            Some(false) => {
+                                log.push(format!(
+                                    "[GRID-SKIP] id={id} state={state} key={} trial={} セットアップ不能(キーのみのリセットで(開,0x19)に戻れない)",
+                                    grid_key_name(t.key),
+                                    t.trial
+                                ));
+                                {
+                                    let tc = t.clone();
+                                    grid_setup_failed(r, tc, &mut log);
+                                }
+                                r.idx += 1;
+                                r.attempt = 0;
+                                r.phase = 0;
+                                go = false;
+                            }
+                        }
+                    }
+                    if go {
+                        for (i, &vk) in path.iter().enumerate() {
+                            queue.push((now + base + scaled(350) * i as u64, vk));
+                        }
+                        let last_key = now + base + scaled(350) * (path.len() as u64).saturating_sub(1);
+                        next = notify_settle_next(last_key, now + base + scaled(350 * path.len() as u64 + 700));
+                        r.phase = 2;
+                    }
+                } else {
+                    log.push(format!(
+                        "[GRID-SKIP] id={id} state={state} key={} trial={} 到達不能(キーで到達する経路が無い)",
+                        grid_key_name(t.key),
+                        t.trial
+                    ));
+                    r.idx += 1;
+                    r.attempt = 0;
+                    r.phase = 0;
+                }
+            }
+            1 => {
+                grid_set_ime(target, t.open, t.conv);
+                next = now + scaled(600);
+                r.phase = 2;
+            }
+            2 => {
+                if !t.open {
+                    next = now + scaled(300);
+                } else {
+                    let ks = t.comp.keys();
+                    for (i, &vk) in ks.iter().enumerate() {
+                        queue.push((now + scaled(350) * i as u64, vk));
+                    }
+                    // 入力中/変換中の生成は compartment 通知が来ない(冒頭docのとおり固定待ち)ので notify_settle_next は使わない。
+                    // 使うと待ちが最後のキー+150ms に縮み、GJI の未確定文字列生成が間に合わないセルが [GRID-PRE] 不合格→SKIP で表から消える。
+                    next = now + scaled(350 * ks.len() as u64 + 700);
+                }
+                r.phase = 3;
+            }
+            3 => {
+                let s = take_snapshot(hwnd);
+                r.verify1_ok = grid_matches(&s, t);
+                log.push(format!(
+                    "[GRID-PRE] id={id} check=1 attempt={} ok={} {}",
+                    r.attempt + 1,
+                    r.verify1_ok,
+                    grid_obs(&s)
+                ));
+                next = now + scaled(300);
+                r.phase = 4;
+            }
+            4 => {
+                let s = take_snapshot(hwnd);
+                let ok = r.verify1_ok && grid_matches(&s, t);
+                log.push(format!(
+                    "[GRID-PRE] id={id} check=2 attempt={} ok={ok} {}",
+                    r.attempt + 1,
+                    grid_obs(&s)
+                ));
+                if ok {
+                    r.setup_ok += 1;
+                    r.consec_fail = 0;
+                    press = Some((
+                        t.key,
+                        format!(
+                            "[GRID id={id} shard={} state={state} key={} trial={}]",
+                            r.shard,
+                            grid_key_name(t.key),
+                            t.trial
+                        ),
+                    ));
+                    let cap = now + if FAST_MODE.with(|f| *f.borrow()) { 700 } else { 2300 }; // --fast は +1500ms の観測を省くので +400ms + 余裕まで待てばよい // +1500ms の観測が出揃うまで
+                    // --snap100 --notify: +100ms の観測だけを取り、通知(compartment/composition/EN_CHANGE)が静かになるまで(上限は cap)。
+                    next = if SNAP100.with(|f| *f.borrow()) && NOTIFY_MODE.with(|m| *m.borrow()) {
+                        notify_settle_next(now.max(now + 100), cap)
+                    } else {
+                        cap
+                    };
+                    r.phase = 5;
+                } else if r.attempt < 1 {
+                    r.attempt += 1;
+                    r.phase = 0;
+                } else {
+                    log.push(format!(
+                        "[GRID-SKIP] id={id} state={state} key={} trial={} セットアップ不能",
+                        grid_key_name(t.key),
+                        t.trial
+                    ));
+                    let tc = t.clone();
+                    grid_setup_failed(r, tc, &mut log);
+                    r.idx += 1;
+                    r.attempt = 0;
+                    r.phase = 0;
+                }
+            }
+            _ => {
+                r.idx += 1;
+                r.attempt = 0;
+                r.phase = 0;
+                next = now + scaled(100);
+            }
+        }
+    });
+    for l in log {
+        append_log(&l);
+    }
+    for (at, vk) in queue {
+        queue_press(at, vk);
+    }
+    if let Some((vk, tag)) = press {
+        GRID_TAG.with(|g| *g.borrow_mut() = Some((vk, tag)));
+        queue_press(now, vk);
+    }
+    if finish {
+        if !AUTO_DONE.with(|d| std::mem::replace(&mut *d.borrow_mut(), true)) {
+            if NOTIFY_MODE.with(|m| *m.borrow()) {
+                let st = NOTIFY_STATS.with(|s| *s.borrow());
+                append_log(&format!(
+                    "[NOTIFY-STATS] 通知で早く終わった待ち={} 通知が来ず変化なしで終わった待ち={} 上限まで待った待ち={}",
+                    st[0], st[1], st[2]
+                ));
+            }
+            append_log("[GRID] 全手順完了（1.5秒後に自動で閉じます）");
+            AUTO_CLOSE_AT.with(|c| *c.borrow_mut() = now + 1500);
+        }
+        return;
+    }
+    AUTO_NEXT.with(|n| *n.borrow_mut() = next);
+}
+
 /// `--walk` の手順: プリセット(ATOK/MS-IME等)を問わず、前提状態を要求せずに固定のキー列を押す。
 /// 各押下の +1500ms の実IME状態と awase の Engine 状態が一致するか(check_consistency.py)を見る。
 /// 半角/全角(0xF3/0xF4)は awase のモデル誤り(ADR-186決定5、別件)が混ざるため含めない。
@@ -790,9 +1954,36 @@ const VKPROBE_CANDIDATES: [u32; 17] = [
     0x1C,             // VK_CONVERT
 ];
 
-/// 現在の手順表(`--walk` なら WALK、なければ SCRIPT)。
+/// `--seq=F2,A0,A0,...` で指定した任意のキー列(VKの16進、`0x`は省略可)。前提状態なしで押し、各押下の実IMEと
+/// Engine の一致を check_consistency.py で見る(ワークフローから、コードを変えずに手順を足せる)。
+static SEQ_TABLE: std::sync::OnceLock<Vec<(&'static str, u32, bool, &'static str, St)>> =
+    std::sync::OnceLock::new();
+
+fn parse_seq(arg: &str) -> Vec<(&'static str, u32, bool, &'static str, St)> {
+    arg.split(',')
+        .map(|t| {
+            // 打ち間違いを黙って捨てると手順が短くなり、それでもPASSしうる。即エラーにする。
+            u32::from_str_radix(t.trim().trim_start_matches("0x"), 16).unwrap_or_else(|_| {
+                arg_error(&format!("--seq のVKが16進数でない: {t:?} (全体: {arg:?})"))
+            })
+        })
+        .map(|vk| {
+            (
+                key_name(vk).unwrap_or("キー"),
+                vk,
+                false,
+                "Engine は実IMEに追随",
+                St::Any,
+            )
+        })
+        .collect()
+}
+
+/// 現在の手順表(`--seq` ならその列、`--walk` なら WALK、なければ SCRIPT)。
 fn script() -> &'static [(&'static str, u32, bool, &'static str, St)] {
-    if HZ_MODE.with(|h| *h.borrow()) {
+    if let Some(seq) = SEQ_TABLE.get() {
+        seq
+    } else if HZ_MODE.with(|h| *h.borrow()) {
         &HZ
     } else if RESYNC_MODE.with(|r| *r.borrow()) {
         &RESYNC
@@ -1278,7 +2469,9 @@ fn on_timer(hwnd: HWND) {
                     let shift_muh = SHIFT_MUH.with(|m| *m.borrow()) && ev.vk == 0x1D;
                     if ev.vk == want_vk
                         && (need == St::Any || before_st == need)
-                        && (ev.shift == shift || (shift_muh && ev.shift))
+                        && (ev.shift == shift
+                            || (shift_muh && ev.shift)
+                            || matches!(want_vk, 0xA0 | 0xA1))
                         && ev.ctrl == want_ctrl
                         && !ev.label.contains("(injected)")
                     {
@@ -1308,6 +2501,12 @@ fn on_timer(hwnd: HWND) {
                     );
                     STEP_IDX.with(|i| *i.borrow_mut() = idx + 1);
                     HOLD_UNTIL.with(|h| *h.borrow_mut() = now + scaled(HOLD_MS));
+                }
+            }
+            if let Some((gvk, gtag)) = GRID_TAG.with(|g| g.borrow().clone()) {
+                if ev.vk == gvk {
+                    tag = gtag;
+                    GRID_TAG.with(|g| *g.borrow_mut() = None);
                 }
             }
             ev.label = format!("{tag} {}", ev.label);
@@ -1452,6 +2651,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 }
                 LRESULT(0)
             }
+            0x0111 /* WM_COMMAND */ if NOTIFY_COMP.load(std::sync::atomic::Ordering::Relaxed) => {
+                // 上位ワード=通知コード。EN_CHANGE=0x0300, EN_UPDATE=0x0400。
+                let code = (wparam.0 >> 16) & 0xFFFF;
+                // ログ欄(同じ EDIT 系の子窓)の更新は除き、打鍵先の入力欄(lparam=その HWND)だけを記録する。
+                let from_input = EDIT_HWND.with(|e| e.borrow().is_some_and(|h| h.0 as isize == lparam.0));
+                if from_input && (code == 0x0300 || code == 0x0400) {
+                    append_log(&format!("[COMP] {} t={}", if code == 0x0300 { "EN_CHANGE" } else { "EN_UPDATE" }, now_ms()));
+                    NOTIFY_LAST.with(|n| *n.borrow_mut() = now_ms());
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
             WM_DESTROY => {
                 let _ = KillTimer(Some(hwnd), TIMER_ID);
                 PostQuitMessage(0);
@@ -1520,6 +2730,13 @@ fn create_window() -> WinResult<HWND> {
         // 上段: 打鍵する入力欄1（標準 EDIT）。
         let edit = create_child(w!("EDIT"), hwnd, instance, WS_BORDER.0, 10, 10, 940, 28)?;
         EDIT_HWND.with(|e| *e.borrow_mut() = Some(edit));
+        if NOTIFY_COMP.load(std::sync::atomic::Ordering::Relaxed) {
+            // SAFETY: edit は作成したばかりの自スレッドの子窓。元のプロシージャを保持して、ログしてから転送する。
+            let orig =
+                unsafe { SetWindowLongPtrW(edit, GWLP_WNDPROC, edit_sub_proc as usize as isize) };
+            EDIT_ORIG_PROC.store(orig, std::sync::atomic::Ordering::Relaxed);
+            append_log("[COMP] Edit をサブクラス化(WM_IME_* を記録)");
+        }
         // 上段2: 入力欄2（RichEdit 5.0、TSF ネイティブ）。読み込み失敗時は EDIT で代用する。
         let rich = create_child(
             w!("RICHEDIT50W"),
@@ -1617,6 +2834,16 @@ fn init_tsf() -> WinResult<()> {
         let _client_id = thread_mgr.Activate()?;
         let thread_cmgr = thread_mgr.cast::<ITfCompartmentMgr>().ok();
         let global_cmgr = thread_mgr.GetGlobalCompartment().ok();
+        if NOTIFY_MODE.with(|m| *m.borrow()) {
+            if let Some(c) = thread_cmgr.as_ref() {
+                let sinks = notify_sink::advise(c);
+                append_log(&format!(
+                    "[NOTIFY] 購読 {}件(OPENCLOSE/CONVERSION/SENTENCE)",
+                    sinks.len()
+                ));
+                NOTIFY_SINKS.with(|v| *v.borrow_mut() = sinks);
+            }
+        }
         TSF_STATE.with(|s| {
             *s.borrow_mut() = Some(TsfState {
                 _thread_mgr: thread_mgr,
@@ -1629,6 +2856,11 @@ fn init_tsf() -> WinResult<()> {
 }
 
 fn report_fatal(msg: &str) {
+    // ログには必ず残す。--auto(CI・自動実行)では MessageBoxW のモーダルで止めない(誰も閉じられず wait を使い切って rc が誤る)。
+    let _ = std::panic::catch_unwind(|| append_log(&format!("[FATAL] {msg}")));
+    if std::env::args().any(|a| a == "--auto") {
+        return;
+    }
     let title: Vec<u16> = "ime_key_matrix_spike: fatal error"
         .encode_utf16()
         .chain(std::iter::once(0))
@@ -1644,8 +2876,86 @@ fn report_fatal(msg: &str) {
     }
 }
 
+/// 引数の誤りをログに残して終了する(rc は 2)。CI では完走マーカーが無いので collect の判定が INVALID(rc=3)になる。
+fn arg_error(msg: &str) -> ! {
+    append_log(&format!("[FATAL] 引数エラー: {msg}"));
+    eprintln!("ime_key_matrix_spike: 引数エラー: {msg}");
+    std::process::exit(2);
+}
+
+/// 起動時に引数を検証する。未知の `--` 引数は警告(綴り間違いを黙って無視しない)、値が不正なものは終了する
+/// (`--grid-setup=` の綴り間違いが「学習に使ってはいけない」IMM 版へ、`--grid=s5` が0試行の緑へ、無言で化けるのを防ぐ)。
+fn validate_args() {
+    const FLAGS: &[&str] = &[
+        "--activate-gji",
+        "--auto",
+        "--cold",
+        "--diag",
+        "--fast",
+        "--free",
+        "--grid-adaptive",
+        "--hz",
+        "--msime",
+        "--notify",
+        "--notify-comp",
+        "--resync",
+        "--round2",
+        "--script",
+        "--shiftmuh",
+        "--snap100",
+        "--vkprobe",
+        "--walk",
+        "--key=henkan",
+    ];
+    const VALUE_FLAGS: &[&str] = &[
+        "--hold=",
+        "--repeat=",
+        "--speed=",
+        "--notify-quiet=",
+        "--notify-nochg=",
+        "--grid=",
+        "--grid-trials=",
+        "--grid-setup=",
+        "--grid-retry-file=",
+        "--grid-audit-pct=",
+        "--walk=",
+        "--seed=",
+        "--seq=",
+        "--resync-gap=",
+    ];
+    for a in std::env::args().skip(1) {
+        if !a.starts_with("--") || FLAGS.contains(&a.as_str()) {
+            continue;
+        }
+        let Some(&pre) = VALUE_FLAGS.iter().find(|p| a.starts_with(**p)) else {
+            append_log(&format!("[init] 警告: 未知の引数を無視した: {a}"));
+            continue;
+        };
+        let v = &a[pre.len()..];
+        match pre {
+            "--grid=" if !matches!(v, "s1" | "s2" | "s3" | "s4") => {
+                arg_error(&format!("--grid= は s1..s4 のいずれか: {a}"))
+            }
+            "--grid-setup=" if !matches!(v, "keys" | "keys-immreset" | "imm") => arg_error(
+                &format!("--grid-setup= は keys / keys-immreset / imm のいずれか: {a}"),
+            ),
+            "--hold=" | "--repeat=" | "--speed=" | "--notify-quiet=" | "--notify-nochg="
+            | "--grid-trials=" | "--grid-audit-pct=" | "--walk=" | "--seed=" | "--resync-gap="
+                if v.parse::<u64>().is_err() =>
+            {
+                arg_error(&format!("数値でない値: {a}"))
+            }
+            "--grid-retry-file=" if std::fs::read_to_string(v).is_err() => {
+                arg_error(&format!("--grid-retry-file を読めない: {a}"))
+            }
+            _ => {}
+        }
+    }
+}
+
 fn run() -> WinResult<()> {
     START.with(|s| *s.borrow_mut() = Some(std::time::Instant::now()));
+    validate_args();
     for a in std::env::args() {
         if let Some(v) = a.strip_prefix("--hold=") {
             if let Ok(n) = v.parse::<u64>() {
@@ -1668,6 +2978,25 @@ fn run() -> WinResult<()> {
         if a == "--fast" {
             FAST_MODE.with(|f| *f.borrow_mut() = true);
         }
+        if a == "--snap100" {
+            SNAP100.with(|f| *f.borrow_mut() = true);
+        }
+        if a == "--notify-comp" {
+            NOTIFY_COMP.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if a == "--notify" {
+            NOTIFY_MODE.with(|f| *f.borrow_mut() = true);
+        }
+        if let Some(v) = a.strip_prefix("--notify-quiet=") {
+            if let Ok(n) = v.parse::<u64>() {
+                NOTIFY_QUIET_MS.with(|r| *r.borrow_mut() = n);
+            }
+        }
+        if let Some(v) = a.strip_prefix("--notify-nochg=") {
+            if let Ok(n) = v.parse::<u64>() {
+                NOTIFY_NOCHG_MS.with(|r| *r.borrow_mut() = n);
+            }
+        }
         if a == "--key=henkan" {
             TOGGLE_VK.with(|t| *t.borrow_mut() = 0x1C);
         }
@@ -1686,8 +3015,77 @@ fn run() -> WinResult<()> {
             queue_press(base + (i as u64) * 3500, *vk);
         }
     }
+    {
+        let cap = std::env::args().find_map(|a| {
+            a.strip_prefix("--grid-trials=")
+                .and_then(|v| v.parse::<usize>().ok())
+        });
+        if let Some(shard) =
+            std::env::args().find_map(|a| a.strip_prefix("--grid=").map(str::to_string))
+        {
+            let adaptive = std::env::args()
+                .any(|a| a == "--grid-adaptive")
+                .then(|| GridAdaptive {
+                    retry_cells: std::env::args()
+                        .find_map(|a| a.strip_prefix("--grid-retry-file=").map(str::to_string))
+                        .and_then(|p| std::fs::read_to_string(p).ok())
+                        .map(|t| {
+                            t.lines()
+                                .map(str::trim)
+                                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    audit_pct: std::env::args()
+                        .find_map(|a| {
+                            a.strip_prefix("--grid-audit-pct=")
+                                .and_then(|v| v.parse::<u64>().ok())
+                        })
+                        .unwrap_or(10),
+                });
+            let (trials, note) = grid_build(&shard, cap, adaptive.as_ref());
+            GRID.with(|g| {
+                *g.borrow_mut() = Some(GridRun {
+                    shard,
+                    trials,
+                    adaptive: adaptive.is_some(),
+                    retried: Vec::new(),
+                    failed_states: Vec::new(),
+                    setup_ok: 0,
+                    consec_fail: 0,
+                    pruned: false,
+                    note,
+                    idx: 0,
+                    phase: 0,
+                    attempt: 0,
+                    verify1_ok: false,
+                    keys_mode: std::env::args()
+                        .any(|a| a == "--grid-setup=keys" || a == "--grid-setup=keys-immreset"),
+                    reset_imm: std::env::args().any(|a| a == "--grid-setup=keys-immreset"),
+                    rs_tries: 0,
+                    expl: GridExplore::default(),
+                });
+            });
+        }
+    }
+    for a in std::env::args() {
+        if let Some(v) = a.strip_prefix("--walk=") {
+            if let Ok(n) = v.parse::<usize>() {
+                WALK_N.with(|w| *w.borrow_mut() = n);
+            }
+        }
+        if let Some(v) = a.strip_prefix("--seed=") {
+            if let Ok(n) = v.parse::<u64>() {
+                WALK_RNG.with(|w| *w.borrow_mut() = n);
+            }
+        }
+    }
     if std::env::args().any(|a| a == "--cold") {
         COLD_MODE.with(|c| *c.borrow_mut() = true);
+    }
+    if let Some(v) = std::env::args().find_map(|a| a.strip_prefix("--seq=").map(str::to_owned)) {
+        let _ = SEQ_TABLE.set(parse_seq(&v));
     }
     if std::env::args().any(|a| a == "--hz") {
         HZ_MODE.with(|h| *h.borrow_mut() = true);
@@ -1794,7 +3192,22 @@ fn run() -> WinResult<()> {
             DispatchMessageW(&raw const msg);
         }
     }
+    teardown_tsf();
     Ok(())
+}
+
+/// メッセージループ終了後に、compartment の購読を解除(UnadviseSink)し、ITfThreadMgr を Deactivate する。
+/// 購読を生かしたまま TLS 破棄で ITfThreadMgr が Release されると、解体中に OnChange が来て破棄済みの TLS を触りうる。
+fn teardown_tsf() {
+    let sinks = NOTIFY_SINKS.with(|v| std::mem::take(&mut *v.borrow_mut()));
+    for (source, cookie, _sink) in sinks {
+        // SAFETY: source はメインスレッド(STA)で AdviseSink した ITfSource、cookie はその戻り値。
+        let _ = unsafe { source.UnadviseSink(cookie) };
+    }
+    if let Some(st) = TSF_STATE.with(|s| s.borrow_mut().take()) {
+        // SAFETY: Activate したメインスレッドで、ループ終了後に1回だけ呼ぶ。
+        let _ = unsafe { st._thread_mgr.Deactivate() };
+    }
 }
 
 fn main() {

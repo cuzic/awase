@@ -50,7 +50,7 @@ impl OpenBeliefInputs {
     /// 取得できない場合は shadow_on + candidate 観測で推定する。
     ///
     /// # confident の計算
-    /// ImmCross/GJI で確認できない環境（KanjiToggle 系）でのみ `safely_confirmed` を
+    /// ImmCross/GJI で確認できない環境でのみ `safely_confirmed` を
     /// 検査する。それ以外は常に `true`。
     /// （旧 `is_engine_intent` 条件は 2026-07-06 到達不能パス監査 B6 で撤去 —
     /// SetOpen は常に Engine の意図であり恒真だった。）
@@ -81,7 +81,7 @@ impl OpenBeliefInputs {
 
         let confident =
             if !self.can_imm32_cross_process && !self.gji_monitor_ok && self.conv_mode.is_none() {
-                // KanjiToggle 系（Chrome/TsfNative 等）: Confirmed かつ shadow 一致 かつ 300ms 以内のみ確信あり
+                // 読み戻し不能系（Chrome/TsfNative 等）: Confirmed かつ shadow 一致かつ 300ms 以内のみ確信あり
                 self.shadow_on == desired_open
                     && self.applied.is_confirmed()
                     && self.now_ms.saturating_sub(self.applied.confirmed_at_ms()) < 300
