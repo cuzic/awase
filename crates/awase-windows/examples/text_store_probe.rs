@@ -9,11 +9,12 @@
 //! `ITfThreadMgr::AssociateFocus` で関連付ける。窓にフォーカスが来ると TIP がこのストアに接続し、
 //! テキストの読み書き（`GetText` / `InsertTextAtSelection` / `SetText`）と composition を行う。
 //!
-//! 使い方: `text_store_probe [--seq=16,4B,41,0D] [--gap=1200] [--lock-delay=MS] [--deny-sync] [--no-scan] [--log=<path>]`
+//! 使い方: `text_store_probe [--seq=16,4B,41,0D] [--gap=1200] [--lock-delay=MS] [--deny-sync] [--no-scan] [--panic-test] [--log=<path>]`
 //!   `--seq`: 注入する VK（16進）。既定は IME ON → `k` → `a` → Enter（composition を確定）。
 //!   `--lock-delay`: `RequestLock` の同期応答を指定 ms 遅らせる（Chrome の遅いロックの模擬。0で無効）。
 //!   `--deny-sync`: 同期ロック要求に `TS_E_SYNCHRONOUS` を返す（非同期のみ許す模擬）。
 //!   `--no-scan`: 文字キーにスキャンコードを付けずに注入する（付けたときとの差を測る）。
+//!   `--panic-test`: `InsertTextAtSelection` で意図的に panic する（panic フックがタイムラインを残すかの確認用）。
 //! キーは `SendInput`（`AWASE_TEST_INJECTION=1` の awase が物理キー扱いする目印付き）で注入する。
 //! awase を止めた状態（IME 単体）が基本。前面窓がプローブ窓でないときは注入しない。
 //! 実行中は Windows 機のキーボード・マウスに触らない。
@@ -81,16 +82,24 @@ mod store {
         pub(crate) t0: Instant,
         pub(crate) lock_delay_ms: u64,
         pub(crate) deny_sync: bool,
+        pub(crate) panic_test: bool,
     }
 
     impl Store {
-        pub(crate) fn new(log: Log, t0: Instant, lock_delay_ms: u64, deny_sync: bool) -> Self {
+        pub(crate) fn new(
+            log: Log,
+            t0: Instant,
+            lock_delay_ms: u64,
+            deny_sync: bool,
+            panic_test: bool,
+        ) -> Self {
             Self {
                 st: RefCell::new(State::default()),
                 log,
                 t0,
                 lock_delay_ms,
                 deny_sync,
+                panic_test,
             }
         }
     }
@@ -431,6 +440,9 @@ mod store {
             pchange: *mut TS_TEXTCHANGE,
         ) -> windows::core::Result<()> {
             self.need_write("InsertTextAtSelection")?;
+            // `--panic-test`: COM コールバック内の panic（非 unwind ABI の境界で abort になる）で、
+            // panic フックがタイムラインを残すかを確かめるための意図的な panic。
+            assert!(!self.panic_test, "--panic-test: InsertTextAtSelection で意図的に panic");
             let query_only = dwflags & 1 != 0; // TS_IAS_QUERYONLY
             // SAFETY: pchtext は cch 個の UTF-16 を指す(cch>0 のとき)。
             let new: Vec<u16> = if cch > 0 && !pchtext.is_null() {
@@ -799,6 +811,27 @@ mod app {
         }
     }
 
+    /// panic フック: COM コールバック内の panic は非 unwind ABI（`extern "system"`）の境界でプロセスごと abort し、
+    /// 終了時のタイムライン出力に到達しない。abort の前に走るこのフックで、panic の内容と直前までのタイムラインを
+    /// ログファイルへ書き出し、測定データを失わないようにする。
+    fn install_panic_hook(path: String, log: Log) {
+        std::panic::set_hook(Box::new(move |info| {
+            let mut s = format!("PANIC: {info}\n--- panic 直前までのタイムライン ---\n");
+            // panic が push 中に起きた場合にデッドロックしないよう try_lock を使う。
+            if let Ok(l) = log.try_lock() {
+                for r in l.iter() {
+                    s.push_str(&format!("+{:>6}ms {:<24} {}\n", r.at_ms, r.tag, r.detail));
+                }
+            } else {
+                s.push_str("(ログのロックを取得できなかった)\n");
+            }
+            eprintln!("{s}");
+            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&path) {
+                let _ = f.write_all(s.as_bytes());
+            }
+        }));
+    }
+
     /// アクティブなキーボード TIP を「GJI / MS-IME / その他」で返す（測定結果がどの IME のものかを残すため）。
     fn active_tip() -> String {
         use windows::core::GUID;
@@ -854,6 +887,7 @@ mod app {
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
         let deny_sync = args.iter().any(|a| a == "--deny-sync");
+        let panic_test = args.iter().any(|a| a == "--panic-test");
         NO_SCAN.store(args.iter().any(|a| a == "--no-scan"), Ordering::SeqCst);
         let log_path = arg_value(&args, "--log=").unwrap_or_else(|| "text_store_probe.log".into());
         let mut file = std::fs::File::create(&log_path).expect("log");
@@ -865,6 +899,7 @@ mod app {
         let t0 = Instant::now();
         let log: Log = Arc::new(Mutex::new(Vec::new()));
         let _ = WND_LOG.set((Arc::clone(&log), t0));
+        install_panic_hook(log_path.clone(), Arc::clone(&log));
 
         // SAFETY: メインスレッド(STA)で COM/TSF と窓を初期化する。以降の COM 呼び出しは同じスレッドから行う。
         let (thread_mgr, _doc, _ctx) = unsafe {
@@ -906,7 +941,7 @@ mod app {
 
             // 自前のテキストストアを載せたドキュメントを作り、窓に関連付ける。
             let store: IUnknown =
-                Store::new(Arc::clone(&log), t0, lock_delay_ms, deny_sync).into();
+                Store::new(Arc::clone(&log), t0, lock_delay_ms, deny_sync, panic_test).into();
             let doc = thread_mgr.CreateDocumentMgr().expect("CreateDocumentMgr");
             let mut ctx: Option<ITfContext> = None;
             let mut edit_cookie = 0u32;
