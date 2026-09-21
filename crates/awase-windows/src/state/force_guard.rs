@@ -269,6 +269,29 @@ pub(crate) const fn should_drop_intents_for_mode_key_pass(
     }
 }
 
+/// 通過マークの窓が**切れた後**の最初の成功観測で、`desired_open`を観測へ揃えるか（BUG-157の揃えの延長、BUG-158追補2）。
+///
+/// 窓の間の観測が全て時間切れ・空振りだった通過（MS-IME本体のCI）では、揃える機会が無く、`desired_open`が古いまま
+/// `observed ≠ desired`が続いて、drift correctionが実IMEへ書き戻す（書き込みが効く環境ではユーザーのモードキーを閉じ直す）。
+/// 揃える条件（全て満たすとき、通過につき1回だけ）:
+/// - 窓が切れている（窓の間は既存の揃えが担当）
+/// - まだ一度も揃えていない（`!aligned`）
+/// - 通過より後に、awaseが実際にIMEへ書いていない（`!awase_wrote`。書いたなら実IMEに届かなかったのかもしれず、
+///   drift correctionが訂正すべきなので、実IMEを信用しない）
+/// - 通過より後に記録された明示意図が無い（`!has_intent`。`ModeKeyPassedThrough`は`last_intent`を捨てるので、
+///   新しい意図を巻き添えにしない）
+/// 揃えた後は通常のdrift correctionに戻る（永続的に無効化しない）。
+#[must_use]
+pub(crate) const fn should_align_after_expired_mode_key_pass(
+    age_ms: u64,
+    window_ms: u64,
+    aligned: bool,
+    awase_wrote: bool,
+    has_intent: bool,
+) -> bool {
+    age_ms >= window_ms && !aligned && !awase_wrote && !has_intent
+}
+
 /// 通過マークの窓が切れるまでの残り時間(ms)。窓が切れていれば`None`。
 #[must_use]
 pub(crate) const fn mode_key_pass_window_remaining_ms(age_ms: u64, window_ms: u64) -> Option<u64> {
@@ -746,5 +769,35 @@ mod tests {
             2,
             "混在は即時の拒否だけを数える"
         );
+    }
+
+    /// BUG-158追補2: 窓が切れた後の最初の成功観測での揃え。通過→全観測が時間切れ→窓切れ→最初の成功観測で揃い、
+    /// 揃った後・awase自身の書き込み後・新しい明示意図があるときは揃えない。
+    #[test]
+    fn should_align_after_expired_mode_key_pass_only_once_and_not_after_awase_write() {
+        let w = 300;
+        // 窓の間は既存の揃えが担当（ここでは揃えない）。
+        assert!(!should_align_after_expired_mode_key_pass(
+            299, w, false, false, false
+        ));
+        // 窓が切れた後の最初の成功観測で揃える。
+        assert!(should_align_after_expired_mode_key_pass(
+            300, w, false, false, false
+        ));
+        assert!(should_align_after_expired_mode_key_pass(
+            9000, w, false, false, false
+        ));
+        // 揃えた後は通常のdrift correctionへ戻る（2回目以降は揃えない）。
+        assert!(!should_align_after_expired_mode_key_pass(
+            9500, w, true, false, false
+        ));
+        // 通過以降にawase自身が書いたなら、実IMEを信用しない（drift correctionが訂正すべき）。
+        assert!(!should_align_after_expired_mode_key_pass(
+            9000, w, false, true, false
+        ));
+        // 新しい明示意図があるなら巻き添えにしない。
+        assert!(!should_align_after_expired_mode_key_pass(
+            9000, w, false, false, true
+        ));
     }
 }

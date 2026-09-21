@@ -155,6 +155,12 @@ pub(crate) struct ModeKeyPassMark {
     armed_at_ms: u64,
     /// 意図の破棄は通過ごとに1回だけ(最初の観測の直後)。窓の間の再読み取りでは、通過より後に記録された意図を捨てない。
     invalidated: bool,
+    /// `desired_open`を観測へ揃えた（`ModeKeyPassedThrough`をdispatchした）ことがあるか。窓が切れた後の最初の
+    /// 成功観測での揃えを通過につき1回に絞る（BUG-158追補2）。
+    aligned: bool,
+    /// 通過より後に、awase自身が実際にIMEへ書いた（`record_optimistic`/`record_confirmed`）か。書いたなら実IMEが
+    /// 書いた値と違っても信用せず、揃えずにdrift correctionへ任せる。
+    awase_wrote: bool,
 }
 
 impl ImeStateHub {
@@ -249,8 +255,32 @@ impl ImeStateHub {
             ModeKeyPassMark {
                 armed_at_ms: now_ms,
                 invalidated: false,
+                aligned: false,
+                awase_wrote: false,
             },
         );
+    }
+
+    /// awaseが実際にIMEへ書いた（`applied`を更新した）ことを、有効な通過マークへ記録する（BUG-158追補2）。
+    fn note_awase_write_for_mode_key_pass(&mut self) {
+        self.note_awase_write_for_mode_key_pass_in_scope(crate::win32::foreground_scope());
+    }
+
+    fn note_awase_write_for_mode_key_pass_in_scope(
+        &mut self,
+        scope: crate::win32::ForegroundScope,
+    ) {
+        if let ScopeCheck::Live(mark) = self.mode_key_pass_mark.peek(scope) {
+            if !mark.awase_wrote {
+                self.mode_key_pass_mark.arm(
+                    scope,
+                    ModeKeyPassMark {
+                        awase_wrote: true,
+                        ..mark
+                    },
+                );
+            }
+        }
     }
 
     fn mode_key_pass_mark_live_in_scope(
@@ -329,24 +359,81 @@ impl ImeStateHub {
             return false;
         }
         let first = !mark.invalidated;
+        // reducerは`last_intent`を捨て、`desired_open`を観測から導ける開閉へ揃える（BUG-157）。
+        // 最初の観測はGJIがキーを処理する前の古い状態のことがあるので、窓の間は観測が届くたびに
+        // 揃え直す。ただし通過より後に記録された明示意図（`last_intent`）は、2回目以降では捨てない。
+        let align = first || self.shadow_model.last_intent.is_none();
         if first {
             if let Some(hwnd) = self.shadow_model.current_focus() {
                 self.intent_store.remove(hwnd);
             }
+        }
+        if first || (align && !mark.aligned) {
             self.mode_key_pass_mark.arm(
                 scope,
                 ModeKeyPassMark {
                     invalidated: true,
+                    // 窓の終了時の破棄（`on_expiry`）は観測を得ていないので、揃えたことにしない。
+                    aligned: mark.aligned || (align && !on_expiry),
                     ..mark
                 },
             );
         }
-        // reducerは`last_intent`を捨て、`desired_open`を観測から導ける開閉へ揃える（BUG-157）。
-        // 最初の観測はGJIがキーを処理する前の古い状態のことがあるので、窓の間は観測が届くたびに
-        // 揃え直す。ただし通過より後に記録された明示意図（`last_intent`）は、2回目以降では捨てない。
-        if first || self.shadow_model.last_intent.is_none() {
-            self.dispatch_event(ImeEvent::ModeKeyPassedThrough, tick_ms);
+        if align {
+            self.pass_through_observed(tick_ms);
         }
+        true
+    }
+
+    /// `ModeKeyPassedThrough` のdispatch元（ADR-187の「1箇所に限定」）。reducerは`last_intent`を捨て、
+    /// `desired_open`を観測から導ける開閉へ揃える（BUG-157）。窓の間の揃えと、窓が切れた後の最初の成功観測での
+    /// 揃え（BUG-158追補2）の両方がここを通る。
+    fn pass_through_observed(&mut self, tick_ms: TickMs) {
+        self.dispatch_event(ImeEvent::ModeKeyPassedThrough, tick_ms);
+    }
+
+    /// 通過マークの窓が**切れた後**の最初の成功観測で、`desired_open`を観測へ揃える（BUG-158追補2）。
+    /// 窓の間の観測が全て時間切れだった通過は、揃える機会が無いまま`observed ≠ desired`が続くため。
+    /// 通過につき1回だけ。通過より後にawaseが書いた/新しい明示意図があるときは揃えない。
+    /// 観測が成功したときに呼ぶ。揃えたら`true`。
+    pub(crate) fn align_after_expired_mode_key_pass(
+        &mut self,
+        now_ms: u64,
+        tick_ms: TickMs,
+    ) -> bool {
+        self.align_after_expired_mode_key_pass_in_scope(
+            now_ms,
+            tick_ms,
+            crate::win32::foreground_scope(),
+        )
+    }
+
+    fn align_after_expired_mode_key_pass_in_scope(
+        &mut self,
+        now_ms: u64,
+        tick_ms: TickMs,
+        scope: crate::win32::ForegroundScope,
+    ) -> bool {
+        let ScopeCheck::Live(mark) = self.mode_key_pass_mark.peek(scope) else {
+            return false;
+        };
+        if !crate::state::force_guard::should_align_after_expired_mode_key_pass(
+            now_ms.saturating_sub(mark.armed_at_ms),
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+            mark.aligned,
+            mark.awase_wrote,
+            self.shadow_model.last_intent.is_some(),
+        ) {
+            return false;
+        }
+        self.mode_key_pass_mark.arm(
+            scope,
+            ModeKeyPassMark {
+                aligned: true,
+                ..mark
+            },
+        );
+        self.pass_through_observed(tick_ms);
         true
     }
 
@@ -385,6 +472,7 @@ impl ImeStateHub {
     /// この5箇所のどれとも異なる新規パターンなら actuation 由来かどうかを
     /// 必ず確認すること。
     pub(crate) fn record_optimistic(&mut self, open: bool) {
+        self.note_awase_write_for_mode_key_pass();
         self.shadow_model.applied = AppliedImeState::Optimistic(open);
         self.clear_pending_if_matches(open);
     }
@@ -395,6 +483,7 @@ impl ImeStateHub {
     /// `at_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来、非ゼロ）。
     /// INV-A97-1 の既知の例外は `record_optimistic` の doc を参照。
     pub(crate) fn record_confirmed(&mut self, open: bool, at_ms: u64) {
+        self.note_awase_write_for_mode_key_pass();
         self.shadow_model.applied = AppliedImeState::Confirmed { open, at_ms };
         self.clear_pending_if_matches(open);
     }
@@ -2632,6 +2721,18 @@ mod tests {
             .record_explicit_intent(target, UserIntentSource::Command, TickMs(tick_ms));
     }
 
+    impl PlatformState {
+        /// テスト専用: `align_after_expired_mode_key_pass` の scope 指定版。
+        fn align_after_expired_pass_for_test(
+            &mut self,
+            now_ms: u64,
+            scope: crate::win32::ForegroundScope,
+        ) -> bool {
+            self.ime
+                .align_after_expired_mode_key_pass_in_scope(now_ms, TickMs(now_ms), scope)
+        }
+    }
+
     fn arm_mode_key_pass_mark_for_test(
         ps: &mut PlatformState,
         scope: crate::win32::ForegroundScope,
@@ -2642,6 +2743,8 @@ mod tests {
             ModeKeyPassMark {
                 armed_at_ms: now_ms,
                 invalidated: false,
+                aligned: false,
+                awase_wrote: false,
             },
         );
     }
@@ -2943,6 +3046,69 @@ mod tests {
             ps.ime.explicit_intent(),
             Some(true),
             "通過より後の意図は残る"
+        );
+    }
+
+    /// BUG-158追補2: 通過→窓の間の観測は全て時間切れ（観測なし）→窓切れ→最初の成功観測で `desired_open` を揃える。
+    /// 揃えた後は通常の drift correction に戻る（2回目は揃えない）。
+    #[test]
+    fn align_after_expired_pass_aligns_once_on_first_successful_observation() {
+        let mut ps = PlatformState::new();
+        let scope = test_foreground_scope();
+        let window = crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS;
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        arm_mode_key_pass_mark_for_test(&mut ps, scope, 125);
+        // 窓の間は観測が無い（全て時間切れ）。窓が切れて意図だけ捨てる（BUG-158）。
+        assert!(ps.ime.drop_intents_for_mode_key_pass_in_scope(
+            125 + window,
+            TickMs(125 + window),
+            scope,
+            true
+        ));
+        assert!(
+            !ps.ime.shadow_model.desired_open(),
+            "観測が無いので desired は古いまま"
+        );
+        // 窓が切れた後の最初の成功観測（実IMEは開）。
+        write_open_observation_high(&mut ps, true, 500);
+        assert!(ps.align_after_expired_pass_for_test(600, scope));
+        assert!(
+            ps.ime.shadow_model.desired_open(),
+            "最初の成功観測で desired を揃える"
+        );
+        // 通常の drift correction へ戻る: 2回目は揃えない。
+        write_open_observation_high(&mut ps, false, 900);
+        assert!(
+            !ps.align_after_expired_pass_for_test(1000, scope),
+            "通過につき1回だけ"
+        );
+        assert!(
+            ps.ime.shadow_model.desired_open(),
+            "2回目の観測では desired を動かさない"
+        );
+    }
+
+    /// 通過より後に awase 自身が書いた（`record_optimistic`）場合は揃えない（実IMEを信用せず drift correction が訂正する）。
+    #[test]
+    fn align_after_expired_pass_skips_when_awase_wrote_after_pass() {
+        let mut ps = PlatformState::new();
+        let scope = test_foreground_scope();
+        let window = crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS;
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        arm_mode_key_pass_mark_for_test(&mut ps, scope, 125);
+        ps.ime.note_awase_write_for_mode_key_pass_in_scope(scope);
+        assert!(ps.ime.drop_intents_for_mode_key_pass_in_scope(
+            125 + window,
+            TickMs(125 + window),
+            scope,
+            true
+        ));
+        write_open_observation_high(&mut ps, true, 500);
+        assert!(
+            !ps.align_after_expired_pass_for_test(600, scope),
+            "awase が書いた後は揃えない"
         );
     }
 

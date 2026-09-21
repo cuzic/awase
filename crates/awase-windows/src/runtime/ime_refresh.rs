@@ -228,6 +228,16 @@ impl Runtime {
                     );
                     // 最初の観測は GJI がキーを処理する前の古い状態を読むことがある。窓が切れるまで読み直す。
                     self.schedule_ime_refresh(crate::tuning::MODE_KEY_PASS_REREAD_MS);
+                } else if observed
+                    && self
+                        .platform_state
+                        .ime
+                        .align_after_expired_mode_key_pass(now, crate::state::TickMs(now))
+                {
+                    // 窓の間の観測が全て時間切れだった通過。窓が切れた後の最初の成功観測で desired を揃える。
+                    tracing::info!(
+                        "[mode-key-follow] first successful observation after the window: desired aligned"
+                    );
                 }
             }
         }
