@@ -25,9 +25,11 @@ use crate::types::VkCode;
 
 /// BUG-52 の「DBE レンジ」キーをパススルーしてよいかどうか（隠し設定、上級者向け）。
 ///
-/// 物理 Hiragana/Katakana/Eisu キー等が生成する `VK_DBE_ALPHANUMERIC` /
-/// `VK_DBE_KATAKANA` / `VK_DBE_SBCSCHAR` / `VK_DBE_DBCSCHAR`
-/// （`crates/awase-windows/src/runtime/transport.rs`）が対象。
+/// **対象は、awase が beliefに基づく開閉トグルとして書く半角/全角
+/// （`VK_DBE_SBCSCHAR` / `VK_DBE_DBCSCHAR`、GJI・MS-IME本体の両方、ADR-189/191）だけ**
+/// （`crates/awase-windows/src/runtime/transport.rs`）。awase が書かない英数
+/// （`VK_DBE_ALPHANUMERIC`）・カタカナ（`VK_DBE_KATAKANA`）・ひらがな（`VK_DBE_HIRAGANA`）は、
+/// この設定に関わらず常に IME へ素通しされる（ADR-191、BUG-153）。
 ///
 /// `VK_DBE_HIRAGANA`（かな入力キー本来の VK、F2 warmup 関連）はこの設定の
 /// 対象外（別分岐で処理される、`transport.rs` 参照）。
@@ -323,9 +325,9 @@ pub struct GeneralConfig {
     /// [ADR-091](../docs/adr/091-idempotent-charset-axis-gji-recommended-msime-self-responsibility.md)
     /// §D3.2 参照。
     pub muhenkan_solo_tap_dedicated_fn_key: Option<String>,
-    /// BUG-52 の DBE レンジ Suppress（`VK_DBE_ALPHANUMERIC`/`KATAKANA`/
-    /// `SBCSCHAR`/`DBCSCHAR`）を無条件抑制のままにするか、パススルーを
-    /// 許すか（隠し設定、上級者向け）。既定値・リスクは [`DbeModeKeyPolicy`] 参照。
+    /// BUG-52 の DBE レンジ Suppress（awase が書く半角/全角 `SBCSCHAR`/`DBCSCHAR` だけ。
+    /// 英数・カタカナ・ひらがなは対象外で常に素通し）を無条件抑制のままにするか、
+    /// パススルーを許すか（隠し設定、上級者向け）。既定値・リスクは [`DbeModeKeyPolicy`] 参照。
     pub dbe_mode_key_policy: DbeModeKeyPolicy,
     /// 左Shift単独タップによる「IME-ON 半角英数」持続トグルの許可範囲。
     ///

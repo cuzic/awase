@@ -4547,24 +4547,35 @@ fn half_width_alnum_toggle_policy_is_wired_at_bootstrap_and_reload() {
     );
 }
 
-/// BUG-116/ADR-137 決定1/2 の安全ガードが本番コードから消えていないことを
-/// 固定する。`transport.rs::plan_tests` / `key_pipeline.rs` 内のユニットテストは
+/// ADR-191: `dbe_mode_key_policy = Suppress` が握りつぶすのは「awase が実際に書くキー」だけ
+/// （`ImeKeyKind::is_open_toggle_for`、GJI・MS-IME本体の半角/全角）であること、および
+/// BUG-116/ADR-137 決定2 の安全ガードが本番コードから消えていないことを固定する。
+/// `transport.rs::plan_tests` / `key_pipeline.rs` 内のユニットテストは
 /// `runtime/mod.rs` の `#[cfg(windows)]` 配下にあり Linux では存在しないため
 /// （CLAUDE.md 参照）、この静的スキャンが Linux CI 側の唯一の防波堤になる。
 #[test]
 fn bug116_shift_katakana_guards_are_present_in_production_code() {
     let transport = read_crate_file("src/runtime/transport.rs");
     let transport = strip_any_test_module(&transport);
+    assert!(
+        transport.contains("is_open_toggle_for"),
+        "runtime/transport.rs の本番コードから `is_open_toggle_for` が消えています。\
+         Suppress の対象は「awase が書くキー」だけにする（ADR-191）"
+    );
+    // 撤去後は awase が書かない英数(0xF0)・カタカナ(0xF1)を VK で列挙して Suppress してはならない
+    // （握りつぶすと OS にも awase にも誰も何もしない二重の空振りになる）。BUG-116 の
+    // Shift+0xF1 の特例（`shift_katakana_passthrough`）も、0xF1 が常に Allow になったため撤去済み。
     for token in [
-        "fn shift_katakana_passthrough",
-        "half_width_alnum_toggle_active",
-        "is_configured_thumb_key",
+        "VK_DBE_ALPHANUMERIC",
         "VK_DBE_KATAKANA",
+        "fn shift_katakana_passthrough",
+        "DbeModeKeyContext",
     ] {
         assert!(
-            transport.contains(token),
-            "runtime/transport.rs の本番コードから `{token}` が消えています \
-             （BUG-116/ADR-137 決定1のガード）"
+            !transport.contains(token),
+            "runtime/transport.rs の本番コードに `{token}` が再び現れています（ADR-191: \
+             Suppress の対象は `is_open_toggle_for` で決め、awase が書かないキーを VK 列挙で \
+             握りつぶさない）"
         );
     }
 

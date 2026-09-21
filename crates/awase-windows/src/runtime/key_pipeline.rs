@@ -195,7 +195,7 @@ impl Runtime {
         // BUG-115: このキーが親指キーとして設定されている構成では、この KeyDown
         // は NICOLA の同時打鍵入力であって IME モードキーではない。ガードが無いと
         // 打鍵ごとに `VK_DBE_HIRAGANA` を SendInput することになる。呼び出し元が
-        // `DbeModeKeyContext` 構築時に計算済みの値をそのまま受け取る（同じ判定を
+        // 計算済みの値をそのまま受け取る（同じ判定を
         // 同一イベントに対して2回計算しない、/code-review 指摘）。
         if is_configured_thumb_key {
             return;
@@ -479,11 +479,7 @@ impl Runtime {
             self.platform.is_tsf_mode(),
             self.platform.output.f2_warmup_owned(),
             active_ime_kind,
-            crate::runtime::DbeModeKeyContext {
-                policy: self.dbe_mode_key_policy,
-                half_width_alnum_toggle_active: half_width_alnum_toggle_before,
-                is_configured_thumb_key,
-            },
+            self.dbe_mode_key_policy,
         );
         // BUG-116/ADR-137 決定2: `plan()` が Suppress と判定した物理かなキーの
         // 埋め合わせ。`kp_stage_execute`（下記）より前で評価すること
