@@ -28,7 +28,7 @@ import sys
 from collections import Counter, defaultdict
 
 KEY_RE = re.compile(
-    r"^\[[\d:.]+Z\] KEY .*? vk=0x([0-9A-Fa-f]+) .*?press=([\d:.]+)Z \((auto)\)"
+    r"^\[[\d:.]+Z\] KEY .*? vk=0x([0-9A-Fa-f]+) .*?press=([\d:.]+)Z \((?:auto|injected)\)"
 )
 SNAP_RE = re.compile(
     r"A\(open=(\S+) conv=(\S+)\) B\(open=(\S+) conv=(\S+)\).*?comp=(\"[^\"]*\"|\?)"
