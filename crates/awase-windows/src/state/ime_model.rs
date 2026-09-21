@@ -838,6 +838,17 @@ impl ImeModel {
                 if open.is_some() {
                     self.last_intent = None;
                 }
+                // 予測が開閉を動かしたとき、awase自身の直近の書き込みの記録（`applied`）が予測と食い違うなら、
+                // それはもう実状態の証拠ではない（書き込み以外の源でbeliefが動いた）。`Unknown`（未確認）へ
+                // 落とす。残すと、GjiDirectのalready-matched判定（`applied`が目標と一致→書き込みを省く）が
+                // 古い記録を根拠に`VK_IME_OFF`/`ON`を省き、物理キーはSuppress済みなので誰も実IMEを動かさない
+                // （半角/全角のbeliefトグルが読めない窓で約4割失われた、BUG-156）。「送信を省略してよいか」は
+                // 陽性の確認済み証拠にだけ基づく（`applied_open`のdoc、ADR-098決定1-b、BUG-113と同じ原則）。
+                if let Some(predicted) = open {
+                    if self.applied.applied_open().is_some_and(|a| a != predicted) {
+                        self.applied = AppliedImeState::Unknown;
+                    }
+                }
             }
             ImeEvent::ModeKeyPassedThrough => {
                 // ADR-187: 明示意図が残ると resolve_open_at の ExplicitIntent 分岐が
@@ -1703,6 +1714,58 @@ mod tests {
                 track,
             },
         ));
+    }
+
+    /// BUG-156: 予測が開閉をappliedと食い違う向きへ動かしたら、appliedは実状態の証拠ではなくなり`Unknown`へ落ちる
+    /// （残すとGjiDirectのalready-matched判定が古い記録で書き込みを省く）。同じ向きの予測ではappliedを保つ。
+    #[test]
+    fn prediction_that_contradicts_applied_drops_it_to_unknown() {
+        use crate::state::key_effect_table::KeyTrack;
+        let predict = |open: Option<bool>| ImeEvent::KeyEffectPredicted {
+            open,
+            mode: None,
+            track: KeyTrack::default(),
+        };
+        let mut model = ImeModel::new();
+        model.applied = AppliedImeState::Confirmed {
+            open: false,
+            at_ms: 5,
+        };
+        model.reduce(&envelope(1, predict(Some(true))));
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Unknown,
+            "食い違う予測: 古い記録は証拠にしない"
+        );
+        assert_eq!(model.applied_pair(), None);
+
+        model.applied = AppliedImeState::Confirmed {
+            open: true,
+            at_ms: 5,
+        };
+        model.reduce(&envelope(2, predict(Some(true))));
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Confirmed {
+                open: true,
+                at_ms: 5
+            },
+            "同じ向きの予測: 記録は保つ"
+        );
+
+        model.applied = AppliedImeState::Confirmed {
+            open: false,
+            at_ms: 5,
+        };
+        model.reduce(&envelope(3, predict(None)));
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 5
+            },
+            "開閉を動かさない予測（追跡だけ）: 記録は保つ"
+        );
     }
 
     #[test]

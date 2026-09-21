@@ -1491,7 +1491,9 @@ fn reduce_helpers_are_called_only_from_reduce_body() {
 #[test]
 fn applied_direct_assignments_are_accounted_for() {
     const DIRECT_ASSIGNMENTS: [(&str, usize); 2] = [
-        ("src/state/ime_model.rs", 5),
+        // ime_model.rs: 5→6。`KeyEffectPredicted`のreduce内で、予測がappliedと食い違う向きへ開閉を動かしたとき
+        // appliedを`Unknown`へ落とす1件を追加（BUG-156、`reduce()`内の正規書き込み）。
+        ("src/state/ime_model.rs", 6),
         ("src/state/platform_state.rs", 2),
     ];
     const STRUCT_LITERAL_FIELDS: [(&str, usize); 1] = [("src/state/ime_model.rs", 1)];
