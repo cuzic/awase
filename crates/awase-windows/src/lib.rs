@@ -419,7 +419,14 @@ impl RawKeyEventExt for RawKeyEvent {
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
                     wVk: VIRTUAL_KEY(self.vk_code.0),
-                    wScan: 0,
+                    // IMEモードキー(全角/半角・英数・かな・カタカナ・変換・無変換)だけは元のスキャンコードを保つ
+                    // (実機のGJIで scan=0 の再注入がモードキーとして効かない疑い。ADR-191 実機検証)。
+                    // 拡張キー(矢印など)は EXTENDEDKEY フラグ無しの scan 付き再注入が別キーに化けうるので、従来どおり 0。
+                    wScan: if crate::vk::is_ime_mode_key_for_ime(self.vk_code) {
+                        self.scan_code.0 as u16
+                    } else {
+                        0
+                    },
                     dwFlags: if is_keyup {
                         KEYEVENTF_KEYUP
                     } else {
