@@ -438,6 +438,19 @@ pub const fn decide_conv_inference_drift(
     }
 }
 
+/// belief起点のトグル（ADR-189/191の半角/全角）を**やめて生キーをIMEへ通すべきか**（beliefが信頼できないか）。
+///
+/// `applied`（awase自身の直近の書き込みの結果）と`effective_open`（予測・観測を含むbelief）が食い違うのは、
+/// 書き込みの後に予測（`KeyEffectPredicted`）や観測がbeliefだけを動かした場合で、どちらが実IMEに合うか分からない。
+/// この状態でトグルすると、GjiDirectの already-matched 判定（`applied`が目標と一致→書き込みを省く）が働いて
+/// 書き込みが飛び、物理キーはSuppressされたまま実IMEが変わらない（CI blind、5/7件）。ズレた向きの書き込み
+/// （belief≠実IME）も、この食い違いの連鎖で生じる（残り2/7件）。食い違っているときは、awaseは書かず・Suppressせず、
+/// キーをIMEへ通して結果に追随する（「IME OFFなのにEngine ON」よりトグルしない方が良い、ユーザー判断）。
+#[must_use]
+pub const fn belief_conflicts_with_applied(applied: Option<bool>, effective_open: bool) -> bool {
+    matches!(applied, Some(a) if a != effective_open)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -769,5 +782,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn belief_conflicts_with_applied_only_when_both_known_and_differ() {
+        assert!(
+            !belief_conflicts_with_applied(None, true),
+            "appliedが未知なら食い違いとは言えない"
+        );
+        assert!(!belief_conflicts_with_applied(None, false));
+        assert!(
+            !belief_conflicts_with_applied(Some(true), true),
+            "信頼できる: トグルする"
+        );
+        assert!(!belief_conflicts_with_applied(Some(false), false));
+        assert!(
+            belief_conflicts_with_applied(Some(false), true),
+            "予測でbeliefだけON: 通す"
+        );
+        assert!(belief_conflicts_with_applied(Some(true), false));
     }
 }

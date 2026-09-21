@@ -494,10 +494,22 @@ impl Runtime {
         let ime = crate::state::ime_kind::ImeKindId::from(
             crate::tsf::observer::tsf_obs().active_ime_kind(),
         );
-        if event
-            .vk_code
-            .ime_kind()
-            .is_some_and(|k| k.is_open_toggle_for(ime))
+        // beliefが信頼できないとき（awaseの直近の書き込み`applied`と、予測・観測を含むbeliefが食い違う）は
+        // トグルしない: `shadow_action`を付けず、生キーをIMEへ通して結果に追随する
+        // （`state::ime_actuation::belief_conflicts_with_applied`）。
+        let belief_unreliable = crate::state::ime_actuation::belief_conflicts_with_applied(
+            self.platform_state
+                .ime
+                .model()
+                .applied_pair()
+                .map(|(open, _)| open),
+            self.platform_state.ime.effective_open(),
+        );
+        if !belief_unreliable
+            && event
+                .vk_code
+                .ime_kind()
+                .is_some_and(|k| k.is_open_toggle_for(ime))
         {
             event.ime_relevance.shadow_action = Some(awase::types::ShadowImeAction::Toggle);
         }
