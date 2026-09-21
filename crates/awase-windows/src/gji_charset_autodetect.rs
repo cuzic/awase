@@ -15,18 +15,17 @@
 //! - **新しいbeliefは持たない**（ADR-091の中心方針）。ここでの判定は
 //!   `config1.db`という外部ファイルの現在の中身を毎回そのまま読むだけで、
 //!   awase側で過去の観測を蓄積・推測することはしない。
-//! - **継続的なポーリングはしない**（ADR-091決定3項目2）。GJIが継続して
-//!   アクティブな間は一度判定したら再読み込みしない（[`sync_gji_charset_autodetect`]
-//!   のラッチ参照）。
+//! - **継続的なポーリングはしない**（ADR-091決定3項目2）。呼び出し側（較正結果の保存、
+//!   bug report〈ADR-148〉）が必要なときに1回だけ読む。ADR-191でGJI検出時の自動同期
+//!   （`sync_gji_charset_autodetect`、ラッチ付き）は撤去した。
 //! - **config1.db未存在（GJI未インストール等）はエラーではない**。読めなければ
 //!   静かに何もしない。`awase-gji-config`crate自体の「パース失敗は常に
 //!   空の結果に静かにフォールバック」という既存方針を踏襲する。
 
 /// GJIが無変換/変換キーに割り当てているIME意味論の分類（BUG-115）。
 /// `session_keymap`/`custom_keymap_table`/`overlay_keymaps`のどれ由来でも
-/// 同じ3値に潰す——awase側の反応（`shadow_action` override経由の
-/// follow-only、ADR-179）は`On`/`Off`なら常に安全（冪等）、`Toggle`のときだけ
-/// opt-inゲートの対象になる。
+/// 同じ3値に潰す。この分類は較正結果の保存とbug report（ADR-148）の診断表示にだけ使う
+/// （ADR-191: awaseがこの結果からIMEの開閉を代行・上書きすることはない）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ImeToggleKind {
     /// このキー単独でIMEをONにする。
@@ -314,8 +313,7 @@ mod windows_impl {
 
     /// `config1.db`を読む。存在しない・読めない場合は`None`（エラーにしない、
     /// GJI未インストール環境を正常系として扱う）。ADR-148（bug report）が
-    /// `sync_gji_charset_autodetect`とは独立に、報告生成時点の内容を
-    /// 都度読み直すためにも使う（Runtime側にキャッシュされた
+    /// 報告生成時点の内容を都度読み直すためにも使う（Runtime側にキャッシュされた
     /// `GjiRawConfig`は存在しないため）。
     pub(crate) fn read_config1_db() -> Option<Vec<u8>> {
         let path = config1_db_path()?;
@@ -345,8 +343,8 @@ mod windows_impl {
     /// `pub`関数）が代わりに`config1.db`/レジストリを読み直して
     /// フィンガープリントを構築する——結果が確定した直後に呼ばれる想定
     /// のため、確定に使われた値と同じ内容が読めるはずである。
-    /// `VK_NONCONVERT`/`VK_CONVERT`以外（`apply_calibration_override`が
-    /// 消費するのはこの2キーのみ）、またはGJI選択時に`config1.db`が
+    /// `VK_NONCONVERT`/`VK_CONVERT`以外（較正の対象はこの2キーのみ）、
+    /// またはGJI選択時に`config1.db`が
     /// 読めない場合は`None`（呼び出し元は保存をスキップし警告すること）。
     #[must_use]
     pub fn build_confirmed_calibration_entry(
@@ -541,33 +539,4 @@ mod tests {
         };
         assert_eq!(classify_thumb_key_ime_actions(&raw), (None, None));
     }
-
-    // ── classify_mode_key_ime_action: Hiragana/Katakana (BUG-115、ひらがな
-    // キーを親指シフトキーに設定しているユーザー向けエッジケース) ──
-
-    // ── GJI検出→反映の全体パイプライン decision table（ユーザー依頼、
-    // 2026-09-05。ADR-179決定1でHenkan/Muhenkanのactuation-auto撤去に
-    // 伴い2026-09-18更新）──
-    //
-    // Phase 1〜3を通じて何度も見落とされてきた「Toggleだけopt-inで
-    // ゲートする」という規則を、4キー（Henkan/Muhenkan/Hiragana/
-    // Katakana）×GJI判定値（None/On/Off/Toggle）×opt_in×is_thumbの
-    // 全組み合わせ（4×4×2×2=64通り）に対して、実際の本番用純粋関数
-    // （`classify_mode_key_ime_action`/`classify_thumb_key_ime_actions`/
-    // `ime_toggle_kind_to_shadow_action`/
-    // `resolve_mode_key_shadow_override_for_event`/
-    // `delegate_owns_mode_key_shadow_toggle`）を呼び出して検証する。
-    //
-    // ADR-179決定1により、Henkan/Muhenkanは「非親指キーはactuation-auto、
-    // 親指キーはdelegate-to-open-axis」という振り分けを撤去し、
-    // is_thumbに関わらず常にdelegate-to-open-axisとshadow_action
-    // overrideの両方に同じ値を反映するようになった（実際にどちらが
-    // 発火するかは`ModeKeyActuationOwner`が打鍵時に判定する、
-    // `runtime/key_pipeline.rs`参照——本decision tableは
-    // `sync_gji_charset_autodetect`が計算する値までを検証対象とする）。
-    //
-    // 64通りは全数（exhaustive）であり、その部分集合として任意の2軸間の
-    // 全組（pairwise）も自動的に網羅される——4値軸(Key)×4値軸(Classify)
-    // だけで16通りの「全組」が必要になるため、2値軸(opt_in/is_thumb)を
-    // 含めても全数を取るのが最も単純かつ取りこぼしが無い。
 }

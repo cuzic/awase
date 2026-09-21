@@ -395,8 +395,8 @@ pub struct GeneralConfig {
     pub swallow_alt_kana_input_method_switch: bool,
 
     /// ADR-176決定8: `[[calibration]]`（較正パネルUIが確定した較正結果）を
-    /// 実際のIME判定（`apply_calibration_override`経由でのGJI/MS-IME
-    /// 側の自動検出結果の差し替え）へ反映するかどうか。**既定`false`**
+    /// 実際のIME判定（旧`apply_calibration_override`経由でのGJI/MS-IME
+    /// 側の自動検出結果の差し替え。ADR-191で撤去済みで、現在この設定を読む経路は無い）へ反映するかどうか。**既定`false`**
     /// （opt-in）——BUG-113の再発リスクを実機A/Bで確認できるまで、較正
     /// 結果は`config.toml`には保存されるが実際のキー選択には影響しない
     /// ようにする安全装置（`ActivationSync`冪等性チェック=176-T0を前提

@@ -257,15 +257,13 @@ pub struct Runtime {
     /// ADR-176決定6（176-T3/T4）: モードキー較正結果（VKごと最大1件）。
     /// 起動時・設定リロード時に`config.calibration`（`176-T11`の
     /// `CalibrationEntry`）から読み込む（`apply_config_update`参照）。
-    /// `apply_calibration_override`の入力として参照するが、実際に差し替えが効くかどうかは
-    /// `apply_calibrated_mode_keys_opt_in`（既定`false`）にも依存する
-    /// （`calibrated_mode_key_for`参照）。
+    /// ADR-191で、較正結果によるIME判定の差し替え（旧`apply_calibration_override`）を撤去したため、
+    /// 現在この値を読む経路は無い（保持しているだけ。読む経路を作るかは製品化の設計で決める）。
     calibrated_mode_keys:
         std::collections::HashMap<VkCode, crate::state::calibrated_mode_key::CalibratedModeKey>,
     /// `GeneralConfig.apply_calibrated_mode_keys`のキャッシュ（ADR-176
-    /// 決定8）。`calibrated_mode_key_for`がこれを見て、`false`なら常に`None`を
-    /// 返す（config.tomlには保存されていても実際のIME判定には反映しない
-    /// 安全装置）。
+    /// 決定8）。上の`calibrated_mode_keys`と同じく、ADR-191で差し替えの経路を撤去したため、
+    /// 現在この値を読む経路は無い。
     apply_calibrated_mode_keys_opt_in: bool,
     /// ADR-176 176-T6: 較正モードのバイパスタイムアウト期限
     /// （`None`=非アクティブ）。`focus_tracking.rs`の

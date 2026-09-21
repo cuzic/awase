@@ -917,31 +917,17 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
         }
     }
 
-    // GJI 検出時、config1.db から無変換/変換キーのIME on/off/toggle
-    // 意味論（BUG-115、ADR-179）を自動判定する。MS-IME 割当てチェックと
-    // 対称に、この「IME 種別に依存する副作用の単一の合流点」に置き、
-    // 同じ理由で detected を見る（未検出時の active_ime_kind() が安全
-    // デフォルトとして MicrosoftIme を返す実装詳細に暗黙に依存せず、
-    // 明示的にゲートする）。
-    //
-    // **MS-IME 側（次のブロック）より先に呼ぶこと（Opus コードレビュー
-    // 指摘、意図的な順序）**: `henkan_shadow_override`/
-    // `muhenkan_shadow_override`/delegate-to-open-axisは GJI/MS-IME 両方の
-    // 自動検出が共有する`Runtime`フィールドで、GJI 離脱時に
-    // `sync_gji_charset_autodetect` がこれらを解除する。GJI→MS-IME の
-    // 遷移で MS-IME 側が先に新しい値を設定してしまうと、後から走る GJI
-    // 離脱処理がその値を上書き消去してしまう（実際に発生していた回帰、
-    // 詳細は`gji_charset_autodetect.rs`のコメント参照）。GJI 側を先に
-    // 走らせれば、GJI→MS-IME遷移時は「GJI離脱で解除→直後にMS-IME側が
-    // 新しい値で上書き」という正しい順序になる。
+    // GJI 検出時に config1.db から無変換/変換/ひらがな/カタカナの意味論を自動判定して、
+    // awase 自身が代行・上書きする経路は、ADR-191 で撤去した（GJI の設定どおりに GJI 自身が動く）。
+    // したがって GJI 検出時にここで行う副作用は、上の warmup FSM 同期だけである。
+    // config1.db の分類は、較正結果の保存（`gji_charset_autodetect::build_confirmed_calibration_entry`）と
+    // bug report（ADR-148）が必要なときに読む。
     //
     // 専用Fnキー変換（ADR-091 §D3.2）の自動判定・設定支援ポップアップ・
     // config1.db書き込みは、実験的機能のまま撤去し忘れて出荷されていた
     // ため2026-09-02に全撤去した（未実装の再検討はADR-091追補参照）。
     // `muhenkan_solo_tap_dedicated_fn_key` の手動設定（config.toml）による
     // 内部配線は残っている。
-    // ADR-191: GJI検出時にconfig1.dbから無変換/変換/ひらがな/カタカナの意味論を自動判定して
-    // awase自身が代行・上書きする経路は撤去した（GJIの設定どおりにGJI自身が動く）。
 
     // MS-IME と確定したら、無変換/変換キーの IME オン/オフ割り当て（awase と
     // 競合し belief 乖離を起こす）をチェックして解除を案内する
@@ -1454,7 +1440,7 @@ struct MsImeAdoptedFields {
 /// 要約する（ADR-148）。「生値・分類系」は`ime_kind`に関わらず常に計算し、
 /// 「採用系」は、ADR-191で採用（代行・上書き）の機構を撤去したため常に`None`。
 ///
-/// `sync_gji_charset_autodetect`とは独立に、報告生成時点の`config1.db`を
+/// 報告生成時点の`config1.db`を
 /// 都度読み直す（Runtime側に`GjiRawConfig`のキャッシュは存在しないため。
 /// 報告時点のファイル内容と、Engineが最後に採用した値とが理論上ズレうる
 /// 限界については ADR-148「実装スコープの訂正」参照）。
@@ -1483,11 +1469,10 @@ fn build_bug_report_gji_keymap_summary(
         .overlay_keymaps
         .contains(&awase_gji_config::SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF);
     let custom_keymap_table_present = raw_ref.custom_keymap_table.is_some();
-    // /code-review指摘: `sync_gji_charset_autodetect`（`gji_charset_autodetect.rs`
-    // の`session_keymap != CUSTOM`ガード直後の`let Some(table) = raw.
-    // custom_keymap_table else { return }`）の実際のゲートは
+    // /code-review指摘: 実際に抽出処理へ到達する条件は
     // 「session_keymap == CUSTOM」**かつ**「custom_keymap_tableが存在する」の
-    // 両方。前者だけをここで再現すると、CUSTOM選択中だがfield 42が不在の
+    // 両方（`gji_charset_autodetect.rs`の`classify_*`と同じゲート）。
+    // 前者だけをここで再現すると、CUSTOM選択中だがfield 42が不在の
     // 環境（本文doc「custom_keymap_table_present」との組み合わせが
     // (true, false)になるケース）で本フィールドが誤って`true`になり、
     // 実際には抽出処理に到達しない状態を「有効」と報告してしまう。

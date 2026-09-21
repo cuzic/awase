@@ -189,11 +189,9 @@ pub struct BugReportStateSnapshot {
 ///   （`ime_kind`）に関わらず常に計算する。
 /// - **採用系**（`henkan_adopted_kind`/`muhenkan_adopted_kind`/
 ///   `henkan_adopted_route`/`muhenkan_adopted_route`/
-///   `thumb_key_ime_warning`）: GJIが実際にアクティブ（`ime_kind ==
-///   Gji`）なときのみ計算する。GJIから離脱すると
-///   `sync_gji_charset_autodetect`がこれらの値を全部解除するため、
-///   非アクティブ時に計算すると「既に解除済みの設定」を「現在の設定」
-///   であるかのように報告してしまう（Opus敵対的レビューG1で検出）。
+///   `thumb_key_ime_warning`）: ADR-191で採用（代行・上書き）の機構を撤去したため、
+///   GJI側は常に`None`。報告のスキーマ互換のためにフィールドだけ残している
+///   （MS-IME側の採用系は別経路で、まだ残っている）。
 ///
 /// # この型の安全性が依存している前提（レビューF7・S-2）
 ///

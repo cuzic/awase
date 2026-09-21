@@ -7231,28 +7231,6 @@ mod engine_integration_tests {
         assert!(!has_effect(&d, |e| matches!(e, Effect::Ime(_))));
     }
 
-    // ── ADR-092 決定D Step4b: 無変換/変換単独タップの IME open 軸への肩代わり ──
-    //
-    // 重要な前提（テスト設計時に判明）: `Engine::compute_active` は
-    // `ctx.ime_on` を判定条件に含むため（判定順: user_enabled → is_japanese_ime →
-    // ime_on → is_romaji）、`ime_on=false` の間は Phase 2 で無条件
-    // `Decision::pass_through()` を返し Phase 3（NicolaFsm、
-    // `resolve_pending_thumb_as_single` を含む）に到達しない。つまり
-    // `DelegateToOpenAxis` は **IME が既に ON の状態からの操作**でしか
-    // 発火し得ない（`TurnOff`/`Toggle(ime_on=true→false)` は届くが、
-    // `TurnOn`（IME OFF から ON へ）は届かない）。これは実装のバグではなく
-    // ADR-092 背景節が明記する既存の構造的な穴（Step3 の対象、本ADRでは
-    // 意図的に対象外）——engine が非活性（＝IME OFF）の間は awase がそもそも
-    // 無変換/変換の生 VK を横取りしないため、MS-IME/GJI 自身のネイティブな
-    // キー割当て処理（`KeyAssignmentHenkan=1` 等）にそのまま委ねられる形に
-    // なる。以下のテストは全て `ime_on_ctx()`（engine active）を前提にする。
-
-    // ── BUG-119/ADR-147: delegate_to_open_axis はユーザーの明示的な
-    // パススルー設定（ModeKeyConfig::is_passthrough）に道を譲るべきだが、
-    // TurnOn 方向に限定する（TurnOff/Toggle まで広げると
-    // `delegate_owns_mode_key_shadow_toggle` 側との整合が崩れる、ADR-147
-    // 「消費点と所有権のマトリクス」参照）。
-
     /// `muhenkan_vk` を設定し、単独タップ設定を「常に送出する（パススルー）」
     /// にした `Engine` を返す（`always_suppress=false`,
     /// `ignore_composing_guard=true` — 設定画面の`SoloTapSuppressMode::

@@ -164,8 +164,8 @@ pub(crate) const fn calibration_bypass_timed_out(now: TickMs, deadline: TickMs) 
 /// 表示すべき警告理由を返す。`None`なら較正してよい。
 ///
 /// BUG-140（`docs/known-bugs/BUG-140.md`）と同じ「優先順位ではなく
-/// 構造的除外」の方針を取る: `apply_calibration_override`は較正結果を
-/// 無条件に最優先採用する（`176-T2`）ため、既に明示config済みのVKを
+/// 構造的除外」の方針を取る: 旧`apply_calibration_override`（ADR-191で撤去）は較正結果を
+/// 無条件に最優先採用していた（`176-T2`）ため、既に明示config済みのVKを
 /// 較正すると、ユーザーが意図して書いた設定を較正UIが無断で上書きする
 /// ことになる。値の優劣や後勝ちで解決するのではなく、較正の実行自体を
 /// 拒否して構造的に衝突を起こさせない。
