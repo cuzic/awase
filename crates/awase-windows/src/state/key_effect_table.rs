@@ -12,9 +12,9 @@
 //!
 //! # 状態
 //!
-//! `(開閉, 変換モード5種, 入力中の段階)`。入力中の段階のうち**変換中（`Conversion`）は観測できない
+//! `(開閉, 変換モード, 入力中の段階)`。変換モードはプリセットごとにキーで到達できる2値だけ、閉(OFF)状態では追わない。入力中の段階のうち**変換中（`Conversion`）は観測できない
 //! 隠れ状態**なので、打鍵履歴から`KeyTrack`が追跡する（変換/無変換/Spaceで入り、Esc/Enter/文字入力等で出る）。
-//! 変換モード5種は`Conv`（ROMANビットを除いたconvの生値）。
+//! 変換モードは`Conv`（ROMANビットを除いたconvの生値）。
 //!
 //! **カスタムキーマップ・overlayが対象キーの行を上書きしている場合は予測しない**（`None`、観測に任せる）。
 //!
@@ -34,15 +34,15 @@ pub enum KeymapPreset {
     MsIme,
 }
 
-/// 変換モード（`conv`の生値からROMANビットを除いた5種）。
+/// 変換モード（`conv`の生値からROMANビットを除いた、キーで到達できる3種）。
+///
+/// 格子第2版（変換モードをキーで到達）の実測: IME単独のキーで入れる変換モードは、ATOKで`C19`・`C10`、
+/// MS-IMEプリセットで`C19`・`C1B`の2つだけ（半角カタカナ0x13・全角英数0x18は到達不能）。
+/// 表現できない値（0x13/0x18等）は追わない（`from_raw`が`None`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Conv {
     /// 半角英数
     C10,
-    /// 半角カタカナ
-    C13,
-    /// 全角英数
-    C18,
     /// ひらがな
     C19,
     /// 全角カタカナ
@@ -51,13 +51,11 @@ pub enum Conv {
 
 impl Conv {
     /// `conv`の生値（IMEのconversion mode）から。NATIVE(1)・KATAKANA(2)・FULLSHAPE(8)だけを見る
-    /// （ROMAN(0x10)はGJIが報告しない）。5種以外の組み合わせは`None`。
+    /// （ROMAN(0x10)はGJIが報告しない）。3種以外の組み合わせは`None`（追わない）。
     #[must_use]
     pub const fn from_raw(raw: u32) -> Option<Self> {
         match raw & 0x0B {
             0x00 => Some(Self::C10),
-            0x03 => Some(Self::C13),
-            0x08 => Some(Self::C18),
             0x09 => Some(Self::C19),
             0x0B => Some(Self::C1B),
             _ => None,
@@ -67,7 +65,7 @@ impl Conv {
     /// かな入力系（NATIVEビットあり）か。EngineはこのときだけNICOLAを有効にする。
     #[must_use]
     pub const fn is_native(self) -> bool {
-        matches!(self, Self::C13 | Self::C19 | Self::C1B)
+        matches!(self, Self::C19 | Self::C1B)
     }
 }
 
@@ -141,14 +139,18 @@ pub enum Disp {
 }
 
 /// 学習した1セル: 押下前の状態とキー → 押下後の開閉・変換モード・入力中の行方。
+///
+/// `conv`が`None`のセルは、変換モードを問わない（閉(OFF)状態のセル。閉状態の変換モードの読み取りは不安定なため、
+/// 開閉だけを予測する）。`after_conv`が`None`のセルは、押下後の変換モードが不明（閉になる/開く遷移、
+/// 表現できないモード）で、追跡を捨てる。
 #[derive(Debug, Clone, Copy)]
 pub struct Cell {
     open: bool,
-    conv: Conv,
+    conv: Option<Conv>,
     stage: Stage,
     key: TableKey,
     after_open: bool,
-    after_conv: Conv,
+    after_conv: Option<Conv>,
     disp: Disp,
 }
 
@@ -156,11 +158,11 @@ pub struct Cell {
 #[must_use]
 pub const fn cell(
     open: bool,
-    conv: Conv,
+    conv: Option<Conv>,
     stage: Stage,
     key: TableKey,
     after_open: bool,
-    after_conv: Conv,
+    after_conv: Option<Conv>,
     disp: Disp,
 ) -> Cell {
     Cell {
@@ -185,9 +187,9 @@ fn find(
         KeymapPreset::Atok => super::key_effect_data::ATOK,
         KeymapPreset::MsIme => super::key_effect_data::MSIME,
     };
-    table
-        .iter()
-        .find(|c| c.open == open && c.conv == conv && c.stage == stage && c.key == key)
+    table.iter().find(|c| {
+        c.open == open && c.conv.map_or(true, |cv| cv == conv) && c.stage == stage && c.key == key
+    })
 }
 
 /// 打鍵履歴から追跡する隠れ状態（`ImeModel`が`KeyEffectPredicted`で持つ）。
@@ -319,12 +321,16 @@ pub fn predict(preset: KeymapPreset, vk: u16, input: &PredictInput) -> Option<Pr
         return (!effect.is_noop() || track != input.track).then_some(Prediction { effect, track });
     };
     let c = find(preset, input.open, conv, stage, key)?;
+    // 押下後の変換モードが不明（閉になる/開く遷移など）のときは、追跡を捨てる。入力モードは種（Unknown）だけ反映する。
     let effect = PredictedEffect {
         open: (c.after_open != input.open).then_some(c.after_open),
-        mode: mode_effect(input.mode, c.after_conv),
+        mode: c
+            .after_conv
+            .and_then(|cv| mode_effect(input.mode, cv))
+            .or_else(|| seeded.then(kana_mode)),
     };
     let track = KeyTrack {
-        conv: Some(c.after_conv),
+        conv: c.after_conv,
         stage: next_stage(stage, key, c.disp, c.after_open),
     };
     Some(Prediction { effect, track })
@@ -436,27 +442,21 @@ mod tests {
     };
 
     #[test]
-    fn atok_hiragana_toggles_to_halfwidth_alnum_and_back_to_hiragana_from_katakana() {
-        // 実測(grid): ATOK ひらがな(0xF2)。開・ひらがな(0x19)→半角英数(0x10)。全角カタカナ(0x1B)→ひらがな(0x19)。
+    fn atok_hiragana_returns_to_hiragana_from_key_entered_halfwidth_alnum() {
+        // 実測(grid第2版、変換モードをキーで到達): ATOK ひらがな(0xF2)。キーで入った半角英数(0x10)→ひらがな(0x19)。
+        let eisu = KeyTrack {
+            conv: Some(Conv::C10),
+            stage: Stage::None,
+        };
         let p = predict(
             KeymapPreset::Atok,
             0xF2,
-            &input(true, ROMAJI, false, NOTRACK),
+            &input(true, InputModeState::ObservedEisu, false, eisu),
         )
         .unwrap();
         assert_eq!(p.effect.open, None);
-        assert_eq!(p.effect.mode, Some(InputModeState::ObservedEisu));
-        assert_eq!(p.track.conv, Some(Conv::C10));
-        let kata = KeyTrack {
-            conv: Some(Conv::C1B),
-            stage: Stage::None,
-        };
-        let p = predict(KeymapPreset::Atok, 0xF2, &input(true, ROMAJI, false, kata)).unwrap();
+        assert_eq!(p.effect.mode, Some(kana_mode()));
         assert_eq!(p.track.conv, Some(Conv::C19));
-        assert_eq!(
-            p.effect.mode, None,
-            "かな系のまま(かな→かな)は入力モードの区分が変わらない"
-        );
     }
 
     #[test]
@@ -551,33 +551,60 @@ mod tests {
     }
 
     #[test]
-    fn observed_conv_raw_selects_the_katakana_state() {
-        // 観測したconv(0x1B=全角カタカナ)が追跡に無いときの初期値になる。
+    fn observed_conv_raw_selects_the_katakana_state_only_where_the_preset_reaches_it() {
+        // 観測したconv(0x1B=全角カタカナ)が追跡に無いときの初期値になる。MS-IMEプリセットはキーで0x1Bに入れる。
         let mut i = input(true, ROMAJI, false, NOTRACK);
         i.conv_raw = Some(0x1B);
-        let p = predict(KeymapPreset::Atok, 0xF2, &i).unwrap();
-        assert_eq!(p.track.conv, Some(Conv::C19));
+        let p = predict(KeymapPreset::MsIme, 0xF1, &i).unwrap();
+        assert_eq!(p.track.conv, Some(Conv::C1B));
+        // ATOKは0x1Bにキーで入れない(表に行が無い): 予測しない。
+        assert_eq!(predict(KeymapPreset::Atok, 0xF1, &i), None);
         assert_eq!(Conv::from_raw(0x19), Some(Conv::C19));
         assert_eq!(Conv::from_raw(0x00), Some(Conv::C10));
-        assert_eq!(Conv::from_raw(0x02), None, "5種以外");
+        assert_eq!(
+            Conv::from_raw(0x03),
+            None,
+            "半角カタカナは到達不能で追わない"
+        );
+        assert_eq!(Conv::from_raw(0x08), None, "全角英数は到達不能で追わない");
+    }
+
+    #[test]
+    fn closed_state_predicts_open_close_only_and_drops_the_conv_track() {
+        // 閉(OFF)状態の変換モードは読み取りが不安定なので、閉のセルは変換モードを問わず、押下後の追跡も捨てる。
+        let tracked = KeyTrack {
+            conv: Some(Conv::C10),
+            stage: Stage::None,
+        };
+        for conv in [Conv::C10, Conv::C19] {
+            let t = KeyTrack {
+                conv: Some(conv),
+                stage: Stage::None,
+            };
+            let p = predict(KeymapPreset::Atok, 0xF3, &input(false, ROMAJI, false, t)).unwrap();
+            assert_eq!(p.effect.open, Some(true));
+            assert_eq!(p.track.conv, None, "開く遷移の押下後convは不明");
+        }
+        // 開→閉でも追跡を捨てる。
+        let p = predict(
+            KeymapPreset::Atok,
+            0xF3,
+            &input(true, ROMAJI, false, tracked),
+        )
+        .unwrap();
+        assert_eq!(p.effect.open, Some(false));
+        assert_eq!(p.track.conv, None);
     }
 
     #[test]
     fn grid_facts_are_reproduced_by_the_generated_table() {
         // 実測(CI --grid): ATOK 入力中の無変換は ToggleAlphanumericMode の変換系の段階へ入り、
-        // ひらがな(0x19)のまま入力中を保持する。もう一度無変換を押すと半角英数(0x10)になる。
+        // 入力中を保持したまま半角英数(0x10)になる。
         let typing = input(true, ROMAJI, true, NOTRACK);
         let p1 = predict(KeymapPreset::Atok, 0x1D, &typing).unwrap();
         assert_eq!(p1.track.stage, Stage::ConvMuhenkan);
-        assert_eq!(p1.track.conv, Some(Conv::C19));
-        let p2 = predict(
-            KeymapPreset::Atok,
-            0x1D,
-            &input(true, ROMAJI, true, p1.track),
-        )
-        .unwrap();
-        assert_eq!(p2.track.conv, Some(Conv::C10));
-        assert_eq!(p2.effect.mode, Some(InputModeState::ObservedEisu));
+        assert_eq!(p1.track.conv, Some(Conv::C10));
+        assert_eq!(p1.effect.mode, Some(InputModeState::ObservedEisu));
         // 半角/全角: 開なら閉じて入力中は破棄、閉なら開く。
         let hz = predict(KeymapPreset::Atok, 0xF3, &typing).unwrap();
         assert_eq!(hz.effect.open, Some(false));
@@ -589,15 +616,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(opened.effect.open, Some(true));
-        // 非決定セル（ATOK 英数キーの一部）は生成時に除外され、予測しない。
+        // 非決定セル（ATOK: 変換中のEsc〈保持/破棄〉、入力中のBS〈保持/破棄〉）は生成時に除外され、予測しない。
+        let conv_space = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::ConvSpace,
+        };
         assert_eq!(
             predict(
                 KeymapPreset::Atok,
-                0xF0,
-                &input(true, ROMAJI, false, NOTRACK)
+                0x1B,
+                &input(true, ROMAJI, true, conv_space)
             ),
             None
         );
+        assert_eq!(predict(KeymapPreset::Atok, 0x08, &typing), None);
     }
 
     #[test]
