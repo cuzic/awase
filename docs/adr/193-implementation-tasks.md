@@ -22,6 +22,11 @@ related_adr:
 - **PM3**: 45試行がrcのANDに潰れ、flakeと撤去効果を分離できない → 試行単位のTALLYと率で判定。
 - **PM4**: `chrome_probe`に既存ワークフローが必要とするbelief合わせ（`--activate-gji`相当）が無い。
 
+計画round2で、さらに Blocker1件・Major2件・Minor7件が見つかり反映した（v3）。
+- **PB2**: `--activate-gji`の本質はVK_IME_OFFではなく`activate_gji_profile()`（TSFの`ActivateProfile`）。ymlのコメントだけを読んで実装を照合していなかった（同型の誤り4回目）。
+- **PM5**: 「ASCII英字を含まない→PASS」はawaseが落ちた run（`か`）をPASSにする。`ensure()`時の観測値を期待値として比較する。
+- **PM6**: 設計4の試行数（45 vs 135）が矛盾し、fail率2%は実質0件要求。ベースライン≦10%・撤去≧50%・比4倍以上へ。
+
 ## 目的と非目的
 
 - 目的: 実Chrome（GJI・NICOLA ON）で「GJIが長くidleした後の最初の打鍵がリテラル化しない」ことを、
@@ -41,17 +46,27 @@ related_adr:
   （`classify`相当をRustとPythonに二重化しない。PythonはLinuxで単体テストできる）。
 - 既存の`classify()`（`chrome_probe.rs`）は「かなが1文字でもあれば`Nicola`」で`kあ`を`Nicola`扱いするため、
   部分リテラルを見逃す。**既存`classify()`は変更しない**（既存8ケースの判定が変わる）。
-- `IDLE`行の書式（案）: `IDLE idle={ms}ms n={i} utc={UTC} text={text:?} process={bool} focus_lost={bool}`。
-  `process`は`probe()`が既に計算している`Process(229)`（Chromeがキーを IME に処理させたか、`chrome_probe.rs:343-346`）。
-  `utc`は`gji_idle_ms`の突き合わせ（設計2）に使う。
-- checkerの判定（案）: `text`が空 → `EMPTY`（FAIL）。**ASCII英字`[A-Za-z]`を含まない** → `PASS`
-  （かな範囲U+3040〜30FFを要求しない。`、`・`。`・半角カナになる配列でも誤判定しない）。
-  かな等と英字が混在 → `process=true`なら`PARTIAL_LITERAL`（FAIL、BUG-002型）、`process=false`なら
-  `PRECONDITION_DRIFT`（INVALID。IMEがキーを見ていない=直接入力に落ちた前提状態のドリフト）。
-  英字のみ → 同様に`process`で`LITERAL`（FAIL）/`PRECONDITION_DRIFT`（INVALID）。
-  加えて`focus_lost`・`前面化に失敗`・物理キー混入（`check_multi.py::phys_in_awase`をimport再利用）・
-  `=== 全ケース完了 ===`が無い（Chrome起動失敗・タイムアウトで途中終了）は`INVALID`。
-- checkerは試行単位の集計行`TALLY pass=N fail=N invalid=N total=N`を`result.txt`に出す（T4の判定に使う、設計4）。
+- `IDLE`行の書式（案）: `IDLE idle={ms}ms n={i} utc={UTC} awase={bool} expect={ensure時のtext:?} text={text:?} process={bool} focus_lost={bool}`。
+  `expect`は`ensure(Kana)`の最後の`probe()`が観測した`k`,`a`の出力（awase起動中はNICOLA文字）。`k`,`a`の出力は同じ配列・設定なら
+  同じ文字列になるので、idle後の`text`と突き合わせる（特定のかなをハードコードしない=配列依存のR6も解消）。
+  `process`は`probe()`が既に計算している`Process(229)`（`chrome_probe.rs:343-346`）。`utc`は`gji_idle_ms`の突き合わせ（設計2）に使う。
+- checkerの判定（案、`awase=true`のとき。上から順に評価）:
+  1. `text == expect` → `PASS`。
+  2. `text`が空 → `process=false`なら`INVALID`（何も届いていない=IME/ハーネス異常）、`process=true`なら`FAIL`（`EMPTY`）。
+  3. **`text == "か"`かつ`expect != "か"` → `ENGINE_OFF`（INVALID）**。idle中にawaseが落ちた・フックが外れた・Engineが非活性になった状態
+     （既存`classify()`の`RomajiKana`=Engine素通し）で、症状ではなくハーネス故障。FAILにすると撤去実験の率を汚す。
+  4. 英字`[A-Za-z]`を含む → `process=true`なら`PARTIAL_LITERAL`（英字とかな等の混在）または`LITERAL`（英字のみ）=FAIL（BUG-002型）、
+     `process=false`なら`PRECONDITION_DRIFT`（INVALID。IMEがキーを見ていない）。
+  5. 上記以外（`expect`と異なり英字も含まない。例: 1文字欠落）→ `MISMATCH`（FAIL）。
+  `awase=false`（`--no-awase`の陽性対照腕）のとき: `text == "か"`（ローマ字かな変換そのまま）→ `PASS`、他は`INVALID`（ハーネス自体が
+  キー注入・読み取りできていない証拠）。
+  加えて`focus_lost`・`前面化に失敗`・物理キー混入（`check_multi.py::phys_in_awase`をimport再利用）・`=== 全ケース完了 ===`が無い・
+  起動ログに期待したフラグが出ていない（`chrome_probe`は未知の引数を黙って無視するため、起動ログの`activate_gji`・`idle_sweep`・
+  `idle_repeat`・`pre_settle`を出力させて確認する）は`INVALID`。
+- checkerは試行単位の集計行を**stdoutに**出す（runステップが`| Tee-Object -FilePath result.txt`でstdoutを`result.txt`に落とし、`summary`が
+  artifactのそれを読む）: `TALLY pass=N fail=N invalid=N total=N`と、掃引点別の`TALLY idle=8000 pass=N fail=N invalid=N`（T4の判定に使う、設計4）。
+- `utc_stamp()`（`HH:MM:SS.mmmZ`、日付なし）は`check.to_ms`と互換（`check.py:29-31`）。ただし日付を持たないため、**UTC 0時をまたぐ実行では
+  `idle_at_cold`の突き合わせが壊れる**（既存ハーネスと同じ性質。対処する場合は負の差分に+86400000msする）。1ジョブ3.5〜4分なので通常は問題にならない。
 
 ### 2. 測る量は`gji_idle_ms`、掃引点は4帯を踏む
 
@@ -75,24 +90,39 @@ Short/Medium/Long重症度分岐のcutoffになる」）は実装と食い違っ
 - T4候補1（`prepend_f2_warmup`撤去）が効くのは`gji_idle_ms`≥7s（`forces_prepend_f2`）＝掃引点8000/11000/14000。
   3000/6000で差が出ないのは正常。
 
-### 3. belief合わせ（`chrome_probe`に足す）
+### 3. GJIのアクティブ化とbelief合わせ（`--activate-gji`を`chrome_probe`へ写す）
 
-既存ワークフローは、スパイクの`--activate-gji`で「awase起動後に`VK_IME_OFF`を1回注入し、awaseの起動時belief(ON推定)と
-実状態(OFF)をそろえる」（`e2e-ime.yml:294-299`）。`chrome_probe`にはこれが無く、`ensure()`が`VK_IME_ON`から始まるため、
-beliefがずれていると前提状態を作れず全試行が`INVALID`になり、G1で「CIでは無理」と**誤診**する。
-`chrome_probe`に`--align-belief`（awase起動・前面化の後、最初の`ensure`の前に、目印付きで`VK_IME_OFF`を1回注入して500ms待つ）を足す。
-併せて`ensure()`がfalseを返した回数をログ末尾に出す（`PRECOND_FAIL=n`）ことで、G1の判断を
-「Chromeが無い／前面化できない／GJIが効かない」と「前提状態を作れない（belief不整合の疑い）」に分けられる。
+既存スパイクの`--activate-gji`（`ime_key_matrix_spike.rs:1785-1794`）は**4つのこと**をする。`e2e-ime.yml:294-299`のコメントは③しか説明しておらず、
+実装を読まずにコメントだけで仕様を決めると本質を取り違える（本計画v2の誤り）:
+
+| # | 内容 | `chrome_probe`で必要か |
+|---|---|---|
+| ① | **`activate_gji_profile()`（`:1590-1613`）: `ITfInputProcessorProfileMgr::ActivateProfile`をGJIのCLSID/プロファイルGUIDに対し`TF_IPPMF_ENABLEPROFILE\|TF_IPPMF_FORSESSION`で呼ぶ**。docが理由を明記: 「CI(GitHub Actions)のように`Set-WinUserLanguageList`が次回サインインまで有効にならない環境用」。**これが無いとGJIが非アクティブTIPのままで、`ensure()`が全試行falseになる** | **必要（本質）** |
+| ② | awaseがアクティブTIPを検出するまで14秒待つ（`:1788`） | 必要（awaseは起動済み。activate後に待ってからChromeを起動・前面化） |
+| ③ | 手順の前に`VK_IME_OFF`を1回注入し、awaseのbelief(起動時推定=ON)と実状態(OFF)をそろえる（`:1790-1792`、CI run 35482240969） | 必要 |
+| ④ | スパイク自身のLLフックの遅延インストール | 不要（`chrome_probe`はフックを張らない） |
+
+- フラグ名は既存と揃えて**`--activate-gji`**にする（対応を見失わない）。①②③を行う。`--msime`分岐（`:1594-1604`）は`ch-*`がGJI固定なので**移さない**。
+- **コード共有**: `activate_gji_profile()`は`examples/`内の関数で、examples同士は`use`できない。(a)`chrome_probe.rs`に約25行を複製し、両側のコメントに
+  出典と「複製である」旨を明記する（**既定**）、(b)`#[path]`で共有モジュール、(c)`awase-windows`のlibへ出す（決定4-4「本体ソースは新たには変更しない」に抵触するので不可）。
+- `ActivateProfile`の戻り（HRESULT）と`GetActiveProfile`の結果をログに出す（スパイクの`log_active`相当）。G1の原因分解で「GJIが非アクティブTIP」を
+  `PRECOND_FAIL`（belief不整合の疑い）から区別するために使う。
+- 併せて`ensure()`がfalseを返した回数をログ末尾に出す（`PRECOND_FAIL=n`）。
+- **未確認**: `FORSESSION`のアクティブ化を、ウィンドウを持たない`chrome_probe`（別プロセス）から呼んでも、後から起動するChromeのウィンドウに効くか。
+  スパイクは自分の窓のプロセス内で呼んでいる。T3aで、activate後の`GetActiveProfile`ログと`ensure()`の成否で確かめる。
 
 ### 4. 撤去実験の判定は試行単位の率で行う
 
-`summary`ジョブは各ジョブの`rc`（0=PASS/1=FAIL/3=INVALID）の数だけを見る。`ch-idle`は5掃引点×`--idle-repeat=3`=15試行/ジョブ、
-`matrix.run:[1,2,3]`で**45試行/構成**あり、rcのANDに潰れると、ベースラインの1回のflakeで`NG`、撤去側は環境flakeだけで`OK`に
-なってしまい、「撤去に検出力がある」ことを示せない。
+`summary`ジョブは各ジョブの`rc`（0=PASS/1=FAIL/3=INVALID）の数だけを見る。**1構成 = 15試行/ジョブ（5掃引点×`--idle-repeat=3`）× 3ジョブ（`matrix.run:[1,2,3]`）= 45試行**。
+rcのANDに潰れると、ベースラインの1回のflakeで`NG`、撤去側は環境flakeだけで`OK`になり、「撤去に検出力がある」ことを示せない。
 
-- checkerの`TALLY`行を`summary`が合算する（`TALLY`が無い既存構成は従来のrc集計にフォールバック）。
-- 採否は**率の対比**: ベースラインのfail率≦2%（135試行中2以下の水準）、撤去ありのfail率≧50%（撤去が効くはずの帯=候補1なら
-  8/11/14sで）。**これらの数値は初期案**で、T3bの`observe`実行で得られる実際のベースラインflake率を見て較正する。
+- checkerの`TALLY`行（構成全体と掃引点別、設計1）を`summary`が合算する（`TALLY`が無い既存構成は従来のrc集計にフォールバック）。
+- 撤去が効くはずの帯（候補1なら8/11/14s）に絞ると、実効n = 3掃引点×3反復×3run = **27試行**。
+- 採否は**率の対比**（初期案）: **ベースラインfail率≦10%**（27試行で2件まで）、**撤去ありfail率≧50%**、**両者の比が4倍以上**（比が小さければ環境要因を疑う）。
+  n=27・p=0.5のとき撤去側のFAIL件数が2件以下になる確率は事実上0なので、ベースラインを10%に緩めても検出力は落ちない。
+  fail率2%は27〜45試行で上限0.5〜0.9件=**0件要求**と同義で、1件のflakeでベースラインが恒常的に`NG`になり対照が成立しない。
+  **T3bの`observe`実行で得た実測のflake率から較正するが、較正後も「ベースライン0件要求」にはしない**（PM3の再発防止）。
+  「135」は「CI実行3回分を合算する」場合の数で、単一のCI実行の基準には使わない。
 - 満たせない撤去候補は「E2Eで検出力を示せない」として`docs/experiments.md`に記録し、別候補へ移る（`--idle-repeat`を増やすのは最後の手段）。
 
 ### 5. CIへの載せ方
@@ -101,7 +131,7 @@ beliefがずれていると前提状態を作れず全試行が`INVALID`にな�
 別ワークフロー(`e2e-chrome.yml`)案は、既存390行を触らず爆発半径が小さい反面、GJI導入・言語設定・`config1.db`書き込みの
 約50行を複製する。本計画は`driver`方式を採り、既存構成の回帰は「T3aの前後で既存`baseline`構成の結果が変わらないこと」で確認する。
 `config.toml`書き換え部分を別ステップに切り出しても、`${{ }}`は各ステップで展開され、書き換え結果は`dist\config.toml`ファイルとして
-次ステップへ渡るので成立する（pwshの変数はステップをまたいで生存しない点に注意）。確認用の`Select-String`行も一緒に移す。
+次ステップへ渡るので成立する（pwshの変数はステップをまたいで生存しない点に注意）。確認用の`Select-String`行も一緒に移す。**切り出したステップには`if:`条件を付けない**（`driver`に依存しない。付けると`driver=chrome`側で`config.toml`が未加工のまま渡る）。
 
 `cache.toml`へのImm capability事前投入が`chrome_probe`に**不要な見込み**な理由: 学習を行う`focus/imm_learning.rs:45-48`は
 `new_app_kind != AppKind::Win32`なら早期returnし、ChromeはクラスがChrome_*（`detect_app_kind`が`AppKind::TsfNative`）なので
@@ -117,7 +147,8 @@ beliefがずれていると前提状態を作れず全試行が`INVALID`にな�
     ablationで現行機構のいずれかの撤去が症状を戻さないなら、そのassertは何も守っていないのでCIに載せず、
     `docs/experiments.md`に記録して終える。陽性対照（`--no-awase`腕）が取れない回は`INVALID`に落とす。
 - **G1（T3aの後）**: CI上でChrome+GJI+awaseの既存8ケースが実行でき、結果が`observe`として集計される。
-  失敗した場合は原因を分解する（`chrome_probe.exe`不在＝PB1、Chrome不在、前面化失敗、`PRECOND_FAIL`＝belief不整合）。
+  失敗した場合は原因を分解する（`chrome_probe.exe`不在＝PB1、Chrome不在、前面化失敗、**GJIが非アクティブTIP**＝`ActivateProfile`のHRESULT/`GetActiveProfile`ログ、
+  `PRECOND_FAIL`＝belief不整合の疑い）。`PRECOND_FAIL`だけではTIP非アクティブとbelief不整合を区別できない。
   「CIでは無理」と結論するのは、これらを切り分けたうえで、なお解けないときだけとする。
 
 ## タスク
@@ -128,6 +159,8 @@ beliefがずれていると前提状態を作れず全試行が`INVALID`にな�
   （`半角英数→ひらがな=かな`、F2→待ち→打鍵でBUG-002の形）を`--settle=500`（対照）と`--settle=3000/6000/8000/11000/14000`で実行する。
   併せて`--no-awase`の対照も1回取る。**ログでは`PROBE action後:`行の`text=`を見る**（`Class`は部分リテラルを`Nicola`等に落とすため。
   `setup:…`・`action後2回目`行も同じ`PROBE `接頭辞なので`action後:`だけを絞る）。
+- **実行時間**: `chrome_probe`にケース選択のフラグは無く、常に8ケース全部を回し（`for (i, c) in CASES.iter().enumerate()`）、`--settle`は全ケースに効く。
+  `--repeat=1`を明記する（8ケース×(`ensure`1.2〜2.6s + settle + probe0.6〜1.1s)。settle14sで約2.4分/回×掃引6点≒15分。`--repeat`既定3だと3倍）。
 - ログ回収: `chrome_probe.log`と、`idle_at_cold`突き合わせ用の`awase.log`の**両方**を回収する
   （`clipwire-targets.example.toml`の`Get-Content chrome_probe.log`の系統）。
 - 実施: clipwireで実機へ（push→Windows側チェックアウトブランチ確認→ビルド→実行）。
@@ -143,16 +176,22 @@ beliefがずれていると前提状態を作れず全試行が`INVALID`にな�
   - `cases`: 既存ログの`SUMMARY PASS=n RECOVER=n FAIL=n INVALID=n`と`RESULT`行を読む。`=== 全ケース完了 ===`が無ければ`INVALID`（rc=3）。
     終了コードは既存`check_multi.py`と同じ（有効回すべてPASS=0 / FAILあり=1 / 有効回なし=3）。`TALLY`行も出す。
   - `idle`: 設計1の判定。`idle_at_cold`をawaseログから`utc`で突き合わせて併記する。
-- 受け入れ基準: fixture（PASS / PARTIAL_LITERAL / LITERAL / PRECONDITION_DRIFT / INVALID（完了マーカー欠落）各1件、実機ログ由来が理想）で
-  単体テストが通る。`chrome_probe`の`utc_stamp()`が`check.to_ms`で読めること（**未確認**）をfixtureで確認する。
+- 受け入れ基準: fixture（PASS / PARTIAL_LITERAL / LITERAL / PRECONDITION_DRIFT / INVALID（完了マーカー欠落・期待フラグが起動ログに無い）各1件、実機ログ由来が理想）で
+  単体テストが通る。`chrome_probe`の`utc_stamp()`は`check.to_ms`と互換（`check.py:29-31`、確認済み）。fixtureでも確認する。
+  fixtureに`ENGINE_OFF`（`text="か"`）と`MISMATCH`（1文字欠落）と、`awase=false`腕のPASS/INVALIDを含める。
 - 依存: なし（T0と並行可）。
 
-### T1a: `chrome_probe`にbelief合わせと前提失敗カウントを足す
+### T1a: `chrome_probe`にGJIアクティブ化とbelief合わせ・前提失敗カウントを足す
 
-- 変更: `crates/awase-windows/examples/chrome_probe.rs`（+ `README.md`のフラグ表）。
-- 内容: `--align-belief`（設計3）と、ログ末尾の`PRECOND_FAIL=n`。既存の8ケースの挙動は`--align-belief`無しで不変。
+- 変更: `crates/awase-windows/examples/chrome_probe.rs`（+ `README.md`のフラグ表）。**規模は「フラグ1つ」ではない**: TSFのCOM呼び出し
+  （`CoInitializeEx`・`CoCreateInstance`・`ITfInputProcessorProfileMgr`）と14秒の待ちが入る。
+- 内容: 設計3の`--activate-gji`（①②③、`activate_gji_profile()`の約25行を出典コメント付きで複製）、`ActivateProfile`のHRESULT/`GetActiveProfile`のログ、
+  ログ末尾の`PRECOND_FAIL=n`、起動ログに`activate_gji`・`idle_sweep`・`idle_repeat`・`pre_settle`を出力。
+  流れは「`--activate-gji`ならactivate → awaseの検出待ち → Chrome起動 → `bring_to_front()` → `VK_IME_OFF`を1回注入 → 既存のケース」。
+  既存の8ケースの挙動は`--activate-gji`無しで不変。
 - 受け入れ基準: `cargo check --target x86_64-pc-windows-msvc -p awase-windows --examples`が通る（`link.exe`不在のためビルド・実行は不可、CLAUDE.md）。
-  実機（clipwire）で`--align-belief`付きの既存8ケースが完走し、`PRECOND_FAIL`が出力される。
+  実機（clipwire、GJIは元からアクティブ）で`--activate-gji`付き既存8ケースが**`PRECOND_FAIL=0`で完走**する。CI固有の「非アクティブTIP」の再現は
+  実機では不可なので、T3aで`ActivateProfile`の効果を確認する。
 - 依存: なし。
 
 ### T3a: `driver=chrome`をCIに載せ、既存8ケースのsmokeを回す
@@ -161,16 +200,17 @@ beliefがずれていると前提状態を作れず全試行が`INVALID`にな�
   1. **ビルドキャッシュ（PB1）**: `hashFiles(...)`に`'.github/workflows/e2e-ime.yml'`を追加する（無いと、`ch-smoke`は`bin='baseline'`で
      キャッシュが必ずヒットしてビルドがスキップされ、`dist\chrome_probe.exe`が無いまま走る）。
      受け入れ基準に`Test-Path dist\chrome_probe.exe`の確認を入れる（無ければ即`INVALID`）。
-  2. `cfg()`に`driver='spike'`を追加。新規構成`ch-smoke`（`driver='chrome'`, `expect='observe'`, `check='chrome-cases'`, `args='--align-belief'`）。
+  2. `cfg()`に`driver='spike'`を追加。新規構成`ch-smoke`（`driver='chrome'`, `expect='observe'`, `check='chrome-cases'`, `args='--activate-gji'`）。
   3. `build`ジョブで`--example chrome_probe`も`dist/`へコピー（全構成、コンパイル時間の増分は**未確認**）。
   4. 既存runステップの`config.toml`書き換え部分（約12行と確認用`Select-String`）を共通ステップに切り出す（機械的な抽出。既存構成の挙動を変えない）。
   5. `driver=chrome`用のステップ: Chromeの有無確認（`Test-Path 'C:\Program Files\Google\Chrome\Application\chrome.exe'`、無ければ
      `choco install googlechrome -y`）→ awase起動（debug、`AWASE_TEST_INJECTION=1`、`RUST_LOG=debug`）→ `awase.log`に起動完了が出るまで確認 →
-     `chrome_probe.exe --align-belief … --log=chrome_probe.log`を時間制限付きで実行（ログに`=== 全ケース完了 ===`が無ければ checker が`INVALID`）→
-     `check_chrome_probe.py`（T2）→ `rc.txt`。
+     `chrome_probe.exe --activate-gji … --log=chrome_probe.log`を時間制限付きで実行（ログに`=== 全ケース完了 ===`が無ければ checker が`INVALID`）→
+     `check_chrome_probe.py`（T2）→ `rc.txt`。`chrome_probe`は`--activate-gji`付きで起動する（設計3）。
   6. upload artifactの`path:`に`dist/chrome_probe.log`・`dist/awase.log`を追加し、存在しない側（`driver`違い）があっても落ちないことを確認する。
   7. `plan`の`ONLY`に、`ci/e2e-chrome`ブランチのとき`ch-*`を選ぶ分岐を追加し、`on.push.branches`にも`ci/e2e-chrome`を足す。
-- 受け入れ基準: `ci/e2e-chrome`へのpushで`ch-smoke`が3回実行され、artifactに`chrome_probe.log`が残る（結果はFAILでもよい=G1、ただし
+- 受け入れ基準: 起動ログに`--activate-gji`が効いた旨が出る（T1aより前にビルドされたバイナリでは、未知の引数が黙って無視されるため）。
+  `ci/e2e-chrome`へのpushで`ch-smoke`が3回実行され、artifactに`chrome_probe.log`が残る（結果はFAILでもよい=G1、ただし
   G1の原因分解ができるだけの情報＝`PRECOND_FAIL`・`Test-Path`結果・awase起動ログが残る）。既存`baseline`構成の結果がT3a前後で変わらない。
 - 依存: T2, T1a。
 
@@ -193,13 +233,15 @@ beliefがずれていると前提状態を作れず全試行が`INVALID`にな�
 ### T3b: `ch-idle`構成を追加
 
 - 変更: `.github/workflows/e2e-ime.yml`のみ。`cfg('ch-idle', 'observe', driver='chrome', check='chrome-idle',
-  args='--align-belief --idle-sweep=3000,6000,8000,11000,14000 --idle-repeat=3')`。あわせて`summary`が`TALLY`を合算するよう拡張
-  （設計4、`TALLY`が無ければ従来のrc集計）。
+  args='--activate-gji --idle-sweep=3000,6000,8000,11000,14000 --idle-repeat=3')`。
+  **陽性対照腕**として`cfg('ch-idle-noawase', 'observe', driver='chrome', check='chrome-idle', awase='false', args='--activate-gji --no-awase --idle-sweep=… ')`も
+  同時に追加する（ADR決定4-0の陽性対照。`awase=false`ではawaseを起動せず、`text=="か"`を期待、設計1）。
+  あわせて`summary`が`TALLY`（構成全体・掃引点別）を合算するよう拡張（設計4、`TALLY`が無ければ従来のrc集計）。
 - 見積もり式: Σ(idle)×repeat + 試行数 ×（`ensure`1.2〜2.6s + 打鍵0.6〜1.1s + 前面化）。Σidle=42s、repeat=3、15試行 → 126s + 15×(3〜5s) ≒ **3.5〜4分/ジョブ**
   （Chrome起動は最大40s待ち+1.5s+0.8sでプロセス当たり1回）。matrixの`run:[1,2,3]`で3ジョブ。`timeout-minutes: 25`内の見込み
   （GJI導入約30秒+`ctfmon`再起動等は別、実測で確認）。`--idle-repeat`を増やす場合は式に戻して見積もり直す。
   **25分を超える場合の対処順**: 掃引点を減らす → 構成を分ける → `run:[1,2,3]`を減らす（別ワークフロー化は最後）。
-- 受け入れ基準: `ci/e2e-chrome`で`ch-idle`が3回完走し、`observe`として集計される。`TALLY`から実際のベースラインflake率が得られる。
+- 受け入れ基準: `ci/e2e-chrome`で`ch-idle`が3回完走し、`observe`として集計される。`TALLY`から実際のベースラインflake率（掃引点別）が得られる。`ch-idle-noawase`が全試行PASS（ハーネス自体が動いている証拠）。
 - 依存: T1b, T3a。
 
 ### T4（G0が「出る」、または「出ない」でもablationが効くと示したいとき）: 撤去スクリプトを追加
@@ -212,7 +254,7 @@ beliefがずれていると前提状態を作れず全試行が`INVALID`にな�
   2. `tsf/warmup/probe_fsm.rs::run_per_vk_confirm`（**`:454`**）が各VKを即confirm扱いにする。
   3. `RawTsfLiteralRecovery`の回収分岐: **所在を確定してから**候補にする（`literal_detect_fsm.rs`には無い。出現は
      `output/tsf_warmup_coord.rs:411,607,633`、`output/mod.rs:309,314,1827,1982,1985`）。どのファイルのどの分岐を撤去するかを先に特定する。
-- 採否基準: 設計4（試行単位のTALLY、ベースラインfail率≦2%・撤去ありfail率≧50%、撤去が効くはずの帯で差が出ること。数値はT3bで較正）。
+- 採否基準: 設計4（試行単位のTALLY、ベースラインfail率≦10%・撤去ありfail率≧50%・比4倍以上、撤去が効くはずの帯（n=27）で差が出ること。数値はT3bで較正し、0件要求にはしない）。
   満たせない候補は`docs/experiments.md`に記録して別候補へ。
 - 受け入れ基準: `summary`で撤去構成が`OK`（期待FAILで実際にFAIL）、ベースライン構成が`OK`（期待PASS）を、**別々の2回のCI実行で再現**する。
 - 依存: T3b、G0。
@@ -252,8 +294,9 @@ ADR・本計画のdevelopへの反映を先に行う。CI実行は`ci/e2e-chrome
   対象ファイル（`src/`配下のwarmup/focus/belief等）のロジックは**変更しない**。撤去スクリプトはCI実行時に作業ツリーへ差分を当てるだけ。
 - `tuning.rs`の定数を新設・変更しない、`RESTRICTED_CALLS`許可リストも触らない（`complexity-budget`対象外）。
 - checkerはfixtureを持つPython単体テストで担保する（E2E自体は実機依存でLinuxでは走らない）。
-- 本ADRが自ら掲げる規律: **known-bugsの「現在の対策」だけでなく、`tuning.rs`等のdocコメントも、現行実装で裏取りしてから前提にする**
-  （PM1で、docコメントの記述を鵜呑みにした誤りが計画・ADRとレビュアー自身の指摘にまで伝播した）。
+- 本ADRが自ら掲げる規律: **known-bugsの「現在の対策」だけでなく、`tuning.rs`等のdocコメントも、workflow（`e2e-ime.yml`）のコメントも、
+  現行実装で裏取りしてから前提にする**（PM1でdocコメントの鵜呑みが計画・ADR・レビュアー自身の指摘にまで伝播し、PB2で`e2e-ime.yml`のコメントだけを読んで
+  `--activate-gji`の本質を取り違えた。同型の誤りは、既存資産・known-bugs・`tuning.rs`のdoc・ymlのコメントと4回続いた）。
 
 ## リスク
 
@@ -265,6 +308,8 @@ ADR・本計画のdevelopへの反映を先に行う。CI実行は`ci/e2e-chrome
 | R4 | e2e-ime.ymlの共通ステップ切り出しで既存構成が壊れる | 機械的抽出に限定し、T3a前後で`baseline`の結果を比較 |
 | R5 | T0の`--settle`は「モードキー後の間隔」で、キー無入力idleとは別物 | T0はG0を確定させず、確定はT1b |
 | R6 | NICOLA出力の文字が配列・設定に依存する | 判定を「ASCII英字を含まない」にし、特定のかな範囲を要求しない |
-| R7 | beliefのずれで全試行が`INVALID`になり、G1で誤診する | `--align-belief`（T1a）と`PRECOND_FAIL`カウント |
+| R7 | GJIが非アクティブTIP、またはbeliefのずれで全試行が`INVALID`になり、G1で誤診する | `--activate-gji`（`ActivateProfile`+VK_IME_OFF、T1a）、`ActivateProfile`のHRESULTログと`PRECOND_FAIL`カウントで原因を分解 |
 | R8 | ページの30msポーリングがChromeのidle挙動を歪める | まず現状で測り、不安定なら間引き版と比較（T1b） |
+| R10 | `ActivateProfile(FORSESSION)`を別プロセスの`chrome_probe`から呼んで、後から起動するChromeに効くか不明 | T3aで`GetActiveProfile`ログと`ensure()`成否を確認。効かなければChrome起動後にactivateする順序を試す |
+| R11 | idle中にawaseが落ちる・Engineが非活性になり、`か`がPASS扱いになる | `expect`との突き合わせで`ENGINE_OFF`（INVALID）に落とす（設計1） |
 | R9 | ビルドキャッシュが古いままT3aを走らせる | `hashFiles`にworkflowを追加、`Test-Path dist\chrome_probe.exe`を受け入れ基準に（PB1） |
