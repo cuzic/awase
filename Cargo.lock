@@ -463,6 +463,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "awase-calibration"
+version = "0.1.0"
+
+[[package]]
 name = "awase-gji-config"
 version = "0.1.0"
 dependencies = [
