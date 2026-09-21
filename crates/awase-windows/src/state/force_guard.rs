@@ -235,6 +235,18 @@ impl ObserveMissMonitor {
     }
 }
 
+/// 今回のOS読み取りが**新しい観測失敗を数えなかった**か（`consecutive_miss_count`が増えていない）。
+///
+/// 通過マークの追随（`ir_stage_observe`の`OsPoll`後、意図の破棄と60ms間隔の読み直し）を続けてよい条件。
+/// 以前は`miss_after == miss_before`だったが、直前の読み取りが失敗（`ime_on=None`、カウント1）していて
+/// 今回**成功**（カウントが0へリセット）すると等しくなくなり、追随が黙って止まっていた。すると
+/// 最初の読み取りがfence（`KEY_EFFECT_SETTLE_MS`）内で無視された予測は、その後の打鍵中
+/// （typing-idleガード）に訂正の機会を失い、約12秒Engineが固まる（実機cold、`removal-cold-2`）。
+/// カウントが**減った**（成功で復帰した）ときも追随を続けるので`<=`とする。
+pub(crate) const fn poll_counted_no_new_miss(miss_before: u32, miss_after: u32) -> bool {
+    miss_after <= miss_before
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,5 +567,23 @@ mod tests {
             set.resolve(false, true),
             (true, Some(ForceOnReason::ProfilePolicy))
         );
+    }
+
+    /// 実機cold（`removal-cold-2`）の再発防止: 直前の読み取りが失敗（カウント1）して今回成功（0へリセット）した
+    /// とき、通過マークの追随（意図の破棄と読み直し）を止めない。止めると、最初の読み取りがfence内で無視された
+    /// 予測が、以後の打鍵中（typing-idleガード）に訂正されず約12秒Engineが固まる。
+    #[test]
+    fn poll_counted_no_new_miss_continues_follow_after_recovery() {
+        assert!(super::poll_counted_no_new_miss(0, 0), "失敗なし");
+        assert!(
+            super::poll_counted_no_new_miss(1, 0),
+            "直前の失敗から成功で復帰(リセット)しても追随は続ける"
+        );
+        assert!(super::poll_counted_no_new_miss(2, 1));
+        assert!(
+            !super::poll_counted_no_new_miss(0, 1),
+            "今回新しく失敗したら追随しない"
+        );
+        assert!(!super::poll_counted_no_new_miss(1, 2));
     }
 }

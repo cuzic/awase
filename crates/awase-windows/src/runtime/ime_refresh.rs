@@ -210,11 +210,13 @@ impl Runtime {
                 let miss_before = self.platform_state.ime.detect_miss_count();
                 self.ir_poll_and_learn(miss_before, ime_snap);
                 let now = crate::hook::current_tick_ms();
-                if self.platform_state.ime.detect_miss_count() == miss_before
-                    && self
-                        .platform_state
-                        .ime
-                        .invalidate_intents_if_mode_key_pass_live(now, crate::state::TickMs(now))
+                if crate::state::force_guard::poll_counted_no_new_miss(
+                    miss_before,
+                    self.platform_state.ime.detect_miss_count(),
+                ) && self
+                    .platform_state
+                    .ime
+                    .invalidate_intents_if_mode_key_pass_live(now, crate::state::TickMs(now))
                 {
                     tracing::info!(
                         "[mode-key-follow] observation arrived after mode key pass: intents invalidated"
