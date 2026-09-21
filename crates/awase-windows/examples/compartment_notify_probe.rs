@@ -296,6 +296,27 @@ mod app {
         });
     }
 
+    /// panic フック: sink の `OnChange` など COM コールバック内の panic は非 unwind ABI（`extern "system"`）の境界で
+    /// プロセスごと abort し、終了時のタイムライン出力に到達しない。abort の前に走るこのフックで、panic の内容と
+    /// 直前までのタイムラインをログファイルへ書き出し、測定データを失わないようにする。
+    fn install_panic_hook(path: String, events: Events) {
+        std::panic::set_hook(Box::new(move |info| {
+            let mut s = format!("PANIC: {info}\n--- panic 直前までのタイムライン ---\n");
+            // panic が push 中に起きた場合にデッドロックしないよう try_lock を使う。
+            if let Ok(ev) = events.try_lock() {
+                for e in ev.iter() {
+                    s.push_str(&format!("+{:>6}ms {:<6} {:<10} {:?}\n", e.at_ms, e.kind, e.name, e.value));
+                }
+            } else {
+                s.push_str("(イベントのロックを取得できなかった)\n");
+            }
+            eprintln!("{s}");
+            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&path) {
+                let _ = f.write_all(s.as_bytes());
+            }
+        }));
+    }
+
     pub(crate) fn main() {
         let args: Vec<String> = std::env::args().collect();
         // 不正な要素や空の列は、測定と誤読されないよう黙って捨てずに終了する。
@@ -331,6 +352,7 @@ mod app {
 
         let t0 = Instant::now();
         let events: Events = Arc::new(Mutex::new(Vec::new()));
+        install_panic_hook(log_path.clone(), Arc::clone(&events));
 
         // SAFETY: メインスレッド(STA)で COM/TSF と窓を初期化する。以降の COM 呼び出しは同じスレッドから行う。
         let (cmgr, thread_mgr, cookies) = unsafe {
