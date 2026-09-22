@@ -152,7 +152,7 @@
 | [BUG-148](BUG-148.md) | awase起動時に既にフォーカスがあるアプリでは、プロセス切替まで明示IME意図が記録されず、FSM委譲のSetOpenが全てUnwarrantedでキーが飲み込まれる |
 | [BUG-149](BUG-149.md) | Chrome(TsfNative)で、ひらがなキー/Shift+無変換によるかな→半角英数のあと、EngineがOFFにならず英数なのにNICOLAが動き続ける（3/3再現、awase停止の対照は正常、原因は一部のみ特定、未修正、ADR-186） |
 | [BUG-150](BUG-150.md) | ATOKプリセットで無変換/変換をパススルーする設定(既定)では、実IMEはGJIが開閉するのにEngineが追随しない（IME OFFでもEngine ONのまま） |
-| [BUG-151](BUG-151.md) | cold(awaseがまだIMEを書き込んでいない)状態で、ひらがなキーによるかな→半角英数の後にEngineがOFFにならないことがある(20ms再読み取りがSkipTyping、起票のみ・未修正) |
+| [BUG-151](BUG-151.md) | cold(awaseがまだIMEを書き込んでいない)状態で、ひらがなキーによるかな→半角英数の後にEngineがOFFにならないことがある(20ms再読み取りがSkipTyping) |
 | [BUG-152](BUG-152.md) | Microsoft IME本体で、最初のImmCross set-openがタイムアウトすると非冪等なVK_KANJIトグルが開いたIMEを閉じ、Engine ON + IME OFFになる |
 | [BUG-153](BUG-153.md) | ADR-191の撤去後、awaseが書かない英数(0xF0)・カタカナ(0xF1)をSuppress列挙が握りつぶす疑い(実機では起きず、Suppress対象を狭めた) |
 | [BUG-154](BUG-154.md) | awaseが通したIMEモードキー（ひらがな0xF2など）の再注入が`wScan=0`で、実機のGJI（MS-IMEプリセット）ではIMEを開かない（ADR-191の撤去後、awase無しなら開くF2が閉→開に失敗） |
