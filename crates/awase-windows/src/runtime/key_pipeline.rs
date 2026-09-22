@@ -1915,9 +1915,10 @@ impl Runtime {
         {
             return;
         }
-        let in_table = crate::state::key_effect_table::TableKey::from_vk(event.vk_code.0).is_some();
+        let in_table =
+            crate::state::key_effect_predictor::TableKey::from_vk(event.vk_code.0).is_some();
         let m = event.modifier_snapshot;
-        if crate::state::key_effect_table::modifiers_suppress_prediction(
+        if crate::state::key_effect_predictor::modifiers_suppress_prediction(
             in_table, m.ctrl, m.alt, m.shift, m.win,
         ) {
             // Shift+変換（ATOKで開閉トグルではない）やCtrl+文字（ショートカット）は「素のキー」の結果と違う。
@@ -1933,7 +1934,7 @@ impl Runtime {
         self.kp_predict_key_effect(event.vk_code);
     }
 
-    /// ADR-191 決定3・4: 通したキーの効果を、学習した表（`key_effect_table`）から**打鍵の時点で**予測して
+    /// ADR-191 決定3・4: 通したキーの効果を、学習した表（`key_effect_predictor`）から**打鍵の時点で**予測して
     /// beliefへ反映する（awaseはIMEへ書かない）。観測を待たないので、読めないアプリ（TsfNative等）でも
     /// Engineが即追随する。後続の観測（`MODE_KEY_PASS_*`の読み直し）がsettle後に照合し、食い違えば観測が勝つ
     /// （`ImeModel`のfence、`[key-effect-miss]`）。GJI/Microsoft IME本体（CLSID で同定できたもの）以外（ATOK等・未検出・IMM32 HKLのみ）・表に無い・非決定のセルは予測しない。
@@ -1942,7 +1943,7 @@ impl Runtime {
     /// Space/Esc/Enter/BS・文字キーも通して追跡状態を更新する（変換中の出入りが打鍵履歴で決まるため）。
     /// ADR-189の固定セット（半角/全角）は`shadow_action`を持つ間この関数に来ない（呼び出し側が除外）。
     fn kp_predict_key_effect(&mut self, vk: awase::types::VkCode) {
-        use crate::state::key_effect_table::PredictInput;
+        use crate::state::key_effect_predictor::PredictInput;
         use crate::tsf::observer::{tsf_obs, ActiveImeKind};
         let obs = tsf_obs();
         let now_ms = hook::current_tick_ms();

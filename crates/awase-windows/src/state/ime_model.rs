@@ -263,7 +263,7 @@ pub struct ImeModel {
     key_effect: Option<KeyEffectPrediction>,
     /// 打鍵履歴から追跡する隠れ状態（ADR-191 決定3・4: 変換モード5種・変換中の段階）。`reduce()`だけが書く
     /// private フィールド（`KeyEffectPredicted`/フォーカス変更/明示意図/観測）。読み取りは`key_track()`。
-    key_track: crate::state::key_effect_table::KeyTrack,
+    key_track: crate::state::key_effect_predictor::KeyTrack,
 }
 
 /// 物理モードキーの打鍵時点で表から予測した効果（ADR-191 決定3）と、その fence。
@@ -320,9 +320,9 @@ impl ImeModel {
             applied: AppliedImeState::Unknown,
             current_focus: None,
             key_effect: None,
-            key_track: crate::state::key_effect_table::KeyTrack {
+            key_track: crate::state::key_effect_predictor::KeyTrack {
                 conv: None,
-                stage: crate::state::key_effect_table::Stage::None,
+                stage: crate::state::key_effect_predictor::Stage::None,
             },
         }
     }
@@ -344,7 +344,7 @@ impl ImeModel {
 
     /// 打鍵履歴から追跡している隠れ状態（変換モード5種・変換中の段階）。
     #[must_use]
-    pub const fn key_track(&self) -> crate::state::key_effect_table::KeyTrack {
+    pub const fn key_track(&self) -> crate::state::key_effect_predictor::KeyTrack {
         self.key_track
     }
 
@@ -689,14 +689,14 @@ impl ImeModel {
         match envelope.event {
             ImeEvent::UserImeToggleIntent { source } => {
                 self.key_effect = None;
-                self.key_track.stage = crate::state::key_effect_table::Stage::None;
+                self.key_track.stage = crate::state::key_effect_predictor::Stage::None;
                 let target = !self.desired_open;
                 self.desired_open = target;
                 self.record_intent(target, source, envelope.time.tick_ms);
             }
             ImeEvent::UserImeSetIntent { target, source } => {
                 self.key_effect = None;
-                self.key_track.stage = crate::state::key_effect_table::Stage::None;
+                self.key_track.stage = crate::state::key_effect_predictor::Stage::None;
                 self.desired_open = target;
                 self.record_intent(target, source, envelope.time.tick_ms);
             }
@@ -941,7 +941,7 @@ impl ImeModel {
         self.last_intent = None;
         // 打鍵時点の予測・追跡状態も旧アプリの文脈のものなので捨てる。
         self.key_effect = None;
-        self.key_track = crate::state::key_effect_table::KeyTrack::default();
+        self.key_track = crate::state::key_effect_predictor::KeyTrack::default();
         // 新しい epoch/hwnd を store に伝える。derive_any() はこれ以降、
         // 古い epoch/hwnd の ImmCrossProbe / FocusProbe を無視する
         // （ADR-106 決定3）。
@@ -1761,7 +1761,7 @@ mod tests {
             ImeEvent::KeyEffectPredicted {
                 open,
                 mode,
-                track: crate::state::key_effect_table::KeyTrack::default(),
+                track: crate::state::key_effect_predictor::KeyTrack::default(),
             },
         ));
     }
@@ -1788,7 +1788,7 @@ mod tests {
     fn predict_with_track(
         model: &mut ImeModel,
         tick_ms: u64,
-        track: crate::state::key_effect_table::KeyTrack,
+        track: crate::state::key_effect_predictor::KeyTrack,
     ) {
         model.reduce(&envelope_at(
             100,
@@ -1806,7 +1806,7 @@ mod tests {
     /// （残すとGjiDirectのalready-matched判定が古い記録で書き込みを省く）。同じ向きの予測ではappliedを保つ。
     #[test]
     fn prediction_that_contradicts_applied_drops_it_to_unknown() {
-        use crate::state::key_effect_table::KeyTrack;
+        use crate::state::key_effect_predictor::KeyTrack;
         let predict = |open: Option<bool>| ImeEvent::KeyEffectPredicted {
             open,
             mode: None,
@@ -1874,7 +1874,7 @@ mod tests {
 
     #[test]
     fn key_track_is_written_by_prediction_and_reset_by_focus_change_and_intent() {
-        use crate::state::key_effect_table::{Conv, KeyTrack, Stage};
+        use crate::state::key_effect_predictor::{Conv, KeyTrack, Stage};
         let track = KeyTrack {
             conv: Some(Conv::C1B),
             stage: Stage::ConvHenkan,
@@ -1907,7 +1907,7 @@ mod tests {
 
     #[test]
     fn medium_mode_observation_returns_conv_tracking_to_observed_value() {
-        use crate::state::key_effect_table::{Conv, KeyTrack, Stage};
+        use crate::state::key_effect_predictor::{Conv, KeyTrack, Stage};
         let mut model = ImeModel::new();
         predict_with_track(
             &mut model,

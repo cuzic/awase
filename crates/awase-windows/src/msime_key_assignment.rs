@@ -241,13 +241,13 @@ mod windows_impl {
         }
     }
 
-    /// ADR-191: Microsoft IME本体の打鍵時予測（`key_effect_table`）に使うキーマップを、キー割り当て
+    /// ADR-191: Microsoft IME本体の打鍵時予測（`key_effect_predictor`）に使うキーマップを、キー割り当て
     /// （`IsKeyAssignmentEnabled`/`KeyAssignmentHenkan`/`KeyAssignmentMuhenkan`）から作る。
     /// 呼び出しは`KeymapCache`が版（[`native_assignment_stamp`]）の変化時だけに絞る。
-    pub(crate) fn read_key_effect_keymap_native() -> crate::state::key_effect_table::KeyEffectKeymap
-    {
+    pub(crate) fn read_key_effect_keymap_native(
+    ) -> crate::state::key_effect_predictor::KeyEffectKeymap {
         let raw = read_raw_key_assignment_dwords();
-        crate::state::key_effect_table::KeyEffectKeymap::for_msime_native(
+        crate::state::key_effect_predictor::KeyEffectKeymap::for_msime_native(
             raw.is_key_assignment_enabled == Some(1),
             raw.key_assignment_henkan,
             raw.key_assignment_muhenkan,

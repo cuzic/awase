@@ -3,7 +3,7 @@
 
   score_walk.py <grid.json> <walk spike.log>...   一段予測の正答率と、不一致セルの一覧
 
-表の引き方は予測側(key_effect_table.rs)と同じ: セル = "<開閉>-c<変換モード>-<入力中の段階>|<キー>"。段階は
+表の引き方は予測側(key_effect_predictor.rs)と同じ: セル = "<開閉>-c<変換モード>-<入力中の段階>|<キー>"。段階は
 入力中の文字列が空なら none、あれば typing(直前のキーが 変換/無変換 なら conv-henkan / conv-muhenkan。Spaceは注入しないので無し)。
 閉状態の変換モードは読み取りが不安定なので、閉のセルは変換モード非依存(開閉だけ比較)。
 正答 = 押下後(+1500ms)の 開閉 と(開なら)変換モード、入力中の有無(保持=あり/それ以外=なし)が表の多数派結果と一致。
@@ -77,7 +77,7 @@ def score(table, paths):
             key = KEYS[vk]
             op, conv, comp = b
             if not op:
-                # 予測器(key_effect_table.rs)と同じ引き方: 閉状態は変換モードを問わず、段階は none だけ
+                # 予測器(key_effect_predictor.rs)と同じ引き方: 閉状態は変換モードを問わず、段階は none だけ
                 # (predict() が !open のとき stage を None に固定する)。全convでセルが一意かつ開閉の結果が一致するときだけ予測がある
                 # (gen_key_effect_table.py::finalize が閉セルを畳む条件と同じ。食い違えば「予測なし」)。
                 cands = [v for k, v in table.items() if k.startswith("off-") and k.endswith("-none|" + key)]

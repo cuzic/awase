@@ -79,7 +79,7 @@ pub const VK_NONAME: VkCode = VkCode(0xFC);
 ///
 /// raw な VK コード (0xF2, 0x19 等) の代わりにパターンマッチで使う。variant 名は VK の名前どおりで、
 /// **効果（ON にする/OFF にする等）を意味しない**。押したときに何が起きるかは IME 種別・キーマップ・状態で変わる
-/// ので、ここでは決め打たず、予測表（`state/key_effect_data.rs`、格子で学習した結果から生成）と観測から引く
+/// ので、ここでは決め打たず、予測表（`state/key_effect_table.rs`、格子で学習した結果から生成）と観測から引く
 /// （ADR-191 決定6）。効果を静的に持つのは [`ImeKeyKind::shadow_effect`]（IME種別に依らず確定しているキーだけ）と
 /// [`ImeKeyKind::is_open_toggle_for`]（IME種別ごとに開閉トグルと確定しているキーだけ）に限る。
 ///

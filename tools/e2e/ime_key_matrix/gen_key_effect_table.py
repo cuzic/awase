@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """格子第3版(--grid-setup=keys、全状態をキーだけで作る=リセットもIMM無し)の学習結果から、打鍵時予測の表(Rustのデータ)を生成する(ADR-191 決定3・4)。
 
-  gen_key_effect_table.py            grid-tables/{atok,msime,msime-native}.json → crates/awase-windows/src/state/key_effect_data.rs
-  gen_key_effect_table.py --check    何も書かず、コミット済みの key_effect_data.rs が生成結果と一致するか検査する(不一致なら終了コード1)。
-                                     `crates/awase-windows/tests/architecture_guard.rs` の `key_effect_data_matches_generator` が呼ぶ。
+  gen_key_effect_table.py            grid-tables/{atok,msime,msime-native}.json → crates/awase-windows/src/state/key_effect_table.rs
+  gen_key_effect_table.py --check    何も書かず、コミット済みの key_effect_table.rs が生成結果と一致するか検査する(不一致なら終了コード1)。
+                                     `crates/awase-windows/tests/architecture_guard.rs` の `key_effect_table_matches_generator` が呼ぶ。
 
 `msime.json` は「GJI の MS-IME プリセット」、`msime-native.json` は「Microsoft IME 本体」(スパイク `--msime`、CI `cal-notify-msimenative-s{1..4}`)の学習結果。
 
@@ -24,7 +24,7 @@ import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "..", "..", "..", "crates", "awase-windows", "src", "state", "key_effect_data.rs")
+OUT = os.path.join(HERE, "..", "..", "..", "crates", "awase-windows", "src", "state", "key_effect_table.rs")
 
 KEYS = {
     "bs": "Bs", "eisu": "Eisu", "enter": "Enter", "esc": "Esc", "hankaku-zenkaku": "HankakuZenkaku",
@@ -159,7 +159,7 @@ def main():
 // MSIME は各セル2試行で非決定を検出しきれないため、ATOK で割れた変換中のEsc・入力中のBS/Escは変換モードを問わず除外した。
 // MSIME_NATIVE は206/227セルが1試行のみ（独立walkの採点で確認、非決定6セルは除外済み）。
 
-use super::key_effect_table::{cell, Cell, Conv, Disp, Stage, TableKey};
+use super::key_effect_predictor::{cell, Cell, Conv, Disp, Stage, TableKey};
 """]
     report = []
     for name, f in (("ATOK", "atok.json"), ("MSIME", "msime.json"), ("MSIME_NATIVE", "msime-native.json")):
@@ -173,10 +173,10 @@ use super::key_effect_table::{cell, Cell, Conv, Disp, Stage, TableKey};
         with open(OUT, encoding="utf-8") as fh:
             committed = fh.read().replace("\r\n", "\n")
         if committed != text:
-            print("key_effect_data.rs が gen_key_effect_table.py の生成結果と一致しない(手編集、または grid-tables/*.json・スクリプトの変更後に再生成していない)。"
+            print("key_effect_table.rs が gen_key_effect_table.py の生成結果と一致しない(手編集、または grid-tables/*.json・スクリプトの変更後に再生成していない)。"
                   "`python3 tools/e2e/ime_key_matrix/gen_key_effect_table.py` で再生成すること。", file=sys.stderr)
             return 1
-        print("OK: key_effect_data.rs matches the generator output")  # 標準出力の文字コードが不明(Windows)でも落ちないよう ASCII だけ
+        print("OK: key_effect_table.rs matches the generator output")  # 標準出力の文字コードが不明(Windows)でも落ちないよう ASCII だけ
         return 0
     with open(OUT, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
