@@ -232,7 +232,7 @@ ADR-187（follow）・ADR-188・ADR-189（半角/全角のToggle上書き）の�
   **限界**: ImmCrossProbe（`key_pipeline.rs`のfocus probeと`focus_tracking.rs`）は`await`の前に取った**読み取りの開始時刻**で判定する（`5015ab2a`、round2 A-N5。以前は到着時刻で、最大300msの不応答窓を挟むと打鍵前の古い値がfenceを通過しえた）。OsPollは元から開始時刻。`GetTickCount64`は約15.6ms粒度。
 
 **実装の現状（2026-09-21、撤去ブランチ）**:
-- 表は手書きせず、格子第3版（全状態をキーだけで作る）の結果から`tools/e2e/ime_key_matrix/gen_key_effect_table.py`が`state/key_effect_data.rs`を生成する（生成元は`grid-tables/{atok,msime,msime-native}.json`。round1でMS-IME本体対応を追加した際に更新漏れがあった、round3 A-NEW-3）。
+- 表は手書きせず、格子第3版（全状態をキーだけで作る）の結果から`tools/e2e/ime_key_matrix/gen_key_effect_table.py`が`state/key_effect_data.rs`（フォローアップPRで`key_effect_table.rs`へ改名）を生成する（生成元は`grid-tables/{atok,msime,msime-native}.json`。round1でMS-IME本体対応を追加した際に更新漏れがあった、round3 A-NEW-3）。
   格子第1版はIMM書き込みで変換モードの状態を作ったため、キーで入った状態と別物になり、ATOKのひらがなが0x19↔0x10の純粋トグルなのに「不変」と誤学習した。第2版（キー到達、リセットのみIMM）を経て、
   第3版でリセットもキーだけにした（経緯は補助資料）。「MS-IME」の表はGJIのMS-IMEプリセットの表で、Microsoft IME本体の表ではない。
 - 変換モード軸は、キーで到達できる値だけを持つ（ATOK: 0x19・0x10、GJIのMS-IMEプリセット: 0x19・0x1B〈自然状態0x09は0x19と同一視〉）。到達できない0x13・0x18等はセルに入れない（予測なし）。
@@ -324,8 +324,8 @@ P50=1ms・P95=34ms（10件、通知が来なかったキーは6/16=38%）。GJI�
   | 削除: `gji_charset_autodetect.rs` | −1,315（+51） | **決定3(a)が再実装する対象**（`config1.db`/Mozcキーマップの読み取り）。現状の表は格子の生成データで、実行時の設定読み取りは未実装（製品化で新規に作る。再実装は分類a〜eに要る最小の範囲に限る） |
   | 削除: `calibrated_mode_key.rs` ほか較正結果の適用 | −254（+7）、適用の削除−165 | **決定4が再実装する**（ユーザー判断: 削除して製品化で新規に作る） |
   | 削除: 単独タップ代行・delegate・opt-in設定・`transport.rs`のDBE分岐 | `nicola_fsm.rs`−587（+52）、`transport.rs`−780（+254）、`runtime/mod.rs`−367（+72）、`src/engine/tests.rs`−546（+44。新定義では`src`の中なので分母に入る。tests.rsを除くと合計は+85で正になる、上記注記参照） | 戻らない（純粋な撤去） |
-  | 追加: 予測器`key_effect_table.rs` | +1,166（MS-IME本体の表引き・修飾キー抑止・キャッシュ・非決定セル除外込み） | 決定3の本体 |
-  | 追加: 生成データ`key_effect_data.rs` | +467（MS-IME本体の表`MSIME_NATIVE`込み） | 格子の生成物（手書きセルは無い。`gen_key_effect_table.py --check`が一致を検査） |
+  | 追加: 予測器`key_effect_table.rs`（フォローアップPRで`key_effect_predictor.rs`へ改名） | +1,166（MS-IME本体の表引き・修飾キー抑止・キャッシュ・非決定セル除外込み） | 決定3の本体 |
+  | 追加: 生成データ`key_effect_data.rs`（フォローアップPRで`key_effect_table.rs`へ改名） | +467（MS-IME本体の表`MSIME_NATIVE`込み） | 格子の生成物（手書きセルは無い。`gen_key_effect_table.py --check`が一致を検査） |
   | 追加: `ime_model.rs`（`KeyEffectPredicted`・追跡・fence）＋`platform_state.rs` | +607＋478（通過マーク・意図の破棄・desired揃え=BUG-155/157/158込み） | 決定3の本体と、その周辺の訂正 |
   | 別クレート: `awase-keymap-learn`（旧名`awase-calibration`。巡回・シミュレータ。`feat/awase-calibration`ブランチで改名済み・未マージ） | +3,406（`crates/awase-windows/src`の外） | 製品化の土台。指標1の対象外 |
   撤去した約4,500行のうち、再実装が要るのは`gji_charset_autodetect.rs`と較正結果の適用の合計約1,700行で、戻ってくる量は**未確定**（設定読み取りの範囲次第）。**指標1（`crates/awase-windows/src`と`src`の合計の追加−削除がP0〜P2の末で負）は、現時点（2026-09-21、`6de6bac1`、レビュー指摘対応後）で+4,480/−4,897＝−417行で満たす**（`src`は+151/−1,476＝−1,325、`crates/awase-windows/src`だけでは+4,329/−3,421＝+908行）。旧定義（`crates/awase-windows/src`のみ）ではPR作成時の−483行から+908行へ増えたが、増えた内訳は上表の予測器・生成データ・`ime_model`/`platform_state`（BUG-155〜159の修正込み）・MS-IME本体対応で、定義の変更の理由と旧定義の実測値は決定5の指標1に残した（ユーザー決定、2026-09-21）。
@@ -397,7 +397,7 @@ BUG-113/124（TsfNative×GJIの「@」）、BUG-143（`session_keymap`と`custom
    3ファイルの参照が残っている（掃除が必要。`gji_charset_autodetect.rs`は名前と違い、現在はthumbキー/変換・無変換の分類だけを持つ）。
 6. 撤去した機能の単体テスト約75本を削除（うち「保留中のIME開閉要求が後続キーに漏れない」2本は`muhenkan_solo_tap_ime_action`版に書き直した）。到達不能になった`delegate_owned`の分岐、`ModeKeyActuationOwner`列挙そのもの（`PhysicalDelivery`は0x1C/0x1Dに`shadow_action`を与える経路が無くなり到達不能。`actuation_owner`フィールド・strip関数・消費点も撤去、レビュー指摘B-M2）、`auto_delegate_open_axis_consumed`（`076f29c3`）と、opt-in設定
    `gji_thumb_key_ime_toggle`（ゲート・警告・設定画面を含む、`78e22861`）も削除した。
-7. 打鍵時予測（決定3）: `state/key_effect_table.rs`（予測器）と生成データ`state/key_effect_data.rs`、`ImeEvent::KeyEffectPredicted`、`platform_state.rs`の反映、`kp_stage_mode_key_follow`から呼ぶ。
+7. 打鍵時予測（決定3）: `state/key_effect_table.rs`（予測器。フォローアップPRで`key_effect_predictor.rs`へ改名、データ側`key_effect_data.rs`は`key_effect_table.rs`へ改名し、名前と実体の逆転を解消した）と生成データ`state/key_effect_data.rs`、`ImeEvent::KeyEffectPredicted`、`platform_state.rs`の反映、`kp_stage_mode_key_follow`から呼ぶ。
    CI検証（run 35585712177）で、観測あり・読めない条件とも400ms以降のずれ0%、`[key-effect-miss]`0件。
 8. `transport.rs::plan`のDBEのSuppressの対象を0xF3/0xF4だけに縮小（`73877f52`）。英数0xF0・カタカナ0xF1は素通しで、実イベントでは元から`shadow_action`を持たず素通しだった
   （握りつぶしていたのは合成イベントの死んだ分岐だけ）。`shift_katakana_passthrough`と`DbeModeKeyContext`は削除。**設定`dbe_mode_key_policy`は撤去した**（`090c13d0`、レビュー指摘B-M3。0xF3/0xF4は`enrich_ime_relevance`で必ずToggleの`shadow_action`を持ち`shadow_toggled`でSuppressされるため、Passthroughを選んでも変わらず、それ以外のキーには効かない、実質死んだ設定だった。旧config.tomlにキーが残っていても読める）。
