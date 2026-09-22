@@ -1423,6 +1423,13 @@ impl NicolaFsm {
     /// （実機で確認）。`is_os_modifier_held` は Shift を含まない（親指シフト面のため）ので `OsModifierHeld`
     /// にも落ちない。撤去した `delegate_to_open_axis` 版の同名ガードの、明示configへの付け替え。
     /// 明示configを持たない無変換/変換（＝親指シフトキーとして使う通常の構成）には影響しない。
+    ///
+    /// **副作用（レビュー round3 A-NEW-5/C-N9）**: `*_solo_tap_ime_action` を設定した親指キーでは、
+    /// Shift+その親指の複合面（ADR-097、`left_thumb_shift`/`right_thumb_shift`、
+    /// `thumb_shift_faces_enabled`）は成立しない——このガードが`classify_idle_intent`の先頭で先に
+    /// `PassThrough`を返すため`PendingThumb`に入らない（`is_space_thumb_shift_literal`と同じく、
+    /// 小指シフト面と親指シフトを組み合わせない設計）。develop からの回帰ではない（develop の同名
+    /// ガードは`delegate_to_open_axis`条件で、GJI自動検出だけで有効になり対象者はむしろ広かった）。
     fn is_mode_key_thumb_shift_passthrough(&self, ev: &ClassifiedEvent) -> bool {
         self.phys.modifiers.shift
             && ev.key_class.is_thumb()

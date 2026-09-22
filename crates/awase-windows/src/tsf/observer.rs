@@ -374,6 +374,11 @@ impl TsfObservations {
 
     /// 打鍵時予測の表・半角/全角の belief トグルを当ててよい IME 種別。GJI と、同定できた Microsoft IME 本体だけ。
     /// GJI 未検出・第三者 IME・IMM32 HKL のみは `None`（安全側: 静的に決めず、生キーを通して観測に追随する）。
+    ///
+    /// **起動直後の窓（round3 A-NEW-8）**: `tsf_active_kind`の既定（0）と`ms_ime_native_identified=false`の
+    /// 間、最初の`query_active_kind`ポーリングが確定するまで`None`を返す。ADR-189の半角/全角belief
+    /// トグルはこの間付かず、物理キーがそのままIMEへ通る（ADR-191の方向としては正しいが、ADR-189
+    /// 「復元して残す」経路の起動直後だけの挙動変化。CI（`sc-hz`/`sc-*-msime-native`）でカバー済み）。
     #[must_use]
     pub(crate) fn table_ime_kind(&self) -> Option<crate::state::ime_kind::ImeKindId> {
         use crate::state::ime_kind::ImeKindId;

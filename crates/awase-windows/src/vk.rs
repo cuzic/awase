@@ -172,10 +172,16 @@ impl ImeKeyKind {
     /// 実IMEと食い違っていただけである。
     ///
     /// **GJIとMS-IME本体の両方に適用するのはユーザー決定**（ADR-189は元々GJIのみ、ADR-191で
-    /// MS-IME本体へ拡張）。`ImeKindId::MsIme`は「GJIを検出できなかった」も兼ねる
-    /// （`state/ime_kind.rs`、ADR-089 §1.3(g)）ので、GJI起動直後の未検出窓や第三者日本語IMEでも
-    /// `true`になる。読めない窓では観測で訂正できないため、DBEの意味（0xF3=SBCS固定・0xF4=DBCS固定）
-    /// に従うIMEでは belief が実IMEとずれうる（既知の制約、BUG-155/156・ADR-191決定5）。
+    /// MS-IME本体へ拡張）。呼び出し側（`enrich_ime_relevance`）は `TSF_OBS.table_ime_kind()`
+    /// （CLSIDで同定できたGJI・Microsoft IME本体だけ`Some`。ATOK・Japanist・未検出・IMM32 HKLのみは
+    /// `None`）を通してからこの関数へ渡すので、この`ime`引数自体は常にGJIか同定済みMicrosoft IME本体
+    /// （`ImeKindId::MsIme`）のどちらか。同定できなかった第三者IME・未検出窓では、この関数まで
+    /// 到達しない（`is_open_toggle_for`を直接見るだけでは分からない、round2 B-NB1/NB3参照）。
+    ///
+    /// **例外（round3 B-NR4）**: `VK_KANJI`(0x19)は`ImeKeyKind::shadow_effect`で**IME種別に依らず**
+    /// 静的にToggleを返す（`hook.rs::classify_ime_relevance`経由、`table_ime_kind()`を通らない）。
+    /// develop由来の「どのIMEでも開閉トグル」という前提（Windows標準の`keys.ime_toggle`の既定）に基づく
+    /// もので、ATOK・未検出でも0x19はawaseが書く。0xF3/0xF4だけが本関数の同定ゲートの対象。
     ///
     /// `match`は`ImeKindId`について網羅なので、**IME種別を足すとここがコンパイルエラーになり、
     /// 適用可否を決め忘れない**（両アームが同じ値でも、この性質のために1本の`match`のまま残す）。

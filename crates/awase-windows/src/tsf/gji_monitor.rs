@@ -436,9 +436,16 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                             tracing::info!("[tip-detect] IME kind → {kind:?} (on GJI attach)");
                             crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
                         }
-                        TSF_OBS.set_ms_ime_native_identified(
+                        // 変化をログに残す（レビュー round3 B-NR3: 取りこぼして識別が黙って止まると
+                        // triage できない。CLSID を取りこぼした形跡は起動時の `dump_profiles`〈info、全CLSID
+                        // 列挙〉と突き合わせる）。
+                        if TSF_OBS.set_ms_ime_native_identified(
                             identity == crate::state::ime_kind::TipIdentity::MsImeNative,
-                        );
+                        ) {
+                            tracing::info!(
+                                "[tip-detect] TIP identity → {identity:?} (on GJI attach)"
+                            );
+                        }
                     }
                     next_clsid_check_ms = now + 2_000;
                 }
