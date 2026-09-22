@@ -149,25 +149,9 @@ impl ImeStateHub {
     }
 }
 
-/// 無変換/変換の生キー通過マーク。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ModeKeyPassMark {
-    armed_at_ms: u64,
-    /// 意図の破棄は通過ごとに1回だけ(最初の観測の直後)。窓の間の再読み取りでは、通過より後に記録された意図を捨てない。
-    invalidated: bool,
-    /// `desired_open`を観測へ揃えた（`ModeKeyPassedThrough`をdispatchした）ことがあるか。窓が切れた後の最初の
-    /// 成功観測での揃えを通過につき1回に絞る（BUG-158追補2）。
-    aligned: bool,
-    /// 通過より後に、awase自身が実際にIMEへ書いた（`record_optimistic`/`record_confirmed`）か。書いたなら実IMEが
-    /// 書いた値と違っても信用せず、揃えずにdrift correctionへ任せる。
-    /// **過大に数える**: `record_confirmed` の呼び出し元には actuation を伴わない belief ミラー（フォーカス変更時の
-    /// ミラー等、ADR-098決定5）も含まれ、それらも `true` にする。安全側（揃えない）にだけ倒れるので実害は薄いが、
-    /// 追補4の揃えが「awaseが書いた」とは無関係な理由で効かなくなりうる（round2 A-N6）。
-    awase_wrote: bool,
-    /// 通過を立てた時点で、その窓が読める窓（`can_use_imm32_cross_process`）だったか。窓の途中で`imm-learning`が
-    /// 降格させても、立てた時点で読めたなら窓の終了時に古い意図を捨てる（BUG-151原因③、レビュー round2 A-N2）。
-    readable_at_arm: bool,
-}
+/// 無変換/変換の生キー通過マーク。定義は `state::force_guard::ModeKeyPassMark`（判定関数の隣、
+/// 緊急レビュー指摘: sim-harness ブランチとの食い違い対策で `&ModeKeyPassMark` を関数の引数にした）。
+use crate::state::force_guard::ModeKeyPassMark;
 
 impl ImeStateHub {
     /// Event を log に記録し、shadow_model にも reduce する (Step 1)。
@@ -375,10 +359,9 @@ impl ImeStateHub {
             return false;
         };
         if !crate::state::force_guard::should_drop_intents_for_mode_key_pass(
+            &mark,
             now_ms.saturating_sub(mark.armed_at_ms),
-            mark.invalidated,
             on_expiry,
-            mark.readable_at_arm,
             crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
         ) {
             return false;
@@ -444,10 +427,9 @@ impl ImeStateHub {
             return false;
         };
         if !crate::state::force_guard::should_align_after_expired_mode_key_pass(
+            &mark,
             now_ms.saturating_sub(mark.armed_at_ms),
             crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
-            mark.aligned,
-            mark.awase_wrote,
             self.shadow_model.last_intent.is_some(),
         ) {
             return false;

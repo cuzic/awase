@@ -247,28 +247,55 @@ pub(crate) const fn poll_counted_no_new_miss(miss_before: u32, miss_after: u32) 
     miss_after <= miss_before
 }
 
+/// 無変換/変換の生キー通過マーク。
+///
+/// **意図的に `platform_state.rs` ではなくここに置く**（レビュー緊急指摘: 破棄した試作ハーネス
+/// `feat/ime-sim-harness` の同名関数は4引数〈`readable_at_arm` 無し〉のままで、本PRの5引数版と
+/// 食い違っていた。フィールドを bool の羅列で関数に渡す形は、片方のブランチだけフィールドが増えても
+/// コンパイルは通ってしまい、BUG-151原因③が黙って再発しうる。この構造体を唯一のデータソースにし、
+/// 判定関数は `&ModeKeyPassMark` を受け取ることで、フィールド不足・順序違いを型エラーとして検出する）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ModeKeyPassMark {
+    pub(crate) armed_at_ms: u64,
+    /// 意図の破棄は通過ごとに1回だけ(最初の観測の直後)。窓の間の再読み取りでは、通過より後に記録された意図を捨てない。
+    pub(crate) invalidated: bool,
+    /// `desired_open`を観測へ揃えた（`ModeKeyPassedThrough`をdispatchした）ことがあるか。窓が切れた後の最初の
+    /// 成功観測での揃えを通過につき1回に絞る（BUG-158追補2）。
+    pub(crate) aligned: bool,
+    /// 通過より後に、awase自身が実際にIMEへ書いた（`record_optimistic`/`record_confirmed`）か。書いたなら実IMEが
+    /// 書いた値と違っても信用せず、揃えずにdrift correctionへ任せる。
+    /// **過大に数える**: `record_confirmed` の呼び出し元には actuation を伴わない belief ミラー（フォーカス変更時の
+    /// ミラー等、ADR-098決定5）も含まれ、それらも `true` にする。安全側（揃えない）にだけ倒れるので実害は薄いが、
+    /// 追補4の揃えが「awaseが書いた」とは無関係な理由で効かなくなりうる（round2 A-N6）。
+    pub(crate) awase_wrote: bool,
+    /// 通過を立てた時点で、その窓が読める窓（`can_use_imm32_cross_process`）だったか。窓の途中で`imm-learning`が
+    /// 降格させても、立てた時点で読めたなら窓の終了時に古い意図を捨てる（BUG-151原因③、レビュー round2 A-N2）。
+    pub(crate) readable_at_arm: bool,
+}
+
 /// 通過マーク（ADR-187）に対して、古い明示意図を捨ててよいか（`age_ms` = 通過からの経過）。
 ///
 /// - `on_expiry == false`（観測が成功したとき）: 窓の間（`age_ms < window_ms`）だけ。
 /// - `on_expiry == true`（窓の終了時、BUG-158）: 窓が切れて（`age_ms >= window_ms`）、まだ一度も観測で
-///   捨てていない（`!invalidated`）、かつ**通過を立てた時点で読める窓だった**（`readable_at_arm`）ときだけ。
+///   捨てていない（`!mark.invalidated`）、かつ**通過を立てた時点で読める窓だった**（`mark.readable_at_arm`）ときだけ。
 ///   窓の間・捨て済みは何もしない。通過の途中で`imm-learning`が窓を降格させても、立てた時点で読める窓なら
 ///   破棄する（「今読めるか」で判定すると、降格を跨いだ通過の後始末をする者がいなくなり、古い意図が残って
 ///   ポーリングが止まる＝BUG-151原因③、レビュー round2 A-N2）。読めない窓（立てた時点から読めない）は
 ///   意図がbeliefの唯一の手がかりなので捨てない（BUG-158の見直し）。
 ///
 /// 判定を純関数にして、`#[cfg(windows)]`配下の`platform_state`のテストに頼らずLinuxで固定する。
+/// `mark`（`ModeKeyPassMark`）を引数にすることで、フィールドを bool の羅列で渡す形と違い、
+/// フィールドの過不足・順序違いがコンパイルエラーになる（緊急レビュー指摘、sim-harness ブランチとの食い違い対策）。
 #[must_use]
 pub(crate) const fn should_drop_intents_for_mode_key_pass(
+    mark: &ModeKeyPassMark,
     age_ms: u64,
-    invalidated: bool,
     on_expiry: bool,
-    readable_at_arm: bool,
     window_ms: u64,
 ) -> bool {
     let expired = age_ms >= window_ms;
     if on_expiry {
-        expired && !invalidated && readable_at_arm
+        expired && !mark.invalidated && mark.readable_at_arm
     } else {
         !expired
     }
@@ -280,22 +307,23 @@ pub(crate) const fn should_drop_intents_for_mode_key_pass(
 /// `observed ≠ desired`が続いて、drift correctionが実IMEへ書き戻す（書き込みが効く環境ではユーザーのモードキーを閉じ直す）。
 /// 揃える条件（全て満たすとき、通過につき1回だけ）:
 /// - 窓が切れている（窓の間は既存の揃えが担当）
-/// - まだ一度も揃えていない（`!aligned`）
-/// - 通過より後に、awaseが実際にIMEへ書いていない（`!awase_wrote`。書いたなら実IMEに届かなかったのかもしれず、
+/// - まだ一度も揃えていない（`!mark.aligned`）
+/// - 通過より後に、awaseが実際にIMEへ書いていない（`!mark.awase_wrote`。書いたなら実IMEに届かなかったのかもしれず、
 ///   drift correctionが訂正すべきなので、実IMEを信用しない）
 /// - 通過より後に記録された明示意図が無い（`!has_intent`。`ModeKeyPassedThrough`は`last_intent`を捨てるので、
-///   新しい意図を巻き添えにしない）
+///   新しい意図を巻き添えにしない。`ModeKeyPassMark`には持たない値〈`shadow_model.last_intent`由来〉なので
+///   引数のまま残す）
 ///
-/// 揃えた後は通常のdrift correctionに戻る（永続的に無効化しない）。
+/// 揃えた後は通常のdrift correctionに戻る（永続的に無効化しない）。`mark`を引数にする理由は
+/// `should_drop_intents_for_mode_key_pass`と同じ（緊急レビュー指摘、sim-harness ブランチとの食い違い対策）。
 #[must_use]
 pub(crate) const fn should_align_after_expired_mode_key_pass(
+    mark: &ModeKeyPassMark,
     age_ms: u64,
     window_ms: u64,
-    aligned: bool,
-    awase_wrote: bool,
     has_intent: bool,
 ) -> bool {
-    age_ms >= window_ms && !aligned && !awase_wrote && !has_intent
+    age_ms >= window_ms && !mark.aligned && !mark.awase_wrote && !has_intent
 }
 
 /// `kp_stage_mode_key_follow`（無変換/変換等の生キー通過後の追随＝通過マーク＋読み直し予約）を、
@@ -721,50 +749,110 @@ mod tests {
         assert!(!poll_counted_no_new_miss(1, 2));
     }
 
+    /// テスト用の `ModeKeyPassMark`。`armed_at_ms`（age_msを別引数で渡すため0固定）・`aligned`/`awase_wrote`
+    /// （このテストでは無関係）はダミー値、`invalidated`/`readable_at_arm`だけ指定する。
+    const fn mark_for_drop_test(invalidated: bool, readable_at_arm: bool) -> ModeKeyPassMark {
+        ModeKeyPassMark {
+            armed_at_ms: 0,
+            invalidated,
+            aligned: false,
+            awase_wrote: false,
+            readable_at_arm,
+        }
+    }
+
+    /// 緊急レビュー指摘(3): 窓の途中で`imm-learning`が降格しても（＝呼び出し時点で読めない窓になっていても）、
+    /// `readable_at_arm`（立てた時点で読めた）が`true`のままなら、窓の終了時に古い意図を捨てる
+    /// （BUG-151原因③、round2 A-N2）。この述語は「今読めるか」を引数に取らないので、呼び出し側が
+    /// 降格後の値を渡しても`mark.readable_at_arm`（立てた時点の値のまま変わらない）だけで判定されることを固定する。
+    #[test]
+    fn should_drop_intents_for_mode_key_pass_uses_readable_at_arm_even_after_mid_window_demotion() {
+        let w = 300;
+        let armed_readable_now_demoted = mark_for_drop_test(false, true);
+        // 窓が切れた時点で on_expiry=true が呼ばれるのは「今読めるかに関わらず」（round2 A-N2 で
+        // can_use_imm32_cross_process() ゲートを外した）。mark.readable_at_arm=true のままなので捨てる。
+        assert!(should_drop_intents_for_mode_key_pass(
+            &armed_readable_now_demoted,
+            w,
+            true,
+            w
+        ));
+    }
+
     /// BUG-158: 意図の破棄の判定。観測成功時は窓の間だけ、窓の終了時は窓が切れて未破棄のときだけ。
     #[test]
     fn should_drop_intents_for_mode_key_pass_distinguishes_observation_and_expiry() {
         let w = 300;
+        let not_invalidated_readable = mark_for_drop_test(false, true);
+        let invalidated_readable = mark_for_drop_test(true, true);
+        let not_invalidated_unreadable = mark_for_drop_test(false, false);
         // 観測が成功したとき: 窓の間だけ捨てる。
         assert!(should_drop_intents_for_mode_key_pass(
-            0, false, false, true, w
+            &not_invalidated_readable,
+            0,
+            false,
+            w
         ));
         assert!(
-            should_drop_intents_for_mode_key_pass(299, true, false, true, w),
+            should_drop_intents_for_mode_key_pass(&invalidated_readable, 299, false, w),
             "2回目以降の観測でも(desired揃え)"
         );
         assert!(!should_drop_intents_for_mode_key_pass(
-            300, false, false, true, w
+            &not_invalidated_readable,
+            300,
+            false,
+            w
         ));
         // 窓の終了時: 窓の間は何もしない(最初のtickで早すぎる破棄をしない。CIで実際に起きたバグ)。
         assert!(
-            !should_drop_intents_for_mode_key_pass(142, false, true, true, w),
+            !should_drop_intents_for_mode_key_pass(&not_invalidated_readable, 142, true, w),
             "窓の間は捨てない"
         );
         assert!(!should_drop_intents_for_mode_key_pass(
-            299, false, true, true, w
+            &not_invalidated_readable,
+            299,
+            true,
+            w
         ));
         // 窓が切れて未破棄なら捨てる。
         assert!(should_drop_intents_for_mode_key_pass(
-            300, false, true, true, w
+            &not_invalidated_readable,
+            300,
+            true,
+            w
         ));
         assert!(should_drop_intents_for_mode_key_pass(
-            5000, false, true, true, w
+            &not_invalidated_readable,
+            5000,
+            true,
+            w
         ));
         // 観測の成功で既に捨てたなら、窓が切れても捨てない(通過より後の明示意図を守る)。
         assert!(!should_drop_intents_for_mode_key_pass(
-            300, true, true, true, w
+            &invalidated_readable,
+            300,
+            true,
+            w
         ));
         // レビュー round2 A-N2: 立てた時点で読めない窓（blind）は、窓が切れても意図を捨てない（beliefの唯一の手がかり）。
         assert!(!should_drop_intents_for_mode_key_pass(
-            300, false, true, false, w
+            &not_invalidated_unreadable,
+            300,
+            true,
+            w
         ));
         assert!(!should_drop_intents_for_mode_key_pass(
-            5000, false, true, false, w
+            &not_invalidated_unreadable,
+            5000,
+            true,
+            w
         ));
         // 観測成功時の破棄（窓の間）は、立てた時点の読める/読めないに依らない（既存の挙動）。
         assert!(should_drop_intents_for_mode_key_pass(
-            0, false, false, false, w
+            &not_invalidated_unreadable,
+            0,
+            false,
+            w
         ));
     }
 
@@ -830,33 +918,53 @@ mod tests {
         );
     }
 
+    /// テスト用の `ModeKeyPassMark`。`invalidated`/`readable_at_arm`（このテストでは無関係）はダミー値。
+    const fn mark_for_align_test(aligned: bool, awase_wrote: bool) -> ModeKeyPassMark {
+        ModeKeyPassMark {
+            armed_at_ms: 0,
+            invalidated: true,
+            aligned,
+            awase_wrote,
+            readable_at_arm: true,
+        }
+    }
+
     /// BUG-158追補2: 窓が切れた後の最初の成功観測での揃え。通過→全観測が時間切れ→窓切れ→最初の成功観測で揃い、
     /// 揃った後・awase自身の書き込み後・新しい明示意図があるときは揃えない。
     #[test]
     fn should_align_after_expired_mode_key_pass_only_once_and_not_after_awase_write() {
         let w = 300;
+        let fresh = mark_for_align_test(false, false);
+        let already_aligned = mark_for_align_test(true, false);
+        let awase_wrote = mark_for_align_test(false, true);
         // 窓の間は既存の揃えが担当（ここでは揃えない）。
         assert!(!should_align_after_expired_mode_key_pass(
-            299, w, false, false, false
+            &fresh, 299, w, false
         ));
         // 窓が切れた後の最初の成功観測で揃える。
         assert!(should_align_after_expired_mode_key_pass(
-            300, w, false, false, false
+            &fresh, 300, w, false
         ));
         assert!(should_align_after_expired_mode_key_pass(
-            9000, w, false, false, false
+            &fresh, 9000, w, false
         ));
         // 揃えた後は通常のdrift correctionへ戻る（2回目以降は揃えない）。
         assert!(!should_align_after_expired_mode_key_pass(
-            9500, w, true, false, false
+            &already_aligned,
+            9500,
+            w,
+            false
         ));
         // 通過以降にawase自身が書いたなら、実IMEを信用しない（drift correctionが訂正すべき）。
         assert!(!should_align_after_expired_mode_key_pass(
-            9000, w, false, true, false
+            &awase_wrote,
+            9000,
+            w,
+            false
         ));
         // 新しい明示意図があるなら巻き添えにしない。
         assert!(!should_align_after_expired_mode_key_pass(
-            9000, w, false, false, true
+            &fresh, 9000, w, true
         ));
     }
 
