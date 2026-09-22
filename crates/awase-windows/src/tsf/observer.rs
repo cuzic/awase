@@ -386,9 +386,25 @@ impl TsfObservations {
         }
     }
 
-    pub(super) fn set_ms_ime_native_identified(&self, identified: bool) {
+    /// 現在確定している `TipIdentity`（`active_ime_kind()`と`ms_ime_native_identified()`から導出）。
+    /// `gji_monitor`の`TipIdentityDebounce`が「変化なし」を判定する基準に使う（レビュー round3 NR1）。
+    #[must_use]
+    pub(super) fn current_tip_identity(&self) -> crate::state::ime_kind::TipIdentity {
+        use crate::state::ime_kind::TipIdentity;
+        match self.active_ime_kind() {
+            ActiveImeKind::GoogleJapaneseInput => TipIdentity::Gji,
+            ActiveImeKind::MicrosoftIme if self.ms_ime_native_identified() => {
+                TipIdentity::MsImeNative
+            }
+            ActiveImeKind::MicrosoftIme => TipIdentity::Other,
+        }
+    }
+
+    /// 値が変化した場合 `true` を返す（`set_tsf_active_kind`と同じ形。デバウンス確定後にログを出すか判定するため）。
+    pub(super) fn set_ms_ime_native_identified(&self, identified: bool) -> bool {
         self.ms_ime_native_identified
-            .store(identified, Ordering::Release);
+            .swap(identified, Ordering::Release)
+            != identified
     }
 
     /// CLSID ベース IME 種別を更新する。値が変化した場合 `true` を返す。

@@ -122,13 +122,22 @@ fn find_gji_clsid(
 
 // ── アクティブ IME 種別クエリ ──────────────────────────────────────────────
 
-/// 現在アクティブな TIP の CLSID から IME 種別を返す。
+/// 現在アクティブな TIP の CLSID から、`ActiveImeKind`（互換の2値）と `TipIdentity`（GJI/Microsoft IME本体/
+/// それ以外を区別する3値）の両方を返す。
 ///
-/// - プロセス内キャッシュ済み GJI CLSID と一致 → `GoogleJapaneseInput`
-/// - それ以外の TIP または IMM32 HKL → `MicrosoftIme`（**Microsoft IME 本体とは限らない**。CLSID が
-///   Microsoft IME のものと一致したかは別に `TSF_OBS.ms_ime_native_identified()` に残す）
+/// **`TSF_OBS` には書き込まない**（`ime_product_name` を除く、診断専用で即時反映してよい）。両方の値は
+/// 呼び出し元（`gji_monitor::monitor_loop`）が**同じデバウンスの単位**で確定させてから書き込むこと
+/// （レビュー round3 NR1: `TipIdentity` をデバウンスせず即時に書いていたため、`ActiveImeKind` のデバウンス
+/// 〈`ImeKindDebounce`〉が2値〈GJI/MicrosoftIme〉でしか動かず、ATOK と Microsoft IME 本体はどちらも
+/// `MicrosoftIme` になるこの軸だけ単発フリップに無防備だった）。
+///
+/// - プロセス内キャッシュ済み GJI CLSID と一致 → `(GoogleJapaneseInput, Gji)`
+/// - それ以外の TIP または IMM32 HKL → `(MicrosoftIme, MsImeNative | Other)`
 /// - 取得失敗 → `None`（呼び出し元はフォールバック値を使う）
-pub(super) fn query_active_kind(mgr: &ITfInputProcessorProfileMgr) -> Option<ActiveImeKind> {
+pub(super) fn query_active_kind(
+    mgr: &ITfInputProcessorProfileMgr,
+) -> Option<(ActiveImeKind, crate::state::ime_kind::TipIdentity)> {
+    use crate::state::ime_kind::TipIdentity;
     unsafe {
         let mut prof = TF_INPUTPROCESSORPROFILE::default();
         mgr.GetActiveProfile(&GUID_TFCAT_TIP_KEYBOARD, &raw mut prof)
@@ -139,8 +148,7 @@ pub(super) fn query_active_kind(mgr: &ITfInputProcessorProfileMgr) -> Option<Act
             // IMM32 ベースの HKL → MS-IME 系とみなす（種別は互換のため MicrosoftIme のまま。
             // ただし Microsoft IME 本体とは同定しない）
             TSF_OBS.set_ime_product_name(None);
-            TSF_OBS.set_ms_ime_native_identified(false);
-            return Some(ActiveImeKind::MicrosoftIme);
+            return Some((ActiveImeKind::MicrosoftIme, TipIdentity::Other));
         }
 
         TSF_OBS.set_ime_product_name(cached_profile_description(&prof));
@@ -149,13 +157,10 @@ pub(super) fn query_active_kind(mgr: &ITfInputProcessorProfileMgr) -> Option<Act
             Some(prof.clsid.to_u128()),
             GJI_CLSID.get().map(GUID::to_u128),
         );
-        TSF_OBS.set_ms_ime_native_identified(
-            identity == crate::state::ime_kind::TipIdentity::MsImeNative,
-        );
-        if identity == crate::state::ime_kind::TipIdentity::Gji {
-            return Some(ActiveImeKind::GoogleJapaneseInput);
+        if identity == TipIdentity::Gji {
+            return Some((ActiveImeKind::GoogleJapaneseInput, identity));
         }
-        Some(ActiveImeKind::MicrosoftIme)
+        Some((ActiveImeKind::MicrosoftIme, identity))
     }
 }
 
