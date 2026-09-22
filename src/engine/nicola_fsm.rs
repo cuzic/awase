@@ -1415,28 +1415,40 @@ impl NicolaFsm {
             && matches!(self.enter_thumb_vk, Some(vk) if vk.0 == ev.vk_code.0)
     }
 
-    /// Shift を押したまま、単独タップの明示config（`*_solo_tap_ime_action`）を持つ無変換/変換を押した場合は、
-    /// 保留にも明示configにも入れず素通しにすべきかを判定する（ADR-186 残る問題2、レビュー round2 C-N1）。
+    /// Shift を押したまま、単独タップの明示config（`*_solo_tap_ime_action`）または
+    /// `ModeKeyConfig::Passthrough` を持つ無変換/変換を押した場合は、保留にも入れず
+    /// 即座に素通しにすべきかを判定する（ADR-186 残る問題2、レビュー round2 C-N1、
+    /// ユーザー指摘2026-09-22「パススルー設定ならパススルーされるべき」）。
     ///
     /// GJI(ATOK)の Shift+無変換/変換 は「かな⇔半角英数」のトグルで、開閉トグルではない。これを単独タップ
     /// として扱うと、KeyUp で明示config（例: `"off"`）の `SetOpen(false)` が発火し、意図せず IME が OFF になる
     /// （実機で確認）。`is_os_modifier_held` は Shift を含まない（親指シフト面のため）ので `OsModifierHeld`
     /// にも落ちない。撤去した `delegate_to_open_axis` 版の同名ガードの、明示configへの付け替え。
-    /// 明示configを持たない無変換/変換（＝親指シフトキーとして使う通常の構成）には影響しない。
     ///
-    /// **副作用（レビュー round3 A-NEW-5/C-N9）**: `*_solo_tap_ime_action` を設定した親指キーでは、
-    /// Shift+その親指の複合面（ADR-097、`left_thumb_shift`/`right_thumb_shift`、
-    /// `thumb_shift_faces_enabled`）は成立しない——このガードが`classify_idle_intent`の先頭で先に
-    /// `PassThrough`を返すため`PendingThumb`に入らない（`is_space_thumb_shift_literal`と同じく、
-    /// 小指シフト面と親指シフトを組み合わせない設計）。develop からの回帰ではない（develop の同名
-    /// ガードは`delegate_to_open_axis`条件で、GJI自動検出だけで有効になり対象者はむしろ広かった）。
+    /// **`ModeKeyConfig::Passthrough` への拡張（2026-09-22）**: 当初は`explicit_ime_action`
+    /// だけを見ていたが、`*_solo_tap_ime_action`を設定しておらず`ModeKeyConfig`側だけを
+    /// Passthrough にしたユーザーには効かなかった（構造的な抜け）。この場合Shift+無変換は
+    /// `PendingThumb`へ入り、保留の間（`simultaneous_threshold_ms`）にもう1キー来ると
+    /// Shiftを押しているのにNICOLAのチョード判定に巻き込まれうる。`mode_key_config`の
+    /// idle側が`Passthrough`なら、同じ理由でここで即座に素通しにする（composing側は見ない
+    /// ——このガード自体、既存の`explicit_ime_action`版もcomposingを見ていない対称性）。
+    /// Suppressのキーは従来どおり`PendingThumb`へ入り、最終的に何も送らない。
+    ///
+    /// **副作用（レビュー round3 A-NEW-5/C-N9、Passthrough拡張にも同様に適用される）**:
+    /// このガードが真になる親指キーでは、Shift+その親指の複合面（ADR-097、
+    /// `left_thumb_shift`/`right_thumb_shift`、`thumb_shift_faces_enabled`）は成立しない
+    /// ——このガードが`classify_idle_intent`の先頭で先に`PassThrough`を返すため`PendingThumb`
+    /// に入らない（`is_space_thumb_shift_literal`と同じく、小指シフト面と親指シフトを
+    /// 組み合わせない設計）。
     fn is_mode_key_thumb_shift_passthrough(&self, ev: &ClassifiedEvent) -> bool {
-        self.phys.modifiers.shift
-            && ev.key_class.is_thumb()
-            && self
-                .thumb_solo_special_handling(ev.vk_code)
-                .explicit_ime_action
-                .is_some()
+        if !(self.phys.modifiers.shift && ev.key_class.is_thumb()) {
+            return false;
+        }
+        let special = self.thumb_solo_special_handling(ev.vk_code);
+        special.explicit_ime_action.is_some()
+            || special
+                .mode_key_config
+                .is_some_and(ModeKeyConfig::is_passthrough)
     }
 
     /// Idle 状態でのキー到着時の意図を分類する（純粋関数）。
