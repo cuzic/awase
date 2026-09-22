@@ -122,12 +122,12 @@ pub fn eisu_reset_on_ime_on(
 #[must_use]
 pub const fn gji_retains_tracked_eisu(
     ime: crate::state::ime_kind::ImeKindId,
-    tracked_conv: Option<crate::state::key_effect_table::Conv>,
+    tracked_conv: Option<crate::state::key_effect_predictor::Conv>,
 ) -> bool {
     matches!(ime, crate::state::ime_kind::ImeKindId::Gji)
         && matches!(
             tracked_conv,
-            Some(crate::state::key_effect_table::Conv::C10)
+            Some(crate::state::key_effect_predictor::Conv::C10)
         )
 }
 
@@ -256,7 +256,7 @@ mod tests {
     // ── BUG-159: GJI は閉→開で追跡した英数を保持する(blind s2 の実バグ) ──
 
     use crate::state::ime_kind::ImeKindId;
-    use crate::state::key_effect_table::Conv;
+    use crate::state::key_effect_predictor::Conv;
 
     #[test]
     fn gji_with_tracked_eisu_conv_retains_mode_and_skips_reset() {

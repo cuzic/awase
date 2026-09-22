@@ -211,7 +211,7 @@ impl ImeStateHub {
     /// 後から来る観測（settle後）が照合し、食い違えば観測が勝つ（`ImeModel::reduce`のfence）。
     pub(crate) fn apply_key_effect_prediction(
         &mut self,
-        prediction: crate::state::key_effect_table::Prediction,
+        prediction: crate::state::key_effect_predictor::Prediction,
         tick_ms: TickMs,
     ) {
         // 開閉・入力モードも追跡状態も変わらない打鍵は何もしない。
@@ -2745,7 +2745,7 @@ mod tests {
     /// （CI blind: `intent-store` の上書きが約30秒続き、予測でopenにしてもEngineが動かなかった）。
     #[test]
     fn key_effect_open_prediction_replaces_stale_explicit_off_intent() {
-        use crate::state::key_effect_table::{KeyTrack, PredictedEffect, Prediction, Stage};
+        use crate::state::key_effect_predictor::{KeyTrack, PredictedEffect, Prediction, Stage};
         let mut ps = PlatformState::new();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);
@@ -2771,7 +2771,7 @@ mod tests {
     /// 開閉を変えない予測（変換モードだけ等）は、明示意図を消さない。
     #[test]
     fn key_effect_prediction_without_open_keeps_explicit_intent() {
-        use crate::state::key_effect_table::{KeyTrack, PredictedEffect, Prediction, Stage};
+        use crate::state::key_effect_predictor::{KeyTrack, PredictedEffect, Prediction, Stage};
         let mut ps = PlatformState::new();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
         dispatch_and_record_explicit_intent(&mut ps, false, 100);

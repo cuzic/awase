@@ -548,7 +548,7 @@ pub enum ImeEvent {
     /// （レビュー round2 A-N1）。
     ModeKeyPassedThrough { align_desired: bool },
 
-    /// 物理モードキーの打鍵時点で、キーマップの表（`key_effect_table`）から予測した効果を
+    /// 物理モードキーの打鍵時点で、キーマップの表（`key_effect_predictor`）から予測した効果を
     /// beliefへ反映する（ADR-191 決定3）。**観測ではなく予測**で、awaseはIMEへ書かない。
     ///
     /// reducerは`key_effect`（予測の記録とfence）を書き、`mode`があれば`input_mode`を先に動かす。
@@ -561,7 +561,7 @@ pub enum ImeEvent {
         mode: Option<InputModeState>,
         /// 打鍵履歴から追跡する隠れ状態（変換モード5種・変換中の段階）。開閉/入力モードに変化が
         /// 無くても、追跡状態が変わる打鍵ではこのイベントを送る。
-        track: crate::state::key_effect_table::KeyTrack,
+        track: crate::state::key_effect_predictor::KeyTrack,
     },
 
     /// 起動直後の初回フォーカス確立時、`current_focus` を bootstrap で確立した

@@ -5270,7 +5270,7 @@ fn key_effect_predicted_event_is_constructed_only_in_apply_key_effect_prediction
     );
 }
 
-/// ADR-191 決定3・4（レビュー指摘C-M3）: `state/key_effect_data.rs`（打鍵時予測の表）は
+/// ADR-191 決定3・4（レビュー指摘C-M3）: `state/key_effect_table.rs`（打鍵時予測の表）は
 /// `tools/e2e/ime_key_matrix/gen_key_effect_table.py` が `grid-tables/*.json` から生成する
 /// 「手で編集しない」ファイルである。生成元 JSON・スクリプトを変えて再生成し忘れる、または
 /// 生成物を手で編集すると、表が黙って学習結果と食い違う（読めないアプリでは観測で訂正されない）。
@@ -5278,7 +5278,7 @@ fn key_effect_predicted_event_is_constructed_only_in_apply_key_effect_prediction
 ///
 /// `python3` が無い環境では失敗する（`AWASE_ALLOW_SKIP_GENERATED_CHECK` を立てたときだけスキップ）。CI（ubuntu・windows）には有る。
 #[test]
-fn key_effect_data_matches_generator() {
+fn key_effect_table_matches_generator() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
     let script = repo.join("tools/e2e/ime_key_matrix/gen_key_effect_table.py");
     assert!(
@@ -5297,17 +5297,17 @@ fn key_effect_data_matches_generator() {
             // 明示的に許可した環境（ローカルの最小構成）でだけスキップし、CI では失敗させる。
             assert!(
                 std::env::var_os("AWASE_ALLOW_SKIP_GENERATED_CHECK").is_some(),
-                "python3 が見つからないため key_effect_data.rs の生成物検査ができません。python3 を入れるか、\
+                "python3 が見つからないため key_effect_table.rs の生成物検査ができません。python3 を入れるか、\
                  ローカルだけ AWASE_ALLOW_SKIP_GENERATED_CHECK=1 でスキップしてください"
             );
-            eprintln!("python3 が無いため key_effect_data.rs の生成物検査をスキップします");
+            eprintln!("python3 が無いため key_effect_table.rs の生成物検査をスキップします");
             return;
         }
         Err(e) => panic!("python3 の起動に失敗: {e}"),
     };
     assert!(
         out.status.success(),
-        "state/key_effect_data.rs が生成結果と一致しません:\n{}",
+        "state/key_effect_table.rs が生成結果と一致しません:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
 }

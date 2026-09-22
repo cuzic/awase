@@ -234,12 +234,12 @@ pub struct Runtime {
     /// 25秒〜4分43秒間隔で再発する」症状が再燃する（docs/known-bugs.md BUG-113参照）。
     conv_drift_latch: Option<crate::state::ime_actuation::ConvDriftEpisode>,
     /// `config1.db` のキーマップ（打鍵時予測用）のキャッシュ。打鍵ごとに読み直さない。
-    key_effect_keymap: crate::state::key_effect_table::KeymapCache,
+    key_effect_keymap: crate::state::key_effect_predictor::KeymapCache,
     /// 直前のOS読み取り（`OsPoll`）で観測（`ime_on`）を得られたか。時間切れ・空振りは`false`。
     /// 通過マークの窓の間の読み直し間隔（成功なら60ms、失敗なら窓の終了時の1回）に使う。
     last_ime_read_ok: bool,
     /// Microsoft IME本体用（レジストリのキー割り当ての版で読み直す。GJIの`key_effect_keymap`とは別のキャッシュ）。
-    key_effect_keymap_native: crate::state::key_effect_table::KeymapCache,
+    key_effect_keymap_native: crate::state::key_effect_predictor::KeymapCache,
     /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091
     /// §D3.2、config.toml による手動設定のみ）が現在有効なら、その vk。
     /// `recompute_active_keymaps` が `[[keymap]]` との衝突チェックに使う
@@ -1110,9 +1110,9 @@ impl Runtime {
             ime_coordinator: ime_coordinator::ImeCoordinator::new(),
             active_actuation: None,
             conv_drift_latch: None,
-            key_effect_keymap: crate::state::key_effect_table::KeymapCache::default(),
+            key_effect_keymap: crate::state::key_effect_predictor::KeymapCache::default(),
             last_ime_read_ok: true,
-            key_effect_keymap_native: crate::state::key_effect_table::KeymapCache::default(),
+            key_effect_keymap_native: crate::state::key_effect_predictor::KeymapCache::default(),
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
             calibration_bypass_deadline: None,

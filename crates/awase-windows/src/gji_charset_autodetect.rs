@@ -322,14 +322,14 @@ mod windows_impl {
         Some((u64::try_from(modified.as_nanos()).ok()?, meta.len()))
     }
 
-    /// ADR-191 決定3: `config1.db`から、打鍵時点の予測（`key_effect_table`）に使うキーマップを読む。
+    /// ADR-191 決定3: `config1.db`から、打鍵時点の予測（`key_effect_predictor`）に使うキーマップを読む。
     /// 呼び出しは`KeymapCache`が版の変化時だけに絞る（打鍵ごとに読まない）。読めない/未対応の
     /// プリセットは`None`（予測しない）。
-    pub(crate) fn read_key_effect_keymap() -> Option<crate::state::key_effect_table::KeyEffectKeymap>
-    {
+    pub(crate) fn read_key_effect_keymap(
+    ) -> Option<crate::state::key_effect_predictor::KeyEffectKeymap> {
         let bytes = read_config1_db()?;
         let raw = awase_gji_config::wire::parse_top_level(&bytes)?;
-        crate::state::key_effect_table::KeyEffectKeymap::from_config(
+        crate::state::key_effect_predictor::KeyEffectKeymap::from_config(
             raw.session_keymap,
             raw.custom_keymap_table,
             &raw.overlay_keymaps,
