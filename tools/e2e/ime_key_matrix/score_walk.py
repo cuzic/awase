@@ -87,6 +87,7 @@ def score(table, paths):
                     continue
                 exp_open = next(iter(opens))
                 good = a[0] == exp_open
+                res = {"ON" if exp_open else "OFF": 1}
             else:
                 stage = "none"
                 if comp:
