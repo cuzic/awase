@@ -20,7 +20,16 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 - キーは `SendInput` で注入し、`dwExtraInfo = 0x5350494B` の目印を付ける。awase は環境変数 `AWASE_TEST_INJECTION=1` の
   ときだけ、この目印付きの注入を物理キーとして扱う(`hook.rs::is_test_injection`)。**デバッグビルドでのみ有効**(リリースビルドは環境変数があっても無効)。本番(環境変数なし)は従来どおり。
   目印の定数は `hook::TEST_INJECTION_MARKER` を、スパイク/プローブが参照する(二重定義しない)。
+  **この目印判定はVKを区別しない**ので、Ctrl/Shift/Alt等のOS修飾キーも目印付きで注入すれば
+  `HOOK_STATE.physical_key_state`が正しく更新され(`read_os_modifiers()`のCtrl/Shift判定に反映)、
+  修飾キーを保持したままの物理チョード(例: Ctrl+変換の強制ON)を自動テストできる(2026-09-22確認、`--chord`参照)。
 - スパイクの状態機械が「前提の状態」を自動で作る(準備キーを注入)。
+- **`--chord=VK1,VK2`**: VK1を押しっぱなしにした状態でVK2をタップし、VK1を離す(「本物の同時押し」)。
+  `--seq`/`--walk`は各VKを逐次タップするだけで重なりが無く、Ctrl等のOS修飾キーを保持したままの
+  物理チョードを再現できない(`send_key`自体は他のモードと同じ目印を使うので、この`--chord`が無くても
+  修飾キーの追跡自体は動く。無かったのは「重なりのある注入」を組み立てる手段だけ)。
+  実機確認: `Ctrl(0xA2)+変換(0x1C)`で`mods(c=true...) phys_ctrl=true`となり、既定の
+  `keys.ime_on=["Ctrl+変換"]`が`origin=ExplicitUserAction`で正しく発火することを確認した。
 
 ## 実行
 1. Windows 側で awase を `AWASE_TEST_INJECTION=1`・`RUST_LOG=debug` で起動する。
