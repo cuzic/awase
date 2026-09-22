@@ -279,12 +279,17 @@ pub struct KeyEffectPrediction {
 }
 
 impl KeyEffectPrediction {
-    /// 両軸とも照合済み（`None`）なら予測ごと捨てる。
-    const fn into_live(self) -> Option<Self> {
-        if self.open.is_none() && self.mode.is_none() {
+    /// 唯一の構築口（design-patterns-review.md B2）。両軸とも`None`（照合済み）なら`None`を返し、
+    /// 呼び出し側に「両軸Noneの予測を作れない」という不変条件を型で強制する
+    /// （以前は`into_live()`という構築後のチェックで、`reduce()`のアーム〈:841〉は
+    /// これを経由せず直接`Some(KeyEffectPrediction { .. })`を組んでいたため、将来の書き方次第では
+    /// 両軸Noneの予測が残りえた）。
+    #[must_use]
+    const fn new(at_ms: u64, open: Option<bool>, mode: Option<InputModeState>) -> Option<Self> {
+        if open.is_none() && mode.is_none() {
             None
         } else {
-            Some(self)
+            Some(Self { at_ms, open, mode })
         }
     }
 }
@@ -621,7 +626,7 @@ impl ImeModel {
                 "[key-effect-miss] axis=open predicted={predicted} observed={observed_open}"
             );
         }
-        self.key_effect = KeyEffectPrediction { open: None, ..pred }.into_live();
+        self.key_effect = KeyEffectPrediction::new(pred.at_ms, None, pred.mode);
     }
 
     /// 観測（入力モード、Medium以上）を打鍵時点の予測と照合する。戻り値は「この観測を採用してよいか」
@@ -648,7 +653,7 @@ impl ImeModel {
                 "[key-effect-miss] axis=mode predicted={predicted:?} observed={observed:?}"
             );
         }
-        self.key_effect = KeyEffectPrediction { mode: None, ..pred }.into_live();
+        self.key_effect = KeyEffectPrediction::new(pred.at_ms, pred.open, None);
         true
     }
 
@@ -838,11 +843,11 @@ impl ImeModel {
                 if open.is_some() || mode.is_some() {
                     // 新しい打鍵が fence を進める。未照合の古い予測は、新しい予測が触れない軸だけ残す。
                     let prev = self.key_effect;
-                    self.key_effect = Some(KeyEffectPrediction {
-                        at_ms: envelope.time.tick_ms,
-                        open: open.or_else(|| prev.and_then(|p| p.open)),
-                        mode: mode.or_else(|| prev.and_then(|p| p.mode)),
-                    });
+                    self.key_effect = KeyEffectPrediction::new(
+                        envelope.time.tick_ms,
+                        open.or_else(|| prev.and_then(|p| p.open)),
+                        mode.or_else(|| prev.and_then(|p| p.mode)),
+                    );
                 }
                 if let Some(mode) = mode {
                     self.input_mode = mode;

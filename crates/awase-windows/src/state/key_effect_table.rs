@@ -556,6 +556,38 @@ mod tests {
     /// 予測が開閉を動かすキーがそれと食い違うと、そのキーで動いた`open`は`desired_open`へ揃わず、BUG-157が黙って退行する。
     /// 表のうち通過マークの対象でないキー（Space/Esc/Enter/BS）が開閉を変えるセルを持たないことを、全表で固定する
     /// （将来の格子で「入力中のEscで閉じる」等が学習されたら、ここで気付く。round2 A-N9）。
+    /// レビュー指摘(design-patterns-review.md D4/C4): `find()`は`.find(..)`＝**最初の一致**を返すので、
+    /// 生成物に矛盾するセル（同じ(open, conv, stage, key)に複数行）が混ざっても黙って先勝ちする。
+    /// `key_effect_data_matches_generator`（architecture_guard）は「生成器の出力と一致するか」だけを見ており、
+    /// キーの一意性そのものは見ていない。全表でキーが一意であることをここで固定する
+    /// （closed セルは`conv`が常に`None`＝ワイルドカードなので、キーは`(open, stage, key)`で比較する。
+    /// `conv`フィールドの意味は`Cell`のdoc参照）。
+    #[test]
+    fn table_cell_keys_are_unique_in_every_preset() {
+        for preset in [
+            KeymapPreset::Atok,
+            KeymapPreset::MsIme,
+            KeymapPreset::MsImeNative,
+        ] {
+            // TableKey/Stage/Conv は Hash を持たないので Vec + 線形探索で十分（表は最大でも数百行）。
+            let mut seen: Vec<(bool, Option<Conv>, Stage, TableKey)> = Vec::new();
+            for c in table_of(preset) {
+                assert!(
+                    c.open || c.conv.is_none(),
+                    "{preset:?}: 閉セル{:?}のconvはNone(ワイルドカード)のはず、実際={:?}",
+                    c.key,
+                    c.conv
+                );
+                let dedup_key = (c.open, c.open.then_some(c.conv).flatten(), c.stage, c.key);
+                assert!(
+                    !seen.contains(&dedup_key),
+                    "{preset:?}: キー{dedup_key:?}が複数行ある(findは先勝ちで矛盾を黙って通す)"
+                );
+                seen.push(dedup_key);
+            }
+        }
+    }
+
     #[test]
     fn table_keys_outside_the_followed_mode_keys_never_change_open() {
         for preset in [
