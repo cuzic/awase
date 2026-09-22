@@ -92,6 +92,19 @@ impl crate::ime::ImeSnapshot {
                 clear_force_on_broken_app_bootstrap: false,
                 clear_force_on_panic_reset: false,
             }
+        } else if !crate::state::imm_evidence::read_miss_is_imm_evidence(self.probe_timed_out) {
+            // 時間切れ（遅い応答）は「IMMが使えない」証拠ではない。missに数えず、belief を保つ
+            // （`imm-learning`が3回連続で`Unavailable`を学習してしまう。BUG-158追補）。
+            tracing::debug!(
+                "IME detection timed out (slow response, not IMM-unavailable evidence), \
+                 preserving ime_on={current_ime_on}"
+            );
+            PollOutcome {
+                observer_poll: None,
+                increment_miss_count: false,
+                clear_force_on_broken_app_bootstrap: false,
+                clear_force_on_panic_reset: false,
+            }
         } else if guard_active {
             tracing::debug!(
                 "IME detection failed but force_on_guard active, preserving ime_on={current_ime_on}"
@@ -297,7 +310,25 @@ mod tests {
             conversion_mode: None,
             is_tsf_native: false,
             focused_class: None,
+            probe_timed_out: false,
         }
+    }
+
+    /// BUG-158追補: `ime_on`が読めなかった理由が時間切れなら missに数えない（`imm-learning`が誤降格しない）。
+    /// 即時の拒否（時間切れでない）は従来どおり数える（本当にIMM不可のアプリを降格できる）。
+    #[test]
+    fn timed_out_read_does_not_increment_miss_count_but_refusal_does() {
+        let mut snap = default_snap();
+        snap.probe_timed_out = true;
+        let out = snap.classify_poll_outcome(0, true, false);
+        assert!(!out.increment_miss_count, "時間切れはmissに数えない");
+        assert!(
+            out.observer_poll.is_none(),
+            "beliefを保つ（観測は書かない）"
+        );
+        snap.probe_timed_out = false;
+        let out = snap.classify_poll_outcome(0, true, false);
+        assert!(out.increment_miss_count, "即時の拒否は従来どおり数える");
     }
 
     /// ケース 1: 日本語 IME + IME ON → observer_poll に Some(true) が記録される
@@ -377,6 +408,7 @@ mod tests {
             conversion_mode: None,
             is_tsf_native: false,
             focused_class: None,
+            probe_timed_out: false,
         };
         let update = classify_ime_snapshot(
             &snap,

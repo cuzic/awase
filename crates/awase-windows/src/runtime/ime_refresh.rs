@@ -208,9 +208,16 @@ impl Runtime {
             }
             ImeReadStrategy::OsPoll => {
                 let miss_before = self.platform_state.ime.detect_miss_count();
-                self.ir_poll_and_learn(miss_before, ime_snap);
+                let got_observation = self.ir_poll_and_learn(miss_before, ime_snap);
                 let now = crate::hook::current_tick_ms();
-                if self.platform_state.ime.detect_miss_count() == miss_before
+                let observed = got_observation
+                    && crate::state::imm_evidence::poll_counted_no_new_miss(
+                        miss_before,
+                        self.platform_state.ime.detect_miss_count(),
+                    );
+                // 直前の読み取りの成否（時間切れも失敗）。通過マークの読み直し間隔の判定に使う。
+                self.last_ime_read_ok = observed;
+                if observed
                     && self
                         .platform_state
                         .ime
@@ -221,6 +228,16 @@ impl Runtime {
                     );
                     // 最初の観測は GJI がキーを処理する前の古い状態を読むことがある。窓が切れるまで読み直す。
                     self.schedule_ime_refresh(crate::tuning::MODE_KEY_PASS_REREAD_MS);
+                } else if observed
+                    && self
+                        .platform_state
+                        .ime
+                        .align_after_expired_mode_key_pass(now, crate::state::TickMs(now))
+                {
+                    // 窓の間の観測が全て時間切れだった通過。窓が切れた後の最初の成功観測で desired を揃える。
+                    tracing::info!(
+                        "[mode-key-follow] first successful observation after the window: desired aligned"
+                    );
                 }
             }
         }
@@ -239,6 +256,22 @@ impl Runtime {
     fn ir_stage_notify(&mut self) {
         // Phase 4: Engine に RefreshState（active 遷移検知）
         self.ir_notify_engine_refresh();
+        // Phase 4a: 通過マークの窓が切れても観測が一度も成功しなかったなら、古い明示意図を捨てる
+        // （意図が残るとポーリングが止まったままになる。BUG-158）。戦略（OsPoll/SkipTyping等）によらず
+        // 毎tick確認する。窓の間は`reschedule_ime_refresh`が読み直しを予約し続けるので、窓の直後に必ずここへ来る。
+        // 立てた時点から読めない窓では意図を捨てない（読み取りで訂正できず、意図がbeliefの唯一の手がかり。
+        // `reschedule_ime_refresh`参照）。立てた時点で読めた窓は、通過の途中で降格しても捨てる
+        // （`ModeKeyPassMark::readable_at_arm`、`expire_mode_key_pass_mark`が判定。レビュー round2 A-N2）。
+        let now = crate::hook::current_tick_ms();
+        if self
+            .platform_state
+            .ime
+            .expire_mode_key_pass_mark(now, crate::state::TickMs(now))
+        {
+            tracing::info!(
+                "[mode-key-follow] window expired without a successful observation: intents invalidated"
+            );
+        }
         // Phase 4b: desired ≠ observed ドリフト補正（ImmCross / non-ImmCross 両対応）
         self.ir_apply_drift_correction();
         // Phase 5: 次回ポーリングをスケジュール
@@ -357,7 +390,14 @@ impl Runtime {
 
     // ── IME 状態のポーリングと学習 ──
 
-    fn ir_poll_and_learn(&mut self, miss_before: u32, ime_snap: Option<&crate::ime::ImeSnapshot>) {
+    /// IME状態を読んでbeliefへ反映し、`imm-learning`へ渡す。戻り値は「この読み取りで観測（`ime_on`）を
+    /// 得られたか」。時間切れの空振りは`miss_count`を増やさない（BUG-158追補）ので、`miss_count`の増減では
+    /// 「読み取りが成功したか」を判定できない——通過マークの追随（ADR-187）はこの戻り値で判定する。
+    fn ir_poll_and_learn(
+        &mut self,
+        miss_before: u32,
+        ime_snap: Option<&crate::ime::ImeSnapshot>,
+    ) -> bool {
         let poll = self.platform_state.ime.capture_poll_state();
         let ime_on_before_poll = poll.ime_on;
         let input_mode_before_poll = poll.input_mode;
@@ -400,6 +440,7 @@ impl Runtime {
         {
             observer_out.new_input_mode = None;
         }
+        let observed = observer_out.observer_poll.is_some();
         let accepted =
             crate::state::probe_admission::AcceptedObservation::for_sync(self.focus_fence());
         self.platform_state
@@ -416,6 +457,7 @@ impl Runtime {
         );
 
         self.learn_imm_capability_from_miss(miss_before, miss_after);
+        observed
     }
 
     /// [診断] フォーカス変更から 10 秒以内で状態が変わった場合にログ出力。
@@ -1006,6 +1048,10 @@ impl Runtime {
     }
 
     // ── Engine 通知 ──
+
+    pub(super) fn notify_engine_refresh(&mut self) {
+        self.ir_notify_engine_refresh();
+    }
 
     fn ir_notify_engine_refresh(&mut self) {
         let ctx = self.build_ctx();

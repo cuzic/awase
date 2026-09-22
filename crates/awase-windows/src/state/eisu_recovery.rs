@@ -76,6 +76,8 @@ use awase::engine::{AssumedReason, InputModeState};
 ///
 /// `ime_turned_on` が真（呼び出し元の経路で IME が実際に ON へ遷移した）かつ
 /// belief が `ObservedEisu` の場合のみ、`AssumedRomaji` への訂正値を返す。
+/// ただし `mode_retained`（[`gji_retains_tracked_eisu`]）が真のときは返さない
+/// （GJI は閉→開でモードを保持するため、追跡した英数は stale ではなく実状態）。
 /// 訂正は `InputModeApplied`（awase 自身の能動的訂正）として dispatch すること。
 /// 実際の入力モードは後続の観測（idle-conv-check / GJI 観測等）が再確認・再訂正する。
 ///
@@ -84,13 +86,49 @@ use awase::engine::{AssumedReason, InputModeState};
 ///   - Decision 経由: `applied && new_ime_on`
 ///   - shadow toggle: `!was_open && now_open`
 /// - `mode`: 現在の `input_mode` belief。
+/// - `mode_retained`: 閉→開で実 IME が変換モードを保持していると分かっているか。
+///   Decision 経由の経路は従来どおり `false`（この判定を使わない）。
 #[must_use]
-pub fn eisu_reset_on_ime_on(ime_turned_on: bool, mode: InputModeState) -> Option<InputModeState> {
-    (ime_turned_on && mode == InputModeState::ObservedEisu).then_some(
+pub fn eisu_reset_on_ime_on(
+    ime_turned_on: bool,
+    mode: InputModeState,
+    mode_retained: bool,
+) -> Option<InputModeState> {
+    (ime_turned_on && !mode_retained && mode == InputModeState::ObservedEisu).then_some(
         InputModeState::AssumedRomaji {
             reason: AssumedReason::AppKindExcluded,
         },
     )
+}
+
+/// GJI が閉→開で変換モードを保持しており、awase もその英数を追跡できているか
+/// （BUG-159 / `docs/adr/191-gji-state-scope-spec.md` §3）。
+///
+/// [`eisu_reset_on_ime_on`] は「IME ON でひらがなに戻る」と仮定して `ObservedEisu` を
+/// `AssumedRomaji` へ直す（Edge のデッドロック対策）。しかし GJI は同じスレッド内で閉じても
+/// 変換モードを保持し、開き直すと直前の 0x10（半角英数）のままである（Mozc の
+/// `Composer::ResetInputMode` は comeback モードへ戻す、CI 実測でも保持）。ひらがなに直すと
+/// awase の Engine だけ ON になり、実 IME は英数のままで NICOLA のかなが出ない。
+///
+/// - GJI（`ImeKindId::Gji`）で、追跡中の変換モード（`KeyTrack::conv`）が**英数（C10）と既知**のとき
+///   だけ保持とみなす。追跡が不明（新しいスレッド・観測で追跡を捨てた直後・未検出）のときは
+///   従来どおり既定のひらがなを種にする（Edge のデッドロック対策はここで効き続ける）。
+/// - Microsoft IME 本体は閉→開で 0x19（ひらがな）へ戻るので、従来のリセットが正しい。
+/// - 追跡が英数以外（C19/C1B）なら `ObservedEisu` と矛盾しているので、リセットしてよい。
+///
+/// 新しい状態は持たない（`KeyTrack::conv` は予測が既に維持している）。トグルキー
+/// （0x19/0xF3/0xF4）は `shadow_action` を持つため予測表が使われず、`KeyTrack::conv` は
+/// 閉じる前の値のまま残る。
+#[must_use]
+pub const fn gji_retains_tracked_eisu(
+    ime: crate::state::ime_kind::ImeKindId,
+    tracked_conv: Option<crate::state::key_effect_table::Conv>,
+) -> bool {
+    matches!(ime, crate::state::ime_kind::ImeKindId::Gji)
+        && matches!(
+            tracked_conv,
+            Some(crate::state::key_effect_table::Conv::C10)
+        )
 }
 
 /// フォーカス後の GJI I/O 観測による stale `ObservedEisu` 救済判定。
@@ -170,7 +208,7 @@ mod tests {
     #[test]
     fn resets_eisu_when_ime_turned_on() {
         assert_eq!(
-            eisu_reset_on_ime_on(true, EISU),
+            eisu_reset_on_ime_on(true, EISU, false),
             Some(InputModeState::AssumedRomaji {
                 reason: AssumedReason::AppKindExcluded
             })
@@ -180,13 +218,13 @@ mod tests {
     #[test]
     fn no_reset_when_ime_not_turned_on() {
         // OFF→OFF / ON→ON / ON→OFF はすべて ime_turned_on=false になる
-        assert_eq!(eisu_reset_on_ime_on(false, EISU), None);
+        assert_eq!(eisu_reset_on_ime_on(false, EISU, false), None);
     }
 
     #[test]
     fn no_reset_for_romaji_capable_modes() {
         assert_eq!(
-            eisu_reset_on_ime_on(true, InputModeState::ObservedRomaji),
+            eisu_reset_on_ime_on(true, InputModeState::ObservedRomaji, false),
             None
         );
         assert_eq!(
@@ -194,7 +232,8 @@ mod tests {
                 true,
                 InputModeState::AssumedRomaji {
                     reason: AssumedReason::ImmBridgeBroken
-                }
+                },
+                false
             ),
             None
         );
@@ -205,10 +244,63 @@ mod tests {
         // ObservedKana / Unknown は correction_for_imm_broken (ImmBrokenCorrection) の
         // 担当領域。この関数は ObservedEisu 固着の救済に限定する。
         assert_eq!(
-            eisu_reset_on_ime_on(true, InputModeState::ObservedKana),
+            eisu_reset_on_ime_on(true, InputModeState::ObservedKana, false),
             None
         );
-        assert_eq!(eisu_reset_on_ime_on(true, InputModeState::Unknown), None);
+        assert_eq!(
+            eisu_reset_on_ime_on(true, InputModeState::Unknown, false),
+            None
+        );
+    }
+
+    // ── BUG-159: GJI は閉→開で追跡した英数を保持する(blind s2 の実バグ) ──
+
+    use crate::state::ime_kind::ImeKindId;
+    use crate::state::key_effect_table::Conv;
+
+    #[test]
+    fn gji_with_tracked_eisu_conv_retains_mode_and_skips_reset() {
+        let retained = gji_retains_tracked_eisu(ImeKindId::Gji, Some(Conv::C10));
+        assert!(retained);
+        assert_eq!(eisu_reset_on_ime_on(true, EISU, retained), None);
+    }
+
+    #[test]
+    fn gji_with_unknown_tracked_conv_still_resets_so_edge_deadlock_guard_holds() {
+        // 追跡が不明(新しいスレッド・観測で追跡を捨てた直後): 既定のひらがなを種にする(従来どおり)。
+        let retained = gji_retains_tracked_eisu(ImeKindId::Gji, None);
+        assert!(!retained);
+        assert_eq!(
+            eisu_reset_on_ime_on(true, EISU, retained),
+            Some(InputModeState::AssumedRomaji {
+                reason: AssumedReason::AppKindExcluded
+            })
+        );
+    }
+
+    #[test]
+    fn gji_with_tracked_native_conv_contradicting_eisu_belief_still_resets() {
+        for conv in [Conv::C19, Conv::C1B] {
+            assert!(!gji_retains_tracked_eisu(ImeKindId::Gji, Some(conv)));
+        }
+    }
+
+    #[test]
+    fn ms_ime_returns_to_hiragana_on_reopen_so_never_retains() {
+        // Microsoft IME 本体は閉→開で 0x19(ひらがな)へ戻る(spec §2.1)。追跡が英数でも従来のリセット。
+        for conv in [None, Some(Conv::C10), Some(Conv::C19), Some(Conv::C1B)] {
+            assert!(!gji_retains_tracked_eisu(ImeKindId::MsIme, conv));
+        }
+        assert_eq!(
+            eisu_reset_on_ime_on(
+                true,
+                EISU,
+                gji_retains_tracked_eisu(ImeKindId::MsIme, Some(Conv::C10))
+            ),
+            Some(InputModeState::AssumedRomaji {
+                reason: AssumedReason::AppKindExcluded
+            })
+        );
     }
 
     // ── gji_io_eisu_correction ──

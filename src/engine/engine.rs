@@ -157,32 +157,6 @@ impl Engine {
         self.adapter.set_muhenkan_solo_tap_dedicated_fn_key(vk);
     }
 
-    /// 無変換キー単独タップの IME open 軸への肩代わり（ADR-092 決定D Step4b、
-    /// MS-IME レジストリ/GJI config1.db の宣言由来）を設定する。
-    /// `set_thumb_key_solo_tap_config`/`set_muhenkan_solo_tap_dedicated_fn_key`
-    /// とは独立して呼び出せる。
-    pub const fn set_muhenkan_delegate_to_open_axis(&mut self, action: Option<ShadowImeAction>) {
-        self.adapter.set_muhenkan_delegate_to_open_axis(action);
-    }
-
-    /// `set_muhenkan_delegate_to_open_axis` と対称（変換キー用）。
-    pub const fn set_henkan_delegate_to_open_axis(&mut self, action: Option<ShadowImeAction>) {
-        self.adapter.set_henkan_delegate_to_open_axis(action);
-    }
-
-    /// ADR-141: shadow-toggle経路との排他判定（`&& effective_open()`）に
-    /// 現在の delegate 配線先を必要とするため、Hiragana/Katakanaと対称に
-    /// getter を追加する。
-    #[must_use]
-    pub const fn muhenkan_delegate_to_open_axis(&self) -> Option<ShadowImeAction> {
-        self.adapter.muhenkan_delegate_to_open_axis()
-    }
-
-    #[must_use]
-    pub const fn henkan_delegate_to_open_axis(&self) -> Option<ShadowImeAction> {
-        self.adapter.henkan_delegate_to_open_axis()
-    }
-
     /// ADR-153 決定1: 無変換単独タップの IME ON/OFF/Toggle を、GJI/MS-IME
     /// 自動検出に頼らずユーザーが直接指定する明示config
     /// （`GeneralConfig::muhenkan_solo_tap_ime_action`）を設定する。
@@ -207,36 +181,6 @@ impl Engine {
     #[must_use]
     pub const fn henkan_solo_tap_ime_action(&self) -> Option<ShadowImeAction> {
         self.adapter.henkan_solo_tap_ime_action()
-    }
-
-    /// Hiragana/Katakana が現在の親指キーなら Platform 層から解決済み VK を渡す。
-    pub const fn set_hiragana_katakana_thumb_key_config(
-        &mut self,
-        hiragana_vk: Option<VkCode>,
-        katakana_vk: Option<VkCode>,
-    ) {
-        self.adapter
-            .set_hiragana_katakana_thumb_key_config(hiragana_vk, katakana_vk);
-    }
-
-    /// Hiragana 親指キー単独タップの IME open 軸 delegate を設定する。
-    pub const fn set_hiragana_delegate_to_open_axis(&mut self, action: Option<ShadowImeAction>) {
-        self.adapter.set_hiragana_delegate_to_open_axis(action);
-    }
-
-    /// Katakana 親指キー単独タップの IME open 軸 delegate を設定する。
-    pub const fn set_katakana_delegate_to_open_axis(&mut self, action: Option<ShadowImeAction>) {
-        self.adapter.set_katakana_delegate_to_open_axis(action);
-    }
-
-    #[must_use]
-    pub const fn hiragana_delegate_to_open_axis(&self) -> Option<ShadowImeAction> {
-        self.adapter.hiragana_delegate_to_open_axis()
-    }
-
-    #[must_use]
-    pub const fn katakana_delegate_to_open_axis(&self) -> Option<ShadowImeAction> {
-        self.adapter.katakana_delegate_to_open_axis()
     }
 
     /// Enter 親指キーのフォールバック挙動を設定する。
@@ -931,7 +875,7 @@ impl Engine {
     /// `general.left_thumb_key`/`right_thumb_key` に設定した**任意の** VK に
     /// 対して `LeftThumb`/`RightThumb` を返す（`hook.rs::classify_key`）。
     /// 一方 `resolve_pending_thumb_as_single`（`nicola_fsm.rs`）が
-    /// `delegate_to_open_axis`/`dedicated_fn_key` 等の特別扱いをするのは
+    /// `dedicated_fn_key`/明示config 等の特別扱いをするのは
     /// `muhenkan_vk`/`henkan_vk` が `Some` のとき、すなわち
     /// `bootstrap.rs`/`runtime/mod.rs` が `VK_NONCONVERT`/`VK_CONVERT`
     /// **限定**でフィルタして設定した場合のみ。無変換/変換以外を

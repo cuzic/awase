@@ -657,7 +657,6 @@ pub(super) fn initialize_app(
     let _ = with_app(|app| {
         app.set_keyboard_model(config.general.keyboard_model);
         app.set_update_check_enabled(config.general.update_check);
-        app.set_dbe_mode_key_policy(config.general.dbe_mode_key_policy);
         app.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
         let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
         app.set_muhenkan_dedicated_fn_key_config(crate::runtime::resolve_dedicated_fn_key(
@@ -667,7 +666,6 @@ pub(super) fn initialize_app(
             config.general.left_thumb_key == "VK_SPACE"
                 || config.general.right_thumb_key == "VK_SPACE",
         );
-        app.set_gji_thumb_key_ime_toggle_opt_in(config.general.gji_thumb_key_ime_toggle);
         // ADR-153 決定1: ユーザー明示config。`apply_config`（reload時）と
         // 同じ配線を起動時にも行う。
         app.set_muhenkan_solo_tap_ime_action(
@@ -1116,12 +1114,6 @@ pub(super) fn run_all() -> Result<()> {
             config.general.henkan_solo_tap_always_suppress,
         ),
     );
-    let (hiragana_vk, katakana_vk) =
-        crate::gji_charset_autodetect::resolve_hiragana_katakana_thumb_vks(
-            left_thumb_vk,
-            right_thumb_vk,
-        );
-    engine.set_hiragana_katakana_thumb_key_config(hiragana_vk, katakana_vk);
 
     // 同様に、left/right のいずれかが Enter に割り当てられている場合、その VK を
     // 伝える（config.rs の enter_thumb_ignore_composing_guard/enter_thumb_shift_literal

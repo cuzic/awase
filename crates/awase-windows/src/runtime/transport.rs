@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 
-use awase::config::DbeModeKeyPolicy;
 use awase::types::{KeyEventType, RawKeyEvent, VkCode};
 
 use crate::focus::class_names::AppImeProfile;
@@ -45,69 +44,6 @@ impl PhysicalKeyDisposition {
     }
 }
 
-/// `plan()` が `VK_DBE_*` KeyDown の Suppress 可否を決めるのに必要な、純粋関数
-/// からは見えない実行時状態（BUG-116 決定1、ADR-137）。
-///
-/// `DbeModeKeyPolicy` からの `From` を持つため、この文脈を必要としない既存の
-/// 呼び出し（回帰テスト含む）は従来どおり `DbeModeKeyPolicy` をそのまま渡せる
-/// （その場合2フラグは false ＝ BUG-52 修正時点と同じ挙動）。
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct DbeModeKeyContext {
-    pub(crate) policy: DbeModeKeyPolicy,
-    /// 半角英数持続トグル区間か。**`kp_stage_shadow_ime_toggle` 実行前**の
-    /// スナップショットを渡すこと——同ステージが `kp_restore_kana_from_half_width`
-    /// へ委譲すると、このフラグのライブ値は同じイベント処理中に false へ落ちる
-    /// （`kp_restore_kana_from_half_width` が同期的に false をセットするため）。
-    /// ライブ値を渡すとこのガードが常にすり抜ける（Opus敵対的レビュー B-2 指摘）。
-    pub(crate) half_width_alnum_toggle_active: bool,
-    /// この VK が NICOLA 親指キーとして設定されているか（BUG-115）。
-    /// ユーザーが「ひらがな/カタカナ」キーを親指キー（同時打鍵用）として設定し、
-    /// `hiragana_delegate_to_open_axis`/`katakana_delegate_to_open_axis` が
-    /// armed の場合、この KeyDown は IME モードキーではなく NICOLA の同時打鍵
-    /// 入力である。ガードが無いと Shift（小指シフト面）併用の打鍵ごとに実 IME を
-    /// カタカナへ飛ばしてしまう（Opus敵対的レビュー B-1 指摘）。
-    pub(crate) is_configured_thumb_key: bool,
-}
-
-impl From<DbeModeKeyPolicy> for DbeModeKeyContext {
-    fn from(policy: DbeModeKeyPolicy) -> Self {
-        Self {
-            policy,
-            half_width_alnum_toggle_active: false,
-            is_configured_thumb_key: false,
-        }
-    }
-}
-
-/// BUG-116 決定1（ADR-137）: Windows 標準の「Shift+かな→カタカナ変換」を実 IME に
-/// 通すための、BUG-52 由来の無条件 Suppress に対する唯一の例外。
-///
-/// スコープを `VK_DBE_KATAKANA` (0xF1) の KeyDown 単体に絞る（ADR-137 M-1）:
-/// Windows 標準トリガーとしての根拠があるのは 0xF1 のみで、0xF0/0xF3/0xF4 に
-/// 同じ緩和を広げる理由が無い（0xF0 は物理 CapsLock 位置で、BUG-15 追補7 の
-/// CapsLock 汚染ハザードの当事者でもある）。
-///
-/// scan は付与しない。`RawKeyEventExt::reinject()` の `wScan: 0` のままで GJI が
-/// カタカナへ切り替わることを 2026-09-05 に実機確認済み（ADR-137）。したがって
-/// BUG-15 追補7 / BUG-61 の「scan 付き DBE キー注入による JIS かな固着」ハザード
-/// はこの決定では一切踏まない（対照的に ADR-137 決定2 のひらがな復元注入は
-/// scan 付き注入を使うため、このハザードを踏む——詳細は ADR-137 参照）。
-///
-/// 2つの否定ガード:
-/// - `half_width_alnum_toggle_active`: この区間では `kp_stage_shadow_ime_toggle`
-///   の no-op 分岐が `kp_restore_kana_from_half_width` へ委譲し、scan 付き
-///   `VK_DBE_HIRAGANA` を独自に注入する。素通しした物理 0xF1 と競合させない
-///   （ADR-137 M-3）。
-/// - `is_configured_thumb_key`: 上記 `DbeModeKeyContext` のドキュメント参照
-///   （ADR-137、BUG-115 delegate 機構との衝突対策）。
-fn shift_katakana_passthrough(event: &RawKeyEvent, dbe: DbeModeKeyContext) -> bool {
-    event.vk_code == crate::vk::VK_DBE_KATAKANA
-        && event.event_type == KeyEventType::KeyDown
-        && event.modifier_snapshot.shift
-        && !dbe.half_width_alnum_toggle_active
-        && !dbe.is_configured_thumb_key
-}
-
 /// passthrough キーの Down/Up 対称性と output guard defer を管理するキュー。
 ///
 /// `check_output_guard_defer` で defer した KeyDown の VK を `deferred_vks` に記録し、
@@ -121,12 +57,6 @@ fn shift_katakana_passthrough(event: &RawKeyEvent, dbe: DbeModeKeyContext) -> bo
 /// Suppress されるようになり `check_output_guard_defer` に到達しなくなったため inert。
 /// 「leak しているように見える」からと TTL/クリア機構を追加する前に、まずこの残留が
 /// 実際に `check_keyup_symmetry` の誤発火につながる経路があるか確認すること。
-///
-/// **例外（BUG-116/ADR-137）**: `VK_DBE_KATAKANA` (0xF1) の KeyDown は Shift 併用時
-/// のみ Allow になりうる（`shift_katakana_passthrough`）ため、この KeyDown が defer
-/// されると `deferred_vks` に入る。ただし 0xF1 の KeyUp は引き続き常に Suppress の
-/// ままで `check_keyup_symmetry` に到達しないため、0xF3/0xF4 と同様に残留は inert
-/// （挙動には影響しない）。
 pub(crate) struct PassthroughQueue {
     deferred_vks: HashSet<VkCode>,
 }
@@ -210,22 +140,18 @@ impl PhysicalKeyDisposition {
     /// - それ以外（Imm32Unavailable / TsfNative）: `apply-ime` が `GjiDirectStrategy` /
     ///   `MsImeDirectStrategy` で実際に actuate する場合（`ime_actuation_owned`）のみ、
     ///   shadow_toggle 発火時 KeyDown と全 KeyUp を Suppress。
-    ///   **例外: `VK_DBE_*`（0xF0 ALPHANUMERIC / 0xF1 KATAKANA / 0xF3 SBCSCHAR /
-    ///   0xF4 DBCSCHAR。0xF2 HIRAGANA は上の専用分岐で別処理）の KeyDown は
-    ///   `shadow_toggled` に関わらず常に Suppress**（`ime_actuation_owned` の場合）。
-    ///   NICOLA の物理「IME ON」キー（scan 0x70）は、IME が既に目的の状態にある時に
-    ///   押されると `VK_DBE_HIRAGANA` (0xF2) の代わりにこれらの `VK_DBE_*` を生成する
-    ///   ことがある（実機で 0xF0/0xF1 を確認）。`VK_KANJI` 等と違い `VK_DBE_*` は
-    ///   素通しすると実 IME（MS-IME）が Windows 標準仕様どおりネイティブ効果
-    ///   （英数/カタカナ/半角/全角への切替）を能動的に実行してしまうため、toggle が
-    ///   発火したかどうかに関係なく漏らしてはならない（2026-08-05 実機、
-    ///   `docs/known-bugs.md` BUG-52 参照）。
-    ///   **例外の例外（BUG-116/ADR-137、2026-09-06 実装）**: `VK_DBE_KATAKANA`
-    ///   単体に限り、`shift_katakana_passthrough` が true なら（Shift 併用、かつ
-    ///   hw トグル中でも設定済み親指キーでもない）上記の無条件 Suppress を
-    ///   解除する。Windows 標準の「Shift+かな→カタカナ」を実 IME に通すための
-    ///   唯一の抜け道。scan は付与しない（実機確認済み、`shift_katakana_passthrough`
-    ///   のdoc参照）。0xF0/0xF3/0xF4 は対象外のまま。
+    ///   **例外: 半角/全角（0xF3 SBCSCHAR / 0xF4 DBCSCHAR。0xF2 HIRAGANA は上の専用分岐で
+    ///   別処理）のうち、awase が beliefに基づく開閉トグルとして書くキー
+    ///   （`ImeKeyKind::is_open_toggle_for`、ADR-189/191、GJI・MS-IME本体の両方）の
+    ///   KeyDown は `shadow_toggled` に関わらず常に Suppress**（`ime_actuation_owned`
+    ///   の場合）。NICOLA の物理「IME ON」キー（scan 0x70）は、IME が既に目的の状態に
+    ///   ある時に押されると `VK_DBE_HIRAGANA` (0xF2) の代わりに `VK_DBE_*` を生成する
+    ///   ことがあり、素通しすると awase が書く開閉に加えて実 IME が同じキーを能動的に
+    ///   処理する二重 actuation になる（2026-08-05 実機、BUG-46/BUG-52）。
+    ///   **ADR-191（撤去後）**: awase が書かない英数(0xF0)・カタカナ(0xF1)・ひらがな(0xF2)
+    ///   などは Suppress せず OS（IME）へ素通しする（`shadow_action` を持たないので
+    ///   `is_kanji_event` 判定で Allow）。BUG-116/ADR-137 の「Shift+0xF1 だけ Allow」の
+    ///   特例は、0xF1 が常に Allow になったため撤去した。
     ///
     /// `ime_actuation_owned` を profile 単独ではなく `ActiveImeKind` からも導出するのは、
     /// TsfNative（Windows Terminal 等）で GJI が起動している場合に awase 自身の
@@ -234,11 +160,6 @@ impl PhysicalKeyDisposition {
     /// `profile.should_pass_physical_key()`（TsfNative で常に true）のみで判定しており、
     /// 「TSF が KANJI を正しく処理する」という前提が `GjiDirectStrategy` の全プロファイル
     /// 適用化（`ime_controller.rs`）より前のまま残っていたことが原因だった。
-    // 物理キーのSuppress/Allow判断は分岐が本質的に多い（プロファイル×VK種別×
-    // 各種例外の組み合わせ）。分割は挙動変更リスクが高い「reincidence family」
-    // （`.claude/rules/fix-requires-evidence.md`のtransport.rs::plan行参照）
-    // のため、複雑度警告のみ抑制する（`kp_stage_shadow_ime_toggle`と同じ方針）。
-    #[expect(clippy::cognitive_complexity)]
     #[tracing::instrument(
         level = "debug",
         skip_all,
@@ -257,9 +178,7 @@ impl PhysicalKeyDisposition {
         is_tsf_mode: bool,
         f2_warmup_owned: bool,
         active_ime_kind: ActiveImeKind,
-        dbe_mode_key: impl Into<DbeModeKeyContext>,
     ) -> Self {
-        let dbe = dbe_mode_key.into();
         // InputRelay: この窓は入力面ではなく、awase は actuation を所有しない
         // （issue #136 / BUG-90 決定4）。**F2分岐より先に判定する**
         // （/code-review指摘で発見・修正）: F2分岐のSuppressは「awase自身の
@@ -383,37 +302,35 @@ impl PhysicalKeyDisposition {
         } else {
             // apply-ime が GjiDirect/MsImeDirect で実際に actuate する場合のみ、
             // shadow_toggle 発火時 KeyDown + 全 KeyUp を Suppress（BUG-46）。
-            let kind = active_ime_kind.into();
+            let kind: crate::state::ime_kind::ImeKindId = active_ime_kind.into();
             let ime_actuation_owned = key_sequence_policy::gji_direct_applicable(kind)
                 || key_sequence_policy::ms_ime_direct_applicable(kind);
-            // VK_DBE_* (0xF0 ALPHANUMERIC / 0xF1 KATAKANA / 0xF3 SBCSCHAR / 0xF4
-            // DBCSCHAR。0xF2 HIRAGANA は上の専用分岐で既に処理済みのためここには
-            // 来ない) の KeyDown は shadow_toggled に関わらず常に Suppress。
-            // 素通しすると実IME（MS-IME）がWindows標準仕様どおり能動的にネイティブ
-            // 効果（英数/カタカナ/半角/全角への切替）を適用してしまうため、
-            // VK_KANJI 等と違い「toggleが不発だったから安全に通してよい」という
-            // 前提が成り立たない（2026-08-05実機、0xF0/0xF1 で確認、known-bugs.md）。
+            // 半角/全角 (0xF3 SBCSCHAR / 0xF4 DBCSCHAR。0xF2 HIRAGANA は上の専用分岐で
+            // 既に処理済みのためここには来ない) の KeyDown は、**awase が beliefに基づく
+            // 開閉トグルとして書くキー**（`ImeKeyKind::is_open_toggle_for`、ADR-189/191。
+            // GJI・MS-IME本体の両方）に限り、`shadow_toggled` に関わらず常に Suppress。
+            // 素通しすると、awase が書く開閉に加えて実 IME が同じキーを能動的に処理する
+            // 二重 actuation になる（BUG-46/BUG-52）。
             //
-            // `dbe_mode_key_policy = Passthrough`（隠し設定、既定 Suppress で
-            // 現状維持、ADR-091 §D3.6）ならこの追加 Suppress 条件自体を無効化する
-            // ——上級者が BUG-52 のリスクを引き受けて素のパススルーを選んだ場合の
-            // 抜け道。`shadow_toggled`/KeyUp 側の既存 Suppress 条件は変更しない。
+            // **ADR-191（撤去後）**: 英数(0xF0)・カタカナ(0xF1)は awase が書かない
+            // （`shadow_action` を持たない）。実 IME に処理させて Engine は観測に追随する
+            // ので、Suppress してはならない——握りつぶすと OS にも awase にも誰も何もしない
+            // 「二重の空振り」になる。この2キーは上の `is_kanji_event` 判定で既に Allow だが、
+            // 判定の根拠を「awase が書くキー」に揃えるため、ここでも VK を列挙せず
+            // `is_open_toggle_for` で決める（BUG-116/ADR-137 の Shift+0xF1 の特例は、
+            // 0xF1 が常に Allow になったため不要になり撤去した）。
             //
-            // BUG-116/ADR-137 決定1: `VK_DBE_KATAKANA` の KeyDown に限り、
-            // `shift_katakana_passthrough` が true なら（Shift 併用、かつ
-            // hw トグル中でも設定済み親指キーでもない）この無条件 Suppress を
-            // 解除する。詳細・安全上の注意は `shift_katakana_passthrough` の
-            // doc コメント参照。
-            let is_dbe_mode_key_down = matches!(dbe.policy, DbeModeKeyPolicy::Suppress)
-                && matches!(
-                    event.vk_code,
-                    crate::vk::VK_DBE_ALPHANUMERIC
-                        | crate::vk::VK_DBE_KATAKANA
-                        | crate::vk::VK_DBE_SBCSCHAR
-                        | crate::vk::VK_DBE_DBCSCHAR
-                )
-                && event.event_type == KeyEventType::KeyDown
-                && !shift_katakana_passthrough(event, dbe);
+            // 設定 `dbe_mode_key_policy`（Passthrough で本条件を外す隠し設定）は撤去した
+            // （ADR-191、レビュー指摘B-M3）: 0xF3/0xF4 は `enrich_ime_relevance` で必ず
+            // `Toggle` の `shadow_action` を持ち `shadow_toggled` で Suppress されるため、
+            // Passthrough を選んでも 0xF3/0xF4 は Suppress のままで、それ以外のキーには
+            // そもそも効かない、実質死んだ設定だった。旧 config.toml にキーが残っていても
+            // 未知キーとして無視され警告は出ない（`src/config.rs` のテストで固定）。
+            let is_dbe_mode_key_down = event.event_type == KeyEventType::KeyDown
+                && event
+                    .vk_code
+                    .ime_kind()
+                    .is_some_and(|k| k.is_open_toggle_for(kind));
             ime_actuation_owned
                 && (shadow_toggled
                     || is_dbe_mode_key_down
@@ -473,8 +390,29 @@ mod plan_tests {
         }
     }
 
-    /// BUG-52 の対象 VK_DBE_* 一覧（0xF2 HIRAGANA は専用分岐で別処理のため対象外）。
-    fn dbe_mode_vks() -> Vec<(VkCode, ShadowImeAction, &'static str)> {
+    /// awase が beliefに基づく開閉トグルとして書く VK_DBE_*（半角/全角、ADR-189/191）。
+    /// これらの KeyDown は `shadow_toggled` に関わらず
+    /// Suppress される（二重 actuation の防止、BUG-46/BUG-52）。
+    fn dbe_written_vks() -> Vec<(VkCode, ShadowImeAction, &'static str)> {
+        vec![
+            (
+                crate::vk::VK_DBE_SBCSCHAR,
+                ShadowImeAction::Toggle,
+                "VK_DBE_SBCSCHAR (0xF3)",
+            ),
+            (
+                crate::vk::VK_DBE_DBCSCHAR,
+                ShadowImeAction::Toggle,
+                "VK_DBE_DBCSCHAR (0xF4)",
+            ),
+        ]
+    }
+
+    /// awase が書かない VK_DBE_*（英数・カタカナ。ADR-191 撤去後は awase が代行しない）。
+    /// 実イベントでは `shadow_action` が無い（`ImeKeyKind::shadow_effect` が `None`）が、
+    /// 撤去前の合成イベント（`shadow_action` あり）でも Suppress されないことを固定するため
+    /// アクションを付けた形も用意する。
+    fn dbe_unwritten_vks() -> Vec<(VkCode, ShadowImeAction, &'static str)> {
         vec![
             (
                 crate::vk::VK_DBE_ALPHANUMERIC,
@@ -486,17 +424,14 @@ mod plan_tests {
                 ShadowImeAction::TurnOn,
                 "VK_DBE_KATAKANA (0xF1)",
             ),
-            (
-                crate::vk::VK_DBE_SBCSCHAR,
-                ShadowImeAction::TurnOff,
-                "VK_DBE_SBCSCHAR (0xF3)",
-            ),
-            (
-                crate::vk::VK_DBE_DBCSCHAR,
-                ShadowImeAction::TurnOn,
-                "VK_DBE_DBCSCHAR (0xF4)",
-            ),
         ]
+    }
+
+    /// 決定表・KeyUp 系のテストが全 VK_DBE_*（0xF0/0xF1/0xF3/0xF4）を回すための和集合。
+    fn dbe_mode_vks() -> Vec<(VkCode, ShadowImeAction, &'static str)> {
+        let mut v = dbe_written_vks();
+        v.extend(dbe_unwritten_vks());
+        v
     }
 
     fn f2_event(event_type: KeyEventType) -> RawKeyEvent {
@@ -528,8 +463,7 @@ mod plan_tests {
                 false,
                 true,
                 true,
-                ANY_IME_KIND,
-                DbeModeKeyPolicy::Suppress
+                ANY_IME_KIND
             ),
             PhysicalKeyDisposition::Suppress
         );
@@ -541,8 +475,7 @@ mod plan_tests {
                 false,
                 true,
                 true,
-                ANY_IME_KIND,
-                DbeModeKeyPolicy::Suppress
+                ANY_IME_KIND
             ),
             PhysicalKeyDisposition::Suppress,
             "TSF mode では F2 Up も double-F2 防止のため Suppress"
@@ -563,8 +496,7 @@ mod plan_tests {
                     false,
                     true,
                     false,
-                    ANY_IME_KIND,
-                    DbeModeKeyPolicy::Suppress
+                    ANY_IME_KIND
                 ),
                 PhysicalKeyDisposition::Allow,
                 "MsImeStrategy は F2 warmup を送らないため物理 F2 ({event_type:?}) を素通しする"
@@ -582,8 +514,7 @@ mod plan_tests {
                 false,
                 false,
                 false,
-                ANY_IME_KIND,
-                DbeModeKeyPolicy::Suppress
+                ANY_IME_KIND
             ),
             PhysicalKeyDisposition::Allow
         );
@@ -612,8 +543,7 @@ mod plan_tests {
                                 shadow_toggled,
                                 false,
                                 false,
-                                active_ime_kind,
-                                DbeModeKeyPolicy::Suppress
+                                active_ime_kind
                             ),
                             PhysicalKeyDisposition::Allow,
                             "非KANJIイベントは profile={profile:?} shadow_toggled={shadow_toggled} \
@@ -639,8 +569,7 @@ mod plan_tests {
                         shadow_toggled,
                         false,
                         false,
-                        ActiveImeKind::MicrosoftIme,
-                        DbeModeKeyPolicy::Suppress
+                        ActiveImeKind::MicrosoftIme
                     ),
                     PhysicalKeyDisposition::Suppress,
                     "ImmCross (Standard) は shadow_toggled={shadow_toggled} event_type={event_type:?} \
@@ -680,8 +609,7 @@ mod plan_tests {
                         false,
                         false,
                         false,
-                        ActiveImeKind::MicrosoftIme,
-                        DbeModeKeyPolicy::Suppress
+                        ActiveImeKind::MicrosoftIme
                     ),
                     PhysicalKeyDisposition::Allow,
                     "無変換/変換(vk={vk:?}, event_type={event_type:?}) は shadow_action が \
@@ -699,8 +627,7 @@ mod plan_tests {
                         true,
                         false,
                         false,
-                        ActiveImeKind::GoogleJapaneseInput,
-                        DbeModeKeyPolicy::Suppress
+                        ActiveImeKind::GoogleJapaneseInput
                     ),
                     PhysicalKeyDisposition::Allow,
                     "無変換/変換(vk={vk:?}, event_type={event_type:?}) は shadow_toggled=true \
@@ -727,8 +654,7 @@ mod plan_tests {
                         false,
                         false,
                         false,
-                        ActiveImeKind::MicrosoftIme,
-                        DbeModeKeyPolicy::Suppress
+                        ActiveImeKind::MicrosoftIme
                     ),
                     PhysicalKeyDisposition::Suppress,
                     "無変換/変換(vk={vk:?}, event_type={event_type:?}) は明示config \
@@ -753,47 +679,11 @@ mod plan_tests {
                     false,
                     false,
                     false,
-                    ActiveImeKind::MicrosoftIme,
-                    DbeModeKeyPolicy::Suppress
+                    ActiveImeKind::MicrosoftIme
                 ),
                 PhysicalKeyDisposition::Allow,
                 "vk={vk:?}: マーカー未設定時は既定のfollow-only Allowのまま"
             );
-        }
-    }
-
-    // ── ADR-154: `auto_delegate_open_axis_consumed`はfollow-only原則の例外
-    //    にならない（`explicit_ime_action_consumed`とは異なる第2の消費者を
-    //    持たない）ことを固定する ──
-
-    #[test]
-    fn henkan_muhenkan_allowed_even_when_auto_delegate_open_axis_consumed() {
-        // `auto_delegate_open_axis_consumed`だけを立てても、`plan`の判定は
-        // 一切変わらずAllowのままであること（ADR-154の中核根拠）。このガードが
-        // 落ちたら、`transport.rs::plan`が`explicit_ime_action_consumed`と
-        // 同じ経路でこのフィールドも見るよう改変された可能性が高く、
-        // follow-only原則を壊す（engine非活性経路で無変換/変換がGJIに一切
-        // 届かなくなる、ADR-119型の「二重の空振り」）。
-        for vk in [crate::vk::VK_CONVERT, crate::vk::VK_NONCONVERT] {
-            for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
-                let mut ev = henkan_muhenkan_event(vk, None, event_type);
-                ev.ime_relevance.auto_delegate_open_axis_consumed = true;
-                assert_eq!(
-                    PhysicalKeyDisposition::plan(
-                        &ev,
-                        AppImeProfile::Standard,
-                        false,
-                        false,
-                        false,
-                        ActiveImeKind::MicrosoftIme,
-                        DbeModeKeyPolicy::Suppress
-                    ),
-                    PhysicalKeyDisposition::Allow,
-                    "無変換/変換(vk={vk:?}, event_type={event_type:?}) は \
-                     auto_delegate_open_axis_consumedだけを立てても \
-                     follow-only Allowのままであるべき（ADR-154）"
-                );
-            }
         }
     }
 
@@ -839,15 +729,7 @@ mod plan_tests {
         for (profile, active_ime_kind, label) in owned_actuation_cases() {
             let ev = kanji_event(KeyEventType::KeyDown, Some(ShadowImeAction::TurnOn));
             assert_eq!(
-                PhysicalKeyDisposition::plan(
-                    &ev,
-                    profile,
-                    false,
-                    false,
-                    false,
-                    active_ime_kind,
-                    DbeModeKeyPolicy::Suppress
-                ),
+                PhysicalKeyDisposition::plan(&ev, profile, false, false, false, active_ime_kind),
                 PhysicalKeyDisposition::Allow,
                 "{label}: shadow_toggle が発火していない KeyDown は物理キーを通す"
             );
@@ -865,8 +747,7 @@ mod plan_tests {
                     true,
                     false,
                     false,
-                    active_ime_kind,
-                    DbeModeKeyPolicy::Suppress
+                    active_ime_kind
                 ),
                 PhysicalKeyDisposition::Suppress,
                 "{label}: shadow_toggle 発火時の KeyDown は awase が既に apply-ime 済みのため Suppress"
@@ -875,22 +756,15 @@ mod plan_tests {
     }
 
     /// 2026-08-05 実機: NICOLA の物理「IME ON」キー（scan 0x70）は IME が既に
-    /// 目的の状態にある時に押されると、`VK_DBE_HIRAGANA` (0xF2) ではなく
-    /// `VK_DBE_ALPHANUMERIC` (0xF0) や `VK_DBE_KATAKANA` (0xF1) が生成されることが
-    /// ある（実機ログで両方確認）。この場合 shadow_toggle は不発（既に目的の状態）
-    /// となるが、これら `VK_DBE_*` を素通しすると実 IME が能動的にネイティブ効果
-    /// （英数/カタカナ/半角/全角への切替）を適用してしまうため、`VK_KANJI` 等と
-    /// 異なり shadow_toggled=false でも Suppress する必要がある（0xF3/0xF4 は
-    /// 実機での漏洩は未確認だが、同じコードパスを通るため同様に対象とする）。
-    ///
-    /// **BUG-52 回帰ガードのピン留め（BUG-116/ADR-137）**: `dbe_mode_event` は
-    /// `ModifierState::default()` 経由で `shift=false` の `RawKeyEvent` を作る
-    /// ため、このテストは「Shift なしでは `VK_DBE_KATAKANA` も含めて全て
-    /// Suppress」を固定している。BUG-116 決定1 の Allow はこのテストを書き換え
-    /// ずに追加されており、BUG-52 の非再発はこのテストがそのまま担保し続ける。
+    /// 目的の状態にある時に押されると `VK_DBE_HIRAGANA` (0xF2) ではなく `VK_DBE_*` が
+    /// 生成されることがある。awase が beliefに基づく開閉トグルとして書く 0xF3/0xF4
+    /// （ADR-189/191）は、shadow_toggle が不発（既に目的の状態）でも、素通しすると
+    /// awase が書く開閉に加えて実 IME が同じキーを処理する二重 actuation になるため、
+    /// shadow_toggled=false でも Suppress する（BUG-46/BUG-52 回帰ガード）。
+    /// GJI・MS-IME本体の両方（`owned_actuation_cases`）で固定する。
     #[test]
     fn dbe_mode_keydown_suppressed_even_when_not_shadow_toggled() {
-        for (vk, action, vk_label) in dbe_mode_vks() {
+        for (vk, action, vk_label) in dbe_written_vks() {
             for (profile, active_ime_kind, label) in owned_actuation_cases() {
                 let ev = dbe_mode_event(vk, action, KeyEventType::KeyDown);
                 assert_eq!(
@@ -900,8 +774,7 @@ mod plan_tests {
                         false,
                         false,
                         false,
-                        active_ime_kind,
-                        DbeModeKeyPolicy::Suppress
+                        active_ime_kind
                     ),
                     PhysicalKeyDisposition::Suppress,
                     "{vk_label} / {label}: shadow_toggle 不発でも実IMEへの意図しない \
@@ -925,8 +798,7 @@ mod plan_tests {
                 false,
                 false,
                 false,
-                ActiveImeKind::GoogleJapaneseInput,
-                DbeModeKeyPolicy::Suppress,
+                ActiveImeKind::GoogleJapaneseInput
             ),
             PhysicalKeyDisposition::Allow
         );
@@ -935,8 +807,8 @@ mod plan_tests {
     #[test]
     fn physical_dbe_mode_keydown_stays_suppressed() {
         let ev = dbe_mode_event(
-            crate::vk::VK_DBE_ALPHANUMERIC,
-            ShadowImeAction::TurnOff,
+            crate::vk::VK_DBE_SBCSCHAR,
+            ShadowImeAction::Toggle,
             KeyEventType::KeyDown,
         );
         assert_eq!(
@@ -946,8 +818,7 @@ mod plan_tests {
                 false,
                 false,
                 false,
-                ActiveImeKind::GoogleJapaneseInput,
-                DbeModeKeyPolicy::Suppress,
+                ActiveImeKind::GoogleJapaneseInput
             ),
             PhysicalKeyDisposition::Suppress
         );
@@ -966,8 +837,7 @@ mod plan_tests {
                 false,
                 false,
                 false,
-                ActiveImeKind::GoogleJapaneseInput,
-                DbeModeKeyPolicy::Suppress,
+                ActiveImeKind::GoogleJapaneseInput
             ),
             PhysicalKeyDisposition::Allow
         );
@@ -983,8 +853,7 @@ mod plan_tests {
                 false,
                 true,
                 true,
-                ANY_IME_KIND,
-                DbeModeKeyPolicy::Suppress,
+                ANY_IME_KIND
             ),
             PhysicalKeyDisposition::Suppress
         );
@@ -1003,8 +872,7 @@ mod plan_tests {
                 false,
                 false,
                 false,
-                ActiveImeKind::MicrosoftIme,
-                DbeModeKeyPolicy::Suppress,
+                ActiveImeKind::MicrosoftIme
             ),
             PhysicalKeyDisposition::Allow
         );
@@ -1021,8 +889,7 @@ mod plan_tests {
                     true,
                     false,
                     false,
-                    ActiveImeKind::GoogleJapaneseInput,
-                    DbeModeKeyPolicy::Suppress,
+                    ActiveImeKind::GoogleJapaneseInput
                 ),
                 PhysicalKeyDisposition::Allow,
                 "{event_type:?}"
@@ -1045,97 +912,11 @@ mod plan_tests {
                 false,
                 true, // is_tsf_mode
                 true, // f2_warmup_owned
-                ActiveImeKind::GoogleJapaneseInput,
-                DbeModeKeyPolicy::Suppress,
+                ActiveImeKind::GoogleJapaneseInput
             ),
             PhysicalKeyDisposition::Allow,
             "InputRelay では is_tsf_mode/f2_warmup_owned が真でも F2 を Suppress してはならない"
         );
-    }
-
-    /// ADR-091 §D3.6: `dbe_mode_key_policy = Passthrough`（隠し設定、上級者向け）
-    /// を選んだ場合、上のテストと対照的に BUG-52 の追加 Suppress 条件が外れ、
-    /// DBE レンジキーの KeyDown が Allow になる（shadow_toggled=false の場合）。
-    /// `shadow_toggled=true`（明示的にトグル発火）の場合は
-    /// `owned_actuation_keydown_suppressed_when_shadow_toggled` の Suppress が
-    /// 別条件として引き続き効くため対象外。
-    #[test]
-    fn dbe_mode_keydown_allowed_when_policy_is_passthrough() {
-        for (vk, action, vk_label) in dbe_mode_vks() {
-            for (profile, active_ime_kind, label) in owned_actuation_cases() {
-                let ev = dbe_mode_event(vk, action, KeyEventType::KeyDown);
-                assert_eq!(
-                    PhysicalKeyDisposition::plan(
-                        &ev,
-                        profile,
-                        false,
-                        false,
-                        false,
-                        active_ime_kind,
-                        DbeModeKeyPolicy::Passthrough
-                    ),
-                    PhysicalKeyDisposition::Allow,
-                    "{vk_label} / {label}: dbe_mode_key_policy=Passthrough なら \
-                     shadow_toggle 不発の DBE レンジキーは Allow"
-                );
-            }
-        }
-    }
-
-    /// `dbe_mode_key_policy=Passthrough` でも、`shadow_toggled=true`（awase 自身が
-    /// 意図した切替）の KeyDown は引き続き Suppress される。Passthrough が緩めるのは
-    /// 「shadow_toggle 不発の DBE レンジキー」という BUG-52 の再現条件のみであり、
-    /// awase が能動的に actuate した場面まで緩めてはならない。
-    #[test]
-    fn dbe_mode_keydown_still_suppressed_when_shadow_toggled_even_with_passthrough() {
-        for (vk, action, vk_label) in dbe_mode_vks() {
-            for (profile, active_ime_kind, label) in owned_actuation_cases() {
-                let ev = dbe_mode_event(vk, action, KeyEventType::KeyDown);
-                assert_eq!(
-                    PhysicalKeyDisposition::plan(
-                        &ev,
-                        profile,
-                        true,
-                        false,
-                        false,
-                        active_ime_kind,
-                        DbeModeKeyPolicy::Passthrough
-                    ),
-                    PhysicalKeyDisposition::Suppress,
-                    "{vk_label} / {label}: dbe_mode_key_policy=Passthrough でも \
-                     shadow_toggled=true の KeyDown は引き続き Suppress"
-                );
-            }
-        }
-    }
-
-    /// `dbe_mode_key_policy=Passthrough` でも、DBE レンジキーの KeyUp は
-    /// （`shadow_toggled` の値に関わらず）引き続き Suppress される
-    /// （`owned_actuation_keyup_always_suppressed` と同じ既存条件、Passthrough は
-    /// `is_dbe_mode_key_down` のゲートにのみ作用し KeyUp 側の条件は変更しない）。
-    #[test]
-    fn dbe_mode_keyup_still_suppressed_with_passthrough() {
-        for (vk, action, _vk_label) in dbe_mode_vks() {
-            for (profile, active_ime_kind, label) in owned_actuation_cases() {
-                for shadow_toggled in [false, true] {
-                    let ev = dbe_mode_event(vk, action, KeyEventType::KeyUp);
-                    assert_eq!(
-                        PhysicalKeyDisposition::plan(
-                            &ev,
-                            profile,
-                            shadow_toggled,
-                            false,
-                            false,
-                            active_ime_kind,
-                            DbeModeKeyPolicy::Passthrough
-                        ),
-                        PhysicalKeyDisposition::Suppress,
-                        "{label}: dbe_mode_key_policy=Passthrough でも DBE レンジ \
-                         KeyUp は shadow_toggled={shadow_toggled} に関わらず Suppress"
-                    );
-                }
-            }
-        }
     }
 
     /// 対照実験: 同じ「shadow_toggle 不発」条件でも `VK_KANJI` 等の DBE 範囲外の
@@ -1146,15 +927,7 @@ mod plan_tests {
         for (profile, active_ime_kind, label) in owned_actuation_cases() {
             let ev = kanji_event(KeyEventType::KeyDown, Some(ShadowImeAction::TurnOn));
             assert_eq!(
-                PhysicalKeyDisposition::plan(
-                    &ev,
-                    profile,
-                    false,
-                    false,
-                    false,
-                    active_ime_kind,
-                    DbeModeKeyPolicy::Suppress
-                ),
+                PhysicalKeyDisposition::plan(&ev, profile, false, false, false, active_ime_kind),
                 PhysicalKeyDisposition::Allow,
                 "{label}: VK_KANJI は VK_DBE_* 向け修正の影響を受けない"
             );
@@ -1173,8 +946,7 @@ mod plan_tests {
                         shadow_toggled,
                         false,
                         false,
-                        active_ime_kind,
-                        DbeModeKeyPolicy::Suppress
+                        active_ime_kind
                     ),
                     PhysicalKeyDisposition::Suppress,
                     "{label}: KANJI KeyUp は shadow_toggled={shadow_toggled} でも常に Suppress \
@@ -1204,7 +976,6 @@ mod plan_tests {
             false, // 非 TSF mode → Allow
             true,
             ANY_IME_KIND,
-            DbeModeKeyPolicy::Suppress,
         );
         assert_eq!(disposition, PhysicalKeyDisposition::Allow);
         assert_eq!(
@@ -1223,7 +994,6 @@ mod plan_tests {
             true,
             true,
             ANY_IME_KIND,
-            DbeModeKeyPolicy::Suppress,
         );
         assert_eq!(disposition, PhysicalKeyDisposition::Suppress);
         assert_eq!(
@@ -1233,7 +1003,7 @@ mod plan_tests {
     }
 
     #[test]
-    fn suppress_reason_is_imm_cross_for_alphanumeric_under_immcross_profile() {
+    fn suppress_reason_is_imm_cross_for_dbe_mode_key_under_immcross_profile() {
         // BUG-90 調査で確認した事実の一つ: ImmCross プロファイル（`Standard`）
         // では VK_DBE_ALPHANUMERIC (英数) は shadow_toggled にも event_type
         // (Down/Up) にも関わらず常に Suppress され、journal 上は "imm-cross"
@@ -1246,8 +1016,8 @@ mod plan_tests {
         for shadow_toggled in [false, true] {
             for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
                 let ev = dbe_mode_event(
-                    crate::vk::VK_DBE_ALPHANUMERIC,
-                    ShadowImeAction::TurnOff,
+                    crate::vk::VK_DBE_SBCSCHAR,
+                    ShadowImeAction::Toggle,
                     event_type,
                 );
                 let disposition = PhysicalKeyDisposition::plan(
@@ -1257,7 +1027,6 @@ mod plan_tests {
                     false,
                     false,
                     ActiveImeKind::GoogleJapaneseInput,
-                    DbeModeKeyPolicy::Suppress,
                 );
                 assert_eq!(
                     disposition,
@@ -1276,8 +1045,8 @@ mod plan_tests {
     #[test]
     fn suppress_reason_is_imm32_off_for_owned_actuation_dbe_mode_key() {
         let ev = dbe_mode_event(
-            crate::vk::VK_DBE_ALPHANUMERIC,
-            ShadowImeAction::TurnOff,
+            crate::vk::VK_DBE_SBCSCHAR,
+            ShadowImeAction::Toggle,
             KeyEventType::KeyDown,
         );
         let disposition = PhysicalKeyDisposition::plan(
@@ -1287,7 +1056,6 @@ mod plan_tests {
             false,
             false,
             ActiveImeKind::GoogleJapaneseInput,
-            DbeModeKeyPolicy::Suppress,
         );
         assert_eq!(disposition, PhysicalKeyDisposition::Suppress);
         assert_eq!(
@@ -1296,230 +1064,120 @@ mod plan_tests {
         );
     }
 
-    // ── BUG-116/ADR-137 決定1: Shift+VK_DBE_KATAKANA の KeyDown を実 IME へ通す ──
+    // ── ADR-191: awase が書かない英数(0xF0)・カタカナ(0xF1)は Suppress せず IME へ素通し ──
+    //
+    // 撤去後は awase が代行しないので、握りつぶすと OS にも awase にも誰も何もしない
+    // 「二重の空振り」になる。BUG-116/ADR-137 の「Shift+0xF1 だけ Allow」は、0xF1 が
+    // 常に Allow になったため不要になった（Shift の有無に依らない）。
 
     fn with_shift(mut event: RawKeyEvent) -> RawKeyEvent {
         event.modifier_snapshot.shift = true;
         event
     }
 
-    fn dbe_ctx(
-        half_width_alnum_toggle_active: bool,
-        is_configured_thumb_key: bool,
-    ) -> DbeModeKeyContext {
-        DbeModeKeyContext {
-            policy: DbeModeKeyPolicy::Suppress,
-            half_width_alnum_toggle_active,
-            is_configured_thumb_key,
-        }
-    }
-
-    /// BUG-116 の修正そのもの: Shift 併用の `VK_DBE_KATAKANA` KeyDown は、
-    /// hw トグル中でも親指キー設定でもなければ Allow される。scan は変更しない
-    /// （`reinject()` の `wScan: 0` のままで GJI がカタカナへ切り替わることを
-    /// 2026-09-05 に実機確認済み、ADR-137）。
+    /// 実イベントの形: 英数・カタカナは `shadow_action` を持たない（`ImeKeyKind::shadow_effect` が
+    /// `None`）。既定の Suppress でも、全プロファイル・全 IME・Down/Up・Shift の有無で Allow。
     #[test]
-    fn shift_katakana_keydown_is_allowed() {
-        for (profile, active_ime_kind, label) in owned_actuation_cases() {
-            let ev = with_shift(dbe_mode_event(
-                crate::vk::VK_DBE_KATAKANA,
-                ShadowImeAction::TurnOn,
-                KeyEventType::KeyDown,
-            ));
-            assert_eq!(
-                PhysicalKeyDisposition::plan(
-                    &ev,
-                    profile,
-                    false,
-                    false,
-                    false,
-                    active_ime_kind,
-                    dbe_ctx(false, false),
-                ),
-                PhysicalKeyDisposition::Allow,
-                "{label}: Shift+VK_DBE_KATAKANA は Allow のはず（BUG-116）"
-            );
-        }
-    }
-
-    /// ADR-137 M-3: 半角英数持続トグル区間では、`kp_stage_shadow_ime_toggle` の
-    /// no-op 分岐が既に `kp_restore_kana_from_half_width` 経由で scan 付き
-    /// `VK_DBE_HIRAGANA` を注入している。素通しした物理 0xF1 と競合させない
-    /// ため、この区間では Shift 併用でも Suppress のままにする。
-    #[test]
-    fn shift_katakana_keydown_suppressed_while_half_width_toggle_active() {
-        let ev = with_shift(dbe_mode_event(
-            crate::vk::VK_DBE_KATAKANA,
-            ShadowImeAction::TurnOn,
-            KeyEventType::KeyDown,
-        ));
-        assert_eq!(
-            PhysicalKeyDisposition::plan(
-                &ev,
-                AppImeProfile::TsfNative,
-                false,
-                false,
-                false,
-                ActiveImeKind::GoogleJapaneseInput,
-                dbe_ctx(true, false),
-            ),
-            PhysicalKeyDisposition::Suppress
-        );
-    }
-
-    /// BUG-115 delegate 機構との衝突対策: 「ひらがな/カタカナ」キーを NICOLA
-    /// 親指キーとして設定している構成では、この KeyDown は IME モードキーでは
-    /// なく同時打鍵入力である。ガードが無いと Shift（小指シフト面）併用の
-    /// 打鍵ごとに実 IME をカタカナへ飛ばしてしまう（Opus 敵対的レビュー B-1）。
-    #[test]
-    fn shift_katakana_keydown_suppressed_when_configured_as_thumb_key() {
-        let ev = with_shift(dbe_mode_event(
-            crate::vk::VK_DBE_KATAKANA,
-            ShadowImeAction::TurnOn,
-            KeyEventType::KeyDown,
-        ));
-        assert_eq!(
-            PhysicalKeyDisposition::plan(
-                &ev,
-                AppImeProfile::TsfNative,
-                false,
-                false,
-                false,
-                ActiveImeKind::GoogleJapaneseInput,
-                dbe_ctx(false, true),
-            ),
-            PhysicalKeyDisposition::Suppress
-        );
-    }
-
-    /// M-2（ADR-137 スコープ外）: IME OFF からの Shift+かな、または belief 乖離時
-    /// （`shadow_toggled=true`）は本修正の対象外のまま Suppress される。
-    #[test]
-    fn shift_katakana_keydown_suppressed_when_shadow_toggled() {
-        let ev = with_shift(dbe_mode_event(
-            crate::vk::VK_DBE_KATAKANA,
-            ShadowImeAction::TurnOn,
-            KeyEventType::KeyDown,
-        ));
-        assert_eq!(
-            PhysicalKeyDisposition::plan(
-                &ev,
-                AppImeProfile::TsfNative,
-                true,
-                false,
-                false,
-                ActiveImeKind::GoogleJapaneseInput,
-                dbe_ctx(false, false),
-            ),
-            PhysicalKeyDisposition::Suppress
-        );
-    }
-
-    /// ADR-137 M-1: スコープは `VK_DBE_KATAKANA` 単体。Windows 標準トリガーの
-    /// 根拠が無い 0xF0/0xF3/0xF4 は Shift 併用でも緩めない（0xF0 は物理
-    /// CapsLock 位置で BUG-15 追補7 の CapsLock 汚染ハザードの当事者でもある）。
-    #[test]
-    fn shift_does_not_unsuppress_other_dbe_mode_keys() {
-        for (vk, action, vk_label) in dbe_mode_vks() {
-            if vk == crate::vk::VK_DBE_KATAKANA {
-                continue;
-            }
+    fn alphanumeric_and_katakana_without_shadow_action_are_always_allowed() {
+        for (vk, _action, vk_label) in dbe_unwritten_vks() {
             for (profile, active_ime_kind, label) in owned_actuation_cases() {
-                let ev = with_shift(dbe_mode_event(vk, action, KeyEventType::KeyDown));
-                assert_eq!(
-                    PhysicalKeyDisposition::plan(
-                        &ev,
-                        profile,
-                        false,
-                        false,
-                        false,
-                        active_ime_kind,
-                        dbe_ctx(false, false),
-                    ),
-                    PhysicalKeyDisposition::Suppress,
-                    "{vk_label} / {label}: Shift 併用でも 0xF1 以外は Suppress のまま"
-                );
+                for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
+                    for shift in [false, true] {
+                        let mut ev = RawKeyEvent {
+                            vk_code: vk,
+                            ..kanji_event(event_type, None)
+                        };
+                        if shift {
+                            ev = with_shift(ev);
+                        }
+                        {
+                            assert_eq!(
+                                PhysicalKeyDisposition::plan(
+                                    &ev,
+                                    profile,
+                                    false,
+                                    false,
+                                    false,
+                                    active_ime_kind
+                                ),
+                                PhysicalKeyDisposition::Allow,
+                                "{vk_label} / {label} / {event_type:?} / shift={shift}: \
+                                 awase が書かないキーは IME へ素通し（ADR-191）"
+                            );
+                        }
+                    }
+                }
             }
         }
     }
 
-    /// ADR-137 M-4: KeyDown だけ Allow・KeyUp は既存どおり Suppress のまま
-    /// （意図的な非対称、`PassthroughQueue` の doc コメント参照）。
+    /// 撤去前の合成イベント（`shadow_action` あり）でも、`shadow_toggled=false` の KeyDown は
+    /// 既定の Suppress で握りつぶされない（Suppress の根拠は「awase が書くキー」だけ）。
     #[test]
-    fn shift_katakana_keyup_stays_suppressed() {
-        for (profile, active_ime_kind, label) in owned_actuation_cases() {
-            let ev = with_shift(dbe_mode_event(
-                crate::vk::VK_DBE_KATAKANA,
-                ShadowImeAction::TurnOn,
-                KeyEventType::KeyUp,
-            ));
-            assert_eq!(
-                PhysicalKeyDisposition::plan(
-                    &ev,
-                    profile,
-                    false,
-                    false,
-                    false,
-                    active_ime_kind,
-                    dbe_ctx(false, false),
-                ),
-                PhysicalKeyDisposition::Suppress,
-                "{label}: Shift+VK_DBE_KATAKANA の KeyUp は引き続き Suppress"
-            );
+    fn alphanumeric_and_katakana_keydown_not_suppressed_even_with_synthetic_action() {
+        for (vk, action, vk_label) in dbe_unwritten_vks() {
+            for (profile, active_ime_kind, label) in owned_actuation_cases() {
+                for shift in [false, true] {
+                    let mut ev = dbe_mode_event(vk, action, KeyEventType::KeyDown);
+                    if shift {
+                        ev = with_shift(ev);
+                    }
+                    assert_eq!(
+                        PhysicalKeyDisposition::plan(
+                            &ev,
+                            profile,
+                            false,
+                            false,
+                            false,
+                            active_ime_kind
+                        ),
+                        PhysicalKeyDisposition::Allow,
+                        "{vk_label} / {label} / shift={shift}: \
+                         awase が書かない英数/カタカナを握りつぶさない（ADR-191）"
+                    );
+                }
+            }
         }
     }
 
-    /// `AppImeProfile::Standard`（ImmCross）は本 ADR のスコープ外のまま
-    /// （`feedback_immcross_owns_kanji` の設計原則、無条件 Suppress は不変）。
+    /// `plan()` の判定そのもの: `shadow_action=Some(Toggle)` を持つ半角/全角（0xF3/0xF4、GJI・MS-IME本体の両方）は、
+    /// `modifier_snapshot.shift` の値に依らず Suppress される（`plan()` は Shift を見ない）。
+    ///
+    /// **本番ではこの組み合わせ（shift=true かつ shadow_action あり）は生成されない**: `enrich_ime_relevance` は
+    /// 修飾キー付きの物理キーに `shadow_action` を付けないので、Shift+半角/全角は `is_kanji_event=false` で **Allow**
+    /// （IME 側で別の意味を持ちうるため）。この名前を「Shift+半角/全角も Suppress される」と読まないこと（round2 B-NB4）。
+    /// なお修飾キーを途中で押す/離すと、同じ物理キーの KeyDown（無修飾で Suppress）と KeyUp（修飾ありで Allow）の
+    /// 配送が非対称になりうる（実害未確認、稀な操作）。
     #[test]
-    fn shift_katakana_suppressed_in_immcross() {
-        let ev = with_shift(dbe_mode_event(
-            crate::vk::VK_DBE_KATAKANA,
-            ShadowImeAction::TurnOn,
-            KeyEventType::KeyDown,
-        ));
-        assert_eq!(
-            PhysicalKeyDisposition::plan(
-                &ev,
-                AppImeProfile::Standard,
-                false,
-                false,
-                false,
-                ActiveImeKind::MicrosoftIme,
-                dbe_ctx(false, false),
-            ),
-            PhysicalKeyDisposition::Suppress
-        );
+    fn plan_suppresses_toggle_hankaku_zenkaku_keydown_regardless_of_modifier_snapshot() {
+        for (vk, action, vk_label) in dbe_written_vks() {
+            for (profile, active_ime_kind, label) in owned_actuation_cases() {
+                for shift in [false, true] {
+                    let mut ev = dbe_mode_event(vk, action, KeyEventType::KeyDown);
+                    if shift {
+                        ev = with_shift(ev);
+                    }
+                    assert_eq!(
+                        PhysicalKeyDisposition::plan(
+                            &ev,
+                            profile,
+                            false,
+                            false,
+                            false,
+                            active_ime_kind
+                        ),
+                        PhysicalKeyDisposition::Suppress,
+                        "{vk_label} / {label} / shift={shift}: awase が beliefトグルとして書く \
+                         キーは二重 actuation 防止のため Suppress（ADR-189/191）"
+                    );
+                }
+            }
+        }
     }
 
-    /// `dbe_mode_key_policy=Passthrough`（ADR-091 §D3.6 の既存の抜け道）でも、
-    /// Shift 併用の 0xF1 は引き続き Allow される（Passthrough は「常に緩める」
-    /// 側であり、決定1 のガードと矛盾しない）。
-    #[test]
-    fn shift_katakana_allowed_only_under_suppress_policy() {
-        let ev = with_shift(dbe_mode_event(
-            crate::vk::VK_DBE_KATAKANA,
-            ShadowImeAction::TurnOn,
-            KeyEventType::KeyDown,
-        ));
-        let ctx = DbeModeKeyContext {
-            policy: DbeModeKeyPolicy::Passthrough,
-            half_width_alnum_toggle_active: false,
-            is_configured_thumb_key: false,
-        };
-        assert_eq!(
-            PhysicalKeyDisposition::plan(
-                &ev,
-                AppImeProfile::TsfNative,
-                false,
-                false,
-                false,
-                ActiveImeKind::GoogleJapaneseInput,
-                ctx,
-            ),
-            PhysicalKeyDisposition::Allow
-        );
-    }
+    // 決定表の絞り込みを書くときは「対象行が空でないこと」を assert すること。ラベルを完全一致で絞り、実際のラベルが
+    // `"VK_DBE_SBCSCHAR (0xF3)"` のように後置きを持つために対象行が0件になったテストが、Linux では走らず
+    // windows-build で初めて失敗した実例がある（`kanji_family_keyup_suppress_verdict_is_independent_of_specific_vk`）。
 
     // ── ADR-166: plan() の全数決定表 ──
     //
@@ -1548,11 +1206,7 @@ mod plan_tests {
         is_tsf_mode: bool,
         f2_warmup_owned: bool,
         active_ime_kind: ActiveImeKind,
-        shift: bool,
         injected: bool,
-        dbe_policy: DbeModeKeyPolicy,
-        half_width_alnum_toggle_active: bool,
-        is_configured_thumb_key: bool,
         explicit_ime_action_consumed: bool,
         result: PhysicalKeyDisposition,
     }
@@ -1569,29 +1223,17 @@ mod plan_tests {
         ActiveImeKind::MicrosoftIme,
     ];
     const ALL_BOOLS: [bool; 2] = [false, true];
-    const ALL_DBE_POLICIES: [DbeModeKeyPolicy; 2] =
-        [DbeModeKeyPolicy::Suppress, DbeModeKeyPolicy::Passthrough];
 
     /// `kanji_family_keyup_suppress_verdict_is_independent_of_specific_vk`が
     /// 行のグルーピングに使う、vk種別を除いた入力キー。
-    type PlanKey = (AppImeProfile, bool, ActiveImeKind, bool, DbeModeKeyPolicy);
-
-    /// `dbe_mode_vks()`から`VK_DBE_KATAKANA`を除いたもの
-    /// （カタカナは`shift_katakana_passthrough`の例外軸を別途持つため
-    /// 行列の節を分ける）。
-    fn dbe_mode_vks_excluding_katakana() -> Vec<(VkCode, ShadowImeAction, &'static str)> {
-        dbe_mode_vks()
-            .into_iter()
-            .filter(|&(vk, _, _)| vk != crate::vk::VK_DBE_KATAKANA)
-            .collect()
-    }
+    type PlanKey = (AppImeProfile, bool, ActiveImeKind, bool);
 
     #[expect(clippy::too_many_lines)]
     fn run_plan_matrix() -> Vec<PlanRow> {
         let mut rows = Vec::new();
 
         // 1. VK_DBE_HIRAGANA (0xF2): 専用分岐。shadow_toggled/active_ime_kind/
-        //    shift/dbe_policy/半角トグル/親指キー設定はどれも参照されないため
+        //    shift/半角トグル/親指キー設定はどれも参照されないため
         //    固定値(既定値)1通りに絞る。
         for &event_type in &ALL_EVENT_TYPES {
             for &profile in &ALL_PROFILES {
@@ -1607,7 +1249,6 @@ mod plan_tests {
                                 is_tsf_mode,
                                 f2_warmup_owned,
                                 ActiveImeKind::GoogleJapaneseInput,
-                                DbeModeKeyPolicy::Suppress,
                             );
                             rows.push(PlanRow {
                                 vk_label: "VK_DBE_HIRAGANA",
@@ -1617,11 +1258,7 @@ mod plan_tests {
                                 is_tsf_mode,
                                 f2_warmup_owned,
                                 active_ime_kind: ActiveImeKind::GoogleJapaneseInput,
-                                shift: false,
                                 injected,
-                                dbe_policy: DbeModeKeyPolicy::Suppress,
-                                half_width_alnum_toggle_active: false,
-                                is_configured_thumb_key: false,
                                 explicit_ime_action_consumed: false,
                                 result,
                             });
@@ -1631,76 +1268,10 @@ mod plan_tests {
             }
         }
 
-        // 2. VK_DBE_KATAKANA (0xF1): shift_katakana_passthroughの例外対象。
-        for &event_type in &ALL_EVENT_TYPES {
-            for &profile in &ALL_PROFILES {
-                for &shadow_toggled in &ALL_BOOLS {
-                    for &active_ime_kind in &ALL_IME_KINDS {
-                        for &shift in &ALL_BOOLS {
-                            for &injected in &ALL_BOOLS {
-                                // `plan()`自身のdebug_assert!が保証する不変条件
-                                // (BUG-14ガード: injected==trueならshadow_toggled
-                                // は必ずfalse)に反する組み合わせは生成しない。
-                                if injected && shadow_toggled {
-                                    continue;
-                                }
-                                for &dbe_policy in &ALL_DBE_POLICIES {
-                                    for &half_width in &ALL_BOOLS {
-                                        for &thumb in &ALL_BOOLS {
-                                            let mut ev = dbe_mode_event(
-                                                crate::vk::VK_DBE_KATAKANA,
-                                                ShadowImeAction::TurnOn,
-                                                event_type,
-                                            );
-                                            ev.injected = injected;
-                                            if shift {
-                                                ev = with_shift(ev);
-                                            }
-                                            let ctx = DbeModeKeyContext {
-                                                policy: dbe_policy,
-                                                half_width_alnum_toggle_active: half_width,
-                                                is_configured_thumb_key: thumb,
-                                            };
-                                            let result = PhysicalKeyDisposition::plan(
-                                                &ev,
-                                                profile,
-                                                shadow_toggled,
-                                                false,
-                                                false,
-                                                active_ime_kind,
-                                                ctx,
-                                            );
-                                            rows.push(PlanRow {
-                                                vk_label: "VK_DBE_KATAKANA",
-                                                event_type,
-                                                profile,
-                                                shadow_toggled,
-                                                is_tsf_mode: false,
-                                                f2_warmup_owned: false,
-                                                active_ime_kind,
-                                                shift,
-                                                injected,
-                                                dbe_policy,
-                                                half_width_alnum_toggle_active: half_width,
-                                                is_configured_thumb_key: thumb,
-                                                explicit_ime_action_consumed: false,
-                                                result,
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3. その他のDBEモードキー (0xF0/0xF3/0xF4): `shift_katakana_passthrough`
-        //    は`vk_code == VK_DBE_KATAKANA`以外では常にfalseを返すため、
-        //    shift/半角トグル/親指キー設定は無関係。固定値1通りに絞る
-        //    （「無関係であること」自体は下記の不変条件テストで確認する）。
-        for &(vk, action, label) in &dbe_mode_vks_excluding_katakana() {
+        // 2. DBEモードキー (0xF0/0xF1/0xF3/0xF4): awase が書くキー(0xF3/0xF4)と書かない
+        //    キー(0xF0/0xF1)の違いは`plan()`の`is_open_toggle_for`だけで決まる
+        //    （ADR-191。Shift/半角トグル/親指キー設定は参照されない）。
+        for &(vk, action, label) in &dbe_mode_vks() {
             for &event_type in &ALL_EVENT_TYPES {
                 for &profile in &ALL_PROFILES {
                     for &shadow_toggled in &ALL_BOOLS {
@@ -1709,40 +1280,28 @@ mod plan_tests {
                                 if injected && shadow_toggled {
                                     continue;
                                 }
-                                for &dbe_policy in &ALL_DBE_POLICIES {
-                                    let mut ev = dbe_mode_event(vk, action, event_type);
-                                    ev.injected = injected;
-                                    let ctx = DbeModeKeyContext {
-                                        policy: dbe_policy,
-                                        half_width_alnum_toggle_active: false,
-                                        is_configured_thumb_key: false,
-                                    };
-                                    let result = PhysicalKeyDisposition::plan(
-                                        &ev,
-                                        profile,
-                                        shadow_toggled,
-                                        false,
-                                        false,
-                                        active_ime_kind,
-                                        ctx,
-                                    );
-                                    rows.push(PlanRow {
-                                        vk_label: label,
-                                        event_type,
-                                        profile,
-                                        shadow_toggled,
-                                        is_tsf_mode: false,
-                                        f2_warmup_owned: false,
-                                        active_ime_kind,
-                                        shift: false,
-                                        injected,
-                                        dbe_policy,
-                                        half_width_alnum_toggle_active: false,
-                                        is_configured_thumb_key: false,
-                                        explicit_ime_action_consumed: false,
-                                        result,
-                                    });
-                                }
+                                let mut ev = dbe_mode_event(vk, action, event_type);
+                                ev.injected = injected;
+                                let result = PhysicalKeyDisposition::plan(
+                                    &ev,
+                                    profile,
+                                    shadow_toggled,
+                                    false,
+                                    false,
+                                    active_ime_kind,
+                                );
+                                rows.push(PlanRow {
+                                    vk_label: label,
+                                    event_type,
+                                    profile,
+                                    shadow_toggled,
+                                    is_tsf_mode: false,
+                                    f2_warmup_owned: false,
+                                    active_ime_kind,
+                                    injected,
+                                    explicit_ime_action_consumed: false,
+                                    result,
+                                });
                             }
                         }
                     }
@@ -1768,7 +1327,6 @@ mod plan_tests {
                                 false,
                                 false,
                                 ActiveImeKind::GoogleJapaneseInput,
-                                DbeModeKeyPolicy::Suppress,
                             );
                             rows.push(PlanRow {
                                 vk_label: if vk == crate::vk::VK_CONVERT {
@@ -1782,11 +1340,7 @@ mod plan_tests {
                                 is_tsf_mode: false,
                                 f2_warmup_owned: false,
                                 active_ime_kind: ActiveImeKind::GoogleJapaneseInput,
-                                shift: false,
                                 injected,
-                                dbe_policy: DbeModeKeyPolicy::Suppress,
-                                half_width_alnum_toggle_active: false,
-                                is_configured_thumb_key: false,
                                 explicit_ime_action_consumed: explicit_consumed,
                                 result,
                             });
@@ -1797,8 +1351,8 @@ mod plan_tests {
         }
 
         // 5. 一般KANJI系VK（shadow_action=Some、DBEモードキー集合には属さない
-        //    例: VK_KANJI）。dbe_policyは`is_dbe_mode_key_down`判定にのみ使われ
-        //    このVK群には無関係だが、「無関係であること」自体を確認するため回す。
+        //    例: VK_KANJI）。`is_dbe_mode_key_down`はこのVK群には無関係だが、
+        //    「無関係であること」自体を確認するため回す。
         for &event_type in &ALL_EVENT_TYPES {
             for &profile in &ALL_PROFILES {
                 for &shadow_toggled in &ALL_BOOLS {
@@ -1807,35 +1361,28 @@ mod plan_tests {
                             if injected && shadow_toggled {
                                 continue;
                             }
-                            for &dbe_policy in &ALL_DBE_POLICIES {
-                                let mut ev = kanji_event(event_type, Some(ShadowImeAction::Toggle));
-                                ev.injected = injected;
-                                let result = PhysicalKeyDisposition::plan(
-                                    &ev,
-                                    profile,
-                                    shadow_toggled,
-                                    false,
-                                    false,
-                                    active_ime_kind,
-                                    dbe_policy,
-                                );
-                                rows.push(PlanRow {
-                                    vk_label: "VK_KANJI(generic)",
-                                    event_type,
-                                    profile,
-                                    shadow_toggled,
-                                    is_tsf_mode: false,
-                                    f2_warmup_owned: false,
-                                    active_ime_kind,
-                                    shift: false,
-                                    injected,
-                                    dbe_policy,
-                                    half_width_alnum_toggle_active: false,
-                                    is_configured_thumb_key: false,
-                                    explicit_ime_action_consumed: false,
-                                    result,
-                                });
-                            }
+                            let mut ev = kanji_event(event_type, Some(ShadowImeAction::Toggle));
+                            ev.injected = injected;
+                            let result = PhysicalKeyDisposition::plan(
+                                &ev,
+                                profile,
+                                shadow_toggled,
+                                false,
+                                false,
+                                active_ime_kind,
+                            );
+                            rows.push(PlanRow {
+                                vk_label: "VK_KANJI(generic)",
+                                event_type,
+                                profile,
+                                shadow_toggled,
+                                is_tsf_mode: false,
+                                f2_warmup_owned: false,
+                                active_ime_kind,
+                                injected,
+                                explicit_ime_action_consumed: false,
+                                result,
+                            });
                         }
                     }
                 }
@@ -1855,7 +1402,6 @@ mod plan_tests {
                         false,
                         false,
                         ActiveImeKind::GoogleJapaneseInput,
-                        DbeModeKeyPolicy::Suppress,
                     );
                     rows.push(PlanRow {
                         vk_label: "non-kanji",
@@ -1865,11 +1411,7 @@ mod plan_tests {
                         is_tsf_mode: false,
                         f2_warmup_owned: false,
                         active_ime_kind: ActiveImeKind::GoogleJapaneseInput,
-                        shift: false,
                         injected,
-                        dbe_policy: DbeModeKeyPolicy::Suppress,
-                        half_width_alnum_toggle_active: false,
-                        is_configured_thumb_key: false,
                         explicit_ime_action_consumed: false,
                         result,
                     });
@@ -1880,7 +1422,7 @@ mod plan_tests {
         rows
     }
 
-    /// `run_plan_matrix`は1000行超の決定表を生成するため、複数のテストが
+    /// `run_plan_matrix`は約380行の決定表を生成するため、複数のテストが
     /// 同じ表を参照する場合はここで1回だけ計算してキャッシュする
     /// （/code-review指摘、PR #206棚卸し。以前は3テストが独立に呼び毎回
     /// 全行を再生成していた）。
@@ -1895,7 +1437,7 @@ mod plan_tests {
     fn plan_matrix_covers_all_branches_without_panicking() {
         let rows = cached_plan_matrix();
         assert!(
-            rows.len() > 1000,
+            rows.len() > 300,
             "決定表が想定より小さい: {} 行",
             rows.len()
         );
@@ -1903,7 +1445,7 @@ mod plan_tests {
 
     /// BUG-131の背景となった性質そのものを固定する: `is_kanji_event`な
     /// DBEモードキー群のKeyUpに対するSuppress判定は、`profile`/
-    /// `shadow_toggled`/`active_ime_kind`/`injected`/`dbe_policy`が同じなら
+    /// `shadow_toggled`/`active_ime_kind`/`injected`/が同じなら
     /// **vkの種類（0xF0/0xF1/0xF3/0xF4のどれか）に依存しない**。
     /// `plan()`自身はこの性質を最初から満たしており、BUG-131は`plan()`の
     /// 外側（`kp_restore_hiragana_for_suppressed_mode_key`）がKeyDown/KeyUpの
@@ -1920,11 +1462,9 @@ mod plan_tests {
         let relevant: Vec<&PlanRow> = rows
             .iter()
             .filter(|r| {
-                dbe_family.contains(&r.vk_label)
+                // ラベルは "VK_DBE_SBCSCHAR (0xF3)" のように16進を後置している
+                dbe_family.iter().any(|f| r.vk_label.starts_with(f))
                     && r.event_type == KeyEventType::KeyUp
-                    && !r.shift
-                    && !r.half_width_alnum_toggle_active
-                    && !r.is_configured_thumb_key
             })
             .collect();
         assert!(!relevant.is_empty());
@@ -1936,7 +1476,6 @@ mod plan_tests {
                 row.shadow_toggled,
                 row.active_ime_kind,
                 row.injected,
-                row.dbe_policy,
             );
             if let Some((_, result, first_vk)) = seen.iter().find(|(k, _, _)| *k == key) {
                 assert_eq!(
@@ -1966,71 +1505,6 @@ mod plan_tests {
                 row.result,
                 PhysicalKeyDisposition::Allow,
                 "InputRelayプロファイルは常にAllowのはず(issue #136/BUG-90決定4): {row:?}"
-            );
-        }
-    }
-
-    /// opus-adversarial-consult指摘(M-2、ADR-166): 同一物理押下の中で
-    /// `plan()`はDown側とUp側で判定が割れうる——`plan()`自体の不具合ではなく、
-    /// 現状の仕様として固定する（このpinが崩れたら意図的な変更かどうかを
-    /// レビューで確認すること）。
-    ///
-    /// `Shift+VK_DBE_KATAKANA`のKeyDownは`shift_katakana_passthrough`
-    /// （ADR-137決定1）によりAllowされ実IMEへ届くが、実機ではこの物理キーの
-    /// KeyUpは`VK_DBE_ALPHANUMERIC`(0xF0)相当で届く。段6bはKANJI系VKの
-    /// KeyUpをvk種別を問わず`ime_actuation_owned`なら常にSuppressするため、
-    /// **GJI/OS側はこの物理押下に対応するKeyUpを一度も受け取らない**。
-    /// これはawase側の`kana_mode_restore_key_down`ラッチ（BUG-131）とは
-    /// 独立した、GJI自身の内部状態が崩れうる候補機序であり、本テストは
-    /// この非対称性そのものを固定するだけで、修正は別ADR/別調査に委ねる
-    /// （`plan()`は既に複数系統の敵対的レビューを経ており、この段6bの
-    /// KeyUp無条件Suppress条件自体を軽々に変更しない方針、ADR-166参照）。
-    #[test]
-    fn shift_katakana_down_allow_can_pair_with_keyup_suppress_pin() {
-        for (profile, active_ime_kind, label) in owned_actuation_cases() {
-            let down = with_shift(dbe_mode_event(
-                crate::vk::VK_DBE_KATAKANA,
-                ShadowImeAction::TurnOn,
-                KeyEventType::KeyDown,
-            ));
-            let down_result = PhysicalKeyDisposition::plan(
-                &down,
-                profile,
-                false,
-                false,
-                false,
-                active_ime_kind,
-                dbe_ctx(false, false),
-            );
-            assert_eq!(
-                down_result,
-                PhysicalKeyDisposition::Allow,
-                "{label}: Shift+VK_DBE_KATAKANA KeyDownはADR-137決定1によりAllowのはず"
-            );
-
-            // 実機ではこの物理キーのKeyUpはvk=VK_DBE_ALPHANUMERIC(0xF0)相当で
-            // 届く（BUG-131）。shiftは付かない（実機でKeyUp側にshift修飾が
-            // 残っていた形跡は無い）。
-            let up = dbe_mode_event(
-                crate::vk::VK_DBE_ALPHANUMERIC,
-                ShadowImeAction::TurnOff,
-                KeyEventType::KeyUp,
-            );
-            let up_result = PhysicalKeyDisposition::plan(
-                &up,
-                profile,
-                false,
-                false,
-                false,
-                active_ime_kind,
-                dbe_ctx(false, false),
-            );
-            assert_eq!(
-                up_result,
-                PhysicalKeyDisposition::Suppress,
-                "{label}: 対応するKeyUpは段6bによりSuppressされ、GJI/OSは \
-                 このKeyUpを一度も受け取らないはず（ADR-166 M-2、独立の \
-                 候補機序として記録・本テストは現状固定のみ）"
             );
         }
     }

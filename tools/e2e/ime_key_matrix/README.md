@@ -64,7 +64,8 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 | `cycle.py` | 3段階ラウンド(設定の読み取り・学習・検証)のオフライン計測。`all <学習ログ> -- <検証ログ>` で、設定由来の表 S・学習した表 L・合成 M を、学習に使っていない walk の開ループ連鎖で採点する |
 | `conv_exp.py` | 隠れ状態「変換中(Conversion)」を打鍵履歴から追跡すると、入力中の Esc・無変換の非決定セルが決定的になるかの検証実験(研究用。製品コードは使わない) |
 | `score_walk.py` | 格子から作った予測表(JSON)を、独立した walk(キーで到達した状態)で一段予測として採点し、不一致セルを列挙する |
+| `gen_key_effect_table.py` | `grid-tables/{atok,msime,msime-native}.json` から、打鍵時予測の表 `crates/awase-windows/src/state/key_effect_data.rs` を生成する(ADR-191 決定3・4)。`--check` は何も書かずコミット済みの生成物との一致だけを検査する(`architecture_guard` の `key_effect_data_matches_generator` が呼ぶ) |
 | `gen_grid_nondet.py` | 前回の格子の表(`grid-tables/*.json`)から、結果が割れたセルの一覧(`grid-tables/nondet-*.txt`)を作る。`--grid-adaptive` の2パス目(`--grid-retry-file`)が再試行する対象になる |
 | `notify_latency.py` | `compartment_notify_probe`(ADR-193)のログから、キー→TSF compartment 変更通知の遅延(P50/P95/最大)、通知が来なかったキーの割合、通知の順序、周期読み取りとの比較を集計する |
-| `grid-tables/` | 格子(`--grid`)の学習結果の参照データ(`atok.json`/`msime.json`: セル→結果の分布)と、`--grid-adaptive` の再試行対象(`nondet-*.txt`)。予測表の生成元は撤去ブランチ側 |
+| `grid-tables/` | 格子(`--grid`)の学習結果の参照データ(`atok.json`/`msime.json`/`msime-native.json`: セル→結果の分布)と、`--grid-adaptive` の再試行対象(`nondet-*.txt`)。予測表(`key_effect_data.rs`)の生成元でもある(`gen_key_effect_table.py`) |
 | `patches/compartment_notify_probe-setfocus.patch` | ADR-193 の `compartment_notify_probe.rs` **本体**への修正案(`WM_SETFOCUS` で入力欄へフォーカスを戻す1アーム。CI で前面化に失敗する原因の対処)。**未適用**(本体は別セッションの成果物) |

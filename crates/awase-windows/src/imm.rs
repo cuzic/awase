@@ -5,7 +5,7 @@
 //! IME 制御定数・RAII コンテキストガード・クロスプロセスクエリヘルパーを一元管理する。
 //! `ime.rs` / `ime_diagnostic.rs` / `observer/ime_observer.rs` に分散していた重複を集約。
 
-use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{GetLastError, HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Input::Ime::{ImmGetContext, ImmGetDefaultIMEWnd, ImmReleaseContext, HIMC};
 use windows::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, SMTO_ABORTIFHUNG};
 
@@ -196,6 +196,22 @@ pub(crate) unsafe fn actuate_ime_control(
     unsafe { send_ime_control_raw(ime_wnd, raw_cmd, lparam, timeout_ms, SendHealthFeed::Record) }
 }
 
+thread_local! {
+    /// この読み取り（同一スレッド）の間に、IME窓への`SendMessageTimeout`が時間切れになったか。
+    /// `read_ime_state_full`が開始時にリセットし、`ime_on`が読めなかったときに`ImeSnapshot::probe_timed_out`へ載せる。
+    static PROBE_TIMED_OUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// 読み取りの開始時に時間切れフラグをリセットする。
+pub(crate) fn reset_probe_timed_out() {
+    PROBE_TIMED_OUT.with(|f| f.set(false));
+}
+
+/// 時間切れフラグを読んでリセットする。
+pub(crate) fn take_probe_timed_out() -> bool {
+    PROBE_TIMED_OUT.with(|f| f.replace(false))
+}
+
 /// `WM_IME_CONTROL` を IME ウィンドウに送信し、結果を返す。
 ///
 /// タイムアウトまたはエラー時は `None` を返す。
@@ -264,7 +280,18 @@ unsafe fn send_ime_control_raw(
             Some(&raw mut result),
         )
     };
+    // 失敗（戻り値0）の理由を、直後に取得する（他のAPI呼び出しで上書きされる前）。
+    let last_error = if ok.0 == 0 {
+        unsafe { GetLastError() }.0
+    } else {
+        0
+    };
     let elapsed_us = crate::hook::now_timestamp_us().saturating_sub(issue_us);
+    if ok.0 == 0
+        && crate::state::imm_evidence::send_failure_is_timeout(last_error, elapsed_us, timeout_ms)
+    {
+        PROBE_TIMED_OUT.with(|f| f.set(true));
+    }
     // ADR-140 コードレビュー指摘（MAJOR）: end_ms は send_health のサーキット
     // ブレーカ計測に使われるため、下の tracing::debug! のフォーマット/I/O コストを
     // その計測窓に含めてはならない——先に end_ms を確定させてから記録する。

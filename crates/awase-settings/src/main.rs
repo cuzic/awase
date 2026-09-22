@@ -2814,18 +2814,8 @@ impl SettingsApp {
         ui.heading("IMEキー較正");
         ui.label(
             "無変換/変換等のキーがGJI/MS-IMEで実際にIMEをON/OFFするか実機測定します。\n\
-             config1.db/レジストリの静的な分類だけでは判別できない環境向けです。",
-        );
-        ui.add_space(8.0);
-        ui.checkbox(
-            &mut self.config.general.apply_calibrated_mode_keys,
-            "確定した較正結果を実際のIME判定に反映する（自己責任）",
-        )
-        .on_hover_text(
-            "OFF(既定)の場合、較正を確定してconfig.tomlへ保存はしますが、\n\
-             実際のGJI/MS-IME自動検出結果を上書きしません（測定のみ、\n\
-             安全側）。ONにすると、確定した較正結果がGJI/MS-IME側の\n\
-             自動検出結果を実際に上書きするようになります。",
+             config1.db/レジストリの静的な分類だけでは判別できない環境向けです。\n\
+             測定結果は保存されますが、現バージョンでは実際のIME判定には適用されません（測定のみ）。",
         );
         ui.add_space(8.0);
 
@@ -3669,29 +3659,6 @@ impl SettingsApp {
              （Windows にこの入力方式を外部から切り替える公式 API が無いため）。\n\
              JIS かな直接入力を意図的に使いたい場合（= awase をローマ字入力に\n\
              して使う場合など）のみ OFF にしてください。",
-        );
-        ui.add_space(4.0);
-        ui.checkbox(
-            &mut self.config.general.gji_thumb_key_ime_toggle,
-            "GJI（Google 日本語入力）の無変換/変換/ひらがな/カタカナキーの状態依存トグルをベストエフォートで追従する（自己責任）",
-        )
-        .on_hover_text(
-            "OFF(既定)の場合、GJIのキーマップ設定（ATOKプリセット、または\n\
-             カスタムキーマップでの同種の割当て）が無変換/変換/ひらがな/\n\
-             カタカナキー単体に状態依存のIME ON/OFFトグルを割り当てていても、\n\
-             awaseはIMEの開閉を代行せず、ログで警告のみ行います（生キーは\n\
-             GJIに届き、awaseは結果を読み取ってEngineを追従させます。\n\
-             IMMで読めるアプリのみ）。ONにすると、その割当てを\n\
-             ベストエフォートで反映します（awaseが代わりに開閉します）。\n\
-             この種のトグルは非冪等（誤って発火すると意図せずIME状態が\n\
-             反転する）なので、既定ではOFFにしています。\n\
-             （On/Offの割当ては非冪等ではないため、この設定に関わらず\n\
-             常に反映します。この設定が影響するのはToggle割当ての場合\n\
-             だけです。またひらがな/カタカナキーが親指シフトキーとして\n\
-             設定されている場合は、この設定に関わらず単独タップ確定時に\n\
-             安全に反映されます——チョード判定と衝突しない専用の仕組みを\n\
-             使うため。詳細は docs/known-bugs.md の BUG-115 を参照して\n\
-             ください。）",
         );
         ui.add_space(4.0);
         half_width_alnum_toggle_checkbox(ui, &mut self.config.general.half_width_alnum_toggle);
@@ -4840,10 +4807,10 @@ const KEYMAP_MAIN_KEYS: &[(&str, &str)] = &[
 ];
 
 /// `KEYMAP_MAIN_KEYS` から、対応する物理キーが存在しない IME 仮想キー
-/// （`ImeKeyKind::ImeOn`/`ImeOff`/`Alphanumeric`/`Katakana`/`Activate`/
-/// `Deactivate`/`ActivatePair`）だけを除いた候補一覧。
+/// （`ImeKeyKind::ImeOn`/`ImeOff`/`DbeAlphanumeric`/`DbeKatakana`/`DbeHiragana`/
+/// `DbeSbcsChar`/`DbeDbcsChar`）だけを除いた候補一覧。
 ///
-/// `かな`(`ImeKeyKind::Kana`)・`漢字`(`ImeKeyKind::KanjiToggle`) は実在する
+/// `かな`(`ImeKeyKind::Kana`)・`漢字`(`ImeKeyKind::Kanji`) は実在する
 /// 物理キーなので除外しない——`ImeKeyKind::from_vk(vk).is_some()` 全体を
 /// 除外条件にすると、この2つも誤って弾いてしまう（コードレビュー指摘）。
 ///
@@ -4862,11 +4829,11 @@ fn physical_key_options() -> impl Iterator<Item = &'static (&'static str, &'stat
                 Some(
                     awase_windows::vk::ImeKeyKind::ImeOn
                         | awase_windows::vk::ImeKeyKind::ImeOff
-                        | awase_windows::vk::ImeKeyKind::Alphanumeric
-                        | awase_windows::vk::ImeKeyKind::Katakana
-                        | awase_windows::vk::ImeKeyKind::Activate
-                        | awase_windows::vk::ImeKeyKind::Deactivate
-                        | awase_windows::vk::ImeKeyKind::ActivatePair
+                        | awase_windows::vk::ImeKeyKind::DbeAlphanumeric
+                        | awase_windows::vk::ImeKeyKind::DbeKatakana
+                        | awase_windows::vk::ImeKeyKind::DbeHiragana
+                        | awase_windows::vk::ImeKeyKind::DbeSbcsChar
+                        | awase_windows::vk::ImeKeyKind::DbeDbcsChar
                 )
             )
         })

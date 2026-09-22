@@ -75,37 +75,40 @@ pub const VK_NONAME: VkCode = VkCode(0xFC);
 
 // ── IME キー種別 ──────────────────────────────────────────
 
-/// IME の ON/OFF 状態を変更するキーの種別。
+/// IME のモード/開閉に関係しうる物理キーの**同定**（このVKは何のキーか）。
 ///
-/// raw な VK コード (0xF2, 0x19 等) の代わりにパターンマッチで使う。
+/// raw な VK コード (0xF2, 0x19 等) の代わりにパターンマッチで使う。variant 名は VK の名前どおりで、
+/// **効果（ON にする/OFF にする等）を意味しない**。押したときに何が起きるかは IME 種別・キーマップ・状態で変わる
+/// ので、ここでは決め打たず、予測表（`state/key_effect_data.rs`、格子で学習した結果から生成）と観測から引く
+/// （ADR-191 決定6）。効果を静的に持つのは [`ImeKeyKind::shadow_effect`]（IME種別に依らず確定しているキーだけ）と
+/// [`ImeKeyKind::is_open_toggle_for`]（IME種別ごとに開閉トグルと確定しているキーだけ）に限る。
+///
+/// 旧名（ADR-191 以前）: `KanjiToggle`→`Kanji`、`Alphanumeric`→`DbeAlphanumeric`、`Katakana`→`DbeKatakana`、
+/// `Activate`→`DbeHiragana`、`Deactivate`→`DbeSbcsChar`、`ActivatePair`→`DbeDbcsChar`。
+/// 旧名は効果を名前に埋め込んでいた（例: 0xF3 を「IME OFF にするキー」と呼ぶ）が、実IMEでは 0xF3/0xF4 は
+/// どちらも開閉トグルである（ADR-186/190）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImeKeyKind {
-    /// VK_KANA (0x15) — カタカナ/ひらがなキー
-    ///
-    /// Microsoft 公式: "The IME On key has the virtual key code VK_KANA (0x15)".
-    /// 単独押下でひらがな入力モードに入る（IME ON）。Shift+ で カタカナモード。
-    /// トグルではなく常に IME ON にする動作。
-    /// wezterm 等のアプリで IME ON キーとして使われる。
+    /// VK_KANA (0x15)。日本語キーボードの「かな」キー。
     Kana,
     /// VK_IME_ON (0x16)
     ImeOn,
-    /// VK_JUNJA (0x17) — IME on 系
+    /// VK_JUNJA (0x17)
     Junja,
-    /// VK_KANJI (0x19) — 半角/全角キー
-    /// 多くの JIS キーボードでは IME ON/OFF のトグルとして動作する。
-    KanjiToggle,
+    /// VK_KANJI (0x19)。「漢字」キー（0xF3/0xF4 の「半角/全角」とは別のVK）。
+    Kanji,
     /// VK_IME_OFF (0x1A)
     ImeOff,
-    /// VK_DBE_ALPHANUMERIC / VK_OEM_ATTN (0xF0) — 英数モード（IME OFF 扱い）
-    Alphanumeric,
-    /// VK_DBE_KATAKANA (0xF1) — カタカナモード（IME ON）
-    Katakana,
-    /// VK_DBE_HIRAGANA (0xF2) — ひらがなモード（IME ON）
-    Activate,
-    /// VK_DBE_SBCSCHAR / VK_OEM_AUTO (0xF3) — 半角モード（IME OFF 扱い）
-    Deactivate,
-    /// VK_DBE_DBCSCHAR / VK_OEM_ENLW (0xF4) — 全角モード（IME ON）
-    ActivatePair,
+    /// VK_DBE_ALPHANUMERIC / VK_OEM_ATTN (0xF0)。「英数」キー。
+    DbeAlphanumeric,
+    /// VK_DBE_KATAKANA (0xF1)。「カタカナ」キー。
+    DbeKatakana,
+    /// VK_DBE_HIRAGANA (0xF2)。「ひらがな」キー。
+    DbeHiragana,
+    /// VK_DBE_SBCSCHAR / VK_OEM_AUTO (0xF3)。「半角/全角」キーの一方（OSが押すたびに 0xF3/0xF4 を交互に見せる）。
+    DbeSbcsChar,
+    /// VK_DBE_DBCSCHAR / VK_OEM_ENLW (0xF4)。「半角/全角」キーのもう一方。
+    DbeDbcsChar,
 }
 
 /// `ImeKeyKind` が IME 状態に与える効果。
@@ -113,6 +116,7 @@ pub enum ImeKeyKind {
 pub enum ShadowImeEffect {
     TurnOn,
     TurnOff,
+    /// 押すたびに開閉が反転する（beliefから目標を決めて冪等な VK_IME_ON/OFF で書く）。
     Toggle,
 }
 
@@ -124,29 +128,70 @@ impl ImeKeyKind {
             0x15 => Some(Self::Kana),
             0x16 => Some(Self::ImeOn),
             0x17 => Some(Self::Junja),
-            0x19 => Some(Self::KanjiToggle),
+            0x19 => Some(Self::Kanji),
             0x1A => Some(Self::ImeOff),
-            0xF0 => Some(Self::Alphanumeric),
-            0xF1 => Some(Self::Katakana),
-            0xF2 => Some(Self::Activate),
-            0xF3 => Some(Self::Deactivate),
-            0xF4 => Some(Self::ActivatePair),
+            0xF0 => Some(Self::DbeAlphanumeric),
+            0xF1 => Some(Self::DbeKatakana),
+            0xF2 => Some(Self::DbeHiragana),
+            0xF3 => Some(Self::DbeSbcsChar),
+            0xF4 => Some(Self::DbeDbcsChar),
             _ => None,
         }
     }
 
-    /// このキーが shadow IME 状態に与える効果。
+    /// このキーが shadow IME 状態に与える効果（IME種別に依らず静的に確定しているものだけ）。
+    ///
+    /// ADR-191: 開閉だけに作用し、どのIMEでも結果が同じキーだけを静的に扱う。
+    /// - `VK_IME_ON`/`VK_IME_OFF`: Windows標準で冪等。
+    /// - `VK_KANJI`(0x19): どのIMEでも開閉トグル（ADR-189、`keys.ime_toggle`の既定）。
+    ///
+    /// ひらがな・カタカナ・英数・`VK_KANA`など、入力モードも動かしうる/IMEの種類・キーマップ・
+    /// 状態で変わるキーは静的に決め打ちしない（`None`）。生のままIMEへ通し、結果を観測して追随する。
+    /// 半角/全角(0xF3/0xF4)はIME種別ごとの判定が要るため[`Self::is_open_toggle_for`]で扱う。
     #[must_use]
-    pub const fn shadow_effect(&self) -> ShadowImeEffect {
+    pub const fn shadow_effect(&self) -> Option<ShadowImeEffect> {
         match self {
+            Self::ImeOn => Some(ShadowImeEffect::TurnOn),
+            Self::ImeOff => Some(ShadowImeEffect::TurnOff),
+            Self::Kanji => Some(ShadowImeEffect::Toggle),
             Self::Kana
-            | Self::ImeOn
             | Self::Junja
-            | Self::Katakana
-            | Self::Activate
-            | Self::ActivatePair => ShadowImeEffect::TurnOn,
-            Self::ImeOff | Self::Alphanumeric | Self::Deactivate => ShadowImeEffect::TurnOff,
-            Self::KanjiToggle => ShadowImeEffect::Toggle,
+            | Self::DbeAlphanumeric
+            | Self::DbeKatakana
+            | Self::DbeHiragana
+            | Self::DbeSbcsChar
+            | Self::DbeDbcsChar => None,
+        }
+    }
+
+    /// ADR-189/191: このIME種別で、このキーが「開閉だけに作用するトグル」と確定しているか。
+    ///
+    /// 半角/全角(0xF3/0xF4)は、GJIでは0x19と同じく「開なら閉、閉なら開」のトグル
+    /// （ADR-186の表、CIの`--hz`）。Microsoft IME本体でも、awaseなしで同じキー列を流すとトグルする
+    /// （ADR-190、`sc-hz-msime-native-noawase`）。awase側の静的モデル（0xF3=OFF、0xF4=ON）が
+    /// 実IMEと食い違っていただけである。
+    ///
+    /// **GJIとMS-IME本体の両方に適用するのはユーザー決定**（ADR-189は元々GJIのみ、ADR-191で
+    /// MS-IME本体へ拡張）。呼び出し側（`enrich_ime_relevance`）は `TSF_OBS.table_ime_kind()`
+    /// （CLSIDで同定できたGJI・Microsoft IME本体だけ`Some`。ATOK・Japanist・未検出・IMM32 HKLのみは
+    /// `None`）を通してからこの関数へ渡すので、この`ime`引数自体は常にGJIか同定済みMicrosoft IME本体
+    /// （`ImeKindId::MsIme`）のどちらか。同定できなかった第三者IME・未検出窓では、この関数まで
+    /// 到達しない（`is_open_toggle_for`を直接見るだけでは分からない、round2 B-NB1/NB3参照）。
+    ///
+    /// **例外（round3 B-NR4）**: `VK_KANJI`(0x19)は`ImeKeyKind::shadow_effect`で**IME種別に依らず**
+    /// 静的にToggleを返す（`hook.rs::classify_ime_relevance`経由、`table_ime_kind()`を通らない）。
+    /// develop由来の「どのIMEでも開閉トグル」という前提（Windows標準の`keys.ime_toggle`の既定）に基づく
+    /// もので、ATOK・未検出でも0x19はawaseが書く。0xF3/0xF4だけが本関数の同定ゲートの対象。
+    ///
+    /// `match`は`ImeKindId`について網羅なので、**IME種別を足すとここがコンパイルエラーになり、
+    /// 適用可否を決め忘れない**（両アームが同じ値でも、この性質のために1本の`match`のまま残す）。
+    #[must_use]
+    pub const fn is_open_toggle_for(&self, ime: crate::state::ime_kind::ImeKindId) -> bool {
+        use crate::state::ime_kind::ImeKindId;
+        match ime {
+            ImeKindId::Gji | ImeKindId::MsIme => {
+                matches!(self, Self::DbeSbcsChar | Self::DbeDbcsChar)
+            }
         }
     }
 }
@@ -184,12 +229,35 @@ pub const fn is_ime_mode_key_for_ime(vk_code: VkCode) -> bool {
     matches!(vk_code.0, 0x1C | 0x1D) // VK_CONVERT / VK_NONCONVERT
 }
 
-/// 無変換(0x1D)/変換(0x1C)か。ADR-187 の follow(生キー通過後に実IMEを読み直す)の対象キー。
-/// `is_ime_mode_key_for_ime` は 0x15-0x1A・0xF0-0xF6 も含む(awase が方向を決めて自分で書くキー)ため、
-/// follow の対象には使わない(コードレビュー指摘: 明示意図を守るべきキーの意図まで捨ててしまう)。
+/// 通した生キーを再注入（`RawKeyEvent::reinject`）するときの`wScan`。
+///
+/// IMEモードキー（`is_ime_mode_key_for_ime`: 全角/半角・英数・かな・カタカナ・変換・無変換など）は元の
+/// スキャンコードを保つ。**`wScan=0`で再注入すると、実機のGJI（MS-IMEプリセット）で、awase無しなら
+/// IMEを開くひらがな（0xF2）が開かなくなった**（BUG-154、ADR-191 実機検証: awase経由の閉→開が0/6、
+/// スキャンコードを保つと4/4）。それ以外のキー（矢印などの拡張キー）は`KEYEVENTF_EXTENDEDKEY`無しの
+/// scan付き再注入が別のキー（テンキー）に化けうるので、従来どおり0のままにする。
+/// なお判定は**拡張フラグではなくVKの集合**（`is_ime_mode_key_for_ime`）で行う。IMEモードキー
+/// （0x15-0x1A・0x1C・0x1D・0xF0-0xF6）はJIS配列で拡張キーにならないので、VK集合で代用できている。
 #[must_use]
-pub const fn is_convert_or_nonconvert(vk_code: VkCode) -> bool {
-    matches!(vk_code.0, 0x1C | 0x1D)
+pub const fn reinject_scan_code(vk_code: VkCode, scan_code: u32) -> u16 {
+    if is_ime_mode_key_for_ime(vk_code) {
+        scan_code as u16
+    } else {
+        0
+    }
+}
+
+/// 生キーを通した直後に実IMEを読み直して追随する（ADR-187のfollow）対象のIMEモードキーか。
+///
+/// ADR-191: IMEモードキー（`is_ime_mode_key_for_ime`）のうち、awase自身が意図を持って書く
+/// （Windows標準で冪等な）`VK_IME_ON`(0x16)/`VK_IME_OFF`(0x1A)を除く全て。無変換・変換・かな・カタカナ・
+/// 英数・半角/全角・漢字などは、静的に意味を決めずIMEへ通し、結果を観測して追随する。
+/// （旧`is_convert_or_nonconvert`は、awaseが方向を決めて書くキーの明示意図まで捨てないよう
+/// 無変換/変換に限っていた。そのキー群は静的な`shadow_action`の撤去で、`shadow_action`を持たない
+/// キーだけがここに来る。呼び出し側は`shadow_action.is_none()`も併せて確認する。）
+#[must_use]
+pub const fn is_followed_mode_key(vk_code: VkCode) -> bool {
+    is_ime_mode_key_for_ime(vk_code) && !matches!(vk_code.0, 0x16 | 0x1A)
 }
 
 /// この VK が IME conv-mode ワード（NATIVE/KATAKANA/FULLSHAPE/ROMAN、
@@ -245,11 +313,11 @@ pub const fn is_synthetic_dbe_ime_hotkey(vk_code: VkCode) -> bool {
     matches!(
         ImeKeyKind::from_vk(vk_code),
         Some(
-            ImeKeyKind::Alphanumeric
-                | ImeKeyKind::Katakana
-                | ImeKeyKind::Activate
-                | ImeKeyKind::Deactivate
-                | ImeKeyKind::ActivatePair
+            ImeKeyKind::DbeAlphanumeric
+                | ImeKeyKind::DbeKatakana
+                | ImeKeyKind::DbeHiragana
+                | ImeKeyKind::DbeSbcsChar
+                | ImeKeyKind::DbeDbcsChar
         )
     )
 }
@@ -844,10 +912,24 @@ pub(crate) fn build_symbol_to_vk() -> HashMap<char, (VkCode, bool)> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn reinject_keeps_scan_code_only_for_ime_mode_keys() {
+        // かな(0xF2)・英数(0xF0)・半角/全角(0xF4)・無変換・変換は元のscanを保つ。
+        assert_eq!(reinject_scan_code(VkCode(0xF2), 0x70), 0x70);
+        assert_eq!(reinject_scan_code(VkCode(0xF0), 0x3A), 0x3A);
+        assert_eq!(reinject_scan_code(VkCode(0xF4), 0x29), 0x29);
+        assert_eq!(reinject_scan_code(VkCode(0x1D), 0x7B), 0x7B);
+        assert_eq!(reinject_scan_code(VkCode(0x1C), 0x79), 0x79);
+        // 通常キー・拡張キー（矢印: VK_LEFT=0x25）は従来どおり0。
+        assert_eq!(reinject_scan_code(VkCode(0x41), 0x1E), 0);
+        assert_eq!(reinject_scan_code(VkCode(0x25), 0x4B), 0);
+    }
+
     use super::{
         ascii_to_vk, build_symbol_to_vk, is_ime_mode_key_for_ime, is_synthetic_dbe_ime_hotkey,
-        may_change_ime, should_upgrade_is_japanese_ime, vk_may_mutate_conv, vk_pair_to_ascii,
-        ImeKeyKind, VkCode, VK_A, VK_RETURN, VK_SPACE,
+        may_change_ime, reinject_scan_code, should_upgrade_is_japanese_ime, vk_may_mutate_conv,
+        vk_pair_to_ascii, ImeKeyKind, VkCode, VK_A, VK_RETURN, VK_SPACE,
     };
 
     /// `vk_pair_to_ascii` は `ascii_to_vk` の厳密な逆写像である
@@ -1144,6 +1226,54 @@ mod tests {
                     "keys側の既定コンボ {a:?} と ime_detect側の既定コンボ {p:?} が \
                      同じキーを指している（二重処理で押しても IME が動かない \
                      キーになる）"
+                );
+            }
+        }
+    }
+
+    /// ADR-191: 静的に確定しているのは `VK_IME_ON`/`VK_IME_OFF`（冪等）と `VK_KANJI`（トグル、ADR-189）だけ。
+    /// 入力モードも動かしうるキー（ひらがな・カタカナ・英数・かな）と半角/全角は静的に決め打ちしない。
+    #[test]
+    fn shadow_effect_is_static_only_for_ime_on_off_and_kanji_toggle() {
+        use super::ShadowImeEffect::{Toggle, TurnOff, TurnOn};
+        assert_eq!(ImeKeyKind::ImeOn.shadow_effect(), Some(TurnOn));
+        assert_eq!(ImeKeyKind::ImeOff.shadow_effect(), Some(TurnOff));
+        assert_eq!(ImeKeyKind::Kanji.shadow_effect(), Some(Toggle));
+        for k in [
+            ImeKeyKind::Kana,
+            ImeKeyKind::Junja,
+            ImeKeyKind::DbeAlphanumeric,
+            ImeKeyKind::DbeKatakana,
+            ImeKeyKind::DbeHiragana,
+            ImeKeyKind::DbeSbcsChar,
+            ImeKeyKind::DbeDbcsChar,
+        ] {
+            assert_eq!(k.shadow_effect(), None, "{k:?} は静的に決め打ちしない");
+        }
+    }
+
+    /// ADR-189/191: 半角/全角(0xF3/0xF4)だけが、GJI・MS-IME本体のどちらでも開閉トグルとして扱われる。
+    /// ひらがな・カタカナ・英数など入力モードも動かしうるキーは、どのIMEでもトグル扱いにしない。
+    #[test]
+    fn open_toggle_applies_to_hankaku_zenkaku_for_every_known_ime_kind() {
+        use crate::state::ime_kind::ImeKindId;
+        for ime in ImeKindId::ALL {
+            for k in [ImeKeyKind::DbeSbcsChar, ImeKeyKind::DbeDbcsChar] {
+                assert!(k.is_open_toggle_for(ime), "{k:?} × {ime:?}");
+            }
+            for k in [
+                ImeKeyKind::Kana,
+                ImeKeyKind::ImeOn,
+                ImeKeyKind::Junja,
+                ImeKeyKind::Kanji,
+                ImeKeyKind::ImeOff,
+                ImeKeyKind::DbeAlphanumeric,
+                ImeKeyKind::DbeKatakana,
+                ImeKeyKind::DbeHiragana,
+            ] {
+                assert!(
+                    !k.is_open_toggle_for(ime),
+                    "{k:?} × {ime:?} はトグル扱いにしない"
                 );
             }
         }

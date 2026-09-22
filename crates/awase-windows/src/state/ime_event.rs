@@ -534,11 +534,35 @@ pub enum ImeEvent {
     /// 無変換/変換の生キーを GJI へ通過させた（ADR-187 follow 方式）。
     ///
     /// 実 IME の開閉は GJI 側が決めるため、awase は結果の開閉状態を知らない。
-    /// 古い明示意図（`last_intent`）だけを捨て、直前に得た観測へ解決を委ねる。
-    /// reducer は `last_intent` のみを書き、`desired_open` / `applied` / 観測 /
-    /// `current_focus` などには触れない。dispatch 元は
-    /// `ImeStateHub::invalidate_intents_if_mode_key_pass_live` の1箇所に限定する。
-    ModeKeyPassedThrough,
+    /// 古い明示意図（`last_intent`）を捨て、直前に得た観測へ解決を委ねる。
+    /// さらに、観測から導ける開閉（`derive_any`）があるときは、`desired_open` をそれへ揃える
+    /// （BUG-157: 通過させたモードキーの結果は実IMEが決めた。`desired_open` が古いままだと
+    /// `check_drift_correction` がユーザーの操作を書き戻す）。観測が無い窓では `desired_open` に触れない。
+    /// reducer は `last_intent` と `desired_open` 以外（`applied` / 観測 / `current_focus`
+    /// など）には触れない。dispatch 元は `ImeStateHub::pass_through_observed` の1箇所に限定する
+    /// （`desired_open` を書ける口なので dylint `ime_event_guard` の designated 関数に登録、レビュー round2 NB2。
+    /// 構造体形式の variant にしているのは、unit variant では dylint の構築検出〈`ExprKind::Struct`〉に掛からないため）。
+    ///
+    /// `align_desired == false` は、観測が一度も成功しないまま窓が切れた破棄（BUG-158）用: `last_intent` だけを捨て、
+    /// `desired_open` は書かない。観測プールに残る打鍵**より前**の値を「ユーザーの結果」として採らないため
+    /// （レビュー round2 A-N1）。
+    ModeKeyPassedThrough { align_desired: bool },
+
+    /// 物理モードキーの打鍵時点で、キーマップの表（`key_effect_table`）から予測した効果を
+    /// beliefへ反映する（ADR-191 決定3）。**観測ではなく予測**で、awaseはIMEへ書かない。
+    ///
+    /// reducerは`key_effect`（予測の記録とfence）を書き、`mode`があれば`input_mode`を先に動かす。
+    /// 開閉（`open`）は`desired_open`を書かず、`resolve_open_at`が予測を最優先の観測の代わりに使う
+    /// （`desired_open`を書くと、ドリフト補正がIMEへ書き戻して「awaseは書かない」に反するため）。
+    /// settle後に始まった観測が来たら予測と照合して観測が勝つ。dispatch元は
+    /// `ImeStateHub::apply_key_effect_prediction`の1箇所に限定する。
+    KeyEffectPredicted {
+        open: Option<bool>,
+        mode: Option<InputModeState>,
+        /// 打鍵履歴から追跡する隠れ状態（変換モード5種・変換中の段階）。開閉/入力モードに変化が
+        /// 無くても、追跡状態が変わる打鍵ではこのイベントを送る。
+        track: crate::state::key_effect_table::KeyTrack,
+    },
 
     /// 起動直後の初回フォーカス確立時、`current_focus` を bootstrap で確立した
     /// 前面 hwnd に設定する（BUG-148、ADR-186）。`establish_initial_focus_scope` からのみ

@@ -500,3 +500,16 @@ pub const IME_APPLY_PENDING_TIMEOUT_MS: u64 = 8_000;
 /// 「効かないので増やした」は禁止——分布の p99 等の実測根拠を残すこと。
 #[measured_macro::measured(pending = true)]
 pub const FOCUS_RESYNC_DEADLINE_MS: u64 = 100;
+
+/// 物理モードキーの打鍵時点の予測（ADR-191 決定3、`ImeModel::key_effect`）に対する fence の settle 時間 (ms)。
+/// 最新の打鍵からこの時間より前に来た観測は、IME がキーを処理する前の古い状態を読んでいる恐れがあるため、
+/// 予測を上書きも消しもしない。これ以降の観測だけが予測と照合され、観測が勝つ。
+///
+/// **実測**（`MODE_KEY_PASS_MARK_WINDOW_MS` の実測と同じ、CI `e2e-ime`、ATOK パススルー、48 押下）:
+/// 生キー通過から実 IME の変化が IMM の再読み取りに現れるまで min 21ms / median 33ms / p90 33ms / max 62ms。
+/// 別の 1 回で、通過から 11ms 後の最初の再読み取りが処理前の古い状態を読んだ。
+/// **導出**: 実測最大 62ms + マージン 38ms = 100ms。follow の読み直し（20ms→以後 `MODE_KEY_PASS_REREAD_MS`=60ms
+/// 間隔、窓 `MODE_KEY_PASS_MARK_WINDOW_MS`=300ms）のうち約 140ms 時点の読み取りが最初の照合対象になり、窓内に収まる。
+/// 実機での再測定は未了のため `pending`。
+#[measured_macro::measured(pending = true)]
+pub const KEY_EFFECT_SETTLE_MS: u64 = 100;

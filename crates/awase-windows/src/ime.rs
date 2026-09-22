@@ -511,6 +511,14 @@ pub struct ImeSnapshot {
     /// 新しい Win32 呼び出しは増えない — `read_ime_state_full` が既に計算している
     /// クラス名を保持するだけ。
     pub focused_class: Option<String>,
+    /// `ime_on`が`None`なのは、IME窓への問い合わせ（`SendMessageTimeout`、宣言50ms）が**個別に時間切れ**
+    /// （`ERROR_TIMEOUT`、(b)）だったため。遅い応答（負荷・CIの遅いランナー・IMEが忙しい）であり、
+    /// 「IMM32が使えない」証拠ではないので、`imm-learning`のmiss（3回連続で`Unavailable`を学習）に数えない
+    /// （BUG-158追補: MS-IME本体のCIでF2直後のprobeが50msの時間切れを繰り返し、Editを誤って降格した）。
+    /// 即時の拒否（`ERROR_ACCESS_DENIED`＝昇格プロセス、IME窓なし＝`ImmGetDefaultIMEWnd`=NULL）と、
+    /// **読み取り全体のワーカータイムアウト（300ms、(d)）**は`false`のまま数える（後者は応答しない窓を降格させる経路。
+    /// レビュー round2 A-N4）。
+    pub probe_timed_out: bool,
 }
 
 /// `read_ime_state_full` をワーカースレッドでタイムアウト付きで実行する。
@@ -536,6 +544,11 @@ pub unsafe fn read_ime_state_full_with_timeout(timeout: std::time::Duration) -> 
                 conversion_mode: None,
                 is_tsf_native: false,
                 focused_class: None,
+                // 読み取り全体のワーカータイムアウト（300ms、(d)）は従来どおり miss に数える（`false`）。
+                // 本当に応答しない窓（hung）を `imm-learning` が降格させる唯一の経路であり、外すと探索が止まらず
+                // 500ms ポーリングのたびに 300ms のワーカーが `LEAKED_THREADS` にパークされ続ける（レビュー round2 A-N4）。
+                // 個別の `SendMessageTimeout` の50ms時間切れ(b)だけが `probe_timed_out` で除外される。
+                probe_timed_out: false,
             }
         },
     )
@@ -551,6 +564,8 @@ pub unsafe fn read_ime_state_full_with_timeout(timeout: std::time::Duration) -> 
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
 #[must_use]
 pub unsafe fn read_ime_state_full() -> ImeSnapshot {
+    // この読み取りの間にIME窓への問い合わせが時間切れになったかを、スナップショットへ載せる。
+    crate::imm::reset_probe_timed_out();
     // 0. フォーカスウィンドウを一度解決して全クエリに使う。
     // GetGUIThreadInfo はフォアグラウンドスレッドがハングすると無期限ブロックするため
     // タイムアウト付きヘルパーを使用する。
@@ -585,6 +600,7 @@ pub unsafe fn read_ime_state_full() -> ImeSnapshot {
             conversion_mode: None,
             is_tsf_native: true,
             focused_class: Some(class),
+            probe_timed_out: false,
         };
     }
 
@@ -632,6 +648,8 @@ pub unsafe fn read_ime_state_full() -> ImeSnapshot {
         conversion_mode,
         is_tsf_native: false,
         focused_class: Some(class),
+        // `ime_on`が読めなかった理由が時間切れなら、IMM不可の証拠にしない（読めたなら関係ない）。
+        probe_timed_out: ime_on.is_none() && crate::imm::take_probe_timed_out(),
     }
 }
 

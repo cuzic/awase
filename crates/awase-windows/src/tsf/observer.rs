@@ -253,6 +253,9 @@ pub struct TsfObservations {
     /// COM/TSF 呼び出しは `gji-io-monitor` スレッド側に閉じ、BugReport 生成時は
     /// このキャッシュだけを読む。
     pub(super) ime_product_name: RwLock<Option<String>>,
+    /// アクティブな TIP が Microsoft IME 本体の CLSID と一致したか（`state::ime_kind::identify_tip`）。
+    /// `tsf_active_kind == 2` は「GJI 以外」の意味で、ATOK 等も含むので区別に使えない。
+    pub(super) ms_ime_native_identified: AtomicBool,
 }
 
 impl Default for TsfObservations {
@@ -285,6 +288,7 @@ impl TsfObservations {
             ime_change_seq: ChangeCounter::new(),
             tsf_active_kind: AtomicU8::new(0),
             ime_product_name: RwLock::new(None),
+            ms_ime_native_identified: AtomicBool::new(false),
         }
     }
 
@@ -356,6 +360,56 @@ impl TsfObservations {
     /// （MS-IME キー割当てチェック等）はこれを併用すること。
     pub(crate) fn ime_kind_detected(&self) -> bool {
         self.tsf_active_kind.load(Ordering::Acquire) != 0
+    }
+
+    /// アクティブな TIP が Microsoft IME 本体と**同定できているか**（CLSID 一致）。
+    ///
+    /// `ime_kind_detected()`（CLSID 判定が一度でも走ったか）や `active_ime_kind() == MicrosoftIme`
+    /// （GJI 以外の全 TIP・IMM32 HKL を含む）と違い、ATOK・Japanist・未知の TIP・IMM32 HKL のみのときは
+    /// `false`。打鍵時予測の Microsoft IME 本体の表と、半角/全角の belief トグルの適用可否に使う
+    /// （レビュー round2 NB1/NB3）。
+    pub(crate) fn ms_ime_native_identified(&self) -> bool {
+        self.ms_ime_native_identified.load(Ordering::Acquire)
+    }
+
+    /// 打鍵時予測の表・半角/全角の belief トグルを当ててよい IME 種別。GJI と、同定できた Microsoft IME 本体だけ。
+    /// GJI 未検出・第三者 IME・IMM32 HKL のみは `None`（安全側: 静的に決めず、生キーを通して観測に追随する）。
+    ///
+    /// **起動直後の窓（round3 A-NEW-8）**: `tsf_active_kind`の既定（0）と`ms_ime_native_identified=false`の
+    /// 間、最初の`query_active_kind`ポーリングが確定するまで`None`を返す。ADR-189の半角/全角belief
+    /// トグルはこの間付かず、物理キーがそのままIMEへ通る（ADR-191の方向としては正しいが、ADR-189
+    /// 「復元して残す」経路の起動直後だけの挙動変化。CI（`sc-hz`/`sc-*-msime-native`）でカバー済み）。
+    #[must_use]
+    pub(crate) fn table_ime_kind(&self) -> Option<crate::state::ime_kind::ImeKindId> {
+        use crate::state::ime_kind::ImeKindId;
+        match self.active_ime_kind() {
+            ActiveImeKind::GoogleJapaneseInput => Some(ImeKindId::Gji),
+            ActiveImeKind::MicrosoftIme if self.ms_ime_native_identified() => {
+                Some(ImeKindId::MsIme)
+            }
+            ActiveImeKind::MicrosoftIme => None,
+        }
+    }
+
+    /// 現在確定している `TipIdentity`（`active_ime_kind()`と`ms_ime_native_identified()`から導出）。
+    /// `gji_monitor`の`TipIdentityDebounce`が「変化なし」を判定する基準に使う（レビュー round3 NR1）。
+    #[must_use]
+    pub(super) fn current_tip_identity(&self) -> crate::state::ime_kind::TipIdentity {
+        use crate::state::ime_kind::TipIdentity;
+        match self.active_ime_kind() {
+            ActiveImeKind::GoogleJapaneseInput => TipIdentity::Gji,
+            ActiveImeKind::MicrosoftIme if self.ms_ime_native_identified() => {
+                TipIdentity::MsImeNative
+            }
+            ActiveImeKind::MicrosoftIme => TipIdentity::Other,
+        }
+    }
+
+    /// 値が変化した場合 `true` を返す（`set_tsf_active_kind`と同じ形。デバウンス確定後にログを出すか判定するため）。
+    pub(super) fn set_ms_ime_native_identified(&self, identified: bool) -> bool {
+        self.ms_ime_native_identified
+            .swap(identified, Ordering::Release)
+            != identified
     }
 
     /// CLSID ベース IME 種別を更新する。値が変化した場合 `true` を返す。

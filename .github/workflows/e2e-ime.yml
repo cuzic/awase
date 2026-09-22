@@ -23,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: '実行する構成名(カンマ区切り、空なら全構成、末尾*は前方一致)。例: baseline,a1-keyup,sc-*'
+        description: '実行する構成名(カンマ区切り、空なら全構成、末尾*は前方一致)。例: baseline,a5-no-refresh20,sc-*'
         required: false
         default: ''
 
@@ -60,7 +60,7 @@ jobs:
         run: |
           import json, os
           # name: 構成名 / bin: 使うビルド成果物(撤去なしの構成は baseline を使い回す) / mutator: ablations/ 下のスクリプト
-          # (空=変更なし) / args: スパイクの追加引数 / toggle: config.toml の gji_thumb_key_ime_toggle /
+          # (空=変更なし) / args: スパイクの追加引数
           # keymap: GJI の session_keymap(1=ATOK, 2=MS-IME) / custom_table: config1.db に古い custom_keymap_table
           # (変換=IMEOn)を残すか / check: expect=ATOK前提の期待表(check.py)、consistency=プリセット非依存で
           # 「実IMEのかな=Engine ON、英数・直接入力=Engine OFF」に追随するか(check_consistency.py、--walk)、
@@ -68,42 +68,36 @@ jobs:
           # expect: pass=全回PASS / fail=撤去や設定で壊れる(既知の問題を固定) / observe=結果を表に出すだけ(不安定・未確定の観測用)
           # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME)
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
-          # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'dbe_mode_key_policy = "passthrough"'
-          def cfg(name, expect, mutator='', args='', toggle='true', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe'):
-            return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args, toggle=toggle,
+          # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe'):
+            return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
                         keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin)
           SC_IMES = [('msime-native', 'msime', 1, ' --msime'), ('gji-msime', 'gji', 2, ''), ('gji-atok', 'gji', 1, '')]
           configs = [
             # --- 撤去実験(ATOK、実機E1〜E7bと同じ) ---
             cfg('baseline', 'pass'),
             cfg('baseline-henkan', 'pass', args='--key=henkan', custom_table='true'),
-            cfg('a1-keyup', 'fail', mutator='a1-revert-keyup.sh'),
-            cfg('a2-atok-skip', 'fail', mutator='a2-revert-atok-skip.sh', args='--key=henkan', custom_table='true'),
             cfg('a4-no-eisu-reset', 'pass', mutator='a4-no-eisu-reset.sh'),
             cfg('a5-no-refresh20', 'fail', mutator='a5-no-refresh20.sh'),
             cfg('a6-no-idle-check', 'pass', mutator='a6-no-idle-check.sh'),
-            cfg('e7-toggle-false', 'fail', toggle='false'),
             # --- プリセット/設定の確認(ビルドは baseline、consistency 判定) ---
-            cfg('atok-optin', 'pass', check='consistency', args='--walk'),
             # フォーカス直後(意図なし)にいきなり無変換/変換を押す(--cold=先頭のひらがなを除く)
-            cfg('atok-passthrough-cold', 'pass', check='consistency', args='--walk --cold', toggle='false'),
-            cfg('atok-passthrough-henkan-cold', 'pass', check='consistency', args='--walk --cold --key=henkan', toggle='false'),
+            cfg('atok-passthrough-cold', 'pass', check='consistency', args='--walk --cold'),
+            cfg('atok-passthrough-henkan-cold', 'pass', check='consistency', args='--walk --cold --key=henkan'),
             # 半角/全角(0xF3/0xF4、GJIではどちらも開閉トグル)。awaseがVKで方向を決め打つとずれる(ADR-186決定5、ADR-189)
-            cfg('msime-hz', 'pass', check='toggle', args='--hz', toggle='false', keymap=2),
-            cfg('atok-hz', 'pass', check='toggle', args='--hz', toggle='false'),
+            cfg('msime-hz', 'pass', check='toggle', args='--hz', keymap=2),
+            cfg('atok-hz', 'pass', check='toggle', args='--hz'),
             # リセット操作(Ctrl+無変換→Ctrl+変換 / 逆)で必ず揃うか(--resync)。nofollow は followを無効化してずれを意図的に起こす
-            cfg('atok-resync', 'observe', check='resync', args='--resync', toggle='false'),
-            cfg('atok-resync-nofollow', 'observe', mutator='a7-no-follow.sh', check='resync', args='--resync', toggle='false'),
-            cfg('atok-resync-gap40', 'observe', check='resync', args='--resync --resync-gap=40', toggle='false'),
-            cfg('atok-resync-gap300', 'observe', check='resync', args='--resync --resync-gap=300', toggle='false'),
-            cfg('atok-passthrough', 'pass', check='consistency', args='--walk', toggle='false'),
-            cfg('atok-passthrough-henkan', 'pass', check='consistency', args='--walk --key=henkan', toggle='false'),
-            cfg('msime', 'pass', check='consistency', args='--walk', toggle='false', keymap=2),
-            cfg('msime-optin', 'pass', check='consistency', args='--walk', toggle='true', keymap=2),
+            cfg('atok-resync', 'observe', check='resync', args='--resync'),
+            cfg('atok-resync-nofollow', 'observe', mutator='a7-no-follow.sh', check='resync', args='--resync'),
+            cfg('atok-resync-gap40', 'observe', check='resync', args='--resync --resync-gap=40'),
+            cfg('atok-resync-gap300', 'observe', check='resync', args='--resync --resync-gap=300'),
+            cfg('atok-passthrough', 'pass', check='consistency', args='--walk'),
+            cfg('atok-passthrough-henkan', 'pass', check='consistency', args='--walk --key=henkan'),
+            cfg('msime', 'pass', check='consistency', args='--walk', keymap=2),
             # --- Microsoft IME 本体(GJI を入れず、ja-JP の言語を追加して標準の日本語IMEを使う) ---
-            cfg('msime-native', 'observe', check='consistency', args='--walk --msime', toggle='false', ime='msime'),
-            cfg('msime-native-henkan', 'observe', check='consistency', args='--walk --msime --key=henkan', toggle='false', ime='msime'),
-            cfg('msime-native-optin', 'observe', check='consistency', args='--walk --msime', toggle='true', ime='msime'),
+            cfg('msime-native', 'observe', check='consistency', args='--walk --msime', ime='msime'),
+            cfg('msime-native-henkan', 'observe', check='consistency', args='--walk --msime --key=henkan', ime='msime'),
             # 対照実験: awase を起動せず、同じキー列で実IMEだけを見る(実IMEの推移がawaseのせいかCI環境の癖かを分ける)
             cfg('msime-native-noawase', 'observe', check='consistency', args='--walk --msime', ime='msime', awase='false'),
             cfg('atok-noawase', 'observe', check='consistency', args='--walk', awase='false'),
@@ -115,7 +109,7 @@ jobs:
             # walk: 撤去ブランチ(打鍵時予測ビルド)+ AWASE_TEST_INJECTION=1 でランダムなキー列を流し、Engine と実IMEのずれを
             # ローカルで解析する(effect_learning.py --drift、DRIFT_OFF=100/400/1500)。cache=works は観測あり、
             # cache=unavailable は awase が IME を読めないアプリ相当(スパイク窓を「IMM不可」に固定)で、予測だけが Engine を動かす。
-            *[cfg(f'cal-verify-{kind}-s{seed}', 'observe', check='collect', toggle='false', cache=cache, runs=1,
+            *[cfg(f'cal-verify-{kind}-s{seed}', 'observe', check='collect', cache=cache, runs=1,
                   args=f'--walk=100 --seed={seed}')
               for kind, cache in (('obs', 'works'), ('blind', 'unavailable')) for seed in (1, 2)],
             cfg('cal-walk-noawase-s5', 'observe', check='collect', awase='false', runs=1, args='--walk=100 --seed=5'),
@@ -168,6 +162,16 @@ jobs:
                   args=f'--grid=s{n} --grid-setup=keys --fast --speed=2 --grid-adaptive --notify '
                        '--grid-retry-file=@REPO@/tools/e2e/ime_key_matrix/grid-tables/nondet-atok.txt')
               for n in (1, 2, 3, 4)],
+            # --- MS-IME本体(Microsoft IME、ImeKind=MicrosoftIme)の学習ラウンド(ADR-191、撤去版レビュー指摘B Blocker の対処(2)) ---
+            # cal-notify-msimenative-s{1..4}: cal-notify-atok-s*(--fast --speed=2 --grid-adaptive --notify)の MS-IME本体版(--msime、awase なし、状態はキーのみで作る)。
+            # 前回の表(retry-file)が無いので --grid-retry-file は付けない(1パス目は全セル1回、2パス目は履歴依存ブロック+10%の監査標本)。
+            # cal-msnative-walk-s{3,4}: 表の一段予測を採点する独立ラン(awase なし、--msime)。学習(格子)とは別のキー列。
+            *[cfg(f'cal-notify-msimenative-s{n}', 'observe', check='collect', ime='msime', awase='false', runs=1, wait=1500,
+                  args=f'--grid=s{n} --grid-setup=keys --fast --speed=2 --grid-adaptive --notify --msime')
+              for n in (1, 2, 3, 4)],
+            *[cfg(f'cal-msnative-walk-s{n}', 'observe', check='collect', ime='msime', awase='false', runs=1,
+                  args=f'--walk=100 --seed={n} --msime')
+              for n in (3, 4)],
             # --- 高速な学習ラウンド(ci/e2e-calibration) ---
             # --fast(押下後の待ち 2300→700ms。+400ms と +1500ms で表が変わらないことを264試行で確認済み) と --speed=2、
             # 探索後に到達不能な試行を外す([GRID-PRUNE])、--grid-adaptive(1パス目は全セル1回、2パス目は前回の表で非決定だったセル+履歴依存+10%の監査標本)、
@@ -184,31 +188,31 @@ jobs:
             *[cfg(f'cal-fast-val-atok-s1-k{k}', 'observe', check='collect', awase='false', runs=1, wait=1500, keymap=1,
                   args=f'--grid=s1 --grid-setup=keys --grid-trials=2 --fast --speed={k}')
               for k in (1, 4)],
-            cfg('msime-stale-table', 'pass', check='consistency', args='--walk --key=henkan', toggle='false', keymap=2, custom_table='true'),
+            cfg('msime-stale-table', 'pass', check='consistency', args='--walk --key=henkan', keymap=2, custom_table='true'),
             # --- 操作シナリオ(sc-): IMEプリセット × 各種IMEキー × パススルー/抑止設定 × Shift単独打鍵 ---
             # 判定はどれも「実IMEのかな=Engine ON、英数・直接入力=Engine OFF」に追随するか(consistency)。
             # 全シナリオ pass(MS-IME本体もADR-190/BUG-152の修正後はPASS。修正前は直接入力からの最初のひらがな(0xF2)でIMEが開かず3/3 FAILだった)。
             # ただし MS-IME本体の半角/全角(sc-hz-msime-native-*)は observe: F3=閉/F4=開の静的モデルでGJIのようなトグルではない(ADR-189が対象外にした範囲)。
             # noawase の構成は、それが awase のせいか(MS-IME本体の癖か)を切り分ける対照実験。
             # IME の3通り: msime-native(標準の日本語IME)、gji-msime(GJI + MS-IMEプリセット)、gji-atok(GJI + ATOKプリセット)
-            # dbe_mode_key_policy: suppress(既定、DBEレンジ 英数/カタカナ/半角全角 を握りつぶす) / passthrough(そのまま通す)
+            # 設定 dbe_mode_key_policy(suppress/passthrough)は ADR-191 で撤去した(Passthroughを選んでも挙動が変わらない実質死んだ設定だった)。
+            # 以前の -suppress/-passthrough の2構成は同じ挙動を測るだけなので1構成にした(構成名は sc-dbe-<ime>・sc-hz-<ime>)。
             # half_width_alnum_toggle: 左Shift単独タップで半角英数(持続トグル)。GJIで使うには all が必要。
-            *[cfg(f'sc-dbe-{ime_name}-{pol}', 'pass', check='consistency', toggle='false', ime=ime, keymap=km,
-                  args=f'--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2{msime}',
-                  general=f'dbe_mode_key_policy = "{pol}"')
-              for ime_name, ime, km, msime in SC_IMES for pol in ('suppress', 'passthrough')],
-            *[cfg(f'sc-kanji-{ime_name}', 'pass', check='consistency', toggle='false', ime=ime, keymap=km,
+            *[cfg(f'sc-dbe-{ime_name}', 'pass', check='consistency', ime=ime, keymap=km,
+                  args=f'--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2{msime}')
+              for ime_name, ime, km, msime in SC_IMES],
+            *[cfg(f'sc-kanji-{ime_name}', 'pass', check='consistency', ime=ime, keymap=km,
                   args=f'--seq=F2,19,19,16,1A,16,1A,19,F2,1A{msime}')
               for ime_name, ime, km, msime in SC_IMES],
-            *[cfg(f'sc-hz-{ime_name}-{pol}', 'observe' if ime == 'msime' else 'pass', check='toggle', toggle='false', ime=ime, keymap=km,
-                  args=f'--hz{msime}', general=f'dbe_mode_key_policy = "{pol}"')
-              for ime_name, ime, km, msime in SC_IMES for pol in ('suppress', 'passthrough')],
-            *[cfg(f'sc-shift-{ime_name}', 'pass', check='consistency', toggle='false', ime=ime, keymap=km,
+            *[cfg(f'sc-hz-{ime_name}', 'observe' if ime == 'msime' else 'pass', check='toggle', ime=ime, keymap=km,
+                  args=f'--hz{msime}')
+              for ime_name, ime, km, msime in SC_IMES],
+            *[cfg(f'sc-shift-{ime_name}', 'pass', check='consistency', ime=ime, keymap=km,
                   args=f'--seq=F2,A0,A0,A0,A1,F2{msime}', general='half_width_alnum_toggle = "all"')
               for ime_name, ime, km, msime in SC_IMES],
-            cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', toggle='false', ime='msime', awase='false',
+            cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
-            cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', toggle='false', ime='msime', awase='false',
+            cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F3,F3,F4,F4,F3,F4,F4,F3 --msime'),
             # MS-IME本体で、スキャンコード付き/無しの注入(NOSCAN|0xF2 等)がIMEを開くか(awase の再注入は scan=0)
             cfg('sc-probe-vk-msime-native', 'observe', check='vkprobe', args='--vkprobe --msime', ime='msime', awase='false'),
@@ -402,10 +406,7 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         shell: pwsh
         run: |
-          $toggle = '${{ matrix.cfg.toggle }}'
           $cfg = Get-Content dist\config.toml -Raw
-          if ($cfg -match 'gji_thumb_key_ime_toggle *= *(true|false)') { $cfg = $cfg -replace 'gji_thumb_key_ime_toggle *= *(true|false)',"gji_thumb_key_ime_toggle = $toggle" }
-          else { $cfg = $cfg -replace '(?m)^\[general\]\s*$', "[general]`r`ngji_thumb_key_ime_toggle = $toggle" }
           # [general] への追加設定(;区切りの `key = value`)。既にあれば値を置き換え、無ければ [general] の直後に足す。
           $general = '${{ matrix.cfg.general }}'
           foreach ($line in ($general -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
@@ -414,7 +415,7 @@ jobs:
             else { $cfg = $cfg -replace '(?m)^\[general\]\s*$', "[general]`r`n$line" }
           }
           [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
-          Select-String -Path "$PWD\dist\config.toml" -Pattern 'gji_thumb_key_ime_toggle|dbe_mode_key_policy|half_width_alnum_toggle'
+          Select-String -Path "$PWD\dist\config.toml" -Pattern 'half_width_alnum_toggle'
           # CIランナーは初回のクロスプロセスIMMプローブが遅く(実測22ms)、awase がスパイク窓を「IMM不可」と誤学習して
           # conv を読まなくなる(Engine が半角英数に追従しない)。学習済みキャッシュを事前投入して防ぐ。
           [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"ime_key_matrix_spike.exe`"]`r`nEdit = `"${{ matrix.cfg.cache }}`"`r`nRICHEDIT50W = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))

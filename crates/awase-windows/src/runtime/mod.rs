@@ -14,7 +14,7 @@ pub(crate) mod open_chain;
 pub(crate) mod outbox;
 mod transport;
 
-pub(crate) use transport::{DbeModeKeyContext, PassthroughQueue, PhysicalKeyDisposition};
+pub(crate) use transport::{PassthroughQueue, PhysicalKeyDisposition};
 
 use crate::focus::FocusKind;
 use awase::config::ValidatedConfig;
@@ -51,25 +51,6 @@ pub(crate) fn resolve_dedicated_fn_key(name: Option<&str>) -> Option<VkCode> {
         );
     }
     resolved
-}
-
-/// ADR-153 決定1 M15対策: ユーザー明示config（`*_solo_tap_ime_action`）が
-/// 設定されているキーについて、GJI/MS-IME自動検出由来の delegate/
-/// shadow_override 値を無効化する共有ヘルパー（/code-review指摘、PR #185
-/// ——2系統4箇所以上に同じ判定式が独立に書かれ、片方を直しても他方が
-/// 取り残されるリスクがあった。GJI側 `gji_charset_autodetect.rs`・
-/// MS-IME側 `runtime/message_handlers.rs::sync_ime_toggle_auto_detect`
-/// の両方から呼ぶ）。
-#[must_use]
-pub(crate) const fn mask_auto_detect_for_explicit_config(
-    auto_detected: Option<awase::types::ShadowImeAction>,
-    explicit_config: Option<awase::types::ShadowImeAction>,
-) -> Option<awase::types::ShadowImeAction> {
-    if explicit_config.is_some() {
-        None
-    } else {
-        auto_detected
-    }
 }
 
 /// IME 状態と修飾キースナップショットから `InputContext` を構築する。
@@ -252,12 +233,13 @@ pub struct Runtime {
     /// 周期的にリセットされると、実機で確認した「無操作のままVK_IME_OFF×5連射が
     /// 25秒〜4分43秒間隔で再発する」症状が再燃する（docs/known-bugs.md BUG-113参照）。
     conv_drift_latch: Option<crate::state::ime_actuation::ConvDriftEpisode>,
-    /// BUG-52 の DBE レンジ Suppress（`VK_DBE_ALPHANUMERIC`/`KATAKANA`/
-    /// `SBCSCHAR`/`DBCSCHAR`）を無条件のままにするか、パススルーを許すか。
-    /// `config.general.dbe_mode_key_policy` から `apply_config_update`/起動時の
-    /// `set_dbe_mode_key_policy` で反映される（ADR-091 §D3.6、既定は `Suppress`
-    /// で現状維持）。`PhysicalKeyDisposition::plan` が参照する。
-    dbe_mode_key_policy: awase::config::DbeModeKeyPolicy,
+    /// `config1.db` のキーマップ（打鍵時予測用）のキャッシュ。打鍵ごとに読み直さない。
+    key_effect_keymap: crate::state::key_effect_table::KeymapCache,
+    /// 直前のOS読み取り（`OsPoll`）で観測（`ime_on`）を得られたか。時間切れ・空振りは`false`。
+    /// 通過マークの窓の間の読み直し間隔（成功なら60ms、失敗なら窓の終了時の1回）に使う。
+    last_ime_read_ok: bool,
+    /// Microsoft IME本体用（レジストリのキー割り当ての版で読み直す。GJIの`key_effect_keymap`とは別のキャッシュ）。
+    key_effect_keymap_native: crate::state::key_effect_table::KeymapCache,
     /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091
     /// §D3.2、config.toml による手動設定のみ）が現在有効なら、その vk。
     /// `recompute_active_keymaps` が `[[keymap]]` との衝突チェックに使う
@@ -273,25 +255,6 @@ pub struct Runtime {
     /// 不要（2026-08-16 ユーザー判断: 明示設定は自動検出キーと併用され、
     /// 一方を排他しない）。
     space_is_thumb_key: bool,
-    /// `GeneralConfig.gji_thumb_key_ime_toggle`のキャッシュ（BUG-115）。
-    /// `gji_charset_autodetect::sync_gji_charset_autodetect`が
-    /// `gate_thumb_key_ime_actions`を呼ぶ際に参照する。
-    gji_thumb_key_ime_toggle_opt_in: bool,
-    /// ADR-176決定6（176-T3/T4）: モードキー較正結果（VKごと最大1件）。
-    /// 起動時・設定リロード時に`config.calibration`（`176-T11`の
-    /// `CalibrationEntry`）から読み込む（`apply_config_update`参照）。
-    /// `apply_calibration_override`の入力として`gate_thumb_key_ime_actions`
-    /// の出力を差し替えるために参照するが、実際に差し替えが効くかどうかは
-    /// `apply_calibrated_mode_keys_opt_in`（既定`false`）にも依存する
-    /// （`calibrated_mode_key_for`参照）。
-    calibrated_mode_keys:
-        std::collections::HashMap<VkCode, crate::state::calibrated_mode_key::CalibratedModeKey>,
-    /// `GeneralConfig.apply_calibrated_mode_keys`のキャッシュ（ADR-176
-    /// 決定8）。`gji_thumb_key_ime_toggle_opt_in`と同じパターン。
-    /// `calibrated_mode_key_for`がこれを見て、`false`なら常に`None`を
-    /// 返す（config.tomlには保存されていても実際のIME判定には反映しない
-    /// 安全装置）。
-    apply_calibrated_mode_keys_opt_in: bool,
     /// ADR-176 176-T6: 較正モードのバイパスタイムアウト期限
     /// （`None`=非アクティブ）。`focus_tracking.rs`の
     /// `begin_calibration_bypass`/`end_calibration_bypass`/
@@ -313,44 +276,6 @@ pub struct Runtime {
     /// （`output/probe_io.rs::start_ms_ime_ready_poll`と同じ世代照合
     /// パターン）。
     calibration_epoch: u64,
-    /// GJI config1.db から検出した Hiragana/Katakana の shadow_action override。
-    /// 適用可否（現在親指キーでないこと）は消費時に判定する。
-    gji_hiragana_shadow_override: Option<awase::types::ShadowImeAction>,
-    gji_katakana_shadow_override: Option<awase::types::ShadowImeAction>,
-    /// 無変換/変換キーの shadow_action override（ADR-141、C2対策）。
-    /// Hiragana/Katakana版と異なり `gji_` 接頭辞を付けない——GJI
-    /// （`sync_gji_charset_autodetect`）と MS-IME（`sync_ime_toggle_
-    /// auto_detect`）の両方がこのフィールドに書き込む共有フィールドで
-    /// あり、`henkan_delegate_to_open_axis`/`muhenkan_delegate_to_open_axis`
-    /// （`Engine`側）と同じ「共有フィールド＋GJI→MS-IME呼び出し順序
-    /// 依存」パターンを踏襲するため（GJI離脱時のクリアも同じ順序で効く、
-    /// `sync_gji_charset_autodetect`参照）。適用可否は
-    /// `mode_key_delegate_owns_shadow_toggle`（`&& effective_open()`）が
-    /// 消費時に判定する——Hiragana/Katakanaと違い「親指キーなら`None`」の
-    /// 早期returnは適用しない（無変換/変換には守るべき静的
-    /// `shadow_action`が存在しないため、ADR-141参照）。
-    henkan_shadow_override: Option<awase::types::ShadowImeAction>,
-    muhenkan_shadow_override: Option<awase::types::ShadowImeAction>,
-    /// GJIが継続してアクティブな「区間」ごとに一度だけ`config1.db`を判定
-    /// するためのラッチ（ADR-164フェーズ1、旧
-    /// `gji_charset_autodetect::windows_impl::LAST_GJI_STREAK_CHECKED`）。
-    /// `false`＝GJI以外、または未判定／`true`＝この区間で判定済み。
-    /// `gji_charset_autodetect::sync_gji_charset_autodetect`と
-    /// `reset_streak_latch_for_reload`以外から触らない。
-    gji_charset_streak_checked: bool,
-    /// BUG-115: 直前にトグル関連の警告を出したかどうかのデデュープ
-    /// （ADR-164フェーズ1、旧`LAST_TOGGLE_WARNING`）。
-    /// `session_keymap`/`custom_keymap_table`/`overlay_keymaps`の内容が
-    /// 変わらない限り連呼しない。`None`＝未警告、`Some(warning)`＝直前に
-    /// 通知した内容。**GJI離脱ではリセットしない**（Q3方針:
-    /// GJI⇔MS-IME往復のたびに再警告すると煩わしいため、内容が変わった
-    /// ときだけ再警告する）。
-    gji_toggle_warning: Option<crate::gji_charset_autodetect::ThumbKeyImeWarning>,
-    /// BUG-115（N8）: Hiragana/Katakanaが親指キーで状態依存トグルを検出
-    /// したが`gji_thumb_key_ime_toggle`未opt-inのため反映しなかった旨の
-    /// 警告デデュープ（ADR-164フェーズ1、旧`LAST_MODE_KEY_THUMB_WARNING`）。
-    /// `true`＝直前に警告済み。
-    gji_mode_key_thumb_warning_declined: bool,
     /// 前回`msime_key_assignment::check_and_warn`が警告を出した割当て内容
     /// （bit0=変換, bit1=無変換、ADR-164フェーズ2、旧
     /// `msime_key_assignment::windows_impl::LAST_WARNED`）。同じ内容で
@@ -556,65 +481,30 @@ impl Runtime {
     /// 実処理は [`focus_tracker::FocusTracker::enrich_ime_relevance`] に委譲する。
     pub fn enrich_ime_relevance(&self, event: &mut RawKeyEvent) {
         self.focus_tracker.enrich_ime_relevance(event);
-        // Hiragana/Katakana、無変換/変換（ADR-141、C2対策）、
-        // 半角/全角（ADR-189）の各ソースは対象VKが重複しないため、
-        // どの順で評価しても高々一方だけがSomeを返す。書き込み箇所を
-        // 1箇所に保つため`or_else`で合成してから1回だけ書く
-        // （`tests/architecture_guard.rs::
-        // ime_relevance_shadow_action_writes_are_accounted_for`が
-        // このファイル内の書き込み箇所数を1に固定している）。
-        // 無変換/変換はHiragana/Katakanaと異なり守るべき静的
-        // shadow_actionを持たないため、親指キーとして設定されている
-        // 場合でもoverrideを差す（「親指キーならNone」の早期returnは
-        // 適用しない）。実際にdelegateとshadow-toggleのどちらが処理する
-        // かは`mode_key_delegate_owns_shadow_toggle`の
-        // `&& effective_open()`ゲートが実行時に排他的に決める。
-        let override_action =
-            crate::gji_charset_autodetect::resolve_mode_key_shadow_override_for_event(
-                event.vk_code,
-                self.gji_hiragana_shadow_override,
-                self.gji_katakana_shadow_override,
-                crate::hook::thumb_vk_codes(),
-            )
-            .or_else(|| {
-                // ADR-186 残る問題2: 修飾キー(Shift等)を押したままの無変換/変換は、GJI(ATOK)では
-                // 開閉トグルではない(Shift+無変換=かな⇔半角英数、直接入力では何もしない、実機で確認)。
-                // 修飾なしのキーに対する分類を、修飾付きの押下へ当てはめない。Ctrl+無変換などのconfig
-                // 由来のIME操作は`sync_direction`/明示configの別経路で扱われ、ここには影響しない。
-                let m = event.modifier_snapshot;
-                if m.ctrl || m.alt || m.shift || m.win {
-                    return None;
-                }
-                crate::gji_charset_autodetect::resolve_henkan_muhenkan_shadow_override_for_event(
-                    event.vk_code,
-                    self.henkan_shadow_override,
-                    self.muhenkan_shadow_override,
-                )
-            })
-            .or_else(|| {
-                // ADR-189: GJIの半角/全角(0xF3/0xF4)は方向固定ではなく開閉トグル。
-                // 修飾付きはGJI側で別意味を持ちうるため、無修飾の物理キーだけ
-                // beliefベースのshadow-toggle経路へ載せる。
-                // 全打鍵で通る経路なので、VK(0xF3/0xF4)を先に見て、それ以外はオブザーバの参照をしない。
-                if !matches!(
-                    event.vk_code,
-                    crate::vk::VK_DBE_SBCSCHAR | crate::vk::VK_DBE_DBCSCHAR
-                ) {
-                    return None;
-                }
-                let m = event.modifier_snapshot;
-                if m.ctrl || m.alt || m.shift || m.win {
-                    return None;
-                }
-                let gji_active = crate::tsf::observer::tsf_obs().active_ime_kind()
-                    == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput;
-                crate::gji_charset_autodetect::resolve_hankaku_zenkaku_shadow_override_for_event(
-                    event.vk_code,
-                    gji_active,
-                )
-            });
-        if let Some(action) = override_action {
-            event.ime_relevance.shadow_action = Some(action);
+        // ADR-189/191: 半角/全角(0xF3/0xF4)は、IME種別ごとに「開閉だけに作用するトグル」と確定して
+        // いるとき（`ImeKeyKind::is_open_toggle_for`）だけ、方向固定でなく beliefに基づくトグルにする。
+        // 修飾付きはIME側で別意味を持ちうるので、無修飾の物理キーだけ。観測に依存しないので、
+        // 読めないアプリ（TsfNative）でも効く。これが`shadow_action`の唯一の上書き点
+        // （`tests/architecture_guard.rs::ime_relevance_shadow_action_writes_are_accounted_for`が
+        // このファイル内の書き込み箇所数を1に固定している）。ひらがな・カタカナ・英数・無変換・変換は
+        // 入力モードも動かしうるので上書きせず、生のままIMEへ通して追随する（ADR-187のfollow）。
+        //
+        // 全打鍵で通る経路なので、VK が IME キーでないものは修飾キーと IME 種別を見る前に抜ける
+        // （develop の同関数が明示していた評価順、レビュー指摘B-m10）。
+        let Some(key) = event.vk_code.ime_kind() else {
+            return;
+        };
+        let m = event.modifier_snapshot;
+        if m.ctrl || m.alt || m.shift || m.win {
+            return;
+        }
+        // 表の適用範囲と揃える: GJI と、CLSID で同定できた Microsoft IME 本体だけ。GJI 未検出・第三者 IME・
+        // IMM32 HKL のみでは付けず、生キーを通して観測に追随する（レビュー round2 NB3）。
+        let Some(ime) = crate::tsf::observer::tsf_obs().table_ime_kind() else {
+            return;
+        };
+        if key.is_open_toggle_for(ime) {
+            event.ime_relevance.shadow_action = Some(awase::types::ShadowImeAction::Toggle);
         }
     }
 
@@ -913,18 +803,47 @@ impl Runtime {
             .platform
             .current_app_profile()
             .is_effectively_tsf_native(self.platform.focus.class_name());
-        if is_tsf_native || self.platform_state.ime.explicit_intent().is_some() {
+        if is_tsf_native {
             return;
         }
-        // ADR-187: 無変換/変換の生キー通過後、窓が有効な間は follow の読み直しタイマー
-        // (`MODE_KEY_PASS_REREAD_MS`)を、通常のポーリング間隔で上書きしない。意図を捨てた後は
-        // `explicit_intent()`が`None`になるため、ここで上書きすると読み直しが窓(300ms)より後(既定500ms)に
-        // 飛び、最初の観測が古い状態を読んだ回で追随できない(コードレビュー指摘、CIの取りこぼしの原因)。
-        if self
+        // ADR-187: 無変換/変換の生キー通過後、窓が有効な間は follow の読み直しを予約する。通常のポーリング間隔で
+        // 上書きしない。意図を捨てた後は`explicit_intent()`が`None`になるため、ここで上書きすると読み直しが
+        // 窓(300ms)より後(既定500ms)に飛び、最初の観測が古い状態を読んだ回で追随できない。
+        // 直前の読み取りが成功したなら`MODE_KEY_PASS_REREAD_MS`ごと、失敗したなら窓の終了時の1回に絞る
+        // （`mode_key_pass_next_read_ms`。失敗する環境で60msごとに読むとprobeが重なり、3回連続失敗で
+        // `imm-learning`が窓を誤って降格する。BUG-158）。窓が切れた直後のtickで`ir_stage_notify`が古い意図を
+        // 捨てる（意図が残ってポーリングが止まらない）。
+        // 読めない窓（`Imm32Unavailable`等）では読み取り自体ができず、意図が読み取りで訂正される見込みが無い
+        // ので、通過マークの読み直しも窓終了時の意図の破棄もしない（意図はbeliefの唯一の手がかりとして残る。
+        // 破棄するとCIのblind条件でEngineずれが0→22〜25%に悪化した）。
+        let now_ms = crate::hook::current_tick_ms();
+        if !self.can_use_imm32_cross_process() {
+            // 立てた時点で読めた通過が、途中の降格で読めない窓になったときは、窓の終了時に1回だけ起こして
+            // 古い意図を捨てる（`ir_stage_notify`）。起こさないと通過マークが有効な間は何も予約されず、
+            // 意図が残ってポーリングが止まる（BUG-151原因③、レビュー round2 A-N2）。
+            if let Some(remaining) = self.platform_state.ime.mode_key_pass_expiry_wait_ms(now_ms) {
+                self.schedule_ime_refresh(remaining + 1);
+                return;
+            }
+            // 読めない窓は従来どおり（ADR-187）: 明示意図があれば停止、通過マークが有効な間は上書きしない。
+            if self.platform_state.ime.explicit_intent().is_some()
+                || self.platform_state.ime.mode_key_pass_mark_live(now_ms)
+            {
+                return;
+            }
+        } else if let Some(remaining) = self
             .platform_state
             .ime
-            .mode_key_pass_mark_live(crate::hook::current_tick_ms())
+            .mode_key_pass_window_remaining_ms(now_ms)
         {
+            self.schedule_ime_refresh(crate::state::mode_key_pass::mode_key_pass_next_read_ms(
+                self.last_ime_read_ok,
+                remaining,
+                crate::tuning::MODE_KEY_PASS_REREAD_MS,
+            ));
+            return;
+        }
+        if self.platform_state.ime.explicit_intent().is_some() {
             return;
         }
         self.schedule_ime_refresh(u64::from(self.platform_state.focus.ime_poll_interval_ms));
@@ -1191,23 +1110,15 @@ impl Runtime {
             ime_coordinator: ime_coordinator::ImeCoordinator::new(),
             active_actuation: None,
             conv_drift_latch: None,
-            dbe_mode_key_policy: awase::config::DbeModeKeyPolicy::default(),
+            key_effect_keymap: crate::state::key_effect_table::KeymapCache::default(),
+            last_ime_read_ok: true,
+            key_effect_keymap_native: crate::state::key_effect_table::KeymapCache::default(),
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
-            gji_thumb_key_ime_toggle_opt_in: false,
-            calibrated_mode_keys: std::collections::HashMap::new(),
-            apply_calibrated_mode_keys_opt_in: false,
             calibration_bypass_deadline: None,
             calibration_session_pid: None,
             calibration_session_vk: None,
             calibration_epoch: 0,
-            gji_hiragana_shadow_override: None,
-            gji_katakana_shadow_override: None,
-            henkan_shadow_override: None,
-            muhenkan_shadow_override: None,
-            gji_charset_streak_checked: false,
-            gji_toggle_warning: None,
-            gji_mode_key_thumb_warning_declined: false,
             msime_key_assignment_warned: None,
             keyboard_model: awase::scanmap::KeyboardModel::default(),
             update_check_enabled: true,
@@ -1228,13 +1139,6 @@ impl Runtime {
 
     pub(crate) const fn set_update_check_enabled(&mut self, enabled: bool) {
         self.update_check_enabled = enabled;
-    }
-
-    /// `config.general.dbe_mode_key_policy` を反映する。起動時
-    /// （`bootstrap.rs`、`conv_mode.set_policy` と同じ post-construction 経路）と
-    /// `apply_config_update`（reload 時）の両方から呼ぶ。
-    pub(crate) fn set_dbe_mode_key_policy(&mut self, policy: awase::config::DbeModeKeyPolicy) {
-        self.dbe_mode_key_policy = policy;
     }
 
     /// `config.general.half_width_alnum_toggle` を反映する。起動時と reload 時の
@@ -1264,87 +1168,6 @@ impl Runtime {
         }
     }
 
-    /// `gji_charset_autodetect`の`classify_thumb_key_ime_actions`/
-    /// `gate_thumb_key_ime_actions`（BUG-115）が導出した、無変換/変換キーが
-    /// 親指キーの場合のIME open 軸への肩代わりを`Engine`へ反映する
-    /// 入口。MS-IME側の`sync_ime_toggle_auto_detect`（レジストリ由来）と
-    /// 同じ`set_muhenkan/henkan_delegate_to_open_axis`APIを共有するため、
-    /// GJI→MS-IME遷移時はMS-IME側の値が必ず後から上書きする
-    /// （`message_handlers.rs`の呼び出し順序参照）。
-    pub(crate) fn set_gji_thumb_key_delegate_to_open_axis(
-        &mut self,
-        henkan: Option<awase::types::ShadowImeAction>,
-        muhenkan: Option<awase::types::ShadowImeAction>,
-    ) {
-        self.engine.set_henkan_delegate_to_open_axis(henkan);
-        self.engine.set_muhenkan_delegate_to_open_axis(muhenkan);
-    }
-
-    pub(crate) fn set_gji_mode_key_shadow_overrides(
-        &mut self,
-        hiragana: Option<awase::types::ShadowImeAction>,
-        katakana: Option<awase::types::ShadowImeAction>,
-    ) {
-        self.gji_hiragana_shadow_override = hiragana;
-        self.gji_katakana_shadow_override = katakana;
-    }
-
-    pub(crate) fn set_gji_mode_key_delegate_to_open_axis(
-        &mut self,
-        hiragana: Option<awase::types::ShadowImeAction>,
-        katakana: Option<awase::types::ShadowImeAction>,
-    ) {
-        self.engine.set_hiragana_delegate_to_open_axis(hiragana);
-        self.engine.set_katakana_delegate_to_open_axis(katakana);
-    }
-
-    /// ADR-141: 無変換/変換の shadow_action override を設定する。GJI
-    /// （`sync_gji_charset_autodetect`）と MS-IME（`sync_ime_toggle_auto_
-    /// detect`）の両方から共通で呼ばれる（`gji_`接頭辞を付けない理由は
-    /// フィールドのdoc参照）。
-    pub(crate) fn set_thumb_key_shadow_overrides(
-        &mut self,
-        henkan: Option<awase::types::ShadowImeAction>,
-        muhenkan: Option<awase::types::ShadowImeAction>,
-    ) {
-        self.henkan_shadow_override = henkan;
-        self.muhenkan_shadow_override = muhenkan;
-    }
-
-    /// GJI継続区間の判定済みラッチを`checked`に更新し、更新前の値を返す
-    /// （ADR-164フェーズ1、旧`LAST_GJI_STREAK_CHECKED`のswap操作に対応）。
-    pub(crate) fn swap_gji_charset_streak_checked(&mut self, checked: bool) -> bool {
-        std::mem::replace(&mut self.gji_charset_streak_checked, checked)
-    }
-
-    /// `reset_streak_latch_for_reload`専用: GJI継続区間ラッチを未判定へ
-    /// 戻す（BUG-115 F4、ADR-164フェーズ1）。
-    pub(crate) fn reset_gji_charset_streak_checked(&mut self) {
-        self.gji_charset_streak_checked = false;
-    }
-
-    /// BUG-115トグル警告のデデュープ値を`warning`に更新し、更新前の値を
-    /// 返す（ADR-164フェーズ1、旧`LAST_TOGGLE_WARNING`のswap操作に対応）。
-    pub(crate) fn swap_gji_toggle_warning(
-        &mut self,
-        warning: crate::gji_charset_autodetect::ThumbKeyImeWarning,
-    ) -> Option<crate::gji_charset_autodetect::ThumbKeyImeWarning> {
-        self.gji_toggle_warning.replace(warning)
-    }
-
-    /// BUG-115（N8）Hiragana/Katakana親指キー警告のデデュープ値を
-    /// `declined`に更新し、更新前の値を返す（ADR-164フェーズ1、旧
-    /// `LAST_MODE_KEY_THUMB_WARNING`のswap操作に対応）。
-    pub(crate) fn swap_gji_mode_key_thumb_warning_declined(&mut self, declined: bool) -> bool {
-        std::mem::replace(&mut self.gji_mode_key_thumb_warning_declined, declined)
-    }
-
-    /// Hiragana/Katakana親指キー警告のデデュープ値を未警告へ戻す
-    /// （ADR-164フェーズ1、旧`LAST_MODE_KEY_THUMB_WARNING`のstore(NOT_WARNED)に対応）。
-    pub(crate) fn reset_gji_mode_key_thumb_warning_declined(&mut self) {
-        self.gji_mode_key_thumb_warning_declined = false;
-    }
-
     /// `msime_key_assignment::check_and_warn`の警告デデュープ値を`packed`に
     /// 更新し、更新前の値を返す（ADR-164フェーズ2、旧`LAST_WARNED`の
     /// swap操作に対応）。
@@ -1356,22 +1179,6 @@ impl Runtime {
     /// 戻す（ADR-164フェーズ2、旧`LAST_WARNED`のstore(NOT_WARNED)に対応）。
     pub(crate) fn reset_msime_key_assignment_warned(&mut self) {
         self.msime_key_assignment_warned = None;
-    }
-
-    #[must_use]
-    pub(crate) fn mode_key_delegate_owns_shadow_toggle(&self, vk: VkCode) -> bool {
-        // 親指キー判定は`gji_charset_autodetect::is_configured_thumb_key`と
-        // 共有し、`hook::thumb_vk_codes()`の展開を2箇所で重複させない
-        // （/code-review指摘）。
-        crate::gji_charset_autodetect::delegate_owns_mode_key_shadow_toggle(
-            vk,
-            crate::gji_charset_autodetect::is_configured_thumb_key(vk),
-            self.engine.hiragana_delegate_to_open_axis(),
-            self.engine.katakana_delegate_to_open_axis(),
-            self.engine.henkan_delegate_to_open_axis(),
-            self.engine.muhenkan_delegate_to_open_axis(),
-            self.muhenkan_dedicated_fn_key_configured(),
-        )
     }
 
     /// `muhenkan_solo_tap_dedicated_fn_key`（config.tomlによる手動設定）が
@@ -1392,89 +1199,10 @@ impl Runtime {
         self.space_is_thumb_key = space_is_thumb_key;
     }
 
-    /// `config.general.gji_thumb_key_ime_toggle`のキャッシュを更新する
-    /// （BUG-115）。起動時（`bootstrap.rs`）と`apply_config_update`
-    /// （reload時）の両方から呼ぶ。
-    pub(crate) fn set_gji_thumb_key_ime_toggle_opt_in(&mut self, opt_in: bool) {
-        self.gji_thumb_key_ime_toggle_opt_in = opt_in;
-    }
-
-    /// `gji_charset_autodetect::sync_gji_charset_autodetect`が
-    /// `gate_thumb_key_ime_actions`へ渡す値（BUG-115）。
-    #[must_use]
-    pub(crate) const fn gji_thumb_key_ime_toggle_opt_in(&self) -> bool {
-        self.gji_thumb_key_ime_toggle_opt_in
-    }
-
-    /// ADR-176決定6（176-T3/T4）: `vk`に対する確定済み較正結果を返す
-    /// （未較正/stale解除済みなら`None`）。`gji_charset_autodetect.rs`/
-    /// `message_handlers.rs`が`apply_calibration_override`へ渡す。
-    ///
-    /// ADR-176決定8（opt-inゲート）: `apply_calibrated_mode_keys_opt_in`が
-    /// `false`のときは、`config.toml`に較正結果が保存されていても常に
-    /// `None`を返す——「較正結果を実際のIME判定へ反映してよいか」の
-    /// 唯一の判定点をここに集約する（`fresh_or_none`によるstale判定とは
-    /// 独立、両方を通ったものだけが実際に使われる）。
-    #[must_use]
-    pub(crate) fn calibrated_mode_key_for(
-        &self,
-        vk: VkCode,
-    ) -> Option<&crate::state::calibrated_mode_key::CalibratedModeKey> {
-        if !self.apply_calibrated_mode_keys_opt_in {
-            return None;
-        }
-        self.calibrated_mode_keys.get(&vk)
-    }
-
-    /// `GeneralConfig.apply_calibrated_mode_keys`のキャッシュを更新する
-    /// （`apply_config_update`から呼ぶ、`set_gji_thumb_key_ime_toggle_
-    /// opt_in`と同じ形式）。
-    pub(crate) fn set_apply_calibrated_mode_keys_opt_in(&mut self, opt_in: bool) {
-        self.apply_calibrated_mode_keys_opt_in = opt_in;
-    }
-
-    /// 較正結果を記録する（`config.calibration`からの読み込み時、および
-    /// `176-T9a`が確定したその場でメモリ上へ反映する場合に呼ぶ）。
-    pub(crate) fn set_calibrated_mode_key(
-        &mut self,
-        record: crate::state::calibrated_mode_key::CalibratedModeKey,
-    ) {
-        self.calibrated_mode_keys.insert(record.vk, record);
-    }
-
-    /// ADR-176 176-T11/T12: `config.calibration`（起動時・設定リロード時の
-    /// 内容）からメモリ上の較正結果マップを丸ごと作り直す。
-    /// 差分更新ではなく毎回`clear`してから再構築する——ユーザーが
-    /// `config.toml`からエントリを手動削除した場合や、同じVKに対して
-    /// 別のエントリへ置き換えた場合に、古い内容が居座らないようにする
-    /// ため。パースできないエントリ（未知の`result`/`fingerprint_kind`
-    /// 文字列等、手書き編集で壊れたもの）は警告ログを残してスキップする
-    /// （起動を落とさない）。
-    pub(crate) fn reload_calibrated_mode_keys(
-        &mut self,
-        entries: &[awase::config::CalibrationEntry],
-    ) {
-        self.calibrated_mode_keys.clear();
-        for entry in entries {
-            match crate::state::calibrated_mode_key::calibrated_mode_key_from_config_entry(entry) {
-                Some(record) => {
-                    self.set_calibrated_mode_key(record);
-                }
-                None => {
-                    tracing::warn!(
-                        "[calibration] config.tomlの較正エントリ（vk={:?}）を解釈できません\
-                         でした。無視します",
-                        entry.vk
-                    );
-                }
-            }
-        }
-    }
-
     /// ADR-153 決定1: ユーザー明示config（`GeneralConfig::
     /// muhenkan_solo_tap_ime_action`）を`Engine`へ設定する。`Engine::adapter`
     /// が private なため、`bootstrap.rs`/`apply_config`双方から呼べる薄い
-    /// ラッパーを公開する（`set_gji_thumb_key_ime_toggle_opt_in`と同じ形式）。
+    /// ラッパーを公開する。
     pub(crate) fn set_muhenkan_solo_tap_ime_action(
         &mut self,
         action: Option<awase::types::ShadowImeAction>,
@@ -1488,21 +1216,6 @@ impl Runtime {
         action: Option<awase::types::ShadowImeAction>,
     ) {
         self.engine.set_henkan_solo_tap_ime_action(action);
-    }
-
-    /// ADR-153 決定1 M15対策: `gji_charset_autodetect.rs`/
-    /// `message_handlers.rs`（いずれも`crate::runtime`の外）が、明示config
-    /// 設定済みキーへの自動検出delegate/shadow_override armed化を避けるため
-    /// に読む。
-    #[must_use]
-    pub(crate) fn muhenkan_solo_tap_ime_action(&self) -> Option<awase::types::ShadowImeAction> {
-        self.engine.muhenkan_solo_tap_ime_action()
-    }
-
-    /// `muhenkan_solo_tap_ime_action` と対称（変換キー用）。
-    #[must_use]
-    pub(crate) fn henkan_solo_tap_ime_action(&self) -> Option<awase::types::ShadowImeAction> {
-        self.engine.henkan_solo_tap_ime_action()
     }
 
     /// `sync_ime_toggle_auto_detect`（`message_handlers.rs`）が Shift+Space の
@@ -1657,14 +1370,10 @@ impl Runtime {
         self.platform_state.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
         self.set_keyboard_model(config.general.keyboard_model);
         self.set_update_check_enabled(config.general.update_check);
-        self.set_dbe_mode_key_policy(config.general.dbe_mode_key_policy);
         self.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,
         );
-        self.set_gji_thumb_key_ime_toggle_opt_in(config.general.gji_thumb_key_ime_toggle);
-        self.set_apply_calibrated_mode_keys_opt_in(config.general.apply_calibrated_mode_keys);
-        self.reload_calibrated_mode_keys(&config.calibration);
         self.focus_tracker.sync_toggle_keys = sync_toggle;
         self.focus_tracker.sync_on_keys = sync_on;
         self.focus_tracker.sync_off_keys = sync_off;
@@ -1723,10 +1432,6 @@ impl Runtime {
                     config.general.henkan_solo_tap_always_suppress,
                 ),
             );
-            let (hiragana_vk, katakana_vk) =
-                crate::gji_charset_autodetect::resolve_hiragana_katakana_thumb_vks(left, right);
-            self.engine
-                .set_hiragana_katakana_thumb_key_config(hiragana_vk, katakana_vk);
             let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
             self.set_muhenkan_dedicated_fn_key_config(resolve_dedicated_fn_key(manual_fn_key));
             // ADR-153 決定1: ユーザー明示config。config.toml 由来のため毎回の

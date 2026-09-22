@@ -838,3 +838,9 @@ DelegateAndShadowOverride}`）に較正結果を入力軸として追加する�
 `docs/known-bugs/`または本ADRに記録する。
 
 **依存**: 176-T0〜T13すべて。
+
+---
+
+**追記（2026-09-21、ADR-191）**: 上記の較正結果の**適用**（opt-inフラグ`GeneralConfig::apply_calibrated_mode_keys`、`Runtime::calibrated_mode_key_for`、設定画面のチェックボックス、
+176-T11/T12の反映側）は、ADR-191の撤去で読む経路が無くなったため、撤去ブランチ（`feat/adr191-remove-hardcoded-mode-keys`）で削除した。較正の**測定・確定・IPC・`[[calibration]]`の保存**（T1〜T10、T11のスキーマ、T12のstale検出）は残す。
+適用は、製品化（`awase-keymap-learn`、ADR-191の決定4）で、学習した表（最小のMealy機械）の実行時読み込みとして新規に作る。本ADRの上記の記述は、削除前の設計の履歴である。

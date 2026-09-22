@@ -100,6 +100,12 @@ pub mod actuation_decision_record;
 pub mod evidence;
 pub mod force_guard;
 pub mod ime_event;
+pub(crate) mod imm_evidence;
+// `ModeKeyPassLatch`の一部メソッド（`note_awase_write`/`window_remaining_ms`/`expiry_wait_ms`/
+// `align_after_expired`）は`platform_state.rs`（`#[cfg(windows)]`）からしか呼ばれない。
+// alt_impersonation等と同じ「純粋判定をLinuxでテストできるようにする」ungatedパターン。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod mode_key_pass;
 // ADR-176決定6。`gji_charset_autodetect::ImeToggleKind`/`ime_kind::ImeKindId`
 // に依存する純粋データ構造で、ImeModelのbeliefとは別の較正記録。
 // `pub`（`pub(crate)`ではない）: 176-T5の
@@ -118,6 +124,8 @@ pub mod ime_model;
 // する。runtime への配線（既存 `ImeModel.last_intent` との統合）はまだ無い
 // （配線は ADR-087 Phase 3 のスコープ、§7 round3 S4 参照）。
 pub mod intent_store;
+mod key_effect_data;
+pub mod key_effect_table;
 // ADR-087 Phase 2'/3 試験実装。intent_store と同じ ungated・未配線パターン。
 pub mod open_warrant;
 #[cfg(windows)]

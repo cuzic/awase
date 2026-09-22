@@ -40,8 +40,10 @@ Apply       dispatch_event → reduce()  ← belief の唯一の書き込み点
 
 - **パニックリセット（全面復旧）**: `ImeEvent::PanicReset { target }` — `apply_panic_reset` 専用。`last_intent` を設定しない。
 - **HWND キャッシュ復元**: `ImeEvent::HwndCacheRestored { target }` — `apply_hwnd_cache_restore` 専用。`last_intent` を設定しない。
+- **通過させたモードキーの結果（ADR-191、BUG-157）**: `ImeEvent::ModeKeyPassedThrough { align_desired }` — `ImeStateHub::pass_through_observed` 専用。`last_intent` を捨て、`align_desired` かつ観測から導ける開閉（`derive_any`）があるときだけ `desired_open` をそれへ揃える。観測が成功しないまま窓が切れた破棄（`align_desired == false`）は `desired_open` を書かない。**unit variant にしない**（dylint の構築検出は構造体形式の式を見る）。
+- **打鍵時予測（ADR-191）**: `ImeEvent::KeyEffectPredicted { open, mode, track }` — `apply_key_effect_prediction` 専用。`input_mode` を書き、`last_intent` を捨て、`applied` を落とす。`desired_open` は書かない（`architecture_guard` が固定）。
 
-これら2つのイベントは「観測ではないが、ユーザー意図でもない、直接書き込みの正当な例外」として明示的に隔離されている。**新しい呼び出し元を追加する前に、本当に「全面復旧」「キャッシュ復元」に該当するか確認すること**。該当しないヒューリスティックな推測は `ObserverReported` + `ObservationConfidence::Low` を使うこと。
+これら4つのイベントは「観測ではないが、ユーザー意図でもない、直接書き込みの正当な例外」として明示的に隔離されている。**新しい呼び出し元を追加する前に、本当に「全面復旧」「キャッシュ復元」に該当するか確認すること**。該当しないヒューリスティックな推測は `ObserverReported` + `ObservationConfidence::Low` を使うこと。
 
 ## input_mode の変更ルール
 
@@ -130,7 +132,7 @@ IME を ON にする経路を追加したら、stale `ObservedEisu` の救済（
 規約は「読めば守れる」を前提にしない。以下の3段構えで、規約を破る近道が実際に取れないか、少なくとも自動で検知されるようにしている。
 
 1. **コンパイラ（最強、ただしモジュール外に対して）**: `desired_open` / `input_mode` フィールドの private 化。`UserIntentSource` から `Recovery` / `HwndCache` を削除し `PanicReset` / `HwndCacheRestored` 専用イベントに分離。`InputModeObserved` への `confidence` フィールド必須化。
-2. **dylint lint（HIR レベルの意味解析）**: `lints/ime_event_guard` — `ImeEvent::PanicReset` / `HwndCacheRestored` が designated 関数（`apply_panic_reset` / `apply_hwnd_cache_restore`）以外で構築されると warning。`lints/observation_source_guard` — 禁止パターン2（観測偽装）を直接検出する: `InputModeObserved { source: ObservationSource::ImmGetOpenStatus, .. }` はどこで構築しても warning（この組合せは常に偽装）、`ConvBitsInference` は `apply_idle_conv_check` 以外で構築すると warning。`cargo dylint --all -p awase-windows -- --target x86_64-pc-windows-msvc` で両方まとめて実行。
+2. **dylint lint（HIR レベルの意味解析）**: `lints/ime_event_guard` — `ImeEvent::PanicReset` / `HwndCacheRestored` / `EngineActivationSync` / `KeyEffectPredicted` / `ModeKeyPassedThrough` が designated 関数（`apply_panic_reset` / `apply_hwnd_cache_restore` / `handle_engine_activation_sync` / `apply_key_effect_prediction` / `pass_through_observed`）以外で構築されると warning。`lints/observation_source_guard` — 禁止パターン2（観測偽装）を直接検出する: `InputModeObserved { source: ObservationSource::ImmGetOpenStatus, .. }` はどこで構築しても warning（この組合せは常に偽装）、`ConvBitsInference` は `apply_idle_conv_check` 以外で構築すると warning。`cargo dylint --all -p awase-windows -- --target x86_64-pc-windows-msvc` で両方まとめて実行。
 3. **CI テスト（軽量な第二の防衛線）**: `crates/awase-windows/tests/architecture_guard.rs` — `PanicReset` / `HwndCacheRestored` / `InputModeObserved` の構築箇所数をテキスト走査で固定し、想定外の増加を検知する。`cargo test -p awase-windows --test architecture_guard`（Linux でも実行可能、CI に組み込み済み）。
 
 新しい「観測が乏しい状況での安全デフォルト」や「awase 自身の能動的訂正」を追加するときは、上記のどの仕組みにも引っかからないからといって「近道が許されている」わけではない。まず本当に `ObserverReported`（confidence 付き）/ `InputModeApplied`（strategy 付き）で表現できないか検討すること。
@@ -151,12 +153,12 @@ ADR-089 の r2〜r5 は **4 ラウンド連続で**「この 2 crate は Phase A
 | dylint crate | 見ているもの | Phase A（open 軸の型化）との関係 |
 |---|---|---|
 | `observation_source_guard` | `ImeEvent::InputModeObserved { source: .. }` の source 偽装。すなわち **input_mode 軸** | 無関係。Phase A が型化したのは `ObserverReported`（**open 軸**） |
-| `ime_event_guard` | `PanicReset` / `HwndCacheRestored` / `EngineActivationSync` の designated 関数外での構築 | 無関係。この 3 variant は**観測でも意図でもない**（`desired_open` の直接書き込み口＝ escape hatch）ため `Observed<E>` にも witness にも載らない |
+| `ime_event_guard` | `PanicReset` / `HwndCacheRestored` / `EngineActivationSync` / `KeyEffectPredicted` / `ModeKeyPassedThrough` の designated 関数外での構築 | 無関係。この 5 variant は**観測でも意図でもない**（belief の直接書き込み口＝ escape hatch）ため `Observed<E>` にも witness にも載らない |
 
 `ime_event_guard` を型化しない理由は「できない」ではなく
 **「型化しても保証が上がらない」**である。`Observed<E>` の witness が成立するのは
 「probe を実行した」「物理キーが来た」といった**引数として渡せる外部事実**が
-あるからで、escape hatch の 3 variant にはそれが無い。designated 関数の中でしか
+あるからで、escape hatch の 5 variant にはそれが無い。designated 関数の中でしか
 作れないトークンを要求する形にしても、そのトークンは crate 内では `pub` に
 ならざるを得ず（構築点と reduce 側が別モジュール）、結局「designated 関数の中で
 作られていること」は件数ガードでしか担保できない。

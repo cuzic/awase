@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""格子第3版(--grid-setup=keys、全状態をキーだけで作る=リセットもIMM無し)の学習結果から、打鍵時予測の表(Rustのデータ)を生成する(ADR-191 決定3・4)。
+
+  gen_key_effect_table.py            grid-tables/{atok,msime,msime-native}.json → crates/awase-windows/src/state/key_effect_data.rs
+  gen_key_effect_table.py --check    何も書かず、コミット済みの key_effect_data.rs が生成結果と一致するか検査する(不一致なら終了コード1)。
+                                     `crates/awase-windows/tests/architecture_guard.rs` の `key_effect_data_matches_generator` が呼ぶ。
+
+`msime.json` は「GJI の MS-IME プリセット」、`msime-native.json` は「Microsoft IME 本体」(スパイク `--msime`、CI `cal-notify-msimenative-s{1..4}`)の学習結果。
+
+入力JSON: `"<状態>|<キー>" → {"ON/0x19/保持": 回数, ...}`(grid_learn.py --json の出力、gridk)。
+状態名 = `on|off - c<conv> - <段階>`(段階: none / typing / conv-space / conv-henkan / conv-muhenkan)。
+`typing-prev-*` は履歴依存の追加ブロックなので表には入れない。
+採用するセル = 結果が**全試行で一致**したセルだけ(多数派<100%の非決定セルと未観測セルは「予測なし」)。
+
+変換モード軸の簡素化(第2版の実測に基づく):
+- キーで到達できる変換モードはプリセットごとに2つだけ(ATOK: 0x19・0x10、MS-IMEプリセット: 0x19・0x1B)。到達不能な状態のセルは元データに無い。
+- **閉(OFF)状態では変換モードを追わない**: 閉状態の変換モードの読み取りは不安定(例 off-c10-none|bs が OFF/0x19)で、開くときのconvもキーごとに違う。
+  閉のセルは変換モードを問わず(全convで結果が一致するセルだけを1セルにまとめる)、開閉だけを予測する。閉になる/開く遷移の押下後convは「不明」(追跡を捨てる)。
+- 押下後convが表現できない値(0x13/0x18等)のセルも「押下後conv不明」にする。
+"""
+import json
+import os
+import re
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+OUT = os.path.join(HERE, "..", "..", "..", "crates", "awase-windows", "src", "state", "key_effect_data.rs")
+
+KEYS = {
+    "bs": "Bs", "eisu": "Eisu", "enter": "Enter", "esc": "Esc", "hankaku-zenkaku": "HankakuZenkaku",
+    "henkan": "Henkan", "hiragana": "Hiragana", "ime-off": "ImeOff", "ime-on": "ImeOn", "kanji": "Kanji",
+    "katakana": "Katakana", "muhenkan": "Muhenkan", "space": "Space",
+}
+STAGES = {"none": "None", "typing": "Typing", "conv-space": "ConvSpace", "conv-henkan": "ConvHenkan", "conv-muhenkan": "ConvMuhenkan"}
+DISP = {None: "None", "保持": "Kept", "破棄": "Discarded", "確定": "Committed"}
+STATE_RE = re.compile(r"^(on|off)-c([0-9A-F]{2})-(none|typing|conv-space|conv-henkan|conv-muhenkan)$")
+RES_RE = re.compile(r"^(ON|OFF)/0x([0-9A-F]{2})(?:/(保持|破棄|確定))?$")
+
+
+# 第3版のMS-IMEプリセットは、自然状態が 0x09(かな・ROMANビット無し)/0x0B。Rust側の Conv は NATIVE/KATAKANA/FULLSHAPE の3ビットだけを見て
+# 0x09 を C19、0x0B を C1B と同一視する(Conv::from_raw)ので、表でも同一視する。同一セルで結果が食い違うものは「予測なし」にする。
+CONV_ALIAS = {"09": "19", "0B": "1B"}
+
+# 第3版は各セル2試行なので、結果が割れるセルを検出しきれない。第2版(各セル4試行)で割れたセルと、独立walkの採点で不一致だったセルは、
+# ATOKの表の生成で「予測なし」にする(次の格子で試行数を増やして確定させるまで)。MS-IMEには適用しない(根拠はATOKの測定)。
+KNOWN_UNSTABLE = {
+    "on-c19-conv-space|esc",  # 第2版: 破棄×3 / 保持×1
+    "on-c19-typing|bs",       # 第2版: 破棄×1 / 保持×3
+    "on-c10-typing|esc",      # 独立walk(ATOK)で 破棄 と 入力中のまま が割れた
+}
+
+# GJI の MS-IME プリセット(msime.json)も各セル2試行で、非決定セルを検出しきれない(`nondeterministic: 0`は「割れない」でなく「n=2では見えない」)。
+# 実機ユーザーの構成がまさにこの表なので、ATOK の第2版(各セル4試行)で割れた「変換中のEsc・入力中のBS/Esc」は、プリセットが違っても
+# 同じキー・同じ段階なので、変換モード(0x19/0x09/0x1B/0x0B)を問わず「予測なし」にする(観測で追随する)。再学習(試行を増やす)で確定させるまでの暫定
+# (レビュー round2 A-M5。試行を増やせる適応学習 cal-fast-msime-* での確定は未実施)。
+KNOWN_UNSTABLE_MSIME = {
+    f"on-c{c}-{stage}|{key}"
+    for c in ("19", "09", "1B", "0B", "10")
+    for stage, key in (("conv-space", "esc"), ("typing", "bs"), ("typing", "esc"))
+}
+
+# Microsoft IME 本体(msime-native.json、CI cal-notify-msimenative-s{1..4}+独立walk cal-msnative-walk-s{3,4}で採点)で、格子の状態と独立walkの実際の状態が
+# 食い違ったセルは「予測なし」にする(開閉・変換モードは合うが、入力中の有無が入力欄の中身に依存する):
+# - `on-c*-none|henkan`: 変換キーは MS-IME 本体では再変換。入力欄に確定済みの文字列があると入力中になる(格子の空の入力欄では 保持しない)。
+# - `on-c*-typing|esc`: 候補/予測ウィンドウの有無で、1回目の Esc が入力中を残す/破棄するが割れる(格子: 保持、独立walk: 破棄)。ATOKの第2版と同型。
+KNOWN_UNSTABLE_NATIVE = {
+    f"on-c{c}-none|henkan" for c in ("19", "1B", "13")
+} | {
+    f"on-c{c}-typing|esc" for c in ("19", "1B", "13")
+}
+
+# レビュー round3 NEW-1: MSIME_NATIVE は227セル中206セルが1試行のみで、CLSID同定により実 Microsoft IME 本体の
+# 全ユーザー(読めない窓では観測で訂正できない)に当たる。ATOK/プリセットで割れた「変換中のEsc・入力中のBS/Esc」は
+# 同じキー・同じ段階なので、本体の変換モード(0x19/0x1B/0x13/0x10)を問わず同様に「予測なし」にする(暫定。適応学習
+# での確定的な再学習は未実施)。上の KNOWN_UNSTABLE_NATIVE(独立walkとの食い違いが実際に判明した3セル)とは別軸で、
+# こちらは「1試行しかない」こと自体への予防的な除外。
+KNOWN_UNSTABLE_NATIVE |= {
+    f"on-c{c}-{stage}|{key}"
+    for c in ("19", "1B", "13", "10")
+    for stage, key in (("conv-space", "esc"), ("typing", "bs"), ("typing", "esc"))
+}
+
+
+
+def cells(path, unstable=frozenset()):
+    d = json.load(open(path, encoding="utf-8"))
+    out, skipped = [], {"nondeterministic": 0, "history": 0, "other": 0, "alias_conflict": 0}
+    seen = {}
+    for cell, dist in sorted(d.items()):
+        state, key = cell.split("|")
+        m = STATE_RE.match(state)
+        if not m:
+            skipped["history" if "prev-" in state else "other"] += 1
+            continue
+        if key not in KEYS:
+            skipped["other"] += 1
+            continue
+        if cell in unstable:
+            skipped["nondeterministic"] += 1
+            continue
+        if len(dist) != 1:
+            skipped["nondeterministic"] += 1
+            continue
+        (res,) = dist
+        r = RES_RE.match(res)
+        if not r:
+            skipped["other"] += 1
+            continue
+        c1 = CONV_ALIAS.get(m.group(2), m.group(2))
+        c2 = CONV_ALIAS.get(r.group(2), r.group(2))
+        row = (m.group(1) == "on", c1, STAGES[m.group(3)], KEYS[key], r.group(1) == "ON", c2, DISP[r.group(3)])
+        k = row[:4]
+        if k in seen:
+            if seen[k] is not None and seen[k] != row:
+                seen[k] = None  # 食い違い→予測なし
+            continue
+        seen[k] = row
+    conflicts = sum(1 for v in seen.values() if v is None)
+    skipped["alias_conflict"] = conflicts
+    out = [v for v in seen.values() if v is not None]
+    return out, skipped
+
+
+REPRESENTABLE = {"10", "19", "1B"}
+
+
+def finalize(cs):
+    """(open, conv, stage, key, after_open, after_conv, disp) → 閉セルをconv非依存に畳み、押下後convが不明なセルを None にする。"""
+    open_cells, closed = [], {}
+    for o, c, st, k, o2, c2, dp in cs:
+        if o and c not in REPRESENTABLE:
+            continue  # 押す前の変換モードが表現できない(0x13 半角カタカナ、0x18 全角英数 等。Rust側 Conv に無い)状態のセルは予測しない
+        after = c2 if (o2 and c2 in REPRESENTABLE and o) else None
+        if o:
+            open_cells.append((True, c, st, k, o2, after, dp))
+        else:
+            closed.setdefault((st, k), set()).add(o2)
+    merged = [(False, None, st, k, next(iter(v)), None, "None")
+              for (st, k), v in sorted(closed.items(), key=lambda x: (x[0][0], x[0][1])) if len(v) == 1]
+    return open_cells + merged
+
+
+def emit(name, cs):
+    lines = ["#[rustfmt::skip]", f"pub(super) const {name}: &[Cell] = &["]
+    for o, c, st, k, o2, c2, dp in finalize(cs):
+        cv = f"Some(Conv::C{c})" if c else "None"
+        c2s = f"Some(Conv::C{c2})" if c2 else "None"
+        lines.append(f"    cell({str(o).lower()}, {cv}, Stage::{st}, TableKey::{k}, {str(o2).lower()}, {c2s}, Disp::{dp}),")
+    lines.append("];")
+    return "\n".join(lines)
+
+
+def main():
+    parts = ["""// @generated by tools/e2e/ime_key_matrix/gen_key_effect_table.py — 手で編集しない（ADR-191 決定3・4）。
+// 生成元: tools/e2e/ime_key_matrix/grid-tables/{atok,msime,msime-native}.json（GitHub CI の --grid --grid-setup=keys 学習結果=第3版。全状態をキーだけで作る）。
+// 全試行で結果が一致したセルだけを含む（非決定セル・未観測セル・履歴依存の追加ブロックは「予測なし」）。
+// 閉(OFF)のセルは変換モードを問わない（conv=None）。押下後convが不明なセルは after_conv=None（追跡を捨てる）。
+// MSIME は「GJI の MS-IME プリセット」の表（Microsoft IME 本体ではない）。MSIME_NATIVE が Microsoft IME 本体の表。
+// MSIME は各セル2試行で非決定を検出しきれないため、ATOK で割れた変換中のEsc・入力中のBS/Escは変換モードを問わず除外した。
+// MSIME_NATIVE は206/227セルが1試行のみ（独立walkの採点で確認、非決定6セルは除外済み）。
+
+use super::key_effect_table::{cell, Cell, Conv, Disp, Stage, TableKey};
+"""]
+    report = []
+    for name, f in (("ATOK", "atok.json"), ("MSIME", "msime.json"), ("MSIME_NATIVE", "msime-native.json")):
+        unstable = {"ATOK": KNOWN_UNSTABLE, "MSIME": KNOWN_UNSTABLE_MSIME, "MSIME_NATIVE": KNOWN_UNSTABLE_NATIVE}.get(name, frozenset())
+        cs, sk = cells(os.path.join(HERE, "grid-tables", f), unstable)
+        parts.append(emit(name, cs))
+        report.append(f"{name}: {len(cs)}セル採用、除外 {sk}")
+    text = "\n".join(parts) + "\n"
+    if "--check" in sys.argv[1:]:
+        # Windows の checkout(core.autocrlf)は CRLF になりうるので、改行の違いは比べない。
+        with open(OUT, encoding="utf-8") as fh:
+            committed = fh.read().replace("\r\n", "\n")
+        if committed != text:
+            print("key_effect_data.rs が gen_key_effect_table.py の生成結果と一致しない(手編集、または grid-tables/*.json・スクリプトの変更後に再生成していない)。"
+                  "`python3 tools/e2e/ime_key_matrix/gen_key_effect_table.py` で再生成すること。", file=sys.stderr)
+            return 1
+        print("OK: key_effect_data.rs matches the generator output")  # 標準出力の文字コードが不明(Windows)でも落ちないよう ASCII だけ
+        return 0
+    with open(OUT, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+    print("\n".join(report))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

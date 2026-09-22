@@ -102,7 +102,7 @@ Engineが約70ms一瞬ONになるため(スパイクv2で確認)。
 - **IMMのクロスプロセス読み取りが効くアプリ**(`profile=ImmCross`/Win32 Edit系、CIの対象)で要件を満たす。TsfNative/Imm32Unavailable
   (メモ帳・Windows Terminal・Chrome/Edge)は`ime_on=None`で読めず、従来どおりidle-conv-check頼み(未検証。BUG-149参照)。
 - **Microsoft IME本体**はCIでawaseのIME ON書き込みが失敗する別の既存の問題(ADR-186)。本変更とは無関係。
-- 観測が空振り(IMM miss)した場合は意図を捨てない(観測成功時のみ)。通過マークは窓(300ms)で失効し、それまでは観測のたびに60ms間隔で読み直す。
+- 観測が空振り(IMM miss)した場合は、窓(300ms)の間は意図を残して60ms間隔で読み直し、**窓が切れても観測が一度も成功しなかったときは意図を捨てる**(BUG-158、2026-09-21。MS-IME本体の`ime_on=None`で意図が残りポーリングが止まったままになった)。通過マークは窓で失効する。
 - 開閉が変わらない場合(入力中の無変換=半角英数トグル等)も、観測が成功すれば意図は捨てられる(beliefは観測に従う。実IMEと一致するので害は小さい)。
 - 通過マークの窓`MODE_KEY_PASS_MARK_WINDOW_MS`(300ms)と読み直し間隔`MODE_KEY_PASS_REREAD_MS`(60ms)は暫定・未実測(`pending`)。CIでは押下後20〜70msにGJIの反応が出た。
 

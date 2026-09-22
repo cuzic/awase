@@ -769,7 +769,7 @@ fn ime_relevance_shadow_action_writes_are_accounted_for() {
         (
             "runtime/mod.rs",
             1,
-            "Runtime::enrich_ime_relevance が GJI Hiragana/Katakana override を消費時に上書きする",
+            "Runtime::enrich_ime_relevance が半角/全角(0xF3/0xF4)を、IME種別ごとの開閉トグル(ADR-189/191)として消費時に上書きする",
         ),
     ];
 
@@ -795,60 +795,9 @@ fn ime_relevance_shadow_action_writes_are_accounted_for() {
             "src/{rel} の event.ime_relevance.shadow_action 書き込み箇所数が想定\
              ({expected_count})と異なります(実際: {count})。本番の書き込み点は \
              hook::classify_ime_relevance と Runtime::enrich_ime_relevance の2箇所に\
-             限定してください。"
+             限定してください（ADR-191）。"
         );
     }
-}
-
-/// ADR-179決定2（未解決点5）: `ModeKeyActuationOwner`の計算点を
-/// `kp_stage_shadow_ime_toggle`（`key_pipeline.rs`）内1箇所に固定する。
-/// 計算点が2箇所目・3箇所目と増えると、ADR-119が警告する「合流点は
-/// 複数箇所に配線が要る」問題をこの列挙自身が再発することになる
-/// （設計そのものがこの一元化を前提にしているため）。
-#[test]
-fn actuation_owner_is_computed_in_exactly_one_place() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut files = Vec::new();
-    walk_rs_files(&src, &mut files);
-
-    let mut total = 0usize;
-    let mut hits: Vec<String> = Vec::new();
-    for path in files {
-        let rel = path
-            .strip_prefix(&src)
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "/");
-        let content = read_crate_file(&format!("src/{rel}"));
-        let production = production_code_only(&content);
-        // 単純な `.matches("... =")` だと `== ModeKeyActuationOwner::..`
-        // という**読み取り**の比較演算子（`==`）まで拾ってしまう
-        // （"actuation_owner ="が"actuation_owner =="の部分文字列として
-        // 一致する）ため、直後の文字が`=`でない（代入であって`==`比較
-        // ではない）場合のみ数える。
-        const NEEDLE: &str = "ime_relevance.actuation_owner =";
-        let mut count = 0usize;
-        let mut from = 0usize;
-        while let Some(rel_idx) = production[from..].find(NEEDLE) {
-            let idx = from + rel_idx;
-            let after = &production[idx + NEEDLE.len()..];
-            if !after.starts_with('=') {
-                count += 1;
-            }
-            from = idx + NEEDLE.len();
-        }
-        if count > 0 {
-            hits.push(format!("{rel}({count})"));
-        }
-        total += count;
-    }
-    assert_eq!(
-        total, 1,
-        "event.ime_relevance.actuation_owner への本番コードでの書き込み箇所数が \
-         1ではありません(実際: {total}, 内訳: {hits:?})。計算点は \
-         runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle 内1箇所に \
-         限定してください（ADR-179決定2）。"
-    );
 }
 
 /// `write_focus_probe` は実際に FocusProbe（first-key の `read_ime_state_fast`）を
@@ -1491,7 +1440,9 @@ fn reduce_helpers_are_called_only_from_reduce_body() {
 #[test]
 fn applied_direct_assignments_are_accounted_for() {
     const DIRECT_ASSIGNMENTS: [(&str, usize); 2] = [
-        ("src/state/ime_model.rs", 5),
+        // ime_model.rs: 5→6。`KeyEffectPredicted`のreduce内で、予測がappliedと食い違う向きへ開閉を動かしたとき
+        // appliedを`Unknown`へ落とす1件を追加（BUG-156、`reduce()`内の正規書き込み）。
+        ("src/state/ime_model.rs", 6),
         ("src/state/platform_state.rs", 2),
     ];
     const STRUCT_LITERAL_FIELDS: [(&str, usize); 1] = [("src/state/ime_model.rs", 1)];
@@ -3323,9 +3274,12 @@ fn initial_app_policy_event_only_touches_app_policy() {
     }
 }
 
-/// ADR-187: `ImeEvent::ModeKeyPassedThrough` は、無変換/変換の生キー通過後に
-/// 観測成功を確認した `ImeStateHub::invalidate_intents_if_mode_key_pass_live` だけが
-/// dispatch する。reducer は `last_intent` だけを捨てる。
+/// ADR-187/191: `ImeEvent::ModeKeyPassedThrough` は `ImeStateHub::pass_through_observed` の1箇所だけが
+/// dispatch する（呼び出し元は、観測成功時の `invalidate_intents_if_mode_key_pass_live`、窓の終了時の
+/// `expire_mode_key_pass_mark`、窓が切れた後の最初の成功観測での `align_after_expired_mode_key_pass`）。
+/// reducer は `last_intent` を捨て、`align_desired` かつ観測から導ける開閉があるときだけ `desired_open` を
+/// それへ揃える（BUG-157。観測が成功しないまま窓が切れた破棄は `desired_open` を書かない）。
+/// つまり `desired_open` を書ける口の1つなので、dylint `ime_event_guard` の designated 関数にも登録してある。
 #[test]
 fn mode_key_passed_through_event_is_dispatched_from_one_place() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -3725,49 +3679,6 @@ fn strip_any_test_module(content: &str) -> &str {
     content
 }
 
-/// ADR-153 決定1 M15対策: 明示config（`muhenkan_solo_tap_ime_action`/
-/// `henkan_solo_tap_ime_action`）設定済みキーには、GJI/MS-IME自動検出由来の
-/// delegate/shadow_overrideをarmedにしない。書き込み点は2系統4箇所
-/// （GJI側=`gji_charset_autodetect.rs`、MS-IME側=`message_handlers.rs`）——
-/// ADR-119の教訓「gateを1箇所に置いて満足しない」のとおり、両ファイルに
-/// 同じ無効化ロジックが存在することを固定する。
-#[test]
-fn explicit_ime_action_masks_autodetect_delegate_in_both_gji_and_msime() {
-    // `_solo_tap_ime_action()`（明示config読み取り）の出現数と、実際に
-    // マスキングを行う共有ヘルパー `mask_auto_detect_for_explicit_config`
-    // （/code-review指摘、PR #185で4+箇所の重複if/else・filter実装を
-    // 統一）の呼び出し数の両方を固定する——前者だけだと「値は読んでいるが
-    // マスキングには使っていない」退行を見逃す。
-    let expectations: &[(&str, usize, usize)] = &[
-        ("src/gji_charset_autodetect.rs", 2, 2),
-        ("src/runtime/message_handlers.rs", 4, 4),
-    ];
-    for (path, expected_reads, expected_masks) in expectations {
-        let content = read_crate_file(path);
-        let production = strip_any_test_module(&content);
-        let read_count = production.matches("_solo_tap_ime_action()").count();
-        assert!(
-            read_count >= *expected_reads,
-            "{path} 内で `*_solo_tap_ime_action()`（明示config読み取り）の本番 \
-             コードでの出現数が想定({expected_reads}以上)を下回ります \
-             (実際: {read_count})。ADR-153決定1 M15対策（GJI/MS-IME自動検出由来の\
-             delegate/shadow_overrideを明示config設定済みキーではarmedに \
-             しない）が欠落していないか確認すること。"
-        );
-        let mask_count = production
-            .matches("mask_auto_detect_for_explicit_config(")
-            .count();
-        assert!(
-            mask_count >= *expected_masks,
-            "{path} 内で `mask_auto_detect_for_explicit_config(`（M15マスキング \
-             共有ヘルパー）の呼び出し数が想定({expected_masks}以上)を下回ります \
-             (実際: {mask_count})。GJI側・MS-IME側の両方、かつdelegate/\
-             shadow_overrideの両方に適用する必要がある（ADR-119の教訓 \
-             「gateを1箇所に置いて満足しない」）。"
-        );
-    }
-}
-
 /// ADR-153 決定1「ケース3」（"off"×belief既にOFFの強制actuate）再導入
 /// 防止ガード（2026-09-08、実機A/B実験で「@」再現の直接原因と確定、
 /// `docs/known-bugs.md` BUG-113節・`docs/experiments.md`エントリ25参照）。
@@ -3847,80 +3758,6 @@ fn kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate() {
          （実際の呼び出し数: {target_calls}）。片方だけになっている場合、\
          KeyDown/KeyUpいずれかの経路でケース3改の判定条件が乖離している \
          おそれがある。"
-    );
-}
-
-/// ADR-154: `auto_delegate_open_axis_consumed`マーカーが正しい場所でのみ
-/// 立てられ、`transport.rs`（follow-only原則、`explicit_ime_action_
-/// consumed`とは異なる第2の消費者を持つ既存フィールドと対称の位置づけ）から
-/// は一切読まれないことを固定する。
-///
-/// このマーカーは「消費点2（`kp_stage_shadow_ime_toggle`）がこの打鍵で
-/// beliefを実際にOFF→ONへ動かした」場合にのみ立てる必要がある——
-/// `if delegate_owned {...}`（delegateが所有し何もしないブランチ）の中で
-/// 立ててしまうと、消費点2も消費点1も何もしないBUG-115型の穴になる。
-#[test]
-fn auto_delegate_open_axis_consumed_marker_is_set_only_when_shadow_toggle_writes_belief() {
-    let content = read_crate_file("src/runtime/key_pipeline.rs");
-    let production = production_code_only(&content);
-    let body = extract_fn_body(production, "fn kp_stage_shadow_ime_toggle(");
-
-    // `if delegate_owned { ... }`（delegateが所有し何もしないブランチ、
-    // triage用ログのみ）にはマーカーが出現してはならない。
-    let owned_start = body.find("if delegate_owned {").expect(
-        "kp_stage_shadow_ime_toggle に `if delegate_owned {` ブロックが \
-         見つかりません。",
-    );
-    let owned_open_brace = owned_start + "if delegate_owned {".len() - 1;
-    let owned_end = find_balanced_close(body, owned_open_brace)
-        .expect("`if delegate_owned` ブロックの閉じ括弧が見つかりません。");
-    let owned_block = &body[owned_start..=owned_end];
-    assert!(
-        !owned_block.contains("auto_delegate_open_axis_consumed"),
-        "`if delegate_owned` ブロック（delegateが所有し何もしないブランチ）に \
-         `auto_delegate_open_axis_consumed` が出現しています。ここで \
-         マーカーを立てると、消費点2も消費点1も何もしないBUG-115型の穴に \
-         なります（ADR-154参照）。"
-    );
-
-    // `if !delegate_owned { ... }`（実際にbeliefを書き込むブランチ）には
-    // マーカーの代入が実際に存在すること（正のガード）。
-    let not_owned_start = body.find("if !delegate_owned {").expect(
-        "kp_stage_shadow_ime_toggle に `if !delegate_owned {` ブロックが \
-         見つかりません。",
-    );
-    let not_owned_open_brace = not_owned_start + "if !delegate_owned {".len() - 1;
-    let not_owned_end = find_balanced_close(body, not_owned_open_brace)
-        .expect("`if !delegate_owned` ブロックの閉じ括弧が見つかりません。");
-    let not_owned_block = &body[not_owned_start..=not_owned_end];
-    assert!(
-        not_owned_block.contains("auto_delegate_open_axis_consumed = true"),
-        "`if !delegate_owned` ブロック（実際にbeliefを書き込むブランチ）に \
-         `auto_delegate_open_axis_consumed = true` が見つかりません。\
-         ADR-154のマーカー設定ロジックが移動・削除されていないか確認して \
-         ください。"
-    );
-}
-
-/// ADR-154: `auto_delegate_open_axis_consumed`は`transport.rs::plan`から
-/// 参照してはならない（follow-only原則。`explicit_ime_action_consumed`との
-/// 違いはADR-154「決定」節・型のdocコメント参照）。
-#[test]
-fn transport_plan_never_reads_auto_delegate_open_axis_consumed() {
-    let content = read_crate_file("src/runtime/transport.rs");
-    // `production_code_only` は `#[cfg(test)] mod tests` の文字どおりの名前
-    // にしか対応しない。`transport.rs` のテストモジュールは `mod plan_tests`
-    // という別名のため、汎用版の `strip_any_test_module`（`#[cfg(test)]`
-    // 直後の `mod <任意の識別子>` を検出して切り落とす）を使う——さもないと
-    // 本テスト自身が追加した`plan_tests`内の`auto_delegate_open_axis_consumed`
-    // 出現（正しいfollow-only確認テスト）を「本番コードでの参照」と誤検出する。
-    let production = strip_any_test_module(&content);
-    assert!(
-        !production.contains("auto_delegate_open_axis_consumed"),
-        "crates/awase-windows/src/runtime/transport.rs の production コードが \
-         `auto_delegate_open_axis_consumed` を参照しています。このフィールドは \
-         engine非活性時（`Decision::PassThrough`）の物理配送可否を左右させて \
-         はならず、`transport.rs::plan`から読んではいけません（ADR-154参照）。"
     );
 }
 
@@ -4625,24 +4462,38 @@ fn half_width_alnum_toggle_policy_is_wired_at_bootstrap_and_reload() {
     );
 }
 
-/// BUG-116/ADR-137 決定1/2 の安全ガードが本番コードから消えていないことを
-/// 固定する。`transport.rs::plan_tests` / `key_pipeline.rs` 内のユニットテストは
+/// ADR-191: `plan()` の DBE 分岐が KeyDown を無条件に握りつぶすのは「awase が実際に書くキー」だけ
+/// （`ImeKeyKind::is_open_toggle_for`、GJI・MS-IME本体の半角/全角）であること、および
+/// BUG-116/ADR-137 決定2 の安全ガードが本番コードから消えていないことを固定する。
+/// `transport.rs::plan_tests` / `key_pipeline.rs` 内のユニットテストは
 /// `runtime/mod.rs` の `#[cfg(windows)]` 配下にあり Linux では存在しないため
 /// （CLAUDE.md 参照）、この静的スキャンが Linux CI 側の唯一の防波堤になる。
 #[test]
 fn bug116_shift_katakana_guards_are_present_in_production_code() {
     let transport = read_crate_file("src/runtime/transport.rs");
     let transport = strip_any_test_module(&transport);
+    assert!(
+        transport.contains("is_open_toggle_for"),
+        "runtime/transport.rs の本番コードから `is_open_toggle_for` が消えています。\
+         Suppress の対象は「awase が書くキー」だけにする（ADR-191）"
+    );
+    // 撤去後は awase が書かない英数(0xF0)・カタカナ(0xF1)を VK で列挙して Suppress してはならない
+    // （握りつぶすと OS にも awase にも誰も何もしない二重の空振りになる）。BUG-116 の
+    // Shift+0xF1 の特例（`shift_katakana_passthrough`）も、0xF1 が常に Allow になったため撤去済み。
     for token in [
-        "fn shift_katakana_passthrough",
-        "half_width_alnum_toggle_active",
-        "is_configured_thumb_key",
+        "VK_DBE_ALPHANUMERIC",
         "VK_DBE_KATAKANA",
+        "fn shift_katakana_passthrough",
+        "DbeModeKeyContext",
+        // 設定 `dbe_mode_key_policy` は撤去済み（Passthrough が実質死んでいたため、B-M3）。
+        // 復活させるなら 0xF3/0xF4 の `shadow_toggled` Suppress との関係を決め直すこと。
+        "DbeModeKeyPolicy",
     ] {
         assert!(
-            transport.contains(token),
-            "runtime/transport.rs の本番コードから `{token}` が消えています \
-             （BUG-116/ADR-137 決定1のガード）"
+            !transport.contains(token),
+            "runtime/transport.rs の本番コードに `{token}` が再び現れています（ADR-191: \
+             Suppress の対象は `is_open_toggle_for` で決め、awase が書かないキーを VK 列挙で \
+             握りつぶさない）"
         );
     }
 
@@ -5374,5 +5225,89 @@ fn notify_calibration_result_call_sites_are_limited_to_confirm_and_reject() {
         "notify_calibration_result の呼び出し箇所が想定と異なります。\
          spawn_calibration_probe_loop内のConfirmedOn/Rejectedの2箇所に\
          限定すること"
+    );
+}
+
+/// ADR-191 決定3: `ImeEvent::KeyEffectPredicted`（打鍵時点の予測を belief へ反映する、観測でも意図でもない
+/// 専用イベント）の構築は `ImeStateHub::apply_key_effect_prediction` の1箇所に限る。ここが増えると
+/// 「観測の偽装」や「ユーザー意図の偽装」への近道になりうる（`ime-belief-architecture.md`）。
+/// また `desired_open` を書かない（ドリフト補正がIMEへ書き戻して「awaseは書かない」に反する）ことを
+/// reduce 側のアームで固定する。
+#[test]
+fn key_effect_predicted_event_is_constructed_only_in_apply_key_effect_prediction() {
+    let platform_state = read_crate_file("src/state/platform_state.rs");
+    let production = production_code_only(&platform_state);
+    assert_eq!(
+        count_real_calls(production, "ImeEvent::KeyEffectPredicted {"),
+        1,
+        "KeyEffectPredicted の構築は platform_state.rs::apply_key_effect_prediction の1箇所だけ"
+    );
+    for path in [
+        "src/runtime/key_pipeline.rs",
+        "src/runtime/ime_refresh.rs",
+        "src/runtime/mod.rs",
+        "src/runtime/executor.rs",
+    ] {
+        let content = read_crate_file(path);
+        assert_eq!(
+            count_real_calls(production_code_only(&content), "ImeEvent::KeyEffectPredicted"),
+            0,
+            "{path} から KeyEffectPredicted を直接 dispatch しない（apply_key_effect_prediction 経由）"
+        );
+    }
+    // reduce のアームは desired_open を書かない。
+    let model = read_crate_file("src/state/ime_model.rs");
+    let arm = model
+        .split("ImeEvent::KeyEffectPredicted { open, mode, track } => {")
+        .nth(1)
+        .expect("reduce に KeyEffectPredicted のアームがある")
+        .split("ImeEvent::ModeKeyPassedThrough")
+        .next()
+        .unwrap();
+    assert!(
+        !arm.contains("desired_open"),
+        "KeyEffectPredicted は desired_open を書かない"
+    );
+}
+
+/// ADR-191 決定3・4（レビュー指摘C-M3）: `state/key_effect_data.rs`（打鍵時予測の表）は
+/// `tools/e2e/ime_key_matrix/gen_key_effect_table.py` が `grid-tables/*.json` から生成する
+/// 「手で編集しない」ファイルである。生成元 JSON・スクリプトを変えて再生成し忘れる、または
+/// 生成物を手で編集すると、表が黙って学習結果と食い違う（読めないアプリでは観測で訂正されない）。
+/// スクリプトの `--check` でコミット済みの生成物と一致することを機械的に検査する。
+///
+/// `python3` が無い環境では失敗する（`AWASE_ALLOW_SKIP_GENERATED_CHECK` を立てたときだけスキップ）。CI（ubuntu・windows）には有る。
+#[test]
+fn key_effect_data_matches_generator() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+    let script = repo.join("tools/e2e/ime_key_matrix/gen_key_effect_table.py");
+    assert!(
+        script.exists(),
+        "生成スクリプトが見つかりません: {script:?}"
+    );
+    let out = match std::process::Command::new("python3")
+        .arg(&script)
+        .arg("--check")
+        .env("PYTHONUTF8", "1")
+        .output()
+    {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // 無言でスキップすると、ランナーから python3 が消えたときに緑のまま検査が消える（round2 C-N7）。
+            // 明示的に許可した環境（ローカルの最小構成）でだけスキップし、CI では失敗させる。
+            assert!(
+                std::env::var_os("AWASE_ALLOW_SKIP_GENERATED_CHECK").is_some(),
+                "python3 が見つからないため key_effect_data.rs の生成物検査ができません。python3 を入れるか、\
+                 ローカルだけ AWASE_ALLOW_SKIP_GENERATED_CHECK=1 でスキップしてください"
+            );
+            eprintln!("python3 が無いため key_effect_data.rs の生成物検査をスキップします");
+            return;
+        }
+        Err(e) => panic!("python3 の起動に失敗: {e}"),
+    };
+    assert!(
+        out.status.success(),
+        "state/key_effect_data.rs が生成結果と一致しません:\n{}",
+        String::from_utf8_lossy(&out.stderr)
     );
 }

@@ -12,7 +12,8 @@ use super::ime_event::{
 use super::ime_event_log::ImeEventLog;
 use super::ime_model::{AppliedImeState, ImeApplyAcceptance, ImeModel};
 use super::input_barrier::InputBarrier;
-use super::scoped_latch::{ScopeCheck, ScopedOneShot};
+use super::mode_key_pass::ModeKeyPassLatch;
+use super::scoped_latch::ScopedOneShot;
 use super::{ApplyGeneration, TickMs};
 use crate::journal::{JournalEntry, UnifiedJournal};
 
@@ -78,7 +79,10 @@ pub(crate) struct ImeStateHub {
     ///
     /// ADR-187 follow 方式: 生キー配送の結果は awase には分からないため、短時間だけ
     /// typing-idle ガードを迂回して観測し、観測成功後に古い明示意図を捨てる。
-    mode_key_pass_mark: ScopedOneShot<crate::win32::ForegroundScope, ModeKeyPassMark>,
+    /// 寿命判断そのものは `state/mode_key_pass.rs::ModeKeyPassLatch`（Win32非依存）に委譲する
+    /// （design-patterns-review.md 提案3）。ここは副作用（`intent_store`/`dispatch_event`）を
+    /// 適用する側に回る。
+    mode_key_pass_mark: ModeKeyPassLatch<crate::win32::ForegroundScope>,
 
     /// `effective_open()` の IntentStore 分岐が `shadow_model` と異なる値を
     /// 返している（＝実際に override している）間 `true`。遷移時のみ INFO
@@ -141,20 +145,12 @@ impl ImeStateHub {
             last_user_explicit_off_ms: 0,
             last_explicit_ime_action_ms: 0,
             intent_store: super::intent_store::IntentStore::default(),
-            mode_key_pass_mark: ScopedOneShot::new(),
+            mode_key_pass_mark: ModeKeyPassLatch::new(),
             intent_override_logged: std::cell::Cell::new(false),
             warmup_gate_suppression_logged: std::cell::Cell::new(false),
             generation_alloc: super::GenerationAllocator::new(),
         }
     }
-}
-
-/// 無変換/変換の生キー通過マーク。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ModeKeyPassMark {
-    armed_at_ms: u64,
-    /// 意図の破棄は通過ごとに1回だけ(最初の観測の直後)。窓の間の再読み取りでは、通過より後に記録された意図を捨てない。
-    invalidated: bool,
 }
 
 impl ImeStateHub {
@@ -209,15 +205,72 @@ impl ImeStateHub {
         self.shadow_model.last_intent.as_ref().map(|i| i.target)
     }
 
-    /// 無変換/変換の生キーを通過させたら呼ぶ（ADR-187）。現在のフォアグラウンドに対する一回マークを立てる。
-    pub(crate) fn arm_mode_key_pass_mark(&mut self, now_ms: u64) {
-        self.mode_key_pass_mark.arm(
-            crate::win32::foreground_scope(),
-            ModeKeyPassMark {
-                armed_at_ms: now_ms,
-                invalidated: false,
+    /// 物理モードキーの打鍵時点で、表から予測した効果をbeliefへ反映する（ADR-191 決定3）。
+    ///
+    /// `ImeEvent::KeyEffectPredicted`の**唯一のdispatch元**。awaseはIMEへ書かない（生キーはそのまま通る）。
+    /// 後から来る観測（settle後）が照合し、食い違えば観測が勝つ（`ImeModel::reduce`のfence）。
+    pub(crate) fn apply_key_effect_prediction(
+        &mut self,
+        prediction: crate::state::key_effect_table::Prediction,
+        tick_ms: TickMs,
+    ) {
+        // 開閉・入力モードも追跡状態も変わらない打鍵は何もしない。
+        if prediction.effect.is_noop() && prediction.track == self.shadow_model.key_track() {
+            return;
+        }
+        self.dispatch_event(
+            ImeEvent::KeyEffectPredicted {
+                open: prediction.effect.open,
+                mode: prediction.effect.mode,
+                track: prediction.track,
             },
+            tick_ms,
         );
+        // 開閉の予測は、この対象に残る古い明示意図（例: 起動直後の明示IME OFF）を置き換える。
+        // `IntentStore`は`effective_open()`で`shadow_model`より優先されるので、消さないと予測が効かない
+        // （読めないアプリでは観測が来ず、意図のTTL〈約30秒〉が切れるまで開閉の予測が無視される）。
+        // 「同一対象では最新の決定が古い意図を置換する」という`IntentStore`自身の設計と、通過マークの
+        // 観測（`consume_mode_key_pass_mark`）が同じ対象の意図を消す扱いに揃える。
+        if prediction.effect.open.is_some() {
+            if let Some(hwnd) = self.shadow_model.current_focus() {
+                self.intent_store.remove(hwnd);
+            }
+        }
+    }
+
+    // ── 通過マーク（ADR-187）: 寿命判断は `ModeKeyPassLatch`（`state/mode_key_pass.rs`）に委譲する ──
+    //
+    // ここに残るのは、latch が返す判断・`PassEffect` を実際に適用する副作用（`intent_store.remove`・
+    // `dispatch_event(ModeKeyPassedThrough)`）だけ（design-patterns-review.md 提案3）。
+    // 各メソッドのシグネチャは委譲前と変えていない（呼び出し元・テストの変更を避けるため）。
+
+    /// 無変換/変換の生キーを通過させたら呼ぶ（ADR-187）。現在のフォアグラウンドに対する一回マークを立てる。
+    pub(crate) fn arm_mode_key_pass_mark(&mut self, now_ms: u64, readable: bool) {
+        self.mode_key_pass_mark
+            .arm(crate::win32::foreground_scope(), now_ms, readable);
+    }
+
+    /// 立てた時点で読める窓だった通過マークが、窓の終了を待っているとき、その残り時間(ms)。
+    /// 通過の途中で窓が読めなくなった（降格した）場合に、窓の終了時に`expire_mode_key_pass_mark`を呼ぶための
+    /// 起床時刻に使う（読めない窓の`reschedule_ime_refresh`は通過マークが有効な間は何も予約しないため）。
+    pub(crate) fn mode_key_pass_expiry_wait_ms(&mut self, now_ms: u64) -> Option<u64> {
+        self.mode_key_pass_mark.expiry_wait_ms(
+            now_ms,
+            crate::win32::foreground_scope(),
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+        )
+    }
+
+    /// awaseが実際にIMEへ書いた（`applied`を更新した）ことを、有効な通過マークへ記録する（BUG-158追補2）。
+    fn note_awase_write_for_mode_key_pass(&mut self) {
+        self.note_awase_write_for_mode_key_pass_in_scope(crate::win32::foreground_scope());
+    }
+
+    fn note_awase_write_for_mode_key_pass_in_scope(
+        &mut self,
+        scope: crate::win32::ForegroundScope,
+    ) {
+        self.mode_key_pass_mark.note_awase_write(scope);
     }
 
     fn mode_key_pass_mark_live_in_scope(
@@ -225,11 +278,17 @@ impl ImeStateHub {
         now_ms: u64,
         scope: crate::win32::ForegroundScope,
     ) -> bool {
-        matches!(
-            self.mode_key_pass_mark.peek(scope),
-            ScopeCheck::Live(mark)
-                if now_ms.saturating_sub(mark.armed_at_ms)
-                    < crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS
+        self.mode_key_pass_mark
+            .live(now_ms, scope, crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS)
+    }
+
+    /// 通過マークの窓が切れるまでの残り時間(ms)。マークが無い/フォアグラウンドが変わった/窓が切れていれば`None`。
+    /// 観測が失敗した通過の後、読み直しを窓の終了時の1回に絞るために使う（BUG-158）。
+    pub(crate) fn mode_key_pass_window_remaining_ms(&mut self, now_ms: u64) -> Option<u64> {
+        self.mode_key_pass_mark.window_remaining_ms(
+            now_ms,
+            crate::win32::foreground_scope(),
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
         )
     }
 
@@ -245,25 +304,92 @@ impl ImeStateHub {
         tick_ms: TickMs,
         scope: crate::win32::ForegroundScope,
     ) -> bool {
-        let ScopeCheck::Live(mark) = self.mode_key_pass_mark.peek(scope) else {
+        self.drop_intents_for_mode_key_pass_in_scope(now_ms, tick_ms, scope, false)
+    }
+
+    /// 通過マークの窓が切れても、観測が一度も成功しなかった（`invalidated`のまま）ときに、古い明示意図を捨てる。
+    ///
+    /// 通過マークは「ユーザーの物理モードキーが通った。結果は分からないので、古い意図を根拠にしない」
+    /// という事実そのものである。意図の破棄を観測の成功だけに頼ると、読み取りが失敗し続ける環境
+    /// （MS-IME本体の`ime_on=None`）で意図が残り、`reschedule_ime_refresh`の早期returnでポーリングが止まったまま
+    /// 次のモードキーまで固まる（BUG-151 原因③の再発、BUG-158）。窓の終了で必ず捨て、ポーリングを再開させる。
+    /// 既に観測の成功で捨てた（`invalidated`）/窓の間は何もしない。
+    pub(crate) fn expire_mode_key_pass_mark(&mut self, now_ms: u64, tick_ms: TickMs) -> bool {
+        self.drop_intents_for_mode_key_pass_in_scope(
+            now_ms,
+            tick_ms,
+            crate::win32::foreground_scope(),
+            true,
+        )
+    }
+
+    /// 判断は `ModeKeyPassLatch::drop_decision`（Win32非依存）。ここは`PassEffect`の適用のみ。
+    fn drop_intents_for_mode_key_pass_in_scope(
+        &mut self,
+        now_ms: u64,
+        tick_ms: TickMs,
+        scope: crate::win32::ForegroundScope,
+        on_expiry: bool,
+    ) -> bool {
+        let Some(effect) = self.mode_key_pass_mark.drop_decision(
+            now_ms,
+            scope,
+            on_expiry,
+            self.shadow_model.last_intent.is_some(),
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+        ) else {
             return false;
         };
-        if now_ms.saturating_sub(mark.armed_at_ms) >= crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS {
-            return false;
-        }
-        if !mark.invalidated {
+        if effect.remove_intent {
             if let Some(hwnd) = self.shadow_model.current_focus() {
                 self.intent_store.remove(hwnd);
             }
-            self.dispatch_event(ImeEvent::ModeKeyPassedThrough, tick_ms);
-            self.mode_key_pass_mark.arm(
-                scope,
-                ModeKeyPassMark {
-                    invalidated: true,
-                    ..mark
-                },
-            );
         }
+        if effect.pass_through {
+            // 窓の終了時の破棄（`on_expiry`）は観測を得ていない: 意図だけ捨て、desired は書かない（A-N1）。
+            self.pass_through_observed(tick_ms, !on_expiry);
+        }
+        true
+    }
+
+    /// `ModeKeyPassedThrough` のdispatch元（ADR-187の「1箇所に限定」）。reducerは`last_intent`を捨て、
+    /// `desired_open`を観測から導ける開閉へ揃える（BUG-157）。窓の間の揃えと、窓が切れた後の最初の成功観測での
+    /// 揃え（BUG-158追補2）の両方がここを通る。
+    fn pass_through_observed(&mut self, tick_ms: TickMs, align_desired: bool) {
+        self.dispatch_event(ImeEvent::ModeKeyPassedThrough { align_desired }, tick_ms);
+    }
+
+    /// 通過マークの窓が**切れた後**の最初の成功観測で、`desired_open`を観測へ揃える（BUG-158追補2）。
+    /// 窓の間の観測が全て時間切れだった通過は、揃える機会が無いまま`observed ≠ desired`が続くため。
+    /// 通過につき1回だけ。通過より後にawaseが書いた/新しい明示意図があるときは揃えない。
+    /// 観測が成功したときに呼ぶ。揃えたら`true`。
+    pub(crate) fn align_after_expired_mode_key_pass(
+        &mut self,
+        now_ms: u64,
+        tick_ms: TickMs,
+    ) -> bool {
+        self.align_after_expired_mode_key_pass_in_scope(
+            now_ms,
+            tick_ms,
+            crate::win32::foreground_scope(),
+        )
+    }
+
+    fn align_after_expired_mode_key_pass_in_scope(
+        &mut self,
+        now_ms: u64,
+        tick_ms: TickMs,
+        scope: crate::win32::ForegroundScope,
+    ) -> bool {
+        if !self.mode_key_pass_mark.align_after_expired(
+            now_ms,
+            scope,
+            self.shadow_model.last_intent.is_some(),
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+        ) {
+            return false;
+        }
+        self.pass_through_observed(tick_ms, true);
         true
     }
 
@@ -302,6 +428,7 @@ impl ImeStateHub {
     /// この5箇所のどれとも異なる新規パターンなら actuation 由来かどうかを
     /// 必ず確認すること。
     pub(crate) fn record_optimistic(&mut self, open: bool) {
+        self.note_awase_write_for_mode_key_pass();
         self.shadow_model.applied = AppliedImeState::Optimistic(open);
         self.clear_pending_if_matches(open);
     }
@@ -312,6 +439,7 @@ impl ImeStateHub {
     /// `at_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来、非ゼロ）。
     /// INV-A97-1 の既知の例外は `record_optimistic` の doc を参照。
     pub(crate) fn record_confirmed(&mut self, open: bool, at_ms: u64) {
+        self.note_awase_write_for_mode_key_pass();
         self.shadow_model.applied = AppliedImeState::Confirmed { open, at_ms };
         self.clear_pending_if_matches(open);
     }
@@ -2467,6 +2595,21 @@ mod tests {
         );
     }
 
+    /// 強い（High）open 観測を1件流し込む（IMM 直接読み取り相当）。テスト専用の再生口
+    /// （`AnyObservation::restored_from_journal`）を使う。
+    fn write_open_observation_high(ps: &mut PlatformState, open: bool, tick_ms: u64) {
+        ps.ime.dispatch_event(
+            ImeEvent::ObserverReported(evidence::AnyObservation::restored_from_journal(
+                open,
+                ObservationSource::ImmGetOpenStatus,
+                TARGET_HWND,
+                ObservationConfidence::High,
+                1,
+            )),
+            TickMs(tick_ms),
+        );
+    }
+
     /// `IntentWitness`（ADR-089 §2.2）を作るための「注入されていない実キー
     /// イベント」。`write_sync_key` / `write_physical_key` は witness 無しには
     /// 呼べないため、テストからもこの経路を通す。
@@ -2492,8 +2635,6 @@ mod tests {
                 is_ime_control: false,
                 is_ime_mode_key: false,
                 explicit_ime_action_consumed: false,
-                auto_delegate_open_axis_consumed: false,
-                actuation_owner: awase::types::ModeKeyActuationOwner::default(),
             },
             modifier_key: None,
             modifier_snapshot: ModifierState::default(),
@@ -2535,18 +2676,24 @@ mod tests {
             .record_explicit_intent(target, UserIntentSource::Command, TickMs(tick_ms));
     }
 
+    impl PlatformState {
+        /// テスト専用: `align_after_expired_mode_key_pass` の scope 指定版。
+        fn align_after_expired_pass_for_test(
+            &mut self,
+            now_ms: u64,
+            scope: crate::win32::ForegroundScope,
+        ) -> bool {
+            self.ime
+                .align_after_expired_mode_key_pass_in_scope(now_ms, TickMs(now_ms), scope)
+        }
+    }
+
     fn arm_mode_key_pass_mark_for_test(
         ps: &mut PlatformState,
         scope: crate::win32::ForegroundScope,
         now_ms: u64,
     ) {
-        ps.ime.mode_key_pass_mark.arm(
-            scope,
-            ModeKeyPassMark {
-                armed_at_ms: now_ms,
-                invalidated: false,
-            },
-        );
+        ps.ime.mode_key_pass_mark.arm(scope, now_ms, true);
     }
 
     fn test_foreground_scope() -> crate::win32::ForegroundScope {
@@ -2591,6 +2738,57 @@ mod tests {
             !ps.ime.effective_open_at(TickMs(300)),
             "IntentStore 込みの PlatformState::effective_open() は同一対象なら \
              明示 OFF 意図を維持し、Engine の ctx.ime_on が誤って true に反転しない"
+        );
+    }
+
+    /// 読めないアプリ（観測が来ない）で、起動直後の明示OFF意図が開閉の予測を無視させ続けない
+    /// （CI blind: `intent-store` の上書きが約30秒続き、予測でopenにしてもEngineが動かなかった）。
+    #[test]
+    fn key_effect_open_prediction_replaces_stale_explicit_off_intent() {
+        use crate::state::key_effect_table::{KeyTrack, PredictedEffect, Prediction, Stage};
+        let mut ps = PlatformState::new();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        assert!(!ps.ime.effective_open_at(TickMs(110)), "明示OFF直後はfalse");
+
+        let open = Prediction {
+            effect: PredictedEffect {
+                open: Some(true),
+                mode: None,
+            },
+            track: KeyTrack {
+                conv: None,
+                stage: Stage::None,
+            },
+        };
+        ps.ime.apply_key_effect_prediction(open, TickMs(120));
+        assert!(
+            ps.ime.effective_open_at(TickMs(130)),
+            "開閉の予測は、同じ対象の古い明示OFF意図（IntentStore）を置き換えてEngineへ効く"
+        );
+    }
+
+    /// 開閉を変えない予測（変換モードだけ等）は、明示意図を消さない。
+    #[test]
+    fn key_effect_prediction_without_open_keeps_explicit_intent() {
+        use crate::state::key_effect_table::{KeyTrack, PredictedEffect, Prediction, Stage};
+        let mut ps = PlatformState::new();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        let no_open = Prediction {
+            effect: PredictedEffect {
+                open: None,
+                mode: None,
+            },
+            track: KeyTrack {
+                conv: None,
+                stage: Stage::Typing,
+            },
+        };
+        ps.ime.apply_key_effect_prediction(no_open, TickMs(120));
+        assert!(
+            !ps.ime.effective_open_at(TickMs(130)),
+            "開閉を予測しない打鍵では、明示OFF意図は残る"
         );
     }
 
@@ -2663,6 +2861,201 @@ mod tests {
                 scope,
             ),
             "窓が切れたら止まる"
+        );
+    }
+
+    /// BUG-157 の回帰テスト: 起動直後のVK_IME_OFF（desired=false）の後、ユーザーのひらがなキーで
+    /// 実IMEが開いた。通過マークの観測がこれを確認したら、`desired_open`は開へ揃い、drift correction は
+    /// ユーザーの操作を閉じ直さない（修正前は desired=false のまま「観測 true ≠ desired false」で発火した）。
+    #[test]
+    fn mode_key_pass_observation_aligns_desired_so_drift_correction_does_not_revert_user_key() {
+        let mut ps = PlatformState::new();
+        let scope = test_foreground_scope();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        // 起動直後の明示OFF（スパイク/ユーザー）。desired=false、意図あり。
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        // ユーザーの物理ひらがな（通過）→ 実IMEが開き、強い観測（High、ImmCross読み取り）が届く。
+        arm_mode_key_pass_mark_for_test(&mut ps, scope, 125);
+        write_open_observation_high(&mut ps, true, 130);
+        assert!(ps
+            .ime
+            .invalidate_intents_if_mode_key_pass_live_in_scope(140, TickMs(140), scope));
+        assert!(
+            ps.ime.shadow_model.desired_open(),
+            "通過したモードキーの結果（開）を desired として採る"
+        );
+        // 乖離の継続時間が閾値を超えていても（drift.started_at をバックデートして模す）、
+        // 観測 == desired なので drift correction は発火しない（揃える前は desired=false ≠ 観測 true で発火した）。
+        ps.ime.shadow_model.observations.drift = Some(ImeDrift {
+            started_at: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_millis(
+                    crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS + 50,
+                ))
+                .expect("test instant can be backdated"),
+        });
+        let now = std::time::Instant::now();
+        assert!(
+            ps.ime
+                .check_drift_correction(now, ps.ime.explicit_intent())
+                .is_none(),
+            "揃った後は、観測 == desired なので drift correction は発火しない"
+        );
+    }
+
+    /// 観測が無い窓（読めない窓）では、通過マークがあっても `desired_open` を書かない。
+    #[test]
+    fn mode_key_pass_without_observation_keeps_desired() {
+        let mut ps = PlatformState::new();
+        let scope = test_foreground_scope();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        arm_mode_key_pass_mark_for_test(&mut ps, scope, 125);
+        assert!(ps
+            .ime
+            .invalidate_intents_if_mode_key_pass_live_in_scope(140, TickMs(140), scope));
+        assert!(
+            !ps.ime.shadow_model.desired_open(),
+            "観測が無ければ desired は書かない（awaseが最後に書こうとした意図のまま）"
+        );
+    }
+
+    /// awase が書いた意図（通過マーク無し）が実IMEに届かなかった場合は、従来どおり drift correction が
+    /// 訂正する（BUG-157 の修正が、この必要な訂正を止めない）。
+    #[test]
+    fn drift_correction_still_fires_for_awase_write_without_mode_key_pass() {
+        let mut ps = PlatformState::new();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, true, 100);
+        write_open_observation_high(&mut ps, false, 130);
+        let now = std::time::Instant::now();
+        let drift = ps.ime.check_drift_correction(now, ps.ime.explicit_intent());
+        assert!(
+            matches!(drift, Some(DriftCorrection { desired: true, observed: false, .. })),
+            "通過マークが無ければ desired（awaseの意図）と観測の乖離は従来どおり補正される: {drift:?}"
+        );
+    }
+
+    /// BUG-158: 通過マークの窓が切れても観測が一度も成功しなかったとき（読み取りが失敗し続ける環境）、
+    /// 古い明示意図を捨てる（捨てないと `reschedule_ime_refresh` の早期returnでポーリングが止まったままになる）。
+    #[test]
+    fn mode_key_pass_expiry_drops_intents_when_no_observation_succeeded() {
+        let mut ps = PlatformState::new();
+        let scope = test_foreground_scope();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        arm_mode_key_pass_mark_for_test(&mut ps, scope, 125);
+        let window = crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS;
+        // 窓の間は捨てない（観測の成功を待つ）。
+        assert!(!ps
+            .ime
+            .drop_intents_for_mode_key_pass_in_scope(140, TickMs(140), scope, true));
+        assert_eq!(ps.ime.explicit_intent(), Some(false));
+        // 窓が切れたら、観測が成功していなくても捨てる（一度だけ）。
+        assert!(ps.ime.drop_intents_for_mode_key_pass_in_scope(
+            125 + window,
+            TickMs(125 + window),
+            scope,
+            true
+        ));
+        assert_eq!(
+            ps.ime.explicit_intent(),
+            None,
+            "意図が残らないのでポーリングが再開する"
+        );
+        assert!(!ps.ime.drop_intents_for_mode_key_pass_in_scope(
+            126 + window,
+            TickMs(126 + window),
+            scope,
+            true
+        ));
+    }
+
+    /// 観測の成功で既に捨てた通過マークは、窓の終了で再度捨てない（通過より後の明示意図を守る）。
+    #[test]
+    fn mode_key_pass_expiry_does_nothing_after_successful_invalidation() {
+        let mut ps = PlatformState::new();
+        let scope = test_foreground_scope();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        arm_mode_key_pass_mark_for_test(&mut ps, scope, 125);
+        assert!(ps
+            .ime
+            .invalidate_intents_if_mode_key_pass_live_in_scope(140, TickMs(140), scope));
+        dispatch_and_record_explicit_intent(&mut ps, true, 150);
+        let window = crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS;
+        assert!(!ps.ime.drop_intents_for_mode_key_pass_in_scope(
+            125 + window,
+            TickMs(125 + window),
+            scope,
+            true
+        ));
+        assert_eq!(
+            ps.ime.explicit_intent(),
+            Some(true),
+            "通過より後の意図は残る"
+        );
+    }
+
+    /// BUG-158追補2: 通過→窓の間の観測は全て時間切れ（観測なし）→窓切れ→最初の成功観測で `desired_open` を揃える。
+    /// 揃えた後は通常の drift correction に戻る（2回目は揃えない）。
+    #[test]
+    fn align_after_expired_pass_aligns_once_on_first_successful_observation() {
+        let mut ps = PlatformState::new();
+        let scope = test_foreground_scope();
+        let window = crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS;
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        arm_mode_key_pass_mark_for_test(&mut ps, scope, 125);
+        // 窓の間は観測が無い（全て時間切れ）。窓が切れて意図だけ捨てる（BUG-158）。
+        assert!(ps.ime.drop_intents_for_mode_key_pass_in_scope(
+            125 + window,
+            TickMs(125 + window),
+            scope,
+            true
+        ));
+        assert!(
+            !ps.ime.shadow_model.desired_open(),
+            "観測が無いので desired は古いまま"
+        );
+        // 窓が切れた後の最初の成功観測（実IMEは開）。
+        write_open_observation_high(&mut ps, true, 500);
+        assert!(ps.align_after_expired_pass_for_test(600, scope));
+        assert!(
+            ps.ime.shadow_model.desired_open(),
+            "最初の成功観測で desired を揃える"
+        );
+        // 通常の drift correction へ戻る: 2回目は揃えない。
+        write_open_observation_high(&mut ps, false, 900);
+        assert!(
+            !ps.align_after_expired_pass_for_test(1000, scope),
+            "通過につき1回だけ"
+        );
+        assert!(
+            ps.ime.shadow_model.desired_open(),
+            "2回目の観測では desired を動かさない"
+        );
+    }
+
+    /// 通過より後に awase 自身が書いた（`record_optimistic`）場合は揃えない（実IMEを信用せず drift correction が訂正する）。
+    #[test]
+    fn align_after_expired_pass_skips_when_awase_wrote_after_pass() {
+        let mut ps = PlatformState::new();
+        let scope = test_foreground_scope();
+        let window = crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS;
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        arm_mode_key_pass_mark_for_test(&mut ps, scope, 125);
+        ps.ime.note_awase_write_for_mode_key_pass_in_scope(scope);
+        assert!(ps.ime.drop_intents_for_mode_key_pass_in_scope(
+            125 + window,
+            TickMs(125 + window),
+            scope,
+            true
+        ));
+        write_open_observation_high(&mut ps, true, 500);
+        assert!(
+            !ps.align_after_expired_pass_for_test(600, scope),
+            "awase が書いた後は揃えない"
         );
     }
 

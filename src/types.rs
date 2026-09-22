@@ -162,44 +162,6 @@ impl ShadowImeAction {
     }
 }
 
-/// ADR-179決定2: `shadow_action`由来のintentについて、beliefを書く責務・
-/// 実IMEを変える責務（明示actuate/`ActivationSync`echo）のどちらを
-/// この打鍵が持つかを表す。計算は`kp_stage_shadow_ime_toggle`
-/// （`awase-windows::runtime::key_pipeline`）内1箇所のみ。
-///
-/// **このenumは所有権の唯一のSSOTではない**: `shadow_action`由来の
-/// intentだけをカバーする。explicit config（ADR-153、
-/// `explicit_ime_action_target`/`explicit_ime_action_consumed`）や
-/// 物理配送のSuppress/Allow判定（`transport.rs::plan`）は、この列挙の
-/// 外側で従来どおり独立に決まる。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ModeKeyActuationOwner {
-    /// この打鍵はshadow_action由来のintentを採用していない
-    /// （`sync_direction`/明示configが優先された、またはそもそも
-    /// モードキーではない）。beliefを書くか・明示actuateするか・
-    /// `ActivationSync`を通すか、の3判断とも従来どおりの既存ロジックに
-    /// 委ねる。`Option`で表現せず独立したvariantにする——将来variantが
-    /// 増えても黙って`_`に吸収されず、match網羅性がコンパイル時に効く
-    /// ようにするため。
-    #[default]
-    NotAModeKey,
-    /// FSM delegate（`resolve_pending_thumb_as_single`）が単独タップ
-    /// 確定時に own する。親指キー配置時、belief ON中のみ
-    /// （`delegate_owns_mode_key_shadow_toggle && effective_open()`）。
-    /// beliefは書かず、明示actuateもしないが、`ActivationSync`は通す。
-    FsmDelegate,
-    /// awase自身がbelief書き込み・実actuationの両方を行う。静的
-    /// `shadow_action`（Hiragana/Katakana/Alphanumeric/DBE系）、および
-    /// 無変換/変換のToggle分類（非冪等、awaseが唯一の変更主体で
-    /// あるべき）はここに属する。
-    AwaseExplicit,
-    /// beliefはawaseが書くが、実IME状態の変更は物理キー配送により
-    /// GJI/MS-IME自身が行う。awaseは明示actuateも`ActivationSync`の
-    /// 自動echoも一切発行しない。無変換/変換のOn/Off分類（非親指キー
-    /// 設定時）専用。
-    PhysicalDelivery,
-}
-
 /// キーの IME 関連情報（プラットフォーム層が事前分類）
 #[allow(clippy::struct_excessive_bools)]
 // 各フィールドは独立の判定軸を1:1で表現（enum化はwiden/意味混同のリスクを増やす）
@@ -242,37 +204,6 @@ pub struct ImeRelevance {
     /// 常にこのイベント1回限りの値（次のKeyDownでは
     /// `RawKeyEvent::ime_relevance` が新規に構築され直す）。
     pub explicit_ime_action_consumed: bool,
-    /// ADR-154: GJI/MS-IME **自動検出**由来の`delegate_to_open_axis`が armed な
-    /// 親指キーについて、`kp_stage_shadow_ime_toggle`（消費点2）がこの物理
-    /// KeyDown 1回分のIME open軸を**beliefをOFF→ONへ実際に動かす形で裁定済み**
-    /// であることを示すマーカー。`PendingThumbData`経由で運ばれ、100ms後の
-    /// `resolve_pending_thumb_as_single`（消費点1）が同じ打鍵に対して優先順位3
-    /// （delegate）を二重に発火させないために使う。
-    ///
-    /// **`explicit_ime_action_consumed`とは別フィールドである理由**: あちらは
-    /// `transport.rs::plan`という**engine外の第2の消費者**を持ち、無変換/変換の
-    /// 物理配送を`Suppress`に転じさせる。本フィールドが意味を持つのは
-    /// `Decision::Consume`に乗る打鍵（＝engine活性時の親指キー）だけであり、
-    /// engine非活性時（`Inactive(ImeOff)`/`Inactive(UserDisabled)`）は
-    /// `Decision::PassThrough`に落ちて`plan`の戻り値が実際に物理配送を左右する。
-    /// この経路で流用すると、明示config用のSuppress判定が誤発火し、無変換/変換が
-    /// GJIに一切届かないままawaseも何もactuateしない——ADR-119型の「二重の空振り」
-    /// を新規に作る（詳細はADR-154「決定」節）。
-    ///
-    /// **禁止事項**: `crates/awase-windows/src/runtime/transport.rs`の production
-    /// コードはこのフィールドを読んではならない（`tests/architecture_guard.rs`の
-    /// grepガードで機械的に固定する）。物理配送の可否を左右させてはならず、
-    /// 非活性経路では単に捨てられる値である。
-    ///
-    /// 常にこのイベント1回限りの値。KeyUpでは立たない（`kp_stage_shadow_ime_toggle`
-    /// がKeyDown以外を早期returnするため）——ADR-153ケース3改がKeyUp側にも
-    /// マーカーを立てる特別分岐を持つのとは非対称だが、本フィールドは
-    /// `PendingThumb`経由で運ばれるだけで物理配送に影響しないためKeyUpペアリングは
-    /// 不要（意図的な非対称）。
-    pub auto_delegate_open_axis_consumed: bool,
-    /// ADR-179決定2: この打鍵の`shadow_action`由来intentのactuation
-    /// 所有者。`kp_stage_shadow_ime_toggle`内1箇所でのみ書き込む。
-    pub actuation_owner: ModeKeyActuationOwner,
 }
 
 // ── キーイベント ──

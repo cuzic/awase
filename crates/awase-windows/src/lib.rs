@@ -419,7 +419,7 @@ impl RawKeyEventExt for RawKeyEvent {
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
                     wVk: VIRTUAL_KEY(self.vk_code.0),
-                    wScan: 0,
+                    wScan: vk::reinject_scan_code(self.vk_code, self.scan_code.0),
                     dwFlags: if is_keyup {
                         KEYEVENTF_KEYUP
                     } else {

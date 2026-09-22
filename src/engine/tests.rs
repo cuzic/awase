@@ -6296,13 +6296,6 @@ mod engine_integration_tests {
         }
     }
 
-    fn ime_on_composing_ctx() -> InputContext {
-        InputContext {
-            composing: true,
-            ..ime_on_ctx()
-        }
-    }
-
     fn ime_off_ctx() -> InputContext {
         InputContext {
             ime_on: false,
@@ -7238,24 +7231,30 @@ mod engine_integration_tests {
         assert!(!has_effect(&d, |e| matches!(e, Effect::Ime(_))));
     }
 
-    // ── ADR-092 決定D Step4b: 無変換/変換単独タップの IME open 軸への肩代わり ──
-    //
-    // 重要な前提（テスト設計時に判明）: `Engine::compute_active` は
-    // `ctx.ime_on` を判定条件に含むため（判定順: user_enabled → is_japanese_ime →
-    // ime_on → is_romaji）、`ime_on=false` の間は Phase 2 で無条件
-    // `Decision::pass_through()` を返し Phase 3（NicolaFsm、
-    // `resolve_pending_thumb_as_single` を含む）に到達しない。つまり
-    // `DelegateToOpenAxis` は **IME が既に ON の状態からの操作**でしか
-    // 発火し得ない（`TurnOff`/`Toggle(ime_on=true→false)` は届くが、
-    // `TurnOn`（IME OFF から ON へ）は届かない）。これは実装のバグではなく
-    // ADR-092 背景節が明記する既存の構造的な穴（Step3 の対象、本ADRでは
-    // 意図的に対象外）——engine が非活性（＝IME OFF）の間は awase がそもそも
-    // 無変換/変換の生 VK を横取りしないため、MS-IME/GJI 自身のネイティブな
-    // キー割当て処理（`KeyAssignmentHenkan=1` 等）にそのまま委ねられる形に
-    // なる。以下のテストは全て `ime_on_ctx()`（engine active）を前提にする。
+    /// `muhenkan_vk` を設定し、単独タップ設定を「常に送出する（パススルー）」
+    /// にした `Engine` を返す（`always_suppress=false`,
+    /// `ignore_composing_guard=true` — 設定画面の`SoloTapSuppressMode::
+    /// PassThrough`が生成する値と同一）。
+    fn make_test_engine_with_muhenkan_passthrough() -> Engine {
+        let mut engine = make_test_engine();
+        engine.set_thumb_key_solo_tap_config(
+            Some(VK_NONCONVERT),
+            ModeKeyConfig::from_legacy_bools(true, false),
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        engine
+    }
 
-    /// `muhenkan_vk` を設定した `Engine` を返す（`delegate_to_open_axis` テスト用）。
-    fn make_test_engine_with_muhenkan() -> Engine {
+    // ── M2 回帰防止（`discard_ime_open_request`）: 明示config `muhenkan_solo_tap_ime_action`
+    //    （優先順位2、ADR-191で残した唯一の open 軸 actuation 供給元）が立てた
+    //    `ime_open_requested` が、ToggleEngine/SwapLayout の内部 flush 経由で後続キーへ漏れない ──
+    //    撤去コミット 983a6bdf の本文が「後続で書き直す」と宣言していたテスト（レビュー指摘C-M1）。
+    //    旧テストは撤去済みの `set_muhenkan_delegate_to_open_axis` を使っていたので、
+    //    残った setter `set_muhenkan_solo_tap_ime_action` に置き換えた。
+
+    /// `muhenkan_vk` を設定し、無変換の単独タップに明示config `TurnOff` を持たせた `Engine`。
+    fn make_test_engine_with_muhenkan_solo_tap_turn_off() -> Engine {
         let mut engine = make_test_engine();
         engine.set_thumb_key_solo_tap_config(
             Some(VK_NONCONVERT),
@@ -7263,98 +7262,34 @@ mod engine_integration_tests {
             None,
             ModeKeyConfig::from_legacy_bools(false, true),
         );
+        engine.set_muhenkan_solo_tap_ime_action(Some(ShadowImeAction::TurnOff));
         engine
     }
 
-    /// `henkan_vk` を設定した `Engine` を返す（`delegate_to_open_axis` テスト用、
-    /// `make_test_engine_with_muhenkan` の対称版。Opus コードレビュー指摘:
-    /// 既存の `delegate_to_open_axis_*` 系テストは全て無変換のみで、変換側の
-    /// `resolve_pending_thumb_as_single` の分岐が未検証だった）。
-    fn make_test_engine_with_henkan() -> Engine {
-        let mut engine = make_test_engine();
-        engine.set_thumb_key_solo_tap_config(
-            None,
-            ModeKeyConfig::from_legacy_bools(false, true),
-            Some(VK_CONVERT),
-            ModeKeyConfig::from_legacy_bools(false, true),
-        );
-        engine
-    }
-
-    /// 無変換単独タップが**確定**（timeout）した時点で `DelegateToOpenAxis` が
-    /// 発火し、`Effect::Ime(SetOpen)` が生成され、かつ生 VK_NONCONVERT は
-    /// 送出されない。
+    /// 対照: 上の設定で無変換が単独タップ確定すると `SetOpen(false)` が出る（＝以下の
+    /// 「漏れない」テストが、そもそも ime_open_requested が立つ設定で走っていることの裏付け）。
     #[test]
-    fn delegate_to_open_axis_fires_on_confirmed_muhenkan_solo_tap() {
-        let mut engine = make_test_engine_with_muhenkan();
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
-
-        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        assert!(
-            d.is_consumed(),
-            "solo tap should be pending, not passthrough"
-        );
-        assert!(
-            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
-            "IME effect must not fire before solo tap is confirmed"
-        );
-
-        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
-        )));
-        assert!(
-            !has_effect(&d, |e| matches!(
-                e,
-                Effect::Input(InputEffect::SendKeys(actions))
-                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
-            )),
-            "raw VK_NONCONVERT must not be sent when delegated to open axis, got {:?}",
-            effects_of(&d)
-        );
-    }
-
-    /// ADR-186: `delegate_to_open_axis`を持つ無変換/変換の単独タップは、タイムアウトでは解決せず
-    /// （`SetOpen`を出さない）、親指KeyUpで**1回だけ**解決する。タイムアウトで解決した`SetOpen`は
-    /// キーボード経路（belief書き込み・明示意図の記録・eisu reset）を通らず、実機でToggle OFFが
-    /// `Unwarranted`になって実行されなかった（2026-09-20）。
-    #[test]
-    fn delegate_to_open_axis_solo_tap_resolves_at_key_up_not_at_timeout() {
-        let mut engine = make_test_engine_with_muhenkan_passthrough();
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
-
+    fn muhenkan_solo_tap_ime_action_fires_set_open_on_confirmed_solo_tap() {
+        let mut engine = make_test_engine_with_muhenkan_solo_tap_turn_off();
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        // しきい値超過のタイムアウトでは単独確定しない（SetOpenも生キー送出も出さない）。
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
         assert!(
-            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
-            "timeout must not resolve the delegate solo tap, got {:?}",
-            effects_of(&d)
-        );
-        // 親指KeyUpで1回だけ解決する。
-        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(300).build(), &ime_on_ctx());
-        let set_opens: Vec<_> = effects_of(&d)
-            .into_iter()
-            .filter(|e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })))
-            .collect();
-        assert_eq!(
-            set_opens.len(),
-            1,
-            "KeyUp must resolve the delegate solo tap exactly once, got {:?}",
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+            )),
+            "confirmed solo tap with muhenkan_solo_tap_ime_action=TurnOff must emit SetOpen(false), got {:?}",
             effects_of(&d)
         );
     }
 
-    /// ADR-186 残る問題2: Shift を押したままの無変換/変換は、GJI(ATOK)では「かな⇔半角英数」のトグルで
-    /// あって開閉トグルではない（実機、`186-measurements/`）。単独タップとして`delegate_to_open_axis`
-    /// （→SetOpen(false)）を発火させると、IMEが意図せずOFFになる（実機で確認）。Shift+Space/Enter の
-    /// literal と同じく、Shift 押下中は保留に入れず素通しにする。Shiftなしなら従来どおり委譲する。
+    /// ADR-186 残る問題2（レビュー round2 C-N1）: Shift を押したままの無変換/変換は、GJI(ATOK)では
+    /// 「かな⇔半角英数」のトグルで開閉トグルではない（実機で確認）。明示config `muhenkan_solo_tap_ime_action`
+    /// を持つユーザーでも、Shift 押下中は単独タップとして扱わず（→`SetOpen`を発火させず）素通しにする。
+    /// Shift なしなら従来どおり明示configが発火する（対照）。
     #[test]
-    fn delegate_to_open_axis_not_fired_when_shift_held() {
-        let mut engine = make_test_engine_with_muhenkan_passthrough();
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
-
+    fn muhenkan_solo_tap_ime_action_not_fired_when_shift_held() {
+        let mut engine = make_test_engine_with_muhenkan_solo_tap_turn_off();
         let shift_ctx = InputContext {
             modifiers: ModifierState {
                 shift: true,
@@ -7371,173 +7306,31 @@ mod engine_integration_tests {
         let d = engine.on_input(Ev::up(VK_NONCONVERT).at(300).build(), &shift_ctx);
         assert!(
             !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
-            "Shift+無変換のKeyUpでSetOpenを発火してはならない, got {:?}",
+            "Shift+無変換のKeyUpで明示configのSetOpenを発火してはならない, got {:?}",
             effects_of(&d)
         );
     }
 
-    /// T-10: engine 活性中でも composing=true なら `DelegateToOpenAxis` は発火せず、
-    /// `ModeKeyConfig.composing`（既定 Suppress）へ落ちる。MS-IME の
-    /// `KeyAssignmentMuhenkan=1` 相当で、変換中の無変換単独タップが
-    /// `SetOpen(false)` に化けて composition を破棄しないことを固定する。
-    #[test]
-    fn delegate_to_open_axis_suppressed_while_composing() {
-        let mut engine = make_test_engine_with_muhenkan();
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
-
-        let d = engine.on_input(
-            Ev::down(VK_NONCONVERT).at(100).build(),
-            &ime_on_composing_ctx(),
-        );
-        assert!(
-            d.is_consumed(),
-            "solo tap should be pending, not passthrough"
-        );
-        assert!(
-            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
-            "IME effect must not fire before solo tap is confirmed"
-        );
-
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_composing_ctx());
-        assert!(
-            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
-            "composing=true must not request IME open-axis action, got {:?}",
-            effects_of(&d)
-        );
-        assert!(
-            !has_effect(&d, |e| matches!(
-                e,
-                Effect::Input(InputEffect::SendKeys(actions))
-                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
-            )),
-            "ModeKeyConfig.composing default Suppress must not send raw VK_NONCONVERT, got {:?}",
-            effects_of(&d)
-        );
-    }
-
-    /// **chord のタイミングウィンドウ内の誤確定では発火しない**（ADR-092
-    /// リスク節が明記する回帰テスト要件）。無変換キーの直後、閾値内に文字キーが
-    /// 来た場合は同時打鍵として確定し、`DelegateToOpenAxis`（単独タップ確定
-    /// 専用の経路）は一切発火しない。
-    #[test]
-    fn delegate_to_open_axis_does_not_fire_during_chord_timing_window() {
-        let mut engine = make_test_engine_with_muhenkan();
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
-
-        let d1 = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ime_on_ctx());
-        assert!(d1.is_consumed());
-        // 同時打鍵の閾値内（make_test_engine の threshold_ms=100）に文字キーが来る
-        // → 同時打鍵として確定し、単独タップの delegate_to_open_axis 経路には
-        // 一切到達しない。
-        let d2 = engine.on_input(Ev::down(VK_A).at(50).build(), &ime_on_ctx());
-        assert!(
-            !has_effect(&d1, |e| matches!(e, Effect::Ime(_)))
-                && !has_effect(&d2, |e| matches!(e, Effect::Ime(_))),
-            "chord confirmation must not trigger IME open axis delegation, d1={:?} d2={:?}",
-            effects_of(&d1),
-            effects_of(&d2)
-        );
-    }
-
-    /// `ShadowImeAction::Toggle` は確定時点の `ctx.ime_on`（belief）を見て
-    /// 反転方向を決める。
-    #[test]
-    fn delegate_to_open_axis_toggle_resolves_via_ctx_ime_on() {
-        let mut engine = make_test_engine_with_muhenkan();
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
-
-        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
-        assert!(
-            has_effect(&d, |e| matches!(
-                e,
-                Effect::Ime(ImeEffect::SetOpen { open: false, .. })
-            )),
-            "Toggle while ime_on=true must resolve to SetOpen(false), got {:?}",
-            effects_of(&d)
-        );
-    }
-
-    /// 専用Fnキー（`muhenkan_solo_tap_dedicated_fn_key`）は `delegate_to_open_axis`
-    /// より優先される。
-    #[test]
-    fn dedicated_fn_key_takes_priority_over_delegate_to_open_axis() {
-        let mut engine = make_test_engine_with_muhenkan();
-        engine.set_muhenkan_solo_tap_dedicated_fn_key(Some(VK_F21));
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
-
-        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
-        assert!(
-            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
-            "dedicated_fn_key must take priority, no IME effect expected, got {:?}",
-            effects_of(&d)
-        );
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::Input(InputEffect::SendKeys(actions))
-                if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_F21))
-        )));
-    }
-
-    /// M1 回帰防止（Opus コードレビュー指摘、実機テストプローブで実証済み）:
-    /// `apply_ime_open_request` が `ime_set_open_effects`（`prev_activation`を
-    /// 推進する）を経由せず直接 `push_effect` していたため、確定した単独タップ
-    /// による `SetOpen(false)` の**次の**打鍵で `ActivationSync` 起点の重複
-    /// `SetOpen` + 不要な `EngineStateChanged{send_ime_key:true}` が再発火して
-    /// いた。`ime_off_combo_does_not_double_emit_set_open_on_next_input`
-    /// と同型のテスト。
-    #[test]
-    fn delegate_to_open_axis_confirmed_tap_does_not_double_emit_set_open_on_next_input() {
-        let mut engine = make_test_engine_with_muhenkan();
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
-
-        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d1 = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
-        assert_eq!(
-            count_set_open_effects(&d1),
-            1,
-            "confirmed solo tap should emit exactly 1 SetOpen, got {:?}",
-            effects_of(&d1)
-        );
-
-        // Platform 層は SetOpen(false) を見て preconditions.ime_on=false を反映する。
-        // 次の on_input は新しい ctx (ime_on=false) で呼ばれる。
-        let d2 = engine.on_input(Ev::up(VK_NONCONVERT).at(110).build(), &ime_off_ctx());
-        assert_eq!(
-            count_set_open_effects(&d2),
-            0,
-            "next on_input must NOT re-emit SetOpen (prev_activation should have been \
-             advanced by ime_set_open_effects), got {:?}",
-            effects_of(&d2)
-        );
-    }
-
-    /// M2 回帰防止（Opus コードレビュー指摘、実機テストプローブで実証済み）:
     /// 無変換が物理的に押下中（`PendingThumb`、まだ単独タップ確定前）に
-    /// `EngineCommand::ToggleEngine` が届くと、`toggle_enabled()` 内部の
-    /// flush が `ThumbRawVkEmission::Allowed` で保留キーを強制的に単独タップ
-    /// 確定させ、`ime_open_requested` をセットしうる。この「確定」は
-    /// ユーザーが実際に無変換をタップしたのではなくトレイ操作等の無関係な
-    /// 外部イベントによる強制解決であり、`apply_ime_open_request` を素通り
-    /// させると（当時のバグ）無関係な次の打鍵でスプリアスな `SetOpen` が
-    /// 発火していた。`discard_ime_open_request` で捨てることを固定する。
+    /// `EngineCommand::ToggleEngine` が届くと、`toggle_enabled()` 内部の flush が
+    /// `ThumbRawVkEmission::Allowed` で保留キーを強制的に単独タップ確定させ、
+    /// `ime_open_requested` をセットしうる。この「確定」はユーザーが実際に無変換をタップした
+    /// のではなくトレイ操作等の無関係な外部イベントによる強制解決であり、素通りさせると
+    /// 無関係な次の打鍵でスプリアスな `SetOpen` が発火する。`discard_ime_open_request`
+    /// （`engine.rs`）で捨てることを固定する。
     #[test]
     fn toggle_engine_discards_pending_ime_open_request_not_leak_to_later_key() {
-        let mut engine = make_test_engine_with_muhenkan();
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+        let mut engine = make_test_engine_with_muhenkan_solo_tap_turn_off();
 
         // 無変換を物理的に押下（まだ単独タップ確定前、PendingThumb）。
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
 
-        // トレイ操作等で ToggleEngine が届く → 内部 flush で強制的に単独タップ
-        // 確定 → ime_open_requested がセットされうる。もう一度 ToggleEngine を
-        // 呼んで元の enabled 状態へ戻す（Idle 状態での2回目の flush は no-op）。
+        // トレイ操作等で ToggleEngine が届く → 内部 flush で強制的に単独タップ確定 →
+        // ime_open_requested がセットされうる。もう一度 ToggleEngine を呼んで元の enabled へ戻す。
         let _ = engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx());
         let _ = engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx());
 
-        // 無関係な後続キー入力に、捨てられたはずの ime_open_requested に由来する
-        // SetOpen が漏れ出さないこと。
+        // 無関係な後続キー入力に、捨てられたはずの ime_open_requested に由来する SetOpen が漏れないこと。
         let d = engine.on_input(Ev::down(VK_A).at(9000).build(), &ime_on_ctx());
         assert!(
             !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
@@ -7550,8 +7343,7 @@ mod engine_integration_tests {
     /// M2 回帰防止（`SwapLayout` 版、上記 `ToggleEngine` 版と対称）。
     #[test]
     fn swap_layout_discards_pending_ime_open_request_not_leak_to_later_key() {
-        let mut engine = make_test_engine_with_muhenkan();
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
+        let mut engine = make_test_engine_with_muhenkan_solo_tap_turn_off();
 
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
 
@@ -7565,62 +7357,6 @@ mod engine_integration_tests {
              into an unrelated later key, got {:?}",
             effects_of(&d)
         );
-    }
-
-    /// `delegate_to_open_axis_fires_on_confirmed_muhenkan_solo_tap` の変換
-    /// （henkan）版。`resolve_pending_thumb_as_single`のhenkan分岐
-    /// （`dedicated_fn_key`は常に`None`、`ModeKeyConfig`のみ）を固定する
-    /// （テストカバレッジ欠落の指摘への対応）。
-    #[test]
-    fn delegate_to_open_axis_fires_on_confirmed_henkan_solo_tap() {
-        let mut engine = make_test_engine_with_henkan();
-        engine.set_henkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
-
-        let d = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
-        assert!(
-            d.is_consumed(),
-            "solo tap should be pending, not passthrough"
-        );
-        assert!(
-            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
-            "IME effect must not fire before solo tap is confirmed"
-        );
-
-        let d = engine.on_input(Ev::up(VK_CONVERT).at(200).build(), &ime_on_ctx());
-        assert!(has_effect(&d, |e| matches!(
-            e,
-            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
-        )));
-        assert!(
-            !has_effect(&d, |e| matches!(
-                e,
-                Effect::Input(InputEffect::SendKeys(actions))
-                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_CONVERT))
-            )),
-            "raw VK_CONVERT must not be sent when delegated to open axis, got {:?}",
-            effects_of(&d)
-        );
-    }
-
-    // ── BUG-119/ADR-147: delegate_to_open_axis はユーザーの明示的な
-    // パススルー設定（ModeKeyConfig::is_passthrough）に道を譲るべきだが、
-    // TurnOn 方向に限定する（TurnOff/Toggle まで広げると
-    // `delegate_owns_mode_key_shadow_toggle` 側との整合が崩れる、ADR-147
-    // 「消費点と所有権のマトリクス」参照）。
-
-    /// `muhenkan_vk` を設定し、単独タップ設定を「常に送出する（パススルー）」
-    /// にした `Engine` を返す（`always_suppress=false`,
-    /// `ignore_composing_guard=true` — 設定画面の`SoloTapSuppressMode::
-    /// PassThrough`が生成する値と同一）。
-    fn make_test_engine_with_muhenkan_passthrough() -> Engine {
-        let mut engine = make_test_engine();
-        engine.set_thumb_key_solo_tap_config(
-            Some(VK_NONCONVERT),
-            ModeKeyConfig::from_legacy_bools(true, false),
-            None,
-            ModeKeyConfig::from_legacy_bools(false, true),
-        );
-        engine
     }
 
     // ── ADR-182 決定1: 文字→親指の押下間隔が閾値を超えて`PendingChar`が単独確定された直後に
@@ -7889,244 +7625,6 @@ mod engine_integration_tests {
         assert!(
             !any_raw_nonconvert_sent(std::slice::from_ref(&d)),
             "フォーカス移動で生のVK_NONCONVERTが別ウィンドウへ出てはならない: {:?}",
-            effects_of(&d)
-        );
-    }
-
-    /// `make_test_engine_with_muhenkan_passthrough` の変換（henkan）版。
-    fn make_test_engine_with_henkan_passthrough() -> Engine {
-        let mut engine = make_test_engine();
-        engine.set_thumb_key_solo_tap_config(
-            None,
-            ModeKeyConfig::from_legacy_bools(false, true),
-            Some(VK_CONVERT),
-            ModeKeyConfig::from_legacy_bools(true, false),
-        );
-        engine
-    }
-
-    /// BUG-119の退行そのもの: `TurnOn`方向のdelegateは、ユーザーが明示的に
-    /// パススルーを選んでいれば辞退し、生の`VK_NONCONVERT`がそのまま
-    /// 送出される（`SetOpen`は発行されない）。
-    #[test]
-    fn delegate_to_open_axis_turn_on_defers_to_user_passthrough_muhenkan() {
-        let mut engine = make_test_engine_with_muhenkan_passthrough();
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOn));
-
-        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
-        assert!(
-            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
-            "TurnOn delegate must defer to user passthrough, got {:?}",
-            effects_of(&d)
-        );
-        assert!(
-            has_effect(&d, |e| matches!(
-                e,
-                Effect::Input(InputEffect::SendKeys(actions))
-                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
-            )),
-            "raw VK_NONCONVERT must be passed through when TurnOn delegate defers, got {:?}",
-            effects_of(&d)
-        );
-    }
-
-    /// Blocker再発防止（ADR-147）: `TurnOff`方向のdelegateは、パススルー
-    /// 設定であっても**辞退しない**（従来どおり発火し、生キーはSuppressされる）。
-    /// TurnOff/Toggleまで辞退させると、`kp_stage_shadow_ime_toggle`の
-    /// 所有権判定（`delegate_owns_mode_key_shadow_toggle`、`mode_key_config`
-    /// を見ない）が「delegateが処理する」と誤信したまま身を引き、GJI自身が
-    /// 生キーでIMEを切り替える一方awaseのbeliefだけが取り残される
-    /// 「誰も追随しない」窓ができる。
-    #[test]
-    fn delegate_to_open_axis_turn_off_still_wins_over_user_passthrough_muhenkan() {
-        let mut engine = make_test_engine_with_muhenkan_passthrough();
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
-
-        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
-        assert!(
-            has_effect(&d, |e| matches!(
-                e,
-                Effect::Ime(ImeEffect::SetOpen { open: false, .. })
-            )),
-            "TurnOff delegate must still fire even with user passthrough configured, got {:?}",
-            effects_of(&d)
-        );
-        assert!(
-            !has_effect(&d, |e| matches!(
-                e,
-                Effect::Input(InputEffect::SendKeys(actions))
-                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
-            )),
-            "raw VK_NONCONVERT must not be sent when TurnOff delegate wins, got {:?}",
-            effects_of(&d)
-        );
-    }
-
-    /// 上記TurnOffテストの`Toggle`版（同じくパススルー設定でも辞退しない）。
-    #[test]
-    fn delegate_to_open_axis_toggle_still_wins_over_user_passthrough_muhenkan() {
-        let mut engine = make_test_engine_with_muhenkan_passthrough();
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
-
-        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
-        assert!(
-            has_effect(&d, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
-            "Toggle delegate must still fire even with user passthrough configured, got {:?}",
-            effects_of(&d)
-        );
-        assert!(
-            !has_effect(&d, |e| matches!(
-                e,
-                Effect::Input(InputEffect::SendKeys(actions))
-                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
-            )),
-            "raw VK_NONCONVERT must not be sent when Toggle delegate wins, got {:?}",
-            effects_of(&d)
-        );
-    }
-
-    /// 上記3テストの変換（henkan）側対称版——無変換だけを直して変換側を
-    /// 見落とす事故を防ぐ（`src/engine/tests.rs:7621-7628`と同種の前例）。
-    #[test]
-    fn delegate_to_open_axis_turn_on_defers_to_user_passthrough_henkan() {
-        let mut engine = make_test_engine_with_henkan_passthrough();
-        engine.set_henkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOn));
-
-        let _ = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_input(Ev::up(VK_CONVERT).at(200).build(), &ime_on_ctx());
-        assert!(
-            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
-            "TurnOn delegate must defer to user passthrough (henkan), got {:?}",
-            effects_of(&d)
-        );
-        assert!(
-            has_effect(&d, |e| matches!(
-                e,
-                Effect::Input(InputEffect::SendKeys(actions))
-                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_CONVERT))
-            )),
-            "raw VK_CONVERT must be passed through when TurnOn delegate defers (henkan), got {:?}",
-            effects_of(&d)
-        );
-    }
-
-    #[test]
-    fn delegate_to_open_axis_turn_off_still_wins_over_user_passthrough_henkan() {
-        let mut engine = make_test_engine_with_henkan_passthrough();
-        engine.set_henkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOff));
-
-        let _ = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_input(Ev::up(VK_CONVERT).at(200).build(), &ime_on_ctx());
-        assert!(
-            has_effect(&d, |e| matches!(
-                e,
-                Effect::Ime(ImeEffect::SetOpen { open: false, .. })
-            )),
-            "TurnOff delegate must still fire even with user passthrough configured (henkan), got {:?}",
-            effects_of(&d)
-        );
-        assert!(
-            !has_effect(&d, |e| matches!(
-                e,
-                Effect::Input(InputEffect::SendKeys(actions))
-                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_CONVERT))
-            )),
-            "raw VK_CONVERT must not be sent when TurnOff delegate wins (henkan), got {:?}",
-            effects_of(&d)
-        );
-    }
-
-    #[test]
-    fn delegate_to_open_axis_toggle_still_wins_over_user_passthrough_henkan() {
-        let mut engine = make_test_engine_with_henkan_passthrough();
-        engine.set_henkan_delegate_to_open_axis(Some(ShadowImeAction::Toggle));
-
-        let _ = engine.on_input(Ev::down(VK_CONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_input(Ev::up(VK_CONVERT).at(200).build(), &ime_on_ctx());
-        assert!(
-            has_effect(&d, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
-            "Toggle delegate must still fire even with user passthrough configured (henkan), got {:?}",
-            effects_of(&d)
-        );
-        assert!(
-            !has_effect(&d, |e| matches!(
-                e,
-                Effect::Input(InputEffect::SendKeys(actions))
-                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_CONVERT))
-            )),
-            "raw VK_CONVERT must not be sent when Toggle delegate wins (henkan), got {:?}",
-            effects_of(&d)
-        );
-    }
-
-    /// 非対称`ModeKeyConfig`（idle=Passthrough, composing=Suppress、
-    /// `config.toml`手編集でのみ到達しうる値。設定GUIの
-    /// `SoloTapSuppressMode`は`ignore_composing_guard`を必ず`idle`と揃える
-    /// ため生成しない）でも、`is_passthrough()`はidle側のみを見るため
-    /// `TurnOn`方向のdelegateは同様に辞退する。
-    #[test]
-    fn delegate_to_open_axis_turn_on_defers_with_asymmetric_mode_key_config() {
-        let mut engine = make_test_engine_with_muhenkan();
-        // from_legacy_bools(false, false) → idle=Passthrough, composing=Suppress
-        engine.set_thumb_key_solo_tap_config(
-            Some(VK_NONCONVERT),
-            ModeKeyConfig::from_legacy_bools(false, false),
-            None,
-            ModeKeyConfig::from_legacy_bools(false, true),
-        );
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOn));
-
-        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
-        assert!(
-            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
-            "TurnOn delegate must defer when idle side is Passthrough even in the \
-             asymmetric ModeKeyConfig case, got {:?}",
-            effects_of(&d)
-        );
-        assert!(
-            has_effect(&d, |e| matches!(
-                e,
-                Effect::Input(InputEffect::SendKeys(actions))
-                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
-            )),
-            "raw VK_NONCONVERT must be passed through, got {:?}",
-            effects_of(&d)
-        );
-    }
-
-    /// `resolve_pending_thumb_as_single`の呼び出し元は7箇所あり
-    /// （`on_timeout`経由の`step_pending_thumb_*`だけでなく、`step_pending_
-    /// thumb_thumb`のように別の親指キー押下で前の保留を単独確定させる経路も
-    /// ある）、上記のテストはすべて`on_timeout`経路のみを通していた
-    /// （PRレビュー指摘）。無変換キーが保留中に別の親指キー（変換キー）が
-    /// 押されて`step_pending_thumb_thumb`から即座に単独確定するケースでも、
-    /// 同じくTurnOn方向delegateがパススルー設定に道を譲ることを固定する。
-    #[test]
-    fn delegate_to_open_axis_turn_on_defers_to_user_passthrough_via_thumb_thumb_confirm() {
-        let mut engine = make_test_engine_with_muhenkan_passthrough();
-        engine.set_muhenkan_delegate_to_open_axis(Some(ShadowImeAction::TurnOn));
-
-        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(0).build(), &ime_on_ctx());
-        // 別の親指キー（変換）が来て、保留中の無変換を単独タップとして確定
-        // （`step_pending_thumb_thumb`、`on_timeout`を経由しない即時確定経路）。
-        let d = engine.on_input(Ev::down(VK_CONVERT).at(50).build(), &ime_on_ctx());
-        assert!(
-            !has_effect(&d, |e| matches!(e, Effect::Ime(_))),
-            "TurnOn delegate must defer to user passthrough via step_pending_thumb_thumb, \
-             got {:?}",
-            effects_of(&d)
-        );
-        assert!(
-            has_effect(&d, |e| matches!(
-                e,
-                Effect::Input(InputEffect::SendKeys(actions))
-                    if actions.iter().any(|a| matches!(a, KeyAction::Key(x) if *x == VK_NONCONVERT))
-            )),
-            "raw VK_NONCONVERT must be passed through when confirmed via thumb+thumb, got {:?}",
             effects_of(&d)
         );
     }

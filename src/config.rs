@@ -23,41 +23,6 @@ use crate::types::VkCode;
 // (scanmap の JIS/US テーブル分離・layout/nicola_us.yab 追加) と合わせて
 // 実際に配線した上で再導入した。旧 config.toml の "jis"/"us" はそのまま解釈される。
 
-/// BUG-52 の「DBE レンジ」キーをパススルーしてよいかどうか（隠し設定、上級者向け）。
-///
-/// 物理 Hiragana/Katakana/Eisu キー等が生成する `VK_DBE_ALPHANUMERIC` /
-/// `VK_DBE_KATAKANA` / `VK_DBE_SBCSCHAR` / `VK_DBE_DBCSCHAR`
-/// （`crates/awase-windows/src/runtime/transport.rs`）が対象。
-///
-/// `VK_DBE_HIRAGANA`（かな入力キー本来の VK、F2 warmup 関連）はこの設定の
-/// 対象外（別分岐で処理される、`transport.rs` 参照）。
-///
-/// 素のパススルーは、MS-IME の既定キー割当て（無変換単独打鍵→かな切替相当）や
-/// OS 側キーボードレイアウト変換層の状態依存トグル（物理「IME ON」キーが
-/// `VK_DBE_HIRAGANA` の代わりに `VK_DBE_KATAKANA` を生成することがある）に
-/// 横取りされ、awase の管理外で IME モードが切り替わるリスクがある
-/// （2026-08-05 実機、`docs/known-bugs.md` BUG-52）。既定値は `Suppress`
-/// （常に抑制、現状維持）。
-///
-/// **`Passthrough` が実際に緩めるのは限定的**: `shadow_toggle` が発火した
-/// KeyDown（awase 自身が意図した切替）と全 KeyUp は `Passthrough` でも
-/// 引き続き Suppress される（`transport.rs::plan` 参照）。緩むのは
-/// `shadow_toggle` 不発の KeyDown（＝ IME が既に目的の状態にあるのに OS が
-/// 状態依存で `VK_DBE_*` を誤生成したケース、BUG-52 の再現条件そのもの）に
-/// 限られる。また `ImmCross` プロファイル（LINE/Qt 等）では `plan` が
-/// この判定に到達する前に別分岐で Suppress を決定するため、この設定は
-/// そもそも無視される。[ADR-091](../docs/adr/091-idempotent-charset-axis-gji-recommended-msime-self-responsibility.md)
-/// §D3.6 参照。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum DbeModeKeyPolicy {
-    /// 常に抑制する（OS に一切送出しない、従来動作）。
-    #[default]
-    Suppress,
-    /// 素の VK をパススルーする（BUG-52 のリスクを引き受ける、上級者向け）。
-    Passthrough,
-}
-
 /// 打鍵列機能（`.yab` の `CtrlChord`/`InlineSequence`/`MacroRef`）を有効化するか。
 ///
 /// ADR-115 決定8は既定 `Off` だったが、2026-09-13 に既定 `On` へ変更した
@@ -323,10 +288,6 @@ pub struct GeneralConfig {
     /// [ADR-091](../docs/adr/091-idempotent-charset-axis-gji-recommended-msime-self-responsibility.md)
     /// §D3.2 参照。
     pub muhenkan_solo_tap_dedicated_fn_key: Option<String>,
-    /// BUG-52 の DBE レンジ Suppress（`VK_DBE_ALPHANUMERIC`/`KATAKANA`/
-    /// `SBCSCHAR`/`DBCSCHAR`）を無条件抑制のままにするか、パススルーを
-    /// 許すか（隠し設定、上級者向け）。既定値・リスクは [`DbeModeKeyPolicy`] 参照。
-    pub dbe_mode_key_policy: DbeModeKeyPolicy,
     /// 左Shift単独タップによる「IME-ON 半角英数」持続トグルの許可範囲。
     ///
     /// 既定 `ms_ime_only` は従来動作を維持する。設定GUI（上級者向け設定）
@@ -392,60 +353,10 @@ pub struct GeneralConfig {
     /// 使いたい場合（= awase の Engine を OFF にして使う想定）のみ `false` にする。
     pub swallow_alt_kana_input_method_switch: bool,
 
-    /// GJI（Google 日本語入力）の設定（`config1.db`。ATOKプリセットの
-    /// `session_keymap`、またはカスタムキーマップ内の literal な
-    /// `Henkan`/`Muhenkan`トークン）が、無変換/変換キー単体に状態依存の
-    /// IME ON/OFFトグル動作を割り当てている場合に、それを awase の
-    /// delegate-to-open-axis（無変換/変換が親指シフトのチョードキーとして
-    /// 設定されている場合。ADR-092 決定D Step4bと同じ機構）または
-    /// `ime_on`/`ime_off`/`ime_toggle`の自動検出リスト（チョードキーとして
-    /// 設定されていない場合）へベストエフォートで反映するか（BUG-115）。
-    ///
-    /// `false`（既定）のとき、awaseはこのToggleを反映しない（警告ログのみ）。生の無変換/変換は
-    /// GJIへそのまま届き、GJIがATOKのキーマップどおり開閉する。**awaseは通過直後に実IMEを
-    /// 読み直し、古い明示意図を捨ててEngineを観測に追随させる**（follow方式、ADR-187。IMMで
-    /// 読めるアプリのみ。TsfNative/Chrome等は`ime_on=None`で読めず従来どおり遅延観測）。
-    ///
-    /// 既定 `false`（反映しない・警告ログのみ）。この状態依存トグルは
-    /// `ShadowImeAction::Toggle`（`!ctx.ime_on`）で技術的には正確に表現
-    /// できる（ATOKプリセットが`DirectInput`状態でHenkan/Muhenkanを
-    /// `IMEOn`、`Precomposition`状態で`CancelAndIMEOff`に割り当てている
-    /// ことを`google/mozc`の`src/data/keymap/atok.tsv`で2026-09-05に確認
-    /// 済み——「表現不能」ではない）が、既定を`true`にしない理由が4つある:
-    ///
-    /// 1. `Toggle`は非冪等。無変換/変換の単独タップ確定判定
-    ///    （`resolve_pending_thumb_as_single`）はチョード判定に失敗した
-    ///    キーからも呼ばれうる経路が複数あり、`TurnOn`/`TurnOff`と違い
-    ///    誤発火が「状態の反転」になり連続誤発火で発振しうる。
-    /// 2. ATOKでは変換・無変換の**両方**がToggleになり、NICOLA親指キー
-    ///    2本ともIME切替を持つことになり露出が2倍になる。
-    /// 3. ATOKプリセットは（overlayと違い）ユーザーが明示的にONにする
-    ///    ものではなく、キーマップにATOKを選んだだけの全ユーザーに
-    ///    自動適用される（親指シフト利用者と重なりが大きい層）。
-    /// 4. GJIはMozcのフォークであり、`atok.tsv`の内容が本家と完全一致
-    ///    する保証は無い。
-    ///
-    /// これらのリスクを理解した上で有効化したいユーザーのためのopt-in
-    /// フラグ。`true`にすると`tracing::info!`で反映したことを通知する
-    /// （`false`のまま矛盾を検出した場合は`tracing::warn!`で対処法を案内する）。
-    #[serde(default)]
-    pub gji_thumb_key_ime_toggle: bool,
-    /// ADR-176決定8: `[[calibration]]`（較正パネルUIが確定した較正結果）を
-    /// 実際のIME判定（`apply_calibration_override`経由でのGJI/MS-IME
-    /// 側の自動検出結果の差し替え）へ反映するかどうか。**既定`false`**
-    /// （opt-in）——BUG-113の再発リスクを実機A/Bで確認できるまで、較正
-    /// 結果は`config.toml`には保存されるが実際のキー選択には影響しない
-    /// ようにする安全装置（`ActivationSync`冪等性チェック=176-T0を前提
-    /// 条件から外した経緯参照、`docs/adr/176-implementation-tasks.md`の
-    /// T0節）。`true`にすると較正結果がGJI/MS-IME両方の自動検出結果を
-    /// 上書きするようになる。
-    #[serde(default)]
-    pub apply_calibrated_mode_keys: bool,
     /// ADR-153 決定1: 無変換単独タップ確定時に、素の `VK_NONCONVERT` の代わりに
     /// awase 自身が直接 IME を ON/OFF/Toggle する（隠し設定、上級者向け）。
-    /// `None`（既定）なら無効で、従来どおり GJI/MS-IME 自動検出
-    /// （`muhenkan_delegate_to_open_axis`）または `ModeKeyConfig` の
-    /// 抑制/パススルー判定に委ねる。
+    /// `None`（既定）なら無効で、従来どおり `ModeKeyConfig` の
+    /// 抑制/パススルー判定に委ねる（GJI/MS-IME 設定からの自動採用は ADR-191 で撤去した）。
     ///
     /// GJI 自身が無変換/変換に何らかの IME 制御コマンドを割り当てていると、
     /// GJI の TSF キー横取り（`ITfKeyEventSink`）が発火し「@」等の疑似文字が
@@ -456,7 +367,7 @@ pub struct GeneralConfig {
     /// `Toggle` は belief（awase が推定する現在の IME 状態）依存であり、
     /// TSF ネイティブアプリ（Windows Terminal 等、`FeedbackPolicy::Blind`）
     /// では実際の IME 状態を読み戻せないため、belief がズレていると逆方向へ
-    /// 切り替わりうる（`gji_thumb_key_ime_toggle` の doc と同じ注意）。
+    /// 切り替わりうる。
     ///
     /// `kp_stage_shadow_ime_toggle` の intent 昇格（ケース2/3）は
     /// `is_japanese_ime()` を要求するが、この belief はスリープ復帰/フォーカス
@@ -512,7 +423,6 @@ impl Default for GeneralConfig {
             muhenkan_solo_tap_ignore_composing_guard: false,
             muhenkan_solo_tap_always_suppress: true,
             muhenkan_solo_tap_dedicated_fn_key: None,
-            dbe_mode_key_policy: DbeModeKeyPolicy::Suppress,
             half_width_alnum_toggle: HalfWidthAlnumTogglePolicy::MsImeOnly,
             keystroke_sequence: KeystrokeSequencePolicy::On,
             henkan_solo_tap_ignore_composing_guard: false,
@@ -520,8 +430,6 @@ impl Default for GeneralConfig {
             enter_thumb_ignore_composing_guard: true,
             enter_thumb_shift_literal: true,
             swallow_alt_kana_input_method_switch: true,
-            gji_thumb_key_ime_toggle: false,
-            apply_calibrated_mode_keys: false,
             muhenkan_solo_tap_ime_action: None,
             henkan_solo_tap_ime_action: None,
         }
@@ -2258,6 +2166,34 @@ ime_toggle = []
     // parse_key_combo テストは awase-windows に移動済み
 
     // ── engine_on/off_keys デフォルトテスト ──
+
+    /// ADR-191で`apply_calibrated_mode_keys`設定を撤去した。既存の`config.toml`に古いキーが残っていても、
+    /// 起動時に読み込みエラーにならず、無視されて他の設定が読める（`deny_unknown_fields`を付けていない）。
+    #[test]
+    fn test_removed_apply_calibrated_mode_keys_key_is_ignored_on_load() {
+        let toml_str = r#"
+[general]
+apply_calibrated_mode_keys = true
+left_thumb_key = "無変換"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).expect("旧キーが残っていても読める");
+        assert_eq!(config.general.left_thumb_key, "無変換");
+    }
+
+    /// ADR-191で`dbe_mode_key_policy`（BUG-52のDBEキー Suppress を外す隠し設定）と
+    /// `gji_thumb_key_ime_toggle`を撤去した（レビュー指摘B-M3）。旧`config.toml`にキーが残っていても、
+    /// 読み込みエラーにも警告にもならず、無視されて他の設定が読める。
+    #[test]
+    fn test_removed_dbe_mode_key_policy_and_gji_thumb_key_ime_toggle_are_ignored_on_load() {
+        let toml_str = r#"
+[general]
+dbe_mode_key_policy = "passthrough"
+gji_thumb_key_ime_toggle = true
+left_thumb_key = "無変換"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).expect("旧キーが残っていても読める");
+        assert_eq!(config.general.left_thumb_key, "無変換");
+    }
 
     #[test]
     fn test_engine_toggle_key_defaults() {

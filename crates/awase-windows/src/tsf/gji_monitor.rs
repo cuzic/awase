@@ -280,12 +280,20 @@ impl Drop for GjiMonitor {
 ///
 /// 同じ新しい種別が 2 回連続（= 前回ポーリングでも候補になっていた）観測されて初めて
 /// 確定として扱う。誤検出が単発なら次の tick で元の種別に戻り `candidate` がクリアされる。
-struct ImeKindDebounce {
-    /// 直近 tick で観測された「まだ確定していない」新種別。
-    candidate: Option<ActiveImeKind>,
+/// `T`（`ActiveImeKind` または `TipIdentity`）を単位にデバウンスする。両者は独立したデバウンスインスタンスを
+/// 持つこと（`monitor_loop` の `kind_debounce`/`identity_debounce`。レビュー round3 NR1: 1つの `query_active_kind`
+/// 呼び出しから得られる2つの値〈`ActiveImeKind`・`TipIdentity`〉のうち、`TipIdentity`だけをデバウンスせず
+/// 即時に書いていたため、ATOK と Microsoft IME本体がどちらも`ActiveImeKind::MicrosoftIme`になる
+/// この軸だけ単発フリップに無防備だった。同じ入力に同じデバウンスの規律を適用するのが筋）。
+struct Debounce<T> {
+    /// 直近 tick で観測された「まだ確定していない」新値。
+    candidate: Option<T>,
 }
 
-impl ImeKindDebounce {
+type ImeKindDebounce = Debounce<ActiveImeKind>;
+type TipIdentityDebounce = Debounce<crate::state::ime_kind::TipIdentity>;
+
+impl<T: Copy + PartialEq> Debounce<T> {
     const fn new() -> Self {
         Self { candidate: None }
     }
@@ -293,13 +301,9 @@ impl ImeKindDebounce {
     /// 新しい観測値を投入する。`current` は `TSF_OBS` に確定済みの現在値。
     ///
     /// `observed == current`（変化なし）なら候補をクリアして `None`。
-    /// `observed` が前回も候補だった（2 回連続で同じ新種別）なら確定として `Some` を返す。
-    /// それ以外（初めて見る新種別）は候補として保持し `None` を返す。
-    fn observe(
-        &mut self,
-        observed: ActiveImeKind,
-        current: ActiveImeKind,
-    ) -> Option<ActiveImeKind> {
+    /// `observed` が前回も候補だった（2 回連続で同じ新値）なら確定として `Some` を返す。
+    /// それ以外（初めて見る新値）は候補として保持し `None` を返す。
+    fn observe(&mut self, observed: T, current: T) -> Option<T> {
         if observed == current {
             self.candidate = None;
             return None;
@@ -351,9 +355,12 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
         // warmup 戦略（GjiFsm vs MsImeStrategy）を初期化する。
         // ポーリングループは「変化時のみ」発行するため、MS-IME 環境では起動後に
         // WM_IME_KIND_CHANGED が届かず GjiFsm が残り続けるバグを防ぐ。
-        if let Some(kind) = super::tip_detector::query_active_kind(mgr) {
+        if let Some((kind, identity)) = super::tip_detector::query_active_kind(mgr) {
             TSF_OBS.set_tsf_active_kind(kind);
-            tracing::info!("[tip-detect] initial IME kind: {kind:?}");
+            TSF_OBS.set_ms_ime_native_identified(
+                identity == crate::state::ime_kind::TipIdentity::MsImeNative,
+            );
+            tracing::info!("[tip-detect] initial IME kind: {kind:?} ({identity:?})");
             crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
         }
     } else {
@@ -366,6 +373,7 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
     let mut next_clsid_check_ms: u64 = 0;
     // 単発フリップで warmup 戦略を破棄しないためのデバウンス（`ImeKindDebounce` 参照）。
     let mut kind_debounce = ImeKindDebounce::new();
+    let mut identity_debounce = TipIdentityDebounce::new();
 
     loop {
         let now = crate::hook::current_tick_ms();
@@ -379,7 +387,7 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
         if let Some((ref mgr, _)) = tsf_ctx {
             if now >= next_clsid_check_ms {
                 next_clsid_check_ms = now + 2_000;
-                if let Some(kind) = super::tip_detector::query_active_kind(mgr) {
+                if let Some((kind, identity)) = super::tip_detector::query_active_kind(mgr) {
                     let current = TSF_OBS.active_ime_kind();
                     if let Some(confirmed) = kind_debounce.observe(kind, current) {
                         if TSF_OBS.set_tsf_active_kind(confirmed) {
@@ -390,6 +398,21 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                         tracing::debug!(
                             "[tip-detect] IME kind candidate {kind:?} (current={current:?}), \
                              awaiting confirmation next tick"
+                        );
+                    }
+                    // TipIdentity も同じデバウンスの規律で確定させる（NR1）。ATOK と Microsoft IME 本体は
+                    // どちらも上の ActiveImeKind では MicrosoftIme のため、こちらが単発フリップの唯一の防御。
+                    let current_identity = TSF_OBS.current_tip_identity();
+                    if let Some(confirmed) = identity_debounce.observe(identity, current_identity) {
+                        if TSF_OBS.set_ms_ime_native_identified(
+                            confirmed == crate::state::ime_kind::TipIdentity::MsImeNative,
+                        ) {
+                            tracing::info!("[tip-detect] TIP identity → {confirmed:?}");
+                        }
+                    } else if identity != current_identity {
+                        tracing::debug!(
+                            "[tip-detect] TIP identity candidate {identity:?} \
+                             (current={current_identity:?}), awaiting confirmation next tick"
                         );
                     }
                 }
@@ -408,10 +431,20 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
                 // プロセス存在だけでは「GJI がアクティブ IME」とは限らないため、
                 // WM_IME_KIND_CHANGED はプロセス存在ではなく CLSID 結果の変化時のみ発行する。
                 if let Some((ref mgr, _)) = tsf_ctx {
-                    if let Some(kind) = super::tip_detector::query_active_kind(mgr) {
+                    if let Some((kind, identity)) = super::tip_detector::query_active_kind(mgr) {
                         if TSF_OBS.set_tsf_active_kind(kind) {
                             tracing::info!("[tip-detect] IME kind → {kind:?} (on GJI attach)");
                             crate::win32::post_to_main_thread(crate::WM_IME_KIND_CHANGED);
+                        }
+                        // 変化をログに残す（レビュー round3 B-NR3: 取りこぼして識別が黙って止まると
+                        // triage できない。CLSID を取りこぼした形跡は起動時の `dump_profiles`〈info、全CLSID
+                        // 列挙〉と突き合わせる）。
+                        if TSF_OBS.set_ms_ime_native_identified(
+                            identity == crate::state::ime_kind::TipIdentity::MsImeNative,
+                        ) {
+                            tracing::info!(
+                                "[tip-detect] TIP identity → {identity:?} (on GJI attach)"
+                            );
                         }
                     }
                     next_clsid_check_ms = now + 2_000;
@@ -501,7 +534,39 @@ fn monitor_loop(token: &win32_worker::ShutdownToken) {
 
 #[cfg(test)]
 mod ime_kind_debounce_tests {
-    use super::{ActiveImeKind, ImeKindDebounce};
+    use super::{ActiveImeKind, ImeKindDebounce, TipIdentityDebounce};
+    use crate::state::ime_kind::TipIdentity;
+
+    /// レビュー round3 NR1 の再現: ATOK 定常状態（`TipIdentity::Other`）で `MsImeNative` が単発で混入しても、
+    /// `TipIdentityDebounce`（`ActiveImeKind` のデバウンスとは独立）は確定させない。
+    /// `ActiveImeKind` 側は ATOK も Microsoft IME 本体も `MicrosoftIme` で区別できない
+    /// （`observed == current` に落ちて `ImeKindDebounce` が無防備になる、これが NR1 の核心）ので、
+    /// `TipIdentity` を単位にする専用のデバウンスが要る。
+    #[test]
+    fn single_tick_ms_ime_native_flip_on_atok_is_filtered_out() {
+        let mut d = TipIdentityDebounce::new();
+        // ATOK が定常状態。単発で Microsoft IME 本体の CLSID が混入する（実測: ImeKindDebounce の doc 参照）。
+        assert_eq!(
+            d.observe(TipIdentity::MsImeNative, TipIdentity::Other),
+            None
+        );
+        // 次 tick で ATOK に戻る → 候補クリア、確定させない。
+        assert_eq!(d.observe(TipIdentity::Other, TipIdentity::Other), None);
+    }
+
+    /// 2 tick 連続で `MsImeNative` なら確定する（実際に Microsoft IME 本体へ切り替わった場合）。
+    #[test]
+    fn two_consecutive_ms_ime_native_confirms() {
+        let mut d = TipIdentityDebounce::new();
+        assert_eq!(
+            d.observe(TipIdentity::MsImeNative, TipIdentity::Other),
+            None
+        );
+        assert_eq!(
+            d.observe(TipIdentity::MsImeNative, TipIdentity::Other),
+            Some(TipIdentity::MsImeNative)
+        );
+    }
 
     #[test]
     fn stable_same_kind_never_confirms() {
