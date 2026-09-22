@@ -69,6 +69,17 @@ KNOWN_UNSTABLE_NATIVE = {
     f"on-c{c}-typing|esc" for c in ("19", "1B", "13")
 }
 
+# レビュー round3 NEW-1: MSIME_NATIVE は227セル中206セルが1試行のみで、CLSID同定により実 Microsoft IME 本体の
+# 全ユーザー(読めない窓では観測で訂正できない)に当たる。ATOK/プリセットで割れた「変換中のEsc・入力中のBS/Esc」は
+# 同じキー・同じ段階なので、本体の変換モード(0x19/0x1B/0x13/0x10)を問わず同様に「予測なし」にする(暫定。適応学習
+# での確定的な再学習は未実施)。上の KNOWN_UNSTABLE_NATIVE(独立walkとの食い違いが実際に判明した3セル)とは別軸で、
+# こちらは「1試行しかない」こと自体への予防的な除外。
+KNOWN_UNSTABLE_NATIVE |= {
+    f"on-c{c}-{stage}|{key}"
+    for c in ("19", "1B", "13", "10")
+    for stage, key in (("conv-space", "esc"), ("typing", "bs"), ("typing", "esc"))
+}
+
 
 
 def cells(path, unstable=frozenset()):
