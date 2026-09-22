@@ -7311,6 +7311,57 @@ mod engine_integration_tests {
         );
     }
 
+    /// ユーザー指摘2026-09-22「パススルー設定ならパススルーされるべき」: `*_solo_tap_ime_action`
+    /// を設定せず `ModeKeyConfig::Passthrough` だけを設定したユーザーでも、Shift+無変換は
+    /// `PendingThumb` へ入れず即座に素通しにする（`is_mode_key_thumb_shift_passthrough` の拡張）。
+    /// 拡張前は`explicit_ime_action`だけを見ていたため、この構成には効かず、Shift+無変換が
+    /// チョード保留に入ってしまっていた。
+    #[test]
+    fn shift_muhenkan_with_mode_key_config_passthrough_is_not_captured_as_thumb() {
+        let mut engine = make_test_engine_with_muhenkan_passthrough();
+        let shift_ctx = InputContext {
+            modifiers: ModifierState {
+                shift: true,
+                ..ime_on_ctx().modifiers
+            },
+            ..ime_on_ctx()
+        };
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &shift_ctx);
+        assert!(
+            !d.is_consumed(),
+            "ModeKeyConfig::PassthroughのShift+無変換は保留に入れず素通しにするべき, got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// 対照: `ModeKeyConfig::Suppress`（既定）のキーは、Shift併用でも従来どおり
+    /// `PendingThumb` に入る（即座の素通しは Passthrough 設定のときだけ）。Suppress は
+    /// 最終的に何も送らない設定なので、チョードに巻き込まれても実害は無いが、
+    /// このガードの適用範囲を Passthrough のときだけに限定していることの固定。
+    #[test]
+    fn shift_muhenkan_with_mode_key_config_suppress_is_still_captured_as_thumb() {
+        let mut engine = make_test_engine();
+        engine.set_thumb_key_solo_tap_config(
+            Some(VK_NONCONVERT),
+            ModeKeyConfig::from_legacy_bools(false, true),
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        let shift_ctx = InputContext {
+            modifiers: ModifierState {
+                shift: true,
+                ..ime_on_ctx().modifiers
+            },
+            ..ime_on_ctx()
+        };
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &shift_ctx);
+        assert!(
+            d.is_consumed(),
+            "ModeKeyConfig::SuppressのShift+無変換は従来どおりPendingThumbへ入るべき, got {:?}",
+            effects_of(&d)
+        );
+    }
+
     /// 無変換が物理的に押下中（`PendingThumb`、まだ単独タップ確定前）に
     /// `EngineCommand::ToggleEngine` が届くと、`toggle_enabled()` 内部の flush が
     /// `ThumbRawVkEmission::Allowed` で保留キーを強制的に単独タップ確定させ、
