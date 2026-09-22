@@ -349,6 +349,11 @@ pub(crate) const fn mode_key_pass_next_read_ms(
 ///
 /// 実測（CI、MS-IME本体、awase.logの`[ime-io]`）: 成功は 0〜20ms、時間切れは 50〜100ms（宣言50ms+スケジューリング）の
 /// 二峰性で、`elapsed_us >= timeout_ms*1000`で時間切れと判別できる。
+///
+/// **`ERROR_ACCESS_DENIED`は先に判定して拒否として数える**（レビュー round3 A-NEW-2）: 高負荷でスケジューリング
+/// 遅延が起き、本当に IMM 不可の証拠である `ERROR_ACCESS_DENIED`（昇格プロセスへの UIPI 拒否）が偶然50ms を
+/// 跨ぐと、elapsed だけで判定した場合は「時間切れ」に落ちて証拠から外れてしまう。エラーコードが確実に取れる
+/// （`send_ime_control_raw`が`ok.0==0`の直後に`GetLastError()`を読む）ので、経過時間より優先する。
 #[must_use]
 pub(crate) const fn send_failure_is_timeout(
     last_error: u32,
@@ -356,6 +361,10 @@ pub(crate) const fn send_failure_is_timeout(
     timeout_ms: u32,
 ) -> bool {
     const ERROR_TIMEOUT: u32 = 1460;
+    const ERROR_ACCESS_DENIED: u32 = 5;
+    if last_error == ERROR_ACCESS_DENIED {
+        return false;
+    }
     last_error == ERROR_TIMEOUT || elapsed_us >= (timeout_ms as u64) * 1000
 }
 
@@ -790,6 +799,12 @@ mod tests {
         assert!(
             !send_failure_is_timeout(0, 800, 50),
             "即時の失敗は時間切れではない"
+        );
+        // レビュー round3 A-NEW-2: 高負荷でスケジューリング遅延が起き、ERROR_ACCESS_DENIED が50ms(宣言timeout)を
+        // 跨いでも、elapsed だけでなくエラーコードを先に見て「時間切れではない(=拒否として数える)」にする。
+        assert!(
+            !send_failure_is_timeout(5, 60_000, 50),
+            "ERROR_ACCESS_DENIEDは、高負荷でelapsedが50msを跨いでも時間切れにしない"
         );
         // 数え方: 3連続のシミュレーション。時間切れ3連続は数えず(降格しない)、即時の拒否3連続は数える(降格する)。
         let count = |seq: &[bool]| -> u32 {
