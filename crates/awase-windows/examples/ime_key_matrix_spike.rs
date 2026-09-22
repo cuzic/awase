@@ -3121,6 +3121,42 @@ fn run() -> WinResult<()> {
             queue_press(t + 10500, *cand);
         }
     }
+    // `--chord=VK1,VK2`: VK1を押しっぱなしにした状態でVK2をタップし、VK1を離す
+    // (「本物の同時押し」)。`--seq`は各VKを逐次タップするだけで重なりが無く、
+    // Ctrl等のOS修飾キーを保持したままの物理チョード(例: Ctrl+変換)を再現できない
+    // 制約があった(2026-09-22調査)。`send_key`は`--seq`/`--walk`等と同じ
+    // `AUTO_MARKER`(=`TEST_INJECTION_MARKER`)を使うため、`AWASE_TEST_INJECTION=1`の
+    // awaseからは他の注入と同じく物理キーとして扱われる
+    // (`HOOK_STATE.physical_key_state`もVK1の保持中は更新される。`hook.rs`の
+    // `is_test_injection`はVKを区別しないため、Ctrl等の修飾キーにも同じ扱いが及ぶ)。
+    if let Some(v) = std::env::args().find_map(|a| a.strip_prefix("--chord=").map(str::to_owned)) {
+        let vks: Vec<u32> = v
+            .split(',')
+            .map(|t| {
+                u32::from_str_radix(t.trim().trim_start_matches("0x"), 16).unwrap_or_else(|_| {
+                    arg_error(&format!("--chord のVKが16進数でない: {t:?} (全体: {v:?})"))
+                })
+            })
+            .collect();
+        let [vk_hold, vk_tap] = vks[..] else {
+            arg_error("--chord=VK1,VK2 の形式で2つのVKを指定してください(VK1=保持するキー、VK2=タップするキー)");
+        };
+        AUTO_MODE.with(|m| *m.borrow_mut() = true);
+        SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
+        STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
+        SCRIPT_IDX.with(|i| *i.borrow_mut() = script().len());
+        let base = now_ms() + 3000;
+        const OVERLAP_MS: u64 = 150; // VK1押下からVK2タップ開始までの重なり
+        const TAP_MS: u64 = 60; // VK2の保持時間
+        const RELEASE_GAP_MS: u64 = 100; // VK2解放からVK1解放までの猶予
+        AUTO_QUEUE.with(|q| {
+            let mut q = q.borrow_mut();
+            q.push((base, vk_hold, true));
+            q.push((base + OVERLAP_MS, vk_tap, true));
+            q.push((base + OVERLAP_MS + TAP_MS, vk_tap, false));
+            q.push((base + OVERLAP_MS + TAP_MS + RELEASE_GAP_MS, vk_hold, false));
+        });
+    }
     // `--auto`: --script の手順を、スパイク自身が SendInput で注入して自動実行する。
     if std::env::args().any(|a| a == "--auto") {
         AUTO_MODE.with(|m| *m.borrow_mut() = true);
