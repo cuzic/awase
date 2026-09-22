@@ -836,7 +836,7 @@ impl Runtime {
             .ime
             .mode_key_pass_window_remaining_ms(now_ms)
         {
-            self.schedule_ime_refresh(crate::state::force_guard::mode_key_pass_next_read_ms(
+            self.schedule_ime_refresh(crate::state::mode_key_pass::mode_key_pass_next_read_ms(
                 self.last_ime_read_ok,
                 remaining,
                 crate::tuning::MODE_KEY_PASS_REREAD_MS,

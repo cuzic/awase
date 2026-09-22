@@ -288,7 +288,7 @@ unsafe fn send_ime_control_raw(
     };
     let elapsed_us = crate::hook::now_timestamp_us().saturating_sub(issue_us);
     if ok.0 == 0
-        && crate::state::force_guard::send_failure_is_timeout(last_error, elapsed_us, timeout_ms)
+        && crate::state::imm_evidence::send_failure_is_timeout(last_error, elapsed_us, timeout_ms)
     {
         PROBE_TIMED_OUT.with(|f| f.set(true));
     }

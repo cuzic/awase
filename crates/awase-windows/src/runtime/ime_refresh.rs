@@ -211,7 +211,7 @@ impl Runtime {
                 let got_observation = self.ir_poll_and_learn(miss_before, ime_snap);
                 let now = crate::hook::current_tick_ms();
                 let observed = got_observation
-                    && crate::state::force_guard::poll_counted_no_new_miss(
+                    && crate::state::imm_evidence::poll_counted_no_new_miss(
                         miss_before,
                         self.platform_state.ime.detect_miss_count(),
                     );

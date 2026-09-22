@@ -1880,7 +1880,7 @@ impl Runtime {
         // 通過マークを立てない（`mode_key_follow_admits_modifiers`、レビュー round3 N8）。立てると観測の直後に
         // 明示意図を捨て、desired を観測へ書き換える。Ctrl/Alt/Win は見ない——Ctrl+無変換→Ctrl+変換
         // （Ctrl 保持のまま、spike `--resync` のリセット操作）を追随の対象外にしてはならない。
-        if !crate::state::force_guard::mode_key_follow_admits_modifiers(
+        if !crate::state::mode_key_pass::mode_key_follow_admits_modifiers(
             event.modifier_snapshot.shift,
         ) {
             return;

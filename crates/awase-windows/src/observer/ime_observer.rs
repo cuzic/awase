@@ -92,7 +92,7 @@ impl crate::ime::ImeSnapshot {
                 clear_force_on_broken_app_bootstrap: false,
                 clear_force_on_panic_reset: false,
             }
-        } else if !crate::state::force_guard::read_miss_is_imm_evidence(self.probe_timed_out) {
+        } else if !crate::state::imm_evidence::read_miss_is_imm_evidence(self.probe_timed_out) {
             // 時間切れ（遅い応答）は「IMMが使えない」証拠ではない。missに数えず、belief を保つ
             // （`imm-learning`が3回連続で`Unavailable`を学習してしまう。BUG-158追補）。
             tracing::debug!(

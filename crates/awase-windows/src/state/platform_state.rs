@@ -12,7 +12,8 @@ use super::ime_event::{
 use super::ime_event_log::ImeEventLog;
 use super::ime_model::{AppliedImeState, ImeApplyAcceptance, ImeModel};
 use super::input_barrier::InputBarrier;
-use super::scoped_latch::{ScopeCheck, ScopedOneShot};
+use super::mode_key_pass::ModeKeyPassLatch;
+use super::scoped_latch::ScopedOneShot;
 use super::{ApplyGeneration, TickMs};
 use crate::journal::{JournalEntry, UnifiedJournal};
 
@@ -78,7 +79,10 @@ pub(crate) struct ImeStateHub {
     ///
     /// ADR-187 follow 方式: 生キー配送の結果は awase には分からないため、短時間だけ
     /// typing-idle ガードを迂回して観測し、観測成功後に古い明示意図を捨てる。
-    mode_key_pass_mark: ScopedOneShot<crate::win32::ForegroundScope, ModeKeyPassMark>,
+    /// 寿命判断そのものは `state/mode_key_pass.rs::ModeKeyPassLatch`（Win32非依存）に委譲する
+    /// （design-patterns-review.md 提案3）。ここは副作用（`intent_store`/`dispatch_event`）を
+    /// 適用する側に回る。
+    mode_key_pass_mark: ModeKeyPassLatch<crate::win32::ForegroundScope>,
 
     /// `effective_open()` の IntentStore 分岐が `shadow_model` と異なる値を
     /// 返している（＝実際に override している）間 `true`。遷移時のみ INFO
@@ -141,17 +145,13 @@ impl ImeStateHub {
             last_user_explicit_off_ms: 0,
             last_explicit_ime_action_ms: 0,
             intent_store: super::intent_store::IntentStore::default(),
-            mode_key_pass_mark: ScopedOneShot::new(),
+            mode_key_pass_mark: ModeKeyPassLatch::new(),
             intent_override_logged: std::cell::Cell::new(false),
             warmup_gate_suppression_logged: std::cell::Cell::new(false),
             generation_alloc: super::GenerationAllocator::new(),
         }
     }
 }
-
-/// 無変換/変換の生キー通過マーク。定義は `state::force_guard::ModeKeyPassMark`（判定関数の隣、
-/// 緊急レビュー指摘: sim-harness ブランチとの食い違い対策で `&ModeKeyPassMark` を関数の引数にした）。
-use crate::state::force_guard::ModeKeyPassMark;
 
 impl ImeStateHub {
     /// Event を log に記録し、shadow_model にも reduce する (Step 1)。
@@ -238,33 +238,25 @@ impl ImeStateHub {
         }
     }
 
+    // ── 通過マーク（ADR-187）: 寿命判断は `ModeKeyPassLatch`（`state/mode_key_pass.rs`）に委譲する ──
+    //
+    // ここに残るのは、latch が返す判断・`PassEffect` を実際に適用する副作用（`intent_store.remove`・
+    // `dispatch_event(ModeKeyPassedThrough)`）だけ（design-patterns-review.md 提案3）。
+    // 各メソッドのシグネチャは委譲前と変えていない（呼び出し元・テストの変更を避けるため）。
+
     /// 無変換/変換の生キーを通過させたら呼ぶ（ADR-187）。現在のフォアグラウンドに対する一回マークを立てる。
     pub(crate) fn arm_mode_key_pass_mark(&mut self, now_ms: u64, readable: bool) {
-        self.mode_key_pass_mark.arm(
-            crate::win32::foreground_scope(),
-            ModeKeyPassMark {
-                armed_at_ms: now_ms,
-                invalidated: false,
-                aligned: false,
-                awase_wrote: false,
-                readable_at_arm: readable,
-            },
-        );
+        self.mode_key_pass_mark
+            .arm(crate::win32::foreground_scope(), now_ms, readable);
     }
 
     /// 立てた時点で読める窓だった通過マークが、窓の終了を待っているとき、その残り時間(ms)。
     /// 通過の途中で窓が読めなくなった（降格した）場合に、窓の終了時に`expire_mode_key_pass_mark`を呼ぶための
     /// 起床時刻に使う（読めない窓の`reschedule_ime_refresh`は通過マークが有効な間は何も予約しないため）。
     pub(crate) fn mode_key_pass_expiry_wait_ms(&mut self, now_ms: u64) -> Option<u64> {
-        let scope = crate::win32::foreground_scope();
-        let ScopeCheck::Live(mark) = self.mode_key_pass_mark.peek(scope) else {
-            return None;
-        };
-        if !mark.readable_at_arm || mark.invalidated {
-            return None;
-        }
-        crate::state::force_guard::mode_key_pass_window_remaining_ms(
-            now_ms.saturating_sub(mark.armed_at_ms),
+        self.mode_key_pass_mark.expiry_wait_ms(
+            now_ms,
+            crate::win32::foreground_scope(),
             crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
         )
     }
@@ -278,17 +270,7 @@ impl ImeStateHub {
         &mut self,
         scope: crate::win32::ForegroundScope,
     ) {
-        if let ScopeCheck::Live(mark) = self.mode_key_pass_mark.peek(scope) {
-            if !mark.awase_wrote {
-                self.mode_key_pass_mark.arm(
-                    scope,
-                    ModeKeyPassMark {
-                        awase_wrote: true,
-                        ..mark
-                    },
-                );
-            }
-        }
+        self.mode_key_pass_mark.note_awase_write(scope);
     }
 
     fn mode_key_pass_mark_live_in_scope(
@@ -296,23 +278,16 @@ impl ImeStateHub {
         now_ms: u64,
         scope: crate::win32::ForegroundScope,
     ) -> bool {
-        matches!(
-            self.mode_key_pass_mark.peek(scope),
-            ScopeCheck::Live(mark)
-                if now_ms.saturating_sub(mark.armed_at_ms)
-                    < crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS
-        )
+        self.mode_key_pass_mark
+            .live(now_ms, scope, crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS)
     }
 
     /// 通過マークの窓が切れるまでの残り時間(ms)。マークが無い/フォアグラウンドが変わった/窓が切れていれば`None`。
     /// 観測が失敗した通過の後、読み直しを窓の終了時の1回に絞るために使う（BUG-158）。
     pub(crate) fn mode_key_pass_window_remaining_ms(&mut self, now_ms: u64) -> Option<u64> {
-        let scope = crate::win32::foreground_scope();
-        let ScopeCheck::Live(mark) = self.mode_key_pass_mark.peek(scope) else {
-            return None;
-        };
-        crate::state::force_guard::mode_key_pass_window_remaining_ms(
-            now_ms.saturating_sub(mark.armed_at_ms),
+        self.mode_key_pass_mark.window_remaining_ms(
+            now_ms,
+            crate::win32::foreground_scope(),
             crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
         )
     }
@@ -348,6 +323,7 @@ impl ImeStateHub {
         )
     }
 
+    /// 判断は `ModeKeyPassLatch::drop_decision`（Win32非依存）。ここは`PassEffect`の適用のみ。
     fn drop_intents_for_mode_key_pass_in_scope(
         &mut self,
         now_ms: u64,
@@ -355,39 +331,21 @@ impl ImeStateHub {
         scope: crate::win32::ForegroundScope,
         on_expiry: bool,
     ) -> bool {
-        let ScopeCheck::Live(mark) = self.mode_key_pass_mark.peek(scope) else {
+        let Some(effect) = self.mode_key_pass_mark.drop_decision(
+            now_ms,
+            scope,
+            on_expiry,
+            self.shadow_model.last_intent.is_some(),
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+        ) else {
             return false;
         };
-        if !crate::state::force_guard::should_drop_intents_for_mode_key_pass(
-            &mark,
-            now_ms.saturating_sub(mark.armed_at_ms),
-            on_expiry,
-            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
-        ) {
-            return false;
-        }
-        let first = !mark.invalidated;
-        // reducerは`last_intent`を捨て、`desired_open`を観測から導ける開閉へ揃える（BUG-157）。
-        // 最初の観測はGJIがキーを処理する前の古い状態のことがあるので、窓の間は観測が届くたびに
-        // 揃え直す。ただし通過より後に記録された明示意図（`last_intent`）は、2回目以降では捨てない。
-        let align = first || self.shadow_model.last_intent.is_none();
-        if first {
+        if effect.remove_intent {
             if let Some(hwnd) = self.shadow_model.current_focus() {
                 self.intent_store.remove(hwnd);
             }
         }
-        if first || (align && !mark.aligned) {
-            self.mode_key_pass_mark.arm(
-                scope,
-                ModeKeyPassMark {
-                    invalidated: true,
-                    // 窓の終了時の破棄（`on_expiry`）は観測を得ていないので、揃えたことにしない。
-                    aligned: mark.aligned || (align && !on_expiry),
-                    ..mark
-                },
-            );
-        }
-        if align {
+        if effect.pass_through {
             // 窓の終了時の破棄（`on_expiry`）は観測を得ていない: 意図だけ捨て、desired は書かない（A-N1）。
             self.pass_through_observed(tick_ms, !on_expiry);
         }
@@ -423,24 +381,14 @@ impl ImeStateHub {
         tick_ms: TickMs,
         scope: crate::win32::ForegroundScope,
     ) -> bool {
-        let ScopeCheck::Live(mark) = self.mode_key_pass_mark.peek(scope) else {
-            return false;
-        };
-        if !crate::state::force_guard::should_align_after_expired_mode_key_pass(
-            &mark,
-            now_ms.saturating_sub(mark.armed_at_ms),
-            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+        if !self.mode_key_pass_mark.align_after_expired(
+            now_ms,
+            scope,
             self.shadow_model.last_intent.is_some(),
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
         ) {
             return false;
         }
-        self.mode_key_pass_mark.arm(
-            scope,
-            ModeKeyPassMark {
-                aligned: true,
-                ..mark
-            },
-        );
         self.pass_through_observed(tick_ms, true);
         true
     }
@@ -2745,16 +2693,7 @@ mod tests {
         scope: crate::win32::ForegroundScope,
         now_ms: u64,
     ) {
-        ps.ime.mode_key_pass_mark.arm(
-            scope,
-            ModeKeyPassMark {
-                armed_at_ms: now_ms,
-                invalidated: false,
-                aligned: false,
-                awase_wrote: false,
-                readable_at_arm: true,
-            },
-        );
+        ps.ime.mode_key_pass_mark.arm(scope, now_ms, true);
     }
 
     fn test_foreground_scope() -> crate::win32::ForegroundScope {
