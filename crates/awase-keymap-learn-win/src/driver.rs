@@ -331,6 +331,19 @@ impl RealImeDriver {
 
 impl Drop for RealImeDriver {
     fn drop(&mut self) {
+        // ADR196-T1の実機検証用の一時的な診断(docs/tasks/adr196-t1-external-write-observation.md)。
+        // quiet window・生存確認・残余リスク判定が実際にA'の崩れ(学習窓への外部からの
+        // 書き込み)を検出できているかを見るため、セッション終了時にhook_monitor/
+        // notify_monitor/session_monitorの累計値を出力する。
+        eprintln!(
+            "[awase-keymap-learn-win] ADR196-T1診断サマリ: hook_external={} \
+             notify_external={} session_invalidated_trials={} decode_errors={} \
+             (ADR196-T1)",
+            self.hook_monitor.external_event_count(),
+            self.notify_monitor.external_count(),
+            self.session_monitor.get().invalidated_trials(),
+            self.decode_errors.get()
+        );
         let _ = unsafe { self.thread_mgr.Deactivate() };
         // `self.edit`は`self.window`の子窓なので、親を破棄すれば一緒に破棄される。
         let _ = unsafe { DestroyWindow(self.window) };
