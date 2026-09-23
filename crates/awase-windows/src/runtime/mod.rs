@@ -33,6 +33,87 @@ use crate::runtime::executor::ImeApplyPair;
 use crate::vk::VkCodeExt as _;
 use awase::platform::PlatformRuntime as _;
 
+/// ADR-192 決定3b: `keys.ime_on/off/toggle` の bare 無変換/変換を、coreへ渡す
+/// OS非依存のopen軸操作へ事前分類する。通常の特殊キー照合と同じく方向固定を
+/// toggleより優先し、onをoffより先に評価する。
+pub(crate) fn thumb_forced_open_actions(
+    special: &SpecialKeyCombos,
+) -> (
+    Option<awase::types::ShadowImeAction>,
+    Option<awase::types::ShadowImeAction>,
+) {
+    fn for_vk(special: &SpecialKeyCombos, vk: VkCode) -> Option<awase::types::ShadowImeAction> {
+        let contains_bare = |combos: &[awase::config::ParsedKeyCombo]| {
+            combos
+                .iter()
+                .any(|combo| combo.vk == vk && !combo.ctrl && !combo.shift && !combo.alt)
+        };
+        if contains_bare(&special.ime_on) {
+            Some(awase::types::ShadowImeAction::TurnOn)
+        } else if contains_bare(&special.ime_off) {
+            Some(awase::types::ShadowImeAction::TurnOff)
+        } else if contains_bare(&special.ime_toggle) {
+            Some(awase::types::ShadowImeAction::Toggle)
+        } else {
+            None
+        }
+    }
+
+    (
+        for_vk(special, crate::vk::VK_NONCONVERT),
+        for_vk(special, crate::vk::VK_CONVERT),
+    )
+}
+
+#[cfg(test)]
+mod adr192_tests {
+    use super::*;
+    use awase::config::ParsedKeyCombo;
+    use awase::types::ShadowImeAction;
+
+    fn combo(vk: VkCode, ctrl: bool, shift: bool, alt: bool) -> ParsedKeyCombo {
+        ParsedKeyCombo {
+            ctrl,
+            shift,
+            alt,
+            vk,
+        }
+    }
+
+    #[test]
+    fn bare_convert_keys_are_classified_with_direction_priority() {
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo(crate::vk::VK_CONVERT, false, false, false)],
+            ime_off: vec![combo(crate::vk::VK_NONCONVERT, false, false, false)],
+            ime_toggle: vec![
+                combo(crate::vk::VK_CONVERT, false, false, false),
+                combo(crate::vk::VK_NONCONVERT, false, false, false),
+            ],
+        };
+        assert_eq!(
+            thumb_forced_open_actions(&special),
+            (
+                Some(ShadowImeAction::TurnOff),
+                Some(ShadowImeAction::TurnOn)
+            )
+        );
+    }
+
+    #[test]
+    fn modified_or_non_convert_combos_are_not_forced_thumb_actions() {
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo(crate::vk::VK_CONVERT, true, false, false)],
+            ime_off: vec![combo(crate::vk::VK_NONCONVERT, false, true, false)],
+            ime_toggle: vec![combo(VkCode(0x20), false, false, false)],
+        };
+        assert_eq!(thumb_forced_open_actions(&special), (None, None));
+    }
+}
+
 /// `GeneralConfig::muhenkan_solo_tap_dedicated_fn_key`（ADR-091 §D3.2）を
 /// `VkCode` に解決する。`bootstrap.rs`（起動時）と `apply_config_update`
 /// （reload 時）の両方から呼ぶ。
@@ -1402,6 +1483,9 @@ impl Runtime {
         sync_off: Vec<VkCode>,
     ) {
         let ctx = self.build_ctx();
+        let forced_open_actions = thumb_forced_open_actions(&special_keys);
+        self.engine
+            .set_thumb_forced_open_actions(forced_open_actions.0, forced_open_actions.1);
         let _ = self.engine.on_command(
             EngineCommand::UpdateFsmParams {
                 threshold_ms: config.general.simultaneous_threshold_ms,

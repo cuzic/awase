@@ -169,6 +169,16 @@ impl Engine {
         self.adapter.set_henkan_solo_tap_ime_action(action);
     }
 
+    /// ADR-192 決定3b: Platform 層で bare `keys.ime_*` と分類した
+    /// 無変換/変換の強制 open 軸操作を設定する。
+    pub const fn set_thumb_forced_open_actions(
+        &mut self,
+        muhenkan: Option<ShadowImeAction>,
+        henkan: Option<ShadowImeAction>,
+    ) {
+        self.adapter.set_thumb_forced_open_actions(muhenkan, henkan);
+    }
+
     /// `crates/awase-windows::runtime::key_pipeline::kp_stage_shadow_ime_toggle`
     /// （ケース2/3、belief OFF側）がGJI/MS-IME自動検出の成否に関わらず
     /// 明示config自体を読むためのgetter。
