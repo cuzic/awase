@@ -125,6 +125,7 @@ pub mod ime_model;
 // （配線は ADR-087 Phase 3 のスコープ、§7 round3 S4 参照）。
 pub mod intent_store;
 pub mod key_effect_predictor;
+pub mod key_effect_runtime;
 pub mod key_effect_table;
 // ADR-195 段階0。key_effect_predictor（経路1）・awase-gji-config::keymap（経路2）・
 // msime_key_assignment（経路3、windows専用だが呼び出しはruntime層が担う）の出力を

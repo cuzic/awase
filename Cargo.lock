@@ -552,6 +552,7 @@ dependencies = [
  "awase",
  "awase-build-support",
  "awase-gji-config",
+ "awase-keymap-learn",
  "awase-vkmap",
  "itertools",
  "measured-macro",
