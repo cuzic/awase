@@ -1620,8 +1620,8 @@ fn build_bug_report_legacy_msime_keymap_summary(
     let assignment = crate::msime_legacy_keymap::read_legacy_toggle_assignment();
     crate::bug_report::BugReportLegacyMsImeKeymapSummary {
         active_style: assignment.active_style.map(|s| s.as_str().to_owned()),
-        muhenkan_ime_on_toggle: assignment.muhenkan_ime_on_toggle,
-        henkan_ime_on_toggle: assignment.henkan_ime_on_toggle,
+        muhenkan_legacy_toggle_assigned: assignment.muhenkan_legacy_toggle_assigned,
+        henkan_legacy_toggle_assigned: assignment.henkan_legacy_toggle_assigned,
         legacy_compat_mode_enabled: crate::msime_legacy_keymap::read_legacy_compat_mode_enabled(),
     }
 }

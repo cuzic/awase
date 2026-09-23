@@ -293,8 +293,8 @@ pub struct BugReportMsImeKeyAssignmentSummary {
 /// の実測範囲がそのまま出所——検出できるのは無変換/変換キー（修飾子なし）
 /// への「IMEオン/オフ」トグル割当ての有無のみで、**2026-09-23の実機検証
 /// （ADR-197）でこの割当てが実際にIME挙動へ影響する証拠は見つからなかった**
-/// （`msime_legacy_keymap`のモジュールdoc参照。`muhenkan_ime_on_toggle`/
-/// `henkan_ime_on_toggle`は「レジストリにこの割当てが存在するか」の事実の
+/// （`msime_legacy_keymap`のモジュールdoc参照。`muhenkan_legacy_toggle_assigned`/
+/// `henkan_legacy_toggle_assigned`は「レジストリにこの割当てが存在するか」の事実の
 /// みを表し、実効性の指標ではない）。`ime_kind`に関わらず常に読む
 /// （[`BugReportMsImeKeyAssignmentSummary`]の生DWORDと同じ理由——
 /// レジストリの内容自体は現在のフォーカス先IMEと無関係に存在するため）。
@@ -307,11 +307,29 @@ pub struct BugReportLegacyMsImeKeymapSummary {
     /// `Some(false)`（割当てなしと確認できた）とは区別する
     /// （コードレビュー指摘、`msime_legacy_keymap::LegacyMsImeToggleAssignment`
     /// のdoc参照）。
-    pub muhenkan_ime_on_toggle: Option<bool>,
-    pub henkan_ime_on_toggle: Option<bool>,
+    ///
+    /// `#[serde(rename)]`でJSONキー名は`muhenkan_ime_on_toggle`のまま維持する
+    /// （コードレビュー指摘でRust側のフィールド名だけ`_assigned`へ訂正した
+    /// ——「実際にIME ONを引き起こす」という誤った含意を除くため——が、
+    /// `report.awase.cc`へ送信済み・サーバ側で読まれる可能性があるJSONの
+    /// キー名自体は変えない。`SCHEMA_VERSION`を上げる理由にもしない）。
+    #[serde(rename = "muhenkan_ime_on_toggle")]
+    pub muhenkan_legacy_toggle_assigned: Option<bool>,
+    #[serde(rename = "henkan_ime_on_toggle")]
+    pub henkan_legacy_toggle_assigned: Option<bool>,
     /// 「以前のバージョンのMicrosoft IMEを使う」互換モードチェックボックスの
     /// 状態（ADR-197決定4、`msime_legacy_keymap::read_legacy_compat_mode_enabled`）。
     /// `None`=判定できなかった。
+    ///
+    /// `#[serde(default)]`必須（コードレビュー指摘）: `legacy_msime_keymap`
+    /// フィールド自体の`#[serde(default)]`（:477付近）は「このフィールド全体が
+    /// JSONに無い」場合しか救わない。本PRより前のビルドが書いた診断JSONには
+    /// `legacy_msime_keymap`オブジェクト自体は存在するが、その中に
+    /// `legacy_compat_mode_enabled`キーが無い——これを外すと、その旧データを
+    /// 読み込んだ際に`state_snapshot`等**既存の診断情報も含めて全部**が
+    /// `load_diagnostics`の`.ok()`で静かに消える（`retro_eval_stats`等の
+    /// コメントと同じ理由、`crates/awase-settings/src/bug_report.rs`参照）。
+    #[serde(default)]
     pub legacy_compat_mode_enabled: Option<bool>,
 }
 
@@ -894,10 +912,31 @@ mod tests {
     fn test_legacy_msime_keymap_summary() -> BugReportLegacyMsImeKeymapSummary {
         BugReportLegacyMsImeKeymapSummary {
             active_style: Some("Custom".to_owned()),
-            muhenkan_ime_on_toggle: Some(true),
-            henkan_ime_on_toggle: Some(false),
+            muhenkan_legacy_toggle_assigned: Some(true),
+            henkan_legacy_toggle_assigned: Some(false),
             legacy_compat_mode_enabled: Some(true),
         }
+    }
+
+    /// コードレビュー指摘: `legacy_compat_mode_enabled`はADR-197でこのPRが追加した
+    /// フィールドで、`SCHEMA_VERSION`は上げていない。旧ビルドが書いた診断JSONの
+    /// `legacy_msime_keymap`オブジェクトにはこのキー自体が無いため、`#[serde(default)]`
+    /// が無いと`serde_json::from_str`がその内側のフィールド不足だけで失敗し、
+    /// `load_diagnostics`側の`.ok()`で`state_snapshot`等**無関係な情報も含めて全部**
+    /// 静かに失われる（`crates/awase-settings/src/bug_report.rs`参照）。
+    #[test]
+    fn legacy_msime_keymap_summary_without_compat_mode_field_still_deserializes() {
+        let old_shape_json = r#"{
+            "active_style": "Custom",
+            "muhenkan_ime_on_toggle": true,
+            "henkan_ime_on_toggle": false
+        }"#;
+        let parsed: BugReportLegacyMsImeKeymapSummary =
+            serde_json::from_str(old_shape_json).expect("旧形式のJSONを読めること");
+        assert_eq!(parsed.active_style, Some("Custom".to_owned()));
+        assert_eq!(parsed.muhenkan_legacy_toggle_assigned, Some(true));
+        assert_eq!(parsed.henkan_legacy_toggle_assigned, Some(false));
+        assert_eq!(parsed.legacy_compat_mode_enabled, None);
     }
 
     fn test_state_snapshot() -> BugReportStateSnapshot {
@@ -1148,6 +1187,8 @@ mod tests {
         assert!(json.contains("\"msime_key_assignment\": {"));
         assert!(json.contains("\"key_assignment_muhenkan\": 1"));
         assert!(json.contains("\"legacy_msime_keymap\": {"));
+        // ワイヤーJSONのキー名は`#[serde(rename)]`により旧名のまま
+        // （Rust側フィールド名のみ`muhenkan_legacy_toggle_assigned`へ訂正、上記struct定義参照）。
         assert!(json.contains("\"muhenkan_ime_on_toggle\": true"));
         assert!(!json.contains("JournalEntry"));
     }
