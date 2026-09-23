@@ -29,9 +29,21 @@ fn main() {
             driver.diag_notify_since_mark()
         );
     }
-    let phase1 = driver.diag_notify_external_count();
-    println!("PHASE1 notify_external={}", phase1 - baseline);
+    println!(
+        "PHASE1 notify_external={}",
+        driver.diag_notify_external_count() - baseline
+    );
     driver.diag_pump(Duration::from_millis(500));
+    for _ in 0..2 {
+        let before = driver.diag_notify_external_count();
+        let toggled = driver.diag_toggle_open_status();
+        driver.diag_pump(Duration::from_millis(300));
+        println!(
+            "INPROC_TOGGLE toggled={toggled:?} notify_external_delta={}",
+            driver.diag_notify_external_count() - before
+        );
+    }
+    let phase1 = driver.diag_notify_external_count();
     println!("WAIT_EXTERNAL");
     let deadline = Instant::now() + Duration::from_mins(1);
     let mut last = phase1;
