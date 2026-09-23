@@ -17,12 +17,15 @@ function Fg-Info { $h=[Fg]::GetForegroundWindow(); $sb=New-Object Text.StringBui
 
 $out = "$env:TEMP\t7-learn-stdout.log"; $err = "$env:TEMP\t7-learn-stderr.log"
 Remove-Item $out,$err -ErrorAction SilentlyContinue
+Get-Process notepad -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Seconds 1
 $learn = Start-Process -FilePath $Exe -PassThru -RedirectStandardOutput $out -RedirectStandardError $err -WindowStyle Normal
+$null = $learn.Handle
 "learn pid=$($learn.Id) started"
 Start-Sleep -Seconds $WarmupSec
 "before switch: fg = $(Fg-Info)"
 "progress lines so far: $((Get-Content $out -ErrorAction SilentlyContinue | Measure-Object -Line).Lines)"
-$np = Start-Process notepad.exe -PassThru
+Start-Process notepad.exe
 Start-Sleep -Seconds 2
 "after notepad: fg = $(Fg-Info)"
 $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -32,4 +35,4 @@ $exited = $learn.WaitForExit($WaitExitSec * 1000)
 "--- stdout tail ---"; Get-Content $out -Tail 8 -ErrorAction SilentlyContinue
 "--- stderr tail ---"; Get-Content $err -Tail 5 -ErrorAction SilentlyContinue
 if (-not $exited) { Stop-Process -Id $learn.Id -Force; "learn force-killed (did NOT self-terminate)" }
-Stop-Process -Id $np.Id -Force -ErrorAction SilentlyContinue
+Get-Process notepad -ErrorAction SilentlyContinue | Stop-Process -Force
