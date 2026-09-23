@@ -1,0 +1,54 @@
+name: adr195-t7-focus-loss-verify
+
+# ADR195-T7 実機確認手順(round3 R1)のCI版。学習中に別アプリ(notepad)へフォーカスが
+# 移った場合、学習プロセスが reason=interference で終了コード1になることを確認する。
+# 対照(Control)は切り替えなしで成功することを確認し、テストと区別する。
+on:
+  push:
+    branches: [diag/adr195-t7-t10-realmachine-verify]
+    paths:
+      - 'tools/e2e/t7-focus-loss-check.ps1'
+      - '.github/workflows/adr195-t7-focus-loss-verify.yml'
+  workflow_dispatch: {}
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: adr195-t7-focus-loss-verify
+      - name: build
+        shell: pwsh
+        run: cargo build -p awase-keymap-learn-win
+      - name: GJI install
+        shell: pwsh
+        run: choco install googlejapaneseinput -y --no-progress 2>&1 | Select-Object -Last 3
+      - name: input language + ATOK preset
+        shell: pwsh
+        run: |
+          $tip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
+          $l = New-WinUserLanguageList ja-JP
+          $l[0].InputMethodTips.Clear(); $l[0].InputMethodTips.Add($tip)
+          Set-WinUserLanguageList $l -Force 2>&1
+          try { Set-WinDefaultInputMethodOverride -InputTip $tip -ErrorAction Stop } catch { "override FAILED: $($_.Exception.Message)" }
+          $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), [byte[]](0xB0,0x01,0x00,0xC8,0x02,0x01))
+          Get-Process | Where-Object { $_.Name -match 'googleime|mozc' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+      - name: control (no focus switch)
+        shell: pwsh
+        run: |
+          Copy-Item config.toml target\debug\ -ErrorAction SilentlyContinue
+          ./tools/e2e/t7-focus-loss-check.ps1 -Control -WarmupSec 5 -WaitExitSec 600
+      - name: focus loss test
+        shell: pwsh
+        run: ./tools/e2e/t7-focus-loss-check.ps1 -WarmupSec 5 -WaitExitSec 120
