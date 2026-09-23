@@ -98,7 +98,10 @@ pub fn spawn_learning_process(exe_path: &Path) -> io::Result<Child> {
 /// 1行のデコードに失敗しても(非UTF-8等)、その行だけ読み飛ばして読み取りを
 /// 継続する——子プロセスの出力全体を1行の乱れだけで諦めない。それ以外の
 /// I/Oエラー(パイプの異常切断等)は呼び出し側へ伝える。
-pub fn drain_learning_output(stdout: ChildStdout, mut on_line: impl FnMut(LearnLine)) -> io::Result<()> {
+pub fn drain_learning_output(
+    stdout: ChildStdout,
+    mut on_line: impl FnMut(LearnLine),
+) -> io::Result<()> {
     for line in BufReader::new(stdout).lines() {
         match line {
             Ok(line) => {
@@ -201,7 +204,9 @@ mod tests {
     #[test]
     fn parses_result_lines() {
         assert_eq!(
-            parse_learn_line("result status=success strategy=x elapsed_ms=1 presses=2 cells=3 total=4 decode_errors=0"),
+            parse_learn_line(
+                "result status=success strategy=x elapsed_ms=1 presses=2 cells=3 total=4 decode_errors=0"
+            ),
             Some(LearnLine::Result(LearnOutcome::Success))
         );
         assert_eq!(
@@ -219,7 +224,11 @@ mod tests {
         assert_eq!(parse_learn_line(""), None);
         assert_eq!(parse_learn_line("noise from stderr leaking in"), None);
         assert_eq!(parse_learn_line("progress cell=notanumber total=1"), None);
-        assert_eq!(parse_learn_line("progress cell=1"), None, "totalが無ければNone");
+        assert_eq!(
+            parse_learn_line("progress cell=1"),
+            None,
+            "totalが無ければNone"
+        );
         assert_eq!(parse_learn_line("result status=unknown_status"), None);
     }
 

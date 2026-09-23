@@ -547,7 +547,8 @@ struct SettingsApp {
     /// ADR-195段階6: 学習プロセス(`awase-keymap-learn-win`)を子プロセスとして
     /// 起動中のとき、その標準出力から`drain_learning_output`が送ってくる
     /// 行を毎フレームノンブロッキングで受け取るチャネル。
-    keymap_learn_rx: Option<std::sync::mpsc::Receiver<Result<keymap_learn_launcher::LearnLine, String>>>,
+    keymap_learn_rx:
+        Option<std::sync::mpsc::Receiver<Result<keymap_learn_launcher::LearnLine, String>>>,
     /// 直近に受信した進捗（UI表示用、進捗行が来るたびに更新）。
     keymap_learn_progress: Option<keymap_learn_launcher::LearnProgress>,
     /// 学習プロセスの最終結果、または起動失敗のエラーメッセージ
@@ -1056,7 +1057,9 @@ impl SettingsApp {
                 // ChildのDropはプロセスをkillしない(ハンドルを閉じるだけ)ため、標準出力
                 // 取得に失敗しただけの子プロセスが野良のまま動き続けてしまう。
                 let _ = child.kill();
-                self.keymap_learn_status = Some(format!("学習プロセスの標準出力を取得できませんでした（{e}）"));
+                self.keymap_learn_status = Some(format!(
+                    "学習プロセスの標準出力を取得できませんでした（{e}）"
+                ));
                 return;
             }
         };
@@ -1065,7 +1068,9 @@ impl SettingsApp {
         self.keymap_learn_stderr_handle = keymap_learn_launcher::take_learning_stderr(&mut child)
             .ok()
             .map(|stderr| {
-                std::thread::spawn(move || keymap_learn_launcher::drain_learning_stderr_lines(stderr))
+                std::thread::spawn(move || {
+                    keymap_learn_launcher::drain_learning_stderr_lines(stderr)
+                })
             });
         // Arc<Mutex<Child>>で共有し、UIの「キャンセル」ボタン・on_exit・読み取りスレッドの
         // いずれからも同じChildをkill()/wait()できるようにする(標準出力は上で取り出し済みなので
@@ -1140,7 +1145,9 @@ impl SettingsApp {
                 }
                 Ok(Ok(keymap_learn_launcher::LearnLine::Result(outcome))) => {
                     self.keymap_learn_status = Some(match outcome {
-                        keymap_learn_launcher::LearnOutcome::Success => "完了しました。".to_string(),
+                        keymap_learn_launcher::LearnOutcome::Success => {
+                            "完了しました。".to_string()
+                        }
                         keymap_learn_launcher::LearnOutcome::SuccessWithWarnings => {
                             "完了しましたが、一部観測に警告がありました。".to_string()
                         }
@@ -3265,56 +3272,59 @@ impl SettingsApp {
     /// `awase-keymap-learn-win`(独立学習プロセス、ADR195-T1)を子プロセスとして
     /// 起動し、全キー×全状態を自動巡回測定するウィザード導線。
     fn keymap_learn_wizard_ui(&mut self, ui: &mut egui::Ui) {
-        ui.collapsing("学習ウィザード（全キー自動測定、実験的）", |ui| {
-            ui.label(
-                "対象キー1つずつの較正の代わりに、全ての対応キー×状態を自動で巡回測定します。\n\
+        ui.collapsing(
+            "学習ウィザード（全キー自動測定、実験的）",
+            |ui| {
+                ui.label(
+                    "対象キー1つずつの較正の代わりに、全ての対応キー×状態を自動で巡回測定します。\n\
                  測定中も awase 自体は動き続け、他の窓では通常どおり入力できます。",
-            );
-            ui.add_space(8.0);
+                );
+                ui.add_space(8.0);
 
-            let running = self.keymap_learn_rx.is_some();
-            ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(!running, egui::Button::new("学習を開始"))
-                    .clicked()
-                {
-                    self.start_keymap_learning();
-                }
-                // 実キー注入を行う子プロセスなので、閉じる/ハングしたときにタスクマネージャ
-                // 頼みにならないよう、UIから止める手段を必ず用意する。
-                if ui
-                    .add_enabled(running, egui::Button::new("キャンセル"))
-                    .clicked()
-                {
-                    self.cancel_keymap_learning();
-                }
-            });
+                let running = self.keymap_learn_rx.is_some();
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(!running, egui::Button::new("学習を開始"))
+                        .clicked()
+                    {
+                        self.start_keymap_learning();
+                    }
+                    // 実キー注入を行う子プロセスなので、閉じる/ハングしたときにタスクマネージャ
+                    // 頼みにならないよう、UIから止める手段を必ず用意する。
+                    if ui
+                        .add_enabled(running, egui::Button::new("キャンセル"))
+                        .clicked()
+                    {
+                        self.cancel_keymap_learning();
+                    }
+                });
 
-            if let Some(p) = self.keymap_learn_progress {
-                ui.add_space(4.0);
-                #[expect(
-                    clippy::cast_precision_loss,
-                    reason = "進捗バー表示用の概算、精度は問題にならない"
-                )]
-                let fraction = if p.total == 0 {
-                    0.0
-                } else {
-                    p.cell as f32 / p.total as f32
-                };
-                ui.add(egui::ProgressBar::new(fraction).text(format!(
-                    "{}/{}セル",
-                    p.cell, p.total
-                )));
-                if let Some(eta_ms) = p.eta_ms {
-                    ui.label(format!("残り約{:.0}秒", eta_ms / 1000.0));
+                if let Some(p) = self.keymap_learn_progress {
+                    ui.add_space(4.0);
+                    #[expect(
+                        clippy::cast_precision_loss,
+                        reason = "進捗バー表示用の概算、精度は問題にならない"
+                    )]
+                    let fraction = if p.total == 0 {
+                        0.0
+                    } else {
+                        p.cell as f32 / p.total as f32
+                    };
+                    ui.add(
+                        egui::ProgressBar::new(fraction)
+                            .text(format!("{}/{}セル", p.cell, p.total)),
+                    );
+                    if let Some(eta_ms) = p.eta_ms {
+                        ui.label(format!("残り約{:.0}秒", eta_ms / 1000.0));
+                    }
                 }
-            }
 
-            if let Some(status) = &self.keymap_learn_status {
-                ui.add_space(4.0);
-                ui.label(status);
-            }
-        });
+                if let Some(status) = &self.keymap_learn_status {
+                    ui.add_space(4.0);
+                    ui.label(status);
+                }
+            },
+        );
     }
 
     #[expect(clippy::too_many_lines)]
@@ -6249,8 +6259,10 @@ mod layout_tab_repro {
         let layout_path =
             resolve_layouts_dir(&config.general.layouts_dir).join(&config.general.default_layout);
         let (layout, layout_loaded_ok) =
-            load_yab_layout(&layout_path, config.general.keyboard_model)
-                .map_or_else(|_| (empty_yab_layout(), false), |(ly, _lint_warnings)| (ly, true));
+            load_yab_layout(&layout_path, config.general.keyboard_model).map_or_else(
+                |_| (empty_yab_layout(), false),
+                |(ly, _lint_warnings)| (ly, true),
+            );
         let config_loaded_model = config.general.keyboard_model;
         SettingsApp {
             config,
