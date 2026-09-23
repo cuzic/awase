@@ -1,6 +1,6 @@
 //! 指標(M1〜M9)。実行後の `Executor` と真のモデルから計算する。
 
-use crate::exec::Executor;
+use crate::exec::{Executor, ImeDriver};
 use crate::model::{CellTruth, Machine};
 use crate::table::Class;
 
@@ -43,7 +43,7 @@ fn ratio(n: usize, d: usize) -> f64 {
 }
 
 /// 指標を計算する。
-pub fn evaluate(exec: &Executor, m: &Machine) -> Metrics {
+pub fn evaluate<D: ImeDriver>(exec: &Executor<D>, m: &Machine) -> Metrics {
     let statuses = m.statuses();
     let mut total = 0usize;
     let (mut c1, mut c2) = (0usize, 0usize);

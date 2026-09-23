@@ -12,7 +12,7 @@
 //! - S9 全セルn回: 1周ごとに巡回の順序を変えて(別経路)、全セルの観測回数を1回ずつ増やし `adaptive_n` 回まで。
 
 use crate::cost::CostModel;
-use crate::exec::{Executor, PressInfo, ReadPolicy};
+use crate::exec::{Executor, ImeDriver, PressInfo, ReadPolicy};
 use crate::graph::{cpp_plan, EdgeKind, Graph, Prior};
 use crate::rng::Rng;
 
@@ -72,14 +72,14 @@ impl Default for Req {
     }
 }
 
-fn over(exec: &Executor, req: &Req) -> bool {
+fn over<D: ImeDriver>(exec: &Executor<D>, req: &Req) -> bool {
     exec.elapsed_ms() > req.budget_ms || exec.stats.presses >= req.max_presses
 }
 
 /// 戦略を実行する。`suspects` は履歴依存が疑われるキーの添字(S6・S7の部分アルファベット)。
-pub fn run(
+pub fn run<D: ImeDriver>(
     strategy: Strategy,
-    exec: &mut Executor,
+    exec: &mut Executor<D>,
     prior: &Prior,
     cost: &CostModel,
     suspects: &[usize],
@@ -172,7 +172,7 @@ fn edge_cells(g: &Graph) -> Vec<(usize, usize)> {
     v
 }
 
-fn need_full(exec: &Executor, g: &Graph, k: u32) -> Vec<u32> {
+fn need_full<D: ImeDriver>(exec: &Executor<D>, g: &Graph, k: u32) -> Vec<u32> {
     let mut need = vec![0u32; g.n_nodes * g.n_keys];
     for (node, key) in edge_cells(g) {
         let c = exec.table.count(g.status_of_node(node), key) as u32;
@@ -181,7 +181,7 @@ fn need_full(exec: &Executor, g: &Graph, k: u32) -> Vec<u32> {
     need
 }
 
-fn need_adaptive(exec: &Executor, g: &Graph, n: u32) -> Vec<u32> {
+fn need_adaptive<D: ImeDriver>(exec: &Executor<D>, g: &Graph, n: u32) -> Vec<u32> {
     let mut need = vec![0u32; g.n_nodes * g.n_keys];
     for (node, key) in edge_cells(g) {
         let s = g.status_of_node(node);
@@ -195,7 +195,7 @@ fn need_adaptive(exec: &Executor, g: &Graph, n: u32) -> Vec<u32> {
 
 /// S6: 疑わしいキー(`suspects`)のセルは、文脈(直前キーが疑わしいキーのどれか/どれでもない)ごとに1回。他のセルは `k` 回
 /// (文脈のうち、初期節点から到達できる最寄りの節点で満たす)。
-fn need_ctx(exec: &Executor, g: &Graph, k: u32, suspects: &[usize]) -> Vec<u32> {
+fn need_ctx<D: ImeDriver>(exec: &Executor<D>, g: &Graph, k: u32, suspects: &[usize]) -> Vec<u32> {
     let mut need = vec![0u32; g.n_nodes * g.n_keys];
     for si in 0..g.statuses.len() {
         let s = g.statuses[si];
@@ -233,13 +233,13 @@ fn ctx_id(g: &Graph, last_key: Option<usize>) -> usize {
 }
 
 /// 観測の多数派の結果でグラフの辺を直す。
-fn learn(exec: &Executor, g: &mut Graph, info: PressInfo, key: usize) {
+fn learn<D: ImeDriver>(exec: &Executor<D>, g: &mut Graph, info: PressInfo, key: usize) {
     if let Some(maj) = exec.table.majority(info.before, key) {
         g.learn_edge(info.before, key, maj);
     }
 }
 
-fn cur_node(exec: &Executor, g: &Graph) -> Option<usize> {
+fn cur_node<D: ImeDriver>(exec: &Executor<D>, g: &Graph) -> Option<usize> {
     g.node_of(exec.current()?, exec.last_key())
 }
 
@@ -249,7 +249,12 @@ enum Step {
 }
 
 /// 計画を実行する。期待と違う状態に出た・キーが届かない・強制リセットが要る、のいずれかで `Mismatch`(計画し直す)。
-fn execute(exec: &mut Executor, g: &mut Graph, plan: &[EdgeKind], req: &Req) -> Step {
+fn execute<D: ImeDriver>(
+    exec: &mut Executor<D>,
+    g: &mut Graph,
+    plan: &[EdgeKind],
+    req: &Req,
+) -> Step {
     for k in plan {
         if over(exec, req) {
             return Step::Done;
@@ -281,13 +286,13 @@ fn execute(exec: &mut Executor, g: &mut Graph, plan: &[EdgeKind], req: &Req) -> 
     Step::Done
 }
 
-fn tour(
-    exec: &mut Executor,
+fn tour<D: ImeDriver>(
+    exec: &mut Executor<D>,
     g: &mut Graph,
     req: &Req,
     rng: &mut Rng,
     shuffle: bool,
-    need_fn: impl Fn(&Executor, &Graph) -> Vec<u32>,
+    need_fn: impl Fn(&Executor<D>, &Graph) -> Vec<u32>,
 ) {
     if exec.current().is_none() {
         exec.reset();
@@ -315,7 +320,7 @@ fn tour(
     }
 }
 
-fn s0(exec: &mut Executor, g: &Graph, req: &Req) {
+fn s0<D: ImeDriver>(exec: &mut Executor<D>, g: &Graph, req: &Req) {
     for (node, key) in edge_cells(g) {
         let s = g.status_of_node(node);
         let mut attempts = 0;
@@ -341,7 +346,7 @@ fn s0(exec: &mut Executor, g: &Graph, req: &Req) {
     }
 }
 
-fn s1(exec: &mut Executor, g: &Graph, req: &Req, rng: &mut Rng, restart: f64) {
+fn s1<D: ImeDriver>(exec: &mut Executor<D>, g: &Graph, req: &Req, rng: &mut Rng, restart: f64) {
     exec.reset();
     for _ in 0..req.max_presses {
         if over(exec, req) {
@@ -362,7 +367,7 @@ fn s1(exec: &mut Executor, g: &Graph, req: &Req, rng: &mut Rng, restart: f64) {
     }
 }
 
-fn s2(exec: &mut Executor, g: &mut Graph, req: &Req) {
+fn s2<D: ImeDriver>(exec: &mut Executor<D>, g: &mut Graph, req: &Req) {
     exec.reset();
     for _ in 0..req.max_presses {
         if over(exec, req) {

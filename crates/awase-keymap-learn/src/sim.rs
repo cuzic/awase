@@ -2,6 +2,7 @@
 
 use crate::anomaly::ResetLevel;
 use crate::cost::{CostModel, WaitModel};
+use crate::exec::ImeDriver;
 use crate::model::{Disposition, Machine, Outcome, Status};
 use crate::rng::Rng;
 
@@ -58,6 +59,7 @@ pub struct SimIme {
     rng: Rng,
     cfg: SimConfig,
     cost: CostModel,
+    elapsed_ms: f64,
 }
 
 impl SimIme {
@@ -78,6 +80,7 @@ impl SimIme {
             rng: Rng::new(cfg.seed),
             cfg,
             cost,
+            elapsed_ms: 0.0,
         }
     }
 
@@ -204,6 +207,48 @@ impl SimIme {
             self.cur = self.machine.initial;
         }
         (cost, ok)
+    }
+}
+
+impl ImeDriver for SimIme {
+    fn press(&mut self, key: usize) -> PressReport {
+        let report = SimIme::press(self, key);
+        self.elapsed_ms += report.cost_ms;
+        report
+    }
+
+    fn press_setup(&mut self, key: usize) {
+        let _ = SimIme::press(self, key);
+        self.elapsed_ms += self.cost.setup_gap_ms;
+    }
+
+    fn read_status(&mut self) -> (Status, Status) {
+        self.elapsed_ms += self.cost.read_ms;
+        SimIme::read_status(self)
+    }
+
+    fn reread_status(&mut self) -> Status {
+        self.elapsed_ms += self.cost.read_ms;
+        SimIme::reread_status(self)
+    }
+
+    fn settle_setup(&mut self) -> Status {
+        self.elapsed_ms += self.cost.setup_settle_ms + self.cost.read_ms;
+        SimIme::reread_status(self)
+    }
+
+    fn reset(&mut self, level: ResetLevel) -> bool {
+        let (cost, ok) = SimIme::reset(self, level);
+        self.elapsed_ms += cost;
+        ok
+    }
+
+    fn elapsed_ms(&self) -> f64 {
+        self.elapsed_ms
+    }
+
+    fn machine_initial_status(&self) -> Status {
+        self.machine.initial_status()
     }
 }
 

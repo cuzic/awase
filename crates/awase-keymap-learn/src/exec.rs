@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::anomaly::{Anomaly, AnomalyPolicy, AnomalyTracker, ResetLevel};
 use crate::model::{Outcome, Status};
-use crate::sim::SimIme;
+use crate::sim::{PressReport, SimIme};
 use crate::table::Table;
 
 /// status読み取りの方針(観測経路を2つ使う頻度)。
@@ -39,10 +39,22 @@ pub struct Stats {
     pub timeline: Vec<(f64, usize, usize)>,
 }
 
+/// IMEへの注入・観測・待機を内包するドライバ。
+pub trait ImeDriver {
+    fn press(&mut self, key: usize) -> PressReport;
+    fn press_setup(&mut self, key: usize);
+    fn read_status(&mut self) -> (Status, Status);
+    fn reread_status(&mut self) -> Status;
+    fn settle_setup(&mut self) -> Status;
+    fn reset(&mut self, level: ResetLevel) -> bool;
+    fn elapsed_ms(&self) -> f64;
+    fn machine_initial_status(&self) -> Status;
+}
+
 /// 実行器。
 #[derive(Debug)]
-pub struct Executor {
-    pub sim: SimIme,
+pub struct Executor<D: ImeDriver = SimIme> {
+    pub driver: D,
     pub table: Table,
     pub stats: Stats,
     tracker: AnomalyTracker,
@@ -52,16 +64,15 @@ pub struct Executor {
     last_key: Option<usize>,
     run_len: usize,
     max_run: Option<usize>,
-    elapsed: f64,
     seen: HashSet<Status>,
     initial: Status,
 }
 
-impl Executor {
-    pub fn new(sim: SimIme, policy: AnomalyPolicy, read: ReadPolicy) -> Self {
-        let initial = sim.machine().initial_status();
+impl<D: ImeDriver> Executor<D> {
+    pub fn new(driver: D, policy: AnomalyPolicy, read: ReadPolicy) -> Self {
+        let initial = driver.machine_initial_status();
         Self {
-            sim,
+            driver,
             table: Table::new(),
             stats: Stats::default(),
             tracker: AnomalyTracker::new(policy),
@@ -71,7 +82,6 @@ impl Executor {
             last_key: None,
             run_len: 0,
             max_run: None,
-            elapsed: 0.0,
             seen: HashSet::new(),
             initial,
         }
@@ -90,8 +100,8 @@ impl Executor {
         self.max_run = n;
     }
 
-    pub const fn elapsed_ms(&self) -> f64 {
-        self.elapsed
+    pub fn elapsed_ms(&self) -> f64 {
+        self.driver.elapsed_ms()
     }
 
     pub const fn last_key(&self) -> Option<usize> {
@@ -108,22 +118,18 @@ impl Executor {
 
     /// 2経路の読み取り結果 `(a, b)` を方針に従って1つに決める(コストは呼び出し側が加える)。
     fn resolve(&mut self, a: Status, b: Status) -> Status {
-        let read_ms = self.sim.cost().read_ms;
         let double = match self.read {
             ReadPolicy::Single => false,
             ReadPolicy::DoubleAlways => true,
             ReadPolicy::DoubleFirst => !self.seen.contains(&a),
         };
-        self.elapsed += read_ms;
         self.stats.reads += 1;
         let mut out = a;
         if double {
-            self.elapsed += read_ms;
             self.stats.reads += 1;
             if a != b {
                 self.note_anomaly(Anomaly::ChannelMismatch);
-                let c = self.sim.reread_status();
-                self.elapsed += read_ms;
+                let c = self.driver.reread_status();
                 self.stats.reads += 1;
                 out = if c == a || c == b { c } else { a };
             }
@@ -134,7 +140,7 @@ impl Executor {
 
     /// 現在のstatusを読む。
     pub fn read_status(&mut self) -> Status {
-        let (a, b) = self.sim.read_status();
+        let (a, b) = self.driver.read_status();
         let s = self.resolve(a, b);
         self.cur = Some(s);
         s
@@ -151,8 +157,7 @@ impl Executor {
         let mut report = None;
         let retries = self.tracker.policy().max_press_retries;
         for attempt in 0..=retries {
-            let r = self.sim.press(key);
-            self.elapsed += r.cost_ms;
+            let r = self.driver.press(key);
             if r.delivered {
                 report = Some(r);
                 break;
@@ -179,35 +184,35 @@ impl Executor {
         self.last_key = Some(key);
         self.run_len += 1;
         self.stats.presses += 1;
-        self.stats
-            .timeline
-            .push((self.elapsed, self.table.covered1(), self.table.covered2()));
+        self.stats.timeline.push((
+            self.driver.elapsed_ms(),
+            self.table.covered1(),
+            self.table.covered2(),
+        ));
         Some(PressInfo { before, outcome })
     }
 
     /// S0用: 状態を作るための押下(観測も記録もしない)。コストは経路のキー間隔だけ。
     pub fn press_setup(&mut self, key: usize) {
-        let _ = self.sim.press(key);
-        self.elapsed += self.sim.cost().setup_gap_ms;
+        self.driver.press_setup(key);
         self.last_key = Some(key);
     }
 
     /// S0用: 経路を打ち終えた後の待ちと検証(statusを読む)。
     pub fn settle_setup(&mut self) -> Status {
-        self.elapsed += self.sim.cost().setup_settle_ms;
-        self.read_status()
+        let status = self.driver.settle_setup();
+        self.cur = Some(status);
+        status
     }
 
     /// リセット(段階的に昇格しながら、初期のstatusに戻ったことを読んで確かめる)。
     pub fn reset(&mut self) {
         let mut level = self.tracker.policy().first_reset;
         for _ in 0..6 {
-            let (c, _ok) = self.sim.reset(level);
-            self.elapsed += c;
+            let ok = self.driver.reset(level);
             self.stats.resets += 1;
             self.last_key = None;
-            let s = self.read_status();
-            if s == self.initial {
+            if ok && self.read_status() == self.initial {
                 break;
             }
             self.note_anomaly(Anomaly::ResetFailed);
@@ -237,7 +242,7 @@ mod tests {
     use crate::sample_models::{atok_keys, atok_like};
     use crate::sim::SimConfig;
 
-    fn exec(cfg: SimConfig) -> Executor {
+    fn exec(cfg: SimConfig) -> Executor<SimIme> {
         Executor::new(
             SimIme::new(atok_like(), cfg, CostModel::event()),
             AnomalyPolicy::default(),
@@ -276,7 +281,7 @@ mod tests {
         });
         e.press(atok_keys::HANKAKU);
         e.reset();
-        assert_eq!(e.current(), Some(e.sim.machine().initial_status()));
+        assert_eq!(e.current(), Some(e.driver.machine().initial_status()));
         assert!(e.stats.resets >= 1);
     }
 
@@ -288,7 +293,7 @@ mod tests {
             ..SimConfig::default()
         });
         e.set_read_policy(ReadPolicy::DoubleAlways);
-        let truth = e.sim.machine().initial_status();
+        let truth = e.driver.machine().initial_status();
         let mut wrong = 0;
         for _ in 0..200 {
             if e.read_status() != truth {
