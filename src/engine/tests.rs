@@ -7438,6 +7438,31 @@ mod engine_integration_tests {
         );
     }
 
+    /// レビュー2026-09-23 C-1: bare `keys.ime_*`（`forced_open_action`）を設定した
+    /// 無変換でも、Shift+無変換は保留に入れず素通しにする（強制操作を発火させない）。
+    #[test]
+    fn shift_muhenkan_with_forced_open_action_is_passed_through_without_ime_effect() {
+        let mut engine = make_test_engine_with_muhenkan_forced_turn_off();
+        engine.set_thumb_forced_open_actions(Some(ShadowImeAction::Toggle), None);
+        let shift_ctx = InputContext {
+            modifiers: ModifierState {
+                shift: true,
+                ..ime_on_ctx().modifiers
+            },
+            ..ime_on_ctx()
+        };
+        let down = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &shift_ctx);
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &shift_ctx);
+        assert!(!down.is_consumed(), "Shift+無変換の押下はOSへ届けるべき");
+        assert!(!up.is_consumed(), "Shift+無変換の解放はOSへ届けるべき");
+        assert!(
+            [&down, &up]
+                .into_iter()
+                .all(|d| !has_effect(d, |e| matches!(e, Effect::Ime(_)))),
+            "Shift併用では強制IME操作を発火しない"
+        );
+    }
+
     /// 対照: `ModeKeyConfig::Suppress`（既定）のキーは、Shift併用でも従来どおり
     /// `PendingThumb` に入る（即座の素通しは Passthrough 設定のときだけ）。Suppress は
     /// 最終的に何も送らない設定なので、チョードに巻き込まれても実害は無いが、

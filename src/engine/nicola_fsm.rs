@@ -1474,6 +1474,7 @@ impl NicolaFsm {
         }
         let special = self.thumb_solo_special_handling(ev.vk_code);
         special.explicit_ime_action.is_some()
+            || special.forced_open_action.is_some()
             || special
                 .mode_key_config
                 .is_some_and(ModeKeyConfig::is_passthrough)
