@@ -34,6 +34,9 @@ pub struct Stats {
     pub retries: u32,
     pub sync_losses: u32,
     pub forced_resets: u32,
+    /// [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2:
+    /// `PressReport::contaminated`が立っていたため表への記録を見送った回数。
+    pub contaminated_trials: u32,
     pub anomalies: HashMap<Anomaly, u32>,
     /// 押下ごとの (経過ms, 1回以上測ったセル数, 2回以上測ったセル数)。
     pub timeline: Vec<(f64, usize, usize)>,
@@ -244,7 +247,14 @@ impl<D: ImeDriver> Executor<D> {
             status: after,
             disp: r.seen.disp,
         };
-        if self.recording {
+        // ADR195-T7項目2: 測定区間に混入があった観測は、記録も学習アルゴリズムへの
+        // フィードバックもしない(信頼できないため)。`recording=false`のとき(検証
+        // ウォーク中)と同様に扱う——両方とも「表を更新しない」という同じ効果を持つが、
+        // 意味は異なる(前者は「無効化された観測」、後者は「意図的に記録しない」)ため
+        // `contaminated_trials`で区別して数える。
+        if r.contaminated {
+            self.stats.contaminated_trials += 1;
+        } else if self.recording {
             self.table.record(before, key, self.last_key, outcome);
         }
         self.cur = Some(after);
@@ -328,6 +338,7 @@ impl<D: ImeDriver> Executor<D> {
 mod tests {
     use super::*;
     use crate::cost::CostModel;
+    use crate::model::Disposition;
     use crate::sample_models::{atok_keys, atok_like};
     use crate::sim::SimConfig;
 
@@ -337,6 +348,94 @@ mod tests {
             AnomalyPolicy::default(),
             ReadPolicy::Single,
         )
+    }
+
+    /// [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+    /// （opus-adversarial-consult round1 M1対応）のテスト専用ドライバ:
+    /// `press()`が返す`PressReport::contaminated`を呼び出し側が指定できる。
+    /// `RealImeDriver`の実際のWin32結線(`check_session_interference`)を
+    /// 経由せずに、`Executor::press`が`contaminated=true`をどう扱うかだけを
+    /// 検証する。
+    struct FixedContaminationDriver {
+        contaminated: bool,
+    }
+
+    impl ImeDriver for FixedContaminationDriver {
+        fn press(&mut self, _key: usize) -> PressReport {
+            let status = Status {
+                open: true,
+                mode: 0,
+                composing: false,
+            };
+            PressReport {
+                delivered: true,
+                cost_ms: 1.0,
+                seen: Outcome {
+                    status,
+                    disp: Disposition::None,
+                },
+                seen_b: status,
+                contaminated: self.contaminated,
+            }
+        }
+        fn press_setup(&mut self, _key: usize) {}
+        fn read_primary(&mut self) -> Status {
+            self.machine_initial_status()
+        }
+        fn read_secondary(&mut self) -> Status {
+            self.machine_initial_status()
+        }
+        fn reread_status(&mut self) -> Status {
+            self.machine_initial_status()
+        }
+        fn settle_setup(&mut self) -> Status {
+            self.machine_initial_status()
+        }
+        fn reset(&mut self, _level: ResetLevel) -> bool {
+            true
+        }
+        fn elapsed_ms(&self) -> f64 {
+            0.0
+        }
+        fn machine_initial_status(&self) -> Status {
+            Status {
+                open: false,
+                mode: 0,
+                composing: false,
+            }
+        }
+    }
+
+    #[test]
+    fn contaminated_press_is_not_recorded_but_is_counted() {
+        let mut e = Executor::new(
+            FixedContaminationDriver { contaminated: true },
+            AnomalyPolicy::default(),
+            ReadPolicy::Single,
+        );
+        let info = e.press(0);
+        assert!(info.is_some(), "delivered=trueなのでPressInfoは返る");
+        assert_eq!(
+            e.table.covered1(),
+            0,
+            "汚染された観測(contaminated=true)は表に記録してはならない(round1 M1)"
+        );
+        assert_eq!(e.stats.contaminated_trials, 1);
+        assert_eq!(e.stats.presses, 1, "押下自体のコスト・件数は数える");
+    }
+
+    #[test]
+    fn uncontaminated_press_is_recorded_normally() {
+        let mut e = Executor::new(
+            FixedContaminationDriver {
+                contaminated: false,
+            },
+            AnomalyPolicy::default(),
+            ReadPolicy::Single,
+        );
+        e.press(0);
+        assert_eq!(e.table.covered1(), 1);
+        assert_eq!(e.stats.contaminated_trials, 0);
     }
 
     #[test]

@@ -256,6 +256,27 @@ mod app {
         let training_presses = executor.stats.presses;
         let decode_errors = executor.driver.decode_error_count();
 
+        // [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+        // (opus-adversarial-consult round1 M1対応): セッション監視
+        // (`RealImeDriver::check_session_interference`)が無効化上限を超えて
+        // いたら、検証ウォーク・表の書き出しへ進まずここで失敗として終了する。
+        // 汚染された観測(外部からの書き込み・物理入力・フォーカス喪失)は
+        // `Executor::press`が表への記録を既に見送っているが、無効化が多発した
+        // セッションは表の残りのセルの信頼性も疑わしいため、書き出さない。
+        if executor.driver.session_failed() {
+            print_interference_failure_line(InterferenceFailureArgs {
+                strategy,
+                training_elapsed_ms,
+                training_presses,
+                covered1: executor.table.covered1(),
+                total_cells,
+                decode_errors,
+                contaminated_trials: executor.stats.contaminated_trials,
+                invalidated_trials: executor.driver.session_invalidated_trials(),
+            });
+            return Ok(());
+        }
+
         let score = run_verification_walk(&mut executor, &mut rng);
         let (cell_count, write_result) = persist_learned_table(&executor.table);
         print_result_line(ResultLineArgs {
@@ -275,6 +296,46 @@ mod app {
             );
         }
         Ok(())
+    }
+
+    /// [`print_interference_failure_line`]の引数。
+    #[derive(Clone, Copy)]
+    struct InterferenceFailureArgs {
+        strategy: Strategy,
+        training_elapsed_ms: f64,
+        training_presses: u32,
+        covered1: usize,
+        total_cells: u32,
+        decode_errors: u32,
+        contaminated_trials: u32,
+        invalidated_trials: u32,
+    }
+
+    /// [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+    /// (round1 M1対応): セッション監視の無効化上限を超えたときの専用result行。
+    /// `print_result_line`と同じ`result status=... strategy=...`の形式を保ち
+    /// `reason=interference`を足す——awase-settings(較正ウィザード)がこの行を
+    /// パースする前提(ADR-195段階6)を崩さないため。
+    fn print_interference_failure_line(args: InterferenceFailureArgs) {
+        eprintln!(
+            "学習セッションを失敗として終了します: 外部からの書き込み・物理入力・\
+             フォーカス喪失により{}回の試行が無効化上限を超えました(汚染された観測{}件)。\
+             学習表は書き出しません。",
+            args.invalidated_trials, args.contaminated_trials
+        );
+        println!(
+            "result status=failure strategy={} elapsed_ms={:.0} presses={} cells={} total={} \
+             decode_errors={} contaminated_trials={} invalidated_trials={} reason=interference",
+            args.strategy.name(),
+            args.training_elapsed_ms,
+            args.training_presses,
+            args.covered1,
+            args.total_cells,
+            args.decode_errors,
+            args.contaminated_trials,
+            args.invalidated_trials,
+        );
+        let _ = std::io::stdout().flush();
     }
 
     /// [`print_result_line`]の引数(clippyの`too_many_arguments`回避のため構造体にまとめる)。
