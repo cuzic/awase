@@ -354,6 +354,8 @@ fn main() -> eframe::Result<()> {
         std::process::exit(0);
     }
 
+    let adr192_warning_context = has_adr192_warning_context(&args);
+
     // ADR-111決定4: 自己昇格フローの昇格側エントリポイント。GUIは起動せず
     // レジストリ操作のみ行い、終了コードで結果を返す（`--bug-report`と
     // 同型のヘッドレス分岐パターン）。
@@ -389,8 +391,8 @@ fn main() -> eframe::Result<()> {
         // 低解像度・高 DPI ディスプレイでも操作不能にならない下限だけ設ける。
         .with_min_inner_size([420.0, 320.0])
         .with_title("awase 設定");
-    startup_failure::run_with_fallback("awase-settings", viewport, |cc| {
-        Box::new(SettingsApp::new(cc)) as Box<dyn eframe::App>
+    startup_failure::run_with_fallback("awase-settings", viewport, move |cc| {
+        Box::new(SettingsApp::new(cc, adr192_warning_context)) as Box<dyn eframe::App>
     })
 }
 
@@ -413,6 +415,10 @@ fn arg_value<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     args.windows(2)
         .find(|pair| pair[0] == name)
         .map(|pair| pair[1].as_str())
+}
+
+fn has_adr192_warning_context(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--adr192-mode-key-warning")
 }
 
 /// 現在の実行ファイル（`awase-settings.exe`）と同じフォルダにある `name`
@@ -533,6 +539,8 @@ struct SettingsApp {
     /// 計測中フォーカスを保持し続けるテキスト入力欄のバッファ
     /// （中身は使わない、フォーカス保持だけが目的）。
     calibration_text_buf: String,
+    /// awaseの状態依存キー警告から起動されたことを示すargv由来のコンテキスト。
+    adr192_warning_context: bool,
     adr192_replacement_undo: Option<Adr192ReplacementSnapshot>,
     adr192_replacement_preview: Option<String>,
 }
@@ -615,7 +623,7 @@ enum PendingSaveResult {
 }
 
 impl SettingsApp {
-    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, adr192_warning_context: bool) -> Self {
         setup_fonts(&cc.egui_ctx);
         // CLI引数でconfigパスが明示されている場合は自己修復しない（ADR-178 決定2）。
         if cli_arg_config_path().is_none() {
@@ -706,6 +714,7 @@ impl SettingsApp {
             calibration_state: crate::calibration_panel::CalibrationPanelState::Idle,
             calibration_target_vk: "VK_NONCONVERT".to_string(),
             calibration_text_buf: String::new(),
+            adr192_warning_context,
             adr192_replacement_undo: None,
             adr192_replacement_preview: None,
         };
@@ -2063,6 +2072,10 @@ enum CapturedKey {
 // ── Tab methods ──
 
 impl SettingsApp {
+    fn adr192_replacement_controls_visible(&self) -> bool {
+        self.adr192_warning_context || self.adr192_replacement_undo.is_some()
+    }
+
     /// 自動起動チェックボックスがクリックされた直後（＝ボタン起点）に、
     /// HKCU Run キーへの実際の登録/解除を即座に行い、成功した場合のみ
     /// `config.toml` の `auto_start` を更新する。
@@ -2447,31 +2460,37 @@ impl SettingsApp {
                 &mut self.config.general.warn_state_dependent_mode_keys,
                 "状態依存のキーを検出したときに警告する",
             );
-            ui.label(
-                "警告された変換/無変換キーを、変換=IME ON・無変換=IME OFFの冪等な設定へ置き換えられます。親指キーの場合は単独タップ設定と常時抑止も同時に揃えます。",
-            );
-            if ui.button("変更内容をプレビュー").clicked() {
-                self.adr192_replacement_preview = Some(
-                    "[keys] ime_on = [\"変換\"], ime_off = [\"無変換\"]。親指キーなら *_solo_tap_ime_action と *_solo_tap_always_suppress = true も設定します。"
-                        .to_owned(),
+            if self.adr192_replacement_controls_visible() {
+                ui.label(
+                    "警告された変換/無変換キーを、変換=IME ON・無変換=IME OFFの冪等な設定へ置き換えられます。親指キーの場合は単独タップ設定と常時抑止も同時に揃えます。",
                 );
-            }
-            if let Some(preview) = &self.adr192_replacement_preview {
-                ui.monospace(preview);
-                if ui.button("この置き換えを適用").clicked() {
-                    self.adr192_replacement_undo = Some(apply_adr192_recommended_replacement(
-                        &mut self.config,
-                    ));
-                    self.status = "冪等なIME ON/OFF設定へ置き換えました。「適用」でconfig.tomlへ保存してください。".to_owned();
+                if ui.button("変更内容をプレビュー").clicked() {
+                    self.adr192_replacement_preview = Some(
+                        "[keys] ime_on = [\"変換\"], ime_off = [\"無変換\"]。親指キーなら *_solo_tap_ime_action と *_solo_tap_always_suppress = true も設定します。"
+                            .to_owned(),
+                    );
                 }
-            }
-            if self.adr192_replacement_undo.is_some()
-                && ui.button("置き換えを元に戻す").clicked()
-            {
-                if let Some(snapshot) = self.adr192_replacement_undo.take() {
-                    undo_adr192_recommended_replacement(&mut self.config, snapshot);
-                    self.status = "ADR-192の置き換えを元に戻しました。".to_owned();
+                if let Some(preview) = &self.adr192_replacement_preview {
+                    ui.monospace(preview);
+                    if ui.button("この置き換えを適用").clicked() {
+                        self.adr192_replacement_undo = Some(apply_adr192_recommended_replacement(
+                            &mut self.config,
+                        ));
+                        self.status = "冪等なIME ON/OFF設定へ置き換えました。「適用」でconfig.tomlへ保存してください。".to_owned();
+                    }
                 }
+                if self.adr192_replacement_undo.is_some()
+                    && ui.button("置き換えを元に戻す").clicked()
+                {
+                    if let Some(snapshot) = self.adr192_replacement_undo.take() {
+                        undo_adr192_recommended_replacement(&mut self.config, snapshot);
+                        self.status = "ADR-192の置き換えを元に戻しました。".to_owned();
+                    }
+                }
+            } else {
+                ui.label(
+                    "現在のIME設定を判定していません。awaseが状態依存キーを検出した際の警告から開くと、診断結果に基づいてここから操作できます。",
+                );
             }
         });
         combo_key_list_ui(
@@ -5959,8 +5978,8 @@ mod layout_tab_repro {
     use super::{
         CLIPBOARD_HISTORY_LEN, Face, KanaTable, LayoutDiscardAction, NewComboBuf, PhysicalPos,
         SPECIAL_KEYS, SettingsApp, Tab, ValueKind, YabValue, apply_adr192_recommended_replacement,
-        empty_yab_layout, find_config_path, load_yab_layout, resolve_layouts_dir,
-        undo_adr192_recommended_replacement,
+        empty_yab_layout, find_config_path, has_adr192_warning_context, load_yab_layout,
+        resolve_layouts_dir, undo_adr192_recommended_replacement,
     };
 
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {
@@ -6029,6 +6048,7 @@ mod layout_tab_repro {
             calibration_state: crate::calibration_panel::CalibrationPanelState::Idle,
             calibration_target_vk: "VK_NONCONVERT".to_string(),
             calibration_text_buf: String::new(),
+            adr192_warning_context: false,
             adr192_replacement_undo: None,
             adr192_replacement_preview: None,
         }
@@ -6102,6 +6122,38 @@ mod layout_tab_repro {
                 app.tab_keys(ui);
             });
         });
+    }
+
+    #[test]
+    fn adr192_warning_flag_and_undo_control_replacement_ui_visibility() {
+        let args = vec![
+            "awase-settings".to_owned(),
+            "--adr192-mode-key-warning".to_owned(),
+        ];
+        assert!(has_adr192_warning_context(&args));
+        assert!(!has_adr192_warning_context(&["awase-settings".to_owned()]));
+
+        let mut app = test_settings_app(awase::config::AppConfig::default());
+        assert!(!app.adr192_replacement_controls_visible());
+        app.adr192_warning_context = true;
+        assert!(app.adr192_replacement_controls_visible());
+        app.adr192_warning_context = false;
+        app.adr192_replacement_undo = Some(apply_adr192_recommended_replacement(&mut app.config));
+        assert!(app.adr192_replacement_controls_visible());
+    }
+
+    #[test]
+    fn adr192_replacement_ui_renders_with_and_without_warning_context() {
+        let mut app = test_settings_app(awase::config::AppConfig::default());
+        let ctx = eframe::egui::Context::default();
+        for warning_context in [false, true] {
+            app.adr192_warning_context = warning_context;
+            let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+                eframe::egui::CentralPanel::default().show(ctx, |ui| {
+                    app.tab_keys(ui);
+                });
+            });
+        }
     }
 
     /// `tab_basic`/`tab_keymap`/`tab_disable_apps`/`tab_app_rules`/
