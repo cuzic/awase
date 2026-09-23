@@ -1,10 +1,14 @@
 # ADR-196 T2: 採否判定（自己検証正答率・内蔵表突き合わせ・再測定）を実装する
 
-状態: 未着手（2026-09-23起票）。[ADR196-T1](adr196-t1-external-write-observation.md)
-完了後に着手（観測基盤が前提）。[ADR195-T2](adr195-t2-self-verification.md)
-（自己検証本体。正答率・縮退率の**計算**はT2の担当、本タスクは**採否判定**の担当——
-役割を分けること）・[ADR195-T3](adr195-t3-persistence.md)（永続化、スキーマに本タスクの
-出力フィールドを追加済みであること）・[ADR196-T3](adr196-t3-bundled-table-versioning.md)
+状態: **一部実装済み（2026-09-23）**。0(内蔵表への参照経路)・1a(自己検証正答率の採否条件、
+`judgement::judge_self_verification`)・1c(既知3構成判定、`awase-gji-config::known_keymap`)は
+develop統合済み（PR #259: `judgement.rs`・`known_keymap.rs`、PR #263: `diff_against_bundled`）。
+**残作業**: 1b-8(判定書き換えモードのCLI実装)・1b項目7〜9のうち再測定オーケストレーション
+（`BundledDiff::mismatched`を入力に、実際にIMEを再度叩いて確認する部分。`awase-keymap-learn-win`側の
+`ImeDriver`実装が前提、未着手）・1e後半（不具合報告=`bug_report.rs`への添付配線、未着手）。
+[ADR195-T2](adr195-t2-self-verification.md)（自己検証本体。正答率・縮退率の**計算**はT2の担当、
+本タスクは**採否判定**の担当——役割を分けること）・[ADR195-T3](adr195-t3-persistence.md)
+（永続化、スキーマに本タスクの出力フィールドを追加済みであること）・[ADR196-T3](adr196-t3-bundled-table-versioning.md)
 （内蔵表の版情報、1b項目7の分布タグで参照）・[ADR196-T5](adr196-t5-revalidation-not-invalidation.md)
 （フィンガープリント、同じく1b項目7で参照）と依存があるため、実装順序をすり合わせること。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
@@ -18,13 +22,21 @@
 
 ## 実装対象
 
-### 0: 内蔵表の参照経路（決定1e第1項）
+### 0: 内蔵表の参照経路（決定1e第1項）【実装済み、PR #263】
 
 学習プロセス（`awase-keymap-learn-win`）が内蔵表（`state/key_effect_table.rs`）を参照
 できるようにする。`key_effect_table`は`state/mod.rs`でprivateなモジュールなので、可視性を
 広げるか、awase-settings側で比較して子プロセスへ結果を渡す設計にするかを決める
 （ADR-195 m-c〈`pub(crate)`で足りるとしていた結論〉を、本タスクの用途に限って更新する）。
 本タスクの1b項目7〜9（内蔵表との突き合わせ）はこの経路が無いと着手できない。
+
+**実装内容**: 生の`ATOK`/`MSIME`/`MSIME_NATIVE`定数自体は`pub(super)`のまま広げず、
+`awase-windows::state::key_effect_runtime::diff_against_bundled(persisted, preset) -> BundledDiff`
+という専用の`pub`関数のみを追加した（決定1e「判定は学習プロセス自身が行う」に従い、
+awase-settings側で比較する案は採らなかった）。`BundledDiff`は一致数・不一致セルの
+`(status, key)`一覧（再測定対象、下記1b項目7〜9の入力）・片方にしか無いセル数を持つ。
+`awase-keymap-learn-win`は既に`awase-windows`に依存しているため、Cargo.tomlの変更は
+不要だった。再測定そのもの（実際にIMEへ再送って確認する部分）はスコープ外のまま。
 
 ### 1a: 自己検証正答率の採否条件
 
