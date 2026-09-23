@@ -42,12 +42,15 @@ jobs:
       - uses: taiki-e/install-action@cargo-mutants
       - name: "Run cargo-mutants (ADR-194 scope: force_guard/mode_key_pass/drift/refresh_plan)"
         # examples/*.rs(windows crate依存、非cfg(windows))をLinux上でbaseline
-        # ビルドに巻き込ませたくない。--cargo-test-arg=--lib(CLI)も
-        # additional_cargo_test_args(config)もbaselineの`cargo test --no-run`
-        # には反映されなかった(2026-09-22実測、両方とも examples が残ったまま
-        # E0433)。`cargo mutants [OPTIONS] [-- <CARGO_TEST_ARGS>...]`の
-        # 末尾`--`区切りが唯一baselineにも反映される形だったので、これを使う。
-        run: cargo mutants -p awase-windows --config .cargo/mutants-bug158-scope.toml --no-shuffle -- --lib
+        # ビルドに巻き込ませたくない。--cargo-test-arg=--lib(CLI)・
+        # additional_cargo_test_args(config)・末尾`-- --lib`のどれを使っても
+        # baselineの`cargo test --no-run --package=X`コマンドには反映されず
+        # (2026-09-22実測、3回とも examples が残ったままE0433)、baseline自体は
+        # 常にフル(--lib無し)で走る設計と判断。対象4ファイルのテストはこのセッション
+        # 内で既にLinux上でcargo test --lib実行・pass確認済みなので、
+        # --baseline skipでbaseline自体を飛ばし、--libは各mutant試験(こちらは
+        # 末尾--が効く想定)にだけ効かせる。
+        run: cargo mutants -p awase-windows --config .cargo/mutants-bug158-scope.toml --no-shuffle --baseline skip -- --lib
       - name: Upload mutants report
         if: always()
         uses: actions/upload-artifact@v4
