@@ -434,6 +434,13 @@ impl RuntimeTableCache {
         self.cells.is_some()
     }
 
+    /// 直近の読込で使った`(preset, check_against_bundled)`（診断用。学習表ファイルが
+    /// 無い/読めなかった場合は`None`）。
+    #[must_use]
+    pub fn last_validation_key(&self) -> Option<(KeymapPreset, bool)> {
+        self.stamp.map(|(_, _, preset, check)| (preset, check))
+    }
+
     pub const RECHECK_MS: u64 = super::key_effect_predictor::KeymapCache::RECHECK_MS;
 
     /// キャッシュした学習済み表を返す（採用できなかった/未学習なら`None`＝呼び出し側は同梱表を使う）。

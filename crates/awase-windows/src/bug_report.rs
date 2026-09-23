@@ -432,14 +432,22 @@ impl BugReportKeymapLearnSummary {
             awase_keymap_learn::persist::PersistedTable,
             crate::state::key_effect_runtime::RejectReason,
         >,
-        last_attempt: Option<&awase_keymap_learn::persist::PersistedTable>,
+        last_attempt: &Option<
+            Result<
+                awase_keymap_learn::persist::PersistedTable,
+                crate::state::key_effect_runtime::RejectReason,
+            >,
+        >,
         use_learned_keymap_table: bool,
         in_use: bool,
         bundled_diff: Option<&crate::state::key_effect_runtime::BundledDiff>,
     ) -> Self {
-        let last_attempt_judgement = last_attempt
-            .and_then(|t| t.judgement)
-            .map(keymap_learn_judgement_label);
+        let last_attempt_judgement = last_attempt.as_ref().map(|r| match r {
+            Ok(t) => t
+                .judgement
+                .map_or_else(|| "no_judgement".to_owned(), keymap_learn_judgement_label),
+            Err(reason) => keymap_learn_file_label(reason).to_owned(),
+        });
         let bundled_diff = bundled_diff.map(|d| BugReportKeymapLearnBundledDiff {
             matched: d.matched,
             mismatched_count: clamp_u32(d.mismatched.len()),
@@ -1148,7 +1156,7 @@ mod tests {
         };
         let s = BugReportKeymapLearnSummary::from_parts(
             &Ok(table),
-            Some(&last),
+            &Some(Ok(last)),
             true,
             false,
             Some(&diff),
@@ -1198,12 +1206,37 @@ mod tests {
             (RejectReason::SchemaVersionMismatch, "schema_mismatch"),
             (RejectReason::Io, "io_error"),
         ] {
-            let s = BugReportKeymapLearnSummary::from_parts(&Err(reason), None, false, false, None);
+            let s =
+                BugReportKeymapLearnSummary::from_parts(&Err(reason), &None, false, false, None);
             assert_eq!(s.table_file, label);
             assert!(!s.use_learned_keymap_table);
             assert_eq!(s.judgement, None);
             assert_eq!(s.cell_count, None);
         }
+    }
+
+    #[test]
+    fn keymap_learn_summary_distinguishes_missing_and_broken_last_attempt() {
+        use crate::state::key_effect_runtime::RejectReason;
+        let label = |r: Option<Result<_, RejectReason>>| {
+            BugReportKeymapLearnSummary::from_parts(
+                &Err(RejectReason::NotFound),
+                &r,
+                true,
+                false,
+                None,
+            )
+            .last_attempt_judgement
+        };
+        assert_eq!(label(None), None);
+        assert_eq!(
+            label(Some(Err(RejectReason::NotFound))).as_deref(),
+            Some("not_learned")
+        );
+        assert_eq!(
+            label(Some(Err(RejectReason::Parse))).as_deref(),
+            Some("parse_error")
+        );
     }
 
     #[test]
@@ -1222,7 +1255,7 @@ mod tests {
         };
         let s = BugReportKeymapLearnSummary::from_parts(
             &Err(crate::state::key_effect_runtime::RejectReason::NotFound),
-            None,
+            &None,
             true,
             false,
             Some(&diff),
