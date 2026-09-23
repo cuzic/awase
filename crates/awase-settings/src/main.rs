@@ -559,6 +559,12 @@ struct SettingsApp {
     /// `kill()`/`wait()`のときだけ短時間ロックする）。UIの「キャンセル」ボタンと
     /// `on_exit`（ウィンドウを閉じたとき）の両方から`kill()`できるようにするための保持。
     keymap_learn_child: Option<std::sync::Arc<std::sync::Mutex<std::process::Child>>>,
+    /// 学習プロセスの標準エラーを読み切るスレッドのハンドル。`result
+    /// status=failure`受信時、書き込み失敗理由(`print_result_line`のErr分岐が
+    /// 標準エラーへ書く1行)をUIに出すために`join()`する
+    /// (code-review指摘: 従来は標準エラーを`Stdio::null()`で捨てていたため、
+    /// 失敗理由がユーザーにもバグ報告にも一切残らなかった)。
+    keymap_learn_stderr_handle: Option<std::thread::JoinHandle<Option<String>>>,
 }
 
 #[derive(Clone)]
@@ -737,6 +743,7 @@ impl SettingsApp {
             keymap_learn_progress: None,
             keymap_learn_status: None,
             keymap_learn_child: None,
+            keymap_learn_stderr_handle: None,
         };
         app.recompute_diagnostics();
         app
@@ -1036,10 +1043,22 @@ impl SettingsApp {
         let stdout = match keymap_learn_launcher::take_learning_stdout(&mut child) {
             Ok(stdout) => stdout,
             Err(e) => {
+                // code-review指摘: ここで単にreturnすると、既に起動済み(実キー注入を
+                // 行いうる)のchildがどこにも保持されないままDropされる。std::process::
+                // ChildのDropはプロセスをkillしない(ハンドルを閉じるだけ)ため、標準出力
+                // 取得に失敗しただけの子プロセスが野良のまま動き続けてしまう。
+                let _ = child.kill();
                 self.keymap_learn_status = Some(format!("学習プロセスの標準出力を取得できませんでした（{e}）"));
                 return;
             }
         };
+        // code-review指摘: 標準エラーの取得失敗は致命的ではない(失敗理由の表示が
+        // 簡素になるだけ)ので、学習プロセス自体の起動は止めない。
+        self.keymap_learn_stderr_handle = keymap_learn_launcher::take_learning_stderr(&mut child)
+            .ok()
+            .map(|stderr| {
+                std::thread::spawn(move || keymap_learn_launcher::drain_learning_stderr_lines(stderr))
+            });
         // Arc<Mutex<Child>>で共有し、UIの「キャンセル」ボタン・on_exit・読み取りスレッドの
         // いずれからも同じChildをkill()/wait()できるようにする(標準出力は上で取り出し済みなので
         // 読み取りループ自体はこのロックを取らない)。
@@ -1066,13 +1085,24 @@ impl SettingsApp {
     /// 止める手段がUIに無いと、ウィンドウを閉じても・ハングしても
     /// タスクマネージャ頼みになってしまうため。
     fn cancel_keymap_learning(&mut self) {
+        self.kill_keymap_learn_child();
+        self.keymap_learn_rx = None;
+        self.keymap_learn_status = Some("キャンセルしました。".to_string());
+    }
+
+    /// `keymap_learn_child`が保持している子プロセスを(生きていれば)強制終了して
+    /// 手放す。`cancel_keymap_learning`(ユーザー操作)だけでなく、`poll_keymap_learn`の
+    /// 異常系(標準出力読み取りエラー・resultを送らず切断)からも呼ぶ——標準出力の
+    /// 読み取りスレッドは`drain_learning_output`が`Err`を返しても直後に`child.wait()`
+    /// するだけでkillはしない。実キー注入を行いうる子プロセスがハングしている場合、
+    /// killせずに`keymap_learn_child`を手放すと、UIから二度とkillする手段が無い
+    /// まま野良で動き続ける(code-review指摘)。
+    fn kill_keymap_learn_child(&mut self) {
         if let Some(child) = self.keymap_learn_child.take()
             && let Ok(mut child) = child.lock()
         {
             let _ = child.kill();
         }
-        self.keymap_learn_rx = None;
-        self.keymap_learn_status = Some("キャンセルしました。".to_string());
     }
 
     /// `start_keymap_learning()` が起動した学習プロセスの標準出力を毎フレーム
@@ -1089,16 +1119,28 @@ impl SettingsApp {
                     self.keymap_learn_status = Some("測定中…".to_string());
                 }
                 Ok(Ok(keymap_learn_launcher::LearnLine::Result(outcome))) => {
-                    self.keymap_learn_status = Some(
-                        match outcome {
-                            keymap_learn_launcher::LearnOutcome::Success => "完了しました。",
-                            keymap_learn_launcher::LearnOutcome::SuccessWithWarnings => {
-                                "完了しましたが、一部観測に警告がありました。"
-                            }
-                            keymap_learn_launcher::LearnOutcome::Failure => "学習に失敗しました。",
+                    self.keymap_learn_status = Some(match outcome {
+                        keymap_learn_launcher::LearnOutcome::Success => "完了しました。".to_string(),
+                        keymap_learn_launcher::LearnOutcome::SuccessWithWarnings => {
+                            "完了しましたが、一部観測に警告がありました。".to_string()
                         }
-                        .to_string(),
-                    );
+                        keymap_learn_launcher::LearnOutcome::Failure => {
+                            // code-review指摘: 標準出力の`result status=failure`行には
+                            // 理由が含まれない(`awase-keymap-learn-win`は理由文を標準
+                            // エラーへ書く)。`result`行送信の時点で子プロセスの終了・
+                            // 標準エラーのEOFは目前のはずなので、joinはここで短時間しか
+                            // ブロックしない。
+                            let reason = self
+                                .keymap_learn_stderr_handle
+                                .take()
+                                .and_then(|h| h.join().ok())
+                                .flatten();
+                            match reason {
+                                Some(reason) => format!("学習に失敗しました: {reason}"),
+                                None => "学習に失敗しました。".to_string(),
+                            }
+                        }
+                    });
                     self.keymap_learn_rx = None;
                     self.keymap_learn_child = None;
                     break;
@@ -1106,7 +1148,7 @@ impl SettingsApp {
                 Ok(Err(e)) => {
                     self.keymap_learn_status = Some(e);
                     self.keymap_learn_rx = None;
-                    self.keymap_learn_child = None;
+                    self.kill_keymap_learn_child();
                     break;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -1121,7 +1163,7 @@ impl SettingsApp {
                     self.keymap_learn_status =
                         Some("学習プロセスが結果を送らずに終了しました。".to_string());
                     self.keymap_learn_rx = None;
-                    self.keymap_learn_child = None;
+                    self.kill_keymap_learn_child();
                     break;
                 }
             }
@@ -2607,16 +2649,16 @@ impl SettingsApp {
                         self.adr192_replacement_undo = Some(apply_adr192_recommended_replacement(
                             &mut self.config,
                         ));
-                        self.status = "冪等なIME ON/OFF設定へ置き換えました。「適用」でconfig.tomlへ保存してください。".to_owned();
+                        "冪等なIME ON/OFF設定へ置き換えました。「適用」でconfig.tomlへ保存してください。"
+                            .clone_into(&mut self.status);
                     }
                 }
                 if self.adr192_replacement_undo.is_some()
                     && ui.button("置き換えを元に戻す").clicked()
+                    && let Some(snapshot) = self.adr192_replacement_undo.take()
                 {
-                    if let Some(snapshot) = self.adr192_replacement_undo.take() {
-                        undo_adr192_recommended_replacement(&mut self.config, snapshot);
-                        self.status = "ADR-192の置き換えを元に戻しました。".to_owned();
-                    }
+                    undo_adr192_recommended_replacement(&mut self.config, snapshot);
+                    "ADR-192の置き換えを元に戻しました。".clone_into(&mut self.status);
                 }
             } else {
                 ui.label(
@@ -6188,8 +6230,7 @@ mod layout_tab_repro {
             resolve_layouts_dir(&config.general.layouts_dir).join(&config.general.default_layout);
         let (layout, layout_loaded_ok) =
             load_yab_layout(&layout_path, config.general.keyboard_model)
-                .map(|(ly, _lint_warnings)| (ly, true))
-                .unwrap_or_else(|_| (empty_yab_layout(), false));
+                .map_or_else(|_| (empty_yab_layout(), false), |(ly, _lint_warnings)| (ly, true));
         let config_loaded_model = config.general.keyboard_model;
         SettingsApp {
             config,
@@ -6256,6 +6297,7 @@ mod layout_tab_repro {
             keymap_learn_progress: None,
             keymap_learn_status: None,
             keymap_learn_child: None,
+            keymap_learn_stderr_handle: None,
         }
     }
 
@@ -7304,9 +7346,8 @@ speculative_delay_ms = 30
             "self.configも正規化後の値へ更新されるべき（次回のApplyで同じ警告が\
              永遠に再表示されるのを防ぐため）"
         );
-        assert_eq!(
+        assert!(
             app.status.contains("speculative"),
-            true,
             "1回目のApplyでは廃止警告が表示されるべき: {}",
             app.status
         );
