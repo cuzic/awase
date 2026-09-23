@@ -18,6 +18,7 @@ mod app {
     use awase_keymap_learn::remeasure::{
         reconcile_with_bundled, MismatchedTarget, RemeasureParams,
     };
+    use awase_keymap_learn::revalidation::StoredEnvVersion;
     use awase_keymap_learn::rng::Rng;
     use awase_keymap_learn::sample_models::atok_like;
     use awase_keymap_learn::strategy::{run, Req, Strategy};
@@ -215,8 +216,8 @@ mod app {
     }
 
     /// ADR-195段階3〜4への結合(B1対応): 表を永続化フォーマットへ変換し、一時ファイル+
-    /// renameで原子的に書き込む。指紋(ADR-195段階8)は、その計算方式自体がADR-196決定3で
-    /// 再設計中のため、ここでは`None`のまま残す(ADR196-T5が実配線する)。
+    /// renameで原子的に書き込む。キーマップ設定の指紋(ADR-195段階8)は`None`のまま残し、
+    /// IME本体の版(`env_version`、ADR-196決定3b)だけを書く。
     ///
     /// C-4/C-9対応: `judgement`が`Accepted`なら本体(`keymap-learn-table.json`)へ、
     /// それ以外は[`last_attempt_file_path`]へ書く。
@@ -226,9 +227,11 @@ mod app {
         cells: Vec<PersistedCell>,
         verification: ScoredVerification,
         judgement: TableJudgement,
+        env_version: Option<StoredEnvVersion>,
     ) -> (usize, Result<(), String>) {
         let cell_count = cells.len();
         let persisted = PersistedTable::new(cells)
+            .with_env_version(env_version)
             .with_verification(verification)
             .with_judgement(judgement);
         // C-9: `Accepted`以外は本体を上書きせず退避ファイルへ書く。
@@ -597,7 +600,24 @@ mod app {
         }
     }
 
+    /// 版取得(Toolhelp・`GetFileVersionInfoW`)がブロックした場合に学習の記録を止めない上限。
+    const ENV_VERSION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+    /// 学習時点のIME本体の版(ADR-196決定3b)。GJIのときだけConverterのファイル版を取る
+    /// (Microsoft IME側の4値はADR-197待ちで未実装のため`None`)。
+    fn probe_env_version(tip: TipIdentity, process_start: SystemTime) -> Option<StoredEnvVersion> {
+        if tip != TipIdentity::Gji {
+            return None;
+        }
+        StoredEnvVersion::from_probe(awase_keymap_learn_win::probe_gji_env_version_with_timeout(
+            process_start,
+            ENV_VERSION_PROBE_TIMEOUT,
+        ))
+    }
+
+    #[allow(clippy::too_many_lines)] // 学習の各段階を直列に並べる入口で、段階ごとの分割はしない
     fn run_main() {
+        let process_start = SystemTime::now();
         let strategy = if std::env::args().any(|arg| arg == "--strategy=s0") {
             Strategy::S0
         } else {
@@ -709,11 +729,15 @@ mod app {
         );
 
         let judgement = judge_score(&score, tip_at_start, reconciliation.as_ref());
-        let verification = ScoredVerification {
-            score,
-            seed: walk_seed,
-        };
-        let (cell_count, write_result) = persist_judged_table(cells, verification, judgement);
+        let (cell_count, write_result) = persist_judged_table(
+            cells,
+            ScoredVerification {
+                score,
+                seed: walk_seed,
+            },
+            judgement,
+            probe_env_version(tip_at_start, process_start),
+        );
         print_result_line(ResultLineArgs {
             strategy,
             training_elapsed_ms,

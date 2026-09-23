@@ -105,7 +105,11 @@ T8のコミット(`3613707e`/`f5d53047`)はT9(#258)経由で既にdevelopの祖�
 `awase-keymap-learn-win/src/env_version.rs`(`file_version`共有関数・自セッションに絞った
 Converterパス探索・`probe_gji_env_version[_with_timeout]`)と、純粋な
 `revalidation::classify_converter_version`(不明/未確定/既知の分類、ユニットテスト済み)。
-未着手: Microsoft IME側の4値(ADR-197待ち)、学習プロセスへの指紋書き込み配線、軽量再検証モード。
+指紋書き込み配線も実装済み: `PersistedTable.env_version: Option<StoredEnvVersion>`(追加のみ、
+スキーマ版は上げず`#[serde(default)]`で旧ファイルも読める)を新設し、学習プロセス
+(`awase-keymap-learn-win/src/main.rs::probe_env_version`)がGJIのときだけ学習終了時に
+Converter版を取得して書く(3秒タイムアウトで超過時は書かない)。
+未着手: Microsoft IME側の4値(ADR-197待ち)、awase-settingsでの現在版との比較表示、軽量再検証モード。
 
 - **GJI**: Converter本体（`GJI_PROCESS_PREFIXES`、`tsf/gji_monitor.rs:25-39`。
   `find_gji_pid`は全セッションから最初の一致を返すため、可能なら`ProcessIdToSessionId`で

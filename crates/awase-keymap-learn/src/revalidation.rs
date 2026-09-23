@@ -60,6 +60,19 @@ pub enum EnvVersionProbe {
     Known(EnvVersion),
 }
 
+impl StoredEnvVersion {
+    /// 学習時に取得した[`EnvVersionProbe`]を永続化用の値へ変換する。`Unknown`は
+    /// 「記録しない」(`None`、フィールド自体を省略)。
+    #[must_use]
+    pub const fn from_probe(probe: EnvVersionProbe) -> Option<Self> {
+        match probe {
+            EnvVersionProbe::Unknown => None,
+            EnvVersionProbe::Unconfirmed => Some(Self::Unconfirmed),
+            EnvVersionProbe::Known(v) => Some(Self::Known(v)),
+        }
+    }
+}
+
 impl From<Option<StoredEnvVersion>> for EnvVersionProbe {
     fn from(stored: Option<StoredEnvVersion>) -> Self {
         match stored {
@@ -212,6 +225,20 @@ mod tests {
             EnvVersionProbe::from(Some(StoredEnvVersion::Unconfirmed)),
             EnvVersionProbe::Unconfirmed
         );
+    }
+
+    #[test]
+    fn from_probe_round_trips_through_stored() {
+        for probe in [
+            EnvVersionProbe::Unknown,
+            EnvVersionProbe::Unconfirmed,
+            EnvVersionProbe::Known(V1),
+        ] {
+            assert_eq!(
+                EnvVersionProbe::from(StoredEnvVersion::from_probe(probe)),
+                probe
+            );
+        }
     }
 
     #[test]
