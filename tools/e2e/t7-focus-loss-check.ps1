@@ -1,5 +1,4 @@
-# ADR195-T7 実機確認手順(round3 R1): 学習中に別アプリへフォーカスが移り戻らない場合、
-# 学習プロセスが status=failure reason=interference で終了し、フォアグラウンドを奪い返さない。
+# ADR195-T7 real-machine check (round3 R1): focus loss mid-learning must abort with reason=interference.
 param(
     [string]$Exe = "target\debug\awase-keymap-learn-win.exe",
     [int]$WarmupSec = 8,
