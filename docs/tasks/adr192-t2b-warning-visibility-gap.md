@@ -1,7 +1,11 @@
 # ADR-192 T2b: 状態依存キー警告のユーザー可視化ギャップを埋める
 
 状態: 完了（2026-09-23起票・実装完了、opus-adversarial-consultで決定2bを収束させた上で
-実装、PR #254でdevelopマージ済み）
+実装、PR #254でdevelopマージ済み）。**採った設計はADR-192決定2b参照**——下記「やること」の
+選択肢(a)/(b)/(c)のいずれでもなく、`WarningKind`ごとに表示面を分け、argv経由でawase.exe→
+awase-settingsへ渡す方式（判定のSSOTは`detect()`の`WarningKind::ThumbConflict`、
+`check_and_warn`側にGJI用の判定は新設しない）に落ち着いた。以下の「やること」節は設計検討
+時の記録として残す。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
 ## 背景

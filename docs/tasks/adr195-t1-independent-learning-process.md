@@ -1,5 +1,22 @@
 # ADR-195 T1: 独立プロセスでの学習ラウンド（段階1）を実装する
 
+**【ADR-196で一部拡張、2026-09-23追記・Blocker】opus-adversarial-consultのdocs/tasks横断レビュー
+（B2）で、`origin/feat/adr195-t3-persistence`の`crates/awase-keymap-learn-win/src/driver.rs`
+（PR #250〜#256の共通土台）が[ADR-196](../adr/196-keymap-learn-truth-priority.md)決定1bの
+必須要件に反していることが判明した。**
+- `driver.rs:359`の`SendInput`が`dwExtraInfo: 0`のまま——決定1b項目1（`196-...md:105`）は
+  「学習プロセスは自分の`SendInput`に専用の目印を付ける」ことを要求する。目印が無いと、
+  [ADR196-T1](adr196-t1-external-write-observation.md)が実装する分類規則（自分の目印が無い
+  注入はすべて外部とみなす）の下で、学習プロセス自身の注入が全て「外部からの書き込み」に
+  誤分類され、セッションが即座に失敗し続ける。
+- `driver.rs:391`の`thread::sleep(...)`——決定1b項目4（`196-...md:112`）は「`sleep`等で
+  メッセージを回さずに待つ実装にすると、フックが黙って外れる」ことを名指しで禁じている。
+
+**実装対象2（`ImeDriver`の6メソッド）に、この2点を追加すること。** [ADR196-T1](adr196-t1-external-write-observation.md)
+は「本タスク（ADR195-T1）完了後に着手」としているが、フック・分類器そのものはADR196-T1が持つ。
+本タスク側が持つのは「注入に専用の目印を付けること」「待ちをメッセージポンピングにすること」の
+2点で、ADR196-T1側の分類規則が正しく機能するための前提条件である。
+
 状態: 未着手（2026-09-23起票）。[ADR195前提タスク](adr195-t-rebase-calibration-branch.md)
 （`feat/awase-calibration`のrebase）完了後に着手。ADR-192とは無関係に着手可。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
@@ -23,6 +40,12 @@
    トレイトに含めない。経過時間は`elapsed_ms()`だけが答える契約にし、`Executor`内の
    積算（`self.elapsed +=`）を撤去する。`Executor::new`は`ImeDriver::read_status()`
    から初期状態を取るようシグネチャを変える。
+   **【ADR-196で追加、2026-09-23】** (a) `SendInput`呼び出しは専用の目印（`dwExtraInfo`）を
+   自分の注入に付けること（`tsf/output.rs`の`INJECTED_MARKER`等とは別に、学習プロセス
+   専用の値を1つ定義する）。(b) 押下・待ち・観測の実装は`thread::sleep`でブロックせず、
+   `MsgWaitForMultipleObjectsEx`等でメッセージを回しながら待つこと（`WH_KEYBOARD_LL`
+   フックとTSF compartment通知の双方が、フックを登録したスレッドのメッセージループに
+   依存するため）。
 3. **A'の確保（`is_app_disabled()`へのコード内定数OR追加）**: `is_keymap_learn_process_name`
    判定関数を新設し、`focus/tracker.rs::is_app_disabled()`に
    `|| is_keymap_learn_process_name(&self.current.process_name)`を1行OR追加する

@@ -1,6 +1,9 @@
 # ADR-196 T3: 内蔵表への版情報埋め込みとCI週次差分検出を実装する
 
-状態: 未着手（2026-09-23起票）。他ADR-196タスクと独立に着手可能（CI側の変更が中心）。
+状態: 未着手（2026-09-23起票）。**【S4対応】GJIの版取得共有関数（`VS_FIXEDFILEINFO`）は
+[ADR196-T5](adr196-t5-revalidation-not-invalidation.md)が所有・実装する。本タスクは
+その関数の完成（T5のGJI部分）を待ってから着手する**（Microsoft IME本体側の実装完了は
+待たなくてよい）。CI週次差分検出（実装対象2）自体はT5と独立。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
 ## 背景
@@ -14,9 +17,11 @@
 1. **生成スクリプトの拡張**: `tools/e2e/ime_key_matrix/gen_key_effect_table.py`が、
    格子学習の実行時にGJIのファイル版・OSビルド・キーボード配列を取得し、
    `key_effect_table.rs`の生成ヘッダ（`const`）へ埋め込む。GJIのファイル版取得は
-   [ADR196-T5](adr196-t5-revalidation-not-invalidation.md)が実装する`VS_FIXEDFILEINFO`
-   共有関数を流用する（Python側は同等のWin32 API呼び出し、またはRust側の小さなCLIを
-   経由）。
+   [ADR196-T5](adr196-t5-revalidation-not-invalidation.md)が**所有・実装する**
+   `VS_FIXEDFILEINFO`共有関数を**利用するだけ**（本タスクでは再実装しない）。Pythonから
+   直接Win32 APIを叩いて同等ロジックを再実装する場合は、Rust版と出力（4つの16ビット
+   数値）が一致することをテストで固定すること（表記揺れを避けるのがADR-196の目的の
+   一部なので、二重実装で再びずれを持ち込まない）。
 2. **CI週次差分検出**: `.github/workflows/e2e-ime.yml`の格子ジョブを定期実行
    （例: 週次cron）し、再生成した表とコミット済み`key_effect_table.rs`を比較する。
    **比較対象は両方で決定的なセルの値だけに限る**（MSIMEプリセットは各セル2試行・
