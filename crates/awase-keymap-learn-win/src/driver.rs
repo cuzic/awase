@@ -9,9 +9,13 @@ use awase::config::AppConfig;
 use awase::paths::resolve_relative_to_exe;
 use awase_keymap_learn::anomaly::ResetLevel;
 use awase_keymap_learn::exec::ImeDriver;
+use awase_keymap_learn::external_write::{is_measurement_suspicious, SessionMonitor};
 use awase_keymap_learn::model::{Disposition, Outcome, Status};
 use awase_keymap_learn::sim::PressReport;
 use awase_windows::state::key_effect_predictor::Conv;
+
+use crate::hook_monitor::{HookMonitor, SELF_MARKER};
+use crate::ime_notify::ImeNotifyMonitor;
 use windows::core::{w, Interface, Result as WinResult};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Com::{
@@ -43,6 +47,18 @@ const QUIET_MS: u64 = 40;
 const SETTLE_TIMEOUT_MS: u64 = 150;
 const FOCUS_DEBOUNCE_FALLBACK_MS: u64 = 100;
 const FOCUS_MARGIN_MS: u64 = 25;
+/// ADR-196決定1b項目3: フォーカス移行・デバウンス待ち直後に、注入を一切しない
+/// 期間を置き、その間に外部からの書き込みが観測されないことをセッション開始
+/// 条件にする（quiet window）。暫定値——`.claude/rules/tuning-constants.md`の
+/// 実測義務に従い、実機プロトタイプでの計測後に更新すること。
+const QUIET_WINDOW_MS: u64 = 200;
+/// ADR-196決定1b項目5: セッション中に外部からの書き込みで試行が無効化された
+/// 回数の上限。超えたらセッション全体を失敗として終了する。暫定値、実測で
+/// 更新する。
+const SESSION_INVALIDATION_LIMIT: u32 = 3;
+/// 自分の注入によって`WM_IME_NOTIFY`が届くと期待してよい猶予（`settle()`の
+/// `SETTLE_TIMEOUT_MS`と揃える）。
+const NOTIFY_EXPECT_WINDOW_MS: u64 = SETTLE_TIMEOUT_MS;
 
 extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
@@ -69,6 +85,16 @@ pub struct RealImeDriver {
     /// この駆動部だけでは異常として`Executor`に伝える経路が無い。せめて可視化する
     /// ——レビュー指摘対応)。`&self`のメソッドから増分するため`Cell`。
     decode_errors: Cell<u32>,
+    /// ADR-196決定1b: 学習窓への「自分以外からの書き込み」を直接観測する基盤。
+    hook_monitor: HookMonitor,
+    notify_monitor: ImeNotifyMonitor,
+    /// 決定1b項目5（セッション中の監視）: 外部からの書き込みで試行が無効化
+    /// された回数を数え、上限超過でセッション全体を失敗にする。`&self`の
+    /// メソッドから更新するため`Cell`。
+    session_monitor: Cell<SessionMonitor>,
+    /// 直近に観測した「外部からの書き込み」の累計件数のスナップショット
+    /// （測定と測定の間で差分を取るための基準点）。
+    external_baseline: Cell<u32>,
 }
 
 impl RealImeDriver {
@@ -85,9 +111,17 @@ impl RealImeDriver {
             let _ = ShowWindow(window, SW_SHOW);
         }
 
-        pump_for(Duration::from_millis(focus_debounce_wait_ms()));
+        // ADR-196決定1b: 学習窓への外部からの書き込みを直接観測する基盤を、
+        // フォーカス移行より前に立ち上げる（以降の待ちすべてを観測できるように）。
+        let hook_monitor = HookMonitor::install()?;
+        let notify_monitor = ImeNotifyMonitor::new();
+
+        pump_for(
+            Duration::from_millis(focus_debounce_wait_ms()),
+            &notify_monitor,
+        );
         unsafe { SetWindowTextW(edit, w!(""))? };
-        pump_for(Duration::from_millis(QUIET_MS));
+        pump_for(Duration::from_millis(QUIET_MS), &notify_monitor);
 
         let mut driver = Self {
             started: Instant::now(),
@@ -102,9 +136,91 @@ impl RealImeDriver {
                 composing: false,
             },
             decode_errors: Cell::new(0),
+            hook_monitor,
+            notify_monitor,
+            session_monitor: Cell::new(SessionMonitor::new(SESSION_INVALIDATION_LIMIT)),
+            external_baseline: Cell::new(0),
         };
+
+        // 決定1b項目3: 静かな観測窓（quiet window）——ここまでの待ちの後、
+        // 注入を一切しない期間T msを置き、その間に外部からの書き込みが
+        // 観測されないことをセッション開始条件にする。ここで失敗すれば
+        // `driver`はこのままスコープを抜けてDropされ、窓・TSF・フックが
+        // 片付く。
+        let external_before = driver.external_total();
+        driver.pump(Duration::from_millis(QUIET_WINDOW_MS));
+        if driver.external_total() != external_before {
+            return Err(windows::core::Error::new(
+                windows::core::HRESULT(0x8000_4004u32.cast_signed()),
+                "quiet window中に外部からの書き込みを検出した(A'が崩れている疑い)",
+            ));
+        }
+
         driver.initial = driver.observe_imm()?.status;
+        driver.external_baseline.set(driver.external_total());
         Ok(driver)
+    }
+
+    /// メッセージを回しながら待つ（`self.notify_monitor`に観測させる）。
+    fn pump(&self, duration: Duration) {
+        pump_for(duration, &self.notify_monitor);
+    }
+
+    /// 現在の「外部からの書き込み」累計件数（フック経由＋IME通知経由）。
+    fn external_total(&self) -> u32 {
+        self.hook_monitor.external_event_count() + self.notify_monitor.external_count()
+    }
+
+    /// 決定1b項目5（セッション中の監視）: 前回チェック以降に外部からの
+    /// 書き込みが観測されていたら、直前の試行を無効化としてセッション監視へ
+    /// 記録する。セッション全体を失敗にすべきなら`true`を返す。
+    fn check_session_interference(&self) -> bool {
+        let current = self.external_total();
+        let baseline = self.external_baseline.replace(current);
+        if current == baseline {
+            return false;
+        }
+        let mut monitor = self.session_monitor.get();
+        let fail = monitor.record_invalidated_trial();
+        self.session_monitor.set(monitor);
+        fail
+    }
+
+    /// 決定1b項目4・項目2（生存確認）: フックとIME通知経路の両方が生きているか。
+    /// `status_changed`は直近の自己注入で実際に開閉・変換モードが変わったかを
+    /// 渡す（変わっていなければ通知が無くても判定できない）。
+    #[must_use]
+    pub fn observation_alive(&self, status_changed: bool) -> bool {
+        self.hook_monitor.liveness().is_alive()
+            && self
+                .notify_monitor
+                .is_alive_given_status_changed(status_changed)
+    }
+
+    /// 決定1b項目6（残余リスクの緩和）: 直近の自己注入1件に対して、
+    /// 開閉・変換モードの通知が2回以上届いていたら、その試行を無効とみなす
+    /// べきかを返す（向きの逆転の判定は未実装——`WM_IME_NOTIFY`はメッセージの
+    /// 種別しか運ばないため、件数のみで判定する）。
+    #[must_use]
+    pub fn measurement_suspicious(&self) -> bool {
+        is_measurement_suspicious(self.notify_monitor.notify_count_since_mark(), false)
+    }
+
+    /// これまでにセッション監視が記録した無効化件数。呼び出し側が上限超過を
+    /// 検知したらセッションを失敗として終了し、表を書き出さない。
+    #[must_use]
+    pub fn session_invalidated_trials(&self) -> u32 {
+        self.session_monitor.get().invalidated_trials()
+    }
+
+    /// フック・IME通知の生存確認用に、この後の自己注入で状態が変わったら
+    /// 通知が届くはずだと申告する。
+    fn mark_self_injection(&mut self, count: u32) {
+        for _ in 0..count {
+            self.hook_monitor.mark_self_injection_sent();
+        }
+        self.notify_monitor
+            .mark_expected_notify(Duration::from_millis(NOTIFY_EXPECT_WINDOW_MS));
     }
 
     pub const fn initial_status(&self) -> Status {
@@ -179,7 +295,10 @@ impl RealImeDriver {
         })
     }
 
-    fn inject(&self, key: usize) -> bool {
+    /// キーを1件注入する。決定1b項目1・4: 送信直前に自分の注入として記録する
+    /// （フック生存確認・IME通知の期待猶予の起点）。
+    fn inject(&mut self, key: usize) -> bool {
+        self.mark_self_injection(1);
         self.keys.get(key).is_some_and(|vk| send_key_press(*vk))
     }
 
@@ -191,7 +310,7 @@ impl RealImeDriver {
         });
         let mut quiet_since = Instant::now();
         while Instant::now() < deadline {
-            pump_for(Duration::from_millis(5));
+            self.pump(Duration::from_millis(5));
             if let Ok(now) = self.observe_imm() {
                 if now.status != last.status || now.text != last.text {
                     last = now;
@@ -206,7 +325,7 @@ impl RealImeDriver {
 
     fn clear_edit(&self) {
         let _ = unsafe { SetWindowTextW(self.edit, w!("")) };
-        pump_for(Duration::from_millis(QUIET_MS));
+        self.pump(Duration::from_millis(QUIET_MS));
     }
 }
 
@@ -229,6 +348,11 @@ impl ImeDriver for RealImeDriver {
         let after = self.settle();
         let disp = disposition(&before, &after);
         let seen_b = self.observe_tsf().unwrap_or(after.status);
+        // 決定1b項目5（セッション中の監視）: この測定の間に外部からの書き込みが
+        // 観測されていたら記録する。呼び出し側（`main.rs`/将来の`Executor`
+        // 統合、ADR196-T2）は`session_invalidated_trials()`を見て、上限超過なら
+        // セッションを失敗として終了すること。
+        let _session_should_fail = self.check_session_interference();
         PressReport {
             delivered,
             cost_ms: 0.0,
@@ -242,7 +366,7 @@ impl ImeDriver for RealImeDriver {
 
     fn press_setup(&mut self, key: usize) {
         let _ = self.inject(key);
-        pump_for(Duration::from_millis(SETUP_GAP_MS));
+        self.pump(Duration::from_millis(SETUP_GAP_MS));
     }
 
     fn read_primary(&mut self) -> Status {
@@ -270,8 +394,9 @@ impl ImeDriver for RealImeDriver {
         }
         if level >= ResetLevel::Mode {
             for vk in [0x16, 0xF2] {
+                self.mark_self_injection(1);
                 let _ = send_key_press(vk);
-                pump_for(Duration::from_millis(SETUP_GAP_MS));
+                self.pump(Duration::from_millis(SETUP_GAP_MS));
             }
         }
         if level == ResetLevel::Hard {
@@ -356,7 +481,10 @@ fn send_key_press(vk: u32) -> bool {
                     KEYBD_EVENT_FLAGS(0)
                 },
                 time: 0,
-                dwExtraInfo: 0,
+                // ADR-196決定1b項目1: 自分の注入だとADR196-T1の分類器が判定
+                // できるよう、専用の目印を付ける（`0`のままだと「目印の無い
+                // 注入」＝外部からの書き込みとして誤分類される）。
+                dwExtraInfo: SELF_MARKER,
             },
         },
     };
@@ -378,12 +506,16 @@ fn focus_debounce_wait_ms() -> u64 {
     configured.unwrap_or(FOCUS_DEBOUNCE_FALLBACK_MS) + FOCUS_MARGIN_MS
 }
 
-fn pump_for(duration: Duration) {
+/// メッセージを回しながら待つ（ADR-196決定1b項目4: フックが黙って外れるのを
+/// 防ぐため、待ちの間もメッセージポンプを回し続ける）。`notify_monitor`に
+/// `WM_IME_NOTIFY`を観測させる（決定1b項目2）。
+fn pump_for(duration: Duration, notify_monitor: &ImeNotifyMonitor) {
     let deadline = Instant::now() + duration;
     while Instant::now() < deadline {
         unsafe {
             let mut msg = MSG::default();
             while PeekMessageW(&raw mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                notify_monitor.observe_message(&msg);
                 let _ = TranslateMessage(&raw const msg);
                 DispatchMessageW(&raw const msg);
             }
