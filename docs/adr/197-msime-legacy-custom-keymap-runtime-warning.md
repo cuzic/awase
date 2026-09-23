@@ -18,12 +18,21 @@ summary: |-
   `IsKeyAssignmentEnabled=0`で「既定」判定）・`StyleList\Custom\key`に無変換/変換=IMEオン/オフ
   トグルの残留設定ありを確認した——この状態でユーザーが旧UIから`keystyle`を`Custom`に切り替えても、
   新UI側のフィンガープリントは変化しないため、ADR-195/176は「既知構成のまま・再較正不要」と誤判定
-  し続ける。本ADRは`msime_legacy_keymap.rs`の検出結果を、(1)`check_and_warn`と対称な実行時警告、
-  (2)ADR-195/176のフィンガープリント・既知構成判定、の両方に配線する。`key_effect_predictor`への
-  直接統合（学習を省略する用途）は、module docが「ON→OFF方向・S1key〜SEkeyの重ね合わせ・修飾子付き
-  キーは未検証/未解読」と明記しているため本ADRの非目的とし、ADR-195側の将来課題として記録するに留める。
+  し続ける。本ADRは`msime_legacy_keymap.rs`の検出結果を`check_and_warn`と対称な実行時警告に配線する
+  （決定1〜3）。2026-09-23、[ADR-196](196-keymap-learn-truth-priority.md)（学習結果を内蔵表より
+  優先する方針）がopus-adversarial-consult 5ラウンドで収束しdevelopへマージされ、ADR-195段階4/6/8の
+  決定が置き換わった。ADR196-T5（陳腐化検出の置き換え）のタスク文書が本ADRの互換モードフラグ
+  調査結果を名指しで前提条件として要求しているため、決定4はフィンガープリント合成・既知構成判定を
+  自前で設計する当初案から、ADR196-T5が要求する読み取りプリミティブ（`NoTsf3Override2`）1つを
+  提供するだけの薄いインターフェースへ縮小した（フィンガープリント合成・既知構成しきい値・UI文言は
+  ADR-196決定1〜3・ADR196-T2/T4/T5が所有）。`key_effect_predictor`への直接統合（打鍵予測での学習
+  省略用途）は、module docが「ON→OFF方向・S1key〜SEkeyの重ね合わせ・修飾子付きキーは未検証/未解読」
+  と明記しているため本ADRの非目的のまま。
 status: |-
-  草案(2026-09-23起票)。opus-adversarial-consultによるレビュー未実施。
+  草案rev2(2026-09-23)。opus-adversarial-consult round1完了（Blocker2件・Must-fix5件・
+  Should-fix7件・Minor2件、`197-opus-review-round1.md`）——B1(警告対象の実機未確認)はCI実機
+  （GitHub Actions windows-latest、`ci/e2e-scenarios`）で裏取り中。round1の他の指摘（M1〜M5・
+  S1〜S7）は未反映。決定4/5はADR-196マージを受けて全面改訂（旧内容は撤回）。
 related_adr:
   - "ADR-148"
   - "ADR-092"
@@ -165,16 +174,10 @@ awaseは気づけない。これが本ADRの動機。
 - **新UI警告（`msime_key_assignment::check_and_warn`）との単一ダイアログへの統合はしない。**
   両者は別レジストリ・別UIの独立した設定であり、両方同時に検出されるケースは稀と見込まれる。
   実装コストの低い「別ダイアログのまま両方出す」を採用し、統合UIは将来の改善として保留する。
-- **ADR-195段階0「初期仮説表S」への統合（学習を一部省略する用途）はしない。** ADR-195本文の
-  「Microsoft IME本体には経路2に相当するものが無い。したがって初期仮説Sは常に空（全キー要学習）」
-  （195本文151行目）という前提は変更しない——`msime_legacy_keymap`の確認済み範囲を経路4として
-  追加し学習を省略する最適化は理論上可能だが、本ADRの主眼は「気づけない」の解消であり学習コストの
-  短縮ではない。ADR-195側の将来課題として「関連」節に記録するに留める。
-- **ADR-195/176のフィンガープリント統合（決定4）は、ADR-195/176自体の改訂を伴う。** 両ADRは
-  草案・多ラウンドレビュー中のドキュメントであり、本ADRが一方的に本文を書き換えることはしない
-  ——本ADRの決定4はADR-197視点でのインターフェース要件（awase-windows側の関数シグネチャ・
-  ハッシュ入力の変更）を定義し、ADR-195/176本文側の該当箇所（段階0経路3・段階6・T12）は、実装時
-  または次のレビューラウンドで両ADRの整合を取る形で更新する。
+- **学習の初期仮説・既知構成判定・フィンガープリント合成・段階UI文言の設計はしない。**
+  2026-09-23のADR-196マージにより、これらはすべて[ADR-196](196-keymap-learn-truth-priority.md)
+  決定1〜3・[ADR196-T1〜T5](../tasks/)が所有する（詳細は決定4参照）。本ADRが提供するのは
+  ADR196-T5が名指しで要求する1つの読み取りプリミティブ（互換モードフラグ）のみ。
 
 ## 決定
 
@@ -223,45 +226,49 @@ if detected && matches!(kind, crate::tsf::observer::ActiveImeKind::MicrosoftIme)
 呼ぶ（結果をキャッシュしない、新UI側の`check_and_warn`も同様に毎回レジストリを読み直す
 設計のため対称性を保つ）。
 
-### 決定4: ADR-176 T12の較正フィンガープリントに`keystyle`/`StyleList`を含める
+### 決定4（2026-09-23 ADR-196マージを受けて全面改訂）: 互換モードフラグの読み取り関数だけを提供し、フィンガープリント合成・既知構成判定はADR-196に委譲する
 
-`crates/awase-windows/src/msime_key_assignment.rs:278-289`の
-`current_registry_fingerprint_hash(vk: VkCode) -> u64`は現在、`IsKeyAssignmentEnabled`/
-`KeyAssignmentMuhenkan`/`KeyAssignmentHenkan`（新UI）のみをハッシュに含む。この関数の
-戻り値は`gji_charset_autodetect.rs:371-372`経由で`ConfigFingerprint::MsIme { registry_
-value_hash }`に格納され、ADR-195段階8（陳腐化検出）が「要再検証」を判定する唯一の入力になる。
+起票当初の決定4/5は、`msime_legacy_keymap.rs`にADR-195段階8のフィンガープリント合成・
+段階6の既知構成判定を直接実装する案だった。**2026-09-23、[ADR-196](196-keymap-learn-truth-priority.md)
+（学習結果を内蔵表より優先する方針）がopus-adversarial-consult 5ラウンド（Blocker/Must-fix
+0件）で収束しdevelopへマージされ、ADR-195段階4/6/8の決定そのものが置き換わった**
+（別セッションからの通知、`docs/tasks/adr196-t1〜t5-*.md`）。このうち
+[ADR196-T5](../tasks/adr196-t5-revalidation-not-invalidation.md)（旧段階8＝陳腐化検出を
+「失効」から「要再検証」へ）のフロントマターが、本ADRを名指しで前提条件として参照している:
 
-**変更**: `msime_legacy_keymap.rs`に`legacy_registry_fingerprint_hash() -> u64`を新設し、
-`keystyle`の文字列値と、対応する`StyleList\<keystyle>\key`の生バイト列（存在すれば）を
-ハッシュに含める（値が無い場合も「無い」という事実自体を安定した値としてハッシュに含める
-——`msime_legacy_keymap.rs`の既存関数群と同じ`Result<Option<..>, String>`の区別を踏襲する
-か、フィンガープリント用途では簡略化するかは実装時に確定する）。呼び出し元
-（`gji_charset_autodetect.rs:371-372`）で新UI側のハッシュと合成する（例:
-`registry_value_hash: current_registry_fingerprint_hash(vk) ^ legacy_registry_
-fingerprint_hash()`、あるいは`ConfigFingerprint::MsIme`にフィールドを1つ追加する——
-具体的な合成方法はADR-195/176側との調整を要するため実装時に確定する）。
+> **Microsoft IMEレガシー互換モードフラグのレジストリ位置**:
+> `msime_legacy_keymap.rs`は`keystyle`とStyleListしか読んでおらず、「以前のバージョンの
+> Microsoft IMEを使う」設定そのものを読むコードは存在しない。実機でのレジストリdiffで
+> 確定するまで、Microsoft IME本体のフィンガープリント・既知構成判定は実装できない。
 
-この変更により、`keystyle`の切り替え・`StyleList`の内容変更のいずれも段階8の「要再検証」
-判定を発火させるようになる。**この決定はADR-176/195本文の該当箇所の改訂を要する**
-（上記「非目的」参照、両ADR側での取り込みが前提）。
+本ADRの背景節が確定した事実（`HKCU\SOFTWARE\Microsoft\Input\TSF\Tsf3Override\{03b5835f-
+f03c-411b-9ce2-aa23e1171e36}\NoTsf3Override2`、dragonflyg4実機で`1`＝互換モードON）は、
+まさにこの前提条件そのものである。したがって決定4は以下に縮小する:
 
-### 決定5: ADR-195段階0/段階6の「既知構成一致」判定に`keystyle`の一致条件を追加する
+1. **`msime_legacy_keymap.rs`に、この値を読む関数（例: `read_legacy_compat_mode_enabled()
+   -> Option<bool>`、`NoTsf3Override2 == Some(1)`ならON）を新設する**。読み取り専用、
+   既存の`read_raw_value`ヘルパーと同じ`ERROR_FILE_NOT_FOUND`区別のパターンを踏襲する。
+2. **フィンガープリントの合成方法・既知構成判定のしきい値・UI文言は本ADRでは定めない
+   ——[ADR196-T5](../tasks/adr196-t5-revalidation-not-invalidation.md)決定3b
+   （Microsoft IME本体のフィンガープリント＝OSビルド番号＋本項の互換モードフラグ＋
+   `keystyle`＋`msime_key_assignment.rs`の再割当て検出の4値）と
+   [ADR196-T2](../tasks/adr196-t2-mismatch-adjudication.md)決定1c（既知構成＝`keystyle`が
+   既定値・新UI再割当てなし・レガシー互換モード無効の3条件、**本項が未実装のうちは既知構成と
+   判定しない**というfail-safeを含む）が既に所有する。** 本ADRの決定1〜3（実行時警告）とは
+   独立した別の合流点であり、ここで競合する設計を追加しない。
+3. `StyleList\<keystyle>\key`の生バイト列そのもの（無変換/変換以外の内容を含む）を
+   フィンガープリントに含めるかどうかもADR196-T5側の設計判断とする——本ADRが確認した
+   `LegacyKeyStyle`（`msime_legacy_keymap.rs`の`keystyle`分類、6値+Other）はADR196-T5の
+   4値フィンガープリントの「`keystyle`」項目としてそのまま使える形になっている。
 
-ADR-195段階6（195本文412-419行目）「検出したキーマップ構成が同梱の3種（ATOK/GJI+MS-IME
-プリセット/Microsoft IME本体、いずれもカスタム設定なし）と一致する場合、学習を積極的に
-案内しない」の判定条件に、**Microsoft IME本体については「`keystyle`がCI基準プリセット
-（`NATURAL`、内蔵表`MSIME_NATIVE`が測定された設定）と一致すること」をANDで追加する**。
+### 決定5（旧決定5は撤回）
 
-この判定は`msime_legacy_keymap.rs`が確認済みの「無変換/変換キーのIMEオン/オフトグル」という
-狭い検出（決定1が使う範囲）より**粗いが広い**——`StyleList`の個々のコードの意味を解読できて
-いなくても、「`keystyle`文字列がCIの基準と違う」という事実だけで「CIが測った内蔵表とは異なる
-設定である」ことが機械的に確定できる。`keystyle`がNATURAL以外（Custom/ATOK/MS-IME2000/
-VJE/WX）であれば、無変換/変換キーに実際に何が割り当てられているかに関わらず「既知構成では
-ない」側に倒し、学習（段階6の案内）を積極的に案内する。
-
-**判定不能時（レジストリ読み取り失敗等）の扱い**: 決定1と同じ思想（false negativeを避ける）
-に倣い、「既知構成である」と確定できない場合は「既知構成ではない」側に倒す（学習を案内する側、
-安全側）。
+起票当初の決定5（ADR-195段階6「既知構成なら学習を積極的に案内しない」への`keystyle`条件
+追加）は、**前提としていたUI方針自体がADR-196決定2で撤回された**（「構成に関わらず学習を
+同じ導線で案内する」、`docs/tasks/adr196-t4-ui-status-and-adoption.md`実装対象1）ため、
+そのまま撤回する。既知構成の判定は決定4の2で述べたとおりADR196-T2/T4が所有し、
+「既知構成でも学習ボタンを隠す」という用途にはもう使われない（採否判定・状態表示文言の
+選択にのみ使われる）。
 
 ## 成功基準
 
@@ -272,17 +279,13 @@ VJE/WX）であれば、無変換/変換キーに実際に何が割り当てら�
    こと**を確認する。
 3. 新UI側（`IsKeyAssignmentEnabled`等）を意図的に有効化した状態と同時発生させ、両方の警告が
    独立に（順不同で構わない）出ることを確認する。
-4. `keystyle=NATURAL`のまま較正済み状態にした後、`keystyle`を`Custom`へ切り替えてawaseを
-   再起動し、ADR-195段階8（要再検証判定、決定4）が「要再検証」を検出すること、かつ
-   `keystyle=NATURAL`のまま無変換/変換以外の値（無関係なレジストリの再読み取りタイミング差等）
-   を変えずに再起動した場合には誤検知しないことを確認する。
-5. `keystyle=ATOK`（無変換/変換とも既定でIMEオン/オフトグルではない値）に切り替えた状態で、
-   決定5の「既知構成一致」判定が**NATURAL以外というだけで**「既知構成ではない」（学習を案内
-   する側）と判定すること——決定1の警告（トグル検出）は発火しない一方で決定5は発火するという
-   非対称な組み合わせが意図どおり両立することを確認する。
-6. `cargo test --lib` / `cargo nextest run -p awase-windows --test architecture_guard
+4. 決定4の`read_legacy_compat_mode_enabled()`が、互換モードON/OFF双方の実機（またはCI、
+   `NoTsf3Override2`をレジストリで直接切り替えたテスト）で正しい`Option<bool>`を返すこと。
+   ADR196-T5/T2側の採否は別ADR（ADR-196）の完了条件でカバーするため、本ADRでは関数単体の
+   正しさのみを確認する。
+5. `cargo test --lib` / `cargo nextest run -p awase-windows --test architecture_guard
    --test golden_scenarios --test layer_boundary_guard`が緑のままであること。
-7. `.claude/rules/fix-requires-evidence.md`の「IME belief」「キー選択」reincidence family
+6. `.claude/rules/fix-requires-evidence.md`の「IME belief」「キー選択」reincidence family
    に該当するため、`docs/known-bugs/`への記録は不要（新規バグ修正ではなく既存検出機構の
    実行時経路への拡張のため）だが、本ADR自体が設計記録を兼ねる。
 
@@ -296,13 +299,10 @@ VJE/WX）であれば、無変換/変換キーに実際に何が割り当てら�
   `keystyle=Custom`のまま無変換キー単独タップを試す）で確認することを推奨する。
 - ON→OFF方向（2〜6列目）の実効性は本ADRでも未確認のまま。決定1の警告文言はこれを明記して
   対応し、確認が取れ次第、文言と`key_effect_predictor`統合の要否を再検討する別ADRを起票する。
-- **決定4/5がADR-195/176本文の改訂を要する具体的な範囲**（段階0経路3の説明文、段階6の判定条件、
-  T12のフィンガープリント計算箇所）は未確定。両ADRが本ADRより先に実装される場合と後に実装される
-  場合とで、どちらが「捨てる前提の暫定実装」になるかが変わる（ADR-195段階0の「ADR-192との順序
-  リスク」記述〈195本文126-131行目〉と同型の問題）。実装順序を決める際に確認すること。
-- **ADR-195段階0「経路4」としての初期仮説統合**（非目的で保留）は、ON→OFF方向の実機確認が取れた
-  後にまとめて検討する候補として残す——GJIの経路2（`extract_mode_keys`が相対トグル系を「不明、
-  要学習」に留める設計）と同型の扱いにできる可能性がある。
+- **決定4の`read_legacy_compat_mode_enabled()`をADR196-T2/T5側が実際にどう消費するか**
+  （フィンガープリントの4値目としてそのまま使うのか、別の形に変換するのか）は、
+  [ADR196-T5](../tasks/adr196-t5-revalidation-not-invalidation.md)側の実装時に確定する
+  ——本ADRは関数シグネチャの提案までに留め、消費側の設計には立ち入らない。
 
 ## 関連
 
@@ -310,9 +310,12 @@ VJE/WX）であれば、無変換/変換キーに実際に何が割り当てら�
 Phase 2で実機確認したバイナリ形式・コード値・非対称な実効挙動）。`msime_key_assignment.rs`
 （新UI側の先行実装、`check_and_warn`/デデュープラッチのパターン一式）。ADR-164フェーズ2
 （グローバルstaticの構造体フィールド化パターン、本ADRの決定2が踏襲）。
-[ADR-195](195-keymap-learn-productization.md)（キーマップ学習の製品化、草案rev7。段階0経路3・
-段階6・段階8が本ADRの決定4/5の対象）。
+[ADR-195](195-keymap-learn-productization.md)（キーマップ学習の製品化、草案rev7。段階4/6/8は
+ADR-196により置き換え済み）。
 [ADR-176](176-behavioral-calibration-of-ime-mode-key-shadow-overrides.md) T12（較正
-フィンガープリント`current_registry_fingerprint_hash`、本ADRの決定4が拡張対象とする関数の出自）。
-[ADR-196](196-keymap-learn-truth-priority.md)（学習結果を内蔵表より優先する方針、草案。ADR-195の
-段階4/6/8を修正する別ドラフトのため、本ADRの決定4/5と合わせて整合を確認する必要がある）。
+フィンガープリント`current_registry_fingerprint_hash`、ADR196-T5が拡張対象とする関数の出自）。
+[ADR-196](196-keymap-learn-truth-priority.md)（学習結果を内蔵表より優先する方針、develop
+マージ済み2026-09-23。決定4が委譲する先。[ADR196-T2](../tasks/adr196-t2-mismatch-adjudication.md)
+〈既知構成判定〉・[ADR196-T4](../tasks/adr196-t4-ui-status-and-adoption.md)〈状態表示〉・
+[ADR196-T5](../tasks/adr196-t5-revalidation-not-invalidation.md)〈陳腐化検出、本ADRを前提
+条件として名指しで参照〉が決定4の直接の消費者）。
