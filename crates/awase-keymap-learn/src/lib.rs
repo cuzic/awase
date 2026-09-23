@@ -11,11 +11,14 @@
 //! `metrics`(指標) / `sample_models`(具体的なモデル例=合成ランダムモデルとATOK風モデル) /
 //! `verify`(段階2: 独立ランダムウォークでの自己検証、誤りに強い分類) /
 //! `persist`(学習結果の永続化フォーマット、ADR-195段階3) / `staleness`(学習済み表の陳腐化検出、
-//! ADR-195段階8) / `minimize`(段階5: 隠れ状態を最小のMealy機械として求めるpartition refinement)。
+//! ADR-195段階8) / `minimize`(段階5: 隠れ状態を最小のMealy機械として求めるpartition refinement) /
+//! `external_write`(学習窓への外部からの書き込みの直接観測、ADR-196決定1b) /
+//! `judgement`(学習結果の採否判定、ADR-196決定1a・1b項目7〜9・1e)。
 
 pub mod anomaly;
 pub mod cost;
 pub mod exec;
+pub mod external_write;
 pub mod graph;
 pub mod metrics;
 pub mod minimize;
