@@ -71,25 +71,45 @@ mod app {
     /// セルが1つでもあれば、学習をもう一度実行する(やり直しは1回まで——
     /// `RetryTracker`がセルごとに1回しか許さない。ここでは「もう一度巡回すべきか」の
     /// 判定にだけ使い、実際の再評価は最終的に`predict`で行う)。
+    ///
+    /// code-review指摘: `tour()`の再訪問条件は`table.count(status, key) < req.k`
+    /// なので、非決定と判定されたセルは(その判定自体がmin_minority以上の観測を
+    /// 前提とするため)既に元の`req.k`以上の観測数を持っている。同じ`req`のまま
+    /// もう一度`run()`しても`need`が0のまま素通りし、観測が一切増えずに空振りする。
+    /// 実際に観測を追加するため、非決定と判定されたセルの現在の観測数を上回るよう
+    /// `k`を底上げしたリクエストで再実行する。
     fn retry_nondeterministic_cells_once<D: ImeDriver>(
         exec: &mut Executor<D>,
         strategy: Strategy,
         prior: &Prior,
         cost: &CostModel,
         suspects: &[usize],
+        base_req: &Req,
         rng: &mut Rng,
     ) {
         let mut retry = RetryTracker::new();
-        let needs_retry = exec.table.cells().any(|(&(status, key), _)| {
-            matches!(
+        let mut max_flagged_count = 0usize;
+        for (&(status, key), obs) in exec.table.cells() {
+            if matches!(
                 decide_cell(&exec.table, status, key, DEFAULT_MIN_MINORITY, &mut retry),
                 CellDecision::RetryLearning
-            )
-        });
-        if needs_retry {
-            eprintln!("非決定的なセルがあるため、学習をもう一度実行します(やり直しは1回まで)。");
-            run(strategy, exec, prior, cost, suspects, &Req::default(), rng);
+            ) {
+                max_flagged_count = max_flagged_count.max(obs.len());
+            }
         }
+        if max_flagged_count == 0 {
+            return;
+        }
+        eprintln!("非決定的なセルがあるため、学習をもう一度実行します(やり直しは1回まで)。");
+        let bumped_k = u32::try_from(max_flagged_count)
+            .unwrap_or(u32::MAX)
+            .saturating_add(2)
+            .max(base_req.k);
+        let retry_req = Req {
+            k: bumped_k,
+            ..*base_req
+        };
+        run(strategy, exec, prior, cost, suspects, &retry_req, rng);
     }
 
     /// ADR-195段階2: 学習に使っていない独立のランダムウォークで一段予測を採点する。
@@ -190,13 +210,14 @@ mod app {
             let _ = std::io::stdout().flush();
         });
 
+        let req = Req::default();
         run(
             strategy,
             &mut executor,
             &prior,
             &cost,
             &model.history_suspects,
-            &Req::default(),
+            &req,
             &mut rng,
         );
         retry_nondeterministic_cells_once(
@@ -205,55 +226,94 @@ mod app {
             &prior,
             &cost,
             &model.history_suspects,
+            &req,
             &mut rng,
         );
+
+        // code-review指摘: 学習(+やり直し)の直後、独立ウォーク(段階2)を走らせる前に
+        // 統計をここで確定させる。ウォーク後に読むと、`stats.presses`/`elapsed_ms`
+        // (Executor::pressが記録の有無に関わらず無条件に更新するため)にウォーク分
+        // (固定300+リトライの可変分)が混入し、戦略比較(presses/elapsed_ms)の指標として
+        // 意味を持たなくなる。`decode_errors`も同様に、学習に無関係な検証ウォーク中の
+        // 一時的な観測失敗が「学習表に信頼できない観測が混じっている」という誤った
+        // 警告を生む(実際にはtable自体はウォーク中recording=falseで変化しない)。
+        let training_elapsed_ms = executor.elapsed_ms();
+        let training_presses = executor.stats.presses;
+        let decode_errors = executor.driver.decode_error_count();
+
         let score = run_verification_walk(&mut executor, &mut rng);
         let (cell_count, write_result) = persist_learned_table(&executor.table);
-
-        let decode_errors = executor.driver.decode_error_count();
-        // ADR-195段階6決定5(項目5): result行は書き込みに成功してから出す
-        // (失敗したのに"success"を名乗らない)。
-        match &write_result {
-            Ok(()) => {
-                println!(
-                    "result status={} strategy={} elapsed_ms={:.0} presses={} cells={} total={} \
-                     decode_errors={} persisted_cells={} verify_accuracy={:.3} verify_confidence={:.3}",
-                    if decode_errors == 0 {
-                        "success"
-                    } else {
-                        "success_with_warnings"
-                    },
-                    strategy.name(),
-                    executor.elapsed_ms(),
-                    executor.stats.presses,
-                    executor.table.covered1(),
-                    total_cells,
-                    decode_errors,
-                    cell_count,
-                    score.accuracy(),
-                    score.confidence(),
-                );
-            }
-            Err(reason) => {
-                eprintln!("学習表の書き込みに失敗しました: {reason}");
-                println!(
-                    "result status=failure strategy={} elapsed_ms={:.0} presses={} cells={} total={} decode_errors={}",
-                    strategy.name(),
-                    executor.elapsed_ms(),
-                    executor.stats.presses,
-                    executor.table.covered1(),
-                    total_cells,
-                    decode_errors
-                );
-            }
-        }
-        let _ = std::io::stdout().flush();
+        print_result_line(ResultLineArgs {
+            strategy,
+            training_elapsed_ms,
+            training_presses,
+            covered1: executor.table.covered1(),
+            total_cells,
+            decode_errors,
+            cell_count,
+            score,
+            write_result: &write_result,
+        });
         if decode_errors > 0 {
             eprintln!(
                 "警告: observe_imm失敗によるフォールバックが{decode_errors}回発生。学習表に信頼できない観測が混じっている可能性がある。"
             );
         }
         Ok(())
+    }
+
+    /// [`print_result_line`]の引数(clippyの`too_many_arguments`回避のため構造体にまとめる)。
+    #[derive(Clone, Copy)]
+    struct ResultLineArgs<'a> {
+        strategy: Strategy,
+        training_elapsed_ms: f64,
+        training_presses: u32,
+        covered1: usize,
+        total_cells: u32,
+        decode_errors: u32,
+        cell_count: usize,
+        score: awase_keymap_learn::verify::ScoreReport,
+        write_result: &'a Result<(), String>,
+    }
+
+    /// ADR-195段階6決定5(項目5): result行は書き込みに成功してから出す
+    /// (失敗したのに"success"を名乗らない)。
+    fn print_result_line(args: ResultLineArgs) {
+        match args.write_result {
+            Ok(()) => {
+                println!(
+                    "result status={} strategy={} elapsed_ms={:.0} presses={} cells={} total={} \
+                     decode_errors={} persisted_cells={} verify_accuracy={:.3} verify_confidence={:.3}",
+                    if args.decode_errors == 0 {
+                        "success"
+                    } else {
+                        "success_with_warnings"
+                    },
+                    args.strategy.name(),
+                    args.training_elapsed_ms,
+                    args.training_presses,
+                    args.covered1,
+                    args.total_cells,
+                    args.decode_errors,
+                    args.cell_count,
+                    args.score.accuracy(),
+                    args.score.confidence(),
+                );
+            }
+            Err(reason) => {
+                eprintln!("学習表の書き込みに失敗しました: {reason}");
+                println!(
+                    "result status=failure strategy={} elapsed_ms={:.0} presses={} cells={} total={} decode_errors={}",
+                    args.strategy.name(),
+                    args.training_elapsed_ms,
+                    args.training_presses,
+                    args.covered1,
+                    args.total_cells,
+                    args.decode_errors
+                );
+            }
+        }
+        let _ = std::io::stdout().flush();
     }
 
     #[cfg(test)]
@@ -305,10 +365,17 @@ mod app {
         #[test]
         fn build_persisted_cells_keeps_visited_nondeterministic_cells_with_none_prediction() {
             let mut table = Table::new();
-            // 同じ(status, key)に食い違う2件を記録(非決定、min_minority=2未満なので
-            // 誤りに強い分類でも決定できない)。
-            table.record(st(true, 0x09), 0, Some(1), out(false, 0));
+            // 同じ文脈(ctx)・同じ(status, key)に3対2で食い違う観測を記録する。
+            // 少数派2件はDEFAULT_MIN_MINORITY(2)に達するため、誤りに強い分類でも
+            // 本物の非決定として扱われる(verify.rs::
+            // classify_robust_declares_nondet_when_minority_reaches_thresholdと同じ形。
+            // 1対1のタイでは多数派の先着優先でDet扱いになってしまい、このテストの
+            // 意図〈訪問したが決定的でないセル〉を検証できない)。
             table.record(st(true, 0x09), 0, Some(1), out(true, 0x09));
+            table.record(st(true, 0x09), 0, Some(1), out(true, 0x09));
+            table.record(st(true, 0x09), 0, Some(1), out(true, 0x09));
+            table.record(st(true, 0x09), 0, Some(1), out(false, 0));
+            table.record(st(true, 0x09), 0, Some(1), out(false, 0));
             let cells = build_persisted_cells(&table);
             assert_eq!(cells.len(), 1, "訪問したセルは省略せず1件書くべき");
             assert_eq!(
