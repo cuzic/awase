@@ -64,7 +64,9 @@ pub enum LoadError {
     Parse(#[source] serde_json::Error),
     #[error("keymap-learn-table のスキーマ版が不一致(見つかった版={found}, 現行版={expected})")]
     SchemaVersionMismatch { found: u32, expected: u32 },
-    #[error("keymap-learn-table に(status, key)の重複エントリがある: status={status:?}, key={key:?}")]
+    #[error(
+        "keymap-learn-table に(status, key)の重複エントリがある: status={status:?}, key={key:?}"
+    )]
     DuplicateCell { status: Status, key: KeyId },
 }
 
@@ -154,7 +156,12 @@ mod tests {
         // 段階5がdevelop側の状態表現を変えると、段階5より前に永続化した表(古い版)が
         // 現行と食い違う。versionチェックが`!=`ではなく`<`のような片方向比較に
         // 誤って変更される回帰を防ぐため、新しい版だけでなく古い版も拒否することを固定する。
-        const { assert!(CURRENT_SCHEMA_VERSION >= 1, "test needs a version below current") };
+        const {
+            assert!(
+                CURRENT_SCHEMA_VERSION >= 1,
+                "test needs a version below current"
+            )
+        };
         let mut table = PersistedTable::new(vec![cell(true, 0, None)]);
         table.schema_version = CURRENT_SCHEMA_VERSION - 1;
         let json = table.to_json().expect("serialize");
@@ -179,10 +186,8 @@ mod tests {
     fn rejects_duplicate_status_key_cell() {
         // 同じ(status, key)に対して食い違う2つのPersistedCellが書き込まれた場合、
         // 「どちらが勝つか」を読み込み側の実装に依存する形で黙認しない(重複を拒否する)。
-        let table = PersistedTable::new(vec![
-            cell(true, 0, Some(false)),
-            cell(true, 0, Some(true)),
-        ]);
+        let table =
+            PersistedTable::new(vec![cell(true, 0, Some(false)), cell(true, 0, Some(true))]);
         let json = table.to_json().expect("serialize");
 
         let err = from_json(&json).expect_err("must reject duplicate (status, key) entries");
