@@ -209,20 +209,39 @@ impl<D: ImeDriver> Executor<D> {
     }
 
     /// S0用: 経路を打ち終えた後の待ちと検証(statusを読む)。
+    ///
+    /// `driver.settle_setup()`は単一チャネルの読み取りで、`read_status()`とは違い
+    /// `ReadPolicy`(Double系)の二重読み取り・`seen`集合の更新を経由しない。
+    /// 現状の呼び出し元は`strategy::s0`(常に`ReadPolicy::Single`)だけなので実害は
+    /// 無いが、将来Double系ポリシーの戦略がS0を再利用すると、二重読み取りが
+    /// 黙って行われなくなる(レビュー指摘)。その組み合わせを早期に検知する。
     pub fn settle_setup(&mut self) -> Status {
+        debug_assert_eq!(
+            self.read,
+            ReadPolicy::Single,
+            "settle_setup() は単一チャネル読み取りのみ対応(ReadPolicy::Double*と組み合わせない)"
+        );
         let status = self.driver.settle_setup();
         self.cur = Some(status);
         status
     }
 
     /// リセット(段階的に昇格しながら、初期のstatusに戻ったことを読んで確かめる)。
+    ///
+    /// `driver.reset(level)`のbool(実機では`settle()`込みの自己申告)だけでなく、
+    /// 毎回`self.read_status()`を無条件で呼ぶ(旧`(f64, bool)`版の不変条件を維持する
+    /// ためのレビュー指摘対応)。`ok`だけを見て読み取りを省略すると、`SimIme`側の
+    /// `ok`は観測に基づかない確率的な値なので、`stats.reads`/コストが
+    /// シナリオ(特に`reset_fail_prob`>0)ごとに黙って変わってしまう
+    /// (ADR-195が要求する「シミュレータ比較実験に影響しない」という不変条件に反する)。
     pub fn reset(&mut self) {
         let mut level = self.tracker.policy().first_reset;
         for _ in 0..6 {
             let ok = self.driver.reset(level);
             self.stats.resets += 1;
             self.last_key = None;
-            if ok && self.read_status() == self.initial {
+            let s = self.read_status();
+            if ok && s == self.initial {
                 break;
             }
             self.note_anomaly(Anomaly::ResetFailed);
