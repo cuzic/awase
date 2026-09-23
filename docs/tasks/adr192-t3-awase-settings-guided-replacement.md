@@ -1,6 +1,9 @@
 # ADR-192 T3: awase-settingsでの案内・1操作書き込み（決定3）を実装する
 
-状態: 未着手（2026-09-22起票、[ADR192-T2](adr192-t2-warning-detection-and-dispatch.md)完了後に着手）
+状態: 完了（2026-09-22起票・実装完了、PR #249でdevelopマージ済み、2026-09-23。ただし
+置き換えUIが検出結果と無関係に常時表示される欠陥、および親指キーで
+bareコンボと`*_solo_tap_ime_action`を同時に書く自己矛盾があり、
+[ADR192-T2b](adr192-t2b-warning-visibility-gap.md)〈PR #254〉で両方修正済み）
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
 ## 背景

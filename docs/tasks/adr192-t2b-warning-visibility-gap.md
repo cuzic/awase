@@ -1,6 +1,7 @@
 # ADR-192 T2b: 状態依存キー警告のユーザー可視化ギャップを埋める
 
-状態: 未着手（2026-09-23起票。T0〜T3実装後のレビューで発見したギャップ、T4より優先度は低い）
+状態: 完了（2026-09-23起票・実装完了、opus-adversarial-consultで決定2bを収束させた上で
+実装、PR #254でdevelopマージ済み）
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
 ## 背景

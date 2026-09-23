@@ -1,6 +1,8 @@
 # ADR-192 T2: 検出・警告の分岐と一度きり表示（決定2）を実装する
 
-状態: 未着手（2026-09-22起票、[ADR192-T1](adr192-t1-state-dependent-key-classifier.md)完了後に着手）
+状態: 完了（2026-09-22起票・実装完了、PR #249でdevelopマージ済み、2026-09-23。ただし
+検出結果のユーザー可視化ギャップ〈ログのみでダイアログ無し〉が見つかり、
+[ADR192-T2b](adr192-t2b-warning-visibility-gap.md)として別途対応・完了済み）
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
 ## 背景

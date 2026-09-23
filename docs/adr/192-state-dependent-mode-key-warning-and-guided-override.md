@@ -18,8 +18,11 @@ summary: |-
   (rev2、round1のC-1案)。
   (4)`[[keymap]]`（ADR-114）は親指キー・IME制御VKを扱えないので使わない。GJIの`config1.db`の書き換えはしない。
 status: |-
-  **草案rev8（2026-09-22、opus-adversarial-consult round7で「収束。レビューループは終了してよい」と
-  判定・訂正済み）。**
+  **実装完了（2026-09-23）。** 決定1〜3b（T0〜T4、PR #249）・決定2b（T2b、警告の
+  ユーザー可視化、PR #254）まで全てdevelopマージ済み。設計はrev8（2026-09-22、
+  opus-adversarial-consult round7で「収束。レビューループは終了してよい」と判定・
+  訂正済み）で収束、決定2bは実装後に発見したギャップをopus-adversarial-consultで
+  追加検証し収束させた。
   ADR-191から分離した（ユーザー指示）。round1(実コード照合)→rev2→round2(実測セル照合)→rev3→round3
   (`key_effect_table.rs`全448セルを機械検証)→rev4→round4(同448セルで再検証)→rev5→round5→rev6→round6
   →rev7→round7と反復し収束した。要点:

@@ -1,6 +1,6 @@
 # ADR-192 T0: `nicola_fsm.rs:858-867` のdoc矛盾を解消する（決定3b着手前の前提）
 
-状態: 未着手（2026-09-22起票）
+状態: 完了（2026-09-22起票・実装完了、PR #249でdevelopマージ済み、2026-09-23）
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
 ## 背景

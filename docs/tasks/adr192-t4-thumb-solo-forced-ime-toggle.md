@@ -1,7 +1,8 @@
 # ADR-192 T4: 親指キー単体への強制ON/OFF新経路（決定3b）を実装する
 
-状態: 未着手（2026-09-22起票、[ADR192-T0](adr192-t0-nicola-fsm-doc-fix.md)完了後に着手。
-T1〜T3とは独立に着手可能）
+状態: 完了（2026-09-22起票・実装完了、PR #249でdevelopマージ済み、2026-09-23。
+/code-review指摘2件〈親指キー×UserOverrideの警告消失、Windows clippy pedantic〉を
+修正済み）
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
 ## 背景
