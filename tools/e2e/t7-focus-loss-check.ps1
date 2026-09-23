@@ -34,4 +34,22 @@ $exited = $learn.WaitForExit($WaitExitSec * 1000)
 "--- stdout tail ---"; Get-Content $out -Tail 8 -ErrorAction SilentlyContinue
 "--- stderr tail ---"; Get-Content $err -Tail 5 -ErrorAction SilentlyContinue
 if (-not $exited) { Stop-Process -Id $learn.Id -Force; "learn force-killed (did NOT self-terminate)" }
+
+$result = (Get-Content $out -ErrorAction SilentlyContinue | Where-Object { $_ -like 'result status=*' } | Select-Object -Last 1)
+$presses = if ($result -match 'presses=(\d+)') { [int]$Matches[1] } else { -1 }
+$fails = @()
+if (-not $exited) { $fails += 'learner did not exit' }
+if (-not $result) { $fails += 'no result line' }
+if ($Control) {
+    if ($exited -and $learn.ExitCode -ne 0) { $fails += "control exit code $($learn.ExitCode) != 0" }
+    if ($result -notlike '*status=success*') { $fails += 'control: status is not success' }
+} else {
+    if ($exited -and $learn.ExitCode -ne 1) { $fails += "exit code $($learn.ExitCode) != 1" }
+    if ($result -notlike '*reason=interference*') { $fails += 'reason is not interference' }
+    if ($presses -le 0) { $fails += 'presses=0: aborted before the focus switch (not a valid test)' }
+    if ((Fg-Info) -like "*(pid=$($learn.Id))") { $fails += 'learner reclaimed the foreground' }
+    if (Test-Path "$env:USERPROFILE\keymap-learn-table.json") { $fails += 'table file written on failure' }
+}
+if ($fails.Count -gt 0) { $fails | ForEach-Object { "FAIL: $_" }; exit 1 }
+"PASS"
 # notepad is left open on purpose: never kill by name (the user may have unsaved notepad windows)
