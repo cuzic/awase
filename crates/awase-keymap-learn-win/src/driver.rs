@@ -598,6 +598,17 @@ impl ImeDriver for RealImeDriver {
             // 行わない。奪い返せない場合、以降の送信は`send_gated`が拒否し
             // 続け、`session_failed`が立ってセッションは終了する
             // （round3 R1対応）。
+            //
+            // round4 I1（opus-adversarial-consult、非ブロッキング情報提供）:
+            // この分岐は実際にはほぼ到達しない——`reset()`はこの前に
+            // Esc×2・Mode段階を`send_gated`経由で送るため、フォーカスが
+            // 既に外れていれば`session_failed`はここへ来る前に確定している。
+            // 回復手段として機能させたい場合は`window_proc`が
+            // `WM_ACTIVATE(WA_ACTIVE)`で`SetFocus(edit)`する形にする必要が
+            // あるが、それでも離脱中の`WA_INACTIVE`は`FOCUS_LOST_EVENTS`に
+            // 計上され、その試行自体は汚染として無効化される（意図的に
+            // 対応していない——安全側の挙動で実害が無いため、round3 R1の
+            // 収束時点ではスコープ外とした）。
             if (unsafe { GetForegroundWindow() }) == self.window {
                 let _ = unsafe { SetFocus(Some(self.edit)) };
             }
