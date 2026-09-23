@@ -394,6 +394,16 @@ pub struct GeneralConfig {
     /// `muhenkan_solo_tap_ime_action` と対称（変換キー用）。
     #[serde(default)]
     pub henkan_solo_tap_ime_action: Option<ShadowImeActionConfig>,
+    /// ADR-195段階4: `<config dir>/keymap-learn-table.json`（段階3永続化）が存在し
+    /// 検証を通れば、それを`key_effect_predictor`が引く表として同梱表の代わりに使う。
+    /// `false`にすると学習済み表があっても常に同梱表を使う（opt-out、M-b）。
+    /// awase-settingsのUIチェックボックスからも切り替え可能。
+    #[serde(default = "default_use_learned_keymap_table")]
+    pub use_learned_keymap_table: bool,
+}
+
+const fn default_use_learned_keymap_table() -> bool {
+    true
 }
 
 impl Default for GeneralConfig {
@@ -435,6 +445,7 @@ impl Default for GeneralConfig {
             swallow_alt_kana_input_method_switch: true,
             muhenkan_solo_tap_ime_action: None,
             henkan_solo_tap_ime_action: None,
+            use_learned_keymap_table: true,
         }
     }
 }
