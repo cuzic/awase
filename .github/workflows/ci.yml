@@ -502,15 +502,23 @@ jobs:
   # (mutants-windows.yml冒頭のコメント参照)。
 
   # 手動起動専用。対象は awase-windows のうちプラットフォーム非依存な
-  # ~550 mutants のみ（設定は .cargo/mutants-awase-windows.toml）。
-  # awase-windows の大半を占める #[cfg(windows)] コードは Linux 上では
-  # コンパイルされず、無指定で走らせると false MISSED だらけになるため
-  # 明示的なファイル許可リストでスコープを絞ってある（詳細は同 toml 内コメント参照）。
-  # Windows 実機依存のロジック自体のミューテーションテスト(#[cfg(windows)]配下)は
-  # mutants-windows.yml(self-hosted Windows runner)が別途担当する。
+  # ~550 mutants のみ（設定は .cargo/mutants-awase-windows.toml）に絞って
+  # あるのは変わらないが（残りの #[cfg(windows)] 本体は mutants-windows.yml
+  # (self-hosted Windows runner)が別途フルスコープで担当）、ランナー自体は
+  # windows-latest(GitHub-hosted、publicリポなら無料)を使う。2026-09-20に
+  # 追加された crates/awase-windows/examples/{ime_key_matrix_spike,
+  # richedit_tsf_probe}.rs が windows クレート(awase-windows/Cargo.toml で
+  # [target.'cfg(windows)'.dependencies])を cfg なしで直接参照しており、
+  # cargo-mutantsのbaselineビルドはpackage全体(examples含む)を対象にするため、
+  # ubuntu-latestだとE0433で即失敗し1件もmutantsをテストできない
+  # (mutants-scope-investigation.yml冒頭コメントに記載の同種症状、examples側の
+  # #![cfg(windows)]化はmain関数が丸ごと消えてE0601になるだけで解決しないことを
+  # 2026-09-23に確認済み)。姉妹ワークフロー
+  # mutants-actuation-confluence-windows.yml / mutants-scope-investigation.yml
+  # が採った解決(windows-latestへ切り替え)に倣う。
   mutants-awase-windows:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -518,8 +526,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-mutants
       - name: Run cargo-mutants (awase-windows, platform-independent subset)
-        # ubuntu-latest(GitHub-hosted標準ランナー)は4vCPU。--jobs未指定だと
+        # windows-latest(GitHub-hosted標準ランナー)は4vCPU。--jobs未指定だと
         # cargo-mutantsは逐次実行(並列度1)になりコア数を活かせないため明示する。
+        shell: pwsh
         run: cargo mutants -p awase-windows --config .cargo/mutants-awase-windows.toml --no-shuffle --jobs 4
       - name: Upload mutants report
         if: always()
