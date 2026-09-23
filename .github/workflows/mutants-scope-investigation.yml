@@ -41,14 +41,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-mutants
       - name: "Run cargo-mutants (ADR-194 scope: force_guard/mode_key_pass/drift/refresh_plan)"
-        # --cargo-test-arg=--lib: cargo-mutantsのbaseline/mutantビルドはデフォルトで
-        # `cargo test --no-run`(examples/binsも含む全ターゲット)を叩くため、
-        # crates/awase-windows/examples/{richedit_tsf_probe,ime_key_matrix_spike}.rs
-        # (windows crate依存、非cfg(windows))がLinux上でE0433多発でbaseline自体が
-        # 落ちる(2026-09-22発見、既存のci.ymlのmutants-awase-windowsジョブも同様に
-        # 影響を受けるはずで、本ワークフロー固有の問題ではない)。対象の純粋関数は
-        # すべてlibターゲットのテストなので、--libでexamples/binsを除外して回避する。
-        run: cargo mutants -p awase-windows --config .cargo/mutants-bug158-scope.toml --no-shuffle --cargo-test-arg=--lib
+        # examples/*.rs(windows crate依存、非cfg(windows))をLinux上でbaseline
+        # ビルドに巻き込ませない--libは、CLIの--cargo-test-argでは反映されず
+        # (2026-09-22実測、baselineコマンドにexamplesが残ったまま)、config側の
+        # additional_cargo_test_args(.cargo/mutants-bug158-scope.toml)で指定する。
+        run: cargo mutants -p awase-windows --config .cargo/mutants-bug158-scope.toml --no-shuffle
       - name: Upload mutants report
         if: always()
         uses: actions/upload-artifact@v4
