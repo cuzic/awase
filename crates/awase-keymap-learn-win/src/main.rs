@@ -9,11 +9,15 @@ mod app {
     use awase_keymap_learn::exec::{Executor, ImeDriver, ReadPolicy, Stats};
     use awase_keymap_learn::graph::Prior;
     use awase_keymap_learn::judgement::{
-        adopt_needs_confirmation, judge_self_verification, AdoptRejected, ScoredVerification,
-        TableJudgement, ACCURACY_THRESHOLD, DEGENERATION_THRESHOLD, MIN_PREDICTED_STEPS,
+        adopt_needs_confirmation, combine, judge_self_verification, AdoptRejected,
+        ReconciliationSummary, ScoredVerification, TableJudgement, ACCURACY_THRESHOLD,
+        DEGENERATION_THRESHOLD, MIN_PREDICTED_STEPS, SYSTEMATIC_MISMATCH_THRESHOLD,
     };
     use awase_keymap_learn::model::KeyId;
     use awase_keymap_learn::persist::{from_json, LoadError, PersistedCell, PersistedTable};
+    use awase_keymap_learn::remeasure::{
+        reconcile_with_bundled, MismatchedTarget, RemeasureParams,
+    };
     use awase_keymap_learn::rng::Rng;
     use awase_keymap_learn::sample_models::atok_like;
     use awase_keymap_learn::strategy::{run, Req, Strategy};
@@ -219,11 +223,10 @@ mod app {
     ///
     /// 戻り値は(書き込もうとしたセル数, 書き込み結果)。
     fn persist_judged_table(
-        table: &Table,
+        cells: Vec<PersistedCell>,
         verification: ScoredVerification,
         judgement: TableJudgement,
     ) -> (usize, Result<(), String>) {
-        let cells = build_persisted_cells(table);
         let cell_count = cells.len();
         let persisted = PersistedTable::new(cells)
             .with_verification(verification)
@@ -481,16 +484,107 @@ mod app {
         model
     }
 
-    /// 決定1a: Microsoft IME本体なら既定で要確認。決定1b項目7〜9(既知構成の内蔵表突き合わせ
-    /// →再測定→`judgement::combine`)は未実装のため、自己検証の判定をそのまま使う。
-    fn judge_score(score: &ScoreReport, tip: TipIdentity) -> TableJudgement {
-        judge_self_verification(
-            score,
-            tip == TipIdentity::MsImeNative,
-            ACCURACY_THRESHOLD,
-            DEGENERATION_THRESHOLD,
-            MIN_PREDICTED_STEPS,
+    /// 決定1a: Microsoft IME本体なら既定で要確認。決定1b項目7〜8: 既知構成で内蔵表との
+    /// 再測定後の突き合わせ結果(`reconciliation`)があれば`judgement::combine`で合成する
+    /// (系統的不一致なら`Accepted`を要確認へ下げる、これは系統的バグへの安全弁であって
+    /// 「内蔵表が正しい」という前提ではない)。
+    fn judge_score(
+        score: &ScoreReport,
+        tip: TipIdentity,
+        reconciliation: Option<&ReconciliationSummary>,
+    ) -> TableJudgement {
+        combine(
+            judge_self_verification(
+                score,
+                tip == TipIdentity::MsImeNative,
+                ACCURACY_THRESHOLD,
+                DEGENERATION_THRESHOLD,
+                MIN_PREDICTED_STEPS,
+            ),
+            reconciliation,
+            SYSTEMATIC_MISMATCH_THRESHOLD,
         )
+    }
+
+    /// 再測定1セルあたりの、目的のstatusへ到達しようとして押してよいセットアップ押下数の
+    /// 上限(暫定値、実機での到達所要押下数の実測待ち)。
+    const REMEASURE_MAX_SETUP_PRESSES: usize = 60;
+    /// セットアップ押下がこの回数続けて目的のstatusに出会えなければリセットして歩き直す。
+    const REMEASURE_RESET_EVERY: usize = 12;
+
+    /// ADR196-T2決定1b項目7〜9: 既知構成なら、学習表を内蔵表と突き合わせ、食い違ったセルを
+    /// (学習本体とは別のセットアップ経路で)再測定する。再現しなかった(確認できなかった
+    /// ものを含む)セルは`cells`の`prediction`を`None`へ落とす。既知構成でない・`config1.db`が
+    /// 読めない場合は`None`(突き合わせ自体を行わない)。
+    ///
+    /// 項目9のうち「不一致の分布タグ」は未実装(残作業)。
+    fn reconcile_against_bundled(
+        executor: &mut Executor<RealImeDriver>,
+        tip: TipIdentity,
+        cells: &mut [PersistedCell],
+        rng: &mut Rng,
+    ) -> Option<ReconciliationSummary> {
+        use awase_windows::gji_charset_autodetect::{
+            bundled_preset_for_adjudication, BundledPresetLookup,
+        };
+        let preset = match bundled_preset_for_adjudication(tip) {
+            BundledPresetLookup::Known(preset) => preset,
+            BundledPresetLookup::NotKnown => return None,
+            BundledPresetLookup::ConfigUnreadable => {
+                eprintln!("警告: config1.dbを読めないため内蔵表との突き合わせをスキップ。");
+                return None;
+            }
+        };
+        let diff = awase_windows::state::key_effect_runtime::diff_against_bundled(cells, preset);
+        let mut only_in_one_table = diff.only_in_one_table;
+        let mut targets = Vec::new();
+        for m in &diff.mismatched {
+            let learned = cells
+                .iter()
+                .find(|c| c.status == m.status && c.key == m.key)
+                .and_then(|c| c.prediction);
+            let key = KEYS.iter().position(|&vk| vk == u32::from(m.key.0));
+            match (learned, key) {
+                (Some(learned), Some(key)) => targets.push(MismatchedTarget {
+                    status: m.status,
+                    key,
+                    learned,
+                }),
+                // 学習値が無い/KEYSに無いキーは再測定できない(分母に含めず「片側のみ」扱い)。
+                _ => only_in_one_table += 1,
+            }
+        }
+        let params = RemeasureParams {
+            max_setup_presses: REMEASURE_MAX_SETUP_PRESSES,
+            reset_every: REMEASURE_RESET_EVERY,
+            key_count: KEYS.len(),
+        };
+        executor.set_recording(false);
+        let result = reconcile_with_bundled(
+            executor,
+            diff.matched,
+            only_in_one_table,
+            &targets,
+            rng,
+            &params,
+        );
+        executor.set_recording(true);
+        for (status, key) in &result.dropped {
+            let vk = KeyId(KEYS[*key] as u16);
+            for cell in cells.iter_mut() {
+                if cell.status == *status && cell.key == vk {
+                    cell.prediction = None;
+                }
+            }
+        }
+        eprintln!(
+            "内蔵表との突き合わせ: 一致{}・再測定で再現{}・再現せず{}・片側のみ{}",
+            result.summary.matched,
+            result.summary.reconfirmed,
+            result.summary.not_reproduced,
+            result.summary.only_in_one_table,
+        );
+        Some(result.summary)
     }
 
     /// プロセスのエントリポイント。判定書き換えモード(実機のIME駆動なし)か、
@@ -579,6 +673,12 @@ mod app {
         let mut walk_rng = Rng::new(walk_seed);
         let score = run_verification_walk(&mut executor, &mut walk_rng);
 
+        // ADR196-T2決定1b項目7〜8: 既知構成なら内蔵表との突き合わせ→再測定。学習・検証と
+        // 同じセッション監視の下で行うため、後続のセッション失敗判定より前に実行する。
+        let mut cells = build_persisted_cells(&executor.table);
+        let reconciliation =
+            reconcile_against_bundled(&mut executor, tip_at_start, &mut cells, &mut walk_rng);
+
         // round2 N1対応: 検証ウォーク中にセッション監視が失敗と判定していたら、
         // (学習フェーズ直後のチェックだけでは検証ウォーク中の汚染を見逃すため)
         // ここでも確認し、表を書き出さない。
@@ -608,13 +708,12 @@ mod app {
             decode_errors,
         );
 
-        let judgement = judge_score(&score, tip_at_start);
+        let judgement = judge_score(&score, tip_at_start, reconciliation.as_ref());
         let verification = ScoredVerification {
             score,
             seed: walk_seed,
         };
-        let (cell_count, write_result) =
-            persist_judged_table(&executor.table, verification, judgement);
+        let (cell_count, write_result) = persist_judged_table(cells, verification, judgement);
         print_result_line(ResultLineArgs {
             strategy,
             training_elapsed_ms,

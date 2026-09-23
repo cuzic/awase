@@ -118,9 +118,14 @@ COM STA初期化・`ITfThreadMgr::Activate`済みのスレッドを持ってお�
   `keymap-learn-last-attempt.json`へ退避する設計にした（**ユーザー判断**、C-9:
   以前`Accepted`だった良い表を今回の学習失敗で失わないため）。
 
-**1e前半の残作業**: 決定1b項目7〜9の再測定オーケストレーションが実装されるまでの間、
-`run_main`は`judgement::combine`に`reconciliation: None`を渡す形——実質`self_verification`の
-判定をそのまま使う。
+**再測定オーケストレーション【実装済み、feat/adr196-t2-remeasure-reconcile】**:
+`awase_keymap_learn::remeasure`（純粋ロジック、`SimIme`でテスト）が、`diff_against_bundled`の
+不一致セルを全件（閾値なし）、学習の巡回とは別経路（リセット→ランダムキー列で目的statusへ
+到達→対象キー押下）で再測定する。再現しなかったセルと**確認できなかった（到達不能・汚染続き・
+中止）セル**は`prediction`を`None`へ落とし、`ReconciliationSummary`を`judgement::combine`へ
+渡す（`run_main`。既知構成でない/`config1.db`不読のときは`None`のまま）。
+**未実装（残作業）**: 決定1b項目9の不一致分布タグ、`REMEASURE_MAX_SETUP_PRESSES`(60)/
+`REMEASURE_RESET_EVERY`(12)の実機での到達所要押下数の実測、実機(RealImeDriver)での動作確認。
 
 **1e後半（不具合報告への添付）【実装済み（`BugReportKeymapLearnSummary`、`attach_ime_keymap`相乗り・`SCHEMA_VERSION`据え置き）。ただし決定1b項目7〜9の再測定結果とADR196-T1の外部書き込み観測は現状どこにも永続化されていないため未添付——永続化され次第同型へ追加する】**: 別途、**不具合報告への添付は本タスクに一本化する**
 （[ADR195-T4](adr195-t4-runtime-loading.md)
