@@ -409,6 +409,12 @@ fn find(uf: &mut [usize], x: usize) -> usize {
 
 /// 必須辺(`need[node*n_keys+key] > 0` の回数ぶん)を覆う巡回(辺の列)を、`start` から始まる形で作る。
 /// 必須辺が無ければ `None`。`shuffle` なら、オイラー閉路の辺の順序を乱数で変える(経路の多様性のため)。
+///
+/// CPP(Chinese Postman Problem)風の巡回計画(必須辺の収集→union-findでの連結→
+/// 最短経路での成分連結→次数調整→オイラー閉路化)は密結合な一連の手続きで、
+/// 分割すると各断片の意味がかえって読み取りにくくなるため、cognitive_complexityは
+/// 許容する(`ime_controller.rs::apply`等、本リポジトリの既存の同種許容と同じ判断)。
+#[allow(clippy::cognitive_complexity)]
 pub fn cpp_plan(
     g: &Graph,
     need: &[u32],
