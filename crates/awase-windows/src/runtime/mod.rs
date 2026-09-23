@@ -240,6 +240,8 @@ pub struct Runtime {
     last_ime_read_ok: bool,
     /// Microsoft IME本体用（レジストリのキー割り当ての版で読み直す。GJIの`key_effect_keymap`とは別のキャッシュ）。
     key_effect_keymap_native: crate::state::key_effect_predictor::KeymapCache,
+    state_dependent_key_warning: crate::state::state_dependent_key_warning::WarningTracker,
+    warn_state_dependent_mode_keys: bool,
     /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091
     /// §D3.2、config.toml による手動設定のみ）が現在有効なら、その vk。
     /// `recompute_active_keymaps` が `[[keymap]]` との衝突チェックに使う
@@ -1113,6 +1115,9 @@ impl Runtime {
             key_effect_keymap: crate::state::key_effect_predictor::KeymapCache::default(),
             last_ime_read_ok: true,
             key_effect_keymap_native: crate::state::key_effect_predictor::KeymapCache::default(),
+            state_dependent_key_warning:
+                crate::state::state_dependent_key_warning::WarningTracker::default(),
+            warn_state_dependent_mode_keys: true,
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
             calibration_bypass_deadline: None,
@@ -1139,6 +1144,47 @@ impl Runtime {
 
     pub(crate) const fn set_update_check_enabled(&mut self, enabled: bool) {
         self.update_check_enabled = enabled;
+    }
+
+    pub(crate) const fn set_warn_state_dependent_mode_keys(&mut self, enabled: bool) {
+        self.warn_state_dependent_mode_keys = enabled;
+    }
+
+    pub(crate) fn check_state_dependent_mode_keys(&mut self, google_ime: bool) {
+        let (left, right) = crate::hook::thumb_vk_codes();
+        let warnings = if google_ime {
+            let stamp = crate::gji_charset_autodetect::config1_db_stamp();
+            let keymap = crate::gji_charset_autodetect::read_key_effect_keymap();
+            self.state_dependent_key_warning.detect_gji(
+                self.warn_state_dependent_mode_keys,
+                stamp,
+                keymap.as_ref(),
+                [left, right],
+            )
+        } else {
+            let raw = crate::msime_key_assignment::read_raw_key_assignment_dwords();
+            let bits = u8::from(raw.key_assignment_henkan.unwrap_or(0) != 0)
+                | (u8::from(raw.key_assignment_muhenkan.unwrap_or(0) != 0) << 1);
+            let keymap = crate::state::key_effect_predictor::KeyEffectKeymap::for_msime_native(
+                raw.is_key_assignment_enabled == Some(1),
+                raw.key_assignment_henkan,
+                raw.key_assignment_muhenkan,
+            );
+            self.state_dependent_key_warning.detect_msime(
+                self.warn_state_dependent_mode_keys,
+                bits,
+                Some(&keymap),
+                [left, right],
+            )
+        };
+        for warning in warnings {
+            tracing::warn!(
+                "[state-dependent-mode-key] kind={:?} keys={:?}: {}",
+                warning.kind,
+                warning.keys,
+                warning.message
+            );
+        }
     }
 
     /// `config.general.half_width_alnum_toggle` を反映する。起動時と reload 時の
@@ -1370,6 +1416,7 @@ impl Runtime {
         self.platform_state.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
         self.set_keyboard_model(config.general.keyboard_model);
         self.set_update_check_enabled(config.general.update_check);
+        self.set_warn_state_dependent_mode_keys(config.general.warn_state_dependent_mode_keys);
         self.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,

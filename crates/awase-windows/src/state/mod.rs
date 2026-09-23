@@ -126,6 +126,7 @@ pub mod ime_model;
 pub mod intent_store;
 pub mod key_effect_predictor;
 pub mod key_effect_table;
+pub mod state_dependent_key_warning;
 // ADR-087 Phase 2'/3 試験実装。intent_store と同じ ungated・未配線パターン。
 pub mod open_warrant;
 #[cfg(windows)]

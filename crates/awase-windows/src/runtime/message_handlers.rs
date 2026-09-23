@@ -914,6 +914,13 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
         }
     }
 
+    if detected {
+        app.check_state_dependent_mode_keys(matches!(
+            kind,
+            crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
+        ));
+    }
+
     // GJI 検出時に config1.db から無変換/変換/ひらがな/カタカナの意味論を自動判定して、
     // awase 自身が代行・上書きする経路は、ADR-191 で撤去した（GJI の設定どおりに GJI 自身が動く）。
     // したがって GJI 検出時にここで行う副作用は、上の warmup FSM 同期だけである。

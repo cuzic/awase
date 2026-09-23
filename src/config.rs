@@ -139,6 +139,8 @@ pub struct GeneralConfig {
     pub auto_start: String,
     /// タスクトレイから右クリックした際に最新バージョンを確認する。
     pub update_check: bool,
+    /// 状態依存のIMEモードキーを検出したときに警告する（ADR-192）。
+    pub warn_state_dependent_mode_keys: bool,
     /// Linux 入力バックエンド ("evdev", "x11", "libinput")
     pub linux_input_backend: String,
     /// evdev バックエンド: キーボードデバイスパス（None = 自動検出）
@@ -415,6 +417,7 @@ impl Default for GeneralConfig {
             ime_poll_interval_ms: 500,
             auto_start: "enabled".to_string(),
             update_check: true,
+            warn_state_dependent_mode_keys: true,
             linux_input_backend: "evdev".to_string(),
             linux_evdev_device: None,
             keyboard_model: KeyboardModel::Jis,
