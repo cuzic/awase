@@ -124,7 +124,9 @@ impl MsImeKeyAssignment {
              awase は無変換/変換キーを親指シフトキーとして使うため、\
              この割り当てが有効だと IME の ON/OFF が awase の管理外で切り替わり、\
              親指シフト入力が生ローマ字で出る等の不具合の原因になります。\n\
-             IME の ON/OFF は awase のキー設定（既定: Ctrl+変換 / Ctrl+無変換）をご利用ください。",
+             IME の ON/OFF は awase のキー設定をご利用ください（既定: Ctrl+変換 / \
+             Ctrl+無変換。無変換/変換の単独キーも、awase 側に bare で設定すれば \
+             単独タップ確定時の強制ON/OFFとして使用できます）。",
             assigned.join("、")
         ))
     }
@@ -296,6 +298,15 @@ mod windows_impl {
     /// `MessageBoxW` はユーザー応答まで呼び出しスレッドをブロックするが、
     /// 別スレッドなのでメインのメッセージループ/フック処理は止めない。
     pub(crate) fn spawn_yes_open_ime_settings_dialog(title: &'static str, text: String) {
+        spawn_yes_dialog(title, text, open_ime_settings);
+    }
+
+    /// 別スレッドでYes/No警告を表示し、Yesなら呼び出し元が指定した遷移先を開く。
+    pub(crate) fn spawn_yes_dialog(
+        title: &'static str,
+        text: String,
+        on_yes: impl FnOnce() + Send + 'static,
+    ) {
         std::thread::spawn(move || {
             use windows::core::PCWSTR;
             use windows::Win32::UI::WindowsAndMessaging::{
@@ -318,7 +329,7 @@ mod windows_impl {
                 )
             };
             if result == IDYES {
-                open_ime_settings();
+                on_yes();
             }
         });
     }
@@ -351,9 +362,9 @@ mod windows_impl {
 
 #[cfg(windows)]
 pub(crate) use windows_impl::{
-    check_and_warn, current_registry_fingerprint_hash, native_assignment_stamp,
+    check_and_warn, current_registry_fingerprint_hash, native_assignment_stamp, open_ime_settings,
     read_key_effect_keymap_native, read_raw_key_assignment_dwords,
-    read_toggle_assignment_from_registry, spawn_yes_open_ime_settings_dialog,
+    read_toggle_assignment_from_registry, spawn_yes_dialog, spawn_yes_open_ime_settings_dialog,
 };
 
 #[cfg(test)]

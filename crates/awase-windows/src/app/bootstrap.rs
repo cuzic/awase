@@ -657,6 +657,7 @@ pub(super) fn initialize_app(
     let _ = with_app(|app| {
         app.set_keyboard_model(config.general.keyboard_model);
         app.set_update_check_enabled(config.general.update_check);
+        app.set_warn_state_dependent_mode_keys(config.general.warn_state_dependent_mode_keys);
         app.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
         let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
         app.set_muhenkan_dedicated_fn_key_config(crate::runtime::resolve_dedicated_fn_key(
@@ -1063,16 +1064,16 @@ pub(super) fn run_all() -> Result<()> {
         config.general.engine_toggle_hotkey.as_deref(),
     );
 
-    let mut engine = Engine::new(
-        fsm,
-        SpecialKeyCombos {
-            engine_on: engine_on_keys,
-            engine_off: engine_off_keys,
-            ime_on: ime_control_on_keys,
-            ime_off: ime_control_off_keys,
-            ime_toggle: ime_control_toggle_keys,
-        },
-    );
+    let special_keys = SpecialKeyCombos {
+        engine_on: engine_on_keys,
+        engine_off: engine_off_keys,
+        ime_on: ime_control_on_keys,
+        ime_off: ime_control_off_keys,
+        ime_toggle: ime_control_toggle_keys,
+    };
+    let forced_open_actions = crate::runtime::thumb_forced_open_actions(&special_keys);
+    let mut engine = Engine::new(fsm, special_keys);
+    engine.set_thumb_forced_open_actions(forced_open_actions.0, forced_open_actions.1);
 
     // left/right のいずれかが Space (VK_SPACE) に割り当てられている場合、
     // その VK を Engine/NicolaFsm に伝える。core 側は VK 番号の意味を知らず、

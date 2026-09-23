@@ -299,6 +299,13 @@ pub struct NicolaFsm {
     /// `muhenkan_solo_tap_ime_action` と対称（変換キー用）。
     henkan_solo_tap_ime_action: Option<crate::types::ShadowImeAction>,
 
+    /// ADR-192 決定3b: `keys.ime_on/off/toggle` に bare 無変換が設定された場合の
+    /// 強制 IME open 軸操作。Platform 層で事前分類して渡す。
+    muhenkan_forced_open_action: Option<crate::types::ShadowImeAction>,
+
+    /// `muhenkan_forced_open_action` と対称（変換キー用）。
+    henkan_forced_open_action: Option<crate::types::ShadowImeAction>,
+
     /// `resolve_pending_thumb_as_single` が明示config（`*_solo_tap_ime_action`）の判定を
     /// 下した直後、`Engine` 層が次の `on_input`/`on_timeout` で取り出すまで
     /// 保持するワンショットの副作用要求（ADR-092 決定D Step4b）。
@@ -385,6 +392,8 @@ pub struct NicolaFsm {
 
 struct ThumbSoloSpecialHandling {
     dedicated_fn_key: Option<VkCode>,
+    /// ADR-192 決定3b: bare `keys.ime_*` 由来の強制 open 軸操作（優先順位1.5）。
+    forced_open_action: Option<crate::types::ShadowImeAction>,
     /// ADR-153 決定1: ユーザー明示config（優先順位2、`dedicated_fn_key` の次）。
     explicit_ime_action: Option<crate::types::ShadowImeAction>,
     mode_key_config: Option<ModeKeyConfig>,
@@ -488,6 +497,8 @@ impl NicolaFsm {
             muhenkan_solo_tap_dedicated_fn_key: None,
             muhenkan_solo_tap_ime_action: None,
             henkan_solo_tap_ime_action: None,
+            muhenkan_forced_open_action: None,
+            henkan_forced_open_action: None,
             ime_open_requested: None,
             henkan_vk: None,
             mode_key_henkan: ModeKeyConfig::from_legacy_bools(false, true),
@@ -826,6 +837,17 @@ impl NicolaFsm {
         self.henkan_solo_tap_ime_action = action;
     }
 
+    /// ADR-192 決定3b: bare `keys.ime_*` による無変換/変換単独タップの
+    /// 強制 open 軸操作を設定する。VK の分類は Platform 層の責務。
+    pub const fn set_thumb_forced_open_actions(
+        &mut self,
+        muhenkan: Option<crate::types::ShadowImeAction>,
+        henkan: Option<crate::types::ShadowImeAction>,
+    ) {
+        self.muhenkan_forced_open_action = muhenkan;
+        self.henkan_forced_open_action = henkan;
+    }
+
     /// `crates/awase-windows::runtime::key_pipeline::kp_stage_shadow_ime_toggle`
     /// （ケース2/3、belief OFF側）が、GJI/MS-IME自動検出の成否に関わらず
     /// 明示config自体を読むために使う。
@@ -847,21 +869,23 @@ impl NicolaFsm {
         self.ime_open_requested.take()
     }
 
-    /// ADR-182 決定1c: この`PendingThumb`は、タイムアウトでは単独確定せず、親指KeyUpか次のキーで
-    /// 解決するか。無変換/変換（`ModeKeyConfig`を持つ親指キー）のうち、タイムアウトで**生のVKを
-    /// 送出する**（`SoloTapAction::Passthrough`）ものだけが対象。
+    /// この`PendingThumb`をタイムアウトでは単独確定せず、親指KeyUpか次のキーで解決するか。
+    /// この述語には独立した2つの理由がある。
+    ///
+    /// 1. ADR-182 決定1c: 無変換/変換（`ModeKeyConfig`を持つ親指キー）のうち、タイムアウトで
+    ///    **生のVKを送出する**（`SoloTapAction::Passthrough`）ものを、solo tapとshiftの
+    ///    1打鍵内二重使用から守る。
+    /// 2. ADR-192 決定3b: bare `keys.ime_*` 由来の強制open操作を、タイマー経路ではなく
+    ///    belief書き込み経路であるKeyUp解決へ通す。
     ///
     /// タイムアウトで先に生の親指VKを出すと、その後に文字が来たときに`decide_idle`→`ActiveThumb`→
     /// `reduce_active_thumb`が親指面のかなを出して親指を消費し、同じ押下がsolo tapとshiftの両方に
     /// 使われる（決定1bと同じ二重使用が2回のディスパッチに分かれる）。
     ///
-    /// 明示config（`*_solo_tap_ime_action`、belief追随/明示actuation）を持つキーも対象にする（ADR-186）:
-    /// タイムアウトで解決した`SetOpen`は非キーボード経路（`execute_from_loop`）で実行され、
-    /// belief書き込み（`handle_engine_set_open`）・明示意図の記録・eisu resetを持つキーボード経路
-    /// （`kp_stage_post_decision`）を通らない。親指の押下が100msを超える通常のタップでは、
-    /// Toggle OFFが古い明示ON意図に対するwarrantで`Unwarranted`になり実行されず、awaseが
-    /// ONを再送していた（実機、2026-09-20）。KeyUpで解決すればキーボード経路を通るので、
-    /// 既存の処理がそのまま働く。
+    /// 明示config（`*_solo_tap_ime_action`）を持つキーは対象外で、従来どおり
+    /// `resolve_explicit_ime_action`によるタイマー解決を使う。ADR-186でKeyUp解決の対象だった
+    /// `delegate_to_open_axis`はADR-191で撤去済み。ADR-192決定3bで追加する専用の強制ON/OFF入力
+    /// だけは、belief書き込みを担うキーボード経路を通すため、別条件でKeyUp解決の対象にする。
     /// 除外: OS修飾キー、`engine_off_solo_repeat_vk`（タイムアウトでソロ連打を数える設計。既定は
     /// `VK_INSERT`なので無変換/変換では通常は当たらないが、無変換/変換に設定するとその親指では
     /// 1cが無効になる）、専用Fnキー・ユーザー明示config（優先順位1・2、送出タイミングを保つ）。
@@ -877,30 +901,34 @@ impl NicolaFsm {
         let special = self.thumb_solo_special_handling(thumb.vk_code);
         special.dedicated_fn_key.is_none()
             && special.explicit_ime_action.is_none()
-            && special.mode_key_config.is_some_and(|cfg| {
-                matches!(
-                    SoloTapAction::from(cfg.for_composing(composing)),
-                    SoloTapAction::Passthrough
-                )
-            })
+            && (special.forced_open_action.is_some()
+                || special.mode_key_config.is_some_and(|cfg| {
+                    matches!(
+                        SoloTapAction::from(cfg.for_composing(composing)),
+                        SoloTapAction::Passthrough
+                    )
+                }))
     }
 
     fn thumb_solo_special_handling(&self, vk_code: VkCode) -> ThumbSoloSpecialHandling {
         if self.muhenkan_vk == Some(vk_code) {
             ThumbSoloSpecialHandling {
                 dedicated_fn_key: self.muhenkan_solo_tap_dedicated_fn_key,
+                forced_open_action: self.muhenkan_forced_open_action,
                 explicit_ime_action: self.muhenkan_solo_tap_ime_action,
                 mode_key_config: Some(self.mode_key_muhenkan),
             }
         } else if self.henkan_vk == Some(vk_code) {
             ThumbSoloSpecialHandling {
                 dedicated_fn_key: None,
+                forced_open_action: self.henkan_forced_open_action,
                 explicit_ime_action: self.henkan_solo_tap_ime_action,
                 mode_key_config: Some(self.mode_key_henkan),
             }
         } else {
             ThumbSoloSpecialHandling {
                 dedicated_fn_key: None,
+                forced_open_action: None,
                 explicit_ime_action: None,
                 mode_key_config: None,
             }
@@ -2120,6 +2148,7 @@ impl NicolaFsm {
 
         // 無変換/変換の優先順位（ADR-092 決定B/決定D Step4b、ADR-153決定1）:
         // 1. 専用Fnキー（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091 §D3.2）
+        // 1.5. bare `keys.ime_*` の強制open操作（ADR-192決定3b）
         // 2. ★ユーザー明示config（`*_solo_tap_ime_action`、ADR-153決定1）
         // 3. `ModeKeyConfig` ベースの Suppress/Passthrough
         // （旧優先順位3の GJI/MS-IME 自動検出由来の「IME open 軸への肩代わり」
@@ -2140,6 +2169,22 @@ impl NicolaFsm {
                     output,
                 },
                 None,
+            );
+        }
+        // ADR-192 決定3b: 既存チェックの位置は動かさず、この分岐内で
+        // `*_solo_tap_ime_action`との排他と2つの既存ガードを自前確認する。
+        // composing は意図的に発火条件から除外しない。
+        if let Some(forced_action) = special.forced_open_action.filter(|_| {
+            special.explicit_ime_action.is_none()
+                && !explicit_action_consumed
+                && !suppress_solo_output
+        }) {
+            return (
+                ResolvedAction {
+                    actions: SmallVec::new(),
+                    output: OutputUpdate::None,
+                },
+                Some(forced_action),
             );
         }
         // ADR-153 決定1: ユーザー明示config（優先順位2）。分割理由は
@@ -3392,6 +3437,58 @@ mod tests {
             resolved.actions
         );
         assert_eq!(request, Some(crate::types::ShadowImeAction::TurnOn));
+    }
+
+    fn fsm_with_forced_action() -> NicolaFsm {
+        let mut fsm = make_test_fsm();
+        let muhenkan_vk = VkCode(0x1D);
+        fsm.set_thumb_key_solo_tap_config(
+            Some(muhenkan_vk),
+            ModeKeyConfig::from_legacy_bools(false, true),
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        fsm.set_thumb_forced_open_actions(Some(crate::types::ShadowImeAction::Toggle), None);
+        fsm
+    }
+
+    #[test]
+    fn forced_action_respects_modifier_consumed_and_suppress_guards() {
+        let fsm = fsm_with_forced_action();
+        let vk = VkCode(0x1D);
+        for (modifier, consumed, suppress) in [
+            (Some(crate::types::ModifierKey::Shift), false, false),
+            (None, true, false),
+            (None, false, true),
+        ] {
+            let (resolved, request) = fsm.resolve_pending_thumb_as_single(
+                ScanCode(0x7B),
+                vk,
+                modifier,
+                false,
+                consumed,
+                suppress,
+            );
+            assert_eq!(request, None);
+            assert!(resolved.actions.is_empty());
+        }
+    }
+
+    #[test]
+    fn dedicated_fn_key_wins_over_forced_action() {
+        let mut fsm = fsm_with_forced_action();
+        let fn_vk = VkCode(0x7C);
+        fsm.set_muhenkan_solo_tap_dedicated_fn_key(Some(fn_vk));
+        let (resolved, request) = fsm.resolve_pending_thumb_as_single(
+            ScanCode(0x7B),
+            VkCode(0x1D),
+            None,
+            false,
+            false,
+            false,
+        );
+        assert_eq!(request, None);
+        assert!(matches!(resolved.actions.as_slice(), [KeyAction::Key(vk)] if *vk == fn_vk));
     }
 
     #[test]

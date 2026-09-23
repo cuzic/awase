@@ -19,6 +19,7 @@
 //! | IME-ON 経路 | 救済 (strategy / source) | 判定関数 |
 //! |---|---|---|
 //! | Decision 経由 `SetOpen(true)`（`kp_stage_post_decision`） | `InputModeApplyStrategy::PostSetOpenEisuReset` | [`eisu_reset_on_ime_on`] |
+//! | bare 無変換/変換の強制open操作（ADR-192決定3b、KeyUpで`SetOpen(true)`） | `InputModeApplyStrategy::PostSetOpenEisuReset` | [`eisu_reset_on_ime_on`] |
 //! | owned キーの shadow-toggle（belief 書き込みなし、TurnOn while open） | `InputModeApplyStrategy::UserTurnOnEisuReset` | [`eisu_reset_on_turn_on_while_open`] |
 //! | owned キーの Phase 3 delegate（`SetOpen(true)`、OFF→ON） | `InputModeApplyStrategy::PostSetOpenEisuReset` | [`eisu_reset_on_ime_on`] |
 //! | 非owned キーの物理 IME キー / SyncKey shadow toggle | `InputModeApplyStrategy::UserImeOnEisuReset` / `InputModeApplyStrategy::UserTurnOnEisuReset` | [`eisu_reset_on_ime_on`] / [`eisu_reset_on_turn_on_while_open`] |
