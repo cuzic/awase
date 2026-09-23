@@ -121,7 +121,7 @@ COM STA初期化・`ITfThreadMgr::Activate`済みのスレッドを持ってお�
 `run_main`は`judgement::combine`に`reconciliation: None`を渡す形——実質`self_verification`の
 判定をそのまま使う。
 
-**1e後半（不具合報告への添付）**: 別途、**不具合報告への添付は本タスクに一本化する**
+**1e後半（不具合報告への添付）【実装済み（`BugReportKeymapLearnSummary`、`attach_ime_keymap`相乗り・`SCHEMA_VERSION`据え置き）。ただし決定1b項目7〜9の再測定結果とADR196-T1の外部書き込み観測は現状どこにも永続化されていないため未添付——永続化され次第同型へ追加する】**: 別途、**不具合報告への添付は本タスクに一本化する**
 （[ADR195-T4](adr195-t4-runtime-loading.md)
   実装対象5が挙げていた「学習表を使用中か」「フィンガープリント」は
   [ADR196-T5](adr196-t5-revalidation-not-invalidation.md)が計算するが、添付項目として
