@@ -8,8 +8,8 @@ summary: |-
   特に観測できないアプリ（TsfNative）ではずれが残るが、awaseのIMトグル書き込み（ADR-189）と強制ON/OFFの打鍵（`keys.ime_on`/`keys.ime_off`、既定Ctrl+変換/Ctrl+無変換、上書き可）で、開閉軸のずれは強制的に解消でき、
   ベストエフォート・ユーザー責任で足りる（ユーザー判断、2026-09-21）。本ADRは、そのユーザーを手助けする層を定める:
   (1)状態依存のキーを、新規の解釈器ではなく既存の`key_effect_predictor.rs`/`key_effect_table.rs`（ADR-191/195）
-  への問い合わせとして、対象VKを限定した上で開閉軸(4仮説適合)と未確定文字列の行方の2軸で機械的に
-  検出する（rev4）。
+  への問い合わせとして、対象VK(6キー)を限定した上で開閉軸(4仮説適合)と未確定文字列の行方(ユーザーが
+  押せるキーのみ)の2軸で機械的に検出する（rev5）。
   (2)検出したら一度だけ警告し、「冪等なキーへの変更」を推奨する——ただし親指キー用途では、既存の
   `msime_key_assignment::conflict_warning`と逆方向の指示にならないよう分岐する（rev2）。
   (3)置き換えは新機構を作らず、既存のユーザー明示config（`keys.ime_on/ime_off/ime_toggle`、`*_solo_tap_ime_action`）をawase-settingsで案内・設定する形にする。
@@ -18,27 +18,25 @@ summary: |-
   (rev2、round1のC-1案)。
   (4)`[[keymap]]`（ADR-114）は親指キー・IME制御VKを扱えないので使わない。GJIの`config1.db`の書き換えはしない。
 status: |-
-  **草案rev4（2026-09-22、opus-adversarial-consult round3で「まだ未収束（Blocker4件。ただしround2の
-  9項目中7項目は意図どおり）」と判定・訂正済み、round4レビュー待ち）。**
+  **草案rev5（2026-09-22、opus-adversarial-consult round4で「判定式(A)(B)と優先順位1.5は機械検証・
+  コード照合ともに収束。残りBlocker2件」と判定・訂正済み、round5レビュー待ち）。**
   ADR-191から分離した（ユーザー指示）。round1(実コード照合)→rev2→round2(実測セル照合)→rev3→round3
-  (`key_effect_table.rs`全448セルを機械的に検証)と反復し、rev3が新規導入した判定式・優先順位もそれぞれ
-  誤りを含んでいたため、rev4でさらに訂正した。主な事実:
-  (a) 決定3bの新しい入力の優先順位は、rev3が提案した「優先順位0.5」が実コード順（`explicit_action_
-  consumed`/`suppress_solo_output`は`dedicated_fn_key`より後）や「専用Fnキー優先」と矛盾していた
-  （round3 B-1）。さらに二重actuation対策として当てにしていた`explicit_action_consumed`は、
-  ケース2(`PromoteToOn`)ではそもそも立たないため防げないと判明（round3 B-2、新規発見）。優先順位を
-  `dedicated_fn_key`の直後(1.5)に確定し、既存ガードは動かさず新入力側で自前確認する形にし、ケース2との
-  衝突はconfig検証での排他に切り替えた。
-  (b) 決定1の判定式(rev3)は、対象VKの範囲を決めないまま`Enter`/`Esc`/`Bs`まで警告対象にしてしまい
-  （round3 A-2）、かつ検算表がMSIMEプリセットの`Henkan`/`Muhenkan`（`Identity`が正、rev3は`Set(true)`
-  と誤記）と`MSIME_NATIVE`の3キー（`ImeOff`/`HankakuZenkaku`/`Eisu`が実は(A)で状態依存になり、しかも
-  `ImeOff`は決定2自身の推奨先）を見落としていた（round3 A-1）。対象VKをIMEモード/制御キーに限定し、
-  `MSIME_NATIVE`は試行数不足のためプリセット単位でCannotPredictとする決定を追加して収束させた
-  （round3 C-1）。awase自身の固定トグルセット〈`HankakuZenkaku`〉がMS-IME本体で状態依存に見える実測は
-  本ADRのスコープ外の発見として記録した。
-  (c) 決定2の「親指キーだが無変換/変換でないVK」の空白（T-16警告が埋める）、未解決節・summaryの
-  rev3残骸も訂正した。
-  決定1〜3・3bはround4レビュー待ち（未収束のため実装は着手しない）。
+  (`key_effect_table.rs`全448セルを機械検証)→rev4→round4(同448セルで再検証)と反復した。round4時点で
+  決定1の判定式(A)(B)・対象VK範囲・決定3bの優先順位1.5は**機械検証で確定**。round4が新たに見つけた
+  Blocker2件をrev5で訂正した:
+  (a) 決定1の`CannotPredict`の帰結が、決定1(ii)本文（「伝える」）とMS-IME本体節・未解決節（「警告
+  しない」）とで矛盾しており、Microsoft IME本体の全ユーザーに行動不能な警告が出るか出ないかが
+  未確定だった（round4 B-1）。原因ごとに(i)キーマップ解釈不確か=沈黙／(ii)ユーザー固有の上書き=
+  伝える／(iii)awase側の実測データ不足〈`MSIME_NATIVE`〉=沈黙、の三分割に訂正し、MS-IME本体
+  ユーザーには本ADRの新規警告が一切出ないことを明記した。
+  (b) rev4の決定3b排他ルール（`*_solo_tap_ime_action`側を無効化）は、ケース3改が担うKeyUp側の
+  「@」対策（BUG-113/124）を同時に無効化する副作用があった（round4 B-2、新規発見）。エラーとして
+  設定を拒否する形に訂正し、物理キー配送は既存の`Decision::Consume`で足りマーカー追加は不要という
+  根拠も明記した（round4 C-1）。
+  あわせて(B)の対象からユーザーが押せない`ImeOn`/`ImeOff`を除外し1回の情報通知にまとめる（round4
+  C-2）、入力モードキーを対象VKから外して単純化する（round4 D-3）、受益範囲がGJI+ATOKプリセット中心に
+  狭いことと実装量の非対称を申告し段階実装を選択肢として明記する（round4 C-3）対応も行った。
+  決定1〜3・3bはround5レビュー待ち（未収束のため実装は着手しない）。
 related_adr:
   - "ADR-092"
   - "ADR-153"
@@ -76,7 +74,7 @@ related_adr:
 
 ## 決定
 
-### 決定1（rev4・対象VK範囲を確定、検算表をround3の機械検証に合わせて訂正）: 状態依存のキーを、既存の実測表・予測器の上で判定する
+### 決定1（rev5・CannotPredictを三分割、(B)の対象を訂正、受益範囲を申告）: 状態依存のキーを、既存の実測表・予測器の上で判定する
 
 **新しい解釈器・新しいキーマップ展開ロジックは作らない**（round1 D-1: 同じ仕事をする実装が
 develop に既に3つある）。決定1は次の既存資産への**問い合わせ**として定義する:
@@ -92,15 +90,16 @@ develop に既に3つある）。決定1は次の既存資産への**問い合�
 「常に純トグルでなければ状態依存」という主節は誤りだったため撤回する——この定義だと決定2が推奨する
 当の冪等キー`ImeOn`/`ImeOff`自身が「状態依存」と誤判定される。round2 A-1が実測セルで確認済み）**:
 
-- **対象VKの範囲（round3 D-1、Major対応。決定1(A)(B)を回すVKを先に定義する）**: `key_effect_table.rs`は
-  `Bs`/`Enter`/`Esc`/`Space`/`Eisu`/`Hiragana`/`Katakana`等13キーぶんの実測を持つが、決定1(A)(B)が
-  実際に**判定を回す**のは次のIMEモード/制御キーだけに限る: `Henkan`(0x1C)・`Muhenkan`(0x1D)・
-  `HankakuZenkaku`(0xF3/0xF4)・`Kanji`(0x19)・`ImeOn`(0x16)・`ImeOff`(0x1A)。`Enter`/`Esc`/`Bs`/`Space`
-  はIME制御キーではないため対象外（round3 A-2が指摘した過検出——これらはIdentity固定だが、仮に
-  Identity以外だったとしても対象VKの範囲外なので判定自体を回さない、という二重の除外にする）。
-  `Eisu`/`Hiragana`/`Katakana`（入力モードキー、awaseは追随するだけで書かない）も、たとえ状態依存や
-  破壊的Dispositionと判定されても「冪等なキーへの変更」という決定2の推奨が意味を持たないため、決定1の
-  判定対象には含めるが**決定2はこれらに警告を出さない**（下記）。
+- **対象VKの範囲（rev5・round4 D-3対応で単純化）**: `key_effect_table.rs`は`Bs`/`Enter`/`Esc`/`Space`/
+  `Eisu`/`Hiragana`/`Katakana`等13キーぶんの実測を持つが、決定1(A)(B)が実際に**判定を回す**のは
+  `Henkan`(0x1C)・`Muhenkan`(0x1D)・`HankakuZenkaku`(0xF3/0xF4)・`Kanji`(0x19)・`ImeOn`(0x16)・
+  `ImeOff`(0x1A)の6キーだけに限る。`Enter`/`Esc`/`Bs`/`Space`はIME制御キーではないため対象外
+  （round3 A-2が指摘した過検出——これらはIdentity固定だが、仮にIdentity以外だったとしても対象VKの
+  範囲外なので判定自体を回さない、という二重の除外にする）。`Eisu`/`Hiragana`/`Katakana`（入力モード
+  キー、awaseは追随するだけで書かない）は**対象VKからも外す**（round4 D-3: 実データで確認したところ
+  これら3キーは(A)(B)いずれにも該当しない〈`MSIME_NATIVE`の`Eisu`だけ(A)状態依存だがプリセット単位
+  CannotPredictで除外済み〉ため、判定対象に残しても常に無出力で、対象に含める理由がない。診断表示等の
+  将来用途が具体化した時点で追加を検討する）。
 - **(A) 開閉軸の状態依存性（モードずれの原因）**: 対象VKについて、到達可能な全セルの`(open, open_after)`
   の組を集め、次の4つの候補仮説のうち**矛盾なく一致するものが存在するか**を調べる: `Set(true)`（常に
   `open_after=true`）／`Set(false)`（常に`open_after=false`）／`Toggle`（常に`open_after = !open`）／
@@ -130,50 +129,75 @@ develop に既に3つある）。決定1は次の既存資産への**問い合�
     「`MSIME_NATIVE`では`ImeOff`/`HankakuZenkaku`/`Eisu`も(A)で状態依存になる」という**実測はあるが
     信頼できない**結果を警告に混ぜない。**この除外の理由は「状態依存でないから」ではなく
     「実測の信頼度が足りないから」であることをここに明記する**（round3 C-1）。
-- **(B) 未確定文字列の行方の危険性（別カテゴリの警告）**: 対象VKのうち、**(A)が`Identity`ではない**
-  もの（round3 A-2、Blocker対応——`Enter`/`Esc`/`Bs`のような開閉に無関係な正常動作キーを誤って
-  警告してしまう過検出を、対象VK範囲の限定と合わせてここでも防ぐ）について、到達可能な全セルの
-  `Disposition`を集め、`Discarded`（破棄）または`Committed`（意図せず確定）が**一部のセルにだけ**
-  現れる場合に警告対象とする。
-  - **検算**: ATOK/MSIMEプリセット共通で`ImeOff`・`HankakuZenkaku`・`Kanji`が該当する（Stage::Noneでは
-    `Disp::None`、Typing/Conv*では`Discarded`〈ATOK〉または`Committed`〈MSIMEプリセット〉）。`ImeOn`は
-    Typing/Conv*でも`Disp::Kept`（保持、破壊的でない）で一貫するため非対象。
+- **(B) 未確定文字列の行方の危険性（別カテゴリの警告。rev5・round4 C-2で対象を訂正）**: 対象VKのうち
+  **ユーザーがMozcキーマップで実際に割り当てられるキー**（`HankakuZenkaku`・`Kanji`・`Henkan`・
+  `Muhenkan`）に限り、かつ**(A)が`Identity`ではない**もの（round3 A-2、Blocker対応——`Enter`/`Esc`/`Bs`
+  のような開閉に無関係な正常動作キーを誤って警告してしまう過検出を、対象VK範囲の限定と合わせてここでも
+  防ぐ）について、到達可能な全セルの`Disposition`を集め、`Discarded`（破棄）または`Committed`
+  （意図せず確定）が**一部のセルにだけ**現れる場合に警告対象とする。**`ImeOn`/`ImeOff`は(B)の対象から
+  除く**（round4 C-2、Major対応: `ImeOn`(0x16)/`ImeOff`(0x1A)は`mozc_tokens`〈`key_effect_predictor.rs:
+  519-533`〉にトークンが無く、Mozcのキーマップに割り当てられない＝**ユーザーが押せないキー**。
+  これらのcomposing中の挙動〈`ImeOff`が入力中に押されて破棄/確定を起こす〉は、ユーザー自身のキー
+  割り当てのリスクではなく**awase自身が送る強制OFFの挙動**なので、決定3bのcomposing周知に統合する）。
+  - **検算**: ATOK/MSIMEプリセット共通で`HankakuZenkaku`・`Kanji`が該当する（Stage::Noneでは
+    `Disp::None`、Typing/Conv*では`Discarded`〈ATOK〉または`Committed`〈MSIMEプリセット〉）。
+    `Henkan`/`Muhenkan`は(A)で状態依存だが`Disp`は`Kept`/`None`のみで一貫するため(B)は非対象。
   - **文言はAとBで分ける**（決定2）: (A)は「モードがずれる可能性があるので冪等なキーに変更してください」、
     (B)は「入力中に押すと変換中の文字が消える/確定してしまう場合があります（冪等なキーでも起こりうる、
-    置き換えでは解決しません）」という別の推奨にする。
+    置き換えでは解決しません）」という別の推奨にする。**(B)は1回だけの情報通知**（該当キーの列挙は
+    根拠として示すが、キーごとに別々の警告を出す設計にはしない。round4 C-2の懸念——素のGJI
+    ユーザー全員に定数的に出るため——を踏まえ、警告疲れを避ける）。
   - **この分類は警告判定のみに使い、actuationの可否判断には使わない**（round3 A-3、Minor対応。書いて
     よいかの線引きはADR-191決定1の分類(a)〜(e)がSSOTのまま）。
-- **沈黙／伝える条件**: 次の(i)(ii)を分けて扱う。
+- **沈黙／伝える条件（rev5・round4 B-1、Blocker対応で三分割に訂正）**: `CannotPredict`を単一の帰結
+  （沈黙か伝えるか）に決め打たず、原因ごとに次の(i)〜(iii)へ分ける——rev4は(ii)の文言（「伝える」）と
+  MS-IME本体節・未解決節の記述（「警告しない」）が矛盾しており、Microsoft IME本体の全ユーザーに
+  行動不能な警告が出るのか出ないのかが未確定だった。
   - (i) **キーマップの解釈自体が不確か**（カスタムキーマップと`session_keymap`の食い違い〈BUG-143〉、
     Mozcトークン未対応、ATOKプリセットでの古い`custom_keymap_table`〈ADR-186決定(c)、コミット
-    `bff621b5`が「読まない」と決めた対象〉、**overlay適用構成**〈round3 D-3、Major対応:
-    `KeyEffectKeymap::predict`がoverlay適用時に`None`を返す既存挙動に揃え、overlay構成は本ADRでも
-    実測が無いためCannotPredictとする。「格子を取り直す」案は較正キャンペーンの再実施を要するため
-    本ADRのスコープ外とし採らない）） → **沈黙**（誤診断回避、round1 D-3/D-4の趣旨）。
-  - (ii) **解釈はできるが実測セルが無い、またはカスタム表でそのVKの行が上書きされている**
-    （`KeyEffectKeymap::predict`が`None`を返す構成に相当。BUG-143の実機——`session_keymap=MSIME(2)`
-    のまま175行のカスタム表に`DirectInput Henkan IMEOn`を持っていた構成——はここに入る）→
-    **「awaseは追随できない」ことを明示する第3の警告カテゴリ**を出す（予測できるセルより予測できない
-    セルの方がずれが確定しやすいので、沈黙ではなく伝える）。
-  - 判定の型は`enum Classification { StateIndependent, StateDependent(Axis), CannotPredict }`のように
-    `Axis`（開閉／未確定文字列）と「予測不能」を区別できる形にする（round1 E-3の「型で落とす」を
-    3値以上に拡張）。
+    `bff621b5`が「読まない」と決めた対象〉、overlay適用構成〈`KeyEffectKeymap::predict`がoverlay適用時に
+    `None`を返す既存挙動に揃える。「格子を取り直す」案は較正キャンペーンの再実施を要するため本ADRの
+    スコープ外とし採らない〉） → **沈黙**（誤診断回避、round1 D-3/D-4の趣旨）。
+  - (ii) **ユーザー固有の上書きが原因で予測できない**（カスタム表にそのVKの行があり`predict`が`None`を
+    返す構成。BUG-143の実機——`session_keymap=MSIME(2)`のまま175行のカスタム表に
+    `DirectInput Henkan IMEOn`を持っていた構成——はここに入る）→ **「awaseは追随できない」ことを
+    明示する第3の警告カテゴリ**を出す（ユーザーが自分の設定を変えれば解消できる、行動可能な情報のため
+    伝える）。
+  - (iii) **awase側の実測データが足りなくて予測できない**（`MSIME_NATIVE`の試行数不足、実測セルの欠落。
+    下記「MS-IME本体」参照）→ **沈黙**（ユーザーには行動の余地が無く、伝えても不安だけが残る。撤去済み
+    自動診断機能の失敗〈誤診断による混乱〉と同種の害）。
+  - 判定の型は`enum Classification { StateIndependent, StateDependent(Axis), CannotPredict(Reason) }`
+    のように`Reason`（`AmbiguousKeymap`=(i)／`UserOverride`=(ii)／`InsufficientData`=(iii)）まで区別できる
+    形にする（round1 E-3の「型で落とす」をさらに拡張）。
 - **実装配置**: 判定関数は`awase-windows`側の`pub fn`として`key_effect_table.rs`のセル横断ロジック上に
   実装する（`key_effect_table`モジュール自体は`state/mod.rs:128`で`mod`＝privateだが、この判定関数を
   `pub`にすれば`awase-settings`から呼べる）。**実行時の`predict()`が持つ既定値補正・特殊扱いは、この
   判定関数には適用しない**（`predict`は`mode == Unknown`のとき既定のひらがなを種にする、`is_char_vk`の
   特別扱い等〈`key_effect_predictor.rs:302`〉の実行時向け補正を含むため、検出にそのまま使うとこの補正が
   判定に混ざる）。
-- **MS-IME本体（rev4・試行数不足の扱いを決定として明記、round3 C-1対応）**: `key_effect_table.rs`は
+- **MS-IME本体（試行数不足の扱いを決定として明記、round3 C-1対応）**: `key_effect_table.rs`は
   `key_effect_predictor.rs:114-125`が定義するセル構造体に試行数のフィールドを持たない（生の試行数は
   `key_effect_table.rs`冒頭の散文と生成元`grid-tables/*.json`にしかない）。`MSIME_NATIVE`はヘッダ注記
   「206/227セルが1試行のみ」の通り大半が単発観測であり、セル単位の信頼度を今のデータ構造から得られない。
-  したがって本ADRでは**`MSIME_NATIVE`をプリセット単位でCannotPredictとして扱う**（セル単位の信頼度判定
-  ロジックを新設しない。生成器`gen_key_effect_table.py`に試行数の列を足す拡張は、必要になった時点で
-  別途起票する）。加えて`KeyEffectKeymap::for_msime_native`（`key_effect_predictor.rs:485`）がレジストリの
-  再割り当てを検出した場合はそもそも`predict`が`None`を返すので、既定のキー配置・再割り当て後のいずれも
-  結果はCannotPredictで一致する（旧rev2/rev3の「レジストリの範囲でしか判定できない」「実測セルを使う」
-  という書き方はどちらも撤回する）。
+  したがって本ADRでは**`MSIME_NATIVE`をプリセット単位で(iii)CannotPredict（沈黙）として扱う**（セル単位の
+  信頼度判定ロジックを新設しない。生成器`gen_key_effect_table.py`に試行数の列を足す拡張は、必要になった
+  時点で別途起票する）。加えて`KeyEffectKeymap::for_msime_native`（`key_effect_predictor.rs:485`）が
+  レジストリの再割り当てを検出した場合はそもそも`predict`が`None`を返すので、既定のキー配置・再割り当て
+  後のいずれも結果は(iii)CannotPredict（沈黙）で一致する——**Microsoft IME本体ユーザーには本ADRの新規
+  警告は一切出ない**（既存の`msime_key_assignment::check_and_warn`はこの決定と独立に動き続ける）。
+  - **受益範囲の申告（round4 C-3、Major対応）**: 上記の除外をすべて適用すると、実際に警告が出るのは
+    ほぼ「GJI＋ATOKプリセットの、無変換/変換を親指キーに使っていないユーザー」に限られる（(A)は
+    ATOKプリセットの`Henkan`/`Muhenkan`のみ、無変換/変換を親指キーに使うユーザーは決定2の親指キー
+    分岐へ回るため）。(B)はカスタム表・overlayを持たない素のGJIユーザー全員に一律で出る定数的な情報
+    （警告というより周知）。Microsoft IME本体ユーザーには何も出ない（上記）。カスタムキーマップ
+    ユーザーは(ii)止まり。一方、実装物（判定関数・3種の警告文言・GJI/MS-IMEで方式の違う同一性判定・
+    awase-settingsの検出表示と1操作書き込み・config検証2本〈専用Fnキー重複・排他ルール〉・T-16文面
+    改訂・`msime_key_assignment`のGJI拡張）は相応に広い。**この非対称（受益範囲の狭さに対して実装量が
+    相応に大きいこと）を実装着手前に明示しておく**——撤去済み自動診断機能（`gji_charset_popup.rs`）が
+    「実験的機能のまま出荷」した前例を繰り返さないための歯止め。**段階実装も選択肢とする**: まず決定1の
+    判定関数と不具合報告（ADR-095/148）への診断表示だけを入れ、警告UI（決定2）とawase-settings連携
+    （決定3）は、その診断表示から実際の価値（該当するユーザーがどれだけいるか）が見えてから着手する、
+    という順序も検討に値する。
   - **本ADRのスコープ外へ回す発見（round3 A-1(2)）**: `MSIME_NATIVE`の実測セル（試行数不足で警告には
     使わない）は、`HankakuZenkaku`（0xF3/0xF4）が(A)で状態依存になることを示している——これは
     `vk.rs::is_open_toggle_for`によりawase自身がbeliefトグルを書く固定セット（ADR-189/191決定1）に
@@ -232,7 +256,7 @@ develop に既に3つある）。決定1は次の既存資産への**問い合�
   （`ModeKeyConfig{idle: Suppress, composing: Suppress}`、`src/config.rs:424,429`が既定値）。
   新記法の検討は不要（旧rev1の「未決」を撤回）。
 
-### 決定3b（rev4・優先順位とケース2との排他を確定、round1 C-1採用）: 親指キー単体への強制ON/OFFは、専用の新しい入力で単独打鍵確定時にactuateする
+### 決定3b（rev5・排他ルールをエラー化に訂正、物理配送の根拠を明記、round1 C-1採用）: 親指キー単体への強制ON/OFFは、専用の新しい入力で単独打鍵確定時にactuateする
 
 **round1が実コード（`nicola_fsm.rs:2106`の`resolve_pending_thumb_as_single`、`:2022`の
 `resolve_explicit_ime_action`）で確認した事実**: 旧rev1が提案した「`*_solo_tap_ime_action`への
@@ -271,22 +295,44 @@ develop に既に3つある）。決定1は次の既存資産への**問い合�
   は関数先頭のearly returnで既にカバーされるので新入力側での追加確認は不要）。これで「専用Fnキー優先」
   （新入力は`dedicated_fn_key`より後なので自然に成立）、composing/M13/専用Fnキーの3つだけを飛ばすこと、
   既存ガードの効果を残すこと、の3つが両立する。config検証は、専用Fnキーと本決定の対象が同一VKに重複
-  設定された場合に警告する。
-- **ケース2（`PromoteToOn`）との二重actuation（round3 B-2、Blocker対応——新規発見）**: round2は
-  `explicit_action_consumed`の適用で二重actuationを防げると想定していたが、**本番でこのマーカーを
-  立てるのは`key_pipeline.rs:1338`（ケース3改）と`:1232`（対応するKeyUp早期分岐）の2箇所だけで、
-  ケース2（`PromoteToOn`、`:1308-1320`）はマーカーを立てない**。したがって`keys.ime_toggle`を親指キー
-  単体に設定し、かつ同じVKに`*_solo_tap_ime_action = "toggle"`も設定しているユーザーでは、
-  KeyDown側のケース2がbelief OFFをONへ昇格させたあと、KeyUp側の新入力がToggleを評価して
-  再びOFFへ戻す（`engine.rs:541`の`Toggle => !ctx.ime_on`はKeyUp時点のbeliefで評価されるため）、
-  1打鍵でON→OFFの往復が起き「効かない」ように見える回帰が起きる。**この衝突はケース2がWindows層の
-  KeyDown処理、新入力がFSMのKeyUp処理という別の層・別の時刻で起きるため、優先順位表では防げない**。
-  **対策として、同一VKに`keys.ime_on/off/toggle`（bare）と`*_solo_tap_ime_action`の両方を設定することを
-  config検証で排他にする**（両方設定されていればエラーにするか、`*_solo_tap_ime_action`側を無効化して
-  警告する。どちらの設定を優先するかは、本決定の新入力の方が明示的な意図〈このキーで強制ON/OFFしたい〉
-  なので`*_solo_tap_ime_action`側を無効化する方を第一候補とする）。ケース2にもマーカーを立てる代替案は
-  `runtime/transport.rs:286`が同じマーカーで生キーのSuppressも制御するため、ON方向の物理キー配送が
-  変わる副作用があり（BUG-46/52/116の物理配送ファミリー）、採らない。
+  設定された場合に警告する。**（round4 D-2、Minor）**`*_solo_tap_ime_action`との併設は下記のconfig検証
+  エラーで排他になるため、実行時にはこの優先順位（新入力が`*_solo_tap_ime_action`の直前にあること）が
+  衝突解決に効く場面は無い——両者の相対順序は防御の二重化（保険）であり、「順序で衝突を解決している」
+  という意味ではないことをここに明記する。
+- **ケース2（`PromoteToOn`）との二重actuation（round3 B-2、Blocker対応）と、その排他ルールの副作用
+  （round4 B-2、Blocker対応でrev4案を撤回）**: round2は`explicit_action_consumed`の適用で二重actuationを
+  防げると想定していたが、**本番でこのマーカーを立てるのは`key_pipeline.rs:1338`（ケース3改）と
+  `:1232`（対応するKeyUp早期分岐）の2箇所だけで、ケース2（`PromoteToOn`、`:1308-1320`）はマーカーを
+  立てない**。したがって`keys.ime_toggle`を親指キー単体に設定し、かつ同じVKに
+  `*_solo_tap_ime_action = "toggle"`も設定しているユーザーでは、KeyDown側のケース2がbelief OFFをONへ
+  昇格させたあと、KeyUp側の新入力がToggleを評価して再びOFFへ戻す（`engine.rs:541`の
+  `Toggle => !ctx.ime_on`はKeyUp時点のbeliefで評価されるため）、1打鍵でON→OFFの往復が起き「効かない」
+  ように見える回帰が起きる。**この衝突はケース2がWindows層のKeyDown処理、新入力がFSMのKeyUp処理という
+  別の層・別の時刻で起きるため、優先順位表では防げない**。
+  - **rev4は「`*_solo_tap_ime_action`側を無効化する」を第一候補にしたが、これは撤回する**:
+    `*_solo_tap_ime_action`と同じ設定値は、ケース3改（`"off"`×既にOFF）の発火条件でもある
+    （`key_pipeline.rs:1162-1169`）。無効化すると、ケース3改が`explicit_ime_action_consumed`を
+    立てられなくなり、`transport.rs:282-291`のM19例外（このマーカーがあるときだけ
+    `VK_CONVERT`/`VK_NONCONVERT`のKeyUpを`Suppress`する。既定は`Allow`）が働かなくなる。さらに
+    エンジン非活性時はコンボ側が`Decision::consumed_with`（`engine.rs:823-825`）でKeyDownしか消費
+    しないため、対応するKeyUpは元々コンボにもマッチしない——マーカーも無ければ`Allow`され、
+    **孤立した生の`VK_NONCONVERT`/`VK_CONVERT`のKeyUpがGJIへ届く**。これは`key_pipeline.rs:
+    1220-1226`が「孤立KeyUpがGJIへ漏れる非対称を防ぐ」として塞いだ穴の再オープンであり、
+    `transport.rs:272-281`のコメントが明記する「ケース3改にとって唯一の実効的なSuppress手段」を
+    削ることになる（BUG-113/BUG-124の「@」ファミリー、実機A/B確認済み。IME OFFキー選択は5日間で
+    6回反転した経緯〈`.claude/rules/experiment-logging.md`〉のすぐ隣の領域であり、慎重に扱う）。
+  - **確定した対策: config検証はエラーにする**（両方設定されていれば設定エラーとして拒否し、
+    ユーザーにどちらか一方を選ばせる。awaseが黙ってどちらかの機能〈強制ON/OFFの新経路、または
+    「@」対策のKeyUp抑止〉を無効化することはない）。優先度を逆にする案（`*_solo_tap_ime_action`を
+    残し新入力を無効化する）も既存挙動を保てる代替として検討したが、エラーにする方が「どちらの設定を
+    ユーザーが意図しているか」をawase側が推測しない分、より安全と判断する。
+  - **物理キー配送（Suppress/Allow）は新経路では変更しない（round4 C-1、Major対応）**: 決定3bの新入力が
+    発火する条件（無変換/変換が親指キーに設定されている）では、エンジン活性時のKeyDownは`PendingThumb`
+    としてFSMが`Decision::Consume`する（`transport.rs:266-271`のコメントが「ケース2の物理配送停止は
+    `Decision::Consume`が担っており、`execute_relay`の`Consume`アームは`physical`を一切参照しない」と
+    明記する通り）。したがって新入力はM19のような専用マーカーを立てる必要が**無い**——KeyDown/KeyUp
+    双方とも既存の`Decision::Consume`による配送停止で足りる。この根拠を明記することで、次の実装者が
+    「新入力にもマーカーを立てるべきか」を再検討し、上記で撤回したマーカー案を再発明することを防ぐ。
 - **composing中の扱い（round2 B-3、Blocker対応で範囲を縮小）**: 決定3bが選べるのは**composing中に
   発火させるか否かだけ**であり、「未確定文字列を破棄する」という結果そのものは選べない——`Disposition`
   はプリセット依存で、ATOKでは`Discarded`（破棄）だがGJIのMS-IMEプリセットでは`Committed`（確定）
@@ -361,13 +407,13 @@ develop に既に3つある）。決定1は次の既存資産への**問い合�
 
 - **誤検出（rev1から残存、緩和策あり）**: Mozc/GJIキーマップの解釈（VK→キー名の写像、カスタムキーマップの
   `custom_keymap_table`と`session_keymap`の食い違い〈BUG-143〉）で、冪等なキーを状態依存と誤警告する
-  恐れは残る。決定1の判定（rev4、対象VKを限定した上での開閉軸4仮説テスト＋未確定文字列軸）と、
-  キーマップ解釈が不確かなら沈黙・解釈できて実測が無いなら「予測不能」と伝える、という(i)/(ii)の
-  書き分けで、「誤警告」より「見逃し／予測不能の通知」に倒すよう保守化したが、実測セル表に無いカスタム
-  構成（ユーザー独自の`custom_keymap_table`）は依然として(ii)止まりになる。カスタムキーマップこそ
-  状態依存を作り込みやすい構成である、という非対称は本ADRのスコープでは解消できない
-  （[ADR-195](195-keymap-learn-productization.md)の学習表が実行時に読めるようになれば、この沈黙域を
-  縮められる可能性がある。本ADRの実装時点では前提にしない）。
+  恐れは残る。決定1の判定（対象VK6キーに限定した上での開閉軸4仮説テスト＋未確定文字列軸）と、
+  (i)キーマップ解釈が不確かなら沈黙／(ii)ユーザー固有の上書きで実測が無いなら「予測不能」と伝える／
+  (iii)awase側のデータ不足なら沈黙、という三分割で、「誤警告」より「見逃し／予測不能の通知」に倒すよう
+  保守化したが、実測セル表に無いカスタム構成（ユーザー独自の`custom_keymap_table`）は依然として
+  (ii)止まりになる。カスタムキーマップこそ状態依存を作り込みやすい構成である、という非対称は本ADRの
+  スコープでは解消できない（[ADR-195](195-keymap-learn-productization.md)の学習表が実行時に読める
+  ようになれば、この沈黙域を縮められる可能性がある。本ADRの実装時点では前提にしない）。
 - **親指キーとの衝突（rev2で決定2・決定3bに分岐として反映済み）**: 無変換/変換をNICOLAの親指キーとして
   使う場合、`keys.ime_on = ["変換"]`はチョード判定と衝突する。決定2は親指キーか否かで警告文言を分岐し、
   決定3bは親指キー単体を専用の新しい合流点で扱う（rev1で「要検討」だった分け方を、rev2で確定した）。
@@ -375,7 +421,9 @@ develop に既に3つある）。決定1は次の既存資産への**問い合�
   （544行、削除されておらず現存。`ImeToggleKind`等を`calibration_ipc.rs`等が利用）のモジュールdocに、
   同モジュール内にあった自動判定・設定支援ポップアップ機能（`gji_charset_popup.rs`/
   `gji_charset_write.rs`。判定ロジック自体ではなくこの2ファイルが撤去対象）が「実験的機能のまま出荷され、GJIのキー設定が実際にはカスタムなのに『カスタム以外』と誤診断されるなどユーザーの混乱を招いた」ため2026-09-02に撤去した、という記録がある。
-  同型の機能なので、警告は判定の根拠を載せ、ブロックせず、判定できないキーは警告しない。ADR-191決定4に「今回の違い」を書いた（実測との突き合わせ）。
+  同型の機能なので、警告は判定の根拠を載せ、ブロックせず、**(i)キーマップ解釈が不確か・(iii)awase側の
+  実測データ不足の場合は警告しない**（round4 D-1で(ii)ユーザー固有の上書きは伝えると明確に区別。決定1
+  「沈黙／伝える条件」参照）。ADR-191決定4に「今回の違い」を書いた（実測との突き合わせ）。
 - **警告疲れ**: 状態依存のキーを意図して使うユーザー（入力中は変換、確定後はIME ON/OFF）にとって、警告は不要。「警告しない」の設定と、警告の文言を短くすることで緩和する。
 - **MS-IME本体（`MSIME_NATIVE`）の判定精度（round3 D-2で訂正）**: 実測セル自体はあるが大半が1試行のみで
   信頼度が足りないため、決定1はプリセット単位でCannotPredictとして扱い警告しない（見逃しを許容）。
@@ -402,15 +450,17 @@ develop に既に3つある）。決定1は次の既存資産への**問い合�
 
 ## 検証計画
 
-- 決定1: `key_effect_table.rs`の実測セルを使い、rev4の判定式（対象VK範囲の限定、開閉軸の4仮説テスト(A)、
-  (A)がIdentity以外のキーだけを対象にする未確定文字列の行方(B)）を、本文の検算表（ATOK/MSIMEプリセットの
-  `ImeOn`/`ImeOff`/`Kanji`/`HankakuZenkaku`/`Henkan`/`Muhenkan`）と一致する結果になることを単体テストで
-  固定する（Linuxで走る、round3が全448セルを機械的に検証した内容の再現）。特に`ImeOn`/`ImeOff`が(A)で
-  非状態依存と判定されること（round2 A-1の反転再発防止）、`Enter`/`Esc`/`Bs`/`Space`が対象VK範囲外のため
-  (A)(B)いずれの判定も回らないこと（round3 A-2の過検出再発防止）、ATOKの`Henkan`/`Muhenkan`が(A)で
-  状態依存と判定されること、`ImeOff`/`HankakuZenkaku`/`Kanji`が(B)で警告対象になること、`MSIME_NATIVE`が
-  プリセット単位でCannotPredictになること（round3 C-1）を直接アサートする。CannotPredict（沈黙(i)・
-  伝える(ii)）の分岐、overlay適用構成が(i)に含まれることも固定する。
+- 決定1: `key_effect_table.rs`の実測セルを使い、rev5の判定式（対象VK範囲の限定〈6キー〉、開閉軸の4仮説
+  テスト(A)、(A)がIdentity以外かつユーザーが割り当てられるキーだけを対象にする未確定文字列の行方(B)）を、
+  本文の検算表（ATOK/MSIMEプリセットの`ImeOn`/`ImeOff`/`Kanji`/`HankakuZenkaku`/`Henkan`/`Muhenkan`）と
+  一致する結果になることを単体テストで固定する（Linuxで走る、round3/round4が全448セルを機械的に検証した
+  内容の再現）。特に`ImeOn`/`ImeOff`が(A)で非状態依存と判定されること（round2 A-1の反転再発防止）、
+  `Enter`/`Esc`/`Bs`/`Space`/`Eisu`/`Hiragana`/`Katakana`が対象VK範囲外のため(A)(B)いずれの判定も回らない
+  こと（round3 A-2・round4 D-3の過検出/無用な判定の再発防止）、ATOKの`Henkan`/`Muhenkan`が(A)で状態依存と
+  判定されること、`HankakuZenkaku`/`Kanji`が(B)で警告対象になり`ImeOn`/`ImeOff`は(B)の対象外であること
+  （round4 C-2）、`MSIME_NATIVE`がプリセット単位で(iii)CannotPredict（沈黙）になること（round3 C-1）を
+  直接アサートする。CannotPredictの三分岐（(i)沈黙・(ii)伝える・(iii)沈黙、round4 B-1）、overlay適用構成が
+  (i)に含まれることも固定する。
 - 決定2: 警告の一度きり・再警告（GJIは`KeymapCache`の`stamp`変化、MS-IME本体は既存packed-bitsでの
   再判定）・「警告しない」の動作の単体テスト。親指キー（`general.left_thumb_key`/`right_thumb_key`）
   設定時に決定2の新規警告ではなく`msime_key_assignment::check_and_warn`型の警告に分岐すること、
@@ -427,8 +477,11 @@ develop に既に3つある）。決定1は次の既存資産への**問い合�
   (f) 専用Fnキーと同一VKに設定した場合は専用Fnキーが勝つこと、(g)
   `tests/architecture_guard.rs::user_ime_on_paths_are_paired_with_eisu_reset`に新経路を追加し、
   `eisu_reset_on_ime_on`との対称配線を固定すること（round2 B-7）、(h) 同一VKに`keys.ime_toggle`（bare）
-  と`*_solo_tap_ime_action`の両方を設定した場合にconfig検証がエラー/無効化のいずれかで排他にすること、
-  1打鍵でON→OFFへ往復する回帰が再現しないこと（round3 B-2）。
+  と`*_solo_tap_ime_action`の両方を設定した場合にconfig検証が**エラーとして拒否**すること（round4 B-2、
+  rev4の「無効化」案は撤回）、(i) エンジン非活性時に無変換/変換の孤立したKeyUpがGJIへ漏れないこと
+  （既存の「@」対策〈`key_pipeline.rs:1220-1226`〉が本決定の追加で壊れていないことの直接確認、
+  round4 B-2）、(j) 新入力が発火する打鍵でKeyDown/KeyUpとも物理配送が`Decision::Consume`で止まり、
+  追加のマーカーを立てなくてもGJIへ生キーが漏れないこと（round4 C-1）。
 
 ## 関連
 
