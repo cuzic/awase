@@ -358,7 +358,11 @@ mod tests {
             assert!(table.covered1() <= stats.presses as usize);
         });
         e.reset();
-        assert_eq!(*calls.borrow(), 0, "reset()はpress()を経由しないので呼ばれない");
+        assert_eq!(
+            *calls.borrow(),
+            0,
+            "reset()はpress()を経由しないので呼ばれない"
+        );
         e.press(atok_keys::HANKAKU).expect("届く");
         assert_eq!(*calls.borrow(), 1);
         e.press(atok_keys::HANKAKU).expect("届く");
