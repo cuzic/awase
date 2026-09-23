@@ -24,6 +24,64 @@ pub struct ModeKeyWarning {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WarningDialogAction {
+    OpenAwaseSettings,
+    OpenMsImeSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WarningDialogRequest {
+    pub warning: ModeKeyWarning,
+    pub action: WarningDialogAction,
+}
+
+/// ADR-192決定2bのユーザー向けダイアログを、同一内容につきプロセス内で一度だけにする。
+/// ログ用の[`WarningTracker`]とは責務を分け、そちらのデデュープ挙動を変えない。
+#[derive(Debug, Default)]
+pub struct WarningDialogTracker {
+    shown: Vec<(WarningKind, Vec<VkCode>, WarningDialogAction)>,
+}
+
+impl WarningDialogTracker {
+    #[must_use]
+    pub fn select(
+        &mut self,
+        google_ime: bool,
+        gji_stamp: Option<(u64, u64)>,
+        warnings: &[ModeKeyWarning],
+    ) -> Vec<WarningDialogRequest> {
+        // config1.dbを読めなかったGJIではWarningTrackerのsource同一性が成立せず、
+        // kind変更通知のたびに警告が再生成されるため、ダイアログは出さない。
+        if google_ime && gji_stamp.is_none() {
+            return Vec::new();
+        }
+
+        warnings
+            .iter()
+            .filter_map(|warning| {
+                let action = match warning.kind {
+                    WarningKind::OpenAxis => WarningDialogAction::OpenAwaseSettings,
+                    WarningKind::ThumbConflict if google_ime => {
+                        WarningDialogAction::OpenAwaseSettings
+                    }
+                    WarningKind::ThumbConflict => WarningDialogAction::OpenMsImeSettings,
+                    WarningKind::Composition | WarningKind::UserOverride => return None,
+                };
+                let identity = (warning.kind, warning.keys.clone(), action);
+                if self.shown.contains(&identity) {
+                    return None;
+                }
+                self.shown.push(identity);
+                Some(WarningDialogRequest {
+                    warning: warning.clone(),
+                    action,
+                })
+            })
+            .collect()
+    }
+}
+
 impl ModeKeyWarning {
     fn new(kind: WarningKind, keys: Vec<VkCode>) -> Self {
         let message = match kind {
@@ -251,5 +309,52 @@ mod tests {
         let changed =
             tracker.detect_gji(true, Some((2, 1)), Some(&atok()), [VkCode(0x19), VkCode(0)]);
         assert!(changed.iter().any(|w| w.kind == WarningKind::Composition));
+    }
+
+    #[test]
+    fn only_open_axis_and_thumb_conflict_are_dialog_targets() {
+        let warnings = [
+            ModeKeyWarning::new(WarningKind::OpenAxis, vec![VkCode(0x1c)]),
+            ModeKeyWarning::new(WarningKind::Composition, vec![VkCode(0x19)]),
+            ModeKeyWarning::new(WarningKind::UserOverride, vec![VkCode(0x1d)]),
+            ModeKeyWarning::new(WarningKind::ThumbConflict, vec![VkCode(0xf3)]),
+        ];
+        let selected = WarningDialogTracker::default().select(false, None, &warnings);
+        assert_eq!(selected.len(), 2);
+        assert!(selected.iter().all(|request| matches!(
+            request.warning.kind,
+            WarningKind::OpenAxis | WarningKind::ThumbConflict
+        )));
+    }
+
+    #[test]
+    fn gji_dialog_requires_config_stamp_and_same_content_is_only_shown_once() {
+        let warning = ModeKeyWarning::new(WarningKind::OpenAxis, vec![VkCode(0x1c)]);
+        let mut tracker = WarningDialogTracker::default();
+        assert!(tracker
+            .select(true, None, std::slice::from_ref(&warning))
+            .is_empty());
+        assert_eq!(
+            tracker
+                .select(true, Some((1, 1)), std::slice::from_ref(&warning))
+                .len(),
+            1
+        );
+        assert!(tracker
+            .select(true, Some((2, 1)), std::slice::from_ref(&warning))
+            .is_empty());
+    }
+
+    #[test]
+    fn thumb_conflict_destination_depends_on_ime_kind() {
+        let warning = ModeKeyWarning::new(WarningKind::ThumbConflict, vec![VkCode(0xf3)]);
+        let gji = WarningDialogTracker::default().select(
+            true,
+            Some((1, 1)),
+            std::slice::from_ref(&warning),
+        );
+        let msime = WarningDialogTracker::default().select(false, None, &[warning]);
+        assert_eq!(gji[0].action, WarningDialogAction::OpenAwaseSettings);
+        assert_eq!(msime[0].action, WarningDialogAction::OpenMsImeSettings);
     }
 }

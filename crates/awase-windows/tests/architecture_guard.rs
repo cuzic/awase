@@ -5078,7 +5078,7 @@ mod adr178_self_heal_wiring {
         let content = read_crate_file("../awase-settings/src/main.rs");
         let body = extract_fn_body(
             &content,
-            "fn new(cc: &eframe::CreationContext<'_>) -> Self {",
+            "fn new(cc: &eframe::CreationContext<'_>, adr192_warning_context: bool) -> Self {",
         );
         assert!(
             body.contains("ensure_default_config_exists();"),

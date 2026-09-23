@@ -275,6 +275,65 @@ develop に既に3つある）。決定1は次の既存資産への**問い合�
 - 警告は**ブロックしない**（無視できる）。ユーザーが「警告しない」を選べるようにする（設定
   `warn_state_dependent_mode_keys`、既定on）。
 
+### 決定2b（T2b・opus-adversarial-consultで収束、2026-09-23）: 警告の表示面を`WarningKind`ごとに分ける、新しいIPCは作らない
+
+T0〜T4実装後のレビューで、T2（検出）の結果が`tracing::warn!`のみでユーザーに一切見えず、T3
+（awase-settings置き換えUI）も検出結果を読まず常時表示になっていたギャップが見つかった
+（`docs/tasks/adr192-t2b-warning-visibility-gap.md`）。以下は、その解消方針をopus-adversarial-
+consultで検証・収束させた結果。
+
+- **表示面は`WarningKind`ごとに分ける**（4種類のうち2種類だけがダイアログ対象）:
+  - **`OpenAxis`**: `msime_key_assignment::spawn_yes_open_ime_settings_dialog`と同型のYes/No
+    ダイアログ（別スレッド）。Yesは`app::launch_settings()`（awase-settingsの置き換えUI、決定3）。
+  - **`ThumbConflict`**: 同型のダイアログだが、**Yesの遷移先はIME種別で分ける**——MS-IME側は
+    `ms-settings:regionlanguage-jpnime`（既存`check_and_warn`のまま）、GJI側は`launch_settings()`
+    （`config1.db`は書かない〈決定4〉ため、ユーザーが取れる行動はawase側の設定だけ）。
+    **判定のSSOTはT2の`state_dependent_key_warning::detect()`が返す`WarningKind::ThumbConflict`
+    のままとし、`check_and_warn`側にGJI用の判定を新設しない**（表示＝ダイアログ生成の構造と
+    文言のみを共有する。判定を2箇所に重複させない）。
+  - **`Composition`**: **ダイアログにしない**。`key_effect_table.rs`の`composition_dependent`は
+    `HankakuZenkaku`についてATOK・MSIMEどちらのプリセットでも成立し、カスタム表・overlayを
+    持たない素のGJIユーザー全員に一律で該当する（決定1(B)が「警告というより周知」と明言する
+    通り）。ダイアログ化すると起動のたびにほぼ全GJIユーザーへモーダルが出て、撤去済み
+    `gji_charset_popup.rs`と同型の「警告疲れ」を再現する。トレイバルーン1回、または現状の
+    ログのまま据え置く。加えて(B)の文言自体が「冪等なキーでも起こりうるため、置き換えだけでは
+    解決しません」なので、Yesが置き換えUIを開く構成にすると案内が自己矛盾する。
+  - **`UserOverride`**（決定1の(ii)）: 是正先がGJIのキーマップ編集画面でawase側に対応する設定が
+    無いため、`launch_settings()`は行き止まりになる。ダイアログを出すならOK単独（Yes/Noにしない）
+    か、既定はログのみに据え置く。
+- **ダイアログの発火条件**: `WarningTracker`の同一性ラッチに加え、(a) GJI側は
+  `config1_db_stamp()`が`Some`であること（`None`のまま`same_source=false`が素通りし続けると
+  `WM_IME_KIND_CHANGED`のたびにダイアログが増殖する）、(b) `msime_key_assignment.rs`の
+  `swap_msime_key_assignment_warned`と同型のプロセス内ラッチ、の両方を条件にする。
+- **awase-settings側の置き換えUIの表示条件**: awase-settingsが自分でconfig1.db/レジストリを
+  再読み込みする設計は**採らない**（後述）。awase.exeが`launch_settings_with_args`（既存、
+  `app/mod.rs:710`）へ渡す引数（不具合報告の`--ime-kind`と同形）を情報源にする。引数なしで
+  awase-settingsが単独起動された場合は、置き換えUIを表示せず「現在のIME設定を判定していません」
+  という文言に留める。
+- **却下した代替案（round1 C-2相当の検討）**: 「awase-settingsが自分でconfig1.db/レジストリを
+  読み直し、`state_dependent_key_warning::detect()`を呼んで表示条件を決める」案は、
+  `gji_charset_autodetect.rs`の`build_confirmed_calibration_entry`（ADR-176 T9b、`pub`関数、
+  第2引数でIME種別を受け取る設計）の先例を誤って「awase-settingsが両方を自分でチェックして
+  OR合成すればよい」と拡大解釈したもので、却下する。理由:
+  1. **誤検出**: GJIをインストール済みだが現在MS-IMEを使っているユーザーで`config1.db`を
+     無条件に読むと、使っていないIMEのキーマップを根拠に置き換えUIが出る。
+  2. MS-IME本体（`MsImeNative`プリセット）は`classify_state_dependent_mode_key`が常に
+     `CannotPredict(InsufficientData)`を返すため、レジストリを読んでOR合成しても得られるものが無い
+     （死んだコードパスになる）。
+  3. `read_config1_db`等は`#[cfg(windows)] mod windows_impl`内にあり、Linuxでもビルドされる
+     awase-settingsから直接呼ぶには`cfg(windows)`境界の追加が要る。
+  4. eguiはフレームごとに再描画するため、「タブ描画のたびに読み直す」はファイルI/Oの频発になる。
+  5. 親指キーの情報源がawase.exe側（`hook::thumb_vk_codes()`）とawase-settings側
+     （`config.general.left/right_thumb_key`の文字列）で二重化し、食い違うリスクがある。
+  argv経由でawase.exeの判定結果を渡す設計は、これら5点すべてを回避する。
+- **親指キーへの1操作置き換え（決定3のUI）の書き込み内容**: 対象キーが親指キーの場合は
+  `*_solo_tap_ime_action`＋`*_solo_tap_always_suppress`のみを書き、`keys.ime_on`/`ime_off`への
+  bareコンボは書かない。非親指キーの場合のみbareコンボを書く。理由: 決定3bの優先順位逆転により
+  親指キーでは`*_solo_tap_ime_action`がbareコンボより優先されるため、両方を書くと保存直後に
+  T-16分岐3（本節末尾参照）の「同じキーの`*_solo_tap_ime_action`の設定が優先され、この強制
+  ON/OFFの設定は無視されます」という検証警告を自ら誘発する自己矛盾した設定になる
+  （T2bレビューで発見、実装のコミット履歴参照）。
+
 ### 決定3（rev2・整合追加）: 置き換えは新機構を作らず、既存の明示configをawase-settingsで案内・設定する
 
 - 案内する設定（既存）: `keys.ime_on`/`keys.ime_off`/`keys.ime_toggle`（キーコンボ）、親指キーが状態依存のキーなら決定3b（改訂後）の経路。

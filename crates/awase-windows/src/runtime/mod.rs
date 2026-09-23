@@ -322,6 +322,8 @@ pub struct Runtime {
     /// Microsoft IME本体用（レジストリのキー割り当ての版で読み直す。GJIの`key_effect_keymap`とは別のキャッシュ）。
     key_effect_keymap_native: crate::state::key_effect_predictor::KeymapCache,
     state_dependent_key_warning: crate::state::state_dependent_key_warning::WarningTracker,
+    state_dependent_key_warning_dialog:
+        crate::state::state_dependent_key_warning::WarningDialogTracker,
     warn_state_dependent_mode_keys: bool,
     /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091
     /// §D3.2、config.toml による手動設定のみ）が現在有効なら、その vk。
@@ -1198,6 +1200,8 @@ impl Runtime {
             key_effect_keymap_native: crate::state::key_effect_predictor::KeymapCache::default(),
             state_dependent_key_warning:
                 crate::state::state_dependent_key_warning::WarningTracker::default(),
+            state_dependent_key_warning_dialog:
+                crate::state::state_dependent_key_warning::WarningDialogTracker::default(),
             warn_state_dependent_mode_keys: true,
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
@@ -1233,12 +1237,14 @@ impl Runtime {
 
     pub(crate) fn check_state_dependent_mode_keys(&mut self, google_ime: bool) {
         let (left, right) = crate::hook::thumb_vk_codes();
+        let gji_stamp = google_ime
+            .then(crate::gji_charset_autodetect::config1_db_stamp)
+            .flatten();
         let warnings = if google_ime {
-            let stamp = crate::gji_charset_autodetect::config1_db_stamp();
             let keymap = crate::gji_charset_autodetect::read_key_effect_keymap();
             self.state_dependent_key_warning.detect_gji(
                 self.warn_state_dependent_mode_keys,
-                stamp,
+                gji_stamp,
                 keymap.as_ref(),
                 [left, right],
             )
@@ -1258,12 +1264,43 @@ impl Runtime {
                 [left, right],
             )
         };
-        for warning in warnings {
+        for warning in &warnings {
             tracing::warn!(
                 "[state-dependent-mode-key] kind={:?} keys={:?}: {}",
                 warning.kind,
                 warning.keys,
                 warning.message
+            );
+        }
+        let requests = self
+            .state_dependent_key_warning_dialog
+            .select(google_ime, gji_stamp, &warnings);
+        for request in requests {
+            use crate::state::state_dependent_key_warning::WarningDialogAction;
+            let question = match request.action {
+                WarningDialogAction::OpenAwaseSettings => {
+                    "いますぐawaseの設定を開いて、冪等なIME ON/OFF設定へ置き換えますか？"
+                }
+                WarningDialogAction::OpenMsImeSettings => {
+                    "いますぐWindowsのIME設定を開いて、競合するキー割り当てを解除しますか？"
+                }
+            };
+            let text = format!(
+                "{}\n\n対象キー: {:?}\n\n{question}",
+                request.warning.message, request.warning.keys,
+            );
+            let on_yes = move || match request.action {
+                WarningDialogAction::OpenAwaseSettings => {
+                    crate::app::launch_settings_with_args(["--adr192-mode-key-warning".to_owned()]);
+                }
+                WarningDialogAction::OpenMsImeSettings => {
+                    crate::msime_key_assignment::open_ime_settings();
+                }
+            };
+            crate::msime_key_assignment::spawn_yes_dialog(
+                "awase - 状態依存のIMEモードキー",
+                text,
+                on_yes,
             );
         }
     }
