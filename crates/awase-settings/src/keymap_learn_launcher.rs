@@ -237,4 +237,111 @@ mod tests {
         assert!(should_recommend_learning(false));
         assert!(!should_recommend_learning(true));
     }
+
+    /// `take_learning_stdout`/`take_learning_stderr`/`drain_learning_output`/
+    /// `drain_learning_stderr_lines`をモック子プロセス相手に実際に動かす統合テスト
+    /// (docs/tasks/adr195-t6-adr176-wizard-integration.mdの完了条件「子プロセス起動・
+    /// 標準出力パースのテスト(Windows実機またはモックプロセスでの検証)」に対応)。
+    ///
+    /// モック子プロセスとして本物の`awase-keymap-learn-win.exe`は使わず、この
+    /// テストバイナリ自身(`std::env::current_exe()`)を、環境変数
+    /// `AWASE_MOCK_KEYMAP_LEARN_LINES`/`AWASE_MOCK_KEYMAP_LEARN_STDERR`を渡した上で
+    /// `mock_child_entrypoint`という1テストだけをフィルタ実行する形で再起動する。
+    /// Windows/Linux両方で「実在するexeパスを渡して実プロセスを起動し、実パイプ経由で
+    /// 標準出力/標準エラーを読む」という配管そのものを検証できる(シェルスクリプトや
+    /// .batだと`Command::new`がプラットフォームによって解釈を変えるため使わない)。
+    #[test]
+    fn spawns_real_child_process_and_parses_its_stdout() {
+        let exe = std::env::current_exe().expect("current_exe");
+        let mock_lines = [
+            "progress cell=1 total=2 elapsed_ms=10 eta_ms=5",
+            "result status=success strategy=x elapsed_ms=20 presses=1 cells=1 total=2 decode_errors=0",
+        ]
+        .join("\n");
+
+        let mut child = Command::new(&exe)
+            .args([
+                "keymap_learn_launcher::tests::mock_child_entrypoint",
+                "--exact",
+                "--nocapture",
+            ])
+            .env("AWASE_MOCK_KEYMAP_LEARN_LINES", mock_lines)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("モック子プロセスの起動に失敗");
+
+        let stdout = take_learning_stdout(&mut child).expect("stdoutパイプの取得に失敗");
+        let mut lines = Vec::new();
+        drain_learning_output(stdout, |line| lines.push(line)).expect("stdoutの読み取りに失敗");
+        let status = child.wait().expect("子プロセスの終了待ちに失敗");
+
+        assert!(
+            status.success(),
+            "モック子プロセスが異常終了した: {status:?}"
+        );
+        assert_eq!(
+            lines,
+            vec![
+                LearnLine::Progress(LearnProgress {
+                    cell: 1,
+                    total: 2,
+                    elapsed_ms: 10.0,
+                    eta_ms: Some(5.0),
+                }),
+                LearnLine::Result(LearnOutcome::Success),
+            ]
+        );
+    }
+
+    /// `drain_learning_stderr_lines`(失敗理由の抽出)を同じ自己再起動トリックで検証する。
+    #[test]
+    fn spawns_real_child_process_and_parses_its_stderr_reason() {
+        let exe = std::env::current_exe().expect("current_exe");
+
+        let mut child = Command::new(&exe)
+            .args([
+                "keymap_learn_launcher::tests::mock_child_entrypoint",
+                "--exact",
+                "--nocapture",
+            ])
+            .env("AWASE_MOCK_KEYMAP_LEARN_LINES", "result status=failure")
+            .env(
+                "AWASE_MOCK_KEYMAP_LEARN_STDERR",
+                "観測に失敗しました: decode_errors=999",
+            )
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("モック子プロセスの起動に失敗");
+
+        let stdout = take_learning_stdout(&mut child).expect("stdoutパイプの取得に失敗");
+        let stderr = take_learning_stderr(&mut child).expect("stderrパイプの取得に失敗");
+        let mut lines = Vec::new();
+        drain_learning_output(stdout, |line| lines.push(line)).expect("stdoutの読み取りに失敗");
+        let reason = drain_learning_stderr_lines(stderr);
+        let _ = child.wait();
+
+        assert_eq!(lines, vec![LearnLine::Result(LearnOutcome::Failure)]);
+        assert_eq!(
+            reason.as_deref(),
+            Some("観測に失敗しました: decode_errors=999")
+        );
+    }
+
+    /// 上記2テストの「モック子プロセス」役。`AWASE_MOCK_KEYMAP_LEARN_LINES`が
+    /// 設定されているときだけ動作する——素の`cargo test`/`cargo nextest run`で通常
+    /// 実行されたときは何もせず即座に成功する、無害な1テストとして振る舞う。
+    #[test]
+    fn mock_child_entrypoint() {
+        let Ok(lines) = std::env::var("AWASE_MOCK_KEYMAP_LEARN_LINES") else {
+            return;
+        };
+        for line in lines.split('\n') {
+            println!("{line}");
+        }
+        if let Ok(stderr_line) = std::env::var("AWASE_MOCK_KEYMAP_LEARN_STDERR") {
+            eprintln!("{stderr_line}");
+        }
+    }
 }
