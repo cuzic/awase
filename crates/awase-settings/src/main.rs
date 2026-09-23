@@ -1028,6 +1028,14 @@ impl SettingsApp {
     /// 起動する。対象プロセスの一時停止・keepalive等は不要
     /// (`is_keymap_learn_process_name`によるawase.exe側の恒久バイパス、ADR195-T1)。
     fn start_keymap_learning(&mut self) {
+        // code-review指摘: 呼び出し元(「学習を開始」ボタン)はkeymap_learn_rx.is_some()の
+        // 間ボタンを無効化しているが、それだけに頼ると、万一二重に呼ばれた場合に前の
+        // Arc<Mutex<Child>>と読み取りスレッドを黙って上書きし、古い子プロセスをkillする
+        // 手段(keymap_learn_child)を失ったまま野良稼働させてしまう(実キー注入を行う
+        // プロセスが2つ同時に動く事故になりうる)。関数自身でも二重起動を防ぐ。
+        if self.keymap_learn_rx.is_some() {
+            return;
+        }
         let exe_path = awase::paths::resolve_relative_to_exe("awase-keymap-learn-win.exe");
         let (tx, rx) = std::sync::mpsc::channel();
         let mut child = match keymap_learn_launcher::spawn_learning_process(&exe_path) {
