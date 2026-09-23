@@ -40,6 +40,26 @@ pub struct Stats {
 }
 
 /// IMEへの注入・観測・待機を内包するドライバ。
+///
+/// ADR-195段階1は本トレイトを「6メソッド(press/press_setup/read_status/
+/// reread_status/settle_setup/reset)+elapsed_ms」と定めるが、実装は意図的に
+/// それより広い9メソッドを持つ。差分2点はADR文面のミス(round4時点の見立て)ではなく、
+/// 実際の呼び出しパターンが要求する区別:
+///
+/// - `read_primary`/`read_secondary`(ADRの`read_status`1本に対応)は2経路読み取り
+///   (`ReadPolicy::DoubleFirst`/`DoubleAlways`)を成立させるために分離が必要。1本化
+///   すると`double_read_detects_channel_mismatch_and_resolves`等が依存する
+///   チャンネル間不一致検出ができなくなる。
+/// - `machine_initial_status`はADRが提案する「`Executor::new`は
+///   `ImeDriver::read_status()`から初期状態を取る」に反して残している。
+///   `SimIme::machine_initial_status`はコスト0・ノイズ無しの真値だが、
+///   `read_primary`はコスト(`cost.read_ms`)とノイズ(`noisy_status`)を伴う観測。
+///   `Executor::reset()`の`s == self.initial`比較(リセット成功判定)がノイズ無しの
+///   真値を要求するため、`read_primary`で代替すると確率的に不一致になり
+///   `reset_recovers_even_when_the_first_level_fails`等が壊れる。`RealImeDriver`側も
+///   `machine_initial_status`はキャッシュ済み定数(`self.initial`)を返すのに対し
+///   `read_primary`は実際のWin32観測I/Oを行うため、置き換えは構築時に不要な実機I/Oを
+///   発生させる。
 pub trait ImeDriver {
     fn press(&mut self, key: usize) -> PressReport;
     fn press_setup(&mut self, key: usize);
