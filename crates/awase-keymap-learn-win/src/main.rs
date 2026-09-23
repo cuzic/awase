@@ -4,11 +4,17 @@ mod app {
 
     use awase_keymap_learn::anomaly::AnomalyPolicy;
     use awase_keymap_learn::cost::CostModel;
-    use awase_keymap_learn::exec::{Executor, ReadPolicy};
+    use awase_keymap_learn::exec::{Executor, ImeDriver, ReadPolicy};
     use awase_keymap_learn::graph::Prior;
+    use awase_keymap_learn::model::KeyId;
+    use awase_keymap_learn::persist::{PersistedCell, PersistedTable};
     use awase_keymap_learn::rng::Rng;
     use awase_keymap_learn::sample_models::atok_like;
     use awase_keymap_learn::strategy::{run, Req, Strategy};
+    use awase_keymap_learn::table::Table;
+    use awase_keymap_learn::verify::{
+        decide_cell, predict, score_walk, CellDecision, RetryTracker, WalkObs, DEFAULT_MIN_MINORITY,
+    };
     use awase_keymap_learn_win::RealImeDriver;
 
     const KEYS: [u32; 14] = [
@@ -18,6 +24,122 @@ mod app {
     /// ADR-195段階6: 何押下ごとに標準出力へ進捗行を書き出すか。毎回書くと
     /// 子プロセス側(awase-settings)のパース負荷・パイプI/Oが無駄に増えるため間引く。
     const PROGRESS_EVERY_N_PRESSES: u32 = 10;
+
+    /// 段階2(自己検証)の独立ランダムウォークの長さ。ADR-195/ADR196-T2が挙げる
+    /// 「正答率判定には最低300ステップ」の基準に合わせる。
+    const VERIFICATION_WALK_STEPS: usize = 300;
+
+    /// `<config dir>/keymap-learn-table.json`のパス。`awase.exe`/`awase-settings.exe`と
+    /// 同じ探索規則(`awase::paths::resolve_relative_to_exe`、exeの隣→開発ビルドの
+    /// ワークスペースルート→CWD相対の順)でconfig.tomlを探し、その親ディレクトリへ書く
+    /// (`crates/awase-windows/src/state/key_effect_runtime.rs::table_file_path`と
+    /// 同じ規約)。config.tomlが見つからなければ`None`(書き込み先を決められない)。
+    fn table_file_path() -> Option<std::path::PathBuf> {
+        let config_path = awase::paths::resolve_relative_to_exe("config.toml");
+        if !config_path.exists() {
+            return None;
+        }
+        config_path
+            .parent()
+            .map(|dir| dir.join("keymap-learn-table.json"))
+    }
+
+    /// 巡回で得た表から、永続化するセル列を組み立てる(ADR-195段階1〜2の出力を
+    /// 段階3の永続化フォーマットへ結合する、B1対応)。
+    ///
+    /// - B2対応: `key`は`Table`が内部で使う`KEYS`配列の**添字**ではなく、実際の
+    ///   Windows VKコード(`KeyId(KEYS[idx] as u16)`)で書く。読み手
+    ///   (`key_effect_runtime.rs::convert_cell`)は`TableKey::from_vk`で生VKとして
+    ///   解釈するため、添字のまま書くと大半が「表に無いVK」として不採用になり、
+    ///   偶然一致する添字(8→BS, 13→Enter等)は誤ったセルとして採用されてしまう。
+    /// - M5対応: 訪問した(観測が1件以上ある)セルは、決定的と言えなくても
+    ///   `prediction: None`で必ず1件書く。書き手が未測定セルを省略できると、
+    ///   読み手側の縮退率チェック(`coverage_ratio`)の分母を書き手が恣意的に
+    ///   操作でき、チェックの意味が無くなる。
+    fn build_persisted_cells(table: &Table) -> Vec<PersistedCell> {
+        table
+            .cells()
+            .map(|(&(status, key_idx), _)| PersistedCell {
+                status,
+                key: KeyId(KEYS[key_idx] as u16),
+                prediction: predict(table, status, key_idx, DEFAULT_MIN_MINORITY),
+            })
+            .collect()
+    }
+
+    /// ADR-195段階2(round1 M-8、round3 m-3): 誤りに強い分類でも決定的と言えない
+    /// セルが1つでもあれば、学習をもう一度実行する(やり直しは1回まで——
+    /// `RetryTracker`がセルごとに1回しか許さない。ここでは「もう一度巡回すべきか」の
+    /// 判定にだけ使い、実際の再評価は最終的に`predict`で行う)。
+    fn retry_nondeterministic_cells_once<D: ImeDriver>(
+        exec: &mut Executor<D>,
+        strategy: Strategy,
+        prior: &Prior,
+        cost: &CostModel,
+        suspects: &[usize],
+        rng: &mut Rng,
+    ) {
+        let mut retry = RetryTracker::new();
+        let needs_retry = exec.table.cells().any(|(&(status, key), _)| {
+            matches!(
+                decide_cell(&exec.table, status, key, DEFAULT_MIN_MINORITY, &mut retry),
+                CellDecision::RetryLearning
+            )
+        });
+        if needs_retry {
+            eprintln!("非決定的なセルがあるため、学習をもう一度実行します(やり直しは1回まで)。");
+            run(strategy, exec, prior, cost, suspects, &Req::default(), rng);
+        }
+    }
+
+    /// ADR-195段階2: 学習に使っていない独立のランダムウォークで一段予測を採点する。
+    /// 進捗sinkは学習の巡回にだけ意味があるので、ここでは無効化する(有効なままだと
+    /// `recording=false`の間もpressごとに呼ばれ、cell数が増えないのにelapsed_msだけ
+    /// 伸びる不審な進捗行が出る)。
+    fn run_verification_walk<D: ImeDriver>(
+        exec: &mut Executor<D>,
+        rng: &mut Rng,
+    ) -> awase_keymap_learn::verify::ScoreReport {
+        exec.set_progress_sink(|_, _| {});
+        exec.set_recording(false);
+        let mut walk = Vec::with_capacity(VERIFICATION_WALK_STEPS);
+        for _ in 0..VERIFICATION_WALK_STEPS {
+            let key = rng.below(KEYS.len());
+            if let Some(info) = exec.press(key) {
+                walk.push(WalkObs {
+                    status: info.before,
+                    key,
+                    outcome: info.outcome,
+                });
+            }
+        }
+        exec.set_recording(true);
+        score_walk(&exec.table, DEFAULT_MIN_MINORITY, &walk)
+    }
+
+    /// ADR-195段階3〜4への結合(B1対応): 表を永続化フォーマットへ変換し、一時ファイル+
+    /// renameで原子的に書き込む。指紋(ADR-195段階8)は、その計算方式自体がADR-196決定3で
+    /// 再設計中のため、ここでは`None`のまま残す(ADR196-T5が実配線する)。
+    ///
+    /// 戻り値は(書き込もうとしたセル数, 書き込み結果)。
+    fn persist_learned_table(table: &Table) -> (usize, Result<(), String>) {
+        let cells = build_persisted_cells(table);
+        let cell_count = cells.len();
+        let persisted = PersistedTable::new(cells, None);
+        let write_result = table_file_path()
+            .ok_or_else(|| "config.tomlが見つからないため書き込み先を決められない".to_string())
+            .and_then(|path| {
+                persisted
+                    .to_json()
+                    .map_err(|e| format!("表のシリアライズに失敗: {e}"))
+                    .map(|json| (path, json))
+            })
+            .and_then(|(path, json)| {
+                awase::fs_atomic::write_atomic(&path, json.as_bytes())
+                    .map_err(|e| format!("{}への書き込みに失敗: {e:#}", path.display()))
+            });
+        (cell_count, write_result)
+    }
 
     pub fn run_main() -> windows::core::Result<()> {
         let strategy = if std::env::args().any(|arg| arg == "--strategy=s0") {
@@ -77,17 +199,54 @@ mod app {
             &Req::default(),
             &mut rng,
         );
-        let decode_errors = executor.driver.decode_error_count();
-        println!(
-            "result status={} strategy={} elapsed_ms={:.0} presses={} cells={} total={} decode_errors={}",
-            if decode_errors == 0 { "success" } else { "success_with_warnings" },
-            strategy.name(),
-            executor.elapsed_ms(),
-            executor.stats.presses,
-            executor.table.covered1(),
-            total_cells,
-            decode_errors
+        retry_nondeterministic_cells_once(
+            &mut executor,
+            strategy,
+            &prior,
+            &cost,
+            &model.history_suspects,
+            &mut rng,
         );
+        let score = run_verification_walk(&mut executor, &mut rng);
+        let (cell_count, write_result) = persist_learned_table(&executor.table);
+
+        let decode_errors = executor.driver.decode_error_count();
+        // ADR-195段階6決定5(項目5): result行は書き込みに成功してから出す
+        // (失敗したのに"success"を名乗らない)。
+        match &write_result {
+            Ok(()) => {
+                println!(
+                    "result status={} strategy={} elapsed_ms={:.0} presses={} cells={} total={} \
+                     decode_errors={} persisted_cells={} verify_accuracy={:.3} verify_confidence={:.3}",
+                    if decode_errors == 0 {
+                        "success"
+                    } else {
+                        "success_with_warnings"
+                    },
+                    strategy.name(),
+                    executor.elapsed_ms(),
+                    executor.stats.presses,
+                    executor.table.covered1(),
+                    total_cells,
+                    decode_errors,
+                    cell_count,
+                    score.accuracy(),
+                    score.confidence(),
+                );
+            }
+            Err(reason) => {
+                eprintln!("学習表の書き込みに失敗しました: {reason}");
+                println!(
+                    "result status=failure strategy={} elapsed_ms={:.0} presses={} cells={} total={} decode_errors={}",
+                    strategy.name(),
+                    executor.elapsed_ms(),
+                    executor.stats.presses,
+                    executor.table.covered1(),
+                    total_cells,
+                    decode_errors
+                );
+            }
+        }
         let _ = std::io::stdout().flush();
         if decode_errors > 0 {
             eprintln!(
@@ -95,6 +254,68 @@ mod app {
             );
         }
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use awase_keymap_learn::model::{Disposition, Outcome, Status};
+
+        fn st(open: bool, mode: u8) -> Status {
+            Status {
+                open,
+                mode,
+                composing: false,
+            }
+        }
+
+        fn out(open: bool, mode: u8) -> Outcome {
+            Outcome {
+                status: st(open, mode),
+                disp: Disposition::None,
+            }
+        }
+
+        /// B2回帰テスト: `build_persisted_cells`は`Table`が内部で使う`KEYS`配列の
+        /// **添字**ではなく、実際のWindows VKコードでセルを書く。添字1(=`KEYS[1]`=
+        /// `0x1C`=Henkan)を、生VKの1(存在しないVK値)と混同していないことを固定する。
+        #[test]
+        fn build_persisted_cells_uses_real_vk_codes_not_key_array_indices() {
+            let mut table = Table::new();
+            // 添字1 = KEYS[1] = 0x1C(Henkan)。もし添字のまま書くと`KeyId(1)`になり、
+            // 実際には無変換(0x1D=KEYS[0])のVKと衝突する誤りを検出できない。
+            table.record(st(true, 0x09), 1, None, out(false, 0));
+            let cells = build_persisted_cells(&table);
+            assert_eq!(cells.len(), 1);
+            assert_eq!(
+                cells[0].key,
+                KeyId(0x1C),
+                "添字1は実VK 0x1C(Henkan)であるべき"
+            );
+            assert_ne!(
+                cells[0].key,
+                KeyId(1),
+                "添字をそのままKeyIdにしてはいけない(B2)"
+            );
+        }
+
+        /// M5回帰テスト: 訪問したが決定的でないセル(観測が食い違う)も、省略せず
+        /// `prediction: None`で書く。書き手が未測定/非決定セルを省略できると、
+        /// 読み手側の縮退率チェックの分母を書き手が恣意的に操作できてしまう。
+        #[test]
+        fn build_persisted_cells_keeps_visited_nondeterministic_cells_with_none_prediction() {
+            let mut table = Table::new();
+            // 同じ(status, key)に食い違う2件を記録(非決定、min_minority=2未満なので
+            // 誤りに強い分類でも決定できない)。
+            table.record(st(true, 0x09), 0, Some(1), out(false, 0));
+            table.record(st(true, 0x09), 0, Some(1), out(true, 0x09));
+            let cells = build_persisted_cells(&table);
+            assert_eq!(cells.len(), 1, "訪問したセルは省略せず1件書くべき");
+            assert_eq!(
+                cells[0].prediction, None,
+                "決定的と言えないセルはNoneで書くべき(省略ではない)"
+            );
+        }
     }
 }
 

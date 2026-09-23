@@ -78,7 +78,9 @@ pub enum LoadError {
     Parse(#[source] serde_json::Error),
     #[error("keymap-learn-table のスキーマ版が不一致(見つかった版={found}, 現行版={expected})")]
     SchemaVersionMismatch { found: u32, expected: u32 },
-    #[error("keymap-learn-table に(status, key)の重複エントリがある: status={status:?}, key={key:?}")]
+    #[error(
+        "keymap-learn-table に(status, key)の重複エントリがある: status={status:?}, key={key:?}"
+    )]
     DuplicateCell { status: Status, key: KeyId },
 }
 
@@ -171,7 +173,12 @@ mod tests {
         // 段階5がdevelop側の状態表現を変えると、段階5より前に永続化した表(古い版)が
         // 現行と食い違う。versionチェックが`!=`ではなく`<`のような片方向比較に
         // 誤って変更される回帰を防ぐため、新しい版だけでなく古い版も拒否することを固定する。
-        const { assert!(CURRENT_SCHEMA_VERSION >= 1, "test needs a version below current") };
+        const {
+            assert!(
+                CURRENT_SCHEMA_VERSION >= 1,
+                "test needs a version below current"
+            )
+        };
         let mut table = PersistedTable::new(vec![cell(true, 0, None)], None);
         table.schema_version = CURRENT_SCHEMA_VERSION - 1;
         let json = table.to_json().expect("serialize");

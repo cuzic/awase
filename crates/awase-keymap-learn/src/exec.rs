@@ -92,8 +92,11 @@ pub struct Executor<D: ImeDriver = SimIme> {
     /// ADR-195段階6: 学習プロセス(`awase-keymap-learn-win`)が進捗を標準出力へ
     /// 運ぶための差し込み口。`press()`が完了するたびに呼ばれる(呼び出し側で
     /// 出力頻度を間引く)。既定は`None`(シミュレータ・既存テストへの影響なし)。
-    progress: Option<Box<dyn FnMut(&Stats, &Table)>>,
+    progress: Option<ProgressSink>,
 }
+
+/// [`Executor::progress`]の型(clippyの`type_complexity`回避のため型エイリアスに分離)。
+type ProgressSink = Box<dyn FnMut(&Stats, &Table)>;
 
 impl<D: ImeDriver + std::fmt::Debug> std::fmt::Debug for Executor<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -358,7 +361,11 @@ mod tests {
             assert!(table.covered1() <= stats.presses as usize);
         });
         e.reset();
-        assert_eq!(*calls.borrow(), 0, "reset()はpress()を経由しないので呼ばれない");
+        assert_eq!(
+            *calls.borrow(),
+            0,
+            "reset()はpress()を経由しないので呼ばれない"
+        );
         e.press(atok_keys::HANKAKU).expect("届く");
         assert_eq!(*calls.borrow(), 1);
         e.press(atok_keys::HANKAKU).expect("届く");
