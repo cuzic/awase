@@ -5,7 +5,7 @@
 #[cfg(windows)]
 fn main() {
     use awase_keymap_learn::exec::ImeDriver;
-    use awase_keymap_learn_win::RealImeDriver;
+    use awase_keymap_learn_win::{arrival_log, RealImeDriver};
     use std::time::{Duration, Instant};
 
     const KEYS: [u32; 14] = [
@@ -39,8 +39,9 @@ fn main() {
         let toggled = driver.diag_toggle_open_status();
         driver.diag_pump(Duration::from_millis(300));
         println!(
-            "INPROC_TOGGLE toggled={toggled:?} notify_external_delta={}",
-            driver.diag_notify_external_count() - before
+            "INPROC_TOGGLE toggled={toggled:?} notify_external_delta={} arrivals={:x?}",
+            driver.diag_notify_external_count() - before,
+            arrival_log()
         );
     }
     let phase1 = driver.diag_notify_external_count();
