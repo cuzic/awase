@@ -21,7 +21,7 @@ use windows::Win32::UI::Input::Ime::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, VIRTUAL_KEY,
+    KEYEVENTF_KEYUP, VIRTUAL_KEY,
 };
 use windows::Win32::UI::TextServices::{
     CLSID_TF_ThreadMgr, ITfCompartmentMgr, ITfThreadMgr,
@@ -319,12 +319,11 @@ fn send_key_press(vk: u32) -> bool {
             ki: KEYBDINPUT {
                 wVk: VIRTUAL_KEY(vk as u16),
                 wScan: scan_for(vk),
-                dwFlags: KEYEVENTF_SCANCODE
-                    | if up {
-                        KEYEVENTF_KEYUP
-                    } else {
-                        KEYBD_EVENT_FLAGS(0)
-                    },
+                dwFlags: if up {
+                    KEYEVENTF_KEYUP
+                } else {
+                    KEYBD_EVENT_FLAGS(0)
+                },
                 time: 0,
                 dwExtraInfo: 0,
             },

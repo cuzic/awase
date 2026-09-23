@@ -23,6 +23,7 @@ mod app {
         let initial = driver.initial_status();
         let mut model = atok_like();
         for state in &mut model.states {
+            // ヒューリスティックな初期仮説として、抽象mode 0/1を実機のConv値0x09/0x00へ対応づける。
             state.status.mode = if state.status.mode == 0 { 0x09 } else { 0x00 };
         }
         if let Some(index) = model
