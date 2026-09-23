@@ -6,8 +6,9 @@ mod app {
     use awase_keymap_learn::cost::CostModel;
     use awase_keymap_learn::exec::{Executor, ImeDriver, ReadPolicy};
     use awase_keymap_learn::graph::Prior;
+    use awase_keymap_learn::judgement::adopt_needs_confirmation;
     use awase_keymap_learn::model::KeyId;
-    use awase_keymap_learn::persist::{PersistedCell, PersistedTable};
+    use awase_keymap_learn::persist::{from_json, PersistedCell, PersistedTable};
     use awase_keymap_learn::rng::Rng;
     use awase_keymap_learn::sample_models::atok_like;
     use awase_keymap_learn::strategy::{run, Req, Strategy};
@@ -20,6 +21,13 @@ mod app {
     const KEYS: [u32; 14] = [
         0x1D, 0x1C, 0xF2, 0xF1, 0xF0, 0xF3, 0x19, 0x16, 0x1A, 0x1B, 0x0D, 0x20, 0x08, 0x41,
     ];
+
+    /// ADR-196決定1b-8: 判定書き換えモード起動フラグ。`awase-settings`の
+    /// 「学習結果を使う」ボタン([ADR196-T4](../../../docs/tasks/adr196-t4-ui-status-and-adoption.md)、
+    /// 未実装)が、実機のIME駆動を一切せずこのプロセスをこのフラグで再起動して、
+    /// 要確認状態の判定だけをアトミックに採用へ書き換える(表ファイルの書き手は
+    /// 学習プロセスのみという原則、決定3aを保つため)。
+    const ADOPT_PENDING_JUDGEMENT_FLAG: &str = "--adopt-pending-judgement";
 
     /// ADR-195段階6: 何押下ごとに標準出力へ進捗行を書き出すか。毎回書くと
     /// 子プロセス側(awase-settings)のパース負荷・パイプI/Oが無駄に増えるため間引く。
@@ -176,7 +184,45 @@ mod app {
         (cell_count, write_result)
     }
 
+    /// 決定1b-8の中核: 既存の`keymap-learn-table.json`を読み、要確認状態の判定を
+    /// アトミックに採用へ書き換える。純粋な採否ロジック(`adopt_needs_confirmation`)は
+    /// `awase-keymap-learn::judgement`が持つ(ホストでユニットテスト済み)——本関数は
+    /// ファイルI/Oの糊付けのみ。パスを引数化しているのはテスト容易性のため
+    /// (`table_file_path()`自体はexe相対探索でテストで差し替えられない)。
+    fn adopt_pending_judgement_at(path: &std::path::Path) -> Result<(), String> {
+        let json = std::fs::read_to_string(path)
+            .map_err(|e| format!("read_failed: {}への読み込みに失敗: {e}", path.display()))?;
+        let mut table = from_json(&json).map_err(|e| format!("parse_failed: {e}"))?;
+        table.judgement =
+            Some(adopt_needs_confirmation(table.judgement).map_err(|reason| reason.to_string())?);
+        let rewritten = table
+            .to_json()
+            .map_err(|e| format!("serialize_failed: {e}"))?;
+        awase::fs_atomic::write_atomic(path, rewritten.as_bytes())
+            .map_err(|e| format!("write_failed: {}への書き込みに失敗: {e:#}", path.display()))
+    }
+
+    fn adopt_pending_judgement() -> Result<(), String> {
+        let path = table_file_path()
+            .ok_or_else(|| "no_config: config.tomlが見つかりません".to_string())?;
+        adopt_pending_judgement_at(&path)
+    }
+
+    /// 判定書き換えモードのエントリポイント。成否を標準出力へ運ぶ(awase-settings側の
+    /// パース対象、`result`行とは別の`adopt`行——学習セッションの結果ではないため)。
+    fn run_adopt_mode() {
+        match adopt_pending_judgement() {
+            Ok(()) => println!("adopt status=success"),
+            Err(reason) => println!("adopt status=failure reason={reason}"),
+        }
+        let _ = std::io::stdout().flush();
+    }
+
     pub fn run_main() -> windows::core::Result<()> {
+        if std::env::args().any(|arg| arg == ADOPT_PENDING_JUDGEMENT_FLAG) {
+            run_adopt_mode();
+            return Ok(());
+        }
         let strategy = if std::env::args().any(|arg| arg == "--strategy=s0") {
             Strategy::S0
         } else {
@@ -397,6 +443,75 @@ mod app {
                 cells[0].prediction, None,
                 "決定的と言えないセルはNoneで書くべき(省略ではない)"
             );
+        }
+
+        use awase_keymap_learn::judgement::{
+            NeedsConfirmationReason, RejectedReason, TableJudgement,
+        };
+        use awase_keymap_learn::model::KeyId;
+
+        /// テストごとに衝突しない一時ファイルパスを作る(`std::env::temp_dir()`+
+        /// テスト名+スレッドIDの規約、`awase-settings::bug_report`テストと同型)。
+        fn temp_table_path(label: &str) -> std::path::PathBuf {
+            std::env::temp_dir().join(format!(
+                "awase_keymap_learn_win_adopt_test_{label}_{:?}.json",
+                std::thread::current().id()
+            ))
+        }
+
+        fn sample_table(judgement: Option<TableJudgement>) -> PersistedTable {
+            let mut table = PersistedTable::new(vec![PersistedCell {
+                status: st(true, 0x09),
+                key: KeyId(0x1D),
+                prediction: None,
+            }]);
+            table.judgement = judgement;
+            table
+        }
+
+        /// 決定1b-8: 要確認状態のファイルは採用へ書き換わり、ディスク上にも反映される。
+        #[test]
+        fn adopt_pending_judgement_at_accepts_needs_confirmation_on_disk() {
+            let path = temp_table_path("accepts");
+            let table = sample_table(Some(TableJudgement::NeedsConfirmation(
+                NeedsConfirmationReason::SystematicMismatch {
+                    mismatch_percent: 40,
+                },
+            )));
+            std::fs::write(&path, table.to_json().unwrap()).unwrap();
+
+            let result = adopt_pending_judgement_at(&path);
+
+            assert_eq!(result, Ok(()));
+            let reloaded = from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(reloaded.judgement, Some(TableJudgement::Accepted));
+            let _ = std::fs::remove_file(&path);
+        }
+
+        /// 安全弁: 不採用(低正答率)のファイルは、書き換え要求があっても変更されない
+        /// (エラーを返し、ディスク上の内容もそのまま)。
+        #[test]
+        fn adopt_pending_judgement_at_leaves_rejected_file_untouched() {
+            let path = temp_table_path("rejected");
+            let table = sample_table(Some(TableJudgement::Rejected(RejectedReason::LowAccuracy)));
+            std::fs::write(&path, table.to_json().unwrap()).unwrap();
+
+            let result = adopt_pending_judgement_at(&path);
+
+            assert_eq!(result, Err("rejected".to_string()));
+            let reloaded = from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(reloaded, table, "拒否時はファイルを一切書き換えない");
+            let _ = std::fs::remove_file(&path);
+        }
+
+        #[test]
+        fn adopt_pending_judgement_at_reports_missing_file() {
+            let path = temp_table_path("missing_never_created");
+            let _ = std::fs::remove_file(&path); // 前回の残骸があれば消す
+
+            let result = adopt_pending_judgement_at(&path);
+
+            assert!(matches!(result, Err(reason) if reason.starts_with("read_failed")));
         }
     }
 }
