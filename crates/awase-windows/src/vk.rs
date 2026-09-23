@@ -968,8 +968,8 @@ mod tests {
     use super::{
         ascii_to_vk, build_symbol_to_vk, is_ime_mode_key_for_ime, is_synthetic_dbe_ime_hotkey,
         may_change_ime, reinject_scan_code, should_release_thumb_latch,
-        should_upgrade_is_japanese_ime, thumb_latch_identity, vk_may_mutate_conv,
-        vk_pair_to_ascii, ImeKeyKind, VkCode, VK_A, VK_RETURN, VK_SPACE,
+        should_upgrade_is_japanese_ime, thumb_latch_identity, vk_may_mutate_conv, vk_pair_to_ascii,
+        ImeKeyKind, VkCode, VK_A, VK_RETURN, VK_SPACE,
     };
     use awase::types::ScanCode;
 
