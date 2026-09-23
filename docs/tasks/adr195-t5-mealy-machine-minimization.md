@@ -1,6 +1,6 @@
 # ADR-195 T5: 隠れ状態を最小Mealy機械として持つ（段階5）を実装する
 
-状態: **実装中（PR #252、2026-09-23時点）**。[ADR195-T2](adr195-t2-self-verification.md)完了後に着手
+状態: **developマージ済み（PR #252、2026-09-23、`588cbd59`）。** [ADR195-T2](adr195-t2-self-verification.md)完了後に着手
 （学習済みの観測表が入力）。ADR-192/176とは無関係に着手可。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 

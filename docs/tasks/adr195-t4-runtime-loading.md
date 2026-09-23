@@ -16,8 +16,8 @@ ADR-196決定1e（`196-...md:133,136`）により、判定（縮退率・突き�
 書かれているため、ADR-196決定1b・1eへの作り直しが必要。PR #256にコメント済み。
 ADR196-T2着手時に、このブランチの担当者と重複作業にならないよう調整すること。**
 
-状態: **実装中（PR #256、ADR-196対応は未反映。2026-09-23時点）**。[ADR195-T3](adr195-t3-persistence.md)
-完了後に着手。着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
+状態: **developマージ済み（PR #256、2026-09-23、`d7e0df17`）。ADR-196対応はまだ未反映のまま。**
+着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
 ## 背景
 

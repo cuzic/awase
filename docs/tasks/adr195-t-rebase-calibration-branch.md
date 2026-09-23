@@ -9,6 +9,15 @@
 その作業記録として更新すること。新規に一からrebaseし直す必要はない。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
+**2026-09-23追記（作業記録）**: 上記の状況をこの日のうちに解消した。T9（PR #258）が
+T2/T3/T8/T6の最新修正を取り込んだ上でdevelop直接へ統合され、元のPR #250/#251/#253/#255
+はsupersededでクローズ（削除はせず）。T5（PR #252）・T4（PR #256）は、それぞれの土台
+（T2・T3）がdevelop統合済みになったのを受けてdevelop直上へ`git rebase --onto`で
+付け替え、developへマージ。結果として`awase-keymap-learn`/`-win`クレートは develop に
+1系統のみで存在する状態になった（2系統に分かれていた問題は解消）。詳細な統合手順・
+遭遇したコンフリクトは[adr195-remaining-work-2026-09-23.md](adr195-remaining-work-2026-09-23.md)
+1節を参照。
+
 ## 背景
 
 [ADR-195](../adr/195-keymap-learn-productization.md)（rev7、opus-adversarial-consult

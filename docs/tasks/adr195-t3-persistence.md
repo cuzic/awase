@@ -5,8 +5,9 @@
 一切反映しておらず（スキーマは`schema_version`と`cells`のみ）、拡張の担当タスクがどこにも
 無いことが判明した。実装対象4として以下のフィールド追加を明記する。**
 
-状態: **実装中（PR #251、ADR-196拡張フィールドは未反映。2026-09-23時点）**。[ADR195-T2](adr195-t2-self-verification.md)完了後に着手
-（着手自体は設計独立なのでT2と並行しても良い）。
+状態: **developマージ済み（2026-09-23、PR #258〈T9〉経由。元PR #251はsupersededで
+クローズ済み、詳細は[adr195-remaining-work-2026-09-23.md](adr195-remaining-work-2026-09-23.md)
+参照）。ADR-196拡張フィールドはまだ未反映のまま。**
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
 ## 背景

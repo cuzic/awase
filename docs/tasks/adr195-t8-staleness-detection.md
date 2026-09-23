@@ -15,8 +15,10 @@ GJI/Microsoft IME本体の**バージョン相当の情報**が不一致だっ�
 （実装対象1・2）は土台として活かせる。PR #253にコメント済み。[ADR196-T5](adr196-t5-revalidation-not-invalidation.md)は、
 これに「バージョン相当の情報」という別枠のフィンガープリントと3状態化を追加する差分になる。**
 
-状態: **実装中（PR #253、独立にテスト可能な判定ロジックのみ先行実装。ADR-196対応は
-未反映。2026-09-23時点）**。[ADR195-T3](adr195-t3-persistence.md)/
+状態: **developマージ済み（2026-09-23、PR #258〈T9〉経由。元PR #253はsupersededで
+クローズ済み、詳細は[adr195-remaining-work-2026-09-23.md](adr195-remaining-work-2026-09-23.md)
+参照）。独立にテスト可能な判定ロジックのみの先行実装であり、ADR-196対応(実際の
+実行時読込への配線)はまだ未反映のまま。**[ADR195-T3](adr195-t3-persistence.md)/
 [ADR195-T4](adr195-t4-runtime-loading.md)完了後に着手。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 

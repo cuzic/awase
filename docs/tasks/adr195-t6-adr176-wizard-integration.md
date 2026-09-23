@@ -6,8 +6,10 @@
 起動・進捗表示）はそのまま有効。新しいUI方針は[ADR196-T4](adr196-t4-ui-status-and-adoption.md)
 を参照。**
 
-状態: **実装中（PR #255、実装対象5〈同梱表一致時は学習を勧めない〉には未着手のまま
-ADR-196対応待ち。2026-09-23時点）**。[ADR195-T1](adr195-t1-independent-learning-process.md)
+状態: **developマージ済み（2026-09-23、PR #258〈T9〉経由。元PR #255はsupersededで
+クローズ済み、詳細は[adr195-remaining-work-2026-09-23.md](adr195-remaining-work-2026-09-23.md)
+参照）。実装対象5〈同梱表一致時は学習を勧めない〉は上記の通りADR-196決定2に置換されたため
+未着手のまま。**[ADR195-T1](adr195-t1-independent-learning-process.md)
 完了後に着手（起動対象となる学習プロセスが必要）。ADR-176は既にdevelopマージ済み。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 

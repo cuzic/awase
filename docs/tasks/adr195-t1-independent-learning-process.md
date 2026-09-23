@@ -17,9 +17,11 @@ docs/tasks横断レビュー（B2）で、`driver.rs`（PR #250〜#256の共通�
 含む。[ADR196-T1](adr196-t1-external-write-observation.md)（フック・分類器そのもの）も
 同じPR #259で実装済み。
 
-状態: **本体はPR #250〜#256（develop未マージ）で実装中。B2修正＋ADR196-T1はPR #259
-（`feat/adr196-t1-external-write-observation`、develop未マージ、`feat/adr195-t3-persistence`
-を土台にしている）で対応済み。** [ADR195前提タスク](adr195-t-rebase-calibration-branch.md)
+状態: **本体はdevelopマージ済み（2026-09-23、PR #258〈T9〉経由。元PR #250〜#256は
+supersededでクローズ済み、詳細は[adr195-remaining-work-2026-09-23.md](adr195-remaining-work-2026-09-23.md)
+参照）。B2修正＋ADR196-T1はPR #259（`feat/adr196-t1-external-write-observation`、
+develop未マージ、別セッション担当）で対応中——まだmergeされておらず、`driver.rs`の
+`dwExtraInfo: 0`問題(B2)自体はdevelop側にまだ残っている。** [ADR195前提タスク](adr195-t-rebase-calibration-branch.md)
 （`feat/awase-calibration`のrebase）完了後に着手。ADR-192とは無関係に着手可。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 

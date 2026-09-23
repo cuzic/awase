@@ -327,7 +327,7 @@ P50=1ms・P95=34ms（10件、通知が来なかったキーは6/16=38%）。GJI�
   | 追加: 予測器`key_effect_table.rs`（フォローアップPRで`key_effect_predictor.rs`へ改名） | +1,166（MS-IME本体の表引き・修飾キー抑止・キャッシュ・非決定セル除外込み） | 決定3の本体 |
   | 追加: 生成データ`key_effect_data.rs`（フォローアップPRで`key_effect_table.rs`へ改名） | +467（MS-IME本体の表`MSIME_NATIVE`込み） | 格子の生成物（手書きセルは無い。`gen_key_effect_table.py --check`が一致を検査） |
   | 追加: `ime_model.rs`（`KeyEffectPredicted`・追跡・fence）＋`platform_state.rs` | +607＋478（通過マーク・意図の破棄・desired揃え=BUG-155/157/158込み） | 決定3の本体と、その周辺の訂正 |
-  | 別クレート: `awase-keymap-learn`（旧名`awase-calibration`。巡回・シミュレータ。`feat/awase-calibration`ブランチで改名済み・未マージ） | +3,406（`crates/awase-windows/src`の外） | 製品化の土台。指標1の対象外 |
+  | 別クレート: `awase-keymap-learn`（旧名`awase-calibration`。巡回・シミュレータ。`feat/awase-calibration`ブランチで改名、ADR-195〈PR #250〜#258〉と共に2026-09-23developマージ済み） | +3,406（`crates/awase-windows/src`の外） | 製品化の土台。指標1の対象外 |
   撤去した約4,500行のうち、再実装が要るのは`gji_charset_autodetect.rs`と較正結果の適用の合計約1,700行で、戻ってくる量は**未確定**（設定読み取りの範囲次第）。**指標1（`crates/awase-windows/src`と`src`の合計の追加−削除がP0〜P2の末で負）は、現時点（2026-09-21、`6de6bac1`、レビュー指摘対応後）で+4,480/−4,897＝−417行で満たす**（`src`は+151/−1,476＝−1,325、`crates/awase-windows/src`だけでは+4,329/−3,421＝+908行）。旧定義（`crates/awase-windows/src`のみ）ではPR作成時の−483行から+908行へ増えたが、増えた内訳は上表の予測器・生成データ・`ime_model`/`platform_state`（BUG-155〜159の修正込み）・MS-IME本体対応で、定義の変更の理由と旧定義の実測値は決定5の指標1に残した（ユーザー決定、2026-09-21）。
   [ADR-162](162-governance-reversal.md) E1（複雑性予算1-in-1-out、未発効）と同じ向き。
 - **削る・見送るもの（round4 D）**: (1)較正セッションは「学習した表の生成と読み込み」に絞り、ADR-176のウィザードの「適用」配線は削除済み。(2)設定の読み取りは、分類a〜eに要る最小（`config1.db`の`session_keymap`・

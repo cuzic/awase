@@ -9,8 +9,9 @@
 - 判定に使う最終ウォークは、予測したステップ数が最低300以上になるようにすること
   （**所要時間の見積もりに反映すること**——下記「実装前に必要な実測」参照）。
 
-状態: 未着手（2026-09-23起票）。[ADR195-T1](adr195-t1-independent-learning-process.md)
-完了後に着手。
+状態: **developマージ済み（2026-09-23、PR #258〈T9〉経由。元PR #250はsupersededで
+クローズ済み、詳細は[adr195-remaining-work-2026-09-23.md](adr195-remaining-work-2026-09-23.md)
+参照）。**
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
 ## 実装前に必要な実測（横断レビューS2対応）
