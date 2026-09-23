@@ -1,7 +1,54 @@
 # IME actuation 合流点4件の棚卸し（統合候補/構造上必要/ロジック共有候補の分類）
 
-状態: 未着手（2026-09-22起票）
-着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
+状態: **完了（2026-09-23）**
+着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること
+（`docs/actuation-confluence-inventory` ブランチ、
+`rust-nicola-worktrees/actuation-confluence-inventory` で実施）。
+
+## 結果サマリー（2026-09-23）
+
+現存5エントリ（`ImeController::apply`/`run_open_chain_async`/`fallback_write`/
+`imm_cross_write`/`dispatch_ime_set_open`）は**全て構造上必要なエントリ点**と
+判明した。**本物の統合候補（エントリ点そのものを削れるもの）はゼロ**——
+complexity-budget.md の TH1e 証明材料はこの棚卸しでは得られなかった。
+
+想定していた「エントリ点は残すが中の判断ロジックを共通pure関数へ切り出す」
+（ロジック共有候補）作業も、着手前に**既に完了済み**と判明した:
+
+- InputRelayゲート判定（旧: 4箇所が個別に同じ`matches!`を書いていた）は
+  `state/ime_actuation_decision.rs::decide_gate`/`is_input_relay`へ
+  集約済み（[ADR-180](../adr/180-actuation-gate-recheck-deduplication.md)
+  決定1、develop コミット`c8bc1adc`で実装済み）。
+- 機構dispatchロジック（`SetOpenCrossProcessSync`/`SendVk`の実Win32呼び出し）
+  は`ime_controller.rs::apply_mechanism`へ集約済み（ADR-163 TH1b-2b）——
+  sync経路（`ImeController::apply`の`SyncChainWriter`）とasync経路
+  （`open_chain.rs::fallback_write`）の2箇所から共有されている。
+
+さらに、より野心的な統合（`ActuationDecisionRecord`3実装の統一、`with_app`を
+内包する共有ゲートヘルパー化）は、**このタスクの着手前にADR-180で既に
+3ラウンドのopus-adversarial-consultを経て検討・見送り済み**だった
+（decision2: 本番−40行に対しテスト+ガード+80〜125行が必要で費用対効果が負、
+`caller`の構築時引数化が実装不能。decision1のヘルパー化: `fallback_write`
+からの再入でInputRelayゲートが恒久的に無効化される危険、issue #136/BUG-90型
+の回帰）。この見送り理由がコード側（`open_chain.rs`の該当`with_app`
+クロージャ直前）に無かったため、ADR-180が約束していた「付随作業」として
+2箇所に説明コメントを追加した（本タスクで唯一の直接コード変更）。
+
+各エントリの分類の詳細は
+[fix-requires-evidence.md「IME actuation合流点」行](../../.claude/rules/fix-requires-evidence.md)
+に反映した。
+
+### このタスクの当初想定との差分
+
+起票時点（上記「背景・動機」節）では「この棚卸し自体がTH1eの証明材料に
+なりうる」と見込んでいたが、実際には「証明すべき統合候補がそもそも存在しない
+（既に先行ADRで分類・実施・却下済み）」という結果になった。これは
+complexity-budget.mdの発効を遅らせる新たな障害ではない——単に、今回の
+探索範囲（IME actuation合流点5箇所）では統合可能な重複が既に払底していた
+ということ。TH1eの証明材料は引き続き別の領域（例: 姉妹タスク
+[actuation-confluence-already-matched-gap.md](actuation-confluence-already-matched-gap.md)
+のような個別の未テスト分岐ではなく、まだADR-180/163の対象になっていない
+箇所）から探す必要がある。
 
 ## 背景・動機
 
