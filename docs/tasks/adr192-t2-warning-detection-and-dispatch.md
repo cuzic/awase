@@ -19,10 +19,14 @@
 1. **親指キーか否かの分岐**: 対象VKが`general.left_thumb_key`/`right_thumb_key`
    （`muhenkan_vk`/`henkan_vk`ではない——ADR-192 round2 D-3参照、この2つは無変換/変換限定の
    内部値で分岐条件には使えない）に設定されているかで分岐する。
-   - 親指キーとして使っている場合: 決定2の新規警告は**出さない**。既存の
-     `msime_key_assignment::check_and_warn`と同型の判定をGJI側にも拡張する
-     （新しい独立ダイアログは追加しない）。案内文は「IME側の割り当てを解除し、awaseの
-     明示config（`*_solo_tap_ime_action`、またはADR192-T4の新経路）に委ねてください」。
+   - 親指キーとして使っている場合: 決定2の新規警告は**出さない**。案内文は
+     「IME側の割り当てを解除し、awaseの明示config（`*_solo_tap_ime_action`、または
+     ADR192-T4の新経路）に委ねてください」。**【2026-09-23訂正、横断レビュー】**
+     この案内の実装は「`check_and_warn`と同型の判定をGJI側にも拡張する」のではない——
+     ADR-192決定2b（`192-...md:294-296`）が「`check_and_warn`側にGJI用の判定を新設
+     しない。判定のSSOTは`detect()`の`WarningKind::ThumbConflict`」と確定しているため、
+     このタスクの元の記述はその確定より前（決定2b起票前）の想定であり、実装時は
+     決定2bのSSOTに従うこと（[ADR192-T2b](adr192-t2b-warning-visibility-gap.md)参照）。
    - 親指キーだが無変換/変換ではない場合: 決定2の新規警告もADR192-T4の救済も届かない
      ため、既存のT-16警告（`validate_thumb_key_in_ime_combos`）がその旨を案内する経路の
      まま残す（このタスクでは何もしない、無案内にしないことの確認のみ）。
