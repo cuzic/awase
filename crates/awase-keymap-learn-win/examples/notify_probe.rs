@@ -18,10 +18,8 @@ fn main() {
             std::process::exit(2);
         }
     };
-    println!(
-        "BASELINE notify_external={}",
-        driver.diag_notify_external_count()
-    );
+    let baseline = driver.diag_notify_external_count();
+    println!("BASELINE notify_external={baseline}");
     for key in [2usize, 5, 2, 5, 2, 5] {
         let report = driver.press(key);
         println!(
