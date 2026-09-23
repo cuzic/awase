@@ -165,7 +165,7 @@ fn coverage_ratio(raw: &[PersistedCell], converted_len: usize) -> f64 {
 
 /// 学習表と同梱表のセル不一致率。同梱表の各セルについて、学習表に同じ
 /// `(open, conv, stage, key)`のセルがあり、かつ`after_open`/`after_conv`/`disp`のいずれかが
-/// 食い違うものを数える（学習表に無いセル＝単に未学習は不一致に数えない、突き合わせの対象は
+/// 食い違うものを数える(`after_conv`は[`after_conv_conflicts`]、片方が`None`＝不明なら矛盾でない)（学習表に無いセル＝単に未学習は不一致に数えない、突き合わせの対象は
 /// 「同梱表にあるセルのうち学習表でも答えが出ているもの」だけ）。
 fn mismatch_ratio(learned: &[Cell], bundled: &[Cell]) -> f64 {
     let mut compared = 0usize;
@@ -179,7 +179,7 @@ fn mismatch_ratio(learned: &[Cell], bundled: &[Cell]) -> f64 {
         };
         compared += 1;
         if l.after_open() != b.after_open()
-            || l.after_conv() != b.after_conv()
+            || after_conv_conflicts(l.after_conv(), b.after_conv())
             || l.disp() != b.disp()
         {
             mismatched += 1;
@@ -693,6 +693,22 @@ mod tests {
             None,
             Disp::None,
         )]
+    }
+
+    /// 実行時の不採用判定`mismatch_ratio`も同じ扱い(実機CI実測: 偽不一致10/73≒13.7%が
+    /// 上限`MAX_MISMATCH_RATIO`(5%)を超え、未改造GJI ATOKの学習表が不採用になりうる型)。
+    #[test]
+    fn mismatch_ratio_treats_unknown_bundled_after_conv_as_no_claim() {
+        let mut pc = pcell(false, 0x00, false, 0xF2, Some((true, 0x09)));
+        pc.prediction.as_mut().unwrap().disp = Disposition::None;
+        let learned = convert_cells(&[pc]);
+        assert_eq!(
+            mismatch_ratio(&learned, &none_after_conv_bundled_table()),
+            0.0
+        );
+        // 既知同士の矛盾は従来どおり不一致に数える。
+        let conflicting = convert_cells(&[pcell(true, 0x09, false, 0xF2, Some((true, 0x09)))]);
+        assert_eq!(mismatch_ratio(&conflicting, &one_cell_bundled_table()), 1.0);
     }
 
     #[test]
