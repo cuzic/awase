@@ -2179,6 +2179,9 @@ impl NicolaFsm {
             special.explicit_ime_action.is_none()
                 && !explicit_action_consumed
                 && !suppress_solo_output
+                // 押下後にShiftが押された場合（押下時のpassthroughガードをすり抜けた
+                // 経路）も強制操作を発火させない（レビュー2026-09-23 C-1）。
+                && !self.phys.modifiers.shift
         }) {
             return (
                 ResolvedAction {

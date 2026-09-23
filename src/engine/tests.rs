@@ -7463,6 +7463,28 @@ mod engine_integration_tests {
         );
     }
 
+    /// C-1追補: 無変換を先に押し（保留に入る）、その後Shiftが押された状態で離しても
+    /// 強制IME操作を発火しない。
+    #[test]
+    fn forced_open_action_does_not_fire_when_shift_pressed_after_key_down() {
+        let mut engine = make_test_engine_with_muhenkan_forced_turn_off();
+        engine.set_thumb_forced_open_actions(Some(ShadowImeAction::Toggle), None);
+        let shift_ctx = InputContext {
+            modifiers: ModifierState {
+                shift: true,
+                ..ime_on_ctx().modifiers
+            },
+            ..ime_on_ctx()
+        };
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let _ = engine.on_input(Ev::down(VK_LSHIFT).at(150).build(), &shift_ctx);
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &shift_ctx);
+        assert!(
+            !has_effect(&up, |e| matches!(e, Effect::Ime(_))),
+            "Shift押下中の解放では強制IME操作を発火しない"
+        );
+    }
+
     /// 対照: `ModeKeyConfig::Suppress`（既定）のキーは、Shift併用でも従来どおり
     /// `PendingThumb` に入る（即座の素通しは Passthrough 設定のときだけ）。Suppress は
     /// 最終的に何も送らない設定なので、チョードに巻き込まれても実害は無いが、
