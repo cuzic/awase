@@ -479,20 +479,30 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-mutants
-      - name: Run cargo-mutants (awase core crate)
-        # ubuntu-latest(GitHub-hosted標準ランナー)は4vCPU。--jobs未指定だと
-        # cargo-mutantsは逐次実行(並列度1)になりコア数を活かせないため明示する。
-        run: cargo mutants --no-shuffle --jobs 4
+      - name: Run cargo-mutants (awase core crate, shard ${{ matrix.shard }}/4)
+        # 2026-09-23実測: --jobs 4(1 runner)では1194 mutantsが65分で、--jobs無しの
+        # 7月実績(661 mutantsで33分)と1件あたりほぼ同じだった。時間の大半は
+        # mutantごとのbuild(24〜58秒、testは1秒)で、4vCPU上の並列化はCPUを
+        # 取り合うだけだったため、4 runnerへ--shardで分割し、各runnerは--jobs 2にする。
+        # rust-cacheが設定するCARGO_INCREMENTAL=0だとmutantごとに全再ビルドに
+        # なるため、このstepだけ有効化する。
+        env:
+          CARGO_INCREMENTAL: "1"
+        run: cargo mutants --no-shuffle --jobs 2 --shard ${{ matrix.shard }}/4
       - name: Upload mutants report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mutants-report
+          name: mutants-report-shard-${{ matrix.shard }}
           path: mutants.out/
 
   # mutants-windows(self-hosted runner向け)は2026-07に mutants-windows.yml
@@ -520,19 +530,24 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-mutants
-      - name: Run cargo-mutants (awase-windows, platform-independent subset)
-        # windows-latest(GitHub-hosted標準ランナー)は4vCPU。--jobs未指定だと
-        # cargo-mutantsは逐次実行(並列度1)になりコア数を活かせないため明示する。
+      - name: Run cargo-mutants (awase-windows, platform-independent subset, shard ${{ matrix.shard }}/4)
+        # 分割・incrementalの理由はmutantsジョブ(coreクレート)のコメント参照。
         shell: pwsh
-        run: cargo mutants -p awase-windows --config .cargo/mutants-awase-windows.toml --no-shuffle --jobs 4
+        env:
+          CARGO_INCREMENTAL: "1"
+        run: cargo mutants -p awase-windows --config .cargo/mutants-awase-windows.toml --no-shuffle --jobs 2 --shard ${{ matrix.shard }}/4
       - name: Upload mutants report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mutants-report-awase-windows
+          name: mutants-report-awase-windows-shard-${{ matrix.shard }}
           path: mutants.out/
