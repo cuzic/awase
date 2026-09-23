@@ -424,6 +424,34 @@ fn keymap_learn_file_label(
 }
 
 impl BugReportKeymapLearnSummary {
+    /// 実ファイルを読んで組み立てる（本番の`build_bug_report_keymap_learn_summary`とCI検証が共有）。
+    /// `validation_key`は予測時に実際に使った`(preset, check_against_bundled)`。
+    #[must_use]
+    pub fn from_paths(
+        table_path: Option<&std::path::Path>,
+        last_attempt_path: Option<&std::path::Path>,
+        use_learned_keymap_table: bool,
+        in_use: bool,
+        validation_key: Option<(crate::state::key_effect_predictor::KeymapPreset, bool)>,
+    ) -> Self {
+        use crate::state::key_effect_runtime as ker;
+        let table = table_path.map_or(Err(ker::RejectReason::NotFound), ker::read_persisted_table);
+        let last_attempt = last_attempt_path.map(ker::read_persisted_table);
+        let bundled_diff = table.as_ref().ok().and_then(|t| {
+            let (preset, true) = validation_key? else {
+                return None;
+            };
+            Some(ker::diff_against_bundled(&t.cells, preset))
+        });
+        Self::from_parts(
+            &table,
+            &last_attempt,
+            use_learned_keymap_table,
+            in_use,
+            bundled_diff.as_ref(),
+        )
+    }
+
     /// 純粋な構築関数（fs・キャッシュ参照は呼び出し側）。`table`が`Err`なら
     /// ファイル自体を読めなかった状態を表す。
     #[must_use]
@@ -446,6 +474,7 @@ impl BugReportKeymapLearnSummary {
             Ok(t) => t
                 .judgement
                 .map_or_else(|| "no_judgement".to_owned(), keymap_learn_judgement_label),
+            Err(crate::state::key_effect_runtime::RejectReason::NotFound) => "not_found".to_owned(),
             Err(reason) => keymap_learn_file_label(reason).to_owned(),
         });
         let bundled_diff = bundled_diff.map(|d| BugReportKeymapLearnBundledDiff {
@@ -1231,12 +1260,66 @@ mod tests {
         assert_eq!(label(None), None);
         assert_eq!(
             label(Some(Err(RejectReason::NotFound))).as_deref(),
-            Some("not_learned")
+            Some("not_found")
         );
         assert_eq!(
             label(Some(Err(RejectReason::Parse))).as_deref(),
             Some("parse_error")
         );
+    }
+
+    /// 実ファイルを読む経路（`from_paths`）: 学習表・退避ファイルの有無・破損が
+    /// `table_file`/`last_attempt_judgement`に区別されて出ること。
+    #[test]
+    fn keymap_learn_summary_from_paths_reads_real_files() {
+        use awase_keymap_learn::judgement::{RejectedReason, TableJudgement};
+        use awase_keymap_learn::persist::PersistedTable;
+        let dir = std::env::temp_dir().join(format!("awase_from_paths_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let table_path = dir.join("keymap-learn-table.json");
+        let last_path = dir.join("keymap-learn-last-attempt.json");
+        let missing = dir.join("does-not-exist.json");
+
+        let table =
+            PersistedTable::new(vec![learn_pcell(1)]).with_judgement(TableJudgement::Accepted);
+        std::fs::write(&table_path, table.to_json().unwrap()).unwrap();
+        std::fs::write(&last_path, "{ not json").unwrap();
+
+        let s = BugReportKeymapLearnSummary::from_paths(
+            Some(&table_path),
+            Some(&last_path),
+            true,
+            false,
+            None,
+        );
+        assert_eq!(s.table_file, "loaded");
+        assert_eq!(s.judgement.as_deref(), Some("Accepted"));
+        assert_eq!(s.last_attempt_judgement.as_deref(), Some("parse_error"));
+        assert_eq!(
+            s.bundled_diff, None,
+            "validation_keyが無ければ突き合わせない"
+        );
+
+        let s = BugReportKeymapLearnSummary::from_paths(
+            Some(&missing),
+            Some(&missing),
+            true,
+            false,
+            None,
+        );
+        assert_eq!(s.table_file, "not_learned");
+        assert_eq!(s.last_attempt_judgement.as_deref(), Some("not_found"));
+
+        let last = PersistedTable::new(vec![])
+            .with_judgement(TableJudgement::Rejected(RejectedReason::LowAccuracy));
+        std::fs::write(&last_path, last.to_json().unwrap()).unwrap();
+        let s = BugReportKeymapLearnSummary::from_paths(None, Some(&last_path), true, false, None);
+        assert_eq!(s.table_file, "not_learned");
+        assert_eq!(
+            s.last_attempt_judgement.as_deref(),
+            Some("Rejected(LowAccuracy)")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
