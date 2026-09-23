@@ -149,7 +149,7 @@ pub enum Disp {
 /// `conv`が`None`のセルは、変換モードを問わない（閉(OFF)状態のセル。閉状態の変換モードの読み取りは不安定なため、
 /// 開閉だけを予測する）。`after_conv`が`None`のセルは、押下後の変換モードが不明（閉になる/開く遷移、
 /// 表現できないモード）で、追跡を捨てる。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cell {
     pub(super) open: bool,
     conv: Option<Conv>,
@@ -182,14 +182,54 @@ pub const fn cell(
     }
 }
 
-fn find(
-    preset: KeymapPreset,
-    open: bool,
-    conv: Conv,
-    stage: Stage,
-    key: TableKey,
-) -> Option<&'static Cell> {
-    table_of(preset).iter().find(|c| {
+impl Cell {
+    /// [`crate::state::key_effect_runtime`]が、学習表と同梱表のセルを突き合わせるためのアクセサ。
+    #[must_use]
+    pub const fn open(&self) -> bool {
+        self.open
+    }
+    #[must_use]
+    pub const fn conv(&self) -> Option<Conv> {
+        self.conv
+    }
+    #[must_use]
+    pub const fn stage(&self) -> Stage {
+        self.stage
+    }
+    #[must_use]
+    pub const fn key(&self) -> TableKey {
+        self.key
+    }
+    #[must_use]
+    pub const fn after_open(&self) -> bool {
+        self.after_open
+    }
+    #[must_use]
+    pub const fn after_conv(&self) -> Option<Conv> {
+        self.after_conv
+    }
+    #[must_use]
+    pub const fn disp(&self) -> Disp {
+        self.disp
+    }
+
+    /// 同じ`(open, conv, stage, key)`のセルか（[`crate::state::key_effect_runtime`]が学習表と
+    /// 同梱表のセルを突き合わせるための同一性判定。`open`と`conv`は常に連動する——閉セルは
+    /// `conv: None`固定、開セルは常に`Some`——ので単純な等値比較でよい）。
+    #[must_use]
+    pub fn matches_lookup_key(
+        &self,
+        open: bool,
+        conv: Option<Conv>,
+        stage: Stage,
+        key: TableKey,
+    ) -> bool {
+        self.open == open && self.conv == conv && self.stage == stage && self.key == key
+    }
+}
+
+fn find_in(table: &[Cell], open: bool, conv: Conv, stage: Stage, key: TableKey) -> Option<&Cell> {
+    table.iter().find(|c| {
         c.open == open && c.conv.is_none_or(|cv| cv == conv) && c.stage == stage && c.key == key
     })
 }
@@ -200,6 +240,13 @@ const fn table_of(preset: KeymapPreset) -> &'static [Cell] {
         KeymapPreset::MsIme => super::key_effect_table::MSIME,
         KeymapPreset::MsImeNative => super::key_effect_table::MSIME_NATIVE,
     }
+}
+
+/// 同梱（コンパイル時埋め込み）の表。[`crate::state::key_effect_runtime`]が、実行時に読み込んだ
+/// 表との突き合わせ（ADR-195段階4の縮退率・セル不一致率チェック）に使う。
+#[must_use]
+pub(crate) const fn bundled_table(preset: KeymapPreset) -> &'static [Cell] {
+    table_of(preset)
 }
 
 /// 打鍵履歴から追跡する隠れ状態（`ImeModel`が`KeyEffectPredicted`で持つ）。
@@ -300,6 +347,13 @@ const fn is_char_vk(vk: u16) -> bool {
 /// （変換中に文字を打つと確定して新しい入力中になる）。
 #[must_use]
 pub fn predict(preset: KeymapPreset, vk: u16, input: &PredictInput) -> Option<Prediction> {
+    predict_in_table(table_of(preset), vk, input)
+}
+
+/// [`predict`]と同じ規則だが、表を`preset`ではなく直接指定する。ADR-195段階4（実行時読込）が
+/// 検証済みの学習済み表（[`crate::state::key_effect_runtime`]）を同梱表の代わりに引くための入口。
+#[must_use]
+pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option<Prediction> {
     let seeded = matches!(input.mode, InputModeState::Unknown);
     let conv = input
         .track
@@ -345,16 +399,16 @@ pub fn predict(preset: KeymapPreset, vk: u16, input: &PredictInput) -> Option<Pr
     // 全て外れる（CI blind: ATOKで入力中の無変換の後、Enter/半角全角が予測なしのまま OFF/ON がずれ続けた）。
     // 段階の行はあるが、そのキーのセルだけが非決定で除外されている場合は代用しない（予測なしのまま）。
     let stage_modeled = |st: Stage| {
-        table_of(preset)
+        table
             .iter()
             .any(|c| c.open == input.open && c.conv.is_none_or(|cv| cv == conv) && c.stage == st)
     };
-    let c = find(preset, input.open, conv, stage, key).or_else(|| {
+    let c = find_in(table, input.open, conv, stage, key).or_else(|| {
         (matches!(
             stage,
             Stage::ConvSpace | Stage::ConvHenkan | Stage::ConvMuhenkan
         ) && !stage_modeled(stage))
-        .then(|| find(preset, input.open, conv, Stage::Typing, key))
+        .then(|| find_in(table, input.open, conv, Stage::Typing, key))
         .flatten()
     })?;
     // 押下後の変換モードが不明（閉になる/開く遷移など）のときは、追跡を捨てる。入力モードは種（Unknown）だけ反映する。
@@ -515,6 +569,52 @@ impl KeyEffectKeymap {
             return None;
         }
         predict(self.preset, vk, input)
+    }
+
+    /// [`Self::predict`]と同じだが、`override_table`が`Some`なら同梱表の代わりにそれを引く
+    /// （ADR-195段階4。検証済みの学習済み表、[`crate::state::key_effect_runtime`]が用意する）。
+    #[must_use]
+    pub fn predict_with_override(
+        &self,
+        vk: u16,
+        input: &PredictInput,
+        override_table: Option<&[Cell]>,
+    ) -> Option<Prediction> {
+        if self
+            .custom_table
+            .as_deref()
+            .is_some_and(|t| custom_table_overrides(t, vk))
+        {
+            return None;
+        }
+        if (self.has_overlay && matches!(vk, 0x1C | 0x1D))
+            || (self.henkan_reassigned && vk == 0x1C)
+            || (self.muhenkan_reassigned && vk == 0x1D)
+        {
+            return None;
+        }
+        override_table.map_or_else(
+            || predict(self.preset, vk, input),
+            |table| predict_in_table(table, vk, input),
+        )
+    }
+
+    /// この構成の`preset`。[`crate::state::key_effect_runtime`]が同梱表との突き合わせに使う。
+    #[must_use]
+    pub const fn preset(&self) -> KeymapPreset {
+        self.preset
+    }
+
+    /// カスタム表・overlay・レジストリ再割り当てのいずれも無い、同梱3種のいずれかとそのまま一致する
+    /// 構成か。ADR-195段階4の「同梱表と同じ構成ならセル突き合わせで縮退検出」判定に使う——
+    /// カスタム構成では学習表が同梱表と食い違うのが正常なので、この判定が`false`のときは
+    /// セル突き合わせ自体を行わない。
+    #[must_use]
+    pub const fn is_unmodified_bundled_config(&self) -> bool {
+        self.custom_table.is_none()
+            && !self.has_overlay
+            && !self.henkan_reassigned
+            && !self.muhenkan_reassigned
     }
 }
 
