@@ -101,6 +101,12 @@ T8のコミット(`3613707e`/`f5d53047`)はT9(#258)経由で既にdevelopの祖�
 
 ### 3b: フィンガープリントの構成
 
+**進捗(2026-09-24、`diag/adr196-t5-revalidation`)**: GJI側の版取得は実装済み(実機未検証)——
+`awase-keymap-learn-win/src/env_version.rs`(`file_version`共有関数・自セッションに絞った
+Converterパス探索・`probe_gji_env_version[_with_timeout]`)と、純粋な
+`revalidation::classify_converter_version`(不明/未確定/既知の分類、ユニットテスト済み)。
+未着手: Microsoft IME側の4値(ADR-197待ち)、学習プロセスへの指紋書き込み配線、軽量再検証モード。
+
 - **GJI**: Converter本体（`GJI_PROCESS_PREFIXES`、`tsf/gji_monitor.rs:25-39`。
   `find_gji_pid`は全セッションから最初の一致を返すため、可能なら`ProcessIdToSessionId`で
   自セッションに絞る）のフルパスを取得する新規関数（`focus/classify.rs::get_process_name`

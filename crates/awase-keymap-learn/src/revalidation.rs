@@ -90,6 +90,28 @@ pub fn needs_revalidation(stored: EnvVersionProbe, current: EnvVersionProbe) -> 
     }
 }
 
+/// Converter実行ファイルから読んだ版・更新時刻・取得側プロセスの起動時刻から、現在の
+/// [`EnvVersionProbe`]を決める(ADR-196決定3b「更新直後の食い違い対策」)。
+///
+/// - `version`が`None`(Converterが見つからない/版を読めない)なら[`EnvVersionProbe::Unknown`]。
+/// - 実行ファイルの最終更新時刻が`process_start`より新しければ、取得した版が学習中に
+///   変わった可能性があるため[`EnvVersionProbe::Unconfirmed`]。
+/// - 更新時刻が取れない場合は「新しい」と断定できないため`Known`のまま扱う。
+#[must_use]
+pub fn classify_converter_version(
+    version: Option<EnvVersion>,
+    exe_modified: Option<std::time::SystemTime>,
+    process_start: std::time::SystemTime,
+) -> EnvVersionProbe {
+    let Some(version) = version else {
+        return EnvVersionProbe::Unknown;
+    };
+    match exe_modified {
+        Some(modified) if modified > process_start => EnvVersionProbe::Unconfirmed,
+        _ => EnvVersionProbe::Known(version),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,6 +211,43 @@ mod tests {
         assert_eq!(
             EnvVersionProbe::from(Some(StoredEnvVersion::Unconfirmed)),
             EnvVersionProbe::Unconfirmed
+        );
+    }
+
+    #[test]
+    fn classify_unknown_when_version_missing() {
+        let now = std::time::SystemTime::now();
+        assert_eq!(
+            classify_converter_version(None, Some(now), now),
+            EnvVersionProbe::Unknown
+        );
+    }
+
+    #[test]
+    fn classify_unconfirmed_when_exe_newer_than_process_start() {
+        let start = std::time::SystemTime::UNIX_EPOCH;
+        let modified = start + std::time::Duration::from_secs(1);
+        assert_eq!(
+            classify_converter_version(Some(V1), Some(modified), start),
+            EnvVersionProbe::Unconfirmed
+        );
+    }
+
+    #[test]
+    fn classify_known_when_exe_not_newer_or_mtime_unavailable() {
+        let start = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10);
+        let older = std::time::SystemTime::UNIX_EPOCH;
+        assert_eq!(
+            classify_converter_version(Some(V1), Some(older), start),
+            EnvVersionProbe::Known(V1)
+        );
+        assert_eq!(
+            classify_converter_version(Some(V1), Some(start), start),
+            EnvVersionProbe::Known(V1)
+        );
+        assert_eq!(
+            classify_converter_version(Some(V1), None, start),
+            EnvVersionProbe::Known(V1)
         );
     }
 }
