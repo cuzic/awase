@@ -13,7 +13,7 @@ mod app {
     use awase_keymap_learn::strategy::{run, Req, Strategy};
     use awase_keymap_learn::table::Table;
     use awase_keymap_learn::verify::{
-        decide_cell, predict, score_walk, CellDecision, RetryTracker, WalkObs, DEFAULT_MIN_MINORITY,
+        classify_robust, predict, score_walk, WalkObs, DEFAULT_MIN_MINORITY,
     };
     use awase_keymap_learn_win::RealImeDriver;
 
@@ -68,9 +68,8 @@ mod app {
     }
 
     /// ADR-195段階2(round1 M-8、round3 m-3): 誤りに強い分類でも決定的と言えない
-    /// セルが1つでもあれば、学習をもう一度実行する(やり直しは1回まで——
-    /// `RetryTracker`がセルごとに1回しか許さない。ここでは「もう一度巡回すべきか」の
-    /// 判定にだけ使い、実際の再評価は最終的に`predict`で行う)。
+    /// セルが1つでもあれば、学習をもう一度実行する(呼び出し元がこの関数自体を
+    /// 高々1回しか呼ばないため、やり直しは1回まで)。
     ///
     /// code-review指摘: `tour()`の再訪問条件は`table.count(status, key) < req.k`
     /// なので、非決定と判定されたセルは(その判定自体がmin_minority以上の観測を
@@ -87,13 +86,14 @@ mod app {
         base_req: &Req,
         rng: &mut Rng,
     ) {
-        let mut retry = RetryTracker::new();
+        // code-review指摘: ここでは「もう一度巡回すべきか」の判定だけが要る(RetryTrackerの
+        // 状態は使い捨て、実際のやり直し回数の管理は行わない——このセッション全体で
+        // やり直しは高々1回だけ)。decide_cell/RetryTrackerを使い捨てで呼ぶと、読み手に
+        // 「複数回のやり直し管理をしている」と誤解させるため、declared_not_det()による
+        // 直接判定に単純化した。
         let mut max_flagged_count = 0usize;
         for (&(status, key), obs) in exec.table.cells() {
-            if matches!(
-                decide_cell(&exec.table, status, key, DEFAULT_MIN_MINORITY, &mut retry),
-                CellDecision::RetryLearning
-            ) {
+            if classify_robust(&exec.table, status, key, DEFAULT_MIN_MINORITY).declared_not_det() {
                 max_flagged_count = max_flagged_count.max(obs.len());
             }
         }
@@ -105,8 +105,15 @@ mod app {
             .unwrap_or(u32::MAX)
             .saturating_add(2)
             .max(base_req.k);
+        // code-review指摘: exec.stats.presses/elapsed_ms()は1回目のrun()からの累積値であり
+        // リセットされない。base_reqのmax_presses/budget_msをそのまま使い回すと、1回目の
+        // 実行で予算を(実機の異常再試行等で)使い切っていた場合、over()の最初のチェックで
+        // 即座にtrueとなり、「もう一度実行します」とログに出すだけで実際には1回も
+        // 押下せずに戻ってしまう。やり直しパスに、1回目とは独立した新しい予算を与える。
         let retry_req = Req {
             k: bumped_k,
+            max_presses: exec.stats.presses.saturating_add(base_req.max_presses),
+            budget_ms: exec.elapsed_ms() + base_req.budget_ms,
             ..*base_req
         };
         run(strategy, exec, prior, cost, suspects, &retry_req, rng);
