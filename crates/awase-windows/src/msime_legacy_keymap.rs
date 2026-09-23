@@ -40,14 +40,30 @@
 //! `無変換=CE CD CD CD CD CD` / `変換=CE CD CD CD CD CD`
 //! （1列目=`CE`、2〜6列目=`CD`）。
 //!
-//! **実機での挙動確認（重要な非対称性）**: 直接入力中に変換キーを単独で
-//! 押すとIME ONになった（1列目の`CE`は実際に効く）が、IME ON中に押しても
-//! IME OFFにはならず、ネイティブの変換機能のままだった（2〜6列目の`CD`は
-//! 実際には効かない——テーブル内に同名キーの重複行が生成され、後から
-//! 追加された方〈2〜6列目が`00`＝「上書きなし」と見られる〉が優先される
-//! ためと推測）。したがって本モジュールは**1列目（直接入力→ON方向）のみ**
-//! を検出対象とする。2〜6列目（ON→OFF方向）は実効性が確認できていないため、
-//! 検出・警告のいずれにも使わない（推測しない、実測した部分だけ使う）。
+//! **2026-09-23追記（訂正、[BUG-161](../../../docs/known-bugs/BUG-161.md)）: 下記の
+//! 「1列目の`CE`は実際に効く」という2026-09-07の記述は誤りと判明した。** [ADR-197](../../../docs/adr/197-msime-legacy-custom-keymap-runtime-warning.md)
+//! （旧UI検出を実行時警告に配線する設計）の実機検証で、GitHub Actions CI
+//! （windows-latest）上で本モジュールと同じ`StyleList\Custom\key`（dragonflyg4実機の
+//! バイト列をそのまま使用）を再現し、互換モード（`NoTsf3Override2`）をONにした状態で
+//! 無変換キーを直接入力状態から単独タップしても**IME ONにならなかった**（4パターンの
+//! 組み合わせすべてで再現せず）。さらにユーザー本人がdragonflyg4実機で無変換キーを
+//! 物理的に押して同じ結果を確認した。2026-09-07の「変換キーでCEが効いた」という
+//! 元の観測も、変換キーは**NATURAL（既定）でも直接入力からIME ONに働く**ため
+//! （素のネイティブ挙動と区別できない）、実際にはCEトグルの効果を見ていなかった
+//! 可能性が高い。**したがって、本モジュールが検出する「IMEオン/オフ」トグル割当て
+//! （コード`CE`）が実際のIME挙動に何らかの影響を与えるという証拠は、現時点で
+//! 一つも無い。** 以下の記述（2026-09-07時点のもの）は、検出コード自体が依然として
+//! 正しいレジストリ読み取りである（＝「この割当てが存在するかどうか」の判定は正確）
+//! ことの説明として残すが、「実際に効く」という解釈は撤回する。
+//!
+//! （以下、2026-09-07時点の記述）直接入力中に変換キーを単独で押すとIME ONになった
+//! （という観測があったが、上記のとおりNATURAL既定挙動と区別できず、CEトグル自体の
+//! 効果ではなかった可能性が高い）。IME ON中に押してもIME OFFにはならず、ネイティブの
+//! 変換機能のままだった（2〜6列目の`CD`。テーブル内に同名キーの重複行が生成され、
+//! 後から追加された方〈2〜6列目が`00`＝「上書きなし」と見られる〉が優先されるため
+//! と推測、こちらは未検証のまま）。したがって本モジュールは**1列目（直接入力→ON方向）
+//! のみ**を検出対象とする。2〜6列目（ON→OFF方向）は実効性が確認できていない
+//! （検出・警告のいずれにも使わない、推測しない、実測した部分だけ使う）。
 //!
 //! # このモジュールが検出しないもの（既知の未解読範囲）
 //!
@@ -124,7 +140,7 @@ impl LegacyKeymapRecord {
     /// 2026-09-10、自由関数`any_record_has_ime_on_toggle`から関連関数へ
     /// 変更した（第1引数`&[LegacyKeymapRecord]`をselfにせず取り続けていた）。
     /// 挙動は変更していない。
-    fn any_has_ime_on_toggle(records: &[Self], is_target: impl Fn(&[u8]) -> bool) -> bool {
+    fn any_has_legacy_toggle_assigned(records: &[Self], is_target: impl Fn(&[u8]) -> bool) -> bool {
         records
             .iter()
             .any(|r| is_target(&r.key_name_raw) && r.codes[0] == IME_ON_TOGGLE_CODE_COL0)
@@ -198,18 +214,19 @@ impl LegacyKeyStyle {
 /// 旧UI（詳細キーカスタマイズ）で無変換/変換キーに「IMEオン/オフ」
 /// トグルが割り当てられているかの検出結果。
 ///
-/// `muhenkan_ime_on_toggle`/`henkan_ime_on_toggle`は`Option<bool>`——
-/// `None`は「判定できなかった」（未知プリセット・レジストリエラー等）を
+/// `muhenkan_legacy_toggle_assigned`/`henkan_legacy_toggle_assigned`は
+/// `Option<bool>`——`None`は「判定できなかった」（未知プリセット・レジストリエラー等）を
 /// 意味し、「割当てなしと確認できた」（`Some(false)`）とは区別する
 /// （コードレビュー指摘: この区別が無いと、判定不能を「安全」と誤読する
-/// 静かな偽陰性になる）。`Some(true)`でも実機確認済みなのは「直接入力中に
-/// 押すと予期せずIME ONになる」方向のみで、「IME ON中に押すとIME OFFに
-/// なる」方向は実効性未確認（モジュールdoc参照）。
+/// 静かな偽陰性になる）。**`Some(true)`は「レジストリにこの割当てが存在する」
+/// ことのみを意味し、それが実際にIME挙動へ影響するかは2026-09-23時点で
+/// 確認できていない（[BUG-161](../../../docs/known-bugs/BUG-161.md)、
+/// モジュールdoc参照）。**
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LegacyMsImeToggleAssignment {
     pub active_style: Option<LegacyKeyStyle>,
-    pub muhenkan_ime_on_toggle: Option<bool>,
-    pub henkan_ime_on_toggle: Option<bool>,
+    pub muhenkan_legacy_toggle_assigned: Option<bool>,
+    pub henkan_legacy_toggle_assigned: Option<bool>,
 }
 
 impl LegacyMsImeToggleAssignment {
@@ -217,8 +234,8 @@ impl LegacyMsImeToggleAssignment {
     fn unknown(active_style: Option<LegacyKeyStyle>) -> Self {
         Self {
             active_style,
-            muhenkan_ime_on_toggle: None,
-            henkan_ime_on_toggle: None,
+            muhenkan_legacy_toggle_assigned: None,
+            henkan_legacy_toggle_assigned: None,
         }
     }
 
@@ -228,22 +245,20 @@ impl LegacyMsImeToggleAssignment {
     fn confirmed_absent(active_style: LegacyKeyStyle) -> Self {
         Self {
             active_style: Some(active_style),
-            muhenkan_ime_on_toggle: Some(false),
-            henkan_ime_on_toggle: Some(false),
+            muhenkan_legacy_toggle_assigned: Some(false),
+            henkan_legacy_toggle_assigned: Some(false),
         }
     }
 
     fn from_table(active_style: LegacyKeyStyle, records: &[LegacyKeymapRecord]) -> Self {
         Self {
             active_style: Some(active_style),
-            muhenkan_ime_on_toggle: Some(LegacyKeymapRecord::any_has_ime_on_toggle(
-                records,
-                is_muhenkan_label,
-            )),
-            henkan_ime_on_toggle: Some(LegacyKeymapRecord::any_has_ime_on_toggle(
-                records,
-                is_henkan_label,
-            )),
+            muhenkan_legacy_toggle_assigned: Some(
+                LegacyKeymapRecord::any_has_legacy_toggle_assigned(records, is_muhenkan_label),
+            ),
+            henkan_legacy_toggle_assigned: Some(
+                LegacyKeymapRecord::any_has_legacy_toggle_assigned(records, is_henkan_label),
+            ),
         }
     }
 }
@@ -384,10 +399,65 @@ mod windows_impl {
             Err(_) => LegacyMsImeToggleAssignment::unknown(Some(style)),
         }
     }
+
+    /// `subkey`直下の`value_name`(REG_DWORD)を読む。値が存在しなければ`None`。
+    ///
+    /// `msime_key_assignment.rs::read_dword`と同じ直接読み取りパターン
+    /// （コードレビュー指摘: `read_raw_value`の可変長バイト列経由+手動LE解釈は
+    /// この用途には過剰）。`read_dword`自体は固定サブキー（`MSIME_SUBKEY`）を
+    /// 前提にしており、本関数は別サブキー（`Tsf3Override\...`）を読むため
+    /// サブキーを引数に取る点だけが異なる。
+    fn read_dword(subkey: &str, value_name: &str) -> Option<u32> {
+        use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+        let subkey_wide = crate::win32::to_wide(subkey);
+        let value_wide = crate::win32::to_wide(value_name);
+        let subkey_pcwstr = PCWSTR(subkey_wide.as_ptr());
+        let value_pcwstr = PCWSTR(value_wide.as_ptr());
+        let mut data: u32 = 0;
+        let mut size = u32::try_from(size_of::<u32>()).unwrap_or(4);
+        // SAFETY: subkey_wide/value_wide はNUL終端済みUTF-16で呼び出し中有効。
+        //         data/size は呼び出し中有効なスタック上のバッファ。
+        let result = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                subkey_pcwstr,
+                value_pcwstr,
+                RRF_RT_REG_DWORD,
+                None,
+                Some((&raw mut data).cast()),
+                Some(&raw mut size),
+            )
+        };
+        result.is_ok().then_some(data)
+    }
+
+    /// 「以前のバージョンのMicrosoft IMEを使う」互換モードチェックボックスの状態を読む
+    /// （ADR-197決定4）。
+    ///
+    /// レジストリ位置（Web調査+2026-09-23 dragonflyg4実機確認、
+    /// <https://mitsushima.work/archives/26597847.html>）:
+    /// `HKCU\SOFTWARE\Microsoft\Input\TSF\Tsf3Override\{03b5835f-f03c-411b-9ce2-aa23e1171e36}`
+    /// の`NoTsf3Override2`(DWORD)。`{03b5835f-...}`はMS-IME本体のCLSID
+    /// （[`crate::state::ime_kind`]が`ImeKindId::MsIme`判定に使うものと同一）。
+    ///
+    /// [ADR196-T5](../../../docs/tasks/adr196-t5-revalidation-not-invalidation.md)が
+    /// Microsoft IME本体のフィンガープリント・既知構成判定の入力としてこの値を要求している
+    /// （本関数はその読み取りプリミティブを提供するだけで、フィンガープリント合成・
+    /// 判定ロジックはADR-196側が所有する。ADR-197決定4参照）。
+    ///
+    /// `None` = 値が存在しない、または読み取りに失敗した（判定不能）。呼び出し側は
+    /// `None`を安易に「OFF」と決め打ちしないこと（fail-safe。ADR196-T2決定1cが
+    /// 「未着手のうちは既知構成と判定しない」としている設計とも整合する）。
+    #[must_use]
+    pub(crate) fn read_legacy_compat_mode_enabled() -> Option<bool> {
+        const TSF3_OVERRIDE_MSIME_SUBKEY: &str =
+            "SOFTWARE\\Microsoft\\Input\\TSF\\Tsf3Override\\{03b5835f-f03c-411b-9ce2-aa23e1171e36}";
+        read_dword(TSF3_OVERRIDE_MSIME_SUBKEY, "NoTsf3Override2").map(|v| v == 1)
+    }
 }
 
 #[cfg(windows)]
-pub(crate) use windows_impl::read_legacy_toggle_assignment;
+pub(crate) use windows_impl::{read_legacy_compat_mode_enabled, read_legacy_toggle_assignment};
 
 #[cfg(test)]
 mod tests {
@@ -395,7 +465,7 @@ mod tests {
 
     /// 「無変換=CE CD CD CD CD CD」（2026-09-07 dragonflyg4実機、
     /// `StyleList\Custom\key`に実際に書き込まれたバイト列そのもの）。
-    fn muhenkan_ime_on_toggle_record() -> Vec<u8> {
+    fn muhenkan_legacy_toggle_assigned_record() -> Vec<u8> {
         let mut v = MUHENKAN_LABEL.to_vec();
         v.extend_from_slice(b"=CE CD CD CD CD CD\0");
         v
@@ -410,7 +480,7 @@ mod tests {
 
     #[test]
     fn parses_single_record() {
-        let mut bytes = muhenkan_ime_on_toggle_record();
+        let mut bytes = muhenkan_legacy_toggle_assigned_record();
         bytes.push(0x00); // リスト終端の追加NUL
         let records = LegacyKeymapRecord::parse_table(&bytes);
         assert_eq!(records.len(), 1);
@@ -420,12 +490,12 @@ mod tests {
 
     #[test]
     fn detects_ime_on_toggle_on_muhenkan() {
-        let mut bytes = muhenkan_ime_on_toggle_record();
+        let mut bytes = muhenkan_legacy_toggle_assigned_record();
         bytes.push(0x00);
         let records = LegacyKeymapRecord::parse_table(&bytes);
         let result = LegacyMsImeToggleAssignment::from_table(LegacyKeyStyle::Custom, &records);
-        assert_eq!(result.muhenkan_ime_on_toggle, Some(true));
-        assert_eq!(result.henkan_ime_on_toggle, Some(false));
+        assert_eq!(result.muhenkan_legacy_toggle_assigned, Some(true));
+        assert_eq!(result.henkan_legacy_toggle_assigned, Some(false));
     }
 
     #[test]
@@ -434,7 +504,7 @@ mod tests {
         bytes.push(0x00);
         let records = LegacyKeymapRecord::parse_table(&bytes);
         let result = LegacyMsImeToggleAssignment::from_table(LegacyKeyStyle::Atok, &records);
-        assert_eq!(result.muhenkan_ime_on_toggle, Some(false));
+        assert_eq!(result.muhenkan_legacy_toggle_assigned, Some(false));
     }
 
     /// 変換キーで実機確認した「重複行」ケース: 同名の行が2つあり、後の方は
@@ -450,7 +520,7 @@ mod tests {
         let records = LegacyKeymapRecord::parse_table(&bytes);
         assert_eq!(records.len(), 2);
         let result = LegacyMsImeToggleAssignment::from_table(LegacyKeyStyle::Custom, &records);
-        assert_eq!(result.henkan_ime_on_toggle, Some(true));
+        assert_eq!(result.henkan_legacy_toggle_assigned, Some(true));
     }
 
     #[test]
@@ -463,7 +533,7 @@ mod tests {
         let records = LegacyKeymapRecord::parse_table(&bytes);
         assert_eq!(records.len(), 1);
         let result = LegacyMsImeToggleAssignment::from_table(LegacyKeyStyle::Custom, &records);
-        assert_eq!(result.henkan_ime_on_toggle, Some(false));
+        assert_eq!(result.henkan_legacy_toggle_assigned, Some(false));
     }
 
     #[test]
@@ -471,8 +541,8 @@ mod tests {
         // コードレビュー指摘の回帰: 未知プリセットは「割当てなし」
         // (Some(false))ではなく「判定不能」(None)であるべき。
         let result = LegacyMsImeToggleAssignment::unknown(Some(LegacyKeyStyle::Other));
-        assert_eq!(result.muhenkan_ime_on_toggle, None);
-        assert_eq!(result.henkan_ime_on_toggle, None);
+        assert_eq!(result.muhenkan_legacy_toggle_assigned, None);
+        assert_eq!(result.henkan_legacy_toggle_assigned, None);
         assert_eq!(result.active_style, Some(LegacyKeyStyle::Other));
     }
 
@@ -481,15 +551,15 @@ mod tests {
         // 既知プリセットで`key`値自体が存在しない場合は確定した
         // Some(false)（「判定不能」ではない）。
         let result = LegacyMsImeToggleAssignment::confirmed_absent(LegacyKeyStyle::Natural);
-        assert_eq!(result.muhenkan_ime_on_toggle, Some(false));
-        assert_eq!(result.henkan_ime_on_toggle, Some(false));
+        assert_eq!(result.muhenkan_legacy_toggle_assigned, Some(false));
+        assert_eq!(result.henkan_legacy_toggle_assigned, Some(false));
     }
 
     #[test]
     fn malformed_record_is_skipped_not_panicking() {
         let mut bytes = b"BrokenNoEquals".to_vec();
         bytes.push(0x00);
-        bytes.extend_from_slice(&muhenkan_ime_on_toggle_record());
+        bytes.extend_from_slice(&muhenkan_legacy_toggle_assigned_record());
         bytes.push(0x00);
         let records = LegacyKeymapRecord::parse_table(&bytes);
         assert_eq!(records.len(), 1);

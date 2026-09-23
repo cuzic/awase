@@ -1611,17 +1611,18 @@ fn build_bug_report_msime_key_assignment_summary(
 }
 
 /// 旧UI（互換モードでのみ到達できる詳細キーカスタマイズ）の要約
-/// （ADR-148 Phase 2）。`msime_legacy_keymap`モジュールdoc参照。
-/// `ime_kind`に関わらず常に読む（レジストリの内容自体は現在の
-/// フォーカス先IMEと無関係に存在するため、上位の`msime_key_assignment`の
-/// 生DWORDと同じ扱い）。
+/// （ADR-148 Phase 2、ADR-197決定4で`legacy_compat_mode_enabled`を追加）。
+/// `msime_legacy_keymap`モジュールdoc参照。`ime_kind`に関わらず常に読む
+/// （レジストリの内容自体は現在のフォーカス先IMEと無関係に存在するため、
+/// 上位の`msime_key_assignment`の生DWORDと同じ扱い）。
 fn build_bug_report_legacy_msime_keymap_summary(
 ) -> crate::bug_report::BugReportLegacyMsImeKeymapSummary {
     let assignment = crate::msime_legacy_keymap::read_legacy_toggle_assignment();
     crate::bug_report::BugReportLegacyMsImeKeymapSummary {
         active_style: assignment.active_style.map(|s| s.as_str().to_owned()),
-        muhenkan_ime_on_toggle: assignment.muhenkan_ime_on_toggle,
-        henkan_ime_on_toggle: assignment.henkan_ime_on_toggle,
+        muhenkan_legacy_toggle_assigned: assignment.muhenkan_legacy_toggle_assigned,
+        henkan_legacy_toggle_assigned: assignment.henkan_legacy_toggle_assigned,
+        legacy_compat_mode_enabled: crate::msime_legacy_keymap::read_legacy_compat_mode_enabled(),
     }
 }
 
