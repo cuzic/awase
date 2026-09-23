@@ -834,7 +834,17 @@ pub fn restart_self() {
             return;
         }
     };
-    match std::process::Command::new(&exe).spawn() {
+    // stdio を明示的に null にする（BUG-79/BUG-134）: 指定しないとRustは親の
+    // 標準入出力ハンドルを子プロセスに継承させようとし、その際に構築される
+    // 継承ハンドル許可リストがawase.exe実機環境（フック・タイマー・非同期
+    // ワーカースレッドを多数抱えた長時間稼働プロセス）でのみ CreateProcessW
+    // を ERROR_NOT_SUPPORTED (os error 50) で失敗させる（BUG-079 参照）。
+    match std::process::Command::new(&exe)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
         Ok(_) => {
             tracing::info!("Restarting self, exiting current process");
             std::process::exit(0);
