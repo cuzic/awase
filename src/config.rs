@@ -139,6 +139,8 @@ pub struct GeneralConfig {
     pub auto_start: String,
     /// タスクトレイから右クリックした際に最新バージョンを確認する。
     pub update_check: bool,
+    /// 状態依存のIMEモードキーを検出したときに警告する（ADR-192）。
+    pub warn_state_dependent_mode_keys: bool,
     /// Linux 入力バックエンド ("evdev", "x11", "libinput")
     pub linux_input_backend: String,
     /// evdev バックエンド: キーボードデバイスパス（None = 自動検出）
@@ -415,6 +417,7 @@ impl Default for GeneralConfig {
             ime_poll_interval_ms: 500,
             auto_start: "enabled".to_string(),
             update_check: true,
+            warn_state_dependent_mode_keys: true,
             linux_input_backend: "evdev".to_string(),
             linux_evdev_device: None,
             keyboard_model: KeyboardModel::Jis,
@@ -1103,21 +1106,32 @@ impl AppConfig {
                     .eq_ignore_ascii_case(AppConfig::canonical_thumb_key_name(thumb_key))
         }
 
-        // `field == "keys.ime_on"` だけ文面を分ける理由: `suppress_ime_combos`
-        // は `engine_active &&` を前提とするため、IME が OFF（engine 非活性）の
-        // 間はこのガードが一切効かず、`keys.ime_on` の bare 親指キーは従来どおり
-        // 発火する。`keys.ime_on` の主目的（IME OFF から ON にする）はまさに
-        // この状態なので、「使われません」は不正確で、正しく動く主用途を
-        // ユーザーが誤って壊しかねない（/code-review 指摘）。一方
-        // `keys.ime_off`/`keys.ime_toggle` は engine 活性中（＝IME が ON で
-        // 同時打鍵が成立しうる間）に使うのが主目的であり、その間は本当に
-        // 発火しないため、既存の文面のままで正確。
-        fn warn_for_field(field: &str, combos: &[String], thumb_key: &str, w: &mut Vec<String>) {
+        fn warn_for_field(
+            g: &GeneralConfig,
+            field: &str,
+            combos: &[String],
+            thumb_key: &str,
+            w: &mut Vec<String>,
+        ) {
             if combos
                 .iter()
                 .any(|combo| is_bare_same_key(combo, thumb_key))
             {
-                let detail = if field == "keys.ime_on" {
+                let canonical = AppConfig::canonical_thumb_key_name(thumb_key);
+                let solo_action = if canonical.eq_ignore_ascii_case("VK_NONCONVERT") {
+                    g.muhenkan_solo_tap_ime_action
+                } else if canonical.eq_ignore_ascii_case("VK_CONVERT") {
+                    g.henkan_solo_tap_ime_action
+                } else {
+                    None
+                };
+                let is_supported = canonical.eq_ignore_ascii_case("VK_NONCONVERT")
+                    || canonical.eq_ignore_ascii_case("VK_CONVERT");
+                let detail = if solo_action.is_some() {
+                    "同じキーの `*_solo_tap_ime_action` の設定が優先され、この強制ON/OFFの設定は無視されます。"
+                } else if is_supported {
+                    "このキーは同時打鍵かどうかの判定後、単独タップ確定時に強制ON/OFFが発火します。composing中も発火し、未確定文字列が破棄されるか確定されるかはIME実装に依存します。"
+                } else if field == "keys.ime_on" {
                     "このキーは同時打鍵（親指シフト入力）にも使うキーなので、IME が \
                      ON になっている間は、まず同時打鍵かどうかの判定が優先されます。\
                      そのため、IME が ON の状態でこのキーだけを押しても IME は \
@@ -1144,9 +1158,9 @@ impl AppConfig {
         }
 
         for thumb_key in [g.left_thumb_key.as_str(), g.right_thumb_key.as_str()] {
-            warn_for_field("keys.ime_on", &keys.ime_on, thumb_key, w);
-            warn_for_field("keys.ime_off", &keys.ime_off, thumb_key, w);
-            warn_for_field("keys.ime_toggle", &keys.ime_toggle, thumb_key, w);
+            warn_for_field(g, "keys.ime_on", &keys.ime_on, thumb_key, w);
+            warn_for_field(g, "keys.ime_off", &keys.ime_off, thumb_key, w);
+            warn_for_field(g, "keys.ime_toggle", &keys.ime_toggle, thumb_key, w);
         }
     }
 
@@ -2154,13 +2168,49 @@ ime_toggle = []
         assert!(
             warnings
                 .iter()
-                .any(|w| w.contains("keys.ime_on") && w.contains("親指キー")),
+                .any(|w| w.contains("keys.ime_on")
+                    && w.contains("単独タップ確定時に強制ON/OFFが発火")),
             "bare thumb key in keys.ime_on should warn, got: {warnings:?}"
         );
         assert!(
             !warnings.iter().any(|w| w.contains("keys.ime_off")),
             "Ctrl+無変換 must not warn, got: {warnings:?}"
         );
+    }
+
+    #[test]
+    fn test_validate_warns_that_solo_tap_action_wins_over_bare_ime_combo() {
+        let toml_str = r#"
+[general]
+left_thumb_key = "無変換"
+muhenkan_solo_tap_ime_action = "toggle"
+
+[keys]
+ime_on = []
+ime_off = []
+ime_toggle = ["VK_NONCONVERT"]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(warnings.iter().any(|w| {
+            w.contains("keys.ime_toggle")
+                && w.contains("*_solo_tap_ime_action")
+                && w.contains("優先され")
+                && w.contains("無視されます")
+        }));
+    }
+
+    #[test]
+    fn test_validate_keeps_legacy_warning_for_non_convert_thumb_key() {
+        let mut config = AppConfig::default();
+        config.general.left_thumb_key = "VK_SPACE".to_string();
+        config.keys.ime_off = vec!["VK_SPACE".to_string()];
+        let (_validated, warnings) = config.validate();
+        assert!(warnings.iter().any(|w| {
+            w.contains("keys.ime_off")
+                && w.contains("他のキーに変更するか")
+                && w.contains("Shift などと組み合わせて")
+        }));
     }
 
     // parse_key_combo テストは awase-windows に移動済み

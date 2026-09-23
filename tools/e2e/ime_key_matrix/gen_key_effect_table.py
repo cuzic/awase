@@ -25,6 +25,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "..", "..", "crates", "awase-windows", "src", "state", "key_effect_table.rs")
+PRESERVED_SUFFIX_MARKER = "// --- ADR-192 classification logic (the generator preserves this suffix) ---"
 
 KEYS = {
     "bs": "Bs", "eisu": "Eisu", "enter": "Enter", "esc": "Esc", "hankaku-zenkaku": "HankakuZenkaku",
@@ -168,6 +169,14 @@ use super::key_effect_predictor::{cell, Cell, Conv, Disp, Stage, TableKey};
         parts.append(emit(name, cs))
         report.append(f"{name}: {len(cs)}セル採用、除外 {sk}")
     text = "\n".join(parts) + "\n"
+    # ADR-192の分類器は生成セルを直接横断するが、実測JSONから生成されるデータではない。
+    # 表を再生成しても分類器を消さないよう、明示マーカー以降を保存する。
+    if os.path.exists(OUT):
+        with open(OUT, encoding="utf-8") as fh:
+            current = fh.read().replace("\r\n", "\n")
+        marker_at = current.find(PRESERVED_SUFFIX_MARKER)
+        if marker_at >= 0:
+            text += "\n" + current[marker_at:]
     if "--check" in sys.argv[1:]:
         # Windows の checkout(core.autocrlf)は CRLF になりうるので、改行の違いは比べない。
         with open(OUT, encoding="utf-8") as fh:

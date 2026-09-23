@@ -151,13 +151,13 @@ pub enum Disp {
 /// 表現できないモード）で、追跡を捨てる。
 #[derive(Debug, Clone, Copy)]
 pub struct Cell {
-    open: bool,
+    pub(super) open: bool,
     conv: Option<Conv>,
     stage: Stage,
-    key: TableKey,
-    after_open: bool,
+    pub(super) key: TableKey,
+    pub(super) after_open: bool,
     after_conv: Option<Conv>,
-    disp: Disp,
+    pub(super) disp: Disp,
 }
 
 /// `key_effect_table.rs`（生成物）が使うセル構築子。
@@ -375,9 +375,9 @@ pub fn predict(preset: KeymapPreset, vk: u16, input: &PredictInput) -> Option<Pr
 /// `config1.db`から得た、予測に使うキーマップ（プリセット+カスタム上書きの検出材料）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyEffectKeymap {
-    preset: KeymapPreset,
-    custom_table: Option<String>,
-    has_overlay: bool,
+    pub(super) preset: KeymapPreset,
+    pub(super) custom_table: Option<String>,
+    pub(super) has_overlay: bool,
     /// Microsoft IME本体のキー割り当て（レジストリ`KeyAssignmentHenkan`/`Muhenkan`）が既定（再変換/かな切替）から
     /// 変えられている。その変換/無変換の打鍵は予測しない（GJIのoverlay/カスタム上書きと同じ安全側）。
     henkan_reassigned: bool,

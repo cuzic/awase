@@ -33,6 +33,87 @@ use crate::runtime::executor::ImeApplyPair;
 use crate::vk::VkCodeExt as _;
 use awase::platform::PlatformRuntime as _;
 
+/// ADR-192 決定3b: `keys.ime_on/off/toggle` の bare 無変換/変換を、coreへ渡す
+/// OS非依存のopen軸操作へ事前分類する。通常の特殊キー照合と同じく方向固定を
+/// toggleより優先し、onをoffより先に評価する。
+pub(crate) fn thumb_forced_open_actions(
+    special: &SpecialKeyCombos,
+) -> (
+    Option<awase::types::ShadowImeAction>,
+    Option<awase::types::ShadowImeAction>,
+) {
+    fn for_vk(special: &SpecialKeyCombos, vk: VkCode) -> Option<awase::types::ShadowImeAction> {
+        let contains_bare = |combos: &[awase::config::ParsedKeyCombo]| {
+            combos
+                .iter()
+                .any(|combo| combo.vk == vk && !combo.ctrl && !combo.shift && !combo.alt)
+        };
+        if contains_bare(&special.ime_on) {
+            Some(awase::types::ShadowImeAction::TurnOn)
+        } else if contains_bare(&special.ime_off) {
+            Some(awase::types::ShadowImeAction::TurnOff)
+        } else if contains_bare(&special.ime_toggle) {
+            Some(awase::types::ShadowImeAction::Toggle)
+        } else {
+            None
+        }
+    }
+
+    (
+        for_vk(special, crate::vk::VK_NONCONVERT),
+        for_vk(special, crate::vk::VK_CONVERT),
+    )
+}
+
+#[cfg(test)]
+mod adr192_tests {
+    use super::*;
+    use awase::config::ParsedKeyCombo;
+    use awase::types::ShadowImeAction;
+
+    fn combo(vk: VkCode, ctrl: bool, shift: bool, alt: bool) -> ParsedKeyCombo {
+        ParsedKeyCombo {
+            ctrl,
+            shift,
+            alt,
+            vk,
+        }
+    }
+
+    #[test]
+    fn bare_convert_keys_are_classified_with_direction_priority() {
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo(crate::vk::VK_CONVERT, false, false, false)],
+            ime_off: vec![combo(crate::vk::VK_NONCONVERT, false, false, false)],
+            ime_toggle: vec![
+                combo(crate::vk::VK_CONVERT, false, false, false),
+                combo(crate::vk::VK_NONCONVERT, false, false, false),
+            ],
+        };
+        assert_eq!(
+            thumb_forced_open_actions(&special),
+            (
+                Some(ShadowImeAction::TurnOff),
+                Some(ShadowImeAction::TurnOn)
+            )
+        );
+    }
+
+    #[test]
+    fn modified_or_non_convert_combos_are_not_forced_thumb_actions() {
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo(crate::vk::VK_CONVERT, true, false, false)],
+            ime_off: vec![combo(crate::vk::VK_NONCONVERT, false, true, false)],
+            ime_toggle: vec![combo(VkCode(0x20), false, false, false)],
+        };
+        assert_eq!(thumb_forced_open_actions(&special), (None, None));
+    }
+}
+
 /// `GeneralConfig::muhenkan_solo_tap_dedicated_fn_key`（ADR-091 §D3.2）を
 /// `VkCode` に解決する。`bootstrap.rs`（起動時）と `apply_config_update`
 /// （reload 時）の両方から呼ぶ。
@@ -240,6 +321,8 @@ pub struct Runtime {
     last_ime_read_ok: bool,
     /// Microsoft IME本体用（レジストリのキー割り当ての版で読み直す。GJIの`key_effect_keymap`とは別のキャッシュ）。
     key_effect_keymap_native: crate::state::key_effect_predictor::KeymapCache,
+    state_dependent_key_warning: crate::state::state_dependent_key_warning::WarningTracker,
+    warn_state_dependent_mode_keys: bool,
     /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091
     /// §D3.2、config.toml による手動設定のみ）が現在有効なら、その vk。
     /// `recompute_active_keymaps` が `[[keymap]]` との衝突チェックに使う
@@ -1113,6 +1196,9 @@ impl Runtime {
             key_effect_keymap: crate::state::key_effect_predictor::KeymapCache::default(),
             last_ime_read_ok: true,
             key_effect_keymap_native: crate::state::key_effect_predictor::KeymapCache::default(),
+            state_dependent_key_warning:
+                crate::state::state_dependent_key_warning::WarningTracker::default(),
+            warn_state_dependent_mode_keys: true,
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
             calibration_bypass_deadline: None,
@@ -1139,6 +1225,47 @@ impl Runtime {
 
     pub(crate) const fn set_update_check_enabled(&mut self, enabled: bool) {
         self.update_check_enabled = enabled;
+    }
+
+    pub(crate) const fn set_warn_state_dependent_mode_keys(&mut self, enabled: bool) {
+        self.warn_state_dependent_mode_keys = enabled;
+    }
+
+    pub(crate) fn check_state_dependent_mode_keys(&mut self, google_ime: bool) {
+        let (left, right) = crate::hook::thumb_vk_codes();
+        let warnings = if google_ime {
+            let stamp = crate::gji_charset_autodetect::config1_db_stamp();
+            let keymap = crate::gji_charset_autodetect::read_key_effect_keymap();
+            self.state_dependent_key_warning.detect_gji(
+                self.warn_state_dependent_mode_keys,
+                stamp,
+                keymap.as_ref(),
+                [left, right],
+            )
+        } else {
+            let raw = crate::msime_key_assignment::read_raw_key_assignment_dwords();
+            let bits = u8::from(raw.key_assignment_henkan.unwrap_or(0) != 0)
+                | (u8::from(raw.key_assignment_muhenkan.unwrap_or(0) != 0) << 1);
+            let keymap = crate::state::key_effect_predictor::KeyEffectKeymap::for_msime_native(
+                raw.is_key_assignment_enabled == Some(1),
+                raw.key_assignment_henkan,
+                raw.key_assignment_muhenkan,
+            );
+            self.state_dependent_key_warning.detect_msime(
+                self.warn_state_dependent_mode_keys,
+                bits,
+                Some(&keymap),
+                [left, right],
+            )
+        };
+        for warning in warnings {
+            tracing::warn!(
+                "[state-dependent-mode-key] kind={:?} keys={:?}: {}",
+                warning.kind,
+                warning.keys,
+                warning.message
+            );
+        }
     }
 
     /// `config.general.half_width_alnum_toggle` を反映する。起動時と reload 時の
@@ -1356,6 +1483,9 @@ impl Runtime {
         sync_off: Vec<VkCode>,
     ) {
         let ctx = self.build_ctx();
+        let forced_open_actions = thumb_forced_open_actions(&special_keys);
+        self.engine
+            .set_thumb_forced_open_actions(forced_open_actions.0, forced_open_actions.1);
         let _ = self.engine.on_command(
             EngineCommand::UpdateFsmParams {
                 threshold_ms: config.general.simultaneous_threshold_ms,
@@ -1370,6 +1500,7 @@ impl Runtime {
         self.platform_state.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
         self.set_keyboard_model(config.general.keyboard_model);
         self.set_update_check_enabled(config.general.update_check);
+        self.set_warn_state_dependent_mode_keys(config.general.warn_state_dependent_mode_keys);
         self.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,

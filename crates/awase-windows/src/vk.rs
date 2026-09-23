@@ -367,6 +367,13 @@ pub const fn is_ime_control(vk_code: VkCode) -> bool {
     matches!(vk_code.0, 0x15 | 0x16 | 0x17 | 0x19 | 0x1A | 0xE5)
 }
 
+/// ADR-192の状態依存判定対象のうち、実キーボードに存在してユーザーが押せるIMEモードキーか。
+/// `VK_IME_ON`/`VK_IME_OFF`は合成送出用で物理キーではないため含めない。
+#[must_use]
+pub const fn is_physical_ime_mode_key(vk_code: VkCode) -> bool {
+    matches!(vk_code.0, 0x19 | 0x1C | 0x1D | 0xF3 | 0xF4)
+}
+
 /// IME コンテキストキーかどうかを判定する。
 #[must_use]
 pub const fn is_ime_context(vk_code: VkCode) -> bool {

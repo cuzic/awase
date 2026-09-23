@@ -125,7 +125,8 @@ pub mod ime_model;
 // （配線は ADR-087 Phase 3 のスコープ、§7 round3 S4 参照）。
 pub mod intent_store;
 pub mod key_effect_predictor;
-mod key_effect_table;
+pub mod key_effect_table;
+pub mod state_dependent_key_warning;
 // ADR-087 Phase 2'/3 試験実装。intent_store と同じ ungated・未配線パターン。
 pub mod open_warrant;
 #[cfg(windows)]

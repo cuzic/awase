@@ -465,3 +465,212 @@ pub(super) const MSIME_NATIVE: &[Cell] = &[
     cell(false, None, Stage::None, TableKey::Muhenkan, false, None, Disp::None),
     cell(false, None, Stage::None, TableKey::Space, false, None, Disp::None),
 ];
+
+// --- ADR-192 classification logic (the generator preserves this suffix) ---
+
+/// 状態依存性を判定できない理由（ADR-192決定1）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CannotPredictReason {
+    /// キーマップの解釈自体が不確か。
+    AmbiguousKeymap,
+    /// ユーザー固有の上書きが対象キーの意味を変えている。
+    UserOverride,
+    /// awase側の実測データが不足している。
+    InsufficientData,
+}
+
+/// 状態依存性が見つかった軸。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateDependentAxis {
+    /// IMEの開閉結果が入力前の状態だけでは決まらない。
+    Open,
+    /// 未確定文字列の破棄・確定が入力状態によって変わる。
+    Composition,
+    /// 開閉と未確定文字列の両方。
+    OpenAndComposition,
+}
+
+/// 対象IMEモードキーの状態依存性（ADR-192決定1）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Classification {
+    StateIndependent,
+    StateDependent(StateDependentAxis),
+    CannotPredict(CannotPredictReason),
+}
+
+/// 実測セルを直接横断してIMEモードキーの状態依存性を分類する。
+///
+/// 対象外のVKは`None`。`KeyEffectKeymap::predict`は実行時向け補正を含むため使わない。
+#[must_use]
+pub fn classify_state_dependent_mode_key(
+    keymap: Option<&super::key_effect_predictor::KeyEffectKeymap>,
+    vk: u16,
+) -> Option<Classification> {
+    use super::key_effect_predictor::{custom_table_overrides, KeymapPreset, TableKey};
+
+    let key = match vk {
+        0x1C => TableKey::Henkan,
+        0x1D => TableKey::Muhenkan,
+        0xF3 | 0xF4 => TableKey::HankakuZenkaku,
+        0x19 => TableKey::Kanji,
+        0x16 => TableKey::ImeOn,
+        0x1A => TableKey::ImeOff,
+        _ => return None,
+    };
+    let Some(keymap) = keymap else {
+        return Some(Classification::CannotPredict(
+            CannotPredictReason::AmbiguousKeymap,
+        ));
+    };
+    if keymap.preset == KeymapPreset::MsImeNative {
+        return Some(Classification::CannotPredict(
+            CannotPredictReason::InsufficientData,
+        ));
+    }
+    if keymap.has_overlay && matches!(key, TableKey::Henkan | TableKey::Muhenkan) {
+        return Some(Classification::CannotPredict(
+            CannotPredictReason::AmbiguousKeymap,
+        ));
+    }
+    if let Some(custom) = keymap.custom_table.as_deref() {
+        // ATOKプリセットでは古いcustom_keymap_tableを信頼できない（ADR-186決定(c)）。
+        if keymap.preset == KeymapPreset::Atok {
+            return Some(Classification::CannotPredict(
+                CannotPredictReason::AmbiguousKeymap,
+            ));
+        }
+        if custom_table_overrides(custom, vk) {
+            return Some(Classification::CannotPredict(
+                CannotPredictReason::UserOverride,
+            ));
+        }
+    }
+
+    let cells = match keymap.preset {
+        KeymapPreset::Atok => ATOK,
+        KeymapPreset::MsIme => MSIME,
+        KeymapPreset::MsImeNative => unreachable!("handled above"),
+    };
+    Some(classify_cells(cells, key, vk))
+}
+
+fn classify_cells(cells: &[Cell], key: TableKey, vk: u16) -> Classification {
+    let matching: Vec<_> = cells.iter().filter(|cell| cell.key == key).collect();
+    if matching.is_empty() {
+        return Classification::CannotPredict(CannotPredictReason::InsufficientData);
+    }
+
+    let set_on = matching.iter().all(|cell| cell.after_open);
+    let set_off = matching.iter().all(|cell| !cell.after_open);
+    let toggle = matching.iter().all(|cell| cell.after_open != cell.open);
+    let identity = matching.iter().all(|cell| cell.after_open == cell.open);
+    let open_dependent = !(set_on || set_off || toggle || identity);
+
+    let composition_dependent = !identity
+        && crate::vk::is_physical_ime_mode_key(awase::types::VkCode(vk))
+        && [Disp::Discarded, Disp::Committed]
+            .into_iter()
+            .any(|hazard| {
+                let hazardous = matching.iter().filter(|cell| cell.disp == hazard).count();
+                hazardous > 0 && hazardous < matching.len()
+            });
+
+    match (open_dependent, composition_dependent) {
+        (false, false) => Classification::StateIndependent,
+        (true, false) => Classification::StateDependent(StateDependentAxis::Open),
+        (false, true) => Classification::StateDependent(StateDependentAxis::Composition),
+        (true, true) => Classification::StateDependent(StateDependentAxis::OpenAndComposition),
+    }
+}
+
+#[cfg(test)]
+mod classification_tests {
+    use super::*;
+    use crate::state::key_effect_predictor::KeyEffectKeymap;
+
+    fn classify(preset: i64, vk: u16) -> Option<Classification> {
+        let keymap = KeyEffectKeymap::from_config(Some(preset), None, &[]).unwrap();
+        classify_state_dependent_mode_key(Some(&keymap), vk)
+    }
+
+    #[test]
+    fn adr192_open_axis_verification_table() {
+        for vk in [0x16, 0x1A, 0x19, 0xF3, 0xF4] {
+            assert_ne!(
+                classify(1, vk),
+                Some(Classification::StateDependent(StateDependentAxis::Open))
+            );
+            assert_ne!(
+                classify(2, vk),
+                Some(Classification::StateDependent(StateDependentAxis::Open))
+            );
+        }
+        for vk in [0x1C, 0x1D] {
+            assert_eq!(
+                classify(1, vk),
+                Some(Classification::StateDependent(StateDependentAxis::Open))
+            );
+            assert_eq!(classify(2, vk), Some(Classification::StateIndependent));
+        }
+    }
+
+    #[test]
+    fn adr192_composition_axis_verification_table() {
+        for preset in [1, 2] {
+            for vk in [0x19, 0xF3, 0xF4] {
+                assert_eq!(
+                    classify(preset, vk),
+                    Some(Classification::StateDependent(
+                        StateDependentAxis::Composition
+                    ))
+                );
+            }
+            for vk in [0x16, 0x1A] {
+                assert_eq!(classify(preset, vk), Some(Classification::StateIndependent));
+            }
+        }
+    }
+
+    #[test]
+    fn adr192_non_target_keys_are_not_classified() {
+        for vk in [0x08, 0x0D, 0x1B, 0x20, 0xF0, 0xF1, 0xF2] {
+            assert_eq!(classify(1, vk), None);
+        }
+    }
+
+    #[test]
+    fn adr192_cannot_predict_reasons_are_distinct() {
+        assert_eq!(
+            classify_state_dependent_mode_key(None, 0x1C),
+            Some(Classification::CannotPredict(
+                CannotPredictReason::AmbiguousKeymap
+            ))
+        );
+        let overlay = KeyEffectKeymap::from_config(Some(2), None, &[1]).unwrap();
+        assert_eq!(
+            classify_state_dependent_mode_key(Some(&overlay), 0x1C),
+            Some(Classification::CannotPredict(
+                CannotPredictReason::AmbiguousKeymap
+            ))
+        );
+        let custom = KeyEffectKeymap::from_config(
+            Some(2),
+            Some("DirectInput\tHenkan\tIMEOn".to_owned()),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            classify_state_dependent_mode_key(Some(&custom), 0x1C),
+            Some(Classification::CannotPredict(
+                CannotPredictReason::UserOverride
+            ))
+        );
+        let native = KeyEffectKeymap::for_msime_native(false, None, None);
+        assert_eq!(
+            classify_state_dependent_mode_key(Some(&native), 0x1C),
+            Some(Classification::CannotPredict(
+                CannotPredictReason::InsufficientData
+            ))
+        );
+    }
+}

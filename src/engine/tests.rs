@@ -7266,6 +7266,110 @@ mod engine_integration_tests {
         engine
     }
 
+    /// ADR-192 決定3bの bare `keys.ime_off` 相当を持つEngine。
+    fn make_test_engine_with_muhenkan_forced_turn_off() -> Engine {
+        let mut engine = make_test_engine();
+        engine.set_thumb_key_solo_tap_config(
+            Some(VK_NONCONVERT),
+            ModeKeyConfig::from_legacy_bools(false, true),
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        engine.set_thumb_forced_open_actions(Some(ShadowImeAction::TurnOff), None);
+        engine
+    }
+
+    #[test]
+    fn forced_thumb_open_action_fires_on_key_up_and_consumes_both_events() {
+        let mut engine = make_test_engine_with_muhenkan_forced_turn_off();
+        let down = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        assert!(down.is_consumed(), "physical KeyDown must not reach the OS");
+        assert!(!has_effect(&down, |e| matches!(e, Effect::Ime(_))));
+
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
+        assert!(up.is_consumed(), "physical KeyUp must not reach the OS");
+        assert!(has_effect(&up, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+    }
+
+    #[test]
+    fn forced_thumb_toggle_resolves_current_belief_on_key_up() {
+        let mut engine = make_test_engine_with_muhenkan_forced_turn_off();
+        engine.set_thumb_forced_open_actions(Some(ShadowImeAction::Toggle), None);
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
+        assert!(has_effect(&up, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+    }
+
+    #[test]
+    fn forced_thumb_open_action_waits_past_timeout_for_key_up() {
+        let mut engine = make_test_engine_with_muhenkan_forced_turn_off();
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let timeout = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert!(timeout.is_consumed());
+        assert!(
+            !has_effect(&timeout, |e| matches!(e, Effect::Ime(_))),
+            "100ms timeout must not actuate the forced action"
+        );
+
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(250).build(), &ime_on_ctx());
+        assert!(has_effect(&up, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+    }
+
+    #[test]
+    fn forced_thumb_open_action_does_not_fire_for_chord() {
+        let mut engine = make_test_engine_with_muhenkan_forced_turn_off();
+        let d1 = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let d2 = engine.on_input(Ev::down(VK_A).at(120).build(), &ime_on_ctx());
+        let d3 = engine.on_input(Ev::up(VK_NONCONVERT).at(180).build(), &ime_on_ctx());
+        assert!(d1.is_consumed() && d2.is_consumed() && d3.is_consumed());
+        assert!(
+            [&d1, &d2, &d3]
+                .into_iter()
+                .all(|d| !has_effect(d, |e| matches!(e, Effect::Ime(_)))),
+            "a completed chord must not actuate the solo forced action"
+        );
+    }
+
+    #[test]
+    fn forced_thumb_open_action_fires_while_composing() {
+        let mut engine = make_test_engine_with_muhenkan_forced_turn_off();
+        let composing_ctx = InputContext {
+            composing: true,
+            ..ime_on_ctx()
+        };
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &composing_ctx);
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &composing_ctx);
+        assert!(has_effect(&up, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+    }
+
+    #[test]
+    fn solo_tap_ime_action_disables_forced_thumb_open_action() {
+        let mut engine = make_test_engine_with_muhenkan_forced_turn_off();
+        engine.set_muhenkan_solo_tap_ime_action(Some(ShadowImeAction::TurnOn));
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
+        assert!(has_effect(&up, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: true, .. })
+        )));
+        assert!(!has_effect(&up, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+    }
+
     /// 対照: 上の設定で無変換が単独タップ確定すると `SetOpen(false)` が出る（＝以下の
     /// 「漏れない」テストが、そもそも ime_open_requested が立つ設定で走っていることの裏付け）。
     #[test]
