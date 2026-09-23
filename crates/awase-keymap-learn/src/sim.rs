@@ -222,9 +222,16 @@ impl ImeDriver for SimIme {
         self.elapsed_ms += self.cost.setup_gap_ms;
     }
 
-    fn read_status(&mut self) -> (Status, Status) {
+    fn read_primary(&mut self) -> Status {
         self.elapsed_ms += self.cost.read_ms;
-        SimIme::read_status(self)
+        let truth = self.machine.states[self.cur].status;
+        self.noisy_status(truth)
+    }
+
+    fn read_secondary(&mut self) -> Status {
+        self.elapsed_ms += self.cost.read_ms;
+        let truth = self.machine.states[self.cur].status;
+        self.noisy_status(truth)
     }
 
     fn reread_status(&mut self) -> Status {

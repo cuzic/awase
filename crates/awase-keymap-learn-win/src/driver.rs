@@ -214,9 +214,12 @@ impl ImeDriver for RealImeDriver {
         pump_for(Duration::from_millis(SETUP_GAP_MS));
     }
 
-    fn read_status(&mut self) -> (Status, Status) {
-        let imm = self.observe_imm().map_or(self.initial, |o| o.status);
-        (imm, self.observe_tsf().unwrap_or(imm))
+    fn read_primary(&mut self) -> Status {
+        self.observe_imm().map_or(self.initial, |o| o.status)
+    }
+
+    fn read_secondary(&mut self) -> Status {
+        self.observe_tsf().unwrap_or(self.initial)
     }
 
     fn reread_status(&mut self) -> Status {

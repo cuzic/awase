@@ -43,7 +43,8 @@ pub struct Stats {
 pub trait ImeDriver {
     fn press(&mut self, key: usize) -> PressReport;
     fn press_setup(&mut self, key: usize);
-    fn read_status(&mut self) -> (Status, Status);
+    fn read_primary(&mut self) -> Status;
+    fn read_secondary(&mut self) -> Status;
     fn reread_status(&mut self) -> Status;
     fn settle_setup(&mut self) -> Status;
     fn reset(&mut self, level: ResetLevel) -> bool;
@@ -116,13 +117,17 @@ impl<D: ImeDriver> Executor<D> {
         *self.stats.anomalies.entry(a).or_default() += 1;
     }
 
-    /// 2経路の読み取り結果 `(a, b)` を方針に従って1つに決める(コストは呼び出し側が加える)。
-    fn resolve(&mut self, a: Status, b: Status) -> Status {
-        let double = match self.read {
+    fn should_double_read(&self, primary: Status) -> bool {
+        match self.read {
             ReadPolicy::Single => false,
             ReadPolicy::DoubleAlways => true,
-            ReadPolicy::DoubleFirst => !self.seen.contains(&a),
-        };
+            ReadPolicy::DoubleFirst => !self.seen.contains(&primary),
+        }
+    }
+
+    /// 2経路の読み取り結果 `(a, b)` を方針に従って1つに決める。
+    fn resolve(&mut self, a: Status, b: Status) -> Status {
+        let double = self.should_double_read(a);
         self.stats.reads += 1;
         let mut out = a;
         if double {
@@ -140,7 +145,12 @@ impl<D: ImeDriver> Executor<D> {
 
     /// 現在のstatusを読む。
     pub fn read_status(&mut self) -> Status {
-        let (a, b) = self.driver.read_status();
+        let a = self.driver.read_primary();
+        let b = if self.should_double_read(a) {
+            self.driver.read_secondary()
+        } else {
+            a
+        };
         let s = self.resolve(a, b);
         self.cur = Some(s);
         s
@@ -310,6 +320,19 @@ mod tests {
                 .unwrap_or(0)
                 > 0
         );
+    }
+
+    #[test]
+    fn double_always_read_charges_for_both_channels_when_no_mismatch() {
+        let mut e = exec(SimConfig::default());
+        e.set_read_policy(ReadPolicy::DoubleAlways);
+        e.reset();
+        let before = e.elapsed_ms();
+        for _ in 0..10 {
+            e.read_status();
+        }
+        let read_ms = CostModel::event().read_ms;
+        assert!((e.elapsed_ms() - before - 10.0 * 2.0 * read_ms).abs() < 1e-6);
     }
 
     #[test]
