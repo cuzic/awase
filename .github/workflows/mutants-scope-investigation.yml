@@ -42,10 +42,12 @@ jobs:
       - uses: taiki-e/install-action@cargo-mutants
       - name: "Run cargo-mutants (ADR-194 scope: force_guard/mode_key_pass/drift/refresh_plan)"
         # examples/*.rs(windows crate依存、非cfg(windows))をLinux上でbaseline
-        # ビルドに巻き込ませない--libは、CLIの--cargo-test-argでは反映されず
-        # (2026-09-22実測、baselineコマンドにexamplesが残ったまま)、config側の
-        # additional_cargo_test_args(.cargo/mutants-bug158-scope.toml)で指定する。
-        run: cargo mutants -p awase-windows --config .cargo/mutants-bug158-scope.toml --no-shuffle
+        # ビルドに巻き込ませたくない。--cargo-test-arg=--lib(CLI)も
+        # additional_cargo_test_args(config)もbaselineの`cargo test --no-run`
+        # には反映されなかった(2026-09-22実測、両方とも examples が残ったまま
+        # E0433)。`cargo mutants [OPTIONS] [-- <CARGO_TEST_ARGS>...]`の
+        # 末尾`--`区切りが唯一baselineにも反映される形だったので、これを使う。
+        run: cargo mutants -p awase-windows --config .cargo/mutants-bug158-scope.toml --no-shuffle -- --lib
       - name: Upload mutants report
         if: always()
         uses: actions/upload-artifact@v4

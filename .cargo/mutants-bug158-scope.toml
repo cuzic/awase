@@ -10,12 +10,11 @@
 # いずれもfeat/ime-sim-harness限定(develop未マージ)のファイル。
 # 役目(検証)が終わったらこのファイルとワークフローごと削除してよい。
 #
-# `cargo mutants --cargo-test-arg=--lib` はCLIで渡してもbaselineビルド
-# (`cargo test --no-run --verbose --package=...`)には反映されず、
-# examples/richedit_tsf_probe.rs 等(windows crate依存、非cfg(windows))の
-# ビルドでE0433多発してbaselineが落ちた(2026-09-22実測)。config側の
-# additional_cargo_test_args なら反映される。
-additional_cargo_test_args = ["--lib"]
+# examples/*.rs(windows crate依存、非cfg(windows))をbaselineビルドに
+# 巻き込ませないための`--lib`は、CLIの--cargo-test-argでもこのconfigの
+# additional_cargo_test_argsでもbaseline(`cargo test --no-run`)には反映
+# されなかった(2026-09-22実測)。ワークフロー側で`cargo mutants ... -- --lib`
+# (末尾`--`区切り)を使うことで解決したので、ここでは指定しない。
 
 examine_globs = [
     "crates/awase-windows/src/state/force_guard.rs",
