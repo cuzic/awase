@@ -340,7 +340,8 @@ impl RuntimeTableCache {
                 .is_some_and(|(_, _, preset, check)| (preset, check) != validation_key);
         if due || validation_key_changed {
             self.checked_at_ms = Some(now_ms);
-            let now_stamp = stamp().map(|(mtime, len)| (mtime, len, validation_key.0, validation_key.1));
+            let now_stamp =
+                stamp().map(|(mtime, len)| (mtime, len, validation_key.0, validation_key.1));
             if first || now_stamp != self.stamp {
                 self.stamp = now_stamp;
                 self.cells = load();
@@ -467,8 +468,10 @@ mod tests {
 
     #[test]
     fn schema_version_mismatch_is_rejected() {
-        let mut table =
-            PersistedTable::new(vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x00)))], None);
+        let mut table = PersistedTable::new(
+            vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x00)))],
+            None,
+        );
         table.schema_version = persist::CURRENT_SCHEMA_VERSION + 1;
         let json = table.to_json().unwrap();
         let err = persist::from_json(&json).unwrap_err();
@@ -497,7 +500,12 @@ mod tests {
         assert_eq!(loads.get(), 1);
         // 版が変わったら読み直す。
         assert!(cache
-            .get(RuntimeTableCache::RECHECK_MS * 2, key, || Some((2, 10)), load)
+            .get(
+                RuntimeTableCache::RECHECK_MS * 2,
+                key,
+                || Some((2, 10)),
+                load
+            )
             .is_some());
         assert_eq!(loads.get(), 2);
     }

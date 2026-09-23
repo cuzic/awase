@@ -522,7 +522,10 @@ pub fn classify_state_dependent_mode_key(
             CannotPredictReason::AmbiguousKeymap,
         ));
     };
-    if matches!(keymap.preset, KeymapPreset::MsImeNative | KeymapPreset::Custom) {
+    if matches!(
+        keymap.preset,
+        KeymapPreset::MsImeNative | KeymapPreset::Custom
+    ) {
         // MsImeNativeと同じ理由: 基準となる同梱表が無い(Customは`session_keymap`が
         // ATOK/MSIME以外、ADR-195段階4 B3対応で`from_config`が`None`ではなく
         // `Custom`プリセットを返すようになった)。
