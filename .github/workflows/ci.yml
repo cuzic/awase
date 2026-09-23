@@ -485,7 +485,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-mutants
       - name: Run cargo-mutants (awase core crate)
-        run: cargo mutants --no-shuffle
+        # ubuntu-latest(GitHub-hosted標準ランナー)は4vCPU。--jobs未指定だと
+        # cargo-mutantsは逐次実行(並列度1)になりコア数を活かせないため明示する。
+        run: cargo mutants --no-shuffle --jobs 4
       - name: Upload mutants report
         if: always()
         uses: actions/upload-artifact@v4
@@ -516,7 +518,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-mutants
       - name: Run cargo-mutants (awase-windows, platform-independent subset)
-        run: cargo mutants -p awase-windows --config .cargo/mutants-awase-windows.toml --no-shuffle
+        # ubuntu-latest(GitHub-hosted標準ランナー)は4vCPU。--jobs未指定だと
+        # cargo-mutantsは逐次実行(並列度1)になりコア数を活かせないため明示する。
+        run: cargo mutants -p awase-windows --config .cargo/mutants-awase-windows.toml --no-shuffle --jobs 4
       - name: Upload mutants report
         if: always()
         uses: actions/upload-artifact@v4
