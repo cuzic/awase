@@ -1,7 +1,14 @@
 # ADR-196 T1: 学習窓への外部からの書き込みを直接観測する基盤を実装する
 
-状態: 未着手（2026-09-23起票）。[ADR195-T1](adr195-t1-independent-learning-process.md)
-（独立学習プロセス本体）完了後に着手。ADR-196の他タスク（T2〜T5）の前提となる基盤。
+状態: **実装済み（PR #259、develop未マージ）。実機未検証（quiet window・生存確認・
+残余リスク判定が実際にA'の崩れを検出できるかは実機検証が必要）。** TSF compartment
+変更通知のCOM advise sink実装は見送り、`WM_IME_NOTIFY`（IMM32互換レイヤー経由）で
+代替した（項目2の一部縮退、将来の拡張余地として明記）。`check_session_interference`/
+`observation_alive`/`measurement_suspicious`はAPIとして公開済みだが、実際にセッションを
+中断・再測定へ接続する配線は[ADR196-T2](adr196-t2-mismatch-adjudication.md)のスコープ
+として残っている。
+[ADR195-T1](adr195-t1-independent-learning-process.md)（独立学習プロセス本体）完了後に
+着手。ADR-196の他タスク（T2〜T5）の前提となる基盤。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
 ## 背景

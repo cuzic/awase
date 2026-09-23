@@ -1,23 +1,25 @@
 # ADR-195 T1: 独立プロセスでの学習ラウンド（段階1）を実装する
 
-**【ADR-196で一部拡張、2026-09-23追記・Blocker】opus-adversarial-consultのdocs/tasks横断レビュー
-（B2）で、`origin/feat/adr195-t3-persistence`の`crates/awase-keymap-learn-win/src/driver.rs`
-（PR #250〜#256の共通土台）が[ADR-196](../adr/196-keymap-learn-truth-priority.md)決定1bの
-必須要件に反していることが判明した。**
-- `driver.rs:359`の`SendInput`が`dwExtraInfo: 0`のまま——決定1b項目1（`196-...md:105`）は
-  「学習プロセスは自分の`SendInput`に専用の目印を付ける」ことを要求する。目印が無いと、
-  [ADR196-T1](adr196-t1-external-write-observation.md)が実装する分類規則（自分の目印が無い
-  注入はすべて外部とみなす）の下で、学習プロセス自身の注入が全て「外部からの書き込み」に
-  誤分類され、セッションが即座に失敗し続ける。
-- `driver.rs:391`の`thread::sleep(...)`——決定1b項目4（`196-...md:112`）は「`sleep`等で
-  メッセージを回さずに待つ実装にすると、フックが黙って外れる」ことを名指しで禁じている。
+**【ADR-196で一部拡張、B2は修正済み（2026-09-23、PR #259）】** opus-adversarial-consultの
+docs/tasks横断レビュー（B2）で、`driver.rs`（PR #250〜#256の共通土台）が
+[ADR-196](../adr/196-keymap-learn-truth-priority.md)決定1bの必須要件に反していると
+指摘された。実コードで裏取りした結果、2点のうち1点は実際には問題なかった:
 
-**実装対象2（`ImeDriver`の6メソッド）に、この2点を追加すること。** [ADR196-T1](adr196-t1-external-write-observation.md)
-は「本タスク（ADR195-T1）完了後に着手」としているが、フック・分類器そのものはADR196-T1が持つ。
-本タスク側が持つのは「注入に専用の目印を付けること」「待ちをメッセージポンピングにすること」の
-2点で、ADR196-T1側の分類規則が正しく機能するための前提条件である。
+- `driver.rs`の`SendInput`が`dwExtraInfo: 0`のまま（決定1b項目1が要求する自分の目印が
+  無い）——**実在する問題、PR #259で修正済み**。目印が無いと、[ADR196-T1](adr196-t1-external-write-observation.md)
+  が実装する分類規則（自分の目印が無い注入はすべて外部とみなす）の下で、学習プロセス
+  自身の注入が全て「外部からの書き込み」に誤分類され、セッションが即座に失敗し続ける。
+- `driver.rs`の`thread::sleep(1ms)`（決定1b項目4が禁じる「メッセージを回さずに待つ」実装）
+  ——**誤検出だった**。既存の`pump_for()`は`PeekMessageW`+`DispatchMessageW`を1msごとに
+  ループしており、実際にはメッセージポンピングを回しながら待っている。修正不要。
 
-状態: 未着手（2026-09-23起票）。[ADR195前提タスク](adr195-t-rebase-calibration-branch.md)
+自分の目印の付与自体は実装対象2（`ImeDriver`の6メソッド）に対する差分としてPR #259が
+含む。[ADR196-T1](adr196-t1-external-write-observation.md)（フック・分類器そのもの）も
+同じPR #259で実装済み。
+
+状態: **本体はPR #250〜#256（develop未マージ）で実装中。B2修正＋ADR196-T1はPR #259
+（`feat/adr196-t1-external-write-observation`、develop未マージ、`feat/adr195-t3-persistence`
+を土台にしている）で対応済み。** [ADR195前提タスク](adr195-t-rebase-calibration-branch.md)
 （`feat/awase-calibration`のrebase）完了後に着手。ADR-192とは無関係に着手可。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
