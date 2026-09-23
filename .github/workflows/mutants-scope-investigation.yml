@@ -7,12 +7,19 @@ name: Mutants (ADR-194 retry-condition scope investigation)
 # サンドボックス上でcargo-mutantsを直接走らせずに済ませる。
 #
 # GitHubのデフォルトブランチ(develop)にファイルが無いとworkflow_dispatchで
-# 起動できない制約があるため、このファイル自体はdevelopに置く。ただし
-# mode_key_pass.rs/drift.rs/refresh_plan.rsはdevelop未マージ(feat/ime-sim-harness
-# 限定)なので、実行時は必ず `gh workflow run mutants-scope-investigation.yml
-# --ref feat/ime-sim-harness` のように対象ブランチをrefで指定すること
-# (actions/checkout@v4はrefを省略するとgithub.ref、すなわちdispatch時の
-# --refをそのまま使う)。ci.ymlは変更しない。検証が終わったらこのファイルと
+# 起動できない制約があるため、このファイル自体はdevelopに置く。
+#
+# 2026-09-22時点でmode_key_pass.rsはPR #240(ADR-191撤去)のマージで既にdevelop
+# 本体に入っており(force_guard.rsから分離済み)、drift.rs/refresh_plan.rsは
+# feat/ime-sim-harness限定(未採用のまま)。両方を比較したいので、`ref`入力で
+# 対象ブランチを切り替えられるようにしてある:
+#   - developの現状(本番採用された2ファイル)を見る:
+#     `gh workflow run mutants-scope-investigation.yml --ref develop`
+#   - feat/ime-sim-harness時点の当初4ファイル構想全体を見る:
+#     `gh workflow run mutants-scope-investigation.yml --ref feat/ime-sim-harness`
+# .cargo/mutants-bug158-scope.tomlのexamine_globsは4ファイルとも列挙してあり、
+# 存在しないファイルへのglobは単に0 mutantsになるだけで実行時エラーにはならない
+# (cargo-mutantsの仕様)。ci.ymlは変更しない。検証が終わったらこのファイルと
 # .cargo/mutants-bug158-scope.tomlをdevelopから削除してよい。
 
 on:
@@ -33,11 +40,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-mutants
-      - name: Run cargo-mutants (ADR-194 scope: 4 files)
+      - name: Run cargo-mutants (ADR-194 scope: force_guard/mode_key_pass/drift/refresh_plan)
         run: cargo mutants -p awase-windows --config .cargo/mutants-bug158-scope.toml --no-shuffle
       - name: Upload mutants report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mutants-report-bug158-scope
+          name: mutants-report-bug158-scope-${{ github.ref_name }}
           path: mutants.out/
