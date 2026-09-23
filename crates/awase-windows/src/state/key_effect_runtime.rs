@@ -70,6 +70,14 @@ pub enum RejectReason {
     MismatchesBundledTooMuch {
         mismatch_ratio: f64,
     },
+    /// 書き手（学習プロセス）の採否判定（[`awase_keymap_learn::judgement::TableJudgement`]）が
+    /// `Accepted`でない（`Rejected`・`NeedsConfirmation`のいずれか）、または判定フィールド
+    /// 自体が無い（`judgement: None`、1e前半以前に書かれたv2ファイル）（ADR196-T2決定1e、
+    /// opus-adversarial-consult 2026-09-23 C-3: 判定を書いても読み手が読まなければ、
+    /// 書いたのに効かない状態になる）。
+    NotAccepted {
+        judgement: Option<awase_keymap_learn::judgement::TableJudgement>,
+    },
 }
 
 impl std::fmt::Display for RejectReason {
@@ -88,6 +96,12 @@ impl std::fmt::Display for RejectReason {
                 f,
                 "同梱表とのセル不一致率が高すぎる(mismatch_ratio={mismatch_ratio:.2})"
             ),
+            Self::NotAccepted { judgement } => {
+                write!(
+                    f,
+                    "書き手の採否判定がAcceptedでない(judgement={judgement:?})"
+                )
+            }
         }
     }
 }
@@ -357,6 +371,11 @@ pub fn validate_and_convert(
     preset: KeymapPreset,
     check_against_bundled: bool,
 ) -> Result<Vec<Cell>, RejectReason> {
+    if table.judgement != Some(awase_keymap_learn::judgement::TableJudgement::Accepted) {
+        return Err(RejectReason::NotAccepted {
+            judgement: table.judgement,
+        });
+    }
     let converted = convert_cells(&table.cells);
     let coverage = coverage_ratio(&table.cells, converted.len());
     if coverage < MIN_COVERAGE_RATIO {
@@ -435,6 +454,7 @@ impl RuntimeTableCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awase_keymap_learn::judgement::TableJudgement;
     use awase_keymap_learn::model::{KeyId, Status};
 
     fn pcell(
@@ -513,7 +533,7 @@ mod tests {
         for _ in 0..8 {
             cells.push(pcell(true, 0x09, false, 0x99, None)); // 表に無いVK: 常に変換不能
         }
-        let table = PersistedTable::new(cells);
+        let table = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
         let err = validate_and_convert(&table, KeymapPreset::Atok, false).unwrap_err();
         assert!(matches!(err, RejectReason::CoverageTooLow { .. }));
     }
@@ -523,7 +543,7 @@ mod tests {
         let cells: Vec<_> = (0..10)
             .map(|_| pcell(true, 0x09, false, 0xF2, Some((true, 0x00))))
             .collect();
-        let table = PersistedTable::new(cells);
+        let table = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
         let out = validate_and_convert(&table, KeymapPreset::Atok, false).unwrap();
         assert_eq!(out.len(), 10);
     }
@@ -536,7 +556,7 @@ mod tests {
         let cells: Vec<_> = (0..20)
             .map(|_| pcell(true, 0x09, false, 0xF2, Some((false, 0x09))))
             .collect();
-        let table = PersistedTable::new(cells);
+        let table = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
         let rejected_when_checked =
             validate_and_convert(&table, KeymapPreset::Atok, true).unwrap_err();
         assert!(matches!(
@@ -545,6 +565,45 @@ mod tests {
         ));
         // カスタム構成(突き合わせなし)なら同じ表でも採用される。
         assert!(validate_and_convert(&table, KeymapPreset::Atok, false).is_ok());
+    }
+
+    /// C-3回帰テスト(opus-adversarial-consult 2026-09-23): 書き手の採否判定が
+    /// `Accepted`でなければ、カバレッジ・同梱表突き合わせがどちらも問題無くても
+    /// 不採用にする。`judgement: None`（1e前半以前に書かれたv2ファイル、または
+    /// 判定フィールド自体が無い）も同様に不採用へ倒す（判定不明を安全側=不採用に
+    /// 倒す、C-5と同じ向き）。
+    #[test]
+    fn judgement_not_accepted_is_rejected_regardless_of_coverage_or_mismatch() {
+        let cells: Vec<_> = (0..10)
+            .map(|_| pcell(true, 0x09, false, 0xF2, Some((true, 0x00))))
+            .collect();
+
+        let no_judgement = PersistedTable::new(cells.clone());
+        assert_eq!(
+            validate_and_convert(&no_judgement, KeymapPreset::Atok, false).unwrap_err(),
+            RejectReason::NotAccepted { judgement: None }
+        );
+
+        let rejected = PersistedTable::new(cells.clone()).with_judgement(TableJudgement::Rejected(
+            awase_keymap_learn::judgement::RejectedReason::LowAccuracy,
+        ));
+        assert!(matches!(
+            validate_and_convert(&rejected, KeymapPreset::Atok, false).unwrap_err(),
+            RejectReason::NotAccepted {
+                judgement: Some(TableJudgement::Rejected(_))
+            }
+        ));
+
+        let needs_confirmation =
+            PersistedTable::new(cells).with_judgement(TableJudgement::NeedsConfirmation(
+                awase_keymap_learn::judgement::NeedsConfirmationReason::UnverifiedMsImeNative,
+            ));
+        assert!(matches!(
+            validate_and_convert(&needs_confirmation, KeymapPreset::Atok, false).unwrap_err(),
+            RejectReason::NotAccepted {
+                judgement: Some(TableJudgement::NeedsConfirmation(_))
+            }
+        ));
     }
 
     /// `diff_against_bundled_cells`用の1セルだけの合成同梱表。ひらがな(0xF2)開で押すと
@@ -793,7 +852,7 @@ mod tests {
         // カスタムキーマップ学習: ひらがな(0xF2)を押すと開閉トグルする、という(同梱3種のいずれとも
         // 違う)独自の挙動を1セルだけ学習した表。
         let learned = vec![pcell(false, 0x00, false, 0xF2, Some((true, 0x09)))]; // 閉→開
-        let table = PersistedTable::new(learned);
+        let table = PersistedTable::new(learned).with_judgement(TableJudgement::Accepted);
         let cells = validate_and_convert(&table, KeymapPreset::Atok, false)
             .expect("カスタム構成は突き合わせをしないので採用される");
 

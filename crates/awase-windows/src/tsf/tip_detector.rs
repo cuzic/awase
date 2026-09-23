@@ -9,9 +9,14 @@
 //!
 //! ## スレッドモデル
 //!
-//! このモジュールの全関数は COM STA 初期化済みのスレッド（`gji-io-monitor`）から呼ぶこと。
-//! COM インターフェース（`ITfInputProcessorProfileMgr` 等）は STA アパートメントに束縛されるため、
-//! 生成スレッド以外で使ってはいけない。
+//! このモジュールの全関数は COM STA 初期化済みのスレッドから呼ぶこと。COM インターフェース
+//! （`ITfInputProcessorProfileMgr` 等）は STA アパートメントに束縛されるため、生成スレッド以外で
+//! 使ってはいけない。`pub(super)` な関数群は awase.exe の `gji-io-monitor` スレッドから呼ばれる。
+//! [`query_tip_identity_on_current_sta`] だけは `pub` で、`awase-keymap-learn-win`
+//! （学習プロセス、`RealImeDriver::new`が確立するTSFスレッド）からも呼ばれる
+//! （ADR196-T2「1e前半」、opus-adversarial-consult 2026-09-23 A-5）——COM初期化・
+//! `ITfThreadMgr::Activate`済みのスレッドから呼ぶのは呼び出し側の責任とし、この関数自体は
+//! 一切のCOM初期化/終了を行わない。
 
 use std::sync::OnceLock;
 use std::sync::RwLock;
@@ -161,6 +166,40 @@ pub(super) fn query_active_kind(
             return Some((ActiveImeKind::GoogleJapaneseInput, identity));
         }
         Some((ActiveImeKind::MicrosoftIme, identity))
+    }
+}
+
+/// 現在のSTAスレッドでアクティブな`TipIdentity`を一発で問い合わせる（ADR196-T2「1e前半」）。
+///
+/// [`query_active_kind`]と違い、`TSF_OBS`（awase.exeプロセスの観測ストア）へは一切書き込まない
+/// ——呼び出し元が別プロセス（学習プロセス）の場合、awase.exeの文脈でしか意味の無いグローバルを
+/// 初期化・更新してしまうため（opus-adversarial-consult 2026-09-23 A-5）。GJIのCLSID発見
+/// （[`find_gji_clsid`]）も、`awase.exe`側の`GJI_CLSID`キャッシュ（[`discover_and_cache_gji_clsid`]）を
+/// 経由せず、呼ぶたびに`EnumProfiles`をやり直す——呼び出し元は短命な学習プロセスで、1セッション
+/// あたり高々数回しか呼ばないため、キャッシュを共有する意味が無い。
+///
+/// COM初期化（`CoInitializeEx`）は呼び出し側の責任。この関数自体は一切のCOM初期化/終了を行わない
+/// （関数内で対にすると、呼び出し元のアパートメントの寿命を乱すため）。
+///
+/// 取得できなければ`None`（COMオブジェクト生成失敗・`GetActiveProfile`失敗のいずれか。
+/// 呼び出し元はエラーの詳細を区別する必要が無い——安全側に倒して「同定できなかった」として扱う）。
+#[must_use]
+pub fn query_tip_identity_on_current_sta() -> Option<crate::state::ime_kind::TipIdentity> {
+    use crate::state::ime_kind::{identify_tip, TipIdentity};
+    let (mgr, profiles) = create_profile_ctx()?;
+    let gji_clsid = find_gji_clsid(&mgr, &profiles);
+    unsafe {
+        let mut prof = TF_INPUTPROCESSORPROFILE::default();
+        mgr.GetActiveProfile(&GUID_TFCAT_TIP_KEYBOARD, &raw mut prof)
+            .map_err(|e| tracing::debug!("[tip-detect] GetActiveProfile failed: {e}"))
+            .ok()?;
+        if prof.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR {
+            return Some(TipIdentity::Other);
+        }
+        Some(identify_tip(
+            Some(prof.clsid.to_u128()),
+            gji_clsid.map(|g| g.to_u128()),
+        ))
     }
 }
 

@@ -106,7 +106,7 @@ Win32依存でホストでは検証できないため、下記「実機確認手
   既存注意通り、このサンドボックスではlink.exe不在のため実行不可）。
 - MSI同梱・署名の実装確認（Windows実機でのインストーラ検証）。**未完了（項目5参照）。**
 
-## 実機確認手順（round3 R1対応、未実施）
+## 実機確認手順（round3 R1対応、windows-latest CIで確認済み 2026-09-23）
 
 opus-adversarial-consult round3 R1が指摘した「フォーカスを恒久的に失った
 場合の回復経路」は、`GetForegroundWindow`/`GetFocus`の実際の挙動に依存する
@@ -127,6 +127,21 @@ opus-adversarial-consult round3 R1が指摘した「フォーカスを恒久的�
      入力されない。
 4. 予算いっぱい（数分）学習プロセスが空回りしないこと、途中までの部分的な
    学習表が`status=success`で書き出されないことを確認する。
+
+### CI確認結果（2026-09-23、run [35873056590](https://github.com/cuzic/awase/actions/runs/35873056590)）
+
+`.github/workflows/adr195-t7-focus-loss-verify.yml`＋`tools/e2e/t7-focus-loss-check.ps1`
+（`diag/adr195-t7-t10-realmachine-verify`ブランチ）で、GJI(ATOK)導入済みwindows-latest上で確認:
+
+- 対照（切替なし）: `status=success presses=933 cells=84 verify_accuracy=0.997`、終了コード0。
+- 学習開始5秒後にnotepadを起動: 4.7秒で`status=failure ... reason=interference`、終了コード1、
+  学習表は書き出されず。終了後もnotepadが前面のまま（学習プロセスが奪い返さない）、
+  notepadのタイトルは`Untitled`（未変更＝学習キーが混入していない）。
+- 上記手順3の3点・手順4の「部分表がsuccessで出ない」を満たす。手順4の「数分空回りしない」は4.7秒で終了。
+- 気づき: 失敗メッセージが「0回の試行が無効化上限を超えました(汚染された観測0件)」と表示される。
+  実際は送信前ゲート(`send_gated`)拒否による打ち切りで、文言が実態とずれている（軽微）。
+
+項目3（セキュリティソフト検知・TsfNativeへの副作用）・項目5（MSI同梱・署名）は未着手のまま。
 
 ## 関連
 

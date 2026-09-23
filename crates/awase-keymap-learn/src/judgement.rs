@@ -14,6 +14,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::verify::ScoreReport;
 
+/// 決定1a: 正答率がこれ未満なら表全体を不採用にする。
+pub const ACCURACY_THRESHOLD: f64 = 0.95;
+/// ADR-195 (ii)-1: 縮退率(`1.0 - ScoreReport::confidence()`)がこれを超えたら不採用にする。
+/// `key_effect_runtime.rs::MIN_COVERAGE_RATIO`(段階4読み手のセル単位カバレッジ、80%)とは
+/// **分母が違う別の量**——こちらはウォークの歩単位(`ScoreReport`)。同じ「20%」に見えて
+/// 意味が異なるので混同しないこと(opus-adversarial-consult 2026-09-23 C-4)。
+pub const DEGENERATION_THRESHOLD: f64 = 0.20;
+/// 決定1a・round2 NM3-2: 判定に使うウォークは、予測した([`ScoreReport::predicted`])
+/// ステップ数がこの値以上であること(全ステップ数ではない、C-2)。
+pub const MIN_PREDICTED_STEPS: usize = 300;
+/// 決定1b項目8: 再測定後も共通セルのこの割合を超えて不一致が残るなら「要確認」にする
+/// (系統的バグへの安全弁)。[`ReconciliationSummary::is_systematic_mismatch`]と
+/// [`combine`]が使う。再測定オーケストレーション(1b項目7〜9)は未実装のため、
+/// 現時点でこの定数を実際に使う呼び出し元はまだ無い。
+pub const SYSTEMATIC_MISMATCH_THRESHOLD: f64 = 0.30;
+
 /// 自己検証の採点結果に、採点に使ったウォークの由来情報（乱数シード）を
 /// 添えたもの。`ScoreReport`自体は`score_walk()`の純粋な計算結果であり
 /// シードを持たない（ウォークをどう生成したかは呼び出し側のメタデータ）ため、
@@ -32,6 +48,10 @@ pub enum RejectedReason {
     /// 縮退率（`1.0 - ScoreReport::confidence()`）が閾値超過
     /// （ADR-195 (ii)-1、20%が既存の暫定値）。
     HighDegeneration,
+    /// 予測したステップ数が[`MIN_PREDICTED_STEPS`]未満（決定1a・round2 NM3-2、C-2）。
+    /// 縮退率が高いウォークほど予測が集まりにくいため、この理由自体が縮退の症状で
+    /// あることが多い。
+    InsufficientSamples,
 }
 
 /// 表全体を「要確認」（既定では不採用、ユーザーの明示操作でのみ採用）に
@@ -60,15 +80,22 @@ pub enum TableJudgement {
 /// 呼び出し順序が重要: 正答率・縮退率どちらかで不採用条件を満たせば
 /// `Rejected`（Microsoft IME本体でも同様——「95%基準を適用しない」は
 /// 「常にNeedsConfirmation」ではなく「正答率を見ないわけではない」の意味、
-/// round4 M-Dで確定）。両方の不採用条件をくぐり抜けて初めて、Microsoft
-/// IME本体は`NeedsConfirmation`（未検証の暫定既定）になる。
+/// round4 M-Dで確定）。標本数不足（`predicted < min_predicted_steps`、C-2）も
+/// 同じく`Rejected`側の条件——水増しされた高正答率を信用しないため、
+/// 正答率・縮退率のどちらより先にチェックする。すべての不採用条件を
+/// くぐり抜けて初めて、Microsoft IME本体は`NeedsConfirmation`
+/// （未検証の暫定既定）になる。
 #[must_use]
 pub fn judge_self_verification(
     score: &ScoreReport,
     is_ms_ime_native: bool,
     accuracy_threshold: f64,
     degeneration_threshold: f64,
+    min_predicted_steps: usize,
 ) -> TableJudgement {
+    if score.predicted() < min_predicted_steps {
+        return TableJudgement::Rejected(RejectedReason::InsufficientSamples);
+    }
     if score.accuracy() < accuracy_threshold {
         return TableJudgement::Rejected(RejectedReason::LowAccuracy);
     }
@@ -80,6 +107,53 @@ pub fn judge_self_verification(
         return TableJudgement::NeedsConfirmation(NeedsConfirmationReason::UnverifiedMsImeNative);
     }
     TableJudgement::Accepted
+}
+
+/// 決定1b項目7〜8: 自己検証の判定([`judge_self_verification`])と、内蔵表との
+/// 再測定後の突き合わせ結果（[`ReconciliationSummary`]、あれば）を合成する
+/// （opus-adversarial-consult 2026-09-23 C-8）。
+///
+/// 合成規則:
+/// - `self_verification`が既に`Rejected`なら、それを覆さない（系統的不一致が
+///   無くても、自己検証で不合格な表を採用してはいけない）。
+/// - `reconciliation`が`None`（再測定オーケストレーション未実装、または
+///   既知構成でないため突き合わせ自体を行っていない）なら、`self_verification`を
+///   そのまま返す。
+/// - `reconciliation`が系統的不一致（[`ReconciliationSummary::is_systematic_mismatch`]）を
+///   示していれば、`Accepted`だけを`NeedsConfirmation(SystematicMismatch)`へ**下げる**
+///   （すでに`NeedsConfirmation(UnverifiedMsImeNative)`だった場合はそちらを残す——
+///   理由を上書きしない）。
+///
+/// 現時点でこの関数を呼ぶ呼び出し元はまだ無い（再測定オーケストレーション未実装、
+/// `run_main`は常に`reconciliation: None`で`self_verification`をそのまま使う）。
+/// Linux上でテストできるpure関数として先に用意しておくことで、後続PRが
+/// `main.rs`（`#[cfg(windows)]`でLinuxのテストが存在しない）に判定ロジックを
+/// 書かずに済む。
+#[must_use]
+pub fn combine(
+    self_verification: TableJudgement,
+    reconciliation: Option<&ReconciliationSummary>,
+    systematic_mismatch_threshold: f64,
+) -> TableJudgement {
+    let TableJudgement::Accepted = self_verification else {
+        return self_verification;
+    };
+    match reconciliation {
+        Some(summary) if summary.is_systematic_mismatch(systematic_mismatch_threshold) => {
+            TableJudgement::NeedsConfirmation(NeedsConfirmationReason::SystematicMismatch {
+                mismatch_percent: percent(summary.residual_mismatch_rate()),
+            })
+        }
+        _ => self_verification,
+    }
+}
+
+/// `0.0..=1.0`の比率を`0..=100`のパーセントへ変換する（`NeedsConfirmationReason::
+/// SystematicMismatch`が表示用に持つ整数値）。
+fn percent(rate: f64) -> u8 {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let clamped = (rate * 100.0).round().clamp(0.0, 100.0) as u8;
+    clamped
 }
 
 /// 内蔵表との突き合わせ1件分の裁定結果（決定1b項目7〜8）。
@@ -212,11 +286,11 @@ mod tests {
     fn low_accuracy_rejects_even_for_ms_ime_native() {
         let s = score(50, 50, 0); // 50% < 95%
         assert_eq!(
-            judge_self_verification(&s, true, 0.95, 0.20),
+            judge_self_verification(&s, true, 0.95, 0.20, 0),
             TableJudgement::Rejected(RejectedReason::LowAccuracy)
         );
         assert_eq!(
-            judge_self_verification(&s, false, 0.95, 0.20),
+            judge_self_verification(&s, false, 0.95, 0.20, 0),
             TableJudgement::Rejected(RejectedReason::LowAccuracy)
         );
     }
@@ -226,7 +300,7 @@ mod tests {
         // 正答率は満点でも、縮退率(1-confidence)が閾値を超えていれば不採用。
         let s = score(50, 0, 250); // predicted 50/300 → degeneration ~83%
         assert_eq!(
-            judge_self_verification(&s, false, 0.95, 0.20),
+            judge_self_verification(&s, false, 0.95, 0.20, 0),
             TableJudgement::Rejected(RejectedReason::HighDegeneration)
         );
     }
@@ -235,7 +309,7 @@ mod tests {
     fn ms_ime_native_needs_confirmation_when_thresholds_pass() {
         let s = score(297, 3, 0); // 99% accuracy, 0% degeneration
         assert_eq!(
-            judge_self_verification(&s, true, 0.95, 0.20),
+            judge_self_verification(&s, true, 0.95, 0.20, 300),
             TableJudgement::NeedsConfirmation(NeedsConfirmationReason::UnverifiedMsImeNative)
         );
     }
@@ -244,8 +318,93 @@ mod tests {
     fn passes_thresholds_and_not_ms_ime_native_is_accepted() {
         let s = score(297, 3, 0);
         assert_eq!(
-            judge_self_verification(&s, false, 0.95, 0.20),
+            judge_self_verification(&s, false, 0.95, 0.20, 300),
             TableJudgement::Accepted
+        );
+    }
+
+    /// C-2回帰テスト(opus-adversarial-consult 2026-09-23): 予測したステップ数
+    /// (`correct + incorrect`)が最低数未満なら、正答率が100%でも不採用にする
+    /// (水増しされた高正答率を信用しない)。
+    #[test]
+    fn insufficient_predicted_samples_rejects_even_with_perfect_accuracy() {
+        let s = score(240, 0, 0); // 100% accuracy, predicted=240 < 300
+        assert_eq!(
+            judge_self_verification(&s, false, 0.95, 0.20, 300),
+            TableJudgement::Rejected(RejectedReason::InsufficientSamples)
+        );
+    }
+
+    /// C-2回帰テスト: 標本数不足は正答率・縮退率のどちらより先にチェックする
+    /// (水増しされた高正答率〈または偶然縮退率をくぐり抜けた値〉を信用しない)。
+    #[test]
+    fn insufficient_samples_takes_priority_over_accuracy_and_degeneration() {
+        let s = score(0, 240, 0); // 0% accuracy, predicted=240 < 300
+        assert_eq!(
+            judge_self_verification(&s, false, 0.95, 0.20, 300),
+            TableJudgement::Rejected(RejectedReason::InsufficientSamples),
+            "predicted不足はLowAccuracyより先に報告されるべき"
+        );
+    }
+
+    #[test]
+    fn combine_does_not_override_an_already_rejected_verdict() {
+        let rejected = TableJudgement::Rejected(RejectedReason::LowAccuracy);
+        let mut summary = ReconciliationSummary::new();
+        for _ in 0..100 {
+            summary.record(CellReconciliation::NotReproduced);
+        }
+        assert_eq!(
+            combine(rejected, Some(&summary), 0.30),
+            rejected,
+            "自己検証で不合格な表は、突き合わせ結果に関わらず不採用のまま"
+        );
+    }
+
+    #[test]
+    fn combine_passes_through_accepted_when_reconciliation_is_absent() {
+        assert_eq!(
+            combine(TableJudgement::Accepted, None, 0.30),
+            TableJudgement::Accepted
+        );
+    }
+
+    #[test]
+    fn combine_demotes_accepted_to_needs_confirmation_on_systematic_mismatch() {
+        let mut summary = ReconciliationSummary::new();
+        for _ in 0..70 {
+            summary.record(CellReconciliation::Matched);
+        }
+        for _ in 0..30 {
+            summary.record(CellReconciliation::NotReproduced);
+        }
+        // ちょうど30%は閾値超過ではない(is_systematic_mismatchと同じ境界)。
+        assert_eq!(
+            combine(TableJudgement::Accepted, Some(&summary), 0.30),
+            TableJudgement::Accepted
+        );
+        summary.record(CellReconciliation::NotReproduced);
+        assert_eq!(
+            combine(TableJudgement::Accepted, Some(&summary), 0.30),
+            TableJudgement::NeedsConfirmation(NeedsConfirmationReason::SystematicMismatch {
+                mismatch_percent: 31,
+            })
+        );
+    }
+
+    #[test]
+    fn combine_does_not_override_unverified_ms_ime_native_reason() {
+        // 既にUnverifiedMsImeNativeでNeedsConfirmationだった場合、
+        // SystematicMismatchで理由を上書きしない(C-8: 元の理由を消さない)。
+        let needs_confirmation =
+            TableJudgement::NeedsConfirmation(NeedsConfirmationReason::UnverifiedMsImeNative);
+        let mut summary = ReconciliationSummary::new();
+        for _ in 0..100 {
+            summary.record(CellReconciliation::NotReproduced);
+        }
+        assert_eq!(
+            combine(needs_confirmation, Some(&summary), 0.30),
+            needs_confirmation
         );
     }
 
