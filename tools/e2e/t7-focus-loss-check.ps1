@@ -2,7 +2,8 @@
 param(
     [string]$Exe = "target\debug\awase-keymap-learn-win.exe",
     [int]$WarmupSec = 8,
-    [int]$WaitExitSec = 90
+    [int]$WaitExitSec = 90,
+    [switch]$Control
 )
 $ErrorActionPreference = "Continue"
 Add-Type @"
@@ -23,7 +24,7 @@ $null = $learn.Handle
 Start-Sleep -Seconds $WarmupSec
 "before switch: fg = $(Fg-Info)"
 "progress lines so far: $((Get-Content $out -ErrorAction SilentlyContinue | Measure-Object -Line).Lines)"
-Start-Process notepad.exe
+if (-not $Control) { Start-Process notepad.exe }
 Start-Sleep -Seconds 2
 "after notepad: fg = $(Fg-Info)"
 $sw = [Diagnostics.Stopwatch]::StartNew()
