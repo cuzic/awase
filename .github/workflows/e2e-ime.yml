@@ -407,11 +407,18 @@ jobs:
           $table.Add(0) # リスト終端の追加NUL(msime_legacy_keymap.rs の split(|&b| b == 0x00) に対応)
           Set-ItemProperty -Path "$base\StyleList\Custom" -Name key -Value ([byte[]]$table.ToArray()) -Type Binary -Force
           Set-ItemProperty -Path "$base\MSIME" -Name keystyle -Value 'Custom' -Type String -Force
+          # 「以前のバージョンのMicrosoft IMEを使う」互換モード自体(2026-09-23 dragonflyg4実機でWeb調査+
+          # レジストリ確認、NoTsf3Override2=1=ON)。既定のCIランナーはこのキー自体が無く(=OFF相当)、
+          # StyleList\<style>\keyが最初から参照されない可能性が高い(round1レビューB2の懸念)。
+          # dragonflyg4実機と同じ条件(互換モードON)で無変換/変換キーの実効果を確かめるため明示的にONにする。
+          $tsfBase = 'HKCU:\SOFTWARE\Microsoft\Input\TSF\Tsf3Override\{03b5835f-f03c-411b-9ce2-aa23e1171e36}'
+          New-Item -Path $tsfBase -Force | Out-Null
+          Set-ItemProperty -Path $tsfBase -Name NoTsf3Override2 -Value 1 -Type DWord -Force
           Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep -Seconds 1
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
-          "keystyle=$((Get-ItemProperty "$base\MSIME" -Name keystyle).keystyle) key_len=$($table.Count)"
+          "keystyle=$((Get-ItemProperty "$base\MSIME" -Name keystyle).keystyle) key_len=$($table.Count) NoTsf3Override2=$((Get-ItemProperty $tsfBase -Name NoTsf3Override2).NoTsf3Override2)"
 
       # smoke ゲート: 本番シャードは、同じ run 内の smoke ジョブ(matrix.cfg.gate)が成功するまで待ち、失敗したら中身を実行しない。
       # smoke と同時に起動する(GJI導入・言語設定は smoke と並行して済ませる)ので、待ちは smoke の残り時間だけで済む。
