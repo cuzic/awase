@@ -482,9 +482,11 @@ dependencies = [
 name = "awase-keymap-learn-win"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "awase",
  "awase-keymap-learn",
  "awase-windows",
+ "serde_json",
  "windows 0.62.2",
 ]
 

@@ -1377,6 +1377,8 @@ fn current_bug_report_diagnostics(
     let msime_key_assignment = Some(build_bug_report_msime_key_assignment_summary(app, ime_kind));
     // ADR-148 Phase 2: 旧UI（互換モード）の詳細キーカスタマイズ。
     let legacy_msime_keymap = Some(build_bug_report_legacy_msime_keymap_summary());
+    // ADR196-T2 決定1e後半: 学習表の採否・自己検証・同梱表との突き合わせ・指紋。
+    let keymap_learn = Some(build_bug_report_keymap_learn_summary(app));
     crate::bug_report::BugReportDiagnostics {
         ime_product_name: crate::tsf::observer::current_ime_product_name(),
         keyboard_model: bug_report_keyboard_model(app.keyboard_model()).to_owned(),
@@ -1389,7 +1391,37 @@ fn current_bug_report_diagnostics(
         gji_keymap,
         msime_key_assignment,
         legacy_msime_keymap,
+        keymap_learn,
     }
+}
+
+/// 学習表の状態を1項目にまとめる。ファイルは診断のたびに直接読み直す（キャッシュ経由に
+/// しない: 不採用理由を報告するのが目的で、採用時のセルではなくファイル自体の判定を見る）。
+fn build_bug_report_keymap_learn_summary(
+    app: &Runtime,
+) -> crate::bug_report::BugReportKeymapLearnSummary {
+    use crate::state::key_effect_runtime as ker;
+    let table = ker::table_file_path().map_or(Err(ker::RejectReason::NotFound), |path| {
+        ker::read_persisted_table(&path)
+    });
+    let last_attempt = ker::last_attempt_file_path().map(|path| ker::read_persisted_table(&path));
+    // 同梱表との突き合わせは、予測時に実際に使った`(preset, check_against_bundled)`
+    // （`RuntimeTableCache`が保持）で行う。`check_against_bundled`が偽（カスタム構成）なら
+    // 突き合わせに意味が無いので行わない。GJI/本体どちらのキャッシュかを推測しない。
+    let bundled_diff = table.as_ref().ok().and_then(|t| {
+        let (preset, true) = app.key_effect_runtime_table.last_validation_key()? else {
+            return None;
+        };
+        Some(ker::diff_against_bundled(&t.cells, preset))
+    });
+    crate::bug_report::BugReportKeymapLearnSummary::from_parts(
+        &table,
+        &last_attempt,
+        app.use_learned_keymap_table,
+        // `use_learned_keymap_table`がfalseの間は`get`が呼ばれずcellsが古いまま残るため併せて見る。
+        app.use_learned_keymap_table && app.key_effect_runtime_table.is_active(),
+        bundled_diff.as_ref(),
+    )
 }
 
 /// `custom_keymap_table_is_effective`が`true`のときにのみ埋まる、

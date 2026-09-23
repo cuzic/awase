@@ -90,7 +90,8 @@ mod tests {
     use super::*;
 
     fn table_with(schema_version: u32, fingerprint: Option<Fingerprint>) -> PersistedTable {
-        let mut t = PersistedTable::new(vec![], fingerprint);
+        let mut t = PersistedTable::new(vec![]);
+        t.fingerprint = fingerprint;
         t.schema_version = schema_version;
         t
     }

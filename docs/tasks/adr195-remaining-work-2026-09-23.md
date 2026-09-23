@@ -1,7 +1,7 @@
 # ADR-195: PR #250〜#258 develop統合と、レビューで見送った低優先度指摘の残作業
 
-状態: **1節(develop統合)は完了(2026-09-23)。残るは2節(低優先度指摘、対応不要と判断)・
-3節(T10究明、未着手)のみ。** 本ドキュメントは、2026-09-23セッションでPR #250〜#258
+状態: **1節(develop統合)は完了(2026-09-23)。3節(T10究明)も同日中に解決。残るは
+2節(低優先度指摘、対応不要と判断)のみ。** 本ドキュメントは、2026-09-23セッションでPR #250〜#258
 （ADR-195 T0/T2/T3/T4/T5/T6/T8/T9）を横断レビュー・修正した後に残った作業をまとめた
 ものとして起票したが、同セッション内でdevelop統合まで完了した。着手時は
 `.claude/rules/worktree-per-session.md` に従い専用worktree/branchを切ること。
@@ -111,12 +111,12 @@ x86_64-pc-windows-msvc`を付けること(CLAUDE.mdの既存注意と同じ理�
 
 ## 3. T10（RealImeDriver実機観測不良）の残作業
 
-[adr195-t10-realimedriver-ci-observation-failure.md](adr195-t10-realimedriver-ci-observation-failure.md)
-に記載の4方向の究明（フォアグラウンド確保ロジックの可視化、`settle_setup`/`observe_imm`の
-失敗理由の可視化、GitHub-hosted runner固有の環境差の切り分け、dragonflyg4実機での再検証）が
-未着手のまま。run [35840828329](https://github.com/cuzic/awase/actions/runs/35840828329)
-（待機時間延長版）の完了を2026-09-23に確認済みだが、結果はT10記載のものと完全一致
-（presses=0, cells=0）で新たな手がかりは得られていない。
+**2026-09-23中に解決。** [adr195-t10-realimedriver-ci-observation-failure.md](adr195-t10-realimedriver-ci-observation-failure.md)
+の「究明結果」節を参照。フォーカス確保の不具合(`AttachThreadInput`併用パターンで修正)と、
+`--strategy=s0`(製品コードパスでは使われない診断専用CLIフラグ)固有の別問題が
+重なっていたと判明。製品が実際に使う既定戦略(S6)は、フォーカス修正+awase.exe同時起動の
+下で実際に学習に成功することをCIで確認した(`cells=84/168, verify_accuracy=0.997`)。
+修正はPR [#266](https://github.com/cuzic/awase/pull/266)。
 
 ## 完了条件
 
@@ -124,7 +124,8 @@ x86_64-pc-windows-msvc`を付けること(CLAUDE.mdの既存注意と同じ理�
 - [ ] 2節の指摘のうち着手したものは、対応してPRへ追随コミットするか、見送りと判断した理由を
   このファイルへ追記する（現時点は全件見送りのまま、対応の要否は次にファイルへ触れる
   セッションが判断する）。
-- [ ] T10の究明が1つでも進展したら、T10ファイル自体を更新する（本ファイルではなくT10側に書く）。
+- [x] T10の究明が1つでも進展したら、T10ファイル自体を更新する（本ファイルではなくT10側に書く）。
+  → T10解決済み(上記3節参照)。
 
 ## 関連
 

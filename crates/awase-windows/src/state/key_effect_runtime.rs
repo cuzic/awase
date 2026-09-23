@@ -70,6 +70,14 @@ pub enum RejectReason {
     MismatchesBundledTooMuch {
         mismatch_ratio: f64,
     },
+    /// 書き手（学習プロセス）の採否判定（[`awase_keymap_learn::judgement::TableJudgement`]）が
+    /// `Accepted`でない（`Rejected`・`NeedsConfirmation`のいずれか）、または判定フィールド
+    /// 自体が無い（`judgement: None`、1e前半以前に書かれたv2ファイル）（ADR196-T2決定1e、
+    /// opus-adversarial-consult 2026-09-23 C-3: 判定を書いても読み手が読まなければ、
+    /// 書いたのに効かない状態になる）。
+    NotAccepted {
+        judgement: Option<awase_keymap_learn::judgement::TableJudgement>,
+    },
 }
 
 impl std::fmt::Display for RejectReason {
@@ -88,6 +96,12 @@ impl std::fmt::Display for RejectReason {
                 f,
                 "同梱表とのセル不一致率が高すぎる(mismatch_ratio={mismatch_ratio:.2})"
             ),
+            Self::NotAccepted { judgement } => {
+                write!(
+                    f,
+                    "書き手の採否判定がAcceptedでない(judgement={judgement:?})"
+                )
+            }
         }
     }
 }
@@ -179,6 +193,87 @@ fn mismatch_ratio(learned: &[Cell], bundled: &[Cell]) -> f64 {
     ratio
 }
 
+/// `(status, key)`ペアで不一致セルを識別する（[`awase_keymap_learn::model::Status`]/
+/// [`awase_keymap_learn::model::KeyId`]をそのまま使い、`PersistedCell`と同じ識別方式にする）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MismatchedCell {
+    pub status: awase_keymap_learn::model::Status,
+    pub key: awase_keymap_learn::model::KeyId,
+}
+
+/// 学習表と同梱表の第一段階の突き合わせ結果（[ADR-196](../../../docs/adr/196-keymap-learn-truth-priority.md)決定1b項目7〜9）。
+///
+/// 再測定（実際にIMEを再度叩いて元の学習値が再現するか確認する）は含まない
+/// ——ここでの`mismatched`は「再測定が必要な候補」であり、呼び出し側（学習プロセス）が
+/// 再測定した結果を[`awase_keymap_learn::judgement::CellReconciliation`]で確定させる。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BundledDiff {
+    /// 両方の表にあり、結果も一致したセル数。
+    pub matched: u32,
+    /// 両方の表にあるが結果が食い違うセル（再測定対象、順序は学習表側の入力順）。
+    pub mismatched: Vec<MismatchedCell>,
+    /// 学習表・同梱表の片方にしか無いセル数（突き合わせの分母に含めない）。
+    pub only_in_one_table: u32,
+}
+
+/// 学習表を同梱表と突き合わせる（[ADR-196](../../../docs/adr/196-keymap-learn-truth-priority.md)決定1e第1項:「学習プロセスが内蔵表を参照できるようにする」の実装本体）。
+///
+/// `preset`は[`super::key_effect_predictor::KeyEffectKeymap::is_unmodified_bundled_config`]相当の判定
+/// （呼び出し側の[`awase_gji_config::known_keymap`]等）で「既知構成である」と確認できた場合のみ
+/// 渡すこと——カスタム構成では突き合わせに意味が無い（`mismatch_ratio`と同じ前提）。
+///
+/// 変換できない学習セル（`convert_cell`が`None`を返すもの: VK非対応・変換モード非表現・
+/// `prediction: None`）は、同梱表側から見て「学習表に無い」＝`only_in_one_table`に数える
+/// （このセルは学習表からは何も主張していないので、突き合わせの母数からは除きつつ、
+/// 「表にのみ存在」の記録には残す）。
+#[must_use]
+pub fn diff_against_bundled(persisted: &[PersistedCell], preset: KeymapPreset) -> BundledDiff {
+    diff_against_bundled_cells(persisted, bundled_table(preset))
+}
+
+/// [`diff_against_bundled`]の本体。テストで同梱表全体ではなく小さな合成`Cell`列を渡せるように
+/// 分離している（`mismatch_ratio`と同じ理由）。
+fn diff_against_bundled_cells(persisted: &[PersistedCell], bundled: &[Cell]) -> BundledDiff {
+    let mut matched_bundled = vec![false; bundled.len()];
+    let mut diff = BundledDiff::default();
+
+    for pc in persisted {
+        let Some(converted) = convert_cell(pc) else {
+            diff.only_in_one_table += 1;
+            continue;
+        };
+        let found = bundled.iter().enumerate().find(|(_, b)| {
+            b.matches_lookup_key(
+                converted.open(),
+                converted.conv(),
+                converted.stage(),
+                converted.key(),
+            )
+        });
+        match found {
+            Some((idx, b)) => {
+                matched_bundled[idx] = true;
+                if converted.after_open() == b.after_open()
+                    && converted.after_conv() == b.after_conv()
+                    && converted.disp() == b.disp()
+                {
+                    diff.matched += 1;
+                } else {
+                    diff.mismatched.push(MismatchedCell {
+                        status: pc.status,
+                        key: pc.key,
+                    });
+                }
+            }
+            None => diff.only_in_one_table += 1,
+        }
+    }
+    diff.only_in_one_table +=
+        u32::try_from(matched_bundled.iter().filter(|m| !**m).count()).unwrap_or(u32::MAX);
+
+    diff
+}
+
 /// `<config dir>/keymap-learn-table.json`のパス。`config dir`は`config.toml`の親ディレクトリ
 /// （`crate::app::find_config_path()`と同じ解決順、見つからなければ`None`＝未学習として扱う）。
 ///
@@ -188,6 +283,14 @@ fn mismatch_ratio(learned: &[Cell], bundled: &[Cell]) -> f64 {
 pub(crate) fn table_file_path() -> Option<std::path::PathBuf> {
     let config_path = crate::app::find_config_path().ok()?;
     Some(config_path.parent()?.join("keymap-learn-table.json"))
+}
+
+/// 学習プロセスが不採用/要確認の結果を退避する`keymap-learn-last-attempt.json`のパス
+/// （`awase-keymap-learn-win`の`--last-attempt-path`既定と同じ場所）。
+#[cfg(windows)]
+pub(crate) fn last_attempt_file_path() -> Option<std::path::PathBuf> {
+    let config_path = crate::app::find_config_path().ok()?;
+    Some(config_path.parent()?.join("keymap-learn-last-attempt.json"))
 }
 
 /// [`RuntimeTableCache::get`]の`stamp`引数（更新時刻+長さ）。ファイルが無い/読めなければ`None`
@@ -254,17 +357,26 @@ pub fn load_runtime_table(
     preset: KeymapPreset,
     check_against_bundled: bool,
 ) -> Result<Vec<Cell>, RejectReason> {
+    let table = read_persisted_table(path)?;
+    validate_and_convert(&table, preset, check_against_bundled)
+}
+
+/// ファイルを読んで`PersistedTable`へパースするところまで（採否判定・変換はしない）。
+/// [`load_runtime_table`]と不具合報告（`bug_report::BugReportKeymapLearnSummary`）が共有する。
+///
+/// # Errors
+/// 読めなかった/パースできなかった理由を[`RejectReason`]で返す（採否判定由来の理由は返さない）。
+pub fn read_persisted_table(path: &Path) -> Result<PersistedTable, RejectReason> {
     let meta = fs::metadata(path).map_err(|e| io_reject_reason(&e))?;
     if meta.len() > MAX_TABLE_FILE_BYTES {
         return Err(RejectReason::TooLarge);
     }
     let text = fs::read_to_string(path).map_err(|e| io_reject_reason(&e))?;
-    let table: PersistedTable = persist::from_json(&text).map_err(|e| match e {
+    persist::from_json(&text).map_err(|e| match e {
         LoadError::Parse(_) => RejectReason::Parse,
         LoadError::SchemaVersionMismatch { .. } => RejectReason::SchemaVersionMismatch,
         LoadError::DuplicateCell { .. } => RejectReason::DuplicateCell,
-    })?;
-    validate_and_convert(&table, preset, check_against_bundled)
+    })
 }
 
 /// [`load_runtime_table`]のfsを伴わない部分（テスト・CI検証双方から呼べるように分離）。
@@ -276,6 +388,11 @@ pub fn validate_and_convert(
     preset: KeymapPreset,
     check_against_bundled: bool,
 ) -> Result<Vec<Cell>, RejectReason> {
+    if table.judgement != Some(awase_keymap_learn::judgement::TableJudgement::Accepted) {
+        return Err(RejectReason::NotAccepted {
+            judgement: table.judgement,
+        });
+    }
     let converted = convert_cells(&table.cells);
     let coverage = coverage_ratio(&table.cells, converted.len());
     if coverage < MIN_COVERAGE_RATIO {
@@ -311,6 +428,19 @@ pub struct RuntimeTableCache {
 }
 
 impl RuntimeTableCache {
+    /// 直近の`get`で学習済み表が採用されている（＝予測に使われている）か。
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        self.cells.is_some()
+    }
+
+    /// 直近の読込で使った`(preset, check_against_bundled)`（診断用。学習表ファイルが
+    /// 無い/読めなかった場合は`None`）。
+    #[must_use]
+    pub fn last_validation_key(&self) -> Option<(KeymapPreset, bool)> {
+        self.stamp.map(|(_, _, preset, check)| (preset, check))
+    }
+
     pub const RECHECK_MS: u64 = super::key_effect_predictor::KeymapCache::RECHECK_MS;
 
     /// キャッシュした学習済み表を返す（採用できなかった/未学習なら`None`＝呼び出し側は同梱表を使う）。
@@ -354,6 +484,7 @@ impl RuntimeTableCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awase_keymap_learn::judgement::TableJudgement;
     use awase_keymap_learn::model::{KeyId, Status};
 
     fn pcell(
@@ -432,7 +563,7 @@ mod tests {
         for _ in 0..8 {
             cells.push(pcell(true, 0x09, false, 0x99, None)); // 表に無いVK: 常に変換不能
         }
-        let table = PersistedTable::new(cells, None);
+        let table = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
         let err = validate_and_convert(&table, KeymapPreset::Atok, false).unwrap_err();
         assert!(matches!(err, RejectReason::CoverageTooLow { .. }));
     }
@@ -442,7 +573,7 @@ mod tests {
         let cells: Vec<_> = (0..10)
             .map(|_| pcell(true, 0x09, false, 0xF2, Some((true, 0x00))))
             .collect();
-        let table = PersistedTable::new(cells, None);
+        let table = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
         let out = validate_and_convert(&table, KeymapPreset::Atok, false).unwrap();
         assert_eq!(out.len(), 10);
     }
@@ -455,7 +586,7 @@ mod tests {
         let cells: Vec<_> = (0..20)
             .map(|_| pcell(true, 0x09, false, 0xF2, Some((false, 0x09))))
             .collect();
-        let table = PersistedTable::new(cells, None);
+        let table = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
         let rejected_when_checked =
             validate_and_convert(&table, KeymapPreset::Atok, true).unwrap_err();
         assert!(matches!(
@@ -466,12 +597,130 @@ mod tests {
         assert!(validate_and_convert(&table, KeymapPreset::Atok, false).is_ok());
     }
 
+    /// C-3回帰テスト(opus-adversarial-consult 2026-09-23): 書き手の採否判定が
+    /// `Accepted`でなければ、カバレッジ・同梱表突き合わせがどちらも問題無くても
+    /// 不採用にする。`judgement: None`（1e前半以前に書かれたv2ファイル、または
+    /// 判定フィールド自体が無い）も同様に不採用へ倒す（判定不明を安全側=不採用に
+    /// 倒す、C-5と同じ向き）。
+    #[test]
+    fn judgement_not_accepted_is_rejected_regardless_of_coverage_or_mismatch() {
+        let cells: Vec<_> = (0..10)
+            .map(|_| pcell(true, 0x09, false, 0xF2, Some((true, 0x00))))
+            .collect();
+
+        let no_judgement = PersistedTable::new(cells.clone());
+        assert_eq!(
+            validate_and_convert(&no_judgement, KeymapPreset::Atok, false).unwrap_err(),
+            RejectReason::NotAccepted { judgement: None }
+        );
+
+        let rejected = PersistedTable::new(cells.clone()).with_judgement(TableJudgement::Rejected(
+            awase_keymap_learn::judgement::RejectedReason::LowAccuracy,
+        ));
+        assert!(matches!(
+            validate_and_convert(&rejected, KeymapPreset::Atok, false).unwrap_err(),
+            RejectReason::NotAccepted {
+                judgement: Some(TableJudgement::Rejected(_))
+            }
+        ));
+
+        let needs_confirmation =
+            PersistedTable::new(cells).with_judgement(TableJudgement::NeedsConfirmation(
+                awase_keymap_learn::judgement::NeedsConfirmationReason::UnverifiedMsImeNative,
+            ));
+        assert!(matches!(
+            validate_and_convert(&needs_confirmation, KeymapPreset::Atok, false).unwrap_err(),
+            RejectReason::NotAccepted {
+                judgement: Some(TableJudgement::NeedsConfirmation(_))
+            }
+        ));
+    }
+
+    /// `diff_against_bundled_cells`用の1セルだけの合成同梱表。ひらがな(0xF2)開で押すと
+    /// 閉じない(`after_open: true`)という、上の`mismatch_against_bundled_is_rejected_when_checked`
+    /// と同じ実測ベースの値を使う。
+    fn one_cell_bundled_table() -> Vec<Cell> {
+        vec![make_cell(
+            true,
+            Some(Conv::C19),
+            Stage::None,
+            TableKey::Hiragana,
+            true,
+            Some(Conv::C10),
+            Disp::Kept,
+        )]
+    }
+
+    #[test]
+    fn diff_against_bundled_counts_matching_cell_as_matched() {
+        let cells = vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x00)))];
+        let diff = diff_against_bundled_cells(&cells, &one_cell_bundled_table());
+        assert_eq!(diff.matched, 1);
+        assert!(diff.mismatched.is_empty());
+        assert_eq!(diff.only_in_one_table, 0);
+    }
+
+    #[test]
+    fn diff_against_bundled_reports_mismatched_cell_identity() {
+        // 上記`mismatch_against_bundled_is_rejected_when_checked`と同じ「わざと閉じる」誤り。
+        let cells = vec![pcell(true, 0x09, false, 0xF2, Some((false, 0x09)))];
+        let diff = diff_against_bundled_cells(&cells, &one_cell_bundled_table());
+        assert_eq!(diff.matched, 0);
+        assert_eq!(
+            diff.mismatched,
+            vec![MismatchedCell {
+                status: Status {
+                    open: true,
+                    mode: 0x09,
+                    composing: false,
+                },
+                key: KeyId(0xF2),
+            }]
+        );
+        assert_eq!(diff.only_in_one_table, 0);
+    }
+
+    #[test]
+    fn diff_against_bundled_counts_unconvertible_cell_as_only_in_one_table() {
+        // 表に無いVK(0x99)は変換できない=「学習表にのみ存在」扱い(突き合わせの分母外)。
+        // 同梱表側の1セルも学習表からは一致しないので、あわせて2件になる。
+        let cells = vec![pcell(true, 0x09, false, 0x99, Some((true, 0x00)))];
+        let diff = diff_against_bundled_cells(&cells, &one_cell_bundled_table());
+        assert_eq!(diff.matched, 0);
+        assert!(diff.mismatched.is_empty());
+        assert_eq!(diff.only_in_one_table, 2);
+    }
+
+    #[test]
+    fn diff_against_bundled_counts_uncovered_bundled_cells_as_only_in_one_table() {
+        // 学習表が空なら、同梱表の全セルが「同梱表にのみ存在」になる。
+        let diff = diff_against_bundled_cells(&[], &one_cell_bundled_table());
+        assert_eq!(diff.matched, 0);
+        assert!(diff.mismatched.is_empty());
+        assert_eq!(diff.only_in_one_table, 1);
+    }
+
+    #[test]
+    fn diff_against_bundled_uses_the_real_bundled_table_for_the_given_preset() {
+        // 実際の同梱ATOK表全体を使う統合テスト。細かい一致・不一致の判定は上の合成表テストで
+        // 検証済みなので、ここでは実表への配線(件数の集計が壊れていないこと)だけ確認する。
+        let cells = vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x00)))];
+        let diff = diff_against_bundled(&cells, KeymapPreset::Atok);
+        assert_eq!(
+            u64::from(diff.matched) + diff.mismatched.len() as u64,
+            1,
+            "唯一の学習セルは、一致か不一致のいずれかとして数えられるはず"
+        );
+        assert!(
+            diff.only_in_one_table > 0,
+            "同梱ATOK表は1セルよりずっと多いはず"
+        );
+    }
+
     #[test]
     fn schema_version_mismatch_is_rejected() {
-        let mut table = PersistedTable::new(
-            vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x00)))],
-            None,
-        );
+        let mut table =
+            PersistedTable::new(vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x00)))]);
         table.schema_version = persist::CURRENT_SCHEMA_VERSION + 1;
         let json = table.to_json().unwrap();
         let err = persist::from_json(&json).unwrap_err();
@@ -633,7 +882,7 @@ mod tests {
         // カスタムキーマップ学習: ひらがな(0xF2)を押すと開閉トグルする、という(同梱3種のいずれとも
         // 違う)独自の挙動を1セルだけ学習した表。
         let learned = vec![pcell(false, 0x00, false, 0xF2, Some((true, 0x09)))]; // 閉→開
-        let table = PersistedTable::new(learned, None);
+        let table = PersistedTable::new(learned).with_judgement(TableJudgement::Accepted);
         let cells = validate_and_convert(&table, KeymapPreset::Atok, false)
             .expect("カスタム構成は突き合わせをしないので採用される");
 

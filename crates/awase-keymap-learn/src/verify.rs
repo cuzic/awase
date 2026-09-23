@@ -98,7 +98,7 @@ pub struct WalkObs {
 }
 
 /// 採点結果。ATOKの実測(一致278・不一致1・表に無い19)と同じ形。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ScoreReport {
     pub correct: usize,
     pub incorrect: usize,
@@ -108,6 +108,13 @@ pub struct ScoreReport {
 impl ScoreReport {
     pub const fn total(&self) -> usize {
         self.correct + self.incorrect + self.not_in_table
+    }
+
+    /// 予測を持っていた観測数(`correct + incorrect`)。ADR-196決定1aが要求する
+    /// 「最低300ステップ」はこの値を指す(全ステップ数ではない、
+    /// opus-adversarial-consult 2026-09-23 C-2)。
+    pub const fn predicted(&self) -> usize {
+        self.correct + self.incorrect
     }
 
     /// 正答率: 予測を持っていた観測のうち一致した割合(`correct / (correct + incorrect)`)。
