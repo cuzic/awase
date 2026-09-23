@@ -1,7 +1,15 @@
 # imm_cross_write の AlreadyMatched 判定にテストの穴がある（要修正）
 
-状態: 未着手（2026-09-22起票）
+状態: 対応済み（2026-09-22起票、PR [#247](https://github.com/cuzic/awase/pull/247)でテスト追加）
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
+
+`imm_cross_reobservation_already_matches`として`state/ime_actuation_decision.rs`
+（windows-ungated）へ判定を抽出し、一致/不一致/未知(`None`)の3ケースを
+ユニットテストで固定した（`cargo test -p awase-windows --lib`でLinux上でも
+検証可能）。残作業: マージ後に`gh workflow run
+mutants-actuation-confluence-windows.yml --ref develop`を再実行し、
+`open_chain.rs:356`相当のmutantが`missed`→`caught`に変わったことを確認する
+（下記「やること」3番）。
 
 ## 背景
 
