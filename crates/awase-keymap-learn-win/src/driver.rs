@@ -1,5 +1,6 @@
 #![allow(unsafe_code)]
 
+use std::cell::Cell;
 use std::mem::size_of;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -12,7 +13,8 @@ use awase_windows::state::key_effect_predictor::Conv;
 use windows::core::{w, Interface, Result as WinResult};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+    COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::Ime::{
@@ -28,7 +30,7 @@ use windows::Win32::UI::TextServices::{
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassW,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, PeekMessageW, RegisterClassW,
     SetForegroundWindow, SetWindowTextW, ShowWindow, TranslateMessage, MSG, PM_REMOVE, SW_SHOW,
     WINDOW_STYLE, WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
@@ -60,6 +62,11 @@ pub struct RealImeDriver {
     thread_compartments: ITfCompartmentMgr,
     keys: Vec<u32>,
     initial: Status,
+    /// `observe_imm()`がIME観測を復号できず`self.initial`へフォールバックした回数
+    /// (ADR-195が前提とする「誤りに強い分類」が`awase-keymap-learn`に未実装のため、
+    /// この駆動部だけでは異常として`Executor`に伝える経路が無い。せめて可視化する
+    /// ——レビュー指摘対応)。`&self`のメソッドから増分するため`Cell`。
+    decode_errors: Cell<u32>,
 }
 
 impl RealImeDriver {
@@ -96,6 +103,7 @@ impl RealImeDriver {
                 mode: 0x09,
                 composing: false,
             },
+            decode_errors: Cell::new(0),
         };
         driver.initial = driver.observe_imm()?.status;
         Ok(driver)
@@ -105,10 +113,26 @@ impl RealImeDriver {
         self.initial
     }
 
+    /// `observe_imm()`が復号に失敗し`self.initial`へフォールバックした回数。
+    /// 0でなければ学習表に信頼できない観測が混じっている可能性がある
+    /// (呼び出し元は最終サマリで表示することを推奨)。
+    pub fn decode_error_count(&self) -> u32 {
+        self.decode_errors.get()
+    }
+
+    fn note_decode_error(&self, reason: &str) {
+        self.decode_errors.set(self.decode_errors.get() + 1);
+        eprintln!(
+            "[awase-keymap-learn-win] observe_imm失敗({reason})、self.initialへフォールバック \
+             — この観測は信頼できない可能性がある(ADR-195: 誤りに強い分類は未実装)"
+        );
+    }
+
     fn observe_imm(&self) -> WinResult<Observation> {
         unsafe {
             let himc = ImmGetContext(self.edit);
             if himc.is_invalid() {
+                self.note_decode_error("ImmGetContextが無効なハンドルを返した");
                 return Err(windows::core::Error::from_thread());
             }
             let open = ImmGetOpenStatus(himc).as_bool();
@@ -120,9 +144,16 @@ impl RealImeDriver {
                 ImmGetCompositionStringW(himc, IME_COMPOSITION_STRING(GCS_COMPSTR), None, 0);
             let _ = ImmReleaseContext(self.edit, himc);
             if !conv_ok {
+                self.note_decode_error("ImmGetConversionStatusが失敗した");
                 return Err(windows::core::Error::from_thread());
             }
-            let mode = normalized_mode(raw.0)?;
+            let mode = match normalized_mode(raw.0) {
+                Ok(mode) => mode,
+                Err(err) => {
+                    self.note_decode_error(&format!("未知の変換モード値 0x{:04X}", raw.0));
+                    return Err(err);
+                }
+            };
             Ok(Observation {
                 status: Status {
                     open,
@@ -184,7 +215,9 @@ impl RealImeDriver {
 impl Drop for RealImeDriver {
     fn drop(&mut self) {
         let _ = unsafe { self.thread_mgr.Deactivate() };
-        let _ = self.window;
+        // `self.edit`は`self.window`の子窓なので、親を破棄すれば一緒に破棄される。
+        let _ = unsafe { DestroyWindow(self.window) };
+        unsafe { CoUninitialize() };
     }
 }
 
@@ -263,7 +296,7 @@ fn normalized_mode(raw: u32) -> WinResult<u8> {
     Conv::from_raw(raw).map_or_else(
         || {
             Err(windows::core::Error::new(
-                windows::core::HRESULT(0x8000_4005u32 as i32),
+                windows::core::HRESULT(0x8000_4005u32.cast_signed()),
                 "unsupported conversion mode",
             ))
         },
@@ -329,7 +362,8 @@ fn send_key_press(vk: u32) -> bool {
             },
         },
     };
-    unsafe { SendInput(&[make(false), make(true)], size_of::<INPUT>() as i32) == 2 }
+    let cb_size = i32::try_from(size_of::<INPUT>()).expect("size_of::<INPUT>() fits in i32");
+    unsafe { SendInput(&[make(false), make(true)], cb_size) == 2 }
 }
 
 fn pump_for(duration: Duration) {
@@ -338,8 +372,8 @@ fn pump_for(duration: Duration) {
         unsafe {
             let mut msg = MSG::default();
             while PeekMessageW(&raw mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                let _ = TranslateMessage(&msg);
-                DispatchMessageW(&msg);
+                let _ = TranslateMessage(&raw const msg);
+                DispatchMessageW(&raw const msg);
             }
         }
         thread::sleep(Duration::from_millis(1));
@@ -364,7 +398,7 @@ fn create_window() -> WinResult<(HWND, HWND)> {
         };
         RegisterClassW(&raw const window_class);
         let window = CreateWindowExW(
-            Default::default(),
+            windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE::default(),
             class,
             w!("awase keymap learn"),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
@@ -378,7 +412,7 @@ fn create_window() -> WinResult<(HWND, HWND)> {
             None,
         )?;
         let edit = CreateWindowExW(
-            Default::default(),
+            windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE::default(),
             w!("EDIT"),
             w!(""),
             WINDOW_STYLE((WS_CHILD | WS_VISIBLE).0 | WS_BORDER.0),

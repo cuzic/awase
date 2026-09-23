@@ -48,12 +48,19 @@ mod app {
             &mut rng,
         );
         println!(
-            "strategy={} elapsed_ms={:.0} presses={} cells={}",
+            "strategy={} elapsed_ms={:.0} presses={} cells={} decode_errors={}",
             strategy.name(),
             executor.elapsed_ms(),
             executor.stats.presses,
-            executor.table.covered1()
+            executor.table.covered1(),
+            executor.driver.decode_error_count()
         );
+        if executor.driver.decode_error_count() > 0 {
+            eprintln!(
+                "警告: observe_imm失敗によるフォールバックが{}回発生。学習表に信頼できない観測が混じっている可能性がある。",
+                executor.driver.decode_error_count()
+            );
+        }
         Ok(())
     }
 }
