@@ -199,8 +199,8 @@
 | [192](192-state-dependent-mode-key-warning-and-guided-override.md) | 状態依存のIMEモードキーを検出して警告し、awaseの明示config（冪等なON/OFF）への置き換えを案内する | 実装完了（PR #249, #254） |
 | [193](193-richedit-superclass-tsf-native-e2e-target.md) | TSFネイティブ相当の入力先を RichEdit のスーパークラス化で決定的に用意する（実機E2Eの検証対象拡張） | 採用（スパイク成功） |
 | 194 | IME時間依存ロジックのシミュレーション・リプレイハーネス（`feat/ime-sim-harness`ブランチのみに存在、develop未マージ） | 破棄（Opusレビューで既存単体テスト以上の実証価値なしと判明、ユーザー判断で試作破棄。**番号194は本行で予約のみ**、developにファイル無しのためリンクなし） |
-| [195](195-keymap-learn-productization.md) | カスタムキーマップ対応のため、IMEキー効果の学習(awase-keymap-learn)を独立プロセスとして製品化する（設定読取→独立プロセスでの巡回学習→自己検証→永続化→実行時読込→ADR-176統合） | 草案rev7（round6で収束・実装可と最終判定、Blockerゼロ） |
-| [196](196-keymap-learn-truth-priority.md) | ADR-195の段階4/6/8を修正し、既知プリセット構成でも内蔵表を審査官にせず学習結果を優先する。陳腐化は失効でなく要再検証とし、フィンガープリントにIME本体バージョンを追加する | 草案rev1（round1のBlocker/Must-fix対応済み、round2レビュー待ち） |
+| [195](195-keymap-learn-productization.md) | カスタムキーマップ対応のため、IMEキー効果の学習(awase-keymap-learn)を独立プロセスとして製品化する（設定読取→独立プロセスでの巡回学習→自己検証→永続化→実行時読込→ADR-176統合） | 草案rev7（round6で収束・実装可と最終判定、Blockerゼロ）。**段階4/6/8はADR-196で置換、段階3は一部フィールド拡張** |
+| [196](196-keymap-learn-truth-priority.md) | ADR-195の段階4/6/8を修正し、既知プリセット構成でも内蔵表を審査官にせず学習結果を優先する。陳腐化は失効でなく要再検証とし、フィンガープリントにIME本体バージョンを追加する | 草案rev2（round1のBlocker/Must-fix対応後、round2でA'自己診断の原理的欠陥を検出・外部書き込み直接観測へ差し替え。round3レビュー待ち） |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
