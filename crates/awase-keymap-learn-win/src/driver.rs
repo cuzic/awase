@@ -12,7 +12,9 @@ use awase_keymap_learn::exec::ImeDriver;
 use awase_keymap_learn::external_write::{is_measurement_suspicious, SessionMonitor};
 use awase_keymap_learn::model::{Disposition, Outcome, Status};
 use awase_keymap_learn::sim::PressReport;
+use awase_windows::state::ime_kind::TipIdentity;
 use awase_windows::state::key_effect_predictor::Conv;
+use awase_windows::tsf::query_tip_identity_on_current_sta;
 
 use crate::hook_monitor::{HookMonitor, SELF_MARKER};
 use crate::ime_notify::ImeNotifyMonitor;
@@ -95,6 +97,21 @@ pub struct RealImeDriver {
     /// 直近に観測した「外部からの書き込み」の累計件数のスナップショット
     /// （測定と測定の間で差分を取るための基準点）。
     external_baseline: Cell<u32>,
+    /// ADR196-T2「1e前半」(opus-adversarial-consult 2026-09-23 C-1): `session_monitor`が
+    /// 一度でも無効化上限超過を記録したら`true`になる。一度立てば以後の`press()`が
+    /// 記録しなくても`true`のまま保つ(`session_monitor.record_invalidated_trial()`の
+    /// 戻り値は「今回の呼び出しで上限を超えたか」であり、以前に超えていたかは
+    /// 呼び出し元が別途覚えておく必要がある)。`&self`のメソッドから更新するため`Cell`。
+    session_failed: Cell<bool>,
+    /// ADR196-T2「1e前半」(A-6): `new()`終了時点で同定した学習対象のTIP。
+    /// `judge_self_verification`の`is_ms_ime_native`引数と、決定1c(既知構成判定)の
+    /// 入力になる。TSFのアクティブプロファイルはスレッド単位で持つため、
+    /// awase-settings等の別スレッド/別プロセスでは同定できない
+    /// （学習窓を持つこのスレッドで同定するのが唯一正しい、opus-adversarial-consult
+    /// 2026-09-23 A-1/A-2）。学習セッション中にユーザーがIMEを切り替える可能性への
+    /// 対処として、呼び出し側は終了時に[`Self::query_tip_identity`]で再同定し、
+    /// この値と比較すること（A-6）。
+    tip_identity: TipIdentity,
 }
 
 impl RealImeDriver {
@@ -140,6 +157,10 @@ impl RealImeDriver {
             notify_monitor,
             session_monitor: Cell::new(SessionMonitor::new(SESSION_INVALIDATION_LIMIT)),
             external_baseline: Cell::new(0),
+            session_failed: Cell::new(false),
+            // 後段で`query_tip_identity_on_current_sta()`の結果に上書きする
+            // プレースホルダ(この値のまま使われることはない、下記参照)。
+            tip_identity: TipIdentity::Other,
         };
 
         // 決定1b項目3: 静かな観測窓（quiet window）——ここまでの待ちの後、
@@ -158,7 +179,33 @@ impl RealImeDriver {
 
         driver.initial = driver.observe_imm()?.status;
         driver.external_baseline.set(driver.external_total());
+
+        // A-6: 学習対象のTIPを開始時点で同定する。ここで取得できなければ、
+        // 20分学習した後で「何を測ったか分からない」と判明するより、開始直後に
+        // 失敗させる方が安い（opus-adversarial-consult 2026-09-23 C-5、
+        // エラー処理方針の核）。
+        driver.tip_identity = query_tip_identity_on_current_sta().ok_or_else(|| {
+            windows::core::Error::new(
+                windows::core::HRESULT(0x8000_4006u32.cast_signed()),
+                "学習対象のIME(TIP)を同定できなかった",
+            )
+        })?;
+
         Ok(driver)
+    }
+
+    /// 開始時点(`new()`)で同定した学習対象のTIP。
+    #[must_use]
+    pub const fn tip_identity(&self) -> TipIdentity {
+        self.tip_identity
+    }
+
+    /// A-6: 現在の学習対象TIPを再同定する。`new()`が同定した[`Self::tip_identity`]との
+    /// 比較は呼び出し側（`run_main`）が行う——学習セッション中にユーザーがIMEを
+    /// 切り替えた場合、開始時と終了時で異なる値が返るので検出できる。
+    #[must_use]
+    pub fn query_tip_identity(&self) -> Option<TipIdentity> {
+        query_tip_identity_on_current_sta()
     }
 
     /// メッセージを回しながら待つ（`self.notify_monitor`に観測させる）。
@@ -173,17 +220,37 @@ impl RealImeDriver {
 
     /// 決定1b項目5（セッション中の監視）: 前回チェック以降に外部からの
     /// 書き込みが観測されていたら、直前の試行を無効化としてセッション監視へ
-    /// 記録する。セッション全体を失敗にすべきなら`true`を返す。
-    fn check_session_interference(&self) -> bool {
+    /// 記録する。上限超過で`session_failed`を立てる(一度立てば`press()`を
+    /// 何度呼んでも`false`へは戻らない、C-1)。
+    fn check_session_interference(&self) {
         let current = self.external_total();
         let baseline = self.external_baseline.replace(current);
         if current == baseline {
-            return false;
+            return;
         }
         let mut monitor = self.session_monitor.get();
-        let fail = monitor.record_invalidated_trial();
+        if monitor.record_invalidated_trial() {
+            self.session_failed.set(true);
+        }
         self.session_monitor.set(monitor);
-        fail
+    }
+
+    /// ADR196-T2「1e前半」(C-1): このセッション中に外部からの書き込みによる
+    /// 無効化が上限を超えたか。`true`なら`run_main`は表を書かずに終了すること
+    /// （決定1b項目5「セッション全体を失敗として終了し、表を書き出さない」）。
+    #[must_use]
+    pub fn session_failed(&self) -> bool {
+        self.session_failed.get()
+    }
+
+    /// ADR196-T2「1e前半」(C-1): フック経路の生存確認(決定1b項目4)。学習プロセス
+    /// 自身が送った自己注入の総数(`sent`)だけ、このセッションを通してフックが
+    /// 観測できていれば`true`。`observation_alive`と違い、直近1件の注入ではなく
+    /// **セッション開始からの累計**を見る(`hook_monitor.liveness()`が累計値を持つ
+    /// ため、いつ呼んでも意味のある粗粒度の健全性チェックになる)。
+    #[must_use]
+    pub fn hook_alive(&self) -> bool {
+        self.hook_monitor.liveness().is_alive()
     }
 
     /// 決定1b項目4・項目2（生存確認）: フックとIME通知経路の両方が生きているか。
@@ -349,10 +416,10 @@ impl ImeDriver for RealImeDriver {
         let disp = disposition(&before, &after);
         let seen_b = self.observe_tsf().unwrap_or(after.status);
         // 決定1b項目5（セッション中の監視）: この測定の間に外部からの書き込みが
-        // 観測されていたら記録する。呼び出し側（`main.rs`/将来の`Executor`
-        // 統合、ADR196-T2）は`session_invalidated_trials()`を見て、上限超過なら
-        // セッションを失敗として終了すること。
-        let _session_should_fail = self.check_session_interference();
+        // 観測されていたら記録する。上限超過は`self.session_failed`に立つ
+        // （呼び出し側は`session_failed()`を見て、`true`ならセッションを失敗として
+        // 終了し表を書かないこと、C-1で配線済み）。
+        self.check_session_interference();
         PressReport {
             delivered,
             cost_ms: 0.0,
