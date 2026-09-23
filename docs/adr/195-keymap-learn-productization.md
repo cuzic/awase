@@ -22,18 +22,17 @@ summary: |-
   (2)自己検証（独立ウォーク、実時間）、(3)永続化（表全体を別ファイルに分離、スキーマ版つき）、(4)実行時読込（予測にのみ使う、actuationには
   使わない。読めない窓向けのドリフト受け入れ基準と同梱表への退避を含む）、(5)隠れ状態を最小Mealy機械として持つ、(6)ADR-176ウィザードからの
   起動統合（子プロセス+一時停止IPC）、(7)安全対策、(8)陳腐化検出（全体フィンガープリント+スキーマ版）。
-  **rev4の核心（round3のBlocker 3件）**: (B-1)段階4が学習表を無条件優先していた点を、読めない窓でのドリフト受け入れ基準（同梱表の
-  実測blind 0%を下回らない）と、学習表を捨てて同梱表へ戻す出口を明記して閉じた。(B-2)学習プロセスは新プロセスゆえGJIで閉・0x09
-  （自然状態）始まりになるが、`key_effect_predictor::Conv::from_raw`が既に`raw & 0x0B`で0x09/0x19・0x0B/0x1Bを同一視するため、
-  観測層でこの関数を再利用するだけで正規化が満たされることを明記した（ADR-191決定4「キーマップは窓に依らない」を転用根拠として引用）。
-  (B-3)A'確保策は「対象窓だけIPCで一時停止」（`begin_calibration_bypass`の一般化）をユーザー決定として確定し（awase.exe全体を
-  終了させる策は不採用）、`calibration_ipc.rs`を実際に読んだ見積もり（約150行、新メッセージ型+送信元検証+ハンドラ+シグネチャ変更）を
-  本文に置いた。ADR-194（シミュレーション・リプレイのハーネス）とADR-192（状態依存キーの警告UI、検出ロジックは段階0で再利用）は
-  範囲外（参照のみ）。
+  **rev5の核心（round4のBlocker 2件）**: (N-1)`begin_calibration_bypass`はバイパスだけの関数ではなく、ADR-176較正UX専用の
+  単一VK検知+クロスプロセスIMMプローブループ一式が付いてくると判明した（学習セッション中ずっとawase自身が学習窓のIMEを
+  叩き続け、A'の前提と衝突する）。これを`begin_app_bypass`（プロセス単位のactuation非所有化だけ）と`begin_calibration_session`
+  （既存のADR-176フロー一式）に分割し、学習パスは前者だけを使う設計に訂正した。(N-2)読めない窓向けの受け入れ基準
+  （blindドリフト実測）は、実際にはawase.exe本体+python解析ツールの構成で、短命の独立学習プロセスの中では実行できない
+  （鶏と卵）と判明し、(i)開発者/CI側の一度きりの手法検証と(ii)学習プロセス内で自己完結する代理指標（開ループ一致率は
+  ADR-191実測2(f)により使用不可）の2段階に置き直した。ADR-194（シミュレーション・リプレイのハーネス）とADR-192（状態依存
+  キーの警告UI、検出ロジックは段階0で再利用）は範囲外（参照のみ）。
 status: |-
-  **草案 rev4（2026-09-22、opus-adversarial-consult round3の指摘〈Blocker B-1/B-2/B-3、Major M-1〜M-7、Minor m-1〜m-3〉を反映。
-  round3は「2つの設計変更（書き込みゲート撤廃・独立プロセス化）は正しい」と確認済みで、残る指摘は新設計固有の詰めの不足。
-  round4待ち）。** round2まで3ラウンド放置されていたADR-194の相互参照未処理（frontmatter/index）も本rev4で解消した。
+  **草案 rev5（2026-09-22、opus-adversarial-consult round4の指摘〈Blocker N-1/N-2、Major M-a〜M-e、Minor m-a〜m-c〉を反映。
+  round4は「round3の10件中8件が収束、ユーザー合意が要る論点はもう無い」と判定した上での実装の詰め。round5待ち）。**
   実装はまだ無い（`awase-keymap-learn`クレート自体は`feat/awase-calibration`ブランチにdevelop未マージで存在するが、巡回プランナと
   シミュレータのみで、本ADRが定める製品への組み込みは未着手）。
 related_adr:
@@ -46,7 +45,6 @@ related_adr:
   - "ADR-190"
   - "ADR-191"
   - "ADR-192"
-  - "ADR-194"
 ---
 
 # ADR-195: IMEキー効果の学習（awase-keymap-learn）の製品化
@@ -175,54 +173,83 @@ awaseが実際に書き込んでよいキーの集合（actuation許可リスト
   理由**: 注入（`SendInput`）・観測（IMM/TSF読み取り）・専用窓の所有をすべて**この1プロセスの1スレッド**に置くため、
   「別スレッドのTSF状態を読む」という取り違えがそもそも発生しない（`191-gji-state-scope-spec.md`の「保持単位はスレッド」を、
   複数スレッドを跨がない設計で満たす）。
-- **`ImeDriver`トレイト（round2 N-3対応、round3 M-1で`cost()`の扱いを訂正）**: `exec.rs`の実際の呼び出しを数えると、`Executor`は
-  `SimIme`に対して`read_status`/`reread_status`/`press`/`reset`の4メソッドに加えて**`cost()`を3箇所**（`read_ms`・`setup_gap_ms`・
-  `setup_settle_ms`）で呼び、`self.elapsed +=`で仮想時間を積算している（round3 M-1が指摘するまでrev3のトレイトに`cost()`が
-  入っていなかった）。実機ドライバでは`setup_gap_ms`/`setup_settle_ms`のような「呼び出し側が定数を足す」モデルは合わない
-  （実機は固定待ちではなく通知待ち――`--notify`: 最後の通知から40ms静か、通知が来なければ150ms打ち切り、
-  `191-calibration-experiments.md`§4）ため、**`cost()`はトレイトに含めない**。代わりに`press`/`read_status`/`reread_status`/`reset`の
-  4メソッドを「待ちを内部で完結させる」契約に変え、経過時間は`elapsed_ms(&self) -> f64`だけが答える形に定義し直す
-  （`Executor`内の`self.elapsed +=`の積算は撤去し、`elapsed_ms()`参照に一本化——二重計上を避ける）。`SimIme`は`elapsed_ms()`の
-  内部実装として従来どおり仮想`CostModel`の値を積算すればよく、シミュレータ比較実験には影響しない。実機ドライバは
-  `Instant::now()`起点の実測msを返す。`Executor`の予算判定（`strategy::run`の`over()`）はこの値で行うため、B-5の20分/40分基準は
-  **実時間**で判定できる。`Executor::new`は`sim.machine().initial_status()`ではなく`ImeDriver::read_status()`から初期状態を取る形に
-  シグネチャを変える（「既存テスト無変更」は主張しない。既存の`SimIme`ベースのテストは呼び出し側を1行直すだけで、期待値自体は
-  変わらない）。見積もり: トレイト定義+`Executor`の時間会計の書き換え160行程度（round2の「120行未満」は`cost()`の整理を
-  含んでおらず楽観的だった——round3指摘）。
+- **`ImeDriver`トレイト（round2 N-3対応、round3 M-1・round4 M-aで訂正）**: `exec.rs`の実際の呼び出しを数えると、`Executor`は
+  `SimIme`に対して`read_status`/`reread_status`/`press`/`reset`だけでなく、**`press_setup`（状態を作るための押下、観測・記録なし、
+  待ちはキー間隔だけ）・`settle_setup`（経路を打ち終えた後の待ちと検証）**も呼んでおり、これらは測定用の`press`/`read_status`とは
+  **待ちの長さが違う**別の操作である（round3時点の4メソッドの見立てはここが漏れていた——round4 M-a指摘）。したがって`ImeDriver`は
+  **6メソッド**（`press`/`press_setup`/`read_status`/`reread_status`/`settle_setup`/`reset`）+`elapsed_ms(&self) -> f64`と定義する。
+  `cost()`はトレイトに含めない（実機は固定待ちではなく通知待ち――`--notify`: 最後の通知から40ms静か、通知が来なければ150ms打ち切り、
+  `191-calibration-experiments.md`§4――なので「呼び出し側が定数を足す」モデルが合わない）。6メソッドすべてが「待ちを内部で完結させる」
+  契約とし、経過時間は`elapsed_ms()`だけが答える（`Executor`内の`self.elapsed +=`の積算は撤去。`reset(level) -> bool`から仮想コストの
+  `f64`を外す——`elapsed_ms()`と二重計上になるため）。`SimIme`は`elapsed_ms()`の内部実装として従来どおり仮想`CostModel`の値を
+  積算すればよく、シミュレータ比較実験には影響しない。実機ドライバは`Instant::now()`起点の実測msを返す。`Executor`の予算判定
+  （`strategy::run`の`over()`）はこの値で行うため、B-5の20分/40分基準は**実時間**で判定できる。`Executor::new`は
+  `sim.machine().initial_status()`ではなく`ImeDriver::read_status()`から初期状態を取る形にシグネチャを変える（「既存テスト無変更」は
+  主張しない。既存の`SimIme`ベースのテストは呼び出し側を1行直すだけで、期待値自体は変わらない）。見積もり: トレイト定義（6メソッド）
+  +`Executor`の時間会計の書き換え180行程度（round3の「160行程度」は`press_setup`/`settle_setup`の整理を含んでおらず、round4で微増）。
 - **実機ドライバ（`SendInput`直叩き、awaseの通常actuation経路は一切通さない。round2 N-1対応）**: 実機ドライバの`press`は、
   awaseの`output/vk_send.rs`等の通常actuationパイプライン（`DeferGate`・belief更新を伴う）を**一切通さず**、生の`SendInput`を叩く
   薄い注入関数だけを使う（ADR-191決定3が要求するA'そのもの。「学習専用の新しい注入経路は作らない」というrev2の方針は撤回する——
   A'を満たすには、それ以外に道が無い）。観測（IMM/TSF読み取り、TSFスレッドcompartment通知の購読）も同一プロセス・同一スレッドで行う
   （`191-gji-state-scope-spec.md`の手法T、素のWin32 EDIT窓で`CoCreateInstance(CLSID_TF_ThreadMgr)+Activate()`を踏襲）。
-- **B-3（round3 Blocker）`awase.exe`との共存（A'の確保）——ユーザー決定: 「対象窓だけIPCで一時停止」を基本方針にする**:
-  学習プロセスの窓へ向かう`SendInput`注入キーは、`awase.exe`が並行して動いていると、そのシステム全体のLLフックに（対象窓の
-  プロセスに関係なく）見られてしまう。round3は「A'策は実装時に実測で決める、事前にコミットしない」というrev3の書き方を認めつつ、
-  「学習セッション中`awase.exe`を終了する」策（ADR-176のIPC相手が居なくなる・17〜20分ユーザーがNICOLA入力できなくなる、というUX上の
-  性質がADRに一言も無かった）を指摘した。**ユーザーが「対象窓だけ一時停止」（`awase.exe`は動かし続ける）を基本方針として確定した**
-  ため、rev4はこちらを段階1・段階6の設計として書き切る（`awase.exe`終了策は不採用。理由: 学習中もNICOLA入力を止めない方がUXとして
-  優れ、既存の`begin_calibration_bypass`が同種のバイパスを窓単位で実測済み〈自己操作0〉のため実装コストも許容範囲）。
-  - **仕組み**: 既存の`Runtime::begin_calibration_bypass`/`end_calibration_bypass`（ADR-176 176-T6）は、対象プロセス名
-    （現状`"awase-settings.exe"`固定）を`focus/tracker.rs::is_app_disabled()`の`disable_apps`相当の判定に加える、**プロセス単位の
-    actuation非所有化**（`AppImeProfile`のInputRelay相当）である。VK単位ではなく窓（プロセス）全体を対象にするため、学習プロセスが
-    セッション中に多数の異なるキーを試す用途にもそのまま使える。
-  - **拡張に要る変更（`calibration_ipc.rs`を実際に読んだ見積もり、「30行」という楽観的な数字は使わない——round3指摘）**:
-    現行の`calibration_ipc.rs`（227行）は、ペイロード`CalibrationIpcPayload{vk, pid}`を`usize`1ワードにpackし、
-    `is_awase_settings_process_name(name)`で送信元プロセス名を`"awase-settings.exe"`固定で検証し、HWNDは運ばない（round7 S1）。
-    学習プロセスという「第3の送信元」を通すには: (a) 新しいメッセージ型`WM_KEYMAP_LEARN_START`/`WM_KEYMAP_LEARN_END`を追加し
-    （既存の`WM_CALIBRATION_START`/`END`と同じ`CalibrationIpcPayload`形状をそのまま再利用、`vk`は未使用で`VkCode(0)`固定）、
-    (b) 新しい送信元検証関数`is_keymap_learn_process_name`（`is_awase_settings_process_name`と同型、テスト込みで約20行）を追加し、
-    (c) `handle_wm_keymap_learn_start`/`end`ハンドラ（既存の`handle_wm_calibration_start`/`end`と同型、送信元検証だけ差し替え、
-    約40行）を追加し、(d) `begin_calibration_bypass(vk, pid, now)`を`begin_calibration_bypass(vk, pid, now, bypass_process_name: &str)`
-    へシグネチャ変更し（既存の1呼び出し元+関連テストを更新、約20行）、(e) WndProcのメッセージディスパッチに新メッセージ型の分岐を足し
-    (数行)、(f) 学習プロセス側（新しいWindowsクレート、下記M-2）に`FindWindowW`+`PostMessage`で開始/終了を送る送信コード
-    （awase-settings側の既存コードと同型、約30〜40行）を書く。**見積もり合計: 約150行**（`awase-windows`側約90〜100行+学習プロセス側
-    約30〜40行）。round2の「対象プロセス名を引数化、30行程度」は(d)だけの見積もりであり、(a)(b)(c)(f)を欠いていた。
-  - **M-4（round3 Major）BUG-14の`injected`ガードとの関係**: この策では学習プロセスの注入キーは`awase.exe`の同一LLフックを通る
-    （プロセス分離では保証されない。策1と違い「物理的に保証」とは言えない）。ただし`begin_calibration_bypass`は対象プロセスを
-    `disable_apps`相当（actuationを所有しない）にするため、`transport.rs::plan`がInputRelay同様Allow（素通し）にする設計と、
-    BUG-14の「外部`SendInput`をユーザー意図に昇格させない」`injected`ガードは、独立した2層の防御として両立する（前者は「awaseが
-    書くか」、後者は「観測した押下をユーザー意図として扱うか」で軸が違う）。**実機で「注入キーがバイパス対象窓で一切のactuationを
-    起こさないこと」をA'の実測項目に含める**（`191-calibration-experiments.md`の「まず実測」の流儀のまま、ここは実測必須で残す）。
+- **B-3（round3 Blocker→round4 N-1で機構を訂正）`awase.exe`との共存（A'の確保）——ユーザー決定: 「対象窓だけIPCで一時停止」を
+  基本方針にする**: 学習プロセスの窓へ向かう`SendInput`注入キーは、`awase.exe`が並行して動いていると、そのシステム全体のLLフックに
+  （対象窓のプロセスに関係なく）見られてしまう。**ユーザーが「対象窓だけ一時停止」（`awase.exe`は動かし続ける）を基本方針として
+  確定した**ため（`awase.exe`終了策は不採用——学習中もNICOLA入力を止めない方がUXとして優れる）、rev4はこの機構を設計する。
+
+  **round4 N-1（Blocker）の訂正**: 既存の`Runtime::begin_calibration_bypass`（ADR-176 176-T6、`focus_tracking.rs:606-630`）は
+  「バイパスだけの関数」ではない。実体は次の4つを一度に行う: ①`set_calibration_bypass_process`（プロセス単位のactuation
+  非所有化、これだけが学習パスに要るもの）、②`set_calibration_target(vk)`（単一VKの押下検知、`architecture_guard.rs`が
+  呼び出し箇所数を固定）、③`spawn_calibration_probe_loop()`（**セッションPIDがフォーカスを持つ間ずっと、対象窓へ
+  クロスプロセスIMMプローブ〈`imm::probe_ime_open_for_calibration`〉を`CALIBRATION_PROBE_POLL_INTERVAL_MS`周期で打ち続ける**
+  ADR-176 176-T9aの非同期ループ）、④`CALIBRATION_BYPASS_TIMEOUT_MS`(30秒)のタイムアウト。②③はADR-176の「ユーザーが
+  モードキーを1回押して効果を確定する」較正UX専用の機構であり、③は学習セッション中（17〜20分）ずっとawase自身が学習窓のIMEを
+  クロスプロセスで叩き続けることを意味する——**これはA'（awaseの自己操作ゼロ）の前提そのものと衝突する**（`191-calibration-
+  experiments.md`にも、この種の外部プローブとの相互作用でランが1本丸ごと無効になった記録〈`[imm-learning]`によるEdit降格が
+  `cache.toml`に永続化されelw11が無効〉がある）。したがって**`begin_calibration_bypass`をそのまま流用しない**。
+  - **新設計**: `begin_calibration_bypass`を2つの関数に分割する。
+    - `begin_app_bypass(process_name: &str, deadline: TickMs)` = ①（`set_calibration_bypass_process`）とタイムアウト設定と
+      `apply_app_disable_transition`の再評価**だけ**を行う、新設の薄い関数。**学習パスはこれだけを使う**（②③には一切触れない
+      ため、probeループは起動せず、`set_calibration_target`の呼び出し箇所も増えない——`architecture_guard.rs`の該当ガードの
+      更新は不要になる）。
+    - `begin_calibration_session(vk, pid, now)` = 既存の①〜④一式（②③込み）。**ADR-176の既存の較正UXフローはこちらを使い、
+      挙動を変えない**（`begin_calibration_bypass`という名前をこちらへ付け替えるか、新設の`begin_calibration_session`という
+      別名にするかは実装時の小さな判断）。
+  - **keepaliveとライフサイクル（round3が見積もりに入れていなかった項目）**: `begin_app_bypass`にも既存と同じ
+    `CALIBRATION_BYPASS_TIMEOUT_MS`(30秒)相当のタイムアウトを設け、20分〜のセッションでは学習プロセス側が周期的に
+    `WM_KEYMAP_LEARN_START`を再送してkeepalive（40回以上）する。`begin_app_bypass`は②③に触れないため、**再武装のたびにprobe
+    loopが再生成される、という既存関数の副作用がそもそも発生しない**（新設計だからこそ解消する問題）。ライフサイクル:
+    (a) 学習セッション正常終了→`WM_KEYMAP_LEARN_END`で`end_app_bypass`相当を呼ぶ、(b) 学習プロセスが異常終了した場合はkeepalive
+    が止まりタイムアウトで自動解除、(c) awase.exe再起動等で状態が失われた場合も同じタイムアウトが安全弁になる。
+  - **対象の特定はプロセス名、フォーカス連動（round4 M-d）**: `focus/tracker.rs::is_app_disabled()`の判定は**現在フォーカス中の
+    プロセス名**との照合であり、HWNDもPIDも見ない。したがって段階6が学習プロセスの起動時に送るのは「自分のプロセス名」の
+    バイパス要求であり（PIDから対象プロセス名を解決するのはawase側の仕事、既存の送信元検証処理を流用できる）、**対象は
+    「窓」ではなく「プロセス」全体**（学習プロセスが複数窓を持っても全部対象になり、学習用途にはむしろ都合がよい）。
+    **バイパスはフォーカス連動で評価される**——学習窓からフォーカスが外れるとバイパスは自動的に無効化され、戻れば再度有効になる
+    （実装者が「HWND固定のバイパス」と誤解しないよう明記する）。
+  - **拡張に要る変更（`calibration_ipc.rs`とfocus_tracking.rsを実際に読んだ見積もり）**: 現行の`calibration_ipc.rs`（227行）は
+    ペイロード`CalibrationIpcPayload{vk, pid}`を`usize`1ワードにpackし、`is_awase_settings_process_name(name)`で送信元プロセス名を
+    `"awase-settings.exe"`固定で検証する。学習プロセスという「第3の送信元」を通すには: (a) 新しいメッセージ型
+    `WM_KEYMAP_LEARN_START`/`WM_KEYMAP_LEARN_END`を追加（既存と同じ`CalibrationIpcPayload`形状を再利用、`vk`は未使用で
+    `VkCode(0)`固定、約数行）、(b) 送信元検証関数`is_keymap_learn_process_name`（`is_awase_settings_process_name`と同型、
+    テスト込み約20行）、(c) `handle_wm_keymap_learn_start`/`end`ハンドラ（新設の`begin_app_bypass`/`end_app_bypass`を呼ぶ、
+    既存ハンドラより単純、約30行）、(d) `begin_calibration_bypass`を`begin_app_bypass`/`begin_calibration_session`に分割する
+    リファクタ（既存の1呼び出し元+関連テストを更新、約40行——単純な引数化より手間が増えた）、(e) WndProcのディスパッチ分岐
+    (数行)、(f) 学習プロセス側の送信+keepaliveループ（`FindWindowW`+`PostMessage`、awase-settings側の既存コードと同型+周期送信、
+    約50行）。**見積もり合計: 約150〜180行**（内訳が変わったため中央値を引き上げた。round3の「約150行」は②③の分割が
+    不要という誤った前提での見積もりだったが、②③を触らない設計にしたことで逆に単純化された部分もあり、大きくは超えない）。
+  - **M-4（round3 Major、round4でも整合を確認）BUG-14の`injected`ガードとの関係**: この策では学習プロセスの注入キーは
+    `awase.exe`の同一LLフックを通る（プロセス分離では保証されない）。バイパスの実装（`is_app_disabled`によるプロセス単位の
+    actuation非所有化）が対象プロセスを`disable_apps`相当にするため、`transport.rs::plan`がInputRelay同様Allow（素通し）にする
+    設計と、BUG-14の「外部`SendInput`をユーザー意図に昇格させない」`injected`ガードは、独立した2層の防御として両立する
+    （前者は「awaseが書くか」、後者は「観測した押下をユーザー意図として扱うか」で軸が違う）。**実機で「注入キーがバイパス
+    対象プロセスで一切のactuationを起こさないこと」をA'の実測項目に含める**（`191-calibration-experiments.md`の「まず実測」の
+    流儀のまま、ここは実測必須で残す）。
+  - **m-b（round4 Minor）新クレートからのactuation呼び出しをガードで0件に固定**: `awase-keymap-learn-win`が`Conv::from_raw`
+    再利用とIPC送信のため`awase-windows`全体に依存すると、`output/vk_send.rs`等のactuation経路一式がバイナリにリンクされる。
+    A'の要（「通常actuationパイプラインを一切通さない」）はコンパイラでは守られないため、`lints/actuation_call_guard`の
+    `RESTRICTED_CALLS`に新クレートを含めるか、新クレートからの`send_input_safe`/`set_ime_open*`呼び出しをガードテストで
+    0件に固定する1行の防御を段階1に足す。
 - **B-2（round3 Blocker）変換モード値の正規化——落とすと「何も起きない」形で全セル不一致になり、段階2でも検出できない**:
   学習プロセスは**毎回新しいプロセス**なので、GJIでは`191-gji-state-scope-spec.md`Q3のとおり必ず閉・**0x09**（自然状態、ROMANビット無し）
   から始まる。一方、ユーザーの常用アプリは同じ「ひらがな」状態でも0x19（ROMANビット付き）を持ちうる。develop の
@@ -234,6 +261,9 @@ awaseが実際に書き込んでよいキーの集合（actuation許可リスト
   外部の実アプリでしか顕在化しない）。**転用可能性の根拠**: ADR-191決定4「キーマップはIMEのプロパティなので窓に依らないが、
   composition状態は窓ごと」——正規化後の値（`Conv`）はキーマップ側の性質として窓に依らず転用でき、窓ごとに違いうるのは
   「今どのcomposition状態にいるか」という実行時の追跡（`KeyTrack`）の方であり、これは各アプリでの観測・打鍵履歴が担う。
+  **M-c（round4 Major）`Conv`↔`model::Status.mode: u8`の対応づけ**: `awase-keymap-learn::model::Status`は`{open, mode: u8,
+  composing}`（OS非依存の抽象値）を持つ。`mode`への詰め方を決めないと、`Conv`(3値)との対応が実装ごとにブレて、B-2と同型の
+  「値が一致しない」事故を再発しうる。**`Conv::from_raw`後の値をそのまま使う**（`C10=0x00`/`C19=0x09`/`C1B=0x0B`）と1文で固定する。
 - **異常への対処**: `awase-keymap-learn::anomaly`の分類（キー未着・観測経路の不一致・想定外の状態・リセット失敗）とリセット段階
   （Soft/Mode/Hard）を実機ドライバに接続する。BUG-153〜159の教訓（観測の時間切れを異常の証拠に数えない、通過マーク相当の仕組みが要る）を、
   ドライバ層の設計に反映する。
@@ -258,6 +288,11 @@ m-3）**——上限が無いと、やり直しの繰り返しだけで40分の�
 （例: `<config dir>/keymap-learn-table.json`のような、表全体を1ファイルに持つ独立フォーマット）を新設する**方針を第一候補とする
 （`[[calibration]]`はADR-176が定めるユーザー向け・人間可読な少数キーの上書き設定のままにする）。
 
+**スキーマの所有クレート（round4 M-c）**: 永続化ファイル（`keymap-learn-table.json`相当）の型は、OS非依存の`awase-keymap-learn`側で
+定義する（`awase-windows`側で定義すると、書き手〈`awase-keymap-learn-win`〉→`awase-windows`の依存で成立してしまうが、
+`awase-windows`→`awase-keymap-learn`の依存が段階4で発生する方が、既存の依存の向き〈coreはOS非依存クレートに依存されるだけ〉と
+整合する）。
+
 **スキーマバージョン（round3 M-5）**: 段階5（隠れ状態を最小Mealy機械へ置き換え）は、develop側の状態表現（固定`Stage`/`Conv`）を
 変えるため、**段階5より前に段階3で永続化した学習表は、段階5の実装後にスキーマ不一致になる**。段階8の失効条件は現状「キーマップが
 変わったら」しか見ないため、「awaseのバージョンアップで表の意味が変わった」ケースを捕まえられない。永続化ファイルに1フィールド
@@ -271,7 +306,8 @@ m-3）**——上限が無いと、やり直しの繰り返しだけで40分の�
 **確認**: ここで読み込んだ表は`KeyEffectPredicted`（belief更新）にのみ使い、awase自身がIMEへキーを送るactuationの判定
 （ADR-189の固定セット、ユーザー明示config）には一切使わない——本ADRのスコープを超える変更をしない。
 
-**B-1（round3 Blocker）読めない窓向けの受け入れ基準と、学習表を捨てる出口が無いまま「無条件優先」としていた欠陥**:
+**B-1（round3 Blocker、round4 N-2で受け入れ基準の置き場所を訂正）読めない窓向けの受け入れ基準と、学習表を捨てる出口が無いまま
+「無条件優先」としていた欠陥**:
 段階2の自己検証は学習プロセス自前の素のWin32 EDIT窓（IMM/TSFが読める）で行うため、測れるのは「読める窓での一段予測の正答率」だけ。
 一方、予測の誤りが訂正されずに残る（＝前段「actuationへの影響」で述べた誤り伝播が実害化する）のは**読めない窓（TsfNative）**。
 develop同梱表はこの条件での実測が既にある（`191-calibration-experiments.md`§3、格子第3版+3件修正のrun 35585712177が
@@ -279,14 +315,35 @@ develop同梱表はこの条件での実測が既にある（`191-calibration-ex
 「段階2で96%合格→採用→読めない窓で徐々にbeliefがずれ、半角/全角が逆方向に効く」という、**学習する前より悪化し、しかも
 やめる手段が無い**失敗が起こりうる。したがって:
 
-1. **採用条件にドリフト実測を追加する**: 既存の計測手段（`effect_learning.py --drift`、`DRIFT_OFF=100/400/1500`、`cache.toml`で対象窓を
-   `Imm32Unavailable`に降格させるblind構成、`191-calibration-experiments.md`§3）を学習プロセスの検証フローに組み込み、学習表が
-   **同梱表の実測水準（blind 0%）を著しく下回らない**ことを確認してから既定値より優先する。
-2. **opt-out（学習表を捨てて同梱表へ戻す出口）を段階3/4に定義する**: 設定1つ（例: 学習表を無効化するフラグ）または永続化ファイルの
-   退避で、ユーザーが「学習前の状態」へ戻せるようにする。段階8のstale検出は「キーマップが変わったとき」しか失効させないため、
-   「学習表そのものが悪かったとき」の出口を別に持つ必要がある。
-3. **段階2の95%は「読める窓での一段予測」の基準であり、読めない窓のドリフト基準（項目1）とは別物である**ことを本文で明記する
-   （2つの基準を混同しない）。
+1. **N-2（round4 Blocker）採用条件を「学習プロセスの検証フローに組み込む」は実行不能——2段階に分ける**:
+   round3の「blindドリフト実測を学習プロセスの検証フローに組み込む」は、実際には`awase.exe`本体を起動し`cache.toml`で対象窓を
+   `Imm32Unavailable`に降格させ、pythonの`effect_learning.py`でログ解析する構成（`191-calibration-experiments.md`§3）であり、
+   (a) 短命の独立学習プロセスの中では回せない（awase.exe側の計測であり、しかも学習プロセスはA'のためにawaseをバイパスさせている
+   当の相手）、(b) 学習表をawase.exeに読み込ませないと測れず「確認してから優先する」が鶏と卵になる、(c) 出荷しないツール
+   （python解析・`cache.toml`書き換え）をユーザー環境で走らせる前提になっている、という3点で成立しない。**受け入れ基準を
+   2段階に分け直す**:
+   - **(i) 開発者/CI側の一度きりの手法検証**: 「この学習パイプライン（段階0〜3のロジック）が生成する表」が読めない窓でも
+     blind 0%を保つことを、CIの既存blind構成（`ci/e2e-ime.yml`の格子ジョブと同じ土俵）で**手法に対して一度**検証する
+     （個々のユーザーの表ごとには測らない。本ADRの実装後、次の検証タスクとして明記する——独立した一度きりの実機検証であり、
+     ユーザーが学習を回すたびに走らせるものではない）。**m-c（round4 Minor）の解消**: この設計では学習プロセス側が同梱表
+     （`state/key_effect_table.rs`、`mod key_effect_table`は非pub）を直接読んで比較する必要が無いため、可視性の変更は
+     不要——CI側の一度きり検証はdevelop本体のテストコードから同梱表へアクセスできる。
+   - **(ii) ユーザー環境で使える代理指標（学習プロセス単体で計算可能）**: 段階2の独立ランダムウォークで計算できる
+     「予測なしへ縮退したセルの割合」と「一段予測の正答率」を、学習プロセス自身の出力に含める。**開ループ連鎖の一致率は
+     指標として使わない**（ADR-191実測2(f)「開ループ追随は指標として壊れている〈連鎖の再同期の回数に強く依存し、A'で
+     84.5→64.0%、未見で37〜56%と条件間で大きくぶれる〉」——読めない窓での実害の直接測定ではなく、この壊れた指標の
+     代用にしかならない）。
+   - 実運用は(i)+(ii)の併用: (i)で「学習の仕組み自体」が読めない窓で安全であることを一度確認しておき、(ii)で個々の
+     学習結果が学習プロセス内で自己完結して品質を自己申告できるようにする。「学習プロセスは候補表を出すだけで、
+     読めない窓での実害が無いことの保証は(i)の一度きり検証に委ねる」という位置づけを正直に明記する。
+2. **M-b（round4 Major）opt-outを具体的に確定する（誰が・いつ・何を、を1案に決める）**:
+   (a) `config.toml`に1フラグ`use_learned_keymap_table`（既定`true`）を追加し、`false`で常に同梱表へフォールバックする。
+   (b) awase-settingsの較正パネルに「学習結果を使わない（同梱表に戻す）」チェックボックスを置き、このフラグを切り替える
+   （**引き金はユーザー手動が最も安全**——症状〈半角/全角が逆に効く〉から原因〈学習表〉に自動で気づく仕組みは本ADRでは作らない）。
+   (c) 不具合報告（ADR-095/148）の添付内容に「学習表を使用中か」「使用中ならそのフィンガープリント（段階8）」を1項目追加する
+   （原因切り分けの費用対効果が最も高い——既存のbug-report機構への追加で済む）。
+3. **段階2の95%は「読める窓での一段予測」の基準であり、読めない窓の受け入れ基準（項目1、(i)+(ii)）とは別物である**ことを本文で
+   明記する（2つの基準を混同しない）。
 
 ADR-176のIPC（`calibration_ipc.rs`の`pack`/`pack_result`）はペイロードが1ワード（`usize`）固定で、数十〜数百セルの表本体を運ぶ設計には
 なっていない。したがって段階4の「実行時読込」はIPC経由ではなく、**段階3の永続化ファイルを直接読む**（`KeymapCache`と同様のfs読み取り+
@@ -406,10 +463,12 @@ rev2までは「較正基盤は単一のディレクトリに閉じる」（ADR-
 - **コアは引き続きOS非依存**（[docs/layer-boundaries.md](../layer-boundaries.md)、ADR-019）。`awase-keymap-learn`もOS非依存の純粋Rustクレートで、
   VKコードを持たない（`KeyId`は抽象ID）。段階1の独立プロセス（新しいWindows専用クレート`awase-keymap-learn-win`、round3 M-2）が、
   `KeyId`⇔実VKの対応とWin32 APIを持つ。
-- **belief書き込みは`reduce()`経由のみ**（`.claude/rules/ime-belief-architecture.md`）。学習セッションは`awase.exe`とは別プロセスで完結し、
-  `awase.exe`のbeliefパイプラインには一切触れない（段階1のA'確保策そのものが、この境界を物理的に保証する）。学習結果（段階3の
-  永続化データ）を段階4で予測器が読み込む経路は、既存の`KeyEffectPredicted`の生成元をコンパイル時データから実行時データへ差し替えるだけで、
-  belief書き込みの規約自体は変わらない。
+- **belief書き込みは`reduce()`経由のみ**（`.claude/rules/ime-belief-architecture.md`）。学習セッションは`awase.exe`とは別プロセスで完結する
+  よう設計するが、**この境界は`begin_app_bypass`（段階1のB-3新設計）の実装が保証するのであって、プロセス分離そのものによる
+  物理的な保証ではない**（round4 M-e、段階1のM-4項が既に正しく書いていた表現に統一する——学習プロセスの注入キーはawase.exeの
+  同一LLフックを通るため、「触れない」はバイパス実装の正しさに依存する）。したがって**A'相当（注入キーが一切のactuationを
+  起こさないこと）を実機で実測する**ことが前提であり続ける。学習結果（段階3の永続化データ）を段階4で予測器が読み込む経路は、
+  既存の`KeyEffectPredicted`の生成元をコンパイル時データから実行時データへ差し替えるだけで、belief書き込みの規約自体は変わらない。
 - **actuationへの影響は「許可リストは不変」だが「向き・要否はゼロではない」（round3 B-1が指摘した言い切りの誤りを訂正）**:
   `.claude/rules/fix-requires-evidence.md`「IME actuation合流点」表の各合流点（`ime_controller.rs::apply`・`runtime/open_chain.rs`等）
   そのものは一切変更しない——**許可リスト（どのキーを送ってよいか）**は`runtime/mod.rs::enrich_ime_relevance`の1箇所（`architecture_guard.rs`
