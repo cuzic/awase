@@ -533,6 +533,59 @@ struct SettingsApp {
     /// 計測中フォーカスを保持し続けるテキスト入力欄のバッファ
     /// （中身は使わない、フォーカス保持だけが目的）。
     calibration_text_buf: String,
+    adr192_replacement_undo: Option<Adr192ReplacementSnapshot>,
+    adr192_replacement_preview: Option<String>,
+}
+
+#[derive(Clone)]
+struct Adr192ReplacementSnapshot {
+    ime_on: Vec<String>,
+    ime_off: Vec<String>,
+    muhenkan_action: Option<awase::config::ShadowImeActionConfig>,
+    henkan_action: Option<awase::config::ShadowImeActionConfig>,
+    muhenkan_suppress: bool,
+    henkan_suppress: bool,
+}
+
+fn apply_adr192_recommended_replacement(
+    config: &mut awase::config::AppConfig,
+) -> Adr192ReplacementSnapshot {
+    let snapshot = Adr192ReplacementSnapshot {
+        ime_on: config.keys.ime_on.clone(),
+        ime_off: config.keys.ime_off.clone(),
+        muhenkan_action: config.general.muhenkan_solo_tap_ime_action,
+        henkan_action: config.general.henkan_solo_tap_ime_action,
+        muhenkan_suppress: config.general.muhenkan_solo_tap_always_suppress,
+        henkan_suppress: config.general.henkan_solo_tap_always_suppress,
+    };
+    config.keys.ime_on = vec!["変換".to_owned()];
+    config.keys.ime_off = vec!["無変換".to_owned()];
+    if is_muhenkan_thumb_key(&config.general.left_thumb_key)
+        || is_muhenkan_thumb_key(&config.general.right_thumb_key)
+    {
+        config.general.muhenkan_solo_tap_ime_action =
+            Some(awase::config::ShadowImeActionConfig::Off);
+        config.general.muhenkan_solo_tap_always_suppress = true;
+    }
+    if is_henkan_thumb_key(&config.general.left_thumb_key)
+        || is_henkan_thumb_key(&config.general.right_thumb_key)
+    {
+        config.general.henkan_solo_tap_ime_action = Some(awase::config::ShadowImeActionConfig::On);
+        config.general.henkan_solo_tap_always_suppress = true;
+    }
+    snapshot
+}
+
+fn undo_adr192_recommended_replacement(
+    config: &mut awase::config::AppConfig,
+    snapshot: Adr192ReplacementSnapshot,
+) {
+    config.keys.ime_on = snapshot.ime_on;
+    config.keys.ime_off = snapshot.ime_off;
+    config.general.muhenkan_solo_tap_ime_action = snapshot.muhenkan_action;
+    config.general.henkan_solo_tap_ime_action = snapshot.henkan_action;
+    config.general.muhenkan_solo_tap_always_suppress = snapshot.muhenkan_suppress;
+    config.general.henkan_solo_tap_always_suppress = snapshot.henkan_suppress;
 }
 
 /// バックグラウンドスレッドで実行する保存処理の結果。
@@ -645,6 +698,8 @@ impl SettingsApp {
             calibration_state: crate::calibration_panel::CalibrationPanelState::Idle,
             calibration_target_vk: "VK_NONCONVERT".to_string(),
             calibration_text_buf: String::new(),
+            adr192_replacement_undo: None,
+            adr192_replacement_preview: None,
         };
         app.recompute_diagnostics();
         app
@@ -2378,6 +2433,39 @@ impl SettingsApp {
         // （旧称「親指シフト ON/OFF」→「awase 有効/無効」）は2026-09-02に
         // 「上級者向け設定」タブへ移動済みのため、このタブでは本項目のみを扱う。
         ui.label("IME ON/OFFキー");
+        ui.group(|ui| {
+            ui.label("状態依存のIMEモードキー（ADR-192）");
+            ui.checkbox(
+                &mut self.config.general.warn_state_dependent_mode_keys,
+                "状態依存のキーを検出したときに警告する",
+            );
+            ui.label(
+                "警告された変換/無変換キーを、変換=IME ON・無変換=IME OFFの冪等な設定へ置き換えられます。親指キーの場合は単独タップ設定と常時抑止も同時に揃えます。",
+            );
+            if ui.button("変更内容をプレビュー").clicked() {
+                self.adr192_replacement_preview = Some(
+                    "[keys] ime_on = [\"変換\"], ime_off = [\"無変換\"]。親指キーなら *_solo_tap_ime_action と *_solo_tap_always_suppress = true も設定します。"
+                        .to_owned(),
+                );
+            }
+            if let Some(preview) = &self.adr192_replacement_preview {
+                ui.monospace(preview);
+                if ui.button("この置き換えを適用").clicked() {
+                    self.adr192_replacement_undo = Some(apply_adr192_recommended_replacement(
+                        &mut self.config,
+                    ));
+                    self.status = "冪等なIME ON/OFF設定へ置き換えました。「適用」でconfig.tomlへ保存してください。".to_owned();
+                }
+            }
+            if self.adr192_replacement_undo.is_some()
+                && ui.button("置き換えを元に戻す").clicked()
+            {
+                if let Some(snapshot) = self.adr192_replacement_undo.take() {
+                    undo_adr192_recommended_replacement(&mut self.config, snapshot);
+                    self.status = "ADR-192の置き換えを元に戻しました。".to_owned();
+                }
+            }
+        });
         combo_key_list_ui(
             ui,
             "IME ON",
@@ -5862,8 +5950,9 @@ fn send_calibration_end() {
 mod layout_tab_repro {
     use super::{
         CLIPBOARD_HISTORY_LEN, Face, KanaTable, LayoutDiscardAction, NewComboBuf, PhysicalPos,
-        SPECIAL_KEYS, SettingsApp, Tab, ValueKind, YabValue, empty_yab_layout, find_config_path,
-        load_yab_layout, resolve_layouts_dir,
+        SPECIAL_KEYS, SettingsApp, Tab, ValueKind, YabValue, apply_adr192_recommended_replacement,
+        empty_yab_layout, find_config_path, load_yab_layout, resolve_layouts_dir,
+        undo_adr192_recommended_replacement,
     };
 
     fn test_settings_app(config: awase::config::AppConfig) -> SettingsApp {
@@ -5932,6 +6021,8 @@ mod layout_tab_repro {
             calibration_state: crate::calibration_panel::CalibrationPanelState::Idle,
             calibration_target_vk: "VK_NONCONVERT".to_string(),
             calibration_text_buf: String::new(),
+            adr192_replacement_undo: None,
+            adr192_replacement_preview: None,
         }
     }
 
@@ -7272,5 +7363,37 @@ speculative_delay_ms = 30
             !app.show_dangerous_save_confirm,
             "cancel() はモーダルの前提(Dangerous)を解消するので、開いたままの確認モーダルも閉じるべき"
         );
+    }
+
+    #[test]
+    fn adr192_replacement_sets_idempotent_keys_and_thumb_suppression() {
+        let mut config = awase::config::AppConfig::default();
+        config.general.muhenkan_solo_tap_always_suppress = false;
+        config.general.henkan_solo_tap_always_suppress = false;
+        let _snapshot = apply_adr192_recommended_replacement(&mut config);
+        assert_eq!(config.keys.ime_on, ["変換"]);
+        assert_eq!(config.keys.ime_off, ["無変換"]);
+        assert_eq!(
+            config.general.muhenkan_solo_tap_ime_action,
+            Some(awase::config::ShadowImeActionConfig::Off)
+        );
+        assert_eq!(
+            config.general.henkan_solo_tap_ime_action,
+            Some(awase::config::ShadowImeActionConfig::On)
+        );
+        assert!(config.general.muhenkan_solo_tap_always_suppress);
+        assert!(config.general.henkan_solo_tap_always_suppress);
+    }
+
+    #[test]
+    fn adr192_replacement_can_be_undone_exactly() {
+        let mut config = awase::config::AppConfig::default();
+        config.keys.ime_on = vec!["Ctrl+変換".into()];
+        config.keys.ime_off = vec!["Ctrl+無変換".into()];
+        config.general.muhenkan_solo_tap_always_suppress = false;
+        let before = toml::to_string(&config).unwrap();
+        let snapshot = apply_adr192_recommended_replacement(&mut config);
+        undo_adr192_recommended_replacement(&mut config, snapshot);
+        assert_eq!(toml::to_string(&config).unwrap(), before);
     }
 }
