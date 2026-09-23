@@ -1,8 +1,7 @@
 name: Mutants (ADR-194 retry-condition scope investigation)
 
 # ADR-194(IMEシミュレーションハーネス)破棄の再挑戦条件検証(2026-09-22)専用の
-# 一時ワークフロー。ci.ymlのmutants-awase-windowsジョブと同じくGitHub-hosted
-# ubuntu-latestで動くが、対象を.cargo/mutants-bug158-scope.tomlの4ファイル
+# 一時ワークフロー。対象を.cargo/mutants-bug158-scope.tomlの4ファイル
 # (force_guard.rs/mode_key_pass.rs/drift.rs/refresh_plan.rs)に絞ることで、
 # サンドボックス上でcargo-mutantsを直接走らせずに済ませる。
 #
@@ -21,6 +20,17 @@ name: Mutants (ADR-194 retry-condition scope investigation)
 # 存在しないファイルへのglobは単に0 mutantsになるだけで実行時エラーにはならない
 # (cargo-mutantsの仕様)。ci.ymlは変更しない。検証が終わったらこのファイルと
 # .cargo/mutants-bug158-scope.tomlをdevelopから削除してよい。
+#
+# runs-on: 当初ubuntu-latestだったが、crates/awase-windows/examples/*.rs
+# (windows crate依存、非cfg(windows))がLinux上ではbaselineビルドでE0433に
+# なり、--baseline skip + 末尾`-- --lib`で回避を試みても各mutant試験自体の
+# `cargo test`もexamples/を巻き込んで同じくE0433になり、95 mutants全てが
+# unviableになることを2026-09-23にこのセッションでローカル実測して確認した
+# （過去の「5回連続で確認」と同じ症状）。姉妹ワークフロー
+# `mutants-actuation-confluence-windows.yml`（windows-latest採用、13 mutants
+# 検証済み）に倣い windows-latest（GitHub-hosted、publicリポなら無料）へ
+# 切り替えた。windows crateが解決できるためexamplesが普通にビルドでき、
+# baselineをskipする必要も--libで絞る必要も無い。
 
 on:
   workflow_dispatch:
@@ -33,7 +43,7 @@ env:
 
 jobs:
   mutants-bug158-scope:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -41,16 +51,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-mutants
       - name: "Run cargo-mutants (ADR-194 scope: force_guard/mode_key_pass/drift/refresh_plan)"
-        # examples/*.rs(windows crate依存、非cfg(windows))をLinux上でbaseline
-        # ビルドに巻き込ませたくない。--cargo-test-arg=--lib(CLI)・
-        # additional_cargo_test_args(config)・末尾`-- --lib`のどれを使っても
-        # baselineの`cargo test --no-run --package=X`コマンドには反映されず
-        # (2026-09-22実測、3回とも examples が残ったままE0433)、baseline自体は
-        # 常にフル(--lib無し)で走る設計と判断。対象4ファイルのテストはこのセッション
-        # 内で既にLinux上でcargo test --lib実行・pass確認済みなので、
-        # --baseline skipでbaseline自体を飛ばし、--libは各mutant試験(こちらは
-        # 末尾--が効く想定)にだけ効かせる。
-        run: cargo mutants -p awase-windows --config .cargo/mutants-bug158-scope.toml --no-shuffle --baseline skip -- --lib
+        shell: pwsh
+        run: cargo mutants -p awase-windows --config .cargo/mutants-bug158-scope.toml --no-shuffle
       - name: Upload mutants report
         if: always()
         uses: actions/upload-artifact@v4

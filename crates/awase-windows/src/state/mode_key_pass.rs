@@ -519,4 +519,192 @@ mod tests {
         assert!(!latch.live(210, 2, 300), "スコープが変わると失効");
         assert!(!latch.live(210, 1, 300), "失効後は同じスコープでも無効");
     }
+
+    /// cargo-mutants実測（docs/tasks/mode-key-pass-latch-mutation-coverage.md、やること1）:
+    /// `note_awase_write`は「有効なマークのawase_wroteをfalse→trueへ一度だけ立てる」グルーコードで、
+    /// この構造体メソッド自身を直接呼ぶテストが無かった。`awase_wrote=true`が以後の
+    /// `align_after_expired`の判定を変えることをブラックボックスで対比させる。
+    #[test]
+    fn note_awase_write_marks_awase_wrote_and_blocks_align_after_expired() {
+        let w = 300;
+        let mut with_write: ModeKeyPassLatch<u8> = ModeKeyPassLatch::new();
+        with_write.arm(1, 0, true);
+        with_write.note_awase_write(1);
+        assert!(
+            !with_write.align_after_expired(w, 1, false, w),
+            "note_awase_writeの後は実IMEを信用せず揃えない"
+        );
+
+        // 対照群: note_awase_writeを呼ばなければ同条件で揃える。
+        let mut without_write: ModeKeyPassLatch<u8> = ModeKeyPassLatch::new();
+        without_write.arm(1, 0, true);
+        assert!(
+            without_write.align_after_expired(w, 1, false, w),
+            "awaseが書いていなければ窓切れ後の最初の観測で揃える"
+        );
+    }
+
+    /// cargo-mutants実測（同docs、やること2）: `window_remaining_ms`自身を直接呼ぶテストが無く、
+    /// 「関数本体をNone/Some(0)/Some(1)に差し替える」変異が生存していた。0でも1でもない具体値
+    /// （250）を確認することで、内部委譲先の純関数テストだけでは潰せなかった構造体メソッド自身の
+    /// グルーコードを固定する。
+    #[test]
+    fn window_remaining_ms_returns_concrete_remaining_time() {
+        let mut latch: ModeKeyPassLatch<u8> = ModeKeyPassLatch::new();
+        latch.arm(1, 100, true);
+        assert_eq!(latch.window_remaining_ms(150, 1, 300), Some(250));
+
+        // マークが無ければNone。
+        let mut empty: ModeKeyPassLatch<u8> = ModeKeyPassLatch::new();
+        assert_eq!(empty.window_remaining_ms(150, 1, 300), None);
+
+        // スコープが変わっていればNone（`peek`が失効させる）。
+        let mut other_scope: ModeKeyPassLatch<u8> = ModeKeyPassLatch::new();
+        other_scope.arm(1, 100, true);
+        assert_eq!(other_scope.window_remaining_ms(150, 2, 300), None);
+    }
+
+    /// cargo-mutants実測（同docs、やること3）: `expiry_wait_ms`自身を直接呼ぶテストが無かった。
+    /// `readable_at_arm × invalidated`の組み合わせを決定表として固定する
+    /// （`!mark.readable_at_arm || mark.invalidated`の`||`↔`&&`・`!`削除、および
+    /// 関数本体のNone/Some(0)/Some(1)差し替えを同時に潰す）。
+    #[test]
+    fn expiry_wait_ms_requires_readable_at_arm_and_not_invalidated() {
+        let w = 300;
+        // readable_at_arm=true, invalidated=false: 具体的な残り時間を返す。
+        let mut readable_fresh: ModeKeyPassLatch<u8> = ModeKeyPassLatch::new();
+        readable_fresh.arm(1, 100, true);
+        assert_eq!(readable_fresh.expiry_wait_ms(150, 1, w), Some(250));
+
+        // readable_at_arm=false: 立てた時点で読めない窓は、窓の間でもNone（BUG-158の見直し）。
+        let mut unreadable: ModeKeyPassLatch<u8> = ModeKeyPassLatch::new();
+        unreadable.arm(1, 100, false);
+        assert_eq!(unreadable.expiry_wait_ms(150, 1, w), None);
+
+        // invalidated=true（観測成功でdrop_decisionが破棄した後）: None。
+        let mut invalidated: ModeKeyPassLatch<u8> = ModeKeyPassLatch::new();
+        invalidated.arm(1, 100, true);
+        invalidated
+            .drop_decision(150, 1, false, false, w)
+            .expect("観測成功・明示意図なしなら破棄する");
+        assert_eq!(invalidated.expiry_wait_ms(160, 1, w), None);
+    }
+
+    /// cargo-mutants実測（同docs、やること4）: `drop_decision`の唯一の既存テスト
+    /// （`mode_key_pass_latch_arms_and_drops_within_window`）は毎回`has_last_intent=false`固定・
+    /// 1回目の呼び出しで`align`と`aligned`が同時にtrueになるため、「2回目以降・`mark.aligned`が
+    /// 既にfalseのまま`first=false`に到達する」経路が通っていなかった。1回目を`on_expiry=true`
+    /// （窓の終了時、観測なし。`aligned`は更新されない）で呼び、2回目をより大きい`window_ms`を渡した
+    /// 観測成功（`on_expiry=false`）で呼ぶことで、`first=false かつ align=true かつ
+    /// mark.aligned=false`の組み合わせに到達させ、`aligned`が実際に`false→true`へ書き変わることを
+    /// `align_after_expired`で観測する。
+    #[test]
+    fn drop_decision_aligns_on_first_full_window_observation_after_expiry_miss() {
+        let mut latch: ModeKeyPassLatch<u8> = ModeKeyPassLatch::new();
+        latch.arm(1, 0, true);
+
+        // 1回目: 窓の終了時(on_expiry=true)、観測なし。first=trueなのでalign=trueだが、
+        // on_expiry=trueなのでalignedはfalseのまま更新されない（BUG-158の仕様）。
+        let expired_effect = latch
+            .drop_decision(300, 1, true, false, 300)
+            .expect("読める窓が切れたのに未破棄なら破棄する");
+        assert!(expired_effect.remove_intent, "初回の破棄は意図を削除する");
+        assert!(
+            expired_effect.pass_through,
+            "初回はalign=trueでdispatchする"
+        );
+
+        // 2回目: より大きい窓を渡した観測成功(on_expiry=false)。invalidated済みなのでfirst=false、
+        // has_last_intent=falseでalign=true、mark.alignedはまだfalseなので
+        // `first || (align && !mark.aligned)` が効いて実際にaligned=false→trueへ書き変わる。
+        let observed_effect = latch
+            .drop_decision(320, 1, false, false, 1000)
+            .expect("2回目: より大きい窓での観測成功");
+        assert!(
+            !observed_effect.remove_intent,
+            "2回目は意図を消さない(既に消した)"
+        );
+        assert!(observed_effect.pass_through, "2回目の観測でも揃える");
+
+        // aligned=trueへ実際に書き変わったことを align_after_expired で観測する
+        // (既にtrueなら以後は揃えない=should_align_after_expired_mode_key_passがfalseを返す)。
+        assert!(
+            !latch.align_after_expired(9000, 1, false, 1),
+            "2回目の観測でaligned=trueになったので、以後は揃えない"
+        );
+    }
+
+    /// cargo-mutants実測（同docs、やること4の補助）: 上のテストは2回目呼び出し後の最終状態しか
+    /// 見ないため、`mark.aligned || (align && !on_expiry)`の内側`align && !on_expiry`部分の
+    /// `&&`↔`||`・`!`削除変異は、1回目(on_expiry=true)単体の直後状態を見ないと潰せない
+    /// （block内では`align`は常にtrueになる不変条件があり、内側が`||`化すると
+    /// `on_expiry`の値に関わらず常にtrueへ壊れる）。1回目単体で`aligned`がfalseのままであることを
+    /// 別インスタンスで確認する。
+    #[test]
+    fn drop_decision_first_expiry_miss_alone_does_not_align_yet() {
+        let w = 300;
+        let mut expiry_only: ModeKeyPassLatch<u8> = ModeKeyPassLatch::new();
+        expiry_only.arm(1, 0, true);
+        expiry_only
+            .drop_decision(w, 1, true, false, w)
+            .expect("読める窓が切れたのに未破棄なら破棄する");
+        assert!(
+            expiry_only.align_after_expired(w + 1, 1, false, w),
+            "1回目(on_expiry=true)の後もalignedはfalseのまま=まだ揃えられる"
+        );
+    }
+
+    /// cargo-mutants実測（同docs、やること4の補助）: `aligned: mark.aligned || (...)`構築式の
+    /// `mark.aligned`参照が削除される変異は、既に`align_after_expired`で揃った（`invalidated`は
+    /// まだfalse）マークへ初めての`drop_decision`（`first=true`）が来た場合にだけ観測できる
+    /// （それ以外では`!mark.aligned`ガードにより`mark.aligned`は常にfalseの状態でしか
+    /// block内へ到達しないため、参照削除が無害化してしまう）。
+    #[test]
+    fn drop_decision_preserves_prior_alignment_from_align_after_expired_on_first_observation() {
+        let w = 100;
+        let mut latch: ModeKeyPassLatch<u8> = ModeKeyPassLatch::new();
+        latch.arm(1, 0, true);
+        // 窓の間、一度もdrop_decisionを呼ばずに窓が切れ、align_after_expiredが先に揃える。
+        assert!(
+            latch.align_after_expired(w, 1, false, w),
+            "先にalign_after_expiredで揃う"
+        );
+
+        // その後に初めてのdrop_decision(on_expiry=true、観測なし、invalidatedはまだfalse)が来ても、
+        // 既に揃っている(mark.aligned=true)ことを維持する(`mark.aligned || (...)`のmark.aligned項)。
+        let effect = latch
+            .drop_decision(w, 1, true, false, w)
+            .expect("読める窓が切れたのに未破棄なら破棄する");
+        assert!(effect.remove_intent, "初回のdrop_decisionは意図を削除する");
+
+        // alignedがtrueのまま維持されている(false化していない)ことを確認する
+        // (既にtrueなら以後は揃えない=falseを返す)。
+        assert!(
+            !latch.align_after_expired(w + 1, 1, false, w),
+            "既に揃っているので二重に揃えない"
+        );
+    }
+
+    /// cargo-mutants実測（同docs、やること5）: `align_after_expired`自身を直接呼ぶテストが
+    /// 無かった（内部で委譲する純関数`should_align_after_expired_mode_key_pass`は既にテスト済み）。
+    /// 「窓の間は揃えない→窓が切れたら揃える→二重に揃えない」の3段階を直接固定することで、
+    /// 関数本体のtrue/false差し替え・`!`削除・`aligned`フィールド構築式の削除を一度に潰す。
+    #[test]
+    fn align_after_expired_aligns_once_and_persists_the_flag() {
+        let w = 300;
+        let mut latch: ModeKeyPassLatch<u8> = ModeKeyPassLatch::new();
+        latch.arm(1, 0, true);
+        assert!(
+            !latch.align_after_expired(200, 1, false, w),
+            "窓の間はalign_after_expiredの担当ではない"
+        );
+        assert!(
+            latch.align_after_expired(300, 1, false, w),
+            "窓が切れた後の最初の成功観測で揃える"
+        );
+        assert!(
+            !latch.align_after_expired(9000, 1, false, w),
+            "揃えた後は二重に揃えない(alignedフィールドが実際にtrueへ書き変わっている)"
+        );
+    }
 }
