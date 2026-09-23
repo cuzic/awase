@@ -81,6 +81,14 @@ struct HookState {
     left_thumb_down_at_us: AtomicU64,
     /// Alt なりすまし適用後の右親指キー押下時刻（µs）。0 = 押下されていない。
     right_thumb_down_at_us: AtomicU64,
+    /// 左親指キーの直近 KeyDown 時の `scan_code`（BUG-132）。`left_thumb_down_at_us`
+    /// が非0の間だけ有効。`VK_DBE_*` を親指キーに割り当てた構成では、Windows が
+    /// KeyDown/KeyUp で異なる vk を合成する非対称性（BUG-131 と同型）のため、
+    /// KeyUp 側の解除判定を vk 一致ではなく scan_code 一致で行う
+    /// （scan_code は Down/Up で一致することが実機確認済み、BUG-131 参照）。
+    left_thumb_down_scan: AtomicU32,
+    /// 右親指キー版（左版と対称、BUG-132）。
+    right_thumb_down_scan: AtomicU32,
     /// 直近の物理 Ctrl 押下後に他の VK の KeyDown を 1 つでも観測したか。
     ///
     /// 用途: `Ctrl↓ → I↓ I↑ → 無変換↓` のような「Ctrl が既に他キーで consume
@@ -164,6 +172,8 @@ impl HookState {
             physical_key_down_at_ms: [const { AtomicU64::new(0) }; 256],
             left_thumb_down_at_us: AtomicU64::new(0),
             right_thumb_down_at_us: AtomicU64::new(0),
+            left_thumb_down_scan: AtomicU32::new(0),
+            right_thumb_down_scan: AtomicU32::new(0),
             ctrl_consumed_since_down: AtomicBool::new(false),
             cached_keyboard_model_is_us: AtomicBool::new(false),
             cached_left_alt_impersonation_enabled: AtomicBool::new(false),
@@ -546,6 +556,8 @@ pub fn reset_physical_key_state() {
     HOOK_STATE
         .right_thumb_down_at_us
         .store(0, Ordering::Relaxed);
+    HOOK_STATE.left_thumb_down_scan.store(0, Ordering::Relaxed);
+    HOOK_STATE.right_thumb_down_scan.store(0, Ordering::Relaxed);
     HOOK_STATE
         .alt_l_impersonating
         .store(false, Ordering::Relaxed);
@@ -607,6 +619,8 @@ pub(crate) fn clear_hook_latches_for_app_disable(
     HOOK_STATE
         .right_thumb_down_at_us
         .store(0, Ordering::Relaxed);
+    HOOK_STATE.left_thumb_down_scan.store(0, Ordering::Relaxed);
+    HOOK_STATE.right_thumb_down_scan.store(0, Ordering::Relaxed);
 
     if matches!(edge, SuppressionEdge::Leave) {
         for vk in [
@@ -689,6 +703,8 @@ pub fn set_thumb_vk_codes(left: VkCode, right: VkCode) {
     HOOK_STATE
         .right_thumb_down_at_us
         .store(0, Ordering::Relaxed);
+    HOOK_STATE.left_thumb_down_scan.store(0, Ordering::Relaxed);
+    HOOK_STATE.right_thumb_down_scan.store(0, Ordering::Relaxed);
 }
 
 /// 現在押下中の左右親指キーの KeyDown 時刻（µs）を返す。
@@ -1399,21 +1415,50 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     vk = rewritten_vk;
 
     if !is_injected {
-        let update_thumb = |slot: &AtomicU64| {
-            if is_keydown {
-                let prev = slot.load(Ordering::Relaxed);
-                if prev == 0 {
-                    slot.store(now_timestamp(), Ordering::Relaxed);
-                }
-            } else {
-                slot.store(0, Ordering::Relaxed);
+        // BUG-132: `VK_DBE_*` を親指キーに割り当てた構成では、Windows が
+        // KeyDown と KeyUp で異なる vk を合成する非対称性がある（BUG-131 と
+        // 同型、`kb.scanCode` は Down/Up で一致することが実機確認済み）。
+        // KeyDown は設定 vk との一致で「これが親指キーの押下か」を判定するが
+        // （この向きは非対称の影響を受けない）、KeyUp は vk ではなく
+        // scan_code の一致で解除する。
+        let scan_u32 = scan.0;
+        let mark_down = |at_us: &AtomicU64, down_scan: &AtomicU32| {
+            let prev = at_us.load(Ordering::Relaxed);
+            if prev == 0 {
+                at_us.store(now_timestamp(), Ordering::Relaxed);
+                down_scan.store(scan_u32, Ordering::Relaxed);
             }
         };
-        if vk == config.left_thumb_vk {
-            update_thumb(&HOOK_STATE.left_thumb_down_at_us);
-        }
-        if vk == config.right_thumb_vk {
-            update_thumb(&HOOK_STATE.right_thumb_down_at_us);
+        let clear_if_matching_scan = |at_us: &AtomicU64, down_scan: &AtomicU32| {
+            let armed_down_scan =
+                (at_us.load(Ordering::Relaxed) != 0).then(|| down_scan.load(Ordering::Relaxed));
+            if crate::vk::should_release_thumb_latch(armed_down_scan, scan_u32) {
+                at_us.store(0, Ordering::Relaxed);
+                down_scan.store(0, Ordering::Relaxed);
+            }
+        };
+        if is_keydown {
+            if vk == config.left_thumb_vk {
+                mark_down(
+                    &HOOK_STATE.left_thumb_down_at_us,
+                    &HOOK_STATE.left_thumb_down_scan,
+                );
+            }
+            if vk == config.right_thumb_vk {
+                mark_down(
+                    &HOOK_STATE.right_thumb_down_at_us,
+                    &HOOK_STATE.right_thumb_down_scan,
+                );
+            }
+        } else {
+            clear_if_matching_scan(
+                &HOOK_STATE.left_thumb_down_at_us,
+                &HOOK_STATE.left_thumb_down_scan,
+            );
+            clear_if_matching_scan(
+                &HOOK_STATE.right_thumb_down_at_us,
+                &HOOK_STATE.right_thumb_down_scan,
+            );
         }
     }
 

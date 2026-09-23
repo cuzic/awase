@@ -337,6 +337,26 @@ pub const fn should_upgrade_is_japanese_ime(injected: bool, vk_code: VkCode) -> 
     !injected && is_synthetic_dbe_ime_hotkey(vk_code)
 }
 
+/// 親指キー押下ラッチ（`hook.rs::HookState::left_thumb_down_at_us`/
+/// `right_thumb_down_at_us`）をこの KeyUp で解除してよいか判定する純粋関数
+/// （BUG-132）。
+///
+/// `VK_DBE_*`（`VK_DBE_HIRAGANA`等）を親指キーに割り当てた構成では、
+/// Windows が KeyDown と KeyUp で異なる vk を合成する非対称性がある
+/// （BUG-131 と同型）。このため解除は vk 一致ではなく、KeyDown 時に記録した
+/// `scan_code` との一致で判定する（`scan_code` は Down/Up で一致することが
+/// 実機確認済み）。
+///
+/// `armed_down_scan` は現在ラッチが立っている場合の KeyDown 時 `scan_code`
+/// （`None` は非ラッチ、`left_thumb_down_at_us == 0` に対応）。
+#[must_use]
+pub const fn should_release_thumb_latch(armed_down_scan: Option<u32>, keyup_scan: u32) -> bool {
+    match armed_down_scan {
+        Some(down_scan) => down_scan == keyup_scan,
+        None => false,
+    }
+}
+
 /// 変換対象外のキー（修飾キー、ファンクションキー等）を判定する
 #[must_use]
 pub const fn is_passthrough(vk_code: VkCode) -> bool {
@@ -935,8 +955,9 @@ mod tests {
 
     use super::{
         ascii_to_vk, build_symbol_to_vk, is_ime_mode_key_for_ime, is_synthetic_dbe_ime_hotkey,
-        may_change_ime, reinject_scan_code, should_upgrade_is_japanese_ime, vk_may_mutate_conv,
-        vk_pair_to_ascii, ImeKeyKind, VkCode, VK_A, VK_RETURN, VK_SPACE,
+        may_change_ime, reinject_scan_code, should_release_thumb_latch,
+        should_upgrade_is_japanese_ime, vk_may_mutate_conv, vk_pair_to_ascii, ImeKeyKind, VkCode,
+        VK_A, VK_RETURN, VK_SPACE,
     };
 
     /// `vk_pair_to_ascii` は `ascii_to_vk` の厳密な逆写像である
@@ -1161,6 +1182,36 @@ mod tests {
     #[test]
     fn should_upgrade_is_japanese_ime_false_for_physical_unrelated_vk() {
         assert!(!should_upgrade_is_japanese_ime(false, VkCode(0x41))); // 'A'
+    }
+
+    // ── BUG-132: should_release_thumb_latch ──
+
+    /// 通常ケース: KeyDown時のscan_codeと同じscan_codeのKeyUpなら解除してよい。
+    #[test]
+    fn should_release_thumb_latch_true_when_scan_matches() {
+        assert!(should_release_thumb_latch(Some(0x70), 0x70));
+    }
+
+    /// BUG-132本体: `VK_DBE_HIRAGANA`（vk=0xF2）を親指キーに割り当てた構成では
+    /// KeyUpのvkが`VK_DBE_ALPHANUMERIC`（0xF0）に化けるが、scan_codeは
+    /// Down/Upで一致する（実機確認済み、BUG-131と同型）ため、vkを見ない本関数は
+    /// このケースでも正しく解除できる。
+    #[test]
+    fn should_release_thumb_latch_true_for_dbe_key_asymmetric_vk_same_scan() {
+        assert!(should_release_thumb_latch(Some(0x70), 0x70));
+    }
+
+    /// 別の物理キーのKeyUp（scan_code不一致）では解除しない。
+    #[test]
+    fn should_release_thumb_latch_false_when_scan_differs() {
+        assert!(!should_release_thumb_latch(Some(0x70), 0x1E)); // 'A' のscan等
+    }
+
+    /// ラッチが立っていない（`None` = `..._down_at_us == 0`）間のKeyUpは
+    /// 常にfalse（誤って新規武装しない）。
+    #[test]
+    fn should_release_thumb_latch_false_when_not_armed() {
+        assert!(!should_release_thumb_latch(None, 0x70));
     }
 
     /// 2026-08-09 ユーザー報告: 「－」（全角ハイフンマイナス、`layout/nicola.yab`
