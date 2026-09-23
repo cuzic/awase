@@ -23,6 +23,15 @@ pub enum ReadPolicy {
 pub struct PressInfo {
     pub before: Status,
     pub outcome: Outcome,
+    /// [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+    /// （opus-adversarial-consult round2 N1対応）: `PressReport::contaminated`
+    /// をそのまま引き継ぐ。呼び出し側（`awase-keymap-learn-win::main`の検証
+    /// ウォーク等、`Executor`が`recording=false`で使われる場面）は、これが
+    /// 立っている観測を採点・記録に使ってはならない——`Executor::press`自身は
+    /// `recording=true`のときの表への記録は既に見送るが、`recording=false`の
+    /// 呼び出し元（採点用ウォーク）には`contaminated`を伝える手段がこれまで
+    /// 無かった。
+    pub contaminated: bool,
 }
 
 /// 実行の統計。
@@ -73,6 +82,14 @@ pub trait ImeDriver {
     fn reset(&mut self, level: ResetLevel) -> bool;
     fn elapsed_ms(&self) -> f64;
     fn machine_initial_status(&self) -> Status;
+    /// [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+    /// （opus-adversarial-consult round2 N3対応）: セッション監視が既に
+    /// 失敗と判定した後は、`strategy::over()`が予算（時間・押下数）を使い切る
+    /// 前に打ち切れるようにする。既定は`false`（`SimIme`等、セッション監視を
+    /// 持たないドライバはこれまで通り予算のみで打ち切る）。
+    fn should_abort(&self) -> bool {
+        false
+    }
 }
 
 /// 実行器。
@@ -269,7 +286,11 @@ impl<D: ImeDriver> Executor<D> {
         if let Some(sink) = &mut self.progress {
             sink(&self.stats, &self.table);
         }
-        Some(PressInfo { before, outcome })
+        Some(PressInfo {
+            before,
+            outcome,
+            contaminated: r.contaminated,
+        })
     }
 
     /// S0用: 状態を作るための押下(観測も記録もしない)。コストは経路のキー間隔だけ。
@@ -415,6 +436,11 @@ mod tests {
         );
         let info = e.press(0);
         assert!(info.is_some(), "delivered=trueなのでPressInfoは返る");
+        assert!(
+            info.expect("直前でSomeを確認済み").contaminated,
+            "round2 N1対応: PressInfo自体にもcontaminatedが伝わるはず(検証ウォーク等、\
+             recording=falseの呼び出し元が判定に使う)"
+        );
         assert_eq!(
             e.table.covered1(),
             0,
@@ -433,7 +459,8 @@ mod tests {
             AnomalyPolicy::default(),
             ReadPolicy::Single,
         );
-        e.press(0);
+        let info = e.press(0).expect("delivered=trueなのでSome");
+        assert!(!info.contaminated);
         assert_eq!(e.table.covered1(), 1);
         assert_eq!(e.stats.contaminated_trials, 0);
     }

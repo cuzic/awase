@@ -368,6 +368,38 @@ mod tests {
     }
 
     #[test]
+    fn tracker_physical_baseline_also_advances_independently() {
+        // round2 N4対応: external専用のテスト
+        // (tracker_baseline_advances_even_when_contaminated_so_next_observation_is_clean)
+        // しか無く、`observe()`内で`self.physical = physical_total;`を消す変異が
+        // 生き残っていた。physical単独でも同じ性質を確認する。
+        let mut tracker = InterferenceTracker::new();
+        let v1 = tracker.observe(0, 1, 0, true);
+        assert!(v1.contaminated());
+        assert!(v1.physical);
+        let v2 = tracker.observe(0, 1, 0, true);
+        assert!(
+            !v2.contaminated(),
+            "physicalのbaselineが前進していれば同じ値の再観測は非汚染のはず"
+        );
+    }
+
+    #[test]
+    fn tracker_focus_events_baseline_also_advances_independently() {
+        // round2 N4対応: focus_events単独でも同じ性質を確認する
+        // (`self.focus_events = focus_events_total;`を消す変異への回帰)。
+        let mut tracker = InterferenceTracker::new();
+        let v1 = tracker.observe(0, 0, 1, true);
+        assert!(v1.contaminated());
+        assert!(v1.focus_lost);
+        let v2 = tracker.observe(0, 0, 1, true);
+        assert!(
+            !v2.contaminated(),
+            "focus_eventsのbaselineが前進していれば同じ値の再観測は非汚染のはず"
+        );
+    }
+
+    #[test]
     fn tracker_flags_each_cause_independently() {
         let mut external_only = InterferenceTracker::new();
         assert!(external_only.observe(1, 0, 0, true).contaminated());

@@ -4,7 +4,7 @@ mod app {
 
     use awase_keymap_learn::anomaly::AnomalyPolicy;
     use awase_keymap_learn::cost::CostModel;
-    use awase_keymap_learn::exec::{Executor, ImeDriver, ReadPolicy};
+    use awase_keymap_learn::exec::{Executor, ImeDriver, ReadPolicy, Stats};
     use awase_keymap_learn::graph::Prior;
     use awase_keymap_learn::model::KeyId;
     use awase_keymap_learn::persist::{PersistedCell, PersistedTable};
@@ -139,8 +139,22 @@ mod app {
         exec.set_recording(false);
         let mut walk = Vec::with_capacity(VERIFICATION_WALK_STEPS);
         for _ in 0..VERIFICATION_WALK_STEPS {
+            // opus-adversarial-consult round2 N3対応: セッション監視が既に
+            // 失敗と判定していたら、採点にならない押下を続けない。
+            if exec.driver.should_abort() {
+                break;
+            }
             let key = rng.below(KEYS.len());
             if let Some(info) = exec.press(key) {
+                // round2 N1対応: 汚染された観測(外部からの書き込み・物理入力・
+                // フォーカス喪失)は採点に使わない。学習フェーズは
+                // `Executor::press`が表への記録を見送るが、このウォークは
+                // `recording=false`で呼ばれるため同じ保護がかかっておらず、
+                // 汚染された観測がそのまま`verify_accuracy`の採点対象に
+                // なっていた(表そのものは正しいのに不当にスコアが下がる)。
+                if info.contaminated {
+                    continue;
+                }
                 walk.push(WalkObs {
                     status: info.before,
                     key,
@@ -176,13 +190,84 @@ mod app {
         (cell_count, write_result)
     }
 
-    pub fn run_main() -> windows::core::Result<()> {
+    /// `run_main`のうち、セッション監視が失敗と判定していないかを確認する
+    /// 部分（学習フェーズ直後・検証ウォーク直後の2箇所から呼ぶ、round2 N1
+    /// 対応で複製されていたブロックの共通化）。失敗していたら専用result行を
+    /// 出して`true`を返す——呼び出し側はこれを見て早期returnすること。
+    fn bail_if_session_failed(
+        executor: &Executor<RealImeDriver>,
+        strategy: Strategy,
+        training_elapsed_ms: f64,
+        training_presses: u32,
+        total_cells: u32,
+        decode_errors: u32,
+    ) -> bool {
+        if !executor.driver.session_failed() {
+            return false;
+        }
+        print_interference_failure_line(InterferenceFailureArgs {
+            strategy,
+            training_elapsed_ms,
+            training_presses,
+            covered1: executor.table.covered1(),
+            total_cells,
+            decode_errors,
+            contaminated_trials: executor.stats.contaminated_trials,
+            invalidated_trials: executor.driver.session_invalidated_trials(),
+        });
+        true
+    }
+
+    /// round2 N2対応: `RealImeDriver::new()`はquiet window判定(外部からの
+    /// 書き込み・物理入力・フォーカス喪失、round1 M1/M3対応で発火条件が
+    /// 広がった)で`Err`を返すことがある。以前は呼び出し元が`?`でそのまま
+    /// プロセスの異常終了に委ねていたため、result行が出ず、awase-settings側の
+    /// 較正パネルには「結果を送らずに終了した」としか表示されなかった。他の
+    /// 失敗経路と同じresult行の形式で理由を伝えた上で`None`を返す。
+    fn build_driver(strategy: Strategy) -> Option<RealImeDriver> {
+        match RealImeDriver::new(KEYS.to_vec()) {
+            Ok(driver) => Some(driver),
+            Err(err) => {
+                let total_cells_estimate = atok_like().states.len() as u32 * KEYS.len() as u32;
+                print_quiet_window_failure_line(strategy, total_cells_estimate, &err);
+                None
+            }
+        }
+    }
+
+    /// 進捗(現在何セル目/推定残り時間)を標準出力へ運ぶsinkを作る(ADR-195段階6)。
+    /// awase-settings(較正ウィザード)はこの行をパースしてUI表示する。IPCは
+    /// 使わない(ペイロードが1ワード固定で表本体を運べないため、詳細はADR本文
+    /// 「段階6」節参照)。表本体はここでは一切標準出力へ出さない。
+    fn make_progress_sink(total_cells: u32) -> impl FnMut(&Stats, &Table) {
+        move |stats, table| {
+            if stats.presses % PROGRESS_EVERY_N_PRESSES != 0 {
+                return;
+            }
+            let cell = table.covered1() as u32;
+            let elapsed_ms = stats.timeline.last().map_or(0.0, |&(ms, _, _)| ms);
+            // 経過時間からの単純な線形外挿。0除算・未進捗時はeta不明(-1)を返す。
+            let eta_ms = if cell == 0 || cell >= total_cells {
+                -1.0
+            } else {
+                elapsed_ms / f64::from(cell) * f64::from(total_cells - cell)
+            };
+            println!(
+                "progress cell={cell} total={total_cells} elapsed_ms={elapsed_ms:.0} eta_ms={eta_ms:.0}"
+            );
+            let _ = std::io::stdout().flush();
+        }
+    }
+
+    pub fn run_main() {
         let strategy = if std::env::args().any(|arg| arg == "--strategy=s0") {
             Strategy::S0
         } else {
             Strategy::S6
         };
-        let driver = RealImeDriver::new(KEYS.to_vec())?;
+        let Some(driver) = build_driver(strategy) else {
+            return;
+        };
         let initial = driver.initial_status();
         let mut model = atok_like();
         for state in &mut model.states {
@@ -202,28 +287,8 @@ mod app {
         let cost = CostModel::event();
         let mut executor = Executor::new(driver, AnomalyPolicy::default(), ReadPolicy::Single);
 
-        // ADR-195段階6: 進捗(現在何セル目/推定残り時間)を標準出力へ運ぶ。
-        // awase-settings(較正ウィザード)はこの行をパースしてUI表示する。IPCは
-        // 使わない(ペイロードが1ワード固定で表本体を運べないため、詳細はADR
-        // 本文「段階6」節参照)。表本体はここでは一切標準出力へ出さない。
         let total_cells = model.states.len() as u32 * KEYS.len() as u32;
-        executor.set_progress_sink(move |stats, table| {
-            if stats.presses % PROGRESS_EVERY_N_PRESSES != 0 {
-                return;
-            }
-            let cell = table.covered1() as u32;
-            let elapsed_ms = stats.timeline.last().map_or(0.0, |&(ms, _, _)| ms);
-            // 経過時間からの単純な線形外挿。0除算・未進捗時はeta不明(-1)を返す。
-            let eta_ms = if cell == 0 || cell >= total_cells {
-                -1.0
-            } else {
-                elapsed_ms / f64::from(cell) * f64::from(total_cells - cell)
-            };
-            println!(
-                "progress cell={cell} total={total_cells} elapsed_ms={elapsed_ms:.0} eta_ms={eta_ms:.0}"
-            );
-            let _ = std::io::stdout().flush();
-        });
+        executor.set_progress_sink(make_progress_sink(total_cells));
 
         let req = Req::default();
         run(
@@ -263,21 +328,33 @@ mod app {
         // 汚染された観測(外部からの書き込み・物理入力・フォーカス喪失)は
         // `Executor::press`が表への記録を既に見送っているが、無効化が多発した
         // セッションは表の残りのセルの信頼性も疑わしいため、書き出さない。
-        if executor.driver.session_failed() {
-            print_interference_failure_line(InterferenceFailureArgs {
-                strategy,
-                training_elapsed_ms,
-                training_presses,
-                covered1: executor.table.covered1(),
-                total_cells,
-                decode_errors,
-                contaminated_trials: executor.stats.contaminated_trials,
-                invalidated_trials: executor.driver.session_invalidated_trials(),
-            });
-            return Ok(());
+        if bail_if_session_failed(
+            &executor,
+            strategy,
+            training_elapsed_ms,
+            training_presses,
+            total_cells,
+            decode_errors,
+        ) {
+            return;
         }
 
         let score = run_verification_walk(&mut executor, &mut rng);
+
+        // round2 N1対応: 検証ウォーク中にセッション監視が失敗と判定していたら、
+        // (学習フェーズ直後のチェックだけでは検証ウォーク中の汚染を見逃すため)
+        // ここでも確認し、表を書き出さない。
+        if bail_if_session_failed(
+            &executor,
+            strategy,
+            training_elapsed_ms,
+            training_presses,
+            total_cells,
+            decode_errors,
+        ) {
+            return;
+        }
+
         let (cell_count, write_result) = persist_learned_table(&executor.table);
         print_result_line(ResultLineArgs {
             strategy,
@@ -295,7 +372,6 @@ mod app {
                 "警告: observe_imm失敗によるフォールバックが{decode_errors}回発生。学習表に信頼できない観測が混じっている可能性がある。"
             );
         }
-        Ok(())
     }
 
     /// [`print_interference_failure_line`]の引数。
@@ -334,6 +410,26 @@ mod app {
             args.decode_errors,
             args.contaminated_trials,
             args.invalidated_trials,
+        );
+        let _ = std::io::stdout().flush();
+    }
+
+    /// [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+    /// (opus-adversarial-consult round2 N2対応): `RealImeDriver::new()`の
+    /// quiet window判定が失敗したときの専用result行。他のresult
+    /// status=failure行と同じ形式にし、`awase-settings`側が結果を確実に
+    /// パースできるようにする(N2以前はプロセスが`Err`のまま終了し、result行が
+    /// 一切出ず「結果を送らずに終了しました」としか表示されなかった)。
+    fn print_quiet_window_failure_line(
+        strategy: Strategy,
+        total_cells: u32,
+        err: &windows::core::Error,
+    ) {
+        eprintln!("学習プロセスの初期化に失敗しました: {err}");
+        println!(
+            "result status=failure strategy={} elapsed_ms=0 presses=0 cells=0 total={total_cells} \
+             decode_errors=0 reason=quiet_window",
+            strategy.name(),
         );
         let _ = std::io::stdout().flush();
     }
@@ -463,8 +559,8 @@ mod app {
 }
 
 #[cfg(windows)]
-fn main() -> windows::core::Result<()> {
-    app::run_main()
+fn main() {
+    app::run_main();
 }
 
 #[cfg(not(windows))]

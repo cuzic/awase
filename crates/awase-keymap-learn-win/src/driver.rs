@@ -503,7 +503,14 @@ impl ImeDriver for RealImeDriver {
         // 返す。`Executor::press`（`awase-keymap-learn::exec`）はこのフラグを
         // 見て表への記録を見送る。セッション全体を失敗にすべきかは
         // `session_failed()`で別途問い合わせる。
-        let contaminated = self.check_session_interference();
+        //
+        // round2 N5対応: `delivered=false`（`send_gated`のフォーカスゲートで
+        // 拒否された、または`SendInput`自体が失敗した）のときは判定しない。
+        // 何も送っていない試行にまで`check_session_interference`を呼ぶと、
+        // `Executor::press`の再試行ループ（`max_press_retries`回）のたびに同じ
+        // フォーカス喪失を重複して`session_monitor`へ計上してしまう
+        // （未送達自体は`Anomaly::KeyNotDelivered`として別途数えられている）。
+        let contaminated = delivered && self.check_session_interference();
         PressReport {
             delivered,
             cost_ms: 0.0,
@@ -566,6 +573,13 @@ impl ImeDriver for RealImeDriver {
 
     fn machine_initial_status(&self) -> Status {
         self.initial
+    }
+
+    /// [ADR195-T7](../../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+    /// （round2 N3対応）: セッション監視の無効化上限を超えたら、戦略側の
+    /// `over()`が予算を使い切る前に打ち切れるようにする。
+    fn should_abort(&self) -> bool {
+        self.session_failed()
     }
 }
 

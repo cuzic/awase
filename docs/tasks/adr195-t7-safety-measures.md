@@ -1,12 +1,16 @@
 # ADR-195 T7: 安全対策（段階7）を実装する
 
 状態: **一部実装済み（2026-09-23、PR [#264](https://github.com/cuzic/awase/pull/264)、
-`feat/adr195-t7-safety-measures`）。opus-adversarial-consultによるレビュー
-（round1）で「検出だけで実際には無効化されない」「送信前ゲートが無い」等の
-Major指摘3件を受け、round1で全て解消済み（詳細は各項目参照）。項目2（ユーザー
-入力混入検出とその無効化・セッション失敗結線）を実装・テスト済み。項目1（送信前
-ゲート）も本タスクで実装。項目4は既存実装で既に満たしていることを確認した
-（新規実装は不要）。項目3・5は未着手のまま残る（下記参照）。**
+`feat/adr195-t7-safety-measures`）。opus-adversarial-consultによるレビューを
+2ラウンド実施し、round1のMajor3件・Minor5件、round2のMajor1件（N1: 検証
+ウォーク中の汚染が採点・セッション失敗判定の両方を素通りしていた）・Minor4件
+（N2: quiet window失敗時にresult行が出ない／N3: セッション失敗後も予算いっぱい
+走り続ける／N4: InterferenceTrackerのphysical/focus baseline前進が未テスト／
+N5: ゲート拒否がリトライ分だけ二重計上される）を全て解消済み（詳細は各項目
+参照）。項目2（ユーザー入力混入検出とその無効化・セッション失敗結線、検証
+ウォーク区間も含む）を実装・テスト済み。項目1（送信前ゲート）も本タスクで
+実装。項目4は既存実装で既に満たしていることを確認した（新規実装は不要）。
+項目3・5は未着手のまま残る（下記参照）。**
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
 ## 背景
@@ -88,7 +92,10 @@ Major指摘3件を受け、round1で全て解消済み（詳細は各項目参�
   実際に無効化されるか」は`crates/awase-keymap-learn/src/exec.rs`の
   `contaminated_press_is_not_recorded_but_is_counted`/
   `uncontaminated_press_is_recorded_normally`（`cargo test -p awase-keymap-learn
-  --lib exec`）で確認済み（round1 M1・m2対応）。`RealImeDriver`側のWin32結線は
+  --lib exec`）で確認済み（round1 M1・m2対応、round2 N1対応で`PressInfo`にも
+  `contaminated`が伝わることを追加確認）。セッション失敗時に予算を使い切らず
+  打ち切ることは`strategy::tests::over_respects_driver_should_abort_even_within_budget`
+  （round2 N3対応）で確認済み。`RealImeDriver`側のWin32結線は
   `cargo check --target x86_64-pc-windows-msvc -p awase-keymap-learn-win --bins
   --tests --lib`でコンパイル確認済み（実機での動作確認は未実施——CLAUDE.mdの
   既存注意通り、このサンドボックスではlink.exe不在のため実行不可）。
