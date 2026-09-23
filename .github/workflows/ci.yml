@@ -204,6 +204,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: cargo run -p xtask-adr-evidence -- .
 
   # ADR-162 E2/TH2: docs/adr/index.md の行に対応する本文ファイルが実在するかを
@@ -256,6 +257,14 @@ jobs:
       - uses: taiki-e/install-action@cargo-audit
       - run: cargo audit
 
+  # 2026-09-23: 元は awase.exe ビルド・awase-settings.exe ビルド(LTO込み
+  # settings-release、単独で2分47秒〜3分31秒かかり windows-build job 全体の
+  # 最大の塊だった)・全テスト・パッケージング(zip/MSI)を1ジョブで直列に
+  # 実行しており、windows-latest ランナーの所要時間(6分22秒〜9分15秒)が
+  # そのまま run 全体のボトルネックになっていた(他ジョブは最大でも
+  # dylint の2.3分)。awase-settings.exe のビルドはこのジョブ(awase.exe +
+  # Windows専用テスト)の完了を待つ理由が無いため windows-settings ジョブへ
+  # 分離し、windows-latest ランナー上で並列実行する。
   windows-build:
     runs-on: windows-latest
     steps:
@@ -271,18 +280,6 @@ jobs:
       # 意図しないドリフトをpush/PR毎に検知する(release.ymlと同じ理由)。
       - name: Build awase.exe
         run: cargo build --release --locked -p awase-windows
-
-      # settings-release: release.yml と同じ理由で専用プロファイルを使う
-      # （[profile.settings-release]、Cargo.toml）。
-      - name: Build awase-settings.exe
-        run: cargo build --profile settings-release --locked -p awase-settings
-
-      # awase-settings は今まで実 Windows でテストが一度も走っていなかった
-      # （build のみで test 未実行）。egui::Grid が行内 add_space() で panic する
-      # 不具合（プレビュータブを開くと無言のまま強制終了）が Linux 上の headless
-      # 再現テストでは検出できても実 Windows で再現するかは未検証だったため追加。
-      - name: Run awase-settings tests (Windows)
-        run: cargo nextest run -p awase-settings
 
       - name: Install Japanese IME
         shell: pwsh
@@ -355,6 +352,76 @@ jobs:
         run: cargo nextest run -p awase-windows --test e2e_windows -- --nocapture e2e_sendinput e2e_ime_status_detection
         env:
           RUST_LOG: debug
+
+      # windows-package ジョブがパッケージング用にダウンロードする。
+      - name: Upload awase.exe (for packaging)
+        uses: actions/upload-artifact@v4
+        with:
+          name: awase-exe
+          path: target/release/awase.exe
+          retention-days: 7
+
+  # awase-settings.exe のビルド(settings-release: LTO=true, codegen-units=1、
+  # [profile.settings-release]、Cargo.toml)は windows-build ジョブの
+  # awase.exe ビルド・Windows専用テストと依存関係が無いため並列実行する。
+  windows-settings:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+
+      # settings-release: release.yml と同じ理由で専用プロファイルを使う
+      # （[profile.settings-release]、Cargo.toml）。
+      - name: Build awase-settings.exe
+        run: cargo build --profile settings-release --locked -p awase-settings
+
+      # awase-settings は今まで実 Windows でテストが一度も走っていなかった
+      # （build のみで test 未実行）。egui::Grid が行内 add_space() で panic する
+      # 不具合（プレビュータブを開くと無言のまま強制終了）が Linux 上の headless
+      # 再現テストでは検出できても実 Windows で再現するかは未検証だったため追加。
+      - name: Run awase-settings tests (Windows)
+        run: cargo nextest run -p awase-settings
+
+      # windows-package ジョブがパッケージング用にダウンロードする。
+      - name: Upload awase-settings.exe (for packaging)
+        uses: actions/upload-artifact@v4
+        with:
+          name: awase-settings-exe
+          path: target/settings-release/awase-settings.exe
+          retention-days: 7
+
+  # 2026-09-23: dist/zip/MSI 配布物は release.yml がタグ push 時に自前で
+  # 別途ビルドしており(ci.yml のこのジョブの成果物を消費する自動化は
+  # リポジトリ内に存在しない)、develop への通常 push で毎回 WiX/MSI 込みの
+  # パッケージングを行う必要は無い。PR・push to main・手動起動では
+  # (パッケージング自体のリグレッション検知のため)引き続き実行する。
+  #
+  # if: に独自条件を書くと needs: に対する GitHub Actions 既定の暗黙
+  # success() チェックが上書きされて消える(needs 先のジョブが失敗していても
+  # このジョブは実行されてしまう)。windows-build/windows-settings が失敗した
+  # 場合に本ジョブが download-artifact でアーティファクト無し失敗という
+  # 無関係なエラーを出し、本当の失敗原因を覆い隠さないよう明示的に
+  # success() を条件へ含める(同種の書き方は e2e-ime.yml に前例あり)。
+  windows-package:
+    needs: [windows-build, windows-settings]
+    if: |
+      success() &&
+      (github.event_name != 'push' || github.ref != 'refs/heads/develop')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: awase-exe
+          path: target/release
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: awase-settings-exe
+          path: target/settings-release
 
       - name: Prepare distribution
         shell: bash
