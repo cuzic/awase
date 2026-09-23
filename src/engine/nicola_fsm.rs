@@ -855,13 +855,10 @@ impl NicolaFsm {
     /// `reduce_active_thumb`が親指面のかなを出して親指を消費し、同じ押下がsolo tapとshiftの両方に
     /// 使われる（決定1bと同じ二重使用が2回のディスパッチに分かれる）。
     ///
-    /// 明示config（`*_solo_tap_ime_action`、belief追随/明示actuation）を持つキーも対象にする（ADR-186）:
-    /// タイムアウトで解決した`SetOpen`は非キーボード経路（`execute_from_loop`）で実行され、
-    /// belief書き込み（`handle_engine_set_open`）・明示意図の記録・eisu resetを持つキーボード経路
-    /// （`kp_stage_post_decision`）を通らない。親指の押下が100msを超える通常のタップでは、
-    /// Toggle OFFが古い明示ON意図に対するwarrantで`Unwarranted`になり実行されず、awaseが
-    /// ONを再送していた（実機、2026-09-20）。KeyUpで解決すればキーボード経路を通るので、
-    /// 既存の処理がそのまま働く。
+    /// 明示config（`*_solo_tap_ime_action`）を持つキーは対象外で、従来どおり
+    /// `resolve_explicit_ime_action`によるタイマー解決を使う。ADR-186でKeyUp解決の対象だった
+    /// `delegate_to_open_axis`はADR-191で撤去済み。ADR-192決定3bで追加する専用の強制ON/OFF入力
+    /// だけは、belief書き込みを担うキーボード経路を通すため、別条件でKeyUp解決の対象にする。
     /// 除外: OS修飾キー、`engine_off_solo_repeat_vk`（タイムアウトでソロ連打を数える設計。既定は
     /// `VK_INSERT`なので無変換/変換では通常は当たらないが、無変換/変換に設定するとその親指では
     /// 1cが無効になる）、専用Fnキー・ユーザー明示config（優先順位1・2、送出タイミングを保つ）。
