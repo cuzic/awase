@@ -1,11 +1,15 @@
 # ADR-196 T2: 採否判定（自己検証正答率・内蔵表突き合わせ・再測定）を実装する
 
-状態: **一部実装済み（2026-09-23）**。0(内蔵表への参照経路)・1a(自己検証正答率の採否条件、
-`judgement::judge_self_verification`)・1c(既知3構成判定、`awase-gji-config::known_keymap`)は
-develop統合済み（PR #259: `judgement.rs`・`known_keymap.rs`、PR #263: `diff_against_bundled`）。
-**残作業**: 1b-8(判定書き換えモードのCLI実装)・1b項目7〜9のうち再測定オーケストレーション
-（`BundledDiff::mismatched`を入力に、実際にIMEを再度叩いて確認する部分。`awase-keymap-learn-win`側の
-`ImeDriver`実装が前提、未着手）・1e後半（不具合報告=`bug_report.rs`への添付配線、未着手）。
+状態: **大部分実装済み（2026-09-23）**。0(内蔵表への参照経路)・1a(自己検証正答率の採否条件、
+`judgement::judge_self_verification`)・1c(既知3構成判定、`awase-gji-config::known_keymap`)・
+1e前半（判定を実際の学習フロー`run_main`へ配線、C-1〜C-9対応、下記参照）はdevelop統合済み
+またはPR起票済み（PR #259: `judgement.rs`・`known_keymap.rs`、PR #263: `diff_against_bundled`、
+PR #269: 1e前半の配線 + `known_keymap.rs`の既知構成誤判定バグ修正）。1b-8(判定書き換えモード)は
+PR #265で別途実装中（develop未統合）。
+**残作業**: 1b項目7〜9のうち再測定オーケストレーション（`BundledDiff::mismatched`を入力に、
+実際にIMEを再度叩いて確認する部分。`awase-keymap-learn-win`側の`ImeDriver`実装が前提、未着手。
+`judgement::combine`はPR #269で先に用意済み、`run_main`からは`reconciliation: None`で
+まだ呼ばれていない）・1e後半（不具合報告=`bug_report.rs`への添付配線、未着手）。
 [ADR195-T2](adr195-t2-self-verification.md)（自己検証本体。正答率・縮退率の**計算**はT2の担当、
 本タスクは**採否判定**の担当——役割を分けること）・[ADR195-T3](adr195-t3-persistence.md)
 （永続化、スキーマに本タスクの出力フィールドを追加済みであること）・[ADR196-T3](adr196-t3-bundled-table-versioning.md)
@@ -91,7 +95,34 @@ awase-settings側で比較する案は採らなかった）。`BundledDiff`は�
 - 判定（1a・1b-8）は学習プロセスが学習セッションの末尾（段階2の後、永続化の前）に行う。
   不採用の場合も理由・スコアを表ファイルに書き出す。
 - `awase.exe`の段階4読込は、永続化された判定結果を読むだけで判定をやり直さない。
-- **不具合報告への添付は本タスクに一本化する**（[ADR195-T4](adr195-t4-runtime-loading.md)
+
+**1e前半（判定を実際の学習フローへ配線する部分）【実装済み、PR #269】**: `run_main`が
+自己検証ウォークの`ScoreReport`を計算するだけで`judge_self_verification`を一度も呼ばず、
+`PersistedTable::with_verification`/`with_judgement`も呼んでいなかった（判定ロジック自体は
+実装済みでも実際の学習フローでは一度も実行されていなかった）ギャップを埋めた。
+着手前のopus-adversarial-consult（2026-09-23）で、当初の配線案（awase-settings側でTSFに
+問い合わせてCLI引数で渡す）が事実誤認だったこと（学習プロセスは`RealImeDriver::new`で既に
+COM STA初期化・`ITfThreadMgr::Activate`済みのスレッドを持っており、TSFのアクティブプロファイルは
+スレッド単位で持つため、awase-settings側で問い合わせると学習窓とは別のIMEを測ってしまう）が
+判明し、学習プロセス自身が学習窓のスレッドで同定する設計に変更した。あわせて以下も修正・実装:
+- `known_keymap::classify_known_gji_keymap`が`session_keymap`不在（最多構成）を
+  「既知構成でない」と誤判定していたバグを修正（B-4、developへ既存の別バグとして
+  混入していたものをこのレビューで発見）。
+- 段階4読み手（`validate_and_convert`）が`judgement`を一切読んでいなかった欠落を修正
+  （C-3、判定を書いても効かない状態だった）。
+- セッション失敗判定（外部書き込み・フック断絶）を`RealImeDriver`に追加したが
+  呼び出し元がどこからも参照していなかった欠落を配線（C-1）。
+- 検証ウォークの最小標本数（予測300歩）チェック追加（C-2）・専用乱数化（C-7）。
+- 不採用/要確認の結果は`keymap-learn-table.json`を上書きせず、別ファイル
+  `keymap-learn-last-attempt.json`へ退避する設計にした（**ユーザー判断**、C-9:
+  以前`Accepted`だった良い表を今回の学習失敗で失わないため）。
+
+**1e前半の残作業**: 決定1b項目7〜9の再測定オーケストレーションが実装されるまでの間、
+`run_main`は`judgement::combine`に`reconciliation: None`を渡す形——実質`self_verification`の
+判定をそのまま使う。
+
+**1e後半（不具合報告への添付）**: 別途、**不具合報告への添付は本タスクに一本化する**
+（[ADR195-T4](adr195-t4-runtime-loading.md)
   実装対象5が挙げていた「学習表を使用中か」「フィンガープリント」は
   [ADR196-T5](adr196-t5-revalidation-not-invalidation.md)が計算するが、添付項目として
   まとめるのは本タスク）: 不一致セルの一覧・観測結果（[ADR196-T1](adr196-t1-external-write-observation.md)

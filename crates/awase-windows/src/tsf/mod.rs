@@ -41,6 +41,11 @@ pub mod probe_bridge;
 pub mod send;
 #[cfg(windows)]
 pub(super) mod tip_detector;
+// ADR196-T2「1e前半」(opus-adversarial-consult 2026-09-23 A-5): tip_detectorモジュール自体は
+// pub(super)で閉じているが、学習プロセス(awase-keymap-learn-win)がこの1関数だけを
+// crate外から呼べるようにする。
+#[cfg(windows)]
+pub use tip_detector::query_tip_identity_on_current_sta;
 #[cfg(windows)]
 pub(crate) mod tsf_gate;
 #[cfg(windows)]

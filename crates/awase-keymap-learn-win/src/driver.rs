@@ -15,7 +15,9 @@ use awase_keymap_learn::external_write::{
 };
 use awase_keymap_learn::model::{Disposition, Outcome, Status};
 use awase_keymap_learn::sim::PressReport;
+use awase_windows::state::ime_kind::TipIdentity;
 use awase_windows::state::key_effect_predictor::Conv;
+use awase_windows::tsf::query_tip_identity_on_current_sta;
 
 use crate::hook_monitor::{HookMonitor, SELF_MARKER};
 use crate::ime_notify::ImeNotifyMonitor;
@@ -169,6 +171,14 @@ pub struct RealImeDriver {
     /// （round1 M1対応）: セッション監視の無効化上限を超えたら`true`に固定する。
     /// `&self`のメソッドから更新するため`Cell`。
     session_failed: Cell<bool>,
+    /// ADR196-T2「1e前半」(A-6): `new()`終了時点で同定した学習対象のTIP。
+    /// `judge_self_verification`の`is_ms_ime_native`引数と、決定1c(既知構成判定)の
+    /// 入力になる。TSFのアクティブプロファイルはスレッド単位で持つため、
+    /// awase-settings等の別スレッド/別プロセスでは同定できない(学習窓を持つこの
+    /// スレッドで同定するのが唯一正しい、opus-adversarial-consult 2026-09-23
+    /// A-1/A-2)。学習中にユーザーがIMEを切り替える可能性への対処として、呼び出し側は
+    /// 終了時に[`Self::query_tip_identity`]で再同定し、この値と比較すること。
+    tip_identity: TipIdentity,
 }
 
 impl RealImeDriver {
@@ -226,6 +236,9 @@ impl RealImeDriver {
             session_monitor: Cell::new(SessionMonitor::new(SESSION_INVALIDATION_LIMIT)),
             interference: Cell::new(InterferenceTracker::new()),
             session_failed: Cell::new(false),
+            // 後段で`query_tip_identity_on_current_sta()`の結果に上書きする
+            // プレースホルダ(この値のまま使われることはない)。
+            tip_identity: TipIdentity::Other,
         };
 
         // 決定1b項目3・ADR195-T7項目2: 静かな観測窓（quiet window）——ここまでの
@@ -270,7 +283,40 @@ impl RealImeDriver {
         }
 
         driver.initial = driver.observe_imm()?.status;
+
+        // A-6: 学習対象のTIPを開始時点で同定する。取得できなければ、20分学習した後で
+        // 「何を測ったか分からない」と判明するより、開始直後に失敗させる方が安い
+        // (opus-adversarial-consult 2026-09-23 C-5)。
+        driver.tip_identity = query_tip_identity_on_current_sta().ok_or_else(|| {
+            windows::core::Error::new(
+                windows::core::HRESULT(0x8000_4006u32.cast_signed()),
+                "学習対象のIME(TIP)を同定できなかった",
+            )
+        })?;
+
         Ok(driver)
+    }
+
+    /// 開始時点(`new()`)で同定した学習対象のTIP。
+    #[must_use]
+    pub const fn tip_identity(&self) -> TipIdentity {
+        self.tip_identity
+    }
+
+    /// A-6: 現在の学習対象TIPを再同定する。開始時の[`Self::tip_identity`]との比較は
+    /// 呼び出し側(`run_main`)が行う(セッション中のIME切り替え検出)。
+    #[must_use]
+    pub fn query_tip_identity(&self) -> Option<TipIdentity> {
+        query_tip_identity_on_current_sta()
+    }
+
+    /// ADR196-T2「1e前半」(C-1): フック経路の生存確認(決定1b項目4)。学習プロセス
+    /// 自身が送った自己注入の総数だけ、セッション開始からの累計でフックが観測できて
+    /// いれば`true`。`observation_alive`と違い直近1件ではなく累計を見るため、
+    /// いつ呼んでも意味のある粗粒度の健全性チェックになる。
+    #[must_use]
+    pub fn hook_alive(&self) -> bool {
+        self.hook_monitor.liveness().is_alive()
     }
 
     /// [ADR195-T7](../../../../docs/tasks/adr195-t7-safety-measures.md)項目2

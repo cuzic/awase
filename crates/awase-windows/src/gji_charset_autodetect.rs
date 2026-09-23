@@ -267,10 +267,13 @@ fn classify_vk_in_ime_keys(
 /// 再エクスポートする（`build_confirmed_calibration_entry`のdoc参照）。
 #[cfg(windows)]
 pub use windows_impl::build_confirmed_calibration_entry;
+/// ADR196-T2「1e前半」: 学習プロセス（`awase-keymap-learn-win`、別クレート）が
+/// 開始時・終了時の`config1.db`比較（opus-adversarial-consult 2026-09-23 B-3）と
+/// 既知構成判定に直接呼べるよう`pub`で再エクスポートする。
 #[cfg(windows)]
-pub(crate) use windows_impl::{
-    config1_db_stamp, is_configured_thumb_key, read_config1_db, read_key_effect_keymap,
-};
+pub use windows_impl::{bundled_preset_for_adjudication, read_config1_db, BundledPresetLookup};
+#[cfg(windows)]
+pub(crate) use windows_impl::{config1_db_stamp, is_configured_thumb_key, read_key_effect_keymap};
 
 #[cfg(windows)]
 mod windows_impl {
@@ -305,7 +308,8 @@ mod windows_impl {
     /// GJI未インストール環境を正常系として扱う）。ADR-148（bug report）が
     /// 報告生成時点の内容を都度読み直すためにも使う（Runtime側にキャッシュされた
     /// `GjiRawConfig`は存在しないため）。
-    pub(crate) fn read_config1_db() -> Option<Vec<u8>> {
+    #[must_use]
+    pub fn read_config1_db() -> Option<Vec<u8>> {
         let path = config1_db_path()?;
         std::fs::read(&path).ok()
     }
@@ -336,6 +340,63 @@ mod windows_impl {
             raw.custom_keymap_table,
             &raw.overlay_keymaps,
         )
+    }
+
+    /// [`bundled_preset_for_adjudication`]の戻り値（ADR196-T2「1e前半」決定1c）。
+    ///
+    /// `NotKnown`と`ConfigUnreadable`を区別する——前者は「既知構成でない」という
+    /// 確定した判定結果、後者は「判定できなかった」という不確実性そのものを表す
+    /// （opus-adversarial-consult 2026-09-23 C-5: 「既知でない」と「読めなかった」を
+    /// 同じ値に潰すと、不具合報告で原因を切り分けられなくなる）。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum BundledPresetLookup {
+        /// 内蔵表との突き合わせに使うプリセットが確定した。
+        Known(crate::state::key_effect_predictor::KeymapPreset),
+        /// GJIだが既知構成でない、またはGJI以外（Microsoft IME本体・その他のTIP）で
+        /// 既知構成判定が未実装（T2タスク1c「未着手のうちは既知構成と判定しない」）。
+        NotKnown,
+        /// `TipIdentity::Gji`なのに`config1.db`が読めない・パースできない
+        /// （GJI未インストールの矛盾等、異常系）。
+        ConfigUnreadable,
+    }
+
+    /// ADR196-T2決定1c: 学習対象のIME（学習窓で同定した`TipIdentity`）と、現在の
+    /// `config1.db`（GJIのときのみ）から、内蔵表との突き合わせ（[`super::super::state::
+    /// key_effect_runtime::diff_against_bundled`]）に使うプリセットを決める。
+    ///
+    /// `config1.db`は学習対象がGJIでなくても読めてしまう（GJIがインストールされて
+    /// いれば常に存在するファイル）ため、`TipIdentity::Gji`のときだけ読む
+    /// （opus-adversarial-consult 2026-09-23 B-2: ゲート無しだと、GJIを「ATOKプリセット」に
+    /// 設定したままATOK本体やMicrosoft IME本体で学習したセッションが、誤ってGJIのATOK同梱表と
+    /// 突き合わされ、偽の不一致になる）。
+    #[must_use]
+    pub fn bundled_preset_for_adjudication(
+        tip: crate::state::ime_kind::TipIdentity,
+    ) -> BundledPresetLookup {
+        use crate::state::ime_kind::TipIdentity;
+        use crate::state::key_effect_predictor::KeymapPreset;
+        use awase_gji_config::known_keymap::{classify_known_gji_keymap, KnownGjiKeymap};
+
+        if tip != TipIdentity::Gji {
+            // MsImeNative: T2タスク1cのMicrosoft IME本体側判定はADR196-T5待ち(未着手)。
+            // Other: 内蔵表を持たない構成(ATOK本体・Japanist等)。
+            return BundledPresetLookup::NotKnown;
+        }
+        let Some(bytes) = read_config1_db() else {
+            return BundledPresetLookup::ConfigUnreadable;
+        };
+        let Some(raw) = awase_gji_config::wire::parse_top_level(&bytes) else {
+            return BundledPresetLookup::ConfigUnreadable;
+        };
+        match classify_known_gji_keymap(
+            raw.session_keymap,
+            &raw.overlay_keymaps,
+            raw.custom_keymap_table.as_deref(),
+        ) {
+            Some(KnownGjiKeymap::Atok) => BundledPresetLookup::Known(KeymapPreset::Atok),
+            Some(KnownGjiKeymap::MsIme) => BundledPresetLookup::Known(KeymapPreset::MsIme),
+            None => BundledPresetLookup::NotKnown,
+        }
     }
 
     /// ADR-176（T9a確定結果のconfig.toml永続化、最終配線）:
@@ -389,6 +450,31 @@ mod windows_impl {
             }
             .to_config_entry(),
         )
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::state::ime_kind::TipIdentity;
+
+        /// B-2回帰テスト(opus-adversarial-consult 2026-09-23): GJI以外のTIPでは
+        /// config1.dbを一切読まず(読めても)常に`NotKnown`を返す。`MsImeNative`は
+        /// T2タスク1cのMicrosoft IME本体側判定が未実装のため、`Other`は内蔵表を
+        /// 持たない構成のため、どちらも既知構成の対象外。
+        /// `#[cfg(windows)]`配下(Win32型`TipIdentity`比較を含む)のため、Windows
+        /// ターゲットでのみ実行される(`cargo check --target x86_64-pc-windows-msvc`
+        /// で存在確認、実行はwindows-build CI)。
+        #[test]
+        fn non_gji_tip_never_reads_config1_db() {
+            assert_eq!(
+                bundled_preset_for_adjudication(TipIdentity::MsImeNative),
+                BundledPresetLookup::NotKnown
+            );
+            assert_eq!(
+                bundled_preset_for_adjudication(TipIdentity::Other),
+                BundledPresetLookup::NotKnown
+            );
+        }
     }
 }
 
