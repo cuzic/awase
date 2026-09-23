@@ -193,17 +193,19 @@ mod app {
     /// `run_main`のうち、セッション監視が失敗と判定していないかを確認する
     /// 部分（学習フェーズ直後・検証ウォーク直後の2箇所から呼ぶ、round2 N1
     /// 対応で複製されていたブロックの共通化）。失敗していたら専用result行を
-    /// 出して`true`を返す——呼び出し側はこれを見て早期returnすること。
-    fn bail_if_session_failed(
+    /// 出して`std::process::exit(1)`で終了する（round3 R3対応: 失敗時に
+    /// 終了コードを非0にする。result行を必ずflushしてから終了すること）。
+    /// 失敗していなければ何もせず戻る。
+    fn exit_if_session_failed(
         executor: &Executor<RealImeDriver>,
         strategy: Strategy,
         training_elapsed_ms: f64,
         training_presses: u32,
         total_cells: u32,
         decode_errors: u32,
-    ) -> bool {
+    ) {
         if !executor.driver.session_failed() {
-            return false;
+            return;
         }
         print_interference_failure_line(InterferenceFailureArgs {
             strategy,
@@ -215,22 +217,31 @@ mod app {
             contaminated_trials: executor.stats.contaminated_trials,
             invalidated_trials: executor.driver.session_invalidated_trials(),
         });
-        true
+        std::process::exit(1);
     }
 
     /// round2 N2対応: `RealImeDriver::new()`はquiet window判定(外部からの
     /// 書き込み・物理入力・フォーカス喪失、round1 M1/M3対応で発火条件が
-    /// 広がった)で`Err`を返すことがある。以前は呼び出し元が`?`でそのまま
+    /// 広がった)や、それ以外の初期化失敗(COM初期化・TSF起動・窓作成・
+    /// フック登録等)で`Err`を返すことがある。以前は呼び出し元が`?`でそのまま
     /// プロセスの異常終了に委ねていたため、result行が出ず、awase-settings側の
     /// 較正パネルには「結果を送らずに終了した」としか表示されなかった。他の
-    /// 失敗経路と同じresult行の形式で理由を伝えた上で`None`を返す。
-    fn build_driver(strategy: Strategy) -> Option<RealImeDriver> {
+    /// 失敗経路と同じresult行の形式で理由を伝えた上で、`std::process::exit(1)`
+    /// で終了する(round3 R3対応)。round3 R2対応:
+    /// `RealImeDriver::is_quiet_window_error`で原因を区別し、result行の
+    /// `reason`をquiet window判定によるものとそれ以外とで出し分ける。
+    fn build_driver(strategy: Strategy) -> RealImeDriver {
         match RealImeDriver::new(KEYS.to_vec()) {
-            Ok(driver) => Some(driver),
+            Ok(driver) => driver,
             Err(err) => {
                 let total_cells_estimate = atok_like().states.len() as u32 * KEYS.len() as u32;
-                print_quiet_window_failure_line(strategy, total_cells_estimate, &err);
-                None
+                let reason = if RealImeDriver::is_quiet_window_error(&err) {
+                    "quiet_window"
+                } else {
+                    "init"
+                };
+                print_driver_init_failure_line(strategy, total_cells_estimate, &err, reason);
+                std::process::exit(1);
             }
         }
     }
@@ -265,9 +276,7 @@ mod app {
         } else {
             Strategy::S6
         };
-        let Some(driver) = build_driver(strategy) else {
-            return;
-        };
+        let driver = build_driver(strategy);
         let initial = driver.initial_status();
         let mut model = atok_like();
         for state in &mut model.states {
@@ -328,32 +337,28 @@ mod app {
         // 汚染された観測(外部からの書き込み・物理入力・フォーカス喪失)は
         // `Executor::press`が表への記録を既に見送っているが、無効化が多発した
         // セッションは表の残りのセルの信頼性も疑わしいため、書き出さない。
-        if bail_if_session_failed(
+        exit_if_session_failed(
             &executor,
             strategy,
             training_elapsed_ms,
             training_presses,
             total_cells,
             decode_errors,
-        ) {
-            return;
-        }
+        );
 
         let score = run_verification_walk(&mut executor, &mut rng);
 
         // round2 N1対応: 検証ウォーク中にセッション監視が失敗と判定していたら、
         // (学習フェーズ直後のチェックだけでは検証ウォーク中の汚染を見逃すため)
         // ここでも確認し、表を書き出さない。
-        if bail_if_session_failed(
+        exit_if_session_failed(
             &executor,
             strategy,
             training_elapsed_ms,
             training_presses,
             total_cells,
             decode_errors,
-        ) {
-            return;
-        }
+        );
 
         let (cell_count, write_result) = persist_learned_table(&executor.table);
         print_result_line(ResultLineArgs {
@@ -416,19 +421,22 @@ mod app {
 
     /// [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2
     /// (opus-adversarial-consult round2 N2対応): `RealImeDriver::new()`の
-    /// quiet window判定が失敗したときの専用result行。他のresult
-    /// status=failure行と同じ形式にし、`awase-settings`側が結果を確実に
-    /// パースできるようにする(N2以前はプロセスが`Err`のまま終了し、result行が
-    /// 一切出ず「結果を送らずに終了しました」としか表示されなかった)。
-    fn print_quiet_window_failure_line(
+    /// 初期化が失敗したときの専用result行。他のresult status=failure行と
+    /// 同じ形式にし、`awase-settings`側が結果を確実にパースできるようにする
+    /// (N2以前はプロセスが`Err`のまま終了し、result行が一切出ず「結果を
+    /// 送らずに終了しました」としか表示されなかった)。`reason`は
+    /// quiet window判定によるものかそれ以外かを呼び出し側
+    /// (`build_driver`、round3 R2対応)が区別して渡す。
+    fn print_driver_init_failure_line(
         strategy: Strategy,
         total_cells: u32,
         err: &windows::core::Error,
+        reason: &str,
     ) {
         eprintln!("学習プロセスの初期化に失敗しました: {err}");
         println!(
             "result status=failure strategy={} elapsed_ms=0 presses=0 cells=0 total={total_cells} \
-             decode_errors=0 reason=quiet_window",
+             decode_errors=0 reason={reason}",
             strategy.name(),
         );
         let _ = std::io::stdout().flush();

@@ -68,6 +68,14 @@ const WM_ACTIVATE: u32 = 0x0006;
 const WA_INACTIVE: u16 = 0;
 
 /// [ADR195-T7](../../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+/// （opus-adversarial-consult round3 R2対応）: quiet window判定（外部からの
+/// 書き込み・物理入力・フォーカス喪失の検出）で失敗したときだけに使う専用
+/// HRESULT。`RealImeDriver::new()`の他の失敗（COM初期化・TSF起動・窓作成・
+/// フック登録等）と区別できるよう、[`is_quiet_window_error`]で判定に使う。
+const QUIET_WINDOW_HRESULT: windows::core::HRESULT =
+    windows::core::HRESULT(0x8000_4004u32.cast_signed());
+
+/// [ADR195-T7](../../../../docs/tasks/adr195-t7-safety-measures.md)項目2
 /// （opus-adversarial-consult round1 M3対応）: 学習窓（`self.window`）が
 /// 非アクティブ化された累計回数。`focus_intact()`の1点サンプリングでは
 /// 測定区間の途中でフォーカスが外れて戻ったケース（通知トーストの一瞬の
@@ -238,13 +246,24 @@ impl RealImeDriver {
                 verdict.focus_lost,
             );
             return Err(windows::core::Error::new(
-                windows::core::HRESULT(0x8000_4004u32.cast_signed()),
+                QUIET_WINDOW_HRESULT,
                 "quiet window中に外部からの書き込み・物理入力・フォーカス喪失のいずれかを検出した(A'が崩れている疑い)",
             ));
         }
 
         driver.initial = driver.observe_imm()?.status;
         Ok(driver)
+    }
+
+    /// [ADR195-T7](../../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+    /// （round3 R2対応）: `RealImeDriver::new()`が返す`Err`が、quiet window
+    /// 判定によるものかを判定する。それ以外（COM初期化・TSF起動・窓作成・
+    /// フック登録失敗等）の初期化失敗と区別するため、呼び出し側
+    /// （`awase-keymap-learn-win::main`）が result行の`reason`を出し分けるのに
+    /// 使う。
+    #[must_use]
+    pub fn is_quiet_window_error(err: &windows::core::Error) -> bool {
+        err.code() == QUIET_WINDOW_HRESULT
     }
 
     /// メッセージを回しながら待つ（`self.notify_monitor`に観測させる）。
@@ -437,6 +456,14 @@ impl RealImeDriver {
             eprintln!(
                 "[awase-keymap-learn-win] 送信前ゲート: フォーカスが学習窓に無いためVK 0x{vk:02X}の送信を中止した"
             );
+            // round3 R1対応（N5が生んだ退行の修正）: フォーカスを失うと、以降の
+            // 送信はすべてこのゲートで拒否され続け、`delivered=false`のため
+            // `check_session_interference`は一度も呼ばれない（round2 N5対応）。
+            // 「送信前ゲートで拒否された」という事実そのものを、無効化件数
+            // カウンタ（`session_monitor`）を経由せず直接セッション失敗として
+            // 記録する——N5が再発しないよう、拒否のたびに加算するカウンタでは
+            // なく、一度立てたら戻らないフラグにする。
+            self.session_failed.set(true);
             return false;
         }
         self.mark_self_injection(1);
@@ -561,8 +588,19 @@ impl ImeDriver for RealImeDriver {
             }
         }
         if level == ResetLevel::Hard {
-            let _ = unsafe { SetForegroundWindow(self.window) };
-            let _ = unsafe { SetFocus(Some(self.edit)) };
+            // round3 R1対応（項目3「他アプリへの副作用を作らない」）:
+            // `SetForegroundWindow(self.window)`は他プロセスが前面にいる
+            // ときにそのフォアグラウンドを奪い返してしまう
+            // （ユーザーが別アプリを操作中でも学習窓へ強制的にキーが
+            // 届くようになる）。自分の窓が既に前面のとき（フォーカスが
+            // `self.window`自身等、`self.edit`以外にずれているだけのとき）
+            // に限り`SetFocus(edit)`で戻す——他プロセスからの奪い返しは
+            // 行わない。奪い返せない場合、以降の送信は`send_gated`が拒否し
+            // 続け、`session_failed`が立ってセッションは終了する
+            // （round3 R1対応）。
+            if (unsafe { GetForegroundWindow() }) == self.window {
+                let _ = unsafe { SetFocus(Some(self.edit)) };
+            }
         }
         self.settle().status == self.initial
     }
