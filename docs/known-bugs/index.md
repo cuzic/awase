@@ -163,6 +163,7 @@
 | [BUG-159](BUG-159.md) | GJIで英数のまま半角/全角を閉→開すると、awaseが入力モードを英数→ひらがなに直し、Engineだけ ON になる(読めない窓) |
 | [BUG-160](BUG-160.md) | Shift+無変換/変換で`ModeKeyConfig::Passthrough`を設定したユーザーには即座の素通しが効かず、NICOLAのチョード保留(PendingThumb)に入ってしまう |
 | [BUG-161](BUG-161.md) | 旧UI「IMEオン/オフ」トグル(コード`CE`)は無変換/変換キーの実IME挙動を変えない、という2026-09-07記述の誤りが実機検証(7パターン)で判明 |
+| [BUG-162](BUG-162.md) | develop最新(2026-09-23)でADR-186撤去実験の`baseline`(期待PASS)がFAILする(`outcome=Unwarranted`が2件、未修正) |
 
 ## その他の資料
 
