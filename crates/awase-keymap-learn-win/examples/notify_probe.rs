@@ -20,7 +20,7 @@ fn main() {
     };
     let baseline = driver.diag_notify_external_count();
     println!("BASELINE notify_external={baseline}");
-    for key in [2usize, 5, 2, 5, 2, 5] {
+    for key in [2usize, 5].into_iter().cycle().take(40) {
         let report = driver.press(key);
         println!(
             "PRESS key_idx={key} delivered={} notify_external={} notify_since_mark={}",
