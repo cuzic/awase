@@ -29,10 +29,15 @@ summary: |-
   省略用途）は、module docが「ON→OFF方向・S1key〜SEkeyの重ね合わせ・修飾子付きキーは未検証/未解読」
   と明記しているため本ADRの非目的のまま。
 status: |-
-  草案rev2(2026-09-23)。opus-adversarial-consult round1完了（Blocker2件・Must-fix5件・
-  Should-fix7件・Minor2件、`197-opus-review-round1.md`）——B1(警告対象の実機未確認)はCI実機
-  （GitHub Actions windows-latest、`ci/e2e-scenarios`）で裏取り中。round1の他の指摘（M1〜M5・
-  S1〜S7）は未反映。決定4/5はADR-196マージを受けて全面改訂（旧内容は撤回）。
+  草案rev3(2026-09-23)。**Blocker——決定1の前提が実機で確認できず、未着手のまま保留中。**
+  opus-adversarial-consult round1完了（Blocker2件・Must-fix5件・Should-fix7件・Minor2件、
+  `197-opus-review-round1.md`）——B1(無変換キーでCEトグルが実際にIME ONを引き起こすかは
+  ADR-148に確認記録が無い)の裏取りをGitHub Actions CI（windows-latest、`ci/e2e-scenarios`）で
+  4パターン試したが、**いずれも無変換キーはIME OFFのまま変化せず、CEトグルの効果を一度も
+  再現できなかった**（詳細は「残された未検証事項」節の比較表）。決定1（実行時警告）は
+  この前提が実機で確認できるまで実装を保留する。round1の他の指摘（M1〜M5・S1〜S7）も未反映。
+  決定4/5はADR-196マージを受けて全面改訂（旧内容は撤回）、こちらは決定1の保留と独立に
+  進められる。
 related_adr:
   - "ADR-148"
   - "ADR-092"
@@ -181,6 +186,11 @@ awaseは気づけない。これが本ADRの動機。
 
 ## 決定
 
+**決定1〜3は実装保留中。** 「残された未検証事項」節のCI実機検証（4パターン）が、
+決定1の前提（旧UIのIMEオン/オフトグル割当てが無変換キーの実IME挙動を実際に変える）を
+一度も再現できなかった。以下は前提が確認できた場合の設計として残すが、round1レビュー
+M1〜M5・S1〜S7の反映も含め、実装着手前に別途、実機（物理キー押下）での確認が要る。
+
 ### 決定1: `msime_legacy_keymap`に`check_and_warn`相当を新設し、既存の新UI警告と並べて呼ぶ
 
 `crates/awase-windows/src/runtime/message_handlers.rs:939-943`の
@@ -291,14 +301,55 @@ f03c-411b-9ce2-aa23e1171e36}\NoTsf3Override2`、dragonflyg4実機で`1`＝互換
 
 ## 残された未検証事項
 
-- **`Tsf3Override\...\NoTsf3Override2`が0（互換モードOFF）でも`keystyle`/`StyleList`の
-  割当てがMS-IME内部で実際に有効化されるか**は未検証。もし「互換モードOFFなら旧UIの設定は
-  一切効かない」ことが実機で確認できれば、決定1の警告条件に`NoTsf3Override2==1`のANDを
-  足すことでfalse positiveをさらに減らせる可能性がある（ただしその場合も、読めない・
-  未検出時は安全側〈警告する側〉に倒すこと）。実装前にこの点を実機A/B（互換モードOFFの状態で
-  `keystyle=Custom`のまま無変換キー単独タップを試す）で確認することを推奨する。
-- ON→OFF方向（2〜6列目）の実効性は本ADRでも未確認のまま。決定1の警告文言はこれを明記して
-  対応し、確認が取れ次第、文言と`key_effect_predictor`統合の要否を再検討する別ADRを起票する。
+### 決定1の前提そのものが実機で確認できていない（Blocker、2026-09-23 CI実機検証）
+
+round1レビューB1（`197-opus-review-round1.md`）は、ADR-148の実機確認が「変換キーを押すと
+IME ONになった」ことしか記録しておらず、**それは既定のNATURAL挙動（変換キーは元々OFF→ONに
+働く）と区別できない**、無変換キー（唯一区別できるはずのケース）は一度も実機で確認されて
+いない、と指摘した。この裏取りのため、GitHub Actions CI（windows-latest、`ci/e2e-ime.yml`に
+`sc-legacy-natural-keystyle`/`sc-legacy-custom-keystyle`を追加、`ci/e2e-scenarios`ブランチ）
+で`ime_key_matrix_spike.exe --seq=1D,1C --msime`（無変換→変換の順で単独タップ、awaseなし）を
+4パターン試した:
+
+| # | 設定 | `keystyle` | `StyleList\Custom\key` | `NoTsf3Override2` | 無変換 open | 変換 open |
+|---|------|-----------|------------------------|--------------------|--------------|-----------|
+| 1 | NATURAL基準 | NATURAL | (既定、未設定) | 未設定（既定=OFF相当） | 0（OFF） | 1（ON） |
+| 2 | Custom・最小テーブル | Custom | 無変換/変換の2レコードのみ（`CE CD CD CD CD CD`） | 未設定（既定=OFF相当） | 0（OFF） | 1（ON） |
+| 3 | Custom・最小テーブル・互換モードON | Custom | 同上 | `1`（明示的にON） | 0（OFF） | 1（ON） |
+| 4 | Custom・**dragonflyg4実機の完全な84レコード** ・互換モードON | Custom | dragonflyg4の`reg export`から取得した生バイト列そのまま（2184バイト、本体`key`のみ） | `1`（明示的にON） | 0（OFF） | 1（ON） |
+
+**4パターンすべてで無変換キーはIME OFFのまま変化しなかった。** `StyleList\Custom\key`の
+内容（最小2レコード vs 実機の完全な84レコード）・互換モードのON/OFF・レジストリ値の存在
+確認（各実行のログで`keystyle=Custom key_len=2184 NoTsf3Override2=1`等を確認済み）のいずれを
+変えても結果は同じだった。したがって:
+
+- **round1のB1が指摘した「無変換キーでCEトグルが実際に効くか」という前提は、依然として
+  一度も肯定的に確認できていない。** ADR-148の元の実機確認（2026-09-07 dragonflyg4、
+  `msime_legacy_keymap.rs`のmodule doc「直接入力中に変換キーを単独で押すとIME ONになった」）
+  自体も、B1の指摘どおり既定挙動と区別できない観測だった可能性が高い。
+- 考えられる説明（いずれも未検証）: (a) `imjpuexc.exe`等の実際の設定ツールを経由せず
+  レジストリを直接書き換えた場合、MS-IMEがそれをキャッシュ済み状態と食い違うとみなし
+  無視している、(b) GitHub-hosted windows-latestランナーのMS-IME実装（Windows Server系
+  イメージ）がdragonflyg4（通常のWindows）と挙動が違う、(c) `ctfmon.exe`の再起動だけでは
+  不十分で、OS再起動や別のトリガが要る、(d) module docの元の観測自体が誤りだった。
+- **本ADRの結論**: 決定1〜3（実行時警告）の実装は、この前提が実機（できれば物理キー押下、
+  round1が要求する条件）で肯定的に確認できるまで保留する。CIでの再現が4回とも失敗した以上、
+  次に試すなら実際の物理キーボードでの押下（dragonflyg4、awase停止、`keystyle=Custom`
+  ＋dragonflyg4自身の元のテーブル、互換モードON〈現状のまま〉）が最後の手段になる。
+
+CI実行ログ:
+[35833569070](https://github.com/cuzic/awase/actions/runs/35833569070)（NATURAL基準）、
+[35834349983](https://github.com/cuzic/awase/actions/runs/35834349983)（Custom最小・互換
+モード未設定）、[35835373786](https://github.com/cuzic/awase/actions/runs/35835373786)
+（Custom最小・互換モードON）、
+[35836616084](https://github.com/cuzic/awase/actions/runs/35836616084)（Custom完全版・
+互換モードON）。ワークフロー変更は一時ブランチ（`tmp/adr197-legacy-verify-fix`,
+`-fix2`, `-fix3`）で検証し、developにはマージしていない（検証専用の使い捨て）。
+
+### その他の未検証事項
+
+- ON→OFF方向（2〜6列目）の実効性は本ADRでも未確認のまま（上記の理由でON方向自体も
+  未確認に後退したため、この項目はより広い前提の一部になった）。
 - **決定4の`read_legacy_compat_mode_enabled()`をADR196-T2/T5側が実際にどう消費するか**
   （フィンガープリントの4値目としてそのまま使うのか、別の形に変換するのか）は、
   [ADR196-T5](../tasks/adr196-t5-revalidation-not-invalidation.md)側の実装時に確定する
