@@ -253,6 +253,14 @@ pub fn describe_bundled_cell(pc: &PersistedCell, preset: KeymapPreset) -> Option
     ))
 }
 
+/// 押下後の変換モードが**矛盾**するか。`None`は「不明（追跡を捨てた）」であって
+/// 「変換モードが変わらない」等の主張ではないため、片方でも`None`なら矛盾とみなさない
+/// （実測: GJI+ATOKで閉→開のセルは、同梱表が`after_conv: None`、学習側が実測モード`Some(x)`を
+/// 持ち、旧・単純な`==`比較だと10セルが偽の不一致になった）。
+fn after_conv_conflicts(learned: Option<Conv>, bundled: Option<Conv>) -> bool {
+    matches!((learned, bundled), (Some(l), Some(b)) if l != b)
+}
+
 /// [`diff_against_bundled`]の本体。テストで同梱表全体ではなく小さな合成`Cell`列を渡せるように
 /// 分離している（`mismatch_ratio`と同じ理由）。
 fn diff_against_bundled_cells(persisted: &[PersistedCell], bundled: &[Cell]) -> BundledDiff {
@@ -276,7 +284,7 @@ fn diff_against_bundled_cells(persisted: &[PersistedCell], bundled: &[Cell]) -> 
             Some((idx, b)) => {
                 matched_bundled[idx] = true;
                 if converted.after_open() == b.after_open()
-                    && converted.after_conv() == b.after_conv()
+                    && !after_conv_conflicts(converted.after_conv(), b.after_conv())
                     && converted.disp() == b.disp()
                 {
                     diff.matched += 1;
@@ -671,6 +679,45 @@ mod tests {
             Some(Conv::C10),
             Disp::Kept,
         )]
+    }
+
+    /// 閉→開のセル(同梱表は`after_conv: None`＝不明)。学習側は実測モード(`Some`)を持つが、
+    /// 「不明」との違いは矛盾ではない(実機CI実測、run 35933929391の偽不一致10セルの型)。
+    fn none_after_conv_bundled_table() -> Vec<Cell> {
+        vec![make_cell(
+            false,
+            None,
+            Stage::None,
+            TableKey::Hiragana,
+            true,
+            None,
+            Disp::None,
+        )]
+    }
+
+    #[test]
+    fn diff_against_bundled_treats_unknown_bundled_after_conv_as_no_claim() {
+        let mut cells = vec![pcell(false, 0x00, false, 0xF2, Some((true, 0x09)))];
+        cells[0].prediction.as_mut().unwrap().disp = Disposition::None;
+        let diff = diff_against_bundled_cells(&cells, &none_after_conv_bundled_table());
+        assert_eq!(diff.matched, 1, "{diff:?}");
+        assert!(diff.mismatched.is_empty());
+    }
+
+    #[test]
+    fn diff_against_bundled_still_flags_after_open_difference_when_after_conv_unknown() {
+        let mut cells = vec![pcell(false, 0x00, false, 0xF2, Some((false, 0x00)))];
+        cells[0].prediction.as_mut().unwrap().disp = Disposition::None;
+        let diff = diff_against_bundled_cells(&cells, &none_after_conv_bundled_table());
+        assert_eq!(diff.mismatched.len(), 1);
+    }
+
+    #[test]
+    fn diff_against_bundled_flags_conflicting_known_after_conv() {
+        // 同梱表 after_conv=Some(C10)、学習側は別モード(0x09→C19)へ遷移: 本物の矛盾。
+        let cells = vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x09)))];
+        let diff = diff_against_bundled_cells(&cells, &one_cell_bundled_table());
+        assert_eq!(diff.mismatched.len(), 1);
     }
 
     #[test]
