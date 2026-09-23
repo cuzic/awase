@@ -1,0 +1,21 @@
+# ADR-194ハーネス破棄の再挑戦条件検証(2026-09-22)用の一時スコープ設定。
+#
+# 対象は「純粋な決定関数を、シミュレーションハーネスなしの決定表的な直接
+# 単体テストでどれだけ網羅できているか」を測りたい4ファイルのみ:
+#   - state/force_guard.rs   (should_drop_intents_for_mode_key_pass 等、BUG-158)
+#   - state/mode_key_pass.rs (ModeKeyPassLatch、ADR-194決定1で抽出)
+#   - state/drift.rs         (check_drift_correction、ADR-194決定1で抽出)
+#   - state/refresh_plan.rs  (next_refresh_ms/decide_imm_capability、同上)
+#
+# いずれもfeat/ime-sim-harness限定(develop未マージ)のファイル。
+# 役目(検証)が終わったらこのファイルとワークフローごと削除してよい。
+examine_globs = [
+    "crates/awase-windows/src/state/force_guard.rs",
+    "crates/awase-windows/src/state/mode_key_pass.rs",
+    "crates/awase-windows/src/state/drift.rs",
+    "crates/awase-windows/src/state/refresh_plan.rs",
+]
+
+# ビルドが数十秒かかることがあるため、自動タイムアウト推定が短すぎて
+# false MISSED になるのを防ぐ下限(.cargo/mutants.tomlと同じ理由)。
+minimum_test_timeout = 30

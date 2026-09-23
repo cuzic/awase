@@ -1,0 +1,43 @@
+name: Mutants (ADR-194 retry-condition scope investigation)
+
+# ADR-194(IMEシミュレーションハーネス)破棄の再挑戦条件検証(2026-09-22)専用の
+# 一時ワークフロー。ci.ymlのmutants-awase-windowsジョブと同じくGitHub-hosted
+# ubuntu-latestで動くが、対象を.cargo/mutants-bug158-scope.tomlの4ファイル
+# (force_guard.rs/mode_key_pass.rs/drift.rs/refresh_plan.rs)に絞ることで、
+# サンドボックス上でcargo-mutantsを直接走らせずに済ませる。
+#
+# GitHubのデフォルトブランチ(develop)にファイルが無いとworkflow_dispatchで
+# 起動できない制約があるため、このファイル自体はdevelopに置く。ただし
+# mode_key_pass.rs/drift.rs/refresh_plan.rsはdevelop未マージ(feat/ime-sim-harness
+# 限定)なので、実行時は必ず `gh workflow run mutants-scope-investigation.yml
+# --ref feat/ime-sim-harness` のように対象ブランチをrefで指定すること
+# (actions/checkout@v4はrefを省略するとgithub.ref、すなわちdispatch時の
+# --refをそのまま使う)。ci.ymlは変更しない。検証が終わったらこのファイルと
+# .cargo/mutants-bug158-scope.tomlをdevelopから削除してよい。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  mutants-bug158-scope:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-mutants
+      - name: Run cargo-mutants (ADR-194 scope: 4 files)
+        run: cargo mutants -p awase-windows --config .cargo/mutants-bug158-scope.toml --no-shuffle
+      - name: Upload mutants report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report-bug158-scope
+          path: mutants.out/
