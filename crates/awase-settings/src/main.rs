@@ -553,6 +553,12 @@ struct SettingsApp {
     /// 学習プロセスの最終結果、または起動失敗のエラーメッセージ
     /// （どちらもここに文字列化して保持、`keymap_learn_rx`が`None`になった後も残す）。
     keymap_learn_status: Option<String>,
+    /// 起動中の学習子プロセスのハンドル（`kill()`/`wait()`用）。
+    /// 標準出力を読む別スレッドと共有するため`Arc<Mutex<_>>`で持つ
+    /// （読み取りループ自体は`ChildStdout`を直接読むのでロックを取らず進む、
+    /// `kill()`/`wait()`のときだけ短時間ロックする）。UIの「キャンセル」ボタンと
+    /// `on_exit`（ウィンドウを閉じたとき）の両方から`kill()`できるようにするための保持。
+    keymap_learn_child: Option<std::sync::Arc<std::sync::Mutex<std::process::Child>>>,
 }
 
 #[derive(Clone)]
@@ -730,6 +736,7 @@ impl SettingsApp {
             keymap_learn_rx: None,
             keymap_learn_progress: None,
             keymap_learn_status: None,
+            keymap_learn_child: None,
         };
         app.recompute_diagnostics();
         app
@@ -1016,28 +1023,56 @@ impl SettingsApp {
     fn start_keymap_learning(&mut self) {
         let exe_path = awase::paths::resolve_relative_to_exe("awase-keymap-learn-win.exe");
         let (tx, rx) = std::sync::mpsc::channel();
+        let mut child = match keymap_learn_launcher::spawn_learning_process(&exe_path) {
+            Ok(child) => child,
+            Err(e) => {
+                self.keymap_learn_status = Some(format!(
+                    "{} を起動できませんでした（{e}）",
+                    exe_path.display()
+                ));
+                return;
+            }
+        };
+        let stdout = match keymap_learn_launcher::take_learning_stdout(&mut child) {
+            Ok(stdout) => stdout,
+            Err(e) => {
+                self.keymap_learn_status = Some(format!("学習プロセスの標準出力を取得できませんでした（{e}）"));
+                return;
+            }
+        };
+        // Arc<Mutex<Child>>で共有し、UIの「キャンセル」ボタン・on_exit・読み取りスレッドの
+        // いずれからも同じChildをkill()/wait()できるようにする(標準出力は上で取り出し済みなので
+        // 読み取りループ自体はこのロックを取らない)。
+        let child = std::sync::Arc::new(std::sync::Mutex::new(child));
+        self.keymap_learn_child = Some(std::sync::Arc::clone(&child));
         std::thread::spawn(move || {
-            let mut child = match keymap_learn_launcher::spawn_learning_process(&exe_path) {
-                Ok(child) => child,
-                Err(e) => {
-                    let _ = tx.send(Err(format!(
-                        "{} を起動できませんでした（{e}）",
-                        exe_path.display()
-                    )));
-                    return;
-                }
-            };
-            let result = keymap_learn_launcher::drain_learning_output(&mut child, |line| {
+            let result = keymap_learn_launcher::drain_learning_output(stdout, |line| {
                 let _ = tx.send(Ok(line));
             });
             if let Err(e) = result {
                 let _ = tx.send(Err(format!("学習プロセスの出力読み取りに失敗（{e}）")));
             }
-            let _ = child.wait();
+            if let Ok(mut child) = child.lock() {
+                let _ = child.wait();
+            }
         });
         self.keymap_learn_rx = Some(rx);
         self.keymap_learn_progress = None;
         self.keymap_learn_status = Some("起動中…".to_string());
+    }
+
+    /// 実行中の学習プロセスを強制終了する（UIの「キャンセル」ボタン、および
+    /// `on_exit`〈ウィンドウを閉じたとき〉から呼ぶ）。実キー注入を行う子プロセスを
+    /// 止める手段がUIに無いと、ウィンドウを閉じても・ハングしても
+    /// タスクマネージャ頼みになってしまうため。
+    fn cancel_keymap_learning(&mut self) {
+        if let Some(child) = self.keymap_learn_child.take()
+            && let Ok(mut child) = child.lock()
+        {
+            let _ = child.kill();
+        }
+        self.keymap_learn_rx = None;
+        self.keymap_learn_status = Some("キャンセルしました。".to_string());
     }
 
     /// `start_keymap_learning()` が起動した学習プロセスの標準出力を毎フレーム
@@ -1065,11 +1100,13 @@ impl SettingsApp {
                         .to_string(),
                     );
                     self.keymap_learn_rx = None;
+                    self.keymap_learn_child = None;
                     break;
                 }
                 Ok(Err(e)) => {
                     self.keymap_learn_status = Some(e);
                     self.keymap_learn_rx = None;
+                    self.keymap_learn_child = None;
                     break;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -1077,11 +1114,14 @@ impl SettingsApp {
                     break;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    if self.keymap_learn_status.as_deref() == Some("起動中…") {
-                        self.keymap_learn_status =
-                            Some("学習プロセスが結果を送らずに終了しました。".to_string());
-                    }
+                    // 進捗を何行か報告した後でクラッシュした場合でも(「起動中…」からは
+                    // 既に進んでいても)、resultを送らずに終了したことを必ず伝える。
+                    // ここを「起動中…」のときだけに限定すると、進捗報告後にクラッシュした
+                    // ケースでステータスが「測定中…」のまま固まって見えてしまう。
+                    self.keymap_learn_status =
+                        Some("学習プロセスが結果を送らずに終了しました。".to_string());
                     self.keymap_learn_rx = None;
+                    self.keymap_learn_child = None;
                     break;
                 }
             }
@@ -3171,12 +3211,22 @@ impl SettingsApp {
             ui.add_space(8.0);
 
             let running = self.keymap_learn_rx.is_some();
-            if ui
-                .add_enabled(!running, egui::Button::new("学習を開始"))
-                .clicked()
-            {
-                self.start_keymap_learning();
-            }
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(!running, egui::Button::new("学習を開始"))
+                    .clicked()
+                {
+                    self.start_keymap_learning();
+                }
+                // 実キー注入を行う子プロセスなので、閉じる/ハングしたときにタスクマネージャ
+                // 頼みにならないよう、UIから止める手段を必ず用意する。
+                if ui
+                    .add_enabled(running, egui::Button::new("キャンセル"))
+                    .clicked()
+                {
+                    self.cancel_keymap_learning();
+                }
+            });
 
             if let Some(p) = self.keymap_learn_progress {
                 ui.add_space(4.0);
@@ -4154,6 +4204,15 @@ impl eframe::App for SettingsApp {
                     Tab::Advanced => self.tab_advanced(ui),
                 });
         });
+    }
+
+    /// ウィンドウを閉じるとき、学習ウィザード(ADR-195段階6)の子プロセスが実行中なら
+    /// 強制終了する。実キー注入を行う子プロセスがウィンドウを閉じた後もタスク
+    /// マネージャ頼みで動き続けることを防ぐ。
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if self.keymap_learn_child.is_some() {
+            self.cancel_keymap_learning();
+        }
     }
 }
 
@@ -6196,6 +6255,7 @@ mod layout_tab_repro {
             keymap_learn_rx: None,
             keymap_learn_progress: None,
             keymap_learn_status: None,
+            keymap_learn_child: None,
         }
     }
 

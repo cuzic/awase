@@ -12,7 +12,7 @@
 
 use std::io::{self, BufRead, BufReader};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
 
 /// 学習プロセスからの1行分の進捗。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -87,23 +87,39 @@ pub fn spawn_learning_process(exe_path: &Path) -> io::Result<Child> {
         .spawn()
 }
 
-/// 起動した子プロセスの標準出力を1行ずつ読み、パースできた行だけ`on_line`へ
-/// 渡す。子プロセスの終了(EOF)まで呼び出しスレッドをブロックするので、
-/// 呼び出し側はUIスレッドとは別スレッドで呼ぶこと。
-pub fn drain_learning_output(
-    child: &mut Child,
-    mut on_line: impl FnMut(LearnLine),
-) -> io::Result<()> {
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("子プロセスのstdoutが取得できない(既に取得済み?)"))?;
+/// 子プロセスの標準出力を1行ずつ読み、パースできた行だけ`on_line`へ渡す。
+/// 子プロセスの終了(EOF)まで呼び出しスレッドをブロックするので、呼び出し側は
+/// UIスレッドとは別スレッドで呼ぶこと。
+///
+/// `Child`本体ではなく`ChildStdout`(`child.stdout.take()`した後の値)を受け取る
+/// ことで、呼び出し側は読み取りをブロックしているあいだも`Child`本体
+/// (`kill()`/`wait()`用)を別スレッド(UIのキャンセル操作)と共有できる。
+///
+/// 1行のデコードに失敗しても(非UTF-8等)、その行だけ読み飛ばして読み取りを
+/// 継続する——子プロセスの出力全体を1行の乱れだけで諦めない。それ以外の
+/// I/Oエラー(パイプの異常切断等)は呼び出し側へ伝える。
+pub fn drain_learning_output(stdout: ChildStdout, mut on_line: impl FnMut(LearnLine)) -> io::Result<()> {
     for line in BufReader::new(stdout).lines() {
-        if let Some(parsed) = parse_learn_line(&line?) {
-            on_line(parsed);
+        match line {
+            Ok(line) => {
+                if let Some(parsed) = parse_learn_line(&line) {
+                    on_line(parsed);
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => {}
+            Err(e) => return Err(e),
         }
     }
     Ok(())
+}
+
+/// 起動済みの子プロセスから、`drain_learning_output`が読める`ChildStdout`を
+/// 取り出す。標準出力がパイプ済み(`spawn_learning_process`)でなければエラー。
+pub fn take_learning_stdout(child: &mut Child) -> io::Result<ChildStdout> {
+    child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("子プロセスのstdoutが取得できない(既に取得済み?)"))
 }
 
 /// ADR-195段階6決定5: 検出したキーマップ構成が同梱の3種(ATOK/
