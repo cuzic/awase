@@ -1969,6 +1969,25 @@ impl Runtime {
         let Some(keymap) = keymap else {
             return;
         };
+        // ADR-195段階4: 学習済み表（T3の永続化データ）が検証を通れば同梱表の代わりに使う。
+        // `KeyEffectPredicted`（belief更新）にのみ使い、actuationの判定には一切使わない。
+        let override_table = self
+            .use_learned_keymap_table
+            .then(|| {
+                let preset = keymap.preset();
+                let check_against_bundled = keymap.is_unmodified_bundled_config();
+                self.key_effect_runtime_table.get(
+                    now_ms,
+                    crate::state::key_effect_runtime::table_file_stamp,
+                    || {
+                        crate::state::key_effect_runtime::load_and_log(
+                            preset,
+                            check_against_bundled,
+                        )
+                    },
+                )
+            })
+            .flatten();
         let ime = &self.platform_state.ime;
         let input = PredictInput {
             open: ime.effective_open(),
@@ -1977,7 +1996,7 @@ impl Runtime {
             composing: crate::tsf::observer::ime_composition_active_now(),
             track: ime.model().key_track(),
         };
-        let Some(prediction) = keymap.predict(vk.0, &input) else {
+        let Some(prediction) = keymap.predict_with_override(vk.0, &input, override_table) else {
             tracing::debug!(
                 "[key-effect-predict] vk=0x{:02X} open={} composing={}: no prediction",
                 vk.0,
