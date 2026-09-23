@@ -159,6 +159,31 @@ const fn gji_direct_already_matches(
     matches!(shadow_on, Some(v) if v == open) && (open || !candidate_was_seen)
 }
 
+/// `runtime/open_chain.rs::imm_cross_write`の`ActuationOutcome::Failed`分岐の
+/// already-matched判定。ImmCross の書き込みは `Failed` と報告されたが、直後に
+/// `read_ime_state_fast()` で再読み取りした実 IME 状態（`actual`、`None`=未知）が
+/// 既に desired（`open`）と一致しているかどうかを判定する。
+///
+/// 上の`gji_direct_already_matches`が shadow（ローカルにキャッシュした信念）を
+/// 見るのに対し、こちらは Win32 の直接再読み取り値を見る点が異なる
+/// （`fallback_write`のBUG-113追補コメントが明記するとおり、shadowベースの
+/// already-matched skip はここには適用できない別物）。`None`（読み取り不能）は
+/// 「一致していると確認できない」ため常に`false`（フォールバックへ進む）。
+///
+/// `docs/tasks/actuation-confluence-already-matched-gap.md`: cargo-mutants で
+/// この判定の`==`→`!=`反転が既存テスト（golden/architecture_guard/
+/// journal_replay等）のどれにも検出されないことが判明した分岐。Win32呼び出し
+/// （`read_ime_state_fast`自体）から切り離した純粋関数としてここへ抽出し、
+/// 本ファイルのユニットテスト（Linuxで`cargo test --lib`実行可能、Windows
+/// ターゲット不要）で両方向を固定する。
+#[must_use]
+pub(crate) const fn imm_cross_reobservation_already_matches(
+    actual: Option<bool>,
+    open: bool,
+) -> bool {
+    matches!(actual, Some(v) if v == open)
+}
+
 /// IME ON の直前に ROMAN ビットを補完する同期 IMC write が要るか
 /// （ADR-089 §6 Phase C item 12 = ADR-086 INV-14 の未移行分の是正）。
 ///
@@ -697,6 +722,33 @@ mod tests {
             let (_, cmd) = decide_attempt(i, site, WriteMechanism::ImmCross, true);
             assert_eq!(cmd, None, "{site:?}");
         }
+    }
+
+    // ── imm_cross_reobservation_already_matches（imm_cross_writeのFailed分岐）──
+    //
+    // docs/tasks/actuation-confluence-already-matched-gap.md: cargo-mutantsが
+    // `open_chain.rs:356`の`==`→`!=`反転を既存テストのどれも検出できないと
+    // 報告した分岐。以下3ケースが反転を確実に検出する
+    // （一致/不一致/未知のすべてで期待値が逆転するため）。
+
+    #[test]
+    fn imm_cross_reobservation_matches_when_actual_equals_desired_open() {
+        assert!(imm_cross_reobservation_already_matches(Some(true), true));
+        assert!(imm_cross_reobservation_already_matches(Some(false), false));
+    }
+
+    #[test]
+    fn imm_cross_reobservation_does_not_match_when_actual_differs_from_desired() {
+        assert!(!imm_cross_reobservation_already_matches(Some(false), true));
+        assert!(!imm_cross_reobservation_already_matches(Some(true), false));
+    }
+
+    #[test]
+    fn imm_cross_reobservation_treats_unknown_actual_as_not_matched() {
+        // BUG-113と同型の罠: `None`（未知）を「一致した」扱いにすると、実際には
+        // desired状態でないのにフォールバックをスキップしてしまう。
+        assert!(!imm_cross_reobservation_already_matches(None, true));
+        assert!(!imm_cross_reobservation_already_matches(None, false));
     }
 
     // ── decide_attempt: romaji_pre_write の bool は decide_needs_romaji_pre_write と一致 ──
