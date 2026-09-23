@@ -7,12 +7,18 @@
 
 use std::collections::VecDeque;
 
+use serde::{Deserialize, Serialize};
+
 /// 抽象的なキーID(修飾付きのキーも、呼び出し側が別のIDを割り当てて表す)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+///
+/// `Serialize`/`Deserialize` は段階3([ADR-195](../../../docs/adr/195-keymap-learn-productization.md)
+/// 「段階3: 学習結果の永続化」)の永続化フォーマット(`persist`モジュール)が、この型をそのまま
+/// 使い回すために付与している(パラレルな永続化専用型を新設しない)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct KeyId(pub u16);
 
 /// 観測できる状態(status message)。変換モードは抽象的な番号で持つ。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Status {
     pub open: bool,
     pub mode: u8,
@@ -20,7 +26,7 @@ pub struct Status {
 }
 
 /// 入力中の文字列の行方(入力欄の変化から観測する)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Disposition {
     None,
     Kept,
@@ -29,7 +35,7 @@ pub enum Disposition {
 }
 
 /// 1回の押下の観測結果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Outcome {
     pub status: Status,
     pub disp: Disposition,
