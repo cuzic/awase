@@ -153,9 +153,8 @@ missedとして残った1件は`158:28: replace && with || in ModeKeyPassLatch<S
   `interrupted`になり結果が取れなかった。develop未採用のコードなので優先度は低いが、
   再現するなら`windows-latest`化や`--jobs 1`固定などを試す価値はあるかもしれない。
 - 今回の調査の本題（ADR-194破棄の再挑戦条件）自体は別途会話ログに記録済み
-  （[[project_adr194_retry_condition_verification_2026_09_22]]、条件不成立で
-  破棄継続が妥当という結論）。本タスクはその副産物として見つかった実在のテスト
-  カバレッジの穴。
+  （2026-09-22、条件不成立で破棄継続が妥当という結論）。本タスクはその副産物として
+  見つかった実在のテストカバレッジの穴。
 - 「これから撤去していくものがあるなら、その前にreplay基盤を充実させる価値はあるか」
   という問いは本タスクとは別軸（削除対象が具体化してから改めて検討する）。
   `docs/tasks/actuation-confluence-already-matched-gap.md`が扱っている

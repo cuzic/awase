@@ -1,6 +1,22 @@
 # ADR-195 T8: 陳腐化検出（段階8）を実装する
 
-状態: 未着手（2026-09-23起票）。[ADR195-T3](adr195-t3-persistence.md)/
+**【ADR-196で一部置換、M5対応で範囲を精密化（2026-09-23）】置き換わるのは「不一致時の
+動作」だけである。実装対象1（キーマップ設定のフィンガープリント）・実装対象2（スキーマ版
+不一致での失効）は、[ADR-196](../adr/196-keymap-learn-truth-priority.md)決定3aへの追記
+（`196-...md`3b直前の段落）により**そのまま有効**——「即時失効」のままでよい。置き換わるのは
+GJI/Microsoft IME本体の**バージョン相当の情報**が不一致だった場合の扱いのみで、こちらは
+「失効」ではなく「要再検証」になる。つまり本タスクの実装対象1・2で作る仕組みに、
+[ADR196-T5](adr196-t5-revalidation-not-invalidation.md)が**別枠のフィンガープリント**
+（版相当の情報、要再検証の判定）を追加する構成になる。両者を1つの`Staleness`（stale/fresh
+の2値）に混ぜないこと——fresh/要再検証/失効の3状態、かつ「要再検証」の原因はバージョン相当の
+情報の不一致に限る。**
+**既存の実装ブランチ`feat/adr195-t8-staleness-detection`（PR #253、developに未マージ、
+コミット`3613707e`/`f5d53047`）の「フィンガープリント不一致→即時失効」というロジック自体
+（実装対象1・2）は土台として活かせる。PR #253にコメント済み。[ADR196-T5](adr196-t5-revalidation-not-invalidation.md)は、
+これに「バージョン相当の情報」という別枠のフィンガープリントと3状態化を追加する差分になる。**
+
+状態: **実装中（PR #253、独立にテスト可能な判定ロジックのみ先行実装。ADR-196対応は
+未反映。2026-09-23時点）**。[ADR195-T3](adr195-t3-persistence.md)/
 [ADR195-T4](adr195-t4-runtime-loading.md)完了後に着手。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
@@ -33,5 +49,7 @@
 
 - [ADR-195](../adr/195-keymap-learn-productization.md) 段階8
 - [ADR-176](../adr/176-behavioral-calibration-of-ime-mode-key-shadow-overrides.md) 176-T12
+- [ADR-196](../adr/196-keymap-learn-truth-priority.md) 決定3（バージョン相当の情報の追加分のみ置換）
 - [ADR195-T3](adr195-t3-persistence.md)
 - [ADR195-T4](adr195-t4-runtime-loading.md)
+- [ADR196-T5](adr196-t5-revalidation-not-invalidation.md)（本タスクを土台にする後継タスク）

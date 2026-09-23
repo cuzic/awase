@@ -1,6 +1,13 @@
 # ADR-195 T6: ADR-176較正ウィザードとの統合（段階6）を実装する
 
-状態: 未着手（2026-09-23起票）。[ADR195-T1](adr195-t1-independent-learning-process.md)
+**【ADR-196で一部置換】実装対象5「同梱表と同じ構成なら学習を勧めない」は、
+[ADR-196](../adr/196-keymap-learn-truth-priority.md)決定2（構成に関わらず学習ボタンを
+同じ導線で案内し、状態表示1行だけを変える）に置き換わった。実装対象1〜4（子プロセス
+起動・進捗表示）はそのまま有効。新しいUI方針は[ADR196-T4](adr196-t4-ui-status-and-adoption.md)
+を参照。**
+
+状態: **実装中（PR #255、実装対象5〈同梱表一致時は学習を勧めない〉には未着手のまま
+ADR-196対応待ち。2026-09-23時点）**。[ADR195-T1](adr195-t1-independent-learning-process.md)
 完了後に着手（起動対象となる学習プロセスが必要）。ADR-176は既にdevelopマージ済み。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
@@ -25,11 +32,13 @@
    IPC（`calibration_ipc.rs`）は使わない（ペイロードが1ワード固定で表本体を運べない）。
 4. **反映は次回のfsスタンプ再チェック時**（`KeymapCache`と同じ`RECHECK_MS`相当の遅れを
    許容する）の一本に倒す。「適用」という別のユーザー操作は不要。
-5. **同梱表と同じ構成なら学習を勧めない**（[ADR195-T4](adr195-t4-runtime-loading.md)の
+5. ~~**同梱表と同じ構成なら学習を勧めない**（[ADR195-T4](adr195-t4-runtime-loading.md)の
    受け入れ基準と対になるUI方針）: 検出したキーマップ構成が同梱の3種
    （ATOK/GJI+MS-IMEプリセット/Microsoft IME本体、いずれもカスタム設定なし）と一致する
    場合、awase-settingsは学習の実行を積極的に案内しない（実行自体は妨げないが、既定の
-   導線に出さない）。
+   導線に出さない）。~~ **【ADR-196で置換】** 実装しないこと。
+  [ADR196-T4](adr196-t4-ui-status-and-adoption.md)実装対象1「構成に関わらず同じ位置・
+  同じ強さで表示する」を参照。
 
 ## 実装対象外（配布関連、[ADR195-T7](adr195-t7-safety-measures.md)参照）
 
@@ -38,11 +47,15 @@
 ## 完了条件
 
 - 子プロセス起動・標準出力パースのテスト（Windows実機またはモックプロセスでの検証）。
-- 「同梱表と同じ構成なら勧めない」判定のテスト。
+- ~~「同梱表と同じ構成なら勧めない」判定のテスト。~~ **【ADR-196で置換】**
+  [ADR196-T4](adr196-t4-ui-status-and-adoption.md)の完了条件へ。
 
 ## 関連
 
 - [ADR-195](../adr/195-keymap-learn-productization.md) 段階6
 - [ADR-176](../adr/176-behavioral-calibration-of-ime-mode-key-shadow-overrides.md)
+- [ADR-196](../adr/196-keymap-learn-truth-priority.md) 決定2（実装対象5のみ置換）
 - [ADR195-T1](adr195-t1-independent-learning-process.md)
 - [ADR195-T4](adr195-t4-runtime-loading.md)
+- [ADR196-T4](adr196-t4-ui-status-and-adoption.md)（実装対象5・完了条件の後継先。子プロセス
+  起動・標準出力パース機構〈実装対象1〜4〉はこちらからも再利用される）
