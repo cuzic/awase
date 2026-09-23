@@ -12,7 +12,7 @@
 
 use std::io::{self, BufRead, BufReader};
 use std::path::Path;
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 
 /// 学習プロセスからの1行分の進捗。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -83,7 +83,7 @@ pub fn parse_learn_line(line: &str) -> Option<LearnLine> {
 pub fn spawn_learning_process(exe_path: &Path) -> io::Result<Child> {
     Command::new(exe_path)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
 }
 
@@ -120,6 +120,35 @@ pub fn take_learning_stdout(child: &mut Child) -> io::Result<ChildStdout> {
         .stdout
         .take()
         .ok_or_else(|| io::Error::other("子プロセスのstdoutが取得できない(既に取得済み?)"))
+}
+
+/// [`take_learning_stdout`]の標準エラー版。`awase-keymap-learn-win`は
+/// 書き込み失敗時の理由(`print_result_line`のErr分岐)や`decode_errors`警告を
+/// 標準エラーへ書くが、標準出力の`result`行にはこの理由が含まれない
+/// (code-review指摘: 従来`spawn_learning_process`は標準エラーを`Stdio::null()`で
+/// 捨てており、このモジュールのdocコメントが謳う「標準出力・標準エラーをパイプで
+/// 受け取る」と実装が食い違っていた)。呼び出し側は失敗理由をユーザーに提示するため、
+/// これを別スレッドで読み切ってから使う([`drain_learning_stderr_lines`]参照)。
+pub fn take_learning_stderr(child: &mut Child) -> io::Result<ChildStderr> {
+    child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("子プロセスのstderrが取得できない(既に取得済み?)"))
+}
+
+/// `stderr`を1行ずつ読み、空でない最後の行を返す(無ければ`None`)。
+/// `result status=failure`の直前に`print_result_line`が書く1行の理由
+/// メッセージをそのままUIへ出すのが目的で、複数行のログを蓄積・解析する
+/// 用途は想定しない。
+#[must_use]
+pub fn drain_learning_stderr_lines(stderr: ChildStderr) -> Option<String> {
+    let mut last = None;
+    for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+        if !line.trim().is_empty() {
+            last = Some(line);
+        }
+    }
+    last
 }
 
 /// ADR-195段階6決定5: 検出したキーマップ構成が同梱の3種(ATOK/
