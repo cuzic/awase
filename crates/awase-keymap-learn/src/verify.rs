@@ -98,7 +98,7 @@ pub struct WalkObs {
 }
 
 /// 採点結果。ATOKの実測(一致278・不一致1・表に無い19)と同じ形。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ScoreReport {
     pub correct: usize,
     pub incorrect: usize,

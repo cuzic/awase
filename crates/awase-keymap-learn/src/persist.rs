@@ -15,10 +15,15 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::judgement::{ScoredVerification, TableJudgement};
 use crate::model::{KeyId, Outcome, Status};
 
 /// 現行のスキーマバージョン。表現(セルの持ち方、`Status`/`Outcome`の意味)を変えたら上げる。
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+///
+/// v1→v2([ADR-196](../../../docs/adr/196-keymap-learn-truth-priority.md)決定1a・1e、
+/// 横断レビューB1対応): 自己検証スコア(`verification`)と採否判定(`judgement`)の
+/// フィールドを追加した。
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// 1セル分の永続化データ。`prediction`が`None`なのは「未測定」または「決定的と言えない
 /// (段階2の自己検証で信頼度が低い、非決定と判定された等)ので予測しない」の両方を表す
@@ -42,6 +47,12 @@ pub struct PersistedCell {
 pub struct Fingerprint(pub u64, pub u64);
 
 /// 表全体を1ファイルに持つ永続化フォーマット。
+///
+/// `verification`/`judgement`は[ADR-196](../../../docs/adr/196-keymap-learn-truth-priority.md)
+/// 決定1e「判定は学習セッションの末尾で学習プロセスが行い、不採用の場合も理由付きで
+/// 表ファイルに書き出す」ための領域。段階4（`awase.exe`の読込時）はこの2フィールドを
+/// 読むだけで、判定をやり直さない。`fingerprint`（ADR-195段階8）の計算方式自体は
+/// ADR-196決定3で再設計中のため、当面`None`のまま運用し、ADR196-T5が実配線する。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedTable {
     pub schema_version: u32,
@@ -53,20 +64,49 @@ pub struct PersistedTable {
     /// `keymap-learn-table.json`にはこのキー自体が存在しないため、無いと
     /// デシリアライズがフィールド欠落エラーで失敗し後方互換が壊れる
     /// (`PersistedCell::prediction`と同じ理由)。
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<Fingerprint>,
     pub cells: Vec<PersistedCell>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<ScoredVerification>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judgement: Option<TableJudgement>,
 }
 
 impl PersistedTable {
-    /// 現行スキーマ版で新規作成する。
+    /// 現行スキーマ版で新規作成する（指紋・自己検証スコア・採否判定はまだ無い状態）。
+    /// 各フィールドは`with_fingerprint`/`with_verification`/`with_judgement`で個別に
+    /// 設定する（呼び出し側がどこまで確定しているかに応じて、必要なものだけ呼べば足りる）。
     #[must_use]
-    pub const fn new(cells: Vec<PersistedCell>, fingerprint: Option<Fingerprint>) -> Self {
+    pub const fn new(cells: Vec<PersistedCell>) -> Self {
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
-            fingerprint,
+            fingerprint: None,
             cells,
+            verification: None,
+            judgement: None,
         }
+    }
+
+    /// 学習時点のキーマップ指紋を設定する（ADR-195段階8、ADR196-T5が実配線）。
+    #[must_use]
+    pub const fn with_fingerprint(mut self, fingerprint: Fingerprint) -> Self {
+        self.fingerprint = Some(fingerprint);
+        self
+    }
+
+    /// 自己検証の採点結果を設定する（決定1e、学習セッション末尾で呼ぶ）。
+    #[must_use]
+    pub const fn with_verification(mut self, verification: ScoredVerification) -> Self {
+        self.verification = Some(verification);
+        self
+    }
+
+    /// 表全体の採否判定を設定する（決定1a・1b-8・1e）。
+    #[must_use]
+    pub const fn with_judgement(mut self, judgement: TableJudgement) -> Self {
+        self.judgement = Some(judgement);
+        self
     }
 
     /// JSONへシリアライズする。
@@ -140,10 +180,8 @@ mod tests {
 
     #[test]
     fn round_trips_through_json() {
-        let table = PersistedTable::new(
-            vec![cell(true, 0, Some(false)), cell(false, 1, None)],
-            Some(Fingerprint(1, 2)),
-        );
+        let table = PersistedTable::new(vec![cell(true, 0, Some(false)), cell(false, 1, None)])
+            .with_fingerprint(Fingerprint(1, 2));
 
         let json = table.to_json().expect("serialize");
         let loaded = from_json(&json).expect("deserialize");
@@ -170,13 +208,38 @@ mod tests {
 
     #[test]
     fn new_table_uses_current_schema_version() {
-        let table = PersistedTable::new(vec![], None);
+        let table = PersistedTable::new(vec![]);
         assert_eq!(table.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(table.fingerprint, None);
+        assert_eq!(table.verification, None);
+        assert_eq!(table.judgement, None);
+    }
+
+    #[test]
+    fn verification_and_judgement_round_trip_through_json() {
+        use crate::judgement::{ScoredVerification, TableJudgement};
+        use crate::verify::ScoreReport;
+
+        let table = PersistedTable::new(vec![cell(true, 0, Some(true))])
+            .with_verification(ScoredVerification {
+                score: ScoreReport {
+                    correct: 297,
+                    incorrect: 3,
+                    not_in_table: 0,
+                },
+                seed: 42,
+            })
+            .with_judgement(TableJudgement::Accepted);
+        let json = table.to_json().expect("serialize");
+        let loaded = from_json(&json).expect("deserialize");
+        assert_eq!(loaded, table);
+        assert_eq!(loaded.verification.unwrap().score.correct, 297);
+        assert_eq!(loaded.judgement, Some(TableJudgement::Accepted));
     }
 
     #[test]
     fn rejects_newer_schema_version() {
-        let mut table = PersistedTable::new(vec![cell(true, 0, None)], None);
+        let mut table = PersistedTable::new(vec![cell(true, 0, None)]);
         table.schema_version = CURRENT_SCHEMA_VERSION + 1;
         let json = table.to_json().expect("serialize");
 
@@ -201,7 +264,7 @@ mod tests {
                 "test needs a version below current"
             );
         };
-        let mut table = PersistedTable::new(vec![cell(true, 0, None)], None);
+        let mut table = PersistedTable::new(vec![cell(true, 0, None)]);
         table.schema_version = CURRENT_SCHEMA_VERSION - 1;
         let json = table.to_json().expect("serialize");
 
@@ -225,10 +288,8 @@ mod tests {
     fn rejects_duplicate_status_key_cell() {
         // 同じ(status, key)に対して食い違う2つのPersistedCellが書き込まれた場合、
         // 「どちらが勝つか」を読み込み側の実装に依存する形で黙認しない(重複を拒否する)。
-        let table = PersistedTable::new(
-            vec![cell(true, 0, Some(false)), cell(true, 0, Some(true))],
-            None,
-        );
+        let table =
+            PersistedTable::new(vec![cell(true, 0, Some(false)), cell(true, 0, Some(true))]);
         let json = table.to_json().expect("serialize");
 
         let err = from_json(&json).expect_err("must reject duplicate (status, key) entries");

@@ -20,6 +20,7 @@ pub mod cost;
 pub mod exec;
 pub mod external_write;
 pub mod graph;
+pub mod judgement;
 pub mod metrics;
 pub mod minimize;
 pub mod model;

@@ -160,7 +160,7 @@ mod app {
     fn persist_learned_table(table: &Table) -> (usize, Result<(), String>) {
         let cells = build_persisted_cells(table);
         let cell_count = cells.len();
-        let persisted = PersistedTable::new(cells, None);
+        let persisted = PersistedTable::new(cells);
         let write_result = table_file_path()
             .ok_or_else(|| "config.tomlが見つからないため書き込み先を決められない".to_string())
             .and_then(|path| {

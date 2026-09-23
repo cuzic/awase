@@ -27,11 +27,13 @@
 
 pub mod command;
 pub mod keymap;
+pub mod known_keymap;
 pub mod tsv;
 pub mod wire;
 
 pub use command::{GjiCompositionMode, GjiModeCommand};
 pub use keymap::{GjiImeKeys, GjiModeKeys};
+pub use known_keymap::{classify_known_gji_keymap, KnownGjiKeymap};
 
 /// `config1.db` の生バイト列から、IME ON/OFF 検出用の VK 名集合を抽出する。
 ///
