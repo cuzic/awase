@@ -470,6 +470,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "awase-keymap-learn"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "awase-keymap-learn-win"
+version = "0.1.0"
+dependencies = [
+ "awase",
+ "awase-keymap-learn",
+ "awase-windows",
+ "windows 0.62.2",
+]
+
+[[package]]
 name = "awase-linux"
 version = "0.1.0"
 dependencies = [

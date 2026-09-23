@@ -47,6 +47,13 @@ pub fn is_awase_settings_process_name(name: &str) -> bool {
         == crate::state::app_suppression::normalize_process_name("awase-settings.exe")
 }
 
+/// ADR-195段階1の独立学習プロセス名と一致するか。
+#[must_use]
+pub fn is_keymap_learn_process_name(name: &str) -> bool {
+    crate::state::app_suppression::normalize_process_name(name)
+        == crate::state::app_suppression::normalize_process_name("awase-keymap-learn-win.exe")
+}
+
 /// ADR-176 176-T9b: awase-settings側の較正結果受信用メッセージ専用
 /// ウィンドウの固定クラス名。
 ///
@@ -184,6 +191,14 @@ mod tests {
         assert!(!is_awase_settings_process_name("awase.exe"));
         assert!(!is_awase_settings_process_name(""));
         assert!(!is_awase_settings_process_name("evil.exe"));
+    }
+
+    #[test]
+    fn keymap_learn_process_name_ignores_case_and_exe_suffix() {
+        assert!(is_keymap_learn_process_name("awase-keymap-learn-win.exe"));
+        assert!(is_keymap_learn_process_name("AWASE-KEYMAP-LEARN-WIN.EXE"));
+        assert!(is_keymap_learn_process_name("awase-keymap-learn-win"));
+        assert!(!is_keymap_learn_process_name("awase.exe"));
     }
 
     // ── 176-T9b: pack_result/unpack_result ───────────────────────────────
