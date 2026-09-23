@@ -48,6 +48,12 @@ pub struct PersistedTable {
     /// 学習時点のキーマップの指紋。`None`は「呼び出し側が指紋を計算できなかった
     /// (フィンガープリント方式が無いIME等)」を表し、段階8の失効判定はこの場合
     /// キーマップ変化による失効を検出しない(スキーマ版不一致の検出のみ行う)。
+    ///
+    /// `#[serde(default)]`必須: 本フィールド追加前に書き出された既存の
+    /// `keymap-learn-table.json`にはこのキー自体が存在しないため、無いと
+    /// デシリアライズがフィールド欠落エラーで失敗し後方互換が壊れる
+    /// (`PersistedCell::prediction`と同じ理由)。
+    #[serde(default)]
     pub fingerprint: Option<Fingerprint>,
     pub cells: Vec<PersistedCell>,
 }
@@ -142,6 +148,22 @@ mod tests {
 
         assert_eq!(loaded, table);
         assert_eq!(loaded.schema_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn loads_pre_fingerprint_json_missing_the_fingerprint_key() {
+        // `fingerprint`フィールド追加(ADR-195段階8)より前に書き出された
+        // keymap-learn-table.jsonには、このキー自体が存在しない。
+        // `#[serde(default)]`が無いと、キー欠落がデシリアライズエラーになり
+        // 既存の学習結果ファイルが一切読めなくなる後方互換破壊になる。
+        let json = format!(
+            r#"{{"schema_version":{CURRENT_SCHEMA_VERSION},"cells":[{{"status":{{"open":true,"mode":0,"composing":false}},"key":0}}]}}"#
+        );
+
+        let loaded = from_json(&json).expect("must accept json without a fingerprint key");
+
+        assert_eq!(loaded.fingerprint, None);
+        assert_eq!(loaded.cells, vec![cell(true, 0, None)]);
     }
 
     #[test]
