@@ -47,6 +47,11 @@ pub struct PressReport {
     pub seen: Outcome,
     /// 経路Bで読んだstatus。
     pub seen_b: Status,
+    /// [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2:
+    /// この押下の測定区間に、外部からの書き込み・ユーザーの物理入力・
+    /// フォーカス喪失のいずれかが混入したか。`true`なら
+    /// `Executor::press`はこの観測を表に記録しない(`SimIme`は常に`false`)。
+    pub contaminated: bool,
 }
 
 /// シミュレートしたIME。
@@ -142,6 +147,7 @@ impl SimIme {
                     disp: Disposition::None,
                 },
                 seen_b: sb,
+                contaminated: false,
             };
         }
         // 分岐を確率で選ぶ。
@@ -194,6 +200,7 @@ impl SimIme {
                 disp: vis_disp,
             },
             seen_b: sb,
+            contaminated: false,
         }
     }
 

@@ -6,6 +6,17 @@
 発見された不具合。着手時は `.claude/rules/worktree-per-session.md` に従い専用
 worktree/branch を切ること。
 
+**2026-09-23追記（[ADR195-T7](adr195-t7-safety-measures.md)、opus-adversarial-consult
+round1 m4）**: `feat/adr195-t7-safety-measures`（PR #264）が`RealImeDriver`のquiet
+window判定・送信前ゲートに`GetForegroundWindow()==self.window && GetFocus()==self.edit`
+の確認を追加した。フォーカス取得に失敗する環境（CI等）では、この変更以降
+学習プロセスは`presses=0`で自然終了する代わりに、起動直後（quiet window）に
+`Err`を返して即座に終了するようになる可能性がある。本タスクの`presses=0`の
+原因がまさに「フォーカスがEDITに無い」だった場合、この挙動変化は原因の切り
+分けに有益（起動直後のエラーメッセージに「フォーカス喪失」と出るかどうかで
+判定できる）。本タスクの調査時は、このT7の変更をベースに含むかどうかで
+`presses=0`と起動時`Err`のどちらの症状になるかが変わりうる点に注意。
+
 ## 背景
 
 T-rebase/T0/T1/T2/T3/T4/T5/T6/T8/T9を統合したブランチ（`ci/adr195-integration-verify`、

@@ -4,7 +4,7 @@ mod app {
 
     use awase_keymap_learn::anomaly::AnomalyPolicy;
     use awase_keymap_learn::cost::CostModel;
-    use awase_keymap_learn::exec::{Executor, ImeDriver, ReadPolicy};
+    use awase_keymap_learn::exec::{Executor, ImeDriver, ReadPolicy, Stats};
     use awase_keymap_learn::graph::Prior;
     use awase_keymap_learn::model::KeyId;
     use awase_keymap_learn::persist::{PersistedCell, PersistedTable};
@@ -139,8 +139,22 @@ mod app {
         exec.set_recording(false);
         let mut walk = Vec::with_capacity(VERIFICATION_WALK_STEPS);
         for _ in 0..VERIFICATION_WALK_STEPS {
+            // opus-adversarial-consult round2 N3対応: セッション監視が既に
+            // 失敗と判定していたら、採点にならない押下を続けない。
+            if exec.driver.should_abort() {
+                break;
+            }
             let key = rng.below(KEYS.len());
             if let Some(info) = exec.press(key) {
+                // round2 N1対応: 汚染された観測(外部からの書き込み・物理入力・
+                // フォーカス喪失)は採点に使わない。学習フェーズは
+                // `Executor::press`が表への記録を見送るが、このウォークは
+                // `recording=false`で呼ばれるため同じ保護がかかっておらず、
+                // 汚染された観測がそのまま`verify_accuracy`の採点対象に
+                // なっていた(表そのものは正しいのに不当にスコアが下がる)。
+                if info.contaminated {
+                    continue;
+                }
                 walk.push(WalkObs {
                     status: info.before,
                     key,
@@ -176,13 +190,93 @@ mod app {
         (cell_count, write_result)
     }
 
-    pub fn run_main() -> windows::core::Result<()> {
+    /// `run_main`のうち、セッション監視が失敗と判定していないかを確認する
+    /// 部分（学習フェーズ直後・検証ウォーク直後の2箇所から呼ぶ、round2 N1
+    /// 対応で複製されていたブロックの共通化）。失敗していたら専用result行を
+    /// 出して`std::process::exit(1)`で終了する（round3 R3対応: 失敗時に
+    /// 終了コードを非0にする。result行を必ずflushしてから終了すること）。
+    /// 失敗していなければ何もせず戻る。
+    fn exit_if_session_failed(
+        executor: &Executor<RealImeDriver>,
+        strategy: Strategy,
+        training_elapsed_ms: f64,
+        training_presses: u32,
+        total_cells: u32,
+        decode_errors: u32,
+    ) {
+        if !executor.driver.session_failed() {
+            return;
+        }
+        print_interference_failure_line(InterferenceFailureArgs {
+            strategy,
+            training_elapsed_ms,
+            training_presses,
+            covered1: executor.table.covered1(),
+            total_cells,
+            decode_errors,
+            contaminated_trials: executor.stats.contaminated_trials,
+            invalidated_trials: executor.driver.session_invalidated_trials(),
+        });
+        std::process::exit(1);
+    }
+
+    /// round2 N2対応: `RealImeDriver::new()`はquiet window判定(外部からの
+    /// 書き込み・物理入力・フォーカス喪失、round1 M1/M3対応で発火条件が
+    /// 広がった)や、それ以外の初期化失敗(COM初期化・TSF起動・窓作成・
+    /// フック登録等)で`Err`を返すことがある。以前は呼び出し元が`?`でそのまま
+    /// プロセスの異常終了に委ねていたため、result行が出ず、awase-settings側の
+    /// 較正パネルには「結果を送らずに終了した」としか表示されなかった。他の
+    /// 失敗経路と同じresult行の形式で理由を伝えた上で、`std::process::exit(1)`
+    /// で終了する(round3 R3対応)。round3 R2対応:
+    /// `RealImeDriver::is_quiet_window_error`で原因を区別し、result行の
+    /// `reason`をquiet window判定によるものとそれ以外とで出し分ける。
+    fn build_driver(strategy: Strategy) -> RealImeDriver {
+        match RealImeDriver::new(KEYS.to_vec()) {
+            Ok(driver) => driver,
+            Err(err) => {
+                let total_cells_estimate = atok_like().states.len() as u32 * KEYS.len() as u32;
+                let reason = if RealImeDriver::is_quiet_window_error(&err) {
+                    "quiet_window"
+                } else {
+                    "init"
+                };
+                print_driver_init_failure_line(strategy, total_cells_estimate, &err, reason);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    /// 進捗(現在何セル目/推定残り時間)を標準出力へ運ぶsinkを作る(ADR-195段階6)。
+    /// awase-settings(較正ウィザード)はこの行をパースしてUI表示する。IPCは
+    /// 使わない(ペイロードが1ワード固定で表本体を運べないため、詳細はADR本文
+    /// 「段階6」節参照)。表本体はここでは一切標準出力へ出さない。
+    fn make_progress_sink(total_cells: u32) -> impl FnMut(&Stats, &Table) {
+        move |stats, table| {
+            if stats.presses % PROGRESS_EVERY_N_PRESSES != 0 {
+                return;
+            }
+            let cell = table.covered1() as u32;
+            let elapsed_ms = stats.timeline.last().map_or(0.0, |&(ms, _, _)| ms);
+            // 経過時間からの単純な線形外挿。0除算・未進捗時はeta不明(-1)を返す。
+            let eta_ms = if cell == 0 || cell >= total_cells {
+                -1.0
+            } else {
+                elapsed_ms / f64::from(cell) * f64::from(total_cells - cell)
+            };
+            println!(
+                "progress cell={cell} total={total_cells} elapsed_ms={elapsed_ms:.0} eta_ms={eta_ms:.0}"
+            );
+            let _ = std::io::stdout().flush();
+        }
+    }
+
+    pub fn run_main() {
         let strategy = if std::env::args().any(|arg| arg == "--strategy=s0") {
             Strategy::S0
         } else {
             Strategy::S6
         };
-        let driver = RealImeDriver::new(KEYS.to_vec())?;
+        let driver = build_driver(strategy);
         let initial = driver.initial_status();
         let mut model = atok_like();
         for state in &mut model.states {
@@ -202,28 +296,8 @@ mod app {
         let cost = CostModel::event();
         let mut executor = Executor::new(driver, AnomalyPolicy::default(), ReadPolicy::Single);
 
-        // ADR-195段階6: 進捗(現在何セル目/推定残り時間)を標準出力へ運ぶ。
-        // awase-settings(較正ウィザード)はこの行をパースしてUI表示する。IPCは
-        // 使わない(ペイロードが1ワード固定で表本体を運べないため、詳細はADR
-        // 本文「段階6」節参照)。表本体はここでは一切標準出力へ出さない。
         let total_cells = model.states.len() as u32 * KEYS.len() as u32;
-        executor.set_progress_sink(move |stats, table| {
-            if stats.presses % PROGRESS_EVERY_N_PRESSES != 0 {
-                return;
-            }
-            let cell = table.covered1() as u32;
-            let elapsed_ms = stats.timeline.last().map_or(0.0, |&(ms, _, _)| ms);
-            // 経過時間からの単純な線形外挿。0除算・未進捗時はeta不明(-1)を返す。
-            let eta_ms = if cell == 0 || cell >= total_cells {
-                -1.0
-            } else {
-                elapsed_ms / f64::from(cell) * f64::from(total_cells - cell)
-            };
-            println!(
-                "progress cell={cell} total={total_cells} elapsed_ms={elapsed_ms:.0} eta_ms={eta_ms:.0}"
-            );
-            let _ = std::io::stdout().flush();
-        });
+        executor.set_progress_sink(make_progress_sink(total_cells));
 
         let req = Req::default();
         run(
@@ -256,7 +330,36 @@ mod app {
         let training_presses = executor.stats.presses;
         let decode_errors = executor.driver.decode_error_count();
 
+        // [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+        // (opus-adversarial-consult round1 M1対応): セッション監視
+        // (`RealImeDriver::check_session_interference`)が無効化上限を超えて
+        // いたら、検証ウォーク・表の書き出しへ進まずここで失敗として終了する。
+        // 汚染された観測(外部からの書き込み・物理入力・フォーカス喪失)は
+        // `Executor::press`が表への記録を既に見送っているが、無効化が多発した
+        // セッションは表の残りのセルの信頼性も疑わしいため、書き出さない。
+        exit_if_session_failed(
+            &executor,
+            strategy,
+            training_elapsed_ms,
+            training_presses,
+            total_cells,
+            decode_errors,
+        );
+
         let score = run_verification_walk(&mut executor, &mut rng);
+
+        // round2 N1対応: 検証ウォーク中にセッション監視が失敗と判定していたら、
+        // (学習フェーズ直後のチェックだけでは検証ウォーク中の汚染を見逃すため)
+        // ここでも確認し、表を書き出さない。
+        exit_if_session_failed(
+            &executor,
+            strategy,
+            training_elapsed_ms,
+            training_presses,
+            total_cells,
+            decode_errors,
+        );
+
         let (cell_count, write_result) = persist_learned_table(&executor.table);
         print_result_line(ResultLineArgs {
             strategy,
@@ -274,7 +377,69 @@ mod app {
                 "警告: observe_imm失敗によるフォールバックが{decode_errors}回発生。学習表に信頼できない観測が混じっている可能性がある。"
             );
         }
-        Ok(())
+    }
+
+    /// [`print_interference_failure_line`]の引数。
+    #[derive(Clone, Copy)]
+    struct InterferenceFailureArgs {
+        strategy: Strategy,
+        training_elapsed_ms: f64,
+        training_presses: u32,
+        covered1: usize,
+        total_cells: u32,
+        decode_errors: u32,
+        contaminated_trials: u32,
+        invalidated_trials: u32,
+    }
+
+    /// [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+    /// (round1 M1対応): セッション監視の無効化上限を超えたときの専用result行。
+    /// `print_result_line`と同じ`result status=... strategy=...`の形式を保ち
+    /// `reason=interference`を足す——awase-settings(較正ウィザード)がこの行を
+    /// パースする前提(ADR-195段階6)を崩さないため。
+    fn print_interference_failure_line(args: InterferenceFailureArgs) {
+        eprintln!(
+            "学習セッションを失敗として終了します: 外部からの書き込み・物理入力・\
+             フォーカス喪失により{}回の試行が無効化上限を超えました(汚染された観測{}件)。\
+             学習表は書き出しません。",
+            args.invalidated_trials, args.contaminated_trials
+        );
+        println!(
+            "result status=failure strategy={} elapsed_ms={:.0} presses={} cells={} total={} \
+             decode_errors={} contaminated_trials={} invalidated_trials={} reason=interference",
+            args.strategy.name(),
+            args.training_elapsed_ms,
+            args.training_presses,
+            args.covered1,
+            args.total_cells,
+            args.decode_errors,
+            args.contaminated_trials,
+            args.invalidated_trials,
+        );
+        let _ = std::io::stdout().flush();
+    }
+
+    /// [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+    /// (opus-adversarial-consult round2 N2対応): `RealImeDriver::new()`の
+    /// 初期化が失敗したときの専用result行。他のresult status=failure行と
+    /// 同じ形式にし、`awase-settings`側が結果を確実にパースできるようにする
+    /// (N2以前はプロセスが`Err`のまま終了し、result行が一切出ず「結果を
+    /// 送らずに終了しました」としか表示されなかった)。`reason`は
+    /// quiet window判定によるものかそれ以外かを呼び出し側
+    /// (`build_driver`、round3 R2対応)が区別して渡す。
+    fn print_driver_init_failure_line(
+        strategy: Strategy,
+        total_cells: u32,
+        err: &windows::core::Error,
+        reason: &str,
+    ) {
+        eprintln!("学習プロセスの初期化に失敗しました: {err}");
+        println!(
+            "result status=failure strategy={} elapsed_ms=0 presses=0 cells=0 total={total_cells} \
+             decode_errors=0 reason={reason}",
+            strategy.name(),
+        );
+        let _ = std::io::stdout().flush();
     }
 
     /// [`print_result_line`]の引数(clippyの`too_many_arguments`回避のため構造体にまとめる)。
@@ -402,8 +567,8 @@ mod app {
 }
 
 #[cfg(windows)]
-fn main() -> windows::core::Result<()> {
-    app::run_main()
+fn main() {
+    app::run_main();
 }
 
 #[cfg(not(windows))]

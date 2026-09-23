@@ -73,7 +73,13 @@ impl Default for Req {
 }
 
 fn over<D: ImeDriver>(exec: &Executor<D>, req: &Req) -> bool {
-    exec.elapsed_ms() > req.budget_ms || exec.stats.presses >= req.max_presses
+    // opus-adversarial-consult round2 N3対応: セッション監視が既に失敗と判定した
+    // 後は、予算（時間・押下数）を使い切るまで注入し続けるのはUX・実行時間の無駄
+    // なので、ここで早期終了する（安全上の問題ではない、汚染された観測は既に
+    // `Executor::press`が記録を見送っている）。
+    exec.elapsed_ms() > req.budget_ms
+        || exec.stats.presses >= req.max_presses
+        || exec.driver.should_abort()
 }
 
 /// 戦略を実行する。`suspects` は履歴依存が疑われるキーの添字(S6・S7の部分アルファベット)。
@@ -419,9 +425,83 @@ fn s2<D: ImeDriver>(exec: &mut Executor<D>, g: &mut Graph, req: &Req) {
 mod tests {
     use super::*;
     use crate::anomaly::AnomalyPolicy;
+    use crate::anomaly::ResetLevel;
     use crate::metrics::evaluate;
+    use crate::model::Status;
     use crate::sample_models::atok_like;
-    use crate::sim::{SimConfig, SimIme};
+    use crate::sim::{PressReport, SimConfig, SimIme};
+
+    /// [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+    /// （opus-adversarial-consult round2 N3対応）のテスト専用ドライバ:
+    /// `SimIme`をそのまま包み、`should_abort()`だけ固定値を返す。
+    struct AbortingDriver<D> {
+        inner: D,
+        abort: bool,
+    }
+
+    impl<D: ImeDriver> ImeDriver for AbortingDriver<D> {
+        fn press(&mut self, key: usize) -> PressReport {
+            self.inner.press(key)
+        }
+        fn press_setup(&mut self, key: usize) {
+            self.inner.press_setup(key);
+        }
+        fn read_primary(&mut self) -> Status {
+            self.inner.read_primary()
+        }
+        fn read_secondary(&mut self) -> Status {
+            self.inner.read_secondary()
+        }
+        fn reread_status(&mut self) -> Status {
+            self.inner.reread_status()
+        }
+        fn settle_setup(&mut self) -> Status {
+            self.inner.settle_setup()
+        }
+        fn reset(&mut self, level: ResetLevel) -> bool {
+            self.inner.reset(level)
+        }
+        fn elapsed_ms(&self) -> f64 {
+            self.inner.elapsed_ms()
+        }
+        fn machine_initial_status(&self) -> Status {
+            self.inner.machine_initial_status()
+        }
+        fn should_abort(&self) -> bool {
+            self.abort
+        }
+    }
+
+    #[test]
+    fn over_respects_driver_should_abort_even_within_budget() {
+        // round2 N3対応: 予算(時間・押下数)を全く使い切っていなくても、
+        // ドライバが`should_abort()==true`を返したら`over()`は即座に真になり、
+        // 戦略は1件も押下せず終了するはず。
+        let m = atok_like();
+        let mut rng = Rng::new(11);
+        let prior = Prior::from_machine(&m, 0.0, &mut rng);
+        let suspects = m.history_suspects.clone();
+        let cost = CostModel::event();
+        let sim = SimIme::new(m.clone(), SimConfig::default(), cost);
+        let driver = AbortingDriver {
+            inner: sim,
+            abort: true,
+        };
+        let mut exec = Executor::new(driver, AnomalyPolicy::default(), ReadPolicy::Single);
+        run(
+            Strategy::S0,
+            &mut exec,
+            &prior,
+            &cost,
+            &suspects,
+            &Req::default(),
+            &mut rng,
+        );
+        assert_eq!(
+            exec.stats.presses, 0,
+            "should_abort()==trueなら予算に関わらず即座に終了するはず"
+        );
+    }
 
     fn run_strategy(
         s: Strategy,
