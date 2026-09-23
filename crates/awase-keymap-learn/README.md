@@ -22,6 +22,7 @@ IMEキー効果の学習(較正)の**巡回プランナ**と**オフラインシ
 | `metrics` | 指標(時間・押下・リセット・網羅・経路多様性・同期喪失・非決定/履歴依存の検出・精度) |
 | `sample_models` | 合成ランダムモデルと、ATOK風モデル |
 | `verify` | 段階2(ADR-195): 誤りに強い分類(`classify_robust`)、独立ランダムウォークでの採点(`score_walk`)、信頼度が低いセルのやり直し1回上限(`RetryTracker`) |
+| `minimize` | 段階5(ADR-195): 隠れ状態を最小のMealy機械として求めるpartition refinement(`minimize`)。初期分割(識別プローブへの応答)→遷移先クラスによる反復分割→不動点、を1パスで打ち切らず反復する |
 
 `cargo run --release -p awase-keymap-learn --example simulate` で下の表を再生成できる(約3分、シード5本の平均)。
 
