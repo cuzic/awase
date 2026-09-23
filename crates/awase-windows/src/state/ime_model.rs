@@ -505,9 +505,7 @@ impl ImeModel {
 
         if matches!(
             outcome,
-            ImeOpenOutcome::UnsafeToToggle
-                | ImeOpenOutcome::NotOwned
-                | ImeOpenOutcome::Unwarranted
+            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned | ImeOpenOutcome::Unwarranted
         ) {
             return ImeApplyAcceptance::NotSent;
         }
