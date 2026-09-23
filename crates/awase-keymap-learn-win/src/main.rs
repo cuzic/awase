@@ -6,7 +6,7 @@ mod app {
 
     use awase_keymap_learn::anomaly::AnomalyPolicy;
     use awase_keymap_learn::cost::CostModel;
-    use awase_keymap_learn::exec::{Executor, ImeDriver, ReadPolicy};
+    use awase_keymap_learn::exec::{Executor, ImeDriver, ReadPolicy, Stats};
     use awase_keymap_learn::graph::Prior;
     use awase_keymap_learn::judgement::{
         judge_self_verification, ScoredVerification, TableJudgement, ACCURACY_THRESHOLD,
@@ -33,10 +33,9 @@ mod app {
     const PROGRESS_EVERY_N_PRESSES: u32 = 10;
 
     /// ADR196-T2「1e前半」(opus-adversarial-consult 2026-09-23 C-2): 縮退が激しい表では
-    /// [`MIN_PREDICTED_STEPS`]（予測できたステップ数）に固定回数の押下では届かないことがある
-    /// （縮退率20%の上限いっぱいなら300回押しても予測は約240歩にしかならない）ため、
-    /// 予測300歩に達するまで押下を続ける。この定数は「それでも届かない」場合の安全弁の上限
-    /// （実機で無限に回さないための保険、暫定値）。
+    /// [`MIN_PREDICTED_STEPS`](予測できたステップ数)に固定回数の押下では届かないことがある
+    /// (縮退率20%の上限いっぱいなら300回押しても予測は約240歩)ため、予測300歩に達する
+    /// まで押下を続ける。この定数は「それでも届かない」場合の安全弁の上限(暫定値)。
     const VERIFICATION_WALK_MAX_STEPS: usize = 1500;
 
     /// `<config dir>/keymap-learn-table.json`のパス。`awase.exe`/`awase-settings.exe`と
@@ -55,11 +54,10 @@ mod app {
     }
 
     /// ADR196-T2「1e前半」・不採用/要確認時の退避先。決定1eは「不採用でも表ファイルに
-    /// 書き出す」というが、`keymap-learn-table.json`（採用済みの表、段階4読み手が直接読む）へ
-    /// アトミック上書きすると、**以前`Accepted`だった良い表が今回の失敗で失われる**
-    /// （ユーザーが「もう一度学習」を押しただけで良い表を失う）。ユーザー判断
-    /// （2026-09-23、opus-adversarial-consultが指摘したC-9）により、`Accepted`以外は
-    /// この別ファイルへ書き、`keymap-learn-table.json`はそのまま残す。
+    /// 書き出す」というが、`keymap-learn-table.json`(採用済みの表、段階4読み手が直接読む)へ
+    /// 上書きすると、以前`Accepted`だった良い表が今回の失敗で失われる。ユーザー判断
+    /// (2026-09-23、opus-adversarial-consultのC-9)により、`Accepted`以外はこの別
+    /// ファイルへ書き、`keymap-learn-table.json`はそのまま残す。
     fn last_attempt_file_path() -> Option<PathBuf> {
         let config_path = awase::paths::resolve_relative_to_exe("config.toml");
         if !config_path.exists() {
@@ -158,27 +156,36 @@ mod app {
     /// `recording=false`の間もpressごとに呼ばれ、cell数が増えないのにelapsed_msだけ
     /// 伸びる不審な進捗行が出る)。
     ///
-    /// C-2対応: 固定回数ではなく、予測できたステップ数（[`ScoreReport::predicted`]）が
-    /// [`MIN_PREDICTED_STEPS`]に達するまで押下を続ける（縮退が激しい表ほど予測が
-    /// 集まりにくいため、固定300回では届かないことがある）。[`VERIFICATION_WALK_MAX_STEPS`]に
-    /// 達しても届かなければ、そこで打ち切って呼び出し元へ返す
-    /// （`judge_self_verification`が`InsufficientSamples`として不採用にする）。
+    /// C-2対応: 固定回数ではなく、予測できたステップ数([`ScoreReport::predicted`])が
+    /// [`MIN_PREDICTED_STEPS`]に達するまで押下を続ける。[`VERIFICATION_WALK_MAX_STEPS`]
+    /// (押下の試行回数)に達しても届かなければ打ち切って返す(`judge_self_verification`が
+    /// `InsufficientSamples`として不採用にする)。
     fn run_verification_walk<D: ImeDriver>(exec: &mut Executor<D>, rng: &mut Rng) -> ScoreReport {
         exec.set_progress_sink(|_, _| {});
         exec.set_recording(false);
         let mut walk = Vec::new();
+        let mut attempts = 0usize;
         let report = loop {
+            // opus-adversarial-consult round2 N3対応: セッション監視が既に
+            // 失敗と判定していたら、採点にならない押下を続けない。
+            if exec.driver.should_abort() {
+                break score_walk(&exec.table, DEFAULT_MIN_MINORITY, &walk);
+            }
             let key = rng.below(KEYS.len());
+            attempts += 1;
             if let Some(info) = exec.press(key) {
-                walk.push(WalkObs {
-                    status: info.before,
-                    key,
-                    outcome: info.outcome,
-                });
+                // round2 N1対応: 汚染された観測(外部からの書き込み・物理入力・
+                // フォーカス喪失)は採点に使わない。
+                if !info.contaminated {
+                    walk.push(WalkObs {
+                        status: info.before,
+                        key,
+                        outcome: info.outcome,
+                    });
+                }
             }
             let report = score_walk(&exec.table, DEFAULT_MIN_MINORITY, &walk);
-            if report.predicted() >= MIN_PREDICTED_STEPS
-                || walk.len() >= VERIFICATION_WALK_MAX_STEPS
+            if report.predicted() >= MIN_PREDICTED_STEPS || attempts >= VERIFICATION_WALK_MAX_STEPS
             {
                 break report;
             }
@@ -187,11 +194,8 @@ mod app {
         report
     }
 
-    /// C-7対応: 検証ウォーク専用の乱数シードを、実行のたびに変える（時刻由来）。
-    /// 学習本体の乱数（固定シード195、実行間の比較可能性のため意図的に固定）とは
-    /// 独立にする——共有すると、記録した`seed`だけではウォークの系列を再現できない
-    /// （学習でどれだけ乱数を消費したかに依存するため）し、固定シードだと「独立ウォーク」
-    /// としての性質も弱くなる。
+    /// C-7対応: 検証ウォーク専用の乱数シードを実行のたびに変える(時刻由来)。学習本体の
+    /// 乱数(固定シード195)と共有すると、記録した`seed`だけではウォークを再現できない。
     #[allow(clippy::cast_possible_truncation)]
     fn fresh_walk_seed() -> u64 {
         SystemTime::now()
@@ -203,10 +207,8 @@ mod app {
     /// renameで原子的に書き込む。指紋(ADR-195段階8)は、その計算方式自体がADR-196決定3で
     /// 再設計中のため、ここでは`None`のまま残す(ADR196-T5が実配線する)。
     ///
-    /// C-4/C-9対応: `judgement`が`Accepted`なら段階4読み手が直接読む本体
-    /// （`keymap-learn-table.json`）へ、それ以外（`Rejected`/`NeedsConfirmation`）は
-    /// [`last_attempt_file_path`]（以前`Accepted`だった良い表を今回の失敗で
-    /// 失わないため、ユーザー判断で別ファイルへ退避する設計）へ書く。
+    /// C-4/C-9対応: `judgement`が`Accepted`なら本体(`keymap-learn-table.json`)へ、
+    /// それ以外は[`last_attempt_file_path`]へ書く。
     ///
     /// 戻り値は(書き込もうとしたセル数, 書き込み結果)。
     fn persist_judged_table(
@@ -219,6 +221,7 @@ mod app {
         let persisted = PersistedTable::new(cells)
             .with_verification(verification)
             .with_judgement(judgement);
+        // C-9: `Accepted`以外は本体を上書きせず退避ファイルへ書く。
         let path_resolver: fn() -> Option<PathBuf> = if judgement == TableJudgement::Accepted {
             table_file_path
         } else {
@@ -239,69 +242,118 @@ mod app {
         (cell_count, write_result)
     }
 
-    /// ADR196-T2「1e前半」(C-1): このセッションで表を書かずに終了すべき理由。
-    /// `None`なら継続してよい。
-    fn session_failure_reason(driver: &RealImeDriver) -> Option<&'static str> {
-        if driver.session_failed() {
-            Some("external_write")
-        } else if !driver.hook_alive() {
-            Some("hook_lost")
-        } else {
-            None
-        }
-    }
-
-    /// `reason`があれば[`print_skipped_result_line`]を出して`true`(呼び出し元は
-    /// 表を書かずに`run_main`を終了すべき)を返す。`args.reason`は無視して`reason`で
-    /// 上書きする(`run_main`側で理由だけを都度差し替えられるようにするため)。
-    fn abort_without_persisting(reason: Option<&'static str>, args: SkippedResultArgs) -> bool {
-        let Some(reason) = reason else {
-            return false;
-        };
-        print_skipped_result_line(SkippedResultArgs { reason, ..args });
-        true
-    }
-
-    /// `run_main`の準備段階(モデル・prior・`Executor`・進捗sinkの構築)をまとめる
-    /// (clippyの`too_many_lines`回避、C-4指摘対応の一環でrun_mainを分割した)。
-    /// 学習で使う`rng`(固定シード195、実行間の比較可能性のため意図的に固定、
-    /// 検証ウォーク専用の`walk_rng`とは別、C-7)もここで作って返す。
-    #[allow(clippy::type_complexity)]
-    fn build_executor(
-        driver: RealImeDriver,
-    ) -> (
-        Executor<RealImeDriver>,
-        Prior,
-        CostModel,
-        Rng,
-        u32,
-        Vec<usize>,
+    /// `run_main`のうち、セッション監視が失敗と判定していないかを確認する
+    /// 部分（学習フェーズ直後・検証ウォーク直後の2箇所から呼ぶ、round2 N1
+    /// 対応で複製されていたブロックの共通化）。失敗していたら専用result行を
+    /// 出して`std::process::exit(1)`で終了する（round3 R3対応: 失敗時に
+    /// 終了コードを非0にする。result行を必ずflushしてから終了すること）。
+    /// 失敗していなければ何もせず戻る。
+    fn exit_if_session_failed(
+        executor: &Executor<RealImeDriver>,
+        strategy: Strategy,
+        training_elapsed_ms: f64,
+        training_presses: u32,
+        total_cells: u32,
+        decode_errors: u32,
     ) {
-        let initial = driver.initial_status();
-        let mut model = atok_like();
-        for state in &mut model.states {
-            // ヒューリスティックな初期仮説として、抽象mode 0/1を実機のConv値0x09/0x00へ対応づける。
-            state.status.mode = if state.status.mode == 0 { 0x09 } else { 0x00 };
+        if !executor.driver.session_failed() {
+            return;
         }
-        if let Some(index) = model
-            .states
-            .iter()
-            .position(|state| state.status == initial)
-        {
-            model.initial = index;
+        print_interference_failure_line(InterferenceFailureArgs {
+            strategy,
+            training_elapsed_ms,
+            training_presses,
+            covered1: executor.table.covered1(),
+            total_cells,
+            decode_errors,
+            contaminated_trials: executor.stats.contaminated_trials,
+            invalidated_trials: executor.driver.session_invalidated_trials(),
+        });
+        std::process::exit(1);
+    }
+
+    /// C-1/A-6/B-3: 学習・検証ウォーク完了後の、表を書かずに失敗とすべき理由
+    /// (フック断絶・学習中のIME切り替え・GJI設定変更)。`None`なら継続してよい。
+    fn end_of_session_abort_reason(
+        driver: &RealImeDriver,
+        tip_at_start: TipIdentity,
+        config1_db_at_start: Option<&[u8]>,
+    ) -> Option<&'static str> {
+        if !driver.hook_alive() {
+            return Some("hook_lost");
         }
+        if driver.query_tip_identity() != Some(tip_at_start) {
+            return Some("ime_unidentified_or_switched");
+        }
+        let config1_db_at_end = (tip_at_start == TipIdentity::Gji)
+            .then(awase_windows::gji_charset_autodetect::read_config1_db)
+            .flatten();
+        (config1_db_at_start != config1_db_at_end.as_deref()).then_some("gji_config_changed")
+    }
 
-        let mut rng = Rng::new(195);
-        let prior = Prior::from_machine(&model, 0.0, &mut rng);
-        let cost = CostModel::event();
-        let mut executor = Executor::new(driver, AnomalyPolicy::default(), ReadPolicy::Single);
+    /// ADR196-T2「1e前半」(C-1/A-6/B-3): `reason`があれば「何を測ったか確定できない」
+    /// セッション失敗として専用result行を出し、`exit_if_session_failed`と同じく
+    /// `std::process::exit(1)`で終了する(表は書かない、決定1b項目5)。
+    fn exit_if_skipped(
+        reason: Option<&'static str>,
+        executor: &Executor<RealImeDriver>,
+        strategy: Strategy,
+        training_elapsed_ms: f64,
+        training_presses: u32,
+        total_cells: u32,
+        decode_errors: u32,
+    ) {
+        let Some(reason) = reason else {
+            return;
+        };
+        eprintln!("学習セッションを失敗として終了しました(reason={reason}): 表は書き出しません");
+        println!(
+            "result status=failure strategy={} elapsed_ms={:.0} presses={} cells={} total={} \
+             decode_errors={} reason={}",
+            strategy.name(),
+            training_elapsed_ms,
+            training_presses,
+            executor.table.covered1(),
+            total_cells,
+            decode_errors,
+            reason,
+        );
+        let _ = std::io::stdout().flush();
+        std::process::exit(1);
+    }
 
-        // ADR-195段階6: 進捗(現在何セル目/推定残り時間)を標準出力へ運ぶ。
-        // awase-settings(較正ウィザード)はこの行をパースしてUI表示する。IPCは
-        // 使わない(ペイロードが1ワード固定で表本体を運べないため、詳細はADR
-        // 本文「段階6」節参照)。表本体はここでは一切標準出力へ出さない。
-        let total_cells = model.states.len() as u32 * KEYS.len() as u32;
-        executor.set_progress_sink(move |stats, table| {
+    /// round2 N2対応: `RealImeDriver::new()`はquiet window判定(外部からの
+    /// 書き込み・物理入力・フォーカス喪失、round1 M1/M3対応で発火条件が
+    /// 広がった)や、それ以外の初期化失敗(COM初期化・TSF起動・窓作成・
+    /// フック登録等)で`Err`を返すことがある。以前は呼び出し元が`?`でそのまま
+    /// プロセスの異常終了に委ねていたため、result行が出ず、awase-settings側の
+    /// 較正パネルには「結果を送らずに終了した」としか表示されなかった。他の
+    /// 失敗経路と同じresult行の形式で理由を伝えた上で、`std::process::exit(1)`
+    /// で終了する(round3 R3対応)。round3 R2対応:
+    /// `RealImeDriver::is_quiet_window_error`で原因を区別し、result行の
+    /// `reason`をquiet window判定によるものとそれ以外とで出し分ける。
+    fn build_driver(strategy: Strategy) -> RealImeDriver {
+        match RealImeDriver::new(KEYS.to_vec()) {
+            Ok(driver) => driver,
+            Err(err) => {
+                let total_cells_estimate = atok_like().states.len() as u32 * KEYS.len() as u32;
+                let reason = if RealImeDriver::is_quiet_window_error(&err) {
+                    "quiet_window"
+                } else {
+                    "init"
+                };
+                print_driver_init_failure_line(strategy, total_cells_estimate, &err, reason);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    /// 進捗(現在何セル目/推定残り時間)を標準出力へ運ぶsinkを作る(ADR-195段階6)。
+    /// awase-settings(較正ウィザード)はこの行をパースしてUI表示する。IPCは
+    /// 使わない(ペイロードが1ワード固定で表本体を運べないため、詳細はADR本文
+    /// 「段階6」節参照)。表本体はここでは一切標準出力へ出さない。
+    fn make_progress_sink(total_cells: u32) -> impl FnMut(&Stats, &Table) {
+        move |stats, table| {
             if stats.presses % PROGRESS_EVERY_N_PRESSES != 0 {
                 return;
             }
@@ -317,42 +369,73 @@ mod app {
                 "progress cell={cell} total={total_cells} elapsed_ms={elapsed_ms:.0} eta_ms={eta_ms:.0}"
             );
             let _ = std::io::stdout().flush();
-        });
+        }
+    }
 
-        (
-            executor,
-            prior,
-            cost,
-            rng,
-            total_cells,
-            model.history_suspects,
+    /// 学習の初期仮説モデル(ATOK風モデルの抽象modeを実機のConv値へ対応づけ、
+    /// 開始状態を実機の`initial`へ合わせる)。
+    fn build_model(
+        initial: awase_keymap_learn::model::Status,
+    ) -> awase_keymap_learn::model::Machine {
+        let mut model = atok_like();
+        for state in &mut model.states {
+            // ヒューリスティックな初期仮説として、抽象mode 0/1を実機のConv値0x09/0x00へ対応づける。
+            state.status.mode = if state.status.mode == 0 { 0x09 } else { 0x00 };
+        }
+        if let Some(index) = model
+            .states
+            .iter()
+            .position(|state| state.status == initial)
+        {
+            model.initial = index;
+        }
+
+        model
+    }
+
+    /// 決定1a: Microsoft IME本体なら既定で要確認。決定1b項目7〜9(既知構成の内蔵表突き合わせ
+    /// →再測定→`judgement::combine`)は未実装のため、自己検証の判定をそのまま使う。
+    fn judge_score(score: &ScoreReport, tip: TipIdentity) -> TableJudgement {
+        judge_self_verification(
+            score,
+            tip == TipIdentity::MsImeNative,
+            ACCURACY_THRESHOLD,
+            DEGENERATION_THRESHOLD,
+            MIN_PREDICTED_STEPS,
         )
     }
 
-    pub fn run_main() -> windows::core::Result<()> {
+    pub fn run_main() {
         let strategy = if std::env::args().any(|arg| arg == "--strategy=s0") {
             Strategy::S0
         } else {
             Strategy::S6
         };
-        let driver = RealImeDriver::new(KEYS.to_vec())?;
-        // A-6/B-3: 開始時点のTIP・(GJIのときだけ)config1.dbを記録する。終了時に
-        // 再取得して比較し、学習セッション中にユーザーがIME/GJI設定を切り替えて
-        // いないことを確認する(食い違えば表を書かずにセッション失敗とする)。
+        let driver = build_driver(strategy);
+        let initial = driver.initial_status();
+        // A-6/B-3: 開始時点のTIP・(GJIのときだけ)config1.dbを記録し、終了時に再取得して
+        // 比較する(学習中のIME/GJI設定の切り替え検出)。
         let tip_at_start = driver.tip_identity();
         let config1_db_at_start = (tip_at_start == TipIdentity::Gji)
             .then(awase_windows::gji_charset_autodetect::read_config1_db)
             .flatten();
+        let model = build_model(initial);
 
-        let (mut executor, prior, cost, mut rng, total_cells, history_suspects) =
-            build_executor(driver);
+        let mut rng = Rng::new(195);
+        let prior = Prior::from_machine(&model, 0.0, &mut rng);
+        let cost = CostModel::event();
+        let mut executor = Executor::new(driver, AnomalyPolicy::default(), ReadPolicy::Single);
+
+        let total_cells = model.states.len() as u32 * KEYS.len() as u32;
+        executor.set_progress_sink(make_progress_sink(total_cells));
+
         let req = Req::default();
         run(
             strategy,
             &mut executor,
             &prior,
             &cost,
-            &history_suspects,
+            &model.history_suspects,
             &req,
             &mut rng,
         );
@@ -361,7 +444,7 @@ mod app {
             strategy,
             &prior,
             &cost,
-            &history_suspects,
+            &model.history_suspects,
             &req,
             &mut rng,
         );
@@ -376,66 +459,58 @@ mod app {
         let training_elapsed_ms = executor.elapsed_ms();
         let training_presses = executor.stats.presses;
         let decode_errors = executor.driver.decode_error_count();
-        let covered1 = executor.table.covered1();
-        // `reason`はabort_without_persisting呼び出しごとに差し替える(残りは全区間共通)。
-        let skip_args = SkippedResultArgs {
+
+        // [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+        // (opus-adversarial-consult round1 M1対応): セッション監視
+        // (`RealImeDriver::check_session_interference`)が無効化上限を超えて
+        // いたら、検証ウォーク・表の書き出しへ進まずここで失敗として終了する。
+        // 汚染された観測(外部からの書き込み・物理入力・フォーカス喪失)は
+        // `Executor::press`が表への記録を既に見送っているが、無効化が多発した
+        // セッションは表の残りのセルの信頼性も疑わしいため、書き出さない。
+        exit_if_session_failed(
+            &executor,
             strategy,
             training_elapsed_ms,
             training_presses,
-            covered1,
             total_cells,
             decode_errors,
-            reason: "",
-        };
+        );
 
-        // C-1: 学習(+やり直し)完了時点で、外部からの書き込みによるセッション失敗・
-        // フック経路の断絶が無いか確認する。「不採用として書く」のではなく
-        // 「書かずに終了する」(決定1b項目5)。
-        if abort_without_persisting(session_failure_reason(&executor.driver), skip_args) {
-            return Ok(());
-        }
-
-        // C-7: 検証ウォーク専用の乱数(学習本体とは独立、時刻由来のシードで実行ごとに変わる)。
+        // C-7: 検証ウォーク専用の乱数(学習本体とは独立、時刻由来のシード)。
         let walk_seed = fresh_walk_seed();
         let mut walk_rng = Rng::new(walk_seed);
         let score = run_verification_walk(&mut executor, &mut walk_rng);
 
-        // C-1: 検証ウォーク中にも外部からの書き込みが観測されていないか再確認する。
-        if abort_without_persisting(session_failure_reason(&executor.driver), skip_args) {
-            return Ok(());
-        }
-
-        // A-6/B-3: 終了時点のTIP・config1.dbを再取得し、開始時と比較する。学習
-        // セッション中にユーザーがIME/GJI設定を切り替えていたら、前半と後半で
-        // 測定対象が別物になっている疑いが強いため、表を書かずに終了する。
-        let tip_at_end = executor.driver.query_tip_identity();
-        let config1_db_at_end = (tip_at_start == TipIdentity::Gji)
-            .then(awase_windows::gji_charset_autodetect::read_config1_db)
-            .flatten();
-        let ime_switch_reason =
-            (tip_at_end != Some(tip_at_start)).then_some("ime_unidentified_or_switched");
-        if abort_without_persisting(ime_switch_reason, skip_args) {
-            return Ok(());
-        }
-        let config_changed_reason =
-            (config1_db_at_start != config1_db_at_end).then_some("gji_config_changed");
-        if abort_without_persisting(config_changed_reason, skip_args) {
-            return Ok(());
-        }
-
-        // 決定1a: judge_self_verificationがMicrosoft IME本体かどうかを見て、既定の
-        // 採否・要確認を決める(NeedsConfirmation(UnverifiedMsImeNative))。
-        // 決定1b項目7〜9(既知構成なら内蔵表と突き合わせ、不一致セルを再測定して
-        // 系統的不一致ならjudgement::combineでNeedsConfirmation(SystematicMismatch)へ
-        // 下げる)は未実装のため、ここではself_verificationの判定をそのまま使う。
-        let is_ms_ime_native = tip_at_start == TipIdentity::MsImeNative;
-        let judgement = judge_self_verification(
-            &score,
-            is_ms_ime_native,
-            ACCURACY_THRESHOLD,
-            DEGENERATION_THRESHOLD,
-            MIN_PREDICTED_STEPS,
+        // round2 N1対応: 検証ウォーク中にセッション監視が失敗と判定していたら、
+        // (学習フェーズ直後のチェックだけでは検証ウォーク中の汚染を見逃すため)
+        // ここでも確認し、表を書き出さない。
+        exit_if_session_failed(
+            &executor,
+            strategy,
+            training_elapsed_ms,
+            training_presses,
+            total_cells,
+            decode_errors,
         );
+
+        // C-1/A-6/B-3: フック断絶・学習中のIME切り替え・GJI設定変更のいずれかなら
+        // 何を測ったか確定できないため、表を書かずに失敗として終了する。
+        let abort_reason = end_of_session_abort_reason(
+            &executor.driver,
+            tip_at_start,
+            config1_db_at_start.as_deref(),
+        );
+        exit_if_skipped(
+            abort_reason,
+            &executor,
+            strategy,
+            training_elapsed_ms,
+            training_presses,
+            total_cells,
+            decode_errors,
+        );
+
+        let judgement = judge_score(&score, tip_at_start);
         let verification = ScoredVerification {
             score,
             seed: walk_seed,
@@ -446,7 +521,7 @@ mod app {
             strategy,
             training_elapsed_ms,
             training_presses,
-            covered1,
+            covered1: executor.table.covered1(),
             total_cells,
             decode_errors,
             cell_count,
@@ -459,7 +534,69 @@ mod app {
                 "警告: observe_imm失敗によるフォールバックが{decode_errors}回発生。学習表に信頼できない観測が混じっている可能性がある。"
             );
         }
-        Ok(())
+    }
+
+    /// [`print_interference_failure_line`]の引数。
+    #[derive(Clone, Copy)]
+    struct InterferenceFailureArgs {
+        strategy: Strategy,
+        training_elapsed_ms: f64,
+        training_presses: u32,
+        covered1: usize,
+        total_cells: u32,
+        decode_errors: u32,
+        contaminated_trials: u32,
+        invalidated_trials: u32,
+    }
+
+    /// [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+    /// (round1 M1対応): セッション監視の無効化上限を超えたときの専用result行。
+    /// `print_result_line`と同じ`result status=... strategy=...`の形式を保ち
+    /// `reason=interference`を足す——awase-settings(較正ウィザード)がこの行を
+    /// パースする前提(ADR-195段階6)を崩さないため。
+    fn print_interference_failure_line(args: InterferenceFailureArgs) {
+        eprintln!(
+            "学習セッションを失敗として終了します: 外部からの書き込み・物理入力・\
+             フォーカス喪失により{}回の試行が無効化上限を超えました(汚染された観測{}件)。\
+             学習表は書き出しません。",
+            args.invalidated_trials, args.contaminated_trials
+        );
+        println!(
+            "result status=failure strategy={} elapsed_ms={:.0} presses={} cells={} total={} \
+             decode_errors={} contaminated_trials={} invalidated_trials={} reason=interference",
+            args.strategy.name(),
+            args.training_elapsed_ms,
+            args.training_presses,
+            args.covered1,
+            args.total_cells,
+            args.decode_errors,
+            args.contaminated_trials,
+            args.invalidated_trials,
+        );
+        let _ = std::io::stdout().flush();
+    }
+
+    /// [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+    /// (opus-adversarial-consult round2 N2対応): `RealImeDriver::new()`の
+    /// 初期化が失敗したときの専用result行。他のresult status=failure行と
+    /// 同じ形式にし、`awase-settings`側が結果を確実にパースできるようにする
+    /// (N2以前はプロセスが`Err`のまま終了し、result行が一切出ず「結果を
+    /// 送らずに終了しました」としか表示されなかった)。`reason`は
+    /// quiet window判定によるものかそれ以外かを呼び出し側
+    /// (`build_driver`、round3 R2対応)が区別して渡す。
+    fn print_driver_init_failure_line(
+        strategy: Strategy,
+        total_cells: u32,
+        err: &windows::core::Error,
+        reason: &str,
+    ) {
+        eprintln!("学習プロセスの初期化に失敗しました: {err}");
+        println!(
+            "result status=failure strategy={} elapsed_ms=0 presses=0 cells=0 total={total_cells} \
+             decode_errors=0 reason={reason}",
+            strategy.name(),
+        );
+        let _ = std::io::stdout().flush();
     }
 
     /// [`print_result_line`]の引数(clippyの`too_many_arguments`回避のため構造体にまとめる)。
@@ -477,10 +614,8 @@ mod app {
         write_result: &'a Result<(), String>,
     }
 
-    /// `judgement`を`result`行に載せる短い文字列表現。詳細な理由は表ファイル
-    /// （`judgement`フィールド、JSON）に残るため、ここでは大分類のみでよい
-    /// （`parse_learn_line`は未知のフィールドを無視するので、awase-settingsは
-    /// 壊れない）。
+    /// `judgement`を`result`行に載せる大分類(詳細な理由は表ファイルのJSONに残る。
+    /// `parse_learn_line`は未知のフィールドを無視するのでawase-settingsは壊れない)。
     fn judgement_tag(judgement: TableJudgement) -> &'static str {
         match judgement {
             TableJudgement::Accepted => "accepted",
@@ -491,10 +626,9 @@ mod app {
 
     /// ADR-195段階6決定5(項目5): result行は書き込みに成功してから出す
     /// (失敗したのに"success"を名乗らない)。`status=success`は「(採否に関わらず)表を
-    /// 書けた」の意味のまま残す——`Rejected`/`NeedsConfirmation`でも
-    /// `last_attempt_file_path`への書き込みが成功していれば`success`になる
-    /// （C-4: awase-settings側は`judgement=`を見て利用者に「学習完了」と
-    /// 誤解させない表示を出すこと）。
+    /// 書けた」の意味のまま残す——`Rejected`/`NeedsConfirmation`でも退避ファイルへの
+    /// 書き込みが成功していれば`success`になる(awase-settings側は`judgement=`を見て
+    /// 「学習完了」と誤解させない表示にすること)。
     fn print_result_line(args: ResultLineArgs) {
         match args.write_result {
             Ok(()) => {
@@ -532,43 +666,6 @@ mod app {
                 );
             }
         }
-        let _ = std::io::stdout().flush();
-    }
-
-    /// [`print_skipped_result_line`]の引数。
-    #[derive(Clone, Copy)]
-    struct SkippedResultArgs {
-        strategy: Strategy,
-        training_elapsed_ms: f64,
-        training_presses: u32,
-        covered1: usize,
-        total_cells: u32,
-        decode_errors: u32,
-        reason: &'static str,
-    }
-
-    /// ADR196-T2「1e前半」(C-1): セッション失敗（外部からの書き込み・フック断絶・
-    /// IME/GJI設定の切り替え）で表を一切書かずに終了する場合の結果行。
-    /// `RejectedReason`（書き手の採否判定）とは異なる——こちらは「何を測ったか
-    /// 確定できなかった」ため判定そのものを行わなかったことを表す
-    /// （opus-adversarial-consult 2026-09-23 C-1: 「不採用として書く」のではなく
-    /// 「書かない」、決定1b項目5の文言どおり）。
-    fn print_skipped_result_line(args: SkippedResultArgs) {
-        eprintln!(
-            "学習セッションを失敗として終了しました(reason={}): 表は書き出しません",
-            args.reason
-        );
-        println!(
-            "result status=failure strategy={} elapsed_ms={:.0} presses={} cells={} total={} \
-             decode_errors={} reason={}",
-            args.strategy.name(),
-            args.training_elapsed_ms,
-            args.training_presses,
-            args.covered1,
-            args.total_cells,
-            args.decode_errors,
-            args.reason,
-        );
         let _ = std::io::stdout().flush();
     }
 
@@ -659,8 +756,8 @@ mod app {
 }
 
 #[cfg(windows)]
-fn main() -> windows::core::Result<()> {
-    app::run_main()
+fn main() {
+    app::run_main();
 }
 
 #[cfg(not(windows))]
