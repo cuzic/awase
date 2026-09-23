@@ -11,7 +11,8 @@
 //! `metrics`(指標) / `sample_models`(具体的なモデル例=合成ランダムモデルとATOK風モデル) /
 //! `verify`(段階2: 独立ランダムウォークでの自己検証、誤りに強い分類) /
 //! `persist`(学習結果の永続化フォーマット、ADR-195段階3) / `staleness`(学習済み表の陳腐化検出、
-//! ADR-195段階8) / `minimize`(段階5: 隠れ状態を最小のMealy機械として求めるpartition refinement)。
+//! ADR-195段階8) / `revalidation`(バージョン相当の情報の不一致を「要再検証」として扱う判定、
+//! ADR-196決定3a) / `minimize`(段階5: 隠れ状態を最小のMealy機械として求めるpartition refinement)。
 
 pub mod anomaly;
 pub mod cost;
@@ -21,6 +22,7 @@ pub mod metrics;
 pub mod minimize;
 pub mod model;
 pub mod persist;
+pub mod revalidation;
 pub mod rng;
 pub mod sample_models;
 pub mod sim;
