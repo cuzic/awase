@@ -1,11 +1,31 @@
 # ADR-196 T2: 採否判定（自己検証正答率・内蔵表突き合わせ・再測定）を実装する
 
 状態: **一部実装済み（2026-09-23）**。0(内蔵表への参照経路)・1a(自己検証正答率の採否条件、
-`judgement::judge_self_verification`)・1c(既知3構成判定、`awase-gji-config::known_keymap`)は
-develop統合済み（PR #259: `judgement.rs`・`known_keymap.rs`、PR #263: `diff_against_bundled`）。
-**残作業**: 1b-8(判定書き換えモードのCLI実装)・1b項目7〜9のうち再測定オーケストレーション
-（`BundledDiff::mismatched`を入力に、実際にIMEを再度叩いて確認する部分。`awase-keymap-learn-win`側の
-`ImeDriver`実装が前提、未着手）・1e後半（不具合報告=`bug_report.rs`への添付配線、未着手）。
+`judgement::judge_self_verification`)・1c(既知3構成判定、`awase-gji-config::known_keymap`)・
+1b-8(判定書き換えモード、`judgement::adopt_needs_confirmation`+
+`awase-keymap-learn-win --adopt-pending-judgement`)はdevelop統合済み（PR #259:
+`judgement.rs`・`known_keymap.rs`、PR #263: `diff_against_bundled`、PR #265: 1b-8）。
+
+**残作業**:
+- **1b項目7〜9のうち再測定オーケストレーション**（`BundledDiff::mismatched`を入力に、実際に
+  IMEを再度叩いて確認する部分。`awase-keymap-learn-win`側の`ImeDriver`実装が前提、未着手）。
+- **1e前半（通常の学習セッションへの配線、2026-09-23調査で判明した新規ギャップ）**:
+  `main.rs::run_main`は現在、自己検証ウォークの`ScoreReport`を計算する(`run_verification_walk`)
+  ものの、`judge_self_verification`を呼ばず、`PersistedTable::with_verification`/
+  `with_judgement`も一切呼んでいない(`persist_learned_table`は`PersistedTable::new(cells)`
+  のまま)——判定ロジック自体(0/1a/1c/1b-8)は実装済みでも、通常の学習フローでは一度も
+  実行されていない。配線には`judge_self_verification`の`is_ms_ime_native: bool`引数を
+  埋める入力が要るが、**現状`awase-keymap-learn-win`にはこれを判定する手段が無い**
+  （GJI/Microsoft IME本体のどちらに対して学習しているかを自動検出するロジックが存在しない、
+  `awase-settings`側の起動コード`start_keymap_learning`もCLI引数を一切渡していない）。
+  この検出方法自体が未設計のため、非自明な設計判断として次に着手するセッションが
+  opus-adversarial-consult等で検討することを推奨する(選択肢の例: `awase-windows`の
+  focus/classify相当のGJIプロセス検出を`awase-keymap-learn-win`から呼べるようにする、
+  `awase-settings`が起動前に判定して`--ms-ime-native`のようなCLI引数で渡す、等)。
+  1c(既知3構成の突き合わせ、`diff_against_bundled`+`classify_known_gji_keymap`)の配線も
+  同じ`run_main`内で行うべきで、GJI設定(`session_keymap`/`overlay_keymaps`/
+  `custom_keymap_table`)の実行時読込手段が同様に未配線。
+- **1e後半（不具合報告=`bug_report.rs`への添付配線、未着手）**。
 [ADR195-T2](adr195-t2-self-verification.md)（自己検証本体。正答率・縮退率の**計算**はT2の担当、
 本タスクは**採否判定**の担当——役割を分けること）・[ADR195-T3](adr195-t3-persistence.md)
 （永続化、スキーマに本タスクの出力フィールドを追加済みであること）・[ADR196-T3](adr196-t3-bundled-table-versioning.md)
