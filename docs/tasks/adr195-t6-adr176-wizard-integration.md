@@ -1,5 +1,11 @@
 # ADR-195 T6: ADR-176較正ウィザードとの統合（段階6）を実装する
 
+**【ADR-196で一部置換】実装対象5「同梱表と同じ構成なら学習を勧めない」は、
+[ADR-196](../adr/196-keymap-learn-truth-priority.md)決定2（構成に関わらず学習ボタンを
+同じ導線で案内し、状態表示1行だけを変える）に置き換わった。実装対象1〜4（子プロセス
+起動・進捗表示）はそのまま有効。新しいUI方針は[ADR196-T4](adr196-t4-ui-status-and-adoption.md)
+を参照。**
+
 状態: 未着手（2026-09-23起票）。[ADR195-T1](adr195-t1-independent-learning-process.md)
 完了後に着手（起動対象となる学習プロセスが必要）。ADR-176は既にdevelopマージ済み。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。

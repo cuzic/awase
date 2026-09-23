@@ -1,5 +1,14 @@
 # ADR-195 T8: 陳腐化検出（段階8）を実装する
 
+**【ADR-196で置換】本タスクが定める「フィンガープリント不一致→即時失効」は、
+[ADR-196](../adr/196-keymap-learn-truth-priority.md)決定3（失効ではなく「要再検証」。
+GJI/Microsoft IME本体のバージョン相当の情報をフィンガープリントに追加）に置き換わった。
+新しい実装対象は[ADR196-T5](adr196-t5-revalidation-not-invalidation.md)を参照。**
+**既存の実装ブランチ`feat/adr195-t8-staleness-detection`（developに未マージ、コミット
+`3613707e`/`f5d53047`）は旧設計（即時失効）で書かれているため、そのブランチを土台に
+ADR-196決定3の差分を当てる形での作り直しを推奨する（ADR196-T5参照。ゼロから作り
+直さない）。**
+
 状態: 未着手（2026-09-23起票）。[ADR195-T3](adr195-t3-persistence.md)/
 [ADR195-T4](adr195-t4-runtime-loading.md)完了後に着手。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
