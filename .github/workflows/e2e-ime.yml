@@ -69,9 +69,9 @@ jobs:
           # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME)
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe'):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false'):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom)
           SC_IMES = [('msime-native', 'msime', 1, ' --msime'), ('gji-msime', 'gji', 2, ''), ('gji-atok', 'gji', 1, '')]
           configs = [
             # --- 撤去実験(ATOK、実機E1〜E7bと同じ) ---
@@ -216,6 +216,15 @@ jobs:
                 args='--seq=F3,F3,F4,F4,F3,F4,F4,F3 --msime'),
             # MS-IME本体で、スキャンコード付き/無しの注入(NOSCAN|0xF2 等)がIMEを開くか(awase の再注入は scan=0)
             cfg('sc-probe-vk-msime-native', 'observe', check='vkprobe', args='--vkprobe --msime', ime='msime', awase='false'),
+            # ADR-197: MS-IME「以前のバージョンのMicrosoft IMEを使う」互換モード限定の詳細キーカスタマイズ
+            # (旧UI、keystyle+StyleList、msime_legacy_keymap.rs が検出)で、無変換/変換キーに「IMEオン/オフ」
+            # トグルを割り当てると、直接入力中の単独タップで実際にIME ONになるか(2026-09-23 dragonflyg4実機
+            # diffで確認したStyleList\Custom\keyの内容と同じ2レコードをCIで再現)。keystyle=NATURAL(既定、
+            # CIランナーの素の状態)との対で比較する——awaseなし(observe専用)、seqは同一(無変換→変換)。
+            cfg('sc-legacy-natural-keystyle', 'observe', check='consistency', ime='msime', awase='false',
+                runs=1, args='--seq=1D,1C --msime'),
+            cfg('sc-legacy-custom-keystyle', 'observe', check='consistency', ime='msime', awase='false',
+                runs=1, args='--seq=1D,1C --msime', legacy_custom='true'),
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
@@ -369,6 +378,37 @@ jobs:
           Start-Sleep -Seconds 1
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
+
+      # ADR-197: MS-IME「以前のバージョンのMicrosoft IMEを使う」互換モード限定の詳細キーカスタマイズ(旧UI)を
+      # 再現する。2026-09-23 dragonflyg4実機の StyleList\Custom\key の実測データ(無変換=CE CD CD CD CD CD、
+      # 変換=CE CD CD CD CD CD、1列目=直接入力状態での機能コード="IMEオン/オフ"トグル)と同じ2レコードだけを
+      # 持つ最小のテーブルを作る(`msime_legacy_keymap.rs`が読むのは無変換/変換ラベルの行だけなので機能的に等価)。
+      # keystyle を Custom に切り替えると同時にこのテーブルを有効化する(旧UIの「ユーザー定義」タブで保存した
+      # ときの実際の見え方と同じ)。互換モード自体(Tsf3Override\...\NoTsf3Override2)は変更しない
+      # (ADR-197の非目的、値を読むだけなら常に有効という前提で検証する)。
+      - name: MS-IME 旧UI互換の詳細キーカスタマイズ(keystyle=Custom)を再現する
+        if: matrix.cfg.ime == 'msime' && matrix.cfg.legacy_custom == 'true'
+        shell: pwsh
+        run: |
+          $base = 'HKCU:\Software\Microsoft\IME\15.0\IMEJP'
+          New-Item -Path "$base\StyleList\Custom" -Force | Out-Null
+          $table = [System.Collections.Generic.List[byte]]::new()
+          function Add-Rec([byte[]]$nameBytes) {
+            $table.AddRange($nameBytes)
+            $table.Add([byte][char]'=')
+            $table.AddRange([Text.Encoding]::ASCII.GetBytes('CE CD CD CD CD CD'))
+            $table.Add(0)
+          }
+          Add-Rec ([byte[]](0x96, 0xb3, 0x95, 0xcf, 0x8a, 0xb7)) # 無変換(Shift-JIS)
+          Add-Rec ([byte[]](0x95, 0xcf, 0x8a, 0xb7))             # 変換(Shift-JIS)
+          $table.Add(0) # リスト終端の追加NUL(msime_legacy_keymap.rs の split(|&b| b == 0x00) に対応)
+          Set-ItemProperty -Path "$base\StyleList\Custom" -Name key -Value ([byte[]]$table.ToArray()) -Type Binary -Force
+          Set-ItemProperty -Path "$base\MSIME" -Name keystyle -Value 'Custom' -Type String -Force
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+          "keystyle=$((Get-ItemProperty "$base\MSIME" -Name keystyle).keystyle) key_len=$($table.Count)"
 
       # smoke ゲート: 本番シャードは、同じ run 内の smoke ジョブ(matrix.cfg.gate)が成功するまで待ち、失敗したら中身を実行しない。
       # smoke と同時に起動する(GJI導入・言語設定は smoke と並行して済ませる)ので、待ちは smoke の残り時間だけで済む。
