@@ -236,6 +236,12 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
     // （実書き込み判定）を分離し、`with_app`失敗時は`inputs=None`
     // （記録できない、163-T6のカウンタ対象）・`is_input_relay=false`
     // （fail-open、書き込みは続行）に戻す。
+    // ADR-180決定1: この`with_app`クロージャを`run_open_chain_async`冒頭
+    // （下記）と共有ヘルパーへ統合しない。`fallback_write`は既に別の
+    // `with_app`クロージャの中でこの判定を行うため、`with_app`を内包する
+    // ヘルパーを導入すると`fallback_write`から呼んだ瞬間に再入で
+    // `try_borrow_mut`失敗→fail-open→このプロファイル非所有ゲートが
+    // 恒久的に無効化される（issue #136/BUG-90型の回帰）。
     let gate = crate::with_app(|app| {
         let view = app.shadow_ime_control_view();
         let inputs = (&view).into();
@@ -444,6 +450,10 @@ fn fallback_write(
     mechanism: WriteMechanism,
     open: bool,
 ) -> (ImeOpenOutcome, Option<AttemptRecord>) {
+    // ADR-180決定1: `imm_cross_write`/`run_open_chain_async`と同じ理由で
+    // `with_app`を内包する共有ゲートヘルパーへは統合しない——この関数自身が
+    // その候補ヘルパーの唯一の再入元になる（下のBUG-113対策の`shadow_on =
+    // None`上書きも`decide_gate`より前に必要なため、単純な委譲にもできない）。
     crate::with_app(|app| {
         let mut view = app.shadow_ime_control_view();
         let shadow_on_before_bug113_override = view.control.shadow_on;
