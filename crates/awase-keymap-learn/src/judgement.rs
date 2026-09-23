@@ -227,6 +227,48 @@ impl ReconciliationSummary {
     }
 }
 
+/// [`adopt_needs_confirmation`]が拒否した理由。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdoptRejected {
+    /// 表に採否判定そのものが無い（学習セッションが1a判定まで完走していない）。
+    NoJudgement,
+    /// 不採用（95%未満・縮退率超過）は、1a「分母の操作によるセル選別での水増しは
+    /// 禁止」という安全弁の下でユーザー操作による採用対象にしない。
+    Rejected,
+}
+
+impl std::fmt::Display for AdoptRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NoJudgement => "no_judgement",
+            Self::Rejected => "rejected",
+        })
+    }
+}
+
+/// 決定1b-8: 「学習結果を使う」操作(`awase-settings`)から起動される判定書き換え
+/// モードの中核。要確認状態(`NeedsConfirmation`、理由は問わない——系統的不一致と
+/// Microsoft IME本体未検証のどちらも対象)の判定だけを`Accepted`へ書き換える。
+/// 既に採用済み(`Accepted`)の呼び出しは**冪等な成功**として扱う(code-review指摘:
+/// 「学習結果を使う」ボタンの二重クリック・UIが結果を取りこぼして再試行、のいずれも
+/// 目的の状態〈採用済み〉に既に到達しているのを失敗扱いするとUI側が誤って
+/// エラー表示しうるため)。
+///
+/// 表ファイルへの書き込みは呼び出し側(`awase-keymap-learn-win`、Windows専用の
+/// ファイルI/O)の責務。本関数はメモリ上の判定値を書き換えるだけの純粋関数
+/// (ホストでユニットテスト可能、決定1b-8のロジック自体はOS非依存)。
+pub fn adopt_needs_confirmation(
+    judgement: Option<TableJudgement>,
+) -> Result<TableJudgement, AdoptRejected> {
+    match judgement {
+        Some(TableJudgement::NeedsConfirmation(_) | TableJudgement::Accepted) => {
+            Ok(TableJudgement::Accepted)
+        }
+        Some(TableJudgement::Rejected(_)) => Err(AdoptRejected::Rejected),
+        None => Err(AdoptRejected::NoJudgement),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,5 +445,63 @@ mod tests {
         summary.record(CellReconciliation::OnlyInOneTable);
         assert_eq!(summary.common_cells(), 0);
         assert!(!summary.is_systematic_mismatch(0.0));
+    }
+
+    #[test]
+    fn adopt_accepts_systematic_mismatch_needs_confirmation() {
+        let judgement = Some(TableJudgement::NeedsConfirmation(
+            NeedsConfirmationReason::SystematicMismatch {
+                mismatch_percent: 40,
+            },
+        ));
+        assert_eq!(
+            adopt_needs_confirmation(judgement),
+            Ok(TableJudgement::Accepted)
+        );
+    }
+
+    #[test]
+    fn adopt_accepts_unverified_ms_ime_native_needs_confirmation() {
+        let judgement = Some(TableJudgement::NeedsConfirmation(
+            NeedsConfirmationReason::UnverifiedMsImeNative,
+        ));
+        assert_eq!(
+            adopt_needs_confirmation(judgement),
+            Ok(TableJudgement::Accepted)
+        );
+    }
+
+    #[test]
+    fn adopt_is_idempotent_for_already_accepted() {
+        // code-review指摘: 二重クリック・再試行が目的の状態(採用済み)に既に到達して
+        // いるのを失敗扱いしない(冪等な成功)。
+        assert_eq!(
+            adopt_needs_confirmation(Some(TableJudgement::Accepted)),
+            Ok(TableJudgement::Accepted)
+        );
+    }
+
+    #[test]
+    fn adopt_rejects_low_accuracy_rejection() {
+        // 不採用(95%未満・縮退率超過)は、水増し禁止の安全弁として
+        // ユーザー操作での採用対象にしない(1b-8はNeedsConfirmationだけが対象)。
+        assert_eq!(
+            adopt_needs_confirmation(Some(TableJudgement::Rejected(RejectedReason::LowAccuracy))),
+            Err(AdoptRejected::Rejected)
+        );
+        assert_eq!(
+            adopt_needs_confirmation(Some(TableJudgement::Rejected(
+                RejectedReason::HighDegeneration
+            ))),
+            Err(AdoptRejected::Rejected)
+        );
+    }
+
+    #[test]
+    fn adopt_rejects_missing_judgement() {
+        assert_eq!(
+            adopt_needs_confirmation(None),
+            Err(AdoptRejected::NoJudgement)
+        );
     }
 }

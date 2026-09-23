@@ -4,8 +4,9 @@
 `judgement::judge_self_verification`)・1c(既知3構成判定、`awase-gji-config::known_keymap`)・
 1e前半（判定を実際の学習フロー`run_main`へ配線、C-1〜C-9対応、下記参照）はdevelop統合済み
 またはPR起票済み（PR #259: `judgement.rs`・`known_keymap.rs`、PR #263: `diff_against_bundled`、
-PR #269: 1e前半の配線 + `known_keymap.rs`の既知構成誤判定バグ修正）。1b-8(判定書き換えモード)は
-PR #265で別途実装中（develop未統合）。
+PR #269: 1e前半の配線 + `known_keymap.rs`の既知構成誤判定バグ修正）。1b-8(判定書き換えモード、
+`judgement::adopt_needs_confirmation`+`awase-keymap-learn-win --adopt-pending-judgement`)は
+PR #265でdevelop統合（stdoutの`reason=`は空白なしコードのみ、詳細はstderr。採用済みへの再実行は冪等成功）。
 **残作業**: 1b項目7〜9のうち再測定オーケストレーション（`BundledDiff::mismatched`を入力に、
 実際にIMEを再度叩いて確認する部分。`awase-keymap-learn-win`側の`ImeDriver`実装が前提、未着手。
 `judgement::combine`はPR #269で先に用意済み、`run_main`からは`reconciliation: None`で
@@ -126,7 +127,7 @@ COM STA初期化・`ITfThreadMgr::Activate`済みのスレッドを持ってお�
 **未実装（残作業）**: 決定1b項目9の不一致分布タグ、`REMEASURE_MAX_SETUP_PRESSES`(60)/
 `REMEASURE_RESET_EVERY`(12)の実機での到達所要押下数の実測、実機(RealImeDriver)での動作確認。
 
-**1e後半（不具合報告への添付）**: 別途、**不具合報告への添付は本タスクに一本化する**
+**1e後半（不具合報告への添付）【実装済み（`BugReportKeymapLearnSummary`、`attach_ime_keymap`相乗り・`SCHEMA_VERSION`据え置き）。ただし決定1b項目7〜9の再測定結果とADR196-T1の外部書き込み観測は現状どこにも永続化されていないため未添付——永続化され次第同型へ追加する】**: 別途、**不具合報告への添付は本タスクに一本化する**
 （[ADR195-T4](adr195-t4-runtime-loading.md)
   実装対象5が挙げていた「学習表を使用中か」「フィンガープリント」は
   [ADR196-T5](adr196-t5-revalidation-not-invalidation.md)が計算するが、添付項目として

@@ -9,12 +9,12 @@ mod app {
     use awase_keymap_learn::exec::{Executor, ImeDriver, ReadPolicy, Stats};
     use awase_keymap_learn::graph::Prior;
     use awase_keymap_learn::judgement::{
-        combine, judge_self_verification, ReconciliationSummary, ScoredVerification,
-        TableJudgement, ACCURACY_THRESHOLD, DEGENERATION_THRESHOLD, MIN_PREDICTED_STEPS,
-        SYSTEMATIC_MISMATCH_THRESHOLD,
+        adopt_needs_confirmation, combine, judge_self_verification, AdoptRejected,
+        ReconciliationSummary, ScoredVerification, TableJudgement, ACCURACY_THRESHOLD,
+        DEGENERATION_THRESHOLD, MIN_PREDICTED_STEPS, SYSTEMATIC_MISMATCH_THRESHOLD,
     };
     use awase_keymap_learn::model::KeyId;
-    use awase_keymap_learn::persist::{PersistedCell, PersistedTable};
+    use awase_keymap_learn::persist::{from_json, LoadError, PersistedCell, PersistedTable};
     use awase_keymap_learn::remeasure::{
         reconcile_with_bundled, MismatchedTarget, RemeasureParams,
     };
@@ -31,6 +31,13 @@ mod app {
     const KEYS: [u32; 14] = [
         0x1D, 0x1C, 0xF2, 0xF1, 0xF0, 0xF3, 0x19, 0x16, 0x1A, 0x1B, 0x0D, 0x20, 0x08, 0x41,
     ];
+
+    /// ADR-196決定1b-8: 判定書き換えモード起動フラグ。`awase-settings`の
+    /// 「学習結果を使う」ボタン([ADR196-T4](../../../docs/tasks/adr196-t4-ui-status-and-adoption.md)、
+    /// 未実装)が、実機のIME駆動を一切せずこのプロセスをこのフラグで再起動して、
+    /// 要確認状態の判定だけをアトミックに採用へ書き換える(表ファイルの書き手は
+    /// 学習プロセスのみという原則、決定3aを保つため)。
+    const ADOPT_PENDING_JUDGEMENT_FLAG: &str = "--adopt-pending-judgement";
 
     /// ADR-195段階6: 何押下ごとに標準出力へ進捗行を書き出すか。毎回書くと
     /// 子プロセス側(awase-settings)のパース負荷・パイプI/Oが無駄に増えるため間引く。
@@ -243,6 +250,87 @@ mod app {
                     .map_err(|e| format!("{}への書き込みに失敗: {e:#}", path.display()))
             });
         (cell_count, write_result)
+    }
+
+    /// 判定書き換えモードの失敗理由。`code()`は標準出力の`reason=`欄へ載せる
+    /// 空白・コロンを含まない固定トークン(code-review指摘: パス・OSエラー文言を
+    /// 含む自由形式の理由をそのまま`reason=`へ埋めると、awase-settings側の
+    /// `split_whitespace()`+`key=value`パース〈`keymap_learn_launcher::parse_learn_line`、
+    /// 既存の`result`行と同じ規約〉が壊れる)。詳細はこの型の`Display`でeprintln専用に持つ
+    /// (既存の`print_result_line`が失敗時に`eprintln!`で詳細を逃がすのと同じ流儀)。
+    #[derive(Debug)]
+    enum AdoptFailure {
+        NoConfig,
+        ReadFailed(std::path::PathBuf, std::io::Error),
+        ParseFailed(LoadError),
+        Rejected(AdoptRejected),
+        SerializeFailed(serde_json::Error),
+        WriteFailed(std::path::PathBuf, anyhow::Error),
+    }
+
+    impl AdoptFailure {
+        const fn code(&self) -> &'static str {
+            match self {
+                Self::NoConfig => "no_config",
+                Self::ReadFailed(..) => "read_failed",
+                Self::ParseFailed(..) => "parse_failed",
+                Self::Rejected(AdoptRejected::NoJudgement) => "no_judgement",
+                Self::Rejected(AdoptRejected::Rejected) => "rejected",
+                Self::SerializeFailed(..) => "serialize_failed",
+                Self::WriteFailed(..) => "write_failed",
+            }
+        }
+    }
+
+    impl std::fmt::Display for AdoptFailure {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::NoConfig => write!(f, "config.tomlが見つかりません"),
+                Self::ReadFailed(path, e) => write!(f, "{}への読み込みに失敗: {e}", path.display()),
+                Self::ParseFailed(e) => write!(f, "{e}"),
+                Self::Rejected(reason) => write!(f, "{reason}"),
+                Self::SerializeFailed(e) => write!(f, "表のシリアライズに失敗: {e}"),
+                Self::WriteFailed(path, e) => {
+                    write!(f, "{}への書き込みに失敗: {e:#}", path.display())
+                }
+            }
+        }
+    }
+
+    /// 決定1b-8の中核: 既存の`keymap-learn-table.json`を読み、要確認状態の判定を
+    /// アトミックに採用へ書き換える。純粋な採否ロジック(`adopt_needs_confirmation`)は
+    /// `awase-keymap-learn::judgement`が持つ(ホストでユニットテスト済み)——本関数は
+    /// ファイルI/Oの糊付けのみ。パスを引数化しているのはテスト容易性のため
+    /// (`table_file_path()`自体はexe相対探索でテストで差し替えられない)。
+    fn adopt_pending_judgement_at(path: &std::path::Path) -> Result<(), AdoptFailure> {
+        let json = std::fs::read_to_string(path)
+            .map_err(|e| AdoptFailure::ReadFailed(path.to_path_buf(), e))?;
+        let mut table = from_json(&json).map_err(AdoptFailure::ParseFailed)?;
+        table.judgement =
+            Some(adopt_needs_confirmation(table.judgement).map_err(AdoptFailure::Rejected)?);
+        let rewritten = table.to_json().map_err(AdoptFailure::SerializeFailed)?;
+        awase::fs_atomic::write_atomic(path, rewritten.as_bytes())
+            .map_err(|e| AdoptFailure::WriteFailed(path.to_path_buf(), e))
+    }
+
+    fn adopt_pending_judgement() -> Result<(), AdoptFailure> {
+        let path = table_file_path().ok_or(AdoptFailure::NoConfig)?;
+        adopt_pending_judgement_at(&path)
+    }
+
+    /// 判定書き換えモードのエントリポイント。成否を標準出力へ運ぶ(awase-settings側の
+    /// パース対象、`result`行とは別の`adopt`行——学習セッションの結果ではないため)。
+    /// 失敗の詳細(パス・OSエラー文言)はstderrへ、stdoutには空白を含まない
+    /// 理由コードのみを載せる(code-review指摘、上記`AdoptFailure`のdoc参照)。
+    fn run_adopt_mode() {
+        match adopt_pending_judgement() {
+            Ok(()) => println!("adopt status=success"),
+            Err(failure) => {
+                eprintln!("学習表の判定書き換えに失敗しました: {failure}");
+                println!("adopt status=failure reason={}", failure.code());
+            }
+        }
+        let _ = std::io::stdout().flush();
     }
 
     /// `run_main`のうち、セッション監視が失敗と判定していないかを確認する
@@ -499,7 +587,17 @@ mod app {
         Some(result.summary)
     }
 
-    pub fn run_main() {
+    /// プロセスのエントリポイント。判定書き換えモード(実機のIME駆動なし)か、
+    /// 通常の学習セッション(`run_main`)かをフラグで振り分ける。
+    pub fn entry() {
+        if std::env::args().any(|arg| arg == ADOPT_PENDING_JUDGEMENT_FLAG) {
+            run_adopt_mode();
+        } else {
+            run_main();
+        }
+    }
+
+    fn run_main() {
         let strategy = if std::env::args().any(|arg| arg == "--strategy=s0") {
             Strategy::S0
         } else {
@@ -851,12 +949,107 @@ mod app {
                 "決定的と言えないセルはNoneで書くべき(省略ではない)"
             );
         }
+
+        /// テストごとに衝突しない一時ファイルパスを作る(`std::env::temp_dir()`+
+        /// テスト名+スレッドIDの規約、`awase-settings::bug_report`テストと同型)。
+        fn temp_table_path(label: &str) -> std::path::PathBuf {
+            std::env::temp_dir().join(format!(
+                "awase_keymap_learn_win_adopt_test_{label}_{:?}.json",
+                std::thread::current().id()
+            ))
+        }
+
+        fn sample_table(judgement: Option<TableJudgement>) -> PersistedTable {
+            let mut table = PersistedTable::new(vec![PersistedCell {
+                status: st(true, 0x09),
+                key: KeyId(0x1D),
+                prediction: None,
+            }]);
+            table.judgement = judgement;
+            table
+        }
+
+        /// 決定1b-8: 要確認状態のファイルは採用へ書き換わり、ディスク上にも反映される。
+        #[test]
+        fn adopt_pending_judgement_at_accepts_needs_confirmation_on_disk() {
+            let path = temp_table_path("accepts");
+            let table = sample_table(Some(TableJudgement::NeedsConfirmation(
+                NeedsConfirmationReason::SystematicMismatch {
+                    mismatch_percent: 40,
+                },
+            )));
+            std::fs::write(&path, table.to_json().unwrap()).unwrap();
+
+            let result = adopt_pending_judgement_at(&path);
+
+            assert!(result.is_ok(), "expected success, got {result:?}");
+            let reloaded = from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(reloaded.judgement, Some(TableJudgement::Accepted));
+            let _ = std::fs::remove_file(&path);
+        }
+
+        /// 安全弁: 不採用(低正答率)のファイルは、書き換え要求があっても変更されない
+        /// (エラーを返し、ディスク上の内容もそのまま)。
+        #[test]
+        fn adopt_pending_judgement_at_leaves_rejected_file_untouched() {
+            let path = temp_table_path("rejected");
+            let table = sample_table(Some(TableJudgement::Rejected(RejectedReason::LowAccuracy)));
+            std::fs::write(&path, table.to_json().unwrap()).unwrap();
+
+            let result = adopt_pending_judgement_at(&path);
+
+            match result {
+                Err(failure) => assert_eq!(failure.code(), "rejected"),
+                Ok(()) => panic!("expected rejection for a low-accuracy table"),
+            }
+            let reloaded = from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(reloaded, table, "拒否時はファイルを一切書き換えない");
+            let _ = std::fs::remove_file(&path);
+        }
+
+        #[test]
+        fn adopt_pending_judgement_at_reports_missing_file() {
+            let path = temp_table_path("missing_never_created");
+            let _ = std::fs::remove_file(&path); // 前回の残骸があれば消す
+
+            let result = adopt_pending_judgement_at(&path);
+
+            match result {
+                Err(failure) => assert_eq!(failure.code(), "read_failed"),
+                Ok(()) => panic!("expected a read failure for a missing file"),
+            }
+        }
+
+        /// code-review指摘の回帰テスト: 標準出力の`reason=`欄は空白・コロンを含む
+        /// 自由形式の文言(パス・OSエラー文言)であってはならない
+        /// (`keymap_learn_launcher::parse_learn_line`のsplit_whitespace()+key=value
+        /// パースを壊すため)。`code()`が返す全トークンがこの制約を満たすことを固定する。
+        #[test]
+        fn adopt_failure_codes_are_single_whitespace_free_tokens() {
+            let path = std::path::PathBuf::from("dummy");
+            let samples = [
+                AdoptFailure::NoConfig,
+                AdoptFailure::ReadFailed(
+                    path.clone(),
+                    std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
+                ),
+                AdoptFailure::Rejected(AdoptRejected::NoJudgement),
+                AdoptFailure::Rejected(AdoptRejected::Rejected),
+            ];
+            for sample in &samples {
+                let code = sample.code();
+                assert!(
+                    code.split_whitespace().count() == 1 && !code.contains(':'),
+                    "code {code:?} must be a single whitespace/colon-free token"
+                );
+            }
+        }
     }
 }
 
 #[cfg(windows)]
 fn main() {
-    app::run_main();
+    app::entry();
 }
 
 #[cfg(not(windows))]

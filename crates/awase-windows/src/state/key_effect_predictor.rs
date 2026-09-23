@@ -483,6 +483,12 @@ impl KeymapCache {
     /// 版の再確認の間隔。キーマップの変更（GJI設定画面）は打鍵より遅い操作なので数秒遅れてよい。
     pub const RECHECK_MS: u64 = 2000;
 
+    /// 再確認・読み直しをせず、キャッシュ済みのキーマップだけを返す（診断用）。
+    #[must_use]
+    pub const fn peek(&self) -> Option<&KeyEffectKeymap> {
+        self.keymap.as_ref()
+    }
+
     /// キャッシュしたキーマップを返す。再確認の時刻なら`stamp`（更新時刻+長さ。読めなければ`None`）で
     /// 版を確かめ、初回または版が変わったときだけ`load`で読み直す。`load`は`None`（GJI未導入・
     /// 未対応プリセット）も正常系として保持する。
