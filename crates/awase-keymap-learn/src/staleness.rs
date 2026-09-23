@@ -44,6 +44,10 @@ impl Staleness {
 /// ではなくこの3値を受け取る——「このIMEにはそもそも指紋方式が無い(比較不能、従来どおり
 /// キーマップ変化の検出をスキップしてよい)」と「指紋方式はあるが今回は計算できなかった
 /// (一時的な読み取り失敗等、安全側に倒して失効扱いにすべき)」を型で区別するため。
+///
+/// [`crate::revalidation::EnvVersionProbe`]と見た目が似ているが、fail openの規則は
+/// 異なる(相互参照は`revalidation`モジュール側のdocを参照)——本型を真似て
+/// `revalidation`側の実装を変えないこと。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FingerprintProbe {
     /// このIME/キーマップ種別には指紋方式が無い(比較対象自体が存在しない)。

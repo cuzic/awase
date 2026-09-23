@@ -13,6 +13,16 @@
 //! 比較して導出する。実際に永続化フィールドへ配線する処理・軽量再検証の合否判定
 //! ([ADR196-T2](../../../docs/tasks/adr196-t2-mismatch-adjudication.md)の95%閾値)は
 //! 別タスクの担当であり、本モジュールは比較の純粋ロジックのみを提供する。
+//!
+//! [`crate::staleness::FingerprintProbe`]と見た目が似た「3値・不明ならfail open」
+//! パターンだが、**fail openの規則が異なる**——共有関数化はしていない(code-review指摘、
+//! 2026-09-23)。`staleness::check`は「保存側にそもそも指紋が無い(`None`)」なら現在側が
+//! 何であってもFresh扱いだが、本モジュールの[`needs_revalidation`]は「どちらか一方でも
+//! [`EnvVersionProbe::Unconfirmed`]」なら他方の状態に関わらず常に要再検証にする(規則は
+//! [`needs_revalidation`]のdoc参照)。`Unconfirmed`は`staleness`側の型には存在しない
+//! 状態(「取得できたが信頼できない」)であり、`staleness`の「保存側が無ければ常にFresh」
+//! という規則をそのまま流用すると「未確定」を「不明」と取り違えて見逃す。どちらか一方の
+//! fail open規則だけを将来変更する際は、もう一方に同じ変更が必要か必ず確認すること。
 
 use serde::{Deserialize, Serialize};
 
