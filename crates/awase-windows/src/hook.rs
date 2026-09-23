@@ -81,8 +81,9 @@ struct HookState {
     left_thumb_down_at_us: AtomicU64,
     /// Alt なりすまし適用後の右親指キー押下時刻（µs）。0 = 押下されていない。
     right_thumb_down_at_us: AtomicU64,
-    /// 左親指キーの直近 KeyDown 時の `scan_code`（BUG-132）。`left_thumb_down_at_us`
-    /// が非0の間だけ有効。`VK_DBE_*` を親指キーに割り当てた構成では、Windows が
+    /// 左親指キーのラッチ識別子（BUG-132、`vk::thumb_latch_identity`＝scan_code+
+    /// 拡張ビット）。0 = 非ラッチ。ラッチ判定の唯一の真実で、`left_thumb_down_at_us`
+    /// は時刻記録専用（判定に使わない）。`VK_DBE_*` を親指キーに割り当てた構成では、Windows が
     /// KeyDown/KeyUp で異なる vk を合成する非対称性（BUG-131 と同型）のため、
     /// KeyUp 側の解除判定を vk 一致ではなく scan_code 一致で行う
     /// （scan_code は Down/Up で一致することが実機確認済み、BUG-131 参照）。
@@ -1420,19 +1421,25 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // 同型、`kb.scanCode` は Down/Up で一致することが実機確認済み）。
         // KeyDown は設定 vk との一致で「これが親指キーの押下か」を判定するが
         // （この向きは非対称の影響を受けない）、KeyUp は vk ではなく
-        // scan_code の一致で解除する。
-        let scan_u32 = scan.0;
+        // scan_code（+拡張ビット）の一致で解除する。
+        //
+        // 「ラッチ中か・どのキーか」の唯一の真実は `*_thumb_down_scan` の
+        // 1 フィールドだけにする（0 = 非ラッチ）。`*_thumb_down_at_us` は
+        // 時刻の記録専用で、判定には使わない——2 つの atomic の整合を要求すると、
+        // メインスレッドのリセットとフックスレッドの武装が交差したとき
+        // 「武装済みだが scan=0」で固着しうるため。
+        let identity = crate::vk::thumb_latch_identity(scan, alt_extended);
+        // フックコールバック上ではログを出さない（`hook_channel.rs` の不変条件、
+        // `architecture_guard::hook_callback_log_call_count_is_pinned`）。
         let mark_down = |at_us: &AtomicU64, down_scan: &AtomicU32| {
-            let prev = at_us.load(Ordering::Relaxed);
-            if prev == 0 {
+            if down_scan.load(Ordering::Relaxed) == 0 && identity.0 != 0 {
                 at_us.store(now_timestamp(), Ordering::Relaxed);
-                down_scan.store(scan_u32, Ordering::Relaxed);
+                down_scan.store(identity.0, Ordering::Relaxed);
             }
         };
-        let clear_if_matching_scan = |at_us: &AtomicU64, down_scan: &AtomicU32| {
-            let armed_down_scan =
-                (at_us.load(Ordering::Relaxed) != 0).then(|| down_scan.load(Ordering::Relaxed));
-            if crate::vk::should_release_thumb_latch(armed_down_scan, scan_u32) {
+        let clear_if_matching_identity = |at_us: &AtomicU64, down_scan: &AtomicU32| {
+            let armed = down_scan.load(Ordering::Relaxed);
+            if crate::vk::should_release_thumb_latch(ScanCode(armed), identity) {
                 at_us.store(0, Ordering::Relaxed);
                 down_scan.store(0, Ordering::Relaxed);
             }
@@ -1451,11 +1458,11 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
                 );
             }
         } else {
-            clear_if_matching_scan(
+            clear_if_matching_identity(
                 &HOOK_STATE.left_thumb_down_at_us,
                 &HOOK_STATE.left_thumb_down_scan,
             );
-            clear_if_matching_scan(
+            clear_if_matching_identity(
                 &HOOK_STATE.right_thumb_down_at_us,
                 &HOOK_STATE.right_thumb_down_scan,
             );
