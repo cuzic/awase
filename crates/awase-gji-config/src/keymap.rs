@@ -248,6 +248,74 @@ pub fn extract_mode_keys(custom_keymap_table: &str) -> GjiModeKeys {
     result
 }
 
+/// ADR-195 段階0 決定3: `custom_keymap_table` の中から、`SetMode`（絶対設定系）
+/// コマンドが入力中（`Composition`/`Conversion`）の status 行に束縛されているキー
+/// （[`mozc_key_to_vk_name`] 形式の VK 名）の集合を返す。
+///
+/// [`extract_mode_keys`] は `status` 列を分類の一意性判定にしか使わず、結果からは
+/// 捨てている。しかし `SetMode` が入力中の status に束縛されていれば、それは
+/// 「押した結果の変換モードそのもの」であり、コマンド名だけから初期仮説の予測値を
+/// 直接組み立てられる（学習を省略できる）。相対トグル系
+/// （`ToggleAlphanumericMode`/`ToggleKanaType`）はこの集合に入らない——現在のモード
+/// 依存で遷移先が一意に定まらないため、呼び出し側は「不明、要学習」のままにする。
+///
+/// キーが確定と認められるのは、(a) `Composition`/`Conversion`のいずれかの行で
+/// `SetMode`が観測され、かつ(b)そのキーの`SetMode`行が(status問わず)全て同じ
+/// 遷移先モードで一致しているときだけ（[`extract_mode_keys`]の一意性判定と同じ規則、
+/// 判定ロジックの二重実装を避けるためここでも同じ「distinctが1件だけ」の基準を使う）。
+/// 単一のComposition/Conversion行だけを見て確定と判定すると、他のstatusで食い違う
+/// `SetMode`行を持つキーまで誤って確定扱いにしうる。
+#[must_use]
+pub fn set_mode_keys_confirmed_by_input_progress_status(
+    custom_keymap_table: &str,
+) -> BTreeSet<String> {
+    const INPUT_IN_PROGRESS_STATUSES: &[&str] = &["Composition", "Conversion"];
+    let rows = parse_custom_keymap_table(custom_keymap_table);
+    // code-review指摘: 一意性判定は`SetMode`行だけでなく、`extract_mode_keys`と同じ
+    // 集合(`ToggleAlphanumericMode`/`ToggleKanaType`込み)で行わないと、状態間で
+    // `SetMode`と`Toggle*`が食い違うキーまで「一意」と誤判定する(`extract_mode_keys`
+    // なら遷移先不定として弾く食い違いを見逃す)。分類の集計自体を`SetMode`のみに
+    // 絞っていたのが本関数のドキュメントと実装の食い違いだった。
+    let mut commands_by_key: BTreeMap<String, BTreeSet<GjiModeCommand>> = BTreeMap::new();
+    let mut has_input_progress_set_mode: BTreeSet<String> = BTreeSet::new();
+    for row in &rows {
+        let classified = classify_command(&row.command);
+        if matches!(
+            classified,
+            GjiModeCommand::ImeOn | GjiModeCommand::ImeOff | GjiModeCommand::Other
+        ) {
+            continue;
+        }
+        commands_by_key
+            .entry(row.key.clone())
+            .or_default()
+            .insert(classified);
+        if matches!(classified, GjiModeCommand::SetMode(_))
+            && INPUT_IN_PROGRESS_STATUSES.contains(&row.status.as_str())
+        {
+            has_input_progress_set_mode.insert(row.key.clone());
+        }
+    }
+    let mut result = BTreeSet::new();
+    for key in has_input_progress_set_mode {
+        let Some(commands) = commands_by_key.get(&key) else {
+            continue;
+        };
+        if commands.len() != 1 {
+            // 状態間で遷移先が一意に定まらない(extract_mode_keysと同じ判定)。
+            continue;
+        }
+        // ここに来た時点で`commands`の唯一の要素は`SetMode(_)`だと分かる:
+        // `has_input_progress_set_mode`への挿入は`SetMode`行の観測が条件であり、
+        // そのキーの`commands_by_key`に他の値が無ければ(len() == 1)その1件が
+        // 観測された`SetMode`そのものになるため。
+        if let Some(vk_name) = mozc_key_to_vk_name(&key) {
+            result.insert(vk_name);
+        }
+    }
+    result
+}
+
 /// `IMEOn`/`IMEOff` 以外のコマンドの行・修飾キー付きの行を除外しつつ、
 /// キーごとに「IMEOn が割り当てられている状態」「IMEOff が割り当てられている
 /// 状態」を集計する。
@@ -317,8 +385,8 @@ fn classify_and_push(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_ime_keys, extract_mode_keys, mozc_key_to_vk_name, relevant_rows_for_vk, GjiImeKeys,
-        GjiModeKeys,
+        extract_ime_keys, extract_mode_keys, mozc_key_to_vk_name, relevant_rows_for_vk,
+        set_mode_keys_confirmed_by_input_progress_status, GjiImeKeys, GjiModeKeys,
     };
     use crate::command::GjiCompositionMode;
 
@@ -596,5 +664,64 @@ Precomposition\tF9\tCompositionModeFullKatakana
 ";
         let keys = extract_mode_keys(text);
         assert_eq!(keys, GjiModeKeys::default());
+    }
+
+    // ── ADR-195 段階0: set_mode_keys_confirmed_by_input_progress_status ──
+
+    #[test]
+    fn set_mode_confirmed_when_bound_to_composition_or_conversion() {
+        let text = "status\tkey\tcommand
+DirectInput\tF6\tCompositionModeHiragana
+Precomposition\tF6\tCompositionModeHiragana
+Composition\tF6\tCompositionModeHiragana
+Conversion\tF7\tCompositionModeFullKatakana
+";
+        let confirmed = set_mode_keys_confirmed_by_input_progress_status(text);
+        assert_eq!(
+            confirmed,
+            ["VK_F6", "VK_F7"].into_iter().map(String::from).collect()
+        );
+    }
+
+    #[test]
+    fn set_mode_not_confirmed_when_bound_only_to_direct_input_or_precomposition() {
+        // 実際にはSetModeはF6のようにDirectInput/Precompositionにも束縛されるが、
+        // Composition/Conversionのstatus行が無い限り未確定のまま。
+        let text = "status\tkey\tcommand
+DirectInput\tF6\tCompositionModeHiragana
+Precomposition\tF6\tCompositionModeHiragana
+";
+        assert!(set_mode_keys_confirmed_by_input_progress_status(text).is_empty());
+    }
+
+    #[test]
+    fn set_mode_confirmed_ignores_relative_toggle_commands() {
+        // 相対トグル系はComposition/Conversionに束縛されていても対象外
+        // （遷移先が現在モード依存で一意に定まらないため）。
+        let text = "status\tkey\tcommand
+Composition\tEisu\tToggleAlphanumericMode
+Conversion\tF8\tSwitchKanaType
+";
+        assert!(set_mode_keys_confirmed_by_input_progress_status(text).is_empty());
+    }
+
+    #[test]
+    fn set_mode_confirmed_empty_table_yields_empty_set() {
+        assert!(set_mode_keys_confirmed_by_input_progress_status("").is_empty());
+    }
+
+    #[test]
+    fn set_mode_not_confirmed_when_key_also_has_a_toggle_row_in_another_status() {
+        // code-review指摘: 同じキーがComposition中はSetModeに束縛されている一方、
+        // 別のstatus(ここではDirectInput)ではToggleAlphanumericModeに束縛されて
+        // いる場合、extract_mode_keysなら「遷移先が状態依存で一意に定まらない」
+        // として除外する(SetModeとToggleが2種の異なる分類として同じキーに
+        // 集まるため)。本関数もextract_mode_keysと同じ一意性判定を謳っている
+        // 以上、SetMode行だけを見て「一意」と誤確定してはならない。
+        let text = "status\tkey\tcommand
+DirectInput\tEisu\tToggleAlphanumericMode
+Composition\tEisu\tCompositionModeHiragana
+";
+        assert!(set_mode_keys_confirmed_by_input_progress_status(text).is_empty());
     }
 }
