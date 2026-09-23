@@ -1,11 +1,17 @@
 #[cfg(windows)]
 mod app {
     use std::io::Write;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use awase_keymap_learn::anomaly::AnomalyPolicy;
     use awase_keymap_learn::cost::CostModel;
     use awase_keymap_learn::exec::{Executor, ImeDriver, ReadPolicy, Stats};
     use awase_keymap_learn::graph::Prior;
+    use awase_keymap_learn::judgement::{
+        judge_self_verification, ScoredVerification, TableJudgement, ACCURACY_THRESHOLD,
+        DEGENERATION_THRESHOLD, MIN_PREDICTED_STEPS,
+    };
     use awase_keymap_learn::model::KeyId;
     use awase_keymap_learn::persist::{PersistedCell, PersistedTable};
     use awase_keymap_learn::rng::Rng;
@@ -13,9 +19,10 @@ mod app {
     use awase_keymap_learn::strategy::{run, Req, Strategy};
     use awase_keymap_learn::table::Table;
     use awase_keymap_learn::verify::{
-        classify_robust, predict, score_walk, WalkObs, DEFAULT_MIN_MINORITY,
+        classify_robust, predict, score_walk, ScoreReport, WalkObs, DEFAULT_MIN_MINORITY,
     };
     use awase_keymap_learn_win::RealImeDriver;
+    use awase_windows::state::ime_kind::TipIdentity;
 
     const KEYS: [u32; 14] = [
         0x1D, 0x1C, 0xF2, 0xF1, 0xF0, 0xF3, 0x19, 0x16, 0x1A, 0x1B, 0x0D, 0x20, 0x08, 0x41,
@@ -25,16 +32,18 @@ mod app {
     /// 子プロセス側(awase-settings)のパース負荷・パイプI/Oが無駄に増えるため間引く。
     const PROGRESS_EVERY_N_PRESSES: u32 = 10;
 
-    /// 段階2(自己検証)の独立ランダムウォークの長さ。ADR-195/ADR196-T2が挙げる
-    /// 「正答率判定には最低300ステップ」の基準に合わせる。
-    const VERIFICATION_WALK_STEPS: usize = 300;
+    /// ADR196-T2「1e前半」(opus-adversarial-consult 2026-09-23 C-2): 縮退が激しい表では
+    /// [`MIN_PREDICTED_STEPS`](予測できたステップ数)に固定回数の押下では届かないことがある
+    /// (縮退率20%の上限いっぱいなら300回押しても予測は約240歩)ため、予測300歩に達する
+    /// まで押下を続ける。この定数は「それでも届かない」場合の安全弁の上限(暫定値)。
+    const VERIFICATION_WALK_MAX_STEPS: usize = 1500;
 
     /// `<config dir>/keymap-learn-table.json`のパス。`awase.exe`/`awase-settings.exe`と
     /// 同じ探索規則(`awase::paths::resolve_relative_to_exe`、exeの隣→開発ビルドの
     /// ワークスペースルート→CWD相対の順)でconfig.tomlを探し、その親ディレクトリへ書く
     /// (`crates/awase-windows/src/state/key_effect_runtime.rs::table_file_path`と
     /// 同じ規約)。config.tomlが見つからなければ`None`(書き込み先を決められない)。
-    fn table_file_path() -> Option<std::path::PathBuf> {
+    fn table_file_path() -> Option<PathBuf> {
         let config_path = awase::paths::resolve_relative_to_exe("config.toml");
         if !config_path.exists() {
             return None;
@@ -42,6 +51,21 @@ mod app {
         config_path
             .parent()
             .map(|dir| dir.join("keymap-learn-table.json"))
+    }
+
+    /// ADR196-T2「1e前半」・不採用/要確認時の退避先。決定1eは「不採用でも表ファイルに
+    /// 書き出す」というが、`keymap-learn-table.json`(採用済みの表、段階4読み手が直接読む)へ
+    /// 上書きすると、以前`Accepted`だった良い表が今回の失敗で失われる。ユーザー判断
+    /// (2026-09-23、opus-adversarial-consultのC-9)により、`Accepted`以外はこの別
+    /// ファイルへ書き、`keymap-learn-table.json`はそのまま残す。
+    fn last_attempt_file_path() -> Option<PathBuf> {
+        let config_path = awase::paths::resolve_relative_to_exe("config.toml");
+        if !config_path.exists() {
+            return None;
+        }
+        config_path
+            .parent()
+            .map(|dir| dir.join("keymap-learn-last-attempt.json"))
     }
 
     /// 巡回で得た表から、永続化するセル列を組み立てる(ADR-195段階1〜2の出力を
@@ -131,51 +155,79 @@ mod app {
     /// 進捗sinkは学習の巡回にだけ意味があるので、ここでは無効化する(有効なままだと
     /// `recording=false`の間もpressごとに呼ばれ、cell数が増えないのにelapsed_msだけ
     /// 伸びる不審な進捗行が出る)。
-    fn run_verification_walk<D: ImeDriver>(
-        exec: &mut Executor<D>,
-        rng: &mut Rng,
-    ) -> awase_keymap_learn::verify::ScoreReport {
+    ///
+    /// C-2対応: 固定回数ではなく、予測できたステップ数([`ScoreReport::predicted`])が
+    /// [`MIN_PREDICTED_STEPS`]に達するまで押下を続ける。[`VERIFICATION_WALK_MAX_STEPS`]
+    /// (押下の試行回数)に達しても届かなければ打ち切って返す(`judge_self_verification`が
+    /// `InsufficientSamples`として不採用にする)。
+    fn run_verification_walk<D: ImeDriver>(exec: &mut Executor<D>, rng: &mut Rng) -> ScoreReport {
         exec.set_progress_sink(|_, _| {});
         exec.set_recording(false);
-        let mut walk = Vec::with_capacity(VERIFICATION_WALK_STEPS);
-        for _ in 0..VERIFICATION_WALK_STEPS {
+        let mut walk = Vec::new();
+        let mut attempts = 0usize;
+        let report = loop {
             // opus-adversarial-consult round2 N3対応: セッション監視が既に
             // 失敗と判定していたら、採点にならない押下を続けない。
             if exec.driver.should_abort() {
-                break;
+                break score_walk(&exec.table, DEFAULT_MIN_MINORITY, &walk);
             }
             let key = rng.below(KEYS.len());
+            attempts += 1;
             if let Some(info) = exec.press(key) {
                 // round2 N1対応: 汚染された観測(外部からの書き込み・物理入力・
-                // フォーカス喪失)は採点に使わない。学習フェーズは
-                // `Executor::press`が表への記録を見送るが、このウォークは
-                // `recording=false`で呼ばれるため同じ保護がかかっておらず、
-                // 汚染された観測がそのまま`verify_accuracy`の採点対象に
-                // なっていた(表そのものは正しいのに不当にスコアが下がる)。
-                if info.contaminated {
-                    continue;
+                // フォーカス喪失)は採点に使わない。
+                if !info.contaminated {
+                    walk.push(WalkObs {
+                        status: info.before,
+                        key,
+                        outcome: info.outcome,
+                    });
                 }
-                walk.push(WalkObs {
-                    status: info.before,
-                    key,
-                    outcome: info.outcome,
-                });
             }
-        }
+            let report = score_walk(&exec.table, DEFAULT_MIN_MINORITY, &walk);
+            if report.predicted() >= MIN_PREDICTED_STEPS || attempts >= VERIFICATION_WALK_MAX_STEPS
+            {
+                break report;
+            }
+        };
         exec.set_recording(true);
-        score_walk(&exec.table, DEFAULT_MIN_MINORITY, &walk)
+        report
+    }
+
+    /// C-7対応: 検証ウォーク専用の乱数シードを実行のたびに変える(時刻由来)。学習本体の
+    /// 乱数(固定シード195)と共有すると、記録した`seed`だけではウォークを再現できない。
+    #[allow(clippy::cast_possible_truncation)]
+    fn fresh_walk_seed() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64)
     }
 
     /// ADR-195段階3〜4への結合(B1対応): 表を永続化フォーマットへ変換し、一時ファイル+
     /// renameで原子的に書き込む。指紋(ADR-195段階8)は、その計算方式自体がADR-196決定3で
     /// 再設計中のため、ここでは`None`のまま残す(ADR196-T5が実配線する)。
     ///
+    /// C-4/C-9対応: `judgement`が`Accepted`なら本体(`keymap-learn-table.json`)へ、
+    /// それ以外は[`last_attempt_file_path`]へ書く。
+    ///
     /// 戻り値は(書き込もうとしたセル数, 書き込み結果)。
-    fn persist_learned_table(table: &Table) -> (usize, Result<(), String>) {
+    fn persist_judged_table(
+        table: &Table,
+        verification: ScoredVerification,
+        judgement: TableJudgement,
+    ) -> (usize, Result<(), String>) {
         let cells = build_persisted_cells(table);
         let cell_count = cells.len();
-        let persisted = PersistedTable::new(cells);
-        let write_result = table_file_path()
+        let persisted = PersistedTable::new(cells)
+            .with_verification(verification)
+            .with_judgement(judgement);
+        // C-9: `Accepted`以外は本体を上書きせず退避ファイルへ書く。
+        let path_resolver: fn() -> Option<PathBuf> = if judgement == TableJudgement::Accepted {
+            table_file_path
+        } else {
+            last_attempt_file_path
+        };
+        let write_result = path_resolver()
             .ok_or_else(|| "config.tomlが見つからないため書き込み先を決められない".to_string())
             .and_then(|path| {
                 persisted
@@ -217,6 +269,56 @@ mod app {
             contaminated_trials: executor.stats.contaminated_trials,
             invalidated_trials: executor.driver.session_invalidated_trials(),
         });
+        std::process::exit(1);
+    }
+
+    /// C-1/A-6/B-3: 学習・検証ウォーク完了後の、表を書かずに失敗とすべき理由
+    /// (フック断絶・学習中のIME切り替え・GJI設定変更)。`None`なら継続してよい。
+    fn end_of_session_abort_reason(
+        driver: &RealImeDriver,
+        tip_at_start: TipIdentity,
+        config1_db_at_start: Option<&[u8]>,
+    ) -> Option<&'static str> {
+        if !driver.hook_alive() {
+            return Some("hook_lost");
+        }
+        if driver.query_tip_identity() != Some(tip_at_start) {
+            return Some("ime_unidentified_or_switched");
+        }
+        let config1_db_at_end = (tip_at_start == TipIdentity::Gji)
+            .then(awase_windows::gji_charset_autodetect::read_config1_db)
+            .flatten();
+        (config1_db_at_start != config1_db_at_end.as_deref()).then_some("gji_config_changed")
+    }
+
+    /// ADR196-T2「1e前半」(C-1/A-6/B-3): `reason`があれば「何を測ったか確定できない」
+    /// セッション失敗として専用result行を出し、`exit_if_session_failed`と同じく
+    /// `std::process::exit(1)`で終了する(表は書かない、決定1b項目5)。
+    fn exit_if_skipped(
+        reason: Option<&'static str>,
+        executor: &Executor<RealImeDriver>,
+        strategy: Strategy,
+        training_elapsed_ms: f64,
+        training_presses: u32,
+        total_cells: u32,
+        decode_errors: u32,
+    ) {
+        let Some(reason) = reason else {
+            return;
+        };
+        eprintln!("学習セッションを失敗として終了しました(reason={reason}): 表は書き出しません");
+        println!(
+            "result status=failure strategy={} elapsed_ms={:.0} presses={} cells={} total={} \
+             decode_errors={} reason={}",
+            strategy.name(),
+            training_elapsed_ms,
+            training_presses,
+            executor.table.covered1(),
+            total_cells,
+            decode_errors,
+            reason,
+        );
+        let _ = std::io::stdout().flush();
         std::process::exit(1);
     }
 
@@ -270,14 +372,11 @@ mod app {
         }
     }
 
-    pub fn run_main() {
-        let strategy = if std::env::args().any(|arg| arg == "--strategy=s0") {
-            Strategy::S0
-        } else {
-            Strategy::S6
-        };
-        let driver = build_driver(strategy);
-        let initial = driver.initial_status();
+    /// 学習の初期仮説モデル(ATOK風モデルの抽象modeを実機のConv値へ対応づけ、
+    /// 開始状態を実機の`initial`へ合わせる)。
+    fn build_model(
+        initial: awase_keymap_learn::model::Status,
+    ) -> awase_keymap_learn::model::Machine {
         let mut model = atok_like();
         for state in &mut model.states {
             // ヒューリスティックな初期仮説として、抽象mode 0/1を実機のConv値0x09/0x00へ対応づける。
@@ -290,6 +389,37 @@ mod app {
         {
             model.initial = index;
         }
+
+        model
+    }
+
+    /// 決定1a: Microsoft IME本体なら既定で要確認。決定1b項目7〜9(既知構成の内蔵表突き合わせ
+    /// →再測定→`judgement::combine`)は未実装のため、自己検証の判定をそのまま使う。
+    fn judge_score(score: &ScoreReport, tip: TipIdentity) -> TableJudgement {
+        judge_self_verification(
+            score,
+            tip == TipIdentity::MsImeNative,
+            ACCURACY_THRESHOLD,
+            DEGENERATION_THRESHOLD,
+            MIN_PREDICTED_STEPS,
+        )
+    }
+
+    pub fn run_main() {
+        let strategy = if std::env::args().any(|arg| arg == "--strategy=s0") {
+            Strategy::S0
+        } else {
+            Strategy::S6
+        };
+        let driver = build_driver(strategy);
+        let initial = driver.initial_status();
+        // A-6/B-3: 開始時点のTIP・(GJIのときだけ)config1.dbを記録し、終了時に再取得して
+        // 比較する(学習中のIME/GJI設定の切り替え検出)。
+        let tip_at_start = driver.tip_identity();
+        let config1_db_at_start = (tip_at_start == TipIdentity::Gji)
+            .then(awase_windows::gji_charset_autodetect::read_config1_db)
+            .flatten();
+        let model = build_model(initial);
 
         let mut rng = Rng::new(195);
         let prior = Prior::from_machine(&model, 0.0, &mut rng);
@@ -346,7 +476,10 @@ mod app {
             decode_errors,
         );
 
-        let score = run_verification_walk(&mut executor, &mut rng);
+        // C-7: 検証ウォーク専用の乱数(学習本体とは独立、時刻由来のシード)。
+        let walk_seed = fresh_walk_seed();
+        let mut walk_rng = Rng::new(walk_seed);
+        let score = run_verification_walk(&mut executor, &mut walk_rng);
 
         // round2 N1対応: 検証ウォーク中にセッション監視が失敗と判定していたら、
         // (学習フェーズ直後のチェックだけでは検証ウォーク中の汚染を見逃すため)
@@ -360,7 +493,30 @@ mod app {
             decode_errors,
         );
 
-        let (cell_count, write_result) = persist_learned_table(&executor.table);
+        // C-1/A-6/B-3: フック断絶・学習中のIME切り替え・GJI設定変更のいずれかなら
+        // 何を測ったか確定できないため、表を書かずに失敗として終了する。
+        let abort_reason = end_of_session_abort_reason(
+            &executor.driver,
+            tip_at_start,
+            config1_db_at_start.as_deref(),
+        );
+        exit_if_skipped(
+            abort_reason,
+            &executor,
+            strategy,
+            training_elapsed_ms,
+            training_presses,
+            total_cells,
+            decode_errors,
+        );
+
+        let judgement = judge_score(&score, tip_at_start);
+        let verification = ScoredVerification {
+            score,
+            seed: walk_seed,
+        };
+        let (cell_count, write_result) =
+            persist_judged_table(&executor.table, verification, judgement);
         print_result_line(ResultLineArgs {
             strategy,
             training_elapsed_ms,
@@ -370,6 +526,7 @@ mod app {
             decode_errors,
             cell_count,
             score,
+            judgement,
             write_result: &write_result,
         });
         if decode_errors > 0 {
@@ -452,18 +609,33 @@ mod app {
         total_cells: u32,
         decode_errors: u32,
         cell_count: usize,
-        score: awase_keymap_learn::verify::ScoreReport,
+        score: ScoreReport,
+        judgement: TableJudgement,
         write_result: &'a Result<(), String>,
     }
 
+    /// `judgement`を`result`行に載せる大分類(詳細な理由は表ファイルのJSONに残る。
+    /// `parse_learn_line`は未知のフィールドを無視するのでawase-settingsは壊れない)。
+    fn judgement_tag(judgement: TableJudgement) -> &'static str {
+        match judgement {
+            TableJudgement::Accepted => "accepted",
+            TableJudgement::NeedsConfirmation(_) => "needs_confirmation",
+            TableJudgement::Rejected(_) => "rejected",
+        }
+    }
+
     /// ADR-195段階6決定5(項目5): result行は書き込みに成功してから出す
-    /// (失敗したのに"success"を名乗らない)。
+    /// (失敗したのに"success"を名乗らない)。`status=success`は「(採否に関わらず)表を
+    /// 書けた」の意味のまま残す——`Rejected`/`NeedsConfirmation`でも退避ファイルへの
+    /// 書き込みが成功していれば`success`になる(awase-settings側は`judgement=`を見て
+    /// 「学習完了」と誤解させない表示にすること)。
     fn print_result_line(args: ResultLineArgs) {
         match args.write_result {
             Ok(()) => {
                 println!(
                     "result status={} strategy={} elapsed_ms={:.0} presses={} cells={} total={} \
-                     decode_errors={} persisted_cells={} verify_accuracy={:.3} verify_confidence={:.3}",
+                     decode_errors={} persisted_cells={} verify_accuracy={:.3} verify_confidence={:.3} \
+                     judgement={}",
                     if args.decode_errors == 0 {
                         "success"
                     } else {
@@ -478,6 +650,7 @@ mod app {
                     args.cell_count,
                     args.score.accuracy(),
                     args.score.confidence(),
+                    judgement_tag(args.judgement),
                 );
             }
             Err(reason) => {
@@ -499,7 +672,23 @@ mod app {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use awase_keymap_learn::judgement::{NeedsConfirmationReason, RejectedReason};
         use awase_keymap_learn::model::{Disposition, Outcome, Status};
+
+        #[test]
+        fn judgement_tag_covers_every_variant() {
+            assert_eq!(judgement_tag(TableJudgement::Accepted), "accepted");
+            assert_eq!(
+                judgement_tag(TableJudgement::NeedsConfirmation(
+                    NeedsConfirmationReason::UnverifiedMsImeNative
+                )),
+                "needs_confirmation"
+            );
+            assert_eq!(
+                judgement_tag(TableJudgement::Rejected(RejectedReason::LowAccuracy)),
+                "rejected"
+            );
+        }
 
         fn st(open: bool, mode: u8) -> Status {
             Status {

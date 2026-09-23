@@ -134,11 +134,11 @@
 | [BUG-129](BUG-129.md) | 【解決済み・仕様と判定】`flush_pending`の`PendingCharThumb`腕が`ComposingHint`（現`ThumbRawVkEmission`）を参照しない件、根本原因はコード見… |
 | [BUG-130](BUG-130.md) | `tsf::probe::tests::check_now_show_only_confirm_becomes_stale_after_grace_expires` がwindows-build CIで稀にflake（テスト自体の不具合、実装バグではない） |
 | [BUG-131](BUG-131.md) | `kana_mode_restore_key_down`（ADR-137決定2のM-2ラッチ）の解除条件がDBEキーのDown/Up vk非対称で成立せず固着する |
-| [BUG-132](BUG-132.md) | `hook.rs`の`LEFT_THUMB_DOWN_AT_US`がDBEキーのDown/Up vk非対称で親指キー押下中ラッチしうる（設定リロードで自然回復、未修正） |
+| [BUG-132](BUG-132.md) | `hook.rs`の`LEFT_THUMB_DOWN_AT_US`がDBEキーのDown/Up vk非対称で親指キー押下中ラッチしうる（修正済み・実機未検証） |
 | [BUG-133](BUG-133.md) | Standardプロファイル×ImmCross失敗フォールバック時、随伴warmupがGjiDirectStrategyの実送信直後に重複する（修正済み、ADR-167） |
 | [BUG-134](BUG-134.md) | tray.rs::restart_self()がBUG-79と同型のos error 50で失敗しうる（修正済み・実機未検証） |
-| [BUG-135](BUG-135.md) | ADR-121のVK_IME_ON冪等再送、即時パスがpending_explicit_reassertラッチを解除せず冗長送信しうる（未修正） |
-| [BUG-136](BUG-136.md) | ADR-121のVK_IME_ON冪等再送ゲートがVK_DBE_HIRAGANA限定で、対称のはずのKatakana/Henkan/Muhenkanが対象外（未修正） |
+| [BUG-135](BUG-135.md) | ADR-121のVK_IME_ON冪等再送、即時パスがpending_explicit_reassertラッチを解除せず冗長送信しうる（クローズ: 対象機構自体を撤去済み） |
+| [BUG-136](BUG-136.md) | ADR-121のVK_IME_ON冪等再送ゲートがVK_DBE_HIRAGANA限定で、対称のはずのKatakana/Henkan/Muhenkanが対象外（クローズ: 対象機構自体を撤去済み） |
 | [BUG-137](BUG-137.md) | explicit_ime_action_targetのKeyDown/KeyUpステートレス再評価が、押下中にbeliefが変化すると孤立KeyUpを漏らしうる（未修正） |
 | [BUG-139](BUG-139.md) | ADR-163のActuationDecisionRecord診断が、with_app再入時のskipカウンタ二重加算と一部同期記録点のcaller未設定を持っていた（修正済み） |
 | [BUG-140](BUG-140.md) | `right_thumb_key`と同じキーを`keys.ime_detect.on`に登録すると、変換キー単独タップ毎にIME再適用が暴発し、GJI自身の変換機能と競合+「あ」混入 |

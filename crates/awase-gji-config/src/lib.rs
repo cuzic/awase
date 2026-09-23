@@ -68,6 +68,16 @@ pub fn read_gji_mode_keys(bytes: &[u8]) -> GjiModeKeys {
     keymap::extract_mode_keys(&table)
 }
 
+/// Mozc `SessionKeymap` enum の `NONE` 値（`session_keymap`フィールド不在時の意味、BUG-115）。
+///
+/// protobufは既定値のフィールドを省略して直列化するため、`session_keymap`を一度も変更して
+/// いないユーザー（最多構成）は`config1.db`上でこのフィールド自体が**存在しない**
+/// （`wire::parse_top_level`は`None`を返す）。`config_handler.cc::GetDefaultKeyMap()`により、
+/// Windows版GJIではこれは`MSIME`と等価に扱われる（`key_effect_predictor.rs::from_config`が
+/// 既にこの前提で実装済み）。値`-1`自体が`config1.db`に直列化されて出現することは無いが、
+/// 「`None`と同じ意味」を呼び出し側に明示する目的で定数として置く。
+pub const SESSION_KEYMAP_NONE: i64 = -1;
+
 /// Mozc `SessionKeymap` enum の `CUSTOM` 値。
 ///
 /// `config.proto`（`google/mozc` 本家ソース `src/protocol/config.proto` で

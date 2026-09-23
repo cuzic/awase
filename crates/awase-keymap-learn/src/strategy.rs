@@ -327,6 +327,13 @@ fn tour<D: ImeDriver>(
 }
 
 fn s0<D: ImeDriver>(exec: &mut Executor<D>, g: &Graph, req: &Req) {
+    // ADR195-T10究明用の一時的な診断(`KEYMAP_LEARN_DEBUG_CELLS`が設定されているときだけ、
+    // 最初の数件のst!=s不一致の詳細をeprintlnする。OS非依存クレートなので環境変数read以外の
+    // 依存は増やさない)。presses=0の原因切り分け(status_changesは非0なのに、
+    // どのセルも目標状態と一致しない)のための計測で、S0固有の問題(無変換キー1回で
+    // IMEがopenになるという想定とATOK実機挙動の不一致疑い)の特定に使った。既定では無効。
+    let debug_cells = std::env::var("KEYMAP_LEARN_DEBUG_CELLS").is_ok();
+    let mut debug_printed = 0u32;
     for (node, key) in edge_cells(g) {
         let s = g.status_of_node(node);
         let mut attempts = 0;
@@ -343,6 +350,21 @@ fn s0<D: ImeDriver>(exec: &mut Executor<D>, g: &Graph, req: &Req) {
             }
             let st = exec.settle_setup();
             if st != s {
+                if debug_cells && debug_printed < 20 {
+                    debug_printed += 1;
+                    let path_keys: Vec<usize> = g
+                        .path(g.initial_node, node)
+                        .into_iter()
+                        .filter_map(|kind| match kind {
+                            EdgeKind::Press { key, .. } => Some(key),
+                            EdgeKind::Reset { .. } => None,
+                        })
+                        .collect();
+                    eprintln!(
+                        "[s0-debug] node={node} key={key} expected={s:?} observed={st:?} \
+                         path_keys={path_keys:?} (ADR195-T10)"
+                    );
+                }
                 exec.note_sync_loss();
                 continue;
             }

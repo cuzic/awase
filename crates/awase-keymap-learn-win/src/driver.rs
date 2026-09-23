@@ -15,7 +15,9 @@ use awase_keymap_learn::external_write::{
 };
 use awase_keymap_learn::model::{Disposition, Outcome, Status};
 use awase_keymap_learn::sim::PressReport;
+use awase_windows::state::ime_kind::TipIdentity;
 use awase_windows::state::key_effect_predictor::Conv;
+use awase_windows::tsf::query_tip_identity_on_current_sta;
 
 use crate::hook_monitor::{HookMonitor, SELF_MARKER};
 use crate::ime_notify::ImeNotifyMonitor;
@@ -26,6 +28,7 @@ use windows::Win32::System::Com::{
     COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmGetOpenStatus,
     ImmReleaseContext, IME_COMPOSITION_STRING, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
@@ -39,10 +42,10 @@ use windows::Win32::UI::TextServices::{
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
-    PeekMessageW, RegisterClassW, SetForegroundWindow, SetWindowTextW, ShowWindow,
-    TranslateMessage, MSG, PM_REMOVE, SW_SHOW, WINDOW_STYLE, WNDCLASSW, WS_BORDER, WS_CHILD,
-    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    BringWindowToTop, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+    GetForegroundWindow, GetWindowThreadProcessId, PeekMessageW, RegisterClassW,
+    SetForegroundWindow, SetWindowTextW, ShowWindow, TranslateMessage, MSG, PM_REMOVE, SW_SHOW,
+    WINDOW_STYLE, WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 
 const GCS_COMPSTR: u32 = 0x0008;
@@ -51,6 +54,14 @@ const QUIET_MS: u64 = 40;
 const SETTLE_TIMEOUT_MS: u64 = 150;
 const FOCUS_DEBOUNCE_FALLBACK_MS: u64 = 100;
 const FOCUS_MARGIN_MS: u64 = 25;
+/// フォーカス確保の再試行間隔・最大試行回数(ADR195-T10究明で判明: 素の`SetForegroundWindow`
+/// 単発呼び出しはCI(GitHub-hosted windows-latest)のフォアグラウンドロック環境下では
+/// 無言で失敗しうる。`tools/e2e/ime_key_matrix`の`compartment_notify_probe.rs::bring_to_front`
+/// が同じ環境で実績のある`AttachThreadInput`併用パターンを使っており、`RealImeDriver::new`の
+/// 起動時フォーカス確保にのみ移植する——`reset(Hard)`はround3 R1対応により意図的に
+/// このような強制前面化を行わない設計になっているため対象外)。
+const FOCUS_RETRY_ATTEMPTS: u32 = 5;
+const FOCUS_RETRY_GAP_MS: u64 = 200;
 /// ADR-196決定1b項目3: フォーカス移行・デバウンス待ち直後に、注入を一切しない
 /// 期間を置き、その間に外部からの書き込みが観測されないことをセッション開始
 /// 条件にする（quiet window）。暫定値——`.claude/rules/tuning-constants.md`の
@@ -160,6 +171,14 @@ pub struct RealImeDriver {
     /// （round1 M1対応）: セッション監視の無効化上限を超えたら`true`に固定する。
     /// `&self`のメソッドから更新するため`Cell`。
     session_failed: Cell<bool>,
+    /// ADR196-T2「1e前半」(A-6): `new()`終了時点で同定した学習対象のTIP。
+    /// `judge_self_verification`の`is_ms_ime_native`引数と、決定1c(既知構成判定)の
+    /// 入力になる。TSFのアクティブプロファイルはスレッド単位で持つため、
+    /// awase-settings等の別スレッド/別プロセスでは同定できない(学習窓を持つこの
+    /// スレッドで同定するのが唯一正しい、opus-adversarial-consult 2026-09-23
+    /// A-1/A-2)。学習中にユーザーがIMEを切り替える可能性への対処として、呼び出し側は
+    /// 終了時に[`Self::query_tip_identity`]で再同定し、この値と比較すること。
+    tip_identity: TipIdentity,
 }
 
 impl RealImeDriver {
@@ -173,15 +192,24 @@ impl RealImeDriver {
         let thread_compartments = thread_mgr.cast::<ITfCompartmentMgr>()?;
         let (window, edit) = create_window()?;
         unsafe {
-            let _ = SetForegroundWindow(window);
-            let _ = SetFocus(Some(edit));
             let _ = ShowWindow(window, SW_SHOW);
         }
 
         // ADR-196決定1b: 学習窓への外部からの書き込みを直接観測する基盤を、
-        // フォーカス移行より前に立ち上げる（以降の待ちすべてを観測できるように）。
+        // フォーカス移行より前に立ち上げる（以降の待ちすべてを観測できるように、
+        // ADR195-T10のフォーカス確保リトライ待ちも含む）。
         let hook_monitor = HookMonitor::install()?;
         let notify_monitor = ImeNotifyMonitor::new();
+
+        // ADR195-T10: 起動直後の1回きりのSetForegroundWindow/SetFocusはCIの
+        // フォアグラウンドロックで無言失敗しうるため、AttachThreadInput併用で
+        // 確認しながら再試行する。
+        if !secure_focus_with_retries(window, edit, &notify_monitor) {
+            eprintln!(
+                "[awase-keymap-learn-win] 起動時のフォーカス確保に失敗した \
+                 (observe_imm()の結果が学習窓ではなく他の窓を指しうる)"
+            );
+        }
 
         pump_for(
             Duration::from_millis(focus_debounce_wait_ms()),
@@ -208,6 +236,9 @@ impl RealImeDriver {
             session_monitor: Cell::new(SessionMonitor::new(SESSION_INVALIDATION_LIMIT)),
             interference: Cell::new(InterferenceTracker::new()),
             session_failed: Cell::new(false),
+            // 後段で`query_tip_identity_on_current_sta()`の結果に上書きする
+            // プレースホルダ(この値のまま使われることはない)。
+            tip_identity: TipIdentity::Other,
         };
 
         // 決定1b項目3・ADR195-T7項目2: 静かな観測窓（quiet window）——ここまでの
@@ -252,7 +283,40 @@ impl RealImeDriver {
         }
 
         driver.initial = driver.observe_imm()?.status;
+
+        // A-6: 学習対象のTIPを開始時点で同定する。取得できなければ、20分学習した後で
+        // 「何を測ったか分からない」と判明するより、開始直後に失敗させる方が安い
+        // (opus-adversarial-consult 2026-09-23 C-5)。
+        driver.tip_identity = query_tip_identity_on_current_sta().ok_or_else(|| {
+            windows::core::Error::new(
+                windows::core::HRESULT(0x8000_4006u32.cast_signed()),
+                "学習対象のIME(TIP)を同定できなかった",
+            )
+        })?;
+
         Ok(driver)
+    }
+
+    /// 開始時点(`new()`)で同定した学習対象のTIP。
+    #[must_use]
+    pub const fn tip_identity(&self) -> TipIdentity {
+        self.tip_identity
+    }
+
+    /// A-6: 現在の学習対象TIPを再同定する。開始時の[`Self::tip_identity`]との比較は
+    /// 呼び出し側(`run_main`)が行う(セッション中のIME切り替え検出)。
+    #[must_use]
+    pub fn query_tip_identity(&self) -> Option<TipIdentity> {
+        query_tip_identity_on_current_sta()
+    }
+
+    /// ADR196-T2「1e前半」(C-1): フック経路の生存確認(決定1b項目4)。学習プロセス
+    /// 自身が送った自己注入の総数だけ、セッション開始からの累計でフックが観測できて
+    /// いれば`true`。`observation_alive`と違い直近1件ではなく累計を見るため、
+    /// いつ呼んでも意味のある粗粒度の健全性チェックになる。
+    #[must_use]
+    pub fn hook_alive(&self) -> bool {
+        self.hook_monitor.liveness().is_alive()
     }
 
     /// [ADR195-T7](../../../../docs/tasks/adr195-t7-safety-measures.md)項目2
@@ -290,7 +354,7 @@ impl RealImeDriver {
     /// プロセスの窓を作成したのと同じスレッドから呼ぶ前提（`AttachThreadInput`
     /// 無しで両APIが有効）。
     fn focus_intact(&self) -> bool {
-        (unsafe { GetForegroundWindow() }) == self.window && (unsafe { GetFocus() }) == self.edit
+        focus_on_edit(self.window, self.edit)
     }
 
     /// 決定1b項目5（セッション中の監視）・ADR195-T7項目2: 前回チェック以降に
@@ -721,6 +785,51 @@ fn focus_debounce_wait_ms() -> u64 {
         .ok()
         .map(|config| u64::from(config.general.focus_debounce_ms));
     configured.unwrap_or(FOCUS_DEBOUNCE_FALLBACK_MS) + FOCUS_MARGIN_MS
+}
+
+/// 前面窓が`window`、かつ入力フォーカスが`edit`にあるか(`RealImeDriver::focus_intact`
+/// と共有、窓を作成したのと同じスレッドから呼ぶ前提)。
+fn focus_on_edit(window: HWND, edit: HWND) -> bool {
+    (unsafe { GetForegroundWindow() }) == window && (unsafe { GetFocus() }) == edit
+}
+
+/// `compartment_notify_probe.rs::bring_to_front`と同じ`AttachThreadInput`併用パターン。
+/// 素の`SetForegroundWindow`は、呼び出し元プロセスが既にフォアグラウンドでない限り
+/// Windowsのフォアグラウンドロックにより無言で失敗しうる(戻り値もエラーにならない)。
+/// 現在の前面窓のスレッドへ一時的に入力キューを結合すると、この制限が外れる。
+fn secure_foreground_focus(window: HWND, edit: HWND) -> bool {
+    unsafe {
+        let fg = GetForegroundWindow();
+        let fg_tid = if fg.0.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(fg, None)
+        };
+        let my_tid = GetCurrentThreadId();
+        let attached =
+            fg_tid != 0 && fg_tid != my_tid && AttachThreadInput(my_tid, fg_tid, true).as_bool();
+        let _ = BringWindowToTop(window);
+        let ok = SetForegroundWindow(window).as_bool();
+        let _ = SetFocus(Some(edit));
+        if attached {
+            let _ = AttachThreadInput(my_tid, fg_tid, false);
+        }
+        ok || GetForegroundWindow() == window
+    }
+}
+
+/// `focus_on_edit`が成立するまで`secure_foreground_focus`を再試行する
+/// (ADR195-T10: CI環境では1回で成立しないことがある)。待ちは`pump_for`経由
+/// (ADR-196決定1b項目4: メッセージポンプを止めるとフックが黙って外れうる)。
+fn secure_focus_with_retries(window: HWND, edit: HWND, notify_monitor: &ImeNotifyMonitor) -> bool {
+    for _ in 0..FOCUS_RETRY_ATTEMPTS {
+        let fronted = secure_foreground_focus(window, edit);
+        pump_for(Duration::from_millis(FOCUS_RETRY_GAP_MS), notify_monitor);
+        if fronted && focus_on_edit(window, edit) {
+            return true;
+        }
+    }
+    focus_on_edit(window, edit)
 }
 
 /// メッセージを回しながら待つ（ADR-196決定1b項目4: フックが黙って外れるのを

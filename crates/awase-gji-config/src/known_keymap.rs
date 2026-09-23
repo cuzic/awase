@@ -6,7 +6,7 @@
 //! にする、決定1b）、不一致率の計算対象を絞り込むためだけに使う。
 
 use crate::tsv::parse_custom_keymap_table;
-use crate::{SESSION_KEYMAP_ATOK, SESSION_KEYMAP_MSIME};
+use crate::{SESSION_KEYMAP_ATOK, SESSION_KEYMAP_MSIME, SESSION_KEYMAP_NONE};
 
 /// 内蔵表が対応する既知のGJI構成（Microsoft IME本体側の判定は別途
 /// `awase-windows`側が持つ——本クレートはGJI固有の設定しか読めないため）。
@@ -35,7 +35,12 @@ fn has_henkan_or_muhenkan_row(custom_keymap_table: &str) -> bool {
 ///   ため）。
 /// - **MS-IMEプリセット**: `custom_keymap_table`が空、または無変換/変換の
 ///   行を含まないこと（実機知見が食い違うため、安全側に倒して除外する。
-///   ADR-196決定1c参照）。
+///   ADR-196決定1c参照）。`session_keymap`が`None`（フィールド不在）または
+///   `SESSION_KEYMAP_NONE`も、Windows版GJIの実質既定である`MSIME`として扱う
+///   （`key_effect_predictor.rs::from_config`と同じ規則——不一致があると、
+///   `session_keymap`を一度も変更していない最多構成のユーザーが常に「既知構成
+///   でない」と判定され、内蔵表との突き合わせが丸ごと飛ばされる。
+///   opus-adversarial-consult 2026-09-23 B-4で発見・修正）。
 /// - いずれの場合も`overlay_keymaps`が空であること（overlayは既定の挙動を
 ///   別の意味論へ丸ごと変えるため）。
 #[must_use]
@@ -49,7 +54,7 @@ pub fn classify_known_gji_keymap(
     }
     match session_keymap {
         Some(v) if v == SESSION_KEYMAP_ATOK => Some(KnownGjiKeymap::Atok),
-        Some(v) if v == SESSION_KEYMAP_MSIME => {
+        None | Some(SESSION_KEYMAP_NONE | SESSION_KEYMAP_MSIME) => {
             let overridden = custom_keymap_table
                 .is_some_and(|table| !table.trim().is_empty() && has_henkan_or_muhenkan_row(table));
             if overridden {
@@ -58,7 +63,7 @@ pub fn classify_known_gji_keymap(
                 Some(KnownGjiKeymap::MsIme)
             }
         }
-        _ => None,
+        Some(_) => None,
     }
 }
 
@@ -104,6 +109,31 @@ mod tests {
         );
     }
 
+    /// B-4回帰テスト(opus-adversarial-consult 2026-09-23): `session_keymap`が`None`
+    /// （フィールド不在）または`SESSION_KEYMAP_NONE`も、Windows版GJIの実質既定である
+    /// `MSIME`として扱う。`session_keymap`を一度も変更していない最多構成のユーザーで
+    /// `session_keymap`は`None`になる(protobufは既定値のフィールドを省略して直列化する)。
+    #[test]
+    fn absent_or_explicit_none_session_keymap_is_treated_as_msime_default() {
+        assert_eq!(
+            classify_known_gji_keymap(None, &[], None),
+            Some(KnownGjiKeymap::MsIme)
+        );
+        assert_eq!(
+            classify_known_gji_keymap(Some(SESSION_KEYMAP_NONE), &[], None),
+            Some(KnownGjiKeymap::MsIme)
+        );
+        // MS-IMEプリセットと同じく、無変換/変換の上書きがあれば除外する。
+        assert_eq!(
+            classify_known_gji_keymap(
+                None,
+                &[],
+                Some("status\tkey\tcommand\nDirectInput\tHenkan\tIMEOn\n")
+            ),
+            None
+        );
+    }
+
     #[test]
     fn msime_excluded_when_custom_table_overrides_henkan_or_muhenkan() {
         assert_eq!(
@@ -142,6 +172,5 @@ mod tests {
             classify_known_gji_keymap(Some(crate::SESSION_KEYMAP_CUSTOM), &[], None),
             None
         );
-        assert_eq!(classify_known_gji_keymap(None, &[], None), None);
     }
 }
