@@ -9,7 +9,8 @@
 //! 構成: `model`(Mealy機械の型) / `sim`(実機の代わり) / `cost`(待ちモデル) / `anomaly`(異常とリセット段階) /
 //! `graph`(プランナ用グラフ・巡回計画) / `table`(観測表) / `exec`(実行器) / `strategy`(S0〜S9、定義は同モジュールのdoc) /
 //! `metrics`(指標) / `sample_models`(具体的なモデル例=合成ランダムモデルとATOK風モデル) /
-//! `persist`(学習結果の永続化フォーマット、ADR-195段階3)。
+//! `persist`(学習結果の永続化フォーマット、ADR-195段階3) / `staleness`(学習済み表の陳腐化検出、
+//! ADR-195段階8)。
 
 pub mod anomaly;
 pub mod cost;
@@ -21,5 +22,6 @@ pub mod persist;
 pub mod rng;
 pub mod sample_models;
 pub mod sim;
+pub mod staleness;
 pub mod strategy;
 pub mod table;

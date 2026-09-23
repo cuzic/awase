@@ -32,19 +32,33 @@ pub struct PersistedCell {
     pub prediction: Option<Outcome>,
 }
 
+/// キーマップの版を表す不透明な指紋([ADR-195](../../../docs/adr/195-keymap-learn-productization.md)
+/// 段階8)。学習時点のキーマップ構成を1組の`u64`に凝縮したもので、本クレートはどちらの方式で
+/// 計算されたかを知らない——呼び出し側(`awase-windows`)が`config1_db_stamp()`(mtimeナノ秒+長さ)
+/// をそのまま使うか、`session_keymap`/`custom_keymap_table`/`overlay_keymaps`3値のハッシュを
+/// 詰めるかのいずれかを選ぶ。同じ方式で計算された指紋どうしでなければ比較に意味がないため、
+/// 呼び出し側は学習時と失効チェック時で同じ計算方式を使い続けること。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Fingerprint(pub u64, pub u64);
+
 /// 表全体を1ファイルに持つ永続化フォーマット。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedTable {
     pub schema_version: u32,
+    /// 学習時点のキーマップの指紋。`None`は「呼び出し側が指紋を計算できなかった
+    /// (フィンガープリント方式が無いIME等)」を表し、段階8の失効判定はこの場合
+    /// キーマップ変化による失効を検出しない(スキーマ版不一致の検出のみ行う)。
+    pub fingerprint: Option<Fingerprint>,
     pub cells: Vec<PersistedCell>,
 }
 
 impl PersistedTable {
     /// 現行スキーマ版で新規作成する。
     #[must_use]
-    pub const fn new(cells: Vec<PersistedCell>) -> Self {
+    pub const fn new(cells: Vec<PersistedCell>, fingerprint: Option<Fingerprint>) -> Self {
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
+            fingerprint,
             cells,
         }
     }
@@ -118,7 +132,10 @@ mod tests {
 
     #[test]
     fn round_trips_through_json() {
-        let table = PersistedTable::new(vec![cell(true, 0, Some(false)), cell(false, 1, None)]);
+        let table = PersistedTable::new(
+            vec![cell(true, 0, Some(false)), cell(false, 1, None)],
+            Some(Fingerprint(1, 2)),
+        );
 
         let json = table.to_json().expect("serialize");
         let loaded = from_json(&json).expect("deserialize");
@@ -129,13 +146,13 @@ mod tests {
 
     #[test]
     fn new_table_uses_current_schema_version() {
-        let table = PersistedTable::new(vec![]);
+        let table = PersistedTable::new(vec![], None);
         assert_eq!(table.schema_version, CURRENT_SCHEMA_VERSION);
     }
 
     #[test]
     fn rejects_newer_schema_version() {
-        let mut table = PersistedTable::new(vec![cell(true, 0, None)]);
+        let mut table = PersistedTable::new(vec![cell(true, 0, None)], None);
         table.schema_version = CURRENT_SCHEMA_VERSION + 1;
         let json = table.to_json().expect("serialize");
 
@@ -155,7 +172,7 @@ mod tests {
         // 現行と食い違う。versionチェックが`!=`ではなく`<`のような片方向比較に
         // 誤って変更される回帰を防ぐため、新しい版だけでなく古い版も拒否することを固定する。
         const { assert!(CURRENT_SCHEMA_VERSION >= 1, "test needs a version below current") };
-        let mut table = PersistedTable::new(vec![cell(true, 0, None)]);
+        let mut table = PersistedTable::new(vec![cell(true, 0, None)], None);
         table.schema_version = CURRENT_SCHEMA_VERSION - 1;
         let json = table.to_json().expect("serialize");
 
@@ -179,10 +196,10 @@ mod tests {
     fn rejects_duplicate_status_key_cell() {
         // 同じ(status, key)に対して食い違う2つのPersistedCellが書き込まれた場合、
         // 「どちらが勝つか」を読み込み側の実装に依存する形で黙認しない(重複を拒否する)。
-        let table = PersistedTable::new(vec![
-            cell(true, 0, Some(false)),
-            cell(true, 0, Some(true)),
-        ]);
+        let table = PersistedTable::new(
+            vec![cell(true, 0, Some(false)), cell(true, 0, Some(true))],
+            None,
+        );
         let json = table.to_json().expect("serialize");
 
         let err = from_json(&json).expect_err("must reject duplicate (status, key) entries");
