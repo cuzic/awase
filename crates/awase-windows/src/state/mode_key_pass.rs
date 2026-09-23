@@ -609,7 +609,10 @@ mod tests {
             .drop_decision(300, 1, true, false, 300)
             .expect("読める窓が切れたのに未破棄なら破棄する");
         assert!(expired_effect.remove_intent, "初回の破棄は意図を削除する");
-        assert!(expired_effect.pass_through, "初回はalign=trueでdispatchする");
+        assert!(
+            expired_effect.pass_through,
+            "初回はalign=trueでdispatchする"
+        );
 
         // 2回目: より大きい窓を渡した観測成功(on_expiry=false)。invalidated済みなのでfirst=false、
         // has_last_intent=falseでalign=true、mark.alignedはまだfalseなので
@@ -617,7 +620,10 @@ mod tests {
         let observed_effect = latch
             .drop_decision(320, 1, false, false, 1000)
             .expect("2回目: より大きい窓での観測成功");
-        assert!(!observed_effect.remove_intent, "2回目は意図を消さない(既に消した)");
+        assert!(
+            !observed_effect.remove_intent,
+            "2回目は意図を消さない(既に消した)"
+        );
         assert!(observed_effect.pass_through, "2回目の観測でも揃える");
 
         // aligned=trueへ実際に書き変わったことを align_after_expired で観測する
