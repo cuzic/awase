@@ -68,9 +68,25 @@ impl InitialHypothesisTable {
         self.known.is_empty() && self.needs_learning.is_empty()
     }
 
+    /// キー`vk_name`の初期仮説を`hypothesis`と確定する。ただし、そのキーに既に
+    /// **別の**仮説が確定済みなら（例: `DirectInput`ではIMEOn、`Composition`/
+    /// `Conversion`では別のSetMode、という状態依存の割り当て）、単一の`KeyHypothesis`
+    /// では表現できない矛盾とみなし、`known`から外して`needs_learning`へ倒す
+    /// （無条件の上書きは、先に確定した事実を黙って握りつぶす）。
     fn insert_known(&mut self, vk_name: String, hypothesis: KeyHypothesis) {
         self.needs_learning.remove(&vk_name);
-        self.known.insert(vk_name, hypothesis);
+        match self.known.entry(vk_name) {
+            std::collections::btree_map::Entry::Vacant(e) => {
+                e.insert(hypothesis);
+            }
+            std::collections::btree_map::Entry::Occupied(e) => {
+                if *e.get() != hypothesis {
+                    let vk_name = e.key().clone();
+                    e.remove();
+                    self.needs_learning.insert(vk_name);
+                }
+            }
+        }
     }
 
     fn insert_needs_learning(&mut self, vk_name: String) {
@@ -198,6 +214,25 @@ Precomposition\tF8\tSwitchKanaType
         assert!(table.needs_learning().contains("VK_DBE_ALPHANUMERIC"));
         assert!(table.needs_learning().contains("VK_F8"));
         assert!(!table.known().contains_key("VK_F9"));
+    }
+
+    /// code-review(PR #257)指摘: あるキーがDirectInputでIMEOn、Composition/Conversionで
+    /// SetMode(Hiragana)に束縛されている(状態依存の割り当て)場合、単一の`KeyHypothesis`
+    /// では表現できないため、どちらか片方を黙って採用せず`needs_learning`へ倒すべき。
+    #[test]
+    fn conflicting_ime_on_and_set_mode_for_same_key_falls_back_to_needs_learning() {
+        let text = "status\tkey\tcommand
+DirectInput\tHenkan\tIMEOn
+Composition\tHenkan\tCompositionModeHiragana
+Conversion\tHenkan\tCompositionModeHiragana
+";
+        let table = build_gji_initial_hypothesis(None, Some(text));
+        assert!(
+            !table.known().contains_key("VK_CONVERT"),
+            "矛盾する仮説を単一のKeyHypothesisとしてknownへ確定してはいけない: {:?}",
+            table.known()
+        );
+        assert!(table.needs_learning().contains("VK_CONVERT"));
     }
 
     /// ADR-195 段階0 決定4: Microsoft IME本体は経路2に相当する抽出元が無いため、

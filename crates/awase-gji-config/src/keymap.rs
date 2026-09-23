@@ -258,21 +258,44 @@ pub fn extract_mode_keys(custom_keymap_table: &str) -> GjiModeKeys {
 /// 直接組み立てられる（学習を省略できる）。相対トグル系
 /// （`ToggleAlphanumericMode`/`ToggleKanaType`）はこの集合に入らない——現在のモード
 /// 依存で遷移先が一意に定まらないため、呼び出し側は「不明、要学習」のままにする。
+///
+/// キーが確定と認められるのは、(a) `Composition`/`Conversion`のいずれかの行で
+/// `SetMode`が観測され、かつ(b)そのキーの`SetMode`行が(status問わず)全て同じ
+/// 遷移先モードで一致しているときだけ（[`extract_mode_keys`]の一意性判定と同じ規則、
+/// 判定ロジックの二重実装を避けるためここでも同じ「distinctが1件だけ」の基準を使う）。
+/// 単一のComposition/Conversion行だけを見て確定と判定すると、他のstatusで食い違う
+/// `SetMode`行を持つキーまで誤って確定扱いにしうる。
 #[must_use]
 pub fn set_mode_keys_confirmed_by_input_progress_status(
     custom_keymap_table: &str,
 ) -> BTreeSet<String> {
     const INPUT_IN_PROGRESS_STATUSES: &[&str] = &["Composition", "Conversion"];
     let rows = parse_custom_keymap_table(custom_keymap_table);
-    let mut result = BTreeSet::new();
+    let mut set_mode_commands_by_key: BTreeMap<String, BTreeSet<GjiModeCommand>> = BTreeMap::new();
+    let mut has_input_progress_set_mode: BTreeSet<String> = BTreeSet::new();
     for row in &rows {
-        if !INPUT_IN_PROGRESS_STATUSES.contains(&row.status.as_str()) {
+        let classified = classify_command(&row.command);
+        if !matches!(classified, GjiModeCommand::SetMode(_)) {
             continue;
         }
-        if !matches!(classify_command(&row.command), GjiModeCommand::SetMode(_)) {
+        set_mode_commands_by_key
+            .entry(row.key.clone())
+            .or_default()
+            .insert(classified);
+        if INPUT_IN_PROGRESS_STATUSES.contains(&row.status.as_str()) {
+            has_input_progress_set_mode.insert(row.key.clone());
+        }
+    }
+    let mut result = BTreeSet::new();
+    for key in has_input_progress_set_mode {
+        let Some(commands) = set_mode_commands_by_key.get(&key) else {
+            continue;
+        };
+        if commands.len() != 1 {
+            // 状態間で遷移先が一意に定まらない(extract_mode_keysと同じ判定)。
             continue;
         }
-        if let Some(vk_name) = mozc_key_to_vk_name(&row.key) {
+        if let Some(vk_name) = mozc_key_to_vk_name(&key) {
             result.insert(vk_name);
         }
     }
