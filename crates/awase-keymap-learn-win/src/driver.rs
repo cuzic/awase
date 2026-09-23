@@ -2,7 +2,7 @@
 
 use std::cell::Cell;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -20,7 +20,7 @@ use awase_windows::state::key_effect_predictor::Conv;
 use awase_windows::tsf::query_tip_identity_on_current_sta;
 
 use crate::hook_monitor::{HookMonitor, SELF_MARKER};
-use crate::ime_notify::ImeNotifyMonitor;
+use crate::ime_notify::{drain_queued_into, queue_notify, ImeNotifyMonitor, WM_IME_NOTIFY};
 use windows::core::{w, Interface, Result as WinResult};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Com::{
@@ -42,10 +42,11 @@ use windows::Win32::UI::TextServices::{
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetForegroundWindow, GetWindowThreadProcessId, PeekMessageW, RegisterClassW,
-    SetForegroundWindow, SetWindowTextW, ShowWindow, TranslateMessage, MSG, PM_REMOVE, SW_SHOW,
-    WINDOW_STYLE, WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    BringWindowToTop, CallWindowProcW, CreateWindowExW, DefWindowProcW, DestroyWindow,
+    DispatchMessageW, GetForegroundWindow, GetWindowThreadProcessId, PeekMessageW, RegisterClassW,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage,
+    GWLP_WNDPROC, MSG, PM_REMOVE, SW_SHOW, WINDOW_STYLE, WNDCLASSW, WNDPROC, WS_BORDER, WS_CHILD,
+    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 
 const GCS_COMPSTR: u32 = 0x0008;
@@ -100,7 +101,38 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
     if msg == WM_ACTIVATE && (wparam.0 & 0xFFFF) as u16 == WA_INACTIVE {
         FOCUS_LOST_EVENTS.fetch_add(1, Ordering::SeqCst);
     }
+    if msg == WM_IME_NOTIFY {
+        queue_notify(wparam.0);
+    }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// EDITコントロールの元のウィンドウプロシージャ（サブクラス化前）。
+static ORIG_EDIT_PROC: AtomicIsize = AtomicIsize::new(0);
+
+/// B-1: IMEが`WM_IME_NOTIFY`を送る先はフォーカスを持つEDIT子窓で、親窓の
+/// `window_proc`にもメッセージポンプ(`PeekMessageW`)にも現れない。EDITを
+/// サブクラス化して通知をキューへ積み、元のプロシージャへ素通しする。
+extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if msg == WM_IME_NOTIFY {
+        queue_notify(wparam.0);
+    }
+    let orig = ORIG_EDIT_PROC.load(Ordering::SeqCst);
+    // SAFETY: `orig`は`SetWindowLongPtrW(GWLP_WNDPROC)`が返した元のプロシージャ
+    // アドレス（0ならフォールバックのDefWindowProcW）。
+    unsafe {
+        if orig == 0 {
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        } else {
+            CallWindowProcW(
+                std::mem::transmute::<isize, WNDPROC>(orig),
+                hwnd,
+                msg,
+                wparam,
+                lparam,
+            )
+        }
+    }
 }
 
 /// [ADR195-T7](../../../../docs/tasks/adr195-t7-safety-measures.md)項目2
@@ -432,6 +464,8 @@ impl RealImeDriver {
         for _ in 0..count {
             self.hook_monitor.mark_self_injection_sent();
         }
+        // 直前までに届いた通知を旧い猶予窓のうちに判定してから窓を付け替える。
+        drain_queued_into(&self.notify_monitor);
         self.notify_monitor
             .mark_expected_notify(Duration::from_millis(NOTIFY_EXPECT_WINDOW_MS));
     }
@@ -846,6 +880,8 @@ fn pump_for(duration: Duration, notify_monitor: &ImeNotifyMonitor) {
                 DispatchMessageW(&raw const msg);
             }
         }
+        // SendMessage配送の`WM_IME_NOTIFY`はウィンドウプロシージャが積んだキューから取る。
+        drain_queued_into(notify_monitor);
         thread::sleep(Duration::from_millis(1));
     }
 }
@@ -895,6 +931,12 @@ fn create_window() -> WinResult<(HWND, HWND)> {
             Some(instance.into()),
             None,
         )?;
+        let orig = SetWindowLongPtrW(
+            edit,
+            GWLP_WNDPROC,
+            (edit_proc as *const () as usize).cast_signed(),
+        );
+        ORIG_EDIT_PROC.store(orig, Ordering::SeqCst);
         Ok((window, edit))
     }
 }

@@ -9,14 +9,39 @@
 //! （`create_window`）は素のWin32窓であり、独自のCOM sinkを実装しなくても
 //! この通知は届く。フルのTSF advise sinkは将来の拡張として残す。
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::time::{Duration, Instant};
 
 use windows::Win32::UI::WindowsAndMessaging::MSG;
 
-const WM_IME_NOTIFY: u32 = 0x0282;
+pub const WM_IME_NOTIFY: u32 = 0x0282;
 const IMN_SETOPENSTATUS: usize = 0x0002;
 const IMN_SETCONVERSIONMODE: usize = 0x0003;
+
+thread_local! {
+    /// ウィンドウプロシージャ（EDITのサブクラスと親窓）が受け取った
+    /// `WM_IME_NOTIFY`の`(wParam, 到着時刻)`。`WM_IME_NOTIFY`は`SendMessage`で
+    /// 配送されるため`PeekMessageW`がMSGとして返すことはなく、`pump_for`の
+    /// ループでは観測できない（B-1）。ウィンドウプロシージャ側で積み、
+    /// `drain_queued_into`で監視状態へ渡す。到着時刻を積む時点で記録するので、
+    /// 取り出しが遅れても猶予窓の判定は到着時点で行われる。
+    static QUEUED: RefCell<Vec<(usize, Instant)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// ウィンドウプロシージャから呼ぶ: `WM_IME_NOTIFY`を到着時刻付きで積む。
+pub fn queue_notify(wparam: usize) {
+    QUEUED.with(|q| q.borrow_mut().push((wparam, Instant::now())));
+}
+
+/// 積まれた通知を全て`monitor`へ渡す。`pump_for`と`mark_expected_notify`の
+/// 直前（猶予窓の付け替え前に届いた通知を取りこぼさない・新しい窓へ
+/// 混入させないため）に呼ぶ。
+pub fn drain_queued_into(monitor: &ImeNotifyMonitor) {
+    let drained = QUEUED.with(|q| std::mem::take(&mut *q.borrow_mut()));
+    for (wparam, at) in drained {
+        monitor.observe_notify_at(wparam, at);
+    }
+}
 
 /// `WM_IME_NOTIFY`の監視状態。専用EDIT窓の`pump_for`ループから
 /// `observe_message`を毎回呼んでもらう前提（このモニタ自体はメッセージを
@@ -48,15 +73,19 @@ impl ImeNotifyMonitor {
 
     /// `pump_for`のメッセージループから1件ずつ渡す。
     pub fn observe_message(&self, msg: &MSG) {
-        if !Self::is_open_or_conv_notify(msg) {
+        if Self::is_open_or_conv_notify(msg) {
+            self.observe_notify_at(msg.wParam.0, Instant::now());
+        }
+    }
+
+    /// `WM_IME_NOTIFY`の`wParam`と到着時刻から観測する（開閉・変換モード以外は無視）。
+    pub fn observe_notify_at(&self, wparam: usize, at: Instant) {
+        if !matches!(wparam, IMN_SETOPENSTATUS | IMN_SETCONVERSIONMODE) {
             return;
         }
         self.notify_since_mark.set(self.notify_since_mark.get() + 1);
         self.notify_observed_since_mark.set(true);
-        let outside_window = self
-            .expect_until
-            .get()
-            .is_none_or(|deadline| Instant::now() > deadline);
+        let outside_window = self.expect_until.get().is_none_or(|deadline| at > deadline);
         if outside_window {
             self.external_count.set(self.external_count.get() + 1);
         }
@@ -157,6 +186,23 @@ mod tests {
         // 状態が変わっていなければ、通知が無くても経路の生死は判定できない
         // （疑わしいとはみなさない）。
         assert!(monitor.is_alive_given_status_changed(false));
+    }
+
+    #[test]
+    fn queued_notify_is_judged_by_arrival_time_not_drain_time() {
+        let monitor = ImeNotifyMonitor::new();
+        monitor.mark_expected_notify(Duration::from_millis(500));
+        // 猶予窓の内側で到着した通知は、取り出しが窓の終了後でも外部扱いにならない。
+        queue_notify(IMN_SETOPENSTATUS);
+        std::thread::sleep(Duration::from_millis(1));
+        drain_queued_into(&monitor);
+        assert_eq!(monitor.external_count(), 0);
+        assert_eq!(monitor.notify_count_since_mark(), 1);
+        // 窓を張っていない状態で届いた通知は外部扱い。
+        let outside = ImeNotifyMonitor::new();
+        queue_notify(IMN_SETCONVERSIONMODE);
+        drain_queued_into(&outside);
+        assert_eq!(outside.external_count(), 1);
     }
 
     #[test]
