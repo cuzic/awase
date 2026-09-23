@@ -177,7 +177,7 @@ mod tests {
             assert!(
                 CURRENT_SCHEMA_VERSION >= 1,
                 "test needs a version below current"
-            )
+            );
         };
         let mut table = PersistedTable::new(vec![cell(true, 0, None)], None);
         table.schema_version = CURRENT_SCHEMA_VERSION - 1;
