@@ -4,22 +4,24 @@ name: Mutants (IME actuation confluence points, Windows scope investigation)
 # 「IME actuation 合流点」表を参照)の棚卸し専用の一時ワークフロー。
 # .cargo/mutants-actuation-confluence-scope.toml で対象を4関数
 # (ImeController::apply / run_open_chain_async / fallback_write /
-# imm_cross_write / DecisionExecutor::dispatch_ime_set_open)に絞る。
-# そのファイル先頭コメントに、表の6エントリのうち2つ(reassert_explicit_
-# physical_key / force_on_and_correct_romaji)が ADR-178 領域A撤去で既に
-# 削除済みだった経緯も書いてある。
+# imm_cross_write / DecisionExecutor::dispatch_ime_set_open、計13 mutants)
+# に絞る。そのファイル先頭コメントに、表の6エントリのうち2つ(reassert_
+# explicit_physical_key / force_on_and_correct_romaji)が ADR-178 領域A撤去
+# で既に削除済みだった経緯も書いてある。
 #
 # これらは #[cfg(windows)] でモジュール宣言ごとゲートされているため、
 # GitHub-hosted ubuntu-latest(ci.yml の mutants-awase-windows ジョブ)では
 # コンパイル自体されない(false MISSED にすらならず 0 mutants になるだけ)。
-# 実際に変異を仕込んでビルド・実行できるのは Windows 実機ネイティブのみ
-# (mutants-windows.yml と同じ理由、詳細はそちらの先頭コメント参照)。
+# 実際に変異を仕込んでビルド・実行できるのは Windows 実機ネイティブのみ。
 #
-# 【重要】mutants-windows.yml と同じく self-hosted runner を使うため
-# workflow_dispatch 専用にしてある。push/pull_request トリガーを追加しない
-# こと(public repo で self-hosted runner を使う以上、トリガー面自体から
-# pull_request を排除しておく方が安全という判断、理由は mutants-windows.yml
-# 先頭コメント参照)。
+# mutants-windows.yml(フルスコープの-p awase-windows、数百mutants、--jobs 8
+# の高並列)は self-hosted(GCP Spot)を使っているが、それは「GitHub-hosted
+# windows-latest(標準2コア)では並列度が足りず、より大きいrunnerはpublicリポ
+# でも課金対象になる」という規模の問題であり、self-hostedがGitHub Actions
+# 側の必須要件というわけではない。本ワークフローは対象13 mutantsのみの
+# 小規模ジョブなので、この規模の問題が当てはまらない。GitHub-hosted
+# windows-latest(publicリポジトリなら無料・MSVCツールチェーン込み)で足りる
+# ため、self-hosted runnerもTailscale経由の実機常駐登録も不要と判断した。
 #
 # 棚卸し(合流点の統合候補洗い出し)が終わったら、このファイルと
 # .cargo/mutants-actuation-confluence-scope.toml は削除してよい
@@ -36,8 +38,8 @@ env:
 
 jobs:
   mutants-actuation-confluence:
-    runs-on: [self-hosted, Windows, gcp-spot]
-    timeout-minutes: 180
+    runs-on: windows-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
