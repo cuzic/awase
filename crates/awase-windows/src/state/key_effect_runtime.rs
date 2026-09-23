@@ -1,0 +1,657 @@
+//! ADR-195 段階4: 予測器（`key_effect_predictor.rs`）の実行時読込。
+//!
+//! `awase-keymap-learn::persist`（段階3の永続化フォーマット）が書き出した学習済み表を、
+//! コンパイル時埋め込みの同梱表（`key_effect_table.rs`）の代わりに使う。読み込んだ表は
+//! `KeyEffectPredicted`（belief更新）にのみ使い、actuationの判定（ADR-189の固定セット・
+//! ユーザー明示config）には一切使わない——本モジュールは`predict_in_table`が引く`Cell`の
+//! 一覧を用意するだけで、actuationのどの合流点も呼ばない。
+//!
+//! 安全側に倒す3つの経路（本タスクB-1 Blockerの核心）:
+//! 1. **破損ファイルへの縮退**: サイズ上限超過・パース失敗・スキーマ版不一致は、
+//!    無条件で同梱表へフォールバック（`RuntimeTableCache::get`が`None`を返す）。
+//! 2. **縮退率チェック**: 変換できたセル（VK・変換モードが表現可能で、かつ予測ありの
+//!    セル）の割合が[`MIN_COVERAGE_RATIO`]未満なら不採用。
+//! 3. **同梱表とのセル突き合わせ**: 検出したキーマップがカスタム上書き無し（同梱3種の
+//!    いずれかとそのまま一致する構成）のときだけ、学習表と同梱表をセル単位で突き合わせ、
+//!    不一致率が[`MAX_MISMATCH_RATIO`]を超えたら不採用（カスタム構成では学習表が同梱表と
+//!    食い違うのが正常なので、この判定はしない）。
+//!
+//! # 表現の粒度の制約（既知の限界、フォローアップが必要）
+//!
+//! `awase-keymap-learn::model::Status.composing`は`bool`（入力中か否か）だが、
+//! `key_effect_predictor::Stage`は`Typing`/`ConvSpace`/`ConvHenkan`/`ConvMuhenkan`の
+//! 4種の入力中サブ状態を区別する（ADR195-T5がMealy機械で置き換える対象そのもの、
+//! 隠れ状態）。本モジュールは`composing == true`を一律`Stage::Typing`に写像する
+//! （表に無い場合に「入力中」の行で代用する、既存の`predict_in_table`のフォールバック
+//! 規則と同じ精度への意図的な劣化——新しい未検証の推測ではない）。これにより
+//! `ConvSpace`/`ConvHenkan`/`ConvMuhenkan`固有のセルは学習表からは再現できず、
+//! 常に同梱表側の値に頼る（学習表側にそのセルが無いのと同義）。段階5（Mealy機械最小化）
+//! が隠れ状態を含む表現へ永続化スキーマを拡張すれば解消する見込み（[`awase_keymap_learn::persist::CURRENT_SCHEMA_VERSION`]の
+//! 版上げが必要）。
+
+use std::fs;
+use std::path::Path;
+
+use awase_keymap_learn::model::{Disposition, Outcome};
+use awase_keymap_learn::persist::{self, LoadError, PersistedCell, PersistedTable};
+
+use super::key_effect_predictor::{
+    bundled_table, cell as make_cell, Cell, Conv, Disp, KeymapPreset, Stage, TableKey,
+};
+
+/// 読み込むファイルの上限サイズ。壊れた/異常に巨大なファイルを丸ごとメモリに載せない
+/// （B-1 Blockerの「ファイルサイズに上限を設ける」）。
+pub const MAX_TABLE_FILE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// 変換できた（＝実際に使える）セルの割合がこれ未満なら不採用（縮退率チェックの裏返し。
+/// ADR本文の「縮退率20%」＝カバレッジ80%を暫定既定値とする）。
+pub const MIN_COVERAGE_RATIO: f64 = 0.80;
+
+/// 同梱表とのセル不一致率がこれを超えたら不採用（カスタム構成無しのときだけ判定）。
+pub const MAX_MISMATCH_RATIO: f64 = 0.05;
+
+/// [`load_runtime_table`]が採用しなかった理由（ログ・診断用）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RejectReason {
+    /// ファイルが存在しない（未学習、正常系）。
+    NotFound,
+    /// ファイルは存在するが読み取りに失敗した（権限・排他ロック等、異常系）。
+    Io,
+    TooLarge,
+    Parse,
+    SchemaVersionMismatch,
+    /// `(status, key)`の重複エントリがある（[`persist::LoadError::DuplicateCell`]）。
+    DuplicateCell,
+    /// 変換できたセルの割合が[`MIN_COVERAGE_RATIO`]未満。
+    CoverageTooLow {
+        coverage: f64,
+    },
+    /// 同梱表とのセル不一致率が[`MAX_MISMATCH_RATIO`]を超えた。
+    MismatchesBundledTooMuch {
+        mismatch_ratio: f64,
+    },
+}
+
+impl std::fmt::Display for RejectReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "ファイル未学習（存在しない）"),
+            Self::Io => write!(f, "読み取り失敗"),
+            Self::TooLarge => write!(f, "ファイルサイズが上限({MAX_TABLE_FILE_BYTES}バイト)超過"),
+            Self::Parse => write!(f, "パース失敗"),
+            Self::SchemaVersionMismatch => write!(f, "スキーマ版不一致"),
+            Self::DuplicateCell => write!(f, "(status, key)の重複エントリ"),
+            Self::CoverageTooLow { coverage } => {
+                write!(f, "変換できたセルの割合が低すぎる(coverage={coverage:.2})")
+            }
+            Self::MismatchesBundledTooMuch { mismatch_ratio } => write!(
+                f,
+                "同梱表とのセル不一致率が高すぎる(mismatch_ratio={mismatch_ratio:.2})"
+            ),
+        }
+    }
+}
+
+/// `PersistedCell`一覧を`key_effect_predictor::Cell`一覧へ変換する。表現できないセル
+/// （VKが表に無い・変換モードが表現不能・`prediction: None`＝未測定または非決定と判定済み）は
+/// 結果に含めない（「予測なし」に読み替える、B-1 Blockerの縮退経路）。
+fn convert_cells(cells: &[PersistedCell]) -> Vec<Cell> {
+    cells.iter().filter_map(convert_cell).collect()
+}
+
+fn convert_cell(pc: &PersistedCell) -> Option<Cell> {
+    let key = TableKey::from_vk(pc.key.0)?;
+    let outcome: Outcome = pc.prediction?;
+    // 開状態のセルだけ変換モードを持つ（閉セルは`conv: None`がワイルドカード、Cellの既存の約束）。
+    // 開状態で変換モードが表現できないときはセルごと除外する（`open`かつ変換不能は無効な組み合わせ）。
+    let conv = if pc.status.open {
+        Some(Conv::from_raw(u32::from(pc.status.mode))?)
+    } else {
+        None
+    };
+    let after_open = outcome.status.open;
+    let after_conv = if after_open {
+        // 変換不能なモードへ遷移した場合は「押下後の変換が不明」として追跡を捨てる
+        // （既存の`predict_in_table`が`after_conv: None`を「開く/閉じる遷移で不明」として扱うのと同じ扱い）。
+        Conv::from_raw(u32::from(outcome.status.mode))
+    } else {
+        None
+    };
+    let stage = if pc.status.composing {
+        Stage::Typing
+    } else {
+        Stage::None
+    };
+    let disp = match outcome.disp {
+        Disposition::None => Disp::None,
+        Disposition::Kept => Disp::Kept,
+        Disposition::Discarded => Disp::Discarded,
+        Disposition::Committed => Disp::Committed,
+    };
+    Some(make_cell(
+        pc.status.open,
+        conv,
+        stage,
+        key,
+        after_open,
+        after_conv,
+        disp,
+    ))
+}
+
+/// 変換できたセルの割合（B-1 Blockerの縮退率チェック）。
+fn coverage_ratio(raw: &[PersistedCell], converted_len: usize) -> f64 {
+    if raw.is_empty() {
+        return 0.0;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let ratio = converted_len as f64 / raw.len() as f64;
+    ratio
+}
+
+/// 学習表と同梱表のセル不一致率。同梱表の各セルについて、学習表に同じ
+/// `(open, conv, stage, key)`のセルがあり、かつ`after_open`/`after_conv`/`disp`のいずれかが
+/// 食い違うものを数える（学習表に無いセル＝単に未学習は不一致に数えない、突き合わせの対象は
+/// 「同梱表にあるセルのうち学習表でも答えが出ているもの」だけ）。
+fn mismatch_ratio(learned: &[Cell], bundled: &[Cell]) -> f64 {
+    let mut compared = 0usize;
+    let mut mismatched = 0usize;
+    for b in bundled {
+        let Some(l) = learned
+            .iter()
+            .find(|c| c.matches_lookup_key(b.open(), b.conv(), b.stage(), b.key()))
+        else {
+            continue;
+        };
+        compared += 1;
+        if l.after_open() != b.after_open()
+            || l.after_conv() != b.after_conv()
+            || l.disp() != b.disp()
+        {
+            mismatched += 1;
+        }
+    }
+    if compared == 0 {
+        return 0.0;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let ratio = mismatched as f64 / compared as f64;
+    ratio
+}
+
+/// `<config dir>/keymap-learn-table.json`のパス。`config dir`は`config.toml`の親ディレクトリ
+/// （`crate::app::find_config_path()`と同じ解決順、見つからなければ`None`＝未学習として扱う）。
+///
+/// `crate::app`（実行ファイルの位置に基づく解決）は`#[cfg(windows)]`のため、この関数もそれに合わせる
+/// （`state/`は原則OS非依存だが、このファイルパス解決だけはWindows固有の起動時パス規則に依存する）。
+#[cfg(windows)]
+pub(crate) fn table_file_path() -> Option<std::path::PathBuf> {
+    let config_path = crate::app::find_config_path().ok()?;
+    Some(config_path.parent()?.join("keymap-learn-table.json"))
+}
+
+/// [`RuntimeTableCache::get`]の`stamp`引数（更新時刻+長さ）。ファイルが無い/読めなければ`None`
+/// （`KeymapCache`の「GJI未導入」と同じ規則: 版が変わらない限り読み直さない）。
+#[cfg(windows)]
+pub(crate) fn table_file_stamp() -> Option<(u64, u64)> {
+    let path = table_file_path()?;
+    let meta = fs::metadata(&path).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some((mtime, meta.len()))
+}
+
+/// [`RuntimeTableCache::get`]の`load`引数。採用できなければ理由をログに残して`None`を返す
+/// （呼び出し側は同梱表へフォールバックする）。
+#[cfg(windows)]
+pub(crate) fn load_and_log(preset: KeymapPreset, check_against_bundled: bool) -> Option<Vec<Cell>> {
+    let path = table_file_path()?;
+    match load_runtime_table(&path, preset, check_against_bundled) {
+        Ok(cells) => {
+            tracing::info!(
+                "[key-effect-runtime] 学習済み表を採用: {} セル (path={})",
+                cells.len(),
+                path.display()
+            );
+            Some(cells)
+        }
+        Err(RejectReason::NotFound) => {
+            // ファイル未学習（存在しない）は正常系、ログしない。
+            None
+        }
+        Err(reason) => {
+            tracing::warn!(
+                "[key-effect-runtime] 学習済み表を不採用、同梱表へフォールバック: {reason} (path={})",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+/// `std::io::Error`を、ファイル不在(正常系)とそれ以外の読み取り失敗(異常系、ログすべき)
+/// とを区別できる[`RejectReason`]へ変換する。
+fn io_reject_reason(e: &std::io::Error) -> RejectReason {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        RejectReason::NotFound
+    } else {
+        RejectReason::Io
+    }
+}
+
+/// ファイルを読み、パース・スキーマ検証・縮退率チェック・（該当すれば）同梱表とのセル突き合わせまで
+/// 行う。`check_against_bundled`は[`super::key_effect_predictor::KeyEffectKeymap::is_unmodified_bundled_config`]の
+/// 結果を渡す（カスタム構成では突き合わせをしない）。
+///
+/// # Errors
+/// 採用できない理由を[`RejectReason`]で返す。
+pub fn load_runtime_table(
+    path: &Path,
+    preset: KeymapPreset,
+    check_against_bundled: bool,
+) -> Result<Vec<Cell>, RejectReason> {
+    let meta = fs::metadata(path).map_err(|e| io_reject_reason(&e))?;
+    if meta.len() > MAX_TABLE_FILE_BYTES {
+        return Err(RejectReason::TooLarge);
+    }
+    let text = fs::read_to_string(path).map_err(|e| io_reject_reason(&e))?;
+    let table: PersistedTable = persist::from_json(&text).map_err(|e| match e {
+        LoadError::Parse(_) => RejectReason::Parse,
+        LoadError::SchemaVersionMismatch { .. } => RejectReason::SchemaVersionMismatch,
+        LoadError::DuplicateCell { .. } => RejectReason::DuplicateCell,
+    })?;
+    validate_and_convert(&table, preset, check_against_bundled)
+}
+
+/// [`load_runtime_table`]のfsを伴わない部分（テスト・CI検証双方から呼べるように分離）。
+///
+/// # Errors
+/// 採用できない理由を[`RejectReason`]で返す。
+pub fn validate_and_convert(
+    table: &PersistedTable,
+    preset: KeymapPreset,
+    check_against_bundled: bool,
+) -> Result<Vec<Cell>, RejectReason> {
+    let converted = convert_cells(&table.cells);
+    let coverage = coverage_ratio(&table.cells, converted.len());
+    if coverage < MIN_COVERAGE_RATIO {
+        return Err(RejectReason::CoverageTooLow { coverage });
+    }
+    if check_against_bundled {
+        let ratio = mismatch_ratio(&converted, bundled_table(preset));
+        if ratio > MAX_MISMATCH_RATIO {
+            return Err(RejectReason::MismatchesBundledTooMuch {
+                mismatch_ratio: ratio,
+            });
+        }
+    }
+    Ok(converted)
+}
+
+/// `config1.db`スタンプ（[`super::key_effect_predictor::KeymapCache`]）と同じ方式のfsキャッシュ。
+/// `RECHECK_MS`ごとにファイルの版（更新時刻+長さ）だけを問い合わせ、変わったときだけ読み直す。
+/// 判定は純関数で、fs/時計は呼び出し側が渡す（テスト容易性のため`KeymapCache`と同じ形にする）。
+///
+/// ファイル自身のスタンプに加えて`(KeymapPreset, check_against_bundled)`も版の一部として
+/// 比較する——学習済み表ファイル自体は変わっていなくても、GJIのプリセット切替
+/// （`session_keymap`）やカスタム構成の有無が変わると、`validate_and_convert`が
+/// 検証に使う`preset`/`check_against_bundled`が変わり、以前キャッシュしたセルは
+/// 新しい構成に対して未検証のまま（かつVK/モードの意味が構成ごとに違いうる）になる。
+/// ファイルスタンプだけで比較すると、プリセットを切り替えても再学習していない限り
+/// 古いプリセット向けに検証済みのセルを黙って使い続けてしまう。
+#[derive(Debug, Default)]
+pub struct RuntimeTableCache {
+    checked_at_ms: Option<u64>,
+    stamp: Option<(u64, u64, KeymapPreset, bool)>,
+    cells: Option<Vec<Cell>>,
+}
+
+impl RuntimeTableCache {
+    pub const RECHECK_MS: u64 = super::key_effect_predictor::KeymapCache::RECHECK_MS;
+
+    /// キャッシュした学習済み表を返す（採用できなかった/未学習なら`None`＝呼び出し側は同梱表を使う）。
+    ///
+    /// `validation_key`は`(preset, check_against_bundled)`——呼び出し側が`load`に渡すのと
+    /// 同じ値を渡すこと（版の一部として比較され、変わればファイルスタンプが同じでも読み直す）。
+    pub fn get(
+        &mut self,
+        now_ms: u64,
+        validation_key: (KeymapPreset, bool),
+        stamp: impl FnOnce() -> Option<(u64, u64)>,
+        load: impl FnOnce() -> Option<Vec<Cell>>,
+    ) -> Option<&[Cell]> {
+        let first = self.checked_at_ms.is_none();
+        let due = self
+            .checked_at_ms
+            .is_none_or(|t| now_ms.saturating_sub(t) >= Self::RECHECK_MS);
+        // code-review指摘: validation_key(preset/check_against_bundled)の変化は、
+        // RECHECK_MS(fsアクセスの間引き)とは独立に毎回チェックする。プリセット切替は
+        // フォーカス移動というユーザー操作でRECHECK_MSの窓の途中でも起こりうり、
+        // dueがfalseのまま素通りすると古いプリセット向けに検証済みのセルを
+        // 新しいプリセットの予測にそのまま使い続けてしまう(セルの意味がプリセットごとに
+        // 違いうるため、これは黙って誤った予測を返す事故になる)。
+        let validation_key_changed = !first
+            && self
+                .stamp
+                .is_some_and(|(_, _, preset, check)| (preset, check) != validation_key);
+        if due || validation_key_changed {
+            self.checked_at_ms = Some(now_ms);
+            let now_stamp =
+                stamp().map(|(mtime, len)| (mtime, len, validation_key.0, validation_key.1));
+            if first || now_stamp != self.stamp {
+                self.stamp = now_stamp;
+                self.cells = load();
+            }
+        }
+        self.cells.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awase_keymap_learn::model::{KeyId, Status};
+
+    fn pcell(
+        open: bool,
+        mode: u8,
+        composing: bool,
+        key: u16,
+        pred: Option<(bool, u8)>,
+    ) -> PersistedCell {
+        PersistedCell {
+            status: Status {
+                open,
+                mode,
+                composing,
+            },
+            key: KeyId(key),
+            prediction: pred.map(|(o, m)| Outcome {
+                status: Status {
+                    open: o,
+                    mode: m,
+                    composing: false,
+                },
+                disp: Disposition::Kept,
+            }),
+        }
+    }
+
+    #[test]
+    fn converts_a_simple_open_to_close_cell() {
+        // ひらがな(0xF2)開→英数(0x00)相当、閉じないケース: open=true mode=0x09(ひらがな) -> after open=true mode=0x00(英数)。
+        let pc = pcell(true, 0x09, false, 0xF2, Some((true, 0x00)));
+        let c = convert_cell(&pc).expect("変換できるはず");
+        assert!(c.open());
+        assert_eq!(c.conv(), Some(Conv::C19));
+        assert_eq!(c.stage(), Stage::None);
+        assert_eq!(c.key(), TableKey::Hiragana);
+        assert!(c.after_open());
+        assert_eq!(c.after_conv(), Some(Conv::C10));
+    }
+
+    #[test]
+    fn skips_cells_with_no_prediction() {
+        let pc = pcell(true, 0x09, false, 0xF2, None);
+        assert!(
+            convert_cell(&pc).is_none(),
+            "未測定/非決定は予測なしに読み替える"
+        );
+    }
+
+    #[test]
+    fn skips_cells_with_unrepresentable_vk_or_mode() {
+        // 表に無いVK(適当な値0x99)。
+        let unknown_vk = pcell(true, 0x09, false, 0x99, Some((true, 0x00)));
+        assert!(convert_cell(&unknown_vk).is_none());
+        // 表現できない変換モード(0x03=半角カタカナ、到達不能)。
+        let unknown_mode = pcell(true, 0x03, false, 0xF2, Some((true, 0x00)));
+        assert!(convert_cell(&unknown_mode).is_none());
+    }
+
+    #[test]
+    fn composing_true_maps_to_typing_stage() {
+        let pc = pcell(true, 0x09, true, 0x0D, Some((true, 0x09)));
+        let c = convert_cell(&pc).expect("変換できるはず");
+        assert_eq!(
+            c.stage(),
+            Stage::Typing,
+            "入力中サブ状態は一律Typingへ縮退する"
+        );
+    }
+
+    #[test]
+    fn coverage_too_low_is_rejected() {
+        // 10セット中2セットだけ予測あり(20%) < MIN_COVERAGE_RATIO(80%)。
+        let mut cells = vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x00)))];
+        cells.push(pcell(true, 0x00, false, 0xF2, Some((true, 0x09))));
+        for _ in 0..8 {
+            cells.push(pcell(true, 0x09, false, 0x99, None)); // 表に無いVK: 常に変換不能
+        }
+        let table = PersistedTable::new(cells, None);
+        let err = validate_and_convert(&table, KeymapPreset::Atok, false).unwrap_err();
+        assert!(matches!(err, RejectReason::CoverageTooLow { .. }));
+    }
+
+    #[test]
+    fn high_coverage_without_bundled_check_is_accepted() {
+        let cells: Vec<_> = (0..10)
+            .map(|_| pcell(true, 0x09, false, 0xF2, Some((true, 0x00))))
+            .collect();
+        let table = PersistedTable::new(cells, None);
+        let out = validate_and_convert(&table, KeymapPreset::Atok, false).unwrap();
+        assert_eq!(out.len(), 10);
+    }
+
+    #[test]
+    fn mismatch_against_bundled_is_rejected_when_checked() {
+        // 同梱ATOK表にある、ひらがな(0xF2)を開いた状態で押した結果は「閉じない」実測（コード中の
+        // `atok_hiragana_is_a_pure_toggle_between_hiragana_and_halfwidth_alnum`テスト参照）。
+        // ここではわざと「閉じる」という誤った学習結果を大量に混ぜ、突き合わせで不採用になることを固定する。
+        let cells: Vec<_> = (0..20)
+            .map(|_| pcell(true, 0x09, false, 0xF2, Some((false, 0x09))))
+            .collect();
+        let table = PersistedTable::new(cells, None);
+        let rejected_when_checked =
+            validate_and_convert(&table, KeymapPreset::Atok, true).unwrap_err();
+        assert!(matches!(
+            rejected_when_checked,
+            RejectReason::MismatchesBundledTooMuch { .. }
+        ));
+        // カスタム構成(突き合わせなし)なら同じ表でも採用される。
+        assert!(validate_and_convert(&table, KeymapPreset::Atok, false).is_ok());
+    }
+
+    #[test]
+    fn schema_version_mismatch_is_rejected() {
+        let mut table = PersistedTable::new(
+            vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x00)))],
+            None,
+        );
+        table.schema_version = persist::CURRENT_SCHEMA_VERSION + 1;
+        let json = table.to_json().unwrap();
+        let err = persist::from_json(&json).unwrap_err();
+        assert!(matches!(err, LoadError::SchemaVersionMismatch { .. }));
+    }
+
+    #[test]
+    fn runtime_table_cache_loads_once_and_rechecks_by_stamp() {
+        use std::cell::Cell as StdCell;
+        let loads = StdCell::new(0u32);
+        let mut cache = RuntimeTableCache::default();
+        let load = || {
+            loads.set(loads.get() + 1);
+            Some(vec![])
+        };
+        let key = (KeymapPreset::Atok, true);
+        assert!(cache.get(0, key, || Some((1, 10)), load).is_some());
+        assert_eq!(loads.get(), 1);
+        // 間隔内はfsを読まない。
+        assert!(cache.get(500, key, || Some((1, 10)), load).is_some());
+        assert_eq!(loads.get(), 1);
+        // 間隔を過ぎても版が同じなら読み直さない。
+        assert!(cache
+            .get(RuntimeTableCache::RECHECK_MS, key, || Some((1, 10)), load)
+            .is_some());
+        assert_eq!(loads.get(), 1);
+        // 版が変わったら読み直す。
+        assert!(cache
+            .get(
+                RuntimeTableCache::RECHECK_MS * 2,
+                key,
+                || Some((2, 10)),
+                load
+            )
+            .is_some());
+        assert_eq!(loads.get(), 2);
+    }
+
+    #[test]
+    fn runtime_table_cache_reloads_when_preset_changes_even_if_file_stamp_is_unchanged() {
+        // GJIのプリセット切替(session_keymap変更)は学習済み表ファイル自体を書き換えない。
+        // ファイルスタンプだけで版を比較すると、切り替え後もATOK向けに検証済みだった
+        // 古いセルを黙って使い続けてしまう(旧プリセットの構成に対してのみ妥当な
+        // 縮退率/突き合わせ判定を経たセルを、新プリセットへそのまま流用する事故)。
+        use std::cell::Cell as StdCell;
+        let loads = StdCell::new(0u32);
+        let mut cache = RuntimeTableCache::default();
+        let load = || {
+            loads.set(loads.get() + 1);
+            Some(vec![])
+        };
+        assert!(cache
+            .get(0, (KeymapPreset::Atok, true), || Some((1, 10)), load)
+            .is_some());
+        assert_eq!(loads.get(), 1);
+        // ファイルスタンプは同じ(1, 10)のまま、プリセットだけがMsImeへ変わった。
+        assert!(cache
+            .get(
+                RuntimeTableCache::RECHECK_MS,
+                (KeymapPreset::MsIme, true),
+                || Some((1, 10)),
+                load
+            )
+            .is_some());
+        assert_eq!(loads.get(), 2, "プリセット変更で読み直すべき");
+        // check_against_bundledだけが変わった場合も読み直す(カスタム構成の有無で検証内容が違う)。
+        assert!(cache
+            .get(
+                RuntimeTableCache::RECHECK_MS * 2,
+                (KeymapPreset::MsIme, false),
+                || Some((1, 10)),
+                load
+            )
+            .is_some());
+        assert_eq!(loads.get(), 3, "check_against_bundled変更でも読み直すべき");
+    }
+
+    #[test]
+    fn runtime_table_cache_reloads_on_preset_change_even_within_the_recheck_window() {
+        // code-review指摘: 前のテストはいずれもnow_msをRECHECK_MSの倍数にしており、
+        // 「dueがtrueの場合にvalidation_keyの変化を検出できるか」しか確認していなかった。
+        // フォーカス移動によるプリセット切替はRECHECK_MSの間引き窓の途中でも起こりうるため、
+        // dueがfalseのままでも(fsを問い合わせ直さずとも)古いプリセット向けのセルを
+        // 新しいプリセットへ流用してはいけない。
+        use std::cell::Cell as StdCell;
+        let loads = StdCell::new(0u32);
+        let mut cache = RuntimeTableCache::default();
+        let load = || {
+            loads.set(loads.get() + 1);
+            Some(vec![])
+        };
+        assert!(cache
+            .get(0, (KeymapPreset::Atok, true), || Some((1, 10)), load)
+            .is_some());
+        assert_eq!(loads.get(), 1);
+        // RECHECK_MSの窓の途中(now_msを1msしか進めない、due=false)でプリセットが変わった。
+        assert!(cache
+            .get(1, (KeymapPreset::MsIme, true), || Some((1, 10)), load)
+            .is_some());
+        assert_eq!(
+            loads.get(),
+            2,
+            "RECHECK_MSの窓の途中でもプリセット変更は読み直すべき"
+        );
+    }
+
+    #[test]
+    fn load_runtime_table_distinguishes_not_found_from_real_io_errors() {
+        // ファイル不在(正常系、ログしない)と、存在するが読み取れない(異常系、ログすべき)を
+        // 混同しない。存在しないパスはNotFound。
+        let missing = std::env::temp_dir().join("awase_keymap_learn_table_does_not_exist.json");
+        let _ = fs::remove_file(&missing);
+        assert_eq!(
+            load_runtime_table(&missing, KeymapPreset::Atok, true),
+            Err(RejectReason::NotFound)
+        );
+
+        // ディレクトリをファイルとして開こうとすると(存在はするが読めない)、
+        // NotFoundではなくIoになる。
+        let dir = std::env::temp_dir().join(format!(
+            "awase_keymap_learn_table_dir_{}",
+            unique_test_suffix()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).expect("create test dir");
+        let result = load_runtime_table(&dir, KeymapPreset::Atok, true);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(result, Err(RejectReason::Io));
+    }
+
+    fn unique_test_suffix() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn runtime_table_cache_falls_back_to_none_when_load_rejects() {
+        let mut cache = RuntimeTableCache::default();
+        assert!(cache
+            .get(0, (KeymapPreset::Atok, true), || Some((1, 10)), || None)
+            .is_none());
+    }
+
+    /// B-1 Blockerの安全性の核（本来はCI実機blind格子`ci/e2e-ime.yml`で検証すべき項目の、
+    /// ユニットテストでの代替——実機検証は本タスクの残課題として別途フォローアップが必要、
+    /// [`docs/tasks/adr195-t4-runtime-loading.md`]参照）: **合成の`custom_keymap_table`**
+    /// （同梱3種のいずれとも一致しないカスタムキーマップ）から作った学習表を
+    /// `predict_in_table`に通したとき、(1) 学習表に無いセルは`None`（予測なし、observation
+    /// 側に委ねる安全側）を返すこと、(2) 学習表にあるセルは学習した通りの結果を返すこと、
+    /// の両方を固定する。「間違った予測を返す」ことだけが実害（読めない窓でのblind誤り）になる
+    /// ため、「予測なし」に倒れる経路が壊れていないことが安全性の core。
+    #[test]
+    fn custom_table_predictions_are_faithful_or_absent_never_silently_wrong() {
+        use super::super::key_effect_predictor::{KeyTrack, PredictInput};
+        use awase::engine::InputModeState;
+
+        // カスタムキーマップ学習: ひらがな(0xF2)を押すと開閉トグルする、という(同梱3種のいずれとも
+        // 違う)独自の挙動を1セルだけ学習した表。
+        let learned = vec![pcell(false, 0x00, false, 0xF2, Some((true, 0x09)))]; // 閉→開
+        let table = PersistedTable::new(learned, None);
+        let cells = validate_and_convert(&table, KeymapPreset::Atok, false)
+            .expect("カスタム構成は突き合わせをしないので採用される");
+
+        let closed = PredictInput {
+            open: false,
+            mode: InputModeState::ObservedRomaji,
+            conv_raw: None,
+            composing: false,
+            track: KeyTrack::default(),
+        };
+        // (2) 学習した通りの結果。
+        let p = super::super::key_effect_predictor::predict_in_table(&cells, 0xF2, &closed)
+            .expect("学習したセルは予測する");
+        assert_eq!(p.effect.open, Some(true));
+
+        // (1) 学習していないキー(Enter)は「予測なし」——間違った値を捏造しない。
+        assert!(
+            super::super::key_effect_predictor::predict_in_table(&cells, 0x0D, &closed).is_none()
+        );
+    }
+}

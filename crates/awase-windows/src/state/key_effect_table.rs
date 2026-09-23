@@ -522,7 +522,13 @@ pub fn classify_state_dependent_mode_key(
             CannotPredictReason::AmbiguousKeymap,
         ));
     };
-    if keymap.preset == KeymapPreset::MsImeNative {
+    if matches!(
+        keymap.preset,
+        KeymapPreset::MsImeNative | KeymapPreset::Custom
+    ) {
+        // MsImeNativeと同じ理由: 基準となる同梱表が無い(Customは`session_keymap`が
+        // ATOK/MSIME以外、ADR-195段階4 B3対応で`from_config`が`None`ではなく
+        // `Custom`プリセットを返すようになった)。
         return Some(Classification::CannotPredict(
             CannotPredictReason::InsufficientData,
         ));
@@ -549,7 +555,7 @@ pub fn classify_state_dependent_mode_key(
     let cells = match keymap.preset {
         KeymapPreset::Atok => ATOK,
         KeymapPreset::MsIme => MSIME,
-        KeymapPreset::MsImeNative => unreachable!("handled above"),
+        KeymapPreset::MsImeNative | KeymapPreset::Custom => unreachable!("handled above"),
     };
     Some(classify_cells(cells, key, vk))
 }

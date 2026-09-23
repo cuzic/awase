@@ -325,6 +325,11 @@ pub struct Runtime {
     state_dependent_key_warning_dialog:
         crate::state::state_dependent_key_warning::WarningDialogTracker,
     warn_state_dependent_mode_keys: bool,
+    /// ADR-195段階4: `<config dir>/keymap-learn-table.json`（段階3永続化）の実行時読込キャッシュ。
+    /// `KeyEffectPredicted`（belief更新）にのみ使い、actuationの判定には使わない。
+    key_effect_runtime_table: crate::state::key_effect_runtime::RuntimeTableCache,
+    /// `config.general.use_learned_keymap_table`（opt-out、既定true）。
+    use_learned_keymap_table: bool,
     /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091
     /// §D3.2、config.toml による手動設定のみ）が現在有効なら、その vk。
     /// `recompute_active_keymaps` が `[[keymap]]` との衝突チェックに使う
@@ -1203,6 +1208,9 @@ impl Runtime {
             state_dependent_key_warning_dialog:
                 crate::state::state_dependent_key_warning::WarningDialogTracker::default(),
             warn_state_dependent_mode_keys: true,
+            key_effect_runtime_table: crate::state::key_effect_runtime::RuntimeTableCache::default(
+            ),
+            use_learned_keymap_table: true,
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
             calibration_bypass_deadline: None,
@@ -1535,6 +1543,7 @@ impl Runtime {
         );
         self.platform_state.focus.focus_debounce_ms = config.general.focus_debounce_ms;
         self.platform_state.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
+        self.use_learned_keymap_table = config.general.use_learned_keymap_table;
         self.set_keyboard_model(config.general.keyboard_model);
         self.set_update_check_enabled(config.general.update_check);
         self.set_warn_state_dependent_mode_keys(config.general.warn_state_dependent_mode_keys);
