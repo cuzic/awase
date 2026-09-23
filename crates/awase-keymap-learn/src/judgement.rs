@@ -124,11 +124,10 @@ pub fn judge_self_verification(
 ///   （すでに`NeedsConfirmation(UnverifiedMsImeNative)`だった場合はそちらを残す——
 ///   理由を上書きしない）。
 ///
-/// 現時点でこの関数を呼ぶ呼び出し元はまだ無い（再測定オーケストレーション未実装、
-/// `run_main`は常に`reconciliation: None`で`self_verification`をそのまま使う）。
-/// Linux上でテストできるpure関数として先に用意しておくことで、後続PRが
-/// `main.rs`（`#[cfg(windows)]`でLinuxのテストが存在しない）に判定ロジックを
-/// 書かずに済む。
+/// 呼び出し元は`awase-keymap-learn-win`の`run_main`（既知構成のときだけ
+/// [`crate::remeasure::reconcile_with_bundled`]の結果を渡し、それ以外は`None`）。
+/// Linux上でテストできるpure関数にしてあるのは、`main.rs`（`#[cfg(windows)]`で
+/// Linuxのテストが存在しない）に判定ロジックを書かずに済ませるため。
 #[must_use]
 pub fn combine(
     self_verification: TableJudgement,
