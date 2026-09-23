@@ -558,20 +558,28 @@ fn apply_adr192_recommended_replacement(
         muhenkan_suppress: config.general.muhenkan_solo_tap_always_suppress,
         henkan_suppress: config.general.henkan_solo_tap_always_suppress,
     };
-    config.keys.ime_on = vec!["変換".to_owned()];
-    config.keys.ime_off = vec!["無変換".to_owned()];
-    if is_muhenkan_thumb_key(&config.general.left_thumb_key)
-        || is_muhenkan_thumb_key(&config.general.right_thumb_key)
-    {
+    // 決定3bの優先順位逆転により、対象キーが親指キーの場合は`*_solo_tap_ime_action`が
+    // `keys.ime_on`/`ime_off`のbareコンボより優先される。両方を同時に書くと、保存直後に
+    // `validate_thumb_key_in_ime_combos`のT-16分岐3が「同じキーの`*_solo_tap_ime_action`の
+    // 設定が優先され、この強制ON/OFFの設定は無視されます」と警告する自己矛盾した設定を
+    // 生んでいた（opus-adversarial-consultによるADR-192 T2bレビュー指摘）。親指キーの場合は
+    // bareコンボを書かず`*_solo_tap_ime_action`＋`always_suppress`のみを書く。
+    let henkan_is_thumb = is_henkan_thumb_key(&config.general.left_thumb_key)
+        || is_henkan_thumb_key(&config.general.right_thumb_key);
+    let muhenkan_is_thumb = is_muhenkan_thumb_key(&config.general.left_thumb_key)
+        || is_muhenkan_thumb_key(&config.general.right_thumb_key);
+    if henkan_is_thumb {
+        config.general.henkan_solo_tap_ime_action = Some(awase::config::ShadowImeActionConfig::On);
+        config.general.henkan_solo_tap_always_suppress = true;
+    } else {
+        config.keys.ime_on = vec!["変換".to_owned()];
+    }
+    if muhenkan_is_thumb {
         config.general.muhenkan_solo_tap_ime_action =
             Some(awase::config::ShadowImeActionConfig::Off);
         config.general.muhenkan_solo_tap_always_suppress = true;
-    }
-    if is_henkan_thumb_key(&config.general.left_thumb_key)
-        || is_henkan_thumb_key(&config.general.right_thumb_key)
-    {
-        config.general.henkan_solo_tap_ime_action = Some(awase::config::ShadowImeActionConfig::On);
-        config.general.henkan_solo_tap_always_suppress = true;
+    } else {
+        config.keys.ime_off = vec!["無変換".to_owned()];
     }
     snapshot
 }
@@ -7366,13 +7374,25 @@ speculative_delay_ms = 30
     }
 
     #[test]
-    fn adr192_replacement_sets_idempotent_keys_and_thumb_suppression() {
+    fn adr192_replacement_sets_thumb_suppression_without_bare_combo_when_thumb_key() {
+        // AppConfig::default()の親指キーは無変換/変換(標準NICOLA配置)。この場合、決定3bの
+        // 優先順位逆転により`*_solo_tap_ime_action`がbareコンボより優先されるため、
+        // bareの`keys.ime_on`/`ime_off`は書かない(書くと保存直後にT-16分岐3の「無視されます」
+        // 警告を自ら誘発する自己矛盾になる)。
         let mut config = awase::config::AppConfig::default();
+        let original_ime_on = config.keys.ime_on.clone();
+        let original_ime_off = config.keys.ime_off.clone();
         config.general.muhenkan_solo_tap_always_suppress = false;
         config.general.henkan_solo_tap_always_suppress = false;
         let _snapshot = apply_adr192_recommended_replacement(&mut config);
-        assert_eq!(config.keys.ime_on, ["変換"]);
-        assert_eq!(config.keys.ime_off, ["無変換"]);
+        assert_eq!(
+            config.keys.ime_on, original_ime_on,
+            "親指キーの場合はbareコンボを書かず変更しない"
+        );
+        assert_eq!(
+            config.keys.ime_off, original_ime_off,
+            "親指キーの場合はbareコンボを書かず変更しない"
+        );
         assert_eq!(
             config.general.muhenkan_solo_tap_ime_action,
             Some(awase::config::ShadowImeActionConfig::Off)
@@ -7383,6 +7403,21 @@ speculative_delay_ms = 30
         );
         assert!(config.general.muhenkan_solo_tap_always_suppress);
         assert!(config.general.henkan_solo_tap_always_suppress);
+    }
+
+    #[test]
+    fn adr192_replacement_writes_bare_combo_only_when_key_is_not_a_thumb_key() {
+        // 無変換/変換を親指シフトに使っていない構成(USキーボード等)では、
+        // *_solo_tap_ime_actionとの優先順位競合が起きないため、従来通りbareの
+        // keys.ime_on/ime_offを書いてよい。
+        let mut config = awase::config::AppConfig::default();
+        config.general.left_thumb_key = "Space".to_owned();
+        config.general.right_thumb_key = "Space".to_owned();
+        let _snapshot = apply_adr192_recommended_replacement(&mut config);
+        assert_eq!(config.keys.ime_on, ["変換"]);
+        assert_eq!(config.keys.ime_off, ["無変換"]);
+        assert_eq!(config.general.henkan_solo_tap_ime_action, None);
+        assert_eq!(config.general.muhenkan_solo_tap_ime_action, None);
     }
 
     #[test]
