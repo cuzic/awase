@@ -834,7 +834,9 @@ pub fn restart_self() {
             return;
         }
     };
-    match std::process::Command::new(&exe).spawn() {
+    // stdio null 化の理由は crate::win32::spawn_command_with_null_stdio の
+    // doc 参照（BUG-79/BUG-134）。
+    match crate::win32::spawn_command_with_null_stdio(&exe).spawn() {
         Ok(_) => {
             tracing::info!("Restarting self, exiting current process");
             std::process::exit(0);

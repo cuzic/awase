@@ -299,6 +299,27 @@ pub fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
+/// 子プロセスの stdin/stdout/stderr を明示的に `Stdio::null()` にした
+/// `Command` を構築する（BUG-79/BUG-134）。
+///
+/// 指定しないと Rust は親の標準入出力ハンドルを子プロセスに継承させようと
+/// し、その際に構築される継承ハンドル許可リストが awase.exe 実機環境
+/// （フック・タイマー・非同期ワーカースレッドを多数抱えた長時間稼働
+/// プロセス）でのみ `CreateProcessW` を `ERROR_NOT_SUPPORTED`（os error 50）
+/// で失敗させる（`docs/known-bugs/BUG-079.md` 参照、実機A/Bテストで確認
+/// 済み）。`launch_settings_with_args`（設定画面起動）と`restart_self`
+/// （トレイの「再起動」）が個別にこの定型句を持っていた（BUG-134）ため
+/// ここに集約する——`awase.exe` から自分自身や兄弟プロセスを spawn する
+/// 新しい呼び出し元は、この定型句を再実装せず必ずこの関数を経由すること。
+#[must_use]
+pub fn spawn_command_with_null_stdio(path: &std::path::Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new(path);
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    cmd
+}
+
 /// 起動失敗などの致命的なエラーを `MessageBoxW` で表示する。
 ///
 /// `main.rs::show_startup_error`（awase.exe 側）と
