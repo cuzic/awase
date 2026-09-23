@@ -8,7 +8,8 @@
 //!
 //! 構成: `model`(Mealy機械の型) / `sim`(実機の代わり) / `cost`(待ちモデル) / `anomaly`(異常とリセット段階) /
 //! `graph`(プランナ用グラフ・巡回計画) / `table`(観測表) / `exec`(実行器) / `strategy`(S0〜S9、定義は同モジュールのdoc) /
-//! `metrics`(指標) / `sample_models`(具体的なモデル例=合成ランダムモデルとATOK風モデル)。
+//! `metrics`(指標) / `sample_models`(具体的なモデル例=合成ランダムモデルとATOK風モデル) /
+//! `verify`(段階2: 独立ランダムウォークでの自己検証、誤りに強い分類)。
 
 pub mod anomaly;
 pub mod cost;
@@ -21,3 +22,4 @@ pub mod sample_models;
 pub mod sim;
 pub mod strategy;
 pub mod table;
+pub mod verify;
