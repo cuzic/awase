@@ -1,0 +1,54 @@
+name: Mutants (IME actuation confluence points, Windows scope investigation)
+
+# 「片方の欠陥をもう片方の冗長経路が隠す」問題(fix-requires-evidence.md の
+# 「IME actuation 合流点」表を参照)の棚卸し専用の一時ワークフロー。
+# .cargo/mutants-actuation-confluence-scope.toml で対象を4関数
+# (ImeController::apply / run_open_chain_async / fallback_write /
+# imm_cross_write / DecisionExecutor::dispatch_ime_set_open)に絞る。
+# そのファイル先頭コメントに、表の6エントリのうち2つ(reassert_explicit_
+# physical_key / force_on_and_correct_romaji)が ADR-178 領域A撤去で既に
+# 削除済みだった経緯も書いてある。
+#
+# これらは #[cfg(windows)] でモジュール宣言ごとゲートされているため、
+# GitHub-hosted ubuntu-latest(ci.yml の mutants-awase-windows ジョブ)では
+# コンパイル自体されない(false MISSED にすらならず 0 mutants になるだけ)。
+# 実際に変異を仕込んでビルド・実行できるのは Windows 実機ネイティブのみ
+# (mutants-windows.yml と同じ理由、詳細はそちらの先頭コメント参照)。
+#
+# 【重要】mutants-windows.yml と同じく self-hosted runner を使うため
+# workflow_dispatch 専用にしてある。push/pull_request トリガーを追加しない
+# こと(public repo で self-hosted runner を使う以上、トリガー面自体から
+# pull_request を排除しておく方が安全という判断、理由は mutants-windows.yml
+# 先頭コメント参照)。
+#
+# 棚卸し(合流点の統合候補洗い出し)が終わったら、このファイルと
+# .cargo/mutants-actuation-confluence-scope.toml は削除してよい
+# (mutants-scope-investigation.yml / mutants-bug158-scope.toml と同じ一時運用)。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  mutants-actuation-confluence:
+    runs-on: [self-hosted, Windows, gcp-spot]
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-mutants
+      - name: Run cargo-mutants (IME actuation confluence points)
+        shell: pwsh
+        run: cargo mutants -p awase-windows --config .cargo/mutants-actuation-confluence-scope.toml --no-shuffle
+      - name: Upload mutants report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report-actuation-confluence
+          path: mutants.out/

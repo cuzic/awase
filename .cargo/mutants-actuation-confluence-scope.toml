@@ -1,0 +1,49 @@
+# IME actuation 合流点(apply_ime_open_with_view の独立入口)の棚卸し用、
+# 一時スコープ設定。
+#
+# fix-requires-evidence.md の「IME actuation 合流点」表は現時点で6エントリを
+# 挙げているが、うち reassert_explicit_physical_key(ADR-121 D1)と
+# force_on_and_correct_romaji(ADR-158 TB2、apply_force_on_for_imm_broken 経由)は
+# ADR-178 領域Aの撤去(コミット f83084b3 / 621bf93c、2026-09-18)で既に削除済みで
+# 現存しない(git log -S<関数名> で確認、2026-09-22。表側の追随漏れ、別途要修正)。
+# よって実質的な現存合流点は以下4関数:
+#   - ImeController::apply                                     (同期経路唯一の合流点)
+#   - run_open_chain_async / fallback_write / imm_cross_write  (非同期経路、3関数が独立に再検出)
+#   - DecisionExecutor::dispatch_ime_set_open                  (早期exit最適化、上記と重複するが単独では不十分)
+#
+# これらは crates/awase-windows/src/{ime_controller.rs, runtime/open_chain.rs,
+# runtime/executor.rs} が #[cfg(windows)] でモジュール宣言ごとゲートされているため
+# (lib.rs の `#[cfg(windows)] pub mod ime_controller;` / `#[cfg(windows)] pub mod runtime;`)、
+# ci.yml の Linux mutants ジョブ(.cargo/mutants-awase-windows.toml)では一切
+# コンパイルされず mutation testing 不可能(0 mutants になるだけで、false MISSED
+# にすらならない)。mutants-actuation-confluence-windows.yml(Windows self-hosted)
+# でのみ意味のある実行ができる。
+#
+# examine_globs でファイルを絞った上、examine_re で各ファイル内の対象関数だけに
+# さらに絞る(ime_controller.rs は1016行、executor.rs は1395行あり、大半は
+# 今回無関係な戦略選択ロジック。open_chain.rs は対象3関数以外がほぼ無い薄い
+# ファイルだが、examine_re は examine_globs と AND で効くため対象関数名も
+# 列挙しておく必要がある)。
+#
+# 目的: 各合流点のガード条件を変異させても、別の独立合流点が同じシナリオで
+# 正しい結果を出してしまい mutant が生存する(=既存テストで検出できない)場合、
+# その合流点は実質的に到達不能=統合候補である可能性が高い、という仮説の検証。
+# 生存 mutant が出たら、それがテストの不備なのか、別合流点によるマスキング
+# なのかを diff を読んで手動で切り分けること(mutants の生存だけでは区別できない)。
+examine_globs = [
+    "crates/awase-windows/src/ime_controller.rs",
+    "crates/awase-windows/src/runtime/open_chain.rs",
+    "crates/awase-windows/src/runtime/executor.rs",
+]
+
+examine_re = [
+    "ImeController::apply",
+    "run_open_chain_async",
+    "fallback_write",
+    "imm_cross_write",
+    "DecisionExecutor::dispatch_ime_set_open",
+]
+
+# ビルドが数十秒かかることがあるため、自動タイムアウト推定が短すぎて
+# false MISSED になるのを防ぐ下限(他の .cargo/mutants*.toml と同じ理由)。
+minimum_test_timeout = 30
