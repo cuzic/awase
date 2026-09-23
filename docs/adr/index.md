@@ -200,6 +200,7 @@
 | [193](193-richedit-superclass-tsf-native-e2e-target.md) | TSFネイティブ相当の入力先を RichEdit のスーパークラス化で決定的に用意する（実機E2Eの検証対象拡張） | 採用（スパイク成功） |
 | 194 | IME時間依存ロジックのシミュレーション・リプレイハーネス（`feat/ime-sim-harness`ブランチのみに存在、develop未マージ） | 破棄（Opusレビューで既存単体テスト以上の実証価値なしと判明、ユーザー判断で試作破棄。**番号194は本行で予約のみ**、developにファイル無しのためリンクなし） |
 | [195](195-keymap-learn-productization.md) | カスタムキーマップ対応のため、IMEキー効果の学習(awase-keymap-learn)を独立プロセスとして製品化する（設定読取→独立プロセスでの巡回学習→自己検証→永続化→実行時読込→ADR-176統合） | 草案rev7（round6で収束・実装可と最終判定、Blockerゼロ） |
+| [196](196-keymap-learn-truth-priority.md) | ADR-195の段階4/6/8を修正し、既知プリセット構成でも内蔵表を審査官にせず学習結果を優先する。陳腐化検出にIME本体バージョンを追加する | 草案（opus-adversarial-consult未実施） |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
