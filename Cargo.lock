@@ -477,6 +477,7 @@ version = "0.1.0"
 name = "awase-keymap-learn-win"
 version = "0.1.0"
 dependencies = [
+ "awase",
  "awase-keymap-learn",
  "awase-windows",
  "windows 0.62.2",

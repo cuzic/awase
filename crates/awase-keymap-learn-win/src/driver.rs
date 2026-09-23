@@ -5,6 +5,8 @@ use std::mem::size_of;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use awase::config::AppConfig;
+use awase::paths::resolve_relative_to_exe;
 use awase_keymap_learn::anomaly::ResetLevel;
 use awase_keymap_learn::exec::ImeDriver;
 use awase_keymap_learn::model::{Disposition, Outcome, Status};
@@ -83,11 +85,7 @@ impl RealImeDriver {
             let _ = ShowWindow(window, SW_SHOW);
         }
 
-        // TODO(ADR-195段階0): config.tomlからgeneral.focus_debounce_msを読み、
-        // その実値+マージンへ置き換える。読み取り統合前は保守的な100msを使う。
-        pump_for(Duration::from_millis(
-            FOCUS_DEBOUNCE_FALLBACK_MS + FOCUS_MARGIN_MS,
-        ));
+        pump_for(Duration::from_millis(focus_debounce_wait_ms()));
         unsafe { SetWindowTextW(edit, w!(""))? };
         pump_for(Duration::from_millis(QUIET_MS));
 
@@ -364,6 +362,20 @@ fn send_key_press(vk: u32) -> bool {
     };
     let cb_size = i32::try_from(size_of::<INPUT>()).expect("size_of::<INPUT>() fits in i32");
     unsafe { SendInput(&[make(false), make(true)], cb_size) == 2 }
+}
+
+/// ADR-195段階1 Major-1対応: 専用窓へフォーカスを移した後、最初の注入まで
+/// `config.general.focus_debounce_ms`(既定50ms)+`FOCUS_MARGIN_MS`だけ待つ。
+/// awase.exeの`config.toml`をexe隣・ワークスペースルートから探して読む
+/// (`resolve_relative_to_exe`、`find_config_path`と同じ解決順)。読めない・
+/// パースできない場合は保守的な既定値`FOCUS_DEBOUNCE_FALLBACK_MS`を使う
+/// (config読み取り統合前の暫定値、ADR-195段階0参照)。
+fn focus_debounce_wait_ms() -> u64 {
+    let path = resolve_relative_to_exe("config.toml");
+    let configured = AppConfig::load(&path)
+        .ok()
+        .map(|config| u64::from(config.general.focus_debounce_ms));
+    configured.unwrap_or(FOCUS_DEBOUNCE_FALLBACK_MS) + FOCUS_MARGIN_MS
 }
 
 fn pump_for(duration: Duration) {
