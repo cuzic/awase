@@ -40,7 +40,11 @@ def read_measurement_env():
     try:
         with open(MEASUREMENT_ENV_PATH, encoding="utf-8") as fh:
             env = json.load(fh)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (OSError, ValueError):
+        # OSError: FileNotFoundError等の読み取り失敗全般。
+        # ValueError: json.JSONDecodeError(サブクラス)に加え、不正なUTF-8バイト列による
+        # UnicodeDecodeError(これもValueErrorのサブクラス)も含めて拾う——CIジョブが
+        # 書き込み途中でクラッシュした等で壊れたファイルでもパニックしないため。
         return None
     if not isinstance(env, dict):
         return None
@@ -220,14 +224,44 @@ use super::key_effect_predictor::{{cell, Cell, Conv, Disp, Stage, TableKey}};
         with open(OUT, encoding="utf-8") as fh:
             committed = fh.read().replace("\r\n", "\n")
         if committed != text:
+            hint = ""
+            # 不一致が測定環境の行だけに起因する場合、原因を具体的に示す(code-review指摘:
+            # measurement-env.json を key_effect_table.rs と一緒にコミットし忘れると、
+            # 通常のCI〈measurement-env.json が無い環境〉で再生成結果が「不明」に戻り、
+            # このcheckが恒久的に落ち続ける。エラーメッセージ自体にこの原因を明記しないと、
+            # 診断しづらい失敗になるため個別に検出する)。
+            committed_lines = committed.split("\n")
+            generated_lines = text.split("\n")
+            if (
+                len(committed_lines) == len(generated_lines)
+                and sum(1 for a, b in zip(committed_lines, generated_lines) if a != b) == 1
+                and env_comment in generated_lines
+            ):
+                hint = (
+                    "\n差分は測定環境の行だけです。おそらく key_effect_table.rs を"
+                    "実測定のmeasurement-env.json入りで再生成した後、measurement-env.json自体を"
+                    "コミットし忘れています(measurement-env.jsonが無い環境では測定環境は「不明」に"
+                    "戻るため、以後このcheckが継続して失敗します)。"
+                    "measurement-env.json を key_effect_table.rs と同じコミットに含めること。"
+                )
             print("key_effect_table.rs が gen_key_effect_table.py の生成結果と一致しない(手編集、または grid-tables/*.json・スクリプトの変更後に再生成していない)。"
-                  "`python3 tools/e2e/ime_key_matrix/gen_key_effect_table.py` で再生成すること。", file=sys.stderr)
+                  "`python3 tools/e2e/ime_key_matrix/gen_key_effect_table.py` で再生成すること。" + hint, file=sys.stderr)
             return 1
         print("OK: key_effect_table.rs matches the generator output")  # 標準出力の文字コードが不明(Windows)でも落ちないよう ASCII だけ
         return 0
     with open(OUT, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
     print("\n".join(report))
+    if os.path.exists(MEASUREMENT_ENV_PATH):
+        # 測定環境入りで再生成した場合、measurement-env.json自体をコミットし忘れると
+        # (このファイルはgit管理下だが、再生成のたびに自動でgit addされるわけではない)、
+        # measurement-env.jsonが無い他の環境での--checkが恒久的に失敗し続ける
+        # (code-review指摘)。再生成のたびに明示的に思い出させる。
+        print(
+            f"注意: {os.path.relpath(MEASUREMENT_ENV_PATH, HERE)} を読んで測定環境をヘッダへ埋め込みました。"
+            "key_effect_table.rs と一緒に measurement-env.json 自体もコミットすること"
+            "(忘れると他環境での --check が失敗し続けます)。"
+        )
 
 
 if __name__ == "__main__":
