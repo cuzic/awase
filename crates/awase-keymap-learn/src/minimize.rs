@@ -53,7 +53,11 @@ fn deterministic_outcome(m: &Machine, state: usize, key_idx: usize) -> Option<Ou
 /// `Disposition`(Kept/Discarded/Committed等)も込みで返す——遷移先の状態クラスだけを見て
 /// 判定すると、同じ遷移先クラスへ着地するが`Disposition`だけが違う(実機では観測者が
 /// 区別できる)2状態を誤って併合してしまう。
-fn deterministic_transition(m: &Machine, state: usize, key_idx: usize) -> Option<(usize, Disposition)> {
+fn deterministic_transition(
+    m: &Machine,
+    state: usize,
+    key_idx: usize,
+) -> Option<(usize, Disposition)> {
     let br = &m.states[state].trans[key_idx];
     if br.len() == 1 && br[0].p >= 1.0 - 1e-9 {
         Some((br[0].next, br[0].disp))
