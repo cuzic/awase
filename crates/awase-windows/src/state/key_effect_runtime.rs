@@ -432,7 +432,7 @@ mod tests {
         for _ in 0..8 {
             cells.push(pcell(true, 0x09, false, 0x99, None)); // 表に無いVK: 常に変換不能
         }
-        let table = PersistedTable::new(cells, None);
+        let table = PersistedTable::new(cells);
         let err = validate_and_convert(&table, KeymapPreset::Atok, false).unwrap_err();
         assert!(matches!(err, RejectReason::CoverageTooLow { .. }));
     }
@@ -442,7 +442,7 @@ mod tests {
         let cells: Vec<_> = (0..10)
             .map(|_| pcell(true, 0x09, false, 0xF2, Some((true, 0x00))))
             .collect();
-        let table = PersistedTable::new(cells, None);
+        let table = PersistedTable::new(cells);
         let out = validate_and_convert(&table, KeymapPreset::Atok, false).unwrap();
         assert_eq!(out.len(), 10);
     }
@@ -455,7 +455,7 @@ mod tests {
         let cells: Vec<_> = (0..20)
             .map(|_| pcell(true, 0x09, false, 0xF2, Some((false, 0x09))))
             .collect();
-        let table = PersistedTable::new(cells, None);
+        let table = PersistedTable::new(cells);
         let rejected_when_checked =
             validate_and_convert(&table, KeymapPreset::Atok, true).unwrap_err();
         assert!(matches!(
@@ -468,10 +468,8 @@ mod tests {
 
     #[test]
     fn schema_version_mismatch_is_rejected() {
-        let mut table = PersistedTable::new(
-            vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x00)))],
-            None,
-        );
+        let mut table =
+            PersistedTable::new(vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x00)))]);
         table.schema_version = persist::CURRENT_SCHEMA_VERSION + 1;
         let json = table.to_json().unwrap();
         let err = persist::from_json(&json).unwrap_err();
@@ -633,7 +631,7 @@ mod tests {
         // カスタムキーマップ学習: ひらがな(0xF2)を押すと開閉トグルする、という(同梱3種のいずれとも
         // 違う)独自の挙動を1セルだけ学習した表。
         let learned = vec![pcell(false, 0x00, false, 0xF2, Some((true, 0x09)))]; // 閉→開
-        let table = PersistedTable::new(learned, None);
+        let table = PersistedTable::new(learned);
         let cells = validate_and_convert(&table, KeymapPreset::Atok, false)
             .expect("カスタム構成は突き合わせをしないので採用される");
 
