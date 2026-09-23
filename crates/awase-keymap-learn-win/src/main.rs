@@ -577,6 +577,13 @@ mod app {
                 }
             }
         }
+        // 診断: 内蔵表と食い違ったセルごとの再測定結果(内蔵表側の版ずれ等の判断材料)。
+        for (target, outcome) in &result.cells {
+            eprintln!(
+                "再測定: {outcome:?} vk={:#04x} status={:?} learned={:?}",
+                KEYS[target.key], target.status, target.learned
+            );
+        }
         eprintln!(
             "内蔵表との突き合わせ: 一致{}・再測定で再現{}・再現せず{}・片側のみ{}",
             result.summary.matched,

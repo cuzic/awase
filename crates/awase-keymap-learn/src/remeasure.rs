@@ -96,6 +96,8 @@ pub struct Reconciliation {
     /// 再測定で再現できなかった（確認できなかったものを含む）セル。呼び出し側は
     /// これらの`prediction`を`None`（予測なし）に落とすこと。
     pub dropped: Vec<(Status, usize)>,
+    /// 再測定した全セルと結果（診断ログ用。`dropped`はこのうち再現しなかったもの）。
+    pub cells: Vec<(MismatchedTarget, RemeasureResult)>,
 }
 
 /// 内蔵表との突き合わせ全体（一致数・片側のみ・不一致セルの再測定）を集計する。
@@ -117,8 +119,11 @@ pub fn reconcile_with_bundled<D: ImeDriver>(
         summary.record(CellReconciliation::OnlyInOneTable);
     }
     let mut dropped = Vec::new();
+    let mut cells = Vec::new();
     for &target in mismatched {
-        match remeasure_cell(exec, target, rng, params) {
+        let result = remeasure_cell(exec, target, rng, params);
+        cells.push((target, result));
+        match result {
             RemeasureResult::Reproduced => {
                 summary.record(CellReconciliation::ReconfirmedByRemeasurement);
             }
@@ -128,7 +133,11 @@ pub fn reconcile_with_bundled<D: ImeDriver>(
             }
         }
     }
-    Reconciliation { summary, dropped }
+    Reconciliation {
+        summary,
+        dropped,
+        cells,
+    }
 }
 
 #[cfg(test)]
@@ -240,6 +249,9 @@ mod tests {
         assert_eq!(r.summary.reconfirmed, 1);
         assert_eq!(r.summary.not_reproduced, 1);
         assert_eq!(r.dropped, vec![(status, atok_keys::HIRAGANA)]);
+        assert_eq!(r.cells.len(), 2);
+        assert_eq!(r.cells[0].1, RemeasureResult::Reproduced);
+        assert_eq!(r.cells[1].1, RemeasureResult::NotReproduced);
         // 分母は matched+reconfirmed+not_reproduced = 7 (only_in_one_tableは含めない)。
         assert_eq!(r.summary.common_cells(), 7);
     }
