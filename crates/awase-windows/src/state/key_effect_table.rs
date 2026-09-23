@@ -5,6 +5,7 @@
 // MSIME は「GJI の MS-IME プリセット」の表（Microsoft IME 本体ではない）。MSIME_NATIVE が Microsoft IME 本体の表。
 // MSIME は各セル2試行で非決定を検出しきれないため、ATOK で割れた変換中のEsc・入力中のBS/Escは変換モードを問わず除外した。
 // MSIME_NATIVE は206/227セルが1試行のみ（独立walkの採点で確認、非決定6セルは除外済み）。
+// 測定環境: 不明(grid-tables/measurement-env.json が無いか読めない、ADR-196決定1d参照)
 
 use super::key_effect_predictor::{cell, Cell, Conv, Disp, Stage, TableKey};
 

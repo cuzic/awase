@@ -4,6 +4,11 @@
   gen_key_effect_table.py            grid-tables/{atok,msime,msime-native}.json → crates/awase-windows/src/state/key_effect_table.rs
   gen_key_effect_table.py --check    何も書かず、コミット済みの key_effect_table.rs が生成結果と一致するか検査する(不一致なら終了コード1)。
                                      `crates/awase-windows/tests/architecture_guard.rs` の `key_effect_table_matches_generator` が呼ぶ。
+  gen_key_effect_table.py --diff-report <old_dir> <new_dir>
+                                     何も書かず、2つのディレクトリの grid-tables/{atok,msime,msime-native}.json を
+                                     セル単位で比較する(ADR-196決定1d、内蔵表自身の版ずれのCI検出用)。
+                                     決定的セルの値そのものが変わっていれば終了コード1(内蔵表の更新が必要)、
+                                     セルの出入り(非決定→決定・その逆)だけなら報告のみで終了コード0。
 
 `msime.json` は「GJI の MS-IME プリセット」、`msime-native.json` は「Microsoft IME 本体」(スパイク `--msime`、CI `cal-notify-msimenative-s{1..4}`)の学習結果。
 
@@ -26,6 +31,46 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "..", "..", "crates", "awase-windows", "src", "state", "key_effect_table.rs")
 PRESERVED_SUFFIX_MARKER = "// --- ADR-192 classification logic (the generator preserves this suffix) ---"
+MEASUREMENT_ENV_PATH = os.path.join(HERE, "grid-tables", "measurement-env.json")
+
+
+def read_measurement_env():
+    """格子学習を実行したCI実機の測定環境(GJIファイル版・Windowsビルド・キーボード配列)を
+    grid-tables/measurement-env.json から読む(ADR-196決定1d)。このファイルは atok.json 等と
+    同じく「格子学習を実行したCIジョブが書き出す入力データ」で、手で編集しない。
+    存在しない・パースできない場合はNoneを返し、呼び出し側は「測定環境不明」として扱う
+    (このクレート・スクリプト群の既存方針: 読めない入力はパニックせず空/不明にフォールバックする)。
+    フィールドは3つとも文字列で、揃っていないものは省略してよい(見つかったものだけ表示する)。
+    """
+    try:
+        with open(MEASUREMENT_ENV_PATH, encoding="utf-8") as fh:
+            env = json.load(fh)
+    except (OSError, ValueError):
+        # OSError: FileNotFoundError等の読み取り失敗全般。
+        # ValueError: json.JSONDecodeError(サブクラス)に加え、不正なUTF-8バイト列による
+        # UnicodeDecodeError(これもValueErrorのサブクラス)も含めて拾う——CIジョブが
+        # 書き込み途中でクラッシュした等で壊れたファイルでもパニックしないため。
+        return None
+    if not isinstance(env, dict):
+        return None
+    return env
+
+
+def measurement_env_comment(env):
+    """ヘッダに埋め込む1行コメントを作る。環境が不明なら「不明」と明記する
+    (省略すると「測定した上で空だった」のか「そもそも測定していない」のか区別できないため)。"""
+    if not env:
+        return "// 測定環境: 不明(grid-tables/measurement-env.json が無いか読めない、ADR-196決定1d参照)"
+    parts = []
+    if gji := env.get("gji_file_version"):
+        parts.append(f"GJI {gji}")
+    if build := env.get("windows_build"):
+        parts.append(f"Windows Build {build}")
+    if layout := env.get("keyboard_layout"):
+        parts.append(f"キーボード配列 {layout}")
+    if not parts:
+        return "// 測定環境: 不明(grid-tables/measurement-env.json に既知のフィールドが無い)"
+    return f"// 測定環境: {', '.join(parts)}(ADR-196決定1d)"
 
 KEYS = {
     "bs": "Bs", "eisu": "Eisu", "enter": "Enter", "esc": "Esc", "hankaku-zenkaku": "HankakuZenkaku",
@@ -151,16 +196,81 @@ def emit(name, cs):
     return "\n".join(lines)
 
 
+def compare_tables(old_cells, new_cells):
+    """`cells()`が返す2つのリストを(open, conv, stage, key)を識別子として突き合わせる
+    (ADR-196決定1d)。戻り値は(changed, added, removed)の3つのリスト。
+
+    - changed: 両方に存在するが押下後の効果(after_open, after_conv, disp)が違うセル
+      ——**決定的セルの値そのものが変わった**、内蔵表を更新すべき強い証拠。
+    - added/removed: 片方にしか存在しないセル(非決定⇔決定の出入り)——報告のみ、
+      それ自体では内蔵表の更新を要求しない(CIジョブを失敗させない)。
+    """
+    def by_identity(cs):
+        return {row[:4]: row[4:] for row in cs}
+
+    old_map, new_map = by_identity(old_cells), by_identity(new_cells)
+    changed = [
+        (identity, old_map[identity], new_map[identity])
+        for identity in sorted(set(old_map) & set(new_map))
+        if old_map[identity] != new_map[identity]
+    ]
+    added = sorted(set(new_map) - set(old_map))
+    removed = sorted(set(old_map) - set(new_map))
+    return changed, added, removed
+
+
+def diff_report_main(old_dir, new_dir):
+    """`--diff-report <old_dir> <new_dir>`本体。両ディレクトリの
+    grid-tables/{atok,msime,msime-native}.json をセル単位で比較して報告する。
+    決定的セルの値が1件でも変わっていれば終了コード1を返す。
+    """
+    any_changed = False
+    for name, f in (("ATOK", "atok.json"), ("MSIME", "msime.json"), ("MSIME_NATIVE", "msime-native.json")):
+        unstable = {"ATOK": KNOWN_UNSTABLE, "MSIME": KNOWN_UNSTABLE_MSIME, "MSIME_NATIVE": KNOWN_UNSTABLE_NATIVE}.get(name, frozenset())
+        old_path = os.path.join(old_dir, f)
+        new_path = os.path.join(new_dir, f)
+        if not (os.path.exists(old_path) and os.path.exists(new_path)):
+            print(f"{name}: {old_path} または {new_path} が無いためスキップ", file=sys.stderr)
+            continue
+        old_cells, _ = cells(old_path, unstable)
+        new_cells, _ = cells(new_path, unstable)
+        changed, added, removed = compare_tables(old_cells, new_cells)
+        print(f"{name}: 決定的セルの値が変わった={len(changed)}件, 新たに決定的になった={len(added)}件, "
+              f"決定的でなくなった={len(removed)}件")
+        for identity, old_effect, new_effect in changed:
+            open_, conv, stage, key = identity
+            print(f"  [changed] open={open_} conv={conv} stage={stage} key={key}: "
+                  f"{old_effect} -> {new_effect}")
+        if changed:
+            any_changed = True
+    if any_changed:
+        print("決定的セルの値が変わったテーブルがある。内蔵表(key_effect_table.rs)の更新を検討すること"
+              "(このリポジトリでは自動コミットしない——学習パイプライン自体のバグの可能性も"
+              "区別できないため、人が確認してから`gen_key_effect_table.py`を再実行してコミットする)。",
+              file=sys.stderr)
+        return 1
+    print("OK: 決定的セルの値の変化は無い(セルの出入りのみ、または差分無し)")
+    return 0
+
+
 def main():
-    parts = ["""// @generated by tools/e2e/ime_key_matrix/gen_key_effect_table.py — 手で編集しない（ADR-191 決定3・4）。
-// 生成元: tools/e2e/ime_key_matrix/grid-tables/{atok,msime,msime-native}.json（GitHub CI の --grid --grid-setup=keys 学習結果=第3版。全状態をキーだけで作る）。
+    if "--diff-report" in sys.argv[1:]:
+        args = [a for a in sys.argv[1:] if a != "--diff-report"]
+        if len(args) != 2:
+            print("使い方: gen_key_effect_table.py --diff-report <old_dir> <new_dir>", file=sys.stderr)
+            return 2
+        return diff_report_main(args[0], args[1])
+    env_comment = measurement_env_comment(read_measurement_env())
+    parts = [f"""// @generated by tools/e2e/ime_key_matrix/gen_key_effect_table.py — 手で編集しない（ADR-191 決定3・4）。
+// 生成元: tools/e2e/ime_key_matrix/grid-tables/{{atok,msime,msime-native}}.json（GitHub CI の --grid --grid-setup=keys 学習結果=第3版。全状態をキーだけで作る）。
 // 全試行で結果が一致したセルだけを含む（非決定セル・未観測セル・履歴依存の追加ブロックは「予測なし」）。
 // 閉(OFF)のセルは変換モードを問わない（conv=None）。押下後convが不明なセルは after_conv=None（追跡を捨てる）。
 // MSIME は「GJI の MS-IME プリセット」の表（Microsoft IME 本体ではない）。MSIME_NATIVE が Microsoft IME 本体の表。
 // MSIME は各セル2試行で非決定を検出しきれないため、ATOK で割れた変換中のEsc・入力中のBS/Escは変換モードを問わず除外した。
 // MSIME_NATIVE は206/227セルが1試行のみ（独立walkの採点で確認、非決定6セルは除外済み）。
+{env_comment}
 
-use super::key_effect_predictor::{cell, Cell, Conv, Disp, Stage, TableKey};
+use super::key_effect_predictor::{{cell, Cell, Conv, Disp, Stage, TableKey}};
 """]
     report = []
     for name, f in (("ATOK", "atok.json"), ("MSIME", "msime.json"), ("MSIME_NATIVE", "msime-native.json")):
@@ -182,14 +292,44 @@ use super::key_effect_predictor::{cell, Cell, Conv, Disp, Stage, TableKey};
         with open(OUT, encoding="utf-8") as fh:
             committed = fh.read().replace("\r\n", "\n")
         if committed != text:
+            hint = ""
+            # 不一致が測定環境の行だけに起因する場合、原因を具体的に示す(code-review指摘:
+            # measurement-env.json を key_effect_table.rs と一緒にコミットし忘れると、
+            # 通常のCI〈measurement-env.json が無い環境〉で再生成結果が「不明」に戻り、
+            # このcheckが恒久的に落ち続ける。エラーメッセージ自体にこの原因を明記しないと、
+            # 診断しづらい失敗になるため個別に検出する)。
+            committed_lines = committed.split("\n")
+            generated_lines = text.split("\n")
+            if (
+                len(committed_lines) == len(generated_lines)
+                and sum(1 for a, b in zip(committed_lines, generated_lines) if a != b) == 1
+                and env_comment in generated_lines
+            ):
+                hint = (
+                    "\n差分は測定環境の行だけです。おそらく key_effect_table.rs を"
+                    "実測定のmeasurement-env.json入りで再生成した後、measurement-env.json自体を"
+                    "コミットし忘れています(measurement-env.jsonが無い環境では測定環境は「不明」に"
+                    "戻るため、以後このcheckが継続して失敗します)。"
+                    "measurement-env.json を key_effect_table.rs と同じコミットに含めること。"
+                )
             print("key_effect_table.rs が gen_key_effect_table.py の生成結果と一致しない(手編集、または grid-tables/*.json・スクリプトの変更後に再生成していない)。"
-                  "`python3 tools/e2e/ime_key_matrix/gen_key_effect_table.py` で再生成すること。", file=sys.stderr)
+                  "`python3 tools/e2e/ime_key_matrix/gen_key_effect_table.py` で再生成すること。" + hint, file=sys.stderr)
             return 1
         print("OK: key_effect_table.rs matches the generator output")  # 標準出力の文字コードが不明(Windows)でも落ちないよう ASCII だけ
         return 0
     with open(OUT, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
     print("\n".join(report))
+    if os.path.exists(MEASUREMENT_ENV_PATH):
+        # 測定環境入りで再生成した場合、measurement-env.json自体をコミットし忘れると
+        # (このファイルはgit管理下だが、再生成のたびに自動でgit addされるわけではない)、
+        # measurement-env.jsonが無い他の環境での--checkが恒久的に失敗し続ける
+        # (code-review指摘)。再生成のたびに明示的に思い出させる。
+        print(
+            f"注意: {os.path.relpath(MEASUREMENT_ENV_PATH, HERE)} を読んで測定環境をヘッダへ埋め込みました。"
+            "key_effect_table.rs と一緒に measurement-env.json 自体もコミットすること"
+            "(忘れると他環境での --check が失敗し続けます)。"
+        )
 
 
 if __name__ == "__main__":
