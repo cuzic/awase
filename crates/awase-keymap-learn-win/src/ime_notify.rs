@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use windows::Win32::UI::WindowsAndMessaging::MSG;
 
 pub const WM_IME_NOTIFY: u32 = 0x0282;
-const IMN_SETOPENSTATUS: usize = 0x0002;
-const IMN_SETCONVERSIONMODE: usize = 0x0003;
+const IMN_SETOPENSTATUS: usize = 0x0008;
+const IMN_SETCONVERSIONMODE: usize = 0x0006;
 
 thread_local! {
     /// ウィンドウプロシージャ（EDITのサブクラスと親窓）が受け取った
