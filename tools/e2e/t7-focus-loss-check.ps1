@@ -17,8 +17,6 @@ function Fg-Info { $h=[Fg]::GetForegroundWindow(); $sb=New-Object Text.StringBui
 
 $out = "$env:TEMP\t7-learn-stdout.log"; $err = "$env:TEMP\t7-learn-stderr.log"
 Remove-Item $out,$err -ErrorAction SilentlyContinue
-Get-Process notepad -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Seconds 1
 $learn = Start-Process -FilePath $Exe -PassThru -RedirectStandardOutput $out -RedirectStandardError $err -WindowStyle Normal
 $null = $learn.Handle
 "learn pid=$($learn.Id) started"
@@ -35,4 +33,4 @@ $exited = $learn.WaitForExit($WaitExitSec * 1000)
 "--- stdout tail ---"; Get-Content $out -Tail 8 -ErrorAction SilentlyContinue
 "--- stderr tail ---"; Get-Content $err -Tail 5 -ErrorAction SilentlyContinue
 if (-not $exited) { Stop-Process -Id $learn.Id -Force; "learn force-killed (did NOT self-terminate)" }
-Get-Process notepad -ErrorAction SilentlyContinue | Stop-Process -Force
+# notepad is left open on purpose: never kill by name (the user may have unsaved notepad windows)
