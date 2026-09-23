@@ -44,9 +44,9 @@ impl ModeKeyWarning {
 /// 警告の同一性をプロセス内で保持する。予測器のキャッシュ状態は変更しない。
 #[derive(Debug, Default)]
 pub struct WarningTracker {
-    last_gji_stamp: Option<(u64, u64)>,
-    last_msime_bits: Option<u8>,
-    last_composition_keys: Vec<VkCode>,
+    gji_stamp: Option<(u64, u64)>,
+    msime_bits: Option<u8>,
+    composition_keys: Vec<VkCode>,
 }
 
 impl WarningTracker {
@@ -87,9 +87,9 @@ impl WarningTracker {
         msime_bits: Option<u8>,
     ) -> Vec<ModeKeyWarning> {
         let same_source = if let Some(stamp) = gji_stamp {
-            self.last_gji_stamp.replace(stamp) == Some(stamp)
+            self.gji_stamp.replace(stamp) == Some(stamp)
         } else if let Some(bits) = msime_bits {
-            self.last_msime_bits.replace(bits) == Some(bits)
+            self.msime_bits.replace(bits) == Some(bits)
         } else {
             false
         };
@@ -97,8 +97,8 @@ impl WarningTracker {
             .iter()
             .find(|warning| warning.kind == WarningKind::Composition)
             .map_or_else(Vec::new, |warning| warning.keys.clone());
-        let same_composition = self.last_composition_keys == composition_keys;
-        self.last_composition_keys = composition_keys;
+        let same_composition = self.composition_keys == composition_keys;
+        self.composition_keys = composition_keys;
 
         warnings
             .into_iter()
@@ -139,8 +139,16 @@ pub fn detect(keymap: Option<&KeyEffectKeymap>, thumb_keys: [VkCode; 2]) -> Vec<
                     }
                 }
             }
-            Some(Classification::CannotPredict(CannotPredictReason::UserOverride)) if !is_thumb => {
-                overrides.push(code);
+            Some(Classification::CannotPredict(CannotPredictReason::UserOverride)) => {
+                // 親指キーの場合は決定2の分岐どおりThumbConflict側へ回す。ここを
+                // `is_thumb`で弾いて無視すると、無変換/変換キーをユーザー固有の
+                // 上書きに割り当てている親指シフトユーザー（本ADRが最初に想定した
+                // ケースそのもの）に何の警告も出なくなる（/code-review PR #249指摘）。
+                if is_thumb {
+                    thumbs.push(code);
+                } else {
+                    overrides.push(code);
+                }
             }
             _ => {}
         }
@@ -196,6 +204,25 @@ mod tests {
         let native = KeyEffectKeymap::for_msime_native(false, None, None);
         assert!(detect(Some(&native), [VkCode(0), VkCode(0)]).is_empty());
         assert!(detect(None, [VkCode(0), VkCode(0)]).is_empty());
+    }
+
+    #[test]
+    fn thumb_key_with_user_override_warns_as_thumb_conflict_not_silence() {
+        // 無変換/変換キーがユーザー固有のIME上書きに割り当てられ、かつそれを親指シフト
+        // として使っているケース（本ADRが最初に想定したシナリオそのもの）。`is_thumb`で
+        // CannotPredict(UserOverride)を弾くと何の警告も出ない退行になる（/code-review
+        // PR #249指摘）。
+        let custom =
+            KeyEffectKeymap::from_config(Some(2), Some("DirectInput\tHenkan\tIMEOn".into()), &[])
+                .unwrap();
+        let warnings = detect(Some(&custom), [VkCode(0x1C), VkCode(0)]);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.kind == WarningKind::ThumbConflict),
+            "thumb key with UserOverride must not be silently dropped: {warnings:?}"
+        );
+        assert!(!warnings.iter().any(|w| w.kind == WarningKind::UserOverride));
     }
 
     #[test]
