@@ -18,6 +18,8 @@ function Fg-Info { $h=[Fg]::GetForegroundWindow(); $sb=New-Object Text.StringBui
 
 $out = "$env:TEMP\t7-learn-stdout.log"; $err = "$env:TEMP\t7-learn-stderr.log"
 Remove-Item $out,$err -ErrorAction SilentlyContinue
+$tableFile = Join-Path (Split-Path -Parent (Resolve-Path $Exe)) "keymap-learn-table.json"
+Remove-Item $tableFile -ErrorAction SilentlyContinue
 $learn = Start-Process -FilePath $Exe -PassThru -RedirectStandardOutput $out -RedirectStandardError $err -WindowStyle Normal
 $null = $learn.Handle
 "learn pid=$($learn.Id) started"
@@ -48,7 +50,7 @@ if ($Control) {
     if ($result -notlike '*reason=interference*') { $fails += 'reason is not interference' }
     if ($presses -le 0) { $fails += 'presses=0: aborted before the focus switch (not a valid test)' }
     if ((Fg-Info) -like "*(pid=$($learn.Id))") { $fails += 'learner reclaimed the foreground' }
-    if (Test-Path "$env:USERPROFILE\keymap-learn-table.json") { $fails += 'table file written on failure' }
+    if (Test-Path $tableFile) { $fails += 'table file written on failure' }
 }
 if ($fails.Count -gt 0) { $fails | ForEach-Object { "FAIL: $_" }; exit 1 }
 "PASS"
