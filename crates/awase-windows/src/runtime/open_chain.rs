@@ -353,7 +353,13 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
             //         spawn_local はメインスレッドのメッセージループで実行される。
             let actual = unsafe { crate::ime::read_ime_state_fast() }.ime_on;
             post_failed_reobservation = Some(actual);
-            if actual == Some(open) {
+            // 判定自体は`state/ime_actuation_decision.rs::
+            // imm_cross_reobservation_already_matches`へ抽出済み（Win32呼び出し
+            // から切り離した純粋関数として、Linuxでもユニットテストできるように
+            // する。docs/tasks/actuation-confluence-already-matched-gap.md参照）。
+            if crate::state::ime_actuation_decision::imm_cross_reobservation_already_matches(
+                actual, open,
+            ) {
                 // ADR-117: 同上、「送信自体が失敗した」を info! で可視化する。
                 tracing::info!(
                     "[apply-ime] ImmCross failed but actual ime_on={actual:?} \
