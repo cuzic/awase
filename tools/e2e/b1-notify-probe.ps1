@@ -21,7 +21,9 @@ for ($i = 0; $i -lt 240 -and -not $ready; $i++) {
     if ($p.HasExited) { break }
 }
 "ready=$ready"
-$hwnd = [Ime]::FindWindow("AwaseKeymapLearnWindow", $null)
+$p.Refresh()
+$hwnd = $p.MainWindowHandle
+if ($hwnd -eq [IntPtr]::Zero) { $hwnd = [Ime]::FindWindow("AwaseKeymapLearnWindow", [NullString]::Value) }
 $ime = [Ime]::ImmGetDefaultIMEWnd($hwnd)
 "hwnd=$hwnd imeWnd=$ime"
 # WM_IME_CONTROL(0x283) IMC_SETOPENSTATUS(6): toggle from a different process

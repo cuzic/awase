@@ -25,13 +25,14 @@ fn main() {
     for key in [2usize, 5, 2, 5, 2, 5] {
         let report = driver.press(key);
         println!(
-            "PRESS key_idx={key} delivered={} notify_external={}",
+            "PRESS key_idx={key} delivered={} notify_external={} notify_since_mark={}",
             report.delivered,
-            driver.diag_notify_external_count()
+            driver.diag_notify_external_count(),
+            driver.diag_notify_since_mark()
         );
     }
     let phase1 = driver.diag_notify_external_count();
-    println!("PHASE1 notify_external={phase1}");
+    println!("PHASE1 notify_external={}", phase1 - baseline);
     driver.diag_pump(Duration::from_millis(500));
     println!("WAIT_EXTERNAL");
     let deadline = Instant::now() + Duration::from_mins(1);

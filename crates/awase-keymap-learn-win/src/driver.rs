@@ -373,6 +373,12 @@ impl RealImeDriver {
         self.notify_monitor.external_count()
     }
 
+    /// 診断用（B-1の実機検証）: 直近の自己注入以降に届いた開閉・変換モード通知の件数。
+    #[must_use]
+    pub fn diag_notify_since_mark(&self) -> u32 {
+        self.notify_monitor.notify_count_since_mark()
+    }
+
     /// 診断用（B-1の実機検証）: メッセージを回しながら待つ。
     pub fn diag_pump(&self, duration: Duration) {
         self.pump(duration);
