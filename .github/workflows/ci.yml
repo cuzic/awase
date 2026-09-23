@@ -479,18 +479,30 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-mutants
-      - name: Run cargo-mutants (awase core crate)
-        run: cargo mutants --no-shuffle
+      - name: Run cargo-mutants (awase core crate, shard ${{ matrix.shard }}/4)
+        # 2026-09-23実測: --jobs 4(1 runner)では1194 mutantsが65分で、--jobs無しの
+        # 7月実績(661 mutantsで33分)と1件あたりほぼ同じだった。時間の大半は
+        # mutantごとのbuild(24〜58秒、testは1秒)で、4vCPU上の並列化はCPUを
+        # 取り合うだけだったため、4 runnerへ--shardで分割し、各runnerは--jobs 2にする。
+        # rust-cacheが設定するCARGO_INCREMENTAL=0だとmutantごとに全再ビルドに
+        # なるため、このstepだけ有効化する。
+        env:
+          CARGO_INCREMENTAL: "1"
+        run: cargo mutants --no-shuffle --jobs 2 --shard ${{ matrix.shard }}/4
       - name: Upload mutants report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mutants-report
+          name: mutants-report-shard-${{ matrix.shard }}
           path: mutants.out/
 
   # mutants-windows(self-hosted runner向け)は2026-07に mutants-windows.yml
@@ -500,26 +512,44 @@ jobs:
   # (mutants-windows.yml冒頭のコメント参照)。
 
   # 手動起動専用。対象は awase-windows のうちプラットフォーム非依存な
-  # ~550 mutants のみ（設定は .cargo/mutants-awase-windows.toml）。
-  # awase-windows の大半を占める #[cfg(windows)] コードは Linux 上では
-  # コンパイルされず、無指定で走らせると false MISSED だらけになるため
-  # 明示的なファイル許可リストでスコープを絞ってある（詳細は同 toml 内コメント参照）。
-  # Windows 実機依存のロジック自体のミューテーションテスト(#[cfg(windows)]配下)は
-  # mutants-windows.yml(self-hosted Windows runner)が別途担当する。
+  # ~620 mutants のみ(windows-latest では許可リスト内の #[cfg(windows)] 部分もコンパイルされるため、Linux 時代の~550より増えた。2026-09-23実測624件)（設定は .cargo/mutants-awase-windows.toml）に絞って
+  # あるのは変わらないが（残りの #[cfg(windows)] 本体は mutants-windows.yml
+  # (self-hosted Windows runner)が別途フルスコープで担当）、ランナー自体は
+  # windows-latest(GitHub-hosted、publicリポなら無料)を使う。2026-09-20に
+  # 追加された crates/awase-windows/examples/{ime_key_matrix_spike,
+  # richedit_tsf_probe}.rs が windows クレート(awase-windows/Cargo.toml で
+  # [target.'cfg(windows)'.dependencies])を cfg なしで直接参照しており、
+  # cargo-mutantsのbaselineビルドはpackage全体(examples含む)を対象にするため、
+  # ubuntu-latestだとE0433で即失敗し1件もmutantsをテストできない
+  # (mutants-scope-investigation.yml冒頭コメントに記載の同種症状、examples側の
+  # #![cfg(windows)]化はmain関数が丸ごと消えてE0601になるだけで解決しないことを
+  # 2026-09-23に確認済み)。姉妹ワークフロー
+  # mutants-actuation-confluence-windows.yml / mutants-scope-investigation.yml
+  # が採った解決(windows-latestへ切り替え)に倣う。
   mutants-awase-windows:
     if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-mutants
-      - name: Run cargo-mutants (awase-windows, platform-independent subset)
-        run: cargo mutants -p awase-windows --config .cargo/mutants-awase-windows.toml --no-shuffle
+      - name: Run cargo-mutants (awase-windows, platform-independent subset, shard ${{ matrix.shard }}/8)
+        # 分割・incrementalの理由はmutantsジョブ(coreクレート)のコメント参照。
+        # Windowsはbuildが遅く(baselineだけで131秒)、4 shardでは各56〜60分(2026-09-23
+        # 実測、run 35879891879)で90分上限への余裕が小さいため8 shardにする。
+        shell: pwsh
+        env:
+          CARGO_INCREMENTAL: "1"
+        run: cargo mutants -p awase-windows --config .cargo/mutants-awase-windows.toml --no-shuffle --jobs 2 --shard ${{ matrix.shard }}/8
       - name: Upload mutants report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mutants-report-awase-windows
+          name: mutants-report-awase-windows-shard-${{ matrix.shard }}
           path: mutants.out/
