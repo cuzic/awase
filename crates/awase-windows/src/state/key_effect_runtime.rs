@@ -328,7 +328,17 @@ impl RuntimeTableCache {
         let due = self
             .checked_at_ms
             .is_none_or(|t| now_ms.saturating_sub(t) >= Self::RECHECK_MS);
-        if due {
+        // code-review指摘: validation_key(preset/check_against_bundled)の変化は、
+        // RECHECK_MS(fsアクセスの間引き)とは独立に毎回チェックする。プリセット切替は
+        // フォーカス移動というユーザー操作でRECHECK_MSの窓の途中でも起こりうり、
+        // dueがfalseのまま素通りすると古いプリセット向けに検証済みのセルを
+        // 新しいプリセットの予測にそのまま使い続けてしまう(セルの意味がプリセットごとに
+        // 違いうるため、これは黙って誤った予測を返す事故になる)。
+        let validation_key_changed = !first
+            && self
+                .stamp
+                .is_some_and(|(_, _, preset, check)| (preset, check) != validation_key);
+        if due || validation_key_changed {
             self.checked_at_ms = Some(now_ms);
             let now_stamp = stamp().map(|(mtime, len)| (mtime, len, validation_key.0, validation_key.1));
             if first || now_stamp != self.stamp {
@@ -529,6 +539,35 @@ mod tests {
             )
             .is_some());
         assert_eq!(loads.get(), 3, "check_against_bundled変更でも読み直すべき");
+    }
+
+    #[test]
+    fn runtime_table_cache_reloads_on_preset_change_even_within_the_recheck_window() {
+        // code-review指摘: 前のテストはいずれもnow_msをRECHECK_MSの倍数にしており、
+        // 「dueがtrueの場合にvalidation_keyの変化を検出できるか」しか確認していなかった。
+        // フォーカス移動によるプリセット切替はRECHECK_MSの間引き窓の途中でも起こりうるため、
+        // dueがfalseのままでも(fsを問い合わせ直さずとも)古いプリセット向けのセルを
+        // 新しいプリセットへ流用してはいけない。
+        use std::cell::Cell as StdCell;
+        let loads = StdCell::new(0u32);
+        let mut cache = RuntimeTableCache::default();
+        let load = || {
+            loads.set(loads.get() + 1);
+            Some(vec![])
+        };
+        assert!(cache
+            .get(0, (KeymapPreset::Atok, true), || Some((1, 10)), load)
+            .is_some());
+        assert_eq!(loads.get(), 1);
+        // RECHECK_MSの窓の途中(now_msを1msしか進めない、due=false)でプリセットが変わった。
+        assert!(cache
+            .get(1, (KeymapPreset::MsIme, true), || Some((1, 10)), load)
+            .is_some());
+        assert_eq!(
+            loads.get(),
+            2,
+            "RECHECK_MSの窓の途中でもプリセット変更は読み直すべき"
+        );
     }
 
     #[test]
