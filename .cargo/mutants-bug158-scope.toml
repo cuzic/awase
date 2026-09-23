@@ -10,11 +10,12 @@
 # いずれもfeat/ime-sim-harness限定(develop未マージ)のファイル。
 # 役目(検証)が終わったらこのファイルとワークフローごと削除してよい。
 #
-# examples/*.rs(windows crate依存、非cfg(windows))をbaselineビルドに
-# 巻き込ませないための`--lib`は、CLIの--cargo-test-argでもこのconfigの
-# additional_cargo_test_argsでもbaseline(`cargo test --no-run`)には反映
-# されなかった(2026-09-22実測)。ワークフロー側で`cargo mutants ... -- --lib`
-# (末尾`--`区切り)を使うことで解決したので、ここでは指定しない。
+# examples/*.rs(windows crate依存、非cfg(windows))は、GitHub-hosted
+# ubuntu-latestではbaseline・各mutant試験どちらのビルドでもE0433になり
+# 全mutantsがunviableになる(2026-09-22/23に複数回実測)。ワークフロー
+# (mutants-scope-investigation.yml)側をwindows-latestへ切り替えたことで
+# examplesが普通にビルドできるようになったため、--baseline skipや--libでの
+# 絞り込みは不要になった(2026-09-23)。
 
 examine_globs = [
     "crates/awase-windows/src/state/force_guard.rs",
@@ -26,3 +27,26 @@ examine_globs = [
 # ビルドが数十秒かかることがあるため、自動タイムアウト推定が短すぎて
 # false MISSED になるのを防ぐ下限(.cargo/mutants.tomlと同じ理由)。
 minimum_test_timeout = 30
+
+# 等価変異体（equivalent mutant）: docs/tasks/mode-key-pass-latch-mutation-coverage.md
+# のやること4で追加したテスト群を反映して2026-09-23にwindows-latestで再実行
+# (run 35819375184)した結果、22件中この1件だけがmissedのまま残った。
+#
+# ModeKeyPassLatch::drop_decision の `if first || (align && !mark.aligned) {`
+# の内側`&&`を`||`に変異させたもの。このif式に到達するのは常に
+# `first == true`（このとき`align`は`first || !has_last_intent`で常にtrueに
+# なり、mutant/originalどちらの条件も`first ||`の短絡で一致する）か、
+# `first == false`かつ`align && !mark.aligned`がtrue（=align=true かつ
+# mark.aligned=false）の場合だけ——後者はmutantの`align || !mark.aligned`も
+# 同じtrueを返す。mutantとoriginalが分岐しうるのは`first=false`のときの
+# (align, mark.aligned) = (true,true) と (false,false) の2通りのみだが、
+# どちらもブロック内で再計算される`aligned`フィールド
+# (`mark.aligned || (align && !on_expiry)`)が「ブロックを実行してもしなくても
+# 同じ値」になる（前者はmark.aligned=trueが再計算結果を支配し、後者は
+# align=falseが`align && !on_expiry`をfalseに固定するため）。invalidated等
+# 他フィールドも`first=false`である以上既に確定済みの値のままなので、
+# ModeKeyPassLatchの公開メソッド経由で観測できる限り、この変異はどんな入力
+# 列でも元コードと区別不可能（数学的に等価）と判断した。
+exclude_re = [
+    "mode_key_pass\\.rs:158:28: replace && with \\|\\|",
+]

@@ -1,7 +1,14 @@
 # ModeKeyPassLatch のメソッド層に22件のテスト漏れ（cargo-mutantsで実測済み、要修正）
 
-状態: 未着手（2026-09-23起票）
-着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
+状態: **完了**（2026-09-23起票・同日中に解消）。PR #248
+（`test/mode-key-pass-latch-mutation-coverage`）でテスト7件を追加し、
+`.github/workflows/mutants-scope-investigation.yml` を`windows-latest`へ
+切り替えて再実行（run
+[35819375184](https://github.com/cuzic/awase/actions/runs/35819375184)）した結果、
+22件中21件が`caught`に変わった。残る1件（`158:28`）は解析の結果、等価変異体
+（メソッドの公開インタフェース経由ではどんな入力でも元コードと区別不可能）と
+判断し、`.cargo/mutants-bug158-scope.toml`に理由付きで`exclude_re`登録した
+（下記「最終結果」節参照）。
 
 ## 背景
 
@@ -119,6 +126,24 @@ cargo-mutantsを回した。
 （または前述のwindows-latest化後の同等ワークフロー）を再実行し、上記22件が
 `missed`→`caught`に変わること（等価変異体と判断したものは`.cargo/mutants.toml`
 方式に倣い`exclude_re`でコメント付き除外してよい）。
+
+## 最終結果（2026-09-23、PR #248、run [35819375184](https://github.com/cuzic/awase/actions/runs/35819375184)）
+
+`.github/workflows/mutants-scope-investigation.yml`を`ubuntu-latest`→`windows-latest`
+へ切り替え（examples/\*.rsがLinux上でbaseline・各mutant試験どちらもE0433になり
+95 mutants全てunviableになることをこのセッションでローカル再実測して確認済み、
+姉妹ワークフロー`mutants-actuation-confluence-windows.yml`と同じ構成に揃えた）、
+`crates/awase-windows/src/state/mode_key_pass.rs`に上記「やること」1〜5に対応する
+テスト7件を追加して再実行した結果:
+
+**95 mutants tested: 1 missed, 89 caught, 5 unviable**（45分）
+
+missedとして残った1件は`158:28: replace && with || in ModeKeyPassLatch<S>::drop_decision`
+のみ。これは`if first || (align && !mark.aligned) {`の内側`&&`の変異で、解析の結果
+「`ModeKeyPassLatch`の公開メソッド経由でどんな入力列を与えても元コードと区別不可能」
+な等価変異体と判断し、理由付きで`.cargo/mutants-bug158-scope.toml`に`exclude_re`
+登録した（判定の詳細はそのファイルのコメント参照）。22件中21件を新規テストで
+`missed`→`caught`に変えられたことになる。
 
 ## 補足（このタスクの範囲外）
 
