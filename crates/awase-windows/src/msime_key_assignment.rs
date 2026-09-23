@@ -124,7 +124,9 @@ impl MsImeKeyAssignment {
              awase は無変換/変換キーを親指シフトキーとして使うため、\
              この割り当てが有効だと IME の ON/OFF が awase の管理外で切り替わり、\
              親指シフト入力が生ローマ字で出る等の不具合の原因になります。\n\
-             IME の ON/OFF は awase のキー設定（既定: Ctrl+変換 / Ctrl+無変換）をご利用ください。",
+             IME の ON/OFF は awase のキー設定をご利用ください（既定: Ctrl+変換 / \
+             Ctrl+無変換。無変換/変換の単独キーも、awase 側に bare で設定すれば \
+             単独タップ確定時の強制ON/OFFとして使用できます）。",
             assigned.join("、")
         ))
     }
