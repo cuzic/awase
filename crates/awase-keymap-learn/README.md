@@ -155,4 +155,9 @@ IMEキー効果の学習(較正)の**巡回プランナ**と**オフラインシ
 - 通知の遅延の実測分布(CIで直接は取れていない)。固定待ちとイベント待ちの比較は、モデルの遅延分布に依存する。
 - 誤りに強い分類は`verify::classify_robust`として段階2向けに実装済み(少数派の観測数が閾値未満なら無視)。
   閾値(`DEFAULT_MIN_MINORITY=2`)は固定値で、統計的な信頼区間に基づく決め方は未検討。
-- 実機のドライバ(`ImeDriver`)とスパイクへの統合(`--plan`)、学習した表の直列化と実行時の読み込み。
+- 実機のドライバ(`ImeDriver`)統合(`awase-keymap-learn-win`)と学習結果の直列化(本クレートの
+  `persist.rs`、ADR-195段階3)は実装済み。ただし実機の`RealImeDriver`はGitHub Actions
+  windows-latestで観測が1件も成功しない不具合が未解明(詳細は
+  [docs/tasks/adr195-t10-realimedriver-ci-observation-failure.md](../../docs/tasks/adr195-t10-realimedriver-ci-observation-failure.md))。
+  直列化した表の実行時の読み込み(`awase-windows`クレート側)は別タスク
+  ([ADR195-T4](../../docs/tasks/adr195-t4-runtime-loading.md))で実装中、本クレートのスコープ外。
