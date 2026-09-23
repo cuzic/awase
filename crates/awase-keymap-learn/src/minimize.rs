@@ -15,9 +15,13 @@
 
 use std::collections::HashMap;
 
-use crate::model::{Machine, Outcome, Status};
+use crate::model::{Disposition, Machine, Outcome, Status};
 
 pub type ClassId = usize;
+
+/// 反復段(段階2〜3)で状態を分類するための署名の1要素: 自身のクラス、または
+/// 各キーの決定的遷移(遷移先クラス+`Disposition`、非決定的なら`None`)。
+type RefinementSignature = Vec<Option<(Option<ClassId>, Disposition)>>;
 
 /// 分割結果。`class[i]` が状態 `i` の属するクラス(到達不能な状態は `None`)。
 #[derive(Debug, Clone)]
@@ -45,71 +49,90 @@ fn deterministic_outcome(m: &Machine, state: usize, key_idx: usize) -> Option<Ou
     }
 }
 
-/// 状態 `state` からキー `key_idx` を押したときの決定的な遷移先(状態の添字)。
-fn deterministic_target(m: &Machine, state: usize, key_idx: usize) -> Option<usize> {
+/// 状態 `state` からキー `key_idx` を押したときの決定的な遷移(遷移先の添字 + `Disposition`)。
+/// `Disposition`(Kept/Discarded/Committed等)も込みで返す——遷移先の状態クラスだけを見て
+/// 判定すると、同じ遷移先クラスへ着地するが`Disposition`だけが違う(実機では観測者が
+/// 区別できる)2状態を誤って併合してしまう。
+fn deterministic_transition(m: &Machine, state: usize, key_idx: usize) -> Option<(usize, Disposition)> {
     let br = &m.states[state].trans[key_idx];
     if br.len() == 1 && br[0].p >= 1.0 - 1e-9 {
-        Some(br[0].next)
+        Some((br[0].next, br[0].disp))
     } else {
         None
     }
 }
 
-/// `probes`(識別プローブのキー添字)で初期分割し、全キーの遷移先クラスが安定するまで反復する。
+/// 段階1(初期分割): 状態`i`の`Status` + `probes`への応答をキーにしたクラス添字を割り当てる。
+/// `minimize`と回帰テスト([`tests::single_pass_initial_partition_alone_would_over_merge`])の
+/// 両方から呼ぶ共有ヘルパー(重複実装によるドリフトを避ける)。
+fn initial_partition(m: &Machine, reach: &[bool], probes: &[usize]) -> Vec<Option<ClassId>> {
+    let n = m.states.len();
+    let mut class: Vec<Option<ClassId>> = vec![None; n];
+    let mut sig_to_class: HashMap<(Status, Vec<Option<Outcome>>), ClassId> = HashMap::new();
+    for (i, reachable) in reach.iter().enumerate().take(n) {
+        if !reachable {
+            continue;
+        }
+        let sig: Vec<Option<Outcome>> = probes
+            .iter()
+            .map(|&k| deterministic_outcome(m, i, k))
+            .collect();
+        let key = (m.states[i].status, sig);
+        let next_id = sig_to_class.len();
+        let id = *sig_to_class.entry(key).or_insert(next_id);
+        class[i] = Some(id);
+    }
+    class
+}
+
+/// `probes`(識別プローブのキー添字)で初期分割し、全キーの遷移先クラス+`Disposition`が
+/// 安定するまで反復する。
 ///
 /// `probes` は空でもよい(その場合、初期分割は `Status` のみで行われ、遷移だけで区別する)。
+///
+/// # Panics
+/// `probes`に`m.keys.len()`以上の添字が含まれる場合(呼び出し側の契約違反)。
 pub fn minimize(m: &Machine, probes: &[usize]) -> Partition {
+    assert!(
+        probes.iter().all(|&k| k < m.keys.len()),
+        "probes contains an out-of-range key index (keys.len()={})",
+        m.keys.len()
+    );
     let reach = m.reachable();
     let n = m.states.len();
 
     // 段階1: 初期分割(自身のstatus + probesへの応答)。
-    let mut class: Vec<Option<ClassId>> = vec![None; n];
-    {
-        let mut sig_to_class: HashMap<(Status, Vec<Option<Outcome>>), ClassId> = HashMap::new();
+    let mut class = initial_partition(m, &reach, probes);
+    let mut num_classes = class.iter().flatten().copied().max().map_or(0, |m| m + 1);
+
+    // 段階2〜3: 遷移先クラス+Dispositionが安定するまで反復(クラス数が増えなくなったら不動点)。
+    loop {
+        let mut sig_to_class: HashMap<RefinementSignature, ClassId> = HashMap::new();
+        let mut new_class: Vec<Option<ClassId>> = vec![None; n];
         for (i, reachable) in reach.iter().enumerate().take(n) {
             if !reachable {
                 continue;
             }
-            let sig: Vec<Option<Outcome>> = probes
-                .iter()
-                .map(|&k| deterministic_outcome(m, i, k))
-                .collect();
-            let key = (m.states[i].status, sig);
+            let mut sig: RefinementSignature = Vec::with_capacity(m.keys.len() + 1);
+            sig.push(class[i].map(|c| (Some(c), Disposition::None)));
+            for k in 0..m.keys.len() {
+                let target_sig =
+                    deterministic_transition(m, i, k).map(|(t, disp)| (class[t], disp));
+                sig.push(target_sig);
+            }
             let next_id = sig_to_class.len();
-            let id = *sig_to_class.entry(key).or_insert(next_id);
-            class[i] = Some(id);
+            let id = *sig_to_class.entry(sig).or_insert(next_id);
+            new_class[i] = Some(id);
         }
-        let mut num_classes = sig_to_class.len();
-        drop(sig_to_class);
-
-        // 段階2〜3: 遷移先クラスが安定するまで反復(クラス数が増えなくなったら不動点)。
-        loop {
-            let mut sig_to_class: HashMap<Vec<Option<ClassId>>, ClassId> = HashMap::new();
-            let mut new_class: Vec<Option<ClassId>> = vec![None; n];
-            for (i, reachable) in reach.iter().enumerate().take(n) {
-                if !reachable {
-                    continue;
-                }
-                let mut sig: Vec<Option<ClassId>> = Vec::with_capacity(m.keys.len() + 1);
-                sig.push(class[i]);
-                for k in 0..m.keys.len() {
-                    let target_class = deterministic_target(m, i, k).and_then(|t| class[t]);
-                    sig.push(target_class);
-                }
-                let next_id = sig_to_class.len();
-                let id = *sig_to_class.entry(sig).or_insert(next_id);
-                new_class[i] = Some(id);
-            }
-            let new_num_classes = sig_to_class.len();
-            class = new_class;
-            if new_num_classes == num_classes {
-                num_classes = new_num_classes;
-                break;
-            }
+        let new_num_classes = sig_to_class.len();
+        class = new_class;
+        if new_num_classes == num_classes {
             num_classes = new_num_classes;
+            break;
         }
-        Partition { class, num_classes }
+        num_classes = new_num_classes;
     }
+    Partition { class, num_classes }
 }
 
 #[cfg(test)]
@@ -253,28 +276,74 @@ mod tests {
 
     #[test]
     fn single_pass_initial_partition_alone_would_over_merge() {
-        // 回帰ガード: 段階1(初期分割)だけを取り出すと、A/BとX/Yが誤って併合されたままに
-        // なることを固定する(反復適用の必要性を裏付ける)。
+        // 回帰ガード: 段階1(初期分割、`minimize`本体と同じ`initial_partition`ヘルパーを使う)
+        // だけを取り出すと、A/BとX/Yが誤って併合されたままになることを固定する
+        // (反復適用の必要性を裏付ける)。
         let m = depth2_distinguishable_machine();
         let reach = m.reachable();
-        let mut sig_to_class: HashMap<(Status, Vec<Option<Outcome>>), ClassId> = HashMap::new();
-        let mut class: Vec<Option<ClassId>> = vec![None; m.states.len()];
-        for (i, reachable) in reach.iter().enumerate() {
-            if !reachable {
-                continue;
-            }
-            let sig: Vec<Option<Outcome>> = [1usize]
-                .iter()
-                .map(|&k| deterministic_outcome(&m, i, k))
-                .collect();
-            let key = (m.states[i].status, sig);
-            let next_id = sig_to_class.len();
-            let id = *sig_to_class.entry(key).or_insert(next_id);
-            class[i] = Some(id);
-        }
+        let class = initial_partition(&m, &reach, &[1]);
         // A(1)とB(2)は初期分割だけでは同じクラスのまま(誤併合)。
         assert_eq!(class[1], class[2]);
         assert_eq!(class[3], class[4]);
         // 反復適用する`minimize`ならこれが正しく分かれる(上のテストで確認済み)。
+    }
+
+    #[test]
+    #[should_panic(expected = "out-of-range key index")]
+    fn minimize_panics_on_out_of_range_probe_index() {
+        // probesにキー数を超える添字を渡すと、意味の分かる理由で早期にpanicする
+        // (範囲外indexingによる不可解なpanicにしない)。
+        let m = redundant_states_machine();
+        let _ = minimize(&m, &[99]);
+    }
+
+    /// 遷移先の状態クラスは同じだが`Disposition`だけが異なる2状態は、実機では観測者が
+    /// 区別できるため、誤って同じクラスへ併合してはならない(round1 M-7関連の回帰)。
+    fn disposition_only_difference_machine() -> Machine {
+        let s0 = st(true, 0, false);
+        let s_leaf = st(true, 1, false);
+        Machine {
+            states: vec![
+                // 0: A. key0でleaf(2)へ、disp=Kept。
+                TrueState {
+                    status: s0,
+                    trans: vec![vec![Branch {
+                        p: 1.0,
+                        next: 2,
+                        disp: Disposition::Kept,
+                    }]],
+                },
+                // 1: B. key0で同じleaf(2)へ、disp=Discarded(遷移先クラスは同じだが結果が違う)。
+                TrueState {
+                    status: s0,
+                    trans: vec![vec![Branch {
+                        p: 1.0,
+                        next: 2,
+                        disp: Disposition::Discarded,
+                    }]],
+                },
+                // 2: leaf. 自己ループ。
+                TrueState {
+                    status: s_leaf,
+                    trans: vec![det(2)],
+                },
+            ],
+            keys: vec![KeyId(0)],
+            initial: 0,
+            history_suspects: vec![],
+        }
+    }
+
+    #[test]
+    fn distinguishes_states_that_differ_only_by_disposition() {
+        let m = disposition_only_difference_machine();
+        // probesは空(key0はStatusが同じA/Bを区別できない識別プローブとしては使わない設定)。
+        let p = minimize(&m, &[]);
+        assert_ne!(
+            p.class_of(0),
+            p.class_of(1),
+            "AとBはkey0のDispositionだけで区別できるはずなのに併合された: {:?}",
+            p.class
+        );
     }
 }
