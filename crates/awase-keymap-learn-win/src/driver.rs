@@ -9,7 +9,9 @@ use awase::config::AppConfig;
 use awase::paths::resolve_relative_to_exe;
 use awase_keymap_learn::anomaly::ResetLevel;
 use awase_keymap_learn::exec::ImeDriver;
-use awase_keymap_learn::external_write::{is_measurement_suspicious, SessionMonitor};
+use awase_keymap_learn::external_write::{
+    is_measurement_suspicious, trial_contaminated, SessionMonitor,
+};
 use awase_keymap_learn::model::{Disposition, Outcome, Status};
 use awase_keymap_learn::sim::PressReport;
 use awase_windows::state::key_effect_predictor::Conv;
@@ -28,7 +30,7 @@ use windows::Win32::UI::Input::Ime::{
     ImmReleaseContext, IME_COMPOSITION_STRING, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+    GetFocus, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
     KEYEVENTF_KEYUP, VIRTUAL_KEY,
 };
 use windows::Win32::UI::TextServices::{
@@ -95,6 +97,10 @@ pub struct RealImeDriver {
     /// 直近に観測した「外部からの書き込み」の累計件数のスナップショット
     /// （測定と測定の間で差分を取るための基準点）。
     external_baseline: Cell<u32>,
+    /// [ADR195-T7](../../../../docs/tasks/adr195-t7-safety-measures.md)項目2:
+    /// 直近に観測したユーザー物理入力（`LLKHF_INJECTED`無し）の累計件数の
+    /// スナップショット（`external_baseline`と同じ基準点方式）。
+    physical_baseline: Cell<u32>,
 }
 
 impl RealImeDriver {
@@ -140,24 +146,31 @@ impl RealImeDriver {
             notify_monitor,
             session_monitor: Cell::new(SessionMonitor::new(SESSION_INVALIDATION_LIMIT)),
             external_baseline: Cell::new(0),
+            physical_baseline: Cell::new(0),
         };
 
-        // 決定1b項目3: 静かな観測窓（quiet window）——ここまでの待ちの後、
-        // 注入を一切しない期間T msを置き、その間に外部からの書き込みが
-        // 観測されないことをセッション開始条件にする。ここで失敗すれば
-        // `driver`はこのままスコープを抜けてDropされ、窓・TSF・フックが
-        // 片付く。
+        // 決定1b項目3・ADR195-T7項目2: 静かな観測窓（quiet window）——ここまでの
+        // 待ちの後、注入を一切しない期間T msを置き、その間に外部からの書き込み・
+        // ユーザーの物理入力・学習窓からのフォーカス喪失のいずれも観測されない
+        // ことをセッション開始条件にする。ここで失敗すれば`driver`はこのまま
+        // スコープを抜けてDropされ、窓・TSF・フックが片付く。
         let external_before = driver.external_total();
+        let physical_before = driver.physical_total();
         driver.pump(Duration::from_millis(QUIET_WINDOW_MS));
-        if driver.external_total() != external_before {
+        if trial_contaminated(
+            driver.external_total() != external_before,
+            driver.physical_total() != physical_before,
+            !driver.focus_intact(),
+        ) {
             return Err(windows::core::Error::new(
                 windows::core::HRESULT(0x8000_4004u32.cast_signed()),
-                "quiet window中に外部からの書き込みを検出した(A'が崩れている疑い)",
+                "quiet window中に外部からの書き込み・物理入力・フォーカス喪失のいずれかを検出した(A'が崩れている疑い)",
             ));
         }
 
         driver.initial = driver.observe_imm()?.status;
         driver.external_baseline.set(driver.external_total());
+        driver.physical_baseline.set(driver.physical_total());
         Ok(driver)
     }
 
@@ -171,13 +184,35 @@ impl RealImeDriver {
         self.hook_monitor.external_event_count() + self.notify_monitor.external_count()
     }
 
-    /// 決定1b項目5（セッション中の監視）: 前回チェック以降に外部からの
-    /// 書き込みが観測されていたら、直前の試行を無効化としてセッション監視へ
-    /// 記録する。セッション全体を失敗にすべきなら`true`を返す。
+    /// [ADR195-T7](../../../../docs/tasks/adr195-t7-safety-measures.md)項目2:
+    /// 現在のユーザー物理入力（`LLKHF_INJECTED`無し）の累計件数。
+    fn physical_total(&self) -> u32 {
+        self.hook_monitor.physical_event_count()
+    }
+
+    /// [ADR195-T7](../../../../docs/tasks/adr195-t7-safety-measures.md)項目2:
+    /// フォーカスが学習窓の専用EDITコントロールに留まっているか。学習プロセスの
+    /// 窓を作成したのと同じスレッドから呼ぶ前提（`AttachThreadInput`無しで
+    /// `GetFocus`が有効）。
+    fn focus_intact(&self) -> bool {
+        (unsafe { GetFocus() }) == self.edit
+    }
+
+    /// 決定1b項目5（セッション中の監視）・ADR195-T7項目2: 前回チェック以降に
+    /// 外部からの書き込み・ユーザーの物理入力が観測されたか、フォーカスが
+    /// 学習窓から外れていたら、直前の試行を無効化としてセッション監視へ記録
+    /// する。セッション全体を失敗にすべきなら`true`を返す。
     fn check_session_interference(&self) -> bool {
-        let current = self.external_total();
-        let baseline = self.external_baseline.replace(current);
-        if current == baseline {
+        let current_external = self.external_total();
+        let external_baseline = self.external_baseline.replace(current_external);
+        let current_physical = self.physical_total();
+        let physical_baseline = self.physical_baseline.replace(current_physical);
+        let contaminated = trial_contaminated(
+            current_external != external_baseline,
+            current_physical != physical_baseline,
+            !self.focus_intact(),
+        );
+        if !contaminated {
             return false;
         }
         let mut monitor = self.session_monitor.get();
@@ -348,7 +383,8 @@ impl ImeDriver for RealImeDriver {
         let after = self.settle();
         let disp = disposition(&before, &after);
         let seen_b = self.observe_tsf().unwrap_or(after.status);
-        // 決定1b項目5（セッション中の監視）: この測定の間に外部からの書き込みが
+        // 決定1b項目5（セッション中の監視）・ADR195-T7項目2: この測定の間に
+        // 外部からの書き込み・ユーザーの物理入力・フォーカス喪失のいずれかが
         // 観測されていたら記録する。呼び出し側（`main.rs`/将来の`Executor`
         // 統合、ADR196-T2）は`session_invalidated_trials()`を見て、上限超過なら
         // セッションを失敗として終了すること。

@@ -97,6 +97,24 @@ pub const fn is_measurement_suspicious(notification_count: u32, direction_revers
     notification_count >= 2 || direction_reversed
 }
 
+/// 測定区間の汚染判定（決定1b項目5・[ADR195-T7](../../../../docs/tasks/adr195-t7-safety-measures.md)
+/// 項目2）。
+///
+/// 外部からの書き込み（フック＋IME通知経由）・ユーザーの物理入力
+/// （`LLKHF_INJECTED`無し）・学習窓からのフォーカス喪失のいずれか1つでも
+/// 測定区間内に観測されたら、その試行は汚染されたとみなす（無効化して
+/// `SessionMonitor::record_invalidated_trial`へ記録する）。3種のうちどれが
+/// 原因かは呼び出し側（Win32依存のカウンタ差分・`GetFocus`比較）が判定し、
+/// このブール値だけをここへ渡す。
+#[must_use]
+pub const fn trial_contaminated(
+    external_changed: bool,
+    physical_changed: bool,
+    focus_lost: bool,
+) -> bool {
+    external_changed || physical_changed || focus_lost
+}
+
 /// セッション中の監視（決定1b項目5）。
 ///
 /// 測定と測定の間の待ち時間に外部からの書き込みが検出されたら、その試行を
@@ -224,5 +242,34 @@ mod tests {
     fn session_monitor_zero_limit_fails_on_first_invalidation() {
         let mut monitor = SessionMonitor::new(0);
         assert!(monitor.record_invalidated_trial());
+    }
+
+    #[test]
+    fn trial_not_contaminated_when_nothing_changed() {
+        assert!(!trial_contaminated(false, false, false));
+    }
+
+    #[test]
+    fn trial_contaminated_by_external_write_alone() {
+        assert!(trial_contaminated(true, false, false));
+    }
+
+    #[test]
+    fn trial_contaminated_by_physical_input_alone() {
+        // ADR195-T7項目2: 自分の注入以外の物理キーが混入したら、外部からの
+        // 書き込みが無くても汚染とみなす。
+        assert!(trial_contaminated(false, true, false));
+    }
+
+    #[test]
+    fn trial_contaminated_by_focus_loss_alone() {
+        // ADR195-T7項目2: フォーカスが学習窓から外れただけでも(キー入力が
+        // 無くても)汚染とみなす。
+        assert!(trial_contaminated(false, false, true));
+    }
+
+    #[test]
+    fn trial_contaminated_by_all_three_causes_together() {
+        assert!(trial_contaminated(true, true, true));
     }
 }
