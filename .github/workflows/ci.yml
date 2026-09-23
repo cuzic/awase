@@ -397,9 +397,18 @@ jobs:
   # リポジトリ内に存在しない)、develop への通常 push で毎回 WiX/MSI 込みの
   # パッケージングを行う必要は無い。PR・push to main・手動起動では
   # (パッケージング自体のリグレッション検知のため)引き続き実行する。
+  #
+  # if: に独自条件を書くと needs: に対する GitHub Actions 既定の暗黙
+  # success() チェックが上書きされて消える(needs 先のジョブが失敗していても
+  # このジョブは実行されてしまう)。windows-build/windows-settings が失敗した
+  # 場合に本ジョブが download-artifact でアーティファクト無し失敗という
+  # 無関係なエラーを出し、本当の失敗原因を覆い隠さないよう明示的に
+  # success() を条件へ含める(同種の書き方は e2e-ime.yml に前例あり)。
   windows-package:
     needs: [windows-build, windows-settings]
-    if: github.event_name != 'push' || github.ref != 'refs/heads/develop'
+    if: |
+      success() &&
+      (github.event_name != 'push' || github.ref != 'refs/heads/develop')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
