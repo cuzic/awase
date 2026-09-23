@@ -1,6 +1,6 @@
 # develop 過去1週間の fix コードレビュー結果（2026-09-23）
 
-状態: **調査完了・未修正**（下記の指摘は1件も修正していない）
+状態: **調査完了・A-1 / C-1 は修正済み（fix/review-a1-c1）、それ以外は未修正**
 
 ## 対象と方法
 
@@ -11,7 +11,7 @@
 
 ## A. awase-windows（ADR-191 / BUG-154〜160 系）
 
-### A-1. [CONFIRMED] `Unwarranted` の完了で `applied` が誤って書き換わる
+### A-1. [CONFIRMED・修正済み] `Unwarranted` の完了で `applied` が誤って書き換わる
 
 - 場所: `crates/awase-windows/src/state/ime_model.rs:506-511`（`completion_can_update_applied`）、`:1068-1094`（`reduce_ime_apply_failed`）
 - 欠陥: `ImeOpenOutcome::Unwarranted`（`c8bc1adc`、ADR-090 A-2）は他の箇所（`platform_state.rs:1199-1218`、`executor.rs:1076`、`platform.rs:1473`）では「送っていない」扱いに追随済み。だが `completion_can_update_applied` の `NotSent` 条件だけ `UnsafeToToggle | NotOwned` のまま
@@ -102,7 +102,7 @@
 
 ## C. エンジン / gji-config / CI / lints
 
-### C-1. [中・CONFIRMED] 強制IME操作（bare `keys.ime_*`）を設定すると Shift+無変換/変換 でも IME が切り替わる
+### C-1. [中・CONFIRMED・修正済み] 強制IME操作（bare `keys.ime_*`）を設定すると Shift+無変換/変換 でも IME が切り替わる
 
 - 場所: `src/engine/nicola_fsm.rs:1471-1480`（`is_mode_key_thumb_shift_passthrough`）、`:2177-2189`（`resolve_pending_thumb_as_single` の強制操作分岐）
 - 欠陥: Shift 押下中の素通しガードは `*_solo_tap_ime_action` と `ModeKeyConfig::Passthrough` しか見ない。`cd77e455` で追加された `forced_open_action`（`keys.ime_on/off/toggle` に修飾なしの無変換/変換を書いた場合）は対象外。強制操作分岐もキー自体が修飾キーかしか見ず、Shift 押下を判定していない

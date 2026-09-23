@@ -505,7 +505,7 @@ impl ImeModel {
 
         if matches!(
             outcome,
-            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned
+            ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned | ImeOpenOutcome::Unwarranted
         ) {
             return ImeApplyAcceptance::NotSent;
         }
@@ -2981,6 +2981,37 @@ mod tests {
                 target: true,
                 generation: gen10,
                 error: ApplyError::NotOwned,
+            },
+        ));
+
+        assert_eq!(model.applied, AppliedImeState::Unknown);
+        assert!(model.pending_generation().is_none());
+    }
+
+    /// レビュー2026-09-23 A-1: 授権なしで送られなかった `Unwarranted` 完了が
+    /// `applied` を書き換えてはならない（GjiDirect の already-matched 誤判定→IME ON のまま
+    /// Engine OFF になる）。
+    #[test]
+    fn matching_unwarranted_failure_consumes_pending_without_writing_applied() {
+        let mut model = ImeModel::new();
+        let gen10 = ApplyGeneration::new(10).unwrap();
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: true,
+                generation: gen10,
+                ctrl_held: false,
+            },
+        ));
+
+        model.reduce(&envelope_at(
+            2,
+            Instant::now(),
+            1234,
+            ImeEvent::ImeApplyFailed {
+                target: true,
+                generation: gen10,
+                error: ApplyError::Unwarranted,
             },
         ));
 
