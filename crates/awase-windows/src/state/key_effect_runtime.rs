@@ -285,6 +285,14 @@ pub(crate) fn table_file_path() -> Option<std::path::PathBuf> {
     Some(config_path.parent()?.join("keymap-learn-table.json"))
 }
 
+/// 学習プロセスが不採用/要確認の結果を退避する`keymap-learn-last-attempt.json`のパス
+/// （`awase-keymap-learn-win`の`--last-attempt-path`既定と同じ場所）。
+#[cfg(windows)]
+pub(crate) fn last_attempt_file_path() -> Option<std::path::PathBuf> {
+    let config_path = crate::app::find_config_path().ok()?;
+    Some(config_path.parent()?.join("keymap-learn-last-attempt.json"))
+}
+
 /// [`RuntimeTableCache::get`]の`stamp`引数（更新時刻+長さ）。ファイルが無い/読めなければ`None`
 /// （`KeymapCache`の「GJI未導入」と同じ規則: 版が変わらない限り読み直さない）。
 #[cfg(windows)]
@@ -349,17 +357,26 @@ pub fn load_runtime_table(
     preset: KeymapPreset,
     check_against_bundled: bool,
 ) -> Result<Vec<Cell>, RejectReason> {
+    let table = read_persisted_table(path)?;
+    validate_and_convert(&table, preset, check_against_bundled)
+}
+
+/// ファイルを読んで`PersistedTable`へパースするところまで（採否判定・変換はしない）。
+/// [`load_runtime_table`]と不具合報告（`bug_report::BugReportKeymapLearnSummary`）が共有する。
+///
+/// # Errors
+/// 読めなかった/パースできなかった理由を[`RejectReason`]で返す（採否判定由来の理由は返さない）。
+pub fn read_persisted_table(path: &Path) -> Result<PersistedTable, RejectReason> {
     let meta = fs::metadata(path).map_err(|e| io_reject_reason(&e))?;
     if meta.len() > MAX_TABLE_FILE_BYTES {
         return Err(RejectReason::TooLarge);
     }
     let text = fs::read_to_string(path).map_err(|e| io_reject_reason(&e))?;
-    let table: PersistedTable = persist::from_json(&text).map_err(|e| match e {
+    persist::from_json(&text).map_err(|e| match e {
         LoadError::Parse(_) => RejectReason::Parse,
         LoadError::SchemaVersionMismatch { .. } => RejectReason::SchemaVersionMismatch,
         LoadError::DuplicateCell { .. } => RejectReason::DuplicateCell,
-    })?;
-    validate_and_convert(&table, preset, check_against_bundled)
+    })
 }
 
 /// [`load_runtime_table`]のfsを伴わない部分（テスト・CI検証双方から呼べるように分離）。
@@ -411,6 +428,12 @@ pub struct RuntimeTableCache {
 }
 
 impl RuntimeTableCache {
+    /// 直近の`get`で学習済み表が採用されている（＝予測に使われている）か。
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        self.cells.is_some()
+    }
+
     pub const RECHECK_MS: u64 = super::key_effect_predictor::KeymapCache::RECHECK_MS;
 
     /// キャッシュした学習済み表を返す（採用できなかった/未学習なら`None`＝呼び出し側は同梱表を使う）。

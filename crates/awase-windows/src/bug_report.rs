@@ -333,6 +333,160 @@ pub struct BugReportLegacyMsImeKeymapSummary {
     pub legacy_compat_mode_enabled: Option<bool>,
 }
 
+/// ADR196-T2 決定1e後半: 学習表の採否・自己検証・同梱表との突き合わせ・指紋を1項目にまとめた診断添付。
+///
+/// `keymap-learn-table.json`が対象。`attach_ime_keymap`に相乗り
+/// （新規フラグは追加しない、`gji_keymap`等と同じ理由）。打鍵内容は含まない
+/// （セルは「IME状態×キー番号」のみ）。`SCHEMA_VERSION`は上げていない（追加のみ、
+/// `BugReportDiagnostics`側の`#[serde(default)]`で旧JSONも読める）。
+///
+/// 決定1b項目7〜9の再測定結果・ADR196-T1の外部書き込み観測は現状どこにも永続化
+/// されていないため添付できない（永続化された時点で本型へ追加すること）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct BugReportKeymapLearnSummary {
+    /// `not_learned`/`loaded`/`io_error`/`too_large`/`parse_error`/`schema_mismatch`/
+    /// `duplicate_cell`（固定語彙、自由文字列は送らない）。
+    pub table_file: String,
+    /// `config.general.use_learned_keymap_table`（opt-out）。
+    pub use_learned_keymap_table: bool,
+    /// 直近の予測で学習表が実際に採用されている（同梱表の代わりに使われている）か。
+    pub in_use: bool,
+    pub cell_count: Option<u32>,
+    /// `Accepted`/`NeedsConfirmation(..)`/`Rejected(..)`。`None`=判定フィールド無し
+    /// （旧v2ファイル）またはファイルを読めなかった。
+    pub judgement: Option<String>,
+    /// 学習時点のキーマップ指紋（16進、`Fingerprint`の2要素を連結）。
+    pub fingerprint: Option<String>,
+    pub self_verification: Option<BugReportKeymapLearnVerification>,
+    /// 既知3構成（同梱表と突き合わせ可能）のときだけ`Some`。
+    pub bundled_diff: Option<BugReportKeymapLearnBundledDiff>,
+    /// `keymap-learn-last-attempt.json`（不採用/要確認の退避）の判定。
+    pub last_attempt_judgement: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BugReportKeymapLearnVerification {
+    pub correct: u32,
+    pub incorrect: u32,
+    pub not_in_table: u32,
+    pub seed: u64,
+}
+
+/// 同梱表との突き合わせ結果。`mismatched_cells`は先頭[`KEYMAP_LEARN_MISMATCH_LIST_MAX`]件のみ。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BugReportKeymapLearnBundledDiff {
+    pub matched: u32,
+    pub mismatched_count: u32,
+    pub mismatched_cells: Vec<String>,
+    /// 「表にのみ存在」するセル数（分母に含めない）。
+    pub only_in_one_table: u32,
+}
+
+pub const KEYMAP_LEARN_MISMATCH_LIST_MAX: usize = 64;
+
+fn clamp_u32(n: usize) -> u32 {
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+fn keymap_learn_judgement_label(j: awase_keymap_learn::judgement::TableJudgement) -> String {
+    use awase_keymap_learn::judgement::{NeedsConfirmationReason, RejectedReason, TableJudgement};
+    match j {
+        TableJudgement::Accepted => "Accepted".to_owned(),
+        TableJudgement::NeedsConfirmation(NeedsConfirmationReason::SystematicMismatch {
+            mismatch_percent,
+        }) => format!("NeedsConfirmation(SystematicMismatch:{mismatch_percent}%)"),
+        TableJudgement::NeedsConfirmation(NeedsConfirmationReason::UnverifiedMsImeNative) => {
+            "NeedsConfirmation(UnverifiedMsImeNative)".to_owned()
+        }
+        TableJudgement::Rejected(RejectedReason::LowAccuracy) => "Rejected(LowAccuracy)".to_owned(),
+        TableJudgement::Rejected(RejectedReason::HighDegeneration) => {
+            "Rejected(HighDegeneration)".to_owned()
+        }
+        TableJudgement::Rejected(RejectedReason::InsufficientSamples) => {
+            "Rejected(InsufficientSamples)".to_owned()
+        }
+    }
+}
+
+fn keymap_learn_file_label(
+    reason: &crate::state::key_effect_runtime::RejectReason,
+) -> &'static str {
+    use crate::state::key_effect_runtime::RejectReason;
+    match reason {
+        RejectReason::NotFound => "not_learned",
+        RejectReason::TooLarge => "too_large",
+        RejectReason::Parse => "parse_error",
+        RejectReason::SchemaVersionMismatch => "schema_mismatch",
+        RejectReason::DuplicateCell => "duplicate_cell",
+        // 採否判定由来の理由は`read_persisted_table`からは返らない。
+        _ => "io_error",
+    }
+}
+
+impl BugReportKeymapLearnSummary {
+    /// 純粋な構築関数（fs・キャッシュ参照は呼び出し側）。`table`が`Err`なら
+    /// ファイル自体を読めなかった状態を表す。
+    #[must_use]
+    pub fn from_parts(
+        table: &Result<
+            awase_keymap_learn::persist::PersistedTable,
+            crate::state::key_effect_runtime::RejectReason,
+        >,
+        last_attempt: Option<&awase_keymap_learn::persist::PersistedTable>,
+        use_learned_keymap_table: bool,
+        in_use: bool,
+        bundled_diff: Option<&crate::state::key_effect_runtime::BundledDiff>,
+    ) -> Self {
+        let last_attempt_judgement = last_attempt
+            .and_then(|t| t.judgement)
+            .map(keymap_learn_judgement_label);
+        let bundled_diff = bundled_diff.map(|d| BugReportKeymapLearnBundledDiff {
+            matched: d.matched,
+            mismatched_count: clamp_u32(d.mismatched.len()),
+            mismatched_cells: d
+                .mismatched
+                .iter()
+                .take(KEYMAP_LEARN_MISMATCH_LIST_MAX)
+                .map(|c| {
+                    format!(
+                        "open={} mode={} composing={} key={}",
+                        c.status.open, c.status.mode, c.status.composing, c.key.0
+                    )
+                })
+                .collect(),
+            only_in_one_table: d.only_in_one_table,
+        });
+        match table {
+            Err(reason) => Self {
+                table_file: keymap_learn_file_label(reason).to_owned(),
+                use_learned_keymap_table,
+                in_use,
+                last_attempt_judgement,
+                bundled_diff,
+                ..Self::default()
+            },
+            Ok(t) => Self {
+                table_file: "loaded".to_owned(),
+                use_learned_keymap_table,
+                in_use,
+                cell_count: Some(clamp_u32(t.cells.len())),
+                judgement: t.judgement.map(keymap_learn_judgement_label),
+                fingerprint: t.fingerprint.map(|f| format!("{:016x}{:016x}", f.0, f.1)),
+                self_verification: t.verification.as_ref().map(|v| {
+                    BugReportKeymapLearnVerification {
+                        correct: clamp_u32(v.score.correct),
+                        incorrect: clamp_u32(v.score.incorrect),
+                        not_in_table: clamp_u32(v.score.not_in_table),
+                        seed: v.seed,
+                    }
+                }),
+                bundled_diff,
+                last_attempt_judgement,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BugReportPayload {
     pub schema_version: u8,
@@ -368,6 +522,10 @@ pub struct BugReportPayload {
     /// ADR-148 Phase 2（2026-09-07追記）。`attach_ime_keymap`に相乗り
     /// （新規フラグは追加しない、上記2フィールドと同じ理由）。
     pub legacy_msime_keymap: Option<BugReportLegacyMsImeKeymapSummary>,
+    /// ADR196-T2 決定1e後半。`attach_ime_keymap`に相乗り。`#[serde(default)]`必須
+    /// （`SCHEMA_VERSION`を上げていないため、旧サーバ保存JSON・旧テストデータに無い）。
+    #[serde(default)]
+    pub keymap_learn: Option<BugReportKeymapLearnSummary>,
     pub reported_at: String,
 }
 
@@ -493,6 +651,9 @@ pub struct BugReportDiagnostics {
     /// ADR-148 Phase 2。上記2フィールドと同じ理由で`#[serde(default)]`必須。
     #[serde(default)]
     pub legacy_msime_keymap: Option<BugReportLegacyMsImeKeymapSummary>,
+    /// ADR196-T2 決定1e後半。上記と同じ理由で`#[serde(default)]`必須。
+    #[serde(default)]
+    pub keymap_learn: Option<BugReportKeymapLearnSummary>,
 }
 
 impl Default for BugReportDiagnostics {
@@ -509,6 +670,7 @@ impl Default for BugReportDiagnostics {
             gji_keymap: None,
             msime_key_assignment: None,
             legacy_msime_keymap: None,
+            keymap_learn: None,
         }
     }
 }
@@ -548,6 +710,7 @@ pub struct BugReportInput<'a> {
     /// ADR-148 Phase 2。呼び出し側（`current_bug_report_diagnostics`）が
     /// 常に構築して渡す（上記2フィールドと同じ理由）。
     pub legacy_msime_keymap: Option<BugReportLegacyMsImeKeymapSummary>,
+    pub keymap_learn: Option<BugReportKeymapLearnSummary>,
     pub reported_at: &'a str,
 }
 
@@ -620,6 +783,11 @@ pub fn build_payload_with_log_budget(
     } else {
         None
     };
+    let keymap_learn = if input.attach_ime_keymap {
+        input.keymap_learn.clone()
+    } else {
+        None
+    };
     Ok(BugReportPayload {
         schema_version: SCHEMA_VERSION,
         app_version: input.app_version.to_owned(),
@@ -646,6 +814,7 @@ pub fn build_payload_with_log_budget(
         gji_keymap,
         msime_key_assignment,
         legacy_msime_keymap,
+        keymap_learn,
         reported_at: input.reported_at.to_owned(),
     })
 }
@@ -861,6 +1030,7 @@ mod tests {
             gji_keymap: Some(test_gji_keymap_summary()),
             msime_key_assignment: Some(test_msime_key_assignment_summary()),
             legacy_msime_keymap: Some(test_legacy_msime_keymap_summary()),
+            keymap_learn: Some(test_keymap_learn_summary()),
             reported_at: "2026-08-19T12:34:56Z",
         }
     }
@@ -907,6 +1077,169 @@ mod tests {
             adopted_henkan_delegate: None,
             muhenkan_dedicated_fn_key_configured: false,
         }
+    }
+
+    fn test_keymap_learn_summary() -> BugReportKeymapLearnSummary {
+        BugReportKeymapLearnSummary {
+            table_file: "loaded".to_owned(),
+            use_learned_keymap_table: true,
+            in_use: false,
+            cell_count: Some(3),
+            judgement: Some("NeedsConfirmation(SystematicMismatch:40%)".to_owned()),
+            fingerprint: None,
+            self_verification: None,
+            bundled_diff: None,
+            last_attempt_judgement: None,
+        }
+    }
+
+    fn learn_pcell(key: u16) -> awase_keymap_learn::persist::PersistedCell {
+        use awase_keymap_learn::model::{Disposition, KeyId, Outcome, Status};
+        let status = Status {
+            open: true,
+            mode: 0x09,
+            composing: false,
+        };
+        awase_keymap_learn::persist::PersistedCell {
+            status,
+            key: KeyId(key),
+            prediction: Some(Outcome {
+                status,
+                disp: Disposition::Kept,
+            }),
+        }
+    }
+
+    /// 完了条件: 判定・自己検証・指紋・同梱表との突き合わせ（不一致セル一覧・表にのみ存在）・
+    /// 使用中か・退避ファイルの判定が**1つの項目にまとまる**こと。
+    #[test]
+    fn keymap_learn_summary_bundles_all_fields_into_one_item() {
+        use crate::state::key_effect_runtime::{BundledDiff, MismatchedCell};
+        use awase_keymap_learn::judgement::{
+            NeedsConfirmationReason, RejectedReason, ScoredVerification, TableJudgement,
+        };
+        use awase_keymap_learn::persist::{Fingerprint, PersistedTable};
+        use awase_keymap_learn::verify::ScoreReport;
+
+        let table = PersistedTable::new(vec![learn_pcell(1), learn_pcell(2)])
+            .with_fingerprint(Fingerprint(0xAB, 0xCD))
+            .with_verification(ScoredVerification {
+                score: ScoreReport {
+                    correct: 290,
+                    incorrect: 10,
+                    not_in_table: 5,
+                },
+                seed: 7,
+            })
+            .with_judgement(TableJudgement::NeedsConfirmation(
+                NeedsConfirmationReason::SystematicMismatch {
+                    mismatch_percent: 40,
+                },
+            ));
+        let last = PersistedTable::new(vec![])
+            .with_judgement(TableJudgement::Rejected(RejectedReason::LowAccuracy));
+        let diff = BundledDiff {
+            matched: 8,
+            mismatched: vec![MismatchedCell {
+                status: learn_pcell(1).status,
+                key: learn_pcell(1).key,
+            }],
+            only_in_one_table: 3,
+        };
+        let s = BugReportKeymapLearnSummary::from_parts(
+            &Ok(table),
+            Some(&last),
+            true,
+            false,
+            Some(&diff),
+        );
+        assert_eq!(s.table_file, "loaded");
+        assert!(s.use_learned_keymap_table);
+        assert!(!s.in_use);
+        assert_eq!(s.cell_count, Some(2));
+        assert_eq!(
+            s.judgement.as_deref(),
+            Some("NeedsConfirmation(SystematicMismatch:40%)")
+        );
+        assert_eq!(
+            s.fingerprint.as_deref(),
+            Some("00000000000000ab00000000000000cd")
+        );
+        assert_eq!(
+            s.self_verification,
+            Some(BugReportKeymapLearnVerification {
+                correct: 290,
+                incorrect: 10,
+                not_in_table: 5,
+                seed: 7
+            })
+        );
+        let d = s.bundled_diff.expect("突き合わせ結果");
+        assert_eq!(
+            (d.matched, d.mismatched_count, d.only_in_one_table),
+            (8, 1, 3)
+        );
+        assert_eq!(
+            d.mismatched_cells,
+            vec!["open=true mode=9 composing=false key=1"]
+        );
+        assert_eq!(
+            s.last_attempt_judgement.as_deref(),
+            Some("Rejected(LowAccuracy)")
+        );
+    }
+
+    #[test]
+    fn keymap_learn_summary_reports_unreadable_file_state_without_table_fields() {
+        use crate::state::key_effect_runtime::RejectReason;
+        for (reason, label) in [
+            (RejectReason::NotFound, "not_learned"),
+            (RejectReason::Parse, "parse_error"),
+            (RejectReason::SchemaVersionMismatch, "schema_mismatch"),
+            (RejectReason::Io, "io_error"),
+        ] {
+            let s = BugReportKeymapLearnSummary::from_parts(&Err(reason), None, false, false, None);
+            assert_eq!(s.table_file, label);
+            assert!(!s.use_learned_keymap_table);
+            assert_eq!(s.judgement, None);
+            assert_eq!(s.cell_count, None);
+        }
+    }
+
+    #[test]
+    fn keymap_learn_summary_caps_mismatched_cell_list_but_keeps_true_count() {
+        use crate::state::key_effect_runtime::{BundledDiff, MismatchedCell};
+        let n = KEYMAP_LEARN_MISMATCH_LIST_MAX + 10;
+        let diff = BundledDiff {
+            matched: 0,
+            mismatched: (0..n)
+                .map(|i| MismatchedCell {
+                    status: learn_pcell(0).status,
+                    key: awase_keymap_learn::model::KeyId(u16::try_from(i).unwrap()),
+                })
+                .collect(),
+            only_in_one_table: 0,
+        };
+        let s = BugReportKeymapLearnSummary::from_parts(
+            &Err(crate::state::key_effect_runtime::RejectReason::NotFound),
+            None,
+            true,
+            false,
+            Some(&diff),
+        );
+        let d = s.bundled_diff.unwrap();
+        assert_eq!(d.mismatched_count as usize, n);
+        assert_eq!(d.mismatched_cells.len(), KEYMAP_LEARN_MISMATCH_LIST_MAX);
+    }
+
+    /// `#[serde(default)]`の回帰: `keymap_learn`を持たない旧診断JSONを読めること
+    /// （落ちると`load_diagnostics`の`.ok()`で既存診断も全部消える）。
+    #[test]
+    fn diagnostics_without_keymap_learn_field_still_deserializes() {
+        let mut v = serde_json::to_value(BugReportDiagnostics::default()).unwrap();
+        v.as_object_mut().unwrap().remove("keymap_learn");
+        let parsed: BugReportDiagnostics = serde_json::from_value(v).expect("旧形式を読めること");
+        assert_eq!(parsed.keymap_learn, None);
     }
 
     fn test_legacy_msime_keymap_summary() -> BugReportLegacyMsImeKeymapSummary {
@@ -1029,6 +1362,11 @@ mod tests {
             payload.legacy_msime_keymap,
             Some(test_legacy_msime_keymap_summary())
         );
+        assert_eq!(
+            payload.keymap_learn,
+            Some(test_keymap_learn_summary()),
+            "keymap_learnはattach_ime_keymapに相乗りして添付される"
+        );
 
         input.attach_state_snapshot = false;
         input.attach_config = false;
@@ -1048,6 +1386,7 @@ mod tests {
         assert_eq!(detached.gji_keymap, None);
         assert_eq!(detached.msime_key_assignment, None);
         assert_eq!(detached.legacy_msime_keymap, None);
+        assert_eq!(detached.keymap_learn, None);
     }
 
     #[test]
