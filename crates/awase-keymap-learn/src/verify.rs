@@ -46,15 +46,19 @@ pub fn classify_robust(table: &Table, status: Status, key: usize, min_minority: 
     for g in groups.values() {
         if g.len() >= 2 {
             multi += 1;
-            let mut counts: HashMap<Outcome, usize> = HashMap::new();
+            // 多数派を選ぶ。同数なら先に現れたものを採用する(table.rs::majority()と同じ
+            // 規則)。HashMap<Outcome, usize>のiterで選ぶと反復順がRandomStateに依存し、
+            // 同数タイの場合に呼び出しごとに結果が変わってしまう(非決定的)ため、
+            // Vecの出現順を線形走査する。
+            let mut maj_outcome = g[0];
+            let mut maj_count = 0usize;
             for o in g {
-                *counts.entry(*o).or_insert(0) += 1;
+                let n = g.iter().filter(|x| *x == o).count();
+                if n > maj_count {
+                    maj_count = n;
+                    maj_outcome = *o;
+                }
             }
-            let (maj_outcome, maj_count) = counts
-                .iter()
-                .max_by_key(|(_, c)| **c)
-                .map(|(o, c)| (*o, *c))
-                .expect("group is non-empty");
             let minority = g.len() - maj_count;
             if minority >= min_minority {
                 any_inhomogeneous = true;
@@ -130,10 +134,18 @@ impl ScoreReport {
 }
 
 /// 独立ランダムウォークの観測列で表を採点する。
+///
+/// ウォークは同じ`(status, key)`セルを何度も踏むことが多い(表全体のセル数より
+/// ウォーク長の方が長いのが通常)ため、セルごとの予測を一度計算したらキャッシュして
+/// 使い回す(`classify_robust`のグルーピング計算をウォーク長ぶん繰り返さない)。
 pub fn score_walk(table: &Table, min_minority: usize, walk: &[WalkObs]) -> ScoreReport {
     let mut report = ScoreReport::default();
+    let mut cache: HashMap<(Status, usize), Option<Outcome>> = HashMap::new();
     for w in walk {
-        match predict(table, w.status, w.key, min_minority) {
+        let prediction = *cache
+            .entry((w.status, w.key))
+            .or_insert_with(|| predict(table, w.status, w.key, min_minority));
+        match prediction {
             Some(o) if o == w.outcome => report.correct += 1,
             Some(_) => report.incorrect += 1,
             None => report.not_in_table += 1,
@@ -253,6 +265,23 @@ mod tests {
             classify_robust(&t, s, 0, DEFAULT_MIN_MINORITY),
             Class::Det(out(true))
         );
+    }
+
+    #[test]
+    fn classify_robust_tie_break_is_deterministic_across_many_calls() {
+        let mut t = Table::new();
+        let s = st(true);
+        // 同じ文脈で1対1のタイ(多数派が一意に決まらない)。minority=1はDEFAULT_MIN_MINORITY(2)
+        // 未満なので観測誤り扱いとなり決定的に倒れるが、その決定先(先に現れたtrue)が
+        // 呼び出しごとにぶれてはならない(HashMap反復順に依存する実装だと再現しなかった回帰)。
+        t.record(s, 0, Some(1), out(true));
+        t.record(s, 0, Some(1), out(false));
+
+        let first = classify_robust(&t, s, 0, DEFAULT_MIN_MINORITY);
+        for _ in 0..500 {
+            assert_eq!(classify_robust(&t, s, 0, DEFAULT_MIN_MINORITY), first);
+        }
+        assert_eq!(first, Class::Det(out(true)));
     }
 
     #[test]
