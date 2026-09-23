@@ -271,30 +271,44 @@ pub fn set_mode_keys_confirmed_by_input_progress_status(
 ) -> BTreeSet<String> {
     const INPUT_IN_PROGRESS_STATUSES: &[&str] = &["Composition", "Conversion"];
     let rows = parse_custom_keymap_table(custom_keymap_table);
-    let mut set_mode_commands_by_key: BTreeMap<String, BTreeSet<GjiModeCommand>> = BTreeMap::new();
+    // code-review指摘: 一意性判定は`SetMode`行だけでなく、`extract_mode_keys`と同じ
+    // 集合(`ToggleAlphanumericMode`/`ToggleKanaType`込み)で行わないと、状態間で
+    // `SetMode`と`Toggle*`が食い違うキーまで「一意」と誤判定する(`extract_mode_keys`
+    // なら遷移先不定として弾く食い違いを見逃す)。分類の集計自体を`SetMode`のみに
+    // 絞っていたのが本関数のドキュメントと実装の食い違いだった。
+    let mut commands_by_key: BTreeMap<String, BTreeSet<GjiModeCommand>> = BTreeMap::new();
     let mut has_input_progress_set_mode: BTreeSet<String> = BTreeSet::new();
     for row in &rows {
         let classified = classify_command(&row.command);
-        if !matches!(classified, GjiModeCommand::SetMode(_)) {
+        if matches!(
+            classified,
+            GjiModeCommand::ImeOn | GjiModeCommand::ImeOff | GjiModeCommand::Other
+        ) {
             continue;
         }
-        set_mode_commands_by_key
+        commands_by_key
             .entry(row.key.clone())
             .or_default()
             .insert(classified);
-        if INPUT_IN_PROGRESS_STATUSES.contains(&row.status.as_str()) {
+        if matches!(classified, GjiModeCommand::SetMode(_))
+            && INPUT_IN_PROGRESS_STATUSES.contains(&row.status.as_str())
+        {
             has_input_progress_set_mode.insert(row.key.clone());
         }
     }
     let mut result = BTreeSet::new();
     for key in has_input_progress_set_mode {
-        let Some(commands) = set_mode_commands_by_key.get(&key) else {
+        let Some(commands) = commands_by_key.get(&key) else {
             continue;
         };
         if commands.len() != 1 {
             // 状態間で遷移先が一意に定まらない(extract_mode_keysと同じ判定)。
             continue;
         }
+        // ここに来た時点で`commands`の唯一の要素は`SetMode(_)`だと分かる:
+        // `has_input_progress_set_mode`への挿入は`SetMode`行の観測が条件であり、
+        // そのキーの`commands_by_key`に他の値が無ければ(len() == 1)その1件が
+        // 観測された`SetMode`そのものになるため。
         if let Some(vk_name) = mozc_key_to_vk_name(&key) {
             result.insert(vk_name);
         }
@@ -694,5 +708,20 @@ Conversion\tF8\tSwitchKanaType
     #[test]
     fn set_mode_confirmed_empty_table_yields_empty_set() {
         assert!(set_mode_keys_confirmed_by_input_progress_status("").is_empty());
+    }
+
+    #[test]
+    fn set_mode_not_confirmed_when_key_also_has_a_toggle_row_in_another_status() {
+        // code-review指摘: 同じキーがComposition中はSetModeに束縛されている一方、
+        // 別のstatus(ここではDirectInput)ではToggleAlphanumericModeに束縛されて
+        // いる場合、extract_mode_keysなら「遷移先が状態依存で一意に定まらない」
+        // として除外する(SetModeとToggleが2種の異なる分類として同じキーに
+        // 集まるため)。本関数もextract_mode_keysと同じ一意性判定を謳っている
+        // 以上、SetMode行だけを見て「一意」と誤確定してはならない。
+        let text = "status\tkey\tcommand
+DirectInput\tEisu\tToggleAlphanumericMode
+Composition\tEisu\tCompositionModeHiragana
+";
+        assert!(set_mode_keys_confirmed_by_input_progress_status(text).is_empty());
     }
 }
