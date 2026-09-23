@@ -4,8 +4,9 @@
 `judgement::judge_self_verification`)・1c(既知3構成判定、`awase-gji-config::known_keymap`)・
 1e前半（判定を実際の学習フロー`run_main`へ配線、C-1〜C-9対応、下記参照）はdevelop統合済み
 またはPR起票済み（PR #259: `judgement.rs`・`known_keymap.rs`、PR #263: `diff_against_bundled`、
-PR #269: 1e前半の配線 + `known_keymap.rs`の既知構成誤判定バグ修正）。1b-8(判定書き換えモード)は
-PR #265で別途実装中（develop未統合）。
+PR #269: 1e前半の配線 + `known_keymap.rs`の既知構成誤判定バグ修正）。1b-8(判定書き換えモード、
+`judgement::adopt_needs_confirmation`+`awase-keymap-learn-win --adopt-pending-judgement`)は
+PR #265でdevelop統合（stdoutの`reason=`は空白なしコードのみ、詳細はstderr。採用済みへの再実行は冪等成功）。
 **残作業**: 1b項目7〜9のうち再測定オーケストレーション（`BundledDiff::mismatched`を入力に、
 実際にIMEを再度叩いて確認する部分。`awase-keymap-learn-win`側の`ImeDriver`実装が前提、未着手。
 `judgement::combine`はPR #269で先に用意済み、`run_main`からは`reconciliation: None`で
