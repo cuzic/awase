@@ -179,6 +179,87 @@ fn mismatch_ratio(learned: &[Cell], bundled: &[Cell]) -> f64 {
     ratio
 }
 
+/// `(status, key)`ペアで不一致セルを識別する（[`awase_keymap_learn::model::Status`]/
+/// [`awase_keymap_learn::model::KeyId`]をそのまま使い、`PersistedCell`と同じ識別方式にする）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MismatchedCell {
+    pub status: awase_keymap_learn::model::Status,
+    pub key: awase_keymap_learn::model::KeyId,
+}
+
+/// 学習表と同梱表の第一段階の突き合わせ結果（[ADR-196](../../../docs/adr/196-keymap-learn-truth-priority.md)決定1b項目7〜9）。
+///
+/// 再測定（実際にIMEを再度叩いて元の学習値が再現するか確認する）は含まない
+/// ——ここでの`mismatched`は「再測定が必要な候補」であり、呼び出し側（学習プロセス）が
+/// 再測定した結果を[`awase_keymap_learn::judgement::CellReconciliation`]で確定させる。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BundledDiff {
+    /// 両方の表にあり、結果も一致したセル数。
+    pub matched: u32,
+    /// 両方の表にあるが結果が食い違うセル（再測定対象、順序は学習表側の入力順）。
+    pub mismatched: Vec<MismatchedCell>,
+    /// 学習表・同梱表の片方にしか無いセル数（突き合わせの分母に含めない）。
+    pub only_in_one_table: u32,
+}
+
+/// 学習表を同梱表と突き合わせる（[ADR-196](../../../docs/adr/196-keymap-learn-truth-priority.md)決定1e第1項:「学習プロセスが内蔵表を参照できるようにする」の実装本体）。
+///
+/// `preset`は[`super::key_effect_predictor::KeyEffectKeymap::is_unmodified_bundled_config`]相当の判定
+/// （呼び出し側の[`awase_gji_config::known_keymap`]等）で「既知構成である」と確認できた場合のみ
+/// 渡すこと——カスタム構成では突き合わせに意味が無い（`mismatch_ratio`と同じ前提）。
+///
+/// 変換できない学習セル（`convert_cell`が`None`を返すもの: VK非対応・変換モード非表現・
+/// `prediction: None`）は、同梱表側から見て「学習表に無い」＝`only_in_one_table`に数える
+/// （このセルは学習表からは何も主張していないので、突き合わせの母数からは除きつつ、
+/// 「表にのみ存在」の記録には残す）。
+#[must_use]
+pub fn diff_against_bundled(persisted: &[PersistedCell], preset: KeymapPreset) -> BundledDiff {
+    diff_against_bundled_cells(persisted, bundled_table(preset))
+}
+
+/// [`diff_against_bundled`]の本体。テストで同梱表全体ではなく小さな合成`Cell`列を渡せるように
+/// 分離している（`mismatch_ratio`と同じ理由）。
+fn diff_against_bundled_cells(persisted: &[PersistedCell], bundled: &[Cell]) -> BundledDiff {
+    let mut matched_bundled = vec![false; bundled.len()];
+    let mut diff = BundledDiff::default();
+
+    for pc in persisted {
+        let Some(converted) = convert_cell(pc) else {
+            diff.only_in_one_table += 1;
+            continue;
+        };
+        let found = bundled.iter().enumerate().find(|(_, b)| {
+            b.matches_lookup_key(
+                converted.open(),
+                converted.conv(),
+                converted.stage(),
+                converted.key(),
+            )
+        });
+        match found {
+            Some((idx, b)) => {
+                matched_bundled[idx] = true;
+                if converted.after_open() == b.after_open()
+                    && converted.after_conv() == b.after_conv()
+                    && converted.disp() == b.disp()
+                {
+                    diff.matched += 1;
+                } else {
+                    diff.mismatched.push(MismatchedCell {
+                        status: pc.status,
+                        key: pc.key,
+                    });
+                }
+            }
+            None => diff.only_in_one_table += 1,
+        }
+    }
+    diff.only_in_one_table +=
+        u32::try_from(matched_bundled.iter().filter(|m| !**m).count()).unwrap_or(u32::MAX);
+
+    diff
+}
+
 /// `<config dir>/keymap-learn-table.json`のパス。`config dir`は`config.toml`の親ディレクトリ
 /// （`crate::app::find_config_path()`と同じ解決順、見つからなければ`None`＝未学習として扱う）。
 ///
@@ -464,6 +545,87 @@ mod tests {
         ));
         // カスタム構成(突き合わせなし)なら同じ表でも採用される。
         assert!(validate_and_convert(&table, KeymapPreset::Atok, false).is_ok());
+    }
+
+    /// `diff_against_bundled_cells`用の1セルだけの合成同梱表。ひらがな(0xF2)開で押すと
+    /// 閉じない(`after_open: true`)という、上の`mismatch_against_bundled_is_rejected_when_checked`
+    /// と同じ実測ベースの値を使う。
+    fn one_cell_bundled_table() -> Vec<Cell> {
+        vec![make_cell(
+            true,
+            Some(Conv::C19),
+            Stage::None,
+            TableKey::Hiragana,
+            true,
+            Some(Conv::C10),
+            Disp::Kept,
+        )]
+    }
+
+    #[test]
+    fn diff_against_bundled_counts_matching_cell_as_matched() {
+        let cells = vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x00)))];
+        let diff = diff_against_bundled_cells(&cells, &one_cell_bundled_table());
+        assert_eq!(diff.matched, 1);
+        assert!(diff.mismatched.is_empty());
+        assert_eq!(diff.only_in_one_table, 0);
+    }
+
+    #[test]
+    fn diff_against_bundled_reports_mismatched_cell_identity() {
+        // 上記`mismatch_against_bundled_is_rejected_when_checked`と同じ「わざと閉じる」誤り。
+        let cells = vec![pcell(true, 0x09, false, 0xF2, Some((false, 0x09)))];
+        let diff = diff_against_bundled_cells(&cells, &one_cell_bundled_table());
+        assert_eq!(diff.matched, 0);
+        assert_eq!(
+            diff.mismatched,
+            vec![MismatchedCell {
+                status: Status {
+                    open: true,
+                    mode: 0x09,
+                    composing: false,
+                },
+                key: KeyId(0xF2),
+            }]
+        );
+        assert_eq!(diff.only_in_one_table, 0);
+    }
+
+    #[test]
+    fn diff_against_bundled_counts_unconvertible_cell_as_only_in_one_table() {
+        // 表に無いVK(0x99)は変換できない=「学習表にのみ存在」扱い(突き合わせの分母外)。
+        // 同梱表側の1セルも学習表からは一致しないので、あわせて2件になる。
+        let cells = vec![pcell(true, 0x09, false, 0x99, Some((true, 0x00)))];
+        let diff = diff_against_bundled_cells(&cells, &one_cell_bundled_table());
+        assert_eq!(diff.matched, 0);
+        assert!(diff.mismatched.is_empty());
+        assert_eq!(diff.only_in_one_table, 2);
+    }
+
+    #[test]
+    fn diff_against_bundled_counts_uncovered_bundled_cells_as_only_in_one_table() {
+        // 学習表が空なら、同梱表の全セルが「同梱表にのみ存在」になる。
+        let diff = diff_against_bundled_cells(&[], &one_cell_bundled_table());
+        assert_eq!(diff.matched, 0);
+        assert!(diff.mismatched.is_empty());
+        assert_eq!(diff.only_in_one_table, 1);
+    }
+
+    #[test]
+    fn diff_against_bundled_uses_the_real_bundled_table_for_the_given_preset() {
+        // 実際の同梱ATOK表全体を使う統合テスト。細かい一致・不一致の判定は上の合成表テストで
+        // 検証済みなので、ここでは実表への配線(件数の集計が壊れていないこと)だけ確認する。
+        let cells = vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x00)))];
+        let diff = diff_against_bundled(&cells, KeymapPreset::Atok);
+        assert_eq!(
+            u64::from(diff.matched) + diff.mismatched.len() as u64,
+            1,
+            "唯一の学習セルは、一致か不一致のいずれかとして数えられるはず"
+        );
+        assert!(
+            diff.only_in_one_table > 0,
+            "同梱ATOK表は1セルよりずっと多いはず"
+        );
     }
 
     #[test]
