@@ -53,6 +53,9 @@ pub const MAX_MISMATCH_RATIO: f64 = 0.05;
 /// [`load_runtime_table`]が採用しなかった理由（ログ・診断用）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RejectReason {
+    /// ファイルが存在しない（未学習、正常系）。
+    NotFound,
+    /// ファイルは存在するが読み取りに失敗した（権限・排他ロック等、異常系）。
     Io,
     TooLarge,
     Parse,
@@ -70,6 +73,7 @@ pub enum RejectReason {
 impl std::fmt::Display for RejectReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::NotFound => write!(f, "ファイル未学習（存在しない）"),
             Self::Io => write!(f, "読み取り失敗"),
             Self::TooLarge => write!(f, "ファイルサイズが上限({MAX_TABLE_FILE_BYTES}バイト)超過"),
             Self::Parse => write!(f, "パース失敗"),
@@ -212,7 +216,7 @@ pub(crate) fn load_and_log(preset: KeymapPreset, check_against_bundled: bool) ->
             );
             Some(cells)
         }
-        Err(RejectReason::Io) => {
+        Err(RejectReason::NotFound) => {
             // ファイル未学習（存在しない）は正常系、ログしない。
             None
         }
@@ -223,6 +227,16 @@ pub(crate) fn load_and_log(preset: KeymapPreset, check_against_bundled: bool) ->
             );
             None
         }
+    }
+}
+
+/// `std::io::Error`を、ファイル不在(正常系)とそれ以外の読み取り失敗(異常系、ログすべき)
+/// とを区別できる[`RejectReason`]へ変換する。
+fn io_reject_reason(e: &std::io::Error) -> RejectReason {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        RejectReason::NotFound
+    } else {
+        RejectReason::Io
     }
 }
 
@@ -237,11 +251,11 @@ pub fn load_runtime_table(
     preset: KeymapPreset,
     check_against_bundled: bool,
 ) -> Result<Vec<Cell>, RejectReason> {
-    let meta = fs::metadata(path).map_err(|_| RejectReason::Io)?;
+    let meta = fs::metadata(path).map_err(|e| io_reject_reason(&e))?;
     if meta.len() > MAX_TABLE_FILE_BYTES {
         return Err(RejectReason::TooLarge);
     }
-    let text = fs::read_to_string(path).map_err(|_| RejectReason::Io)?;
+    let text = fs::read_to_string(path).map_err(|e| io_reject_reason(&e))?;
     let table: PersistedTable = persist::from_json(&text).map_err(|e| match e {
         LoadError::Parse(_) => RejectReason::Parse,
         LoadError::SchemaVersionMismatch { .. } => RejectReason::SchemaVersionMismatch,
@@ -277,10 +291,18 @@ pub fn validate_and_convert(
 /// `config1.db`スタンプ（[`super::key_effect_predictor::KeymapCache`]）と同じ方式のfsキャッシュ。
 /// `RECHECK_MS`ごとにファイルの版（更新時刻+長さ）だけを問い合わせ、変わったときだけ読み直す。
 /// 判定は純関数で、fs/時計は呼び出し側が渡す（テスト容易性のため`KeymapCache`と同じ形にする）。
+///
+/// ファイル自身のスタンプに加えて`(KeymapPreset, check_against_bundled)`も版の一部として
+/// 比較する——学習済み表ファイル自体は変わっていなくても、GJIのプリセット切替
+/// （`session_keymap`）やカスタム構成の有無が変わると、`validate_and_convert`が
+/// 検証に使う`preset`/`check_against_bundled`が変わり、以前キャッシュしたセルは
+/// 新しい構成に対して未検証のまま（かつVK/モードの意味が構成ごとに違いうる）になる。
+/// ファイルスタンプだけで比較すると、プリセットを切り替えても再学習していない限り
+/// 古いプリセット向けに検証済みのセルを黙って使い続けてしまう。
 #[derive(Debug, Default)]
 pub struct RuntimeTableCache {
     checked_at_ms: Option<u64>,
-    stamp: Option<(u64, u64)>,
+    stamp: Option<(u64, u64, KeymapPreset, bool)>,
     cells: Option<Vec<Cell>>,
 }
 
@@ -288,9 +310,13 @@ impl RuntimeTableCache {
     pub const RECHECK_MS: u64 = super::key_effect_predictor::KeymapCache::RECHECK_MS;
 
     /// キャッシュした学習済み表を返す（採用できなかった/未学習なら`None`＝呼び出し側は同梱表を使う）。
+    ///
+    /// `validation_key`は`(preset, check_against_bundled)`——呼び出し側が`load`に渡すのと
+    /// 同じ値を渡すこと（版の一部として比較され、変わればファイルスタンプが同じでも読み直す）。
     pub fn get(
         &mut self,
         now_ms: u64,
+        validation_key: (KeymapPreset, bool),
         stamp: impl FnOnce() -> Option<(u64, u64)>,
         load: impl FnOnce() -> Option<Vec<Cell>>,
     ) -> Option<&[Cell]> {
@@ -300,7 +326,7 @@ impl RuntimeTableCache {
             .is_none_or(|t| now_ms.saturating_sub(t) >= Self::RECHECK_MS);
         if due {
             self.checked_at_ms = Some(now_ms);
-            let now_stamp = stamp();
+            let now_stamp = stamp().map(|(mtime, len)| (mtime, len, validation_key.0, validation_key.1));
             if first || now_stamp != self.stamp {
                 self.stamp = now_stamp;
                 self.cells = load();
@@ -444,27 +470,100 @@ mod tests {
             loads.set(loads.get() + 1);
             Some(vec![])
         };
-        assert!(cache.get(0, || Some((1, 10)), load).is_some());
+        let key = (KeymapPreset::Atok, true);
+        assert!(cache.get(0, key, || Some((1, 10)), load).is_some());
         assert_eq!(loads.get(), 1);
         // 間隔内はfsを読まない。
-        assert!(cache.get(500, || Some((1, 10)), load).is_some());
+        assert!(cache.get(500, key, || Some((1, 10)), load).is_some());
         assert_eq!(loads.get(), 1);
         // 間隔を過ぎても版が同じなら読み直さない。
         assert!(cache
-            .get(RuntimeTableCache::RECHECK_MS, || Some((1, 10)), load)
+            .get(RuntimeTableCache::RECHECK_MS, key, || Some((1, 10)), load)
             .is_some());
         assert_eq!(loads.get(), 1);
         // 版が変わったら読み直す。
         assert!(cache
-            .get(RuntimeTableCache::RECHECK_MS * 2, || Some((2, 10)), load)
+            .get(RuntimeTableCache::RECHECK_MS * 2, key, || Some((2, 10)), load)
             .is_some());
         assert_eq!(loads.get(), 2);
     }
 
     #[test]
+    fn runtime_table_cache_reloads_when_preset_changes_even_if_file_stamp_is_unchanged() {
+        // GJIのプリセット切替(session_keymap変更)は学習済み表ファイル自体を書き換えない。
+        // ファイルスタンプだけで版を比較すると、切り替え後もATOK向けに検証済みだった
+        // 古いセルを黙って使い続けてしまう(旧プリセットの構成に対してのみ妥当な
+        // 縮退率/突き合わせ判定を経たセルを、新プリセットへそのまま流用する事故)。
+        use std::cell::Cell as StdCell;
+        let loads = StdCell::new(0u32);
+        let mut cache = RuntimeTableCache::default();
+        let load = || {
+            loads.set(loads.get() + 1);
+            Some(vec![])
+        };
+        assert!(cache
+            .get(0, (KeymapPreset::Atok, true), || Some((1, 10)), load)
+            .is_some());
+        assert_eq!(loads.get(), 1);
+        // ファイルスタンプは同じ(1, 10)のまま、プリセットだけがMsImeへ変わった。
+        assert!(cache
+            .get(
+                RuntimeTableCache::RECHECK_MS,
+                (KeymapPreset::MsIme, true),
+                || Some((1, 10)),
+                load
+            )
+            .is_some());
+        assert_eq!(loads.get(), 2, "プリセット変更で読み直すべき");
+        // check_against_bundledだけが変わった場合も読み直す(カスタム構成の有無で検証内容が違う)。
+        assert!(cache
+            .get(
+                RuntimeTableCache::RECHECK_MS * 2,
+                (KeymapPreset::MsIme, false),
+                || Some((1, 10)),
+                load
+            )
+            .is_some());
+        assert_eq!(loads.get(), 3, "check_against_bundled変更でも読み直すべき");
+    }
+
+    #[test]
+    fn load_runtime_table_distinguishes_not_found_from_real_io_errors() {
+        // ファイル不在(正常系、ログしない)と、存在するが読み取れない(異常系、ログすべき)を
+        // 混同しない。存在しないパスはNotFound。
+        let missing = std::env::temp_dir().join("awase_keymap_learn_table_does_not_exist.json");
+        let _ = fs::remove_file(&missing);
+        assert_eq!(
+            load_runtime_table(&missing, KeymapPreset::Atok, true),
+            Err(RejectReason::NotFound)
+        );
+
+        // ディレクトリをファイルとして開こうとすると(存在はするが読めない)、
+        // NotFoundではなくIoになる。
+        let dir = std::env::temp_dir().join(format!(
+            "awase_keymap_learn_table_dir_{}",
+            unique_test_suffix()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).expect("create test dir");
+        let result = load_runtime_table(&dir, KeymapPreset::Atok, true);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(result, Err(RejectReason::Io));
+    }
+
+    fn unique_test_suffix() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    }
+
+    #[test]
     fn runtime_table_cache_falls_back_to_none_when_load_rejects() {
         let mut cache = RuntimeTableCache::default();
-        assert!(cache.get(0, || Some((1, 10)), || None).is_none());
+        assert!(cache
+            .get(0, (KeymapPreset::Atok, true), || Some((1, 10)), || None)
+            .is_none());
     }
 
     /// B-1 Blockerの安全性の核（本来はCI実機blind格子`ci/e2e-ime.yml`で検証すべき項目の、

@@ -397,7 +397,8 @@ pub struct GeneralConfig {
     /// ADR-195段階4: `<config dir>/keymap-learn-table.json`（段階3永続化）が存在し
     /// 検証を通れば、それを`key_effect_predictor`が引く表として同梱表の代わりに使う。
     /// `false`にすると学習済み表があっても常に同梱表を使う（opt-out、M-b）。
-    /// awase-settingsのUIチェックボックスからも切り替え可能。
+    /// 現状は`config.toml`を直接編集する以外の切り替え手段は無い
+    /// （awase-settingsのUIチェックボックスは未実装、フォローアップが必要）。
     #[serde(default = "default_use_learned_keymap_table")]
     pub use_learned_keymap_table: bool,
 }

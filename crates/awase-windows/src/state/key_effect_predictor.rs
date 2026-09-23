@@ -555,20 +555,10 @@ impl KeyEffectKeymap {
     /// （無変換/変換は overlay `HENKAN_MUHENKAN_TO_IME_ON_OFF` が上書きしうる）ときは`None`。
     #[must_use]
     pub fn predict(&self, vk: u16, input: &PredictInput) -> Option<Prediction> {
-        if self
-            .custom_table
-            .as_deref()
-            .is_some_and(|t| custom_table_overrides(t, vk))
-        {
-            return None;
-        }
-        if (self.has_overlay && matches!(vk, 0x1C | 0x1D))
-            || (self.henkan_reassigned && vk == 0x1C)
-            || (self.muhenkan_reassigned && vk == 0x1D)
-        {
-            return None;
-        }
-        predict(self.preset, vk, input)
+        // ガード(custom_table/overlay/レジストリ再割り当ての除外)は`predict_with_override`と
+        // 完全に同じでなければならない。2箇所に手書きすると片方だけ直る事故が起きうるため
+        // (`.claude/rules/fix-requires-evidence.md`の「キー選択」再発ファミリー)、こちらへ委譲する。
+        self.predict_with_override(vk, input, None)
     }
 
     /// [`Self::predict`]と同じだが、`override_table`が`Some`なら同梱表の代わりにそれを引く
