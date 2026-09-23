@@ -1,15 +1,30 @@
 # imm_cross_write の AlreadyMatched 判定にテストの穴がある（要修正）
 
-状態: 対応済み（2026-09-22起票、PR [#247](https://github.com/cuzic/awase/pull/247)でテスト追加）
+状態: 完了（2026-09-22起票、PR [#247](https://github.com/cuzic/awase/pull/247)でテスト追加・検証済み）
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
 `imm_cross_reobservation_already_matches`として`state/ime_actuation_decision.rs`
 （windows-ungated）へ判定を抽出し、一致/不一致/未知(`None`)の3ケースを
 ユニットテストで固定した（`cargo test -p awase-windows --lib`でLinux上でも
-検証可能）。残作業: マージ後に`gh workflow run
-mutants-actuation-confluence-windows.yml --ref develop`を再実行し、
-`open_chain.rs:356`相当のmutantが`missed`→`caught`に変わったことを確認する
-（下記「やること」3番）。
+検証可能）。
+
+マージ後に`gh workflow run mutants-actuation-confluence-windows.yml --ref
+develop`を再実行（run
+[35819543135](https://github.com/cuzic/awase/actions/runs/35819543135)）し、
+`12 mutants tested in 7m: 2 missed, 2 caught, 8 unviable`という結果を得た。
+残る2件のmissed（`ime_controller.rs:640`/`executor.rs:1055`）は元々「戻り値に
+影響しないログ専用の等価変異体」として対象外だったもので、`open_chain.rs:356`
+（本タスクの対象）はレポートから消えた——ただし正確には「同一箇所で
+missed→caughtに変わった」のではなく、判定ロジック自体を`imm_cross_write`から
+`state/ime_actuation_decision.rs`へ移設したため、このワークフローの走査対象
+（`open_chain.rs`等3ファイルの特定関数のみ）から外れた形。移設先の正しさは
+上記ユニットテストで担保している。
+
+**副次的に判明した別件（本タスクの範囲外、対応せず）**: 移設先の
+`state/ime_actuation_decision.rs`は`.cargo/mutants-awase-windows.toml`の
+許可リストにも含まれておらず、既存30件超のユニットテストごと、どちらの
+mutantsジョブからも独立検証を受けていない。今回移設した関数固有の問題ではなく
+既存のギャップ。
 
 ## 背景
 
