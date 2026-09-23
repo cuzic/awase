@@ -367,6 +367,17 @@ impl RealImeDriver {
         pump_for(duration, &self.notify_monitor);
     }
 
+    /// 診断用（B-1の実機検証）: IME通知経由だけで数えた外部書き込みの累計件数。
+    #[must_use]
+    pub fn diag_notify_external_count(&self) -> u32 {
+        self.notify_monitor.external_count()
+    }
+
+    /// 診断用（B-1の実機検証）: メッセージを回しながら待つ。
+    pub fn diag_pump(&self, duration: Duration) {
+        self.pump(duration);
+    }
+
     /// 現在の「外部からの書き込み」累計件数（フック経由＋IME通知経由）。
     fn external_total(&self) -> u32 {
         self.hook_monitor.external_event_count() + self.notify_monitor.external_count()

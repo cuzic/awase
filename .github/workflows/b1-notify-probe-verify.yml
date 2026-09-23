@@ -1,0 +1,50 @@
+name: b1-notify-probe-verify
+
+# B-1(PR #274)実機確認: EDITサブクラス経由でWM_IME_NOTIFYが観測できるか、自己注入で偽陽性が出ないか。
+on:
+  push:
+    branches: [fix/b1-ime-notify-external-write]
+    paths:
+      - 'tools/e2e/b1-notify-probe.ps1'
+      - 'crates/awase-keymap-learn-win/**'
+      - '.github/workflows/b1-notify-probe-verify.yml'
+  workflow_dispatch: {}
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: b1-notify-probe-verify
+      - name: build
+        shell: pwsh
+        run: cargo build -p awase-keymap-learn-win --examples
+      - name: GJI install
+        shell: pwsh
+        run: choco install googlejapaneseinput -y --no-progress 2>&1 | Select-Object -Last 3
+      - name: input language + ATOK preset
+        shell: pwsh
+        run: |
+          $tip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
+          $l = New-WinUserLanguageList ja-JP
+          $l[0].InputMethodTips.Clear(); $l[0].InputMethodTips.Add($tip)
+          Set-WinUserLanguageList $l -Force 2>&1
+          try { Set-WinDefaultInputMethodOverride -InputTip $tip -ErrorAction Stop } catch { "override FAILED: $($_.Exception.Message)" }
+          $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), [byte[]](0xB0,0x01,0x00,0xC8,0x02,0x01))
+          Get-Process | Where-Object { $_.Name -match 'googleime|mozc' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+      - name: notify probe
+        shell: pwsh
+        run: |
+          Copy-Item config.toml target\debug\examples\ -ErrorAction SilentlyContinue
+          ./tools/e2e/b1-notify-probe.ps1
