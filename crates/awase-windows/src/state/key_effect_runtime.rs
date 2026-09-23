@@ -231,6 +231,28 @@ pub fn diff_against_bundled(persisted: &[PersistedCell], preset: KeymapPreset) -
     diff_against_bundled_cells(persisted, bundled_table(preset))
 }
 
+/// 診断用: `pc`と同じ`(open, conv, stage, key)`の同梱表セルの結果を文字列にする
+/// （不一致セルで、同梱表側が何と言っているかをログに残すため。突き合わせ判定には使わない）。
+/// 変換できないセル・同梱表に無いセルは`None`。
+#[must_use]
+pub fn describe_bundled_cell(pc: &PersistedCell, preset: KeymapPreset) -> Option<String> {
+    let converted = convert_cell(pc)?;
+    let b = bundled_table(preset).iter().find(|b| {
+        b.matches_lookup_key(
+            converted.open(),
+            converted.conv(),
+            converted.stage(),
+            converted.key(),
+        )
+    })?;
+    Some(format!(
+        "after_open={:?} after_conv={:?} disp={:?}",
+        b.after_open(),
+        b.after_conv(),
+        b.disp()
+    ))
+}
+
 /// [`diff_against_bundled`]の本体。テストで同梱表全体ではなく小さな合成`Cell`列を渡せるように
 /// 分離している（`mismatch_ratio`と同じ理由）。
 fn diff_against_bundled_cells(persisted: &[PersistedCell], bundled: &[Cell]) -> BundledDiff {

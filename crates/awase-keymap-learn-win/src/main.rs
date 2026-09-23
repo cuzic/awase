@@ -579,8 +579,17 @@ mod app {
         }
         // 診断: 内蔵表と食い違ったセルごとの再測定結果(内蔵表側の版ずれ等の判断材料)。
         for (target, outcome) in &result.cells {
+            let vk = KeyId(KEYS[target.key] as u16);
+            let probe = PersistedCell {
+                status: target.status,
+                key: vk,
+                prediction: Some(target.learned),
+            };
+            let bundled =
+                awase_windows::state::key_effect_runtime::describe_bundled_cell(&probe, preset)
+                    .unwrap_or_else(|| "(取得不可)".to_string());
             eprintln!(
-                "再測定: {outcome:?} vk={:#04x} status={:?} learned={:?}",
+                "再測定: {outcome:?} vk={:#04x} status={:?} learned={:?} bundled={bundled}",
                 KEYS[target.key], target.status, target.learned
             );
         }
