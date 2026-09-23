@@ -11,6 +11,8 @@
 //! 変えるため、段階5より前に永続化した表が段階5実装後にスキーマ不一致になることを検出する
 //! ために持つ(段階8の失効条件がこのフィールドを使う予定、本モジュールでは読み書きのみ)。
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::model::{KeyId, Outcome, Status};
@@ -26,6 +28,7 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 pub struct PersistedCell {
     pub status: Status,
     pub key: KeyId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prediction: Option<Outcome>,
 }
 
@@ -52,33 +55,23 @@ impl PersistedTable {
     }
 }
 
-/// [`from_json`]の失敗理由。パース失敗とスキーマ版不一致を区別する
-/// (段階4のフォールバック経路がどちらも「同梱の既定表へフォールバック」として
+/// [`from_json`]の失敗理由。パース失敗・スキーマ版不一致・重複セルを区別する
+/// (段階4のフォールバック経路がどれも「同梱の既定表へフォールバック」として
 /// 扱うが、原因の切り分けはログ・診断のために保つ)。
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum LoadError {
-    Parse(serde_json::Error),
+    #[error("keymap-learn-table のパースに失敗: {0}")]
+    Parse(#[source] serde_json::Error),
+    #[error("keymap-learn-table のスキーマ版が不一致(見つかった版={found}, 現行版={expected})")]
     SchemaVersionMismatch { found: u32, expected: u32 },
+    #[error("keymap-learn-table に(status, key)の重複エントリがある: status={status:?}, key={key:?}")]
+    DuplicateCell { status: Status, key: KeyId },
 }
 
-impl std::fmt::Display for LoadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Parse(e) => write!(f, "keymap-learn-table のパースに失敗: {e}"),
-            Self::SchemaVersionMismatch { found, expected } => write!(
-                f,
-                "keymap-learn-table のスキーマ版が不一致(見つかった版={found}, 現行版={expected})"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for LoadError {}
-
-/// JSONから読み込み、スキーマ版が現行と一致するか検証する。
+/// JSONから読み込み、スキーマ版が現行と一致するか・`(status, key)`の重複が無いかを検証する。
 ///
 /// 段階4の実行時読込がこの`Err`を「同梱の既定表へフォールバック」の判断材料に使う想定
-/// (フォールバック自体は段階4のスコープ、本関数は読み込み+版検証のみを行う)。
+/// (フォールバック自体は段階4のスコープ、本関数は読み込み+検証のみを行う)。
 pub fn from_json(s: &str) -> Result<PersistedTable, LoadError> {
     let table: PersistedTable = serde_json::from_str(s).map_err(LoadError::Parse)?;
     if table.schema_version != CURRENT_SCHEMA_VERSION {
@@ -86,6 +79,15 @@ pub fn from_json(s: &str) -> Result<PersistedTable, LoadError> {
             found: table.schema_version,
             expected: CURRENT_SCHEMA_VERSION,
         });
+    }
+    let mut seen: HashSet<(Status, KeyId)> = HashSet::with_capacity(table.cells.len());
+    for cell in &table.cells {
+        if !seen.insert((cell.status, cell.key)) {
+            return Err(LoadError::DuplicateCell {
+                status: cell.status,
+                key: cell.key,
+            });
+        }
     }
     Ok(table)
 }
@@ -132,7 +134,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_mismatched_schema_version() {
+    fn rejects_newer_schema_version() {
         let mut table = PersistedTable::new(vec![cell(true, 0, None)]);
         table.schema_version = CURRENT_SCHEMA_VERSION + 1;
         let json = table.to_json().expect("serialize");
@@ -143,7 +145,27 @@ mod tests {
                 assert_eq!(found, CURRENT_SCHEMA_VERSION + 1);
                 assert_eq!(expected, CURRENT_SCHEMA_VERSION);
             }
-            LoadError::Parse(e) => panic!("expected schema mismatch, got parse error: {e}"),
+            other => panic!("expected schema mismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_older_schema_version() {
+        // 段階5がdevelop側の状態表現を変えると、段階5より前に永続化した表(古い版)が
+        // 現行と食い違う。versionチェックが`!=`ではなく`<`のような片方向比較に
+        // 誤って変更される回帰を防ぐため、新しい版だけでなく古い版も拒否することを固定する。
+        const { assert!(CURRENT_SCHEMA_VERSION >= 1, "test needs a version below current") };
+        let mut table = PersistedTable::new(vec![cell(true, 0, None)]);
+        table.schema_version = CURRENT_SCHEMA_VERSION - 1;
+        let json = table.to_json().expect("serialize");
+
+        let err = from_json(&json).expect_err("must reject older schema version");
+        match err {
+            LoadError::SchemaVersionMismatch { found, expected } => {
+                assert_eq!(found, CURRENT_SCHEMA_VERSION - 1);
+                assert_eq!(expected, CURRENT_SCHEMA_VERSION);
+            }
+            other => panic!("expected schema mismatch, got {other:?}"),
         }
     }
 
@@ -151,5 +173,25 @@ mod tests {
     fn rejects_invalid_json() {
         let err = from_json("not json").expect_err("must reject invalid json");
         assert!(matches!(err, LoadError::Parse(_)));
+    }
+
+    #[test]
+    fn rejects_duplicate_status_key_cell() {
+        // 同じ(status, key)に対して食い違う2つのPersistedCellが書き込まれた場合、
+        // 「どちらが勝つか」を読み込み側の実装に依存する形で黙認しない(重複を拒否する)。
+        let table = PersistedTable::new(vec![
+            cell(true, 0, Some(false)),
+            cell(true, 0, Some(true)),
+        ]);
+        let json = table.to_json().expect("serialize");
+
+        let err = from_json(&json).expect_err("must reject duplicate (status, key) entries");
+        match err {
+            LoadError::DuplicateCell { status, key } => {
+                assert_eq!(key, KeyId(0));
+                assert!(status.open);
+            }
+            other => panic!("expected duplicate cell error, got {other:?}"),
+        }
     }
 }
