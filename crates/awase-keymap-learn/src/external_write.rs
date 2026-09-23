@@ -97,6 +97,93 @@ pub const fn is_measurement_suspicious(notification_count: u32, direction_revers
     notification_count >= 2 || direction_reversed
 }
 
+/// 測定区間の汚染判定（決定1b項目5・[ADR195-T7](../../../../docs/tasks/adr195-t7-safety-measures.md)
+/// 項目2）。
+///
+/// 外部からの書き込み（フック＋IME通知経由）・ユーザーの物理入力
+/// （`LLKHF_INJECTED`無し）・学習窓からのフォーカス喪失のいずれか1つでも
+/// 測定区間内に観測されたら、その試行は汚染されたとみなす（無効化して
+/// `SessionMonitor::record_invalidated_trial`へ記録する）。3種のうちどれが
+/// 原因かは呼び出し側（Win32依存のカウンタ差分・`GetFocus`比較）が判定し、
+/// このブール値だけをここへ渡す。
+#[must_use]
+pub const fn trial_contaminated(
+    external_changed: bool,
+    physical_changed: bool,
+    focus_lost: bool,
+) -> bool {
+    external_changed || physical_changed || focus_lost
+}
+
+/// [ADR195-T7](../../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+/// （opus-adversarial-consult round1 m2対応）: `trial_contaminated`の3入力の
+/// うち、累計カウンタ由来の2つ（外部からの書き込み・物理入力）が「前回の
+/// 呼び出し以降に変化したか」を判定する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Verdict {
+    pub external: bool,
+    pub physical: bool,
+    pub focus_lost: bool,
+}
+
+impl Verdict {
+    #[must_use]
+    pub const fn contaminated(&self) -> bool {
+        trial_contaminated(self.external, self.physical, self.focus_lost)
+    }
+}
+
+/// [ADR195-T7](../../../../docs/tasks/adr195-t7-safety-measures.md)項目2
+/// （round1 m2対応）: 汚染判定に使う3種の累計カウンタのbaseline管理を1箇所に
+/// まとめる。以前は`RealImeDriver`がquiet window判定・
+/// `check_session_interference`の両方で同じ差分ロジックを重複して書いていて
+/// （baselineの取り違え・設定漏れのリスクがあり、しかもその結線部分自体は
+/// Win32依存のためLinux上でテストできなかった）、この構造体へ切り出すことで
+/// 呼び出し側（`RealImeDriver`）は値を取ってきて`observe`へ渡すだけにする。
+///
+/// `external`/`physical`/`focus_events`は呼び出し側で単調増加する累計カウンタ
+/// （フック等からの生の合計値）を渡す前提。`focus_intact_now`は瞬時の
+/// フォーカス確認結果（`GetFocus`/`GetForegroundWindow`の比較）を毎回渡す
+/// 前提（baselineの対象外——「今」の状態しか意味を持たないため差分を取らない）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InterferenceTracker {
+    external: u32,
+    physical: u32,
+    focus_events: u32,
+}
+
+impl InterferenceTracker {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            external: 0,
+            physical: 0,
+            focus_events: 0,
+        }
+    }
+
+    /// 現在の3種の累計値・瞬時のフォーカス確認結果から汚染を判定し、判定に
+    /// 使ったのと同じ値でbaselineを前進させる（round1 m1対応: 判定後に改めて
+    /// 読み直した値をbaselineにすると、その間に来たイベントを取りこぼす）。
+    pub const fn observe(
+        &mut self,
+        external_total: u32,
+        physical_total: u32,
+        focus_events_total: u32,
+        focus_intact_now: bool,
+    ) -> Verdict {
+        let verdict = Verdict {
+            external: external_total != self.external,
+            physical: physical_total != self.physical,
+            focus_lost: focus_events_total != self.focus_events || !focus_intact_now,
+        };
+        self.external = external_total;
+        self.physical = physical_total;
+        self.focus_events = focus_events_total;
+        verdict
+    }
+}
+
 /// セッション中の監視（決定1b項目5）。
 ///
 /// 測定と測定の間の待ち時間に外部からの書き込みが検出されたら、その試行を
@@ -224,5 +311,119 @@ mod tests {
     fn session_monitor_zero_limit_fails_on_first_invalidation() {
         let mut monitor = SessionMonitor::new(0);
         assert!(monitor.record_invalidated_trial());
+    }
+
+    #[test]
+    fn trial_not_contaminated_when_nothing_changed() {
+        assert!(!trial_contaminated(false, false, false));
+    }
+
+    #[test]
+    fn trial_contaminated_by_external_write_alone() {
+        assert!(trial_contaminated(true, false, false));
+    }
+
+    #[test]
+    fn trial_contaminated_by_physical_input_alone() {
+        // ADR195-T7項目2: 自分の注入以外の物理キーが混入したら、外部からの
+        // 書き込みが無くても汚染とみなす。
+        assert!(trial_contaminated(false, true, false));
+    }
+
+    #[test]
+    fn trial_contaminated_by_focus_loss_alone() {
+        // ADR195-T7項目2: フォーカスが学習窓から外れただけでも(キー入力が
+        // 無くても)汚染とみなす。
+        assert!(trial_contaminated(false, false, true));
+    }
+
+    #[test]
+    fn trial_contaminated_by_all_three_causes_together() {
+        assert!(trial_contaminated(true, true, true));
+    }
+
+    #[test]
+    fn tracker_reports_no_contamination_when_nothing_changes_across_two_observations() {
+        // (i) round1 m2対応: 変化なしの2回連続は非汚染。
+        let mut tracker = InterferenceTracker::new();
+        let v1 = tracker.observe(0, 0, 0, true);
+        assert!(!v1.contaminated());
+        let v2 = tracker.observe(0, 0, 0, true);
+        assert!(!v2.contaminated());
+    }
+
+    #[test]
+    fn tracker_baseline_advances_even_when_contaminated_so_next_observation_is_clean() {
+        // (ii) round1 m2対応: 汚染と判定した回もbaselineは前進するので、
+        // 直後にもう一度同じ値で観測すると非汚染に戻る。
+        let mut tracker = InterferenceTracker::new();
+        let v1 = tracker.observe(1, 0, 0, true);
+        assert!(v1.contaminated());
+        assert!(v1.external);
+        let v2 = tracker.observe(1, 0, 0, true);
+        assert!(
+            !v2.contaminated(),
+            "baselineが前進していれば同じ値の再観測は非汚染のはず"
+        );
+    }
+
+    #[test]
+    fn tracker_physical_baseline_also_advances_independently() {
+        // round2 N4対応: external専用のテスト
+        // (tracker_baseline_advances_even_when_contaminated_so_next_observation_is_clean)
+        // しか無く、`observe()`内で`self.physical = physical_total;`を消す変異が
+        // 生き残っていた。physical単独でも同じ性質を確認する。
+        let mut tracker = InterferenceTracker::new();
+        let v1 = tracker.observe(0, 1, 0, true);
+        assert!(v1.contaminated());
+        assert!(v1.physical);
+        let v2 = tracker.observe(0, 1, 0, true);
+        assert!(
+            !v2.contaminated(),
+            "physicalのbaselineが前進していれば同じ値の再観測は非汚染のはず"
+        );
+    }
+
+    #[test]
+    fn tracker_focus_events_baseline_also_advances_independently() {
+        // round2 N4対応: focus_events単独でも同じ性質を確認する
+        // (`self.focus_events = focus_events_total;`を消す変異への回帰)。
+        let mut tracker = InterferenceTracker::new();
+        let v1 = tracker.observe(0, 0, 1, true);
+        assert!(v1.contaminated());
+        assert!(v1.focus_lost);
+        let v2 = tracker.observe(0, 0, 1, true);
+        assert!(
+            !v2.contaminated(),
+            "focus_eventsのbaselineが前進していれば同じ値の再観測は非汚染のはず"
+        );
+    }
+
+    #[test]
+    fn tracker_flags_each_cause_independently() {
+        let mut external_only = InterferenceTracker::new();
+        assert!(external_only.observe(1, 0, 0, true).contaminated());
+
+        let mut physical_only = InterferenceTracker::new();
+        assert!(physical_only.observe(0, 1, 0, true).contaminated());
+
+        let mut focus_events_only = InterferenceTracker::new();
+        assert!(focus_events_only.observe(0, 0, 1, true).contaminated());
+
+        let mut focus_intact_false_only = InterferenceTracker::new();
+        assert!(focus_intact_false_only
+            .observe(0, 0, 0, false)
+            .contaminated());
+    }
+
+    #[test]
+    fn tracker_focus_intact_now_is_not_baseline_tracked() {
+        // `focus_intact_now`は瞬時の値であり、baselineの対象外。前回`false`
+        // だった後でも、今回`true`ならフォーカス起因の汚染にはならない
+        // （他の原因が無ければ非汚染）。
+        let mut tracker = InterferenceTracker::new();
+        assert!(tracker.observe(0, 0, 0, false).contaminated());
+        let v = tracker.observe(0, 0, 0, true);
+        assert!(!v.contaminated());
     }
 }

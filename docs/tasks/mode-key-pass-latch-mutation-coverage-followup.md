@@ -1,9 +1,19 @@
 # ModeKeyPassLatch cargo-mutants調査の残作業（別セッション向け）
 
-状態: 未着手（2026-09-23起票、親タスク
-[mode-key-pass-latch-mutation-coverage.md](mode-key-pass-latch-mutation-coverage.md)
-完了・PR #248 developマージの副産物として切り出し）
+状態: **やること1完了（2026-09-23）、develop未反映のまま**。
+`test/mode-key-pass-latch-mutation-followup`ブランチ（`feat/ime-sim-harness`起点、
+[commit 789063ce](https://github.com/cuzic/awase/commit/789063ce)）で
+drift.rs/refresh_plan.rsの直接単体テスト4件を追加済み。詳細は下記「やること1
+実施結果」節参照。やること2（一時ファイル後片付け）は未着手のまま。
+
+<details>
+<summary>旧状態（未着手、2026-09-23起票）</summary>
+
+親タスク[mode-key-pass-latch-mutation-coverage.md](mode-key-pass-latch-mutation-coverage.md)
+完了・PR #248 developマージの副産物として切り出し。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
+
+</details>
 
 ## 背景
 
@@ -54,6 +64,56 @@ cargo-mutants実測22件missedを、テスト追加で21件caught・1件等価�
 約10分で原因不明の`interrupted`になり結果が取れていない
 （`mode-key-pass-latch-mutation-coverage.md`の「補足」節参照）。windows-latest化後
 なら解消しているかもしれないが未検証。再現するなら`--jobs 1`固定も試す価値がある。
+
+### やること1 実施結果（2026-09-23）
+
+上記手順1〜4を実施。手順4の再確認結果: ADR-194は`feat/ime-sim-harness`上でも
+依然「草案・develop未マージ」のままで、2026-09-22の「条件不成立、破棄継続が妥当」
+という結論に変化なし（本ドキュメントはstaleになっていなかった）。
+
+1. **worktree/branch**: `test/mode-key-pass-latch-mutation-followup`
+   （`~/rust-nicola-worktrees/mkpl-followup`、`origin/feat/ime-sim-harness`起点）。
+2. **バックポート**（[commit df9f2029](https://github.com/cuzic/awase/commit/df9f2029)）:
+   develop側の`.cargo/mutants-bug158-scope.toml`/
+   `.github/workflows/mutants-scope-investigation.yml`
+   （windows-latest化・158:28等価変異体除外込み）をこのブランチへ反映。
+   さらに4ファイル対象化でdevelop実績の45分を超えたため`timeout-minutes`を
+   60→120へ延長（[commit 3b7cacef](https://github.com/cuzic/awase/commit/3b7cacef)、
+   最初の実行run
+   [35849828981](https://github.com/cuzic/awase/actions/runs/35849828981)は
+   ちょうど60分で`cancelled`だった）。
+3. **実測**（run
+   [35855782626](https://github.com/cuzic/awase/actions/runs/35855782626)、
+   131 mutants tested in 85m: **10 missed**, 113 caught, 6 unviable, 2 timeouts）。
+   missed 10件の内訳:
+   - `drift.rs`: 46:57(`&&`→`||`)・51:24(`<`→`>`)・57:25(`>`→`>=`) の3件
+   - `refresh_plan.rs`: 46:38(`||`→`&&`) の1件
+   - `force_guard.rs`: 342:70(`*`→`+`、`send_failure_is_timeout`) の1件
+   - `mode_key_pass.rs`: 133:18/133:28/133:31/139:21/139:43 の5件
+     （このブランチの`mode_key_pass.rs`は develop 採用版〈4引数、
+     `readable_at_arm`あり〉と異なる**旧版〈3引数〉**のままで、PR #248の
+     修正が未反映。develop側は既にcaught済みのため無関係）。
+4. **対応**（[commit 789063ce](https://github.com/cuzic/awase/commit/789063ce)）:
+   本タスクの対象である`drift.rs`/`refresh_plan.rs`の4件を、親タスクと同じ
+   「構造体/関数を直接呼ぶ決定表スタイル」のテストで解消。`ImeModel`の観測は
+   `ObservationStore::record_replayed`（journal/fixture復元用の口）+
+   `update_drift`で直接組み立てた（`ime_model.rs::fully_populated_model`の
+   フィクスチャと同じ手法）。`force_guard.rs`/`mode_key_pass.rs`の残り6件は
+   上記の通り develop 未同期の旧版コード由来のため対象外とした。
+5. **検証**: `cargo test -p awase-windows --lib`（754 passed、追加4件含む）・
+   `cargo fmt --check`・`cargo clippy --lib --tests`（追加2ファイルへの新規
+   指摘なし。`architecture_guard.rs`等の既存clippy失敗はこのブランチが
+   develop未同期であることに起因する既存不具合で、本タスクの変更前から
+   存在する——本タスクのスコープ外）をローカルで確認。**CIでの
+   missed→caught再確認（親タスクの受け入れ基準）はコスト対効果を鑑みて
+   意図的に省略した**（4ファイル分で約85分かかる上、本タスク自体が
+   「優先度低」「投資対効果が低い可能性がある」と明記された副次タスクの
+   ため、ユーザー判断でローカル検証止まりとした、2026-09-23）。
+
+**現状**: `test/mode-key-pass-latch-mutation-followup`ブランチは develop に
+一切マージしていない（`drift.rs`/`refresh_plan.rs`自体がdevelopに存在しない
+ため）。「やること1」冒頭の選択肢のうち「`feat/ime-sim-harness`が最終的に
+削除される際に一緒に破棄してよい」を採用する。
 
 ## やること2: 調査用一時ファイルの後片付け判断
 
