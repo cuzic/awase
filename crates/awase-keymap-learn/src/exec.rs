@@ -73,7 +73,9 @@ pub trait ImeDriver {
 }
 
 /// 実行器。
-#[derive(Debug)]
+///
+/// `progress`は`Box<dyn FnMut>`を持つため`#[derive(Debug)]`は付けない
+/// (Executorの`{:?}`表示は既存コード・テストのどこからも使われていない)。
 pub struct Executor<D: ImeDriver = SimIme> {
     pub driver: D,
     pub table: Table,
@@ -87,6 +89,28 @@ pub struct Executor<D: ImeDriver = SimIme> {
     max_run: Option<usize>,
     seen: HashSet<Status>,
     initial: Status,
+    /// ADR-195段階6: 学習プロセス(`awase-keymap-learn-win`)が進捗を標準出力へ
+    /// 運ぶための差し込み口。`press()`が完了するたびに呼ばれる(呼び出し側で
+    /// 出力頻度を間引く)。既定は`None`(シミュレータ・既存テストへの影響なし)。
+    progress: Option<Box<dyn FnMut(&Stats, &Table)>>,
+}
+
+impl<D: ImeDriver + std::fmt::Debug> std::fmt::Debug for Executor<D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Executor")
+            .field("driver", &self.driver)
+            .field("table", &self.table)
+            .field("stats", &self.stats)
+            .field("read", &self.read)
+            .field("recording", &self.recording)
+            .field("cur", &self.cur)
+            .field("last_key", &self.last_key)
+            .field("run_len", &self.run_len)
+            .field("max_run", &self.max_run)
+            .field("initial", &self.initial)
+            .field("progress", &self.progress.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<D: ImeDriver> Executor<D> {
@@ -105,11 +129,19 @@ impl<D: ImeDriver> Executor<D> {
             max_run: None,
             seen: HashSet::new(),
             initial,
+            progress: None,
         }
     }
 
     pub fn set_read_policy(&mut self, r: ReadPolicy) {
         self.read = r;
+    }
+
+    /// ADR-195段階6: 進捗の差し込み口を設定する。`press()`終了のたびに
+    /// `(stats, table)`で呼ばれる。呼び出し側で出力頻度(何押下ごとに実際に
+    /// 表示するか)を判断すること——ここでは無条件に毎回呼ぶ。
+    pub fn set_progress_sink(&mut self, sink: impl FnMut(&Stats, &Table) + 'static) {
+        self.progress = Some(Box::new(sink));
     }
 
     pub fn set_recording(&mut self, on: bool) {
@@ -219,6 +251,9 @@ impl<D: ImeDriver> Executor<D> {
             self.table.covered1(),
             self.table.covered2(),
         ));
+        if let Some(sink) = &mut self.progress {
+            sink(&self.stats, &self.table);
+        }
         Some(PressInfo { before, outcome })
     }
 
@@ -307,6 +342,27 @@ mod tests {
         assert!(info.before.open && !info.outcome.status.open);
         assert_eq!(e.table.covered1(), 1);
         assert!(e.elapsed_ms() > 0.0);
+    }
+
+    #[test]
+    fn progress_sink_is_called_once_per_successful_press() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let calls = Rc::new(RefCell::new(0u32));
+        let calls_in_sink = Rc::clone(&calls);
+        let mut e = exec(SimConfig::default());
+        e.set_progress_sink(move |stats, table| {
+            *calls_in_sink.borrow_mut() += 1;
+            assert!(stats.presses >= 1);
+            assert!(table.covered1() <= stats.presses as usize);
+        });
+        e.reset();
+        assert_eq!(*calls.borrow(), 0, "reset()はpress()を経由しないので呼ばれない");
+        e.press(atok_keys::HANKAKU).expect("届く");
+        assert_eq!(*calls.borrow(), 1);
+        e.press(atok_keys::HANKAKU).expect("届く");
+        assert_eq!(*calls.borrow(), 2);
     }
 
     #[test]
