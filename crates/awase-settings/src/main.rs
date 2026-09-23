@@ -1079,9 +1079,14 @@ impl SettingsApp {
             if let Err(e) = result {
                 let _ = tx.send(Err(format!("学習プロセスの出力読み取りに失敗（{e}）")));
             }
-            if let Ok(mut child) = child.lock() {
-                let _ = child.wait();
-            }
+            // code-review指摘: lock()が毒(他スレッドがロック保持中にpanic)を返すと
+            // 単に諦めてはいけない。ここは資源の後始末(reap)専用で、内部不変条件の
+            // 破損を気にする場面ではないため、毒付きでもガードを回収して続行する。
+            let mut guard = match child.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let _ = guard.wait();
         });
         self.keymap_learn_rx = Some(rx);
         self.keymap_learn_progress = None;
@@ -1106,10 +1111,17 @@ impl SettingsApp {
     /// killせずに`keymap_learn_child`を手放すと、UIから二度とkillする手段が無い
     /// まま野良で動き続ける(code-review指摘)。
     fn kill_keymap_learn_child(&mut self) {
-        if let Some(child) = self.keymap_learn_child.take()
-            && let Ok(mut child) = child.lock()
-        {
-            let _ = child.kill();
+        if let Some(child) = self.keymap_learn_child.take() {
+            // code-review指摘: lock()が毒を返しても`if let Ok(...)`で黙って諦めると、
+            // 実キー注入を行いうる子プロセスをkillせずに手放してしまい、UIには
+            // 「キャンセルしました」等の成功メッセージだけが残って二度とkillする
+            // 手段が無くなる。killは内部不変条件に依存しない操作なので、毒付きでも
+            // ガードを回収してkillを試みる。
+            let mut guard = match child.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let _ = guard.kill();
         }
     }
 
