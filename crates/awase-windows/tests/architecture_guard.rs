@@ -38,6 +38,17 @@ fn read_crate_file(rel_path: &str) -> String {
     raw.replace("\r\n", "\n")
 }
 
+fn read_workspace_file(rel_path: &str) -> String {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("awase-windows must be under <workspace>/crates");
+    fs::read_to_string(workspace.join(rel_path))
+        .unwrap_or_else(|e| panic!("failed to read workspace {rel_path}: {e}"))
+        .replace("\r\n", "\n")
+}
+
 /// `content` から `needle`（関数呼び出しの `fn_name(` 形）の**実呼び出し**箇所数を
 /// 数える。行コメント（`//`/`///`/`//!`、trim 後に先頭一致）と、`fn `/`async fn `
 /// 直後に続く関数定義そのものの行を除外する。
@@ -724,6 +735,16 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
         "key_pipeline.rs は PostSetOpenEisuReset / UserImeOnEisuReset の両経路で \
          eisu_recovery::eisu_reset_on_ime_on を使うこと（インライン再実装の禁止）"
     );
+    let engine = read_workspace_file("src/engine/nicola_fsm.rs");
+    let eisu = read_crate_file("src/state/eisu_recovery.rs");
+    assert!(
+        engine.contains("forced_open_action")
+            && eisu.contains("bare 無変換/変換の強制open操作")
+            && eisu.contains("PostSetOpenEisuReset")
+            && eisu.contains("eisu_reset_on_ime_on"),
+        "ADR-192決定3bの user IME-ON 経路は Decision 経由の \
+         PostSetOpenEisuReset/eisu_reset_on_ime_on と対で登録すること"
+    );
     assert!(
         kp.contains("InputModeApplyStrategy::UserImeOnEisuReset"),
         "shadow toggle 経路の救済 (UserImeOnEisuReset) が撤去されています。\
@@ -752,6 +773,29 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
              分割に合わせてSSOTを更新してください。"
         );
     }
+}
+
+/// ADR-192決定3bは、engine非活性時にも必要なADR-153ケース3改の
+/// 「孤立KeyUpをSuppressする」経路を置換・短絡してはならない。
+#[test]
+fn forced_thumb_path_preserves_inactive_orphan_keyup_suppression() {
+    let kp = read_crate_file("src/runtime/key_pipeline.rs");
+    let body = extract_fn_body(production_code_only(&kp), "fn kp_stage_shadow_ime_toggle(");
+    assert!(
+        body.contains("matches!(event.event_type, KeyEventType::KeyUp)")
+            && body.contains("ExplicitImeActionOutcome::SuppressOnly")
+            && body.contains("event.ime_relevance.explicit_ime_action_consumed = true")
+            && body.contains("return false"),
+        "engine非活性時もケース3改の無変換/変換 KeyUp 抑止を維持すること \
+         (BUG-113/124の孤立KeyUp・@再発防止)"
+    );
+
+    let core = read_workspace_file("src/engine/nicola_fsm.rs");
+    assert!(core.contains("forced_open_action"));
+    assert!(
+        !kp.contains("forced_open_action") && !kp.contains("forced_open_action_consumed"),
+        "新経路用マーカーをkey_pipelineに追加せず、Decision::Consumeに配送停止を委ねること"
+    );
 }
 
 #[test]
