@@ -200,7 +200,7 @@
 | [193](193-richedit-superclass-tsf-native-e2e-target.md) | TSFネイティブ相当の入力先を RichEdit のスーパークラス化で決定的に用意する（実機E2Eの検証対象拡張） | 採用（スパイク成功） |
 | 194 | IME時間依存ロジックのシミュレーション・リプレイハーネス（`feat/ime-sim-harness`ブランチのみに存在、develop未マージ） | 破棄（Opusレビューで既存単体テスト以上の実証価値なしと判明、ユーザー判断で試作破棄。**番号194は本行で予約のみ**、developにファイル無しのためリンクなし） |
 | [195](195-keymap-learn-productization.md) | カスタムキーマップ対応のため、IMEキー効果の学習(awase-keymap-learn)を独立プロセスとして製品化する（設定読取→独立プロセスでの巡回学習→自己検証→永続化→実行時読込→ADR-176統合） | 草案rev7（round6で収束・実装可と最終判定、Blockerゼロ） |
-| [197](197-msime-legacy-custom-keymap-runtime-warning.md) | MS-IME「以前のバージョンのMicrosoft IMEを使う」互換モードの詳細キーカスタマイズ(旧UI)を、実行時警告(`check_and_warn`)と学習/較正機能(ADR-195/176の既知構成判定・陳腐化フィンガープリント)の両方に対応させる | 草案(2026-09-23起票)。opus-adversarial-consultによるレビュー未実施 |
+| [197](197-msime-legacy-custom-keymap-runtime-warning.md) | MS-IME旧UI(互換モード限定キーカスタマイズ)の調査。実行時警告は前提(無変換キーへのCEトグル)が実機で否定され撤回、ADR-196向け互換モードフラグ読み取り(決定4)のみ採用 | 決定1〜3撤回・決定4のみ採用(2026-09-23、CI実機検証4パターン+ユーザー本人の物理キー確認) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
