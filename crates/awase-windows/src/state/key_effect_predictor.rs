@@ -38,6 +38,11 @@ pub enum KeymapPreset {
     MsIme,
     /// Microsoft IME本体（`ActiveImeKind::MicrosoftIme`を明示検出したときだけ。ADR-191、CI `cal-notify-msimenative-*`）。
     MsImeNative,
+    /// `session_keymap`がATOK/MSIME以外（CUSTOM・MOBILE等）で、基準となる同梱表が無い構成
+    /// （ADR-195段階4 B3対応）。`bundled_table`は空を返す——`is_unmodified_bundled_config`が
+    /// 常に`false`を返すため、この空表がセル突き合わせ判定で実際に引かれることはない。
+    /// 学習済み表(ADR-195段階4)があれば、この構成でも`predict_with_override`経由で使える。
+    Custom,
 }
 
 /// 変換モード（`conv`の生値からROMANビットを除いた、キーで到達できる3種）。
@@ -239,6 +244,7 @@ const fn table_of(preset: KeymapPreset) -> &'static [Cell] {
         KeymapPreset::Atok => super::key_effect_table::ATOK,
         KeymapPreset::MsIme => super::key_effect_table::MSIME,
         KeymapPreset::MsImeNative => super::key_effect_table::MSIME_NATIVE,
+        KeymapPreset::Custom => &[],
     }
 }
 
@@ -510,7 +516,9 @@ const SESSION_KEYMAP_MSIME: i64 = 2;
 impl KeyEffectKeymap {
     /// `config1.db`の`session_keymap`（不在=`None`）・`custom_keymap_table`・`overlay_keymaps`から作る。
     /// プリセットがATOK/MSIME（不在/NONEはWindows版GJIの既定でMSIME相当）以外（CUSTOM・MOBILE等）は
-    /// 基準の表が無いので`None`（予測しない）。
+    /// 基準の同梱表が無いため`KeymapPreset::Custom`にする（ADR-195段階4 B3対応、以前は`None`を
+    /// 返して予測自体を諦めていたが、学習済み表があればこの構成でも`predict_with_override`経由で
+    /// 使えるようにするため、常に`Some`を返すようにした）。
     #[must_use]
     pub fn from_config(
         session_keymap: Option<i64>,
@@ -520,7 +528,7 @@ impl KeyEffectKeymap {
         let preset = match session_keymap {
             Some(SESSION_KEYMAP_ATOK) => KeymapPreset::Atok,
             None | Some(SESSION_KEYMAP_NONE | SESSION_KEYMAP_MSIME) => KeymapPreset::MsIme,
-            Some(_) => return None,
+            Some(_) => KeymapPreset::Custom,
         };
         Some(Self {
             preset,
@@ -570,6 +578,17 @@ impl KeyEffectKeymap {
         input: &PredictInput,
         override_table: Option<&[Cell]>,
     ) -> Option<Prediction> {
+        // ADR-195段階4 B3対応: 学習済み表にこのキー・状態の答えがあれば、custom_table/overlay/
+        // レジストリ再割り当てのガードより先にそれを使う。これらのガードは「同梱表はユーザーの
+        // 独自割り当てを知らないので予測しない」という安全策であり、学習済み表はまさにその
+        // 独自割り当てを実測したものなので、ガードの理由が最初から当てはまらない。ガードを先に
+        // 通すと、ユーザーが学習させたかったキー（カスタムキーマップで上書きしたキーそのもの）
+        // だけが黙って予測対象から外れてしまう。
+        if let Some(table) = override_table {
+            if let Some(prediction) = predict_in_table(table, vk, input) {
+                return Some(prediction);
+            }
+        }
         if self
             .custom_table
             .as_deref()
@@ -583,10 +602,7 @@ impl KeyEffectKeymap {
         {
             return None;
         }
-        override_table.map_or_else(
-            || predict(self.preset, vk, input),
-            |table| predict_in_table(table, vk, input),
-        )
+        predict(self.preset, vk, input)
     }
 
     /// この構成の`preset`。[`crate::state::key_effect_runtime`]が同梱表との突き合わせに使う。
@@ -601,7 +617,10 @@ impl KeyEffectKeymap {
     /// セル突き合わせ自体を行わない。
     #[must_use]
     pub const fn is_unmodified_bundled_config(&self) -> bool {
-        self.custom_table.is_none()
+        // KeymapPreset::Customはそもそも基準となる同梱表が無い構成なので、custom_table等が
+        // たまたま空でも「同梱表そのまま」とは判定しない(ADR-195段階4 B3対応)。
+        !matches!(self.preset, KeymapPreset::Custom)
+            && self.custom_table.is_none()
             && !self.has_overlay
             && !self.henkan_reassigned
             && !self.muhenkan_reassigned
@@ -1162,9 +1181,19 @@ mod tests {
         let base = input(true, ROMAJI, false, NOTRACK);
         let atok = KeyEffectKeymap::from_config(Some(1), None, &[]).unwrap();
         assert!(atok.predict(0xF2, &base).is_some());
-        // CUSTOM・MOBILE 等は基準の表が無い。
-        assert!(KeyEffectKeymap::from_config(Some(0), None, &[]).is_none());
-        assert!(KeyEffectKeymap::from_config(Some(4), None, &[]).is_none());
+        // CUSTOM・MOBILE 等は基準の同梱表が無い(KeymapPreset::Custom)が、ADR-195段階4 B3対応で
+        // Noneは返さない(学習済み表があればpredict_with_override経由で使えるようにするため)。
+        // 同梱表(predict())は無いので常にNoneを返す。
+        let custom_preset = KeyEffectKeymap::from_config(Some(0), None, &[]).unwrap();
+        assert_eq!(custom_preset.preset(), KeymapPreset::Custom);
+        assert_eq!(custom_preset.predict(0xF2, &base), None);
+        assert!(!custom_preset.is_unmodified_bundled_config());
+        assert_eq!(
+            KeyEffectKeymap::from_config(Some(4), None, &[])
+                .unwrap()
+                .preset(),
+            KeymapPreset::Custom
+        );
         // ATOK + カスタム表が無変換の行を持つ → 無変換だけ予測しない。
         let table = "Precomposition\tMuhenkan\tIMEOn\n".to_string();
         let custom = KeyEffectKeymap::from_config(Some(1), Some(table), &[]).unwrap();
@@ -1174,6 +1203,62 @@ mod tests {
         let ov = KeyEffectKeymap::from_config(Some(1), None, &[100]).unwrap();
         assert_eq!(ov.predict(0x1C, &base), None);
         assert!(ov.predict(0xF2, &base).is_some());
+    }
+
+    /// ADR-195段階4 B3対応の回帰テスト: 学習済み表(override_table)にこのキー・状態の答えが
+    /// あれば、custom_table上書きガードより先にそれが使われる。ちょうどユーザーが
+    /// カスタムキーマップで上書きし、学習させたかったキーそのものが、ガードによって
+    /// 黙って予測対象から外れてしまう事故を防ぐ。
+    #[test]
+    fn predict_with_override_bypasses_custom_table_guard_for_the_customized_key() {
+        // 閉状態から始める: セルの遷移(閉→開)がbeliefへの実変化になるようにするため
+        // (`effect.open`は`after_open != input.open`のときだけ`Some`を返す)。
+        let base = input(false, ROMAJI, false, NOTRACK);
+        // ATOK + カスタム表が無変換(0x1D)の行を持つ → 通常のpredict()は無変換だけ予測しない
+        // (観測に委ねる、まさにユーザーが学習させたいキー)。
+        let table = "Precomposition\tMuhenkan\tIMEOn\n".to_string();
+        let custom = KeyEffectKeymap::from_config(Some(1), Some(table), &[]).unwrap();
+        assert_eq!(custom.predict(0x1D, &base), None);
+
+        let learned = [cell(
+            false,
+            None,
+            Stage::None,
+            TableKey::Muhenkan,
+            true,
+            Some(Conv::C19),
+            Disp::None,
+        )];
+        let prediction = custom
+            .predict_with_override(0x1D, &base, Some(&learned))
+            .expect("学習済み表に答えがあれば、ガードより先にそれを使うはず");
+        assert_eq!(prediction.effect.open, Some(true));
+
+        // 学習済み表にこのキーの答えが無ければ、従来どおりガードが効く。
+        assert_eq!(custom.predict_with_override(0x1D, &base, Some(&[])), None);
+    }
+
+    /// ADR-195段階4 B3対応の回帰テスト: `session_keymap`がCUSTOM/MOBILE等
+    /// (`KeymapPreset::Custom`)でも、学習済み表があれば`predict_with_override`経由で
+    /// 予測が返る(以前は`from_config`が`None`を返し、この構成では予測自体が始まらなかった)。
+    #[test]
+    fn predict_with_override_works_for_custom_preset_when_learned_table_has_the_cell() {
+        let base = input(true, ROMAJI, false, NOTRACK);
+        let custom_preset = KeyEffectKeymap::from_config(Some(0), None, &[]).unwrap();
+        assert_eq!(custom_preset.predict(0xF2, &base), None);
+
+        let learned = [cell(
+            true,
+            Some(Conv::C19),
+            Stage::None,
+            TableKey::Hiragana,
+            true,
+            Some(Conv::C19),
+            Disp::None,
+        )];
+        assert!(custom_preset
+            .predict_with_override(0xF2, &base, Some(&learned))
+            .is_some());
     }
 
     /// 実機(ADR-191 実機検証、GJI + MS-IMEプリセット `session_keymap=2` + 既存の `custom_keymap_table` 175行)の
