@@ -285,14 +285,17 @@ pub struct BugReportMsImeKeyAssignmentSummary {
 }
 
 /// 旧UI（互換モード「以前のバージョンのMicrosoft IMEを使う」でのみ到達
-/// できる詳細キーカスタマイズ）の要約（ADR-148 Phase 2）。
+/// できる詳細キーカスタマイズ）の要約（ADR-148 Phase 2、ADR-197決定4で
+/// `legacy_compat_mode_enabled`を追加）。
 ///
 /// [`BugReportMsImeKeyAssignmentSummary`]（新UI・シンプルキー割当て）とは
 /// 別系統のレジストリ値。`msime_legacy_keymap::LegacyMsImeToggleAssignment`
 /// の実測範囲がそのまま出所——検出できるのは無変換/変換キー（修飾子なし）
-/// への「IMEオン/オフ」トグル割当てのみで、かつ実機確認済みなのは
-/// 「直接入力中に押すと予期せずIME ONになる」方向だけ（`msime_legacy_keymap`
-/// のモジュールdoc参照）。`ime_kind`に関わらず常に読む
+/// への「IMEオン/オフ」トグル割当ての有無のみで、**2026-09-23の実機検証
+/// （ADR-197）でこの割当てが実際にIME挙動へ影響する証拠は見つからなかった**
+/// （`msime_legacy_keymap`のモジュールdoc参照。`muhenkan_ime_on_toggle`/
+/// `henkan_ime_on_toggle`は「レジストリにこの割当てが存在するか」の事実の
+/// みを表し、実効性の指標ではない）。`ime_kind`に関わらず常に読む
 /// （[`BugReportMsImeKeyAssignmentSummary`]の生DWORDと同じ理由——
 /// レジストリの内容自体は現在のフォーカス先IMEと無関係に存在するため）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -306,6 +309,10 @@ pub struct BugReportLegacyMsImeKeymapSummary {
     /// のdoc参照）。
     pub muhenkan_ime_on_toggle: Option<bool>,
     pub henkan_ime_on_toggle: Option<bool>,
+    /// 「以前のバージョンのMicrosoft IMEを使う」互換モードチェックボックスの
+    /// 状態（ADR-197決定4、`msime_legacy_keymap::read_legacy_compat_mode_enabled`）。
+    /// `None`=判定できなかった。
+    pub legacy_compat_mode_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -889,6 +896,7 @@ mod tests {
             active_style: Some("Custom".to_owned()),
             muhenkan_ime_on_toggle: Some(true),
             henkan_ime_on_toggle: Some(false),
+            legacy_compat_mode_enabled: Some(true),
         }
     }
 

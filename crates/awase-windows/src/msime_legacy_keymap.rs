@@ -401,10 +401,53 @@ mod windows_impl {
             Err(_) => LegacyMsImeToggleAssignment::unknown(Some(style)),
         }
     }
+
+    /// 「以前のバージョンのMicrosoft IMEを使う」互換モードチェックボックスの状態を読む
+    /// （ADR-197決定4）。
+    ///
+    /// レジストリ位置（Web調査+2026-09-23 dragonflyg4実機確認、
+    /// <https://mitsushima.work/archives/26597847.html>）:
+    /// `HKCU\SOFTWARE\Microsoft\Input\TSF\Tsf3Override\{03b5835f-f03c-411b-9ce2-aa23e1171e36}`
+    /// の`NoTsf3Override2`(DWORD)。`{03b5835f-...}`はMS-IME本体のCLSID
+    /// （[`crate::state::ime_kind`]が`ImeKindId::MsIme`判定に使うものと同一）。
+    ///
+    /// [ADR196-T5](../../../docs/tasks/adr196-t5-revalidation-not-invalidation.md)が
+    /// Microsoft IME本体のフィンガープリント・既知構成判定の入力としてこの値を要求している
+    /// （本関数はその読み取りプリミティブを提供するだけで、フィンガープリント合成・
+    /// 判定ロジックはADR-196側が所有する。ADR-197決定4参照）。
+    ///
+    /// `None` = 値が存在しない、または読み取りに失敗した（判定不能）。呼び出し側は
+    /// `None`を安易に「OFF」と決め打ちしないこと（fail-safe。ADR196-T2決定1cが
+    /// 「未着手のうちは既知構成と判定しない」としている設計とも整合する）。
+    #[must_use]
+    pub(crate) fn read_legacy_compat_mode_enabled() -> Option<bool> {
+        const TSF3_OVERRIDE_MSIME_SUBKEY: &str =
+            "SOFTWARE\\Microsoft\\Input\\TSF\\Tsf3Override\\{03b5835f-f03c-411b-9ce2-aa23e1171e36}";
+        use windows::Win32::System::Registry::RRF_RT_REG_DWORD;
+        let Ok(Some(bytes)) = read_raw_value(
+            TSF3_OVERRIDE_MSIME_SUBKEY,
+            "NoTsf3Override2",
+            RRF_RT_REG_DWORD.0,
+        ) else {
+            return None;
+        };
+        super::interpret_compat_mode_dword(&bytes)
+    }
 }
 
 #[cfg(windows)]
-pub(crate) use windows_impl::read_legacy_toggle_assignment;
+pub(crate) use windows_impl::{read_legacy_compat_mode_enabled, read_legacy_toggle_assignment};
+
+/// `NoTsf3Override2`(DWORD)の生バイト列を解釈する純粋関数（`read_legacy_compat_mode_enabled`
+/// から分離、Linux上の`cargo test --lib`でも境界値をテストできるようにするため）。
+///
+/// `RegGetValueW`が`RRF_RT_REG_DWORD`で返すバイト列はリトルエンディアンの4バイトで
+/// あることをWindows APIの契約として前提にする（`REG_DWORD`は常にLE、`REG_DWORD_BIG_ENDIAN`
+/// とは別の型）。4バイトちょうどでなければ`None`（判定不能、壊れた値を誤読しない）。
+fn interpret_compat_mode_dword(bytes: &[u8]) -> Option<bool> {
+    let arr: [u8; 4] = bytes.try_into().ok()?;
+    Some(u32::from_le_bytes(arr) == 1)
+}
 
 #[cfg(test)]
 mod tests {
@@ -542,5 +585,37 @@ mod tests {
             LegacyKeyStyle::from_registry_value("SomeFutureStyle"),
             LegacyKeyStyle::Other
         );
+    }
+
+    // ── ADR-197決定4: interpret_compat_mode_dword ──
+
+    #[test]
+    fn compat_mode_dword_one_means_enabled() {
+        assert_eq!(interpret_compat_mode_dword(&1u32.to_le_bytes()), Some(true));
+    }
+
+    #[test]
+    fn compat_mode_dword_zero_means_disabled() {
+        assert_eq!(
+            interpret_compat_mode_dword(&0u32.to_le_bytes()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn compat_mode_dword_other_value_means_disabled() {
+        // 仕様上は0/1のみだが、未知の値を「ONではない」に倒すのが安全側
+        // （decision1のCEトグル検出と同じ「推測しない」思想——1以外は全てfalse扱い）。
+        assert_eq!(
+            interpret_compat_mode_dword(&2u32.to_le_bytes()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn compat_mode_dword_wrong_length_is_undetermined() {
+        assert_eq!(interpret_compat_mode_dword(&[1, 0, 0]), None);
+        assert_eq!(interpret_compat_mode_dword(&[]), None);
+        assert_eq!(interpret_compat_mode_dword(&[1, 0, 0, 0, 0]), None);
     }
 }
