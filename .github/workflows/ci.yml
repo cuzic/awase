@@ -512,7 +512,7 @@ jobs:
   # (mutants-windows.yml冒頭のコメント参照)。
 
   # 手動起動専用。対象は awase-windows のうちプラットフォーム非依存な
-  # ~550 mutants のみ（設定は .cargo/mutants-awase-windows.toml）に絞って
+  # ~620 mutants のみ(windows-latest では許可リスト内の #[cfg(windows)] 部分もコンパイルされるため、Linux 時代の~550より増えた。2026-09-23実測624件)（設定は .cargo/mutants-awase-windows.toml）に絞って
   # あるのは変わらないが（残りの #[cfg(windows)] 本体は mutants-windows.yml
   # (self-hosted Windows runner)が別途フルスコープで担当）、ランナー自体は
   # windows-latest(GitHub-hosted、publicリポなら無料)を使う。2026-09-20に
