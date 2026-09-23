@@ -126,6 +126,10 @@ pub mod ime_model;
 pub mod intent_store;
 pub mod key_effect_predictor;
 pub mod key_effect_table;
+// ADR-195 段階0。key_effect_predictor（経路1）・awase-gji-config::keymap（経路2）・
+// msime_key_assignment（経路3、windows専用だが呼び出しはruntime層が担う）の出力を
+// 統合する薄い集約層。ungated（純粋関数のみで、レジストリ等のI/Oはしない）。
+pub mod keymap_initial_hypothesis;
 pub mod state_dependent_key_warning;
 // ADR-087 Phase 2'/3 試験実装。intent_store と同じ ungated・未配線パターン。
 pub mod open_warrant;

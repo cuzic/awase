@@ -15,6 +15,7 @@ mod bug_report;
 mod calibration_panel;
 #[cfg(target_os = "windows")]
 mod calibration_result_window;
+mod keymap_learn_launcher;
 mod scancode_map_admin;
 mod startup_failure;
 mod update_check;
@@ -543,6 +544,28 @@ struct SettingsApp {
     adr192_warning_context: bool,
     adr192_replacement_undo: Option<Adr192ReplacementSnapshot>,
     adr192_replacement_preview: Option<String>,
+    /// ADR-195段階6: 学習プロセス(`awase-keymap-learn-win`)を子プロセスとして
+    /// 起動中のとき、その標準出力から`drain_learning_output`が送ってくる
+    /// 行を毎フレームノンブロッキングで受け取るチャネル。
+    keymap_learn_rx:
+        Option<std::sync::mpsc::Receiver<Result<keymap_learn_launcher::LearnLine, String>>>,
+    /// 直近に受信した進捗（UI表示用、進捗行が来るたびに更新）。
+    keymap_learn_progress: Option<keymap_learn_launcher::LearnProgress>,
+    /// 学習プロセスの最終結果、または起動失敗のエラーメッセージ
+    /// （どちらもここに文字列化して保持、`keymap_learn_rx`が`None`になった後も残す）。
+    keymap_learn_status: Option<String>,
+    /// 起動中の学習子プロセスのハンドル（`kill()`/`wait()`用）。
+    /// 標準出力を読む別スレッドと共有するため`Arc<Mutex<_>>`で持つ
+    /// （読み取りループ自体は`ChildStdout`を直接読むのでロックを取らず進む、
+    /// `kill()`/`wait()`のときだけ短時間ロックする）。UIの「キャンセル」ボタンと
+    /// `on_exit`（ウィンドウを閉じたとき）の両方から`kill()`できるようにするための保持。
+    keymap_learn_child: Option<std::sync::Arc<std::sync::Mutex<std::process::Child>>>,
+    /// 学習プロセスの標準エラーを読み切るスレッドのハンドル。`result
+    /// status=failure`受信時、書き込み失敗理由(`print_result_line`のErr分岐が
+    /// 標準エラーへ書く1行)をUIに出すために`join()`する
+    /// (code-review指摘: 従来は標準エラーを`Stdio::null()`で捨てていたため、
+    /// 失敗理由がユーザーにもバグ報告にも一切残らなかった)。
+    keymap_learn_stderr_handle: Option<std::thread::JoinHandle<Option<String>>>,
 }
 
 #[derive(Clone)]
@@ -717,6 +740,11 @@ impl SettingsApp {
             adr192_warning_context,
             adr192_replacement_undo: None,
             adr192_replacement_preview: None,
+            keymap_learn_rx: None,
+            keymap_learn_progress: None,
+            keymap_learn_status: None,
+            keymap_learn_child: None,
+            keymap_learn_stderr_handle: None,
         };
         app.recompute_diagnostics();
         app
@@ -993,6 +1021,178 @@ impl SettingsApp {
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.pending_save = None;
+            }
+        }
+    }
+
+    /// ADR-195段階6: 学習プロセス(`awase-keymap-learn-win.exe`)を子プロセスとして
+    /// 起動する。対象プロセスの一時停止・keepalive等は不要
+    /// (`is_keymap_learn_process_name`によるawase.exe側の恒久バイパス、ADR195-T1)。
+    fn start_keymap_learning(&mut self) {
+        // code-review指摘: 呼び出し元(「学習を開始」ボタン)はkeymap_learn_rx.is_some()の
+        // 間ボタンを無効化しているが、それだけに頼ると、万一二重に呼ばれた場合に前の
+        // Arc<Mutex<Child>>と読み取りスレッドを黙って上書きし、古い子プロセスをkillする
+        // 手段(keymap_learn_child)を失ったまま野良稼働させてしまう(実キー注入を行う
+        // プロセスが2つ同時に動く事故になりうる)。関数自身でも二重起動を防ぐ。
+        if self.keymap_learn_rx.is_some() {
+            return;
+        }
+        let exe_path = awase::paths::resolve_relative_to_exe("awase-keymap-learn-win.exe");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut child = match keymap_learn_launcher::spawn_learning_process(&exe_path) {
+            Ok(child) => child,
+            Err(e) => {
+                self.keymap_learn_status = Some(format!(
+                    "{} を起動できませんでした（{e}）",
+                    exe_path.display()
+                ));
+                return;
+            }
+        };
+        let stdout = match keymap_learn_launcher::take_learning_stdout(&mut child) {
+            Ok(stdout) => stdout,
+            Err(e) => {
+                // code-review指摘: ここで単にreturnすると、既に起動済み(実キー注入を
+                // 行いうる)のchildがどこにも保持されないままDropされる。std::process::
+                // ChildのDropはプロセスをkillしない(ハンドルを閉じるだけ)ため、標準出力
+                // 取得に失敗しただけの子プロセスが野良のまま動き続けてしまう。
+                let _ = child.kill();
+                self.keymap_learn_status = Some(format!(
+                    "学習プロセスの標準出力を取得できませんでした（{e}）"
+                ));
+                return;
+            }
+        };
+        // code-review指摘: 標準エラーの取得失敗は致命的ではない(失敗理由の表示が
+        // 簡素になるだけ)ので、学習プロセス自体の起動は止めない。
+        self.keymap_learn_stderr_handle = keymap_learn_launcher::take_learning_stderr(&mut child)
+            .ok()
+            .map(|stderr| {
+                std::thread::spawn(move || {
+                    keymap_learn_launcher::drain_learning_stderr_lines(stderr)
+                })
+            });
+        // Arc<Mutex<Child>>で共有し、UIの「キャンセル」ボタン・on_exit・読み取りスレッドの
+        // いずれからも同じChildをkill()/wait()できるようにする(標準出力は上で取り出し済みなので
+        // 読み取りループ自体はこのロックを取らない)。
+        let child = std::sync::Arc::new(std::sync::Mutex::new(child));
+        self.keymap_learn_child = Some(std::sync::Arc::clone(&child));
+        std::thread::spawn(move || {
+            let result = keymap_learn_launcher::drain_learning_output(stdout, |line| {
+                let _ = tx.send(Ok(line));
+            });
+            if let Err(e) = result {
+                let _ = tx.send(Err(format!("学習プロセスの出力読み取りに失敗（{e}）")));
+            }
+            // code-review指摘: lock()が毒(他スレッドがロック保持中にpanic)を返すと
+            // 単に諦めてはいけない。ここは資源の後始末(reap)専用で、内部不変条件の
+            // 破損を気にする場面ではないため、毒付きでもガードを回収して続行する。
+            let mut guard = match child.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let _ = guard.wait();
+        });
+        self.keymap_learn_rx = Some(rx);
+        self.keymap_learn_progress = None;
+        self.keymap_learn_status = Some("起動中…".to_string());
+    }
+
+    /// 実行中の学習プロセスを強制終了する（UIの「キャンセル」ボタン、および
+    /// `on_exit`〈ウィンドウを閉じたとき〉から呼ぶ）。実キー注入を行う子プロセスを
+    /// 止める手段がUIに無いと、ウィンドウを閉じても・ハングしても
+    /// タスクマネージャ頼みになってしまうため。
+    fn cancel_keymap_learning(&mut self) {
+        self.kill_keymap_learn_child();
+        self.keymap_learn_rx = None;
+        self.keymap_learn_status = Some("キャンセルしました。".to_string());
+    }
+
+    /// `keymap_learn_child`が保持している子プロセスを(生きていれば)強制終了して
+    /// 手放す。`cancel_keymap_learning`(ユーザー操作)だけでなく、`poll_keymap_learn`の
+    /// 異常系(標準出力読み取りエラー・resultを送らず切断)からも呼ぶ——標準出力の
+    /// 読み取りスレッドは`drain_learning_output`が`Err`を返しても直後に`child.wait()`
+    /// するだけでkillはしない。実キー注入を行いうる子プロセスがハングしている場合、
+    /// killせずに`keymap_learn_child`を手放すと、UIから二度とkillする手段が無い
+    /// まま野良で動き続ける(code-review指摘)。
+    fn kill_keymap_learn_child(&mut self) {
+        if let Some(child) = self.keymap_learn_child.take() {
+            // code-review指摘: lock()が毒を返しても`if let Ok(...)`で黙って諦めると、
+            // 実キー注入を行いうる子プロセスをkillせずに手放してしまい、UIには
+            // 「キャンセルしました」等の成功メッセージだけが残って二度とkillする
+            // 手段が無くなる。killは内部不変条件に依存しない操作なので、毒付きでも
+            // ガードを回収してkillを試みる。
+            let mut guard = match child.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let _ = guard.kill();
+        }
+    }
+
+    /// `start_keymap_learning()` が起動した学習プロセスの標準出力を毎フレーム
+    /// ノンブロッキングで確認する。`poll_pending_save`と同じパターン
+    /// (受信できるだけ受信してから、空なら`request_repaint`で再描画を予約)。
+    fn poll_keymap_learn(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.keymap_learn_rx else {
+            return;
+        };
+        loop {
+            match rx.try_recv() {
+                Ok(Ok(keymap_learn_launcher::LearnLine::Progress(p))) => {
+                    self.keymap_learn_progress = Some(p);
+                    self.keymap_learn_status = Some("測定中…".to_string());
+                }
+                Ok(Ok(keymap_learn_launcher::LearnLine::Result(outcome))) => {
+                    self.keymap_learn_status = Some(match outcome {
+                        keymap_learn_launcher::LearnOutcome::Success => {
+                            "完了しました。".to_string()
+                        }
+                        keymap_learn_launcher::LearnOutcome::SuccessWithWarnings => {
+                            "完了しましたが、一部観測に警告がありました。".to_string()
+                        }
+                        keymap_learn_launcher::LearnOutcome::Failure => {
+                            // code-review指摘: 標準出力の`result status=failure`行には
+                            // 理由が含まれない(`awase-keymap-learn-win`は理由文を標準
+                            // エラーへ書く)。`result`行送信の時点で子プロセスの終了・
+                            // 標準エラーのEOFは目前のはずなので、joinはここで短時間しか
+                            // ブロックしない。
+                            let reason = self
+                                .keymap_learn_stderr_handle
+                                .take()
+                                .and_then(|h| h.join().ok())
+                                .flatten();
+                            match reason {
+                                Some(reason) => format!("学習に失敗しました: {reason}"),
+                                None => "学習に失敗しました。".to_string(),
+                            }
+                        }
+                    });
+                    self.keymap_learn_rx = None;
+                    self.keymap_learn_child = None;
+                    break;
+                }
+                Ok(Err(e)) => {
+                    self.keymap_learn_status = Some(e);
+                    self.keymap_learn_rx = None;
+                    self.kill_keymap_learn_child();
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint();
+                    break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // 進捗を何行か報告した後でクラッシュした場合でも(「起動中…」からは
+                    // 既に進んでいても)、resultを送らずに終了したことを必ず伝える。
+                    // ここを「起動中…」のときだけに限定すると、進捗報告後にクラッシュした
+                    // ケースでステータスが「測定中…」のまま固まって見えてしまう。
+                    self.keymap_learn_status =
+                        Some("学習プロセスが結果を送らずに終了しました。".to_string());
+                    self.keymap_learn_rx = None;
+                    self.kill_keymap_learn_child();
+                    break;
+                }
             }
         }
     }
@@ -2476,16 +2676,16 @@ impl SettingsApp {
                         self.adr192_replacement_undo = Some(apply_adr192_recommended_replacement(
                             &mut self.config,
                         ));
-                        self.status = "冪等なIME ON/OFF設定へ置き換えました。「適用」でconfig.tomlへ保存してください。".to_owned();
+                        "冪等なIME ON/OFF設定へ置き換えました。「適用」でconfig.tomlへ保存してください。"
+                            .clone_into(&mut self.status);
                     }
                 }
                 if self.adr192_replacement_undo.is_some()
                     && ui.button("置き換えを元に戻す").clicked()
+                    && let Some(snapshot) = self.adr192_replacement_undo.take()
                 {
-                    if let Some(snapshot) = self.adr192_replacement_undo.take() {
-                        undo_adr192_recommended_replacement(&mut self.config, snapshot);
-                        self.status = "ADR-192の置き換えを元に戻しました。".to_owned();
-                    }
+                    undo_adr192_recommended_replacement(&mut self.config, snapshot);
+                    "ADR-192の置き換えを元に戻しました。".clone_into(&mut self.status);
                 }
             } else {
                 ui.label(
@@ -3062,6 +3262,69 @@ impl SettingsApp {
             send_calibration_end();
             self.calibration_state = calibration_panel::on_cancel_or_close();
         }
+
+        ui.add_space(16.0);
+        ui.separator();
+        self.keymap_learn_wizard_ui(ui);
+    }
+
+    /// ADR-195段階6: 上のIMEキー較正（1キーずつの手動測定、ADR-176）とは別に、
+    /// `awase-keymap-learn-win`(独立学習プロセス、ADR195-T1)を子プロセスとして
+    /// 起動し、全キー×全状態を自動巡回測定するウィザード導線。
+    fn keymap_learn_wizard_ui(&mut self, ui: &mut egui::Ui) {
+        ui.collapsing(
+            "学習ウィザード（全キー自動測定、実験的）",
+            |ui| {
+                ui.label(
+                    "対象キー1つずつの較正の代わりに、全ての対応キー×状態を自動で巡回測定します。\n\
+                 測定中も awase 自体は動き続け、他の窓では通常どおり入力できます。",
+                );
+                ui.add_space(8.0);
+
+                let running = self.keymap_learn_rx.is_some();
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(!running, egui::Button::new("学習を開始"))
+                        .clicked()
+                    {
+                        self.start_keymap_learning();
+                    }
+                    // 実キー注入を行う子プロセスなので、閉じる/ハングしたときにタスクマネージャ
+                    // 頼みにならないよう、UIから止める手段を必ず用意する。
+                    if ui
+                        .add_enabled(running, egui::Button::new("キャンセル"))
+                        .clicked()
+                    {
+                        self.cancel_keymap_learning();
+                    }
+                });
+
+                if let Some(p) = self.keymap_learn_progress {
+                    ui.add_space(4.0);
+                    #[expect(
+                        clippy::cast_precision_loss,
+                        reason = "進捗バー表示用の概算、精度は問題にならない"
+                    )]
+                    let fraction = if p.total == 0 {
+                        0.0
+                    } else {
+                        p.cell as f32 / p.total as f32
+                    };
+                    ui.add(
+                        egui::ProgressBar::new(fraction)
+                            .text(format!("{}/{}セル", p.cell, p.total)),
+                    );
+                    if let Some(eta_ms) = p.eta_ms {
+                        ui.label(format!("残り約{:.0}秒", eta_ms / 1000.0));
+                    }
+                }
+
+                if let Some(status) = &self.keymap_learn_status {
+                    ui.add_space(4.0);
+                    ui.label(status);
+                }
+            },
+        );
     }
 
     #[expect(clippy::too_many_lines)]
@@ -3860,6 +4123,7 @@ impl eframe::App for SettingsApp {
         // 未保存確認も入れない。キャンセルボタンの復元操作だけを確認対象にする。
         self.update_ime_state(ctx);
         self.poll_pending_save(ctx);
+        self.poll_keymap_learn(ctx);
         self.commit_pending_layout_edit(ctx);
         // code-review指摘: キー捕捉モードだけでなく、確認モーダル表示中
         // （Dangerous確認・キャンセル3択・配列破棄確認）にもグローバル
@@ -4012,6 +4276,15 @@ impl eframe::App for SettingsApp {
                     Tab::Advanced => self.tab_advanced(ui),
                 });
         });
+    }
+
+    /// ウィンドウを閉じるとき、学習ウィザード(ADR-195段階6)の子プロセスが実行中なら
+    /// 強制終了する。実キー注入を行う子プロセスがウィンドウを閉じた後もタスク
+    /// マネージャ頼みで動き続けることを防ぐ。
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if self.keymap_learn_child.is_some() {
+            self.cancel_keymap_learning();
+        }
     }
 }
 
@@ -5986,9 +6259,10 @@ mod layout_tab_repro {
         let layout_path =
             resolve_layouts_dir(&config.general.layouts_dir).join(&config.general.default_layout);
         let (layout, layout_loaded_ok) =
-            load_yab_layout(&layout_path, config.general.keyboard_model)
-                .map(|(ly, _lint_warnings)| (ly, true))
-                .unwrap_or_else(|_| (empty_yab_layout(), false));
+            load_yab_layout(&layout_path, config.general.keyboard_model).map_or_else(
+                |_| (empty_yab_layout(), false),
+                |(ly, _lint_warnings)| (ly, true),
+            );
         let config_loaded_model = config.general.keyboard_model;
         SettingsApp {
             config,
@@ -6051,6 +6325,11 @@ mod layout_tab_repro {
             adr192_warning_context: false,
             adr192_replacement_undo: None,
             adr192_replacement_preview: None,
+            keymap_learn_rx: None,
+            keymap_learn_progress: None,
+            keymap_learn_status: None,
+            keymap_learn_child: None,
+            keymap_learn_stderr_handle: None,
         }
     }
 
@@ -7099,9 +7378,8 @@ speculative_delay_ms = 30
             "self.configも正規化後の値へ更新されるべき（次回のApplyで同じ警告が\
              永遠に再表示されるのを防ぐため）"
         );
-        assert_eq!(
+        assert!(
             app.status.contains("speculative"),
-            true,
             "1回目のApplyでは廃止警告が表示されるべき: {}",
             app.status
         );
