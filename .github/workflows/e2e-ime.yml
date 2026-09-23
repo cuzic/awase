@@ -391,6 +391,9 @@ jobs:
         shell: pwsh
         run: |
           $base = 'HKCU:\Software\Microsoft\IME\15.0\IMEJP'
+          # 新規ランナーでは ja-JP 追加直後は $base\MSIME 自体が存在しない(dragonflyg4実機はMS-IME起動履歴が
+          # あるため既存)。先に両キーを作ってから Set-ItemProperty する(GJI設定ステップの New-Item と同じ理由)。
+          New-Item -Path "$base\MSIME" -Force | Out-Null
           New-Item -Path "$base\StyleList\Custom" -Force | Out-Null
           $table = [System.Collections.Generic.List[byte]]::new()
           function Add-Rec([byte[]]$nameBytes) {
