@@ -35,11 +35,44 @@ pub enum LearnOutcome {
     Failure,
 }
 
+/// 学習プロセスの起動モード(ADR196-T4)。`awase-keymap-learn-win`のフラグに対応。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LearnMode {
+    /// 通常の学習セッション。
+    Learn,
+    /// `--adopt-pending-judgement`: 要確認状態の表を採用へ書き換えるだけ(IME駆動なし)。
+    AdoptPendingJudgement,
+    /// `--revalidate`: 保存済みの表で自己検証だけを走らせる軽量再検証(ADR196-T5)。
+    Revalidate,
+}
+
+impl LearnMode {
+    const fn flag(self) -> Option<&'static str> {
+        match self {
+            Self::Learn => None,
+            Self::AdoptPendingJudgement => Some("--adopt-pending-judgement"),
+            Self::Revalidate => Some("--revalidate"),
+        }
+    }
+}
+
+/// `revalidate status=..`行の結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevalidateOutcome {
+    Passed,
+    /// 自己検証が採否条件を割り、表が失効した。
+    Invalidated,
+    Failure,
+}
+
 /// 学習プロセスの標準出力1行をパースした結果。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LearnLine {
     Progress(LearnProgress),
     Result(LearnOutcome),
+    /// `adopt status=success|failure`(判定書き換えモード)。`true`が成功。
+    Adopt(bool),
+    Revalidate(RevalidateOutcome),
 }
 
 /// `awase-keymap-learn-win`が標準出力へ書く
@@ -74,14 +107,29 @@ pub fn parse_learn_line(line: &str) -> Option<LearnLine> {
             "failure" => Some(LearnLine::Result(LearnOutcome::Failure)),
             _ => None,
         },
+        "adopt" => match field("status")? {
+            "success" => Some(LearnLine::Adopt(true)),
+            "failure" => Some(LearnLine::Adopt(false)),
+            _ => None,
+        },
+        "revalidate" => match field("status")? {
+            "passed" => Some(LearnLine::Revalidate(RevalidateOutcome::Passed)),
+            "invalidated" => Some(LearnLine::Revalidate(RevalidateOutcome::Invalidated)),
+            "failure" => Some(LearnLine::Revalidate(RevalidateOutcome::Failure)),
+            _ => None,
+        },
         _ => None,
     }
 }
 
-/// 学習プロセスを子プロセスとして起動する。`exe_path`は
+/// 学習プロセスを`mode`で子プロセスとして起動する。`exe_path`は
 /// `awase-keymap-learn-win.exe`のパス。標準出力・標準エラーをパイプで受け取る。
-pub fn spawn_learning_process(exe_path: &Path) -> io::Result<Child> {
-    Command::new(exe_path)
+pub fn spawn_learning_process(exe_path: &Path, mode: LearnMode) -> io::Result<Child> {
+    let mut command = Command::new(exe_path);
+    if let Some(flag) = mode.flag() {
+        command.arg(flag);
+    }
+    command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -154,26 +202,6 @@ pub fn drain_learning_stderr_lines(stderr: ChildStderr) -> Option<String> {
     last
 }
 
-/// ADR-195段階6決定5: 検出したキーマップ構成が同梱の3種(ATOK/
-/// GJI+MS-IMEプリセット/Microsoft IME本体、いずれもカスタム設定なし)と
-/// 一致する場合、awase-settingsは学習の実行を積極的に案内しない(実行自体は
-/// 妨げないが、既定の導線に出さない)。
-///
-/// 構成の検出自体はこの関数の責務外——経路1〜3の統合は
-/// [ADR195-T0](../../../../docs/tasks/adr195-t0-config-reading-integration.md)、
-/// 実行時の「同梱表とのセル突き合わせ」による一致判定は
-/// [ADR195-T4](../../../../docs/tasks/adr195-t4-runtime-loading.md)が持つ。
-/// 本関数はそれらが確定させた「一致/不一致」の結果を受け取って、UI導線に
-/// 出すかどうかだけを決める(検出ロジックの二重実装を避けるため)。
-///
-/// 呼び出し元は未配線(`#[allow(dead_code)]`): ADR195-T4の「同梱表とのセル
-/// 突き合わせ」判定が実装されるまで、実際に渡せる`matches_bundled_preset`が
-/// 存在しない。T4実装後、ここから`keymap_learn_wizard_ui`の表示条件へ配線する。
-#[allow(dead_code)]
-pub const fn should_recommend_learning(matches_bundled_preset: bool) -> bool {
-    !matches_bundled_preset
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,6 +248,43 @@ mod tests {
     }
 
     #[test]
+    fn parses_adopt_and_revalidate_lines() {
+        assert_eq!(
+            parse_learn_line("adopt status=success"),
+            Some(LearnLine::Adopt(true))
+        );
+        assert_eq!(
+            parse_learn_line("adopt status=failure reason=not_pending"),
+            Some(LearnLine::Adopt(false))
+        );
+        assert_eq!(
+            parse_learn_line("revalidate status=passed accuracy=0.970 predicted=310"),
+            Some(LearnLine::Revalidate(RevalidateOutcome::Passed))
+        );
+        assert_eq!(
+            parse_learn_line(
+                "revalidate status=invalidated reason=LowAccuracy accuracy=0.5 predicted=300"
+            ),
+            Some(LearnLine::Revalidate(RevalidateOutcome::Invalidated))
+        );
+        assert_eq!(
+            parse_learn_line("revalidate status=failure reason=x"),
+            Some(LearnLine::Revalidate(RevalidateOutcome::Failure))
+        );
+        assert_eq!(parse_learn_line("adopt status=maybe"), None);
+    }
+
+    #[test]
+    fn mode_flags_match_learn_win_cli() {
+        assert_eq!(LearnMode::Learn.flag(), None);
+        assert_eq!(
+            LearnMode::AdoptPendingJudgement.flag(),
+            Some("--adopt-pending-judgement")
+        );
+        assert_eq!(LearnMode::Revalidate.flag(), Some("--revalidate"));
+    }
+
+    #[test]
     fn unknown_or_malformed_lines_are_ignored() {
         assert_eq!(parse_learn_line(""), None);
         assert_eq!(parse_learn_line("noise from stderr leaking in"), None);
@@ -230,12 +295,6 @@ mod tests {
             "totalが無ければNone"
         );
         assert_eq!(parse_learn_line("result status=unknown_status"), None);
-    }
-
-    #[test]
-    fn should_recommend_learning_only_for_non_bundled_configs() {
-        assert!(should_recommend_learning(false));
-        assert!(!should_recommend_learning(true));
     }
 
     /// `take_learning_stdout`/`take_learning_stderr`/`drain_learning_output`/
