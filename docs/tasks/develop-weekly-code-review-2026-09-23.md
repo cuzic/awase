@@ -1,6 +1,6 @@
 # develop 過去1週間の fix コードレビュー結果（2026-09-23）
 
-状態: **調査完了。修正済み: A-1 / C-1（PR #272）・B-1配送（PR #274、生存確認は未配線）・B-7 / B-8 / B-9（PR #280）・B-2の副次（PR #278、`mismatch_ratio`は`4af30b0c`）。B-4 / B-5 / B-6は`fix/adr192-t5-learned-table-consistency`で修正（下記）。未修正: A-2 / B-3 / B-10**（B-2本体は修正済み）（2026-09-24時点、origin/develop `bbd6d133`で再確認）
+状態: **調査完了。修正済み: A-1 / C-1（PR #272）・B-1配送（PR #274、生存確認は未配線）・B-7 / B-8 / B-9（PR #280）・B-2の副次（PR #278、`mismatch_ratio`は`4af30b0c`）。B-4 / B-5 / B-6は`fix/adr192-t5-learned-table-consistency`で修正（下記）。B-2本体はPR #290。A-2は実機測定で再現せず修正なし。未修正: B-3 / B-10**（2026-09-24時点、origin/develop `bbd6d133`で再確認）
 
 ## 対象と方法
 
@@ -20,7 +20,7 @@
 - テスト欠落: generation 付き `Unwarranted` のテストなし（`unsafe_to_toggle_…`/`not_owned_…` の同型テストのみ）
 - 修正方針案: `NotSent` 条件に `Unwarranted` を追加 + 同型テスト追加
 
-### A-2. [PLAUSIBLE・未修正（`mode_key_pass.rs`は9/23のテスト追加のみ）] 通過マーク窓で「古い観測」に揃えると窓後に揃え直せず BUG-157 が再発しうる
+### A-2. [実機で再現せず・修正なし（2026-09-24、`aligned`判定は不変）] 通過マーク窓で「古い観測」に揃えると窓後に揃え直せず BUG-157 が再発しうる
 
 - 場所: `state/mode_key_pass.rs:157-168`（`drop_decision` の `aligned: mark.aligned || (align && !on_expiry)`）、`:258`（`should_align_after_expired_mode_key_pass` の `!mark.aligned`）
 - 欠陥: 窓内の最初の成功観測が、IME がキーを処理する前の古い値でも `aligned=true` になる。窓後の救済（`align_after_expired`）は `!aligned` のときしか動かない
@@ -28,7 +28,6 @@
 - 修正方針案: `KEY_EFFECT_SETTLE_MS` 以降の観測に揃えたときだけ `aligned` を立てる。要テスト
 - 前提: 1回目成功+2回目時間切れという実機タイミング。実機ログでの確認が先
 - 実機測定（2026-09-24、windows-latest、`ci/a2-mode-key-pass-timeline`、run 35962229239 / 35963409931、通過計1,207押下）: A-2の条件（最初の成功が古い値かつ窓内の成功がその1回だけ）は**0件で再現せず**。形だけ近いもの（窓内の成功が1回だけ、2回目がタイムアウト）はMS-IME本体で8/318（2.5%）あったが、その1回目は古い値ではなかった。`aligned`判定は変更しない。副産物として`KEY_EFFECT_SETTLE_MS`の裾（古い値を読む最遅が131ms）が判明し100→170msへ変更（`fix/key-effect-settle-170`）。集計は`tools/e2e/ime_key_matrix/mode_key_pass_timeline.py`
-- 実測（2026-09-24、担当: rust-nicola-3f、検証専用ブランチ`ci/a2-mode-key-pass-timeline`〈developへマージしない〉）: 1回目（run 35962229239、windows-latest、5構成×3回、91押下）でA-2成立（最初の成功が古い値で、窓内の成功がその1回だけ）は**0件**。GJI+MS-IMEプリセットは各回の最初の押下で65〜71msに古い値・121〜146msに新しい値（後続の読み取りは成功）。MS-IME本体は最初の押下で窓内の読み取りが全滅（BUG-158型、`on_expiry`で対処済み）。2回目（run 35963409931、ランダムウォーク150手×5シード×2回×3構成）は集計中。方針: 再現しなければ`aligned`判定は変えず、分布しだいで`KEY_EFFECT_SETTLE_MS`（現状100ms、`tuning.rs`）だけを実測根拠つきで見直す（tuning-constants規約）。
 
 ### A-3. 確認して問題なしとしたもの（参考）
 
@@ -136,7 +135,7 @@ BUG-160（`cbedf857`、既定 Suppress では挙動不変。Shift 素通し後�
 3. B-1（学習表の汚染検出が無効。ADR-196 T1 と合わせて）
 4. B-2 / B-5 / B-4（学習表が不採用になる・進捗表示が狂う。ADR-196 T2〜T4 と合わせて）
 5. B-6 / B-7（クラッシュ・フリーズ）
-6. A-2（実機ログで発生条件の確認が先）
+6. A-2（再現せず、対応不要）
 7. B-3 / B-8 / B-9 / B-10
 
 修正時は各コミットで `.claude/rules/fix-requires-evidence.md`（回帰テストまたは `docs/known-bugs/BUG-NNN.md`）に従うこと。A-1/A-2 は IME belief ファミリー、C-1 はキー選択ファミリー、B-1 は学習系のため対象。
