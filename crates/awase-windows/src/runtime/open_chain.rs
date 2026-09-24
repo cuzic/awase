@@ -633,7 +633,7 @@ pub(crate) async fn run_open_chain_async(
     }
     // ADR-090 §2.A A-2（2026-09-19、ユーザー指示によりリスクを受容し実機
     // 検証で確認する方針へ切替）: 授権は起案側
-    // （`ImeStateHub::issue_actuation_order`）で発行済み。ADR-178領域A撤去で
+    // （`ImeStateHub::issue_actuation_order`）で発行済み。ADR-179（旧178）領域A撤去で
     // 差分オラクルの最大リスク（old-1: bootstrap force-ON、old-2:
     // `BrokenAppBootstrap`guard）の生産コード上の発火源が既に消えている
     // ため、残る差分（old-3安全側/new-1意図されたTsfNative Blindフォール

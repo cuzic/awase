@@ -529,7 +529,7 @@ impl Runtime {
         // `Unknown` のまま維持する（`focus_tracking.rs` の hard pre-sync が
         // 非 TsfNative について既に守っている不変条件——INV-A97-1——を
         // ここでも適用する）。何も apply していないのに belief を `applied
-        // = Confirmed` として書くと、`apply_force_on_for_imm_broken` の
+        // = Confirmed` として書くと、（撤去済みの）`apply_force_on_for_imm_broken` の
         // スパムガードが恒久的に早期 return し、BUG-16 の修正が TsfNative で
         // 一度も実効しない（詳細は known-bugs.md BUG-69 / ADR-098）。
         if !new_profile_is_tsf_native {
@@ -557,7 +557,7 @@ impl Runtime {
         // shadow_on 無視で強制送信）はここに存在した。決定1-a が `applied` を
         // 偽装しなくなったことで、通常の strategy chain（`shadow_on=false`
         // になる）と、決定1-c で有界化された `apply_force_on_for_imm_broken`
-        // の両方が正しく VK_IME_ON を送れるようになったため撤去した。撤去の
+        // （後に `f83084b3` で関数ごと撤去）の両方が正しく VK_IME_ON を送れるようになったため撤去した。撤去の
         // 詳細な根拠は known-bugs.md BUG-69 / ADR-098 決定2 参照。
 
         // ADR-098 決定1-b: `applied.applied_open()` の生値ではなく `warmup_ime_on()`
@@ -616,7 +616,7 @@ impl Runtime {
     // - IMM32 クロスプロセス対応アプリ（LINE 等 ImmCross）: set_ime_open(desired) を使う。
     // - non-ImmCross（GJI/TsfNative/Blacklist、Chrome/Windows Terminal 等）:
     //   set_ime_open は can_use_imm32_cross_process=false で no-op になるため使えない。
-    //   apply_force_on_for_imm_broken は ON 方向専用で OFF 方向の乖離は担当しないため、
+    //   （撤去済みの）apply_force_on_for_imm_broken は ON 方向専用で OFF 方向の乖離は担当しなかったため、
     //   ここで strategy chain 経由の apply_ime_open_with_belief（実 VK 送信）を使う
     //   （2026-07-08 実機: Windows Terminal/Chrome + GJI で IME OFF コンボ送信後、
     //   Engine 内部は即 OFF になるが OS 側 IME は ON のまま固定される不具合。
@@ -660,7 +660,7 @@ impl Runtime {
         };
         let (desired, observed, duration_ms) = (drift.desired, drift.observed, drift.duration_ms);
         if self.ime_apply_should_defer() {
-            // apply_force_on_for_imm_broken と同じく settle 明けに必ず再試行する。
+            // 他の settle 対応経路（撤去済みの apply_force_on_for_imm_broken 等）と同じく settle 明けに必ず再試行する。
             self.schedule_settle_retry(&format!(
                 "drift correction skipped (settling): desired={desired} observed={observed}"
             ));
@@ -936,7 +936,7 @@ impl Runtime {
             }
         } else {
             // set_ime_open は IMM32専用で Blacklist/TsfNative では no-op のため、
-            // apply_force_on_for_imm_broken と同じ strategy chain 経由の実送信を使う。
+            // （撤去済みの）apply_force_on_for_imm_broken と同じ strategy chain 経由の実送信を使う。
             let belief = crate::output::OpenBelief {
                 effective_open: desired,
                 confident: true,

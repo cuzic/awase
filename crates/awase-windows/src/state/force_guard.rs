@@ -203,7 +203,8 @@ impl ForceGuardSet {
 /// Drift detection 用の連続観測失敗カウンタ。
 ///
 /// 旧 `ImeRecoveryState::ime_detect_miss_count` の責務分離版。
-/// 閾値到達で `Runtime::try_force_on_bootstrap()` が `BrokenAppBootstrap` guard を追加する。
+/// 閾値到達で `Runtime::try_force_on_bootstrap()` が `BrokenAppBootstrap` guard を追加していたが、
+/// `621bf93c` で撤去済み（現在は連続失敗の記録のみ）。
 #[derive(Debug, Default, Clone)]
 pub struct ObserveMissMonitor {
     pub consecutive_miss_count: u32,

@@ -247,8 +247,8 @@ pub enum Authorization {
     /// 差分オラクル（`open_warrant.rs::differential_old_gate_vs_issue_open_warrant`）は
     /// 旧ゲートと新 warrant の判定が **9 通りで食い違う**ことを既に測っている
     /// （old-only 8 / new-only 1）。そのまま強制すると 9 通りの挙動が変わり、
-    /// うち `try_force_on_bootstrap` の消滅は「判明した中で最大の挙動変化」で
-    /// ある（ADR-090 §2.A 設計案 2 の表 old-1）。
+    /// うち `try_force_on_bootstrap` の消滅（`621bf93c` で実施済み）は「判明した中で最大の挙動変化」で
+    /// あった（ADR-090 §2.A 設計案 2 の表 old-1）。
     ///
     /// 差分オラクルが測っているのは **240 通りの組合せ**であって、
     /// **実機でどの組合せが実際に起きるか**は測っていない。A-1 はそれを
@@ -386,7 +386,7 @@ impl ActuationOrder {
     /// 授権が下りていれば `Warranted`、下りていなければ `None`。
     /// 入口ごとに A-1 の shadow ログで `would_have_blocked` の実発火頻度を
     /// 測ってから、1 つずつこちらへ倒す（ADR-090 §6 ステップ 7）。
-    /// `try_force_on_bootstrap` は**最後**に回すこと（§4.9）。
+    /// `try_force_on_bootstrap` は**最後**に回す方針だった（§4.9、`621bf93c` で撤去済み）。
     #[must_use]
     pub fn into_actuation(self) -> Option<Actuation<Warranted>> {
         Actuation::request(self.open).warrant(self.warrant?)

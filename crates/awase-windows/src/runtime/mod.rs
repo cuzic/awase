@@ -642,8 +642,8 @@ impl Runtime {
         if stripped_set_open.is_some() {
             // settle 中に握りつぶした SetOpen は自然には再発行されない
             // （Engine::prev_activation は遷移確定済みのため）。既存の
-            // apply_force_on_for_imm_broken 等と同じ「settle 明けに refresh で再試行」
-            // パターンで確実に一度だけ再同期する。
+            // 他の settle 対応経路（撤去済みの apply_force_on_for_imm_broken 等）と同じ「settle 明けに
+            // refresh で再試行」パターンで確実に一度だけ再同期する。
             self.schedule_settle_retry("SetOpen stripped from execute_from_loop decision");
         }
         callback
@@ -845,7 +845,7 @@ impl Runtime {
     ///
     /// 遅延は settle 残余の上限（= `focus_settle_ms()`）+ タイマー粒度マージン 50ms。
     /// `reason` はログの `[focus-settle] {reason} → ...` に埋め込まれる、呼び出し元ごとの
-    /// 説明文（例: `"apply_force_on_for_imm_broken skipped (settling)"`）。
+    /// 説明文（例: `"drift correction skipped (settling)"`）。
     pub fn schedule_settle_retry(&mut self, reason: &str) {
         let retry_ms = self.platform_state.ime.focus_settle_ms() + 50;
         tracing::debug!("[focus-settle] {reason} → {retry_ms}ms 後に refresh で再試行");
@@ -887,8 +887,7 @@ impl Runtime {
         // 例外が過去に存在した（`apply_force_on_for_imm_broken` の周期 force-ON
         // 再送を同じリフレッシュ連鎖に相乗りさせるため）。2026-08-17、ADR-094 で
         // force ポリシー自体を撤去したのに伴い削除した。`apply_force_on_for_imm_broken`
-        // は常時この早期 return の影響を受ける（force policy 分岐が無くなった今、
-        // 周期リフレッシュに乗るのが唯一の force-ON 経路になった）。
+        // は常時この早期 return の影響を受けていた（その後 `f83084b3` で関数ごと撤去済み）。
         let is_tsf_native = self
             .platform
             .current_app_profile()
@@ -976,8 +975,8 @@ impl Runtime {
     ///
     /// `execute_decision`/`execute_decision_suppressed` 経由の `Decision` ベースの経路は
     /// `Executor::execute_from_loop` が一括でガードするが、`platform.set_ime_open` を
-    /// 直接呼ぶ経路（`apply_force_on_for_imm_broken`, `try_force_on_bootstrap`,
-    /// `ir_apply_drift_correction`）は `Decision`/`Effect` という抽象を経由しないため
+    /// 直接呼ぶ経路（`ir_apply_drift_correction` 等。撤去済みの
+    /// `apply_force_on_for_imm_broken`/`try_force_on_bootstrap` も同型だった）は `Decision`/`Effect` という抽象を経由しないため
     /// そちらのガードが効かない。これらの呼び出し元は実行前に必ずこれを確認すること。
     ///
     /// 2026-07-05: Alt+Tab 中間ウィンドウへの一瞬のフォーカス中に、これらの直接呼び出しが

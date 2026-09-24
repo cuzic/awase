@@ -341,10 +341,10 @@ pub enum OpenApplyReason {
     EngineDecision,
     /// IMM32 クロスプロセス制御が使えないアプリ（TsfNative 等）向けの、
     /// `force_policy` によらない applied スロットル付き強制 ON
-    /// （`apply_force_on_for_imm_broken` の非 force 分岐、既存挙動）。
+    /// （撤去済みの `apply_force_on_for_imm_broken` の非 force 分岐、`f83084b3` 以前の挙動）。
     ImmBrokenForceOn,
     /// 未知 Imm32Unavailable アプリで IME 検出が連続失敗したときの一時 force-ON
-    /// （`try_force_on_bootstrap`）。
+    /// （撤去済みの `try_force_on_bootstrap`、`621bf93c`）。
     Bootstrap,
     /// 観測値（conv/IMC 読み取り）と belief の乖離を検出しての是正
     /// （`ir_apply_drift_correction`、`kp_apply_conv_engine_sync` の

@@ -1527,8 +1527,8 @@ impl WindowsPlatform {
         // BUG-110/ADR-132 Phase 2 敵対的コードレビュー指摘: この `warmup_ime_on` は
         // `from_actuated`（実 actuation 直後の確定値）由来であり、`resolve_warmup_ime_on`
         // が課す `off_drift_active` ゲートを通らない——force-ON
-        // （`apply_force_on_for_imm_broken`）が `SetOpen(true)` を適用した直後にも
-        // ここを通るため、drift correction が OFF 方向へ送り続けている最中でも
+        // （撤去済みの `apply_force_on_for_imm_broken`、`f83084b3`）が `SetOpen(true)` を適用した直後にも
+        // ここを通っていたため、drift correction が OFF 方向へ送り続けている最中でも
         // 随伴 warmup（`VK_IME_ON`）が飛びうる。INV-B1'（`send_eager_tsf_warmup` が
         // `VK_IME_ON` を送信する瞬間 OFF 方向 drift は検出されていない）は
         // **この経路には及ばない**、既知の限界（ADR-132「Phase 2」節参照）。

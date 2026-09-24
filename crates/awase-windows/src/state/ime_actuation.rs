@@ -364,7 +364,7 @@ pub struct DriftCorrectionTick {
 /// 限られる。`EngineActivationSync`/`PanicReset`/`HwndCacheRestored` は設定しない
 /// （`state/ime_model.rs`）。したがって awase 自身の周期処理
 /// （`post_ime_refresh()` の 20ms 自己駆動チェーン、WinEvent フォーカスイベント、
-/// `apply_force_on_for_imm_broken`）ではこの値が進まない。
+/// 撤去済みの `apply_force_on_for_imm_broken`〈`f83084b3`〉も同様）ではこの値が進まない。
 ///
 /// **`Actuation` のライフサイクル（`target` 変化 + `FocusChanged`）をキーにしては
 /// ならない** — awase 自身が起こす `FocusChanged`（Windows Terminal 等の XAML/UWP
