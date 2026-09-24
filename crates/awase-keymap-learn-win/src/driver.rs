@@ -392,17 +392,6 @@ impl RealImeDriver {
         }
     }
 
-    /// 診断用（B-1の実機検証）: 直近の自己注入以降に届いた開閉・変換モード通知の件数。
-    #[must_use]
-    pub fn diag_notify_since_mark(&self) -> u32 {
-        self.notify_monitor.notify_count_since_mark()
-    }
-
-    /// 診断用（B-1の実機検証）: メッセージを回しながら待つ。
-    pub fn diag_pump(&self, duration: Duration) {
-        self.pump(duration);
-    }
-
     /// 現在の「外部からの書き込み」累計件数（フック経由＋IME通知経由）。
     fn external_total(&self) -> u32 {
         self.hook_monitor.external_event_count() + self.notify_monitor.external_count()
@@ -433,7 +422,12 @@ impl RealImeDriver {
     /// セッション全体を失敗にすべきかは別途`session_failed()`で問い合わせる
     /// （round1 M1対応——以前はここで判定した「上限超過」を誰も消費していな
     /// かった）。
-    fn check_session_interference(&self) -> bool {
+    ///
+    /// `status_changed`は直近の試行で開閉・変換モードが実際に変わったか。
+    /// 変わったのに通知が1件も届かない（`observation_alive`）、または1回の注入に
+    /// 通知が2件以上届いた（`measurement_suspicious`）場合は、観測経路の停止・
+    /// 複数要因の混入を疑い、外部干渉と同様に試行を無効化する。
+    fn check_session_interference(&self, status_changed: bool) -> bool {
         let mut tracker = self.interference.get();
         let verdict = tracker.observe(
             self.external_total(),
@@ -442,15 +436,26 @@ impl RealImeDriver {
             self.focus_intact(),
         );
         self.interference.set(tracker);
-        if !verdict.contaminated() {
+        let observation_bad =
+            !self.observation_alive(status_changed) || self.measurement_suspicious();
+        if !verdict.contaminated() && !observation_bad {
             return false;
         }
-        log_contamination_cause(
-            "press",
-            verdict.external,
-            verdict.physical,
-            verdict.focus_lost,
-        );
+        if verdict.contaminated() {
+            log_contamination_cause(
+                "press",
+                verdict.external,
+                verdict.physical,
+                verdict.focus_lost,
+            );
+        } else {
+            eprintln!(
+                "[awase-keymap-learn-win] press: 観測経路の異常で試行を無効化 \
+                 (status_changed={status_changed}, alive={}, suspicious={})",
+                self.observation_alive(status_changed),
+                self.measurement_suspicious()
+            );
+        }
         let mut monitor = self.session_monitor.get();
         if monitor.record_invalidated_trial() {
             self.session_failed.set(true);
@@ -544,7 +549,7 @@ impl RealImeDriver {
                 self.note_decode_error("ImmGetConversionStatusが失敗した");
                 return Err(windows::core::Error::from_thread());
             }
-            let mode = match normalized_mode(raw.0) {
+            let mode = match normalized_mode(raw.0, open) {
                 Ok(mode) => mode,
                 Err(err) => {
                     self.note_decode_error(&format!("未知の変換モード値 0x{:04X}", raw.0));
@@ -573,7 +578,7 @@ impl RealImeDriver {
         )?;
         Some(Status {
             open,
-            mode: normalized_mode(u32::try_from(raw).ok()?).ok()?,
+            mode: normalized_mode(u32::try_from(raw).ok()?, open).ok()?,
             composing: self.observe_imm().ok()?.status.composing,
         })
     }
@@ -671,7 +676,8 @@ impl ImeDriver for RealImeDriver {
         // `Executor::press`の再試行ループ（`max_press_retries`回）のたびに同じ
         // フォーカス喪失を重複して`session_monitor`へ計上してしまう
         // （未送達自体は`Anomaly::KeyNotDelivered`として別途数えられている）。
-        let contaminated = delivered && self.check_session_interference();
+        let contaminated =
+            delivered && self.check_session_interference(before.status != after.status);
         PressReport {
             delivered,
             cost_ms: 0.0,
@@ -766,9 +772,16 @@ impl ImeDriver for RealImeDriver {
     }
 }
 
-fn normalized_mode(raw: u32) -> WinResult<u8> {
+/// IMEが閉じているときのconvは、IMM側が0x0001等の既知表に無い値を返す
+/// （MS-IME本体で実測: open=0でImmGetConversionStatus=0x01、TSF compartmentは0x00）。
+/// 閉状態ではconvに意味がないので直接入力(0x00)へ正規化する。開状態の未知値は
+/// 誤分類を避けるため従来どおりエラーにする。
+fn normalized_mode(raw: u32, open: bool) -> WinResult<u8> {
     Conv::from_raw(raw).map_or_else(
         || {
+            if !open {
+                return Ok(0x00);
+            }
             Err(windows::core::Error::new(
                 windows::core::HRESULT(0x8000_4005u32.cast_signed()),
                 "unsupported conversion mode",

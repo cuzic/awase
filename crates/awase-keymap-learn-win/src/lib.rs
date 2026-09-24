@@ -20,4 +20,4 @@ pub use env_version::{file_version, probe_gji_env_version, probe_gji_env_version
 #[cfg(windows)]
 pub use hook_monitor::HookMonitor;
 #[cfg(windows)]
-pub use ime_notify::{arrival_log, ImeNotifyMonitor};
+pub use ime_notify::ImeNotifyMonitor;
