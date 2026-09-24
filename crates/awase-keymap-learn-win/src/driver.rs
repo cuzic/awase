@@ -972,7 +972,11 @@ fn create_window() -> WinResult<(HWND, HWND)> {
             GWLP_WNDPROC,
             (edit_proc as *const () as usize).cast_signed(),
         );
-        ORIG_EDIT_PROC.store(orig, Ordering::SeqCst);
+        // 二重にサブクラス化した場合（`orig`が`edit_proc`自身）に自己再帰しないよう、
+        // 自分自身は元のプロシージャとして記録しない。
+        if orig != (edit_proc as *const () as usize).cast_signed() {
+            ORIG_EDIT_PROC.store(orig, Ordering::SeqCst);
+        }
         Ok((window, edit))
     }
 }

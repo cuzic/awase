@@ -47,7 +47,13 @@ pub fn queue_notify(wparam: usize) {
             l.push(wparam);
         }
     });
-    QUEUED.with(|q| q.borrow_mut().push((wparam, Instant::now())));
+    QUEUED.with(|q| {
+        let mut q = q.borrow_mut();
+        // 取り出されないまま溜まり続けないよう上限を置く（通常は`pump_for`が即座に取り出す）。
+        if q.len() < 1024 {
+            q.push((wparam, Instant::now()));
+        }
+    });
 }
 
 /// 積まれた通知を全て`monitor`へ渡す。`pump_for`と`mark_expected_notify`の
