@@ -405,6 +405,9 @@ fn keymap_learn_judgement_label(j: awase_keymap_learn::judgement::TableJudgement
         TableJudgement::Rejected(RejectedReason::InsufficientSamples) => {
             "Rejected(InsufficientSamples)".to_owned()
         }
+        TableJudgement::Rejected(RejectedReason::FingerprintUnavailable) => {
+            "Rejected(FingerprintUnavailable)".to_owned()
+        }
     }
 }
 

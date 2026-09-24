@@ -33,7 +33,8 @@ use std::fs;
 use std::path::Path;
 
 use awase_keymap_learn::model::{Disposition, Outcome};
-use awase_keymap_learn::persist::{self, LoadError, PersistedCell, PersistedTable};
+use awase_keymap_learn::persist::{self, Fingerprint, LoadError, PersistedCell, PersistedTable};
+use awase_keymap_learn::staleness::{self, FingerprintProbe, Staleness};
 
 use super::key_effect_predictor::{
     bundled_table, cell as make_cell, Cell, Conv, Disp, KeymapPreset, Stage, TableKey,
@@ -78,6 +79,10 @@ pub enum RejectReason {
     NotAccepted {
         judgement: Option<awase_keymap_learn::judgement::TableJudgement>,
     },
+    /// 学習時点のキーマップ指紋が現在のキーマップと一致しない/確認できない（[`staleness::check`]が
+    /// `Fresh`以外）。判定は書き手の採否判定のやり直しではなく、「表が測った構成と今の構成が
+    /// 同じか」の照合（ADR-196決定1eの「判定をやり直さない」は正答率等の採否判定を指す）。
+    Stale(Staleness),
 }
 
 impl std::fmt::Display for RejectReason {
@@ -102,6 +107,10 @@ impl std::fmt::Display for RejectReason {
                     "書き手の採否判定がAcceptedでない(judgement={judgement:?})"
                 )
             }
+            Self::Stale(staleness) => write!(
+                f,
+                "学習時のキーマップ構成と現在の構成が一致しない(staleness={staleness:?})"
+            ),
         }
     }
 }
@@ -398,9 +407,18 @@ pub(crate) fn table_file_stamp() -> Option<(u64, u64)> {
 /// [`RuntimeTableCache::get`]の`load`引数。採用できなければ理由をログに残して`None`を返す
 /// （呼び出し側は同梱表へフォールバックする）。
 #[cfg(windows)]
-pub(crate) fn load_and_log(preset: KeymapPreset, check_against_bundled: bool) -> Option<Vec<Cell>> {
+pub(crate) fn load_and_log(
+    preset: KeymapPreset,
+    check_against_bundled: bool,
+    fingerprint: Fingerprint,
+) -> Option<Vec<Cell>> {
     let path = table_file_path()?;
-    match load_runtime_table(&path, preset, check_against_bundled) {
+    match load_runtime_table(
+        &path,
+        preset,
+        check_against_bundled,
+        FingerprintProbe::Computed(fingerprint),
+    ) {
         Ok(cells) => {
             tracing::info!(
                 "[key-effect-runtime] 学習済み表を採用: {} セル (path={})",
@@ -420,6 +438,28 @@ pub(crate) fn load_and_log(preset: KeymapPreset, check_against_bundled: bool) ->
             );
             None
         }
+    }
+}
+
+/// 学習プロセスが使う「今のキーマップの指紋」。
+///
+/// `awase-keymap-learn-win`が、学習時点の指紋を書き込む/再検証で照合するために使う。awase.exeの読込（`kp_predict_key_effect`）が
+/// 使う指紋と同じ関数（`KeyEffectKeymap::fingerprint`）から作るので、書き手と読み手で
+/// 計算方式がずれない。GJI/Microsoft IME本体以外（`Other`）は指紋方式が無い（`NotSupported`、
+/// 実行時もその構成では予測しない）。GJIで`config1.db`が読めない/解析できないときは`Unavailable`。
+#[cfg(windows)]
+#[must_use]
+pub fn current_fingerprint_probe(tip: super::ime_kind::TipIdentity) -> FingerprintProbe {
+    use super::ime_kind::TipIdentity;
+    match tip {
+        TipIdentity::Gji => crate::gji_charset_autodetect::read_key_effect_keymap()
+            .map_or(FingerprintProbe::Unavailable, |k| {
+                FingerprintProbe::Computed(k.fingerprint())
+            }),
+        TipIdentity::MsImeNative => FingerprintProbe::Computed(
+            crate::msime_key_assignment::read_key_effect_keymap_native().fingerprint(),
+        ),
+        TipIdentity::Other => FingerprintProbe::NotSupported,
     }
 }
 
@@ -443,9 +483,10 @@ pub fn load_runtime_table(
     path: &Path,
     preset: KeymapPreset,
     check_against_bundled: bool,
+    current_fingerprint: FingerprintProbe,
 ) -> Result<Vec<Cell>, RejectReason> {
     let table = read_persisted_table(path)?;
-    validate_and_convert(&table, preset, check_against_bundled)
+    validate_and_convert(&table, preset, check_against_bundled, current_fingerprint)
 }
 
 /// ファイルを読んで`PersistedTable`へパースするところまで（採否判定・変換はしない）。
@@ -474,11 +515,18 @@ pub fn validate_and_convert(
     table: &PersistedTable,
     preset: KeymapPreset,
     check_against_bundled: bool,
+    current_fingerprint: FingerprintProbe,
 ) -> Result<Vec<Cell>, RejectReason> {
     if table.judgement != Some(awase_keymap_learn::judgement::TableJudgement::Accepted) {
         return Err(RejectReason::NotAccepted {
             judgement: table.judgement,
         });
+    }
+    // 学習時点のキーマップ指紋と現在の指紋を照合する（ADR-195段階8）。指紋を持たない表
+    // （指紋配線前に書かれたもの）は`check`が`Fresh`にする＝従来どおり保護しない。
+    let staleness = staleness::check(table, current_fingerprint);
+    if staleness.is_stale() {
+        return Err(RejectReason::Stale(staleness));
     }
     let converted = convert_cells(&table.cells);
     let coverage = coverage_ratio(&table.cells, converted.len());
@@ -500,7 +548,7 @@ pub fn validate_and_convert(
 /// `RECHECK_MS`ごとにファイルの版（更新時刻+長さ）だけを問い合わせ、変わったときだけ読み直す。
 /// 判定は純関数で、fs/時計は呼び出し側が渡す（テスト容易性のため`KeymapCache`と同じ形にする）。
 ///
-/// ファイル自身のスタンプに加えて`(KeymapPreset, check_against_bundled)`も版の一部として
+/// ファイル自身のスタンプに加えて`(KeymapPreset, check_against_bundled, キーマップ指紋)`も版の一部として
 /// 比較する——学習済み表ファイル自体は変わっていなくても、GJIのプリセット切替
 /// （`session_keymap`）やカスタム構成の有無が変わると、`validate_and_convert`が
 /// 検証に使う`preset`/`check_against_bundled`が変わり、以前キャッシュしたセルは
@@ -510,7 +558,7 @@ pub fn validate_and_convert(
 #[derive(Debug, Default)]
 pub struct RuntimeTableCache {
     checked_at_ms: Option<u64>,
-    stamp: Option<(u64, u64, KeymapPreset, bool)>,
+    stamp: Option<(u64, u64, KeymapPreset, bool, Fingerprint)>,
     cells: Option<Vec<Cell>>,
 }
 
@@ -525,19 +573,21 @@ impl RuntimeTableCache {
     /// 無い/読めなかった場合は`None`）。
     #[must_use]
     pub fn last_validation_key(&self) -> Option<(KeymapPreset, bool)> {
-        self.stamp.map(|(_, _, preset, check)| (preset, check))
+        self.stamp.map(|(_, _, preset, check, _)| (preset, check))
     }
 
     pub const RECHECK_MS: u64 = super::key_effect_predictor::KeymapCache::RECHECK_MS;
 
     /// キャッシュした学習済み表を返す（採用できなかった/未学習なら`None`＝呼び出し側は同梱表を使う）。
     ///
-    /// `validation_key`は`(preset, check_against_bundled)`——呼び出し側が`load`に渡すのと
-    /// 同じ値を渡すこと（版の一部として比較され、変わればファイルスタンプが同じでも読み直す）。
+    /// `validation_key`は`(preset, check_against_bundled, 現在のキーマップ指紋)`——呼び出し側が
+    /// `load`に渡すのと同じ値を渡すこと。指紋を含めるのは、GJIのカスタムキーマップ/overlayや
+    /// MS-IME本体の再割り当てが変わっても`preset`・ファイルスタンプが同じままだと、読み直し
+    /// すら起きず`staleness::check`が二度と呼ばれないため（版の一部として比較され、変わればファイルスタンプが同じでも読み直す）。
     pub fn get(
         &mut self,
         now_ms: u64,
-        validation_key: (KeymapPreset, bool),
+        validation_key: (KeymapPreset, bool, Fingerprint),
         stamp: impl FnOnce() -> Option<(u64, u64)>,
         load: impl FnOnce() -> Option<Vec<Cell>>,
     ) -> Option<&[Cell]> {
@@ -554,11 +604,18 @@ impl RuntimeTableCache {
         let validation_key_changed = !first
             && self
                 .stamp
-                .is_some_and(|(_, _, preset, check)| (preset, check) != validation_key);
+                .is_some_and(|(_, _, preset, check, fp)| (preset, check, fp) != validation_key);
         if due || validation_key_changed {
             self.checked_at_ms = Some(now_ms);
-            let now_stamp =
-                stamp().map(|(mtime, len)| (mtime, len, validation_key.0, validation_key.1));
+            let now_stamp = stamp().map(|(mtime, len)| {
+                (
+                    mtime,
+                    len,
+                    validation_key.0,
+                    validation_key.1,
+                    validation_key.2,
+                )
+            });
             if first || now_stamp != self.stamp {
                 self.stamp = now_stamp;
                 self.cells = load();
@@ -571,6 +628,11 @@ impl RuntimeTableCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 指紋を持たない表（旧形式）向けの「現在の指紋」: 比較対象が無いので照合しない。
+    const NS: FingerprintProbe = FingerprintProbe::NotSupported;
+    const FP: Fingerprint = Fingerprint(1, 2);
+    use super::super::key_effect_predictor::KeyEffectKeymap;
     use awase_keymap_learn::judgement::TableJudgement;
     use awase_keymap_learn::model::{KeyId, Status};
 
@@ -651,7 +713,7 @@ mod tests {
             cells.push(pcell(true, 0x09, false, 0x99, None)); // 表に無いVK: 常に変換不能
         }
         let table = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
-        let err = validate_and_convert(&table, KeymapPreset::Atok, false).unwrap_err();
+        let err = validate_and_convert(&table, KeymapPreset::Atok, false, NS).unwrap_err();
         assert!(matches!(err, RejectReason::CoverageTooLow { .. }));
     }
 
@@ -661,7 +723,7 @@ mod tests {
             .map(|_| pcell(true, 0x09, false, 0xF2, Some((true, 0x00))))
             .collect();
         let table = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
-        let out = validate_and_convert(&table, KeymapPreset::Atok, false).unwrap();
+        let out = validate_and_convert(&table, KeymapPreset::Atok, false, NS).unwrap();
         assert_eq!(out.len(), 10);
     }
 
@@ -675,13 +737,13 @@ mod tests {
             .collect();
         let table = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
         let rejected_when_checked =
-            validate_and_convert(&table, KeymapPreset::Atok, true).unwrap_err();
+            validate_and_convert(&table, KeymapPreset::Atok, true, NS).unwrap_err();
         assert!(matches!(
             rejected_when_checked,
             RejectReason::MismatchesBundledTooMuch { .. }
         ));
         // カスタム構成(突き合わせなし)なら同じ表でも採用される。
-        assert!(validate_and_convert(&table, KeymapPreset::Atok, false).is_ok());
+        assert!(validate_and_convert(&table, KeymapPreset::Atok, false, NS).is_ok());
     }
 
     /// C-3回帰テスト(opus-adversarial-consult 2026-09-23): 書き手の採否判定が
@@ -697,7 +759,7 @@ mod tests {
 
         let no_judgement = PersistedTable::new(cells.clone());
         assert_eq!(
-            validate_and_convert(&no_judgement, KeymapPreset::Atok, false).unwrap_err(),
+            validate_and_convert(&no_judgement, KeymapPreset::Atok, false, NS).unwrap_err(),
             RejectReason::NotAccepted { judgement: None }
         );
 
@@ -705,7 +767,7 @@ mod tests {
             awase_keymap_learn::judgement::RejectedReason::LowAccuracy,
         ));
         assert!(matches!(
-            validate_and_convert(&rejected, KeymapPreset::Atok, false).unwrap_err(),
+            validate_and_convert(&rejected, KeymapPreset::Atok, false, NS).unwrap_err(),
             RejectReason::NotAccepted {
                 judgement: Some(TableJudgement::Rejected(_))
             }
@@ -716,7 +778,7 @@ mod tests {
                 awase_keymap_learn::judgement::NeedsConfirmationReason::UnverifiedMsImeNative,
             ));
         assert!(matches!(
-            validate_and_convert(&needs_confirmation, KeymapPreset::Atok, false).unwrap_err(),
+            validate_and_convert(&needs_confirmation, KeymapPreset::Atok, false, NS).unwrap_err(),
             RejectReason::NotAccepted {
                 judgement: Some(TableJudgement::NeedsConfirmation(_))
             }
@@ -923,7 +985,7 @@ mod tests {
             loads.set(loads.get() + 1);
             Some(vec![])
         };
-        let key = (KeymapPreset::Atok, true);
+        let key = (KeymapPreset::Atok, true, FP);
         assert!(cache.get(0, key, || Some((1, 10)), load).is_some());
         assert_eq!(loads.get(), 1);
         // 間隔内はfsを読まない。
@@ -960,14 +1022,14 @@ mod tests {
             Some(vec![])
         };
         assert!(cache
-            .get(0, (KeymapPreset::Atok, true), || Some((1, 10)), load)
+            .get(0, (KeymapPreset::Atok, true, FP), || Some((1, 10)), load)
             .is_some());
         assert_eq!(loads.get(), 1);
         // ファイルスタンプは同じ(1, 10)のまま、プリセットだけがMsImeへ変わった。
         assert!(cache
             .get(
                 RuntimeTableCache::RECHECK_MS,
-                (KeymapPreset::MsIme, true),
+                (KeymapPreset::MsIme, true, FP),
                 || Some((1, 10)),
                 load
             )
@@ -977,7 +1039,7 @@ mod tests {
         assert!(cache
             .get(
                 RuntimeTableCache::RECHECK_MS * 2,
-                (KeymapPreset::MsIme, false),
+                (KeymapPreset::MsIme, false, FP),
                 || Some((1, 10)),
                 load
             )
@@ -1000,18 +1062,175 @@ mod tests {
             Some(vec![])
         };
         assert!(cache
-            .get(0, (KeymapPreset::Atok, true), || Some((1, 10)), load)
+            .get(0, (KeymapPreset::Atok, true, FP), || Some((1, 10)), load)
             .is_some());
         assert_eq!(loads.get(), 1);
         // RECHECK_MSの窓の途中(now_msを1msしか進めない、due=false)でプリセットが変わった。
         assert!(cache
-            .get(1, (KeymapPreset::MsIme, true), || Some((1, 10)), load)
+            .get(1, (KeymapPreset::MsIme, true, FP), || Some((1, 10)), load)
             .is_some());
         assert_eq!(
             loads.get(),
             2,
             "RECHECK_MSの窓の途中でもプリセット変更は読み直すべき"
         );
+    }
+
+    // ---- 陳腐化検出(学習表の指紋照合、ADR-195段階8の実行時配線) ----
+
+    fn accepted_table_with(fingerprint: Option<Fingerprint>) -> PersistedTable {
+        let cells: Vec<_> = (0..10)
+            .map(|_| pcell(true, 0x09, false, 0xF2, Some((true, 0x00))))
+            .collect();
+        let mut t = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
+        t.fingerprint = fingerprint;
+        t
+    }
+
+    fn gji_fp(session: i64, custom: Option<&str>, overlay: &[i64]) -> Fingerprint {
+        awase_keymap_learn::fingerprint::gji_keymap_fingerprint(Some(session), custom, overlay)
+    }
+
+    fn adopt(table: &PersistedTable, current: FingerprintProbe) -> Result<Vec<Cell>, RejectReason> {
+        validate_and_convert(table, KeymapPreset::Atok, false, current)
+    }
+
+    /// (a) 指紋が違う表は棄却される。一致すれば採用される。
+    #[test]
+    fn table_with_different_fingerprint_is_rejected_as_stale() {
+        let table = accepted_table_with(Some(gji_fp(1, None, &[])));
+        let err = adopt(&table, FingerprintProbe::Computed(gji_fp(2, None, &[]))).unwrap_err();
+        assert_eq!(err, RejectReason::Stale(Staleness::FingerprintMismatch));
+        assert!(adopt(&table, FingerprintProbe::Computed(gji_fp(1, None, &[]))).is_ok());
+    }
+
+    /// (b) シナリオ2: GJIの指紋の表を、Microsoft IME本体の指紋(`MsImeNative`)の下で読むと棄却。
+    #[test]
+    fn gji_table_is_rejected_under_ms_ime_native_fingerprint() {
+        let table = accepted_table_with(Some(gji_fp(1, None, &[])));
+        let native = KeyEffectKeymap::for_msime_native(false, None, None);
+        let err = validate_and_convert(
+            &table,
+            native.preset(),
+            native.is_unmodified_bundled_config(),
+            FingerprintProbe::Computed(native.fingerprint()),
+        )
+        .unwrap_err();
+        assert_eq!(err, RejectReason::Stale(Staleness::FingerprintMismatch));
+    }
+
+    /// (c) 指紋を持つ表 + 現在が指紋方式なし(NotSupported) → 棄却。
+    #[test]
+    fn stored_fingerprint_against_not_supported_is_rejected() {
+        let table = accepted_table_with(Some(gji_fp(1, None, &[])));
+        let err = adopt(&table, FingerprintProbe::NotSupported).unwrap_err();
+        assert_eq!(err, RejectReason::Stale(Staleness::FingerprintNotSupported));
+    }
+
+    /// 現在の指紋を計算できなかった(Unavailable)なら、指紋を持つ表は安全側で棄却。
+    #[test]
+    fn stored_fingerprint_against_unavailable_is_rejected() {
+        let table = accepted_table_with(Some(gji_fp(1, None, &[])));
+        let err = adopt(&table, FingerprintProbe::Unavailable).unwrap_err();
+        assert_eq!(err, RejectReason::Stale(Staleness::FingerprintUnavailable));
+    }
+
+    /// 指紋を持たない旧形式の表は従来どおり(保護されないが、棄却もされない)。
+    #[test]
+    fn table_without_fingerprint_keeps_legacy_behaviour() {
+        let table = accepted_table_with(None);
+        assert!(adopt(&table, FingerprintProbe::Computed(gji_fp(1, None, &[]))).is_ok());
+        assert!(adopt(&table, FingerprintProbe::NotSupported).is_ok());
+    }
+
+    /// (d) overlayの中身だけが違う(どちらも`has_overlay=true`)GJI構成を、`KeyEffectKeymap`経由の
+    /// 指紋で区別して棄却する。真偽値から作る旧案では見逃していたケース。
+    #[test]
+    fn overlay_content_change_is_detected_through_the_keymap_fingerprint() {
+        let learned_under = KeyEffectKeymap::from_config(Some(1), None, &[100]).unwrap();
+        let now = KeyEffectKeymap::from_config(Some(1), None, &[101]).unwrap();
+        assert_eq!(
+            learned_under.is_unmodified_bundled_config(),
+            now.is_unmodified_bundled_config()
+        );
+        let table = accepted_table_with(Some(learned_under.fingerprint()));
+        let err = adopt(&table, FingerprintProbe::Computed(now.fingerprint())).unwrap_err();
+        assert_eq!(err, RejectReason::Stale(Staleness::FingerprintMismatch));
+    }
+
+    /// (e) MS-IME本体の再割り当て値が「0以外→別の0以外」に変わったケース
+    /// (`henkan_reassigned`はどちらもtrueで、旧案の真偽値では区別できない)。
+    #[test]
+    fn msime_native_reassignment_value_change_is_detected_through_the_keymap_fingerprint() {
+        let learned_under = KeyEffectKeymap::for_msime_native(true, Some(1), Some(1));
+        let now = KeyEffectKeymap::for_msime_native(true, Some(1), Some(2));
+        let table = accepted_table_with(Some(learned_under.fingerprint()));
+        let err = adopt(&table, FingerprintProbe::Computed(now.fingerprint())).unwrap_err();
+        assert_eq!(err, RejectReason::Stale(Staleness::FingerprintMismatch));
+        assert!(adopt(
+            &table,
+            FingerprintProbe::Computed(learned_under.fingerprint())
+        )
+        .is_ok());
+    }
+
+    /// キーマップ指紋は`KeyEffectKeymap`構築時に生の入力から作られ、同じ入力なら同じ値。
+    #[test]
+    fn keymap_fingerprint_is_deterministic_and_input_sensitive() {
+        let a = KeyEffectKeymap::from_config(Some(1), Some("t".into()), &[1]).unwrap();
+        let b = KeyEffectKeymap::from_config(Some(1), Some("t".into()), &[1]).unwrap();
+        let c = KeyEffectKeymap::from_config(Some(1), Some("u".into()), &[1]).unwrap();
+        assert_eq!(a.fingerprint(), b.fingerprint());
+        assert_ne!(a.fingerprint(), c.fingerprint());
+    }
+
+    /// (i) シナリオ1: presetもファイルスタンプも同じまま指紋だけ変わったら、読み直して棄却する
+    /// (`RECHECK_MS`の窓の途中でも)。キャッシュキーに指紋が無いと`staleness::check`は二度と呼ばれない。
+    #[test]
+    fn runtime_table_cache_reloads_and_rejects_when_only_the_fingerprint_changes() {
+        let table = accepted_table_with(Some(gji_fp(1, Some("A"), &[])));
+        let fp_a = gji_fp(1, Some("A"), &[]);
+        let fp_b = gji_fp(1, Some("B"), &[]);
+        let mut cache = RuntimeTableCache::default();
+        let load_for = |fp: Fingerprint| {
+            let table = table.clone();
+            move || {
+                validate_and_convert(
+                    &table,
+                    KeymapPreset::Custom,
+                    false,
+                    FingerprintProbe::Computed(fp),
+                )
+                .ok()
+            }
+        };
+        assert!(cache
+            .get(
+                0,
+                (KeymapPreset::Custom, false, fp_a),
+                || Some((1, 10)),
+                load_for(fp_a)
+            )
+            .is_some());
+        // 同じpreset・同じファイルスタンプ・窓の途中。指紋だけが変わった。
+        assert!(cache
+            .get(
+                1,
+                (KeymapPreset::Custom, false, fp_b),
+                || Some((1, 10)),
+                load_for(fp_b)
+            )
+            .is_none());
+        assert!(!cache.is_active());
+        // 元の構成へ戻せば再び採用される。
+        assert!(cache
+            .get(
+                2,
+                (KeymapPreset::Custom, false, fp_a),
+                || Some((1, 10)),
+                load_for(fp_a)
+            )
+            .is_some());
     }
 
     /// CI専用(`--ignored`、環境変数`KL_TABLE_PATH`): 実機の学習プロセスが書いた
@@ -1046,7 +1265,7 @@ mod tests {
             strict_mismatch as f64 / compared.max(1) as f64,
             mismatch_ratio(&learned, bundled),
         );
-        let result = load_runtime_table(path, KeymapPreset::Atok, true);
+        let result = load_runtime_table(path, KeymapPreset::Atok, true, NS);
         println!(
             "CI-RESULT load_runtime_table={:?}",
             result.as_ref().map(Vec::len)
@@ -1061,7 +1280,7 @@ mod tests {
         let missing = std::env::temp_dir().join("awase_keymap_learn_table_does_not_exist.json");
         let _ = fs::remove_file(&missing);
         assert_eq!(
-            load_runtime_table(&missing, KeymapPreset::Atok, true),
+            load_runtime_table(&missing, KeymapPreset::Atok, true, NS),
             Err(RejectReason::NotFound)
         );
 
@@ -1073,7 +1292,7 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir(&dir).expect("create test dir");
-        let result = load_runtime_table(&dir, KeymapPreset::Atok, true);
+        let result = load_runtime_table(&dir, KeymapPreset::Atok, true, NS);
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(result, Err(RejectReason::Io));
     }
@@ -1089,7 +1308,7 @@ mod tests {
     fn runtime_table_cache_falls_back_to_none_when_load_rejects() {
         let mut cache = RuntimeTableCache::default();
         assert!(cache
-            .get(0, (KeymapPreset::Atok, true), || Some((1, 10)), || None)
+            .get(0, (KeymapPreset::Atok, true, FP), || Some((1, 10)), || None)
             .is_none());
     }
 
@@ -1110,7 +1329,7 @@ mod tests {
         // 違う)独自の挙動を1セルだけ学習した表。
         let learned = vec![pcell(false, 0x00, false, 0xF2, Some((true, 0x09)))]; // 閉→開
         let table = PersistedTable::new(learned).with_judgement(TableJudgement::Accepted);
-        let cells = validate_and_convert(&table, KeymapPreset::Atok, false)
+        let cells = validate_and_convert(&table, KeymapPreset::Atok, false, NS)
             .expect("カスタム構成は突き合わせをしないので採用される");
 
         let closed = PredictInput {

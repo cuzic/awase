@@ -1257,12 +1257,19 @@ impl Runtime {
         }
         let preset = keymap.preset();
         let check_against_bundled = keymap.is_unmodified_bundled_config();
+        let fingerprint = keymap.fingerprint();
         self.key_effect_runtime_table
             .get(
                 now_ms,
-                (preset, check_against_bundled),
+                (preset, check_against_bundled, fingerprint),
                 crate::state::key_effect_runtime::table_file_stamp,
-                || crate::state::key_effect_runtime::load_and_log(preset, check_against_bundled),
+                || {
+                    crate::state::key_effect_runtime::load_and_log(
+                        preset,
+                        check_against_bundled,
+                        fingerprint,
+                    )
+                },
             )
             .map(<[_]>::to_vec)
     }

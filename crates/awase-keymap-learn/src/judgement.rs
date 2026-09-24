@@ -12,6 +12,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::staleness::FingerprintProbe;
 use crate::verify::ScoreReport;
 
 /// 決定1a: 正答率がこれ未満なら表全体を不採用にする。
@@ -52,6 +53,13 @@ pub enum RejectedReason {
     /// 縮退率が高いウォークほど予測が集まりにくいため、この理由自体が縮退の症状で
     /// あることが多い。
     InsufficientSamples,
+    /// 学習時点のキーマップ指紋を計算できなかった(GJI/Microsoft IME本体で`config1.db`・
+    /// レジストリが読めない、または学習中に構成が変わった等)。指紋`None`の表は
+    /// [`crate::staleness::check`]で永久に保護されない(`(None, _) → Fresh`)ため、
+    /// 指紋が取れなかった表は採用へ進ませず不採用にする(実行時配線、
+    /// `docs/tasks/review-2026-09-24-06-keymap-learn-staleness-wiring.md`)。
+    /// 旧版のバイナリはこの値を読めず解析失敗として扱う(予測には使われない安全側)。
+    FingerprintUnavailable,
 }
 
 /// 表全体を「要確認」（既定では不採用、ユーザーの明示操作でのみ採用）に
@@ -235,6 +243,10 @@ pub enum AdoptRejected {
     /// 不採用（95%未満・縮退率超過）は、1a「分母の操作によるセル選別での水増しは
     /// 禁止」という安全弁の下でユーザー操作による採用対象にしない。
     Rejected,
+    /// 表に学習時点のキーマップ指紋が無い(指紋配線前の学習プロセスが書いた退避ファイル等)。
+    /// 指紋`None`の表は陳腐化検出で保護されないため、`NeedsConfirmation`から`Accepted`へは
+    /// 昇格させない(再学習が必要)。
+    NoFingerprint,
 }
 
 impl std::fmt::Display for AdoptRejected {
@@ -242,7 +254,27 @@ impl std::fmt::Display for AdoptRejected {
         f.write_str(match self {
             Self::NoJudgement => "no_judgement",
             Self::Rejected => "rejected",
+            Self::NoFingerprint => "no_fingerprint",
         })
+    }
+}
+
+/// 学習側の書き込み前ゲート: 指紋を計算できなかった([`FingerprintProbe::Unavailable`])のに
+/// `Accepted`/`NeedsConfirmation`のまま表を書くと、指紋`None`の表が採用対象になって
+/// 陳腐化検出で永久に保護されない。そこで`Rejected(FingerprintUnavailable)`に落とす。
+/// 既に`Rejected`なら理由を上書きしない。`NotSupported`(指紋方式の無いIME)・`Computed`は
+/// そのまま返す。
+#[must_use]
+pub const fn gate_on_fingerprint(
+    judgement: TableJudgement,
+    probe: FingerprintProbe,
+) -> TableJudgement {
+    match (judgement, probe) {
+        (TableJudgement::Rejected(_), _) => judgement,
+        (_, FingerprintProbe::Unavailable) => {
+            TableJudgement::Rejected(RejectedReason::FingerprintUnavailable)
+        }
+        _ => judgement,
     }
 }
 
@@ -257,10 +289,19 @@ impl std::fmt::Display for AdoptRejected {
 /// 表ファイルへの書き込みは呼び出し側(`awase-keymap-learn-win`、Windows専用の
 /// ファイルI/O)の責務。本関数はメモリ上の判定値を書き換えるだけの純粋関数
 /// (ホストでユニットテスト可能、決定1b-8のロジック自体はOS非依存)。
+///
+/// `has_fingerprint`は表が学習時点のキーマップ指紋を持つか。持たない表の`NeedsConfirmation`
+/// は昇格させない([`AdoptRejected::NoFingerprint`])。
 pub fn adopt_needs_confirmation(
     judgement: Option<TableJudgement>,
+    has_fingerprint: bool,
 ) -> Result<TableJudgement, AdoptRejected> {
     match judgement {
+        // 指紋の無い表は陳腐化検出で保護されないので、要確認からの昇格は拒む。
+        // 既に採用済みの再実行(冪等成功)は状態を変えないので指紋を問わない。
+        Some(TableJudgement::NeedsConfirmation(_)) if !has_fingerprint => {
+            Err(AdoptRejected::NoFingerprint)
+        }
         Some(TableJudgement::NeedsConfirmation(_) | TableJudgement::Accepted) => {
             Ok(TableJudgement::Accepted)
         }
@@ -455,7 +496,7 @@ mod tests {
             },
         ));
         assert_eq!(
-            adopt_needs_confirmation(judgement),
+            adopt_needs_confirmation(judgement, true),
             Ok(TableJudgement::Accepted)
         );
     }
@@ -466,7 +507,7 @@ mod tests {
             NeedsConfirmationReason::UnverifiedMsImeNative,
         ));
         assert_eq!(
-            adopt_needs_confirmation(judgement),
+            adopt_needs_confirmation(judgement, true),
             Ok(TableJudgement::Accepted)
         );
     }
@@ -476,7 +517,7 @@ mod tests {
         // code-review指摘: 二重クリック・再試行が目的の状態(採用済み)に既に到達して
         // いるのを失敗扱いしない(冪等な成功)。
         assert_eq!(
-            adopt_needs_confirmation(Some(TableJudgement::Accepted)),
+            adopt_needs_confirmation(Some(TableJudgement::Accepted), true),
             Ok(TableJudgement::Accepted)
         );
     }
@@ -486,13 +527,17 @@ mod tests {
         // 不採用(95%未満・縮退率超過)は、水増し禁止の安全弁として
         // ユーザー操作での採用対象にしない(1b-8はNeedsConfirmationだけが対象)。
         assert_eq!(
-            adopt_needs_confirmation(Some(TableJudgement::Rejected(RejectedReason::LowAccuracy))),
+            adopt_needs_confirmation(
+                Some(TableJudgement::Rejected(RejectedReason::LowAccuracy)),
+                true
+            ),
             Err(AdoptRejected::Rejected)
         );
         assert_eq!(
-            adopt_needs_confirmation(Some(TableJudgement::Rejected(
-                RejectedReason::HighDegeneration
-            ))),
+            adopt_needs_confirmation(
+                Some(TableJudgement::Rejected(RejectedReason::HighDegeneration)),
+                true
+            ),
             Err(AdoptRejected::Rejected)
         );
     }
@@ -500,8 +545,72 @@ mod tests {
     #[test]
     fn adopt_rejects_missing_judgement() {
         assert_eq!(
-            adopt_needs_confirmation(None),
+            adopt_needs_confirmation(None, true),
             Err(AdoptRejected::NoJudgement)
         );
+    }
+
+    #[test]
+    fn adopt_refuses_to_promote_needs_confirmation_without_fingerprint() {
+        // 指紋配線前の学習プロセスが書いた退避ファイル(指紋None)を、設定画面の
+        // 「採用」だけで本体へ昇格させない。
+        for reason in [
+            NeedsConfirmationReason::UnverifiedMsImeNative,
+            NeedsConfirmationReason::SystematicMismatch {
+                mismatch_percent: 40,
+            },
+        ] {
+            assert_eq!(
+                adopt_needs_confirmation(Some(TableJudgement::NeedsConfirmation(reason)), false),
+                Err(AdoptRejected::NoFingerprint)
+            );
+        }
+    }
+
+    #[test]
+    fn adopt_stays_idempotent_for_accepted_even_without_fingerprint() {
+        assert_eq!(
+            adopt_needs_confirmation(Some(TableJudgement::Accepted), false),
+            Ok(TableJudgement::Accepted)
+        );
+    }
+
+    #[test]
+    fn gate_rejects_accepted_and_needs_confirmation_when_fingerprint_unavailable() {
+        let unavailable = FingerprintProbe::Unavailable;
+        let want = TableJudgement::Rejected(RejectedReason::FingerprintUnavailable);
+        assert_eq!(
+            gate_on_fingerprint(TableJudgement::Accepted, unavailable),
+            want
+        );
+        assert_eq!(
+            gate_on_fingerprint(
+                TableJudgement::NeedsConfirmation(NeedsConfirmationReason::UnverifiedMsImeNative),
+                unavailable
+            ),
+            want
+        );
+    }
+
+    #[test]
+    fn gate_keeps_existing_rejection_reason_and_passes_other_probes() {
+        let low = TableJudgement::Rejected(RejectedReason::LowAccuracy);
+        assert_eq!(gate_on_fingerprint(low, FingerprintProbe::Unavailable), low);
+        for probe in [
+            FingerprintProbe::NotSupported,
+            FingerprintProbe::Computed(crate::persist::Fingerprint(1, 2)),
+        ] {
+            assert_eq!(
+                gate_on_fingerprint(TableJudgement::Accepted, probe),
+                TableJudgement::Accepted
+            );
+        }
+    }
+
+    #[test]
+    fn fingerprint_unavailable_survives_json_round_trip() {
+        let j = TableJudgement::Rejected(RejectedReason::FingerprintUnavailable);
+        let json = serde_json::to_string(&j).unwrap();
+        assert_eq!(serde_json::from_str::<TableJudgement>(&json).unwrap(), j);
     }
 }

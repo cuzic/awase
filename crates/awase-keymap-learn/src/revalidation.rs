@@ -458,4 +458,28 @@ mod tests {
         assert_eq!(new.env_version, Some(StoredEnvVersion::Known(V1)));
         assert_eq!(new.verification, Some(verification(3)));
     }
+
+    #[test]
+    fn apply_revalidation_keeps_the_stored_fingerprint_in_both_outcomes() {
+        // 再検証は指紋を書き換えない(GJIの表を別構成の下で「再検証合格」させる経路を
+        // 呼び出し側が先に塞ぐ前提。ここでは書き換えないことだけを固定する)。
+        let fp = crate::persist::Fingerprint(7, 9);
+        let old = PersistedTable::new(vec![])
+            .with_fingerprint(fp)
+            .with_judgement(TableJudgement::Accepted);
+        let passed = apply_revalidation(
+            old.clone(),
+            RevalidationOutcome::Passed,
+            None,
+            verification(1),
+        );
+        assert_eq!(passed.fingerprint, Some(fp));
+        let invalidated = apply_revalidation(
+            old,
+            RevalidationOutcome::Invalidated(RejectedReason::LowAccuracy),
+            None,
+            verification(1),
+        );
+        assert_eq!(invalidated.fingerprint, Some(fp));
+    }
 }
