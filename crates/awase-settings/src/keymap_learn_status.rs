@@ -200,11 +200,13 @@ fn version_change(stored: StoredEnvVersion, current: EnvVersionProbe) -> String 
     }
 }
 
-/// UNIX秒を`YYYY-MM-DD`(UTC)に整形する(表ファイルの更新日表示用、日付ライブラリを
-/// 引かないための最小実装。Howard Hinnantのcivil_from_days)。
+/// UNIX秒を`utc_offset_secs`(ローカル時刻のUTCからの差、JSTなら`32400`)ずらして
+/// `YYYY-MM-DD`に整形する(表ファイルの更新日表示用、日付ライブラリを引かないための
+/// 最小実装。Howard Hinnantのcivil_from_days)。
 #[must_use]
-pub fn format_ymd_utc(unix_secs: u64) -> String {
-    let days = i64::try_from(unix_secs / 86_400).unwrap_or(0) + 719_468;
+pub fn format_ymd(unix_secs: u64, utc_offset_secs: i64) -> String {
+    let local = i64::try_from(unix_secs).unwrap_or(0) + utc_offset_secs;
+    let days = local.div_euclid(86_400) + 719_468;
     let era = days.div_euclid(146_097);
     let doe = days.rem_euclid(146_097);
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
@@ -214,6 +216,99 @@ pub fn format_ymd_utc(unix_secs: u64) -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
     format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// 現在のローカルタイムゾーンのUTCからの差(秒)。取得できない環境は0(UTC)。
+#[cfg(windows)]
+#[must_use]
+pub fn local_utc_offset_secs() -> i64 {
+    use windows::Win32::System::Time::{GetTimeZoneInformation, TIME_ZONE_INFORMATION};
+    // GetTimeZoneInformationの戻り値(TIME_ZONE_ID_STANDARD=1, TIME_ZONE_ID_DAYLIGHT=2)。
+    const STANDARD: u32 = 1;
+    const DAYLIGHT: u32 = 2;
+    let mut tzi = TIME_ZONE_INFORMATION::default();
+    // SAFETY: `tzi`は有効な出力先。
+    let id = unsafe { GetTimeZoneInformation(&raw mut tzi) };
+    let extra = match id {
+        STANDARD => tzi.StandardBias,
+        DAYLIGHT => tzi.DaylightBias,
+        _ => 0,
+    };
+    // Biasは「UTC = ローカル + Bias」(分)なので符号を反転する。
+    -i64::from(tzi.Bias + extra) * 60
+}
+
+#[cfg(not(windows))]
+#[must_use]
+pub const fn local_utc_offset_secs() -> i64 {
+    0
+}
+
+/// 現在のIME本体版(フィンガープリント)の取得状態。ブロックしうるWin32呼び出しを
+/// UIスレッドから外すため別スレッドで走らせ、結果をチャネルで受け取る。
+/// `process_start`は取得側プロセス(awase-settings)の起動時刻で、Converterの更新時刻が
+/// これより新しいと「学習中に版が変わった可能性」として`Unconfirmed`になる
+/// ([`awase_keymap_learn::revalidation::classify_converter_version`])。呼び出しごとの
+/// `now()`ではなく固定のプロセス起動時刻を使うことで、settings起動後に更新された
+/// Converterを正しく検出する。
+#[derive(Debug)]
+pub struct EnvProbe {
+    current: EnvVersionProbe,
+    rx: Option<std::sync::mpsc::Receiver<EnvVersionProbe>>,
+    started: bool,
+    pub process_start: std::time::SystemTime,
+}
+
+impl EnvProbe {
+    #[must_use]
+    pub fn new(process_start: std::time::SystemTime) -> Self {
+        Self {
+            current: EnvVersionProbe::Unknown,
+            rx: None,
+            started: false,
+            process_start,
+        }
+    }
+
+    /// 取得を開始すべきか(未開始のときだけ`true`)。
+    #[must_use]
+    pub const fn needs_start(&self) -> bool {
+        !self.started
+    }
+
+    /// 取得スレッドの受信側を登録する。
+    pub fn attach(&mut self, rx: std::sync::mpsc::Receiver<EnvVersionProbe>) {
+        self.started = true;
+        self.rx = Some(rx);
+    }
+
+    /// 学習・再検証・採用の完了後に呼ぶ。次の表示時に版を取り直す。取得が完了するまで
+    /// [`Self::is_pending`]が真で、呼び出し側は古い版で状態を再計算してはならない。
+    pub fn request_reprobe(&mut self) {
+        self.started = false;
+        self.rx = None;
+    }
+
+    /// 取得中(開始前を含む)か。
+    #[must_use]
+    pub const fn is_pending(&self) -> bool {
+        self.rx.is_some() || !self.started
+    }
+
+    /// 結果が届いていれば取り込み、更新があったら`true`。
+    pub fn poll(&mut self) -> bool {
+        let Some(probe) = self.rx.as_ref().and_then(|rx| rx.try_recv().ok()) else {
+            return false;
+        };
+        self.current = probe;
+        self.rx = None;
+        true
+    }
+
+    #[must_use]
+    pub const fn current(&self) -> EnvVersionProbe {
+        self.current
+    }
 }
 
 /// 学習を勧める文言(症状ベース、ADR196-T4実装対象4)。
@@ -243,9 +338,46 @@ mod tests {
 
     #[test]
     fn formats_unix_secs_as_date() {
-        assert_eq!(format_ymd_utc(0), "1970-01-01");
-        assert_eq!(format_ymd_utc(1_789_000_000), "2026-09-10");
-        assert_eq!(format_ymd_utc(1_709_164_800), "2024-02-29");
+        assert_eq!(format_ymd(0, 0), "1970-01-01");
+        assert_eq!(format_ymd(1_789_000_000, 0), "2026-09-10");
+        assert_eq!(format_ymd(1_709_164_800, 0), "2024-02-29");
+    }
+
+    #[test]
+    fn date_uses_local_offset_across_midnight() {
+        // 2026-09-22 20:00:00 UTC は JST(+9h) では 2026-09-23 05:00。
+        let utc_evening = 1_789_000_000 + 86_400 * 12 + 20 * 3600 - (1_789_000_000 % 86_400);
+        assert_eq!(format_ymd(utc_evening, 0), "2026-09-22");
+        assert_eq!(format_ymd(utc_evening, 9 * 3600), "2026-09-23");
+        assert_eq!(format_ymd(utc_evening, -9 * 3600), "2026-09-22");
+    }
+
+    #[test]
+    fn env_probe_reprobe_blocks_stale_state_until_result() {
+        let mut probe = EnvProbe::new(std::time::SystemTime::UNIX_EPOCH);
+        assert!(probe.needs_start() && probe.is_pending());
+        let (tx, rx) = std::sync::mpsc::channel();
+        probe.attach(rx);
+        assert!(!probe.needs_start() && probe.is_pending());
+        assert!(!probe.poll(), "結果が来るまで更新なし");
+        let v1 = EnvVersionProbe::Known(EnvVersion([1, 0, 0, 0]));
+        tx.send(v1).unwrap();
+        assert!(probe.poll());
+        assert!(!probe.is_pending());
+        assert_eq!(probe.current(), v1);
+
+        probe.request_reprobe();
+        assert!(
+            probe.needs_start() && probe.is_pending(),
+            "完了後は再取得が必要"
+        );
+        assert_eq!(probe.current(), v1, "新しい結果が来るまで旧値は保持");
+        let (tx, rx) = std::sync::mpsc::channel();
+        probe.attach(rx);
+        let v2 = EnvVersionProbe::Known(EnvVersion([2, 0, 0, 0]));
+        tx.send(v2).unwrap();
+        assert!(probe.poll());
+        assert_eq!(probe.current(), v2);
     }
 
     #[test]
