@@ -82,8 +82,8 @@
   `None`固定（内蔵表側の版情報を実行時に読む経路が未整備）。
 - 「学習したが不採用: 外部からの書き込みを検出」は表ファイルに理由が残らないため未対応
   （`RejectedReason`に相当が無い）。
-- 「予測表なし（カスタムキーマップ）」は判定入力`custom_keymap_without_prediction`を
-  常に`false`で渡している（ADR195-T0の構成検出との配線が未実装）。
+- 「予測表なし（カスタムキーマップ）」: **配線済み**（2026-09-23）。`bundled_preset_for_adjudication(Gji)`が
+  `NotKnown`のとき`custom_keymap_without_prediction=true`（`config1.db`が読めないときは`false`）。
 - 現在の版取得はGJIのみ（Microsoft IME本体はT5の共有関数待ち）。
 - 結合テスト（モックプロセスでの採用/再検証起動）は起動フラグ・パースのユニットテストまで。
 - Windows実機でのUI確認は未実施。

@@ -16,7 +16,6 @@ use awase_keymap_learn::external_write::{
 use awase_keymap_learn::model::{Disposition, Outcome, Status};
 use awase_keymap_learn::sim::PressReport;
 use awase_windows::state::ime_kind::TipIdentity;
-use awase_windows::state::key_effect_predictor::Conv;
 use awase_windows::tsf::query_tip_identity_on_current_sta;
 
 use crate::hook_monitor::{HookMonitor, SELF_MARKER};
@@ -508,13 +507,7 @@ impl RealImeDriver {
                 self.note_decode_error("ImmGetConversionStatusが失敗した");
                 return Err(windows::core::Error::from_thread());
             }
-            let mode = match normalized_mode(raw.0) {
-                Ok(mode) => mode,
-                Err(err) => {
-                    self.note_decode_error(&format!("未知の変換モード値 0x{:04X}", raw.0));
-                    return Err(err);
-                }
-            };
+            let mode = Status::mode_from_raw_conv(raw.0);
             Ok(Observation {
                 status: Status {
                     open,
@@ -537,7 +530,7 @@ impl RealImeDriver {
         )?;
         Some(Status {
             open,
-            mode: normalized_mode(u32::try_from(raw).ok()?).ok()?,
+            mode: Status::mode_from_raw_conv(u32::try_from(raw).ok()?),
             composing: self.observe_imm().ok()?.status.composing,
         })
     }
@@ -728,24 +721,6 @@ impl ImeDriver for RealImeDriver {
     fn should_abort(&self) -> bool {
         self.session_failed()
     }
-}
-
-fn normalized_mode(raw: u32) -> WinResult<u8> {
-    Conv::from_raw(raw).map_or_else(
-        || {
-            Err(windows::core::Error::new(
-                windows::core::HRESULT(0x8000_4005u32.cast_signed()),
-                "unsupported conversion mode",
-            ))
-        },
-        |conv| {
-            Ok(match conv {
-                Conv::C10 => 0x00,
-                Conv::C19 => 0x09,
-                Conv::C1B => 0x0B,
-            })
-        },
-    )
 }
 
 fn disposition(before: &Observation, after: &Observation) -> Disposition {

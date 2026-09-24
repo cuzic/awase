@@ -606,8 +606,29 @@ fn load_keymap_table_state(
         table: table.as_ref(),
         current_env,
         file_date: file_date.flatten(),
-        custom_keymap_without_prediction: false,
+        custom_keymap_without_prediction: gji_keymap_without_bundled_prediction(),
     })
+}
+
+/// GJIのキーマップが内蔵表を持たない構成（カスタムキーマップ等、ADR195-T0/ADR196-T2 1cの
+/// 既知構成判定で`NotKnown`）か。`config1.db`が読めない（GJI未導入等）ときは`false`
+/// （「予測表なし」ではなく通常の内蔵表表示に倒す）。
+fn gji_keymap_without_bundled_prediction() -> bool {
+    #[cfg(windows)]
+    {
+        use awase_windows::gji_charset_autodetect::{
+            BundledPresetLookup, bundled_preset_for_adjudication,
+        };
+        use awase_windows::state::ime_kind::TipIdentity;
+        matches!(
+            bundled_preset_for_adjudication(TipIdentity::Gji),
+            BundledPresetLookup::NotKnown
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 #[derive(Clone)]

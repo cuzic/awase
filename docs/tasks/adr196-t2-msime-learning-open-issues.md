@@ -27,7 +27,13 @@ developへマージしない。
 TSF compartment通知を別経路の生存指標にする、等）。GJI/ATOKで配線した場合の挙動も未検証。
 配線するなら本タスクで、MS-IME・GJI・ATOKの3構成で実機確認すること。
 
-## 未解決2: 半角カタカナ（conv=0x0013）が学習モデルに無い
+## 未解決2: 半角カタカナ（conv=0x0013）が学習モデルに無い（**対応済み**、2026-09-23）
+
+対応: `Status::mode_from_raw_conv`（`awase-keymap-learn/src/model.rs`）で`raw & 0x0B`をそのまま`mode`に保持し、
+`Conv`に表せない値（0x13→0x03、0x18→0x08）も復号失敗にしない。予測側`convert_cell`は表せないセルを
+読み飛ばすので予測への影響なし。`verify_accuracy`の実機での改善（0.95以上か）は未確認（CI待ち）。
+
+以下は対応前の記録。
 
 MS-IME本体で`未知の変換モード値 0x0013`が多発し復号失敗する（run 35945955606: 683回、decode_errors=220。
 run 35947850606: decode_errors=95）。`Conv`(C10/C19/C1B)に半角カタカナ(0x13)が無いモデル欠落で、
