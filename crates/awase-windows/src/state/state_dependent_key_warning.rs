@@ -2,7 +2,7 @@
 
 use awase::types::VkCode;
 
-use super::key_effect_predictor::KeyEffectKeymap;
+use super::key_effect_predictor::{Cell, KeyEffectKeymap};
 use super::key_effect_table::{
     classify_state_dependent_mode_key, CannotPredictReason, Classification, StateDependentAxis,
 };
@@ -104,6 +104,7 @@ impl ModeKeyWarning {
 pub struct WarningTracker {
     gji_stamp: Option<(u64, u64)>,
     msime_bits: Option<u8>,
+    learned_active: Option<bool>,
     composition_keys: Vec<VkCode>,
 }
 
@@ -114,13 +115,14 @@ impl WarningTracker {
         enabled: bool,
         stamp: Option<(u64, u64)>,
         keymap: Option<&KeyEffectKeymap>,
+        learned: Option<&[Cell]>,
         thumb_keys: [VkCode; 2],
     ) -> Vec<ModeKeyWarning> {
         if !enabled {
             return Vec::new();
         }
-        let warnings = detect(keymap, thumb_keys);
-        self.deduplicate(warnings, stamp, None)
+        let warnings = detect(keymap, learned, thumb_keys);
+        self.deduplicate(warnings, stamp, None, learned.is_some())
     }
 
     #[must_use]
@@ -129,13 +131,19 @@ impl WarningTracker {
         enabled: bool,
         packed_assignment_bits: u8,
         keymap: Option<&KeyEffectKeymap>,
+        learned: Option<&[Cell]>,
         thumb_keys: [VkCode; 2],
     ) -> Vec<ModeKeyWarning> {
         if !enabled {
             return Vec::new();
         }
-        let warnings = detect(keymap, thumb_keys);
-        self.deduplicate(warnings, None, Some(packed_assignment_bits))
+        let warnings = detect(keymap, learned, thumb_keys);
+        self.deduplicate(
+            warnings,
+            None,
+            Some(packed_assignment_bits),
+            learned.is_some(),
+        )
     }
 
     fn deduplicate(
@@ -143,14 +151,18 @@ impl WarningTracker {
         warnings: Vec<ModeKeyWarning>,
         gji_stamp: Option<(u64, u64)>,
         msime_bits: Option<u8>,
+        learned_active: bool,
     ) -> Vec<ModeKeyWarning> {
-        let same_source = if let Some(stamp) = gji_stamp {
+        // 学習表の採用有無が変わると判定の根拠が変わるため、同一ソース扱いにしない。
+        let same_learned = self.learned_active.replace(learned_active) == Some(learned_active);
+        let same_stamp = if let Some(stamp) = gji_stamp {
             self.gji_stamp.replace(stamp) == Some(stamp)
         } else if let Some(bits) = msime_bits {
             self.msime_bits.replace(bits) == Some(bits)
         } else {
             false
         };
+        let same_source = same_learned && same_stamp;
         let composition_keys = warnings
             .iter()
             .find(|warning| warning.kind == WarningKind::Composition)
@@ -169,7 +181,11 @@ impl WarningTracker {
 }
 
 #[must_use]
-pub fn detect(keymap: Option<&KeyEffectKeymap>, thumb_keys: [VkCode; 2]) -> Vec<ModeKeyWarning> {
+pub fn detect(
+    keymap: Option<&KeyEffectKeymap>,
+    learned: Option<&[Cell]>,
+    thumb_keys: [VkCode; 2],
+) -> Vec<ModeKeyWarning> {
     let mut open = Vec::new();
     let mut composition = Vec::new();
     let mut overrides = Vec::new();
@@ -178,7 +194,7 @@ pub fn detect(keymap: Option<&KeyEffectKeymap>, thumb_keys: [VkCode; 2]) -> Vec<
     for vk in TARGET_VKS {
         let code = VkCode(vk);
         let is_thumb = thumb_keys.contains(&code);
-        match classify_state_dependent_mode_key(keymap, vk) {
+        match classify_state_dependent_mode_key(keymap, vk, learned) {
             Some(Classification::StateDependent(axis)) => {
                 if is_thumb {
                     thumbs.push(code);
@@ -234,7 +250,7 @@ mod tests {
 
     #[test]
     fn warning_wording_is_split_by_category() {
-        let warnings = detect(Some(&atok()), [VkCode(0), VkCode(0)]);
+        let warnings = detect(Some(&atok()), None, [VkCode(0), VkCode(0)]);
         assert!(warnings
             .iter()
             .any(|w| w.kind == WarningKind::OpenAxis && w.message.contains("モードがずれる")));
@@ -244,7 +260,7 @@ mod tests {
 
     #[test]
     fn thumb_keys_are_routed_to_existing_conflict_style_warning() {
-        let warnings = detect(Some(&atok()), [VkCode(0x1C), VkCode(0x1D)]);
+        let warnings = detect(Some(&atok()), None, [VkCode(0x1C), VkCode(0x1D)]);
         assert!(!warnings.iter().any(|w| w.kind == WarningKind::OpenAxis));
         assert!(warnings
             .iter()
@@ -256,12 +272,12 @@ mod tests {
         let custom =
             KeyEffectKeymap::from_config(Some(2), Some("DirectInput\tHenkan\tIMEOn".into()), &[])
                 .unwrap();
-        assert!(detect(Some(&custom), [VkCode(0), VkCode(0)])
+        assert!(detect(Some(&custom), None, [VkCode(0), VkCode(0)])
             .iter()
             .any(|w| w.kind == WarningKind::UserOverride));
         let native = KeyEffectKeymap::for_msime_native(false, None, None);
-        assert!(detect(Some(&native), [VkCode(0), VkCode(0)]).is_empty());
-        assert!(detect(None, [VkCode(0), VkCode(0)]).is_empty());
+        assert!(detect(Some(&native), None, [VkCode(0), VkCode(0)]).is_empty());
+        assert!(detect(None, None, [VkCode(0), VkCode(0)]).is_empty());
     }
 
     #[test]
@@ -273,7 +289,7 @@ mod tests {
         let custom =
             KeyEffectKeymap::from_config(Some(2), Some("DirectInput\tHenkan\tIMEOn".into()), &[])
                 .unwrap();
-        let warnings = detect(Some(&custom), [VkCode(0x1C), VkCode(0)]);
+        let warnings = detect(Some(&custom), None, [VkCode(0x1C), VkCode(0)]);
         assert!(
             warnings
                 .iter()
@@ -288,26 +304,88 @@ mod tests {
         let mut tracker = WarningTracker::default();
         let thumbs = [VkCode(0), VkCode(0)];
         assert!(!tracker
-            .detect_gji(true, Some((1, 1)), Some(&atok()), thumbs)
+            .detect_gji(true, Some((1, 1)), Some(&atok()), None, thumbs)
             .is_empty());
         assert!(tracker
-            .detect_gji(true, Some((1, 1)), Some(&atok()), thumbs)
+            .detect_gji(true, Some((1, 1)), Some(&atok()), None, thumbs)
             .is_empty());
         assert!(!tracker
-            .detect_gji(true, Some((2, 1)), Some(&atok()), thumbs)
+            .detect_gji(true, Some((2, 1)), Some(&atok()), None, thumbs)
             .is_empty());
         assert!(tracker
-            .detect_gji(false, Some((3, 1)), Some(&atok()), thumbs)
+            .detect_gji(false, Some((3, 1)), Some(&atok()), None, thumbs)
+            .is_empty());
+    }
+
+    #[test]
+    fn adr192_t5_warning_follows_learned_table_and_repeats_when_adoption_changes() {
+        use super::super::key_effect_predictor::{cell, Conv, Disp, Stage, TableKey};
+        // 変換キーが常にONになる（状態非依存）と示す学習表。ATOK同梱表では変換キーは開閉依存。
+        let learned = [
+            cell(
+                false,
+                None,
+                Stage::None,
+                TableKey::Henkan,
+                true,
+                Some(Conv::C19),
+                Disp::None,
+            ),
+            cell(
+                true,
+                Some(Conv::C10),
+                Stage::None,
+                TableKey::Henkan,
+                true,
+                Some(Conv::C10),
+                Disp::None,
+            ),
+        ];
+        let thumbs = [VkCode(0), VkCode(0)];
+        let henkan_open_axis = |warnings: &[ModeKeyWarning]| {
+            warnings
+                .iter()
+                .any(|w| w.kind == WarningKind::OpenAxis && w.keys.contains(&VkCode(0x1C)))
+        };
+        assert!(henkan_open_axis(&detect(Some(&atok()), None, thumbs)));
+        assert!(!henkan_open_axis(&detect(
+            Some(&atok()),
+            Some(&learned),
+            thumbs
+        )));
+
+        // 同じ設定ファイルの版でも、学習表の採用有無が変わったら警告を出し直す。
+        let mut tracker = WarningTracker::default();
+        let stamp = Some((1, 1));
+        assert!(!tracker
+            .detect_gji(true, stamp, Some(&atok()), None, thumbs)
+            .is_empty());
+        assert!(tracker
+            .detect_gji(true, stamp, Some(&atok()), None, thumbs)
+            .is_empty());
+        assert!(!tracker
+            .detect_gji(true, stamp, Some(&atok()), Some(&learned), thumbs)
             .is_empty());
     }
 
     #[test]
     fn composition_identity_is_the_actual_notified_key_set() {
         let mut tracker = WarningTracker::default();
-        let first = tracker.detect_gji(true, Some((1, 1)), Some(&atok()), [VkCode(0), VkCode(0)]);
+        let first = tracker.detect_gji(
+            true,
+            Some((1, 1)),
+            Some(&atok()),
+            None,
+            [VkCode(0), VkCode(0)],
+        );
         assert!(first.iter().any(|w| w.kind == WarningKind::Composition));
-        let changed =
-            tracker.detect_gji(true, Some((2, 1)), Some(&atok()), [VkCode(0x19), VkCode(0)]);
+        let changed = tracker.detect_gji(
+            true,
+            Some((2, 1)),
+            Some(&atok()),
+            None,
+            [VkCode(0x19), VkCode(0)],
+        );
         assert!(changed.iter().any(|w| w.kind == WarningKind::Composition));
     }
 
