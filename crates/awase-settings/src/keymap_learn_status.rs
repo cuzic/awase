@@ -80,9 +80,9 @@ pub struct StatusInputs<'a> {
 /// (`preset`に依存しない判定)だけを反映する。
 #[must_use]
 pub fn runtime_rejection_of(table: &PersistedTable) -> Option<RuntimeRejection> {
+    use awase_keymap_learn::staleness::FingerprintProbe;
     use awase_windows::state::key_effect_predictor::KeymapPreset;
     use awase_windows::state::key_effect_runtime::{RejectReason, validate_and_convert};
-    use awase_keymap_learn::staleness::FingerprintProbe;
     // 指紋の失効判定はawase.exe側で行う（設定画面は現在のキーマップ指紋を計算できない）。
     // 表自身の指紋を「現在の指紋」として渡し、失効(Staleness)では棄却されないようにする。
     let probe = table

@@ -568,7 +568,6 @@ pub(crate) unsafe fn handle_wm_timer(
             }
         }
         Some(id) if id == TIMER_HOOK_WATCHDOG => {
-            app.check_calibration_bypass_timeout(crate::state::TickMs(hook::current_tick_ms()));
             let last_activity = hook::hook_alive_tick_ms();
             let now = hook::current_tick_ms();
             let stale_ms = now.saturating_sub(last_activity);
@@ -924,8 +923,7 @@ pub(crate) fn sync_ime_kind_from_observation(app: &mut Runtime, source: &str) {
     // GJI 検出時に config1.db から無変換/変換/ひらがな/カタカナの意味論を自動判定して、
     // awase 自身が代行・上書きする経路は、ADR-191 で撤去した（GJI の設定どおりに GJI 自身が動く）。
     // したがって GJI 検出時にここで行う副作用は、上の warmup FSM 同期だけである。
-    // config1.db の分類は、較正結果の保存（`gji_charset_autodetect::build_confirmed_calibration_entry`）と
-    // bug report（ADR-148）が必要なときに読む。
+    // config1.db の分類は、bug report（ADR-148）が必要なときに読む。
     //
     // 専用Fnキー変換（ADR-091 §D3.2）の自動判定・設定支援ポップアップ・
     // config1.db書き込みは、実験的機能のまま撤去し忘れて出荷されていた
@@ -1056,85 +1054,6 @@ pub(crate) unsafe fn handle_wm_focus_kind_update(app: &mut Runtime, wparam: usiz
 /// WM_HOTKEY ハンドラ (HOTKEY_ID_TOGGLE)
 pub(crate) unsafe fn handle_wm_hotkey_toggle(app: &mut Runtime) {
     app.toggle_engine();
-}
-
-/// WM_CALIBRATION_KEY_DETECTED ハンドラ（ADR-176 176-T8）。
-///
-/// **belief書き込みAPI（`ImeModel`のsetter・`dispatch_event`・
-/// `observation_store`・`reduce(`等）を一切呼ばないこと**
-/// （ADR-176決定1の点2、`architecture_guard.rs`の
-/// `calibration_key_detected_handler_does_not_touch_belief`が固定する）。
-pub(crate) fn handle_wm_calibration_key_detected(app: &Runtime) {
-    let Some(session_pid) = app.calibration_session_pid() else {
-        return;
-    };
-    let focus_pid = app.platform.focus.pid();
-    if focus_pid != session_pid {
-        tracing::debug!(
-            "[calibration] キー検知を受信したが、現在のフォーカス先(pid={focus_pid})が\
-             較正セッション(pid={session_pid})と一致しないため無視します"
-        );
-        return;
-    }
-    let seq = hook::calibration_press_seq();
-    let press_ms = hook::calibration_last_press_ms();
-    tracing::info!(
-        "[calibration] 対象キー押下を検知: vk={:?} seq={seq} press_ms={press_ms}",
-        app.calibration_session_vk()
-    );
-}
-
-/// WM_CALIBRATION_START ハンドラ（ADR-176 176-T7）。
-pub(crate) unsafe fn handle_wm_calibration_start(app: &mut Runtime, wparam: WPARAM) {
-    let payload = crate::calibration_ipc::unpack(wparam.0);
-    if !sender_is_awase_settings(payload.pid) {
-        tracing::warn!(
-            "[calibration] WM_CALIBRATION_START pid={}がawase-settings.exeと\
-             確認できないため拒否します",
-            payload.pid
-        );
-        return;
-    }
-    if let Some(active_pid) = app.calibration_session_pid() {
-        if active_pid != payload.pid {
-            tracing::warn!(
-                "[calibration] 別セッション(pid={active_pid})が進行中のため、\
-                 pid={}からのSTARTを無視します",
-                payload.pid
-            );
-            return;
-        }
-    }
-    tracing::info!(
-        "[calibration] 較正モード開始/再武装: vk={:?} pid={}",
-        payload.vk,
-        payload.pid
-    );
-    app.begin_calibration_bypass(
-        payload.vk,
-        payload.pid,
-        crate::state::TickMs(hook::current_tick_ms()),
-    );
-}
-
-/// WM_CALIBRATION_END ハンドラ（ADR-176 176-T7）。
-pub(crate) unsafe fn handle_wm_calibration_end(app: &mut Runtime, wparam: WPARAM) {
-    let pid = crate::calibration_ipc::unpack(wparam.0).pid;
-    if app.calibration_session_pid() == Some(pid) {
-        tracing::info!("[calibration] 較正モード終了: pid={pid}");
-        app.end_calibration_bypass();
-    } else {
-        tracing::debug!(
-            "[calibration] pid={pid}からのENDは現在のセッションと一致しないため無視します"
-        );
-    }
-}
-
-/// `pid`が実際に`awase-settings.exe`であるかを検証する（round7 N2対応、
-/// `disable_apps`と同じ名前ベースの信頼モデル）。
-fn sender_is_awase_settings(pid: u32) -> bool {
-    let name = crate::focus::classify::get_process_name(pid);
-    crate::calibration_ipc::is_awase_settings_process_name(&name)
 }
 
 /// WM_HOTKEY ハンドラ (HOTKEY_ID_FOCUS_OVERRIDE)

@@ -49,29 +49,6 @@ pub const GJI_CONFIRM_WINDOW_MS: u64 = 500;
 #[measured_macro::measured(pending = true)]
 pub const OBSERVATION_FRESH_WINDOW_MS: u64 = 3_000;
 
-/// ADR-176 176-T9a: 較正probeのポーリング間隔 (ms)。
-///
-/// 決着実験（`spike_egui_ime_control_probe.rs`、2026-09-16、egui環境で
-/// 実測確認済み）の`POLL_INTERVAL_MS=100`をそのまま採用。
-#[measured_macro::measured(value_ms = 100, commit = "821d892a")]
-pub const CALIBRATION_PROBE_POLL_INTERVAL_MS: u64 = 100;
-
-/// ADR-176 176-T9a: 較正probe1回あたりの`SendMessageTimeoutW`タイムアウト (ms)。
-///
-/// 決着実験の`SEND_IME_CONTROL_TIMEOUT_MS=50`をそのまま採用
-/// （`elapsed_ms`は決着実験v2で全サンプル20ms未満、v1でもほぼ全区間15ms未満）。
-#[measured_macro::measured(value_ms = 50, commit = "821d892a")]
-pub const CALIBRATION_PROBE_TIMEOUT_MS: u32 = 50;
-
-/// ADR-176 176-T9a（決定4）: 較正probeの押下起点試行におけるsettle window (ms)。
-///
-/// 押下からGJI/MS-IMEが実際にIME状態を変えるまでの実測レイテンシ
-/// （決着実験v2、247〜2295ms）の最大値2295msに、マージン705msを足して
-/// 3000msとした（実測最大 + マージン、`.claude/rules/tuning-constants.md`
-/// の導出義務対応）。
-#[measured_macro::measured(value_ms = 3000, margin_ms = 705, commit = "821d892a")]
-pub const CALIBRATION_TRIAL_SETTLE_WINDOW_MS: u64 = 3000;
-
 // === TSF warmup タイミング ===
 
 /// cold 発生前のアイドル時間がこれ以上なら「長期 idle」と判定する (ms)。

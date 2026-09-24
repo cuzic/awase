@@ -345,27 +345,6 @@ pub struct Runtime {
     /// 不要（2026-08-16 ユーザー判断: 明示設定は自動検出キーと併用され、
     /// 一方を排他しない）。
     space_is_thumb_key: bool,
-    /// ADR-176 176-T6: 較正モードのバイパスタイムアウト期限
-    /// （`None`=非アクティブ）。`focus_tracking.rs`の
-    /// `begin_calibration_bypass`/`end_calibration_bypass`/
-    /// `check_calibration_bypass_timeout`が管理する。
-    calibration_bypass_deadline: Option<crate::state::TickMs>,
-    /// ADR-176 176-T7: 較正セッションを開始したawase-settingsのPID
-    /// （`None`=非アクティブ）。STARTの再武装/ENDがこのPIDと一致する
-    /// 場合のみ有効（round7 S4対応: 別プロセスからのSTART/ENDが進行中
-    /// セッションを乗っ取れないようにする）。
-    calibration_session_pid: Option<u32>,
-    /// ADR-176 176-T7: 較正対象VK（`None`=非アクティブ）。176-T8/T9が
-    /// 参照する想定、現時点では呼び出し元は無い。
-    calibration_session_vk: Option<VkCode>,
-    /// ADR-176 176-T9a: 較正probeループの世代カウンタ。`begin_calibration_
-    /// bypass`/`end_calibration_bypass`の**両方**が無条件にインクリメント
-    /// する（開始・再武装・終了のいずれでも前の世代を無効化する）。
-    /// `spawn_calibration_probe_loop`が起動時にこの値を捕捉し、毎tick
-    /// 値が変わっていないか確認することで、古いループを安全に停止する
-    /// （`output/probe_io.rs::start_ms_ime_ready_poll`と同じ世代照合
-    /// パターン）。
-    calibration_epoch: u64,
     /// 前回`msime_key_assignment::check_and_warn`が警告を出した割当て内容
     /// （bit0=変換, bit1=無変換、ADR-164フェーズ2、旧
     /// `msime_key_assignment::windows_impl::LAST_WARNED`）。同じ内容で
@@ -1212,10 +1191,6 @@ impl Runtime {
             use_learned_keymap_table: true,
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
-            calibration_bypass_deadline: None,
-            calibration_session_pid: None,
-            calibration_session_vk: None,
-            calibration_epoch: 0,
             msime_key_assignment_warned: None,
             keyboard_model: awase::scanmap::KeyboardModel::default(),
             update_check_enabled: true,
