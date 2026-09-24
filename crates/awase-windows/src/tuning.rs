@@ -505,11 +505,19 @@ pub const FOCUS_RESYNC_DEADLINE_MS: u64 = 100;
 /// 最新の打鍵からこの時間より前に来た観測は、IME がキーを処理する前の古い状態を読んでいる恐れがあるため、
 /// 予測を上書きも消しもしない。これ以降の観測だけが予測と照合され、観測が勝つ。
 ///
-/// **実測**（`MODE_KEY_PASS_MARK_WINDOW_MS` の実測と同じ、CI `e2e-ime`、ATOK パススルー、48 押下）:
+/// **実測 1**（`MODE_KEY_PASS_MARK_WINDOW_MS` の実測と同じ、CI `e2e-ime`、ATOK パススルー、48 押下）:
 /// 生キー通過から実 IME の変化が IMM の再読み取りに現れるまで min 21ms / median 33ms / p90 33ms / max 62ms。
-/// 別の 1 回で、通過から 11ms 後の最初の再読み取りが処理前の古い状態を読んだ。
-/// **導出**: 実測最大 62ms + マージン 38ms = 100ms。follow の読み直し（20ms→以後 `MODE_KEY_PASS_REREAD_MS`=60ms
-/// 間隔、窓 `MODE_KEY_PASS_MARK_WINDOW_MS`=300ms）のうち約 140ms 時点の読み取りが最初の照合対象になり、窓内に収まる。
-/// 実機での再測定は未了のため `pending`。
+/// **実測 2**（2026-09-24、windows-latest、`ci/a2-mode-key-pass-timeline`、ランダムウォーク 150 手×5 シード×2 回×3 構成
+/// 〈MS-IME 本体 / GJI+MS-IME プリセット / GJI+ATOK〉、通過 1,116 押下のうち窓内で値が変わって見えた 10 押下）:
+/// 最初の成功観測が処理前の古い値だった押下が 10 件あり、古い値を最後に読んだ時刻の最大は 131ms
+/// （100ms 以降が 7 件: 109 / 113 / 114 / 119 / 124 / 126 / 131ms）。それらで新しい値が最初に見えたのは最大 212ms（読み取りの間隔で粗い）。
+/// 再読み取りの間隔が CI ランナーの負荷で 60ms を超えて揺れるため、実測 1 の max 62ms は分布の裾を取り逃していた。
+/// 値が変わった押下（553 件）全体の「新しい値が最初に見えた時刻」は P50/P90/P99/max = 47/85/102/208ms。
+/// 解析は `tools/e2e/ime_key_matrix/mode_key_pass_timeline.py`。
+/// **導出**: 実測最大（古い値を読んだ最も遅い時刻）131ms + マージン 39ms = 170ms（実測 1 と同じ約 +38ms のマージン）。
+/// fence 内の古い観測は予測を訂正しないだけなので、長くしても Engine への影響は無く、照合が遅れるだけ。
+/// follow の再読み取り（通過から約 33/96/159/222/285ms）のうち約 222ms 時点の読み取りが最初の照合対象になり、
+/// 窓 `MODE_KEY_PASS_MARK_WINDOW_MS`=300ms 内に 2 回収まる。
+/// 実機（GitHub-hosted 以外）での再測定は未了のため `pending`。
 #[measured_macro::measured(pending = true)]
-pub const KEY_EFFECT_SETTLE_MS: u64 = 100;
+pub const KEY_EFFECT_SETTLE_MS: u64 = 170;

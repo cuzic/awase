@@ -359,25 +359,42 @@ mod app {
         }
     }
 
-    /// 決定1b-8の中核: 既存の`keymap-learn-table.json`を読み、要確認状態の判定を
-    /// アトミックに採用へ書き換える。純粋な採否ロジック(`adopt_needs_confirmation`)は
-    /// `awase-keymap-learn::judgement`が持つ(ホストでユニットテスト済み)——本関数は
-    /// ファイルI/Oの糊付けのみ。パスを引数化しているのはテスト容易性のため
-    /// (`table_file_path()`自体はexe相対探索でテストで差し替えられない)。
-    fn adopt_pending_judgement_at(path: &std::path::Path) -> Result<(), AdoptFailure> {
-        let json = std::fs::read_to_string(path)
-            .map_err(|e| AdoptFailure::ReadFailed(path.to_path_buf(), e))?;
+    /// 決定1b-8の中核: 保留中の表を採用済みへ書き換えて`keymap-learn-table.json`へ置く。
+    /// 要確認/不採用の表は`keymap-learn-last-attempt.json`(`pending`)へ退避される(C-9)ので、
+    /// それがあればそれを読み、採用後に`table_path`へアトミックに昇格させて`pending`を消す
+    /// (実機windows-latestで、退避先とは別の`table_path`だけを読んで常に`read_failed`になる
+    /// 不具合が見つかった)。`pending`が無ければ従来どおり`table_path`を読んで書き換える
+    /// (採用済みへの再実行は冪等成功)。純粋な採否ロジック(`adopt_needs_confirmation`)は
+    /// `awase-keymap-learn::judgement`が持つ——本関数はファイルI/Oの糊付けのみ。
+    /// パスを引数化しているのはテスト容易性のため(exe相対探索はテストで差し替えられない)。
+    fn adopt_pending_judgement_at(
+        pending: &std::path::Path,
+        table_path: &std::path::Path,
+    ) -> Result<(), AdoptFailure> {
+        let source = if pending.exists() {
+            pending
+        } else {
+            table_path
+        };
+        let json = std::fs::read_to_string(source)
+            .map_err(|e| AdoptFailure::ReadFailed(source.to_path_buf(), e))?;
         let mut table = from_json(&json).map_err(AdoptFailure::ParseFailed)?;
         table.judgement =
             Some(adopt_needs_confirmation(table.judgement).map_err(AdoptFailure::Rejected)?);
         let rewritten = table.to_json().map_err(AdoptFailure::SerializeFailed)?;
-        awase::fs_atomic::write_atomic(path, rewritten.as_bytes())
-            .map_err(|e| AdoptFailure::WriteFailed(path.to_path_buf(), e))
+        awase::fs_atomic::write_atomic(table_path, rewritten.as_bytes())
+            .map_err(|e| AdoptFailure::WriteFailed(table_path.to_path_buf(), e))?;
+        if source == pending {
+            // 昇格済み。残しても次回は同じ内容を昇格するだけ(冪等)なので、消せなくても成功。
+            let _ = std::fs::remove_file(pending);
+        }
+        Ok(())
     }
 
     fn adopt_pending_judgement() -> Result<(), AdoptFailure> {
-        let path = table_file_path().ok_or(AdoptFailure::NoConfig)?;
-        adopt_pending_judgement_at(&path)
+        let table_path = table_file_path().ok_or(AdoptFailure::NoConfig)?;
+        let pending = last_attempt_file_path().ok_or(AdoptFailure::NoConfig)?;
+        adopt_pending_judgement_at(&pending, &table_path)
     }
 
     /// 判定書き換えモードのエントリポイント。成否を標準出力へ運ぶ(awase-settings側の
@@ -1176,12 +1193,58 @@ mod app {
             )));
             std::fs::write(&path, table.to_json().unwrap()).unwrap();
 
-            let result = adopt_pending_judgement_at(&path);
+            let none = temp_table_path("accepts_no_pending");
+            let _ = std::fs::remove_file(&none);
+            let result = adopt_pending_judgement_at(&none, &path);
 
             assert!(result.is_ok(), "expected success, got {result:?}");
             let reloaded = from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
             assert_eq!(reloaded.judgement, Some(TableJudgement::Accepted));
             let _ = std::fs::remove_file(&path);
+        }
+
+        /// 実機windows-latestで見つかった不具合の回帰: 要確認の表は退避ファイル(pending)にあり、
+        /// `table_path`は無い。採用すると`table_path`へ採用済みで昇格し、pendingは消える。
+        /// もう一度実行しても(pendingは無く`table_path`が採用済み)成功する。
+        #[test]
+        fn adopt_pending_judgement_at_promotes_pending_attempt_to_table() {
+            let pending = temp_table_path("promote_pending");
+            let table_path = temp_table_path("promote_table");
+            let _ = std::fs::remove_file(&table_path);
+            let table = sample_table(Some(TableJudgement::NeedsConfirmation(
+                NeedsConfirmationReason::UnverifiedMsImeNative,
+            )));
+            std::fs::write(&pending, table.to_json().unwrap()).unwrap();
+
+            let first = adopt_pending_judgement_at(&pending, &table_path);
+            assert!(first.is_ok(), "expected success, got {first:?}");
+            let promoted = from_json(&std::fs::read_to_string(&table_path).unwrap()).unwrap();
+            assert_eq!(promoted.judgement, Some(TableJudgement::Accepted));
+            assert!(!pending.exists(), "昇格後はpendingを消す");
+
+            let second = adopt_pending_judgement_at(&pending, &table_path);
+            assert!(second.is_ok(), "再実行は冪等に成功する: {second:?}");
+            let _ = std::fs::remove_file(&table_path);
+        }
+
+        /// pendingが不採用の表なら、`table_path`(以前の良い表)は書き換えず、pendingも残す。
+        #[test]
+        fn adopt_pending_judgement_at_rejected_pending_keeps_existing_table() {
+            let pending = temp_table_path("rejected_pending");
+            let table_path = temp_table_path("rejected_pending_table");
+            let good = sample_table(Some(TableJudgement::Accepted));
+            std::fs::write(&table_path, good.to_json().unwrap()).unwrap();
+            let bad = sample_table(Some(TableJudgement::Rejected(RejectedReason::LowAccuracy)));
+            std::fs::write(&pending, bad.to_json().unwrap()).unwrap();
+
+            let result = adopt_pending_judgement_at(&pending, &table_path);
+
+            assert_eq!(result.unwrap_err().code(), "rejected");
+            let reloaded = from_json(&std::fs::read_to_string(&table_path).unwrap()).unwrap();
+            assert_eq!(reloaded, good, "以前の良い表は失われない");
+            assert!(pending.exists(), "不採用のpendingは残す");
+            let _ = std::fs::remove_file(&table_path);
+            let _ = std::fs::remove_file(&pending);
         }
 
         /// 安全弁: 不採用(低正答率)のファイルは、書き換え要求があっても変更されない
@@ -1192,7 +1255,9 @@ mod app {
             let table = sample_table(Some(TableJudgement::Rejected(RejectedReason::LowAccuracy)));
             std::fs::write(&path, table.to_json().unwrap()).unwrap();
 
-            let result = adopt_pending_judgement_at(&path);
+            let none = temp_table_path("rejected_no_pending");
+            let _ = std::fs::remove_file(&none);
+            let result = adopt_pending_judgement_at(&none, &path);
 
             match result {
                 Err(failure) => assert_eq!(failure.code(), "rejected"),
@@ -1208,7 +1273,9 @@ mod app {
             let path = temp_table_path("missing_never_created");
             let _ = std::fs::remove_file(&path); // 前回の残骸があれば消す
 
-            let result = adopt_pending_judgement_at(&path);
+            let none = temp_table_path("missing_pending_never_created");
+            let _ = std::fs::remove_file(&none);
+            let result = adopt_pending_judgement_at(&none, &path);
 
             match result {
                 Err(failure) => assert_eq!(failure.code(), "read_failed"),

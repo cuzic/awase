@@ -27,6 +27,7 @@
 - 失敗シナリオ（MS-IME 本体等）: t≈20ms の最初の OsPoll が古い値を読む（IME 反応は最大 62ms）→ `desired_open` が押下前の値に揃い `aligned=true` → t≈80ms の再読み取りが時間切れ → 窓後の成功観測でも揃え直されない → `last_intent` は破棄済みで drift correction がユーザーのモードキー操作を書き戻す
 - 修正方針案: `KEY_EFFECT_SETTLE_MS` 以降の観測に揃えたときだけ `aligned` を立てる。要テスト
 - 前提: 1回目成功+2回目時間切れという実機タイミング。実機ログでの確認が先
+- 実機測定（2026-09-24、windows-latest、`ci/a2-mode-key-pass-timeline`、run 35962229239 / 35963409931、通過計1,207押下）: A-2の条件（最初の成功が古い値かつ窓内の成功がその1回だけ）は**0件で再現せず**。形だけ近いもの（窓内の成功が1回だけ、2回目がタイムアウト）はMS-IME本体で8/318（2.5%）あったが、その1回目は古い値ではなかった。`aligned`判定は変更しない。副産物として`KEY_EFFECT_SETTLE_MS`の裾（古い値を読む最遅が131ms）が判明し100→170msへ変更（`fix/key-effect-settle-170`）。集計は`tools/e2e/ime_key_matrix/mode_key_pass_timeline.py`
 - 実測（2026-09-24、担当: rust-nicola-3f、検証専用ブランチ`ci/a2-mode-key-pass-timeline`〈developへマージしない〉）: 1回目（run 35962229239、windows-latest、5構成×3回、91押下）でA-2成立（最初の成功が古い値で、窓内の成功がその1回だけ）は**0件**。GJI+MS-IMEプリセットは各回の最初の押下で65〜71msに古い値・121〜146msに新しい値（後続の読み取りは成功）。MS-IME本体は最初の押下で窓内の読み取りが全滅（BUG-158型、`on_expiry`で対処済み）。2回目（run 35963409931、ランダムウォーク150手×5シード×2回×3構成）は集計中。方針: 再現しなければ`aligned`判定は変えず、分布しだいで`KEY_EFFECT_SETTLE_MS`（現状100ms、`tuning.rs`）だけを実測根拠つきで見直す（tuning-constants規約）。
 
 ### A-3. 確認して問題なしとしたもの（参考）
@@ -54,12 +55,13 @@
 - 関連タスク: `adr196-t2-mismatch-adjudication.md`、`adr196-t3-bundled-table-versioning.md`
 - 対応（2026-09-23〜24）: 副次の`mismatch_ratio`/`diff_against_bundled`は同梱表側の`after_conv=None`を「主張なし」として扱うよう修正済み（PR #278、`4af30b0c`）。本体は2026-09-24修正: `convert_cells`が閉セルを`(stage, key)`ごとに`merge_closed_cells`で入力順非依存に畳む（`after_open`/`disp`が全一致なら採用し`after_conv`だけ割れたら`None`、`after_open`/`disp`が割れたらセルごと落とす）。回帰テスト2件（`closed_cells_*`）
 
-### B-3. [中・PLAUSIBLE・未修正] `classify_robust` の頑健性が既定 k=2 ではほぼ効かない
+### B-3. [中・PLAUSIBLE・修正済み(2026-09-24)] `classify_robust` の頑健性が既定 k=2 ではほぼ効かない
 
 - 場所: `crates/awase-keymap-learn/src/verify.rs:46-81`
 - (a) 同文脈で 1対1 に割れても少数派1件は閾値2未満 → `Det(先着)`。`Req::default().k=2` では2回観測したセルは割れても非決定と宣言されない
 - (b) 1件しかない文脈グループは多数派補正を受けず、別文脈の迷い観測1件でセル全体が `HistoryDep`/`Conflict`（予測なし）になる
 - 影響: 入力中 BS（75/25）が同文脈で1対1に割れると25%側が確定予測として書き出される（`declared_not_det` が偽でやり直しも起きない）。逆に単発の誤観測で不要な全体再巡回
+- 対応: `classify_robust`を修正。(a)同一文脈の同数タイは`k`に関わらず`NonDet`、(b)文脈をまたぐ場合は観測数重み付けの最多結果に対し食い違う観測の合計が`k`未満（かつ最多が一意）なら`Det(最多)`。`k=1`は従来の厳密一致のまま。2対1は単発誤りと区別できないため既定k=2では許容（設計上の限界）。回帰テスト3件（`verify.rs`）
 - 注: PR #282/#286は多数決ロジックの共通化（`table::majority_of`）と再カウント解消のリファクタで、(a)(b)の挙動は変えていない（同数タイのテストのみ追加）
 
 ### B-4. [中・CONFIRMED・修正済み(2026-09-24)] 進捗の分母が実セル数の約2倍
