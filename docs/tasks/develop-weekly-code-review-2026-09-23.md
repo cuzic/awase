@@ -107,6 +107,9 @@
 - 「表に指紋あり」かつ「現在の IME が `NotSupported`」の組が `Fresh` になる。GJI → 指紋方式のない IME への切替が陳腐化として検出されない
 - 見送り理由（2026-09-24）: `staleness::check`は現在も呼び出し元が無く、既存テスト`fresh_when_current_fingerprint_not_supported`が`NotSupported`→`Fresh`を意図した挙動として固定している。ADR196-T5の再検証（`revalidation.rs`、`--revalidate`）が別モデルで陳腐化判定を担う方向なので、`check`の意味を変える前にT5側の扱いを決める必要がある
 - 現状は呼び出し元が未配線のため未発現。**ADR196-T5 の配線時に見直すこと**（`adr196-t5-revalidation-not-invalidation.md`）
+- 再確認（2026-09-24、origin/develop）: `staleness::check`の呼び出し元は`crates/`配下のコード・テスト共に皆無（`revalidation.rs`のdocコメントが言及するのみ）で、`awase-windows`は参照していない。`revalidation.rs::needs_revalidation`は`staleness`の型を使わず独立に判定し、T5は`staleness`を「即時失効（スキーマ版・キーマップ設定変更用）」に据え置く方針（`adr196-t5-revalidation-not-invalidation.md`冒頭）。
+- **判断: コードは変更せず見送り継続**。理由: (1) 呼び出し元が無く、`NotSupported`の意味を変えても観測可能な挙動は無い。(2) GJI→指紋方式なしIMEへの切替検出は、T5が別モデル(`EnvVersionProbe`/`needs_revalidation`、IME種別変更を含む)で担う想定で、`check`側を直すと二重の判定源になる。(3) `check`を配線する時点でどちらの判定を正とするか決める必要があり、今`NotSupported`を`Stale`系にすると、その決定を先取りする。
+- 推奨: `check`を配線する場合は、`(Some(_), NotSupported)`を`Fresh`ではなく別variant（例: `FingerprintNotSupported`、`is_stale()`はtrue）にして`fresh_when_current_fingerprint_not_supported`を意図変更として書き換える。配線しない場合は`staleness::check`ごと削除してT5に一本化するのが単純。
 
 ## C. エンジン / gji-config / CI / lints
 
