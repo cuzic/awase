@@ -1236,6 +1236,34 @@ mod tests {
             coverage_slot_count(&persisted.cells),
             coverage_ratio(&persisted.cells, converted.len()),
         );
+        {
+            let c = &persisted.cells;
+            let open_unrepr = c
+                .iter()
+                .filter(|pc| {
+                    pc.status.open
+                        && TableKey::from_vk(pc.key.0).is_some()
+                        && Conv::from_raw(u32::from(pc.status.mode)).is_none()
+                })
+                .count();
+            let open_total = c.iter().filter(|pc| pc.status.open).count();
+            let no_pred = c.iter().filter(|pc| pc.prediction.is_none()).count();
+            let unk_vk = c
+                .iter()
+                .filter(|pc| TableKey::from_vk(pc.key.0).is_none())
+                .count();
+            let after_unrepr = c
+                .iter()
+                .filter(|pc| {
+                    pc.prediction.is_some_and(|o| {
+                        o.status.open && Conv::from_raw(u32::from(o.status.mode)).is_none()
+                    })
+                })
+                .count();
+            println!(
+                "CI-RESULT breakdown open_total={open_total} open_conv_unrepresentable={open_unrepr} no_prediction={no_pred} unknown_vk={unk_vk} after_conv_unrepresentable={after_unrepr}"
+            );
+        }
         let result = load_runtime_table(path, NS);
         println!(
             "CI-RESULT load_runtime_table={:?}",
