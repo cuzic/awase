@@ -26,6 +26,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::judgement::{RejectedReason, ScoredVerification, TableJudgement};
+use crate::model::KeyId;
+use crate::persist::PersistedTable;
+use crate::table::Table;
+
 /// GJI/Microsoft IME本体の「バージョン相当の情報」を凝縮した不透明な4値。
 /// 値の意味はIME種別ごとに異なる(GJIは`VS_FIXEDFILEINFO`の
 /// `dwFileVersionMS`/`dwFileVersionLS`から得る4値、Microsoft IME本体はOSビルド番号・
@@ -123,6 +128,73 @@ pub fn classify_converter_version(
         Some(modified) if modified > process_start => EnvVersionProbe::Unconfirmed,
         _ => EnvVersionProbe::Known(version),
     }
+}
+
+/// 軽量再検証(段階2単独、[ADR-196](../../../docs/adr/196-keymap-learn-truth-priority.md)
+/// 決定3a)の結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevalidationOutcome {
+    /// 合格(採否条件を満たした)。表を残し、指紋・採点を書き直す。
+    Passed,
+    /// 不合格。この場合に初めて失効させる(理由付き)。
+    Invalidated(RejectedReason),
+}
+
+/// 自己検証の判定([`crate::judgement::judge_self_verification`]の結果)から軽量再検証の
+/// 合否を決める。`Rejected`だけが失効で、`Accepted`/`NeedsConfirmation`(Microsoft IME本体の
+/// 暫定既定)は合格側——要確認かどうかは元の表の判定を引き継ぐため、ここでは覆さない。
+#[must_use]
+pub const fn outcome_of_revalidation(self_verification: TableJudgement) -> RevalidationOutcome {
+    match self_verification {
+        TableJudgement::Rejected(reason) => RevalidationOutcome::Invalidated(reason),
+        TableJudgement::Accepted | TableJudgement::NeedsConfirmation(_) => {
+            RevalidationOutcome::Passed
+        }
+    }
+}
+
+/// 軽量再検証の結果を、既存の表へ反映した新しい表を返す(書き込みは呼び出し側が
+/// 一時ファイル→置換でアトミックに行う)。
+///
+/// - 合格: `env_version`(現在の版)と`verification`(新しい採点)を書き直す。`judgement`は
+///   元のまま(元が要確認なら要確認のまま)。
+/// - 失効: `judgement`を`Rejected`へ落とし`verification`だけ更新する。`env_version`は
+///   書き直さない(失効した表に現在の版を付けると、次回以降の比較が誤って一致し得る)。
+#[must_use]
+pub fn apply_revalidation(
+    mut table: PersistedTable,
+    outcome: RevalidationOutcome,
+    current_env_version: Option<StoredEnvVersion>,
+    verification: ScoredVerification,
+) -> PersistedTable {
+    table.verification = Some(verification);
+    match outcome {
+        RevalidationOutcome::Passed => table.env_version = current_env_version,
+        RevalidationOutcome::Invalidated(reason) => {
+            table.judgement = Some(TableJudgement::Rejected(reason));
+        }
+    }
+    table
+}
+
+/// 保存済みの表から、軽量再検証の採点に使う観測表を作る。予測が入っているセルごとに
+/// 同じ結果を2件記録し(決定的なセルとして扱われる)、予測が無い(`None`)セルは
+/// 未測定のまま(採点で「表に無い」扱い)にする。`key_index`はVKコードから実機ドライバの
+/// キー添字への対応(該当が無ければそのセルは飛ばす)。
+#[must_use]
+pub fn table_from_persisted(
+    persisted: &PersistedTable,
+    key_index: impl Fn(KeyId) -> Option<usize>,
+) -> Table {
+    let mut table = Table::new();
+    for cell in &persisted.cells {
+        let (Some(outcome), Some(key)) = (cell.prediction, key_index(cell.key)) else {
+            continue;
+        };
+        table.record(cell.status, key, None, outcome);
+        table.record(cell.status, key, None, outcome);
+    }
+    table
 }
 
 #[cfg(test)]
@@ -276,5 +348,114 @@ mod tests {
             classify_converter_version(Some(V1), None, start),
             EnvVersionProbe::Known(V1)
         );
+    }
+
+    fn persisted_cell(open: bool, vk: u16, pred: Option<bool>) -> crate::persist::PersistedCell {
+        use crate::model::{Disposition, Outcome, Status};
+        let status = |open| Status {
+            open,
+            mode: 0,
+            composing: false,
+        };
+        crate::persist::PersistedCell {
+            status: status(open),
+            key: KeyId(vk),
+            prediction: pred.map(|p| Outcome {
+                status: status(p),
+                disp: Disposition::None,
+            }),
+        }
+    }
+
+    #[test]
+    fn table_from_persisted_records_predicted_cells_as_deterministic() {
+        use crate::table::Class;
+        let persisted = PersistedTable::new(vec![
+            persisted_cell(false, 0xF2, Some(true)),
+            persisted_cell(true, 0xF2, None),
+            persisted_cell(true, 0x99, Some(false)),
+        ]);
+        let table = table_from_persisted(&persisted, |k| (k.0 == 0xF2).then_some(2));
+        let closed = crate::model::Status {
+            open: false,
+            mode: 0,
+            composing: false,
+        };
+        let open = crate::model::Status {
+            open: true,
+            ..closed
+        };
+        assert!(matches!(table.class(closed, 2), Class::Det(_)));
+        assert_eq!(table.class(open, 2), Class::Unmeasured);
+        assert_eq!(table.covered1(), 1);
+    }
+
+    #[test]
+    fn only_rejected_self_verification_invalidates() {
+        use crate::judgement::NeedsConfirmationReason;
+        assert_eq!(
+            outcome_of_revalidation(TableJudgement::Accepted),
+            RevalidationOutcome::Passed
+        );
+        assert_eq!(
+            outcome_of_revalidation(TableJudgement::NeedsConfirmation(
+                NeedsConfirmationReason::UnverifiedMsImeNative
+            )),
+            RevalidationOutcome::Passed
+        );
+        assert_eq!(
+            outcome_of_revalidation(TableJudgement::Rejected(RejectedReason::LowAccuracy)),
+            RevalidationOutcome::Invalidated(RejectedReason::LowAccuracy)
+        );
+    }
+
+    fn verification(seed: u64) -> ScoredVerification {
+        ScoredVerification {
+            score: crate::verify::ScoreReport {
+                correct: 300,
+                incorrect: 0,
+                not_in_table: 0,
+            },
+            seed,
+        }
+    }
+
+    #[test]
+    fn passed_rewrites_env_version_and_verification_but_keeps_judgement() {
+        use crate::judgement::NeedsConfirmationReason;
+        let old = PersistedTable::new(vec![])
+            .with_env_version(Some(StoredEnvVersion::Known(V1)))
+            .with_judgement(TableJudgement::NeedsConfirmation(
+                NeedsConfirmationReason::UnverifiedMsImeNative,
+            ))
+            .with_verification(verification(1));
+        let new = apply_revalidation(
+            old.clone(),
+            RevalidationOutcome::Passed,
+            Some(StoredEnvVersion::Known(V2)),
+            verification(2),
+        );
+        assert_eq!(new.env_version, Some(StoredEnvVersion::Known(V2)));
+        assert_eq!(new.verification, Some(verification(2)));
+        assert_eq!(new.judgement, old.judgement);
+    }
+
+    #[test]
+    fn invalidated_rejects_judgement_and_keeps_old_env_version() {
+        let old = PersistedTable::new(vec![])
+            .with_env_version(Some(StoredEnvVersion::Known(V1)))
+            .with_judgement(TableJudgement::Accepted);
+        let new = apply_revalidation(
+            old,
+            RevalidationOutcome::Invalidated(RejectedReason::LowAccuracy),
+            Some(StoredEnvVersion::Known(V2)),
+            verification(3),
+        );
+        assert_eq!(
+            new.judgement,
+            Some(TableJudgement::Rejected(RejectedReason::LowAccuracy))
+        );
+        assert_eq!(new.env_version, Some(StoredEnvVersion::Known(V1)));
+        assert_eq!(new.verification, Some(verification(3)));
     }
 }

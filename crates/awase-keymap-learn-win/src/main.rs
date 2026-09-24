@@ -18,7 +18,10 @@ mod app {
     use awase_keymap_learn::remeasure::{
         reconcile_with_bundled, MismatchedTarget, RemeasureParams,
     };
-    use awase_keymap_learn::revalidation::StoredEnvVersion;
+    use awase_keymap_learn::revalidation::{
+        apply_revalidation, outcome_of_revalidation, table_from_persisted, RevalidationOutcome,
+        StoredEnvVersion,
+    };
     use awase_keymap_learn::rng::Rng;
     use awase_keymap_learn::sample_models::atok_like;
     use awase_keymap_learn::strategy::{run, Req, Strategy};
@@ -39,6 +42,11 @@ mod app {
     /// 要確認状態の判定だけをアトミックに採用へ書き換える(表ファイルの書き手は
     /// 学習プロセスのみという原則、決定3aを保つため)。
     const ADOPT_PENDING_JUDGEMENT_FLAG: &str = "--adopt-pending-judgement";
+
+    /// ADR196-T5決定3a: 軽量再検証モード起動フラグ。段階1(格子学習)を飛ばし、保存済みの表を
+    /// 予測として使う段階2(自己検証ウォーク)だけを実行する。合格なら指紋・採点を書き直し、
+    /// 不合格(正答率などが採否条件を割った)のときに初めて表を失効させる。
+    const REVALIDATE_FLAG: &str = "--revalidate";
 
     /// ADR-195段階6: 何押下ごとに標準出力へ進捗行を書き出すか。毎回書くと
     /// 子プロセス側(awase-settings)のパース負荷・パイプI/Oが無駄に増えるため間引く。
@@ -336,6 +344,73 @@ mod app {
         let _ = std::io::stdout().flush();
     }
 
+    /// 軽量再検証モード(ADR196-T5決定3a)。標準出力の`revalidate`行は`adopt`行と同じく
+    /// `key=value`の空白区切りで、失敗理由は空白を含まない固定トークンだけを載せる。
+    fn run_revalidate_mode() {
+        let process_start = SystemTime::now();
+        let line = match revalidate_table(process_start) {
+            Ok((outcome, score)) => match outcome {
+                RevalidationOutcome::Passed => format!(
+                    "revalidate status=passed accuracy={:.3} predicted={}",
+                    score.accuracy(),
+                    score.predicted()
+                ),
+                RevalidationOutcome::Invalidated(reason) => format!(
+                    "revalidate status=invalidated reason={reason:?} accuracy={:.3} predicted={}",
+                    score.accuracy(),
+                    score.predicted()
+                ),
+            },
+            Err(reason) => format!("revalidate status=failure reason={reason}"),
+        };
+        println!("{line}");
+        let _ = std::io::stdout().flush();
+        if line.starts_with("revalidate status=failure") {
+            std::process::exit(1);
+        }
+    }
+
+    /// 保存済みの表を読み、実機で自己検証ウォークだけを走らせ、結果を表ファイルへ
+    /// アトミックに書き戻す。ウォーク中の外部書き込み・フォーカス喪失・IME切り替え等で
+    /// 何を測ったか確定できない場合は、表を触らず`Err`(固定トークン)を返す。
+    fn revalidate_table(
+        process_start: SystemTime,
+    ) -> Result<(RevalidationOutcome, ScoreReport), &'static str> {
+        let path = table_file_path().ok_or("no_config")?;
+        let json = std::fs::read_to_string(&path).map_err(|_| "read_failed")?;
+        let persisted = from_json(&json).map_err(|_| "parse_failed")?;
+        let driver = build_driver(Strategy::S6);
+        let tip = driver.tip_identity();
+        let config1_db_at_start = (tip == TipIdentity::Gji)
+            .then(awase_windows::gji_charset_autodetect::read_config1_db)
+            .flatten();
+        let mut executor = Executor::new(driver, AnomalyPolicy::default(), ReadPolicy::Single);
+        executor.table = table_from_persisted(&persisted, |k| {
+            KEYS.iter().position(|&vk| vk == u32::from(k.0))
+        });
+        executor.reset();
+        let seed = fresh_walk_seed();
+        let score = run_verification_walk(&mut executor, &mut Rng::new(seed));
+        if executor.driver.session_failed() {
+            return Err("interference");
+        }
+        if let Some(reason) =
+            end_of_session_abort_reason(&executor.driver, tip, config1_db_at_start.as_deref())
+        {
+            return Err(reason);
+        }
+        let outcome = outcome_of_revalidation(judge_score(&score, tip, None));
+        let rewritten = apply_revalidation(
+            persisted,
+            outcome,
+            probe_env_version(tip, process_start),
+            ScoredVerification { score, seed },
+        );
+        let json = rewritten.to_json().map_err(|_| "serialize_failed")?;
+        awase::fs_atomic::write_atomic(&path, json.as_bytes()).map_err(|_| "write_failed")?;
+        Ok((outcome, score))
+    }
+
     /// `run_main`のうち、セッション監視が失敗と判定していないかを確認する
     /// 部分（学習フェーズ直後・検証ウォーク直後の2箇所から呼ぶ、round2 N1
     /// 対応で複製されていたブロックの共通化）。失敗していたら専用result行を
@@ -595,6 +670,8 @@ mod app {
     pub fn entry() {
         if std::env::args().any(|arg| arg == ADOPT_PENDING_JUDGEMENT_FLAG) {
             run_adopt_mode();
+        } else if std::env::args().any(|arg| arg == REVALIDATE_FLAG) {
+            run_revalidate_mode();
         } else {
             run_main();
         }

@@ -109,7 +109,13 @@ Converterパス探索・`probe_gji_env_version[_with_timeout]`)と、純粋な
 スキーマ版は上げず`#[serde(default)]`で旧ファイルも読める)を新設し、学習プロセス
 (`awase-keymap-learn-win/src/main.rs::probe_env_version`)がGJIのときだけ学習終了時に
 Converter版を取得して書く(3秒タイムアウトで超過時は書かない)。
-未着手: Microsoft IME側の4値(ADR-197待ち)、awase-settingsでの現在版との比較表示、軽量再検証モード。
+軽量再検証モードも実装済み: `awase-keymap-learn-win --revalidate`が保存済み表を予測として
+段階2(自己検証ウォーク)だけを実行し、`revalidate status=passed|invalidated|failure`行を
+標準出力へ出す(判定は純粋関数`revalidation::{outcome_of_revalidation,apply_revalidation,
+table_from_persisted}`)。合格なら`env_version`・`verification`を書き直し(判定は元のまま)、
+`Rejected`相当のときだけ判定を`Rejected`へ落とす。採点日時の記録用フィールドは現スキーマに無く
+未実装。
+未着手: Microsoft IME側の4値(ADR-197待ち)、awase-settingsでの現在版との比較表示・起動ボタン(ADR196-T4)。
 
 - **GJI**: Converter本体（`GJI_PROCESS_PREFIXES`、`tsf/gji_monitor.rs:25-39`。
   `find_gji_pid`は全セッションから最初の一致を返すため、可能なら`ProcessIdToSessionId`で
