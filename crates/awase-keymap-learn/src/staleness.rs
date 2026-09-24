@@ -31,6 +31,10 @@ pub enum Staleness {
     /// PR #253指摘: `config1_db_stamp()`はファイル不在と読み取り失敗を区別せず`None`を
     /// 返しうるため、`None`を常にFreshと解釈するのは危険)。
     FingerprintUnavailable,
+    /// 表は指紋を持つが、現在のIME/構成には指紋方式が無い(比較不能)。学習表が測った構成と
+    /// 今の構成が同じと確認できないので失効扱いにする(以前は`Fresh`だったが、IME切替を
+    /// 検出する仕組みが他に無く、GJIの表がATOK等の下で使われうるため安全側に改めた)。
+    FingerprintNotSupported,
 }
 
 impl Staleness {
@@ -64,7 +68,9 @@ pub enum FingerprintProbe {
 ///   無かった)は、比較対象が無いためキーマップ変化による失効は検出しない(スキーマ版の
 ///   検証だけ行う)。
 /// - `current_fingerprint`が[`FingerprintProbe::NotSupported`]
-///   (このIME/構成に指紋方式が無い)の場合も同様に比較をスキップする。
+///   (このIME/構成に指紋方式が無い)で表が指紋を持つ場合は、同じ構成と確認できないので
+///   失効扱いにする([`Staleness::FingerprintNotSupported`])。表が指紋を持たなければ
+///   比較対象が無いのでスキップする。
 /// - `current_fingerprint`が[`FingerprintProbe::Unavailable`]
 ///   (指紋方式はあるが今回は計算できなかった)の場合は、「変化していない」ことを
 ///   確認できていないので安全側に倒し失効扱いにする。
@@ -78,6 +84,7 @@ pub fn check(table: &PersistedTable, current_fingerprint: FingerprintProbe) -> S
     }
     match (table.fingerprint, current_fingerprint) {
         (Some(_), FingerprintProbe::Unavailable) => Staleness::FingerprintUnavailable,
+        (Some(_), FingerprintProbe::NotSupported) => Staleness::FingerprintNotSupported,
         (Some(stored), FingerprintProbe::Computed(current)) if stored != current => {
             Staleness::FingerprintMismatch
         }
@@ -139,10 +146,19 @@ mod tests {
     }
 
     #[test]
-    fn fresh_when_fingerprint_not_supported() {
-        // フィンガープリント方式が無いIME(MS-IME本体等)は比較対象自体が無いため
-        // キーマップ変化による失効は検出できず、Fresh扱いにする。
+    fn stale_when_stored_fingerprint_meets_not_supported() {
+        // 表が指紋を持つのに現在の構成が指紋方式を持たない(別IMEへ切替等)場合は、
+        // 同じ構成と確認できないので失効扱い(旧: Fresh。B-10の見送り理由は
+        // IME切替を検出する仕組みが他に無いため成り立たない)。
         let table = table_with(CURRENT_SCHEMA_VERSION, Some(Fingerprint(1, 1)));
+        let got = check(&table, FingerprintProbe::NotSupported);
+        assert_eq!(got, Staleness::FingerprintNotSupported);
+        assert!(got.is_stale());
+    }
+
+    #[test]
+    fn fresh_when_neither_side_has_a_fingerprint() {
+        let table = table_with(CURRENT_SCHEMA_VERSION, None);
         assert_eq!(
             check(&table, FingerprintProbe::NotSupported),
             Staleness::Fresh

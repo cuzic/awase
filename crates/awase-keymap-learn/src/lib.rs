@@ -21,6 +21,7 @@ pub mod anomaly;
 pub mod cost;
 pub mod exec;
 pub mod external_write;
+pub mod fingerprint;
 pub mod graph;
 pub mod judgement;
 pub mod metrics;
