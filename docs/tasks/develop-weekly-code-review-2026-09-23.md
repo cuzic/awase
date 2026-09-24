@@ -27,6 +27,7 @@
 - 失敗シナリオ（MS-IME 本体等）: t≈20ms の最初の OsPoll が古い値を読む（IME 反応は最大 62ms）→ `desired_open` が押下前の値に揃い `aligned=true` → t≈80ms の再読み取りが時間切れ → 窓後の成功観測でも揃え直されない → `last_intent` は破棄済みで drift correction がユーザーのモードキー操作を書き戻す
 - 修正方針案: `KEY_EFFECT_SETTLE_MS` 以降の観測に揃えたときだけ `aligned` を立てる。要テスト
 - 前提: 1回目成功+2回目時間切れという実機タイミング。実機ログでの確認が先
+- 実測（2026-09-24、担当: rust-nicola-3f、検証専用ブランチ`ci/a2-mode-key-pass-timeline`〈developへマージしない〉）: 1回目（run 35962229239、windows-latest、5構成×3回、91押下）でA-2成立（最初の成功が古い値で、窓内の成功がその1回だけ）は**0件**。GJI+MS-IMEプリセットは各回の最初の押下で65〜71msに古い値・121〜146msに新しい値（後続の読み取りは成功）。MS-IME本体は最初の押下で窓内の読み取りが全滅（BUG-158型、`on_expiry`で対処済み）。2回目（run 35963409931、ランダムウォーク150手×5シード×2回×3構成）は集計中。方針: 再現しなければ`aligned`判定は変えず、分布しだいで`KEY_EFFECT_SETTLE_MS`（現状100ms、`tuning.rs`）だけを実測根拠つきで見直す（tuning-constants規約）。
 
 ### A-3. 確認して問題なしとしたもの（参考）
 
@@ -44,7 +45,7 @@
 - 対応（2026-09-23）: EDIT子窓をサブクラス化（`edit_proc`）し、親窓`window_proc`と合わせて`WM_IME_NOTIFY`を到着時刻付きでスレッドローカルのキューへ積み、`pump_for`と`mark_self_injection`の直前に`ImeNotifyMonitor`へ渡す。猶予窓の判定は到着時刻で行う。**未対応**: `observation_alive`/`measurement_suspicious`の配線（実機でEDIT窓にIME通知が実際に届く頻度・遅延を測ってから。届かない環境で配線すると学習が偽陽性で全失敗する）、`NOTIFY_EXPECT_WINDOW_MS`(150ms)より遅い自己注入由来の通知が外部扱いになる恐れ（配送が動いた今、実機で実測が必要）。
 - windows-latest実機検証（2026-09-23、`b1-notify-probe-verify`ワークフロー、GJI+ATOK配列、`examples/notify_probe.rs`+`tools/e2e/b1-notify-probe.ps1`）: 配送は動作（全wParam履歴を取得できた）。**第2の欠陥を発見・修正**: `IMN_SETOPENSTATUS`/`IMN_SETCONVERSIONMODE`の定数が誤り（0x2/0x3、正しくは0x8/0x6）で、修正前は`ImmSetOpenStatus`反転(true→false→true)を実際に行っても外部検出0件。修正後はプロセス内反転2/2検出、別プロセスからのIMC_SETOPENSTATUS・物理キー注入も検出(7件)、自己注入6押下での偽陽性0件（猶予窓150ms、GJI warm時）。再測定（自己注入40押下×2）でも偽陽性0件。コールド（起動後120秒idle→40押下）でもidle中の外部通知0件・偽陽性0件（GJI+ATOK）。**MS-IME本体は未測定**: `RealImeDriver::new()`がconv 0x0001未対応で初期化に失敗する（別問題、`normalized_mode`）ため、プローブも走らせられない。
 
-### B-2. [中〜高・本体は未修正／副次は修正済み] 閉状態セルが1つに潰れ、採用セルが実行ごとに変わる
+### B-2. [中〜高・修正済み（本体PR #290、副次PR #278）] 閉状態セルが1つに潰れ、採用セルが実行ごとに変わる
 
 - 場所: `awase-windows/src/state/key_effect_runtime.rs:107-117`、`keymap-learn-win/src/main.rs:59-68`、`key_effect_predictor.rs:236`（`find_in`）
 - 欠陥: 閉状態は `conv: None`（ワイルドカード）に変換され、mode 0x09 と 0x00 の閉セルが同じ検索キーになる。開く遷移の `after_conv` は `Some(保持モード)` で値が異なる（atok_like の閉状態は m=0/1 の2つ）。`build_persisted_cells` は `HashMap` 反復順で書くため `find_in` の先勝ちが学習ごとに変わる（潰れる点は CONFIRMED）
