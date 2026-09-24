@@ -779,6 +779,7 @@ fn normalized_mode(raw: u32) -> WinResult<u8> {
                 Conv::C10 => 0x00,
                 Conv::C19 => 0x09,
                 Conv::C1B => 0x0B,
+                Conv::C13 => 0x03,
             })
         },
     )

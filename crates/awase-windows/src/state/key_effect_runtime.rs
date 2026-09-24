@@ -577,9 +577,16 @@ mod tests {
         // 表に無いVK(適当な値0x99)。
         let unknown_vk = pcell(true, 0x09, false, 0x99, Some((true, 0x00)));
         assert!(convert_cell(&unknown_vk).is_none());
-        // 表現できない変換モード(0x03=半角カタカナ、到達不能)。
-        let unknown_mode = pcell(true, 0x03, false, 0xF2, Some((true, 0x00)));
+        // 表現できない変換モード(0x08=全角英数、到達不能)。
+        let unknown_mode = pcell(true, 0x08, false, 0xF2, Some((true, 0x00)));
         assert!(convert_cell(&unknown_mode).is_none());
+    }
+
+    #[test]
+    fn halfwidth_katakana_cell_is_convertible() {
+        let pc = pcell(true, 0x03, false, 0xF2, Some((true, 0x09)));
+        let c = convert_cell(&pc).expect("半角カタカナ(0x03)は表現できる");
+        assert_eq!(c.conv(), Some(Conv::C13));
     }
 
     #[test]

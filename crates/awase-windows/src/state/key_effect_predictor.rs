@@ -45,11 +45,12 @@ pub enum KeymapPreset {
     Custom,
 }
 
-/// 変換モード（`conv`の生値からROMANビットを除いた、キーで到達できる3種）。
+/// 変換モード（`conv`の生値からROMANビットを除いた、キーで到達できる4種）。
 ///
 /// 格子第2版（変換モードをキーで到達）の実測: IME単独のキーで入れる変換モードは、ATOKで`C19`・`C10`、
-/// MS-IMEプリセットで`C19`・`C1B`の2つだけ（半角カタカナ0x13・全角英数0x18は到達不能）。
-/// 表現できない値（0x13/0x18等）は追わない（`from_raw`が`None`）。
+/// MS-IMEプリセットで`C19`・`C1B`の2つだけ（全角英数0x18は到達不能）。
+/// Microsoft IME本体では半角カタカナ(0x13)にも到達する（windows-latest、学習run 35945955606で
+/// 683回観測）ため`C13`を持つ。表現できない値（0x18等）は追わない（`from_raw`が`None`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Conv {
     /// 半角英数
@@ -58,6 +59,8 @@ pub enum Conv {
     C19,
     /// 全角カタカナ
     C1B,
+    /// 半角カタカナ（Microsoft IME本体で到達する）
+    C13,
 }
 
 impl Conv {
@@ -69,6 +72,7 @@ impl Conv {
             0x00 => Some(Self::C10),
             0x09 => Some(Self::C19),
             0x0B => Some(Self::C1B),
+            0x03 => Some(Self::C13),
             _ => None,
         }
     }
@@ -76,7 +80,7 @@ impl Conv {
     /// かな入力系（NATIVEビットあり）か。EngineはこのときだけNICOLAを有効にする。
     #[must_use]
     pub const fn is_native(self) -> bool {
-        matches!(self, Self::C19 | Self::C1B)
+        matches!(self, Self::C19 | Self::C1B | Self::C13)
     }
 }
 
@@ -1096,10 +1100,11 @@ mod tests {
         assert_eq!(Conv::from_raw(0x19), Some(Conv::C19));
         assert_eq!(Conv::from_raw(0x00), Some(Conv::C10));
         assert_eq!(
-            Conv::from_raw(0x03),
-            None,
-            "半角カタカナは到達不能で追わない"
+            Conv::from_raw(0x13),
+            Some(Conv::C13),
+            "半角カタカナはMS-IME本体で到達する(ROMANビットは無視)"
         );
+        assert!(Conv::C13.is_native());
         assert_eq!(Conv::from_raw(0x08), None, "全角英数は到達不能で追わない");
     }
 
