@@ -552,3 +552,7 @@ force-on ブロック撤去 + `apply_ime_open_with_applied` 削除 + `architectu
 - 決定3-c（GJI warmup を `VK_IME_ON` に置き換えられるかの実機実験）は [ADR-100](100-gji-warmup-vk-ime-on-reinit.md) が引き取り、2026-08-22 に実機検証（群B）を経て採用・実装済み（`docs/known-bugs.md` BUG-50 追補2参照）。
 - 決定1〜2の実装順序を守らないと、単独修正が別の未監査の穴を露出させ regression する構造（BUG-34 追補4の3ラウンド premortem と同型）である。決定1（1-a+1-b+1-cを同一コミット）→決定2の順で進めること（実装ではこの順序で行い、分割コミットはしなかった）。
 - **`sync_ime_kind_from_observation`（`runtime/message_handlers.rs:444`）への波及は未検証。** この関数は `applied.applied_open() == Some(true)` を条件に `gji_on_ime_on(mode)`（GjiFsm 遷移トリガー）を呼ぶ。決定1-a により TsfNative では `applied` がフォーカス入場後 `Unknown` のまま残るため、`WM_IME_KIND_CHANGED`（GJI 検出）がこの関数を real actuation より先に呼んだ場合、この経路単独では即時に GjiFsm を同期しなくなる。ただし ADR-089 §2.4（INV-42）の `ActuationReceipt.settle()` → `GjiSyncSink::sync_gji(GjiFsmSync::OnImeOn)`（`platform.rs:1057`）が実際の actuation 完了時に独立して GjiFsm を同期するため、force-ON（決定1-c）や drift correction が一度でも実行されれば追いつくはずだが、この2経路の相互作用は実機で未検証。GjiFsm が OffCold に残り続けたら BUG-18 型の退行として扱い、`sync_ime_kind_from_observation` 側にも `warmup_ime_on()` 相当の belief フォールバックを追加するか検討すること（ソーク項目#11）。
+
+## 撤去の記録（2026-09-24追記）
+
+決定1-c（force-onの再試行クールダウン）を含むforce-on機構は、`621bf93c`（2026-09-18、`apply_force_on_for_imm_broken`/`try_force_on_bootstrap`/`ForceOnRetryState`/`FORCE_ON_RETRY_COOLDOWN_MS`を削除）で**撤去済み**。旧称「ADR-178撤去プロジェクト領域A」、根拠は現[ADR-179](179-mode-key-actuation-follow-only-vs-toggle-ownership.md)の「領域A・Cの撤去」節参照。冒頭のstatusは撤去前の状態を述べたもの。`ForceOnReason::BrokenAppBootstrap`のenum variantは意図的に残されたが、追加する本番コードは無い（死蔵コード、review-2026-09-24-10のB-6）。

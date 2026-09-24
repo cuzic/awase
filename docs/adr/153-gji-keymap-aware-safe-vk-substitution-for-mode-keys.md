@@ -835,3 +835,7 @@ opus-adversarial-consult r1 で判明、現決定1はこれを回避する設計
 delegate機構自体の排他性の穴——提案中・未実装）、
 `.claude/rules/fix-requires-evidence.md` の「キー選択（IME ON/OFFに
 送るVK）」表。
+
+## 撤去の記録（2026-09-24追記）
+
+決定1のうち「GJI/MS-IMEの設定からの自動採用」は、ADR-191（PR #240、`d777bcfe`）で**撤去済み**。`config.toml`の隠し設定（無変換/変換単独タップのIME ON/OFF/Toggleをawase側で直接指定する明示config）は残っている。記録は`src/config.rs`の該当doc comment（「GJI/MS-IME 設定からの自動採用は ADR-191 で撤去した」）にあったが、ADR本文には無かったためここに追記する。冒頭のstatus「決定1実装済み」は撤去前の状態を述べたもの。
