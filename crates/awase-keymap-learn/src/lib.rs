@@ -37,3 +37,4 @@ pub mod staleness;
 pub mod strategy;
 pub mod table;
 pub mod verify;
+pub mod walk_trace;

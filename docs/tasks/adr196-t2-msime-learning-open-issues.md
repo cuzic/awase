@@ -32,7 +32,8 @@ TSF compartment通知を別経路の生存指標にする、等）。GJI/ATOKで
 
 対応: `Status::mode_from_raw_conv`（`awase-keymap-learn/src/model.rs`）で`raw & 0x0B`をそのまま`mode`に保持し、
 `Conv`に表せない値（0x13→0x03、0x18→0x08）も復号失敗にしない。予測側`convert_cell`は表せないセルを
-読み飛ばすので予測への影響なし。`verify_accuracy`の実機での改善（0.95以上か）は未確認（CI待ち）。
+読み飛ばすので予測への影響なし。`verify_accuracy`は5モード仮説モデル（PR #294）と合わせて0.920〜0.980（10回中9回が0.95以上、要確認まで到達）。
+ばらつきの原因（隠れ状態仮説）と対応方針は[adr196-t2-msime-hidden-state-hypothesis.md](adr196-t2-msime-hidden-state-hypothesis.md)。
 
 以下は対応前の記録。
 

@@ -48,6 +48,8 @@ mod app {
     /// 予測として使う段階2(自己検証ウォーク)だけを実行する。合格なら指紋・採点を書き直し、
     /// 不合格(正答率などが採否条件を割った)のときに初めて表を失効させる。
     const REVALIDATE_FLAG: &str = "--revalidate";
+    /// 検証ウォークの1歩ごとの記録をstderrへ出す(正答率のばらつきの調査用、標準出力の`result`行には影響しない)。
+    const TRACE_WALK_FLAG: &str = "--trace-walk";
 
     /// ADR-195段階6: 何押下ごとに標準出力へ進捗行を書き出すか。毎回書くと
     /// 子プロセス側(awase-settings)のパース負荷・パイプI/Oが無駄に増えるため間引く。
@@ -182,6 +184,38 @@ mod app {
     }
 
     /// ADR-195段階2: 学習に使っていない独立のランダムウォークで一段予測を採点する。
+    /// `--trace-walk`用: 検証ウォークの1歩を、採点と同じ規則(`predict`)で整形する。
+    fn trace_walk_step<D: ImeDriver>(
+        exec: &Executor<D>,
+        index: usize,
+        info: awase_keymap_learn::exec::PressInfo,
+        key: usize,
+    ) -> String {
+        use awase_keymap_learn::walk_trace::{
+            format_contaminated_step, format_walk_step, CellInfo,
+        };
+        let vk = KEYS[key];
+        if info.contaminated {
+            return format_contaminated_step(index, info.before, vk);
+        }
+        let observations = exec.table.observations(info.before, key);
+        let mut distinct: Vec<_> = observations.iter().map(|o| o.outcome).collect();
+        distinct.sort_by_key(|o| format!("{o:?}"));
+        distinct.dedup();
+        format_walk_step(
+            index,
+            info.before,
+            vk,
+            info.outcome,
+            predict(&exec.table, info.before, key, DEFAULT_MIN_MINORITY),
+            CellInfo {
+                class: classify_robust(&exec.table, info.before, key, DEFAULT_MIN_MINORITY),
+                n_obs: observations.len(),
+                n_distinct: distinct.len(),
+            },
+        )
+    }
+
     /// 進捗sinkは学習の巡回にだけ意味があるので、ここでは無効化する(有効なままだと
     /// `recording=false`の間もpressごとに呼ばれ、cell数が増えないのにelapsed_msだけ
     /// 伸びる不審な進捗行が出る)。
@@ -190,7 +224,11 @@ mod app {
     /// [`MIN_PREDICTED_STEPS`]に達するまで押下を続ける。[`VERIFICATION_WALK_MAX_STEPS`]
     /// (押下の試行回数)に達しても届かなければ打ち切って返す(`judge_self_verification`が
     /// `InsufficientSamples`として不採用にする)。
-    fn run_verification_walk<D: ImeDriver>(exec: &mut Executor<D>, rng: &mut Rng) -> ScoreReport {
+    fn run_verification_walk<D: ImeDriver>(
+        exec: &mut Executor<D>,
+        rng: &mut Rng,
+        trace: bool,
+    ) -> ScoreReport {
         exec.set_progress_sink(|_, _| {});
         exec.set_recording(false);
         let mut walk = Vec::new();
@@ -206,6 +244,9 @@ mod app {
             if let Some(info) = exec.press(key) {
                 // round2 N1対応: 汚染された観測(外部からの書き込み・物理入力・
                 // フォーカス喪失)は採点に使わない。
+                if trace {
+                    eprintln!("{}", trace_walk_step(exec, attempts, info, key));
+                }
                 if !info.contaminated {
                     walk.push(WalkObs {
                         status: info.before,
@@ -420,7 +461,7 @@ mod app {
         });
         executor.reset();
         let seed = fresh_walk_seed();
-        let score = run_verification_walk(&mut executor, &mut Rng::new(seed));
+        let score = run_verification_walk(&mut executor, &mut Rng::new(seed), false);
         if executor.driver.session_failed() {
             return Err("interference");
         }
@@ -835,7 +876,8 @@ mod app {
         // C-7: 検証ウォーク専用の乱数(学習本体とは独立、時刻由来のシード)。
         let walk_seed = fresh_walk_seed();
         let mut walk_rng = Rng::new(walk_seed);
-        let score = run_verification_walk(&mut executor, &mut walk_rng);
+        let trace_walk = std::env::args().any(|arg| arg == TRACE_WALK_FLAG);
+        let score = run_verification_walk(&mut executor, &mut walk_rng, trace_walk);
 
         // ADR196-T2決定1b項目7〜8: 既知構成なら内蔵表との突き合わせ→再測定。学習・検証と
         // 同じセッション監視の下で行うため、後続のセッション失敗判定より前に実行する。
