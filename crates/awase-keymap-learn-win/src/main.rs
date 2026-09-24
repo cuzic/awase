@@ -23,7 +23,7 @@ mod app {
         StoredEnvVersion,
     };
     use awase_keymap_learn::rng::Rng;
-    use awase_keymap_learn::sample_models::atok_like;
+    use awase_keymap_learn::sample_models::{atok_like, atok_like_with_modes};
     use awase_keymap_learn::strategy::{run, Req, Strategy};
     use awase_keymap_learn::table::Table;
     use awase_keymap_learn::verify::{
@@ -572,15 +572,27 @@ mod app {
         }
     }
 
-    /// 学習の初期仮説モデル(ATOK風モデルの抽象modeを実機のConv値へ対応づけ、
-    /// 開始状態を実機の`initial`へ合わせる)。
+    /// 学習の初期仮説モデル(ATOK風モデルの抽象modeを実機の変換モード値へ対応づけ、
+    /// 開始状態を実機の`initial`へ合わせる)。Microsoft IME本体は全角/半角カタカナ・全角英数にも
+    /// 到達する(windows-latest実測: 0x13が683回、0x18が187回)ので5モード、
+    /// GJI(ATOK/MS-IMEプリセット)は従来の2モード。
     fn build_model(
         initial: awase_keymap_learn::model::Status,
+        tip: TipIdentity,
     ) -> awase_keymap_learn::model::Machine {
-        let mut model = atok_like();
+        let native_modes = tip == TipIdentity::MsImeNative;
+        let mut model = atok_like_with_modes(if native_modes { 5 } else { 2 });
         for state in &mut model.states {
-            // ヒューリスティックな初期仮説として、抽象mode 0/1を実機のConv値0x09/0x00へ対応づける。
-            state.status.mode = if state.status.mode == 0 { 0x09 } else { 0x00 };
+            // ヒューリスティックな初期仮説として、抽象modeを実機の変換モード値
+            // (`Status::mode_from_raw_conv`の出力)へ対応づける。
+            // 2モード: 0/1=0x09/0x00、5モード: 0〜4=ひらがな/半角英数/全角カタカナ/半角カタカナ/全角英数。
+            state.status.mode = match state.status.mode {
+                0 => 0x09,
+                1 => 0x00,
+                2 => 0x0B,
+                3 => 0x03,
+                _ => 0x08,
+            };
         }
         if let Some(index) = model
             .states
@@ -763,7 +775,7 @@ mod app {
         let config1_db_at_start = (tip_at_start == TipIdentity::Gji)
             .then(awase_windows::gji_charset_autodetect::read_config1_db)
             .flatten();
-        let model = build_model(initial);
+        let model = build_model(initial, tip_at_start);
 
         let mut rng = Rng::new(195);
         let prior = Prior::from_machine(&model, 0.0, &mut rng);
