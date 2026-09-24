@@ -742,7 +742,9 @@ mod app {
             judgement,
             write_result: &write_result,
         });
-        if decode_errors > 0 {
+        // 書き込み失敗時は失敗理由が標準エラー最終行に残るよう、警告で上書きしない
+        // (awase-settingsは標準エラーの最後の非空行を失敗理由として表示する)。
+        if decode_errors > 0 && write_result.is_ok() {
             eprintln!(
                 "警告: observe_imm失敗によるフォールバックが{decode_errors}回発生。学習表に信頼できない観測が混じっている可能性がある。"
             );

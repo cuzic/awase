@@ -1087,11 +1087,21 @@ impl SettingsApp {
             // code-review指摘: lock()が毒(他スレッドがロック保持中にpanic)を返すと
             // 単に諦めてはいけない。ここは資源の後始末(reap)専用で、内部不変条件の
             // 破損を気にする場面ではないため、毒付きでもガードを回収して続行する。
-            let mut guard = match child.lock() {
-                Ok(g) => g,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            let _ = guard.wait();
+            // ロックを握ったままwait()すると、子が生きている間UIのkill_keymap_learn_child()が
+            // lock()で固まる。短いtry_wait()ポーリングでロックを都度手放す。
+            loop {
+                let exited = {
+                    let mut guard = match child.lock() {
+                        Ok(g) => g,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                    !matches!(guard.try_wait(), Ok(None))
+                };
+                if exited {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
         });
         self.keymap_learn_rx = Some(rx);
         self.keymap_learn_progress = None;
@@ -3277,7 +3287,8 @@ impl SettingsApp {
             |ui| {
                 ui.label(
                     "対象キー1つずつの較正の代わりに、全ての対応キー×状態を自動で巡回測定します。\n\
-                 測定中も awase 自体は動き続け、他の窓では通常どおり入力できます。",
+                 測定中は学習ウィンドウを前面に保ち、キーボードに触れないでください\n\
+                 （他の窓へ切り替えたり物理キーを押すと、測定は失敗として中止されます）。",
                 );
                 ui.add_space(8.0);
 
