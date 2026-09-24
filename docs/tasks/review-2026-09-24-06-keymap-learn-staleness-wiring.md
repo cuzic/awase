@@ -1,6 +1,6 @@
 ---
 title: 学習表の陳腐化検出（キーマップ指紋の書き込みと staleness::check の実行時配線）
-status: 未着手
+status: 実装済み（PR、2026-09-24。指紋書き込み・staleness配線・NotSupported失効・採用/再検証ガード。既存表は(b-2)で保護しない）
 created: 2026-09-24
 related_adr: ["ADR-195", "ADR-196", "ADR-191"]
 source_review: 俯瞰レビュー（受動化・actuation撤去・学習/較正・config棚卸し・v2方針、2026-09-24）の B-1（要旨は本文「背景」に引用）
@@ -9,6 +9,14 @@ source_review: 俯瞰レビュー（受動化・actuation撤去・学習/較正�
 # 陳腐化検出の実行時配線（俯瞰レビュー B-1）
 
 索引: [11](review-2026-09-24-11-low-priority-backlog.md)。裏取り基準は `5877f982`（origin/develop、PR #296 まで）。既存タスク [adr195-t8-staleness-detection.md](adr195-t8-staleness-detection.md)（実装対象1・2は ADR-196 3a 追記で「即時失効のまま有効」）と同件。
+
+## 実装メモ（2026-09-24、`feat/keymap-learn-staleness-wiring`）
+
+- 主ツリー未コミット差分の特性化テスト（`b10_...`・B-3）は origin/develop に**存在しない**（`git grep`で0件）。B-10 のテストは本実装で `fresh_when_fingerprint_not_supported` を `stale_when_stored_fingerprint_meets_not_supported` へ書き換えた。主ツリー側のテストは取り込まれていないので、その担当が本ブランチのマージ後に `b10_...` の期待値を更新するか破棄すること。
+- (b) は **(b-2)**（スキーマ版は上げず、指紋`None`の既存表は保護しない）を採用。(c) プリセット名の照合は指紋（`session_keymap`値を含む）に寄せた。01 の案Aとの重複整理は 01 側で。
+- `--adopt-pending-judgement`: 指紋`None`の`NeedsConfirmation`は昇格させない（`AdoptRejected::NoFingerprint`）。既に`Accepted`の再実行は冪等成功のまま。
+- 学習本体: `Unavailable`は`Rejected(FingerprintUnavailable)`。指紋方式の無いTIP（`Other`）は`NotSupported`で従来どおり書く（実行時もその構成では予測しない）。
+- 未実装: ソース走査ガード、awase-settings画面の「キーマップ変更で失効」表示（02）、実機確認。
 
 ## 背景（元レビュー B-1 の要旨）
 

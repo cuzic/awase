@@ -16,6 +16,8 @@ pub enum NotAdoptedReason {
     LowAccuracy(Option<u8>),
     /// 縮退・標本数不足で予測できないキーが多い。
     ManyUnpredictable,
+    /// 学習時にキーマップ設定を読み取れず、構成を識別する指紋を残せなかった。
+    FingerprintUnavailable,
 }
 
 /// 表の状態(表示行の分類)。
@@ -84,6 +86,7 @@ impl TableState {
                 RejectedReason::HighDegeneration | RejectedReason::InsufficientSamples => {
                     NotAdoptedReason::ManyUnpredictable
                 }
+                RejectedReason::FingerprintUnavailable => NotAdoptedReason::FingerprintUnavailable,
             }),
             Some(TableJudgement::NeedsConfirmation(
                 NeedsConfirmationReason::SystematicMismatch { mismatch_percent },
@@ -159,6 +162,9 @@ impl TableState {
                     NotAdoptedReason::LowAccuracy(Some(pct)) => format!("自己検証 {pct}%"),
                     NotAdoptedReason::LowAccuracy(None) => "自己検証の正答率が不足".to_string(),
                     NotAdoptedReason::ManyUnpredictable => "予測できないキーが多い".to_string(),
+                    NotAdoptedReason::FingerprintUnavailable => {
+                        "キーマップ設定を読み取れず構成を記録できなかった".to_string()
+                    }
                 };
                 format!("学習結果を採用しませんでした（理由: {why}）")
             }
@@ -464,6 +470,12 @@ mod tests {
         assert_eq!(
             s.status_line(None),
             "学習結果を採用しませんでした（理由: 予測できないキーが多い）"
+        );
+        let t = mk(RejectedReason::FingerprintUnavailable);
+        let s = TableState::from_inputs(&inputs(Some(&t), EnvVersionProbe::Unknown));
+        assert_eq!(
+            s.status_line(None),
+            "学習結果を採用しませんでした（理由: キーマップ設定を読み取れず構成を記録できなかった）"
         );
         assert_eq!(
             TableState::NotAdopted(NotAdoptedReason::LowAccuracy(Some(82))).status_line(None),

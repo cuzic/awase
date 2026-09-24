@@ -42,7 +42,8 @@ pub struct PersistedCell {
 /// 段階8)。学習時点のキーマップ構成を1組の`u64`に凝縮したもので、本クレートはどちらの方式で
 /// 計算されたかを知らない——呼び出し側(`awase-windows`)が`config1_db_stamp()`(mtimeナノ秒+長さ)
 /// をそのまま使うか、`session_keymap`/`custom_keymap_table`/`overlay_keymaps`3値のハッシュを
-/// 詰めるかのいずれかを選ぶ。同じ方式で計算された指紋どうしでなければ比較に意味がないため、
+/// 詰めるかのいずれかを選ぶ（実配線は後者。[`crate::fingerprint`]がGJIの3値・Microsoft IME本体の
+/// 3 DWORDから計算する）。同じ方式で計算された指紋どうしでなければ比較に意味がないため、
 /// 呼び出し側は学習時と失効チェック時で同じ計算方式を使い続けること。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Fingerprint(pub u64, pub u64);
@@ -53,7 +54,10 @@ pub struct Fingerprint(pub u64, pub u64);
 /// 決定1e「判定は学習セッションの末尾で学習プロセスが行い、不採用の場合も理由付きで
 /// 表ファイルに書き出す」ための領域。段階4（`awase.exe`の読込時）はこの2フィールドを
 /// 読むだけで、判定をやり直さない。`fingerprint`（ADR-195段階8、キーマップ設定の指紋）は
-/// 当面`None`のまま運用する。`env_version`（ADR-196決定3、GJI/Microsoft IME本体の
+/// 学習プロセスが`awase_keymap_learn::fingerprint`の計算で書き、awase.exeの読込が
+/// [`crate::staleness::check`]で現在のキーマップと照合する（正答率等の採否判定のやり直しではなく、
+/// 「表が測った構成と今の構成が同じか」の照合）。`None`は指紋配線前に書かれた旧形式の表で、
+/// 保護されない（照合をスキップする）。`env_version`（ADR-196決定3、GJI/Microsoft IME本体の
 /// バージョン相当の情報）はADR196-T5が学習プロセスから書き込む。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedTable {
@@ -96,7 +100,8 @@ impl PersistedTable {
         }
     }
 
-    /// 学習時点のキーマップ指紋を設定する（ADR-195段階8、ADR196-T5が実配線）。
+    /// 学習時点のキーマップ指紋を設定する（ADR-195段階8。学習プロセス`awase-keymap-learn-win`が
+    /// 書く。ADR196-T5が配線したのは`env_version`〈IME本体の版〉で、こちらではない）。
     #[must_use]
     pub const fn with_fingerprint(mut self, fingerprint: Fingerprint) -> Self {
         self.fingerprint = Some(fingerprint);

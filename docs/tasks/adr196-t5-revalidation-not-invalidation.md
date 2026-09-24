@@ -1,6 +1,6 @@
 # ADR-196 T5: 陳腐化検出を「失効」から「要再検証」へ置き換える
 
-状態: **主要部分実装済み（2026-09-24、PR #279・#280・#283でdevelop統合）。** 3a(状態遷移)の純粋ロジック・GJI側のConverter版取得と指紋書き込み配線・軽量再検証モード(`--revalidate`)・awase-settingsの起動ボタン(T4)は実装済み（実機での動作確認はGJIのみ・一部）。**残り**: Microsoft IME側の版取得(ADR-197待ち)・採点日時フィールド・互換モード読み取り。下記「進捗」参照。
+状態: **主要部分実装済み（2026-09-24、PR #279・#280・#283でdevelop統合）。** 3a(状態遷移)の純粋ロジック・GJI側のConverter版取得と版（`env_version`）の書き込み配線・軽量再検証モード(`--revalidate`)・awase-settingsの起動ボタン(T4)は実装済み（実機での動作確認はGJIのみ・一部）。**残り**: Microsoft IME側の版取得(ADR-197待ち)・採点日時フィールド・互換モード読み取り。下記「進捗」参照。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
 **訂正（2026-09-23）**: 起票時点の記載「既存の[ADR195-T8](adr195-t8-staleness-detection.md)
@@ -104,7 +104,7 @@ T8のコミット(`3613707e`/`f5d53047`)はT9(#258)経由で既にdevelopの祖�
 `awase-keymap-learn-win/src/env_version.rs`(`file_version`共有関数・自セッションに絞った
 Converterパス探索・`probe_gji_env_version[_with_timeout]`)と、純粋な
 `revalidation::classify_converter_version`(不明/未確定/既知の分類、ユニットテスト済み)。
-指紋書き込み配線も実装済み: `PersistedTable.env_version: Option<StoredEnvVersion>`(追加のみ、
+版（`env_version`）の書き込み配線も実装済み（キーマップ設定の指紋は別、review-2026-09-24-06で配線）: `PersistedTable.env_version: Option<StoredEnvVersion>`(追加のみ、
 スキーマ版は上げず`#[serde(default)]`で旧ファイルも読める)を新設し、学習プロセス
 (`awase-keymap-learn-win/src/main.rs::probe_env_version`)がGJIのときだけ学習終了時に
 Converter版を取得して書く(3秒タイムアウトで超過時は書かない)。
