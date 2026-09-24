@@ -422,7 +422,10 @@ fn save_section(base_dir: &std::path::Path, section_name: &str, section: toml::T
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
         Err(e) => {
-            tracing::warn!("Skip saving [{section_name}]: cannot read {}: {e}", path.display());
+            tracing::warn!(
+                "Skip saving [{section_name}]: cannot read {}: {e}",
+                path.display()
+            );
             return;
         }
     };
