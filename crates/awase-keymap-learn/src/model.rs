@@ -78,6 +78,17 @@ pub struct Machine {
 }
 
 impl Machine {
+    /// 観測表(`Table`)が区別できる`Status`の数。`Table`は`Status`単位でセルを持つため、
+    /// 同じ`Status`にまとまる隠れ状態(入力中の段階など)は1つに数える。進捗の分母
+    /// (`distinct_status_count() × キー数`)に使う（`states.len()`で数えると約2倍になる）。
+    pub fn distinct_status_count(&self) -> usize {
+        self.states
+            .iter()
+            .map(|s| s.status)
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+    }
+
     /// 初期状態から到達できる状態。
     pub fn reachable(&self) -> Vec<bool> {
         let mut seen = vec![false; self.states.len()];

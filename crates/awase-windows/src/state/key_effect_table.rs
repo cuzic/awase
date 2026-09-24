@@ -502,10 +502,16 @@ pub enum Classification {
 /// 実測セルを直接横断してIMEモードキーの状態依存性を分類する。
 ///
 /// 対象外のVKは`None`。`KeyEffectKeymap::predict`は実行時向け補正を含むため使わない。
+///
+/// `learned`は実行時に採用されている学習表のセル（`RuntimeTableCache`、ADR-196/ADR192-T5）。
+/// 対象キーのセルを持つときは、同梱表・キーマップ由来のガード（overlay/カスタム表）より先に
+/// それで判定する（予測器`predict_with_override`と同じ優先順位。予測器が「冪等」と見ているキーを
+/// この警告が「状態依存」と表示する食い違いを防ぐ）。対象キーのセルが無ければ従来どおり。
 #[must_use]
 pub fn classify_state_dependent_mode_key(
     keymap: Option<&super::key_effect_predictor::KeyEffectKeymap>,
     vk: u16,
+    learned: Option<&[Cell]>,
 ) -> Option<Classification> {
     use super::key_effect_predictor::{custom_table_overrides, KeymapPreset, TableKey};
 
@@ -523,6 +529,11 @@ pub fn classify_state_dependent_mode_key(
             CannotPredictReason::AmbiguousKeymap,
         ));
     };
+    if let Some(learned) = learned {
+        if learned.iter().any(|cell| cell.key == key) {
+            return Some(classify_cells(learned, key, vk));
+        }
+    }
     if matches!(
         keymap.preset,
         KeymapPreset::MsImeNative | KeymapPreset::Custom
@@ -597,7 +608,7 @@ mod classification_tests {
 
     fn classify(preset: i64, vk: u16) -> Option<Classification> {
         let keymap = KeyEffectKeymap::from_config(Some(preset), None, &[]).unwrap();
-        classify_state_dependent_mode_key(Some(&keymap), vk)
+        classify_state_dependent_mode_key(Some(&keymap), vk, None)
     }
 
     #[test]
@@ -648,14 +659,14 @@ mod classification_tests {
     #[test]
     fn adr192_cannot_predict_reasons_are_distinct() {
         assert_eq!(
-            classify_state_dependent_mode_key(None, 0x1C),
+            classify_state_dependent_mode_key(None, 0x1C, None),
             Some(Classification::CannotPredict(
                 CannotPredictReason::AmbiguousKeymap
             ))
         );
         let overlay = KeyEffectKeymap::from_config(Some(2), None, &[1]).unwrap();
         assert_eq!(
-            classify_state_dependent_mode_key(Some(&overlay), 0x1C),
+            classify_state_dependent_mode_key(Some(&overlay), 0x1C, None),
             Some(Classification::CannotPredict(
                 CannotPredictReason::AmbiguousKeymap
             ))
@@ -667,16 +678,116 @@ mod classification_tests {
         )
         .unwrap();
         assert_eq!(
-            classify_state_dependent_mode_key(Some(&custom), 0x1C),
+            classify_state_dependent_mode_key(Some(&custom), 0x1C, None),
             Some(Classification::CannotPredict(
                 CannotPredictReason::UserOverride
             ))
         );
         let native = KeyEffectKeymap::for_msime_native(false, None, None);
         assert_eq!(
-            classify_state_dependent_mode_key(Some(&native), 0x1C),
+            classify_state_dependent_mode_key(Some(&native), 0x1C, None),
             Some(Classification::CannotPredict(
                 CannotPredictReason::InsufficientData
+            ))
+        );
+    }
+
+    /// ADR192-T5: 学習表が採用されているとき、判定は内蔵表でなく学習表に従う。
+    ///
+    /// `dependent=false`は変換キーが常にON（セット系＝状態非依存）、`true`は状態によって
+    /// トグル/セットが混在する（開閉依存）セル集合。
+    fn learned_henkan(dependent: bool) -> Vec<Cell> {
+        use super::super::key_effect_predictor::{Conv, Stage};
+        let mut cells = vec![
+            cell(
+                false,
+                None,
+                Stage::None,
+                TableKey::Henkan,
+                true,
+                Some(Conv::C19),
+                Disp::None,
+            ),
+            cell(
+                true,
+                Some(Conv::C10),
+                Stage::None,
+                TableKey::Henkan,
+                true,
+                Some(Conv::C10),
+                Disp::None,
+            ),
+        ];
+        if dependent {
+            cells.push(cell(
+                true,
+                Some(Conv::C19),
+                Stage::None,
+                TableKey::Henkan,
+                false,
+                Some(Conv::C19),
+                Disp::None,
+            ));
+        }
+        cells
+    }
+
+    #[test]
+    fn adr192_t5_learned_table_overrides_bundled_classification() {
+        let keymap = KeyEffectKeymap::from_config(Some(1), None, &[]).unwrap();
+        // 内蔵表(ATOK)では変換キーは開閉依存（既存テスト`adr192_open_axis_verification_table`）。
+        assert_eq!(
+            classify_state_dependent_mode_key(Some(&keymap), 0x1C, None),
+            Some(Classification::StateDependent(StateDependentAxis::Open))
+        );
+        // 学習表が「常にON」（冪等）と示していれば、警告は出さない側に揃う。
+        let idempotent = learned_henkan(false);
+        assert_eq!(
+            classify_state_dependent_mode_key(Some(&keymap), 0x1C, Some(&idempotent)),
+            Some(Classification::StateIndependent)
+        );
+        // 学習表が開閉依存と示していれば、状態依存。
+        let dependent = learned_henkan(true);
+        assert_eq!(
+            classify_state_dependent_mode_key(Some(&keymap), 0x1C, Some(&dependent)),
+            Some(Classification::StateDependent(StateDependentAxis::Open))
+        );
+    }
+
+    #[test]
+    fn adr192_t5_learned_table_without_the_key_falls_back_to_bundled() {
+        use super::super::key_effect_predictor::Stage;
+        let keymap = KeyEffectKeymap::from_config(Some(1), None, &[]).unwrap();
+        // 学習表に無変換(0x1D)のセルしか無ければ、変換(0x1C)は従来の内蔵表判定のまま。
+        let only_muhenkan = [cell(
+            false,
+            None,
+            Stage::None,
+            TableKey::Muhenkan,
+            true,
+            None,
+            Disp::None,
+        )];
+        assert_eq!(
+            classify_state_dependent_mode_key(Some(&keymap), 0x1C, Some(&only_muhenkan)),
+            classify_state_dependent_mode_key(Some(&keymap), 0x1C, None)
+        );
+    }
+
+    #[test]
+    fn adr192_t5_learned_table_classifies_presets_that_have_no_bundled_table() {
+        // Microsoft IME本体は同梱表が無く常に`InsufficientData`だが、学習表があれば判定できる。
+        let native = KeyEffectKeymap::for_msime_native(false, None, None);
+        let idempotent = learned_henkan(false);
+        assert_eq!(
+            classify_state_dependent_mode_key(Some(&native), 0x1C, Some(&idempotent)),
+            Some(Classification::StateIndependent)
+        );
+        // keymap自体が不明なら学習表があっても判定しない（何のIMEの表か分からない）。
+        assert_eq!(
+            classify_state_dependent_mode_key(None, 0x1C, Some(&idempotent)),
+            Some(Classification::CannotPredict(
+                CannotPredictReason::AmbiguousKeymap
             ))
         );
     }

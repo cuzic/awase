@@ -7,10 +7,8 @@
 PR #269: 1e前半の配線 + `known_keymap.rs`の既知構成誤判定バグ修正）。1b-8(判定書き換えモード、
 `judgement::adopt_needs_confirmation`+`awase-keymap-learn-win --adopt-pending-judgement`)は
 PR #265でdevelop統合（stdoutの`reason=`は空白なしコードのみ、詳細はstderr。採用済みへの再実行は冪等成功）。
-**残作業**: 1b項目7〜9のうち再測定オーケストレーション（`BundledDiff::mismatched`を入力に、
-実際にIMEを再度叩いて確認する部分。`awase-keymap-learn-win`側の`ImeDriver`実装が前提、未着手。
-`judgement::combine`はPR #269で先に用意済み、`run_main`からは`reconciliation: None`で
-まだ呼ばれていない）・1e後半（不具合報告=`bug_report.rs`への添付配線、未着手）。
+PR #275で再測定オーケストレーション（1b項目7〜8、`awase_keymap_learn::remeasure`＋`judgement::combine`配線）、PR #273/#277で1e後半（不具合報告への添付、`BugReportKeymapLearnSummary`）、PR #284で項目9の不一致分布タグ付けの純粋ロジック（`mismatch_tag::tag_mismatches`）、PR #285で再測定の押下数上限・リセット間隔の実測に基づく調整をdevelopへ統合済み（2026-09-24時点）。
+**残作業**: 項目9の配線（`tag_mismatches`を学習フロー・不具合報告へ接続、現状は純粋ロジックのみ）・再測定結果とT1外部書き込み観測の永続化（未永続化のため不具合報告にも未添付）・実機(`RealImeDriver`)での再測定の動作確認。MS-IME本体の未解決問題は[adr196-t2-msime-learning-open-issues.md](adr196-t2-msime-learning-open-issues.md)。
 [ADR195-T2](adr195-t2-self-verification.md)（自己検証本体。正答率・縮退率の**計算**はT2の担当、
 本タスクは**採否判定**の担当——役割を分けること）・[ADR195-T3](adr195-t3-persistence.md)
 （永続化、スキーマに本タスクの出力フィールドを追加済みであること）・[ADR196-T3](adr196-t3-bundled-table-versioning.md)
@@ -125,7 +123,7 @@ COM STA初期化・`ITfThreadMgr::Activate`済みのスレッドを持ってお�
 中止）セル**は`prediction`を`None`へ落とし、`ReconciliationSummary`を`judgement::combine`へ
 渡す（`run_main`。既知構成でない/`config1.db`不読のときは`None`のまま）。
 **項目9の不一致分布タグ**: 純粋ロジック`awase_keymap_learn::mismatch_tag::tag_mismatches`を追加（キー集中=版ずれ寄り、状態集中・同版で不一致=パイプライン疑い、参考タグのみ）。学習フロー/不具合報告への配線は未実装。
-**未実装（残作業）**: 決定1b項目9の配線、実機(RealImeDriver)での動作確認。
+**未実装（残作業）**: 決定1b項目9の配線（PR #284で純粋ロジックのみdevelop統合済み）、実機(RealImeDriver)での動作確認。
 `REMEASURE_MAX_SETUP_PRESSES`は実測済み（60→250、windows-latest実GJI+ATOK・1600件: 中央値11・
 p95≈100・p99≈150・最大230、60超は10.3%）。`REMEASURE_RESET_EVERY`も実測済み（12→24、3/6/12/24/48
 を比較、到達押下数は差が無く所要時間のみ変わる）。

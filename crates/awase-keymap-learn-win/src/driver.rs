@@ -169,6 +169,30 @@ struct Observation {
     text: String,
 }
 
+/// `CoInitializeEx`成功の対価としての`CoUninitialize`を担うガード。
+///
+/// `RealImeDriver::drop`本体で`CoUninitialize`を呼ぶと、その後に解放されるフィールド
+/// (`thread_mgr`/`thread_compartments`のCOMインターフェース)のReleaseがCOM終了後になり、
+/// アンロード済みCOMへのアクセス違反になりうる(コードレビューB-6)。Rustはフィールドを
+/// 宣言順に解放するので、このガードを**最後のフィールド**に置き、COMインターフェースが
+/// すべて解放された後に`CoUninitialize`が走るようにする。
+#[derive(Debug)]
+struct ComApartment;
+
+impl ComApartment {
+    /// STAで初期化する。成功時のみガードを返す(失敗時は`CoUninitialize`を呼んではならない)。
+    fn initialize_sta() -> WinResult<Self> {
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()? };
+        Ok(Self)
+    }
+}
+
+impl Drop for ComApartment {
+    fn drop(&mut self) {
+        unsafe { CoUninitialize() };
+    }
+}
+
 /// 専用EDIT窓、TSF thread manager、IMM観測と生SendInputを同一スレッドに保持する。
 #[derive(Debug)]
 pub struct RealImeDriver {
@@ -211,13 +235,17 @@ pub struct RealImeDriver {
     /// A-1/A-2)。学習中にユーザーがIMEを切り替える可能性への対処として、呼び出し側は
     /// 終了時に[`Self::query_tip_identity`]で再同定し、この値と比較すること。
     tip_identity: TipIdentity,
+    /// **最後のフィールドでなければならない**(上記`ComApartment`の解放順の説明を参照)。
+    _com: ComApartment,
 }
 
 impl RealImeDriver {
     pub fn new(keys: Vec<u32>) -> WinResult<Self> {
         // round1 M3対応: 前回の(あれば)インスタンスが残したカウントを引き継がない。
         FOCUS_LOST_EVENTS.store(0, Ordering::SeqCst);
-        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()? };
+        // 以降の`?`による早期returnでも、`com`がローカル変数の解放順(宣言の逆順)で最後に
+        // 落ちるので、COMインターフェースの解放後に`CoUninitialize`される。
+        let com = ComApartment::initialize_sta()?;
         let thread_mgr: ITfThreadMgr =
             unsafe { CoCreateInstance(&CLSID_TF_ThreadMgr, None, CLSCTX_INPROC_SERVER)? };
         unsafe { thread_mgr.Activate()? };
@@ -271,6 +299,7 @@ impl RealImeDriver {
             // 後段で`query_tip_identity_on_current_sta()`の結果に上書きする
             // プレースホルダ(この値のまま使われることはない)。
             tip_identity: TipIdentity::Other,
+            _com: com,
         };
 
         // 決定1b項目3・ADR195-T7項目2: 静かな観測窓（quiet window）——ここまでの
@@ -608,7 +637,7 @@ impl Drop for RealImeDriver {
         let _ = unsafe { self.thread_mgr.Deactivate() };
         // `self.edit`は`self.window`の子窓なので、親を破棄すれば一緒に破棄される。
         let _ = unsafe { DestroyWindow(self.window) };
-        unsafe { CoUninitialize() };
+        // `CoUninitialize`は`_com`フィールド(最後に解放される)が担う。
     }
 }
 

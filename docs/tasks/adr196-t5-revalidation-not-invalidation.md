@@ -1,7 +1,6 @@
 # ADR-196 T5: 陳腐化検出を「失効」から「要再検証」へ置き換える
 
-状態: **一部着手（2026-09-23、`diag/adr196-t5-revalidation`ブランチ）。3a(状態遷移)の
-純粋ロジックのみ実装・テスト済み、残りは未着手。** 下記「進捗（2026-09-23）」参照。
+状態: **主要部分実装済み（2026-09-24、PR #279・#280・#283でdevelop統合）。** 3a(状態遷移)の純粋ロジック・GJI側のConverter版取得と指紋書き込み配線・軽量再検証モード(`--revalidate`)・awase-settingsの起動ボタン(T4)は実装済み（実機での動作確認はGJIのみ・一部）。**残り**: Microsoft IME側の版取得(ADR-197待ち)・採点日時フィールド・互換モード読み取り。下記「進捗」参照。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
 **訂正（2026-09-23）**: 起票時点の記載「既存の[ADR195-T8](adr195-t8-staleness-detection.md)
@@ -115,7 +114,7 @@ Converter版を取得して書く(3秒タイムアウトで超過時は書かな
 table_from_persisted}`)。合格なら`env_version`・`verification`を書き直し(判定は元のまま)、
 `Rejected`相当のときだけ判定を`Rejected`へ落とす。採点日時の記録用フィールドは現スキーマに無く
 未実装。
-未着手: Microsoft IME側の4値(ADR-197待ち)、awase-settingsでの現在版との比較表示・起動ボタン(ADR196-T4)。
+未着手: Microsoft IME側の4値(ADR-197待ち)。awase-settingsでの現在版との比較表示・起動ボタンはADR196-T4(PR #283)で実装済み。
 
 - **GJI**: Converter本体（`GJI_PROCESS_PREFIXES`、`tsf/gji_monitor.rs:25-39`。
   `find_gji_pid`は全セッションから最初の一致を返すため、可能なら`ProcessIdToSessionId`で
