@@ -28,6 +28,8 @@ pub struct MismatchDistribution {
     pub distinct_statuses: u32,
 }
 
+/// `mismatched`は重複しない`(Status, KeyId)`を渡すこと（`mismatched`件数は重複を除かず数える）。
+///
 /// `version_matches`は「ユーザーのIME版＝内蔵表の版か」（不明なら`None`）。`Some(true)`で
 /// 不一致があれば、分布に関わらずパイプライン疑いとする。
 #[must_use]
