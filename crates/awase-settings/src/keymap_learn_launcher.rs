@@ -47,6 +47,22 @@ pub enum LearnMode {
 }
 
 impl LearnMode {
+    /// この起動モードの子プロセスが出しうる行か。モードと合わない行(学習中に`adopt`行など)
+    /// は無視する——別プロセスの出力の混入や、旧版の出力形式との取り違えで状態表示を
+    /// 誤更新しないため。`Revalidate`は自己検証ウォークの進捗行を出しうるので`Progress`も許す。
+    #[must_use]
+    pub const fn accepts(self, line: &LearnLine) -> bool {
+        matches!(
+            (self, line),
+            (Self::Learn, LearnLine::Progress(_) | LearnLine::Result(_))
+                | (Self::AdoptPendingJudgement, LearnLine::Adopt(_))
+                | (
+                    Self::Revalidate,
+                    LearnLine::Progress(_) | LearnLine::Revalidate(_)
+                )
+        )
+    }
+
     const fn flag(self) -> Option<&'static str> {
         match self {
             Self::Learn => None,
@@ -272,6 +288,26 @@ mod tests {
             Some(LearnLine::Revalidate(RevalidateOutcome::Failure))
         );
         assert_eq!(parse_learn_line("adopt status=maybe"), None);
+    }
+
+    #[test]
+    fn each_mode_accepts_only_its_own_lines() {
+        let progress = LearnLine::Progress(LearnProgress {
+            cell: 1,
+            total: 2,
+            elapsed_ms: 0.0,
+            eta_ms: None,
+        });
+        let result = LearnLine::Result(LearnOutcome::Success);
+        let adopt = LearnLine::Adopt(true);
+        let reval = LearnLine::Revalidate(RevalidateOutcome::Passed);
+        assert!(LearnMode::Learn.accepts(&progress) && LearnMode::Learn.accepts(&result));
+        assert!(!LearnMode::Learn.accepts(&adopt) && !LearnMode::Learn.accepts(&reval));
+        assert!(LearnMode::AdoptPendingJudgement.accepts(&adopt));
+        assert!(!LearnMode::AdoptPendingJudgement.accepts(&result));
+        assert!(!LearnMode::AdoptPendingJudgement.accepts(&reval));
+        assert!(LearnMode::Revalidate.accepts(&reval) && LearnMode::Revalidate.accepts(&progress));
+        assert!(!LearnMode::Revalidate.accepts(&result) && !LearnMode::Revalidate.accepts(&adopt));
     }
 
     #[test]
