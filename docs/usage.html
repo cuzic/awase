@@ -508,7 +508,7 @@ footer p{margin-bottom:0.3rem}
       <ul>
         <li><strong>配列選択</strong> — <code>layouts_dir</code> 内の .yab ファイルを一覧表示。選択するとレイアウトが即座に切り替わります</li>
         <li><strong>設定...</strong> — 設定画面を開きます</li>
-        <li><strong>学習キャッシュをクリア</strong> — IME の学習データキャッシュを削除します</li>
+        <li><strong>学習キャッシュをクリア</strong> — <strong>現状は動作しません（BUG-108）</strong>。選んでも何も削除されません</li>
         <li><strong>プロセスを再起動</strong> — 入力がおかしくなったときにプロセスを完全再起動します（詳細は<a href="#panic-reset">「緊急操作・リセット」</a>参照）</li>
         <li><strong>自動起動</strong> — ログオン時の自動起動を有効/無効にします（チェックで有効）</li>
         <li><strong>管理者として再起動</strong> — UAC で昇格して awase を再起動します。管理者権限を要求するアプリ（一部のゲームなど）でも動作するようになります</li>
@@ -540,8 +540,6 @@ footer p{margin-bottom:0.3rem}
         <tr><th>項目</th><th>説明</th></tr>
         <tr><td>キーボードモデル</td><td>JIS（日本語配列）または US（英語配列）を選択</td></tr>
         <tr><td>同時打鍵閾値</td><td>同時打鍵と判定する時間幅（ms）。NICOLA 規格標準は 100ms</td></tr>
-        <tr><td>出力モード</td><td>Unicode（推奨）・PerKey・Batched。通常は Unicode のまま</td></tr>
-        <tr><td>フックモード</td><td>Relay（推奨・安定）または Filter（低遅延）</td></tr>
         <tr><td>自動起動</td><td>Windows ログオン時に自動起動するかどうか</td></tr>
         <tr><td>レイアウト</td><td>使用する .yab 配列ファイルの選択。「再スキャン」で一覧を更新</td></tr>
       </table>
@@ -556,11 +554,11 @@ footer p{margin-bottom:0.3rem}
       </p>
       <table class="tab-table">
         <tr><th>モード</th><th>動作</th><th>向いている人</th></tr>
-        <tr><td>wait（既定）</td><td>タイムアウトまで保留してから確定。最も正確</td><td>ゆっくり正確に打ちたい方</td></tr>
+        <tr><td>wait（既定・推奨）</td><td>タイムアウトまで保留してから確定。最も正確</td><td>ゆっくり正確に打ちたい方</td></tr>
         <tr><td>speculative<br><span style="color:var(--text-secondary);font-size:0.85rem">（廃止予定）</span></td><td>即時出力し、同時打鍵なら差し替え。<code>two_phase</code>（<code>speculative_delay_ms=0</code>）と完全に等価なため、設定すると自動的にそちらへ読み替えられます</td><td>—</td></tr>
         <tr><td>two_phase</td><td>短い待機後に投機出力。wait と即時出力の中間。<code>speculative_delay_ms</code> で待機時間（ms）を指定</td><td>バランス重視の方</td></tr>
         <tr><td>adaptive_timing</td><td>連続打鍵中は wait、途切れたら投機。速度に自動適応</td><td>打鍵速度にムラがある方</td></tr>
-        <tr><td>ngram_predictive</td><td>n-gram 統計で投機/待機を動的判断。文脈を使って精度向上</td><td>最も賢い判定を使いたい方（推奨）</td></tr>
+        <tr><td>ngram_predictive</td><td>n-gram 統計で投機/待機を動的判断。文脈を使って精度向上</td><td>最も賢い判定を使いたい方</td></tr>
       </table>
     </div>
 
@@ -692,12 +690,12 @@ engine_off_solo_triple = "VK_NONCONVERT"</div>
 simultaneous_threshold_ms = 100
 
 # 確定モードの選択（既定: wait。設定画面には無く config.toml 手動編集のみ）
-#   ngram_predictive  - n-gram 予測で投機/待機を動的切替（推奨）
-#   wait              - タイムアウトまで保留（最も正確、既定）
+#   wait              - タイムアウトまで保留（最も正確、既定・推奨）
+#   ngram_predictive  - n-gram 予測で投機/待機を動的切替
 #   speculative       - （廃止予定）two_phase(speculative_delay_ms=0)と等価
 #   two_phase         - 短い待機→投機出力→差し替え
 #   adaptive_timing   - 打鍵速度に応じて閾値を自動調整
-confirm_mode = "ngram_predictive"
+confirm_mode = "wait"
 
 # 3キー分岐・重なり不足判定のマージン（%）。設定画面の
 # 「上級者向け設定」タブから調整できる（既定: 30 / 0）。
@@ -721,13 +719,7 @@ right_thumb_key = "VK_CONVERT"      # 変換キー</div>
 # キーボードモデル（JIS キーボードを使っている場合はデフォルトで OK）
 # keyboard_model = "jis"   # JIS キーボード（デフォルト）
 # keyboard_model = "us"    # US キーボード
-
-# ローマ字出力の送信方式（通常は変更不要）
-#   unicode  - ひらがなを直接送信（IME 不要、推奨）
-#   per_key  - 1文字ずつ SendInput（他フックとの互換性重視）
-#   batched  - 全文字を1回の SendInput
-output_mode = "unicode"</div>
-      <p class="note">新しい Microsoft IME（Windows 10 20H1 以降）では <code>unicode</code> モードを推奨します。<code>per_key</code> / <code>batched</code> では入力が正しく処理されない場合があります。</p>
+</div>
     </div>
 
     <div class="card">
@@ -754,7 +746,7 @@ update_check = true</div>
 
     <div class="card">
       <h3>特定ウィンドウの動作オーバーライド</h3>
-      <div class="code-block">[focus_overrides]
+      <div class="code-block">[app_overrides]
 # 特定アプリでテキスト入力を強制する
 force_text = [
     { process = "myapp.exe", class = "MyWindowClass" },
@@ -769,7 +761,7 @@ force_bypass = [
 
     <div class="card">
       <h3>アプリ別の出力モード上書き</h3>
-      <div class="code-block">[focus_overrides]
+      <div class="code-block">[app_overrides]
 # VK キーストロークで送信する（Chrome / Edge / VS Code 等 Electron ベースのアプリ）
 force_vk = [
     { process = "chrome.exe",  class = "Chrome_RenderWidgetHostHWND" },
@@ -1004,8 +996,8 @@ engine_off_solo_triple = "VK_NONCONVERT"
       <h3>2. 確定モードの調整（<code>config.toml</code> 手動設定）</h3>
       <ul>
         <li>設定画面には無いため <code>config.toml</code> の <code>[general]</code> セクションを直接編集する</li>
-        <li>まず <code>confirm_mode = "ngram_predictive"</code>（推奨）で試す</li>
-        <li>誤変換が多い場合は <code>"wait"</code>（既定）に変更（正確だがやや遅め）</li>
+        <li>まず既定の <code>confirm_mode = "wait"</code>（推奨。正確だがやや遅め）のまま試す</li>
+        <li>遅延が気になる場合は <code>"ngram_predictive"</code> を試す</li>
         <li>高速タイピングで違和感がある場合は <code>"adaptive_timing"</code> を試す</li>
       </ul>
     </div>

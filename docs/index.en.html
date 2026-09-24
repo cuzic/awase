@@ -465,7 +465,7 @@ footer p{margin-bottom:0.3rem}
         <ul>
           <li>Written in Rust with 1–5ms processing time, so you never feel input lag</li>
           <li>An n-gram statistical model predicts "the reading that fits the context," judging chords intelligently</li>
-          <li>Choose from five confirmation modes to match your typing style</li>
+          <li>Choose from four confirmation modes to match your typing style</li>
           <li>Coexists with other hook-based software such as AutoHotKey</li>
         </ul>
       </div>
@@ -579,11 +579,11 @@ footer p{margin-bottom:0.3rem}
         awase includes a built-in statistical model learned from a Japanese n-gram corpus, and judges "which is the natural Japanese" from the surrounding context. Even when you type fast there are few misconversions, and long-form input stays comfortable.
       </p>
 
-      <h3>Five Confirmation Modes</h3>
+      <h3>Four Confirmation Modes</h3>
       <div class="modes-grid">
         <div class="mode-row">
           <span class="mode-name">ngram_predictive</span>
-          <span class="mode-desc">Context prediction with an n-gram statistical model. The best balance of speed and accuracy (recommended)</span>
+          <span class="mode-desc">Context prediction with an n-gram statistical model. Balances speed and accuracy</span>
         </div>
         <div class="mode-row">
           <span class="mode-name">adaptive_timing</span>
@@ -594,12 +594,8 @@ footer p{margin-bottom:0.3rem}
           <span class="mode-desc">Uses speculative output to keep speed, then replaces it if a thumb key arrives</span>
         </div>
         <div class="mode-row">
-          <span class="mode-name">speculative</span>
-          <span class="mode-desc">Outputs single keystrokes immediately. Fastest, but misconversions may increase during fast typing</span>
-        </div>
-        <div class="mode-row">
           <span class="mode-name">wait</span>
-          <span class="mode-desc">Waits until the timer fires before committing. Most accurate, and suited to those who type at a relaxed pace</span>
+          <span class="mode-desc">Waits until the timer fires before committing. Most accurate, and suited to those who type at a relaxed pace (default, recommended)</span>
         </div>
       </div>
     </div>
@@ -667,15 +663,7 @@ footer p{margin-bottom:0.3rem}
       <table class="config-table">
         <tr>
           <th><code>confirm_mode</code></th>
-          <td>Selects the confirmation mode. <code>ngram_predictive</code> (recommended), <code>wait</code> (favors accuracy), <code>speculative</code> (favors speed), and more</td>
-        </tr>
-        <tr>
-          <th><code>output_mode</code></th>
-          <td>The output method. <code>unicode</code> is the default</td>
-        </tr>
-        <tr>
-          <th><code>hook_mode</code></th>
-          <td>How the hook operates. <code>relay</code> is the default, designed to prioritize stability</td>
+          <td>Selects the confirmation mode. <code>wait</code> (default, recommended, favors accuracy), <code>ngram_predictive</code>, <code>adaptive_timing</code>, <code>two_phase</code></td>
         </tr>
       </table>
     </div>
@@ -725,7 +713,7 @@ footer p{margin-bottom:0.3rem}
       </div>
       <div class="faq-item">
         <p class="faq-q">When I typed fast, the shift would bleed into the neighboring key and add a dakuten.</p>
-        <p class="faq-a">This is a problem widely reported with traditional tools like YamabukiR and Benisara. If the moment you release the thumb-shift key overlaps with the next keystroke, it's judged as an unintended chord and a voiced sound or a different character comes out — creating a situation where "it only works if you type slowly." awase uses an n-gram statistical model to judge "whether it's natural Japanese," so it can decide correctly even if the timing is slightly off. You can also choose from five confirmation modes to tune it to your own typing speed.</p>
+        <p class="faq-a">This is a problem widely reported with traditional tools like YamabukiR and Benisara. If the moment you release the thumb-shift key overlaps with the next keystroke, it's judged as an unintended chord and a voiced sound or a different character comes out — creating a situation where "it only works if you type slowly." awase uses an n-gram statistical model to judge "whether it's natural Japanese," so it can decide correctly even if the timing is slightly off. You can also choose from four confirmation modes to tune it to your own typing speed.</p>
       </div>
       <div class="faq-item">
         <p class="faq-q">During fast typing, the character order sometimes came out wrong.</p>
