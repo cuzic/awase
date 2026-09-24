@@ -1264,7 +1264,12 @@ mod tests {
                 "CI-RESULT breakdown open_total={open_total} open_conv_unrepresentable={open_unrepr} no_prediction={no_pred} unknown_vk={unk_vk} after_conv_unrepresentable={after_unrepr}"
             );
         }
-        let result = load_runtime_table(path, NS);
+        // 指紋照合はCIで再現できないので表自身の指紋を現在値として渡す(指紋以外の採否を見る)。
+        let probe = persisted
+            .fingerprint
+            .map_or(NS, FingerprintProbe::Computed);
+        println!("CI-RESULT judgement={:?}", persisted.judgement);
+        let result = load_runtime_table(path, probe);
         println!(
             "CI-RESULT load_runtime_table={:?}",
             result.as_ref().map(Vec::len)
