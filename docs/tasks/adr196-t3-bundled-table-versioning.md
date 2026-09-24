@@ -6,6 +6,7 @@
 埋め込む形でコミット済み。実装対象1のうち「`VS_FIXEDFILEINFO`によるGJIファイル版の
 実取得」は依然**未着手**——**【S4対応】この部分は[ADR196-T5](adr196-t5-revalidation-not-invalidation.md)
 が所有・実装する共有関数を待つ**（Microsoft IME本体側の実装完了は待たなくてよい）。
+**【2026-09-24追記】待っていた共有関数はPR #279（`awase-keymap-learn-win/src/env_version.rs`の`file_version`、GJI側のみ）でdevelop統合済み。`measurement-env.json`への実値投入・CI配線は引き続き未着手。**
 
 実装対象2「CI差分検出」の**比較ロジック本体**（`--diff-report`、決定的セルの値変更と
 セルの出入りを区別）は実装・単体テスト済み（PR #260）。**`.github/workflows/e2e-ime.yml`

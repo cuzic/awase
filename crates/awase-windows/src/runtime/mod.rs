@@ -1243,17 +1243,44 @@ impl Runtime {
         self.warn_state_dependent_mode_keys = enabled;
     }
 
+    /// ADR192-T5: 状態依存キー警告の判定に使う、採用中の学習表のセル。予測器
+    /// （`kp_predict_key_effect`）と同じ`RuntimeTableCache`・同じ検証キーで引くので、
+    /// 予測器が使う表と警告が見る表は常に一致する（学習表が無効/未採用なら`None`＝同梱表）。
+    fn learned_cells_for_warning(
+        &mut self,
+        now_ms: u64,
+        keymap: Option<&crate::state::key_effect_predictor::KeyEffectKeymap>,
+    ) -> Option<Vec<crate::state::key_effect_predictor::Cell>> {
+        let keymap = keymap?;
+        if !self.use_learned_keymap_table {
+            return None;
+        }
+        let preset = keymap.preset();
+        let check_against_bundled = keymap.is_unmodified_bundled_config();
+        self.key_effect_runtime_table
+            .get(
+                now_ms,
+                (preset, check_against_bundled),
+                crate::state::key_effect_runtime::table_file_stamp,
+                || crate::state::key_effect_runtime::load_and_log(preset, check_against_bundled),
+            )
+            .map(<[_]>::to_vec)
+    }
+
     pub(crate) fn check_state_dependent_mode_keys(&mut self, google_ime: bool) {
         let (left, right) = crate::hook::thumb_vk_codes();
         let gji_stamp = google_ime
             .then(crate::gji_charset_autodetect::config1_db_stamp)
             .flatten();
+        let now_ms = crate::hook::current_tick_ms();
         let warnings = if google_ime {
             let keymap = crate::gji_charset_autodetect::read_key_effect_keymap();
+            let learned = self.learned_cells_for_warning(now_ms, keymap.as_ref());
             self.state_dependent_key_warning.detect_gji(
                 self.warn_state_dependent_mode_keys,
                 gji_stamp,
                 keymap.as_ref(),
+                learned.as_deref(),
                 [left, right],
             )
         } else {
@@ -1265,10 +1292,12 @@ impl Runtime {
                 raw.key_assignment_henkan,
                 raw.key_assignment_muhenkan,
             );
+            let learned = self.learned_cells_for_warning(now_ms, Some(&keymap));
             self.state_dependent_key_warning.detect_msime(
                 self.warn_state_dependent_mode_keys,
                 bits,
                 Some(&keymap),
+                learned.as_deref(),
                 [left, right],
             )
         };
