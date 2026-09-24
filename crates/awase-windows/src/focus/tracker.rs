@@ -244,7 +244,7 @@ impl FocusTracker {
                         &self.current.process_name,
                     )
                 })
-            || crate::calibration_ipc::is_keymap_learn_process_name(&self.current.process_name)
+            || crate::state::app_suppression::is_keymap_learn_process_name(&self.current.process_name)
     }
 
     pub(crate) fn cache_insert(

@@ -39,6 +39,15 @@ pub(crate) fn normalize_process_name(name: &str) -> String {
     lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
 }
 
+/// ADR-195段階1の独立学習プロセス（`awase-keymap-learn-win.exe`）名と一致するか。
+///
+/// 学習中は合成注入キーを awase が変換しないよう、`FocusTracker::is_app_disabled`が
+/// このプロセスを恒久バイパスする（旧`calibration_ipc.rs`から移設）。
+#[must_use]
+pub fn is_keymap_learn_process_name(name: &str) -> bool {
+    normalize_process_name(name) == normalize_process_name("awase-keymap-learn-win.exe")
+}
+
 /// フォーカス変更前後で「無効化対象アプリへの出入り」のどちらが起きたかを表す。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuppressionEdge {
@@ -67,6 +76,15 @@ pub const fn edge(prev: bool, next: bool) -> SuppressionEdge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keymap_learn_process_name_ignores_case_and_exe_suffix() {
+        assert!(is_keymap_learn_process_name("awase-keymap-learn-win.exe"));
+        assert!(is_keymap_learn_process_name("AWASE-KEYMAP-LEARN-WIN.EXE"));
+        assert!(is_keymap_learn_process_name("awase-keymap-learn-win"));
+        assert!(!is_keymap_learn_process_name("awase.exe"));
+        assert!(!is_keymap_learn_process_name(""));
+    }
 
     #[test]
     fn matches_ignores_case() {
