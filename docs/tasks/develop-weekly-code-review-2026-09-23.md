@@ -54,12 +54,13 @@
 - 関連タスク: `adr196-t2-mismatch-adjudication.md`、`adr196-t3-bundled-table-versioning.md`
 - 対応（2026-09-23〜24）: 副次の`mismatch_ratio`/`diff_against_bundled`は同梱表側の`after_conv=None`を「主張なし」として扱うよう修正済み（PR #278、`4af30b0c`）。本体は2026-09-24修正: `convert_cells`が閉セルを`(stage, key)`ごとに`merge_closed_cells`で入力順非依存に畳む（`after_open`/`disp`が全一致なら採用し`after_conv`だけ割れたら`None`、`after_open`/`disp`が割れたらセルごと落とす）。回帰テスト2件（`closed_cells_*`）
 
-### B-3. [中・PLAUSIBLE・未修正] `classify_robust` の頑健性が既定 k=2 ではほぼ効かない
+### B-3. [中・PLAUSIBLE・修正済み(2026-09-24)] `classify_robust` の頑健性が既定 k=2 ではほぼ効かない
 
 - 場所: `crates/awase-keymap-learn/src/verify.rs:46-81`
 - (a) 同文脈で 1対1 に割れても少数派1件は閾値2未満 → `Det(先着)`。`Req::default().k=2` では2回観測したセルは割れても非決定と宣言されない
 - (b) 1件しかない文脈グループは多数派補正を受けず、別文脈の迷い観測1件でセル全体が `HistoryDep`/`Conflict`（予測なし）になる
 - 影響: 入力中 BS（75/25）が同文脈で1対1に割れると25%側が確定予測として書き出される（`declared_not_det` が偽でやり直しも起きない）。逆に単発の誤観測で不要な全体再巡回
+- 対応: `classify_robust`を修正。(a)同一文脈の同数タイは`k`に関わらず`NonDet`、(b)文脈をまたぐ場合は観測数重み付けの最多結果に対し食い違う観測の合計が`k`未満（かつ最多が一意）なら`Det(最多)`。`k=1`は従来の厳密一致のまま。2対1は単発誤りと区別できないため既定k=2では許容（設計上の限界）。回帰テスト3件（`verify.rs`）
 - 注: PR #282/#286は多数決ロジックの共通化（`table::majority_of`）と再カウント解消のリファクタで、(a)(b)の挙動は変えていない（同数タイのテストのみ追加）
 
 ### B-4. [中・CONFIRMED・修正済み(2026-09-24)] 進捗の分母が実セル数の約2倍

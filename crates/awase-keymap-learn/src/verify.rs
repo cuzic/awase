@@ -42,28 +42,49 @@ pub fn classify_robust(table: &Table, status: Status, key: usize, min_minority: 
 
     let mut any_inhomogeneous = false;
     let mut multi = 0;
-    let mut effective: Vec<Outcome> = Vec::with_capacity(groups.len());
+    // (多数派の結果, その文脈の観測数)。
+    let mut effective: Vec<(Outcome, usize)> = Vec::with_capacity(groups.len());
     for g in groups.values() {
         if g.len() >= 2 {
             multi += 1;
             let (maj_outcome, maj_count) =
                 majority_with_count(g.iter().copied()).unwrap_or((g[0], 0));
             let minority = g.len() - maj_count;
-            if minority >= min_minority {
+            // 同数タイ(多数派が一意に決まらない)は、`min_minority`に関わらず観測誤りとは
+            // 言えない(1対1に割れた文脈を先着で決定的と宣言しない)。
+            if minority >= min_minority || maj_count <= minority {
                 any_inhomogeneous = true;
             }
-            effective.push(maj_outcome);
+            effective.push((maj_outcome, g.len()));
         } else {
-            effective.push(g[0]);
+            effective.push((g[0], 1));
         }
     }
 
     if any_inhomogeneous {
         return Class::NonDet;
     }
-    if effective.iter().all(|o| *o == effective[0]) {
-        Class::Det(effective[0])
-    } else if multi >= 1 && groups.len() >= 2 {
+    if effective.iter().all(|(o, _)| *o == effective[0].0) {
+        return Class::Det(effective[0].0);
+    }
+    // 文脈をまたいで結果が違う場合: 観測数で重み付けした全体の最多結果に対し、食い違う観測の
+    // 合計が`min_minority`未満なら(1件しかない文脈の迷い観測は多数派補正を受けられないため)
+    // 観測誤りとみなして最多結果で決定的とする。`min_minority == 1`では常に成立しない。
+    let mut weights: Vec<(Outcome, usize)> = Vec::new();
+    for &(o, w) in &effective {
+        match weights.iter_mut().find(|(x, _)| *x == o) {
+            Some(e) => e.1 += w,
+            None => weights.push((o, w)),
+        }
+    }
+    let total: usize = weights.iter().map(|(_, w)| w).sum();
+    if let Some(&(top, tw)) = weights.iter().max_by_key(|(_, w)| *w) {
+        let unique = weights.iter().filter(|(_, w)| *w == tw).count() == 1;
+        if unique && total - tw < min_minority {
+            return Class::Det(top);
+        }
+    }
+    if multi >= 1 && groups.len() >= 2 {
         Class::HistoryDep
     } else {
         Class::Conflict
@@ -267,9 +288,9 @@ mod tests {
     fn classify_robust_tie_break_is_deterministic_across_many_calls() {
         let mut t = Table::new();
         let s = st(true);
-        // 同じ文脈で1対1のタイ(多数派が一意に決まらない)。minority=1はDEFAULT_MIN_MINORITY(2)
-        // 未満なので観測誤り扱いとなり決定的に倒れるが、その決定先(先に現れたtrue)が
-        // 呼び出しごとにぶれてはならない(HashMap反復順に依存する実装だと再現しなかった回帰)。
+        // 同じ文脈で1対1のタイ(多数派が一意に決まらない)。B-3(a): 少数派1件でも同数タイは
+        // 観測誤りと言えないので非決定とする。結果が呼び出しごとにぶれてはならない
+        // (HashMap反復順に依存する実装だと再現しなかった回帰)。
         t.record(s, 0, Some(1), out(true));
         t.record(s, 0, Some(1), out(false));
 
@@ -277,7 +298,60 @@ mod tests {
         for _ in 0..500 {
             assert_eq!(classify_robust(&t, s, 0, DEFAULT_MIN_MINORITY), first);
         }
-        assert_eq!(first, Class::Det(out(true)));
+        assert_eq!(first, Class::NonDet);
+    }
+
+    #[test]
+    fn classify_robust_alternating_cell_detected_at_2_obs_but_2_to_1_is_tolerated() {
+        // B-3(a)(3fの検証テスト由来): 同一文脈2件の交互揺れ(1対1)は非決定と宣言する。
+        // 2対1は単発の観測誤りと区別できないため、既定k=2では許容する(頑健性の設計上の限界)。
+        let s = st(true);
+        let rec = |n: usize| {
+            let mut t = Table::new();
+            for i in 0..n {
+                t.record(s, 0, Some(1), out(i % 2 == 0));
+            }
+            t
+        };
+        assert_eq!(
+            classify_robust(&rec(2), s, 0, DEFAULT_MIN_MINORITY),
+            Class::NonDet
+        );
+        assert!(matches!(
+            classify_robust(&rec(3), s, 0, DEFAULT_MIN_MINORITY),
+            Class::Det(_)
+        ));
+        assert_eq!(
+            classify_robust(&rec(4), s, 0, DEFAULT_MIN_MINORITY),
+            Class::NonDet
+        );
+    }
+
+    #[test]
+    fn classify_robust_stray_singleton_context_does_not_poison_cell() {
+        // B-3(b): ctx1で3回true、別文脈ctx2で1回だけfalse(迷い観測)。
+        let mut t = Table::new();
+        let s = st(true);
+        for _ in 0..3 {
+            t.record(s, 0, Some(1), out(true));
+        }
+        t.record(s, 0, Some(2), out(false));
+        assert_eq!(
+            classify_robust(&t, s, 0, DEFAULT_MIN_MINORITY),
+            Class::Det(out(true))
+        );
+        // 厳密(k=1)では従来どおり履歴依存。
+        assert_eq!(classify_robust(&t, s, 0, 1), Class::HistoryDep);
+        // 本物の履歴依存(各文脈2件)は残る。
+        let mut t = Table::new();
+        for _ in 0..2 {
+            t.record(s, 0, Some(1), out(true));
+            t.record(s, 0, Some(2), out(false));
+        }
+        assert_eq!(
+            classify_robust(&t, s, 0, DEFAULT_MIN_MINORITY),
+            Class::HistoryDep
+        );
     }
 
     #[test]
