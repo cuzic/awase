@@ -20,7 +20,7 @@ summary: |-
   外部からの書き込みを直接観測する」方式（INJECTED_MARKER検出＋IME通知監視＋quiet window）へ差し替えた。
   ADR-195の段階0/1/2/3/5/7は変更しない（段階3は自己検証スコア等のフィールド追加を伴う）。
 status: |-
-  **草案rev5（2026-09-23、opus-adversarial-consult round5で「Blocker0件・Must-fix0件、実装着手可」と
+  **実装済み（一部未完、2026-09-24更新: PR #259・#260・#263・#265・#269 ほかがdevelopマージ済み。採用の仕組みのずれは review-2026-09-24-01 の結論待ち）。以下は草案rev5（2026-09-23、opus-adversarial-consult round5で「Blocker0件・Must-fix0件、実装着手可」と
   最終判定。5ラウンドの推移: round1〈B-1回答の欠落〉→round2〈A'自己診断の原理的欠陥〉→round3〈目印1種類
   限定・フック無音停止〉→round4〈箇条書き挿入による内部参照ずれ〉→round5〈文言のみ〉と、指摘の重さは
   単調に減少し収束した。round5のShould-fix2件（TSF advise sink生存確認の方式・「段階4読込時に判定」の
