@@ -572,10 +572,7 @@ struct SettingsApp {
     /// ADR196-T4: 「使用中の予測表」状態表示用の現在の表状態(パネル表示時に再計算)。
     keymap_table_state: Option<keymap_learn_status::TableState>,
     /// 現在のIME本体版(フィンガープリント)。UIスレッドを塞がないよう別スレッドで取得する。
-    keymap_current_env: awase_keymap_learn::revalidation::EnvVersionProbe,
-    keymap_current_env_rx:
-        Option<std::sync::mpsc::Receiver<awase_keymap_learn::revalidation::EnvVersionProbe>>,
-    keymap_env_probe_started: bool,
+    keymap_env_probe: keymap_learn_status::EnvProbe,
 }
 
 /// `keymap-learn-table.json`(`awase.exe`と同じ探索規則でconfig.tomlの隣)を読み、
@@ -596,7 +593,12 @@ fn load_keymap_table_state(
                 .and_then(|m| m.modified())
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| keymap_learn_status::format_ymd_utc(d.as_secs()));
+                .map(|d| {
+                    keymap_learn_status::format_ymd(
+                        d.as_secs(),
+                        keymap_learn_status::local_utc_offset_secs(),
+                    )
+                });
             Some((table, date))
         })
         .unzip();
@@ -787,9 +789,7 @@ impl SettingsApp {
             keymap_learn_stderr_handle: None,
             keymap_learn_mode: keymap_learn_launcher::LearnMode::Learn,
             keymap_table_state: None,
-            keymap_current_env: awase_keymap_learn::revalidation::EnvVersionProbe::Unknown,
-            keymap_current_env_rx: None,
-            keymap_env_probe_started: false,
+            keymap_env_probe: keymap_learn_status::EnvProbe::new(std::time::SystemTime::now()),
         };
         app.recompute_diagnostics();
         app
@@ -1159,43 +1159,51 @@ impl SettingsApp {
         self.keymap_learn_status = Some("起動中…".to_string());
     }
 
-    /// 子プロセスが結果行を返して終わったときの後始末。表ファイルが変わっているので
-    /// 状態表示を再計算させる。
+    /// 表ファイルが変わりうる終了(結果行・異常終了・エラー)後の共通処理。状態表示を
+    /// 破棄し、IME本体版も取り直させる(学習中にIMEが更新された場合に備える)。
+    fn invalidate_keymap_table_state(&mut self) {
+        self.keymap_table_state = None;
+        self.keymap_env_probe.request_reprobe();
+    }
+
+    /// 子プロセスが結果行を返して終わったときの後始末。
     fn finish_keymap_process(&mut self) {
         self.keymap_learn_rx = None;
         self.keymap_learn_child = None;
-        self.keymap_table_state = None;
+        self.invalidate_keymap_table_state();
     }
 
     /// 較正パネル表示時に呼ぶ。現在のIME本体版の取得(ブロックしうるWin32呼び出し)を
-    /// 別スレッドで一度だけ走らせ、結果が届いていれば取り込み、表状態を再計算する。
+    /// 別スレッドで走らせ、結果が届くまでは(古い版で誤った状態を出さないよう)状態表示を
+    /// 更新しない。
     fn refresh_keymap_table_state(&mut self, ctx: &egui::Context) {
-        #[cfg(windows)]
-        if !self.keymap_env_probe_started {
-            self.keymap_env_probe_started = true;
-            let (tx, rx) = std::sync::mpsc::channel();
-            let ctx = ctx.clone();
-            let start = std::time::SystemTime::now();
-            std::thread::spawn(move || {
-                let probe = awase_keymap_learn_win::probe_gji_env_version(start);
-                let _ = tx.send(probe);
-                ctx.request_repaint();
-            });
-            self.keymap_current_env_rx = Some(rx);
+        if self.keymap_env_probe.needs_start() {
+            #[cfg(windows)]
+            {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let ctx = ctx.clone();
+                let start = self.keymap_env_probe.process_start;
+                std::thread::spawn(move || {
+                    let probe = awase_keymap_learn_win::probe_gji_env_version(start);
+                    let _ = tx.send(probe);
+                    ctx.request_repaint();
+                });
+                self.keymap_env_probe.attach(rx);
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = ctx;
+                let (tx, rx) = std::sync::mpsc::channel();
+                let _ = tx.send(awase_keymap_learn::revalidation::EnvVersionProbe::Unknown);
+                self.keymap_env_probe.attach(rx);
+            }
         }
-        #[cfg(not(windows))]
-        let _ = ctx;
-        if let Some(probe) = self
-            .keymap_current_env_rx
-            .as_ref()
-            .and_then(|rx| rx.try_recv().ok())
-        {
-            self.keymap_current_env = probe;
-            self.keymap_current_env_rx = None;
+        if self.keymap_env_probe.poll() {
             self.keymap_table_state = None;
         }
-        if self.keymap_table_state.is_none() {
-            self.keymap_table_state = Some(load_keymap_table_state(self.keymap_current_env));
+        if self.keymap_table_state.is_none() && !self.keymap_env_probe.is_pending() {
+            self.keymap_table_state =
+                Some(load_keymap_table_state(self.keymap_env_probe.current()));
         }
     }
 
@@ -1206,6 +1214,7 @@ impl SettingsApp {
     fn cancel_keymap_learning(&mut self) {
         self.kill_keymap_learn_child();
         self.keymap_learn_rx = None;
+        self.invalidate_keymap_table_state();
         self.keymap_learn_status = Some("キャンセルしました。".to_string());
     }
 
@@ -1240,6 +1249,7 @@ impl SettingsApp {
         };
         loop {
             match rx.try_recv() {
+                Ok(Ok(line)) if !self.keymap_learn_mode.accepts(&line) => {}
                 Ok(Ok(keymap_learn_launcher::LearnLine::Progress(p))) => {
                     self.keymap_learn_progress = Some(p);
                     self.keymap_learn_status = Some("測定中…".to_string());
@@ -1300,7 +1310,7 @@ impl SettingsApp {
                     self.keymap_learn_status = Some(e);
                     self.keymap_learn_rx = None;
                     self.kill_keymap_learn_child();
-                    self.keymap_table_state = None;
+                    self.invalidate_keymap_table_state();
                     break;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -1316,6 +1326,7 @@ impl SettingsApp {
                         Some("学習プロセスが結果を送らずに終了しました。".to_string());
                     self.keymap_learn_rx = None;
                     self.kill_keymap_learn_child();
+                    self.invalidate_keymap_table_state();
                     break;
                 }
             }
@@ -6484,9 +6495,9 @@ mod layout_tab_repro {
             keymap_learn_stderr_handle: None,
             keymap_learn_mode: crate::keymap_learn_launcher::LearnMode::Learn,
             keymap_table_state: None,
-            keymap_current_env: awase_keymap_learn::revalidation::EnvVersionProbe::Unknown,
-            keymap_current_env_rx: None,
-            keymap_env_probe_started: false,
+            keymap_env_probe: crate::keymap_learn_status::EnvProbe::new(
+                std::time::SystemTime::now(),
+            ),
         }
     }
 
