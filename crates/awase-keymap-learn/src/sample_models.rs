@@ -49,14 +49,14 @@ const STAGES: [Stage; 4] = [
     Stage::ConvMuhenkan,
 ];
 
-fn all_states() -> Vec<A> {
+fn all_states(modes: u8) -> Vec<A> {
     let mut v = Vec::new();
     for open in [true, false] {
-        for m in 0..2u8 {
+        for m in 0..modes {
             v.push(A::Idle { open, m });
         }
     }
-    for m in 0..2u8 {
+    for m in 0..modes {
         for stage in STAGES {
             v.push(A::Comp { stage, m });
         }
@@ -91,20 +91,53 @@ fn one(to: A, disp: Disposition, idx: &[A]) -> Vec<Branch> {
     vec![br(1.0, to, disp, idx)]
 }
 
-fn atok_trans(from: A, key: usize, idx: &[A]) -> Vec<Branch> {
+/// モードキーを押した後の抽象mode。`modes==2`は従来どおり(ひらがな/英数キーで反転、他のキーは不変)。
+/// `modes>2`は抽象mode 0=ひらがな・1=半角英数・2=全角カタカナ・3=半角カタカナ・4=全角英数の**初期仮説**
+/// (ひらがなキーは直接0へ、英数キーは半角英数→全角英数→半角英数と巡る、
+/// カタカナキーは全角カタカナ→半角カタカナ→全角カタカナと巡る)。
+/// 仮説が実機と違っても、押した結果の観測で辺が直る(`Graph::learn_edge`)。
+const fn mode_after(modes: u8, m: u8, key: usize) -> u8 {
+    use atok_keys::{EISU, HIRAGANA, KATAKANA};
+    if modes == 2 {
+        return if key == HIRAGANA || key == EISU {
+            1 - m
+        } else {
+            m
+        };
+    }
+    match key {
+        HIRAGANA => 0,
+        EISU => {
+            if m == 1 {
+                4
+            } else {
+                1
+            }
+        }
+        KATAKANA => {
+            if m == 2 {
+                3
+            } else {
+                2
+            }
+        }
+        _ => m,
+    }
+}
+
+fn atok_trans(from: A, key: usize, idx: &[A], modes: u8) -> Vec<Branch> {
     use atok_keys::{
-        BS, CHAR, EISU, ENTER, ESC, HANKAKU, HENKAN, HIRAGANA, IME_OFF, IME_ON, KANJI, MUHENKAN,
-        SPACE,
+        BS, CHAR, EISU, ENTER, ESC, HANKAKU, HENKAN, HIRAGANA, IME_OFF, IME_ON, KANJI, KATAKANA,
+        MUHENKAN, SPACE,
     };
     use Disposition::{Committed, Discarded, Kept, None as N};
-    let flip = |m: u8| 1 - m;
     match from {
         A::Idle { open: true, m } => {
             let on = |m| A::Idle { open: true, m };
             let off = A::Idle { open: false, m };
             match key {
                 MUHENKAN | HENKAN | HANKAKU | KANJI | IME_OFF => one(off, N, idx),
-                HIRAGANA | EISU => one(on(flip(m)), N, idx),
+                HIRAGANA | EISU | KATAKANA => one(on(mode_after(modes, m, key)), N, idx),
                 CHAR => one(
                     A::Comp {
                         stage: Stage::Typing,
@@ -127,7 +160,9 @@ fn atok_trans(from: A, key: usize, idx: &[A]) -> Vec<Branch> {
             match key {
                 HANKAKU | KANJI | IME_OFF => one(closed, Discarded, idx),
                 ENTER => one(idle_on, Committed, idx),
-                HIRAGANA | EISU => one(comp(stage, flip(m)), Kept, idx),
+                HIRAGANA | EISU | KATAKANA => {
+                    one(comp(stage, mode_after(modes, m, key)), Kept, idx)
+                }
                 SPACE => one(comp(Stage::ConvSpace, m), Kept, idx),
                 HENKAN => one(comp(Stage::ConvHenkan, m), Kept, idx),
                 MUHENKAN if stage == Stage::ConvMuhenkan => {
@@ -157,13 +192,19 @@ fn atok_trans(from: A, key: usize, idx: &[A]) -> Vec<Branch> {
 
 /// ATOK風モデル(12状態、14キー)。仮定はこのモジュールの説明を参照。
 pub fn atok_like() -> Machine {
-    let idx = all_states();
+    atok_like_with_modes(2)
+}
+
+/// 変換モードを`modes`種(2または5)持つATOK風モデル。`modes==5`(30状態)は、Microsoft IME本体の
+/// 学習の初期仮説用(全角/半角カタカナ・全角英数の状態も測る)。抽象mode→実機の変換モード値の対応は呼び出し側が決める。
+pub fn atok_like_with_modes(modes: u8) -> Machine {
+    let idx = all_states(modes);
     let states: Vec<TrueState> = idx
         .iter()
         .map(|a| TrueState {
             status: status_of(*a),
             trans: (0..atok_keys::COUNT)
-                .map(|k| atok_trans(*a, k, &idx))
+                .map(|k| atok_trans(*a, k, &idx, modes))
                 .collect(),
         })
         .collect();
@@ -312,6 +353,18 @@ mod tests {
         // 観測表のセル数の上限は distinct × キー数。
         let statuses: std::collections::HashSet<_> = m.states.iter().map(|s| s.status).collect();
         assert_eq!(distinct, statuses.len());
+    }
+
+    #[test]
+    fn five_mode_model_is_fully_reachable_and_mode_keys_cycle_hypothesis() {
+        let m = atok_like_with_modes(5);
+        assert_eq!(m.states.len(), 30);
+        assert!(m.reachable().iter().all(|r| *r), "全状態に到達できる");
+        let s0 = m.initial;
+        let to_katakana = m.outcomes(s0, atok_keys::KATAKANA)[0].1;
+        assert!(to_katakana.status.open);
+        assert_eq!(to_katakana.status.mode, 2, "初期仮説: 全角カタカナへ");
+        assert_eq!(atok_like().states.len(), 12, "2モード版は従来どおり");
     }
 
     #[test]
