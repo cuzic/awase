@@ -31,8 +31,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmGetOpenStatus,
-    ImmReleaseContext, ImmSetOpenStatus, IME_COMPOSITION_STRING, IME_CONVERSION_MODE,
-    IME_SENTENCE_MODE,
+    ImmReleaseContext, IME_COMPOSITION_STRING, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
@@ -366,30 +365,6 @@ impl RealImeDriver {
     /// メッセージを回しながら待つ（`self.notify_monitor`に観測させる）。
     fn pump(&self, duration: Duration) {
         pump_for(duration, &self.notify_monitor);
-    }
-
-    /// 診断用（B-1の実機検証）: IME通知経由だけで数えた外部書き込みの累計件数。
-    #[must_use]
-    pub fn diag_notify_external_count(&self) -> u32 {
-        self.notify_monitor.external_count()
-    }
-
-    /// 診断用（B-1の実機検証）: 学習窓自身のスレッドから`ImmSetOpenStatus`で開閉を
-    /// 反転する（`mark_self_injection`を経由しない＝猶予窓の外の「外部書き込み」
-    /// 相当）。戻り値は(反転前, 反転後)の`ImmGetOpenStatus`。
-    #[must_use]
-    pub fn diag_toggle_open_status(&self) -> Option<(bool, bool)> {
-        unsafe {
-            let himc = ImmGetContext(self.edit);
-            if himc.is_invalid() {
-                return None;
-            }
-            let before = ImmGetOpenStatus(himc).as_bool();
-            let _ = ImmSetOpenStatus(himc, !before);
-            let after = ImmGetOpenStatus(himc).as_bool();
-            let _ = ImmReleaseContext(self.edit, himc);
-            Some((before, after))
-        }
     }
 
     /// 現在の「外部からの書き込み」累計件数（フック経由＋IME通知経由）。
