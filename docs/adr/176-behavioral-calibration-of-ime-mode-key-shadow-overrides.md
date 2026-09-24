@@ -4,6 +4,15 @@ title: |-
   awase-settingsの明示的な較正UIでモードキーの実効果を測定し、
   未登録時に静的分類を補完する
 status: |-
+  **2026-09-24: 撤去済み（ADR-195 学習に置換）。** 較正結果を適用する側は
+  ADR-191 `9dc52c89`（`apply_calibrated_mode_keys`削除）で撤去済み、測定UI・awase.exe側の
+  仕組み（`calibration_ipc.rs`・`state/calibrated_mode_key.rs`・hook/focus_trackingの較正分岐・
+  `[[calibration]]`書き込み・`RESTRICTED_CALLS`の`probe_ime_open_for_calibration`ほか）も
+  ADR-198 決定3 に従い ブランチ`refactor/remove-manual-calibration`で撤去した。以後キーの実効果は
+  ADR-195/196 の自動学習（`awase-keymap-learn`）が担う。`[[calibration]]`を含む既存の
+  `config.toml`は無視されて読め、awase-settingsで保存すると消える（読む側が無いため問題なし）。
+  以下は撤去前（2026-09-17時点）の記録。
+
   **2026-09-17: 実機A/B検証完了。ADR-176の較正機能（176-T8〜T12）が
   エンドツーエンドで実機動作することを確認した。** T10の較正パネルUIから
   無変換キーを較正→`ConfirmedOn`確定→`config.toml`へ永続化→
