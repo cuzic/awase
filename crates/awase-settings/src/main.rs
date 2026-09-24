@@ -575,21 +575,23 @@ struct SettingsApp {
     keymap_env_probe: keymap_learn_status::EnvProbe,
 }
 
-/// `keymap-learn-table.json`(`awase.exe`と同じ探索規則でconfig.tomlの隣)を読み、
-/// 状態表示用の[`keymap_learn_status::TableState`]を作る。ファイルが無い・壊れている
-/// 場合は表なし(内蔵表)として扱う(読み手側のフォールバックと同じ)。
+/// `keymap-learn-table.json`(config.tomlの隣。config.tomlの解決は`awase.exe`と同じ
+/// [`find_config_path`]、コマンドライン引数を優先)を読み、状態表示用の
+/// [`keymap_learn_status::TableState`]を作る。ファイルが無い・壊れている・4MB超過の場合は
+/// 表なし(内蔵表)として扱う(読み手`key_effect_runtime::read_persisted_table`と同じ棄却)。
 fn load_keymap_table_state(
     current_env: awase_keymap_learn::revalidation::EnvVersionProbe,
     custom_keymap_without_prediction: bool,
+    use_learned_keymap_table: bool,
 ) -> keymap_learn_status::TableState {
-    let config_path = awase::paths::resolve_relative_to_exe("config.toml");
+    let config_path = find_config_path();
     let path = config_path
         .parent()
         .map(|dir| dir.join("keymap-learn-table.json"));
     let (table, file_date) = path
         .and_then(|path| {
-            let json = std::fs::read_to_string(&path).ok()?;
-            let table = awase_keymap_learn::persist::from_json(&json).ok()?;
+            let table =
+                awase_windows::state::key_effect_runtime::read_persisted_table(&path).ok()?;
             let date = std::fs::metadata(&path)
                 .and_then(|m| m.modified())
                 .ok()
@@ -603,11 +605,16 @@ fn load_keymap_table_state(
             Some((table, date))
         })
         .unzip();
+    let runtime_rejection = table
+        .as_ref()
+        .and_then(keymap_learn_status::runtime_rejection_of);
     keymap_learn_status::TableState::from_inputs(&keymap_learn_status::StatusInputs {
         table: table.as_ref(),
         current_env,
         file_date: file_date.flatten(),
         custom_keymap_without_prediction,
+        use_learned_keymap_table,
+        runtime_rejection,
     })
 }
 
@@ -1209,6 +1216,7 @@ impl SettingsApp {
             self.keymap_table_state = Some(load_keymap_table_state(
                 self.keymap_env_probe.current(),
                 self.keymap_env_probe.custom_keymap_without_prediction(),
+                self.config.general.use_learned_keymap_table,
             ));
         }
     }

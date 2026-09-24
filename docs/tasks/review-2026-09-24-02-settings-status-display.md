@@ -1,6 +1,6 @@
 ---
 title: 設定画面の「使用中: 学習表」表示が awase.exe の実際の採否と食い違う
-status: 未着手
+status: 一部実装済み（条件2・3・5・doc修正。条件1・4・6と測定環境表示は未実施）
 priority: 次リリース前（俯瞰レビュー A-2【重大】、同 D節の優先度2位）
 created: 2026-09-24
 related_adr: ["ADR-196", "ADR-195"]
@@ -162,3 +162,12 @@ source_review: 俯瞰レビュー（2026-09-24）の A-2
 - N5（未確認点1はコードで解消）: 反映。`src/config.rs:400-401` の doc コメントを確認し、未確認点1を削除してタスク3に移した。
 - N6（`main.rs:630` の引用が弱い）: 反映。`:630` 付近は `config: &mut AppConfig` を引数に取る別関数だったので、`self.config`（`:682`・`:838`）に差し替えた。
   01 側の矢印表現の補足は 01 の担当なので本ファイルでは変えない。04 の「学習表を消す操作」の管轄は依存節と未確認点に一行ずつ足した。
+
+## 実装メモ（fix/settings-status-display-adopted）
+
+- 実装済み: 条件2（カバレッジ不足。`runtime_rejection_of`が`validate_and_convert(.., false)`を直接呼ぶ。
+  カバレッジ判定は`preset`に依存しないため`KeymapPreset::Atok`固定で同値）、条件3（`use_learned_keymap_table=false`→`LearnedDisabled`）、
+  条件5（config探索を`find_config_path()`へ、読み込みを`read_persisted_table`＝4MB超過等も同じ棄却へ）、`from_table`→`from_inputs`のdoc修正。
+- 未実施: 条件1（不一致率。`(preset, check_against_bundled)`を得る`awase-windows`側`pub`ラッパーが必要で、条件4の(a)/(b)決定が先）、
+  条件4、条件6（06待ち）、測定環境表示（ADR196-T3待ち）。`RuntimeRejection`には不一致variantをまだ足していない。
+- 設定画面への`use_learned_keymap_table`チェックボックス追加は未実施。
