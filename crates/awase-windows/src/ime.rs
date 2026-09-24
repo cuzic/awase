@@ -1721,35 +1721,8 @@ pub unsafe fn toggle_caps_lock() {
     let _ = crate::win32::send_input_safe(&[press, release]);
 }
 
-/// クロスプロセスで IME の ON/OFF を切り替え、変換モードのマスクを適用する。
-///
-/// 呼び出し時点の `GetForegroundWindow()` を対象にする。トレイメニュー等、対象
-/// ウィンドウを別途確定済みの呼び出し元は [`set_ime_mode_for_target`] を使うこと
-/// （理由は [`set_ime_open_for_target`] の doc を参照）。
-///
-/// # Safety
-/// Win32 API を呼び出す。メインスレッドから呼ぶこと。
-#[must_use]
-pub unsafe fn set_ime_mode(
-    ime_on: bool,
-    target_conv_mask_to_set: u32,
-    target_conv_mask_to_clear: u32,
-) -> bool {
-    let Some(hwnd) = GetForegroundWindow().non_null() else {
-        return false;
-    };
-    unsafe {
-        set_ime_mode_for_target(
-            hwnd,
-            ime_on,
-            target_conv_mask_to_set,
-            target_conv_mask_to_clear,
-        )
-    }
-}
-
-/// [`set_ime_mode`] のターゲット指定版。IME open/close と conv mode の両方を `hwnd`
-/// に対して発行する（[`set_ime_open_for_target`] を参照）。
+/// クロスプロセスで IME の ON/OFF を切り替え、変換モードのマスクを `hwnd` に対して
+/// 適用する（[`set_ime_open_for_target`] を参照）。
 ///
 /// # Safety
 /// Win32 API を呼び出す。メインスレッドから呼ぶこと。
