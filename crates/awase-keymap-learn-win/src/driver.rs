@@ -169,8 +169,6 @@ struct Observation {
     text: String,
 }
 
-/// 専用EDIT窓、TSF thread manager、IMM観測と生SendInputを同一スレッドに保持する。
-#[derive(Debug)]
 /// `CoInitializeEx`成功の対価としての`CoUninitialize`を担うガード。
 ///
 /// `RealImeDriver::drop`本体で`CoUninitialize`を呼ぶと、その後に解放されるフィールド
@@ -178,6 +176,7 @@ struct Observation {
 /// アンロード済みCOMへのアクセス違反になりうる(コードレビューB-6)。Rustはフィールドを
 /// 宣言順に解放するので、このガードを**最後のフィールド**に置き、COMインターフェースが
 /// すべて解放された後に`CoUninitialize`が走るようにする。
+#[derive(Debug)]
 struct ComApartment;
 
 impl ComApartment {
@@ -194,6 +193,8 @@ impl Drop for ComApartment {
     }
 }
 
+/// 専用EDIT窓、TSF thread manager、IMM観測と生SendInputを同一スレッドに保持する。
+#[derive(Debug)]
 pub struct RealImeDriver {
     started: Instant,
     window: HWND,
