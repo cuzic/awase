@@ -441,8 +441,9 @@ pub(crate) fn load_and_log(
     }
 }
 
-/// 学習プロセス（`awase-keymap-learn-win`）が、学習時点のキーマップ指紋を書き込む/再検証で
-/// 照合するために使う「今のキーマップの指紋」。awase.exeの読込（`kp_predict_key_effect`）が
+/// 学習プロセスが使う「今のキーマップの指紋」。
+///
+/// `awase-keymap-learn-win`が、学習時点の指紋を書き込む/再検証で照合するために使う。awase.exeの読込（`kp_predict_key_effect`）が
 /// 使う指紋と同じ関数（`KeyEffectKeymap::fingerprint`）から作るので、書き手と読み手で
 /// 計算方式がずれない。GJI/Microsoft IME本体以外（`Other`）は指紋方式が無い（`NotSupported`、
 /// 実行時もその構成では予測しない）。GJIで`config1.db`が読めない/解析できないときは`Unavailable`。
