@@ -165,7 +165,7 @@ fn coverage_ratio(raw: &[PersistedCell], converted_len: usize) -> f64 {
 
 /// 学習表と同梱表のセル不一致率。同梱表の各セルについて、学習表に同じ
 /// `(open, conv, stage, key)`のセルがあり、かつ`after_open`/`after_conv`/`disp`のいずれかが
-/// 食い違うものを数える（学習表に無いセル＝単に未学習は不一致に数えない、突き合わせの対象は
+/// 食い違うものを数える(`after_conv`は[`after_conv_conflicts`]、片方が`None`＝不明なら矛盾でない)（学習表に無いセル＝単に未学習は不一致に数えない、突き合わせの対象は
 /// 「同梱表にあるセルのうち学習表でも答えが出ているもの」だけ）。
 fn mismatch_ratio(learned: &[Cell], bundled: &[Cell]) -> f64 {
     let mut compared = 0usize;
@@ -179,7 +179,7 @@ fn mismatch_ratio(learned: &[Cell], bundled: &[Cell]) -> f64 {
         };
         compared += 1;
         if l.after_open() != b.after_open()
-            || l.after_conv() != b.after_conv()
+            || after_conv_conflicts(l.after_conv(), b.after_conv())
             || l.disp() != b.disp()
         {
             mismatched += 1;
@@ -231,6 +231,44 @@ pub fn diff_against_bundled(persisted: &[PersistedCell], preset: KeymapPreset) -
     diff_against_bundled_cells(persisted, bundled_table(preset))
 }
 
+/// 診断用: `pc`と同じ`(open, conv, stage, key)`の同梱表セルの結果を文字列にする
+/// （不一致セルで、同梱表側が何と言っているかをログに残すため。突き合わせ判定には使わない）。
+/// 変換できないセル・同梱表に無いセルは`None`。
+#[must_use]
+pub fn describe_bundled_cell(pc: &PersistedCell, preset: KeymapPreset) -> Option<String> {
+    let converted = convert_cell(pc)?;
+    let b = bundled_table(preset).iter().find(|b| {
+        b.matches_lookup_key(
+            converted.open(),
+            converted.conv(),
+            converted.stage(),
+            converted.key(),
+        )
+    })?;
+    Some(format!(
+        "after_open={:?} after_conv={:?} disp={:?}",
+        b.after_open(),
+        b.after_conv(),
+        b.disp()
+    ))
+}
+
+/// 押下後の変換モードが**矛盾**するか。同梱表側の`None`は「不明（追跡を捨てた）」であって
+/// 「変換モードが変わらない」等の主張ではないため、同梱表が`None`なら矛盾とみなさない
+/// （実測: GJI+ATOKで閉→開のセルは、同梱表が`after_conv: None`、学習側が実測モード`Some(x)`を
+/// 持ち、旧・単純な`==`比較だと10セルが偽の不一致になった）。
+///
+/// 逆向き（学習側が`None`で同梱表が`Some`）は矛盾として数え続ける: 学習表が同梱表より
+/// 情報を落としている（変換モードの追跡が途切れる）ことを、採否ゲートが検出できなくなるため
+/// （code-review 2026-09-24 指摘）。
+fn after_conv_conflicts(learned: Option<Conv>, bundled: Option<Conv>) -> bool {
+    match (learned, bundled) {
+        (_, None) => false,
+        (Some(l), Some(b)) => l != b,
+        (None, Some(_)) => true,
+    }
+}
+
 /// [`diff_against_bundled`]の本体。テストで同梱表全体ではなく小さな合成`Cell`列を渡せるように
 /// 分離している（`mismatch_ratio`と同じ理由）。
 fn diff_against_bundled_cells(persisted: &[PersistedCell], bundled: &[Cell]) -> BundledDiff {
@@ -254,7 +292,7 @@ fn diff_against_bundled_cells(persisted: &[PersistedCell], bundled: &[Cell]) -> 
             Some((idx, b)) => {
                 matched_bundled[idx] = true;
                 if converted.after_open() == b.after_open()
-                    && converted.after_conv() == b.after_conv()
+                    && !after_conv_conflicts(converted.after_conv(), b.after_conv())
                     && converted.disp() == b.disp()
                 {
                     diff.matched += 1;
@@ -651,6 +689,75 @@ mod tests {
         )]
     }
 
+    /// 閉→開のセル(同梱表は`after_conv: None`＝不明)。学習側は実測モード(`Some`)を持つが、
+    /// 「不明」との違いは矛盾ではない(実機CI実測、run 35933929391の偽不一致10セルの型)。
+    fn none_after_conv_bundled_table() -> Vec<Cell> {
+        vec![make_cell(
+            false,
+            None,
+            Stage::None,
+            TableKey::Hiragana,
+            true,
+            None,
+            Disp::None,
+        )]
+    }
+
+    /// 実行時の不採用判定`mismatch_ratio`も同じ扱い(実機CI実測: 偽不一致10/73≒13.7%が
+    /// 上限`MAX_MISMATCH_RATIO`(5%)を超え、未改造GJI ATOKの学習表が不採用になりうる型)。
+    #[test]
+    fn mismatch_ratio_treats_unknown_bundled_after_conv_as_no_claim() {
+        let mut pc = pcell(false, 0x00, false, 0xF2, Some((true, 0x09)));
+        pc.prediction.as_mut().unwrap().disp = Disposition::None;
+        let learned = convert_cells(&[pc]);
+        assert_eq!(
+            mismatch_ratio(&learned, &none_after_conv_bundled_table()),
+            0.0
+        );
+        // 既知同士の矛盾は従来どおり不一致に数える。
+        let conflicting = convert_cells(&[pcell(true, 0x09, false, 0xF2, Some((true, 0x09)))]);
+        assert_eq!(mismatch_ratio(&conflicting, &one_cell_bundled_table()), 1.0);
+    }
+
+    #[test]
+    fn diff_against_bundled_treats_unknown_bundled_after_conv_as_no_claim() {
+        let mut cells = vec![pcell(false, 0x00, false, 0xF2, Some((true, 0x09)))];
+        cells[0].prediction.as_mut().unwrap().disp = Disposition::None;
+        let diff = diff_against_bundled_cells(&cells, &none_after_conv_bundled_table());
+        assert_eq!(diff.matched, 1, "{diff:?}");
+        assert!(diff.mismatched.is_empty());
+    }
+
+    #[test]
+    fn diff_against_bundled_still_flags_after_open_difference_when_after_conv_unknown() {
+        let mut cells = vec![pcell(false, 0x00, false, 0xF2, Some((false, 0x00)))];
+        cells[0].prediction.as_mut().unwrap().disp = Disposition::None;
+        let diff = diff_against_bundled_cells(&cells, &none_after_conv_bundled_table());
+        assert_eq!(diff.mismatched.len(), 1);
+    }
+
+    /// 逆向き: 学習側が`after_conv: None`(追跡を捨てた)で同梱表が`Some`なら、学習表の方が
+    /// 情報を落としているので不一致に数える(採否ゲートが弱くならない)。
+    #[test]
+    fn learned_unknown_after_conv_against_known_bundled_is_still_a_mismatch() {
+        // 学習側: 開→開でモード0x01(raw & 0x0B==0x01でConv表現不能→after_conv None)。同梱表: Some(C10)。
+        let cells = vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x01)))];
+        let learned = convert_cells(&cells);
+        assert_eq!(learned.len(), 1, "変換できるセルであること");
+        assert_eq!(learned[0].after_conv(), None);
+        let diff = diff_against_bundled_cells(&cells, &one_cell_bundled_table());
+        assert_eq!(diff.mismatched.len(), 1);
+        assert_eq!(mismatch_ratio(&learned, &one_cell_bundled_table()), 1.0);
+    }
+
+    #[test]
+    fn diff_against_bundled_flags_conflicting_known_after_conv() {
+        // 同梱表 after_conv=Some(C10)、学習側は別モード(0x09→C19)へ遷移: 本物の矛盾。
+        let cells = vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x09)))];
+        let diff = diff_against_bundled_cells(&cells, &one_cell_bundled_table());
+        assert_eq!(diff.mismatched.len(), 1);
+    }
+
     #[test]
     fn diff_against_bundled_counts_matching_cell_as_matched() {
         let cells = vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x00)))];
@@ -825,6 +932,46 @@ mod tests {
             2,
             "RECHECK_MSの窓の途中でもプリセット変更は読み直すべき"
         );
+    }
+
+    /// CI専用(`--ignored`、環境変数`KL_TABLE_PATH`): 実機の学習プロセスが書いた
+    /// `keymap-learn-table.json`を、未改造GJI ATOKとして実行時の採否判定
+    /// (`load_runtime_table`、`mismatch_ratio`込み)に通す。修正前(`after_conv`の単純`==`比較)の
+    /// 不一致率も併せて出力し、偽不一致が実際に採否を分けたかを実測で確認できるようにする。
+    #[test]
+    #[ignore = "CI用: 実機の学習表(KL_TABLE_PATH)が要る"]
+    fn ci_real_learned_table_is_adopted_for_unmodified_atok() {
+        let path = std::env::var("KL_TABLE_PATH").expect("KL_TABLE_PATH");
+        let path = std::path::Path::new(&path);
+        let persisted = read_persisted_table(path).expect("読める");
+        let learned = convert_cells(&persisted.cells);
+        let bundled = bundled_table(KeymapPreset::Atok);
+        let (mut compared, mut strict_mismatch) = (0usize, 0usize);
+        for b in bundled {
+            if let Some(l) = learned
+                .iter()
+                .find(|c| c.matches_lookup_key(b.open(), b.conv(), b.stage(), b.key()))
+            {
+                compared += 1;
+                if l.after_open() != b.after_open()
+                    || l.after_conv() != b.after_conv()
+                    || l.disp() != b.disp()
+                {
+                    strict_mismatch += 1;
+                }
+            }
+        }
+        println!(
+            "CI-RESULT compared={compared} old_strict_mismatch={strict_mismatch} old_ratio={:.3} new_ratio={:.3} limit={MAX_MISMATCH_RATIO}",
+            strict_mismatch as f64 / compared.max(1) as f64,
+            mismatch_ratio(&learned, bundled),
+        );
+        let result = load_runtime_table(path, KeymapPreset::Atok, true);
+        println!(
+            "CI-RESULT load_runtime_table={:?}",
+            result.as_ref().map(Vec::len)
+        );
+        assert!(result.is_ok(), "{result:?}");
     }
 
     #[test]
