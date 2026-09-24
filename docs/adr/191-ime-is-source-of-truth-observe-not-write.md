@@ -240,7 +240,7 @@ ADR-187（follow）・ADR-188・ADR-189（半角/全角のToggle上書き）の�
 - 隠れ状態「入力中の段階」（なし/入力中/変換中〈Space・変換キー・無変換で入る〉）は、現実装では固定の段階を打鍵履歴から追跡する（`ImeModel::key_track`、暫定）。**目標は、固定の名前・規則でなく、
   学習した最小のMealy機械として持つこと**（カスタムキーマップに対応するのがこの機能の目的なので必須。Spaceや変換キーの意味がユーザーのキーマップで変わるため、規則をコードに書けない）。
   同じ応答をする状態は統合し、識別プローブ（Esc/Enter/BS/Space）への応答の違いで同定する。
-- 予測の書き込みは`ImeEvent::KeyEffectPredicted`（`desired_open`は書かない）。開閉は`resolve_open_at`に「明示意図の次、観測の前」の枠を足した。fenceは`KEY_EFFECT_SETTLE_MS=100`（実測最大62ms＋マージン）。
+- 予測の書き込みは`ImeEvent::KeyEffectPredicted`（`desired_open`は書かない）。開閉は`resolve_open_at`に「明示意図の次、観測の前」の枠を足した。fenceは`KEY_EFFECT_SETTLE_MS=100`（実測最大62ms＋マージン）。**2026-09-24に170へ変更**（windows-latest再測定で古い値を読んだ最遅が131ms。根拠は`tuning.rs`のdoc）。
   開閉を予測したら同じ対象の古い明示意図を捨てる（読めないアプリで予測が古い意図に負けないように）。
 
 ### 決定4: 較正セッション（注入による自動学習）
