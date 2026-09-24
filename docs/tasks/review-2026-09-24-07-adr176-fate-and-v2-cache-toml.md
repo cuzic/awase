@@ -65,7 +65,7 @@ v2 方針（calibration を config.toml から cache.toml へ移す、ConfirmMod
 
 ## タスク
 
-- [ ] **(1) v2 方針がいまもユーザーの決定かを確認する。** ADR 起票の前に行う。対象は ConfirmMode の2択化、`app_overrides` の維持、calibration の移設。メモは古くなっている可能性がある。
+- [x] **(1) v2 方針がいまもユーザーの決定かを確認する。**（2026-09-24 確認済み: 変わらない。calibration は手動を廃止し自動学習に一本化、ADR-198 決定3） ADR 起票の前に行う。対象は ConfirmMode の2択化、`app_overrides` の維持、calibration の移設。
 - [x] **(2) ADR-176 の手動較正パネルを撤去する。**
   - 撤去の方向は ADR-191 決定4と ADR-195 段階6で既に出ている。ADR-176 本体（`docs/adr/176-behavioral-calibration-of-ime-mode-key-shadow-overrides.md`）の frontmatter `status` に「ADR-191 で適用側を撤去（`9dc52c89`）、ADR-195 学習に置き換え、測定 UI も撤去」と追記し、撤去 PR を出す。`176-implementation-tasks.md` は更新対象ではない。status の同期は [10](review-2026-09-24-10-adr-status-and-stale-docs-sync.md) と重なるので、本タスクで直し、10 からはここを参照するだけにする。
   - 撤去範囲: 上記の1,336行、hook/focus_tracking/message_handlers の較正分岐、`RESTRICTED_CALLS` の `probe_ime_open_for_calibration`、settings UI、上記「較正専用ではない依存」のうち較正専用になったもの。
@@ -80,12 +80,12 @@ v2 方針（calibration を config.toml から cache.toml へ移す、ConfirmMod
   - `AppConfig` には `deny_unknown_fields` が付いていない（`src/config.rs:2233` のテストコメント）。フィールドを構造体から消すだけで、既存の config は読める。
   - 実装は要らない。互換テストを1件足すだけでよい。
   - 副作用: awase-settings で保存すると `AppConfig::save` がファイル全体を書き直すので、`[[calibration]]` が消える。読む側が無いので消えてよい、と ADR-176 の status に明記する。
-- [ ] **(5) v2 方針を ADR として起票する。** frontmatter 規約に従い、index.md に短い1行を足す。
+- [x] **(5) v2 方針を ADR として起票する。**（ADR-198 草案、opus round1・2反映済み、決定3は手動較正廃止でユーザー決定済み） frontmatter 規約に従い、index.md に短い1行を足す。
   - 範囲は「永続化先の分類」に絞る: `config.toml`（ユーザー設定）、`cache.toml`（再学習で戻る観測キャッシュ）、学習表 JSON（ADR-195 段階3、再生成コストが大きい）。
   - メモの `[keymap_learn]` 節案は、ADR-195 段階3に合わせて取り下げると書く。calibration の移設は、(2) の撤去で不要になると書く。
   - ConfirmMode の2択化は、確定エンジンの設定（`src/config.rs:66` `enum ConfirmMode`）で、永続化先の話とは関係ない。同じ ADR に入れると、片方だけ実装済みのときに status の追随が難しくなる。そこで、[04](review-2026-09-24-04-sample-config-and-user-docs.md) で推奨モードを統一したあと、別の ADR（または既存 ADR への追記）で扱う。`app_overrides` の維持は、1行の現状確認として v2 ADR に入れてよい。
-- [ ] **(6) `save_section` をアトミックにする。** v2 とは独立に、いますぐ小さく直す。`std::fs::write` を `awase::fs_atomic::write_atomic`（`src/fs_atomic.rs:35`。keymap-learn-win と同じ呼び方）に置き換える。
-- [ ] **(7) `save_section` が読込に失敗したときの扱いを決める。** 候補は、上書きしない／`.bak` に退避してから書く／警告だけ。v2 でセクションを増やすなら必須、増やさないなら優先度は低い。
+- [x] **(6) `save_section` をアトミックにする。**（実装済み: `docs/review-07-08` ブランチ） v2 とは独立に、いますぐ小さく直す。`std::fs::write` を `awase::fs_atomic::write_atomic`（`src/fs_atomic.rs:35`。keymap-learn-win と同じ呼び方）に置き換える。
+- [x] **(7) `save_section` が読込に失敗したときの扱いを決める。**（決定: 上書きせず warn で中止、ADR-198 決定5・PR #302） 候補は、上書きしない／`.bak` に退避してから書く／警告だけ。v2 でセクションを増やすなら必須、増やさないなら優先度は低い。
 
 ### 採らなかった案
 - 「complexity-budget の1-in-1-out の返済材料として記録する」: `probe_ime_open_for_calibration` の削除は `RESTRICTED_CALLS` の1件削除に当たり、記述自体は正しい。ただし `.claude/rules/complexity-budget.md` はまだ発効しておらず、返済の記録先（ADR-162 E3 の定例棚卸し）も整っていない。撤去 PR の本文に「RESTRICTED_CALLS −1」と書くにとどめ、独立のタスクにはしない。
