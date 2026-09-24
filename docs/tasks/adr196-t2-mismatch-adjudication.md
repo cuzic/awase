@@ -124,7 +124,8 @@ COM STA初期化・`ITfThreadMgr::Activate`済みのスレッドを持ってお�
 到達→対象キー押下）で再測定する。再現しなかったセルと**確認できなかった（到達不能・汚染続き・
 中止）セル**は`prediction`を`None`へ落とし、`ReconciliationSummary`を`judgement::combine`へ
 渡す（`run_main`。既知構成でない/`config1.db`不読のときは`None`のまま）。
-**未実装（残作業）**: 決定1b項目9の不一致分布タグ、`REMEASURE_MAX_SETUP_PRESSES`(60)/
+**項目9の不一致分布タグ**: 純粋ロジック`awase_keymap_learn::mismatch_tag::tag_mismatches`を追加（キー集中=版ずれ寄り、状態集中・同版で不一致=パイプライン疑い、参考タグのみ）。学習フロー/不具合報告への配線は未実装。
+**未実装（残作業）**: `REMEASURE_MAX_SETUP_PRESSES`(60)/
 `REMEASURE_RESET_EVERY`(12)の実機での到達所要押下数の実測、実機(RealImeDriver)での動作確認。
 
 **1e後半（不具合報告への添付）【実装済み（`BugReportKeymapLearnSummary`、`attach_ime_keymap`相乗り・`SCHEMA_VERSION`据え置き）。ただし決定1b項目7〜9の再測定結果とADR196-T1の外部書き込み観測は現状どこにも永続化されていないため未添付——永続化され次第同型へ追加する】**: 別途、**不具合報告への添付は本タスクに一本化する**
