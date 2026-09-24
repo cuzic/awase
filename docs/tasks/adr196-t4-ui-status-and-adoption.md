@@ -1,6 +1,6 @@
 # ADR-196 T4: 較正パネルの状態表示・採用導線を実装する
 
-状態: **主要部分実装済み（2026-09-23、`feat/adr196-t4-ui-status`）**。下記「進捗」参照。起票時: 2026-09-23。**【S5対応】前提タスクを列挙**: [ADR195-T6](adr195-t6-adr176-wizard-integration.md)
+状態: **主要部分実装済み（2026-09-23、PR #283でdevelop統合済み）**。下記「進捗」参照。起票時: 2026-09-23。**【S5対応】前提タスクを列挙**: [ADR195-T6](adr195-t6-adr176-wizard-integration.md)
 （子プロセス起動・標準出力パース機構、本タスクが利用する）、[ADR196-T2](adr196-t2-mismatch-adjudication.md)
 （採否判定・要確認状態・判定書き換えモード）、[ADR196-T3](adr196-t3-bundled-table-versioning.md)
 （「測定環境」表示に使う内蔵表の版情報）、[ADR196-T5](adr196-t5-revalidation-not-invalidation.md)
@@ -84,6 +84,7 @@
   （`RejectedReason`に相当が無い）。
 - 「予測表なし（カスタムキーマップ）」は判定入力`custom_keymap_without_prediction`を
   常に`false`で渡している（ADR195-T0の構成検出との配線が未実装）。
-- 現在の版取得はGJIのみ（Microsoft IME本体はT5の共有関数待ち）。
+- 現在の版取得はGJIのみ（Microsoft IME本体はADR-197待ち。GJI側の共有関数はPR #279で統合済み）。
+- B-7〜B-9（読み取りスレッドのロック保持・失敗理由の隠蔽・説明文の矛盾）はPR #280で修正済み。
 - 結合テスト（モックプロセスでの採用/再検証起動）は起動フラグ・パースのユニットテストまで。
 - Windows実機でのUI確認は未実施。

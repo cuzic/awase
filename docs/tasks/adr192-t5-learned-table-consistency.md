@@ -2,6 +2,7 @@
 
 状態: 未着手（2026-09-23起票、ADR-196非目的S2からの後続課題として記録）。
 [ADR196-T2](adr196-t2-mismatch-adjudication.md)（学習表の採用）着手後に着手。
+**【2026-09-24追記】前提のT2は「内蔵表への参照経路」(PR #263)・採否判定の配線(PR #269)・再測定(PR #275)までdevelop統合済みのため、着手可能。**
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
 
 ## 背景

@@ -10,7 +10,8 @@ developへマージしない。
   （既存リストへja-JP追加だとen-USが既定のままMS-IMEがアクティブにならない）。ja-JPのみ＋MS-IME TIPに
   直すと解消し、学習は完走する（run 35945955606: presses=1891、judgement=rejected、verify_accuracy=0.940）。
   「open=falseならconvを0x00扱い」の正規化は、必要性が証明できず撤去した。
-- `observation_alive`/`measurement_suspicious`の配線と`ARRIVAL_LOG`は、ARRIVAL_LOG撤去のみPR #281で実施。
+- `observation_alive`/`measurement_suspicious`の配線と`ARRIVAL_LOG`は、ARRIVAL_LOG撤去のみPR #281で実施（2026-09-24にdevelop統合済み。0x0001正規化と生存確認配線は同PR内で`0d4d9f80`により撤去）。
+- 再測定の押下数上限・リセット間隔の実測調整（PR #285）はGJI+ATOKでの値。MS-IME本体では未測定。
 
 ## 未解決1: 生存確認（`observation_alive` / `measurement_suspicious`）が未配線
 
