@@ -11,8 +11,10 @@ pub struct Obs {
     pub outcome: Outcome,
 }
 
-/// 多数派の結果。同数なら先に現れたものを採用する(`HashMap`の反復順に依存させず決定的にする)。
-pub(crate) fn majority_of(outcomes: impl IntoIterator<Item = Outcome> + Clone) -> Option<Outcome> {
+/// 多数派の結果とその件数。同数なら先に現れたものを採用する(`HashMap`の反復順に依存させず決定的にする)。
+pub(crate) fn majority_with_count(
+    outcomes: impl IntoIterator<Item = Outcome> + Clone,
+) -> Option<(Outcome, usize)> {
     let mut best: Option<(Outcome, usize)> = None;
     for o in outcomes.clone() {
         let n = outcomes.clone().into_iter().filter(|x| *x == o).count();
@@ -20,7 +22,11 @@ pub(crate) fn majority_of(outcomes: impl IntoIterator<Item = Outcome> + Clone) -
             best = Some((o, n));
         }
     }
-    best.map(|(o, _)| o)
+    best
+}
+
+pub(crate) fn majority_of(outcomes: impl IntoIterator<Item = Outcome> + Clone) -> Option<Outcome> {
+    majority_with_count(outcomes).map(|(o, _)| o)
 }
 
 /// 観測から見たセルの分類。
@@ -202,5 +208,30 @@ mod tests {
         assert_eq!((t.covered1(), t.covered2()), (1, 0));
         t.record(s, 0, None, out(true));
         assert_eq!((t.covered1(), t.covered2()), (1, 1));
+    }
+
+    #[test]
+    fn majority_with_count_tie_picks_first_seen() {
+        assert_eq!(
+            majority_with_count([out(true), out(false)]),
+            Some((out(true), 1))
+        );
+        assert_eq!(
+            majority_with_count([out(false), out(true)]),
+            Some((out(false), 1))
+        );
+        assert_eq!(
+            majority_with_count([out(false), out(true), out(true), out(false)]),
+            Some((out(false), 2))
+        );
+    }
+
+    #[test]
+    fn majority_with_count_prefers_strict_majority_over_earlier() {
+        assert_eq!(
+            majority_with_count([out(false), out(true), out(true)]),
+            Some((out(true), 2))
+        );
+        assert_eq!(majority_with_count(std::iter::empty::<Outcome>()), None);
     }
 }

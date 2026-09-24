@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 
 use crate::model::{Outcome, Status};
-use crate::table::{majority_of, Class, Table};
+use crate::table::{majority_with_count, Class, Table};
 
 /// 誤りに強い分類の既定閾値: 文脈内の少数派の観測数がこれ未満なら観測誤りとみなし、
 /// 多数派の結果を採用する(単発の観測誤りだけでは非決定と宣言しない)。
@@ -46,8 +46,8 @@ pub fn classify_robust(table: &Table, status: Status, key: usize, min_minority: 
     for g in groups.values() {
         if g.len() >= 2 {
             multi += 1;
-            let maj_outcome = majority_of(g.iter().copied()).unwrap_or(g[0]);
-            let maj_count = g.iter().filter(|x| **x == maj_outcome).count();
+            let (maj_outcome, maj_count) =
+                majority_with_count(g.iter().copied()).unwrap_or((g[0], 0));
             let minority = g.len() - maj_count;
             if minority >= min_minority {
                 any_inhomogeneous = true;
