@@ -1338,7 +1338,9 @@ impl ImeStateHub {
                 .observe_miss_monitor
                 .consecutive_miss_count;
             if miss == crate::IME_DETECT_MISS_THRESHOLD {
-                tracing::warn!("IME detection failed {miss} consecutive times, will force IME ON");
+                tracing::warn!(
+                    "IME detection failed {miss} consecutive times (force-ON was removed; recording only)"
+                );
             }
         }
         if update.clear_force_on_broken_app_bootstrap {
