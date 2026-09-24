@@ -413,8 +413,15 @@ fn save_section(base_dir: &std::path::Path, section_name: &str, section: toml::T
         .and_then(|c| c.parse().ok())
         .unwrap_or_default();
     root.insert(section_name.to_string(), toml::Value::Table(section));
-    let content = toml::to_string_pretty(&root).unwrap_or_default();
-    if let Err(e) = std::fs::write(&path, &content) {
+    let content = match toml::to_string_pretty(&root) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Failed to serialize cache for {}: {e}", path.display());
+            return;
+        }
+    };
+    // 書き込み途中の中断で cache.toml が壊れ、次回保存で他セクションが消えるのを防ぐ。
+    if let Err(e) = awase::fs_atomic::write_atomic(&path, content.as_bytes()) {
         tracing::warn!("Failed to save cache to {}: {e}", path.display());
     }
 }

@@ -84,7 +84,7 @@ v2 方針（calibration を config.toml から cache.toml へ移す、ConfirmMod
   - 範囲は「永続化先の分類」に絞る: `config.toml`（ユーザー設定）、`cache.toml`（再学習で戻る観測キャッシュ）、学習表 JSON（ADR-195 段階3、再生成コストが大きい）。
   - メモの `[keymap_learn]` 節案は、ADR-195 段階3に合わせて取り下げると書く。calibration の移設は、(2) の撤去で不要になると書く。
   - ConfirmMode の2択化は、確定エンジンの設定（`src/config.rs:66` `enum ConfirmMode`）で、永続化先の話とは関係ない。同じ ADR に入れると、片方だけ実装済みのときに status の追随が難しくなる。そこで、[04](review-2026-09-24-04-sample-config-and-user-docs.md) で推奨モードを統一したあと、別の ADR（または既存 ADR への追記）で扱う。`app_overrides` の維持は、1行の現状確認として v2 ADR に入れてよい。
-- [ ] **(6) `save_section` をアトミックにする。** v2 とは独立に、いますぐ小さく直す。`std::fs::write` を `awase::fs_atomic::write_atomic`（`src/fs_atomic.rs:35`。keymap-learn-win と同じ呼び方）に置き換える。
+- [x] **(6) `save_section` をアトミックにする。**（実装済み: `docs/review-07-08` ブランチ） v2 とは独立に、いますぐ小さく直す。`std::fs::write` を `awase::fs_atomic::write_atomic`（`src/fs_atomic.rs:35`。keymap-learn-win と同じ呼び方）に置き換える。
 - [ ] **(7) `save_section` が読込に失敗したときの扱いを決める。** 候補は、上書きしない／`.bak` に退避してから書く／警告だけ。v2 でセクションを増やすなら必須、増やさないなら優先度は低い。
 
 ### 採らなかった案
