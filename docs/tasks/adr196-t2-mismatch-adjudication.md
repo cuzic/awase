@@ -124,7 +124,8 @@ COM STA初期化・`ITfThreadMgr::Activate`済みのスレッドを持ってお�
 到達→対象キー押下）で再測定する。再現しなかったセルと**確認できなかった（到達不能・汚染続き・
 中止）セル**は`prediction`を`None`へ落とし、`ReconciliationSummary`を`judgement::combine`へ
 渡す（`run_main`。既知構成でない/`config1.db`不読のときは`None`のまま）。
-**未実装（残作業）**: 決定1b項目9の不一致分布タグ、実機(RealImeDriver)での動作確認。
+**項目9の不一致分布タグ**: 純粋ロジック`awase_keymap_learn::mismatch_tag::tag_mismatches`を追加（キー集中=版ずれ寄り、状態集中・同版で不一致=パイプライン疑い、参考タグのみ）。学習フロー/不具合報告への配線は未実装。
+**未実装（残作業）**: 決定1b項目9の配線、実機(RealImeDriver)での動作確認。
 `REMEASURE_MAX_SETUP_PRESSES`は実測済み（60→250、windows-latest実GJI+ATOK・1600件: 中央値11・
 p95≈100・p99≈150・最大230、60超は10.3%）。`REMEASURE_RESET_EVERY`も実測済み（12→24、3/6/12/24/48
 を比較、到達押下数は差が無く所要時間のみ変わる）。

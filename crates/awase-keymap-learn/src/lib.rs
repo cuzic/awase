@@ -25,6 +25,7 @@ pub mod graph;
 pub mod judgement;
 pub mod metrics;
 pub mod minimize;
+pub mod mismatch_tag;
 pub mod model;
 pub mod persist;
 pub mod remeasure;
