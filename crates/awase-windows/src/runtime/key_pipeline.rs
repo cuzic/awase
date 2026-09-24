@@ -440,8 +440,8 @@ impl Runtime {
         if stripped_set_open.is_some() {
             // settle 中に握りつぶした SetOpen は自然には再発行されない
             // （Engine::prev_activation は遷移確定済みのため）。既存の
-            // apply_force_on_for_imm_broken 等と同じ「settle 明けに refresh で再試行」
-            // パターンで確実に一度だけ再同期する
+            // 他の settle 対応経路（撤去済みの apply_force_on_for_imm_broken 等）と同じ「settle 明けに
+            // refresh で再試行」パターンで確実に一度だけ再同期する
             // （2026-07-08: GjiFsm が resync できず「このせっけい」の文字欠落に至った実機ログから判明）。
             self.schedule_settle_retry("SetOpen stripped from kp_run_inner decision");
         }
@@ -1518,7 +1518,7 @@ impl Runtime {
         }
 
         // ON→OFF の場合、OS IME を明示的に OFF にする。
-        // 【2026-09-17 訂正、ADR-178 round4/round8】旧コメントは「deactivation は
+        // 【2026-09-17 訂正、ADR-179（旧178） round4/round8】旧コメントは「deactivation は
         // SetOpen(false) を生成しないため、このブロックが必要」としていたが誤り。
         // `Engine::transition_activation`（`src/engine/engine.rs:456-475`）は
         // `NotRomajiInput` の場合を除き、active→inactive 遷移でも

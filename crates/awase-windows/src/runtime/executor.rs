@@ -149,7 +149,7 @@ impl std::fmt::Debug for DecisionExecutor {
 /// この呼び出しより前に確定させており（`prev_activation` 更新はログ出力と同時、effect 実行より
 /// 前）、以後 belief が変わらない限り同じ遷移は二度と検知されない＝この SetOpen は自然には
 /// 再発行されない。呼び出し元は `Some` を受けたら settle 明けの再試行
-/// （`focus_settle_ms() + 50`ms 後、`apply_force_on_for_imm_broken` 等と同じ確立済みパターン）を
+/// （`focus_settle_ms() + 50`ms 後、撤去済みの `apply_force_on_for_imm_broken` 等と同じ確立済みパターン）を
 /// 必ずスケジュールすること（さもないと GjiFsm 等 apply 完了通知でしか同期しないサブシステムが
 /// 実 IME 状態と乖離したまま固着する。2026-07-08 実機: 「このせっけい」が「せっけい」に文字欠落）。
 #[must_use]

@@ -219,7 +219,7 @@ pub(crate) fn apply_mechanism(
     match command {
         Some(MechanismCommand::SetOpenCrossProcessSync(_)) => {
             // ADR-117（issue #138 切り分け）: この経路は Standard プロファイル×MS-IME の
-            // 完全同期呼び出し（`try_force_on_bootstrap` 等）のみ到達し、報告環境の
+            // 完全同期呼び出し（撤去済みの `try_force_on_bootstrap` 等）のみ到達した経路で、報告環境の
             // 主経路（非同期 ImmCross）は `runtime/open_chain.rs::imm_cross_write` が
             // 別途担う。
             tracing::info!(
@@ -402,8 +402,8 @@ pub(crate) fn apply_mechanism(
 /// **この穴は到達しうる**——初出時は「同期呼び出し元はすべて
 /// `imm_cross_is_first_applicable` で async 分岐するか
 /// `!can_use_imm32_cross_process()` に限定されているので到達しない」と
-/// 書いていたが、`runtime/mod.rs::try_force_on_bootstrap`（`:892`）が
-/// プロファイルガードを持たないため Standard でも同期で到達する
+/// 書いていたが、`runtime/mod.rs::try_force_on_bootstrap`（`:892`、`621bf93c` で撤去済み）が
+/// プロファイルガードを持たないため Standard でも同期で到達していた
 /// （ADR-089 §9-21 の訂正、実機確認は §9-17 の 17-h）。
 /// ただし **Phase C 以前から同じ挙動**であり、Phase C が作り込んだ
 /// 回帰ではない。
@@ -547,7 +547,7 @@ fn actuation_decision_record(
 ///
 /// # 「ゼロだったから安全」と「そもそも発火していない」を混同しないこと
 ///
-/// ADR-090 §7-1 が指摘するとおり、`try_force_on_bootstrap` の発火条件
+/// ADR-090 §7-1 が指摘するとおり、撤去済みの `try_force_on_bootstrap` の発火条件
 /// （`IME_DETECT_MISS_THRESHOLD` 回連続の検出失敗）は稀であり、1 日の通常利用
 /// では一度も踏まない可能性が高い。そのため**授権が下りた場合も 1 行出す**
 /// ——入口が発火したこと自体をログに残さないと、`would_have_blocked` の
@@ -600,7 +600,7 @@ impl ImeController {
         }
         // ADR-090 §2.A A-2（2026-09-19、ユーザー指示によりリスクを受容し実機
         // 検証で確認する方針へ切替）: 授権は入口側
-        // （`ImeStateHub::issue_actuation_order`）で発行済み。ADR-178領域A撤去
+        // （`ImeStateHub::issue_actuation_order`）で発行済み。ADR-179（旧178）領域A撤去
         // （`apply_force_on_for_imm_broken`/`try_force_on_bootstrap`の削除）で
         // 差分オラクルが指摘していた最大の挙動変化（old-1、bootstrapで観測/
         // 意図/guard皆無のまま`desired_open`へフォールバックする経路）と、

@@ -780,7 +780,7 @@ fn decode_outcome(value: isize) -> ImeOpenOutcome {
 /// `reason` は wparam の bit1 にエンコードする（BUG-34 横展開 D、2026-08-19）。
 /// 以前はこの経路の唯一の生成元が `executor.rs::dispatch_ime_set_open`
 /// （常に `EngineDecision`）だったため固定値にしていたが、
-/// `try_force_on_bootstrap`（`Bootstrap`）が2つ目の生成元として加わったため、
+/// `try_force_on_bootstrap`（`Bootstrap`、`621bf93c` で撤去済み）が2つ目の生成元として加わったため、
 /// 呼び出し元が申告した reason を実際に運ぶ必要がある。**`EngineDecision` と
 /// `Bootstrap` の2値のみエンコードする**（1 bit）。この async 経路に将来
 /// 別の `OpenApplyReason` を渡す呼び出し元を追加する場合は、この関数と

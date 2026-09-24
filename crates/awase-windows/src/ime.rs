@@ -1036,7 +1036,7 @@ impl ActuationTarget {
     /// [`Self::capture`] の同期版（ADR-089 §6 Phase C item 12）。
     ///
     /// **`ImeOpenStrategy::apply` の呼び出しチェーンは完全に同期的**であり
-    /// （`apply_force_on_for_imm_broken` / `consume_force_open_pending` /
+    /// （撤去済みの `apply_force_on_for_imm_broken`〈`f83084b3`〉のほか `consume_force_open_pending` /
     /// `ir_apply_drift_correction` / `kp_stage_shadow_ime_toggle` 等、
     /// `spawn_local` を使わない経路から直接呼ばれる）、async 版の `capture` を
     /// そのまま使うことはできない。ADR-086 Phase 3 はこの制約を理由に

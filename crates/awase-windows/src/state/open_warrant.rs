@@ -1163,8 +1163,8 @@ mod tests {
         TsfNative,
         // default_feedback = Read。Step4c は発火しない
         // （`step4c_does_not_fire_for_read_profile` 参照）。旧ゲートの
-        // `try_force_on_bootstrap` 呼び出し元はこちら側のプロファイルで
-        // 到達する（`ir_poll_and_learn`／`OsPoll` 経由）。
+        // 撤去済みの `try_force_on_bootstrap` 呼び出し元はこちら側のプロファイルで
+        // 到達していた（`ir_poll_and_learn`／`OsPoll` 経由）。
         ImmCross,
     }
 
@@ -1184,7 +1184,7 @@ mod tests {
         //
         // old_only の内訳（本テストで実測、計8件）:
         // 1. `policy=ImmCross`・観測/意図/guard 一切無し・`desired_open=true`
-        //    （`try_force_on_bootstrap` 相当、1件）: 旧は observation 皆無時に
+        //    （撤去済み `try_force_on_bootstrap` 相当、1件）: 旧は observation 皆無時に
         //    `most_recent_trusted` も外れて `desired_open` にフォールバックし
         //    true になるが、新は Read プロファイルのため Step4c(OwnSsot) が
         //    発火せず None——**Phase 3 実配線で ImmCross の bootstrap force-ON

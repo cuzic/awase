@@ -1131,9 +1131,9 @@ impl ImeStateHub {
         // `HeuristicDefault` 観測を record すると、`desired`（生の
         // `desired_open()`、別ウィンドウでの古い明示操作の残留）と食い違い、
         // drift correction がこの弱い観測1件を理由に実 IME へ書き込んでしまう。
-        // `apply_force_on_for_imm_broken`（`effective_open()` 経由で同じ
-        // `HeuristicDefault` を信頼する）と反対方向の書き込みを競って短時間に
-        // 往復する。
+        // （撤去済みの）`apply_force_on_for_imm_broken`（`effective_open()` 経由で同じ
+        // `HeuristicDefault` を信頼していた）と反対方向の書き込みを競って短時間に
+        // 往復していた。
         //
         // ここに含めるかどうかの判断基準は「`ObservationSource::authority()`
         // が `BeliefOnly` かどうか」ではない——`authority()` は `HwndCache`/
@@ -2479,8 +2479,8 @@ mod tests {
     // correction を発火させない。拡張前は、Word 等で明示 OFF → Chrome へ
     // フォーカス移動 → `reset_stale_ime_on_for_imm_broken` が `HeuristicDefault(true)`
     // を記録、という経路で `check_drift_correction` が
-    // `Some(desired:false, observed:true)` を返し、`apply_force_on_for_imm_broken`
-    // （`effective_open()` 経由で同じ `HeuristicDefault` を信頼して ON を送る）と
+    // `Some(desired:false, observed:true)` を返し、（撤去済みの）`apply_force_on_for_imm_broken`
+    // （`effective_open()` 経由で同じ `HeuristicDefault` を信頼して ON を送っていた）と
     // 反対方向に競合し、短時間の ON/OFF 往復を起こしていた。
     #[test]
     fn check_drift_correction_ignores_heuristic_default_alone_without_explicit_intent() {
