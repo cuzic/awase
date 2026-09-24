@@ -42,7 +42,7 @@ pub(crate) fn normalize_process_name(name: &str) -> String {
 /// ADR-195段階1の独立学習プロセス（`awase-keymap-learn-win.exe`）名と一致するか。
 ///
 /// 学習中は合成注入キーを awase が変換しないよう、`FocusTracker::is_app_disabled`が
-/// このプロセスを恒久バイパスする（旧`calibration_ipc.rs`から移設）。
+/// このプロセスを恒久バイパスする（旧`calibration_ipc.rs`〈ADR-176手動較正、撤去済み〉から移設）。
 #[must_use]
 pub fn is_keymap_learn_process_name(name: &str) -> bool {
     normalize_process_name(name) == normalize_process_name("awase-keymap-learn-win.exe")
