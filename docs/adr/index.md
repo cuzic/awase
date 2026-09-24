@@ -202,7 +202,7 @@
 | [195](195-keymap-learn-productization.md) | カスタムキーマップ対応のため、IMEキー効果の学習(awase-keymap-learn)を独立プロセスとして製品化する（設定読取→独立プロセスでの巡回学習→自己検証→永続化→実行時読込→ADR-176統合） | **段階0/1/2/3/4/5/6/8はdevelopマージ済み(2026-09-23、PR #250〜#258)。段階7(安全対策)は一部実装済み(PR #264、項目2完了・項目1送信前ゲート実装・項目3/5未着手)。** 段階4/6/8はADR-196で置換予定(ADR-196自体は未マージ)、段階3は一部フィールド拡張 |
 | [196](196-keymap-learn-truth-priority.md) | ADR-195の段階4/6/8を修正し、既知プリセット構成でも内蔵表を審査官にせず学習結果を優先する。陳腐化は失効でなく要再検証とし、フィンガープリントにIME本体バージョンを追加する | **草案rev5、round5で収束・実装着手可と最終判定（Blocker0件・Must-fix0件、5ラウンド）** |
 | [197](197-msime-legacy-custom-keymap-runtime-warning.md) | MS-IME旧UI(互換モード限定キーカスタマイズ)の調査。実行時警告は前提(無変換キーへのCEトグル)が実機で否定され撤回、ADR-196向け互換モードフラグ読み取り(決定4)のみ採用 | 決定1〜3撤回・決定4のみ採用(2026-09-23、CI実機検証4パターン+ユーザー本人の物理キー確認) |
-| [198](198-persistence-destination-classification.md) | 永続化先の分類(config.toml/cache.toml/学習表JSON)とv2でのcalibrationの扱い。学習表はcache.tomlへ移さず、calibration移設は不要 | 草案(2026-09-24、consult未実施) |
+| [198](198-persistence-destination-classification.md) | 永続化先の分類(config.toml/cache.toml/学習表JSON)とv2でのcalibrationの扱い | 草案(2026-09-24、opus round1反映済み、決定3はユーザー確認待ち) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
