@@ -1,6 +1,6 @@
 ---
 title: awase.exe の読込時に残る「内蔵表との不一致5%判定」とカバレッジ判定が ADR-196 決定1e と食い違う（採用しても学習表が使われない構成がある）
-status: 未着手（B-2 は解消済み）
+status: 実装済み（5%判定の廃止・カバレッジ分母の修正。ユーザー決定 2026-09-24。案Aの「突き合わせ済み記録」は不要になり取り下げ）
 priority: 中〜高（学習機能を次リリースで利用者に見せるなら、その前に「実測→判断」まで。03 の判断に従う）
 created: 2026-09-24
 related_adr: ["ADR-196", "ADR-195", "ADR-191"]
@@ -14,6 +14,21 @@ source_review: 俯瞰レビュー（受動化・actuation撤去・学習/較正�
 索引・優先度: [11](review-2026-09-24-11-low-priority-backlog.md)。
 裏取り基準は worktree の `5877f982`（origin/develop、PR #296 まで。PR #293 `d00ac8dd` を含む）。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
+
+## 決定と実装（2026-09-24、ユーザー決定）
+
+- **5%判定は廃止**: awase.exe の読込時に内蔵表と突き合わせない（ADR-196 決定1e のとおり、内蔵表を審査官にしない）。
+  `validate_and_convert` / `load_runtime_table` / `load_and_log` から `preset`・`check_against_bundled` を削除し、
+  `MismatchesBundledTooMuch`・`MAX_MISMATCH_RATIO`・`mismatch_ratio` も削除した。下の「推奨案」の案A（突き合わせ済みかの記録）・案Bは取り下げ（学習側のスキーマ変更も不要）。
+  実測（PR #303、windows-latest run 35987424778）で `mismatch` は GJI+ATOK・MS-IME 本体とも 0.000 だったので、廃止しても採否は変わらない。
+- **カバレッジ分母は「畳んだ後に変換対象になりえた検索キー数」**（`coverage_slot_count`）: 実測の棄却原因はこちらだった
+  （GJI+ATOK 0.782＝61/78、MS-IME 本体 0.52〜0.53＝74〜76/143。閉状態の畳み込みと、`Conv` で表せない開状態セルが分母に残っていた）。
+  閉状態は `(stage, key)` の1枠に畳み、`Conv` で表せない開状態セルは分母から除く。予測なしのセルと表に無いVKのセルは枠に数える（縮退表は引き続き棄却）。
+- 陳腐化（指紋）の照合は従来どおり残る（別IME・別プリセットで学習した表は `Stale` で棄却される）。
+- 不具合報告の同梱表突き合わせ診断（`bug_report.rs`、`last_validation_key`）は採否判定ではないので残した。
+- ADR-196 に追補（決定1e の直後）を書いた。
+- 残り: タスク0の実測を、この修正後のビルドで再確認する（windows-latest、GJI+ATOK と MS-IME 本体）。CI 専用テストは `ci_real_learned_table_is_adopted` に改名した。
+  MS-IME 本体は分母が減って0.80を超える見込みだが、学習側の判定（決定1a: 既定では要確認）は別なので、採用されるかは要確認のまま。
 
 ## 背景
 
