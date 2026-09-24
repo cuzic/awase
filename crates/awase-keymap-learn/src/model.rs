@@ -25,6 +25,19 @@ pub struct Status {
     pub composing: bool,
 }
 
+impl Status {
+    /// IMEのconversion mode生値から`mode`を作る。NATIVE(1)・KATAKANA(2)・FULLSHAPE(8)だけを見る
+    /// （ROMAN(0x10)はIME/構成により報告が揺れるため落とす）。
+    ///
+    /// `awase-windows`の`Conv`（0x00/0x09/0x0B）に表せない値（半角カタカナ0x13→0x03、全角英数0x18→0x08等）も
+    /// 復号失敗にせず、そのまま別の状態として保持する（ADR196-T2 未解決2）。学習表を予測に使う側
+    /// （`key_effect_runtime::convert_cell`）は`Conv`に表せないセルを読み飛ばすので、予測には影響しない。
+    #[must_use]
+    pub const fn mode_from_raw_conv(raw: u32) -> u8 {
+        (raw & 0x0B) as u8
+    }
+}
+
 /// 入力中の文字列の行方(入力欄の変化から観測する)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Disposition {
@@ -190,6 +203,21 @@ mod tests {
             mode,
             composing,
         }
+    }
+
+    #[test]
+    fn mode_from_raw_conv_keeps_unrepresentable_modes_distinct() {
+        assert_eq!(Status::mode_from_raw_conv(0x00), 0x00);
+        assert_eq!(Status::mode_from_raw_conv(0x19), 0x09);
+        assert_eq!(Status::mode_from_raw_conv(0x1B), 0x0B);
+        // 半角カタカナ(0x13)・全角英数(0x18)は落とさず、Conv系3種とは別の値になる。
+        assert_eq!(Status::mode_from_raw_conv(0x13), 0x03);
+        assert_eq!(Status::mode_from_raw_conv(0x18), 0x08);
+        // ROMANビットの有無で値が変わらない。
+        assert_eq!(
+            Status::mode_from_raw_conv(0x09),
+            Status::mode_from_raw_conv(0x19)
+        );
     }
 
     /// 2状態が同じstatusを持ち(隠れ状態)、キー0の結果が違う小さな機械。

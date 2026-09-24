@@ -244,6 +244,22 @@ pub const fn local_utc_offset_secs() -> i64 {
     0
 }
 
+/// 別スレッドで取得した現在の環境の事実（IME本体版と、使用中IMEのキーマップ構成）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnvSnapshot {
+    pub version: EnvVersionProbe,
+    /// 使用中のIMEがGJIで、そのキーマップが内蔵表を持たない構成（カスタムキーマップ等）か。
+    /// GJI以外のIMEや`config1.db`が読めない場合は`false`。
+    pub custom_keymap_without_prediction: bool,
+}
+
+impl EnvSnapshot {
+    pub const UNKNOWN: Self = Self {
+        version: EnvVersionProbe::Unknown,
+        custom_keymap_without_prediction: false,
+    };
+}
+
 /// 現在のIME本体版(フィンガープリント)の取得状態。ブロックしうるWin32呼び出しを
 /// UIスレッドから外すため別スレッドで走らせ、結果をチャネルで受け取る。
 /// `process_start`は取得側プロセス(awase-settings)の起動時刻で、Converterの更新時刻が
@@ -253,8 +269,8 @@ pub const fn local_utc_offset_secs() -> i64 {
 /// Converterを正しく検出する。
 #[derive(Debug)]
 pub struct EnvProbe {
-    current: EnvVersionProbe,
-    rx: Option<std::sync::mpsc::Receiver<EnvVersionProbe>>,
+    current: EnvSnapshot,
+    rx: Option<std::sync::mpsc::Receiver<EnvSnapshot>>,
     started: bool,
     pub process_start: std::time::SystemTime,
 }
@@ -263,7 +279,7 @@ impl EnvProbe {
     #[must_use]
     pub fn new(process_start: std::time::SystemTime) -> Self {
         Self {
-            current: EnvVersionProbe::Unknown,
+            current: EnvSnapshot::UNKNOWN,
             rx: None,
             started: false,
             process_start,
@@ -277,7 +293,7 @@ impl EnvProbe {
     }
 
     /// 取得スレッドの受信側を登録する。
-    pub fn attach(&mut self, rx: std::sync::mpsc::Receiver<EnvVersionProbe>) {
+    pub fn attach(&mut self, rx: std::sync::mpsc::Receiver<EnvSnapshot>) {
         self.started = true;
         self.rx = Some(rx);
     }
@@ -307,7 +323,12 @@ impl EnvProbe {
 
     #[must_use]
     pub const fn current(&self) -> EnvVersionProbe {
-        self.current
+        self.current.version
+    }
+
+    #[must_use]
+    pub const fn custom_keymap_without_prediction(&self) -> bool {
+        self.current.custom_keymap_without_prediction
     }
 }
 
@@ -352,6 +373,13 @@ mod tests {
         assert_eq!(format_ymd(utc_evening, -9 * 3600), "2026-09-22");
     }
 
+    fn snap(version: EnvVersionProbe) -> EnvSnapshot {
+        EnvSnapshot {
+            version,
+            custom_keymap_without_prediction: true,
+        }
+    }
+
     #[test]
     fn env_probe_reprobe_blocks_stale_state_until_result() {
         let mut probe = EnvProbe::new(std::time::SystemTime::UNIX_EPOCH);
@@ -361,10 +389,11 @@ mod tests {
         assert!(!probe.needs_start() && probe.is_pending());
         assert!(!probe.poll(), "結果が来るまで更新なし");
         let v1 = EnvVersionProbe::Known(EnvVersion([1, 0, 0, 0]));
-        tx.send(v1).unwrap();
+        tx.send(snap(v1)).unwrap();
         assert!(probe.poll());
         assert!(!probe.is_pending());
         assert_eq!(probe.current(), v1);
+        assert!(probe.custom_keymap_without_prediction());
 
         probe.request_reprobe();
         assert!(
@@ -375,7 +404,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         probe.attach(rx);
         let v2 = EnvVersionProbe::Known(EnvVersion([2, 0, 0, 0]));
-        tx.send(v2).unwrap();
+        tx.send(snap(v2)).unwrap();
         assert!(probe.poll());
         assert_eq!(probe.current(), v2);
     }

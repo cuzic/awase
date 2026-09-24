@@ -580,6 +580,7 @@ struct SettingsApp {
 /// 場合は表なし(内蔵表)として扱う(読み手側のフォールバックと同じ)。
 fn load_keymap_table_state(
     current_env: awase_keymap_learn::revalidation::EnvVersionProbe,
+    custom_keymap_without_prediction: bool,
 ) -> keymap_learn_status::TableState {
     let config_path = awase::paths::resolve_relative_to_exe("config.toml");
     let path = config_path
@@ -606,7 +607,7 @@ fn load_keymap_table_state(
         table: table.as_ref(),
         current_env,
         file_date: file_date.flatten(),
-        custom_keymap_without_prediction: false,
+        custom_keymap_without_prediction,
     })
 }
 
@@ -1184,8 +1185,11 @@ impl SettingsApp {
                 let ctx = ctx.clone();
                 let start = self.keymap_env_probe.process_start;
                 std::thread::spawn(move || {
-                    let probe = awase_keymap_learn_win::probe_gji_env_version(start);
-                    let _ = tx.send(probe);
+                    let _ = tx.send(keymap_learn_status::EnvSnapshot {
+                        version: awase_keymap_learn_win::probe_gji_env_version(start),
+                        custom_keymap_without_prediction:
+                            awase_keymap_learn_win::probe_custom_keymap_without_prediction(),
+                    });
                     ctx.request_repaint();
                 });
                 self.keymap_env_probe.attach(rx);
@@ -1194,7 +1198,7 @@ impl SettingsApp {
             {
                 let _ = ctx;
                 let (tx, rx) = std::sync::mpsc::channel();
-                let _ = tx.send(awase_keymap_learn::revalidation::EnvVersionProbe::Unknown);
+                let _ = tx.send(keymap_learn_status::EnvSnapshot::UNKNOWN);
                 self.keymap_env_probe.attach(rx);
             }
         }
@@ -1202,8 +1206,10 @@ impl SettingsApp {
             self.keymap_table_state = None;
         }
         if self.keymap_table_state.is_none() && !self.keymap_env_probe.is_pending() {
-            self.keymap_table_state =
-                Some(load_keymap_table_state(self.keymap_env_probe.current()));
+            self.keymap_table_state = Some(load_keymap_table_state(
+                self.keymap_env_probe.current(),
+                self.keymap_env_probe.custom_keymap_without_prediction(),
+            ));
         }
     }
 
