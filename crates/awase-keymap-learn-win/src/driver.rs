@@ -424,9 +424,9 @@ impl RealImeDriver {
     /// かった）。
     ///
     /// `status_changed`は直近の試行で開閉・変換モードが実際に変わったか。
-    /// 変わったのに通知が1件も届かない（`observation_alive`）、または1回の注入に
-    /// 通知が2件以上届いた（`measurement_suspicious`）場合は、観測経路の停止・
-    /// 複数要因の混入を疑い、外部干渉と同様に試行を無効化する。
+    /// フックの取りこぼし、または1回の注入に通知が2件以上届いた
+    /// （`measurement_suspicious`）場合は、観測経路の停止・複数要因の混入を疑い、
+    /// 外部干渉と同様に試行を無効化する。通知の不着は警告のみ（下記参照）。
     fn check_session_interference(&self, status_changed: bool) -> bool {
         let mut tracker = self.interference.get();
         let verdict = tracker.observe(
@@ -436,8 +436,20 @@ impl RealImeDriver {
             self.focus_intact(),
         );
         self.interference.set(tracker);
+        // 通知経路の停止は無効化の根拠にしない: MS-IME本体は開閉・変換モードが
+        // 変わっても`WM_IME_NOTIFY`をEDITへ送らず（windows-latest実測: status_changed=true
+        // でも通知0件）、必須にすると全試行が無効化される。フックの取りこぼしと
+        // 1注入あたり複数通知のみを異常とみなす。
+        if !self
+            .notify_monitor
+            .is_alive_given_status_changed(status_changed)
+        {
+            eprintln!(
+                "[awase-keymap-learn-win] press: 状態は変化したが開閉・変換モード通知が届かなかった(警告のみ)"
+            );
+        }
         let observation_bad =
-            !self.observation_alive(status_changed) || self.measurement_suspicious();
+            !self.hook_monitor.liveness().is_alive() || self.measurement_suspicious();
         if !verdict.contaminated() && !observation_bad {
             return false;
         }
@@ -451,10 +463,8 @@ impl RealImeDriver {
         } else {
             eprintln!(
                 "[awase-keymap-learn-win] press: 観測経路の異常で試行を無効化 \
-                 (status_changed={status_changed}, hook_alive={}, notify_alive={}, suspicious={})",
+                 (hook_alive={}, suspicious={})",
                 self.hook_monitor.liveness().is_alive(),
-                self.notify_monitor
-                    .is_alive_given_status_changed(status_changed),
                 self.measurement_suspicious()
             );
         }
