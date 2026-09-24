@@ -451,8 +451,10 @@ impl RealImeDriver {
         } else {
             eprintln!(
                 "[awase-keymap-learn-win] press: 観測経路の異常で試行を無効化 \
-                 (status_changed={status_changed}, alive={}, suspicious={})",
-                self.observation_alive(status_changed),
+                 (status_changed={status_changed}, hook_alive={}, notify_alive={}, suspicious={})",
+                self.hook_monitor.liveness().is_alive(),
+                self.notify_monitor
+                    .is_alive_given_status_changed(status_changed),
                 self.measurement_suspicious()
             );
         }
