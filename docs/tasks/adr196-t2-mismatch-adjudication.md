@@ -124,8 +124,10 @@ COM STA初期化・`ITfThreadMgr::Activate`済みのスレッドを持ってお�
 到達→対象キー押下）で再測定する。再現しなかったセルと**確認できなかった（到達不能・汚染続き・
 中止）セル**は`prediction`を`None`へ落とし、`ReconciliationSummary`を`judgement::combine`へ
 渡す（`run_main`。既知構成でない/`config1.db`不読のときは`None`のまま）。
-**未実装（残作業）**: 決定1b項目9の不一致分布タグ、`REMEASURE_MAX_SETUP_PRESSES`(60)/
-`REMEASURE_RESET_EVERY`(12)の実機での到達所要押下数の実測、実機(RealImeDriver)での動作確認。
+**未実装（残作業）**: 決定1b項目9の不一致分布タグ、実機(RealImeDriver)での動作確認。
+`REMEASURE_MAX_SETUP_PRESSES`は実測済み（60→250、windows-latest実GJI+ATOK・1600件: 中央値11・
+p95≈100・p99≈150・最大230、60超は10.3%）。`REMEASURE_RESET_EVERY`も実測済み（12→24、3/6/12/24/48
+を比較、到達押下数は差が無く所要時間のみ変わる）。
 
 **1e後半（不具合報告への添付）【実装済み（`BugReportKeymapLearnSummary`、`attach_ime_keymap`相乗り・`SCHEMA_VERSION`据え置き）。ただし決定1b項目7〜9の再測定結果とADR196-T1の外部書き込み観測は現状どこにも永続化されていないため未添付——永続化され次第同型へ追加する】**: 別途、**不具合報告への添付は本タスクに一本化する**
 （[ADR195-T4](adr195-t4-runtime-loading.md)
