@@ -151,6 +151,31 @@ pub fn probe_gji_env_version(process_start: SystemTime) -> EnvVersionProbe {
     classify_converter_version(file_version(&path), modified, process_start)
 }
 
+/// 使用中のIMEがGJIで、そのキーマップが内蔵表を持たない構成（ADR196-T2 1cの既知構成判定が
+/// `NotKnown`）か(ブロックしうる: COM・`config1.db`読み込み)。呼び出し元スレッドでSTAを
+/// 初期化する。GJI以外のIME・同定失敗・`config1.db`読めずは`false`。
+#[must_use]
+pub fn probe_custom_keymap_without_prediction() -> bool {
+    use awase_windows::gji_charset_autodetect::{
+        bundled_preset_for_adjudication, BundledPresetLookup,
+    };
+    use awase_windows::state::ime_kind::TipIdentity;
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+
+    // 既に別モードで初期化済み(RPC_E_CHANGED_MODE)でも識別自体は試せるので、
+    // 初期化に成功したときだけ対で終了する。
+    let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() };
+    let is_gji = awase_windows::tsf::query_tip_identity_on_current_sta() == Some(TipIdentity::Gji);
+    if initialized {
+        unsafe { CoUninitialize() };
+    }
+    is_gji
+        && matches!(
+            bundled_preset_for_adjudication(TipIdentity::Gji),
+            BundledPresetLookup::NotKnown
+        )
+}
+
 /// [`probe_gji_env_version`] を別スレッドで走らせ、`timeout` 内に返らなければ
 /// [`EnvVersionProbe::Unknown`](fail open)を返す。応答しないスレッドは切り離すだけで
 /// 回収しないため、短周期で繰り返し呼ぶ用途には向かない(現状は学習プロセスが1回だけ呼ぶ)。
