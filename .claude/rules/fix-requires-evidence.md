@@ -33,7 +33,7 @@
 | --- | --- |
 | warmup / cold-start | `output/tsf_warmup_coord.rs`, `output/probe_io.rs`, `tsf/`, `output/ime_apply_planner.rs`, `tuning.rs` |
 | focus 遷移 | `focus/`, `runtime/focus_tracking.rs` |
-| IME belief | `state/ime_model.rs`, `state/observation_store.rs`, `runtime/ime_coordinator.rs`, `focus/uia.rs`, `focus/msaa.rs` |
+| IME belief | `state/ime_model.rs`, `state/observation_store.rs`, `state/platform_state.rs`（`ImeStateHub`・`check_drift_correction`）, `state/mode_key_pass.rs`（ADR-187、`desired_open`の揃え）, `state/key_effect_predictor.rs`/`state/key_effect_runtime.rs`/`state/key_effect_table.rs`（`KeyEffectPredicted`がbeliefを直接動かす）, `runtime/ime_coordinator.rs`, `focus/uia.rs`, `focus/msaa.rs` |
 | conv mode | `state/conv_mode.rs`, `focus/classify.rs`, `output/conv_actuation.rs`, `runtime/conv_actuation.rs`, `ime.rs` |
 | キー選択（IME ON/OFF に送る VK） | `ime_controller.rs`, `output/vk_send.rs`, `src/engine/nicola_fsm.rs::resolve_pending_thumb_as_single`（無変換/変換単独タップの`dedicated_fn_key`/bare `keys.ime_*`由来の`forced_open_action`/`*_solo_tap_ime_action`/`ModeKeyConfig`優先順位〈旧`delegate_to_open_axis`はADR-191で撤去〉、BUG-119でルート`awase`クレート側にも同ファミリーの再発が判明。`crates/awase-windows/`配下だけを見ていた本表・`.githooks/pre-push`双方の見落としを2026-09-06に追加して埋めた） |
 | 物理キー押下ラッチ（親指キー・IMEモードキーのDown/Up非対称、BUG-131/BUG-132） | `hook.rs`（`HookState::*_thumb_down_scan`・`hook_callback`の親指ラッチ武装/解除）, `runtime/key_pipeline.rs::should_clear_kana_mode_restore_latch`, `vk::should_release_thumb_latch`/`vk::thumb_latch_identity`（純粋関数）。`VK_DBE_*`はDown/Upでvkが変わるため解除条件をvkで書かず、scan_code（+拡張ビット）一致にすること。**左右2スロットでは Left Alt/Right Alt のように raw scan が同一で拡張ビットだけが違うキーがあり、scan だけの一致では交差解除する**（BUG-132コードレビューで発見）。hook.rsが本表・`.githooks/pre-push`のどちらにも無かった穴を2026-09-23に埋めた。 |
@@ -91,8 +91,8 @@ warmup・focus・belief・conv・キー選択の 5 領域は、実機の組み�
 
 ## 自動チェック（pre-push）
 
-`.git/hooks/pre-push`（および追跡下のミラー`.githooks/pre-push`、両者は2026-09-06時点で
-本文が一部乖離しており未解消——実行されるのは`.git/hooks/pre-push`側）に軽量チェックを
+追跡下の`.githooks/pre-push`（`core.hooksPath`が`.githooks`を指すので**実行されるのはこちら**。
+旧`.git/hooks/pre-push`〈未追跡〉は実行されない。2026-09-24訂正）に軽量チェックを
 入れてある。上表の対象ファイルが変更されている
 push で、`crates/awase-windows/tests/` にも `docs/known-bugs/` にも差分が無い場合、
 **警告を出す（ブロックはしない）**。golden の期待値更新や `docs/known-bugs/` への
