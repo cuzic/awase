@@ -13,6 +13,7 @@ awase-build-support = { path = "../awase-build-support" }
 [dependencies]
 awase = { path = "../.." }
 awase-windows = { path = "../awase-windows" }
+awase-keymap-learn = { path = "../awase-keymap-learn" }
 eframe = "0.31"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
@@ -22,6 +23,7 @@ serde_json = "1"
 toml = "0.8"
 
 [target.'cfg(windows)'.dependencies]
+awase-keymap-learn-win = { path = "../awase-keymap-learn-win" }
 # "wgpu": Glow(OpenGL)でのウィンドウ生成が失敗した環境向けのフォールバック
 # レンダラー（startup_failure::run_with_fallback 参照）。非 Windows では
 # フォールバック自体を実装していない（run_with_fallback_impl の
@@ -62,6 +64,7 @@ features = [
     "Win32_System_Console",
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",
+    "Win32_System_Time",
     "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",

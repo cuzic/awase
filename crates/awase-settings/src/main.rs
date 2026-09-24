@@ -16,6 +16,7 @@ mod calibration_panel;
 #[cfg(target_os = "windows")]
 mod calibration_result_window;
 mod keymap_learn_launcher;
+mod keymap_learn_status;
 mod scancode_map_admin;
 mod startup_failure;
 mod update_check;
@@ -566,6 +567,47 @@ struct SettingsApp {
     /// (code-review指摘: 従来は標準エラーを`Stdio::null()`で捨てていたため、
     /// 失敗理由がユーザーにもバグ報告にも一切残らなかった)。
     keymap_learn_stderr_handle: Option<std::thread::JoinHandle<Option<String>>>,
+    /// 実行中(または直近)の子プロセスの起動モード(結果行の解釈に使う)。
+    keymap_learn_mode: keymap_learn_launcher::LearnMode,
+    /// ADR196-T4: 「使用中の予測表」状態表示用の現在の表状態(パネル表示時に再計算)。
+    keymap_table_state: Option<keymap_learn_status::TableState>,
+    /// 現在のIME本体版(フィンガープリント)。UIスレッドを塞がないよう別スレッドで取得する。
+    keymap_env_probe: keymap_learn_status::EnvProbe,
+}
+
+/// `keymap-learn-table.json`(`awase.exe`と同じ探索規則でconfig.tomlの隣)を読み、
+/// 状態表示用の[`keymap_learn_status::TableState`]を作る。ファイルが無い・壊れている
+/// 場合は表なし(内蔵表)として扱う(読み手側のフォールバックと同じ)。
+fn load_keymap_table_state(
+    current_env: awase_keymap_learn::revalidation::EnvVersionProbe,
+) -> keymap_learn_status::TableState {
+    let config_path = awase::paths::resolve_relative_to_exe("config.toml");
+    let path = config_path
+        .parent()
+        .map(|dir| dir.join("keymap-learn-table.json"));
+    let (table, file_date) = path
+        .and_then(|path| {
+            let json = std::fs::read_to_string(&path).ok()?;
+            let table = awase_keymap_learn::persist::from_json(&json).ok()?;
+            let date = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| {
+                    keymap_learn_status::format_ymd(
+                        d.as_secs(),
+                        keymap_learn_status::local_utc_offset_secs(),
+                    )
+                });
+            Some((table, date))
+        })
+        .unzip();
+    keymap_learn_status::TableState::from_inputs(&keymap_learn_status::StatusInputs {
+        table: table.as_ref(),
+        current_env,
+        file_date: file_date.flatten(),
+        custom_keymap_without_prediction: false,
+    })
 }
 
 #[derive(Clone)]
@@ -745,6 +787,9 @@ impl SettingsApp {
             keymap_learn_status: None,
             keymap_learn_child: None,
             keymap_learn_stderr_handle: None,
+            keymap_learn_mode: keymap_learn_launcher::LearnMode::Learn,
+            keymap_table_state: None,
+            keymap_env_probe: keymap_learn_status::EnvProbe::new(std::time::SystemTime::now()),
         };
         app.recompute_diagnostics();
         app
@@ -1029,6 +1074,11 @@ impl SettingsApp {
     /// 起動する。対象プロセスの一時停止・keepalive等は不要
     /// (`is_keymap_learn_process_name`によるawase.exe側の恒久バイパス、ADR195-T1)。
     fn start_keymap_learning(&mut self) {
+        self.start_keymap_process(keymap_learn_launcher::LearnMode::Learn);
+    }
+
+    /// ADR196-T4: `mode`で`awase-keymap-learn-win`を起動する(学習・採用・軽量再検証で共通)。
+    fn start_keymap_process(&mut self, mode: keymap_learn_launcher::LearnMode) {
         // code-review指摘: 呼び出し元(「学習を開始」ボタン)はkeymap_learn_rx.is_some()の
         // 間ボタンを無効化しているが、それだけに頼ると、万一二重に呼ばれた場合に前の
         // Arc<Mutex<Child>>と読み取りスレッドを黙って上書きし、古い子プロセスをkillする
@@ -1039,7 +1089,7 @@ impl SettingsApp {
         }
         let exe_path = awase::paths::resolve_relative_to_exe("awase-keymap-learn-win.exe");
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut child = match keymap_learn_launcher::spawn_learning_process(&exe_path) {
+        let mut child = match keymap_learn_launcher::spawn_learning_process(&exe_path, mode) {
             Ok(child) => child,
             Err(e) => {
                 self.keymap_learn_status = Some(format!(
@@ -1104,8 +1154,57 @@ impl SettingsApp {
             }
         });
         self.keymap_learn_rx = Some(rx);
+        self.keymap_learn_mode = mode;
         self.keymap_learn_progress = None;
         self.keymap_learn_status = Some("起動中…".to_string());
+    }
+
+    /// 表ファイルが変わりうる終了(結果行・異常終了・エラー)後の共通処理。状態表示を
+    /// 破棄し、IME本体版も取り直させる(学習中にIMEが更新された場合に備える)。
+    fn invalidate_keymap_table_state(&mut self) {
+        self.keymap_table_state = None;
+        self.keymap_env_probe.request_reprobe();
+    }
+
+    /// 子プロセスが結果行を返して終わったときの後始末。
+    fn finish_keymap_process(&mut self) {
+        self.keymap_learn_rx = None;
+        self.keymap_learn_child = None;
+        self.invalidate_keymap_table_state();
+    }
+
+    /// 較正パネル表示時に呼ぶ。現在のIME本体版の取得(ブロックしうるWin32呼び出し)を
+    /// 別スレッドで走らせ、結果が届くまでは(古い版で誤った状態を出さないよう)状態表示を
+    /// 更新しない。
+    fn refresh_keymap_table_state(&mut self, ctx: &egui::Context) {
+        if self.keymap_env_probe.needs_start() {
+            #[cfg(windows)]
+            {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let ctx = ctx.clone();
+                let start = self.keymap_env_probe.process_start;
+                std::thread::spawn(move || {
+                    let probe = awase_keymap_learn_win::probe_gji_env_version(start);
+                    let _ = tx.send(probe);
+                    ctx.request_repaint();
+                });
+                self.keymap_env_probe.attach(rx);
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = ctx;
+                let (tx, rx) = std::sync::mpsc::channel();
+                let _ = tx.send(awase_keymap_learn::revalidation::EnvVersionProbe::Unknown);
+                self.keymap_env_probe.attach(rx);
+            }
+        }
+        if self.keymap_env_probe.poll() {
+            self.keymap_table_state = None;
+        }
+        if self.keymap_table_state.is_none() && !self.keymap_env_probe.is_pending() {
+            self.keymap_table_state =
+                Some(load_keymap_table_state(self.keymap_env_probe.current()));
+        }
     }
 
     /// 実行中の学習プロセスを強制終了する（UIの「キャンセル」ボタン、および
@@ -1115,6 +1214,7 @@ impl SettingsApp {
     fn cancel_keymap_learning(&mut self) {
         self.kill_keymap_learn_child();
         self.keymap_learn_rx = None;
+        self.invalidate_keymap_table_state();
         self.keymap_learn_status = Some("キャンセルしました。".to_string());
     }
 
@@ -1149,6 +1249,7 @@ impl SettingsApp {
         };
         loop {
             match rx.try_recv() {
+                Ok(Ok(line)) if !self.keymap_learn_mode.accepts(&line) => {}
                 Ok(Ok(keymap_learn_launcher::LearnLine::Progress(p))) => {
                     self.keymap_learn_progress = Some(p);
                     self.keymap_learn_status = Some("測定中…".to_string());
@@ -1178,14 +1279,38 @@ impl SettingsApp {
                             }
                         }
                     });
-                    self.keymap_learn_rx = None;
-                    self.keymap_learn_child = None;
+                    self.finish_keymap_process();
+                    break;
+                }
+                Ok(Ok(keymap_learn_launcher::LearnLine::Adopt(ok))) => {
+                    self.keymap_learn_status = Some(if ok {
+                        "学習結果を使う設定にしました。".to_string()
+                    } else {
+                        "学習結果の採用に失敗しました。".to_string()
+                    });
+                    self.finish_keymap_process();
+                    break;
+                }
+                Ok(Ok(keymap_learn_launcher::LearnLine::Revalidate(outcome))) => {
+                    use keymap_learn_launcher::RevalidateOutcome as R;
+                    self.keymap_learn_status = Some(
+                        match outcome {
+                            R::Passed => "再検証に合格しました。学習表をそのまま使います。",
+                            R::Invalidated => {
+                                "再検証で精度が足りず、学習表を無効にしました。学習をやり直してください。"
+                            }
+                            R::Failure => "再検証を完了できませんでした。",
+                        }
+                        .to_string(),
+                    );
+                    self.finish_keymap_process();
                     break;
                 }
                 Ok(Err(e)) => {
                     self.keymap_learn_status = Some(e);
                     self.keymap_learn_rx = None;
                     self.kill_keymap_learn_child();
+                    self.invalidate_keymap_table_state();
                     break;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -1201,6 +1326,7 @@ impl SettingsApp {
                         Some("学習プロセスが結果を送らずに終了しました。".to_string());
                     self.keymap_learn_rx = None;
                     self.kill_keymap_learn_child();
+                    self.invalidate_keymap_table_state();
                     break;
                 }
             }
@@ -3282,6 +3408,7 @@ impl SettingsApp {
     /// `awase-keymap-learn-win`(独立学習プロセス、ADR195-T1)を子プロセスとして
     /// 起動し、全キー×全状態を自動巡回測定するウィザード導線。
     fn keymap_learn_wizard_ui(&mut self, ui: &mut egui::Ui) {
+        self.refresh_keymap_table_state(&ui.ctx().clone());
         ui.collapsing(
             "学習ウィザード（全キー自動測定、実験的）",
             |ui| {
@@ -3290,9 +3417,34 @@ impl SettingsApp {
                  測定中は学習ウィンドウを前面に保ち、キーボードに触れないでください\n\
                  （他の窓へ切り替えたり物理キーを押すと、測定は失敗として中止されます）。",
                 );
+                ui.add_space(4.0);
+                ui.label(keymap_learn_status::LEARNING_RECOMMENDATION);
                 ui.add_space(8.0);
 
                 let running = self.keymap_learn_rx.is_some();
+                let table_state = self.keymap_table_state.clone();
+                if let Some(state) = &table_state {
+                    ui.label(state.status_line(None));
+                    ui.horizontal(|ui| {
+                        if state.can_adopt()
+                            && ui
+                                .add_enabled(!running, egui::Button::new("学習結果を使う"))
+                                .clicked()
+                        {
+                            self.start_keymap_process(
+                                keymap_learn_launcher::LearnMode::AdoptPendingJudgement,
+                            );
+                        }
+                        if state.can_revalidate()
+                            && ui
+                                .add_enabled(!running, egui::Button::new("軽量再検証を実行"))
+                                .clicked()
+                        {
+                            self.start_keymap_process(keymap_learn_launcher::LearnMode::Revalidate);
+                        }
+                    });
+                    ui.add_space(4.0);
+                }
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(!running, egui::Button::new("学習を開始"))
@@ -6341,6 +6493,11 @@ mod layout_tab_repro {
             keymap_learn_status: None,
             keymap_learn_child: None,
             keymap_learn_stderr_handle: None,
+            keymap_learn_mode: crate::keymap_learn_launcher::LearnMode::Learn,
+            keymap_table_state: None,
+            keymap_env_probe: crate::keymap_learn_status::EnvProbe::new(
+                std::time::SystemTime::now(),
+            ),
         }
     }
 

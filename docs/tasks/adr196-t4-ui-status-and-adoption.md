@@ -1,6 +1,6 @@
 # ADR-196 T4: 較正パネルの状態表示・採用導線を実装する
 
-状態: 未着手（2026-09-23起票）。**【S5対応】前提タスクを列挙**: [ADR195-T6](adr195-t6-adr176-wizard-integration.md)
+状態: **主要部分実装済み（2026-09-23、`feat/adr196-t4-ui-status`）**。下記「進捗」参照。起票時: 2026-09-23。**【S5対応】前提タスクを列挙**: [ADR195-T6](adr195-t6-adr176-wizard-integration.md)
 （子プロセス起動・標準出力パース機構、本タスクが利用する）、[ADR196-T2](adr196-t2-mismatch-adjudication.md)
 （採否判定・要確認状態・判定書き換えモード）、[ADR196-T3](adr196-t3-bundled-table-versioning.md)
 （「測定環境」表示に使う内蔵表の版情報）、[ADR196-T5](adr196-t5-revalidation-not-invalidation.md)
@@ -68,3 +68,22 @@
   実装対象5のみ本タスクが置き換える）
 - [ADR196-T2](adr196-t2-mismatch-adjudication.md)
 - [ADR196-T5](adr196-t5-revalidation-not-invalidation.md)
+
+## 進捗（2026-09-23）
+
+実装済み: `crates/awase-settings/src/keymap_learn_status.rs`（状態表示の純粋関数、7状態
+のテスト、症状ベース文言）、`keymap_learn_launcher.rs`（`LearnMode`で`--adopt-pending-judgement`/
+`--revalidate`起動、`adopt`/`revalidate`行のパース）、`main.rs`（状態行・「学習結果を使う」
+「軽量再検証を実行」ボタン、現在のGJI版取得を別スレッドで実行〈対象0〉）。
+旧`should_recommend_learning`（構成一致時に案内しない方針）は決定2に従い削除。
+
+**残作業**:
+- 内蔵表の測定環境（T3の版情報）は`status_line(bundled_env)`の引数に渡せるが、呼び出しは
+  `None`固定（内蔵表側の版情報を実行時に読む経路が未整備）。
+- 「学習したが不採用: 外部からの書き込みを検出」は表ファイルに理由が残らないため未対応
+  （`RejectedReason`に相当が無い）。
+- 「予測表なし（カスタムキーマップ）」は判定入力`custom_keymap_without_prediction`を
+  常に`false`で渡している（ADR195-T0の構成検出との配線が未実装）。
+- 現在の版取得はGJIのみ（Microsoft IME本体はT5の共有関数待ち）。
+- 結合テスト（モックプロセスでの採用/再検証起動）は起動フラグ・パースのユニットテストまで。
+- Windows実機でのUI確認は未実施。
