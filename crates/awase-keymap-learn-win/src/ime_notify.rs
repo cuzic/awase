@@ -28,25 +28,8 @@ thread_local! {
     static QUEUED: RefCell<Vec<(usize, Instant)>> = const { RefCell::new(Vec::new()) };
 }
 
-thread_local! {
-    /// 診断用: 到着した`WM_IME_NOTIFY`の全wParam（開閉・変換モード以外も含む）の履歴。
-    static ARRIVAL_LOG: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
-}
-
-/// 診断用（B-1の実機検証）: これまでに届いた全`WM_IME_NOTIFY`のwParam履歴。
-#[must_use]
-pub fn arrival_log() -> Vec<usize> {
-    ARRIVAL_LOG.with(|l| l.borrow().clone())
-}
-
 /// ウィンドウプロシージャから呼ぶ: `WM_IME_NOTIFY`を到着時刻付きで積む。
 pub fn queue_notify(wparam: usize) {
-    ARRIVAL_LOG.with(|l| {
-        let mut l = l.borrow_mut();
-        if l.len() < 256 {
-            l.push(wparam);
-        }
-    });
     QUEUED.with(|q| {
         let mut q = q.borrow_mut();
         // 取り出されないまま溜まり続けないよう上限を置く（通常は`pump_for`が即座に取り出す）。
