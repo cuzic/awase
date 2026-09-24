@@ -1025,7 +1025,12 @@ mod tests {
         let path = std::path::Path::new(&path);
         let persisted = read_persisted_table(path).expect("読める");
         let learned = convert_cells(&persisted.cells);
-        let bundled = bundled_table(KeymapPreset::Atok);
+        let preset = match std::env::var("KL_PRESET").as_deref() {
+            Ok("msime-native") => KeymapPreset::MsImeNative,
+            Ok("msime") => KeymapPreset::MsIme,
+            _ => KeymapPreset::Atok,
+        };
+        let bundled = bundled_table(preset);
         let (mut compared, mut strict_mismatch) = (0usize, 0usize);
         for b in bundled {
             if let Some(l) = learned
@@ -1041,17 +1046,34 @@ mod tests {
                 }
             }
         }
+        let pre_merge: Vec<Cell> = persisted.cells.iter().filter_map(convert_cell).collect();
+        let closed_pre: Vec<&Cell> = pre_merge.iter().filter(|c| !c.open()).collect();
+        let mut closed_modes: Vec<String> = closed_pre.iter().map(|c| format!("{:?}", c.conv())).collect();
+        closed_modes.sort_unstable();
+        closed_modes.dedup();
+        println!(
+            "CI-RESULT preset={preset:?} judgement={:?} raw_cells={} convertible_pre_merge={} closed_pre_merge={} open_pre_merge={} closed_distinct_conv_modes={} converted_after_merge={} coverage={:.3} min_coverage={MIN_COVERAGE_RATIO} bundled_cells={}",
+            persisted.judgement,
+            persisted.cells.len(),
+            pre_merge.len(),
+            closed_pre.len(),
+            pre_merge.len() - closed_pre.len(),
+            closed_modes.len(),
+            learned.len(),
+            coverage_ratio(&persisted.cells, learned.len()),
+            bundled.len(),
+        );
         println!(
             "CI-RESULT compared={compared} old_strict_mismatch={strict_mismatch} old_ratio={:.3} new_ratio={:.3} limit={MAX_MISMATCH_RATIO}",
             strict_mismatch as f64 / compared.max(1) as f64,
             mismatch_ratio(&learned, bundled),
         );
-        let result = load_runtime_table(path, KeymapPreset::Atok, true);
+        let result = load_runtime_table(path, preset, true);
         println!(
             "CI-RESULT load_runtime_table={:?}",
             result.as_ref().map(Vec::len)
         );
-        assert!(result.is_ok(), "{result:?}");
+        println!("CI-RESULT adopted={}", result.is_ok());
     }
 
     #[test]
