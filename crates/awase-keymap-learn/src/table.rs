@@ -11,6 +11,18 @@ pub struct Obs {
     pub outcome: Outcome,
 }
 
+/// 多数派の結果。同数なら先に現れたものを採用する(`HashMap`の反復順に依存させず決定的にする)。
+pub(crate) fn majority_of(outcomes: impl IntoIterator<Item = Outcome> + Clone) -> Option<Outcome> {
+    let mut best: Option<(Outcome, usize)> = None;
+    for o in outcomes.clone() {
+        let n = outcomes.clone().into_iter().filter(|x| *x == o).count();
+        if best.is_none_or(|(_, bn)| n > bn) {
+            best = Some((o, n));
+        }
+    }
+    best.map(|(o, _)| o)
+}
+
 /// 観測から見たセルの分類。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
@@ -93,14 +105,7 @@ impl Table {
     /// 多数派の結果(同数なら先に現れたもの)。
     pub fn majority(&self, status: Status, key: usize) -> Option<Outcome> {
         let v = self.cells.get(&(status, key))?;
-        let mut best: Option<(Outcome, usize)> = None;
-        for o in v {
-            let n = v.iter().filter(|x| x.outcome == o.outcome).count();
-            if best.is_none_or(|(_, bn)| n > bn) {
-                best = Some((o.outcome, n));
-            }
-        }
-        best.map(|(o, _)| o)
+        majority_of(v.iter().map(|o| o.outcome))
     }
 
     pub fn class(&self, status: Status, key: usize) -> Class {
