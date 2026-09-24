@@ -4,7 +4,7 @@ engine_toggle_hotkey = "Ctrl+Shift+F12"
 layouts_dir = "layout"
 default_layout = "nicola_keytop.yab"
 
-# confirm_mode = "wait"  # wait / speculative / two_phase / adaptive_timing / ngram_predictive
+# confirm_mode = "wait"  # wait / two_phase / adaptive_timing / ngram_predictive
 # speculative_delay_ms = 30
 
 # n-gram コーパスファイル（実行ファイルからの相対パス）。
@@ -24,6 +24,8 @@ ngram_file = "data/ngram_hiragana.csv.gz"
 
 # IME 検出設定（シャドウ IME 状態追跡用キー定義）
 # [keys.ime_detect]
+# 注意: toggle は既定の keys.ime_toggle（VK_KANJI）と併用すると二重処理で漢字キーが壊れるため、
+# 通常は設定しないこと。
 # toggle = ["VK_KANJI"]
 # on = ["VK_DBE_DBCSCHAR", "VK_IME_ON"]
 # off = ["VK_DBE_SBCSCHAR", "VK_IME_OFF"]

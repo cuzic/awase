@@ -17,7 +17,7 @@ awase は低レベルキーボードフックで物理キー入力を横取り�
 ## 特徴
 
 - **NICOLA 準拠の同時打鍵判定** — d1/d2 比較による 3 キー仲裁
-- **5 つの確定モード** — wait / speculative / two\_phase / adaptive\_timing / ngram\_predictive
+- **4 つの確定モード** — wait / two\_phase / adaptive\_timing / ngram\_predictive
 - **n-gram 適応閾値** — Wikipedia コーパス由来の 2/3-gram で判定ウィンドウを動的調整し精度向上
 - **やまぶき互換 `.yab` 配列ファイル** — 既存の配列データをそのまま利用可能
 - **幅広いアプリ対応** — Win32 / UWP / TSF ネイティブ（Chrome・VS Code・WezTerm 等）を自動識別
@@ -116,7 +116,6 @@ default_layout  = "nicola_keytop.yab"
 | `left_thumb_key` | `無変換` | 左親指シフトキー |
 | `right_thumb_key` | `変換` | 右親指シフトキー |
 | `confirm_mode` | `wait` | 確定モード（後述） |
-| `output_mode` | `unicode` | 出力方式（通常は変更不要） |
 | `engine_toggle_hotkey` | なし | 親指シフト入力／ローマ字入力トグルホットキー |
 | `keyboard_model` | `jis` | 物理キーボード配列。US 配列なら `"us"`（`default_layout` も `nicola_us.yab` に変更） |
 
@@ -125,8 +124,7 @@ default_layout  = "nicola_keytop.yab"
 | モード | 特徴 |
 |--------|------|
 | `wait` | タイムアウトまで待機。最も正確、わずかに遅延あり |
-| `speculative` | 即座に出力し誤りなら取消・再送。高速だがちらつきあり |
-| `two_phase` | 短い待機後に投機出力。wait と speculative の中間 |
+| `two_phase` | 短い待機後に投機出力。wait と即時出力の中間 |
 | `adaptive_timing` | 打鍵速度に応じて自動調整 |
 | `ngram_predictive` | Wikipedia 由来の n-gram 統計で閾値を動的調整（n-gram ファイル推奨） |
 

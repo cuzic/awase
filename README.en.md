@@ -17,7 +17,7 @@ awase intercepts physical key input with a low-level keyboard hook, detects simu
 ## Features
 
 - **NICOLA-compliant chord detection** — 3-key arbitration based on d1/d2 comparison
-- **Five confirm modes** — wait / speculative / two\_phase / adaptive\_timing / ngram\_predictive
+- **Four confirm modes** — wait / two\_phase / adaptive\_timing / ngram\_predictive
 - **n-gram adaptive thresholds** — dynamically tunes the detection window using 2/3-grams derived from a Wikipedia corpus, improving accuracy
 - **Yamabuki-compatible `.yab` layout files** — use your existing layout data as-is
 - **Broad application support** — automatically identifies Win32 / UWP / TSF-native apps (Chrome, VS Code, WezTerm, etc.)
@@ -118,7 +118,6 @@ Note: `left_thumb_key` / `right_thumb_key` must be set to the literal Japanese k
 | `left_thumb_key` | `無変換` | Left thumb-shift key |
 | `right_thumb_key` | `変換` | Right thumb-shift key |
 | `confirm_mode` | `wait` | Confirm mode (see below) |
-| `output_mode` | `unicode` | Output method (normally no need to change) |
 | `engine_toggle_hotkey` | none | Hotkey to toggle thumb-shift/romaji input |
 | `keyboard_model` | `jis` | Physical keyboard layout. For a US layout use `"us"` (also change `default_layout` to `nicola_us.yab`) |
 
@@ -127,8 +126,7 @@ Note: `left_thumb_key` / `right_thumb_key` must be set to the literal Japanese k
 | Mode | Characteristics |
 |--------|------|
 | `wait` | Waits until the timeout. Most accurate, with slight latency |
-| `speculative` | Outputs immediately and cancels/resends if wrong. Fast, but with flicker |
-| `two_phase` | Speculative output after a brief wait. A middle ground between wait and speculative |
+| `two_phase` | Speculative output after a brief wait. A middle ground between wait and immediate output |
 | `adaptive_timing` | Auto-adjusts based on typing speed |
 | `ngram_predictive` | Dynamically tunes the threshold using Wikipedia-derived n-gram statistics (n-gram file recommended) |
 

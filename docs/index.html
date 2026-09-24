@@ -465,7 +465,7 @@ footer p{margin-bottom:0.3rem}
         <ul>
           <li>Rust 製で処理速度 1–5ms。入力遅延を感じさせない</li>
           <li>n-gram 統計モデルで「文脈に合う方」を予測し、同時打鍵を賢く判定</li>
-          <li>5 種類の確定モードからタイピングスタイルに合わせて選択</li>
+          <li>4 種類の確定モードからタイピングスタイルに合わせて選択</li>
           <li>AutoHotKey など他のフックソフトウェアとも共存可能</li>
         </ul>
       </div>
@@ -579,11 +579,11 @@ footer p{margin-bottom:0.3rem}
         awase は日本語 n-gram コーパスから学習した統計モデルを内蔵し、前後の文脈から「どちらが自然な日本語か」を判定します。速く打っても誤変換が少なく、長文入力でも快適です。
       </p>
 
-      <h3>5 種類の確定モード</h3>
+      <h3>4 種類の確定モード</h3>
       <div class="modes-grid">
         <div class="mode-row">
           <span class="mode-name">ngram_predictive</span>
-          <span class="mode-desc">n-gram 統計モデルで文脈予測。速度と精度のバランスが最も良い（推奨）</span>
+          <span class="mode-desc">n-gram 統計モデルで文脈予測。速度と精度のバランスを取る</span>
         </div>
         <div class="mode-row">
           <span class="mode-name">adaptive_timing</span>
@@ -594,12 +594,8 @@ footer p{margin-bottom:0.3rem}
           <span class="mode-desc">投機出力で速度を確保しつつ、親指キーが来れば差し替え</span>
         </div>
         <div class="mode-row">
-          <span class="mode-name">speculative</span>
-          <span class="mode-desc">単独打鍵を即時出力。最速だが高速タイピング時は誤変換が増える場合あり</span>
-        </div>
-        <div class="mode-row">
           <span class="mode-name">wait</span>
-          <span class="mode-desc">タイマーまで待機してから確定。最も正確で、ゆったり打つ方に向く</span>
+          <span class="mode-desc">タイマーまで待機してから確定。最も正確で、ゆったり打つ方に向く（既定・推奨）</span>
         </div>
       </div>
     </div>
@@ -667,15 +663,7 @@ footer p{margin-bottom:0.3rem}
       <table class="config-table">
         <tr>
           <th><code>confirm_mode</code></th>
-          <td>確定モードの選択。<code>ngram_predictive</code>（推奨）、<code>wait</code>（正確重視）、<code>speculative</code>（速度重視）など</td>
-        </tr>
-        <tr>
-          <th><code>output_mode</code></th>
-          <td>出力方式。<code>unicode</code> がデフォルト</td>
-        </tr>
-        <tr>
-          <th><code>hook_mode</code></th>
-          <td>フックの動作方式。<code>relay</code> がデフォルトで、安定性を重視した設計</td>
+          <td>確定モードの選択。<code>wait</code>（既定・推奨、正確重視）、<code>ngram_predictive</code>、<code>adaptive_timing</code>、<code>two_phase</code></td>
         </tr>
       </table>
     </div>
@@ -725,7 +713,7 @@ footer p{margin-bottom:0.3rem}
       </div>
       <div class="faq-item">
         <p class="faq-q">速く打つとシフトが隣のキーに響いて濁点になることがありました</p>
-        <p class="faq-a">やまぶきR・紅皿など従来ツールで広く報告されていた問題です。親指シフトキーを離すタイミングが次のキー入力に重なると、意図しない同時打鍵と判定されて濁音や別の文字が出てしまいます。「ゆっくり打てば誤動作しない」という状況が生まれていました。awase は n-gram 統計モデルを使って「日本語として自然かどうか」を判断するため、タイミングが多少ずれても正しく判定できます。確定モードも 5 種類から選べるため、自分のタイピング速度に合わせた調整も可能です。</p>
+        <p class="faq-a">やまぶきR・紅皿など従来ツールで広く報告されていた問題です。親指シフトキーを離すタイミングが次のキー入力に重なると、意図しない同時打鍵と判定されて濁音や別の文字が出てしまいます。「ゆっくり打てば誤動作しない」という状況が生まれていました。awase は n-gram 統計モデルを使って「日本語として自然かどうか」を判断するため、タイミングが多少ずれても正しく判定できます。確定モードも 4 種類から選べるため、自分のタイピング速度に合わせた調整も可能です。</p>
       </div>
       <div class="faq-item">
         <p class="faq-q">高速タイピングで文字の順番がおかしくなることがありました</p>

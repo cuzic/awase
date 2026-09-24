@@ -508,7 +508,7 @@ footer p{margin-bottom:0.3rem}
       <ul>
         <li><strong>Select layout</strong> — Lists the .yab files in <code>layouts_dir</code>. Selecting one switches the layout immediately</li>
         <li><strong>Settings...</strong> — Opens the Settings window</li>
-        <li><strong>Clear learning cache</strong> — Deletes the IME's learning-data cache</li>
+        <li><strong>Clear learning cache</strong> — <strong>Currently does nothing (BUG-108)</strong>. Selecting it deletes nothing</li>
         <li><strong>Restart process</strong> — Fully restarts the process when input misbehaves (see <a href="#panic-reset">"Emergency operations & reset"</a> for details)</li>
         <li><strong>Auto-start</strong> — Enables/disables auto-start at logon (checked = enabled)</li>
         <li><strong>Restart as administrator</strong> — Restarts awase elevated via UAC. This lets it work even with apps that require administrator privileges (some games, for example)</li>
@@ -540,24 +540,21 @@ footer p{margin-bottom:0.3rem}
         <tr><th>Item</th><th>Description</th></tr>
         <tr><td>Keyboard model</td><td>Choose JIS (Japanese layout) or US (English layout)</td></tr>
         <tr><td>Simultaneous-keystroke threshold</td><td>The time window (ms) within which two keystrokes count as simultaneous. The NICOLA standard default is 100 ms</td></tr>
-        <tr><td>Confirm mode</td><td>The timing at which characters are committed. See the table below</td></tr>
-        <tr><td>Speculative-output wait</td><td>The wait (ms) before speculative output when using two_phase / adaptive_timing</td></tr>
-        <tr><td>Output mode</td><td>Unicode (recommended), PerKey, or Batched. Normally leave it as Unicode</td></tr>
-        <tr><td>Hook mode</td><td>Relay (recommended, stable) or Filter (low latency)</td></tr>
         <tr><td>Auto-start</td><td>Whether to start automatically at Windows logon</td></tr>
         <tr><td>Layout</td><td>Selects the .yab layout file to use. "Rescan" refreshes the list</td></tr>
       </table>
+      <p class="note">The confirm mode (<code>confirm_mode</code>) and the speculative-output wait (<code>speculative_delay_ms</code>) have been removed from the settings screen. Most users kept the default <code>wait</code>, and offering other modes there added more complexity than benefit. The n-gram tie-break (3-key branching and insufficient-overlap decisions) is always active regardless of <code>confirm_mode</code>. To change it, edit <code>config.toml</code> directly as described under "Confirm-mode options" below. The margins for 3-key branching and insufficient-overlap decisions (<code>timing_margin_percent</code> / <code>min_overlap_margin_percent</code>) can be adjusted with the sliders on the "Advanced settings" tab.</p>
     </div>
 
     <div class="card">
       <h3>Confirm-mode options</h3>
       <table class="tab-table">
         <tr><th>Mode</th><th>Behavior</th><th>Suited for</th></tr>
-        <tr><td>wait</td><td>Holds until the timeout before committing. Most accurate</td><td>People who want to type slowly and accurately</td></tr>
-        <tr><td>speculative</td><td>Outputs immediately and replaces on a simultaneous keystroke. Fastest, but flickers briefly</td><td>People who prioritize speed above all</td></tr>
+        <tr><td>wait (default, recommended)</td><td>Holds until the timeout before committing. Most accurate</td><td>People who want to type slowly and accurately</td></tr>
+        <tr><td>speculative<br><span style="color:var(--text-secondary);font-size:0.85rem">(deprecated)</span></td><td>Outputs immediately and replaces on a simultaneous keystroke. Exactly equivalent to <code>two_phase</code> (<code>speculative_delay_ms=0</code>), so setting it is automatically read as that</td><td>—</td></tr>
         <tr><td>two_phase</td><td>Speculative output after a short wait. Between wait and speculative</td><td>People who want a balance</td></tr>
         <tr><td>adaptive_timing</td><td>wait during continuous typing, speculative once typing pauses. Adapts to speed automatically</td><td>People whose typing speed varies</td></tr>
-        <tr><td>ngram_predictive</td><td>Dynamically decides speculative vs. wait using n-gram statistics. Uses context to improve accuracy</td><td>People who want the smartest decision (recommended)</td></tr>
+        <tr><td>ngram_predictive</td><td>Dynamically decides speculative vs. wait using n-gram statistics. Uses context to improve accuracy</td><td>People who want the smartest decision</td></tr>
       </table>
     </div>
 
@@ -669,12 +666,12 @@ engine_off_solo_triple = "VK_NONCONVERT"</div>
 simultaneous_threshold_ms = 100
 
 # Confirm-mode selection
-#   ngram_predictive  - dynamically switch speculative/wait with n-gram prediction (recommended)
-#   wait              - hold until the timeout (most accurate)
-#   speculative       - output immediately (fastest)
+#   wait              - hold until the timeout (most accurate, default, recommended)
+#   ngram_predictive  - dynamically switch speculative/wait with n-gram prediction
+#   speculative       - (deprecated) equivalent to two_phase (speculative_delay_ms=0)
 #   two_phase         - short wait -> speculative output -> replace
 #   adaptive_timing   - automatically adjust the threshold to typing speed
-confirm_mode = "ngram_predictive"</div>
+confirm_mode = "wait"</div>
     </div>
 
     <div class="card">
@@ -693,13 +690,7 @@ right_thumb_key = "VK_CONVERT"      # Henkan key</div>
 # Keyboard model (the default is fine if you use a JIS keyboard)
 # keyboard_model = "jis"   # JIS keyboard (default)
 # keyboard_model = "us"    # US keyboard
-
-# Send method for romaji output (normally no need to change)
-#   unicode  - send hiragana directly (no IME needed, recommended)
-#   per_key  - SendInput one character at a time (for compatibility with other hooks)
-#   batched  - all characters in a single SendInput
-output_mode = "unicode"</div>
-      <p class="note">For the new Microsoft IME (Windows 10 20H1 or later), <code>unicode</code> mode is recommended. With <code>per_key</code> / <code>batched</code>, input may not be processed correctly.</p>
+</div>
     </div>
 
     <div class="card">
@@ -715,7 +706,7 @@ auto_start = "enabled"</div>
 
     <div class="card">
       <h3>Overriding behavior for specific windows</h3>
-      <div class="code-block">[focus_overrides]
+      <div class="code-block">[app_overrides]
 # Force text input in specific apps
 force_text = [
     { process = "myapp.exe", class = "MyWindowClass" },
@@ -730,7 +721,7 @@ force_bypass = [
 
     <div class="card">
       <h3>Per-app output-mode override</h3>
-      <div class="code-block">[focus_overrides]
+      <div class="code-block">[app_overrides]
 # Send as VK keystrokes (Chrome / Edge / VS Code and other Electron-based apps)
 force_vk = [
     { process = "chrome.exe",  class = "Chrome_RenderWidgetHostHWND" },
@@ -942,8 +933,8 @@ engine_off_solo_triple = "VK_NONCONVERT"
     <div class="card">
       <h3>2. Adjust the confirm mode</h3>
       <ul>
-        <li>First try <code>confirm_mode = "ngram_predictive"</code> (recommended)</li>
-        <li>If there are many misconversions, change it to <code>"wait"</code> (accurate but somewhat slower)</li>
+        <li>First try the default <code>confirm_mode = "wait"</code> (recommended; accurate but somewhat slower)</li>
+        <li>If the delay bothers you, try <code>"ngram_predictive"</code></li>
         <li>If fast typing feels off, try <code>"adaptive_timing"</code></li>
       </ul>
     </div>

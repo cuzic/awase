@@ -6,7 +6,7 @@
 ;キートップ印字通りの記号を割り当てている。詳しい設計根拠・
 ;layout/nicola.yab との使い分けは README.md / README.en.md を参照。
 ;
-;新規インストールではこちらが既定（config.sample.toml参照）。既存環境を
+;新規インストールではこちらが既定（config.toml参照）。既存環境を
 ;アップグレードした場合、config.toml の default_layout は変更されない
 ;（layout/nicola.yab がユーザー編集済みかもしれないため、既存ファイルは
 ;上書きしない設計。ADR-099参照）。乗り換えたい場合は default_layout を

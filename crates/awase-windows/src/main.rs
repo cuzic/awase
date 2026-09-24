@@ -45,10 +45,11 @@ fn startup_error_hint(detail: &str) -> &'static str {
     if detail.contains("Failed to parse") && detail.contains(".toml") {
         "→ config.toml の TOML 構文に誤りがあります。上記メッセージの行番号・列番号と \
          「^」の位置を確認し、クォートや括弧の閉じ忘れ、カンマの過不足を修正してください。\n\
-         同梱の config.sample.toml と見比べると原因を特定しやすくなります。"
+         初回起動時に生成された既定の config.toml と見比べると原因を特定しやすくなります。"
     } else if detail.contains("Config file not found") {
         "→ config.toml が見つかりません。awase.exe と同じフォルダに config.toml を \
-         置いてください（同梱の config.sample.toml をコピーして使えます）。"
+         置いてください（通常は起動時に既定値から自動生成されます。生成されない場合は \
+         フォルダの書き込み権限を確認してください）。"
     } else if detail.contains("Unknown VK name") {
         "→ config.toml のキー名の指定に誤りがあります。上記メッセージが示す設定項目を、\
          有効なキー名（例: VK_MUHENKAN, VK_CONVERT 等）に修正してください。"
