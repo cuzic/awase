@@ -18,6 +18,10 @@ mod app {
     use awase_keymap_learn::remeasure::{
         reconcile_with_bundled, MismatchedTarget, RemeasureParams,
     };
+    use awase_keymap_learn::revalidation::{
+        apply_revalidation, outcome_of_revalidation, table_from_persisted, RevalidationOutcome,
+        StoredEnvVersion,
+    };
     use awase_keymap_learn::rng::Rng;
     use awase_keymap_learn::sample_models::atok_like;
     use awase_keymap_learn::strategy::{run, Req, Strategy};
@@ -38,6 +42,11 @@ mod app {
     /// 要確認状態の判定だけをアトミックに採用へ書き換える(表ファイルの書き手は
     /// 学習プロセスのみという原則、決定3aを保つため)。
     const ADOPT_PENDING_JUDGEMENT_FLAG: &str = "--adopt-pending-judgement";
+
+    /// ADR196-T5決定3a: 軽量再検証モード起動フラグ。段階1(格子学習)を飛ばし、保存済みの表を
+    /// 予測として使う段階2(自己検証ウォーク)だけを実行する。合格なら指紋・採点を書き直し、
+    /// 不合格(正答率などが採否条件を割った)のときに初めて表を失効させる。
+    const REVALIDATE_FLAG: &str = "--revalidate";
 
     /// ADR-195段階6: 何押下ごとに標準出力へ進捗行を書き出すか。毎回書くと
     /// 子プロセス側(awase-settings)のパース負荷・パイプI/Oが無駄に増えるため間引く。
@@ -215,8 +224,8 @@ mod app {
     }
 
     /// ADR-195段階3〜4への結合(B1対応): 表を永続化フォーマットへ変換し、一時ファイル+
-    /// renameで原子的に書き込む。指紋(ADR-195段階8)は、その計算方式自体がADR-196決定3で
-    /// 再設計中のため、ここでは`None`のまま残す(ADR196-T5が実配線する)。
+    /// renameで原子的に書き込む。キーマップ設定の指紋(ADR-195段階8)は`None`のまま残し、
+    /// IME本体の版(`env_version`、ADR-196決定3b)だけを書く。
     ///
     /// C-4/C-9対応: `judgement`が`Accepted`なら本体(`keymap-learn-table.json`)へ、
     /// それ以外は[`last_attempt_file_path`]へ書く。
@@ -226,9 +235,11 @@ mod app {
         cells: Vec<PersistedCell>,
         verification: ScoredVerification,
         judgement: TableJudgement,
+        env_version: Option<StoredEnvVersion>,
     ) -> (usize, Result<(), String>) {
         let cell_count = cells.len();
         let persisted = PersistedTable::new(cells)
+            .with_env_version(env_version)
             .with_verification(verification)
             .with_judgement(judgement);
         // C-9: `Accepted`以外は本体を上書きせず退避ファイルへ書く。
@@ -331,6 +342,76 @@ mod app {
             }
         }
         let _ = std::io::stdout().flush();
+    }
+
+    /// 軽量再検証モード(ADR196-T5決定3a)。標準出力の`revalidate`行は`adopt`行と同じく
+    /// `key=value`の空白区切りで、失敗理由は空白を含まない固定トークンだけを載せる。
+    fn run_revalidate_mode() {
+        let process_start = SystemTime::now();
+        let result = revalidate_table(process_start);
+        let line = match &result {
+            Ok((RevalidationOutcome::Passed, score)) => format!(
+                "revalidate status=passed accuracy={:.3} predicted={}",
+                score.accuracy(),
+                score.predicted()
+            ),
+            Ok((RevalidationOutcome::Invalidated(reason), score)) => format!(
+                "revalidate status=invalidated reason={reason:?} accuracy={:.3} predicted={}",
+                score.accuracy(),
+                score.predicted()
+            ),
+            Err(reason) => format!("revalidate status=failure reason={reason}"),
+        };
+        println!("{line}");
+        let _ = std::io::stdout().flush();
+        if result.is_err() {
+            std::process::exit(1);
+        }
+    }
+
+    /// 保存済みの表を読み、実機で自己検証ウォークだけを走らせ、結果を表ファイルへ
+    /// アトミックに書き戻す。ウォーク中の外部書き込み・フォーカス喪失・IME切り替え等で
+    /// 何を測ったか確定できない場合は、表を触らず`Err`(固定トークン)を返す。
+    fn revalidate_table(
+        process_start: SystemTime,
+    ) -> Result<(RevalidationOutcome, ScoreReport), &'static str> {
+        let path = table_file_path().ok_or("no_config")?;
+        let json = std::fs::read_to_string(&path).map_err(|_| "read_failed")?;
+        let persisted = from_json(&json).map_err(|_| "parse_failed")?;
+        // 失効済み(Rejected)の表は、再検証に合格しても復活させない(再学習が必要)。
+        if matches!(persisted.judgement, Some(TableJudgement::Rejected(_))) {
+            return Err("already_rejected");
+        }
+        let driver = build_driver(Strategy::S6);
+        let tip = driver.tip_identity();
+        let config1_db_at_start = (tip == TipIdentity::Gji)
+            .then(awase_windows::gji_charset_autodetect::read_config1_db)
+            .flatten();
+        let mut executor = Executor::new(driver, AnomalyPolicy::default(), ReadPolicy::Single);
+        executor.table = table_from_persisted(&persisted, |k| {
+            KEYS.iter().position(|&vk| vk == u32::from(k.0))
+        });
+        executor.reset();
+        let seed = fresh_walk_seed();
+        let score = run_verification_walk(&mut executor, &mut Rng::new(seed));
+        if executor.driver.session_failed() {
+            return Err("interference");
+        }
+        if let Some(reason) =
+            end_of_session_abort_reason(&executor.driver, tip, config1_db_at_start.as_deref())
+        {
+            return Err(reason);
+        }
+        let outcome = outcome_of_revalidation(judge_score(&score, tip, None));
+        let rewritten = apply_revalidation(
+            persisted,
+            outcome,
+            probe_env_version(tip, process_start),
+            ScoredVerification { score, seed },
+        );
+        let json = rewritten.to_json().map_err(|_| "serialize_failed")?;
+        awase::fs_atomic::write_atomic(&path, json.as_bytes()).map_err(|_| "write_failed")?;
+        Ok((outcome, score))
     }
 
     /// `run_main`のうち、セッション監視が失敗と判定していないかを確認する
@@ -608,12 +689,31 @@ mod app {
     pub fn entry() {
         if std::env::args().any(|arg| arg == ADOPT_PENDING_JUDGEMENT_FLAG) {
             run_adopt_mode();
+        } else if std::env::args().any(|arg| arg == REVALIDATE_FLAG) {
+            run_revalidate_mode();
         } else {
             run_main();
         }
     }
 
+    /// 版取得(Toolhelp・`GetFileVersionInfoW`)がブロックした場合に学習の記録を止めない上限。
+    const ENV_VERSION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+    /// 学習時点のIME本体の版(ADR-196決定3b)。GJIのときだけConverterのファイル版を取る
+    /// (Microsoft IME側の4値はADR-197待ちで未実装のため`None`)。
+    fn probe_env_version(tip: TipIdentity, process_start: SystemTime) -> Option<StoredEnvVersion> {
+        if tip != TipIdentity::Gji {
+            return None;
+        }
+        StoredEnvVersion::from_probe(awase_keymap_learn_win::probe_gji_env_version_with_timeout(
+            process_start,
+            ENV_VERSION_PROBE_TIMEOUT,
+        ))
+    }
+
+    #[allow(clippy::too_many_lines)] // 学習の各段階を直列に並べる入口で、段階ごとの分割はしない
     fn run_main() {
+        let process_start = SystemTime::now();
         let strategy = if std::env::args().any(|arg| arg == "--strategy=s0") {
             Strategy::S0
         } else {
@@ -725,11 +825,15 @@ mod app {
         );
 
         let judgement = judge_score(&score, tip_at_start, reconciliation.as_ref());
-        let verification = ScoredVerification {
-            score,
-            seed: walk_seed,
-        };
-        let (cell_count, write_result) = persist_judged_table(cells, verification, judgement);
+        let (cell_count, write_result) = persist_judged_table(
+            cells,
+            ScoredVerification {
+                score,
+                seed: walk_seed,
+            },
+            judgement,
+            probe_env_version(tip_at_start, process_start),
+        );
         print_result_line(ResultLineArgs {
             strategy,
             training_elapsed_ms,

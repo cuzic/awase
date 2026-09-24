@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::judgement::{ScoredVerification, TableJudgement};
 use crate::model::{KeyId, Outcome, Status};
+use crate::revalidation::StoredEnvVersion;
 
 /// 現行のスキーマバージョン。表現(セルの持ち方、`Status`/`Outcome`の意味)を変えたら上げる。
 ///
@@ -51,8 +52,9 @@ pub struct Fingerprint(pub u64, pub u64);
 /// `verification`/`judgement`は[ADR-196](../../../docs/adr/196-keymap-learn-truth-priority.md)
 /// 決定1e「判定は学習セッションの末尾で学習プロセスが行い、不採用の場合も理由付きで
 /// 表ファイルに書き出す」ための領域。段階4（`awase.exe`の読込時）はこの2フィールドを
-/// 読むだけで、判定をやり直さない。`fingerprint`（ADR-195段階8）の計算方式自体は
-/// ADR-196決定3で再設計中のため、当面`None`のまま運用し、ADR196-T5が実配線する。
+/// 読むだけで、判定をやり直さない。`fingerprint`（ADR-195段階8、キーマップ設定の指紋）は
+/// 当面`None`のまま運用する。`env_version`（ADR-196決定3、GJI/Microsoft IME本体の
+/// バージョン相当の情報）はADR196-T5が学習プロセスから書き込む。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersistedTable {
     pub schema_version: u32,
@@ -66,6 +68,11 @@ pub struct PersistedTable {
     /// (`PersistedCell::prediction`と同じ理由)。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fingerprint: Option<Fingerprint>,
+    /// 学習時点のIME本体の版([`crate::revalidation`]、ADR-196決定3)。`fingerprint`とは
+    /// 別枠で、不一致は失効ではなく「要再検証」になる。`None`は版取得の方式が無い/取得元が
+    /// 見つからなかった場合。追加のみでスキーマ版は上げない(`#[serde(default)]`で旧ファイルも読める)。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_version: Option<StoredEnvVersion>,
     pub cells: Vec<PersistedCell>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification: Option<ScoredVerification>,
@@ -82,6 +89,7 @@ impl PersistedTable {
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
             fingerprint: None,
+            env_version: None,
             cells,
             verification: None,
             judgement: None,
@@ -92,6 +100,13 @@ impl PersistedTable {
     #[must_use]
     pub const fn with_fingerprint(mut self, fingerprint: Fingerprint) -> Self {
         self.fingerprint = Some(fingerprint);
+        self
+    }
+
+    /// 学習時点のIME本体の版を設定する（ADR-196決定3b、ADR196-T5）。
+    #[must_use]
+    pub const fn with_env_version(mut self, env_version: Option<StoredEnvVersion>) -> Self {
+        self.env_version = env_version;
         self
     }
 
@@ -188,6 +203,32 @@ mod tests {
 
         assert_eq!(loaded, table);
         assert_eq!(loaded.schema_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn env_version_round_trips_and_is_omitted_when_none() {
+        use crate::revalidation::EnvVersion;
+        let known = PersistedTable::new(vec![cell(true, 0, None)])
+            .with_env_version(Some(StoredEnvVersion::Known(EnvVersion([1, 2, 3, 4]))));
+        let json = known.to_json().expect("serialize");
+        assert_eq!(from_json(&json).expect("deserialize"), known);
+
+        let unconfirmed = known
+            .clone()
+            .with_env_version(Some(StoredEnvVersion::Unconfirmed));
+        let json = unconfirmed.to_json().expect("serialize");
+        assert_eq!(from_json(&json).expect("deserialize"), unconfirmed);
+
+        let none = known.with_env_version(None);
+        assert!(!none.to_json().expect("serialize").contains("env_version"));
+    }
+
+    #[test]
+    fn loads_json_without_env_version_key() {
+        let json = format!(
+            r#"{{"schema_version":{CURRENT_SCHEMA_VERSION},"cells":[{{"status":{{"open":true,"mode":0,"composing":false}},"key":0}}]}}"#
+        );
+        assert_eq!(from_json(&json).expect("load").env_version, None);
     }
 
     #[test]

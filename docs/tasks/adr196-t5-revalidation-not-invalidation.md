@@ -1,12 +1,17 @@
 # ADR-196 T5: 陳腐化検出を「失効」から「要再検証」へ置き換える
 
-状態: 未着手（2026-09-23起票）。**実装前に必須の実測が1件ある**（下記「前提条件」）。
-[ADR195-T3](adr195-t3-persistence.md)（永続化）完了後に着手。既存の
-[ADR195-T8](adr195-t8-staleness-detection.md)実装（ブランチ`feat/adr195-t8-staleness-detection`、
-develop未マージ、コミット`3613707e`/`f5d53047`）は旧設計（陳腐化＝失効）で書かれている
-ため、本タスクはゼロから作るのではなく、そのブランチを土台に決定3の差分を当てる形で
-進めることを推奨する（該当ブランチの担当者と重複作業にならないよう事前に調整すること）。
+状態: **一部着手（2026-09-23、`diag/adr196-t5-revalidation`ブランチ）。3a(状態遷移)の
+純粋ロジックのみ実装・テスト済み、残りは未着手。** 下記「進捗（2026-09-23）」参照。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
+
+**訂正（2026-09-23）**: 起票時点の記載「既存の[ADR195-T8](adr195-t8-staleness-detection.md)
+実装(ブランチ`feat/adr195-t8-staleness-detection`)を土台にする」は誤りだった。
+T8のコミット(`3613707e`/`f5d53047`)はT9(#258)経由で既にdevelopの祖先に含まれており
+(`crates/awase-keymap-learn/src/staleness.rs`として存在)、当該ブランチ自体は既に削除
+されている。**「土台にする」は「develop上の`staleness.rs`とは別モジュールとして追加する」
+と読み替える**——本タスクが追加する「バージョン相当の情報」の不一致判定は、
+`staleness.rs`の`Staleness`(即時失効、キーマップ設定変更・スキーマ版不一致用)とは
+意図的に別の型・別モジュールにする(下記「進捗」参照)。
 
 ## 前提条件（実装着手前に確定が必要な実測）
 
@@ -22,6 +27,38 @@ develop未マージ、コミット`3613707e`/`f5d53047`）は旧設計（陳腐�
   と主張している。本タスク着手時は、ADR-197の収束状況を確認し、この実測を重複して
   やり直さずADR-197の成果を参照すること（ADR-197はADR-196を関連ADRとして既に認識して
   いるため、双方の担当が同じ調査を独立に進める事故を避けるためにも要確認）。
+
+## 進捗（2026-09-23）
+
+`diag/adr196-t5-revalidation`ブランチ（未push、developから分岐）で以下を実装・テスト済み:
+
+- `crates/awase-keymap-learn/src/revalidation.rs`（新規）: 3a(状態遷移)の比較ロジックのみ。
+  `EnvVersion`(不透明な4値)・`EnvVersionProbe`(Unknown/Unconfirmed/Known)・
+  `StoredEnvVersion`(永続化側、Unconfirmed/Known の2値、`Unknown`は`Option::None`で表現)・
+  `needs_revalidation(stored, current) -> bool`。前提条件の「未確定」規則
+  (`Unconfirmed`は`Unknown`どうしの比較除外＝fail openの対象外、常に要再検証)を含め
+  12件のユニットテストで規則を1つずつ確認済み（`cargo test -p awase-keymap-learn --lib
+  revalidation`、`cargo clippy -p awase-keymap-learn --lib -- -D warnings`ともgreen）。
+- `crate::staleness`（`Staleness`列挙体、キーマップ設定変更・スキーマ版不一致用）には
+  一切手を入れていない——完了条件の「本タスクの追加フィンガープリントと混同されていない
+  ことの確認」を、型を分けることで構造的に満たす形にした。
+
+**意図的に手を付けていない部分**（別セッションとの衝突回避・前提未確定のため）:
+
+- `persist.rs`/`PersistedTable`への永続化フィールド追加。[ADR196-T2](adr196-t2-mismatch-adjudication.md)
+  (2026-09-23時点で別セッション`rust-nicola-0f`が着手中、スキーマ拡張を伴う)と同じ
+  ファイルを触るため、T2のスキーマ変更が固まってから合わせて追加する。
+  `PersistedTable`に`env_version: Option<StoredEnvVersion>`のような`#[serde(default)]`
+  フィールドを足し、`persist.rs`冒頭の既存後方互換コメントに倣うことを想定。
+- 「軽量再検証→失効/継続」フロー（[ADR196-T2](adr196-t2-mismatch-adjudication.md)の
+  95%閾値に依存、T2未完了のため）。
+- 3b: GJI Converterの`VS_FIXEDFILEINFO`4値取得の共有関数(`awase-windows`側、
+  `tsf/gji_monitor.rs`の`GJI_PROCESS_PREFIXES`/`find_gji_pid`と`focus/classify.rs::get_process_name`
+  を使う)。実機での動作確認ができないままWin32コードを書くことのリスクを踏まえ、
+  今回のセッションでは着手を見送った。
+- 3b: Microsoft IME本体側の4値取得（前提条件のレジストリ実測が[ADR-197](../adr/197-msime-legacy-custom-keymap-runtime-warning.md)
+  側で完了しているかの確認自体が未実施）。
+- 軽量再検証モード(CLI引数)・awase-settings側のUI導線・アトミック書き直し。
 
 ## 背景
 
@@ -63,6 +100,22 @@ develop未マージ、コミット`3613707e`/`f5d53047`）は旧設計（陳腐�
   パース機構を再利用する。
 
 ### 3b: フィンガープリントの構成
+
+**進捗(2026-09-24、`diag/adr196-t5-revalidation`)**: GJI側の版取得は実装済み(実機未検証)——
+`awase-keymap-learn-win/src/env_version.rs`(`file_version`共有関数・自セッションに絞った
+Converterパス探索・`probe_gji_env_version[_with_timeout]`)と、純粋な
+`revalidation::classify_converter_version`(不明/未確定/既知の分類、ユニットテスト済み)。
+指紋書き込み配線も実装済み: `PersistedTable.env_version: Option<StoredEnvVersion>`(追加のみ、
+スキーマ版は上げず`#[serde(default)]`で旧ファイルも読める)を新設し、学習プロセス
+(`awase-keymap-learn-win/src/main.rs::probe_env_version`)がGJIのときだけ学習終了時に
+Converter版を取得して書く(3秒タイムアウトで超過時は書かない)。
+軽量再検証モードも実装済み: `awase-keymap-learn-win --revalidate`が保存済み表を予測として
+段階2(自己検証ウォーク)だけを実行し、`revalidate status=passed|invalidated|failure`行を
+標準出力へ出す(判定は純粋関数`revalidation::{outcome_of_revalidation,apply_revalidation,
+table_from_persisted}`)。合格なら`env_version`・`verification`を書き直し(判定は元のまま)、
+`Rejected`相当のときだけ判定を`Rejected`へ落とす。採点日時の記録用フィールドは現スキーマに無く
+未実装。
+未着手: Microsoft IME側の4値(ADR-197待ち)、awase-settingsでの現在版との比較表示・起動ボタン(ADR196-T4)。
 
 - **GJI**: Converter本体（`GJI_PROCESS_PREFIXES`、`tsf/gji_monitor.rs:25-39`。
   `find_gji_pid`は全セッションから最初の一致を返すため、可能なら`ProcessIdToSessionId`で

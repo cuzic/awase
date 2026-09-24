@@ -7,12 +7,16 @@
 #[cfg(windows)]
 mod driver;
 #[cfg(windows)]
+mod env_version;
+#[cfg(windows)]
 mod hook_monitor;
 #[cfg(windows)]
 mod ime_notify;
 
 #[cfg(windows)]
 pub use driver::RealImeDriver;
+#[cfg(windows)]
+pub use env_version::{file_version, probe_gji_env_version, probe_gji_env_version_with_timeout};
 #[cfg(windows)]
 pub use hook_monitor::HookMonitor;
 #[cfg(windows)]
