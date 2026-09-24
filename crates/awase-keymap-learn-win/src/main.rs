@@ -9,9 +9,10 @@ mod app {
     use awase_keymap_learn::exec::{Executor, ImeDriver, ReadPolicy, Stats};
     use awase_keymap_learn::graph::Prior;
     use awase_keymap_learn::judgement::{
-        adopt_needs_confirmation, combine, judge_self_verification, AdoptRejected,
-        ReconciliationSummary, ScoredVerification, TableJudgement, ACCURACY_THRESHOLD,
-        DEGENERATION_THRESHOLD, MIN_PREDICTED_STEPS, SYSTEMATIC_MISMATCH_THRESHOLD,
+        adopt_needs_confirmation, combine, gate_on_fingerprint, judge_self_verification,
+        AdoptRejected, ReconciliationSummary, ScoredVerification, TableJudgement,
+        ACCURACY_THRESHOLD, DEGENERATION_THRESHOLD, MIN_PREDICTED_STEPS,
+        SYSTEMATIC_MISMATCH_THRESHOLD,
     };
     use awase_keymap_learn::model::KeyId;
     use awase_keymap_learn::persist::{from_json, LoadError, PersistedCell, PersistedTable};
@@ -24,6 +25,7 @@ mod app {
     };
     use awase_keymap_learn::rng::Rng;
     use awase_keymap_learn::sample_models::{atok_like, atok_like_with_modes};
+    use awase_keymap_learn::staleness::{self, FingerprintProbe};
     use awase_keymap_learn::strategy::{run, Req, Strategy};
     use awase_keymap_learn::table::Table;
     use awase_keymap_learn::verify::{
@@ -32,6 +34,7 @@ mod app {
     use awase_keymap_learn_win::RealImeDriver;
     use awase_windows::state::ime_kind::TipIdentity;
     use awase_windows::state::key_effect_predictor::TableKey;
+    use awase_windows::state::key_effect_runtime::current_fingerprint_probe;
 
     const KEYS: [u32; 14] = [
         0x1D, 0x1C, 0xF2, 0xF1, 0xF0, 0xF3, 0x19, 0x16, 0x1A, 0x1B, 0x0D, 0x20, 0x08, 0x41,
@@ -275,8 +278,10 @@ mod app {
     }
 
     /// ADR-195段階3〜4への結合(B1対応): 表を永続化フォーマットへ変換し、一時ファイル+
-    /// renameで原子的に書き込む。キーマップ設定の指紋(ADR-195段階8)は`None`のまま残し、
-    /// IME本体の版(`env_version`、ADR-196決定3b)だけを書く。
+    /// renameで原子的に書き込む。キーマップ設定の指紋(ADR-195段階8、`awase_windows::state::
+    /// key_effect_runtime::current_fingerprint_probe`)と、IME本体の版(`env_version`、
+    /// ADR-196決定3b)を書く。指紋を計算できなかった(`Unavailable`)場合の判定の格下げ
+    /// (`gate_on_fingerprint`)は呼び出し側が`judgement`へ反映済みであること。
     ///
     /// C-4/C-9対応: `judgement`が`Accepted`なら本体(`keymap-learn-table.json`)へ、
     /// それ以外は[`last_attempt_file_path`]へ書く。
@@ -287,12 +292,16 @@ mod app {
         verification: ScoredVerification,
         judgement: TableJudgement,
         env_version: Option<StoredEnvVersion>,
+        fingerprint: FingerprintProbe,
     ) -> (usize, Result<(), String>) {
         let cell_count = cells.len();
-        let persisted = PersistedTable::new(cells)
+        let mut persisted = PersistedTable::new(cells)
             .with_env_version(env_version)
             .with_verification(verification)
             .with_judgement(judgement);
+        if let FingerprintProbe::Computed(fp) = fingerprint {
+            persisted = persisted.with_fingerprint(fp);
+        }
         // C-9: `Accepted`以外は本体を上書きせず退避ファイルへ書く。
         let path_resolver: fn() -> Option<PathBuf> = if judgement == TableJudgement::Accepted {
             table_file_path
@@ -338,6 +347,7 @@ mod app {
                 Self::ParseFailed(..) => "parse_failed",
                 Self::Rejected(AdoptRejected::NoJudgement) => "no_judgement",
                 Self::Rejected(AdoptRejected::Rejected) => "rejected",
+                Self::Rejected(AdoptRejected::NoFingerprint) => "no_fingerprint",
                 Self::SerializeFailed(..) => "serialize_failed",
                 Self::WriteFailed(..) => "write_failed",
             }
@@ -379,8 +389,10 @@ mod app {
         let json = std::fs::read_to_string(source)
             .map_err(|e| AdoptFailure::ReadFailed(source.to_path_buf(), e))?;
         let mut table = from_json(&json).map_err(AdoptFailure::ParseFailed)?;
-        table.judgement =
-            Some(adopt_needs_confirmation(table.judgement).map_err(AdoptFailure::Rejected)?);
+        table.judgement = Some(
+            adopt_needs_confirmation(table.judgement, table.fingerprint.is_some())
+                .map_err(AdoptFailure::Rejected)?,
+        );
         let rewritten = table.to_json().map_err(AdoptFailure::SerializeFailed)?;
         awase::fs_atomic::write_atomic(table_path, rewritten.as_bytes())
             .map_err(|e| AdoptFailure::WriteFailed(table_path.to_path_buf(), e))?;
@@ -452,6 +464,13 @@ mod app {
         }
         let driver = build_driver(Strategy::S6);
         let tip = driver.tip_identity();
+        // 表が測った構成と今の構成が違えば、再検証に合格しても復活させない(GJIの表を
+        // Microsoft IME本体の下で、あるいはキーマップ変更後に「再検証合格」させない)。
+        // 指紋を持たない旧形式の表は`check`がFreshにする(従来どおり)。
+        let fingerprint_at_start = current_fingerprint_probe(tip);
+        if staleness::check(&persisted, fingerprint_at_start).is_stale() {
+            return Err("keymap_changed");
+        }
         let config1_db_at_start = (tip == TipIdentity::Gji)
             .then(awase_windows::gji_charset_autodetect::read_config1_db)
             .flatten();
@@ -469,6 +488,9 @@ mod app {
             end_of_session_abort_reason(&executor.driver, tip, config1_db_at_start.as_deref())
         {
             return Err(reason);
+        }
+        if current_fingerprint_probe(tip) != fingerprint_at_start {
+            return Err("keymap_changed");
         }
         let outcome = outcome_of_revalidation(judge_score(&score, tip, None));
         let rewritten = apply_revalidation(
@@ -816,6 +838,9 @@ mod app {
         let config1_db_at_start = (tip_at_start == TipIdentity::Gji)
             .then(awase_windows::gji_charset_autodetect::read_config1_db)
             .flatten();
+        // 学習時点のキーマップ指紋(表へ書く)。終了時に再計算して、学習中に構成が変わって
+        // いたら`Unavailable`扱い(何を測ったか確定できない)にする。
+        let fingerprint_at_start = current_fingerprint_probe(tip_at_start);
         let model = build_model(initial, tip_at_start);
 
         let mut rng = Rng::new(195);
@@ -914,7 +939,17 @@ mod app {
             decode_errors,
         );
 
-        let judgement = judge_score(&score, tip_at_start, reconciliation.as_ref());
+        let fingerprint = if current_fingerprint_probe(tip_at_start) == fingerprint_at_start {
+            fingerprint_at_start
+        } else {
+            FingerprintProbe::Unavailable
+        };
+        // 指紋を計算できなかった表は採用へ進ませない(指紋`None`の表は陳腐化検出で
+        // 永久に保護されないため、`Rejected(FingerprintUnavailable)`にして退避ファイルへ書く)。
+        let judgement = gate_on_fingerprint(
+            judge_score(&score, tip_at_start, reconciliation.as_ref()),
+            fingerprint,
+        );
         let (cell_count, write_result) = persist_judged_table(
             cells,
             ScoredVerification {
@@ -923,6 +958,7 @@ mod app {
             },
             judgement,
             probe_env_version(tip_at_start, process_start),
+            fingerprint,
         );
         print_result_line(ResultLineArgs {
             strategy,
@@ -1191,7 +1227,48 @@ mod app {
                 prediction: None,
             }]);
             table.judgement = judgement;
+            // 指紋配線後の学習プロセスが書く表(指紋あり)。指紋なしは専用テストで扱う。
+            table.fingerprint = Some(awase_keymap_learn::persist::Fingerprint(1, 2));
             table
+        }
+
+        /// 06以前の学習プロセスが書いた退避ファイル(指紋None・要確認)は、採用操作だけで
+        /// 本体へ昇格しない。ファイルも書き換えない。
+        #[test]
+        fn adopt_pending_judgement_at_refuses_needs_confirmation_without_fingerprint() {
+            let pending = temp_table_path("nofp_pending");
+            let table_path = temp_table_path("nofp_table");
+            let _ = std::fs::remove_file(&table_path);
+            let mut table = sample_table(Some(TableJudgement::NeedsConfirmation(
+                NeedsConfirmationReason::UnverifiedMsImeNative,
+            )));
+            table.fingerprint = None;
+            std::fs::write(&pending, table.to_json().unwrap()).unwrap();
+
+            let result = adopt_pending_judgement_at(&pending, &table_path);
+
+            assert_eq!(result.unwrap_err().code(), "no_fingerprint");
+            assert!(!table_path.exists(), "本体へ昇格しない");
+            assert!(pending.exists(), "退避ファイルは残す");
+            let _ = std::fs::remove_file(&pending);
+        }
+
+        /// 採用は指紋を保つ(書き換えるのは判定だけ)。
+        #[test]
+        fn adopt_pending_judgement_at_keeps_the_fingerprint() {
+            let path = temp_table_path("keeps_fp");
+            let table = sample_table(Some(TableJudgement::NeedsConfirmation(
+                NeedsConfirmationReason::UnverifiedMsImeNative,
+            )));
+            std::fs::write(&path, table.to_json().unwrap()).unwrap();
+            let none = temp_table_path("keeps_fp_no_pending");
+            let _ = std::fs::remove_file(&none);
+
+            adopt_pending_judgement_at(&none, &path).unwrap();
+
+            let reloaded = from_json(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(reloaded.fingerprint, table.fingerprint);
+            let _ = std::fs::remove_file(&path);
         }
 
         /// 決定1b-8: 要確認状態のファイルは採用へ書き換わり、ディスク上にも反映される。
@@ -1310,6 +1387,7 @@ mod app {
                 ),
                 AdoptFailure::Rejected(AdoptRejected::NoJudgement),
                 AdoptFailure::Rejected(AdoptRejected::Rejected),
+                AdoptFailure::Rejected(AdoptRejected::NoFingerprint),
             ];
             for sample in &samples {
                 let code = sample.code();

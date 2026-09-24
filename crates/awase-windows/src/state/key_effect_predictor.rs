@@ -442,6 +442,11 @@ pub struct KeyEffectKeymap {
     /// 変えられている。その変換/無変換の打鍵は予測しない（GJIのoverlay/カスタム上書きと同じ安全側）。
     henkan_reassigned: bool,
     muhenkan_reassigned: bool,
+    /// このキーマップの生の入力（GJI: session/custom/overlay、Microsoft IME本体: 3 DWORD）から
+    /// 作った指紋（`awase_keymap_learn::fingerprint`）。上の真偽値は overlay の中身や
+    /// 再割り当て値を潰すので、学習表の陳腐化検出（`key_effect_runtime`）にはこちらを使う。
+    /// キーマップと同時に計算するので「キーマップは取れたのに指紋だけ取れない」状態は無い。
+    fingerprint: awase_keymap_learn::persist::Fingerprint,
 }
 
 /// 修飾キーを押したままの打鍵では予測・追跡をしない。
@@ -536,12 +541,18 @@ impl KeyEffectKeymap {
             None | Some(SESSION_KEYMAP_NONE | SESSION_KEYMAP_MSIME) => KeymapPreset::MsIme,
             Some(_) => KeymapPreset::Custom,
         };
+        let fingerprint = awase_keymap_learn::fingerprint::gji_keymap_fingerprint(
+            session_keymap,
+            custom_table.as_deref(),
+            overlay_keymaps,
+        );
         Some(Self {
             preset,
             custom_table,
             has_overlay: !overlay_keymaps.is_empty(),
             henkan_reassigned: false,
             muhenkan_reassigned: false,
+            fingerprint,
         })
     }
 
@@ -562,7 +573,18 @@ impl KeyEffectKeymap {
             has_overlay: false,
             henkan_reassigned: reassigned(henkan),
             muhenkan_reassigned: reassigned(muhenkan),
+            fingerprint: awase_keymap_learn::fingerprint::msime_native_keymap_fingerprint(
+                assignment_enabled,
+                henkan,
+                muhenkan,
+            ),
         }
+    }
+
+    /// 学習表の陳腐化検出に使う、このキーマップの指紋（生の入力から作ったもの）。
+    #[must_use]
+    pub const fn fingerprint(&self) -> awase_keymap_learn::persist::Fingerprint {
+        self.fingerprint
     }
 
     /// このキーマップでの、`vk`の打鍵の予測。カスタム表がそのキーの行を持つ、または overlay がある

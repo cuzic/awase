@@ -1976,14 +1976,17 @@ impl Runtime {
             .then(|| {
                 let preset = keymap.preset();
                 let check_against_bundled = keymap.is_unmodified_bundled_config();
+                // 学習時点のキーマップと今のキーマップが同じかの照合用（陳腐化検出）。
+                let fingerprint = keymap.fingerprint();
                 self.key_effect_runtime_table.get(
                     now_ms,
-                    (preset, check_against_bundled),
+                    (preset, check_against_bundled, fingerprint),
                     crate::state::key_effect_runtime::table_file_stamp,
                     || {
                         crate::state::key_effect_runtime::load_and_log(
                             preset,
                             check_against_bundled,
+                            fingerprint,
                         )
                     },
                 )
