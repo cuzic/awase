@@ -16,4 +16,4 @@ pub use driver::RealImeDriver;
 #[cfg(windows)]
 pub use hook_monitor::HookMonitor;
 #[cfg(windows)]
-pub use ime_notify::ImeNotifyMonitor;
+pub use ime_notify::{arrival_log, ImeNotifyMonitor};

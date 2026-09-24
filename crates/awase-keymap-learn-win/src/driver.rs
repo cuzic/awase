@@ -2,7 +2,7 @@
 
 use std::cell::Cell;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -20,7 +20,7 @@ use awase_windows::state::key_effect_predictor::Conv;
 use awase_windows::tsf::query_tip_identity_on_current_sta;
 
 use crate::hook_monitor::{HookMonitor, SELF_MARKER};
-use crate::ime_notify::ImeNotifyMonitor;
+use crate::ime_notify::{drain_queued_into, queue_notify, ImeNotifyMonitor, WM_IME_NOTIFY};
 use windows::core::{w, Interface, Result as WinResult};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Com::{
@@ -31,7 +31,8 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmGetOpenStatus,
-    ImmReleaseContext, IME_COMPOSITION_STRING, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
+    ImmReleaseContext, ImmSetOpenStatus, IME_COMPOSITION_STRING, IME_CONVERSION_MODE,
+    IME_SENTENCE_MODE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
@@ -42,10 +43,11 @@ use windows::Win32::UI::TextServices::{
     GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
-    GetForegroundWindow, GetWindowThreadProcessId, PeekMessageW, RegisterClassW,
-    SetForegroundWindow, SetWindowTextW, ShowWindow, TranslateMessage, MSG, PM_REMOVE, SW_SHOW,
-    WINDOW_STYLE, WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    BringWindowToTop, CallWindowProcW, CreateWindowExW, DefWindowProcW, DestroyWindow,
+    DispatchMessageW, GetForegroundWindow, GetWindowThreadProcessId, PeekMessageW, RegisterClassW,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, TranslateMessage,
+    GWLP_WNDPROC, MSG, PM_REMOVE, SW_SHOW, WINDOW_STYLE, WNDCLASSW, WNDPROC, WS_BORDER, WS_CHILD,
+    WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 
 const GCS_COMPSTR: u32 = 0x0008;
@@ -100,7 +102,38 @@ extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
     if msg == WM_ACTIVATE && (wparam.0 & 0xFFFF) as u16 == WA_INACTIVE {
         FOCUS_LOST_EVENTS.fetch_add(1, Ordering::SeqCst);
     }
+    if msg == WM_IME_NOTIFY {
+        queue_notify(wparam.0);
+    }
     unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// EDITコントロールの元のウィンドウプロシージャ（サブクラス化前）。
+static ORIG_EDIT_PROC: AtomicIsize = AtomicIsize::new(0);
+
+/// B-1: IMEが`WM_IME_NOTIFY`を送る先はフォーカスを持つEDIT子窓で、親窓の
+/// `window_proc`にもメッセージポンプ(`PeekMessageW`)にも現れない。EDITを
+/// サブクラス化して通知をキューへ積み、元のプロシージャへ素通しする。
+extern "system" fn edit_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if msg == WM_IME_NOTIFY {
+        queue_notify(wparam.0);
+    }
+    let orig = ORIG_EDIT_PROC.load(Ordering::SeqCst);
+    // SAFETY: `orig`は`SetWindowLongPtrW(GWLP_WNDPROC)`が返した元のプロシージャ
+    // アドレス（0ならフォールバックのDefWindowProcW）。
+    unsafe {
+        if orig == 0 {
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        } else {
+            CallWindowProcW(
+                std::mem::transmute::<isize, WNDPROC>(orig),
+                hwnd,
+                msg,
+                wparam,
+                lparam,
+            )
+        }
+    }
 }
 
 /// [ADR195-T7](../../../../docs/tasks/adr195-t7-safety-measures.md)項目2
@@ -335,6 +368,41 @@ impl RealImeDriver {
         pump_for(duration, &self.notify_monitor);
     }
 
+    /// 診断用（B-1の実機検証）: IME通知経由だけで数えた外部書き込みの累計件数。
+    #[must_use]
+    pub fn diag_notify_external_count(&self) -> u32 {
+        self.notify_monitor.external_count()
+    }
+
+    /// 診断用（B-1の実機検証）: 学習窓自身のスレッドから`ImmSetOpenStatus`で開閉を
+    /// 反転する（`mark_self_injection`を経由しない＝猶予窓の外の「外部書き込み」
+    /// 相当）。戻り値は(反転前, 反転後)の`ImmGetOpenStatus`。
+    #[must_use]
+    pub fn diag_toggle_open_status(&self) -> Option<(bool, bool)> {
+        unsafe {
+            let himc = ImmGetContext(self.edit);
+            if himc.is_invalid() {
+                return None;
+            }
+            let before = ImmGetOpenStatus(himc).as_bool();
+            let _ = ImmSetOpenStatus(himc, !before);
+            let after = ImmGetOpenStatus(himc).as_bool();
+            let _ = ImmReleaseContext(self.edit, himc);
+            Some((before, after))
+        }
+    }
+
+    /// 診断用（B-1の実機検証）: 直近の自己注入以降に届いた開閉・変換モード通知の件数。
+    #[must_use]
+    pub fn diag_notify_since_mark(&self) -> u32 {
+        self.notify_monitor.notify_count_since_mark()
+    }
+
+    /// 診断用（B-1の実機検証）: メッセージを回しながら待つ。
+    pub fn diag_pump(&self, duration: Duration) {
+        self.pump(duration);
+    }
+
     /// 現在の「外部からの書き込み」累計件数（フック経由＋IME通知経由）。
     fn external_total(&self) -> u32 {
         self.hook_monitor.external_event_count() + self.notify_monitor.external_count()
@@ -432,6 +500,8 @@ impl RealImeDriver {
         for _ in 0..count {
             self.hook_monitor.mark_self_injection_sent();
         }
+        // 直前までに届いた通知を旧い猶予窓のうちに判定してから窓を付け替える。
+        drain_queued_into(&self.notify_monitor);
         self.notify_monitor
             .mark_expected_notify(Duration::from_millis(NOTIFY_EXPECT_WINDOW_MS));
     }
@@ -846,6 +916,8 @@ fn pump_for(duration: Duration, notify_monitor: &ImeNotifyMonitor) {
                 DispatchMessageW(&raw const msg);
             }
         }
+        // SendMessage配送の`WM_IME_NOTIFY`はウィンドウプロシージャが積んだキューから取る。
+        drain_queued_into(notify_monitor);
         thread::sleep(Duration::from_millis(1));
     }
 }
@@ -895,6 +967,16 @@ fn create_window() -> WinResult<(HWND, HWND)> {
             Some(instance.into()),
             None,
         )?;
+        let orig = SetWindowLongPtrW(
+            edit,
+            GWLP_WNDPROC,
+            (edit_proc as *const () as usize).cast_signed(),
+        );
+        // 二重にサブクラス化した場合（`orig`が`edit_proc`自身）に自己再帰しないよう、
+        // 自分自身は元のプロシージャとして記録しない。
+        if orig != (edit_proc as *const () as usize).cast_signed() {
+            ORIG_EDIT_PROC.store(orig, Ordering::SeqCst);
+        }
         Ok((window, edit))
     }
 }

@@ -34,13 +34,15 @@
 
 ## B. 学習系（awase-keymap-learn / keymap-learn-win / settings）
 
-### B-1. [高・CONFIRMED] IME 通知による外部書き込み検出が動いていない
+### B-1. [高・CONFIRMED・配送のみ修正済み(fix/b1-ime-notify-external-write)] IME 通知による外部書き込み検出が動いていない
 
 - 場所: `crates/awase-keymap-learn-win/src/driver.rs:729-738`（`pump_for`）、`ime_notify.rs:50`、`driver.rs:342-356`
 - 欠陥: `WM_IME_NOTIFY` は SendMessage で送られ、`PeekMessageW` が MSG として返すことはない。届く先は EDIT 子窓のウィンドウプロシージャ
 - 影響: 他プロセスが `ImmSetOpenStatus`/compartment 書き込みで学習窓の IME 状態を変えても `external_count` は 0 のまま。汚染観測が「キーの効果」として表に入る
 - 関連: ADR-196 決定1b 項目2 が求める生存確認 `observation_alive()`/`measurement_suspicious()` はどこからも呼ばれていない（grep 確認）→「検出ゼロ = 外部書き込みなし」と合格側に倒れる。物理入力（フック）と `WM_ACTIVATE`（`window_proc`）の検出は正常
 - 関連タスク: `adr196-t1-external-write-observation.md`
+- 対応（2026-09-23）: EDIT子窓をサブクラス化（`edit_proc`）し、親窓`window_proc`と合わせて`WM_IME_NOTIFY`を到着時刻付きでスレッドローカルのキューへ積み、`pump_for`と`mark_self_injection`の直前に`ImeNotifyMonitor`へ渡す。猶予窓の判定は到着時刻で行う。**未対応**: `observation_alive`/`measurement_suspicious`の配線（実機でEDIT窓にIME通知が実際に届く頻度・遅延を測ってから。届かない環境で配線すると学習が偽陽性で全失敗する）、`NOTIFY_EXPECT_WINDOW_MS`(150ms)より遅い自己注入由来の通知が外部扱いになる恐れ（配送が動いた今、実機で実測が必要）。
+- windows-latest実機検証（2026-09-23、`b1-notify-probe-verify`ワークフロー、GJI+ATOK配列、`examples/notify_probe.rs`+`tools/e2e/b1-notify-probe.ps1`）: 配送は動作（全wParam履歴を取得できた）。**第2の欠陥を発見・修正**: `IMN_SETOPENSTATUS`/`IMN_SETCONVERSIONMODE`の定数が誤り（0x2/0x3、正しくは0x8/0x6）で、修正前は`ImmSetOpenStatus`反転(true→false→true)を実際に行っても外部検出0件。修正後はプロセス内反転2/2検出、別プロセスからのIMC_SETOPENSTATUS・物理キー注入も検出(7件)、自己注入6押下での偽陽性0件（猶予窓150ms、GJI warm時）。再測定（自己注入40押下×2）でも偽陽性0件。コールド（起動後120秒idle→40押下）でもidle中の外部通知0件・偽陽性0件（GJI+ATOK）。**MS-IME本体は未測定**: `RealImeDriver::new()`がconv 0x0001未対応で初期化に失敗する（別問題、`normalized_mode`）ため、プローブも走らせられない。
 
 ### B-2. [中〜高] 閉状態セルが1つに潰れ、採用セルが実行ごとに変わる
 
