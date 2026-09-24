@@ -109,8 +109,57 @@ impl std::fmt::Display for RejectReason {
 /// `PersistedCell`一覧を`key_effect_predictor::Cell`一覧へ変換する。表現できないセル
 /// （VKが表に無い・変換モードが表現不能・`prediction: None`＝未測定または非決定と判定済み）は
 /// 結果に含めない（「予測なし」に読み替える、B-1 Blockerの縮退経路）。
+///
+/// 閉セルは`conv: None`（ワイルドカード）へ変換されるため、閉状態の変換モードだけが違う
+/// 複数セル（例: mode 0x09 と 0x00）が同じ検索キー`(stage, key)`に潰れる。潰れた先を
+/// 反復順（`HashMap`由来の書き出し順）で先勝ちにすると採用セルが実行ごとに変わる（B-2）ため、
+/// [`merge_closed_cells`]で入力順に依存しない形へ畳む。
 fn convert_cells(cells: &[PersistedCell]) -> Vec<Cell> {
-    cells.iter().filter_map(convert_cell).collect()
+    let mut out: Vec<Cell> = Vec::new();
+    // 検索キーごとの閉セル群（キー出現順は結果の並びにだけ影響し、内容には影響しない）。
+    let mut closed_groups: Vec<Vec<Cell>> = Vec::new();
+    for c in cells.iter().filter_map(convert_cell) {
+        if c.open() {
+            out.push(c);
+        } else if let Some(g) = closed_groups
+            .iter_mut()
+            .find(|g| g[0].stage() == c.stage() && g[0].key() == c.key())
+        {
+            g.push(c);
+        } else {
+            closed_groups.push(vec![c]);
+        }
+    }
+    out.extend(closed_groups.iter().filter_map(|g| merge_closed_cells(g)));
+    out
+}
+
+/// 同じ`(stage, key)`の閉セル群を1セルへ畳む。開閉（`after_open`）と行方（`disp`）が全セルで
+/// 一致するときだけ採用し、押下後の変換モードだけが食い違うなら`after_conv: None`
+/// （「押下後の変換が不明」＝追跡を捨てる、既存の意味）にする。`after_open`/`disp`が食い違う
+/// なら閉状態の隠れたモードに依存して予測できないので、セルごと落とす（「予測なし」）。
+fn merge_closed_cells(group: &[Cell]) -> Option<Cell> {
+    let first = group.first()?;
+    if group
+        .iter()
+        .any(|c| c.after_open() != first.after_open() || c.disp() != first.disp())
+    {
+        return None;
+    }
+    let after_conv = if group.iter().all(|c| c.after_conv() == first.after_conv()) {
+        first.after_conv()
+    } else {
+        None
+    };
+    Some(make_cell(
+        false,
+        None,
+        first.stage(),
+        first.key(),
+        first.after_open(),
+        after_conv,
+        first.disp(),
+    ))
 }
 
 fn convert_cell(pc: &PersistedCell) -> Option<Cell> {
@@ -717,6 +766,37 @@ mod tests {
         // 既知同士の矛盾は従来どおり不一致に数える。
         let conflicting = convert_cells(&[pcell(true, 0x09, false, 0xF2, Some((true, 0x09)))]);
         assert_eq!(mismatch_ratio(&conflicting, &one_cell_bundled_table()), 1.0);
+    }
+
+    /// B-2: 閉状態の変換モードだけが違う複数セルは、入力順に依存しない1セルへ畳まれる。
+    #[test]
+    fn closed_cells_differing_only_by_hidden_mode_collapse_order_independently() {
+        let mk = |mode: u8, after_mode: u8| {
+            let mut pc = pcell(false, mode, false, 0xF2, Some((true, after_mode)));
+            pc.prediction.as_mut().unwrap().disp = Disposition::None;
+            pc
+        };
+        let a = mk(0x00, 0x00);
+        let b = mk(0x09, 0x09);
+        let fwd = convert_cells(&[a.clone(), b.clone()]);
+        let rev = convert_cells(&[b, a]);
+        assert_eq!(fwd, rev);
+        assert_eq!(fwd.len(), 1);
+        assert!(fwd[0].after_open());
+        assert_eq!(
+            fwd[0].after_conv(),
+            None,
+            "保持モードが割れるので追跡を捨てる"
+        );
+    }
+
+    /// B-2: 閉状態のモードで開閉結果そのものが割れるセルは予測なしにする（順序非依存）。
+    #[test]
+    fn closed_cells_disagreeing_on_after_open_are_dropped() {
+        let a = pcell(false, 0x00, false, 0xF2, Some((true, 0x09)));
+        let b = pcell(false, 0x09, false, 0xF2, Some((false, 0x00)));
+        assert!(convert_cells(&[a.clone(), b.clone()]).is_empty());
+        assert!(convert_cells(&[b, a]).is_empty());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # develop 過去1週間の fix コードレビュー結果（2026-09-23）
 
-状態: **調査完了。修正済み: A-1 / C-1（PR #272）・B-1配送（PR #274、生存確認は未配線）・B-7 / B-8 / B-9（PR #280）・B-2の副次（PR #278、`mismatch_ratio`は`4af30b0c`）。B-4 / B-5 / B-6は`fix/adr192-t5-learned-table-consistency`で修正（下記）。未修正: A-2 / B-2本体 / B-3 / B-10**（2026-09-24時点、origin/develop `bbd6d133`で再確認）
+状態: **調査完了。修正済み: A-1 / C-1（PR #272）・B-1配送（PR #274、生存確認は未配線）・B-7 / B-8 / B-9（PR #280）・B-2の副次（PR #278、`mismatch_ratio`は`4af30b0c`）。B-4 / B-5 / B-6は`fix/adr192-t5-learned-table-consistency`で修正（下記）。未修正: A-2 / B-3 / B-10**（B-2本体は修正済み）（2026-09-24時点、origin/develop `bbd6d133`で再確認）
 
 ## 対象と方法
 
@@ -51,7 +51,7 @@
 - 影響: 閉→漢字キーで開くとき、予測変換モードがひらがな/英数で入れ替わる
 - 副次（PLAUSIBLE）: 同梱表の閉セルは `after_conv: None` のため `mismatch_ratio`（`:167`）で開く系5セルが常に不一致。比較対象が100セル未満なら `MAX_MISMATCH_RATIO`（5%）超過で、正しい学習表が `MismatchesBundledTooMuch` で不採用になりやすい
 - 関連タスク: `adr196-t2-mismatch-adjudication.md`、`adr196-t3-bundled-table-versioning.md`
-- 対応（2026-09-23〜24）: 副次の`mismatch_ratio`/`diff_against_bundled`は同梱表側の`after_conv=None`を「主張なし」として扱うよう修正済み（PR #278、`4af30b0c`）。本体（`convert_cell`が閉セルを`conv: None`へ潰す点、`key_effect_runtime.rs`）は未修正のまま
+- 対応（2026-09-23〜24）: 副次の`mismatch_ratio`/`diff_against_bundled`は同梱表側の`after_conv=None`を「主張なし」として扱うよう修正済み（PR #278、`4af30b0c`）。本体は2026-09-24修正: `convert_cells`が閉セルを`(stage, key)`ごとに`merge_closed_cells`で入力順非依存に畳む（`after_open`/`disp`が全一致なら採用し`after_conv`だけ割れたら`None`、`after_open`/`disp`が割れたらセルごと落とす）。回帰テスト2件（`closed_cells_*`）
 
 ### B-3. [中・PLAUSIBLE・未修正] `classify_robust` の頑健性が既定 k=2 ではほぼ効かない
 
