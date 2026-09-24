@@ -20,6 +20,19 @@ fn main() {
     };
     let baseline = driver.diag_notify_external_count();
     println!("BASELINE notify_external={baseline}");
+    // コールド測定: 起動後にIMEを長時間idleにしてから押下する（環境変数で秒数指定）。
+    let idle: u64 = std::env::var("PROBE_IDLE_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    if idle > 0 {
+        driver.diag_pump(Duration::from_secs(idle));
+        println!(
+            "IDLE secs={idle} notify_external_during_idle={}",
+            driver.diag_notify_external_count() - baseline
+        );
+    }
+    let baseline = driver.diag_notify_external_count();
     for key in [2usize, 5].into_iter().cycle().take(40) {
         let report = driver.press(key);
         println!(

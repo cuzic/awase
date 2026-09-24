@@ -15,7 +15,7 @@ Remove-Item (Join-Path $dir "notify-probe.stop") -ErrorAction SilentlyContinue
 $p = Start-Process -FilePath (Resolve-Path $Exe) -WorkingDirectory $dir -PassThru -RedirectStandardOutput $out -WindowStyle Normal
 $null = $p.Handle
 $ready = $false
-for ($i = 0; $i -lt 240 -and -not $ready; $i++) {
+for ($i = 0; $i -lt 900 -and -not $ready; $i++) {
     Start-Sleep -Milliseconds 500
     $ready = (Get-Content $out -ErrorAction SilentlyContinue) -contains "WAIT_EXTERNAL"
     if ($p.HasExited) { break }

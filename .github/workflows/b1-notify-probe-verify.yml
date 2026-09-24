@@ -48,3 +48,8 @@ jobs:
         run: |
           Copy-Item config.toml target\debug\examples\ -ErrorAction SilentlyContinue
           ./tools/e2e/b1-notify-probe.ps1
+      - name: notify probe (cold, 120s idle)
+        shell: pwsh
+        env:
+          PROBE_IDLE_SECS: '120'
+        run: ./tools/e2e/b1-notify-probe.ps1
