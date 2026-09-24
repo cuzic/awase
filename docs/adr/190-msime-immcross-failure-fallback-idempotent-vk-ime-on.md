@@ -11,7 +11,7 @@ summary: |-
   `[ImmCross, MsImeDirect]`にし、述語を`kind==MsIme`だけにする(同時にしか入れられない)。`KanjiToggle`(非冪等な機構)は到達不能になるので**同じ変更で撤去する**
   (ユーザー判断: VK_IME_ON/OFFはIME種別によらず同じ挙動で常に安全。`ImeKeyKind::KanjiToggle`=物理VK_KANJIキーの分類は別物で残す)。
 status: |-
-  **実装済み(未マージ)・CI実機E2Eで検証済み**。opus round1〜3で収束(round3: Blocker無し)、KanjiToggle撤去をユーザー判断で決定に追加。実装はfeb49ffd(決定1〜4)・ef2d73a7(FallbackSent削除)・c2163b69(CI判定窓)。CI実機(run 35545478699): sc-dbe/sc-shift-msime-native 各3/3 PASS、sc-kanji-msime-native 3回目はスパイク側のkが+6.9s遅れて判定窓を超えた「?」だったのでチェッカーを直した(窓の上限=次の手順の押下)。PR #231のCI(windows-build含む全ジョブ)PASS、`/code-review low`の指摘4件のうち実害のある2件(--seq不正トークン、欠番符号のテスト)を修正。実機(dragonflyg4)検証済み(下記「実機検証結果」)。CI検証済み(a8: run 35515406371、a9: run 35516320434)。実機(dragonflyg4)検証済み(下記「実機検証結果」)。
+  **実装済み(developマージ済み: `feb49ffd`)・CI実機E2Eで検証済み**。opus round1〜3で収束(round3: Blocker無し)、KanjiToggle撤去をユーザー判断で決定に追加。実装はfeb49ffd(決定1〜4)・ef2d73a7(FallbackSent削除)・c2163b69(CI判定窓)。CI実機(run 35545478699): sc-dbe/sc-shift-msime-native 各3/3 PASS、sc-kanji-msime-native 3回目はスパイク側のkが+6.9s遅れて判定窓を超えた「?」だったのでチェッカーを直した(窓の上限=次の手順の押下)。PR #231のCI(windows-build含む全ジョブ)PASS、`/code-review low`の指摘4件のうち実害のある2件(--seq不正トークン、欠番符号のテスト)を修正。実機(dragonflyg4)検証済み(下記「実機検証結果」)。CI検証済み(a8: run 35515406371、a9: run 35516320434)。実機(dragonflyg4)検証済み(下記「実機検証結果」)。
 related_adr:
   - "ADR-063"
   - "ADR-089"

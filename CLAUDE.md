@@ -93,8 +93,16 @@ crates/win32-worker/          Worker-thread primitives used by win32-async
 crates/awase-settings/        Settings GUI (eframe/egui) — separate binary, awase-settings.exe
 crates/awase-gji-config/      GJI (Google 日本語入力) config file handling
 crates/awase-vkmap/           VK code / scan code mapping tables
-crates/awase-keymap-learn/     IME key-effect learning (not the ADR-176 calibration UI): traversal planner + offline simulator (pure logic, OS-independent, ADR-191)
+crates/awase-keymap-learn/     IME key-effect learning (not the ADR-176 calibration UI), pure logic, OS-independent (ADR-191/195/196):
+                              traversal planner + offline simulator, plus learning/self-verification (verify, judgement, mismatch_tag),
+                              persistence (persist), re-measurement (remeasure), staleness detection and revalidation (staleness,
+                              revalidation), external-write detection (external_write), walk traces (walk_trace)
+crates/awase-keymap-learn-win/ Windows real-machine driver for the above: independent short-lived learning process (ADR-195 stage 1,
+                              ADR-196 hook_monitor/ime_notify)
 crates/awase-build-support/   Shared build.rs logic (manifest embedding etc.)
+crates/xtask-adr-evidence/    Checks that fix-requires-evidence.md's family table is covered by the pre-push target regex (CI adr-evidence-consistency, ADR-158 TB2)
+crates/measured-macro/        `#[measured(...)]` attribute macro forcing value_ms/commit metadata on tuning.rs constants (ADR-158 TE1)
+crates/actuation-choke-point-macro/  `#[actuation_choke_point(callers = ...)]` observation-phase attribute macro (ADR-158 TE3 prerequisite)
 crates/timed-fsm/             Standalone timer-aware FSM framework (published to crates.io independently)
 ```
 

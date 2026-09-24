@@ -273,7 +273,7 @@ ImeModel (state/ime_model.rs)
 ├─ app_policy: AppImePolicy    ← アプリ別ポリシー
 ├─ input_barrier              ← Ctrl+IME chord transaction
 ├─ force_guards: ForceGuardSet ← 強制 ON ガード
-├─ drift_monitor: DriftMonitor ← 観測失敗追跡
+├─ observe_miss_monitor: ObserveMissMonitor ← 観測失敗の連続回数の記録（閾値到達での force-on は撤去済み）
 ├─ pending: Option<ImeTransition> ← apply 進行中 transition
 ├─ applied_open: Option<bool>  ← 最後の apply 成功状態
 └─ applied_at_ms: u64         ← apply 成功時刻 (0=未確認)
@@ -316,7 +316,7 @@ fn effective_open(&self) -> bool {
 
 ```rust
 pub struct ForceGuard {
-    pub reason: ForceOnReason,     // BrokenAppBootstrap / PanicReset / DetectMissThreshold / ProfilePolicy
+    pub reason: ForceOnReason,     // PanicReset / ProfilePolicy（BrokenAppBootstrap は variant のみ残存・追加する本番コードは無い、`621bf93c`）
     pub expires_at: Option<Instant>, // TTL（None = 永続）
     pub generation: u64,           // 発火時の状態 generation
 }
@@ -325,9 +325,8 @@ pub struct ForceGuard {
 guard が active な条件: `guards` が空でない（TTL 未失効）。
 
 **TTL 設計の方針:**
-- `BrokenAppBootstrap`: フォーカス変更で無効化すべき（`focus_generation` 追加が必要）
+- `BrokenAppBootstrap`: 撤去済み（`621bf93c`、2026-09-18。追加元の `try_force_on_bootstrap` を削除。variant は残るが到達不能）
 - `PanicReset`: 確認済み観測で無効化すべき
-- `DetectMissThreshold`: Observer 成功で無効化（実装済み）
 
 ### 4-5. Observer ループ
 
@@ -356,7 +355,7 @@ refresh_ime_state()
 |------|------|------|
 | `Some(true/false)` | 観測成功 | observations に記録、キャッシュ更新 |
 | `None` | 観測失敗 (timeout 等) | 前回値を維持 |
-| miss_count ≥ 3 | 連続失敗 | `force_on_broken_app_bootstrap` = true |
+| miss_count ≥ 3 | 連続失敗 | 回数を記録するのみ（旧: `force_on_broken_app_bootstrap` = true。`621bf93c` で撤去） |
 
 ---
 
@@ -466,7 +465,7 @@ VK_IME_ON/OFF や IMM32 SetOpen は冪等だが、物理 VK_KANJI は冪等で�
 | SetOpen 後リフレッシュ | 20ms | 安全ネット |
 | GJI 検出窓 | 2500ms | フォーカス後の GJI I/O 確認 |
 | Ctrl+無変換 救済窓 | 50ms | TIMER_IME_OFF_RESCUE |
-| drift_monitor 閾値 | 3 | 連続観測失敗 → force_on 発動 |
+| observe_miss 閾値 | 3 | 連続観測失敗の記録のみ（旧: force_on 発動、`621bf93c` で撤去） |
 
 **タイミング定数の限界:** 複数のタイマーが重なる状況では数値調整だけでは対処しきれない。
 将来的には遷移フェーズ（`IntentRecorded → ApplyDispatched → AwaitingFirstObservation → Verified`）

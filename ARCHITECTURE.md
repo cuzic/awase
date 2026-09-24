@@ -40,11 +40,11 @@ IME の ON/OFF 状態は複数の方法で検出しています：
 
 1. **シャドウ追跡** — 半角/全角・IME ON/OFF キーをリアルタイムで捕捉（イベント駆動）
 2. **OS ポーリング** — 500ms ごとに IMM32 経由で確認（300ms タイムアウト保護付き）
-3. **SSOT フォールバック** — 検出が連続して失敗した場合、awase 自身が IME 状態の正とみなして管理を引き取る
+3. ~~SSOT フォールバック~~ — 検出が連続して失敗した場合に awase が IME 状態の正を引き取って ON にする機構。`621bf93c`（2026-09-18）で**撤去済み**（現在は観測失敗の回数を記録するだけで、強制 ON はしない。[ADR-179](docs/adr/179-mode-key-actuation-follow-only-vs-toggle-ownership.md)「領域A・Cの撤去」参照）
 
 IMM32 ブリッジが機能しないアプリ（Chrome・WezTerm 等の TSF ネイティブアプリ）では最初から Layer 1 のシャドウ追跡のみで動作し、Layer 2/3 を迂回します。これにより「検出失敗 = IME オフ」と誤判定することなく、正しい状態を維持します。
 
-SSOT（Single Source of Truth）フォールバックが実際に発動するのは「未知の IMM-broken アプリへの初回フォーカス時」に限られます。Chrome・WezTerm 等の既知アプリはアプリ種別キャッシュ（`imm_cache.toml`）に学習済みのため Layer 3 には到達しません。
+かつて存在した SSOT フォールバック（未知の IMM-broken アプリへの初回フォーカス時に強制 ON する `try_force_on_bootstrap`）は撤去済みです。Chrome・WezTerm 等の既知アプリはアプリ種別キャッシュ（`cache.toml`、旧 `imm_cache.toml`）に学習済みで、Layer 3 相当の経路は現在ありません。
 
 ### TSF コールドスタートの自動回復
 

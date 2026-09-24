@@ -679,7 +679,7 @@ $ grep -rn 'issue_actuation_order(\|issue_actuation_order_with_origin(\|issue_or
 
 **通常の段階的計画（A-1のshadowログで`would_have_blocked`実発火頻度を測り、
 入口ごとに1つずつ強制へ倒す）を経ず、ユーザー指示により3箇所を一括で
-強制へ切り替えた。** 理由: [ADR-178](178-msi-uninstall-preserve-userdata.md)
+強制へ切り替えた。** 理由: [ADR-179（旧178）](179-mode-key-actuation-follow-only-vs-toggle-ownership.md)
 領域A撤去（`f83084b3`/`621bf93c`、`apply_force_on_for_imm_broken`/
 `try_force_on_bootstrap`の削除）により、差分オラクルが指摘していた
 9件の不一致のうち最大リスクの2件（old-1: bootstrap force-ON、old-2:

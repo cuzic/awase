@@ -13,7 +13,7 @@ summary: |-
   PassThrough)で通過マーク+20ms再読み取り(typing-idleバイパス)を予約し、観測が成功した直後に対象hwndのIntentStoreと`last_intent`を
   捨てる(新`ImeEvent::ModeKeyPassedThrough`)。スパイクCIで全12手順追随(各3/3)・cold各3/3・退行なし。
 status: |-
-  **決定・実装済み(未マージ)**。スパイク(`spike/adr187-follow-observe`)でCI検証済み。本実装は`feat/adr187-follow-mode-key-passthrough`。
+  **決定・実装済み(developマージ済み: `c949ba33`)**。スパイク(`spike/adr187-follow-observe`)でCI検証済み。本実装は`feat/adr187-follow-mode-key-passthrough`。
   未検証: TsfNative/Imm32Unavailable(メモ帳・Windows Terminal・Chrome/Edge)、Microsoft IME本体(別の既存の問題、ADR-186)。
 related_adr:
   - "ADR-090"

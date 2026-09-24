@@ -555,7 +555,7 @@ open軸で表現できない動作にFollowOnlyを付ける方法が無いので
 いるが、間の07:37:49.508にも同種の`Engine deactivated (NotRomajiInput)`＝再検出があり、
 07:35:44.993の書き込みの持続とは断定できない（同種の書き込みが繰り返された結果の可能性が高い）。決定1が抑止しない
 Idle起点の単独タップでも同様に起きる、IME beliefの再発ファミリー（`state/ime_model.rs`・
-`runtime/ime_coordinator.rs`）の問題で、ADR-178がforce-ONを撤去した直後で消費側の
+`runtime/ime_coordinator.rs`）の問題で、ADR-179（旧178）がforce-ONを撤去した直後で消費側の
 前提も変わっているため、単独で評価する。**本ADRでは修正案を出さない。**
 （07:34:38の`belief_on=false explicit_intent=Some(false)`は、conv=0x19の07:33:16
 Ctrl+無変換による正規のIME OFFで、この件の根拠にならない。）
@@ -579,7 +579,7 @@ ADR-179の実装者向けの注意: 無変換は`delegate_to_open_axis=None`の�
 （所有者は`PhysicalDelivery`のまま、実際に配送されるかはコアの`resolve_pending_thumb_as_single`
 の結果で決まる）こと。
 
-また現ブランチ（ADR-178領域Aの撤去作業中）に新しい対症療法を足すことになる点は
+また現ブランチ（ADR-179（旧178）領域Aの撤去作業中）に新しい対症療法を足すことになる点は
 認識している。決定1は`resolve_pending_thumb_as_single`に条件を1つ足すもので、
 撤去済みの`reassert`/force-onとは別の領域（FSM内の単独タップ解決）である。
 

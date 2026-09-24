@@ -11,7 +11,7 @@ summary: |-
   Toggleへ上書きする(`runtime/mod.rs`の既存の上書き点に1つ追加、既存のHiragana/Katakana/Henkan/Muhenkan上書きと同じ様式)。
 status: |-
   **[ADR-191で範囲を拡張]** 本文の「GJIがアクティブなときだけ」「GJI以外・GJI判定が不明なときは静的モデルのまま」は、ADR-191（実装の現状9・11）でGJIと、CLSIDで同定できたMicrosoft IME本体の両方に適用する形へ変わった（未検出・第三者IMEは静的に決めず、生キーを通して観測に追随）。以下は当初（2026-09-20）の決定。
-  **決定・実装済み(未マージ)・CI検証済み**。`msime-hz`/`atok-hz`(`check_toggle.py`)は、実装前は8手順中4手順が反転せず、実装後は各3/3で全8手順が反転しEngineも追随。
+  **決定・実装済み(developマージ済み: `651cab8d`)・CI検証済み**。`msime-hz`/`atok-hz`(`check_toggle.py`)は、実装前は8手順中4手順が反転せず、実装後は各3/3で全8手順が反転しEngineも追随。
 related_adr:
   - "ADR-186"
   - "ADR-187"

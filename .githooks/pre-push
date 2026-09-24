@@ -33,11 +33,15 @@ warn_if_missing_evidence() {
     # fix-requires-evidence.mdの「IME actuation合流点」表が挙げる5つ目の入口
     # （reassert_explicit_physical_key）で、どちらのファイルにも含まれていな
     # かったため新規追加した。
-    local target='(crates/awase-windows/src/(hook\.rs|output/|tsf/|focus/|runtime/(ime_coordinator|focus_tracking|key_pipeline|conv_actuation|open_chain|executor|transport|ime_refresh|message_handlers|outbox|mod)\.rs|state/(ime|conv_mode|observation_store)|ime_controller\.rs|ime\.rs|input_defer\.rs|platform\.rs|tuning\.rs)|src/engine/nicola_fsm\.rs|lints/actuation_call_guard/src/lib\.rs)'
+    local target='(crates/awase-windows/src/(hook\.rs|output/|tsf/|focus/|runtime/(ime_coordinator|focus_tracking|key_pipeline|conv_actuation|open_chain|executor|transport|ime_refresh|message_handlers|outbox|mod)\.rs|state/(ime|conv_mode|observation_store|platform_state|mode_key_pass|key_effect_)|ime_controller\.rs|ime\.rs|input_defer\.rs|platform\.rs|tuning\.rs)|src/engine/nicola_fsm\.rs|lints/actuation_call_guard/src/lib\.rs)'
     # 2026-09-23: fix-requires-evidence.mdの「IME actuation合流点」行が
     # `lints/actuation_call_guard/src/lib.rs::RESTRICTED_CALLS`をSSOTとして
     # 参照しているのに対し、target正規表現が未カバーだった（CI
     # `adr-evidence-consistency`が検出、`xtask-adr-evidence`参照）。
+    # 2026-09-24: state/platform_state.rs(ImeStateHub・check_drift_correction)、
+    # state/mode_key_pass.rs(ADR-187、desired_openの揃え)、state/key_effect_*.rs
+    # (KeyEffectPredictedがbeliefを直接動かす)を対象に追加。fix-requires-evidence.md
+    # の「IME belief」行と同じコミットで揃えている。
     # 2026-09-11: docs/known-bugs.md を docs/known-bugs/*.md に分割したため、
     # エビデンス対象パスをディレクトリ側に変更（旧ファイルは以後リダイレクト
     # スタブのみで差分が発生しない）。

@@ -449,3 +449,5 @@ ADR-153（`explicit_ime_action_target`、無変換/変換の明示config設計�
 ADR-172（TsfNative ON方向救済4系統の整理）、ADR-173
 （`solo_tap_ime_action_apps`、却下された代替案）、ADR-174
 （パススルー+belief再観測、Blocker未解消のまま保留）。
+
+> 注記（2026-09-24）: ADR-172・ADR-173 の本文ファイルは develop に無い。両ADRのレビュー記録はgitタグ `archive/adr172-tsfnative-rescue-consolidation`（`f0868bcb`）・`archive/adr173-solo-tap-ime-action-by-process-name`（`cbb412cf`）に保存されている（[index](index.md)の172・173行参照）。

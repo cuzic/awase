@@ -20,6 +20,7 @@ status: |-
   `actuation_owner`書き込み点のguard新設、`NotAModeKey`/`AwaseExplicit`
   非統合の固定）は「未解決点」節に記載。`key_pipeline.rs:1688`のコメント
   訂正〈独立したドキュメント負債〉は2026-09-17に対応済み。**
+  **【2026-09-24更新】決定2の`ModeKeyActuationOwner`列挙と配線は、ADR-191の撤去（`502c6673`、2026-09-21）で到達不能として撤去済み（コード中の出現0件）。**
   **【2026-09-19更新】決定1・決定2は実装済み**（`2e8b834b`・`09ea4ce1`）。その後の実機A/Bで
   実験コミット4件（`b9e45e55`・`176d37af`・`c0814776`・`f0e36b0e`）が追加され、Passthrough設定
   を前提にした実験が**現在も有効**。**developへマージする前に、実験を撤去して既定（Suppress）へ
@@ -41,7 +42,7 @@ related_adr:
 
 # ADR-179: 無変換/変換の非親指キー時actuation-autoを撤去し、`ModeKeyActuationOwner`列挙で責務を統一管理する
 
-**8ラウンドのopus-adversarial-consultを経て収束済み。決定1・2は実装済み（実験コミット4件は2026-09-20に撤去済み）。** 設計の
+**8ラウンドのopus-adversarial-consultを経て収束済み。決定1・2は実装済み（実験コミット4件は2026-09-20に撤去済み）。ただし決定2の`ModeKeyActuationOwner`は、ADR-191の撤去（`502c6673`、2026-09-21）で到達不能として列挙・配線ごと撤去済み。** 設計の
 紆余曲折（当初案からの縮小・4ラウンド連続で踏んだ「送信元が移動するだけ」
 という同型の誤り等）は末尾「レビュー経緯」節にまとめてある——まずは
 以下の決定・スコープ・撤去対象を読めば実装に着手できる。
@@ -527,6 +528,21 @@ MS-IME側のコメント（`message_handlers.rs:1031-1064`）には、過去の
   プロファイルやInputRelayへの横取り拡張。将来の別ADR候補。
 - ADR-176較正機能・ADR-174分類ロジック自体の変更。
 - Eisu・Kanji（`VK_KANJI`本体）の扱いの変更。
+
+## 領域A・Cの撤去（旧称: ADR-178撤去プロジェクト、2026-09-24追記）
+
+本ADRは当初178番で起票したが、developにマージ済みの別ADR-178（MSIアンインストール時のユーザーデータ保持）と番号が衝突したため179へ採番し直した（[index](index.md)の179行）。番号の付け替え前に書かれたコミット本文・ADR・BUG・コードコメントの「ADR-178撤去プロジェクト」「ADR-178領域A/B/C」は、**本ADR（旧178）が起点の撤去作業**を指す。領域の内訳と撤去の事実は次のとおり（いずれも2026-09、developに含まれる）。
+
+- **領域A（TsfNative向けON方向救済4系統〈force-on / drift / warmup / reassert〉の削減）**: ユーザー方針は「他のactuation機構がかなり残ってしまっている」ことを問題視し、drift correctionだけを残して他を撤去、実機A/Bで問題が出れば復元する、というもの（設計レビューより実機検証を優先）。
+  - `f83084b3`（領域A 1/3）: reassert（[ADR-121](121-explicit-physical-ime-key-idempotent-reassert.md) D1、BUG-37対策の物理IMEキー冪等再送）を撤去。`apply_ime_open_with_view`の許可呼び出し元 4→3。
+  - `621bf93c`（領域A 2/3）: force-on機構（[ADR-098](098-tsfnative-applied-confirmed-laundering-and-force-on-removal.md)決定1-c、再試行クールダウン込み、`apply_force_on_for_imm_broken`/`try_force_on_bootstrap`/`force_on_and_correct_romaji`）を撤去。`apply_ime_open_with_view`の許可呼び出し元 3→2。`ForceOnReason::BrokenAppBootstrap`のvariantは`ForceGuardSet`/`open_warrant.rs`が同じ列挙型を共有するため意図的に残した（追加する本番コードは無くなった）。
+  - **warmupは撤去対象外**: 4系統に数えていたが、warmupは書き込みではなく読み取り専用のゲート（送信可否の待機）であり、「actuationを減らす」目的に合わないため対象から外した。
+  - 残したdrift correctionは観測に基づくOFF方向の回復として現存する。
+- **領域B**: IME actuation合流点（旧「6箇所」）の設計検討。[ADR-180](180-actuation-gate-recheck-deduplication.md)が扱う。
+- **領域C**: 半角英数（ObservedEisu）検出時にawase自身がIME OFFを送っていた`EngineSync::DirectInput`の撤去。`f5338edc`、[ADR-185](185-directinput-open-axis-write-teardown.md)（BUG-146）。
+- **決定2の撤去**: 本ADR決定2の`ModeKeyActuationOwner`は、ADR-191の撤去後にshadow_actionの供給元から0x1C/0x1Dが外れて`PhysicalDelivery`が到達不能になったため、`502c6673`で列挙・配線ごと撤去した。
+
+残存する書き込み経路の棚卸し（A/B結果）は、[review-2026-09-24-09](../tasks/review-2026-09-24-09-remaining-active-writes-inventory.md)の完了後にこの節へ追記する。
 
 ## 関連
 

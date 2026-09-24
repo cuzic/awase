@@ -72,7 +72,7 @@ precondition）を新設して症状を隠す」という積み重ねが問題�
 「IME actuation合流点」表は元々6エントリを挙げていたが、`git log -S`で調査した
 ところ、うち2つ（`runtime/mod.rs::reassert_explicit_physical_key`〈ADR-121 D1〉、
 `runtime/mod.rs::force_on_and_correct_romaji`〈ADR-158 TB2〉）は
-ADR-178領域A撤去（コミット`f83084b3`/`621bf93c`、2026-09-18）で**既に削除済み**
+ADR-179（旧178）領域A撤去（コミット`f83084b3`/`621bf93c`、2026-09-18）で**既に削除済み**
 だった。表は追随できておらず、2026-09-22（コミット`d8076516`）で修正済み。
 
 現存する4エントリ:
