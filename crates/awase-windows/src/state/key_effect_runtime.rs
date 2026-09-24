@@ -253,12 +253,20 @@ pub fn describe_bundled_cell(pc: &PersistedCell, preset: KeymapPreset) -> Option
     ))
 }
 
-/// 押下後の変換モードが**矛盾**するか。`None`は「不明（追跡を捨てた）」であって
-/// 「変換モードが変わらない」等の主張ではないため、片方でも`None`なら矛盾とみなさない
+/// 押下後の変換モードが**矛盾**するか。同梱表側の`None`は「不明（追跡を捨てた）」であって
+/// 「変換モードが変わらない」等の主張ではないため、同梱表が`None`なら矛盾とみなさない
 /// （実測: GJI+ATOKで閉→開のセルは、同梱表が`after_conv: None`、学習側が実測モード`Some(x)`を
 /// 持ち、旧・単純な`==`比較だと10セルが偽の不一致になった）。
+///
+/// 逆向き（学習側が`None`で同梱表が`Some`）は矛盾として数え続ける: 学習表が同梱表より
+/// 情報を落としている（変換モードの追跡が途切れる）ことを、採否ゲートが検出できなくなるため
+/// （code-review 2026-09-24 指摘）。
 fn after_conv_conflicts(learned: Option<Conv>, bundled: Option<Conv>) -> bool {
-    matches!((learned, bundled), (Some(l), Some(b)) if l != b)
+    match (learned, bundled) {
+        (_, None) => false,
+        (Some(l), Some(b)) => l != b,
+        (None, Some(_)) => true,
+    }
 }
 
 /// [`diff_against_bundled`]の本体。テストで同梱表全体ではなく小さな合成`Cell`列を渡せるように
@@ -726,6 +734,20 @@ mod tests {
         cells[0].prediction.as_mut().unwrap().disp = Disposition::None;
         let diff = diff_against_bundled_cells(&cells, &none_after_conv_bundled_table());
         assert_eq!(diff.mismatched.len(), 1);
+    }
+
+    /// 逆向き: 学習側が`after_conv: None`(追跡を捨てた)で同梱表が`Some`なら、学習表の方が
+    /// 情報を落としているので不一致に数える(採否ゲートが弱くならない)。
+    #[test]
+    fn learned_unknown_after_conv_against_known_bundled_is_still_a_mismatch() {
+        // 学習側: 開→開でモード0x01(raw & 0x0B==0x01でConv表現不能→after_conv None)。同梱表: Some(C10)。
+        let cells = vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x01)))];
+        let learned = convert_cells(&cells);
+        assert_eq!(learned.len(), 1, "変換できるセルであること");
+        assert_eq!(learned[0].after_conv(), None);
+        let diff = diff_against_bundled_cells(&cells, &one_cell_bundled_table());
+        assert_eq!(diff.mismatched.len(), 1);
+        assert_eq!(mismatch_ratio(&learned, &one_cell_bundled_table()), 1.0);
     }
 
     #[test]
