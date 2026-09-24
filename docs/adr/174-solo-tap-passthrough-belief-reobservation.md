@@ -193,6 +193,8 @@ ONになったという事実を、awaseのbeliefへ反映すること」**に�
 
 ## 却下した代替案: ADR-173（生キー抑止方式）
 
+> 注記（2026-09-24）: ADR-172・ADR-173 の本文ファイルは develop に無い。両ADRのレビュー記録はgitタグ `archive/adr172-tsfnative-rescue-consolidation`（`f0868bcb`）・`archive/adr173-solo-tap-ime-action-by-process-name`（`cbb412cf`）に保存されている（[index](index.md)の172・173行参照）。
+
 ADR-153 の `muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`
 （`explicit_ime_action_target`、ケース2/3改）は、無変換/変換の生キーを
 **抑止**（GJIへ渡さない）し、awase自身が明示的にactuateすることでこの
