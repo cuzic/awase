@@ -27,6 +27,7 @@
 - 失敗シナリオ（MS-IME 本体等）: t≈20ms の最初の OsPoll が古い値を読む（IME 反応は最大 62ms）→ `desired_open` が押下前の値に揃い `aligned=true` → t≈80ms の再読み取りが時間切れ → 窓後の成功観測でも揃え直されない → `last_intent` は破棄済みで drift correction がユーザーのモードキー操作を書き戻す
 - 修正方針案: `KEY_EFFECT_SETTLE_MS` 以降の観測に揃えたときだけ `aligned` を立てる。要テスト
 - 前提: 1回目成功+2回目時間切れという実機タイミング。実機ログでの確認が先
+- 実機測定（2026-09-24、windows-latest、`ci/a2-mode-key-pass-timeline`、run 35962229239 / 35963409931、通過計1,207押下）: A-2の条件（最初の成功が古い値かつ窓内の成功がその1回だけ）は**0件で再現せず**。形だけ近いもの（窓内の成功が1回だけ、2回目がタイムアウト）はMS-IME本体で8/318（2.5%）あったが、その1回目は古い値ではなかった。`aligned`判定は変更しない。副産物として`KEY_EFFECT_SETTLE_MS`の裾（古い値を読む最遅が131ms）が判明し100→170msへ変更（`fix/key-effect-settle-170`）。集計は`tools/e2e/ime_key_matrix/mode_key_pass_timeline.py`
 - 実測（2026-09-24、担当: rust-nicola-3f、検証専用ブランチ`ci/a2-mode-key-pass-timeline`〈developへマージしない〉）: 1回目（run 35962229239、windows-latest、5構成×3回、91押下）でA-2成立（最初の成功が古い値で、窓内の成功がその1回だけ）は**0件**。GJI+MS-IMEプリセットは各回の最初の押下で65〜71msに古い値・121〜146msに新しい値（後続の読み取りは成功）。MS-IME本体は最初の押下で窓内の読み取りが全滅（BUG-158型、`on_expiry`で対処済み）。2回目（run 35963409931、ランダムウォーク150手×5シード×2回×3構成）は集計中。方針: 再現しなければ`aligned`判定は変えず、分布しだいで`KEY_EFFECT_SETTLE_MS`（現状100ms、`tuning.rs`）だけを実測根拠つきで見直す（tuning-constants規約）。
 
 ### A-3. 確認して問題なしとしたもの（参考）
