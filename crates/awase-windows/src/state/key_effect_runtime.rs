@@ -912,6 +912,46 @@ mod tests {
         );
     }
 
+    /// CI専用(`--ignored`、環境変数`KL_TABLE_PATH`): 実機の学習プロセスが書いた
+    /// `keymap-learn-table.json`を、未改造GJI ATOKとして実行時の採否判定
+    /// (`load_runtime_table`、`mismatch_ratio`込み)に通す。修正前(`after_conv`の単純`==`比較)の
+    /// 不一致率も併せて出力し、偽不一致が実際に採否を分けたかを実測で確認できるようにする。
+    #[test]
+    #[ignore = "CI用: 実機の学習表(KL_TABLE_PATH)が要る"]
+    fn ci_real_learned_table_is_adopted_for_unmodified_atok() {
+        let path = std::env::var("KL_TABLE_PATH").expect("KL_TABLE_PATH");
+        let path = std::path::Path::new(&path);
+        let persisted = read_persisted_table(path).expect("読める");
+        let learned = convert_cells(&persisted.cells);
+        let bundled = bundled_table(KeymapPreset::Atok);
+        let (mut compared, mut strict_mismatch) = (0usize, 0usize);
+        for b in bundled {
+            if let Some(l) = learned
+                .iter()
+                .find(|c| c.matches_lookup_key(b.open(), b.conv(), b.stage(), b.key()))
+            {
+                compared += 1;
+                if l.after_open() != b.after_open()
+                    || l.after_conv() != b.after_conv()
+                    || l.disp() != b.disp()
+                {
+                    strict_mismatch += 1;
+                }
+            }
+        }
+        println!(
+            "CI-RESULT compared={compared} old_strict_mismatch={strict_mismatch} old_ratio={:.3} new_ratio={:.3} limit={MAX_MISMATCH_RATIO}",
+            strict_mismatch as f64 / compared.max(1) as f64,
+            mismatch_ratio(&learned, bundled),
+        );
+        let result = load_runtime_table(path, KeymapPreset::Atok, true);
+        println!(
+            "CI-RESULT load_runtime_table={:?}",
+            result.as_ref().map(Vec::len)
+        );
+        assert!(result.is_ok(), "{result:?}");
+    }
+
     #[test]
     fn load_runtime_table_distinguishes_not_found_from_real_io_errors() {
         // ファイル不在(正常系、ログしない)と、存在するが読み取れない(異常系、ログすべき)を
