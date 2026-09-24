@@ -6,7 +6,7 @@ title: |-
   `ActuationDecisionRecord`の3通りの組み立て方統一（decision2）は
   3ラウンドの検証の結果、費用対効果が負と判明し見送る
 summary: |-
-  ADR-178領域B（旧「6箇所のIME actuation合流点」）の設計検討、3ラウンドの
+  ADR-179（旧178）領域B（旧「6箇所のIME actuation合流点」）の設計検討、3ラウンドの
   opus-adversarial-consultを経た。round1: 「領域A撤去で合流点6→4」は誤りで
   `decide_gate`呼び出しは5箇所のまま不変と判明、当初提案の共有gateヘルパー
   （`with_app`内包）は`fallback_write`から呼ぶと再入で恒久的にfail-open化

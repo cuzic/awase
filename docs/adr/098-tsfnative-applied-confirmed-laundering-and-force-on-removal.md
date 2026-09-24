@@ -555,4 +555,4 @@ force-on ブロック撤去 + `apply_ime_open_with_applied` 削除 + `architectu
 
 ## 撤去の記録（2026-09-24追記）
 
-決定1-c（force-onの再試行クールダウン）を含むforce-on機構は、`621bf93c`（2026-09-18、`apply_force_on_for_imm_broken`/`try_force_on_bootstrap`/`ForceOnRetryState`/`FORCE_ON_RETRY_COOLDOWN_MS`を削除）で**撤去済み**。旧称「ADR-178撤去プロジェクト領域A」、根拠は現[ADR-179](179-mode-key-actuation-follow-only-vs-toggle-ownership.md)の「領域A・Cの撤去」節参照。冒頭のstatusは撤去前の状態を述べたもの。`ForceOnReason::BrokenAppBootstrap`のenum variantは意図的に残されたが、追加する本番コードは無い（死蔵コード、review-2026-09-24-10のB-6）。
+決定1-c（force-onの再試行クールダウン）を含むforce-on機構は、`621bf93c`（2026-09-18、`apply_force_on_for_imm_broken`/`try_force_on_bootstrap`/`ForceOnRetryState`/`FORCE_ON_RETRY_COOLDOWN_MS`を削除）で**撤去済み**。旧178番（当時の呼称は「ADR-178撤去プロジェクト」）の領域A、根拠は現[ADR-179](179-mode-key-actuation-follow-only-vs-toggle-ownership.md)の「領域A・Cの撤去」節参照。冒頭のstatusは撤去前の状態を述べたもの。`ForceOnReason::BrokenAppBootstrap`のenum variantは意図的に残されたが、追加する本番コードは無い（死蔵コード、review-2026-09-24-10のB-6）。

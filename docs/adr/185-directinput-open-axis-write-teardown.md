@@ -2,7 +2,7 @@
 id: ADR-185
 title: |-
   半角英数（ObservedEisu）を検出するとawaseが自らIME OFFを送ってしまう`EngineSync::DirectInput`を撤去する
-  （BUG-146、ADR-178撤去プロジェクトの領域C）
+  （BUG-146、ADR-179（旧178）撤去プロジェクトの領域C）
 summary: |-
   **ユーザー確認済みの症状**: 無変換で半角英数にすると、その後（約0.1〜1秒後）に直接入力（IME OFF）になる。
   原因はawase自身。`idle-conv-check`が`conv=0x10`（NATIVE=0）を読んで`ObservedEisu`と判定すると、
@@ -20,7 +20,7 @@ summary: |-
 status: |-
   **ドラフトv3（opus-adversarial-consult round1・round2反映、収束判定済み）**。実装着手可。
 related_adr:
-  - "ADR-178"
+  - "ADR-179"
   - "ADR-182"
   - "ADR-184"
   - "ADR-090"

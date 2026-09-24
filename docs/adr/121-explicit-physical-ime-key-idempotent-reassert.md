@@ -930,4 +930,4 @@ Blacklist 限定・settle-defer・デバウンス）は、この単純な撤去�
 
 ## 撤去の記録（2026-09-24追記）
 
-決定D1（reassert: 物理IME訂正キーno-op時の冪等再送）は、`f83084b3`（2026-09-18、`reassert_explicit_physical_key`ほか関連配線を削除、`apply_ime_open_with_view`の許可呼び出し元 4→3）で**撤去済み**。TsfNative向けON方向救済4系統（force-on/drift/warmup/reassert）のうち、drift correctionだけを残し実機A/Bで問題が出れば復元する方針の一環（旧称「ADR-178撤去プロジェクト領域A」、現[ADR-179](179-mode-key-actuation-follow-only-vs-toggle-ownership.md)の「領域A・Cの撤去」節参照）。冒頭のstatus「D1実装済み」は撤去前の状態を述べたもので、現在のコードにD1は存在しない。
+決定D1（reassert: 物理IME訂正キーno-op時の冪等再送）は、`f83084b3`（2026-09-18、`reassert_explicit_physical_key`ほか関連配線を削除、`apply_ime_open_with_view`の許可呼び出し元 4→3）で**撤去済み**。TsfNative向けON方向救済4系統（force-on/drift/warmup/reassert）のうち、drift correctionだけを残し実機A/Bで問題が出れば復元する方針の一環（旧178番（当時の呼称は「ADR-178撤去プロジェクト」）の領域A、現[ADR-179](179-mode-key-actuation-follow-only-vs-toggle-ownership.md)の「領域A・Cの撤去」節参照）。冒頭のstatus「D1実装済み」は撤去前の状態を述べたもので、現在のコードにD1は存在しない。
