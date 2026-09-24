@@ -422,12 +422,7 @@ impl RealImeDriver {
     /// セッション全体を失敗にすべきかは別途`session_failed()`で問い合わせる
     /// （round1 M1対応——以前はここで判定した「上限超過」を誰も消費していな
     /// かった）。
-    ///
-    /// `status_changed`は直近の試行で開閉・変換モードが実際に変わったか。
-    /// フックの取りこぼし、または1回の注入に通知が2件以上届いた
-    /// （`measurement_suspicious`）場合は、観測経路の停止・複数要因の混入を疑い、
-    /// 外部干渉と同様に試行を無効化する。通知の不着は警告のみ（下記参照）。
-    fn check_session_interference(&self, status_changed: bool) -> bool {
+    fn check_session_interference(&self) -> bool {
         let mut tracker = self.interference.get();
         let verdict = tracker.observe(
             self.external_total(),
@@ -436,38 +431,15 @@ impl RealImeDriver {
             self.focus_intact(),
         );
         self.interference.set(tracker);
-        // 通知経路の停止は無効化の根拠にしない: MS-IME本体は開閉・変換モードが
-        // 変わっても`WM_IME_NOTIFY`をEDITへ送らず（windows-latest実測: status_changed=true
-        // でも通知0件）、必須にすると全試行が無効化される。フックの取りこぼしと
-        // 1注入あたり複数通知のみを異常とみなす。
-        if !self
-            .notify_monitor
-            .is_alive_given_status_changed(status_changed)
-        {
-            eprintln!(
-                "[awase-keymap-learn-win] press: 状態は変化したが開閉・変換モード通知が届かなかった(警告のみ)"
-            );
-        }
-        let observation_bad =
-            !self.hook_monitor.liveness().is_alive() || self.measurement_suspicious();
-        if !verdict.contaminated() && !observation_bad {
+        if !verdict.contaminated() {
             return false;
         }
-        if verdict.contaminated() {
-            log_contamination_cause(
-                "press",
-                verdict.external,
-                verdict.physical,
-                verdict.focus_lost,
-            );
-        } else {
-            eprintln!(
-                "[awase-keymap-learn-win] press: 観測経路の異常で試行を無効化 \
-                 (hook_alive={}, suspicious={})",
-                self.hook_monitor.liveness().is_alive(),
-                self.measurement_suspicious()
-            );
-        }
+        log_contamination_cause(
+            "press",
+            verdict.external,
+            verdict.physical,
+            verdict.focus_lost,
+        );
         let mut monitor = self.session_monitor.get();
         if monitor.record_invalidated_trial() {
             self.session_failed.set(true);
@@ -561,7 +533,7 @@ impl RealImeDriver {
                 self.note_decode_error("ImmGetConversionStatusが失敗した");
                 return Err(windows::core::Error::from_thread());
             }
-            let mode = match normalized_mode(raw.0, open) {
+            let mode = match normalized_mode(raw.0) {
                 Ok(mode) => mode,
                 Err(err) => {
                     self.note_decode_error(&format!("未知の変換モード値 0x{:04X}", raw.0));
@@ -590,7 +562,7 @@ impl RealImeDriver {
         )?;
         Some(Status {
             open,
-            mode: normalized_mode(u32::try_from(raw).ok()?, open).ok()?,
+            mode: normalized_mode(u32::try_from(raw).ok()?).ok()?,
             composing: self.observe_imm().ok()?.status.composing,
         })
     }
@@ -688,8 +660,7 @@ impl ImeDriver for RealImeDriver {
         // `Executor::press`の再試行ループ（`max_press_retries`回）のたびに同じ
         // フォーカス喪失を重複して`session_monitor`へ計上してしまう
         // （未送達自体は`Anomaly::KeyNotDelivered`として別途数えられている）。
-        let contaminated =
-            delivered && self.check_session_interference(before.status != after.status);
+        let contaminated = delivered && self.check_session_interference();
         PressReport {
             delivered,
             cost_ms: 0.0,
@@ -784,16 +755,9 @@ impl ImeDriver for RealImeDriver {
     }
 }
 
-/// IMEが閉じているときのconvは、IMM側が0x0001等の既知表に無い値を返す
-/// （MS-IME本体で実測: open=0でImmGetConversionStatus=0x01、TSF compartmentは0x00）。
-/// 閉状態ではconvに意味がないので直接入力(0x00)へ正規化する。開状態の未知値は
-/// 誤分類を避けるため従来どおりエラーにする。
-fn normalized_mode(raw: u32, open: bool) -> WinResult<u8> {
+fn normalized_mode(raw: u32) -> WinResult<u8> {
     Conv::from_raw(raw).map_or_else(
         || {
-            if !open {
-                return Ok(0x00);
-            }
             Err(windows::core::Error::new(
                 windows::core::HRESULT(0x8000_4005u32.cast_signed()),
                 "unsupported conversion mode",
