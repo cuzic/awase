@@ -31,6 +31,7 @@ mod app {
     };
     use awase_keymap_learn_win::RealImeDriver;
     use awase_windows::state::ime_kind::TipIdentity;
+    use awase_windows::state::key_effect_predictor::TableKey;
 
     const KEYS: [u32; 14] = [
         0x1D, 0x1C, 0xF2, 0xF1, 0xF0, 0xF3, 0x19, 0x16, 0x1A, 0x1B, 0x0D, 0x20, 0x08, 0x41,
@@ -100,9 +101,18 @@ mod app {
     ///   `prediction: None`で必ず1件書く。書き手が未測定セルを省略できると、
     ///   読み手側の縮退率チェック(`coverage_ratio`)の分母を書き手が恣意的に
     ///   操作でき、チェックの意味が無くなる。
+    /// - B-5対応: 読み手が**そもそも表現できないキー**(`TableKey::from_vk`が`None`。
+    ///   学習が入力中状態へ入るために使う文字キー0x41)のセルは書かない。書くと全セルの
+    ///   1/14(約7.1%)が「変換できないセル」として`coverage_ratio`の分母に入り、
+    ///   `MIN_COVERAGE_RATIO`(80%)の実余裕が約13%まで削られる。これは測定できた/できない
+    ///   の判断ではなく読み手の語彙の外にあるキーなので、M5の懸念(測ったセルを省いて分母を
+    ///   操作する)には当たらない。
     fn build_persisted_cells(table: &Table) -> Vec<PersistedCell> {
         table
             .cells()
+            .filter(|&(&(_, key_idx), _)| {
+                u16::try_from(KEYS[key_idx]).is_ok_and(|vk| TableKey::from_vk(vk).is_some())
+            })
             .map(|(&(status, key_idx), _)| PersistedCell {
                 status,
                 key: KeyId(KEYS[key_idx] as u16),
@@ -508,7 +518,8 @@ mod app {
         match RealImeDriver::new(KEYS.to_vec()) {
             Ok(driver) => driver,
             Err(err) => {
-                let total_cells_estimate = atok_like().states.len() as u32 * KEYS.len() as u32;
+                let total_cells_estimate =
+                    atok_like().distinct_status_count() as u32 * KEYS.len() as u32;
                 let reason = if RealImeDriver::is_quiet_window_error(&err) {
                     "quiet_window"
                 } else {
@@ -742,7 +753,7 @@ mod app {
         let cost = CostModel::event();
         let mut executor = Executor::new(driver, AnomalyPolicy::default(), ReadPolicy::Single);
 
-        let total_cells = model.states.len() as u32 * KEYS.len() as u32;
+        let total_cells = model.distinct_status_count() as u32 * KEYS.len() as u32;
         executor.set_progress_sink(make_progress_sink(total_cells));
 
         let req = Req::default();
@@ -1078,6 +1089,19 @@ mod app {
                 cells[0].prediction, None,
                 "決定的と言えないセルはNoneで書くべき(省略ではない)"
             );
+        }
+
+        /// B-5回帰テスト: 読み手が表現できないキー(文字キー0x41、`KEYS`の添字13)の
+        /// セルは書かない。書くと`coverage_ratio`の分母の約1/14が常に変換不能になる。
+        #[test]
+        fn build_persisted_cells_omits_keys_the_reader_cannot_represent() {
+            let text_key_idx = KEYS.iter().position(|&vk| vk == 0x41).expect("KEYSに0x41");
+            let mut table = Table::new();
+            table.record(st(true, 0x09), text_key_idx, None, out(true, 0x09));
+            table.record(st(true, 0x09), 1, None, out(false, 0));
+            let cells = build_persisted_cells(&table);
+            assert_eq!(cells.len(), 1, "0x41のセルは書かない");
+            assert_eq!(cells[0].key, KeyId(0x1C));
         }
 
         /// テストごとに衝突しない一時ファイルパスを作る(`std::env::temp_dir()`+

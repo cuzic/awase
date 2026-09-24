@@ -1,6 +1,6 @@
 # develop 過去1週間の fix コードレビュー結果（2026-09-23）
 
-状態: **調査完了。修正済み: A-1 / C-1（PR #272）・B-1配送（PR #274、生存確認は未配線）・B-7 / B-8 / B-9（PR #280）・B-2の副次（PR #278、`mismatch_ratio`は`4af30b0c`）。未修正: A-2 / B-2本体 / B-3 / B-4 / B-5 / B-6 / B-10**（2026-09-24時点、origin/develop `bbd6d133`で再確認）
+状態: **調査完了。修正済み: A-1 / C-1（PR #272）・B-1配送（PR #274、生存確認は未配線）・B-7 / B-8 / B-9（PR #280）・B-2の副次（PR #278、`mismatch_ratio`は`4af30b0c`）。B-4 / B-5 / B-6は`fix/adr192-t5-learned-table-consistency`で修正（下記）。未修正: A-2 / B-2本体 / B-3 / B-10**（2026-09-24時点、origin/develop `bbd6d133`で再確認）
 
 ## 対象と方法
 
@@ -61,24 +61,27 @@
 - 影響: 入力中 BS（75/25）が同文脈で1対1に割れると25%側が確定予測として書き出される（`declared_not_det` が偽でやり直しも起きない）。逆に単発の誤観測で不要な全体再巡回
 - 注: PR #282/#286は多数決ロジックの共通化（`table::majority_of`）と再カウント解消のリファクタで、(a)(b)の挙動は変えていない（同数タイのテストのみ追加）
 
-### B-4. [中・CONFIRMED・未修正] 進捗の分母が実セル数の約2倍
+### B-4. [中・CONFIRMED・修正済み(2026-09-24)] 進捗の分母が実セル数の約2倍
 
 - 場所: `keymap-learn-win/src/main.rs:299`、`:261-265`
 - 欠陥: `total_cells = states.len() × 14 = 12×14 = 168`。Table は `Status` 単位で入力中4段階が同 Status にまとまるため区別できる Status は6個、`covered1` 上限は約84
+- 対応: `Machine::distinct_status_count()`を追加し、分母を`distinct Status数 × キー数`にした（`states.len()`→重複除去、`awase-keymap-learn/src/model.rs`、`main.rs`の2箇所）。回帰テスト`distinct_status_count_merges_hidden_states_sharing_a_status`
 - 影響: 進捗バーが約50%で止まる。ETA は完了時にも経過時間相当の「残り」を表示。result 行の `cells=/total=` も同様にずれる
 
-### B-5. [中・未修正] 変換不能キー（0x41）が縮退率の分母に常に入る
+### B-5. [中・修正済み(2026-09-24)] 変換不能キー（0x41）が縮退率の分母に常に入る
 
 - 場所: `keymap-learn-win/src/main.rs:21`（`KEYS`）、`key_effect_runtime.rs:143`、`key_effect_predictor.rs:119-135`
 - 欠陥: `TableKey::from_vk(0x41)` は `None` だが、書き出し側は訪問セルを全部書く（M5 方針）ため全セルの 1/14（約7.1%）が「変換できないセル」として `coverage_ratio` の分母に入る（事実は CONFIRMED）
+- 対応: 書き手(`build_persisted_cells`)が、読み手の語彙外のキー（`TableKey::from_vk`が`None`＝0x41）のセルを書かないようにした。読み手の`coverage_ratio`は変更していない（既存テスト`coverage_too_low_is_rejected`の「表に無いVKは変換不能」の意図を保つため）。テスト`build_persisted_cells_omits_keys_the_reader_cannot_represent`はWindows専用cfgのため、windows-build CIで初めて実行される
 - 影響（PLAUSIBLE）: `MIN_COVERAGE_RATIO=0.80` の実余裕は約13%。入力中 BS/Esc/文字キーの履歴依存・非決定セルが両モード分で6件前後出ると `CoverageTooLow`
 
-### B-6. [中・PLAUSIBLE・未修正] `CoUninitialize` の後に COM インターフェースを Release している
+### B-6. [中・PLAUSIBLE・修正済み(2026-09-24、実機未検証)] `CoUninitialize` の後に COM インターフェースを Release している
 
 - 場所: `keymap-learn-win/src/driver.rs:508-514`（`Drop::drop`）
 - 欠陥: `drop` 本体で `CoUninitialize()` を呼ぶが、フィールド `thread_mgr`/`thread_compartments` は `drop` の後に Release される
 - 影響: 正常終了時や quiet window 失敗で `new()` 内の `driver` が drop されたとき、アンロード済み COM への Release でアクセス違反の恐れ（result 行出力後なので主な影響は非0終了コードとクラッシュダイアログ）
-- 修正方針案: COM フィールドを `Option` にして `drop` 内で先に take するか、`CoUninitialize` を専用ガード型の Drop に分離
+- 対応: `ComApartment`ガード型を追加し、`RealImeDriver`の最後のフィールド（`_com`）に置いて、COMインターフェース解放後に`CoUninitialize`が走るようにした。`new()`内の早期returnでもローカル変数の解放順で同じ順序になる。`cargo check --target x86_64-pc-windows-msvc`のみ確認、実機未検証
+- 修正方針案（採用しなかった案）: COM フィールドを `Option` にして `drop` 内で先に take するか、`CoUninitialize` を専用ガード型の Drop に分離
 
 ### B-7. [低〜中・PLAUSIBLE・修正済み（PR #280）] 読み取りスレッドが `child` のロックを握ったまま `wait()` し UI が固まる
 
@@ -98,10 +101,11 @@
 - 欠陥: 画面に「他の窓では通常どおり入力できます」とあるが、フックは全システムの物理キー入力を汚染として数え、フォーカス喪失で `send_gated` が即 `session_failed` を立てる
 - 影響: 説明どおり別窓で入力するとセッション確実に失敗
 
-### B-10. [潜在・未修正] `staleness.rs` の `NotSupported` が `Fresh` と判定される
+### B-10. [潜在・未修正・見送り中] `staleness.rs` の `NotSupported` が `Fresh` と判定される
 
 - 場所: `crates/awase-keymap-learn/src/staleness.rs:75-81`
 - 「表に指紋あり」かつ「現在の IME が `NotSupported`」の組が `Fresh` になる。GJI → 指紋方式のない IME への切替が陳腐化として検出されない
+- 見送り理由（2026-09-24）: `staleness::check`は現在も呼び出し元が無く、既存テスト`fresh_when_current_fingerprint_not_supported`が`NotSupported`→`Fresh`を意図した挙動として固定している。ADR196-T5の再検証（`revalidation.rs`、`--revalidate`）が別モデルで陳腐化判定を担う方向なので、`check`の意味を変える前にT5側の扱いを決める必要がある
 - 現状は呼び出し元が未配線のため未発現。**ADR196-T5 の配線時に見直すこと**（`adr196-t5-revalidation-not-invalidation.md`）
 
 ## C. エンジン / gji-config / CI / lints

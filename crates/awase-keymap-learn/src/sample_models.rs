@@ -304,6 +304,17 @@ mod tests {
     }
 
     #[test]
+    fn distinct_status_count_merges_hidden_states_sharing_a_status() {
+        // 進捗の分母(B-4): 隠れ状態は同じStatusにまとまるので、状態数より少ない。
+        let m = atok_like();
+        let distinct = m.distinct_status_count();
+        assert!(distinct < m.states.len(), "{distinct} < {}", m.states.len());
+        // 観測表のセル数の上限は distinct × キー数。
+        let statuses: std::collections::HashSet<_> = m.states.iter().map(|s| s.status).collect();
+        assert_eq!(distinct, statuses.len());
+    }
+
+    #[test]
     fn atok_hiragana_toggles_the_mode_when_open() {
         let m = atok_like();
         let s0 = m.initial;
