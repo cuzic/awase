@@ -348,24 +348,23 @@ mod app {
     /// `key=value`の空白区切りで、失敗理由は空白を含まない固定トークンだけを載せる。
     fn run_revalidate_mode() {
         let process_start = SystemTime::now();
-        let line = match revalidate_table(process_start) {
-            Ok((outcome, score)) => match outcome {
-                RevalidationOutcome::Passed => format!(
-                    "revalidate status=passed accuracy={:.3} predicted={}",
-                    score.accuracy(),
-                    score.predicted()
-                ),
-                RevalidationOutcome::Invalidated(reason) => format!(
-                    "revalidate status=invalidated reason={reason:?} accuracy={:.3} predicted={}",
-                    score.accuracy(),
-                    score.predicted()
-                ),
-            },
+        let result = revalidate_table(process_start);
+        let line = match &result {
+            Ok((RevalidationOutcome::Passed, score)) => format!(
+                "revalidate status=passed accuracy={:.3} predicted={}",
+                score.accuracy(),
+                score.predicted()
+            ),
+            Ok((RevalidationOutcome::Invalidated(reason), score)) => format!(
+                "revalidate status=invalidated reason={reason:?} accuracy={:.3} predicted={}",
+                score.accuracy(),
+                score.predicted()
+            ),
             Err(reason) => format!("revalidate status=failure reason={reason}"),
         };
         println!("{line}");
         let _ = std::io::stdout().flush();
-        if line.starts_with("revalidate status=failure") {
+        if result.is_err() {
             std::process::exit(1);
         }
     }
@@ -379,6 +378,10 @@ mod app {
         let path = table_file_path().ok_or("no_config")?;
         let json = std::fs::read_to_string(&path).map_err(|_| "read_failed")?;
         let persisted = from_json(&json).map_err(|_| "parse_failed")?;
+        // 失効済み(Rejected)の表は、再検証に合格しても復活させない(再学習が必要)。
+        if matches!(persisted.judgement, Some(TableJudgement::Rejected(_))) {
+            return Err("already_rejected");
+        }
         let driver = build_driver(Strategy::S6);
         let tip = driver.tip_identity();
         let config1_db_at_start = (tip == TipIdentity::Gji)

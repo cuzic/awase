@@ -152,7 +152,8 @@ pub fn probe_gji_env_version(process_start: SystemTime) -> EnvVersionProbe {
 }
 
 /// [`probe_gji_env_version`] を別スレッドで走らせ、`timeout` 内に返らなければ
-/// [`EnvVersionProbe::Unknown`](fail open)を返す。応答しないスレッドは切り離す。
+/// [`EnvVersionProbe::Unknown`](fail open)を返す。応答しないスレッドは切り離すだけで
+/// 回収しないため、短周期で繰り返し呼ぶ用途には向かない(現状は学習プロセスが1回だけ呼ぶ)。
 #[must_use]
 pub fn probe_gji_env_version_with_timeout(
     process_start: SystemTime,
