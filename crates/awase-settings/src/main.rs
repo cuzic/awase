@@ -12,7 +12,6 @@ use awase_windows::scancode_map::{ScancodeMapPreset, ScancodeMapSelection};
 use awase_windows::vk::VkCodeExt as _;
 
 mod bug_report;
-#[cfg(target_os = "windows")]
 mod keymap_learn_launcher;
 mod keymap_learn_status;
 mod scancode_map_admin;

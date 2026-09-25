@@ -9,7 +9,7 @@ summary: |-
   (3) 手動較正は廃止し自動学習に一本化する（ユーザー決定 2026-09-24）。calibration の移設は不要。学習なしでも設定読取り+内蔵表で動く機能は維持する。(4) cache.toml の書込はアトミックにする（PR #302）。
   ConfirmMode の2択化は確定エンジンの設定で永続化先と無関係なので範囲外（後継 ADR は未起票）。
 status: |-
-  草案（2026-09-24）。opus-adversarial-consult round1・2 の指摘を反映済み。決定3 はユーザー決定済み。opus round2 の指摘反映後、確定待ち。
+  採用（2026-09-24）。opus-adversarial-consult round1・2 の指摘を反映済み。決定3 はユーザー決定済み。
 related_adr:
   - "ADR-176"
   - "ADR-191"
