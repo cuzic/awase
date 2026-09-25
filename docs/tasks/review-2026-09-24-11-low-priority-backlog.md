@@ -14,6 +14,8 @@ source_review: 俯瞰レビュー（2026-09-24、origin/develop ae0ccfb3 基準�
 
 `related_adr` は B-7 に直接関係する ADR だけに絞っている（ADR-186 は BUG-162、ADR-197 は T5 の前提）。01〜10 が扱う ADR は各ファイルの frontmatter を参照。なお `docs/tasks/` の YAML frontmatter は `docs-frontmatter-convention.md` の規約対象外で、この系列（review-2026-09-24-*）内だけで揃えた独自書式である。
 
+> **追随注記（ADR-199、2026-09-25）**: 08 は [ADR-199](../adr/199-derive-key-roles-from-user-ime-keymap.md) の T0〜T14 に置換。対応: 01・06 → T3（学習表による狭め）、08 → T2〜T4（判定関数・予測経路・`is_open_toggle_for` 撤去）、09 → T9〜T10・T12（F13〜F24・無変換/変換・MS-IME レジストリ）、10 → T7・T11（status・文書同期）、07 → ADR-176 撤去済み（ADR-198 決定3）で ADR-191 決定4 の見直しのみ（T7）、04 → T11・T14（`ime_toggle` 既定の文書追随）。
+
 ## 全体表（優先度と依存）
 
 依存の矢印は「先に決める側 → 後で使う側」。各ファイルの「他ファイルとの依存」節と一致させてある。ただし、各ファイル側がまだ追随していない箇所が5つある（02・05・07・10。下の「各ファイルへの申し送り」）。その箇所はこの表のほうを正とする。

@@ -10,6 +10,8 @@ source_review: 俯瞰レビュー（2026-09-24）の A-8 / A-10 / C-4 / C-5
 
 索引: [11](review-2026-09-24-11-low-priority-backlog.md)。裏取り基準は `5877f982`（origin/develop）。初版は `cbae84ff` 基準で、その後の差分（PR #293〜#296）は本件の対象ファイルに触れていない。
 
+> **追随注記（ADR-199、2026-09-25）**: ADR-176 手動較正の撤去は所有者決定済み（ADR-198 決定3、PR #304）。これに伴い ADR-191 決定4（「較正」）は ADR-195 の学習への読み替え・見直しが必要（[ADR-199](../adr/199-derive-key-roles-from-user-ime-keymap.md) の「既存 ADR・実装への影響」表を参照。ADR-176 の行は影響なし、ADR-191 決定1-1/RM3 は置換）。
+
 ## 背景
 
 v2 方針（calibration を config.toml から cache.toml へ移す、ConfirmMode の2択化、`app_overrides` の維持）は、リポジトリ内の docs/ADR には書かれていない。

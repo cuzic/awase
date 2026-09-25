@@ -16,6 +16,8 @@ C-7 の 08 担当分: ADR-195(A) により開閉書き込みは意図的に学�
 `runtime/transport.rs`・`src/config.rs`〉に差分なし）。着手時は `.claude/rules/worktree-per-session.md` に従い
 専用 worktree/branch を切ること。
 
+> **追随注記（ADR-199、2026-09-25）**: 本ファイルの論点は [ADR-199](../adr/199-derive-key-roles-from-user-ime-keymap.md)（キーの役割をユーザーの IME キー設定から逆算する）に一般化・置換された。実装は ADR-199 の T 番号に従う。(B) 案（カスタム検出時に固定セットを外す）は ADR-199 決定4（役割の判定式）と T2〜T4 に移り、PR #308 の分岐は決定6-2 に包含される（0x19 は決定14）。
+
 ## ユーザー決定（2026-09-24）
 
 - **(B) 案を採る**: 採用中の学習表でそのキーのセルが開閉トグル以外を示すときだけ、固定セット（0xF3/0xF4）の `shadow_action` を外す。
