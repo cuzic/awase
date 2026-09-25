@@ -10,7 +10,28 @@ name: e2e-ime
 # ci/e2e-scenarios ブランチへの push は、操作シナリオ(名前が sc- で始まる構成、下のplan参照)だけを回す。
 # ci/e2e-calibration ブランチへの push は、ADR-191 の学習/検証ラウンド(名前が cal- で始まる構成)だけを回す。
 # (workflow_dispatch は既定ブランチにワークフローが無いと使えないので、構成を絞るには only 入力かこのブランチを使う)
+#
+# awase を起動する構成では、期待表(expect/rc)とは別に、ログの不変条件(異常検出器、check_invariants.py と
+# invariant_limits.json)も数えて summary に別の表で出す。既定では情報のみで、期待表の判定(終了コード)は変えない。
+# e2e-ime-smoke.yml(PR ゲート)は workflow_call で gate_mode=invariants を渡し、不変条件だけで合否を決める。
 on:
+  workflow_call:
+    inputs:
+      only:
+        description: '実行する構成名(workflow_dispatch の only と同じ書式)'
+        type: string
+        required: false
+        default: ''
+      runs:
+        description: '各構成の実行回数の上書き(空なら構成ごとの runs)'
+        type: string
+        required: false
+        default: ''
+      gate_mode:
+        description: "summary の合否: ''=期待表(expect/rc)で決める(既定) / 'invariants'=不変条件だけで決める(期待表は表示のみ)"
+        type: string
+        required: false
+        default: ''
   push:
     branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration]
     paths:
@@ -57,6 +78,8 @@ jobs:
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
+          # workflow_call の runs 入力(空なら構成ごとの runs のまま)
+          RUNS: ${{ inputs.runs || '' }}
         run: |
           import json, os
           # name: 構成名 / bin: 使うビルド成果物(撤去なしの構成は baseline を使い回す) / mutator: ablations/ 下のスクリプト
@@ -232,6 +255,9 @@ jobs:
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
             configs = [c for c in configs if not c['name'].startswith('cal-')]
+          if os.environ.get('RUNS', '').strip():
+            for c in configs:
+              c['runs'] = int(os.environ['RUNS'])
           # ビルドは bin ごとに1回(撤去なしの構成は baseline を共有)
           builds = [c for c in configs if c['bin'] == c['name']]
           if not any(c['bin'] == 'baseline' and c['name'] == 'baseline' for c in builds):
@@ -575,6 +601,17 @@ jobs:
           Get-Process awase, ime_key_matrix_spike, compartment_notify_probe, compartment_notify_probe_diag -ErrorAction SilentlyContinue | Stop-Process -Force
           exit 0
 
+      # 不変条件(異常検出器): 上の期待表(rc.txt)とは別に数え、結果は invariants.json / inv_rc.txt に書く(summary が別の表で集計)。
+      # awase を起動する構成だけ(awase=false の対照実験・probe 構成には awase.log が無い)。
+      - name: 不変条件(異常検出器)を数える
+        if: steps.gate.outputs.skip != 'true' && matrix.cfg.awase != 'false' && matrix.cfg.probe == ''
+        shell: pwsh
+        run: |
+          $env:PYTHONUTF8 = '1'
+          python tools\e2e\ime_key_matrix\check_invariants.py --config '${{ matrix.cfg.name }}' --json invariants.json dist\awase.log | Tee-Object -FilePath invariants.txt
+          "inv_rc=$LASTEXITCODE" | Out-File -FilePath inv_rc.txt -Encoding ascii
+          exit 0
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -588,6 +625,9 @@ jobs:
             dist/awase.log
             awase-stderr.log
             awase-filtered.log
+            invariants.txt
+            invariants.json
+            inv_rc.txt
           retention-days: 7
 
   summary:
@@ -603,6 +643,7 @@ jobs:
         shell: python
         env:
           CONFIGS: ${{ needs.plan.outputs.configs }}
+          GATE_MODE: ${{ inputs.gate_mode || '' }}
         run: |
           import json, os, re, sys
           configs = json.loads(os.environ['CONFIGS'])
@@ -630,6 +671,32 @@ jobs:
             bad |= verdict not in ('OK', '観測')
             rows.append(f"| {c['name']} | {c['expect']} | {c.get('check','expect')} | {n['pass_']} | {n['fail']} | {n['invalid']} | {n['missing']} | {verdict} |")
           out = ["## e2e-ime 撤去実験", "", "| 構成 | 期待 | 判定方式 | PASS | FAIL | INVALID | 欠落 | 判定 |", "|---|---|---|---|---|---|---|---|"] + rows
+          # 不変条件(check_invariants.py、上限は tools/e2e/ime_key_matrix/invariant_limits.json)。期待表とは別に集計する。
+          inv_rows, inv_bad = [], False
+          for c in configs:
+            if c.get('awase') == 'false' or c.get('probe'):
+              continue
+            for run in range(1, c.get('runs', 3) + 1):
+              f = f"results/result-{c['name']}-{run}/invariants.json"
+              if not os.path.exists(f):
+                inv_bad = True
+                inv_rows.append(f"| {c['name']} | {run} | 欠落 | - | - | - | - | - | |")
+                continue
+              j = json.load(open(f, encoding='utf-8'))
+              k = j.get('counts', {})
+              over = ', '.join(r['key'] for r in j.get('rows', []) if r['message'].startswith('FAIL'))
+              lower = ', '.join(r['key'] for r in j.get('rows', []) if '下げてよい' in r['message'])
+              note = '; '.join(x for x in (over and f'超過: {over}', lower and f'上限を下げてよい: {lower}', j.get('reason', '')) if x)
+              inv_bad |= j['verdict'] != 'OK'
+              inv_rows.append(f"| {c['name']} | {run} | {j['verdict']} | {k.get('i1_startup_drift_no_intent', '-')} | {k.get('i1_drift_no_intent_total', '-')} | {k.get('i2_unwarranted', '-')} | {k.get('i3_self_injected_ime_mode_keys', '-')} | {k.get('i3_warrant_shadow_would_block', '-')} | {note} |")
+          if inv_rows:
+            gate = os.environ.get('GATE_MODE') == 'invariants'
+            out += ["", "## 不変条件(異常検出器)" + ("(このrunの合否)" if gate else "(情報のみ、合否は上の表)"), "",
+                    "上限と対応するBUGは tools/e2e/ime_key_matrix/invariant_limits.json。各回の詳細は result-*/invariants.txt。", "",
+                    "| 構成 | 回 | 判定 | I1 起動直後の意図なしdrift | I1 全体 | I2 Unwarranted | I3 自己注入IMEモードキー | I3 would_have_blocked | 備考 |",
+                    "|---|---|---|---|---|---|---|---|---|"] + inv_rows
           open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8').write('\n'.join(out) + '\n')
           print('\n'.join(out))
+          if os.environ.get('GATE_MODE') == 'invariants':
+            sys.exit(1 if inv_bad or not inv_rows else 0)
           sys.exit(1 if bad else 0)

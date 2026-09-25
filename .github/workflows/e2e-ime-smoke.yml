@@ -1,0 +1,60 @@
+name: e2e-ime-smoke
+
+# PR ゲート: 実機E2E(GJI ATOK × awase、windows-latest)を軽い1構成だけ回し、awase.log の不変条件(異常検出器)を
+# 既知バグの許容上限(tools/e2e/ime_key_matrix/invariant_limits.json)と比べる。
+#
+# 手順(構成生成・ビルド・GJI 導入・実行・集計)は e2e-ime.yml を workflow_call で呼んで再利用する(複製しない)。
+# 構成は atok-passthrough-cold ×1回。baseline は BUG-162 で期待表が赤いので入れない。
+# 合否は不変条件の件数だけで決める(gate_mode=invariants)。期待表(check_consistency.py)の結果は summary に表示するが
+# 合否には使わない(フォーカス喪失で INVALID になる等、CI 環境の揺らぎで赤くならないように)。
+#
+# develop への push でも回す: PR から見えるキャッシュ(ビルド済み exe・rust-cache)は base ブランチ(develop)のものなので、
+# develop で保存しておくと PR のビルドが速くなる。develop 上の退行の早期検知も兼ねる。
+on:
+  pull_request:
+    branches: [develop]
+    paths:
+      - 'src/**'
+      - 'crates/awase-windows/**'
+      - 'crates/awase-keymap-learn/**'
+      - 'tools/e2e/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/e2e-ime.yml'
+      - '.github/workflows/e2e-ime-smoke.yml'
+  push:
+    branches: [develop]
+    paths:
+      - 'src/**'
+      - 'crates/awase-windows/**'
+      - 'crates/awase-keymap-learn/**'
+      - 'tools/e2e/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/e2e-ime.yml'
+      - '.github/workflows/e2e-ime-smoke.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: e2e-ime-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 不変条件の検出器そのものの単体テスト(実ログ抜粋のフィクスチャ)。数秒で終わる。
+  invariants-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: check_invariants.py の単体テスト
+        run: python3 -m unittest discover -s tools/e2e/ime_key_matrix -p 'test_*.py' -v
+
+  smoke:
+    uses: ./.github/workflows/e2e-ime.yml
+    with:
+      only: atok-passthrough-cold
+      runs: '1'
+      gate_mode: invariants
