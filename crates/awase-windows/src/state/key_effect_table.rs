@@ -629,7 +629,9 @@ pub fn learned_cells_show_non_toggle(cells: &[Cell], key: TableKey) -> bool {
     if !idle().any(|c| !c.open()) || !has_open(Conv::C19) || !has_open(Conv::C10) {
         return false;
     }
-    idle().filter(|c| c.open()).all(|c| c.after_open())
+    idle()
+        .filter(|c| c.open())
+        .all(super::key_effect_predictor::Cell::after_open)
 }
 
 #[cfg(test)]
