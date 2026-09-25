@@ -1096,6 +1096,16 @@ impl SettingsApp {
             return;
         }
         let exe_path = awase::paths::resolve_relative_to_exe("awase-keymap-learn-win.exe");
+        // 見つからないときにOSのエラー文だけを出すと原因が分かりにくい（PATH検索へのフォールバックも
+        // 避けるため、起動の前に存在を確かめる）。
+        if !exe_path.exists() {
+            self.keymap_learn_status = Some(format!(
+                "学習プロセス（awase-keymap-learn-win.exe）が見つかりません（{}）。\
+                 awase.exe と同じフォルダに置かれているか確認してください",
+                exe_path.display()
+            ));
+            return;
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         let mut child = match keymap_learn_launcher::spawn_learning_process(&exe_path, mode) {
             Ok(child) => child,

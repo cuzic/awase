@@ -145,6 +145,7 @@ fn known_component_guids_are_unchanged() {
     let known_guids = [
         ("MainExe", "FEE4643D-BD1C-4FBA-A6F0-3422691909C5"),
         ("SettingsExe", "83280E86-7973-43A3-84E9-A4B51E47751B"),
+        ("KeymapLearnExe", "E97CD6D4-11C4-4E3C-B193-17ADB4721F04"),
         ("ConfigFile", "57E95F1F-4785-40B7-A4E7-16613080C938"),
         ("NicolaYab", "9690990E-0D11-425B-B60C-AF23D5E87226"),
         ("NicolaKeytopYab", "5B75B3B2-A53D-493E-BB62-81AE2B17D8ED"),

@@ -12,6 +12,7 @@ $installDir = "$env:LOCALAPPDATA\awase"
 # Stop running process
 Get-Process -Name "awase" -ErrorAction SilentlyContinue | Stop-Process -Force
 Get-Process -Name "awase-settings" -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process -Name "awase-keymap-learn-win" -ErrorAction SilentlyContinue | Stop-Process -Force
 
 # Remove startup registry entry
 $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
@@ -52,6 +53,7 @@ if ($Purge) {
     # （コードレビュー指摘 P7b）。
     Remove-Item "$installDir\awase.exe" -ErrorAction SilentlyContinue
     Remove-Item "$installDir\awase-settings.exe" -ErrorAction SilentlyContinue
+    Remove-Item "$installDir\awase-keymap-learn-win.exe" -ErrorAction SilentlyContinue
     Remove-Item "$installDir\data" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item "$installDir\awase.log" -ErrorAction SilentlyContinue
     Write-Host "設定・配列ファイル（config.toml・layout/）は保持されました。"
