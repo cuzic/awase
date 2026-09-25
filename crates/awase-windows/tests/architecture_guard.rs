@@ -2574,6 +2574,35 @@ fn conv_write_call_sites_are_fixed_to_the_inventory() {
     );
 }
 
+/// BUG-163: 授権（warrant）が下りない drift 補正は、「検知」（journal・`DriftDetected`・バルーン通知）へ進めない。
+///
+/// `ir_apply_drift_correction` は、ImmCross の書き込み経路（`set_ime_open_ordered`、ADR-090 A-2 で
+/// `Unwarranted` を拒否する）で書けない補正を、journal・`DriftDetected`（`applied` を `Optimistic` に
+/// 偽装する）・バルーン通知へ流していた。`would_have_blocked()` の早期 return が、これらより前にあることを固定する。
+#[test]
+fn drift_correction_does_not_detect_when_the_warrant_would_block() {
+    let content = read_crate_file("src/runtime/ime_refresh.rs");
+    let production = production_code_only(&content);
+    let body = extract_fn_body(production, "fn ir_apply_drift_correction");
+    let guard = body.find(".would_have_blocked()").expect(
+        "`ir_apply_drift_correction` に `would_have_blocked()` の早期 return が必要（BUG-163）",
+    );
+    for later in [
+        "ir_notify_drift_giveup_diagnostic(",
+        "ImeEvent::DriftDetected",
+        "JournalEntry::ImeActuation",
+        "set_ime_open_ordered(",
+    ] {
+        let at = body
+            .find(later)
+            .unwrap_or_else(|| panic!("`{later}` が `ir_apply_drift_correction` に無い"));
+        assert!(
+            guard < at,
+            "`would_have_blocked()` の早期 return は `{later}` より前になければならない（BUG-163）"
+        );
+    }
+}
+
 /// ADR-089 §6 Phase C item 12（= ADR-086 INV-14 の未移行分の是正）:
 /// **同期経路の ROMAN 補完 IMC write は、捕獲済み `ActuationTarget` を必ず通る。**
 ///
