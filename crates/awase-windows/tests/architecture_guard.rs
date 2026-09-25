@@ -1315,11 +1315,10 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         // **ガードは残す**——ここが 0 でなくなったら、warrant を通さない
         // actuation 入口が復活したことを意味する。
         (".set_ime_open(", 0),
-        // 外部 2（ime_refresh.rs:534 focus change 強制 OFF / :752 drift correction
-        // の ImmCross 分岐）。**旧コメントは `:727` と書いていたが実在しない**
-        // ——近いのは `tracing::warn!` の文字列（`:725`）で、先頭に `.` が無いため
-        // そもそも needle に一致しない（ADR-090 §2.A.2(3) 脚注）。
-        (".set_ime_open_ordered(", 2),
+        // 外部 1（ime_refresh.rs drift correction の ImmCross 分岐）。
+        // **2026-09-25**: focus change 強制 OFF（`focus_change_enforce_off`）を撤去したため
+        // 2→1（docs/adr/191-calibration-experiments.md「A/B-1」）。
+        (".set_ime_open_ordered(", 1),
         // 呼び出し元ゼロ(死んだ入口)。`WindowsPlatform` のオーバーライドは
         // ADR-090 A-1 で削除し、`awase` 側のトレイト既定実装だけが残る。
         (".apply_ime_open(", 0),
@@ -1919,27 +1918,19 @@ fn ir_post_focus_change_snapshot_write_call_sites_are_accounted_for() {
     let production = production_code_only(&content);
     let body = extract_fn_body(production, "fn ir_post_focus_change_snapshot");
 
-    // **ADR-090 A-1**: 実呼び出しは `set_ime_open_ordered(` へ移った
-    // （トレイトメソッドには `ActuationOrder` 引数を足せないため、
-    // §2.A 設計案 3）。`set_ime_open(` に残るのはログメッセージ 1 件
-    // （`tracing::debug!("... set_ime_open(false) called ...")`）だけ。
-    let set_ime_open_count = count_real_calls(body, "set_ime_open(");
-    assert_eq!(
-        set_ime_open_count, 1,
-        "{path}::ir_post_focus_change_snapshot 内の `set_ime_open(` 出現数が \
-         想定(1 = ログメッセージのみ。実呼び出しは set_ime_open_ordered へ移行)と\
-         異なります(実際: {set_ime_open_count})。トレイトメソッド \
-         `set_ime_open` を直接呼ぶと warrant を通さない actuation 入口が\
-         復活します（ADR-090 §2.A・INV-47）。"
-    );
-    let ordered_count = count_real_calls(body, "set_ime_open_ordered(");
-    assert_eq!(
-        ordered_count, 1,
-        "{path}::ir_post_focus_change_snapshot 内の `set_ime_open_ordered(` \
-         出現数が想定(1 = IME OFF 強制)と異なります(実際: {ordered_count})。\
-         新しい呼び出しを追加した場合はこの期待値を更新し、それが force-write \
-         でないことを確認すること。"
-    );
+    // **2026-09-25**: focus change 強制 OFF（`focus_change_enforce_off`）を撤去したため、
+    // この関数内の IME open 書き込み呼び出しはゼロ（旧: `set_ime_open_ordered(` 1 件）。
+    // 復活したら warrant 経由の actuation 入口が増えたことを意味するので、
+    // 意図的な変更ならこの期待値と `ime_open_actuation_entry_points_are_accounted_for` を更新すること。
+    for needle in ["set_ime_open(", "set_ime_open_ordered("] {
+        let count = count_real_calls(body, needle);
+        assert_eq!(
+            count, 0,
+            "{path}::ir_post_focus_change_snapshot 内の `{needle}` 出現数が想定(0)と\
+             異なります(実際: {count})。フォーカス変更時の強制 OFF は 2026-09-25 に撤去済み\
+             （docs/adr/191-calibration-experiments.md「A/B-1」）。"
+        );
+    }
 }
 
 // NOTE: `force_policy_is_read_from_a_single_decision_point` と
@@ -2531,6 +2522,55 @@ fn send_input_and_send_message_timeout_w_have_single_production_call_site() {
          1箇所のみに固定されています（ADR-140 決定B/G）。実際: {send_message_timeout_w_sites:?}\n\
          新しい呼び出しを追加する場合は `send_ime_control` 経由にすること\
          （さもないと probe_actuation_fence の bump がその actuation/probe を検出できない）。"
+    );
+}
+
+/// conv 軸の書き込み経路の件数を固定する（09 T6、`docs/tasks/conv-write-paths-inventory.md`）。
+///
+/// T5 の棚卸しで、conv 軸を書く経路は次の2つの入口に集約されると確認した。新しい呼び出し元を
+/// 足すと、棚卸しの表（A 撤去候補・B 正当な例外・C warmup）に載らない書き込みが増える。
+/// 撤去が目的の ADR-191 決定5に反する追加を、件数の増加で気づけるようにする。
+/// 意図した追加・撤去のときは、この件数と棚卸しの表を同じコミットで更新すること。
+///
+/// - `modify_conv_mode(`（`IMC_SETCONVERSIONMODE` の唯一の書き手）: `ime.rs` の3入口のみ。
+/// - `set_ime_conv_for_target(`: 5か所（cold-start の ROMAN 保護、`actuate_conv_mode`、
+///   Ctrl+変換のリセット、半角英数トグルの復元、焦点プローブのかなモード修正）。
+#[test]
+fn conv_write_call_sites_are_fixed_to_the_inventory() {
+    let files = list_src_files();
+    let count_sites = |needle: &str| -> Vec<(String, usize)> {
+        let mut sites: Vec<(String, usize)> = Vec::new();
+        for path in &files {
+            let content = read_crate_file(path);
+            let production = production_code_only(&content);
+            let count = count_real_calls(production, needle);
+            if count > 0 {
+                sites.push((path.clone(), count));
+            }
+        }
+        sites.sort();
+        sites
+    };
+
+    assert_eq!(
+        count_sites("modify_conv_mode("),
+        vec![("src/ime.rs".to_string(), 3)],
+        "`modify_conv_mode(` の本番呼び出し元は `ime.rs` の3入口（`set_ime_romaji_mode_for_hwnd`・\
+         `set_ime_hiragana_mode_cross_process`・`set_ime_mode_for_target`）に固定されています。\
+         新しい入口を足すなら `docs/tasks/conv-write-paths-inventory.md` の表を更新すること。"
+    );
+
+    assert_eq!(
+        count_sites("set_ime_conv_for_target("),
+        vec![
+            ("src/output/conv_actuation.rs".to_string(), 1),
+            ("src/runtime/key_pipeline.rs".to_string(), 3),
+            ("src/tsf/warmup/cold_warmup.rs".to_string(), 1),
+        ],
+        "`set_ime_conv_for_target(` の本番呼び出し元は5か所に固定されています\
+         （`docs/tasks/conv-write-paths-inventory.md` の経路3・4・5・8・9）。\
+         増やすなら棚卸しの表に分類（A 撤去候補／B 例外／C warmup）を書いて、この件数を更新すること。\
+         撤去したなら件数を減らすこと。"
     );
 }
 

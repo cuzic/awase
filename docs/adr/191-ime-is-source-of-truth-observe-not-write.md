@@ -303,11 +303,11 @@ P50=1ms・P95=34ms（10件、通知が来なかったキーは6/16=38%）。GJI�
 2. `send_input_safe`の呼び出し**箇所**数（現在20）。
 3. `set_ime_open_ordered`の呼び出し箇所数（現在2: `ime_refresh.rs`のフォーカス変更時の強制OFFと、drift補正内）。`RESTRICTED_CALLS`の外にあるので別に数える。
 4. `architecture_guard.rs`の件数ガードの総数。
-5. IMEへ書く**振る舞い**の数（固定の例外・表駆動の追加・opt-inの単独タップ・`keys.ime_on/off/toggle`・EngineDecision・warmup）。入口が1つでも振る舞いが増えていないかを、許可リストの件数とは別に列挙して数える。
+5. IMEへ書く**振る舞い**の数（固定の例外・表駆動の追加・opt-inの単独タップ・`keys.ime_on/off/toggle`・EngineDecision・warmup）。入口が1つでも振る舞いが増えていないかを、許可リストの件数とは別に列挙して数える。 conv 軸の書き込み経路の棚卸し（2026-09-25）は[conv-write-paths-inventory.md](../tasks/conv-write-paths-inventory.md)（11経路: 撤去候補4・例外6・warmup1）。
 
 フェーズ（撤去を先、較正は撤去が頭打ちになってから）:
 - **P0**: 決定2（BUG-151の最小修正）。
-- **P1（表なしで撤去できるもの）**: 調査を先に。候補: フォーカス変更時の強制OFF（`ime_refresh.rs`、決定1に反する）。`is_convert_or_nonconvert`は決定2でも使い続けるので外す。**→ 決定変更（本PRで実施、決定2の項参照）**: この関数自体を`is_followed_mode_key`へ差し替えて削除した（round3 A-NEW-3、決定2の「やらないこと」に記載した決定変更と同じ話。この行は履歴として残す）。
+- **P1（表なしで撤去できるもの）**: 調査を先に。候補: フォーカス変更時の強制OFF（`ime_refresh.rs`、決定1に反する。調査結果と確認手段の提案は[teardown-verification-guide.md](../teardown-verification-guide.md) §7.1・§8-1、撤去後の期待は[ime-passive-model-expected-results.md](../ime-passive-model-expected-results.md)）。`is_convert_or_nonconvert`は決定2でも使い続けるので外す。**→ 決定変更（本PRで実施、決定2の項参照）**: この関数自体を`is_followed_mode_key`へ差し替えて削除した（round3 A-NEW-3、決定2の「やらないこと」に記載した決定変更と同じ話。この行は履歴として残す）。
 - **P2（表が要るもの）**: 決定6の撤去。**撤去はTsfNativeを含む全アプリに効く**（本ADRの原則の適用範囲がIMMで読めるアプリでも、撤去するコードはアプリ種別で分岐しない）。撤去前に「TsfNativeで従来と同じ挙動が
   既定表で再現できること」をADR-189のCI（`msime-hz`/`atok-hz`）で確認する。**`shadow_action`は4つの役割**（①shadow beliefの方向、②`transport::plan`のモードキー分類、③`ModeKeyActuationOwner`、④BUG-14のinjectedガード）を担う
   ので、②③④の代替を先に用意する。①だけが表で置き換わる。トグルキー（決定1の固定の例外）には`shadow_action`が残る（`shadow_effect`はトグル以外のVKだけ`None`を返す形になり、関数は残る。

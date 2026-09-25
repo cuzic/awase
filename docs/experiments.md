@@ -1149,3 +1149,11 @@ belief=実IME(ON)でトグル(true→false)を決めたのに、GjiDirect が「
 
 **学び**:
 - 「送信を省略してよいか」の判定は陽性の確認済み証拠(`applied` の確認済み値)にのみ基づかせる。予測が belief を動かすなら、`applied` も同時に「未知」へ落とす(ADR-098 決定1-b の罠と同型)。
+
+## エントリ 29: フォーカス変更時の強制OFF(`ime_refresh.rs` の `focus_change_enforce_off`)を撤去(`cedcdb04`)
+
+**背景**: 失敗による revert ではなく、実質 no-op の入口の撤去。詳細な試行4件と限界は [ADR-191 補助資料「A/B-1」](adr/191-calibration-experiments.md)。
+
+| 日付 | 仮説 | 環境 | 変更 | 観測結果 | 判定 |
+| --- | --- | --- | --- | --- | --- |
+| 2026-09-25 | 新窓へフォーカスが移った時に belief=OFF を IME へ押し込む書き込みは、撤去しても「Engine OFF なのに IME ON」を悪化させない | GJI(ATOK)、windows-latest CI、pwsh EDIT / notepad、4通りの試行(A/B) | ブロックを撤去 | 意図なし・belief OFF・新窓 ON の場面では warrant が OFF を必ず拒否(`sent=false`)し、撤去前後で差なし。再導入は warrant を緩める=ADR-191決定1違反。未検証: 実機、OFF意図 TTL(30秒)内に同じ窓へ戻る場面(撤去後は drift correction が約400ms遅れて OFF) | 撤去(ユーザー判断)。実機で不具合が出れば BUG 起票して再検討 |
