@@ -11,19 +11,25 @@ from datetime import datetime
 # STEP番号(1-10) → 期待。real_open/real_conv は押下 +400ms 時点の実IME(ImmGet*)。
 # engine: ('activated'|'deactivated', 許容ms) = 押下後その時間内にEngineが切り替わる
 #         ('none', 1500) = 押下後1500ms、Engineがactivatedにならない(OFFのまま)
-# delegate_false: 押下後300ms以内に「IME open axis delegated → false」が出る
+# 手順5・6（BUG-162 B、2026-09-25）: ADR-191 で無変換/変換の単独タップ代行（delegate）を撤去した。Engine が有効な間、
+# 無変換は既定設定（muhenkan_solo_tap_always_suppress = true）で Suppress され、実 IME に届かない。よって
+# 手順5は「IME は ON のまま（かな）、Engine は変わらない」。手順6は前提状態（IME OFF）を無変換では作れないので、
+# スパイクが「前提状態にできずスキップ」と記録する（SKIPPABLE に載せた手順だけ、その記録があれば SKIP とする）。
 EXPECT = {
     1: dict(real_open=1, real_conv=0x10, engine=("deactivated", 300)),  # ひらがな: かな→半角英数
     2: dict(real_open=0, real_conv=0x10, engine=("none", 1500)),  # 無変換: 半角英数ON→OFF
     3: dict(real_open=1, real_conv=0x10, engine=("none", 1500)),  # 無変換: OFF→ON(半角英数のまま、決定2の核心)
     4: dict(real_open=1, real_conv=0x19, engine=("activated", 300)),  # ひらがな: 半角英数→かな
-    5: dict(real_open=0, real_conv=0x19, delegate_false=True),  # 無変換: かなON→OFF
-    6: dict(real_open=1, real_conv=0x19, engine=("activated", 300)),  # 無変換: OFF→ON(かな)
+    5: dict(real_open=1, real_conv=0x19, engine=("none", 1500)),  # 無変換: Suppress される(IME ON のまま・かな)
+    6: dict(real_open=1, real_conv=0x19, engine=("activated", 300)),  # 無変換: OFF→ON(かな)。前提を作れなければ SKIP
     7: dict(real_open=1, real_conv=0x10, engine=("deactivated", 300)),  # ひらがな: かな→半角英数
     8: dict(real_open=0, real_conv=0x10, engine=("none", 1500)),  # 無変換: 半角英数ON→OFF
     9: dict(real_open=1, real_conv=0x10, engine=("none", 1500)),  # 無変換: OFF→ON(退行窓の確認)
     10: dict(real_open=1, real_conv=0x19, engine=("activated", 300)),  # ひらがな: 半角英数→かな
 }
+
+# スパイクが前提状態にできず「スキップ」と記録したとき、SKIP（FAILでも PASS でもない）としてよい手順。
+SKIPPABLE = {6}
 
 
 def to_ms(t: str) -> float:
@@ -35,10 +41,14 @@ def parse_spike(path):
     steps = {}
     cur = None
     for line in open(path, encoding="utf-8").read().splitlines():
+        sk = re.match(r"\[AUTO\] STEP (\d+) .*前提状態にできずスキップ", line)
+        if sk:
+            steps.setdefault(int(sk.group(1)), {})["skipped"] = True
+            continue
         m = re.match(r"\[[\d:.]+Z\] KEY \[SCRIPT (\d+)/10 [^\]]*\].*?press=([\d:.]+Z)", line)
         if m:
             cur = int(m.group(1))
-            steps[cur] = {"press": to_ms(m.group(2))}
+            steps.setdefault(cur, {})["press"] = to_ms(m.group(2))
             continue
         m = re.match(r"\s+\+400ms: A\(open=(\d) conv=0x([0-9A-Fa-f]+)\)", line)
         if m and cur is not None and "open" not in steps[cur]:
@@ -49,21 +59,23 @@ def parse_spike(path):
 
 def parse_awase(path):
     events = []  # (ms, kind, detail)
-    unwarranted = 0
+    # `ime open applied seq=N … outcome="Unwarranted"`（journal の1行）だけを、seq ごとに1件と数える。
+    # 旧実装は "outcome=Unwarranted" を含む行を全て数え、同じ span（`on_ime_apply_complete{… outcome=Unwarranted …}`）
+    # の別の行（Timer set 等）まで数えたので、1件が2件になった（BUG-162 C）。
+    unwarranted_seqs = set()
     for line in open(path, encoding="utf-8", errors="replace").read().splitlines():
         m = re.match(r"\d{4}-\d\d-\d\dT([\d:.]+)Z\s+\w+\s+(.*)", line)
         if not m:
             continue
         ms = to_ms(m.group(1))
         msg = m.group(2)
-        if "outcome=Unwarranted" in msg:
-            unwarranted += 1
+        u = re.search(r'\bime open applied seq=(\d+)\b.*\boutcome="Unwarranted"', msg)
+        if u:
+            unwarranted_seqs.add(u.group(1))
         r = re.search(r"Engine (activated|deactivated) .*reason=(\S+?)\)?$", msg)
         if r:
             events.append((ms, r.group(1), r.group(2)))
-        elif "IME open axis delegated" in msg:
-            events.append((ms, "delegate", msg[msg.find("→"):].strip()))
-    return events, unwarranted
+    return events, len(unwarranted_seqs)
 
 
 def main():
@@ -92,6 +104,9 @@ def main():
     for n in range(1, 11):
         exp = EXPECT[n]
         st = steps.get(n)
+        if n in SKIPPABLE and st and st.get("skipped") and "open" not in st:
+            print(f"{n:>4} {'(スキップ)':<16} {'(前提状態にできない=設計上)':<34} SKIP")
+            continue
         if not st or "open" not in st:
             print(f"{n:>4} 記録なし → FAIL")
             fails += 1
@@ -114,9 +129,6 @@ def main():
                 ok = [x for x in after if x[1] == kind and x[0] <= win]
                 if not ok:
                     problems.append(f"{win}ms以内に{kind}しない")
-        if exp.get("delegate_false") and not real_only:
-            if not [x for x in after if x[1] == "delegate" and x[0] <= 300]:
-                problems.append("delegate → false が出ない")
         verdict = "PASS" if not problems else "FAIL: " + " / ".join(problems)
         fails += bool(problems)
         real = f"open={st['open']} conv=0x{st['conv']:02X}"

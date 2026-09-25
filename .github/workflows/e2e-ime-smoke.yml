@@ -4,7 +4,8 @@ name: e2e-ime-smoke
 # 既知バグの許容上限(tools/e2e/ime_key_matrix/invariant_limits.json)と比べる。
 #
 # 手順(構成生成・ビルド・GJI 導入・実行・集計)は e2e-ime.yml を workflow_call で呼んで再利用する(複製しない)。
-# 構成は atok-passthrough-cold ×1回。baseline は BUG-162 で期待表が赤いので入れない。
+# 構成は atok-passthrough-cold と baseline を各1回。baseline は BUG-162 が直るまで期待表(check.py)が赤いが、
+# 合否は不変条件の件数だけで決める(既知の失敗は invariant_limits.json の上限〈BUG 番号付き〉で許容し、BUG の修正で下げていく)。
 # 合否は不変条件の件数だけで決める(gate_mode=invariants)。期待表(check_consistency.py)の結果は summary に表示するが
 # 合否には使わない(フォーカス喪失で INVALID になる等、CI 環境の揺らぎで赤くならないように)。
 #
@@ -55,6 +56,6 @@ jobs:
   smoke:
     uses: ./.github/workflows/e2e-ime.yml
     with:
-      only: atok-passthrough-cold
+      only: atok-passthrough-cold,baseline
       runs: '1'
       gate_mode: invariants
