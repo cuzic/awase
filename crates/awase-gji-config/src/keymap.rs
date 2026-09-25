@@ -1,9 +1,9 @@
 //! GJI のキー表記を awase の VK 名に変換する。
 //!
-//! Mozc `key_parser` 由来のトークン（例: `"F21"`, `"Hankaku/Zenkaku"`,
-//! `"Kanji"`）を、awase の VK 名（`VkCode::from_name` が受理する文字列。
-//! 例: `"VK_F21"`, `"VK_KANJI"`）へ変換し、GJI の `custom_keymap_table`
-//! から IME ON/OFF に使われているキーの集合を抽出する。
+//! Mozc `key_parser` 由来のトークン（例: `"F21"`, `"Hankaku/Zenkaku"`）を、
+//! awase の VK 名（`VkCode::from_name` が受理する文字列。例: `"VK_F21"`,
+//! `"VK_DBE_SBCSCHAR"`）へ変換し（[`mozc_key_vk_names`]）、GJI の
+//! `custom_keymap_table` から IME ON/OFF に使われているキーの集合を抽出する。
 //!
 //! スコープ（stage 1）: 修飾キー付きの行（`"Ctrl Shift Insert"` 等）は
 //! 対象外（ログのみ、無視）。awase 側の `ime_detect.on/off/toggle`
@@ -31,59 +31,54 @@ const STATUSES_WHEN_IME_ON: &[&str] = &[
     "Suggestion",
 ];
 
-/// Mozc キー名の別名テーブル。`F1`..`F24` は規則的なので別途扱う（下記
-/// [`mozc_key_to_vk_name`] 参照）。
-///
-/// - `"Hankaku/Zenkaku"` は awase 側の `vk.rs` doc コメントに実測記載がある
-///   通り、物理的には `VK_KANJI` と同じキー。
-/// - `"ON"`/`"OFF"` は GJI 内部の擬似キー名で、`VK_IME_ON`/`VK_IME_OFF`
-///   （SendInput 等で仮想的に送出される合成キー）に対応する。
-/// - `"Eisu"` は英数キー（`VK_DBE_ALPHANUMERIC`）。
-/// - `"Henkan"`/`"Muhenkan"`（BUG-115）は変換/無変換キー。ADR-092
-///   決定D Step4c実装当時は「GJIは親指キーにIME ON/OFFを割り当てる手段を
-///   持たない」という前提でこの2トークンを未対応のままにしていたが、
-///   実際には`custom_keymap_table`にこれらのトークンが（ユーザーが
-///   ATOKベースからカスタムキーマップを作った場合など）literal に
-///   含まれうることが判明した（`crates/awase-windows/src/
-///   gji_charset_autodetect.rs::classify_thumb_key_ime_actions`参照）。
-///   このエイリアス追加自体は、F15-F24限定の専用Fnキー自動検出
-///   （ADR-179で撤去済み）には元々影響していなかった——`VK_CONVERT`/
-///   `VK_NONCONVERT`はその範囲外だったため。
-/// - `"Hiragana"`/`"Katakana"`（BUG-115）はひらがな/カタカナキー。
-///   Henkan/Muhenkanと同じ理由で、これらのキーが親指シフトキーとして
-///   設定されているユーザーが、GJIの設定でこれらに状態依存のIME ON/OFFを
-///   割り当てている場合の検出に使う（`ms-ime.tsv`/`mobile.tsv`が
-///   `DirectInput`状態でHiragana/Katakanaを`IMEOn`に割り当てていることが
-///   2026-09-05確認済み）。
-const MOZC_KEY_ALIASES: &[(&str, &str)] = &[
-    ("Kanji", "VK_KANJI"),
-    ("Hankaku/Zenkaku", "VK_KANJI"),
-    ("ON", "VK_IME_ON"),
-    ("OFF", "VK_IME_OFF"),
-    ("Eisu", "VK_DBE_ALPHANUMERIC"),
-    ("Henkan", "VK_CONVERT"),
-    ("Muhenkan", "VK_NONCONVERT"),
-    ("Hiragana", "VK_DBE_HIRAGANA"),
-    ("Katakana", "VK_DBE_KATAKANA"),
+/// `F1`..`F24` の VK 名（[`mozc_key_vk_names`] が `'static` のスライスを返すための表）。
+const F_KEY_VK_NAMES: [&str; 24] = [
+    "VK_F1", "VK_F2", "VK_F3", "VK_F4", "VK_F5", "VK_F6", "VK_F7", "VK_F8", "VK_F9", "VK_F10",
+    "VK_F11", "VK_F12", "VK_F13", "VK_F14", "VK_F15", "VK_F16", "VK_F17", "VK_F18", "VK_F19",
+    "VK_F20", "VK_F21", "VK_F22", "VK_F23", "VK_F24",
 ];
 
-/// Mozc のキートークンを awase の VK 名に変換する。対応表に無い、または
-/// `F` に続く数値が VK_F1..VK_F24 の範囲外のトークンは `None`
-/// （安全側に倒し、未知の VK を検出キーに使わない）。
+/// Mozc のキー名（`custom_keymap_table` の `key` 列）を、Windows でそのキーイベントを
+/// 生む VK の名前（`VkCode::from_name` が受理する文字列）へ写す。
+///
+/// キー名→VK の写像はここ1箇所に置き、GJI 設定の抽出・役割判定（[`crate::role`]）・awase-windows の予測
+/// （`key_effect_predictor::custom_table_overrides`）が共有する（ADR-199 T2）。
+///
+/// Mozc と同じく大文字小文字を区別せず、前後の空白は無視する（`key_parser.cc`
+/// `ParseKey`）。空白で区切られた複数トークン（修飾キー付き、例: `"Ctrl Space"`）・
+/// 未知のキー名は空スライス（安全側に倒し、未知の VK を使わない）。
+///
+/// - `Hankaku/Zenkaku`（別名 `Hankaku`・`Zenkaku`）は 0xF3/0xF4 の両方。Mozc は
+///   `VK_DBE_SBCSCHAR`/`VK_DBE_DBCSCHAR` を同じ `KeyEvent::HANKAKU` に畳む
+///   （`win32/base/keyevent_handler.cc`）。
+/// - `Kanji` はどの VK にも写さない。Windows では `VK_KANJI`(0x19) が
+///   `KeyEvent::KANJI` にならない（IMM32 では `NO_SPECIALKEY`、TSF では
+///   `HANKAKU` に畳まれる。同ファイル L87-93）ので、プリセットの `Kanji` 行は
+///   使われない行である（ADR-199 背景3）。
+/// - `ON`/`OFF` は `VK_IME_ON`/`VK_IME_OFF`（Mozc は `KeyEvent::ON`/`OFF` に写す）。
+/// - `Kana`/`Hiragana` はどちらも `KeyEvent::KANA`（`VK_DBE_HIRAGANA`）。
 #[must_use]
-pub fn mozc_key_to_vk_name(key: &str) -> Option<String> {
-    if let Some((_, vk_name)) = MOZC_KEY_ALIASES
-        .iter()
-        .find(|(mozc_key, _)| *mozc_key == key)
-    {
-        return Some((*vk_name).to_string());
-    }
-    let digits = key.strip_prefix('F')?;
-    let number: u8 = digits.parse().ok()?;
-    if (1..=24).contains(&number) {
-        Some(format!("VK_F{number}"))
-    } else {
-        None
+pub fn mozc_key_vk_names(key: &str) -> &'static [&'static str] {
+    let key = key.trim().to_ascii_lowercase();
+    match key.as_str() {
+        "hankaku" | "zenkaku" | "hankaku/zenkaku" => &["VK_DBE_SBCSCHAR", "VK_DBE_DBCSCHAR"],
+        "on" => &["VK_IME_ON"],
+        "off" => &["VK_IME_OFF"],
+        "eisu" => &["VK_DBE_ALPHANUMERIC"],
+        "henkan" => &["VK_CONVERT"],
+        "muhenkan" => &["VK_NONCONVERT"],
+        "kana" | "hiragana" => &["VK_DBE_HIRAGANA"],
+        "katakana" => &["VK_DBE_KATAKANA"],
+        "bs" | "backspace" => &["VK_BACK"],
+        "enter" | "return" => &["VK_RETURN"],
+        "esc" | "escape" => &["VK_ESCAPE"],
+        "space" => &["VK_SPACE"],
+        other => other
+            .strip_prefix('f')
+            .filter(|digits| !digits.starts_with('0'))
+            .and_then(|digits| digits.parse::<usize>().ok())
+            .filter(|n| (1..=24).contains(n))
+            .map_or(&[], |n| std::slice::from_ref(&F_KEY_VK_NAMES[n - 1])),
     }
 }
 
@@ -134,11 +129,13 @@ pub fn extract_ime_keys(custom_keymap_table: &str) -> GjiImeKeys {
 
     let mut result = GjiImeKeys::default();
     for (key, (on_statuses, off_statuses)) in grouped {
-        let Some(vk_name) = mozc_key_to_vk_name(&key) else {
-            tracing::warn!("gji-config: 未対応のキートークンをスキップしました: key={key}");
-            continue;
-        };
-        classify_and_push(&key, &vk_name, &on_statuses, &off_statuses, &mut result);
+        let vk_names = mozc_key_vk_names(&key);
+        if vk_names.is_empty() {
+            tracing::debug!("gji-config: VK に写らないキートークンをスキップしました: key={key}");
+        }
+        for vk_name in vk_names {
+            classify_and_push(&key, vk_name, &on_statuses, &off_statuses, &mut result);
+        }
     }
 
     result.on.sort_unstable();
@@ -189,10 +186,11 @@ pub fn extract_mode_keys(custom_keymap_table: &str) -> GjiModeKeys {
 
     let mut result = GjiModeKeys::default();
     for (key, commands) in by_key {
-        let Some(vk_name) = mozc_key_to_vk_name(&key) else {
-            tracing::warn!("gji-config: 未対応のキートークンをスキップしました: key={key}");
+        let vk_names = mozc_key_vk_names(&key);
+        if vk_names.is_empty() {
+            tracing::debug!("gji-config: VK に写らないキートークンをスキップしました: key={key}");
             continue;
-        };
+        }
         let mut distinct = commands.into_iter();
         let Some(only) = distinct.next() else {
             continue;
@@ -203,12 +201,14 @@ pub fn extract_mode_keys(custom_keymap_table: &str) -> GjiModeKeys {
             );
             continue;
         }
-        match only {
-            GjiModeCommand::SetMode(mode) => result.set_mode.push((vk_name, mode)),
-            GjiModeCommand::ToggleAlphanumericMode => result.toggle_alphanumeric.push(vk_name),
-            GjiModeCommand::ToggleKanaType => result.toggle_kana_type.push(vk_name),
-            GjiModeCommand::ImeOn | GjiModeCommand::ImeOff | GjiModeCommand::Other => {
-                unreachable!("filtered out above")
+        for vk_name in vk_names.iter().map(|name| (*name).to_string()) {
+            match only {
+                GjiModeCommand::SetMode(mode) => result.set_mode.push((vk_name, mode)),
+                GjiModeCommand::ToggleAlphanumericMode => result.toggle_alphanumeric.push(vk_name),
+                GjiModeCommand::ToggleKanaType => result.toggle_kana_type.push(vk_name),
+                GjiModeCommand::ImeOn | GjiModeCommand::ImeOff | GjiModeCommand::Other => {
+                    unreachable!("filtered out above")
+                }
             }
         }
     }
@@ -224,7 +224,7 @@ pub fn extract_mode_keys(custom_keymap_table: &str) -> GjiModeKeys {
 
 /// ADR-195 段階0 決定3: `custom_keymap_table` の中から、`SetMode`（絶対設定系）
 /// コマンドが入力中（`Composition`/`Conversion`）の status 行に束縛されているキー
-/// （[`mozc_key_to_vk_name`] 形式の VK 名）の集合を返す。
+/// （[`mozc_key_vk_names`] 形式の VK 名）の集合を返す。
 ///
 /// [`extract_mode_keys`] は `status` 列を分類の一意性判定にしか使わず、結果からは
 /// 捨てている。しかし `SetMode` が入力中の status に束縛されていれば、それは
@@ -283,9 +283,11 @@ pub fn set_mode_keys_confirmed_by_input_progress_status(
         // `has_input_progress_set_mode`への挿入は`SetMode`行の観測が条件であり、
         // そのキーの`commands_by_key`に他の値が無ければ(len() == 1)その1件が
         // 観測された`SetMode`そのものになるため。
-        if let Some(vk_name) = mozc_key_to_vk_name(&key) {
-            result.insert(vk_name);
-        }
+        result.extend(
+            mozc_key_vk_names(&key)
+                .iter()
+                .map(|name| (*name).to_string()),
+        );
     }
     result
 }
@@ -359,58 +361,66 @@ fn classify_and_push(
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_ime_keys, extract_mode_keys, mozc_key_to_vk_name,
+        extract_ime_keys, extract_mode_keys, mozc_key_vk_names,
         set_mode_keys_confirmed_by_input_progress_status, GjiImeKeys, GjiModeKeys,
     };
     use crate::command::GjiCompositionMode;
 
     #[test]
     fn f_key_tokens_map_to_vk_names() {
-        assert_eq!(mozc_key_to_vk_name("F1").as_deref(), Some("VK_F1"));
-        assert_eq!(mozc_key_to_vk_name("F21").as_deref(), Some("VK_F21"));
-        assert_eq!(mozc_key_to_vk_name("F24").as_deref(), Some("VK_F24"));
-        assert_eq!(mozc_key_to_vk_name("F25"), None);
-        assert_eq!(mozc_key_to_vk_name("F0"), None);
+        assert_eq!(mozc_key_vk_names("F1"), ["VK_F1"]);
+        assert_eq!(mozc_key_vk_names("F21"), ["VK_F21"]);
+        assert_eq!(mozc_key_vk_names("F24"), ["VK_F24"]);
+        assert!(mozc_key_vk_names("F25").is_empty());
+        assert!(mozc_key_vk_names("F0").is_empty());
+        assert!(mozc_key_vk_names("F013").is_empty());
     }
 
     #[test]
     fn alias_tokens_map_to_vk_names() {
-        assert_eq!(mozc_key_to_vk_name("Kanji").as_deref(), Some("VK_KANJI"));
-        assert_eq!(
-            mozc_key_to_vk_name("Hankaku/Zenkaku").as_deref(),
-            Some("VK_KANJI")
-        );
-        assert_eq!(mozc_key_to_vk_name("ON").as_deref(), Some("VK_IME_ON"));
-        assert_eq!(mozc_key_to_vk_name("OFF").as_deref(), Some("VK_IME_OFF"));
-        assert_eq!(
-            mozc_key_to_vk_name("Eisu").as_deref(),
-            Some("VK_DBE_ALPHANUMERIC")
-        );
+        // ADR-199 T2: 半角/全角は 0xF3/0xF4 の両方（Mozc は同じ KeyEvent::HANKAKU に畳む）。
+        // 旧実装は VK_KANJI に写しており、予測側（0xF3/0xF4）と逆向きに食い違っていた。
+        for token in ["Hankaku/Zenkaku", "Hankaku", "Zenkaku"] {
+            assert_eq!(
+                mozc_key_vk_names(token),
+                ["VK_DBE_SBCSCHAR", "VK_DBE_DBCSCHAR"]
+            );
+        }
+        // Windows では 0x19 が KeyEvent::KANJI にならないので、Kanji 行は使われない。
+        assert!(mozc_key_vk_names("Kanji").is_empty());
+        assert_eq!(mozc_key_vk_names("ON"), ["VK_IME_ON"]);
+        assert_eq!(mozc_key_vk_names("OFF"), ["VK_IME_OFF"]);
+        assert_eq!(mozc_key_vk_names("Eisu"), ["VK_DBE_ALPHANUMERIC"]);
         // BUG-115: Henkan/Muhenkanは、config1.dbのcustom_keymap_tableに
         // literalに含まれうる（例: ユーザーがATOKベースからカスタムを
         // 作った場合）。
-        assert_eq!(mozc_key_to_vk_name("Henkan").as_deref(), Some("VK_CONVERT"));
-        assert_eq!(
-            mozc_key_to_vk_name("Muhenkan").as_deref(),
-            Some("VK_NONCONVERT")
-        );
-        // BUG-115: ひらがな/カタカナキーが親指シフトキーに設定されている
-        // ユーザー向け（ms-ime.tsv/mobile.tsvがDirectInputで両キーを
-        // IMEOnに割り当てている）。
-        assert_eq!(
-            mozc_key_to_vk_name("Hiragana").as_deref(),
-            Some("VK_DBE_HIRAGANA")
-        );
-        assert_eq!(
-            mozc_key_to_vk_name("Katakana").as_deref(),
-            Some("VK_DBE_KATAKANA")
-        );
+        assert_eq!(mozc_key_vk_names("Henkan"), ["VK_CONVERT"]);
+        assert_eq!(mozc_key_vk_names("Muhenkan"), ["VK_NONCONVERT"]);
+        assert_eq!(mozc_key_vk_names("Hiragana"), ["VK_DBE_HIRAGANA"]);
+        assert_eq!(mozc_key_vk_names("Kana"), ["VK_DBE_HIRAGANA"]);
+        assert_eq!(mozc_key_vk_names("Katakana"), ["VK_DBE_KATAKANA"]);
+        // プリセット TSV の綴り（`ESC`）と Mozc の別名。
+        assert_eq!(mozc_key_vk_names("ESC"), ["VK_ESCAPE"]);
+        assert_eq!(mozc_key_vk_names("Escape"), ["VK_ESCAPE"]);
+        assert_eq!(mozc_key_vk_names("BS"), ["VK_BACK"]);
+        assert_eq!(mozc_key_vk_names("Backspace"), ["VK_BACK"]);
+        assert_eq!(mozc_key_vk_names("Return"), ["VK_RETURN"]);
+        assert_eq!(mozc_key_vk_names("Enter"), ["VK_RETURN"]);
+        assert_eq!(mozc_key_vk_names("Space"), ["VK_SPACE"]);
     }
 
     #[test]
-    fn unknown_token_maps_to_none() {
-        assert_eq!(mozc_key_to_vk_name("Insert"), None);
-        assert_eq!(mozc_key_to_vk_name(""), None);
+    fn tokens_are_case_insensitive_and_trimmed_like_mozc() {
+        assert_eq!(mozc_key_vk_names("hankaku/zenkaku").len(), 2);
+        assert_eq!(mozc_key_vk_names(" f13 "), ["VK_F13"]);
+    }
+
+    #[test]
+    fn unknown_or_modified_token_maps_to_nothing() {
+        assert!(mozc_key_vk_names("Insert").is_empty());
+        assert!(mozc_key_vk_names("").is_empty());
+        assert!(mozc_key_vk_names("Ctrl Space").is_empty());
+        assert!(mozc_key_vk_names("Shift Hankaku/Zenkaku").is_empty());
     }
 
     /// BUG-115: ユーザーがATOKベースからカスタムキーマップを作った場合を
@@ -514,7 +524,8 @@ Composition\tSpace\tConvert
                     "VK_IME_ON".to_string(), // ON
                 ],
                 off: vec!["VK_F22".to_string(), "VK_IME_OFF".to_string()], // OFF
-                toggle: vec!["VK_KANJI".to_string()], // Hankaku/Zenkaku と Kanji がどちらも集約
+                // Hankaku/Zenkaku は 0xF3/0xF4 の両方。Kanji 行は VK に写らない。
+                toggle: vec!["VK_DBE_DBCSCHAR".to_string(), "VK_DBE_SBCSCHAR".to_string()],
             }
         );
     }

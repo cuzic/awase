@@ -28,6 +28,7 @@
 pub mod command;
 pub mod keymap;
 pub mod known_keymap;
+pub mod role;
 pub mod tsv;
 pub mod wire;
 
@@ -112,6 +113,9 @@ pub const SESSION_KEYMAP_MSIME: i64 = 2;
 /// Henkan/Muhenkan/Hiragana/Katakana割当て。
 pub const SESSION_KEYMAP_MOBILE: i64 = 4;
 
+/// Mozc `SessionKeymap` enum の `KOTOERI` 値（ADR-199 決定4、プリセット定数表の判別に使う）。
+pub const SESSION_KEYMAP_KOTOERI: i64 = 3;
+
 /// Mozc `SessionKeymap` enum の `OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF` 値
 /// （BUG-115）。
 ///
@@ -126,9 +130,9 @@ pub const SESSION_KEYMAP_MOBILE: i64 = 4;
 /// このクレートは現時点でこの値を検出する手段
 /// （[`crate::wire::GjiRawConfig::overlay_keymaps`]）を提供するのみで、
 /// `read_gji_ime_keys`/`read_gji_mode_keys` の戻り値には反映していない
-/// （無変換/変換キーは `mozc_key_to_vk_name` の出力範囲に含まれないため、
-/// `custom_keymap_table` 経由の通常の抽出ロジックでは表現できない。呼び出し
-/// 側でこの定数を直接チェックする必要がある）。
+/// （overlay は `custom_keymap_table` の外にあるため、`custom_keymap_table`
+/// 経由の通常の抽出ロジックでは表現できない。呼び出し側でこの定数を直接
+/// チェックする必要がある）。
 pub const SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF: i64 = 100;
 
 #[cfg(test)]

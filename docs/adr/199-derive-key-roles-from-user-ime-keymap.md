@@ -246,7 +246,9 @@ BUG-64 の残骸バインド〈DirectInput の F21=`IMEOn`・開状態の F22=`I
   `Hankaku/Zenkaku` 行が無いので受動と一致する。Mozc は真に未知の値を既定に倒すが、ここでは決定6-3 の「不明なときに能動側へ倒さない」を優先する）。
 
 `KeyEffectKeymap::from_config` の `preset` は流用しない（ATOK/MSIME 以外をすべて `KeymapPreset::Custom` にまとめる〈`key_effect_predictor.rs:539-542`〉ので、
-kotoeri/mobile のユーザーで使われていない古い `custom_keymap_table` を評価してしまう）。`overlay_keymaps` は変換/無変換にしか効かず候補外なので使わない。
+kotoeri/mobile のユーザーで使われていない古い `custom_keymap_table` を評価してしまう）。`overlay_keymaps`（field 68）は Mozc が主キーマップの後に後勝ちで重ねる（`ApplyOverlaySessionKeymap`）。重ねた後の実効は評価せず受動に倒す（決定6-3）:
+`OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF`（100）があれば変換/無変換（決定16 で候補に入った）を受動に、それ以外の overlay 値があれば書き換える行が分からないので候補キーすべてを受動にする。
+半角/全角・F13〜F24 は overlay 100 の対象外なので影響しない（PR #315 のコードレビュー M1。変換/無変換を候補に入れる前は「候補外なので使わない」としていた）。
 
 ### 決定5（提案）: 役割を持つキーで awase が「書いてよい」範囲
 
@@ -327,10 +329,14 @@ kotoeri/mobile のユーザーで使われていない古い `custom_keymap_tabl
   `from_config(None, None, &[])` を返す。読めない・パース失敗・パス未解決は従来どおり `None`。これで「不在」と「読めない」の区別に3値の型は要らない。
   副作用として、不在のとき**予測も MS-IME プリセットで動き**、指紋 `gji_keymap_fingerprint(None, None, &[])` で学習表も引ける（`from_config` が既にフィールド不在・`NONE` を
   MSIME とみなしているのと同じ扱いで、Mozc の挙動とも一致する）。予測の変化なのでホストテストを付ける。
-  `read_key_effect_keymap` の呼び出し元は予測（`key_pipeline.rs:1958`）のほかに2つあり、不在時の挙動がそれぞれ変わる（どちらも改善の方向）:
+  `read_key_effect_keymap` の呼び出し元は予測（`key_pipeline.rs:1958`）のほかに3つあり、不在時の挙動がそれぞれ変わる（いずれも改善の方向）:
+  PR #308 の半角/全角の `Toggle` 除外（`runtime/mod.rs:620` `learned_table_omits_hz_toggle`、`:646` で読む）は、不在のとき keymap が `None` で `false`（除外しない）だったのが、
+  `get_for_keymap`→`hz_omit_verdict` まで届き、採用中の学習表が半角/全角をトグルでないと示せば `Toggle` を外すようになる（決定6-2 の向き。能動→受動の方向だけ）。
   ADR-192 の警告（`runtime/mod.rs:1252` `check_state_dependent_mode_keys`）は、全対象 VK が `CannotPredict(AmbiguousKeymap)`（`key_effect_table.rs:527-531`）
   から MSIME 表での分類になる。学習プロセスの指紋（`key_effect_runtime.rs:442` `current_fingerprint_probe`、`awase-keymap-learn-win` main.rs:470・942）は
   `Unavailable` から計算可能になり、`Rejected(FingerprintUnavailable)` で棄却されず採用されうる（ADR-196 の挙動の変化。書き手と読み手が同じ関数なので指紋は構造的に一致する）。
+  学習プロセスの内蔵表との突き合わせ（`gji_charset_autodetect.rs` `bundled_preset_for_adjudication`、ADR196-T2 決定1c/1e）も不在を `ConfigUnreadable`（突き合わせを飛ばす）から
+  既定の既知構成 `Known(MsIme)` に揃える（採用されうるようになった表が突き合わせを通らないのを防ぐ。PR #315 のコードレビュー M2）。
   付随して、ユーザーが GJI の設定画面で初めて保存すると指紋が `(None,None,[])` から `(Some(2),None,[])` に変わり、挙動は同じでも学習表は1回だけ要再検証になる（記録のみ）。
 - バッチ前処理の enrich（`message_handlers.rs:1732`）は候補キーに触らない（`shadow_action` は `kp_run_inner` で付く。その間に `shadow_action` を読む経路が無いことは T4 で確認）。
 - `config1.db` が変われば学習表の指紋も変わり、学習表は陳腐化として使われなくなる（06、`staleness::check`）。このとき役割は `config1.db` だけから決める
@@ -584,7 +590,7 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
 | T1 | 実機確認（(c) を最優先。決定13 で所有者の例〈モード指定で開くキー〉が対象になるかを決めるため）: (c) DirectInput の `CompositionMode*` で開くか、(a) 半角/全角を変えていないカスタム TSV に `Hankaku/Zenkaku` 行が残るか、(b) TSF 経路で 0x19 が `Hankaku/Zenkaku` 行に従うか（カスタム表で半角/全角だけ変えて Alt+半角/全角を押す1回。決定14 の移行の前提）、(d) 互換モードのチェックボックスを触っていない環境で `NoTsf3Override2` が無いか（決定17 の `None` の扱い）、(e) `Scancode Map` で F13 を出し、GJI の CUSTOM で F13 をトグルにした構成の実タイピング（TsfNative 1つ以上、決定18） | 08 の未確認点を引き継ぐ |
 | T2 | `awase-gji-config`: 継承規則つきの状態表（CUSTOM のみ）、決定4の判定関数（対象キー名は `Hankaku/Zenkaku`・`F13`〜`F24`・`Muhenkan`・`Henkan`）、プリセット定数表（Mozc TSV との突き合わせテスト付き）、キー名→VK 写像の一本化（純粋関数）。`Kanji` 行は 0x19 に写さない。awase-windows 側: `KeyEffectKeymap` に生の `session_keymap`、`read_key_effect_keymap` の不在→既定 keymap（決定8） | 08 のタスク「判定を純粋関数として」 |
 | T3 | 学習表による狭め（`state/`、決定6-2。半角/全角・無変換/変換。F キーはセルが無いので対象外）と食い違い記録。PR #308 の分岐を包含 | 01・06・PR #308 と経路を共有 |
-| T4 | 予測経路の keymap/学習表取得をヘルパーに切り出し、`kp_run_inner` 冒頭で候補キーのときだけ役割を求めて enrich に渡す（決定8）、`vk.rs` の `is_open_toggle_for` 撤去（`vk.rs:1347/1360` のテストも）、`transport.rs` の Suppress 判定更新（影響表）。`architecture_guard.rs` の `bug116_...` の必須トークンを新しい判定に差し替え、`:816` の説明文を更新。バッチ前処理と `kp_run_inner` の間で `shadow_action` を読む経路が無いことの確認。PR #308 のラッチを候補キー全体の打鍵ごとのラッチに一般化。**0x19 は決定14 の移行まで `hook.rs` の経路から動かさない** | 08 のタスク「影響洗い出し」 |
+| T4 | 予測経路の keymap/学習表取得をヘルパーに切り出し、`kp_run_inner` 冒頭で候補キーのときだけ役割を求めて enrich に渡す（決定8）、`vk.rs` の `is_open_toggle_for` 撤去（`vk.rs:1347/1360` のテストも）、`transport.rs` の Suppress 判定更新（影響表）。`architecture_guard.rs` の `bug116_...` の必須トークンを新しい判定に差し替え、`:816` の説明文を更新。バッチ前処理と `kp_run_inner` の間で `shadow_action` を読む経路が無いことの確認。PR #308 のラッチを候補キー全体の打鍵ごとのラッチに一般化。`vk.rs` の候補キー判定は T2 の `awase_gji_config::role::ROLE_CANDIDATE_VK_NAMES` から作る（定義を2箇所にしない）。**0x19 は決定14 の移行まで `hook.rs` の経路から動かさない** | 08 のタスク「影響洗い出し」 |
 | T5 | （欠番）旧「`keys.ime_on`/`ime_off` の既定を空にする」は所有者回答（2026-09-25、U5 修正）で撤回。`ime_on`/`ime_off` の既定は残す（決定15）ので既定変更・移行のタスクは無い | — |
 | T6 | ADR-192 警告の対象・文言の更新 | 08 論点 (A)・(C) |
 | T7 | ADR-189/191/195 の status・summary 追記（RM3 置換、195(A) の追記）と、残る能動書き込みの棚卸し（09）への反映 | 10（status 同期）・08（191 summary 訂正）・09 |
@@ -687,4 +693,6 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
 | 所有者回答 U5 修正・Q2（2026-09-25） | 反映 | `keys.ime_on`/`ime_off` の既定は空にせず awase 自身の actuate 設定として残す（決定1 の例外(2)・決定15）。既定を空にする記述と T5（既定変更・移行）を撤回し、U10 は消滅。Q2 は config 優先・役割なしで確定。`keys.ime_toggle` 既定だけ未確認として残す（下の行で確定） |
 | 所有者回答 `keys.ime_toggle` 既定（2026-09-25） | 反映 | 既定（`VK_KANJI`）は空にする（U4 の移行と同時、T14）で確定。決定14・決定15・T0/T11/T14・影響表・テスト方針の「未確認」を確定に直し、未決節を空にした |
 | round8 軽微（r7 M2 の行に U10 消滅を追記） | 反映 | 上の r7 M2 の行に追記 |
+| PR #315 コードレビュー M1（overlay） | 反映 | 決定4 末尾の「overlay は候補外なので使わない」は U9 で変換/無変換を候補に入れる前の記述だった。overlay 100 は変換/無変換を、未知の overlay は全候補を受動にする |
+| PR #315 コードレビュー M2（`config1.db` 不在の影響） | 反映 | 決定8 の呼び出し元に PR #308 の Toggle 除外を追加し、学習プロセスの突き合わせも不在を既定の既知構成として扱うよう揃えた |
 | round8 軽微（決定8 の「明示値」） | 反映 | 読み込み後の `KeysConfig` ではユーザーが書いた値と既定値を実行時に区別できないので、比較対象は既定値を含む実効値だと明記（既定の無修飾は `VK_KANJI` だけで候補キーと重ならない） |
