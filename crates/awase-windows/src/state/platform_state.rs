@@ -117,22 +117,9 @@ pub(crate) struct ImePollState {
     pub(crate) prev_conv: Option<u32>,
 }
 
-/// [`ImeStateHub::check_drift_correction`] の戻り値（BUG-113残置課題）。
-///
-/// 旧 `(bool, bool, u64)` タプルから構造体化したのは、`ir_apply_drift_correction`
-/// （`runtime/ime_refresh.rs`）が `ConvOpenInference` 由来の drift を
-/// 「明示意図エピソードあたり1送信」に絞る際の根拠（`source`）を、呼び出し元が
-/// 別途 `most_recent_trusted()` を再計算せずに受け取れるようにするため
-/// （独立再計算は BUG-110 と同型の構造的欠陥、`resolve_warmup_ime_on` の doc 参照）。
-/// `confidence` は診断ログ専用で判定には使わない。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DriftCorrection {
-    pub(crate) desired: bool,
-    pub(crate) observed: bool,
-    pub(crate) duration_ms: u64,
-    pub(crate) source: ObservationSource,
-    pub(crate) confidence: ObservationConfidence,
-}
+/// [`ImeStateHub::check_drift_correction`] の戻り値。定義は ungated な
+/// `state/drift_correction.rs` へ移した（Linux ホストのテストから判定本体を呼ぶため）。
+pub(crate) use super::drift_correction::DriftCorrection;
 
 impl ImeStateHub {
     /// デフォルト値で初期化する。
@@ -1093,90 +1080,9 @@ impl ImeStateHub {
         now: std::time::Instant,
         explicit_intent: Option<bool>,
     ) -> Option<DriftCorrection> {
-        let desired = self.shadow_model.desired_open();
-
-        let dur = self.shadow_model.observations.drift_duration(now)?;
-        // last_intent は UserImeSetIntent / UserImeToggleIntent のみが設定する。
-        // PanicReset / HwndCacheRestored は設定しないため、is_some() で十分。
-        // SyncKey / PhysicalImeKey / Command は全て閾値 0 (即時補正) の対象。
-        let is_strong_intent = self.shadow_model.last_intent.is_some();
-        let threshold = if explicit_intent == Some(desired) && is_strong_intent {
-            0
-        } else {
-            u128::from(crate::tuning::DRIFT_CORRECTION_THRESHOLD_MS)
-        };
-        if dur.as_millis() < threshold {
-            return None;
-        }
-
-        let max_age =
-            std::time::Duration::from_millis(crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS);
-        let trusted = self.shadow_model.observations.most_recent_trusted(now)?;
-        if trusted.age(now) > max_age {
-            return None;
-        }
-        // ConvOpenInference（conv ビットからの間接推測、KatakanaShadowOff/
-        // NativeToggleShadowOff 由来）は、明示的なユーザー意図が一度も無い間は単独で
-        // drift correction を発火させない。desired_open のデフォルト値（起動直後等、
-        // last_intent が一度も設定されていない状態）を conv 由来の推論だけで
-        // actuate すると、ユーザーが望んでもいない ON/OFF の押し付けになりかねない。
-        // 明示意図がある場合（BUG-19 再発の本来のシナリオ: ユーザーが OFF にした
-        // 直後に conv がまだ native/katakana を示す）はこの gate を素通りし、
-        // 既存の `desired`（ユーザーの意図した値）が正しく再適用される。
-        //
-        // BUG-110 追補7〜9（issue #189）: `HeuristicDefault`（観測ゼロの安全
-        // デフォルト、`reset_stale_ime_on_for_imm_broken` が Imm32Unavailable
-        // ウィンドウ入場時に記録する）でも全く同じ構造の問題が起きる——
-        // `FocusChanged` で `last_intent` がクリアされた直後に新しいウィンドウの
-        // `HeuristicDefault` 観測を record すると、`desired`（生の
-        // `desired_open()`、別ウィンドウでの古い明示操作の残留）と食い違い、
-        // drift correction がこの弱い観測1件を理由に実 IME へ書き込んでしまう。
-        // （撤去済みの）`apply_force_on_for_imm_broken`（`effective_open()` 経由で同じ
-        // `HeuristicDefault` を信頼していた）と反対方向の書き込みを競って短時間に
-        // 往復していた。
-        //
-        // ここに含めるかどうかの判断基準は「`ObservationSource::authority()`
-        // が `BeliefOnly` かどうか」ではない——`authority()` は `HwndCache`/
-        // `FocusProbe`/`ConvBitsInference`/`GjiIoInference` も含む6バリアント
-        // を持ち、判断基準として使うには広すぎる（opus-adversarial-consult
-        // 指摘）。正しい基準は**「外部観測の裏付けが一切ない、awase 自身の
-        // 推測であること」**——これを満たすのは `ConvOpenInference`（conv
-        // ビットからの間接推測）と `HeuristicDefault`（観測ゼロの安全
-        // デフォルト）の2つだけ。同じ `BeliefOnly` でも性質が違う残り4つを
-        // 対象外とする理由は個別に検討済みで、いずれも「まだ調べていないから」
-        // ではない:
-        // - `ConvBitsInference`/`GjiIoInference` は input_mode 専用ソースで
-        //   open/close 観測として `most_recent_trusted()` に到達しない
-        //   （`PerSourceObservations::get`/`set` が None/no-op を返す、
-        //   `authority()` 自身の doc 参照）——追加しても到達しないデッドコード
-        //   が増えるだけ。
-        // - `HwndCache` が運ぶ値は `HwndCacheRestored` が `desired_open` に
-        //   書く値と同一のため `trusted.open == desired` となり、下の等値
-        //   チェックで既に `None` になる（今日は無害）。将来その不変条件が
-        //   崩れたときに正当な補正経路を黙って殺す副作用だけが残るため、
-        //   あえて含めない。
-        // - `FocusProbe` は推測ではなく実 IMC 読み取り（Low confidence なのは
-        //   hwnd の曖昧性ゆえ、BUG-91 由来）。これを抑止すると BUG-16/BUG-20
-        //   型の固着（belief と実 IME が乖離したまま補正されない）を再導入する
-        //   リスクがあり、実機再現なしに含めるべきではない。
-        if matches!(
-            trusted.source,
-            ObservationSource::ConvOpenInference | ObservationSource::HeuristicDefault
-        ) && explicit_intent.is_none()
-        {
-            return None;
-        }
-        if trusted.open == desired {
-            return None;
-        }
-
-        Some(DriftCorrection {
-            desired,
-            observed: trusted.open,
-            duration_ms: dur.as_millis() as u64,
-            source: trusted.source,
-            confidence: trusted.confidence,
-        })
+        // 判定本体は ungated な `state/drift_correction.rs`（Linux の
+        // `tests/closed_loop_scenarios.rs` から呼べるように移した。ロジックは不変）。
+        super::drift_correction::check_drift_correction(&self.shadow_model, now, explicit_intent)
     }
 
     /// IME apply 完了を記録する（D: generation 照合 dispatch）。

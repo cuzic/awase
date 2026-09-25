@@ -98,6 +98,11 @@ pub mod ime_actuation_decision;
 pub mod actuation_decision_record;
 // ADR-089 §2.1/§2.2: open 観測の evidence 型（プール分離 + データ witness）。
 pub mod evidence;
+// drift correction の判定本体（旧 `ImeStateHub::check_drift_correction` の本体）。
+// ungated（Linux の `tests/closed_loop_scenarios.rs` から呼ぶため）。本番の呼び出し元は
+// `#[cfg(windows)]` の `platform_state.rs` だけなので、非 Windows では未使用になる。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub mod drift_correction;
 pub mod force_guard;
 pub mod ime_event;
 pub(crate) mod imm_evidence;
