@@ -138,7 +138,10 @@ grep -rn "try_force_on_bootstrap\|apply_force_on_for_imm_broken" crates/awase-wi
 - [ ] **P1** A-6 文書部分: `ARCHITECTURE.md:43-47` と `docs/ime-control-overview.md` の該当箇所を過去形に直すか削除する。`imm_cache.toml` 表記をそろえる。
 - [ ] **P1** A-7: CLAUDE.md の一覧に4 crate を足し、`awase-keymap-learn` の説明と ADR 番号を直す。
 - [ ] **P2** A-6 コード部分: 上の grep の全ヒットを判定し、現在形を0件にする。`platform_state.rs:1341` のログ文言を直す。A-5 のコードコメント3箇所（`ime_controller.rs:603`、`open_chain.rs:636`、`key_pipeline.rs:1521`）の「ADR-178」を置き換える。
-- [ ] **P2** B-6: `BrokenAppBootstrap` 一式と `ime.rs::set_ime_mode` を削除する（保留可）。`SetOpenCrossProcessSync` の到達経路を確認する。
+- [x] **P2** B-6（実装済み）: `BrokenAppBootstrap` 一式を削除した（variant・`clear_force_on_broken_app_bootstrap` とその配線・専用テスト・説明コメント。`ime.rs::set_ime_mode` は develop で既に無い）。
+  - `open_warrant.rs` の parity テストは、ヒューリスティック guard の次元を落とした（`EXPECTED_OLD_ONLY_COUNT` 8→4。消えた4件は旧 `BrokenAppBootstrap` の分）。
+  - ヒューリスティック guard の枠組み（`overrides_explicit_intent`、`active_heuristic_reason`、`issue_open_warrant` の Step 4b、`HeuristicGuessSource::Guard`、`effective_open`/`resolve` の `has_explicit_intent` 引数）も、到達する reason が無くなったので削除した（別 PR。ADR-087 に追記）。
+  - **`SetOpenCrossProcessSync` の到達経路**: 消えてはいない。同期 `ImeController::apply` の呼び出し元は `platform.rs:1635`（`apply_ime_open_with_view`）と `key_pipeline.rs:1585`（shadow toggle OFF の同期分岐）で、後者は `imm_cross_is_first_applicable` が偽のときだけ通る（真なら非同期チェーン）。ImmCross が先頭でなければ同期チェーンに ImmCross が入らないはずだが、チェーン構成の全網羅は未確認。死蔵と断定するには、`decide_attempt(.., Sync, ImmCross, ..)` に到達する入力の有無をテストか網羅で確かめる必要がある。今回は削除しない。
 - [ ] **P3** B-8（保留しない）: `.githooks/pre-push` の `target` に `state/(platform_state|mode_key_pass|key_effect_)` を足し、`fix-requires-evidence.md` の IME belief 行に同じファイルを**同じコミットで**足す。`fix-requires-evidence.md:95` の「実行されるのは `.git/hooks/pre-push` 側」を訂正する。未使用の `.git/hooks/pre-push`（未追跡、リポジトリ外）は削除してよいが、メインの作業ツリーを使っているユーザーに確認してから行う。
 
 ## 受け入れ条件

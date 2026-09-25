@@ -1930,3 +1930,14 @@ S3（`extract_fn_body` のブレースカウントが文字列リテラル非対
 awase-windows -- -A clippy::doc_lazy_continuation -D warnings` 新規指摘
 ゼロを確認済み。**Phase 3 本体（item15 実差し替え・item16(b)）に進む前の
 must-fix は解消済み**（Opus 総評）。
+
+## 追記（2026-09-25）: ヒューリスティック guard の区別を撤去した
+
+`ForceOnReason::BrokenAppBootstrap`（唯一の「override 権限を持たない」reason）は、追加元の `try_force_on_bootstrap` が `621bf93c`（force-on 撤去、2026-09-18）で消え、variant 自体も #307 で削除した。これにより本 ADR が導入した次の区別は、到達する reason が無くなったので削除した（挙動は変わらない）。
+
+- `ForceOnReason::overrides_explicit_intent()`（全 reason が `true` になった）。
+- `ForceGuardSet::active_heuristic_reason()`（常に `None`）と、`issue_open_warrant` の Step 4b、`HeuristicGuessSource::Guard`。
+- `effective_open`/`resolve` の `has_explicit_intent` 引数（guard は明示意図があっても常に override する）。`active_override_reason()` は `active_reason()` に改名した。
+
+本文中の上記の名前は、当時の設計の記録として残す。
+
