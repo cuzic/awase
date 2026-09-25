@@ -483,6 +483,12 @@ pub fn read_persisted_table(path: &Path) -> Result<PersistedTable, RejectReason>
     if meta.len() > MAX_TABLE_FILE_BYTES {
         return Err(RejectReason::TooLarge);
     }
+    // 0バイトは未学習と同じ扱い（scoopのpersistは、まだ存在しない永続化対象のファイルを
+    // 空ファイルとして作ることがあり、壊れたファイル扱い＝パース失敗の警告にしないため）。
+    // （Windowsではディレクトリの`len`も0なので、通常ファイルに限る。ディレクトリは読み取り失敗のまま）
+    if meta.is_file() && meta.len() == 0 {
+        return Err(RejectReason::NotFound);
+    }
     let text = fs::read_to_string(path).map_err(|e| io_reject_reason(&e))?;
     persist::from_json(&text).map_err(|e| match e {
         LoadError::Parse(_) => RejectReason::Parse,
@@ -1266,6 +1272,18 @@ mod tests {
         let result = load_runtime_table(&dir, NS);
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(result, Err(RejectReason::Io));
+    }
+
+    #[test]
+    fn empty_file_is_treated_as_not_learned() {
+        let path = std::env::temp_dir().join(format!(
+            "awase_keymap_learn_table_empty_{}.json",
+            unique_test_suffix()
+        ));
+        fs::write(&path, b"").expect("write empty file");
+        let result = load_runtime_table(&path, NS);
+        let _ = fs::remove_file(&path);
+        assert_eq!(result, Err(RejectReason::NotFound));
     }
 
     fn unique_test_suffix() -> u128 {
