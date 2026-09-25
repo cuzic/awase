@@ -36,8 +36,6 @@ pub struct ImeUpdate {
     pub observer_poll: Option<ImeObs>,
     /// miss_count を 1 インクリメントすべきか
     pub increment_miss_count: bool,
-    /// `force_on_broken_app_bootstrap` フラグをリセットすべきか（検出成功時）
-    pub clear_force_on_broken_app_bootstrap: bool,
     /// `force_on_panic_reset` フラグと miss_count をリセットすべきか（検出成功時）
     pub clear_force_on_panic_reset: bool,
     /// `input_mode` に適用すべき新しい値（`Some` のときのみ更新すべき）
@@ -50,7 +48,6 @@ pub struct ImeUpdate {
 struct PollOutcome {
     observer_poll: Option<ImeObs>,
     increment_miss_count: bool,
-    clear_force_on_broken_app_bootstrap: bool,
     clear_force_on_panic_reset: bool,
 }
 
@@ -69,7 +66,6 @@ impl crate::ime::ImeSnapshot {
                     ms: now_ms,
                 }),
                 increment_miss_count: false,
-                clear_force_on_broken_app_bootstrap: true,
                 clear_force_on_panic_reset: true,
             }
         } else if let Some(on) = self.ime_on {
@@ -79,7 +75,6 @@ impl crate::ime::ImeSnapshot {
                     ms: now_ms,
                 }),
                 increment_miss_count: false,
-                clear_force_on_broken_app_bootstrap: true,
                 clear_force_on_panic_reset: true,
             }
         } else if self.is_tsf_native {
@@ -89,7 +84,6 @@ impl crate::ime::ImeSnapshot {
             PollOutcome {
                 observer_poll: None,
                 increment_miss_count: false,
-                clear_force_on_broken_app_bootstrap: false,
                 clear_force_on_panic_reset: false,
             }
         } else if !crate::state::imm_evidence::read_miss_is_imm_evidence(self.probe_timed_out) {
@@ -102,7 +96,6 @@ impl crate::ime::ImeSnapshot {
             PollOutcome {
                 observer_poll: None,
                 increment_miss_count: false,
-                clear_force_on_broken_app_bootstrap: false,
                 clear_force_on_panic_reset: false,
             }
         } else if guard_active {
@@ -112,14 +105,12 @@ impl crate::ime::ImeSnapshot {
             PollOutcome {
                 observer_poll: None,
                 increment_miss_count: false,
-                clear_force_on_broken_app_bootstrap: false,
                 clear_force_on_panic_reset: false,
             }
         } else {
             PollOutcome {
                 observer_poll: None,
                 increment_miss_count: true,
-                clear_force_on_broken_app_bootstrap: false,
                 clear_force_on_panic_reset: false,
             }
         }
@@ -246,7 +237,6 @@ pub fn classify_ime_snapshot(
         is_japanese_ime: snap.is_japanese_ime,
         observer_poll: poll.observer_poll,
         increment_miss_count: poll.increment_miss_count,
-        clear_force_on_broken_app_bootstrap: poll.clear_force_on_broken_app_bootstrap,
         clear_force_on_panic_reset: poll.clear_force_on_panic_reset,
         new_input_mode,
         new_prev_conversion_mode: if trust_input_mode {
@@ -394,7 +384,6 @@ mod tests {
         assert!(update.observer_poll.is_some());
         assert!(!update.observer_poll.unwrap().value);
         assert!(!update.increment_miss_count);
-        assert!(update.clear_force_on_broken_app_bootstrap);
         assert!(update.clear_force_on_panic_reset);
     }
 
@@ -442,7 +431,6 @@ mod tests {
         );
         assert!(update.observer_poll.is_none());
         assert!(!update.increment_miss_count);
-        assert!(!update.clear_force_on_broken_app_bootstrap);
         assert!(!update.clear_force_on_panic_reset);
     }
 
@@ -466,7 +454,6 @@ mod tests {
         );
         assert!(update.observer_poll.is_none());
         assert!(!update.increment_miss_count);
-        assert!(!update.clear_force_on_broken_app_bootstrap);
         assert!(!update.clear_force_on_panic_reset);
     }
 

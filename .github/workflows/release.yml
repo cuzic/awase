@@ -57,12 +57,17 @@ jobs:
       - name: Build awase-settings.exe
         run: cargo build --profile settings-release --locked -p awase-settings
 
+      # 学習プロセス（設定画面の「学習」ボタンが exe の隣から起動する。ADR-195/196）。
+      - name: Build awase-keymap-learn-win.exe
+        run: cargo build --release --locked -p awase-keymap-learn-win
+
       - name: Prepare distribution
         shell: bash
         run: |
           mkdir -p dist/layout dist/data dist/scripts
           cp target/release/awase.exe dist/
           cp target/settings-release/awase-settings.exe dist/
+          cp target/release/awase-keymap-learn-win.exe dist/
           cp config.toml dist/
           cp layout/*.yab dist/layout/
           cp data/*.csv.gz dist/data/ 2>/dev/null || true
@@ -128,7 +133,7 @@ jobs:
             hash        = "sha256:$hash"
             bin         = @("awase.exe")
             shortcuts   = @(, @("awase-settings.exe", "Awase Settings"))
-            persist     = @("config.toml", "layout", "data")
+            persist     = @("config.toml", "layout", "data", "keymap-learn-table.json", "keymap-learn-last-attempt.json")
           }
           New-Item -ItemType Directory -Force -Path "scoop-awase/bucket" | Out-Null
           $manifest | ConvertTo-Json -Depth 10 | Out-File -FilePath "scoop-awase/bucket/awase.json" -Encoding utf8NoBOM

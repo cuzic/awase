@@ -40,6 +40,8 @@ New-Item -ItemType Directory -Force -Path "$installDir\data" | Out-Null
 # Copy files
 Copy-Item "awase.exe" "$installDir\" -Force
 Copy-Item "awase-settings.exe" "$installDir\" -Force
+# 学習プロセス（設定画面の「学習」ボタンが exe の隣から起動する）。
+Copy-Item "awase-keymap-learn-win.exe" "$installDir\" -Force
 
 # layout/: 既存なら上書きしない（awase-settings の配列編集タブが
 # その場で上書き保存するユーザーデータのため。ADR-099 決定2）。

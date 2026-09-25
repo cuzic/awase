@@ -281,6 +281,11 @@ jobs:
       - name: Build awase.exe
         run: cargo build --release --locked -p awase-windows
 
+      # 学習プロセス（release.yml が同梱する。ADR-195/196）。PR で Windows 向けの
+      # ビルド崩れを検知するため、release.yml と同じコマンドでビルドする。
+      - name: Build awase-keymap-learn-win.exe
+        run: cargo build --release --locked -p awase-keymap-learn-win
+
       - name: Install Japanese IME
         shell: pwsh
         run: |
@@ -358,7 +363,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: awase-exe
-          path: target/release/awase.exe
+          path: |
+            target/release/awase.exe
+            target/release/awase-keymap-learn-win.exe
           retention-days: 7
 
   # awase-settings.exe のビルド(settings-release: LTO=true, codegen-units=1、
@@ -428,6 +435,7 @@ jobs:
         run: |
           mkdir -p dist/layout dist/data dist/scripts
           cp target/release/awase.exe dist/
+          cp target/release/awase-keymap-learn-win.exe dist/
           cp target/settings-release/awase-settings.exe dist/
           cp config.toml dist/
           cp layout/*.yab dist/layout/

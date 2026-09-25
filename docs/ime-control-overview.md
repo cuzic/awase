@@ -316,7 +316,7 @@ fn effective_open(&self) -> bool {
 
 ```rust
 pub struct ForceGuard {
-    pub reason: ForceOnReason,     // PanicReset / ProfilePolicy（BrokenAppBootstrap は variant のみ残存・追加する本番コードは無い、`621bf93c`）
+    pub reason: ForceOnReason,     // PanicReset / ProfilePolicy（旧 BrokenAppBootstrap は削除済み。追加元は `621bf93c` で撤去）
     pub expires_at: Option<Instant>, // TTL（None = 永続）
     pub generation: u64,           // 発火時の状態 generation
 }
@@ -325,7 +325,7 @@ pub struct ForceGuard {
 guard が active な条件: `guards` が空でない（TTL 未失効）。
 
 **TTL 設計の方針:**
-- `BrokenAppBootstrap`: 撤去済み（`621bf93c`、2026-09-18。追加元の `try_force_on_bootstrap` を削除。variant は残るが到達不能）
+- `BrokenAppBootstrap`: 撤去済み（`621bf93c`、2026-09-18。追加元の `try_force_on_bootstrap` を削除。variant 本体も後に削除した）
 - `PanicReset`: 確認済み観測で無効化すべき
 
 ### 4-5. Observer ループ

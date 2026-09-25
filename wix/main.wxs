@@ -108,6 +108,14 @@
         <RegistryValue Root="HKCU" Key="Software\awase" Name="SettingsExe"
                        Type="string" Value="" KeyPath="yes" />
       </Component>
+      <!-- 学習プロセス（設定画面が exe の隣から起動する。ADR-195/196）。ショートカットは作らない
+           （利用者が直接起動するものではない）。keymap-learn-table.json 等の学習表は MSI が
+           入れるファイルではないので、アンインストールでも消えない（ADR-178 と同じ扱い）。 -->
+      <Component Id="KeymapLearnExe" Guid="E97CD6D4-11C4-4E3C-B193-17ADB4721F04">
+        <File Source="dist\awase-keymap-learn-win.exe" />
+        <RegistryValue Root="HKCU" Key="Software\awase" Name="KeymapLearnExe"
+                       Type="string" Value="" KeyPath="yes" />
+      </Component>
       <!-- この GUID を変更すると ADR-099 決定0 が意図するアップグレード時の
            ユーザー設定保護が壊れる。
            crates/awase-windows/tests/wix_installer_guard.rs（決定8）参照。

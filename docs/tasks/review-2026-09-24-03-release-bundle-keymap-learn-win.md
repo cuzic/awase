@@ -1,6 +1,6 @@
 ---
 title: awase-keymap-learn-win.exe がリリース成果物（release.yml / ZIP / MSI / scoop）に入っていない
-status: 未着手
+status: 実装済み（案A。ユーザー決定 2026-09-24。署名は未対応・別判断）
 created: 2026-09-24
 related_adr: ["ADR-195", "ADR-196", "ADR-178"]
 source_review: 俯瞰レビュー（2026-09-24）の B-4
@@ -11,6 +11,14 @@ source_review: 俯瞰レビュー（2026-09-24）の B-4
 索引: [11](review-2026-09-24-11-low-priority-backlog.md)。裏取り基準は worktree の `5877f982`（PR #296 まで）。
 `cbae84ff` から `5877f982` までの間に `.github/`・`wix/`・`scripts/`・`crates/awase-settings/`・`src/paths.rs` の変更は無い（`git diff --stat cbae84ff 5877f982` で確認）。
 既存タスク [adr195-t7-safety-measures.md](adr195-t7-safety-measures.md) の項目5（`:85-89`、MSI 同梱・署名・アンインストール時の扱い〈ADR-177/178〉）と同件。
+
+## 決定と実装（2026-09-24、ユーザー決定: 案A＝同梱する）
+
+- `release.yml` と `ci.yml`（windows-build）が `awase-keymap-learn-win` を release ビルドし、ZIP・MSI（`KeymapLearnExe`、新 GUID、ショートカット無し）・`install.ps1`/`uninstall.ps1` に入れた。
+- scoop: `bin` には足さない（PATH に shim を作らない）。`persist` に `keymap-learn-table.json` / `keymap-learn-last-attempt.json` を足した。
+  scoop が未作成の persist ファイルを空で作ることがあるので、`read_persisted_table` は 0 バイトを未学習（NotFound）扱いにした。
+- 設定画面は、exe が無いとき OS のエラー文ではなく「学習プロセスが見つかりません」を出す（起動前に `exists()` を確認）。
+- 未対応: 署名（全 exe が未署名のまま。T7 項目3の結果を見て別判断）、MSI アンインストール時の学習表の扱い（MSI が入れたファイルではないので消えない。ADR-178 の一覧への明記は未実施）。
 
 ## 現状（裏取り済み）
 

@@ -1343,11 +1343,6 @@ impl ImeStateHub {
                 );
             }
         }
-        if update.clear_force_on_broken_app_bootstrap {
-            self.shadow_model
-                .force_guards
-                .remove(ForceOnReason::BrokenAppBootstrap);
-        }
         if update.clear_force_on_panic_reset {
             self.shadow_model
                 .force_guards
