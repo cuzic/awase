@@ -1,0 +1,72 @@
+2026-09-25T06:37:58.464332Z  INFO awase_windows::app::bootstrap: Keyboard Layout Emulator starting... (log → D:\a\awase\awase\dist\awase.log)
+2026-09-25T06:37:59.247915Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x1A down self_injected=true injected=true scan=0x0 extra=0x4B45594A since_actuation_us=Some(440)
+2026-09-25T06:37:59.248469Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x1A up self_injected=true injected=true scan=0x0 extra=0x4B45594A since_actuation_us=Some(1061)
+2026-09-25T06:37:59.248705Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x16 down self_injected=true injected=true scan=0x0 extra=0x4B45594A since_actuation_us=Some(1296)
+2026-09-25T06:37:59.249008Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x16 up self_injected=true injected=true scan=0x0 extra=0x4B45594A since_actuation_us=Some(1600)
+2026-09-25T06:37:59.252418Z DEBUG awase::journal: hook ime-mode diagnostic seq=14 elapsed_ms=398 vk_code=26 is_down=true self_injected=true injected=true scan=0
+2026-09-25T06:37:59.252432Z DEBUG awase::journal: hook ime-mode diagnostic seq=15 elapsed_ms=398 vk_code=26 is_down=false self_injected=true injected=true scan=0
+2026-09-25T06:37:59.252442Z DEBUG awase::journal: hook ime-mode diagnostic seq=16 elapsed_ms=398 vk_code=22 is_down=true self_injected=true injected=true scan=0
+2026-09-25T06:37:59.252451Z DEBUG awase::journal: hook ime-mode diagnostic seq=17 elapsed_ms=398 vk_code=22 is_down=false self_injected=true injected=true scan=0
+2026-09-25T06:37:59.756135Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-25T06:37:59.756232Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 505ms → set_ime_open(true) (source=ImmCrossProbe confidence=High)
+2026-09-25T06:37:59.756267Z DEBUG ir_apply_drift_correction: awase::journal: ime actuation seq=20 elapsed_ms=902 target_open=true attempts=0 policy="Read" action="Send"
+2026-09-25T06:37:59.756335Z  INFO ir_apply_drift_correction: awase_windows::ime_controller: [warrant-shadow] chain=set_ime_open open=true origin=EventOrigin { source: SelfActuated { strategy: "drift_correction_read" }, epoch: Generation(0) } would_have_blocked=true (A-1 shadow: 書き込みは止めない。A-2 で強制する際の判断材料)
+2026-09-25T06:38:00.262937Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-25T06:38:00.262987Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 1012ms → set_ime_open(true) (source=ImmCrossProbe confidence=High)
+2026-09-25T06:38:00.263059Z DEBUG ir_apply_drift_correction: awase::journal: ime actuation seq=23 elapsed_ms=1408 target_open=true attempts=1 policy="Read" action="Send"
+2026-09-25T06:38:00.263122Z  INFO ir_apply_drift_correction: awase_windows::ime_controller: [warrant-shadow] chain=set_ime_open open=true origin=EventOrigin { source: SelfActuated { strategy: "drift_correction_read" }, epoch: Generation(1) } would_have_blocked=true (A-1 shadow: 書き込みは止めない。A-2 で強制する際の判断材料)
+2026-09-25T06:38:00.753815Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-25T06:38:00.753849Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 1503ms → set_ime_open(true) (source=ImmCrossProbe confidence=High)
+2026-09-25T06:38:00.753919Z DEBUG ir_apply_drift_correction: awase::journal: ime actuation seq=26 elapsed_ms=1899 target_open=true attempts=2 policy="Read" action="Send"
+2026-09-25T06:38:00.753978Z  INFO ir_apply_drift_correction: awase_windows::ime_controller: [warrant-shadow] chain=set_ime_open open=true origin=EventOrigin { source: SelfActuated { strategy: "drift_correction_read" }, epoch: Generation(2) } would_have_blocked=true (A-1 shadow: 書き込みは止めない。A-2 で強制する際の判断材料)
+2026-09-25T06:38:10.035856Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x1A down self_injected=false injected=false scan=0x0 extra=0x5350494B since_actuation_us=Some(10788387)
+2026-09-25T06:38:10.035950Z DEBUG awase::journal: hook ime-mode diagnostic seq=46 elapsed_ms=11181 vk_code=26 is_down=true self_injected=false injected=false scan=0
+2026-09-25T06:38:10.057858Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x1A down self_injected=true injected=true scan=0x0 extra=0x4B45594D since_actuation_us=Some(10810396)
+2026-09-25T06:38:10.058076Z DEBUG awase::journal: hook ime-mode diagnostic seq=47 elapsed_ms=11203 vk_code=26 is_down=true self_injected=true injected=true scan=0
+2026-09-25T06:38:10.226025Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x1A up self_injected=false injected=false scan=0x0 extra=0x5350494B since_actuation_us=Some(10978555)
+2026-09-25T06:38:10.226128Z DEBUG awase::journal: hook ime-mode diagnostic seq=48 elapsed_ms=11371 vk_code=26 is_down=false self_injected=false injected=false scan=0
+2026-09-25T06:38:10.249522Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x1A up self_injected=true injected=true scan=0x0 extra=0x4B45594D since_actuation_us=Some(11002060)
+2026-09-25T06:38:10.249772Z DEBUG awase::journal: hook ime-mode diagnostic seq=49 elapsed_ms=11395 vk_code=26 is_down=false self_injected=true injected=true scan=0
+2026-09-25T06:38:12.638131Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-25T06:38:12.638189Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 509ms → set_ime_open(true) (source=ImmCrossProbe confidence=High)
+2026-09-25T06:38:12.638228Z DEBUG ir_apply_drift_correction: awase::journal: ime actuation seq=60 elapsed_ms=13783 target_open=true attempts=0 policy="Read" action="Send"
+2026-09-25T06:38:12.638319Z  INFO ir_apply_drift_correction: awase_windows::ime_controller: [warrant-shadow] chain=set_ime_open open=true origin=EventOrigin { source: SelfActuated { strategy: "drift_correction_read" }, epoch: Generation(0) } would_have_blocked=true (A-1 shadow: 書き込みは止めない。A-2 で強制する際の判断材料)
+2026-09-25T06:38:12.756871Z  INFO run_open_chain_async: awase_windows::ime_controller: [warrant-shadow] chain=async open=true origin=EventOrigin { source: SelfActuated { strategy: "engine_decision_async" }, epoch: Generation(0) } would_have_blocked=true (A-1 shadow: 書き込みは止めない。A-2 で強制する際の判断材料)
+2026-09-25T06:38:12.757051Z DEBUG on_ime_apply_complete{open=true outcome=Unwarranted generation=None reason=EngineDecision}: awase::journal: ime open applied seq=65 elapsed_ms=13902 open=true outcome="Unwarranted" reason="EngineDecision"
+2026-09-25T06:38:12.757099Z DEBUG on_ime_apply_complete{open=true outcome=Unwarranted generation=None reason=EngineDecision}: awase_windows::timer: Timer set: logical=101, ms=20, os_id=32610
+2026-09-25T06:38:15.220916Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(15973432)
+2026-09-25T06:38:15.221001Z DEBUG awase::journal: hook ime-mode diagnostic seq=79 elapsed_ms=16366 vk_code=242 is_down=true self_injected=false injected=false scan=112
+2026-09-25T06:38:15.255653Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=true injected=true scan=0x70 extra=0x4B45594D since_actuation_us=Some(16008170)
+2026-09-25T06:38:15.255937Z DEBUG awase::journal: hook ime-mode diagnostic seq=83 elapsed_ms=16401 vk_code=242 is_down=true self_injected=true injected=true scan=112
+2026-09-25T06:38:15.346970Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 up self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(16099484)
+2026-09-25T06:38:15.347047Z DEBUG awase::journal: hook ime-mode diagnostic seq=88 elapsed_ms=16492 vk_code=242 is_down=false self_injected=false injected=false scan=112
+2026-09-25T06:38:15.353218Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 up self_injected=true injected=true scan=0x70 extra=0x4B45594D since_actuation_us=Some(16105733)
+2026-09-25T06:38:15.353396Z DEBUG awase::journal: hook ime-mode diagnostic seq=90 elapsed_ms=16499 vk_code=242 is_down=false self_injected=true injected=true scan=112
+2026-09-25T06:38:18.439742Z DEBUG run_open_chain_async: awase_windows::ime_controller: [warrant-shadow] chain=async open=true origin=EventOrigin { source: SelfActuated { strategy: "engine_decision_async" }, epoch: Generation(0) } warranted
+2026-09-25T06:38:27.159252Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(27911543)
+2026-09-25T06:38:27.159353Z DEBUG awase::journal: hook ime-mode diagnostic seq=171 elapsed_ms=28304 vk_code=242 is_down=true self_injected=false injected=false scan=112
+2026-09-25T06:38:27.190282Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=true injected=true scan=0x70 extra=0x4B45594D since_actuation_us=Some(27942580)
+2026-09-25T06:38:27.190508Z DEBUG run_open_chain_async: awase_windows::ime_controller: [warrant-shadow] chain=async open=true origin=EventOrigin { source: SelfActuated { strategy: "engine_decision_async" }, epoch: Generation(0) } warranted
+2026-09-25T06:38:27.190668Z DEBUG awase::journal: hook ime-mode diagnostic seq=174 elapsed_ms=28336 vk_code=242 is_down=true self_injected=true injected=true scan=112
+2026-09-25T06:38:27.298066Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 up self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(28050361)
+2026-09-25T06:38:27.298166Z DEBUG awase::journal: hook ime-mode diagnostic seq=184 elapsed_ms=28443 vk_code=242 is_down=false self_injected=false injected=false scan=112
+2026-09-25T06:38:27.302725Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 up self_injected=true injected=true scan=0x70 extra=0x4B45594D since_actuation_us=Some(28055021)
+2026-09-25T06:38:27.302922Z DEBUG awase::journal: hook ime-mode diagnostic seq=186 elapsed_ms=28448 vk_code=242 is_down=false self_injected=true injected=true scan=112
+2026-09-25T06:38:48.674321Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(49426320)
+2026-09-25T06:38:48.674431Z DEBUG awase::journal: hook ime-mode diagnostic seq=289 elapsed_ms=49819 vk_code=242 is_down=true self_injected=false injected=false scan=112
+2026-09-25T06:38:48.714978Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=true injected=true scan=0x70 extra=0x4B45594D since_actuation_us=Some(49466984)
+2026-09-25T06:38:48.715212Z DEBUG awase::journal: hook ime-mode diagnostic seq=293 elapsed_ms=49860 vk_code=242 is_down=true self_injected=true injected=true scan=112
+2026-09-25T06:38:48.800461Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 up self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(49552467)
+2026-09-25T06:38:48.800525Z DEBUG awase::journal: hook ime-mode diagnostic seq=298 elapsed_ms=49945 vk_code=242 is_down=false self_injected=false injected=false scan=112
+2026-09-25T06:38:48.807583Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 up self_injected=true injected=true scan=0x70 extra=0x4B45594D since_actuation_us=Some(49559589)
+2026-09-25T06:38:48.807800Z DEBUG awase::journal: hook ime-mode diagnostic seq=300 elapsed_ms=49952 vk_code=242 is_down=false self_injected=true injected=true scan=112
+2026-09-25T06:38:51.828037Z DEBUG run_open_chain_async: awase_windows::ime_controller: [warrant-shadow] chain=async open=true origin=EventOrigin { source: SelfActuated { strategy: "engine_decision_async" }, epoch: Generation(0) } warranted
+2026-09-25T06:39:00.559359Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(61311219)
+2026-09-25T06:39:00.559454Z DEBUG awase::journal: hook ime-mode diagnostic seq=385 elapsed_ms=61704 vk_code=242 is_down=true self_injected=false injected=false scan=112
+2026-09-25T06:39:00.583078Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 down self_injected=true injected=true scan=0x70 extra=0x4B45594D since_actuation_us=Some(61334942)
+2026-09-25T06:39:00.583318Z DEBUG run_open_chain_async: awase_windows::ime_controller: [warrant-shadow] chain=async open=true origin=EventOrigin { source: SelfActuated { strategy: "engine_decision_async" }, epoch: Generation(0) } warranted
+2026-09-25T06:39:00.583482Z DEBUG awase::journal: hook ime-mode diagnostic seq=388 elapsed_ms=61728 vk_code=242 is_down=true self_injected=true injected=true scan=112
+2026-09-25T06:39:00.749809Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 up self_injected=false injected=false scan=0x70 extra=0x5350494B since_actuation_us=Some(61501671)
+2026-09-25T06:39:00.749970Z DEBUG awase::journal: hook ime-mode diagnostic seq=401 elapsed_ms=61894 vk_code=242 is_down=false self_injected=false injected=false scan=112
+2026-09-25T06:39:00.755137Z DEBUG awase_windows::hook: [hook] IME-mode vk=0xF2 up self_injected=true injected=true scan=0x70 extra=0x4B45594D since_actuation_us=Some(61507000)
+2026-09-25T06:39:00.755302Z DEBUG awase::journal: hook ime-mode diagnostic seq=403 elapsed_ms=61900 vk_code=242 is_down=false self_injected=true injected=true scan=112

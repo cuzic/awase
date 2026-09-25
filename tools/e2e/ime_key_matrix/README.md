@@ -78,3 +78,36 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 | `notify_latency.py` | `compartment_notify_probe`(ADR-193)のログから、キー→TSF compartment 変更通知の遅延(P50/P95/最大)、通知が来なかったキーの割合、通知の順序、周期読み取りとの比較を集計する |
 | `grid-tables/` | 格子(`--grid`)の学習結果の参照データ(`atok.json`/`msime.json`/`msime-native.json`: セル→結果の分布)と、`--grid-adaptive` の再試行対象(`nondet-*.txt`)。予測表(`key_effect_table.rs`)の生成元でもある(`gen_key_effect_table.py`) |
 | `patches/compartment_notify_probe-setfocus.patch` | ADR-193 の `compartment_notify_probe.rs` **本体**への修正案(`WM_SETFOCUS` で入力欄へフォーカスを戻す1アーム。CI で前面化に失敗する原因の対処)。**未適用**(本体は別セッションの成果物) |
+
+## 不変条件(異常検出器)と PR ゲート(`check_invariants.py` / `invariant_limits.json` / `e2e-ime-smoke`)
+
+期待表(`check.py` の `EXPECT` 等)は設計が変わるたびに古くなり、BUG-162・BUG-163 はログに出ていたのに数日見逃された。
+そこで、設計によらず「起きてはいけないこと」を awase.log から数え、件数だけで合否を決める検出器を置いた。
+
+| 不変条件 | 数えるもの | 上限の根拠 |
+|---|---|---|
+| I1 `i1_startup_drift_no_intent` | 起動(ログ先頭行)から `window_s` 秒以内の `[drift] correction: … set_ime_open(…)` のうち、同じ観測サイクル(直前 100ms 以内の `explicit_intent=` 行)が `explicit_intent=None` のもの。直前に `explicit_intent=` 行が無いものも「意図の証拠なし」として数える(書式変更で黙って0件にならないように) | BUG-163 |
+| I1 `i1_drift_no_intent_total` | 同じ条件でログ全体 | BUG-163 |
+| I2 `i2_unwarranted` | journal の `ime open applied seq=… outcome="Unwarranted"` 行(同じ seq は1件)。同じ span(`on_ime_apply_complete{… outcome=Unwarranted …}`)の別の行は数えない(`check.py` は2行を2件と数える) | BUG-162 |
+| I3(情報のみ) | 自己注入の IME モードキー(`[hook] IME-mode vk=… down self_injected=true`、vk 別)と `[warrant-shadow] … would_have_blocked=true`(chain/strategy 別) | 上限なし |
+
+- 使い方: `python3 check_invariants.py [--config 構成名] [--window 秒] [--json out.json] awase.log`。
+  終了コード 0=上限以内 / 1=超過 / 3=ログが無い・起動行が無い(INVALID)。最終行が1行サマリ `INVARIANTS: verdict=…`。
+- 単体テスト: `python3 -m unittest discover -s tools/e2e/ime_key_matrix -p 'test_*.py'`(フィクスチャは `testdata/` の CI 実ログ抜粋)。
+- `e2e-ime.yml`: awase を起動する全構成で数え、summary に**期待表とは別の表**で出す(情報のみ。期待表の合否は変えない)。
+- `e2e-ime-smoke.yml`(PR ゲート、develop 向け PR と develop への push): `e2e-ime.yml` を workflow_call で呼び、
+  `atok-passthrough-cold` を1回だけ回して**不変条件の件数だけ**で合否を決める(`gate_mode=invariants`)。
+  期待表の結果は表示のみ(フォーカス喪失で INVALID になる等の CI の揺らぎで赤くしないため)。
+
+### 上限(ratchet)の運用
+
+- 上限は `invariant_limits.json` の `limits`(全構成の既定)と `config_overrides`(構成別)。各上限に
+  `max`(超えたら FAIL)、`observed_min`(実測の揺れ幅の下限)、`bug`(許容している既知バグの番号)、`measured`(実測値と出典)を書く。
+- 値が `max` 以下なら OK。`observed_min` も下回ったら「上限を下げてよい」と表示する。**上限は下げる方向にだけ動かす**:
+  バグが直ったら `max` を実測値(理想は 0)まで下げ、`observed_min` もそろえる。
+- 上限を上げる・新しい上限を足すときは、**必ず対応する BUG 番号(`docs/known-bugs/BUG-NNN.md`)と実測値(どの run の何本で何件)**を
+  書く。「赤いので上げた」は禁止(`.claude/rules/tuning-constants.md` と同じ考え方)。
+- CI の揺らぎで件数が揺れる不変条件は、揺れ幅の最大を `max`、最小を `observed_min` にする。
+- 現在の上限の実測(windows-latest・GJI+ATOK、run 36103384502 の baseline×3・atok-passthrough-cold×3 と
+  run 36104015748 の baseline×3、計9本): I1 起動10秒 2〜3件、I1 全体 3〜4件、I2 全て1件。
+  旧 run 35620809258(ci/e2e-drift-fix)の3本は I1 起動10秒 18〜19件・全体 19〜22件で、今の上限では FAIL になる。

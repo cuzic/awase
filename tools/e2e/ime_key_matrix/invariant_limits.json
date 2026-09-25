@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "check_invariants.py の不変条件ごとの許容上限(ratchet)。上限は既知バグが直るまでの一時的な許容量で、下げる方向にだけ動かす。",
+    "max=これを超えたら FAIL。observed_min=実測した揺れ幅の下限(値がこれも下回ったら『上限を下げてよい』と表示)。",
+    "上限を上げる・新しく足すときは、必ず対応する BUG 番号(bug)と実測(measured)を書くこと。BUG が直ったら max を 0 にする。",
+    "実測: CI windows-latest・GJI+ATOK。run 36103384502(f2a875cd、baseline×3・atok-passthrough-cold×3)と",
+    "run 36104015748(c82b1d3d、baseline×3)の計9本。詳細は README の『不変条件』節。"
+  ],
+  "window_s": 10,
+  "measured_configs": ["baseline", "atok-passthrough-cold"],
+  "limits": {
+    "i1_startup_drift_no_intent": {
+      "max": 3,
+      "observed_min": 2,
+      "bug": "BUG-163",
+      "measured": "起動後10秒の窓で 2〜3 件(9本: 2,2,3,2,3,2,2,3,2)。起動約1.1〜2.3秒後、source=ImmCrossProbe、全て explicit_intent=None → set_ime_open(true)"
+    },
+    "i1_drift_no_intent_total": {
+      "max": 4,
+      "observed_min": 3,
+      "bug": "BUG-163",
+      "measured": "ログ全体で 3〜4 件(起動直後の2〜3件 + ハーネス操作後のフォーカス変更で約14.2秒後に1件)"
+    },
+    "i2_unwarranted": {
+      "max": 1,
+      "observed_min": 1,
+      "bug": "BUG-162",
+      "measured": "9本すべて 1 件(ime open applied seq=… outcome=\"Unwarranted\" reason=\"EngineDecision\"、約14秒後)。check.py はこれを span 由来の行と合わせて 2 件と数える"
+    }
+  },
+  "config_overrides": {}
+}
