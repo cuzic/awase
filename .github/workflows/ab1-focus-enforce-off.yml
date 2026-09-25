@@ -25,7 +25,7 @@ jobs:
         with:
           shared-key: ab1-focus-enforce-off
           save-if: ${{ matrix.cfg == 'A' }}
-      - name: 構成B: 強制OFFを無効化
+      - name: "構成B 強制OFFを無効化"
         if: matrix.cfg == 'B'
         shell: bash
         run: |
