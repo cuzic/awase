@@ -545,14 +545,6 @@ impl Runtime {
             self.platform_state.ime.journal.absorb(entry);
         }
 
-        let applied_ime_on = self
-            .platform_state
-            .ime
-            .model()
-            .applied
-            .applied_open()
-            .unwrap_or(false);
-
         // ADR-098 決定2: 旧 TsfNative force-on ブロック（GJI VK_IME_ON を
         // shadow_on 無視で強制送信）はここに存在した。決定1-a が `applied` を
         // 偽装しなくなったことで、通常の strategy chain（`shadow_on=false`
@@ -595,18 +587,10 @@ impl Runtime {
         tracing::debug!(
             "[composition] FocusChange: send_eager_tsf_warmup called (ime_on via warmup_ime_on())"
         );
-
-        if !applied_ime_on && !new_profile_is_tsf_native {
-            // ADR-090 §2.A 設計案 3: トレイトメソッド `set_ime_open` には引数を
-            // 足せないため inherent な `set_ime_open_ordered` へ移した。
-            let order = self.issue_actuation_order(false, "focus_change_enforce_off");
-            let sent = self.platform.set_ime_open_ordered(order);
-            tracing::debug!(
-                "[composition] FocusChange: set_ime_open(false) sent={sent} \
-                 (applied_open OFF → enforce IME OFF on new window; ADR-090 A-2: \
-                 sent=false means warrant was refused, no write happened)"
-            );
-        }
+        // 旧「フォーカス変更時の強制 OFF」（非 TsfNative で belief=OFF なら新窓へ
+        // `set_ime_open_ordered(false)`）は 2026-09-25 に撤去した。CI 実測で現 develop では
+        // warrant が拒否して書き込まないか発火しないかのどちらかで、撤去前後に差が出なかった
+        // （docs/adr/191-calibration-experiments.md「A/B-1」）。
     }
 
     // ── ドリフト補正 ──

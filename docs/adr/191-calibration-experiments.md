@@ -259,3 +259,18 @@ GJI側(`ci/e2e-drift-fix3`、run 35630377273): `cal-verify-obs` 400ms以降 0%�
 揃えた後は通常の drift correction に戻る(永続的に無効化しない)。awaseが通過後に書いた場合は揃えず、書き込みが届かなかったなら drift correction が訂正する。dispatch元は `pass_through_observed` の1箇所(architecture_guard)。
 **テスト:** 純関数 `should_align_after_expired_mode_key_pass_only_once_and_not_after_awase_write`(Linux)、`platform_state` の Windows専用テスト2件(通過→観測なし→窓切れ→最初の成功観測で揃い2回目は揃えない/awase書き込み後は揃えない。Linuxでは走らず windows-build CI で実行)。
 
+
+## A/B-1 フォーカス変更時の強制OFF(`focus_change_enforce_off`)のCI比較と撤去決定(2026-09-25)
+
+GJI/windows-latest、検証専用ブランチ `ci/ab1-*`(developへは未マージ)。構成A=当時のdevelop、構成B=強制OFFの `if` ブロックを無効化。
+
+| 日時 | アプリ | IME | 構成 | 操作 | +100/+400/+1500ms の窓2 IME開閉 | 強制OFF(`focus_change_enforce_off`) | 判定 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-25 | pwsh内EDIT2窓(同一プロセス、run 36085675898) | GJI(ATOK) | A×8 / B×8 | 窓1OFF→窓2ON→窓2へ前面化 | 全16回 開/開/開 | A 2/8発火、B 0 | 判定不能(belief=OFFを作れず。窓2が同一プロセスでFocusChangedが通らない) |
+| 2026-09-25 | notepad / pwsh内EDIT(run 36086291594) | GJI(ATOK) | A,B×20×2種 | 窓1のIME×窓2移動前idle(800/2500/6000ms)を巡回 | 全80回 開のまま | A/notepad 1/20のみ発火、他0/60 | 判定不能(発火が稀、`sent=`未採取) |
+| 2026-09-25 | pwsh 2プロセスのEDIT(run 36086861542) | GJI(ATOK) | A×10 / B×10 | VK_IME_OFF注入でbelief=OFF(`explicit_intent=None`)→窓2をON→前面化 | 全20回 開/開/開 | A: ログ全体11回発火、`sent=true`は起動直後1回のみ・試行中10回すべて`sent=false`(warrant拒否)、B 0 | A=Bと同挙動 |
+| 2026-09-25 | 同上(プロセス内E2E相当、run 36086549599) | GJI(ATOK) | A,B×1 | 同上 | 開/開/開/開 | 0回(`belief_on=true`で前提不成立) | 判定不能 |
+
+**決定(2026-09-25、ユーザー): 強制OFFブロックを撤去する。** 根拠: 現developでは、CI上で強制OFFが発火してもwarrantが拒否して書き込まない(`sent=false`)か、そもそも発火しない。撤去前後(A/B)でIME状態の差は一度も出なかった。ADR-191決定1(belief をIMEへ押し込まない)にも沿う。
+**コード構造上の根拠(Opusレビュー、2026-09-25):** `set_ime_open_ordered`(`platform.rs:1683-1697`)は授権がなければ書かずに `false` を返す(強制版。ログの `would_have_blocked=true` は強制の前の記録)。このブロックは OsPoll 観測の後で走るため、新窓が ON と観測されていれば warrant(`open_warrant.rs:131-193`)が OFF を必ず拒否する(意図は hwnd 単位で窓1の意図は窓2に効かない)。書き込めたのは (a) 新窓の観測が既に OFF の冗長書き込み、(b) 同じ窓宛ての OFF 明示意図が TTL(30秒)内に残る場合、のみ。つまり「CIで前提を作れなかった」だけでなく、意図なし・belief OFF・新窓 ON の場面では現行 warrant 仕様で書き込めない。回復は観測が belief を ON に追随させる経路(ADR-191 決定1)で、撤去前後で変わらない。
+**限界(未検証):** 上記(b)「OFF にした窓へ30秒以内に戻ったら IME が ON だった」場面は4試行のどれでも作っていない(VK_IME_OFF 注入は `explicit_intent=None`)。撤去後はこの場面で drift correction が約400ms遅れて OFF を書く(旧: フォーカス直後に即OFF)。 実機のGJI/MS-IME、CIのpwsh EDIT以外のImmCrossアプリ(LINE等)では確認していない。「Engine OFFなのにIME ON」が観測で上書きされるまで残る事象が実機で出た場合は、新規BUGとして起票し、この決定を再検討する。
