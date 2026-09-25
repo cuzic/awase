@@ -259,3 +259,15 @@ GJI側(`ci/e2e-drift-fix3`、run 35630377273): `cal-verify-obs` 400ms以降 0%�
 揃えた後は通常の drift correction に戻る(永続的に無効化しない)。awaseが通過後に書いた場合は揃えず、書き込みが届かなかったなら drift correction が訂正する。dispatch元は `pass_through_observed` の1箇所(architecture_guard)。
 **テスト:** 純関数 `should_align_after_expired_mode_key_pass_only_once_and_not_after_awase_write`(Linux)、`platform_state` の Windows専用テスト2件(通過→観測なし→窓切れ→最初の成功観測で揃い2回目は揃えない/awase書き込み後は揃えない。Linuxでは走らず windows-build CI で実行)。
 
+
+## A/B-1 アプローチ1: VK_IME_OFFテスト注入で belief=OFF を作り、窓2を別プロセスに置く(2026-09-25、検証専用ブランチ ci/ab1-approach1、run 36086861542)
+
+| 日時 | アプリ | IME | 構成 | 操作 | +100/+400/+1500ms の窓2 IME開閉 | 強制OFF(`focus_change_enforce_off`) | 判定 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-25 | pwsh.exe 2プロセスのEDIT(windows-latest) | GJI(ATOK) | A(現develop)×10 | 窓1前面で VK_IME_OFF を `AWASE_TEST_INJECTION` 注入→窓2をAPIでON→窓2へ前面化 | 全10回 開/開/開 | ログ全体で11回発火、`sent=true` は起動直後の1回のみ、試行中の10回はすべて `sent=false`(warrantに拒否、`would_have_blocked=true`) | 判定不能(差なし) |
+| 2026-09-25 | 同上 | 同上 | B(if無効化)×10 | 同上 | 全10回 開/開/開 | 0回 | 判定不能(差なし) |
+
+- 判明: `ir_stage_focus` の `FocusChanged` はプロセス変更時のみ発火するため、run 36086292824(窓2が同一プロセス)は強制OFFのブロックがそもそも通っていなかった。別プロセスにすると `marking cold` が25回(全フォーカス切替)出るようになった。
+- 前提の検証: 注入した VK_IME_OFF は `extra=0x5350494B` で物理キー扱い(`[engine-input] vk=0x1A`)、直前に `[stage-observe] belief_on=false`。ただし `explicit_intent=None` で、belief=OFF は観測由来。
+- 未成立: 試行中の強制OFF発火10回は、ログ上の focus-sync の hwnd が窓1のとき9回(窓2→窓1の切替側に寄る)で、窓1→窓2の切替時(窓2がIME ON)に発火した証拠は取れていない。発火してもすべて `sent=false`(ADR-090 A-2 の warrant が拒否)で、現develop では強制OFFは実質書き込まない。よって A と B は挙動が同じで、撤去可否の根拠にならない。
+- 採取ミス: CSV の `enforce_off_lines`/`sent` は per-trial のログ窓が w2→w1 切替を含まず、ほぼ空。ログ全体(dist/awase.log)から集計した値が上の表。
