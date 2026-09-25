@@ -545,7 +545,7 @@ pub fn classify_state_dependent_mode_key(
             CannotPredictReason::InsufficientData,
         ));
     }
-    if keymap.has_overlay && matches!(key, TableKey::Henkan | TableKey::Muhenkan) {
+    if keymap.has_overlay() && matches!(key, TableKey::Henkan | TableKey::Muhenkan) {
         return Some(Classification::CannotPredict(
             CannotPredictReason::AmbiguousKeymap,
         ));

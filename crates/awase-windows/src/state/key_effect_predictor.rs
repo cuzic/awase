@@ -442,7 +442,8 @@ pub struct KeyEffectKeymap {
     /// 復元できないので別に持つ（決定8 (i)）。Microsoft IME本体のキーマップでは使わない（`None`）。
     session_keymap: Option<i64>,
     pub(super) custom_table: Option<String>,
-    pub(super) has_overlay: bool,
+    /// `config1.db`の生の`overlay_keymaps`（役割判定は種類で受動にするキーが違う、ADR-199 決定4）。
+    overlay_keymaps: Vec<i64>,
     /// Microsoft IME本体のキー割り当て（レジストリ`KeyAssignmentHenkan`/`Muhenkan`）が既定（再変換/かな切替）から
     /// 変えられている。その変換/無変換の打鍵は予測しない（GJIのoverlay/カスタム上書きと同じ安全側）。
     henkan_reassigned: bool,
@@ -555,7 +556,7 @@ impl KeyEffectKeymap {
             preset,
             session_keymap,
             custom_table,
-            has_overlay: !overlay_keymaps.is_empty(),
+            overlay_keymaps: overlay_keymaps.to_vec(),
             henkan_reassigned: false,
             muhenkan_reassigned: false,
             fingerprint,
@@ -596,7 +597,12 @@ impl KeyEffectKeymap {
         let vk_name = awase_gji_config::role::ROLE_CANDIDATE_VK_NAMES
             .iter()
             .find(|name| awase::types::VkCode::from_name(name).is_some_and(|v| v.0 == vk))?;
-        awase_gji_config::role::key_role(self.session_keymap, self.custom_table.as_deref(), vk_name)
+        awase_gji_config::role::key_role(
+            self.session_keymap,
+            self.custom_table.as_deref(),
+            &self.overlay_keymaps,
+            vk_name,
+        )
     }
 
     /// Microsoft IME本体のキーマップ。`assignment_enabled`は`IsKeyAssignmentEnabled == 1`、`henkan`/`muhenkan`は
@@ -614,7 +620,7 @@ impl KeyEffectKeymap {
             preset: KeymapPreset::MsImeNative,
             session_keymap: None,
             custom_table: None,
-            has_overlay: false,
+            overlay_keymaps: Vec::new(),
             henkan_reassigned: reassigned(henkan),
             muhenkan_reassigned: reassigned(muhenkan),
             fingerprint: awase_keymap_learn::fingerprint::msime_native_keymap_fingerprint(
@@ -623,6 +629,13 @@ impl KeyEffectKeymap {
                 muhenkan,
             ),
         }
+    }
+
+    /// overlay（`overlay_keymaps`）が1つでもあるか。無変換/変換は overlay
+    /// `HENKAN_MUHENKAN_TO_IME_ON_OFF` が上書きしうるので予測しない。
+    #[must_use]
+    pub const fn has_overlay(&self) -> bool {
+        !self.overlay_keymaps.is_empty()
     }
 
     /// 学習表の陳腐化検出に使う、このキーマップの指紋（生の入力から作ったもの）。
@@ -668,7 +681,7 @@ impl KeyEffectKeymap {
         {
             return None;
         }
-        if (self.has_overlay && matches!(vk, 0x1C | 0x1D))
+        if (self.has_overlay() && matches!(vk, 0x1C | 0x1D))
             || (self.henkan_reassigned && vk == 0x1C)
             || (self.muhenkan_reassigned && vk == 0x1D)
         {
@@ -693,7 +706,7 @@ impl KeyEffectKeymap {
         // たまたま空でも「同梱表そのまま」とは判定しない(ADR-195段階4 B3対応)。
         !matches!(self.preset, KeymapPreset::Custom)
             && self.custom_table.is_none()
-            && !self.has_overlay
+            && !self.has_overlay()
             && !self.henkan_reassigned
             && !self.muhenkan_reassigned
     }
@@ -1409,6 +1422,34 @@ mod tests {
         // 候補外のキー（0x19・0xF2）は役割を持たない。
         assert_eq!(kotoeri.gji_key_role(0x19), None);
         assert_eq!(kotoeri.gji_key_role(0xF2), None);
+        // 候補キーの VK 名は全て`from_name`で解決でき、F13〜F24・変換/無変換も VK 値から引ける。
+        use crate::vk::VkCodeExt;
+        for name in awase_gji_config::role::ROLE_CANDIDATE_VK_NAMES {
+            assert!(awase::types::VkCode::from_name(name).is_some(), "{name}");
+        }
+        let rows = |key: &str| {
+            format!(
+                "DirectInput\t{key}\tIMEOn\nPrecomposition\t{key}\tIMEOff\n\
+                 Composition\t{key}\tIMEOff\nConversion\t{key}\tIMEOff\n"
+            )
+        };
+        let f_and_henkan = format!(
+            "status\tkey\tcommand\n{}{}{}{}",
+            rows("F13"),
+            rows("F24"),
+            rows("Henkan"),
+            "DirectInput\tON\tIMEOn\nPrecomposition\tOFF\tIMEOff\n\
+             Composition\tOFF\tIMEOff\nConversion\tOFF\tIMEOff\n"
+        );
+        let km = KeyEffectKeymap::from_config(Some(0), Some(f_and_henkan.clone()), &[]).unwrap();
+        for vk in [0x7C, 0x87, 0x1C] {
+            assert_eq!(km.gji_key_role(vk), Some(KeyRole::ImeToggle), "{vk:#x}");
+        }
+        assert_eq!(km.gji_key_role(0x1D), None);
+        // overlay 100 が変換/無変換を書き換える構成では、変換は受動（F キーはトグルのまま）。
+        let overlaid = KeyEffectKeymap::from_config(Some(0), Some(f_and_henkan), &[100]).unwrap();
+        assert_eq!(overlaid.gji_key_role(0x1C), None);
+        assert_eq!(overlaid.gji_key_role(0x7C), Some(KeyRole::ImeToggle));
         // Microsoft IME 本体のキーマップでは GJI の役割判定をしない。
         let native = KeyEffectKeymap::for_msime_native(false, None, None);
         assert_eq!(native.gji_key_role(0xF3), None);

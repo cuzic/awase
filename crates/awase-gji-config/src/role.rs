@@ -20,6 +20,7 @@ use crate::tsv::{parse_custom_keymap_table, KeymapRow};
 use crate::{
     SESSION_KEYMAP_ATOK, SESSION_KEYMAP_CUSTOM, SESSION_KEYMAP_KOTOERI, SESSION_KEYMAP_MOBILE,
     SESSION_KEYMAP_MSIME, SESSION_KEYMAP_NONE,
+    SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF,
 };
 
 /// キーの役割（ADR-199 決定2）。役割が無いキー（受動）は `Option::None` で表す。
@@ -99,13 +100,26 @@ const fn source(session_keymap: Option<i64>, custom_keymap_table: Option<&str>) 
 
 /// `vk_name`（無修飾の打鍵）が、この GJI 設定で持つ役割（ADR-199 決定4）。
 /// 候補外のキー（[`ROLE_CANDIDATE_VK_NAMES`] に無い）は常に `None`。
+///
+/// `overlay_keymaps`（`config1.db` field 68）は Mozc が主キーマップの後に後勝ちで重ねる
+/// （`ApplyOverlaySessionKeymap`）。役割は重ねた後の実効で決まるが、ここでは評価せず受動に
+/// 倒す（決定6-3）: `OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF` は変換/無変換の行を書き換える
+/// ので変換/無変換を受動に、未知の overlay は書き換える行が分からないので全キーを受動にする。
 #[must_use]
 pub fn key_role(
     session_keymap: Option<i64>,
     custom_keymap_table: Option<&str>,
+    overlay_keymaps: &[i64],
     vk_name: &str,
 ) -> Option<KeyRole> {
     if !ROLE_CANDIDATE_VK_NAMES.contains(&vk_name) {
+        return None;
+    }
+    let overlay_touches_key = overlay_keymaps.iter().any(|&overlay| {
+        overlay != SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF
+            || matches!(vk_name, "VK_CONVERT" | "VK_NONCONVERT")
+    });
+    if overlay_touches_key {
         return None;
     }
     let toggle = match source(session_keymap, custom_keymap_table) {
@@ -271,15 +285,16 @@ mod tests {
     }
 
     fn role_in_custom(table: &str, vk_name: &str) -> Option<KeyRole> {
-        key_role(Some(SESSION_KEYMAP_CUSTOM), Some(table), vk_name)
+        key_role(Some(SESSION_KEYMAP_CUSTOM), Some(table), &[], vk_name)
     }
 
     const HZ: [&str; 2] = ["VK_DBE_SBCSCHAR", "VK_DBE_DBCSCHAR"];
 
     // ---- プリセット定数表と Mozc TSV の突き合わせ ----
     //
-    // 以下は google/mozc master の `src/data/keymap/{ms-ime,atok,kotoeri,mobile}.tsv`
-    // （2026-09-25 取得）から、候補キー（Hankaku/Zenkaku・F13〜F24・Henkan・Muhenkan）と
+    // 以下は google/mozc の `src/data/keymap/{ms-ime,atok,kotoeri,mobile}.tsv`（2026-09-25 に
+    // master から取得。keymap ディレクトリの最終変更コミット
+    // b4bbc42ff5524ec16a53cb4914166f6aed45056a の内容と一致を確認済み）から、候補キー（Hankaku/Zenkaku・F13〜F24・Henkan・Muhenkan）と
     // `Kanji`・`ON`・`OFF` の行だけを抜き出したもの（該当キーの Suggestion/Prediction/
     // ZeroQuerySuggestion 行は4種とも無い）。TSV 本体は同梱しない（決定4）。
 
@@ -383,14 +398,14 @@ Precomposition\tON\tIMEOn
         ] {
             for vk_name in HZ {
                 assert_eq!(
-                    key_role(Some(session), None, vk_name),
+                    key_role(Some(session), None, &[], vk_name),
                     Some(KeyRole::ImeToggle)
                 );
             }
             // ATOK の変換/無変換（Composition で Convert/ToggleAlphanumericMode）・
             // MS-IME の F13（DirectInput 行のみ）は受動。
             for vk_name in ["VK_CONVERT", "VK_NONCONVERT", "VK_F13"] {
-                assert_eq!(key_role(Some(session), None, vk_name), None);
+                assert_eq!(key_role(Some(session), None, &[], vk_name), None);
             }
         }
     }
@@ -402,7 +417,7 @@ Precomposition\tON\tIMEOn
         assert_eq!(role_in_custom(&stale, HZ[0]), None);
         for session in [SESSION_KEYMAP_KOTOERI, SESSION_KEYMAP_MOBILE] {
             assert_eq!(
-                key_role(Some(session), Some(&stale), HZ[0]),
+                key_role(Some(session), Some(&stale), &[], HZ[0]),
                 Some(KeyRole::ImeToggle)
             );
         }
@@ -418,7 +433,7 @@ Precomposition\tON\tIMEOn
             (Some(SESSION_KEYMAP_CUSTOM), Some(empty)),
         ] {
             assert_eq!(
-                key_role(session, table, HZ[1]),
+                key_role(session, table, &[], HZ[1]),
                 Some(KeyRole::ImeToggle),
                 "{session:?} {table:?}"
             );
@@ -429,7 +444,7 @@ Precomposition\tON\tIMEOn
     fn unknown_session_keymap_is_passive() {
         // CHROMEOS(5)・OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF(100)・未知の値。
         for session in [5, 100, 999] {
-            assert_eq!(key_role(Some(session), None, HZ[0]), None);
+            assert_eq!(key_role(Some(session), None, &[], HZ[0]), None);
         }
     }
 
@@ -589,5 +604,38 @@ Precomposition\tON\tIMEOn
         let precomp_only =
             custom("DirectInput\tMuhenkan\tIMEOn\nPrecomposition\tMuhenkan\tCancelAndIMEOff\n");
         assert_eq!(role_in_custom(&precomp_only, "VK_NONCONVERT"), None);
+    }
+
+    #[test]
+    fn overlay_makes_affected_keys_passive() {
+        // CUSTOM で変換をトグルにしても、overlay 100 が全状態を IMEOn に書き換える
+        // （Mozc の実効はトグルでない）ので受動。半角/全角は overlay の対象外でトグルのまま。
+        let table = custom(&format!(
+            "{}{}",
+            toggle_rows("Henkan"),
+            toggle_rows("Hankaku/Zenkaku")
+        ));
+        let overlay = [SESSION_KEYMAP_OVERLAY_HENKAN_MUHENKAN_TO_IME_ON_OFF];
+        let custom_session = Some(SESSION_KEYMAP_CUSTOM);
+        assert_eq!(
+            key_role(custom_session, Some(&table), &[], "VK_CONVERT"),
+            Some(KeyRole::ImeToggle)
+        );
+        for vk_name in ["VK_CONVERT", "VK_NONCONVERT"] {
+            assert_eq!(
+                key_role(custom_session, Some(&table), &overlay, vk_name),
+                None
+            );
+        }
+        assert_eq!(
+            key_role(custom_session, Some(&table), &overlay, HZ[0]),
+            Some(KeyRole::ImeToggle)
+        );
+        // 未知の overlay（OVERLAY_FOR_TEST 等）は書き換える行が分からないので全キー受動。
+        assert_eq!(key_role(custom_session, Some(&table), &[999], HZ[0]), None);
+        assert_eq!(
+            key_role(Some(SESSION_KEYMAP_MSIME), None, &[999], HZ[0]),
+            None
+        );
     }
 }
