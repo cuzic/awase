@@ -534,9 +534,40 @@ pub struct RuntimeTableCache {
     checked_at_ms: Option<u64>,
     stamp: Option<(u64, u64, KeymapPreset, bool, Fingerprint)>,
     cells: Option<Vec<Cell>>,
+    /// `cells`から読込時に前計算した「半角/全角が開閉トグルでない」判定
+    /// （[`learned_cells_show_non_toggle`]）。`cells`と同じ場所で更新するので別々に古くならない。
+    hankaku_zenkaku_non_toggle: bool,
 }
 
 impl RuntimeTableCache {
+    /// 採用中の学習表が半角/全角を開閉トグルでないと示しているか（ADR-195追記、読込時に前計算）。
+    /// 学習表が無い・棄却・未採用なら`false`。**`use_learned_keymap_table`は見ない**ので、
+    /// 呼び出し側が`get`を呼んだ直後にだけ使うこと。
+    #[must_use]
+    pub const fn hankaku_zenkaku_non_toggle(&self) -> bool {
+        self.hankaku_zenkaku_non_toggle
+    }
+
+    /// [`Self::get`]を、予測器・警告・(B)判定で共通の検証キー（`preset`・同梱表そのままか・指紋）で呼ぶ。
+    #[cfg(windows)]
+    pub fn get_for_keymap(
+        &mut self,
+        now_ms: u64,
+        keymap: &super::key_effect_predictor::KeyEffectKeymap,
+    ) -> Option<&[Cell]> {
+        let fingerprint = keymap.fingerprint();
+        self.get(
+            now_ms,
+            (
+                keymap.preset(),
+                keymap.is_unmodified_bundled_config(),
+                fingerprint,
+            ),
+            table_file_stamp,
+            || load_and_log(fingerprint),
+        )
+    }
+
     /// 直近の`get`で学習済み表が採用されている（＝予測に使われている）か。
     #[must_use]
     pub const fn is_active(&self) -> bool {
@@ -593,6 +624,17 @@ impl RuntimeTableCache {
             if first || now_stamp != self.stamp {
                 self.stamp = now_stamp;
                 self.cells = load();
+                self.hankaku_zenkaku_non_toggle = self.cells.as_deref().is_some_and(|c| {
+                    super::key_effect_table::learned_cells_show_non_toggle(
+                        c,
+                        TableKey::HankakuZenkaku,
+                    )
+                });
+                if self.hankaku_zenkaku_non_toggle {
+                    tracing::info!(
+                        "[hz-toggle] 採用中の学習表が半角/全角を開閉トグルでないと示す: 固定セットのToggleを外す"
+                    );
+                }
             }
         }
         self.cells.as_deref()
@@ -1319,5 +1361,42 @@ mod tests {
         assert!(
             super::super::key_effect_predictor::predict_in_table(&cells, 0x0D, &closed).is_none()
         );
+    }
+
+    /// ADR-195追記: 読込時に「半角/全角が開閉トグルでない」判定を前計算し、`cells`と同時に更新・失効する。
+    #[test]
+    fn hankaku_zenkaku_non_toggle_is_precomputed_with_cells() {
+        use super::super::key_effect_predictor::{cell, Disp};
+        let k = TableKey::HankakuZenkaku;
+        // IMEOn割当: 閉→開、開→開（C19/C10）。
+        let non_toggle = vec![
+            cell(false, None, Stage::None, k, true, None, Disp::None),
+            cell(
+                true,
+                Some(Conv::C19),
+                Stage::None,
+                k,
+                true,
+                Some(Conv::C19),
+                Disp::None,
+            ),
+            cell(
+                true,
+                Some(Conv::C10),
+                Stage::None,
+                k,
+                true,
+                Some(Conv::C10),
+                Disp::None,
+            ),
+        ];
+        let key = (KeymapPreset::Custom, false, FP);
+        let mut cache = RuntimeTableCache::default();
+        assert!(!cache.hankaku_zenkaku_non_toggle());
+        cache.get(0, key, || Some((1, 1)), || Some(non_toggle));
+        assert!(cache.hankaku_zenkaku_non_toggle());
+        // 学習表が消えたら（棄却・ファイル削除）判定も戻る。
+        cache.get(RuntimeTableCache::RECHECK_MS, key, || Some((2, 1)), || None);
+        assert!(!cache.hankaku_zenkaku_non_toggle());
     }
 }

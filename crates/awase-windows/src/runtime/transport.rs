@@ -321,8 +321,9 @@ impl PhysicalKeyDisposition {
             // 0xF1 が常に Allow になったため不要になり撤去した）。
             //
             // 設定 `dbe_mode_key_policy`（Passthrough で本条件を外す隠し設定）は撤去した
-            // （ADR-191、レビュー指摘B-M3）: 0xF3/0xF4 は `enrich_ime_relevance` で必ず
-            // `Toggle` の `shadow_action` を持ち `shadow_toggled` で Suppress されるため、
+            // （ADR-191、レビュー指摘B-M3）: 0xF3/0xF4 は `enrich_ime_relevance` で（採用中の GJI 学習表が
+            // 開閉トグルでないと示す場合＝ADR-195追記を除き）`Toggle` の `shadow_action` を持ち
+            // `shadow_toggled` で Suppress されるため、
             // Passthrough を選んでも 0xF3/0xF4 は Suppress のままで、それ以外のキーには
             // そもそも効かない、実質死んだ設定だった。旧 config.toml にキーが残っていても
             // 未知キーとして無視され警告は出ない（`src/config.rs` のテストで固定）。
