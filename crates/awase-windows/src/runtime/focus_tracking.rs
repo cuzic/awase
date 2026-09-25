@@ -744,6 +744,14 @@ impl Runtime {
                             "[focus] Imm32Unavailable cache-miss: skip reset_stale \
                              — explicit IME OFF {elapsed}ms ago",
                         );
+                    } else if self.platform.focus.pid() == std::process::id() {
+                        // BUG-163: awase 自身のウィンドウ（警告ダイアログ等、ADR-192）は、ユーザーの入力先ではない。
+                        // ここで「安全デフォルト ON」の推測を記録すると、先同期と GJI への ImeOn 通知
+                        // （long-cold の `VK_IME_OFF→VK_IME_ON` reinit）へ進み、IME を閉じて起動したとき
+                        // 起動直後に awase が IME を開けてしまう（CI: 起動 0.5 秒後の警告ダイアログ）。
+                        tracing::debug!(
+                            "[focus] Imm32Unavailable cache-miss: skip reset_stale — awase 自身のウィンドウ"
+                        );
                     } else {
                         self.platform_state.ime.reset_stale_ime_on_for_imm_broken(
                             crate::state::ime_event::ImePolicyProfile::Imm32Unavailable,

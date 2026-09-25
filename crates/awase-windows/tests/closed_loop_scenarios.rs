@@ -115,7 +115,7 @@ fn bug162_misprediction_does_not_write_ime_back_open() {
 /// ひらがなキーの予測で Engine が活性化し、`SetOpen(true)` に `DirectRead` の warrant が下りて IME を開ける。
 /// 実 IME（格子）: 閉のひらがなキーは閉のまま（`off-c10-none|hiragana` → `OFF/0x10`）。
 #[test]
-#[ignore = "BUG-162: A の2段目（Engine 活性化の SetOpen を IME に書かない）が未着手。修正後に外す"]
+#[ignore = "BUG-162 A の2段目: 観測の鮮度窓（3秒）内の外部クローズで、Engine 活性化の SetOpen が IME を開ける限界。修正の要否は未決定（BUG-162 の追記参照）"]
 fn bug162_stage2_activation_set_open_does_not_open_ime_closed_outside_awase() {
     let mut h = Harness::start(Setup::imm_cross(state(true, CONV_ALNUM)));
     h.advance_ms(100)
