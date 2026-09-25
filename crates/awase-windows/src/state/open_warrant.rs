@@ -16,7 +16,7 @@
 //! ## Step 0〜4 の評価順序（§2.3 P15、round3 で確定）
 //!
 //! ```text
-//! Step 0: override 権限を持つ真の安全弁（PanicReset/ProfilePolicy）が active
+//! Step 0: 真の安全弁（PanicReset/ProfilePolicy。active な guard は全て該当）が active
 //!         → SafetyValve（意図より先に評価する。ForceGuardSet::effective_open()
 //!           の意味論そのもの。§7 round3 M2）
 //! Step 1: IntentStore に対象への有効な明示意図がある
@@ -24,9 +24,6 @@
 //! Step 3: authority()==Actuating な観測が derive_any() 相当の判定を満たす
 //!         → DirectRead / Corroborated
 //! Step 4a: HeuristicDefault 観測が実在する → HeuristicGuess(Observation)
-//! Step 4b: override 権限を持たないヒューリスティック guard が active
-//!          → HeuristicGuess(Guard)（現存する reason は全て override 権限を持つため、
-//!          この分岐に到達する guard は無い。旧 `BrokenAppBootstrap` は撤去済み）
 //! Step 4c: policy.default_feedback == Blind（実 IME の open 状態を直接観測する
 //!          手段が構造的に無いプロファイル）→ OwnSsot（desired_open を採用）
 //! ```
@@ -98,9 +95,6 @@ pub enum HeuristicGuessSource {
     /// `HeuristicDefault` 観測（`reset_stale_ime_on_for_imm_broken()` が
     /// Imm32Unavailable 入場時に記録するもの）に基づく。
     Observation(ObservationSource),
-    /// override 権限を持たないヒューリスティック guard に基づく（現存する reason は
-    /// 全て override 権限を持つため、本番で発行されることは無い）。
-    Guard(ForceOnReason),
 }
 
 /// `issue_open_warrant()` が参照する状態一式。1回の呼び出しの間は不変
@@ -143,8 +137,8 @@ pub fn issue_open_warrant(
         return None;
     }
 
-    // Step 0: 真の安全弁。明示意図より先に評価する（§7 round3 M2）。
-    if let Some(reason) = ctx.guards.active_override_reason() {
+    // Step 0: 真の安全弁（active な guard は全て安全弁）。明示意図より先に評価する（§7 round3 M2）。
+    if let Some(reason) = ctx.guards.active_reason() {
         return finalize(requested, true, WarrantBasis::SafetyValve(reason));
     }
 
@@ -187,15 +181,6 @@ pub fn issue_open_warrant(
             WarrantBasis::HeuristicGuess(HeuristicGuessSource::Observation(
                 ObservationSource::HeuristicDefault,
             )),
-        );
-    }
-
-    // Step 4b: override 権限を持たないヒューリスティック guard。
-    if let Some(reason) = ctx.guards.active_heuristic_reason() {
-        return finalize(
-            requested,
-            true,
-            WarrantBasis::HeuristicGuess(HeuristicGuessSource::Guard(reason)),
         );
     }
 
