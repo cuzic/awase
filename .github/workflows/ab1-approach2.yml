@@ -1,0 +1,88 @@
+name: ab1-approach2
+
+# タスク09 A/B-1: フォーカス変更時の強制OFF(ime_refresh.rs focus_change_enforce_off)の撤去前後比較。
+# 検証専用ブランチ。develop へはマージしない。A=現状、B=強制OFFの if を無効化(if false &&)。
+on:
+  push:
+    branches: [ci/ab1-approach2]
+    paths:
+      - 'tools/e2e/ab1-approach2.ps1'
+      - '.github/workflows/ab1-approach2.yml'
+  workflow_dispatch: {}
+
+jobs:
+  ab1:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        cfg: [A, B]
+        app: [notepad, edit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ab1-approach2
+          save-if: ${{ matrix.cfg == 'A' && matrix.app == 'notepad' }}
+      - name: "構成B 強制OFFを無効化"
+        if: matrix.cfg == 'B'
+        shell: bash
+        run: |
+          sed -i 's/if !applied_ime_on && !new_profile_is_tsf_native {/if false \&\& !applied_ime_on \&\& !new_profile_is_tsf_native {/' crates/awase-windows/src/runtime/ime_refresh.rs
+          git diff --stat
+          test -n "$(git diff --stat)" || { echo "無効化が差分を作らなかった"; exit 1; }
+      - name: awase をビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --bin awase
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\awase.exe dist\
+          Copy-Item config.toml dist\ -ErrorAction SilentlyContinue
+      - name: Google 日本語入力をインストール
+        shell: pwsh
+        run: choco install googlejapaneseinput -y --no-progress 2>&1 | Select-Object -Last 3
+      - name: 入力言語をja-JP + GJI に設定(ATOKプリセット)
+        shell: pwsh
+        run: |
+          $tip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
+          $l = New-WinUserLanguageList ja-JP
+          $l[0].InputMethodTips.Clear(); $l[0].InputMethodTips.Add($tip)
+          Set-WinUserLanguageList $l -Force 2>&1
+          try { Set-WinDefaultInputMethodOverride -InputTip $tip -ErrorAction Stop } catch { "override FAILED: $($_.Exception.Message)" }
+          $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), [byte[]](0xB0,0x01,0x00,0xC8,0x02,0x01))
+          Get-Process | Where-Object { $_.Name -match 'googleime|mozc' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+      - name: awase を起動して A/B-1 を実行
+        shell: pwsh
+        run: |
+          # 窓がホスト(pwsh.exe)内の Edit なので、awase に「IMMで読める」と事前に教える(e2e-ime.yml と同じ手当て)。
+          [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"pwsh.exe`"]`r`nEdit = `"works`"`r`n[imm_capability.`"powershell.exe`"]`r`nEdit = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))
+          $env:RUST_LOG = 'debug'
+          $env:AWASE_TEST_INJECTION = '1'
+          Push-Location dist
+          Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
+          Start-Sleep -Seconds 8
+          & "$PWD\..\tools\e2e\ab1-focus-enforce-off.ps1" -Config '${{ matrix.cfg }}' -App '${{ matrix.app }}' -Runs 20 -AwaseLog "$PWD\awase.log" -OutCsv "$PWD\..\ab1-result-${{ matrix.cfg }}-${{ matrix.app }}.csv" 2>&1 | Tee-Object -FilePath "$PWD\..\ab1-run-${{ matrix.cfg }}-${{ matrix.app }}.txt"
+          Pop-Location
+          if (Test-Path dist\awase.log) { Get-Content dist\awase.log -Encoding utf8 | Where-Object { $_ -match 'focus_change_enforce_off|FocusChange|warrant-shadow|Blacklist drift|sent=' } | Select-Object -Last 200 | Set-Content awase-filtered-${{ matrix.cfg }}-${{ matrix.app }}.log -Encoding utf8 }
+          Get-Process awase -ErrorAction SilentlyContinue | Stop-Process -Force
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ab1-${{ matrix.cfg }}-${{ matrix.app }}
+          path: |
+            ab1-result-*.csv
+            ab1-result-*.trials.log
+            ab1-run-*.txt
+            awase-filtered-*.log
+            awase-stderr.log
+            dist/awase.log
+          retention-days: 7
