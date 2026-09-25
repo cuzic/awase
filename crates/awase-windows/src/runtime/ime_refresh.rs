@@ -678,6 +678,25 @@ impl Runtime {
             )
         };
 
+        // BUG-163: 授権（warrant）が下りない補正は、そもそも書けない（`set_ime_open_ordered` は ADR-090 A-2 で
+        // `Unwarranted` を拒否する）。書けないのに「検知」（journal・`DriftDetected`＝`applied` を `Optimistic` に
+        // 偽装・試行回数の加算・「IME状態を確認できません」のバルーン）まで進めると、起動直後（明示意図なし・
+        // 観測だけが「閉」）に 500ms ごとの空振りと誤通知が続く。書き込み経路（`set_ime_open_ordered`）を通る
+        // ImmCross だけを対象にする（Blind の再送・give-up の有界化〈BUG-43〉は従来どおり）。
+        if self.can_use_imm32_cross_process()
+            && self
+                .issue_actuation_order_with_origin(desired, act_origin)
+                .would_have_blocked()
+        {
+            tracing::debug!(
+                "[drift] 授権が下りないため補正を見送る（検知しない）: desired={desired} \
+                 observed={observed} for {duration_ms}ms (source={:?} confidence={:?})",
+                drift.source,
+                drift.confidence,
+            );
+            return;
+        }
+
         self.ir_notify_drift_giveup_diagnostic(desired, observed, duration_ms, now);
 
         // BUG-113残置課題(2026-09-06): conv NATIVE ビットはVK_IME_OFFを送っても
