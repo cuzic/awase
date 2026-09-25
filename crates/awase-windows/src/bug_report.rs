@@ -196,8 +196,8 @@ pub struct BugReportStateSnapshot {
 /// # この型の安全性が依存している前提（レビューF7・S-2）
 ///
 /// `ime_*_keys`/`mode_*_keys`に含まれるVK名は
-/// `awase_gji_config::keymap::mozc_key_to_vk_name`のallowlist
-/// （固定エイリアス表と`F1`-`F24`のみ）を通過したものだけであり、
+/// `awase_gji_config::keymap::mozc_key_vk_names`のallowlist
+/// （固定の別名表と`F1`-`F24`のみ）を通過したものだけであり、
 /// `config1.db`由来の任意文字列が混入する経路はない。**将来「未対応の
 /// キートークンも診断のため載せよう」という変更を加えると、この
 /// allowlistという唯一の防壁を素通りして`config1.db`由来の任意文字列を

@@ -656,35 +656,19 @@ impl KeyEffectKeymap {
     }
 }
 
-/// このVKのMozcキーイベント名（カスタムキーマップに同名の行があるかの判定用）。
-/// 別名を含む（`key_parser.cc`）。
-const fn mozc_tokens(vk: u16) -> &'static [&'static str] {
-    match vk {
-        0xF0 => &["eisu"],
-        0xF1 => &["katakana"],
-        0xF2 => &["kana", "hiragana"],
-        0xF3 | 0xF4 => &["hankaku", "zenkaku", "hankaku/zenkaku"],
-        0x1C => &["henkan"],
-        0x1D => &["muhenkan"],
-        0x08 => &["backspace"],
-        0x0D => &["enter"],
-        0x1B => &["escape"],
-        0x20 => &["space"],
-        _ => &[],
-    }
-}
-
 /// カスタムキーマップTSV（`custom_keymap_table`）が、このVKのキーイベントの行を持つか。
+/// キー名→VK の写像は`awase_gji_config::keymap::mozc_key_vk_names`（ADR-199 T2 で一本化）。
 #[must_use]
 pub fn custom_table_overrides(custom_table: &str, vk: u16) -> bool {
-    let tokens = mozc_tokens(vk);
+    use crate::vk::VkCodeExt;
     custom_table.lines().any(|line| {
         let mut cols = line.split('\t');
         let (_status, Some(key)) = (cols.next(), cols.next()) else {
             return false;
         };
-        let key = key.trim().to_ascii_lowercase();
-        tokens.contains(&key.as_str())
+        awase_gji_config::keymap::mozc_key_vk_names(key)
+            .iter()
+            .any(|name| awase::types::VkCode::from_name(name).is_some_and(|v| v.0 == vk))
     })
 }
 
