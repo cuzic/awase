@@ -2,9 +2,10 @@
 //!
 //! `awase-keymap-learn::persist`（段階3の永続化フォーマット）が書き出した学習済み表を、
 //! コンパイル時埋め込みの同梱表（`key_effect_table.rs`）の代わりに使う。読み込んだ表は
-//! `KeyEffectPredicted`（belief更新）にのみ使い、actuationの判定（ADR-189の固定セット・
-//! ユーザー明示config）には一切使わない——本モジュールは`predict_in_table`が引く`Cell`の
-//! 一覧を用意するだけで、actuationのどの合流点も呼ばない。
+//! `KeyEffectPredicted`（belief更新）に使う。actuationの判定には原則使わない（ユーザー明示config・
+//! 漢字0x19の固定Toggleは不変）。**唯一の例外**: GJIの採用学習表が半角/全角を開閉トグルでないと示すとき
+//! （ADR-195追記、`hankaku_zenkaku_non_toggle`）だけ、ADR-189の固定セットの`shadow_action=Toggle`を外す。
+//! 本モジュールは`Cell`の一覧と、その前計算フラグを用意するだけで、actuationのどの合流点も呼ばない。
 //!
 //! 安全側に倒す2つの経路（本タスクB-1 Blockerの核心）:
 //! 1. **破損ファイルへの縮退**: サイズ上限超過・パース失敗・スキーマ版不一致は、
@@ -524,6 +525,76 @@ pub fn validate_and_convert(
     Ok(converted)
 }
 
+/// 半角/全角の`shadow_action=Toggle`を外すか（ADR-195追記）の、分岐部分の純関数。
+///
+/// GJI限定・`use_learned_keymap_table`（opt-out）・表の前計算フラグ（[`RuntimeTableCache::hankaku_zenkaku_non_toggle`]）
+/// の3つが全て真のときだけ外す。MS-IME本体・第三者IME・opt-out・学習表なしは常に`false`（固定セット維持）。
+#[must_use]
+pub const fn hz_omit_verdict(
+    ime: crate::state::ime_kind::ImeKindId,
+    use_learned: bool,
+    table_flag: bool,
+) -> bool {
+    hz_omit_may_apply(ime, use_learned) && table_flag
+}
+
+/// [`hz_omit_verdict`]の前段（表を読む前に分かる条件）。偽なら表の同期読込を省ける。
+#[must_use]
+pub const fn hz_omit_may_apply(ime: crate::state::ime_kind::ImeKindId, use_learned: bool) -> bool {
+    matches!(ime, crate::state::ime_kind::ImeKindId::Gji) && use_learned
+}
+
+/// `enrich_ime_relevance`が判定に届く前に早期returnする（修飾付き・IME種別不明）とき、古いラッチを
+/// 捨てるべきか。半角/全角（`is_hz`）の非injected KeyDownだけ捨てる（捨てないと次のKeyUpが前回押下の
+/// 判定を使い、Down=Allow・Up=Suppress の非対称になる。Opus round2 N2）。
+#[must_use]
+pub const fn should_clear_omit_latch_on_early_return(
+    is_hz: bool,
+    is_key_down: bool,
+    injected: bool,
+) -> bool {
+    is_hz && is_key_down && !injected
+}
+
+/// 半角/全角の「学習表由来でToggleを外すか」判定のラッチ（`(scan_code, 外すか)`）を進める純関数（ADR-195追記）。
+///
+/// - `reuse`（KeyUp、またはオートリピートの`was_down`なKeyDown）で、ラッチの scan_code（非0）が一致すれば
+///   ラッチの判定を使う（`fresh`は呼ばない）。
+/// - それ以外は`fresh`で判定を求める。非injectedのKeyDown（`fresh_down`）はその結果でラッチを**上書き**する。
+///   KeyUp では消さない（ドレイン経路は enrich を2回呼ぶので、Down→Up→Down→Up でも同じ結果になる。
+///   二重enrichは2回の判定のOR: どちらかで`shadow_action`が付けば残る）。
+/// - 識別は vk でなく scan_code（`VK_DBE_*`はDown/Upでvkが変わりうる、BUG-131/132）。拡張ビットは照合しない:
+///   半角/全角（0xF3/0xF4）には、Left/Right Alt のような raw scan 同一で拡張ビットだけが違う双子キーが無い。
+/// - `fresh`は表の同期読込（`RuntimeTableCache::get`）を含みうるので、enrich内で同期I/Oが走りうる
+///   （スタンプ変化時のみ）。
+///
+/// 戻り値は`(判定, 新しいラッチ)`。
+#[must_use]
+pub fn omit_latch_step(
+    latch: Option<(awase::types::ScanCode, bool)>,
+    reuse: bool,
+    fresh_down: bool,
+    scan: awase::types::ScanCode,
+    fresh: impl FnOnce() -> bool,
+) -> (bool, Option<(awase::types::ScanCode, bool)>) {
+    if reuse {
+        if let Some((s, omit)) = latch {
+            if scan.0 != 0 && s == scan {
+                return (omit, latch);
+            }
+        }
+    }
+    let omit = fresh();
+    (
+        omit,
+        if fresh_down {
+            Some((scan, omit))
+        } else {
+            latch
+        },
+    )
+}
+
 /// `config1.db`スタンプ（[`super::key_effect_predictor::KeymapCache`]）と同じ方式のfsキャッシュ。
 /// `RECHECK_MS`ごとにファイルの版（更新時刻+長さ）だけを問い合わせ、変わったときだけ読み直す。
 /// 判定は純関数で、fs/時計は呼び出し側が渡す（テスト容易性のため`KeymapCache`と同じ形にする）。
@@ -540,9 +611,40 @@ pub struct RuntimeTableCache {
     checked_at_ms: Option<u64>,
     stamp: Option<(u64, u64, KeymapPreset, bool, Fingerprint)>,
     cells: Option<Vec<Cell>>,
+    /// `cells`から読込時に前計算した「半角/全角が開閉トグルでない」判定
+    /// （[`learned_cells_show_non_toggle`]）。`cells`と同じ場所で更新するので別々に古くならない。
+    hankaku_zenkaku_non_toggle: bool,
 }
 
 impl RuntimeTableCache {
+    /// 採用中の学習表が半角/全角を開閉トグルでないと示しているか（ADR-195追記、読込時に前計算）。
+    /// 学習表が無い・棄却・未採用なら`false`。**`use_learned_keymap_table`は見ない**ので、
+    /// 呼び出し側が`get`を呼んだ直後にだけ使うこと。
+    #[must_use]
+    pub const fn hankaku_zenkaku_non_toggle(&self) -> bool {
+        self.hankaku_zenkaku_non_toggle
+    }
+
+    /// [`Self::get`]を、予測器・警告・(B)判定で共通の検証キー（`preset`・同梱表そのままか・指紋）で呼ぶ。
+    #[cfg(windows)]
+    pub fn get_for_keymap(
+        &mut self,
+        now_ms: u64,
+        keymap: &super::key_effect_predictor::KeyEffectKeymap,
+    ) -> Option<&[Cell]> {
+        let fingerprint = keymap.fingerprint();
+        self.get(
+            now_ms,
+            (
+                keymap.preset(),
+                keymap.is_unmodified_bundled_config(),
+                fingerprint,
+            ),
+            table_file_stamp,
+            || load_and_log(fingerprint),
+        )
+    }
+
     /// 直近の`get`で学習済み表が採用されている（＝予測に使われている）か。
     #[must_use]
     pub const fn is_active(&self) -> bool {
@@ -599,6 +701,18 @@ impl RuntimeTableCache {
             if first || now_stamp != self.stamp {
                 self.stamp = now_stamp;
                 self.cells = load();
+                self.hankaku_zenkaku_non_toggle = self.cells.as_deref().is_some_and(|c| {
+                    super::key_effect_table::learned_cells_show_non_toggle(
+                        c,
+                        TableKey::HankakuZenkaku,
+                    )
+                });
+                if self.hankaku_zenkaku_non_toggle {
+                    // 読込（再計算）時に1回だけ。実際に外すのは GJI のときだけ（enrich 側の判定）。
+                    tracing::info!(
+                        "[hz-toggle] 採用中の学習表が半角/全角を開閉トグルでないと示す（適用はGJIのみ）"
+                    );
+                }
             }
         }
         self.cells.as_deref()
@@ -1336,6 +1450,124 @@ mod tests {
         // (1) 学習していないキー(Enter)は「予測なし」——間違った値を捏造しない。
         assert!(
             super::super::key_effect_predictor::predict_in_table(&cells, 0x0D, &closed).is_none()
+        );
+    }
+
+    /// ADR-195追記: 読込時に「半角/全角が開閉トグルでない」判定を前計算し、`cells`と同時に更新・失効する。
+    #[test]
+    fn hankaku_zenkaku_non_toggle_is_precomputed_with_cells() {
+        use super::super::key_effect_predictor::{cell, Disp};
+        let k = TableKey::HankakuZenkaku;
+        // IMEOn割当: 閉→開、開→開（C19/C10）。
+        let non_toggle = vec![
+            cell(false, None, Stage::None, k, true, None, Disp::None),
+            cell(
+                true,
+                Some(Conv::C19),
+                Stage::None,
+                k,
+                true,
+                Some(Conv::C19),
+                Disp::None,
+            ),
+            cell(
+                true,
+                Some(Conv::C10),
+                Stage::None,
+                k,
+                true,
+                Some(Conv::C10),
+                Disp::None,
+            ),
+        ];
+        let key = (KeymapPreset::Custom, false, FP);
+        let mut cache = RuntimeTableCache::default();
+        assert!(!cache.hankaku_zenkaku_non_toggle());
+        cache.get(0, key, || Some((1, 1)), || Some(non_toggle));
+        assert!(cache.hankaku_zenkaku_non_toggle());
+        // 学習表が消えたら（棄却・ファイル削除）判定も戻る。
+        cache.get(RuntimeTableCache::RECHECK_MS, key, || Some((2, 1)), || None);
+        assert!(!cache.hankaku_zenkaku_non_toggle());
+    }
+
+    /// ADR-195追記: KeyDownで確定した判定がKeyUpへ持ち越され、途中で表が変わっても揃う。
+    #[test]
+    fn omit_latch_carries_down_verdict_to_up() {
+        use awase::types::ScanCode;
+        let scan = ScanCode(0x29);
+        let (v, latch) = omit_latch_step(None, false, true, scan, || false);
+        assert!(!v);
+        let (v, latch2) =
+            omit_latch_step(latch, true, false, scan, || panic!("fresh must not run"));
+        assert!(!v);
+        assert_eq!(latch2, latch, "Upでラッチを消さない");
+        let (v, latch3) = omit_latch_step(latch2, false, true, scan, || false);
+        assert!(!v);
+        let (v, _) = omit_latch_step(latch3, true, false, scan, || true);
+        assert!(!v);
+    }
+
+    /// オートリピート（`was_down`のKeyDown。reuse=true）はラッチを再利用し、freshを呼ばない。
+    #[test]
+    fn omit_latch_reused_on_autorepeat_down() {
+        use awase::types::ScanCode;
+        let latch = Some((ScanCode(0x29), true));
+        let (v, l) = omit_latch_step(latch, true, true, ScanCode(0x29), || panic!("no fresh"));
+        assert!(v);
+        assert_eq!(l, latch);
+    }
+
+    /// scan違い/scan 0/ラッチ無しのreuseはその場で判定する。injectedのDownはラッチを更新しない。
+    #[test]
+    fn omit_latch_ignores_other_scan_and_injected() {
+        use awase::types::ScanCode;
+        let latch = Some((ScanCode(0x29), false));
+        let (v, l) = omit_latch_step(latch, true, false, ScanCode(0x1E), || true);
+        assert!(v);
+        assert_eq!(l, latch);
+        let (v, _) = omit_latch_step(Some((ScanCode(0), false)), true, false, ScanCode(0), || {
+            true
+        });
+        assert!(v);
+        let (v, _) = omit_latch_step(None, true, false, ScanCode(0x29), || true);
+        assert!(v);
+        let (v, l) = omit_latch_step(latch, false, false, ScanCode(0x29), || true);
+        assert!(v);
+        assert_eq!(l, latch);
+    }
+
+    /// 分岐: GJI・学習表使用・表フラグ真の3つが揃うときだけ外す（MS-IME本体・第三者・opt-outは外さない）。
+    #[test]
+    fn hz_omit_verdict_truth_table() {
+        use crate::state::ime_kind::ImeKindId;
+        let all = [ImeKindId::Gji, ImeKindId::MsIme];
+        for ime in all {
+            for use_learned in [false, true] {
+                for flag in [false, true] {
+                    let want = matches!(ime, ImeKindId::Gji) && use_learned && flag;
+                    assert_eq!(hz_omit_verdict(ime, use_learned, flag), want);
+                }
+            }
+        }
+        assert!(!hz_omit_may_apply(ImeKindId::MsIme, true));
+        assert!(!hz_omit_may_apply(ImeKindId::Gji, false));
+    }
+
+    /// 早期returnでラッチを捨てるのは、半角/全角の非injected KeyDownだけ。
+    #[test]
+    fn early_return_clears_latch_only_for_fresh_hz_down() {
+        assert!(should_clear_omit_latch_on_early_return(true, true, false));
+        assert!(
+            !should_clear_omit_latch_on_early_return(true, false, false),
+            "KeyUpは消さない"
+        );
+        assert!(
+            !should_clear_omit_latch_on_early_return(true, true, true),
+            "injectedは消さない"
+        );
+        assert!(
+            !should_clear_omit_latch_on_early_return(false, true, false),
+            "他キーは触らない"
         );
     }
 }

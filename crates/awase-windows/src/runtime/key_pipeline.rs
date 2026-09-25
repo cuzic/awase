@@ -1970,22 +1970,13 @@ impl Runtime {
             return;
         };
         // ADR-195段階4: 学習済み表（T3の永続化データ）が検証を通れば同梱表の代わりに使う。
-        // `KeyEffectPredicted`（belief更新）にのみ使い、actuationの判定には一切使わない。
-        let override_table = self
-            .use_learned_keymap_table
-            .then(|| {
-                let preset = keymap.preset();
-                let check_against_bundled = keymap.is_unmodified_bundled_config();
-                // 学習時点のキーマップと今のキーマップが同じかの照合用（陳腐化検出）。
-                let fingerprint = keymap.fingerprint();
-                self.key_effect_runtime_table.get(
-                    now_ms,
-                    (preset, check_against_bundled, fingerprint),
-                    crate::state::key_effect_runtime::table_file_stamp,
-                    || crate::state::key_effect_runtime::load_and_log(fingerprint),
-                )
-            })
-            .flatten();
+        // `KeyEffectPredicted`（belief更新）に使う。actuationの許可リストを広げる判定には使わない
+        // （半角/全角のToggleを外す縮小方向だけ`enrich_ime_relevance`が参照する、ADR-195追記）。
+        let override_table = if self.use_learned_keymap_table {
+            self.key_effect_runtime_table.get_for_keymap(now_ms, keymap)
+        } else {
+            None
+        };
         let ime = &self.platform_state.ime;
         let input = PredictInput {
             open: ime.effective_open(),

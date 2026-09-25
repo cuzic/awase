@@ -601,10 +601,177 @@ fn classify_cells(cells: &[Cell], key: TableKey, vk: u16) -> Classification {
     }
 }
 
+/// ADR-195 追記（縮小方向）: 採用中の学習表が、このキーを**開閉トグルでない**と示しているか。
+///
+/// 半角/全角（0xF3/0xF4）の固定セット`shadow_action=Toggle`を外してよいかの判定に使う純関数。
+/// 誤って外すと belief 追随が予測に依存するようになるので、外すのは「予測が引けて、かつ
+/// 非トグルが確からしい」ときだけにする（Opus round1 B1〜B3）:
+/// - **`Stage::None`（入力中でない）のセルだけ**を見る。入力中のセルは MS-IME 本体のように
+///   純トグルでない正規の挙動がある（開→開・半角英数へ切替）ので、開閉の割り当ての証拠にならない。
+/// - 予測が引けることを前提にする: 閉セルと、開セルのうち`C19`（ひらがな）・`C10`（英数）の
+///   両方が揃っているときだけ`true`になりうる（欠けていれば`false`＝外さない）。
+/// - 非トグルの証拠: 開セルが**すべて**開→開（IMEOn・ひらがな系の割り当て）の方向だけ。開セル1つの
+///   ノイズでは反転しない。閉セルは前提条件（存在するか）にだけ使い、閉→閉（IMEOff系の割り当て）の
+///   検出は**見送っている**: 学習が閉セル1つを取りこぼしただけで判定が反転し、TsfNative で belief が
+///   追随せず Engine OFF・IME ON のまま固定される退行を避けるため（Opus PR#308 M1）。
+/// - 行が無い・セルが欠ける→`false`（固定セット維持）。
+///
+/// `classify_cells`（全セルを見て警告に使う）とは目的が違い、同じ基準ではない。
+#[must_use]
+pub fn learned_cells_show_non_toggle(cells: &[Cell], key: TableKey) -> bool {
+    use super::key_effect_predictor::{Conv, Stage};
+    let idle = || {
+        cells
+            .iter()
+            .filter(move |c| c.key() == key && c.stage() == Stage::None)
+    };
+    let has_open = |conv: Conv| idle().any(|c| c.open() && c.conv() == Some(conv));
+    if !idle().any(|c| !c.open()) || !has_open(Conv::C19) || !has_open(Conv::C10) {
+        return false;
+    }
+    idle().filter(|c| c.open()).all(Cell::after_open)
+}
+
 #[cfg(test)]
 mod classification_tests {
     use super::*;
     use crate::state::key_effect_predictor::KeyEffectKeymap;
+
+    /// ADR-195追記: 半角/全角の`Stage::None`セル（閉1つ+開C19/C10）を組み立てる。
+    /// `(閉→after, C19→after, C10→after)`。
+    fn hz_cells(closed_after: bool, c19_after: bool, c10_after: bool) -> Vec<Cell> {
+        use super::super::key_effect_predictor::{cell, Conv, Stage};
+        let k = TableKey::HankakuZenkaku;
+        vec![
+            cell(false, None, Stage::None, k, closed_after, None, Disp::None),
+            cell(
+                true,
+                Some(Conv::C19),
+                Stage::None,
+                k,
+                c19_after,
+                Some(Conv::C19),
+                Disp::None,
+            ),
+            cell(
+                true,
+                Some(Conv::C10),
+                Stage::None,
+                k,
+                c10_after,
+                Some(Conv::C10),
+                Disp::None,
+            ),
+        ]
+    }
+
+    #[test]
+    fn hz_pure_toggle_does_not_omit() {
+        assert!(!learned_cells_show_non_toggle(
+            &hz_cells(true, false, false),
+            TableKey::HankakuZenkaku
+        ));
+    }
+
+    #[test]
+    fn hz_reassigned_to_other_command_omits() {
+        let k = TableKey::HankakuZenkaku;
+        // IMEOn/ひらがな割当: 閉→開、開→開。
+        assert!(learned_cells_show_non_toggle(
+            &hz_cells(true, true, true),
+            k
+        ));
+    }
+
+    /// 閉→閉（IMEOff割当）の検出は見送り（閉セル1つのノイズで反転させない）。開セルが開→閉なら外さない。
+    #[test]
+    fn hz_closed_to_closed_alone_does_not_omit() {
+        let k = TableKey::HankakuZenkaku;
+        assert!(!learned_cells_show_non_toggle(
+            &hz_cells(false, false, false),
+            k
+        ));
+        assert!(!learned_cells_show_non_toggle(
+            &hz_cells(false, true, false),
+            k
+        ));
+    }
+
+    #[test]
+    fn hz_single_noisy_open_cell_does_not_flip() {
+        // 開セル1つだけが開→開（学習ノイズ）でも、残りがトグルなら外さない。
+        assert!(!learned_cells_show_non_toggle(
+            &hz_cells(true, true, false),
+            TableKey::HankakuZenkaku
+        ));
+    }
+
+    #[test]
+    fn hz_no_row_or_missing_cells_does_not_omit() {
+        use super::super::key_effect_predictor::{cell, Stage};
+        let k = TableKey::HankakuZenkaku;
+        assert!(!learned_cells_show_non_toggle(&[], k));
+        // 別キーの行だけ（行なし）。
+        let other = [cell(
+            false,
+            None,
+            Stage::None,
+            TableKey::Henkan,
+            false,
+            None,
+            Disp::None,
+        )];
+        assert!(!learned_cells_show_non_toggle(&other, k));
+        // 閉セルが無い / C10が無い→予測が引けないので外さない。
+        let mut no_closed = hz_cells(false, true, true);
+        no_closed.remove(0);
+        assert!(!learned_cells_show_non_toggle(&no_closed, k));
+        let mut no_c10 = hz_cells(false, true, true);
+        no_c10.pop();
+        assert!(!learned_cells_show_non_toggle(&no_c10, k));
+    }
+
+    #[test]
+    fn hz_typing_stage_cells_are_ignored() {
+        use super::super::key_effect_predictor::{cell, Conv, Stage};
+        // MS-IME本体のように、入力中(Typing)の開→開があっても、Noneのセルが純トグルなら外さない。
+        let mut cells = hz_cells(true, false, false);
+        cells.push(cell(
+            true,
+            Some(Conv::C19),
+            Stage::Typing,
+            TableKey::HankakuZenkaku,
+            true,
+            Some(Conv::C10),
+            Disp::Kept,
+        ));
+        assert!(!learned_cells_show_non_toggle(
+            &cells,
+            TableKey::HankakuZenkaku
+        ));
+    }
+
+    /// 同梱表（GJIの2プリセット）は純トグルなので、判定が外さない（誤検出の回帰）。
+    #[test]
+    fn hz_bundled_gji_tables_are_pure_toggle() {
+        for cells in [ATOK, MSIME] {
+            assert!(!learned_cells_show_non_toggle(
+                cells,
+                TableKey::HankakuZenkaku
+            ));
+        }
+    }
+
+    /// `MSIME_NATIVE`（Microsoft IME本体）でも偽だが、理由はGJIと違う: 半角/全角の`Stage::None`に
+    /// C10の開セルが無く前提条件を満たさないため偽になる（純トグルだと確認できたわけではない）。
+    /// 適用をGJIに限定している理由の一つ（本体の表を判定にかけても外す根拠にならない）。
+    #[test]
+    fn hz_msime_native_is_false_because_precondition_not_met() {
+        assert!(!learned_cells_show_non_toggle(
+            MSIME_NATIVE,
+            TableKey::HankakuZenkaku
+        ));
+    }
 
     fn classify(preset: i64, vk: u16) -> Option<Classification> {
         let keymap = KeyEffectKeymap::from_config(Some(preset), None, &[]).unwrap();

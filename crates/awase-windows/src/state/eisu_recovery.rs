@@ -119,7 +119,8 @@ pub fn eisu_reset_on_ime_on(
 ///
 /// 新しい状態は持たない（`KeyTrack::conv` は予測が既に維持している）。トグルキー
 /// （0x19/0xF3/0xF4）は `shadow_action` を持つため予測表が使われず、`KeyTrack::conv` は
-/// 閉じる前の値のまま残る。
+/// 閉じる前の値のまま残る（例外: GJI の学習表が半角/全角を開閉トグルでないと示して
+/// `shadow_action` を外した構成では予測表が使われる。ADR-195追記）。
 #[must_use]
 pub const fn gji_retains_tracked_eisu(
     ime: crate::state::ime_kind::ImeKindId,

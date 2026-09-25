@@ -142,7 +142,8 @@ impl PhysicalKeyDisposition {
     ///   shadow_toggle 発火時 KeyDown と全 KeyUp を Suppress。
     ///   **例外: 半角/全角（0xF3 SBCSCHAR / 0xF4 DBCSCHAR。0xF2 HIRAGANA は上の専用分岐で
     ///   別処理）のうち、awase が beliefに基づく開閉トグルとして書くキー
-    ///   （`ImeKeyKind::is_open_toggle_for`、ADR-189/191、GJI・MS-IME本体の両方）の
+    ///   （`ImeKeyKind::is_open_toggle_for`、ADR-189/191、GJI・MS-IME本体の両方。ただし採用中のGJI学習表が
+    ///   半角/全角を開閉トグルでないと示すと`shadow_action`が付かず、この分岐の前に Down/Up とも Allow、ADR-195追記）の
     ///   KeyDown は `shadow_toggled` に関わらず常に Suppress**（`ime_actuation_owned`
     ///   の場合）。NICOLA の物理「IME ON」キー（scan 0x70）は、IME が既に目的の状態に
     ///   ある時に押されると `VK_DBE_HIRAGANA` (0xF2) の代わりに `VK_DBE_*` を生成する
@@ -309,6 +310,8 @@ impl PhysicalKeyDisposition {
             // 既に処理済みのためここには来ない) の KeyDown は、**awase が beliefに基づく
             // 開閉トグルとして書くキー**（`ImeKeyKind::is_open_toggle_for`、ADR-189/191。
             // GJI・MS-IME本体の両方）に限り、`shadow_toggled` に関わらず常に Suppress。
+            // （採用中のGJI学習表が半角/全角を開閉トグルでないと示す場合は`shadow_action`が付かず、
+            // 上の`is_kanji_event`判定でDown/UpともAllow済みでここに来ない。ADR-195追記）
             // 素通しすると、awase が書く開閉に加えて実 IME が同じキーを能動的に処理する
             // 二重 actuation になる（BUG-46/BUG-52）。
             //
@@ -321,8 +324,9 @@ impl PhysicalKeyDisposition {
             // 0xF1 が常に Allow になったため不要になり撤去した）。
             //
             // 設定 `dbe_mode_key_policy`（Passthrough で本条件を外す隠し設定）は撤去した
-            // （ADR-191、レビュー指摘B-M3）: 0xF3/0xF4 は `enrich_ime_relevance` で必ず
-            // `Toggle` の `shadow_action` を持ち `shadow_toggled` で Suppress されるため、
+            // （ADR-191、レビュー指摘B-M3）: 0xF3/0xF4 は `enrich_ime_relevance` で（採用中の GJI 学習表が
+            // 開閉トグルでないと示す場合＝ADR-195追記を除き）`Toggle` の `shadow_action` を持ち
+            // `shadow_toggled` で Suppress されるため、
             // Passthrough を選んでも 0xF3/0xF4 は Suppress のままで、それ以外のキーには
             // そもそも効かない、実質死んだ設定だった。旧 config.toml にキーが残っていても
             // 未知キーとして無視され警告は出ない（`src/config.rs` のテストで固定）。
@@ -1173,6 +1177,42 @@ mod plan_tests {
                 }
             }
         }
+    }
+
+    /// ADR-195追記: 採用中のGJI学習表が半角/全角を開閉トグルでないと示すと`enrich_ime_relevance`は
+    /// `shadow_action`を付けない（`None`）。このとき GJI の ImmCross（Standard）・GjiDirect
+    /// （Imm32Unavailable/TsfNative）のいずれでも 0xF3/0xF4 は Down も Up も Allow（KeyDownだけが残らない）。
+    #[test]
+    fn gji_hankaku_zenkaku_without_shadow_action_is_allowed_down_and_up() {
+        let mut checked = 0;
+        for vk in [crate::vk::VK_DBE_SBCSCHAR, crate::vk::VK_DBE_DBCSCHAR] {
+            for profile in [
+                AppImeProfile::Standard,
+                AppImeProfile::Imm32Unavailable,
+                AppImeProfile::TsfNative,
+            ] {
+                for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
+                    let ev = RawKeyEvent {
+                        vk_code: vk,
+                        ..kanji_event(event_type, None)
+                    };
+                    assert_eq!(
+                        PhysicalKeyDisposition::plan(
+                            &ev,
+                            profile,
+                            false,
+                            false,
+                            false,
+                            ActiveImeKind::GoogleJapaneseInput
+                        ),
+                        PhysicalKeyDisposition::Allow,
+                        "{vk:?} / {profile:?} / {event_type:?}: shadow_action=None のGJI半角/全角は素通し"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 12);
     }
 
     // 決定表の絞り込みを書くときは「対象行が空でないこと」を assert すること。ラベルを完全一致で絞り、実際のラベルが

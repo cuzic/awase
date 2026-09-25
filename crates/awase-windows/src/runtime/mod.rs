@@ -326,10 +326,18 @@ pub struct Runtime {
         crate::state::state_dependent_key_warning::WarningDialogTracker,
     warn_state_dependent_mode_keys: bool,
     /// ADR-195段階4: `<config dir>/keymap-learn-table.json`（段階3永続化）の実行時読込キャッシュ。
-    /// `KeyEffectPredicted`（belief更新）にのみ使い、actuationの判定には使わない。
+    /// `KeyEffectPredicted`（belief更新）に使う。actuationの許可リストは広げない（ADR-195決定(A)）が、
+    /// 半角/全角の固定セットの`shadow_action=Toggle`を**外す**方向にだけ参照する（ADR-195追記、
+    /// `learned_table_omits_hz_toggle`）。
     key_effect_runtime_table: crate::state::key_effect_runtime::RuntimeTableCache,
     /// `config.general.use_learned_keymap_table`（opt-out、既定true）。
     use_learned_keymap_table: bool,
+    /// ADR-195追記: 半角/全角の物理キー押下ごとの「学習表由来でToggleを外すか」の判定を、KeyDownで確定して
+    /// KeyUp まで持ち越すラッチ（`(scan_code, 外すか)`）。学習表の再読込がDownとUpの間に起きても、
+    /// Down=Allow・Up=Suppressで KeyDown だけがOSに残る形にしないため。識別は vk でなく scan_code
+    /// （`VK_DBE_*`はDown/Upでvkが変わりうる、BUG-131/132）。**Upで消さず上書きのみ**にする
+    /// （drain経路は enrich を2回呼ぶため）。
+    hz_toggle_omit_latch: Option<(awase::types::ScanCode, bool)>,
     /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091
     /// §D3.2、config.toml による手動設定のみ）が現在有効なら、その vk。
     /// `recompute_active_keymaps` が `[[keymap]]` との衝突チェックに使う
@@ -548,7 +556,7 @@ impl Runtime {
     /// IME 関連の事前分類情報を sync key 設定で補完する。
     ///
     /// 実処理は [`focus_tracker::FocusTracker::enrich_ime_relevance`] に委譲する。
-    pub fn enrich_ime_relevance(&self, event: &mut RawKeyEvent) {
+    pub fn enrich_ime_relevance(&mut self, event: &mut RawKeyEvent) {
         self.focus_tracker.enrich_ime_relevance(event);
         // ADR-189/191: 半角/全角(0xF3/0xF4)は、IME種別ごとに「開閉だけに作用するトグル」と確定して
         // いるとき（`ImeKeyKind::is_open_toggle_for`）だけ、方向固定でなく beliefに基づくトグルにする。
@@ -565,16 +573,90 @@ impl Runtime {
         };
         let m = event.modifier_snapshot;
         if m.ctrl || m.alt || m.shift || m.win {
+            self.clear_hz_toggle_omit_latch(key, event);
             return;
         }
         // 表の適用範囲と揃える: GJI と、CLSID で同定できた Microsoft IME 本体だけ。GJI 未検出・第三者 IME・
         // IMM32 HKL のみでは付けず、生キーを通して観測に追随する（レビュー round2 NB3）。
         let Some(ime) = crate::tsf::observer::tsf_obs().table_ime_kind() else {
+            self.clear_hz_toggle_omit_latch(key, event);
             return;
         };
-        if key.is_open_toggle_for(ime) {
+        if key.is_open_toggle_for(ime) && !self.learned_table_omits_hz_toggle(event, ime) {
             event.ime_relevance.shadow_action = Some(awase::types::ShadowImeAction::Toggle);
         }
+    }
+
+    /// 半角/全角の非injected KeyDown が判定（`learned_table_omits_hz_toggle`）に届かず早期 return する
+    /// （修飾付き・IME種別不明）とき、古いラッチを捨てる（判定は純関数
+    /// [`crate::state::key_effect_runtime::should_clear_omit_latch_on_early_return`]）。
+    fn clear_hz_toggle_omit_latch(&mut self, key: crate::vk::ImeKeyKind, event: &RawKeyEvent) {
+        let is_hz = matches!(
+            key,
+            crate::vk::ImeKeyKind::DbeSbcsChar | crate::vk::ImeKeyKind::DbeDbcsChar
+        );
+        if crate::state::key_effect_runtime::should_clear_omit_latch_on_early_return(
+            is_hz,
+            event.event_type == awase::types::KeyEventType::KeyDown,
+            event.injected,
+        ) {
+            self.hz_toggle_omit_latch = None;
+        }
+    }
+
+    /// ADR-195追記（縮小方向）: 採用中の学習表が半角/全角を開閉トグルでないと示すとき、固定セットの
+    /// `shadow_action=Toggle`を外す（`true`）。分岐（GJI限定・opt-out・表フラグ）は純関数
+    /// [`crate::state::key_effect_runtime::hz_omit_verdict`]。学習表が無い・棄却・未採用・opt-out・
+    /// キーマップ未取得のときは`false`＝従来どおり固定セットを維持する。
+    ///
+    /// 呼び出しの順序は`table_ime_kind`（未同定なら`enrich_ime_relevance`が`shadow_action`を付けずに抜ける。
+    /// 未同定の窓のKeyUpは`shadow_action`なし＝Allowで、Down側がSuppressでも孤立KeyUpが通るだけの有害でない方向）
+    /// → `is_open_toggle_for(ime)` → 本関数。本関数の中ではIME種別の判定より**前**にラッチを見る
+    /// （押したままGJI以外の窓へ移ってもDownとUpの判定が揃う）。
+    /// KeyDownで確定した結果を scan_code 付きのラッチに持ち、同じ物理キーのKeyUp・オートリピート
+    /// （`was_down`）はそれを使う（[`crate::state::key_effect_runtime::omit_latch_step`]）。
+    /// ドレイン経路は enrich を2回呼びうるので、二重enrichは2回の判定のOR（どちらかで`shadow_action`が付けば残る）。
+    /// 表の読込（`key_effect_keymap.get`/`get_for_keymap`）は同期I/Oを含み、スタンプ変化時だけ enrich 内で走る。
+    fn learned_table_omits_hz_toggle(
+        &mut self,
+        event: &RawKeyEvent,
+        ime: crate::state::ime_kind::ImeKindId,
+    ) -> bool {
+        use crate::state::key_effect_runtime::{
+            hz_omit_may_apply, hz_omit_verdict, omit_latch_step,
+        };
+        use awase::types::KeyEventType;
+        let is_up = event.event_type == KeyEventType::KeyUp;
+        let fresh_down = event.event_type == KeyEventType::KeyDown && !event.injected;
+        let reuse = is_up || (fresh_down && event.was_down);
+        let use_learned = self.use_learned_keymap_table;
+        let (omit, latch) = omit_latch_step(
+            self.hz_toggle_omit_latch,
+            reuse,
+            fresh_down,
+            event.scan_code,
+            || {
+                if !hz_omit_may_apply(ime, use_learned) {
+                    return false;
+                }
+                let now_ms = crate::hook::current_tick_ms();
+                let Some(keymap) = self.key_effect_keymap.get(
+                    now_ms,
+                    crate::gji_charset_autodetect::config1_db_stamp,
+                    crate::gji_charset_autodetect::read_key_effect_keymap,
+                ) else {
+                    return false;
+                };
+                self.key_effect_runtime_table.get_for_keymap(now_ms, keymap);
+                hz_omit_verdict(
+                    ime,
+                    use_learned,
+                    self.key_effect_runtime_table.hankaku_zenkaku_non_toggle(),
+                )
+            },
+        );
+        self.hz_toggle_omit_latch = latch;
+        omit
     }
 
     /// Decision の副作用を実行する（メッセージループ用）。
@@ -1189,6 +1271,7 @@ impl Runtime {
             key_effect_runtime_table: crate::state::key_effect_runtime::RuntimeTableCache::default(
             ),
             use_learned_keymap_table: true,
+            hz_toggle_omit_latch: None,
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
             msime_key_assignment_warned: None,
@@ -1229,16 +1312,8 @@ impl Runtime {
         if !self.use_learned_keymap_table {
             return None;
         }
-        let preset = keymap.preset();
-        let check_against_bundled = keymap.is_unmodified_bundled_config();
-        let fingerprint = keymap.fingerprint();
         self.key_effect_runtime_table
-            .get(
-                now_ms,
-                (preset, check_against_bundled, fingerprint),
-                crate::state::key_effect_runtime::table_file_stamp,
-                || crate::state::key_effect_runtime::load_and_log(fingerprint),
-            )
+            .get_for_keymap(now_ms, keymap)
             .map(<[_]>::to_vec)
     }
 
