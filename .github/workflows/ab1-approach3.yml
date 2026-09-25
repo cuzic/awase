@@ -1,0 +1,68 @@
+name: ab1-approach3
+
+# 検証専用。develop へはマージしない。A/B-1 アプローチ3: プロセス内で focus_change_enforce_off を駆動。
+# A=現状、B=強制OFFの if を無効化。
+on:
+  push:
+    branches: [ci/ab1-approach3]
+  workflow_dispatch: {}
+
+jobs:
+  ab1:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        cfg: [A, B]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ab1-approach3
+          save-if: ${{ matrix.cfg == 'A' }}
+      - name: 構成B 強制OFFを無効化
+        if: matrix.cfg == 'B'
+        shell: bash
+        run: |
+          sed -i 's/if !applied_ime_on && !new_profile_is_tsf_native {/if false \&\& !applied_ime_on \&\& !new_profile_is_tsf_native {/' crates/awase-windows/src/runtime/ime_refresh.rs
+          git diff --stat
+          test -n "$(git diff --stat)" || { echo "無効化が差分を作らなかった"; exit 1; }
+      - name: Google 日本語入力をインストール
+        shell: pwsh
+        run: choco install googlejapaneseinput -y --no-progress 2>&1 | Select-Object -Last 3
+      - name: 入力言語をja-JP + GJI に設定
+        shell: pwsh
+        run: |
+          $tip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
+          $l = New-WinUserLanguageList ja-JP
+          $l[0].InputMethodTips.Clear(); $l[0].InputMethodTips.Add($tip)
+          Set-WinUserLanguageList $l -Force 2>&1
+          try { Set-WinDefaultInputMethodOverride -InputTip $tip -ErrorAction Stop } catch { "override FAILED: $($_.Exception.Message)" }
+          $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), [byte[]](0xB0,0x01,0x00,0xC8,0x02,0x01))
+          Get-Process | Where-Object { $_.Name -match 'googleime|mozc' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+      - name: A/B-1 プロセス内テストを実行
+        shell: pwsh
+        run: |
+          $env:AB1_RUN = '1'
+          $env:AB1_RUNS = '10'
+          $cfg = '${{ matrix.cfg }}'
+          cargo test -p awase-windows --lib ab1_focus_enforce_off_in_process -- --nocapture --test-threads=1 2>&1 | Tee-Object -FilePath "ab1-run-$cfg.txt"
+          Select-String -Path "ab1-run-$cfg.txt" -Pattern '^AB1\|' | ForEach-Object { $_.Line } | Set-Content "ab1-result-$cfg.txt" -Encoding utf8
+          Get-Content "ab1-result-$cfg.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ab1-approach3-${{ matrix.cfg }}
+          path: |
+            ab1-run-*.txt
+            ab1-result-*.txt
+          retention-days: 7

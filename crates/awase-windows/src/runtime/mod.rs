@@ -7,6 +7,8 @@ mod focus_tracking;
 mod ime_actuation;
 mod ime_coordinator;
 mod ime_refresh;
+#[cfg(test)]
+mod ab1_focus_enforce_off_test;
 mod key_pipeline;
 // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの要素として実行する非同期経路。
 pub(crate) mod message_handlers;
