@@ -10,20 +10,20 @@ summary: |-
   役割を持つキーだけ（キー名・VK で固定しない）。(3) 設定を知る手段は `config1.db`・MS-IME 本体のレジストリ・学習表（ADR-195/196）だけ（U7 回答で確定）。
   所有者回答（第2回、決定11〜18）: 全ての開状態で閉じるキーだけトグル（U1）、belief の観測追随は存続（U2）、モード指定で開くキーも
   開閉だけ書く（U3）、0x19 は現状維持を経て既知のトグルへ（U4）、awase 既定の `keys.ime_on/ime_off`（Ctrl+変換/Ctrl+無変換）は
-  「awase 自身が actuate する設定」として**残す**（U5 修正・U10 回答。`keys.ime_toggle` の既定は決定14 の移行と同時に空にする方針のまま、所有者未確認）、
+  「awase 自身が actuate する設定」として**残す**（U5 修正・U10 消滅）。`keys.ime_toggle` の既定（`VK_KANJI`）は決定14 の移行と同時に空にする（2026-09-25 確定）、
   無変換/変換は単独タップと解決したときだけ能動（U6）、MS-IME 互換モードの半角/全角は受動（U8）、初期範囲の候補は
   半角/全角・F13〜F24・無変換/変換（U9）。
   要点: プリセットは定数表・動的逆算は CUSTOM だけ・学習表は狭める方向だけ・役割は保持せず打鍵時に求める・`config1.db` 不在は既定プリセット扱い・
   F13〜F24 は「その打鍵の最初の Down で awase が実際に書いたときだけ Down/リピート/Up を Suppress」（ADR-195 追記のラッチを一般化）・
   無変換/変換は ADR-192 決定3b の単独タップ確定点に合流。明示 config と役割由来が同じキーに重なったら config が優先（役割は付けない、Q2 回答で確定）。
   能動制御の例外は (1) IME 設定から逆算した役割トグル、(2) awase 自身の `keys.ime_on/ime_off` 設定（既定 Ctrl+変換/Ctrl+無変換）の2つ。
-  未決は `keys.ime_toggle` 既定（`VK_KANJI`）の扱いの確認のみ。
+  未決事項は無い。
 status: |-
-  **草案（所有者決定反映済み。未決=`keys.ime_toggle` 既定の確認のみ）。** 2026-09-24 起草、opus round1〜round7 反映済み。
+  **草案（所有者決定反映済み、未決なし）。** 2026-09-24 起草、opus round1〜round7 反映済み。
   2026-09-25 所有者回答（U1〜U6・U8・U9）を決定11〜18として反映し、opus round7（収束・条件付き）の中程度3件（M1〜M3）を反映。
   同日の所有者回答で U7（MS-IME 本体のレジストリは `config1.db` と同様にユーザー設定の一次情報源）を確定。
   同日の所有者回答で U5 を修正（`keys.ime_on`/`ime_off` の既定は空にせず残す。awase 自身が actuate する設定として扱う）。これで U10（旧既定値の移行）は消滅。
-  Q2（明示 config と役割が重なったら config 優先・役割なし）も確定。`keys.ime_toggle` 既定の扱いだけ所有者未確認。
+  Q2（明示 config と役割が重なったら config 優先・役割なし）も確定。同日の所有者回答で `keys.ime_toggle` の既定（`VK_KANJI`）は空にする（U4 の移行と同時、T14）と確定し、未決事項は無くなった。opus round8 の軽微指摘2件も反映。
   所有者は実装着手を指示していない。実装は未着手。review-2026-09-24-08 の方針（(B) 案、PR #308 で実装済み）を一般化・置換する。
 related_adr:
   - "ADR-189"
@@ -258,7 +258,7 @@ kotoeri/mobile のユーザーで使われていない古い `custom_keymap_tabl
   修飾付きのユーザー設定（例: MS-IME の Ctrl+Space トグル）は、既存の Engine 自動キー（`sync_ime_toggle_auto_detect`）が担う（適用条件は決定10で締める）。
 - **awase 自身の設定（`keys.ime_on`/`ime_off`/`ime_toggle`）は、awase が自分で actuate する能動制御として別軸で存続する**
   （ADR-191 の「ユーザー設定はユーザーが何をしたいかの軸」、決定1 の例外(2)）。`ime_on`/`ime_off` は既定値（Ctrl+変換/Ctrl+無変換）も残す
-  （所有者回答、U5 修正、決定15）。`ime_toggle` の既定は決定14 の移行と同時に空にする方針（所有者未確認、決定15）。
+  （所有者回答、U5 修正、決定15）。`ime_toggle` の既定（`VK_KANJI`）は空にする（決定14 の移行と同時、所有者回答 2026-09-25、決定15）。
   同じキーに役割由来のトグルと config.toml の値が重なったら config.toml が勝ち、役割は付けない（決定8・決定16。所有者回答 Q2 で確定）。
 - IME の設定（`config1.db`・レジストリ）へは書かない（従来どおり）。
 
@@ -305,13 +305,15 @@ kotoeri/mobile のユーザーで使われていない古い `custom_keymap_tabl
   （付け外しを1回で決める。代入は1箇所のままで `ime_relevance_shadow_action_writes_are_accounted_for` の件数は不変。
   ただし `is_open_toggle_for` の文字列を前提にした別のガード〈`bug116_...`〉の差し替えが要る、T4）。
 - **明示 config と重なったら config が優先（役割を付けない）**（round7 M1）: 無修飾のそのキーが config.toml の `keys.ime_on`/`ime_off`/`ime_toggle`
-  （明示値、`SpecialKeyCombos`）に含まれるなら役割を求めない（`shadow_action` なし）。重ねると1回の押下で開閉が2回書かれ打ち消し合う:
+  （読み込んだ実効値、`SpecialKeyCombos`）に含まれるなら役割を求めない（`shadow_action` なし）。読み込み後の `KeysConfig` では、ユーザーが書いた値と
+  既定値（`KeysConfig::default()`・`AppConfig::save` が書き出した既定）を実行時に区別できないので、比較対象は既定値を含む実効値になる。
+  既定値のうち無修飾は `ime_toggle` の `VK_KANJI` だけで、0x19 は候補キーでない（決定4・決定14）ので既定値との重なりは起きない（決定15 で空にした後も同じ）。重ねると1回の押下で開閉が2回書かれ打ち消し合う:
   `kp_run_inner` は `kp_stage_shadow_ime_toggle`（`key_pipeline.rs:328`）が belief を反転した**後**で ctx を作り（`:338`）`engine.on_input`（`:426`）を呼ぶ。
   Engine の `ImeToggle` は反転後の `!ctx.ime_on` を読む（`engine.rs:994-1001`）ので元に戻し、`VK_IME_OFF`→`VK_IME_ON` が続けて送られる。
   `match_event` が ime 系コンボの照合を止めるのは `sync_direction.is_some()` のときだけ（`engine.rs:1070-1083`、ADR-092 の `ime_detect` との二重処理と同じ形）で、
   役割由来の `shadow_action` では止まらない。例: 以前から GJI の CUSTOM で F13 をトグルにし、awase にも `ime_toggle = ["F13"]` と書いているユーザー。
   向きは決定16（config 由来が優先）と揃える。逆向き（`match_event` のガードに `shadow_action.is_some()` を足す）は役割が config に勝つので採らない。
-  config の明示値は Runtime が保持する（決定16 の `thumb_forced_open_actions` の保持と同じく Runtime のフィールド、ADR-164 に従いグローバル static にしない）。
+  config の実効値は Runtime が保持する（決定16 の `thumb_forced_open_actions` の保持と同じく Runtime のフィールド、ADR-164 に従いグローバル static にしない）。
   所有者回答 Q2（2026-09-25）で確定: 同じキーが GJI のトグルで config.toml にも書かれていれば config.toml を優先し、役割は付けない。
   既定値のまま残る `ime_on`/`ime_off`（Ctrl 付き）は無修飾の候補キーと重ならないので、この規則が効くのは config.toml に無修飾のキーを書いた場合だけ。
 - 求め方は `tsf_obs().table_ime_kind()` で分岐する: `None`（ATOK・未同定等）→ 役割なし（受動。現行 enrich のゲートと同じ）、`Gji` → `config1.db` の
@@ -385,9 +387,9 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
 - T1(b)（TSF 経路で 0x19 が `Hankaku/Zenkaku` 行に従わないことの実機確認）の後: 決定6-4 と同じ「既知のトグル」とし、採用中の学習表に
   矛盾セル（決定6-2 の2種、`TableKey::Kanji`）があるときだけ受動に狭める。IME 種別に依らない点は変えない（学習表があるのは GJI・MS-IME 本体だけなので、
   狭めが効くのもその2つだけ）。T1(b) で行に従うと分かった場合は、0x19 を役割判定に入れるかを改めて決める（別 round）。
-- どの段階でも 0x19 は決定4 の候補集合・無修飾ガードに通さない（Alt 付きで届くため）。`keys.ime_toggle` の既定を空にする変更（決定15）はこの移行と同じ変更で行う（所有者未確認。`ime_on`/`ime_off` と同じく残す可能性がある、決定15）。
+- どの段階でも 0x19 は決定4 の候補集合・無修飾ガードに通さない（Alt 付きで届くため）。`keys.ime_toggle` の既定を空にする変更（決定15、所有者回答 2026-09-25 で確定）はこの移行と同じ変更で行う。
 
-### 決定15（所有者決定 U5・2026-09-25 修正）: awase 既定の `keys.ime_on`/`ime_off` は残す（awase 自身が actuate する設定）。`keys.ime_toggle` の既定は決定14 の移行と同時に空にする（未確認）
+### 決定15（所有者決定 U5・2026-09-25 修正）: awase 既定の `keys.ime_on`/`ime_off` は残す（awase 自身が actuate する設定）。`keys.ime_toggle` の既定は決定14 の移行と同時に空にする
 
 - **`ime_on`（`Ctrl+変換`）・`ime_off`（`Ctrl+無変換`）の既定は変えない**（`KeysConfig::default()`、`src/config.rs:576-590`）。所有者回答（2026-09-25）で、
   これは「IME の設定から逆算する役割」ではなく「awase 自身が actuate する設定」として扱う例外（決定1 の例外(2)、所有者の当初の例外定義
@@ -396,13 +398,14 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
   `ime_on`/`ime_off` については現状維持。
 - **既知の衝突（所有者が awase 側の設定として受け入れた）**: ユーザーが IME 側（例: GJI のキー設定）で Ctrl+変換/Ctrl+無変換 を別のコマンドに割り当てていても、
   awase の既定の `ime_on`/`ime_off` が先に消費して開閉を書く。決定1 の「ユーザーの IME 設定を尊重する」の例外として所有者が受け入れた。変えたいユーザーは config.toml で上書きする（リスク節）。
-- **`ime_toggle`（`VK_KANJI`）の既定は決定14 の移行と同じ変更で空にする**（従来の方針を維持）。ただし `ime_on`/`ime_off` の既定を残すと決めた後の
-  所有者確認は未了で、「`ime_on`/`ime_off` と同じく残す」可能性がある（未決、「所有者回答と残る未決事項」）。空にする場合の影響:
+- **`ime_toggle`（`VK_KANJI`）の既定は空にする**（所有者回答 2026-09-25 で確定）。時期は決定14 の移行（U4、0x19 を既知のトグルとして扱う変更）と同じ変更（T14）で、
+  それまで 0x19 は現状維持。`ime_on`/`ime_off`（修飾付き、既定を残す）とは扱いが分かれる。影響:
   物理の 0x19 は Alt 付きで届き、Engine のコンボ照合は修飾の完全一致（`engine.rs:1013-1018` `matches_key_combo`）なので、無修飾の既定 `VK_KANJI` に
   一致するのは無修飾の 0x19 を出す構成（リマッパー等）だけと推定する（T14 で確認）。0x19 の開閉は hook 経路の静的 `Toggle` が担い続ける。
   このとき JIS 配列切替の書き込み（`main.rs:2591`）の `ime_toggle` も空に揃え、`AppConfig::save`（`src/config.rs:830-833`）が構造体全体を書くことで
-  既存 config.toml に残る旧既定値 `ime_toggle = ["VK_KANJI"]` の扱い（旧 U10 と同型）を T14 で決める。
-- 文書の追随（T11、`ime_toggle` の既定を変えるときだけ）: 同梱の `config.toml:27-29`（`ime_detect.toggle` の注意書き）、`docs/usage.html:674-675`・`:779`、
+  既存 config.toml に書き出された旧既定値 `ime_toggle = ["VK_KANJI"]`（旧 U10 と同型）が残る。実行時はユーザーが書いた値と区別できない（決定8）ので、
+  移行処理の要否は T14 の実装時に確認する（所有者判断を要する未決ではない。上記のとおり無修飾 `VK_KANJI` が一致する構成は限られる）。
+- 文書の追随（T11、T14 と同時）: 同梱の `config.toml:27-29`（`ime_detect.toggle` の注意書き）、`docs/usage.html:674-675`・`:779`、
   `docs/usage.en.html` の対応箇所、`crates/awase-settings/src/main.rs:4856-4883`（漢字キーを既定とする説明）。`ime_on`/`ime_off` の既定の記述（`README.md:82-83` 等）は変えない。
 
 ### 決定16（所有者決定 U6）: 無変換/変換がトグルの役割を持つ設定では、単独タップと解決したときだけ能動制御する（チョード優先）
@@ -513,7 +516,7 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
 | `tests/architecture_guard.rs:4516-4541`（`bug116_shift_katakana_guards_are_present_in_production_code`）・`:816` の説明文 | transport.rs 本番コードに `is_open_toggle_for` があることを assert（Linux での Suppress 判定の唯一の防波堤） | 必須トークンを新しい判定（`Some(ShadowImeAction::Toggle)` と 0xF3/0xF4 の組）に差し替え、否定側メッセージと `:816` の説明を更新（T4。削るだけにしない） |
 | `awase-gji-config`（`extract_ime_keys`・`mozc_key_to_vk_name`） | 状態完備を見ない。`Hankaku/Zenkaku`→`VK_KANJI` のみ（doc も不正確） | 継承規則つきの状態表と決定4の判定関数（純粋関数）を追加。キー名→VK 写像（`Hankaku/Zenkaku`→0xF3/0xF4）を予測側と一本化し、別名表の doc を直す |
 | `state/key_effect_table.rs:511-`（ADR-192 分類） | 0x19 を `Kanji` として独立扱い | 決定14（移行後は `Kanji` セルで狭める） |
-| `src/config.rs:581-583`（`keys.ime_on`/`ime_off`/`ime_toggle` 既定）・`engine.rs:975` | awase の既定値で Engine が消費 | `ime_on`/`ime_off` は不変（awase 自身が actuate する設定、決定1 の例外(2)・決定15）。`ime_toggle` の既定は決定14 の移行と同時に空にする（T14、所有者未確認） |
+| `src/config.rs:581-583`（`keys.ime_on`/`ime_off`/`ime_toggle` 既定）・`engine.rs:975` | awase の既定値で Engine が消費 | `ime_on`/`ime_off` は不変（awase 自身が actuate する設定、決定1 の例外(2)・決定15）。`ime_toggle` の既定（`VK_KANJI`）は決定14 の移行と同時に空にする（T14、所有者回答 2026-09-25 で確定） |
 | `crates/awase-settings/src/main.rs:2587-2591`（JIS 配列へ切替時の既定値書き込み） | 既定値を書き込む | `ime_on`/`ime_off` は不変。`ime_toggle`（`:2591`）だけ T14 で既定に揃える（決定15） |
 | `src/engine/nicola_fsm.rs`（`forced_open_action`・`resolve_pending_thumb_as_single`）・`runtime/mod.rs:39-66`（`thumb_forced_open_actions`） | bare `keys.ime_*` 由来だけ | Engine 側は変えない。Windows 側で `config由来.or(役割由来)` を渡す（決定16） |
 | `message_handlers.rs:878-887`・`:939-942`・`app/mod.rs:811-817`・`gji_monitor.rs`（`sync_ime_toggle_auto_detect`・`check_and_warn`） | GJI 以外すべてで適用、種別変更で消えない、同定の変化で再評価されない | 決定10 |
@@ -577,7 +580,7 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
 
 | # | 内容 | 既存 docs/tasks との対応 |
 | --- | --- | --- |
-| T0 | 未決事項「`keys.ime_toggle` 既定の扱い」の所有者確認（U1〜U10・Q2 は回答済み、決定3・決定11〜18） | — |
+| T0 | （完了）所有者確認。U1〜U10・Q2 と `keys.ime_toggle` 既定（空にする、決定15）まで回答済みで、未決は無い（決定3・決定11〜18） | — |
 | T1 | 実機確認（(c) を最優先。決定13 で所有者の例〈モード指定で開くキー〉が対象になるかを決めるため）: (c) DirectInput の `CompositionMode*` で開くか、(a) 半角/全角を変えていないカスタム TSV に `Hankaku/Zenkaku` 行が残るか、(b) TSF 経路で 0x19 が `Hankaku/Zenkaku` 行に従うか（カスタム表で半角/全角だけ変えて Alt+半角/全角を押す1回。決定14 の移行の前提）、(d) 互換モードのチェックボックスを触っていない環境で `NoTsf3Override2` が無いか（決定17 の `None` の扱い）、(e) `Scancode Map` で F13 を出し、GJI の CUSTOM で F13 をトグルにした構成の実タイピング（TsfNative 1つ以上、決定18） | 08 の未確認点を引き継ぐ |
 | T2 | `awase-gji-config`: 継承規則つきの状態表（CUSTOM のみ）、決定4の判定関数（対象キー名は `Hankaku/Zenkaku`・`F13`〜`F24`・`Muhenkan`・`Henkan`）、プリセット定数表（Mozc TSV との突き合わせテスト付き）、キー名→VK 写像の一本化（純粋関数）。`Kanji` 行は 0x19 に写さない。awase-windows 側: `KeyEffectKeymap` に生の `session_keymap`、`read_key_effect_keymap` の不在→既定 keymap（決定8） | 08 のタスク「判定を純粋関数として」 |
 | T3 | 学習表による狭め（`state/`、決定6-2。半角/全角・無変換/変換。F キーはセルが無いので対象外）と食い違い記録。PR #308 の分岐を包含 | 01・06・PR #308 と経路を共有 |
@@ -588,10 +591,10 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
 | T8 | 決定10（別件の BUG・fix PR として先行してよい） | — |
 | T9 | 決定18（F13〜F24）: 候補集合の入口（`ime_kind()` の早期 return の前）、ラッチへの `shadow_toggled` の書き込み（`key_pipeline.rs:328` の直後）、`was_down` の Down で昇格させない条件、`transport.rs::plan` の F キー分岐と `suppress_reason` のラベル。T4 の後 | — |
 | T10 | 決定16（無変換/変換）: 親指キーの KeyDown で役割を求め、`config由来.or(役割由来)` を `set_thumb_forced_open_actions` に渡す。ADR-192 決定3b のテスト群（`src/engine/tests.rs`）に役割由来のケースを足す | — |
-| T11 | 決定15 の文書追随（`ime_toggle` の既定を変える T14 と同時、別タスク）: 同梱 `config.toml:27-29`、`docs/usage.html:674-675`・`:779`、`docs/usage.en.html` の対応箇所、`crates/awase-settings/src/main.rs:4856-4883` の説明。`ime_on`/`ime_off` の記述は変えない | 10（status・文書同期） |
+| T11 | 決定15 の文書追随（`ime_toggle` の既定を空にする T14 と同時、別タスク）: 同梱 `config.toml:27-29`、`docs/usage.html:674-675`・`:779`、`docs/usage.en.html` の対応箇所、`crates/awase-settings/src/main.rs:4856-4883` の説明。`ime_on`/`ime_off` の記述は変えない | 10（status・文書同期） |
 | T12 | U7（確定）: MS-IME 本体の変換/無変換の役割（レジストリ）。トグルに当たるレジストリ値を実機で確認してから足す（既知の 0/1 は受動）。`check_and_warn` の案内文言 | — |
 | T13 | 決定17: 互換モードのとき MS-IME 本体の半角/全角を受動に（レジストリ読み取りは予測経路と同じ間引き） | — |
-| T14 | 決定14 の移行（T1(b) の後）: 0x19 を既知のトグルとして学習表の `Kanji` セルで狭める＋`keys.ime_toggle` の既定を空に（決定15。T0 の所有者確認が要る。空にする場合は JIS 切替の書き込み `main.rs:2591`、既存 config.toml に残る `VK_KANJI` の扱い、0x19 が無修飾コンボに一致しないことの確認を含む） | — |
+| T14 | 決定14 の移行（T1(b) の後）: 0x19 を既知のトグルとして学習表の `Kanji` セルで狭める＋`keys.ime_toggle` の既定を空に（決定15、所有者回答で確定。JIS 切替の書き込み `main.rs:2591` を空に揃える、既存 config.toml に残る `VK_KANJI` の移行処理の要否の確認、0x19 が無修飾コンボに一致しないことの確認を含む） | — |
 
 ## テスト方針
 
@@ -620,7 +623,7 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
   - 決定16: `src/engine/tests.rs`（ホスト）に、役割由来の `forced_open_action` で単独タップ→開閉要求、チョード→要求なし、`*_solo_tap_ime_action` 併設→役割由来は自己無効化、
     config 由来と役割由来が両方あれば config 由来、を足す（ADR-192 決定3b の既存テストと同じ形）。`config由来.or(役割由来)` の合成は純関数にしてホストでテストする。
   - 決定15: `KeysConfig::default()` の `ime_on`/`ime_off` が Ctrl+変換/Ctrl+無変換 のまま（既存テストで固定されていなければ足す）、config.toml に書いた値はそのまま読める
-    （`src/config.rs` のテスト）。`ime_toggle` の既定を空にするのは T14（所有者確認後）。
+    （`src/config.rs` のテスト）。T14 で `ime_toggle` の既定が空になったこと（`KeysConfig::default()` と JIS 配列切替の書き込みの両方）を足す。
   - 決定17: 互換モード `Some(true)`→受動、`Some(false)`・`None`→トグル（純関数に切り出す）。
 - **source-scanning ガード**（Linux）: `architecture_guard.rs` の `shadow_action` 書き込み箇所数、`bug116_...`（差し替え後のトークン）、`layer_boundary_guard`。役割の判定以外から `Toggle` を付ける経路が無いこと。
 - **Windows ターゲットのコンパイル**: `cargo check --target x86_64-pc-windows-msvc -p awase-windows --tests --lib`（`runtime/` は `#[cfg(windows)]` で Linux のテストバイナリに存在しない）。
@@ -630,7 +633,7 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
   CUSTOM 構成は CI 上で CUSTOM の `config1.db` を作る手段が無い（awase-gji-config は読み取り専用、GUI 自動化は重い）ので、ホスト上の純粋関数テストで固定する。
 - **実機（ユーザー実機）**: TsfNative（Chrome・VS Code・Windows Terminal）での実タイピング確認（API の読取り値だけで判断しない）。T1 の3点。
 
-## 所有者回答と残る未決事項
+## 所有者回答（未決なし）
 
 ### 回答済み（2026-09-25 反映、覆さない）
 
@@ -640,7 +643,7 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
 | U2 | 実行時の受動的観測の禁止の範囲 | 禁止は役割の推定だけ。belief の観測追随は存続 | 決定12 |
 | U3 | モードを指定して開くトグル | 開閉だけ書く。実機で DirectInput からモード指定で開くかが分かるまでは受動 | 決定13 |
 | U4 | 0x19 の役割 | 現状維持を経て既知のトグル扱い | 決定14 |
-| U5（2026-09-25 修正） | awase 既定の `keys.ime_toggle`/`ime_on`/`ime_off` | 当初回答「既定を空にする」を `ime_on`/`ime_off` について修正: 既定（Ctrl+変換/Ctrl+無変換）は**残す**。IME 設定から逆算する役割ではなく awase 自身が actuate する設定として扱う（当初の例外定義「ime_on/off キー（CTRL+無変換・変換）」どおり）。IME 側の割り当てとの衝突は awase 側の設定として受け入れる。`ime_toggle` は U4 と同時に空にする方針のまま（下記の未決） | 決定1（例外(2)）・決定5・決定15 |
+| U5（2026-09-25 修正） | awase 既定の `keys.ime_toggle`/`ime_on`/`ime_off` | 当初回答「既定を空にする」を `ime_on`/`ime_off` について修正: 既定（Ctrl+変換/Ctrl+無変換）は**残す**。IME 設定から逆算する役割ではなく awase 自身が actuate する設定として扱う（当初の例外定義「ime_on/off キー（CTRL+無変換・変換）」どおり）。IME 側の割り当てとの衝突は awase 側の設定として受け入れる。`ime_toggle` の既定（`VK_KANJI`）は**空にする**（2026-09-25 確定。時期は U4 の既知のトグルへの移行と同時、T14） | 決定1（例外(2)）・決定5・決定14・決定15 |
 | U10 | 既存 config.toml に書き出された旧既定値の扱い | U5 修正で `ime_on`/`ime_off` の既定が変わらなくなり、問い自体が消滅（移行処理なし） | 決定15 |
 | Q2 | 同じキーが GJI のトグルで config.toml にも書かれている場合 | config.toml を優先し、awase の役割判定は付けない | 決定5・決定8・決定16 |
 | U6 | 無変換/変換がトグルの設定のとき | 単独タップと解決したときだけ能動（チョード優先、ADR-192 決定3b の KeyUp 解決の合流点） | 決定16 |
@@ -650,10 +653,7 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
 
 ### 未決
 
-- **`keys.ime_toggle` 既定（`VK_KANJI`）の扱いの確認** — 決定14・決定15 では「決定14 の移行（T14）と同じ変更で空にする」方針を維持している。
-  ただし所有者は `ime_on`/`ime_off` の既定を「awase 自身が actuate する設定」として残すと決めており（U5 修正）、`ime_toggle` も同じく残す可能性がある。
-  残す場合は T14 から既定変更を外し、T11 の文書追随も不要になる。空にする場合は、既存 config.toml に書き出された `ime_toggle = ["VK_KANJI"]` の扱い（旧 U10 と同型）を
-  T14 で決める。回答までは T14 の既定変更に着手しない（T14 自体が T1(b) の後なので、他のタスクは止めない）。
+- 無し（2026-09-25 の `keys.ime_toggle` 既定の回答で解消）。
 
 ## レビュー反映メモ
 
@@ -680,8 +680,11 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
 | r5 冗長3（U1 を所有者への質問から外す） | 非反映 | U1 は所有者定義の解釈で起草者が確定しない。初期範囲で差が出る構成が狭いことと、回答までは (a) で実装することを U1 に明記した（所有者は (a) と回答、決定11） |
 | 所有者回答（2026-09-25） | 反映 | U1〜U6・U8・U9 を決定11〜18 に昇格。U9 の起草者推奨（0xF3/0xF4 のみ）は却下された。反映中に U10 を発見 |
 | r7 M1（明示 config と役割由来 Toggle の二重書き込み） | 反映 | 決定8 に「重なったら config 優先・役割を付けない」を追加（決定16 と同じ向き）。`match_event` 側のガード案は役割が config に勝つので不採用。所有者確認は Q2 |
-| r7 M2（U10 の前提が未裏取り） | 反映 | 「保存したことがある人は従来どおり、ない人は更新時に空になる（分布不明）」に訂正。旧推奨 (a) は取り下げ、(a') を足して Q1 として所有者に問い直す |
+| r7 M2（U10 の前提が未裏取り） | 反映 | 「保存したことがある人は従来どおり、ない人は更新時に空になる（分布不明）」に訂正。旧推奨 (a) は取り下げ、(a') を足して Q1 として所有者に問い直す。その後 U5 修正（`ime_on`/`ime_off` の既定を残す）で U10 自体が消滅した |
 | r7 M3（ラッチの意味が逆・scan 不一致） | 反映 | 修正案 (a)（値を最終的な `shadow_action` に統一）と (b)（F キーの scan 不一致は `None`）の両方を採用。テストを「別 scan を挟んだ Down→他キー Down→Up」に具体化 |
 | r7 m1〜m7・簡素化案 | 未反映 | 本反映の範囲外（中程度3件と所有者回答のみを反映）。実装前の次 round で扱う |
 | 所有者回答 U7（2026-09-25） | 反映 | レジストリを `config1.db` と同様の一次情報源とし決定3 に明記。MS-IME 本体の変換/無変換は、トグルと判断できる値を実機で確認してから能動に足す（T12） |
-| 所有者回答 U5 修正・Q2（2026-09-25） | 反映 | `keys.ime_on`/`ime_off` の既定は空にせず awase 自身の actuate 設定として残す（決定1 の例外(2)・決定15）。既定を空にする記述と T5（既定変更・移行）を撤回し、U10 は消滅。Q2 は config 優先・役割なしで確定。`keys.ime_toggle` 既定だけ未確認として残す |
+| 所有者回答 U5 修正・Q2（2026-09-25） | 反映 | `keys.ime_on`/`ime_off` の既定は空にせず awase 自身の actuate 設定として残す（決定1 の例外(2)・決定15）。既定を空にする記述と T5（既定変更・移行）を撤回し、U10 は消滅。Q2 は config 優先・役割なしで確定。`keys.ime_toggle` 既定だけ未確認として残す（下の行で確定） |
+| 所有者回答 `keys.ime_toggle` 既定（2026-09-25） | 反映 | 既定（`VK_KANJI`）は空にする（U4 の移行と同時、T14）で確定。決定14・決定15・T0/T11/T14・影響表・テスト方針の「未確認」を確定に直し、未決節を空にした |
+| round8 軽微（r7 M2 の行に U10 消滅を追記） | 反映 | 上の r7 M2 の行に追記 |
+| round8 軽微（決定8 の「明示値」） | 反映 | 読み込み後の `KeysConfig` ではユーザーが書いた値と既定値を実行時に区別できないので、比較対象は既定値を含む実効値だと明記（既定の無修飾は `VK_KANJI` だけで候補キーと重ならない） |
