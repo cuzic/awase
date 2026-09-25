@@ -259,3 +259,12 @@ GJI側(`ci/e2e-drift-fix3`、run 35630377273): `cal-verify-obs` 400ms以降 0%�
 揃えた後は通常の drift correction に戻る(永続的に無効化しない)。awaseが通過後に書いた場合は揃えず、書き込みが届かなかったなら drift correction が訂正する。dispatch元は `pass_through_observed` の1箇所(architecture_guard)。
 **テスト:** 純関数 `should_align_after_expired_mode_key_pass_only_once_and_not_after_awase_write`(Linux)、`platform_state` の Windows専用テスト2件(通過→観測なし→窓切れ→最初の成功観測で揃い2回目は揃えない/awase書き込み後は揃えない。Linuxでは走らず windows-build CI で実行)。
 
+
+## A/B-1 強制OFF撤去前後のCI自動比較(2026-09-25、検証専用ブランチ ci/ab1-focus-enforce-off、run 36085675898)
+
+| 日時 | アプリ | IME | 構成 | 操作 | +100/+400/+1500ms の窓2 IME開閉 | 強制OFF発火 | 判定 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-25 | pwsh.exe内のEDIT2窓(windows-latest) | GJI(ATOK) | A(現develop)×8 | 窓1をOFF→窓2をON→窓2へ前面化 | 全8回 開/開/開 | 8回中2回(`focus_change_enforce_off`) | 判定不能 |
+| 2026-09-25 | 同上 | GJI(ATOK) | B(if無効化)×8 | 同上 | 全8回 開/開/開 | 0回 | 判定不能 |
+
+A・B とも全回「開」で差が出なかった。ただし A でも強制OFFの発火は2/8で、発火した回でも窓2は開のまま(OFFの書き込みが効いたか=`sent=` は該当ログ行が出ず不明)。Engine OFFの前提(belief=OFF)を物理キー無しで安定して作れていないため、「撤去してよい/保留」のどちらの根拠にもしない。次にやるなら、belief=OFFを確実に作る手段(窓2への切替直前にawaseのEngine状態をログで確認)と `sent=` の出力をそろえる必要がある。
