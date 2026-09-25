@@ -155,6 +155,8 @@ ADR-191 決定5の P1/P2 候補について、**現在ある確認**と**空白*
 
 ### 7.1 フォーカス変更時の強制OFF（`runtime/ime_refresh.rs`、`focus_change_enforce_off`）
 
+> **2026-09-25 撤去済み**: CI 実測（現 develop では warrant 拒否か未発火で、撤去前後に差なし）を根拠に撤去した。根拠と限界は `docs/adr/191-calibration-experiments.md`「A/B-1」。以下は撤去前の調査記録。
+
 - **何をするか**: フォーカスが新しいウィンドウへ移ったとき、awase の belief が OFF なら、そのウィンドウの IME へ IMM32 経由で OFF を書く
   （非TsfNativeのみ）。belief を IME へ押し込む能動モデルで、ADR-191 決定1に反する。
 - **効く範囲は ImmCross のアプリだけ**: 書き込みに使う `PlatformRuntime::set_ime_open_ordered`（`platform.rs`。トレイトの `set_ime_open` から ADR-090 §2.A で移した版）は IMM32 専用で、それ以外では no-op になる。

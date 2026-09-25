@@ -85,8 +85,8 @@ lint（`lints/actuation_call_guard/src/lib.rs:98-101`）は `actuate_ime_control
   - (a) worktree `adr191-p1` を使っているセッションを確認する（`worktree-per-session`。他セッションの作業中ブランチを勝手にマージしない）。
   - (b) `docs/teardown-verification-guide.md` と `docs/ime-passive-model-expected-results.md` を develop に入れる（docs のみ、`main-develop-branch-flow` に従い develop へ直接マージ可）。手段は先行5コミットの cherry-pick か2ファイルのチェックアウト（ブランチは471コミット遅れているので、ブランチごとのマージや二点 diff での確認はしない）。取り込むとき、ガイド中のコード参照（関数名・行番号）を `5877f982` 以降の develop で再確認して直す（例: §7.1 の `set_ime_open` → `set_ime_open_ordered`）。
   - (c) ADR-191 決定5の P1 行から `teardown-verification-guide.md` §7.1 へリンクする。
-- [ ] **T2 強制OFFの確認手段を先に作る**（同ガイド §8-1）: `ime_key_matrix_spike` に2窓のフォーカス切替モードを足し、片方を IME ON にしてから belief OFF のままもう片方へ移り、移動後 +100/+400/+1500ms で実IMEと Engine の一致を記録する。撤去前のビルドでは、`focus_change_enforce_off` が実際に書いたか（`set_ime_open_ordered` の戻り値 `sent`、`ime_refresh.rs:603` 以降のログ）を各試行で記録する。授権が下りずに書いていない試行は、撤去前後の差がゼロでも「撤去しても影響なし」の証拠にならないため分けて数える。対象は ImmCross（CI の GJI 構成は Win32 `Edit` が入力先なのでそのまま測れる）。
-- [ ] **T3 強制OFFの撤去要否を ADR-191 で決める**: T2 で撤去前後の「不一致が続く時間」を比べる。撤去するなら撤去コミットに T2 のモードを CI の構成として含める。
+- [x] **T2 強制OFFの確認手段を先に作る**（同ガイド §8-1）: `ime_key_matrix_spike` に2窓のフォーカス切替モードを足し、片方を IME ON にしてから belief OFF のままもう片方へ移り、移動後 +100/+400/+1500ms で実IMEと Engine の一致を記録する。撤去前のビルドでは、`focus_change_enforce_off` が実際に書いたか（`set_ime_open_ordered` の戻り値 `sent`、`ime_refresh.rs:603` 以降のログ）を各試行で記録する。授権が下りずに書いていない試行は、撤去前後の差がゼロでも「撤去しても影響なし」の証拠にならないため分けて数える。対象は ImmCross（CI の GJI 構成は Win32 `Edit` が入力先なのでそのまま測れる）。 → 2026-09-25 CIで4通り試行し、いずれも差が出ず判定不能（記録: `docs/adr/191-calibration-experiments.md`）。
+- [x] **T3 強制OFFの撤去要否を ADR-191 で決める**: T2 で撤去前後の「不一致が続く時間」を比べる。撤去するなら撤去コミットに T2 のモードを CI の構成として含める。 → 2026-09-25 ユーザー判断で「CI結果（現developでは実質no-op、`sent=false`はwarrant拒否）を根拠に撤去」と決定。実機未検証は限界として記録。
 - [ ] **T4 drift correction（P2 の前提）**:
   - 判定側: 既存テスト（`check_drift_correction` の単体テスト、`drift_correction_replay.rs`）で足りる。追加は不要。
   - 書く側: ADR-193 の入力先を `e2e-ime.yml` に配線し（同ガイド §8-2、GJI 有効化と `awase=true/false` の対照が要る）、明示意図の回復シナリオ（§8-3）を作る。
