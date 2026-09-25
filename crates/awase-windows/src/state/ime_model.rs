@@ -417,7 +417,7 @@ impl ImeModel {
     ///      新しければそちらが優先される。
     ///   3. 観測が一切なければ `desired_open` にフォールバック
     /// - 最後に `force_guards` を適用（guard が active なら強制 ON。ただし
-    ///   `BrokenAppBootstrap` 等のヒューリスティック由来 guard はユーザーの明示的意図を
+    ///   ヒューリスティック由来 guard はユーザーの明示的意図を
     ///   上書きしない。`PanicReset` 等の安全弁は明示的意図があっても override する）
     #[must_use]
     pub fn effective_open(&self) -> bool {
@@ -2186,7 +2186,7 @@ mod tests {
         // None であるべき（旧実装は誤って Some を返していた）。
         let mut model = ImeModel::new(); // desired_open=true, 明示意図なし
         model.force_guards.add(ForceGuard {
-            reason: ForceOnReason::BrokenAppBootstrap,
+            reason: ForceOnReason::PanicReset,
             expires_at: None,
             generation: 1,
         });
@@ -2314,7 +2314,7 @@ mod tests {
     fn focus_change_clears_force_guards() {
         let mut model = ImeModel::new();
         model.force_guards.add(ForceGuard {
-            reason: ForceOnReason::BrokenAppBootstrap,
+            reason: ForceOnReason::PanicReset,
             expires_at: None,
             generation: 1,
         });
@@ -2325,30 +2325,6 @@ mod tests {
         assert!(
             !model.force_guards.requires_on(),
             "focus change で force guard が解除される"
-        );
-    }
-
-    // 回帰テスト: BrokenAppBootstrap は observation-miss カウンタというヒューリスティック
-    // にすぎないため、ユーザーが明示的に IME を OFF にした場合はそちらを尊重する
-    // (force_guard.rs の overrides_explicit_intent() を参照)。
-    #[test]
-    fn broken_app_bootstrap_guard_does_not_override_explicit_off_intent() {
-        let mut model = ImeModel::new();
-        model.reduce(&envelope(
-            1,
-            ImeEvent::UserImeSetIntent {
-                target: false,
-                source: UserIntentSource::SyncKey,
-            },
-        ));
-        model.force_guards.add(ForceGuard {
-            reason: ForceOnReason::BrokenAppBootstrap,
-            expires_at: None,
-            generation: 1,
-        });
-        assert!(
-            !model.effective_open(),
-            "ユーザーの明示的な IME OFF は BrokenAppBootstrap guard より優先される"
         );
     }
 
