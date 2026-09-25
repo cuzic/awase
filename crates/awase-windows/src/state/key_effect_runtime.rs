@@ -485,7 +485,8 @@ pub fn read_persisted_table(path: &Path) -> Result<PersistedTable, RejectReason>
     }
     // 0バイトは未学習と同じ扱い（scoopのpersistは、まだ存在しない永続化対象のファイルを
     // 空ファイルとして作ることがあり、壊れたファイル扱い＝パース失敗の警告にしないため）。
-    if meta.len() == 0 {
+    // （Windowsではディレクトリの`len`も0なので、通常ファイルに限る。ディレクトリは読み取り失敗のまま）
+    if meta.is_file() && meta.len() == 0 {
         return Err(RejectReason::NotFound);
     }
     let text = fs::read_to_string(path).map_err(|e| io_reject_reason(&e))?;
