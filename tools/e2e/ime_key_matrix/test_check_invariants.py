@@ -156,9 +156,16 @@ class Limits(unittest.TestCase):
 
 class Main(unittest.TestCase):
     def test_baseline_passes_repo_limits(self):
-        rc, out = run_main(["--config", "baseline", os.path.join(DATA, "awase-baseline-excerpt.log")])
+        # 修正後（#318・#321、run 36140615943）の baseline: 起動直後の drift は 0 件、Unwarranted は 1 件（BUG-162）。
+        rc, out = run_main(["--config", "baseline", os.path.join(DATA, "awase-baseline-fixed-excerpt.log")])
         self.assertEqual(rc, 0)
-        self.assertIn("INVARIANTS: verdict=OK rc=0 i1_startup=3 i1_total=4 i2_unwarranted=1", out)
+        self.assertIn("INVARIANTS: verdict=OK rc=0 i1_startup=0 i1_total=0 i2_unwarranted=1", out)
+
+    def test_pre_fix_baseline_fails_the_lowered_limits(self):
+        # 修正前（run 36103384502）の baseline は、下げた上限（i1=0）を超える（ratchet が緩まない）。
+        rc, out = run_main(["--config", "baseline", os.path.join(DATA, "awase-baseline-excerpt.log")])
+        self.assertEqual(rc, 1)
+        self.assertIn("verdict=FAIL", out.splitlines()[-1])
 
     def test_old_run_fails_repo_limits(self):
         rc, out = run_main([os.path.join(DATA, "awase-old-sc-dbe-excerpt.log")])
@@ -182,7 +189,7 @@ class Main(unittest.TestCase):
     def test_json_output(self):
         with tempfile.TemporaryDirectory() as d:
             out = os.path.join(d, "inv.json")
-            rc, _ = run_main(["--config", "baseline", "--json", out, os.path.join(DATA, "awase-baseline-excerpt.log")])
+            rc, _ = run_main(["--config", "baseline", "--json", out, os.path.join(DATA, "awase-baseline-fixed-excerpt.log")])
             with open(out, encoding="utf-8") as f:
                 j = json.load(f)
         self.assertEqual((rc, j["verdict"], j["counts"]["i2_unwarranted"], j["measured_config"]), (0, "OK", 1, True))

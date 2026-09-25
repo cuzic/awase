@@ -1,0 +1,149 @@
+2026-09-25T13:25:56.605364Z  INFO awase_windows::app::bootstrap: Keyboard Layout Emulator starting... (log → D:\a\awase\awase\dist\awase.log)
+2026-09-25T13:25:56.606642Z  INFO awase_windows::app::bootstrap: Running with administrator privileges
+2026-09-25T13:25:56.606925Z  INFO awase_windows::app: Loading config from: D:\a\awase\awase\dist\config.toml
+2026-09-25T13:25:56.608537Z  INFO awase_windows::app: Default layout: nicola_keytop.yab, Threshold: 100ms
+2026-09-25T13:25:56.711897Z  WARN awase_windows::app::bootstrap: auto_start is enabled in config.toml but no Windows Run key entry was found; re-enable it via the tray menu or settings UI
+2026-09-25T13:25:56.716954Z  INFO awase_windows::app::bootstrap: Discovered layout: nicola (D:\a\awase\awase\dist\layout\nicola.yab)
+2026-09-25T13:25:56.717717Z  INFO awase_windows::app::bootstrap: Discovered layout: nicola_f (D:\a\awase\awase\dist\layout\nicola_f.yab)
+2026-09-25T13:25:56.718630Z  INFO awase_windows::app::bootstrap: Discovered layout: nicola_kakutei (D:\a\awase\awase\dist\layout\nicola_kakutei.yab)
+2026-09-25T13:25:56.719352Z  INFO awase_windows::app::bootstrap: Discovered layout: nicola_kb232 (D:\a\awase\awase\dist\layout\nicola_kb232.yab)
+2026-09-25T13:25:56.720815Z  INFO awase_windows::app::bootstrap: Discovered layout: nicola_keytop (D:\a\awase\awase\dist\layout\nicola_keytop.yab)
+2026-09-25T13:25:56.722251Z  INFO awase_windows::app::bootstrap: Discovered layout: nicola_us (D:\a\awase\awase\dist\layout\nicola_us.yab)
+2026-09-25T13:25:56.722406Z  INFO awase_windows::app::bootstrap: Available layouts: ["nicola", "nicola_f", "nicola_kakutei", "nicola_kb232", "nicola_keytop", "nicola_us"]
+2026-09-25T13:25:56.722576Z  INFO awase_windows::app::bootstrap: Layout loaded: 48 normal keys, 48 left thumb keys, 48 right thumb keys
+2026-09-25T13:25:56.722652Z  INFO awase_windows::app: Engine ON keys: ["Ctrl+Shift+変換"] (1 parsed)
+2026-09-25T13:25:56.722685Z  INFO awase_windows::app: Engine OFF keys: ["Ctrl+Shift+無変換"] (1 parsed)
+2026-09-25T13:25:56.722700Z  INFO awase_windows::app: IME control ON keys: ["Ctrl+変換"] (1 parsed)
+2026-09-25T13:25:56.722712Z  INFO awase_windows::app: IME control OFF keys: ["Ctrl+無変換"] (1 parsed)
+2026-09-25T13:25:56.722723Z  INFO awase_windows::app: IME control Toggle keys: ["VK_KANJI"] (1 parsed)
+2026-09-25T13:25:56.722750Z  INFO awase_windows::app: IME detect keys: toggle=[] on=["IMEオン"] off=["IMEオフ"]
+2026-09-25T13:25:56.726916Z  INFO awase_windows::app::bootstrap: Keyboard layout: LANGID=0x0411, Japanese=true
+2026-09-25T13:25:56.736757Z  INFO awase_windows::tray: System tray icon created (elevated=true)
+2026-09-25T13:25:56.938073Z DEBUG awase::journal: clock anchor seq=0 elapsed_ms=0 tick_ms=164640 hook_us=0
+2026-09-25T13:25:56.939023Z  INFO awase_windows::focus::classifier: Loaded IMM capability cache: 2 entries from D:\a\awase\awase\dist\cache.toml
+2026-09-25T13:25:56.939530Z  WARN awase::paths: path resolution fell back to CWD-relative for "data/ngram_hiragana.csv.gz" (not found next to exe D:\a\awase\awase\dist\awase.exe nor under workspace root)
+2026-09-25T13:25:56.939989Z  WARN awase_windows::app: startup: n-gramモデル解析失敗: The system cannot find the path specified. (os error 3)
+2026-09-25T13:25:56.940695Z  INFO awase_windows::hook: Keyboard hook installed in dedicated thread (tid=2144)
+2026-09-25T13:25:56.940776Z  INFO awase_windows::app::bootstrap: Toggle hotkey registered: Ctrl+Shift+F12
+2026-09-25T13:25:56.940791Z  INFO awase_windows::app::bootstrap: Focus override hotkey registered: Ctrl+Shift+F11
+2026-09-25T13:25:56.940797Z  INFO awase_windows::app: 1 startup warning(s):
+2026-09-25T13:25:56.940802Z  INFO awase_windows::app:   - n-gramモデル解析失敗: The system cannot find the path specified. (os error 3)
+2026-09-25T13:25:56.964513Z  INFO awase_windows::app::bootstrap: Hook installed. Running message loop...
+2026-09-25T13:25:56.964574Z  INFO awase_windows::app::bootstrap: Focus event hook installed
+2026-09-25T13:25:56.964609Z  INFO awase_windows::tsf::win_event_obs: [obs-hook] OBJECT_SHOW/HIDE hook installed (GJI candidate window visibility tracking)
+2026-09-25T13:25:56.964624Z  INFO awase_windows::tsf::win_event_obs: [obs-hook] EVENT_OBJECT_IME_SHOW/HIDE/CHANGE hook installed (Chrome TSF composition context probe)
+2026-09-25T13:25:56.964662Z DEBUG awase_windows::focus::class_names: [actuation-record] can_use_imm32_cross_process called from crates\awase-windows\src\runtime\mod.rs:970 (想定呼び出し元: 17+ call sites across platform/state/runtime layers, see doc comment)
+2026-09-25T13:25:56.964746Z DEBUG awase_windows::timer: Timer set: logical=101, ms=500, os_id=32668
+2026-09-25T13:25:56.964826Z DEBUG awase_windows::timer: Timer set: logical=102, ms=3000, os_id=32667
+2026-09-25T13:25:56.966322Z  INFO awase_windows::tsf::gji_monitor: [gji-monitor] thread started
+2026-09-25T13:25:56.966914Z  INFO awase_windows::app::bootstrap: WTS session notification registered
+2026-09-25T13:25:56.969784Z  INFO awase_windows::tsf::tip_detector: [tip-detect] ── EnumProfiles(JA) start ──
+2026-09-25T13:25:56.969863Z  INFO awase_windows::tsf::tip_detector: [tip-detect] HKL clsid={00000000-0000-0000-0000-000000000000} profile={00000000-0000-0000-0000-000000000000} lang=0411 desc=""
+2026-09-25T13:25:56.970258Z  INFO awase_windows::tsf::tip_detector: [tip-detect] TIP clsid={03B5835F-F03C-411B-9CE2-AA23E1171E36} profile={A76C93D9-5523-4E90-AAFA-4DB112F9AC76} lang=0411 desc="Microsoft IME"
+2026-09-25T13:25:56.970599Z  INFO awase_windows::tsf::tip_detector: [tip-detect] TIP clsid={D5A86FD5-5308-47EA-AD16-9C4EB160EC3C} profile={773EB24E-CA1D-4B1B-B420-FA985BB0B80D} lang=0411 desc="Google Japanese Input"
+2026-09-25T13:25:56.975570Z DEBUG awase_windows::runtime::focus_tracking: Focus kind changed: Undetermined → TextInput (reason=KnownTextClass(RICHEDIT50W))
+2026-09-25T13:25:56.975667Z DEBUG awase::journal: focus transition seq=1 elapsed_ms=37 changed_process=true changed_window=true changed_app_kind=false changed_focus_kind=true dwell_ms=0 profile="ImmCross"
+2026-09-25T13:25:56.975747Z DEBUG awase_windows::tsf::probe: [composition] focus changed → marked cold
+2026-09-25T13:25:56.975799Z DEBUG awase_windows::runtime: [keymap] active rules recomputed: 0 rule(s) for process="ime_key_matrix_spike.exe"
+2026-09-25T13:25:56.975824Z DEBUG awase_windows::runtime::focus_tracking: [keymap] active rules updated on focus change: 0 rule(s) (hwnd=HWND(0x30208) kind=TextInput focus_epoch=1)
+2026-09-25T13:25:56.975849Z DEBUG awase_windows::runtime::focus_tracking: [focus-fence] bootstrap initial fence: FocusFence { epoch: 1, hwnd: HwndId(197128) }
+2026-09-25T13:25:56.975936Z DEBUG reduce: awase_windows::state::observation_store: [focus-fence] establish_initial_fence: FocusFence { epoch: 0, hwnd: HwndId(0) } -> FocusFence { epoch: 1, hwnd: HwndId(197128) }
+2026-09-25T13:25:56.976028Z DEBUG awase::journal: ime event seq=2 elapsed_ms=38 event_kind="InitialFocusFenceEstablished"
+2026-09-25T13:25:56.976053Z DEBUG awase_windows::runtime::focus_tracking: [app-policy] bootstrap initial app_policy: profile=ImmCross
+2026-09-25T13:25:56.976083Z DEBUG awase::journal: ime event seq=3 elapsed_ms=38 event_kind="InitialAppPolicyEstablished"
+2026-09-25T13:25:56.976102Z DEBUG awase_windows::runtime::focus_tracking: [focus] bootstrap initial current_focus: HwndId(197128)
+2026-09-25T13:25:56.976128Z DEBUG awase::journal: ime event seq=4 elapsed_ms=38 event_kind="InitialFocusHwndEstablished"
+2026-09-25T13:25:56.978419Z DEBUG awase_windows::focus::class_names: [actuation-record] can_use_imm32_cross_process called from crates\awase-windows\src\runtime\ime_refresh.rs:286 (想定呼び出し元: 17+ call sites across platform/state/runtime layers, see doc comment)
+2026-09-25T13:25:56.978496Z DEBUG awase_windows::runtime::ime_refresh: [stage-observe] strategy=OsPoll belief_on=true explicit_intent=None
+2026-09-25T13:25:56.981259Z  INFO awase_windows::tsf::tip_detector: [tip-detect] TIP clsid={8613E14C-D0C0-4161-AC0F-1DD2563286BC} profile={B37D4237-8D1A-412E-9026-538FE16DF216} lang=0000 desc="Touch Input Correction"
+2026-09-25T13:25:56.981673Z  INFO awase_windows::tsf::tip_detector: [tip-detect] TIP clsid={F25E9F57-2FC8-4EB3-A41A-CCE5F08541E6} profile={F2510000-2FC8-4EB3-A41A-CCE5F08541E6} lang=0000 desc="Touch Input Text Insertion"
+2026-09-25T13:25:56.981928Z  INFO awase_windows::focus::uia: UIA worker thread started
+2026-09-25T13:25:56.982355Z DEBUG awase_windows::ime: read_ime_state_full: focused_hwnd=HWND(0x30208) class="RICHEDIT50W"
+2026-09-25T13:25:57.003587Z DEBUG awase_windows::imm: [ime-io] cross_process cmd=0x0005 kind=probe ime_wnd=HWND(0x4021c) thread=ThreadId(10) issue_us=44384 elapsed_us=21154
+2026-09-25T13:25:57.003766Z DEBUG awase_windows::imm: [ime-io] cross_process cmd=0x0001 kind=probe ime_wnd=HWND(0x4021c) thread=ThreadId(10) issue_us=65646 elapsed_us=93
+2026-09-25T13:25:57.003796Z DEBUG awase_windows::ime: read_ime_state_full: cross native=true roman=false, direct_kana=None
+2026-09-25T13:25:57.004150Z DEBUG awase_windows::observer::ime_observer: IME snapshot: japanese=Some(true) ime_on=Some(false) romaji=None conv=Some("0x00000009") guard=false
+2026-09-25T13:25:57.004181Z DEBUG awase_windows::focus::class_names: [actuation-record] can_use_imm32_cross_process called from crates\awase-windows\src\runtime\ime_refresh.rs:437 (想定呼び出し元: 17+ call sites across platform/state/runtime layers, see doc comment)
+2026-09-25T13:25:57.004374Z DEBUG awase::journal: ime event seq=5 elapsed_ms=66 event_kind="ObserverReported"
+2026-09-25T13:25:57.004416Z  INFO awase_windows::runtime::ime_refresh: ObserverPoll +32ms since focus: ime_on true → false(intent=None) 
+2026-09-25T13:25:57.004475Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-25T13:25:57.004543Z DEBUG awase::journal: ime event seq=6 elapsed_ms=66 event_kind="ModeKeyPassedThrough"
+2026-09-25T13:25:57.004554Z  INFO awase_windows::runtime::ime_refresh: [startup-align] desired_open を最初の成功観測へ揃えた: desired=false
+2026-09-25T13:25:57.004577Z DEBUG awase_windows::focus::class_names: [actuation-record] can_use_imm32_cross_process called from crates\awase-windows\src\runtime\mod.rs:970 (想定呼び出し元: 17+ call sites across platform/state/runtime layers, see doc comment)
+2026-09-25T13:25:57.004596Z DEBUG awase_windows::timer: Timer set: logical=101, ms=500, os_id=32666
+2026-09-25T13:25:57.004639Z  INFO awase_windows::runtime::message_handlers: [runtime] IME kind sync (startup pull sync): MicrosoftIme (detected=false)
+2026-09-25T13:25:57.004650Z  INFO awase_windows::output::tsf_warmup_coord: [output] Switching warmup strategy → MsImeStrategy (MS-IME detected)
+2026-09-25T13:25:57.004681Z DEBUG awase_windows::runtime::message_handlers: WM_APP received: hwnd=HWND(0x2021e) lparam=0x0000000000000402
+2026-09-25T13:25:57.004701Z DEBUG awase_windows::tray: Tray message: event=0x0402 lparam=0x0000000000000402
+2026-09-25T13:25:57.010844Z DEBUG awase_windows::runtime::message_handlers: WM_APP received: hwnd=HWND(0x2021e) lparam=0x0000000000000404
+2026-09-25T13:25:57.010893Z DEBUG awase_windows::tray: Tray message: event=0x0404 lparam=0x0000000000000404
+2026-09-25T13:25:57.013113Z DEBUG awase_windows::runtime::message_handlers: WM_APP received: hwnd=HWND(0x2021e) lparam=0x0000000000000404
+2026-09-25T13:25:57.013146Z DEBUG awase_windows::tray: Tray message: event=0x0404 lparam=0x0000000000000404
+2026-09-25T13:25:57.183441Z  INFO awase_windows::tsf::tip_detector: [tip-detect] TIP clsid={DCBD6FA8-032F-11D3-B5B1-00C04FC324A1} profile={6A114E62-E11B-447F-9A58-2D354F5C9204} lang=0000 desc="Speech Recognition"
+2026-09-25T13:25:57.183497Z  INFO awase_windows::tsf::tip_detector: [tip-detect] ── EnumProfiles(JA) end ──
+2026-09-25T13:25:57.183947Z  INFO awase_windows::tsf::tip_detector: [tip-detect] GJI CLSID discovered: {D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}
+2026-09-25T13:25:57.183972Z  INFO awase_windows::tsf::gji_monitor: [tip-detect] initial IME kind: GoogleJapaneseInput (Gji)
+2026-09-25T13:25:57.184078Z  INFO awase_windows::runtime::message_handlers: [runtime] IME kind sync (WM_IME_KIND_CHANGED): GoogleJapaneseInput (detected=true)
+2026-09-25T13:25:57.184114Z  INFO awase_windows::output::tsf_warmup_coord: [output] Switching warmup strategy → GjiFsm (GJI detected)
+2026-09-25T13:25:57.184690Z  WARN awase_windows::runtime: [state-dependent-mode-key] kind=Composition keys=[VkCode(243), VkCode(244), VkCode(25)]: 入力中に押すと、変換中の文字が消える、または確定してしまう場合があります。冪等なキーでも起こりうるため、ON/OFFキーへの置き換えだけでは解決しません。
+2026-09-25T13:25:57.184776Z  WARN awase_windows::runtime: [state-dependent-mode-key] kind=ThumbConflict keys=[VkCode(28), VkCode(29)]: IME側の割り当てを解除し、awaseの親指単独タップ設定またはbare親指キーのIME ON/OFF設定に委ねてください。
+2026-09-25T13:25:57.189095Z DEBUG awase_windows::tsf::gji_monitor: [gji-monitor] no GJI process found (searched prefixes: ["GoogleIMEJaConverter", "GoogleJapaneseInputConverter"]), google/japanese procs: []
+2026-09-25T13:25:57.189136Z DEBUG awase_windows::tsf::gji_monitor: [gji-monitor] GJI process not found (I/O monitoring unavailable)
+2026-09-25T13:25:57.442068Z DEBUG awase_windows::runtime: [focus-sync] hwnd=0x10236 class="#32770" app_kind=Win32 hint=Default → mode=Unicode
+2026-09-25T13:25:57.442154Z DEBUG awase_windows::tsf::tsf_gate: [tsf-gate] focus change → PendingWarmup (held cleared)
+2026-09-25T13:25:57.442313Z DEBUG awase_windows::timer: Timer set: logical=106, ms=500, os_id=32661
+2026-09-25T13:25:57.442491Z DEBUG awase_windows::timer: Timer set: logical=101, ms=50, os_id=32660
+2026-09-25T13:25:57.443071Z DEBUG awase_windows::runtime: [focus-sync] hwnd=0x1023E class="Button" app_kind=Win32 hint=Default → mode=Unicode
+2026-09-25T13:25:57.443116Z DEBUG awase_windows::output: [tsf-gate] focus change while PendingWarmup — held バッファを保持して再初期化スキップ (Chrome等の連続フォーカスイベント対策)
+2026-09-25T13:25:57.443254Z DEBUG awase_windows::timer: Timer set: logical=106, ms=500, os_id=32659
+2026-09-25T13:25:57.443556Z DEBUG awase_windows::timer: Timer set: logical=101, ms=50, os_id=32658
+2026-09-25T13:25:57.498375Z DEBUG awase_windows::timer: Timer killed: logical=101, os_id=32658
+2026-09-25T13:25:57.500834Z DEBUG awase_windows::ime: read_ime_state_full: focused_hwnd=HWND(0x1023e) class="Button"
+2026-09-25T13:25:57.561112Z DEBUG awase_windows::imm: [ime-io] cross_process cmd=0x0005 kind=probe ime_wnd=HWND(0x10238) thread=ThreadId(15) issue_us=562852 elapsed_us=60214
+2026-09-25T13:25:57.561433Z DEBUG awase_windows::imm: [ime-io] cross_process cmd=0x0001 kind=probe ime_wnd=HWND(0x10238) thread=ThreadId(15) issue_us=623149 elapsed_us=250
+2026-09-25T13:25:57.563871Z DEBUG apply_focus_probe_result: awase_windows::runtime::focus_tracking: Focus kind changed: TextInput → NonText (reason=KnownNonTextClass(Button))
+2026-09-25T13:25:57.563952Z DEBUG apply_focus_probe_result: awase_windows::focus::hwnd_cache: HwndCache: save [6792 RICHEDIT50W] ime_on=false mode=ObservedRomaji hwnd=197128
+2026-09-25T13:25:57.564086Z DEBUG apply_focus_probe_result: awase::journal: focus transition seq=7 elapsed_ms=626 changed_process=true changed_window=true changed_app_kind=false changed_focus_kind=true dwell_ms=594 profile="ImmCross"
+2026-09-25T13:25:57.564299Z  INFO apply_focus_probe_result: awase_windows::runtime::focus_tracking: FocusChange [6792→7136] Button: stale ime_on=false intent=None mode=ObservedRomaji japanese=true
+2026-09-25T13:25:57.564331Z DEBUG apply_focus_probe_result: awase_windows::tsf::probe: [composition] focus changed → marked cold
+2026-09-25T13:25:57.564385Z DEBUG apply_focus_probe_result: awase_windows::runtime: [keymap] active rules recomputed: 0 rule(s) for process="awase.exe"
+2026-09-25T13:25:57.564414Z DEBUG apply_focus_probe_result: awase_windows::runtime::focus_tracking: [keymap] active rules updated on focus change: 0 rule(s) (hwnd=HWND(0x1023e) kind=NonText focus_epoch=2)
+2026-09-25T13:25:57.564452Z DEBUG apply_focus_probe_result:reduce: awase_windows::state::ime_model: [explicit-intent] cleared (focus change)
+2026-09-25T13:25:57.564530Z DEBUG apply_focus_probe_result: awase::journal: ime event seq=8 elapsed_ms=626 event_kind="FocusChanged"
+2026-09-25T13:25:57.564572Z DEBUG apply_focus_probe_result: awase_windows::focus::hwnd_cache: HwndCache: no entry for [7136 Button], stale until FocusProbe
+2026-09-25T13:25:57.564601Z  INFO apply_focus_probe_result: awase_windows::state::platform_state: Imm32Unavailable entry without trusted cache: 安全デフォルト ON を Low confidence observation として記録 (no explicit intent, Japanese layout, IME state uncontrollable in Imm32Unavailable)
+2026-09-25T13:25:57.564718Z DEBUG apply_focus_probe_result: awase::journal: ime event seq=9 elapsed_ms=626 event_kind="ObserverReported"
+2026-09-25T13:25:57.564759Z DEBUG apply_focus_probe_result: awase_windows::runtime::focus_tracking: [focus] Imm32Unavailable hard pre-sync applied=true (prevent spurious VK_KANJI on first character key)
+2026-09-25T13:25:57.564919Z DEBUG apply_focus_probe_result:gji_on_event{event=ImeOn { injection_mode: Unicode, gji_idle_ms: 165265 }}: awase_windows::tsf::gji_fsm: [gji-fsm] ImeOn gji_idle=165265ms → Long
+2026-09-25T13:25:57.564985Z DEBUG apply_focus_probe_result: awase_windows::platform: [gji-fsm] StartProbe probe_id=ProbeId(0) forces_f2=true long=true
+2026-09-25T13:25:57.565119Z DEBUG apply_focus_probe_result: awase_windows::platform: [gji-fsm] Unicode long-cold StartProbe: VK_IME_OFF→VK_IME_ON reinit (chars なし)
+2026-09-25T13:25:57.565171Z DEBUG apply_focus_probe_result: awase_windows::output::probe_io: [chrome-reinit] cold=0 VK_IME_OFF→VK_IME_ON 強制リセット送信 + IMC ポーリング開始 (write_bytes_baseline=0)
+2026-09-25T13:25:57.565203Z DEBUG apply_focus_probe_result: awase_windows::win32: [ime-io] actuation SendInput kind=kanji_marker vk=[1A, 16] issue_us=627167
+2026-09-25T13:25:57.565240Z DEBUG apply_focus_probe_result: awase_windows::shadow_send_trace: [shadow-send] channel=SendInput kind=kanji_marker vk=[1A, 16] issue_us=627167
+2026-09-25T13:25:57.565387Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x1A down self_injected=true injected=true scan=0x0 extra=0x4B45594A since_actuation_us=Some(173)
+2026-09-25T13:25:57.565736Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x1A up self_injected=true injected=true scan=0x0 extra=0x4B45594A since_actuation_us=Some(535)
+2026-09-25T13:25:57.565974Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x16 down self_injected=true injected=true scan=0x0 extra=0x4B45594A since_actuation_us=Some(773)
+2026-09-25T13:25:57.566177Z DEBUG awase_windows::hook: [hook] IME-mode vk=0x16 up self_injected=true injected=true scan=0x0 extra=0x4B45594A since_actuation_us=Some(976)
+2026-09-25T13:25:57.566299Z DEBUG apply_focus_probe_result: awase_windows::tsf::ime_mode_fsm: [ime-mode] VK_IME_OFF 送信 → Off (belief, unconfirmed)
+2026-09-25T13:25:57.566328Z DEBUG apply_focus_probe_result: awase_windows::tsf::ime_mode_fsm: [ime-mode] VK_IME_ON 送信 → Hiragana (belief, unconfirmed)
+2026-09-25T13:25:57.566428Z DEBUG apply_focus_probe_result: awase_windows::platform: [gji-fsm] LongIdle timer set duration=10000ms
+2026-09-25T13:25:57.566519Z DEBUG apply_focus_probe_result: awase_windows::timer: Timer set: logical=108, ms=10000, os_id=32656
+2026-09-25T13:26:10.897877Z DEBUG execute_from_loop:execute_one{generation=None}: awase_windows::platform: [engine-state-key] suppressed (polling/focus-triggered, enabled=true)
+2026-09-25T13:26:10.897947Z DEBUG execute_from_hook: awase_windows::runtime::executor: [relay-guard] vk=0x1c down in_flight_ms=never has_pending=false output_in_flight=false
+2026-09-25T13:26:10.898157Z DEBUG execute_one{generation=None}: awase_windows::runtime::executor: [reinject] vk=0x1c down (queued passthrough now firing)
+2026-09-25T13:26:10.918943Z DEBUG awase_windows::imm: [ime-io] cross_process cmd=0x0005 kind=probe ime_wnd=HWND(0x4021c) thread=ThreadId(141) issue_us=13960520 elapsed_us=20239
+2026-09-25T13:26:10.931035Z DEBUG awase_windows::imm: [ime-io] cross_process cmd=0x0001 kind=probe ime_wnd=HWND(0x4021c) thread=ThreadId(141) issue_us=13980832 elapsed_us=12025
+2026-09-25T13:26:10.931067Z DEBUG awase_windows::ime: read_ime_state_fast: conv=0x00000009 native=true roman=false
+2026-09-25T13:26:10.931343Z  INFO run_open_chain_async: awase_windows::ime_controller: [warrant-shadow] chain=async open=true origin=EventOrigin { source: SelfActuated { strategy: "engine_decision_async" }, epoch: Generation(0) } would_have_blocked=true (A-1 shadow: 書き込みは止めない。A-2 で強制する際の判断材料)
+2026-09-25T13:26:10.931418Z DEBUG run_open_chain_async: awase::journal: actuation decision seq=59 elapsed_ms=13993 site="DispatchImeSetOpen" caller="None" open=true chain_len=3 attempts_len=0 gate_profile="Standard" gate_kind="Gji" gate_shadow_known=false gate_shadow_on=false gate_input_mode="ObservedRomaji" first_attempt_present=false first_mechanism="None" first_command="None" first_outcome="Non
+2026-09-25T13:26:10.931528Z DEBUG awase_windows::tsf::probe_bridge: [output-gate] deactivated (depth 1→0), pending_drain=0 → post WM_DRAIN_OUTPUT_QUEUE
+2026-09-25T13:26:10.931630Z  INFO awase_windows::runtime::key_pipeline: FocusProbe +32ms: ime_on=true(shadow) mode=ObservedRomaji [ime=GoogleJapaneseInput sig1=false gji_io=neverms sig2=false]
+2026-09-25T13:26:10.931645Z DEBUG awase_windows::runtime::key_pipeline: FocusProbe: TsfNative/Imm32Unavailable — 観測不能のため記録は行わず、shadow 値 false を guard 解除判定にのみ使用 [probe_age=32ms]
+2026-09-25T13:26:10.931687Z DEBUG on_ime_apply_complete{open=true outcome=Unwarranted generation=None reason=EngineDecision}: awase::journal: ime open applied seq=60 elapsed_ms=13993 open=true outcome="Unwarranted" reason="EngineDecision"
+2026-09-25T13:26:10.931711Z DEBUG on_ime_apply_complete{open=true outcome=Unwarranted generation=None reason=EngineDecision}: awase_windows::timer: Timer set: logical=101, ms=20, os_id=32610
+2026-09-25T13:26:10.931744Z DEBUG awase_windows::runtime::message_handlers: [drain-start] now=13993568us queue_len=0
+2026-09-25T13:26:10.932372Z DEBUG awase_windows::ime: read_ime_state_full: focused_hwnd=HWND(0x30206) class="Edit"
+2026-09-25T13:26:10.957845Z DEBUG awase_windows::timer: Timer killed: logical=101, os_id=32610
+2026-09-25T13:26:10.959137Z DEBUG awase_windows::ime: read_ime_state_full: focused_hwnd=HWND(0x30206) class="Edit"
+2026-09-25T13:26:10.975207Z DEBUG awase_windows::imm: [ime-io] cross_process cmd=0x0005 kind=probe ime_wnd=HWND(0x4021c) thread=ThreadId(148) issue_us=14021002 elapsed_us=16029
+2026-09-25T13:26:10.975201Z DEBUG awase_windows::imm: [ime-io] cross_process cmd=0x0005 kind=probe ime_wnd=HWND(0x4021c) thread=ThreadId(144) issue_us=13994243 elapsed_us=42767
