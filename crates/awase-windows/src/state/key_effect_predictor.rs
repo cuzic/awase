@@ -410,14 +410,35 @@ pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option
             .iter()
             .any(|c| c.open == input.open && c.conv.is_none_or(|cv| cv == conv) && c.stage == st)
     };
-    let c = find_in(table, input.open, conv, stage, key).or_else(|| {
+    let Some(c) = find_in(table, input.open, conv, stage, key).or_else(|| {
         (matches!(
             stage,
             Stage::ConvSpace | Stage::ConvHenkan | Stage::ConvMuhenkan
         ) && !stage_modeled(stage))
         .then(|| find_in(table, input.open, conv, Stage::Typing, key))
         .flatten()
-    })?;
+    }) else {
+        // BUG-162: 表に該当セルが無い（ATOK の入力中/変換中の Esc は保持/破棄が割れるので生成時に除外される）
+        // ときは、開閉・入力モードは予測しない（観測に委ねる）が、**入力中の段階の追跡は捨てる**。
+        // 入力中（`Typing`）の Esc は未確定文字列を破棄するので、セルが無くても段階への効果は
+        // `next_stage` の Esc の規則と同じ（`Stage::None`）。変換中（`Conv*`）の Esc は保持/破棄が実際に
+        // 割れる（元の状態へ戻る）ので、ここでは触らない（追跡は従来どおり）。追跡を捨てないと、`k`→Esc の後も段階が `Typing` のまま残り、次の無変換が「入力中の無変換
+        // （かなのまま）」と誤予測され、Engine が活性化して `SetOpen(true)` で IME を書き戻す（読めない窓では
+        // 観測が追跡を直せない）。
+        if matches!(key, TableKey::Esc) && input.track.stage == Stage::Typing {
+            return Some(Prediction {
+                effect: PredictedEffect {
+                    open: None,
+                    mode: seeded.then(kana_mode),
+                },
+                track: KeyTrack {
+                    conv: input.track.conv,
+                    stage: Stage::None,
+                },
+            });
+        }
+        return None;
+    };
     // 押下後の変換モードが不明（閉になる/開く遷移など）のときは、追跡を捨てる。入力モードは種（Unknown）だけ反映する。
     let effect = PredictedEffect {
         open: (c.after_open != input.open).then_some(c.after_open),
@@ -919,6 +940,62 @@ mod tests {
 
     /// ATOKの表に`ConvMuhenkan`の行は無い。入力中の無変換で入った変換中の段階の後も、Enter・半角/全角は
     /// 「入力中」の行で予測し、追跡した段階を更新する（予測なしで古い段階が残らない）。
+    /// BUG-162 回帰: 入力中の Esc は ATOK 表にセルが無い（保持/破棄が割れて生成時に除外）が、追跡した
+    /// 段階（`Typing`）は捨てなければならない。捨てないと、`k`→Esc の後の無変換が「入力中の無変換」と
+    /// 誤予測される（実際は入力中でないので IME OFF）。
+    #[test]
+    fn typing_esc_without_a_table_cell_drops_the_tracked_stage() {
+        const EISU: InputModeState = InputModeState::ObservedEisu;
+        let mut base = input(true, EISU, false, NOTRACK);
+        base.conv_raw = Some(0x10); // 半角英数（実測 baseline の手順2の状態）
+                                    // 1. 文字キー（k）: 入力中（Typing）になる。
+        let k = predict(KeymapPreset::Atok, 0x4B, &base).expect("文字キーは段階を Typing にする");
+        assert_eq!(k.track.stage, Stage::Typing);
+        // 2. Esc: 表にセルは無く、開閉・モードは予測しないが、追跡した段階は捨てる。
+        let mut after_k = base;
+        after_k.track = k.track;
+        assert_eq!(
+            find_in(
+                table_of(KeymapPreset::Atok),
+                true,
+                Conv::C10,
+                Stage::Typing,
+                TableKey::Esc
+            ),
+            None,
+            "前提: ATOK 表に（半角英数・入力中・Esc）のセルは無い"
+        );
+        let esc = predict(KeymapPreset::Atok, 0x1B, &after_k)
+            .expect("段階が変わるので追跡の更新だけ返す");
+        assert!(esc.effect.is_noop(), "開閉・モードは予測しない: {esc:?}");
+        assert_eq!(esc.track.stage, Stage::None);
+        // 3. 無変換: 入力中でない無変換として引く（古い Typing の行を引かない）。
+        let mut after_esc = base;
+        after_esc.track = esc.track;
+        let muhenkan = predict(KeymapPreset::Atok, 0x1D, &after_esc);
+        let stale = predict(KeymapPreset::Atok, 0x1D, &after_k);
+        assert_ne!(
+            muhenkan.map(|p| p.effect.open),
+            stale.map(|p| p.effect.open),
+            "Esc で段階を捨てた後の予測は、古い Typing のままの予測と違う（BUG-162）"
+        );
+    }
+
+    /// 変換中（`Conv*`）の Esc は保持/破棄が実際に割れる（元の状態へ戻る）ので、追跡は変えない（従来どおり予測なし）。
+    #[test]
+    fn conversion_stage_esc_without_a_table_cell_keeps_the_previous_behaviour() {
+        let conv_space = KeyTrack {
+            conv: Some(Conv::C19),
+            stage: Stage::ConvSpace,
+        };
+        assert!(predict(
+            KeymapPreset::Atok,
+            0x1B,
+            &input(true, ROMAJI, true, conv_space)
+        )
+        .is_none());
+    }
+
     #[test]
     fn atok_conv_muhenkan_stage_falls_back_to_typing_row() {
         let conv = KeyTrack {
@@ -1381,7 +1458,14 @@ mod tests {
             conv: Some(Conv::C19),
             stage: Stage::Typing,
         };
-        assert_eq!(km.predict(0x1B, &input(true, ROMAJI, true, typing)), None);
+        // 入力中の Esc: 開閉・入力モードは予測しない（候補ウィンドウ依存）。ただし入力中の段階の追跡は捨てる
+        // （BUG-162。捨てないと Esc の後の打鍵が古い「入力中」の行で誤予測される。候補ウィンドウだけが閉じて
+        // 入力中が残る場合の取りこぼしは、読める窓では観測（composing）が直す。読めない窓では未解決の限界）。
+        let esc = km
+            .predict(0x1B, &input(true, ROMAJI, true, typing))
+            .expect("追跡の更新だけ返す");
+        assert!(esc.effect.is_noop());
+        assert_eq!(esc.track.stage, Stage::None);
     }
 
     #[test]
