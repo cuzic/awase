@@ -27,25 +27,6 @@ pub enum ForceOnReason {
     ProfilePolicy,
 }
 
-impl ForceOnReason {
-    /// この guard がユーザーの明示的な意図（`UserImeSetIntent`/`UserImeToggleIntent`
-    /// 由来、SyncKey/PhysicalImeKey/Command）よりも優先されるべきか。
-    ///
-    /// `true`: 明示的意図があっても force-on する（安全弁として意図的にユーザー操作を
-    /// 一時的に上書きする）。`PanicReset`（クラッシュ直後の安全弁）・`ProfilePolicy`
-    /// （アプリ側の制約による恒久的な要求）が該当する。
-    ///
-    /// `false`: 「観測できない/信頼できない」ことのヒューリスティックな推測にすぎず、
-    /// ユーザーの本物の意図を上書きしてはならない（`ObservationConfidence` の
-    /// Low を `desired_open`/明示意図より優先させない、という belief 全体のルールと同じ）。
-    /// 現存する reason は全て `true`（唯一のヒューリスティック由来だった
-    /// `BrokenAppBootstrap` は `621bf93c` の force-on 撤去で追加元が消え、削除した）。
-    #[must_use]
-    pub const fn overrides_explicit_intent(self) -> bool {
-        matches!(self, Self::PanicReset | Self::ProfilePolicy)
-    }
-}
-
 /// 単一の force-on ガード。
 #[derive(Debug, Clone, Copy)]
 pub struct ForceGuard {
@@ -114,14 +95,13 @@ impl ForceGuardSet {
 
     /// `desired_open` を guard で override した最終値を返す。
     ///
-    /// `has_explicit_intent=true`（ユーザーが `UserImeSetIntent`/`UserImeToggleIntent`
-    /// で明示的に意図を示している）場合、`ForceOnReason::overrides_explicit_intent()`
-    /// が `false` の guard（ヒューリスティック由来）は無視する。
-    /// 観測できないことの推測が、ユーザーの本物の意図を上書きしてはならないため。
-    /// `PanicReset` 等の安全弁は明示的意図があっても引き続き override する。
+    /// guard は全て安全弁（`PanicReset`・`ProfilePolicy`）で、ユーザーの明示意図があっても
+    /// 常に override する。かつては「観測できない」ことの推測で立つヒューリスティック guard
+    /// （`BrokenAppBootstrap`）だけ明示意図に譲る区別があったが、追加元が `621bf93c` で撤去され、
+    /// 区別ごと削除した。
     #[must_use]
-    pub fn effective_open(&self, desired_open: bool, has_explicit_intent: bool) -> bool {
-        self.resolve(desired_open, has_explicit_intent).0
+    pub fn effective_open(&self, desired_open: bool) -> bool {
+        self.resolve(desired_open).0
     }
 
     /// `effective_open()` と同じ判定を行い、**実際に override が起きた場合のみ**
@@ -134,38 +114,16 @@ impl ForceGuardSet {
     /// ここに一本化する（ADR-087 §7 round4 M-C: 手書きの複製が
     /// `platform_state.rs:1300-1304` と同型の乖離バグを生む前例があるため）。
     #[must_use]
-    pub fn resolve(
-        &self,
-        desired_open: bool,
-        has_explicit_intent: bool,
-    ) -> (bool, Option<ForceOnReason>) {
-        // override 権限を持つ reason を優先して報告する（Opus round4 最終確認の
-        // 補足指摘: `has_explicit_intent==false` のとき素の `.find()` は挿入順で
-        // 最初の guard を返すため、権限の異なる guard が同時に
-        // 立っていると弱い方を報告しうる。`.0` の値は変わらないが、診断としては
-        // 権限の強い方を報告する方が自然）。
-        let override_reason = self
-            .guards
-            .iter()
-            .map(|g| g.reason)
-            .find(|r| r.overrides_explicit_intent());
-        let forcing = override_reason.or_else(|| {
-            if has_explicit_intent {
-                None
-            } else {
-                self.guards.iter().map(|g| g.reason).next()
-            }
-        });
-        match forcing {
+    pub fn resolve(&self, desired_open: bool) -> (bool, Option<ForceOnReason>) {
+        match self.guards.first().map(|g| g.reason) {
             Some(reason) if !desired_open => (true, Some(reason)),
             Some(_) => (true, None), // 既に true だったので override は無かった
             None => (desired_open, None),
         }
     }
 
-    /// 明示意図があっても override してよい（`overrides_explicit_intent()==true`）
-    /// guard が active なら、その reason を返す。ADR-087 §2.3 P15 Step 0
-    /// （真の安全弁）の判定に使う。
+    /// active な guard があれば、その reason を返す（最初に追加されたもの）。
+    /// ADR-087 §2.3 P15 Step 0（真の安全弁）の判定に使う。
     ///
     /// `guards` フィールドは private のため（過去の直接フィールド操作の迂回を
     /// 塞ぐための設計、本ファイル冒頭コメント参照）、`iter()` を公開する代わりに
@@ -176,25 +134,8 @@ impl ForceGuardSet {
     /// `expires_at` は事実上機能していない）。期限を見るように変える場合は
     /// `effective_open()`/`resolve()` も同時に変えること（ADR-087 §7 round4 S-D）。
     #[must_use]
-    pub fn active_override_reason(&self) -> Option<ForceOnReason> {
-        self.guards
-            .iter()
-            .map(|g| g.reason)
-            .find(|r| r.overrides_explicit_intent())
-    }
-
-    /// override 権限を持たない（`overrides_explicit_intent()==false`）
-    /// ヒューリスティック guard が active なら、
-    /// その reason を返す。ADR-087 §2.3 P15 Step 4b の判定に使う。
-    ///
-    /// `active_override_reason()` と同じ理由で `expires_at` を見ない
-    /// （§7 round4 S-D）。
-    #[must_use]
-    pub fn active_heuristic_reason(&self) -> Option<ForceOnReason> {
-        self.guards
-            .iter()
-            .map(|g| g.reason)
-            .find(|r| !r.overrides_explicit_intent())
+    pub fn active_reason(&self) -> Option<ForceOnReason> {
+        self.guards.first().map(|g| g.reason)
     }
 }
 
@@ -320,17 +261,14 @@ mod tests {
     #[test]
     fn effective_open_overrides_when_guard_active() {
         let mut set = ForceGuardSet::default();
-        assert!(
-            !set.effective_open(false, false),
-            "guard なし → desired そのまま"
-        );
+        assert!(!set.effective_open(false), "guard なし → desired そのまま");
         set.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
             expires_at: None,
             generation: 1,
         });
         assert!(
-            set.effective_open(false, false),
+            set.effective_open(false),
             "guard で true に override (明示的意図なし)"
         );
     }
@@ -344,7 +282,7 @@ mod tests {
             generation: 1,
         });
         assert!(
-            set.effective_open(false, true),
+            set.effective_open(false),
             "PanicReset は安全弁のため明示的意図があっても override する"
         );
     }
@@ -376,10 +314,10 @@ mod tests {
         assert_eq!(d.consecutive_miss_count, 0);
     }
 
-    // ── active_override_reason / active_heuristic_reason（ADR-087 §2.3 P15） ──
+    // ── active_reason（ADR-087 §2.3 P15） ──
 
     #[test]
-    fn active_override_reason_finds_panic_reset() {
+    fn active_reason_finds_panic_reset() {
         let mut set = ForceGuardSet::default();
         set.add(ForceGuard {
             reason: ForceOnReason::PanicReset,
@@ -387,32 +325,27 @@ mod tests {
             generation: 1,
         });
         assert_eq!(
-            set.active_override_reason(),
+            set.active_reason(),
             Some(ForceOnReason::PanicReset),
             "override 権限を持つ PanicReset が見つかるべき"
         );
     }
 
     #[test]
-    fn active_heuristic_reason_none_when_only_override_guards() {
+    fn active_reason_finds_profile_policy() {
         let mut set = ForceGuardSet::default();
         set.add(ForceGuard {
             reason: ForceOnReason::ProfilePolicy,
             expires_at: None,
             generation: 1,
         });
-        assert_eq!(set.active_heuristic_reason(), None);
-        assert_eq!(
-            set.active_override_reason(),
-            Some(ForceOnReason::ProfilePolicy)
-        );
+        assert_eq!(set.active_reason(), Some(ForceOnReason::ProfilePolicy));
     }
 
     #[test]
-    fn active_reasons_both_none_when_empty() {
+    fn active_reason_none_when_empty() {
         let set = ForceGuardSet::default();
-        assert_eq!(set.active_override_reason(), None);
-        assert_eq!(set.active_heuristic_reason(), None);
+        assert_eq!(set.active_reason(), None);
     }
 
     // ── resolve()（ADR-087 §7 round4 M-C） ──
@@ -427,7 +360,7 @@ mod tests {
             generation: 1,
         });
         assert_eq!(
-            set.resolve(true, false),
+            set.resolve(true),
             (true, None),
             "base が既に true なら guard は何も変えていないので reason は None"
         );
@@ -442,7 +375,7 @@ mod tests {
             generation: 1,
         });
         assert_eq!(
-            set.resolve(false, true),
+            set.resolve(false),
             (true, Some(ForceOnReason::PanicReset)),
             "base=false を override して true にしたので reason が返る"
         );
@@ -451,8 +384,8 @@ mod tests {
     #[test]
     fn resolve_no_guard_no_override() {
         let set = ForceGuardSet::default();
-        assert_eq!(set.resolve(false, false), (false, None));
-        assert_eq!(set.resolve(true, false), (true, None));
+        assert_eq!(set.resolve(false), (false, None));
+        assert_eq!(set.resolve(true), (true, None));
     }
 
     #[test]
@@ -465,19 +398,13 @@ mod tests {
             generation: 1,
         });
         for desired in [true, false] {
-            for has_intent in [true, false] {
-                assert_eq!(
-                    set.resolve(desired, has_intent).0,
-                    set.effective_open(desired, has_intent)
-                );
-            }
+            assert_eq!(set.resolve(desired).0, set.effective_open(desired));
         }
     }
 
     #[test]
-    fn resolve_profile_policy_also_overrides_explicit_intent() {
-        // overrides_explicit_intent() のもう一方の true variant（ProfilePolicy）も
-        // PanicReset と同じ経路を通ることを確認する（enum を閉じる）。
+    fn resolve_profile_policy_also_overrides() {
+        // ProfilePolicy も PanicReset と同じく、明示意図の有無に関わらず override する。
         let mut set = ForceGuardSet::default();
         set.add(ForceGuard {
             reason: ForceOnReason::ProfilePolicy,
@@ -485,7 +412,7 @@ mod tests {
             generation: 1,
         });
         assert_eq!(
-            set.resolve(false, true),
+            set.resolve(false),
             (true, Some(ForceOnReason::ProfilePolicy))
         );
     }

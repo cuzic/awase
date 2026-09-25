@@ -66,7 +66,7 @@ pub struct OpenResolution {
 /// `base`（明示意図/観測/フォールバックのどれで決まったか）と
 /// `guard_override`（`force_guards` が override したか）を分けて持つ——
 /// `ImeModel::effective_open()` の実装が
-/// `force_guards.effective_open(base, has_explicit_intent)` という2段構造に
+/// `force_guards.effective_open(base)` という2段構造に
 /// なっているため（`ime_model.rs` 本体参照）、診断もそれに合わせる。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecidedBy {
@@ -467,7 +467,7 @@ impl ImeModel {
         // M-C: 述語を手書きで複製すると「guard が active なだけで override して
         // いない」場合にも reason を報告してしまう誤情報バグを生む。resolve() は
         // 実際に値を変えた場合のみ Some を返す）。
-        let (value, guard_override) = self.force_guards.resolve(base, has_explicit_intent);
+        let (value, guard_override) = self.force_guards.resolve(base);
         OpenResolution {
             value,
             decided_by: DecidedBy {
