@@ -142,25 +142,6 @@ impl ActuateCmd {
     }
 }
 
-/// probe呼び出しが`send_health`のサーキットブレーカへ計測をフィードするか。
-///
-/// ADR-176 176-T9a（決定3 round6 B2対応）: 較正probeは数秒間100ms間隔で
-/// 回る測定専用のクロスプロセスprobeであり、本番のグローバルサーキット
-/// ブレーカを誤作動させてはならない（`runtime/executor.rs:986-995`に、
-/// 診断専用probeが`send_health`を誤作動させたため削除された前例がある）。
-/// `send_ime_control_raw`のdocが謳う「probe/actuate双方の計測はすべて
-/// ここに集約する」という不変条件を、較正probeに限り意図的に緩める
-/// ——`architecture_guard.rs`の`calibration_probe_skips_send_health_at_
-/// exactly_one_call_site`がこの唯一の使用箇所を固定する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SendHealthFeed {
-    /// 通常どおり`send_health::record`へ計測をフィードする（probe/actuate
-    /// 双方の既存呼び出し元はすべてこちら）。
-    Record,
-    /// `send_health::record`を呼ばない（較正probe専用）。
-    Skip,
-}
-
 /// IME状態の照会（`IMC_GET*`）。actuationを起こさない。
 ///
 /// ADR-159 round4 TJ2 MF2が「関数名だけではcmdの種類を区別できない」という
@@ -175,10 +156,9 @@ pub(crate) unsafe fn probe_ime_control(
     ime_wnd: HWND,
     cmd: ProbeCmd,
     timeout_ms: u32,
-    feed: SendHealthFeed,
 ) -> Option<usize> {
     // SAFETY: 呼び出し元の安全性要件をそのまま満たす。
-    unsafe { send_ime_control_raw(ime_wnd, cmd.raw(), 0, timeout_ms, feed) }
+    unsafe { send_ime_control_raw(ime_wnd, cmd.raw(), 0, timeout_ms) }
 }
 
 /// IME状態のactuate（`IMC_SET*`）。このクレートで`WM_IME_CONTROL`経由のIME actuationを
@@ -193,7 +173,7 @@ pub(crate) unsafe fn actuate_ime_control(
 ) -> Option<usize> {
     let (raw_cmd, lparam) = cmd.raw();
     // SAFETY: 呼び出し元の安全性要件をそのまま満たす。
-    unsafe { send_ime_control_raw(ime_wnd, raw_cmd, lparam, timeout_ms, SendHealthFeed::Record) }
+    unsafe { send_ime_control_raw(ime_wnd, raw_cmd, lparam, timeout_ms) }
 }
 
 thread_local! {
@@ -229,7 +209,6 @@ unsafe fn send_ime_control_raw(
     cmd: usize,
     lparam: isize,
     timeout_ms: u32,
-    feed: SendHealthFeed,
 ) -> Option<usize> {
     let mut result = 0usize;
     // BUG-34 横展開 Step0-c: SMTO_ABORTIFHUNG は呼び出し中に相手がハングし始めた
@@ -308,45 +287,6 @@ unsafe fn send_ime_control_raw(
     if is_actuation {
         crate::shadow_send_trace::record_ime_control(cmd, lparam, issue_us);
     }
-    if matches!(feed, SendHealthFeed::Record) {
-        crate::send_health::record(end_ms.saturating_sub(start_ms), end_ms);
-    }
+    crate::send_health::record(end_ms.saturating_sub(start_ms), end_ms);
     (ok.0 != 0).then_some(result)
-}
-
-/// ADR-176 176-T9a: 較正probe専用のIME open状態照会。`get_ime_wnd`を内部で
-/// 呼び、`SendHealthFeed::Skip`で`send_health`への計測フィードを回避する
-/// （B2対応）。
-///
-/// `app_hwnd_addr`はアプリのトップレベルウィンドウハンドルを`usize`化した
-/// 値で渡すこと（`HWND`は`Send`でないため、呼び出し元が
-/// `win32_async::offload_timeout`のクロージャに直接キャプチャできない
-/// ——`usize`のまま渡し、この関数の中で`HWND`を再構成する）。
-///
-/// タイムアウトは`crate::tuning::CALIBRATION_PROBE_TIMEOUT_MS`を呼び出し元
-/// が渡すことを想定するが、この関数自体はタイムアウト値を固定しない
-/// （呼び出し元が`tuning.rs`から渡す）。
-///
-/// # Safety
-/// Win32 API を呼び出す。`app_hwnd_addr`は有効なウィンドウハンドルの
-/// アドレスであること（無効なら`get_ime_wnd`が`None`を返すだけで
-/// 安全に失敗する）。
-pub(crate) unsafe fn probe_ime_open_for_calibration(
-    app_hwnd_addr: usize,
-    timeout_ms: u32,
-) -> Option<bool> {
-    let app_hwnd = HWND(app_hwnd_addr as *mut core::ffi::c_void);
-    // SAFETY: app_hwnd は呼び出し元が渡した値をそのまま再構成したもの。
-    //         無効であれば ImmGetDefaultIMEWnd が None を返すだけで安全。
-    let ime_wnd = unsafe { get_ime_wnd(app_hwnd) }?;
-    // SAFETY: ime_wnd は get_ime_wnd が返した有効なIMEウィンドウハンドル。
-    let result = unsafe {
-        probe_ime_control(
-            ime_wnd,
-            ProbeCmd::GetOpenStatus,
-            timeout_ms,
-            SendHealthFeed::Skip,
-        )
-    }?;
-    Some(result != 0)
 }

@@ -1,0 +1,117 @@
+---
+id: ADR-198
+title: |-
+  永続化先の分類（config.toml / cache.toml / 学習表 JSON）と v2 での calibration の扱い
+summary: |-
+  v2 方針（2026-09-23 のユーザー決定、2026-09-24 に「変わらない」と再確認）のうち永続化先の分類だけを定める。
+  (1) 永続化先は「ユーザー設定 / 観測キャッシュ / 学習表」の3分類で、軸は可搬性（dotfiles 同期してよいか）と再生成コスト。
+  (2) 学習表は cache.toml の節にせず別 JSON のまま（ADR-195 段階3 が第一候補とし、実装が採用）。
+  (3) 手動較正は廃止し自動学習に一本化する（ユーザー決定 2026-09-24）。calibration の移設は不要。学習なしでも設定読取り+内蔵表で動く機能は維持する。(4) cache.toml の書込はアトミックにする（PR #302）。
+  ConfirmMode の2択化は確定エンジンの設定で永続化先と無関係なので範囲外（後継 ADR は未起票）。
+status: |-
+  採用（2026-09-24）。opus-adversarial-consult round1・2 の指摘を反映済み。決定3 はユーザー決定済み。
+related_adr:
+  - "ADR-176"
+  - "ADR-191"
+  - "ADR-195"
+  - "ADR-196"
+  - "ADR-099"
+  - "ADR-058"
+  - "ADR-125"
+  - "ADR-162"
+---
+
+# 永続化先の分類（v2 方針、俯瞰レビュー A-10 / C-4 / C-5）
+
+## 背景
+
+v2 では calibration を config.toml から cache.toml へ移す、というユーザー決定（2026-09-23）があった。
+理由は**可搬性**である。config.toml は dotfiles で複数マシンに同期しうる「ユーザーの意図」で、
+cache.toml は IME の版やキーボード配列に結びつく「機械依存の事実」という線引き。
+この決定の出典はリポジトリ外のメモだけだったので、本 ADR が決定内容と理由を本文に書く。
+メモの内容は現行の実装・ADR と次の2点で合わない。
+
+- 「学習表も cache.toml の `[keymap_learn]` 節に置く」: ADR-195 段階3 は別ファイルを第一候補とし、実装は別 JSON を採った
+  （`crates/awase-keymap-learn-win/src/main.rs`、`awase::fs_atomic::write_atomic`）。
+- 「calibration を cache.toml へ移す」: `[[calibration]]` を読む本番コードが無い（適用側は ADR-191 で撤去、`9dc52c89`）。
+  書き手は `crates/awase-settings/src/main.rs` の手動較正パネルだけが残っている。
+
+## 範囲
+
+IME・キー効果に関する永続化だけを対象にする。`update_check.json`、`layout/*.yab`、不具合報告の出力はこの3分類の対象外
+（別の性質のファイルで、v2 の論点ではない）。
+
+## 決定
+
+### 決定1: 永続化先は3分類とする
+
+| 分類 | 置き場 | 可搬性（同期してよいか） | 性質 | 例 |
+|---|---|---|---|---|
+| ユーザー設定 | `config.toml` | 原則よい（`keyboard_model` や IME 種別依存の `[keys]` は機械依存で、v2 の config 簡略化で扱う） | ユーザーの意図。消えると困る | `[keys]`、`app_overrides`、`use_learned_keymap_table` |
+| 観測キャッシュ | `cache.toml` | 不可（機械依存） | 再観測で戻る。消えても実害は初回のやり直しだけ。**手編集されうる**（`focus/tracker.rs` が誤学習時の手編集を案内している） | `[imm_capability]`（ADR-125）、`[injection_mode]`（ADR-058） |
+| 学習表 | 別 JSON（`keymap-learn-table.json`、`keymap-learn-last-attempt.json`） | 不可（機械依存） | 再生成コストが大きい。表全体を1ファイルで持つ | ADR-195 段階3 |
+
+置き場の解決規則は現状2つある。cache.toml は `current_exe()` の親（`app/bootstrap.rs`）、config.toml と学習表は
+`awase::paths::resolve_relative_to_exe`（exe の隣、開発ビルドではワークスペースルート）。開発ビルドでは置き場が分かれる。
+04 A-9 のクリア操作など cache.toml を触る新規実装は、cache.toml と同じ規則で解決すること。
+
+**既知の不整合（本 ADR では直さない）**: 学習表 JSON は機械依存なのに config.toml と同じディレクトリにある。
+ディレクトリごと dotfiles 同期すると別マシンの学習表が持ち込まれる。06（学習表のキーマップ指紋、失効検出）が
+実装されれば検出できる。置き場を分ける案は「採らなかった案」に記録した。
+
+### 決定2: 学習表は cache.toml の節にしない
+
+再生成コストが大きい。学習は自動測定だが、ウィンドウとキーボードを専有する（所要時間は、段階1の全数学習だけで17分相当
+〈ADR-195 成功基準〉、段階2は未計測、MS-IME 本体は20分基準の対象外）。消されうる cache.toml に混ぜる理由がない。
+粒度も違う（ADR-195 段階3）。
+
+### 決定3: 手動キャリブレーションは廃止し、自動学習に一本化する（ユーザー決定 2026-09-24）
+
+手動較正パネル（ADR-176）は撤去する。キャリブレーションは自動操作による学習（ADR-195/196）だけにする。
+一方で、**キャリブレーション（学習）なしでも、設定読取り（ADR-195 段階0、ADR-192 の検出）と内蔵表だけで一定の精度で動く機能は維持する**。
+学習は精度を上げる任意の上乗せで、必須ではない。
+
+- `[[calibration]]` は書き手（パネル）も読み手も無くなるので、cache.toml への移設は行わない。
+  2026-09-23 のユーザー決定の目的（config.toml から機械依存データを追い出す）は、撤去で達成される。
+- `AppConfig` のフィールドを消すと、awase-settings の保存（`AppConfig::save` はファイル全体を書き直す）で既存の `[[calibration]]` は消える。
+  読む側が無いので消えてよい。読み込みは `deny_unknown_fields` が無いので壊れない。
+- ADR-176 の frontmatter status は今も「適用あり」の状態を書いている。適用は ADR-191（`9dc52c89`）で撤去済みで、
+  status の訂正と撤去の実施は 07 (2) で行う。
+
+### 決定4: 優先順位
+
+config.toml に対応するキーがある項目では、config.toml が観測キャッシュ・学習表に勝つ。`[injection_mode]` は `app_overrides` が先で、
+`InjectionModeStore` は未マッチのときだけ参照する。**`[imm_capability]` には対応する設定キーが無い**（`apply_learned_imm_capability` は
+`Standard` を無条件に降格する）。誤学習の訂正手段は cache.toml の削除・編集だけで、「config で上書きできるから実害は小さい」とは言えない。上書きキーの追加は範囲外。学習表を使うかどうかは config.toml の `use_learned_keymap_table`
+（既定 true、opt-out が常に勝つ）が決める。ADR-196 T4 が要確認判定を表 JSON の中で「採用」に書き換える設計は、
+ユーザーの明示判断を表ファイルに置くことになる。再学習・再検証で採用が消えない扱いは ADR-196 T4/T5 で決める（本 ADR では決めない）。
+
+### 決定5: cache.toml の書込はアトミックにする
+
+`save_section` は `awase::fs_atomic::write_atomic` を使う（PR #302、本 ADR と同じブランチ。マージ順は同時とする）。
+代償として `sync_all` と rename 再試行（最大約200ms）が、フォーカス切替時のメインスレッドで発生しうる。
+頻度は process/class ごとの学習時だけなので受け入れる。オフロードは別判断。
+プロセス間ロックは無いが、cache.toml に書くのは awase.exe だけなので不要。
+
+読込失敗時の扱いは**今決める**（07 (7)）: 既存の cache.toml が読めない・パースできないときは `save_section` が上書きせず、
+warn を出して中止する（PR #302 に含める）。壊れたファイルは残るので、他セクションは消えない。
+稼働中に手編集した内容は次の `learn()` がメモリ上のストアから書き戻す。`tracker.rs` の手編集案内は「awase を終了してから編集」に直す（別 PR、04 へ申し送り）。
+
+**cache.toml をクリアする操作**（トレイの「学習キャッシュをクリア」、`IDM_CLEAR_IMM_CACHE`、BUG-108 で現状は何もしない）は、
+学習表 JSON に触れない。学習表の削除は別の明示操作（02 の設定画面側）にする。ラベルが keymap 学習と紛らわしいので、
+04 A-9 で「IMM 判定キャッシュ」等へ改名する。クリアの実装は、ファイルとメモリ上の `ImmCapabilityStore.cache` の両方を消すこと
+（ファイルだけ消すと次の `learn()` が書き戻す）。
+
+## 範囲外
+
+- ConfirmMode の2択化（確定エンジンの設定）。04 T2（推奨モード統一）の後に、新規 ADR として起票する。担当は 07 (5) の後継。
+  04 が「07 の ADR で覆す」と書いている箇所（`review-2026-09-24-04` の推奨モード統一に関する2行）は、その新規 ADR を指すよう直す。
+- `keys.ime_detect.*`、`keys.ime_on`、`*_solo_tap_ime_action`、`keyboard_model` などの config 簡略化（v2 の別論点）。
+- 手動較正パネルの撤去の実施（07 (2)）。
+
+## 採らなかった案
+
+- (a) calibration を cache.toml へ移す: 読み手が無いデータを移すことになる。手動較正の廃止で不要になった。
+- (b) 学習表を cache.toml の `[keymap_learn]` 節に置く: 粒度が違い、cache.toml は手編集・クリアで消えうる。
+- (c) 機械依存データ（cache.toml・学習表）を `<config dir>/state/` や `%LOCALAPPDATA%\awase\` へ分ける: 可搬性の軸には最も合う。
+  ただし既存ユーザーのファイル移行と、置き場の解決規則の統一が要る。v2 の実装計画で再評価する（本 ADR では採らない）。

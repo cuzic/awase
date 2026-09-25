@@ -12,9 +12,6 @@ use awase_windows::scancode_map::{ScancodeMapPreset, ScancodeMapSelection};
 use awase_windows::vk::VkCodeExt as _;
 
 mod bug_report;
-mod calibration_panel;
-#[cfg(target_os = "windows")]
-mod calibration_result_window;
 mod keymap_learn_launcher;
 mod keymap_learn_status;
 mod scancode_map_admin;
@@ -373,12 +370,6 @@ fn main() -> eframe::Result<()> {
         std::process::exit(scancode_map_admin::run_elevated_worker(selection));
     }
 
-    // ADR-176 176-T9b: eframeのイベントループが同一スレッドで動き出す前に、
-    // 較正結果受信用のメッセージ専用ウィンドウを1回だけ作成する
-    // （`calibration_result_window`のモジュールdoc参照）。
-    #[cfg(target_os = "windows")]
-    calibration_result_window::create();
-
     let viewport = egui::ViewportBuilder::default()
         // 幅 760: サイドパネル(100) + 配列編集タブの最も幅を要する行（JIS 最上段
         // 13キー、ボタン min_size 40px + item_spacing 8px ≈ 616px）+ 余白/
@@ -534,13 +525,6 @@ struct SettingsApp {
     /// `recompute_diagnostics()`（`apply_autostart_toggle` 末尾からも呼ばれる）
     /// でのみ更新する（Opus敵対的レビュー指摘、2026-09-07）。
     auto_start_registered: bool,
-    calibration_state: calibration_panel::CalibrationPanelState,
-    /// 較正対象VKの内部表記（`engine_key_combo`が読み書きする文字列、
-    /// 例: "VK_NONCONVERT"）。
-    calibration_target_vk: String,
-    /// 計測中フォーカスを保持し続けるテキスト入力欄のバッファ
-    /// （中身は使わない、フォーカス保持だけが目的）。
-    calibration_text_buf: String,
     /// awaseの状態依存キー警告から起動されたことを示すargv由来のコンテキスト。
     adr192_warning_context: bool,
     adr192_replacement_undo: Option<Adr192ReplacementSnapshot>,
@@ -784,9 +768,6 @@ impl SettingsApp {
             startup_diagnostics: Vec::new(),
             // recompute_diagnostics() が直後に実体で上書きする。
             auto_start_registered: false,
-            calibration_state: crate::calibration_panel::CalibrationPanelState::Idle,
-            calibration_target_vk: "VK_NONCONVERT".to_string(),
-            calibration_text_buf: String::new(),
             adr192_warning_context,
             adr192_replacement_undo: None,
             adr192_replacement_preview: None,
@@ -3272,236 +3253,92 @@ impl SettingsApp {
         );
     }
 
-    #[expect(clippy::too_many_lines)]
+    /// 「IMEキー学習」タブ。ADR-176の手動較正（1キーずつの測定、結果はIME判定に
+    /// 適用されないため）は撤去し、ADR-195の学習ウィザードだけをタブの最上段に置く。
     fn tab_calibration(&mut self, ui: &mut egui::Ui) {
-        use calibration_panel::CalibrationPanelState;
-
-        ui.heading("IMEキー較正");
-        ui.label(
-            "無変換/変換等のキーがGJI/MS-IMEで実際にIMEをON/OFFするか実機測定します。\n\
-             config1.db/レジストリの静的な分類だけでは判別できない環境向けです。\n\
-             測定結果は保存されますが、現バージョンでは実際のIME判定には適用されません（測定のみ）。",
-        );
-        ui.add_space(8.0);
-
-        ui.horizontal(|ui| {
-            ui.label("対象キー");
-            engine_key_combo(
-                ui,
-                "calibration_vk",
-                &mut self.calibration_target_vk,
-                "較正対象のキー",
-            );
-        });
-
-        let vk = VkCode::from_name(&self.calibration_target_vk);
-        let blocked_reason = vk.and_then(|vk| {
-            awase_windows::state::calibrated_mode_key::explicit_config_conflict_reason(
-                vk,
-                &self.config.keys.ime_detect,
-                &self.config.keys.ime_on,
-                &self.config.keys.ime_off,
-                &self.config.keys.ime_toggle,
-            )
-        });
-        if let Some(reason) = blocked_reason {
-            ui.colored_label(egui::Color32::from_rgb(200, 120, 0), reason);
-        }
-
-        if matches!(
-            self.calibration_state,
-            CalibrationPanelState::WaitingFocus
-                | CalibrationPanelState::Measuring
-                | CalibrationPanelState::FocusLost
-        ) {
-            #[cfg(target_os = "windows")]
-            if let (Some(payload), Some(vk)) = (calibration_result_window::take_latest_result(), vk)
-                && payload.vk == vk
-            {
-                if payload.kind
-                    == awase_windows::calibration_ipc::CalibrationResultKind::ConfirmedOn
-                {
-                    persist_confirmed_calibration(
-                        &self.config_path,
-                        vk,
-                        payload.active_ime_kind,
-                        &mut self.config,
-                    );
-                }
-                self.calibration_state =
-                    calibration_panel::on_result_received(self.calibration_state, payload.kind);
-            }
-        }
-
-        ui.add_space(8.0);
-        let start_enabled =
-            blocked_reason.is_none() && self.calibration_state == CalibrationPanelState::Idle;
-        if ui
-            .add_enabled(start_enabled, egui::Button::new("較正開始"))
-            .clicked()
-            && let Some(vk) = vk
-        {
-            send_calibration_start(vk);
-            self.calibration_text_buf.clear();
-            self.calibration_state = calibration_panel::on_start_pressed(blocked_reason.is_some());
-        }
-
-        if matches!(
-            self.calibration_state,
-            CalibrationPanelState::Idle | CalibrationPanelState::Blocked
-        ) {
-            return;
-        }
-
-        ui.add_space(8.0);
-        match self.calibration_state {
-            CalibrationPanelState::WaitingFocus => {
-                ui.label("テキスト欄にフォーカスします…");
-            }
-            CalibrationPanelState::Measuring => {
-                ui.label(
-                    "計測中です。対象キーを押してください（IMEがONの状態で押すのが望ましいです）。",
-                );
-            }
-            CalibrationPanelState::FocusLost => {
-                ui.colored_label(
-                    egui::Color32::from_rgb(200, 60, 60),
-                    "テキスト入力欄からフォーカスが外れました。下のテキスト欄をクリックしてフォーカスを戻してください。",
-                );
-            }
-            CalibrationPanelState::Confirmed(
-                awase_windows::calibration_ipc::CalibrationResultKind::ConfirmedOn,
-            ) => {
-                ui.label("確定: このキーはIMEをONにします。");
-            }
-            CalibrationPanelState::Confirmed(
-                awase_windows::calibration_ipc::CalibrationResultKind::Rejected,
-            ) => {
-                ui.label(
-                    "判定不能でした（ONの状態で押すとOFFになる=単純なトグルキーである可能性が高い、または再現性のある結果が得られませんでした）。較正は保存されません。",
-                );
-            }
-            CalibrationPanelState::Idle | CalibrationPanelState::Blocked => {}
-        }
-
-        let response = ui.add(
-            egui::TextEdit::singleline(&mut self.calibration_text_buf)
-                .desired_width(240.0)
-                .hint_text(""),
-        );
-        if self.calibration_state == CalibrationPanelState::WaitingFocus {
-            response.request_focus();
-        }
-        self.calibration_state =
-            calibration_panel::on_focus_changed(self.calibration_state, response.has_focus());
-
-        ui.add_space(4.0);
-        if matches!(
-            self.calibration_state,
-            CalibrationPanelState::WaitingFocus
-                | CalibrationPanelState::Measuring
-                | CalibrationPanelState::FocusLost
-        ) {
-            if ui.button("中止").clicked() {
-                send_calibration_end();
-                self.calibration_state = calibration_panel::on_cancel_or_close();
-            }
-        } else if matches!(self.calibration_state, CalibrationPanelState::Confirmed(_))
-            && ui.button("閉じる").clicked()
-        {
-            send_calibration_end();
-            self.calibration_state = calibration_panel::on_cancel_or_close();
-        }
-
-        ui.add_space(16.0);
-        ui.separator();
+        ui.heading("IMEキー学習");
         self.keymap_learn_wizard_ui(ui);
     }
 
-    /// ADR-195段階6: 上のIMEキー較正（1キーずつの手動測定、ADR-176）とは別に、
-    /// `awase-keymap-learn-win`(独立学習プロセス、ADR195-T1)を子プロセスとして
+    /// ADR-195段階6: `awase-keymap-learn-win`(独立学習プロセス、ADR195-T1)を子プロセスとして
     /// 起動し、全キー×全状態を自動巡回測定するウィザード導線。
     fn keymap_learn_wizard_ui(&mut self, ui: &mut egui::Ui) {
         self.refresh_keymap_table_state(&ui.ctx().clone());
-        ui.collapsing(
-            "学習ウィザード（全キー自動測定、実験的）",
-            |ui| {
-                ui.label(
-                    "対象キー1つずつの較正の代わりに、全ての対応キー×状態を自動で巡回測定します。\n\
+        {
+            ui.label(
+                "全ての対応キー×状態を自動で巡回測定します。\n\
                  測定中は学習ウィンドウを前面に保ち、キーボードに触れないでください\n\
                  （他の窓へ切り替えたり物理キーを押すと、測定は失敗として中止されます）。",
-                );
-                ui.add_space(4.0);
-                ui.label(keymap_learn_status::LEARNING_RECOMMENDATION);
-                ui.add_space(8.0);
+            );
+            ui.add_space(4.0);
+            ui.label(keymap_learn_status::LEARNING_RECOMMENDATION);
+            ui.add_space(8.0);
 
-                let running = self.keymap_learn_rx.is_some();
-                let table_state = self.keymap_table_state.clone();
-                if let Some(state) = &table_state {
-                    ui.label(state.status_line(None));
-                    ui.horizontal(|ui| {
-                        if state.can_adopt()
-                            && ui
-                                .add_enabled(!running, egui::Button::new("学習結果を使う"))
-                                .clicked()
-                        {
-                            self.start_keymap_process(
-                                keymap_learn_launcher::LearnMode::AdoptPendingJudgement,
-                            );
-                        }
-                        if state.can_revalidate()
-                            && ui
-                                .add_enabled(!running, egui::Button::new("軽量再検証を実行"))
-                                .clicked()
-                        {
-                            self.start_keymap_process(keymap_learn_launcher::LearnMode::Revalidate);
-                        }
-                    });
-                    ui.add_space(4.0);
-                }
+            let running = self.keymap_learn_rx.is_some();
+            let table_state = self.keymap_table_state.clone();
+            if let Some(state) = &table_state {
+                ui.label(state.status_line(None));
                 ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(!running, egui::Button::new("学習を開始"))
-                        .clicked()
+                    if state.can_adopt()
+                        && ui
+                            .add_enabled(!running, egui::Button::new("学習結果を使う"))
+                            .clicked()
                     {
-                        self.start_keymap_learning();
+                        self.start_keymap_process(
+                            keymap_learn_launcher::LearnMode::AdoptPendingJudgement,
+                        );
                     }
-                    // 実キー注入を行う子プロセスなので、閉じる/ハングしたときにタスクマネージャ
-                    // 頼みにならないよう、UIから止める手段を必ず用意する。
-                    if ui
-                        .add_enabled(running, egui::Button::new("キャンセル"))
-                        .clicked()
+                    if state.can_revalidate()
+                        && ui
+                            .add_enabled(!running, egui::Button::new("軽量再検証を実行"))
+                            .clicked()
                     {
-                        self.cancel_keymap_learning();
+                        self.start_keymap_process(keymap_learn_launcher::LearnMode::Revalidate);
                     }
                 });
-
-                if let Some(p) = self.keymap_learn_progress {
-                    ui.add_space(4.0);
-                    #[expect(
-                        clippy::cast_precision_loss,
-                        reason = "進捗バー表示用の概算、精度は問題にならない"
-                    )]
-                    let fraction = if p.total == 0 {
-                        0.0
-                    } else {
-                        p.cell as f32 / p.total as f32
-                    };
-                    ui.add(
-                        egui::ProgressBar::new(fraction)
-                            .text(format!("{}/{}セル", p.cell, p.total)),
-                    );
-                    if let Some(eta_ms) = p.eta_ms {
-                        ui.label(format!("残り約{:.0}秒", eta_ms / 1000.0));
-                    }
+                ui.add_space(4.0);
+            }
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(!running, egui::Button::new("学習を開始"))
+                    .clicked()
+                {
+                    self.start_keymap_learning();
                 }
-
-                if let Some(status) = &self.keymap_learn_status {
-                    ui.add_space(4.0);
-                    ui.label(status);
+                // 実キー注入を行う子プロセスなので、閉じる/ハングしたときにタスクマネージャ
+                // 頼みにならないよう、UIから止める手段を必ず用意する。
+                if ui
+                    .add_enabled(running, egui::Button::new("キャンセル"))
+                    .clicked()
+                {
+                    self.cancel_keymap_learning();
                 }
-            },
-        );
+            });
+
+            if let Some(p) = self.keymap_learn_progress {
+                ui.add_space(4.0);
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "進捗バー表示用の概算、精度は問題にならない"
+                )]
+                let fraction = if p.total == 0 {
+                    0.0
+                } else {
+                    p.cell as f32 / p.total as f32
+                };
+                ui.add(
+                    egui::ProgressBar::new(fraction).text(format!("{}/{}セル", p.cell, p.total)),
+                );
+                if let Some(eta_ms) = p.eta_ms {
+                    ui.label(format!("残り約{:.0}秒", eta_ms / 1000.0));
+                }
+            }
+
+            if let Some(status) = &self.keymap_learn_status {
+                ui.add_space(4.0);
+                ui.label(status);
+            }
+        }
     }
 
     #[expect(clippy::too_many_lines)]
@@ -4374,7 +4211,7 @@ impl eframe::App for SettingsApp {
                     (Tab::Advanced, "上級者向け設定"),
                     (Tab::DisableApps, "アプリ無効化"),
                     (Tab::Keymap, "ショートカット"),
-                    (Tab::Calibration, "IMEキー較正"),
+                    (Tab::Calibration, "IMEキー学習"),
                 ] {
                     if ui.selectable_label(self.active_tab == tab, label).clicked() {
                         self.clear_ime_on_tab_change(tab);
@@ -6316,113 +6153,6 @@ fn send_reload_config_message() {
     }
 }
 
-/// ADR-176（T9a確定結果のconfig.toml永続化、最終配線）: 較正が`ConfirmedOn`
-/// で確定したら、`awase_windows::gji_charset_autodetect::build_confirmed_
-/// calibration_entry`でエントリを構築し、config.tomlへ書き込んで
-/// awase.exeへリロード要求を送る。
-///
-/// **意図的にconfig.tomlを直接読み直して書く**（`config`引数=UIの
-/// 編集中in-memory状態は使わない）——ユーザーが他のタブで未保存の編集を
-/// している最中に較正が確定しても、その未保存編集を巻き込んで保存
-/// しないようにするため。書き込み後、`config.calibration`だけは
-/// UIの`config`にも反映しておく（次にユーザーが通常の保存操作をしても
-/// この較正結果が失われないように）。
-#[cfg(target_os = "windows")]
-fn persist_confirmed_calibration(
-    config_path: &std::path::Path,
-    vk: awase::types::VkCode,
-    active_ime_kind: awase_windows::state::ime_kind::ImeKindId,
-    config: &mut awase::config::AppConfig,
-) {
-    let Some(entry) = awase_windows::gji_charset_autodetect::build_confirmed_calibration_entry(
-        vk,
-        active_ime_kind,
-    ) else {
-        tracing::warn!(
-            "[calibration] vk={vk:?}（active_ime_kind={active_ime_kind:?}）の\
-             較正結果を保存できませんでした（対象外のキー、または\
-             config1.db/レジストリを読めませんでした）"
-        );
-        return;
-    };
-
-    let mut on_disk = match awase::config::AppConfig::load(config_path) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!("[calibration] config.tomlの再読み込みに失敗しました: {e}");
-            return;
-        }
-    };
-    on_disk.calibration.retain(|e| e.vk != entry.vk);
-    on_disk.calibration.push(entry.clone());
-    if let Err(e) = on_disk.save(config_path) {
-        tracing::warn!("[calibration] config.tomlへの較正結果の保存に失敗しました: {e}");
-        return;
-    }
-    tracing::info!("[calibration] vk={vk:?}の較正結果をconfig.tomlへ保存しました");
-
-    config.calibration.retain(|e| e.vk != entry.vk);
-    config.calibration.push(entry);
-
-    send_reload_config_message();
-}
-
-/// ADR-176 176-T7: 較正モード開始/再武装（keepalive）要求を送る。
-/// `vk`のみを引数に取り、送信元PIDは自プロセスの`std::process::id()`を使う。
-fn send_calibration_start(vk: awase::types::VkCode) {
-    #[cfg(target_os = "windows")]
-    {
-        use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
-        use windows::core::w;
-        unsafe {
-            let hwnd = FindWindowW(w!("awase_tray_window"), None);
-            if let Ok(hwnd) = hwnd {
-                let payload = awase_windows::calibration_ipc::CalibrationIpcPayload {
-                    vk,
-                    pid: std::process::id(),
-                };
-                let wparam = windows::Win32::Foundation::WPARAM(
-                    awase_windows::calibration_ipc::pack(payload),
-                );
-                let lparam = windows::Win32::Foundation::LPARAM(0);
-                let _ = PostMessageW(hwnd, awase_windows::WM_CALIBRATION_START, wparam, lparam);
-            } else {
-                tracing::warn!(
-                    "較正モード開始通知の送信先ウィンドウ (awase_tray_window) が見つかりません。\
-                     awase.exe が起動していないか、権限レベルが異なる可能性があります。"
-                );
-            }
-        }
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = vk;
-    }
-}
-
-/// ADR-176 176-T7: 較正モード終了要求を送る。
-fn send_calibration_end() {
-    #[cfg(target_os = "windows")]
-    {
-        use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
-        use windows::core::w;
-        unsafe {
-            let hwnd = FindWindowW(w!("awase_tray_window"), None);
-            if let Ok(hwnd) = hwnd {
-                let payload = awase_windows::calibration_ipc::CalibrationIpcPayload {
-                    vk: awase::types::VkCode::from(0u16),
-                    pid: std::process::id(),
-                };
-                let wparam = windows::Win32::Foundation::WPARAM(
-                    awase_windows::calibration_ipc::pack(payload),
-                );
-                let lparam = windows::Win32::Foundation::LPARAM(0);
-                let _ = PostMessageW(hwnd, awase_windows::WM_CALIBRATION_END, wparam, lparam);
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod layout_tab_repro {
     use super::{
@@ -6496,9 +6226,6 @@ mod layout_tab_repro {
             scancode_map_last_message: None,
             startup_diagnostics: Vec::new(),
             auto_start_registered: false,
-            calibration_state: crate::calibration_panel::CalibrationPanelState::Idle,
-            calibration_target_vk: "VK_NONCONVERT".to_string(),
-            calibration_text_buf: String::new(),
             adr192_warning_context: false,
             adr192_replacement_undo: None,
             adr192_replacement_preview: None,

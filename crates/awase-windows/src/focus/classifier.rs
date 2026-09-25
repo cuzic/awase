@@ -408,13 +408,37 @@ fn count_imm_capability_entries(cache: &ImmCapabilityCache) -> usize {
 /// `cache.toml` の指定セクションだけを更新し、他のセクションを保持して上書き保存する。
 fn save_section(base_dir: &std::path::Path, section_name: &str, section: toml::Table) {
     let path = base_dir.join(CACHE_FILENAME);
-    let mut root: toml::Table = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|c| c.parse().ok())
-        .unwrap_or_default();
+    // 既存ファイルがあるのに読めない・パースできない場合は、他セクションを消さないよう上書きしない。
+    let mut root: toml::Table = match std::fs::read_to_string(&path) {
+        Ok(c) => match c.parse() {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(
+                    "Skip saving [{section_name}]: {} is not valid TOML: {e}",
+                    path.display()
+                );
+                return;
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
+        Err(e) => {
+            tracing::warn!(
+                "Skip saving [{section_name}]: cannot read {}: {e}",
+                path.display()
+            );
+            return;
+        }
+    };
     root.insert(section_name.to_string(), toml::Value::Table(section));
-    let content = toml::to_string_pretty(&root).unwrap_or_default();
-    if let Err(e) = std::fs::write(&path, &content) {
+    let content = match toml::to_string_pretty(&root) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Failed to serialize cache for {}: {e}", path.display());
+            return;
+        }
+    };
+    // 書き込み途中の中断で cache.toml が壊れ、次回保存で他セクションが消えるのを防ぐ。
+    if let Err(e) = awase::fs_atomic::write_atomic(&path, content.as_bytes()) {
         tracing::warn!("Failed to save cache to {}: {e}", path.display());
     }
 }

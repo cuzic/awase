@@ -221,7 +221,7 @@ source_review: 俯瞰レビュー（受動化・actuation撤去・学習/較正�
 
 ## 他ファイルとの依存
 
-- 本タスク → [07](review-2026-09-24-07-adr176-fate-and-v2-cache-toml.md): 07 の ConfirmMode 2択化の前提は、T2 の推奨モード統一（wait）。本タスクが先に行う。
+- 本タスク → [07](review-2026-09-24-07-adr176-fate-and-v2-cache-toml.md): ConfirmMode 2択化（新規 ADR、ADR-198 範囲外節）の前提は、T2 の推奨モード統一（wait）。本タスクが先に行う。
 - [07](review-2026-09-24-07-adr176-fate-and-v2-cache-toml.md) → 本タスク T4: A-9 の (b)/(c) は、07 のタスク(7)（C-4）の判断の後に行う。(a) と T2 の文書の暫定対応は、07 を待たずに進めてよい。
 - [02](review-2026-09-24-02-settings-status-display.md): 学習表を消す操作を設けるなら、02 の設定画面側の管轄。
 - T1・T2 は他のタスクと独立に先に進められる（[11](review-2026-09-24-11-low-priority-backlog.md) の着手順どおり）。ただし T1 は docs と設定ファイルに加えて `main.rs` の起動エラーメッセージの文言1箇所（Windows 専用コード）を含む。11 `:47` の「04 の T1・T2（docs と設定ファイル）」はこれに合わせて直す必要がある（11 側の担当で対応）。

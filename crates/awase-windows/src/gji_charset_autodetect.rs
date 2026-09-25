@@ -100,8 +100,7 @@ pub(crate) fn classify_thumb_key_ime_actions(
 ///
 /// 無変換(`Muhenkan`)・変換(`Henkan`)だけを扱う（`ImeKeyKind::from_vk`に含まれないキー）。
 /// ADR-191で、この分類結果を awase が自動採用する機構（`*_delegate_to_open_axis`、
-/// shadow_action override）は撤去した。分類は較正結果の記録（`build_confirmed_calibration_entry`）
-/// と bug report の診断（[`classify_mode_key_ime_action`]）に使う。
+/// shadow_action override）は撤去した。分類は bug report の診断（[`classify_mode_key_ime_action`]）に使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) enum ModeKeyCandidate {
@@ -115,24 +114,6 @@ impl ModeKeyCandidate {
         match self {
             Self::Henkan => "VK_CONVERT",
             Self::Muhenkan => "VK_NONCONVERT",
-        }
-    }
-
-    /// ADR-176決定6（176-T12）: 現在の`config1.db`内容から、このキーの
-    /// 較正フィンガープリントを構築する。
-    /// 較正結果の保存時に、`state::calibrated_mode_key::ConfigFingerprint`として保存する（旧stale判定は撤去済み、ADR-191）
-    /// ——値の意味解釈は[`classify_mode_key_ime_action`]が別途行う。
-    #[cfg_attr(not(windows), allow(dead_code))]
-    fn current_fingerprint(
-        self,
-        raw: &awase_gji_config::wire::GjiRawConfig,
-    ) -> crate::state::calibrated_mode_key::ConfigFingerprint {
-        let relevant_row = raw.custom_keymap_table.as_deref().and_then(|table| {
-            awase_gji_config::keymap::relevant_rows_for_vk(table, self.vk_name())
-        });
-        crate::state::calibrated_mode_key::ConfigFingerprint::Gji {
-            session_keymap: raw.session_keymap,
-            relevant_row,
         }
     }
 }
@@ -263,10 +244,6 @@ fn classify_vk_in_ime_keys(
     }
 }
 
-/// ADR-176: `awase-settings`（別クレート）から直接呼べるよう`pub`で
-/// 再エクスポートする（`build_confirmed_calibration_entry`のdoc参照）。
-#[cfg(windows)]
-pub use windows_impl::build_confirmed_calibration_entry;
 /// ADR196-T2「1e前半」: 学習プロセス（`awase-keymap-learn-win`、別クレート）が
 /// 開始時・終了時の`config1.db`比較（opus-adversarial-consult 2026-09-23 B-3）と
 /// 既知構成判定に直接呼べるよう`pub`で再エクスポートする。
@@ -278,8 +255,6 @@ pub(crate) use windows_impl::{config1_db_stamp, is_configured_thumb_key, read_ke
 #[cfg(windows)]
 mod windows_impl {
     use awase::types::VkCode;
-
-    use super::{ImeToggleKind, ModeKeyCandidate};
 
     /// `vk`が現在`left_thumb_key`/`right_thumb_key`のいずれかに設定されて
     /// いるか（BUG-115）。`crate::hook::thumb_vk_codes()`
@@ -397,59 +372,6 @@ mod windows_impl {
             Some(KnownGjiKeymap::MsIme) => BundledPresetLookup::Known(KeymapPreset::MsIme),
             None => BundledPresetLookup::NotKnown,
         }
-    }
-
-    /// ADR-176（T9a確定結果のconfig.toml永続化、最終配線）:
-    /// `awase-settings`が`WM_CALIBRATION_RESULT`（`ConfirmedOn`）を受けて
-    /// config.tomlへ書き込む際に呼ぶ。
-    ///
-    /// awase-settings自身はGJI/レジストリ読み取りロジックを持たないため、
-    /// この関数（`awase-windows`クレート内、awase-settingsからも呼べる
-    /// `pub`関数）が代わりに`config1.db`/レジストリを読み直して
-    /// フィンガープリントを構築する——結果が確定した直後に呼ばれる想定
-    /// のため、確定に使われた値と同じ内容が読めるはずである。
-    /// `VK_NONCONVERT`/`VK_CONVERT`以外（較正の対象はこの2キーのみ）、
-    /// またはGJI選択時に`config1.db`が
-    /// 読めない場合は`None`（呼び出し元は保存をスキップし警告すること）。
-    #[must_use]
-    pub fn build_confirmed_calibration_entry(
-        vk: VkCode,
-        active_ime_kind: crate::state::ime_kind::ImeKindId,
-    ) -> Option<awase::config::CalibrationEntry> {
-        use crate::state::ime_kind::ImeKindId;
-
-        let candidate = if vk == crate::vk::VK_CONVERT {
-            ModeKeyCandidate::Henkan
-        } else if vk == crate::vk::VK_NONCONVERT {
-            ModeKeyCandidate::Muhenkan
-        } else {
-            return None;
-        };
-        let config_fingerprint = match active_ime_kind {
-            ImeKindId::Gji => {
-                let bytes = read_config1_db()?;
-                let raw = awase_gji_config::wire::parse_top_level(&bytes)?;
-                candidate.current_fingerprint(&raw)
-            }
-            ImeKindId::MsIme => crate::state::calibrated_mode_key::ConfigFingerprint::MsIme {
-                registry_value_hash: crate::msime_key_assignment::current_registry_fingerprint_hash(
-                    vk,
-                ),
-            },
-        };
-        let confirmed_at_epoch_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-        Some(
-            crate::state::calibrated_mode_key::CalibratedModeKey {
-                vk,
-                result: ImeToggleKind::On,
-                active_ime_kind,
-                config_fingerprint,
-                confirmed_at_epoch_ms,
-            }
-            .to_config_entry(),
-        )
     }
 
     #[cfg(test)]

@@ -182,7 +182,7 @@
 | 173 | 無変換/変換ソロタップのIME動作をプロセス名で限定する `app_overrides.solo_tap_ime_action_apps`（ADR-174で却下、インフラは残置） | アーカイブ（タグ `archive/adr173-solo-tap-ime-action-by-process-name`、develop未収録・本文ファイル無し） |
 | [174](174-solo-tap-passthrough-belief-reobservation.md) | 無変換/変換ソロタップでGJIが実際にIMEを開いてもEngineが追従しない問題。round1〜3(観測ベースの新設計)は全てBlockerで破綻、round4でclassify_mode_key_ime_actionのsession_keymapゲート不具合(BUG-143)と判明 | 修正・実機確認完了(コミットf4317675、BUG-143) |
 | [175](175-physical-dbe-key-stuck-direction-recovery.md) | 物理半角/全角キー(VK_DBE_SBCSCHAR/DBCSCHAR)の固定方向マッピングをやめToggle解決に変えIME ON固着を解消(BUG-142)。config変更のみで実機A/B確定済み | opus-adversarial-consult round5で収束・実装着手可（Blockerなし） |
-| [176](176-behavioral-calibration-of-ime-mode-key-shadow-overrides.md) | awase-settingsに専用較正UIを新設し、モードキーの実効果をユーザー協力の下で明示的に測定、gate_thumb_key_ime_actions出力を差し替えて静的分類を補完する。BUG-143の静的パースの限界を補完 | round1〜4で計17件のBlocker検出、v6/v7/v8とopus round5・6で設計修正を重ねた後、決着実験v2でGJIの生キー反応はテキスト入力欄フォーカス時のみ本物と確定(awase自作自演説は否定)、実装着手(T1から) |
+| [176](176-behavioral-calibration-of-ime-mode-key-shadow-overrides.md) | awase-settingsに専用較正UIを新設し、モードキーの実効果をユーザー協力の下で明示的に測定、gate_thumb_key_ime_actions出力を差し替えて静的分類を補完する。BUG-143の静的パースの限界を補完 | round1〜4で計17件のBlocker検出、v6/v7/v8とopus round5・6で設計修正を重ねた後、決着実験v2でGJIの生キー反応はテキスト入力欄フォーカス時のみ本物と確定(awase自作自演説は否定)、実装着手(T1から) 【撤去済み 2026-09-24: 適用はADR-191 9dc52c89、測定UIもADR-198決定3で撤去、ADR-195学習に置換】 |
 | [177](177-msi-restart-manager-graceful-shutdown.md) | 常駐中のMSIアップグレードは実機検証の結果コード変更不要と判明(Restart Managerが現状コードのまま自律的にシャットダウン・再起動を処理、UI付き・データ保持も確認)。副産物でMSIアンインストール時のユーザーデータ削除を発見 | 確定・opus round1〜4(4ラウンド)を経て収束・ADR-099 MF-4解消 |
 | [178](178-msi-uninstall-preserve-userdata.md) | MSIアンインストール時のユーザーデータ喪失をPermanent="yes"+アプリ側自己修復(無ければ埋め込み既定値から生成)で防ぐ。v1〜v13の「バックアップ+復元」方式(12ラウンド・Blocker20件)は複雑化しすぎたため破棄し全面差し替え | 起草中v14・実装/実機検証/opusレビュー完了(Blocker2件反映済み)、フォローアップ項目のみ残る |
 | [179](179-mode-key-actuation-follow-only-vs-toggle-ownership.md) | 無変換/変換の非親指キー時actuation-autoを撤去し`ModeKeyActuationOwner`列挙へ統一。元178番、developマージ済みの別ADR-178(msi-uninstall)と衝突し179へ採番し直し | 収束(opus-adversarial-consult round1〜8)。決定2のModeKeyActuationOwnerはADR-191で撤去済み(`502c6673`) |
@@ -204,6 +204,7 @@
 | [195](195-keymap-learn-productization.md) | カスタムキーマップ対応のため、IMEキー効果の学習(awase-keymap-learn)を独立プロセスとして製品化する（設定読取→独立プロセスでの巡回学習→自己検証→永続化→実行時読込→ADR-176統合） | **段階0/1/2/3/4/5/6/8はdevelopマージ済み(2026-09-23、PR #250〜#258)。段階7(安全対策)は一部実装済み(PR #264、項目2完了・項目1送信前ゲート実装・項目3/5未着手)。** 段階4/6/8はADR-196で置換予定(ADR-196は実装済み・一部未完)、段階3は一部フィールド拡張 |
 | [196](196-keymap-learn-truth-priority.md) | ADR-195の段階4/6/8を修正し、既知プリセット構成でも内蔵表を審査官にせず学習結果を優先する。陳腐化は失効でなく要再検証とし、フィンガープリントにIME本体バージョンを追加する | **実装済み（一部未完、PR #259 ほかdevelopマージ済み）。草案rev5はround5で収束（Blocker0件・Must-fix0件、5ラウンド）** |
 | [197](197-msime-legacy-custom-keymap-runtime-warning.md) | MS-IME旧UI(互換モード限定キーカスタマイズ)の調査。実行時警告は前提(無変換キーへのCEトグル)が実機で否定され撤回、ADR-196向け互換モードフラグ読み取り(決定4)のみ採用 | 決定1〜3撤回・決定4のみ採用(2026-09-23、CI実機検証4パターン+ユーザー本人の物理キー確認) |
+| [198](198-persistence-destination-classification.md) | 永続化先の分類(config.toml/cache.toml/学習表JSON)とv2でのcalibrationの扱い | 採用(2026-09-24、opus round1・2反映済み、決定3=手動較正廃止はユーザー決定済み) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

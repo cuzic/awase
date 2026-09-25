@@ -741,44 +741,6 @@ pub struct PostBypassRule {
     pub class: String,
 }
 
-/// `[[calibration]]` モードキー較正結果1件の永続化用表現（ADR-176 決定6、176-T11）。
-///
-/// このクレート（`awase`本体）はプラットフォーム非依存（ADR-019）のため、
-/// `awase-windows`側の`ImeToggleKind`/`ImeKindId`/`ConfigFingerprint`を
-/// 直接使わず、`KeysConfig`の`ime_on: Vec<String>`等と同じ「文字列で橋渡し
-/// する」パターンに揃える。`vk`は`VkCode`（このクレートで定義済み、
-/// `u16`のnewtypeとして透過的にシリアライズされる）をそのまま使う——
-/// 名前文字列との相互変換（`VkCode::from_name`相当）はGUI/awase-windows
-/// 側の責務であり、ここでは生のVKコード値をそのまま保持するだけで済む。
-///
-/// 実際のパース・妥当性検証（`result`/`fingerprint_kind`が既知の値か等）は
-/// `awase-windows`側（`state/calibrated_mode_key.rs`）が担い、このクレート
-/// 自身は構造をそのまま読み書きするだけで意味解釈は行わない。
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-pub struct CalibrationEntry {
-    /// 較正対象の物理VKコード。
-    pub vk: VkCode,
-    /// 較正結果（v8時点のスコープでは`"On"`のみが実際に書き込まれる想定）。
-    pub result: String,
-    /// 較正時点で使われていたIME種別（`"Gji"`/`"MsIme"`）。
-    pub active_ime_kind: String,
-    /// 較正時点のconfig1.db/レジストリのフィンガープリント種別
-    /// （`"Gji"`/`"MsIme"`、`active_ime_kind`と同じ値になる想定）。
-    pub fingerprint_kind: String,
-    /// GJI較正時: `session_keymap`フィールドの値。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gji_session_keymap: Option<i64>,
-    /// GJI較正時: `custom_keymap_table`の該当行（無ければ`None`）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gji_relevant_row: Option<String>,
-    /// MS-IME較正時: 較正に関連するレジストリ値のハッシュ。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ms_ime_registry_value_hash: Option<u64>,
-    /// 較正が確定した時刻（Unix epoch ms、プロセス再起動をまたいでも
-    /// 意味を持つ形式で保持する）。
-    pub confirmed_at_epoch_ms: u64,
-}
-
 /// アプリケーション設定ファイル (config.toml) のトップレベル構造
 ///
 /// レイアウト定義は .yab ファイルから読み込むため、
@@ -799,9 +761,6 @@ pub struct AppConfig {
     /// 名前付き打鍵列マクロ一覧（ADR-115 決定2b）。
     #[serde(default)]
     pub keystroke_macro: Vec<KeystrokeMacro>,
-    /// モードキー較正結果一覧（ADR-176 決定6、176-T11）。
-    #[serde(default)]
-    pub calibration: Vec<CalibrationEntry>,
 }
 
 /// `AppConfig::load` の失敗を UI 側の扱い分けができる粒度に分類した結果
@@ -927,10 +886,6 @@ pub struct ValidatedConfig {
     /// 転送するのみで検証は行わない（`steps` の中身の妥当性は
     /// `resolve_keystroke_syntax` が読み込み時に判定し警告する、決定3）。
     pub keystroke_macro: Vec<KeystrokeMacro>,
-    /// モードキー較正結果一覧（ADR-176 決定6、176-T11）。`keystroke_macro`と
-    /// 同様、`AppConfig`から単純に転送するのみで検証は行わない（意味解釈は
-    /// `awase-windows`側の責務）。
-    pub calibration: Vec<CalibrationEntry>,
 }
 
 impl From<ValidatedConfig> for AppConfig {
@@ -949,7 +904,6 @@ impl From<ValidatedConfig> for AppConfig {
             keymaps: v.keymaps,
             post_bypass: v.post_bypass,
             keystroke_macro: v.keystroke_macro,
-            calibration: v.calibration,
         }
     }
 }
@@ -1325,7 +1279,6 @@ impl AppConfig {
                 keymaps: self.keymaps,
                 post_bypass: self.post_bypass,
                 keystroke_macro: self.keystroke_macro,
-                calibration: self.calibration,
             },
             warnings,
         )
@@ -2239,6 +2192,29 @@ apply_calibrated_mode_keys = true
 left_thumb_key = "無変換"
 "#;
         let config: AppConfig = toml::from_str(toml_str).expect("旧キーが残っていても読める");
+        assert_eq!(config.general.left_thumb_key, "無変換");
+    }
+
+    /// 手動較正(ADR-176)の撤去で`AppConfig::calibration`（`[[calibration]]`）を削除した。
+    /// 旧版が書いた`[[calibration]]`が`config.toml`に残っていても、読み込みエラーにならず、
+    /// 無視されて他の設定が読める（`deny_unknown_fields`を付けていない）。
+    #[test]
+    fn test_removed_calibration_section_is_ignored_on_load() {
+        let toml_str = r#"
+[general]
+left_thumb_key = "無変換"
+
+[[calibration]]
+vk = 29
+result = "On"
+active_ime_kind = "Gji"
+fingerprint_kind = "Gji"
+gji_session_keymap = 3
+gji_relevant_row = "DirectInput\tMuhenkan\tIMEOn"
+confirmed_at_epoch_ms = 1758000000000
+"#;
+        let config: AppConfig =
+            toml::from_str(toml_str).expect("旧[[calibration]]が残っていても読める");
         assert_eq!(config.general.left_thumb_key, "無変換");
     }
 

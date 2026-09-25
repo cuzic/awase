@@ -325,15 +325,8 @@ unsafe fn get_ime_conversion_mode_for_hwnd(hwnd: HWND, timeout_ms: u32) -> Optio
     let ime_wnd = ime_wnd?;
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
     //         send_ime_control は SendMessageTimeoutW のラッパーで、timeout_ms 内に制御が戻ることが保証される。
-    unsafe {
-        crate::imm::probe_ime_control(
-            ime_wnd,
-            ProbeCmd::GetConversionMode,
-            timeout_ms,
-            crate::imm::SendHealthFeed::Record,
-        )
-    }
-    .map(|v| v as u32)
+    unsafe { crate::imm::probe_ime_control(ime_wnd, ProbeCmd::GetConversionMode, timeout_ms) }
+        .map(|v| v as u32)
 }
 
 /// フォアグラウンドウィンドウのクラス名を返す（H1 診断ログ専用）。
@@ -374,14 +367,8 @@ unsafe fn modify_conv_mode(
 ) -> Option<(u32, u32, bool, bool)> {
     // SAFETY: ime_wnd は呼び出し元が get_ime_wnd から取得した有効な IME ウィンドウハンドル。
     //         タイムアウト 50ms 内に制御が戻ることが保証される。
-    let current = unsafe {
-        crate::imm::probe_ime_control(
-            ime_wnd,
-            ProbeCmd::GetConversionMode,
-            50,
-            crate::imm::SendHealthFeed::Record,
-        )
-    }?;
+    let current =
+        unsafe { crate::imm::probe_ime_control(ime_wnd, ProbeCmd::GetConversionMode, 50) }?;
     let conv = current as u32;
     let new_conv = f(conv);
     if new_conv == conv {
@@ -420,14 +407,7 @@ unsafe fn detect_ime_open_for_hwnd(hwnd: HWND) -> Option<bool> {
     let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) }?;
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
     //         タイムアウト 50ms 付きで呼び出しているため応答なしプロセスでもブロックしない。
-    let result = unsafe {
-        crate::imm::probe_ime_control(
-            ime_wnd,
-            ProbeCmd::GetOpenStatus,
-            50,
-            crate::imm::SendHealthFeed::Record,
-        )
-    }?;
+    let result = unsafe { crate::imm::probe_ime_control(ime_wnd, ProbeCmd::GetOpenStatus, 50) }?;
     tracing::trace!("CrossProcess(hwndFocus): ime_wnd={ime_wnd:?} open={result}");
     Some(result != 0)
 }
@@ -438,15 +418,8 @@ unsafe fn detect_ime_conversion_for_hwnd(hwnd: HWND) -> Option<u32> {
     let ime_wnd = unsafe { crate::imm::get_ime_wnd(hwnd) }?;
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。
     //         タイムアウト 50ms 付きで呼び出しているため応答なしプロセスでもブロックしない。
-    unsafe {
-        crate::imm::probe_ime_control(
-            ime_wnd,
-            ProbeCmd::GetConversionMode,
-            50,
-            crate::imm::SendHealthFeed::Record,
-        )
-    }
-    .map(|v| v as u32)
+    unsafe { crate::imm::probe_ime_control(ime_wnd, ProbeCmd::GetConversionMode, 50) }
+        .map(|v| v as u32)
 }
 
 unsafe fn detect_kana_for_hwnd(hwnd: HWND) -> Option<bool> {
@@ -919,28 +892,16 @@ pub unsafe fn read_ime_state_fast() -> FastImeProbeResult {
         };
     };
 
-    let imc_open = unsafe {
-        crate::imm::probe_ime_control(
-            ime_wnd,
-            ProbeCmd::GetOpenStatus,
-            20,
-            crate::imm::SendHealthFeed::Record,
-        )
-    }
-    .map(|v| v != 0);
+    let imc_open = unsafe { crate::imm::probe_ime_control(ime_wnd, ProbeCmd::GetOpenStatus, 20) }
+        .map(|v| v != 0);
 
     // 通常パス: conversion mode → 診断ログのみ（is_romaji 更新は read_ime_state_full に委ねる）
     // IMM32 ブリッジは WezTerm 等の TSF アプリでローマ字モードでも ROMAN ビットを
     // 報告しないことがある。ROMAN ビット不在を「かな入力」と断定するのは誤検出を招く。
     // SAFETY: ime_wnd は get_ime_wnd が返した有効な IME ウィンドウハンドル。タイムアウト 20ms 付き。
-    if let Some(conv) = unsafe {
-        crate::imm::probe_ime_control(
-            ime_wnd,
-            ProbeCmd::GetConversionMode,
-            20,
-            crate::imm::SendHealthFeed::Record,
-        )
-    } {
+    if let Some(conv) =
+        unsafe { crate::imm::probe_ime_control(ime_wnd, ProbeCmd::GetConversionMode, 20) }
+    {
         let conv = conv as u32;
         let is_native = conv & IME_CMODE_NATIVE != 0;
         let is_roman = conv & IME_CMODE_ROMAN != 0;

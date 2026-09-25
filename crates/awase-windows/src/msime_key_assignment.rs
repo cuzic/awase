@@ -267,29 +267,6 @@ mod windows_impl {
         )
     }
 
-    /// ADR-176決定6（176-T12）: `vk`（`VK_NONCONVERT`/`VK_CONVERT`）に関連する
-    /// レジストリ値から較正フィンガープリント用のハッシュを計算する。
-    /// 解釈済みの値（未知の生値を「宣言なし」に潰す）ではなく、
-    /// `read_dword`の生の戻り値をそのままハッシュに含める——フィンガープリント
-    /// としての感度を優先し、意味的に同じ扱いに潰される前の値の変化も
-    /// 検知できるようにするため。対象外のVKは`None`扱い（`IsKeyAssignment
-    /// Enabled`のみを反映）。
-    #[must_use]
-    pub(crate) fn current_registry_fingerprint_hash(vk: awase::types::VkCode) -> u64 {
-        use std::hash::{Hash, Hasher};
-        use windows::core::w;
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        read_dword(w!("IsKeyAssignmentEnabled")).hash(&mut hasher);
-        if vk == crate::vk::VK_NONCONVERT {
-            read_dword(w!("KeyAssignmentMuhenkan")).hash(&mut hasher);
-        } else if vk == crate::vk::VK_CONVERT {
-            read_dword(w!("KeyAssignmentHenkan")).hash(&mut hasher);
-        } else {
-            None::<u32>.hash(&mut hasher);
-        }
-        hasher.finish()
-    }
-
     /// 別スレッドで Yes/No の警告ダイアログを表示し、Yes なら MS-IME 設定画面を
     /// 開く。`check_and_warn`（キー割り当て競合）と `tray::show_kana_lock_help_dialog`
     /// （かな入力ロック検知、issue #137）が共有する——どちらも「別スレッドで
@@ -362,9 +339,9 @@ mod windows_impl {
 
 #[cfg(windows)]
 pub(crate) use windows_impl::{
-    check_and_warn, current_registry_fingerprint_hash, native_assignment_stamp, open_ime_settings,
-    read_key_effect_keymap_native, read_raw_key_assignment_dwords,
-    read_toggle_assignment_from_registry, spawn_yes_dialog, spawn_yes_open_ime_settings_dialog,
+    check_and_warn, native_assignment_stamp, open_ime_settings, read_key_effect_keymap_native,
+    read_raw_key_assignment_dwords, read_toggle_assignment_from_registry, spawn_yes_dialog,
+    spawn_yes_open_ime_settings_dialog,
 };
 
 #[cfg(test)]
