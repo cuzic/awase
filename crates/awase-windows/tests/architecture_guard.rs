@@ -2534,6 +2534,55 @@ fn send_input_and_send_message_timeout_w_have_single_production_call_site() {
     );
 }
 
+/// conv 軸の書き込み経路の件数を固定する（09 T6、`docs/tasks/conv-write-paths-inventory.md`）。
+///
+/// T5 の棚卸しで、conv 軸を書く経路は次の2つの入口に集約されると確認した。新しい呼び出し元を
+/// 足すと、棚卸しの表（A 撤去候補・B 正当な例外・C warmup）に載らない書き込みが増える。
+/// 撤去が目的の ADR-191 決定5に反する追加を、件数の増加で気づけるようにする。
+/// 意図した追加・撤去のときは、この件数と棚卸しの表を同じコミットで更新すること。
+///
+/// - `modify_conv_mode(`（`IMC_SETCONVERSIONMODE` の唯一の書き手）: `ime.rs` の3入口のみ。
+/// - `set_ime_conv_for_target(`: 5か所（cold-start の ROMAN 保護、`actuate_conv_mode`、
+///   Ctrl+変換のリセット、半角英数トグルの復元、焦点プローブのかなモード修正）。
+#[test]
+fn conv_write_call_sites_are_fixed_to_the_inventory() {
+    let files = list_src_files();
+    let count_sites = |needle: &str| -> Vec<(String, usize)> {
+        let mut sites: Vec<(String, usize)> = Vec::new();
+        for path in &files {
+            let content = read_crate_file(path);
+            let production = production_code_only(&content);
+            let count = count_real_calls(production, needle);
+            if count > 0 {
+                sites.push((path.clone(), count));
+            }
+        }
+        sites.sort();
+        sites
+    };
+
+    assert_eq!(
+        count_sites("modify_conv_mode("),
+        vec![("src/ime.rs".to_string(), 3)],
+        "`modify_conv_mode(` の本番呼び出し元は `ime.rs` の3入口（`set_ime_romaji_mode_for_hwnd`・\
+         `set_ime_hiragana_mode_cross_process`・`set_ime_mode_for_target`）に固定されています。\
+         新しい入口を足すなら `docs/tasks/conv-write-paths-inventory.md` の表を更新すること。"
+    );
+
+    assert_eq!(
+        count_sites("set_ime_conv_for_target("),
+        vec![
+            ("src/output/conv_actuation.rs".to_string(), 1),
+            ("src/runtime/key_pipeline.rs".to_string(), 3),
+            ("src/tsf/warmup/cold_warmup.rs".to_string(), 1),
+        ],
+        "`set_ime_conv_for_target(` の本番呼び出し元は5か所に固定されています\
+         （`docs/tasks/conv-write-paths-inventory.md` の経路3・4・5・8・9）。\
+         増やすなら棚卸しの表に分類（A 撤去候補／B 例外／C warmup）を書いて、この件数を更新すること。\
+         撤去したなら件数を減らすこと。"
+    );
+}
+
 /// ADR-089 §6 Phase C item 12（= ADR-086 INV-14 の未移行分の是正）:
 /// **同期経路の ROMAN 補完 IMC write は、捕獲済み `ActuationTarget` を必ず通る。**
 ///
