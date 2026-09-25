@@ -303,7 +303,7 @@ P50=1ms・P95=34ms（10件、通知が来なかったキーは6/16=38%）。GJI�
 2. `send_input_safe`の呼び出し**箇所**数（現在20）。
 3. `set_ime_open_ordered`の呼び出し箇所数（現在2: `ime_refresh.rs`のフォーカス変更時の強制OFFと、drift補正内）。`RESTRICTED_CALLS`の外にあるので別に数える。
 4. `architecture_guard.rs`の件数ガードの総数。
-5. IMEへ書く**振る舞い**の数（固定の例外・表駆動の追加・opt-inの単独タップ・`keys.ime_on/off/toggle`・EngineDecision・warmup）。入口が1つでも振る舞いが増えていないかを、許可リストの件数とは別に列挙して数える。
+5. IMEへ書く**振る舞い**の数（固定の例外・表駆動の追加・opt-inの単独タップ・`keys.ime_on/off/toggle`・EngineDecision・warmup）。入口が1つでも振る舞いが増えていないかを、許可リストの件数とは別に列挙して数える。 conv 軸の書き込み経路の棚卸し（2026-09-25）は[conv-write-paths-inventory.md](../tasks/conv-write-paths-inventory.md)（11経路: 撤去候補4・例外6・warmup1）。
 
 フェーズ（撤去を先、較正は撤去が頭打ちになってから）:
 - **P0**: 決定2（BUG-151の最小修正）。
