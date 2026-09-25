@@ -610,8 +610,10 @@ fn classify_cells(cells: &[Cell], key: TableKey, vk: u16) -> Classification {
 ///   純トグルでない正規の挙動がある（開→開・半角英数へ切替）ので、開閉の割り当ての証拠にならない。
 /// - 予測が引けることを前提にする: 閉セルと、開セルのうち`C19`（ひらがな）・`C10`（英数）の
 ///   両方が揃っているときだけ`true`になりうる（欠けていれば`false`＝外さない）。
-/// - 非トグルの証拠: 閉セルが閉→閉（IMEOff・英数系の割り当て）、または開セルが**すべて**開→開
-///   （IMEOn・ひらがな系の割り当て）。開セル1つだけのノイズでは反転しない。
+/// - 非トグルの証拠: 開セルが**すべて**開→開（IMEOn・ひらがな系の割り当て）の方向だけ。開セル1つの
+///   ノイズでは反転しない。閉セルは前提条件（存在するか）にだけ使い、閉→閉（IMEOff系の割り当て）の
+///   検出は**見送っている**: 学習が閉セル1つを取りこぼしただけで判定が反転し、TsfNative で belief が
+///   追随せず Engine OFF・IME ON のまま固定される退行を避けるため（Opus PR#308 M1）。
 /// - 行が無い・セルが欠ける→`false`（固定セット維持）。
 ///
 /// `classify_cells`（全セルを見て警告に使う）とは目的が違い、同じ基準ではない。
@@ -627,8 +629,7 @@ pub fn learned_cells_show_non_toggle(cells: &[Cell], key: TableKey) -> bool {
     if !idle().any(|c| !c.open()) || !has_open(Conv::C19) || !has_open(Conv::C10) {
         return false;
     }
-    idle().any(|c| !c.open() && !c.after_open())
-        || idle().filter(|c| c.open()).all(|c| c.after_open())
+    idle().filter(|c| c.open()).all(|c| c.after_open())
 }
 
 #[cfg(test)]
@@ -680,9 +681,18 @@ mod classification_tests {
             &hz_cells(true, true, true),
             k
         ));
-        // IMEOff割当: 閉→閉、開→閉。
-        assert!(learned_cells_show_non_toggle(
+    }
+
+    /// 閉→閉（IMEOff割当）の検出は見送り（閉セル1つのノイズで反転させない）。開セルが開→閉なら外さない。
+    #[test]
+    fn hz_closed_to_closed_alone_does_not_omit() {
+        let k = TableKey::HankakuZenkaku;
+        assert!(!learned_cells_show_non_toggle(
             &hz_cells(false, false, false),
+            k
+        ));
+        assert!(!learned_cells_show_non_toggle(
+            &hz_cells(false, true, false),
             k
         ));
     }
@@ -744,13 +754,23 @@ mod classification_tests {
     /// 同梱表（GJIの2プリセット）は純トグルなので、判定が外さない（誤検出の回帰）。
     #[test]
     fn hz_bundled_gji_tables_are_pure_toggle() {
-        // MS-IME本体（GJI限定を外す議論が出たときの根拠）: `Stage::None`では純トグルなので偽。
-        for cells in [ATOK, MSIME, MSIME_NATIVE] {
+        for cells in [ATOK, MSIME] {
             assert!(!learned_cells_show_non_toggle(
                 cells,
                 TableKey::HankakuZenkaku
             ));
         }
+    }
+
+    /// `MSIME_NATIVE`（Microsoft IME本体）でも偽だが、理由はGJIと違う: 半角/全角の`Stage::None`に
+    /// C10の開セルが無く前提条件を満たさないため偽になる（純トグルだと確認できたわけではない）。
+    /// 適用をGJIに限定している理由の一つ（本体の表を判定にかけても外す根拠にならない）。
+    #[test]
+    fn hz_msime_native_is_false_because_precondition_not_met() {
+        assert!(!learned_cells_show_non_toggle(
+            MSIME_NATIVE,
+            TableKey::HankakuZenkaku
+        ));
     }
 
     fn classify(preset: i64, vk: u16) -> Option<Classification> {
