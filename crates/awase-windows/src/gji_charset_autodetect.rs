@@ -302,19 +302,18 @@ mod windows_impl {
     }
 
     /// ADR-191 決定3: `config1.db`から、打鍵時点の予測（`key_effect_predictor`）に使うキーマップを読む。
-    /// 呼び出しは`KeymapCache`が版の変化時だけに絞る（打鍵ごとに読まない）。`config1.db`が
-    /// 読めない場合のみ`None`。`session_keymap`がATOK/MSIME以外（CUSTOM・MOBILE等）でも、
-    /// ADR-195段階4 B3対応により`KeymapPreset::Custom`として`Some`を返す
+    /// 呼び出しは`KeymapCache`が版の変化時だけに絞る（打鍵ごとに読まない）。パスが解決できない・
+    /// `config1.db`が読めない・パースできない場合は`None`。ファイルが**無い**ときはMozcと同じく
+    /// 既定のキーマップ（MS-IMEプリセット相当）を返す（ADR-199 決定6-3・決定8 (ii)、
+    /// `KeyEffectKeymap::from_config1_db_read`）。`session_keymap`がATOK/MSIME以外
+    /// （CUSTOM・MOBILE等）でも、ADR-195段階4 B3対応により`KeymapPreset::Custom`として`Some`を返す
     /// （同梱表による予測は無いが、学習済み表があれば`predict_with_override`経由で使える）。
     pub(crate) fn read_key_effect_keymap(
     ) -> Option<crate::state::key_effect_predictor::KeyEffectKeymap> {
-        let bytes = read_config1_db()?;
-        let raw = awase_gji_config::wire::parse_top_level(&bytes)?;
-        crate::state::key_effect_predictor::KeyEffectKeymap::from_config(
-            raw.session_keymap,
-            raw.custom_keymap_table,
-            &raw.overlay_keymaps,
-        )
+        let path = config1_db_path()?;
+        crate::state::key_effect_predictor::KeyEffectKeymap::from_config1_db_read(std::fs::read(
+            &path,
+        ))
     }
 
     /// [`bundled_preset_for_adjudication`]の戻り値（ADR196-T2「1e前半」決定1c）。

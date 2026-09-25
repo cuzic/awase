@@ -437,6 +437,10 @@ pub fn predict_in_table(table: &[Cell], vk: u16, input: &PredictInput) -> Option
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyEffectKeymap {
     pub(super) preset: KeymapPreset,
+    /// `config1.db`の生の`session_keymap`（不在=`None`）。`preset`はATOK/MSIME以外を`Custom`に
+    /// まとめるので、役割判定（ADR-199 決定4）のプリセット判別にはこちらを使う。指紋はハッシュで
+    /// 復元できないので別に持つ（決定8 (i)）。Microsoft IME本体のキーマップでは使わない（`None`）。
+    session_keymap: Option<i64>,
     pub(super) custom_table: Option<String>,
     pub(super) has_overlay: bool,
     /// Microsoft IME本体のキー割り当て（レジストリ`KeyAssignmentHenkan`/`Muhenkan`）が既定（再変換/かな切替）から
@@ -549,12 +553,50 @@ impl KeyEffectKeymap {
         );
         Some(Self {
             preset,
+            session_keymap,
             custom_table,
             has_overlay: !overlay_keymaps.is_empty(),
             henkan_reassigned: false,
             muhenkan_reassigned: false,
             fingerprint,
         })
+    }
+
+    /// `config1.db`の読み取り結果から作る（ADR-199 決定6-3・決定8 (ii)）。ファイルが**無い**
+    /// （`NotFound`）ときは、Mozcがファイル不在を既定設定（Windowsでは`session_keymap = MSIME`）と
+    /// して扱うのに揃えて既定のキーマップ（`from_config(None, None, &[])`）を返す。読めない・
+    /// パースできないときは`None`（不明。役割を能動側へ倒さない）。
+    #[must_use]
+    pub fn from_config1_db_read(read: std::io::Result<Vec<u8>>) -> Option<Self> {
+        match read {
+            Ok(bytes) => {
+                let raw = awase_gji_config::wire::parse_top_level(&bytes)?;
+                Self::from_config(
+                    raw.session_keymap,
+                    raw.custom_keymap_table,
+                    &raw.overlay_keymaps,
+                )
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Self::from_config(None, None, &[])
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// このGJIのキーマップで、`vk`（無修飾の打鍵）が持つ役割（ADR-199 決定4）。GJIの設定から
+    /// 逆算するだけで、学習表による狭め（決定6-2）・明示configとの重なり（決定8）は呼び出し側。
+    /// Microsoft IME本体のキーマップ（`MsImeNative`）では`None`（決定6-4は別の規則）。
+    #[must_use]
+    pub fn gji_key_role(&self, vk: u16) -> Option<awase_gji_config::role::KeyRole> {
+        use crate::vk::VkCodeExt;
+        if matches!(self.preset, KeymapPreset::MsImeNative) {
+            return None;
+        }
+        let vk_name = awase_gji_config::role::ROLE_CANDIDATE_VK_NAMES
+            .iter()
+            .find(|name| awase::types::VkCode::from_name(name).is_some_and(|v| v.0 == vk))?;
+        awase_gji_config::role::key_role(self.session_keymap, self.custom_table.as_deref(), vk_name)
     }
 
     /// Microsoft IME本体のキーマップ。`assignment_enabled`は`IsKeyAssignmentEnabled == 1`、`henkan`/`muhenkan`は
@@ -570,6 +612,7 @@ impl KeyEffectKeymap {
         let reassigned = |v: Option<u32>| assignment_enabled && v.is_some_and(|x| x != 0);
         Self {
             preset: KeymapPreset::MsImeNative,
+            session_keymap: None,
             custom_table: None,
             has_overlay: false,
             henkan_reassigned: reassigned(henkan),
@@ -1307,6 +1350,68 @@ mod tests {
             "Composition\tEscape\tCancel\n",
             0x1B
         ));
+        // ADR-199 T2: キー名→VK を awase-gji-config と一本化。プリセット TSV の綴り`ESC`も拾い、
+        // 半角/全角は 0xF3/0xF4 の両方、`Kanji`行は 0x19 に写さない。
+        assert!(custom_table_overrides("Composition\tESC\tCancel\n", 0x1B));
+        let hz = "Composition\tHankaku/Zenkaku\tIMEOff\nComposition\tKanji\tIMEOff\n";
+        assert!(custom_table_overrides(hz, 0xF3));
+        assert!(custom_table_overrides(hz, 0xF4));
+        assert!(!custom_table_overrides(hz, 0x19));
+        // 修飾付きの行はそのキーの行として数えない（従来どおり）。
+        assert!(!custom_table_overrides(
+            "Composition\tShift Space\tConvert\n",
+            0x20
+        ));
+    }
+
+    // ---- ADR-199 T2: config1.db の読み取り結果・役割判定 ----
+
+    #[test]
+    fn missing_config1_db_is_the_default_msime_keymap() {
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let km = KeyEffectKeymap::from_config1_db_read(Err(missing)).expect("不在は既定の keymap");
+        assert_eq!(km, KeyEffectKeymap::from_config(None, None, &[]).unwrap());
+        assert_eq!(km.preset(), KeymapPreset::MsIme);
+        // 予測も MS-IME プリセットで動く（決定8 の副作用、ADR-199）。
+        let closed = input(false, ROMAJI, false, NOTRACK);
+        assert!(km.predict(0xF3, &closed).is_some());
+        // 半角/全角はトグルの役割を持つ。
+        assert_eq!(
+            km.gji_key_role(0xF3),
+            Some(awase_gji_config::role::KeyRole::ImeToggle)
+        );
+    }
+
+    #[test]
+    fn unreadable_or_unparsable_config1_db_is_unknown() {
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert_eq!(KeyEffectKeymap::from_config1_db_read(Err(denied)), None);
+        // ファイルはあるがパースできない（`parse_top_level`が`None`、空のバイト列）→ 不明。
+        assert_eq!(KeyEffectKeymap::from_config1_db_read(Ok(Vec::new())), None);
+    }
+
+    #[test]
+    fn gji_key_role_follows_the_raw_session_keymap() {
+        use awase_gji_config::role::KeyRole;
+        // CUSTOM で半角/全角を別機能にした表 → 受動。
+        let custom = "status\tkey\tcommand\nDirectInput\tHankaku/Zenkaku\tCompositionModeHiragana\n\
+                      Precomposition\tHankaku/Zenkaku\tIMEOff\nComposition\tHankaku/Zenkaku\tIMEOff\n\
+                      Conversion\tHankaku/Zenkaku\tIMEOff\nDirectInput\tON\tIMEOn\n\
+                      Precomposition\tOFF\tIMEOff\nComposition\tOFF\tIMEOff\nConversion\tOFF\tIMEOff\n"
+            .to_string();
+        let km = KeyEffectKeymap::from_config(Some(0), Some(custom.clone()), &[]).unwrap();
+        assert_eq!(km.gji_key_role(0xF3), None);
+        assert_eq!(km.gji_key_role(0xF4), None);
+        // KOTOERI(3) は preset=Custom にまとめられるが、役割は生の値で判別し、古い custom 表は読まない。
+        let kotoeri = KeyEffectKeymap::from_config(Some(3), Some(custom), &[]).unwrap();
+        assert_eq!(kotoeri.preset(), KeymapPreset::Custom);
+        assert_eq!(kotoeri.gji_key_role(0xF3), Some(KeyRole::ImeToggle));
+        // 候補外のキー（0x19・0xF2）は役割を持たない。
+        assert_eq!(kotoeri.gji_key_role(0x19), None);
+        assert_eq!(kotoeri.gji_key_role(0xF2), None);
+        // Microsoft IME 本体のキーマップでは GJI の役割判定をしない。
+        let native = KeyEffectKeymap::for_msime_native(false, None, None);
+        assert_eq!(native.gji_key_role(0xF3), None);
     }
 
     // ---- Microsoft IME 本体(ImeKind=MicrosoftIme。CI cal-notify-msimenative-s{1..4}、独立walkで一段予測 99.1%) ----
