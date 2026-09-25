@@ -70,7 +70,7 @@ jobs:
           Push-Location dist
           Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
           Start-Sleep -Seconds 8
-          & "$PWD\..\tools\e2e\ab1-focus-enforce-off.ps1" -Config '${{ matrix.cfg }}' -App '${{ matrix.app }}' -Runs 20 -AwaseLog "$PWD\awase.log" -OutCsv "$PWD\..\ab1-result-${{ matrix.cfg }}-${{ matrix.app }}.csv" 2>&1 | Tee-Object -FilePath "$PWD\..\ab1-run-${{ matrix.cfg }}-${{ matrix.app }}.txt"
+          & "$PWD\..\tools\e2e\ab1-approach2.ps1" -Config '${{ matrix.cfg }}' -App '${{ matrix.app }}' -Runs 20 -AwaseLog "$PWD\awase.log" -OutCsv "$PWD\..\ab1-result-${{ matrix.cfg }}-${{ matrix.app }}.csv" 2>&1 | Tee-Object -FilePath "$PWD\..\ab1-run-${{ matrix.cfg }}-${{ matrix.app }}.txt"
           Pop-Location
           if (Test-Path dist\awase.log) { Get-Content dist\awase.log -Encoding utf8 | Where-Object { $_ -match 'focus_change_enforce_off|FocusChange|warrant-shadow|Blacklist drift|sent=' } | Select-Object -Last 200 | Set-Content awase-filtered-${{ matrix.cfg }}-${{ matrix.app }}.log -Encoding utf8 }
           Get-Process awase -ErrorAction SilentlyContinue | Stop-Process -Force
