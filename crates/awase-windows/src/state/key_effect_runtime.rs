@@ -2,9 +2,10 @@
 //!
 //! `awase-keymap-learn::persist`（段階3の永続化フォーマット）が書き出した学習済み表を、
 //! コンパイル時埋め込みの同梱表（`key_effect_table.rs`）の代わりに使う。読み込んだ表は
-//! `KeyEffectPredicted`（belief更新）にのみ使い、actuationの判定（ADR-189の固定セット・
-//! ユーザー明示config）には一切使わない——本モジュールは`predict_in_table`が引く`Cell`の
-//! 一覧を用意するだけで、actuationのどの合流点も呼ばない。
+//! `KeyEffectPredicted`（belief更新）に使う。actuationの判定には原則使わない（ユーザー明示config・
+//! 漢字0x19の固定Toggleは不変）。**唯一の例外**: GJIの採用学習表が半角/全角を開閉トグルでないと示すとき
+//! （ADR-195追記、`hankaku_zenkaku_non_toggle`）だけ、ADR-189の固定セットの`shadow_action=Toggle`を外す。
+//! 本モジュールは`Cell`の一覧と、その前計算フラグを用意するだけで、actuationのどの合流点も呼ばない。
 //!
 //! 安全側に倒す2つの経路（本タスクB-1 Blockerの核心）:
 //! 1. **破損ファイルへの縮退**: サイズ上限超過・パース失敗・スキーマ版不一致は、
@@ -524,23 +525,59 @@ pub fn validate_and_convert(
     Ok(converted)
 }
 
+/// 半角/全角の`shadow_action=Toggle`を外すか（ADR-195追記）の、分岐部分の純関数。
+///
+/// GJI限定・`use_learned_keymap_table`（opt-out）・表の前計算フラグ（[`RuntimeTableCache::hankaku_zenkaku_non_toggle`]）
+/// の3つが全て真のときだけ外す。MS-IME本体・第三者IME・opt-out・学習表なしは常に`false`（固定セット維持）。
+#[must_use]
+pub const fn hz_omit_verdict(
+    ime: crate::state::ime_kind::ImeKindId,
+    use_learned: bool,
+    table_flag: bool,
+) -> bool {
+    hz_omit_may_apply(ime, use_learned) && table_flag
+}
+
+/// [`hz_omit_verdict`]の前段（表を読む前に分かる条件）。偽なら表の同期読込を省ける。
+#[must_use]
+pub const fn hz_omit_may_apply(ime: crate::state::ime_kind::ImeKindId, use_learned: bool) -> bool {
+    matches!(ime, crate::state::ime_kind::ImeKindId::Gji) && use_learned
+}
+
+/// `enrich_ime_relevance`が判定に届く前に早期returnする（修飾付き・IME種別不明）とき、古いラッチを
+/// 捨てるべきか。半角/全角（`is_hz`）の非injected KeyDownだけ捨てる（捨てないと次のKeyUpが前回押下の
+/// 判定を使い、Down=Allow・Up=Suppress の非対称になる。Opus round2 N2）。
+#[must_use]
+pub const fn should_clear_omit_latch_on_early_return(
+    is_hz: bool,
+    is_key_down: bool,
+    injected: bool,
+) -> bool {
+    is_hz && is_key_down && !injected
+}
+
 /// 半角/全角の「学習表由来でToggleを外すか」判定のラッチ（`(scan_code, 外すか)`）を進める純関数（ADR-195追記）。
 ///
-/// - KeyUp で、ラッチの scan_code（非0）が一致すればラッチの判定を使う（`fresh`は呼ばない）。
+/// - `reuse`（KeyUp、またはオートリピートの`was_down`なKeyDown）で、ラッチの scan_code（非0）が一致すれば
+///   ラッチの判定を使う（`fresh`は呼ばない）。
 /// - それ以外は`fresh`で判定を求める。非injectedのKeyDown（`fresh_down`）はその結果でラッチを**上書き**する。
-///   KeyUp では消さない（drain経路は enrich を2回呼ぶので、Down→Up→Down→Up でも同じ結果になる）。
-/// - 識別は vk でなく scan_code（`VK_DBE_*`はDown/Upでvkが変わりうる、BUG-131/132）。
+///   KeyUp では消さない（ドレイン経路は enrich を2回呼ぶので、Down→Up→Down→Up でも同じ結果になる。
+///   二重enrichは2回の判定のOR: どちらかで`shadow_action`が付けば残る）。
+/// - 識別は vk でなく scan_code（`VK_DBE_*`はDown/Upでvkが変わりうる、BUG-131/132）。拡張ビットは照合しない:
+///   半角/全角（0xF3/0xF4）には、Left/Right Alt のような raw scan 同一で拡張ビットだけが違う双子キーが無い。
+/// - `fresh`は表の同期読込（`RuntimeTableCache::get`）を含みうるので、enrich内で同期I/Oが走りうる
+///   （スタンプ変化時のみ）。
 ///
 /// 戻り値は`(判定, 新しいラッチ)`。
 #[must_use]
 pub fn omit_latch_step(
     latch: Option<(awase::types::ScanCode, bool)>,
-    is_up: bool,
+    reuse: bool,
     fresh_down: bool,
     scan: awase::types::ScanCode,
     fresh: impl FnOnce() -> bool,
 ) -> (bool, Option<(awase::types::ScanCode, bool)>) {
-    if is_up {
+    if reuse {
         if let Some((s, omit)) = latch {
             if scan.0 != 0 && s == scan {
                 return (omit, latch);
@@ -670,6 +707,12 @@ impl RuntimeTableCache {
                         TableKey::HankakuZenkaku,
                     )
                 });
+                if self.hankaku_zenkaku_non_toggle {
+                    // 読込（再計算）時に1回だけ。実際に外すのは GJI のときだけ（enrich 側の判定）。
+                    tracing::info!(
+                        "[hz-toggle] 採用中の学習表が半角/全角を開閉トグルでないと示す（適用はGJIのみ）"
+                    );
+                }
             }
         }
         self.cells.as_deref()
@@ -1452,22 +1495,29 @@ mod tests {
     fn omit_latch_carries_down_verdict_to_up() {
         use awase::types::ScanCode;
         let scan = ScanCode(0x29);
-        // Down: fresh=false でラッチを上書き。
         let (v, latch) = omit_latch_step(None, false, true, scan, || false);
         assert!(!v);
-        // その後に表が差し替わって fresh が true になっても、Up はラッチ（false）を使う（fresh は呼ばれない）。
         let (v, latch2) =
             omit_latch_step(latch, true, false, scan, || panic!("fresh must not run"));
         assert!(!v);
         assert_eq!(latch2, latch, "Upでラッチを消さない");
-        // 二重 enrich（Down→Up→Down→Up）でも同じ。
         let (v, latch3) = omit_latch_step(latch2, false, true, scan, || false);
         assert!(!v);
         let (v, _) = omit_latch_step(latch3, true, false, scan, || true);
         assert!(!v);
     }
 
-    /// scan が違う（別の物理キー）/ scan 0 / ラッチ無しの Up は、その場で判定する。injected の Down はラッチを更新しない。
+    /// オートリピート（`was_down`のKeyDown。reuse=true）はラッチを再利用し、freshを呼ばない。
+    #[test]
+    fn omit_latch_reused_on_autorepeat_down() {
+        use awase::types::ScanCode;
+        let latch = Some((ScanCode(0x29), true));
+        let (v, l) = omit_latch_step(latch, true, true, ScanCode(0x29), || panic!("no fresh"));
+        assert!(v);
+        assert_eq!(l, latch);
+    }
+
+    /// scan違い/scan 0/ラッチ無しのreuseはその場で判定する。injectedのDownはラッチを更新しない。
     #[test]
     fn omit_latch_ignores_other_scan_and_injected() {
         use awase::types::ScanCode;
@@ -1481,9 +1531,43 @@ mod tests {
         assert!(v);
         let (v, _) = omit_latch_step(None, true, false, ScanCode(0x29), || true);
         assert!(v);
-        // injected の Down（fresh_down=false）: 判定は返すがラッチは変えない。
         let (v, l) = omit_latch_step(latch, false, false, ScanCode(0x29), || true);
         assert!(v);
         assert_eq!(l, latch);
+    }
+
+    /// 分岐: GJI・学習表使用・表フラグ真の3つが揃うときだけ外す（MS-IME本体・第三者・opt-outは外さない）。
+    #[test]
+    fn hz_omit_verdict_truth_table() {
+        use crate::state::ime_kind::ImeKindId;
+        let all = [ImeKindId::Gji, ImeKindId::MsIme];
+        for ime in all {
+            for use_learned in [false, true] {
+                for flag in [false, true] {
+                    let want = matches!(ime, ImeKindId::Gji) && use_learned && flag;
+                    assert_eq!(hz_omit_verdict(ime, use_learned, flag), want);
+                }
+            }
+        }
+        assert!(!hz_omit_may_apply(ImeKindId::MsIme, true));
+        assert!(!hz_omit_may_apply(ImeKindId::Gji, false));
+    }
+
+    /// 早期returnでラッチを捨てるのは、半角/全角の非injected KeyDownだけ。
+    #[test]
+    fn early_return_clears_latch_only_for_fresh_hz_down() {
+        assert!(should_clear_omit_latch_on_early_return(true, true, false));
+        assert!(
+            !should_clear_omit_latch_on_early_return(true, false, false),
+            "KeyUpは消さない"
+        );
+        assert!(
+            !should_clear_omit_latch_on_early_return(true, true, true),
+            "injectedは消さない"
+        );
+        assert!(
+            !should_clear_omit_latch_on_early_return(false, true, false),
+            "他キーは触らない"
+        );
     }
 }

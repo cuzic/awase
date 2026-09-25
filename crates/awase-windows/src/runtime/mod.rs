@@ -587,45 +587,56 @@ impl Runtime {
         }
     }
 
-    /// 半角/全角の非injected KeyDown が、判定（`learned_table_omits_hz_toggle`）に届かず早期 return する
-    /// （修飾付き・IME種別不明）とき、古いラッチを捨てる。捨てないと、その後のKeyUpが前回押下の判定を
-    /// 使い、Down=Allow・Up=Suppress の非対称を作る（Opus round2 N2）。
+    /// 半角/全角の非injected KeyDown が判定（`learned_table_omits_hz_toggle`）に届かず早期 return する
+    /// （修飾付き・IME種別不明）とき、古いラッチを捨てる（判定は純関数
+    /// [`crate::state::key_effect_runtime::should_clear_omit_latch_on_early_return`]）。
     fn clear_hz_toggle_omit_latch(&mut self, key: crate::vk::ImeKeyKind, event: &RawKeyEvent) {
-        if matches!(
+        let is_hz = matches!(
             key,
             crate::vk::ImeKeyKind::DbeSbcsChar | crate::vk::ImeKeyKind::DbeDbcsChar
-        ) && event.event_type == awase::types::KeyEventType::KeyDown
-            && !event.injected
-        {
+        );
+        if crate::state::key_effect_runtime::should_clear_omit_latch_on_early_return(
+            is_hz,
+            event.event_type == awase::types::KeyEventType::KeyDown,
+            event.injected,
+        ) {
             self.hz_toggle_omit_latch = None;
         }
     }
 
     /// ADR-195追記（縮小方向）: 採用中の学習表が半角/全角を開閉トグルでないと示すとき、固定セットの
-    /// `shadow_action=Toggle`を外す（`true`）。GJIの学習表だけが対象（Microsoft IME本体は入力中に純トグルで
-    /// ない正規の挙動があり、カスタム表も持てないので対象外）。学習表が無い・棄却・未採用・opt-out・
+    /// `shadow_action=Toggle`を外す（`true`）。分岐（GJI限定・opt-out・表フラグ）は純関数
+    /// [`crate::state::key_effect_runtime::hz_omit_verdict`]。学習表が無い・棄却・未採用・opt-out・
     /// キーマップ未取得のときは`false`＝従来どおり固定セットを維持する。
     ///
-    /// KeyDownで確定した結果を scan_code 付きのラッチに持ち、同じ物理キーのKeyUpはそれを使う
-    /// （純関数[`crate::state::key_effect_runtime::omit_latch_step`]。IME種別の判定より前にラッチを見るので、
-    /// 押したままGJI以外の窓へ移ってもDownとUpの判定が揃う）。
+    /// 呼び出しの順序は`table_ime_kind`（未同定なら`enrich_ime_relevance`が`shadow_action`を付けずに抜ける。
+    /// 未同定の窓のKeyUpは`shadow_action`なし＝Allowで、Down側がSuppressでも孤立KeyUpが通るだけの有害でない方向）
+    /// → `is_open_toggle_for(ime)` → 本関数。本関数の中ではIME種別の判定より**前**にラッチを見る
+    /// （押したままGJI以外の窓へ移ってもDownとUpの判定が揃う）。
+    /// KeyDownで確定した結果を scan_code 付きのラッチに持ち、同じ物理キーのKeyUp・オートリピート
+    /// （`was_down`）はそれを使う（[`crate::state::key_effect_runtime::omit_latch_step`]）。
+    /// ドレイン経路は enrich を2回呼びうるので、二重enrichは2回の判定のOR（どちらかで`shadow_action`が付けば残る）。
+    /// 表の読込（`key_effect_keymap.get`/`get_for_keymap`）は同期I/Oを含み、スタンプ変化時だけ enrich 内で走る。
     fn learned_table_omits_hz_toggle(
         &mut self,
         event: &RawKeyEvent,
         ime: crate::state::ime_kind::ImeKindId,
     ) -> bool {
+        use crate::state::key_effect_runtime::{
+            hz_omit_may_apply, hz_omit_verdict, omit_latch_step,
+        };
         use awase::types::KeyEventType;
         let is_up = event.event_type == KeyEventType::KeyUp;
         let fresh_down = event.event_type == KeyEventType::KeyDown && !event.injected;
+        let reuse = is_up || (fresh_down && event.was_down);
         let use_learned = self.use_learned_keymap_table;
-        let gji = ime == crate::state::ime_kind::ImeKindId::Gji;
-        let (omit, latch) = crate::state::key_effect_runtime::omit_latch_step(
+        let (omit, latch) = omit_latch_step(
             self.hz_toggle_omit_latch,
-            is_up,
+            reuse,
             fresh_down,
             event.scan_code,
             || {
-                if !(gji && use_learned) {
+                if !hz_omit_may_apply(ime, use_learned) {
                     return false;
                 }
                 let now_ms = crate::hook::current_tick_ms();
@@ -637,14 +648,11 @@ impl Runtime {
                     return false;
                 };
                 self.key_effect_runtime_table.get_for_keymap(now_ms, keymap);
-                let omit = self.key_effect_runtime_table.hankaku_zenkaku_non_toggle();
-                if omit && fresh_down {
-                    tracing::info!(
-                        "[hz-toggle] 学習表が半角/全角を開閉トグルでないと示す: 固定セットのToggleを外す (scan=0x{:X})",
-                        event.scan_code.0
-                    );
-                }
-                omit
+                hz_omit_verdict(
+                    ime,
+                    use_learned,
+                    self.key_effect_runtime_table.hankaku_zenkaku_non_toggle(),
+                )
             },
         );
         self.hz_toggle_omit_latch = latch;
