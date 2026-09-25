@@ -329,8 +329,9 @@ mod windows_impl {
         /// GJIだが既知構成でない、またはGJI以外（Microsoft IME本体・その他のTIP）で
         /// 既知構成判定が未実装（T2タスク1c「未着手のうちは既知構成と判定しない」）。
         NotKnown,
-        /// `TipIdentity::Gji`なのに`config1.db`が読めない・パースできない
-        /// （GJI未インストールの矛盾等、異常系）。
+        /// `TipIdentity::Gji`なのに`config1.db`が読めない・パースできない・パスが解決できない
+        /// （異常系）。ファイルが**無い**ときはここに入れない: Mozcはファイル不在を既定設定
+        /// （Windowsでは`session_keymap = MSIME`）として扱う（ADR-199 決定6-3・決定8）。
         ConfigUnreadable,
     }
 
@@ -348,19 +349,35 @@ mod windows_impl {
         tip: crate::state::ime_kind::TipIdentity,
     ) -> BundledPresetLookup {
         use crate::state::ime_kind::TipIdentity;
-        use crate::state::key_effect_predictor::KeymapPreset;
-        use awase_gji_config::known_keymap::{classify_known_gji_keymap, KnownGjiKeymap};
 
         if tip != TipIdentity::Gji {
             // MsImeNative: T2タスク1cのMicrosoft IME本体側判定はADR196-T5待ち(未着手)。
             // Other: 内蔵表を持たない構成(ATOK本体・Japanist等)。
             return BundledPresetLookup::NotKnown;
         }
-        let Some(bytes) = read_config1_db() else {
+        let Some(path) = config1_db_path() else {
             return BundledPresetLookup::ConfigUnreadable;
         };
-        let Some(raw) = awase_gji_config::wire::parse_top_level(&bytes) else {
-            return BundledPresetLookup::ConfigUnreadable;
+        lookup_from_config1_db_read(std::fs::read(&path))
+    }
+
+    /// [`bundled_preset_for_adjudication`]の、`config1.db`の読み取り結果の解釈部分。
+    /// 不在（`NotFound`）は既定設定（`session_keymap`等のフィールド無し）として判定する
+    /// （予測側の`KeyEffectKeymap::from_config1_db_read`と同じ扱い。ADR-199 決定8で不在の
+    /// 指紋が計算可能になり学習表が採用されうるので、突き合わせもそれに揃える）。
+    fn lookup_from_config1_db_read(read: std::io::Result<Vec<u8>>) -> BundledPresetLookup {
+        use crate::state::key_effect_predictor::KeymapPreset;
+        use awase_gji_config::known_keymap::{classify_known_gji_keymap, KnownGjiKeymap};
+
+        let raw = match read {
+            Ok(bytes) => match awase_gji_config::wire::parse_top_level(&bytes) {
+                Some(raw) => raw,
+                None => return BundledPresetLookup::ConfigUnreadable,
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                awase_gji_config::wire::GjiRawConfig::default()
+            }
+            Err(_) => return BundledPresetLookup::ConfigUnreadable,
         };
         match classify_known_gji_keymap(
             raw.session_keymap,
@@ -385,6 +402,27 @@ mod windows_impl {
         /// `#[cfg(windows)]`配下(Win32型`TipIdentity`比較を含む)のため、Windows
         /// ターゲットでのみ実行される(`cargo check --target x86_64-pc-windows-msvc`
         /// で存在確認、実行はwindows-build CI)。
+        /// ADR-199 決定8: `config1.db`不在は既定（MSIMEプリセット）の既知構成として突き合わせる。
+        /// 読めない・パースできないときは従来どおり`ConfigUnreadable`。
+        #[test]
+        fn missing_config1_db_is_the_known_msime_default() {
+            use crate::state::key_effect_predictor::KeymapPreset;
+            let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+            assert_eq!(
+                lookup_from_config1_db_read(Err(missing)),
+                BundledPresetLookup::Known(KeymapPreset::MsIme)
+            );
+            let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+            assert_eq!(
+                lookup_from_config1_db_read(Err(denied)),
+                BundledPresetLookup::ConfigUnreadable
+            );
+            assert_eq!(
+                lookup_from_config1_db_read(Ok(Vec::new())),
+                BundledPresetLookup::ConfigUnreadable
+            );
+        }
+
         #[test]
         fn non_gji_tip_never_reads_config1_db() {
             assert_eq!(
