@@ -2603,6 +2603,53 @@ fn drift_correction_does_not_detect_when_the_warrant_would_block() {
     }
 }
 
+/// BUG-163（代案A）: 起動時の初期値のままの `desired_open` は、awase の意図ではない。
+///
+/// - フォーカス時の先同期（`applied` の `record_confirmed(true)` と GJI への ImeOn 通知＝long-cold の
+///   `VK_IME_OFF→VK_IME_ON`）は、`desired_is_placeholder` の間は行わない（IME を閉じて起動したとき awase が開けない）。
+///   代わりに、最初の成功観測が「開」だったとき `ir_align_placeholder_desired` が同じ処理（`presync_applied_open_on`）を行う。
+/// - 揃え（`ir_align_placeholder_desired`）は、drift 補正（`ir_apply_drift_correction`）より前に呼ぶ。
+#[test]
+fn startup_placeholder_desired_is_not_treated_as_intent() {
+    let focus = read_crate_file("src/runtime/focus_tracking.rs");
+    let focus_prod = production_code_only(&focus);
+    let calls: Vec<usize> = focus_prod
+        .match_indices("self.presync_applied_open_on(")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        calls.len(),
+        1,
+        "フォーカス時の先同期は `presync_applied_open_on` 経由の1箇所だけ"
+    );
+    let head = &focus_prod[..calls[0]];
+    let guard_at = head
+        .rfind("desired_is_placeholder()")
+        .expect("先同期の直前に `desired_is_placeholder()` の判定が必要（BUG-163）");
+    assert!(
+        calls[0] - guard_at < 300,
+        "先同期は `desired_is_placeholder()` の間は行わない（BUG-163）。判定が先同期の直前にあること"
+    );
+
+    let refresh = read_crate_file("src/runtime/ime_refresh.rs");
+    let refresh_prod = production_code_only(&refresh);
+    let align = refresh_prod
+        .find("self.ir_align_placeholder_desired();")
+        .expect("ir_stage で `ir_align_placeholder_desired` を呼ぶこと（BUG-163）");
+    let drift = refresh_prod
+        .find("self.ir_apply_drift_correction();")
+        .expect("ir_stage で `ir_apply_drift_correction` を呼ぶ");
+    assert!(
+        align < drift,
+        "`ir_align_placeholder_desired` は `ir_apply_drift_correction` より前に呼ぶこと（BUG-163）"
+    );
+    let body = extract_fn_body(refresh_prod, "fn ir_align_placeholder_desired");
+    assert!(
+        body.contains("if open && !tsf_native"),
+        "揃えた値が「開」の非 TsfNative だけ、スキップした先同期を行う（閉なら行わない）"
+    );
+}
+
 /// ADR-089 §6 Phase C item 12（= ADR-086 INV-14 の未移行分の是正）:
 /// **同期経路の ROMAN 補完 IMC write は、捕獲済み `ActuationTarget` を必ず通る。**
 ///

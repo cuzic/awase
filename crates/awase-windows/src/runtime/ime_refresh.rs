@@ -272,6 +272,8 @@ impl Runtime {
                 "[mode-key-follow] window expired without a successful observation: intents invalidated"
             );
         }
+        // Phase 4a': 起動時の初期値のままの desired_open を、最初の成功観測へ揃える（BUG-163）。
+        self.ir_align_placeholder_desired();
         // Phase 4b: desired ≠ observed ドリフト補正（ImmCross / non-ImmCross 両対応）
         self.ir_apply_drift_correction();
         // Phase 5: 次回ポーリングをスケジュール
@@ -607,6 +609,33 @@ impl Runtime {
     //   set_ime_open の戻り値を見ずに mirror_applied_open_with_ts で belief だけ
     //   「反映済み」にしていたため、実際には一切再送されていなかった。詳細は
     //   docs/known-bugs.md BUG-20 を参照）。
+
+    /// 起動時の初期値のままの `desired_open` を最初の成功観測へ 1 回だけ揃える（BUG-163、代案A）。
+    ///
+    /// 揃えた値が「開」で、非 TsfNative なら、フォーカス時にスキップした先同期（`presync_applied_open_on`。GJI への ImeOn
+    /// 通知を含む）をここで行う。「閉」なら行わない（IME を閉じて起動したとき awase が開けない）。
+    fn ir_align_placeholder_desired(&mut self) {
+        if !self.engine.is_user_enabled() || !self.platform_state.ime.belief.is_japanese_ime() {
+            return;
+        }
+        let now_ms = crate::hook::current_tick_ms();
+        let tick_ms = crate::state::TickMs(now_ms);
+        let Some(open) = self
+            .platform_state
+            .ime
+            .align_placeholder_desired(std::time::Instant::now(), tick_ms)
+        else {
+            return;
+        };
+        tracing::info!("[startup-align] desired_open を最初の成功観測へ揃えた: desired={open}");
+        let tsf_native = self
+            .platform
+            .current_app_profile()
+            .is_effectively_tsf_native(self.platform.focus.class_name());
+        if open && !tsf_native {
+            self.presync_applied_open_on(tick_ms);
+        }
+    }
 
     fn ir_check_drift_correction(
         &self,
