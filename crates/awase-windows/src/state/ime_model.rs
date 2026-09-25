@@ -135,8 +135,7 @@ impl AppliedImeState {
     /// 「送信を省略してよいか」のような抑制器/トリガーの判断（誤った yes が無音
     /// で不可逆な被害を生む用途）にのみ使うこと。現在の production 呼び出し元は
     /// `sync_ime_kind_from_observation`（GjiFsm 遷移トリガー）/
-    /// `ir_post_focus_change_snapshot` の enforce-OFF ゲート/
-    /// `send_engine_state_ime_key` のモードキー抑止判断の3箇所（決定1-b で
+    /// `send_engine_state_ime_key` のモードキー抑止判断の2箇所（決定1-b で
     /// 7箇所を `WarmupImeOn`/`warmup_ime_on()` へ移した残り）に加え、
     /// `ImeStateHub::resolve_warmup_ime_on`（`state/platform_state.rs`）自身が
     /// `WarmupImeOn::from_applied_or_belief` へ渡すための橋渡しとして呼ぶ

@@ -1055,7 +1055,7 @@ impl Runtime {
     /// という意図と正反対になる。加えて `ImeDiagnosticSnapshot::capture` は
     /// BUG-34 が撤去/非同期化の対象とする同族の同期 `SendMessageTimeoutW` を
     /// 含むため、BUG-34 が進めばこのゲートは静かに「常に不発」へ反転する。
-    /// enforce-OFF ブロック自体はこの関数を呼ばないまま維持する（決定4）。
+    /// （この enforce-OFF ブロック自体は 2026-09-25 に撤去した。docs/adr/191-calibration-experiments.md「A/B-1」。）
     pub(crate) fn ime_apply_should_defer(&self) -> bool {
         self.platform_state
             .ime
