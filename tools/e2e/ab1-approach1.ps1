@@ -2,7 +2,8 @@ param(
   [string]$Config = 'A',
   [int]$Runs = 8,
   [string]$AwaseLog = 'awase.log',
-  [string]$OutCsv = 'ab1-result.csv'
+  [string]$OutCsv = 'ab1-result.csv',
+  [string]$Serve = ''
 )
 # ADR-191 P1 / タスク09 A/B-1: フォーカス変更時の強制OFF(ime_refresh.rs focus_change_enforce_off)の撤去前後比較。
 # 窓2のIMEをONにした状態で、awase(belief=OFF)が動くまま窓1→窓2へフォーカスを移し、+100/+400/+1500msの窓2のIME開閉を読む。
@@ -94,8 +95,19 @@ function Read-LogLines {
   return @($all -split "`r?`n")
 }
 
+# ime_refresh の FocusChanged は「プロセス変更時」だけ発火するので、窓2は別プロセス(別pwsh)に置く。
+if ($Serve) {
+  $h = [Ab1]::Make(500)
+  Set-Content -Path $Serve -Value ([int64]$h) -Encoding ascii
+  Start-Sleep -Seconds 600
+  exit
+}
 $w1 = [Ab1]::Make(50)
-$w2 = [Ab1]::Make(500)
+$hf = Join-Path $env:TEMP 'ab1-w2.txt'
+Remove-Item $hf -ErrorAction SilentlyContinue
+$srv = Start-Process pwsh -ArgumentList '-NoProfile','-File',$PSCommandPath,'-Serve',$hf -PassThru
+for ($k = 0; $k -lt 60 -and -not (Test-Path $hf); $k++) { Start-Sleep -Milliseconds 500 }
+$w2 = [IntPtr][int64](Get-Content $hf)
 "windows: w1=$w1 w2=$w2"
 Start-Sleep -Seconds 2
 $rows = @()
@@ -130,3 +142,5 @@ Get-Content $OutCsv
 $valid = @($rows | Where-Object { $_.front_ok -eq 1 })
 $stay = @($valid | Where-Object { $_.open_1500ms -eq 1 })
 "SUMMARY config=$Config valid=$($valid.Count)/$Runs open_at_100ms=$(@($valid | Where-Object { $_.open_100ms -eq 1 }).Count) open_at_400ms=$(@($valid | Where-Object { $_.open_400ms -eq 1 }).Count) open_at_1500ms=$($stay.Count)"
+
+Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue
