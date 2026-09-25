@@ -1,0 +1,45 @@
+2026-09-21T15:47:36.614863Z  INFO awase_windows::app::bootstrap: Keyboard Layout Emulator starting... (log → D:\a\awase\awase\dist\awase.log)
+2026-09-21T15:47:37.501534Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:37.501581Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 531ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:38.007489Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:38.007524Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 1037ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:38.514589Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:38.514622Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 1545ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:39.022382Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:39.022416Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 2052ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:39.529103Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:39.529137Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 2559ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:40.031436Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:40.049762Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 3061ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:40.554660Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:40.554720Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 3585ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:41.062045Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:41.062078Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 4092ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:41.567927Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:41.567962Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 4598ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:42.075583Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:42.075619Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 5106ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:42.569365Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:42.569400Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 5599ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:43.075702Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:43.075736Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 6106ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:43.581028Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:43.581082Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 6611ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:44.088287Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:44.088324Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 7118ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:44.619769Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:44.619803Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 7650ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:45.123299Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:45.123334Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 8153ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:45.625199Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:45.625247Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 8655ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:46.136318Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:46.136351Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 9166ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:46.655734Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:46.655768Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 9686ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:47.163824Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:47.163857Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 10194ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:47.660803Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:47.660837Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 10691ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
+2026-09-21T15:47:48.168121Z DEBUG awase_windows::runtime::ime_refresh: [notify-refresh] ctx.ime_on=false ctx.is_jp=true explicit_intent=None
+2026-09-21T15:47:48.168164Z  WARN ir_apply_drift_correction: awase_windows::runtime::ime_refresh: [drift] correction: observed=false ≠ desired=true for 11198ms → set_ime_open(true) (source=ObserverPoll confidence=Medium)
