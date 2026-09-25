@@ -1,7 +1,7 @@
 ---
 title: awase.exe の読込時に残る「内蔵表との不一致5%判定」とカバレッジ判定が ADR-196 決定1e と食い違う（採用しても学習表が使われない構成がある）
-status: 未着手（B-2 は解消済み）
-priority: 高（タスク0の実測で全構成 CoverageTooLow と確定。学習機能を利用者に見せるなら、その前にカバレッジ判定の分母修正が必須。03 の判断に従う）
+status: 実装済み（PR #305。5%判定の廃止・カバレッジ分母の修正、ユーザー決定 2026-09-24。案Aの「突き合わせ済み記録」は不要になり取り下げ。修正後ビルドの実機再測定で全構成の採用を確認済み）
+priority: 中（実装済み。残りは修正後ビルドでの再測定確認。03 の同梱判断に従う）
 created: 2026-09-24
 related_adr: ["ADR-196", "ADR-195", "ADR-191"]
 source_review: 俯瞰レビュー（受動化・actuation撤去・学習/較正・config棚卸し・v2方針、2026-09-24）の A-1 / B-2 / B-3 / C-3 / C-6 / C-7（awase.exe 内の3経路の確認のみ）。元レビューはリポジトリ外（セッションの scratchpad）にしかないため、要点は本文に引用する
@@ -14,6 +14,23 @@ source_review: 俯瞰レビュー（受動化・actuation撤去・学習/較正�
 索引・優先度: [11](review-2026-09-24-11-low-priority-backlog.md)。
 裏取り基準は worktree の `5877f982`（origin/develop、PR #296 まで。PR #293 `d00ac8dd` を含む）。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
+
+## 決定と実装（2026-09-24、ユーザー決定）
+
+- **5%判定は廃止**: awase.exe の読込時に内蔵表と突き合わせない（ADR-196 決定1e のとおり、内蔵表を審査官にしない）。
+  `validate_and_convert` / `load_runtime_table` / `load_and_log` から `preset`・`check_against_bundled` を削除し、
+  `MismatchesBundledTooMuch`・`MAX_MISMATCH_RATIO`・`mismatch_ratio` も削除した。下の「推奨案」の案A（突き合わせ済みかの記録）・案Bは取り下げ（学習側のスキーマ変更も不要）。
+  実測（PR #303、windows-latest run 35987424778）で `mismatch` は GJI+ATOK・MS-IME 本体とも 0.000 だったので、廃止しても採否は変わらない。
+- **カバレッジ分母は「畳んだ後に変換対象になりえた検索キー数」**（`coverage_slot_count`）: 実測の棄却原因はこちらだった
+  （GJI+ATOK 0.782＝61/78、MS-IME 本体 0.52〜0.53＝74〜76/143。閉状態の畳み込みと、`Conv` で表せない開状態セルが分母に残っていた）。
+  閉状態は `(stage, key)` の1枠に畳み、`Conv` で表せない開状態セルは分母から除く。予測なしのセルと表に無いVKのセルは枠に数える（縮退表は引き続き棄却）。
+- 陳腐化（指紋）の照合は従来どおり残る（別IME・別プリセットで学習した表は `Stale` で棄却される）。
+- 不具合報告の同梱表突き合わせ診断（`bug_report.rs`、`last_validation_key`）は採否判定ではないので残した。
+- ADR-196 に追補（決定1e の直後）を書いた。
+- **修正後ビルドの再測定（windows-latest run 36062266673、検証専用ブランチ、4ジョブ success）**: 全構成で学習表が採用された。
+  GJI+ATOK: raw=78 converted=61 slots=65 coverage=0.938（採用）。MS-IME 本体（要確認→採用）3回: 正答率 0.960/0.967/0.963、raw=143 converted=74〜76 slots=78 coverage=0.949〜0.974（採用）。
+  MS-IME 本体の内訳: 開状態 91 セルのうち `Conv` で表せないもの 26（分母から除外）、予測なし 5〜7、押下後の変換モードが表せないもの 20〜21。CI 専用テストは `ci_real_learned_table_is_adopted` に改名した。
+  MS-IME 本体は学習側の判定（決定1a: 既定では要確認）が別にあるので、利用者が明示的に採用するまで使われない点は変わらない。
 
 ## 背景
 

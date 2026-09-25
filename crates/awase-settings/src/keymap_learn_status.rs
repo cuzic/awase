@@ -74,15 +74,17 @@ pub struct StatusInputs<'a> {
 
 /// awase.exeと同じ`validate_and_convert`で読み込み時検証の棄却理由を求める。
 ///
-/// 内蔵表との不一致判定(`check_against_bundled`)は、awase.exeが`KeyEffectKeymap`
-/// (GJI/MS-IME本体のキーマップ読み取り、`pub(crate)`かつ`cfg(windows)`)から得る値が
-/// 要るため未対応で、ここでは`false`(不一致は判定しない)固定。カバレッジ不足
-/// (`preset`に依存しない判定)だけを反映する。
+/// 指紋照合(`Stale`)は、awase.exeが`KeyEffectKeymap`(GJI/MS-IME本体のキーマップ読み取り、
+/// `pub(crate)`かつ`cfg(windows)`)から得る現在の指紋が要るため未対応で、ここでは表自身の
+/// 指紋を「現在の指紋」として渡す(常に一致扱い)。カバレッジ不足だけを反映する。
 #[must_use]
 pub fn runtime_rejection_of(table: &PersistedTable) -> Option<RuntimeRejection> {
-    use awase_windows::state::key_effect_predictor::KeymapPreset;
+    use awase_keymap_learn::staleness::FingerprintProbe;
     use awase_windows::state::key_effect_runtime::{RejectReason, validate_and_convert};
-    match validate_and_convert(table, KeymapPreset::Atok, false) {
+    let current = table
+        .fingerprint
+        .map_or(FingerprintProbe::NotSupported, FingerprintProbe::Computed);
+    match validate_and_convert(table, current) {
         Err(RejectReason::CoverageTooLow { coverage }) => {
             #[expect(
                 clippy::cast_possible_truncation,
