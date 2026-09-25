@@ -259,3 +259,5 @@ GJI側(`ci/e2e-drift-fix3`、run 35630377273): `cal-verify-obs` 400ms以降 0%�
 揃えた後は通常の drift correction に戻る(永続的に無効化しない)。awaseが通過後に書いた場合は揃えず、書き込みが届かなかったなら drift correction が訂正する。dispatch元は `pass_through_observed` の1箇所(architecture_guard)。
 **テスト:** 純関数 `should_align_after_expired_mode_key_pass_only_once_and_not_after_awase_write`(Linux)、`platform_state` の Windows専用テスト2件(通過→観測なし→窓切れ→最初の成功観測で揃い2回目は揃えない/awase書き込み後は揃えない。Linuxでは走らず windows-build CI で実行)。
 
+
+- 2026-09-25 A/B-1 アプローチ2（実アプリ+ログ駆動、run 36086291594、検証ブランチ ci/ab1-approach2）: GJI/windows-latest、N=20×{A,B}×{notepad,pwsh内EDIT}、窓1のIME(ON/OFF)×窓2移動前idle(800/2500/6000ms)を巡回。強制OFF発火は A/notepad の1/20（idle800ms・窓1OFF・初回試行）のみ、他3構成は0/20。発火した1回も窓2のIMEは+100/+400/+1500msすべて開（`sent=`行は採取できず）。全80試行で+1500msまで開のまま。判定不能（発火が稀で、発火回でもIMEが閉じない。API読み取りが実IMEを反映しているかは未検証）。
