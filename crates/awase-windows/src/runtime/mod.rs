@@ -573,15 +573,31 @@ impl Runtime {
         };
         let m = event.modifier_snapshot;
         if m.ctrl || m.alt || m.shift || m.win {
+            self.clear_hz_toggle_omit_latch(key, event);
             return;
         }
         // 表の適用範囲と揃える: GJI と、CLSID で同定できた Microsoft IME 本体だけ。GJI 未検出・第三者 IME・
         // IMM32 HKL のみでは付けず、生キーを通して観測に追随する（レビュー round2 NB3）。
         let Some(ime) = crate::tsf::observer::tsf_obs().table_ime_kind() else {
+            self.clear_hz_toggle_omit_latch(key, event);
             return;
         };
         if key.is_open_toggle_for(ime) && !self.learned_table_omits_hz_toggle(event, ime) {
             event.ime_relevance.shadow_action = Some(awase::types::ShadowImeAction::Toggle);
+        }
+    }
+
+    /// 半角/全角の非injected KeyDown が、判定（`learned_table_omits_hz_toggle`）に届かず早期 return する
+    /// （修飾付き・IME種別不明）とき、古いラッチを捨てる。捨てないと、その後のKeyUpが前回押下の判定を
+    /// 使い、Down=Allow・Up=Suppress の非対称を作る（Opus round2 N2）。
+    fn clear_hz_toggle_omit_latch(&mut self, key: crate::vk::ImeKeyKind, event: &RawKeyEvent) {
+        if matches!(
+            key,
+            crate::vk::ImeKeyKind::DbeSbcsChar | crate::vk::ImeKeyKind::DbeDbcsChar
+        ) && event.event_type == awase::types::KeyEventType::KeyDown
+            && !event.injected
+        {
+            self.hz_toggle_omit_latch = None;
         }
     }
 
@@ -590,40 +606,48 @@ impl Runtime {
     /// ない正規の挙動があり、カスタム表も持てないので対象外）。学習表が無い・棄却・未採用・opt-out・
     /// キーマップ未取得のときは`false`＝従来どおり固定セットを維持する。
     ///
-    /// KeyDownで確定した結果を scan_code 付きのラッチに持ち、同じ物理キーのKeyUpはそれを使う。
+    /// KeyDownで確定した結果を scan_code 付きのラッチに持ち、同じ物理キーのKeyUpはそれを使う
+    /// （純関数[`crate::state::key_effect_runtime::omit_latch_step`]。IME種別の判定より前にラッチを見るので、
+    /// 押したままGJI以外の窓へ移ってもDownとUpの判定が揃う）。
     fn learned_table_omits_hz_toggle(
         &mut self,
         event: &RawKeyEvent,
         ime: crate::state::ime_kind::ImeKindId,
     ) -> bool {
-        use crate::state::ime_kind::ImeKindId;
-        if ime != ImeKindId::Gji {
-            return false;
-        }
-        if event.event_type == awase::types::KeyEventType::KeyUp {
-            if let Some((scan, omit)) = self.hz_toggle_omit_latch {
-                if event.scan_code.0 != 0 && scan == event.scan_code {
-                    return omit;
+        use awase::types::KeyEventType;
+        let is_up = event.event_type == KeyEventType::KeyUp;
+        let fresh_down = event.event_type == KeyEventType::KeyDown && !event.injected;
+        let use_learned = self.use_learned_keymap_table;
+        let gji = ime == crate::state::ime_kind::ImeKindId::Gji;
+        let (omit, latch) = crate::state::key_effect_runtime::omit_latch_step(
+            self.hz_toggle_omit_latch,
+            is_up,
+            fresh_down,
+            event.scan_code,
+            || {
+                if !(gji && use_learned) {
+                    return false;
                 }
-            }
-        }
-        let omit = self.use_learned_keymap_table && {
-            let now_ms = crate::hook::current_tick_ms();
-            match self.key_effect_keymap.get(
-                now_ms,
-                crate::gji_charset_autodetect::config1_db_stamp,
-                crate::gji_charset_autodetect::read_key_effect_keymap,
-            ) {
-                Some(keymap) => {
-                    self.key_effect_runtime_table.get_for_keymap(now_ms, keymap);
-                    self.key_effect_runtime_table.hankaku_zenkaku_non_toggle()
+                let now_ms = crate::hook::current_tick_ms();
+                let Some(keymap) = self.key_effect_keymap.get(
+                    now_ms,
+                    crate::gji_charset_autodetect::config1_db_stamp,
+                    crate::gji_charset_autodetect::read_key_effect_keymap,
+                ) else {
+                    return false;
+                };
+                self.key_effect_runtime_table.get_for_keymap(now_ms, keymap);
+                let omit = self.key_effect_runtime_table.hankaku_zenkaku_non_toggle();
+                if omit && fresh_down {
+                    tracing::info!(
+                        "[hz-toggle] 学習表が半角/全角を開閉トグルでないと示す: 固定セットのToggleを外す (scan=0x{:X})",
+                        event.scan_code.0
+                    );
                 }
-                None => false,
-            }
-        };
-        if event.event_type == awase::types::KeyEventType::KeyDown && !event.injected {
-            self.hz_toggle_omit_latch = Some((event.scan_code, omit));
-        }
+                omit
+            },
+        );
+        self.hz_toggle_omit_latch = latch;
         omit
     }
 

@@ -518,6 +518,40 @@ pub fn validate_and_convert(
     Ok(converted)
 }
 
+/// 半角/全角の「学習表由来でToggleを外すか」判定のラッチ（`(scan_code, 外すか)`）を進める純関数（ADR-195追記）。
+///
+/// - KeyUp で、ラッチの scan_code（非0）が一致すればラッチの判定を使う（`fresh`は呼ばない）。
+/// - それ以外は`fresh`で判定を求める。非injectedのKeyDown（`fresh_down`）はその結果でラッチを**上書き**する。
+///   KeyUp では消さない（drain経路は enrich を2回呼ぶので、Down→Up→Down→Up でも同じ結果になる）。
+/// - 識別は vk でなく scan_code（`VK_DBE_*`はDown/Upでvkが変わりうる、BUG-131/132）。
+///
+/// 戻り値は`(判定, 新しいラッチ)`。
+#[must_use]
+pub fn omit_latch_step(
+    latch: Option<(awase::types::ScanCode, bool)>,
+    is_up: bool,
+    fresh_down: bool,
+    scan: awase::types::ScanCode,
+    fresh: impl FnOnce() -> bool,
+) -> (bool, Option<(awase::types::ScanCode, bool)>) {
+    if is_up {
+        if let Some((s, omit)) = latch {
+            if scan.0 != 0 && s == scan {
+                return (omit, latch);
+            }
+        }
+    }
+    let omit = fresh();
+    (
+        omit,
+        if fresh_down {
+            Some((scan, omit))
+        } else {
+            latch
+        },
+    )
+}
+
 /// `config1.db`スタンプ（[`super::key_effect_predictor::KeymapCache`]）と同じ方式のfsキャッシュ。
 /// `RECHECK_MS`ごとにファイルの版（更新時刻+長さ）だけを問い合わせ、変わったときだけ読み直す。
 /// 判定は純関数で、fs/時計は呼び出し側が渡す（テスト容易性のため`KeymapCache`と同じ形にする）。
@@ -630,11 +664,6 @@ impl RuntimeTableCache {
                         TableKey::HankakuZenkaku,
                     )
                 });
-                if self.hankaku_zenkaku_non_toggle {
-                    tracing::info!(
-                        "[hz-toggle] 採用中の学習表が半角/全角を開閉トグルでないと示す: 固定セットのToggleを外す"
-                    );
-                }
             }
         }
         self.cells.as_deref()
@@ -1398,5 +1427,45 @@ mod tests {
         // 学習表が消えたら（棄却・ファイル削除）判定も戻る。
         cache.get(RuntimeTableCache::RECHECK_MS, key, || Some((2, 1)), || None);
         assert!(!cache.hankaku_zenkaku_non_toggle());
+    }
+
+    /// ADR-195追記: KeyDownで確定した判定がKeyUpへ持ち越され、途中で表が変わっても揃う。
+    #[test]
+    fn omit_latch_carries_down_verdict_to_up() {
+        use awase::types::ScanCode;
+        let scan = ScanCode(0x29);
+        // Down: fresh=false でラッチを上書き。
+        let (v, latch) = omit_latch_step(None, false, true, scan, || false);
+        assert!(!v);
+        // その後に表が差し替わって fresh が true になっても、Up はラッチ（false）を使う（fresh は呼ばれない）。
+        let (v, latch2) =
+            omit_latch_step(latch, true, false, scan, || panic!("fresh must not run"));
+        assert!(!v);
+        assert_eq!(latch2, latch, "Upでラッチを消さない");
+        // 二重 enrich（Down→Up→Down→Up）でも同じ。
+        let (v, latch3) = omit_latch_step(latch2, false, true, scan, || false);
+        assert!(!v);
+        let (v, _) = omit_latch_step(latch3, true, false, scan, || true);
+        assert!(!v);
+    }
+
+    /// scan が違う（別の物理キー）/ scan 0 / ラッチ無しの Up は、その場で判定する。injected の Down はラッチを更新しない。
+    #[test]
+    fn omit_latch_ignores_other_scan_and_injected() {
+        use awase::types::ScanCode;
+        let latch = Some((ScanCode(0x29), false));
+        let (v, l) = omit_latch_step(latch, true, false, ScanCode(0x1E), || true);
+        assert!(v);
+        assert_eq!(l, latch);
+        let (v, _) = omit_latch_step(Some((ScanCode(0), false)), true, false, ScanCode(0), || {
+            true
+        });
+        assert!(v);
+        let (v, _) = omit_latch_step(None, true, false, ScanCode(0x29), || true);
+        assert!(v);
+        // injected の Down（fresh_down=false）: 判定は返すがラッチは変えない。
+        let (v, l) = omit_latch_step(latch, false, false, ScanCode(0x29), || true);
+        assert!(v);
+        assert_eq!(l, latch);
     }
 }

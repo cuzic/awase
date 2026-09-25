@@ -744,7 +744,8 @@ mod classification_tests {
     /// 同梱表（GJIの2プリセット）は純トグルなので、判定が外さない（誤検出の回帰）。
     #[test]
     fn hz_bundled_gji_tables_are_pure_toggle() {
-        for cells in [ATOK, MSIME] {
+        // MS-IME本体（GJI限定を外す議論が出たときの根拠）: `Stage::None`では純トグルなので偽。
+        for cells in [ATOK, MSIME, MSIME_NATIVE] {
             assert!(!learned_cells_show_non_toggle(
                 cells,
                 TableKey::HankakuZenkaku
