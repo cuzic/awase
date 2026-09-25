@@ -186,6 +186,13 @@ pub struct ImeModel {
     /// （`input_mode` と同じパターン）。
     desired_open: bool,
 
+    /// `desired_open` が起動時の**初期値のまま**（どの意図・復元・揃えでも書かれていない）か（BUG-163）。
+    ///
+    /// 初期値 `true` は「観測が無いときの既定」にすぎず、awase が IME にそうしたい意図ではない。この間は
+    /// `desired_open` を「awase の意図」として扱わず、最初の成功観測へ 1 回だけ揃える
+    /// （`ImeStateHub::align_placeholder_desired`）。`desired_open` を書く reduce のアームは、全てここを `false` にする。
+    desired_is_placeholder: bool,
+
     /// 入力モード（ローマ字/かな/英数/不明）の belief。
     ///
     /// H-3-b で追加。H-3-c で `ImeBelief::input_mode` への直接代入が
@@ -306,6 +313,7 @@ impl ImeModel {
     pub fn new() -> Self {
         Self {
             desired_open: true,
+            desired_is_placeholder: true,
             input_mode: InputModeState::ObservedRomaji, // ImeBelief 初期値に合わせる
             last_intent: None,
             observations: ObservationStore::default(),
@@ -367,6 +375,12 @@ impl ImeModel {
         self.input_mode
     }
 
+    /// `desired_open` が起動時の初期値のままか（BUG-163）。`true` の間、`desired_open` は awase の意図ではない。
+    #[must_use]
+    pub const fn desired_is_placeholder(&self) -> bool {
+        self.desired_is_placeholder
+    }
+
     /// テスト専用: `desired_open` を直接設定する。
     ///
     /// carry-over シナリオ（focus 変更前の stale な desired_open）をテストで
@@ -374,6 +388,7 @@ impl ImeModel {
     #[cfg(test)]
     pub(crate) fn set_desired_open_for_test(&mut self, value: bool) {
         self.desired_open = value;
+        self.desired_is_placeholder = false;
     }
 
     /// 現在 CtrlImeChord transaction が active か。
@@ -691,12 +706,14 @@ impl ImeModel {
                 self.key_track.stage = crate::state::key_effect_predictor::Stage::None;
                 let target = !self.desired_open;
                 self.desired_open = target;
+                self.desired_is_placeholder = false;
                 self.record_intent(target, source, envelope.time.tick_ms);
             }
             ImeEvent::UserImeSetIntent { target, source } => {
                 self.key_effect = None;
                 self.key_track.stage = crate::state::key_effect_predictor::Stage::None;
                 self.desired_open = target;
+                self.desired_is_placeholder = false;
                 self.record_intent(target, source, envelope.time.tick_ms);
             }
             ImeEvent::PanicReset { target } => {
@@ -705,6 +722,7 @@ impl ImeModel {
                 // ForceGuard::PanicReset が IME ON を保証するため、
                 // has_user_explicit_intent() を汚染しない。
                 self.desired_open = target;
+                self.desired_is_placeholder = false;
             }
             ImeEvent::HwndCacheRestored { target } => {
                 // HWND キャッシュ復元: 前回フォーカス時の desired_open を回復する。
@@ -712,6 +730,7 @@ impl ImeModel {
                 // has_user_explicit_intent() が false のまま維持され、
                 // 後続の実観測が effective_open() を上書きできる。
                 self.desired_open = target;
+                self.desired_is_placeholder = false;
             }
             ImeEvent::EngineActivationSync { target: _target } => {
                 // Engine の active/inactive 遷移が対称性のために自動発行した echo。
@@ -882,6 +901,7 @@ impl ImeModel {
                 if align_desired {
                     if let Some(outcome) = self.observations.derive_any(envelope.time.monotonic) {
                         self.desired_open = outcome.value();
+                        self.desired_is_placeholder = false;
                     }
                 }
             }
@@ -1342,10 +1362,75 @@ mod tests {
         let mut expected = fully_populated_model(now);
         expected.last_intent = None;
         expected.desired_open = true;
+        // `desired_open` を書いたので、「初期値のまま」でなくなる（BUG-163）。
+        expected.desired_is_placeholder = false;
         assert_eq!(
             format!("{model:?}"),
             format!("{expected:?}"),
-            "ModeKeyPassedThrough は last_intent と desired_open 以外を書き換えてはならない"
+            "ModeKeyPassedThrough は last_intent と desired_open（と、それに伴う desired_is_placeholder）\
+             以外を書き換えてはならない"
+        );
+    }
+
+    /// BUG-163: 起動時の `desired_open`（初期値 true）は「初期値のまま」で、意図・復元・揃えのどれかが書くと外れる。
+    #[test]
+    fn desired_open_is_a_placeholder_until_something_writes_it() {
+        let now = Instant::now();
+        assert!(
+            ImeModel::new().desired_is_placeholder(),
+            "起動直後は初期値のまま"
+        );
+
+        // 明示意図（ユーザー操作）。
+        let mut m = ImeModel::new();
+        m.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::SyncKey,
+            },
+        ));
+        assert!(!m.desired_is_placeholder());
+
+        let mut m = ImeModel::new();
+        m.reduce(&envelope(
+            1,
+            ImeEvent::UserImeToggleIntent {
+                source: UserIntentSource::SyncKey,
+            },
+        ));
+        assert!(!m.desired_is_placeholder());
+
+        // 復旧操作・HWND キャッシュ復元。
+        let mut m = ImeModel::new();
+        m.reduce(&envelope(1, ImeEvent::PanicReset { target: true }));
+        assert!(!m.desired_is_placeholder());
+        let mut m = ImeModel::new();
+        m.reduce(&envelope(1, ImeEvent::HwndCacheRestored { target: false }));
+        assert!(!m.desired_is_placeholder());
+
+        // 観測が無い揃え（読めない窓）は書かないので、初期値のまま。
+        let mut m = ImeModel::new();
+        m.reduce(&envelope(
+            1,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: true,
+            },
+        ));
+        assert!(m.desired_is_placeholder(), "観測が無ければ揃えない");
+
+        // 観測がある揃えは書く。
+        let mut m = fully_populated_model(now);
+        m.desired_is_placeholder = true;
+        m.reduce(&envelope(
+            1,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: true,
+            },
+        ));
+        assert!(
+            !m.desired_is_placeholder(),
+            "観測から揃えたら初期値ではない"
         );
     }
 

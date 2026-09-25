@@ -346,6 +346,32 @@ impl ImeStateHub {
         self.dispatch_event(ImeEvent::ModeKeyPassedThrough { align_desired }, tick_ms);
     }
 
+    /// `desired_open` が起動時の初期値のまま（BUG-163）か。`true` の間、`desired_open` は awase の意図ではない。
+    #[must_use]
+    pub(crate) fn desired_is_placeholder(&self) -> bool {
+        self.shadow_model.desired_is_placeholder()
+    }
+
+    /// 起動時の初期値のままの `desired_open` を、最初の成功観測へ**1回だけ**揃える（BUG-163、代案A）。
+    ///
+    /// 初期値 `true` は「観測が無いときの既定」で、awase が IME にそうしたい意図ではない。揃えないと、IME を閉じて起動したとき
+    /// 最初の観測「閉」が初期値 `true` と比べられ、明示意図が無いのに drift 補正が発火する（`ir_apply_drift_correction`）。
+    /// 揃える条件: 初期値のまま（`desired_is_placeholder`）、明示意図が無い（`last_intent`）、観測から導ける開閉
+    /// （`derive_any`）がある。揃えたら（`ModeKeyPassedThrough { align_desired: true }` の reducer 経路、BUG-157 と同じ）
+    /// 揃えた後の `desired_open` を返す。揃えなかったら `None`（読めない窓では観測が来るまで触れない）。
+    pub(crate) fn align_placeholder_desired(
+        &mut self,
+        now: std::time::Instant,
+        tick_ms: TickMs,
+    ) -> Option<bool> {
+        if !self.shadow_model.desired_is_placeholder() || self.shadow_model.last_intent.is_some() {
+            return None;
+        }
+        self.shadow_model.observations.derive_any(now)?;
+        self.pass_through_observed(tick_ms, true);
+        Some(self.shadow_model.desired_open())
+    }
+
     /// 通過マークの窓が**切れた後**の最初の成功観測で、`desired_open`を観測へ揃える（BUG-158追補2）。
     /// 窓の間の観測が全て時間切れだった通過は、揃える機会が無いまま`observed ≠ desired`が続くため。
     /// 通過につき1回だけ。通過より後にawaseが書いた/新しい明示意図があるときは揃えない。

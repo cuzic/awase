@@ -547,6 +547,18 @@ impl Harness {
         let decision = self.engine.on_command(EngineCommand::RefreshState, &ctx);
         self.handle_engine_decision(&decision);
 
+        // `ir_align_placeholder_desired`（`runtime/ime_refresh.rs`）の写し（BUG-163、代案A）: 起動時の初期値のままの
+        // `desired_open` を、明示意図が無く、観測から導ける開閉があるとき、最初の成功観測へ 1 回だけ揃える
+        // （`ImeStateHub::align_placeholder_desired`、reducer は `ModeKeyPassedThrough { align_desired: true }`）。
+        if self.model.desired_is_placeholder()
+            && self.model.last_intent.is_none()
+            && self.model.observations.derive_any(self.now()).is_some()
+        {
+            self.reduce(ImeEvent::ModeKeyPassedThrough {
+                align_desired: true,
+            });
+        }
+
         let explicit = self.model.last_intent.as_ref().map(|i| i.target);
         if let Some(drift) = check_drift_correction(&self.model, self.now(), explicit) {
             // `ir_apply_drift_correction`（`runtime/ime_refresh.rs`）: ImmCross（書き込み経路が

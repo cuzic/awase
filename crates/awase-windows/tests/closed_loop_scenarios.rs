@@ -166,10 +166,9 @@ fn bug163_run(source: Source) -> Harness {
 /// BUG-163（P3）: 最初の成功観測が「閉」なら desired がそれに揃い、drift 補正が発火しない。
 /// 観測源は現在の CI（ImmCrossProbe/High。`f2a875cd` の run で起動0.5秒後・約1秒後に発火）。
 ///
-/// 1段目の修正（`b6ab8980`、warrant の下りない ImmCross の補正を検知の手前で見送る）で「発火」は消えたが、
-/// desired は起動時の初期値 true のまま（代案A〈起動直後の desired 揃え〉は未着手）なので、P3 の前半で失敗する。
+/// 1段目の修正（`b6ab8980`、warrant の下りない ImmCross の補正を検知の手前で見送る）と、代案A（起動時の初期値のままの
+/// desired を最初の成功観測へ揃える、`ImeStateHub::align_placeholder_desired`）で緑になった。
 #[test]
-#[ignore = "BUG-163: 代案A（起動直後の desired 揃え）が未着手。修正後に外す"]
 fn bug163_startup_closed_imm_cross_observation_aligns_desired_without_drift_correction() {
     let h = bug163_run(Source::ImmCross);
     assert_ok(&h, p3_startup_aligns_desired_without_drift(&h));
@@ -178,7 +177,6 @@ fn bug163_startup_closed_imm_cross_observation_aligns_desired_without_drift_corr
 
 /// BUG-163（P3）の旧 CI の形（観測源 ObserverPoll/Medium、run 35620809258）。
 #[test]
-#[ignore = "BUG-163: 代案A（起動直後の desired 揃え）が未着手。修正後に外す"]
 fn bug163_startup_closed_poll_observation_aligns_desired_without_drift_correction() {
     let h = bug163_run(Source::Poll);
     assert_ok(&h, p3_startup_aligns_desired_without_drift(&h));

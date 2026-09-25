@@ -189,6 +189,36 @@ impl Runtime {
         tick_ms
     }
 
+    /// 非 TsfNative で、IME が ON である belief を `applied` へ先同期し、GJI なら GjiFsm へも ImeOn を通知する。
+    ///
+    /// フォーカス直後の OS 観測値を applied に先同期して、直後の Engine ON が古い applied を根拠に不要な再送へ進む
+    /// ことを防ぐ（KanjiToggle 機構は撤去済みだが、applied_snapshot を未更新のままにすると focus-resync / force-on の
+    /// 判断が古い状態を参照するため、この pre-sync は Standard でも必要）。
+    ///
+    /// BUG-18: HwndCacheRestored / mirror_applied_open は belief 層（ImeModel）だけを ON に戻し、GjiFsm には一切通知
+    /// しない。無操作中の AppKind 往復（TsfNative⇔Uwp）で本経路を繰り返し通ると、直前の実 IME-OFF で
+    /// `GjiFsm::OffCold` に入ったまま belief だけが ON に戻り、再開後の StartComposition が OffCold で握りつぶされて
+    /// 最初の数文字が欠落する。`sync_ime_kind_from_observation`（runtime/message_handlers.rs）と同じ
+    /// 「belief=ON なら GjiFsm へも ImeOn を通知する」パターンを揃える。GjiFsm が既に ON なら ImeOn ハンドラ側で
+    /// no-op になる（gji_fsm.rs 558-565）。
+    pub(crate) fn presync_applied_open_on(&mut self, tick_ms: crate::state::TickMs) {
+        self.platform_state.ime.record_confirmed(true, tick_ms.0);
+        tracing::debug!(
+            "[focus] Imm32Unavailable hard pre-sync applied=true \
+             (prevent spurious VK_KANJI on first character key)"
+        );
+        if matches!(
+            crate::tsf::observer::tsf_obs().active_ime_kind(),
+            crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
+        ) {
+            let mode = self.platform.output.injection_mode;
+            self.platform.gji_on_ime_on(mode);
+            for entry in self.platform.drain_journal_entries() {
+                self.platform_state.ime.journal.absorb(entry);
+            }
+        }
+    }
+
     /// bootstrap で確立した最初のフォーカススコープの同一性（epoch + hwnd）を
     /// `ObservationStore::current_fence` へ同期する（BUG-102）。
     ///
@@ -739,34 +769,16 @@ impl Runtime {
             .platform
             .current_app_profile()
             .is_effectively_tsf_native(self.platform.focus.class_name());
-        if !is_effectively_tsf_native_now {
-            let ime_on_now = self.platform_state.ime.effective_open();
-            if ime_on_now {
-                self.platform_state.ime.record_confirmed(true, tick_ms.0);
-                tracing::debug!(
-                    "[focus] Imm32Unavailable hard pre-sync applied=true \
-                     (prevent spurious VK_KANJI on first character key)"
-                );
-                // BUG-18: HwndCacheRestored / mirror_applied_open は belief 層
-                // (ImeModel) だけを ON に戻し、GjiFsm には一切通知しない。
-                // 無操作中の AppKind 往復 (TsfNative⇔Uwp) で本経路を繰り返し通ると、
-                // 直前の実 IME-OFF で GjiFsm::OffCold に入ったまま belief だけが
-                // ON に戻り、再開後の StartComposition が OffCold で握りつぶされて
-                // 最初の数文字が欠落する。sync_ime_kind_from_observation
-                // (runtime/message_handlers.rs) と同じ「belief=ON なら GjiFsm へも
-                // ImeOn を通知する」パターンをここにも適用して揃える。GjiFsm が
-                // 既に ON なら ImeOn ハンドラ側で no-op になる (gji_fsm.rs 558-565)。
-                if matches!(
-                    crate::tsf::observer::tsf_obs().active_ime_kind(),
-                    crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
-                ) {
-                    let mode = self.platform.output.injection_mode;
-                    self.platform.gji_on_ime_on(mode);
-                    for entry in self.platform.drain_journal_entries() {
-                        self.platform_state.ime.journal.absorb(entry);
-                    }
-                }
-            }
+        // BUG-163: `desired_open` が起動時の初期値のまま（`desired_is_placeholder`）の間は、`effective_open()` の
+        // 「ON」は観測でも意図でもない既定値にすぎない。これで先同期・GJI への ImeOn 通知（→ long-cold の
+        // `VK_IME_OFF→VK_IME_ON` reinit）を行うと、IME を閉じて起動したとき awase が IME を開けてしまう。
+        // 初期値のままの間は行わず、最初の成功観測が「開」だったときに `ir_align_placeholder_desired` が同じ処理を行う
+        // （観測が「閉」なら行わない。GjiFsm は閉の IME と整合した OffCold のまま）。
+        if !is_effectively_tsf_native_now
+            && !self.platform_state.ime.desired_is_placeholder()
+            && self.platform_state.ime.effective_open()
+        {
+            self.presync_applied_open_on(tick_ms);
         }
 
         // ImmCross アプリ（Qt/LINE 等）: FocusChanged 直後に child hwnd の正確な IME 状態を
