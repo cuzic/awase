@@ -103,6 +103,12 @@ pub(crate) struct ImeStateHub {
     /// `ApplyGeneration` 専用アロケータ（ADR-106 決定1）。`event_log.next_seq()`
     /// から独立しており、診断ログの記録有無と generation の一意性が無関係になる。
     generation_alloc: super::GenerationAllocator,
+
+    /// 起動直後の最初の成功観測での`desired_open`の揃え（BUG-163）を判定済みか。最初の成功観測で1回だけ判定する。
+    startup_align_done: bool,
+    /// 起動後にawase自身がIMEへ書いた（`record_optimistic`/`record_confirmed`）ことがあるか。
+    /// `ModeKeyPassMark::awase_wrote`と同じく過大に数える（安全側＝揃えない、にだけ倒れる）。
+    awase_wrote_since_start: bool,
 }
 
 /// [`ImeStateHub::capture_poll_state`] で取得する IME ポーリング入力スナップショット。
@@ -149,6 +155,8 @@ impl ImeStateHub {
             intent_override_logged: std::cell::Cell::new(false),
             warmup_gate_suppression_logged: std::cell::Cell::new(false),
             generation_alloc: super::GenerationAllocator::new(),
+            startup_align_done: false,
+            awase_wrote_since_start: false,
         }
     }
 }
@@ -393,6 +401,25 @@ impl ImeStateHub {
         true
     }
 
+    /// 起動直後の最初の成功観測で、`desired_open`を観測へ揃える（BUG-163）。起動後1回だけ判定する
+    /// （最初の成功観測が「awaseが書いた後」「明示意図あり」なら、以後も揃えない）。
+    /// 揃えは`pass_through_observed`（`ModeKeyPassedThrough { align_desired: true }`）と同じ経路で、
+    /// 観測から導ける開閉があるときだけ`desired_open`を書く。観測が成功したときに呼ぶ。揃えたら`true`。
+    pub(crate) fn align_desired_at_startup(&mut self, tick_ms: TickMs) -> bool {
+        if self.startup_align_done {
+            return false;
+        }
+        self.startup_align_done = true;
+        if !super::mode_key_pass::should_align_desired_at_startup(
+            self.awase_wrote_since_start,
+            self.shadow_model.last_intent.is_some(),
+        ) {
+            return false;
+        }
+        self.pass_through_observed(tick_ms, true);
+        true
+    }
+
     pub(crate) fn invalidate_intents_if_mode_key_pass_live(
         &mut self,
         now_ms: u64,
@@ -428,6 +455,7 @@ impl ImeStateHub {
     /// この5箇所のどれとも異なる新規パターンなら actuation 由来かどうかを
     /// 必ず確認すること。
     pub(crate) fn record_optimistic(&mut self, open: bool) {
+        self.awase_wrote_since_start = true;
         self.note_awase_write_for_mode_key_pass();
         self.shadow_model.applied = AppliedImeState::Optimistic(open);
         self.clear_pending_if_matches(open);
@@ -439,6 +467,7 @@ impl ImeStateHub {
     /// `at_ms`: 呼び出し元が取得した現在時刻（`GetTickCount64` 由来、非ゼロ）。
     /// INV-A97-1 の既知の例外は `record_optimistic` の doc を参照。
     pub(crate) fn record_confirmed(&mut self, open: bool, at_ms: u64) {
+        self.awase_wrote_since_start = true;
         self.note_awase_write_for_mode_key_pass();
         self.shadow_model.applied = AppliedImeState::Confirmed { open, at_ms };
         self.clear_pending_if_matches(open);
@@ -3059,6 +3088,52 @@ mod tests {
             !ps.align_after_expired_pass_for_test(600, scope),
             "awase が書いた後は揃えない"
         );
+    }
+
+    /// BUG-163: IME を閉じて起動 → 最初の成功観測（閉）で desired（初期値 true）を1回だけ揃え、
+    /// drift correction が `set_ime_open(true)` を発行しない。2回目以降は揃えない。
+    #[test]
+    fn startup_align_aligns_desired_once_on_first_successful_observation() {
+        let mut ps = PlatformState::new();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        assert!(
+            ps.ime.shadow_model.desired_open(),
+            "初期値は true（型・初期値は変えない）"
+        );
+        write_open_observation_high(&mut ps, false, 500);
+        assert!(ps.ime.align_desired_at_startup(TickMs(500)));
+        assert!(
+            !ps.ime.shadow_model.desired_open(),
+            "最初の成功観測（閉）へ揃える"
+        );
+        write_open_observation_high(&mut ps, true, 900);
+        assert!(
+            !ps.ime.align_desired_at_startup(TickMs(900)),
+            "起動後1回だけ"
+        );
+        assert!(!ps.ime.shadow_model.desired_open());
+    }
+
+    /// BUG-163: 最初の成功観測より前に awase が書いた/明示意図があるときは揃えず、以後も揃えない。
+    #[test]
+    fn startup_align_skips_after_awase_write_or_explicit_intent() {
+        let mut wrote = PlatformState::new();
+        dispatch_focus_changed(&mut wrote, TARGET_HWND, 1, 0);
+        wrote.ime.record_optimistic(true);
+        write_open_observation_high(&mut wrote, false, 500);
+        assert!(!wrote.ime.align_desired_at_startup(TickMs(500)));
+        assert!(wrote.ime.shadow_model.desired_open());
+        write_open_observation_high(&mut wrote, false, 900);
+        assert!(
+            !wrote.ime.align_desired_at_startup(TickMs(900)),
+            "最初の成功観測で判定済み（以後も揃えない）"
+        );
+
+        let mut intent = PlatformState::new();
+        dispatch_focus_changed(&mut intent, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut intent, true, 100);
+        write_open_observation_high(&mut intent, false, 500);
+        assert!(!intent.ime.align_desired_at_startup(TickMs(500)));
     }
 
     /// 対象が違えば IntentStore は効かない（ADR-087 INV-24(b) の2段判定、BUG-26 非退行）。

@@ -239,6 +239,18 @@ impl Runtime {
                         "[mode-key-follow] first successful observation after the window: desired aligned"
                     );
                 }
+                // BUG-163: 起動直後の最初の成功観測で、初期値 `desired_open=true` を観測へ1回だけ揃える
+                // （揃えないと観測「閉」が初期値と比べられ、drift correction が IME を開けに行く）。
+                if observed
+                    && self
+                        .platform_state
+                        .ime
+                        .align_desired_at_startup(crate::state::TickMs(now))
+                {
+                    tracing::info!(
+                        "[startup-align] first successful observation after startup: desired aligned"
+                    );
+                }
             }
         }
 

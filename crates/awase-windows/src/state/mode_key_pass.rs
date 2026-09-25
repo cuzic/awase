@@ -258,6 +258,20 @@ pub(crate) const fn should_align_after_expired_mode_key_pass(
     age_ms >= window_ms && !mark.aligned && !mark.awase_wrote && !has_intent
 }
 
+/// 起動直後の最初の成功観測で、`desired_open`（初期値`true`）を観測へ揃えるか（BUG-163）。
+///
+/// `desired_open`の初期値`true`は根拠が現存しない（`ImeBelief::ime_on`は無い）。IMEを閉じて起動すると、
+/// 最初の観測「閉」が初期値と比べられてdrift correctionが`set_ime_open(true)`を発行する（ADR-191決定1違反）。
+/// 揃える条件（起動後1回だけ、判定は呼び出し元が「最初の成功観測」でのみ行う）:
+/// - awaseがまだ実際にIMEへ書いていない（書いたなら実IMEに届かなかったのかもしれず、drift correctionが訂正すべき）
+/// - 明示意図が無い（`last_intent`。ユーザーの意図を観測で上書きしない）
+///
+/// 型・初期値・`effective_open()`のフォールバックは変えない（観測ゼロの窓では`desired_open`に触れない）。
+#[must_use]
+pub(crate) const fn should_align_desired_at_startup(awase_wrote: bool, has_intent: bool) -> bool {
+    !awase_wrote && !has_intent
+}
+
 /// `kp_stage_mode_key_follow`（無変換/変換等の生キー通過後の追随＝通過マーク＋読み直し予約）を、
 /// この打鍵で立ててよいか（修飾キーの判定だけ、レビュー round3 N8）。
 ///
@@ -471,6 +485,15 @@ mod tests {
         assert!(!should_align_after_expired_mode_key_pass(
             &fresh, 9000, w, true
         ));
+    }
+
+    /// BUG-163: 起動直後の最初の成功観測で揃えるのは、awaseが未書き込みかつ明示意図が無いときだけ。
+    #[test]
+    fn should_align_desired_at_startup_only_when_no_write_and_no_intent() {
+        assert!(should_align_desired_at_startup(false, false));
+        assert!(!should_align_desired_at_startup(true, false));
+        assert!(!should_align_desired_at_startup(false, true));
+        assert!(!should_align_desired_at_startup(true, true));
     }
 
     /// レビュー round3 N8: Ctrl+無変換→Ctrl+変換（Ctrl 保持のまま、spike `--resync`「リセット操作」）は

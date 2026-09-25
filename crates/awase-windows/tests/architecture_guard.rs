@@ -3320,7 +3320,8 @@ fn initial_app_policy_event_only_touches_app_policy() {
 
 /// ADR-187/191: `ImeEvent::ModeKeyPassedThrough` は `ImeStateHub::pass_through_observed` の1箇所だけが
 /// dispatch する（呼び出し元は、観測成功時の `invalidate_intents_if_mode_key_pass_live`、窓の終了時の
-/// `expire_mode_key_pass_mark`、窓が切れた後の最初の成功観測での `align_after_expired_mode_key_pass`）。
+/// `expire_mode_key_pass_mark`、窓が切れた後の最初の成功観測での `align_after_expired_mode_key_pass`、
+/// 起動直後の最初の成功観測での `align_desired_at_startup`〈BUG-163〉。いずれも `pass_through_observed` 経由）。
 /// reducer は `last_intent` を捨て、`align_desired` かつ観測から導ける開閉があるときだけ `desired_open` を
 /// それへ揃える（BUG-157。観測が成功しないまま窓が切れた破棄は `desired_open` を書かない）。
 /// つまり `desired_open` を書ける口の1つなので、dylint `ime_event_guard` の designated 関数にも登録してある。
