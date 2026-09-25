@@ -2650,6 +2650,32 @@ fn startup_placeholder_desired_is_not_treated_as_intent() {
     );
 }
 
+/// BUG-163: awase 自身のウィンドウ（警告ダイアログ等）へのフォーカスでは、`reset_stale_ime_on_for_imm_broken`
+/// （キャッシュの無い窓の「安全デフォルト ON」の推測）を呼ばない。呼ぶと、先同期と GJI への ImeOn 通知
+/// （long-cold の `VK_IME_OFF→VK_IME_ON` reinit）へ進み、IME を閉じて起動したとき起動直後に awase が IME を開ける。
+#[test]
+fn stale_ime_on_heuristic_skips_awase_own_windows() {
+    let content = read_crate_file("src/runtime/focus_tracking.rs");
+    let production = production_code_only(&content);
+    let calls: Vec<usize> = production
+        .match_indices("reset_stale_ime_on_for_imm_broken(")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        calls.len(),
+        1,
+        "`reset_stale_ime_on_for_imm_broken` の呼び出しは focus_tracking.rs の1箇所だけ"
+    );
+    let head = &production[..calls[0]];
+    let guard_at = head
+        .rfind("self.platform.focus.pid() == std::process::id()")
+        .expect("呼び出しの前に awase 自身のウィンドウの除外が必要（BUG-163）");
+    assert!(
+        calls[0] - guard_at < 1500,
+        "awase 自身のウィンドウの除外は、`reset_stale_ime_on_for_imm_broken` の呼び出しの直前の分岐にあること"
+    );
+}
+
 /// ADR-089 §6 Phase C item 12（= ADR-086 INV-14 の未移行分の是正）:
 /// **同期経路の ROMAN 補完 IMC write は、捕獲済み `ActuationTarget` を必ず通る。**
 ///
