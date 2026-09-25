@@ -3,23 +3,26 @@
     "check_invariants.py の不変条件ごとの許容上限(ratchet)。上限は既知バグが直るまでの一時的な許容量で、下げる方向にだけ動かす。",
     "max=これを超えたら FAIL。observed_min=実測した揺れ幅の下限(値がこれも下回ったら『上限を下げてよい』と表示)。",
     "上限を上げる・新しく足すときは、必ず対応する BUG 番号(bug)と実測(measured)を書くこと。BUG が直ったら max を 0 にする。",
-    "実測: CI windows-latest・GJI+ATOK。run 36103384502(f2a875cd、baseline×3・atok-passthrough-cold×3)と",
-    "run 36104015748(c82b1d3d、baseline×3)の計9本。詳細は README の『不変条件』節。"
+    "実測: CI windows-latest・GJI+ATOK。当初の上限は run 36103384502(f2a875cd)・36104015748(c82b1d3d)の計9本。",
+    "BUG-163 の修正（#318・#321）後の run 36140615943（baseline・atok-passthrough-cold）で i1 は 0 件になったので、i1 の上限を 0 に下げた。"
   ],
   "window_s": 10,
-  "measured_configs": ["baseline", "atok-passthrough-cold"],
+  "measured_configs": [
+    "baseline",
+    "atok-passthrough-cold"
+  ],
   "limits": {
     "i1_startup_drift_no_intent": {
-      "max": 3,
-      "observed_min": 2,
+      "max": 0,
+      "observed_min": 0,
       "bug": "BUG-163",
-      "measured": "起動後10秒の窓で 2〜3 件(9本: 2,2,3,2,3,2,2,3,2)。起動約1.1〜2.3秒後、source=ImmCrossProbe、全て explicit_intent=None → set_ime_open(true)"
+      "measured": "修正後（run 36140615943、baseline・atok-passthrough-cold）で 0 件。修正前は 2〜4 件（9本）。初期値の desired が最初の観測へ揃う（[startup-align] desired=false）"
     },
     "i1_drift_no_intent_total": {
-      "max": 4,
-      "observed_min": 3,
+      "max": 0,
+      "observed_min": 0,
       "bug": "BUG-163",
-      "measured": "ログ全体で 3〜4 件(起動直後の2〜3件 + ハーネス操作後のフォーカス変更で約14.2秒後に1件)"
+      "measured": "修正後（run 36140615943、baseline・atok-passthrough-cold）で 0 件。修正前は 2〜4 件（9本）。初期値の desired が最初の観測へ揃う（[startup-align] desired=false）"
     },
     "i2_unwarranted": {
       "max": 1,
