@@ -1315,11 +1315,10 @@ fn ime_open_actuation_entry_points_are_accounted_for() {
         // **ガードは残す**——ここが 0 でなくなったら、warrant を通さない
         // actuation 入口が復活したことを意味する。
         (".set_ime_open(", 0),
-        // 外部 2（ime_refresh.rs:534 focus change 強制 OFF / :752 drift correction
-        // の ImmCross 分岐）。**旧コメントは `:727` と書いていたが実在しない**
-        // ——近いのは `tracing::warn!` の文字列（`:725`）で、先頭に `.` が無いため
-        // そもそも needle に一致しない（ADR-090 §2.A.2(3) 脚注）。
-        (".set_ime_open_ordered(", 2),
+        // 外部 1（ime_refresh.rs drift correction の ImmCross 分岐）。
+        // **2026-09-25**: focus change 強制 OFF（`focus_change_enforce_off`）を撤去したため
+        // 2→1（docs/adr/191-calibration-experiments.md「A/B-1」）。
+        (".set_ime_open_ordered(", 1),
         // 呼び出し元ゼロ(死んだ入口)。`WindowsPlatform` のオーバーライドは
         // ADR-090 A-1 で削除し、`awase` 側のトレイト既定実装だけが残る。
         (".apply_ime_open(", 0),
@@ -1919,27 +1918,19 @@ fn ir_post_focus_change_snapshot_write_call_sites_are_accounted_for() {
     let production = production_code_only(&content);
     let body = extract_fn_body(production, "fn ir_post_focus_change_snapshot");
 
-    // **ADR-090 A-1**: 実呼び出しは `set_ime_open_ordered(` へ移った
-    // （トレイトメソッドには `ActuationOrder` 引数を足せないため、
-    // §2.A 設計案 3）。`set_ime_open(` に残るのはログメッセージ 1 件
-    // （`tracing::debug!("... set_ime_open(false) called ...")`）だけ。
-    let set_ime_open_count = count_real_calls(body, "set_ime_open(");
-    assert_eq!(
-        set_ime_open_count, 1,
-        "{path}::ir_post_focus_change_snapshot 内の `set_ime_open(` 出現数が \
-         想定(1 = ログメッセージのみ。実呼び出しは set_ime_open_ordered へ移行)と\
-         異なります(実際: {set_ime_open_count})。トレイトメソッド \
-         `set_ime_open` を直接呼ぶと warrant を通さない actuation 入口が\
-         復活します（ADR-090 §2.A・INV-47）。"
-    );
-    let ordered_count = count_real_calls(body, "set_ime_open_ordered(");
-    assert_eq!(
-        ordered_count, 1,
-        "{path}::ir_post_focus_change_snapshot 内の `set_ime_open_ordered(` \
-         出現数が想定(1 = IME OFF 強制)と異なります(実際: {ordered_count})。\
-         新しい呼び出しを追加した場合はこの期待値を更新し、それが force-write \
-         でないことを確認すること。"
-    );
+    // **2026-09-25**: focus change 強制 OFF（`focus_change_enforce_off`）を撤去したため、
+    // この関数内の IME open 書き込み呼び出しはゼロ（旧: `set_ime_open_ordered(` 1 件）。
+    // 復活したら warrant 経由の actuation 入口が増えたことを意味するので、
+    // 意図的な変更ならこの期待値と `ime_open_actuation_entry_points_are_accounted_for` を更新すること。
+    for needle in ["set_ime_open(", "set_ime_open_ordered("] {
+        let count = count_real_calls(body, needle);
+        assert_eq!(
+            count, 0,
+            "{path}::ir_post_focus_change_snapshot 内の `{needle}` 出現数が想定(0)と\
+             異なります(実際: {count})。フォーカス変更時の強制 OFF は 2026-09-25 に撤去済み\
+             （docs/adr/191-calibration-experiments.md「A/B-1」）。"
+        );
+    }
 }
 
 // NOTE: `force_policy_is_read_from_a_single_decision_point` と
