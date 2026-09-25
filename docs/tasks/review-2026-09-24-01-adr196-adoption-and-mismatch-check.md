@@ -1,7 +1,7 @@
 ---
 title: awase.exe の読込時に残る「内蔵表との不一致5%判定」とカバレッジ判定が ADR-196 決定1e と食い違う（採用しても学習表が使われない構成がある）
-status: 未着手（B-2 は解消済み）
-priority: 中〜高（学習機能を次リリースで利用者に見せるなら、その前に「実測→判断」まで。03 の判断に従う）
+status: 実装済み（PR #305。5%判定の廃止・カバレッジ分母の修正、ユーザー決定 2026-09-24。案Aの「突き合わせ済み記録」は不要になり取り下げ。修正後ビルドの実機再測定で全構成の採用を確認済み）
+priority: 中（実装済み。残りは修正後ビルドでの再測定確認。03 の同梱判断に従う）
 created: 2026-09-24
 related_adr: ["ADR-196", "ADR-195", "ADR-191"]
 source_review: 俯瞰レビュー（受動化・actuation撤去・学習/較正・config棚卸し・v2方針、2026-09-24）の A-1 / B-2 / B-3 / C-3 / C-6 / C-7（awase.exe 内の3経路の確認のみ）。元レビューはリポジトリ外（セッションの scratchpad）にしかないため、要点は本文に引用する
@@ -14,6 +14,23 @@ source_review: 俯瞰レビュー（受動化・actuation撤去・学習/較正�
 索引・優先度: [11](review-2026-09-24-11-low-priority-backlog.md)。
 裏取り基準は worktree の `5877f982`（origin/develop、PR #296 まで。PR #293 `d00ac8dd` を含む）。
 着手時は `.claude/rules/worktree-per-session.md` に従い専用 worktree/branch を切ること。
+
+## 決定と実装（2026-09-24、ユーザー決定）
+
+- **5%判定は廃止**: awase.exe の読込時に内蔵表と突き合わせない（ADR-196 決定1e のとおり、内蔵表を審査官にしない）。
+  `validate_and_convert` / `load_runtime_table` / `load_and_log` から `preset`・`check_against_bundled` を削除し、
+  `MismatchesBundledTooMuch`・`MAX_MISMATCH_RATIO`・`mismatch_ratio` も削除した。下の「推奨案」の案A（突き合わせ済みかの記録）・案Bは取り下げ（学習側のスキーマ変更も不要）。
+  実測（PR #303、windows-latest run 35987424778）で `mismatch` は GJI+ATOK・MS-IME 本体とも 0.000 だったので、廃止しても採否は変わらない。
+- **カバレッジ分母は「畳んだ後に変換対象になりえた検索キー数」**（`coverage_slot_count`）: 実測の棄却原因はこちらだった
+  （GJI+ATOK 0.782＝61/78、MS-IME 本体 0.52〜0.53＝74〜76/143。閉状態の畳み込みと、`Conv` で表せない開状態セルが分母に残っていた）。
+  閉状態は `(stage, key)` の1枠に畳み、`Conv` で表せない開状態セルは分母から除く。予測なしのセルと表に無いVKのセルは枠に数える（縮退表は引き続き棄却）。
+- 陳腐化（指紋）の照合は従来どおり残る（別IME・別プリセットで学習した表は `Stale` で棄却される）。
+- 不具合報告の同梱表突き合わせ診断（`bug_report.rs`、`last_validation_key`）は採否判定ではないので残した。
+- ADR-196 に追補（決定1e の直後）を書いた。
+- **修正後ビルドの再測定（windows-latest run 36062266673、検証専用ブランチ、4ジョブ success）**: 全構成で学習表が採用された。
+  GJI+ATOK: raw=78 converted=61 slots=65 coverage=0.938（採用）。MS-IME 本体（要確認→採用）3回: 正答率 0.960/0.967/0.963、raw=143 converted=74〜76 slots=78 coverage=0.949〜0.974（採用）。
+  MS-IME 本体の内訳: 開状態 91 セルのうち `Conv` で表せないもの 26（分母から除外）、予測なし 5〜7、押下後の変換モードが表せないもの 20〜21。CI 専用テストは `ci_real_learned_table_is_adopted` に改名した。
+  MS-IME 本体は学習側の判定（決定1a: 既定では要確認）が別にあるので、利用者が明示的に採用するまで使われない点は変わらない。
 
 ## 背景
 
@@ -61,12 +78,27 @@ source_review: 俯瞰レビュー（受動化・actuation撤去・学習/較正�
    - MS-IME 本体の表には、`Conv` で表せないモード（半角カタカナ 0x03・全角英数 0x08 を `mode_from_raw_conv` が保持）の開状態セルがある。`convert_cell` はこれを捨てる（`:170-174`）ので、この分もカバレッジを下げる。
 3. **カスタム構成**: `check_against_bundled=false`。5%判定はかからず、カバレッジ判定だけがかかる。
 
-### 新たに見つけた疑い: 閉状態セルの畳み込みでカバレッジが下がる（未確認・要実測）
+### 閉状態セルの畳み込みでカバレッジが下がる — **実測で確定（2026-09-24、タスク0）**
 
 - `ef76bf9a`（2026-09-24、閉状態セルの潰れ修正）以降、`convert_cells`（`:117-135`）は同じ `(stage, key)` の閉状態セルを1セルに畳む（`merge_closed_cells` `:141-163`）。
   一方、`coverage_ratio`（`:206-213`）の分母は畳む前の生セル数。閉状態のモードが k 種類あると、全セルが予測ありでも閉状態分は 1/k しか数えられない。
 - 学習側は閉状態でも変換モードを保持する（「open=false なら conv を0x00扱い」の正規化は撤去済み、open-issues 文書）。閉状態が複数モードに分かれていれば、**構成に関係なく**実表のカバレッジが80%を割りうる。
 - `ef76bf9a` の回帰テスト（`closed_cells_differing_only_by_hidden_mode_collapse_order_independently` など）は `convert_cells` の結果だけを見ていて、`validate_and_convert` のカバレッジは見ていない。実表を通す CI テスト `ci_real_learned_table_is_adopted_for_unmodified_atok`（`:1023-1057`、`cdb90018`）は `ef76bf9a` より前に書かれたもの。`ef76bf9a` 以降の実表で通るかは**未確認**。
+
+**実測結果（`ci/task01-measure`、run 35987424778、windows-latest。develop `1a6bdec8` + CI専用テストの出力拡張のみ。`validate_and_convert` は無変更）**
+
+| 構成 | raw | 畳む前に変換可 | 閉/開（畳む前） | 畳んだ後 | coverage | 不一致率 | 採否 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| GJI+ATOK（accepted、verify 0.997） | 78 | 74 | 26 / 48 | 61 | **0.782** | 0.000（比較60セル） | **棄却 `CoverageTooLow`** |
+| MS-IME 本体 run1（要確認→採用、0.957） | 143 | 112 | 49 / 63 | 76 | **0.531** | 0.000（比較59、旧`==`比較では1件） | **棄却 `CoverageTooLow`** |
+| MS-IME 本体 run3（要確認→採用、0.970） | 143 | 111 | 50 / 61 | 74 | **0.517** | 0.000（比較59） | **棄却 `CoverageTooLow`** |
+| MS-IME 本体 run2 | — | — | — | — | — | — | 正答率0.930で Rejected（採用対象外） |
+
+- 疑いは**確定**。GJI+ATOK でも、畳む前は 74/78=0.95 だが、閉状態26セルが13セルに畳まれて 61/78=0.782 になり、80%を割る。MS-IME 本体はさらに、`Conv` で表せない開状態セル（143→112）の脱落が加わり 0.5 台。
+- 5%判定（不一致率）は両構成とも 0.000 で問題にならない。**採用を阻んでいるのはカバレッジ判定だけ**。したがって現状、学習表は GJI+ATOK でも MS-IME 本体でも awase.exe に使われず内蔵表へ戻る。案A の5%判定の議論より、カバレッジの分母修正（畳んだ後に変換対象になりえたセル数へ揃える、または学習側の判定へ一本化）が先。
+- 注記: 畳む前の閉セルの `conv()` の種類数は1と出力されたが、26→13 に畳まれているため、同じ `(stage,key)` を分けている軸は conv 以外（例: open 側の別属性）。畳み込みの内訳の確認は残る。
+- 出力の取り方: CI 専用テスト `ci_real_learned_table_is_adopted_for_unmodified_atok` に環境変数 `KL_PRESET`（`msime-native`/`msime`/既定Atok）を追加し、`CI-RESULT` 行に上の値を出す（検証専用ブランチのみ。develop 未反映）。
+
 - 起きていれば、学習表はどの構成でも awase.exe に使われない。A-1 の構成別の議論より優先度が高い。**最初に実測する**（タスク0）。
 
 ### B-2: 要確認表の採用経路 — **解消済み（PR #293、`d00ac8dd`）**
@@ -134,11 +166,16 @@ source_review: 俯瞰レビュー（受動化・actuation撤去・学習/較正�
 
 ## タスク
 
-- [ ] **0（最優先・実測）**: 実機の学習表を `validate_and_convert` に通し、採否と理由（`CoverageTooLow` の値／`mismatch_ratio`）を記録する。
+- [x] **0（最優先・実測、完了 2026-09-24）**: 実機の学習表を `validate_and_convert` に通し、採否と理由（`CoverageTooLow` の値／`mismatch_ratio`）を記録する。
   - GJI+ATOK: `ef76bf9a` 以降の表で `ci_real_learned_table_is_adopted_for_unmodified_atok` を再実行する。
   - MS-IME 本体: 同じテストはプリセットが `Atok` 固定（`:1028` の `bundled_table(KeymapPreset::Atok)`、`:1049` の `load_runtime_table(path, KeymapPreset::Atok, true)`）。環境変数でプリセットを選べるようにし、要確認→採用後の表を `MsImeNative` で通す。
   - 生セル数・閉状態のモード数・畳んだ後のセル数も出力して、上の「疑い」が実際に起きているかを確定する。
   - 結果に応じて本文の「未確認」を更新し、下のタスクの優先度を決め直す。
+  - **優先度の見直し提案（実測後、2026-09-24）**: 実測で GJI+ATOK・MS-IME 本体とも `CoverageTooLow`（0.782／0.517〜0.531）で全構成棄却と確定し、5%判定は不一致率0.000で無関係だった。
+    よって本タスクの優先度は「中〜高」から**高（学習機能を見せるリリースの前に必須）**へ戻す。着手順は
+    (1) カバレッジ判定の分母修正（畳んだ後に変換対象になりえたセル数へ揃える、または学習側の判定へ一本化）を最優先、
+    (2) ADR-196 改訂、(3) 案A（突き合わせ済みの記録と5%判定の免除）と既存テスト修正は後ろへ下げる（5%判定は現状の実表で棄却理由になっていない）。
+    暫定策（02 の画面表示）は、(1) が次リリースに間に合わない場合に実施する。
 - [ ] ADR-196 を改訂する（または追補 ADR を起票する）: 1e と awase.exe の5%判定・カバレッジ判定の関係、1b-2/1b-4 が MS-IME 本体では成り立たないこと、案A（突き合わせ済みかの記録）を書く。プロジェクトの慣行に従い、`opus-adversarial-consult` で収束させてから実装する。
 - [ ] 学習側: `reconcile_against_bundled` の結果（`Some`/`None`）を、突き合わせたプリセット名と一緒に `PersistedTable` へ `#[serde(default)]` の `Option` として永続化する（スキーマ版は上げない）。
 - [ ] awase.exe 側: `validate_and_convert` で、突き合わせ済みで、**かつ記録のプリセットが今の preset と一致する**表には5%判定をかけない（06 の指紋の照合に寄せる場合は、06 がこの条件を満たしていることを確かめる）。カバレッジ判定は ADR 改訂の結論に合わせて直す（閉状態セルの分母を揃える／学習側の判定に一本化する）。
@@ -174,7 +211,7 @@ source_review: 俯瞰レビュー（受動化・actuation撤去・学習/較正�
 
 ## 未確認点
 
-- `ef76bf9a` 以降、実際の学習表（GJI+ATOK／MS-IME 本体）が awase.exe のカバレッジ判定を通るか（閉状態セルの畳み込みの疑い）。
+- （解消 2026-09-24）`ef76bf9a` 以降の実表は GJI+ATOK・MS-IME 本体とも `CoverageTooLow` で棄却されると実測で確定（「閉状態セルの畳み込み」節）。
 - GJI+ATOK の実表で、再測定で**再現した**セルの数と、awase.exe の `mismatch_ratio`（1-(a) が実際に起きるか）。
 - MS-IME 本体の表を採用した後の `MSIME_NATIVE` との不一致率。
 - CI 専用テスト `ci_real_learned_table_is_adopted_for_unmodified_atok` を現在どの WF が流しているか。

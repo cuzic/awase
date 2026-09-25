@@ -6,15 +6,15 @@
 //! ユーザー明示config）には一切使わない——本モジュールは`predict_in_table`が引く`Cell`の
 //! 一覧を用意するだけで、actuationのどの合流点も呼ばない。
 //!
-//! 安全側に倒す3つの経路（本タスクB-1 Blockerの核心）:
+//! 安全側に倒す2つの経路（本タスクB-1 Blockerの核心）:
 //! 1. **破損ファイルへの縮退**: サイズ上限超過・パース失敗・スキーマ版不一致は、
 //!    無条件で同梱表へフォールバック（`RuntimeTableCache::get`が`None`を返す）。
-//! 2. **縮退率チェック**: 変換できたセル（VK・変換モードが表現可能で、かつ予測ありの
-//!    セル）の割合が[`MIN_COVERAGE_RATIO`]未満なら不採用。
-//! 3. **同梱表とのセル突き合わせ**: 検出したキーマップがカスタム上書き無し（同梱3種の
-//!    いずれかとそのまま一致する構成）のときだけ、学習表と同梱表をセル単位で突き合わせ、
-//!    不一致率が[`MAX_MISMATCH_RATIO`]を超えたら不採用（カスタム構成では学習表が同梱表と
-//!    食い違うのが正常なので、この判定はしない）。
+//! 2. **縮退率チェック**: 変換対象になりえたセル（VK・変換モードが表現可能なセルの
+//!    検索キー数。閉状態のセルは変換モード違いを1つの枠に畳む）のうち、実際に使える
+//!    セル（予測ありで、畳んでも矛盾しないもの）の割合が[`MIN_COVERAGE_RATIO`]未満なら不採用。
+//!
+//! 同梱表とのセル突き合わせ（旧・不一致率5%判定）は行わない（ADR-196決定1e:
+//! 内蔵表を審査官にしない。突き合わせ・再測定は学習プロセスの仕事）。
 //!
 //! # 表現の粒度の制約（既知の限界、フォローアップが必要）
 //!
@@ -45,11 +45,9 @@ use super::key_effect_predictor::{
 pub const MAX_TABLE_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// 変換できた（＝実際に使える）セルの割合がこれ未満なら不採用（縮退率チェックの裏返し。
-/// ADR本文の「縮退率20%」＝カバレッジ80%を暫定既定値とする）。
+/// ADR本文の「縮退率20%」＝カバレッジ80%を暫定既定値とする）。分母は
+/// [`coverage_slot_count`]（畳んだ後に変換対象になりえた検索キー数）。
 pub const MIN_COVERAGE_RATIO: f64 = 0.80;
-
-/// 同梱表とのセル不一致率がこれを超えたら不採用（カスタム構成無しのときだけ判定）。
-pub const MAX_MISMATCH_RATIO: f64 = 0.05;
 
 /// [`load_runtime_table`]が採用しなかった理由（ログ・診断用）。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -66,10 +64,6 @@ pub enum RejectReason {
     /// 変換できたセルの割合が[`MIN_COVERAGE_RATIO`]未満。
     CoverageTooLow {
         coverage: f64,
-    },
-    /// 同梱表とのセル不一致率が[`MAX_MISMATCH_RATIO`]を超えた。
-    MismatchesBundledTooMuch {
-        mismatch_ratio: f64,
     },
     /// 書き手（学習プロセス）の採否判定（[`awase_keymap_learn::judgement::TableJudgement`]）が
     /// `Accepted`でない（`Rejected`・`NeedsConfirmation`のいずれか）、または判定フィールド
@@ -97,10 +91,6 @@ impl std::fmt::Display for RejectReason {
             Self::CoverageTooLow { coverage } => {
                 write!(f, "変換できたセルの割合が低すぎる(coverage={coverage:.2})")
             }
-            Self::MismatchesBundledTooMuch { mismatch_ratio } => write!(
-                f,
-                "同梱表とのセル不一致率が高すぎる(mismatch_ratio={mismatch_ratio:.2})"
-            ),
             Self::NotAccepted { judgement } => {
                 write!(
                     f,
@@ -171,21 +161,14 @@ fn merge_closed_cells(group: &[Cell]) -> Option<Cell> {
     ))
 }
 
-fn convert_cell(pc: &PersistedCell) -> Option<Cell> {
+/// セルの検索キー`(open, conv, stage, key)`。VKまたは（開状態の）変換モードが表に表現できない
+/// セルは`None`（そのセルは、予測の有無にかかわらず変換対象になりえない）。
+fn lookup_slot(pc: &PersistedCell) -> Option<(bool, Option<Conv>, Stage, TableKey)> {
     let key = TableKey::from_vk(pc.key.0)?;
-    let outcome: Outcome = pc.prediction?;
     // 開状態のセルだけ変換モードを持つ（閉セルは`conv: None`がワイルドカード、Cellの既存の約束）。
     // 開状態で変換モードが表現できないときはセルごと除外する（`open`かつ変換不能は無効な組み合わせ）。
     let conv = if pc.status.open {
         Some(Conv::from_raw(u32::from(pc.status.mode))?)
-    } else {
-        None
-    };
-    let after_open = outcome.status.open;
-    let after_conv = if after_open {
-        // 変換不能なモードへ遷移した場合は「押下後の変換が不明」として追跡を捨てる
-        // （既存の`predict_in_table`が`after_conv: None`を「開く/閉じる遷移で不明」として扱うのと同じ扱い）。
-        Conv::from_raw(u32::from(outcome.status.mode))
     } else {
         None
     };
@@ -194,6 +177,20 @@ fn convert_cell(pc: &PersistedCell) -> Option<Cell> {
     } else {
         Stage::None
     };
+    Some((pc.status.open, conv, stage, key))
+}
+
+fn convert_cell(pc: &PersistedCell) -> Option<Cell> {
+    let (open, conv, stage, key) = lookup_slot(pc)?;
+    let outcome: Outcome = pc.prediction?;
+    let after_open = outcome.status.open;
+    let after_conv = if after_open {
+        // 変換不能なモードへ遷移した場合は「押下後の変換が不明」として追跡を捨てる
+        // （既存の`predict_in_table`が`after_conv: None`を「開く/閉じる遷移で不明」として扱うのと同じ扱い）。
+        Conv::from_raw(u32::from(outcome.status.mode))
+    } else {
+        None
+    };
     let disp = match outcome.disp {
         Disposition::None => Disp::None,
         Disposition::Kept => Disp::Kept,
@@ -201,53 +198,52 @@ fn convert_cell(pc: &PersistedCell) -> Option<Cell> {
         Disposition::Committed => Disp::Committed,
     };
     Some(make_cell(
-        pc.status.open,
-        conv,
-        stage,
-        key,
-        after_open,
-        after_conv,
-        disp,
+        open, conv, stage, key, after_open, after_conv, disp,
     ))
 }
 
-/// 変換できたセルの割合（B-1 Blockerの縮退率チェック）。
-fn coverage_ratio(raw: &[PersistedCell], converted_len: usize) -> f64 {
-    if raw.is_empty() {
-        return 0.0;
-    }
-    #[allow(clippy::cast_precision_loss)]
-    let ratio = converted_len as f64 / raw.len() as f64;
-    ratio
-}
-
-/// 学習表と同梱表のセル不一致率。同梱表の各セルについて、学習表に同じ
-/// `(open, conv, stage, key)`のセルがあり、かつ`after_open`/`after_conv`/`disp`のいずれかが
-/// 食い違うものを数える(`after_conv`は[`after_conv_conflicts`]、片方が`None`＝不明なら矛盾でない)（学習表に無いセル＝単に未学習は不一致に数えない、突き合わせの対象は
-/// 「同梱表にあるセルのうち学習表でも答えが出ているもの」だけ）。
-fn mismatch_ratio(learned: &[Cell], bundled: &[Cell]) -> f64 {
-    let mut compared = 0usize;
-    let mut mismatched = 0usize;
-    for b in bundled {
-        let Some(l) = learned
-            .iter()
-            .find(|c| c.matches_lookup_key(b.open(), b.conv(), b.stage(), b.key()))
-        else {
-            continue;
-        };
-        compared += 1;
-        if l.after_open() != b.after_open()
-            || after_conv_conflicts(l.after_conv(), b.after_conv())
-            || l.disp() != b.disp()
-        {
-            mismatched += 1;
+/// 縮退率チェックの分母: 畳んだ後に変換対象になりえたセル数（検索キーの異なり数）。
+///
+/// 生セル数を分母にすると、閉状態の変換モード違いのセル（[`merge_closed_cells`]で1枠に畳まれる）や、
+/// 変換モードを`Conv`で表せない開状態のセル（MS-IME本体など、そもそも表に入らない）まで
+/// 「変換できなかった」と数えてしまい、学習が成功していてもカバレッジが基準を下回る
+/// （実機CI実測: GJI+ATOK 0.782、MS-IME本体 0.52〜0.53。いずれも`mismatch`は0.000）。
+/// 分母に数えないのは変換モード側の表現限界だけ。次は枠に数え、縮退の証拠としてカバレッジを下げる:
+/// - 予測なし（`prediction: None`＝非決定と判定済み・未測定）のセル（学習側が決められなかった）。
+/// - 表に無いVKのセル（生の表が想定外のキーを含む＝破損・別物の疑い。セルごとに1枠）。
+fn coverage_slot_count(raw: &[PersistedCell]) -> usize {
+    let mut slots: Vec<(Stage, TableKey)> = Vec::new();
+    let mut open_slots: Vec<(Conv, Stage, TableKey)> = Vec::new();
+    let unknown_vk = raw
+        .iter()
+        .filter(|pc| TableKey::from_vk(pc.key.0).is_none())
+        .count();
+    for (open, conv, stage, key) in raw.iter().filter_map(lookup_slot) {
+        match (open, conv) {
+            (true, Some(conv)) => {
+                if !open_slots.contains(&(conv, stage, key)) {
+                    open_slots.push((conv, stage, key));
+                }
+            }
+            _ => {
+                // 閉状態は変換モード違いを1枠に畳む（`convert_cells`の畳み込みと同じ単位）。
+                if !slots.contains(&(stage, key)) {
+                    slots.push((stage, key));
+                }
+            }
         }
     }
-    if compared == 0 {
+    slots.len() + open_slots.len() + unknown_vk
+}
+
+/// 変換できたセルの割合（B-1 Blockerの縮退率チェック）。分母は[`coverage_slot_count`]。
+fn coverage_ratio(raw: &[PersistedCell], converted_len: usize) -> f64 {
+    let slots = coverage_slot_count(raw);
+    if slots == 0 {
         return 0.0;
     }
     #[allow(clippy::cast_precision_loss)]
-    let ratio = mismatched as f64 / compared as f64;
+    let ratio = converted_len as f64 / slots as f64;
     ratio
 }
 
@@ -407,18 +403,9 @@ pub(crate) fn table_file_stamp() -> Option<(u64, u64)> {
 /// [`RuntimeTableCache::get`]の`load`引数。採用できなければ理由をログに残して`None`を返す
 /// （呼び出し側は同梱表へフォールバックする）。
 #[cfg(windows)]
-pub(crate) fn load_and_log(
-    preset: KeymapPreset,
-    check_against_bundled: bool,
-    fingerprint: Fingerprint,
-) -> Option<Vec<Cell>> {
+pub(crate) fn load_and_log(fingerprint: Fingerprint) -> Option<Vec<Cell>> {
     let path = table_file_path()?;
-    match load_runtime_table(
-        &path,
-        preset,
-        check_against_bundled,
-        FingerprintProbe::Computed(fingerprint),
-    ) {
+    match load_runtime_table(&path, FingerprintProbe::Computed(fingerprint)) {
         Ok(cells) => {
             tracing::info!(
                 "[key-effect-runtime] 学習済み表を採用: {} セル (path={})",
@@ -473,20 +460,17 @@ fn io_reject_reason(e: &std::io::Error) -> RejectReason {
     }
 }
 
-/// ファイルを読み、パース・スキーマ検証・縮退率チェック・（該当すれば）同梱表とのセル突き合わせまで
-/// 行う。`check_against_bundled`は[`super::key_effect_predictor::KeyEffectKeymap::is_unmodified_bundled_config`]の
-/// 結果を渡す（カスタム構成では突き合わせをしない）。
+/// ファイルを読み、パース・スキーマ検証・採否判定・指紋照合・縮退率チェックまで行う
+/// （同梱表との突き合わせはしない。ADR-196決定1e）。
 ///
 /// # Errors
 /// 採用できない理由を[`RejectReason`]で返す。
 pub fn load_runtime_table(
     path: &Path,
-    preset: KeymapPreset,
-    check_against_bundled: bool,
     current_fingerprint: FingerprintProbe,
 ) -> Result<Vec<Cell>, RejectReason> {
     let table = read_persisted_table(path)?;
-    validate_and_convert(&table, preset, check_against_bundled, current_fingerprint)
+    validate_and_convert(&table, current_fingerprint)
 }
 
 /// ファイルを読んで`PersistedTable`へパースするところまで（採否判定・変換はしない）。
@@ -513,8 +497,6 @@ pub fn read_persisted_table(path: &Path) -> Result<PersistedTable, RejectReason>
 /// 採用できない理由を[`RejectReason`]で返す。
 pub fn validate_and_convert(
     table: &PersistedTable,
-    preset: KeymapPreset,
-    check_against_bundled: bool,
     current_fingerprint: FingerprintProbe,
 ) -> Result<Vec<Cell>, RejectReason> {
     if table.judgement != Some(awase_keymap_learn::judgement::TableJudgement::Accepted) {
@@ -533,14 +515,6 @@ pub fn validate_and_convert(
     if coverage < MIN_COVERAGE_RATIO {
         return Err(RejectReason::CoverageTooLow { coverage });
     }
-    if check_against_bundled {
-        let ratio = mismatch_ratio(&converted, bundled_table(preset));
-        if ratio > MAX_MISMATCH_RATIO {
-            return Err(RejectReason::MismatchesBundledTooMuch {
-                mismatch_ratio: ratio,
-            });
-        }
-    }
     Ok(converted)
 }
 
@@ -550,11 +524,11 @@ pub fn validate_and_convert(
 ///
 /// ファイル自身のスタンプに加えて`(KeymapPreset, check_against_bundled, キーマップ指紋)`も版の一部として
 /// 比較する——学習済み表ファイル自体は変わっていなくても、GJIのプリセット切替
-/// （`session_keymap`）やカスタム構成の有無が変わると、`validate_and_convert`が
-/// 検証に使う`preset`/`check_against_bundled`が変わり、以前キャッシュしたセルは
+/// （`session_keymap`）やカスタム構成の有無が変わると、以前キャッシュしたセルは
 /// 新しい構成に対して未検証のまま（かつVK/モードの意味が構成ごとに違いうる）になる。
-/// ファイルスタンプだけで比較すると、プリセットを切り替えても再学習していない限り
-/// 古いプリセット向けに検証済みのセルを黙って使い続けてしまう。
+/// 採否判定に効くのは指紋（`staleness::check`）だけだが、`preset`/`check_against_bundled`は
+/// 不具合報告の同梱表突き合わせ診断（[`Self::last_validation_key`]）が「予測時に実際に使った値」
+/// を報告するために、変化のたびに読み直して最新に保つ。
 #[derive(Debug, Default)]
 pub struct RuntimeTableCache {
     checked_at_ms: Option<u64>,
@@ -569,8 +543,8 @@ impl RuntimeTableCache {
         self.cells.is_some()
     }
 
-    /// 直近の読込で使った`(preset, check_against_bundled)`（診断用。学習表ファイルが
-    /// 無い/読めなかった場合は`None`）。
+    /// 直近の読込で使った`(preset, check_against_bundled)`（不具合報告の診断用で、採否判定には
+    /// 使わない。学習表ファイルが無い/読めなかった場合は`None`）。
     #[must_use]
     pub fn last_validation_key(&self) -> Option<(KeymapPreset, bool)> {
         self.stamp.map(|(_, _, preset, check, _)| (preset, check))
@@ -595,7 +569,7 @@ impl RuntimeTableCache {
         let due = self
             .checked_at_ms
             .is_none_or(|t| now_ms.saturating_sub(t) >= Self::RECHECK_MS);
-        // code-review指摘: validation_key(preset/check_against_bundled)の変化は、
+        // code-review指摘: validation_key(preset/指紋)の変化は、
         // RECHECK_MS(fsアクセスの間引き)とは独立に毎回チェックする。プリセット切替は
         // フォーカス移動というユーザー操作でRECHECK_MSの窓の途中でも起こりうり、
         // dueがfalseのまま素通りすると古いプリセット向けに検証済みのセルを
@@ -713,7 +687,7 @@ mod tests {
             cells.push(pcell(true, 0x09, false, 0x99, None)); // 表に無いVK: 常に変換不能
         }
         let table = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
-        let err = validate_and_convert(&table, KeymapPreset::Atok, false, NS).unwrap_err();
+        let err = validate_and_convert(&table, NS).unwrap_err();
         assert!(matches!(err, RejectReason::CoverageTooLow { .. }));
     }
 
@@ -723,27 +697,68 @@ mod tests {
             .map(|_| pcell(true, 0x09, false, 0xF2, Some((true, 0x00))))
             .collect();
         let table = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
-        let out = validate_and_convert(&table, KeymapPreset::Atok, false, NS).unwrap();
+        let out = validate_and_convert(&table, NS).unwrap();
         assert_eq!(out.len(), 10);
     }
 
+    /// ADR-196決定1e: 内蔵表を審査官にしない。学習表が同梱表と食い違っていても（学習の目的そのもの）、
+    /// 採否判定・指紋・カバレッジを通っていれば採用する。
     #[test]
-    fn mismatch_against_bundled_is_rejected_when_checked() {
-        // 同梱ATOK表にある、ひらがな(0xF2)を開いた状態で押した結果は「閉じない」実測（コード中の
-        // `atok_hiragana_is_a_pure_toggle_between_hiragana_and_halfwidth_alnum`テスト参照）。
-        // ここではわざと「閉じる」という誤った学習結果を大量に混ぜ、突き合わせで不採用になることを固定する。
+    fn table_disagreeing_with_bundled_is_adopted() {
+        // 同梱ATOK表では、ひらがな(0xF2)を開いた状態で押した結果は「閉じない」実測。
+        // ここではわざと「閉じる」という学習結果を大量に混ぜても、突き合わせで棄却しない。
         let cells: Vec<_> = (0..20)
             .map(|_| pcell(true, 0x09, false, 0xF2, Some((false, 0x09))))
             .collect();
         let table = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
-        let rejected_when_checked =
-            validate_and_convert(&table, KeymapPreset::Atok, true, NS).unwrap_err();
+        assert!(validate_and_convert(&table, NS).is_ok());
+    }
+
+    /// 閉状態の変換モード違いのセルは`convert_cells`で1枠に畳まれる。分母を生セル数にすると、
+    /// 畳んだだけで（学習は全セル成功でも）カバレッジが下がる（実機CI: GJI+ATOK 0.782）。
+    #[test]
+    fn closed_cells_folded_by_mode_do_not_lower_coverage() {
+        // 閉状態でモード違い(0x00/0x09/0x11)の同キー3セル→1枠（結果は一致するので採用される）。
+        let mk = |mode: u8| {
+            let mut pc = pcell(false, mode, false, 0xF2, Some((true, 0x09)));
+            pc.prediction.as_mut().unwrap().disp = Disposition::None;
+            pc
+        };
+        let mut cells = vec![mk(0x00), mk(0x09), mk(0x11)];
+        // 開状態の別キーセル。
+        cells.push(pcell(true, 0x09, false, 0x0D, Some((true, 0x09))));
+        assert_eq!(coverage_slot_count(&cells), 2);
+        let table = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
+        assert_eq!(validate_and_convert(&table, NS).unwrap().len(), 2);
+    }
+
+    /// 開状態で変換モードを`Conv`で表せないセル（MS-IME本体など）は、そもそも変換対象になりえない
+    /// ので分母に数えない（実機CI: MS-IME本体 生143セル→畳んだ後74〜76、0.52〜0.53だった）。
+    #[test]
+    fn unrepresentable_open_mode_cells_are_not_counted_in_the_denominator() {
+        let mut cells = vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x00)))];
+        // 表現できない変換モード(0x03=半角カタカナ)の開状態セルを大量に混ぜる。
+        for key in [0xF2, 0x0D, 0x1B, 0x20] {
+            cells.push(pcell(true, 0x03, false, key, Some((true, 0x00))));
+        }
+        assert_eq!(coverage_slot_count(&cells), 1);
+        let table = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
+        assert!(validate_and_convert(&table, NS).is_ok());
+    }
+
+    /// 予測なし（非決定・未測定）のセルは枠に数える。縮退した表（予測なしだらけ）は引き続き棄却される。
+    #[test]
+    fn cells_without_prediction_still_count_against_coverage() {
+        let mut cells = vec![pcell(true, 0x09, false, 0xF2, Some((true, 0x00)))];
+        for key in [0x0D, 0x1B, 0x08, 0x20] {
+            cells.push(pcell(true, 0x09, false, key, None));
+        }
+        assert_eq!(coverage_slot_count(&cells), 5);
+        let table = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
         assert!(matches!(
-            rejected_when_checked,
-            RejectReason::MismatchesBundledTooMuch { .. }
+            validate_and_convert(&table, NS).unwrap_err(),
+            RejectReason::CoverageTooLow { .. }
         ));
-        // カスタム構成(突き合わせなし)なら同じ表でも採用される。
-        assert!(validate_and_convert(&table, KeymapPreset::Atok, false, NS).is_ok());
     }
 
     /// C-3回帰テスト(opus-adversarial-consult 2026-09-23): 書き手の採否判定が
@@ -759,7 +774,7 @@ mod tests {
 
         let no_judgement = PersistedTable::new(cells.clone());
         assert_eq!(
-            validate_and_convert(&no_judgement, KeymapPreset::Atok, false, NS).unwrap_err(),
+            validate_and_convert(&no_judgement, NS).unwrap_err(),
             RejectReason::NotAccepted { judgement: None }
         );
 
@@ -767,7 +782,7 @@ mod tests {
             awase_keymap_learn::judgement::RejectedReason::LowAccuracy,
         ));
         assert!(matches!(
-            validate_and_convert(&rejected, KeymapPreset::Atok, false, NS).unwrap_err(),
+            validate_and_convert(&rejected, NS).unwrap_err(),
             RejectReason::NotAccepted {
                 judgement: Some(TableJudgement::Rejected(_))
             }
@@ -778,7 +793,7 @@ mod tests {
                 awase_keymap_learn::judgement::NeedsConfirmationReason::UnverifiedMsImeNative,
             ));
         assert!(matches!(
-            validate_and_convert(&needs_confirmation, KeymapPreset::Atok, false, NS).unwrap_err(),
+            validate_and_convert(&needs_confirmation, NS).unwrap_err(),
             RejectReason::NotAccepted {
                 judgement: Some(TableJudgement::NeedsConfirmation(_))
             }
@@ -812,22 +827,6 @@ mod tests {
             None,
             Disp::None,
         )]
-    }
-
-    /// 実行時の不採用判定`mismatch_ratio`も同じ扱い(実機CI実測: 偽不一致10/73≒13.7%が
-    /// 上限`MAX_MISMATCH_RATIO`(5%)を超え、未改造GJI ATOKの学習表が不採用になりうる型)。
-    #[test]
-    fn mismatch_ratio_treats_unknown_bundled_after_conv_as_no_claim() {
-        let mut pc = pcell(false, 0x00, false, 0xF2, Some((true, 0x09)));
-        pc.prediction.as_mut().unwrap().disp = Disposition::None;
-        let learned = convert_cells(&[pc]);
-        assert_eq!(
-            mismatch_ratio(&learned, &none_after_conv_bundled_table()),
-            0.0
-        );
-        // 既知同士の矛盾は従来どおり不一致に数える。
-        let conflicting = convert_cells(&[pcell(true, 0x09, false, 0xF2, Some((true, 0x09)))]);
-        assert_eq!(mismatch_ratio(&conflicting, &one_cell_bundled_table()), 1.0);
     }
 
     /// B-2: 閉状態の変換モードだけが違う複数セルは、入力順に依存しない1セルへ畳まれる。
@@ -889,7 +888,6 @@ mod tests {
         assert_eq!(learned[0].after_conv(), None);
         let diff = diff_against_bundled_cells(&cells, &one_cell_bundled_table());
         assert_eq!(diff.mismatched.len(), 1);
-        assert_eq!(mismatch_ratio(&learned, &one_cell_bundled_table()), 1.0);
     }
 
     #[test]
@@ -1092,7 +1090,7 @@ mod tests {
     }
 
     fn adopt(table: &PersistedTable, current: FingerprintProbe) -> Result<Vec<Cell>, RejectReason> {
-        validate_and_convert(table, KeymapPreset::Atok, false, current)
+        validate_and_convert(table, current)
     }
 
     /// (a) 指紋が違う表は棄却される。一致すれば採用される。
@@ -1109,13 +1107,8 @@ mod tests {
     fn gji_table_is_rejected_under_ms_ime_native_fingerprint() {
         let table = accepted_table_with(Some(gji_fp(1, None, &[])));
         let native = KeyEffectKeymap::for_msime_native(false, None, None);
-        let err = validate_and_convert(
-            &table,
-            native.preset(),
-            native.is_unmodified_bundled_config(),
-            FingerprintProbe::Computed(native.fingerprint()),
-        )
-        .unwrap_err();
+        let err = validate_and_convert(&table, FingerprintProbe::Computed(native.fingerprint()))
+            .unwrap_err();
         assert_eq!(err, RejectReason::Stale(Staleness::FingerprintMismatch));
     }
 
@@ -1194,15 +1187,7 @@ mod tests {
         let mut cache = RuntimeTableCache::default();
         let load_for = |fp: Fingerprint| {
             let table = table.clone();
-            move || {
-                validate_and_convert(
-                    &table,
-                    KeymapPreset::Custom,
-                    false,
-                    FingerprintProbe::Computed(fp),
-                )
-                .ok()
-            }
+            move || validate_and_convert(&table, FingerprintProbe::Computed(fp)).ok()
         };
         assert!(cache
             .get(
@@ -1234,38 +1219,24 @@ mod tests {
     }
 
     /// CI専用(`--ignored`、環境変数`KL_TABLE_PATH`): 実機の学習プロセスが書いた
-    /// `keymap-learn-table.json`を、未改造GJI ATOKとして実行時の採否判定
-    /// (`load_runtime_table`、`mismatch_ratio`込み)に通す。修正前(`after_conv`の単純`==`比較)の
-    /// 不一致率も併せて出力し、偽不一致が実際に採否を分けたかを実測で確認できるようにする。
+    /// `keymap-learn-table.json`を実行時の採否判定(`load_runtime_table`)に通し、
+    /// 生セル数・変換できたセル数・カバレッジの分母（畳んだ後に変換対象になりえた枠数）と
+    /// 採否を出力する。学習表が同梱表と違っていても棄却されない（ADR-196決定1e）ことの実機確認用。
     #[test]
     #[ignore = "CI用: 実機の学習表(KL_TABLE_PATH)が要る"]
-    fn ci_real_learned_table_is_adopted_for_unmodified_atok() {
+    fn ci_real_learned_table_is_adopted() {
         let path = std::env::var("KL_TABLE_PATH").expect("KL_TABLE_PATH");
-        let path = std::path::Path::new(&path);
+        let path = Path::new(&path);
         let persisted = read_persisted_table(path).expect("読める");
-        let learned = convert_cells(&persisted.cells);
-        let bundled = bundled_table(KeymapPreset::Atok);
-        let (mut compared, mut strict_mismatch) = (0usize, 0usize);
-        for b in bundled {
-            if let Some(l) = learned
-                .iter()
-                .find(|c| c.matches_lookup_key(b.open(), b.conv(), b.stage(), b.key()))
-            {
-                compared += 1;
-                if l.after_open() != b.after_open()
-                    || l.after_conv() != b.after_conv()
-                    || l.disp() != b.disp()
-                {
-                    strict_mismatch += 1;
-                }
-            }
-        }
+        let converted = convert_cells(&persisted.cells);
         println!(
-            "CI-RESULT compared={compared} old_strict_mismatch={strict_mismatch} old_ratio={:.3} new_ratio={:.3} limit={MAX_MISMATCH_RATIO}",
-            strict_mismatch as f64 / compared.max(1) as f64,
-            mismatch_ratio(&learned, bundled),
+            "CI-RESULT raw={} converted={} slots={} coverage={:.3} limit={MIN_COVERAGE_RATIO}",
+            persisted.cells.len(),
+            converted.len(),
+            coverage_slot_count(&persisted.cells),
+            coverage_ratio(&persisted.cells, converted.len()),
         );
-        let result = load_runtime_table(path, KeymapPreset::Atok, true, NS);
+        let result = load_runtime_table(path, NS);
         println!(
             "CI-RESULT load_runtime_table={:?}",
             result.as_ref().map(Vec::len)
@@ -1280,7 +1251,7 @@ mod tests {
         let missing = std::env::temp_dir().join("awase_keymap_learn_table_does_not_exist.json");
         let _ = fs::remove_file(&missing);
         assert_eq!(
-            load_runtime_table(&missing, KeymapPreset::Atok, true, NS),
+            load_runtime_table(&missing, NS),
             Err(RejectReason::NotFound)
         );
 
@@ -1292,7 +1263,7 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir(&dir).expect("create test dir");
-        let result = load_runtime_table(&dir, KeymapPreset::Atok, true, NS);
+        let result = load_runtime_table(&dir, NS);
         let _ = fs::remove_dir_all(&dir);
         assert_eq!(result, Err(RejectReason::Io));
     }
@@ -1329,7 +1300,7 @@ mod tests {
         // 違う)独自の挙動を1セルだけ学習した表。
         let learned = vec![pcell(false, 0x00, false, 0xF2, Some((true, 0x09)))]; // 閉→開
         let table = PersistedTable::new(learned).with_judgement(TableJudgement::Accepted);
-        let cells = validate_and_convert(&table, KeymapPreset::Atok, false, NS)
+        let cells = validate_and_convert(&table, NS)
             .expect("カスタム構成は突き合わせをしないので採用される");
 
         let closed = PredictInput {

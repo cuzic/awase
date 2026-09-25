@@ -1982,13 +1982,7 @@ impl Runtime {
                     now_ms,
                     (preset, check_against_bundled, fingerprint),
                     crate::state::key_effect_runtime::table_file_stamp,
-                    || {
-                        crate::state::key_effect_runtime::load_and_log(
-                            preset,
-                            check_against_bundled,
-                            fingerprint,
-                        )
-                    },
+                    || crate::state::key_effect_runtime::load_and_log(fingerprint),
                 )
             })
             .flatten();
