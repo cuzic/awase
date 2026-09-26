@@ -268,6 +268,11 @@ pub struct ColdContext {
     idle_ms_at_last_cold: std::cell::Cell<u64>,
     /// `RawTsfLiteralRecovery` が連続で発火した回数
     raw_tsf_literal_consecutive_count: std::cell::Cell<u32>,
+    /// 「literal だった」という否定的証拠（`SuspectedLiteral`）の累計（ADR-200 決定1）。
+    /// `StaleConfirm` は着弾を否定する証拠を持たない（BUG-075）ので数えない。
+    /// `consecutive` と同じ場所でリセットされる。give-up 時の reinit（VK_IME_OFF→ON は
+    /// 未確定 preedit を破棄する、BUG-168）を、この値が2以上のときだけ許すために使う。
+    negative_evidence_count: std::cell::Cell<u32>,
 }
 
 impl ColdContext {
@@ -277,6 +282,7 @@ impl ColdContext {
             last_cold_reason: std::cell::Cell::new(crate::output::ColdReason::FocusChange),
             idle_ms_at_last_cold: std::cell::Cell::new(0),
             raw_tsf_literal_consecutive_count: std::cell::Cell::new(0),
+            negative_evidence_count: std::cell::Cell::new(0),
         }
     }
 
@@ -293,9 +299,23 @@ impl ColdContext {
         n
     }
 
-    /// `RawTsfLiteralRecovery` 連続カウントをリセットする。
+    /// `RawTsfLiteralRecovery` 連続カウントをリセットする（否定的証拠カウンタも同時にリセットする）。
     pub fn reset_consecutive_count(&self) {
         self.raw_tsf_literal_consecutive_count.set(0);
+        self.negative_evidence_count.set(0);
+    }
+
+    /// 否定的証拠（`SuspectedLiteral`）カウンタをインクリメントして新値を返す。
+    pub fn increment_negative_evidence_count(&self) -> u32 {
+        let n = self.negative_evidence_count.get() + 1;
+        self.negative_evidence_count.set(n);
+        n
+    }
+
+    /// 否定的証拠（`SuspectedLiteral`）の累計を返す。
+    #[must_use]
+    pub const fn negative_evidence_count(&self) -> u32 {
+        self.negative_evidence_count.get()
     }
 
     /// 最後に cold になった時点での idle 時間（ms）を返す。
@@ -454,7 +474,18 @@ impl CompositionState {
         self.cold_ctx.consecutive_count()
     }
 
-    /// `RawTsfLiteralRecovery` 連続カウントをリセットする。
+    /// 否定的証拠（`SuspectedLiteral`）カウンタをインクリメントして新値を返す（ADR-200 決定1）。
+    pub fn increment_negative_evidence_count(&self) -> u32 {
+        self.cold_ctx.increment_negative_evidence_count()
+    }
+
+    /// 否定的証拠（`SuspectedLiteral`）の累計を返す（ADR-200 決定1）。
+    #[must_use]
+    pub const fn negative_evidence_count(&self) -> u32 {
+        self.cold_ctx.negative_evidence_count()
+    }
+
+    /// `RawTsfLiteralRecovery` 連続カウントをリセットする（否定的証拠カウンタも同時）。
     ///
     /// `DetectionResult::CompositionConfirmed`（非 partial）を確認した dispatcher が
     /// 呼ぶ（BUG-27 追補4）。フォーカス変更・`SetOpenTrue` 以外に、本物の confirm
@@ -1283,5 +1314,41 @@ mod tests {
         );
 
         crate::tsf::observer::reset_literal_session_confirmed();
+    }
+
+    // ---- ADR-200: 否定的証拠カウンタの寿命は `consecutive` と同じ ----
+
+    #[test]
+    fn negative_evidence_count_is_reset_together_with_consecutive() {
+        let c = CompositionState::new();
+        assert_eq!(c.increment_negative_evidence_count(), 1);
+        assert_eq!(c.increment_negative_evidence_count(), 2);
+        assert_eq!(c.negative_evidence_count(), 2);
+        // CompositionConfirmed の dispatch（reset_consecutive_count）でリセットされる。
+        c.reset_consecutive_count();
+        assert_eq!(c.negative_evidence_count(), 0);
+    }
+
+    #[test]
+    fn negative_evidence_count_survives_raw_recovery_cold_mark_but_resets_on_focus_and_set_open() {
+        use crate::output::ColdReason;
+        let c = CompositionState::new();
+        c.increment_negative_evidence_count();
+        // give-up の cold mark（RawTsfLiteralRecovery）自体はリセットしない。
+        c.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
+        assert_eq!(c.negative_evidence_count(), 1);
+        // 通常のタイピング操作の cold mark でもリセットしない（consecutive と同じ）。
+        c.mark_composition_cold(ColdReason::PassthroughConfirmKey);
+        assert_eq!(c.negative_evidence_count(), 1);
+        // SetOpenTrue でリセット。
+        c.mark_composition_cold(ColdReason::SetOpenTrue);
+        assert_eq!(c.negative_evidence_count(), 0);
+        // FocusChange（mark 経由と on_focus_changed 経由）でもリセット。
+        c.increment_negative_evidence_count();
+        c.mark_composition_cold(ColdReason::FocusChange);
+        assert_eq!(c.negative_evidence_count(), 0);
+        c.increment_negative_evidence_count();
+        c.on_focus_changed();
+        assert_eq!(c.negative_evidence_count(), 0);
     }
 }

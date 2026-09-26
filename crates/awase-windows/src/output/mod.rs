@@ -65,6 +65,9 @@ pub(crate) fn fmt_ms(ms: u64) -> String {
 pub(crate) enum ScheduleGjiReinitResult {
     /// reinit を予約した。`WM_DRAIN_OUTPUT_QUEUE` で raw cleanup 後に開始する。
     Scheduled,
+    /// 否定的証拠が足りない（ADR-200 決定1）ため reinit は予約しなかった。先行する reinit も
+    /// 無い（あれば `SuppressedExisting*`）ので、呼び出し側は cleanup（`set_raw_literal`）だけ行う。
+    NotScheduled,
     /// 既に retry 付き reinit poll が進行中のため、新しい give-up は抑止した。
     SuppressedExistingPoll {
         existing_cold_seq: Generation,
@@ -493,6 +496,7 @@ impl Output {
         focus_gen: u32,
         retry_romaji: Option<String>,
         consecutive_before: u32,
+        reserve_reinit: bool,
     ) -> ScheduleGjiReinitResult {
         let mut pending = self.pending_gji_reinit.borrow_mut();
         if let Some(existing) = pending.as_ref() {
@@ -537,6 +541,11 @@ impl Output {
                     };
                 }
             }
+        }
+        // ADR-200 決定1: 否定的証拠が足りないときは reinit を予約しない。先行する reinit の
+        // Polling/Scheduled 抑止（上）は予約する場合と共用する（単一 RAW_TSF_LITERAL スロットの保護）。
+        if !reserve_reinit {
+            return ScheduleGjiReinitResult::NotScheduled;
         }
         let retry = retry_romaji.and_then(|romaji| {
             let duplicate = self
