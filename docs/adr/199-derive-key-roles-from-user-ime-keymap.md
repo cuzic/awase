@@ -202,7 +202,7 @@ Suggestion/Prediction/ZeroQuerySuggestion は継承規則（背景1）で**実�
 
 - **Open**: 閉状態から開く。`IMEOn`、および DirectInput 行の `CompositionMode*`/旧名 `InputMode*`（Mozc `keymap.cc` L460-471 が DirectInput に登録。
   所有者定義の「ひらがな/カタカナに設定して」に当たる）。※ `kCompositionModeXCommandSupported` が偽のビルドでは DirectInput の `CompositionMode*` は
-  `NONE` で登録される（同 L472-483）。Windows 版 GJI でどちらかは未確認（T1(c)）で、確認までは `CompositionMode*` を Open に数えない（受動側に倒す。決定13）。
+  `NONE` で登録される（同 L472-483）。Windows 版 GJI でどちらかは未確認だった（T1(c)）。**T1(c) 実機確認済み（2026-09-26、GitHub Actions windows-latest、GJI の CUSTOM 表）**: DirectInput 行の `InputModeHiragana` も `CompositionModeHiragana` も、IME OFF から押すと実際に IME が開く（`open` 0→1）。対照: 行を書かない無変換は開かず、同じ表の `Henkan→IMEOn` は開く（表は読まれている）。run 36241517512（`sc-t1c-inputmode`/`sc-t1c-compmode`）・36241771830（`sc-t1c-none`）。これを受けて `CompositionMode*`/`InputMode*` を Open に数えるかは決定13 の見直し事項（実装は未着手）。
 - **Close**: 開状態から閉じる。`IMEOff`・`CancelAndIMEOff`。
 - **その他**: 上記以外（`Convert`・`Reconvert`・`ToggleAlphanumericMode` 等）、未知のコマンド、実効コマンドが無い（何もしない）。
 
