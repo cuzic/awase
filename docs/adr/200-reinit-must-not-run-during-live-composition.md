@@ -4,11 +4,11 @@ title: |-
   chrome-reinit(VK_IME_OFF→ON)は SuspectedLiteral の証拠が2回そろったときだけ送る(StaleConfirm では reinit しない)
 summary: |-
   Chrome+GJI で、StaleConfirm(否定的証拠なしの誤検出)が2連続すると give-up が reinit を送り、入力中の未確定文字が全部消える(BUG-168、CI で2件)。
-  awase なしの対照で VK_IME_OFF→ON は24/24全消失(CI の GJI)。決定: (1) reinit は「SuspectedLiteral の連続数が2以上」のときだけ。give-up 自体(再送の打ち切り)は従来どおり consecutive で行う。
+  awase なしの対照で VK_IME_OFF→ON は24/24全消失(CI の GJI)。決定: (1) reinit は「最後の CompositionConfirmed 以降に SuspectedLiteral が累計2回以上」あったときだけ(連続でなくてよい)。give-up 自体(再送の打ち切り)は従来どおり consecutive で行う。
   (2) StaleConfirm の romaji 再送(BUG-075 の重複)・猶予20msは変えない(引き金は猶予不足ではなく deferred 一括送出後の GJI 停止)。(3) 単体テストと CI の A/B、対照ハーネスの修正。
   未決: Escape 経路(per-VK idx≥1 の ESC)の破壊性、reinit の他の呼び出し元、実機での reinit 破壊性。
 status: |-
-  草案(2026-09-26、opus-adversarial-consult round1 反映済み、round2 待ち)。
+  草案(2026-09-26、opus-adversarial-consult round1・2 反映済み、round3 待ち)。
 related_adr:
   - "ADR-079"
   - "ADR-100"
@@ -26,7 +26,7 @@ related_adr:
   `VK_IME_OFF` 単独は、有効な試行(各 run の #0)4/4で全消失。#1 以降は IME が OFF のまま打鍵してローマ字化するので無効(ハーネスが試行間で IME を ON に戻さない)。
   `VK_DBE_HIRAGANA`(F2)は未確定文字を壊さない(偶数試行 PASS)。奇数試行の失敗は F2 で IME が OFF に切り替わったためのローマ字化。
 - **BUG-036(実機、2026-07-23)は同じ連鎖で「commit されて literal が残った(tみや)」と観測**。本 ADR の CI 対照とは食い違う。差の候補: GJI の版、reinit 時に preedit が短い(1文字)か長い(23〜35文字)か、ハーネスは打鍵終了後300ms待機・awase はバックログ中に OFF/ON を連続送信、scan 値の違い。未解明。
-- 実利用への結びつき: 2ms は人間の打鍵の10倍以上。30ms間隔でも StaleConfirm は2件出たが give-up には至らなかった。BUG-036 は通常速度の実機で連鎖が起きた記録。
+- 実利用への結びつき: 2ms は人間の打鍵の10倍以上。CI の打鍵試行で StaleConfirm が出たのは2〜10ms間隔だけで、30ms 以上の試行では0件(ready 段階の1文字確認では出る)。BUG-036 は通常速度の実機で連鎖が起きた記録。
 
 ## 原因連鎖
 
@@ -38,19 +38,21 @@ related_adr:
 
 ## 決定
 
-**決定1: reinit は SuspectedLiteral が2回そろったときだけ送る。**
-`consecutive`(再送を打ち切るための連続失敗カウンタ)は従来どおり StaleConfirm も数える(これを外すと Stale 再送が無限に続き、重複文字が増え続ける)。
-それとは別に、同じ寿命(`consecutive` と同じ場所でリセット)の**否定的証拠カウンタ**を持つ。SuspectedLiteral だけが増やし、CompositionConfirmed でリセットする。
-give-up 時に否定的証拠カウンタが2未満なら、reinit を予約せず cleanup のみで終える。連鎖 S,S(SuspectedLiteral 2回)は従来どおり reinit(BUG-033 の回復を保つ)。S,U / U,S / U,U は reinit しない。
-最新 verdict だけで判定しない(U→S で1回の証拠で reinit が走るのを避けるため)。
+**決定1: reinit は SuspectedLiteral が累計2回そろったときだけ送る。**
+`consecutive`(再送を打ち切るための連続失敗カウンタ)は従来どおり StaleConfirm も数える(これを外すと Stale 再送が自走して無限に続き、重複文字が増え続ける)。
+それとは別に**否定的証拠カウンタ**を `ColdContext`(`tsf/probe.rs` の `raw_tsf_literal_consecutive_count` の隣)に持つ。
+- 増やすのは `RawTsfLiteralRecovery` 分岐の中で `facts.verdict == SuspectedLiteral` のときだけ(`mark_composition_cold` 側には入れない。どの verdict でも増えてしまう)。
+- リセットは `consecutive` と同じ3か所(`CompositionConfirmed` の dispatch=per-VK 途中の confirm を含む、FocusChange/SetOpenTrue、`on_focus_changed`)。
+- give-up 時にカウンタが2未満なら reinit を予約せず cleanup のみで終える。S,S は従来どおり reinit(BUG-033 の回復を保つ)。S,U,S は累計2回で reinit する。S,U / U,S / U,U は reinit しない。最新 verdict だけでは判定しない(U→S で証拠1回のまま reinit が走るのを避ける)。
+- **単一スロット保護を保つ**: reinit しない give-up でも、先行する reinit が Scheduled または Polling のあいだは、現行の `schedule_pending_gji_reinit` と同じく `set_raw_literal` を呼ばず cleanup を抑止する(`SuppressedExistingScheduled`/`SuppressedExistingPoll` の判定を共用する。「reinit を予約するか」の引数を足す形が安全)。抑止しないと、先行 give-up の backspace 数・escape が上書きされる(BUG-074 系、`probe_io.rs` の Angle A #1 テストと同じ回帰)。
 
 **決定2: StaleConfirm 時の romaji 再送と猶予20msは本 ADR では変えない。**
 再送で文字が重複する問題は BUG-075(suffix 再送は6ラウンドの対話設計で致命的欠陥が見つかり revert 済み。「着弾したかの事後推測」は証拠なしの仮定になる)。未送信分だけを再送する案は同じ罠なので採らない。
-決定1のあと、Stale 起因の give-up では romaji が捨てられ、送り済みの子音が残る(今回の事例を再生すると「こうてとせ」が「っくてとせ」型になると推定)。35文字の消失より小さいが残る誤りとして BUG-168 に記録する。
+決定1のあと、Stale 起因の give-up では romaji が捨てられ、送り済みの子音が残る(今回の事例を再生すると、`k` が2つとも composition に入れば「っくてとせ」型、ローマ字のまま出れば「kkてとせ」型になると推定)。35文字の消失より小さいが残る誤りとして BUG-168 に記録する。
 猶予20msは延長しない(引き金が猶予不足ではない、`tuning-constants.md` の実測義務)。
 
 **決定3: 検証。**
-(a) `probe_io.rs` の FakeIo テスト: S,S→reinit予約あり / U,U→なし / S,U→なし / U,S→なし / Confirmed で否定的証拠カウンタがリセット。
+(a) `probe_io.rs` の FakeIo テスト: S,S→reinit予約あり / S,U,S→あり(累計) / U,U→なし / S,U→なし / U,S→なし / Confirmed(per-VK 途中の相乗り confirm を含む)でカウンタがリセット / 先行 reinit が Scheduled・Polling のとき reinit しない give-up がスロットを上書きしない / reinit しない give-up では romaji を再送しない(決定2で許容した残りの誤りを固定)。
 (b) CI A/B: `ts-chromebar-gji-2ms` と `ts-chromepage-gji-2ms` を修正の前後で各 N run(発生率は約1/100試行なので数百試行必要)。決定的に再現させるため、ハーネスに「60 VK 一括送出の直後に OFF/ON」を足す。
 (c) 対照ハーネスの修正: 試行ごとに `turn_ime_on`、awase と同じ間隔・scan で OFF/ON を送る、`--reinit-after=esc` と `burst+off_on` を足す。修正後の対照で reinit の破壊性を再確認する。
 
@@ -64,6 +66,10 @@ give-up 時に否定的証拠カウンタが2未満なら、reinit を予約せ�
 - **猶予の延長**: 上記のとおり引き金ではなく、実機の分布も無い。
 
 ## リスク・未決
+
+- **回復の低下(R2-2)**: 候補窓が残ったまま GJI が本当に OFF の場合(ADR-079・`93bb36a7` の「kれでできる」型)、候補窓が可視の per-VK 確認は Confirmed か Stale しか返さない(SuspectedLiteral は不可能)。旧コードは U,U で reinit して IME を ON に戻せたが、決定1では否定的証拠カウンタが増えず、`consecutive` も戻らないので、次の語も idx=0 で即 give-up して romaji を捨て続け、候補窓が消えて SuspectedLiteral が2回出るまで語が失われる。旧 U,U の reinit がこのケースで実際に役立っていたかは、実機の不具合報告 journal で `gave_up=true` かつ StaleConfirm の後に回復した例を探して確かめる。判別の候補(事後推測ではなく awase 自身が持つ状態): 「直前 N ms 以内に自分で deferred を一括送出したか」(今回の2件に共通)、「give-up の後に GJI の write が再開したか」。決定ではなく未決事項。
+- **S,S でも生きた preedit を壊す余地(R2-4)**: 「候補窓は見えないが preedit は長い」状態(GJI のバックログが300msを超えサジェスト窓が HIDE した場合など)で idx=0 の SuspectedLiteral が2回出れば、同じ全消失が起きる。コーパスの SuspectedLiteral による give-up 7件はすべて ready 段階で、試行中は0件(頻度は低いが、起きない理由の証明は無い)。ready 段階の reinit の直後に ready が失敗した例が3件ある(「起動直後」の失敗の一部は awase 自身の reinit の疑い)。
+- **idx≥1 の失敗に打ち切りが無い(既存)**: per-VK の途中の confirm が `consecutive` を0に戻すので、idx≥1 の失敗(ESC＋全体の再送)は毎回0から始まり、現行コードの時点で打ち切りが無い。本 ADR の範囲外。
 
 - reinit の破壊性は CI の GJI での観測。実機で `off_on` 対照を1回回すまで一般化しない(BUG-036 の食い違い)。
 - 他の reinit 呼び出し元(`Output::send_f22_f21_reinit`、Unicode モードの long-cold)は preedit が空の前提だが未監査。`CHROME_GJI_REINIT_CONFIRM_MS` のレート制限と `Suppressed*` 分岐(cleanup も romaji も捨てる)との相互作用も未整理。
