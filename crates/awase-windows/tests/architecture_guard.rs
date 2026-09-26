@@ -813,7 +813,7 @@ fn ime_relevance_shadow_action_writes_are_accounted_for() {
         (
             "runtime/mod.rs",
             1,
-            "Runtime::enrich_ime_relevance が半角/全角(0xF3/0xF4)を、IME種別ごとの開閉トグル(ADR-189/191)として消費時に上書きする",
+            "Runtime::enrich_key_role が候補キーの役割(ADR-199決定8、T4の配線範囲は半角/全角0xF3/0xF4)から消費時に上書きする",
         ),
     ];
 
@@ -838,7 +838,7 @@ fn ime_relevance_shadow_action_writes_are_accounted_for() {
             count, expected_count,
             "src/{rel} の event.ime_relevance.shadow_action 書き込み箇所数が想定\
              ({expected_count})と異なります(実際: {count})。本番の書き込み点は \
-             hook::classify_ime_relevance と Runtime::enrich_ime_relevance の2箇所に\
+             hook::classify_ime_relevance と Runtime::enrich_key_role の2箇所に\
              限定してください（ADR-191）。"
         );
     }
@@ -4648,8 +4648,8 @@ fn half_width_alnum_toggle_policy_is_wired_at_bootstrap_and_reload() {
     );
 }
 
-/// ADR-191: `plan()` の DBE 分岐が KeyDown を無条件に握りつぶすのは「awase が実際に書くキー」だけ
-/// （`ImeKeyKind::is_open_toggle_for`、GJI・MS-IME本体の半角/全角）であること、および
+/// ADR-191/199: `plan()` の DBE 分岐が KeyDown を無条件に握りつぶすのは「awase が実際に書くキー」だけ
+/// （`enrich_key_role` が役割から `Some(Toggle)` を付けた 0xF3/0xF4。旧 `is_open_toggle_for`）であること、および
 /// BUG-116/ADR-137 決定2 の安全ガードが本番コードから消えていないことを固定する。
 /// `transport.rs::plan_tests` / `key_pipeline.rs` 内のユニットテストは
 /// `runtime/mod.rs` の `#[cfg(windows)]` 配下にあり Linux では存在しないため
@@ -4658,10 +4658,23 @@ fn half_width_alnum_toggle_policy_is_wired_at_bootstrap_and_reload() {
 fn bug116_shift_katakana_guards_are_present_in_production_code() {
     let transport = read_crate_file("src/runtime/transport.rs");
     let transport = strip_any_test_module(&transport);
+    // Suppress の根拠は「役割由来の `Some(Toggle)` と 0xF3/0xF4 の組」（ADR-199 T4）。どちらかが消えると
+    // VK だけ（または shadow_action だけ）で握りつぶす形に退行し、awase が書かないキーを Suppress しうる。
+    for token in [
+        "ShadowImeAction::Toggle",
+        "ImeKeyKind::DbeSbcsChar",
+        "ImeKeyKind::DbeDbcsChar",
+    ] {
+        assert!(
+            transport.contains(token),
+            "runtime/transport.rs の本番コードから `{token}` が消えています。\
+             Suppress の対象は「awase が書くキー（役割由来の `Some(Toggle)` の 0xF3/0xF4）」だけに\
+             する（ADR-191/199）"
+        );
+    }
     assert!(
-        transport.contains("is_open_toggle_for"),
-        "runtime/transport.rs の本番コードから `is_open_toggle_for` が消えています。\
-         Suppress の対象は「awase が書くキー」だけにする（ADR-191）"
+        !transport.contains("is_open_toggle_for"),
+        "runtime/transport.rs の本番コードに撤去済みの `is_open_toggle_for` が再び現れています（ADR-199 T4）"
     );
     // 撤去後は awase が書かない英数(0xF0)・カタカナ(0xF1)を VK で列挙して Suppress してはならない
     // （握りつぶすと OS にも awase にも誰も何もしない二重の空振りになる）。BUG-116 の
@@ -4678,7 +4691,7 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
         assert!(
             !transport.contains(token),
             "runtime/transport.rs の本番コードに `{token}` が再び現れています（ADR-191: \
-             Suppress の対象は `is_open_toggle_for` で決め、awase が書かないキーを VK 列挙で \
+             Suppress の対象は役割由来の `shadow_action` で決め、awase が書かないキーを VK 列挙で \
              握りつぶさない）"
         );
     }
@@ -4698,11 +4711,32 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
         // vkベースの比較へ戻る変更は、runtime/配下がLinuxでテスト実行
         // できない（CLAUDE.md参照）ためこの静的スキャンでしか検知できない。
         "fn should_clear_kana_mode_restore_latch",
+        // ADR-199 T4: 役割由来の `shadow_action` は `kp_run_inner` の冒頭（`kp_stage_shadow_ime_toggle`・
+        // `plan()` より前）で付く。この呼び出しが消えると 0xF3/0xF4 が `shadow_action` なしで
+        // Allow され、awase の書き込みと生キーの二重 actuation（BUG-46/BUG-52）に退行する。
+        "self.enrich_key_role(&mut event)",
     ] {
         assert!(
             kp.contains(token),
             "runtime/key_pipeline.rs の本番コードから `{token}` が消えています \
              （BUG-116/ADR-137 決定2のガード）"
+        );
+    }
+    // 順序も固定する: `enrich_key_role` が `kp_stage_shadow_ime_toggle`・`plan()` より後ろに動くと、
+    // それらが `shadow_action` の付く前のイベントを読み、0xF3/0xF4 が Allow のまま二重 actuation になる。
+    let enrich = kp
+        .find("self.enrich_key_role(&mut event)")
+        .expect("enrich_key_role の呼び出し");
+    for later in [
+        "self.kp_stage_shadow_ime_toggle(&mut event)",
+        "PhysicalKeyDisposition::plan(",
+    ] {
+        let at = kp
+            .find(later)
+            .unwrap_or_else(|| panic!("`{later}` が見つかりません"));
+        assert!(
+            enrich < at,
+            "runtime/key_pipeline.rs: `enrich_key_role` は `{later}` より前に呼ぶこと（ADR-199 T4）"
         );
     }
 }

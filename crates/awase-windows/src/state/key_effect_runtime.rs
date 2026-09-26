@@ -3,8 +3,9 @@
 //! `awase-keymap-learn::persist`（段階3の永続化フォーマット）が書き出した学習済み表を、
 //! コンパイル時埋め込みの同梱表（`key_effect_table.rs`）の代わりに使う。読み込んだ表は
 //! `KeyEffectPredicted`（belief更新）に使う。actuationの判定には原則使わない（ユーザー明示config・
-//! 漢字0x19の固定Toggleは不変）。**唯一の例外**: GJIの採用学習表が半角/全角を開閉トグルでないと示すとき
-//! （ADR-195追記、`hankaku_zenkaku_non_toggle`）だけ、ADR-189の固定セットの`shadow_action=Toggle`を外す。
+//! 漢字0x19の固定Toggleは不変）。**唯一の例外**: 採用学習表が候補キー（半角/全角。ADR-199 T4の配線範囲）を
+//! 開閉トグルでないと示すとき（ADR-195追記・ADR-199決定6-2、[`RuntimeTableCache::toggle_contradiction`]）だけ、
+//! 役割由来の`shadow_action=Toggle`を外す（狭める方向だけ。[`key_shadow_action`]）。
 //! 本モジュールは`Cell`の一覧と、その前計算フラグを用意するだけで、actuationのどの合流点も呼ばない。
 //!
 //! 安全側に倒す2つの経路（本タスクB-1 Blockerの核心）:
@@ -544,51 +545,76 @@ pub const fn hz_omit_may_apply(use_learned: bool) -> bool {
     use_learned
 }
 
-/// `enrich_ime_relevance`が判定に届く前に早期returnする（修飾付き・IME種別不明）とき、古いラッチを
-/// 捨てるべきか。半角/全角（`is_hz`）の非injected KeyDownだけ捨てる（捨てないと次のKeyUpが前回押下の
-/// 判定を使い、Down=Allow・Up=Suppress の非対称になる。Opus round2 N2）。
+/// 候補キー（無修飾の打鍵）に付ける役割由来の`shadow_action`（ADR-199 決定4・6・8）を決める純関数。
+/// `Runtime::derive_key_shadow_action`が取得した値だけを受け取り、規則の組み合わせをここに閉じる。
+///
+/// - `explicit_overlap`: config.toml の無修飾 `ime_on`/`ime_off`/`ime_toggle` と重なる。真なら役割を付けない
+///   （config が勝つ。重ねると Engine の照合と役割の両方が開閉を書き打ち消し合う、決定8・Q2）。
+/// - `keymap_role`: GJI の`config1.db`から逆算した役割。外側の`None`は「キーマップが読めない・パースできない」
+///   （不明＝受動、決定6-3。不在は既定プリセットとして読み取り側が返すのでここには来ない）。
+/// - MS-IME 本体（[`ImeKindId::MsIme`]）の半角/全角は仕様で固定のトグル（決定6-4）。キーマップが取れなくても
+///   役割は付く（`keymap_role`は見ない）。
+/// - 採用中の学習表がそのキーをトグルと矛盾すると示すとき（`learned_contradiction`、`use_learned`が真のときだけ有効）は
+///   受動に狭める（決定6-2。狭める方向だけ）。
 #[must_use]
-pub const fn should_clear_omit_latch_on_early_return(
-    is_hz: bool,
-    is_key_down: bool,
-    injected: bool,
-) -> bool {
-    is_hz && is_key_down && !injected
+pub fn key_shadow_action(
+    ime: super::ime_kind::ImeKindId,
+    explicit_overlap: bool,
+    keymap_role: Option<Option<awase_gji_config::role::KeyRole>>,
+    use_learned: bool,
+    learned_contradiction: bool,
+) -> Option<awase::types::ShadowImeAction> {
+    use super::ime_kind::ImeKindId;
+    if explicit_overlap {
+        return None;
+    }
+    let role = match ime {
+        ImeKindId::Gji => keymap_role.flatten()?,
+        ImeKindId::MsIme => awase_gji_config::role::KeyRole::ImeToggle,
+    };
+    if hz_omit_verdict(use_learned, learned_contradiction) {
+        return None;
+    }
+    match role {
+        awase_gji_config::role::KeyRole::ImeToggle => Some(awase::types::ShadowImeAction::Toggle),
+    }
 }
 
-/// 半角/全角の「学習表由来でToggleを外すか」判定のラッチ（`(scan_code, 外すか)`）を進める純関数（ADR-195追記）。
+/// 候補キーの「この打鍵の最終的な`shadow_action`」のラッチ（`(scan_code, 判定)`）を進める純関数
+/// （ADR-195追記の半角/全角ラッチを、ADR-199決定18(i)で候補キー全体の打鍵ごとのラッチに一般化した。
+/// 値の意味はキーの種類で変えない: 判定は常に「付ける`shadow_action`（付けないなら`None`）」）。
 ///
 /// - `reuse`（KeyUp、またはオートリピートの`was_down`なKeyDown）で、ラッチの scan_code（非0）が一致すれば
 ///   ラッチの判定を使う（`fresh`は呼ばない）。
 /// - それ以外は`fresh`で判定を求める。非injectedのKeyDown（`fresh_down`）はその結果でラッチを**上書き**する。
-///   KeyUp では消さない（ドレイン経路は enrich を2回呼ぶので、Down→Up→Down→Up でも同じ結果になる。
-///   二重enrichは2回の判定のOR: どちらかで`shadow_action`が付けば残る）。
+///   KeyUp では消さない（ドレイン経路・救済窓の再入で同じ打鍵が2回 enrich されても Down→Up→Down→Up で
+///   同じ結果になる）。
 /// - 識別は vk でなく scan_code（`VK_DBE_*`はDown/Upでvkが変わりうる、BUG-131/132）。拡張ビットは照合しない:
-///   半角/全角（0xF3/0xF4）には、Left/Right Alt のような raw scan 同一で拡張ビットだけが違う双子キーが無い。
-/// - `fresh`は表の同期読込（`RuntimeTableCache::get`）を含みうるので、enrich内で同期I/Oが走りうる
+///   半角/全角（0xF3/0xF4）・F13〜F24には、Left/Right Alt のような raw scan 同一で拡張ビットだけが違う双子キーが無い。
+/// - `fresh`は表の同期読込（`RuntimeTableCache::get`）を含みうるので、`enrich_key_role`内で同期I/Oが走りうる
 ///   （スタンプ変化時のみ）。
 ///
 /// 戻り値は`(判定, 新しいラッチ)`。
 #[must_use]
-pub fn omit_latch_step(
-    latch: Option<(awase::types::ScanCode, bool)>,
+pub fn latch_step<T: Copy>(
+    latch: Option<(awase::types::ScanCode, T)>,
     reuse: bool,
     fresh_down: bool,
     scan: awase::types::ScanCode,
-    fresh: impl FnOnce() -> bool,
-) -> (bool, Option<(awase::types::ScanCode, bool)>) {
+    fresh: impl FnOnce() -> T,
+) -> (T, Option<(awase::types::ScanCode, T)>) {
     if reuse {
-        if let Some((s, omit)) = latch {
+        if let Some((s, verdict)) = latch {
             if scan.0 != 0 && s == scan {
-                return (omit, latch);
+                return (verdict, latch);
             }
         }
     }
-    let omit = fresh();
+    let verdict = fresh();
     (
-        omit,
+        verdict,
         if fresh_down {
-            Some((scan, omit))
+            Some((scan, verdict))
         } else {
             latch
         },
@@ -1502,46 +1528,110 @@ mod tests {
 
     /// ADR-195追記: KeyDownで確定した判定がKeyUpへ持ち越され、途中で表が変わっても揃う。
     #[test]
-    fn omit_latch_carries_down_verdict_to_up() {
+    fn latch_carries_down_verdict_to_up() {
         use awase::types::ScanCode;
         let scan = ScanCode(0x29);
-        let (v, latch) = omit_latch_step(None, false, true, scan, || false);
+        let (v, latch) = latch_step(None, false, true, scan, || false);
         assert!(!v);
-        let (v, latch2) =
-            omit_latch_step(latch, true, false, scan, || panic!("fresh must not run"));
+        let (v, latch2) = latch_step(latch, true, false, scan, || panic!("fresh must not run"));
         assert!(!v);
         assert_eq!(latch2, latch, "Upでラッチを消さない");
-        let (v, latch3) = omit_latch_step(latch2, false, true, scan, || false);
+        let (v, latch3) = latch_step(latch2, false, true, scan, || false);
         assert!(!v);
-        let (v, _) = omit_latch_step(latch3, true, false, scan, || true);
+        let (v, _) = latch_step(latch3, true, false, scan, || true);
         assert!(!v);
+    }
+
+    /// ADR-199 決定6・8: 役割由来の`shadow_action`の規則の組み合わせ（ホストテスト）。
+    #[test]
+    fn key_shadow_action_combines_rules() {
+        use crate::state::ime_kind::ImeKindId;
+        use awase::types::ShadowImeAction::Toggle;
+        use awase_gji_config::role::KeyRole::ImeToggle;
+        // GJI: 役割があればトグル。
+        assert_eq!(
+            key_shadow_action(ImeKindId::Gji, false, Some(Some(ImeToggle)), true, false),
+            Some(Toggle)
+        );
+        // GJI: 役割が無い（CUSTOM で別機能）・キーマップが読めない（不明）は受動。
+        assert_eq!(
+            key_shadow_action(ImeKindId::Gji, false, Some(None), true, false),
+            None
+        );
+        assert_eq!(
+            key_shadow_action(ImeKindId::Gji, false, None, true, false),
+            None
+        );
+        // MS-IME 本体: 仕様固定。キーマップが取れなくても付く。
+        for keymap_role in [None, Some(None), Some(Some(ImeToggle))] {
+            assert_eq!(
+                key_shadow_action(ImeKindId::MsIme, false, keymap_role, true, false),
+                Some(Toggle)
+            );
+        }
+        // 明示 config と重なれば、どの IME でも付けない。
+        for ime in [ImeKindId::Gji, ImeKindId::MsIme] {
+            assert_eq!(
+                key_shadow_action(ime, true, Some(Some(ImeToggle)), true, false),
+                None
+            );
+        }
+        // 学習表の矛盾で狭める。ただし opt-out（use_learned=false）のときは狭めない。
+        for ime in [ImeKindId::Gji, ImeKindId::MsIme] {
+            assert_eq!(
+                key_shadow_action(ime, false, Some(Some(ImeToggle)), true, true),
+                None
+            );
+            assert_eq!(
+                key_shadow_action(ime, false, Some(Some(ImeToggle)), false, true),
+                Some(Toggle)
+            );
+        }
+        // 狭めは能動側へ広げない: 役割が無いキーは矛盾フラグに関係なく受動のまま。
+        assert_eq!(
+            key_shadow_action(ImeKindId::Gji, false, Some(None), true, false),
+            None
+        );
+    }
+
+    /// ラッチの値は「この打鍵の最終的な`shadow_action`」（ADR-199 決定18(i)）。`None`（付けない）も判定として
+    /// KeyUp まで持ち越し、Down=Allow・Up=Suppress の非対称を作らない。
+    #[test]
+    fn latch_carries_none_verdict_to_up() {
+        use awase::types::{ScanCode, ShadowImeAction};
+        let scan = ScanCode(0x29);
+        let (v, latch) = latch_step::<Option<ShadowImeAction>>(None, false, true, scan, || None);
+        assert_eq!(v, None);
+        // Up は（修飾が外れて）fresh なら Toggle になる状況でも、ラッチの `None` を使う。
+        let (v, _) = latch_step(latch, true, false, scan, || Some(ShadowImeAction::Toggle));
+        assert_eq!(v, None);
     }
 
     /// オートリピート（`was_down`のKeyDown。reuse=true）はラッチを再利用し、freshを呼ばない。
     #[test]
-    fn omit_latch_reused_on_autorepeat_down() {
+    fn latch_reused_on_autorepeat_down() {
         use awase::types::ScanCode;
         let latch = Some((ScanCode(0x29), true));
-        let (v, l) = omit_latch_step(latch, true, true, ScanCode(0x29), || panic!("no fresh"));
+        let (v, l) = latch_step(latch, true, true, ScanCode(0x29), || panic!("no fresh"));
         assert!(v);
         assert_eq!(l, latch);
     }
 
     /// scan違い/scan 0/ラッチ無しのreuseはその場で判定する。injectedのDownはラッチを更新しない。
     #[test]
-    fn omit_latch_ignores_other_scan_and_injected() {
+    fn latch_ignores_other_scan_and_injected() {
         use awase::types::ScanCode;
         let latch = Some((ScanCode(0x29), false));
-        let (v, l) = omit_latch_step(latch, true, false, ScanCode(0x1E), || true);
+        let (v, l) = latch_step(latch, true, false, ScanCode(0x1E), || true);
         assert!(v);
         assert_eq!(l, latch);
-        let (v, _) = omit_latch_step(Some((ScanCode(0), false)), true, false, ScanCode(0), || {
+        let (v, _) = latch_step(Some((ScanCode(0), false)), true, false, ScanCode(0), || {
             true
         });
         assert!(v);
-        let (v, _) = omit_latch_step(None, true, false, ScanCode(0x29), || true);
+        let (v, _) = latch_step(None, true, false, ScanCode(0x29), || true);
         assert!(v);
-        let (v, l) = omit_latch_step(latch, false, false, ScanCode(0x29), || true);
+        let (v, l) = latch_step(latch, false, false, ScanCode(0x29), || true);
         assert!(v);
         assert_eq!(l, latch);
     }
@@ -1556,23 +1646,5 @@ mod tests {
         }
         assert!(hz_omit_may_apply(true));
         assert!(!hz_omit_may_apply(false));
-    }
-
-    /// 早期returnでラッチを捨てるのは、半角/全角の非injected KeyDownだけ。
-    #[test]
-    fn early_return_clears_latch_only_for_fresh_hz_down() {
-        assert!(should_clear_omit_latch_on_early_return(true, true, false));
-        assert!(
-            !should_clear_omit_latch_on_early_return(true, false, false),
-            "KeyUpは消さない"
-        );
-        assert!(
-            !should_clear_omit_latch_on_early_return(true, true, true),
-            "injectedは消さない"
-        );
-        assert!(
-            !should_clear_omit_latch_on_early_return(false, true, false),
-            "他キーは触らない"
-        );
     }
 }

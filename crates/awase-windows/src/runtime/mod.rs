@@ -328,16 +328,20 @@ pub struct Runtime {
     /// ADR-195段階4: `<config dir>/keymap-learn-table.json`（段階3永続化）の実行時読込キャッシュ。
     /// `KeyEffectPredicted`（belief更新）に使う。actuationの許可リストは広げない（ADR-195決定(A)）が、
     /// 半角/全角の固定セットの`shadow_action=Toggle`を**外す**方向にだけ参照する（ADR-195追記、
-    /// `learned_table_omits_hz_toggle`）。
+    /// `derive_key_shadow_action`）。
     key_effect_runtime_table: crate::state::key_effect_runtime::RuntimeTableCache,
     /// `config.general.use_learned_keymap_table`（opt-out、既定true）。
     use_learned_keymap_table: bool,
-    /// ADR-195追記: 半角/全角の物理キー押下ごとの「学習表由来でToggleを外すか」の判定を、KeyDownで確定して
-    /// KeyUp まで持ち越すラッチ（`(scan_code, 外すか)`）。学習表の再読込がDownとUpの間に起きても、
-    /// Down=Allow・Up=Suppressで KeyDown だけがOSに残る形にしないため。識別は vk でなく scan_code
-    /// （`VK_DBE_*`はDown/Upでvkが変わりうる、BUG-131/132）。**Upで消さず上書きのみ**にする
-    /// （drain経路は enrich を2回呼ぶため）。
-    hz_toggle_omit_latch: Option<(awase::types::ScanCode, bool)>,
+    /// 役割判定の候補キー（ADR-199決定18(i)、旧ADR-195追記の`hz_toggle_omit_latch`を一般化）の物理キー押下ごとの
+    /// 「この打鍵の最終的な`shadow_action`」を、KeyDownで確定して KeyUp まで持ち越すラッチ
+    /// （`(scan_code, 判定)`）。学習表の再読込がDownとUpの間に起きても、Down=Allow・Up=Suppressで
+    /// KeyDown だけがOSに残る形にしないため。識別は vk でなく scan_code（`VK_DBE_*`はDown/Upでvkが
+    /// 変わりうる、BUG-131/132）。**Upで消さず上書きのみ**にする（救済窓・drain 経路の再入で同じ打鍵が
+    /// 2回 `enrich_key_role` を通りうる）。
+    key_role_latch: Option<(
+        awase::types::ScanCode,
+        Option<awase::types::ShadowImeAction>,
+    )>,
     /// 専用Fnキー変換モード（`muhenkan_solo_tap_dedicated_fn_key`、ADR-091
     /// §D3.2、config.toml による手動設定のみ）が現在有効なら、その vk。
     /// `recompute_active_keymaps` が `[[keymap]]` との衝突チェックに使う
@@ -555,107 +559,114 @@ impl Runtime {
 
     /// IME 関連の事前分類情報を sync key 設定で補完する。
     ///
-    /// 実処理は [`focus_tracker::FocusTracker::enrich_ime_relevance`] に委譲する。
+    /// 実処理は [`focus_tracker::FocusTracker::enrich_ime_relevance`] に委譲する。バッチ前処理
+    /// （`handle_wm_drain_output_queue`）もここを呼ぶ。候補キーの役割（`shadow_action`）は
+    /// **触らない**（[`Self::enrich_key_role`]が `kp_run_inner` で付ける。バッチ前処理との間で
+    /// `shadow_action` を読む経路が無いことは ADR-199 T4 で確認済み）。
     pub fn enrich_ime_relevance(&mut self, event: &mut RawKeyEvent) {
         self.focus_tracker.enrich_ime_relevance(event);
-        // ADR-189/191: 半角/全角(0xF3/0xF4)は、IME種別ごとに「開閉だけに作用するトグル」と確定して
-        // いるとき（`ImeKeyKind::is_open_toggle_for`）だけ、方向固定でなく beliefに基づくトグルにする。
-        // 修飾付きはIME側で別意味を持ちうるので、無修飾の物理キーだけ。観測に依存しないので、
-        // 読めないアプリ（TsfNative）でも効く。これが`shadow_action`の唯一の上書き点
-        // （`tests/architecture_guard.rs::ime_relevance_shadow_action_writes_are_accounted_for`が
-        // このファイル内の書き込み箇所数を1に固定している）。ひらがな・カタカナ・英数・無変換・変換は
-        // 入力モードも動かしうるので上書きせず、生のままIMEへ通して追随する（ADR-187のfollow）。
-        //
-        // 全打鍵で通る経路なので、VK が IME キーでないものは修飾キーと IME 種別を見る前に抜ける
-        // （develop の同関数が明示していた評価順、レビュー指摘B-m10）。
-        let Some(key) = event.vk_code.ime_kind() else {
-            return;
-        };
-        let m = event.modifier_snapshot;
-        if m.ctrl || m.alt || m.shift || m.win {
-            self.clear_hz_toggle_omit_latch(key, event);
-            return;
-        }
-        // 表の適用範囲と揃える: GJI と、CLSID で同定できた Microsoft IME 本体だけ。GJI 未検出・第三者 IME・
-        // IMM32 HKL のみでは付けず、生キーを通して観測に追随する（レビュー round2 NB3）。
-        let Some(ime) = crate::tsf::observer::tsf_obs().table_ime_kind() else {
-            self.clear_hz_toggle_omit_latch(key, event);
-            return;
-        };
-        if key.is_open_toggle_for(ime) && !self.learned_table_omits_hz_toggle(event) {
-            event.ime_relevance.shadow_action = Some(awase::types::ShadowImeAction::Toggle);
-        }
     }
 
-    /// 半角/全角の非injected KeyDown が判定（`learned_table_omits_hz_toggle`）に届かず早期 return する
-    /// （修飾付き・IME種別不明）とき、古いラッチを捨てる（判定は純関数
-    /// [`crate::state::key_effect_runtime::should_clear_omit_latch_on_early_return`]）。
-    fn clear_hz_toggle_omit_latch(&mut self, key: crate::vk::ImeKeyKind, event: &RawKeyEvent) {
-        let is_hz = matches!(
-            key,
-            crate::vk::ImeKeyKind::DbeSbcsChar | crate::vk::ImeKeyKind::DbeDbcsChar
-        );
-        if crate::state::key_effect_runtime::should_clear_omit_latch_on_early_return(
-            is_hz,
-            event.event_type == awase::types::KeyEventType::KeyDown,
-            event.injected,
-        ) {
-            self.hz_toggle_omit_latch = None;
-        }
-    }
-
-    /// ADR-195追記（縮小方向）: 採用中の学習表が半角/全角を開閉トグルでないと示すとき、固定セットの
-    /// `shadow_action=Toggle`を外す（`true`）。分岐（opt-out・表フラグ。GJI限定は撤去しMS-IME本体にも適用、ADR-199決定6-4）は純関数
-    /// [`crate::state::key_effect_runtime::hz_omit_verdict`]。学習表が無い・棄却・未採用・opt-out・
-    /// キーマップ未取得のときは`false`＝従来どおり固定セットを維持する。
+    /// 役割判定の候補キー（[`crate::vk::is_role_candidate`]）の打鍵に、役割由来の `shadow_action` を
+    /// 付け外しする（ADR-199 決定8。ADR-189/191 の「半角/全角は固定でToggle」を、ユーザーの IME 設定から
+    /// 逆算した役割に置き換えた）。`kp_run_inner` の冒頭から呼ぶ。これが`shadow_action`の唯一の上書き点
+    /// （`tests/architecture_guard.rs::ime_relevance_shadow_action_writes_are_accounted_for`が
+    /// このファイル内の書き込み箇所数を1に固定している）。
     ///
-    /// 呼び出しの順序は`table_ime_kind`（未同定なら`enrich_ime_relevance`が`shadow_action`を付けずに抜ける。
-    /// 未同定の窓のKeyUpは`shadow_action`なし＝Allowで、Down側がSuppressでも孤立KeyUpが通るだけの有害でない方向）
-    /// → `is_open_toggle_for(ime)` → 本関数。本関数の中ではIME種別の判定より**前**にラッチを見る
-    /// （押したまま別の窓へ移ってもDownとUpの判定が揃う）。
-    /// KeyDownで確定した結果を scan_code 付きのラッチに持ち、同じ物理キーのKeyUp・オートリピート
-    /// （`was_down`）はそれを使う（[`crate::state::key_effect_runtime::omit_latch_step`]）。
-    /// ドレイン経路は enrich を2回呼びうるので、二重enrichは2回の判定のOR（どちらかで`shadow_action`が付けば残る）。
-    /// 表の読込（`key_effect_keymap.get`/`get_for_keymap`）は同期I/Oを含み、スタンプ変化時だけ enrich 内で走る。
-    fn learned_table_omits_hz_toggle(&mut self, event: &RawKeyEvent) -> bool {
-        use crate::state::key_effect_runtime::{
-            hz_omit_may_apply, hz_omit_verdict, omit_latch_step,
-        };
+    /// 修飾付きはIME側で別意味を持ちうるので、無修飾の物理キーだけ。観測に依存しないので、
+    /// 読めないアプリ（TsfNative）でも効く。ひらがな・カタカナ・英数は入力モードも動かしうるので
+    /// 候補外（生のままIMEへ通して追随する、ADR-187のfollow）。
+    ///
+    /// **T4 の配線範囲は半角/全角(0xF3/0xF4)だけ**: F13〜F24（決定18。`is_japanese_ime`を上げない・
+    /// 書かなかった打鍵は Suppress しない規則が要る、T9）と無変換/変換（決定16。`shadow_action` でなく
+    /// 単独タップ確定点、T5）は、それぞれの配線が入るまで受動のまま。
+    ///
+    /// 判定は打鍵ごとのラッチ（[`crate::state::key_effect_runtime::latch_step`]）で KeyDown に確定し、
+    /// 同じ物理キーの KeyUp・オートリピート（`was_down`）はそれを使う（Down=Allow・Up=Suppress の非対称防止）。
+    pub fn enrich_key_role(&mut self, event: &mut RawKeyEvent) {
+        use crate::state::key_effect_runtime::latch_step;
         use awase::types::KeyEventType;
+        // 全打鍵で通る経路なので、候補キーでないものは修飾キーと IME 種別を見る前に抜ける。
+        if !crate::vk::is_role_candidate(event.vk_code) {
+            return;
+        }
+        if !matches!(
+            event.vk_code.ime_kind(),
+            Some(crate::vk::ImeKeyKind::DbeSbcsChar | crate::vk::ImeKeyKind::DbeDbcsChar)
+        ) {
+            return;
+        }
         let is_up = event.event_type == KeyEventType::KeyUp;
         let fresh_down = event.event_type == KeyEventType::KeyDown && !event.injected;
         let reuse = is_up || (fresh_down && event.was_down);
-        let use_learned = self.use_learned_keymap_table;
-        let (omit, latch) = omit_latch_step(
-            self.hz_toggle_omit_latch,
+        let vk = event.vk_code;
+        let m = event.modifier_snapshot;
+        let modified = m.ctrl || m.alt || m.shift || m.win;
+        // 修飾付き・IME 未同定の打鍵も `None` の判定として**ラッチに記録する**（早期 return しない）。
+        // 記録しないと、Ctrl を押したまま半角/全角を Down（判定なし=Allow）→ Ctrl を先に離す →
+        // 半角/全角の Up がラッチ空で判定をやり直し `Some(Toggle)`（=Suppress）になり、
+        // Down=Allow・Up=Suppress の非対称（BUG-131/132 型）になる（Opus レビュー、PR #326）。
+        let (action, latch) = latch_step(
+            self.key_role_latch,
             reuse,
             fresh_down,
             event.scan_code,
             || {
-                if !hz_omit_may_apply(use_learned) {
-                    return false;
+                if modified {
+                    return None;
                 }
-                let now_ms = crate::hook::current_tick_ms();
-                let Some(keymap) = self.key_effect_keymap.get(
-                    now_ms,
-                    crate::gji_charset_autodetect::config1_db_stamp,
-                    crate::gji_charset_autodetect::read_key_effect_keymap,
-                ) else {
-                    return false;
-                };
-                self.key_effect_runtime_table.get_for_keymap(now_ms, keymap);
-                hz_omit_verdict(
-                    use_learned,
-                    self.key_effect_runtime_table
-                        .toggle_contradiction(
-                            crate::state::key_effect_predictor::TableKey::HankakuZenkaku,
-                        )
-                        .is_some(),
-                )
+                // 役割を求められる IME は GJI と、CLSID で同定できた Microsoft IME 本体だけ。GJI 未検出・
+                // 第三者 IME・IMM32 HKL のみでは付けず、生キーを通して観測に追随する（レビュー round2 NB3、決定6-3）。
+                let ime = crate::tsf::observer::tsf_obs().table_ime_kind()?;
+                self.derive_key_shadow_action(ime, vk)
             },
         );
-        self.hz_toggle_omit_latch = latch;
-        omit
+        self.key_role_latch = latch;
+        event.ime_relevance.shadow_action = action;
+    }
+
+    /// `vk`（無修飾の候補キー）の役割由来の`shadow_action`（ADR-199 決定4・6・8）。取得（I/O・キャッシュ）だけを
+    /// ここで行い、規則の組み合わせは純関数
+    /// [`crate::state::key_effect_runtime::key_shadow_action`]（ホストテストあり）に任せる。
+    ///
+    /// キーマップ・学習表の取得は予測経路（`kp_predict_key_effect`）と同じインスタンス・同じ引数
+    /// （`KeymapCache::get_gji`/`get_native`）なので、間引きも共通で I/O は増えない。
+    /// `table_ime_kind` で分岐するのは打鍵の時点の同定なので、IME を切り替えたときに古い役割が残らない。
+    fn derive_key_shadow_action(
+        &mut self,
+        ime: crate::state::ime_kind::ImeKindId,
+        vk: VkCode,
+    ) -> Option<awase::types::ShadowImeAction> {
+        use crate::state::ime_kind::ImeKindId;
+        use crate::state::key_effect_predictor::TableKey;
+        use crate::state::key_effect_runtime::{hz_omit_may_apply, key_shadow_action};
+        let explicit_overlap = self.engine.has_bare_ime_combo(vk);
+        let now_ms = crate::hook::current_tick_ms();
+        let keymap = match ime {
+            ImeKindId::Gji => self.key_effect_keymap.get_gji(now_ms),
+            ImeKindId::MsIme => self.key_effect_keymap_native.get_native(now_ms),
+        };
+        let use_learned = self.use_learned_keymap_table;
+        let contradiction = match (
+            hz_omit_may_apply(use_learned),
+            keymap,
+            TableKey::from_vk(vk.0),
+        ) {
+            (true, Some(keymap), Some(key)) => {
+                self.key_effect_runtime_table.get_for_keymap(now_ms, keymap);
+                self.key_effect_runtime_table
+                    .toggle_contradiction(key)
+                    .is_some()
+            }
+            _ => false,
+        };
+        key_shadow_action(
+            ime,
+            explicit_overlap,
+            keymap.map(|k| k.gji_key_role(vk.0)),
+            use_learned,
+            contradiction,
+        )
     }
 
     /// Decision の副作用を実行する（メッセージループ用）。
@@ -1270,7 +1281,7 @@ impl Runtime {
             key_effect_runtime_table: crate::state::key_effect_runtime::RuntimeTableCache::default(
             ),
             use_learned_keymap_table: true,
-            hz_toggle_omit_latch: None,
+            key_role_latch: None,
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
             msime_key_assignment_warned: None,

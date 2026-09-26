@@ -193,6 +193,18 @@ impl Engine {
         self.adapter.henkan_solo_tap_ime_action()
     }
 
+    /// 修飾なしの `vk` が、明示された IME 制御コンボ（`ime_on`/`ime_off`/`ime_toggle`、自動検出トグル）に
+    /// 含まれるか（ADR-199 決定8）。含まれるキーには役割由来の `shadow_action` を付けない:
+    /// 付けると1回の押下で Engine の照合と役割の両方が開閉を書き、打ち消し合う。
+    #[must_use]
+    pub fn has_bare_ime_combo(&self, vk: VkCode) -> bool {
+        let bare = |k: &ParsedKeyCombo| k.vk == vk && !k.ctrl && !k.shift && !k.alt;
+        self.special_keys.ime_on.iter().any(bare)
+            || self.special_keys.ime_off.iter().any(bare)
+            || self.special_keys.ime_toggle.iter().any(bare)
+            || self.ime_toggle_auto.iter().any(bare)
+    }
+
     /// Enter 親指キーのフォールバック挙動を設定する。
     ///
     /// `enter_thumb_vk` は `left_thumb_key`/`right_thumb_key` のいずれかが

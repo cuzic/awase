@@ -6604,6 +6604,36 @@ mod engine_integration_tests {
         engine
     }
 
+    /// ADR-199 決定8: 無修飾の ime_on/off/toggle に書かれたキーだけが「明示 config と重なる」と答える。
+    /// 修飾付きの同じ VK・engine_on/off のコンボは重なりに数えない
+    /// （役割由来の `shadow_action` と Engine の照合が両方開閉を書いて打ち消し合うのは前者だけ）。
+    #[test]
+    fn has_bare_ime_combo_only_counts_unmodified_ime_combos() {
+        let combo = |vk, ctrl| ParsedKeyCombo {
+            ctrl,
+            shift: false,
+            alt: false,
+            vk,
+        };
+        let f13 = VkCode(0x7C);
+        let hz = VkCode(0xF3);
+        let special = SpecialKeyCombos {
+            engine_on: vec![combo(VK_CONVERT, false)],
+            engine_off: vec![],
+            ime_on: vec![combo(f13, false)],
+            ime_off: vec![combo(hz, true)],
+            ime_toggle: vec![],
+        };
+        let engine = make_engine_with_special(special);
+        assert!(engine.has_bare_ime_combo(f13), "無修飾の ime_on");
+        assert!(!engine.has_bare_ime_combo(hz), "Ctrl 付きは重ならない");
+        assert!(
+            !engine.has_bare_ime_combo(VK_CONVERT),
+            "engine_on は IME 制御でない"
+        );
+        assert!(!engine.has_bare_ime_combo(VkCode(0xF4)));
+    }
+
     #[test]
     fn special_key_engine_on_combo() {
         let combo = ParsedKeyCombo {
