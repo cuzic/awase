@@ -1,0 +1,5 @@
+[12:00:00.000Z] [init] IMEプロファイルをアクティブ化: Ok(())
+[12:00:01.000Z] [TS-JSON] {"type": "config", "form": "edit", "ime": "gji", "mode": "nicola", "interval_ms": 10.0, "len": 6, "trials": 1, "seed": 1, "kinds": ["single", "thumb", "mixed"], "layout": "layout/nicola_keytop.yab", "cells": [36, 30, 30], "child_class": "Edit"}
+[12:00:02.000Z] [TS-JSON] {"type": "abort", "reason": "IME/awase の準備確認に失敗(ready の text を参照)"}
+[12:00:03.000Z] [TS-JSON] {"type": "done"}
+[12:00:59.000Z] === 完了 ===

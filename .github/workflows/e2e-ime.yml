@@ -9,6 +9,7 @@ name: e2e-ime
 # 通常のCI(ci.yml)には影響しない。ci/e2e-ime ブランチへの関連ファイルの push と手動起動でだけ動く。
 # ci/e2e-scenarios ブランチへの push は、操作シナリオ(名前が sc- で始まる構成、下のplan参照)だけを回す。
 # ci/e2e-calibration ブランチへの push は、ADR-191 の学習/検証ラウンド(名前が cal- で始まる構成)だけを回す。
+# ci/e2e-typing-stress ブランチへの push は、高速打鍵ストレス(名前が ts- で始まる構成、examples/typing_stress.rs)だけを回す。
 # (workflow_dispatch は既定ブランチにワークフローが無いと使えないので、構成を絞るには only 入力かこのブランチを使う)
 #
 # awase を起動する構成では、期待表(expect/rc)とは別に、ログの不変条件(異常検出器、check_invariants.py と
@@ -33,7 +34,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration]
+    branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -74,8 +75,8 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || '' }}
-          # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)を除く。
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || '' }}
+          # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
           # workflow_call の runs 入力(空なら構成ごとの runs のまま)
@@ -92,9 +93,9 @@ jobs:
           # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME)
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false'):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress)
           SC_IMES = [('msime-native', 'msime', 1, ' --msime'), ('gji-msime', 'gji', 2, ''), ('gji-atok', 'gji', 1, '')]
           configs = [
             # --- 撤去実験(ATOK、実機E1〜E7bと同じ) ---
@@ -248,13 +249,31 @@ jobs:
                 runs=1, args='--seq=1D,1C --msime'),
             cfg('sc-legacy-custom-keystyle', 'observe', check='consistency', ime='msime', awase='false',
                 runs=1, args='--seq=1D,1C --msime', legacy_custom='true'),
+            # --- 高速打鍵ストレス(ts-、ci/e2e-typing-stress): NICOLA の単打・親指シフト同時打鍵・混在を、人間より速い間隔で SendInput 注入し、
+            # 入力先のテキストを読み戻して期待文字列(.yab とかな表から機械的に決める)と比べる。判定は check_typing_stress.py(消失/入れ替わり/リテラル化を分類)。
+            # 入力先: edit=素のEDIT(IMM32系) / multi=複数行EDIT / rich=素のRICHEDIT50W(TSF text store) / tsf=RichEditをChrome_RenderWidgetHostHWNDへスーパークラス化(TsfNative相当、ADR-193)。
+            # 検出のみなので expect=observe(崩れを見つけても赤にしない。結果は summary の別表)。runs=2(seed=回番号で列を変える)。
+            # 名前: ts-<入力先>-<gji|msime>-<間隔ms>ms。ts-raw-* は awase なしで同じ文字列を生のローマ字として同じ速度で打つ対照実験(入力先+IME単体が受けられるか)。
+            # tsf+GJI の 5/3/2ms は、run 36209255447 で 2ms・run1 だけが全12試行 FAIL(awase.log に [pending-deferred] count limit exceeded が182件=消失文字数と一致)
+            # だったため、再現率を見るため6回にする。
+            *[cfg(f'ts-{form}-{ime_name}-{iv}ms', 'observe', check='typing', ime=ime, runs=6 if (form == 'tsf' and ime == 'gji' and iv <= 5) else 2, wait=420,
+                  stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab{msime}')
+              for form in ('edit', 'multi', 'rich', 'tsf')
+              for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
+              # 40/20/10ms は初回(run 36208885340)で全 PASS だったので、限界を探るため 5/2ms も足した。
+              for iv in (40, 20, 10, 5, 3, 2)],
+            *[cfg(f'ts-raw-{form}-{ime_name}-{iv}ms', 'observe', check='typing', ime=ime, awase='false', runs=2, wait=420,
+                  stress=f'--form={form} --interval={iv} --mode=raw --no-awase --layout=@REPO@/layout/nicola_keytop.yab{msime}')
+              for form in ('edit', 'tsf')
+              for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
+              for iv in (10, 2)],
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
             configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
-            configs = [c for c in configs if not c['name'].startswith('cal-')]
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])
@@ -307,11 +326,13 @@ jobs:
           cargo build -p awase-windows --example ime_key_matrix_spike
           cargo build -p awase-windows --example compartment_notify_probe
           cargo build -p awase-windows --example compartment_notify_probe_diag
+          cargo build -p awase-windows --example typing_stress
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target\debug\awase.exe dist\
           Copy-Item target\debug\examples\ime_key_matrix_spike.exe dist\
           Copy-Item target\debug\examples\compartment_notify_probe.exe dist\
           Copy-Item target\debug\examples\compartment_notify_probe_diag.exe dist\
+          Copy-Item target\debug\examples\typing_stress.exe dist\
           Copy-Item config.toml dist\ -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         with:
@@ -489,7 +510,7 @@ jobs:
           Select-String -Path "$PWD\dist\config.toml" -Pattern 'half_width_alnum_toggle'
           # CIランナーは初回のクロスプロセスIMMプローブが遅く(実測22ms)、awase がスパイク窓を「IMM不可」と誤学習して
           # conv を読まなくなる(Engine が半角英数に追従しない)。学習済みキャッシュを事前投入して防ぐ。
-          [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"ime_key_matrix_spike.exe`"]`r`nEdit = `"${{ matrix.cfg.cache }}`"`r`nRICHEDIT50W = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))
+          [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"ime_key_matrix_spike.exe`"]`r`nEdit = `"${{ matrix.cfg.cache }}`"`r`nRICHEDIT50W = `"works`"`r`n[imm_capability.`"typing_stress.exe`"]`r`nEdit = `"works`"`r`nRICHEDIT50W = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))
           $env:RUST_LOG = 'debug'
           $env:AWASE_TEST_INJECTION = '1'
           # 順序: スパイクを先に起動し、初期化(TSF/ActivateProfile)が終わってから awase を起動する。
@@ -534,6 +555,23 @@ jobs:
               Start-Sleep -Seconds 2
               if ((Test-Path "$probeBin.log") -and (Select-String -Path "$probeBin.log" -Pattern '=== 完了 ===' -Quiet)) { break }
             }
+          } elseif ('${{ matrix.cfg.stress }}' -ne '') {
+            # 高速打鍵ストレス(typing_stress.exe): 入力欄の窓を作り GJI/MS-IME を有効化 → 「READY-FOR-AWASE」を出したら awase を起動 →
+            # exe が awase.log を確認して10秒待ち、IME を ON にして各速度で打鍵・読み戻し → 「=== 完了 ===」。seed は回番号。
+            $stressArgs = '--activate-gji ${{ matrix.cfg.stress }} --seed=${{ matrix.run }}'.Replace('@REPO@', $env:GITHUB_WORKSPACE.Replace('\', '/'))
+            Start-Process -FilePath .\typing_stress.exe -ArgumentList $stressArgs
+            for ($i = 0; $i -lt 80; $i++) {
+              Start-Sleep -Milliseconds 500
+              if ((Test-Path typing_stress.log) -and (Select-String -Path typing_stress.log -Pattern 'READY-FOR-AWASE' -Quiet)) { break }
+            }
+            if ('${{ matrix.cfg.awase }}' -ne 'false') {
+              Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
+            }
+            $deadline = (Get-Date).AddSeconds(${{ matrix.cfg.wait }})
+            while ((Get-Date) -lt $deadline) {
+              Start-Sleep -Seconds 2
+              if ((Test-Path typing_stress.log) -and (Select-String -Path typing_stress.log -Pattern '=== 完了 ===' -Quiet)) { break }
+            }
           } else {
           $spikeArgs = '--auto --hold=180 --activate-gji ${{ matrix.cfg.args }}'.Replace('@REPO@', $env:GITHUB_WORKSPACE.Replace('\', '/'))
           Start-Process -FilePath .\ime_key_matrix_spike.exe -ArgumentList $spikeArgs
@@ -568,6 +606,8 @@ jobs:
               "probe: 判定なし(ログ回収のみ, rc=0) KEY行=$pkeys。解析は notify_latency.py" | Tee-Object -FilePath result.txt
               $global:LASTEXITCODE = 0
             }
+          } elseif ('${{ matrix.cfg.check }}' -eq 'typing') {
+            python tools\e2e\ime_key_matrix\check_typing_stress.py --json typing.json dist\typing_stress.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'toggle') {
             python tools\e2e\ime_key_matrix\check_toggle.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'resync') {
@@ -598,7 +638,7 @@ jobs:
           $rc = $LASTEXITCODE
           "rc=$rc" | Out-File -FilePath rc.txt -Encoding ascii
           "exit code: $rc"
-          Get-Process awase, ime_key_matrix_spike, compartment_notify_probe, compartment_notify_probe_diag -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process awase, ime_key_matrix_spike, typing_stress, compartment_notify_probe, compartment_notify_probe_diag -ErrorAction SilentlyContinue | Stop-Process -Force
           exit 0
 
       # 不変条件(異常検出器): 上の期待表(rc.txt)とは別に数え、結果は invariants.json / inv_rc.txt に書く(summary が別の表で集計)。
@@ -620,6 +660,8 @@ jobs:
             result.txt
             rc.txt
             dist/ime_key_matrix_spike.log
+            dist/typing_stress.log
+            typing.json
             dist/compartment_notify_probe.log
             dist/compartment_notify_probe_diag.log
             dist/awase.log
@@ -695,6 +737,28 @@ jobs:
                     "上限と対応するBUGは tools/e2e/ime_key_matrix/invariant_limits.json。各回の詳細は result-*/invariants.txt。", "",
                     "| 構成 | 回 | 判定 | I1 起動直後の意図なしdrift | I1 全体 | I2 Unwarranted | I3 自己注入IMEモードキー | I3 would_have_blocked | 備考 |",
                     "|---|---|---|---|---|---|---|---|---|"] + inv_rows
+          # 高速打鍵ストレス(ts-*): result.txt 末尾の TYPING_STRESS 行を表にする(崩れ方の内訳つき)。
+          ts_rows = []
+          for c in configs:
+            if c.get('check') != 'typing':
+              continue
+            for run in range(1, c.get('runs', 3) + 1):
+              f = f"results/result-{c['name']}-{run}/result.txt"
+              line = ''
+              if os.path.exists(f):
+                for l in open(f, encoding='utf-8', errors='replace').read().splitlines():
+                  if l.startswith('TYPING_STRESS:'):
+                    line = l
+              kv = dict(re.findall(r'(\w+)=(\S+)', line))
+              if not kv:
+                ts_rows.append(f"| {c['name']} | {run} | 欠落 | - | - | - | - | - | - | - | - | - |")
+                continue
+              ts_rows.append(f"| {c['name']} | {run} | {kv.get('verdict')} | {kv.get('trials')} | {kv.get('fail')} | {kv.get('loss')} | {kv.get('extra')} | {kv.get('reorder')} | {kv.get('literal')} | {kv.get('substitute')} | {kv.get('inject_late_max_us')} | {kv.get('hook_seen_min_ratio')} |")
+          if ts_rows:
+            out += ["", "## 高速打鍵ストレス(ts-*、判定は入力先のテキストと期待文字列の比較。検出のみで合否には含めない)", "",
+                    "loss=消失 / extra=余計 / reorder=入れ替わり / literal=ローマ字リテラル化 / substitute=別のかなに置換。注入遅れmax=予定時刻に対する実注入の最大遅れ(us)、フック到着比=自プロセスのLLフックに届いた数/送信数の最小(1.000で落ち無し)。", "",
+                    "| 構成 | 回 | 判定 | 試行 | FAIL試行 | 消失 | 余計 | 入れ替わり | リテラル化 | 置換 | 注入遅れmax(us) | フック到着比 |",
+                    "|---|---|---|---|---|---|---|---|---|---|---|---|"] + ts_rows
           open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8').write('\n'.join(out) + '\n')
           print('\n'.join(out))
           if os.environ.get('GATE_MODE') == 'invariants':
