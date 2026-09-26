@@ -17,22 +17,27 @@ ngram_file = "data/ngram_hiragana.csv.gz"
 # ngram_max_threshold_ms = 120
 
 # キーバインディング設定
+# example-begin: config-keys-engine uncomment
 # [keys]
 # 親指シフト入力／ローマ字入力 切替キー（複数指定可、デフォルト: Ctrl+Shift+変換で親指シフト入力、Ctrl+Shift+無変換でローマ字入力）
 # engine_on = ["Ctrl+Shift+Convert"]
 # engine_off = ["Ctrl+Shift+Nonconvert"]
+# example-end
 
 # IME 検出設定（シャドウ IME 状態追跡用キー定義）
+# example-begin: config-ime-detect uncomment
 # [keys.ime_detect]
 # 注意: toggle は既定の keys.ime_toggle（VK_KANJI）と併用すると二重処理で漢字キーが壊れるため、
 # 通常は設定しないこと。
 # toggle = ["VK_KANJI"]
 # on = ["VK_DBE_DBCSCHAR", "VK_IME_ON"]
 # off = ["VK_DBE_SBCSCHAR", "VK_IME_OFF"]
+# example-end
 
 # フォーカス判定の永続オーバーライド
 # 特定の (プロセス名, クラス名) の組み合わせに対して、
 # 自動判定を無視してテキスト入力 / 非テキストを強制する。
+# example-begin: config-app-overrides uncomment
 # [app_overrides]
 # force_text = [
 #     { process = "chrome.exe", class = "Chrome_RenderWidgetHostHWND" },
@@ -40,6 +45,7 @@ ngram_file = "data/ngram_hiragana.csv.gz"
 # force_bypass = [
 #     { process = "explorer.exe", class = "CabinetWClass" },
 # ]
+# example-end
 
 # ローマ字出力を VK キーストローク経由で送るアプリの明示指定。
 # Chrome/Edge/Electron 等 IME composition を VK 経由でないと扱えないアプリ向け。
@@ -73,6 +79,8 @@ force_tsf = [
 # process : プロセス名フィルタ（省略=全アプリ、部分一致、大文字小文字無視）
 # class   : ウィンドウクラスフィルタ（省略=全クラス、部分一致）
 #
+# example-begin: config-post-bypass uncomment
 # [[post_bypass]]
 # key = "Ctrl+J"
 # process = "WindowsTerminal"   # Windows Terminal (wt.exe) でのみ有効
+# example-end

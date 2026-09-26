@@ -22,6 +22,8 @@
 
 // ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
 pub mod bug_report;
+#[cfg(test)]
+mod config_key_resolution_tests;
 pub mod focus;
 pub mod focus_resync;
 pub mod gji_charset_autodetect;

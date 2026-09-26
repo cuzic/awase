@@ -676,7 +676,7 @@ pub fn parse_hotkey(s: &str) -> Option<(u32, VkCode)> {
 /// と `keymap::warn_on_engine_hotkey_collision`（Linux でもビルドされる）の両方が
 /// この関数を使い、正規化を1か所に置く。
 #[must_use]
-pub(crate) fn with_vk_prefix(key_name: &str) -> String {
+pub fn with_vk_prefix(key_name: &str) -> String {
     if key_name.starts_with("VK_") {
         key_name.to_string()
     } else {

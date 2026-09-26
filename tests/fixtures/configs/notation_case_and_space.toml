@@ -1,0 +1,13 @@
+# 大文字小文字・前後の空白
+[general]
+left_thumb_key = "vk_nonconvert"
+right_thumb_key = " VK_CONVERT "
+engine_toggle_hotkey = "ctrl+shift+f12"
+
+[keys]
+engine_on = ["ctrl+shift+VK_CONVERT"]
+engine_off = [" Ctrl + Shift + VK_NONCONVERT "]
+ime_on = ["Control+vk_f13"]
+ime_off = ["CTRL+VK_F14"]
+ime_toggle = ["vk_kanji"]
+engine_off_solo_repeat = "vk_insert"

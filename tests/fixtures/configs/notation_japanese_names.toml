@@ -1,0 +1,19 @@
+# 日本語名・ADR-019 の中立名(手書きで多い書き方)
+[general]
+left_thumb_key = "無変換"
+right_thumb_key = "変換"
+engine_toggle_hotkey = "Ctrl+Shift+変換"
+
+[keys]
+engine_on = ["Ctrl+Shift+変換"]
+engine_off = ["Ctrl+Shift+無変換"]
+ime_on = ["Ctrl+Convert"]
+ime_off = ["Ctrl+Nonconvert"]
+ime_toggle = ["漢字", "かな"]
+engine_on_ime_key = "IMEオン"
+engine_off_ime_key = "IMEオフ"
+
+[keys.ime_detect]
+toggle = ["Kanji"]
+on = ["VK_DBE_HIRAGANA"]
+off = ["VK_DBE_ALPHANUMERIC"]

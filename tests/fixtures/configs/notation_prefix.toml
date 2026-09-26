@@ -1,0 +1,17 @@
+# VK_ 接頭辞の有無(GUI は VK_ 付き、手書きは付けないことが多い)
+[general]
+left_thumb_key = "VK_NONCONVERT"
+right_thumb_key = "VK_CONVERT"
+engine_toggle_hotkey = "Ctrl+Shift+VK_F12"
+
+[keys]
+engine_on = ["Ctrl+F12", "Ctrl+Shift+VK_F11"]
+engine_off = ["Ctrl+F10"]
+ime_on = ["VK_F13"]
+ime_off = ["F14"]
+ime_toggle = ["Ctrl+VK_F15"]
+engine_off_solo_repeat = "F16"
+
+[keys.ime_detect]
+on = ["F17"]
+off = ["VK_F18"]
