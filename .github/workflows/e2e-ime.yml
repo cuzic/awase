@@ -245,6 +245,12 @@ jobs:
                 args='--chord=A4,19 --chord-at=20000 --chord-prep=1C', tsv='DirectInput,Henkan,IMEOn|Precomposition,Hankaku/Zenkaku,IMEOff'),
             cfg('sc-t1b-no-row', 'observe', check='consistency', awase='false', keymap=0, runs=1,
                 args='--chord=A4,19 --chord-at=20000 --chord-prep=1C', tsv='DirectInput,Henkan,IMEOn'),
+            # 0x19 は Kanji 行にも従うか(Hankaku/Zenkaku 行なし・Kanji 行=IMEOff の表)。開いたままなら Kanji 行は見ない(0x19 は Hankaku/Zenkaku 行だけ)。
+            cfg('sc-t1b-kanji-row-only', 'observe', check='consistency', awase='false', keymap=0, runs=1,
+                args='--chord=A4,19 --chord-at=20000 --chord-prep=1C', tsv='DirectInput,Henkan,IMEOn|Precomposition,Kanji,IMEOff'),
+            # T1(e) の一部(ADR-199 決定18): F13 をトグルにした CUSTOM 表で、F13(0x7C)が GJI に効くか。IME OFF から F13→開、もう一度→閉。
+            cfg('sc-t1e-f13-toggle', 'observe', check='consistency', awase='false', keymap=0, runs=1,
+                args='--seq=1A,7C,7C', tsv='DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff'),
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
