@@ -1,0 +1,25 @@
+# 文書・ADR に書かれている古い表記: [[keymap]](実際のフィールドは keymaps)と
+# [[post_bypass]] key = "Ctrl+J"
+[general]
+left_thumb_key = "VK_NONCONVERT"
+
+[[keymap]]
+app = "notepad.exe"
+from = "Ctrl+VK_I"
+to = ["VK_UP"]
+
+[[keymaps]]
+from = "Ctrl+VK_J"
+to = "F7"
+
+[[keymaps]]
+from = "Ctrl+F8"
+to = ["VK_F9", "F10"]
+
+[[post_bypass]]
+key = "Ctrl+J"
+process = "example-terminal"
+
+[[post_bypass]]
+key = "Ctrl+VK_B"
+class = "ExampleClass"

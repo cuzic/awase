@@ -92,10 +92,11 @@ jobs:
           # expect: pass=全回PASS / fail=撤去や設定で壊れる(既知の問題を固定) / observe=結果を表に出すだけ(不安定・未確定の観測用)
           # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME)
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
+          # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress=''):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys)
           SC_IMES = [('msime-native', 'msime', 1, ' --msime'), ('gji-msime', 'gji', 2, ''), ('gji-atok', 'gji', 1, '')]
           configs = [
             # --- 撤去実験(ATOK、実機E1〜E7bと同じ) ---
@@ -234,6 +235,10 @@ jobs:
             *[cfg(f'sc-shift-{ime_name}', 'pass', check='consistency', ime=ime, keymap=km,
                   args=f'--seq=F2,A0,A0,A0,A1,F2{msime}', general='half_width_alnum_toggle = "all"')
               for ime_name, ime, km, msime in SC_IMES],
+            # ADR-199 T10 決定A: 文字→親指(無変換)の順で重なり不足(min_overlap_margin_percent=15)にしたまま親指を押し続けてタイムアウトを越えても、
+            # 親指を押している間は forced の IME OFF(keys.ime_off)を発火せず、離した時に発火する(check_charthumb.py)。修正前の awase は押している間に閉じる。
+            cfg('sc-charthumb-gji-atok', 'pass', check='charthumb', args='--charthumb=41,1D', runs=2,
+                general='min_overlap_margin_percent = 15', keys='ime_off = ["VK_NONCONVERT"]'),
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
@@ -506,6 +511,14 @@ jobs:
             if ($cfg -match "(?m)^$key *=") { $cfg = $cfg -replace "(?m)^$key *=.*$", $line }
             else { $cfg = $cfg -replace '(?m)^\[general\]\s*$', "[general]`r`n$line" }
           }
+          # [keys] への追加設定(;区切りの `key = value`)。既にあれば値を置き換え、無ければ末尾に [keys] を作って足す。
+          $keys = '${{ matrix.cfg.keys }}'
+          foreach ($line in ($keys -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+            $key = ($line -split '=')[0].Trim()
+            if ($cfg -notmatch '(?m)^\[keys\]\s*$') { $cfg = $cfg.TrimEnd() + "`r`n`r`n[keys]`r`n" }
+            if ($cfg -match "(?m)^$key *=") { $cfg = $cfg -replace "(?m)^$key *=.*$", $line }
+            else { $cfg = $cfg -replace '(?m)^\[keys\]\s*$', "[keys]`r`n$line" }
+          }
           [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
           Select-String -Path "$PWD\dist\config.toml" -Pattern 'half_width_alnum_toggle'
           # CIランナーは初回のクロスプロセスIMMプローブが遅く(実測22ms)、awase がスパイク窓を「IMM不可」と誤学習して
@@ -610,6 +623,8 @@ jobs:
             python tools\e2e\ime_key_matrix\check_typing_stress.py --json typing.json dist\typing_stress.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'toggle') {
             python tools\e2e\ime_key_matrix\check_toggle.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
+          } elseif ('${{ matrix.cfg.check }}' -eq 'charthumb') {
+            python tools\e2e\ime_key_matrix\check_charthumb.py dist\ime_key_matrix_spike.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'resync') {
             python tools\e2e\ime_key_matrix\check_resync.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'collect') {

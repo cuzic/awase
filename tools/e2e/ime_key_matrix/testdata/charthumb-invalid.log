@@ -1,0 +1,19 @@
+=== spike ===
+[12:00:01.000Z] KEY [準備/その他] 無変換 vk=0x1D scan=0x7B press=12:00:01.000Z (auto)  状態=OnKana
+    前     : A(open=0 conv=0x19)
+    +100ms: A(open=0 conv=0x19)
+    +400ms: A(open=0 conv=0x19)
+    +1500ms: A(open=0 conv=0x00)
+    差分 (前→+400ms): -
+[12:00:01.000Z] KEY [準備/その他] 無変換 vk=0x1D scan=0x7B press=12:00:01.000Z (auto)  状態=OnKana
+    前     : A(open=0 conv=0x19)
+    +100ms: A(open=0 conv=0x19)
+    +400ms: A(open=0 conv=0x19)
+    +1500ms: A(open=0 conv=0x00)
+    差分 (前→+400ms): -
+[12:00:01.000Z] KEY [準備/その他] 無変換 vk=0x1D scan=0x7B press=12:00:01.000Z (auto)  状態=OnKana
+    前     : A(open=0 conv=0x19)
+    +100ms: A(open=0 conv=0x19)
+    +400ms: A(open=0 conv=0x19)
+    +1500ms: A(open=0 conv=0x00)
+    差分 (前→+400ms): -

@@ -120,9 +120,7 @@ impl KeymapTable {
             }
             let mut send_vks = Vec::with_capacity(rule.to.len());
             for to in &rule.to {
-                let resolved =
-                    VkCode::from_name(to).or_else(|| VkCode::from_name(&format!("VK_{to}")));
-                let Some(vk) = resolved else {
+                let Some(vk) = VkCode::from_name(to) else {
                     if to.contains('+') {
                         tracing::warn!(
                             "[keymap] 'to' に修飾キーは指定できません（ADR-130 決定2）: {to:?}"
@@ -299,26 +297,12 @@ pub(crate) fn warn_on_engine_hotkey_collision(
 ) {
     // `ParsedKeyCombo` は `PartialEq` を derive 済みなので `==` で比較できる。
     //
-    // `crate::vk::parse_hotkey` は Windows 専用（`windows` クレートの
-    // MOD_CONTROL 等を使う）のためここでは使えない（この関数は Linux でも
-    // ビルド・テストできるよう ungated にしている）。`parse_key_combo` は
-    // 最後のトークンに `VK_` 接頭辞が必要だが `engine_toggle_hotkey` は
-    // "Ctrl+Shift+F12"（手書き）でも "Ctrl+Shift+VK_F12"（設定 GUI）でも
-    // 書かれうる（`parse_hotkey` と同じ）ため、`with_vk_prefix` で補って
-    // `parse_key_combo` に委譲する。
-    let hotkey_combo = engine_toggle_hotkey.and_then(|s| {
-        let prefixed = s.rfind('+').map_or_else(
-            || crate::vk::with_vk_prefix(s),
-            |idx| {
-                format!(
-                    "{}+{}",
-                    &s[..idx],
-                    crate::vk::with_vk_prefix(s[idx + 1..].trim())
-                )
-            },
-        );
-        crate::vk::parse_key_combo(&prefixed)
-    });
+    // `crate::vk::parse_hotkey` は Windows 専用（`windows` クレートの MOD_CONTROL 等を
+    // 使う）のためここでは使えない（この関数は Linux でも ビルド・テストできるよう ungated
+    // にしている）。`parse_hotkey` は `parse_key_combo` の薄い変換なので、同じ
+    // `parse_key_combo` で読む（`VK_` の有無・大文字小文字は `from_name` が吸収する。
+    // ADR-201 決定1）。
+    let hotkey_combo = engine_toggle_hotkey.and_then(crate::vk::parse_key_combo);
 
     for rule in keymaps {
         let Some(combo) = crate::vk::parse_key_combo(&rule.from) else {

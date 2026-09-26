@@ -1,0 +1,16 @@
+# 未知のキー・撤去済みのキー・存在しないキー名(いずれも今は無警告のものが多い)
+[general]
+left_thumb_key = "VK_NONCONVERT"
+no_such_option = 1
+engine_toggle_hotkey = "Ctrl+Shift+NoSuchKey"
+
+[keys]
+ime_on = ["Ctrl+NoSuchKey"]
+ime_off = ["Ctrl+Nonconvert"]
+apply_calibrated_mode_keys = true
+
+[[calibration]]
+key = "VK_F13"
+
+[futuresection]
+value = 1
