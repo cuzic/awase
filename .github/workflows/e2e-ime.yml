@@ -126,6 +126,12 @@ jobs:
             cfg('msime-native-a8', 'observe', mutator='a8-no-focus-probe-roman.sh', check='consistency', args='--walk --msime', ime='msime'),
             cfg('msime-native-a9', 'observe', mutator='a9-no-roman-completion.sh', check='consistency', args='--walk --msime', ime='msime'),
             cfg('msime-native-a10', 'observe', mutator='a10-no-conv-auto-write.sh', check='consistency', args='--walk --msime', ime='msime'),
+            # かな入力へ落とした実IME(conv 0x09)を awase が ROMAN へ戻すか(--kana-drop、check_kana_drop.py)。上の walk は conv が常に 0x19 で経路が実効を持たなかった(run 36217202077)。
+            cfg('kana-msime-native', 'observe', check='kana', args='--kana-drop=9 --msime', ime='msime'),
+            cfg('kana-msime-native-a8', 'observe', mutator='a8-no-focus-probe-roman.sh', check='kana', args='--kana-drop=9 --msime', ime='msime'),
+            cfg('kana-msime-native-a9', 'observe', mutator='a9-no-roman-completion.sh', check='kana', args='--kana-drop=9 --msime', ime='msime'),
+            cfg('kana-msime-native-a10', 'observe', mutator='a10-no-conv-auto-write.sh', check='kana', args='--kana-drop=9 --msime', ime='msime'),
+            cfg('kana-msime-native-noawase', 'observe', check='kana', args='--kana-drop=9 --msime', ime='msime', awase='false'),
             cfg('atok-passthrough-a9', 'observe', mutator='a9-no-roman-completion.sh', check='consistency', args='--walk'),
             # 対照実験: awase を起動せず、同じキー列で実IMEだけを見る(実IMEの推移がawaseのせいかCI環境の癖かを分ける)
             cfg('msime-native-noawase', 'observe', check='consistency', args='--walk --msime', ime='msime', awase='false'),
@@ -592,6 +598,8 @@ jobs:
               "collect: 判定なし(ログ回収のみ, rc=0) KEY行=$skeys。解析はローカルで grid_learn.py / effect_learning.py / cycle.py" | Tee-Object -FilePath result.txt
               $global:LASTEXITCODE = 0
             }
+          } elseif ('${{ matrix.cfg.check }}' -eq 'kana') {
+            python tools\e2e\ime_key_matrix\check_kana_drop.py dist\ime_key_matrix_spike.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'vkprobe') {
             python tools\e2e\ime_key_matrix\vkprobe_report.py dist\ime_key_matrix_spike.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'consistency') {

@@ -424,6 +424,11 @@ thread_local! {
     static GRID_TAG: RefCell<Option<(u32, String)>> = const { RefCell::new(None) };
     /// `--walk=N`: 固定手順の代わりに、ランダムなキーをN回注入する(効果学習・検証ラウンド用。ADR-191)。
     static WALK_N: RefCell<usize> = const { RefCell::new(0) };
+    /// `--kana-drop=N`: 実IMEを「かな入力(ROMAN 無し)」へ落としてから awase の conv 自動書き込み
+    /// (焦点プローブ・ROMAN 補完)が ROMAN を戻すかを N 周見る(0=無効)。
+    static KANA_N: RefCell<usize> = const { RefCell::new(0) };
+    static KANA_DONE: RefCell<usize> = const { RefCell::new(0) };
+    static KANA_PHASE: RefCell<u8> = const { RefCell::new(0) };
     static WALK_DONE: RefCell<usize> = const { RefCell::new(0) };
     /// `--seed=S`: `--walk=N` の乱数シード(線形合同法)。
     static WALK_RNG: RefCell<u64> = const { RefCell::new(1) };
@@ -803,6 +808,10 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
         grid_drive(now, hwnd);
         return;
     }
+    if KANA_N.with(|n| *n.borrow()) > 0 {
+        kana_drive(now, hwnd);
+        return;
+    }
     if WALK_N.with(|n| *n.borrow()) > 0 {
         walk_drive(now);
         return;
@@ -1020,6 +1029,83 @@ fn walk_next_index() -> usize {
             .wrapping_add(1_442_695_040_888_963_407);
         ((*r >> 33) as usize) % WALK_KEYS.len()
     })
+}
+
+/// `--kana-drop=N` の1周の種類: (名前, 開いた状態で作るか, 注入するキー。0=フォーカスを外して戻す)。
+const KANA_VARIANTS: [(&str, bool, u32); 3] = [
+    ("focus", true, 0),
+    ("closed-then-vk16", false, 0x16),
+    ("closed-then-f2", false, 0xF2),
+];
+
+/// `--kana-drop=N` の1手。実IMEを ROMAN 無しのかな入力(conv 0x09)へ IMM で落とし、
+/// awase の conv 自動書き込み(焦点プローブ=経路9、ROMAN 補完=経路1・2)が ROMAN を戻すかを、
+/// 1.8秒後の実IME(`[KANA-RESULT]`)で見る。awase の内部ログに頼らない(成功時は無音のため)。
+fn kana_drive(now: u64, hwnd: HWND) {
+    let done = KANA_DONE.with(|d| *d.borrow());
+    let total = KANA_N.with(|n| *n.borrow());
+    if done >= total {
+        if !AUTO_DONE.with(|d| std::mem::replace(&mut *d.borrow_mut(), true)) {
+            append_log(&format!(
+                "[KANA] {total}周完了（全手順完了。1.5秒後に自動で閉じます）"
+            ));
+            AUTO_CLOSE_AT.with(|c| *c.borrow_mut() = now + 1500);
+        }
+        return;
+    }
+    let (name, open, vk) = KANA_VARIANTS[done % KANA_VARIANTS.len()];
+    let phase = KANA_PHASE.with(|p| *p.borrow());
+    let edit = EDIT_HWND.with(|e| *e.borrow());
+    let target = unsafe { GetFocus() };
+    let target = if target.0.is_null() { hwnd } else { target };
+    match phase {
+        0 => {
+            grid_set_ime(target, open, 0x09);
+            append_log(&format!(
+                "[KANA {}/{total}] variant={name} 設定: open={open} conv=0x00000009"
+            , done + 1));
+            KANA_PHASE.with(|p| *p.borrow_mut() = 1);
+            AUTO_NEXT.with(|n| *n.borrow_mut() = now + scaled(900));
+        }
+        1 => {
+            if vk == 0 {
+                // 入力欄から別のコントロールへ移して戻す(awase から見ると焦点変更)。
+                if let Some(log) = LOG_HWND.with(|h| *h.borrow()) {
+                    unsafe {
+                        let _ = SetFocus(Some(log));
+                    }
+                }
+                KANA_PHASE.with(|p| *p.borrow_mut() = 2);
+                AUTO_NEXT.with(|n| *n.borrow_mut() = now + scaled(500));
+            } else {
+                queue_press(now, vk);
+                KANA_PHASE.with(|p| *p.borrow_mut() = 3);
+                AUTO_NEXT.with(|n| *n.borrow_mut() = now + scaled(1800));
+            }
+        }
+        2 => {
+            if let Some(e) = edit {
+                unsafe {
+                    let _ = SetFocus(Some(e));
+                }
+            }
+            KANA_PHASE.with(|p| *p.borrow_mut() = 3);
+            AUTO_NEXT.with(|n| *n.borrow_mut() = now + scaled(1800));
+        }
+        _ => {
+            let s = take_snapshot(hwnd);
+            append_log(&format!(
+                "[KANA-RESULT] round={} variant={name} open={:?} conv={}",
+                done + 1,
+                s.b_open,
+                s.b_conv
+                    .map_or_else(|| "none".to_owned(), |c| format!("0x{c:08X}"))
+            ));
+            KANA_DONE.with(|d| *d.borrow_mut() = done + 1);
+            KANA_PHASE.with(|p| *p.borrow_mut() = 0);
+            AUTO_NEXT.with(|n| *n.borrow_mut() = now + scaled(600));
+        }
+    }
 }
 
 /// `--walk=N` の1手: ランダムなキーを1つ注入し、効果が落ち着くまで待つ。
@@ -2919,6 +3005,7 @@ fn validate_args() {
         "--grid-retry-file=",
         "--grid-audit-pct=",
         "--walk=",
+        "--kana-drop=",
         "--seed=",
         "--seq=",
         "--resync-gap=",
@@ -2940,7 +3027,7 @@ fn validate_args() {
                 &format!("--grid-setup= は keys / keys-immreset / imm のいずれか: {a}"),
             ),
             "--hold=" | "--repeat=" | "--speed=" | "--notify-quiet=" | "--notify-nochg="
-            | "--grid-trials=" | "--grid-audit-pct=" | "--walk=" | "--seed=" | "--resync-gap="
+            | "--grid-trials=" | "--grid-audit-pct=" | "--walk=" | "--kana-drop=" | "--seed=" | "--resync-gap="
                 if v.parse::<u64>().is_err() =>
             {
                 arg_error(&format!("数値でない値: {a}"))
@@ -3073,6 +3160,11 @@ fn run() -> WinResult<()> {
         if let Some(v) = a.strip_prefix("--walk=") {
             if let Ok(n) = v.parse::<usize>() {
                 WALK_N.with(|w| *w.borrow_mut() = n);
+            }
+        }
+        if let Some(v) = a.strip_prefix("--kana-drop=") {
+            if let Ok(n) = v.parse::<usize>() {
+                KANA_N.with(|w| *w.borrow_mut() = n);
             }
         }
         if let Some(v) = a.strip_prefix("--seed=") {
