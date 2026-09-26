@@ -19,6 +19,11 @@ use crate::tsf::TsfGateState;
 use awase::types::VkCode;
 use win32_async;
 
+/// give-up 時に reinit（VK_IME_OFF→ON）を予約してよい、否定的証拠（`SuspectedLiteral`）の最小累計。
+/// BUG-033 の前提「2連続 literal ＝ GJI が本当に OFF」を、StaleConfirm（否定的証拠なし）を
+/// 数えずに保つための値（ADR-200 決定1、BUG-168）。
+const MIN_NEGATIVE_EVIDENCE_FOR_REINIT: u32 = 2;
+
 /// `dispatch_probe_actions` が要求する Win32 / 状態ミューテーション操作の抽象。
 ///
 /// - `Output` が本番実装（Win32 SendInput・グローバル原子値の操作）
@@ -48,7 +53,12 @@ pub(crate) trait ProbeIo {
     /// 連続 raw TSF literal 回数を返す。
     fn consecutive_count(&self) -> u32;
     /// 連続カウントをリセットする（`DetectionResult::CompositionConfirmed` 確認時、BUG-27 追補4）。
+    /// 否定的証拠カウンタも同時にリセットされる（ADR-200）。
     fn reset_consecutive_count(&self);
+    /// 否定的証拠（`SuspectedLiteral`）カウンタを1増やして新値を返す（ADR-200 決定1）。
+    fn note_negative_evidence(&self) -> u32;
+    /// 否定的証拠（`SuspectedLiteral`）の累計を返す（ADR-200 決定1）。
+    fn negative_evidence_count(&self) -> u32;
     /// retry 済み tombstone を解除する。
     fn clear_gji_reinit_retry_tombstone(&self);
     /// `RAW_TSF_LITERAL` グローバルを設定する（`consecutive == 0` のときのみ呼ばれる）。
@@ -82,6 +92,7 @@ pub(crate) trait ProbeIo {
         focus_gen: u32,
         retry_romaji: Option<String>,
         consecutive_before: u32,
+        reserve_reinit: bool,
     ) -> ScheduleGjiReinitResult;
     /// 現在の IME mode focus 世代を返す。
     fn ime_mode_focus_gen(&self) -> u32;
@@ -148,6 +159,14 @@ impl ProbeIo for Output {
     fn reset_consecutive_count(&self) {
         self.composition.reset_consecutive_count();
         self.clear_gji_reinit_retry_tombstone();
+    }
+
+    fn note_negative_evidence(&self) -> u32 {
+        self.composition.increment_negative_evidence_count()
+    }
+
+    fn negative_evidence_count(&self) -> u32 {
+        self.composition.negative_evidence_count()
     }
 
     fn clear_gji_reinit_retry_tombstone(&self) {
@@ -343,8 +362,15 @@ impl ProbeIo for Output {
         focus_gen: u32,
         retry_romaji: Option<String>,
         consecutive_before: u32,
+        reserve_reinit: bool,
     ) -> ScheduleGjiReinitResult {
-        self.schedule_pending_gji_reinit(cold_seq, focus_gen, retry_romaji, consecutive_before)
+        self.schedule_pending_gji_reinit(
+            cold_seq,
+            focus_gen,
+            retry_romaji,
+            consecutive_before,
+            reserve_reinit,
+        )
     }
 
     fn ime_mode_focus_gen(&self) -> u32 {
@@ -878,6 +904,16 @@ where
                     // には倒れない、2026-07-16 撤去）。consecutive==0 なら backspace + romaji
                     // 再送を scheduled し、次の cold パス（per-VK confirm）へ自然に委ねる。
                     let consecutive = io.consecutive_count();
+                    // ADR-200 決定1: 「literal だった」という否定的証拠は SuspectedLiteral だけが持つ
+                    // （StaleConfirm は着弾を否定する証拠を持たない、BUG-075）。give-up 時に reinit
+                    // （VK_IME_OFF→ON、未確定 preedit を破棄する、BUG-168）を許すかを、この累計で
+                    // 決める。**今回の verdict を数えてから**判定する（先に判定すると S,S でも
+                    // 2回目の判定時点でカウンタが1になり、BUG-033 の回復が消える）。
+                    let negative_evidence = if facts.verdict == LiteralVerdict::SuspectedLiteral {
+                        io.note_negative_evidence()
+                    } else {
+                        io.negative_evidence_count()
+                    };
                     trace
                         .0
                         .push(LiteralDetectTraceItem::Verdict(LiteralDetectRecord {
@@ -926,14 +962,26 @@ where
                         // backspace が追いつけないレースになる（docs/known-bugs.md BUG-36）。
                         // 代わりに schedule_chrome_gji_reinit で予約し、
                         // flush_raw_tsf_literal_recovery が backspace 送信直後に実行する。
+                        let reserve_reinit = negative_evidence >= MIN_NEGATIVE_EVIDENCE_FOR_REINIT;
+                        if !reserve_reinit {
+                            tracing::warn!(
+                                "[raw-tsf-literal] cold={cold_seq} give-up but reinit withheld: \
+                                 negative_evidence={negative_evidence} < {MIN_NEGATIVE_EVIDENCE_FOR_REINIT} \
+                                 (verdict={:?}; VK_IME_OFF→ON would discard a live preedit, BUG-168)",
+                                facts.verdict,
+                                cold_seq = cold_seq.value(),
+                            );
+                        }
                         let schedule = io.schedule_chrome_gji_reinit(
                             cold_seq,
                             io.ime_mode_focus_gen(),
                             Some(romaji),
                             consecutive,
+                            reserve_reinit,
                         );
                         match schedule {
-                            ScheduleGjiReinitResult::Scheduled => {
+                            ScheduleGjiReinitResult::Scheduled
+                            | ScheduleGjiReinitResult::NotScheduled => {
                                 // 諦めても partial literal 由来の 'k'(literal) + composition が
                                 // terminal に残ると "kおの" 等の文字化けになる。
                                 // romaji 再送は reinit confirmed 後の retry に委ね、ここでは BS
@@ -1100,6 +1148,10 @@ mod tests {
         gji_reinit_scheduled_count: Cell<u32>,
         schedule_result: ScheduleGjiReinitResult,
         focus_gen: Cell<u32>,
+        /// 否定的証拠（`SuspectedLiteral`）の累計（ADR-200）。先行 S があるフィクスチャは 1 にする。
+        negative_evidence: Cell<u32>,
+        /// 直近の `schedule_chrome_gji_reinit` に渡された `reserve_reinit`。
+        last_reserve_reinit: Cell<Option<bool>>,
     }
 
     impl Default for FakeProbeIo {
@@ -1121,6 +1173,8 @@ mod tests {
                 gji_reinit_scheduled_count: Cell::new(0),
                 schedule_result: ScheduleGjiReinitResult::Scheduled,
                 focus_gen: Cell::new(1),
+                negative_evidence: Cell::new(0),
+                last_reserve_reinit: Cell::new(None),
             }
         }
     }
@@ -1159,6 +1213,13 @@ mod tests {
         fn reset_consecutive_count(&self) {
             self.reset_consecutive_called.set(true);
         }
+        fn note_negative_evidence(&self) -> u32 {
+            self.negative_evidence.set(self.negative_evidence.get() + 1);
+            self.negative_evidence.get()
+        }
+        fn negative_evidence_count(&self) -> u32 {
+            self.negative_evidence.get()
+        }
         fn clear_gji_reinit_retry_tombstone(&self) {}
         fn set_raw_literal(&self, _backs: usize, _romaji: String, _escape_composition: bool) {
             self.set_raw_literal_called.set(true);
@@ -1184,10 +1245,19 @@ mod tests {
             _focus_gen: u32,
             _retry_romaji: Option<String>,
             _consecutive_before: u32,
+            reserve_reinit: bool,
         ) -> ScheduleGjiReinitResult {
             self.gji_reinit_scheduled_count
                 .set(self.gji_reinit_scheduled_count.get() + 1);
-            self.schedule_result
+            self.last_reserve_reinit.set(Some(reserve_reinit));
+            // 本物の Output と同じ: 先行 reinit があれば予約しなくても Suppressed、無ければ
+            // reserve_reinit=false は NotScheduled。
+            match self.schedule_result {
+                ScheduleGjiReinitResult::Scheduled if !reserve_reinit => {
+                    ScheduleGjiReinitResult::NotScheduled
+                }
+                other => other,
+            }
         }
 
         fn ime_mode_focus_gen(&self) -> u32 {
@@ -1750,7 +1820,8 @@ mod tests {
         // TSF mode でも consecutive > 0 のときは諦める。
         // ただし terminal に 'k'(literal) + composition が残らないよう BS のみ送る (romaji 再送なし)。
         let io = FakeProbeIo {
-            consecutive: 1, // already attempted once
+            consecutive: 1,                  // already attempted once
+            negative_evidence: Cell::new(1), // 先行の SuspectedLiteral が1回(S,S で reinit する)
             ..Default::default()
         };
         let mut machine = make_gji_machine();
@@ -1815,6 +1886,7 @@ mod tests {
     fn raw_tsf_literal_recovery_suppressed_existing_poll_does_not_set_raw_literal() {
         let io = FakeProbeIo {
             consecutive: 1,
+            negative_evidence: Cell::new(1),
             schedule_result: ScheduleGjiReinitResult::SuppressedExistingPoll {
                 existing_cold_seq: Generation::INITIAL,
                 poll_token: 7,
@@ -1859,6 +1931,7 @@ mod tests {
         // 抑止すべきで、上書きしてはいけない。
         let io = FakeProbeIo {
             consecutive: 1,
+            negative_evidence: Cell::new(1),
             schedule_result: ScheduleGjiReinitResult::SuppressedExistingScheduled {
                 existing_cold_seq: Generation::INITIAL,
             },
@@ -1892,10 +1965,12 @@ mod tests {
         use crate::output::PendingGjiReinitPhase;
         let o = Output::new();
         o.ime_mode_focus_gen.set(1);
-        let first = o.schedule_pending_gji_reinit(Generation::INITIAL, 1, Some("ko".to_owned()), 0);
+        let first =
+            o.schedule_pending_gji_reinit(Generation::INITIAL, 1, Some("ko".to_owned()), 0, true);
         assert_eq!(first, ScheduleGjiReinitResult::Scheduled);
 
-        let second = o.schedule_pending_gji_reinit(Generation::new(2), 1, Some("i".to_owned()), 1);
+        let second =
+            o.schedule_pending_gji_reinit(Generation::new(2), 1, Some("i".to_owned()), 1, true);
         assert_eq!(
             second,
             ScheduleGjiReinitResult::SuppressedExistingScheduled {
@@ -1922,5 +1997,166 @@ mod tests {
                 panic!("Scheduled のままであるべき: {other:?}");
             }
         }
+    }
+
+    // ---- ADR-200 決定1: reinit は SuspectedLiteral の否定的証拠が累計2回そろったときだけ ----
+
+    /// give-up 分岐（consecutive != 0）に `facts` の verdict で入り、fake を返す。
+    fn run_give_up(io: &FakeProbeIo, verdict: LiteralVerdict) {
+        let mut machine = make_gji_machine();
+        let actions = vec![
+            ProbeAction::RawTsfLiteralRecovery {
+                cold_seq: Generation::INITIAL,
+                backs: 0,
+                romaji: "ko".to_string(),
+                escape_composition: false,
+                facts: test_facts(verdict),
+            },
+            ProbeAction::Done,
+        ];
+        let mut trace = LiteralDetectTrace::default();
+        let result = dispatch_probe_actions(&mut machine, actions, io, &mut trace);
+        assert!(result.is_done());
+    }
+
+    #[test]
+    fn give_up_reserves_reinit_when_suspected_literal_evidence_reaches_two_s_s() {
+        // S,S: 先行 S で証拠1、今回の S を数えて2 → reinit を予約する（BUG-033 の回復を保つ）。
+        let io = FakeProbeIo {
+            consecutive: 1,
+            negative_evidence: Cell::new(1),
+            ..Default::default()
+        };
+        run_give_up(&io, LiteralVerdict::SuspectedLiteral);
+        assert_eq!(io.negative_evidence.get(), 2, "今回の S を先に数える");
+        assert_eq!(io.last_reserve_reinit.get(), Some(true));
+    }
+
+    #[test]
+    fn give_up_reserves_reinit_for_s_u_s_cumulative() {
+        // S,U,S: 証拠は累計（U は数えない）。3回目の S で2に届き reinit する。
+        let io = FakeProbeIo {
+            consecutive: 2,
+            negative_evidence: Cell::new(1),
+            ..Default::default()
+        };
+        run_give_up(&io, LiteralVerdict::SuspectedLiteral);
+        assert_eq!(io.last_reserve_reinit.get(), Some(true));
+    }
+
+    #[test]
+    fn give_up_withholds_reinit_for_stale_stale_bug168() {
+        // U,U: StaleConfirm 2連続は否定的証拠ゼロ。reinit（未確定 preedit を破棄する）を予約しない。
+        // cleanup（set_raw_literal）と cold mark は従来どおり。romaji は再送しない。
+        let io = FakeProbeIo {
+            consecutive: 1,
+            negative_evidence: Cell::new(0),
+            ..Default::default()
+        };
+        run_give_up(&io, LiteralVerdict::StaleConfirm);
+        assert_eq!(io.negative_evidence.get(), 0, "StaleConfirm は数えない");
+        assert_eq!(io.last_reserve_reinit.get(), Some(false));
+        assert_eq!(io.gji_reinit_call_count.get(), 0);
+        assert!(io.set_raw_literal_called.get(), "cleanup は従来どおり");
+        assert!(io.mark_cold_raw_tsf_called.get());
+    }
+
+    #[test]
+    fn give_up_withholds_reinit_for_s_then_u() {
+        // S,U: 証拠1 のまま。reinit しない。
+        let io = FakeProbeIo {
+            consecutive: 1,
+            negative_evidence: Cell::new(1),
+            ..Default::default()
+        };
+        run_give_up(&io, LiteralVerdict::StaleConfirm);
+        assert_eq!(io.last_reserve_reinit.get(), Some(false));
+    }
+
+    #[test]
+    fn give_up_withholds_reinit_for_u_then_s() {
+        // U,S: 今回の S を数えても証拠1。reinit しない（最新の verdict だけで判定しない）。
+        let io = FakeProbeIo {
+            consecutive: 1,
+            negative_evidence: Cell::new(0),
+            ..Default::default()
+        };
+        run_give_up(&io, LiteralVerdict::SuspectedLiteral);
+        assert_eq!(io.negative_evidence.get(), 1);
+        assert_eq!(io.last_reserve_reinit.get(), Some(false));
+    }
+
+    #[test]
+    fn give_up_withheld_reinit_still_honors_existing_reinit_suppression() {
+        // reinit を予約しない give-up でも、先行 reinit が Polling/Scheduled のあいだは
+        // 単一 RAW_TSF_LITERAL スロットへ cleanup を書かない（Angle A #1、ADR-200 決定1）。
+        for existing in [
+            ScheduleGjiReinitResult::SuppressedExistingPoll {
+                existing_cold_seq: Generation::INITIAL,
+                poll_token: 3,
+                age_ms: 10,
+            },
+            ScheduleGjiReinitResult::SuppressedExistingScheduled {
+                existing_cold_seq: Generation::INITIAL,
+            },
+        ] {
+            let io = FakeProbeIo {
+                consecutive: 1,
+                negative_evidence: Cell::new(0),
+                schedule_result: existing,
+                ..Default::default()
+            };
+            run_give_up(&io, LiteralVerdict::StaleConfirm);
+            assert_eq!(io.last_reserve_reinit.get(), Some(false));
+            assert!(
+                !io.set_raw_literal_called.get(),
+                "予約しない give-up でも先行 reinit の抑止は共用する: {existing:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn first_attempt_counts_suspected_literal_evidence() {
+        // consecutive==0（初回の再送）でも SuspectedLiteral は否定的証拠として数える。
+        let io = FakeProbeIo::default();
+        run_give_up(&io, LiteralVerdict::SuspectedLiteral);
+        assert_eq!(io.negative_evidence.get(), 1);
+        assert_eq!(
+            io.gji_reinit_scheduled_count.get(),
+            0,
+            "初回は reinit しない"
+        );
+    }
+
+    #[test]
+    fn schedule_pending_gji_reinit_without_reserve_creates_no_pending() {
+        let o = Output::new();
+        o.ime_mode_focus_gen.set(1);
+        let r =
+            o.schedule_pending_gji_reinit(Generation::INITIAL, 1, Some("ko".to_owned()), 1, false);
+        assert_eq!(r, ScheduleGjiReinitResult::NotScheduled);
+        assert!(
+            o.pending_gji_reinit.borrow().is_none(),
+            "予約しないなら pending を作らない"
+        );
+    }
+
+    #[test]
+    fn schedule_pending_gji_reinit_without_reserve_still_suppresses_on_existing_scheduled() {
+        let o = Output::new();
+        o.ime_mode_focus_gen.set(1);
+        assert_eq!(
+            o.schedule_pending_gji_reinit(Generation::INITIAL, 1, Some("ko".to_owned()), 1, true),
+            ScheduleGjiReinitResult::Scheduled
+        );
+        let second =
+            o.schedule_pending_gji_reinit(Generation::new(2), 1, Some("i".to_owned()), 1, false);
+        assert_eq!(
+            second,
+            ScheduleGjiReinitResult::SuppressedExistingScheduled {
+                existing_cold_seq: Generation::INITIAL,
+            },
+            "reserve_reinit=false でも先行 Scheduled の抑止は共用する"
+        );
     }
 }
