@@ -7403,6 +7403,29 @@ mod engine_integration_tests {
         )));
     }
 
+    /// ADR-199 T10（所有者決定A）: 文字→親指の順で重なりが足りず `PendingCharThumb` がタイムアウトしても、
+    /// forced の開閉は親指を押している間は発火せず、親指の KeyUp で初めて発火する。文字は単独確定される。
+    #[test]
+    fn forced_thumb_open_action_after_char_thumb_timeout_waits_for_thumb_key_up() {
+        let mut engine = make_test_engine_with_muhenkan_forced_turn_off();
+        engine.set_min_overlap_margin_percent_for_test(15);
+        let _ = engine.on_input(Ev::down(VK_S).at(0).build(), &ime_on_ctx());
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(30_000).build(), &ime_on_ctx());
+        let _ = engine.on_input(Ev::up(VK_S).at(32_000).build(), &ime_on_ctx());
+
+        let timeout = engine.on_timeout(TIMER_PENDING, &ime_on_ctx());
+        assert!(
+            !has_effect(&timeout, |e| matches!(e, Effect::Ime(_))),
+            "親指を押したままのタイムアウトで IME を動かさない"
+        );
+
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(400_000).build(), &ime_on_ctx());
+        assert!(has_effect(&up, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+    }
+
     #[test]
     fn forced_thumb_open_action_waits_past_timeout_for_key_up() {
         let mut engine = make_test_engine_with_muhenkan_forced_turn_off();

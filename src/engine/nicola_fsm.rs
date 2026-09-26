@@ -2981,6 +2981,16 @@ impl NicolaFsm {
         self.build_response(resolved.actions, true, TimerIntent::CancelAll)
     }
 
+    /// `defers_solo_until_release` のうち、ADR-192 決定3b/ADR-199 決定16 の forced 開閉（IME を動かす単独タップ）
+    /// 由来の待機だけを返す。変換パススルー（ADR-182 決定1c）は含めない。
+    fn defers_forced_open_until_release(&self, thumb: &PendingThumbData) -> bool {
+        self.defers_solo_until_release(thumb, self.phys.composing)
+            && self
+                .thumb_solo_special_handling(thumb.vk_code)
+                .forced_open_action
+                .is_some()
+    }
+
     /// PendingCharThumb タイムアウト：char1+thumb の同時打鍵を確定を試みる。
     /// 重なり不足（`char_thumb_chord_confirmed` が false）なら
     /// `resolve_char_and_thumb_as_separate_solos` に委譲し、代わりに char1・thumb を
@@ -2994,6 +3004,20 @@ impl NicolaFsm {
         let thumb_face = self.resolve_thumb_face(thumb.side(), char_key.pos);
         let confirmed_chord =
             self.char_thumb_chord_confirmed(char_key, thumb, thumb_face, char1_released_at);
+
+        if !confirmed_chord && self.defers_forced_open_until_release(thumb) {
+            // ADR-199 T10（所有者決定A）: 親指の単独タップが IME 開閉を要求する（forced_open_action）
+            // 場合、押したままのタイムアウトでは親指を確定しない。char1 だけを単独確定し、
+            // 親指は `PendingThumb` に戻して KeyUp（か次のキー）で解決する。ここで確定すると、
+            // 親指を押したまま IME が閉じる（`PendingThumb` のタイムアウトと同じ理由で避ける）。
+            let char1 = self.resolve_pending_char_as_single(char_key);
+            self.update_history_imprecise(char1.output, self.last_key_timestamp.unwrap_or(0));
+            let mut actions = char1.actions;
+            self.append_key_up_for(&mut actions, char_key.scan_code);
+            self.state = EngineState::PendingThumb(*thumb);
+            self.solo_counter.reset();
+            return self.build_response(actions, true, TimerIntent::CancelAll);
+        }
 
         if !confirmed_chord {
             // 重なり不足 → 同時打鍵ではなく char1・thumb をそれぞれ単独打鍵として確定する。

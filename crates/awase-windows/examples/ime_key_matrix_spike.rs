@@ -10,7 +10,8 @@
 //! ログ回収、解析は tools/e2e/ime_key_matrix/grid_learn.py 等) / [検証] 打鍵時予測の検証 walk / [共通]。
 //! - 手順の選択: `--script`(固定手順を案内、awase 起動中の A/B) / `--auto`(固定手順をスパイク自身が SendInput で注入) /
 //!   `--free`(案内なし、押したキーと実 IME 状態の推移だけ記録) / `--round2`(RichEdit のラウンドから開始) [ADR-186]
-//! - `--seq=F2,F0,A0,...`(VK16進の任意キー列。前提状態なしで押す) / `--hz`(半角/全角 0xF3/0xF4 の交互・連続) /
+//! - `--charthumb=CHAR,THUMB`(文字→親指の順に押し文字を先に離して親指を押し続ける。ADR-199 T10 決定A、判定は check_charthumb.py) /
+//!   `--seq=F2,F0,A0,...`(VK16進の任意キー列。前提状態なしで押す) / `--hz`(半角/全角 0xF3/0xF4 の交互・連続) /
 //!   `--resync`, `--resync-gap=MS`(Ctrl+無変換/変換のリセット操作の2打間隔。既定100) / `--cold`(`--walk` と併用: 明示意図なしで
 //!   いきなり無変換/変換) / `--key=henkan`(手順の「無変換」を「変換」に) / `--shiftmuh`(無変換を Shift+無変換に) /
 //!   `--vkprobe`(ひらがな系の正しい VK 調べ) / `--diag`(どのキーで GJI が ON になるかの診断) [ADR-186/190]
@@ -382,6 +383,8 @@ thread_local! {
     static AUTO_MODE: RefCell<bool> = const { RefCell::new(false) };
     /// (実行時刻ms, VK, KeyDownか) の注入予約。
     static AUTO_QUEUE: RefCell<Vec<(u64, u32, bool)>> = const { RefCell::new(Vec::new()) };
+    /// `--charthumb=CHAR,THUMB`: (文字VK, 親指VK, 残りラウンド数)。`auto_drive` がフォーカス確認のあとでラウンドごとに予約する。
+    static CHARTHUMB: RefCell<Option<(u32, u32, u32)>> = const { RefCell::new(None) };
     static AUTO_NEXT: RefCell<u64> = const { RefCell::new(0) };
     /// `--activate-gji` 時: キーフックをこの時刻(ms)まで遅らせて張る。0=張り済み/不要。
     /// LLフックは後から張ったものが先に呼ばれる。awase より後に張らないと、awase が消費・再注入した
@@ -797,6 +800,29 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
                 AUTO_NEXT.with(|n| *n.borrow_mut() = now + 300);
                 return;
             }
+        }
+    }
+    if let Some((vk_char, vk_thumb, left)) = CHARTHUMB.with(|c| *c.borrow()) {
+        if left > 0 {
+            // ADR-199 T10 決定A の1ラウンド: VK_IME_ON で IME を ON → 文字↓ → 親指↓(30ms後) → 文字↑(親指↓の2ms後=重なりほぼ無し)
+            // → 親指を800ms押し続けて離す(親指の KEY 行の +400ms は保持中、+1500ms は解放後)。
+            const IME_ON_SETTLE_MS: u64 = 2500;
+            const THUMB_LEAD_MS: u64 = 30;
+            const CHAR_UP_MS: u64 = 32;
+            const THUMB_HOLD_MS: u64 = 800;
+            const ROUND_MS: u64 = 6000;
+            CHARTHUMB.with(|c| *c.borrow_mut() = Some((vk_char, vk_thumb, left - 1)));
+            queue_press(now, 0x16); // VK_IME_ON(ATOK プリセットの F2 は半角英数へ切り替えるので使わない)
+            let t1 = now + IME_ON_SETTLE_MS;
+            AUTO_QUEUE.with(|q| {
+                let mut q = q.borrow_mut();
+                q.push((t1, vk_char, true));
+                q.push((t1 + THUMB_LEAD_MS, vk_thumb, true));
+                q.push((t1 + CHAR_UP_MS, vk_char, false));
+                q.push((t1 + THUMB_LEAD_MS + THUMB_HOLD_MS, vk_thumb, false));
+            });
+            AUTO_NEXT.with(|n| *n.borrow_mut() = now + ROUND_MS);
+            return;
         }
     }
     if GRID.with(|g| g.borrow().is_some()) {
@@ -2921,6 +2947,7 @@ fn validate_args() {
         "--walk=",
         "--seed=",
         "--seq=",
+        "--charthumb=",
         "--resync-gap=",
     ];
     for a in std::env::args().skip(1) {
@@ -3156,6 +3183,34 @@ fn run() -> WinResult<()> {
             q.push((base + OVERLAP_MS + TAP_MS, vk_tap, false));
             q.push((base + OVERLAP_MS + TAP_MS + RELEASE_GAP_MS, vk_hold, false));
         });
+    }
+    // `--charthumb=CHAR,THUMB`(ADR-199 T10 決定A): 文字→親指の順に押し、文字を親指より先に離して重なり不足
+    // (`min_overlap_margin_percent`>0 の設定で `PendingCharThumb` が同時打鍵と確定しない)にしたまま、親指を
+    // 押し続けてタイムアウト(既定100ms)を越えさせ、その後で親指を離す。親指を押している間に awase が IME を
+    // 動かしていないか(親指 KEY 行の +400ms の実IME開閉)と、離した後に動くか(+1500ms)を check_charthumb.py が見る。
+    // 各ラウンドの頭に VK_IME_ON(0x16)を注入して IME を ON にそろえる(3ラウンド)。ラウンドの予約は `auto_drive` が、
+    // 前面化・フォーカス確認のあとで行う(先にキューへ積むと、フォーカスが外れた窓へ注入が届いて IME が ON にならない)。
+    if let Some(v) =
+        std::env::args().find_map(|a| a.strip_prefix("--charthumb=").map(str::to_owned))
+    {
+        let vks: Vec<u32> = v
+            .split(',')
+            .map(|t| {
+                u32::from_str_radix(t.trim().trim_start_matches("0x"), 16).unwrap_or_else(|_| {
+                    arg_error(&format!(
+                        "--charthumb のVKが16進数でない: {t:?} (全体: {v:?})"
+                    ))
+                })
+            })
+            .collect();
+        let [vk_char, vk_thumb] = vks[..] else {
+            arg_error("--charthumb=CHAR,THUMB の形式で2つのVKを指定してください");
+        };
+        AUTO_MODE.with(|m| *m.borrow_mut() = true);
+        SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
+        STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
+        SCRIPT_IDX.with(|i| *i.borrow_mut() = script().len());
+        CHARTHUMB.with(|c| *c.borrow_mut() = Some((vk_char, vk_thumb, 3)));
     }
     // `--auto`: --script の手順を、スパイク自身が SendInput で注入して自動実行する。
     if std::env::args().any(|a| a == "--auto") {
