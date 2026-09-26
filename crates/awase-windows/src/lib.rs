@@ -22,6 +22,7 @@
 
 // ── 純粋モジュール（全プラットフォーム）──────────────────────────────────────────
 pub mod bug_report;
+pub mod config_diagnostics;
 #[cfg(test)]
 mod config_key_resolution_tests;
 pub mod focus;

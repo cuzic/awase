@@ -467,6 +467,7 @@ pub(super) fn init_tray(
 /// 検証済み設定でフック登録とホットキー登録を行う
 pub(super) fn install_hooks_and_hotkeys_validated(
     config: &ValidatedConfig,
+    diag: &mut StartupDiagnostics,
 ) -> Result<(hook::HookGuard, Option<HotKeyGuard>, Option<HotKeyGuard>)> {
     let guard = hook::install_hook().context("Failed to install keyboard hook")?;
 
@@ -475,8 +476,10 @@ pub(super) fn install_hooks_and_hotkeys_validated(
         .engine_toggle_hotkey
         .as_ref()
         .and_then(|hotkey_str| {
+            // 名前の解決の失敗（`Invalid toggle hotkey format`）と `RegisterHotKey` の失敗
+            // （他のアプリが先に使っている等）の両方を診断に流す（ADR-201 決定2(e)）。
             HotKeyGuard::register_toggle(hotkey_str)
-                .map_err(|e| tracing::warn!("{e}"))
+                .map_err(|e| diag.warn(format!("general.engine_toggle_hotkey: {e:#}")))
                 .ok()
         });
     let app_override_guard = HotKeyGuard::register_app_override()
@@ -568,6 +571,7 @@ pub(super) fn initialize_app(
     left_alt_impersonates: bool,
     right_alt_impersonates: bool,
     all_keymaps: crate::keymap::KeymapTable,
+    diag: &mut StartupDiagnostics,
 ) {
     let mut ps = crate::PlatformState::new();
     ps.focus.focus_debounce_ms = config.general.focus_debounce_ms;
@@ -577,41 +581,45 @@ pub(super) fn initialize_app(
     hook::set_alt_impersonation_enabled(left_alt_impersonates, right_alt_impersonates);
     hook::set_swallow_alt_kana_mode_switch(config.general.swallow_alt_kana_input_method_switch);
 
-    let engine_on_ime_vk = config
-        .keys
-        .engine_on_ime_key
-        .as_deref()
-        .and_then(VkCode::from_name);
-    let engine_off_ime_vk = config
-        .keys
-        .engine_off_ime_key
-        .as_deref()
-        .and_then(VkCode::from_name);
+    // 解決できない名前は診断に流す（ADR-201 決定2(c)。以前は無言で None になっていた）。
+    let mut resolve_ime_key = |label: &str, name: Option<&str>| {
+        crate::config_diagnostics::resolve_optional_key_name(label, name).unwrap_or_else(|w| {
+            diag.warn(w);
+            None
+        })
+    };
+    let engine_on_ime_vk = resolve_ime_key(
+        "keys.engine_on_ime_key",
+        config.keys.engine_on_ime_key.as_deref(),
+    );
+    let engine_off_ime_vk = resolve_ime_key(
+        "keys.engine_off_ime_key",
+        config.keys.engine_off_ime_key.as_deref(),
+    );
 
     let base_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("."));
 
-    // [[post_bypass]] ルールをコンパイル（キー名パース + 小文字化）
+    // [[post_bypass]] ルールをコンパイル（キー名パース + 小文字化）。
+    // 解決できない・Ctrl+key 形式でないルールは診断に流す（ADR-201 決定2(a)。以前は無言で消えていた）。
     let post_bypass_rules: Vec<crate::runtime::PostBypassEntry> = config
         .post_bypass
         .iter()
-        .filter_map(|rule| {
-            let combo = crate::vk::parse_key_combo(&rule.key)?;
-            if !combo.ctrl {
-                tracing::warn!(
-                    "[post_bypass] key {:?} は Ctrl+key 形式であること（例: \"Ctrl+J\"）",
-                    rule.key
-                );
-                return None;
-            }
-            Some(crate::runtime::PostBypassEntry {
-                vk: combo.vk,
-                process: rule.process.to_lowercase(),
-                class: rule.class.to_lowercase(),
-            })
-        })
+        .filter_map(
+            |rule| match crate::config_diagnostics::resolve_post_bypass_key(rule) {
+                Ok(vk) => Some(crate::runtime::PostBypassEntry {
+                    vk,
+                    process: rule.process.to_lowercase(),
+                    class: rule.class.to_lowercase(),
+                }),
+                Err(w) => {
+                    diag.warn(w);
+                    None
+                }
+            },
+        )
         .collect();
     if !post_bypass_rules.is_empty() {
         tracing::info!("[post_bypass] {} ルールをロード", post_bypass_rules.len());
@@ -654,15 +662,19 @@ pub(super) fn initialize_app(
         all_keymaps,
         post_bypass_rules,
     ));
+    // 解決できない名前は診断に流す（ADR-201 決定2(d)）。
+    let (dedicated_fn_key, dedicated_fn_key_warning) = crate::runtime::resolve_dedicated_fn_key(
+        config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref(),
+    );
+    if let Some(w) = dedicated_fn_key_warning {
+        diag.warn(w);
+    }
     let _ = with_app(|app| {
         app.set_keyboard_model(config.general.keyboard_model);
         app.set_update_check_enabled(config.general.update_check);
         app.set_warn_state_dependent_mode_keys(config.general.warn_state_dependent_mode_keys);
         app.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
-        let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
-        app.set_muhenkan_dedicated_fn_key_config(crate::runtime::resolve_dedicated_fn_key(
-            manual_fn_key,
-        ));
+        app.set_muhenkan_dedicated_fn_key_config(dedicated_fn_key);
         app.set_space_is_thumb_key(crate::state::alt_impersonation::is_thumb_key_vk(
             &config.general.left_thumb_key,
             &config.general.right_thumb_key,
@@ -1012,10 +1024,12 @@ pub(super) fn run_all() -> Result<()> {
 
     let raw_config = load_config()?;
     handle_auto_start(&raw_config);
-    let (config, config_warnings) = raw_config.validate();
-    for w in &config_warnings {
-        diag.warn(w);
+    let load_notes = raw_config.load_warnings().to_vec();
+    if let Some(n) = crate::config_diagnostics::newly_effective_note(&raw_config) {
+        diag.note(n);
     }
+    let (config, config_warnings) = raw_config.validate();
+    diag.warn_config(&load_notes, config_warnings);
     let (
         fsm,
         layouts,
@@ -1151,8 +1165,11 @@ pub(super) fn run_all() -> Result<()> {
         engine.set_engine_off_solo_repeat_vk(vk);
     }
 
-    let compiled_keymaps =
+    let (compiled_keymaps, keymap_warnings) =
         crate::keymap::KeymapTable::new(&config.keymaps, left_thumb_vk, right_thumb_vk);
+    for w in keymap_warnings {
+        diag.warn(w);
+    }
     initialize_app(
         engine,
         system_tray,
@@ -1166,12 +1183,13 @@ pub(super) fn run_all() -> Result<()> {
         left_alt_impersonates,
         right_alt_impersonates,
         compiled_keymaps,
+        &mut diag,
     );
 
     init_ngram_validated(&config, &mut diag);
     let _engine_window_guard = crate::runtime::engine_window::create_engine_window()?;
     let (hook_guard, _toggle_hotkey_guard, _app_override_hotkey_guard) =
-        install_hooks_and_hotkeys_validated(&config)?;
+        install_hooks_and_hotkeys_validated(&config, &mut diag)?;
     diag.report();
 
     tracing::info!("Hook installed. Running message loop...");
