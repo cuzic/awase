@@ -36,6 +36,9 @@ impl PhysicalKeyDisposition {
         }
         Some(if event.vk_code == crate::vk::VK_DBE_HIRAGANA {
             "tsf-f2"
+        } else if crate::vk::is_role_fkey(event.vk_code) {
+            // F13〜F24（ADR-199 決定18）。profile に依らず「awase が実際に書いた打鍵」だけ Suppress される。
+            "role-fkey"
         } else if profile.can_use_imm32_cross_process() {
             "imm-cross"
         } else {
@@ -122,6 +125,44 @@ impl PassthroughQueue {
 }
 
 impl PhysicalKeyDisposition {
+    /// 無変換/変換（ADR-141・ADR-153 決定1 M19）と、役割由来の F13〜F24（ADR-199 決定18(iii)）の配送判断。
+    /// どちらも `is_kanji_event` 判定（ImmCross の無条件 Suppress を含む）より前で決まる。該当しなければ `None`。
+    /// `plan` の認知的複雑度（clippy 上限）のため関数に切り出した（分岐の中身は下の各コメントのとおり、
+    /// 従来の無変換/変換の分岐をそのまま移したもの）。
+    ///
+    /// - **無変換/変換**: `shadow_action` は belief 追随専用で、物理配送は既定で Allow（GJI 自身がこの物理キーを見て
+    ///   IME を切り替える設計、BUG-115。Suppress すると「OS 側にも awase 側にも誰も切り替えない」二重の空振りになる）。
+    ///   **例外（ADR-153決定1 M19）**: 明示 config が `kp_stage_shadow_ime_toggle` でこの打鍵に反応済み
+    ///   （`explicit_ime_action_consumed`）の場合のみ Suppress。ケース3改（"off"×既に OFF）では、この分岐が
+    ///   生の `VK_NONCONVERT`/`VK_CONVERT` を GJI に届けない**唯一の実効的な Suppress 手段**（届くと GJI の TSF キー
+    ///   横取りが「@」を誘発する、BUG-113/BUG-124）。「無害な冗長値」と誤認して削除しないこと。
+    /// - **F13〜F24**: 最初の Down は `shadow_toggled`（awase が実際に開閉を書いたか）で、リピートの Down と Up は
+    ///   ラッチ由来の `shadow_action.is_some()` で Suppress する。書かなかった打鍵は Down/Up とも Allow（IME が
+    ///   ユーザー設定どおり処理する）。ImmCross でも同じ（`shadow_action` があるだけで Suppress する従来規則だと、
+    ///   書かない打鍵が二重の空振りになる）。
+    fn thumb_or_role_fkey_disposition(event: &RawKeyEvent, shadow_toggled: bool) -> Option<Self> {
+        let suppress = if matches!(
+            event.vk_code,
+            crate::vk::VK_CONVERT | crate::vk::VK_NONCONVERT
+        ) {
+            event.ime_relevance.explicit_ime_action_consumed
+        } else if crate::vk::is_role_fkey(event.vk_code) {
+            let first_down = event.event_type == KeyEventType::KeyDown && !event.was_down;
+            if first_down {
+                shadow_toggled
+            } else {
+                event.ime_relevance.shadow_action.is_some()
+            }
+        } else {
+            return None;
+        };
+        Some(if suppress {
+            Self::Suppress
+        } else {
+            Self::Allow
+        })
+    }
+
     /// 物理キーを OS に届けるかどうかの純粋関数。
     ///
     /// **F2 (VK_DBE_HIRAGANA)**:
@@ -280,15 +321,8 @@ impl PhysicalKeyDisposition {
         //   そのもの、実機A/B確認済み・BUG-124参照）。この分岐を
         //   「無害な冗長値」と誤認して削除すると、ケース3改が事実上の
         //   無防備になり「@」が再発する。
-        if matches!(
-            event.vk_code,
-            crate::vk::VK_CONVERT | crate::vk::VK_NONCONVERT
-        ) {
-            return if event.ime_relevance.explicit_ime_action_consumed {
-                Self::Suppress
-            } else {
-                Self::Allow
-            };
+        if let Some(disposition) = Self::thumb_or_role_fkey_disposition(event, shadow_toggled) {
+            return disposition;
         }
 
         let is_kanji_event = event.ime_relevance.shadow_action.is_some();
@@ -1557,5 +1591,104 @@ mod plan_tests {
                 "InputRelayプロファイルは常にAllowのはず(issue #136/BUG-90決定4): {row:?}"
             );
         }
+    }
+
+    // ── F13〜F24（ADR-199 決定18(iii)）: 「その打鍵の最初の Down で awase が実際に書いたときだけ」Suppress ──
+
+    fn fkey_event(
+        event_type: KeyEventType,
+        was_down: bool,
+        shadow_action: Option<ShadowImeAction>,
+    ) -> RawKeyEvent {
+        RawKeyEvent {
+            was_down,
+            vk_code: VkCode(0x7C),
+            ..kanji_event(event_type, shadow_action)
+        }
+    }
+
+    /// 全プロファイル・全 IME 種別で同じ規則（ImmCross でも「書かなかった打鍵」は Allow）。
+    fn fkey_disposition(ev: &RawKeyEvent, shadow_toggled: bool) -> PhysicalKeyDisposition {
+        let mut seen = None;
+        for profile in [AppImeProfile::Standard, AppImeProfile::TsfNative] {
+            for kind in [
+                ActiveImeKind::GoogleJapaneseInput,
+                ActiveImeKind::MicrosoftIme,
+            ] {
+                let d =
+                    PhysicalKeyDisposition::plan(ev, profile, shadow_toggled, false, false, kind);
+                assert!(
+                    seen.is_none_or(|p| p == d),
+                    "{profile:?}/{kind:?} で規則が変わってはいけない"
+                );
+                seen = Some(d);
+            }
+        }
+        seen.unwrap()
+    }
+
+    #[test]
+    fn fkey_first_down_is_suppressed_only_when_awase_wrote() {
+        let down = fkey_event(KeyEventType::KeyDown, false, Some(ShadowImeAction::Toggle));
+        assert_eq!(
+            fkey_disposition(&down, true),
+            PhysicalKeyDisposition::Suppress
+        );
+        // `shadow_action` が暫定で付いていても、書かなかった（`shadow_toggled=false`）なら Allow。
+        assert_eq!(
+            fkey_disposition(&down, false),
+            PhysicalKeyDisposition::Allow
+        );
+    }
+
+    #[test]
+    fn fkey_repeat_and_up_follow_the_latched_shadow_action() {
+        for (event_type, was_down) in [
+            (KeyEventType::KeyDown, true), // 自動リピート
+            (KeyEventType::KeyUp, true),
+        ] {
+            // ラッチが「書いた」を持ち越した（`shadow_action=Some`）→ Suppress。`shadow_toggled` は見ない。
+            let wrote = fkey_event(event_type, was_down, Some(ShadowImeAction::Toggle));
+            assert_eq!(
+                fkey_disposition(&wrote, false),
+                PhysicalKeyDisposition::Suppress
+            );
+            // 書かなかった（ラッチ `None`、または scan 不一致で `None`）→ Allow。
+            let passive = fkey_event(event_type, was_down, None);
+            assert_eq!(
+                fkey_disposition(&passive, true),
+                PhysicalKeyDisposition::Allow
+            );
+        }
+    }
+
+    #[test]
+    fn fkey_injected_is_always_allowed_and_labelled_role_fkey_when_suppressed() {
+        let mut ev = fkey_event(KeyEventType::KeyDown, false, Some(ShadowImeAction::Toggle));
+        ev.injected = true;
+        assert_eq!(
+            PhysicalKeyDisposition::plan(
+                &ev,
+                AppImeProfile::Standard,
+                false,
+                false,
+                false,
+                ActiveImeKind::GoogleJapaneseInput
+            ),
+            PhysicalKeyDisposition::Allow
+        );
+        let ev = fkey_event(KeyEventType::KeyDown, false, Some(ShadowImeAction::Toggle));
+        let d = PhysicalKeyDisposition::plan(
+            &ev,
+            AppImeProfile::Standard,
+            true,
+            false,
+            false,
+            ActiveImeKind::GoogleJapaneseInput,
+        );
+        assert_eq!(
+            d.suppress_reason(&ev, AppImeProfile::Standard),
+            Some("role-fkey")
+        );
     }
 }

@@ -553,7 +553,8 @@ pub const fn hz_omit_may_apply(use_learned: bool) -> bool {
 /// - `keymap_role`: GJI の`config1.db`から逆算した役割。外側の`None`は「キーマップが読めない・パースできない」
 ///   （不明＝受動、決定6-3。不在は既定プリセットとして読み取り側が返すのでここには来ない）。
 /// - MS-IME 本体（[`ImeKindId::MsIme`]）の半角/全角は仕様で固定のトグル（決定6-4）。キーマップが取れなくても
-///   役割は付く（`keymap_role`は見ない）。
+///   役割は付く（`keymap_role`は見ない）。`msime_fixed_toggle`はそのキーが半角/全角か（F13〜F24 は MS-IME 本体では
+///   設定を読めないので常に受動、決定18）。
 /// - 採用中の学習表がそのキーをトグルと矛盾すると示すとき（`learned_contradiction`、`use_learned`が真のときだけ有効）は
 ///   受動に狭める（決定6-2。狭める方向だけ）。
 #[must_use]
@@ -561,6 +562,7 @@ pub fn key_shadow_action(
     ime: super::ime_kind::ImeKindId,
     explicit_overlap: bool,
     keymap_role: Option<Option<awase_gji_config::role::KeyRole>>,
+    msime_fixed_toggle: bool,
     use_learned: bool,
     learned_contradiction: bool,
 ) -> Option<awase::types::ShadowImeAction> {
@@ -570,7 +572,8 @@ pub fn key_shadow_action(
     }
     let role = match ime {
         ImeKindId::Gji => keymap_role.flatten()?,
-        ImeKindId::MsIme => awase_gji_config::role::KeyRole::ImeToggle,
+        ImeKindId::MsIme if msime_fixed_toggle => awase_gji_config::role::KeyRole::ImeToggle,
+        ImeKindId::MsIme => return None,
     };
     if hz_omit_verdict(use_learned, learned_contradiction) {
         return None;
@@ -1550,46 +1553,69 @@ mod tests {
         use awase_gji_config::role::KeyRole::ImeToggle;
         // GJI: 役割があればトグル。
         assert_eq!(
-            key_shadow_action(ImeKindId::Gji, false, Some(Some(ImeToggle)), true, false),
+            key_shadow_action(
+                ImeKindId::Gji,
+                false,
+                Some(Some(ImeToggle)),
+                true,
+                true,
+                false
+            ),
             Some(Toggle)
         );
         // GJI: 役割が無い（CUSTOM で別機能）・キーマップが読めない（不明）は受動。
         assert_eq!(
-            key_shadow_action(ImeKindId::Gji, false, Some(None), true, false),
+            key_shadow_action(ImeKindId::Gji, false, Some(None), true, true, false),
             None
         );
         assert_eq!(
-            key_shadow_action(ImeKindId::Gji, false, None, true, false),
+            key_shadow_action(ImeKindId::Gji, false, None, true, true, false),
             None
         );
         // MS-IME 本体: 仕様固定。キーマップが取れなくても付く。
         for keymap_role in [None, Some(None), Some(Some(ImeToggle))] {
             assert_eq!(
-                key_shadow_action(ImeKindId::MsIme, false, keymap_role, true, false),
+                key_shadow_action(ImeKindId::MsIme, false, keymap_role, true, true, false),
                 Some(Toggle)
             );
         }
         // 明示 config と重なれば、どの IME でも付けない。
         for ime in [ImeKindId::Gji, ImeKindId::MsIme] {
             assert_eq!(
-                key_shadow_action(ime, true, Some(Some(ImeToggle)), true, false),
+                key_shadow_action(ime, true, Some(Some(ImeToggle)), true, true, false),
                 None
             );
         }
         // 学習表の矛盾で狭める。ただし opt-out（use_learned=false）のときは狭めない。
         for ime in [ImeKindId::Gji, ImeKindId::MsIme] {
             assert_eq!(
-                key_shadow_action(ime, false, Some(Some(ImeToggle)), true, true),
+                key_shadow_action(ime, false, Some(Some(ImeToggle)), true, true, true),
                 None
             );
             assert_eq!(
-                key_shadow_action(ime, false, Some(Some(ImeToggle)), false, true),
+                key_shadow_action(ime, false, Some(Some(ImeToggle)), true, false, true),
                 Some(Toggle)
             );
         }
+        // F13〜F24（`msime_fixed_toggle=false`）は MS-IME 本体では常に受動。GJI は役割どおり。
+        assert_eq!(
+            key_shadow_action(ImeKindId::MsIme, false, None, false, true, false),
+            None
+        );
+        assert_eq!(
+            key_shadow_action(
+                ImeKindId::Gji,
+                false,
+                Some(Some(ImeToggle)),
+                false,
+                true,
+                false
+            ),
+            Some(Toggle)
+        );
         // 狭めは能動側へ広げない: 役割が無いキーは矛盾フラグに関係なく受動のまま。
         assert_eq!(
-            key_shadow_action(ImeKindId::Gji, false, Some(None), true, false),
+            key_shadow_action(ImeKindId::Gji, false, Some(None), true, true, false),
             None
         );
     }

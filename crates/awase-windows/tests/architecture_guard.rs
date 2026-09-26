@@ -4664,6 +4664,10 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
         "ShadowImeAction::Toggle",
         "ImeKeyKind::DbeSbcsChar",
         "ImeKeyKind::DbeDbcsChar",
+        // ADR-199 決定18(iii): F13〜F24 は「最初の Down で実際に書いた打鍵だけ」Suppress する専用の分岐
+        // （ImmCross の無条件 Suppress より前）。消えると書かない打鍵が二重の空振り・Up 欠落になる。
+        "is_role_fkey",
+        "role-fkey",
     ] {
         assert!(
             transport.contains(token),
@@ -4715,6 +4719,9 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
         // `plan()` より前）で付く。この呼び出しが消えると 0xF3/0xF4 が `shadow_action` なしで
         // Allow され、awase の書き込みと生キーの二重 actuation（BUG-46/BUG-52）に退行する。
         "self.enrich_key_role(&mut event)",
+        // ADR-199 決定18(i)(ii): F13〜F24 のラッチを「実際に書いたか」で確定する呼び出しと、リピートで昇格させない条件。
+        "self.settle_fkey_role_latch(&event, shadow_toggled)",
+        "is_role_fkey(event.vk_code)",
     ] {
         assert!(
             kp.contains(token),
@@ -4724,6 +4731,21 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
     }
     // 順序も固定する: `enrich_key_role` が `kp_stage_shadow_ime_toggle`・`plan()` より後ろに動くと、
     // それらが `shadow_action` の付く前のイベントを読み、0xF3/0xF4 が Allow のまま二重 actuation になる。
+    // `settle_fkey_role_latch` は `kp_stage_shadow_ime_toggle` の結果（`shadow_toggled`）を受けるので直後、`plan()` より前。
+    let toggle_at = kp
+        .find("self.kp_stage_shadow_ime_toggle(&mut event)")
+        .expect("kp_stage_shadow_ime_toggle の呼び出し");
+    let settle_at = kp
+        .find("self.settle_fkey_role_latch(&event, shadow_toggled)")
+        .expect("settle_fkey_role_latch の呼び出し");
+    let plan_at = kp
+        .find("PhysicalKeyDisposition::plan(")
+        .expect("plan の呼び出し");
+    assert!(
+        toggle_at < settle_at && settle_at < plan_at,
+        "runtime/key_pipeline.rs: `settle_fkey_role_latch` は `kp_stage_shadow_ime_toggle` の後・`plan()` の前に呼ぶこと\
+         （ADR-199 決定18(i)）"
+    );
     let enrich = kp
         .find("self.enrich_key_role(&mut event)")
         .expect("enrich_key_role の呼び出し");
