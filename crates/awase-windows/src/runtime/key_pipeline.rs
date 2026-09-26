@@ -76,6 +76,32 @@ fn should_clear_kana_mode_restore_latch(
     armed_scan_code == Some(keyup_scan_code) && !injected
 }
 
+/// 診断用(ci/e2e-typing-stress 限定): ステージが `SLOW_STAGE_MS` 以上かかったら WARN を出す。
+/// 主スレッドが数秒止まる事象(chromebar 2ms の run 36224534565)の停止箇所を特定するため。
+struct SlowGuard {
+    name: &'static str,
+    t0: std::time::Instant,
+}
+
+impl SlowGuard {
+    const SLOW_STAGE_MS: u128 = 50;
+    fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            t0: std::time::Instant::now(),
+        }
+    }
+}
+
+impl Drop for SlowGuard {
+    fn drop(&mut self) {
+        let ms = self.t0.elapsed().as_millis();
+        if ms >= Self::SLOW_STAGE_MS {
+            tracing::warn!("[slow-stage] {} took {ms}ms", self.name);
+        }
+    }
+}
+
 impl Runtime {
     /// キーイベント処理エントリポイント
     pub(crate) fn process_key_event(&mut self, event: RawKeyEvent) -> CallbackResult {
@@ -315,8 +341,14 @@ impl Runtime {
             .ime
             .is_focus_transition_settling(std::time::Instant::now());
 
-        self.kp_stage_focus_probe(&mut event);
-        self.kp_stage_idle_conv_check(&event);
+        {
+            let _g = SlowGuard::new("focus_probe");
+            self.kp_stage_focus_probe(&mut event);
+        }
+        {
+            let _g = SlowGuard::new("idle_conv_check");
+            self.kp_stage_idle_conv_check(&event);
+        }
         // BUG-116/ADR-137 決定1 の M-3 ガード用スナップショット。
         // `kp_stage_shadow_ime_toggle` が半角英数トグルの no-op 分岐から
         // `kp_restore_kana_from_half_width` へ委譲すると、このフラグは同じ
@@ -325,7 +357,10 @@ impl Runtime {
         // 委譲が起きる**前**の値をここで確定させる。
         let half_width_alnum_toggle_before =
             self.platform_state.gate.half_width_alnum.is_toggle_active();
-        let shadow_toggled = self.kp_stage_shadow_ime_toggle(&mut event);
+        let shadow_toggled = {
+            let _g = SlowGuard::new("shadow_ime_toggle");
+            self.kp_stage_shadow_ime_toggle(&mut event)
+        };
 
         // ADR-129: ライブクエリ（`hook::thumb_down_timestamps()`）は使わない。
         // drain replay 中に「replay を実行している"今"」の値を誤って読んでしまう
@@ -499,7 +534,10 @@ impl Runtime {
             event.was_down,
         );
 
-        self.kp_stage_post_decision(&decision, &event, focus_transition_was_pending);
+        {
+            let _g = SlowGuard::new("post_decision");
+            self.kp_stage_post_decision(&decision, &event, focus_transition_was_pending);
+        }
 
         // Ctrl 系 KeyUp で chord barrier を解除する。
         // chord 状態の判断は ImeStateHub.on_ctrl_key_up() に集約（パイプラインは VK 分類のみ担う）。
@@ -512,7 +550,10 @@ impl Runtime {
                 .on_ctrl_key_up(event.vk_code, tick_ms);
         }
 
-        let callback = self.kp_stage_execute(decision, &event, profile, physical);
+        let callback = {
+            let _g = SlowGuard::new("execute");
+            self.kp_stage_execute(decision, &event, profile, physical)
+        };
         for entry in self.platform.drain_journal_entries() {
             self.platform_state.ime.journal.absorb(entry);
         }
@@ -1785,8 +1826,14 @@ impl Runtime {
             tracing::debug!("may_change_ime key passed through → IME refresh scheduled (20ms)");
         }
 
-        self.kp_stage_mode_key_follow(decision, event);
-        self.kp_stage_key_effect_track(decision, event);
+        {
+            let _g = SlowGuard::new("mode_key_follow");
+            self.kp_stage_mode_key_follow(decision, event);
+        }
+        {
+            let _g = SlowGuard::new("key_effect_track");
+            self.kp_stage_key_effect_track(decision, event);
+        }
 
         self.kp_stage_shift_conv_guard(event);
     }
@@ -1951,6 +1998,7 @@ impl Runtime {
         // （`ms_ime_native_identified`）レジストリのキー割り当て。`active_ime_kind() == MicrosoftIme` は「GJI 以外」の
         // 意味で ATOK・Japanist・未知の TIP・IMM32 HKL も含み、`ime_kind_detected()` も「CLSID 判定が一度でも走った」
         // でしかないので、どちらも本体の表を当てる根拠にならない（レビュー round2 NB1）。
+        let _keymap_guard = SlowGuard::new("predict_keymap_and_composition");
         let keymap = match obs.active_ime_kind() {
             ActiveImeKind::GoogleJapaneseInput => self.key_effect_keymap.get(
                 now_ms,

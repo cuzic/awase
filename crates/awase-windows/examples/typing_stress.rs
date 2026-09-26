@@ -1000,7 +1000,20 @@ fn worker(form: Form) {
             sleep_ms(600);
             press(VK_RETURN, 0x1C, 50);
             sleep_ms(1200);
-            let actual = read_text(child);
+            let actual_at_1200 = read_text(child);
+            // 取りこぼしか遅延かを分けるため、内容が 800ms 変わらなくなるまで(最大 8 秒)読み直す。
+            let settle_t0 = Instant::now();
+            let mut actual = actual_at_1200.clone();
+            let mut stable_since = Instant::now();
+            while settle_t0.elapsed() < Duration::from_secs(8) && stable_since.elapsed() < Duration::from_millis(800) {
+                sleep_ms(200);
+                let now_text = read_text(child);
+                if now_text != actual {
+                    actual = now_text;
+                    stable_since = Instant::now();
+                }
+            }
+            let settle_ms = settle_t0.elapsed().as_millis() as u64;
             let (seen, deliv_p50, deliv_max) = delivery_stats(&stats, &hook);
             let downs = hook.iter().filter(|h| h.down).count();
             let mut late = stats.late_us.clone();
@@ -1019,7 +1032,8 @@ fn worker(form: Form) {
                 .collect();
             rec(
                 &json!({"type":"trial","kind":kind,"n":t,"chars":seq.len(),"expect":expect,
-                "actual":actual,"keys":seq_desc.join(" "),"focus_ok":focus_ok()}),
+                "actual":actual,"actual_at_1200ms":actual_at_1200,"settle_ms":settle_ms,
+                "keys":seq_desc.join(" "),"focus_ok":focus_ok()}),
             );
             rec(
                 &json!({"type":"inject","kind":kind,"n":t,"planned":stats.planned,"sent_ok":stats.sent_ok,

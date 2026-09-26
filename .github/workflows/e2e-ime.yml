@@ -269,9 +269,9 @@ jobs:
               for iv in (10, 2)],
             # --- 本物の Chrome(chromebar=アドレスバー、Alt+D でフォーカス / chromepage=ページ内 textarea)。読み戻しは UI Automation。GJI のみ。---
             # 取りこぼしの再現率測定(run 36222195067 で chromepage 2ms が 48 試行中 1 件 FAIL): 2ms/3ms を 1 回あたり 24 試行 × 20 回に増やす。
-            *[cfg(f'ts-{form}-gji-{iv}ms', 'observe', check='typing', ime='gji', runs=runs, wait=900,
+            *[cfg(f'ts-{form}-gji-{iv}ms', 'observe', check='typing', ime='gji', runs=runs, wait=1200,
                   stress=f'--form={form} --interval={iv} --trials=8 --layout=@REPO@/layout/nicola_keytop.yab')
-              for form, iv, runs in (('chromepage', 2, 20), ('chromepage', 3, 12), ('chromebar', 2, 12), ('chromebar', 3, 6))],
+              for form, iv, runs in (('chromepage', 2, 30), ('chromepage', 3, 6), ('chromebar', 2, 30), ('chromebar', 3, 6))],
             *[cfg(f'ts-raw-{form}-gji-2ms', 'observe', check='typing', ime='gji', awase='false', runs=6, wait=900,
                   stress=f'--form={form} --interval=2 --mode=raw --no-awase --trials=8 --layout=@REPO@/layout/nicola_keytop.yab')
               for form in ('chromebar', 'chromepage')],
