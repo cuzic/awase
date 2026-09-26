@@ -8,7 +8,7 @@ summary: |-
   (2) StaleConfirm の romaji 再送(BUG-075 の重複)・猶予20msは変えない(引き金は猶予不足ではなく deferred 一括送出後の GJI 停止)。(3) 単体テストと CI の A/B、対照ハーネスの修正。
   未決: Escape 経路(per-VK idx≥1 の ESC)の破壊性、reinit の他の呼び出し元、実機での reinit 破壊性。
 status: |-
-  草案(2026-09-26、opus-adversarial-consult round1・2 反映済み、round3 待ち)。
+  草案(2026-09-26、opus-adversarial-consult round1〜3 で収束、実装前)。未決事項はリスク節。
 related_adr:
   - "ADR-079"
   - "ADR-100"
@@ -43,7 +43,8 @@ related_adr:
 それとは別に**否定的証拠カウンタ**を `ColdContext`(`tsf/probe.rs` の `raw_tsf_literal_consecutive_count` の隣)に持つ。
 - 増やすのは `RawTsfLiteralRecovery` 分岐の中で `facts.verdict == SuspectedLiteral` のときだけ(`mark_composition_cold` 側には入れない。どの verdict でも増えてしまう)。
 - リセットは `consecutive` と同じ3か所(`CompositionConfirmed` の dispatch=per-VK 途中の confirm を含む、FocusChange/SetOpenTrue、`on_focus_changed`)。
-- give-up 時にカウンタが2未満なら reinit を予約せず cleanup のみで終える。S,S は従来どおり reinit(BUG-033 の回復を保つ)。S,U,S は累計2回で reinit する。S,U / U,S / U,U は reinit しない。最新 verdict だけでは判定しない(U→S で証拠1回のまま reinit が走るのを避ける)。
+- **評価順序**: 同じ回収の中で、今回の verdict が SuspectedLiteral なら**先にカウンタを増やし、増やした後の値**で give-up 時の reinit の可否を判定する(判定を先にすると S,S でも2回目の判定時点でカウンタが1になり、BUG-033 の回復が消える)。
+- give-up 時にカウンタ(増加後)が2未満なら reinit を予約せず cleanup のみで終える。S,S は従来どおり reinit(BUG-033 の回復を保つ)。S,U,S は累計2回で reinit する。S,U / U,S / U,U は reinit しない。最新 verdict だけでは判定しない(U→S で証拠1回のまま reinit が走るのを避ける)。
 - **単一スロット保護を保つ**: reinit しない give-up でも、先行する reinit が Scheduled または Polling のあいだは、現行の `schedule_pending_gji_reinit` と同じく `set_raw_literal` を呼ばず cleanup を抑止する(`SuppressedExistingScheduled`/`SuppressedExistingPoll` の判定を共用する。「reinit を予約するか」の引数を足す形が安全)。抑止しないと、先行 give-up の backspace 数・escape が上書きされる(BUG-074 系、`probe_io.rs` の Angle A #1 テストと同じ回帰)。
 
 **決定2: StaleConfirm 時の romaji 再送と猶予20msは本 ADR では変えない。**
@@ -52,7 +53,7 @@ related_adr:
 猶予20msは延長しない(引き金が猶予不足ではない、`tuning-constants.md` の実測義務)。
 
 **決定3: 検証。**
-(a) `probe_io.rs` の FakeIo テスト: S,S→reinit予約あり / S,U,S→あり(累計) / U,U→なし / S,U→なし / U,S→なし / Confirmed(per-VK 途中の相乗り confirm を含む)でカウンタがリセット / 先行 reinit が Scheduled・Polling のとき reinit しない give-up がスロットを上書きしない / reinit しない give-up では romaji を再送しない(決定2で許容した残りの誤りを固定)。
+(a) `probe_io.rs` の FakeIo テスト: S,S→reinit予約あり / S,U,S→あり(累計) / U,U→なし / S,U→なし / U,S→なし / Confirmed(per-VK 途中の相乗り confirm を含む)でカウンタがリセット / 先行 reinit が Scheduled・Polling のとき reinit しない give-up がスロットを上書きしない / reinit しない give-up では romaji を再送しない(決定2で許容した残りの誤りを固定)。S,S のテストは「2回目の回収の直前のフィクスチャでカウンタ=1」の形で書く。既存の give-up テスト(`probe_io.rs` の `…consecutive_gives_up_with_cold_mark` など、`consecutive: 1` と SuspectedLiteral の facts だけで2回目を表すもの)は、否定的証拠カウンタ=1(先行 S あり)のフィクスチャに更新する。「予約しない側の Suppressed」用のテストを別に足す。Output 側の分岐(既存 pending があれば予約しなくても Suppressed を返し、無ければ pending を作らない)のテストは `schedule_pending_gji_reinit_does_not_overwrite_scheduled_phase` の隣に置く。`output` は `#[cfg(windows)]` なので、Linux では `cargo check --target x86_64-pc-windows-msvc -p awase-windows --tests --lib` で確かめ、実行は windows-build CI。
 (b) CI A/B: `ts-chromebar-gji-2ms` と `ts-chromepage-gji-2ms` を修正の前後で各 N run(発生率は約1/100試行なので数百試行必要)。決定的に再現させるため、ハーネスに「60 VK 一括送出の直後に OFF/ON」を足す。
 (c) 対照ハーネスの修正: 試行ごとに `turn_ime_on`、awase と同じ間隔・scan で OFF/ON を送る、`--reinit-after=esc` と `burst+off_on` を足す。修正後の対照で reinit の破壊性を再確認する。
 
