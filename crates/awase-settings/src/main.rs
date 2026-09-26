@@ -2699,9 +2699,11 @@ impl SettingsApp {
                 right_thumb_hover,
             );
         });
-        if self.config.general.left_thumb_key == "VK_SPACE"
-            || self.config.general.right_thumb_key == "VK_SPACE"
-        {
+        if awase_windows::state::alt_impersonation::is_thumb_key_vk(
+            &self.config.general.left_thumb_key,
+            &self.config.general.right_thumb_key,
+            awase_windows::vk::VK_SPACE,
+        ) {
             ui.indent("space_thumb_options", |ui| {
                 ui.checkbox(
                     &mut self.config.general.space_thumb_ignore_composing_guard,
@@ -2722,9 +2724,11 @@ impl SettingsApp {
                 );
             });
         }
-        if self.config.general.left_thumb_key == "VK_RETURN"
-            || self.config.general.right_thumb_key == "VK_RETURN"
-        {
+        if awase_windows::state::alt_impersonation::is_thumb_key_vk(
+            &self.config.general.left_thumb_key,
+            &self.config.general.right_thumb_key,
+            awase_windows::vk::VK_RETURN,
+        ) {
             ui.indent("enter_thumb_options", |ui| {
                 ui.checkbox(
                     &mut self.config.general.enter_thumb_ignore_composing_guard,
@@ -5385,22 +5389,10 @@ fn key_display_name(internal: &str) -> &str {
 /// keymap rule の `from` 文字列を (Ctrl, Shift, Alt, main_internal) に分解する。
 /// パース失敗時は (false, false, false, "") を返す。
 fn parse_combo_str(s: &str) -> (bool, bool, bool, String) {
-    let parts: Vec<&str> = s.split('+').map(str::trim).collect();
-    if parts.is_empty() {
-        return (false, false, false, String::new());
-    }
-    let (mut ctrl, mut shift, mut alt) = (false, false, false);
-    let mod_count = parts.len().saturating_sub(1);
-    for &part in &parts[..mod_count] {
-        match part {
-            "Ctrl" | "Control" => ctrl = true,
-            "Shift" => shift = true,
-            "Alt" => alt = true,
-            _ => {}
-        }
-    }
-    let main = (*parts.last().unwrap_or(&"")).to_string();
-    (ctrl, shift, alt, main)
+    // 修飾キーの解釈は読み手（`parse_key_combo`/`parse_hotkey`）と同じ関数を使う
+    // （ADR-201 決定1）。未知の修飾キーは今までどおり黙って捨てて主キーだけ残す。
+    let c = awase_windows::vk::interpret_combo(s);
+    (c.ctrl, c.shift, c.alt, c.main.to_string())
 }
 
 /// 修飾キーと main key から keymap rule 用文字列を組み立てる。

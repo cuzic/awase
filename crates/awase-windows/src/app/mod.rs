@@ -76,13 +76,22 @@ unsafe extern "system" {
 
 /// 起動時の警告を集約して報告する診断コレクター
 struct StartupDiagnostics {
+    /// 「設定した機能が働かない」類の警告。ログとトレイ通知に出る。
     warnings: Vec<String>,
+    /// 情報（未知のキー・撤去済みキー・互換表記・「以前は無視されていた設定が有効になった」）。
+    /// ログだけに出し、トレイには出さない（ADR-201 決定2）。
+    notes: Vec<String>,
 }
+
+/// 直近に出したトレイ通知の警告の一覧。`reload_config` のたびに同じバルーンを
+/// 繰り返さないために使う（前回と同じ内容なら出さない。ADR-201 決定2）。
+static LAST_BALLOON_WARNINGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 impl StartupDiagnostics {
     const fn new() -> Self {
         Self {
             warnings: Vec::new(),
+            notes: Vec::new(),
         }
     }
 
@@ -92,13 +101,50 @@ impl StartupDiagnostics {
         self.warnings.push(msg);
     }
 
+    /// ログだけに出す情報。トレイ通知の件数には数えない。
+    fn note(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        tracing::info!("startup note: {msg}");
+        self.notes.push(msg);
+    }
+
+    /// `AppConfig::validate` が返した警告を流す。`load_notes`（`AppConfig::load_warnings`、
+    /// 未知のキー・`[[keymap]]` の合流）に含まれるものは「ログだけ」、それ以外は警告。
+    fn warn_config(&mut self, load_notes: &[String], warnings: Vec<String>) {
+        for w in warnings {
+            if load_notes.contains(&w) {
+                self.note(w);
+            } else {
+                self.warn(w);
+            }
+        }
+    }
+
     fn report(&self) {
+        if !self.notes.is_empty() {
+            tracing::info!("{} startup note(s):", self.notes.len());
+            for n in &self.notes {
+                tracing::info!("  - {n}");
+            }
+        }
+        let unchanged = {
+            let mut last = LAST_BALLOON_WARNINGS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let same = *last == self.warnings;
+            last.clone_from(&self.warnings);
+            same
+        };
         if self.warnings.is_empty() {
             return;
         }
         tracing::info!("{} startup warning(s):", self.warnings.len());
         for w in &self.warnings {
             tracing::info!("  - {w}");
+        }
+        if unchanged {
+            tracing::info!("同じ警告を前回すでに通知したため、トレイ通知は省略します");
+            return;
         }
         let _ = with_app(|app| {
             app.show_tray_balloon(
@@ -275,7 +321,7 @@ pub(crate) fn read_bug_report_attachments(
     };
 
     let layout_yab = config_toml.as_deref().and_then(|toml_text| {
-        let parsed: AppConfig = match toml::from_str(toml_text) {
+        let parsed: AppConfig = match AppConfig::from_toml_str(toml_text) {
             Ok(parsed) => parsed,
             Err(e) => {
                 tracing::warn!("[bug-report] config.toml parse failed: {e}");
@@ -741,10 +787,12 @@ pub(crate) fn reload_config() {
     // 非対称（起動時は diag.warn 経由でトレイバルーンに出る）も解消する。
     let mut diag = StartupDiagnostics::new();
 
-    let (config, config_warnings) = raw_config.validate();
-    for w in config_warnings {
-        diag.warn(w);
+    let load_notes = raw_config.load_warnings().to_vec();
+    if let Some(n) = crate::config_diagnostics::newly_effective_note(&raw_config) {
+        diag.note(n);
     }
+    let (config, config_warnings) = raw_config.validate();
+    diag.warn_config(&load_notes, config_warnings);
 
     init_ngram_validated(&config, &mut diag);
 
@@ -799,8 +847,9 @@ pub(crate) fn reload_config() {
         ime_off,
         ime_toggle,
     };
+    let mut apply_warnings: Vec<String> = Vec::new();
     let _ = with_app(|app| {
-        app.apply_config_update(&config, special_keys, toggle, on, off);
+        apply_warnings = app.apply_config_update(&config, special_keys, toggle, on, off);
         // ADR-092 決定D Step4b前提条件3: MS-IME レジストリの Ctrl+Space/
         // Shift+Space トグル割当てを設定リロードのたびに再読みする
         // （stale化対策、apply_config_update が space_is_thumb_key を
@@ -820,6 +869,10 @@ pub(crate) fn reload_config() {
         // 自分で追随するので、ここで再読みしない（ADR-191で`gji_charset_autodetect`の設定への反映は撤去済み。
         // 旧BUG-115 F4のコメントは実体が無くなっていた、レビュー指摘A-m3）。
     });
+
+    for w in apply_warnings {
+        diag.warn(w);
+    }
 
     let layouts_dir = resolve_relative(&config.general.layouts_dir);
     match crate::LayoutEntry::scan_all(
@@ -869,6 +922,19 @@ mod tests {
             "重複検出時はBUG-140を参照する警告を出す: {:?}",
             diag.warnings
         );
+    }
+
+    /// ADR-201 決定2: 未知のキー等(`load_warnings`)はログだけ(`notes`)、それ以外は警告(トレイに出る)。
+    #[test]
+    fn warn_config_routes_load_warnings_to_notes_only() {
+        let mut diag = StartupDiagnostics::new();
+        let load = vec!["未知のキー a".to_string()];
+        diag.warn_config(
+            &load,
+            vec!["未知のキー a".to_string(), "解決できない値 b".to_string()],
+        );
+        assert_eq!(diag.notes, vec!["未知のキー a".to_string()]);
+        assert_eq!(diag.warnings, vec!["解決できない値 b".to_string()]);
     }
 
     /// 重複が無い通常設定では、すべてのキーがそのまま採用され警告も出ない。

@@ -1,8 +1,10 @@
 pub mod config;
+pub mod config_load_diag;
 pub mod engine;
 pub mod fs_atomic;
 pub mod gate;
 pub mod kana_table;
+pub mod key_text;
 pub mod ngram;
 pub mod paths;
 pub mod platform;

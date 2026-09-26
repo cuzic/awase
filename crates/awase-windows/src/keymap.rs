@@ -82,62 +82,66 @@ pub struct KeymapTable(Vec<CompiledKeymap>);
 
 impl KeymapTable {
     /// config の `KeymapRule` リストをコンパイルする。
-    /// パース失敗・禁止 VK 使用ルールは警告ログを出して skip（ADR-114 決定5）。
+    /// パース失敗・禁止 VK 使用ルールは skip し、その理由を警告の一覧として返す
+    /// （ADR-114 決定5、ADR-201 決定2: 呼び出し元が診断へ流す。無言にしない）。
     ///
     /// `left_thumb_vk`/`right_thumb_vk` は実行時値（`config.general` 由来）。
     /// `muhenkan_solo_tap_dedicated_fn_key`（GJI 専用 Fn キー、実行時にしか
     /// 確定しない）とエンジン制御系コンボとの衝突検出はここでは行わない
     /// （ADR-114「未解決の疑問」4・5、`Runtime::recompute_active_keymaps()` 側で扱う）。
-    pub fn new(rules: &[KeymapRule], left_thumb_vk: VkCode, right_thumb_vk: VkCode) -> Self {
+    pub fn new(
+        rules: &[KeymapRule],
+        left_thumb_vk: VkCode,
+        right_thumb_vk: VkCode,
+    ) -> (Self, Vec<String>) {
         let mut result = Vec::new();
+        let mut warnings: Vec<String> = Vec::new();
         'rules: for rule in rules {
             let Some(combo) = crate::vk::parse_key_combo(&rule.from) else {
-                tracing::warn!("[keymap] 'from' のパース失敗: {:?}", rule.from);
+                warnings.push(format!("[keymap] 'from' のパース失敗: {:?}", rule.from));
                 continue;
             };
             if combo.alt {
-                tracing::warn!(
+                warnings.push(format!(
                     "[keymap] 'from' の Alt 修飾は使用できません（ADR-114 決定5）: {:?}",
                     rule.from
-                );
+                ));
                 continue;
             }
             if is_forbidden_ctrl_or_shift_primary_key(combo.vk) {
-                tracing::warn!(
+                warnings.push(format!(
                     "[keymap] 'from' の主キーに Ctrl/Shift は指定できません（ADR-114 決定5）: {:?}",
                     rule.from
-                );
+                ));
                 continue;
             }
             if let Some(reason) =
                 forbidden_target_vk_reason(combo.vk, left_thumb_vk, right_thumb_vk, false)
             {
-                tracing::warn!(
+                warnings.push(format!(
                     "[keymap] 'from' に {reason} は指定できません（ADR-114 決定5）: {:?}",
                     rule.from
-                );
+                ));
                 continue;
             }
             let mut send_vks = Vec::with_capacity(rule.to.len());
             for to in &rule.to {
-                let resolved =
-                    VkCode::from_name(to).or_else(|| VkCode::from_name(&format!("VK_{to}")));
-                let Some(vk) = resolved else {
+                let Some(vk) = VkCode::from_name(to) else {
                     if to.contains('+') {
-                        tracing::warn!(
+                        warnings.push(format!(
                             "[keymap] 'to' に修飾キーは指定できません（ADR-130 決定2）: {to:?}"
-                        );
+                        ));
                     } else {
-                        tracing::warn!("[keymap] 'to' のパース失敗: {to:?}");
+                        warnings.push(format!("[keymap] 'to' のパース失敗: {to:?}"));
                     }
                     continue 'rules;
                 };
                 if let Some(reason) =
                     forbidden_target_vk_reason(vk, left_thumb_vk, right_thumb_vk, true)
                 {
-                    tracing::warn!(
+                    warnings.push(format!(
                         "[keymap] 'to' に {reason} は指定できません（ADR-114 決定5）: {to:?}"
-                    );
+                    ));
                     continue 'rules;
                 }
                 send_vks.push(vk);
@@ -148,7 +152,7 @@ impl KeymapTable {
                 send_vks,
             });
         }
-        Self(result)
+        (Self(result), warnings)
     }
 
     /// 現在のプロセスに適用されるルールをフィルタして新しい `KeymapTable` を返す。
@@ -299,26 +303,12 @@ pub(crate) fn warn_on_engine_hotkey_collision(
 ) {
     // `ParsedKeyCombo` は `PartialEq` を derive 済みなので `==` で比較できる。
     //
-    // `crate::vk::parse_hotkey` は Windows 専用（`windows` クレートの
-    // MOD_CONTROL 等を使う）のためここでは使えない（この関数は Linux でも
-    // ビルド・テストできるよう ungated にしている）。`parse_key_combo` は
-    // 最後のトークンに `VK_` 接頭辞が必要だが `engine_toggle_hotkey` は
-    // "Ctrl+Shift+F12"（手書き）でも "Ctrl+Shift+VK_F12"（設定 GUI）でも
-    // 書かれうる（`parse_hotkey` と同じ）ため、`with_vk_prefix` で補って
-    // `parse_key_combo` に委譲する。
-    let hotkey_combo = engine_toggle_hotkey.and_then(|s| {
-        let prefixed = s.rfind('+').map_or_else(
-            || crate::vk::with_vk_prefix(s),
-            |idx| {
-                format!(
-                    "{}+{}",
-                    &s[..idx],
-                    crate::vk::with_vk_prefix(s[idx + 1..].trim())
-                )
-            },
-        );
-        crate::vk::parse_key_combo(&prefixed)
-    });
+    // `crate::vk::parse_hotkey` は Windows 専用（`windows` クレートの MOD_CONTROL 等を
+    // 使う）のためここでは使えない（この関数は Linux でも ビルド・テストできるよう ungated
+    // にしている）。`parse_hotkey` は `parse_key_combo` の薄い変換なので、同じ
+    // `parse_key_combo` で読む（`VK_` の有無・大文字小文字は `from_name` が吸収する。
+    // ADR-201 決定1）。
+    let hotkey_combo = engine_toggle_hotkey.and_then(crate::vk::parse_key_combo);
 
     for rule in keymaps {
         let Some(combo) = crate::vk::parse_key_combo(&rule.from) else {
@@ -389,7 +379,7 @@ mod tests {
 
     fn new_table(rules: &[KeymapRule]) -> KeymapTable {
         let (left, right) = thumb_vks();
-        KeymapTable::new(rules, left, right)
+        KeymapTable::new(rules, left, right).0
     }
 
     #[test]
@@ -491,12 +481,36 @@ mod tests {
     fn new_skips_thumb_key_target_vk() {
         let (left, _right) = thumb_vks();
         // to に親指キー(無変換)を指定するルールは skip される。
-        let table = KeymapTable::new(
+        let (table, warnings) = KeymapTable::new(
             &[rule(None, "Ctrl+VK_I", Some("VK_NONCONVERT"))],
             left,
             crate::vk::VK_CONVERT,
         );
         assert!(table.is_empty(), "親指キーへの to は skip されるべき");
+        assert_eq!(
+            warnings.len(),
+            1,
+            "skip の理由が警告として返る: {warnings:?}"
+        );
+    }
+
+    /// ADR-201 決定2(b): 解決できない from/to は無言で消えず、警告として返る。
+    #[test]
+    fn new_returns_a_warning_for_each_unresolvable_rule() {
+        let (left, right) = thumb_vks();
+        let (table, warnings) = KeymapTable::new(
+            &[
+                rule(None, "Ctrl+NoSuchKey", Some("F7")),
+                rule(None, "Ctrl+VK_I", Some("NoSuchKey")),
+                rule(None, "Ctrl+VK_J", Some("F7")),
+            ],
+            left,
+            right,
+        );
+        assert_eq!(table.len(), 1);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains("'from'") && warnings[0].contains("NoSuchKey"));
+        assert!(warnings[1].contains("'to'") && warnings[1].contains("NoSuchKey"));
     }
 
     #[test]
@@ -562,7 +576,8 @@ mod tests {
     #[test]
     fn new_forbids_conv_mutating_vk_as_to_target_via_keymap_table() {
         let (left, right) = thumb_vks_away_from_convert();
-        let table = KeymapTable::new(&[rule(None, "Ctrl+VK_I", Some("VK_CONVERT"))], left, right);
+        let (table, _) =
+            KeymapTable::new(&[rule(None, "Ctrl+VK_I", Some("VK_CONVERT"))], left, right);
         assert!(
             table.is_empty(),
             "`is_to_side=true` の OR 判定により、親指キーでなくても VK_CONVERT を \
@@ -573,7 +588,7 @@ mod tests {
     #[test]
     fn new_accepts_conv_mutating_vk_as_from_primary_key_when_not_thumb_key() {
         let (left, right) = thumb_vks_away_from_convert();
-        let table = KeymapTable::new(&[rule(None, "VK_CONVERT", Some("F7"))], left, right);
+        let (table, _) = KeymapTable::new(&[rule(None, "VK_CONVERT", Some("F7"))], left, right);
         assert_eq!(
             table.len(),
             1,

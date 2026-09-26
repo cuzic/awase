@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::path::Path;
 
+use crate::key_text::{combo_main_identity, key_identity, split_combo};
 use crate::scanmap::KeyboardModel;
 use crate::types::VkCode;
 
@@ -271,8 +272,8 @@ pub struct GeneralConfig {
     /// `muhenkan_solo_tap_always_suppress`/`muhenkan_solo_tap_ignore_composing_guard`
     /// による従来の抑制/パススルー判定がそのまま適用される。
     ///
-    /// `VkCode::from_name` が受理する完全な VK 名（例: `"VK_F21"`、`"F21"` の
-    /// ような短縮形は不可）を指定する。`validate_dedicated_fn_key` が
+    /// `VkCode::from_name` が受理するキー名（例: `"VK_F21"`、`"F21"`。`VK_` は任意、
+    /// 大文字小文字は問わない。ADR-201）を指定する。`validate_dedicated_fn_key` が
     /// `VK_F15`-`VK_F24`（`VK_F13`/`VK_F14` を除く、物理キー非存在で安全、
     /// ADR-057）の範囲外を警告する（`VK_NONCONVERT`/`VK_IME_ON`/`VK_KANJI` 等の
     /// 危険なキー、およびターミナルエスケープシーケンス漏れが実機確認済みの
@@ -761,6 +762,15 @@ pub struct AppConfig {
     /// 名前付き打鍵列マクロ一覧（ADR-115 決定2b）。
     #[serde(default)]
     pub keystroke_macro: Vec<KeystrokeMacro>,
+    /// 旧表記 `[[keymap]]`（ADR-201 決定5）。`alias` にすると `[[keymap]]` と `[[keymaps]]` が
+    /// 両方あるとき serde が読み込み全体を失敗させるので、別のフィールドで受けて
+    /// [`AppConfig::from_toml_str`] が `keymaps` へ合流させる（合流後は空）。保存はしない。
+    #[serde(default, rename = "keymap", skip_serializing)]
+    legacy_keymap: Vec<KeymapRule>,
+    /// 読み込み時に集めた診断（未知のキー・`[[keymap]]` の合流）。`validate()` が警告に加える。
+    /// 設定ファイルの項目ではない（保存しない）。
+    #[serde(skip)]
+    load_warnings: Vec<String>,
 }
 
 /// `AppConfig::load` の失敗を UI 側の扱い分けができる粒度に分類した結果
@@ -806,9 +816,79 @@ impl AppConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
-        let config: Self = toml::from_str(&content)
+        let config = Self::from_toml_str(&content)
             .with_context(|| format!("Failed to parse {}", path.display()))?;
         Ok(config)
+    }
+
+    /// 設定テキストを読み込む**唯一の入口**（ADR-201 決定2・5）。
+    ///
+    /// `AppConfig::load`・不具合報告・テストはこれを使う（`toml::from_str` を直接呼ぶと
+    /// `[[keymap]]` の合流も未知キーの検出も通らない）。
+    /// - 未知のキー（`serde_ignored`）は `load_warnings` に入れ、`validate()` が警告に加える。
+    ///   撤去済みのキー（[`crate::config_load_diag::is_removed_key`]）は警告しない。
+    /// - 旧表記 `[[keymap]]` は `keymaps` の後ろへ連結して合流させる（両方あれば連結）。
+    ///
+    /// # Errors
+    ///
+    /// TOML として、または型として読めない場合にエラーを返す。
+    pub fn from_toml_str(text: &str) -> Result<Self, toml::de::Error> {
+        let mut ignored: Vec<String> = Vec::new();
+        let mut config: Self =
+            serde_ignored::deserialize(toml::de::Deserializer::new(text), |p| {
+                ignored.push(p.to_string());
+            })?;
+        let default_table = toml::Table::try_from(Self::default()).unwrap_or_default();
+        for path in ignored {
+            if crate::config_load_diag::is_removed_key(&path) {
+                continue;
+            }
+            let (parent, _) = path.rsplit_once('.').unwrap_or(("", &path));
+            let siblings = Self::known_keys_under(&default_table, parent);
+            config
+                .load_warnings
+                .push(crate::config_load_diag::unknown_key_message(
+                    &path, &siblings,
+                ));
+        }
+        if !config.legacy_keymap.is_empty() {
+            let n = config.legacy_keymap.len();
+            let both = !config.keymaps.is_empty();
+            config.keymaps.append(&mut config.legacy_keymap);
+            config.load_warnings.push(if both {
+                format!(
+                    "[[keymap]] {n} 件を [[keymaps]] と連結して読みました\
+                     （[[keymap]] は旧表記です。[[keymaps]] にまとめてください）"
+                )
+            } else {
+                format!(
+                    "[[keymap]] {n} 件を [[keymaps]] として読みました\
+                     （[[keymap]] は旧表記です）"
+                )
+            });
+        }
+        Ok(config)
+    }
+
+    /// 既定値を TOML の表にしたものから、`parent`（`""` は最上位、`"general"` 等）の
+    /// 直下の既知のキー名を返す。`None` の項目は表に出ないので、提案の候補が少し減るだけ。
+    fn known_keys_under(default_table: &toml::Table, parent: &str) -> Vec<String> {
+        let mut cur = default_table;
+        if !parent.is_empty() {
+            for seg in parent.split('.') {
+                match cur.get(seg).and_then(toml::Value::as_table) {
+                    Some(t) => cur = t,
+                    None => return Vec::new(),
+                }
+            }
+        }
+        cur.keys().cloned().collect()
+    }
+
+    /// 読み込み時の診断（未知のキー・`[[keymap]]` の合流）。`validate()` の警告にも含まれる。
+    #[must_use]
+    pub fn load_warnings(&self) -> &[String] {
+        &self.load_warnings
     }
 
     /// 設定を TOML 形式でファイルに保存する
@@ -904,6 +984,8 @@ impl From<ValidatedConfig> for AppConfig {
             keymaps: v.keymaps,
             post_bypass: v.post_bypass,
             keystroke_macro: v.keystroke_macro,
+            legacy_keymap: Vec::new(),
+            load_warnings: Vec::new(),
         }
     }
 }
@@ -1009,12 +1091,12 @@ impl AppConfig {
     /// （ADR-091 §4 Phase1-3、未実装）が入るまでは、GJI 側の既存キー設定に
     /// 同じ番号が使われていないかをユーザー自身が確認すること。
     fn validate_dedicated_fn_key(g: &GeneralConfig, w: &mut Vec<String>) {
+        // `canonical_key_text` を通した完全一致（`from_name` と規則を揃える。ADR-201 決定1）。
         const SAFE_RANGE: &[&str] = &[
-            "VK_F15", "VK_F16", "VK_F17", "VK_F18", "VK_F19", "VK_F20", "VK_F21", "VK_F22",
-            "VK_F23", "VK_F24",
+            "F15", "F16", "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24",
         ];
         if let Some(name) = &g.muhenkan_solo_tap_dedicated_fn_key {
-            if !SAFE_RANGE.contains(&name.as_str()) {
+            if !SAFE_RANGE.contains(&key_identity(name).as_str()) {
                 w.push(format!(
                     "muhenkan_solo_tap_dedicated_fn_key = {name:?} は指定できない値です。\
                      指定できるのは F15〜F24（F13・F14 を除く）のいずれかです \
@@ -1029,11 +1111,8 @@ impl AppConfig {
     }
 
     fn validate_thumb_keys(g: &GeneralConfig, w: &mut Vec<String>) {
-        if g.left_thumb_key == "Kana"
-            || g.left_thumb_key == "VK_KANA"
-            || g.right_thumb_key == "Kana"
-            || g.right_thumb_key == "VK_KANA"
-        {
+        // `Kana`/`VK_KANA`/`かな`/`カナ`（大文字小文字・空白は問わない）はすべて同じ VK。
+        if key_identity(&g.left_thumb_key) == "KANA" || key_identity(&g.right_thumb_key) == "KANA" {
             w.push(
                 "Kana キーはロック型キーで KeyUp イベントが発生しません。\
                  親指キーとしての使用は推奨しません。"
@@ -1042,34 +1121,11 @@ impl AppConfig {
         }
     }
 
-    /// 無変換/変換キーの表記ゆれ（漢字表記 or VK_*識別子）のペア。
-    /// `validate_thumb_key_in_ime_combos`（同一キーかどうかの正規化比較）と
-    /// `validate_keyboard_model`（JIS専用キーの残存検出）の両方で参照する
-    /// 単一の情報源。将来3つ目の別名表記を追加する場合はここに足すだけで
-    /// 両方の検証に反映される。
-    const THUMB_KEY_ALIASES: &[(&str, &str)] =
-        &[("無変換", "VK_NONCONVERT"), ("変換", "VK_CONVERT")];
-
-    /// 無変換/変換の表記ゆれ（漢字表記・エイリアス・`VK_*`識別子）を
-    /// `THUMB_KEY_ALIASES` に基づいて正規化する。一致しなければ入力をそのまま返す
-    /// （`THUMB_KEY_ALIASES` に無い任意のキー名の可能性があるため）。
-    /// `validate_thumb_key_in_ime_combos` が使う単一の情報源。
-    fn canonical_thumb_key_name(s: &str) -> &str {
-        let s = s.trim();
-        for (kanji, vk) in Self::THUMB_KEY_ALIASES {
-            if s == *kanji || s.eq_ignore_ascii_case(vk) {
-                return vk;
-            }
-        }
-        s
-    }
-
     fn validate_thumb_key_in_ime_combos(g: &GeneralConfig, keys: &KeysConfig, w: &mut Vec<String>) {
         fn is_bare_same_key(combo: &str, thumb_key: &str) -> bool {
-            let combo = combo.trim();
-            !combo.contains('+')
-                && AppConfig::canonical_thumb_key_name(combo)
-                    .eq_ignore_ascii_case(AppConfig::canonical_thumb_key_name(thumb_key))
+            // 修飾キーなし（`+` で区切って主キーだけ）で、主キーが親指キーと同じ組。
+            let (mods, main) = split_combo(combo);
+            mods.is_empty() && key_identity(main) == key_identity(thumb_key)
         }
 
         fn warn_for_field(
@@ -1083,16 +1139,15 @@ impl AppConfig {
                 .iter()
                 .any(|combo| is_bare_same_key(combo, thumb_key))
             {
-                let canonical = AppConfig::canonical_thumb_key_name(thumb_key);
-                let solo_action = if canonical.eq_ignore_ascii_case("VK_NONCONVERT") {
+                let canonical = key_identity(thumb_key);
+                let solo_action = if canonical == "NONCONVERT" {
                     g.muhenkan_solo_tap_ime_action
-                } else if canonical.eq_ignore_ascii_case("VK_CONVERT") {
+                } else if canonical == "CONVERT" {
                     g.henkan_solo_tap_ime_action
                 } else {
                     None
                 };
-                let is_supported = canonical.eq_ignore_ascii_case("VK_NONCONVERT")
-                    || canonical.eq_ignore_ascii_case("VK_CONVERT");
+                let is_supported = canonical == "NONCONVERT" || canonical == "CONVERT";
                 let detail = if solo_action.is_some() {
                     "同じキーの `*_solo_tap_ime_action` の設定が優先され、この強制ON/OFFの設定は無視されます。"
                 } else if is_supported {
@@ -1150,11 +1205,10 @@ impl AppConfig {
             ));
         }
 
-        let mentions_jis_only = |s: &str| {
-            Self::THUMB_KEY_ALIASES
-                .iter()
-                .any(|(kanji, vk)| s.contains(kanji) || s.contains(vk))
-        };
+        // 組み合わせは `split_combo` で主キーを取り出して完全一致（`contains` は使わない。
+        // ADR-201 R3-3）。
+        let mentions_jis_only =
+            |s: &str| matches!(combo_main_identity(s).as_str(), "NONCONVERT" | "CONVERT");
 
         let mut offending_fields: Vec<&str> = Vec::new();
         if mentions_jis_only(&g.left_thumb_key) {
@@ -1258,7 +1312,8 @@ impl AppConfig {
     /// 不正な値がある場合は警告メッセージのリストと共に返す（厳密なエラーではなくデフォルト値にフォールバック）。
     #[must_use]
     pub fn validate(self) -> (ValidatedConfig, Vec<String>) {
-        let mut warnings = Vec::new();
+        // 読み込み時の診断（未知のキー・`[[keymap]]` の合流）を先頭に置く。
+        let mut warnings = self.load_warnings;
         let mut general = self.general;
         let app_overrides = self.app_overrides;
 
@@ -2115,6 +2170,66 @@ default_layout = "nicola.yab"
         }
     }
 
+    /// ADR-201 決定1: `F18` のような `VK_` 無し・小文字の表記も、`from_name` と同じ規則で
+    /// 安全範囲として扱う（以前は `"VK_F18"` の完全一致のみで、`F18` は警告された）。
+    #[test]
+    fn test_validate_dedicated_fn_key_is_lenient_about_notation() {
+        for name in ["F18", "f18", "vk_f18", " VK_F18 ", "F15", "F24"] {
+            let mut general = GeneralConfig::default();
+            general.muhenkan_solo_tap_dedicated_fn_key = Some(name.to_string());
+            let mut warnings = Vec::new();
+            AppConfig::validate_dedicated_fn_key(&general, &mut warnings);
+            assert!(warnings.is_empty(), "{name:?}: {warnings:?}");
+        }
+        for name in ["F14", "f13", "Ctrl+F18", "VK_F25", "無変換"] {
+            let mut general = GeneralConfig::default();
+            general.muhenkan_solo_tap_dedicated_fn_key = Some(name.to_string());
+            let mut warnings = Vec::new();
+            AppConfig::validate_dedicated_fn_key(&general, &mut warnings);
+            assert_eq!(warnings.len(), 1, "{name:?}");
+        }
+    }
+
+    /// ADR-201 決定1: かなキーは `カナ`/`かな`/小文字でも同じ VK（0x15）なので警告する。
+    #[test]
+    fn test_validate_thumb_keys_warns_on_kana_spellings() {
+        for name in ["カナ", "かな", "kana", "vk_kana", " Kana "] {
+            let mut general = GeneralConfig::default();
+            general.left_thumb_key = name.to_string();
+            let mut warnings = Vec::new();
+            AppConfig::validate_thumb_keys(&general, &mut warnings);
+            assert_eq!(warnings.len(), 1, "{name:?}");
+        }
+    }
+
+    /// ADR-201 R3-3: 組み合わせは主キーの完全一致で見る（`contains` ではない）。
+    /// 修飾付きの `Ctrl+変換` も US 配列では JIS 専用キーとして検出し、無関係な名前の
+    /// 一部に「変換」が含まれるだけでは誤検出しない。
+    #[test]
+    fn test_validate_keyboard_model_us_matches_combo_main_key_exactly() {
+        let check = |engine_on: &str| {
+            let mut general = GeneralConfig::default();
+            general.keyboard_model = KeyboardModel::Us;
+            general.left_thumb_key = "VK_SPACE".to_string();
+            general.right_thumb_key = "VK_SPACE".to_string();
+            let mut keys = KeysConfig::default();
+            keys.engine_on = vec![engine_on.to_string()];
+            keys.engine_off = vec![];
+            keys.ime_on = vec![];
+            keys.ime_off = vec![];
+            keys.engine_off_solo_repeat = None;
+            let mut w = Vec::new();
+            AppConfig::validate_keyboard_model(&general, &keys, &mut w);
+            w.iter().any(|m| m.contains("keys.engine_on"))
+        };
+        assert!(check("Ctrl+変換"));
+        assert!(check("ctrl+vk_nonconvert"));
+        assert!(check("Nonconvert"));
+        assert!(!check("Ctrl+VK_F12"));
+        // 名前の一部に「変換」を含むだけの別の名前は誤検出しない。
+        assert!(!check("Ctrl+再変換"));
+    }
+
     /// T-16: IME コンボに bare 親指キーを設定した場合だけ警告する。
     /// Ctrl+無変換のような修飾付きコンボは従来どおり許容する。
     #[test]
@@ -2663,5 +2778,86 @@ steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]
             );
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── ADR-201 段階2: from_toml_str（未知キー・[[keymap]] の合流）──
+
+    #[test]
+    fn from_toml_str_warns_unknown_keys_and_suggests() {
+        let c = AppConfig::from_toml_str(
+            "[general]\nsimultaneous_threshold_msx = 80\n[keys]\nime_onn = []\n[futuresection]\na = 1\n",
+        )
+        .unwrap();
+        let w = c.load_warnings().join("\n");
+        assert!(w.contains("general.simultaneous_threshold_msx"), "{w}");
+        assert!(
+            w.contains("simultaneous_threshold_ms\""),
+            "近い名前を示す: {w}"
+        );
+        assert!(w.contains("keys.ime_onn") && w.contains("ime_on\""), "{w}");
+        assert!(w.contains("futuresection"), "{w}");
+        // validate() が警告に加える
+        let (_v, warnings) = c.validate();
+        assert!(warnings.iter().any(|x| x.contains("futuresection")));
+    }
+
+    #[test]
+    fn from_toml_str_does_not_warn_for_removed_keys_or_alias() {
+        let c = AppConfig::from_toml_str(
+            "[general]\napply_calibrated_mode_keys = true\ndbe_mode_key_policy = \"passthrough\"\n\
+             output_mode = \"batched\"\n[keys]\nengine_off_solo_triple = \"VK_INSERT\"\n\
+             [[calibration]]\nvk = 29\n",
+        )
+        .unwrap();
+        assert!(c.load_warnings().is_empty(), "{:?}", c.load_warnings());
+        assert_eq!(c.keys.engine_off_solo_repeat.as_deref(), Some("VK_INSERT"));
+    }
+
+    #[test]
+    fn from_toml_str_merges_legacy_keymap_into_keymaps() {
+        let only_legacy = "[[keymap]]\nfrom = \"Ctrl+VK_I\"\nto = [\"VK_TAB\"]\n";
+        let c = AppConfig::from_toml_str(only_legacy).unwrap();
+        assert_eq!(c.keymaps.len(), 1);
+        assert!(c.load_warnings().iter().any(|w| w.contains("[[keymap]]")));
+
+        // 両方あっても読み込みは失敗せず、連結して警告する（alias にしたときの Dangerous を避ける）
+        let both = "[[keymap]]\nfrom = \"Ctrl+VK_I\"\nto = [\"VK_TAB\"]\n\
+                    [[keymaps]]\nfrom = \"Ctrl+VK_J\"\nto = [\"VK_TAB\"]\n";
+        let c = AppConfig::from_toml_str(both).unwrap();
+        assert_eq!(c.keymaps.len(), 2);
+        assert!(c.load_warnings().iter().any(|w| w.contains("連結")));
+    }
+
+    /// `[[keymap]]` だけのファイル → 読み込み → 保存 → 再読み込みで規則の数が変わらない
+    /// （合流後は `keymaps` に一本化されて書かれ、`keymap` は書かれない）。
+    #[test]
+    fn legacy_keymap_survives_save_and_reload_without_doubling() {
+        let text = "[[keymap]]\nfrom = \"Ctrl+VK_I\"\nto = [\"VK_TAB\"]\n";
+        let c = AppConfig::from_toml_str(text).unwrap();
+        let dir = std::env::temp_dir().join(format!("awase-adr201-s2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        c.save(&path).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("[[keymap]]"), "{saved}");
+        let r = AppConfig::load(&path).unwrap();
+        assert_eq!(r.keymaps.len(), 1);
+        r.save(&path).unwrap();
+        assert_eq!(AppConfig::load(&path).unwrap().keymaps.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 既定値から書き出した設定は、未知キーの警告を出さない（`Option` の `None` などで誤報しない）。
+    #[test]
+    fn from_toml_str_default_roundtrip_has_no_warnings() {
+        let text = toml::to_string_pretty(&AppConfig::default()).unwrap();
+        let c = AppConfig::from_toml_str(&text).unwrap();
+        assert!(c.load_warnings().is_empty(), "{:?}", c.load_warnings());
+        let bundled = AppConfig::from_toml_str(include_str!("../config.toml")).unwrap();
+        assert!(
+            bundled.load_warnings().is_empty(),
+            "{:?}",
+            bundled.load_warnings()
+        );
     }
 }
