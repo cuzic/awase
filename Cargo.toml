@@ -45,6 +45,8 @@ path = "src/lib.rs"
 
 [dependencies]
 toml = "0.8"
+# ADR-201 決定3: 保存はコメント・未知キーを保つ toml_edit。toml 0.8 と同じ 0.22 系（Cargo.lock で共有）。
+toml_edit = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
