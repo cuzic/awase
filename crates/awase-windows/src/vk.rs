@@ -180,6 +180,14 @@ pub fn is_role_candidate(vk: VkCode) -> bool {
         .contains(&vk)
 }
 
+/// 役割判定の候補のうち F13〜F24（0x7C〜0x87、ADR-199 決定18）か。半角/全角（0xF3/0xF4）と違い、
+/// 受信そのものが IME の証拠にならず（`is_japanese_ime` を上げない）、自動リピートがあり、書かなかった打鍵は
+/// Suppress してはならない——そのため配送・ラッチ・昇格の各所で半角/全角と別扱いにする。
+#[must_use]
+pub const fn is_role_fkey(vk: VkCode) -> bool {
+    matches!(vk.0, 0x7C..=0x87)
+}
+
 /// VK コードが IME 状態を変更する可能性があるかどうかを判定する。
 #[must_use]
 pub const fn may_change_ime(vk_code: VkCode) -> bool {
@@ -1175,6 +1183,18 @@ mod tests {
         assert!(!should_upgrade_is_japanese_ime(true, VkCode(0xF2))); // HIRAGANA, injected
     }
 
+    /// ADR-199 決定18: F13〜F24 は物理キーが実在しうる（プログラマブルキーボード等）ので、受信そのものは
+    /// IME の証拠にならず `is_japanese_ime` を上げてはならない（ADR-093 の基準、BUG-14 と同じ理由）。
+    #[test]
+    fn should_upgrade_is_japanese_ime_false_for_f13_to_f24() {
+        for vk in 0x7C..=0x87 {
+            assert!(
+                !should_upgrade_is_japanese_ime(false, VkCode(vk)),
+                "0x{vk:02X}"
+            );
+        }
+    }
+
     /// 物理イベントでも、5 VK でなければ false。
     #[test]
     fn should_upgrade_is_japanese_ime_false_for_physical_unrelated_vk() {
@@ -1325,7 +1345,7 @@ mod tests {
     /// ひらがな・カタカナ・英数・0x19（決定14の移行まで）は候補に入れない。
     #[test]
     fn role_candidates_come_from_the_shared_name_list() {
-        use super::{is_role_candidate, VkCodeExt as _};
+        use super::{is_role_candidate, is_role_fkey, VkCodeExt as _};
         for name in awase_gji_config::role::ROLE_CANDIDATE_VK_NAMES {
             let vk = VkCode::from_name(name).expect(name);
             assert!(is_role_candidate(vk), "{name}");
@@ -1333,5 +1353,14 @@ mod tests {
         for vk in [0xF0, 0xF1, 0xF2, 0x19, 0x16, 0x1A, 0x15, 0x20, 0x41] {
             assert!(!is_role_candidate(VkCode(vk)), "0x{vk:02X}");
         }
+        // F13〜F24 は候補で、`is_role_fkey` と一致する（0x7B=F12・0x88 は含まない）。
+        for vk in 0x7C..=0x87 {
+            assert!(
+                is_role_candidate(VkCode(vk)) && is_role_fkey(VkCode(vk)),
+                "0x{vk:02X}"
+            );
+        }
+        assert!(!is_role_fkey(VkCode(0x7B)) && !is_role_fkey(VkCode(0x88)));
+        assert!(!is_role_fkey(VkCode(0xF3)));
     }
 }

@@ -553,7 +553,8 @@ pub const fn hz_omit_may_apply(use_learned: bool) -> bool {
 /// - `keymap_role`: GJI の`config1.db`から逆算した役割。外側の`None`は「キーマップが読めない・パースできない」
 ///   （不明＝受動、決定6-3。不在は既定プリセットとして読み取り側が返すのでここには来ない）。
 /// - MS-IME 本体（[`ImeKindId::MsIme`]）の半角/全角は仕様で固定のトグル（決定6-4）。キーマップが取れなくても
-///   役割は付く（`keymap_role`は見ない）。
+///   役割は付く（`keymap_role`は見ない）。`msime_fixed_toggle`はそのキーが半角/全角か（F13〜F24 は MS-IME 本体では
+///   設定を読めないので常に受動、決定18）。
 /// - 採用中の学習表がそのキーをトグルと矛盾すると示すとき（`learned_contradiction`、`use_learned`が真のときだけ有効）は
 ///   受動に狭める（決定6-2。狭める方向だけ）。
 #[must_use]
@@ -561,6 +562,7 @@ pub fn key_shadow_action(
     ime: super::ime_kind::ImeKindId,
     explicit_overlap: bool,
     keymap_role: Option<Option<awase_gji_config::role::KeyRole>>,
+    msime_fixed_toggle: bool,
     use_learned: bool,
     learned_contradiction: bool,
 ) -> Option<awase::types::ShadowImeAction> {
@@ -570,7 +572,8 @@ pub fn key_shadow_action(
     }
     let role = match ime {
         ImeKindId::Gji => keymap_role.flatten()?,
-        ImeKindId::MsIme => awase_gji_config::role::KeyRole::ImeToggle,
+        ImeKindId::MsIme if msime_fixed_toggle => awase_gji_config::role::KeyRole::ImeToggle,
+        ImeKindId::MsIme => return None,
     };
     if hz_omit_verdict(use_learned, learned_contradiction) {
         return None;
@@ -619,6 +622,55 @@ pub fn latch_step<T: Copy>(
             latch
         },
     )
+}
+
+/// 候補キーの打鍵を、役割を引かずに受動（`shadow_action=None`）と決める条件（ADR-199 決定18）。
+/// `Runtime::enrich_key_role`の`fresh`判定の前段で、ホストテストできるよう純関数にした。
+///
+/// - 修飾付き: IME 側で別意味を持ちうる（決定5）。
+/// - F13〜F24（`is_fkey`）: injected（他プロセスの SendInput・awase 自身の専用 Fn キー、BUG-14）、
+///   Up・リピートでラッチが一致しなかったとき（`reuse`。判定し直さず Allow 側、決定18(i)）、
+///   同期キー（`keys.ime_detect`。`sync_direction`が付くと`shadow_toggled`は同期キー由来でも立つので、役割を付けると
+///   書かなかった打鍵まで Suppress してしまう。決定9・Opus レビュー PR #328）。
+#[must_use]
+pub const fn passive_without_lookup(
+    is_fkey: bool,
+    modified: bool,
+    injected: bool,
+    reuse: bool,
+    has_sync_direction: bool,
+) -> bool {
+    modified || (is_fkey && (injected || reuse || has_sync_direction))
+}
+
+/// F13〜F24 のラッチを、`kp_stage_shadow_ime_toggle` の結果で確定する純関数（ADR-199 決定18(i)）。
+///
+/// - 最初の Down（非injected・`!was_down`、`fresh_first_down`）: `(scan, 実際に書いたか→Some(Toggle)/None)` で上書き。
+/// - 非injectedの Up（`fresh_up`）でラッチの scan が一致したら**ラッチを捨てる**: 残すと、次の同じキーの Down が
+///   `kp_run_inner` を通らない（`deliver_key_event` の早期 return 等）とき、Up だけが前回の `Some` で Suppress され
+///   Down=Allow・Up=Suppress の非対称になる（Opus レビュー PR #328）。保留（`try_hold_key`）からの再入では
+///   settle に届く前に return するので、Up の判定が2回目で変わることはない。
+#[must_use]
+pub fn settle_fkey_latch(
+    latch: Option<(
+        awase::types::ScanCode,
+        Option<awase::types::ShadowImeAction>,
+    )>,
+    fresh_first_down: bool,
+    fresh_up: bool,
+    scan: awase::types::ScanCode,
+    wrote: bool,
+) -> Option<(
+    awase::types::ScanCode,
+    Option<awase::types::ShadowImeAction>,
+)> {
+    if fresh_first_down {
+        return Some((scan, wrote.then_some(awase::types::ShadowImeAction::Toggle)));
+    }
+    if fresh_up && latch.is_some_and(|(s, _)| s == scan) {
+        return None;
+    }
+    latch
 }
 
 /// `config1.db`スタンプ（[`super::key_effect_predictor::KeymapCache`]）と同じ方式のfsキャッシュ。
@@ -1550,48 +1602,114 @@ mod tests {
         use awase_gji_config::role::KeyRole::ImeToggle;
         // GJI: 役割があればトグル。
         assert_eq!(
-            key_shadow_action(ImeKindId::Gji, false, Some(Some(ImeToggle)), true, false),
+            key_shadow_action(
+                ImeKindId::Gji,
+                false,
+                Some(Some(ImeToggle)),
+                true,
+                true,
+                false
+            ),
             Some(Toggle)
         );
         // GJI: 役割が無い（CUSTOM で別機能）・キーマップが読めない（不明）は受動。
         assert_eq!(
-            key_shadow_action(ImeKindId::Gji, false, Some(None), true, false),
+            key_shadow_action(ImeKindId::Gji, false, Some(None), true, true, false),
             None
         );
         assert_eq!(
-            key_shadow_action(ImeKindId::Gji, false, None, true, false),
+            key_shadow_action(ImeKindId::Gji, false, None, true, true, false),
             None
         );
         // MS-IME 本体: 仕様固定。キーマップが取れなくても付く。
         for keymap_role in [None, Some(None), Some(Some(ImeToggle))] {
             assert_eq!(
-                key_shadow_action(ImeKindId::MsIme, false, keymap_role, true, false),
+                key_shadow_action(ImeKindId::MsIme, false, keymap_role, true, true, false),
                 Some(Toggle)
             );
         }
         // 明示 config と重なれば、どの IME でも付けない。
         for ime in [ImeKindId::Gji, ImeKindId::MsIme] {
             assert_eq!(
-                key_shadow_action(ime, true, Some(Some(ImeToggle)), true, false),
+                key_shadow_action(ime, true, Some(Some(ImeToggle)), true, true, false),
                 None
             );
         }
         // 学習表の矛盾で狭める。ただし opt-out（use_learned=false）のときは狭めない。
         for ime in [ImeKindId::Gji, ImeKindId::MsIme] {
             assert_eq!(
-                key_shadow_action(ime, false, Some(Some(ImeToggle)), true, true),
+                key_shadow_action(ime, false, Some(Some(ImeToggle)), true, true, true),
                 None
             );
             assert_eq!(
-                key_shadow_action(ime, false, Some(Some(ImeToggle)), false, true),
+                key_shadow_action(ime, false, Some(Some(ImeToggle)), true, false, true),
                 Some(Toggle)
             );
         }
-        // 狭めは能動側へ広げない: 役割が無いキーは矛盾フラグに関係なく受動のまま。
+        // F13〜F24（`msime_fixed_toggle=false`）は MS-IME 本体では常に受動。GJI は役割どおり。
         assert_eq!(
-            key_shadow_action(ImeKindId::Gji, false, Some(None), true, false),
+            key_shadow_action(ImeKindId::MsIme, false, None, false, true, false),
             None
         );
+        assert_eq!(
+            key_shadow_action(
+                ImeKindId::Gji,
+                false,
+                Some(Some(ImeToggle)),
+                false,
+                true,
+                false
+            ),
+            Some(Toggle)
+        );
+        // 狭めは能動側へ広げない: 役割が無いキーは矛盾フラグに関係なく受動のまま。
+        assert_eq!(
+            key_shadow_action(ImeKindId::Gji, false, Some(None), true, true, false),
+            None
+        );
+    }
+
+    /// 役割を引かずに受動と決める条件（ADR-199 決定18、PR #328 Opus レビュー: 同期キーに F キーを書いた場合）。
+    #[test]
+    fn passive_without_lookup_rules() {
+        // 修飾付きは、キーの種類に依らず受動。
+        assert!(passive_without_lookup(false, true, false, false, false));
+        assert!(passive_without_lookup(true, true, false, false, false));
+        // 半角/全角は injected・reuse・同期キーでも従来どおり役割を引く（reuse はラッチが先に効く）。
+        assert!(!passive_without_lookup(false, false, true, true, true));
+        // F キーは injected・reuse（ラッチ不一致）・同期キーのいずれでも受動。それ以外は役割を引く。
+        for (injected, reuse, sync) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            assert!(passive_without_lookup(true, false, injected, reuse, sync));
+        }
+        assert!(!passive_without_lookup(true, false, false, false, false));
+    }
+
+    /// F13〜F24 のラッチ確定: 最初の Down は「書いたか」で上書き、一致する Up で捨てる（古い `Some` を残さない）。
+    #[test]
+    fn settle_fkey_latch_overwrites_on_first_down_and_clears_on_matching_up() {
+        use awase::types::{ScanCode, ShadowImeAction::Toggle};
+        let f13 = ScanCode(0x64);
+        let other = ScanCode(0x29);
+        // 書いた/書かなかった。
+        assert_eq!(
+            settle_fkey_latch(None, true, false, f13, true),
+            Some((f13, Some(Toggle)))
+        );
+        assert_eq!(
+            settle_fkey_latch(Some((f13, Some(Toggle))), true, false, f13, false),
+            Some((f13, None))
+        );
+        // 一致する Up でラッチを捨てる。別 scan の Up・リピート・injected（どちらも false）は触らない。
+        let held = Some((f13, Some(Toggle)));
+        assert_eq!(settle_fkey_latch(held, false, true, f13, false), None);
+        assert_eq!(settle_fkey_latch(held, false, true, other, false), held);
+        assert_eq!(settle_fkey_latch(held, false, false, f13, false), held);
+        // 捨てたあとは、同じキーの Up が孤立しても（次の Down が kp を通らなくても）`Some` を再利用しない。
+        assert_eq!(settle_fkey_latch(None, false, true, f13, false), None);
     }
 
     /// ラッチの値は「この打鍵の最終的な`shadow_action`」（ADR-199 決定18(i)）。`None`（付けない）も判定として

@@ -577,23 +577,29 @@ impl Runtime {
     /// 読めないアプリ（TsfNative）でも効く。ひらがな・カタカナ・英数は入力モードも動かしうるので
     /// 候補外（生のままIMEへ通して追随する、ADR-187のfollow）。
     ///
-    /// **T4 の配線範囲は半角/全角(0xF3/0xF4)だけ**: F13〜F24（決定18。`is_japanese_ime`を上げない・
-    /// 書かなかった打鍵は Suppress しない規則が要る、T9）と無変換/変換（決定16。`shadow_action` でなく
-    /// 単独タップ確定点、T5）は、それぞれの配線が入るまで受動のまま。
+    /// **配線範囲は半角/全角(0xF3/0xF4)と F13〜F24（決定18）**。無変換/変換（決定16）は `shadow_action` でなく
+    /// 単独タップ確定点なのでここでは扱わない（T10）。
     ///
     /// 判定は打鍵ごとのラッチ（[`crate::state::key_effect_runtime::latch_step`]）で KeyDown に確定し、
     /// 同じ物理キーの KeyUp・オートリピート（`was_down`）はそれを使う（Down=Allow・Up=Suppress の非対称防止）。
+    /// **F13〜F24 だけの違い**（決定18）: (a) 最初の Down の判定は暫定で、`kp_stage_shadow_ime_toggle` の直後に
+    /// [`Self::settle_fkey_role_latch`] が「実際に書いたか」で上書きする。(b) Up・リピートでラッチの scan が
+    /// 一致しないとき（別キーがラッチを上書きした）は役割で判定し直さず `None`（Allow）にする。
+    /// (c) injected の打鍵には付けない。
     pub fn enrich_key_role(&mut self, event: &mut RawKeyEvent) {
-        use crate::state::key_effect_runtime::latch_step;
+        use crate::state::key_effect_runtime::{latch_step, passive_without_lookup};
         use awase::types::KeyEventType;
         // 全打鍵で通る経路なので、候補キーでないものは修飾キーと IME 種別を見る前に抜ける。
         if !crate::vk::is_role_candidate(event.vk_code) {
             return;
         }
-        if !matches!(
+        let is_fkey = crate::vk::is_role_fkey(event.vk_code);
+        let is_hz = matches!(
             event.vk_code.ime_kind(),
             Some(crate::vk::ImeKeyKind::DbeSbcsChar | crate::vk::ImeKeyKind::DbeDbcsChar)
-        ) {
+        );
+        // 無変換/変換（決定16）は別の入口（T10）。
+        if !is_fkey && !is_hz {
             return;
         }
         let is_up = event.event_type == KeyEventType::KeyUp;
@@ -602,6 +608,8 @@ impl Runtime {
         let vk = event.vk_code;
         let m = event.modifier_snapshot;
         let modified = m.ctrl || m.alt || m.shift || m.win;
+        let injected = event.injected;
+        let has_sync = event.ime_relevance.sync_direction.is_some();
         // 修飾付き・IME 未同定の打鍵も `None` の判定として**ラッチに記録する**（早期 return しない）。
         // 記録しないと、Ctrl を押したまま半角/全角を Down（判定なし=Allow）→ Ctrl を先に離す →
         // 半角/全角の Up がラッチ空で判定をやり直し `Some(Toggle)`（=Suppress）になり、
@@ -612,7 +620,7 @@ impl Runtime {
             fresh_down,
             event.scan_code,
             || {
-                if modified {
+                if passive_without_lookup(is_fkey, modified, injected, reuse, has_sync) {
                     return None;
                 }
                 // 役割を求められる IME は GJI と、CLSID で同定できた Microsoft IME 本体だけ。GJI 未検出・
@@ -623,6 +631,29 @@ impl Runtime {
         );
         self.key_role_latch = latch;
         event.ime_relevance.shadow_action = action;
+    }
+
+    /// F13〜F24 の最初の Down（非injected・`!was_down`）で、`kp_stage_shadow_ime_toggle` が**実際に開閉を書いたか**
+    /// （役割由来の昇格で`shadow_toggled`）をラッチへ上書きし、一致する Up でラッチを捨てる
+    /// （[`crate::state::key_effect_runtime::settle_fkey_latch`]、ADR-199 決定18(i)）。書かなかった打鍵（`is_japanese_ime` が偽・
+    /// belief が更新されなかった等）の自動リピートと Up は `None`＝Allow になり、Down だけ Suppress・Up だけ
+    /// Suppress の非対称や、書かないのに握りつぶす二重の空振りを作らない。イベント自身の`shadow_action`は
+    /// 触らない（配送は `plan` が最初の Down では `shadow_toggled` を見る）。
+    pub(crate) fn settle_fkey_role_latch(&mut self, event: &RawKeyEvent, shadow_toggled: bool) {
+        use awase::types::KeyEventType;
+        if !crate::vk::is_role_fkey(event.vk_code) || event.injected {
+            return;
+        }
+        // 「書いた」は役割由来（`shadow_action` あり）の昇格だけ。同期キー（`keys.ime_detect`）や修飾付きで
+        // `shadow_toggled` が立っても、`shadow_action` は付いていない（`passive_without_lookup`）ので書いたことにしない。
+        let wrote = shadow_toggled && event.ime_relevance.shadow_action.is_some();
+        self.key_role_latch = crate::state::key_effect_runtime::settle_fkey_latch(
+            self.key_role_latch,
+            event.event_type == KeyEventType::KeyDown && !event.was_down,
+            event.event_type == KeyEventType::KeyUp,
+            event.scan_code,
+            wrote,
+        );
     }
 
     /// `vk`（無修飾の候補キー）の役割由来の`shadow_action`（ADR-199 決定4・6・8）。取得（I/O・キャッシュ）だけを
@@ -664,6 +695,8 @@ impl Runtime {
             ime,
             explicit_overlap,
             keymap.map(|k| k.gji_key_role(vk.0)),
+            // MS-IME 本体の仕様固定トグルは半角/全角だけ（F13〜F24 は設定を読めないので受動、決定18）。
+            !crate::vk::is_role_fkey(vk),
             use_learned,
             contradiction,
         )

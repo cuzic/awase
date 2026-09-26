@@ -327,6 +327,7 @@ impl Runtime {
         let half_width_alnum_toggle_before =
             self.platform_state.gate.half_width_alnum.is_toggle_active();
         let shadow_toggled = self.kp_stage_shadow_ime_toggle(&mut event);
+        self.settle_fkey_role_latch(&event, shadow_toggled);
 
         // ADR-129: ライブクエリ（`hook::thumb_down_timestamps()`）は使わない。
         // drain replay 中に「replay を実行している"今"」の値を誤って読んでしまう
@@ -1360,6 +1361,10 @@ impl Runtime {
             event
                 .ime_relevance
                 .shadow_action
+                // ADR-199 決定18(ii): F13〜F24 の役割由来 Toggle は自動リピートの Down では昇格させない
+                // （物理の F13 はリピートし、`kp_stage_shadow_ime_toggle` はリピートを区別しないので、
+                // そのままではリピートのたびに開閉が反転する）。0xF3/0xF4・0x19 の挙動は変えない。
+                .filter(|_| !(event.was_down && crate::vk::is_role_fkey(event.vk_code)))
                 .map(|a| (a, IntentKind::PhysicalImeKey))
                 .or_else(|| explicit_action_for_pipeline.map(|a| (a, IntentKind::PhysicalImeKey)))
         } else {
