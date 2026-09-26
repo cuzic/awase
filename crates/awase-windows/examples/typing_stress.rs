@@ -95,6 +95,26 @@ const SCAN_HENKAN: u16 = 0x79;
 const VK_RETURN: u32 = 0x0D;
 const VK_IME_OFF: u32 = 0x1A;
 const VK_DBE_HIRAGANA: u32 = 0xF2;
+const VK_IME_ON: u32 = 0x16;
+
+/// IME を ON にするキーの候補(試す順)。GJI は VK_IME_ON(0x16)が確実(richedit_tsf_probe の実測)、
+/// MS-IME 本体はひらがなキー(0xF2)で ON になる(sc-* 構成の実績)。効かなければ次の候補へ進む。
+fn ime_on_key(step: usize) -> u32 {
+    let order = if has_flag("--msime") {
+        [VK_DBE_HIRAGANA, VK_IME_ON, 0x1C]
+    } else {
+        [VK_IME_ON, VK_DBE_HIRAGANA, 0x1C]
+    };
+    order[step % order.len()]
+}
+
+/// IME を OFF にそろえてから、`step` 番目の候補キーで ON にする(awase の belief と実状態をそろえる)。
+fn turn_ime_on(step: usize) {
+    press(VK_IME_OFF, 0x70, 50);
+    sleep_ms(600);
+    press(ime_on_key(step), 0x70, 50);
+    sleep_ms(1500);
+}
 
 static TOP: AtomicIsize = AtomicIsize::new(0);
 static CHILD: AtomicIsize = AtomicIsize::new(0);
@@ -799,11 +819,8 @@ fn ime_ready(raw: bool, cells: &[Vec<Cell>; 3], child: HWND) -> bool {
             clear_text(child);
             return true;
         }
-        // IME を ON にし直す(ひらがなキー)。
-        press(VK_IME_OFF, 0x70, 50);
-        sleep_ms(600);
-        press(VK_DBE_HIRAGANA, 0x70, 50);
-        sleep_ms(1500);
+        // 次の候補キーで IME を ON にし直す。
+        turn_ime_on(attempt);
     }
     false
 }
@@ -883,10 +900,7 @@ fn worker(form: Form) {
     sleep_ms(500);
 
     // IME を ON にそろえる(OFF → ひらがな)。
-    press(VK_IME_OFF, 0x70, 50);
-    sleep_ms(600);
-    press(VK_DBE_HIRAGANA, 0x70, 50);
-    sleep_ms(1500);
+    turn_ime_on(0);
     if !ime_ready(raw, &cells, child) {
         rec(&json!({"type":"abort","reason":"IME/awase の準備確認に失敗(ready の text を参照)"}));
         finish();
