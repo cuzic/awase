@@ -4720,6 +4720,10 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
         // `plan()` より前）で付く。この呼び出しが消えると 0xF3/0xF4 が `shadow_action` なしで
         // Allow され、awase の書き込みと生キーの二重 actuation（BUG-46/BUG-52）に退行する。
         "self.enrich_key_role(&mut event)",
+        // ADR-199 決定16: 無変換/変換の役割由来の open 軸操作は、`engine.on_input` より前に打鍵ごとに設定し直す。
+        // 消えると GJI CUSTOM で無変換/変換をトグルにしたユーザーの単独タップが受動のまま（または古い役割が残る）。
+        // key_pipeline 自体は `forced_open_action` を名指ししない（下の別ガード）ので、呼び出し名だけを固定する。
+        "self.enrich_thumb_key_role(&event)",
         // ADR-199 決定18(i)(ii): F13〜F24 のラッチを「実際に書いたか」で確定する呼び出しと、リピートで昇格させない条件。
         "self.settle_fkey_role_latch(&event, shadow_toggled)",
         "is_role_fkey(event.vk_code)",
@@ -4732,6 +4736,17 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
     }
     // 順序も固定する: `enrich_key_role` が `kp_stage_shadow_ime_toggle`・`plan()` より後ろに動くと、
     // それらが `shadow_action` の付く前のイベントを読み、0xF3/0xF4 が Allow のまま二重 actuation になる。
+    let thumb_role_at = kp
+        .find("self.enrich_thumb_key_role(&event)")
+        .expect("enrich_thumb_key_role の呼び出し");
+    let on_input_at = kp
+        .find("self.engine.on_input(event, &ctx)")
+        .expect("engine.on_input の呼び出し");
+    assert!(
+        thumb_role_at < on_input_at,
+        "runtime/key_pipeline.rs: `enrich_thumb_key_role` は `engine.on_input` より前に呼ぶこと（ADR-199 決定16。\
+         KeyDown 時点で `defers_solo_until_release` が役割由来の操作を見る）"
+    );
     // `settle_fkey_role_latch` は `kp_stage_shadow_ime_toggle` の結果（`shadow_toggled`）を受けるので直後、`plan()` より前。
     let toggle_at = kp
         .find("self.kp_stage_shadow_ime_toggle(&mut event)")

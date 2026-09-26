@@ -205,6 +205,14 @@ impl Engine {
             || self.ime_toggle_auto.iter().any(bare)
     }
 
+    /// 修飾なしの `vk` に対する、明示 config（`ime_on`/`ime_off`/`ime_toggle`）由来の open 軸操作
+    /// （[`SpecialKeyCombos::bare_ime_action`]）。ADR-199 決定16 で無変換/変換の役割由来の操作と合成するときの、
+    /// config 側の値（config が優先する）。
+    #[must_use]
+    pub fn bare_ime_action(&self, vk: VkCode) -> Option<ShadowImeAction> {
+        self.special_keys.bare_ime_action(vk)
+    }
+
     /// Enter 親指キーのフォールバック挙動を設定する。
     ///
     /// `enter_thumb_vk` は `left_thumb_key`/`right_thumb_key` のいずれかが
@@ -1030,6 +1038,27 @@ fn matches_key_combo(combo: ParsedKeyCombo, event: &RawKeyEvent, modifiers: Modi
 }
 
 impl SpecialKeyCombos {
+    /// 修飾なしの `vk` に対する open 軸操作。通常の特殊キー照合と同じく方向固定を toggle より優先し、
+    /// on を off より先に評価する（ADR-192 決定3b。Platform 層の `thumb_forced_open_actions` と
+    /// ADR-199 決定16 の役割合成が共有する）。
+    #[must_use]
+    pub fn bare_ime_action(&self, vk: VkCode) -> Option<ShadowImeAction> {
+        let contains_bare = |combos: &[ParsedKeyCombo]| {
+            combos
+                .iter()
+                .any(|combo| combo.vk == vk && !combo.ctrl && !combo.shift && !combo.alt)
+        };
+        if contains_bare(&self.ime_on) {
+            Some(ShadowImeAction::TurnOn)
+        } else if contains_bare(&self.ime_off) {
+            Some(ShadowImeAction::TurnOff)
+        } else if contains_bare(&self.ime_toggle) {
+            Some(ShadowImeAction::Toggle)
+        } else {
+            None
+        }
+    }
+
     /// エンジン有効状態を考慮したうえでコンボマッチを行い、最初に一致した種別を返す。
     ///
     /// 副作用なし。`engine_enabled` は `adapter.is_enabled()` の値を、`engine_active` は
