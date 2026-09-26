@@ -8,7 +8,7 @@ summary: |-
   (2) StaleConfirm の romaji 再送(BUG-075 の重複)・猶予20msは変えない(引き金は猶予不足ではなく deferred 一括送出後の GJI 停止)。(3) 単体テストと CI の A/B、対照ハーネスの修正。
   未決: Escape 経路(per-VK idx≥1 の ESC)の破壊性、reinit の他の呼び出し元、実機での reinit 破壊性。
 status: |-
-  草案(2026-09-26、opus-adversarial-consult round1〜3 で収束、実装前)。未決事項はリスク節。
+  採用・決定1 実装済み(2026-09-26、`bc12ce95`、opus-adversarial-consult round1〜3 で収束)。決定3(b)(c) と未決事項はリスク節。
 related_adr:
   - "ADR-079"
   - "ADR-100"
