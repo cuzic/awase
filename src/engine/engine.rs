@@ -179,6 +179,14 @@ impl Engine {
         self.adapter.set_thumb_forced_open_actions(muhenkan, henkan);
     }
 
+    /// 現在設定されている無変換/変換の強制 open 軸操作 `(無変換, 変換)`（ADR-199 決定16。押した側だけを更新するため）。
+    #[must_use]
+    pub const fn thumb_forced_open_actions(
+        &self,
+    ) -> (Option<ShadowImeAction>, Option<ShadowImeAction>) {
+        self.adapter.thumb_forced_open_actions()
+    }
+
     /// `crates/awase-windows::runtime::key_pipeline::kp_stage_shadow_ime_toggle`
     /// （ケース2/3、belief OFF側）がGJI/MS-IME自動検出の成否に関わらず
     /// 明示config自体を読むためのgetter。

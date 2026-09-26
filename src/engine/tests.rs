@@ -7338,6 +7338,21 @@ mod engine_integration_tests {
         assert_eq!(special.bare_ime_action(VkCode(0x20)), None);
     }
 
+    /// ADR-199 決定16: Platform 層は押した側だけを更新する（もう一方の押下中の値を巻き込まない）ため、現在値を読める。
+    #[test]
+    fn thumb_forced_open_actions_getter_reflects_setter_per_side() {
+        let mut engine = make_test_engine();
+        assert_eq!(engine.thumb_forced_open_actions(), (None, None));
+        engine.set_thumb_forced_open_actions(Some(ShadowImeAction::Toggle), None);
+        let (muhenkan, henkan) = engine.thumb_forced_open_actions();
+        engine.set_thumb_forced_open_actions(muhenkan, Some(ShadowImeAction::TurnOn));
+        assert_eq!(
+            engine.thumb_forced_open_actions(),
+            (Some(ShadowImeAction::Toggle), Some(ShadowImeAction::TurnOn)),
+            "変換側だけを更新しても無変換側の値は残る（henkan={henkan:?} を上書きしただけ）"
+        );
+    }
+
     /// ADR-199 決定16: 役割由来の操作は打鍵ごとに設定し直される。役割が消えたら（IME 切替・設定変更）、
     /// 次の打鍵からは単独タップで IME を動かさず従来どおり受動に戻る（古い役割が残らない）。
     #[test]

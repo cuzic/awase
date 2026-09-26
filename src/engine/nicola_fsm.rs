@@ -848,6 +848,21 @@ impl NicolaFsm {
         self.henkan_forced_open_action = henkan;
     }
 
+    /// 現在設定されている無変換/変換の強制 open 軸操作 `(無変換, 変換)`。Platform 層が押した側だけを更新し、
+    /// もう一方の押下中の値を巻き込まないために読む（ADR-199 決定16）。
+    #[must_use]
+    pub const fn thumb_forced_open_actions(
+        &self,
+    ) -> (
+        Option<crate::types::ShadowImeAction>,
+        Option<crate::types::ShadowImeAction>,
+    ) {
+        (
+            self.muhenkan_forced_open_action,
+            self.henkan_forced_open_action,
+        )
+    }
+
     /// `crates/awase-windows::runtime::key_pipeline::kp_stage_shadow_ime_toggle`
     /// （ケース2/3、belief OFF側）が、GJI/MS-IME自動検出の成否に関わらず
     /// 明示config自体を読むために使う。

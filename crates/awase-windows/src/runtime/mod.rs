@@ -643,7 +643,8 @@ impl Runtime {
     /// 「config.toml の bare `keys.ime_*` 由来 ＞ 役割由来」で設定し直す（ADR-199 決定16。合流点は ADR-192 決定3b の
     /// 既存の入力 `set_thumb_forced_open_actions` 1つだけ）。`kp_run_inner` の `engine.on_input` より前から呼ぶ。
     ///
-    /// - 対象は非 injected・非リピートの KeyDown だけ（決定16）。Up・リピートは押下時に決めた値のまま。
+    /// - 対象は非リピートの KeyDown だけ（決定16）。Up・リピートは押下時に決めた値のまま。役割を引くのは非 injected のときだけで、
+    ///   injected の Down は config 由来へ戻す。押した側の値だけを書き、もう一方は触らない。
     /// - 打鍵ごとに求め直すので、IME を切り替えたときに古い役割が残らない（決定8 と同じ考え方）。役割が無ければ
     ///   config 由来だけ（無ければ `None`＝従来どおり受動）に戻す。
     /// - 役割は [`Self::derive_key_shadow_action`]（GJI の `config1.db` の逆算・学習表による狭め・config との重なり）。
@@ -652,11 +653,9 @@ impl Runtime {
     ///   物理配送は `Decision::Consume`（PendingThumb）に任せる。発火は FSM が単独タップと解決したときだけ（チョード優先）。
     pub(crate) fn enrich_thumb_key_role(&mut self, event: &RawKeyEvent) {
         use awase::types::KeyEventType;
-        if !matches!(
-            event.vk_code,
-            crate::vk::VK_NONCONVERT | crate::vk::VK_CONVERT
-        ) || event.event_type != KeyEventType::KeyDown
-            || event.injected
+        let is_muhenkan = event.vk_code == crate::vk::VK_NONCONVERT;
+        if !(is_muhenkan || event.vk_code == crate::vk::VK_CONVERT)
+            || event.event_type != KeyEventType::KeyDown
             || event.was_down
         {
             return;
@@ -664,18 +663,24 @@ impl Runtime {
         let m = event.modifier_snapshot;
         let modified = m.ctrl || m.alt || m.shift || m.win;
         let ime = crate::tsf::observer::tsf_obs().table_ime_kind();
-        let mut resolve = |vk: VkCode| {
-            let configured = self.engine.bare_ime_action(vk);
-            match ime {
-                Some(ime) if !modified && configured.is_none() => {
-                    self.derive_key_shadow_action(ime, vk)
-                }
-                _ => configured,
-            }
-        };
-        let muhenkan = resolve(crate::vk::VK_NONCONVERT);
-        let henkan = resolve(crate::vk::VK_CONVERT);
-        self.engine.set_thumb_forced_open_actions(muhenkan, henkan);
+        let vk = event.vk_code;
+        let configured = self.engine.bare_ime_action(vk);
+        // injected の Down も設定し直す（役割は引かず config 由来へ戻す）: 早期 return すると、直前の物理打鍵で
+        // 決めた役割を引き継いでしまう（BUG-14 の原則・決定8「古い役割を残さない」、PR #331 Opus レビュー）。
+        let action = crate::state::key_effect_runtime::thumb_forced_action(
+            configured,
+            ime.is_some(),
+            modified,
+            event.injected,
+            || ime.and_then(|ime| self.derive_key_shadow_action(ime, vk)),
+        );
+        // **押した側だけ**書く。もう一方の押下中の値を巻き込んで変えない。
+        let (muhenkan, henkan) = self.engine.thumb_forced_open_actions();
+        if is_muhenkan {
+            self.engine.set_thumb_forced_open_actions(action, henkan);
+        } else {
+            self.engine.set_thumb_forced_open_actions(muhenkan, action);
+        }
     }
 
     /// `vk`（無修飾の候補キー）の役割由来の`shadow_action`（ADR-199 決定4・6・8）。取得（I/O・キャッシュ）だけを

@@ -210,6 +210,15 @@ impl FsmAdapter {
         self.fsm.set_henkan_solo_tap_ime_action(action);
     }
 
+    pub(super) const fn thumb_forced_open_actions(
+        &self,
+    ) -> (
+        Option<crate::types::ShadowImeAction>,
+        Option<crate::types::ShadowImeAction>,
+    ) {
+        self.fsm.thumb_forced_open_actions()
+    }
+
     pub(super) const fn set_thumb_forced_open_actions(
         &mut self,
         muhenkan: Option<crate::types::ShadowImeAction>,

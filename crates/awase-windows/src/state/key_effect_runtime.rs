@@ -545,6 +545,27 @@ pub const fn hz_omit_may_apply(use_learned: bool) -> bool {
     use_learned
 }
 
+/// 無変換/変換の KeyDown で Engine に渡す単独タップの open 軸操作を決める純関数（ADR-199 決定16）:
+/// `config由来.or(役割由来)`。`Runtime::enrich_thumb_key_role`の合成をホストテストできるよう切り出した。
+///
+/// 役割を引くのは、config 由来が無く（config が勝つ、決定8・Q2）・IME を同定でき（`table_ime_kind`）・修飾なし・
+/// 非 injected のときだけ（injected は BUG-14 の原則でユーザー意図にしない。`role`は遅延評価で、引かない条件では
+/// キーマップの取得も走らない）。引かないときは config 由来（無ければ`None`＝受動）に**戻す**ので、古い役割が残らない。
+#[must_use]
+pub fn thumb_forced_action(
+    configured: Option<awase::types::ShadowImeAction>,
+    ime_identified: bool,
+    modified: bool,
+    injected: bool,
+    role: impl FnOnce() -> Option<awase::types::ShadowImeAction>,
+) -> Option<awase::types::ShadowImeAction> {
+    if configured.is_some() || !ime_identified || modified || injected {
+        configured
+    } else {
+        role()
+    }
+}
+
 /// 候補キー（無修飾の打鍵）に付ける役割由来の`shadow_action`（ADR-199 決定4・6・8）を決める純関数。
 /// `Runtime::derive_key_shadow_action`が取得した値だけを受け取り、規則の組み合わせをここに閉じる。
 ///
@@ -1667,6 +1688,43 @@ mod tests {
             key_shadow_action(ImeKindId::Gji, false, Some(None), true, true, false),
             None
         );
+    }
+
+    /// 無変換/変換の合成（ADR-199 決定16、PR #331 Opus レビュー）: config が勝ち、引かない条件では config 由来へ戻る。
+    #[test]
+    fn thumb_forced_action_composes_config_then_role() {
+        use awase::types::ShadowImeAction::{Toggle, TurnOff};
+        let role = || Some(Toggle);
+        let never =
+            || -> Option<awase::types::ShadowImeAction> { panic!("role must not be evaluated") };
+        // config があれば役割は引かない（キーマップも取得しない）。
+        assert_eq!(
+            thumb_forced_action(Some(TurnOff), true, false, false, never),
+            Some(TurnOff)
+        );
+        // 役割を引く唯一の条件: config なし・IME 同定済み・修飾なし・非 injected。
+        assert_eq!(
+            thumb_forced_action(None, true, false, false, role),
+            Some(Toggle)
+        );
+        assert_eq!(thumb_forced_action(None, true, false, false, || None), None);
+        // IME 未同定・修飾付き・injected は役割を引かず、config 由来（無ければ None）に戻す。
+        assert_eq!(thumb_forced_action(None, false, false, false, never), None);
+        assert_eq!(thumb_forced_action(None, true, true, false, never), None);
+        assert_eq!(thumb_forced_action(None, true, false, true, never), None);
+    }
+
+    /// MS-IME 本体の無変換/変換は受動（レジストリの値が未確認、T12）。仕様固定トグルは半角/全角だけ。
+    #[test]
+    fn msime_native_thumb_keys_stay_passive() {
+        use crate::state::ime_kind::ImeKindId;
+        use awase_gji_config::role::KeyRole::ImeToggle;
+        for keymap_role in [None, Some(None), Some(Some(ImeToggle))] {
+            assert_eq!(
+                key_shadow_action(ImeKindId::MsIme, false, keymap_role, false, true, false),
+                None
+            );
+        }
     }
 
     /// 役割を引かずに受動と決める条件（ADR-199 決定18、PR #328 Opus レビュー: 同期キーに F キーを書いた場合）。
