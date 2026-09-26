@@ -3113,62 +3113,6 @@ impl Runtime {
                         );
                     });
                 }
-
-                // MS-IME + ImmCross (LINE 等): かなモード (conv=0x09) で IME ON すると
-                // JIS かな直接入力になる。ImmCrossProcessStrategy は romaji 修正を
-                // 先行実行するが、async probe 完了時点で stale な conv を読む場合に備えて
-                // ここでも ROMAN ビットを補完する（二重補正は冪等なので無害）。
-                // ObservedKana はユーザーが意図的にかな入力に設定した状態なので上書きしない。
-                if let (Some(true), Some(conv)) = (snap.ime_on, snap.conversion_mode) {
-                    let mode = awase::engine::ConvMode::from_u32(conv);
-                    if !mode.is_eisu() && !mode.romaji {
-                        // opus レビュー指摘（2026-08-08）: `set_ime_romaji_mode_async`
-                        // （ライブクエリ版、ADR-086 削除対象の
-                        // `set_ime_romaji_mode_with_target_async` と同じ危険を持つ）
-                        // への呼び出しが未移行のまま残っていた。focus_gen も
-                        // should_restore と同じ with_app 呼び出しでまとめて読み、
-                        // ネストした spawn_local の**先頭**で capture する
-                        // （この外側ブロックは probe 読み取りが最初の await のため、
-                        // capture をここに直接置くと「ブロック先頭で capture」の
-                        // 規律から外れてしまう）。
-                        let (should_restore, focus_gen) = crate::with_app(|app| {
-                            let ime = &app.platform_state.ime;
-                            let should_restore = ime.effective_open()
-                                && !matches!(ime.input_mode(), InputModeState::ObservedKana);
-                            (should_restore, app.platform.output.ime_mode_focus_gen.get())
-                        })
-                        .unwrap_or((false, 0));
-                        if should_restore {
-                            tracing::debug!(
-                                "[ImmCrossProbe] kana mode (conv=0x{conv:08X}) + IME ON \
-                                 → romaji 修正 (MS-IME かなモード修正)"
-                            );
-                            win32_async::spawn_local(async move {
-                                let Some(target) =
-                                    crate::ime::ActuationTarget::capture(focus_gen).await
-                                else {
-                                    tracing::debug!(
-                                        "[ImmCrossProbe] romaji 修正: capture 失敗（フォーカス無し）"
-                                    );
-                                    return;
-                                };
-                                let outcome =
-                                    crate::ime::set_ime_conv_for_target(target, None, || {
-                                        crate::with_app(|runtime| {
-                                            runtime.platform.output.ime_mode_focus_gen.get()
-                                        })
-                                        .unwrap_or_else(|| focus_gen.wrapping_add(1))
-                                    })
-                                    .await;
-                                if !matches!(outcome, crate::ime::ActuationOutcome::Written) {
-                                    tracing::warn!(
-                                        "[ImmCrossProbe] romaji 修正に失敗: {outcome:?}"
-                                    );
-                                }
-                            });
-                        }
-                    }
-                }
             });
         }
 
