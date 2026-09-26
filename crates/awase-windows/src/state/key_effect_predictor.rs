@@ -544,6 +544,27 @@ impl KeymapCache {
         }
         self.keymap.as_ref()
     }
+
+    /// GJI の`config1.db`用の[`Self::get`]。予測（`kp_predict_key_effect`）と役割判定
+    /// （`enrich_key_role`、ADR-199決定8）が**同じインスタンス・同じ引数**で呼ぶための取得部分。
+    #[cfg(windows)]
+    pub fn get_gji(&mut self, now_ms: u64) -> Option<&KeyEffectKeymap> {
+        self.get(
+            now_ms,
+            crate::gji_charset_autodetect::config1_db_stamp,
+            crate::gji_charset_autodetect::read_key_effect_keymap,
+        )
+    }
+
+    /// Microsoft IME 本体のレジストリ割り当て用の[`Self::get`]（[`Self::get_gji`]と同じ趣旨）。
+    #[cfg(windows)]
+    pub fn get_native(&mut self, now_ms: u64) -> Option<&KeyEffectKeymap> {
+        self.get(
+            now_ms,
+            || Some(crate::msime_key_assignment::native_assignment_stamp()),
+            || Some(crate::msime_key_assignment::read_key_effect_keymap_native()),
+        )
+    }
 }
 
 /// Mozc `SessionKeymap`: `NONE=-1, CUSTOM=0, ATOK=1, MSIME=2`（`awase-gji-config`の定数と同じ値）。

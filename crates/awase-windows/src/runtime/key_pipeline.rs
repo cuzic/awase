@@ -263,6 +263,7 @@ impl Runtime {
     #[expect(clippy::too_many_lines)]
     fn kp_run_inner(&mut self, mut event: RawKeyEvent, skip_rescue_defer: bool) -> CallbackResult {
         self.enrich_ime_relevance(&mut event);
+        self.enrich_key_role(&mut event);
 
         // TsfGate: PendingWarmup 中はキーを保留し TSF モード確定を待つ。
         // run_with_prefetched 完了後に OUTPUT_PENDING_QUEUE 経由で再処理される。
@@ -1952,17 +1953,9 @@ impl Runtime {
         // 意味で ATOK・Japanist・未知の TIP・IMM32 HKL も含み、`ime_kind_detected()` も「CLSID 判定が一度でも走った」
         // でしかないので、どちらも本体の表を当てる根拠にならない（レビュー round2 NB1）。
         let keymap = match obs.active_ime_kind() {
-            ActiveImeKind::GoogleJapaneseInput => self.key_effect_keymap.get(
-                now_ms,
-                crate::gji_charset_autodetect::config1_db_stamp,
-                crate::gji_charset_autodetect::read_key_effect_keymap,
-            ),
+            ActiveImeKind::GoogleJapaneseInput => self.key_effect_keymap.get_gji(now_ms),
             ActiveImeKind::MicrosoftIme if obs.ms_ime_native_identified() => {
-                self.key_effect_keymap_native.get(
-                    now_ms,
-                    || Some(crate::msime_key_assignment::native_assignment_stamp()),
-                    || Some(crate::msime_key_assignment::read_key_effect_keymap_native()),
-                )
+                self.key_effect_keymap_native.get_native(now_ms)
             }
             ActiveImeKind::MicrosoftIme => return,
         };
