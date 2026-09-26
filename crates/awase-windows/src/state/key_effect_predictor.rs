@@ -636,9 +636,12 @@ impl KeyEffectKeymap {
         if matches!(self.preset, KeymapPreset::MsImeNative) {
             return None;
         }
+        // ADR-202 決定1: 0x19（Alt+半角/全角）は GJI の TSF 経路で `Hankaku/Zenkaku` 行に従い `Kanji` 行は見ない
+        // （実機確認、T1(b)）ので、半角/全角（0xF4）と同じ行から求める。
+        let lookup_vk = if vk == 0x19 { 0xF4 } else { vk };
         let vk_name = awase_gji_config::role::ROLE_CANDIDATE_VK_NAMES
             .iter()
-            .find(|name| awase::types::VkCode::from_name(name).is_some_and(|v| v.0 == vk))?;
+            .find(|name| awase::types::VkCode::from_name(name).is_some_and(|v| v.0 == lookup_vk))?;
         awase_gji_config::role::key_role(
             self.session_keymap,
             self.custom_table.as_deref(),
@@ -1517,9 +1520,28 @@ mod tests {
         let kotoeri = KeyEffectKeymap::from_config(Some(3), Some(custom), &[]).unwrap();
         assert_eq!(kotoeri.preset(), KeymapPreset::Custom);
         assert_eq!(kotoeri.gji_key_role(0xF3), Some(KeyRole::ImeToggle));
-        // 候補外のキー（0x19・0xF2）は役割を持たない。
-        assert_eq!(kotoeri.gji_key_role(0x19), None);
+        // 候補外のキー（0xF2）は役割を持たない。0x19（Alt+半角/全角）は半角/全角と同じ `Hankaku/Zenkaku` 行に従う
+        // （ADR-202 決定1、実機確認 T1(b)）ので、プリセット（KOTOERI）ではトグル。
         assert_eq!(kotoeri.gji_key_role(0xF2), None);
+        assert_eq!(kotoeri.gji_key_role(0x19), Some(KeyRole::ImeToggle));
+        // CUSTOM で半角/全角を別機能にした表（上の `custom`）では 0x19 も受動。
+        assert_eq!(km.gji_key_role(0x19), None);
+        // `Hankaku/Zenkaku` 行がトグルなら 0x19 もトグル。`Kanji` 行だけがトグルで `Hankaku/Zenkaku` 行が無い表では
+        // 受動（実機: 0x19 は `Kanji` 行を見ない、run 36242940343）。
+        let toggle_rows = |key: &str| {
+            format!(
+                "status\tkey\tcommand\nDirectInput\t{key}\tIMEOn\nPrecomposition\t{key}\tIMEOff\n\
+                 Composition\t{key}\tIMEOff\nConversion\t{key}\tIMEOff\n\
+                 DirectInput\tON\tIMEOn\nPrecomposition\tOFF\tIMEOff\nComposition\tOFF\tIMEOff\n\
+                 Conversion\tOFF\tIMEOff\n"
+            )
+        };
+        let hz = KeyEffectKeymap::from_config(Some(0), Some(toggle_rows("Hankaku/Zenkaku")), &[])
+            .unwrap();
+        assert_eq!(hz.gji_key_role(0x19), Some(KeyRole::ImeToggle));
+        let kanji_only =
+            KeyEffectKeymap::from_config(Some(0), Some(toggle_rows("Kanji")), &[]).unwrap();
+        assert_eq!(kanji_only.gji_key_role(0x19), None);
         // 候補キーの VK 名は全て`from_name`で解決でき、F13〜F24・変換/無変換も VK 値から引ける。
         use crate::vk::VkCodeExt;
         for name in awase_gji_config::role::ROLE_CANDIDATE_VK_NAMES {
