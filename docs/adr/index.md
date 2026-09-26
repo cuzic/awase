@@ -207,7 +207,7 @@
 | [198](198-persistence-destination-classification.md) | 永続化先の分類(config.toml/cache.toml/学習表JSON)とv2でのcalibrationの扱い | 採用(2026-09-24、opus round1・2反映済み、決定3=手動較正廃止はユーザー決定済み) |
 | [199](199-derive-key-roles-from-user-ime-keymap.md) | キーの役割をユーザーのIMEキー設定から逆算し原則受動、能動はIME ON/OFFトグルの役割のキーと awase の ime_on/off 設定だけ | 草案(所有者決定反映済み、未決なし) |
 | [200](200-reinit-must-not-run-during-live-composition.md) | chrome-reinit(VK_IME_OFF→ON)は SuspectedLiteral の証拠が2回そろったときだけ送る(StaleConfirm では reinit しない) | 採用・決定1 実装済み(opus round1〜3 で収束) |
-| [201](201-config-key-resolution-and-load-diagnostics.md) | 設定のキー名解決を from_name に集約して寛容にし、握りつぶしを既存診断へ流す。toml_edit保存(三者比較)・GUI候補×読み手のCI検証 | 採用・実装済み（2026-09-26、段階0〜3、実機確認は未実施） |
+| [201](201-config-key-resolution-and-load-diagnostics.md) | 設定のキー名解決を from_name に集約して寛容にし、握りつぶしを既存診断へ流す。toml_edit保存(三者比較)・GUI候補×読み手のCI検証 | 採用・実装済み（2026-09-26、段階0〜3。windows-latest の実 awase.exe で起動ログ・ホットキー・矢印キーを確認、GUI操作は未確認） |
 | [202](202-kanji-0x19-role-from-hankaku-zenkaku-row.md) | 0x19（Alt+半角/全角）を GJI では CUSTOM 表の Hankaku/Zenkaku 行から役割判定する（ADR-199 決定14 の実装設計） | 採用（2026-09-26、未決2件も確定）・T16-1/2 実装済み
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
