@@ -1504,8 +1504,8 @@ mod tests {
     #[test]
     fn gji_key_role_follows_the_raw_session_keymap() {
         use awase_gji_config::role::KeyRole;
-        // CUSTOM で半角/全角を別機能にした表 → 受動。
-        let custom = "status\tkey\tcommand\nDirectInput\tHankaku/Zenkaku\tCompositionModeHiragana\n\
+        // CUSTOM で半角/全角を別機能（開かない相対トグル。`CompositionMode*` は決定13 で Open に数える）にした表 → 受動。
+        let custom = "status\tkey\tcommand\nDirectInput\tHankaku/Zenkaku\tToggleAlphanumericMode\n\
                       Precomposition\tHankaku/Zenkaku\tIMEOff\nComposition\tHankaku/Zenkaku\tIMEOff\n\
                       Conversion\tHankaku/Zenkaku\tIMEOff\nDirectInput\tON\tIMEOn\n\
                       Precomposition\tOFF\tIMEOff\nComposition\tOFF\tIMEOff\nConversion\tOFF\tIMEOff\n"
