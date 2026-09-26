@@ -237,7 +237,7 @@ jobs:
               for ime_name, ime, km, msime in SC_IMES],
             # ADR-199 T10 決定A: 文字→親指(無変換)の順で重なり不足(min_overlap_margin_percent=15)にしたまま親指を押し続けてタイムアウトを越えても、
             # 親指を押している間は forced の IME OFF(keys.ime_off)を発火せず、離した時に発火する(check_charthumb.py)。修正前の awase は押している間に閉じる。
-            cfg('sc-charthumb-gji-atok', 'pass', check='charthumb', args='--charthumb=53,1D', runs=2,
+            cfg('sc-charthumb-gji-atok', 'pass', check='charthumb', args='--charthumb=41,1D', runs=2,
                 general='min_overlap_margin_percent = 15', keys='ime_off = ["VK_NONCONVERT"]'),
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
