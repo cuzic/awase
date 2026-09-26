@@ -987,12 +987,46 @@ fn worker(form: Form) {
             } else {
                 nicola_events(&seq, iv_us)
             };
+            // 実利用に近い条件: アイドル(--idle=MS)→別ウィンドウへ切替→Chrome へ戻す(--switch-focus)→すぐ打鍵(--start-delay=MS)。
+            let idle_ms: u64 = arg_value("--idle=").and_then(|v| v.parse().ok()).unwrap_or(0);
+            if idle_ms > 0 {
+                sleep_ms(idle_ms);
+            }
+            if has_flag("--switch-focus") && is_chrome_mode() && OTHER.load(Ordering::SeqCst) != 0 {
+                front_and_focus_foreign(hwnd_of(&OTHER));
+                sleep_ms(500);
+                chrome_front();
+            }
             clear_text(child);
-            sleep_ms(300);
+            let start_delay: u64 = arg_value("--start-delay=").and_then(|v| v.parse().ok()).unwrap_or(300);
+            sleep_ms(start_delay);
             if let Ok(mut g) = HOOK_EVENTS.lock() {
                 g.clear();
             }
             let stats = run_schedule(&evs);
+            // 対照実験(--reinit-after=off_on|off|f2): 入力中(未確定)に awase の chrome-reinit と同じキー列を送ると、
+            // 未確定の文字が消えるかを見る(BUG-36 のコメントは「commit される」とするが、実測で確かめる)。
+            if let Some(mode) = arg_value("--reinit-after=") {
+                sleep_ms(300);
+                match mode.as_str() {
+                    "off_on" => {
+                        press(VK_IME_OFF, 0x70, 50);
+                        sleep_ms(100);
+                        press(VK_IME_ON, 0x70, 50);
+                        sleep_ms(1500);
+                    }
+                    "off" => {
+                        press(VK_IME_OFF, 0x70, 50);
+                        sleep_ms(1000);
+                    }
+                    "f2" => {
+                        press(VK_DBE_HIRAGANA, 0x70, 50);
+                        sleep_ms(1000);
+                    }
+                    _ => {}
+                }
+                rec(&json!({"type":"reinit_after","mode":mode,"n":t,"kind":kind}));
+            }
             // 最後の同時打鍵判定・出力の落ち着きを待ってから確定(Enter)。
             sleep_ms(300);
             // 注入したキーだけのフック到着を、確定キー(Enter)を打つ前に確定させる。
@@ -1053,6 +1087,8 @@ fn worker(form: Form) {
 
 static CHROME_MODE: AtomicIsize = AtomicIsize::new(0);
 static CHROME_PAGE: AtomicIsize = AtomicIsize::new(0);
+/// フォーカス切替の再現用に、Chrome から前面を奪う別ウィンドウ(--switch-focus)。
+static OTHER: AtomicIsize = AtomicIsize::new(0);
 
 fn is_chrome_mode() -> bool {
     CHROME_MODE.load(Ordering::SeqCst) != 0
@@ -1139,6 +1175,34 @@ fn launch_chrome(form: Form) -> HWND {
     }
     sleep_ms(4000);
     CHILD.store(TOP.load(Ordering::SeqCst), Ordering::SeqCst);
+    unsafe {
+        let instance = GetModuleHandleW(None).expect("module");
+        let cls = wide("TypingStressOther");
+        let wc = WNDCLASSEXW {
+            cbSize: size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: Some(top_proc),
+            hInstance: instance.into(),
+            lpszClassName: PCWSTR(cls.as_ptr()),
+            ..Default::default()
+        };
+        RegisterClassExW(&raw const wc);
+        if let Ok(other) = CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            PCWSTR(cls.as_ptr()),
+            w!("typing stress other"),
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            300,
+            120,
+            None,
+            None,
+            Some(instance.into()),
+            None,
+        ) {
+            OTHER.store(other.0 as isize, Ordering::SeqCst);
+        }
+    }
     hwnd_of(&TOP)
 }
 
