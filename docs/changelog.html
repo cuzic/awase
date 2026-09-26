@@ -110,6 +110,17 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h3>変更</h3>
+<ul>
+<li><strong><code>config.toml</code> のキー名の書き方を、どの設定項目でも同じ規則で読むようにした（ADR-201 段階1）。今まで黙って無視されていた設定が有効になる</strong><ul>
+<li>規則: 前後の空白は無視、英字の大文字小文字は区別しない、先頭の <code>VK_</code> は付けても付けなくてもよい、<code>Enter</code>/<code>Esc</code>/<code>Space</code>/<code>Backspace</code>/<code>Tab</code>/<code>Delete</code> などの一般的な名前も使える。修飾キー（<code>Ctrl</code>/<code>Shift</code>/<code>Alt</code>）も同じ規則で、ホットキー・キー組み合わせ・設定画面で共通</li>
+<li>今まで無視されていて、更新すると<strong>有効になる</strong>例: <code>[[post_bypass]] key = &quot;Ctrl+J&quot;</code>（<code>VK_</code> 無し）、<code>keys.ime_detect</code> の <code>&quot;F13&quot;</code>、<code>keys.engine_on = [&quot;Ctrl+F12&quot;]</code>（今までは警告を出して捨てていた）、<code>muhenkan_solo_tap_dedicated_fn_key = &quot;F18&quot;</code>、<code>engine_toggle_hotkey = &quot;Ctrl+Shift+変換&quot;</code>（日本語名）、小文字の <code>&quot;ctrl+shift+vk_f12&quot;</code>、<code>left_thumb_key = &quot;left alt&quot;</code></li>
+<li><strong>昔書いたが効かないので忘れていた再割り当てや設定が、更新しただけで効き始めることがある。</strong> 心当たりがあれば <code>config.toml</code> を確認すること。<code>[[keymap]]</code>（実際の項目名は <code>[[keymaps]]</code>）の古い書き方は今回は対象外（別の段階で扱う）</li>
+<li>設定の検証（警告）も同じ規則になり、<code>left_thumb_key = &quot;カナ&quot;</code>（かなキーは KeyUp が来ないための警告）や <code>muhenkan_solo_tap_dedicated_fn_key = &quot;F18&quot;</code>（今までは「指定できない値」と誤って警告していた）などの判定が、表記によらず揃う</li>
+<li>設定画面のホットキー候補に「変換」「無変換」「かな」「漢字」を選んでも、ホットキーが無言で登録されない不具合（BUG-167 の残り）を修正</li>
+</ul>
+</li>
+</ul>
 <h2>[1.21.0] - 2026-09-21</h2>
 <h3>追加</h3>
 <ul>
