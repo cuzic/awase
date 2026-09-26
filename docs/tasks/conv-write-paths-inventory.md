@@ -1,6 +1,6 @@
 ---
 title: conv 軸（変換モード）と、それに付随する開閉軸の書き込み経路の棚卸し（09 T5）
-status: 完了（2026-09-25）。撤去・維持の判断は別（下記「結果」の分類が入力）
+status: 完了（2026-09-25）。経路9は2026-09-26に撤去（根拠: docs/adr/191-calibration-experiments.md A/B-2）。他の判断は別（下記「結果」の分類が入力）
 created: 2026-09-25
 related_adr: ["ADR-191", "ADR-189", "ADR-084", "ADR-086", "ADR-094"]
 source_review: docs/tasks/review-2026-09-24-09-remaining-active-writes-inventory.md の T5
@@ -46,7 +46,7 @@ source_review: docs/tasks/review-2026-09-24-09-remaining-active-writes-inventory
 | 6 | 半角英数トグルの復元（MS-IME のモードキー注入） | `runtime/key_pipeline.rs:2366`（`:2457`〜`:2470` で `VK_DBE_HIRAGANA` を注入）。`MicrosoftIme` かつ開かつ Win/Alt 非押下のときだけ | `VK_DBE_HIRAGANA` の押下/離し | **B** | 5と同じ関数の前段。5と同じく4の対 |
 | 7 | 物理かなキーの埋め合わせ | `runtime/key_pipeline.rs:205`〜`:262`（`:250` で `send_gji_half_width_alnum_toggle(Exit)` → `output/mod.rs:1239` の `VK_DBE_HIRAGANA`）。`conv_mutation_allowed`・IME ON・warm・かなロック Off のときだけ | `VK_DBE_HIRAGANA` の注入 | **A** | Suppress した物理かなキーの代わりに、awase がモードキーを注入する（ユーザーのキー押下の代行）。決定1の「入力モードを変えるキーはIMEに任せる」に反する。Suppress を止めれば不要になる（Suppress の判断に従属） |
 | 8 | Ctrl+変換で IME が既に ON のときのリセット | `runtime/key_pipeline.rs:1738` → `:1805` `kp_reset_to_hiragana_romaji_capsoff`（`:1847` で `set_ime_conv_for_target(target, Some(mask))`） | conv=ひらがな＋ローマ字（Caps Lock も Off） | **B** | ユーザーの明示コンボ操作（`is_default_ime_on_combo`）が起点。`conv_mutation_allowed` のゲートを通らない（関数内に既存の注意書きあり） |
-| 9 | 焦点プローブでのかなモード修正 | `runtime/key_pipeline.rs:558` → `:2894` `apply_focus_probe`（`:3158` で `set_ime_conv_for_target(target, None)`）。かなモード（MS-IME）かつ IME ON のとき | conv に ROMAN を足す | **A** | **観測に反応して自動で訂正する**書き込み。ユーザー操作が起点ではない。受動化（決定1）の対象で、撤去候補のうち最も原則に反する。撤去したときの影響は MS-IME のかなモード誤入力（実機確認が要る） |
+| 9 | **【撤去済み 2026-09-26】** 焦点プローブでのかなモード修正 | `runtime/key_pipeline.rs:558` → `:2894` `apply_focus_probe`（`:3158` で `set_ime_conv_for_target(target, None)`）。かなモード（MS-IME）かつ IME ON のとき | conv に ROMAN を足す | **A** | **観測に反応して自動で訂正する**書き込み。ユーザー操作が起点ではない。受動化（決定1）の対象で、撤去候補のうち最も原則に反する。撤去したときの影響は MS-IME のかなモード誤入力（実機確認が要る） |
 | 10 | パニックリセット | `runtime/mod.rs:1844`（`panic_reset` の中）→ `ime.rs:740` `set_ime_hiragana_mode_cross_process_async` → `ime.rs:708` | conv=ひらがな＋ローマ字（開閉も OFF→ON） | **B** | 緊急リセット。IME 関連キーの連打が起点 |
 | 11 | トレイ「状態をリセット」 | `runtime/message_handlers.rs:1210`（`handle_wm_command`、`ResetState`）→ `ime.rs:1691` `set_ime_mode_for_target(hwnd, true, NATIVE\|FULLSHAPE, KATAKANA)` | 開を書き、conv にマスクを適用 | **B** | ユーザーのトレイ操作が起点（ADR-094 で書き込みマスクから ROMAN を外した） |
 | 12 | 起動時・その他の直接呼び出し | なし | — | — | `modify_conv_mode` の呼び出し元を `grep` で網羅した結果、上の入口以外は存在しない |
@@ -87,6 +87,6 @@ conv 軸: 固定の例外 0、opt-in の単独タップ（半角英数トグル�
 
 ## 未確認点
 
-- 経路9（焦点プローブ）の `should_restore` 条件が、実際にどの構成で真になるか（MS-IME 本体のみか）。コードは `key_pipeline.rs:3136`〜`:3140`。
+- （経路9は撤去済み。以下は撤去前の疑問）経路9（焦点プローブ）の `should_restore` 条件が、実際にどの構成で真になるか（MS-IME 本体のみか）。コードは `key_pipeline.rs:3136`〜`:3140`。
 - 経路7が Suppress の代行になる条件（物理かなキーを Suppress するのが既定か、設定次第か）。
 - `set_ime_conv_for_target` の呼び出し元は5か所（`cold_warmup.rs:94`、`conv_actuation.rs:176`、`key_pipeline.rs:1847`/`:2562`/`:3158`）で、上の表と一致する。今後増えていないかは件数ガードで確かめる（T6）。

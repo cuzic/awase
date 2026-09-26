@@ -6604,6 +6604,36 @@ mod engine_integration_tests {
         engine
     }
 
+    /// ADR-199 決定8: 無修飾の ime_on/off/toggle に書かれたキーだけが「明示 config と重なる」と答える。
+    /// 修飾付きの同じ VK・engine_on/off のコンボは重なりに数えない
+    /// （役割由来の `shadow_action` と Engine の照合が両方開閉を書いて打ち消し合うのは前者だけ）。
+    #[test]
+    fn has_bare_ime_combo_only_counts_unmodified_ime_combos() {
+        let combo = |vk, ctrl| ParsedKeyCombo {
+            ctrl,
+            shift: false,
+            alt: false,
+            vk,
+        };
+        let f13 = VkCode(0x7C);
+        let hz = VkCode(0xF3);
+        let special = SpecialKeyCombos {
+            engine_on: vec![combo(VK_CONVERT, false)],
+            engine_off: vec![],
+            ime_on: vec![combo(f13, false)],
+            ime_off: vec![combo(hz, true)],
+            ime_toggle: vec![],
+        };
+        let engine = make_engine_with_special(special);
+        assert!(engine.has_bare_ime_combo(f13), "無修飾の ime_on");
+        assert!(!engine.has_bare_ime_combo(hz), "Ctrl 付きは重ならない");
+        assert!(
+            !engine.has_bare_ime_combo(VK_CONVERT),
+            "engine_on は IME 制御でない"
+        );
+        assert!(!engine.has_bare_ime_combo(VkCode(0xF4)));
+    }
+
     #[test]
     fn special_key_engine_on_combo() {
         let combo = ParsedKeyCombo {
@@ -7277,6 +7307,73 @@ mod engine_integration_tests {
         );
         engine.set_thumb_forced_open_actions(Some(ShadowImeAction::TurnOff), None);
         engine
+    }
+
+    /// ADR-199 決定16: config 由来と合成される側の入力（`bare_ime_action`）。方向固定を toggle より優先し、
+    /// on を off より先に評価し、修飾付きのコンボは含めない。
+    #[test]
+    fn bare_ime_action_prefers_direction_and_ignores_modified_combos() {
+        let combo = |vk, ctrl| ParsedKeyCombo {
+            ctrl,
+            shift: false,
+            alt: false,
+            vk,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![combo(VK_CONVERT, false)],
+            engine_off: vec![],
+            ime_on: vec![combo(VK_NONCONVERT, false)],
+            ime_off: vec![combo(VK_NONCONVERT, false), combo(VK_CONVERT, true)],
+            ime_toggle: vec![combo(VK_NONCONVERT, false), combo(VK_CONVERT, false)],
+        };
+        assert_eq!(
+            special.bare_ime_action(VK_NONCONVERT),
+            Some(ShadowImeAction::TurnOn)
+        );
+        // 変換は Ctrl 付きの ime_off しか無いので、無修飾の toggle が残る。engine_on は IME 制御でない。
+        assert_eq!(
+            special.bare_ime_action(VK_CONVERT),
+            Some(ShadowImeAction::Toggle)
+        );
+        assert_eq!(special.bare_ime_action(VkCode(0x20)), None);
+    }
+
+    /// ADR-199 決定16: Platform 層は押した側だけを更新する（もう一方の押下中の値を巻き込まない）ため、現在値を読める。
+    #[test]
+    fn thumb_forced_open_actions_getter_reflects_setter_per_side() {
+        let mut engine = make_test_engine();
+        assert_eq!(engine.thumb_forced_open_actions(), (None, None));
+        engine.set_thumb_forced_open_actions(Some(ShadowImeAction::Toggle), None);
+        let (muhenkan, henkan) = engine.thumb_forced_open_actions();
+        engine.set_thumb_forced_open_actions(muhenkan, Some(ShadowImeAction::TurnOn));
+        assert_eq!(
+            engine.thumb_forced_open_actions(),
+            (Some(ShadowImeAction::Toggle), Some(ShadowImeAction::TurnOn)),
+            "変換側だけを更新しても無変換側の値は残る（henkan={henkan:?} を上書きしただけ）"
+        );
+    }
+
+    /// ADR-199 決定16: 役割由来の操作は打鍵ごとに設定し直される。役割が消えたら（IME 切替・設定変更）、
+    /// 次の打鍵からは単独タップで IME を動かさず従来どおり受動に戻る（古い役割が残らない）。
+    #[test]
+    fn role_derived_thumb_action_is_replaced_per_keystroke_and_can_vanish() {
+        let mut engine = make_test_engine_with_muhenkan_forced_turn_off();
+        // 役割（Toggle）が付いた打鍵 → 単独タップで belief を反転（IME ON→OFF）。
+        engine.set_thumb_forced_open_actions(Some(ShadowImeAction::Toggle), None);
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
+        assert!(has_effect(&up, |e| matches!(
+            e,
+            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
+        )));
+        // 次の打鍵で役割が無くなった（None, None）→ 単独タップは IME を動かさない。
+        engine.set_thumb_forced_open_actions(None, None);
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(400).build(), &ime_on_ctx());
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(500).build(), &ime_on_ctx());
+        assert!(
+            !has_effect(&up, |e| matches!(e, Effect::Ime(_))),
+            "役割が消えた打鍵では単独タップで IME を動かさない"
+        );
     }
 
     #[test]

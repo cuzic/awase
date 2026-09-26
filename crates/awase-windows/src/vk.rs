@@ -81,7 +81,7 @@ pub const VK_NONAME: VkCode = VkCode(0xFC);
 /// **効果（ON にする/OFF にする等）を意味しない**。押したときに何が起きるかは IME 種別・キーマップ・状態で変わる
 /// ので、ここでは決め打たず、予測表（`state/key_effect_table.rs`、格子で学習した結果から生成）と観測から引く
 /// （ADR-191 決定6）。効果を静的に持つのは [`ImeKeyKind::shadow_effect`]（IME種別に依らず確定しているキーだけ）と
-/// [`ImeKeyKind::is_open_toggle_for`]（IME種別ごとに開閉トグルと確定しているキーだけ）に限る。
+/// 役割由来の`shadow_action`（`Runtime::enrich_key_role`、ADR-199）に限る。
 ///
 /// 旧名（ADR-191 以前）: `KanjiToggle`→`Kanji`、`Alphanumeric`→`DbeAlphanumeric`、`Katakana`→`DbeKatakana`、
 /// `Activate`→`DbeHiragana`、`Deactivate`→`DbeSbcsChar`、`ActivatePair`→`DbeDbcsChar`。
@@ -147,7 +147,7 @@ impl ImeKeyKind {
     ///
     /// ひらがな・カタカナ・英数・`VK_KANA`など、入力モードも動かしうる/IMEの種類・キーマップ・
     /// 状態で変わるキーは静的に決め打ちしない（`None`）。生のままIMEへ通し、結果を観測して追随する。
-    /// 半角/全角(0xF3/0xF4)はIME種別ごとの判定が要るため[`Self::is_open_toggle_for`]で扱う。
+    /// 半角/全角(0xF3/0xF4)はIME設定ごとの役割判定が要るため`Runtime::enrich_key_role`で扱う（ADR-199）。
     #[must_use]
     pub const fn shadow_effect(&self) -> Option<ShadowImeEffect> {
         match self {
@@ -163,37 +163,29 @@ impl ImeKeyKind {
             | Self::DbeDbcsChar => None,
         }
     }
+}
 
-    /// ADR-189/191: このIME種別で、このキーが「開閉だけに作用するトグル」と確定しているか。
-    ///
-    /// 半角/全角(0xF3/0xF4)は、GJIでは0x19と同じく「開なら閉、閉なら開」のトグル
-    /// （ADR-186の表、CIの`--hz`）。Microsoft IME本体でも、awaseなしで同じキー列を流すとトグルする
-    /// （ADR-190、`sc-hz-msime-native-noawase`）。awase側の静的モデル（0xF3=OFF、0xF4=ON）が
-    /// 実IMEと食い違っていただけである。
-    ///
-    /// **GJIとMS-IME本体の両方に適用するのはユーザー決定**（ADR-189は元々GJIのみ、ADR-191で
-    /// MS-IME本体へ拡張）。呼び出し側（`enrich_ime_relevance`）は `TSF_OBS.table_ime_kind()`
-    /// （CLSIDで同定できたGJI・Microsoft IME本体だけ`Some`。ATOK・Japanist・未検出・IMM32 HKLのみは
-    /// `None`）を通してからこの関数へ渡すので、この`ime`引数自体は常にGJIか同定済みMicrosoft IME本体
-    /// （`ImeKindId::MsIme`）のどちらか。同定できなかった第三者IME・未検出窓では、この関数まで
-    /// 到達しない（`is_open_toggle_for`を直接見るだけでは分からない、round2 B-NB1/NB3参照）。
-    ///
-    /// **例外（round3 B-NR4）**: `VK_KANJI`(0x19)は`ImeKeyKind::shadow_effect`で**IME種別に依らず**
-    /// 静的にToggleを返す（`hook.rs::classify_ime_relevance`経由、`table_ime_kind()`を通らない）。
-    /// develop由来の「どのIMEでも開閉トグル」という前提（Windows標準の`keys.ime_toggle`の既定）に基づく
-    /// もので、ATOK・未検出でも0x19はawaseが書く。0xF3/0xF4だけが本関数の同定ゲートの対象。
-    ///
-    /// `match`は`ImeKindId`について網羅なので、**IME種別を足すとここがコンパイルエラーになり、
-    /// 適用可否を決め忘れない**（両アームが同じ値でも、この性質のために1本の`match`のまま残す）。
-    #[must_use]
-    pub const fn is_open_toggle_for(&self, ime: crate::state::ime_kind::ImeKindId) -> bool {
-        use crate::state::ime_kind::ImeKindId;
-        match ime {
-            ImeKindId::Gji | ImeKindId::MsIme => {
-                matches!(self, Self::DbeSbcsChar | Self::DbeDbcsChar)
-            }
-        }
-    }
+/// 役割判定の候補キー（ADR-199 決定4）か。集合の定義は `awase_gji_config::role::ROLE_CANDIDATE_VK_NAMES`
+/// の1箇所だけで、ここでは VK に解決するだけ（定義を2箇所にしない）。全打鍵で通るので解決結果は1度だけ作る。
+#[must_use]
+pub fn is_role_candidate(vk: VkCode) -> bool {
+    static CANDIDATES: std::sync::OnceLock<Vec<VkCode>> = std::sync::OnceLock::new();
+    CANDIDATES
+        .get_or_init(|| {
+            awase_gji_config::role::ROLE_CANDIDATE_VK_NAMES
+                .iter()
+                .filter_map(|name| VkCode::from_name(name))
+                .collect()
+        })
+        .contains(&vk)
+}
+
+/// 役割判定の候補のうち F13〜F24（0x7C〜0x87、ADR-199 決定18）か。半角/全角（0xF3/0xF4）と違い、
+/// 受信そのものが IME の証拠にならず（`is_japanese_ime` を上げない）、自動リピートがあり、書かなかった打鍵は
+/// Suppress してはならない——そのため配送・ラッチ・昇格の各所で半角/全角と別扱いにする。
+#[must_use]
+pub const fn is_role_fkey(vk: VkCode) -> bool {
+    matches!(vk.0, 0x7C..=0x87)
 }
 
 /// VK コードが IME 状態を変更する可能性があるかどうかを判定する。
@@ -669,10 +661,27 @@ pub fn parse_hotkey(s: &str) -> Option<(u32, VkCode)> {
         }
     }
 
-    let key_name = format!("VK_{}", parts.last()?);
+    let key_name = with_vk_prefix(parts.last()?);
     let vk = VkCode::from_name(&key_name)?;
 
     Some((modifiers, vk))
+}
+
+/// ホットキーのキー名に `VK_` 接頭辞を補う（既にあればそのまま）。
+///
+/// `engine_toggle_hotkey` は手書きなら `"Ctrl+Shift+F12"`（接頭辞なし）、設定 GUI が
+/// 書き出すと `"Ctrl+Shift+VK_F12"`（接頭辞あり）と、2通りの表記で config に入る。
+/// 以前は常に `VK_` を付けていたため後者が `VK_VK_F12` になって `from_name` が
+/// 失敗し、ホットキーが無言で登録されなかった（BUG-167）。`parse_hotkey`（Windows 専用）
+/// と `keymap::warn_on_engine_hotkey_collision`（Linux でもビルドされる）の両方が
+/// この関数を使い、正規化を1か所に置く。
+#[must_use]
+pub(crate) fn with_vk_prefix(key_name: &str) -> String {
+    if key_name.starts_with("VK_") {
+        key_name.to_string()
+    } else {
+        format!("VK_{key_name}")
+    }
 }
 
 /// キーコンボ文字列をパースする
@@ -969,7 +978,7 @@ mod tests {
         ascii_to_vk, build_symbol_to_vk, is_ime_mode_key_for_ime, is_synthetic_dbe_ime_hotkey,
         may_change_ime, reinject_scan_code, should_release_thumb_latch,
         should_upgrade_is_japanese_ime, thumb_latch_identity, vk_may_mutate_conv, vk_pair_to_ascii,
-        ImeKeyKind, VkCode, VK_A, VK_RETURN, VK_SPACE,
+        with_vk_prefix, ImeKeyKind, VkCode, VkCodeExt, VK_A, VK_RETURN, VK_SPACE,
     };
     use awase::types::ScanCode;
 
@@ -1191,6 +1200,18 @@ mod tests {
         assert!(!should_upgrade_is_japanese_ime(true, VkCode(0xF2))); // HIRAGANA, injected
     }
 
+    /// ADR-199 決定18: F13〜F24 は物理キーが実在しうる（プログラマブルキーボード等）ので、受信そのものは
+    /// IME の証拠にならず `is_japanese_ime` を上げてはならない（ADR-093 の基準、BUG-14 と同じ理由）。
+    #[test]
+    fn should_upgrade_is_japanese_ime_false_for_f13_to_f24() {
+        for vk in 0x7C..=0x87 {
+            assert!(
+                !should_upgrade_is_japanese_ime(false, VkCode(vk)),
+                "0x{vk:02X}"
+            );
+        }
+    }
+
     /// 物理イベントでも、5 VK でなければ false。
     #[test]
     fn should_upgrade_is_japanese_ime_false_for_physical_unrelated_vk() {
@@ -1337,30 +1358,59 @@ mod tests {
         }
     }
 
-    /// ADR-189/191: 半角/全角(0xF3/0xF4)だけが、GJI・MS-IME本体のどちらでも開閉トグルとして扱われる。
-    /// ひらがな・カタカナ・英数など入力モードも動かしうるキーは、どのIMEでもトグル扱いにしない。
+    /// ADR-199 決定4: 候補キーは `ROLE_CANDIDATE_VK_NAMES` から作る（半角/全角・F13〜F24・無変換/変換）。
+    /// ひらがな・カタカナ・英数・0x19（決定14の移行まで）は候補に入れない。
     #[test]
-    fn open_toggle_applies_to_hankaku_zenkaku_for_every_known_ime_kind() {
-        use crate::state::ime_kind::ImeKindId;
-        for ime in ImeKindId::ALL {
-            for k in [ImeKeyKind::DbeSbcsChar, ImeKeyKind::DbeDbcsChar] {
-                assert!(k.is_open_toggle_for(ime), "{k:?} × {ime:?}");
-            }
-            for k in [
-                ImeKeyKind::Kana,
-                ImeKeyKind::ImeOn,
-                ImeKeyKind::Junja,
-                ImeKeyKind::Kanji,
-                ImeKeyKind::ImeOff,
-                ImeKeyKind::DbeAlphanumeric,
-                ImeKeyKind::DbeKatakana,
-                ImeKeyKind::DbeHiragana,
-            ] {
-                assert!(
-                    !k.is_open_toggle_for(ime),
-                    "{k:?} × {ime:?} はトグル扱いにしない"
-                );
-            }
+    fn role_candidates_come_from_the_shared_name_list() {
+        use super::{is_role_candidate, is_role_fkey, VkCodeExt as _};
+        for name in awase_gji_config::role::ROLE_CANDIDATE_VK_NAMES {
+            let vk = VkCode::from_name(name).expect(name);
+            assert!(is_role_candidate(vk), "{name}");
         }
+        for vk in [0xF0, 0xF1, 0xF2, 0x19, 0x16, 0x1A, 0x15, 0x20, 0x41] {
+            assert!(!is_role_candidate(VkCode(vk)), "0x{vk:02X}");
+        }
+        // F13〜F24 は候補で、`is_role_fkey` と一致する（0x7B=F12・0x88 は含まない）。
+        for vk in 0x7C..=0x87 {
+            assert!(
+                is_role_candidate(VkCode(vk)) && is_role_fkey(VkCode(vk)),
+                "0x{vk:02X}"
+            );
+        }
+        assert!(!is_role_fkey(VkCode(0x7B)) && !is_role_fkey(VkCode(0x88)));
+        assert!(!is_role_fkey(VkCode(0xF3)));
+    }
+
+    /// BUG-167: 設定 GUI は `Ctrl+Shift+VK_F12`、手書きは `Ctrl+Shift+F12` と書く。
+    /// どちらの表記でも末尾のキー名が `VK_F12` に揃うこと（二重に `VK_VK_` にならない）。
+    #[test]
+    fn with_vk_prefix_accepts_both_spellings() {
+        assert_eq!(with_vk_prefix("F12"), "VK_F12");
+        assert_eq!(with_vk_prefix("VK_F12"), "VK_F12");
+        assert_eq!(with_vk_prefix("A"), "VK_A");
+        // 接頭辞と紛らわしいだけの名前は補う（`VK_` で始まらない）。
+        assert_eq!(with_vk_prefix("VKX"), "VK_VKX");
+    }
+
+    /// BUG-167: 正規化後のキー名が実際に `from_name` で引けること
+    /// （旧実装では `VK_VK_F12` で `None` になり、ホットキーが無言で登録されなかった）。
+    #[test]
+    fn both_hotkey_spellings_resolve_to_the_same_vk() {
+        let a = VkCode::from_name(&with_vk_prefix("F12"));
+        let b = VkCode::from_name(&with_vk_prefix("VK_F12"));
+        assert!(a.is_some());
+        assert_eq!(a, b);
+        assert!(VkCode::from_name("VK_VK_F12").is_none());
+    }
+
+    /// `parse_hotkey`（Windows 専用。Linux では走らず windows-build CI で走る）が
+    /// 両表記で同じ修飾キー・VK を返すこと。
+    #[cfg(windows)]
+    #[test]
+    fn parse_hotkey_accepts_gui_and_handwritten_spellings() {
+        let handwritten = super::parse_hotkey("Ctrl+Shift+F12");
+        let gui = super::parse_hotkey("Ctrl+Shift+VK_F12");
+        assert!(handwritten.is_some());
+        assert_eq!(handwritten, gui);
     }
 }

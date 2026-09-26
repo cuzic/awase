@@ -76,32 +76,6 @@ fn should_clear_kana_mode_restore_latch(
     armed_scan_code == Some(keyup_scan_code) && !injected
 }
 
-/// 診断用(ci/e2e-typing-stress 限定): ステージが `SLOW_STAGE_MS` 以上かかったら WARN を出す。
-/// 主スレッドが数秒止まる事象(chromebar 2ms の run 36224534565)の停止箇所を特定するため。
-struct SlowGuard {
-    name: &'static str,
-    t0: std::time::Instant,
-}
-
-impl SlowGuard {
-    const SLOW_STAGE_MS: u128 = 50;
-    fn new(name: &'static str) -> Self {
-        Self {
-            name,
-            t0: std::time::Instant::now(),
-        }
-    }
-}
-
-impl Drop for SlowGuard {
-    fn drop(&mut self) {
-        let ms = self.t0.elapsed().as_millis();
-        if ms >= Self::SLOW_STAGE_MS {
-            tracing::warn!("[slow-stage] {} took {ms}ms", self.name);
-        }
-    }
-}
-
 impl Runtime {
     /// キーイベント処理エントリポイント
     pub(crate) fn process_key_event(&mut self, event: RawKeyEvent) -> CallbackResult {
@@ -289,6 +263,8 @@ impl Runtime {
     #[expect(clippy::too_many_lines)]
     fn kp_run_inner(&mut self, mut event: RawKeyEvent, skip_rescue_defer: bool) -> CallbackResult {
         self.enrich_ime_relevance(&mut event);
+        self.enrich_key_role(&mut event);
+        self.enrich_thumb_key_role(&event);
 
         // TsfGate: PendingWarmup 中はキーを保留し TSF モード確定を待つ。
         // run_with_prefetched 完了後に OUTPUT_PENDING_QUEUE 経由で再処理される。
@@ -341,14 +317,8 @@ impl Runtime {
             .ime
             .is_focus_transition_settling(std::time::Instant::now());
 
-        {
-            let _g = SlowGuard::new("focus_probe");
-            self.kp_stage_focus_probe(&mut event);
-        }
-        {
-            let _g = SlowGuard::new("idle_conv_check");
-            self.kp_stage_idle_conv_check(&event);
-        }
+        self.kp_stage_focus_probe(&mut event);
+        self.kp_stage_idle_conv_check(&event);
         // BUG-116/ADR-137 決定1 の M-3 ガード用スナップショット。
         // `kp_stage_shadow_ime_toggle` が半角英数トグルの no-op 分岐から
         // `kp_restore_kana_from_half_width` へ委譲すると、このフラグは同じ
@@ -357,10 +327,8 @@ impl Runtime {
         // 委譲が起きる**前**の値をここで確定させる。
         let half_width_alnum_toggle_before =
             self.platform_state.gate.half_width_alnum.is_toggle_active();
-        let shadow_toggled = {
-            let _g = SlowGuard::new("shadow_ime_toggle");
-            self.kp_stage_shadow_ime_toggle(&mut event)
-        };
+        let shadow_toggled = self.kp_stage_shadow_ime_toggle(&mut event);
+        self.settle_fkey_role_latch(&event, shadow_toggled);
 
         // ADR-129: ライブクエリ（`hook::thumb_down_timestamps()`）は使わない。
         // drain replay 中に「replay を実行している"今"」の値を誤って読んでしまう
@@ -534,10 +502,7 @@ impl Runtime {
             event.was_down,
         );
 
-        {
-            let _g = SlowGuard::new("post_decision");
-            self.kp_stage_post_decision(&decision, &event, focus_transition_was_pending);
-        }
+        self.kp_stage_post_decision(&decision, &event, focus_transition_was_pending);
 
         // Ctrl 系 KeyUp で chord barrier を解除する。
         // chord 状態の判断は ImeStateHub.on_ctrl_key_up() に集約（パイプラインは VK 分類のみ担う）。
@@ -550,10 +515,7 @@ impl Runtime {
                 .on_ctrl_key_up(event.vk_code, tick_ms);
         }
 
-        let callback = {
-            let _g = SlowGuard::new("execute");
-            self.kp_stage_execute(decision, &event, profile, physical)
-        };
+        let callback = self.kp_stage_execute(decision, &event, profile, physical);
         for entry in self.platform.drain_journal_entries() {
             self.platform_state.ime.journal.absorb(entry);
         }
@@ -1400,6 +1362,10 @@ impl Runtime {
             event
                 .ime_relevance
                 .shadow_action
+                // ADR-199 決定18(ii): F13〜F24 の役割由来 Toggle は自動リピートの Down では昇格させない
+                // （物理の F13 はリピートし、`kp_stage_shadow_ime_toggle` はリピートを区別しないので、
+                // そのままではリピートのたびに開閉が反転する）。0xF3/0xF4・0x19 の挙動は変えない。
+                .filter(|_| !(event.was_down && crate::vk::is_role_fkey(event.vk_code)))
                 .map(|a| (a, IntentKind::PhysicalImeKey))
                 .or_else(|| explicit_action_for_pipeline.map(|a| (a, IntentKind::PhysicalImeKey)))
         } else {
@@ -1826,14 +1792,8 @@ impl Runtime {
             tracing::debug!("may_change_ime key passed through → IME refresh scheduled (20ms)");
         }
 
-        {
-            let _g = SlowGuard::new("mode_key_follow");
-            self.kp_stage_mode_key_follow(decision, event);
-        }
-        {
-            let _g = SlowGuard::new("key_effect_track");
-            self.kp_stage_key_effect_track(decision, event);
-        }
+        self.kp_stage_mode_key_follow(decision, event);
+        self.kp_stage_key_effect_track(decision, event);
 
         self.kp_stage_shift_conv_guard(event);
     }
@@ -1998,19 +1958,10 @@ impl Runtime {
         // （`ms_ime_native_identified`）レジストリのキー割り当て。`active_ime_kind() == MicrosoftIme` は「GJI 以外」の
         // 意味で ATOK・Japanist・未知の TIP・IMM32 HKL も含み、`ime_kind_detected()` も「CLSID 判定が一度でも走った」
         // でしかないので、どちらも本体の表を当てる根拠にならない（レビュー round2 NB1）。
-        let _keymap_guard = SlowGuard::new("predict_keymap_and_composition");
         let keymap = match obs.active_ime_kind() {
-            ActiveImeKind::GoogleJapaneseInput => self.key_effect_keymap.get(
-                now_ms,
-                crate::gji_charset_autodetect::config1_db_stamp,
-                crate::gji_charset_autodetect::read_key_effect_keymap,
-            ),
+            ActiveImeKind::GoogleJapaneseInput => self.key_effect_keymap.get_gji(now_ms),
             ActiveImeKind::MicrosoftIme if obs.ms_ime_native_identified() => {
-                self.key_effect_keymap_native.get(
-                    now_ms,
-                    || Some(crate::msime_key_assignment::native_assignment_stamp()),
-                    || Some(crate::msime_key_assignment::read_key_effect_keymap_native()),
-                )
+                self.key_effect_keymap_native.get_native(now_ms)
             }
             ActiveImeKind::MicrosoftIme => return,
         };
@@ -2019,7 +1970,7 @@ impl Runtime {
         };
         // ADR-195段階4: 学習済み表（T3の永続化データ）が検証を通れば同梱表の代わりに使う。
         // `KeyEffectPredicted`（belief更新）に使う。actuationの許可リストを広げる判定には使わない
-        // （半角/全角のToggleを外す縮小方向だけ`enrich_ime_relevance`が参照する、ADR-195追記）。
+        // （半角/全角のToggleを外す縮小方向だけ`enrich_key_role`が役割判定の中で参照する、ADR-195追記・ADR-199決定6-2）。
         let override_table = if self.use_learned_keymap_table {
             self.key_effect_runtime_table.get_for_keymap(now_ms, keymap)
         } else {
@@ -3162,62 +3113,6 @@ impl Runtime {
                             },
                         );
                     });
-                }
-
-                // MS-IME + ImmCross (LINE 等): かなモード (conv=0x09) で IME ON すると
-                // JIS かな直接入力になる。ImmCrossProcessStrategy は romaji 修正を
-                // 先行実行するが、async probe 完了時点で stale な conv を読む場合に備えて
-                // ここでも ROMAN ビットを補完する（二重補正は冪等なので無害）。
-                // ObservedKana はユーザーが意図的にかな入力に設定した状態なので上書きしない。
-                if let (Some(true), Some(conv)) = (snap.ime_on, snap.conversion_mode) {
-                    let mode = awase::engine::ConvMode::from_u32(conv);
-                    if !mode.is_eisu() && !mode.romaji {
-                        // opus レビュー指摘（2026-08-08）: `set_ime_romaji_mode_async`
-                        // （ライブクエリ版、ADR-086 削除対象の
-                        // `set_ime_romaji_mode_with_target_async` と同じ危険を持つ）
-                        // への呼び出しが未移行のまま残っていた。focus_gen も
-                        // should_restore と同じ with_app 呼び出しでまとめて読み、
-                        // ネストした spawn_local の**先頭**で capture する
-                        // （この外側ブロックは probe 読み取りが最初の await のため、
-                        // capture をここに直接置くと「ブロック先頭で capture」の
-                        // 規律から外れてしまう）。
-                        let (should_restore, focus_gen) = crate::with_app(|app| {
-                            let ime = &app.platform_state.ime;
-                            let should_restore = ime.effective_open()
-                                && !matches!(ime.input_mode(), InputModeState::ObservedKana);
-                            (should_restore, app.platform.output.ime_mode_focus_gen.get())
-                        })
-                        .unwrap_or((false, 0));
-                        if should_restore {
-                            tracing::debug!(
-                                "[ImmCrossProbe] kana mode (conv=0x{conv:08X}) + IME ON \
-                                 → romaji 修正 (MS-IME かなモード修正)"
-                            );
-                            win32_async::spawn_local(async move {
-                                let Some(target) =
-                                    crate::ime::ActuationTarget::capture(focus_gen).await
-                                else {
-                                    tracing::debug!(
-                                        "[ImmCrossProbe] romaji 修正: capture 失敗（フォーカス無し）"
-                                    );
-                                    return;
-                                };
-                                let outcome =
-                                    crate::ime::set_ime_conv_for_target(target, None, || {
-                                        crate::with_app(|runtime| {
-                                            runtime.platform.output.ime_mode_focus_gen.get()
-                                        })
-                                        .unwrap_or_else(|| focus_gen.wrapping_add(1))
-                                    })
-                                    .await;
-                                if !matches!(outcome, crate::ime::ActuationOutcome::Written) {
-                                    tracing::warn!(
-                                        "[ImmCrossProbe] romaji 修正に失敗: {outcome:?}"
-                                    );
-                                }
-                            });
-                        }
-                    }
                 }
             });
         }

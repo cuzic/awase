@@ -179,6 +179,14 @@ impl Engine {
         self.adapter.set_thumb_forced_open_actions(muhenkan, henkan);
     }
 
+    /// 現在設定されている無変換/変換の強制 open 軸操作 `(無変換, 変換)`（ADR-199 決定16。押した側だけを更新するため）。
+    #[must_use]
+    pub const fn thumb_forced_open_actions(
+        &self,
+    ) -> (Option<ShadowImeAction>, Option<ShadowImeAction>) {
+        self.adapter.thumb_forced_open_actions()
+    }
+
     /// `crates/awase-windows::runtime::key_pipeline::kp_stage_shadow_ime_toggle`
     /// （ケース2/3、belief OFF側）がGJI/MS-IME自動検出の成否に関わらず
     /// 明示config自体を読むためのgetter。
@@ -191,6 +199,26 @@ impl Engine {
     #[must_use]
     pub const fn henkan_solo_tap_ime_action(&self) -> Option<ShadowImeAction> {
         self.adapter.henkan_solo_tap_ime_action()
+    }
+
+    /// 修飾なしの `vk` が、明示された IME 制御コンボ（`ime_on`/`ime_off`/`ime_toggle`、自動検出トグル）に
+    /// 含まれるか（ADR-199 決定8）。含まれるキーには役割由来の `shadow_action` を付けない:
+    /// 付けると1回の押下で Engine の照合と役割の両方が開閉を書き、打ち消し合う。
+    #[must_use]
+    pub fn has_bare_ime_combo(&self, vk: VkCode) -> bool {
+        let bare = |k: &ParsedKeyCombo| k.vk == vk && !k.ctrl && !k.shift && !k.alt;
+        self.special_keys.ime_on.iter().any(bare)
+            || self.special_keys.ime_off.iter().any(bare)
+            || self.special_keys.ime_toggle.iter().any(bare)
+            || self.ime_toggle_auto.iter().any(bare)
+    }
+
+    /// 修飾なしの `vk` に対する、明示 config（`ime_on`/`ime_off`/`ime_toggle`）由来の open 軸操作
+    /// （[`SpecialKeyCombos::bare_ime_action`]）。ADR-199 決定16 で無変換/変換の役割由来の操作と合成するときの、
+    /// config 側の値（config が優先する）。
+    #[must_use]
+    pub fn bare_ime_action(&self, vk: VkCode) -> Option<ShadowImeAction> {
+        self.special_keys.bare_ime_action(vk)
     }
 
     /// Enter 親指キーのフォールバック挙動を設定する。
@@ -1018,6 +1046,27 @@ fn matches_key_combo(combo: ParsedKeyCombo, event: &RawKeyEvent, modifiers: Modi
 }
 
 impl SpecialKeyCombos {
+    /// 修飾なしの `vk` に対する open 軸操作。通常の特殊キー照合と同じく方向固定を toggle より優先し、
+    /// on を off より先に評価する（ADR-192 決定3b。Platform 層の `thumb_forced_open_actions` と
+    /// ADR-199 決定16 の役割合成が共有する）。
+    #[must_use]
+    pub fn bare_ime_action(&self, vk: VkCode) -> Option<ShadowImeAction> {
+        let contains_bare = |combos: &[ParsedKeyCombo]| {
+            combos
+                .iter()
+                .any(|combo| combo.vk == vk && !combo.ctrl && !combo.shift && !combo.alt)
+        };
+        if contains_bare(&self.ime_on) {
+            Some(ShadowImeAction::TurnOn)
+        } else if contains_bare(&self.ime_off) {
+            Some(ShadowImeAction::TurnOff)
+        } else if contains_bare(&self.ime_toggle) {
+            Some(ShadowImeAction::Toggle)
+        } else {
+            None
+        }
+    }
+
     /// エンジン有効状態を考慮したうえでコンボマッチを行い、最初に一致した種別を返す。
     ///
     /// 副作用なし。`engine_enabled` は `adapter.is_enabled()` の値を、`engine_active` は

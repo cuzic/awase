@@ -206,6 +206,7 @@
 | [197](197-msime-legacy-custom-keymap-runtime-warning.md) | MS-IME旧UI(互換モード限定キーカスタマイズ)の調査。実行時警告は前提(無変換キーへのCEトグル)が実機で否定され撤回、ADR-196向け互換モードフラグ読み取り(決定4)のみ採用 | 決定1〜3撤回・決定4のみ採用(2026-09-23、CI実機検証4パターン+ユーザー本人の物理キー確認) |
 | [198](198-persistence-destination-classification.md) | 永続化先の分類(config.toml/cache.toml/学習表JSON)とv2でのcalibrationの扱い | 採用(2026-09-24、opus round1・2反映済み、決定3=手動較正廃止はユーザー決定済み) |
 | [199](199-derive-key-roles-from-user-ime-keymap.md) | キーの役割をユーザーのIMEキー設定から逆算し原則受動、能動はIME ON/OFFトグルの役割のキーと awase の ime_on/off 設定だけ | 草案(所有者決定反映済み、未決なし) |
+| [200](200-reinit-must-not-run-during-live-composition.md) | chrome-reinit(VK_IME_OFF→ON)は SuspectedLiteral の証拠が2回そろったときだけ送る(StaleConfirm では reinit しない) | 採用・決定1 実装済み(opus round1〜3 で収束) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
