@@ -256,7 +256,7 @@ jobs:
             # 名前: ts-<入力先>-<gji|msime>-<間隔ms>ms。ts-raw-* は awase なしで同じ文字列を生のローマ字として同じ速度で打つ対照実験(入力先+IME単体が受けられるか)。
             # tsf+GJI の 5/3/2ms は、run 36209255447 で 2ms・run1 だけが全12試行 FAIL(awase.log に [pending-deferred] count limit exceeded が182件=消失文字数と一致)
             # だったため、再現率を見るため6回にする。
-            *[cfg(f'ts-{form}-{ime_name}-{iv}ms', 'observe', check='typing', ime=ime, runs=6 if (form == 'tsf' and ime == 'gji' and iv <= 5) else 2, wait=420,
+            *[cfg(f'ts-{form}-{ime_name}-{iv}ms', 'observe', check='typing', ime=ime, runs=20 if ((form == 'tsf' and ime == 'gji' and iv == 2) or (form == 'edit' and ime == 'msime' and iv == 10)) else (6 if (form == 'tsf' and ime == 'gji' and iv <= 5) else 2), wait=420,
                   stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab{msime}')
               for form in ('edit', 'multi', 'rich', 'tsf')
               for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
