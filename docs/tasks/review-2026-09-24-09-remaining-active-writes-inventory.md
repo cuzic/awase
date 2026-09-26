@@ -102,6 +102,22 @@ lint（`lints/actuation_call_guard/src/lib.rs:98-101`）は `actuate_ime_control
 - **強制OFFの撤去（T2・T3）**: windows-build / e2e-ime CI で、T2 のフォーカス切替モードの撤去前後の不一致時間が記録されている（ImmCross、Linux では走らない）。撤去コミットは `fix-requires-evidence` を満たす（T2 のモードを回帰の確認として残す、または known-bugs を足す）。
 - **drift correction の撤去（T4）**: 判定側の既存テスト（Linux: `cargo nextest run -p awase-windows --test drift_correction_replay` と `check_drift_correction` の単体テスト）が通る。書く側は ADR-193 の入力先を使う CI E2E、または実機（Chrome / VS Code / WezTerm 等の TsfNative 環境で実タイピング）で、明示意図の回復が撤去前と同じく働くことを確認する。シナリオが作れない場合は「撤去しない」の記録で完了とする。
 
+## 実機 A/B 手順（T4: drift correction 単独での ON 回復・未実施）
+
+強制OFF（T2・T3）は #313 で撤去済みのため、旧 A/B-1（撤去前後比較）は不要になった。残るのは T4 の判断材料だけ。
+実行者はユーザー（実機と物理キー押下が要る。SendInput 注入では物理キー状態を作れない）。
+BUG-163（起動時 `desired_open=true` の強制ON）は修正が develop に入っているため、**現 develop 先端のビルド1本**で測る（修正前との比較は不要）。
+
+**準備**: develop 先端を **push してから** `awase-build` スキル（`clipwire exec awase-build`）でビルドし、Windows 側チェックアウトのブランチとコミット（`git log -1`）が push したものか毎回確認する。
+ログは `awase.log`（`tracing`）。drift の結果は `info!`（`ime_refresh.rs` の `Blacklist drift correction: apply_ime_open(...)`）。解釈する前に、押したキー・config のパス・awase の PID/コミットを記録する。
+
+**A/B-2（対象は TsfNative）**: Chrome または VS Code の入力欄で、reassert/force-on は撤去済みで比較対象が無いので、撤去済み状態での回復可否だけを測る。
+1. IME ON で日本語入力できる状態から、Ctrl+無変換（または設定中の OFF キー）で OFF にし、直後に IME が ON へ戻る/固定されるかを見る（2026-07-08 の症状）。10回。
+2. ずれが作れない → 「作れないので drift correction は撤去せず残す」と ADR-191 に記録して T4 終了。
+3. ずれが作れた場合: `Blacklist drift correction` ログの発火有無と、発火後に**実タイピング**で正しく ON/OFF になったかを記録する（API の成功表示だけで判断しない）。
+
+**結果の記録先**: `docs/adr/191-calibration-experiments.md`。1試行=1行（日時・アプリ・IME・押したキー・+100/+400/+1500ms の一致・drift 発火の有無）。
+
 ## 他ファイルとの依存
 
 - [05](review-2026-09-24-05-startup-desired-open-forced-on.md): 05 は 09 に依存しない。09 の A/B（T4）は 05 の修正の有無を前提条件として持つ（どちらのビルドで測るかを固定する）。起動時に ON を書き、ImmCross の窓へフォーカスが移ると強制OFFが OFF を書く往復は、05 と T3 の両方に関わる。

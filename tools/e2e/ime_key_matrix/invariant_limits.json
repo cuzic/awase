@@ -4,7 +4,8 @@
     "max=これを超えたら FAIL。observed_min=実測した揺れ幅の下限(値がこれも下回ったら『上限を下げてよい』と表示)。",
     "上限を上げる・新しく足すときは、必ず対応する BUG 番号(bug)と実測(measured)を書くこと。BUG が直ったら max を 0 にする。",
     "実測: CI windows-latest・GJI+ATOK。当初の上限は run 36103384502(f2a875cd)・36104015748(c82b1d3d)の計9本。",
-    "BUG-163 の修正（#318・#321）後の run 36140615943（baseline・atok-passthrough-cold）で i1 は 0 件になったので、i1 の上限を 0 に下げた。"
+    "BUG-163 の修正（#318・#321）後の run 36140615943（baseline・atok-passthrough-cold）で i1 は 0 件になったので、i1 の上限を 0 に下げた。",
+    "MS-IME 系シナリオ(sc-*-msime-*)は GJI+ATOK と別に config_overrides で上限を持つ(未実測の既定値1では毎回FAILになるため)。"
   ],
   "window_s": 10,
   "measured_configs": [
@@ -31,5 +32,46 @@
       "measured": "9本すべて 1 件(ime open applied seq=… outcome=\"Unwarranted\" reason=\"EngineDecision\"、約14秒後)。check.py はこれを span 由来の行と合わせて 2 件と数える"
     }
   },
-  "config_overrides": {}
+  "config_overrides": {
+    "sc-dbe-msime-native": {
+      "i2_unwarranted": {
+        "max": 3,
+        "observed_min": 3,
+        "bug": "BUG-162",
+        "measured": "3 件。run 36158074326 の各3回で毎回同数。全STEP PASS。物理IMEキー(0xF0〜0xF2等)が実IMEを先に切り替え、その約20〜30ms後の予測駆動 Engine 活性化/非活性化の SetOpen を warrant が拒否した記録(BUG-162 A の2段目と同じ機序。open=true/false の両方向)"
+      }
+    },
+    "sc-kanji-msime-native": {
+      "i2_unwarranted": {
+        "max": 2,
+        "observed_min": 2,
+        "bug": "BUG-162",
+        "measured": "2 件。run 36158074326 の各3回で毎回同数。全STEP PASS。物理IMEキー(0xF0〜0xF2等)が実IMEを先に切り替え、その約20〜30ms後の予測駆動 Engine 活性化/非活性化の SetOpen を warrant が拒否した記録(BUG-162 A の2段目と同じ機序。open=true/false の両方向)"
+      }
+    },
+    "sc-kanji-gji-msime": {
+      "i2_unwarranted": {
+        "max": 2,
+        "observed_min": 2,
+        "bug": "BUG-162",
+        "measured": "2 件。run 36158074326 の各3回で毎回同数。全STEP PASS。物理IMEキー(0xF0〜0xF2等)が実IMEを先に切り替え、その約20〜30ms後の予測駆動 Engine 活性化/非活性化の SetOpen を warrant が拒否した記録(BUG-162 A の2段目と同じ機序。open=true/false の両方向)"
+      }
+    },
+    "sc-shift-msime-native": {
+      "i2_unwarranted": {
+        "max": 3,
+        "observed_min": 3,
+        "bug": "BUG-162",
+        "measured": "3 件。run 36158074326 の各3回で毎回同数。全STEP PASS。物理IMEキー(0xF0〜0xF2等)が実IMEを先に切り替え、その約20〜30ms後の予測駆動 Engine 活性化/非活性化の SetOpen を warrant が拒否した記録(BUG-162 A の2段目と同じ機序。open=true/false の両方向)"
+      }
+    },
+    "sc-shift-gji-msime": {
+      "i2_unwarranted": {
+        "max": 3,
+        "observed_min": 3,
+        "bug": "BUG-162",
+        "measured": "3 件。run 36158074326 の各3回で毎回同数。全STEP PASS。物理IMEキー(0xF0〜0xF2等)が実IMEを先に切り替え、その約20〜30ms後の予測駆動 Engine 活性化/非活性化の SetOpen を warrant が拒否した記録(BUG-162 A の2段目と同じ機序。open=true/false の両方向)"
+      }
+    }
+  }
 }
