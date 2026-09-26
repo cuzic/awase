@@ -453,6 +453,7 @@ dependencies = [
  "smallvec",
  "timed-fsm",
  "toml",
+ "toml_edit 0.22.27",
  "tracing",
 ]
 
