@@ -574,7 +574,12 @@ impl Runtime {
         use crate::state::key_effect_runtime::{latch_step, passive_without_lookup};
         use awase::types::KeyEventType;
         // 全打鍵で通る経路なので、候補キーでないものは修飾キーと IME 種別を見る前に抜ける。
-        if !crate::vk::is_role_candidate(event.vk_code) {
+        // 0x19（Alt+半角/全角、ADR-202）は候補集合の外（Alt 付きで届き無修飾ガードを通らない）で、専用に扱う。
+        let is_kanji = matches!(event.vk_code.ime_kind(), Some(crate::vk::ImeKeyKind::Kanji));
+        if is_kanji && event.injected {
+            return; // injected は付けない。静的 Toggle のまま（現行と同じ）。
+        }
+        if !is_kanji && !crate::vk::is_role_candidate(event.vk_code) {
             return;
         }
         let is_fkey = crate::vk::is_role_fkey(event.vk_code);
@@ -583,7 +588,7 @@ impl Runtime {
             Some(crate::vk::ImeKeyKind::DbeSbcsChar | crate::vk::ImeKeyKind::DbeDbcsChar)
         );
         // 無変換/変換（決定16）は別の入口（T10）。
-        if !is_fkey && !is_hz {
+        if !is_fkey && !is_hz && !is_kanji {
             return;
         }
         let is_up = event.event_type == KeyEventType::KeyUp;
@@ -594,16 +599,20 @@ impl Runtime {
         let modified = m.ctrl || m.alt || m.shift || m.win;
         let injected = event.injected;
         let has_sync = event.ime_relevance.sync_direction.is_some();
-        // 修飾付き・IME 未同定の打鍵も `None` の判定として**ラッチに記録する**（早期 return しない）。
-        // 記録しないと、Ctrl を押したまま半角/全角を Down（判定なし=Allow）→ Ctrl を先に離す →
-        // 半角/全角の Up がラッチ空で判定をやり直し `Some(Toggle)`（=Suppress）になり、
-        // Down=Allow・Up=Suppress の非対称（BUG-131/132 型）になる（Opus レビュー、PR #326）。
+        let static_action = event.ime_relevance.shadow_action; // hook が付けた静的値（0x19 は Toggle）
+                                                               // 修飾付き・IME 未同定の打鍵も `None` の判定として**ラッチに記録する**（早期 return しない）。
+                                                               // 記録しないと、Ctrl を押したまま半角/全角を Down（判定なし=Allow）→ Ctrl を先に離す →
+                                                               // 半角/全角の Up がラッチ空で判定をやり直し `Some(Toggle)`（=Suppress）になり、
+                                                               // Down=Allow・Up=Suppress の非対称（BUG-131/132 型）になる（Opus レビュー、PR #326）。
         let (action, latch) = latch_step(
             self.key_role_latch,
             reuse,
             fresh_down,
             event.scan_code,
             || {
+                if is_kanji {
+                    return self.kanji_shadow_action(vk, static_action, m);
+                }
                 if passive_without_lookup(is_fkey, modified, injected, reuse, has_sync) {
                     return None;
                 }
@@ -615,6 +624,24 @@ impl Runtime {
         );
         self.key_role_latch = latch;
         event.ime_relevance.shadow_action = action;
+    }
+
+    /// 0x19 の `shadow_action`（ADR-202）。GJI のときだけ `Hankaku/Zenkaku` 行から求める（修飾の扱いは
+    /// [`crate::state::key_effect_runtime::kanji_role_plan`]）。GJI 以外は hook の静的値のまま（決定2）。
+    fn kanji_shadow_action(
+        &mut self,
+        vk: VkCode,
+        static_action: Option<awase::types::ShadowImeAction>,
+        m: awase::types::ModifierState,
+    ) -> Option<awase::types::ShadowImeAction> {
+        use crate::state::ime_kind::ImeKindId;
+        use crate::state::key_effect_runtime::{kanji_role_plan, KanjiRolePlan};
+        let is_gji = crate::tsf::observer::tsf_obs().table_ime_kind() == Some(ImeKindId::Gji);
+        match kanji_role_plan(is_gji, m.ctrl, m.shift, m.win) {
+            KanjiRolePlan::KeepStatic => static_action,
+            KanjiRolePlan::Passive => None,
+            KanjiRolePlan::Derive => self.derive_key_shadow_action(ImeKindId::Gji, vk),
+        }
     }
 
     /// F13〜F24 の最初の Down（非injected・`!was_down`）で、`kp_stage_shadow_ime_toggle` が**実際に開閉を書いたか**

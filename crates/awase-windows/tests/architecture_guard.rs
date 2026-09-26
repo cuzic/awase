@@ -5359,3 +5359,39 @@ fn key_effect_table_matches_generator() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// ADR-202: 0x19（Alt+半角/全角）の `shadow_action` は、GJI のときだけ `Hankaku/Zenkaku` 行から求める。
+/// `runtime/` は Linux でテスト実行できない（CLAUDE.md）ので、配線の形を静的スキャンで固定する:
+/// (1) 同じ `latch_step` の中で決める（別の代入を増やすと Down/Up の非対称〈BUG-131/132 型〉と、
+///     `shadow_action` 書き込み箇所固定の両方が崩れる）、(2) injected の 0x19 は付けない（静的値のまま）、
+/// (3) GJI 以外は `KanjiRolePlan::KeepStatic`（現行維持、決定2）。
+#[test]
+fn kanji_0x19_role_goes_through_the_shared_latch_and_only_overrides_gji() {
+    let rt_src = read_crate_file("src/runtime/mod.rs");
+    let rt = production_code_only(&rt_src);
+    for token in [
+        "fn kanji_shadow_action",
+        "kanji_role_plan(is_gji, m.ctrl, m.shift, m.win)",
+        "KanjiRolePlan::KeepStatic => static_action",
+        "KanjiRolePlan::Passive => None",
+        "KanjiRolePlan::Derive => self.derive_key_shadow_action(ImeKindId::Gji, vk)",
+        "if is_kanji && event.injected",
+        "return self.kanji_shadow_action(vk, static_action, m);",
+    ] {
+        assert!(
+            rt.contains(token),
+            "runtime/mod.rs の本番コードから `{token}` が消えています（ADR-202 の配線）"
+        );
+    }
+    // 0x19 の分岐は `latch_step` のクロージャ内（ラッチの前に判定しない）。
+    let latch_at = rt.find("latch_step(").expect("latch_step の呼び出し");
+    let kanji_at = rt
+        .find("return self.kanji_shadow_action(vk, static_action, m);")
+        .expect("0x19 の分岐");
+    assert!(
+        latch_at < kanji_at,
+        "runtime/mod.rs: 0x19 の `kanji_shadow_action` は `latch_step` のクロージャの中で呼ぶこと（ADR-202 決定3）"
+    );
+    // `shadow_action` の代入は1箇所のまま（`ime_relevance_shadow_action_writes_are_accounted_for`）。
+    assert_eq!(rt.matches("ime_relevance.shadow_action =").count(), 1);
+}

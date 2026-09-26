@@ -14,7 +14,7 @@ summary: |-
   (4) T14（学習表の `Kanji` セルで狭める移行）は撤回。学習表による狭め（決定6-2）は `Kanji` セルで従来どおり効かせる。
   (5) 実機検証を e2e に常設する（行を変えた CUSTOM 表で、awase 起動中に belief が実 IME とずれないこと）。
 status: |-
-  **採用（2026-09-26 所有者承認、未決2件も確定）。** 実装は未着手（T16-1〜）。
+  **採用（2026-09-26 所有者承認、未決2件も確定）。** T16-1・T16-2 実装済み（PR 未マージ）。T16-3（e2e 常設）・T16-6（MS-IME 本体の確認）は未着手。
 related_adr:
   - "ADR-199"
   - "ADR-189"
@@ -100,8 +100,8 @@ related_adr:
 
 ## 実装タスク
 
-- T16-1: 純関数（0x19 の修飾判定、GJI のときの `shadow_action` 決定）とホストテスト。`gji_key_role` の vk 名引きに 0x19→`VK_DBE_DBCSCHAR` を足す。
-- T16-2: `enrich_key_role` に 0x19 の分岐（GJI のみ上書き、ラッチ共用、`architecture_guard` 維持）。`transport.rs` の物理配送は `shadow_action` の有無で従来どおり決まる。
+- T16-1（実装済み）: 純関数 `key_effect_runtime::kanji_role_plan`（GJI 以外は静的値のまま／Ctrl・Shift・Win 付きは受動／それ以外は役割を引く）とホストテスト。`KeyEffectKeymap::gji_key_role` の引き先に 0x19→0xF4（`Hankaku/Zenkaku` 行）を足し、CUSTOM 表〈行がトグル／行を別機能／`Kanji` 行のみ〉のテストを追加。
+- T16-2（実装済み）: `Runtime::enrich_key_role` が 0x19 を扱う（`kanji_shadow_action`。既存の `latch_step` のクロージャ内で決め、`shadow_action` の代入は1箇所のまま。injected は静的値のまま）。`transport.rs` の物理配送は `shadow_action` の有無で従来どおり決まる。配線の形は `architecture_guard` の `kanji_0x19_role_goes_through_the_shared_latch_and_only_overrides_gji` で固定。
 - T16-3: e2e 常設（決定5）。修正前後の比較を PR に残す。
 - T16-4: ADR-199 の決定14・T16・影響表（ADR-189 固定セット行）を本 ADR 参照に更新。
 - T16-5（保留）: `keys.ime_toggle` 既定を空にする場合の設定 GUI 変更。所有者判断で当面行わない。
