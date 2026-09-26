@@ -433,6 +433,12 @@ fn resolve_sibling_exe(name: &str) -> Option<std::path::PathBuf> {
 #[expect(clippy::struct_excessive_bools)]
 struct SettingsApp {
     config: awase::config::AppConfig,
+    /// ADR-201 決定3 の `base`: GUI が読み込んだときの生の `AppConfig`（`validate()` で
+    /// 正規化する前）。保存は `to_save`（`self.config`）が `base` と違う項目だけを、
+    /// 保存直前のディスクの文書へ書く（三者比較）。更新は読み込み・キャンセルでの読み直しと、
+    /// 保存の成功（`poll_pending_save` が `Saved` を受けたとき、保存した値の複製）だけ。
+    /// 保存失敗では更新しない（次の保存で差分が書かれなくなるため）。
+    base: awase::config::AppConfig,
     config_path: std::path::PathBuf,
     /// 直近の `AppConfig::load` 結果の分類（ADR-099 決定4）。`Dangerous` の
     /// 間は `apply()` が無条件保存せず、確認・バックアップを必須にする。
@@ -678,6 +684,8 @@ enum PendingSaveResult {
     Saved {
         warnings: Vec<String>,
         keyboard_model: awase::scanmap::KeyboardModel,
+        /// 保存した `to_save` の複製。成功後の `base` にする（ADR-201 決定3）。
+        saved: Box<awase::config::AppConfig>,
     },
 }
 
@@ -709,9 +717,11 @@ impl SettingsApp {
         }
         let available_layouts = scan_layout_names(&config.general.layouts_dir);
         let config_loaded_model = config.general.keyboard_model;
+        let base = config.clone();
 
         let mut app = Self {
             config,
+            base,
             config_path,
             config_load_state,
             show_dangerous_save_confirm: false,
@@ -823,34 +833,11 @@ impl SettingsApp {
         // クリアされないままになっていた）。
         self.pending_status_notes.clear();
 
-        // 2026-09-05ユーザー報告: `keys.ime_detect`はGUIに編集ウィジェットが
-        // 無い（`4d36f663`で撤去済み、上級者はconfig.toml直接編集を想定する
-        // 設計）。`self.config`は起動時（またはキャンセル時）に一度だけ
-        // 読み込んだメモリ上のスナップショットなので、設定画面を開いたまま
-        // 外部エディタで`[keys.ime_detect]`を手動編集していても、この
-        // 「適用」でその古いスナップショットが丸ごとファイルへ上書き保存され、
-        // 手動編集が消えて見えていた（stale read-modify-write）。保存直前に
-        // ディスク上の最新値だけを拾い直して補う。GUIが編集しうる他の
-        // フィールドはここでは一切触れない——`self.config`のそれ以外の
-        // フィールドはこのセッション中の意図した変更を含みうるため、
-        // まるごと再読み込みで上書きしてはならない（読み込みに失敗しても
-        // 保存自体は中止せず、それまでの`self.config`の値のまま続行する）。
-        //
-        // /code-review指摘（PR #168）: `keys.ime_detect`と同じくGUIに編集
-        // ウィジェットが無いフィールドは他にも存在し（`engine_on_ime_key`/
-        // `engine_off_ime_key`＝ADR-092決定D Step1で既定Noneに凍結された
-        // 上級者専用複合副作用キー、`app_overrides.input_relay_apps`＝
-        // ADR-119で追加された入力中継アプリ一覧、`keystroke_macro`＝
-        // ADR-115決定2bの打鍵列マクロ一覧）、いずれも同じ構造的クローバーに
-        // 晒されていた。GUIウィジェットを持たない全フィールドを網羅的に
-        // 再読み込みする。
-        if let Ok(fresh) = awase::config::AppConfig::load(&self.config_path) {
-            self.config.keys.ime_detect = fresh.keys.ime_detect;
-            self.config.keys.engine_on_ime_key = fresh.keys.engine_on_ime_key;
-            self.config.keys.engine_off_ime_key = fresh.keys.engine_off_ime_key;
-            self.config.app_overrides.input_relay_apps = fresh.app_overrides.input_relay_apps;
-            self.config.keystroke_macro = fresh.keystroke_macro;
-        }
+        // 2026-09-05 の stale read-modify-write（GUIに編集ウィジェットが無い
+        // `keys.ime_detect` 等を、古い読み込み時の値で上書きして外部エディタでの編集が
+        // 消える）への対策は、以前はここでディスクから画面に無い項目を読み直していた。
+        // ADR-201 決定3 の三者比較（`self.base` から変えた項目だけを保存直前のディスクへ
+        // 書く）で構造的に不要になったので削除した（回帰テストは `awase::config_save`）。
 
         // /code-review指摘（PR #127、2回目）: self.configはこの直後に
         // AppConfig::from(validated)で上書きされるため、事前の
@@ -949,6 +936,7 @@ impl SettingsApp {
         // 変わった時点で再計算する。
         self.recompute_diagnostics();
         let clone = self.config.clone();
+        let base = self.base.clone();
 
         let config_path = self.config_path.clone();
         let is_dangerous = matches!(
@@ -985,11 +973,19 @@ impl SettingsApp {
                 }
             }
 
-            match clone.save(&config_path) {
+            // Dangerous（読み込みに失敗して既定値を表示中）は `base` が意味を持たないので、
+            // 今と同じ全体の書き出し（上でバックアップ済み）。それ以外は差分だけ書く。
+            let result = if is_dangerous {
+                clone.save(&config_path)
+            } else {
+                awase::config_save::save_edit(&clone, &base, &config_path)
+            };
+            match result {
                 Ok(()) => {
                     let _ = tx.send(PendingSaveResult::Saved {
                         warnings,
                         keyboard_model: clone.general.keyboard_model,
+                        saved: Box::new(clone),
                     });
                 }
                 Err(e) => {
@@ -1015,7 +1011,10 @@ impl SettingsApp {
             Ok(PendingSaveResult::Saved {
                 warnings,
                 keyboard_model,
+                saved,
             }) => {
+                // ADR-201 決定3: 成功で `base` を保存した値にする（保存後にディスクを読み直さない）。
+                self.base = *saved;
                 let mut parts = vec!["設定を保存しました".to_string()];
                 parts.append(&mut self.pending_status_notes);
                 if !warnings.is_empty() {
@@ -1397,6 +1396,7 @@ impl SettingsApp {
             Ok(cfg) => {
                 self.available_layouts = scan_layout_names(&cfg.general.layouts_dir);
                 self.config_loaded_model = cfg.general.keyboard_model;
+                self.base = cfg.clone();
                 self.config = cfg;
                 self.config_load_state = awase::config::ConfigLoadState::Loaded;
                 self.status = "変更を破棄しました".to_string();
@@ -2460,6 +2460,7 @@ impl SettingsApp {
         match self.save_auto_start_config(value) {
             Some(warnings) if warnings.is_empty() => {
                 self.config.general.auto_start = value.to_string();
+                self.base.general.auto_start = value.to_string();
                 self.status = if enable {
                     "自動起動を有効にしました。".to_string()
                 } else {
@@ -2468,6 +2469,7 @@ impl SettingsApp {
             }
             Some(warnings) => {
                 self.config.general.auto_start = value.to_string();
+                self.base.general.auto_start = value.to_string();
                 self.status = format!(
                     "自動起動の設定は反映しましたが、config.toml の他の項目に警告があります: {}",
                     warnings.join("; ")
@@ -2480,7 +2482,8 @@ impl SettingsApp {
                 // 更新してもズレの可視化には影響しない。むしろここで更新して
                 // おかないと、後で無関係な項目を編集して「適用」（全体保存）を
                 // 押した際に古い値が書き戻され、この保存失敗が固定化してしまう
-                // （/code-review指摘、2026-09-07）。
+                // （/code-review指摘、2026-09-07）。`base` は更新しない（ディスクに書けて
+                // いないので、次の保存で `auto_start` が差分として書かれる）。
                 self.config.general.auto_start = value.to_string();
                 self.status =
                     "自動起動レジストリは更新しましたが、config.toml への保存に失敗しました。"
@@ -6176,6 +6179,7 @@ mod layout_tab_repro {
             );
         let config_loaded_model = config.general.keyboard_model;
         SettingsApp {
+            base: config.clone(),
             config,
             config_path: std::path::PathBuf::from("config.toml"),
             config_load_state: awase::config::ConfigLoadState::Loaded,
@@ -7269,6 +7273,14 @@ speculative_delay_ms = 30
             unique_test_id()
         ));
         app.config_path = config_path.clone();
+        // ADR-201 決定3: 保存は `base`（読み込んだ生の値）との差だけを書くので、
+        // 実際に読み込んだファイルがある状態にする（`base` の speculative → 正規化後の
+        // two_phase が差分として書かれる）。
+        std::fs::write(
+            &config_path,
+            "[general]\nconfirm_mode = \"speculative\"\nspeculative_delay_ms = 30\n",
+        )
+        .unwrap();
 
         app.apply_confirmed();
         wait_for_pending_save(&mut app);
@@ -7503,6 +7515,111 @@ speculative_delay_ms = 30
         );
         assert_eq!(saved.keystroke_macro.len(), 1);
         assert_eq!(saved.keystroke_macro[0].name, "new");
+    }
+
+    fn loaded_app_with_file(text: &str) -> (SettingsApp, std::path::PathBuf) {
+        let config_path = std::env::temp_dir().join(format!(
+            "awase_test_base_{}_{}.toml",
+            std::process::id(),
+            unique_test_id()
+        ));
+        std::fs::write(&config_path, text).unwrap();
+        let config = awase::config::AppConfig::load(&config_path).unwrap();
+        let mut app = test_settings_app(config);
+        app.config_path = config_path.clone();
+        app.config_load_state = ConfigLoadState::Loaded;
+        (app, config_path)
+    }
+
+    /// ADR-201 決定3 (7): 保存の成功で `base` は保存した値（`to_save` の複製）になる。
+    #[test]
+    fn base_becomes_saved_value_on_success() {
+        let (mut app, path) = loaded_app_with_file("# keep\n[general]\n");
+        app.config.general.simultaneous_threshold_ms = 90;
+        app.apply_confirmed();
+        wait_for_pending_save(&mut app);
+        assert_eq!(app.base.general.simultaneous_threshold_ms, 90);
+        assert!(std::fs::read_to_string(&path).unwrap().contains("# keep"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// ADR-201 決定3 (7): 保存の失敗では `base` を更新しない（次の保存で差分が残る）。
+    #[test]
+    fn base_is_not_updated_on_failed_save() {
+        let (mut app, path) = loaded_app_with_file("[general]\n");
+        let before = app.base.general.simultaneous_threshold_ms;
+        let dir = std::env::temp_dir().join(format!(
+            "awase_test_base_fail_{}_{}",
+            std::process::id(),
+            unique_test_id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        app.config_path = dir.clone();
+        app.config.general.simultaneous_threshold_ms = 90;
+        app.apply_confirmed();
+        wait_for_pending_save(&mut app);
+        assert!(app.status.contains("保存失敗"), "{}", app.status);
+        assert_eq!(app.base.general.simultaneous_threshold_ms, before);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// ADR-201 決定3 (7): 保存中に GUI で行った編集が、成功後の `base` 更新で失われない
+    /// （`base` は保存した値であり `self.config` ではない。差分は次の保存で書かれる）。
+    #[test]
+    fn edit_made_during_save_survives_base_update() {
+        let (mut app, path) = loaded_app_with_file("[general]\n");
+        app.config.general.simultaneous_threshold_ms = 90;
+        app.apply_confirmed();
+        app.config.general.simultaneous_threshold_ms = 95; // 保存中の編集
+        wait_for_pending_save(&mut app);
+        assert_eq!(app.base.general.simultaneous_threshold_ms, 90);
+        assert_eq!(app.config.general.simultaneous_threshold_ms, 95);
+        app.apply_confirmed();
+        wait_for_pending_save(&mut app);
+        let saved = awase::config::AppConfig::load(&path).unwrap();
+        assert_eq!(saved.general.simultaneous_threshold_ms, 95);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// ADR-201 決定3 (6): `Dangerous`（型が合わないが TOML としては正しいファイル）は、
+    /// `toml_edit` で読めても全体の書き出し（バックアップ後）になる。未知キーは残らない。
+    #[test]
+    fn dangerous_state_writes_whole_file_after_backup() {
+        let (mut app, path) = dangerous_app();
+        std::fs::write(
+            &path,
+            "[general]\nsimultaneous_threshold_ms = \"abc\"\nunknown_key = 1\n",
+        )
+        .unwrap();
+        app.apply_confirmed();
+        wait_for_pending_save(&mut app);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let bak = path.with_extension("toml.bak");
+        assert!(!text.contains("unknown_key"), "全体書き出しのはず: {text}");
+        assert!(bak.exists(), "バックアップを取る");
+        assert!(awase::config::AppConfig::load(&path).is_ok());
+        assert_eq!(app.config_load_state, ConfigLoadState::Loaded);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&bak);
+    }
+
+    /// ADR-201 決定3 (6): 保存直前に外部の書きかけ（TOML として壊れている）なら保存を中止し、
+    /// ファイルを上書きしない。`base` も更新しない。
+    #[test]
+    fn broken_file_at_save_time_aborts_without_overwrite() {
+        let (mut app, path) = loaded_app_with_file("[general]\n");
+        std::fs::write(&path, "[general\nhalf written").unwrap();
+        app.config.general.simultaneous_threshold_ms = 90;
+        app.apply_confirmed();
+        wait_for_pending_save(&mut app);
+        assert!(app.status.contains("保存失敗"), "{}", app.status);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[general\nhalf written"
+        );
+        assert_ne!(app.base.general.simultaneous_threshold_ms, 90);
+        let _ = std::fs::remove_file(&path);
     }
 
     /// コードレビュー指摘の回帰テスト: `apply_confirmed()` は保存の完了を
