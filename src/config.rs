@@ -762,6 +762,15 @@ pub struct AppConfig {
     /// 名前付き打鍵列マクロ一覧（ADR-115 決定2b）。
     #[serde(default)]
     pub keystroke_macro: Vec<KeystrokeMacro>,
+    /// 旧表記 `[[keymap]]`（ADR-201 決定5）。`alias` にすると `[[keymap]]` と `[[keymaps]]` が
+    /// 両方あるとき serde が読み込み全体を失敗させるので、別のフィールドで受けて
+    /// [`AppConfig::from_toml_str`] が `keymaps` へ合流させる（合流後は空）。保存はしない。
+    #[serde(default, rename = "keymap", skip_serializing)]
+    legacy_keymap: Vec<KeymapRule>,
+    /// 読み込み時に集めた診断（未知のキー・`[[keymap]]` の合流）。`validate()` が警告に加える。
+    /// 設定ファイルの項目ではない（保存しない）。
+    #[serde(skip)]
+    load_warnings: Vec<String>,
 }
 
 /// `AppConfig::load` の失敗を UI 側の扱い分けができる粒度に分類した結果
@@ -807,9 +816,79 @@ impl AppConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
-        let config: Self = toml::from_str(&content)
+        let config = Self::from_toml_str(&content)
             .with_context(|| format!("Failed to parse {}", path.display()))?;
         Ok(config)
+    }
+
+    /// 設定テキストを読み込む**唯一の入口**（ADR-201 決定2・5）。
+    ///
+    /// `AppConfig::load`・不具合報告・テストはこれを使う（`toml::from_str` を直接呼ぶと
+    /// `[[keymap]]` の合流も未知キーの検出も通らない）。
+    /// - 未知のキー（`serde_ignored`）は `load_warnings` に入れ、`validate()` が警告に加える。
+    ///   撤去済みのキー（[`crate::config_load_diag::is_removed_key`]）は警告しない。
+    /// - 旧表記 `[[keymap]]` は `keymaps` の後ろへ連結して合流させる（両方あれば連結）。
+    ///
+    /// # Errors
+    ///
+    /// TOML として、または型として読めない場合にエラーを返す。
+    pub fn from_toml_str(text: &str) -> Result<Self, toml::de::Error> {
+        let mut ignored: Vec<String> = Vec::new();
+        let mut config: Self =
+            serde_ignored::deserialize(toml::de::Deserializer::new(text), |p| {
+                ignored.push(p.to_string());
+            })?;
+        let default_table = toml::Table::try_from(Self::default()).unwrap_or_default();
+        for path in ignored {
+            if crate::config_load_diag::is_removed_key(&path) {
+                continue;
+            }
+            let (parent, _) = path.rsplit_once('.').unwrap_or(("", &path));
+            let siblings = Self::known_keys_under(&default_table, parent);
+            config
+                .load_warnings
+                .push(crate::config_load_diag::unknown_key_message(
+                    &path, &siblings,
+                ));
+        }
+        if !config.legacy_keymap.is_empty() {
+            let n = config.legacy_keymap.len();
+            let both = !config.keymaps.is_empty();
+            config.keymaps.append(&mut config.legacy_keymap);
+            config.load_warnings.push(if both {
+                format!(
+                    "[[keymap]] {n} 件を [[keymaps]] と連結して読みました\
+                     （[[keymap]] は旧表記です。[[keymaps]] にまとめてください）"
+                )
+            } else {
+                format!(
+                    "[[keymap]] {n} 件を [[keymaps]] として読みました\
+                     （[[keymap]] は旧表記です）"
+                )
+            });
+        }
+        Ok(config)
+    }
+
+    /// 既定値を TOML の表にしたものから、`parent`（`""` は最上位、`"general"` 等）の
+    /// 直下の既知のキー名を返す。`None` の項目は表に出ないので、提案の候補が少し減るだけ。
+    fn known_keys_under(default_table: &toml::Table, parent: &str) -> Vec<String> {
+        let mut cur = default_table;
+        if !parent.is_empty() {
+            for seg in parent.split('.') {
+                match cur.get(seg).and_then(toml::Value::as_table) {
+                    Some(t) => cur = t,
+                    None => return Vec::new(),
+                }
+            }
+        }
+        cur.keys().cloned().collect()
+    }
+
+    /// 読み込み時の診断（未知のキー・`[[keymap]]` の合流）。`validate()` の警告にも含まれる。
+    #[must_use]
+    pub fn load_warnings(&self) -> &[String] {
+        &self.load_warnings
     }
 
     /// 設定を TOML 形式でファイルに保存する
@@ -905,6 +984,8 @@ impl From<ValidatedConfig> for AppConfig {
             keymaps: v.keymaps,
             post_bypass: v.post_bypass,
             keystroke_macro: v.keystroke_macro,
+            legacy_keymap: Vec::new(),
+            load_warnings: Vec::new(),
         }
     }
 }
@@ -1231,7 +1312,8 @@ impl AppConfig {
     /// 不正な値がある場合は警告メッセージのリストと共に返す（厳密なエラーではなくデフォルト値にフォールバック）。
     #[must_use]
     pub fn validate(self) -> (ValidatedConfig, Vec<String>) {
-        let mut warnings = Vec::new();
+        // 読み込み時の診断（未知のキー・`[[keymap]]` の合流）を先頭に置く。
+        let mut warnings = self.load_warnings;
         let mut general = self.general;
         let app_overrides = self.app_overrides;
 
@@ -2696,5 +2778,86 @@ steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]
             );
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── ADR-201 段階2: from_toml_str（未知キー・[[keymap]] の合流）──
+
+    #[test]
+    fn from_toml_str_warns_unknown_keys_and_suggests() {
+        let c = AppConfig::from_toml_str(
+            "[general]\nsimultaneous_threshold_msx = 80\n[keys]\nime_onn = []\n[futuresection]\na = 1\n",
+        )
+        .unwrap();
+        let w = c.load_warnings().join("\n");
+        assert!(w.contains("general.simultaneous_threshold_msx"), "{w}");
+        assert!(
+            w.contains("simultaneous_threshold_ms\""),
+            "近い名前を示す: {w}"
+        );
+        assert!(w.contains("keys.ime_onn") && w.contains("ime_on\""), "{w}");
+        assert!(w.contains("futuresection"), "{w}");
+        // validate() が警告に加える
+        let (_v, warnings) = c.validate();
+        assert!(warnings.iter().any(|x| x.contains("futuresection")));
+    }
+
+    #[test]
+    fn from_toml_str_does_not_warn_for_removed_keys_or_alias() {
+        let c = AppConfig::from_toml_str(
+            "[general]\napply_calibrated_mode_keys = true\ndbe_mode_key_policy = \"passthrough\"\n\
+             output_mode = \"batched\"\n[keys]\nengine_off_solo_triple = \"VK_INSERT\"\n\
+             [[calibration]]\nvk = 29\n",
+        )
+        .unwrap();
+        assert!(c.load_warnings().is_empty(), "{:?}", c.load_warnings());
+        assert_eq!(c.keys.engine_off_solo_repeat.as_deref(), Some("VK_INSERT"));
+    }
+
+    #[test]
+    fn from_toml_str_merges_legacy_keymap_into_keymaps() {
+        let only_legacy = "[[keymap]]\nfrom = \"Ctrl+VK_I\"\nto = [\"VK_TAB\"]\n";
+        let c = AppConfig::from_toml_str(only_legacy).unwrap();
+        assert_eq!(c.keymaps.len(), 1);
+        assert!(c.load_warnings().iter().any(|w| w.contains("[[keymap]]")));
+
+        // 両方あっても読み込みは失敗せず、連結して警告する（alias にしたときの Dangerous を避ける）
+        let both = "[[keymap]]\nfrom = \"Ctrl+VK_I\"\nto = [\"VK_TAB\"]\n\
+                    [[keymaps]]\nfrom = \"Ctrl+VK_J\"\nto = [\"VK_TAB\"]\n";
+        let c = AppConfig::from_toml_str(both).unwrap();
+        assert_eq!(c.keymaps.len(), 2);
+        assert!(c.load_warnings().iter().any(|w| w.contains("連結")));
+    }
+
+    /// `[[keymap]]` だけのファイル → 読み込み → 保存 → 再読み込みで規則の数が変わらない
+    /// （合流後は `keymaps` に一本化されて書かれ、`keymap` は書かれない）。
+    #[test]
+    fn legacy_keymap_survives_save_and_reload_without_doubling() {
+        let text = "[[keymap]]\nfrom = \"Ctrl+VK_I\"\nto = [\"VK_TAB\"]\n";
+        let c = AppConfig::from_toml_str(text).unwrap();
+        let dir = std::env::temp_dir().join(format!("awase-adr201-s2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        c.save(&path).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("[[keymap]]"), "{saved}");
+        let r = AppConfig::load(&path).unwrap();
+        assert_eq!(r.keymaps.len(), 1);
+        r.save(&path).unwrap();
+        assert_eq!(AppConfig::load(&path).unwrap().keymaps.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 既定値から書き出した設定は、未知キーの警告を出さない（`Option` の `None` などで誤報しない）。
+    #[test]
+    fn from_toml_str_default_roundtrip_has_no_warnings() {
+        let text = toml::to_string_pretty(&AppConfig::default()).unwrap();
+        let c = AppConfig::from_toml_str(&text).unwrap();
+        assert!(c.load_warnings().is_empty(), "{:?}", c.load_warnings());
+        let bundled = AppConfig::from_toml_str(include_str!("../config.toml")).unwrap();
+        assert!(
+            bundled.load_warnings().is_empty(),
+            "{:?}",
+            bundled.load_warnings()
+        );
     }
 }

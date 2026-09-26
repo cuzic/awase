@@ -30,13 +30,12 @@ use crate::vk::{parse_key_combo, VkCodeExt};
 
 /// 文書・サンプルの例の「既知の失敗」。書式は `"<例の名前>|<種別>|<詳細>"`。
 ///
-/// 種別: `unparsable`(TOML/型として読めない)、`unknown_top_level`(未知の最上位キー。
-/// 今は無警告で捨てられる)、`unresolved`(読み込めるが、実際の読み手が解決できず
+/// 種別: `unparsable`(TOML/型として読めない)、`unresolved`(読み込めるが、実際の読み手が解決できず
 /// 無言で無効になる)、`default_mismatch`(「デフォルト値」と書いた例が
 /// `KeysConfig::default()` と違う)。
 ///
-/// 段階1(`from_name` の寛容化)で `unresolved` の行が消え、段階2(`keymap` の合流)で
-/// `unknown_top_level` の行が消える。`default_mismatch` は文書の誤りで、別途直す。
+/// 段階1(`from_name` の寛容化)で `unresolved` の行が消えた。`default_mismatch` は文書の誤りで、
+/// 別途直す。
 const DOC_KNOWN_FAILURES: &[&str] = &[
     // 文書の「デフォルト値」の例が実際の既定値(`VK_INSERT`)と違う(文書が古い。既定は
     // ADR-199 以前に無変換から Insert へ変わった)。文書側を直すときに消す。
@@ -48,12 +47,13 @@ const DOC_KNOWN_FAILURES: &[&str] = &[
 
 /// 合成 config の「既知の失敗」。書式は `"<ファイル名>|<種別>|<詳細>"`(種別は上と同じ)。
 const FIXTURE_KNOWN_FAILURES: &[&str] = &[
-    // 旧表記 `[[keymap]]`(実際は `keymaps`)。段階2で `keymaps` へ合流する。
-    "legacy_keymap_and_post_bypass.toml|unknown_top_level|keymap",
-    // ── 未知のキー・存在しないキー名(意図して解決できない値)。
-    // 段階2で `validate()` の警告に出るようになったら、警告数の基準を上げて一覧から消す ──
-    "unknown_keys.toml|unknown_top_level|calibration",
-    "unknown_keys.toml|unknown_top_level|futuresection",
+    // 段階2: `[[keymap]]` は `keymaps` へ合流し、未知のキーは `load_warnings` として
+    // `validate()` の警告に出るようになった(未知のキーの検出は警告数の基準に移した)。
+    // ── 表(`from_name`)に無いキー名。`keymaps.to = "VK_UP"` は矢印キーが `from_name` の表に
+    // 無いため解決できない(`[[keymap]]` が合流したことで初めて見えた既存の欠落。段階2の報告に記載)。
+    // 実行時には `KeymapTable::new` の警告として診断に出る ──
+    "legacy_keymap_and_post_bypass.toml|unresolved|keymaps[2].to=VK_UP",
+    // ── 意図して解決できない値(存在しないキー名)。実行時の診断に出る ──
     "unknown_keys.toml|unresolved|general.engine_toggle_hotkey=Ctrl+Shift+NoSuchKey",
     "unknown_keys.toml|unresolved|keys.ime_on=Ctrl+NoSuchKey",
 ];
@@ -95,20 +95,20 @@ const DOC_BASELINE: &[(&str, usize)] = &[
 const FIXTURE_BASELINE: &[(&str, usize)] = &[
     ("alt_impersonation_and_legacy_alias.toml", 2),
     ("alt_impersonation_lowercase.toml", 0),
-    ("legacy_keymap_and_post_bypass.toml", 0),
+    ("legacy_keymap_and_post_bypass.toml", 1),
     ("notation_case_and_space.toml", 0),
     ("notation_japanese_names.toml", 0),
     ("notation_prefix.toml", 0),
-    ("unknown_keys.toml", 0),
+    ("unknown_keys.toml", 2),
 ];
 
 // ── 読み込みと、実際の読み手の再現 ───────────────────────────────────────────
 
 /// 設定テキストを `AppConfig` として読み込む。**読み込みの入口はここ1か所**。
-/// 段階2で `AppConfig::from_toml_str`(`keymap` の合流・`load_warnings` を含む)ができたら
-/// 差し替える。
+/// 段階2で `AppConfig::from_toml_str`(`keymap` の合流・`load_warnings` を含む)に差し替えた
+/// (実際の読み込み `AppConfig::load` と同じ経路)。
 fn load_config_text(text: &str) -> Result<AppConfig, String> {
-    toml::from_str(text).map_err(|e| e.to_string())
+    AppConfig::from_toml_str(text).map_err(|e| e.to_string())
 }
 
 /// ホットキー文字列を、実際の読み手 `parse_hotkey` と同じ経路で解釈できるか。
@@ -214,22 +214,6 @@ fn unresolved_keys(c: &AppConfig) -> Vec<String> {
     out
 }
 
-/// 未知の最上位キー(`[[keymap]]` など)。今は `serde` が黙って捨てる。
-/// 入れ子の未知キー(`[general] no_such = 1`)は、`serde_ignored`(段階2)が入るまで
-/// 検出できないので対象外。
-fn unknown_top_level(text: &str) -> Vec<String> {
-    let Ok(raw) = text.parse::<toml::Table>() else {
-        return Vec::new();
-    };
-    let known: BTreeSet<String> = toml::Table::try_from(AppConfig::default())
-        .map(|t| t.keys().cloned().collect())
-        .unwrap_or_default();
-    raw.keys()
-        .filter(|k| !known.contains(*k))
-        .cloned()
-        .collect()
-}
-
 /// 「デフォルト値」と書いた `[keys]` の例が `KeysConfig::default()` と一致しない項目。
 /// 例に書かれた項目(別名を含む)だけを比べる。
 fn default_mismatches(text: &str, c: &AppConfig) -> Vec<String> {
@@ -306,11 +290,6 @@ fn analyze(text: &str, check_defaults: bool) -> Analysis {
     };
     let (_, warnings) = config.clone().validate();
     let mut failures = Vec::new();
-    failures.extend(
-        unknown_top_level(text)
-            .into_iter()
-            .map(|k| format!("unknown_top_level|{k}")),
-    );
     failures.extend(
         unresolved_keys(&config)
             .into_iter()
@@ -589,6 +568,35 @@ fn synthetic_configs_match_baseline() {
             "{name}: validate() の警告が増えた ({base} -> {n})"
         );
     }
+}
+
+/// ADR-201 段階2: 未知のキーだけが警告になり、撤去済みのキー(`apply_calibrated_mode_keys`・
+/// `[[calibration]]`)は警告にならない。`[[keymap]]` は `keymaps` へ合流する。
+#[test]
+fn load_warnings_report_unknown_keys_and_merge_legacy_keymap() {
+    let text =
+        std::fs::read_to_string(repo_root().join("tests/fixtures/configs/unknown_keys.toml"))
+            .unwrap();
+    let c = load_config_text(&text).unwrap();
+    let w = c.load_warnings().join("\n");
+    assert_eq!(c.load_warnings().len(), 2, "{w}");
+    assert!(
+        w.contains("general.no_such_option") && w.contains("futuresection"),
+        "{w}"
+    );
+    assert!(!w.contains("calibrat"), "撤去済みのキーは警告しない: {w}");
+
+    let text = std::fs::read_to_string(
+        repo_root().join("tests/fixtures/configs/legacy_keymap_and_post_bypass.toml"),
+    )
+    .unwrap();
+    let c = load_config_text(&text).unwrap();
+    assert_eq!(
+        c.keymaps.len(),
+        3,
+        "[[keymap]] 1件 + [[keymaps]] 2件が合流する"
+    );
+    assert!(c.load_warnings().iter().any(|w| w.contains("[[keymap]]")));
 }
 
 /// 実物の不具合報告の config は同意が無いためリポジトリに置かない(ADR-201 決定4-3)。

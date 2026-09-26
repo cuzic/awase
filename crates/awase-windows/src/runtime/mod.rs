@@ -104,17 +104,18 @@ mod adr192_tests {
 /// `Some(name)` なのに `VkCode::from_name` が解決できない場合（誤字・
 /// `"F21"` のような短縮形など）は、専用 Fn キー変換が黙って無効化される
 /// （＝設定前と同じ挙動に留まる、安全側）が、原因が分かるよう警告ログを出す。
-pub(crate) fn resolve_dedicated_fn_key(name: Option<&str>) -> Option<VkCode> {
-    let name = name?;
+pub(crate) fn resolve_dedicated_fn_key(name: Option<&str>) -> (Option<VkCode>, Option<String>) {
+    let Some(name) = name else {
+        return (None, None);
+    };
     let resolved = VkCode::from_name(name);
-    if resolved.is_none() {
-        tracing::warn!(
-            "[config] muhenkan_solo_tap_dedicated_fn_key = {name:?} を VK 名として \
-             解決できませんでした。専用 Fn キー変換は無効のままです \
-             （\"VK_F18\" のような完全な VK 名が必要、\"F18\" 等の短縮形は不可）"
-        );
-    }
-    resolved
+    let warning = resolved.is_none().then(|| {
+        format!(
+            "general.muhenkan_solo_tap_dedicated_fn_key = {name:?} を VK 名として解決できませんでした。\
+             専用 Fn キー変換は無効のままです（\"VK_F18\" または \"F18\" のような VK 名が必要）"
+        )
+    });
+    (resolved, warning)
 }
 
 /// IME 状態と修飾キースナップショットから `InputContext` を構築する。
@@ -1679,7 +1680,9 @@ impl Runtime {
         sync_toggle: Vec<VkCode>,
         sync_on: Vec<VkCode>,
         sync_off: Vec<VkCode>,
-    ) {
+    ) -> Vec<String> {
+        // 解決できなかった項目の警告（ADR-201 決定2）。呼び出し元（`reload_config`）が診断へ流す。
+        let mut warnings: Vec<String> = Vec::new();
         let ctx = self.build_ctx();
         let forced_open_actions = thumb_forced_open_actions(&special_keys);
         self.engine
@@ -1763,7 +1766,9 @@ impl Runtime {
                 ),
             );
             let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
-            self.set_muhenkan_dedicated_fn_key_config(resolve_dedicated_fn_key(manual_fn_key));
+            let (fn_key, fn_key_warning) = resolve_dedicated_fn_key(manual_fn_key);
+            warnings.extend(fn_key_warning);
+            self.set_muhenkan_dedicated_fn_key_config(fn_key);
             // ADR-153 決定1: ユーザー明示config。config.toml 由来のため毎回の
             // reload で再設定される（自動検出由来の delegate と異なり消去
             // されて構わない、`muhenkan_solo_tap_ime_action` フィールドdoc参照）。
@@ -1817,14 +1822,17 @@ impl Runtime {
         // if-let の成否に関わらず現在キャッシュされている値（bootstrap
         // または直近の成功した reload の値）を返すため、ここで安全に使える。
         let (left_thumb_vk, right_thumb_vk) = crate::hook::thumb_vk_codes();
-        self.all_keymaps =
+        let (all_keymaps, keymap_warnings) =
             crate::keymap::KeymapTable::new(&config.keymaps, left_thumb_vk, right_thumb_vk);
+        warnings.extend(keymap_warnings);
+        self.all_keymaps = all_keymaps;
         self.recompute_active_keymaps();
         tracing::info!(
             "Config applied: threshold={}ms, speculative_delay={}ms",
             config.general.simultaneous_threshold_ms,
             config.general.speculative_delay_ms,
         );
+        warnings
     }
 
     /// `active_keymaps` を `all_keymaps` から再計算する（ADR-114 決定8）。
