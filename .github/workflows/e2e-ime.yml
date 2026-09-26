@@ -239,6 +239,12 @@ jobs:
             # 親指を押している間は forced の IME OFF(keys.ime_off)を発火せず、離した時に発火する(check_charthumb.py)。修正前の awase は押している間に閉じる。
             cfg('sc-charthumb-gji-atok', 'pass', check='charthumb', args='--charthumb=41,1D', runs=2,
                 general='min_overlap_margin_percent = 15', keys='ime_off = ["VK_NONCONVERT"]'),
+            # T1(b)(ADR-199): TSF 経路で Alt+半角/全角(VK 0x19)が CUSTOM 表の Hankaku/Zenkaku 行に従うか。
+            # 変換(IMEOn)で IME を開き、Alt+0x19。行=IMEOff の表で閉じ、行なしの対照で閉じなければ「行に従う」。両方閉じれば行を見ない(0x19 は固定)。
+            cfg('sc-t1b-row-imeoff', 'observe', check='consistency', awase='false', keymap=0, runs=1,
+                args='--chord=A4,19 --chord-at=20000 --chord-prep=1C', tsv='DirectInput,Henkan,IMEOn|Precomposition,Hankaku/Zenkaku,IMEOff'),
+            cfg('sc-t1b-no-row', 'observe', check='consistency', awase='false', keymap=0, runs=1,
+                args='--chord=A4,19 --chord-at=20000 --chord-prep=1C', tsv='DirectInput,Henkan,IMEOn'),
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
@@ -390,6 +396,16 @@ jobs:
           if ('${{ matrix.cfg.custom_table }}' -eq 'true') {
             $tbl = [Text.Encoding]::UTF8.GetBytes("status`tkey`tcommand`nDirectInput`tHenkan`tIMEOn`n")
             $bytes.AddRange([byte[]](0xD2,0x02,[byte]$tbl.Length))
+            $bytes.AddRange($tbl)
+          }
+          # tsv: CUSTOM キー表を丸ごと指定する(行は '|'、列は ','。ヘッダは自動)。keymap=0(CUSTOM)と併用する。
+          if ('${{ matrix.cfg.tsv }}' -ne '') {
+            $rows = '${{ matrix.cfg.tsv }}' -split '\|' | ForEach-Object { $_ -replace ',', "`t" }
+            $tbl = [Text.Encoding]::UTF8.GetBytes("status`tkey`tcommand`n" + ($rows -join "`n") + "`n")
+            $bytes.AddRange([byte[]](0xD2,0x02))
+            $len = $tbl.Length
+            while ($len -ge 0x80) { $bytes.Add([byte](($len -band 0x7F) -bor 0x80)); $len = $len -shr 7 }
+            $bytes.Add([byte]$len)
             $bytes.AddRange($tbl)
           }
           [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), $bytes.ToArray())

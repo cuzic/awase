@@ -2948,6 +2948,9 @@ fn validate_args() {
         "--seed=",
         "--seq=",
         "--charthumb=",
+        "--chord=",
+        "--chord-at=",
+        "--chord-prep=",
         "--resync-gap=",
     ];
     for a in std::env::args().skip(1) {
@@ -2966,8 +2969,9 @@ fn validate_args() {
             "--grid-setup=" if !matches!(v, "keys" | "keys-immreset" | "imm") => arg_error(
                 &format!("--grid-setup= は keys / keys-immreset / imm のいずれか: {a}"),
             ),
-            "--hold=" | "--repeat=" | "--speed=" | "--notify-quiet=" | "--notify-nochg="
-            | "--grid-trials=" | "--grid-audit-pct=" | "--walk=" | "--seed=" | "--resync-gap="
+            "--hold=" | "--chord-at=" | "--repeat=" | "--speed=" | "--notify-quiet="
+            | "--notify-nochg=" | "--grid-trials=" | "--grid-audit-pct=" | "--walk="
+            | "--seed=" | "--resync-gap="
                 if v.parse::<u64>().is_err() =>
             {
                 arg_error(&format!("数値でない値: {a}"))
@@ -3172,7 +3176,19 @@ fn run() -> WinResult<()> {
         SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
         STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
         SCRIPT_IDX.with(|i| *i.borrow_mut() = script().len());
-        let base = now_ms() + 3000;
+        // `--chord-at=MS`: 開始までの待ち(既定3000)。`--activate-gji` の準備(約12秒)のあとに始めるには 20000 程度を指定する。
+        // `--chord-prep=VK`: チョードの2.5秒前に注入する準備キー(例: 変換=1C で IME を開いてから Alt+半角/全角、ADR-199 T1(b))。
+        let arg_u64 = |name: &str| {
+            std::env::args().find_map(|a| a.strip_prefix(name).and_then(|v| v.parse::<u64>().ok()))
+        };
+        let mut base = now_ms() + arg_u64("--chord-at=").unwrap_or(3000);
+        if let Some(prep) = std::env::args().find_map(|a| {
+            a.strip_prefix("--chord-prep=")
+                .and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok())
+        }) {
+            queue_press(base, prep);
+            base += 2500;
+        }
         const OVERLAP_MS: u64 = 150; // VK1押下からVK2タップ開始までの重なり
         const TAP_MS: u64 = 60; // VK2の保持時間
         const RELEASE_GAP_MS: u64 = 100; // VK2解放からVK1解放までの猶予
