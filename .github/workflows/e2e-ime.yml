@@ -258,7 +258,8 @@ jobs:
                   stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab{msime}')
               for form in ('edit', 'multi', 'rich', 'tsf')
               for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
-              for iv in (40, 20, 10)],
+              # 40/20/10ms は初回(run 36208885340)で全 PASS だったので、限界を探るため 5/2ms も足した。
+              for iv in (40, 20, 10, 5, 2)],
             *[cfg(f'ts-raw-{form}-{ime_name}-10ms', 'observe', check='typing', ime=ime, awase='false', runs=2, wait=420,
                   stress=f'--form={form} --interval=10 --mode=raw --no-awase --layout=@REPO@/layout/nicola_keytop.yab{msime}')
               for form in ('edit', 'tsf')
