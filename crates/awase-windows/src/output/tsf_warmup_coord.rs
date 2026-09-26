@@ -322,20 +322,15 @@ impl TsfWarmupCoordinator {
         true
     }
 
-    /// `pending_deferred` の件数上限（暴走防止用の安全弁、ADR-123 変更A+C 決定4-3）。
+    /// `pending_deferred` の件数上限（ADR-123 変更A+C 決定4-3）。
     ///
-    /// 超過分は「通常送信へ degrade」されるが、cold probe 中の直接送信は
-    /// 文字が消える（かつ既にキューにある分を追い越す）ため、この上限は
-    /// **通常の打鍵では到達しない値**でなければならない（BUG-165: 旧値 32 は
-    /// ts-tsf-gji-2ms〈2ms 間隔の高速打鍵〉で cold probe 中に超過し、
-    /// 8 回に 1 回・182 文字が消えた）。
-    ///
-    /// 導出: cold probe の最大所要 ~960ms（`tuning.rs` のリトライ合計）×
-    /// 2ms 間隔打鍵（500 key/s）× 1 モーラ最大 3 VK ≒ 1440 VK。probe は
-    /// deadline で必ず終わり flush される（BUG-038 修正済み）ため、上限は
-    /// キューが flush されないまま増え続ける暴走の検知にだけ働けばよく、
-    /// 余裕を見て 2048 とする。
-    pub(crate) const DEFERRED_QUEUE_CAP: usize = 2048;
+    /// 実測値: report `01M1KEGZ081YHJ1T2NC765SYYH`（cold_seq=28時点で4件）、
+    /// `01M1JJD54XQXSEJTHHFKV1WKA1`（3件）が既知の最大観測値。上限は
+    /// これらに十分な余裕を持たせた暫定値であり、実測データが増えたら
+    /// 見直すこと（`_MS` 系のタイミング定数ではないため
+    /// `.claude/rules/tuning-constants.md` の実測義務の直接対象ではないが、
+    /// 同じ精神で「効かないので増やした」式の変更は避けること）。
+    pub(crate) const DEFERRED_QUEUE_CAP: usize = 32;
 
     /// `pending_deferred` に `additional` 件を追加すると上限を超えるか。
     ///

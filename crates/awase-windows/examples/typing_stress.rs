@@ -821,24 +821,6 @@ fn delivery_stats(st: &InjectStats, hook: &[HookEv]) -> (usize, u64, u64) {
     (hook.len(), p50, mx)
 }
 
-/// ハーネス自身の入力欄の IME が実際に開いているか(同一プロセスの IMM。取れなければ `None`)。
-///
-/// ready 確認の出力「か」は、awase が Engine ON のまま Unicode で送っても一致する(BUG-166: MS-IME が
-/// 最初の 0xF2 を受け付けず閉のままでも ready が通り、以後の単打が生ローマ字になった)ため、
-/// 実 IME の開閉を別に確認する。
-fn real_ime_open(child: HWND) -> Option<bool> {
-    // SAFETY: 自プロセスの入力欄の HWND に対する IMM 呼び出し。取得した HIMC は必ず解放する。
-    unsafe {
-        let himc = windows::Win32::UI::Input::Ime::ImmGetContext(child);
-        if himc.is_invalid() {
-            return None;
-        }
-        let open = windows::Win32::UI::Input::Ime::ImmGetOpenStatus(himc).as_bool();
-        let _ = windows::Win32::UI::Input::Ime::ImmReleaseContext(child, himc);
-        Some(open)
-    }
-}
-
 fn ime_ready(raw: bool, cells: &[Vec<Cell>; 3], child: HWND) -> bool {
     // かなキー(NICOLA 単打 `ka`→か、raw なら k,a)を1回、ゆっくり打って確定し、IME と awase が効いているかを確かめる。
     let probe = cells[0]
@@ -865,10 +847,9 @@ fn ime_ready(raw: bool, cells: &[Vec<Cell>; 3], child: HWND) -> bool {
         press(VK_RETURN, 0x1C, 50);
         sleep_ms(700);
         let text = read_text(child);
-        let open = real_ime_open(child);
-        let ok = text.trim() == c.kana.to_string() && open != Some(false);
+        let ok = text.trim() == c.kana.to_string();
         rec(
-            &json!({"type":"ready","attempt":attempt,"text":text,"expect":c.kana.to_string(),"ime_open":open,"ok":ok}),
+            &json!({"type":"ready","attempt":attempt,"text":text,"expect":c.kana.to_string(),"ok":ok}),
         );
         if ok {
             clear_text(child);

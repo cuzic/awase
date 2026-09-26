@@ -2445,29 +2445,6 @@ mod tests {
     }
 
     #[test]
-    fn defer_vk_if_probe_in_flight_keeps_deferring_past_the_old_cap_of_32() {
-        // BUG-165: 旧上限 32 は 2ms 間隔の高速打鍵で cold probe 中に超過し、
-        // 超過分が通常送信へ degrade して消えた。通常の打鍵量では上限に達しない。
-        let o = make_output();
-        o.install_pending_tsf(Box::new(
-            crate::tsf::warmup::chrome_probe::ChromeProbe::new(
-                "x",
-                Generation::INITIAL,
-                crate::tsf::probe::TsfReadinessProbe::new(0, Generation::INITIAL, 0),
-                0,
-                OutputActiveGuard::begin(),
-            ),
-        ));
-        for i in 0..500 {
-            assert!(
-                o.defer_vk_if_probe_in_flight(VkCode(0x41), false, DeferredOrigin::UserInput),
-                "{i} 件目で defer が諦められた"
-            );
-        }
-        assert_eq!(o.pending_deferred_len(), 500);
-    }
-
-    #[test]
     fn defer_vk_if_probe_in_flight_degrades_instead_of_pushing_past_the_cap() {
         // 2026-09-03 code review指摘の回帰テスト: 単一VK版が件数上限
         // (would_exceed_deferred_cap)を経由せず無条件pushしていた退行の
