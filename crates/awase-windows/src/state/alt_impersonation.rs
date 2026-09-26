@@ -37,11 +37,26 @@ pub(crate) const fn classify_alt_side(vk: VkCode, extended: bool) -> (bool, bool
 #[must_use]
 pub fn resolve_thumb_key(name: &str) -> Option<(VkCode, bool)> {
     use crate::vk::{VkCodeExt, VK_CONVERT, VK_NONCONVERT};
-    match name {
-        "Left Alt" => Some((VK_NONCONVERT, true)),
-        "Right Alt" => Some((VK_CONVERT, true)),
-        _ => VkCode::from_name(name).map(|vk| (vk, false)),
+    // `from_name` が大文字小文字・前後の空白を区別しなくなった（ADR-201 決定1）ので、
+    // 目印だけが区別すると `"left alt"` が `from_name` に落ちて失敗する。同じ規則で比べる。
+    let marker = name.trim();
+    if marker.eq_ignore_ascii_case("Left Alt") {
+        Some((VK_NONCONVERT, true))
+    } else if marker.eq_ignore_ascii_case("Right Alt") {
+        Some((VK_CONVERT, true))
+    } else {
+        VkCode::from_name(name).map(|vk| (vk, false))
     }
+}
+
+/// `left_thumb_key`/`right_thumb_key` のどちらかが、解決した VK として `vk` か。
+/// 文字列の完全一致（`== "VK_SPACE"`）だと `"Space"`・`"vk_space"` などの別表記を
+/// 取りこぼすため、表（`from_name`）を通した VK 比較にする（ADR-201 決定1）。
+#[must_use]
+pub fn is_thumb_key_vk(left: &str, right: &str, vk: VkCode) -> bool {
+    [left, right]
+        .into_iter()
+        .any(|n| resolve_thumb_key(n).is_some_and(|(resolved, _)| resolved == vk))
 }
 
 /// Alt キー1個ぶんの「なりすまし」判定(純粋関数、テスト対象)。
@@ -95,7 +110,7 @@ pub(crate) fn decide_alt_impersonation(
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_alt_side, decide_alt_impersonation, resolve_thumb_key};
+    use super::{classify_alt_side, decide_alt_impersonation, is_thumb_key_vk, resolve_thumb_key};
     use crate::vk::{VK_CONVERT, VK_LMENU, VK_MENU, VK_NONCONVERT, VK_RMENU, VK_SPACE};
 
     const LEFT_THUMB: awase::types::VkCode = VK_NONCONVERT;
@@ -139,6 +154,26 @@ mod tests {
     fn resolve_thumb_key_alt_sentinels() {
         assert_eq!(resolve_thumb_key("Left Alt"), Some((VK_NONCONVERT, true)));
         assert_eq!(resolve_thumb_key("Right Alt"), Some((VK_CONVERT, true)));
+    }
+
+    /// ADR-201 決定1: 目印も `from_name` と同じく大文字小文字・前後の空白を区別しない
+    /// （区別すると `"left alt"` が `from_name` に落ちて失敗する）。
+    #[test]
+    fn resolve_thumb_key_alt_sentinels_ignore_case_and_space() {
+        assert_eq!(resolve_thumb_key("left alt"), Some((VK_NONCONVERT, true)));
+        assert_eq!(resolve_thumb_key(" RIGHT ALT "), Some((VK_CONVERT, true)));
+    }
+
+    /// Space/Enter 判定は文字列の完全一致でなく解決した VK の比較（別表記も拾う）。
+    #[test]
+    fn is_thumb_key_vk_matches_any_spelling() {
+        use crate::vk::VK_RETURN;
+        assert!(is_thumb_key_vk("無変換", "VK_SPACE", VK_SPACE));
+        assert!(is_thumb_key_vk("Space", "変換", VK_SPACE));
+        assert!(is_thumb_key_vk("vk_space", "変換", VK_SPACE));
+        assert!(is_thumb_key_vk("無変換", "Enter", VK_RETURN));
+        assert!(!is_thumb_key_vk("無変換", "変換", VK_SPACE));
+        assert!(!is_thumb_key_vk("Left Alt", "Right Alt", VK_SPACE));
     }
 
     /// 通常の VK 名は従来通り解決され、なりすましフラグは立たない。

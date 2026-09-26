@@ -38,9 +38,6 @@ use crate::vk::{parse_key_combo, VkCodeExt};
 /// 段階1(`from_name` の寛容化)で `unresolved` の行が消え、段階2(`keymap` の合流)で
 /// `unknown_top_level` の行が消える。`default_mismatch` は文書の誤りで、別途直す。
 const DOC_KNOWN_FAILURES: &[&str] = &[
-    // 同梱 config.toml・文書の書き方。`parse_key_combo` が `VK_` を補わず、`filter_map` の `?` で
-    // 無警告に捨てられる(背景 #2)。段階1で解決する。
-    "config-post-bypass|unresolved|post_bypass[0].key=Ctrl+J",
     // 文書の「デフォルト値」の例が実際の既定値(`VK_INSERT`)と違う(文書が古い。既定は
     // ADR-199 以前に無変換から Insert へ変わった)。文書側を直すときに消す。
     "usage-ja-2|default_mismatch|keys.engine_off_solo_repeat",
@@ -51,31 +48,9 @@ const DOC_KNOWN_FAILURES: &[&str] = &[
 
 /// 合成 config の「既知の失敗」。書式は `"<ファイル名>|<種別>|<詳細>"`(種別は上と同じ)。
 const FIXTURE_KNOWN_FAILURES: &[&str] = &[
-    // ── 大文字小文字・前後の空白: 修飾キー(`Ctrl`)も `from_name` も完全一致(段階1で寛容化) ──
-    "notation_case_and_space.toml|unresolved|general.engine_toggle_hotkey=ctrl+shift+f12",
-    "notation_case_and_space.toml|unresolved|general.left_thumb_key=vk_nonconvert",
-    "notation_case_and_space.toml|unresolved|general.right_thumb_key= VK_CONVERT ",
-    "notation_case_and_space.toml|unresolved|keys.engine_off_solo_repeat=vk_insert",
-    "notation_case_and_space.toml|unresolved|keys.engine_on=ctrl+shift+VK_CONVERT",
-    "notation_case_and_space.toml|unresolved|keys.ime_off=CTRL+VK_F14",
-    "notation_case_and_space.toml|unresolved|keys.ime_on=Control+vk_f13",
-    "notation_case_and_space.toml|unresolved|keys.ime_toggle=vk_kanji",
-    // ── Alt なりすましの目印は大文字小文字を区別する(決定1末尾、`resolve_thumb_key` も無視にする) ──
-    "alt_impersonation_lowercase.toml|unresolved|general.left_thumb_key=left alt",
-    // ── ホットキーの日本語名: `parse_hotkey` が `VK_変換` にして失敗(背景 #1、BUG-167 の残り) ──
-    "notation_japanese_names.toml|unresolved|general.engine_toggle_hotkey=Ctrl+Shift+変換",
-    // ── `VK_` 無しの主キー: `parse_key_combo` は補わない(背景 #2) ──
-    "notation_prefix.toml|unresolved|keys.engine_off=Ctrl+F10",
-    "notation_prefix.toml|unresolved|keys.engine_off_solo_repeat=F16",
-    "notation_prefix.toml|unresolved|keys.engine_on=Ctrl+F12",
-    "notation_prefix.toml|unresolved|keys.ime_detect.on=F17",
-    "notation_prefix.toml|unresolved|keys.ime_off=F14",
-    // ── 旧表記 `[[keymap]]`(実際は `keymaps`)、`[[post_bypass]]` の `Ctrl+J`(背景 #2・#3) ──
-    // `[[keymap]]` は段階2で合流する。`Ctrl+J`・`Ctrl+F8` は段階1で解決する。
+    // 旧表記 `[[keymap]]`(実際は `keymaps`)。段階2で `keymaps` へ合流する。
     "legacy_keymap_and_post_bypass.toml|unknown_top_level|keymap",
-    "legacy_keymap_and_post_bypass.toml|unresolved|keymaps[1].from=Ctrl+F8",
-    "legacy_keymap_and_post_bypass.toml|unresolved|post_bypass[0].key=Ctrl+J",
-    // ── 未知のキー・存在しないキー名(意図して解決できない値)。段階1では残る。
+    // ── 未知のキー・存在しないキー名(意図して解決できない値)。
     // 段階2で `validate()` の警告に出るようになったら、警告数の基準を上げて一覧から消す ──
     "unknown_keys.toml|unknown_top_level|calibration",
     "unknown_keys.toml|unknown_top_level|futuresection",
@@ -137,8 +112,8 @@ fn load_config_text(text: &str) -> Result<AppConfig, String> {
 }
 
 /// ホットキー文字列を、実際の読み手 `parse_hotkey` と同じ経路で解釈できるか。
-/// Windows では実物を呼ぶ。Linux では `parse_hotkey` と同じ処理(`+` で分割・修飾キーの
-/// 完全一致・`with_vk_prefix` で前置き・`from_name`)の等価コードで確かめる。
+/// Windows では実物を呼ぶ。Linux では `parse_hotkey` が薄く包んでいる
+/// `parse_key_combo`(修飾キー解釈は `interpret_combo` 1関数)で確かめる。
 fn hotkey_readable(s: &str) -> bool {
     #[cfg(windows)]
     {
@@ -146,14 +121,7 @@ fn hotkey_readable(s: &str) -> bool {
     }
     #[cfg(not(windows))]
     {
-        use crate::vk::with_vk_prefix;
-        let parts: Vec<&str> = s.split('+').map(str::trim).collect();
-        let Some((last, mods)) = parts.split_last() else {
-            return false;
-        };
-        mods.iter()
-            .all(|m| matches!(*m, "Ctrl" | "Control" | "Shift" | "Alt"))
-            && VkCode::from_name(&with_vk_prefix(last)).is_some()
+        parse_key_combo(s).is_some()
     }
 }
 
@@ -167,7 +135,7 @@ fn hotkey_readable(s: &str) -> bool {
 /// - `keys.ime_detect.*`・`engine_off_solo_repeat`・`engine_on/off_ime_key`・
 ///   `muhenkan_solo_tap_dedicated_fn_key`: `from_name`
 /// - `[[post_bypass]] key`: `parse_key_combo` + Ctrl 必須(`bootstrap.rs` の `filter_map`)
-/// - `[[keymaps]] from`: `parse_key_combo`、`to`: `from_name` か `VK_` を補って `from_name`
+/// - `[[keymaps]] from`: `parse_key_combo`、`to`: `from_name`
 fn unresolved_keys(c: &AppConfig) -> Vec<String> {
     let mut out = Vec::new();
     for (name, v) in [
@@ -238,10 +206,7 @@ fn unresolved_keys(c: &AppConfig) -> Vec<String> {
             out.push(format!("keymaps[{i}].from={}", r.from));
         }
         for to in &r.to {
-            if VkCode::from_name(to)
-                .or_else(|| VkCode::from_name(&format!("VK_{to}")))
-                .is_none()
-            {
+            if VkCode::from_name(to).is_none() {
                 out.push(format!("keymaps[{i}].to={to}"));
             }
         }

@@ -331,7 +331,7 @@ pub struct Runtime {
     /// （ADR-114「未解決の疑問」5 対応）。
     muhenkan_dedicated_fn_key_vk: Option<VkCode>,
     /// `config.general.left_thumb_key`/`right_thumb_key` のいずれかが
-    /// `"VK_SPACE"` か。`true` の場合、MS-IME レジストリ自動検出の
+    /// Space（`VK_SPACE`）か。`true` の場合、MS-IME レジストリ自動検出の
     /// Shift+Space トグルは `engine.set_ime_toggle_auto_keys` へ反映しない
     /// （Space 親指キーの Shift リテラル送出機能との衝突を避けるため、
     /// Opus コードレビュー指摘）。`apply_config_update`/起動時に反映される。
@@ -1779,10 +1779,11 @@ impl Runtime {
                     .henkan_solo_tap_ime_action
                     .map(awase::config::ShadowImeActionConfig::to_core),
             );
-            self.set_space_is_thumb_key(
-                config.general.left_thumb_key == "VK_SPACE"
-                    || config.general.right_thumb_key == "VK_SPACE",
-            );
+            self.set_space_is_thumb_key(crate::state::alt_impersonation::is_thumb_key_vk(
+                &config.general.left_thumb_key,
+                &config.general.right_thumb_key,
+                crate::vk::VK_SPACE,
+            ));
             let enter_thumb_vk = [left, right]
                 .into_iter()
                 .find(|&vk| vk == crate::vk::VK_RETURN);
