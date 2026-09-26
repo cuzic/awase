@@ -661,10 +661,27 @@ pub fn parse_hotkey(s: &str) -> Option<(u32, VkCode)> {
         }
     }
 
-    let key_name = format!("VK_{}", parts.last()?);
+    let key_name = with_vk_prefix(parts.last()?);
     let vk = VkCode::from_name(&key_name)?;
 
     Some((modifiers, vk))
+}
+
+/// ホットキーのキー名に `VK_` 接頭辞を補う（既にあればそのまま）。
+///
+/// `engine_toggle_hotkey` は手書きなら `"Ctrl+Shift+F12"`（接頭辞なし）、設定 GUI が
+/// 書き出すと `"Ctrl+Shift+VK_F12"`（接頭辞あり）と、2通りの表記で config に入る。
+/// 以前は常に `VK_` を付けていたため後者が `VK_VK_F12` になって `from_name` が
+/// 失敗し、ホットキーが無言で登録されなかった（BUG-167）。`parse_hotkey`（Windows 専用）
+/// と `keymap::warn_on_engine_hotkey_collision`（Linux でもビルドされる）の両方が
+/// この関数を使い、正規化を1か所に置く。
+#[must_use]
+pub(crate) fn with_vk_prefix(key_name: &str) -> String {
+    if key_name.starts_with("VK_") {
+        key_name.to_string()
+    } else {
+        format!("VK_{key_name}")
+    }
 }
 
 /// キーコンボ文字列をパースする
@@ -961,7 +978,7 @@ mod tests {
         ascii_to_vk, build_symbol_to_vk, is_ime_mode_key_for_ime, is_synthetic_dbe_ime_hotkey,
         may_change_ime, reinject_scan_code, should_release_thumb_latch,
         should_upgrade_is_japanese_ime, thumb_latch_identity, vk_may_mutate_conv, vk_pair_to_ascii,
-        ImeKeyKind, VkCode, VK_A, VK_RETURN, VK_SPACE,
+        with_vk_prefix, ImeKeyKind, VkCode, VkCodeExt, VK_A, VK_RETURN, VK_SPACE,
     };
     use awase::types::ScanCode;
 
@@ -1362,5 +1379,38 @@ mod tests {
         }
         assert!(!is_role_fkey(VkCode(0x7B)) && !is_role_fkey(VkCode(0x88)));
         assert!(!is_role_fkey(VkCode(0xF3)));
+    }
+
+    /// BUG-167: 設定 GUI は `Ctrl+Shift+VK_F12`、手書きは `Ctrl+Shift+F12` と書く。
+    /// どちらの表記でも末尾のキー名が `VK_F12` に揃うこと（二重に `VK_VK_` にならない）。
+    #[test]
+    fn with_vk_prefix_accepts_both_spellings() {
+        assert_eq!(with_vk_prefix("F12"), "VK_F12");
+        assert_eq!(with_vk_prefix("VK_F12"), "VK_F12");
+        assert_eq!(with_vk_prefix("A"), "VK_A");
+        // 接頭辞と紛らわしいだけの名前は補う（`VK_` で始まらない）。
+        assert_eq!(with_vk_prefix("VKX"), "VK_VKX");
+    }
+
+    /// BUG-167: 正規化後のキー名が実際に `from_name` で引けること
+    /// （旧実装では `VK_VK_F12` で `None` になり、ホットキーが無言で登録されなかった）。
+    #[test]
+    fn both_hotkey_spellings_resolve_to_the_same_vk() {
+        let a = VkCode::from_name(&with_vk_prefix("F12"));
+        let b = VkCode::from_name(&with_vk_prefix("VK_F12"));
+        assert!(a.is_some());
+        assert_eq!(a, b);
+        assert!(VkCode::from_name("VK_VK_F12").is_none());
+    }
+
+    /// `parse_hotkey`（Windows 専用。Linux では走らず windows-build CI で走る）が
+    /// 両表記で同じ修飾キー・VK を返すこと。
+    #[cfg(windows)]
+    #[test]
+    fn parse_hotkey_accepts_gui_and_handwritten_spellings() {
+        let handwritten = super::parse_hotkey("Ctrl+Shift+F12");
+        let gui = super::parse_hotkey("Ctrl+Shift+VK_F12");
+        assert!(handwritten.is_some());
+        assert_eq!(handwritten, gui);
     }
 }
