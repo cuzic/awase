@@ -606,8 +606,8 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
 | T12 | U7（確定）: MS-IME 本体の変換/無変換の役割（レジストリ）。トグルに当たるレジストリ値を実機で確認してから足す（既知の 0/1 は受動）。`check_and_warn` の案内文言 | — |
 | T13 | 決定17: 互換モードのとき MS-IME 本体の半角/全角を受動に（レジストリ読み取りは予測経路と同じ間引き） | — |
 | T14 | **（撤回・T16 に置換: 2026-09-26 の所有者決定で 0x19 は役割判定に入れる）** 決定14 の移行（T1(b) の後）: 0x19 を既知のトグルとして学習表の `Kanji` セルで狭める＋`keys.ime_toggle` の既定を空に（決定15、所有者回答で確定。JIS 切替の書き込み `main.rs:2591` を空に揃える、既存 config.toml に残る `VK_KANJI` の移行処理の要否の確認、0x19 が無修飾コンボに一致しないことの確認を含む） | — |
-| T15 | **（実装済み・PR 未マージ）** 決定13（確定）: `awase-gji-config/src/command.rs::classify_command` で DirectInput 行の `CompositionMode*`/旧名 `InputMode*` を Open に数える（テスト: 決定13 の例〈ひらがな/カタカナ指定で開くキー〉。awase が書くのは開閉だけ、変換モード軸は書かない）。実機確認は済み（T1(c)、run 36241517512）。**実装状況**: 純関数 `command::sets_absolute_mode`（`CompositionMode*`/旧名 `InputMode*` の絶対設定系5種）を `role.rs::Effect::of` の DirectInput 行で Open に数える。`classify_command` は変えない（`keymap.rs` のモード追随が旧名の行まで拾う挙動変更を避ける）。DirectInput 以外・相対トグル系は従来どおり受動 | 決定13 |
-| T16 | **設計は [ADR-202](202-kanji-0x19-role-from-hankaku-zenkaku-row.md)（草案・未決2件）**。決定14（確定）: 0x19 を `Hankaku/Zenkaku` 行から役割逆算する専用経路（Alt 付きで届くので決定4 の候補集合・無修飾ガードは通さない、`Kanji` 行は見ない）。`hook.rs` の静的 Toggle の置換範囲、`keys.ime_toggle` 既定（`VK_KANJI`）の扱い、MS-IME 本体の 0x19（未確認）を決める。実機根拠: run 36242111739・36242940343 | 決定14 |
+| T15 | **（実装済み・PR #339 マージ済み）** 決定13（確定）: `awase-gji-config/src/command.rs::classify_command` で DirectInput 行の `CompositionMode*`/旧名 `InputMode*` を Open に数える（テスト: 決定13 の例〈ひらがな/カタカナ指定で開くキー〉。awase が書くのは開閉だけ、変換モード軸は書かない）。実機確認は済み（T1(c)、run 36241517512）。**実装状況**: 純関数 `command::sets_absolute_mode`（`CompositionMode*`/旧名 `InputMode*` の絶対設定系5種）を `role.rs::Effect::of` の DirectInput 行で Open に数える。`classify_command` は変えない（`keymap.rs` のモード追随が旧名の行まで拾う挙動変更を避ける）。DirectInput 以外・相対トグル系は従来どおり受動 | 決定13 |
+| T16 | **設計は [ADR-202](202-kanji-0x19-role-from-hankaku-zenkaku-row.md)（採用・未決2件も確定、実装未着手）**。決定14（確定）: 0x19 を `Hankaku/Zenkaku` 行から役割逆算する専用経路（Alt 付きで届くので決定4 の候補集合・無修飾ガードは通さない、`Kanji` 行は見ない）。`hook.rs` の静的 Toggle の置換範囲、`keys.ime_toggle` 既定（`VK_KANJI`）の扱い、MS-IME 本体の 0x19（未確認）を決める。実機根拠: run 36242111739・36242940343 | 決定14 |
 
 ## テスト方針
 
