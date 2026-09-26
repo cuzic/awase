@@ -121,6 +121,12 @@ jobs:
             # --- Microsoft IME 本体(GJI を入れず、ja-JP の言語を追加して標準の日本語IMEを使う) ---
             cfg('msime-native', 'observe', check='consistency', args='--walk --msime', ime='msime'),
             cfg('msime-native-henkan', 'observe', check='consistency', args='--walk --msime --key=henkan', ime='msime'),
+            # conv 軸の自動書き込みの撤去実験(docs/tasks/conv-write-paths-inventory.md、対照は msime-native / atok-passthrough)。
+            # a8=経路9(焦点プローブのかなモード修正) a9=経路1+2(ROMAN補完、sync/async両方) a10=a8+a9
+            cfg('msime-native-a8', 'observe', mutator='a8-no-focus-probe-roman.sh', check='consistency', args='--walk --msime', ime='msime'),
+            cfg('msime-native-a9', 'observe', mutator='a9-no-roman-completion.sh', check='consistency', args='--walk --msime', ime='msime'),
+            cfg('msime-native-a10', 'observe', mutator='a10-no-conv-auto-write.sh', check='consistency', args='--walk --msime', ime='msime'),
+            cfg('atok-passthrough-a9', 'observe', mutator='a9-no-roman-completion.sh', check='consistency', args='--walk'),
             # 対照実験: awase を起動せず、同じキー列で実IMEだけを見る(実IMEの推移がawaseのせいかCI環境の癖かを分ける)
             cfg('msime-native-noawase', 'observe', check='consistency', args='--walk --msime', ime='msime', awase='false'),
             cfg('atok-noawase', 'observe', check='consistency', args='--walk', awase='false'),

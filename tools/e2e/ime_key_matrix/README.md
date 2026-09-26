@@ -58,7 +58,7 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 | `check_consistency.py` | プリセット非依存: 実IMEのかな=Engine ON、英数/直接入力=Engine OFF に追随するか(Engineは各押下の700ms後の`k`の扱いで読む) |
 | `check_resync.py` | リセット操作の後に実IMEとEngineが揃うか |
 | `check_toggle.py` | 開閉トグルキーが押すたびに反転し、Engineが追随するか |
-| `ablations/a*.sh` | 撤去実験(ミューテーター)。`a7-no-follow.sh`はfollow(ADR-187)を無効化してずれを起こす |
+| `ablations/a*.sh` | 撤去実験(ミューテーター)。`a7-no-follow.sh`はfollow(ADR-187)を無効化してずれを起こす。`a8`〜`a10`はconv軸の自動書き込み(焦点プローブ・ROMAN補完)の撤去(docs/tasks/conv-write-paths-inventory.md) |
 
 ## ADR-191/193: 学習ラウンド(格子)・検証ラウンド(walk)・通知の計測ツール(ワークフローの `cal-*` 構成 = `check: collect`)
 `cal-*` 構成は判定せずログを回収し、`[GRID-ABORT]` による打ち切り(rc=3=INVALID)だけを検出する(解析は下のツールでローカルに行う)。
