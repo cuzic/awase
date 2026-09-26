@@ -830,6 +830,8 @@ fn ime_ready(raw: bool, cells: &[Vec<Cell>; 3], child: HWND) -> bool {
         sleep_ms(700);
         let text = read_text(child);
         let open = real_ime_open(child);
+        // `None`(取れない)は通す: ts-chrome* は入力欄が別プロセス(Chrome)で HIMC を取れないため。
+        // 自プロセスの入力欄(edit/tsf/rich/multi)では CI で 41/41 回とも値が取れた(run 36224603306)。
         let ok = text.trim() == c.kana.to_string() && open != Some(false);
         rec(
             &json!({"type":"ready","attempt":attempt,"text":text,"expect":c.kana.to_string(),"ime_open":open,"ok":ok}),
