@@ -97,6 +97,7 @@ data/
 
 最小構成：
 
+<!-- example-begin: readme-minimal asis -->
 ```toml
 [general]
 simultaneous_threshold_ms = 100   # 同時打鍵判定の閾値（ms）。NICOLA 規格は 100ms
@@ -105,6 +106,7 @@ right_thumb_key = "変換"
 layouts_dir     = "layout"
 default_layout  = "nicola_keytop.yab"
 ```
+<!-- example-end -->
 
 フルサンプルは同梱の `config.toml` を参照してください。
 
@@ -136,6 +138,7 @@ n-gram の仕組みの詳細は [ARCHITECTURE.md](ARCHITECTURE.md#n-gram-によ�
 
 特定アプリで動作が合わない場合に強制指定します。
 
+<!-- example-begin: readme-app-overrides asis -->
 ```toml
 [app_overrides]
 # 常にテキスト入力として扱う
@@ -151,6 +154,7 @@ force_tsf = [
     { process = "wezterm-gui.exe", class = "org.wezfurlong.wezterm" },
 ]
 ```
+<!-- example-end -->
 
 プロセス名とクラス名は `RUST_LOG=debug awase.exe` のログで確認できます。
 

@@ -1,0 +1,4 @@
+# Alt なりすましを小文字で手書きしたもの(resolve_thumb_key は大文字小文字を区別する)
+[general]
+left_thumb_key = "left alt"
+right_thumb_key = "Right Alt"

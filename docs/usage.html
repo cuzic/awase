@@ -584,7 +584,7 @@ footer p{margin-bottom:0.3rem}
         特定の Fn キーへ固定したい場合のみ、以下のように <code>config.toml</code> を
         直接編集してください（設定画面には現在この項目はありません）。
       </p>
-      <div class="code-block">[general]
+      <div class="code-block" data-example="usage-ja-1" data-mode="uncomment">[general]
 # 無変換キー単独タップで送る専用Fnキー（既定: 未設定・自動検出に任せる）
 # muhenkan_solo_tap_dedicated_fn_key = "VK_F21"</div>
       <p class="note" style="margin-top:0.7rem">
@@ -658,7 +658,7 @@ footer p{margin-bottom:0.3rem}
     <div class="card">
       <h3>ショートカットのカスタマイズ</h3>
       <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.7rem">以下がデフォルト値です。<code>config.toml</code> に <code>[keys]</code> セクションを追加して上書きできます。</p>
-      <div class="code-block">[keys]
+      <div class="code-block" data-example="usage-ja-2" data-mode="asis" data-default="keys">[keys]
 # NICOLA エンジン ON（親指シフト入力を有効化）
 engine_on = ["Ctrl+Shift+変換"]
 
@@ -685,7 +685,7 @@ engine_off_solo_triple = "VK_NONCONVERT"</div>
 
     <div class="card">
       <h3>同時打鍵の判定</h3>
-      <div class="code-block">[general]
+      <div class="code-block" data-example="usage-ja-3" data-mode="asis">[general]
 # 同時打鍵の判定閾値（ミリ秒）。NICOLA 規格標準は 100ms。
 simultaneous_threshold_ms = 100
 
@@ -705,7 +705,7 @@ confirm_mode = "wait"
 
     <div class="card">
       <h3>親指キーのカスタマイズ</h3>
-      <div class="code-block">[general]
+      <div class="code-block" data-example="usage-ja-4" data-mode="asis">[general]
 # 左親指キー（VK コード名）
 left_thumb_key = "VK_NONCONVERT"    # 無変換キー
 
@@ -715,7 +715,7 @@ right_thumb_key = "VK_CONVERT"      # 変換キー</div>
 
     <div class="card">
       <h3>キーボードモデルと出力方式</h3>
-      <div class="code-block">[general]
+      <div class="code-block" data-example="usage-ja-5" data-mode="asis">[general]
 # キーボードモデル（JIS キーボードを使っている場合はデフォルトで OK）
 # keyboard_model = "jis"   # JIS キーボード（デフォルト）
 # keyboard_model = "us"    # US キーボード
@@ -725,7 +725,7 @@ right_thumb_key = "VK_CONVERT"      # 変換キー</div>
     <div class="card">
       <h3>自動起動の設定</h3>
       <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">MSI インストーラー・ZIP 版の <code>install.ps1</code> のいずれでインストールした場合も、確認ダイアログなしで Windows ログオン時の自動起動が既定で有効になります。無効にしたい場合は、トレイアイコンのメニューか、以下の <code>auto_start</code> 設定で変更できます。</p>
-      <div class="code-block">[general]
+      <div class="code-block" data-example="usage-ja-6" data-mode="asis">[general]
 # Windows ログオン時に自動起動する
 #   "enabled"  - 自動起動を有効にする（デフォルト）
 #   "disabled" - 自動起動を無効にする
@@ -736,7 +736,7 @@ auto_start = "enabled"</div>
     <div class="card">
       <h3>更新確認の設定</h3>
       <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">タスクトレイアイコンを右クリックすると、最新バージョンを確認して新しい版があればメニューに表示します（設定画面の「更新を確認」チェックボックスでも切り替えられます）。バージョン・OS・端末固有の情報は送信しません。無効にしたい場合や、無人展開でこのファイルを直接配置する場合は以下の設定を使います。</p>
-      <div class="code-block">[general]
+      <div class="code-block" data-example="usage-ja-7" data-mode="asis">[general]
 # トレイ右クリック時に最新バージョンを確認する
 #   true  - 確認する（デフォルト）
 #   false - 一切通信しない
@@ -746,7 +746,7 @@ update_check = true</div>
 
     <div class="card">
       <h3>特定ウィンドウの動作オーバーライド</h3>
-      <div class="code-block">[app_overrides]
+      <div class="code-block" data-example="usage-ja-8" data-mode="asis">[app_overrides]
 # 特定アプリでテキスト入力を強制する
 force_text = [
     { process = "myapp.exe", class = "MyWindowClass" },
@@ -761,7 +761,7 @@ force_bypass = [
 
     <div class="card">
       <h3>アプリ別の出力モード上書き</h3>
-      <div class="code-block">[app_overrides]
+      <div class="code-block" data-example="usage-ja-9" data-mode="asis">[app_overrides]
 # VK キーストロークで送信する（Chrome / Edge / VS Code 等 Electron ベースのアプリ）
 force_vk = [
     { process = "chrome.exe",  class = "Chrome_RenderWidgetHostHWND" },
@@ -777,7 +777,7 @@ force_tsf = [
     <div class="card">
       <h3>IME 検出キーの手動設定</h3>
       <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">外部 IME の状態変化（半角/全角キー等）を awase が検出するための設定です。GUI には無く <code>config.toml</code> の直接編集でのみ設定できます（多くの利用者には不要なため、GUI からは意図的に外してあります）。<code>toggle</code> の既定は空です。漢字キーは「キー設定」タブの「IME ON/OFF トグル」（<code>keys.ime_toggle</code>、既定: 漢字キー）が能動的に処理するため、ここに重ねて設定すると同じキーを二重処理してしまい正しく動作しません。</p>
-      <div class="code-block">[keys.ime_detect]
+      <div class="code-block" data-example="usage-ja-10" data-mode="uncomment">[keys.ime_detect]
 # IME ON/OFF をトグルするキー（既定: 空。上記「IME ON/OFF トグル」と
 # 同じキーを指定すると二重処理になるため避けること）
 # toggle = ["VK_KANJI"]
@@ -792,7 +792,7 @@ force_tsf = [
     <div class="card">
       <h3>句読点確定などの複数アクション（打鍵列機能）</h3>
       <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">1つのキーで「文字を出力してから確定操作を送る」など、複数の動作をまとめて実行できる機能です（やまぶきの <code>CV4D</code> 相当）。既定では無効（Off）です。GUI にはまだトグルがなく、<code>config.toml</code> の直接編集でのみ有効化できます。</p>
-      <div class="code-block">[general]
+      <div class="code-block" data-example="usage-ja-13" data-mode="asis">[general]
 # 打鍵列機能を有効化する
 #   "off" - 無効（デフォルト。既存の .yab をそのまま解釈）
 #   "on"  - 有効（.yab セル内の + 区切り・CV4D・@マクロ参照を解釈）
@@ -801,7 +801,7 @@ keystroke_sequence = "on"</div>
       <div class="code-block">[ローマ字シフト無し]
 '．'+CV4D,ka,ta,...</div>
       <p class="note">上の例は「。を出力してから Ctrl+M で確定する」という動作を1セルで定義しています。同じ動作を複数キーで使い回したい場合は、<code>[[keystroke_macro]]</code> で名前を付けて <code>@名前</code> で参照できます。</p>
-      <div class="code-block">[[keystroke_macro]]
+      <div class="code-block" data-example="usage-ja-11" data-mode="asis">[[keystroke_macro]]
 name = "kakko"
 steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]</div>
       <p class="note">既存の <code>.yab</code> ファイルは有効化しても壊れません（<code>+</code> を含まないセルは今まで通り解釈されます）。ただし、やまぶき形式で無区切り（例: <code>．CV4D</code>）と書かれたセルは、<code>+</code> を挿入した形（<code>．+CV4D</code>）に書き換える必要があります。</p>
@@ -856,7 +856,7 @@ steps = ["'（'", "CV4D", "'）'", "CV4D", "左"]</div>
         NICOLA エンジンを強制的に止めたいときの最終手段です。
         <strong>デフォルトで有効</strong>（無変換キーに割り当て済み）です。
       </p>
-      <div class="code-block">[keys]
+      <div class="code-block" data-example="usage-ja-12" data-mode="asis" data-default="keys">[keys]
 # 単独で400ms以内に3回連打するとエンジン OFF になるキー（デフォルト: 無変換）
 engine_off_solo_triple = "VK_NONCONVERT"
 
