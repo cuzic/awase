@@ -1964,7 +1964,7 @@ impl Runtime {
         };
         // ADR-195段階4: 学習済み表（T3の永続化データ）が検証を通れば同梱表の代わりに使う。
         // `KeyEffectPredicted`（belief更新）に使う。actuationの許可リストを広げる判定には使わない
-        // （半角/全角のToggleを外す縮小方向だけ`enrich_ime_relevance`が参照する、ADR-195追記）。
+        // （半角/全角のToggleを外す縮小方向だけ`enrich_key_role`が役割判定の中で参照する、ADR-195追記・ADR-199決定6-2）。
         let override_table = if self.use_learned_keymap_table {
             self.key_effect_runtime_table.get_for_keymap(now_ms, keymap)
         } else {

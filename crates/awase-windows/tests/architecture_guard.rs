@@ -4722,6 +4722,23 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
              （BUG-116/ADR-137 決定2のガード）"
         );
     }
+    // 順序も固定する: `enrich_key_role` が `kp_stage_shadow_ime_toggle`・`plan()` より後ろに動くと、
+    // それらが `shadow_action` の付く前のイベントを読み、0xF3/0xF4 が Allow のまま二重 actuation になる。
+    let enrich = kp
+        .find("self.enrich_key_role(&mut event)")
+        .expect("enrich_key_role の呼び出し");
+    for later in [
+        "self.kp_stage_shadow_ime_toggle(&mut event)",
+        "PhysicalKeyDisposition::plan(",
+    ] {
+        let at = kp
+            .find(later)
+            .unwrap_or_else(|| panic!("`{later}` が見つかりません"));
+        assert!(
+            enrich < at,
+            "runtime/key_pipeline.rs: `enrich_key_role` は `{later}` より前に呼ぶこと（ADR-199 T4）"
+        );
+    }
 }
 
 /// `hook_callback`（`WH_KEYBOARD_LL` フックプロシージャ本体）内のログ/tracing

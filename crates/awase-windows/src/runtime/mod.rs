@@ -328,7 +328,7 @@ pub struct Runtime {
     /// ADR-195段階4: `<config dir>/keymap-learn-table.json`（段階3永続化）の実行時読込キャッシュ。
     /// `KeyEffectPredicted`（belief更新）に使う。actuationの許可リストは広げない（ADR-195決定(A)）が、
     /// 半角/全角の固定セットの`shadow_action=Toggle`を**外す**方向にだけ参照する（ADR-195追記、
-    /// `learned_table_omits_hz_toggle`）。
+    /// `derive_key_shadow_action`）。
     key_effect_runtime_table: crate::state::key_effect_runtime::RuntimeTableCache,
     /// `config.general.use_learned_keymap_table`（opt-out、既定true）。
     use_learned_keymap_table: bool,
@@ -584,7 +584,7 @@ impl Runtime {
     /// 判定は打鍵ごとのラッチ（[`crate::state::key_effect_runtime::latch_step`]）で KeyDown に確定し、
     /// 同じ物理キーの KeyUp・オートリピート（`was_down`）はそれを使う（Down=Allow・Up=Suppress の非対称防止）。
     pub fn enrich_key_role(&mut self, event: &mut RawKeyEvent) {
-        use crate::state::key_effect_runtime::{latch_step, should_clear_latch_on_early_return};
+        use crate::state::key_effect_runtime::latch_step;
         use awase::types::KeyEventType;
         // 全打鍵で通る経路なので、候補キーでないものは修飾キーと IME 種別を見る前に抜ける。
         if !crate::vk::is_role_candidate(event.vk_code) {
@@ -596,50 +596,38 @@ impl Runtime {
         ) {
             return;
         }
-        let clear_latch = should_clear_latch_on_early_return(
-            true,
-            event.event_type == KeyEventType::KeyDown,
-            event.injected,
-        );
-        let m = event.modifier_snapshot;
-        if m.ctrl || m.alt || m.shift || m.win {
-            if clear_latch {
-                self.key_role_latch = None;
-            }
-            return;
-        }
-        // 役割を求められる IME は GJI と、CLSID で同定できた Microsoft IME 本体だけ。GJI 未検出・第三者 IME・
-        // IMM32 HKL のみでは付けず、生キーを通して観測に追随する（レビュー round2 NB3、決定6-3）。
-        let Some(ime) = crate::tsf::observer::tsf_obs().table_ime_kind() else {
-            if clear_latch {
-                self.key_role_latch = None;
-            }
-            return;
-        };
         let is_up = event.event_type == KeyEventType::KeyUp;
         let fresh_down = event.event_type == KeyEventType::KeyDown && !event.injected;
         let reuse = is_up || (fresh_down && event.was_down);
         let vk = event.vk_code;
+        let m = event.modifier_snapshot;
+        let modified = m.ctrl || m.alt || m.shift || m.win;
+        // 修飾付き・IME 未同定の打鍵も `None` の判定として**ラッチに記録する**（早期 return しない）。
+        // 記録しないと、Ctrl を押したまま半角/全角を Down（判定なし=Allow）→ Ctrl を先に離す →
+        // 半角/全角の Up がラッチ空で判定をやり直し `Some(Toggle)`（=Suppress）になり、
+        // Down=Allow・Up=Suppress の非対称（BUG-131/132 型）になる（Opus レビュー、PR #326）。
         let (action, latch) = latch_step(
             self.key_role_latch,
             reuse,
             fresh_down,
             event.scan_code,
-            || self.derive_key_shadow_action(ime, vk),
+            || {
+                if modified {
+                    return None;
+                }
+                // 役割を求められる IME は GJI と、CLSID で同定できた Microsoft IME 本体だけ。GJI 未検出・
+                // 第三者 IME・IMM32 HKL のみでは付けず、生キーを通して観測に追随する（レビュー round2 NB3、決定6-3）。
+                let ime = crate::tsf::observer::tsf_obs().table_ime_kind()?;
+                self.derive_key_shadow_action(ime, vk)
+            },
         );
         self.key_role_latch = latch;
         event.ime_relevance.shadow_action = action;
     }
 
-    /// `vk`（無修飾の候補キー）の役割由来の`shadow_action`（ADR-199 決定4・6・8）。
-    ///
-    /// - 明示 config（`keys.ime_on/off/toggle` の無修飾）と重なるキーは役割を付けない（config が勝つ。
-    ///   重ねると1回の押下で開閉が2回書かれ打ち消し合う、決定8・所有者回答 Q2）。
-    /// - GJI: `config1.db` から逆算（[`KeyEffectKeymap::gji_key_role`]）。読めない・パースできない・パス未解決は
-    ///   `None`＝受動（決定6-3。不在は既定プリセットとして`read_key_effect_keymap`が返す）。
-    /// - MS-IME 本体: 半角/全角は仕様で固定のトグル（決定6-4）。キーマップが取れなくても役割は付く。
-    /// - 採用中の学習表がそのキーをトグルと矛盾するセルで示すときは受動に狭める（決定6-2。狭める方向だけ、
-    ///   `use_learned_keymap_table = false`のときは狭めない）。
+    /// `vk`（無修飾の候補キー）の役割由来の`shadow_action`（ADR-199 決定4・6・8）。取得（I/O・キャッシュ）だけを
+    /// ここで行い、規則の組み合わせは純関数
+    /// [`crate::state::key_effect_runtime::key_shadow_action`]（ホストテストあり）に任せる。
     ///
     /// キーマップ・学習表の取得は予測経路（`kp_predict_key_effect`）と同じインスタンス・同じ引数
     /// （`KeymapCache::get_gji`/`get_native`）なので、間引きも共通で I/O は増えない。
@@ -651,41 +639,34 @@ impl Runtime {
     ) -> Option<awase::types::ShadowImeAction> {
         use crate::state::ime_kind::ImeKindId;
         use crate::state::key_effect_predictor::TableKey;
-        use crate::state::key_effect_runtime::{hz_omit_may_apply, hz_omit_verdict};
-        if self.engine.has_bare_ime_combo(vk) {
-            return None;
-        }
+        use crate::state::key_effect_runtime::{hz_omit_may_apply, key_shadow_action};
+        let explicit_overlap = self.engine.has_bare_ime_combo(vk);
         let now_ms = crate::hook::current_tick_ms();
         let keymap = match ime {
             ImeKindId::Gji => self.key_effect_keymap.get_gji(now_ms),
             ImeKindId::MsIme => self.key_effect_keymap_native.get_native(now_ms),
         };
-        let role = match ime {
-            // 読めないとき（`keymap`が`None`）は不明＝受動。
-            ImeKindId::Gji => keymap?.gji_key_role(vk.0),
-            ImeKindId::MsIme => Some(awase_gji_config::role::KeyRole::ImeToggle),
-        }?;
         let use_learned = self.use_learned_keymap_table;
-        if let (true, Some(keymap), Some(key)) = (
+        let contradiction = match (
             hz_omit_may_apply(use_learned),
             keymap,
             TableKey::from_vk(vk.0),
         ) {
-            self.key_effect_runtime_table.get_for_keymap(now_ms, keymap);
-            if hz_omit_verdict(
-                use_learned,
+            (true, Some(keymap), Some(key)) => {
+                self.key_effect_runtime_table.get_for_keymap(now_ms, keymap);
                 self.key_effect_runtime_table
                     .toggle_contradiction(key)
-                    .is_some(),
-            ) {
-                return None;
+                    .is_some()
             }
-        }
-        match role {
-            awase_gji_config::role::KeyRole::ImeToggle => {
-                Some(awase::types::ShadowImeAction::Toggle)
-            }
-        }
+            _ => false,
+        };
+        key_shadow_action(
+            ime,
+            explicit_overlap,
+            keymap.map(|k| k.gji_key_role(vk.0)),
+            use_learned,
+            contradiction,
+        )
     }
 
     /// Decision の副作用を実行する（メッセージループ用）。

@@ -1151,7 +1151,7 @@ mod plan_tests {
     /// `plan()` の判定そのもの: `shadow_action=Some(Toggle)` を持つ半角/全角（0xF3/0xF4、GJI・MS-IME本体の両方）は、
     /// `modifier_snapshot.shift` の値に依らず Suppress される（`plan()` は Shift を見ない）。
     ///
-    /// **本番ではこの組み合わせ（shift=true かつ shadow_action あり）は生成されない**: `enrich_ime_relevance` は
+    /// **本番ではこの組み合わせ（shift=true かつ shadow_action あり）は生成されない**: `enrich_key_role` は
     /// 修飾キー付きの物理キーに `shadow_action` を付けないので、Shift+半角/全角は `is_kanji_event=false` で **Allow**
     /// （IME 側で別の意味を持ちうるため）。この名前を「Shift+半角/全角も Suppress される」と読まないこと（round2 B-NB4）。
     /// なお修飾キーを途中で押す/離すと、同じ物理キーの KeyDown（無修飾で Suppress）と KeyUp（修飾ありで Allow）の
@@ -1183,7 +1183,7 @@ mod plan_tests {
         }
     }
 
-    /// ADR-195追記: 採用中のGJI学習表が半角/全角を開閉トグルでないと示すと`enrich_ime_relevance`は
+    /// ADR-195追記: 採用中の学習表が半角/全角を開閉トグルでないと示すと（または役割が無いと）`enrich_key_role`は
     /// `shadow_action`を付けない（`None`）。このとき GJI の ImmCross（Standard）・GjiDirect
     /// （Imm32Unavailable/TsfNative）のいずれでも 0xF3/0xF4 は Down も Up も Allow（KeyDownだけが残らない）。
     #[test]
