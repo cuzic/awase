@@ -362,6 +362,10 @@ pub struct BugReportKeymapLearnSummary {
     pub bundled_diff: Option<BugReportKeymapLearnBundledDiff>,
     /// `keymap-learn-last-attempt.json`（不採用/要確認の退避）の判定。
     pub last_attempt_judgement: Option<String>,
+    /// 学習表がトグルと矛盾すると示したキー（ADR-199決定6-2）。`"<TableKey>:<種類>"`の固定語彙
+    /// （例: `HankakuZenkaku:closed_stays_closed`）。採用の可否には依らず、読めた表のセルから求める。
+    #[serde(default)]
+    pub toggle_contradictions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -522,6 +526,16 @@ impl BugReportKeymapLearnSummary {
                 }),
                 bundled_diff,
                 last_attempt_judgement,
+                toggle_contradictions: {
+                    let cells = crate::state::key_effect_runtime::convert_cells(&t.cells);
+                    crate::state::key_effect_table::NARROWABLE_KEYS
+                        .iter()
+                        .filter_map(|&k| {
+                            crate::state::key_effect_table::toggle_contradiction(&cells, k)
+                                .map(|c| format!("{k:?}:{}", c.label()))
+                        })
+                        .collect()
+                },
             },
         }
     }
@@ -1130,6 +1144,7 @@ mod tests {
             self_verification: None,
             bundled_diff: None,
             last_attempt_judgement: None,
+            toggle_contradictions: Vec::new(),
         }
     }
 
@@ -1148,6 +1163,46 @@ mod tests {
                 disp: Disposition::Kept,
             }),
         }
+    }
+
+    /// ADR-199決定6-2: 閉状態で半角/全角（0xF3）を押して閉のままのセルは、学習表のトグル矛盾として
+    /// 固定語彙で報告される。矛盾が無い表では空。
+    #[test]
+    fn keymap_learn_summary_reports_toggle_contradictions() {
+        use awase_keymap_learn::model::{Disposition, KeyId, Outcome, Status};
+        use awase_keymap_learn::persist::{PersistedCell, PersistedTable};
+        let closed = Status {
+            open: false,
+            mode: 0x00,
+            composing: false,
+        };
+        let stays_closed = PersistedCell {
+            status: closed,
+            key: KeyId(0xF3),
+            prediction: Some(Outcome {
+                status: closed,
+                disp: Disposition::None,
+            }),
+        };
+        let with = BugReportKeymapLearnSummary::from_parts(
+            &Ok(PersistedTable::new(vec![stays_closed])),
+            &None,
+            true,
+            false,
+            None,
+        );
+        assert_eq!(
+            with.toggle_contradictions,
+            vec!["HankakuZenkaku:closed_stays_closed".to_owned()]
+        );
+        let without = BugReportKeymapLearnSummary::from_parts(
+            &Ok(PersistedTable::new(vec![learn_pcell(1)])),
+            &None,
+            true,
+            false,
+            None,
+        );
+        assert!(without.toggle_contradictions.is_empty());
     }
 
     /// 完了条件: 判定・自己検証・指紋・同梱表との突き合わせ（不一致セル一覧・表にのみ存在）・
