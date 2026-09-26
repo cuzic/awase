@@ -57,6 +57,7 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 | `--msime` / `--activate-gji` | 使うIMEのTSFプロファイルをアクティブ化(Microsoft IME / GJI) |
 | `check_consistency.py` | プリセット非依存: 実IMEのかな=Engine ON、英数/直接入力=Engine OFF に追随するか(Engineは各押下の700ms後の`k`の扱いで読む) |
 | `check_resync.py` | リセット操作の後に実IMEとEngineが揃うか |
+| `--charthumb=CHAR,THUMB` / `check_charthumb.py` | 文字→親指の順に押して文字を先に離し、親指を押し続ける(重なり不足、`min_overlap_margin_percent`>0)。親指の KEY 行の実IMEで、保持中(+400ms)は開いたまま・離した後(+1500ms)に閉じるか(ADR-199 T10 決定A、構成 `sc-charthumb-gji-atok`)。文字キーにはスキャンコードの対応(`scan_for`)が要る |
 | `check_toggle.py` | 開閉トグルキーが押すたびに反転し、Engineが追随するか |
 | `ablations/a*.sh` | 撤去実験(ミューテーター)。`a7-no-follow.sh`はfollow(ADR-187)を無効化してずれを起こす |
 

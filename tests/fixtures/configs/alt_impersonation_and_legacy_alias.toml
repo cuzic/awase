@@ -1,0 +1,8 @@
+# Alt なりすまし(GUI が書く "Left Alt"/"Right Alt")と、旧名 alias
+[general]
+left_thumb_key = "Left Alt"
+right_thumb_key = "Right Alt"
+keyboard_model = "us"
+
+[keys]
+engine_off_solo_triple = "VK_INSERT"
