@@ -330,15 +330,7 @@ impl PhysicalKeyDisposition {
             // Passthrough を選んでも 0xF3/0xF4 は Suppress のままで、それ以外のキーには
             // そもそも効かない、実質死んだ設定だった。旧 config.toml にキーが残っていても
             // 未知キーとして無視され警告は出ない（`src/config.rs` のテストで固定）。
-            let is_dbe_mode_key_down = event.event_type == KeyEventType::KeyDown
-                && matches!(
-                    event.ime_relevance.shadow_action,
-                    Some(ShadowImeAction::Toggle)
-                )
-                && matches!(
-                    event.vk_code.ime_kind(),
-                    Some(crate::vk::ImeKeyKind::DbeSbcsChar | crate::vk::ImeKeyKind::DbeDbcsChar)
-                );
+            let is_dbe_mode_key_down = is_role_toggle_hz_key_down(event);
             ime_actuation_owned
                 && (shadow_toggled
                     || is_dbe_mode_key_down
@@ -350,6 +342,20 @@ impl PhysicalKeyDisposition {
             Self::Allow
         }
     }
+}
+
+/// 役割由来の `Some(Toggle)` が付いた半角/全角(0xF3/0xF4)の KeyDown か（ADR-199 T4）。`plan` の
+/// Suppress 判定の根拠（awase が開閉として書くキー）。認知的複雑度の上限（clippy）のため関数に切り出した。
+fn is_role_toggle_hz_key_down(event: &RawKeyEvent) -> bool {
+    event.event_type == KeyEventType::KeyDown
+        && matches!(
+            event.ime_relevance.shadow_action,
+            Some(ShadowImeAction::Toggle)
+        )
+        && matches!(
+            event.vk_code.ime_kind(),
+            Some(crate::vk::ImeKeyKind::DbeSbcsChar | crate::vk::ImeKeyKind::DbeDbcsChar)
+        )
 }
 
 #[cfg(test)]
