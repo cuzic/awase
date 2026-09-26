@@ -62,13 +62,18 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
     KEYEVENTF_KEYUP, VIRTUAL_KEY,
 };
+use windows::Win32::System::Com::{CoInitializeEx as CoInitEx, COINIT_MULTITHREADED};
+use windows::Win32::UI::Accessibility::{
+    CUIAutomation, IUIAutomation, IUIAutomationValuePattern, TreeScope_Descendants,
+    UIA_EditControlTypeId, UIA_ValuePatternId,
+};
 use windows::Win32::UI::TextServices::{
     CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfInputProcessorProfileMgr, ITfThreadMgr,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW,
     GetClassInfoExW, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetMessageW,
-    GetWindowThreadProcessId, PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW,
+    EnumWindows, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW,
     SetForegroundWindow, SetWindowsHookExW, ShowWindow, TranslateMessage, CW_USEDEFAULT,
     GUITHREADINFO, KBDLLHOOKSTRUCT, MSG, SW_SHOW, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE,
     WM_APP, WM_CLOSE, WM_DESTROY, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP, WM_SETTEXT,
@@ -188,6 +193,8 @@ enum Form {
     Multi,
     Rich,
     Tsf,
+    ChromeBar,
+    ChromePage,
 }
 
 impl Form {
@@ -197,6 +204,8 @@ impl Form {
             "multi" => Some(Self::Multi),
             "rich" => Some(Self::Rich),
             "tsf" => Some(Self::Tsf),
+            "chromebar" => Some(Self::ChromeBar),
+            "chromepage" => Some(Self::ChromePage),
             _ => None,
         }
     }
@@ -206,7 +215,16 @@ impl Form {
             Self::Multi => "multi",
             Self::Rich => "rich",
             Self::Tsf => "tsf",
+            Self::ChromeBar => "chromebar",
+            Self::ChromePage => "chromepage",
         }
+    }
+}
+
+impl Form {
+    /// 本物の Chrome(別プロセス)を入力先にする形態。
+    fn is_chrome(self) -> bool {
+        matches!(self, Self::ChromeBar | Self::ChromePage)
     }
 }
 
@@ -257,6 +275,9 @@ fn front_and_focus(top: HWND) {
 }
 
 fn create_form(form: Form) -> HWND {
+    if form.is_chrome() {
+        return launch_chrome(form);
+    }
     unsafe {
         let _ = LoadLibraryW(w!("Msftedit.dll"));
         let instance = GetModuleHandleW(None).expect("module");
@@ -298,6 +319,7 @@ fn create_form(form: Form) -> HWND {
                 700,
                 240,
             ),
+            Form::ChromeBar | Form::ChromePage => unreachable!("launch_chrome で処理済み"),
             Form::Rich => ("RICHEDIT50W".into(), WS_BORDER.0 | ES_AUTOHSCROLL, 700, 240),
             Form::Tsf => {
                 // RICHEDIT50W をスーパークラス化して、Chrome の描画窓のクラス名で登録し直す(ADR-193)。
@@ -351,6 +373,9 @@ fn create_form(form: Form) -> HWND {
 }
 
 fn read_text(h: HWND) -> String {
+    if is_chrome_mode() {
+        return chrome_read();
+    }
     unsafe {
         let len = SendMessageW(h, WM_GETTEXTLENGTH, None, None).0;
         let len = usize::try_from(len).unwrap_or(0);
@@ -367,6 +392,10 @@ fn read_text(h: HWND) -> String {
 }
 
 fn clear_text(h: HWND) {
+    if is_chrome_mode() {
+        chrome_clear();
+        return;
+    }
     unsafe {
         let empty = wide("");
         let _ = SendMessageW(h, WM_SETTEXT, None, Some(LPARAM(empty.as_ptr() as isize)));
@@ -375,6 +404,9 @@ fn clear_text(h: HWND) {
 
 /// 前面窓が `top`、かつそのスレッドのフォーカスが入力欄にあるか。
 fn focus_ok() -> bool {
+    if is_chrome_mode() {
+        return unsafe { GetForegroundWindow() == hwnd_of(&TOP) };
+    }
     unsafe {
         if GetForegroundWindow() != hwnd_of(&TOP) {
             return false;
@@ -401,6 +433,10 @@ fn focus_report() -> serde_json::Value {
 }
 
 fn refocus() {
+    if is_chrome_mode() {
+        chrome_front();
+        return;
+    }
     unsafe {
         let _ = PostMessageW(Some(hwnd_of(&TOP)), WM_TS_FRONT, WPARAM(0), LPARAM(0));
     }
@@ -999,9 +1035,203 @@ fn worker(form: Form) {
     finish();
 }
 
+// ---------------------------------------------------------------- 本物の Chrome(chromebar / chromepage)
+
+static CHROME_MODE: AtomicIsize = AtomicIsize::new(0);
+static CHROME_PAGE: AtomicIsize = AtomicIsize::new(0);
+
+fn is_chrome_mode() -> bool {
+    CHROME_MODE.load(Ordering::SeqCst) != 0
+}
+
+const PAGE_INPUT_NAME: &str = "stress-input";
+
+unsafe extern "system" fn enum_chrome(hwnd: HWND, lp: LPARAM) -> windows::core::BOOL {
+    unsafe {
+        let want_pid = lp.0 as u32;
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
+        if IsWindowVisible(hwnd).as_bool()
+            && class_of(hwnd) == "Chrome_WidgetWin_1"
+            && (pid == want_pid || want_pid == 0)
+        {
+            TOP.store(hwnd.0 as isize, Ordering::SeqCst);
+            return false.into();
+        }
+        true.into()
+    }
+}
+
+/// 本物の Chrome を新しいプロファイルで起動し、その最上位窓を TOP/CHILD にする。
+/// chromebar=アドレスバー(Alt+D でフォーカス) / chromepage=ページ内の textarea(autofocus)。
+fn launch_chrome(form: Form) -> HWND {
+    CHROME_MODE.store(1, Ordering::SeqCst);
+    let tmp = std::env::temp_dir();
+    let profile = tmp.join("ts-chrome-profile");
+    let page = tmp.join("ts-chrome-page.html");
+    let html = format!(
+        "<!doctype html><meta charset=utf-8><title>ts</title>\n<textarea id=t aria-label=\"{PAGE_INPUT_NAME}\" autofocus rows=8 cols=80></textarea>\n"
+    );
+    let _ = std::fs::write(&page, html);
+    let url = if form == Form::ChromePage {
+        format!("file:///{}", page.to_string_lossy().replace('\\', "/"))
+    } else {
+        "about:blank".to_string()
+    };
+    CHROME_PAGE.store(isize::from(form == Form::ChromePage), Ordering::SeqCst);
+    let exe = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ]
+    .into_iter()
+    .find(|p| std::path::Path::new(p).exists())
+    .unwrap_or("chrome.exe");
+    let child = std::process::Command::new(exe)
+        .arg(format!("--user-data-dir={}", profile.display()))
+        .args([
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-extensions",
+            "--force-renderer-accessibility",
+            "--new-window",
+        ])
+        .arg(&url)
+        .spawn();
+    let pid = match child {
+        Ok(c) => c.id(),
+        Err(e) => {
+            log(&format!("[FATAL] Chrome の起動に失敗: {exe} {e}"));
+            std::process::exit(2);
+        }
+    };
+    log(&format!("[init] Chrome 起動 pid={pid} url={url}"));
+    for _ in 0..120 {
+        sleep_ms(500);
+        unsafe {
+            let _ = EnumWindows(Some(enum_chrome), LPARAM(pid as isize));
+        }
+        if !hwnd_of(&TOP).0.is_null() {
+            break;
+        }
+    }
+    if hwnd_of(&TOP).0.is_null() {
+        unsafe {
+            let _ = EnumWindows(Some(enum_chrome), LPARAM(0));
+        }
+    }
+    if hwnd_of(&TOP).0.is_null() {
+        log("[FATAL] Chrome の窓が見つからない");
+        std::process::exit(2);
+    }
+    sleep_ms(4000);
+    CHILD.store(TOP.load(Ordering::SeqCst), Ordering::SeqCst);
+    hwnd_of(&TOP)
+}
+
+fn chrome_front() {
+    front_and_focus_foreign(hwnd_of(&TOP));
+    sleep_ms(400);
+    if !chrome_is_page() {
+        chrome_focus_omnibox();
+    }
+}
+
+fn chrome_is_page() -> bool {
+    CHROME_PAGE.load(Ordering::SeqCst) != 0
+}
+
+/// 別プロセスの窓を前面化する(前面スレッドへの AttachThreadInput。フォーカスの SetFocus は行わない)。
+fn front_and_focus_foreign(top: HWND) {
+    unsafe {
+        let fg = GetForegroundWindow();
+        let fg_tid = if fg.0.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(fg, None)
+        };
+        let my_tid = GetCurrentThreadId();
+        let attached =
+            fg_tid != 0 && fg_tid != my_tid && AttachThreadInput(my_tid, fg_tid, true).as_bool();
+        let _ = BringWindowToTop(top);
+        let _ = SetForegroundWindow(top);
+        if attached {
+            let _ = AttachThreadInput(my_tid, fg_tid, false);
+        }
+    }
+}
+
+/// Alt+D でアドレスバーにフォーカスする。
+fn chrome_focus_omnibox() {
+    send_key(0x12, 0x38, true);
+    sleep_ms(30);
+    press(0x44, 0x20, 30);
+    send_key(0x12, 0x38, false);
+    sleep_ms(200);
+}
+
+/// 入力欄の内容を全消去する(アドレスバーは Alt+D、ページは既存フォーカスのまま Ctrl+A → Backspace)。
+fn chrome_clear() {
+    if !chrome_is_page() {
+        chrome_focus_omnibox();
+    }
+    send_key(0x11, 0x1D, true);
+    sleep_ms(20);
+    press(0x41, 0x1E, 30);
+    send_key(0x11, 0x1D, false);
+    sleep_ms(50);
+    press(0x08, 0x0E, 30);
+    sleep_ms(150);
+}
+
+/// UI Automation で入力欄の値を読む(アドレスバー=名前が PAGE_INPUT_NAME でない Edit、ページ=名前が一致する Edit)。
+fn chrome_read() -> String {
+    unsafe {
+        let _ = CoInitEx(None, COINIT_MULTITHREADED);
+        let Ok(ua) = CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+        else {
+            return "<uia-init-failed>".into();
+        };
+        for _ in 0..10 {
+            if let Ok(root) = ua.ElementFromHandle(hwnd_of(&TOP)) {
+                if let (Ok(cond), true) = (ua.CreateTrueCondition(), true) {
+                    if let Ok(all) = root.FindAll(TreeScope_Descendants, &cond) {
+                        let n = all.Length().unwrap_or(0);
+                        for i in 0..n {
+                            let Ok(el) = all.GetElement(i) else { continue };
+                            if el.CurrentControlType().ok() != Some(UIA_EditControlTypeId) {
+                                continue;
+                            }
+                            let name = el.CurrentName().map(|b| b.to_string()).unwrap_or_default();
+                            let is_page_input = name == PAGE_INPUT_NAME;
+                            if is_page_input != chrome_is_page() {
+                                continue;
+                            }
+                            if let Ok(vp) =
+                                el.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+                            {
+                                if let Ok(v) = vp.CurrentValue() {
+                                    return v.to_string();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            sleep_ms(300);
+        }
+        "<uia-not-found>".into()
+    }
+}
+
 fn finish() {
     rec(&json!({"type":"done"}));
     log("=== 完了 ===");
+    if is_chrome_mode() {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "chrome.exe"])
+            .output();
+        std::process::exit(0);
+    }
     unsafe {
         let _ = PostMessageW(Some(hwnd_of(&TOP)), WM_CLOSE, WPARAM(0), LPARAM(0));
     }

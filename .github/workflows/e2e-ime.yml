@@ -75,7 +75,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-chrome*,ts-raw-chrome*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -267,6 +267,13 @@ jobs:
               for form in ('edit', 'tsf')
               for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
               for iv in (10, 2)],
+            # --- 本物の Chrome(chromebar=アドレスバー、Alt+D でフォーカス / chromepage=ページ内 textarea)。読み戻しは UI Automation。GJI のみ。---
+            *[cfg(f'ts-{form}-gji-{iv}ms', 'observe', check='typing', ime='gji', runs=4, wait=700,
+                  stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab')
+              for form in ('chromebar', 'chromepage') for iv in (20, 5, 2)],
+            *[cfg(f'ts-raw-{form}-gji-2ms', 'observe', check='typing', ime='gji', awase='false', runs=2, wait=700,
+                  stress=f'--form={form} --interval=2 --mode=raw --no-awase --layout=@REPO@/layout/nicola_keytop.yab')
+              for form in ('chromebar', 'chromepage')],
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
@@ -638,7 +645,7 @@ jobs:
           $rc = $LASTEXITCODE
           "rc=$rc" | Out-File -FilePath rc.txt -Encoding ascii
           "exit code: $rc"
-          Get-Process awase, ime_key_matrix_spike, typing_stress, compartment_notify_probe, compartment_notify_probe_diag -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process awase, ime_key_matrix_spike, typing_stress, chrome, compartment_notify_probe, compartment_notify_probe_diag -ErrorAction SilentlyContinue | Stop-Process -Force
           exit 0
 
       # 不変条件(異常検出器): 上の期待表(rc.txt)とは別に数え、結果は invariants.json / inv_rc.txt に書く(summary が別の表で集計)。
