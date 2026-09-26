@@ -248,13 +248,13 @@ jobs:
             # 0x19 は Kanji 行にも従うか(Hankaku/Zenkaku 行なし・Kanji 行=IMEOff の表)。開いたままなら Kanji 行は見ない(0x19 は Hankaku/Zenkaku 行だけ)。
             cfg('sc-t1b-kanji-row-only', 'observe', check='consistency', awase='false', keymap=0, runs=1,
                 args='--chord=A4,19 --chord-at=20000 --chord-prep=1C', tsv='DirectInput,Henkan,IMEOn|Precomposition,Kanji,IMEOff'),
-            # ADR-202 T16-3: awase 起動中に、GJI の CUSTOM 表の Hankaku/Zenkaku 行を変えた利用者の Alt+半角/全角(0x19)で、実 IME と Engine(belief)がずれないこと。
+            # ADR-202 T16-3(判定は check_kanji_role.py): awase 起動中に、GJI の CUSTOM 表の Hankaku/Zenkaku 行を変えた利用者の Alt+半角/全角(0x19)で、実 IME と Engine(belief)がずれないこと。
             # VK_IME_ON で IME を開き、Alt+0x19。nontoggle=行が閉じないコマンド(InputModeHiragana)なので IME は開いたまま、Engine も ON のまま(修正前は静的 Toggle で belief だけ反転してずれる)。
             # toggle=行がトグルなので IME が閉じ、Engine も OFF に追随する。表には awase の書き込み手段(ON/OFF 行)を必ず入れる。
-            cfg('sc-kanji-role-nontoggle', 'observe', check='consistency', keymap=0, runs=2,
+            cfg('sc-kanji-role-nontoggle', 'pass', check='kanjirole-open', keymap=0, runs=2,
                 args='--chord=A4,19 --chord-at=20000 --chord-prep=16',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|Precomposition,Hankaku/Zenkaku,InputModeHiragana'),
-            cfg('sc-kanji-role-toggle', 'observe', check='consistency', keymap=0, runs=2,
+            cfg('sc-kanji-role-toggle', 'pass', check='kanjirole-closed', keymap=0, runs=2,
                 args='--chord=A4,19 --chord-at=20000 --chord-prep=16',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,Hankaku/Zenkaku,IMEOn|Precomposition,Hankaku/Zenkaku,IMEOff|Composition,Hankaku/Zenkaku,IMEOff|Conversion,Hankaku/Zenkaku,IMEOff'),
             # T1(e) の一部(ADR-199 決定18): F13 をトグルにした CUSTOM 表で、F13(0x7C)が GJI に効くか。IME OFF から F13→開、もう一度→閉。
@@ -656,6 +656,9 @@ jobs:
             python tools\e2e\ime_key_matrix\check_toggle.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'charthumb') {
             python tools\e2e\ime_key_matrix\check_charthumb.py dist\ime_key_matrix_spike.log | Tee-Object -FilePath result.txt
+          } elseif ('${{ matrix.cfg.check }}' -like 'kanjirole-*') {
+            $kexp = '${{ matrix.cfg.check }}'.Substring('kanjirole-'.Length)
+            python tools\e2e\ime_key_matrix\check_kanji_role.py --expect=$kexp dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'resync') {
             python tools\e2e\ime_key_matrix\check_resync.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'collect') {
