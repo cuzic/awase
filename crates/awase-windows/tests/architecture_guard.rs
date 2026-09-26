@@ -1746,7 +1746,7 @@ fn actuation_target_capture_call_sites_are_accounted_for() {
         ("src/output/conv_actuation.rs", 1), // actuate_conv_mode（ADR-084 INV-1 単一窓口、2026-08-08 Runtime→Output移設）
         ("src/tsf/warmup/cold_warmup.rs", 1), // ColdWarmupSequence::run_start
         ("src/runtime/executor.rs", 1),      // dispatch_ime_set_open（ImmCross async path）
-        ("src/runtime/key_pipeline.rs", 3), // kp_reset_to_hiragana_romaji_capsoff / kp_restore_kana_from_half_width / apply_focus_probe(ImmCrossProbe kana修正)（apply_idle_conv_check の restore_roman(BUG-08 Apply(3))経路は2026-08-17 BUG-61に伴い撤去）
+        ("src/runtime/key_pipeline.rs", 2), // kp_reset_to_hiragana_romaji_capsoff / kp_restore_kana_from_half_width（apply_focus_probe の ImmCrossProbe kana修正は2026-09-26に撤去、docs/adr/191-calibration-experiments.md A/B-2。apply_idle_conv_check の restore_roman(BUG-08 Apply(3))経路は2026-08-17 BUG-61に伴い撤去）
                                             // 2026-09-19（領域A撤去、ユーザー指示）: `src/runtime/mod.rs` の
                                             // try_force_on_bootstrap（force-ON bootstrap）を撤去したため、
                                             // mod.rs のエントリ（1）が消えた。
@@ -1846,9 +1846,9 @@ fn actuation_target_capture_is_first_await_in_spawn_local_block() {
         }
     }
     assert_eq!(
-        checked, 6,
+        checked, 5,
         "ActuationTarget::capture を含む spawn_local ブロックの検査対象数が \
-         想定(6)と異なります。新しい経路を追加/削除した場合は \
+         想定(5)と異なります。新しい経路を追加/削除した場合は \
          actuation_target_capture_call_sites_are_accounted_for と合わせて \
          この期待値も更新すること。"
     );
@@ -2564,11 +2564,12 @@ fn conv_write_call_sites_are_fixed_to_the_inventory() {
         count_sites("set_ime_conv_for_target("),
         vec![
             ("src/output/conv_actuation.rs".to_string(), 1),
-            ("src/runtime/key_pipeline.rs".to_string(), 3),
+            ("src/runtime/key_pipeline.rs".to_string(), 2),
             ("src/tsf/warmup/cold_warmup.rs".to_string(), 1),
         ],
-        "`set_ime_conv_for_target(` の本番呼び出し元は5か所に固定されています\
-         （`docs/tasks/conv-write-paths-inventory.md` の経路3・4・5・8・9）。\
+        "`set_ime_conv_for_target(` の本番呼び出し元は4か所に固定されています\
+         （`docs/tasks/conv-write-paths-inventory.md` の経路3・4・5・8。経路9=焦点プローブの\
+         ROMAN 修正は 2026-09-26 に撤去済みで、ここに戻さないこと）。\
          増やすなら棚卸しの表に分類（A 撤去候補／B 例外／C warmup）を書いて、この件数を更新すること。\
          撤去したなら件数を減らすこと。"
     );
