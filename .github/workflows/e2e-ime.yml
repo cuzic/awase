@@ -271,7 +271,7 @@ jobs:
             # 取りこぼしの再現率測定(run 36222195067 で chromepage 2ms が 48 試行中 1 件 FAIL): 2ms/3ms を 1 回あたり 24 試行 × 20 回に増やす。
             *[cfg(f'ts-{form}-gji-{iv}ms', 'observe', check='typing', ime='gji', runs=runs, wait=1200,
                   stress=f'--form={form} --interval={iv} --trials=8 --layout=@REPO@/layout/nicola_keytop.yab')
-              for form, iv, runs in (('chromepage', 2, 8), ('chromebar', 2, 8))],
+              for form, iv, runs in (('chromepage', 2, 30), ('chromebar', 2, 30))],
             # 対照実験: awase なし・raw ローマ字 20ms で入力中(未確定)に、awase の chrome-reinit と同じ VK_IME_OFF→VK_IME_ON 等を送る。
             # 未確定文字が消える(loss>0)なら、awase の reinit が入力を破棄する根拠になる(run 36222195067 の chromepage 2ms で 35 文字消失)。
             *[cfg(f'ts-raw-{form}-gji-20ms-reinit-{ra}', 'observe', check='typing', ime='gji', awase='false', runs=2, wait=900,
