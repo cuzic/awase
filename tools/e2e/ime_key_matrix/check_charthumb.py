@@ -3,7 +3,7 @@
 
 各ラウンドで、文字を親指より先に離して重なり不足にしたまま親指を押し続ける(タイムアウトを越える)。判定は親指の KEY 行の
 実IME(A: ImmGetOpenStatus)で行う:
-  前      open=1 であること(F2 で IME が ON になっていない回は INVALID)
+  前      open=1 であること(VK_IME_ON で IME が ON になっていない回は INVALID)
   +400ms  open=1 であること(親指を押している間に awase が IME を閉じない。閉じていれば FAIL)
   +1500ms open=0 であること(親指を離した後に forced の開閉(`keys.ime_off`)が発火する。閉じなければ FAIL)
 使い方: check_charthumb.py [--thumb-vk=1D] <スパイク(--charthumb)のlog>   終了コード: 0=全ラウンドOK / 1=NG / 3=INVALID

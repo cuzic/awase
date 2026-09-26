@@ -804,7 +804,7 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
     }
     if let Some((vk_char, vk_thumb, left)) = CHARTHUMB.with(|c| *c.borrow()) {
         if left > 0 {
-            // ADR-199 T10 決定A の1ラウンド: F2 で IME を ON → 文字↓ → 親指↓(30ms後) → 文字↑(親指↓の2ms後=重なりほぼ無し)
+            // ADR-199 T10 決定A の1ラウンド: VK_IME_ON で IME を ON → 文字↓ → 親指↓(30ms後) → 文字↑(親指↓の2ms後=重なりほぼ無し)
             // → 親指を800ms押し続けて離す(親指の KEY 行の +400ms は保持中、+1500ms は解放後)。
             const IME_ON_SETTLE_MS: u64 = 2500;
             const THUMB_LEAD_MS: u64 = 30;
@@ -812,7 +812,7 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
             const THUMB_HOLD_MS: u64 = 800;
             const ROUND_MS: u64 = 6000;
             CHARTHUMB.with(|c| *c.borrow_mut() = Some((vk_char, vk_thumb, left - 1)));
-            queue_press(now, 0xF2);
+            queue_press(now, 0x16); // VK_IME_ON(ATOK プリセットの F2 は半角英数へ切り替えるので使わない)
             let t1 = now + IME_ON_SETTLE_MS;
             AUTO_QUEUE.with(|q| {
                 let mut q = q.borrow_mut();
@@ -3188,7 +3188,7 @@ fn run() -> WinResult<()> {
     // (`min_overlap_margin_percent`>0 の設定で `PendingCharThumb` が同時打鍵と確定しない)にしたまま、親指を
     // 押し続けてタイムアウト(既定100ms)を越えさせ、その後で親指を離す。親指を押している間に awase が IME を
     // 動かしていないか(親指 KEY 行の +400ms の実IME開閉)と、離した後に動くか(+1500ms)を check_charthumb.py が見る。
-    // 各ラウンドの頭に F2(ひらがな)を注入して IME を ON にそろえる(3ラウンド)。ラウンドの予約は `auto_drive` が、
+    // 各ラウンドの頭に VK_IME_ON(0x16)を注入して IME を ON にそろえる(3ラウンド)。ラウンドの予約は `auto_drive` が、
     // 前面化・フォーカス確認のあとで行う(先にキューへ積むと、フォーカスが外れた窓へ注入が届いて IME が ON にならない)。
     if let Some(v) = std::env::args().find_map(|a| a.strip_prefix("--charthumb=").map(str::to_owned)) {
         let vks: Vec<u32> = v
