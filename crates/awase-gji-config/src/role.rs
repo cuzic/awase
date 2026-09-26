@@ -14,7 +14,7 @@
 //! - 判別できない値（`OVERLAY_*`・`CHROMEOS`・未知の値）は受動（決定6-3「不明なときに
 //!   能動側へ倒さない」）。
 
-use crate::command::{classify_command, GjiModeCommand};
+use crate::command::{classify_command, sets_absolute_mode, GjiModeCommand};
 use crate::keymap::mozc_key_vk_names;
 use crate::tsv::{parse_custom_keymap_table, KeymapRow};
 use crate::{
@@ -199,8 +199,8 @@ impl Status {
 /// コマンドの3類（決定4）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Effect {
-    /// 閉状態から開く（DirectInput の `IMEOn`）。DirectInput の `CompositionMode*` は
-    /// 実機で開くと確認できるまで数えない（T1(c)、決定13）。
+    /// 閉状態から開く（DirectInput の `IMEOn`、および `CompositionMode*`/旧名 `InputMode*`）。
+    /// 後者は実機の GJI で実際に開くと確認済み（T1(c)、決定13 確定）。
     Open,
     /// 開状態から閉じる（`IMEOff`・`CancelAndIMEOff`）。
     Close,
@@ -212,6 +212,7 @@ impl Effect {
     fn of(status: Status, command: &str) -> Self {
         match (status, classify_command(command)) {
             (Status::DirectInput, GjiModeCommand::ImeOn) => Self::Open,
+            (Status::DirectInput, _) if sets_absolute_mode(command) => Self::Open,
             (Status::DirectInput, _) => Self::Other,
             (_, GjiModeCommand::ImeOff) => Self::Close,
             _ => Self::Other,
@@ -461,16 +462,48 @@ Precomposition\tON\tIMEOn
         assert_eq!(role_in_custom(&alias, HZ[0]), Some(KeyRole::ImeToggle));
     }
 
+    /// 決定13（確定、T15）: DirectInput の `CompositionMode*`・旧名 `InputMode*` は Open に数える（実機確認済み、T1(c)）。
     #[test]
-    fn custom_hankaku_zenkaku_opening_with_a_mode_is_passive_until_t1c() {
-        // 決定13: DirectInput の CompositionMode* は実機確認（T1(c)）まで Open に数えない。
-        let table = custom(
-            "DirectInput\tHankaku/Zenkaku\tCompositionModeHiragana\n\
+    fn direct_input_mode_command_counts_as_open() {
+        for command in [
+            "CompositionModeHiragana",
+            "InputModeHiragana",
+            "CompositionModeFullKatakana",
+        ] {
+            let table = custom(&format!(
+                "DirectInput\tHankaku/Zenkaku\t{command}\n\
+                 Precomposition\tHankaku/Zenkaku\tIMEOff\n\
+                 Composition\tHankaku/Zenkaku\tIMEOff\n\
+                 Conversion\tHankaku/Zenkaku\tIMEOff\n"
+            ));
+            assert_eq!(
+                role_in_custom(&table, HZ[0]),
+                Some(KeyRole::ImeToggle),
+                "{command}"
+            );
+        }
+    }
+
+    /// Open に数えるのは DirectInput の絶対設定系だけ。他の状態の `CompositionMode*`、相対トグル系、
+    /// 閉じる側が揃わない表は、従来どおり受動。
+    #[test]
+    fn mode_commands_outside_direct_input_or_relative_toggles_stay_passive() {
+        // DirectInput が相対トグル（開くとは限らない）。
+        let relative = custom(
+            "DirectInput\tHankaku/Zenkaku\tToggleAlphanumericMode\n\
              Precomposition\tHankaku/Zenkaku\tIMEOff\n\
              Composition\tHankaku/Zenkaku\tIMEOff\n\
              Conversion\tHankaku/Zenkaku\tIMEOff\n",
         );
-        assert_eq!(role_in_custom(&table, HZ[0]), None);
+        assert_eq!(role_in_custom(&relative, HZ[0]), None);
+        // 開状態の側が閉じない（Composition だけモード指定）。
+        let not_closing = custom(
+            "DirectInput\tHankaku/Zenkaku\tCompositionModeHiragana\n\
+             Precomposition\tHankaku/Zenkaku\tIMEOff\n\
+             Composition\tHankaku/Zenkaku\tCompositionModeHiragana\n\
+             Conversion\tHankaku/Zenkaku\tIMEOff\n",
+        );
+        assert_eq!(role_in_custom(&not_closing, HZ[0]), None);
     }
 
     #[test]
