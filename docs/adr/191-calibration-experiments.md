@@ -293,3 +293,9 @@ windows-latest、MS-IME 本体(`--msime`)、検証専用ブランチ `ci/e2e-ime
 - 経路9(焦点プローブ)は、この操作では撤去しても差が出ない。焦点変更後の ROMAN 復元は経路1・2 側が担っている。→ 撤去候補として最も根拠が強い。
 - 経路1・2(ROMAN 補完)は、「閉→ON キー」では awase 無しでも MS-IME が自分で ROMAN を戻すので不要。一方「焦点変更」では awase の書き込みだけが戻している。ただしこの状態は IMM で人為的に作ったもので、ユーザーが選んだかな入力(belief=ObservedKana)では発火しない。実際に MS-IME が開いた直後にかな入力へ落ちる症状(`decide_needs_romaji_pre_write` の動機)は、CI では再現していない。
 - 未確認: 実機の MS-IME 本体で、開いた直後にかな入力へ落ちる症状が今も出るか。
+
+**経路9 撤去後の develop の検証(2026-09-26、PR #329 マージ後の `28fddf2f`、MS-IME 本体、run 36233582888 ほか):**
+- `kana-msime-native` 3/3 で 0x19 へ復元(撤去前の対照と同じ)。`msime-native`(walk)・`sc-dbe-msime-native`・`sc-shift-msime-native` は 3/3 PASS、不変条件も OK。
+- `sc-kanji-msime-native` は 2/3(1回 FAIL)。失敗は最初のひらがな(0xF2)で「実IMEに追随していない」。撤去前(`641ffe54`)と撤去後を同じ構成で追加比較した: 10回(撤去前 10/10、撤去後 9/10 で同じ失敗)、25回(両方 25/25)。撤去後は合計 38 回中 2 回、撤去前は 35 回中 0 回で、差は有意でない。最新の 25 回は両方全 PASS。起動直後の最初のキーで稀に起きる揺れの可能性が高いが、撤去との因果は断定できない。
+- 未確認: 実機の MS-IME 本体で、開いた直後・焦点変更後にかな入力へ落ちる症状が出るか。経路1・2(ROMAN 補完)の撤去可否もこの確認待ち。
+- 検証用ブランチ `ci/e2e-pre-removal` / `ci/e2e-post-removal` は削除済み。a8〜a10 と `--kana-drop` の構成は `origin/ci/e2e-ime`(commit `00ce0c61`)に残っている。
