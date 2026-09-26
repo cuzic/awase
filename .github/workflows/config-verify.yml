@@ -1,0 +1,59 @@
+name: config-verify
+
+# 設定のキー名解決・起動時診断・ホットキー・矢印キー割り当て(ADR-201)を、windows-latest 上で
+# 実際の awase.exe(デバッグビルド)を config ごとに起動して確かめる。判定は tools/e2e/config_verify/run.py。
+# 通常のCI(ci.yml)・e2e-ime.yml には影響しない。ci/config-verify ブランチへの push と手動起動でだけ動く。
+on:
+  push:
+    branches: [ci/config-verify]
+  workflow_dispatch:
+    inputs:
+      only:
+        description: '実行する構成名(カンマ区切り、空なら全部)。例: a2,a3,b,c'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: config-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: config-verify
+      - name: awase(デバッグ)と検証用 example をビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --bin awase
+          cargo build -p awase-windows --example config_verify_probe
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\awase.exe dist\
+          Copy-Item target\debug\examples\config_verify_probe.exe dist\
+      - name: 構成ごとに awase を起動して判定する
+        shell: pwsh
+        env:
+          PYTHONUTF8: '1'
+          ONLY: ${{ inputs.only }}
+        run: |
+          python tools\e2e\config_verify\run.py --dist dist --out out --only "$env:ONLY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: config-verify-out
+          path: |
+            out/summary.md
+            out/results.json
+            out/logs/
+          retention-days: 7
