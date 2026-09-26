@@ -303,12 +303,19 @@ pub(crate) fn warn_on_engine_hotkey_collision(
     // MOD_CONTROL 等を使う）のためここでは使えない（この関数は Linux でも
     // ビルド・テストできるよう ungated にしている）。`parse_key_combo` は
     // 最後のトークンに `VK_` 接頭辞が必要だが `engine_toggle_hotkey` は
-    // "Ctrl+Shift+F12" のように接頭辞なしで書く（`parse_hotkey` と同じ
-    // 慣習）ため、ここで補って `parse_key_combo` に委譲する。
+    // "Ctrl+Shift+F12"（手書き）でも "Ctrl+Shift+VK_F12"（設定 GUI）でも
+    // 書かれうる（`parse_hotkey` と同じ）ため、`with_vk_prefix` で補って
+    // `parse_key_combo` に委譲する。
     let hotkey_combo = engine_toggle_hotkey.and_then(|s| {
         let prefixed = s.rfind('+').map_or_else(
-            || format!("VK_{s}"),
-            |idx| format!("{}+VK_{}", &s[..idx], &s[idx + 1..]),
+            || crate::vk::with_vk_prefix(s),
+            |idx| {
+                format!(
+                    "{}+{}",
+                    &s[..idx],
+                    crate::vk::with_vk_prefix(s[idx + 1..].trim())
+                )
+            },
         );
         crate::vk::parse_key_combo(&prefixed)
     });

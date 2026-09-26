@@ -142,6 +142,9 @@
 | [BUG-137](BUG-137.md) | explicit_ime_action_targetのKeyDown/KeyUpステートレス再評価が、押下中にbeliefが変化すると孤立KeyUpを漏らしうる（未修正） |
 | [BUG-139](BUG-139.md) | ADR-163のActuationDecisionRecord診断が、with_app再入時のskipカウンタ二重加算と一部同期記録点のcaller未設定を持っていた（修正済み） |
 | [BUG-140](BUG-140.md) | `right_thumb_key`と同じキーを`keys.ime_detect.on`に登録すると、変換キー単独タップ毎にIME再適用が暴発し、GJI自身の変換機能と競合+「あ」混入 |
+| [BUG-148](BUG-148.md) | awase起動時に既にフォーカスがあるアプリでは、プロセス切替まで明示IME意図が記録されず、FSM委譲のSetOpenが全てUnwarrantedでキーが飲み込まれる |
+| [BUG-165](BUG-165.md) | TsfNative+GJI の高速打鍵で cold probe 中に `pending_deferred` 上限(32 VK)超過し文字が消える(修正済み・クローズ) |
+| [BUG-167](BUG-167.md) | 設定GUIが書く `Ctrl+Shift+VK_F12` を `parse_hotkey` が `VK_VK_F12` と解釈し、エンジン切替ホットキーが無言で登録されない |
 
 ## その他の資料
 
