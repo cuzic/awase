@@ -40,6 +40,7 @@ use awase_keymap_learn::staleness::{self, FingerprintProbe, Staleness};
 use super::key_effect_predictor::{
     bundled_table, cell as make_cell, Cell, Conv, Disp, KeymapPreset, Stage, TableKey,
 };
+use super::key_effect_table::{toggle_contradiction, ToggleContradiction, NARROWABLE_KEYS};
 
 /// 読み込むファイルの上限サイズ。壊れた/異常に巨大なファイルを丸ごとメモリに載せない
 /// （B-1 Blockerの「ファイルサイズに上限を設ける」）。
@@ -114,7 +115,7 @@ impl std::fmt::Display for RejectReason {
 /// 複数セル（例: mode 0x09 と 0x00）が同じ検索キー`(stage, key)`に潰れる。潰れた先を
 /// 反復順（`HashMap`由来の書き出し順）で先勝ちにすると採用セルが実行ごとに変わる（B-2）ため、
 /// [`merge_closed_cells`]で入力順に依存しない形へ畳む。
-fn convert_cells(cells: &[PersistedCell]) -> Vec<Cell> {
+pub(crate) fn convert_cells(cells: &[PersistedCell]) -> Vec<Cell> {
     let mut out: Vec<Cell> = Vec::new();
     // 検索キーごとの閉セル群（キー出現順は結果の並びにだけ影響し、内容には影響しない）。
     let mut closed_groups: Vec<Vec<Cell>> = Vec::new();
@@ -525,23 +526,22 @@ pub fn validate_and_convert(
     Ok(converted)
 }
 
-/// 半角/全角の`shadow_action=Toggle`を外すか（ADR-195追記）の、分岐部分の純関数。
+/// 学習表由来で`shadow_action=Toggle`を外す（受動に狭める）か（ADR-195追記・ADR-199決定6-2/6-4）の、
+/// 分岐部分の純関数。
 ///
-/// GJI限定・`use_learned_keymap_table`（opt-out）・表の前計算フラグ（[`RuntimeTableCache::hankaku_zenkaku_non_toggle`]）
-/// の3つが全て真のときだけ外す。MS-IME本体・第三者IME・opt-out・学習表なしは常に`false`（固定セット維持）。
+/// `use_learned_keymap_table`（opt-out）と表の前計算結果（[`RuntimeTableCache::toggle_contradiction`]）の
+/// 両方が真のときだけ外す。学習表が無い・棄却・未採用・opt-out は常に`false`（呼び出し側の役割を維持）。
+/// IME種別による限定はしない: 学習表があるのは GJI と MS-IME 本体だけで、どちらも狭めは同様に適用する
+/// （決定6-4。呼び出し側は`table_ime_kind()`が`None`の窓を先に除く）。
 #[must_use]
-pub const fn hz_omit_verdict(
-    ime: crate::state::ime_kind::ImeKindId,
-    use_learned: bool,
-    table_flag: bool,
-) -> bool {
-    hz_omit_may_apply(ime, use_learned) && table_flag
+pub const fn hz_omit_verdict(use_learned: bool, table_flag: bool) -> bool {
+    hz_omit_may_apply(use_learned) && table_flag
 }
 
 /// [`hz_omit_verdict`]の前段（表を読む前に分かる条件）。偽なら表の同期読込を省ける。
 #[must_use]
-pub const fn hz_omit_may_apply(ime: crate::state::ime_kind::ImeKindId, use_learned: bool) -> bool {
-    matches!(ime, crate::state::ime_kind::ImeKindId::Gji) && use_learned
+pub const fn hz_omit_may_apply(use_learned: bool) -> bool {
+    use_learned
 }
 
 /// `enrich_ime_relevance`が判定に届く前に早期returnする（修飾付き・IME種別不明）とき、古いラッチを
@@ -611,18 +611,19 @@ pub struct RuntimeTableCache {
     checked_at_ms: Option<u64>,
     stamp: Option<(u64, u64, KeymapPreset, bool, Fingerprint)>,
     cells: Option<Vec<Cell>>,
-    /// `cells`から読込時に前計算した「半角/全角が開閉トグルでない」判定
-    /// （[`learned_cells_show_non_toggle`]）。`cells`と同じ場所で更新するので別々に古くならない。
-    hankaku_zenkaku_non_toggle: bool,
+    /// `cells`から読込時に前計算した、[`NARROWABLE_KEYS`]ごとの「トグルと矛盾する」判定
+    /// （[`toggle_contradiction`]、ADR-199決定6-2）。`cells`と同じ場所で更新するので別々に古くならない。
+    contradictions: [Option<ToggleContradiction>; NARROWABLE_KEYS.len()],
 }
 
 impl RuntimeTableCache {
-    /// 採用中の学習表が半角/全角を開閉トグルでないと示しているか（ADR-195追記、読込時に前計算）。
-    /// 学習表が無い・棄却・未採用なら`false`。**`use_learned_keymap_table`は見ない**ので、
-    /// 呼び出し側が`get`を呼んだ直後にだけ使うこと。
+    /// 採用中の学習表が`key`を開閉トグルと矛盾すると示しているか（読込時に前計算）。
+    /// `key`が[`NARROWABLE_KEYS`]に無い・学習表が無い・棄却・未採用なら`None`。
+    /// **`use_learned_keymap_table`は見ない**ので、呼び出し側が`get`を呼んだ直後にだけ使うこと。
     #[must_use]
-    pub const fn hankaku_zenkaku_non_toggle(&self) -> bool {
-        self.hankaku_zenkaku_non_toggle
+    pub fn toggle_contradiction(&self, key: TableKey) -> Option<ToggleContradiction> {
+        let i = NARROWABLE_KEYS.iter().position(|k| *k == key)?;
+        self.contradictions[i]
     }
 
     /// [`Self::get`]を、予測器・警告・(B)判定で共通の検証キー（`preset`・同梱表そのままか・指紋）で呼ぶ。
@@ -701,17 +702,20 @@ impl RuntimeTableCache {
             if first || now_stamp != self.stamp {
                 self.stamp = now_stamp;
                 self.cells = load();
-                self.hankaku_zenkaku_non_toggle = self.cells.as_deref().is_some_and(|c| {
-                    super::key_effect_table::learned_cells_show_non_toggle(
-                        c,
-                        TableKey::HankakuZenkaku,
-                    )
+                self.contradictions = NARROWABLE_KEYS.map(|key| {
+                    self.cells
+                        .as_deref()
+                        .and_then(|c| toggle_contradiction(c, key))
                 });
-                if self.hankaku_zenkaku_non_toggle {
-                    // 読込（再計算）時に1回だけ。実際に外すのは GJI のときだけ（enrich 側の判定）。
-                    tracing::info!(
-                        "[hz-toggle] 採用中の学習表が半角/全角を開閉トグルでないと示す（適用はGJIのみ）"
-                    );
+                // 食い違いの記録（決定6-2）。読込（再計算）時に1回だけ。実際に受動へ狭めるのは
+                // 呼び出し側（enrich）で、そのキーが役割を持つときだけ。
+                for (key, found) in NARROWABLE_KEYS.iter().zip(self.contradictions) {
+                    if let Some(found) = found {
+                        tracing::warn!(
+                            "[learned-narrow] 採用中の学習表が{key:?}を開閉トグルでないと示す（{}）。役割を持つ場合は受動へ狭める",
+                            found.label()
+                        );
+                    }
                 }
             }
         }
@@ -1482,12 +1486,18 @@ mod tests {
         ];
         let key = (KeymapPreset::Custom, false, FP);
         let mut cache = RuntimeTableCache::default();
-        assert!(!cache.hankaku_zenkaku_non_toggle());
+        assert_eq!(cache.toggle_contradiction(k), None);
         cache.get(0, key, || Some((1, 1)), || Some(non_toggle));
-        assert!(cache.hankaku_zenkaku_non_toggle());
+        assert_eq!(
+            cache.toggle_contradiction(k),
+            Some(ToggleContradiction::IdleOpenStaysOpen)
+        );
+        // 対象キー以外・対象外のキーは常に`None`。
+        assert_eq!(cache.toggle_contradiction(TableKey::Henkan), None);
+        assert_eq!(cache.toggle_contradiction(TableKey::Space), None);
         // 学習表が消えたら（棄却・ファイル削除）判定も戻る。
         cache.get(RuntimeTableCache::RECHECK_MS, key, || Some((2, 1)), || None);
-        assert!(!cache.hankaku_zenkaku_non_toggle());
+        assert_eq!(cache.toggle_contradiction(k), None);
     }
 
     /// ADR-195追記: KeyDownで確定した判定がKeyUpへ持ち越され、途中で表が変わっても揃う。
@@ -1536,21 +1546,16 @@ mod tests {
         assert_eq!(l, latch);
     }
 
-    /// 分岐: GJI・学習表使用・表フラグ真の3つが揃うときだけ外す（MS-IME本体・第三者・opt-outは外さない）。
+    /// 分岐: 学習表使用・表フラグ真の2つが揃うときだけ外す（opt-out・学習表なしは外さない）。
     #[test]
     fn hz_omit_verdict_truth_table() {
-        use crate::state::ime_kind::ImeKindId;
-        let all = [ImeKindId::Gji, ImeKindId::MsIme];
-        for ime in all {
-            for use_learned in [false, true] {
-                for flag in [false, true] {
-                    let want = matches!(ime, ImeKindId::Gji) && use_learned && flag;
-                    assert_eq!(hz_omit_verdict(ime, use_learned, flag), want);
-                }
+        for use_learned in [false, true] {
+            for flag in [false, true] {
+                assert_eq!(hz_omit_verdict(use_learned, flag), use_learned && flag);
             }
         }
-        assert!(!hz_omit_may_apply(ImeKindId::MsIme, true));
-        assert!(!hz_omit_may_apply(ImeKindId::Gji, false));
+        assert!(hz_omit_may_apply(true));
+        assert!(!hz_omit_may_apply(false));
     }
 
     /// 早期returnでラッチを捨てるのは、半角/全角の非injected KeyDownだけ。

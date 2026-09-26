@@ -601,35 +601,58 @@ fn classify_cells(cells: &[Cell], key: TableKey, vk: u16) -> Classification {
     }
 }
 
-/// ADR-195 追記（縮小方向）: 採用中の学習表が、このキーを**開閉トグルでない**と示しているか。
+/// 学習表がトグルと矛盾すると示した種類（ADR-199 決定6-2）。根拠にするのは開閉の反転そのものを測る
+/// `Stage::None`（入力中でない）のセル2種だけ。入力中・変換中のセルは根拠にしない
+/// （MS-IME 本体は入力中に開→開の正規挙動があり、同梱表の MSIME_NATIVE は1試行のセルが多い）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToggleContradiction {
+    /// 閉状態（DirectInput）で押して閉のまま（`after_open=false`）。
+    ClosedStaysClosed,
+    /// 開状態の未入力で押して開のまま（`after_open=true`）。
+    IdleOpenStaysOpen,
+}
+
+impl ToggleContradiction {
+    /// 不具合報告・ログ用の固定語彙。
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ClosedStaysClosed => "closed_stays_closed",
+            Self::IdleOpenStaysOpen => "idle_open_stays_open",
+        }
+    }
+}
+
+/// 学習表による狭めの対象キー（ADR-199 決定6-2。F13〜F24 は表にセルが無いので対象外）。
+pub const NARROWABLE_KEYS: [TableKey; 3] = [
+    TableKey::HankakuZenkaku,
+    TableKey::Muhenkan,
+    TableKey::Henkan,
+];
+
+/// ADR-199 決定6-2（PR #308 の半角/全角判定を包含）: 採用中の学習表に、`key` を**開閉トグルとする
+/// 割り当てと矛盾するセル**が1つでもあるか。あれば呼び出し側はそのキーを受動にする（能動→受動の
+/// 方向だけ。学習表から能動側へは広げない）。
 ///
-/// 半角/全角（0xF3/0xF4）の固定セット`shadow_action=Toggle`を外してよいかの判定に使う純関数。
-/// 誤って外すと belief 追随が予測に依存するようになるので、外すのは「予測が引けて、かつ
-/// 非トグルが確からしい」ときだけにする（Opus round1 B1〜B3）:
-/// - **`Stage::None`（入力中でない）のセルだけ**を見る。入力中のセルは MS-IME 本体のように
-///   純トグルでない正規の挙動がある（開→開・半角英数へ切替）ので、開閉の割り当ての証拠にならない。
-/// - 予測が引けることを前提にする: 閉セルと、開セルのうち`C19`（ひらがな）・`C10`（英数）の
-///   両方が揃っているときだけ`true`になりうる（欠けていれば`false`＝外さない）。
-/// - 非トグルの証拠: 開セルが**すべて**開→開（IMEOn・ひらがな系の割り当て）の方向だけ。開セル1つの
-///   ノイズでは反転しない。閉セルは前提条件（存在するか）にだけ使い、閉→閉（IMEOff系の割り当て）の
-///   検出は**見送っている**: 学習が閉セル1つを取りこぼしただけで判定が反転し、TsfNative で belief が
-///   追随せず Engine OFF・IME ON のまま固定される退行を避けるため（Opus PR#308 M1）。
-/// - 行が無い・セルが欠ける→`false`（固定セット維持）。
+/// - 見るのは`Stage::None`のセルだけ（[`ToggleContradiction`]）。閉と開の両方にあれば閉を先に返す。
+/// - セルが欠けているだけでは矛盾としない（`None`）。行が無いキー・空の表も`None`。
 ///
 /// `classify_cells`（全セルを見て警告に使う）とは目的が違い、同じ基準ではない。
 #[must_use]
-pub fn learned_cells_show_non_toggle(cells: &[Cell], key: TableKey) -> bool {
-    use super::key_effect_predictor::{Conv, Stage};
-    let idle = || {
-        cells
-            .iter()
-            .filter(move |c| c.key() == key && c.stage() == Stage::None)
-    };
-    let has_open = |conv: Conv| idle().any(|c| c.open() && c.conv() == Some(conv));
-    if !idle().any(|c| !c.open()) || !has_open(Conv::C19) || !has_open(Conv::C10) {
-        return false;
+pub fn toggle_contradiction(cells: &[Cell], key: TableKey) -> Option<ToggleContradiction> {
+    use super::key_effect_predictor::Stage;
+    let mut idle = cells
+        .iter()
+        .filter(|c| c.key() == key && c.stage() == Stage::None);
+    let mut found = None;
+    for c in idle.by_ref() {
+        match (c.open(), c.after_open()) {
+            (false, false) => return Some(ToggleContradiction::ClosedStaysClosed),
+            (true, true) => found = Some(ToggleContradiction::IdleOpenStaysOpen),
+            _ => {}
+        }
     }
-    idle().filter(|c| c.open()).all(Cell::after_open)
+    found
 }
 
 #[cfg(test)]
@@ -637,7 +660,7 @@ mod classification_tests {
     use super::*;
     use crate::state::key_effect_predictor::KeyEffectKeymap;
 
-    /// ADR-195追記: 半角/全角の`Stage::None`セル（閉1つ+開C19/C10）を組み立てる。
+    /// ADR-199 決定6-2: `Stage::None` の閉セル1つ+開セル（C19/C10）を組み立てる。
     /// `(閉→after, C19→after, C10→after)`。
     fn hz_cells(closed_after: bool, c19_after: bool, c10_after: bool) -> Vec<Cell> {
         use super::super::key_effect_predictor::{cell, Conv, Stage};
@@ -665,53 +688,53 @@ mod classification_tests {
         ]
     }
 
-    #[test]
-    fn hz_pure_toggle_does_not_omit() {
-        assert!(!learned_cells_show_non_toggle(
-            &hz_cells(true, false, false),
-            TableKey::HankakuZenkaku
-        ));
-    }
+    const HZ: TableKey = TableKey::HankakuZenkaku;
 
     #[test]
-    fn hz_reassigned_to_other_command_omits() {
-        let k = TableKey::HankakuZenkaku;
-        // IMEOn/ひらがな割当: 閉→開、開→開。
-        assert!(learned_cells_show_non_toggle(
-            &hz_cells(true, true, true),
-            k
-        ));
+    fn pure_toggle_has_no_contradiction() {
+        assert_eq!(
+            toggle_contradiction(&hz_cells(true, false, false), HZ),
+            None
+        );
     }
 
-    /// 閉→閉（IMEOff割当）の検出は見送り（閉セル1つのノイズで反転させない）。開セルが開→閉なら外さない。
+    /// IMEOn/ひらがな割当: 閉→開、開→開。開セルの開→開が矛盾。
     #[test]
-    fn hz_closed_to_closed_alone_does_not_omit() {
-        let k = TableKey::HankakuZenkaku;
-        assert!(!learned_cells_show_non_toggle(
-            &hz_cells(false, false, false),
-            k
-        ));
-        assert!(!learned_cells_show_non_toggle(
-            &hz_cells(false, true, false),
-            k
-        ));
+    fn open_stays_open_contradicts() {
+        assert_eq!(
+            toggle_contradiction(&hz_cells(true, true, true), HZ),
+            Some(ToggleContradiction::IdleOpenStaysOpen)
+        );
     }
 
+    /// 決定6-2: 閉→閉（IMEOff割当）も矛盾（PR #308 は見送っていたが、ADR-199 で対象に含めた）。
     #[test]
-    fn hz_single_noisy_open_cell_does_not_flip() {
-        // 開セル1つだけが開→開（学習ノイズ）でも、残りがトグルなら外さない。
-        assert!(!learned_cells_show_non_toggle(
-            &hz_cells(true, true, false),
-            TableKey::HankakuZenkaku
-        ));
+    fn closed_stays_closed_contradicts() {
+        assert_eq!(
+            toggle_contradiction(&hz_cells(false, false, false), HZ),
+            Some(ToggleContradiction::ClosedStaysClosed)
+        );
+        // 閉と開の両方に矛盾があれば閉を先に返す。
+        assert_eq!(
+            toggle_contradiction(&hz_cells(false, true, true), HZ),
+            Some(ToggleContradiction::ClosedStaysClosed)
+        );
     }
 
+    /// 決定6-2: 矛盾セルが**1つでも**あれば狭める（開セル1つだけ開→開でも）。
     #[test]
-    fn hz_no_row_or_missing_cells_does_not_omit() {
+    fn single_contradicting_cell_is_enough() {
+        assert_eq!(
+            toggle_contradiction(&hz_cells(true, true, false), HZ),
+            Some(ToggleContradiction::IdleOpenStaysOpen)
+        );
+    }
+
+    /// セルが欠けているだけでは狭めない。行が無い・空の表・別キーの行だけも同じ。
+    #[test]
+    fn missing_cells_or_rows_do_not_contradict() {
         use super::super::key_effect_predictor::{cell, Stage};
-        let k = TableKey::HankakuZenkaku;
-        assert!(!learned_cells_show_non_toggle(&[], k));
-        // 別キーの行だけ（行なし）。
+        assert_eq!(toggle_contradiction(&[], HZ), None);
         let other = [cell(
             false,
             None,
@@ -721,56 +744,63 @@ mod classification_tests {
             None,
             Disp::None,
         )];
-        assert!(!learned_cells_show_non_toggle(&other, k));
-        // 閉セルが無い / C10が無い→予測が引けないので外さない。
-        let mut no_closed = hz_cells(false, true, true);
+        assert_eq!(toggle_contradiction(&other, HZ), None);
+        let mut no_closed = hz_cells(true, false, false);
         no_closed.remove(0);
-        assert!(!learned_cells_show_non_toggle(&no_closed, k));
-        let mut no_c10 = hz_cells(false, true, true);
+        assert_eq!(toggle_contradiction(&no_closed, HZ), None);
+        let mut no_c10 = hz_cells(true, false, false);
         no_c10.pop();
-        assert!(!learned_cells_show_non_toggle(&no_c10, k));
+        assert_eq!(toggle_contradiction(&no_c10, HZ), None);
     }
 
+    /// 入力中（Typing）・変換中のセルは、開→開でも根拠にしない（MS-IME 本体の正規挙動・1試行ノイズ）。
     #[test]
-    fn hz_typing_stage_cells_are_ignored() {
+    fn non_idle_stage_cells_are_ignored() {
         use super::super::key_effect_predictor::{cell, Conv, Stage};
-        // MS-IME本体のように、入力中(Typing)の開→開があっても、Noneのセルが純トグルなら外さない。
-        let mut cells = hz_cells(true, false, false);
-        cells.push(cell(
-            true,
-            Some(Conv::C19),
-            Stage::Typing,
-            TableKey::HankakuZenkaku,
-            true,
-            Some(Conv::C10),
-            Disp::Kept,
-        ));
-        assert!(!learned_cells_show_non_toggle(
-            &cells,
-            TableKey::HankakuZenkaku
-        ));
-    }
-
-    /// 同梱表（GJIの2プリセット）は純トグルなので、判定が外さない（誤検出の回帰）。
-    #[test]
-    fn hz_bundled_gji_tables_are_pure_toggle() {
-        for cells in [ATOK, MSIME] {
-            assert!(!learned_cells_show_non_toggle(
-                cells,
-                TableKey::HankakuZenkaku
+        for stage in [Stage::Typing, Stage::ConvSpace, Stage::ConvHenkan] {
+            let mut cells = hz_cells(true, false, false);
+            cells.push(cell(
+                true,
+                Some(Conv::C19),
+                stage,
+                HZ,
+                true,
+                Some(Conv::C10),
+                Disp::Kept,
             ));
+            cells.push(cell(false, None, stage, HZ, false, None, Disp::Kept));
+            assert_eq!(toggle_contradiction(&cells, HZ), None, "{stage:?}");
         }
     }
 
-    /// `MSIME_NATIVE`（Microsoft IME本体）でも偽だが、理由はGJIと違う: 半角/全角の`Stage::None`に
-    /// C10の開セルが無く前提条件を満たさないため偽になる（純トグルだと確認できたわけではない）。
-    /// 適用をGJIに限定している理由の一つ（本体の表を判定にかけても外す根拠にならない）。
+    /// 同梱表の半角/全角は、GJI の2プリセットも MS-IME 本体も純トグル（誤検出の回帰）。
+    /// 同梱表と実機の食い違いをここで拾えるよう、3表すべてで固定する。
     #[test]
-    fn hz_msime_native_is_false_because_precondition_not_met() {
-        assert!(!learned_cells_show_non_toggle(
-            MSIME_NATIVE,
-            TableKey::HankakuZenkaku
-        ));
+    fn bundled_tables_hankaku_zenkaku_is_pure_toggle() {
+        for cells in [ATOK, MSIME, MSIME_NATIVE] {
+            assert_eq!(toggle_contradiction(cells, HZ), None);
+        }
+    }
+
+    /// 無変換/変換もキー単位で独立に判定する（他キーの矛盾に引きずられない）。
+    #[test]
+    fn contradiction_is_per_key() {
+        use super::super::key_effect_predictor::{cell, Stage};
+        let cells = [cell(
+            false,
+            None,
+            Stage::None,
+            TableKey::Muhenkan,
+            false,
+            None,
+            Disp::None,
+        )];
+        assert_eq!(
+            toggle_contradiction(&cells, TableKey::Muhenkan),
+            Some(ToggleContradiction::ClosedStaysClosed)
+        );
+        assert_eq!(toggle_contradiction(&cells, TableKey::Henkan), None);
+        assert_eq!(toggle_contradiction(&cells, HZ), None);
     }
 
     fn classify(preset: i64, vk: u16) -> Option<Classification> {

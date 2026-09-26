@@ -582,7 +582,7 @@ impl Runtime {
             self.clear_hz_toggle_omit_latch(key, event);
             return;
         };
-        if key.is_open_toggle_for(ime) && !self.learned_table_omits_hz_toggle(event, ime) {
+        if key.is_open_toggle_for(ime) && !self.learned_table_omits_hz_toggle(event) {
             event.ime_relevance.shadow_action = Some(awase::types::ShadowImeAction::Toggle);
         }
     }
@@ -605,23 +605,19 @@ impl Runtime {
     }
 
     /// ADR-195追記（縮小方向）: 採用中の学習表が半角/全角を開閉トグルでないと示すとき、固定セットの
-    /// `shadow_action=Toggle`を外す（`true`）。分岐（GJI限定・opt-out・表フラグ）は純関数
+    /// `shadow_action=Toggle`を外す（`true`）。分岐（opt-out・表フラグ。GJI限定は撤去しMS-IME本体にも適用、ADR-199決定6-4）は純関数
     /// [`crate::state::key_effect_runtime::hz_omit_verdict`]。学習表が無い・棄却・未採用・opt-out・
     /// キーマップ未取得のときは`false`＝従来どおり固定セットを維持する。
     ///
     /// 呼び出しの順序は`table_ime_kind`（未同定なら`enrich_ime_relevance`が`shadow_action`を付けずに抜ける。
     /// 未同定の窓のKeyUpは`shadow_action`なし＝Allowで、Down側がSuppressでも孤立KeyUpが通るだけの有害でない方向）
     /// → `is_open_toggle_for(ime)` → 本関数。本関数の中ではIME種別の判定より**前**にラッチを見る
-    /// （押したままGJI以外の窓へ移ってもDownとUpの判定が揃う）。
+    /// （押したまま別の窓へ移ってもDownとUpの判定が揃う）。
     /// KeyDownで確定した結果を scan_code 付きのラッチに持ち、同じ物理キーのKeyUp・オートリピート
     /// （`was_down`）はそれを使う（[`crate::state::key_effect_runtime::omit_latch_step`]）。
     /// ドレイン経路は enrich を2回呼びうるので、二重enrichは2回の判定のOR（どちらかで`shadow_action`が付けば残る）。
     /// 表の読込（`key_effect_keymap.get`/`get_for_keymap`）は同期I/Oを含み、スタンプ変化時だけ enrich 内で走る。
-    fn learned_table_omits_hz_toggle(
-        &mut self,
-        event: &RawKeyEvent,
-        ime: crate::state::ime_kind::ImeKindId,
-    ) -> bool {
+    fn learned_table_omits_hz_toggle(&mut self, event: &RawKeyEvent) -> bool {
         use crate::state::key_effect_runtime::{
             hz_omit_may_apply, hz_omit_verdict, omit_latch_step,
         };
@@ -636,7 +632,7 @@ impl Runtime {
             fresh_down,
             event.scan_code,
             || {
-                if !hz_omit_may_apply(ime, use_learned) {
+                if !hz_omit_may_apply(use_learned) {
                     return false;
                 }
                 let now_ms = crate::hook::current_tick_ms();
@@ -649,9 +645,12 @@ impl Runtime {
                 };
                 self.key_effect_runtime_table.get_for_keymap(now_ms, keymap);
                 hz_omit_verdict(
-                    ime,
                     use_learned,
-                    self.key_effect_runtime_table.hankaku_zenkaku_non_toggle(),
+                    self.key_effect_runtime_table
+                        .toggle_contradiction(
+                            crate::state::key_effect_predictor::TableKey::HankakuZenkaku,
+                        )
+                        .is_some(),
                 )
             },
         );

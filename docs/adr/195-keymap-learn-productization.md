@@ -148,6 +148,10 @@ awaseが実際に書き込んでよいキーの集合（actuation許可リスト
 学習結果を見て許可リストの要素を**外す（縮小する）**ことは禁止範囲外であり、次の条件で許す。
 本ADR中の「学習結果は予測にのみ使う」「学習表は`enrich_ime_relevance`を一切通らない」等の断定は、この縮小方向だけを例外とする。
 
+- **【ADR-199 T3 で置換】** 以下の「GJI限定」「`learned_cells_show_non_toggle`」「閉→閉の見送り」は ADR-199 決定6-2/6-4 に従い変更済み:
+  判定は`state/key_effect_table.rs::toggle_contradiction`（`Stage::None`の閉→閉・開→開のどちらか1セルでも矛盾）、対象は GJI・MS-IME 本体の両方、
+  半角/全角に加えて無変換/変換も判定できる。閉セルは`convert_cells`が同じ`(stage,key)`で畳むので、閉セル間で結果が割れる場合は落ちて矛盾にならない。
+  以下は #308 時点の記録として残す。
 - **対象**: ADR-189/191 の固定セットのうち半角/全角(0xF3/0xF4)の`shadow_action = Toggle`のみ（`runtime/mod.rs::enrich_ime_relevance`）。
   漢字(0x19)の静的Toggleと`keys.ime_*`（ユーザー明示config）は変えない（0x19の非対称は現状維持）。**GJI の学習表だけ**が対象で、
   Microsoft IME 本体には適用しない（本体の半角/全角は入力中に純トグルでない正規の挙動があり〈同梱表`MSIME_NATIVE`の`Stage::Typing`で開→開〉、
