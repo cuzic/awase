@@ -42,26 +42,9 @@ pub(crate) fn thumb_forced_open_actions(
     Option<awase::types::ShadowImeAction>,
     Option<awase::types::ShadowImeAction>,
 ) {
-    fn for_vk(special: &SpecialKeyCombos, vk: VkCode) -> Option<awase::types::ShadowImeAction> {
-        let contains_bare = |combos: &[awase::config::ParsedKeyCombo]| {
-            combos
-                .iter()
-                .any(|combo| combo.vk == vk && !combo.ctrl && !combo.shift && !combo.alt)
-        };
-        if contains_bare(&special.ime_on) {
-            Some(awase::types::ShadowImeAction::TurnOn)
-        } else if contains_bare(&special.ime_off) {
-            Some(awase::types::ShadowImeAction::TurnOff)
-        } else if contains_bare(&special.ime_toggle) {
-            Some(awase::types::ShadowImeAction::Toggle)
-        } else {
-            None
-        }
-    }
-
     (
-        for_vk(special, crate::vk::VK_NONCONVERT),
-        for_vk(special, crate::vk::VK_CONVERT),
+        special.bare_ime_action(crate::vk::VK_NONCONVERT),
+        special.bare_ime_action(crate::vk::VK_CONVERT),
     )
 }
 
@@ -656,6 +639,50 @@ impl Runtime {
         );
     }
 
+    /// 無変換/変換の親指キーの KeyDown で、Engine の単独タップ確定点に渡す open 軸操作を
+    /// 「config.toml の bare `keys.ime_*` 由来 ＞ 役割由来」で設定し直す（ADR-199 決定16。合流点は ADR-192 決定3b の
+    /// 既存の入力 `set_thumb_forced_open_actions` 1つだけ）。`kp_run_inner` の `engine.on_input` より前から呼ぶ。
+    ///
+    /// - 対象は非リピートの KeyDown だけ（決定16）。Up・リピートは押下時に決めた値のまま。役割を引くのは非 injected のときだけで、
+    ///   injected の Down は config 由来へ戻す。押した側の値だけを書き、もう一方は触らない。
+    /// - 打鍵ごとに求め直すので、IME を切り替えたときに古い役割が残らない（決定8 と同じ考え方）。役割が無ければ
+    ///   config 由来だけ（無ければ `None`＝従来どおり受動）に戻す。
+    /// - 役割は [`Self::derive_key_shadow_action`]（GJI の `config1.db` の逆算・学習表による狭め・config との重なり）。
+    ///   MS-IME 本体は受動（レジストリでトグルと判断できる値が未確認、T12）。修飾付きの押下では役割を求めない。
+    /// - `shadow_action` は付けない（付けると `transport.rs` の先行 Allow と awase の書き込みで二重 actuation、BUG-46 型）。
+    ///   物理配送は `Decision::Consume`（PendingThumb）に任せる。発火は FSM が単独タップと解決したときだけ（チョード優先）。
+    pub(crate) fn enrich_thumb_key_role(&mut self, event: &RawKeyEvent) {
+        use awase::types::KeyEventType;
+        let is_muhenkan = event.vk_code == crate::vk::VK_NONCONVERT;
+        if !(is_muhenkan || event.vk_code == crate::vk::VK_CONVERT)
+            || event.event_type != KeyEventType::KeyDown
+            || event.was_down
+        {
+            return;
+        }
+        let m = event.modifier_snapshot;
+        let modified = m.ctrl || m.alt || m.shift || m.win;
+        let ime = crate::tsf::observer::tsf_obs().table_ime_kind();
+        let vk = event.vk_code;
+        let configured = self.engine.bare_ime_action(vk);
+        // injected の Down も設定し直す（役割は引かず config 由来へ戻す）: 早期 return すると、直前の物理打鍵で
+        // 決めた役割を引き継いでしまう（BUG-14 の原則・決定8「古い役割を残さない」、PR #331 Opus レビュー）。
+        let action = crate::state::key_effect_runtime::thumb_forced_action(
+            configured,
+            ime.is_some(),
+            modified,
+            event.injected,
+            || ime.and_then(|ime| self.derive_key_shadow_action(ime, vk)),
+        );
+        // **押した側だけ**書く。もう一方の押下中の値を巻き込んで変えない。
+        let (muhenkan, henkan) = self.engine.thumb_forced_open_actions();
+        if is_muhenkan {
+            self.engine.set_thumb_forced_open_actions(action, henkan);
+        } else {
+            self.engine.set_thumb_forced_open_actions(muhenkan, action);
+        }
+    }
+
     /// `vk`（無修飾の候補キー）の役割由来の`shadow_action`（ADR-199 決定4・6・8）。取得（I/O・キャッシュ）だけを
     /// ここで行い、規則の組み合わせは純関数
     /// [`crate::state::key_effect_runtime::key_shadow_action`]（ホストテストあり）に任せる。
@@ -695,8 +722,12 @@ impl Runtime {
             ime,
             explicit_overlap,
             keymap.map(|k| k.gji_key_role(vk.0)),
-            // MS-IME 本体の仕様固定トグルは半角/全角だけ（F13〜F24 は設定を読めないので受動、決定18）。
-            !crate::vk::is_role_fkey(vk),
+            // MS-IME 本体の仕様固定トグルは半角/全角だけ（F13〜F24 は決定18、無変換/変換は決定16・T12 で、
+            // どれも設定を読めないので受動）。
+            matches!(
+                vk.ime_kind(),
+                Some(crate::vk::ImeKeyKind::DbeSbcsChar | crate::vk::ImeKeyKind::DbeDbcsChar)
+            ),
             use_learned,
             contradiction,
         )
