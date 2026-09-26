@@ -587,7 +587,7 @@ impl Runtime {
     /// 一致しないとき（別キーがラッチを上書きした）は役割で判定し直さず `None`（Allow）にする。
     /// (c) injected の打鍵には付けない。
     pub fn enrich_key_role(&mut self, event: &mut RawKeyEvent) {
-        use crate::state::key_effect_runtime::latch_step;
+        use crate::state::key_effect_runtime::{latch_step, passive_without_lookup};
         use awase::types::KeyEventType;
         // 全打鍵で通る経路なので、候補キーでないものは修飾キーと IME 種別を見る前に抜ける。
         if !crate::vk::is_role_candidate(event.vk_code) {
@@ -609,6 +609,7 @@ impl Runtime {
         let m = event.modifier_snapshot;
         let modified = m.ctrl || m.alt || m.shift || m.win;
         let injected = event.injected;
+        let has_sync = event.ime_relevance.sync_direction.is_some();
         // 修飾付き・IME 未同定の打鍵も `None` の判定として**ラッチに記録する**（早期 return しない）。
         // 記録しないと、Ctrl を押したまま半角/全角を Down（判定なし=Allow）→ Ctrl を先に離す →
         // 半角/全角の Up がラッチ空で判定をやり直し `Some(Toggle)`（=Suppress）になり、
@@ -619,10 +620,7 @@ impl Runtime {
             fresh_down,
             event.scan_code,
             || {
-                // F13〜F24: injected（他プロセスの SendInput・awase 自身の専用 Fn キー）には付けない（BUG-14）。
-                // Up・リピートでラッチが一致しなかったときは判定し直さず Allow 側（孤立した Up が IME に届く
-                // 向きのほうが害が小さい、決定18(i)）。
-                if modified || (is_fkey && (injected || reuse)) {
+                if passive_without_lookup(is_fkey, modified, injected, reuse, has_sync) {
                     return None;
                 }
                 // 役割を求められる IME は GJI と、CLSID で同定できた Microsoft IME 本体だけ。GJI 未検出・
@@ -636,21 +634,26 @@ impl Runtime {
     }
 
     /// F13〜F24 の最初の Down（非injected・`!was_down`）で、`kp_stage_shadow_ime_toggle` が**実際に開閉を書いたか**
-    /// （`shadow_toggled`）をラッチへ上書きする（ADR-199 決定18(i)）。書かなかった打鍵（`is_japanese_ime` が偽・
+    /// （役割由来の昇格で`shadow_toggled`）をラッチへ上書きし、一致する Up でラッチを捨てる
+    /// （[`crate::state::key_effect_runtime::settle_fkey_latch`]、ADR-199 決定18(i)）。書かなかった打鍵（`is_japanese_ime` が偽・
     /// belief が更新されなかった等）の自動リピートと Up は `None`＝Allow になり、Down だけ Suppress・Up だけ
     /// Suppress の非対称や、書かないのに握りつぶす二重の空振りを作らない。イベント自身の`shadow_action`は
     /// 触らない（配送は `plan` が最初の Down では `shadow_toggled` を見る）。
     pub(crate) fn settle_fkey_role_latch(&mut self, event: &RawKeyEvent, shadow_toggled: bool) {
-        if crate::vk::is_role_fkey(event.vk_code)
-            && event.event_type == awase::types::KeyEventType::KeyDown
-            && !event.injected
-            && !event.was_down
-        {
-            self.key_role_latch = Some((
-                event.scan_code,
-                shadow_toggled.then_some(awase::types::ShadowImeAction::Toggle),
-            ));
+        use awase::types::KeyEventType;
+        if !crate::vk::is_role_fkey(event.vk_code) || event.injected {
+            return;
         }
+        // 「書いた」は役割由来（`shadow_action` あり）の昇格だけ。同期キー（`keys.ime_detect`）や修飾付きで
+        // `shadow_toggled` が立っても、`shadow_action` は付いていない（`passive_without_lookup`）ので書いたことにしない。
+        let wrote = shadow_toggled && event.ime_relevance.shadow_action.is_some();
+        self.key_role_latch = crate::state::key_effect_runtime::settle_fkey_latch(
+            self.key_role_latch,
+            event.event_type == KeyEventType::KeyDown && !event.was_down,
+            event.event_type == KeyEventType::KeyUp,
+            event.scan_code,
+            wrote,
+        );
     }
 
     /// `vk`（無修飾の候補キー）の役割由来の`shadow_action`（ADR-199 決定4・6・8）。取得（I/O・キャッシュ）だけを

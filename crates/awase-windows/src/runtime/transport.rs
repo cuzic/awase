@@ -148,10 +148,13 @@ impl PhysicalKeyDisposition {
             event.ime_relevance.explicit_ime_action_consumed
         } else if crate::vk::is_role_fkey(event.vk_code) {
             let first_down = event.event_type == KeyEventType::KeyDown && !event.was_down;
+            // 役割由来の昇格（`shadow_action` あり）で書いたときだけ。同期キー（`keys.ime_detect`）由来の
+            // `shadow_toggled` では書いたことにしない（`shadow_action` は付かない、Opus レビュー PR #328）。
+            let role_action = event.ime_relevance.shadow_action.is_some();
             if first_down {
-                shadow_toggled
+                shadow_toggled && role_action
             } else {
-                event.ime_relevance.shadow_action.is_some()
+                role_action
             }
         } else {
             return None;
@@ -1639,6 +1642,15 @@ mod plan_tests {
             fkey_disposition(&down, false),
             PhysicalKeyDisposition::Allow
         );
+    }
+
+    /// 同期キー（`keys.ime_detect`）に F キーを書いて `shadow_toggled` が立っても、役割由来でなければ（`shadow_action=None`）
+    /// Allow のまま（決定9。Suppress すると belief だけ反転して IME に届かない）。
+    #[test]
+    fn fkey_sync_key_toggle_without_role_stays_allowed() {
+        let mut down = fkey_event(KeyEventType::KeyDown, false, None);
+        down.ime_relevance.sync_direction = Some(ShadowImeAction::Toggle);
+        assert_eq!(fkey_disposition(&down, true), PhysicalKeyDisposition::Allow);
     }
 
     #[test]

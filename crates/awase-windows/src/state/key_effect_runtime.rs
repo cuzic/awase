@@ -624,6 +624,55 @@ pub fn latch_step<T: Copy>(
     )
 }
 
+/// 候補キーの打鍵を、役割を引かずに受動（`shadow_action=None`）と決める条件（ADR-199 決定18）。
+/// `Runtime::enrich_key_role`の`fresh`判定の前段で、ホストテストできるよう純関数にした。
+///
+/// - 修飾付き: IME 側で別意味を持ちうる（決定5）。
+/// - F13〜F24（`is_fkey`）: injected（他プロセスの SendInput・awase 自身の専用 Fn キー、BUG-14）、
+///   Up・リピートでラッチが一致しなかったとき（`reuse`。判定し直さず Allow 側、決定18(i)）、
+///   同期キー（`keys.ime_detect`。`sync_direction`が付くと`shadow_toggled`は同期キー由来でも立つので、役割を付けると
+///   書かなかった打鍵まで Suppress してしまう。決定9・Opus レビュー PR #328）。
+#[must_use]
+pub const fn passive_without_lookup(
+    is_fkey: bool,
+    modified: bool,
+    injected: bool,
+    reuse: bool,
+    has_sync_direction: bool,
+) -> bool {
+    modified || (is_fkey && (injected || reuse || has_sync_direction))
+}
+
+/// F13〜F24 のラッチを、`kp_stage_shadow_ime_toggle` の結果で確定する純関数（ADR-199 決定18(i)）。
+///
+/// - 最初の Down（非injected・`!was_down`、`fresh_first_down`）: `(scan, 実際に書いたか→Some(Toggle)/None)` で上書き。
+/// - 非injectedの Up（`fresh_up`）でラッチの scan が一致したら**ラッチを捨てる**: 残すと、次の同じキーの Down が
+///   `kp_run_inner` を通らない（`deliver_key_event` の早期 return 等）とき、Up だけが前回の `Some` で Suppress され
+///   Down=Allow・Up=Suppress の非対称になる（Opus レビュー PR #328）。保留（`try_hold_key`）からの再入では
+///   settle に届く前に return するので、Up の判定が2回目で変わることはない。
+#[must_use]
+pub fn settle_fkey_latch(
+    latch: Option<(
+        awase::types::ScanCode,
+        Option<awase::types::ShadowImeAction>,
+    )>,
+    fresh_first_down: bool,
+    fresh_up: bool,
+    scan: awase::types::ScanCode,
+    wrote: bool,
+) -> Option<(
+    awase::types::ScanCode,
+    Option<awase::types::ShadowImeAction>,
+)> {
+    if fresh_first_down {
+        return Some((scan, wrote.then_some(awase::types::ShadowImeAction::Toggle)));
+    }
+    if fresh_up && latch.is_some_and(|(s, _)| s == scan) {
+        return None;
+    }
+    latch
+}
+
 /// `config1.db`スタンプ（[`super::key_effect_predictor::KeymapCache`]）と同じ方式のfsキャッシュ。
 /// `RECHECK_MS`ごとにファイルの版（更新時刻+長さ）だけを問い合わせ、変わったときだけ読み直す。
 /// 判定は純関数で、fs/時計は呼び出し側が渡す（テスト容易性のため`KeymapCache`と同じ形にする）。
@@ -1618,6 +1667,49 @@ mod tests {
             key_shadow_action(ImeKindId::Gji, false, Some(None), true, true, false),
             None
         );
+    }
+
+    /// 役割を引かずに受動と決める条件（ADR-199 決定18、PR #328 Opus レビュー: 同期キーに F キーを書いた場合）。
+    #[test]
+    fn passive_without_lookup_rules() {
+        // 修飾付きは、キーの種類に依らず受動。
+        assert!(passive_without_lookup(false, true, false, false, false));
+        assert!(passive_without_lookup(true, true, false, false, false));
+        // 半角/全角は injected・reuse・同期キーでも従来どおり役割を引く（reuse はラッチが先に効く）。
+        assert!(!passive_without_lookup(false, false, true, true, true));
+        // F キーは injected・reuse（ラッチ不一致）・同期キーのいずれでも受動。それ以外は役割を引く。
+        for (injected, reuse, sync) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            assert!(passive_without_lookup(true, false, injected, reuse, sync));
+        }
+        assert!(!passive_without_lookup(true, false, false, false, false));
+    }
+
+    /// F13〜F24 のラッチ確定: 最初の Down は「書いたか」で上書き、一致する Up で捨てる（古い `Some` を残さない）。
+    #[test]
+    fn settle_fkey_latch_overwrites_on_first_down_and_clears_on_matching_up() {
+        use awase::types::{ScanCode, ShadowImeAction::Toggle};
+        let f13 = ScanCode(0x64);
+        let other = ScanCode(0x29);
+        // 書いた/書かなかった。
+        assert_eq!(
+            settle_fkey_latch(None, true, false, f13, true),
+            Some((f13, Some(Toggle)))
+        );
+        assert_eq!(
+            settle_fkey_latch(Some((f13, Some(Toggle))), true, false, f13, false),
+            Some((f13, None))
+        );
+        // 一致する Up でラッチを捨てる。別 scan の Up・リピート・injected（どちらも false）は触らない。
+        let held = Some((f13, Some(Toggle)));
+        assert_eq!(settle_fkey_latch(held, false, true, f13, false), None);
+        assert_eq!(settle_fkey_latch(held, false, true, other, false), held);
+        assert_eq!(settle_fkey_latch(held, false, false, f13, false), held);
+        // 捨てたあとは、同じキーの Up が孤立しても（次の Down が kp を通らなくても）`Some` を再利用しない。
+        assert_eq!(settle_fkey_latch(None, false, true, f13, false), None);
     }
 
     /// ラッチの値は「この打鍵の最終的な`shadow_action`」（ADR-199 決定18(i)）。`None`（付けない）も判定として

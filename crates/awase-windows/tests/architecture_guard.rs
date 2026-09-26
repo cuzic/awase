@@ -4666,7 +4666,7 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
         "ImeKeyKind::DbeDbcsChar",
         // ADR-199 決定18(iii): F13〜F24 は「最初の Down で実際に書いた打鍵だけ」Suppress する専用の分岐
         // （ImmCross の無条件 Suppress より前）。消えると書かない打鍵が二重の空振り・Up 欠落になる。
-        "is_role_fkey",
+        "Self::thumb_or_role_fkey_disposition(event, shadow_toggled)",
         "role-fkey",
     ] {
         assert!(
