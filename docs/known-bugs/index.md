@@ -165,6 +165,7 @@
 | [BUG-161](BUG-161.md) | 旧UI「IMEオン/オフ」トグル(コード`CE`)は無変換/変換キーの実IME挙動を変えない、という2026-09-07記述の誤りが実機検証(7パターン)で判明 |
 | [BUG-162](BUG-162.md) | develop最新(2026-09-23)でADR-186撤去実験の`baseline`(期待PASS)がFAILする(`outcome=Unwarranted`が2件、未修正) |
 | [BUG-163](BUG-163.md) | 起動直後の`desired_open=true`初期値により、IMEを閉じて起動するとdrift correctionが`set_ime_open(true)`を繰り返す(未修正) |
+| [BUG-164](BUG-164.md) | 古い High 観測が新しい Medium 観測を隠す(`most_recent_trusted`/`derive_any`、鮮度窓3秒内は時刻を見ない、未修正) |
 
 ## その他の資料
 
