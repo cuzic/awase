@@ -551,6 +551,9 @@ fn key_name(vk: u32) -> Option<&'static str> {
         0x20 => "Space",
         0xA0 => "左Shift(0xA0)",
         0xA1 => "右Shift(0xA1)",
+        0x7C..=0x87 => [
+            "F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24",
+        ][(vk - 0x7C) as usize],
         _ => return None,
     })
 }
