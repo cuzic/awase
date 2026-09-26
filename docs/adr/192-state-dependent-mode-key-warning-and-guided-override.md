@@ -23,6 +23,10 @@ status: |-
   opus-adversarial-consult round7で「収束。レビューループは終了してよい」と判定・
   訂正済み）で収束、決定2bは実装後に発見したギャップをopus-adversarial-consultで
   追加検証し収束させた。
+  **ADR-199 による追記（T7、2026-09-26）**: 決定3b の「bare `keys.ime_*` は config.toml に書いたときだけ発火する（完全なオプトイン）」
+  という前提は変わった。`forced_open_action` には役割由来の値も入る（config 由来が優先、ADR-199 決定16・T10、PR #331）ため、
+  config.toml に何も書かなくても、GJI の CUSTOM で無変換/変換をトグルにしたユーザーでは単独タップで開閉が発火する。
+  警告の対象 VK の見直しは ADR-199 T6。
   ADR-191から分離した（ユーザー指示）。round1(実コード照合)→rev2→round2(実測セル照合)→rev3→round3
   (`key_effect_table.rs`全448セルを機械検証)→rev4→round4(同448セルで再検証)→rev5→round5→rev6→round6
   →rev7→round7と反復し収束した。要点:
