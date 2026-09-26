@@ -3190,12 +3190,16 @@ fn run() -> WinResult<()> {
     // 動かしていないか(親指 KEY 行の +400ms の実IME開閉)と、離した後に動くか(+1500ms)を check_charthumb.py が見る。
     // 各ラウンドの頭に VK_IME_ON(0x16)を注入して IME を ON にそろえる(3ラウンド)。ラウンドの予約は `auto_drive` が、
     // 前面化・フォーカス確認のあとで行う(先にキューへ積むと、フォーカスが外れた窓へ注入が届いて IME が ON にならない)。
-    if let Some(v) = std::env::args().find_map(|a| a.strip_prefix("--charthumb=").map(str::to_owned)) {
+    if let Some(v) =
+        std::env::args().find_map(|a| a.strip_prefix("--charthumb=").map(str::to_owned))
+    {
         let vks: Vec<u32> = v
             .split(',')
             .map(|t| {
                 u32::from_str_radix(t.trim().trim_start_matches("0x"), 16).unwrap_or_else(|_| {
-                    arg_error(&format!("--charthumb のVKが16進数でない: {t:?} (全体: {v:?})"))
+                    arg_error(&format!(
+                        "--charthumb のVKが16進数でない: {t:?} (全体: {v:?})"
+                    ))
                 })
             })
             .collect();
