@@ -520,114 +520,120 @@ impl VkCodeExt for VkCode {
         vk_to_pos(self)
     }
     fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "VK_A" => Some(Self(0x41)),
-            "VK_B" => Some(Self(0x42)),
-            "VK_C" => Some(Self(0x43)),
-            "VK_D" => Some(Self(0x44)),
-            "VK_E" => Some(Self(0x45)),
-            "VK_F" => Some(Self(0x46)),
-            "VK_G" => Some(Self(0x47)),
-            "VK_H" => Some(Self(0x48)),
-            "VK_I" => Some(Self(0x49)),
-            "VK_J" => Some(Self(0x4A)),
-            "VK_K" => Some(Self(0x4B)),
-            "VK_L" => Some(Self(0x4C)),
-            "VK_M" => Some(Self(0x4D)),
-            "VK_N" => Some(Self(0x4E)),
-            "VK_O" => Some(Self(0x4F)),
-            "VK_P" => Some(Self(0x50)),
-            "VK_Q" => Some(Self(0x51)),
-            "VK_R" => Some(Self(0x52)),
-            "VK_S" => Some(Self(0x53)),
-            "VK_T" => Some(Self(0x54)),
-            "VK_U" => Some(Self(0x55)),
-            "VK_V" => Some(Self(0x56)),
-            "VK_W" => Some(Self(0x57)),
-            "VK_X" => Some(Self(0x58)),
-            "VK_Y" => Some(Self(0x59)),
-            "VK_Z" => Some(Self(0x5A)),
-            "VK_0" => Some(Self(0x30)),
-            "VK_1" => Some(Self(0x31)),
-            "VK_2" => Some(Self(0x32)),
-            "VK_3" => Some(Self(0x33)),
-            "VK_4" => Some(Self(0x34)),
-            "VK_5" => Some(Self(0x35)),
-            "VK_6" => Some(Self(0x36)),
-            "VK_7" => Some(Self(0x37)),
-            "VK_8" => Some(Self(0x38)),
-            "VK_9" => Some(Self(0x39)),
-            "VK_OEM_PLUS" => Some(Self(0xBB)),
-            "VK_OEM_COMMA" => Some(Self(0xBC)),
-            "VK_OEM_MINUS" => Some(Self(0xBD)),
-            "VK_OEM_PERIOD" => Some(Self(0xBE)),
-            "VK_OEM_2" => Some(Self(0xBF)),
-            "VK_OEM_1" => Some(Self(0xBA)),
-            "VK_OEM_3" => Some(Self(0xC0)),
-            "VK_OEM_4" => Some(Self(0xDB)),
-            "VK_OEM_5" => Some(Self(0xDC)),
-            "VK_OEM_6" => Some(Self(0xDD)),
-            "VK_OEM_7" => Some(Self(0xDE)),
-            "VK_OEM_102" => Some(Self(0xE2)),
-            "VK_SPACE" => Some(Self(0x20)),
-            "VK_RETURN" => Some(Self(0x0D)),
-            "VK_TAB" => Some(Self(0x09)),
-            "VK_BACK" => Some(Self(0x08)),
-            "VK_ESCAPE" => Some(Self(0x1B)),
-            "VK_DELETE" => Some(Self(0x2E)),
-            "VK_CONVERT" | "Convert" | "変換" => Some(Self(0x1C)),
-            "VK_NONCONVERT" | "VK_MUHENKAN" | "Nonconvert" | "無変換" => Some(Self(0x1D)),
-            "VK_KANA" | "Kana" | "かな" | "カナ" => Some(Self(0x15)),
-            "VK_KANJI" | "Kanji" | "漢字" => Some(Self(0x19)),
-            "VK_IME_ON" | "ImeOn" | "IMEオン" => Some(Self(0x16)),
-            "VK_IME_OFF" | "ImeOff" | "IMEオフ" => Some(Self(0x1A)),
-            "VK_DBE_ALPHANUMERIC" => Some(Self(0xF0)),
-            "VK_DBE_KATAKANA" => Some(Self(0xF1)),
-            "VK_DBE_HIRAGANA" => Some(Self(0xF2)),
-            "VK_DBE_SBCSCHAR" | "VK_OEM_AUTO" => Some(Self(0xF3)),
-            "VK_DBE_DBCSCHAR" | "VK_OEM_ENLW" => Some(Self(0xF4)),
-            "VK_DBE_ROMAN" => Some(Self(0xF5)),
-            "VK_DBE_NOROMAN" => Some(Self(0xF6)),
-            "VK_SHIFT" => Some(Self(0x10)),
-            "VK_CONTROL" => Some(Self(0x11)),
-            "VK_MENU" => Some(Self(0x12)),
-            "VK_CAPITAL" => Some(Self(0x14)),
-            "VK_LSHIFT" => Some(Self(0xA0)),
-            "VK_RSHIFT" => Some(Self(0xA1)),
-            "VK_LCONTROL" => Some(Self(0xA2)),
-            "VK_RCONTROL" => Some(Self(0xA3)),
-            "VK_LMENU" => Some(Self(0xA4)),
-            "VK_RMENU" => Some(Self(0xA5)),
-            "VK_F1" => Some(Self(0x70)),
-            "VK_F2" => Some(Self(0x71)),
-            "VK_F3" => Some(Self(0x72)),
-            "VK_F4" => Some(Self(0x73)),
-            "VK_F5" => Some(Self(0x74)),
-            "VK_F6" => Some(Self(0x75)),
-            "VK_F7" => Some(Self(0x76)),
-            "VK_F8" => Some(Self(0x77)),
-            "VK_F9" => Some(Self(0x78)),
-            "VK_F10" => Some(Self(0x79)),
-            "VK_F11" => Some(Self(0x7A)),
-            "VK_F12" => Some(Self(0x7B)),
-            "VK_F13" => Some(Self(0x7C)),
-            "VK_F14" => Some(Self(0x7D)),
-            "VK_F15" => Some(Self(0x7E)),
-            "VK_F16" => Some(Self(0x7F)),
-            "VK_F17" => Some(Self(0x80)),
-            "VK_F18" => Some(Self(0x81)),
-            "VK_F19" => Some(Self(0x82)),
-            "VK_F20" => Some(Self(0x83)),
-            "VK_F21" => Some(Self(0x84)),
-            "VK_F22" => Some(Self(0x85)),
-            "VK_F23" => Some(Self(0x86)),
-            "VK_F24" => Some(Self(0x87)),
-            "VK_HOME" => Some(Self(0x24)),
-            "VK_END" => Some(Self(0x23)),
-            "VK_PRIOR" => Some(Self(0x21)),
-            "VK_NEXT" => Some(Self(0x22)),
-            "VK_INSERT" => Some(Self(0x2D)),
-            "VK_SNAPSHOT" => Some(Self(0x2C)),
+        // 最初に `canonical_key_text`（空白除去 → ASCII 大文字化 → 先頭 `VK_` 除去）を通し、
+        // 正規化した名前で引く。表のキーは正規化した形で書く（`VK_A` → `"A"`、
+        // `ImeOn` → `"IMEON"`、`IMEオン` → `"IMEオン"`、`VK_OEM_1` → `"OEM_1"`）。
+        // コアの検証（`awase::key_text::key_identity`）と規則が同じになる（ADR-201 決定1）。
+        // `"Left Alt"`/`"Right Alt"` は VK 名ではないのでここには入れない
+        // （`resolve_thumb_key` が目印として先に処理する）。
+        match awase::key_text::canonical_key_text(name).as_str() {
+            "A" => Some(Self(0x41)),
+            "B" => Some(Self(0x42)),
+            "C" => Some(Self(0x43)),
+            "D" => Some(Self(0x44)),
+            "E" => Some(Self(0x45)),
+            "F" => Some(Self(0x46)),
+            "G" => Some(Self(0x47)),
+            "H" => Some(Self(0x48)),
+            "I" => Some(Self(0x49)),
+            "J" => Some(Self(0x4A)),
+            "K" => Some(Self(0x4B)),
+            "L" => Some(Self(0x4C)),
+            "M" => Some(Self(0x4D)),
+            "N" => Some(Self(0x4E)),
+            "O" => Some(Self(0x4F)),
+            "P" => Some(Self(0x50)),
+            "Q" => Some(Self(0x51)),
+            "R" => Some(Self(0x52)),
+            "S" => Some(Self(0x53)),
+            "T" => Some(Self(0x54)),
+            "U" => Some(Self(0x55)),
+            "V" => Some(Self(0x56)),
+            "W" => Some(Self(0x57)),
+            "X" => Some(Self(0x58)),
+            "Y" => Some(Self(0x59)),
+            "Z" => Some(Self(0x5A)),
+            "0" => Some(Self(0x30)),
+            "1" => Some(Self(0x31)),
+            "2" => Some(Self(0x32)),
+            "3" => Some(Self(0x33)),
+            "4" => Some(Self(0x34)),
+            "5" => Some(Self(0x35)),
+            "6" => Some(Self(0x36)),
+            "7" => Some(Self(0x37)),
+            "8" => Some(Self(0x38)),
+            "9" => Some(Self(0x39)),
+            "OEM_PLUS" => Some(Self(0xBB)),
+            "OEM_COMMA" => Some(Self(0xBC)),
+            "OEM_MINUS" => Some(Self(0xBD)),
+            "OEM_PERIOD" => Some(Self(0xBE)),
+            "OEM_2" => Some(Self(0xBF)),
+            "OEM_1" => Some(Self(0xBA)),
+            "OEM_3" => Some(Self(0xC0)),
+            "OEM_4" => Some(Self(0xDB)),
+            "OEM_5" => Some(Self(0xDC)),
+            "OEM_6" => Some(Self(0xDD)),
+            "OEM_7" => Some(Self(0xDE)),
+            "OEM_102" => Some(Self(0xE2)),
+            "SPACE" => Some(Self(0x20)),
+            "RETURN" | "ENTER" => Some(Self(0x0D)),
+            "TAB" => Some(Self(0x09)),
+            "BACK" | "BACKSPACE" => Some(Self(0x08)),
+            "ESCAPE" | "ESC" => Some(Self(0x1B)),
+            "DELETE" => Some(Self(0x2E)),
+            "CONVERT" | "変換" => Some(Self(0x1C)),
+            "NONCONVERT" | "MUHENKAN" | "無変換" => Some(Self(0x1D)),
+            "KANA" | "かな" | "カナ" => Some(Self(0x15)),
+            "KANJI" | "漢字" => Some(Self(0x19)),
+            "IME_ON" | "IMEON" | "IMEオン" => Some(Self(0x16)),
+            "IME_OFF" | "IMEOFF" | "IMEオフ" => Some(Self(0x1A)),
+            "DBE_ALPHANUMERIC" => Some(Self(0xF0)),
+            "DBE_KATAKANA" => Some(Self(0xF1)),
+            "DBE_HIRAGANA" => Some(Self(0xF2)),
+            "DBE_SBCSCHAR" | "OEM_AUTO" => Some(Self(0xF3)),
+            "DBE_DBCSCHAR" | "OEM_ENLW" => Some(Self(0xF4)),
+            "DBE_ROMAN" => Some(Self(0xF5)),
+            "DBE_NOROMAN" => Some(Self(0xF6)),
+            "SHIFT" => Some(Self(0x10)),
+            "CONTROL" => Some(Self(0x11)),
+            "MENU" => Some(Self(0x12)),
+            "CAPITAL" => Some(Self(0x14)),
+            "LSHIFT" => Some(Self(0xA0)),
+            "RSHIFT" => Some(Self(0xA1)),
+            "LCONTROL" => Some(Self(0xA2)),
+            "RCONTROL" => Some(Self(0xA3)),
+            "LMENU" => Some(Self(0xA4)),
+            "RMENU" => Some(Self(0xA5)),
+            "F1" => Some(Self(0x70)),
+            "F2" => Some(Self(0x71)),
+            "F3" => Some(Self(0x72)),
+            "F4" => Some(Self(0x73)),
+            "F5" => Some(Self(0x74)),
+            "F6" => Some(Self(0x75)),
+            "F7" => Some(Self(0x76)),
+            "F8" => Some(Self(0x77)),
+            "F9" => Some(Self(0x78)),
+            "F10" => Some(Self(0x79)),
+            "F11" => Some(Self(0x7A)),
+            "F12" => Some(Self(0x7B)),
+            "F13" => Some(Self(0x7C)),
+            "F14" => Some(Self(0x7D)),
+            "F15" => Some(Self(0x7E)),
+            "F16" => Some(Self(0x7F)),
+            "F17" => Some(Self(0x80)),
+            "F18" => Some(Self(0x81)),
+            "F19" => Some(Self(0x82)),
+            "F20" => Some(Self(0x83)),
+            "F21" => Some(Self(0x84)),
+            "F22" => Some(Self(0x85)),
+            "F23" => Some(Self(0x86)),
+            "F24" => Some(Self(0x87)),
+            "HOME" => Some(Self(0x24)),
+            "END" => Some(Self(0x23)),
+            "PRIOR" => Some(Self(0x21)),
+            "NEXT" => Some(Self(0x22)),
+            "INSERT" => Some(Self(0x2D)),
+            "SNAPSHOT" => Some(Self(0x2C)),
             _ => None,
         }
     }
@@ -635,82 +641,86 @@ impl VkCodeExt for VkCode {
 
 // ── キー名解決（config パース用）──
 
+/// 組み合わせ文字列(`"Ctrl+Shift+F12"`)を修飾キーと主キーの文字列に分解した結果。
+/// [`interpret_combo`] の戻り値。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComboText<'a> {
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    /// 主キー(最後のトークン、前後の空白除去済み)。名前の解決はしない。
+    pub main: &'a str,
+    /// 修飾キーの位置に `Ctrl`/`Control`/`Shift`/`Alt` 以外のトークンがあった。
+    pub has_unknown_modifier: bool,
+}
+
+/// 組み合わせ文字列の**修飾キー解釈の唯一の入口**(ADR-201 決定1)。
+///
+/// 区切りは `awase::key_text::split_combo`(コアの検証と共通)。修飾キー名は
+/// `from_name` と同じく ASCII の大文字小文字を区別しない。`parse_key_combo`・
+/// `parse_hotkey`・設定 GUI の `parse_combo_str` がすべてこれを使う(片方の読み手だけが
+/// 寛容だと、手書きの `"ctrl+J"` が実行時には効くのに GUI で開いて保存すると Ctrl が落ちる)。
+#[must_use]
+pub fn interpret_combo(s: &str) -> ComboText<'_> {
+    let (mods, main) = awase::key_text::split_combo(s);
+    let mut out = ComboText {
+        ctrl: false,
+        shift: false,
+        alt: false,
+        main,
+        has_unknown_modifier: false,
+    };
+    for m in mods {
+        match m.to_ascii_uppercase().as_str() {
+            "CTRL" | "CONTROL" => out.ctrl = true,
+            "SHIFT" => out.shift = true,
+            "ALT" => out.alt = true,
+            _ => out.has_unknown_modifier = true,
+        }
+    }
+    out
+}
+
 /// ホットキー文字列をパースして修飾キーフラグと仮想キーコードに変換する。
 ///
 /// `windows::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_CONTROL, MOD_SHIFT}` に
 /// 依存する唯一の関数のため `#[cfg(windows)]`。`vk` モジュール自体は
 /// この関数以外 windows crate に依存しないため ungated（ADR-082「決定1実施記録」の
 /// 次の一歩、`decide_alt_impersonation` の Linux 化のための下準備）。
+/// 解釈は [`parse_key_combo`] と同じ(BUG-167: 手書きの `F12` と GUI の `VK_F12` の両表記、
+/// `変換` などの日本語名も `from_name` が受理する)。
 #[cfg(windows)]
 #[must_use]
 pub fn parse_hotkey(s: &str) -> Option<(u32, VkCode)> {
     use windows::Win32::UI::Input::KeyboardAndMouse::{MOD_ALT, MOD_CONTROL, MOD_SHIFT};
 
-    let parts: Vec<&str> = s.split('+').map(str::trim).collect();
-    if parts.is_empty() {
-        return None;
-    }
-
+    let k = parse_key_combo(s)?;
     let mut modifiers = 0u32;
-    for &part in &parts[..parts.len() - 1] {
-        match part {
-            "Ctrl" | "Control" => modifiers |= MOD_CONTROL.0,
-            "Shift" => modifiers |= MOD_SHIFT.0,
-            "Alt" => modifiers |= MOD_ALT.0,
-            _ => return None,
-        }
+    if k.ctrl {
+        modifiers |= MOD_CONTROL.0;
     }
-
-    let key_name = with_vk_prefix(parts.last()?);
-    let vk = VkCode::from_name(&key_name)?;
-
-    Some((modifiers, vk))
-}
-
-/// ホットキーのキー名に `VK_` 接頭辞を補う（既にあればそのまま）。
-///
-/// `engine_toggle_hotkey` は手書きなら `"Ctrl+Shift+F12"`（接頭辞なし）、設定 GUI が
-/// 書き出すと `"Ctrl+Shift+VK_F12"`（接頭辞あり）と、2通りの表記で config に入る。
-/// 以前は常に `VK_` を付けていたため後者が `VK_VK_F12` になって `from_name` が
-/// 失敗し、ホットキーが無言で登録されなかった（BUG-167）。`parse_hotkey`（Windows 専用）
-/// と `keymap::warn_on_engine_hotkey_collision`（Linux でもビルドされる）の両方が
-/// この関数を使い、正規化を1か所に置く。
-#[must_use]
-pub fn with_vk_prefix(key_name: &str) -> String {
-    if key_name.starts_with("VK_") {
-        key_name.to_string()
-    } else {
-        format!("VK_{key_name}")
+    if k.shift {
+        modifiers |= MOD_SHIFT.0;
     }
+    if k.alt {
+        modifiers |= MOD_ALT.0;
+    }
+    Some((modifiers, k.vk))
 }
 
 /// キーコンボ文字列をパースする
 #[must_use]
 pub fn parse_key_combo(s: &str) -> Option<awase::config::ParsedKeyCombo> {
-    let parts: Vec<&str> = s.split('+').map(str::trim).collect();
-    if parts.is_empty() {
+    let c = interpret_combo(s);
+    if c.has_unknown_modifier {
         return None;
     }
-
-    let mut ctrl = false;
-    let mut shift = false;
-    let mut alt = false;
-    for &part in &parts[..parts.len() - 1] {
-        match part {
-            "Ctrl" | "Control" => ctrl = true,
-            "Shift" => shift = true,
-            "Alt" => alt = true,
-            _ => return None,
-        }
-    }
-
-    let key_name = *parts.last()?;
-    let vk = VkCode::from_name(key_name)?;
+    let vk = VkCode::from_name(c.main)?;
 
     Some(awase::config::ParsedKeyCombo {
-        ctrl,
-        shift,
-        alt,
+        ctrl: c.ctrl,
+        shift: c.shift,
+        alt: c.alt,
         vk,
     })
 }
@@ -975,10 +985,11 @@ mod tests {
     }
 
     use super::{
-        ascii_to_vk, build_symbol_to_vk, is_ime_mode_key_for_ime, is_synthetic_dbe_ime_hotkey,
-        may_change_ime, reinject_scan_code, should_release_thumb_latch,
-        should_upgrade_is_japanese_ime, thumb_latch_identity, vk_may_mutate_conv, vk_pair_to_ascii,
-        with_vk_prefix, ImeKeyKind, VkCode, VkCodeExt, VK_A, VK_RETURN, VK_SPACE,
+        ascii_to_vk, build_symbol_to_vk, interpret_combo, is_ime_mode_key_for_ime,
+        is_synthetic_dbe_ime_hotkey, may_change_ime, parse_key_combo, reinject_scan_code,
+        should_release_thumb_latch, should_upgrade_is_japanese_ime, thumb_latch_identity,
+        vk_may_mutate_conv, vk_pair_to_ascii, ImeKeyKind, VkCode, VkCodeExt, VK_A, VK_RETURN,
+        VK_SPACE,
     };
     use awase::types::ScanCode;
 
@@ -1382,29 +1393,18 @@ mod tests {
     }
 
     /// BUG-167: 設定 GUI は `Ctrl+Shift+VK_F12`、手書きは `Ctrl+Shift+F12` と書く。
-    /// どちらの表記でも末尾のキー名が `VK_F12` に揃うこと（二重に `VK_VK_` にならない）。
-    #[test]
-    fn with_vk_prefix_accepts_both_spellings() {
-        assert_eq!(with_vk_prefix("F12"), "VK_F12");
-        assert_eq!(with_vk_prefix("VK_F12"), "VK_F12");
-        assert_eq!(with_vk_prefix("A"), "VK_A");
-        // 接頭辞と紛らわしいだけの名前は補う（`VK_` で始まらない）。
-        assert_eq!(with_vk_prefix("VKX"), "VK_VKX");
-    }
-
-    /// BUG-167: 正規化後のキー名が実際に `from_name` で引けること
-    /// （旧実装では `VK_VK_F12` で `None` になり、ホットキーが無言で登録されなかった）。
+    /// どちらの表記でも同じ VK に解決される(`VK_VK_F12` にならない)。
     #[test]
     fn both_hotkey_spellings_resolve_to_the_same_vk() {
-        let a = VkCode::from_name(&with_vk_prefix("F12"));
-        let b = VkCode::from_name(&with_vk_prefix("VK_F12"));
+        let a = parse_key_combo("Ctrl+Shift+F12");
+        let b = parse_key_combo("Ctrl+Shift+VK_F12");
         assert!(a.is_some());
         assert_eq!(a, b);
         assert!(VkCode::from_name("VK_VK_F12").is_none());
     }
 
     /// `parse_hotkey`（Windows 専用。Linux では走らず windows-build CI で走る）が
-    /// 両表記で同じ修飾キー・VK を返すこと。
+    /// 両表記・日本語名・大文字小文字で同じ修飾キー・VK を返すこと。
     #[cfg(windows)]
     #[test]
     fn parse_hotkey_accepts_gui_and_handwritten_spellings() {
@@ -1412,5 +1412,295 @@ mod tests {
         let gui = super::parse_hotkey("Ctrl+Shift+VK_F12");
         assert!(handwritten.is_some());
         assert_eq!(handwritten, gui);
+        assert_eq!(super::parse_hotkey("ctrl+shift+vk_f12"), gui);
+        let (_, vk) = super::parse_hotkey("Ctrl+Shift+変換").unwrap();
+        assert_eq!(vk, super::VK_CONVERT);
+        assert!(super::parse_hotkey("Ctrl+").is_none());
+        assert!(super::parse_hotkey("Bogus+F12").is_none());
     }
+
+    /// `interpret_combo` の端の場合(ADR-201「実装時に決める細部」)。
+    #[test]
+    fn interpret_combo_edge_cases() {
+        let c = interpret_combo("F12");
+        assert_eq!(
+            (c.ctrl, c.shift, c.alt, c.main),
+            (false, false, false, "F12")
+        );
+        assert!(!c.has_unknown_modifier);
+        let c = interpret_combo(" ctrl + SHIFT + Alt + VK_A ");
+        assert_eq!((c.ctrl, c.shift, c.alt, c.main), (true, true, true, "VK_A"));
+        let c = interpret_combo("Control+J");
+        assert!(c.ctrl && !c.has_unknown_modifier);
+        // 端の場合: 主キーが空・`+` だけは解決できない。
+        assert!(parse_key_combo("Ctrl+").is_none());
+        assert!(parse_key_combo("+").is_none());
+        assert!(parse_key_combo("").is_none());
+        assert!(parse_key_combo("Bogus+F12").is_none());
+        // `+` の文字そのものは `VK_OEM_PLUS` で書く。
+        assert!(parse_key_combo("Ctrl+VK_OEM_PLUS").is_some());
+    }
+
+    /// ADR-201 決定1: 手書きの表記がすべての入口で効く(今まで無言で無視されていた設定)。
+    #[test]
+    fn lenient_names_resolve_in_parse_key_combo() {
+        let f12 = parse_key_combo("Ctrl+F12").unwrap();
+        assert_eq!((f12.ctrl, f12.vk.0), (true, 0x7B));
+        assert_eq!(parse_key_combo("ctrl+j").unwrap().vk.0, 0x4A);
+        assert_eq!(parse_key_combo("Ctrl+J"), parse_key_combo("Ctrl+VK_J"));
+        assert_eq!(VkCode::from_name("F18").unwrap().0, 0x81);
+        assert_eq!(VkCode::from_name("F13").unwrap().0, 0x7C);
+        assert_eq!(VkCode::from_name(" vk_space ").unwrap(), VK_SPACE);
+        for (alias, canonical) in [
+            ("Enter", "VK_RETURN"),
+            ("Esc", "VK_ESCAPE"),
+            ("Escape", "VK_ESCAPE"),
+            ("Space", "VK_SPACE"),
+            ("Backspace", "VK_BACK"),
+            ("Tab", "VK_TAB"),
+            ("Delete", "VK_DELETE"),
+        ] {
+            assert_eq!(
+                VkCode::from_name(alias),
+                VkCode::from_name(canonical),
+                "{alias}"
+            );
+            assert!(VkCode::from_name(alias).is_some(), "{alias}");
+        }
+        // `Left Alt`/`Right Alt` は VK 名ではない(`resolve_thumb_key` の目印)。
+        assert!(VkCode::from_name("Left Alt").is_none());
+        assert!(VkCode::from_name("Right Alt").is_none());
+    }
+
+    /// ADR-201 未決事項8: 書き直し前の `from_name` が受理していた全ての名前が、
+    /// 正規化した表でも同じ VK に解決される(表のキーの正規化漏れがあると、その名前だけ
+    /// 受理されなくなる)。あわせて、各名前を小文字・`VK_` 無しに変えても同じ VK になる
+    /// (別の VK と衝突しない)。
+    #[test]
+    fn from_name_resolves_every_legacy_name_to_the_same_vk() {
+        const LEGACY: &[(&str, u16)] = &[
+            ("VK_A", 0x41),
+            ("VK_B", 0x42),
+            ("VK_C", 0x43),
+            ("VK_D", 0x44),
+            ("VK_E", 0x45),
+            ("VK_F", 0x46),
+            ("VK_G", 0x47),
+            ("VK_H", 0x48),
+            ("VK_I", 0x49),
+            ("VK_J", 0x4A),
+            ("VK_K", 0x4B),
+            ("VK_L", 0x4C),
+            ("VK_M", 0x4D),
+            ("VK_N", 0x4E),
+            ("VK_O", 0x4F),
+            ("VK_P", 0x50),
+            ("VK_Q", 0x51),
+            ("VK_R", 0x52),
+            ("VK_S", 0x53),
+            ("VK_T", 0x54),
+            ("VK_U", 0x55),
+            ("VK_V", 0x56),
+            ("VK_W", 0x57),
+            ("VK_X", 0x58),
+            ("VK_Y", 0x59),
+            ("VK_Z", 0x5A),
+            ("VK_0", 0x30),
+            ("VK_1", 0x31),
+            ("VK_2", 0x32),
+            ("VK_3", 0x33),
+            ("VK_4", 0x34),
+            ("VK_5", 0x35),
+            ("VK_6", 0x36),
+            ("VK_7", 0x37),
+            ("VK_8", 0x38),
+            ("VK_9", 0x39),
+            ("VK_OEM_PLUS", 0xBB),
+            ("VK_OEM_COMMA", 0xBC),
+            ("VK_OEM_MINUS", 0xBD),
+            ("VK_OEM_PERIOD", 0xBE),
+            ("VK_OEM_2", 0xBF),
+            ("VK_OEM_1", 0xBA),
+            ("VK_OEM_3", 0xC0),
+            ("VK_OEM_4", 0xDB),
+            ("VK_OEM_5", 0xDC),
+            ("VK_OEM_6", 0xDD),
+            ("VK_OEM_7", 0xDE),
+            ("VK_OEM_102", 0xE2),
+            ("VK_SPACE", 0x20),
+            ("VK_RETURN", 0x0D),
+            ("VK_TAB", 0x09),
+            ("VK_BACK", 0x08),
+            ("VK_ESCAPE", 0x1B),
+            ("VK_DELETE", 0x2E),
+            ("VK_CONVERT", 0x1C),
+            ("Convert", 0x1C),
+            ("変換", 0x1C),
+            ("VK_NONCONVERT", 0x1D),
+            ("VK_MUHENKAN", 0x1D),
+            ("Nonconvert", 0x1D),
+            ("無変換", 0x1D),
+            ("VK_KANA", 0x15),
+            ("Kana", 0x15),
+            ("かな", 0x15),
+            ("カナ", 0x15),
+            ("VK_KANJI", 0x19),
+            ("Kanji", 0x19),
+            ("漢字", 0x19),
+            ("VK_IME_ON", 0x16),
+            ("ImeOn", 0x16),
+            ("IMEオン", 0x16),
+            ("VK_IME_OFF", 0x1A),
+            ("ImeOff", 0x1A),
+            ("IMEオフ", 0x1A),
+            ("VK_DBE_ALPHANUMERIC", 0xF0),
+            ("VK_DBE_KATAKANA", 0xF1),
+            ("VK_DBE_HIRAGANA", 0xF2),
+            ("VK_DBE_SBCSCHAR", 0xF3),
+            ("VK_OEM_AUTO", 0xF3),
+            ("VK_DBE_DBCSCHAR", 0xF4),
+            ("VK_OEM_ENLW", 0xF4),
+            ("VK_DBE_ROMAN", 0xF5),
+            ("VK_DBE_NOROMAN", 0xF6),
+            ("VK_SHIFT", 0x10),
+            ("VK_CONTROL", 0x11),
+            ("VK_MENU", 0x12),
+            ("VK_CAPITAL", 0x14),
+            ("VK_LSHIFT", 0xA0),
+            ("VK_RSHIFT", 0xA1),
+            ("VK_LCONTROL", 0xA2),
+            ("VK_RCONTROL", 0xA3),
+            ("VK_LMENU", 0xA4),
+            ("VK_RMENU", 0xA5),
+            ("VK_F1", 0x70),
+            ("VK_F2", 0x71),
+            ("VK_F3", 0x72),
+            ("VK_F4", 0x73),
+            ("VK_F5", 0x74),
+            ("VK_F6", 0x75),
+            ("VK_F7", 0x76),
+            ("VK_F8", 0x77),
+            ("VK_F9", 0x78),
+            ("VK_F10", 0x79),
+            ("VK_F11", 0x7A),
+            ("VK_F12", 0x7B),
+            ("VK_F13", 0x7C),
+            ("VK_F14", 0x7D),
+            ("VK_F15", 0x7E),
+            ("VK_F16", 0x7F),
+            ("VK_F17", 0x80),
+            ("VK_F18", 0x81),
+            ("VK_F19", 0x82),
+            ("VK_F20", 0x83),
+            ("VK_F21", 0x84),
+            ("VK_F22", 0x85),
+            ("VK_F23", 0x86),
+            ("VK_F24", 0x87),
+            ("VK_HOME", 0x24),
+            ("VK_END", 0x23),
+            ("VK_PRIOR", 0x21),
+            ("VK_NEXT", 0x22),
+            ("VK_INSERT", 0x2D),
+            ("VK_SNAPSHOT", 0x2C),
+        ];
+        assert_eq!(LEGACY.len(), 123);
+        for &(name, vk) in LEGACY {
+            assert_eq!(VkCode::from_name(name), Some(VkCode(vk)), "{name}");
+            let lower = name.to_ascii_lowercase();
+            assert_eq!(VkCode::from_name(&lower), Some(VkCode(vk)), "{lower}");
+            if let Some(bare) = name.strip_prefix("VK_") {
+                assert_eq!(VkCode::from_name(bare), Some(VkCode(vk)), "{bare}");
+            }
+        }
+    }
+
+    /// ADR-201 R3-4(見逃し防止の向き): コアの検証が意味を問うキー(かな、F15〜F24、
+    /// 変換、無変換)について、`from_name` がその VK に解決する全ての名前が、コアの
+    /// `key_identity`(`canonical_key_text` + 別名の表)で同じ組に入る。`from_name` に別名を
+    /// 足したときにコア側の追加漏れを検出する。
+    #[test]
+    fn core_key_identity_covers_from_name() {
+        use awase::key_text::key_identity;
+        // (VK, 組の名前, その VK に解決される既知の全名前の候補)
+        let groups: &[(u16, &str)] = &[
+            (0x15, "KANA"),
+            (0x1C, "CONVERT"),
+            (0x1D, "NONCONVERT"),
+            (0x7E, "F15"),
+            (0x7F, "F16"),
+            (0x80, "F17"),
+            (0x81, "F18"),
+            (0x82, "F19"),
+            (0x83, "F20"),
+            (0x84, "F21"),
+            (0x85, "F22"),
+            (0x86, "F23"),
+            (0x87, "F24"),
+        ];
+        // 旧表の名前 + 大小文字・`VK_` の違いを足した候補全部を総当たりする。
+        let names = LEGACY_AND_NEUTRAL_NAMES;
+        for &(vk, group) in groups {
+            let mut found = 0;
+            for name in names {
+                if VkCode::from_name(name) == Some(VkCode(vk)) {
+                    found += 1;
+                    assert_eq!(key_identity(name), group, "{name} (VK 0x{vk:02X})");
+                }
+            }
+            assert!(found > 0, "{group}: 名前が1つも見つからない");
+        }
+        // 逆向き(補助): 同じ組になる名前は `from_name` でも同じ VK になる。
+        for a in names {
+            for b in names {
+                if key_identity(a) == key_identity(b) {
+                    assert_eq!(VkCode::from_name(a), VkCode::from_name(b), "{a} / {b}");
+                }
+            }
+        }
+    }
+
+    /// `core_key_identity_covers_from_name` が総当たりする名前(意味を問うキーの全綴り)。
+    const LEGACY_AND_NEUTRAL_NAMES: &[&str] = &[
+        "VK_KANA",
+        "Kana",
+        "かな",
+        "カナ",
+        "kana",
+        "vk_kana",
+        "VK_CONVERT",
+        "Convert",
+        "変換",
+        "convert",
+        "VK_NONCONVERT",
+        "VK_MUHENKAN",
+        "Nonconvert",
+        "無変換",
+        "muhenkan",
+        "vk_f15",
+        "VK_F15",
+        "F15",
+        "VK_F16",
+        "F16",
+        "VK_F17",
+        "F17",
+        "VK_F18",
+        "F18",
+        "VK_F19",
+        "F19",
+        "VK_F20",
+        "F20",
+        "VK_F21",
+        "F21",
+        "VK_F22",
+        "F22",
+        "VK_F23",
+        "F23",
+        "VK_F24",
+        "F24",
+        "VK_KANJI",
+        "Kanji",
+        "漢字",
+        "F14",
+        "VK_F13",
+    ];
 }

@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### 変更
+
+- **`config.toml` のキー名の書き方を、どの設定項目でも同じ規則で読むようにした（ADR-201 段階1）。今まで黙って無視されていた設定が有効になる**
+  - 規則: 前後の空白は無視、英字の大文字小文字は区別しない、先頭の `VK_` は付けても付けなくてもよい、`Enter`/`Esc`/`Space`/`Backspace`/`Tab`/`Delete` などの一般的な名前も使える。修飾キー（`Ctrl`/`Shift`/`Alt`）も同じ規則で、ホットキー・キー組み合わせ・設定画面で共通
+  - 今まで無視されていて、更新すると**有効になる**例: `[[post_bypass]] key = "Ctrl+J"`（`VK_` 無し）、`keys.ime_detect` の `"F13"`、`keys.engine_on = ["Ctrl+F12"]`（今までは警告を出して捨てていた）、`muhenkan_solo_tap_dedicated_fn_key = "F18"`、`engine_toggle_hotkey = "Ctrl+Shift+変換"`（日本語名）、小文字の `"ctrl+shift+vk_f12"`、`left_thumb_key = "left alt"`
+  - **昔書いたが効かないので忘れていた再割り当てや設定が、更新しただけで効き始めることがある。** 心当たりがあれば `config.toml` を確認すること。`[[keymap]]`（実際の項目名は `[[keymaps]]`）の古い書き方は今回は対象外（別の段階で扱う）
+  - 設定の検証（警告）も同じ規則になり、`left_thumb_key = "カナ"`（かなキーは KeyUp が来ないための警告）や `muhenkan_solo_tap_dedicated_fn_key = "F18"`（今までは「指定できない値」と誤って警告していた）などの判定が、表記によらず揃う
+  - 設定画面のホットキー候補に「変換」「無変換」「かな」「漢字」を選んでも、ホットキーが無言で登録されない不具合（BUG-167 の残り）を修正
+
 ## [1.21.0] - 2026-09-21
 
 ### 追加

@@ -663,10 +663,11 @@ pub(super) fn initialize_app(
         app.set_muhenkan_dedicated_fn_key_config(crate::runtime::resolve_dedicated_fn_key(
             manual_fn_key,
         ));
-        app.set_space_is_thumb_key(
-            config.general.left_thumb_key == "VK_SPACE"
-                || config.general.right_thumb_key == "VK_SPACE",
-        );
+        app.set_space_is_thumb_key(crate::state::alt_impersonation::is_thumb_key_vk(
+            &config.general.left_thumb_key,
+            &config.general.right_thumb_key,
+            crate::vk::VK_SPACE,
+        ));
         // ADR-153 決定1: ユーザー明示config。`apply_config`（reload時）と
         // 同じ配線を起動時にも行う。
         app.set_muhenkan_solo_tap_ime_action(
