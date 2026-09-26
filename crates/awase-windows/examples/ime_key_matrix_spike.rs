@@ -383,6 +383,8 @@ thread_local! {
     static AUTO_MODE: RefCell<bool> = const { RefCell::new(false) };
     /// (実行時刻ms, VK, KeyDownか) の注入予約。
     static AUTO_QUEUE: RefCell<Vec<(u64, u32, bool)>> = const { RefCell::new(Vec::new()) };
+    /// `--charthumb=CHAR,THUMB`: (文字VK, 親指VK, 残りラウンド数)。`auto_drive` がフォーカス確認のあとでラウンドごとに予約する。
+    static CHARTHUMB: RefCell<Option<(u32, u32, u32)>> = const { RefCell::new(None) };
     static AUTO_NEXT: RefCell<u64> = const { RefCell::new(0) };
     /// `--activate-gji` 時: キーフックをこの時刻(ms)まで遅らせて張る。0=張り済み/不要。
     /// LLフックは後から張ったものが先に呼ばれる。awase より後に張らないと、awase が消費・再注入した
@@ -798,6 +800,29 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
                 AUTO_NEXT.with(|n| *n.borrow_mut() = now + 300);
                 return;
             }
+        }
+    }
+    if let Some((vk_char, vk_thumb, left)) = CHARTHUMB.with(|c| *c.borrow()) {
+        if left > 0 {
+            // ADR-199 T10 決定A の1ラウンド: F2 で IME を ON → 文字↓ → 親指↓(30ms後) → 文字↑(親指↓の2ms後=重なりほぼ無し)
+            // → 親指を800ms押し続けて離す(親指の KEY 行の +400ms は保持中、+1500ms は解放後)。
+            const IME_ON_SETTLE_MS: u64 = 2500;
+            const THUMB_LEAD_MS: u64 = 30;
+            const CHAR_UP_MS: u64 = 32;
+            const THUMB_HOLD_MS: u64 = 800;
+            const ROUND_MS: u64 = 6000;
+            CHARTHUMB.with(|c| *c.borrow_mut() = Some((vk_char, vk_thumb, left - 1)));
+            queue_press(now, 0xF2);
+            let t1 = now + IME_ON_SETTLE_MS;
+            AUTO_QUEUE.with(|q| {
+                let mut q = q.borrow_mut();
+                q.push((t1, vk_char, true));
+                q.push((t1 + THUMB_LEAD_MS, vk_thumb, true));
+                q.push((t1 + CHAR_UP_MS, vk_char, false));
+                q.push((t1 + THUMB_LEAD_MS + THUMB_HOLD_MS, vk_thumb, false));
+            });
+            AUTO_NEXT.with(|n| *n.borrow_mut() = now + ROUND_MS);
+            return;
         }
     }
     if GRID.with(|g| g.borrow().is_some()) {
@@ -3163,8 +3188,8 @@ fn run() -> WinResult<()> {
     // (`min_overlap_margin_percent`>0 の設定で `PendingCharThumb` が同時打鍵と確定しない)にしたまま、親指を
     // 押し続けてタイムアウト(既定100ms)を越えさせ、その後で親指を離す。親指を押している間に awase が IME を
     // 動かしていないか(親指 KEY 行の +400ms の実IME開閉)と、離した後に動くか(+1500ms)を check_charthumb.py が見る。
-    // 各ラウンドの頭に F2(ひらがな)を注入して IME を ON にそろえる。awase の起動(--activate-gji の手順のあと)を
-    // 待つため、最初のラウンドは起動の約20秒後に始める。
+    // 各ラウンドの頭に F2(ひらがな)を注入して IME を ON にそろえる(3ラウンド)。ラウンドの予約は `auto_drive` が、
+    // 前面化・フォーカス確認のあとで行う(先にキューへ積むと、フォーカスが外れた窓へ注入が届いて IME が ON にならない)。
     if let Some(v) = std::env::args().find_map(|a| a.strip_prefix("--charthumb=").map(str::to_owned)) {
         let vks: Vec<u32> = v
             .split(',')
@@ -3181,25 +3206,7 @@ fn run() -> WinResult<()> {
         SCRIPT_MODE.with(|m| *m.borrow_mut() = true);
         STEP_IDX.with(|i| *i.borrow_mut() = steps().len() * ROUNDS);
         SCRIPT_IDX.with(|i| *i.borrow_mut() = script().len());
-        const CHARTHUMB_ROUNDS: u64 = 3;
-        const ROUND_MS: u64 = 6000; // ラウンドの間隔
-        const IME_ON_SETTLE_MS: u64 = 2500; // F2 で IME を ON にしてから文字を打つまで
-        const THUMB_LEAD_MS: u64 = 30; // 文字押下から親指押下まで
-        const CHAR_UP_MS: u64 = 32; // 文字押下から文字解放まで(親指押下の2ms後 = 重なりほぼ無し)
-        const THUMB_HOLD_MS: u64 = 800; // 親指の保持(親指 KEY 行の +400ms は保持中、+1500ms は解放後になる)
-        let base = now_ms() + 20_000;
-        for round in 0..CHARTHUMB_ROUNDS {
-            let t0 = base + round * ROUND_MS;
-            queue_press(t0, 0xF2);
-            let t1 = t0 + IME_ON_SETTLE_MS;
-            AUTO_QUEUE.with(|q| {
-                let mut q = q.borrow_mut();
-                q.push((t1, vk_char, true));
-                q.push((t1 + THUMB_LEAD_MS, vk_thumb, true));
-                q.push((t1 + CHAR_UP_MS, vk_char, false));
-                q.push((t1 + THUMB_LEAD_MS + THUMB_HOLD_MS, vk_thumb, false));
-            });
-        }
+        CHARTHUMB.with(|c| *c.borrow_mut() = Some((vk_char, vk_thumb, 3)));
     }
     // `--auto`: --script の手順を、スパイク自身が SendInput で注入して自動実行する。
     if std::env::args().any(|a| a == "--auto") {

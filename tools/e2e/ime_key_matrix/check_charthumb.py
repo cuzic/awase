@@ -20,9 +20,9 @@ def parse(path, thumb_vk):
     for line in open(path, encoding="utf-8").read().splitlines():
         m = re.match(r"\[[\d:.]+Z\] KEY \[[^\]]*\] .*vk=0x([0-9A-Fa-f]+) ", line)
         if m:
-            started = True
             cur = {} if int(m.group(1), 16) == thumb_vk else None
             if cur is not None:
+                started = True  # 最初のラウンドの前の前面化(準備)は数えない
                 rounds.append(cur)
             continue
         if started and "[AUTO] フォーカス復帰" in line:
