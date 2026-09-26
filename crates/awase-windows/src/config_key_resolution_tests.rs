@@ -49,10 +49,8 @@ const DOC_KNOWN_FAILURES: &[&str] = &[
 const FIXTURE_KNOWN_FAILURES: &[&str] = &[
     // 段階2: `[[keymap]]` は `keymaps` へ合流し、未知のキーは `load_warnings` として
     // `validate()` の警告に出るようになった(未知のキーの検出は警告数の基準に移した)。
-    // ── 表(`from_name`)に無いキー名。`keymaps.to = "VK_UP"` は矢印キーが `from_name` の表に
-    // 無いため解決できない(`[[keymap]]` が合流したことで初めて見えた既存の欠落。段階2の報告に記載)。
-    // 実行時には `KeymapTable::new` の警告として診断に出る ──
-    "legacy_keymap_and_post_bypass.toml|unresolved|keymaps[2].to=VK_UP",
+    // (矢印キーが `from_name` の表に無く `keymaps.to = "VK_UP"` が解決できなかった欠落は、
+    // 矢印キーを表に追加して解消した。一覧から外した。)
     // ── 意図して解決できない値(存在しないキー名)。実行時の診断に出る ──
     "unknown_keys.toml|unresolved|general.engine_toggle_hotkey=Ctrl+Shift+NoSuchKey",
     "unknown_keys.toml|unresolved|keys.ime_on=Ctrl+NoSuchKey",

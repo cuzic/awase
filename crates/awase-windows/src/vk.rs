@@ -628,6 +628,11 @@ impl VkCodeExt for VkCode {
             "F22" => Some(Self(0x85)),
             "F23" => Some(Self(0x86)),
             "F24" => Some(Self(0x87)),
+            // 矢印キー（以前は表に無く、`[[keymaps]]` の `to` などに指定できなかった）。
+            "LEFT" => Some(Self(0x25)),
+            "UP" => Some(Self(0x26)),
+            "RIGHT" => Some(Self(0x27)),
+            "DOWN" => Some(Self(0x28)),
             "HOME" => Some(Self(0x24)),
             "END" => Some(Self(0x23)),
             "PRIOR" => Some(Self(0x21)),
@@ -988,8 +993,8 @@ mod tests {
         ascii_to_vk, build_symbol_to_vk, interpret_combo, is_ime_mode_key_for_ime,
         is_synthetic_dbe_ime_hotkey, may_change_ime, parse_key_combo, reinject_scan_code,
         should_release_thumb_latch, should_upgrade_is_japanese_ime, thumb_latch_identity,
-        vk_may_mutate_conv, vk_pair_to_ascii, ImeKeyKind, VkCode, VkCodeExt, VK_A, VK_RETURN,
-        VK_SPACE,
+        vk_may_mutate_conv, vk_pair_to_ascii, ImeKeyKind, VkCode, VkCodeExt, VK_A, VK_LEFT,
+        VK_RETURN, VK_SPACE, VK_UP,
     };
     use awase::types::ScanCode;
 
@@ -1476,6 +1481,29 @@ mod tests {
     /// 正規化した表でも同じ VK に解決される(表のキーの正規化漏れがあると、その名前だけ
     /// 受理されなくなる)。あわせて、各名前を小文字・`VK_` 無しに変えても同じ VK になる
     /// (別の VK と衝突しない)。
+    /// 矢印キー（`VK_LEFT`/`UP`/`RIGHT`/`DOWN`）は表に無かった。`VK_` 付き・無し・大文字小文字を問わず
+    /// 解決でき、`parse_key_combo` でも使えること（`[[keymaps]]` の `to`・`from`、ホットキー等）。
+    #[test]
+    fn from_name_resolves_arrow_keys() {
+        for (names, vk) in [
+            (["VK_LEFT", "LEFT", "Left", " vk_left "], 0x25),
+            (["VK_UP", "UP", "Up", " vk_up "], 0x26),
+            (["VK_RIGHT", "RIGHT", "Right", " vk_right "], 0x27),
+            (["VK_DOWN", "DOWN", "Down", " vk_down "], 0x28),
+        ] {
+            for n in names {
+                assert_eq!(VkCode::from_name(n).map(|v| v.0), Some(vk), "{n:?}");
+            }
+        }
+        assert_eq!(parse_key_combo("Ctrl+VK_UP").unwrap().vk.0, 0x26);
+        assert_eq!(parse_key_combo("Alt+Left").unwrap().vk.0, 0x25);
+        // 定数と表が食い違わない。
+        assert_eq!(VkCode::from_name("VK_LEFT"), Some(VK_LEFT));
+        assert_eq!(VkCode::from_name("VK_UP"), Some(VK_UP));
+        // 親指キーの目印 `Left Alt` とは無関係（空白があるので別の名前）。
+        assert_eq!(VkCode::from_name("Left Alt"), None);
+    }
+
     #[test]
     fn from_name_resolves_every_legacy_name_to_the_same_vk() {
         const LEGACY: &[(&str, u16)] = &[
