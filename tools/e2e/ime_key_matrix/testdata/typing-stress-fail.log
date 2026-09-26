@@ -1,0 +1,13 @@
+[12:00:00.000Z] [init] IMEプロファイルをアクティブ化: Ok(())
+[12:00:01.000Z] [TS-JSON] {"type": "config", "form": "edit", "ime": "gji", "mode": "nicola", "interval_ms": 10.0, "len": 6, "trials": 1, "seed": 1, "kinds": ["single", "thumb", "mixed"], "layout": "layout/nicola_keytop.yab", "cells": [36, 30, 30], "child_class": "Edit"}
+[12:00:02.000Z] [TS-JSON] {"type": "ready", "attempt": 1, "text": "か", "expect": "か", "ok": true}
+[12:00:03.000Z] [TS-JSON] {"type": "trial", "kind": "single", "n": 0, "chars": 5, "expect": "かたこさら", "actual": "かたさら", "keys": "ka L+e", "focus_ok": true}
+[12:00:04.000Z] [TS-JSON] {"type": "inject", "kind": "single", "n": 0, "planned": 12, "sent_ok": 12, "late_p95_us": 300, "late_max_us": 900, "span_ms": 60, "planned_span_ms": 58, "hook_seen": 12, "hook_down": 6, "deliver_p50_us": 80, "deliver_max_us": 400, "foreign_events_total": 0}
+[12:00:05.000Z] [TS-JSON] {"type": "trial", "kind": "thumb", "n": 0, "chars": 5, "expect": "がだござよ", "actual": "だがござよ", "keys": "ka L+e", "focus_ok": true}
+[12:00:06.000Z] [TS-JSON] {"type": "inject", "kind": "thumb", "n": 0, "planned": 12, "sent_ok": 12, "late_p95_us": 300, "late_max_us": 900, "span_ms": 60, "planned_span_ms": 58, "hook_seen": 12, "hook_down": 6, "deliver_p50_us": 80, "deliver_max_us": 400, "foreign_events_total": 0}
+[12:00:07.000Z] [TS-JSON] {"type": "trial", "kind": "mixed", "n": 0, "chars": 5, "expect": "かたこさら", "actual": "かtaこさら", "keys": "ka L+e", "focus_ok": true}
+[12:00:08.000Z] [TS-JSON] {"type": "inject", "kind": "mixed", "n": 0, "planned": 12, "sent_ok": 12, "late_p95_us": 300, "late_max_us": 900, "span_ms": 60, "planned_span_ms": 58, "hook_seen": 12, "hook_down": 6, "deliver_p50_us": 80, "deliver_max_us": 400, "foreign_events_total": 0}
+[12:00:09.000Z] [TS-JSON] {"type": "trial", "kind": "mixed", "n": 0, "chars": 5, "expect": "がだござよ", "actual": "かだござよ", "keys": "ka L+e", "focus_ok": true}
+[12:00:10.000Z] [TS-JSON] {"type": "inject", "kind": "mixed", "n": 0, "planned": 12, "sent_ok": 12, "late_p95_us": 300, "late_max_us": 900, "span_ms": 60, "planned_span_ms": 58, "hook_seen": 12, "hook_down": 6, "deliver_p50_us": 80, "deliver_max_us": 400, "foreign_events_total": 0}
+[12:00:11.000Z] [TS-JSON] {"type": "done"}
+[12:00:59.000Z] === 完了 ===

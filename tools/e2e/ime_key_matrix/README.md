@@ -111,3 +111,20 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 - 現在の上限の実測(windows-latest・GJI+ATOK、run 36103384502 の baseline×3・atok-passthrough-cold×3 と
   run 36104015748 の baseline×3、計9本): I1 起動10秒 2〜3件、I1 全体 3〜4件、I2 全て1件。
   旧 run 35620809258(ci/e2e-drift-fix)の3本は I1 起動10秒 18〜19件・全体 19〜22件で、今の上限では FAIL になる。
+
+## 高速打鍵ストレス(`ts-*` 構成、`ci/e2e-typing-stress` ブランチ)
+
+「Zoom のチャットで超高速タイピングするとキーを受け取りきれない」報告を、CI で awase 単体の問題かどうかに切り分けるための検出専用ハーネス
+(awase 本体は変更しない)。NICOLA の単打・親指シフト同時打鍵・混在を、人間より速い間隔(40/20/10ms)で `SendInput` 注入し、
+入力先のテキストを読み戻して、`.yab`(`layout/nicola_keytop.yab`)とかな表(`KanaTable`)から機械的に決めた期待文字列と比べる。
+
+| ファイル | 役割 |
+|---|---|
+| `crates/awase-windows/examples/typing_stress.rs` | 入力欄の窓を作り(`--form=edit\|multi\|rich\|tsf`)、GJI/MS-IME を有効化して IME ON にし、打鍵列を busy-wait で1イベントずつ注入して読み戻す。ログは `typing_stress.log`(`[TS-JSON]` 行) |
+| `check_typing_stress.py` | ログを判定し、崩れ方(消失 loss / 余計 extra / 入れ替わり reorder / リテラル化 literal / 置換 substitute)を分類する。0=PASS / 1=FAIL / 3=INVALID(中断・注入の落ち・フォーカス喪失) |
+| `test_check_typing_stress.py` + `testdata/typing-stress-*.log` | 単体テスト(手書きのログ) |
+
+入力先: `edit`=素の EDIT(IMM32 系) / `multi`=複数行 EDIT / `rich`=素の `RICHEDIT50W`(TSF text store) / `tsf`=RichEdit を `Chrome_RenderWidgetHostHWND` へ
+スーパークラス化(ADR-193、TsfNative 相当)。Chrome・Zoom・UWP は CI で起動/フォーカスが安定せず、ストレスの影響と切り分けられないので対象外。
+構成名: `ts-<入力先>-<gji|msime>-<間隔ms>ms`。`ts-raw-*` は awase なしで同じ文字列を生のローマ字として同じ速度で打つ対照実験。
+自己検証(各試行の `inject` 記録): 予定時刻に対する実注入の遅れ、`SendInput` の成功数、自プロセスの LL フックに届いたイベント数と配送遅延。
