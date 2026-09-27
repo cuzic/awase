@@ -293,6 +293,19 @@ jobs:
               for form in ('edit', 'tsf')
               for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
               for iv in (10, 2)],
+            # --- drift correction の実機観測(cal-drift-、ci/e2e-calibration。ADR-191 09-T4、BUG-020) ---
+            # `runtime/ime_refresh.rs::ir_apply_drift_correction` が、明示意図の OFF 直後に実 IME を不適切に
+            # ON へ戻す/固定するか(2026-07-08 の実機症状)を、TsfNative相当の入力先(--form=tsf、ADR-193)で観測する。
+            # `keys.ime_off` を単一キー(VK_NONCONVERT)へ上書きする: 既定の `Ctrl+無変換` は
+            # `modifier_snapshot.ctrl` が PHYSICAL_KEY_STATE(`is_physical_key_down`)で判定されるため、
+            # SendInput 注入では物理 Ctrl 押下として認識されず駆動できない
+            # (feedback_sendinput_cannot_test_physical_key_state_modifiers、2026-09-22)。
+            # 判定は check_drift_correction.py。expect=observe(まだ「作れる」と確定していないため、赤くしない。
+            # docs/tasks/review-2026-09-24-09-remaining-active-writes-inventory.md T4 の第一段階)。
+            *[cfg(f'cal-drift-tsf-{ime_name}', 'observe', check='driftcorrection', ime=ime, keymap=km, wait=200,
+                  keys='ime_off = ["VK_NONCONVERT"]',
+                  stress=f'--form=tsf --mode=drift --trials=10{msime}')
+              for ime_name, ime, km, msime in (('gji-atok', 'gji', 1, ''), ('msime-native', 'msime', 1, ' --msime'))],
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
@@ -652,6 +665,8 @@ jobs:
             }
           } elseif ('${{ matrix.cfg.check }}' -eq 'typing') {
             python tools\e2e\ime_key_matrix\check_typing_stress.py --json typing.json dist\typing_stress.log | Tee-Object -FilePath result.txt
+          } elseif ('${{ matrix.cfg.check }}' -eq 'driftcorrection') {
+            python tools\e2e\ime_key_matrix\check_drift_correction.py --json drift.json dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'toggle') {
             python tools\e2e\ime_key_matrix\check_toggle.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'charthumb') {
@@ -808,6 +823,28 @@ jobs:
                     "loss=消失 / extra=余計 / reorder=入れ替わり / literal=ローマ字リテラル化 / substitute=別のかなに置換。注入遅れmax=予定時刻に対する実注入の最大遅れ(us)、フック到着比=自プロセスのLLフックに届いた数/送信数の最小(1.000で落ち無し)。", "",
                     "| 構成 | 回 | 判定 | 試行 | FAIL試行 | 消失 | 余計 | 入れ替わり | リテラル化 | 置換 | 注入遅れmax(us) | フック到着比 |",
                     "|---|---|---|---|---|---|---|---|---|---|---|---|"] + ts_rows
+          # drift correction 観測(cal-drift-*、ADR-191 09-T4): result.txt 末尾の DRIFT_CORRECTION 行を表にする。
+          drift_rows = []
+          for c in configs:
+            if c.get('check') != 'driftcorrection':
+              continue
+            for run in range(1, c.get('runs', 3) + 1):
+              f = f"results/result-{c['name']}-{run}/result.txt"
+              line = ''
+              if os.path.exists(f):
+                for l in open(f, encoding='utf-8', errors='replace').read().splitlines():
+                  if l.startswith('DRIFT_CORRECTION:'):
+                    line = l
+              kv = dict(re.findall(r'(\w+)=(\S+)', line))
+              if not kv:
+                drift_rows.append(f"| {c['name']} | {run} | 欠落 | - | - | - |")
+                continue
+              drift_rows.append(f"| {c['name']} | {run} | {kv.get('verdict')} | {kv.get('trials')} | {kv.get('reverted_to_on')} | {kv.get('drift_log_fired')} |")
+          if drift_rows:
+            out += ["", "## drift correction 観測(cal-drift-*、判定はまだ観測段階。expect=observeなので合否には含めない。ADR-191 09-T4/BUG-020)", "",
+                    "reverted_to_on=OFF後いったん閉じてから再度開いた試行数(BUG-020型の候補) / drift_log_fired=awase.logの`Blacklist drift correction`行数(参考値)。", "",
+                    "| 構成 | 回 | 判定 | 試行 | 復帰試行数 | drift発火行数 |",
+                    "|---|---|---|---|---|---|"] + drift_rows
           open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8').write('\n'.join(out) + '\n')
           print('\n'.join(out))
           if os.environ.get('GATE_MODE') == 'invariants':
