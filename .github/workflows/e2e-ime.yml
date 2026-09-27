@@ -299,12 +299,14 @@ jobs:
             # `keys.ime_off` を単一キー(VK_NONCONVERT)へ上書きする: 既定の `Ctrl+無変換` は
             # `modifier_snapshot.ctrl` が PHYSICAL_KEY_STATE(`is_physical_key_down`)で判定されるため、
             # SendInput 注入では物理 Ctrl 押下として認識されず駆動できない
-            # (feedback_sendinput_cannot_test_physical_key_state_modifiers、2026-09-22)。
+            # (2026-09-22、TsfNativeでのCtrl+変換強制ON不発火の根本原因調査で確認)。
             # 判定は check_drift_correction.py。expect=observe(まだ「作れる」と確定していないため、赤くしない。
             # docs/tasks/review-2026-09-24-09-remaining-active-writes-inventory.md T4 の第一段階)。
+            # --drift-off-vk=0x1D は typing_stress.rs の既定(VK_MUHENKAN)と同じ値だが、既定に暗黙で
+            # 頼らず明示する(既定が変わっても keys.ime_off の上書き先と食い違わないように)。
             *[cfg(f'cal-drift-tsf-{ime_name}', 'observe', check='driftcorrection', ime=ime, keymap=km, wait=200,
                   keys='ime_off = ["VK_NONCONVERT"]',
-                  stress=f'--form=tsf --mode=drift --trials=10 --layout=@REPO@/layout/nicola_keytop.yab{msime}')
+                  stress=f'--form=tsf --mode=drift --trials=10 --drift-off-vk=0x1D --layout=@REPO@/layout/nicola_keytop.yab{msime}')
               for ime_name, ime, km, msime in (('gji-atok', 'gji', 1, ''), ('msime-native', 'msime', 1, ' --msime'))],
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
@@ -837,14 +839,14 @@ jobs:
                     line = l
               kv = dict(re.findall(r'(\w+)=(\S+)', line))
               if not kv:
-                drift_rows.append(f"| {c['name']} | {run} | 欠落 | - | - | - |")
+                drift_rows.append(f"| {c['name']} | {run} | 欠落 | - | - | - | - |")
                 continue
-              drift_rows.append(f"| {c['name']} | {run} | {kv.get('verdict')} | {kv.get('trials')} | {kv.get('reverted_to_on')} | {kv.get('drift_log_fired')} |")
+              drift_rows.append(f"| {c['name']} | {run} | {kv.get('verdict')} | {kv.get('trials')} | {kv.get('reverted_to_on')} | {kv.get('never_closed')} | {kv.get('drift_log_fired')} |")
           if drift_rows:
             out += ["", "## drift correction 観測(cal-drift-*、判定はまだ観測段階。expect=observeなので合否には含めない。ADR-191 09-T4/BUG-020)", "",
-                    "reverted_to_on=OFF後いったん閉じてから再度開いた試行数(BUG-020型の候補) / drift_log_fired=awase.logの`Blacklist drift correction`行数(参考値)。", "",
-                    "| 構成 | 回 | 判定 | 試行 | 復帰試行数 | drift発火行数 |",
-                    "|---|---|---|---|---|---|"] + drift_rows
+                    "reverted_to_on=OFF後いったん閉じてから再度開いた試行数(BUG-020型の候補) / never_closed=どのチェックポイントでも一度も閉じなかった試行数(OFFが効いていない) / drift_log_fired=awase.logの`Blacklist drift correction`行数(参考値)。", "",
+                    "| 構成 | 回 | 判定 | 試行 | 復帰試行数 | OFF不発試行数 | drift発火行数 |",
+                    "|---|---|---|---|---|---|---|"] + drift_rows
           open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8').write('\n'.join(out) + '\n')
           print('\n'.join(out))
           if os.environ.get('GATE_MODE') == 'invariants':

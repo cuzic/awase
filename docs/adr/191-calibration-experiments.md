@@ -304,7 +304,7 @@ windows-latest、MS-IME 本体(`--msime`)、検証専用ブランチ `ci/e2e-ime
 
 `docs/tasks/review-2026-09-24-09-remaining-active-writes-inventory.md` T4・`teardown-verification-guide.md` §7.2/§8-2/§8-3 の CI 化。ADR-193 の RichEdit スーパークラス(`--form=tsf`、`typing_stress.rs`)を使い、TsfNative相当の入力先で観測する構成 `cal-drift-tsf-{gji-atok,msime-native}` を追加(`feat/adr191-t4-drift-e2e-wiring`、developへは未マージ)。
 
-**手法**: `typing_stress --mode=drift`(新規)が「IMEをONにそろえる → 単発OFF → +100/+400/+1500ms で `ImmGetOpenStatus` を記録」を10試行繰り返す。`keys.ime_off` を単一キー(`VK_NONCONVERT`)へ上書き: 既定の `Ctrl+無変換` は `modifier_snapshot.ctrl` が `PHYSICAL_KEY_STATE`(`is_physical_key_down`)で判定されるため、SendInput 注入では物理Ctrl押下として認識されず駆動できない([[feedback_sendinput_cannot_test_physical_key_state_modifiers]]、2026-09-22)。**この上書きにより、既定の`Ctrl+無変換`チョードそのものの再現ではなく、単一キーOFFでの代替検証になる点が限界。**
+**手法**: `typing_stress --mode=drift`(新規)が「IMEをONにそろえる → 単発OFF → +100/+400/+1500ms で `ImmGetOpenStatus` を記録」を10試行繰り返す。`keys.ime_off` を単一キー(`VK_NONCONVERT`)へ上書き: 既定の `Ctrl+無変換` は `modifier_snapshot.ctrl` が `PHYSICAL_KEY_STATE`(`is_physical_key_down`)で判定されるため、SendInput 注入では物理Ctrl押下として認識されず駆動できない(2026-09-22、TsfNativeでのCtrl+変換強制ON不発火の根本原因調査で確認)。**この上書きにより、既定の`Ctrl+無変換`チョードそのものの再現ではなく、単一キーOFFでの代替検証になる点が限界。**
 
 **結果(run 36356018592、windows-latest)**: GJI(ATOK)・MS-IME本体の両IMEで、各3回×10試行=計60試行、**全試行で OFF 後は+1500msまで一貫して閉じたまま(復帰0件)**。`awase.log` の `Blacklist drift correction` 発火行数も全6回とも0行。
 

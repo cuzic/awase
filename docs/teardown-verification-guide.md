@@ -206,7 +206,7 @@ ADR-191 決定5の P1/P2 候補について、**現在ある確認**と**空白*
    ATOK/GJI で作れるかは未確認。作れなければ、drift correction は撤去せず残す判断の根拠になる。
    **部分着手（2026-09-27）**: CIでは単一キー（`VK_NONCONVERT`）OFFで60試行とも作れなかった（`A/B-3`）。
    既定の `Ctrl+無変換` チョードは `modifier_snapshot.ctrl` が `PHYSICAL_KEY_STATE`（`is_physical_key_down`）で
-   判定されるため SendInput では駆動できず（[[feedback_sendinput_cannot_test_physical_key_state_modifiers]]）、
+   判定されるため SendInput では駆動できず（2026-09-22、TsfNativeでのCtrl+変換強制ON不発火の根本原因調査で確認）、
    `--resync`（`ime_key_matrix_spike.rs`、Ctrl先行注入+200msリードタイムで駆動を試みる既存機構）も含め、
    チョードそのものでの再現可否はCIでは未解決のまま。実機A/B（ユーザーの物理キー押下）が必要。
 4. **低頻度の失敗の拾い方**: BUG-151 のような約4%の失敗は、3回では見逃す。`run_loop.sh` の高速版（1回約23秒）で回数を増やすか、
