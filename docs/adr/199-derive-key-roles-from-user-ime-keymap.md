@@ -586,6 +586,15 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
 - **複雑性**: 判定関数とプリセット定数表を新設する。U9 の拡大で、F13〜F24 の配送分岐1つ・リピート条件1つ・ラッチへの書き込み1箇所（決定18）と、
   親指キーの `forced_open_action` への役割由来の合成（決定16）が加わる。代わりに `is_open_toggle_for`・08 の (B) 案の分岐を撤去する
   （complexity-budget は未発効だが、撤去量を PR に記録する）。
+- **半角/全角のラッチ固着の疑い（コードレビュー指摘、2026-09-26 実機確認で再現せず）**: `runtime/mod.rs` の `reuse = is_up || (fresh_down && event.was_down)` は
+  `was_down` を VK 単位（0xF3/0xF4 は別 VK）で管理しているため、「同じ物理キーの Down/Up で異なる VK が届き続けると片方の VK の Up が来ず、
+  以後その VK の Down がリピート扱いでラッチの初回判定に固着する」のではと疑われた。`ci/e2e-typing-stress`（run 36320215538、
+  `sc-hzscan-*`）で Down=0xF3/Up=0xF4 の非対称注入を8回連続で行ったが、ATOK・GJI+MS-IMEプリセット・MS-IME本体いずれも全9回 ALL PASS
+  （ラッチは毎回正しく反転）で、固着は再現しなかった。長時間使用・他アプリへの切替を挟むケースは未検証。
+  副産物として `sc-hzctrl-*`（半角/全角 ⇄ Ctrl+半角/全角タップの交互）で、**MS-IME 本体だけ** 2回目の Ctrl+タップで実 IME の開閉が反転しない事象を
+  3/3 回で再現した（GJI は ATOK・MS-IMEプリセットとも6/6 PASS）。`awase.log` では該当 F3 は `mods(c=true) phys_ctrl=true` で
+  修飾付きと正しく判定され `decision="PassThrough" physical="Allow"`（決定5どおり素通し）になっており、awase 側の誤動作ではなく
+  MS-IME 本体自体が Ctrl+半角/全角 の連続タップを開閉トグルとして扱わないことがある、という実 IME 側の挙動と見られる。
 
 ## 移行・実装タスクの分割案
 
