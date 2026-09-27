@@ -304,7 +304,7 @@ jobs:
             # docs/tasks/review-2026-09-24-09-remaining-active-writes-inventory.md T4 の第一段階)。
             *[cfg(f'cal-drift-tsf-{ime_name}', 'observe', check='driftcorrection', ime=ime, keymap=km, wait=200,
                   keys='ime_off = ["VK_NONCONVERT"]',
-                  stress=f'--form=tsf --mode=drift --trials=10{msime}')
+                  stress=f'--form=tsf --mode=drift --trials=10 --layout=@REPO@/layout/nicola_keytop.yab{msime}')
               for ime_name, ime, km, msime in (('gji-atok', 'gji', 1, ''), ('msime-native', 'msime', 1, ' --msime'))],
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
