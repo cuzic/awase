@@ -12,7 +12,7 @@
 //! （`AWASE_TEST_INJECTION=1` の awase が物理キー扱いする目印付き）で注入する。専用プロファイルで
 //! Chrome を起動するので、ユーザーの Chrome には触れない。
 //!
-//! 使い方: `chrome_probe [--repeat=N] [--no-awase] [--chrome=<chrome.exe>] [--log=<path>]`
+//! 使い方: `chrome_probe [--repeat=N] [--no-awase] [--f13] [--chrome=<chrome.exe>] [--log=<path>]`
 //!   `--no-awase`: awase を止めた対照実験（かなのとき `か` を期待）。既定は awase 起動中（NICOLA を期待）。
 //! 実行中は Windows 機のキーボード・マウスに触らない。
 
@@ -414,6 +414,25 @@ struct Case {
     expect_kana: bool,
 }
 
+/// `--f13`(ADR-199 T1(e)、決定18): GJI の CUSTOM 表で F13 をトグル(DirectInput=IMEOn、他=IMEOff)にした構成の、実 Chrome での実タイピング。
+/// 表の設定は呼び出し側(ワークフロー)。F13(0x7C)で閉↔開が切り替わり、awase の belief が追随して NICOLA 文字が出るか(`ka` か NICOLA 文字か)を見る。
+const F13_CASES: [Case; 2] = [
+    Case {
+        name: "かな→F13=IME OFF",
+        setup: Setup::Kana,
+        vk: 0x7C,
+        shift: false,
+        expect_kana: false,
+    },
+    Case {
+        name: "直接入力→F13=かなON",
+        setup: Setup::Off,
+        vk: 0x7C,
+        shift: false,
+        expect_kana: true,
+    },
+];
+
 const CASES: [Case; 8] = [
     Case {
         name: "かな→無変換=IME OFF",
@@ -632,12 +651,17 @@ fn main() {
     let mut fail = 0usize;
     let mut invalid = 0usize;
     let mut recover = 0usize;
+    let cases: &[Case] = if args.iter().any(|a| a == "--f13") {
+        &F13_CASES
+    } else {
+        &CASES
+    };
     for r in 1..=repeat {
-        for (i, c) in CASES.iter().enumerate() {
+        for (i, c) in cases.iter().enumerate() {
             p.log.line(&format!(
                 "[CASE {}/{} run {r}/{repeat}] {}",
                 i + 1,
-                CASES.len(),
+                cases.len(),
                 c.name
             ));
             p.focus_lost = false;
