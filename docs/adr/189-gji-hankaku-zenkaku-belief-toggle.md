@@ -10,6 +10,9 @@ summary: |-
   連続やF3/F4の順序で「押しても反転しない」(CIの`--hz`: 8手順中4手順が反転せず)。GJIがアクティブなときだけ、`shadow_action`を
   Toggleへ上書きする(`runtime/mod.rs`の既存の上書き点に1つ追加、既存のHiragana/Katakana/Henkan/Muhenkan上書きと同じ様式)。
 status: |-
+  **[ADR-199 で役割判定に一般化（T7、2026-09-27）]** 本ADRの「VK基準で常にトグル」は、[ADR-199](199-derive-key-roles-from-user-ime-keymap.md)
+  決定4により「既定プリセットの半角/全角がトグルの役割を持つ場合の一例」に格下げされた。GJI の CUSTOM で `Hankaku/Zenkaku` 行を
+  変えたユーザーには適用されない（ADR-199 の役割判定が優先）。
   **[ADR-191で範囲を拡張]** 本文の「GJIがアクティブなときだけ」「GJI以外・GJI判定が不明なときは静的モデルのまま」は、ADR-191（実装の現状9・11）でGJIと、CLSIDで同定できたMicrosoft IME本体の両方に適用する形へ変わった（未検出・第三者IMEは静的に決めず、生キーを通して観測に追随）。以下は当初（2026-09-20）の決定。
   **決定・実装済み(developマージ済み: `651cab8d`)・CI検証済み**。`msime-hz`/`atok-hz`(`check_toggle.py`)は、実装前は8手順中4手順が反転せず、実装後は各3/3で全8手順が反転しEngineも追随。
 related_adr:
