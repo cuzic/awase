@@ -309,6 +309,8 @@ pub struct Runtime {
     state_dependent_key_warning_dialog:
         crate::state::state_dependent_key_warning::WarningDialogTracker,
     warn_state_dependent_mode_keys: bool,
+    /// 単独タップがIMEへ素通しされる親指キーのVK（状態依存キー警告の対象を絞る）。
+    passthrough_thumb_mode_keys: Vec<VkCode>,
     /// ADR-195段階4: `<config dir>/keymap-learn-table.json`（段階3永続化）の実行時読込キャッシュ。
     /// `KeyEffectPredicted`（belief更新）に使う。actuationの許可リストは広げない（ADR-195決定(A)）が、
     /// 半角/全角の固定セットの`shadow_action=Toggle`を**外す**方向にだけ参照する（ADR-195追記、
@@ -1370,6 +1372,7 @@ impl Runtime {
             state_dependent_key_warning_dialog:
                 crate::state::state_dependent_key_warning::WarningDialogTracker::default(),
             warn_state_dependent_mode_keys: true,
+            passthrough_thumb_mode_keys: Vec::new(),
             key_effect_runtime_table: crate::state::key_effect_runtime::RuntimeTableCache::default(
             ),
             use_learned_keymap_table: true,
@@ -1400,6 +1403,30 @@ impl Runtime {
 
     pub(crate) const fn set_warn_state_dependent_mode_keys(&mut self, enabled: bool) {
         self.warn_state_dependent_mode_keys = enabled;
+    }
+
+    /// 状態依存キー警告の対象にする親指キーを、設定（抑止・専用Fnキー・単独タップaction）から決める。
+    pub(crate) fn set_passthrough_thumb_mode_keys(
+        &mut self,
+        general: &awase::config::GeneralConfig,
+    ) {
+        use awase::engine::ModeKeyConfig;
+        self.passthrough_thumb_mode_keys =
+            crate::state::state_dependent_key_warning::passthrough_thumb_vks(
+                ModeKeyConfig::from_legacy_bools(
+                    general.muhenkan_solo_tap_ignore_composing_guard,
+                    general.muhenkan_solo_tap_always_suppress,
+                )
+                .is_passthrough(),
+                general.muhenkan_solo_tap_dedicated_fn_key.is_some()
+                    || general.muhenkan_solo_tap_ime_action.is_some(),
+                ModeKeyConfig::from_legacy_bools(
+                    general.henkan_solo_tap_ignore_composing_guard,
+                    general.henkan_solo_tap_always_suppress,
+                )
+                .is_passthrough(),
+                general.henkan_solo_tap_ime_action.is_some(),
+            );
     }
 
     /// ADR192-T5: 状態依存キー警告の判定に使う、採用中の学習表のセル。予測器
@@ -1434,6 +1461,7 @@ impl Runtime {
                 keymap.as_ref(),
                 learned.as_deref(),
                 [left, right],
+                &self.passthrough_thumb_mode_keys,
             )
         } else {
             let raw = crate::msime_key_assignment::read_raw_key_assignment_dwords();
@@ -1451,6 +1479,7 @@ impl Runtime {
                 Some(&keymap),
                 learned.as_deref(),
                 [left, right],
+                &self.passthrough_thumb_mode_keys,
             )
         };
         for warning in &warnings {
@@ -1796,6 +1825,7 @@ impl Runtime {
             let (fn_key, fn_key_warning) = resolve_dedicated_fn_key(manual_fn_key);
             warnings.extend(fn_key_warning);
             self.set_muhenkan_dedicated_fn_key_config(fn_key);
+            self.set_passthrough_thumb_mode_keys(&config.general);
             // ADR-153 決定1: ユーザー明示config。config.toml 由来のため毎回の
             // reload で再設定される（自動検出由来の delegate と異なり消去
             // されて構わない、`muhenkan_solo_tap_ime_action` フィールドdoc参照）。

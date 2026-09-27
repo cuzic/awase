@@ -282,6 +282,19 @@ develop に既に3つある）。決定1は次の既存資産への**問い合�
 - 警告は**ブロックしない**（無視できる）。ユーザーが「警告しない」を選べるようにする（設定
   `warn_state_dependent_mode_keys`、既定on）。
 
+### 決定2c（2026-09-26、所有者判断）: 親指キーの警告は「素通し＋開閉軸が状態依存」のときだけ
+
+既定設定（`*_solo_tap_always_suppress=true`）でも、GJI+ATOK プリセットの起動時に無変換/変換の
+`ThumbConflict` ダイアログが出ていた。標準構成そのものが警告対象になっており、設計の誤り。
+親指キーの単独タップを awase が抑止・消費している間は IME に届かず、モードずれの原因にならない。
+
+- 警告しない: 単独タップを抑止（`always_suppress`）・専用 Fn キー・`*_solo_tap_ime_action` で消費している親指キー。
+- 素通しでも警告しない: 開閉が状態に依存しない（冪等・純粋トグル）キー、および未確定文字列の扱いだけが状態依存のキー（モードずれではない）。
+- 警告する: 素通し＋開閉軸が状態依存、または素通し＋ユーザー固有の上書き（効果を追随できない）。
+- 実装: `state_dependent_key_warning::detect` の`passthrough_thumbs`引数と`passthrough_thumb_vks`
+  （起動時 `bootstrap.rs` と設定リロード時 `runtime/mod.rs` の両方で配線）。決定2の
+  「親指キーは ThumbConflict」はこの条件で上書きされる。実機確認は未実施。
+
 ### 決定2b（T2b・opus-adversarial-consultで収束、2026-09-23）: 警告の表示面を`WarningKind`ごとに分ける、新しいIPCは作らない
 
 T0〜T4実装後のレビューで、T2（検出）の結果が`tracing::warn!`のみでユーザーに一切見えず、T3

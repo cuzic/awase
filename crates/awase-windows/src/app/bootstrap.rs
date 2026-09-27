@@ -673,6 +673,7 @@ pub(super) fn initialize_app(
         app.set_keyboard_model(config.general.keyboard_model);
         app.set_update_check_enabled(config.general.update_check);
         app.set_warn_state_dependent_mode_keys(config.general.warn_state_dependent_mode_keys);
+        app.set_passthrough_thumb_mode_keys(&config.general);
         app.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
         app.set_muhenkan_dedicated_fn_key_config(dedicated_fn_key);
         app.set_space_is_thumb_key(crate::state::alt_impersonation::is_thumb_key_vk(
