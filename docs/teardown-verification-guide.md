@@ -178,7 +178,11 @@ ADR-191 決定5の P1/P2 候補について、**現在ある確認**と**空白*
   IME が ON のまま固定される、2026-07-08 の実機症状）を用意する必要がある。
 - **TsfNative を決定的に測る入力先が使える**（ADR-193）: `RICHEDIT50W` を `Chrome_RenderWidgetHostHWND` の名前でスーパークラス化すると、
   awase は `app_kind=TsfNative → mode=Vk` として扱い、確定文字を `WM_GETTEXT` で厳密に読める（実機・GJIで成功）。
-  ただし CI（`e2e-ime.yml`）への配線は未着手（GJI 有効化の `--activate-gji` 相当が要る）。
+  **CI（`e2e-ime.yml`、`cal-drift-tsf-*`）への配線は2026-09-27に完了**（`typing_stress --mode=drift`、
+  `feat/adr191-t4-drift-e2e-wiring`、developへは未マージ）。ただし `keys.ime_off` を単一キー（`VK_NONCONVERT`）へ
+  上書きする代替検証（既定の `Ctrl+無変換` チョードは SendInput では駆動できない、下記§8-3参照）。
+  結果は `docs/adr/191-calibration-experiments.md`「A/B-3」: 60試行すべてで復帰なし・drift correction発火0件。
+  「ATOK/GJIで作れるか」の問い自体には、既定チョードでは答えられていない（実機A/Bが必要）。
 
 ### 7.3 一般的な発見
 
@@ -197,8 +201,14 @@ ADR-191 決定5の P1/P2 候補について、**現在ある確認**と**空白*
    構成は `consistency` 判定の流用で足りる見込み。撤去の前後で「不一致が続く時間」を比べる。
 2. **TsfNative 相当（ADR-193 の RichEdit スーパークラス）の CI 配線**: §7.2 の空白を埋める。GJI の有効化と、
    `awase=true/false` の対照構成が要る。BUG-002 型は実機で再現しなかったので、対象は drift correction と warmup に絞る。
+   **完了（2026-09-27）**: `cal-drift-tsf-*`（`typing_stress --mode=drift`）。`awase=true/false` の対照はまだ足していない。
 3. **明示意図の回復シナリオ**: 「Ctrl+無変換で OFF にした直後に IME が ON へ戻る」状況を作る（`--resync` の流用を検討）。
    ATOK/GJI で作れるかは未確認。作れなければ、drift correction は撤去せず残す判断の根拠になる。
+   **部分着手（2026-09-27）**: CIでは単一キー（`VK_NONCONVERT`）OFFで60試行とも作れなかった（`A/B-3`）。
+   既定の `Ctrl+無変換` チョードは `modifier_snapshot.ctrl` が `PHYSICAL_KEY_STATE`（`is_physical_key_down`）で
+   判定されるため SendInput では駆動できず（[[feedback_sendinput_cannot_test_physical_key_state_modifiers]]）、
+   `--resync`（`ime_key_matrix_spike.rs`、Ctrl先行注入+200msリードタイムで駆動を試みる既存機構）も含め、
+   チョードそのものでの再現可否はCIでは未解決のまま。実機A/B（ユーザーの物理キー押下）が必要。
 4. **低頻度の失敗の拾い方**: BUG-151 のような約4%の失敗は、3回では見逃す。`run_loop.sh` の高速版（1回約23秒）で回数を増やすか、
    決定的な再現条件（`--cold` で先頭のひらがなを除く）を構成に固定する。
 

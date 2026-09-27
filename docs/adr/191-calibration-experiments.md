@@ -299,3 +299,20 @@ windows-latest、MS-IME 本体(`--msime`)、検証専用ブランチ `ci/e2e-ime
 - `sc-kanji-msime-native` は 2/3(1回 FAIL)。失敗は最初のひらがな(0xF2)で「実IMEに追随していない」。撤去前(`641ffe54`)と撤去後を同じ構成で追加比較した: 10回(撤去前 10/10、撤去後 9/10 で同じ失敗)、25回(両方 25/25)。撤去後は合計 38 回中 2 回、撤去前は 35 回中 0 回で、差は有意でない。最新の 25 回は両方全 PASS。起動直後の最初のキーで稀に起きる揺れの可能性が高いが、撤去との因果は断定できない。
 - 未確認: 実機の MS-IME 本体で、開いた直後・焦点変更後にかな入力へ落ちる症状が出るか。経路1・2(ROMAN 補完)の撤去可否もこの確認待ち。
 - 検証用ブランチ `ci/e2e-pre-removal` / `ci/e2e-post-removal` は削除済み。a8〜a10 と `--kana-drop` の構成は `origin/ci/e2e-ime`(commit `00ce0c61`)に残っている。
+
+## A/B-3 drift correction(明示意図OFF直後の復帰)のCI観測(2026-09-27、09-T4)
+
+`docs/tasks/review-2026-09-24-09-remaining-active-writes-inventory.md` T4・`teardown-verification-guide.md` §7.2/§8-2/§8-3 の CI 化。ADR-193 の RichEdit スーパークラス(`--form=tsf`、`typing_stress.rs`)を使い、TsfNative相当の入力先で観測する構成 `cal-drift-tsf-{gji-atok,msime-native}` を追加(`feat/adr191-t4-drift-e2e-wiring`、developへは未マージ)。
+
+**手法**: `typing_stress --mode=drift`(新規)が「IMEをONにそろえる → 単発OFF → +100/+400/+1500ms で `ImmGetOpenStatus` を記録」を10試行繰り返す。`keys.ime_off` を単一キー(`VK_NONCONVERT`)へ上書き: 既定の `Ctrl+無変換` は `modifier_snapshot.ctrl` が `PHYSICAL_KEY_STATE`(`is_physical_key_down`)で判定されるため、SendInput 注入では物理Ctrl押下として認識されず駆動できない([[feedback_sendinput_cannot_test_physical_key_state_modifiers]]、2026-09-22)。**この上書きにより、既定の`Ctrl+無変換`チョードそのものの再現ではなく、単一キーOFFでの代替検証になる点が限界。**
+
+**結果(run 36356018592、windows-latest)**: GJI(ATOK)・MS-IME本体の両IMEで、各3回×10試行=計60試行、**全試行で OFF 後は+1500msまで一貫して閉じたまま(復帰0件)**。`awase.log` の `Blacklist drift correction` 発火行数も全6回とも0行。
+
+| 構成 | 回数 | 試行 | 復帰試行数(BUG-020型) | drift correction 発火行数 |
+| --- | --- | --- | --- | --- |
+| cal-drift-tsf-gji-atok | 3 | 各10 | 0/10×3 | 0 |
+| cal-drift-tsf-msime-native | 3 | 各10 | 0/10×3 | 0 |
+
+**読み取り(限界つき)**: 単一キーでの明示OFFは、TsfNative相当の入力先で一貫して即座に反映され、drift correctionが発火する余地(desired/observedの乖離)自体が生じなかった。つまり「drift correctionが誤ってONへ戻す」型の再現には**至らなかった**。2026-07-08の実機症状(BUG-020、`docs/known-bugs/BUG-020.md`)は既定の`Ctrl+無変換`チョードで起きており、本CIはそのチョード自体を駆動できないため、**「ATOK/GJIで作れるか」の問いにはまだ答えていない**(チョードでない単一キー入力では作れなかった、という部分的な結果)。
+**未確認のまま残る**: (a) 既定チョードでの実機再現可否(実行者はユーザー、物理キー押下が必要)、(b) 副産物として `i2_unwarranted` の不変条件超過(gji-atok 27件・msime-native 32件、3回とも)が出ており、drift correctionとは別軸だが要因未調査。
+**次**: T4の終了条件(「ATOK/GJIで作れなければ撤去せず残す」)は、このCI結果だけでは満たせない。実機A/B(`docs/tasks/review-2026-09-24-09-remaining-active-writes-inventory.md`「実機A/B手順」節、A/B-2)をユーザーが実施し、既定チョードでの再現可否を確認する必要がある。
