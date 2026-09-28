@@ -220,6 +220,88 @@ mod probe {
         std::thread::sleep(Duration::from_millis(150));
     }
 
+    /// issue #165 の hook_starved を確実に発火させるための強制ブロック実験。
+    ///
+    /// フォーカス往復だけでは（BUG-053 の Win キー引き金を混ぜても）実際に
+    /// awase の `WH_KEYBOARD_LL` フックへイベントが届かなくなる瞬間を1回の
+    /// CI 実行で偶然引き当てられなかった。そこで、このプローブ自身が
+    /// **もう1つの** `WH_KEYBOARD_LL` フックを（awase より後に）インストールし、
+    /// 一定時間だけ `CallNextHookEx` を意図的に呼ばずに自分のマーク付きキーを
+    /// 握りつぶす。フックは後から入れたものほど先に呼ばれる（LIFO）ため、
+    /// この間 awase 側フックには一切イベントが渡らなくなる——「OS は
+    /// `SendInput` を受理し続けている（`GetLastInputInfo` は更新され続ける）のに
+    /// awase のフックだけ何も受け取らない」という issue #165 の観測条件そのものを
+    /// 人為的に作り出す。真の自然発生条件（何が実際に awase のフックを詰まらせる
+    /// のか）を特定するものではないが、「その状態になったら watchdog が正しく
+    /// 検知し、実際に文字入力が壊れるか」という**下流の因果関係**を検証できる。
+    mod blocking_hook {
+        use super::{log, send_marked_key, PROBE_KEYS};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+        use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CallNextHookEx, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT,
+            WH_KEYBOARD_LL,
+        };
+
+        static BLOCKING: AtomicBool = AtomicBool::new(false);
+
+        unsafe extern "system" fn proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+            if code >= 0 && BLOCKING.load(Ordering::SeqCst) {
+                // SAFETY: Win32 契約により code>=0 のとき lparam は有効な
+                // KBDLLHOOKSTRUCT を指す。
+                let info = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+                if info.dwExtraInfo == super::MARKER {
+                    // 意図的に CallNextHookEx を呼ばない = 後段(awase含む)へ
+                    // このイベントは一切届かない。
+                    return LRESULT(1);
+                }
+            }
+            // SAFETY: 標準的なフックチェーン継続呼び出し。
+            unsafe { CallNextHookEx(None, code, wparam, lparam) }
+        }
+
+        pub(super) struct Guard(HHOOK);
+
+        impl Guard {
+            pub(super) fn install() -> anyhow::Result<Self> {
+                // SAFETY: proc は正しい HOOKPROC シグネチャ、hMod は同一プロセス内
+                // フックのため None で良い（Win32 の標準的な用法）。
+                let hhook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(proc), None, 0) }
+                    .map_err(|e| anyhow::anyhow!("SetWindowsHookExW(blocking) failed: {e}"))?;
+                Ok(Self(hhook))
+            }
+        }
+
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                // SAFETY: self.0 は install() が返した有効なフックハンドル。
+                let _ = unsafe { UnhookWindowsHookEx(self.0) };
+            }
+        }
+
+        /// バックグラウンドスレッドで、少し待ってから `window_secs` 秒間
+        /// ブロックを有効化し、その間もマーク付きキーを送り続ける
+        /// （OS側の `GetLastInputInfo` を新鮮に保ちつつ、awase側には
+        /// 一切届かせないため）。
+        pub(super) fn spawn_forced_starvation_window(initial_delay: Duration, window_secs: u64) {
+            std::thread::spawn(move || {
+                std::thread::sleep(initial_delay);
+                log(&format!(
+                    "=== 強制hook_starved窓 開始 ({window_secs}秒、この間awase側フックには何も届かないはず) ==="
+                ));
+                BLOCKING.store(true, Ordering::SeqCst);
+                let start = Instant::now();
+                while start.elapsed() < Duration::from_secs(window_secs) {
+                    send_marked_key(PROBE_KEYS[0].0, PROBE_KEYS[0].1);
+                    std::thread::sleep(Duration::from_millis(400));
+                }
+                BLOCKING.store(false, Ordering::SeqCst);
+                log("=== 強制hook_starved窓 終了 ===");
+            });
+        }
+    }
+
     // `windows-reactor` 0.100(公開版)には `ComponentContext::set_timeout`/
     // `ComponentTimer`/`WindowRef::request_activate` が無い（GitHub `master` の
     // 開発中APIで、公開crateにはまだ降りてきていない）。そのため:
@@ -408,9 +490,25 @@ mod probe {
         let dwell_ms: u64 = arg_value("--dwell-ms=")
             .and_then(|s| s.parse().ok())
             .unwrap_or(120);
+        let force_starvation_secs: u64 = arg_value("--force-starvation-secs=")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(7);
         let config = ProbeConfig {
             iterations,
             dwell_ms,
+        };
+
+        // issue #165 を確実に発火させる強制実験（詳細は `blocking_hook` モジュール
+        // doc参照）。`--force-starvation-secs=0` で無効化できる。
+        let _blocking_hook_guard = if force_starvation_secs > 0 {
+            let guard = blocking_hook::Guard::install()?;
+            blocking_hook::spawn_forced_starvation_window(
+                Duration::from_secs(3),
+                force_starvation_secs,
+            );
+            Some(guard)
+        } else {
+            None
         };
 
         // `Distractor` がルートウィンドウ（`App::run_component`の対象）を兼ねる。
