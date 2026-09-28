@@ -575,11 +575,18 @@ pub(crate) unsafe fn handle_wm_timer(
                 // issue #165（D&D不可・印刷不能、Geminiの「キーフックのフック落ち」説）
                 // の切り分け用診断。OS全体では直近に入力があったのに awase のフックだけ
                 // 古いままなら「フックにイベントが届いていない」疑いが強まる。OS側も
-                // 無操作なら、単にユーザーがキー/マウス操作をしていないだけと判断できる
-                // （挙動は変えない、ログ文言の拡充のみ）。
-                match hook::os_last_input_tick_ms() {
-                    Some(os_last_input) => {
-                        let os_idle_ms = now.saturating_sub(os_last_input);
+                // 無操作なら、単にユーザーがキー/マウス操作をしていないだけと判断できる。
+                //
+                // 2026-09-28追記: `crates/e2e-uwp-inputsite-probe`によるCI実証実験
+                // （PR #347）で、他プロセスの`WH_KEYBOARD_LL`が`CallNextHookEx`を
+                // 呼ばずに握りつぶすとこのシグネチャが確実に発火し、その間の打鍵は
+                // 遅延ではなく awase の処理系に一切届かず完全消失することを確認した。
+                // hook_starved 側（下記）では`evaluate_hook_watchdog`（環境ガード
+                // 付き自己修復、opus-adversarial-consult round1対応）を呼ぶように
+                // なった——以前の「挙動は変えない、ログ文言の拡充のみ」という
+                // コメントはこの変更でもう正確ではない。
+                match hook::os_idle_ms(now) {
+                    Some(os_idle_ms) => {
                         let hook_starved = os_idle_ms < 5000;
                         tracing::warn!(
                             "Hook watchdog: no activity for {stale_ms}ms (OS全体の最終入力は\
@@ -595,6 +602,19 @@ pub(crate) unsafe fn handle_wm_timer(
                             unsafe {
                                 sample_watchdog_kana_lock_edge(app, stale_ms, os_idle_ms);
                             }
+                            // issue #165 自己修復（PR #347参照、opus-adversarial-consult
+                            // round1対応でF1〜F3ガード付きに再設計）。旧フックを解除して
+                            // 再インストールし、フックチェーンの先頭（LIFOで最後に登録
+                            // したものが最初に呼ばれる）へ戻る。失った打鍵は戻せないが、
+                            // 同じ停止が続くのを防ぐ。昇格ウィンドウ・ロック中・secure
+                            // desktop中・relayソフトのフォアグラウンド中、同一episode
+                            // での2回目以降、thrash上限超過はスキップする
+                            // （`state::hook_watchdog::decide`参照）。
+                            let action = app.evaluate_hook_watchdog(now);
+                            if action != crate::state::hook_watchdog::HookWatchdogAction::Reinstall
+                            {
+                                tracing::debug!("[hook-watchdog] 自己修復をスキップ: {action:?}");
+                            }
                         }
                     }
                     None => {
@@ -606,6 +626,10 @@ pub(crate) unsafe fn handle_wm_timer(
                 }
             } else {
                 tracing::trace!("Hook watchdog: last activity {stale_ms}ms ago");
+                // hook が生存確認できた＝現在の hook_starved episode は終わった
+                // （episode境界）。次に検知したときは新しい episode として
+                // 再度1回だけ自己修復を試みられるようにラッチを解除する。
+                app.note_hook_watchdog_recovered();
             }
             crate::hook_channel::recover_stuck_wake_if_needed();
             recover_pending_drain_request();
@@ -979,10 +1003,14 @@ pub(crate) unsafe fn handle_wts_session_change(app: &mut Runtime, session_event:
     match session_event {
         WTS_SESSION_LOCK => {
             tracing::info!("Session locked, flushing engine state");
+            // issue #165 自己修復 F2ガード用（hook watchdog がロック中に再
+            // インストールしても意味が無いためスキップする）。
+            app.set_session_locked(true);
             app.invalidate_engine_context(ContextChange::FocusChanged);
         }
         WTS_SESSION_UNLOCK => {
             tracing::info!("Session unlocked, scheduling deferred recovery");
+            app.set_session_locked(false);
             // ロック中 (Secure Desktop) は WH_KEYBOARD_LL にイベントが届かないため、
             // ロック直前に押されていた物理キーの KeyUp が失われうる。PHYSICAL_KEY_STATE は
             // OR で左右を合成するため、片側が stuck するだけで mods.shift/ctrl が恒久的に

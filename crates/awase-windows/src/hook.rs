@@ -754,6 +754,123 @@ pub fn os_last_input_tick_ms() -> Option<u64> {
     ok.as_bool().then_some(u64::from(info.dwTime))
 }
 
+/// OS 全体の最終入力からの経過時間（ms）を返す。取得失敗時は `None`。
+///
+/// `now_tick_ms` は `current_tick_ms()`（`GetTickCount64`、64bit）由来の現在時刻を
+/// 呼び出し元から渡す。`os_last_input_tick_ms()` の値は Win32 の
+/// `GetLastInputInfo`（`LASTINPUTINFO.dwTime`）が返す `GetTickCount()` 由来の
+/// **32bit** 値であるため、64bit の `now_tick_ms` と単純減算すると、稼働約49.7日で
+/// `dwTime` が32bit空間で0近辺へ巻き戻った直後に桁あふれで巨大な差分になり、
+/// `hook_starved` の判定（`os_idle_ms < 5000`）が以後永久に成立しなくなる
+/// （issue #165 自己修復レビュー F6）。両者を32bit空間の `wrapping_sub` で比較する
+/// ことで、通常の桁上がり同様に巻き戻りを正しく吸収する（想定する経過時間は
+/// 高々数秒のオーダーなので、32bit空間での折り返し境界をまたぐ心配はない）。
+#[must_use]
+pub fn os_idle_ms(now_tick_ms: u64) -> Option<u64> {
+    let os_last_input = os_last_input_tick_ms()?;
+    #[expect(clippy::cast_possible_truncation)] // 下位32bitのみ使う意図的な切り詰め
+    let now32 = now_tick_ms as u32;
+    // os_last_input は `u64::from(info.dwTime)`（u32 由来）なので u32::MAX を超えない。
+    #[expect(clippy::cast_possible_truncation)]
+    let last32 = os_last_input as u32;
+    Some(u64::from(now32.wrapping_sub(last32)))
+}
+
+/// フォアグラウンドウィンドウの所有プロセスが昇格（管理者権限）しているかを返す。
+///
+/// 取得できない場合（`GetForegroundWindow`がNULL、`OpenProcess`/トークン取得失敗等）
+/// は `false`（＝昇格していない扱い）を返す——判定できないことを理由に自己修復を
+/// 常時スキップしてしまうと watchdog の目的自体が失われるため、安全側ではなく
+/// 「わかる範囲でだけガードする」側に倒す。
+///
+/// issue #165 自己修復レビュー F2: 自分（awase）が非昇格で動作中、フォアグラウンドが
+/// 昇格プロセスのときに再インストールしても効果が無い（UIPI）まま同じ判定を
+/// 繰り返しうるため、この関数の結果と `!crate::is_elevated()` を組み合わせて
+/// 呼び出し元がスキップ判定に使う。
+#[must_use]
+pub fn foreground_window_is_elevated() -> bool {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::{
+        OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+    // SAFETY: GetForegroundWindow は引数なしで呼べる副作用のない Win32 API。
+    //         戻り値が NULL（フォアグラウンドウィンドウ無し）でも安全に扱う。
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_invalid() {
+        return false;
+    }
+    let pid = crate::focus::classify::get_window_process_id(hwnd);
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: pid は GetWindowThreadProcessId 経由で取得した値。
+    //         PROCESS_QUERY_LIMITED_INFORMATION は最小権限（get_process_name と同じ流儀）。
+    let Ok(process_handle) =
+        (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) })
+    else {
+        return false;
+    };
+    let mut token_handle = HANDLE::default();
+    // SAFETY: process_handle は直前の OpenProcess が返した有効なハンドル。
+    //         token_handle はスタック上の有効な出力先ポインタ。
+    let opened = unsafe { OpenProcessToken(process_handle, TOKEN_QUERY, &raw mut token_handle) };
+    // SAFETY: process_handle は1回のみ Close する。
+    let _ = unsafe { CloseHandle(process_handle) };
+    if opened.is_err() {
+        return false;
+    }
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut returned_len: u32 = 0;
+    // SAFETY: token_handle は直前の OpenProcessToken が返した有効なハンドル。
+    //         elevation はスタック上の有効なバッファで、正しいサイズを渡す。
+    let queried = unsafe {
+        GetTokenInformation(
+            token_handle,
+            TokenElevation,
+            Some((&raw mut elevation).cast()),
+            u32::try_from(size_of::<TOKEN_ELEVATION>()).unwrap_or(0),
+            &raw mut returned_len,
+        )
+    };
+    // SAFETY: token_handle は1回のみ Close する。
+    let _ = unsafe { CloseHandle(token_handle) };
+    queried.is_ok() && elevation.TokenIsElevated != 0
+}
+
+/// secure desktop（UAC 昇格プロンプト・ロック画面遷移中等）がアクティブかを返す。
+///
+/// `OpenInputDesktop` が現在の入力デスクトップを開けない（`Err`を返す）ことを
+/// もって secure desktop 中と判定する、広く使われる手法
+/// （通常デスクトップ上で動作する非昇格プロセスには secure desktop オブジェクトへの
+/// アクセス権が無いため）。
+///
+/// issue #165 自己修復レビュー F2: secure desktop 中は `WH_KEYBOARD_LL` が
+/// そもそもそのデスクトップの入力を観測できない設計上の境界であり、
+/// 「フックが握りつぶされている」わけではない。この状態で再インストールしても
+/// 意味が無いうえ、ユーザーが機微な操作（UAC 昇格・ロック解除）の最中に不要な
+/// フック入れ替えを行う実害の方が大きいためスキップする。
+#[must_use]
+pub fn is_secure_desktop_active() -> bool {
+    use windows::Win32::System::StationsAndDesktops::{
+        CloseDesktop, OpenInputDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_READOBJECTS,
+    };
+
+    // SAFETY: 引数は全て値渡しの定数/フラグで、ポインタは扱わない。
+    unsafe { OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS) }.map_or(
+        true,
+        |hdesk| {
+            // SAFETY: hdesk は直前の OpenInputDesktop が返した有効なハンドル。
+            let _ = unsafe { CloseDesktop(hdesk) };
+            false
+        },
+    )
+}
+
 /// `HKCU\Control Panel\Desktop\LowLevelHooksTimeout` の実値（ms）を読む。
 /// 未設定/読み取り失敗時は `None`（＝ Windows 既定の 5000ms とみなしてよい）。
 ///

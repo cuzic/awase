@@ -413,38 +413,57 @@ pub(crate) fn detect_conflicting_software() -> Vec<String> {
 /// していない。**いずれも issue #165 の原因と確定したわけではなく、次の
 /// 報告で相関を取るための候補**（`docs/bug-reports-triage.md` の
 /// `01M3JTVDPMW35MF81DGRKW10MQ` 追記も参照）。
+///
+/// `is_relay_or_remap_software_process`（hook watchdog 自己修復、issue #165 F3）と
+/// 共有するため module-level const にしてある（fix/hook-self-heal-v2、opus
+/// round2 M7対応: develop側PR #347が追加した2件を含む7件全てをここに集約）。
+const RELAY_OR_REMAP_CANDIDATES: &[ConflictEntry] = &[
+    ConflictEntry {
+        exe: "PowerToys.MouseWithoutBorders.exe",
+        display: "Mouse Without Borders",
+    },
+    ConflictEntry {
+        exe: "PowerToys.MouseWithoutBordersHelper.exe",
+        display: "Mouse Without Borders (Helper)",
+    },
+    ConflictEntry {
+        exe: "PowerToys.exe",
+        display: "PowerToys",
+    },
+    ConflictEntry {
+        exe: "PowerToys.KeyboardManagerEngine.exe",
+        display: "PowerToys Keyboard Manager",
+    },
+    ConflictEntry {
+        exe: "PowerToys.PowerLauncher.exe",
+        display: "PowerToys Run",
+    },
+    ConflictEntry {
+        exe: "mstsc.exe",
+        display: "リモートデスクトップ接続 (mstsc)",
+    },
+    ConflictEntry {
+        exe: "vcxsrv.exe",
+        display: "VcXsrv",
+    },
+];
+
 pub(crate) fn detect_relay_or_remap_software() -> Vec<String> {
-    const CANDIDATES: &[ConflictEntry] = &[
-        ConflictEntry {
-            exe: "PowerToys.MouseWithoutBorders.exe",
-            display: "Mouse Without Borders",
-        },
-        ConflictEntry {
-            exe: "PowerToys.MouseWithoutBordersHelper.exe",
-            display: "Mouse Without Borders (Helper)",
-        },
-        ConflictEntry {
-            exe: "PowerToys.exe",
-            display: "PowerToys",
-        },
-        ConflictEntry {
-            exe: "PowerToys.KeyboardManagerEngine.exe",
-            display: "PowerToys Keyboard Manager",
-        },
-        ConflictEntry {
-            exe: "PowerToys.PowerLauncher.exe",
-            display: "PowerToys Run",
-        },
-        ConflictEntry {
-            exe: "mstsc.exe",
-            display: "リモートデスクトップ接続 (mstsc)",
-        },
-        ConflictEntry {
-            exe: "vcxsrv.exe",
-            display: "VcXsrv",
-        },
-    ];
-    scan_running_processes(CANDIDATES)
+    scan_running_processes(RELAY_OR_REMAP_CANDIDATES)
+}
+
+/// フォアグラウンドプロセス名が `detect_relay_or_remap_software` と同じ既知の
+/// 入力中継/リマップソフトのいずれかに一致するか（プロセス全列挙をしない軽量版）。
+///
+/// hook watchdog 自己修復（`TIMER_HOOK_WATCHDOG`、issue #165 F3）は3秒周期の
+/// ホットパスから呼ぶため、`CreateToolhelp32Snapshot`によるプロセス全列挙
+/// （`detect_relay_or_remap_software`）ではなく、既に取得済みのフォアグラウンド
+/// プロセス名1件だけを比較するこちらを使う。
+#[must_use]
+pub(crate) fn is_relay_or_remap_software_process(process_name: &str) -> bool {
+    RELAY_OR_REMAP_CANDIDATES
+        .iter()
+        .any(|c| process_name.eq_ignore_ascii_case(c.exe))
 }
 
 /// 実行中の全プロセスの実行ファイル名（重複除去・昇順ソート、パスは含まない）
@@ -747,6 +766,7 @@ pub(super) fn initialize_app(
         app.set_keyboard_model(config.general.keyboard_model);
         app.set_update_check_enabled(config.general.update_check);
         app.set_warn_state_dependent_mode_keys(config.general.warn_state_dependent_mode_keys);
+        app.set_hook_self_heal_enabled(config.diagnostics.hook_self_heal);
         app.set_passthrough_thumb_mode_keys(&config.general);
         app.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
         app.set_muhenkan_dedicated_fn_key_config(dedicated_fn_key);
@@ -1276,8 +1296,12 @@ pub(super) fn run_all() -> Result<()> {
     let _focus_hook_guard = install_focus_hook().map_err(|e| tracing::warn!("{e}")).ok();
     let _obs_hook_guards = crate::tsf::observer::install_observation_hooks();
 
+    // issue #165（hook_starved）自己修復用: `Runtime`（`with_app`経由、プロセス
+    // 終了まで生存）へ移す。ローカル変数のままだと watchdog タイマーハンドラ
+    // （`TIMER_HOOK_WATCHDOG`）から差し替えられない。
     // 統合 IME リフレッシュタイマー + ウォッチドッグタイマー
     let _ = with_app(|app| {
+        app.set_hook_guard(hook_guard);
         app.reschedule_ime_refresh();
         app.start_hook_watchdog();
     });
@@ -1303,7 +1327,9 @@ pub(super) fn run_all() -> Result<()> {
 
     run_message_loop();
     cleanup();
-    drop(hook_guard);
+    // issue #165自己修復対応でRuntimeへ移したため、`drop(hook_guard)`ではなく
+    // `Runtime::drop_hook_guard`経由（旧来と同じタイミングで解除する）。
+    let _ = with_app(Runtime::drop_hook_guard);
 
     Ok(())
 }

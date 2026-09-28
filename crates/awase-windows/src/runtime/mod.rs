@@ -366,6 +366,31 @@ pub struct Runtime {
     drift_giveup_notified_this_focus: bool,
     /// ADR-132 Phase 1 診断用: 直近の GiveUp 通知区間の開始時刻。
     drift_giveup_started_at: Option<std::time::Instant>,
+    /// issue #165（hook_starved）自己修復用（2026-09-28追記）。`bootstrap.rs`が
+    /// `install_hook()`直後に`set_hook_guard`で格納する（起動時は必ず`Some`）。
+    /// `reinstall_keyboard_hook_for_watchdog`がwatchdog検知時にドロップ→
+    /// 再インストールして差し替える。ここに保持する理由は、`HookGuard`の
+    /// ライフタイムを`Runtime`（`RUNTIME`グローバル、プロセス終了まで生存）に
+    /// 揃えることで、watchdogタイマー（`with_app`経由、`Runtime`にしか
+    /// アクセスできない）から直接差し替えられるようにするため
+    /// （`bootstrap.rs::run`のローカル変数のままでは他所から触れない）。
+    hook_guard: Option<crate::hook::HookGuard>,
+    /// `[diagnostics] hook_self_heal`（既定 true）。issue #165 自己修復の
+    /// ビルド無しキルスイッチ。`state::hook_watchdog::decide` へそのまま渡す。
+    hook_self_heal_enabled: bool,
+    /// 現在の hook_starved episode（検知してから hook が実際に生き返るまでの
+    /// 連続区間）で既に自己修復を試行したか。`message_handlers.rs`が
+    /// stale_ms<=5000（＝生存確認）に戻った tick でこれを `false` にリセットする
+    /// （episode境界、`state::hook_watchdog` F1a）。
+    hook_watchdog_episode_attempted: bool,
+    /// 自己修復（再インストール）を試行した tick_ms の履歴（レート上限判定用、
+    /// `state::hook_watchdog::THRASH_WINDOW_MS`より古いエントリは
+    /// `reinstall_keyboard_hook_for_watchdog`が随時刈り取る）。
+    hook_watchdog_reinstall_history_ms: Vec<u64>,
+    /// `WM_WTSSESSION_CHANGE`（`WTS_SESSION_LOCK`/`WTS_SESSION_UNLOCK`）から
+    /// 更新する、現在セッションがロック中かの永続フラグ。issue #165 自己修復の
+    /// F2ガード（ロック中は再インストールしても意味が無い）に使う。
+    session_locked: bool,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -1381,6 +1406,11 @@ impl Runtime {
             watchdog_kana_edge: None,
             drift_giveup_notified_this_focus: false,
             drift_giveup_started_at: None,
+            hook_guard: None,
+            hook_self_heal_enabled: true,
+            hook_watchdog_episode_attempted: false,
+            hook_watchdog_reinstall_history_ms: Vec::new(),
+            session_locked: false,
         }
     }
 
@@ -1681,6 +1711,137 @@ impl Runtime {
         );
     }
 
+    /// `bootstrap.rs`が起動時に`install_hook()`直後へ1回だけ呼ぶ。以後は
+    /// `reinstall_keyboard_hook_for_watchdog`が差し替える。
+    pub(crate) fn set_hook_guard(&mut self, guard: crate::hook::HookGuard) {
+        self.hook_guard = Some(guard);
+    }
+
+    /// `bootstrap.rs::run`終了時（`run_message_loop`/`cleanup`の後）に呼び、
+    /// フックを明示的に解除する（旧来の`drop(hook_guard)`と同じタイミング）。
+    pub(crate) fn drop_hook_guard(&mut self) {
+        self.hook_guard = None;
+    }
+
+    /// `[diagnostics] hook_self_heal`を反映する（起動時`bootstrap.rs`、
+    /// リロード時`apply_config_update`の両方から呼ぶ）。
+    pub(crate) const fn set_hook_self_heal_enabled(&mut self, enabled: bool) {
+        self.hook_self_heal_enabled = enabled;
+    }
+
+    /// `WM_WTSSESSION_CHANGE`（`handle_wts_session_change`）から呼び、セッション
+    /// ロック状態を更新する（issue #165 自己修復 F2ガード用）。
+    pub(crate) const fn set_session_locked(&mut self, locked: bool) {
+        self.session_locked = locked;
+    }
+
+    /// hook watchdog が stale_ms<=5000（＝フック生存を確認できた）へ戻った tick
+    /// （`message_handlers.rs`の`TIMER_HOOK_WATCHDOG`分岐、else側）で呼ぶ。
+    /// 次に hook_starved を検知したときは新しい episode として扱われ、再度1回
+    /// だけ自己修復を試みられるようになる（`state::hook_watchdog` F1a のラッチ解除）。
+    pub(crate) const fn note_hook_watchdog_recovered(&mut self) {
+        self.hook_watchdog_episode_attempted = false;
+    }
+
+    /// issue #165（hook_starved）の自己修復トリガー判定（2026-09-28追記、
+    /// opus-adversarial-consult round1 指摘対応版）。
+    ///
+    /// `message_handlers.rs`のhook_starved分岐から、`stale_ms>5000 &&
+    /// os_idle_ms<5000`成立時に呼ぶ。環境情報（昇格/セッションロック/
+    /// secure desktop/relayソフト/エピソードラッチ/thrash上限）を集めて
+    /// `state::hook_watchdog::decide`（純粋関数）へ渡し、`Reinstall`が返った
+    /// 場合のみ実際に`reinstall_keyboard_hook_for_watchdog`を実行する。
+    /// それ以外のバリアントは全て「何もしない」を意味し、呼び出し元が
+    /// スキップ理由のログに使う。
+    pub(crate) fn evaluate_hook_watchdog(
+        &mut self,
+        now_ms: u64,
+    ) -> crate::state::hook_watchdog::HookWatchdogAction {
+        let is_elevated_foreground =
+            !crate::is_elevated() && crate::hook::foreground_window_is_elevated();
+        let is_secure_desktop = crate::hook::is_secure_desktop_active();
+        let process_name = self.platform.focus.process_name();
+        let is_relay_or_remap_foreground = self.platform.focus.is_app_disabled()
+            || crate::state::app_suppression::matches_disabled_app(
+                self.platform.focus.input_relay_apps(),
+                process_name,
+            )
+            || crate::app::is_relay_or_remap_software_process(process_name);
+        let reinstalls_in_window = crate::state::hook_watchdog::count_within_window(
+            &self.hook_watchdog_reinstall_history_ms,
+            now_ms,
+            crate::state::hook_watchdog::THRASH_WINDOW_MS,
+        );
+        let action = crate::state::hook_watchdog::decide(
+            self.hook_self_heal_enabled,
+            is_elevated_foreground,
+            self.session_locked,
+            is_secure_desktop,
+            is_relay_or_remap_foreground,
+            self.hook_watchdog_episode_attempted,
+            reinstalls_in_window,
+            crate::state::hook_watchdog::THRASH_LIMIT,
+        );
+        if action == crate::state::hook_watchdog::HookWatchdogAction::Reinstall {
+            self.reinstall_keyboard_hook_for_watchdog(now_ms);
+        }
+        action
+    }
+
+    /// issue #165（hook_starved）の自己修復本体（2026-09-28追記）。
+    ///
+    /// `evaluate_hook_watchdog`が`Reinstall`と判定した場合のみ呼ばれる。
+    /// `WH_KEYBOARD_LL`はLIFO（最後に登録したフックが最初に呼ばれる）で配送
+    /// されるため、旧フックを`UnhookWindowsHookEx`してから新しく
+    /// `SetWindowsHookExW`し直すと、このタイミング以降にチェーンへ割り込んで
+    /// いた他プロセスのフックより手前（先頭）に戻れる。失われた打鍵は戻せない
+    /// が、同じ停止が続くのを防ぐ。
+    ///
+    /// `install_hook()`が失敗した場合はフック無しの状態になりうる（次回の
+    /// watchdog tickで再試行される）。ここでpanicはしない——フック関連の
+    /// 失敗で常駐アプリを丸ごと落とすのは実害が大きすぎる。
+    fn reinstall_keyboard_hook_for_watchdog(&mut self, now_ms: u64) {
+        // エピソードラッチ/thrash履歴は「試行した」事実そのものを記録する
+        // （install_hook()の成否に関わらず）。失敗時に無条件でリトライを
+        // 許すと、install_hook()自体が失敗し続ける環境で毎tick再試行して
+        // ログを埋めるだけになるため。
+        self.hook_watchdog_episode_attempted = true;
+        self.hook_watchdog_reinstall_history_ms.push(now_ms);
+        // 履歴は thrash 判定用の直近分だけで十分。THRASH_WINDOW_MS より古い
+        // エントリを刈り取り、無期限に肥大化しないようにする。
+        self.hook_watchdog_reinstall_history_ms
+            .retain(|&t| now_ms.saturating_sub(t) < crate::state::hook_watchdog::THRASH_WINDOW_MS);
+
+        // 旧ガードをここで明示的にdropしてから新規installする
+        // （両方生存する瞬間を作らない。`WM_QUIT`→スレッドjoin→
+        // `UnhookWindowsHookEx`が完了してから次のSetWindowsHookExWへ進む）。
+        self.hook_guard = None;
+        match crate::hook::install_hook() {
+            Ok(guard) => {
+                self.hook_guard = Some(guard);
+                // issue #165 自己修復 F4: 握りつぶされていた間のKeyUp消失で
+                // 物理キーラッチ（Ctrl等）がスタックしたまま残る（BUG-78/BUG-48
+                // と同型）。今回の停止はチェーン全体が握りつぶされていた
+                // （特定アプリへの出入りではなく、全画面・全キー影響しうる）
+                // ため、`clear_hook_latches_for_app_disable`（Ctrl/Shiftのみ
+                // 対象の狭いクリア）ではなく、`WTS_SESSION_UNLOCK`と同じ
+                // 「全物理キーを解放状態とみなす」広いリセットを使う方が
+                // 意味的に近い（両者とも「フックがしばらく何も見ていなかった」
+                // という同型の前提に立つ）。
+                crate::hook::reset_physical_key_state();
+                self.platform_state.keymap.keymap_latch.release_all();
+                tracing::warn!(
+                    "[hook-watchdog] キーボードフックを再インストールしました（issue #165 自己修復）"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "[hook-watchdog] キーボードフックの再インストールに失敗しました: {e}"
+                );
+            }
+        }
+    }
+
     /// UIA ワーカースレッドへの送信チャネルを登録する。
     pub(crate) fn set_uia_sender(
         &mut self,
@@ -1750,6 +1911,7 @@ impl Runtime {
         self.set_keyboard_model(config.general.keyboard_model);
         self.set_update_check_enabled(config.general.update_check);
         self.set_warn_state_dependent_mode_keys(config.general.warn_state_dependent_mode_keys);
+        self.set_hook_self_heal_enabled(config.diagnostics.hook_self_heal);
         self.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,

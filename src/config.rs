@@ -478,6 +478,32 @@ impl ShadowImeActionConfig {
     }
 }
 
+/// 診断・自己修復系のキルスイッチ設定（issue #165）。
+///
+/// `[general]`（`GeneralConfig`）ではなく独立したセクションにしているのは、
+/// ここに置く項目が「ユーザーの好み」ではなく「不具合発生時にビルド無しで
+/// 無効化できる安全弁」という性質のものだけだから（`awase-settings` GUI には
+/// 当面出さない、上級者向け `config.toml` 直接編集専用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DiagnosticsConfig {
+    /// hook watchdog（`TIMER_HOOK_WATCHDOG`）が hook_starved（issue #165、他プロセスの
+    /// `WH_KEYBOARD_LL`が`CallNextHookEx`を呼ばず握りつぶす）を検知した際、キーボード
+    /// フックを自己修復（`UnhookWindowsHookEx`→`SetWindowsHookExW`で再インストール）
+    /// するかどうか。既定で有効。誤検知や環境固有の副作用が疑われる場合、この値を
+    /// `false`にすることでビルド無しで無効化できる（自己修復以前の診断ログ出力自体は
+    /// この設定に関係なく継続する）。
+    pub hook_self_heal: bool,
+}
+
+impl Default for DiagnosticsConfig {
+    fn default() -> Self {
+        Self {
+            hook_self_heal: true,
+        }
+    }
+}
+
 /// IME 検出設定（シャドウ IME 状態追跡用キー定義）
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
@@ -754,6 +780,9 @@ pub struct AppConfig {
     pub keys: KeysConfig,
     #[serde(default)]
     pub app_overrides: AppOverrides,
+    /// 診断・自己修復系のキルスイッチ（issue #165）。
+    #[serde(default)]
+    pub diagnostics: DiagnosticsConfig,
     #[serde(default)]
     pub keymaps: Vec<KeymapRule>,
     /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール一覧
@@ -967,6 +996,8 @@ pub struct ValidatedConfig {
     pub keys: KeysConfig,
     /// 検証済みのアプリ別オーバーライド
     pub app_overrides: AppOverrides,
+    /// 診断・自己修復系のキルスイッチ（issue #165）。検証は行わない（bool のみ）。
+    pub diagnostics: DiagnosticsConfig,
     /// キーマップインターセプトルール
     pub keymaps: Vec<KeymapRule>,
     /// Ctrl+key バイパス後に次キーを NICOLA スキップするルール
@@ -990,6 +1021,7 @@ impl From<ValidatedConfig> for AppConfig {
             general: v.general,
             keys: v.keys,
             app_overrides: v.app_overrides,
+            diagnostics: v.diagnostics,
             keymaps: v.keymaps,
             post_bypass: v.post_bypass,
             keystroke_macro: v.keystroke_macro,
@@ -1340,6 +1372,7 @@ impl AppConfig {
                 general,
                 keys: self.keys,
                 app_overrides,
+                diagnostics: self.diagnostics,
                 keymaps: self.keymaps,
                 post_bypass: self.post_bypass,
                 keystroke_macro: self.keystroke_macro,
@@ -1804,6 +1837,26 @@ engine_off_solo_triple = "VK_NONCONVERT"
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.app_overrides.disable_apps, vec!["mstsc.exe"]);
+    }
+
+    #[test]
+    fn test_hook_self_heal_defaults_to_enabled() {
+        // [diagnostics] を含め設定ファイルに一切キーが無い場合でも、既定で有効。
+        let toml_str = r#"
+[general]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.diagnostics.hook_self_heal);
+    }
+
+    #[test]
+    fn test_hook_self_heal_can_be_disabled() {
+        let toml_str = r#"
+[diagnostics]
+hook_self_heal = false
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(!config.diagnostics.hook_self_heal);
     }
 
     #[test]
