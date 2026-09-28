@@ -24,7 +24,9 @@
 //! `--trials=N`(種別ごとの試行数。既定4) / `--len=N`(1試行の文字数。既定40) / `--seed=S` /
 //! `--kinds=single,thumb,mixed` / `--layout=PATH`(.yab。既定 layout/nicola_keytop.yab) /
 //! `--activate-gji`(GJI/MS-IME のプロファイルを有効化。CI 用) / `--msime`(有効化する IME を Microsoft IME に) /
-//! `--no-awase`(awase を待たない。`--mode=raw` の対照実験用) / `--log=PATH`。
+//! `--no-awase`(awase を待たない。`--mode=raw` の対照実験用) / `--log=PATH` /
+//! `--cold`(`ime_ready()` の確認ウォームアップ〈「か」を打って確定〉を省略し、最初の本試行を
+//! 窓に対する最初の実際の確定入力にする。起動直後特有の不具合の再現用)。
 //! `--mode=raw` は awase なしで、期待文字列と同じ内容をローマ字の生キーで同じ速度で注入する対照実験
 //! (入力先+IME 単体がその速度を受けられるかを、awase と切り離して見る)。
 //!
@@ -981,7 +983,16 @@ fn worker(form: Form) {
 
     // IME を ON にそろえる(OFF → ひらがな)。
     turn_ime_on(0);
-    if !ime_ready(raw, &cells, child) {
+    // --cold: ime_ready() の「か」を打って確認・最大3回リトライする準備ウォームアップを省略する。
+    // このウォームアップ自体が、窓に対する最初の実際の確定入力になってしまい、
+    // 「起動直後にユーザーが最初に打つ文字」を汚してしまう(bugreport フォームでの
+    // 「開いてすぐ打つと謎の「あ」が混じる」報告の再現用。ウォームアップで一度
+    // 正常に確定できてしまうと、その後の本試行では窓/awase の分類が既に
+    // 済んでしまっており、起動直後特有の不具合を素通りしてしまう可能性がある)。
+    if has_flag("--cold") {
+        rec(&json!({"type":"ready","attempt":0,"skipped":true,
+            "reason":"--cold: 起動直後の最初の1文字を汚さないためウォームアップ省略"}));
+    } else if !ime_ready(raw, &cells, child) {
         rec(&json!({"type":"abort","reason":"IME/awase の準備確認に失敗(ready の text を参照)"}));
         finish();
         return;
