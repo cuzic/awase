@@ -1,0 +1,482 @@
+#![allow(clippy::all, clippy::pedantic, clippy::nursery)]
+//! ADR-199 T17: MS-IME本体で無変換/変換キーの割り当てが「IME-オン/オフ」（トグル、値2）の
+//! とき、**composing中（未確定の変換文字列がある状態）**に無変換キーを押すと開閉トグルとして
+//! 動くか、それとも変換や無視など別の挙動になるかを実機で直接測定するツール。
+//!
+//! ADR-199 T17 Phase 4（無変換/変換=2のときawaseが単独タップでIME開閉する配線、
+//! `state/key_effect_predictor.rs::KeyEffectKeymap::msime_native_key_role`）の設計を
+//! 左右する前提確認として2026-09-28に実施し、composing中はIME-オン/オフの発火自体が起きず、
+//! 無変換キー本来の既定動作（かな⇔カタカナ変換）が優先されることを確認した
+//! （`docs/adr/199-derive-key-roles-from-user-ime-keymap.md`決定16本文参照）。Windows/MS-IME
+//! のアップデートで挙動が変わっていないかの再確認や、他のキー・他の割り当て値での追加検証に
+//! 再利用できるよう、恒久的なツールとしてコミットする。
+//!
+//! 前提: `crates/awase-windows/examples/msime_key_assignment_settings_probe.rs -- --set-master=on`
+//! を先に実行し、「キーの割り当て」マスタースイッチをONにしておくこと（無変換/変換の
+//! ComboBoxを「IME-オン/オフ」にする場合は同ツールの`--set-muhenkan=`/`--set-henkan=`も使う）。
+//!
+//! 仕組みは `gji_composition_probe.rs`(既存, ADR-091検証用)と同じ: 自前のEDITウィンドウを
+//! 作り、SendInputで物理キー相当を注入し、ImmGetOpenStatus/ImmGetConversionStatus/
+//! ImmGetCompositionStringWで実際の状態を直接読む。IMEはこのプロセスのセッション内だけ
+//! MS-IME本体のTSFプロファイルへ切り替える(`ime_key_matrix_spike.rs`の`--msime`と同じ
+//! CLSID/プロファイルGUID)。終了時に元のプロファイルへ戻す。
+//!
+//! 実行方法(Windows実機のみ): `cargo run -p awase-windows --example msime_native_composing_probe --release`
+
+#![allow(unsafe_code)]
+
+#[cfg(windows)]
+mod windows_probe {
+    use std::time::{Duration, Instant};
+
+    use serde::Serialize;
+    use windows::core::{Result as WinResult, GUID, PCWSTR};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::Input::Ime::{
+        ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmGetOpenStatus,
+        ImmReleaseContext, IME_COMPOSITION_STRING, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
+    };
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+        KEYEVENTF_KEYUP, VIRTUAL_KEY,
+    };
+    use windows::Win32::UI::TextServices::{
+        CLSID_TF_InputProcessorProfiles, ITfInputProcessorProfileMgr, GUID_TFCAT_TIP_KEYBOARD,
+        TF_INPUTPROCESSORPROFILE,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow,
+        GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, PeekMessageW,
+        RegisterClassW, SetForegroundWindow, SetWindowTextW, ShowWindow, TranslateMessage,
+        CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, MSG, PM_REMOVE, SW_SHOW, WM_DESTROY, WNDCLASSW,
+        WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    };
+
+    const WINDOW_CLASS_NAME: &str = "msime_native_composing_probe_window";
+    const ES_MULTILINE: u32 = 0x0004;
+    const ES_AUTOVSCROLL: u32 = 0x0040;
+    const WS_CHILD: u32 = 0x4000_0000;
+    const WS_BORDER: u32 = 0x0080_0000;
+
+    const VK_NONCONVERT: u16 = 0x1D;
+    const VK_IME_ON: u16 = 0x16;
+    const VK_IME_OFF: u16 = 0x1A;
+
+    const TF_PROFILETYPE_INPUTPROCESSOR: u32 = 1;
+    const TF_IPPMF_ENABLEPROFILE: u32 = 0x1;
+    const TF_IPPMF_FORSESSION: u32 = 0x2000_0000;
+    // MS-IME本体のCLSID/プロファイルGUID(ime_key_matrix_spike.rsの--msimeと同一)。
+    const MSIME_CLSID: u128 = 0x03B5835F_F03C_411B_9CE2_AA23E1171E36;
+    const MSIME_PROFILE: u128 = 0xA76C93D9_5523_4E90_AAFA_4DB112F9AC76;
+
+    #[derive(Debug, Clone, Serialize)]
+    struct ConvState {
+        open_status: Option<bool>,
+        conversion_mode: Option<u32>,
+        sentence_mode: Option<u32>,
+        comp_str: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize)]
+    struct ScenarioResult {
+        scenario: String,
+        edit_text: String,
+        before: ConvState,
+        after: ConvState,
+    }
+
+    extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        if msg == WM_DESTROY {
+            return LRESULT(0);
+        }
+        // SAFETY: DefWindowProcW はどんな組でも安全に呼べる既定ハンドラ。
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
+
+    fn to_wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn log(msg: &str) {
+        use std::io::Write as _;
+        println!("{msg}");
+        let _ = std::io::stdout().flush();
+    }
+
+    /// # Safety
+    /// メインスレッドから一度だけ呼ぶこと。
+    unsafe fn create_probe_windows() -> anyhow::Result<(HWND, HWND)> {
+        let class_name_wide = to_wide(WINDOW_CLASS_NAME);
+        let hinstance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None)
+            .unwrap_or_default()
+            .into();
+        let wc = WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(wnd_proc),
+            hInstance: hinstance,
+            lpszClassName: PCWSTR(class_name_wide.as_ptr()),
+            ..Default::default()
+        };
+        let atom = unsafe { RegisterClassW(&raw const wc) };
+        anyhow::ensure!(atom != 0, "RegisterClassW failed for parent window");
+
+        let title = to_wide("MS-IME Native Composing Probe");
+        let parent = unsafe {
+            CreateWindowExW(
+                windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE::default(),
+                PCWSTR(class_name_wide.as_ptr()),
+                PCWSTR(title.as_ptr()),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                600,
+                300,
+                None,
+                None,
+                Some(hinstance),
+                None,
+            )
+        }
+        .map_err(|e| anyhow::anyhow!("CreateWindowExW (parent) failed: {e}"))?;
+
+        let edit_class = to_wide("EDIT");
+        let edit_style = windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(
+            WS_CHILD | WS_VISIBLE.0 | WS_BORDER | ES_MULTILINE | ES_AUTOVSCROLL,
+        );
+        let edit = unsafe {
+            CreateWindowExW(
+                windows::Win32::UI::WindowsAndMessaging::WINDOW_EX_STYLE::default(),
+                PCWSTR(edit_class.as_ptr()),
+                PCWSTR::null(),
+                edit_style,
+                0,
+                0,
+                580,
+                260,
+                Some(parent),
+                None,
+                Some(hinstance),
+                None,
+            )
+        }
+        .map_err(|e| anyhow::anyhow!("CreateWindowExW (edit) failed: {e}"))?;
+        Ok((parent, edit))
+    }
+
+    /// # Safety
+    /// `hwnd` は有効なウィンドウハンドルであること。
+    unsafe fn force_foreground(hwnd: HWND) {
+        let fg = unsafe { GetForegroundWindow() };
+        let mut fg_thread_pid = 0u32;
+        let fg_thread_id = unsafe { GetWindowThreadProcessId(fg, Some(&raw mut fg_thread_pid)) };
+        let my_thread_id = unsafe { GetCurrentThreadId() };
+        let attached = if fg_thread_id != 0 && fg_thread_id != my_thread_id {
+            unsafe { AttachThreadInput(my_thread_id, fg_thread_id, true) }.as_bool()
+        } else {
+            false
+        };
+        let _ = unsafe { ShowWindow(hwnd, SW_SHOW) };
+        let _ = unsafe { SetForegroundWindow(hwnd) };
+        if attached {
+            let _ = unsafe { AttachThreadInput(my_thread_id, fg_thread_id, false) };
+        }
+    }
+
+    /// # Safety
+    /// SendInput はプロセス全体に影響する。テスト目的でのみ呼ぶこと。
+    unsafe fn send_vk(vk: u16, keyup: bool) {
+        let flags = if keyup {
+            KEYEVENTF_KEYUP
+        } else {
+            KEYBD_EVENT_FLAGS(0)
+        };
+        let input = INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: VIRTUAL_KEY(vk),
+                    wScan: 0,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32");
+        unsafe { SendInput(&[input], size) };
+    }
+
+    unsafe fn send_vk_tap(vk: u16) {
+        unsafe {
+            send_vk(vk, false);
+            send_vk(vk, true);
+        }
+    }
+
+    fn send_ascii_tap(c: char) {
+        let upper = c.to_ascii_uppercase();
+        let vk = match upper {
+            'A'..='Z' | '0'..='9' => u16::from(upper as u8),
+            _ => return,
+        };
+        unsafe { send_vk_tap(vk) };
+    }
+
+    fn pump_messages(duration: Duration) {
+        let deadline = Instant::now() + duration;
+        while Instant::now() < deadline {
+            let mut msg = MSG::default();
+            // SAFETY: msg はスタック上の有効な MSG バッファ。
+            while unsafe { PeekMessageW(&raw mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+                let _ = unsafe { TranslateMessage(&raw const msg) };
+                unsafe { DispatchMessageW(&raw const msg) };
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn get_edit_text(hwnd: HWND) -> String {
+        // SAFETY: hwnd は create_probe_windows で作成した有効な EDIT コントロール。
+        let len = unsafe { GetWindowTextLengthW(hwnd) };
+        if len <= 0 {
+            return String::new();
+        }
+        let mut buf = vec![0u16; usize::try_from(len).unwrap_or(0) + 1];
+        let written = unsafe { GetWindowTextW(hwnd, &mut buf) };
+        let written = usize::try_from(written).unwrap_or(0);
+        String::from_utf16_lossy(&buf[..written])
+    }
+
+    fn clear_edit_text(hwnd: HWND) {
+        let empty = to_wide("");
+        // SAFETY: hwnd は有効な EDIT コントロール。empty は NUL 終端済み。
+        let _ = unsafe { SetWindowTextW(hwnd, PCWSTR(empty.as_ptr())) };
+    }
+
+    /// # Safety
+    /// `himc` は `ImmGetContext` で得た有効な HIMC であること。
+    unsafe fn read_comp_str(himc: windows::Win32::UI::Input::Ime::HIMC) -> Option<String> {
+        const GCS_COMPSTR: u32 = 0x0008;
+        let byte_len =
+            unsafe { ImmGetCompositionStringW(himc, IME_COMPOSITION_STRING(GCS_COMPSTR), None, 0) };
+        if byte_len < 0 {
+            return None;
+        }
+        let byte_len = usize::try_from(byte_len).unwrap_or(0);
+        if byte_len == 0 {
+            return Some(String::new());
+        }
+        let mut buf = vec![0u16; byte_len.div_ceil(2)];
+        let written = unsafe {
+            ImmGetCompositionStringW(
+                himc,
+                IME_COMPOSITION_STRING(GCS_COMPSTR),
+                Some(buf.as_mut_ptr().cast()),
+                u32::try_from(buf.len() * 2).unwrap_or(0),
+            )
+        };
+        if written <= 0 {
+            return None;
+        }
+        let char_count = usize::try_from(written).unwrap_or(0) / 2;
+        Some(String::from_utf16_lossy(&buf[..char_count]))
+    }
+
+    fn read_conv_state(hwnd: HWND) -> ConvState {
+        // SAFETY: hwnd は create_probe_windows で作成した有効なウィンドウ。
+        let himc = unsafe { ImmGetContext(hwnd) };
+        if himc.is_invalid() {
+            return ConvState {
+                open_status: None,
+                conversion_mode: None,
+                sentence_mode: None,
+                comp_str: None,
+            };
+        }
+        // SAFETY: himc は有効。
+        let open_status = Some(unsafe { ImmGetOpenStatus(himc) }.as_bool());
+        let mut conv = IME_CONVERSION_MODE::default();
+        let mut sent = IME_SENTENCE_MODE::default();
+        // SAFETY: himc は有効。書き込み先は両方 null でない。
+        let ok = unsafe { ImmGetConversionStatus(himc, Some(&raw mut conv), Some(&raw mut sent)) };
+        let (conversion_mode, sentence_mode) = if ok.as_bool() {
+            (Some(conv.0), Some(sent.0))
+        } else {
+            (None, None)
+        };
+        // SAFETY: himc は有効。
+        let comp_str = unsafe { read_comp_str(himc) };
+        // SAFETY: hwnd/himc は対応する有効なペア。
+        let _ = unsafe { ImmReleaseContext(hwnd, himc) };
+        ConvState {
+            open_status,
+            conversion_mode,
+            sentence_mode,
+            comp_str,
+        }
+    }
+
+    const VK_ESCAPE: u16 = 0x1B;
+
+    fn run_scenario(name: &str, edit: HWND, setup: impl FnOnce(HWND)) -> ScenarioResult {
+        // 前のシナリオの未確定composition(あれば)をEscでキャンセルしてから始める。
+        // clear_edit_text(SetWindowTextW)だけではTSF側のcomposition overlayは
+        // リセットされず、次のシナリオへ状態が混入する(1回目の実行で確認)。
+        // SAFETY: テスト目的での注入。
+        unsafe { send_vk_tap(VK_ESCAPE) };
+        pump_messages(Duration::from_millis(200));
+        clear_edit_text(edit);
+        pump_messages(Duration::from_millis(200));
+        setup(edit);
+        pump_messages(Duration::from_millis(300));
+        let before = read_conv_state(edit);
+        // SAFETY: テスト目的での無変換キー注入。
+        unsafe { send_vk_tap(VK_NONCONVERT) };
+        pump_messages(Duration::from_millis(300));
+        let after = read_conv_state(edit);
+        ScenarioResult {
+            scenario: name.to_string(),
+            edit_text: get_edit_text(edit),
+            before,
+            after,
+        }
+    }
+
+    /// 現在アクティブなキーボードTIPプロファイルを取得する。
+    ///
+    /// # Safety
+    /// TSF が初期化済み(CoInitializeEx済み)であること。
+    unsafe fn get_active_profile(
+        mgr: &ITfInputProcessorProfileMgr,
+    ) -> WinResult<TF_INPUTPROCESSORPROFILE> {
+        let mut p = TF_INPUTPROCESSORPROFILE::default();
+        // SAFETY: p はスタック上の有効なバッファ。
+        unsafe { mgr.GetActiveProfile(&GUID_TFCAT_TIP_KEYBOARD, &raw mut p) }?;
+        Ok(p)
+    }
+
+    /// # Safety
+    /// TSF が初期化済みであること。
+    unsafe fn activate_profile(mgr: &ITfInputProcessorProfileMgr, clsid: GUID, profile: GUID) {
+        // SAFETY: mgr は有効な COM オブジェクト。
+        let r = unsafe {
+            mgr.ActivateProfile(
+                TF_PROFILETYPE_INPUTPROCESSOR,
+                0x0411,
+                &clsid,
+                &profile,
+                windows::Win32::UI::Input::KeyboardAndMouse::HKL(std::ptr::null_mut()),
+                TF_IPPMF_ENABLEPROFILE | TF_IPPMF_FORSESSION,
+            )
+        };
+        log(&format!(
+            "[tsf] ActivateProfile(clsid={clsid:?}, profile={profile:?}) -> {r:?}"
+        ));
+        std::thread::sleep(Duration::from_millis(1500));
+    }
+
+    pub(super) fn run() -> anyhow::Result<()> {
+        // SAFETY: プロセス起動直後の唯一の COM 初期化呼び出し。
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }
+            .ok()
+            .map_err(|e| anyhow::anyhow!("CoInitializeEx failed: {e}"))?;
+
+        let mgr: ITfInputProcessorProfileMgr =
+            // SAFETY: COM 初期化済み。
+            unsafe { CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER) }?;
+        // SAFETY: mgr は直前に取得した有効な COM オブジェクト。
+        let original_profile = unsafe { get_active_profile(&mgr) }.ok();
+        log(&format!(
+            "[tsf] original active profile: {original_profile:?}"
+        ));
+
+        log("[tsf] switching to MS-IME native profile (session-scoped)...");
+        // SAFETY: mgr は有効な COM オブジェクト。
+        unsafe {
+            activate_profile(
+                &mgr,
+                GUID::from_u128(MSIME_CLSID),
+                GUID::from_u128(MSIME_PROFILE),
+            )
+        };
+
+        // SAFETY: メインスレッドから一度だけウィンドウを作成する。
+        let (parent, edit) = unsafe { create_probe_windows() }?;
+        // SAFETY: parent は直前に作成した有効なウィンドウ。
+        unsafe { force_foreground(parent) };
+        pump_messages(Duration::from_millis(300));
+        let _ = unsafe { SetFocus(Some(edit)) };
+        pump_messages(Duration::from_millis(300));
+
+        let mut results = Vec::new();
+
+        // (a) 直接入力(閉じている)状態 → 無変換 (T12既知: 開く、0→1)
+        results.push(run_scenario("direct_input_closed", edit, |e| {
+            // SAFETY: テスト目的での注入。
+            unsafe { send_vk_tap(VK_IME_OFF) };
+            let _ = e;
+        }));
+
+        // (b) 開いていて入力なし(アイドル) → 無変換 (T12既知: 閉じる、1→0)
+        results.push(run_scenario("open_idle", edit, |e| {
+            // SAFETY: テスト目的での注入。
+            unsafe { send_vk_tap(VK_IME_ON) };
+            let _ = e;
+        }));
+
+        // (c) 開いていて入力中(「あい」未確定) → 無変換 ★M1の核心、実機未確認だった論点
+        results.push(run_scenario("open_composing_ai", edit, |_e| {
+            // SAFETY: テスト目的での注入。
+            unsafe { send_vk_tap(VK_IME_ON) };
+            pump_messages(Duration::from_millis(200));
+            send_ascii_tap('a');
+            pump_messages(Duration::from_millis(150));
+            send_ascii_tap('i');
+        }));
+
+        // (d) 開いていて入力中、まだ子音だけ(「k」未確定、かな1文字にすら達していない)
+        results.push(run_scenario("open_composing_k_only", edit, |_e| {
+            // SAFETY: テスト目的での注入。
+            unsafe { send_vk_tap(VK_IME_ON) };
+            pump_messages(Duration::from_millis(200));
+            send_ascii_tap('k');
+        }));
+
+        for r in &results {
+            log(&format!(
+                "[result] scenario={} edit_text={:?} before(open={:?} comp={:?}) after(open={:?} comp={:?})",
+                r.scenario,
+                r.edit_text,
+                r.before.open_status,
+                r.before.comp_str,
+                r.after.open_status,
+                r.after.comp_str,
+            ));
+        }
+        let json = serde_json::to_string_pretty(&results)?;
+        std::fs::write("msime_native_composing_probe_result.json", &json)?;
+        log("[done] wrote msime_native_composing_probe_result.json");
+
+        log("[tsf] restoring original profile...");
+        if let Some(p) = original_profile {
+            // SAFETY: mgr は有効な COM オブジェクト。
+            unsafe { activate_profile(&mgr, p.clsid, p.guidProfile) };
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn main() -> anyhow::Result<()> {
+    windows_probe::run()
+}
+
+#[cfg(not(windows))]
+fn main() {
+    eprintln!("this probe is windows-only");
+}
