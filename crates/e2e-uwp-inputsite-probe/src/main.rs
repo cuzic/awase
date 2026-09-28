@@ -58,6 +58,15 @@
 //! （不具合報告で見られた「無関係なアプリ間往復 → UWP系入力面へフォーカス
 //! → 直後に入力」という順序を模す）。
 //!
+//! `Distractor` は自分の番が来るたびに、`docs/known-bugs/BUG-053.md` で実機
+//! 確認済みの引き金（物理 Win キー押下→検索UI(`searchhost.exe`)オープン→
+//! 直後に打鍵）も再現する（`trigger_search_ui_and_type`）。BUG-053 は
+//! シェル側の別 `WH_KEYBOARD_LL` フックが `CallNextHookEx` を呼ばず KeyUp を
+//! 消費し awase 側フックに届かないことを実機ログで確認済みで、issue #165 の
+//! hook_starved と同族のメカニズムである可能性が高い。単純な自前ウィンドウの
+//! フォーカス往復だけでは1回のCI実行(80回往復)で hook_starved を再現できな
+//! かったため追加した。
+//!
 //! 成功/失敗の判定はこのプローブ自身では行わない。別プロセスとして起動中の
 //! awase.exe（デバッグビルド、`AWASE_TEST_INJECTION=1` 環境変数、`RUST_LOG=debug`）
 //! のログを`Hook watchdog: no activity for .*フックにイベントが届いていない疑い(issue #165)`
@@ -100,8 +109,8 @@
 mod probe {
     use std::time::Duration;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
-        VIRTUAL_KEY,
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+        KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VIRTUAL_KEY,
     };
     use windows_reactor::*;
 
@@ -116,6 +125,15 @@ mod probe {
         (0x4F, 0x18), // O
         (0x55, 0x16), // U
     ];
+
+    /// `docs/known-bugs/BUG-053.md` で実機確認済みの引き金: 物理 Win キー押下で
+    /// 検索UI(`searchhost.exe`)が開く際、シェル側の別の `WH_KEYBOARD_LL` フックが
+    /// `CallNextHookEx` を呼ばず KeyUp を消費し、awase 側のフックにイベントが
+    /// 渡らないことがある。issue #165 の hook_starved(フックにイベントが届いて
+    /// いない疑い)と同族のメカニズムである可能性が高いため、同じ引き金を
+    /// このプローブでも再現する。
+    const VK_LWIN: u16 = 0x5B;
+    const VK_ESCAPE: u16 = 0x1B;
 
     fn arg_value(key: &str) -> Option<String> {
         std::env::args().find_map(|a| a.strip_prefix(key).map(str::to_string))
@@ -141,6 +159,17 @@ mod probe {
     /// キーを1つ、テストドライバの目印付きで注入する
     /// （`AWASE_TEST_INJECTION=1` の debug ビルド awase が物理キー扱いする）。
     fn send_marked_key(vk: u16, scan: u16) {
+        send_marked_key_ex(vk, scan, false);
+    }
+
+    /// `send_marked_key` の拡張版。`extended=true` で `KEYEVENTF_EXTENDEDKEY`
+    /// を立てる（Win キー等、拡張キーとして送る必要があるキー用）。
+    fn send_marked_key_ex(vk: u16, scan: u16, extended: bool) {
+        let ext_flag = if extended {
+            KEYEVENTF_EXTENDEDKEY
+        } else {
+            KEYBD_EVENT_FLAGS::default()
+        };
         let inputs = [
             INPUT {
                 r#type: INPUT_KEYBOARD,
@@ -148,7 +177,7 @@ mod probe {
                     ki: KEYBDINPUT {
                         wVk: VIRTUAL_KEY(vk),
                         wScan: scan,
-                        dwFlags: KEYBD_EVENT_FLAGS::default(),
+                        dwFlags: ext_flag,
                         time: 0,
                         dwExtraInfo: MARKER,
                     },
@@ -160,7 +189,7 @@ mod probe {
                     ki: KEYBDINPUT {
                         wVk: VIRTUAL_KEY(vk),
                         wScan: scan,
-                        dwFlags: KEYEVENTF_KEYUP,
+                        dwFlags: ext_flag | KEYEVENTF_KEYUP,
                         time: 0,
                         dwExtraInfo: MARKER,
                     },
@@ -180,6 +209,15 @@ mod probe {
             send_marked_key(vk, scan);
             std::thread::sleep(Duration::from_millis(15));
         }
+    }
+
+    /// BUG-053 の引き金（Win キー押下→検索UIオープン→直後に打鍵）を再現する。
+    fn trigger_search_ui_and_type() {
+        send_marked_key_ex(VK_LWIN, 0x5B, true);
+        std::thread::sleep(Duration::from_millis(250));
+        send_probe_sequence();
+        send_marked_key(VK_ESCAPE, 0x01);
+        std::thread::sleep(Duration::from_millis(150));
     }
 
     // `windows-reactor` 0.100(公開版)には `ComponentContext::set_timeout`/
@@ -287,6 +325,7 @@ mod probe {
             }
             self.remaining -= 1;
             force_foreground_by_title(DISTRACTOR_TITLE);
+            trigger_search_ui_and_type();
             send_marked_key(PROBE_KEYS[0].0, PROBE_KEYS[0].1);
             self._task = arm_tick(context, Duration::from_millis(self.config.dwell_ms));
         }
