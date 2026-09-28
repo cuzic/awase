@@ -1,0 +1,38 @@
+[package]
+name = "e2e-uwp-inputsite-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "issue #165 (Hook watchdog: フックにイベントが届いていない疑い) をCI(windows-latest)上でも再現できるか切り分けるための使い捨てプローブ。awase本体には組み込まない。"
+
+[[bin]]
+name = "uwp_inputsite_probe"
+path = "src/main.rs"
+
+# `windows-reactor` (Windows専用、WinUI3の宣言的UIをRustから使う公式crate、
+# https://github.com/microsoft/windows-rs の一部) は non-Windows ホストでも
+# 依存グラフの解決自体は通るが、実行時はWindows専用。このクレートは
+# `main.rs` 側を丸ごと `#[cfg(windows)]` で分岐する既存パターン
+# (`awase-windows/examples/*.rs` と同じ) を踏襲するため、依存自体も
+# `cfg(windows)` にスコープし、非Windowsホストでの `cargo check --workspace`/
+# `cargo nextest run --workspace --lib` を軽くする。
+[target.'cfg(windows)'.dependencies]
+windows-reactor = "0.100"
+anyhow = "1"
+awase-windows = { path = "../awase-windows" }
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+]
+
+# `windows-reactor-setup` はbuild.rs専用のステージングヘルパー（実行時APIではない）。
+# 自己完結デプロイ用にWindows App SDKランタイム一式をビルド出力ディレクトリへ
+# 展開する。初回ビルド時にNuGetへのネットワークアクセスが必要
+# (`%SystemRoot%\System32\curl.exe`/`tar.exe` 使用)。
+[target.'cfg(windows)'.build-dependencies]
+windows-reactor-setup = "0.100"
