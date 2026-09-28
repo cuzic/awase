@@ -8,6 +8,9 @@
   reverted     いったん閉じた後、再び開いた(drift correction が意図せず ON へ戻した、BUG-020型の候補)
   never_closed どのチェックポイントでも一度も閉じなかった(OFF 自体が効いていない。reverted とは
                閉→開の遷移が無い点で違うが、放置すると verdict=PASS のまま隠れるため同じく FAIL に数える)
+上記2つとは別に、OFF 前提(`drift_pre.real_ime_open`)が True でない、または全チェックポイントが
+読み取り不能(`None`)だった試行は reverted/never_closed のどちらにも数えず invalid として除外する
+(ON→OFF の遷移を一度も検証できていない試行を PASS/FAIL どちらの証拠としても使わないため)。
 まだ「(BUG-020を)作れた」と断定はしない(他要因〈IME側の遅延等〉の可能性は残る)。
 
 判定は現時点では下限の観測用(exit codeは目安、CI の expect は 'observe' で判定には使わない)。
@@ -51,8 +54,19 @@ def analyze(recs: list, drift_log_lines: list) -> dict:
     trials = []
     reverted = 0
     never_closed = 0
+    invalid_trials = 0
     for n in sorted(by_trial):
         cps = sorted(by_trial[n], key=lambda r: r["checkpoint_ms"])
+        pre_rec = pre.get(n)
+        pre_open = pre_rec.get("real_ime_open") if pre_rec else None
+        # OFF前提(turn_ime_on()で実IMEがONにそろっていること)が確認できなかった試行は、
+        # ON→OFFの遷移を一度も検証していない。無視すると「OFFが効いた証拠」として
+        # verdict=PASS に紛れ込む(ONに失敗しただけの試行が閉じたままに見えてしまう)。
+        pre_ok = pre_open is True
+        # 全チェックポイントが読み取り不能(None、ImmGetContextが無効HIMCを返す既知の事象)
+        # だった試行は「一度も閉じなかった」のではなく「観測できなかった」。区別しないと
+        # 読み取り失敗が never_closed(FAIL)に化ける。
+        all_unknown = bool(cps) and all(cp["real_ime_open"] is None for cp in cps)
         # OFF後、いったん閉じた(False)後にもう一度開いた(True)チェックポイントがあれば「復帰」とみなす。
         # 逆に、どのチェックポイントでも一度も閉じなかった(OFFがそもそも効かなかった)場合は別に数える
         # ("復帰"と違い、閉→開の遷移が無いので trial_reverted では検出できない。放置すると、OFF が
@@ -65,13 +79,24 @@ def analyze(recs: list, drift_log_lines: list) -> dict:
             elif cp["real_ime_open"] is True and seen_closed:
                 trial_reverted = True
         trial_never_closed = bool(cps) and not seen_closed
-        if trial_reverted:
-            reverted += 1
-        if trial_never_closed:
-            never_closed += 1
+        trial_invalid = (not pre_ok) or all_unknown
+        if trial_invalid:
+            invalid_trials += 1
+            invalid_reason = (
+                f"OFF前にIMEがONにそろっていない(pre_open={pre_open})" if not pre_ok
+                else "全チェックポイントが読み取り不能"
+            )
+        else:
+            invalid_reason = None
+            if trial_reverted:
+                reverted += 1
+            if trial_never_closed:
+                never_closed += 1
         trials.append({
-            "n": n, "pre": pre.get(n), "checkpoints": cps,
-            "reverted": trial_reverted, "never_closed": trial_never_closed,
+            "n": n, "pre": pre_rec, "checkpoints": cps,
+            "reverted": trial_reverted and not trial_invalid,
+            "never_closed": trial_never_closed and not trial_invalid,
+            "invalid": trial_invalid, "invalid_reason": invalid_reason,
         })
     invalid = []
     if aborts:
@@ -80,6 +105,8 @@ def analyze(recs: list, drift_log_lines: list) -> dict:
         invalid.append("完走マーカー(done)が無い")
     if not trials:
         invalid.append("試行が0件")
+    elif invalid_trials == len(trials):
+        invalid.append(f"全 {invalid_trials} 試行が前提未成立/観測不能でINVALID")
     if invalid:
         verdict = "INVALID"
     elif reverted or never_closed:
@@ -89,6 +116,7 @@ def analyze(recs: list, drift_log_lines: list) -> dict:
     return {
         "verdict": verdict, "cfg": cfg, "trials": trials, "invalid": invalid,
         "n_trials": len(trials), "n_reverted": reverted, "n_never_closed": never_closed,
+        "n_invalid_trials": invalid_trials,
         "drift_log_fired": len(drift_log_lines),
     }
 
@@ -98,7 +126,7 @@ def summary_line(r: dict) -> str:
     return (
         f"DRIFT_CORRECTION: verdict={r['verdict']} form={c.get('form', '?')} ime={c.get('ime', '?')} "
         f"trials={r['n_trials']} reverted_to_on={r['n_reverted']} never_closed={r['n_never_closed']} "
-        f"drift_log_fired={r['drift_log_fired']}"
+        f"invalid_trials={r['n_invalid_trials']} drift_log_fired={r['drift_log_fired']}"
     )
 
 
@@ -128,7 +156,9 @@ def main(argv) -> int:
     for t in r["trials"]:
         pre_open = t["pre"].get("real_ime_open") if t["pre"] else None
         cps = " ".join(f"+{c['checkpoint_ms']}ms={c['real_ime_open']}" for c in t["checkpoints"])
-        if t["reverted"]:
+        if t["invalid"]:
+            tag = f"INVALID({t['invalid_reason']})"
+        elif t["reverted"]:
             tag = "復帰あり(BUG-020型の候補)"
         elif t["never_closed"]:
             tag = "一度も閉じなかった(OFFが効いていない)"
@@ -144,6 +174,7 @@ def main(argv) -> int:
         with open(json_out, "w", encoding="utf-8") as f:
             json.dump({"verdict": r["verdict"], "cfg": cfg, "n_trials": r["n_trials"],
                        "n_reverted": r["n_reverted"], "n_never_closed": r["n_never_closed"],
+                       "n_invalid_trials": r["n_invalid_trials"],
                        "drift_log_fired": r["drift_log_fired"],
                        "line": line, "invalid": r["invalid"]}, f, ensure_ascii=False)
     return {"PASS": 0, "FAIL": 1, "INVALID": 3}[r["verdict"]]
