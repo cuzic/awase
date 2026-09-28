@@ -567,35 +567,31 @@ pub fn thumb_forced_action(
 }
 
 /// 候補キー（無修飾の打鍵）に付ける役割由来の`shadow_action`（ADR-199 決定4・6・8）を決める純関数。
+///
 /// `Runtime::derive_key_shadow_action`が取得した値だけを受け取り、規則の組み合わせをここに閉じる。
+/// GJI・MS-IME本体のどちらも、呼び出し元が対応する役割判定（`KeyEffectKeymap::gji_key_role`／
+/// `msime_native_key_role`）を`keymap_role`に詰めて渡すだけで、この関数自体はIME種別を見ない
+/// （ADR-199 T17 opusレビュー: 合流点を1つに保ち新しい判定点を作らないため、`msime_fixed_toggle`
+/// という別引数は廃止した）。
 ///
 /// - `explicit_overlap`: config.toml の無修飾 `ime_on`/`ime_off`/`ime_toggle` と重なる。真なら役割を付けない
 ///   （config が勝つ。重ねると Engine の照合と役割の両方が開閉を書き打ち消し合う、決定8・Q2）。
-/// - `keymap_role`: GJI の`config1.db`から逆算した役割。外側の`None`は「キーマップが読めない・パースできない」
-///   （不明＝受動、決定6-3。不在は既定プリセットとして読み取り側が返すのでここには来ない）。
-/// - MS-IME 本体（[`ImeKindId::MsIme`]）の半角/全角は仕様で固定のトグル（決定6-4）。キーマップが取れなくても
-///   役割は付く（`keymap_role`は見ない）。`msime_fixed_toggle`はそのキーが半角/全角か（F13〜F24 は MS-IME 本体では
-///   設定を読めないので常に受動、決定18）。
+/// - `keymap_role`: `gji_key_role`／`msime_native_key_role`が返した役割。外側の`None`は「キーマップが
+///   読めない・パースできない」（不明＝受動、決定6-3）。内側の`None`は「キーマップは読めたがこのキー・
+///   この構成では役割が無い」（GJIのCUSTOMで別機能、MS-IME本体の互換モードでの半角/全角、決定17など）。
 /// - 採用中の学習表がそのキーをトグルと矛盾すると示すとき（`learned_contradiction`、`use_learned`が真のときだけ有効）は
 ///   受動に狭める（決定6-2。狭める方向だけ）。
 #[must_use]
 pub fn key_shadow_action(
-    ime: super::ime_kind::ImeKindId,
     explicit_overlap: bool,
     keymap_role: Option<Option<awase_gji_config::role::KeyRole>>,
-    msime_fixed_toggle: bool,
     use_learned: bool,
     learned_contradiction: bool,
 ) -> Option<awase::types::ShadowImeAction> {
-    use super::ime_kind::ImeKindId;
     if explicit_overlap {
         return None;
     }
-    let role = match ime {
-        ImeKindId::Gji => keymap_role.flatten()?,
-        ImeKindId::MsIme if msime_fixed_toggle => awase_gji_config::role::KeyRole::ImeToggle,
-        ImeKindId::MsIme => return None,
-    };
+    let role = keymap_role.flatten()?;
     if hz_omit_verdict(use_learned, learned_contradiction) {
         return None;
     }
@@ -1353,7 +1349,7 @@ mod tests {
     #[test]
     fn gji_table_is_rejected_under_ms_ime_native_fingerprint() {
         let table = accepted_table_with(Some(gji_fp(1, None, &[])));
-        let native = KeyEffectKeymap::for_msime_native(false, None, None);
+        let native = KeyEffectKeymap::for_msime_native(false, None, None, None);
         let err = validate_and_convert(&table, FingerprintProbe::Computed(native.fingerprint()))
             .unwrap_err();
         assert_eq!(err, RejectReason::Stale(Staleness::FingerprintMismatch));
@@ -1402,8 +1398,8 @@ mod tests {
     /// (`henkan_reassigned`はどちらもtrueで、旧案の真偽値では区別できない)。
     #[test]
     fn msime_native_reassignment_value_change_is_detected_through_the_keymap_fingerprint() {
-        let learned_under = KeyEffectKeymap::for_msime_native(true, Some(1), Some(1));
-        let now = KeyEffectKeymap::for_msime_native(true, Some(1), Some(2));
+        let learned_under = KeyEffectKeymap::for_msime_native(true, Some(1), Some(1), None);
+        let now = KeyEffectKeymap::for_msime_native(true, Some(1), Some(2), None);
         let table = accepted_table_with(Some(learned_under.fingerprint()));
         let err = adopt(&table, FingerprintProbe::Computed(now.fingerprint())).unwrap_err();
         assert_eq!(err, RejectReason::Stale(Staleness::FingerprintMismatch));
@@ -1640,78 +1636,38 @@ mod tests {
     }
 
     /// ADR-199 決定6・8: 役割由来の`shadow_action`の規則の組み合わせ（ホストテスト）。
+    /// `keymap_role`はGJI/MS-IME本体どちらの呼び出し元でも同じ形（`gji_key_role`／
+    /// `msime_native_key_role`が返す値）で渡されるので、この関数自体はIME種別を見ない
+    /// （ADR-199 T17 opusレビュー、`msime_fixed_toggle`引数は廃止）。
     #[test]
     fn key_shadow_action_combines_rules() {
-        use crate::state::ime_kind::ImeKindId;
         use awase::types::ShadowImeAction::Toggle;
         use awase_gji_config::role::KeyRole::ImeToggle;
-        // GJI: 役割があればトグル。
+        // 役割があればトグル。
         assert_eq!(
-            key_shadow_action(
-                ImeKindId::Gji,
-                false,
-                Some(Some(ImeToggle)),
-                true,
-                true,
-                false
-            ),
+            key_shadow_action(false, Some(Some(ImeToggle)), true, false),
             Some(Toggle)
         );
-        // GJI: 役割が無い（CUSTOM で別機能）・キーマップが読めない（不明）は受動。
+        // 役割が無い（GJIのCUSTOMで別機能、MS-IME本体の互換モード等）は受動。
+        assert_eq!(key_shadow_action(false, Some(None), true, false), None);
+        // キーマップが読めない（不明）も受動。
+        assert_eq!(key_shadow_action(false, None, true, false), None);
+        // 明示 config と重なれば付けない。
         assert_eq!(
-            key_shadow_action(ImeKindId::Gji, false, Some(None), true, true, false),
+            key_shadow_action(true, Some(Some(ImeToggle)), true, false),
             None
         );
-        assert_eq!(
-            key_shadow_action(ImeKindId::Gji, false, None, true, true, false),
-            None
-        );
-        // MS-IME 本体: 仕様固定。キーマップが取れなくても付く。
-        for keymap_role in [None, Some(None), Some(Some(ImeToggle))] {
-            assert_eq!(
-                key_shadow_action(ImeKindId::MsIme, false, keymap_role, true, true, false),
-                Some(Toggle)
-            );
-        }
-        // 明示 config と重なれば、どの IME でも付けない。
-        for ime in [ImeKindId::Gji, ImeKindId::MsIme] {
-            assert_eq!(
-                key_shadow_action(ime, true, Some(Some(ImeToggle)), true, true, false),
-                None
-            );
-        }
         // 学習表の矛盾で狭める。ただし opt-out（use_learned=false）のときは狭めない。
-        for ime in [ImeKindId::Gji, ImeKindId::MsIme] {
-            assert_eq!(
-                key_shadow_action(ime, false, Some(Some(ImeToggle)), true, true, true),
-                None
-            );
-            assert_eq!(
-                key_shadow_action(ime, false, Some(Some(ImeToggle)), true, false, true),
-                Some(Toggle)
-            );
-        }
-        // F13〜F24（`msime_fixed_toggle=false`）は MS-IME 本体では常に受動。GJI は役割どおり。
         assert_eq!(
-            key_shadow_action(ImeKindId::MsIme, false, None, false, true, false),
+            key_shadow_action(false, Some(Some(ImeToggle)), true, true),
             None
         );
         assert_eq!(
-            key_shadow_action(
-                ImeKindId::Gji,
-                false,
-                Some(Some(ImeToggle)),
-                false,
-                true,
-                false
-            ),
+            key_shadow_action(false, Some(Some(ImeToggle)), false, true),
             Some(Toggle)
         );
         // 狭めは能動側へ広げない: 役割が無いキーは矛盾フラグに関係なく受動のまま。
-        assert_eq!(
-            key_shadow_action(ImeKindId::Gji, false, Some(None), true, true, false),
-            None
-        );
+        assert_eq!(key_shadow_action(false, Some(None), true, true), None);
     }
 
     /// 無変換/変換の合成（ADR-199 決定16、PR #331 Opus レビュー）: config が勝ち、引かない条件では config 由来へ戻る。
@@ -1738,18 +1694,9 @@ mod tests {
         assert_eq!(thumb_forced_action(None, true, false, true, never), None);
     }
 
-    /// MS-IME 本体の無変換/変換は受動（レジストリの値が未確認、T12）。仕様固定トグルは半角/全角だけ。
-    #[test]
-    fn msime_native_thumb_keys_stay_passive() {
-        use crate::state::ime_kind::ImeKindId;
-        use awase_gji_config::role::KeyRole::ImeToggle;
-        for keymap_role in [None, Some(None), Some(Some(ImeToggle))] {
-            assert_eq!(
-                key_shadow_action(ImeKindId::MsIme, false, keymap_role, false, true, false),
-                None
-            );
-        }
-    }
+    // MS-IME 本体の無変換/変換の受動・半角/全角トグル判定は`msime_native_key_role`側のテスト
+    // （`state/key_effect_predictor.rs`）に移した。この関数（`key_shadow_action`）はIME種別を
+    // 見ないため（上のコメント参照）、ここに同種のテストを重複させない。
 
     /// ADR-202 決定2・決定3: GJI 以外は静的 Toggle のまま、GJI は Alt だけなら役割を引き、Ctrl・Shift・Win 付きは受動。
     #[test]

@@ -70,7 +70,7 @@
 | [054](054-physical-key-state-injected-filter.md) | PHYSICAL_KEY_STATE と LLKHF_INJECTED フィルタリング | 採用済み |
 | [055](055-engine-off-solo-triple.md) | 無変換3連打によるエンジン OFF 緊急回復 | 採用済み |
 | [056](056-panic-reset-trigger-sequence.md) | パニックリセットトリガー: 同一キー連打 → OFF→ON→OFF シーケンス | 採用済み |
-| [057](057-gji-keybind-f13f14-to-f21f22.md) | GJI キーバインド F13/F14 → F21/F22 への移行 | ~~採用済み~~ **廃止済み（VK_IME_ON/OFF 移行）** |
+| [057](057-gji-keybind-f13f14-to-f21f22.md) | GJI キーバインド F13/F14 → F21/F22 への移行 | **廃止済み（2026-06-28、ADR-067 に置換）** |
 | [058](058-injection-mode-cache-toml.md) | InjectionMode の cache.toml 永続化 | 採用済み |
 | [059](059-autostart-schtasks-to-hkcu-run.md) | 自動起動: schtasks → HKCU\Run レジストリへの移行 | 採用済み |
 | [060](060-competing-software-detection.md) | 競合ソフトウェア起動時チェック | 採用済み |
@@ -125,7 +125,7 @@
 | [108](108-ime-apply-pending-generation-ordering.md) | IME apply 完了の受理判定を「pending 一致」から3つの独立した問いへ分解する | 採用・実装済み（2026-08-28、Windows実機ソーク未実施） |
 | [109](109-yab-cv4d-punctuation-auto-confirm.md) | `.yab` 句読点確定サフィックス（やまぶき `CV4D` 相当）の実現機構 | 保留（本ADR単独実装はしない、2026-08-28。ADR-115が`CV4D`の実体(Ctrl+M)をComposing判定なしの直接送… |
 | [114](114-keymap-app-scoped-shortcut-wiring.md) | `[[keymap]]`（アプリ別ショートカット再割当）の未配線を解消する | 採用・実装済み（2026-08-31、Windows実機ソーク未実施） |
-| [110](110-simple-physical-key-remap.md) | 物理キー単純リマップ機能（`key_remap`） | 撤回（2026-08-30、ADR-111 r4決定によりrevert。実装・修正まで完了していたが後継検討で機能全体を取り下げ） |
+| [110](110-simple-physical-key-remap.md) | 物理キー単純リマップ機能（`key_remap`） | **撤回済み（2026-08-30、後継: ADR-111）** |
 | [111](111-caps-eisu-ctrl-swap-preset.md) | Caps(英数)⇔Ctrl 入れ替え専用プリセット（Scancode Map 一本化） | 採用・実装済み（2026-08-31、Windows実機ソーク未実施） |
 | [112](112-keyup-lifecycle-fsm-delivery.md) | `Engine::on_input` Phase 0 が KeyUp を FSM に一切届けていない欠陥の修正 | **クローズ**（2026-08-31、Windows実機ソーク完了・不具合報告なし。決定3は実測データ無しのため見送り、`min_over… |
 | [115](115-yab-keystroke-sequence.md) | `.yab` 打鍵列機能（1キーに複数の `KeyAction` を定義する） | 採用・実装済み（2026-08-31、r6でOpus 2体レビュー収束後に実装。パーサ・config・engine・Windows配線・ma… |
@@ -163,7 +163,7 @@
 | [154](154-delegate-shadow-toggle-exclusivity-off-to-on-transition.md) | `delegate_owned` ゲートの排他性を OFF→ON 遷移の打鍵でも成立させる（ADR-149「案C」続報） | **実装済み（2026-09-09）。`ImeRelevance`に`auto_delegate_open_axis_consumed`を新… |
 | [155](155-timer-path-live-thumb-requery-during-deferred-timer-replay.md) | タイマー経路の親指タイムスタンプ問題（ADR-129 が未着手のまま残した部分）— クローズ（未実装、failure scenario 未確立） | **クローズ（2026-09-08、未実装）。`docs/known-bugs.md` BUG-126へ軽い記録を残し、失敗シナリオが実機再… |
 | [156](156-unify-deferred-execution-queues.md) | 遅延実行キューの解放条件管理 — 観察記録と軽量な対策（将来構想、大規模統合は不採用） | 大規模統合は不採用・軽量策のみ実装済み。**pre-pushフック（`.git/hooks/pre-push`、未追跡）のregexに`in… |
-| [157](157-symmetric-target-resolution-for-drift-correction-and-force-on.md) | force-ON が drift correction に道を譲る調停案（不採用・撤回） | **不採用（撤回）。採用した修正はdocs/known-bugs.md BUG-110追補9を参照。round1の恒真化に関する知見のみ本A… |
+| [157](157-symmetric-target-resolution-for-drift-correction-and-force-on.md) | force-ON が drift correction に道を譲る調停案（不採用・撤回） | **撤回済み（不採用）。採用した修正はdocs/known-bugs.md BUG-110追補9を参照** |
 | [158](158-complexity-reduction-north-star.md) | アーキテクチャ複雑性根絶の北極星 — 記録・再生基盤／非スコープ宣言／単一仕様生成／ガバナンス反転（Bは棄却） | **北極星として起票、round1反映済み・round2待ち。設計原則を159〜162すべてに反映済み（round4 MF-3で訂正——16… |
 | [159](159-existing-io-boundary-inventory.md) | 既存の送受信境界を棚卸しし、記録・再生・シャドー実行の土台にする | 起票。段階0/段階1完了、段階2(TF2)はログ出力のみ実装。再生側(ADR-163)はTH1a〜TH1d完了・TH1eのみ… |
 | [160](160-explicit-non-scope-declaration.md) | 非スコープを決定する会議体を持つ（C1: IME一本化／C2: アプリホワイトリスト化／C3: conv-mode追跡全廃） | 起票。TJ3(単体レビュー)実施済み・round4反映済み。実施可否はユーザー確認待ちのまま未確定(2026-12-31バックストップ設定済… |
@@ -189,7 +189,7 @@
 | [180](180-actuation-gate-recheck-deduplication.md) | 領域B(IME actuation合流点)の深い統一を検討、ADR-106決定5が既に軸統合を却下済みと判明し「新fence型ではなく共有ヘルパー関数への機械的重複除去」に縮小 | decision1(gate再検証の重複除去)実装・push済み、decision2(レコード統一)は3ラウンド検証の結果コスト超過で見送り確定 |
 | [181](181-gji-atok-keymap-hiragana-key-external-echo-reverts-ime-off.md) | GJI(ATOKキーマッププリセット)がVK_DBE_HIRAGANAを自己注入マーカー無しで周期送信し、IME OFF直後にkp_stage_shadow_ime_toggleが誤って物理意図として再actuateしIME ONへ戻る不具合 | ドラフト・opus-adversarial-consult round1前 |
 | [182](182-char-then-thumb-gap-gate-misjudges-modekey-chord-as-solo-tap.md) | 文字→親指(無変換/変換)の押下間隔が閾値をわずかに超えると重なったチョードが「文字単独+無変換単独タップ」に割れ、生の無変換がGJIへ届いて半角英数化・エンジン非活性へ連鎖する不具合 | **ドラフトv9(opus round1〜8反映、決定1・1b・1c実装済み、実機A/B前)**。実装未着手 |
-| [183](183-vk-kana-physical-delivery-passthrough.md) | VK_KANA(かなキー)をADR-179の`PhysicalDelivery`へ合流させKeyUp無条件Suppressの非対称を解消する設計 | **撤回(2026-09-19)**。実機検証で対象VKは`VK_DBE_HIRAGANA`と判明し前提誤り、症状も再現せず |
+| [183](183-vk-kana-physical-delivery-passthrough.md) | VK_KANA(かなキー)をADR-179の`PhysicalDelivery`へ合流させKeyUp無条件Suppressの非対称を解消する設計 | **撤回済み（2026-09-19）**。実機検証で対象VKは`VK_DBE_HIRAGANA`と判明し前提誤り、症状も再現せず |
 | [184](184-gji-atok-muhenkan-toggle-awase-owned-eisu-hiragana.md) | GJI(ATOKキーマップ)の無変換/変換Toggleを、ADR-179決定2の既存分岐へ配線し直すだけの最小修正 | **方針転換・簡素化(2026-09-19)**。opus round1〜6で複雑化したため最小配線変更へ縮小、実機検証で問題が出たものだけ個別対処 |
 | [185](185-directinput-open-axis-write-teardown.md) | 半角英数(ObservedEisu)検出時にawase自身がIME OFFを送る`EngineSync::DirectInput`を撤去(BUG-146、ADR-179（旧178）撤去プロジェクトの領域C) | **実装済み**(`f5338edc`)。実機確認は ADR-186 のE2Eで代替 |
 | [186](186-gji-atok-mode-key-measured-matrix-and-belief-follow.md) | GJI(ATOK)のモードキー動作を実機で測定し、無変換/変換の開閉トグルを「KeyUpで解決する」既存delegate経路で押下時点にbelief追随させる(実機E2E+撤去実験で必要/不要な仕組みを確定) | **v4(実装済み・実機E2E/CIで検証)**。Shift+無変換の横取りは修正済み(`b195b47a`)、BUG-147は再現せず。残り: TsfNative/Chrome未検証 |
@@ -203,7 +203,7 @@
 | 194 | IME時間依存ロジックのシミュレーション・リプレイハーネス（`feat/ime-sim-harness`ブランチのみに存在、develop未マージ） | 破棄（Opusレビューで既存単体テスト以上の実証価値なしと判明、ユーザー判断で試作破棄。**番号194は本行で予約のみ**、developにファイル無しのためリンクなし） |
 | [195](195-keymap-learn-productization.md) | カスタムキーマップ対応のため、IMEキー効果の学習(awase-keymap-learn)を独立プロセスとして製品化する（設定読取→独立プロセスでの巡回学習→自己検証→永続化→実行時読込→ADR-176統合） | **段階0/1/2/3/4/5/6/8はdevelopマージ済み(2026-09-23、PR #250〜#258)。段階7(安全対策)は一部実装済み(PR #264、項目2完了・項目1送信前ゲート実装・項目3/5未着手)。** 段階4/6/8はADR-196で置換予定(ADR-196は実装済み・一部未完)、段階3は一部フィールド拡張 |
 | [196](196-keymap-learn-truth-priority.md) | ADR-195の段階4/6/8を修正し、既知プリセット構成でも内蔵表を審査官にせず学習結果を優先する。陳腐化は失効でなく要再検証とし、フィンガープリントにIME本体バージョンを追加する | **実装済み（一部未完、PR #259 ほかdevelopマージ済み）。草案rev5はround5で収束（Blocker0件・Must-fix0件、5ラウンド）** |
-| [197](197-msime-legacy-custom-keymap-runtime-warning.md) | MS-IME旧UI(互換モード限定キーカスタマイズ)の調査。実行時警告は前提(無変換キーへのCEトグル)が実機で否定され撤回、ADR-196向け互換モードフラグ読み取り(決定4)のみ採用 | 決定1〜3撤回・決定4のみ採用(2026-09-23、CI実機検証4パターン+ユーザー本人の物理キー確認) |
+| [197](197-msime-legacy-custom-keymap-runtime-warning.md) | MS-IME旧UI(互換モード限定キーカスタマイズ)の調査。実行時警告は前提(無変換キーへのCEトグル)が実機で否定され撤回、ADR-196向け互換モードフラグ読み取り(決定4)のみ採用 | **部分撤回済み（決定1〜3、2026-09-23）**・決定4のみ採用 |
 | [198](198-persistence-destination-classification.md) | 永続化先の分類(config.toml/cache.toml/学習表JSON)とv2でのcalibrationの扱い | 採用(2026-09-24、opus round1・2反映済み、決定3=手動較正廃止はユーザー決定済み) |
 | [199](199-derive-key-roles-from-user-ime-keymap.md) | キーの役割をユーザーのIMEキー設定から逆算し原則受動、能動はIME ON/OFFトグルの役割のキーと awase の ime_on/off 設定だけ | 草案(所有者決定反映済み、未決なし) |
 | [200](200-reinit-must-not-run-during-live-composition.md) | chrome-reinit(VK_IME_OFF→ON)は SuspectedLiteral の証拠が2回そろったときだけ送る(StaleConfirm では reinit しない) | 採用・決定1 実装済み(opus round1〜3 で収束) |

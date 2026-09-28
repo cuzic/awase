@@ -5,13 +5,14 @@ name: config-verify
 # 単体テストでは見えない「実際の起動でログに出ること・ホットキーが登録されること・キーマップが効くこと」の回帰検出用
 # (約5分)。通常のCI(ci.yml)・e2e-ime.yml には影響しない。
 #
-# 動く条件: (1) develop 向け PR で、設定・起動時診断・キー名解決に関わるファイルが変わったとき、
-# (2) ci/config-verify ブランチへの push、(3) 手動起動。
+# 動く条件: (1) develop/v1-develop 向け PR で、設定・起動時診断・キー名解決に関わるファイルが
+# 変わったとき、(2) ci/config-verify ブランチへの push、(3) 手動起動。v1-develop は v1(保守)
+# ラインの開発ブランチ(2026-09-27〜、main-develop-branch-flow.md参照)。
 # (workflow_dispatch は既定ブランチ〈main〉にワークフローが無いと使えない。develop で試すときは
 #  (1) か (2) を使う。手動起動が使えるのは main に入った後。)
 on:
   pull_request:
-    branches: [develop]
+    branches: [develop, v1-develop]
     paths:
       - 'src/config.rs'
       - 'src/config_*.rs'

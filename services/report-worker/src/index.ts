@@ -13,6 +13,24 @@ const RELEASE_SOFT_TTL_SECONDS = 3600;
 const RELEASE_CACHE_EXPIRATION_TTL_SECONDS = 86400;
 const RELEASE_REFRESHING_TTL_SECONDS = 60;
 const GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/cuzic/awase/releases/latest";
+// ライン別判定が必要なとき（クライアントが ?current_version= を送るとき）だけ使う。
+// GitHub の「latest」は全体で1つしか無く、v1/v2両ラインを併走させると片方の
+// リリースがもう片方の「latest」を覆い隠すため、全件リストから自ラインの最大値を選ぶ。
+// per_page=100 の1ページ目のみ見る（当面の総リリース数を考えれば十分。増えたら要見直し）。
+const GITHUB_RELEASES_LIST_URL = "https://api.github.com/repos/cuzic/awase/releases?per_page=100";
+
+/**
+ * v1(保守)/v2(新アーキテクチャ)ラインの境界（2026-09-27 ユーザー決定）。
+ *
+ * v2はしばらく `1.90.0` 以降のマイナーバージョンとして走り、安定してから
+ * `2.0.0` へ移行する予定。この定数は「境界より上か」だけを見るので、
+ * 2.0.0移行後もそのまま動く（2.0.0 は 1.90.0 より大きいため自動的にv2ラインの
+ * ままになる）——移行時にこの定数を変更する必要はない。
+ */
+const V2_LINE_MIN_VERSION: Semver = [1, 90, 0];
+
+type Semver = readonly [number, number, number];
+type ReleaseLine = "v1" | "v2";
 
 type ImeKind = "Gji" | "MsIme" | "Unknown";
 type KeyboardModel = "Jis" | "Us";
@@ -66,6 +84,19 @@ export interface BugReportPayload {
    * カスタマイズで無変換/変換キーに「IMEオン/オフ」が割当てられているかの
    * 検出結果。`attach_ime_keymap`に相乗り（新規フラグは追加しない）。 */
   legacy_msime_keymap: Record<string, unknown> | null;
+  /** ADR196-T2 決定1e後半（2026-09-07追記）。学習表の採否・自己検証・同梱表との
+   * 突き合わせ・指紋。`attach_ime_keymap`に相乗り（新規フラグは追加しない、
+   * legacy_msime_keymapと同じ理由）。2026-09-28: このフィールドがRust側の
+   * ペイロードには存在するのにWorker側でallowlist再構築時に見落とされており、
+   * 送信されても黙って消えていた（`running_processes`追加時の監査で発覚）。 */
+  keymap_learn: Record<string, unknown> | null;
+  /** issue #165（hook_starved）用（2026-09-28追記）。`SCHEMA_VERSION`は
+   * 上げていないため、旧クライアントが生成した報告にはこの2フィールドが
+   * 存在しない（`retro_eval_stats`と同じ理由でoptionalとして読む）。他の
+   * `attach_*`と違い既定オフのチェックボックスのため、実際に添付される
+   * 報告は少ない見込み。 */
+  attach_running_processes: boolean;
+  running_processes: string[] | null;
   reported_at: string;
 }
 
@@ -189,12 +220,20 @@ async function handleLatestRelease(
     });
   }
 
+  // `?current_version=` を送らない（旧）クライアントは従来通り全体の「latest」を見る。
+  // 送ってくるが値がSemVerとして読めない場合も安全側に倒して同じ扱いにする。
+  const line = requestedReleaseLine(new URL(request.url));
+  const cacheKey = releaseCacheKey(line);
+
   // RATE_LIMIT_KV is named for report rate limits, but also stores the release cache by prefix.
-  const cached = parseLatestReleaseCacheEntry(await env.RATE_LIMIT_KV.get(RELEASE_CACHE_KEY));
+  const cached = parseLatestReleaseCacheEntry(await env.RATE_LIMIT_KV.get(cacheKey));
   if (cached === null) {
-    const refreshed = await fetchAndCacheLatestRelease(env);
+    const refreshed = await fetchAndCacheLatestRelease(env, line);
     if (refreshed === null) {
-      return jsonResponse({ error: "upstream_unavailable" }, 503);
+      return jsonResponse(
+        { error: line === null ? "upstream_unavailable" : "no_release_for_line" },
+        line === null ? 503 : 404
+      );
     }
     return jsonResponse(latestReleaseResponse(refreshed, false), 200);
   }
@@ -203,49 +242,62 @@ async function handleLatestRelease(
     return jsonResponse(latestReleaseResponse(cached, false), 200);
   }
 
-  ctx.waitUntil(refreshStaleLatestRelease(env));
+  ctx.waitUntil(refreshStaleLatestRelease(env, line));
   return jsonResponse(latestReleaseResponse(cached, true), 200);
 }
 
-async function refreshStaleLatestRelease(env: Env): Promise<LatestReleaseCacheEntry | null> {
-  if (await env.RATE_LIMIT_KV.get(RELEASE_REFRESHING_KEY) !== null) {
+/** `line === null` は旧クライアント互換の「ライン区別なし・全体のlatest」モード。 */
+function requestedReleaseLine(url: URL): ReleaseLine | null {
+  const currentVersion = url.searchParams.get("current_version");
+  if (currentVersion === null) {
+    return null;
+  }
+  const parsed = parseSemver(currentVersion);
+  return parsed === null ? null : releaseLine(parsed);
+}
+
+function releaseCacheKey(line: ReleaseLine | null): string {
+  return line === null ? RELEASE_CACHE_KEY : `latest-release:line:${line}`;
+}
+
+function releaseRefreshingKey(line: ReleaseLine | null): string {
+  return line === null ? RELEASE_REFRESHING_KEY : `latest-release:refreshing:${line}`;
+}
+
+async function refreshStaleLatestRelease(
+  env: Env,
+  line: ReleaseLine | null
+): Promise<LatestReleaseCacheEntry | null> {
+  const refreshingKey = releaseRefreshingKey(line);
+  if (await env.RATE_LIMIT_KV.get(refreshingKey) !== null) {
     return null;
   }
 
-  await env.RATE_LIMIT_KV.put(RELEASE_REFRESHING_KEY, "1", {
+  await env.RATE_LIMIT_KV.put(refreshingKey, "1", {
     expirationTtl: RELEASE_REFRESHING_TTL_SECONDS
   });
-  return fetchAndCacheLatestRelease(env);
+  return fetchAndCacheLatestRelease(env, line);
 }
 
-async function fetchAndCacheLatestRelease(env: Env): Promise<LatestReleaseCacheEntry | null> {
+async function fetchAndCacheLatestRelease(
+  env: Env,
+  line: ReleaseLine | null
+): Promise<LatestReleaseCacheEntry | null> {
   try {
-    const response = await fetch(GITHUB_LATEST_RELEASE_URL, {
-      method: "GET",
-      headers: {
-        "User-Agent": "awase-update-check-worker (+https://awase.cc)",
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28"
-      }
-    });
-    if (!response.ok) {
-      return null;
-    }
-
-    const body: unknown = await response.json();
-    if (!isRecord(body) || typeof body.tag_name !== "string") {
+    const tagName = await fetchLatestTagForLine(line);
+    if (tagName === null) {
       return null;
     }
 
     const now = new Date().toISOString();
     const entry: LatestReleaseCacheEntry = {
       schema_version: 1,
-      latest_version: normalizeReleaseVersion(body.tag_name),
+      latest_version: normalizeReleaseVersion(tagName),
       checked_at: now,
       fetched_at: now
     };
 
-    await env.RATE_LIMIT_KV.put(RELEASE_CACHE_KEY, JSON.stringify(entry), {
+    await env.RATE_LIMIT_KV.put(releaseCacheKey(line), JSON.stringify(entry), {
       expirationTtl: RELEASE_CACHE_EXPIRATION_TTL_SECONDS
     });
     return entry;
@@ -253,6 +305,75 @@ async function fetchAndCacheLatestRelease(env: Env): Promise<LatestReleaseCacheE
     console.error("latest release refresh failed", error);
     return null;
   }
+}
+
+async function fetchLatestTagForLine(line: ReleaseLine | null): Promise<string | null> {
+  const url = line === null ? GITHUB_LATEST_RELEASE_URL : GITHUB_RELEASES_LIST_URL;
+  const response = await fetch(url, {
+    method: "GET",
+    headers: {
+      "User-Agent": "awase-update-check-worker (+https://awase.cc)",
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28"
+    }
+  });
+  if (!response.ok) {
+    return null;
+  }
+
+  const body: unknown = await response.json();
+  if (line === null) {
+    return isRecord(body) && typeof body.tag_name === "string" ? body.tag_name : null;
+  }
+  return highestTagForLine(body, line);
+}
+
+/** `body` はGitHub `/releases` の一覧レスポンス。draft/prereleaseは除外し、自ライン
+ * 内でSemVer最大のtag_nameを返す（`/releases/latest`はライン区別できないため使わない）。 */
+function highestTagForLine(body: unknown, line: ReleaseLine): string | null {
+  if (!Array.isArray(body)) {
+    return null;
+  }
+
+  let best: { tag: string; version: Semver } | null = null;
+  for (const item of body) {
+    if (!isRecord(item) || item.draft === true || item.prerelease === true) {
+      continue;
+    }
+    if (typeof item.tag_name !== "string") {
+      continue;
+    }
+    const version = parseSemver(normalizeReleaseVersion(item.tag_name));
+    if (version === null || releaseLine(version) !== line) {
+      continue;
+    }
+    if (best === null || compareSemver(version, best.version) > 0) {
+      best = { tag: item.tag_name, version };
+    }
+  }
+  return best?.tag ?? null;
+}
+
+export function parseSemver(version: string): Semver | null {
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+  if (match?.[1] === undefined || match[2] === undefined || match[3] === undefined) {
+    return null;
+  }
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function compareSemver(a: Semver, b: Semver): number {
+  for (let i = 0; i < 3; i += 1) {
+    const diff = (a[i] ?? 0) - (b[i] ?? 0);
+    if (diff !== 0) {
+      return diff;
+    }
+  }
+  return 0;
+}
+
+export function releaseLine(version: Semver): ReleaseLine {
+  return compareSemver(version, V2_LINE_MIN_VERSION) >= 0 ? "v2" : "v1";
 }
 
 function parseLatestReleaseCacheEntry(value: string | null): LatestReleaseCacheEntry | null {
@@ -393,6 +514,11 @@ export function validatePayload(value: unknown): BugReportPayload {
   const msimeKeyAssignment = optionalNullableRecord(value, "msime_key_assignment");
   // ADR-148 Phase 2: attach_ime_keymap に相乗り。上記2フィールドと同じ理由でoptional。
   const legacyMsimeKeymap = optionalNullableRecord(value, "legacy_msime_keymap");
+  // ADR196-T2 決定1e後半: attach_ime_keymap に相乗り。上記と同じ理由でoptional。
+  const keymapLearn = optionalNullableRecord(value, "keymap_learn");
+  // issue #165（hook_starved）用。上記と同じ理由でoptionalとして読む。
+  const attachRunningProcesses = optionalBoolean(value, "attach_running_processes");
+  const runningProcesses = optionalNullableStringArray(value, "running_processes");
   const reportedAt = requiredString(value, "reported_at");
   if (Number.isNaN(Date.parse(reportedAt))) {
     throw new HttpError(400, "reported_at_must_be_rfc3339");
@@ -428,6 +554,12 @@ export function validatePayload(value: unknown): BugReportPayload {
   if (!attachImeKeymap && legacyMsimeKeymap !== null) {
     throw new HttpError(400, "legacy_msime_keymap_requires_attach_ime_keymap");
   }
+  if (!attachImeKeymap && keymapLearn !== null) {
+    throw new HttpError(400, "keymap_learn_requires_attach_ime_keymap");
+  }
+  if (!attachRunningProcesses && runningProcesses !== null) {
+    throw new HttpError(400, "running_processes_requires_attach_running_processes");
+  }
 
   return {
     schema_version: SCHEMA_VERSION,
@@ -455,6 +587,9 @@ export function validatePayload(value: unknown): BugReportPayload {
     gji_keymap: gjiKeymap,
     msime_key_assignment: msimeKeyAssignment,
     legacy_msime_keymap: legacyMsimeKeymap,
+    keymap_learn: keymapLearn,
+    attach_running_processes: attachRunningProcesses,
+    running_processes: runningProcesses,
     reported_at: reportedAt
   };
 }
@@ -629,6 +764,26 @@ function requiredStringArray(value: Record<string, unknown>, field: string): str
     throw new HttpError(400, `${field}_required`);
   }
   return fieldValue;
+}
+
+/**
+ * `requiredStringArray` と異なり、フィールド自体が存在しない（`undefined`）
+ * 場合、または`null`の場合は`null`として受理する。issue #165(hook_starved)
+ * 用の`running_processes`で導入 — `optionalNullableRecord`と同じ理由
+ * （旧クライアント・attach_running_processes=falseの報告を拒否しない）。
+ */
+function optionalNullableStringArray(
+  value: Record<string, unknown>,
+  field: string
+): string[] | null {
+  const fieldValue = value[field];
+  if (fieldValue === undefined || fieldValue === null) {
+    return null;
+  }
+  if (Array.isArray(fieldValue) && fieldValue.every((item) => typeof item === "string")) {
+    return fieldValue;
+  }
+  throw new HttpError(400, `${field}_invalid`);
 }
 
 function requiredImeKind(value: unknown): ImeKind {

@@ -1,6 +1,32 @@
 # main / develop のブランチ運用
 
-## ルール
+## v1(保守)/v2(新アーキテクチャ)の並行ライン(2026-09-27〜)
+
+2026-09-27、`develop` が既に v2(新アーキテクチャ)の変更で `main` から大きく
+乖離していたため、`main` の時点から `v1-main`/`v1-develop` を新設し、v1(保守)/v2
+の2ラインを並行運用する体制にした。以下、本ファイルの「main」「develop」という
+記述は **v2ライン(`main`/`develop`)を指す**。v1ラインには同じ規則を次の対応で
+読み替えて適用する:
+
+| v2ライン | v1ライン |
+| --- | --- |
+| `develop` | `v1-develop` |
+| `main` | `v1-main` |
+| `release-develop-to-main` スキル | `release-v1develop-to-v1main` スキル |
+
+- **修正は v2(`develop`)側で先に直し、`v1-develop` へ backport する**方針
+  （ユーザー判断、二重メンテを許容）。`v1-develop` に新規の修正を直接書き下ろさない。
+  backport コミットの本文には `Backport of <develop側のコミットハッシュ>` を明記する。
+- `v1-develop`/`v1-main` は保守ライン専用であり、v2専用の新機能・アーキテクチャ変更
+  （calibrationのcache.toml移行等）を持ち込まない。
+- CI（`.github/workflows/ci.yml` 等）は `v1-main`/`v1-develop` も push/PR 対象に含めて
+  いる。`config-verify.yml`/`e2e-ime-smoke.yml` は PR 先ブランチに `v1-develop` を
+  追加済み。
+- Scoop配布・アプリ内更新通知（`report.awase.cc`）はメジャーバージョン(v1/v2)を
+  区別しないままの設計（2026-09-27時点、未解決）。v1のタグを実際にpushする前に
+  `release-v1develop-to-v1main` スキルの「v1固有の注意点」を確認すること。
+
+## ルール（v2ライン基準、上記対応表でv1ラインにも適用）
 
 - 新規の作業（fix / feat を問わない）は **必ず `develop` を経由する**。`develop`
   へ直接コミットするか、feature ブランチを切って `develop` にマージする。

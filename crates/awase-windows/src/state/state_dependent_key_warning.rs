@@ -2,6 +2,8 @@
 
 use awase::types::VkCode;
 
+use crate::vk::{VK_CONVERT, VK_NONCONVERT};
+
 use super::key_effect_predictor::{Cell, KeyEffectKeymap};
 use super::key_effect_table::{
     classify_state_dependent_mode_key, CannotPredictReason, Classification, StateDependentAxis,
@@ -194,10 +196,10 @@ pub fn passthrough_thumb_vks(
 ) -> Vec<VkCode> {
     let mut vks = Vec::new();
     if muhenkan_passthrough && !muhenkan_consumed {
-        vks.push(VkCode(0x1D));
+        vks.push(VK_NONCONVERT);
     }
     if henkan_passthrough && !henkan_consumed {
-        vks.push(VkCode(0x1C));
+        vks.push(VK_CONVERT);
     }
     vks
 }
@@ -342,7 +344,7 @@ mod tests {
         assert!(detect(Some(&custom), None, [VkCode(0), VkCode(0)], &[])
             .iter()
             .any(|w| w.kind == WarningKind::UserOverride));
-        let native = KeyEffectKeymap::for_msime_native(false, None, None);
+        let native = KeyEffectKeymap::for_msime_native(false, None, None, None);
         assert!(detect(Some(&native), None, [VkCode(0), VkCode(0)], &[]).is_empty());
         assert!(detect(None, None, [VkCode(0), VkCode(0)], &[]).is_empty());
     }

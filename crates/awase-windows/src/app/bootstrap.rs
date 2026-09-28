@@ -392,6 +392,27 @@ pub(crate) fn detect_conflicting_software() -> Vec<String> {
 /// リストは網羅的ではない。過去に実際に相互作用が確認できたもののみ収録:
 /// Mouse Without Borders（issue #136/BUG-90）、mstsc.exe（BUG-78、KeyUp消失）、
 /// VcXsrv（project memory記録、合成Ctrl KeyDownの送りっぱなし）。
+///
+/// **`PowerToys.KeyboardManagerEngine.exe`/`PowerToys.PowerLauncher.exe`
+/// （2026-09-28追記）**: issue #165 の不具合報告 `01M3JTVDPMW35MF81DGRKW10MQ`
+/// は `competing_software: ["PowerToys"]`（本関数が検出した汎用の
+/// `PowerToys.exe` ランチャープロセス）を伴っていた。その後
+/// `crates/e2e-uwp-inputsite-probe` による CI 実証実験で、awase より後に
+/// インストールされ `CallNextHookEx` を呼ばない別の `WH_KEYBOARD_LL` フックが
+/// あると issue #165 の watchdog シグネチャと同一の症状（キー入力が遅延では
+/// なく完全消失）を確実に再現できることを確認した（PR #347）。PowerToys の
+/// Keyboard Manager モジュールは公式に `WH_KEYBOARD_LL` を使い、専用の別
+/// プロセス `PowerToys.KeyboardManagerEngine.exe` がそのフックをホストする
+/// （PowerToys本体のアーキテクチャドキュメントで確認、awase側で直接検証した
+/// 事実ではない）。汎用の `PowerToys.exe` だけでは「PowerToys スイートの
+/// どのモジュールが有効か」が分からないため、次に同種の報告が来たとき
+/// Keyboard Manager 自体が動いていたかを直接判別できるよう、この専用プロセス
+/// 名も候補に加える。PowerToys Run（`PowerToys.PowerLauncher.exe`）は
+/// BUG-053（Win キー押下で検索UIが開く際のフック競合）と同系統のグローバル
+/// ホットキー常駐という点で候補に加えたが、`WH_KEYBOARD_LL` 使用の直接確認は
+/// していない。**いずれも issue #165 の原因と確定したわけではなく、次の
+/// 報告で相関を取るための候補**（`docs/bug-reports-triage.md` の
+/// `01M3JTVDPMW35MF81DGRKW10MQ` 追記も参照）。
 pub(crate) fn detect_relay_or_remap_software() -> Vec<String> {
     const CANDIDATES: &[ConflictEntry] = &[
         ConflictEntry {
@@ -407,6 +428,14 @@ pub(crate) fn detect_relay_or_remap_software() -> Vec<String> {
             display: "PowerToys",
         },
         ConflictEntry {
+            exe: "PowerToys.KeyboardManagerEngine.exe",
+            display: "PowerToys Keyboard Manager",
+        },
+        ConflictEntry {
+            exe: "PowerToys.PowerLauncher.exe",
+            display: "PowerToys Run",
+        },
+        ConflictEntry {
             exe: "mstsc.exe",
             display: "リモートデスクトップ接続 (mstsc)",
         },
@@ -416,6 +445,51 @@ pub(crate) fn detect_relay_or_remap_software() -> Vec<String> {
         },
     ];
     scan_running_processes(CANDIDATES)
+}
+
+/// 実行中の全プロセスの実行ファイル名（重複除去・昇順ソート、パスは含まない）
+/// を返す。issue #165 の hook_starved（`WH_KEYBOARD_LL` フックチェーンへの
+/// イベント配送が数秒単位で途絶える）の切り分け用。`detect_relay_or_remap_software`
+/// は既知の候補との照合に限られるため、まだ知らない競合ソフトを後から遡って
+/// 発見できるよう、不具合報告の任意添付（`attach_running_processes`、既定オフ）
+/// としてこちらも用意する。プロセス名のみでパス（ユーザー名を含みうる）は
+/// 含めない。
+pub(crate) fn list_all_running_process_names() -> Vec<String> {
+    use std::mem::size_of;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    // SAFETY: scan_running_processes と同一の標準的な呼び出し手順。
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return Vec::new();
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: u32::try_from(size_of::<PROCESSENTRY32W>()).unwrap_or(0),
+            ..Default::default()
+        };
+        let mut names: Vec<String> = Vec::new();
+        if Process32FirstW(snap, &raw mut entry).is_ok() {
+            loop {
+                let end = entry
+                    .szExeFile
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                names.push(String::from_utf16_lossy(&entry.szExeFile[..end]));
+                if Process32NextW(snap, &raw mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snap);
+        names.sort_unstable_by_key(|n| n.to_ascii_lowercase());
+        names.dedup();
+        names
+    }
 }
 
 pub(super) fn check_conflicting_software(diag: &mut StartupDiagnostics) {

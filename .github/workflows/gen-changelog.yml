@@ -2,7 +2,7 @@ name: Generate changelog.html
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, v1-main, v1-develop]
     paths:
       - CHANGELOG.md
 
