@@ -171,7 +171,6 @@
 | [BUG-167](BUG-167.md) | 設定GUIが書く `Ctrl+Shift+VK_F12` を `parse_hotkey` が `VK_VK_F12` と解釈し、エンジン切替ホットキーが無言で登録されない |
 | [BUG-168](BUG-168.md) | Chrome+GJI で StaleConfirm 2連続 → reinit(IME OFF→ON)が入力中の未確定文字を全消失させる(未修正) |
 | [BUG-169](BUG-169.md) | 設定GUIの n-gram ファイル欄を空にして保存しても、次の読み込みで既定のファイルに戻る(既存の制約・未修正) |
-| [BUG-170](BUG-170.md) | 他プロセスの`WH_KEYBOARD_LL`が`CallNextHookEx`を呼ばず握りつぶすとキー入力が完全消失する(issue #165、自己修復を追加・CI実証済み) |
 
 ## その他の資料
 

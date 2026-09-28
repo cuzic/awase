@@ -575,16 +575,8 @@ pub(crate) unsafe fn handle_wm_timer(
                 // issue #165（D&D不可・印刷不能、Geminiの「キーフックのフック落ち」説）
                 // の切り分け用診断。OS全体では直近に入力があったのに awase のフックだけ
                 // 古いままなら「フックにイベントが届いていない」疑いが強まる。OS側も
-                // 無操作なら、単にユーザーがキー/マウス操作をしていないだけと判断できる。
-                //
-                // 2026-09-28追記: `crates/e2e-uwp-inputsite-probe`によるCI実証実験
-                // （PR #347）で、他プロセスの`WH_KEYBOARD_LL`が`CallNextHookEx`を
-                // 呼ばずに握りつぶすとこのシグネチャが確実に発火し、その間の打鍵は
-                // 遅延ではなく awase の処理系に一切届かず完全消失することを確認した。
-                // hook_starved 側（下記）では`reinstall_keyboard_hook_for_watchdog`
-                // による自己修復（フック再インストール）を行うようになった——
-                // 以前の「挙動は変えない、ログ文言の拡充のみ」というコメントは
-                // この変更でもう正確ではない。
+                // 無操作なら、単にユーザーがキー/マウス操作をしていないだけと判断できる
+                // （挙動は変えない、ログ文言の拡充のみ）。
                 match hook::os_last_input_tick_ms() {
                     Some(os_last_input) => {
                         let os_idle_ms = now.saturating_sub(os_last_input);
@@ -603,13 +595,6 @@ pub(crate) unsafe fn handle_wm_timer(
                             unsafe {
                                 sample_watchdog_kana_lock_edge(app, stale_ms, os_idle_ms);
                             }
-                            // issue #165 自己修復（PR #347参照）。旧フックを解除して
-                            // 再インストールし、フックチェーンの先頭（LIFOで最後に
-                            // 登録したものが最初に呼ばれる）へ戻る。失った打鍵は戻せ
-                            // ないが、同じ停止が続くのを防ぐ。3秒周期のwatchdogが
-                            // 停止中は毎tick再試行する（バックオフは実測に基づく
-                            // 調整が必要になった時点で導入する、現時点では未実装）。
-                            app.reinstall_keyboard_hook_for_watchdog();
                         }
                     }
                     None => {

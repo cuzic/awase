@@ -283,16 +283,8 @@ mod probe {
         /// バックグラウンドスレッドで、少し待ってから `window_secs` 秒間
         /// ブロックを有効化し、その間もマーク付きキーを送り続ける
         /// （OS側の `GetLastInputInfo` を新鮮に保ちつつ、awase側には
-        /// 一切届かせないため）。呼び出し側は返り値の `JoinHandle` を
-        /// `join()` すること——メインのフォーカス往復ループ（`--iterations`×
-        /// `--dwell-ms`）がこの窓より短いと、`main()` がプロセスごと終了して
-        /// この検出スレッドが窓の途中で強制終了してしまう（Rustは非デーモン
-        /// スレッドの完了を待たずにプロセスを終了する）。
-        #[must_use]
-        pub(super) fn spawn_forced_starvation_window(
-            initial_delay: Duration,
-            window_secs: u64,
-        ) -> std::thread::JoinHandle<()> {
+        /// 一切届かせないため）。
+        pub(super) fn spawn_forced_starvation_window(initial_delay: Duration, window_secs: u64) {
             std::thread::spawn(move || {
                 std::thread::sleep(initial_delay);
                 log(&format!(
@@ -306,7 +298,7 @@ mod probe {
                 }
                 BLOCKING.store(false, Ordering::SeqCst);
                 log("=== 強制hook_starved窓 終了 ===");
-            })
+            });
         }
     }
 
@@ -508,13 +500,12 @@ mod probe {
 
         // issue #165 を確実に発火させる強制実験（詳細は `blocking_hook` モジュール
         // doc参照）。`--force-starvation-secs=0` で無効化できる。
-        let mut starvation_join_handle = None;
         let _blocking_hook_guard = if force_starvation_secs > 0 {
             let guard = blocking_hook::Guard::install()?;
-            starvation_join_handle = Some(blocking_hook::spawn_forced_starvation_window(
+            blocking_hook::spawn_forced_starvation_window(
                 Duration::from_secs(3),
                 force_starvation_secs,
-            ));
+            );
             Some(guard)
         } else {
             None
@@ -524,14 +515,6 @@ mod probe {
         // 副ウィンドウ（実際のInputSite面、`InputSurface`）は
         // `Distractor::create` の中で `open_window` する。
         App::run_component::<Distractor>(config)?;
-
-        // メインループ（フォーカス往復）が強制ブロック窓より短く終わっても、
-        // プロセスがブロック窓の完了前に終了しないよう待つ（`spawn_forced_starvation_window`
-        // のdoc参照）。
-        if let Some(handle) = starvation_join_handle {
-            let _ = handle.join();
-        }
-
         log("=== 完了 ===");
         Ok(())
     }
