@@ -671,6 +671,9 @@ impl KeyEffectKeymap {
     pub fn msime_native_key_role(&self, vk: u16) -> Option<awase_gji_config::role::KeyRole> {
         use crate::vk::{VK_DBE_DBCSCHAR, VK_DBE_SBCSCHAR};
         use awase_gji_config::role::KeyRole;
+        if !matches!(self.preset, KeymapPreset::MsImeNative) {
+            return None;
+        }
         if vk == VK_DBE_SBCSCHAR.0 || vk == VK_DBE_DBCSCHAR.0 {
             return (self.msime_compat_mode != Some(true)).then_some(KeyRole::ImeToggle);
         }
@@ -1732,5 +1735,16 @@ mod tests {
         let km = KeyEffectKeymap::for_msime_native(false, None, None, None);
         assert_eq!(km.msime_native_key_role(0x7C), None, "F13");
         assert_eq!(km.msime_native_key_role(0x41), None, "'A'");
+    }
+
+    /// opusレビュー指摘: docコメントは「GJIのキーマップ(MsImeNative以外)ではNone」と約束して
+    /// いるが、以前の実装はpresetを見ておらずGJIのキーマップでも半角/全角にSome(ImeToggle)を
+    /// 返していた(実害は無い——呼び出し元は常にMS-IME本体のキーマップだけを渡すため——が、
+    /// 将来の誤用を防ぐガードを追加した)。
+    #[test]
+    fn msime_native_key_role_is_none_for_gji_keymap() {
+        let gji = KeyEffectKeymap::from_config(None, None, &[]).unwrap();
+        assert_eq!(gji.msime_native_key_role(0xF3), None);
+        assert_eq!(gji.msime_native_key_role(0xF4), None);
     }
 }
