@@ -616,8 +616,15 @@ pub(crate) unsafe fn handle_wm_timer(
                             // のフォアグラウンド中、バックオフ待機中、thrash上限
                             // 超過はスキップする（`state::hook_watchdog::decide`参照）。
                             let action = app.evaluate_hook_watchdog(now);
-                            if action != crate::state::hook_watchdog::HookWatchdogAction::SendCanary
-                            {
+                            // opus round2 n3: `SendCanary`/`ReinstallWithoutCanary`は
+                            // どちらも実際に自己修復へ進む（前者はカナリア確認後、
+                            // 後者はフック不在時に直接）ため、それ以外の
+                            // バリアントだけを「スキップ」としてログに出す。
+                            if !matches!(
+                                action,
+                                crate::state::hook_watchdog::HookWatchdogAction::SendCanary
+                                    | crate::state::hook_watchdog::HookWatchdogAction::ReinstallWithoutCanary
+                            ) {
                                 tracing::debug!("[hook-watchdog] 自己修復をスキップ: {action:?}");
                             }
                         }

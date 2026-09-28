@@ -1032,6 +1032,13 @@ std::thread_local! {
 /// installが既に行われた）場合は`hook_callback`が共有状態に一切触れず
 /// `CallNextHookEx`だけ行う「ゾンビ」状態になる——実際に`UnhookWindowsHookEx`
 /// されるまでの短い間、フックチェーンには残り続けるが実害は無い。
+///
+/// opus round2 M2': 判定は`hook_callback`の**2箇所**で行う——(1)冒頭
+/// （これから始まるコールバック全体を早期に弾く）と、(2)
+/// `hook_channel::HOOK_KEYS.produce()`の直前（`tracing`の同期I/O等で
+/// 冒頭通過後に詰まり、詰まっている間に世代が進んだ「復帰したゾンビ」を
+/// 弾く）。(1)だけでは、詰まってから復帰するまでの間に世代が進んだ
+/// コールバックを防げない。
 static HOOK_GEN: AtomicU32 = AtomicU32::new(0);
 
 /// コールバックの戻り値
@@ -1739,6 +1746,16 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         was_down,
     );
 
+    // opus round2 M2': 入口（`hook_callback`冒頭）のガードは、これから
+    // 始まるコールバックしか守らない。旧フックスレッドが`tracing`の
+    // 同期I/O等でここまでの処理中に詰まり、詰まっている間に世代が進んだ
+    // 場合は、この直前まで来ても`produce`する前にもう一度判定する必要が
+    // ある——`HOOK_KEYS`は単一producer前提のSPSCリングであり、新旧2つの
+    // フックスレッドが同時に`produce`するとデータ競合になる。ここで弾く
+    // 場合、既に組み立てた`event`は破棄して通常のパススルーへ委ねる。
+    if MY_HOOK_GEN.get() != HOOK_GEN.load(Ordering::Acquire) {
+        return CallNextHookEx(None, ncode, wparam, lparam);
+    }
     let produce_result = crate::hook_channel::HOOK_KEYS.produce(event);
     crate::hook_channel::request_engine_wake();
     match produce_result {
