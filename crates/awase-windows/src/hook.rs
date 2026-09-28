@@ -1009,7 +1009,30 @@ std::thread_local! {
     /// `None` を渡してよい（下記 `hook_callback` 参照）。
     static OWN_HOOK_HANDLE: std::cell::Cell<HHOOK> =
         const { std::cell::Cell::new(HHOOK(std::ptr::null_mut())) };
+
+    /// このフックスレッドに`install_hook()`が割り当てた世代番号（M2参照）。
+    /// 既定値の`0`はどの`install_hook()`呼び出しも割り当てない値
+    /// （[`HOOK_GEN`]は1から始まる）なので、スレッド開始直後・世代未設定の
+    /// 状態で誤って「現行世代」と一致してしまうことはない。
+    static MY_HOOK_GEN: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
+
+/// 直近の`install_hook()`呼び出しが払い出した世代番号（opus round1 M2）。
+///
+/// `HookGuard::drop`の`join()`は`HOOK_JOIN_TIMEOUT_MS`で有界化されている
+/// （タイムアウト時はリークし、共有`LEAKED_THREADS`プールが満杯なら
+/// join を一切待たずdetachされる）ため、旧フックスレッドが
+/// `tracing`の同期I/O等で詰まっている間に新フックのinstallが先に完了する
+/// 経路が実在する。その窓では新旧2つの`WH_KEYBOARD_LL`スレッドが同時に
+/// 生存し、どちらも`hook_callback`から`tick_hook_alive()`や
+/// `hook_channel::HOOK_KEYS.produce()`（単一producer前提のSPSCリング）を
+/// 呼びうる——producerが2つになるデータ競合。`install_hook()`の呼び出し
+/// ごとにこの値をインクリメントし、各フックスレッドは自分が受け取った
+/// 世代（[`MY_HOOK_GEN`]）と比較する。一致しない（＝自分より新しい
+/// installが既に行われた）場合は`hook_callback`が共有状態に一切触れず
+/// `CallNextHookEx`だけ行う「ゾンビ」状態になる——実際に`UnhookWindowsHookEx`
+/// されるまでの短い間、フックチェーンには残り続けるが実害は無い。
+static HOOK_GEN: AtomicU32 = AtomicU32::new(0);
 
 /// コールバックの戻り値
 #[derive(Debug)]
@@ -1051,7 +1074,10 @@ impl std::fmt::Debug for HookGuard {
 /// 待機を有界化し、超過時はワーカースレッド（`join()`の呼び出し元）ごと
 /// 孤児リストへリークする。フックスレッド自体はその後も生存し続け、
 /// `OWN_HOOK_HANDLE`がthread-local化（M6）されているため、いずれ終了して
-/// 自分のハンドルをUnhookしても新しいフックには一切影響しない。
+/// 自分のハンドルをUnhookしても新しいフックには一切影響しない。生存中も
+/// `HOOK_GEN`/`MY_HOOK_GEN`（opus round1 M2）により`hook_callback`が
+/// 共有状態（`tick_hook_alive`/`HOOK_KEYS`）へ一切書き込まなくなるため、
+/// 新フックとの二重producerも起きない。
 const HOOK_JOIN_TIMEOUT_MS: u64 = 500;
 
 impl Drop for HookGuard {
@@ -1103,15 +1129,21 @@ impl Drop for HookGuard {
 pub fn install_hook() -> windows::core::Result<HookGuard> {
     // 多重呼び出し対策: スロットをリセット
     hook_tid_reset();
+    // opus round1 M2: 世代番号を先に払い出す。以降、これより古い世代の
+    // フックスレッド（旧HookGuard::dropのjoinがタイムアウトしてまだ生存中
+    // でも）は`hook_callback`内で共有状態（tick_hook_alive/HOOK_KEYS）に
+    // 一切触れなくなる（下記`hook_callback`のガード参照）。
+    let my_gen = HOOK_GEN.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
 
     let thread = std::thread::Builder::new()
         .name("awase-hook".into())
-        .spawn(|| {
+        .spawn(move || {
             let hook_result =
                 unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_callback), None, 0) };
             match hook_result {
                 Ok(hook) => {
                     OWN_HOOK_HANDLE.set(hook);
+                    MY_HOOK_GEN.set(my_gen);
                     let tid = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
                     hook_tid_set(tid);
 
@@ -1314,6 +1346,16 @@ pub(crate) fn drain_hook_ime_mode_diagnostics() -> Vec<crate::journal::HookImeMo
 /// フックスレッドの GetMessageW ループ内でのみ呼ばれる。
 #[expect(clippy::cognitive_complexity)]
 unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // opus round1 M2: `HookGuard::drop`のjoinがタイムアウトし、旧フック
+    // スレッドがまだ生存したまま新フックがinstallされた「ゾンビ」の場合、
+    // 自分の世代（`MY_HOOK_GEN`）は既に古い。この間は`tick_hook_alive()`も
+    // `HOOK_KEYS`のproduceも一切行わず、ただ次のフックへ渡すだけにする——
+    // 新旧2スレッドが同時に共有状態（特にSPSCリング`HOOK_KEYS`、
+    // 単一producer前提）へ書き込むデータ競合を防ぐ。
+    if MY_HOOK_GEN.get() != HOOK_GEN.load(Ordering::Acquire) {
+        return CallNextHookEx(None, ncode, wparam, lparam);
+    }
+
     // ウォッチドッグ用タイムスタンプを更新（自己注入キーも含む全コールバック）
     tick_hook_alive();
 

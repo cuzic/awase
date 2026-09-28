@@ -454,9 +454,15 @@ const RELAY_OR_REMAP_CANDIDATES: &[ConflictEntry] = &[
     // はずの物理キーをNICOLA変換してしまう。いずれもawase側で直接検証した
     // 事実ではなく、一般的に知られる実行ファイル名からの候補
     // （`detect_relay_or_remap_software`の既存エントリと同水準）。
-    // `vmware-vmx.exe`/`VirtualBoxVM.exe`はVM本体プロセスでありフォアグラウンド
-    // ウィンドウを持たないため、フォアグラウンド判定用のここでは意味を持たない
-    // （実際のフォアグラウンドは`vmware.exe`/`vmplayer.exe`/`VirtualBox.exe`）。
+    // `vmware-vmx.exe`はVM本体プロセスでありフォアグラウンドウィンドウを
+    // 持たないため除外し、実際にコンソールを所有する`vmware.exe`
+    // （Workstation）/`vmplayer.exe`（Player）を使う。
+    //
+    // opus round1 M3（round4の訂正が逆向きだった）: VirtualBoxは逆に、
+    // `VirtualBox.exe`はManagerのGUIでキーボードを捕捉せず、ゲストへの
+    // 入力を捕捉するVMコンソール（Qtウィンドウ）を実際に所有するのは
+    // `VirtualBoxVM.exe --startvm ...`側（VirtualBox 5.2以降）。
+    // `VirtualBox.exe`も害は無いので残しつつ、実際に効く方を追加する。
     ConflictEntry {
         exe: "vmware.exe",
         display: "VMware Workstation (VM)",
@@ -467,6 +473,10 @@ const RELAY_OR_REMAP_CANDIDATES: &[ConflictEntry] = &[
     },
     ConflictEntry {
         exe: "VirtualBox.exe",
+        display: "VirtualBox (Manager)",
+    },
+    ConflictEntry {
+        exe: "VirtualBoxVM.exe",
         display: "VirtualBox (VM)",
     },
     ConflictEntry {

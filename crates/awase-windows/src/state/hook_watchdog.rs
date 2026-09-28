@@ -7,6 +7,18 @@
 //! （`Runtime::evaluate_hook_watchdog`/`send_hook_watchdog_canary`/
 //! `confirm_hook_watchdog_canary`/`reinstall_keyboard_hook_for_watchdog`）を参照。
 //!
+//! ## 既知の限界
+//!
+//! カナリア（`hook::send_hook_watchdog_canary`）は自己注入キーが自分の
+//! `WH_KEYBOARD_LL`コールバックへ往復するかどうかだけを見る。原因フックが
+//! 「物理キーだけを握りつぶし、`LLKHF_INJECTED`が立った注入キーは
+//! `CallNextHookEx`で通す」実装（他フックとのループ防止で一般的な作法）の
+//! 場合、カナリアは常に素通りして届いてしまい、真の hook_starved を
+//! 「生きている」と誤判定し続ける。issue #165の自然発生条件が実際に
+//! どちらのタイプの原因フックかは未確認（`crates/e2e-uwp-inputsite-probe`の
+//! `--force-starvation-swallow-all`は注入も含め全握りつぶす「最悪ケース」を
+//! 人為的に作るだけで、自然発生条件を再現するものではない）。
+//!
 //! ## 設計の経緯（round1 → round2）
 //!
 //! opus-adversarial-consult round1（2026-09-28、fix/hook-self-heal-v2起票時）は
@@ -25,8 +37,8 @@
 //! 本モジュールはB1の推奨修正(i)+(ii)を実装する:
 //! - **(i) カナリア**（[`HookWatchdogAction::SendCanary`]）: 全ガード通過時、
 //!   即座に`Reinstall`せず、まず無害な自己注入キー（`hook::send_hook_watchdog_canary`）
-//!   を送る。[`CANARY_CONFIRM_MS`]後に`hook::hook_alive_tick_ms()`が送信時刻より
-//!   進んだかを[`canary_confirmed_starved`]で判定し、進んでいれば
+//!   を送る。[`CANARY_CONFIRM_MS`]後に`hook::hook_alive_tick_ms()`が送信「前」の
+//!   基準値から進んだかを[`canary_confirmed_starved`]で判定し、進んでいれば
 //!   「マウスのみのアイドル」という誤検知と分かりepisodeラッチ/thrash履歴を
 //!   一切消費せずスキップできる。進んでいなければ本物のstarvationと確定して
 //!   初めて再インストールする（`Runtime::reinstall_keyboard_hook_for_watchdog`は
@@ -40,9 +52,27 @@
 //!
 //! さらに round2 M5（`install_hook()`失敗時にラッチだけ立って二度と
 //! リトライされない）に対応するため、`hook_guard_present=false`
-//! （フックが1つも存在しない）の間はバックオフ待機・thrash上限の両方を
-//! バイパスする（[`decide`]参照）——フックが無い状態は「誤検知の上限」の
-//! 対象ではなく、常に最優先で復旧を試みるべきだからである。
+//! （フックが1つも存在しない）の間はバックオフ・thrash上限を無条件で
+//! バイパスして最優先で復旧を試みる（[`decide`]参照）。
+//!
+//! ## opus-adversarial-consult round1（本ブランチ、2026-09-28）の指摘対応
+//!
+//! - **B1**（Blocker）: [`canary_confirmed_starved`]の基準値に「カナリア
+//!   送信時刻」（`GetTickCount64`ベース、分解能約15.6ms）を使っていたため、
+//!   送信からコールバック到達までの実処理（1〜2ms程度）がこの刻みを跨がない
+//!   確率が約87%あり、フックが生きていても高頻度で誤ってstarvedと判定して
+//!   いた。基準値を「カナリア送信**前**の`hook_alive_tick_ms()`」（この
+//!   分岐に入る時点で既に5秒以上古い）に変更し、分解能の問題を原理的に
+//!   解消した。
+//! - **M1**（`hook_guard_present=false`時のカナリア）: 旧実装はフック不在
+//!   の間もカナリア（Ctrl down+up の`SendInput`）を3秒ごとに送り続けていた。
+//!   受け取るフックが無いためフォアグラウンドへCtrlタップが漏れ続けるうえ、
+//!   自己注入自体が`GetLastInputInfo`を更新しアイドルタイマーをリセットして
+//!   しまうため、ユーザーが離席してもこのループが自律的に回り続け、画面
+//!   ロック/スリープを妨げる（マウスジグラーと同型の副作用）。
+//!   [`HookWatchdogAction::ReinstallWithoutCanary`]を新設し、フック不在の
+//!   間はカナリアを送らず直接再インストールを試みるようにした——確認する
+//!   相手（自分のフック）が存在しない以上、カナリアには情報的な意味も無い。
 
 /// hook_starved 検知 tick で watchdog が取るべきアクション。
 ///
@@ -54,6 +84,10 @@
 pub enum HookWatchdogAction {
     /// 全ガード通過。カナリアを送り、確認後に再インストールするかを決める。
     SendCanary,
+    /// フックが1つもインストールされていない（`hook_guard_present=false`）。
+    /// 確認する自分のフックが無い以上カナリアには意味が無いため、送らずに
+    /// 直接再インストールを試みる（opus round1 M1、[`decide`]のdoc参照）。
+    ReinstallWithoutCanary,
     /// `[diagnostics] hook_self_heal = false`（キルスイッチ）。
     SkipDisabled,
     /// フォアグラウンドが昇格プロセスで自分（awase）は非昇格（UIPI）。
@@ -141,8 +175,10 @@ pub const fn backoff_delay_ms(confirmed_attempt_count: u32) -> u64 {
 /// - `is_relay_or_remap_foreground`: `disable_apps`/`input_relay_apps`一致、または
 ///   既知の入力中継/リマップソフトがフォアグラウンドか（F3）。
 /// - `hook_guard_present`: 現在フックが1つでもインストールされているか
-///   （`Runtime.hook_guard.is_some()`）。`false`の間はバックオフ・thrash上限を
-///   バイパスする（round2 M5: install失敗時は最優先でリトライする）。
+///   （`Runtime.hook_guard.is_some()`）。`false`の間は
+///   [`HookWatchdogAction::ReinstallWithoutCanary`]を返し、カナリアを
+///   経由せずバックオフ・thrash上限もバイパスして最優先でリトライする
+///   （round2 M5・opus round1 M1）。
 /// - `now_ms`: 現在の`hook::current_tick_ms()`。
 /// - `next_retry_at_ms`: 前回のカナリア確認済み再インストールが設定した、
 ///   次に試みてよい時刻（`None`なら即座に試みてよい）。
@@ -178,15 +214,24 @@ pub const fn decide(
     if is_relay_or_remap_foreground {
         return HookWatchdogAction::SkipRelayOrRemapForeground;
     }
-    if hook_guard_present {
-        if let Some(retry_at_ms) = next_retry_at_ms {
-            if now_ms < retry_at_ms {
-                return HookWatchdogAction::SkipBackoffPending { retry_at_ms };
-            }
+    // opus round1 M1: フックが1つも無い場合、確認相手（自分のフック）が
+    // 存在しないカナリアには情報的な意味が無いうえ、SendInputでの
+    // Ctrl down+upがそのままフォアグラウンドへ漏れ続け、かつ
+    // `GetLastInputInfo`を自分で更新してしまい離席中もループが自律的に
+    // 回り続ける（マウスジグラー化）。カナリアを経由せず直接
+    // 再インストールを試みる。round2 M5のとおりバックオフ・thrash上限は
+    // 引き続きバイパスする（フック不在は最優先で復旧すべきであり、
+    // 「誤検知の頻度を抑える」ためのカナリア/バックオフの対象外）。
+    if !hook_guard_present {
+        return HookWatchdogAction::ReinstallWithoutCanary;
+    }
+    if let Some(retry_at_ms) = next_retry_at_ms {
+        if now_ms < retry_at_ms {
+            return HookWatchdogAction::SkipBackoffPending { retry_at_ms };
         }
-        if reinstalls_in_thrash_window >= thrash_limit {
-            return HookWatchdogAction::SkipThrashLimit;
-        }
+    }
+    if reinstalls_in_thrash_window >= thrash_limit {
+        return HookWatchdogAction::SkipThrashLimit;
     }
     HookWatchdogAction::SendCanary
 }
@@ -195,20 +240,27 @@ pub const fn decide(
 /// 実際にフックを再インストールすべきかを判定する。
 ///
 /// - `hook_alive_tick_ms_after`: 確認時点の `hook::hook_alive_tick_ms()`。
-/// - `canary_sent_at_ms`: カナリア注入時点の tick（両者とも同じ
-///   `hook::current_tick_ms()` クロック上の値）。
+/// - `baseline_hook_alive_tick_ms`: **カナリア送信前**（`send_hook_watchdog_canary`
+///   がカナリアを注入するより前）に読んだ `hook::hook_alive_tick_ms()` のスナップ
+///   ショット。
 ///
-/// `tick_hook_alive()` は自己注入キーも含め `hook_callback` の呼び出し毎に
-/// 無条件で更新される（`hook.rs`参照）ため、カナリア送信後に値が進んでいれば
-/// 「送ったカナリアがコールバックへ届いた」＝フックは生きている（誤検知）と
-/// 判定できる。進んでいなければ、他プロセスのフックが `CallNextHookEx` を
-/// 呼ばず自己注入キーごと握りつぶしている＝真の hook_starved。
+/// opus round1 B1: 以前はこの引数にカナリア送信「時刻」（watchdog tickの
+/// `now_ms`）を渡していた。`GetTickCount64` の分解能は既定で約15.6msしか
+/// ないため、送信からコールバック到達までの実処理（1〜2ms程度）がこの刻みを
+/// 跨がない確率が約87%あり、フックが生きているのに「値が進んでいない」＝
+/// starvedと誤判定していた。`hook_alive_tick_ms()`は「フックが呼ばれた最終
+/// 時刻」であり、watchdogがこの分岐に入る時点（`stale_ms>5000`）で既に
+/// 5秒以上古い値が入っている。カナリア送信前のこの古い値を基準にすれば、
+/// フックが生きていてカナリアが届いた場合は`current_tick_ms()`（=ほぼ
+/// 「今」、基準より数千ms新しい）に更新されるため、分解能の問題が原理的に
+/// 起きない。`tick_hook_alive()` は自己注入キーも含め `hook_callback` の
+/// 呼び出し毎に無条件で更新される（`hook.rs`参照）。
 #[must_use]
 pub const fn canary_confirmed_starved(
     hook_alive_tick_ms_after: u64,
-    canary_sent_at_ms: u64,
+    baseline_hook_alive_tick_ms: u64,
 ) -> bool {
-    hook_alive_tick_ms_after <= canary_sent_at_ms
+    hook_alive_tick_ms_after <= baseline_hook_alive_tick_ms
 }
 
 /// `history`（過去の再インストール試行時刻、tick_ms）のうち、`now_ms` から
@@ -450,6 +502,8 @@ mod tests {
     }
 
     // ── decide: M5（フック不在時はバックオフ/thrash上限をバイパス） ──
+    // opus round1 M1: フック不在時は`SendCanary`ではなく`ReinstallWithoutCanary`
+    // を返す（カナリアには確認相手が無く、Ctrl漏れ/ジグラー化を招くため）。
 
     #[test]
     fn decide_bypasses_backoff_when_hook_guard_absent() {
@@ -468,7 +522,7 @@ mod tests {
                 0,
                 THRASH_LIMIT
             ),
-            HookWatchdogAction::SendCanary
+            HookWatchdogAction::ReinstallWithoutCanary
         );
     }
 
@@ -487,7 +541,35 @@ mod tests {
                 THRASH_LIMIT + 10, // 上限を大幅に超えていても無視される
                 THRASH_LIMIT
             ),
-            HookWatchdogAction::SendCanary
+            HookWatchdogAction::ReinstallWithoutCanary
+        );
+    }
+
+    #[test]
+    fn decide_reinstalls_without_canary_when_hook_guard_absent_even_if_all_else_clear() {
+        // フックさえ無ければ、他の全条件が「SendCanaryしてよい」状態でも
+        // カナリアは経由しない（opus round1 M1）。
+        assert_eq!(
+            decide(
+                true, false, false, false, false, false, // hook_guard_present
+                1_000, NO_RETRY_PENDING, 0, THRASH_LIMIT,
+            ),
+            HookWatchdogAction::ReinstallWithoutCanary
+        );
+    }
+
+    #[test]
+    fn decide_relay_guard_still_applies_when_hook_guard_absent() {
+        // フック不在でも、relay/remapフォアグラウンド中は復旧を試みない
+        // （VM/リモート操作クライアントより先にawaseが割り込まないため、
+        // M4のガード意図はフック不在時にも及ぶ）。
+        assert_eq!(
+            decide(
+                true, false, false, false, true, // is_relay_or_remap_foreground
+                false, // hook_guard_present
+                1_000, NO_RETRY_PENDING, 0, THRASH_LIMIT,
+            ),
+            HookWatchdogAction::SkipRelayOrRemapForeground
         );
     }
 

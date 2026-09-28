@@ -403,6 +403,13 @@ pub struct Runtime {
     /// ガードにも使う。確認タイマー発火時に`confirm_hook_watchdog_canary`が
     /// `take()`してクリアする。
     hook_watchdog_canary_sent_at_ms: Option<u64>,
+    /// カナリア送信**前**に読んだ`hook::hook_alive_tick_ms()`のスナップ
+    /// ショット（opus round1 B1）。`hook_watchdog_canary_sent_at_ms`と常に
+    /// 同時にSome/Noneが揃う。`canary_confirmed_starved`の基準値として使う
+    /// ——送信「時刻」を基準にすると`GetTickCount64`の分解能（約15.6ms）に
+    /// 負けて誤検知するため、代わりにこの「最後にフックが呼ばれた時刻」の
+    /// 古い値（この分岐に入る時点で既に5秒以上古い）を基準にする。
+    hook_watchdog_canary_baseline_alive_ms: Option<u64>,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -1425,6 +1432,7 @@ impl Runtime {
             hook_watchdog_reinstall_history_ms: Vec::new(),
             session_locked: false,
             hook_watchdog_canary_sent_at_ms: None,
+            hook_watchdog_canary_baseline_alive_ms: None,
         }
     }
 
@@ -1800,8 +1808,16 @@ impl Runtime {
             reinstalls_in_window,
             crate::state::hook_watchdog::THRASH_LIMIT,
         );
-        if action == crate::state::hook_watchdog::HookWatchdogAction::SendCanary {
-            self.send_hook_watchdog_canary(now_ms);
+        match action {
+            crate::state::hook_watchdog::HookWatchdogAction::SendCanary => {
+                self.send_hook_watchdog_canary(now_ms);
+            }
+            crate::state::hook_watchdog::HookWatchdogAction::ReinstallWithoutCanary => {
+                // opus round1 M1: フック不在時はカナリアを経由しない
+                // （確認相手が無く、Ctrl漏れ/ジグラー化を招くため）。
+                self.reinstall_keyboard_hook_for_watchdog(now_ms);
+            }
+            _ => {}
         }
         action
     }
@@ -1816,11 +1832,32 @@ impl Runtime {
     /// watchdog tickに対し確認は`CANARY_CONFIRM_MS`（既定200ms）で完了する
     /// はずなので、通常はここに到達しない防御的ガード。
     fn send_hook_watchdog_canary(&mut self, now_ms: u64) {
-        if self.hook_watchdog_canary_sent_at_ms.is_some() {
-            tracing::debug!("[hook-watchdog] カナリア確認待ち中のため送信をスキップ");
-            return;
+        if let Some(sent_at_ms) = self.hook_watchdog_canary_sent_at_ms {
+            // opus round1 m2: `SetTimer`（`TIMER_HOOK_WATCHDOG_CANARY_CHECK`）が
+            // 失敗する（戻り値未検査）、またはUSERオブジェクト枯渇等で
+            // `WM_TIMER`自体が届かないと、`confirm_hook_watchdog_canary`が
+            // 一度も呼ばれず確認待ちフラグが永久に残り、以後の自己修復が
+            // 完全に止まる。`CANARY_CONFIRM_MS`の10倍を過ぎてもまだ
+            // 確認待ちのままなら、確認処理が失われたとみなして古い状態を
+            // 破棄し、新しいカナリアを送り直す。
+            let confirm_lost_threshold_ms =
+                crate::state::hook_watchdog::CANARY_CONFIRM_MS.saturating_mul(10);
+            if now_ms.saturating_sub(sent_at_ms) < confirm_lost_threshold_ms {
+                tracing::debug!("[hook-watchdog] カナリア確認待ち中のため送信をスキップ");
+                return;
+            }
+            tracing::warn!(
+                "[hook-watchdog] カナリア確認が{}ms以上届いていない（確認タイマー \
+                 消失の疑い）、状態を破棄して送り直します",
+                now_ms.saturating_sub(sent_at_ms)
+            );
         }
         self.hook_watchdog_canary_sent_at_ms = Some(now_ms);
+        // opus round1 B1: 基準値は送信「前」の`hook_alive_tick_ms()`
+        // （この分岐に入る時点で既に5秒以上古い値）。送信「時刻」
+        // （`now_ms`）を基準にすると`GetTickCount64`の分解能（約15.6ms）に
+        // 負けて誤検知する。
+        self.hook_watchdog_canary_baseline_alive_ms = Some(crate::hook::hook_alive_tick_ms());
         crate::hook::send_hook_watchdog_canary();
         self.platform.timer.set(
             crate::TIMER_HOOK_WATCHDOG_CANARY_CHECK,
@@ -1839,10 +1876,16 @@ impl Runtime {
             // 通常は起こらない（確認タイマーはカナリア送信時にしか起動しない）。
             return;
         };
+        // `hook_watchdog_canary_sent_at_ms`と常に同時にSome/Noneが揃う
+        // （どちらも`send_hook_watchdog_canary`でのみSomeになる）。
+        let baseline_hook_alive_ms = self
+            .hook_watchdog_canary_baseline_alive_ms
+            .take()
+            .unwrap_or(canary_sent_at_ms);
         let hook_alive_tick_ms_after = crate::hook::hook_alive_tick_ms();
         if crate::state::hook_watchdog::canary_confirmed_starved(
             hook_alive_tick_ms_after,
-            canary_sent_at_ms,
+            baseline_hook_alive_ms,
         ) {
             tracing::warn!(
                 "[hook-watchdog] カナリア({}ms前送信)が届かず確認 → 真の \

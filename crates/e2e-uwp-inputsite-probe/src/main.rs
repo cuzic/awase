@@ -525,9 +525,9 @@ mod probe {
         let force_starvation_swallow_all =
             std::env::args().any(|a| a == "--force-starvation-swallow-all");
         // 既定の強制窓は、swallow-allモードでは自己修復の検知遅延
-        // （3秒周期tickの量子化5〜8秒 + カナリア確認3秒 = 最大約11秒）に
-        // 十分なマージンを足した25秒にする。従来モード(自己修復を前提としない)
-        // は既定7秒のまま変えない。
+        // （3秒周期tickの量子化5〜8秒 + カナリア確認200ms = 最大約8.2秒、
+        // opus round1 m5で訂正）に十分なマージンを足した25秒にする。
+        // 従来モード(自己修復を前提としない)は既定7秒のまま変えない。
         let force_starvation_secs: u64 = arg_value("--force-starvation-secs=")
             .and_then(|s| s.parse().ok())
             .unwrap_or(if force_starvation_swallow_all { 25 } else { 7 });
