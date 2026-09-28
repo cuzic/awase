@@ -392,6 +392,27 @@ pub(crate) fn detect_conflicting_software() -> Vec<String> {
 /// リストは網羅的ではない。過去に実際に相互作用が確認できたもののみ収録:
 /// Mouse Without Borders（issue #136/BUG-90）、mstsc.exe（BUG-78、KeyUp消失）、
 /// VcXsrv（project memory記録、合成Ctrl KeyDownの送りっぱなし）。
+///
+/// **`PowerToys.KeyboardManagerEngine.exe`/`PowerToys.PowerLauncher.exe`
+/// （2026-09-28追記）**: issue #165 の不具合報告 `01M3JTVDPMW35MF81DGRKW10MQ`
+/// は `competing_software: ["PowerToys"]`（本関数が検出した汎用の
+/// `PowerToys.exe` ランチャープロセス）を伴っていた。その後
+/// `crates/e2e-uwp-inputsite-probe` による CI 実証実験で、awase より後に
+/// インストールされ `CallNextHookEx` を呼ばない別の `WH_KEYBOARD_LL` フックが
+/// あると issue #165 の watchdog シグネチャと同一の症状（キー入力が遅延では
+/// なく完全消失）を確実に再現できることを確認した（PR #347）。PowerToys の
+/// Keyboard Manager モジュールは公式に `WH_KEYBOARD_LL` を使い、専用の別
+/// プロセス `PowerToys.KeyboardManagerEngine.exe` がそのフックをホストする
+/// （PowerToys本体のアーキテクチャドキュメントで確認、awase側で直接検証した
+/// 事実ではない）。汎用の `PowerToys.exe` だけでは「PowerToys スイートの
+/// どのモジュールが有効か」が分からないため、次に同種の報告が来たとき
+/// Keyboard Manager 自体が動いていたかを直接判別できるよう、この専用プロセス
+/// 名も候補に加える。PowerToys Run（`PowerToys.PowerLauncher.exe`）は
+/// BUG-053（Win キー押下で検索UIが開く際のフック競合）と同系統のグローバル
+/// ホットキー常駐という点で候補に加えたが、`WH_KEYBOARD_LL` 使用の直接確認は
+/// していない。**いずれも issue #165 の原因と確定したわけではなく、次の
+/// 報告で相関を取るための候補**（`docs/bug-reports-triage.md` の
+/// `01M3JTVDPMW35MF81DGRKW10MQ` 追記も参照）。
 pub(crate) fn detect_relay_or_remap_software() -> Vec<String> {
     const CANDIDATES: &[ConflictEntry] = &[
         ConflictEntry {
@@ -405,6 +426,14 @@ pub(crate) fn detect_relay_or_remap_software() -> Vec<String> {
         ConflictEntry {
             exe: "PowerToys.exe",
             display: "PowerToys",
+        },
+        ConflictEntry {
+            exe: "PowerToys.KeyboardManagerEngine.exe",
+            display: "PowerToys Keyboard Manager",
+        },
+        ConflictEntry {
+            exe: "PowerToys.PowerLauncher.exe",
+            display: "PowerToys Run",
         },
         ConflictEntry {
             exe: "mstsc.exe",
