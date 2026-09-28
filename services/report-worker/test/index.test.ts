@@ -36,6 +36,7 @@ const validPayload = {
   gji_keymap: null,
   msime_key_assignment: null,
   legacy_msime_keymap: null,
+  keymap_learn: null,
   attach_running_processes: false,
   running_processes: null,
   reported_at: "2026-08-19T12:34:56Z"
@@ -364,13 +365,15 @@ describe("payload validation", () => {
   // ADR-148: SCHEMA_VERSION は上げていないため、この変更より前のクライアント
   // （attach_ime_keymap/gji_keymap/msime_key_assignment を一切送らないペイロード）
   // が引き続き200で受理されることを固定する（retro_eval_stats と同型の回帰）。
-  // legacy_msime_keymap（Phase 2）も同じ理由でoptionalとして読むため、ここに含める。
+  // legacy_msime_keymap（Phase 2）・keymap_learn（ADR196-T2）も同じ理由で
+  // optionalとして読むため、ここに含める。
   it("accepts payloads without ime_keymap fields (pre-ADR-148 clients) and normalizes to false/null", () => {
     const {
       attach_ime_keymap: _attachImeKeymap,
       gji_keymap: _gjiKeymap,
       msime_key_assignment: _msimeKeyAssignment,
       legacy_msime_keymap: _legacyMsimeKeymap,
+      keymap_learn: _keymapLearn,
       ...payload
     } = validPayload;
 
@@ -379,7 +382,8 @@ describe("payload validation", () => {
       attach_ime_keymap: false,
       gji_keymap: null,
       msime_key_assignment: null,
-      legacy_msime_keymap: null
+      legacy_msime_keymap: null,
+      keymap_learn: null
     });
   });
 
@@ -528,7 +532,31 @@ describe("payload validation", () => {
     );
   });
 
-  it("accepts explicitly attached gji_keymap, msime_key_assignment and legacy_msime_keymap objects", () => {
+  it("rejects a non-object, non-null keymap_learn", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_ime_keymap: true,
+        keymap_learn: 42
+      })),
+      400,
+      "keymap_learn_invalid"
+    );
+  });
+
+  it("rejects keymap_learn unless attach_ime_keymap is explicitly true", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_ime_keymap: false,
+        keymap_learn: { table_file: "loaded" }
+      })),
+      400,
+      "keymap_learn_requires_attach_ime_keymap"
+    );
+  });
+
+  it("accepts explicitly attached gji_keymap, msime_key_assignment, legacy_msime_keymap and keymap_learn objects", () => {
     const payload = {
       ...validPayload,
       attach_ime_keymap: true,
@@ -546,6 +574,13 @@ describe("payload validation", () => {
         active_style: "Custom",
         muhenkan_ime_on_toggle: true,
         henkan_ime_on_toggle: false
+      },
+      keymap_learn: {
+        table_file: "loaded",
+        use_learned_keymap_table: true,
+        in_use: true,
+        cell_count: 42,
+        judgement: "Accepted"
       }
     };
 

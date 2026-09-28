@@ -84,6 +84,12 @@ export interface BugReportPayload {
    * カスタマイズで無変換/変換キーに「IMEオン/オフ」が割当てられているかの
    * 検出結果。`attach_ime_keymap`に相乗り（新規フラグは追加しない）。 */
   legacy_msime_keymap: Record<string, unknown> | null;
+  /** ADR196-T2 決定1e後半（2026-09-07追記）。学習表の採否・自己検証・同梱表との
+   * 突き合わせ・指紋。`attach_ime_keymap`に相乗り（新規フラグは追加しない、
+   * legacy_msime_keymapと同じ理由）。2026-09-28: このフィールドがRust側の
+   * ペイロードには存在するのにWorker側でallowlist再構築時に見落とされており、
+   * 送信されても黙って消えていた（`running_processes`追加時の監査で発覚）。 */
+  keymap_learn: Record<string, unknown> | null;
   /** issue #165（hook_starved）用（2026-09-28追記）。`SCHEMA_VERSION`は
    * 上げていないため、旧クライアントが生成した報告にはこの2フィールドが
    * 存在しない（`retro_eval_stats`と同じ理由でoptionalとして読む）。他の
@@ -508,6 +514,8 @@ export function validatePayload(value: unknown): BugReportPayload {
   const msimeKeyAssignment = optionalNullableRecord(value, "msime_key_assignment");
   // ADR-148 Phase 2: attach_ime_keymap に相乗り。上記2フィールドと同じ理由でoptional。
   const legacyMsimeKeymap = optionalNullableRecord(value, "legacy_msime_keymap");
+  // ADR196-T2 決定1e後半: attach_ime_keymap に相乗り。上記と同じ理由でoptional。
+  const keymapLearn = optionalNullableRecord(value, "keymap_learn");
   // issue #165（hook_starved）用。上記と同じ理由でoptionalとして読む。
   const attachRunningProcesses = optionalBoolean(value, "attach_running_processes");
   const runningProcesses = optionalNullableStringArray(value, "running_processes");
@@ -546,6 +554,9 @@ export function validatePayload(value: unknown): BugReportPayload {
   if (!attachImeKeymap && legacyMsimeKeymap !== null) {
     throw new HttpError(400, "legacy_msime_keymap_requires_attach_ime_keymap");
   }
+  if (!attachImeKeymap && keymapLearn !== null) {
+    throw new HttpError(400, "keymap_learn_requires_attach_ime_keymap");
+  }
   if (!attachRunningProcesses && runningProcesses !== null) {
     throw new HttpError(400, "running_processes_requires_attach_running_processes");
   }
@@ -576,6 +587,7 @@ export function validatePayload(value: unknown): BugReportPayload {
     gji_keymap: gjiKeymap,
     msime_key_assignment: msimeKeyAssignment,
     legacy_msime_keymap: legacyMsimeKeymap,
+    keymap_learn: keymapLearn,
     attach_running_processes: attachRunningProcesses,
     running_processes: runningProcesses,
     reported_at: reportedAt
