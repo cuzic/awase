@@ -342,7 +342,7 @@ mod tests {
         assert!(detect(Some(&custom), None, [VkCode(0), VkCode(0)], &[])
             .iter()
             .any(|w| w.kind == WarningKind::UserOverride));
-        let native = KeyEffectKeymap::for_msime_native(false, None, None);
+        let native = KeyEffectKeymap::for_msime_native(false, None, None, None);
         assert!(detect(Some(&native), None, [VkCode(0), VkCode(0)], &[]).is_empty());
         assert!(detect(None, None, [VkCode(0), VkCode(0)], &[]).is_empty());
     }

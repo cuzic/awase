@@ -880,7 +880,7 @@ mod classification_tests {
                 CannotPredictReason::UserOverride
             ))
         );
-        let native = KeyEffectKeymap::for_msime_native(false, None, None);
+        let native = KeyEffectKeymap::for_msime_native(false, None, None, None);
         assert_eq!(
             classify_state_dependent_mode_key(Some(&native), 0x1C, None),
             Some(Classification::CannotPredict(
@@ -974,7 +974,7 @@ mod classification_tests {
     #[test]
     fn adr192_t5_learned_table_classifies_presets_that_have_no_bundled_table() {
         // Microsoft IME本体は同梱表が無く常に`InsufficientData`だが、学習表があれば判定できる。
-        let native = KeyEffectKeymap::for_msime_native(false, None, None);
+        let native = KeyEffectKeymap::for_msime_native(false, None, None, None);
         let idempotent = learned_henkan(false);
         assert_eq!(
             classify_state_dependent_mode_key(Some(&native), 0x1C, Some(&idempotent)),

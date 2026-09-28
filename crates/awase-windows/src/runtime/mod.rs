@@ -678,7 +678,8 @@ impl Runtime {
     /// - 打鍵ごとに求め直すので、IME を切り替えたときに古い役割が残らない（決定8 と同じ考え方）。役割が無ければ
     ///   config 由来だけ（無ければ `None`＝従来どおり受動）に戻す。
     /// - 役割は [`Self::derive_key_shadow_action`]（GJI の `config1.db` の逆算・学習表による狭め・config との重なり）。
-    ///   MS-IME 本体は受動（レジストリでトグルと判断できる値が未確認、T12）。修飾付きの押下では役割を求めない。
+    ///   MS-IME 本体は無変換/変換については受動のまま（トグルと判断できる値〈2〉はADR-199 T12で確定したが、
+    ///   能動化はT17 Phase 4——入力中・変換中の挙動の実機確認待ちで保留中、2026-09-27）。修飾付きの押下では役割を求めない。
     /// - `shadow_action` は付けない（付けると `transport.rs` の先行 Allow と awase の書き込みで二重 actuation、BUG-46 型）。
     ///   物理配送は `Decision::Consume`（PendingThumb）に任せる。発火は FSM が単独タップと解決したときだけ（チョード優先）。
     pub(crate) fn enrich_thumb_key_role(&mut self, event: &RawKeyEvent) {
@@ -720,6 +721,8 @@ impl Runtime {
     /// キーマップ・学習表の取得は予測経路（`kp_predict_key_effect`）と同じインスタンス・同じ引数
     /// （`KeymapCache::get_gji`/`get_native`）なので、間引きも共通で I/O は増えない。
     /// `table_ime_kind` で分岐するのは打鍵の時点の同定なので、IME を切り替えたときに古い役割が残らない。
+    /// 役割そのものの判定は`ime`に応じて`KeyEffectKeymap::gji_key_role`／`msime_native_key_role`を
+    /// 選ぶだけで、`key_shadow_action`自体はIME種別を見ない（T17 opusレビュー、合流点を1つに保つ）。
     fn derive_key_shadow_action(
         &mut self,
         ime: crate::state::ime_kind::ImeKindId,
@@ -748,19 +751,11 @@ impl Runtime {
             }
             _ => false,
         };
-        key_shadow_action(
-            ime,
-            explicit_overlap,
-            keymap.map(|k| k.gji_key_role(vk.0)),
-            // MS-IME 本体の仕様固定トグルは半角/全角だけ（F13〜F24 は決定18、無変換/変換は決定16・T12 で、
-            // どれも設定を読めないので受動）。
-            matches!(
-                vk.ime_kind(),
-                Some(crate::vk::ImeKeyKind::DbeSbcsChar | crate::vk::ImeKeyKind::DbeDbcsChar)
-            ),
-            use_learned,
-            contradiction,
-        )
+        let keymap_role = keymap.map(|k| match ime {
+            ImeKindId::Gji => k.gji_key_role(vk.0),
+            ImeKindId::MsIme => k.msime_native_key_role(vk.0),
+        });
+        key_shadow_action(explicit_overlap, keymap_role, use_learned, contradiction)
     }
 
     /// Decision の副作用を実行する（メッセージループ用）。
@@ -1464,14 +1459,10 @@ impl Runtime {
                 &self.passthrough_thumb_mode_keys,
             )
         } else {
-            let raw = crate::msime_key_assignment::read_raw_key_assignment_dwords();
-            let bits = u8::from(raw.key_assignment_henkan.unwrap_or(0) != 0)
-                | (u8::from(raw.key_assignment_muhenkan.unwrap_or(0) != 0) << 1);
-            let keymap = crate::state::key_effect_predictor::KeyEffectKeymap::for_msime_native(
-                raw.is_key_assignment_enabled == Some(1),
-                raw.key_assignment_henkan,
-                raw.key_assignment_muhenkan,
-            );
+            // 予測経路・役割判定経路と同じ構築関数を経由する（別々にレジストリを読んで解釈を
+            // ずらさないため、ADR-199 T17 opusレビュー M3）。
+            let (keymap, bits) =
+                crate::msime_key_assignment::read_key_effect_keymap_native_with_reassignment_bits();
             let learned = self.learned_cells_for_warning(now_ms, Some(&keymap));
             self.state_dependent_key_warning.detect_msime(
                 self.warn_state_dependent_mode_keys,
