@@ -84,6 +84,13 @@ export interface BugReportPayload {
    * カスタマイズで無変換/変換キーに「IMEオン/オフ」が割当てられているかの
    * 検出結果。`attach_ime_keymap`に相乗り（新規フラグは追加しない）。 */
   legacy_msime_keymap: Record<string, unknown> | null;
+  /** issue #165（hook_starved）用（2026-09-28追記）。`SCHEMA_VERSION`は
+   * 上げていないため、旧クライアントが生成した報告にはこの2フィールドが
+   * 存在しない（`retro_eval_stats`と同じ理由でoptionalとして読む）。他の
+   * `attach_*`と違い既定オフのチェックボックスのため、実際に添付される
+   * 報告は少ない見込み。 */
+  attach_running_processes: boolean;
+  running_processes: string[] | null;
   reported_at: string;
 }
 
@@ -501,6 +508,9 @@ export function validatePayload(value: unknown): BugReportPayload {
   const msimeKeyAssignment = optionalNullableRecord(value, "msime_key_assignment");
   // ADR-148 Phase 2: attach_ime_keymap に相乗り。上記2フィールドと同じ理由でoptional。
   const legacyMsimeKeymap = optionalNullableRecord(value, "legacy_msime_keymap");
+  // issue #165（hook_starved）用。上記と同じ理由でoptionalとして読む。
+  const attachRunningProcesses = optionalBoolean(value, "attach_running_processes");
+  const runningProcesses = optionalNullableStringArray(value, "running_processes");
   const reportedAt = requiredString(value, "reported_at");
   if (Number.isNaN(Date.parse(reportedAt))) {
     throw new HttpError(400, "reported_at_must_be_rfc3339");
@@ -536,6 +546,9 @@ export function validatePayload(value: unknown): BugReportPayload {
   if (!attachImeKeymap && legacyMsimeKeymap !== null) {
     throw new HttpError(400, "legacy_msime_keymap_requires_attach_ime_keymap");
   }
+  if (!attachRunningProcesses && runningProcesses !== null) {
+    throw new HttpError(400, "running_processes_requires_attach_running_processes");
+  }
 
   return {
     schema_version: SCHEMA_VERSION,
@@ -563,6 +576,8 @@ export function validatePayload(value: unknown): BugReportPayload {
     gji_keymap: gjiKeymap,
     msime_key_assignment: msimeKeyAssignment,
     legacy_msime_keymap: legacyMsimeKeymap,
+    attach_running_processes: attachRunningProcesses,
+    running_processes: runningProcesses,
     reported_at: reportedAt
   };
 }
@@ -737,6 +752,26 @@ function requiredStringArray(value: Record<string, unknown>, field: string): str
     throw new HttpError(400, `${field}_required`);
   }
   return fieldValue;
+}
+
+/**
+ * `requiredStringArray` と異なり、フィールド自体が存在しない（`undefined`）
+ * 場合、または`null`の場合は`null`として受理する。issue #165(hook_starved)
+ * 用の`running_processes`で導入 — `optionalNullableRecord`と同じ理由
+ * （旧クライアント・attach_running_processes=falseの報告を拒否しない）。
+ */
+function optionalNullableStringArray(
+  value: Record<string, unknown>,
+  field: string
+): string[] | null {
+  const fieldValue = value[field];
+  if (fieldValue === undefined || fieldValue === null) {
+    return null;
+  }
+  if (Array.isArray(fieldValue) && fieldValue.every((item) => typeof item === "string")) {
+    return fieldValue;
+  }
+  throw new HttpError(400, `${field}_invalid`);
 }
 
 function requiredImeKind(value: unknown): ImeKind {

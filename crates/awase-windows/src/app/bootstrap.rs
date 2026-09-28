@@ -447,6 +447,51 @@ pub(crate) fn detect_relay_or_remap_software() -> Vec<String> {
     scan_running_processes(CANDIDATES)
 }
 
+/// 実行中の全プロセスの実行ファイル名（重複除去・昇順ソート、パスは含まない）
+/// を返す。issue #165 の hook_starved（`WH_KEYBOARD_LL` フックチェーンへの
+/// イベント配送が数秒単位で途絶える）の切り分け用。`detect_relay_or_remap_software`
+/// は既知の候補との照合に限られるため、まだ知らない競合ソフトを後から遡って
+/// 発見できるよう、不具合報告の任意添付（`attach_running_processes`、既定オフ）
+/// としてこちらも用意する。プロセス名のみでパス（ユーザー名を含みうる）は
+/// 含めない。
+pub(crate) fn list_all_running_process_names() -> Vec<String> {
+    use std::mem::size_of;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    // SAFETY: scan_running_processes と同一の標準的な呼び出し手順。
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return Vec::new();
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: u32::try_from(size_of::<PROCESSENTRY32W>()).unwrap_or(0),
+            ..Default::default()
+        };
+        let mut names: Vec<String> = Vec::new();
+        if Process32FirstW(snap, &raw mut entry).is_ok() {
+            loop {
+                let end = entry
+                    .szExeFile
+                    .iter()
+                    .position(|&c| c == 0)
+                    .unwrap_or(entry.szExeFile.len());
+                names.push(String::from_utf16_lossy(&entry.szExeFile[..end]));
+                if Process32NextW(snap, &raw mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snap);
+        names.sort_unstable_by_key(|n| n.to_ascii_lowercase());
+        names.dedup();
+        names
+    }
+}
+
 pub(super) fn check_conflicting_software(diag: &mut StartupDiagnostics) {
     for name in detect_conflicting_software() {
         diag.warn(format!(

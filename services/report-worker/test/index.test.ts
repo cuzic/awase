@@ -36,6 +36,8 @@ const validPayload = {
   gji_keymap: null,
   msime_key_assignment: null,
   legacy_msime_keymap: null,
+  attach_running_processes: false,
+  running_processes: null,
   reported_at: "2026-08-19T12:34:56Z"
 };
 
@@ -379,6 +381,68 @@ describe("payload validation", () => {
       msime_key_assignment: null,
       legacy_msime_keymap: null
     });
+  });
+
+  // issue #165（hook_starved）用: SCHEMA_VERSION は上げていないため、この変更
+  // より前のクライアント（attach_running_processes/running_processesを一切
+  // 送らないペイロード）が引き続き200で受理されることを固定する。
+  it("accepts payloads without running_processes fields (pre-issue-165 clients) and normalizes to false/null", () => {
+    const {
+      attach_running_processes: _attachRunningProcesses,
+      running_processes: _runningProcesses,
+      ...payload
+    } = validPayload;
+
+    expect(parseAndValidatePayload(JSON.stringify(payload))).toEqual({
+      ...payload,
+      attach_running_processes: false,
+      running_processes: null
+    });
+  });
+
+  it("rejects a non-boolean attach_running_processes", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_running_processes: "yes"
+      })),
+      400,
+      "attach_running_processes_invalid"
+    );
+  });
+
+  it("rejects a non-array, non-null running_processes", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_running_processes: true,
+        running_processes: 42
+      })),
+      400,
+      "running_processes_invalid"
+    );
+  });
+
+  it("rejects running_processes unless attach_running_processes is explicitly true", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_running_processes: false,
+        running_processes: ["explorer.exe"]
+      })),
+      400,
+      "running_processes_requires_attach_running_processes"
+    );
+  });
+
+  it("accepts an explicitly attached running_processes array", () => {
+    const payload = {
+      ...validPayload,
+      attach_running_processes: true,
+      running_processes: ["explorer.exe", "powertoys.exe"]
+    };
+
+    expect(parseAndValidatePayload(JSON.stringify(payload))).toEqual(payload);
   });
 
   it("rejects a non-boolean attach_ime_keymap", () => {

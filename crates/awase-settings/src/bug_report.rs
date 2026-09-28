@@ -28,6 +28,9 @@ pub(crate) struct BugReportApp {
     attach_layout: bool,
     attach_retro_eval_stats: bool,
     attach_ime_keymap: bool,
+    /// issue #165（hook_starved）用（2026-09-28追記）。他の`attach_*`と異なり
+    /// **既定オフ**（他アプリの起動状況が丸ごと分かるため開示範囲が広い）。
+    attach_running_processes: bool,
     journal_json: Option<String>,
     journal_status: String,
     app_log: Option<String>,
@@ -115,6 +118,7 @@ impl BugReportApp {
             attach_layout: true,
             attach_retro_eval_stats: true,
             attach_ime_keymap: true,
+            attach_running_processes: false,
             journal_json,
             journal_status,
             app_log,
@@ -135,7 +139,7 @@ impl BugReportApp {
         app
     }
 
-    /// 添付チェックボックス（現在6個）とその下のステータスラベルを描画する。
+    /// 添付チェックボックス（現在7個）とその下のステータスラベルを描画する。
     /// `update` の行数を抑えるための抽出（clippy::too_many_lines）。
     /// 戻り値: いずれかのチェックボックスが変化したか。
     fn draw_attachment_checkboxes(&mut self, ui: &mut egui::Ui) -> bool {
@@ -216,6 +220,18 @@ impl BugReportApp {
                 "IMEのキーマップ設定は送信しません。",
             ))
             .changed();
+        let attach_running_processes_changed = ui
+            .checkbox(
+                &mut self.attach_running_processes,
+                "実行中のプロセス名一覧を添付する（既定オフ）",
+            )
+            .on_hover_text(attachment_hover_text(
+                // issue #165（hook_starved）用。他のawase実行中ソフトの一覧が
+                // 分かってしまうため、他のチェックボックスと違い既定でオフ。
+                "現在実行中の全プロセスの実行ファイル名（フォルダのパスは含みません）を\n送信内容に含めます。キー入力が一時的に反応しなくなる不具合の原因調査で、\n競合しうる常駐ソフトの手がかりになります。他のアプリの起動状況が\n分かってしまうため、既定ではオフにしています。",
+                "実行中のプロセス名一覧は送信しません。",
+            ))
+            .changed();
         ui.label(&self.journal_status);
         ui.label(&self.app_log_status);
         attach_log_changed
@@ -224,6 +240,7 @@ impl BugReportApp {
             || attach_layout_changed
             || attach_retro_eval_stats_changed
             || attach_ime_keymap_changed
+            || attach_running_processes_changed
     }
 
     /// 生成済みのプレビュー JSON を反映する。デバウンス完了時と「プレビュー
@@ -287,6 +304,8 @@ impl BugReportApp {
                 msime_key_assignment: self.diagnostics.msime_key_assignment.clone(),
                 legacy_msime_keymap: self.diagnostics.legacy_msime_keymap.clone(),
                 keymap_learn: self.diagnostics.keymap_learn.clone(),
+                attach_running_processes: self.attach_running_processes,
+                running_processes: self.diagnostics.running_processes.clone(),
                 reported_at: &self.reported_at,
             },
             MAX_BODY_BYTES,

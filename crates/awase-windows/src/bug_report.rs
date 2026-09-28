@@ -580,6 +580,16 @@ pub struct BugReportPayload {
     /// （`SCHEMA_VERSION`を上げていないため、旧サーバ保存JSON・旧テストデータに無い）。
     #[serde(default)]
     pub keymap_learn: Option<BugReportKeymapLearnSummary>,
+    /// issue #165（hook_starved）の切り分け用（2026-09-28追記）。実行中の全
+    /// プロセスの実行ファイル名一覧（パスは含まない）。`competing_software`
+    /// は既知候補との照合に限られるため、まだ候補に挙げていない競合ソフトを
+    /// 後から遡って発見できるようにする。他の`attach_*`と異なり**既定オフ**
+    /// （他アプリの起動状況が丸ごと分かるため、既存の`attach_*`より開示範囲が
+    /// 広い）。`#[serde(default)]`必須（`SCHEMA_VERSION`を上げていないため）。
+    #[serde(default)]
+    pub attach_running_processes: bool,
+    #[serde(default)]
+    pub running_processes: Option<Vec<String>>,
     pub reported_at: String,
 }
 
@@ -708,6 +718,10 @@ pub struct BugReportDiagnostics {
     /// ADR196-T2 決定1e後半。上記と同じ理由で`#[serde(default)]`必須。
     #[serde(default)]
     pub keymap_learn: Option<BugReportKeymapLearnSummary>,
+    /// issue #165（hook_starved）用（2026-09-28追記）。上記と同じ理由で
+    /// `#[serde(default)]`必須。
+    #[serde(default)]
+    pub running_processes: Option<Vec<String>>,
 }
 
 impl Default for BugReportDiagnostics {
@@ -725,6 +739,7 @@ impl Default for BugReportDiagnostics {
             msime_key_assignment: None,
             legacy_msime_keymap: None,
             keymap_learn: None,
+            running_processes: None,
         }
     }
 }
@@ -765,6 +780,10 @@ pub struct BugReportInput<'a> {
     /// 常に構築して渡す（上記2フィールドと同じ理由）。
     pub legacy_msime_keymap: Option<BugReportLegacyMsImeKeymapSummary>,
     pub keymap_learn: Option<BugReportKeymapLearnSummary>,
+    /// issue #165（hook_starved）用（2026-09-28追記）。既定オフの独立チェック
+    /// ボックス（`BugReportPayload::attach_running_processes`参照）。
+    pub attach_running_processes: bool,
+    pub running_processes: Option<Vec<String>>,
     pub reported_at: &'a str,
 }
 
@@ -842,6 +861,11 @@ pub fn build_payload_with_log_budget(
     } else {
         None
     };
+    let running_processes = if input.attach_running_processes {
+        input.running_processes.clone()
+    } else {
+        None
+    };
     Ok(BugReportPayload {
         schema_version: SCHEMA_VERSION,
         app_version: input.app_version.to_owned(),
@@ -869,6 +893,8 @@ pub fn build_payload_with_log_budget(
         msime_key_assignment,
         legacy_msime_keymap,
         keymap_learn,
+        attach_running_processes: input.attach_running_processes,
+        running_processes,
         reported_at: input.reported_at.to_owned(),
     })
 }
@@ -1085,6 +1111,8 @@ mod tests {
             msime_key_assignment: Some(test_msime_key_assignment_summary()),
             legacy_msime_keymap: Some(test_legacy_msime_keymap_summary()),
             keymap_learn: Some(test_keymap_learn_summary()),
+            attach_running_processes: true,
+            running_processes: Some(vec!["explorer.exe".to_owned(), "powertoys.exe".to_owned()]),
             reported_at: "2026-08-19T12:34:56Z",
         }
     }
@@ -1541,12 +1569,18 @@ mod tests {
             Some(test_keymap_learn_summary()),
             "keymap_learnはattach_ime_keymapに相乗りして添付される"
         );
+        assert!(payload.attach_running_processes);
+        assert_eq!(
+            payload.running_processes,
+            Some(vec!["explorer.exe".to_owned(), "powertoys.exe".to_owned()])
+        );
 
         input.attach_state_snapshot = false;
         input.attach_config = false;
         input.attach_layout = false;
         input.attach_retro_eval_stats = false;
         input.attach_ime_keymap = false;
+        input.attach_running_processes = false;
         let detached = build_payload(&input).unwrap();
         assert!(!detached.attach_state_snapshot);
         assert_eq!(detached.state_snapshot, None);
@@ -1561,6 +1595,8 @@ mod tests {
         assert_eq!(detached.msime_key_assignment, None);
         assert_eq!(detached.legacy_msime_keymap, None);
         assert_eq!(detached.keymap_learn, None);
+        assert!(!detached.attach_running_processes);
+        assert_eq!(detached.running_processes, None);
     }
 
     #[test]
