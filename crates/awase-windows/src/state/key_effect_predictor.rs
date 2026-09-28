@@ -465,10 +465,19 @@ pub struct KeyEffectKeymap {
     pub(super) custom_table: Option<String>,
     /// `config1.db`の生の`overlay_keymaps`（役割判定は種類で受動にするキーが違う、ADR-199 決定4）。
     overlay_keymaps: Vec<i64>,
-    /// Microsoft IME本体のキー割り当て（レジストリ`KeyAssignmentHenkan`/`Muhenkan`）が既定（再変換/かな切替）から
-    /// 変えられている。その変換/無変換の打鍵は予測しない（GJIのoverlay/カスタム上書きと同じ安全側）。
+    /// Microsoft IME本体のキー割り当て（レジストリ`KeyAssignmentHenkan`/`Muhenkan`）に明示値がある
+    /// （`IsKeyAssignmentEnabled=1`かつ値が存在する）。その変換/無変換の打鍵は予測しない（GJIのoverlay/
+    /// カスタム上書きと同じ安全側）。ADR-199 T12（2026-09-26実機確認）で値0=IME-オン・3=既定
+    /// 〈かな切替/再変換〉と確定し、「0=既定」という以前の前提が逆転した。値0/3の実機的意味が
+    /// 確認できるまでは明示値なら一律に予測しない（決定C R3・M5、推測で値を決めない）。
     henkan_reassigned: bool,
     muhenkan_reassigned: bool,
+    /// MS-IME本体の「以前のバージョンのMicrosoft IMEを使う」互換モード（ADR-197決定4、
+    /// [`crate::msime_legacy_keymap::read_legacy_compat_mode_enabled`]）。`Some(true)`=ON・
+    /// `Some(false)`=OFF・`None`=読めない（決定17により「新しい版」として扱う）。GJIのキーマップ
+    /// では使わない（`None`）。役割判定（[`Self::msime_native_key_role`]）だけが参照し、指紋には
+    /// 混ぜない（ADR196-T5の`env_version`が別途担当、M3）。
+    msime_compat_mode: Option<bool>,
     /// このキーマップの生の入力（GJI: session/custom/overlay、Microsoft IME本体: 3 DWORD）から
     /// 作った指紋（`awase_keymap_learn::fingerprint`）。上の真偽値は overlay の中身や
     /// 再割り当て値を潰すので、学習表の陳腐化検出（`key_effect_runtime`）にはこちらを使う。
@@ -601,6 +610,7 @@ impl KeyEffectKeymap {
             overlay_keymaps: overlay_keymaps.to_vec(),
             henkan_reassigned: false,
             muhenkan_reassigned: false,
+            msime_compat_mode: None,
             fingerprint,
         })
     }
@@ -629,7 +639,7 @@ impl KeyEffectKeymap {
 
     /// このGJIのキーマップで、`vk`（無修飾の打鍵）が持つ役割（ADR-199 決定4）。GJIの設定から
     /// 逆算するだけで、学習表による狭め（決定6-2）・明示configとの重なり（決定8）は呼び出し側。
-    /// Microsoft IME本体のキーマップ（`MsImeNative`）では`None`（決定6-4は別の規則）。
+    /// Microsoft IME本体のキーマップ（`MsImeNative`）では`None`（[`Self::msime_native_key_role`]が別の規則）。
     #[must_use]
     pub fn gji_key_role(&self, vk: u16) -> Option<awase_gji_config::role::KeyRole> {
         use crate::vk::VkCodeExt;
@@ -650,17 +660,42 @@ impl KeyEffectKeymap {
         )
     }
 
+    /// Microsoft IME本体のキーマップで、`vk`（無修飾の打鍵）が持つ役割（[`Self::gji_key_role`]のMS-IME本体版、
+    /// ADR-199 T17）。GJIのキーマップ（`MsImeNative`以外）では`None`。
+    ///
+    /// - 半角/全角（0xF3/0xF4）: 仕様固定トグル（決定6-4）。互換モード（[`Self::msime_compat_mode`]相当）が
+    ///   `Some(true)`なら受動（決定17・T13）。
+    /// - 無変換/変換（0x1C/0x1D）・F13〜F24・その他: 常に`None`（受動）。無変換/変換の能動化（決定16）は
+    ///   ADR-199 T17 Phase 4——値2で入力中・変換中にどう動くかの実機確認待ちで保留中（2026-09-27）。
+    #[must_use]
+    pub fn msime_native_key_role(&self, vk: u16) -> Option<awase_gji_config::role::KeyRole> {
+        use crate::vk::{VK_DBE_DBCSCHAR, VK_DBE_SBCSCHAR};
+        use awase_gji_config::role::KeyRole;
+        if !matches!(self.preset, KeymapPreset::MsImeNative) {
+            return None;
+        }
+        if vk == VK_DBE_SBCSCHAR.0 || vk == VK_DBE_DBCSCHAR.0 {
+            return (self.msime_compat_mode != Some(true)).then_some(KeyRole::ImeToggle);
+        }
+        None
+    }
+
     /// Microsoft IME本体のキーマップ。`assignment_enabled`は`IsKeyAssignmentEnabled == 1`、`henkan`/`muhenkan`は
-    /// `KeyAssignmentHenkan`/`KeyAssignmentMuhenkan`の値（不在=既定=`None`、`0`=既定〈再変換/かな切替〉、
-    /// 非0=IME-オン/オフ等に再割り当て）。マスタースイッチが無効なら割り当ては効かない（既定のキー設定）。
+    /// `KeyAssignmentHenkan`/`KeyAssignmentMuhenkan`の値。ADR-199 T12（2026-09-26実機確認）で
+    /// 0=IME-オン・1=IME-オフ・2=トグル・3=既定〈無変換=かな切替/変換=再変換〉と確定した
+    /// （不在は未設定=`None`）。値0/3の実機的意味（予測への影響）はまだ確認できていないため、
+    /// `assignment_enabled`かつ明示値があれば一律に予測しない（安全側、M5・決定C R3）。
+    /// `compat_mode`は`msime_legacy_keymap::read_legacy_compat_mode_enabled()`の結果をそのまま渡す
+    /// （決定17・T13）。マスタースイッチが無効なら割り当ては効かない（既定のキー設定）。
     /// Ctrl+Space/Shift+Spaceは修飾キー付きなので`modifiers_suppress_prediction`が抑止する。
     #[must_use]
     pub fn for_msime_native(
         assignment_enabled: bool,
         henkan: Option<u32>,
         muhenkan: Option<u32>,
+        compat_mode: Option<bool>,
     ) -> Self {
-        let reassigned = |v: Option<u32>| assignment_enabled && v.is_some_and(|x| x != 0);
+        let reassigned = |v: Option<u32>| assignment_enabled && v.is_some();
         Self {
             preset: KeymapPreset::MsImeNative,
             session_keymap: None,
@@ -668,6 +703,7 @@ impl KeyEffectKeymap {
             overlay_keymaps: Vec::new(),
             henkan_reassigned: reassigned(henkan),
             muhenkan_reassigned: reassigned(muhenkan),
+            msime_compat_mode: compat_mode,
             fingerprint: awase_keymap_learn::fingerprint::msime_native_keymap_fingerprint(
                 assignment_enabled,
                 henkan,
@@ -1571,7 +1607,7 @@ mod tests {
         assert_eq!(overlaid.gji_key_role(0x1C), None);
         assert_eq!(overlaid.gji_key_role(0x7C), Some(KeyRole::ImeToggle));
         // Microsoft IME 本体のキーマップでは GJI の役割判定をしない。
-        let native = KeyEffectKeymap::for_msime_native(false, None, None);
+        let native = KeyEffectKeymap::for_msime_native(false, None, None, None);
         assert_eq!(native.gji_key_role(0xF3), None);
     }
 
@@ -1581,7 +1617,7 @@ mod tests {
     fn msime_native_hiragana_opens_from_direct_input() {
         // 実測(grid、--msime、awase なし): 閉(直接入力)でひらがな(0xF2)を押すと開く。撤去版CIで最初のF2が Engine に
         // 反映されなかった実害(msime-native/sc-* が3/3 FAIL)の予測側の対処。
-        let km = KeyEffectKeymap::for_msime_native(false, None, None);
+        let km = KeyEffectKeymap::for_msime_native(false, None, None, None);
         let p = km
             .predict(0xF2, &input(false, ROMAJI, false, NOTRACK))
             .expect("MS-IME本体のひらがなは予測する");
@@ -1591,7 +1627,7 @@ mod tests {
     #[test]
     fn msime_native_eisu_closes_ime_and_hankaku_zenkaku_toggles() {
         // 実測: MS-IME本体の英数(0xF0)は開いていて入力中でなければ IME オフ(0x10)、半角/全角は開→閉・閉→開。
-        let km = KeyEffectKeymap::for_msime_native(false, None, None);
+        let km = KeyEffectKeymap::for_msime_native(false, None, None, None);
         let hira = KeyTrack {
             conv: Some(Conv::C19),
             stage: Stage::None,
@@ -1609,7 +1645,7 @@ mod tests {
     #[test]
     fn msime_native_muhenkan_rotates_conversion_mode() {
         // 実測: 無変換(既定=かな切替)は 0x19→0x1B。
-        let km = KeyEffectKeymap::for_msime_native(false, None, None);
+        let km = KeyEffectKeymap::for_msime_native(false, None, None, None);
         let hira = KeyTrack {
             conv: Some(Conv::C19),
             stage: Stage::None,
@@ -1621,7 +1657,7 @@ mod tests {
     #[test]
     fn msime_native_henkan_none_and_typing_esc_are_not_predicted() {
         // 独立walkで入力欄の中身/候補ウィンドウ依存と判明したセルは「予測なし」(再変換は入力欄に確定済み文字列があると入力中になる)。
-        let km = KeyEffectKeymap::for_msime_native(false, None, None);
+        let km = KeyEffectKeymap::for_msime_native(false, None, None, None);
         let hira = KeyTrack {
             conv: Some(Conv::C19),
             stage: Stage::None,
@@ -1643,17 +1679,72 @@ mod tests {
 
     #[test]
     fn msime_native_reassigned_keys_are_not_predicted() {
-        // レジストリのキー割り当て(IsKeyAssignmentEnabled=1)で変換/無変換が IME オン/オフ等に変えられていれば、その打鍵は予測しない。
+        // レジストリのキー割り当て(IsKeyAssignmentEnabled=1)で変換/無変換に明示値があれば、その打鍵は予測しない
+        // (安全側。値0/3の実機的意味はADR-199 T12で未確認、決定C R3・M5)。
         let closed = input(false, ROMAJI, false, NOTRACK);
-        let km = KeyEffectKeymap::for_msime_native(true, Some(1), Some(1));
+        let km = KeyEffectKeymap::for_msime_native(true, Some(1), Some(1), None);
         assert_eq!(km.predict(0x1C, &closed), None);
         assert_eq!(km.predict(0x1D, &closed), None);
         assert!(km.predict(0xF2, &closed).is_some(), "他のキーは予測する");
         // マスタースイッチが無効なら割り当ては効かない(既定のキー設定)。
-        let km = KeyEffectKeymap::for_msime_native(false, Some(1), Some(1));
+        let km = KeyEffectKeymap::for_msime_native(false, Some(1), Some(1), None);
         assert!(km.predict(0x1D, &closed).is_some());
-        // 値0は既定(再変換/かな切替)。
-        let km = KeyEffectKeymap::for_msime_native(true, Some(0), Some(0));
-        assert!(km.predict(0x1D, &closed).is_some());
+        // 値0もADR-199 T12でIME-オンと確定した明示値であり、既定ではない(以前の「0=既定」の
+        // 前提が逆転した、M5)。安全側として予測しない。
+        let km = KeyEffectKeymap::for_msime_native(true, Some(0), Some(0), None);
+        assert_eq!(km.predict(0x1D, &closed), None);
+    }
+
+    // ── ADR-199 T17: `msime_native_key_role`（半角/全角トグル・互換モードでの受動化、無変換/変換は保留） ──
+
+    #[test]
+    fn msime_native_key_role_hz_is_toggle_unless_compat_mode() {
+        use awase_gji_config::role::KeyRole::ImeToggle;
+        let default = KeyEffectKeymap::for_msime_native(false, None, None, None);
+        assert_eq!(default.msime_native_key_role(0xF3), Some(ImeToggle));
+        assert_eq!(default.msime_native_key_role(0xF4), Some(ImeToggle));
+        let compat_off = KeyEffectKeymap::for_msime_native(false, None, None, Some(false));
+        assert_eq!(compat_off.msime_native_key_role(0xF3), Some(ImeToggle));
+        // 互換モードON(NoTsf3Override2=1)では半角/全角も受動(決定17・T13)。
+        let compat_on = KeyEffectKeymap::for_msime_native(false, None, None, Some(true));
+        assert_eq!(compat_on.msime_native_key_role(0xF3), None);
+        assert_eq!(compat_on.msime_native_key_role(0xF4), None);
+    }
+
+    #[test]
+    fn msime_native_key_role_thumb_keys_stay_passive_until_phase4() {
+        // 無変換/変換の能動化(決定16)はADR-199 T17 Phase 4で実施予定——値2で入力中・変換中に
+        // どう動くかの実機確認待ちで保留中(2026-09-27)。それまでは常に受動。
+        for (enabled, henkan, muhenkan, compat) in [
+            (false, None, None, None),
+            (true, Some(2), Some(2), None),
+            (true, Some(2), Some(2), Some(false)),
+        ] {
+            let km = KeyEffectKeymap::for_msime_native(enabled, henkan, muhenkan, compat);
+            assert_eq!(
+                km.msime_native_key_role(0x1C),
+                None,
+                "{enabled:?}/{henkan:?}/{muhenkan:?}/{compat:?}"
+            );
+            assert_eq!(km.msime_native_key_role(0x1D), None);
+        }
+    }
+
+    #[test]
+    fn msime_native_key_role_fkeys_and_other_vks_are_passive() {
+        let km = KeyEffectKeymap::for_msime_native(false, None, None, None);
+        assert_eq!(km.msime_native_key_role(0x7C), None, "F13");
+        assert_eq!(km.msime_native_key_role(0x41), None, "'A'");
+    }
+
+    /// opusレビュー指摘: docコメントは「GJIのキーマップ(MsImeNative以外)ではNone」と約束して
+    /// いるが、以前の実装はpresetを見ておらずGJIのキーマップでも半角/全角にSome(ImeToggle)を
+    /// 返していた(実害は無い——呼び出し元は常にMS-IME本体のキーマップだけを渡すため——が、
+    /// 将来の誤用を防ぐガードを追加した)。
+    #[test]
+    fn msime_native_key_role_is_none_for_gji_keymap() {
+        let gji = KeyEffectKeymap::from_config(None, None, &[]).unwrap();
+        assert_eq!(gji.msime_native_key_role(0xF3), None);
+        assert_eq!(gji.msime_native_key_role(0xF4), None);
     }
 }

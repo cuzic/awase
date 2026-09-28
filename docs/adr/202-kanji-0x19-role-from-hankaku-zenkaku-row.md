@@ -113,6 +113,9 @@ related_adr:
   `open` 1→0（+100ms、`sc-t166-msime-real`）。awase 起動中: 実 IME が閉じ Engine も OFF に追随（`kanjirole-closed` PASS、閉じる書き込み 0 件）。よって MS-IME 本体では静的 `Toggle`（決定2 の現行維持）が正しく、
   変更は不要。n は少ない（awase なしの有効な回は1回、もう1回は F2 で開いた IME が自然に閉じて無効、awase ありは有効1回・無効1回）ので、揺れが見えたら再確認する。
   検証用の構成（`sc-t166-*`）は develop には入れていない（`ci/t16-6-msime-kanji` は確認後に削除）。
+- **既知の非対称（ADR-199 T13実装、2026-09-27）**: MS-IME互換モード（`NoTsf3Override2=1`）では、半角/全角（0xF3/0xF4）は決定17により受動化される
+  （`KeyEffectKeymap::msime_native_key_role`）が、**0x19（Alt+半角/全角）は`hook.rs`の静的`Toggle`のまま能動が残る**（`kanji_role_plan`の`KeepStatic`、GJI以外は現行維持のため）。
+  互換モードで0x19の役割判定を止める変更は本ADRの範囲外。
 
 ## 影響
 

@@ -4,7 +4,9 @@
 //!
 //! # 背景（防ぐバグクラス: IME 状態の二重オーナー）
 //!
-//! MS-IME は設定で 無変換キー=IME-オフ / 変換キー=IME-オン を割り当てられる。
+//! MS-IME は設定で無変換/変換キーそれぞれに独立してIME-オン・IME-オフ・トグル等を
+//! 割り当てられる（下記「レジストリ位置」節の値の意味を参照。無変換=オフ・変換=オンに
+//! 固定されているわけではない）。
 //! 一方 awase は無変換/変換を親指シフトキーとして扱い、単独タップを
 //! `Key(0x1D/0x1C)` として OS に素通しする。割当てが有効だと、この素通しを
 //! MS-IME が処理して **OS 側だけ** IME 状態が反転し、awase の belief と乖離する
@@ -22,8 +24,15 @@
 //!
 //! `HKCU\Software\Microsoft\IME\15.0\IMEJP\MSIME`:
 //! - `IsKeyAssignmentEnabled` (DWORD) — 割当てマスタースイッチ（設定アプリが即書き込む）
-//! - `KeyAssignmentMuhenkan` (DWORD) — 1 = IME-オフ / 0 = かな切替（既定）
-//! - `KeyAssignmentHenkan` (DWORD) — 1 = IME-オン / 0 = 再変換（既定）
+//! - `KeyAssignmentMuhenkan`（無変換）/`KeyAssignmentHenkan`（変換） (DWORD) — 共通で
+//!   **0 = IME-オン・1 = IME-オフ・2 = IME-オン/オフ（トグル）**。3 だけ無変換/変換で意味が
+//!   分かれる（無変換=ひらがな/カタカナ切替・変換=再変換）。2026-09-26 実機（dragonflyg4、
+//!   設定アプリをUI Automationで自動操作）で確認（[ADR-199](../../../docs/adr/199-derive-key-roles-from-user-ime-keymap.md)
+//!   T12）。以前は「0 = 既定（かな切替/再変換）、1 だけ意味を持つ」という前提だったが、
+//!   実際には**0も明示的な割り当て（IME-オン）であり既定ではない**——この前提の逆転を踏まえ、
+//!   値0/3の実機的意味（予測・警告への影響）が確認できるまでは、予測側は明示値があれば
+//!   一律に安全側（予測しない）で扱う（`state/key_effect_predictor.rs::KeyEffectKeymap::
+//!   for_msime_native`、決定C R3）。
 //!
 //! レジストリは**読み取り専用**。書き換えによる自動解除は行わない
 //! （動作中 IME への反映タイミングが保証されず、ユーザー設定への侵襲になるため）。
@@ -96,22 +105,45 @@ pub struct MsImeKeyAssignment {
     pub enabled: bool,
     /// `KeyAssignmentMuhenkan` == 1 — 無変換キーに IME-オフが割り当てられている
     pub muhenkan_ime_off: bool,
-    /// `KeyAssignmentHenkan` == 1 — 変換キーに IME-オンが割り当てられている
-    pub henkan_ime_on: bool,
+    /// `KeyAssignmentHenkan` == 1 — 変換キーに IME-オフが割り当てられている（無変換と対称。
+    /// ADR-199 T12で確定するまでは「1 = IME-オン」という誤った前提だった）
+    pub henkan_ime_off: bool,
+    /// `KeyAssignmentMuhenkan` == 2 — 無変換キーに IME-オン/オフ（トグル）が割り当てられている。
+    /// 決定16でawaseが将来肩代わりする予定の値だが、能動化配線（ADR-199 T17 Phase 4）は
+    /// 入力中・変換中の実機確認待ちでまだ未実装（`state/key_effect_predictor.rs::
+    /// KeyEffectKeymap::msime_native_key_role`の無変換/変換分岐は常に`None`）。Phase 4が
+    /// 実装されるまでは値1と同じ「二重オーナー」リスクがあるため[`Self::conflict_warning`]の
+    /// 対象に含める。
+    pub muhenkan_is_toggle: bool,
+    /// `KeyAssignmentHenkan` == 2 — 変換キーに IME-オン/オフ（トグル）が割り当てられている。
+    /// `muhenkan_is_toggle`と同じ理由でPhase 4実装までは警告対象。
+    pub henkan_is_toggle: bool,
+    /// MS-IME本体の「以前のバージョンのMicrosoft IMEを使う」互換モード（ADR-197決定4）。
+    /// `Some(true)`のときは、この値がどれであっても実際には効かない（T12実機確認）ので、
+    /// [`Self::conflict_warning`]は警告そのものを抑制する（誤警告防止）。
+    pub compat_mode: Option<bool>,
 }
 
 impl MsImeKeyAssignment {
     /// awase と競合する割当てが有効なら、警告文（診断ログ/ポップアップ共用の本文）を返す。
     ///
-    /// マスタースイッチが無効、または両キーとも既定（かな切替/再変換）なら `None`。
+    /// マスタースイッチが無効、全キーとも既定（かな切替/再変換）、または互換モードON
+    /// （値が効かないので警告しても誤り、T12）なら `None`。値2（トグル）は将来（ADR-199 T17
+    /// Phase 4実装後）decision16でawaseが尊重・肩代わりする予定だが、**Phase 4が未実装の
+    /// あいだは値1と同じ「二重オーナー」リスクがあるため、値1と同様に警告対象に含める**
+    /// （Phase 4実装時にこの分岐を外すこと）。
     #[must_use]
     pub fn conflict_warning(&self) -> Option<String> {
-        if !self.enabled {
+        if !self.enabled || self.compat_mode == Some(true) {
             return None;
         }
         let assigned: Vec<&str> = [
             self.muhenkan_ime_off.then_some("無変換キー → IME-オフ"),
-            self.henkan_ime_on.then_some("変換キー → IME-オン"),
+            self.henkan_ime_off.then_some("変換キー → IME-オフ"),
+            self.muhenkan_is_toggle
+                .then_some("無変換キー → IME-オン/オフ（トグル、awase未対応）"),
+            self.henkan_is_toggle
+                .then_some("変換キー → IME-オン/オフ（トグル、awase未対応）"),
         ]
         .into_iter()
         .flatten()
@@ -158,8 +190,10 @@ mod windows_impl {
             app.reset_msime_key_assignment_warned();
             return;
         };
-        let packed =
-            u8::from(assignment.henkan_ime_on) | (u8::from(assignment.muhenkan_ime_off) << 1);
+        let packed = u8::from(assignment.henkan_ime_off)
+            | (u8::from(assignment.muhenkan_ime_off) << 1)
+            | (u8::from(assignment.henkan_is_toggle) << 2)
+            | (u8::from(assignment.muhenkan_is_toggle) << 3);
         if app.swap_msime_key_assignment_warned(packed) == Some(packed) {
             return; // 同じ内容で警告済み
         }
@@ -204,10 +238,15 @@ mod windows_impl {
     #[must_use]
     fn read_from_registry() -> MsImeKeyAssignment {
         use windows::core::w;
+        let muhenkan = read_dword(w!("KeyAssignmentMuhenkan"));
+        let henkan = read_dword(w!("KeyAssignmentHenkan"));
         MsImeKeyAssignment {
             enabled: read_dword(w!("IsKeyAssignmentEnabled")) == Some(1),
-            muhenkan_ime_off: read_dword(w!("KeyAssignmentMuhenkan")) == Some(1),
-            henkan_ime_on: read_dword(w!("KeyAssignmentHenkan")) == Some(1),
+            muhenkan_ime_off: muhenkan == Some(1),
+            henkan_ime_off: henkan == Some(1),
+            muhenkan_is_toggle: muhenkan == Some(2),
+            henkan_is_toggle: henkan == Some(2),
+            compat_mode: crate::msime_legacy_keymap::read_legacy_compat_mode_enabled(),
         }
     }
 
@@ -244,25 +283,46 @@ mod windows_impl {
     }
 
     /// ADR-191: Microsoft IME本体の打鍵時予測（`key_effect_predictor`）に使うキーマップを、キー割り当て
-    /// （`IsKeyAssignmentEnabled`/`KeyAssignmentHenkan`/`KeyAssignmentMuhenkan`）から作る。
-    /// 呼び出しは`KeymapCache`が版（[`native_assignment_stamp`]）の変化時だけに絞る。
+    /// （`IsKeyAssignmentEnabled`/`KeyAssignmentHenkan`/`KeyAssignmentMuhenkan`）と互換モード
+    /// （ADR-197決定4、ADR-199決定17・T13）から作る。呼び出しは`KeymapCache`が版
+    /// （[`native_assignment_stamp`]）の変化時だけに絞る。
     pub(crate) fn read_key_effect_keymap_native(
     ) -> crate::state::key_effect_predictor::KeyEffectKeymap {
+        read_key_effect_keymap_native_with_reassignment_bits().0
+    }
+
+    /// [`read_key_effect_keymap_native`]と、ADR-192状態依存キーモード警告
+    /// （`state_dependent_key_warning::detect_msime`）が使うdedup用ビット
+    /// （無変換/変換に明示値があるか）を、**同じレジストリ読み取り結果**から組み立てる。
+    /// `runtime/mod.rs::check_state_dependent_mode_keys`と予測・役割判定の両経路が別々に
+    /// レジストリを読んで解釈をずらさないための一本化（ADR-199 T17 opusレビュー M3）。
+    pub(crate) fn read_key_effect_keymap_native_with_reassignment_bits(
+    ) -> (crate::state::key_effect_predictor::KeyEffectKeymap, u8) {
         let raw = read_raw_key_assignment_dwords();
-        crate::state::key_effect_predictor::KeyEffectKeymap::for_msime_native(
+        let compat_mode = crate::msime_legacy_keymap::read_legacy_compat_mode_enabled();
+        let keymap = crate::state::key_effect_predictor::KeyEffectKeymap::for_msime_native(
             raw.is_key_assignment_enabled == Some(1),
             raw.key_assignment_henkan,
             raw.key_assignment_muhenkan,
-        )
+            compat_mode,
+        );
+        // 値0もADR-199 T12で明示的な割り当て(IME-オン)と確定した(既定ではない)ので、
+        // 「値があるか」だけを見る(`!= 0`ではない、M5)。
+        let bits = u8::from(raw.key_assignment_henkan.is_some())
+            | (u8::from(raw.key_assignment_muhenkan.is_some()) << 1);
+        (keymap, bits)
     }
 
-    /// `read_key_effect_keymap_native`の版。3つのDWORDの値（不在は`u32::MAX`で表す）を詰めた値
-    /// （レジストリの再読み取りだけで、ファイルは読まない）。
+    /// `read_key_effect_keymap_native`の版。3つのDWORDの値（不在は`u32::MAX`で表す）と
+    /// 互換モード（`Some(true)`=1・`Some(false)`=0・`None`=`u32::MAX`）を詰めた値
+    /// （レジストリの再読み取りだけで、ファイルは読まない）。互換モードは1つ目のタプル要素の
+    /// 上位32bit（`IsKeyAssignmentEnabled`は下位32bitしか使わない）に詰める。
     pub(crate) fn native_assignment_stamp() -> (u64, u64) {
         let raw = read_raw_key_assignment_dwords();
+        let compat_mode = crate::msime_legacy_keymap::read_legacy_compat_mode_enabled();
         let v = |x: Option<u32>| u64::from(x.unwrap_or(u32::MAX));
         (
-            v(raw.is_key_assignment_enabled),
+            v(raw.is_key_assignment_enabled) | (v(compat_mode.map(u32::from)) << 32),
             (v(raw.key_assignment_henkan) << 32) | v(raw.key_assignment_muhenkan),
         )
     }
@@ -340,8 +400,8 @@ mod windows_impl {
 #[cfg(windows)]
 pub(crate) use windows_impl::{
     check_and_warn, native_assignment_stamp, open_ime_settings, read_key_effect_keymap_native,
-    read_raw_key_assignment_dwords, read_toggle_assignment_from_registry, spawn_yes_dialog,
-    spawn_yes_open_ime_settings_dialog,
+    read_key_effect_keymap_native_with_reassignment_bits, read_raw_key_assignment_dwords,
+    read_toggle_assignment_from_registry, spawn_yes_dialog, spawn_yes_open_ime_settings_dialog,
 };
 
 #[cfg(test)]
@@ -349,10 +409,38 @@ mod tests {
     use super::{MsImeKeyAssignment, MsImeToggleAssignment};
 
     fn assign(enabled: bool, muhenkan: bool, henkan: bool) -> MsImeKeyAssignment {
+        assign_with_compat_mode(enabled, muhenkan, henkan, None)
+    }
+
+    fn assign_with_compat_mode(
+        enabled: bool,
+        muhenkan: bool,
+        henkan: bool,
+        compat_mode: Option<bool>,
+    ) -> MsImeKeyAssignment {
         MsImeKeyAssignment {
             enabled,
             muhenkan_ime_off: muhenkan,
-            henkan_ime_on: henkan,
+            henkan_ime_off: henkan,
+            muhenkan_is_toggle: false,
+            henkan_is_toggle: false,
+            compat_mode,
+        }
+    }
+
+    fn assign_toggle(
+        enabled: bool,
+        muhenkan_is_toggle: bool,
+        henkan_is_toggle: bool,
+        compat_mode: Option<bool>,
+    ) -> MsImeKeyAssignment {
+        MsImeKeyAssignment {
+            enabled,
+            muhenkan_ime_off: false,
+            henkan_ime_off: false,
+            muhenkan_is_toggle,
+            henkan_is_toggle,
+            compat_mode,
         }
     }
 
@@ -369,22 +457,62 @@ mod tests {
 
     #[test]
     fn warns_on_muhenkan_ime_off() {
+        // 「変換キー → IME-オフ」は「無変換キー → IME-オフ」の部分文字列なので、単純な
+        // contains の否定では区別できない。結合直後の行として一致するかで確認する。
         let w = assign(true, true, false).conflict_warning().unwrap();
-        assert!(w.contains("無変換キー → IME-オフ"));
-        assert!(!w.contains("変換キー → IME-オン"));
+        assert!(w.contains("競合しています:\n  無変換キー → IME-オフ\nawase は"));
     }
 
     #[test]
-    fn warns_on_henkan_ime_on() {
+    fn warns_on_henkan_ime_off() {
         let w = assign(true, false, true).conflict_warning().unwrap();
-        assert!(w.contains("変換キー → IME-オン"));
-        assert!(!w.contains("無変換キー → IME-オフ"));
+        assert!(w.contains("競合しています:\n  変換キー → IME-オフ\nawase は"));
     }
 
     #[test]
     fn warns_on_both_assignments() {
         let w = assign(true, true, true).conflict_warning().unwrap();
-        assert!(w.contains("無変換キー → IME-オフ、変換キー → IME-オン"));
+        assert!(w.contains("無変換キー → IME-オフ、変換キー → IME-オフ"));
+    }
+
+    /// ADR-199 T17 m1: 互換モードON（値が効かない、T12実機確認）では値1の警告も誤りになるので出さない。
+    #[test]
+    fn no_warning_when_compat_mode_on_even_with_value_1() {
+        assert_eq!(
+            assign_with_compat_mode(true, true, true, Some(true)).conflict_warning(),
+            None
+        );
+    }
+
+    #[test]
+    fn warns_when_compat_mode_off_or_unknown() {
+        assert!(assign_with_compat_mode(true, true, false, Some(false))
+            .conflict_warning()
+            .is_some());
+        assert!(assign_with_compat_mode(true, true, false, None)
+            .conflict_warning()
+            .is_some());
+    }
+
+    /// opusレビュー指摘: 値2（トグル）を能動的に肩代わりする配線（決定16のMS-IME本体版）は
+    /// ADR-199 T17 Phase 4としてまだ未実装。それまでは値1と同じ「二重オーナー」リスクが
+    /// あるため、値2も警告対象に含めること（`check_and_warn`のダイアログから「トグルを
+    /// 選んでください」という誤った回避策の案内を消したことと対になる）。
+    #[test]
+    fn warns_on_toggle_assignment_until_phase4_implemented() {
+        let w = assign_toggle(true, true, false, None)
+            .conflict_warning()
+            .unwrap();
+        assert!(w.contains("無変換キー → IME-オン/オフ（トグル、awase未対応）"));
+    }
+
+    #[test]
+    fn no_warning_for_toggle_when_compat_mode_on() {
+        // 互換モードONでは値そのものが効かない(T12)ので、トグル(値2)であっても警告しない。
+        assert_eq!(
+            assign_toggle(true, true, true, Some(true)).conflict_warning(),
+            None
+        );
     }
 
     // ── ADR-092 決定D Step4a: MsImeToggleAssignment::to_combos ──
