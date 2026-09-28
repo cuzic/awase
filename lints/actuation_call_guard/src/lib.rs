@@ -88,6 +88,10 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
             "send_unicode_cold_warmup_keys",
             "send_eager_warmup_vk_pair",
             "send_all_modifier_key_ups",
+            // issue #165 自己修復（hook watchdog）のカナリア送信（opus round2 B1(i)）。
+            // 2026-09-28追記、複雑性予算制（.claude/rules/complexity-budget.md）は
+            // 発効条件未達のため1-in-1-out対象外。
+            "send_hook_watchdog_canary",
         ],
     ),
     // send_ime_control（imm.rs）: ADR-159段階0のもう一方の送信側対象。

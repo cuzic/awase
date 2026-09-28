@@ -378,19 +378,31 @@ pub struct Runtime {
     /// `[diagnostics] hook_self_heal`（既定 true）。issue #165 自己修復の
     /// ビルド無しキルスイッチ。`state::hook_watchdog::decide` へそのまま渡す。
     hook_self_heal_enabled: bool,
-    /// 現在の hook_starved episode（検知してから hook が実際に生き返るまでの
-    /// 連続区間）で既に自己修復を試行したか。`message_handlers.rs`が
-    /// stale_ms<=5000（＝生存確認）に戻った tick でこれを `false` にリセットする
-    /// （episode境界、`state::hook_watchdog` F1a）。
-    hook_watchdog_episode_attempted: bool,
-    /// 自己修復（再インストール）を試行した tick_ms の履歴（レート上限判定用、
-    /// `state::hook_watchdog::THRASH_WINDOW_MS`より古いエントリは
-    /// `reinstall_keyboard_hook_for_watchdog`が随時刈り取る）。
+    /// カナリア確認済みの本物のstarvation再インストールを、現在の
+    /// hook_starved episode（`hook::hook_alive_tick_ms()`が自然回復するまでの
+    /// 連続区間）で何回試みたか。`note_hook_watchdog_recovered`が`0`に
+    /// リセットする。`state::hook_watchdog::backoff_delay_ms`の入力
+    /// （opus round2 B1(ii)、旧`hook_watchdog_episode_attempted: bool`を置換）。
+    hook_watchdog_confirmed_attempt_count: u32,
+    /// 次に自己修復（カナリア送信）を試みてよい tick_ms。`None`なら即座に
+    /// 試みてよい。カナリア確認済みの再インストール成功/失敗どちらでも
+    /// `reinstall_keyboard_hook_for_watchdog`が更新する
+    /// （`state::hook_watchdog::backoff_delay_ms`、opus round2 B1(ii)）。
+    hook_watchdog_next_retry_at_ms: Option<u64>,
+    /// 自己修復（カナリア確認済みの再インストール）を試行した tick_ms の履歴
+    /// （レート上限判定用、`state::hook_watchdog::THRASH_WINDOW_MS`より古い
+    /// エントリは`reinstall_keyboard_hook_for_watchdog`が随時刈り取る）。
     hook_watchdog_reinstall_history_ms: Vec<u64>,
     /// `WM_WTSSESSION_CHANGE`（`WTS_SESSION_LOCK`/`WTS_SESSION_UNLOCK`）から
     /// 更新する、現在セッションがロック中かの永続フラグ。issue #165 自己修復の
     /// F2ガード（ロック中は再インストールしても意味が無い）に使う。
     session_locked: bool,
+    /// issue #165 自己修復のカナリア（`hook::send_hook_watchdog_canary`）を
+    /// 送信した tick_ms（opus round2 B1(i)）。`Some`の間は確認待ち
+    /// （`TIMER_HOOK_WATCHDOG_CANARY_CHECK`発火まで）で、多重送信を防ぐ
+    /// ガードにも使う。確認タイマー発火時に`confirm_hook_watchdog_canary`が
+    /// `take()`してクリアする。
+    hook_watchdog_canary_sent_at_ms: Option<u64>,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -1408,9 +1420,11 @@ impl Runtime {
             drift_giveup_started_at: None,
             hook_guard: None,
             hook_self_heal_enabled: true,
-            hook_watchdog_episode_attempted: false,
+            hook_watchdog_confirmed_attempt_count: 0,
+            hook_watchdog_next_retry_at_ms: None,
             hook_watchdog_reinstall_history_ms: Vec::new(),
             session_locked: false,
+            hook_watchdog_canary_sent_at_ms: None,
         }
     }
 
@@ -1737,22 +1751,24 @@ impl Runtime {
 
     /// hook watchdog が stale_ms<=5000（＝フック生存を確認できた）へ戻った tick
     /// （`message_handlers.rs`の`TIMER_HOOK_WATCHDOG`分岐、else側）で呼ぶ。
-    /// 次に hook_starved を検知したときは新しい episode として扱われ、再度1回
-    /// だけ自己修復を試みられるようになる（`state::hook_watchdog` F1a のラッチ解除）。
+    /// 次に hook_starved を検知したときは新しい episode として扱われ、
+    /// バックオフ/thrash履歴の起点がリセットされる（opus round2 B1(ii)、
+    /// 旧`hook_watchdog_episode_attempted`ラッチの後継）。
     pub(crate) const fn note_hook_watchdog_recovered(&mut self) {
-        self.hook_watchdog_episode_attempted = false;
+        self.hook_watchdog_confirmed_attempt_count = 0;
+        self.hook_watchdog_next_retry_at_ms = None;
     }
 
-    /// issue #165（hook_starved）の自己修復トリガー判定（2026-09-28追記、
-    /// opus-adversarial-consult round1 指摘対応版）。
+    /// issue #165（hook_starved）の自己修復トリガー判定（opus-adversarial-consult
+    /// round1・round2 指摘対応版）。
     ///
     /// `message_handlers.rs`のhook_starved分岐から、`stale_ms>5000 &&
     /// os_idle_ms<5000`成立時に呼ぶ。環境情報（昇格/セッションロック/
-    /// secure desktop/relayソフト/エピソードラッチ/thrash上限）を集めて
-    /// `state::hook_watchdog::decide`（純粋関数）へ渡し、`Reinstall`が返った
-    /// 場合のみ実際に`reinstall_keyboard_hook_for_watchdog`を実行する。
-    /// それ以外のバリアントは全て「何もしない」を意味し、呼び出し元が
-    /// スキップ理由のログに使う。
+    /// secure desktop/relayソフト/フック有無/バックオフ/thrash上限）を集めて
+    /// `state::hook_watchdog::decide`（純粋関数）へ渡し、`SendCanary`が返った
+    /// 場合のみ`send_hook_watchdog_canary`を呼ぶ（round2 B1(i)、即座の
+    /// 再インストールではなくカナリア確認を経る）。それ以外のバリアントは
+    /// 全て「何もしない」を意味し、呼び出し元がスキップ理由のログに使う。
     pub(crate) fn evaluate_hook_watchdog(
         &mut self,
         now_ms: u64,
@@ -1778,34 +1794,97 @@ impl Runtime {
             self.session_locked,
             is_secure_desktop,
             is_relay_or_remap_foreground,
-            self.hook_watchdog_episode_attempted,
+            self.hook_guard.is_some(),
+            now_ms,
+            self.hook_watchdog_next_retry_at_ms,
             reinstalls_in_window,
             crate::state::hook_watchdog::THRASH_LIMIT,
         );
-        if action == crate::state::hook_watchdog::HookWatchdogAction::Reinstall {
-            self.reinstall_keyboard_hook_for_watchdog(now_ms);
+        if action == crate::state::hook_watchdog::HookWatchdogAction::SendCanary {
+            self.send_hook_watchdog_canary(now_ms);
         }
         action
     }
 
-    /// issue #165（hook_starved）の自己修復本体（2026-09-28追記）。
+    /// issue #165 自己修復 round2 B1(i): カナリア（自己注入 Ctrl down+up）を
+    /// 送信し、`state::hook_watchdog::CANARY_CONFIRM_MS`後に
+    /// `confirm_hook_watchdog_canary`で結果を判定できるよう一発タイマーを
+    /// 起動する。
     ///
-    /// `evaluate_hook_watchdog`が`Reinstall`と判定した場合のみ呼ばれる。
-    /// `WH_KEYBOARD_LL`はLIFO（最後に登録したフックが最初に呼ばれる）で配送
-    /// されるため、旧フックを`UnhookWindowsHookEx`してから新しく
-    /// `SetWindowsHookExW`し直すと、このタイミング以降にチェーンへ割り込んで
-    /// いた他プロセスのフックより手前（先頭）に戻れる。失われた打鍵は戻せない
-    /// が、同じ停止が続くのを防ぐ。
+    /// 既に確認待ち（前回のカナリアがまだ`TIMER_HOOK_WATCHDOG_CANARY_CHECK`を
+    /// 待っている）なら二重送信・二重タイマーを避けるため何もしない。3秒周期の
+    /// watchdog tickに対し確認は`CANARY_CONFIRM_MS`（既定200ms）で完了する
+    /// はずなので、通常はここに到達しない防御的ガード。
+    fn send_hook_watchdog_canary(&mut self, now_ms: u64) {
+        if self.hook_watchdog_canary_sent_at_ms.is_some() {
+            tracing::debug!("[hook-watchdog] カナリア確認待ち中のため送信をスキップ");
+            return;
+        }
+        self.hook_watchdog_canary_sent_at_ms = Some(now_ms);
+        crate::hook::send_hook_watchdog_canary();
+        self.platform.timer.set(
+            crate::TIMER_HOOK_WATCHDOG_CANARY_CHECK,
+            std::time::Duration::from_millis(crate::state::hook_watchdog::CANARY_CONFIRM_MS),
+        );
+    }
+
+    /// issue #165 自己修復 round2 B1(i): `TIMER_HOOK_WATCHDOG_CANARY_CHECK`
+    /// 発火時に`message_handlers.rs`から呼ぶ。カナリア送信後に
+    /// `hook::hook_alive_tick_ms()`が進んでいなければ真の hook_starved と
+    /// 確定し、実際の再インストールへ進む。進んでいれば「hookは生きている
+    /// がユーザーが実キーを打っていないだけ」の偽陽性と分かり、
+    /// バックオフ/thrash履歴を一切消費せずスキップする。
+    pub(crate) fn confirm_hook_watchdog_canary(&mut self, now_ms: u64) {
+        let Some(canary_sent_at_ms) = self.hook_watchdog_canary_sent_at_ms.take() else {
+            // 通常は起こらない（確認タイマーはカナリア送信時にしか起動しない）。
+            return;
+        };
+        let hook_alive_tick_ms_after = crate::hook::hook_alive_tick_ms();
+        if crate::state::hook_watchdog::canary_confirmed_starved(
+            hook_alive_tick_ms_after,
+            canary_sent_at_ms,
+        ) {
+            tracing::warn!(
+                "[hook-watchdog] カナリア({}ms前送信)が届かず確認 → 真の \
+                 hook_starved と判定、再インストールします",
+                now_ms.saturating_sub(canary_sent_at_ms)
+            );
+            self.reinstall_keyboard_hook_for_watchdog(now_ms);
+        } else {
+            tracing::debug!(
+                "[hook-watchdog] カナリアが届いた（フックは生存中）→ \
+                 誤検知として再インストールをスキップ"
+            );
+        }
+    }
+
+    /// issue #165（hook_starved）の自己修復本体。
     ///
-    /// `install_hook()`が失敗した場合はフック無しの状態になりうる（次回の
-    /// watchdog tickで再試行される）。ここでpanicはしない——フック関連の
-    /// 失敗で常駐アプリを丸ごと落とすのは実害が大きすぎる。
+    /// `confirm_hook_watchdog_canary`がカナリア不着＝本物のstarvationと
+    /// 確定した場合のみ呼ばれる（round2 B1: 誤検知ではepisodeラッチ/
+    /// thrash履歴を一切消費しない設計）。`WH_KEYBOARD_LL`はLIFO（最後に
+    /// 登録したフックが最初に呼ばれる）で配送されるため、旧フックを
+    /// `UnhookWindowsHookEx`してから新しく`SetWindowsHookExW`し直すと、
+    /// このタイミング以降にチェーンへ割り込んでいた他プロセスのフックより
+    /// 手前（先頭）に戻れる。失われた打鍵は戻せないが、同じ停止が続くのを
+    /// 防ぐ。
+    ///
+    /// `install_hook()`が失敗した場合はフック無しの状態になりうる。この場合
+    /// `state::hook_watchdog::decide`の`hook_guard_present=false`分岐が
+    /// バックオフ/thrash上限をバイパスするため、次のwatchdog tick（3秒後）で
+    /// 即座に再試行される（opus round2 M5: 旧実装はエピソードラッチが
+    /// 立ったまま二度とフックが来ないため永久にリトライされなかった）。
+    /// ここでpanicはしない——フック関連の失敗で常駐アプリを丸ごと落とすのは
+    /// 実害が大きすぎる。
     fn reinstall_keyboard_hook_for_watchdog(&mut self, now_ms: u64) {
-        // エピソードラッチ/thrash履歴は「試行した」事実そのものを記録する
-        // （install_hook()の成否に関わらず）。失敗時に無条件でリトライを
-        // 許すと、install_hook()自体が失敗し続ける環境で毎tick再試行して
-        // ログを埋めるだけになるため。
-        self.hook_watchdog_episode_attempted = true;
+        // バックオフ/thrash履歴は「カナリア確認済みで実際に試行した」事実
+        // そのものを記録する（install_hook()の成否に関わらず）。
+        let backoff_ms = crate::state::hook_watchdog::backoff_delay_ms(
+            self.hook_watchdog_confirmed_attempt_count,
+        );
+        self.hook_watchdog_confirmed_attempt_count =
+            self.hook_watchdog_confirmed_attempt_count.saturating_add(1);
+        self.hook_watchdog_next_retry_at_ms = Some(now_ms.saturating_add(backoff_ms));
         self.hook_watchdog_reinstall_history_ms.push(now_ms);
         // 履歴は thrash 判定用の直近分だけで十分。THRASH_WINDOW_MS より古い
         // エントリを刈り取り、無期限に肥大化しないようにする。
@@ -1819,16 +1898,17 @@ impl Runtime {
         match crate::hook::install_hook() {
             Ok(guard) => {
                 self.hook_guard = Some(guard);
-                // issue #165 自己修復 F4: 握りつぶされていた間のKeyUp消失で
-                // 物理キーラッチ（Ctrl等）がスタックしたまま残る（BUG-78/BUG-48
-                // と同型）。今回の停止はチェーン全体が握りつぶされていた
-                // （特定アプリへの出入りではなく、全画面・全キー影響しうる）
-                // ため、`clear_hook_latches_for_app_disable`（Ctrl/Shiftのみ
-                // 対象の狭いクリア）ではなく、`WTS_SESSION_UNLOCK`と同じ
-                // 「全物理キーを解放状態とみなす」広いリセットを使う方が
-                // 意味的に近い（両者とも「フックがしばらく何も見ていなかった」
-                // という同型の前提に立つ）。
-                crate::hook::reset_physical_key_state();
+                // issue #165 自己修復 F4（round2 M2で根拠づけを訂正）: この
+                // 関数はカナリアで本物のstarvationと確認できたときにしか
+                // 呼ばれないため（誤検知では呼ばれない）、握りつぶされていた
+                // 間のKeyUp消失で物理キーラッチ（Ctrl/Shift）がスタックした
+                // まま残る（BUG-78/BUG-48と同型）前提が実際に成り立つ。
+                // `reset_physical_key_state()`（全256 VK無条件クリア）は
+                // 誤検知時にも呼ばれていた旧実装では「押されたままのCtrlが
+                // stateだけfalseになりCtrl+Cがローマ字文字と合成される」
+                // 新しい事故を生んでいたため、Ctrl/Shiftのみを対象にする
+                // narrow版に切り替えた。
+                crate::hook::clear_hook_latches_for_watchdog_reinstall();
                 self.platform_state.keymap.keymap_latch.release_all();
                 tracing::warn!(
                     "[hook-watchdog] キーボードフックを再インストールしました（issue #165 自己修復）"

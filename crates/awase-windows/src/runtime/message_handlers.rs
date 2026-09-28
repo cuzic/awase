@@ -24,8 +24,9 @@ use crate::tray;
 use crate::vk::VkCodeExt;
 use crate::win32::post_to_main_thread;
 use crate::{
-    with_app, with_app_ref, Runtime, TIMER_GJI_LONG_IDLE, TIMER_HOOK_WATCHDOG, TIMER_IME_REFRESH,
-    TIMER_OUTPUT_GUARD, TIMER_POWER_RESUME, TIMER_TSF_GATE, TIMER_TSF_PROBE, WM_EXECUTE_EFFECTS,
+    with_app, with_app_ref, Runtime, TIMER_GJI_LONG_IDLE, TIMER_HOOK_WATCHDOG,
+    TIMER_HOOK_WATCHDOG_CANARY_CHECK, TIMER_IME_REFRESH, TIMER_OUTPUT_GUARD, TIMER_POWER_RESUME,
+    TIMER_TSF_GATE, TIMER_TSF_PROBE, WM_EXECUTE_EFFECTS,
 };
 use awase::platform::ImeOpenOutcome;
 use awase::types::{ContextChange, VkCode};
@@ -603,15 +604,19 @@ pub(crate) unsafe fn handle_wm_timer(
                                 sample_watchdog_kana_lock_edge(app, stale_ms, os_idle_ms);
                             }
                             // issue #165 自己修復（PR #347参照、opus-adversarial-consult
-                            // round1対応でF1〜F3ガード付きに再設計）。旧フックを解除して
-                            // 再インストールし、フックチェーンの先頭（LIFOで最後に登録
-                            // したものが最初に呼ばれる）へ戻る。失った打鍵は戻せないが、
-                            // 同じ停止が続くのを防ぐ。昇格ウィンドウ・ロック中・secure
-                            // desktop中・relayソフトのフォアグラウンド中、同一episode
-                            // での2回目以降、thrash上限超過はスキップする
-                            // （`state::hook_watchdog::decide`参照）。
+                            // round1・round2対応）。まずカナリア（自己注入の無害な
+                            // キー）を送り、`CANARY_CONFIRM_MS`後に自分のフックへ
+                            // 届いたかで「本物のhook_starved」か「マウスのみの
+                            // 誤検知」かを見分けてから初めて再インストールする
+                            // （`confirm_hook_watchdog_canary`）。再インストールは
+                            // 旧フックを解除して新規installし直し、フックチェーンの
+                            // 先頭（LIFOで最後に登録したものが最初に呼ばれる）へ
+                            // 戻る。失った打鍵は戻せないが、同じ停止が続くのを防ぐ。
+                            // 昇格ウィンドウ・ロック中・secure desktop中・relayソフト
+                            // のフォアグラウンド中、バックオフ待機中、thrash上限
+                            // 超過はスキップする（`state::hook_watchdog::decide`参照）。
                             let action = app.evaluate_hook_watchdog(now);
-                            if action != crate::state::hook_watchdog::HookWatchdogAction::Reinstall
+                            if action != crate::state::hook_watchdog::HookWatchdogAction::SendCanary
                             {
                                 tracing::debug!("[hook-watchdog] 自己修復をスキップ: {action:?}");
                             }
@@ -628,11 +633,18 @@ pub(crate) unsafe fn handle_wm_timer(
                 tracing::trace!("Hook watchdog: last activity {stale_ms}ms ago");
                 // hook が生存確認できた＝現在の hook_starved episode は終わった
                 // （episode境界）。次に検知したときは新しい episode として
-                // 再度1回だけ自己修復を試みられるようにラッチを解除する。
+                // バックオフ/thrash履歴の起点をリセットする（round2 B1(ii)）。
                 app.note_hook_watchdog_recovered();
             }
             crate::hook_channel::recover_stuck_wake_if_needed();
             recover_pending_drain_request();
+        }
+        Some(id) if id == TIMER_HOOK_WATCHDOG_CANARY_CHECK => {
+            // 一発タイマー（issue #165自己修復 round2 B1(i)）。`TIMER_TSF_GATE`/
+            // `TIMER_POWER_RESUME`と同じ流儀で冒頭に自ら`kill`する。
+            app.platform.timer.kill(TIMER_HOOK_WATCHDOG_CANARY_CHECK);
+            let now = hook::current_tick_ms();
+            app.confirm_hook_watchdog_canary(now);
         }
         Some(timer_id) => {
             tracing::debug!("WM_TIMER fired: logical_id={timer_id}");

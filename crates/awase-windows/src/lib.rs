@@ -291,6 +291,10 @@ pub const TIMER_IME_OFF_RESCUE: usize = 107;
 pub const TIMER_GJI_LONG_IDLE: usize = 108;
 /// フォーカス復帰後 resync のハード期限タイマー ID（report `01M0VGJ2M5KQHD1D9V7HAMBHNT`）
 pub const TIMER_FOCUS_RESYNC: usize = 109;
+/// hook watchdog カナリア確認タイマー ID（issue #165 自己修復 round2 B1(i)）。
+/// 一発タイマーで、ハンドラ冒頭で自ら `kill` する（`TIMER_TSF_GATE`/
+/// `TIMER_POWER_RESUME`と同じ流儀）。
+pub const TIMER_HOOK_WATCHDOG_CANARY_CHECK: usize = 110;
 
 // ── Windows メッセージ定数 ──────────────────────────────────────────────────────
 

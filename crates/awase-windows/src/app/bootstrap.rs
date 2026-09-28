@@ -1296,6 +1296,15 @@ pub(super) fn run_all() -> Result<()> {
     let _focus_hook_guard = install_focus_hook().map_err(|e| tracing::warn!("{e}")).ok();
     let _obs_hook_guards = crate::tsf::observer::install_observation_hooks();
 
+    // issue #165 自己修復 opus round2 B1(iii): `hook_alive_tick_ms`を
+    // 起動時点で`current_tick_ms()`に初期化する。初期値0のままだと起動直後
+    // 最初のwatchdog tick（3秒後）でstale_msが稼働時間全体になり、
+    // ログオン直後のマウス操作（os_idle_ms<5000）と重なってほぼ毎回
+    // カナリアが送られてしまう（誤検知そのものは害が無いが無駄な往復になる）。
+    // **再インストール時にはこの初期化を呼ばないこと**——呼ぶとバックオフが
+    // 無意味になる（`state/hook_watchdog.rs`のモジュールdoc参照）。
+    hook::tick_hook_alive();
+
     // issue #165（hook_starved）自己修復用: `Runtime`（`with_app`経由、プロセス
     // 終了まで生存）へ移す。ローカル変数のままだと watchdog タイマーハンドラ
     // （`TIMER_HOOK_WATCHDOG`）から差し替えられない。
