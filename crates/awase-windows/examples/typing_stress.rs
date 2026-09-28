@@ -26,7 +26,10 @@
 //! `--activate-gji`(GJI/MS-IME のプロファイルを有効化。CI 用) / `--msime`(有効化する IME を Microsoft IME に) /
 //! `--no-awase`(awase を待たない。`--mode=raw` の対照実験用) / `--log=PATH` /
 //! `--cold`(`ime_ready()` の確認ウォームアップ〈「か」を打って確定〉を省略し、最初の本試行を
-//! 窓に対する最初の実際の確定入力にする。起動直後特有の不具合の再現用)。
+//! 窓に対する最初の実際の確定入力にする。起動直後特有の不具合の再現用) /
+//! `--pause-after=N --pause-ms=MS`(N文字目の直後にMSだけ一映停止してから再開する。連続打鍵では
+//! 作れない「入力の間」を意図的に挿む。bugreport フォームの `PREVIEW_DEBOUNCE` のような
+//! 「止まってから発火する重い処理」との衝突を狙う再現用)。
 //! `--mode=raw` は awase なしで、期待文字列と同じ内容をローマ字の生キーで同じ速度で注入する対照実験
 //! (入力先+IME 単体がその速度を受けられるかを、awase と切り離して見る)。
 //!
@@ -815,6 +818,23 @@ fn raw_events(seq: &[Cell], iv_us: u64) -> Vec<Ev> {
     evs
 }
 
+/// 打鍵列の `after_chars` 文字目の直後に `pause_us` だけ間を空ける(その後は詰めて続ける)。
+/// `nicola_events`/`raw_events` はどちらも文字 `i` の各イベントを `t_us = i*iv_us + offset`
+/// (`offset < iv_us`)で生成しているため、`t_us / iv_us` から文字境界 `i` を逆算できる。
+/// `bug_report.rs::PREVIEW_DEBOUNCE`(300ms、最後の変更から一定時間止まったらJSON再生成)の
+/// ような「一旦止まってから再開」で発火する重い処理との衝突を、連続打鍵では作れないため
+/// 意図的に狙う(実際のユーザーは文章を考えながら間を置いて打つ)。
+fn insert_mid_pause(evs: &mut [Ev], iv_us: u64, after_chars: usize, pause_us: u64) {
+    if pause_us == 0 || iv_us == 0 {
+        return;
+    }
+    for e in evs.iter_mut() {
+        if (e.t_us / iv_us) as usize >= after_chars {
+            e.t_us += pause_us;
+        }
+    }
+}
+
 // ---------------------------------------------------------------- シナリオ
 
 /// awase を起動する CI では、awase.log が現れてからさらに待つ(起動直後の TIP 検出・belief 同期のため)。
@@ -1018,11 +1038,17 @@ fn worker(form: Form) {
                 .wrapping_add(kind.len() as u64);
             let seq = gen_sequence(kind, len, trial_seed, &cells);
             let expect = expect_string(&seq);
-            let evs = if raw {
+            let mut evs = if raw {
                 raw_events(&seq, iv_us)
             } else {
                 nicola_events(&seq, iv_us)
             };
+            // --pause-after=N --pause-ms=MS: N 文字目の直後に MS だけ一映停止してから打鍵を再開する。
+            let pause_after: usize = arg_value("--pause-after=").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let pause_ms: u64 = arg_value("--pause-ms=").and_then(|v| v.parse().ok()).unwrap_or(0);
+            if pause_after > 0 && pause_ms > 0 {
+                insert_mid_pause(&mut evs, iv_us, pause_after, pause_ms * 1000);
+            }
             // 実利用に近い条件: アイドル(--idle=MS)→別ウィンドウへ切替→Chrome へ戻す(--switch-focus)→すぐ打鍵(--start-delay=MS)。
             let idle_ms: u64 = arg_value("--idle=").and_then(|v| v.parse().ok()).unwrap_or(0);
             if idle_ms > 0 {
