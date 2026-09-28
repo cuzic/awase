@@ -110,6 +110,35 @@ footer p{margin:0.3rem 0}
 <div class="container">
 <div class="cl-content">
 <h2>[Unreleased]</h2>
+<h2>[1.21.1] - 2026-09-27</h2>
+<h3>Changed</h3>
+<ul>
+<li><strong>The in-app update check no longer risks announcing an unrelated in-development version as the "latest version"</strong> (internal improvement)</li>
+</ul>
+<h3>Fixed</h3>
+<ul>
+<li><strong>Fixed the engine-toggle hotkey created in the settings window (e.g. Ctrl+Shift+F12) sometimes failing to work after being saved</strong><ul>
+<li>Cause: the `VK_F12`-style spelling written out by the settings window was prefixed a second time into `VK_VK_F12`, which failed hotkey registration</li>
+<li>Fix: the spelling is now normalized before registration</li>
+</ul>
+</li>
+<li><strong>Fixed characters occasionally being dropped during very fast continuous typing</strong><ul>
+<li>With Google Japanese Input, characters could be dropped during very fast continuous keystrokes</li>
+<li>Cause: an internal deferred-key queue's capacity was too small and overflowed during fast typing</li>
+<li>Fix: raised the capacity</li>
+</ul>
+</li>
+<li><strong>Fixed the first IME mode-key action sometimes not taking effect when awase starts while an application already has focus</strong><ul>
+<li>Cause: until the focused application changed at least once after startup, awase's internal "which app has focus" tracking stayed unset, so explicit IME-action intent was never recorded</li>
+<li>Fix: the initial focus at startup is now recorded explicitly too</li>
+</ul>
+</li>
+<li><strong>Fixed the tray menu's "Restart" occasionally failing</strong><ul>
+<li>Cause: inheriting standard I/O handles into the child process could fail in long-running environments</li>
+<li>Fix: standard I/O is now explicitly disabled for the restarted process</li>
+</ul>
+</li>
+</ul>
 <h2>[1.21.0] - 2026-09-21</h2>
 <h3>Added</h3>
 <ul>
