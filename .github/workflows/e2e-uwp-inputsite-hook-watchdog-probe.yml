@@ -1,0 +1,85 @@
+name: e2e-uwp-inputsite-hook-watchdog-probe
+
+# issue #165(`Hook watchdog: ... フックにイベントが届いていない疑い`)を、実アプリ
+# 無しでCI(windows-latest)上で再現できるか切り分ける実験用ワークフロー。
+# `docs/bug-reports-triage.md` の report `01M3JTVDPMW35MF81DGRKW10MQ` 参照。
+#
+# 実機(clipwire経由)での検証は環境要因(不明なファイル書き込み/プロセス起動の
+# 不安定さ、rustupの自己更新でも同種のAccess Deniedが発生)で断念し、こちらの
+# クリーンなCI環境で切り分ける。本ジョブは調査目的であり、シグネチャが
+# 見つからなくても失敗にはしない(再現しないこと自体も有益な情報)。
+on:
+  push:
+    branches: [feat/e2e-uwp-inputsite-hook-watchdog]
+    paths:
+      - 'crates/e2e-uwp-inputsite-probe/**'
+      - 'crates/awase-windows/src/runtime/message_handlers.rs'
+      - '.github/workflows/e2e-uwp-inputsite-hook-watchdog-probe.yml'
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: e2e-uwp-inputsite-hook-watchdog-probe
+
+      - name: Build awase.exe
+        run: cargo build -p awase-windows --bin awase
+
+      - name: Build probe
+        run: cargo build -p e2e-uwp-inputsite-probe
+
+      - name: Launch awase.exe with test injection
+        shell: pwsh
+        run: |
+          $env:AWASE_TEST_INJECTION = '1'
+          $env:RUST_LOG = 'debug'
+          Start-Process -FilePath target\debug\awase.exe -RedirectStandardError awase-probe.log
+          Start-Sleep -Seconds 2
+
+      # 不具合報告のタイムライン(無関係アプリ間往復 → UWP系入力面へフォーカス)を
+      # 模して、フォーカス往復を繰り返しながらキーを注入する。詳細は
+      # `crates/e2e-uwp-inputsite-probe/src/main.rs` のモジュールdoc参照。
+      - name: Run probe
+        run: target\debug\uwp_inputsite_probe.exe --iterations=80 --dwell-ms=120
+
+      - name: Stop awase.exe and check for the hook_starved signature
+        if: always()
+        shell: pwsh
+        run: |
+          Start-Sleep -Seconds 1
+          Stop-Process -Name awase -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 1
+          if (Test-Path awase-probe.log) {
+            $lineCount = (Get-Content awase-probe.log).Count
+            Write-Host "awase-probe.log: $lineCount lines"
+            $hits = Select-String -Path awase-probe.log -Pattern 'Hook watchdog'
+            if ($hits) {
+              Write-Host "=== Hook watchdog lines ==="
+              $hits | ForEach-Object { Write-Host $_.Line }
+            } else {
+              Write-Host "no 'Hook watchdog' lines at all in this run"
+            }
+            $starved = $hits | Where-Object { $_.Line -match 'issue #165' }
+            if ($starved) {
+              Write-Host "::notice::hook_starved signature reproduced ($($starved.Count) hit(s)) — issue #165"
+            } else {
+              Write-Host "::notice::hook_starved signature NOT observed this run (inconclusive, not a failure)"
+            }
+          } else {
+            Write-Host "::warning::awase-probe.log was never created"
+          }
+
+      - name: Upload awase log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: awase-probe-log
+          path: awase-probe.log
+          retention-days: 14
+          if-no-files-found: warn
