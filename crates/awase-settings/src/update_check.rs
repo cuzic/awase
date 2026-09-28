@@ -170,6 +170,16 @@ fn winhttp_get_latest_release() -> Result<String, String> {
         }
     }
 
+    // `current_version` を付けて送る（v1/v2ライン別の「latest」判定、2026-09-27）:
+    // report-workerはこれが無い/SemVerとして読めない場合は旧来の全体最新版を
+    // 返す（後方互換）ため、ここを省略しても壊れはしないが、v1/v2どちらの
+    // ラインのユーザーにも「自分のラインの」最新版だけを通知するにはこれが必須。
+    let path = format!(
+        "/v1/latest-release?current_version={}",
+        env!("CARGO_PKG_VERSION")
+    );
+    let path_wide = awase_windows::win32::to_wide(&path);
+
     unsafe {
         let session = Handle::new(
             WinHttpOpen(
@@ -191,7 +201,7 @@ fn winhttp_get_latest_release() -> Result<String, String> {
             WinHttpOpenRequest(
                 connect.0,
                 w!("GET"),
-                w!("/v1/latest-release"),
+                PCWSTR(path_wide.as_ptr()),
                 PCWSTR::null(),
                 PCWSTR::null(),
                 std::ptr::null(),
