@@ -15,13 +15,22 @@
 //! CI で安定して動かせない Chrome・Zoom・UWP は対象外(フォーカス/起動が不確定でストレスと切り分けられない)。
 //!
 //! ## フラグ
-//! `--form=edit|multi|rich|tsf` / `--mode=nicola|raw` / `--interval=MS`(1文字あたりの間隔。既定20) /
-//! `--trials=N`(種別ごとの試行数。既定4) / `--len=N`(1試行の文字数。既定40) / `--seed=S` /
+//! `--form=edit|multi|rich|tsf` / `--mode=nicola|raw|drift` / `--interval=MS`(1文字あたりの間隔。既定20) /
+//! `--trials=N`(種別ごとの試行数。既定4。`--mode=drift` では試行回数として使う) / `--len=N`(1試行の文字数。既定40) / `--seed=S` /
 //! `--kinds=single,thumb,mixed` / `--layout=PATH`(.yab。既定 layout/nicola_keytop.yab) /
 //! `--activate-gji`(GJI/MS-IME のプロファイルを有効化。CI 用) / `--msime`(有効化する IME を Microsoft IME に) /
 //! `--no-awase`(awase を待たない。`--mode=raw` の対照実験用) / `--log=PATH`。
 //! `--mode=raw` は awase なしで、期待文字列と同じ内容をローマ字の生キーで同じ速度で注入する対照実験
 //! (入力先+IME 単体がその速度を受けられるかを、awase と切り離して見る)。
+//!
+//! `--mode=drift`(ADR-191 09-T4、BUG-020 の回帰観測): 打鍵ストレスとは別の手順で、drift correction
+//! (`runtime/ime_refresh.rs::ir_apply_drift_correction`)が明示意図の OFF 直後に実 IME を不適切に ON へ
+//! 戻す/固定するか(2026-07-08 の実機症状)を観測する。手順は「IME を ON にそろえる → `--drift-off-vk`
+//! (既定 0x1D)を単発で押す → +100/+400/+1500ms で `ImmGetOpenStatus` を読む」を `--trials` 回繰り返す。
+//! **チョードでない単一キーで OFF を駆動する前提**: `--drift-off-vk` は awase 側の設定
+//! `keys.ime_off` をこの単一キーに上書きした状態で使うこと(既定の `Ctrl+無変換` は、`modifier_snapshot.ctrl`
+//! が `is_physical_key_down`(PHYSICAL_KEY_STATE)で判定されるため、SendInput 注入では物理 Ctrl 押下として
+//! 認識されず駆動できない)。追加フラグ: `--drift-off-vk=0xNN`(既定 0x1D=VK_NONCONVERT)。
 //!
 //! ## 注入の作法
 //! `dwExtraInfo = hook::TEST_INJECTION_MARKER`(`AWASE_TEST_INJECTION=1` の debug ビルド awase が物理キー扱い)。
@@ -32,8 +41,8 @@
 //! 前に出た場合は届数が減るので、届数 < 送信数は「注入の落ち」と断定せず参考値として扱うこと)。
 //!
 //! ## ログ
-//! `[TS-JSON] {...}` の行(1行1JSON、type = config/focus/ready/trial/inject/abort/done)が機械可読の記録。
-//! 完走マーカーは `=== 完了 ===`。
+//! `[TS-JSON] {...}` の行(1行1JSON、type = config/focus/ready/trial/inject/abort/done、`--mode=drift`
+//! では加えて drift_pre/drift_check)が機械可読の記録。完走マーカーは `=== 完了 ===`。
 
 #![windows_subsystem = "windows"]
 #![allow(unsafe_code)]
@@ -846,9 +855,53 @@ fn ime_ready(raw: bool, cells: &[Vec<Cell>; 3], child: HWND) -> bool {
     false
 }
 
+/// `--mode=drift`(ADR-191 09-T4、BUG-020 の回帰観測)。`ime_ready` で IME/awase の準備を確認した後に呼ぶ。
+/// 1試行: IME を ON にそろえる → `off_vk` を単発で押す(awase 側は `keys.ime_off` をこの単一キーに
+/// 上書きした設定で起動していること)→ +100/+400/+1500ms で `real_ime_open` を記録する。
+fn drift_scenario(child: HWND) {
+    let off_vk = arg_value("--drift-off-vk=")
+        .and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok())
+        .unwrap_or(VK_MUHENKAN);
+    // 無変換/変換は物理位置(scancode)で分類されるため、既定候補は対応する scan を使う(BUG-131/132 と同型の
+    // scan/vk不一致を避ける)。それ以外の VK を指定した場合は scan=0(専用 VK コードは scan を見ない前提)。
+    let off_scan = match off_vk {
+        VK_MUHENKAN => SCAN_MUHENKAN,
+        VK_HENKAN => SCAN_HENKAN,
+        _ => 0,
+    };
+    let trials: usize = arg_value("--trials=")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    const CHECKPOINTS_MS: [u64; 3] = [100, 400, 1500];
+    for n in 0..trials {
+        if !focus_ok() {
+            refocus();
+        }
+        if !focus_ok() {
+            rec(&json!({"type":"abort","reason":format!("drift試行前にフォーカスが外れた n={n}")}));
+            return;
+        }
+        turn_ime_on(n);
+        let pre_open = real_ime_open(child);
+        rec(
+            &json!({"type":"drift_pre","n":n,"off_vk":format!("0x{off_vk:02X}"),"real_ime_open":pre_open}),
+        );
+        press(off_vk, off_scan, 50);
+        let mut waited_ms = 0u64;
+        for &cp in &CHECKPOINTS_MS {
+            sleep_ms(cp - waited_ms);
+            waited_ms = cp;
+            let open = real_ime_open(child);
+            rec(&json!({"type":"drift_check","n":n,"checkpoint_ms":cp,"real_ime_open":open}));
+        }
+    }
+}
+
 fn worker(form: Form) {
     let child = hwnd_of(&CHILD);
-    let raw = arg_value("--mode=").as_deref() == Some("raw");
+    let mode_arg = arg_value("--mode=");
+    let raw = mode_arg.as_deref() == Some("raw");
+    let drift = mode_arg.as_deref() == Some("drift");
     let iv_ms: f64 = arg_value("--interval=")
         .and_then(|v| v.parse().ok())
         .unwrap_or(20.0);
@@ -891,7 +944,7 @@ fn worker(form: Form) {
         collect_cells(&layout.right_thumb, Face::Right, &table),
     ];
     rec(
-        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if raw {"raw"} else {"nicola"},
+        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if drift {"drift"} else if raw {"raw"} else {"nicola"},
         "interval_ms":iv_ms,"len":len,"trials":trials,"seed":seed,"kinds":kinds,
         "layout":layout_path,"cells":[cells[0].len(),cells[1].len(),cells[2].len()],
         "child_class":class_of(child)}),
@@ -924,6 +977,12 @@ fn worker(form: Form) {
     turn_ime_on(0);
     if !ime_ready(raw, &cells, child) {
         rec(&json!({"type":"abort","reason":"IME/awase の準備確認に失敗(ready の text を参照)"}));
+        finish();
+        return;
+    }
+
+    if drift {
+        drift_scenario(child);
         finish();
         return;
     }
