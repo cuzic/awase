@@ -28,6 +28,13 @@
 //! いずれでも`ProfileRestoreGuard`のDropで）元のプロファイルへ戻す。元のプロファイルが
 //! 読めない場合は切り替え自体を行わず中止する（`FORSESSION`のまま残存するリスクを避けるため）。
 //!
+//! # 既知の未確認事項
+//!
+//! `ActivateProfile`に渡す`TF_IPPMF_ENABLEPROFILE`フラグは、対象プロファイルが「入力方式の
+//! 一覧」から無効化・削除されている場合にそれを再度有効化しうる（PR #348レビュー指摘、
+//! 未確認）。MS-IME本体を一覧から意図的に外しているユーザーがこのツールを実行すると、
+//! 実行後にMS-IME本体が一覧へ戻ってしまう可能性がある。
+//!
 //! 実行方法(Windows実機のみ): `cargo run -p awase-windows --example msime_native_composing_probe --release`
 
 #![allow(unsafe_code)]

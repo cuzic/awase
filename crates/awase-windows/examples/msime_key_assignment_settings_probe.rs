@@ -370,6 +370,18 @@ mod windows_probe {
         unsafe { pattern.Expand() }
     }
 
+    /// `IUIAutomationExpandCollapsePattern`で要素（ComboBox等）を折りたたむ。
+    unsafe fn collapse_element(element: &IUIAutomationElement) -> windows::core::Result<()> {
+        use windows::Win32::UI::Accessibility::{
+            IUIAutomationExpandCollapsePattern, UIA_ExpandCollapsePatternId,
+        };
+        // SAFETY: element は呼び出し元が渡した有効な COM オブジェクト。
+        let pattern: IUIAutomationExpandCollapsePattern =
+            unsafe { element.GetCurrentPatternAs(UIA_ExpandCollapsePatternId) }?;
+        // SAFETY: pattern は直前に取得した有効な COM オブジェクト。
+        unsafe { pattern.Collapse() }
+    }
+
     /// `IUIAutomationSelectionItemPattern`で要素（ComboBoxItem等）を選択する。
     unsafe fn select_element(element: &IUIAutomationElement) -> windows::core::Result<()> {
         use windows::Win32::UI::Accessibility::{
@@ -416,10 +428,22 @@ mod windows_probe {
         std::thread::sleep(Duration::from_millis(500));
         let mut budget: u32 = 100;
         // SAFETY: walker/combo は直前に取得した有効な COM オブジェクト。
-        let item = unsafe { find_by_name(walker, combo, item_name, 0, 4, &mut budget) }
-            .ok_or_else(|| format!("item {item_name:?} not found (budget left {budget})"))?;
+        let Some(item) = (unsafe { find_by_name(walker, combo, item_name, 0, 4, &mut budget) })
+        else {
+            // 項目が見つからなかった場合、展開したままにするとUIが操作しづらい状態で
+            // 残る（PR #348レビュー指摘）。折りたたんでから失敗を返す。
+            // SAFETY: combo は呼び出し元が渡した有効な COM オブジェクト。
+            let _ = unsafe { collapse_element(combo) };
+            return Err(format!(
+                "item {item_name:?} not found (budget left {budget})"
+            ));
+        };
         // SAFETY: item は直前に取得した有効な COM オブジェクト。
-        unsafe { select_element(&item) }.map_err(|e| format!("select failed: {e:?}"))?;
+        if let Err(e) = unsafe { select_element(&item) } {
+            // SAFETY: combo は呼び出し元が渡した有効な COM オブジェクト。
+            let _ = unsafe { collapse_element(combo) };
+            return Err(format!("select failed: {e:?}"));
+        }
         std::thread::sleep(Duration::from_millis(500));
         Ok(())
     }
