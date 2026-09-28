@@ -36,6 +36,9 @@ const validPayload = {
   gji_keymap: null,
   msime_key_assignment: null,
   legacy_msime_keymap: null,
+  keymap_learn: null,
+  attach_running_processes: false,
+  running_processes: null,
   reported_at: "2026-08-19T12:34:56Z"
 };
 
@@ -362,13 +365,15 @@ describe("payload validation", () => {
   // ADR-148: SCHEMA_VERSION は上げていないため、この変更より前のクライアント
   // （attach_ime_keymap/gji_keymap/msime_key_assignment を一切送らないペイロード）
   // が引き続き200で受理されることを固定する（retro_eval_stats と同型の回帰）。
-  // legacy_msime_keymap（Phase 2）も同じ理由でoptionalとして読むため、ここに含める。
+  // legacy_msime_keymap（Phase 2）・keymap_learn（ADR196-T2）も同じ理由で
+  // optionalとして読むため、ここに含める。
   it("accepts payloads without ime_keymap fields (pre-ADR-148 clients) and normalizes to false/null", () => {
     const {
       attach_ime_keymap: _attachImeKeymap,
       gji_keymap: _gjiKeymap,
       msime_key_assignment: _msimeKeyAssignment,
       legacy_msime_keymap: _legacyMsimeKeymap,
+      keymap_learn: _keymapLearn,
       ...payload
     } = validPayload;
 
@@ -377,8 +382,71 @@ describe("payload validation", () => {
       attach_ime_keymap: false,
       gji_keymap: null,
       msime_key_assignment: null,
-      legacy_msime_keymap: null
+      legacy_msime_keymap: null,
+      keymap_learn: null
     });
+  });
+
+  // issue #165（hook_starved）用: SCHEMA_VERSION は上げていないため、この変更
+  // より前のクライアント（attach_running_processes/running_processesを一切
+  // 送らないペイロード）が引き続き200で受理されることを固定する。
+  it("accepts payloads without running_processes fields (pre-issue-165 clients) and normalizes to false/null", () => {
+    const {
+      attach_running_processes: _attachRunningProcesses,
+      running_processes: _runningProcesses,
+      ...payload
+    } = validPayload;
+
+    expect(parseAndValidatePayload(JSON.stringify(payload))).toEqual({
+      ...payload,
+      attach_running_processes: false,
+      running_processes: null
+    });
+  });
+
+  it("rejects a non-boolean attach_running_processes", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_running_processes: "yes"
+      })),
+      400,
+      "attach_running_processes_invalid"
+    );
+  });
+
+  it("rejects a non-array, non-null running_processes", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_running_processes: true,
+        running_processes: 42
+      })),
+      400,
+      "running_processes_invalid"
+    );
+  });
+
+  it("rejects running_processes unless attach_running_processes is explicitly true", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_running_processes: false,
+        running_processes: ["explorer.exe"]
+      })),
+      400,
+      "running_processes_requires_attach_running_processes"
+    );
+  });
+
+  it("accepts an explicitly attached running_processes array", () => {
+    const payload = {
+      ...validPayload,
+      attach_running_processes: true,
+      running_processes: ["explorer.exe", "powertoys.exe"]
+    };
+
+    expect(parseAndValidatePayload(JSON.stringify(payload))).toEqual(payload);
   });
 
   it("rejects a non-boolean attach_ime_keymap", () => {
@@ -464,7 +532,31 @@ describe("payload validation", () => {
     );
   });
 
-  it("accepts explicitly attached gji_keymap, msime_key_assignment and legacy_msime_keymap objects", () => {
+  it("rejects a non-object, non-null keymap_learn", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_ime_keymap: true,
+        keymap_learn: 42
+      })),
+      400,
+      "keymap_learn_invalid"
+    );
+  });
+
+  it("rejects keymap_learn unless attach_ime_keymap is explicitly true", () => {
+    expectHttpError(
+      () => parseAndValidatePayload(JSON.stringify({
+        ...validPayload,
+        attach_ime_keymap: false,
+        keymap_learn: { table_file: "loaded" }
+      })),
+      400,
+      "keymap_learn_requires_attach_ime_keymap"
+    );
+  });
+
+  it("accepts explicitly attached gji_keymap, msime_key_assignment, legacy_msime_keymap and keymap_learn objects", () => {
     const payload = {
       ...validPayload,
       attach_ime_keymap: true,
@@ -482,6 +574,13 @@ describe("payload validation", () => {
         active_style: "Custom",
         muhenkan_ime_on_toggle: true,
         henkan_ime_on_toggle: false
+      },
+      keymap_learn: {
+        table_file: "loaded",
+        use_learned_keymap_table: true,
+        in_use: true,
+        cell_count: 42,
+        judgement: "Accepted"
       }
     };
 
