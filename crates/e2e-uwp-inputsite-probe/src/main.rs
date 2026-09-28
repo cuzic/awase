@@ -59,27 +59,33 @@
 //! → 直後に入力」という順序を模す）。
 //!
 //! 成功/失敗の判定はこのプローブ自身では行わない。別プロセスとして起動中の
-//! awase.exe（デバッグビルド、`AWASE_TEST_INJECTION=1` 環境変数、`RUST_LOG=debug`
-//! でログをファイルへ）の側のログを
-//! `Hook watchdog: no activity for .*フックにイベントが届いていない疑い(issue #165)`
+//! awase.exe（デバッグビルド、`AWASE_TEST_INJECTION=1` 環境変数、`RUST_LOG=debug`）
+//! のログを`Hook watchdog: no activity for .*フックにイベントが届いていない疑い(issue #165)`
 //! で grep することで行う（`crates/awase-windows/src/runtime/message_handlers.rs:574-598`
 //! の診断専用ログ、`stale_ms>5000` かつ `os_idle_ms<5000` のときだけ出る）。
+//!
+//! **注意**: awase.exe は既定（`debug_console=false`）では stderr に何も出さず、
+//! 実行ファイルと同じディレクトリの固定パス `awase.log` へ書く
+//! （`crates/awase-windows/src/app/bootstrap.rs::init_logging`/`log_path`、
+//! `tools/e2e/config_verify/run.py::start_awase`と同じ流儀）。`-RedirectStandardError`
+//! でstderrを捕まえようとしても常に空になる（1回転目でこれを誤り、実機/CI
+//! いずれの初回試行もこのため判定不能だった）。
 //!
 //! ## 実行方法（Windows実機、または CI の windows-latest ランナー）
 //!
 //! ```powershell
 //! # 1. awase をデバッグビルドし、テスト注入を物理キー扱いする設定で起動
-//! cargo build -p awase --bin awase
+//! cargo build -p awase-windows --bin awase
 //! $env:AWASE_TEST_INJECTION = "1"
-//! Start-Process .\target\debug\awase.exe -RedirectStandardError awase.log
+//! Start-Process target\debug\awase.exe -WorkingDirectory target\debug
 //! Start-Sleep -Seconds 2
 //!
 //! # 2. このプローブを実行（GJI 等の実 IME は不要 — hook_starved はキー配送層の
 //! #    現象で IME 変換の正しさとは無関係）
 //! cargo run -p e2e-uwp-inputsite-probe -- --iterations=80
 //!
-//! # 3. awase 側ログを確認
-//! Select-String -Path awase.log -Pattern 'フックにイベントが届いていない疑い'
+//! # 3. awase 側ログを確認（実行ファイルと同じディレクトリの固定パス）
+//! Select-String -Path target\debug\awase.log -Pattern 'フックにイベントが届いていない疑い'
 //! ```
 //!
 //! ## フラグ
