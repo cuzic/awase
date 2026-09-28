@@ -1276,8 +1276,12 @@ pub(super) fn run_all() -> Result<()> {
     let _focus_hook_guard = install_focus_hook().map_err(|e| tracing::warn!("{e}")).ok();
     let _obs_hook_guards = crate::tsf::observer::install_observation_hooks();
 
+    // issue #165（hook_starved）自己修復用: `Runtime`（`with_app`経由、プロセス
+    // 終了まで生存）へ移す。ローカル変数のままだと watchdog タイマーハンドラ
+    // （`TIMER_HOOK_WATCHDOG`）から差し替えられない。
     // 統合 IME リフレッシュタイマー + ウォッチドッグタイマー
     let _ = with_app(|app| {
+        app.set_hook_guard(hook_guard);
         app.reschedule_ime_refresh();
         app.start_hook_watchdog();
     });
@@ -1303,7 +1307,9 @@ pub(super) fn run_all() -> Result<()> {
 
     run_message_loop();
     cleanup();
-    drop(hook_guard);
+    // issue #165自己修復対応でRuntimeへ移したため、`drop(hook_guard)`ではなく
+    // `Runtime::drop_hook_guard`経由（旧来と同じタイミングで解除する）。
+    let _ = with_app(Runtime::drop_hook_guard);
 
     Ok(())
 }

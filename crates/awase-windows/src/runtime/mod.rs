@@ -366,6 +366,15 @@ pub struct Runtime {
     drift_giveup_notified_this_focus: bool,
     /// ADR-132 Phase 1 診断用: 直近の GiveUp 通知区間の開始時刻。
     drift_giveup_started_at: Option<std::time::Instant>,
+    /// issue #165（hook_starved）自己修復用（2026-09-28追記）。`bootstrap.rs`が
+    /// `install_hook()`直後に`set_hook_guard`で格納する（起動時は必ず`Some`）。
+    /// `reinstall_keyboard_hook_for_watchdog`がwatchdog検知時にドロップ→
+    /// 再インストールして差し替える。ここに保持する理由は、`HookGuard`の
+    /// ライフタイムを`Runtime`（`RUNTIME`グローバル、プロセス終了まで生存）に
+    /// 揃えることで、watchdogタイマー（`with_app`経由、`Runtime`にしか
+    /// アクセスできない）から直接差し替えられるようにするため
+    /// （`bootstrap.rs::run`のローカル変数のままでは他所から触れない）。
+    hook_guard: Option<crate::hook::HookGuard>,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -1386,6 +1395,7 @@ impl Runtime {
             watchdog_kana_edge: None,
             drift_giveup_notified_this_focus: false,
             drift_giveup_started_at: None,
+            hook_guard: None,
         }
     }
 
@@ -1688,6 +1698,50 @@ impl Runtime {
             crate::TIMER_HOOK_WATCHDOG,
             std::time::Duration::from_secs(3),
         );
+    }
+
+    /// `bootstrap.rs`が起動時に`install_hook()`直後へ1回だけ呼ぶ。以後は
+    /// `reinstall_keyboard_hook_for_watchdog`が差し替える。
+    pub(crate) fn set_hook_guard(&mut self, guard: crate::hook::HookGuard) {
+        self.hook_guard = Some(guard);
+    }
+
+    /// `bootstrap.rs::run`終了時（`run_message_loop`/`cleanup`の後）に呼び、
+    /// フックを明示的に解除する（旧来の`drop(hook_guard)`と同じタイミング）。
+    pub(crate) fn drop_hook_guard(&mut self) {
+        self.hook_guard = None;
+    }
+
+    /// issue #165（hook_starved）の自己修復（2026-09-28追記）。
+    ///
+    /// watchdog が「フックにイベントが届いていない疑い」（`stale_ms>5000`かつ
+    /// `os_idle_ms<5000`）を検知した際に呼ぶ。`WH_KEYBOARD_LL`はLIFO（最後に
+    /// 登録したフックが最初に呼ばれる）で配送されるため、旧フックを
+    /// `UnhookWindowsHookEx`してから新しく`SetWindowsHookExW`し直すと、
+    /// このタイミング以降にチェーンへ割り込んでいた他プロセスのフックより
+    /// 手前（先頭）に戻れる。失われた打鍵は戻せないが、同じ停止が続くのを防ぐ。
+    ///
+    /// `install_hook()`が失敗した場合はフック無しの状態になりうる（次回の
+    /// watchdog tickで再試行される）。ここでpanicはしない——フック関連の
+    /// 失敗で常駐アプリを丸ごと落とすのは実害が大きすぎる。
+    pub(crate) fn reinstall_keyboard_hook_for_watchdog(&mut self) {
+        // 旧ガードをここで明示的にdropしてから新規installする
+        // （両方生存する瞬間を作らない。`WM_QUIT`→スレッドjoin→
+        // `UnhookWindowsHookEx`が完了してから次のSetWindowsHookExWへ進む）。
+        self.hook_guard = None;
+        match crate::hook::install_hook() {
+            Ok(guard) => {
+                self.hook_guard = Some(guard);
+                tracing::warn!(
+                    "[hook-watchdog] キーボードフックを再インストールしました（issue #165 自己修復）"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "[hook-watchdog] キーボードフックの再インストールに失敗しました: {e}"
+                );
+            }
+        }
     }
 
     /// UIA ワーカースレッドへの送信チャネルを登録する。
