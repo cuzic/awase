@@ -1298,6 +1298,9 @@ fn current_bug_report_diagnostics(
     let legacy_msime_keymap = Some(build_bug_report_legacy_msime_keymap_summary());
     // ADR196-T2 決定1e後半: 学習表の採否・自己検証・同梱表との突き合わせ・指紋。
     let keymap_learn = Some(build_bug_report_keymap_learn_summary(app));
+    // issue #165（hook_starved）用（2026-09-28追記）。既定オフの独立チェック
+    // ボックスでのみ実際に送信される（`BugReportPayload::attach_running_processes`）。
+    let running_processes = Some(crate::app::list_all_running_process_names());
     crate::bug_report::BugReportDiagnostics {
         ime_product_name: crate::tsf::observer::current_ime_product_name(),
         keyboard_model: bug_report_keyboard_model(app.keyboard_model()).to_owned(),
@@ -1311,6 +1314,7 @@ fn current_bug_report_diagnostics(
         msime_key_assignment,
         legacy_msime_keymap,
         keymap_learn,
+        running_processes,
     }
 }
 
