@@ -75,7 +75,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-tsf-gji-2ms,ts-edit-msime-10ms') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-bugreport-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -293,6 +293,13 @@ jobs:
               for form in ('edit', 'tsf')
               for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
               for iv in (10, 2)],
+            # --- 本物の awase-settings --bug-report(不具合報告フォーム、ADR-095)の「説明」欄。UIA で読み戻す。---
+            # ユーザー報告「入力欄がとても反応が遅い、謎の「あ」が含まれる」の再現手順(まずは再現できるかの確認、wait は
+            # 実プロセス起動+CJKフォント読み込み分の余裕を chrome 系(1200s)に合わせて多めに取る)。
+            *[cfg(f'ts-bugreport-{ime_name}-{iv}ms', 'observe', check='typing', ime=ime, runs=3, wait=900,
+                  stress=f'--form=bugreport --interval={iv} --trials=6 --kinds=single,mixed --len=30 --layout=@REPO@/layout/nicola_keytop.yab{msime}')
+              for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
+              for iv in (40, 10)],
             # --- 本物の Chrome(chromebar=アドレスバー、Alt+D でフォーカス / chromepage=ページ内 textarea)。読み戻しは UI Automation。GJI のみ。---
             # 取りこぼしの再現率測定(run 36222195067 で chromepage 2ms が 48 試行中 1 件 FAIL): 2ms/3ms を 1 回あたり 24 試行 × 20 回に増やす。
             *[cfg(f'ts-{form}-gji-{iv}ms', 'observe', check='typing', ime='gji', runs=runs, wait=1200,
@@ -374,12 +381,16 @@ jobs:
           cargo build -p awase-windows --example compartment_notify_probe
           cargo build -p awase-windows --example compartment_notify_probe_diag
           cargo build -p awase-windows --example typing_stress
+          cargo build -p awase-settings --bin awase-settings
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target\debug\awase.exe dist\
           Copy-Item target\debug\examples\ime_key_matrix_spike.exe dist\
           Copy-Item target\debug\examples\compartment_notify_probe.exe dist\
           Copy-Item target\debug\examples\compartment_notify_probe_diag.exe dist\
           Copy-Item target\debug\examples\typing_stress.exe dist\
+          # ts-bugreport-*(typing_stress.rs --form=bugreport)が実体を起動するのに要る。typing_stress.exe と
+          # 同じ dist\ に置く(launch_bugreport() は自 exe と同じディレクトリの awase-settings.exe を探す)。
+          Copy-Item target\debug\awase-settings.exe dist\
           Copy-Item config.toml dist\ -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         with:
@@ -708,7 +719,7 @@ jobs:
           $rc = $LASTEXITCODE
           "rc=$rc" | Out-File -FilePath rc.txt -Encoding ascii
           "exit code: $rc"
-          Get-Process awase, ime_key_matrix_spike, typing_stress, chrome, compartment_notify_probe, compartment_notify_probe_diag -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process awase, awase-settings, ime_key_matrix_spike, typing_stress, chrome, compartment_notify_probe, compartment_notify_probe_diag -ErrorAction SilentlyContinue | Stop-Process -Force
           exit 0
 
       # 不変条件(異常検出器): 上の期待表(rc.txt)とは別に数え、結果は invariants.json / inv_rc.txt に書く(summary が別の表で集計)。

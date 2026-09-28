@@ -12,10 +12,15 @@
 //! - `rich`  : 素の `RICHEDIT50W`(Msftedit。TSF text store を自前で持つ)。
 //! - `tsf`   : `RICHEDIT50W` を `Chrome_RenderWidgetHostHWND` へスーパークラス化(ADR-193)。awase から
 //!   `AppKind::TsfNative` 相当に見える決定的な入力先(親窓も `Chrome_WidgetWin_1`)。
+//! - `bugreport` : 本物の `awase-settings.exe --bug-report`(不具合報告フォーム、ADR-095)の「説明」欄
+//!   (egui `TextEdit::multiline`)。入力遅延+謎の「あ」報告(自己言及的: 不具合報告フォーム自体が
+//!   awase のキー変換を経由してタイプされるため、awase側の不具合がそのまま報告フォームの入力に出る)
+//!   の再現用。ウィンドウは別プロセス(egui/eframe、accesskit経由でUI Automationに公開)なので、
+//!   Chrome と同じく UI Automation(`IUIAutomationValuePattern`)で値を読み書きする。
 //! CI で安定して動かせない Chrome・Zoom・UWP は対象外(フォーカス/起動が不確定でストレスと切り分けられない)。
 //!
 //! ## フラグ
-//! `--form=edit|multi|rich|tsf` / `--mode=nicola|raw` / `--interval=MS`(1文字あたりの間隔。既定20) /
+//! `--form=edit|multi|rich|tsf|bugreport` / `--mode=nicola|raw` / `--interval=MS`(1文字あたりの間隔。既定20) /
 //! `--trials=N`(種別ごとの試行数。既定4) / `--len=N`(1試行の文字数。既定40) / `--seed=S` /
 //! `--kinds=single,thumb,mixed` / `--layout=PATH`(.yab。既定 layout/nicola_keytop.yab) /
 //! `--activate-gji`(GJI/MS-IME のプロファイルを有効化。CI 用) / `--msime`(有効化する IME を Microsoft IME に) /
@@ -39,6 +44,7 @@
 #![allow(unsafe_code)]
 
 use std::io::Write as _;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicIsize, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -64,8 +70,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::System::Com::{CoInitializeEx as CoInitEx, COINIT_MULTITHREADED};
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomationValuePattern, TreeScope_Descendants,
-    UIA_EditControlTypeId, UIA_ValuePatternId,
+    CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationValuePattern,
+    TreeScope_Descendants, UIA_EditControlTypeId, UIA_ValuePatternId,
 };
 use windows::Win32::UI::TextServices::{
     CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfInputProcessorProfileMgr, ITfThreadMgr,
@@ -73,7 +79,8 @@ use windows::Win32::UI::TextServices::{
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW,
     GetClassInfoExW, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetMessageW,
-    EnumWindows, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW,
+    EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, PostMessageW,
+    PostQuitMessage, RegisterClassExW, SendMessageW,
     SetForegroundWindow, SetWindowsHookExW, ShowWindow, TranslateMessage, CW_USEDEFAULT,
     GUITHREADINFO, KBDLLHOOKSTRUCT, MSG, SW_SHOW, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE,
     WM_APP, WM_CLOSE, WM_DESTROY, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP, WM_SETTEXT,
@@ -195,6 +202,7 @@ enum Form {
     Tsf,
     ChromeBar,
     ChromePage,
+    BugReport,
 }
 
 impl Form {
@@ -206,6 +214,7 @@ impl Form {
             "tsf" => Some(Self::Tsf),
             "chromebar" => Some(Self::ChromeBar),
             "chromepage" => Some(Self::ChromePage),
+            "bugreport" => Some(Self::BugReport),
             _ => None,
         }
     }
@@ -217,6 +226,7 @@ impl Form {
             Self::Tsf => "tsf",
             Self::ChromeBar => "chromebar",
             Self::ChromePage => "chromepage",
+            Self::BugReport => "bugreport",
         }
     }
 }
@@ -275,6 +285,9 @@ fn front_and_focus(top: HWND) {
 }
 
 fn create_form(form: Form) -> HWND {
+    if form == Form::BugReport {
+        return launch_bugreport();
+    }
     if form.is_chrome() {
         return launch_chrome(form);
     }
@@ -320,6 +333,7 @@ fn create_form(form: Form) -> HWND {
                 240,
             ),
             Form::ChromeBar | Form::ChromePage => unreachable!("launch_chrome で処理済み"),
+            Form::BugReport => unreachable!("launch_bugreport で処理済み"),
             Form::Rich => ("RICHEDIT50W".into(), WS_BORDER.0 | ES_AUTOHSCROLL, 700, 240),
             Form::Tsf => {
                 // RICHEDIT50W をスーパークラス化して、Chrome の描画窓のクラス名で登録し直す(ADR-193)。
@@ -376,6 +390,9 @@ fn read_text(h: HWND) -> String {
     if is_chrome_mode() {
         return chrome_read();
     }
+    if is_bugreport_mode() {
+        return bugreport_read();
+    }
     unsafe {
         let len = SendMessageW(h, WM_GETTEXTLENGTH, None, None).0;
         let len = usize::try_from(len).unwrap_or(0);
@@ -396,6 +413,10 @@ fn clear_text(h: HWND) {
         chrome_clear();
         return;
     }
+    if is_bugreport_mode() {
+        bugreport_clear();
+        return;
+    }
     unsafe {
         let empty = wide("");
         let _ = SendMessageW(h, WM_SETTEXT, None, Some(LPARAM(empty.as_ptr() as isize)));
@@ -404,7 +425,7 @@ fn clear_text(h: HWND) {
 
 /// 前面窓が `top`、かつそのスレッドのフォーカスが入力欄にあるか。
 fn focus_ok() -> bool {
-    if is_chrome_mode() {
+    if is_chrome_mode() || is_bugreport_mode() {
         return unsafe { GetForegroundWindow() == hwnd_of(&TOP) };
     }
     unsafe {
@@ -435,6 +456,10 @@ fn focus_report() -> serde_json::Value {
 fn refocus() {
     if is_chrome_mode() {
         chrome_front();
+        return;
+    }
+    if is_bugreport_mode() {
+        bugreport_front();
         return;
     }
     unsafe {
@@ -1301,12 +1326,191 @@ fn chrome_read() -> String {
     }
 }
 
+// ---------------------------------------------------------------- 本物の awase-settings --bug-report
+
+static BUGREPORT_MODE: AtomicIsize = AtomicIsize::new(0);
+
+fn is_bugreport_mode() -> bool {
+    BUGREPORT_MODE.load(Ordering::SeqCst) != 0
+}
+
+unsafe extern "system" fn enum_bugreport(hwnd: HWND, lp: LPARAM) -> windows::core::BOOL {
+    unsafe {
+        let want_pid = lp.0 as u32;
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
+        if IsWindowVisible(hwnd).as_bool() && pid == want_pid {
+            let mut buf = [0u16; 256];
+            let n = GetWindowTextW(hwnd, &mut buf);
+            let title = String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0)]);
+            // bug_report.rs::run() の with_title("awase 不具合報告") と一致させる。
+            if title.contains("不具合報告") {
+                TOP.store(hwnd.0 as isize, Ordering::SeqCst);
+                return false.into();
+            }
+        }
+        true.into()
+    }
+}
+
+/// 本物の `awase-settings.exe --bug-report` を起動し、その窓を TOP/CHILD にする(自プロセスの
+/// exe と同じディレクトリに置かれている前提。CI の `dist/` はビルド成果物をフラットにコピーする)。
+fn launch_bugreport() -> HWND {
+    BUGREPORT_MODE.store(1, Ordering::SeqCst);
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("awase-settings.exe")))
+        .unwrap_or_else(|| PathBuf::from("awase-settings.exe"));
+    let child = std::process::Command::new(&exe).arg("--bug-report").spawn();
+    let pid = match child {
+        Ok(c) => c.id(),
+        Err(e) => {
+            log(&format!(
+                "[FATAL] awase-settings.exe の起動に失敗: {} {e}",
+                exe.display()
+            ));
+            std::process::exit(2);
+        }
+    };
+    log(&format!(
+        "[init] awase-settings --bug-report 起動 pid={pid} exe={}",
+        exe.display()
+    ));
+    for _ in 0..60 {
+        sleep_ms(500);
+        unsafe {
+            let _ = EnumWindows(Some(enum_bugreport), LPARAM(pid as isize));
+        }
+        if !hwnd_of(&TOP).0.is_null() {
+            break;
+        }
+    }
+    if hwnd_of(&TOP).0.is_null() {
+        log("[FATAL] 不具合報告窓が見つからない(タイトル「不具合報告」を含む可視窓なし)");
+        std::process::exit(2);
+    }
+    // フォント読み込み(初回フレーム、CJK .ttc)の完了を待つ余裕。
+    sleep_ms(1500);
+    CHILD.store(TOP.load(Ordering::SeqCst), Ordering::SeqCst);
+    hwnd_of(&TOP)
+}
+
+/// 「説明」欄(症状カテゴリの下、添付チェックボックスより前)の Edit を UI Automation で探す。
+/// egui は accesskit 経由でウィジェットを Edit ロールとして公開するが、`ui.label` と
+/// 明示的に紐付けていない(`.labelled_by` 未使用)ため Name が空のことがある。代わりに、
+/// `draw_form` の描画順(説明欄が先、JSON プレビューが後)に対応する走査順で先頭の Edit を選ぶ。
+/// `log_all=true` のとき、見つかった全 Edit の Name/BoundingRectangle をログへ残す
+/// (この順序の仮定が実機で崩れていた場合に awase.log 相当のログから気付けるようにするため)。
+fn bugreport_find_description_element(log_all: bool) -> Option<IUIAutomationElement> {
+    unsafe {
+        let _ = CoInitEx(None, COINIT_MULTITHREADED);
+        let Ok(ua) =
+            CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+        else {
+            log("[bugreport] UIA初期化に失敗");
+            return None;
+        };
+        for _ in 0..10 {
+            let Ok(root) = ua.ElementFromHandle(hwnd_of(&TOP)) else {
+                sleep_ms(300);
+                continue;
+            };
+            let Ok(cond) = ua.CreateTrueCondition() else {
+                sleep_ms(300);
+                continue;
+            };
+            let Ok(all) = root.FindAll(TreeScope_Descendants, &cond) else {
+                sleep_ms(300);
+                continue;
+            };
+            let n = all.Length().unwrap_or(0);
+            let mut edits: Vec<IUIAutomationElement> = Vec::new();
+            for i in 0..n {
+                let Ok(el) = all.GetElement(i) else { continue };
+                if el.CurrentControlType().ok() != Some(UIA_EditControlTypeId) {
+                    continue;
+                }
+                if log_all {
+                    let name = el.CurrentName().map(|b| b.to_string()).unwrap_or_default();
+                    let rect = el.CurrentBoundingRectangle().ok();
+                    log(&format!(
+                        "[bugreport] edit#{} name={name:?} rect={rect:?}",
+                        edits.len()
+                    ));
+                }
+                edits.push(el);
+            }
+            if !edits.is_empty() {
+                return Some(edits.remove(0));
+            }
+            sleep_ms(300);
+        }
+        log("[bugreport] 説明欄のEditが見つからない(リトライ上限)");
+        None
+    }
+}
+
+fn bugreport_focus_description() {
+    if let Some(el) = bugreport_find_description_element(true) {
+        unsafe {
+            if let Err(e) = el.SetFocus() {
+                log(&format!("[bugreport] SetFocus失敗: {e}"));
+            }
+        }
+        sleep_ms(150);
+    } else {
+        log("[bugreport] フォーカス設定をスキップ(要素が見つからない)");
+    }
+}
+
+fn bugreport_front() {
+    front_and_focus_foreign(hwnd_of(&TOP));
+    sleep_ms(300);
+    bugreport_focus_description();
+}
+
+fn bugreport_read() -> String {
+    let Some(el) = bugreport_find_description_element(false) else {
+        return "<uia-not-found>".into();
+    };
+    unsafe {
+        match el.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) {
+            Ok(vp) => vp.CurrentValue().map(|v| v.to_string()).unwrap_or_default(),
+            Err(_) => "<uia-no-value-pattern>".into(),
+        }
+    }
+}
+
+/// UIA の ValuePattern に SetValue は使わない(egui/accesskit 側が外部からの値書き換えに
+/// 対応しているか不明なため)。フォーカスしてから通常のキー操作(Ctrl+A → Backspace)で消す。
+fn bugreport_clear() {
+    bugreport_focus_description();
+    send_key(0x11, 0x1D, true);
+    sleep_ms(20);
+    press(0x41, 0x1E, 30);
+    send_key(0x11, 0x1D, false);
+    sleep_ms(50);
+    press(0x08, 0x0E, 30);
+    sleep_ms(150);
+}
+
 fn finish() {
     rec(&json!({"type":"done"}));
     log("=== 完了 ===");
     if is_chrome_mode() {
         let _ = std::process::Command::new("taskkill")
             .args(["/F", "/IM", "chrome.exe"])
+            .output();
+        std::process::exit(0);
+    }
+    if is_bugreport_mode() {
+        unsafe {
+            let _ = PostMessageW(Some(hwnd_of(&TOP)), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+        sleep_ms(500);
+        // WM_CLOSE で閉じ損ねた場合の保険(次の構成/試行を巻き込まないため)。
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "awase-settings.exe"])
             .output();
         std::process::exit(0);
     }
