@@ -446,6 +446,53 @@ const RELAY_OR_REMAP_CANDIDATES: &[ConflictEntry] = &[
         exe: "vcxsrv.exe",
         display: "VcXsrv",
     },
+    // opus round3 M4（2026-09-28追記、round4でVMware/VirtualBoxのexe名を訂正）:
+    // VM/リモート操作クライアントは前面でキーボードを捕捉している間、自分の
+    // `WH_KEYBOARD_LL`で注入キーも含めて握りつぶすのが一般的で、issue #165と
+    // 同じシグネチャ（hook_starved）になりうる。ここでスキップしないと、
+    // 自己修復がこれらのフックより先頭に割り込み、ゲスト/リモート側に届く
+    // はずの物理キーをNICOLA変換してしまう。いずれもawase側で直接検証した
+    // 事実ではなく、一般的に知られる実行ファイル名からの候補
+    // （`detect_relay_or_remap_software`の既存エントリと同水準）。
+    // `vmware-vmx.exe`/`VirtualBoxVM.exe`はVM本体プロセスでありフォアグラウンド
+    // ウィンドウを持たないため、フォアグラウンド判定用のここでは意味を持たない
+    // （実際のフォアグラウンドは`vmware.exe`/`vmplayer.exe`/`VirtualBox.exe`）。
+    ConflictEntry {
+        exe: "vmware.exe",
+        display: "VMware Workstation (VM)",
+    },
+    ConflictEntry {
+        exe: "vmplayer.exe",
+        display: "VMware Player (VM)",
+    },
+    ConflictEntry {
+        exe: "VirtualBox.exe",
+        display: "VirtualBox (VM)",
+    },
+    ConflictEntry {
+        exe: "vmconnect.exe",
+        display: "Hyper-V 仮想マシン接続",
+    },
+    ConflictEntry {
+        exe: "TeamViewer.exe",
+        display: "TeamViewer",
+    },
+    ConflictEntry {
+        exe: "AnyDesk.exe",
+        display: "AnyDesk",
+    },
+    ConflictEntry {
+        exe: "parsecd.exe",
+        display: "Parsec",
+    },
+    ConflictEntry {
+        exe: "wfica32.exe",
+        display: "Citrix Workspace (ICA)",
+    },
+    ConflictEntry {
+        exe: "CDViewer.exe",
+        display: "Citrix Workspace (Desktop Viewer)",
+    },
 ];
 
 pub(crate) fn detect_relay_or_remap_software() -> Vec<String> {
