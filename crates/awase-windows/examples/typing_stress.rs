@@ -878,14 +878,14 @@ fn drift_scenario(child: HWND) {
             refocus();
         }
         if !focus_ok() {
-            rec(
-                &json!({"type":"abort","reason":format!("drift試行前にフォーカスが外れた n={n}")}),
-            );
+            rec(&json!({"type":"abort","reason":format!("drift試行前にフォーカスが外れた n={n}")}));
             return;
         }
         turn_ime_on(n);
         let pre_open = real_ime_open(child);
-        rec(&json!({"type":"drift_pre","n":n,"off_vk":format!("0x{off_vk:02X}"),"real_ime_open":pre_open}));
+        rec(
+            &json!({"type":"drift_pre","n":n,"off_vk":format!("0x{off_vk:02X}"),"real_ime_open":pre_open}),
+        );
         press(off_vk, off_scan, 50);
         let mut waited_ms = 0u64;
         for &cp in &CHECKPOINTS_MS {
