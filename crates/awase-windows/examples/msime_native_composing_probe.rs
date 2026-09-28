@@ -17,11 +17,16 @@
 //!
 //! 仕組みは `gji_composition_probe.rs`(既存, ADR-091検証用)と同じ: 自前のEDITウィンドウを
 //! 作り、SendInputで物理キー相当を注入し、ImmGetOpenStatus/ImmGetConversionStatus/
-//! ImmGetCompositionStringWで実際の状態を直接読む。IMEはこのプロセスだけ
-//! （`TF_IPPMF_FORPROCESS`、ユーザーの他のアプリやログオンセッション全体には影響しない）
-//! MS-IME本体のTSFプロファイルへ切り替える(`ime_key_matrix_spike.rs`の`--msime`と同じ
-//! CLSID/プロファイルGUID)。終了時（正常終了・早期return・panicのいずれでも`ProfileRestoreGuard`
-//! のDropで）元のプロファイルへ戻す。元のプロファイルが読めない場合は切り替え自体を行わず中止する。
+//! ImmGetCompositionStringWで実際の状態を直接読む。MS-IME本体のTSFプロファイルへ切り替える
+//! (`ime_key_matrix_spike.rs`の`--msime`と同じCLSID/プロファイルGUID)。この切替は
+//! `TF_IPPMF_FORSESSION`（ログオンセッション全体・他の実行中アプリにも影響し、プロセス
+//! 終了後も残存する。`TF_IPPMF_FORPROCESS`＝このプロセスだけへスコープを絞る方が本来安全
+//! だが、2026-09-28にdragonflyg4実機で検証したところSendInputで注入した物理キーがその
+//! スコープのプロファイルへ実効的に届かず、`open_status`が常に変化しない＝ツールが機能
+//! しなくなる退行を確認したため`FORSESSION`のままにしている。詳細は下記
+//! `TF_IPPMF_FORSESSION`定数のコメント参照）で行う。終了時（正常終了・早期return・panicの
+//! いずれでも`ProfileRestoreGuard`のDropで）元のプロファイルへ戻す。元のプロファイルが
+//! 読めない場合は切り替え自体を行わず中止する（`FORSESSION`のまま残存するリスクを避けるため）。
 //!
 //! 実行方法(Windows実機のみ): `cargo run -p awase-windows --example msime_native_composing_probe --release`
 
@@ -70,11 +75,19 @@ mod windows_probe {
 
     const TF_PROFILETYPE_INPUTPROCESSOR: u32 = 1;
     const TF_IPPMF_ENABLEPROFILE: u32 = 0x1;
-    // レビュー指摘(高)反映: TF_IPPMF_FORSESSION（ログオンセッション全体、他のアプリ全部に影響し
-    // プロセス終了後も残る）ではなく TF_IPPMF_FORPROCESS（このプロセスだけ、プロセス終了で自動的に
-    // 元へ戻る）を使う。元のプロファイルへの復元が何らかの理由で失敗しても、このプロセスが
-    // 終了すればユーザーのデスクトップ全体がMS-IMEのままにはならない。
-    const TF_IPPMF_FORPROCESS: u32 = 0x1000_0000;
+    // PR #348レビューでTF_IPPMF_FORSESSION（ログオンセッション全体、他のアプリ全部に影響し
+    // プロセス終了後も残る）からTF_IPPMF_FORPROCESS（このプロセスだけ、プロセス終了で自動的に
+    // 元へ戻るはず）へ一度変更したが、2026-09-28にdragonflyg4実機で検証したところ、
+    // FORPROCESSスコープではSendInputで注入した物理キー（VK_NONCONVERT等）がそのプロファイルへ
+    // 実効的に届かず、direct_input_closedのようなT12で確立済みの最も単純なベースライン
+    // シナリオですらopen_statusが0→1に変化しなくなる退行を確認した（ActivateProfile自体は
+    // Ok(())を返しており、復元は正常に動作した——プロファイル切替APIの成功と、実際の
+    // キー入力ルーティングへの反映は別物だった）。ツールの本来の目的（実際のIME開閉挙動の
+    // 観測）が果たせなくなるため、FORSESSIONへ戻す。元のプロファイルへの復元は
+    // ProfileRestoreGuardのDropが正常終了・早期return・panicのどの経路でも保証する
+    // （復元処理自体の正しさはPR #348レビューの指摘#1/#2で修正済み、このコミットで
+    // 引き続き維持）。
+    const TF_IPPMF_FORSESSION: u32 = 0x2000_0000;
     // MS-IME本体のCLSID/プロファイルGUID(ime_key_matrix_spike.rsの--msimeと同一)。
     const MSIME_CLSID: u128 = 0x03B5835F_F03C_411B_9CE2_AA23E1171E36;
     const MSIME_PROFILE: u128 = 0xA76C93D9_5523_4E90_AAFA_4DB112F9AC76;
@@ -417,7 +430,7 @@ mod windows_probe {
                     p.clsid,
                     p.guidProfile,
                     p.hkl,
-                    TF_IPPMF_ENABLEPROFILE | TF_IPPMF_FORPROCESS,
+                    TF_IPPMF_ENABLEPROFILE | TF_IPPMF_FORSESSION,
                 )
             };
         }
@@ -461,7 +474,7 @@ mod windows_probe {
                 GUID::from_u128(MSIME_CLSID),
                 GUID::from_u128(MSIME_PROFILE),
                 windows::Win32::UI::Input::KeyboardAndMouse::HKL(std::ptr::null_mut()),
-                TF_IPPMF_ENABLEPROFILE | TF_IPPMF_FORPROCESS,
+                TF_IPPMF_ENABLEPROFILE | TF_IPPMF_FORSESSION,
             )
         }?;
 
