@@ -51,8 +51,13 @@ jobs:
       # 不具合報告のタイムライン(無関係アプリ間往復 → UWP系入力面へフォーカス)を
       # 模して、フォーカス往復を繰り返しながらキーを注入する。詳細は
       # `crates/e2e-uwp-inputsite-probe/src/main.rs` のモジュールdoc参照。
+      # --force-starvation-secs=25: 既定(7秒)だと自己修復(watchdog検知まで
+      # 最大8秒程度かかりうる: stale_ms>5000 + 3秒周期のポーリング)が働く前に
+      # ブロック窓が自然終了してしまい、効果があったかの判定が付かない。
+      # 十分に長い窓にして、再インストール後に打鍵が窓の途中で復帰することを
+      # 明確に確認する。
       - name: Run probe
-        run: target\debug\uwp_inputsite_probe.exe --iterations=80 --dwell-ms=120
+        run: target\debug\uwp_inputsite_probe.exe --iterations=80 --dwell-ms=120 --force-starvation-secs=25
 
       - name: Stop awase.exe and check for the hook_starved signature
         if: always()
