@@ -27,6 +27,11 @@
 //! `TF_IPPMF_FORSESSION`定数のコメント参照）で行う。終了時（正常終了・早期return・panicの
 //! いずれでも`ProfileRestoreGuard`のDropで）元のプロファイルへ戻す。元のプロファイルが
 //! 読めない場合は切り替え自体を行わず中止する（`FORSESSION`のまま残存するリスクを避けるため）。
+//! **この保証はCtrl+C・コンソールを閉じる・`taskkill`等でプロセスが終了する場合には及ばない**
+//! （Rustの既定ではCtrl+Cはスタック巻き戻し無しでプロセスを終了させるため、Dropは走らない）。
+//! `FORSESSION`はログオンセッション全体に効くため、実行中に中断するとデスクトップ全体が
+//! MS-IME本体のままになりうる（PR #348再レビュー指摘）。この状態に陥った場合は、
+//! `Win+Space`（または`Ctrl+Shift`等、通常のIME切替キー）で手動で元のIMEへ戻すこと。
 //!
 //! # 既知の未確認事項
 //!
@@ -429,7 +434,7 @@ mod windows_probe {
             let p = self.original;
             // SAFETY: mgr は run() が保持している有効な COM オブジェクト。hkl は
             //         get_active_profile が返した値をそのまま渡す。
-            let _ = unsafe {
+            let restore_result = unsafe {
                 activate_profile(
                     self.mgr,
                     p.dwProfileType,
@@ -440,6 +445,13 @@ mod windows_probe {
                     TF_IPPMF_ENABLEPROFILE | TF_IPPMF_FORSESSION,
                 )
             };
+            // PR #348再レビュー指摘: 復元の失敗を`let _ =`で握り潰すと、デスクトップ全体が
+            // MS-IME本体のまま残っていることにユーザーが気づけない。目立つログを出す。
+            if let Err(e) = restore_result {
+                log(&format!(
+                    "RESULT: restore FAILED ({e:?}) — このセッションはMS-IME本体のままの可能性があります。Win+Space（または通常のIME切替キー）で手動で元のIMEへ切り替えてください。"
+                ));
+            }
         }
     }
 
@@ -471,8 +483,9 @@ mod windows_probe {
             original: original_profile,
         };
 
-        log("[tsf] switching to MS-IME native profile (this process only)...");
-        // SAFETY: mgr は有効な COM オブジェクト、hkl はプロセス内で完結するテスト用の値。
+        log("[tsf] switching to MS-IME native profile (session-wide, TF_IPPMF_FORSESSION)...");
+        // SAFETY: mgr は有効な COM オブジェクト、hkl はテスト用の値。この切替はログオン
+        //         セッション全体に効く（TF_IPPMF_FORSESSION、上記モジュールdoc参照）。
         unsafe {
             activate_profile(
                 &mgr,
