@@ -17,9 +17,11 @@
 //!
 //! 仕組みは `gji_composition_probe.rs`(既存, ADR-091検証用)と同じ: 自前のEDITウィンドウを
 //! 作り、SendInputで物理キー相当を注入し、ImmGetOpenStatus/ImmGetConversionStatus/
-//! ImmGetCompositionStringWで実際の状態を直接読む。IMEはこのプロセスのセッション内だけ
+//! ImmGetCompositionStringWで実際の状態を直接読む。IMEはこのプロセスだけ
+//! （`TF_IPPMF_FORPROCESS`、ユーザーの他のアプリやログオンセッション全体には影響しない）
 //! MS-IME本体のTSFプロファイルへ切り替える(`ime_key_matrix_spike.rs`の`--msime`と同じ
-//! CLSID/プロファイルGUID)。終了時に元のプロファイルへ戻す。
+//! CLSID/プロファイルGUID)。終了時（正常終了・早期return・panicのいずれでも`ProfileRestoreGuard`
+//! のDropで）元のプロファイルへ戻す。元のプロファイルが読めない場合は切り替え自体を行わず中止する。
 //!
 //! 実行方法(Windows実機のみ): `cargo run -p awase-windows --example msime_native_composing_probe --release`
 
@@ -68,7 +70,11 @@ mod windows_probe {
 
     const TF_PROFILETYPE_INPUTPROCESSOR: u32 = 1;
     const TF_IPPMF_ENABLEPROFILE: u32 = 0x1;
-    const TF_IPPMF_FORSESSION: u32 = 0x2000_0000;
+    // レビュー指摘(高)反映: TF_IPPMF_FORSESSION（ログオンセッション全体、他のアプリ全部に影響し
+    // プロセス終了後も残る）ではなく TF_IPPMF_FORPROCESS（このプロセスだけ、プロセス終了で自動的に
+    // 元へ戻る）を使う。元のプロファイルへの復元が何らかの理由で失敗しても、このプロセスが
+    // 終了すればユーザーのデスクトップ全体がMS-IMEのままにはならない。
+    const TF_IPPMF_FORPROCESS: u32 = 0x1000_0000;
     // MS-IME本体のCLSID/プロファイルGUID(ime_key_matrix_spike.rsの--msimeと同一)。
     const MSIME_CLSID: u128 = 0x03B5835F_F03C_411B_9CE2_AA23E1171E36;
     const MSIME_PROFILE: u128 = 0xA76C93D9_5523_4E90_AAFA_4DB112F9AC76;
@@ -187,7 +193,10 @@ mod windows_probe {
     }
 
     /// # Safety
-    /// SendInput はプロセス全体に影響する。テスト目的でのみ呼ぶこと。
+    /// SendInputはシステムの入力キューに入り、その時点の前面ウィンドウに届く（プロセス単位では
+    /// なくOS単位の副作用）。`force_foreground`でこのプローブの`parent`ウィンドウを前面にした
+    /// 直後の短い時間だけ呼ぶことを前提にしている。ユーザーが操作中に別ウィンドウへフォーカスを
+    /// 奪われると、Esc/a/i/k/無変換の注入がそちらに届く。テスト目的でのみ呼ぶこと。
     unsafe fn send_vk(vk: u16, keyup: bool) {
         let flags = if keyup {
             KEYEVENTF_KEYUP
@@ -359,24 +368,59 @@ mod windows_probe {
         Ok(p)
     }
 
+    /// レビュー指摘(高)反映: 復元時に`langid`/`dwProfileType`/`hkl`を`0x0411`/固定値で決め打ちに
+    /// せず、`get_active_profile`が読んだ値をそのまま渡す。元がキーボードレイアウト型の
+    /// プロファイル（`clsid`/`guidProfile`が`GUID_NULL`）だった場合、これを
+    /// `TF_PROFILETYPE_INPUTPROCESSOR`・固定`langid`で活性化しようとすると失敗し、
+    /// MS-IME本体のまま戻らなくなる。
+    ///
     /// # Safety
-    /// TSF が初期化済みであること。
-    unsafe fn activate_profile(mgr: &ITfInputProcessorProfileMgr, clsid: GUID, profile: GUID) {
-        // SAFETY: mgr は有効な COM オブジェクト。
-        let r = unsafe {
-            mgr.ActivateProfile(
-                TF_PROFILETYPE_INPUTPROCESSOR,
-                0x0411,
-                &clsid,
-                &profile,
-                windows::Win32::UI::Input::KeyboardAndMouse::HKL(std::ptr::null_mut()),
-                TF_IPPMF_ENABLEPROFILE | TF_IPPMF_FORSESSION,
-            )
-        };
+    /// TSF が初期化済みであること。`hkl`は呼び出し元が渡した有効な値（`HKL(null)`でもよい）。
+    unsafe fn activate_profile(
+        mgr: &ITfInputProcessorProfileMgr,
+        profile_type: u32,
+        langid: u16,
+        clsid: GUID,
+        profile: GUID,
+        hkl: windows::Win32::UI::Input::KeyboardAndMouse::HKL,
+        flags: u32,
+    ) -> WinResult<()> {
+        // SAFETY: mgr は有効な COM オブジェクト、hkl は呼び出し元が渡した有効な値。
+        let r = unsafe { mgr.ActivateProfile(profile_type, langid, &clsid, &profile, hkl, flags) };
         log(&format!(
-            "[tsf] ActivateProfile(clsid={clsid:?}, profile={profile:?}) -> {r:?}"
+            "[tsf] ActivateProfile(type={profile_type} langid=0x{langid:04X} clsid={clsid:?} profile={profile:?} flags=0x{flags:X}) -> {r:?}"
         ));
         std::thread::sleep(Duration::from_millis(1500));
+        r
+    }
+
+    /// [`activate_profile`]で元のプロファイルへ戻すことを保証するRAIIガード。
+    /// レビュー指摘(中〜高)反映: 復元処理を`run()`の正常終了パスの末尾だけに置くと、
+    /// `create_probe_windows()?`・JSON書き出し・ファイル書き込み等の早期returnや、
+    /// 万一のpanicで復元がスキップされる。Dropに置くことでどの経路でも復元を試みる。
+    struct ProfileRestoreGuard<'a> {
+        mgr: &'a ITfInputProcessorProfileMgr,
+        original: TF_INPUTPROCESSORPROFILE,
+    }
+
+    impl Drop for ProfileRestoreGuard<'_> {
+        fn drop(&mut self) {
+            log("[tsf] restoring original profile (guard)...");
+            let p = self.original;
+            // SAFETY: mgr は run() が保持している有効な COM オブジェクト。hkl は
+            //         get_active_profile が返した値をそのまま渡す。
+            let _ = unsafe {
+                activate_profile(
+                    self.mgr,
+                    p.dwProfileType,
+                    p.langid,
+                    p.clsid,
+                    p.guidProfile,
+                    p.hkl,
+                    TF_IPPMF_ENABLEPROFILE | TF_IPPMF_FORPROCESS,
+                )
+            };
+        }
     }
 
     pub(super) fn run() -> anyhow::Result<()> {
@@ -389,20 +433,37 @@ mod windows_probe {
             // SAFETY: COM 初期化済み。
             unsafe { CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER) }?;
         // SAFETY: mgr は直前に取得した有効な COM オブジェクト。
-        let original_profile = unsafe { get_active_profile(&mgr) }.ok();
+        let Ok(original_profile) = (unsafe { get_active_profile(&mgr) }) else {
+            // レビュー指摘(高)反映: 元のプロファイルが読めないまま切り替えると、復元先が
+            // 分からず「MS-IME本体のまま戻せない」事故になりうる。読めないときは切り替え
+            // 自体を行わずに中止する。
+            anyhow::bail!(
+                "could not read the original active TIP profile; aborting before switching to MS-IME to avoid leaving the session stuck on it"
+            );
+        };
         log(&format!(
             "[tsf] original active profile: {original_profile:?}"
         ));
+        // `_restore_guard`のDropが、以降のどの終了経路（正常終了・`?`による早期return・panic）
+        // でも元のプロファイルへ戻すことを保証する（レビュー指摘、中〜高）。
+        let _restore_guard = ProfileRestoreGuard {
+            mgr: &mgr,
+            original: original_profile,
+        };
 
-        log("[tsf] switching to MS-IME native profile (session-scoped)...");
-        // SAFETY: mgr は有効な COM オブジェクト。
+        log("[tsf] switching to MS-IME native profile (this process only)...");
+        // SAFETY: mgr は有効な COM オブジェクト、hkl はプロセス内で完結するテスト用の値。
         unsafe {
             activate_profile(
                 &mgr,
+                TF_PROFILETYPE_INPUTPROCESSOR,
+                0x0411,
                 GUID::from_u128(MSIME_CLSID),
                 GUID::from_u128(MSIME_PROFILE),
+                windows::Win32::UI::Input::KeyboardAndMouse::HKL(std::ptr::null_mut()),
+                TF_IPPMF_ENABLEPROFILE | TF_IPPMF_FORPROCESS,
             )
-        };
+        }?;
 
         // SAFETY: メインスレッドから一度だけウィンドウを作成する。
         let (parent, edit) = unsafe { create_probe_windows() }?;
@@ -461,12 +522,7 @@ mod windows_probe {
         std::fs::write("msime_native_composing_probe_result.json", &json)?;
         log("[done] wrote msime_native_composing_probe_result.json");
 
-        log("[tsf] restoring original profile...");
-        if let Some(p) = original_profile {
-            // SAFETY: mgr は有効な COM オブジェクト。
-            unsafe { activate_profile(&mgr, p.clsid, p.guidProfile) };
-        }
-
+        // 元のプロファイルへの復元は `_restore_guard` の Drop（関数の終わりで発火）が行う。
         Ok(())
     }
 }
