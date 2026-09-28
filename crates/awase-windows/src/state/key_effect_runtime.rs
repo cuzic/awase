@@ -664,6 +664,30 @@ pub const fn passive_without_lookup(
     modified || (is_fkey && (injected || reuse || has_sync_direction))
 }
 
+/// 0x19（`VK_KANJI`）の打鍵で、`shadow_action` をどう決めるか（ADR-202 決定2・決定3）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KanjiRolePlan {
+    /// 静的 `Toggle`（hook が付けた値）のまま。GJI 以外（MS-IME 本体・ATOK 本体・未検出）は現行維持（決定2）。
+    KeepStatic,
+    /// 役割を付けず受動（`None`）。Ctrl・Shift・Win 付きは IME 側で別意味を持ちうる（決定3）。
+    Passive,
+    /// `Hankaku/Zenkaku` 行から役割を求める（GJI、決定1）。
+    Derive,
+}
+
+/// 0x19 の `shadow_action` の決め方（ホストテスト用の純関数）。0x19 は物理的に Alt 付きで届くので、
+/// Alt だけの修飾は受動にしない。
+#[must_use]
+pub const fn kanji_role_plan(is_gji: bool, ctrl: bool, shift: bool, win: bool) -> KanjiRolePlan {
+    if !is_gji {
+        KanjiRolePlan::KeepStatic
+    } else if ctrl || shift || win {
+        KanjiRolePlan::Passive
+    } else {
+        KanjiRolePlan::Derive
+    }
+}
+
 /// F13〜F24 のラッチを、`kp_stage_shadow_ime_toggle` の結果で確定する純関数（ADR-199 決定18(i)）。
 ///
 /// - 最初の Down（非injected・`!was_down`、`fresh_first_down`）: `(scan, 実際に書いたか→Some(Toggle)/None)` で上書き。
@@ -1725,6 +1749,26 @@ mod tests {
                 None
             );
         }
+    }
+
+    /// ADR-202 決定2・決定3: GJI 以外は静的 Toggle のまま、GJI は Alt だけなら役割を引き、Ctrl・Shift・Win 付きは受動。
+    #[test]
+    fn kanji_role_plan_rules() {
+        use KanjiRolePlan::{Derive, KeepStatic, Passive};
+        // GJI 以外は修飾に関わらず現行維持。
+        for (c, s, w) in [
+            (false, false, false),
+            (true, false, false),
+            (false, true, true),
+        ] {
+            assert_eq!(kanji_role_plan(false, c, s, w), KeepStatic);
+        }
+        // GJI: 修飾なし（Alt は引数に無い＝Alt だけの打鍵）は役割を引く。
+        assert_eq!(kanji_role_plan(true, false, false, false), Derive);
+        // GJI: Ctrl・Shift・Win のどれかが付くと受動。
+        assert_eq!(kanji_role_plan(true, true, false, false), Passive);
+        assert_eq!(kanji_role_plan(true, false, true, false), Passive);
+        assert_eq!(kanji_role_plan(true, false, false, true), Passive);
     }
 
     /// 役割を引かずに受動と決める条件（ADR-199 決定18、PR #328 Opus レビュー: 同期キーに F キーを書いた場合）。

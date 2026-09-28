@@ -117,11 +117,12 @@ impl WarningTracker {
         keymap: Option<&KeyEffectKeymap>,
         learned: Option<&[Cell]>,
         thumb_keys: [VkCode; 2],
+        passthrough_thumbs: &[VkCode],
     ) -> Vec<ModeKeyWarning> {
         if !enabled {
             return Vec::new();
         }
-        let warnings = detect(keymap, learned, thumb_keys);
+        let warnings = detect(keymap, learned, thumb_keys, passthrough_thumbs);
         self.deduplicate(warnings, stamp, None, learned.is_some())
     }
 
@@ -133,11 +134,12 @@ impl WarningTracker {
         keymap: Option<&KeyEffectKeymap>,
         learned: Option<&[Cell]>,
         thumb_keys: [VkCode; 2],
+        passthrough_thumbs: &[VkCode],
     ) -> Vec<ModeKeyWarning> {
         if !enabled {
             return Vec::new();
         }
-        let warnings = detect(keymap, learned, thumb_keys);
+        let warnings = detect(keymap, learned, thumb_keys, passthrough_thumbs);
         self.deduplicate(
             warnings,
             None,
@@ -180,11 +182,39 @@ impl WarningTracker {
     }
 }
 
+/// 無変換/変換の単独タップ設定から、IMEへ素通しされる親指キーのVKを求める。
+/// 抑止（`always_suppress`）・専用Fnキー・`*_solo_tap_ime_action`のいずれかがあれば、
+/// awaseが単独タップを消費するので素通しではない。
+#[must_use]
+pub fn passthrough_thumb_vks(
+    muhenkan_passthrough: bool,
+    muhenkan_consumed: bool,
+    henkan_passthrough: bool,
+    henkan_consumed: bool,
+) -> Vec<VkCode> {
+    let mut vks = Vec::new();
+    if muhenkan_passthrough && !muhenkan_consumed {
+        vks.push(VkCode(0x1D));
+    }
+    if henkan_passthrough && !henkan_consumed {
+        vks.push(VkCode(0x1C));
+    }
+    vks
+}
+
+/// 状態依存のIMEモードキーを検出する。
+///
+/// `passthrough_thumbs`は、単独タップがIMEへ素通しされる親指キー（[`passthrough_thumb_vks`]）。
+/// 親指キーは、awaseが単独タップを抑止・消費している間はIMEに届かないので、状態依存でも
+/// モードずれの原因にならず警告しない。素通しでも、開閉が入力前の状態で変わらない
+/// （冪等・純粋トグル）なら警告しない。警告するのは、素通し＋開閉軸が状態依存のときと、
+/// 素通し＋ユーザー固有の上書きで効果を追随できないときだけ。
 #[must_use]
 pub fn detect(
     keymap: Option<&KeyEffectKeymap>,
     learned: Option<&[Cell]>,
     thumb_keys: [VkCode; 2],
+    passthrough_thumbs: &[VkCode],
 ) -> Vec<ModeKeyWarning> {
     let mut open = Vec::new();
     let mut composition = Vec::new();
@@ -196,13 +226,16 @@ pub fn detect(
         let is_thumb = thumb_keys.contains(&code);
         match classify_state_dependent_mode_key(keymap, vk, learned) {
             Some(Classification::StateDependent(axis)) => {
+                let open_axis = matches!(
+                    axis,
+                    StateDependentAxis::Open | StateDependentAxis::OpenAndComposition
+                );
                 if is_thumb {
-                    thumbs.push(code);
+                    if open_axis && passthrough_thumbs.contains(&code) {
+                        thumbs.push(code);
+                    }
                 } else {
-                    if matches!(
-                        axis,
-                        StateDependentAxis::Open | StateDependentAxis::OpenAndComposition
-                    ) {
+                    if open_axis {
                         open.push(code);
                     }
                     if matches!(
@@ -219,7 +252,9 @@ pub fn detect(
                 // 上書きに割り当てている親指シフトユーザー（本ADRが最初に想定した
                 // ケースそのもの）に何の警告も出なくなる（/code-review PR #249指摘）。
                 if is_thumb {
-                    thumbs.push(code);
+                    if passthrough_thumbs.contains(&code) {
+                        thumbs.push(code);
+                    }
                 } else {
                     overrides.push(code);
                 }
@@ -250,7 +285,7 @@ mod tests {
 
     #[test]
     fn warning_wording_is_split_by_category() {
-        let warnings = detect(Some(&atok()), None, [VkCode(0), VkCode(0)]);
+        let warnings = detect(Some(&atok()), None, [VkCode(0), VkCode(0)], &[]);
         assert!(warnings
             .iter()
             .any(|w| w.kind == WarningKind::OpenAxis && w.message.contains("モードがずれる")));
@@ -260,7 +295,12 @@ mod tests {
 
     #[test]
     fn thumb_keys_are_routed_to_existing_conflict_style_warning() {
-        let warnings = detect(Some(&atok()), None, [VkCode(0x1C), VkCode(0x1D)]);
+        let warnings = detect(
+            Some(&atok()),
+            None,
+            [VkCode(0x1C), VkCode(0x1D)],
+            &[VkCode(0x1C), VkCode(0x1D)],
+        );
         assert!(!warnings.iter().any(|w| w.kind == WarningKind::OpenAxis));
         assert!(warnings
             .iter()
@@ -268,16 +308,43 @@ mod tests {
     }
 
     #[test]
+    fn suppressed_thumb_keys_never_warn_even_when_state_dependent() {
+        // 既定（`always_suppress`）では親指単独タップはIMEに届かないので、ATOKで状態依存でも警告しない。
+        let thumbs = [VkCode(0x1C), VkCode(0x1D)];
+        let mentions_thumb = |warnings: Vec<ModeKeyWarning>| {
+            warnings
+                .iter()
+                .any(|w| w.keys.iter().any(|k| thumbs.contains(k)))
+        };
+        assert!(!mentions_thumb(detect(Some(&atok()), None, thumbs, &[])));
+        let custom =
+            KeyEffectKeymap::from_config(Some(2), Some("DirectInput\tHenkan\tIMEOn".into()), &[])
+                .unwrap();
+        assert!(!mentions_thumb(detect(Some(&custom), None, thumbs, &[])));
+    }
+
+    #[test]
+    fn passthrough_thumb_is_derived_from_suppression_and_consumption() {
+        assert!(passthrough_thumb_vks(false, false, false, false).is_empty());
+        assert_eq!(
+            passthrough_thumb_vks(true, false, true, false),
+            vec![VkCode(0x1D), VkCode(0x1C)]
+        );
+        // 専用Fnキー・solo tap actionで消費されるなら素通しではない。
+        assert!(passthrough_thumb_vks(true, true, true, true).is_empty());
+    }
+
+    #[test]
     fn user_override_warns_but_ambiguous_and_insufficient_stay_silent() {
         let custom =
             KeyEffectKeymap::from_config(Some(2), Some("DirectInput\tHenkan\tIMEOn".into()), &[])
                 .unwrap();
-        assert!(detect(Some(&custom), None, [VkCode(0), VkCode(0)])
+        assert!(detect(Some(&custom), None, [VkCode(0), VkCode(0)], &[])
             .iter()
             .any(|w| w.kind == WarningKind::UserOverride));
         let native = KeyEffectKeymap::for_msime_native(false, None, None);
-        assert!(detect(Some(&native), None, [VkCode(0), VkCode(0)]).is_empty());
-        assert!(detect(None, None, [VkCode(0), VkCode(0)]).is_empty());
+        assert!(detect(Some(&native), None, [VkCode(0), VkCode(0)], &[]).is_empty());
+        assert!(detect(None, None, [VkCode(0), VkCode(0)], &[]).is_empty());
     }
 
     #[test]
@@ -289,7 +356,12 @@ mod tests {
         let custom =
             KeyEffectKeymap::from_config(Some(2), Some("DirectInput\tHenkan\tIMEOn".into()), &[])
                 .unwrap();
-        let warnings = detect(Some(&custom), None, [VkCode(0x1C), VkCode(0)]);
+        let warnings = detect(
+            Some(&custom),
+            None,
+            [VkCode(0x1C), VkCode(0)],
+            &[VkCode(0x1C)],
+        );
         assert!(
             warnings
                 .iter()
@@ -304,16 +376,16 @@ mod tests {
         let mut tracker = WarningTracker::default();
         let thumbs = [VkCode(0), VkCode(0)];
         assert!(!tracker
-            .detect_gji(true, Some((1, 1)), Some(&atok()), None, thumbs)
+            .detect_gji(true, Some((1, 1)), Some(&atok()), None, thumbs, &[])
             .is_empty());
         assert!(tracker
-            .detect_gji(true, Some((1, 1)), Some(&atok()), None, thumbs)
+            .detect_gji(true, Some((1, 1)), Some(&atok()), None, thumbs, &[])
             .is_empty());
         assert!(!tracker
-            .detect_gji(true, Some((2, 1)), Some(&atok()), None, thumbs)
+            .detect_gji(true, Some((2, 1)), Some(&atok()), None, thumbs, &[])
             .is_empty());
         assert!(tracker
-            .detect_gji(false, Some((3, 1)), Some(&atok()), None, thumbs)
+            .detect_gji(false, Some((3, 1)), Some(&atok()), None, thumbs, &[])
             .is_empty());
     }
 
@@ -347,24 +419,25 @@ mod tests {
                 .iter()
                 .any(|w| w.kind == WarningKind::OpenAxis && w.keys.contains(&VkCode(0x1C)))
         };
-        assert!(henkan_open_axis(&detect(Some(&atok()), None, thumbs)));
+        assert!(henkan_open_axis(&detect(Some(&atok()), None, thumbs, &[])));
         assert!(!henkan_open_axis(&detect(
             Some(&atok()),
             Some(&learned),
-            thumbs
+            thumbs,
+            &[]
         )));
 
         // 同じ設定ファイルの版でも、学習表の採用有無が変わったら警告を出し直す。
         let mut tracker = WarningTracker::default();
         let stamp = Some((1, 1));
         assert!(!tracker
-            .detect_gji(true, stamp, Some(&atok()), None, thumbs)
+            .detect_gji(true, stamp, Some(&atok()), None, thumbs, &[])
             .is_empty());
         assert!(tracker
-            .detect_gji(true, stamp, Some(&atok()), None, thumbs)
+            .detect_gji(true, stamp, Some(&atok()), None, thumbs, &[])
             .is_empty());
         assert!(!tracker
-            .detect_gji(true, stamp, Some(&atok()), Some(&learned), thumbs)
+            .detect_gji(true, stamp, Some(&atok()), Some(&learned), thumbs, &[])
             .is_empty());
     }
 
@@ -377,6 +450,7 @@ mod tests {
             Some(&atok()),
             None,
             [VkCode(0), VkCode(0)],
+            &[],
         );
         assert!(first.iter().any(|w| w.kind == WarningKind::Composition));
         let changed = tracker.detect_gji(
@@ -385,6 +459,7 @@ mod tests {
             Some(&atok()),
             None,
             [VkCode(0x19), VkCode(0)],
+            &[],
         );
         assert!(changed.iter().any(|w| w.kind == WarningKind::Composition));
     }

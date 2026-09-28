@@ -70,7 +70,7 @@ Composition→`Convert`/`ToggleAlphanumericMode`（L30/L35）で、「入力し�
 キー設定エディタでの編集は、選択中のプリセットの TSV をコピーしたところから始まる（`config_dialog.cc` L765-788 `EditKeymap()`）。
 `session_keymap == CUSTOM` のときは `custom_keymap_table` **だけ**が使われ、プリセットに重ねるのではなく置き換える
 （`src/session/keymap.cc` L169-194、`ApplyPrimarySessionKeymap`）。プリセットの中身は GUI から変えられない（変えると CUSTOM になる）。
-よってカスタム表には、半角/全角を変えていなくても `Hankaku/Zenkaku` 行が残る（ソースからの推論。実ファイルでは未確認、T1(a)）。
+よってカスタム表には、半角/全角を変えていなくても `Hankaku/Zenkaku` 行が残る（ソースからの推論。**T1(a) 確認済み（2026-09-26）**: 実機で GJI が書いた CUSTOM 表（`docs/adr/186-measurements/config1-custom-keymap-table-ignored.tsv`）に `Hankaku/Zenkaku` 行が4状態とも残っている（`DirectInput`→`IMEOn`、他→`IMEOff`＝プリセット既定と同値）。`Kanji` 行も4状態とも書かれている（キー設定エディタには出ない）。GJI の設定画面は使わず、この実サンプルと、`config1.db` の protobuf を直接生成した実機検証（下記 T1(b)(e)）で確認した。）
 `Kanji`・`ON`・`OFF` の行はキー設定エディタに表示されない（`keymap_editor.cc` L125-127）。
 
 MS-IME（新しいバージョン）で割り当てを変えられるのは、無変換・変換・Ctrl+Space・Shift+Space の4つだけで、半角/全角は固定
@@ -202,7 +202,7 @@ Suggestion/Prediction/ZeroQuerySuggestion は継承規則（背景1）で**実�
 
 - **Open**: 閉状態から開く。`IMEOn`、および DirectInput 行の `CompositionMode*`/旧名 `InputMode*`（Mozc `keymap.cc` L460-471 が DirectInput に登録。
   所有者定義の「ひらがな/カタカナに設定して」に当たる）。※ `kCompositionModeXCommandSupported` が偽のビルドでは DirectInput の `CompositionMode*` は
-  `NONE` で登録される（同 L472-483）。Windows 版 GJI でどちらかは未確認（T1(c)）で、確認までは `CompositionMode*` を Open に数えない（受動側に倒す。決定13）。
+  `NONE` で登録される（同 L472-483）。Windows 版 GJI でどちらかは未確認だった（T1(c)）。**T1(c) 実機確認済み（2026-09-26、GitHub Actions windows-latest、GJI の CUSTOM 表）**: DirectInput 行の `InputModeHiragana` も `CompositionModeHiragana` も、IME OFF から押すと実際に IME が開く（`open` 0→1）。対照: 行を書かない無変換は開かず、同じ表の `Henkan→IMEOn` は開く（表は読まれている）。run 36241517512（`sc-t1c-inputmode`/`sc-t1c-compmode`）・36241771830（`sc-t1c-none`）。これを受けて `CompositionMode*`/`InputMode*` を Open に数えるかは決定13 の見直し事項（実装は未着手）。
 - **Close**: 開状態から閉じる。`IMEOff`・`CancelAndIMEOff`。
 - **その他**: 上記以外（`Convert`・`Reconvert`・`ToggleAlphanumericMode` 等）、未知のコマンド、実効コマンドが無い（何もしない）。
 
@@ -381,6 +381,8 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
 
 ### 決定13（所有者決定 U3）: モードを指定して開くトグルも開閉だけ書く。実機で確認できるまでは受動
 
+**確定（2026-09-26、所有者決定）: `CompositionMode*`/`InputMode*` を Open に数える。** T1(c) で GJI の DirectInput 行のこれらのコマンドが実際に IME を開くと実機で確認できたため、下の「確認できるまでは受動」は解消した（実装は T15）。
+
 - DirectInput の `CompositionMode*`/`InputMode*` で本当に開くか（T1(c)）の実機確認が済むまでは、これらを Open に数えない。所有者の例
   （ひらがな/カタカナのモードを指定して開くキー）はそれまで受動。
 - 開くと確認できたら Open に数える。awase が書くのは開閉だけ（`VK_IME_ON`/`VK_IME_OFF`）で、変換モード軸は書かない（決定5、ADR-191）。
@@ -389,10 +391,13 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
 
 ### 決定14（所有者決定 U4）: 0x19 は当面現状維持。T1(b) の後に「ユーザー設定で変えられない既知のトグル」として扱う
 
+**確定（2026-09-26、所有者決定）: 0x19 を役割判定に入れる（GJI）。** T1(b) で GJI の 0x19 は `Hankaku/Zenkaku` 行に従い `Kanji` 行は見ないと実機で確認できたため、「ユーザー設定で変えられない既知のトグル」とする下の移行（T14）は行わない。0x19 の役割は `Hankaku/Zenkaku` 行から逆算する（実装は T16）。Alt 付きで届くため決定4 の候補集合・無修飾ガードは通さず、専用経路にする。MS-IME 本体は未確認のため、当面は今の固定トグルのまま（確認後に別途）。`keys.ime_toggle` の既定（`VK_KANJI`）の扱いは T16 で決め直す。
+
 - 当面: `hook.rs:272-299` の静的 `Toggle`（`vk.rs:156`、IME 種別に依らない）をそのまま使う。
 - T1(b)（TSF 経路で 0x19 が `Hankaku/Zenkaku` 行に従わないことの実機確認）の後: 決定6-4 と同じ「既知のトグル」とし、採用中の学習表に
   矛盾セル（決定6-2 の2種、`TableKey::Kanji`）があるときだけ受動に狭める。IME 種別に依らない点は変えない（学習表があるのは GJI・MS-IME 本体だけなので、
   狭めが効くのもその2つだけ）。T1(b) で行に従うと分かった場合は、0x19 を役割判定に入れるかを改めて決める（別 round）。
+  **T1(b) 実機確認済み（2026-09-26、GitHub Actions windows-latest、GJI の CUSTOM 表）: 0x19 は行に従う。** 変換（`DirectInput Henkan IMEOn`）で IME を開き Alt+0x19 を押す。`Precomposition Hankaku/Zenkaku IMEOff` の行がある表では閉じ（`open` 1→0）、行のない対照表では開いたまま。run 36242111739（`sc-t1b-row-imeoff`/`sc-t1b-no-row`）。`Kanji` 行だけ（`Precomposition Kanji IMEOff`、`Hankaku/Zenkaku` 行なし）の表では Alt+0x19 で閉じず（run 36242940343 `sc-t1b-kanji-row-only`）、0x19 が従うのは `Hankaku/Zenkaku` 行だけで `Kanji` 行は見ない（T2 の「`Kanji` 行は 0x19 に写さない」を実機で裏付け）。よって「ユーザー設定で変えられない既知のトグル」とする前提は GJI では成り立たず、T14 は止めて、0x19 を役割判定に入れるかを別 round で決める（所有者判断待ち。MS-IME 本体は未確認）。
 - どの段階でも 0x19 は決定4 の候補集合・無修飾ガードに通さない（Alt 付きで届くため）。`keys.ime_toggle` の既定を空にする変更（決定15、所有者回答 2026-09-25 で確定）はこの移行と同じ変更で行う。
 
 ### 決定15（所有者決定 U5・2026-09-25 修正）: awase 既定の `keys.ime_on`/`ime_off` は残す（awase 自身が actuate する設定）。`keys.ime_toggle` の既定は決定14 の移行と同時に空にする
@@ -581,26 +586,40 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
 - **複雑性**: 判定関数とプリセット定数表を新設する。U9 の拡大で、F13〜F24 の配送分岐1つ・リピート条件1つ・ラッチへの書き込み1箇所（決定18）と、
   親指キーの `forced_open_action` への役割由来の合成（決定16）が加わる。代わりに `is_open_toggle_for`・08 の (B) 案の分岐を撤去する
   （complexity-budget は未発効だが、撤去量を PR に記録する）。
+- **半角/全角のラッチ固着の疑い（コードレビュー指摘、2026-09-26 実機確認で再現せず）**: `runtime/mod.rs` の `reuse = is_up || (fresh_down && event.was_down)` は
+  `was_down` を VK 単位（0xF3/0xF4 は別 VK）で管理しているため、「同じ物理キーの Down/Up で異なる VK が届き続けると片方の VK の Up が来ず、
+  以後その VK の Down がリピート扱いでラッチの初回判定に固着する」のではと疑われた。`ci/e2e-typing-stress`（run 36320215538、
+  `sc-hzscan-*`）で Down=0xF3/Up=0xF4 の非対称注入を8回連続で行ったが、ATOK・GJI+MS-IMEプリセット・MS-IME本体いずれも全9回 ALL PASS
+  （ラッチは毎回正しく反転）で、固着は再現しなかった。長時間使用・他アプリへの切替を挟むケースは未検証。
+  副産物として `sc-hzctrl-*`（半角/全角 ⇄ Ctrl+半角/全角タップの交互）で、**MS-IME 本体だけ** 2回目の Ctrl+タップで実 IME の開閉が反転しない事象を
+  3/3 回で再現した（GJI は ATOK・MS-IMEプリセットとも6/6 PASS）。`awase.log` では該当 F3 は `mods(c=true) phys_ctrl=true` で
+  修飾付きと正しく判定され `decision="PassThrough" physical="Allow"`（決定5どおり素通し）になっており、awase 側の誤動作ではなく
+  MS-IME 本体自体が Ctrl+半角/全角 の連続タップを開閉トグルとして扱わないことがある、という実 IME 側の挙動と見られる。
 
 ## 移行・実装タスクの分割案
 
 | # | 内容 | 既存 docs/tasks との対応 |
 | --- | --- | --- |
 | T0 | （完了）所有者確認。U1〜U10・Q2 と `keys.ime_toggle` 既定（空にする、決定15）まで回答済みで、未決は無い（決定3・決定11〜18） | — |
-| T1 | 実機確認（(c) を最優先。決定13 で所有者の例〈モード指定で開くキー〉が対象になるかを決めるため）: (c) DirectInput の `CompositionMode*` で開くか、(a) 半角/全角を変えていないカスタム TSV に `Hankaku/Zenkaku` 行が残るか、(b) TSF 経路で 0x19 が `Hankaku/Zenkaku` 行に従うか（カスタム表で半角/全角だけ変えて Alt+半角/全角を押す1回。決定14 の移行の前提）、(d) 互換モードのチェックボックスを触っていない環境で `NoTsf3Override2` が無いか（決定17 の `None` の扱い）、(e) `Scancode Map` で F13 を出し、GJI の CUSTOM で F13 をトグルにした構成の実タイピング（TsfNative 1つ以上、決定18） | 08 の未確認点を引き継ぐ |
+| T1 | 実機確認（(c) を最優先。決定13 で所有者の例〈モード指定で開くキー〉が対象になるかを決めるため）: (c) DirectInput の `CompositionMode*` で開くか、(a) 半角/全角を変えていないカスタム TSV に `Hankaku/Zenkaku` 行が残るか、(b) TSF 経路で 0x19 が `Hankaku/Zenkaku` 行に従うか（カスタム表で半角/全角だけ変えて Alt+半角/全角を押す1回。決定14 の移行の前提）、(d) 互換モードのチェックボックスを触っていない環境で `NoTsf3Override2` が無いか（決定17 の `None` の扱い）、(e) `Scancode Map` で F13 を出し、GJI の CUSTOM で F13 をトグルにした構成の実タイピング（TsfNative 1つ以上、決定18） | 08 の未確認点を引き継ぐ。**進捗（2026-09-26）**: (a)(b)(c) は GJI で確認済み（決定13・14・上の表を参照）。(e) の一部: `DirectInput F13 IMEOn`・`Precomposition/Composition F13 IMEOff` の表で、VK 0x7C（スキャンコード無しの注入）を押すと IME OFF から開き、入力中にもう一度押すと閉じる（run 36243203670 `sc-t1e-f13-toggle`）。Scancode Map による実 F13 と TsfNative（Chrome 等）での実タイピングは未確認。(d) 未確認 |
 | T2 | `awase-gji-config`: 継承規則つきの状態表（CUSTOM のみ）、決定4の判定関数（対象キー名は `Hankaku/Zenkaku`・`F13`〜`F24`・`Muhenkan`・`Henkan`）、プリセット定数表（Mozc TSV との突き合わせテスト付き）、キー名→VK 写像の一本化（純粋関数）。`Kanji` 行は 0x19 に写さない。awase-windows 側: `KeyEffectKeymap` に生の `session_keymap`、`read_key_effect_keymap` の不在→既定 keymap（決定8） | 08 のタスク「判定を純粋関数として」 |
 | T3 | **（実装済み・PR 未マージ）** 学習表による狭め（`state/`、決定6-2。半角/全角・無変換/変換。F キーはセルが無いので対象外）と食い違い記録。PR #308 の分岐を包含。実装: `key_effect_table.rs::toggle_contradiction`/`NARROWABLE_KEYS`、`RuntimeTableCache::toggle_contradiction`（読込時に前計算し warn ログ）、不具合報告 `toggle_contradictions`。`hz_omit_verdict` の GJI 限定を撤去（MS-IME 本体にも適用、決定6-4）。**#308 からの挙動変更**: 閉→閉の1セルでも狭める（#308 は見送り）、C19/C10 が揃う前提を撤廃。無変換/変換を役割に結ぶ配線とラッチの一般化は T4 | 01・06・PR #308 と経路を共有 |
 | T4 | **（半角/全角の配線まで実装済み・PR 未マージ）** 予測経路の keymap/学習表取得をヘルパーに切り出し、`kp_run_inner` 冒頭で候補キーのときだけ役割を求めて enrich に渡す（決定8）、`vk.rs` の `is_open_toggle_for` 撤去（`vk.rs:1347/1360` のテストも）、`transport.rs` の Suppress 判定更新（影響表）。`architecture_guard.rs` の `bug116_...` の必須トークンを新しい判定に差し替え、`:816` の説明文を更新。バッチ前処理と `kp_run_inner` の間で `shadow_action` を読む経路が無いことの確認。PR #308 のラッチを候補キー全体の打鍵ごとのラッチに一般化。`vk.rs` の候補キー判定は T2 の `awase_gji_config::role::ROLE_CANDIDATE_VK_NAMES` から作る（定義を2箇所にしない）。**0x19 は決定14 の移行まで `hook.rs` の経路から動かさない** **実装状況**: `Runtime::enrich_key_role`（`kp_run_inner` 冒頭。`enrich_ime_relevance` は sync キーだけに縮小しバッチ前処理は候補キーに触らない）、`derive_key_shadow_action`（明示 config 重なり→`Engine::has_bare_ime_combo`、GJI は `config1.db` から逆算〈読めなければ受動〉、MS-IME 本体は仕様固定、学習表で狭める）、`KeymapCache::get_gji`/`get_native`（予測と共通）、ラッチ `latch_step`（値は「この打鍵の最終的な `shadow_action`」）、`vk::is_role_candidate`。`is_open_toggle_for` 撤去、`transport.rs` の Suppress は `Some(Toggle)` かつ 0xF3/0xF4、`bug116_...` の必須トークン差し替え。**配線範囲は半角/全角だけ**: F13〜F24（T9）・無変換/変換（決定16）は各配線が入るまで受動のまま。副次的に、MS-IME 本体の学習表による狭めが GJI の keymap でなく本体の keymap を使うようになった（T3 の取得元の誤りを是正）。規則の組み合わせは純関数 `state/key_effect_runtime.rs::key_shadow_action`（ホストテスト）。修飾付き・IME 未同定の打鍵も `None` 判定としてラッチに記録する（Down=Allow・Up=Suppress の非対称の是正、PR #326 Opus レビュー）。**既知の残課題（記録のみ）**: (1) `has_bare_ime_combo` は VK 完全一致なので、`ime_on = ["VK_DBE_SBCSCHAR"]` のように片方の VK だけ書くと他方の VK の打鍵には役割が付く（Engine 自体の照合も VK 一致で旧来からの挙動）。(2) 保留（`try_hold_key`）から再入した打鍵が早期 return すると、1回目の `shadow_action` が残りうる（Down/Up で同値のため実害小）。(3) Down が `deliver_key_event` の早期 return で `kp_run_inner` を通らないとき、Up は前回打鍵の古いラッチを再利用しうる（旧来から） | 08 のタスク「影響洗い出し」 |
 | T5 | （欠番）旧「`keys.ime_on`/`ime_off` の既定を空にする」は所有者回答（2026-09-25、U5 修正）で撤回。`ime_on`/`ime_off` の既定は残す（決定15）ので既定変更・移行のタスクは無い | — |
 | T6 | ADR-192 警告の対象・文言の更新 | 08 論点 (A)・(C) |
-| T7 | ADR-189/191/195 の status・summary 追記（RM3 置換、195(A) の追記）と、残る能動書き込みの棚卸し（09）への反映 | 10（status 同期）・08（191 summary 訂正）・09 |
+| T7 | **（ADR-189/191/195 の status 追記は実装済み。09 への反映は未着手）** ADR-189/191/195 の status・summary 追記（RM3 置換、195(A) の追記）と、残る能動書き込みの棚卸し（09）への反映 | 10（status 同期）・08（191 summary 訂正）・09 |
 | T8 | 決定10（別件の BUG・fix PR として先行してよい） | — |
 | T9 | **（実装済み・PR 未マージ）** 決定18（F13〜F24）: 候補集合の入口（`ime_kind()` の早期 return の前）、ラッチへの `shadow_toggled` の書き込み（`key_pipeline.rs:328` の直後）、`was_down` の Down で昇格させない条件、`transport.rs::plan` の F キー分岐と `suppress_reason` のラベル。T4 の後 **実装状況**: 候補集合の入口は `enrich_key_role`（`vk::is_role_fkey`、半角/全角と F13〜F24 だけ配線。無変換/変換は T10）。最初の Down の判定は暫定で、`kp_stage_shadow_ime_toggle` 直後の `settle_fkey_role_latch` が `shadow_toggled` で上書きする。F キーの Up・リピートでラッチの scan が不一致なら `None`（Allow）、injected には付けない。`kp_stage_shadow_ime_toggle` の `intent_kind` は F13〜F24 の `was_down` Down では昇格させない（決定18(ii)）。`transport.rs` は `thumb_or_role_fkey_disposition`（無変換/変換の従来分岐を移したものと F キー分岐。`plan` の認知的複雑度のため関数化）で最初の Down は `shadow_toggled`、リピート/Up は `shadow_action.is_some()` で Suppress（ImmCross でも同じ）、`suppress_reason` は `role-fkey`。MS-IME 本体では F キーは受動（`key_shadow_action` の `msime_fixed_toggle`）。`is_japanese_ime` は上げない（`should_upgrade_is_japanese_ime` は 0xF0〜0xF4 のまま、ホストテストで固定）。PR #328 Opus レビュー反映: 同期キー（`keys.ime_detect`）に F キーを書いたときは役割を付けない（`passive_without_lookup`。付けると `shadow_toggled` が同期キー由来で立ち、書かなかった打鍵まで Suppress される。決定9）、F キーの一致する Up でラッチを捨てる（`settle_fkey_latch`。次の Down が `kp_run_inner` を通らないとき Up だけ Suppress される非対称の防止）。**既知の制約**: 同期キー経路には `was_down` の除外が無く、リピートのたびに belief が反転する（旧来から） | — |
 | T10 | **（実装済み・PR 未マージ）** 決定16（無変換/変換）: 親指キーの KeyDown で役割を求め、`config由来.or(役割由来)` を `set_thumb_forced_open_actions` に渡す。ADR-192 決定3b のテスト群（`src/engine/tests.rs`）に役割由来のケースを足す **実装状況**: `Runtime::enrich_thumb_key_role`（`kp_run_inner` の `engine.on_input` より前。非injected・非リピートの無変換/変換の KeyDown だけ）が`config由来（Engine::bare_ime_action = SpecialKeyCombos::bare_ime_action）.or(役割由来)` を `set_thumb_forced_open_actions` に打鍵ごとに設定し直す。役割由来は T4 の `derive_key_shadow_action`（GJI の `config1.db` 逆算・学習表による狭め）を再利用し、修飾付きの押下・MS-IME 本体（T12 まで受動。`key_shadow_action` の `msime_fixed_toggle` は半角/全角だけ）・IME 未同定では config 由来だけに戻す。`shadow_action` は付けず物理配送は変えない。`thumb_forced_open_actions`（config 由来の分類）は `SpecialKeyCombos::bare_ime_action` に一本化。ADR-192 の status への追記は T7。PR #331 Opus レビュー反映: 合成は純関数 `thumb_forced_action`（ホストテスト）、injected の Down も設定し直す（役割は引かず config 由来へ戻す。早期 return だと直前の物理打鍵の役割を引き継ぐ）、押した側の値だけを書く（`Engine::thumb_forced_open_actions` getter）。**所有者決定A（2026-09-26）**: `PendingCharThumb` のタイムアウトでは、forced 開閉を持つ親指は確定せず `PendingThumb` に戻し、KeyUp（か次のキー）で解決する（`defers_forced_open_until_release`。char1 だけ単独確定）。親指を押したまま IME が閉じない。変換パススルー（ADR-182 決定1c）の親指は従来どおりタイムアウトで確定。**この経路に入るのは `min_overlap_margin_percent` が 0 より大きいときだけ**（既定 0 では重なり不足にならず、文字→親指は常に同時打鍵と確定する）。実機E2E `sc-charthumb-gji-atok`（GJI ATOK、`min_overlap_margin_percent=15`、`keys.ime_off=VK_NONCONVERT`、文字→親指を押し続ける×3ラウンド×2回）: 修正なし(develop) run 36239250076 は 0/6 PASS（タイムアウトで閉じる要求が `Unwarranted` になり直後に開き直され、離しても IME が閉じない）、修正あり run 36239248412 は 6/6 PASS（保持中は開いたまま、離すと閉じる） | — |
 | T11 | 決定15 の文書追随（`ime_toggle` の既定を空にする T14 と同時、別タスク）: 同梱 `config.toml:27-29`、`docs/usage.html:674-675`・`:779`、`docs/usage.en.html` の対応箇所、`crates/awase-settings/src/main.rs:4856-4883` の説明。`ime_on`/`ime_off` の記述は変えない | 10（status・文書同期） |
-| T12 | U7（確定）: MS-IME 本体の変換/無変換の役割（レジストリ）。トグルに当たるレジストリ値を実機で確認してから足す（既知の 0/1 は受動）。`check_and_warn` の案内文言 | — |
+| T12 | **確定（2026-09-26、実機 dragonflyg4、設定アプリを UI Automation で自動操作して確認）**。値と機能名の対応（無変換=`KeyAssignmentMuhenkan`・変換=`KeyAssignmentHenkan`、共通で 0=IME-オン・1=IME-オフ・**2=IME-オン/オフ（トグル）**、3 だけ無変換=ひらがな/カタカナ・変換=再変換で異なる）。実機で値2を選び実際に打鍵して確認: 直接入力→無変換で開く（open 0→1）、IME ON→無変換で閉じる（open 1→0）、真のトグル。既存コード注記の「`KeyAssignmentHenkan`=1 は IME-オン」は誤りで、実際は無変換/変換とも 1=IME-オフ（対称）——修正が要る。
+  **CI（T1(d) 行・PR #344）で値を確定できなかった理由が判明**: windows-latest でレジストリ直書きが反映されなかったのは、値そのものの問題ではなく、**実機側が「以前のバージョンの Microsoft IME を使う」（`NoTsf3Override2=1`、ADR-197 の互換モード）を ON にしていたため**、新しいバージョンのキー割り当て機構自体が使われていなかったから（実機で確認: 互換モード ON のままレジストリへ 0/1/2 のどれを書いても無変換の挙動は同一〈かな切替〉、`IsKeyAssignmentEnabled=0` でも同じ）。互換モードを OFF にし、設定アプリの UI（`ms-settings:regionlanguage-jpnime` →「全般」→「キーとタッチのカスタマイズ」→「キーの割り当て」）で値を選んで初めて反映される。レジストリを直接書くだけでは（`IsKeyAssignmentEnabled=1` にしても、ctfmon 再起動をしても）実際の変換エンジンには反映されない（CI・実機とも共通）。
+  作業は実機のレジストリ・互換モードとも元の値（`IsKeyAssignmentEnabled=0`・`KeyAssignmentMuhenkan/Henkan=2`・`NoTsf3Override2=1`）に復元済み、`awase.exe` 再起動済み。`check_and_warn` の案内文言・実装（値2＝トグルを検出）は T17 として別タスク化 | — |
+| T17 | T12 の実装: `msime_key_assignment.rs` に `KeyAssignmentMuhenkan/Henkan == 2`（トグル）の検出を追加し、決定17（半角/全角は受動のまま）と同様に案内・警告に反映する。既存の「`Henkan`=1 は IME-オン」という誤った注記の訂正も含む | T12 |
 | T13 | 決定17: 互換モードのとき MS-IME 本体の半角/全角を受動に（レジストリ読み取りは予測経路と同じ間引き） | — |
-| T14 | 決定14 の移行（T1(b) の後）: 0x19 を既知のトグルとして学習表の `Kanji` セルで狭める＋`keys.ime_toggle` の既定を空に（決定15、所有者回答で確定。JIS 切替の書き込み `main.rs:2591` を空に揃える、既存 config.toml に残る `VK_KANJI` の移行処理の要否の確認、0x19 が無修飾コンボに一致しないことの確認を含む） | — |
+| T14 | **（撤回・T16 に置換: 2026-09-26 の所有者決定で 0x19 は役割判定に入れる）** 決定14 の移行（T1(b) の後）: 0x19 を既知のトグルとして学習表の `Kanji` セルで狭める＋`keys.ime_toggle` の既定を空に（決定15、所有者回答で確定。JIS 切替の書き込み `main.rs:2591` を空に揃える、既存 config.toml に残る `VK_KANJI` の移行処理の要否の確認、0x19 が無修飾コンボに一致しないことの確認を含む） | — |
+| T15 | **（実装済み・PR #339 マージ済み）** 決定13（確定）: `awase-gji-config/src/command.rs::classify_command` で DirectInput 行の `CompositionMode*`/旧名 `InputMode*` を Open に数える（テスト: 決定13 の例〈ひらがな/カタカナ指定で開くキー〉。awase が書くのは開閉だけ、変換モード軸は書かない）。実機確認は済み（T1(c)、run 36241517512）。**実装状況**: 純関数 `command::sets_absolute_mode`（`CompositionMode*`/旧名 `InputMode*` の絶対設定系5種）を `role.rs::Effect::of` の DirectInput 行で Open に数える。`classify_command` は変えない（`keymap.rs` のモード追随が旧名の行まで拾う挙動変更を避ける）。DirectInput 以外・相対トグル系は従来どおり受動 | 決定13 |
+| T16 | **設計は [ADR-202](202-kanji-0x19-role-from-hankaku-zenkaku-row.md)（採用・未決2件も確定、実装未着手）**。決定14（確定）: 0x19 を `Hankaku/Zenkaku` 行から役割逆算する専用経路（Alt 付きで届くので決定4 の候補集合・無修飾ガードは通さない、`Kanji` 行は見ない）。`hook.rs` の静的 Toggle の置換範囲、`keys.ime_toggle` 既定（`VK_KANJI`）の扱い、MS-IME 本体の 0x19（未確認）を決める。実機根拠: run 36242111739・36242940343 | 決定14 |
 
 ## テスト方針
 

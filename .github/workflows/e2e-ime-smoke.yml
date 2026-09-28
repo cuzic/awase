@@ -9,11 +9,12 @@ name: e2e-ime-smoke
 # 合否は不変条件の件数だけで決める(gate_mode=invariants)。期待表(check_consistency.py)の結果は summary に表示するが
 # 合否には使わない(フォーカス喪失で INVALID になる等、CI 環境の揺らぎで赤くならないように)。
 #
-# develop への push でも回す: PR から見えるキャッシュ(ビルド済み exe・rust-cache)は base ブランチ(develop)のものなので、
-# develop で保存しておくと PR のビルドが速くなる。develop 上の退行の早期検知も兼ねる。
+# develop/v1-develop への push でも回す: PR から見えるキャッシュ(ビルド済み exe・rust-cache)は
+# base ブランチのものなので、そこで保存しておくと PR のビルドが速くなる。base ブランチ上の
+# 退行の早期検知も兼ねる。v1-develop は v1(保守)ラインの開発ブランチ(2026-09-27〜)。
 on:
   pull_request:
-    branches: [develop]
+    branches: [develop, v1-develop]
     paths:
       - 'src/**'
       - 'crates/awase-windows/**'

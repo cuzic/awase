@@ -85,9 +85,28 @@ pub fn classify_command(command: &str) -> GjiModeCommand {
     }
 }
 
+/// 現在の状態に関係なく特定の入力モードへ遷移する絶対設定系のコマンド名か（`CompositionMode*` と旧名 `InputMode*`）。
+///
+/// DirectInput（IME OFF）の行にあると、実機の GJI ではこれで IME が開く（ADR-199 決定13・T1(c)、GitHub Actions windows-latest の
+/// `sc-t1c-*` で `InputModeHiragana`・`CompositionModeHiragana` の両方を確認）。役割判定（`role.rs`）が Open に数えるために使う。
+/// [`classify_command`] は変えない（`keymap.rs` のモード追随〈`extract_mode_keys` 等〉が旧名の行まで拾う挙動変更を避ける）。
+/// `SwitchKanaType` などの相対トグル系は含めない。
+#[must_use]
+pub fn sets_absolute_mode(command: &str) -> bool {
+    let name = command
+        .strip_prefix("CompositionMode")
+        .or_else(|| command.strip_prefix("InputMode"));
+    matches!(
+        name,
+        Some(
+            "Hiragana" | "FullKatakana" | "HalfKatakana" | "FullAlphanumeric" | "HalfAlphanumeric"
+        )
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{classify_command, GjiCompositionMode, GjiModeCommand};
+    use super::{classify_command, sets_absolute_mode, GjiCompositionMode, GjiModeCommand};
 
     #[test]
     fn recognizes_ime_on_off() {
@@ -153,6 +172,38 @@ mod tests {
             "SomeFutureMozcCommand",
         ] {
             assert_eq!(classify_command(command), GjiModeCommand::Other);
+        }
+    }
+
+    /// ADR-199 決定13（T15）: `CompositionMode*` と旧名 `InputMode*` の絶対設定系だけが対象。
+    #[test]
+    fn sets_absolute_mode_covers_both_names_and_only_absolute_commands() {
+        for mode in [
+            "Hiragana",
+            "FullKatakana",
+            "HalfKatakana",
+            "FullAlphanumeric",
+            "HalfAlphanumeric",
+        ] {
+            assert!(
+                sets_absolute_mode(&format!("CompositionMode{mode}")),
+                "{mode}"
+            );
+            assert!(sets_absolute_mode(&format!("InputMode{mode}")), "{mode}");
+        }
+        // 相対トグル系・IME 開閉・未知・部分一致は含めない。
+        for other in [
+            "CompositionModeSwitchKanaType",
+            "SwitchKanaType",
+            "ToggleAlphanumericMode",
+            "IMEOn",
+            "IMEOff",
+            "CompositionMode",
+            "InputModeUnknown",
+            "compositionmodehiragana",
+            "",
+        ] {
+            assert!(!sets_absolute_mode(other), "{other}");
         }
     }
 }

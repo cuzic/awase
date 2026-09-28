@@ -1,0 +1,122 @@
+---
+id: ADR-202
+title: |-
+  0x19（Alt+半角/全角）を、GJI では CUSTOM 表の `Hankaku/Zenkaku` 行から役割判定する（ADR-199 決定14 の実装設計）
+summary: |-
+  ADR-199 決定14 は「0x19 はユーザー設定で変えられない既知のトグル」を前提に、静的 `Toggle` を学習表で狭める移行（T14）を計画していた。
+  T1(b) の実機確認（2026-09-26、GitHub Actions windows-latest、GJI の CUSTOM 表を protobuf 直接生成）で前提が逆と分かった:
+  `Hankaku/Zenkaku` 行を `IMEOff` にした表では Alt+0x19 で IME が閉じ、行の無い表では閉じない（run 36242111739）。`Kanji` 行だけの表では閉じない
+  （run 36242940343）。所有者決定（2026-09-26）: 0x19 を役割判定に入れる。本 ADR はその設計を定める。
+  決定: (1) 対象は GJI だけ。0x19 の役割は `Hankaku/Zenkaku` 行（`VK_DBE_DBCSCHAR` 名）から求め、`Kanji` 行は見ない。プリセットでは半角/全角がトグルなので、
+  プリセット利用者の挙動は変わらず、CUSTOM で行を変えた利用者だけが変わる。
+  (2) 静的 `Toggle`（`hook.rs`）は残し、`enrich_key_role` が GJI のときだけ役割由来の値（`Toggle` か `None`）で上書きする。GJI 以外（MS-IME 本体・ATOK・未検出）は現行どおり。
+  (3) Alt 付きは正常な入力として扱う（Ctrl/Shift/Win 付きは受動）。Down/Up の非対称を防ぐため既存の打鍵ごとのラッチを使う。
+  (4) T14（学習表の `Kanji` セルで狭める移行）は撤回。学習表による狭め（決定6-2）は `Kanji` セルで従来どおり効かせる。
+  (5) 実機検証を e2e に常設する（行を変えた CUSTOM 表で、awase 起動中に belief が実 IME とずれないこと）。
+status: |-
+  **採用（2026-09-26 所有者承認、未決2件も確定）。** T16-1・T16-2 実装済み（PR #341）。T16-3（e2e 常設）実装済み（PR #342）。T16-6（MS-IME 本体の確認）確認済み（本体の 0x19 は固定トグル）。ADR-202 の実装タスクは全て完了（T16-5 は所有者判断で保留）。
+related_adr:
+  - "ADR-199"
+  - "ADR-189"
+  - "ADR-191"
+  - "ADR-195"
+---
+
+# ADR-202: 0x19（Alt+半角/全角）を、GJI では CUSTOM 表の `Hankaku/Zenkaku` 行から役割判定する
+
+## 背景
+
+- 現行の awase は 0x19（`VK_KANJI`）を、IME 種別・キー設定に関わらず開閉トグルとして能動的に書く（`hook.rs` の `classify_ime_relevance` →
+  `vk.rs::ImeKeyKind::Kanji.shadow_effect() = Toggle`。ADR-189）。0x19 は JIS 配列で Alt を押しながら半角/全角を押したときに届く
+  （kbd106 の `T29`。ADR-199 背景1）。
+- ADR-199 決定14 は、0x19 を「ユーザー設定で変えられない既知のトグル」として扱い、T1(b) で「TSF 経路で 0x19 が `Hankaku/Zenkaku` 行に従わない」と
+  確認できたら学習表で狭める移行（T14）を行う、と決めていた。根拠は「IMM32 では OS 側が IME の割り当てに関係なく開閉する」（Mozc のコメント、
+  `keyevent_handler.cc` L87-93）と「同梱表の実測が `Hankaku/Zenkaku` 行と食い違う」ことからの推定だった。
+- **実機確認（2026-09-26、GitHub Actions windows-latest、GJI。`config1.db` の protobuf を直接生成して CUSTOM 表を与えた）**:
+
+  | 表（`DirectInput Henkan IMEOn` で IME を開いたあと Alt+0x19） | 結果 | run |
+  |---|---|---|
+  | `Precomposition Hankaku/Zenkaku IMEOff` あり | 閉じる（`open` 1→0） | 36242111739 |
+  | `Hankaku/Zenkaku` 行なし（対照） | 開いたまま | 36242111739 |
+  | `Precomposition Kanji IMEOff` のみ（`Hankaku/Zenkaku` 行なし） | 開いたまま | 36242940343 |
+
+  よって GJI の 0x19 は `Hankaku/Zenkaku` 行に従い、`Kanji` 行は見ない。推定は外れた。所有者決定（2026-09-26）で、0x19 を役割判定に入れる。
+- 実機で GJI が書いた CUSTOM 表には `Hankaku/Zenkaku` 行が4状態とも残る（プリセット既定と同値。ADR-186 の実測 `config1-custom-keymap-table-ignored.tsv`。
+  ADR-199 T1(a)）ので、行を変えていない CUSTOM 利用者では従来どおりトグルと判定される。
+
+## 決定
+
+### 決定1: 対象は GJI だけ。役割は `Hankaku/Zenkaku` 行から求める
+
+- 役割の判定は既存の `awase_gji_config::role::key_role` をそのまま使い、0x19 の引き先を `VK_DBE_DBCSCHAR`（`Hankaku/Zenkaku` 行のキー名）にする。
+  `Kanji` 行は見ない（`Kanji` 行だけの表で閉じない、上の実機結果。ADR-199 T2 の「`Kanji` 行は 0x19 に写さない」と一致）。
+- 候補集合（`ROLE_CANDIDATE_VK_NAMES`）は変えない。0x19 は Alt 付きで届き、決定4 の無修飾ガードを通らないので、候補集合には入れず専用の分岐にする
+  （ADR-199 決定4・決定14 の記述どおり）。
+- 効くのは CUSTOM で `Hankaku/Zenkaku` 行を変えた利用者だけ。プリセット（ATOK/MS-IME/KOTOERI/MOBILE）は4種とも半角/全角がトグルなので、
+  0x19 も従来どおり `Toggle`（挙動不変）。
+
+### 決定2: 静的 `Toggle` は残し、GJI のときだけ上書きする
+
+- `classify_ime_relevance`（hook、IME 非依存）の静的 `Toggle` は変えない。`Runtime::enrich_key_role` が 0x19 を扱い、`ImeKindId::Gji` のときだけ
+  `shadow_action` を役割由来の値（`Some(Toggle)` か `None`）で置き換える。GJI 以外（MS-IME 本体・ATOK 本体・未検出・第三者 IME）は静的 `Toggle` のまま（現行と同じ）。
+- 理由: 最小の変更で「行を変えた GJI 利用者が、IME は動かないのに awase が belief を反転する」不整合（現状の 0x19）だけを直せる。
+  静的値を撤去して全 IME を役割判定に載せると、MS-IME 本体（0x19 は未確認、決定17 のとおり互換モード等の差もある）まで巻き込む。
+- 合流点は増やさない。`shadow_action` を付ける場所は `enrich_key_role` の1箇所のまま（`architecture_guard` の代入箇所固定を維持）。
+
+### 決定3: Alt 付きは正常、他の修飾は受動。ラッチで Down/Up を対称にする
+
+- 0x19 は物理的に Alt 付きで届くので、Alt だけの修飾は受動にしない。Ctrl・Shift・Win が付くときは役割を付けない（`None`）。
+  判定は純関数（例 `kanji_modifier_passive(ctrl, shift, win)`）に出し、ホストテストで固める。
+- Down=Allow・Up=Suppress の非対称（BUG-131/132 型）を防ぐため、既存の打鍵ごとのラッチ（`key_role_latch`、`latch_step`）を使う。
+  識別は scan_code（半角/全角キー 0x29 は 0xF3/0xF4 と同じ物理キー）。Alt を先に離すと KeyUp 時の修飾が変わるので、修飾ではなくラッチの記録で Up を決める。
+
+### 決定4: T14 は撤回。学習表による狭めは `Kanji` セルで効かせる
+
+- 静的 `Toggle` を学習表で狭める移行（T14）は不要（0x19 は「変えられない既知のトグル」ではない）。撤回する。
+- 学習表の矛盾セルによる狭め（ADR-199 決定6-2、狭める方向だけ）は、0x19 では `TableKey::Kanji` のセルを見る（実機で測ったセルが `Kanji` なので）。
+  これは既存の `derive_key_shadow_action` の `TableKey::from_vk` が 0x19 を `Kanji` に写す挙動のまま使える。
+
+### 決定5: 実機検証を e2e に常設する
+
+- 既存の検証構成（`ci/t1b-alt-kanji` の `sc-t1b-row-imeoff`/`sc-t1b-no-row`/`sc-t1b-kanji-row-only`）を、develop の `e2e-ime.yml` に昇格する（`tsv` 引数と
+  `--chord-at`/`--chord-prep` も同時に入れる）。
+- **awase 起動中**の構成を足す: `Hankaku/Zenkaku` 行を「閉じない」コマンドに変えた CUSTOM 表で Alt+0x19 を押し、実 IME の開閉と Engine の追随（belief）が
+  ずれないこと。今の静的 `Toggle` ではここでずれる（IME は動かず belief だけ反転）。判定は `check_consistency.py` 系。
+- ADR-199 の学習・検証の枠組みにならい、修正前（develop）で失敗・修正後で通ることを同じ構成で示す（PR #333 の手順）。
+
+## 検討して採らなかった案
+
+- **静的 `Toggle` を撤去し、全 IME を役割判定に載せる**: MS-IME 本体の 0x19 が未確認で、ATOK 等の役割は表が読めない。GJI だけの不整合を直す目的に対して
+  影響範囲が広い。決定2 のとおり GJI だけ上書きする。
+- **0x19 を候補集合に入れる**: 候補集合は無修飾で評価する前提（決定4）。0x19 は Alt 付きなので、集合に入れるとガードを外す例外が増える。専用分岐のほうが小さい。
+- **`Kanji` 行も見て両方が揃ったときだけトグル**: 実機で `Kanji` 行は 0x19 に効かないと分かったので、見ると誤判定の元になる。
+
+## 確定した未決（所有者判断、2026-09-26）
+
+1. **`keys.ime_toggle` の既定（`VK_KANJI`）は当面空にしない。** ADR-199 決定15 の「T14 と同時に空にする」は、T14 撤回により前提が変わったので保留とする
+   （GJI では役割由来の値と重なるときは `explicit_overlap` で役割を付けないので二重処理は起きない。GJI 以外では静的 `Toggle` が残る）。空にするなら別 PR で、
+   `awase-settings/src/main.rs:2593`（JIS 切替の書き込み）も揃える。
+2. **GJI 以外の 0x19 は現行維持（静的 `Toggle`）。** MS-IME 本体は、T16 の実装後に GJI と同じ手順の CI 構成（Alt+0x19）で確認し、固定トグルと確定できれば別途反映する（T16-6）。
+
+## 実装タスク
+
+- T16-1（実装済み）: 純関数 `key_effect_runtime::kanji_role_plan`（GJI 以外は静的値のまま／Ctrl・Shift・Win 付きは受動／それ以外は役割を引く）とホストテスト。`KeyEffectKeymap::gji_key_role` の引き先に 0x19→0xF4（`Hankaku/Zenkaku` 行）を足し、CUSTOM 表〈行がトグル／行を別機能／`Kanji` 行のみ〉のテストを追加。
+- T16-2（実装済み）: `Runtime::enrich_key_role` が 0x19 を扱う（`kanji_shadow_action`。既存の `latch_step` のクロージャ内で決め、`shadow_action` の代入は1箇所のまま。injected は静的値のまま）。`transport.rs` の物理配送は `shadow_action` の有無で従来どおり決まる。配線の形は `architecture_guard` の `kanji_0x19_role_goes_through_the_shared_latch_and_only_overrides_gji` で固定。
+- T16-3: e2e 常設（決定5）。修正前後の比較を PR に残す。
+- T16-3（実装済み）: e2e `sc-kanji-role-nontoggle`/`sc-kanji-role-toggle`（awase 起動中、`check_kanji_role.py`）を常設。ドライバに `--chord-at`/`--chord-prep`、`tsv` 引数、`sc-t1b-*` も取り込んだ。
+  **実機の修正前後比較（GitHub Actions windows-latest、GJI）**: 行が閉じないコマンド（`Precomposition Hankaku/Zenkaku InputModeHiragana`）の表で、修正前（`e91ad8ee`）は Alt+0x19 で awase が IME を実際に閉じた
+  （`open` 1→0、閉じる書き込み2件、Engine OFF）＝GJI の設定では閉じないはずが閉じる不具合、run 36270771941（2/2 FAIL）。修正後は IME は開いたまま・Engine も ON のまま、run 36270770311（2/2 PASS）。
+  行がトグルの表は修正前後とも IME が閉じ Engine が追随（回帰防止、両方 PASS）。
+- T16-4: ADR-199 の決定14・T16・影響表（ADR-189 固定セット行）を本 ADR 参照に更新。
+- T16-5（保留）: `keys.ime_toggle` 既定を空にする場合の設定 GUI 変更。所有者判断で当面行わない。
+- T16-6（確認済み、2026-09-26）: MS-IME 本体の Alt+0x19 は IME の開閉トグル（固定）。GitHub Actions windows-latest、run 36278942088。awase なし: F2 で IME を開いた状態で Alt+0x19 を押すと
+  `open` 1→0（+100ms、`sc-t166-msime-real`）。awase 起動中: 実 IME が閉じ Engine も OFF に追随（`kanjirole-closed` PASS、閉じる書き込み 0 件）。よって MS-IME 本体では静的 `Toggle`（決定2 の現行維持）が正しく、
+  変更は不要。n は少ない（awase なしの有効な回は1回、もう1回は F2 で開いた IME が自然に閉じて無効、awase ありは有効1回・無効1回）ので、揺れが見えたら再確認する。
+  検証用の構成（`sc-t166-*`）は develop には入れていない（`ci/t16-6-msime-kanji` は確認後に削除）。
+
+## 影響
+
+- 変わるのは **GJI で `Hankaku/Zenkaku` 行を変えた CUSTOM 利用者の Alt+半角/全角** だけ。IME が動かないのに belief を反転する不整合が直る。
+- 変わらない: プリセット利用者、GJI 以外の IME、無変換/変換・F13〜F24・半角/全角（0xF3/0xF4）の役割判定。
+- リスク: 0x19 の Down/Up 非対称（決定3 のラッチで防ぐ、`transport.rs` を通る family なので `fix-requires-evidence` の回帰テストが要る）。
+  実機で確認したのは標準 EDIT コントロール上の GJI で、TsfNative（Chrome 等）での Alt+半角/全角は未確認（T16-3 で拡げる）。

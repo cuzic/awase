@@ -104,17 +104,18 @@ mod adr192_tests {
 /// `Some(name)` なのに `VkCode::from_name` が解決できない場合（誤字・
 /// `"F21"` のような短縮形など）は、専用 Fn キー変換が黙って無効化される
 /// （＝設定前と同じ挙動に留まる、安全側）が、原因が分かるよう警告ログを出す。
-pub(crate) fn resolve_dedicated_fn_key(name: Option<&str>) -> Option<VkCode> {
-    let name = name?;
+pub(crate) fn resolve_dedicated_fn_key(name: Option<&str>) -> (Option<VkCode>, Option<String>) {
+    let Some(name) = name else {
+        return (None, None);
+    };
     let resolved = VkCode::from_name(name);
-    if resolved.is_none() {
-        tracing::warn!(
-            "[config] muhenkan_solo_tap_dedicated_fn_key = {name:?} を VK 名として \
-             解決できませんでした。専用 Fn キー変換は無効のままです \
-             （\"VK_F18\" のような完全な VK 名が必要、\"F18\" 等の短縮形は不可）"
-        );
-    }
-    resolved
+    let warning = resolved.is_none().then(|| {
+        format!(
+            "general.muhenkan_solo_tap_dedicated_fn_key = {name:?} を VK 名として解決できませんでした。\
+             専用 Fn キー変換は無効のままです（\"VK_F18\" または \"F18\" のような VK 名が必要）"
+        )
+    });
+    (resolved, warning)
 }
 
 /// IME 状態と修飾キースナップショットから `InputContext` を構築する。
@@ -308,6 +309,8 @@ pub struct Runtime {
     state_dependent_key_warning_dialog:
         crate::state::state_dependent_key_warning::WarningDialogTracker,
     warn_state_dependent_mode_keys: bool,
+    /// 単独タップがIMEへ素通しされる親指キーのVK（状態依存キー警告の対象を絞る）。
+    passthrough_thumb_mode_keys: Vec<VkCode>,
     /// ADR-195段階4: `<config dir>/keymap-learn-table.json`（段階3永続化）の実行時読込キャッシュ。
     /// `KeyEffectPredicted`（belief更新）に使う。actuationの許可リストは広げない（ADR-195決定(A)）が、
     /// 半角/全角の固定セットの`shadow_action=Toggle`を**外す**方向にだけ参照する（ADR-195追記、
@@ -331,7 +334,7 @@ pub struct Runtime {
     /// （ADR-114「未解決の疑問」5 対応）。
     muhenkan_dedicated_fn_key_vk: Option<VkCode>,
     /// `config.general.left_thumb_key`/`right_thumb_key` のいずれかが
-    /// `"VK_SPACE"` か。`true` の場合、MS-IME レジストリ自動検出の
+    /// Space（`VK_SPACE`）か。`true` の場合、MS-IME レジストリ自動検出の
     /// Shift+Space トグルは `engine.set_ime_toggle_auto_keys` へ反映しない
     /// （Space 親指キーの Shift リテラル送出機能との衝突を避けるため、
     /// Opus コードレビュー指摘）。`apply_config_update`/起動時に反映される。
@@ -573,7 +576,12 @@ impl Runtime {
         use crate::state::key_effect_runtime::{latch_step, passive_without_lookup};
         use awase::types::KeyEventType;
         // 全打鍵で通る経路なので、候補キーでないものは修飾キーと IME 種別を見る前に抜ける。
-        if !crate::vk::is_role_candidate(event.vk_code) {
+        // 0x19（Alt+半角/全角、ADR-202）は候補集合の外（Alt 付きで届き無修飾ガードを通らない）で、専用に扱う。
+        let is_kanji = matches!(event.vk_code.ime_kind(), Some(crate::vk::ImeKeyKind::Kanji));
+        if is_kanji && event.injected {
+            return; // injected は付けない。静的 Toggle のまま（現行と同じ）。
+        }
+        if !is_kanji && !crate::vk::is_role_candidate(event.vk_code) {
             return;
         }
         let is_fkey = crate::vk::is_role_fkey(event.vk_code);
@@ -582,7 +590,7 @@ impl Runtime {
             Some(crate::vk::ImeKeyKind::DbeSbcsChar | crate::vk::ImeKeyKind::DbeDbcsChar)
         );
         // 無変換/変換（決定16）は別の入口（T10）。
-        if !is_fkey && !is_hz {
+        if !is_fkey && !is_hz && !is_kanji {
             return;
         }
         let is_up = event.event_type == KeyEventType::KeyUp;
@@ -593,16 +601,20 @@ impl Runtime {
         let modified = m.ctrl || m.alt || m.shift || m.win;
         let injected = event.injected;
         let has_sync = event.ime_relevance.sync_direction.is_some();
-        // 修飾付き・IME 未同定の打鍵も `None` の判定として**ラッチに記録する**（早期 return しない）。
-        // 記録しないと、Ctrl を押したまま半角/全角を Down（判定なし=Allow）→ Ctrl を先に離す →
-        // 半角/全角の Up がラッチ空で判定をやり直し `Some(Toggle)`（=Suppress）になり、
-        // Down=Allow・Up=Suppress の非対称（BUG-131/132 型）になる（Opus レビュー、PR #326）。
+        let static_action = event.ime_relevance.shadow_action; // hook が付けた静的値（0x19 は Toggle）
+                                                               // 修飾付き・IME 未同定の打鍵も `None` の判定として**ラッチに記録する**（早期 return しない）。
+                                                               // 記録しないと、Ctrl を押したまま半角/全角を Down（判定なし=Allow）→ Ctrl を先に離す →
+                                                               // 半角/全角の Up がラッチ空で判定をやり直し `Some(Toggle)`（=Suppress）になり、
+                                                               // Down=Allow・Up=Suppress の非対称（BUG-131/132 型）になる（Opus レビュー、PR #326）。
         let (action, latch) = latch_step(
             self.key_role_latch,
             reuse,
             fresh_down,
             event.scan_code,
             || {
+                if is_kanji {
+                    return self.kanji_shadow_action(vk, static_action, m);
+                }
                 if passive_without_lookup(is_fkey, modified, injected, reuse, has_sync) {
                     return None;
                 }
@@ -614,6 +626,24 @@ impl Runtime {
         );
         self.key_role_latch = latch;
         event.ime_relevance.shadow_action = action;
+    }
+
+    /// 0x19 の `shadow_action`（ADR-202）。GJI のときだけ `Hankaku/Zenkaku` 行から求める（修飾の扱いは
+    /// [`crate::state::key_effect_runtime::kanji_role_plan`]）。GJI 以外は hook の静的値のまま（決定2）。
+    fn kanji_shadow_action(
+        &mut self,
+        vk: VkCode,
+        static_action: Option<awase::types::ShadowImeAction>,
+        m: awase::types::ModifierState,
+    ) -> Option<awase::types::ShadowImeAction> {
+        use crate::state::ime_kind::ImeKindId;
+        use crate::state::key_effect_runtime::{kanji_role_plan, KanjiRolePlan};
+        let is_gji = crate::tsf::observer::tsf_obs().table_ime_kind() == Some(ImeKindId::Gji);
+        match kanji_role_plan(is_gji, m.ctrl, m.shift, m.win) {
+            KanjiRolePlan::KeepStatic => static_action,
+            KanjiRolePlan::Passive => None,
+            KanjiRolePlan::Derive => self.derive_key_shadow_action(ImeKindId::Gji, vk),
+        }
     }
 
     /// F13〜F24 の最初の Down（非injected・`!was_down`）で、`kp_stage_shadow_ime_toggle` が**実際に開閉を書いたか**
@@ -1342,6 +1372,7 @@ impl Runtime {
             state_dependent_key_warning_dialog:
                 crate::state::state_dependent_key_warning::WarningDialogTracker::default(),
             warn_state_dependent_mode_keys: true,
+            passthrough_thumb_mode_keys: Vec::new(),
             key_effect_runtime_table: crate::state::key_effect_runtime::RuntimeTableCache::default(
             ),
             use_learned_keymap_table: true,
@@ -1372,6 +1403,30 @@ impl Runtime {
 
     pub(crate) const fn set_warn_state_dependent_mode_keys(&mut self, enabled: bool) {
         self.warn_state_dependent_mode_keys = enabled;
+    }
+
+    /// 状態依存キー警告の対象にする親指キーを、設定（抑止・専用Fnキー・単独タップaction）から決める。
+    pub(crate) fn set_passthrough_thumb_mode_keys(
+        &mut self,
+        general: &awase::config::GeneralConfig,
+    ) {
+        use awase::engine::ModeKeyConfig;
+        self.passthrough_thumb_mode_keys =
+            crate::state::state_dependent_key_warning::passthrough_thumb_vks(
+                ModeKeyConfig::from_legacy_bools(
+                    general.muhenkan_solo_tap_ignore_composing_guard,
+                    general.muhenkan_solo_tap_always_suppress,
+                )
+                .is_passthrough(),
+                general.muhenkan_solo_tap_dedicated_fn_key.is_some()
+                    || general.muhenkan_solo_tap_ime_action.is_some(),
+                ModeKeyConfig::from_legacy_bools(
+                    general.henkan_solo_tap_ignore_composing_guard,
+                    general.henkan_solo_tap_always_suppress,
+                )
+                .is_passthrough(),
+                general.henkan_solo_tap_ime_action.is_some(),
+            );
     }
 
     /// ADR192-T5: 状態依存キー警告の判定に使う、採用中の学習表のセル。予測器
@@ -1406,6 +1461,7 @@ impl Runtime {
                 keymap.as_ref(),
                 learned.as_deref(),
                 [left, right],
+                &self.passthrough_thumb_mode_keys,
             )
         } else {
             let raw = crate::msime_key_assignment::read_raw_key_assignment_dwords();
@@ -1423,6 +1479,7 @@ impl Runtime {
                 Some(&keymap),
                 learned.as_deref(),
                 [left, right],
+                &self.passthrough_thumb_mode_keys,
             )
         };
         for warning in &warnings {
@@ -1679,7 +1736,9 @@ impl Runtime {
         sync_toggle: Vec<VkCode>,
         sync_on: Vec<VkCode>,
         sync_off: Vec<VkCode>,
-    ) {
+    ) -> Vec<String> {
+        // 解決できなかった項目の警告（ADR-201 決定2）。呼び出し元（`reload_config`）が診断へ流す。
+        let mut warnings: Vec<String> = Vec::new();
         let ctx = self.build_ctx();
         let forced_open_actions = thumb_forced_open_actions(&special_keys);
         self.engine
@@ -1763,7 +1822,10 @@ impl Runtime {
                 ),
             );
             let manual_fn_key = config.general.muhenkan_solo_tap_dedicated_fn_key.as_deref();
-            self.set_muhenkan_dedicated_fn_key_config(resolve_dedicated_fn_key(manual_fn_key));
+            let (fn_key, fn_key_warning) = resolve_dedicated_fn_key(manual_fn_key);
+            warnings.extend(fn_key_warning);
+            self.set_muhenkan_dedicated_fn_key_config(fn_key);
+            self.set_passthrough_thumb_mode_keys(&config.general);
             // ADR-153 決定1: ユーザー明示config。config.toml 由来のため毎回の
             // reload で再設定される（自動検出由来の delegate と異なり消去
             // されて構わない、`muhenkan_solo_tap_ime_action` フィールドdoc参照）。
@@ -1779,10 +1841,11 @@ impl Runtime {
                     .henkan_solo_tap_ime_action
                     .map(awase::config::ShadowImeActionConfig::to_core),
             );
-            self.set_space_is_thumb_key(
-                config.general.left_thumb_key == "VK_SPACE"
-                    || config.general.right_thumb_key == "VK_SPACE",
-            );
+            self.set_space_is_thumb_key(crate::state::alt_impersonation::is_thumb_key_vk(
+                &config.general.left_thumb_key,
+                &config.general.right_thumb_key,
+                crate::vk::VK_SPACE,
+            ));
             let enter_thumb_vk = [left, right]
                 .into_iter()
                 .find(|&vk| vk == crate::vk::VK_RETURN);
@@ -1816,14 +1879,17 @@ impl Runtime {
         // if-let の成否に関わらず現在キャッシュされている値（bootstrap
         // または直近の成功した reload の値）を返すため、ここで安全に使える。
         let (left_thumb_vk, right_thumb_vk) = crate::hook::thumb_vk_codes();
-        self.all_keymaps =
+        let (all_keymaps, keymap_warnings) =
             crate::keymap::KeymapTable::new(&config.keymaps, left_thumb_vk, right_thumb_vk);
+        warnings.extend(keymap_warnings);
+        self.all_keymaps = all_keymaps;
         self.recompute_active_keymaps();
         tracing::info!(
             "Config applied: threshold={}ms, speculative_delay={}ms",
             config.general.simultaneous_threshold_ms,
             config.general.speculative_delay_ms,
         );
+        warnings
     }
 
     /// `active_keymaps` を `all_keymaps` から再計算する（ADR-114 決定8）。

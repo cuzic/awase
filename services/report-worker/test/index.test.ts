@@ -5,7 +5,9 @@ import {
   incrementDailyRateLimit,
   MAX_BODY_BYTES,
   parseAndValidatePayload,
-  RELEASE_CACHE_KEY
+  parseSemver,
+  RELEASE_CACHE_KEY,
+  releaseLine
 } from "../src/index";
 
 const validPayload = {
@@ -815,6 +817,128 @@ describe("latest release endpoint", () => {
   });
 });
 
+describe("release line classification", () => {
+  it("classifies below the 1.90.0 threshold as v1", () => {
+    expect(releaseLine(parseSemver("1.21.0")!)).toBe("v1");
+    expect(releaseLine(parseSemver("1.89.999")!)).toBe("v1");
+  });
+
+  it("classifies 1.90.0 and above as v2, including a future 2.0.0", () => {
+    expect(releaseLine(parseSemver("1.90.0")!)).toBe("v2");
+    expect(releaseLine(parseSemver("1.95.3")!)).toBe("v2");
+    expect(releaseLine(parseSemver("2.0.0")!)).toBe("v2");
+  });
+});
+
+describe("line-aware latest release (?current_version=)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("picks the highest v1 tag and ignores v2 tags when the client is on the v1 line", async () => {
+    mockGithubReleasesList([
+      { tag_name: "v1.90.0" },
+      { tag_name: "v1.22.0" },
+      { tag_name: "v1.21.1" }
+    ]);
+
+    const response = await handleRequest(
+      latestReleaseRequest({ currentVersion: "1.21.0" }),
+      latestReleaseEnv(new MemoryKv()),
+      fakeCtx([])
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ latest_version: "1.22.0" });
+  });
+
+  it("picks the highest v2 tag and ignores v1 tags when the client is on the v2 line", async () => {
+    mockGithubReleasesList([
+      { tag_name: "v1.22.0" },
+      { tag_name: "v1.95.0" },
+      { tag_name: "v1.91.0" }
+    ]);
+
+    const response = await handleRequest(
+      latestReleaseRequest({ currentVersion: "1.90.0" }),
+      latestReleaseEnv(new MemoryKv()),
+      fakeCtx([])
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ latest_version: "1.95.0" });
+  });
+
+  it("ignores draft and prerelease entries when picking the per-line highest", async () => {
+    mockGithubReleasesList([
+      { tag_name: "v1.23.0", draft: true },
+      { tag_name: "v1.22.5", prerelease: true },
+      { tag_name: "v1.22.0" }
+    ]);
+
+    const response = await handleRequest(
+      latestReleaseRequest({ currentVersion: "1.21.0" }),
+      latestReleaseEnv(new MemoryKv()),
+      fakeCtx([])
+    );
+
+    await expect(response.json()).resolves.toMatchObject({ latest_version: "1.22.0" });
+  });
+
+  it("falls back to the legacy global latest when current_version is malformed", async () => {
+    const fetchMock = mockGithubLatestRelease("v1.19.0");
+
+    const response = await handleRequest(
+      latestReleaseRequest({ currentVersion: "not-a-version" }),
+      latestReleaseEnv(new MemoryKv()),
+      fakeCtx([])
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ latest_version: "1.19.0" });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.github.com/repos/cuzic/awase/releases/latest"
+    );
+  });
+
+  it("caches v1 and v2 lines independently without cross-contamination", async () => {
+    const kv = new MemoryKv();
+    mockGithubReleasesList([{ tag_name: "v1.22.0" }, { tag_name: "v1.95.0" }]);
+
+    await handleRequest(
+      latestReleaseRequest({ currentVersion: "1.21.0" }),
+      latestReleaseEnv(kv),
+      fakeCtx([])
+    );
+    const v2Response = await handleRequest(
+      latestReleaseRequest({ currentVersion: "1.90.0" }),
+      latestReleaseEnv(kv),
+      fakeCtx([])
+    );
+
+    expect(JSON.parse(kv.values.get("latest-release:line:v1") ?? "{}")).toMatchObject({
+      latest_version: "1.22.0"
+    });
+    await expect(v2Response.json()).resolves.toMatchObject({ latest_version: "1.95.0" });
+    expect(JSON.parse(kv.values.get("latest-release:line:v2") ?? "{}")).toMatchObject({
+      latest_version: "1.95.0"
+    });
+  });
+
+  it("returns 404 no_release_for_line when no release matches the requested line", async () => {
+    mockGithubReleasesList([{ tag_name: "v1.22.0" }]);
+
+    const response = await handleRequest(
+      latestReleaseRequest({ currentVersion: "1.90.0" }),
+      latestReleaseEnv(new MemoryKv()),
+      fakeCtx([])
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "no_release_for_line" });
+  });
+});
+
 function expectHttpError(action: () => unknown, status: number, message: string): void {
   try {
     action();
@@ -828,8 +952,15 @@ function expectHttpError(action: () => unknown, status: number, message: string)
   throw new Error("expected HttpError");
 }
 
-function latestReleaseRequest(init?: RequestInit): Request {
-  return new Request("https://report.awase.cc/v1/latest-release", init);
+function latestReleaseRequest(
+  init?: RequestInit & { currentVersion?: string }
+): Request {
+  const { currentVersion, ...requestInit } = init ?? {};
+  const url = new URL("https://report.awase.cc/v1/latest-release");
+  if (currentVersion !== undefined) {
+    url.searchParams.set("current_version", currentVersion);
+  }
+  return new Request(url, requestInit);
 }
 
 function latestReleaseEnv(kv: MemoryKv): {
@@ -869,6 +1000,12 @@ function mockGithubLatestRelease(tagName: string) {
   return mockGithubResponse(Response.json({ tag_name: tagName }));
 }
 
+function mockGithubReleasesList(
+  releases: Array<{ tag_name: string; draft?: boolean; prerelease?: boolean }>
+) {
+  return mockGithubResponse(Response.json(releases));
+}
+
 function mockDeferredGithubLatestRelease(): {
   resolve: (tagName: string) => void;
 } {
@@ -892,8 +1029,10 @@ function mockDeferredGithubLatestRelease(): {
 }
 
 function mockGithubResponse(response: Response) {
+  // `.clone()` so a mock can be read across multiple `fetch()` calls in one test
+  // (a `Response` body can only be consumed once).
   const fetchMock = vi.fn(
-    async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => response
+    async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => response.clone()
   );
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;

@@ -70,6 +70,7 @@ related_adr:
 
 - **回復の低下(R2-2)**: 候補窓が残ったまま GJI が本当に OFF の場合(ADR-079・`93bb36a7` の「kれでできる」型)、候補窓が可視の per-VK 確認は Confirmed か Stale しか返さない(SuspectedLiteral は不可能)。旧コードは U,U で reinit して IME を ON に戻せたが、決定1では否定的証拠カウンタが増えず、`consecutive` も戻らないので、次の語も idx=0 で即 give-up して romaji を捨て続け、候補窓が消えて SuspectedLiteral が2回出るまで語が失われる。旧 U,U の reinit がこのケースで実際に役立っていたかは、実機の不具合報告 journal で `gave_up=true` かつ StaleConfirm の後に回復した例を探して確かめる。判別の候補(事後推測ではなく awase 自身が持つ状態): 「直前 N ms 以内に自分で deferred を一括送出したか」(今回の2件に共通)、「give-up の後に GJI の write が再開したか」。決定ではなく未決事項。
 - **S,S でも生きた preedit を壊す余地(R2-4)**: 「候補窓は見えないが preedit は長い」状態(GJI のバックログが300msを超えサジェスト窓が HIDE した場合など)で idx=0 の SuspectedLiteral が2回出れば、同じ全消失が起きる。コーパスの SuspectedLiteral による give-up 7件はすべて ready 段階で、試行中は0件(頻度は低いが、起きない理由の証明は無い)。ready 段階の reinit の直後に ready が失敗した例が3件ある(「起動直後」の失敗の一部は awase 自身の reinit の疑い)。
+- **reinit 予約後にカウンタが残る(コードレビュー指摘、2026-09-26)**: 否定的証拠カウンタは reinit を予約してもリセットされず、`consecutive` と同じく CompositionConfirmed・FocusChange・SetOpenTrue まで残る。S,S で reinit を予約したあと確認が入らないまま U,U の give-up が来ると、証拠が2のままなので再び reinit を予約しうる。通常は reinit の retry で CompositionConfirmed が入りリセットされるので稀と見ているが、実測はしていない。予約時にリセットする案は ADR のレビューを経ていないので採っていない。
 - **idx≥1 の失敗に打ち切りが無い(既存)**: per-VK の途中の confirm が `consecutive` を0に戻すので、idx≥1 の失敗(ESC＋全体の再送)は毎回0から始まり、現行コードの時点で打ち切りが無い。本 ADR の範囲外。
 
 - reinit の破壊性は CI の GJI での観測。実機で `off_on` 対照を1回回すまで一般化しない(BUG-036 の食い違い)。

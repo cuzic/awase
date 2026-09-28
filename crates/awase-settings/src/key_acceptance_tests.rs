@@ -5,10 +5,10 @@
 //! 文字列にして読み手へ渡し、`Some` になることを確かめる。BUG-167(GUI が書く
 //! `Ctrl+Shift+VK_F12` を `parse_hotkey` が読めない)は、このテストがあれば CI で見つかっていた。
 //!
-//! **既知の失敗はデータ(`KNOWN_READER_FAILURES`・`KNOWN_ROUNDTRIP_LOSSES`)として持ち、その
-//! 一覧どおりに失敗することを期待値にする。** 段階1(`from_name` と修飾キー解釈の寛容化)で
-//! 一覧を空にする。修正が効くと「一覧に残っているのに失敗しない」でテストが落ちるので、
-//! 一覧の消し忘れは起きない。
+//! 段階0では現状の失敗を「既知の失敗の一覧」として期待値にしていた(ホットキーの
+//! `変換`/`無変換`/`かな`/`漢字`、GUI の読み手が手書きの小文字の修飾キーを落とす件)。
+//! 段階1(`from_name` と修飾キー解釈の寛容化、1関数への集約)で一覧は空になり、
+//! 今は「失敗が1件も無いこと」を直接検査する。
 //!
 //! 走る場所: `windows-settings` ジョブ(`cargo nextest run -p awase-settings`、実 Windows)。
 //! ubuntu の `test` ジョブは `awase-settings` を `cargo check` するだけでテストは走らせない
@@ -28,25 +28,6 @@ use super::{
     parse_combo_str, physical_key_options,
 };
 
-/// 読み手ごとの既知の失敗。書式 `"<読み手>|<内部名>"`。段階1で空にする。
-///
-/// ホットキー(`engine_toggle_hotkey`)の `変換`/`無変換`/`かな`/`漢字`: GUI の候補
-/// `KEYMAP_MAIN_KEYS` の内部名は `VK_` 無しの日本語名で、`parse_hotkey` が無条件で `VK_` を
-/// 付けて `VK_変換` になり `from_name` が失敗する(背景 #1)。`register_toggle` の失敗は
-/// `warn!` のみで、ホットキーが無言で無効になる。
-const KNOWN_READER_FAILURES: &[&str] = &[
-    "hotkey(parse_hotkey)|かな",
-    "hotkey(parse_hotkey)|変換",
-    "hotkey(parse_hotkey)|無変換",
-    "hotkey(parse_hotkey)|漢字",
-];
-
-/// GUI の読み手 `parse_combo_str` が、手書きの表記で修飾キーを落とす入力。
-/// `parse_combo_str` は `Ctrl|Control|Shift|Alt` の完全一致で、それ以外は黙って捨てる
-/// (決定1: 修飾キーの解釈を1関数にして大文字小文字を `from_name` と揃える)。段階1で空にする。
-const KNOWN_ROUNDTRIP_LOSSES: &[&str] =
-    &["CTRL+VK_J", "alt+VK_F4", "ctrl+shift+VK_F12", "shift+VK_A"];
-
 /// 修飾キーの全8通り `(ctrl, shift, alt)`。
 fn all_mods() -> Vec<(bool, bool, bool)> {
     (0..8)
@@ -55,6 +36,7 @@ fn all_mods() -> Vec<(bool, bool, bool)> {
 }
 
 /// `parse_hotkey` と同じ経路でホットキー文字列が読めるか。Windows では実物を呼ぶ。
+/// `parse_hotkey` は `parse_key_combo` の薄い変換(段階1)なので、Linux では後者で確かめる。
 fn hotkey_readable(s: &str) -> bool {
     #[cfg(windows)]
     {
@@ -62,14 +44,7 @@ fn hotkey_readable(s: &str) -> bool {
     }
     #[cfg(not(windows))]
     {
-        use awase_windows::vk::with_vk_prefix;
-        let parts: Vec<&str> = s.split('+').map(str::trim).collect();
-        let Some((last, mods)) = parts.split_last() else {
-            return false;
-        };
-        mods.iter()
-            .all(|m| matches!(*m, "Ctrl" | "Control" | "Shift" | "Alt"))
-            && VkCode::from_name(&with_vk_prefix(last)).is_some()
+        parse_key_combo(s).is_some()
     }
 }
 
@@ -150,11 +125,7 @@ fn readers() -> Vec<Reader> {
             // [[keymaps]] to(`keymap_to_key_options`)。`KeymapTable::new` の解決と同じ。
             "keymap_to(from_name)",
             keymap_to_key_options(VK_NONCONVERT, VK_CONVERT).collect(),
-            Box::new(|n| {
-                VkCode::from_name(n)
-                    .or_else(|| VkCode::from_name(&format!("VK_{n}")))
-                    .is_some()
-            }),
+            Box::new(|n| VkCode::from_name(n).is_some()),
         ),
         (
             // 候補表全体(どの項目に出す予定であれ、`parse_key_combo` で読めること)。
@@ -180,31 +151,10 @@ fn gui_candidates_are_accepted_by_their_readers() {
     }
     assert!(checked > 300, "検査件数が少なすぎる: {checked}");
 
-    let known: BTreeSet<String> = KNOWN_READER_FAILURES
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect();
-    let fixed: Vec<_> = known.difference(&failures).collect();
-    let new: Vec<_> = failures.difference(&known).collect();
     assert!(
-        fixed.is_empty() && new.is_empty(),
-        "GUI の候補 × 読み手: 既知の失敗の一覧と現状が違う。\n\
-         - 新しい失敗(GUI が書く値を読み手が読めない。回帰): {new:#?}\n\
-         - もう失敗しない(修正済み。KNOWN_READER_FAILURES から消す): {fixed:#?}"
+        failures.is_empty(),
+        "GUI の候補 × 読み手: GUI が書く値を読み手が読めない(回帰): {failures:#?}"
     );
-}
-
-/// 「読めない候補」が今ある項目でも、それが**候補表そのものの誤り**(`from_name` に無い名前)
-/// ではないこと。既知の失敗は「`VK_` を補う読み手側」の問題で、`from_name` 自体は内部名を解決する。
-#[test]
-fn known_reader_failures_resolve_via_from_name() {
-    for entry in KNOWN_READER_FAILURES {
-        let (_, internal) = entry.split_once('|').unwrap();
-        assert!(
-            VkCode::from_name(internal).is_some(),
-            "{internal}: from_name でも解決できない(候補表側の誤り)"
-        );
-    }
 }
 
 /// GUI の書き手 `format_combo` → GUI の読み手 `parse_combo_str` の往復で、修飾キーと主キーが
@@ -229,8 +179,8 @@ fn format_then_parse_combo_roundtrips_for_all_candidates() {
 }
 
 /// 手書きの表記を GUI が開いて保存し直したとき、修飾キーが落ちないこと。
-/// `(手書きの文字列, ctrl, shift, alt)`。読み手 `parse_combo_str` が完全一致のため、
-/// 小文字などは今は落ちる(`KNOWN_ROUNDTRIP_LOSSES`)。
+/// `(手書きの文字列, ctrl, shift, alt)`。`parse_combo_str` は `vk::interpret_combo` を使い、
+/// 大文字小文字を `from_name` と同じ規則で扱う。
 #[test]
 fn hand_written_modifiers_survive_gui_parse() {
     let cases: &[(&str, (bool, bool, bool))] = &[
@@ -251,13 +201,8 @@ fn hand_written_modifiers_survive_gui_parse() {
         })
         .map(|(text, _)| (*text).to_string())
         .collect();
-    let known: BTreeSet<String> = KNOWN_ROUNDTRIP_LOSSES
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect();
-    assert_eq!(
-        lost, known,
-        "GUI の読み手が修飾キーを落とす入力の一覧が、既知の一覧と違う(増えたら回帰、\
-         減ったら KNOWN_ROUNDTRIP_LOSSES から消す)"
+    assert!(
+        lost.is_empty(),
+        "GUI の読み手が修飾キーを落とす入力がある: {lost:#?}"
     );
 }
