@@ -467,6 +467,7 @@ impl Runtime {
             self.platform.output.f2_warmup_owned(),
             active_ime_kind,
         );
+        let physical = self.kp_latch_keyup_to_keydown_disposition(&event, physical);
         // BUG-116/ADR-137 決定2: `plan()` が Suppress と判定した物理かなキーの
         // 埋め合わせ。`kp_stage_execute`（下記）より前で評価すること
         // （`composition_native_f2_down` が warm/cold に関わらず MarkCold する
@@ -520,6 +521,49 @@ impl Runtime {
             self.platform_state.ime.journal.absorb(entry);
         }
         callback
+    }
+
+    /// BUG-173追補: KeyUp の配送を、対応する最初の KeyDown の配送に揃える。
+    ///
+    /// `plan()` は非 ImmCross の IME 系キー（`shadow_action` あり）の KeyUp を KeyDown の結果と無関係に
+    /// 常に Suppress するため、KeyDown が素通しされたキーでも KeyUp だけが握りつぶされていた
+    /// （BUG-131/132 型の Down/Up 非対称）。最初の KeyDown が Allow だった VK を覚えておき、その KeyUp は
+    /// Allow に揃える。Down が Suppress だった場合・ラッチが無い場合（awase 起動前の押下等）は `plan()` の結果を
+    /// そのまま使う。無変換/変換は KeyUp 側で明示設定の消費が確定する（BUG-113/124）ため対象外。
+    fn kp_latch_keyup_to_keydown_disposition(
+        &mut self,
+        event: &RawKeyEvent,
+        physical: crate::runtime::PhysicalKeyDisposition,
+    ) -> crate::runtime::PhysicalKeyDisposition {
+        use crate::runtime::PhysicalKeyDisposition::{Allow, Suppress};
+        if event.ime_relevance.shadow_action.is_none()
+            || matches!(
+                event.vk_code,
+                crate::vk::VK_CONVERT | crate::vk::VK_NONCONVERT
+            )
+        {
+            return physical;
+        }
+        let latch = &mut self.platform_state.gate.shadow_key_down_allowed;
+        match event.event_type {
+            KeyEventType::KeyDown if !event.was_down => {
+                latch.retain(|v| *v != event.vk_code);
+                if physical == Allow {
+                    latch.push(event.vk_code);
+                }
+                physical
+            }
+            KeyEventType::KeyUp => {
+                if let Some(pos) = latch.iter().position(|v| *v == event.vk_code) {
+                    latch.swap_remove(pos);
+                    if physical == Suppress {
+                        return Allow;
+                    }
+                }
+                physical
+            }
+            KeyEventType::KeyDown => physical,
+        }
     }
 
     /// フォーカス切替直後の非同期プローブ
