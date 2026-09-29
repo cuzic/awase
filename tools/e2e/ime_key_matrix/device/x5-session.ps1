@@ -1,6 +1,6 @@
 # Waits until the machine has been idle for IdleMs (polling up to WaitMin minutes), then runs the X5 scenarios back to back.
 # Progress goes to Out/session.status. ASCII only.
-param([int]$IdleMs = 60000, [int]$WaitMin = 600, [string]$Out = 'C:/Users/cuzic/dv-out')
+param([int]$IdleMs = 10000, [int]$WaitMin = 600, [string]$Out = 'C:/Users/cuzic/dv-out')
 Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class Idle3{[StructLayout(LayoutKind.Sequential)]public struct LII{public uint cb;public uint t;}[DllImport("user32.dll")]public static extern bool GetLastInputInfo(ref LII p);public static uint Ms(){LII l=new LII();l.cb=8;GetLastInputInfo(ref l);return (uint)Environment.TickCount-l.t;}}'
 Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class Es{[DllImport("kernel32.dll")]public static extern uint SetThreadExecutionState(uint f);}public class Lk3{[DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();[DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);[DllImport("user32.dll")]public static extern IntPtr OpenInputDesktop(uint f,bool i,uint a);[DllImport("user32.dll")]public static extern bool CloseDesktop(IntPtr h);public static bool InputDesktopOpen(){IntPtr h=OpenInputDesktop(0,false,1);if(h==IntPtr.Zero)return false;CloseDesktop(h);return true;}public static uint FgPid(){uint p;GetWindowThreadProcessId(GetForegroundWindow(),out p);return p;}}'
 # keep the display awake while this process lives (not a persistent setting; released on exit)
@@ -15,7 +15,7 @@ while ((Test-Locked) -or ([Idle3]::Ms() -lt $IdleMs)) {
   if ((Get-Date) -gt $deadline) { "gave up (owner never idle) $(Get-Date -Format o)" | Add-Content $st; exit 0 }
   Start-Sleep 10
 }
-Start-Sleep 30
+Start-Sleep 12
 if (Test-Locked) { "relocked during 30s settle, giving up $(Get-Date -Format o)" | Add-Content $st; exit 0 }
 "start $(Get-Date -Format o) idle_ms=$([Idle3]::Ms()) locked=$(Test-Locked)" | Add-Content $st
 $aw = 'C:/Users/cuzic/awase-dv/target/debug/awase.exe'
