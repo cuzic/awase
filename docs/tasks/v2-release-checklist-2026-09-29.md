@@ -1,6 +1,6 @@
 ---
 title: awase v2.0.0 リリースの完成条件チェックリスト
-status: 進行中（2026-09-29 深夜時点。A・B1・B2・B4・C1・C2・E2 は完了。残りは B3・B5・D・E1・E3）
+status: 進行中（2026-09-29 深夜時点。A・B・C・D4・E2 は完了。残りは D1〜D3（実機確認）と E1・E3）
 created: 2026-09-29
 related_adr: ["ADR-198", "ADR-199", "ADR-200", "ADR-201", "ADR-202", "ADR-203"]
 ---
@@ -47,7 +47,7 @@ v2 ラインは `develop` → `main`（`.claude/rules/main-develop-branch-flow.m
 - [x] **B1 T16 / ADR-202**: 0x19 を `Hankaku/Zenkaku` 行から役割逆算する専用経路。**実装済み**（PR #341・#342、`runtime/mod.rs::kanji_shadow_action`）。当初この項目を「未着手」と書いたのは、ADR-199 の T16 行の古い記述を信じた誤り。
 - [x] **B2 T11**: `keys.ime_toggle` の既定を空にする。PR #367 でマージ済み（`88f9c1f8`）。e2e `sc-kanji-role-toggle`／`sc-kanji-role-nontoggle` 4ジョブ成功（run 36539956282）。明示の `VK_KANJI` を持つ既存 config は尊重し、消さない。
   - 副次的な発見: 旧既定の `VK_KANJI` は、GJI の 0x19 の役割判定を `explicit_overlap` で常に無効にしていた。既定を空にすると、能動の経路が既定設定で初めて動く。**既定 `[keys]` の GJI・実機での確認は未実施。**
-- [ ] **B3 T1 の実機確認 (a)(d)(e)**: (a) 半角/全角を変えていないカスタム TSV に `Hankaku/Zenkaku` 行が残るか、(d) 互換モードを触っていない環境で `NoTsf3Override2` が無いか、(e) `Scancode Map` の F13 構成の実タイピング（(e) は実 Chrome で一部確認済み）。
+- [x] **B3 T1 の実機確認 (a)(d)(e)**: CI で確認（PR #382、`v2-b3-t1-ci-verification-2026-09-29.md`、run 36569131073）。(e) F13 をトグルにした構成の実 Chrome 実タイピングは 4/4 PASS（#367・#373・#376 の後）、(d) `NoTsf3Override2` はランナー 3 台すべてで値なし（前回と合わせて 4/4。決定 17 の `None` はトグル扱いのままでよい）。(a) `Hankaku/Zenkaku` 行が残るかは、CI のハーネスが TSV を直接書くため測れず、ADR-186 の実機サンプルでの確認のまま。
 - [x] **B4 T17 Phase 4**: 実装済み（PR #379）。MS-IME 本体の無変換/変換が値2（トグル）のとき役割（ImeToggle）として扱う。入力中の除外はなし（所有者決定）。**値2は CI で作れず（設定アプリに「キーの割り当て」が出ない）、実際の開閉は未検証**（ホストテストのみ）。
 - [ ] **B5 T7 の残り**: 09（残る能動書き込みの棚卸し）への反映。
 - [x] **B6 ADR-201**: 完了（未検証項目は ADR-201 に明記）。矢印キーのキー名対応は #340 で完了・CI 実機確認済み。送出の拡張キーフラグ要否・設定画面の実クリック保存・共有違反時のエラー表示・トレイのバルーンは未検証の既知の制限（所有者決定 2026-09-29）。
@@ -64,7 +64,7 @@ v2 ラインは `develop` → `main`（`.claude/rules/main-develop-branch-flow.m
 - [ ] **D1 BUG-163**: GJI/MS-IME × メモ帳/実 Chrome で、最初の打鍵が欠落しないこと。
 - [ ] **D2 ADR-203 / BUG-170・171**: OFF 前に1語確定→物理 OFF→1秒以内に物理 ON→即打鍵。ON キー単独タップ直後の遅延（想定30〜60ms）の再測定。
 - [ ] **D3 ADR-178 領域A撤去**: 実機 A/B（`review-2026-09-24-09` の「実機 A/B 手順」）。物理 Ctrl は SendInput で作れない。
-- [ ] **D4 MS-IME 本体の学習（ADR-196 T2）**（v2 に含める、所有者決定）: 半角カタカナ（conv 0x0013）が学習モデルの Conv に無く復号失敗する件と、`--adopt-pending-judgement`（精度≥0.95）の採用経路の検証。**CI検証完了**（run 36569030546、5/5でdecode_errors=0・採用/再採用success・精度0.953〜0.973。[adr196-t2-msime-learning-open-issues.md](adr196-t2-msime-learning-open-issues.md)「再検証」節。コード変更なし）。
+- [x] **D4 MS-IME 本体の学習（ADR-196 T2）**（v2 に含める、所有者決定）: 半角カタカナ（conv 0x0013）が学習モデルの Conv に無く復号失敗する件と、`--adopt-pending-judgement`（精度≥0.95）の採用経路の検証。**CI検証完了**（run 36569030546、5/5でdecode_errors=0・採用/再採用success・精度0.953〜0.973。[adr196-t2-msime-learning-open-issues.md](adr196-t2-msime-learning-open-issues.md)「再検証」節。コード変更なし）。
 
 ## E. リリース作業
 
