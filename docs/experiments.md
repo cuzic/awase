@@ -25,6 +25,30 @@ awase の IME ON/OFF 制御・warmup・focus 分類まわりは、Windows / IME 
 
 ---
 
+## エントリ 28: issue #165（hook_starved）自己修復——PR #347 opus round1指摘で一旦分離revert
+
+**背景**: hookスレッドが詰まって`WM_KEYDOWN`が届かなくなる`hook_starved`（issue #165）
+を、`stale_ms>5000 && os_idle_ms<5000`をトリガーにフックを解除・再インストールする
+自己修復で解消しようとした。opus-adversarial-consultによるPR #347レビュー(round1)
+で5件の欠陥（マウスのみ操作での誤発火・UIPI昇格ウィンドウでの無限再試行・Mouse
+Without Borders等への割り込み・KeyUp消失によるCtrl等ラッチのスタック・
+`HookGuard::drop`の無制限`join()`によるハング）が指摘されたため、本体（`2b0aa802`）
+と検証コミット2件（`735fe162`/`7378fdb9`、BUG-170記録含む）を`0de3400a`でrevert。
+
+**opusコードレビュー指摘（このエントリ自体の追加理由）**: `0de3400a`のコミット本文は
+5件の失敗条件を具体的に記述しているが、**いずれもレビューでの指摘であり実機/CIでの
+再現は本文中に明記の通り未実施**。[experiment-logging](../.claude/rules/experiment-logging.md)
+が求める「観測された失敗条件」（アプリ×IME×再現手順）とは性質が異なる（コード
+レビュー指摘 vs 実機観測）ため、本ログへの追記が漏れていた。次にhook self-healを
+再検討するセッションが「これは実機で確認済みの欠陥」と誤解しないよう、ここで
+「未検証の設計上の懸念」であることを明記する。
+
+| 日付 | 仮説 | 環境（アプリ × IME × idle） | 変更 | 観測結果 | 判定 | コミット |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2026-09-28 | stale_ms>5000 && os_idle_ms<5000をトリガーにフックを再インストールすればhook_starvedから自己復帰できる | CI（windows-latest、WinUI3プローブで hook_starved を強制発火）。実機での再現・検証は未実施 | `runtime`にフック解除+再インストールの自己修復を追加(`2b0aa802`)、検証用ブロック窓延長(`735fe162`) | CI上で自己修復の発火自体は確認できたが、opus-adversarial-consult round1で上記5件の未検証な欠陥（レビュー指摘のみ、実機/CI再現なし）が判明 | 撤回（`0de3400a`、`fix/hook-self-heal-v2`で欠陥対応後に再度PR予定） | `0de3400a`（revert対象: `2b0aa802`/`735fe162`/`7378fdb9`） |
+
+---
+
 ## エントリ 27: issue #189（BUG-110追補7）修正——調停機構は即日撤回、既存ガード拡張へ
 
 （ADR-158 TD4、2026-09-09: 「エントリ18」を名乗る既存エントリが本ファイル下方

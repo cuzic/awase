@@ -16,8 +16,13 @@ const GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/cuzic/awase/rele
 // ライン別判定が必要なとき（クライアントが ?current_version= を送るとき）だけ使う。
 // GitHub の「latest」は全体で1つしか無く、v1/v2両ラインを併走させると片方の
 // リリースがもう片方の「latest」を覆い隠すため、全件リストから自ラインの最大値を選ぶ。
-// per_page=100 の1ページ目のみ見る（当面の総リリース数を考えれば十分。増えたら要見直し）。
-const GITHUB_RELEASES_LIST_URL = "https://api.github.com/repos/cuzic/awase/releases?per_page=100";
+// per_page=100で、最終ページ（返却件数がper_page未満）に達するまで最大
+// GITHUB_RELEASES_MAX_PAGES ページ分ページングする（opusコードレビュー指摘: 1ページ目
+// 固定だと、v1/v2合計が100件を超えた場合に古い方のラインの最新リリースがページ外に
+// 落ちて見えなくなる）。
+const GITHUB_RELEASES_PER_PAGE = 100;
+const GITHUB_RELEASES_MAX_PAGES = 5;
+const GITHUB_RELEASES_LIST_URL = `https://api.github.com/repos/cuzic/awase/releases?per_page=${GITHUB_RELEASES_PER_PAGE}`;
 
 /**
  * v1(保守)/v2(新アーキテクチャ)ラインの境界（2026-09-27 ユーザー決定）。
@@ -129,6 +134,11 @@ export class HttpError extends Error {
   }
 }
 
+/** GitHub側の実障害（`!response.ok`）を表す。`fetchLatestTagForLine`が`null`を
+ * 返す「該当ラインのリリースが単に無い」ケースと区別するために使う
+ * （opusコードレビュー指摘: 混同すると本来503であるべき障害が404として報告される）。 */
+class UpstreamFetchError extends Error {}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     return handleRequest(request, env, ctx);
@@ -228,7 +238,16 @@ async function handleLatestRelease(
   // RATE_LIMIT_KV is named for report rate limits, but also stores the release cache by prefix.
   const cached = parseLatestReleaseCacheEntry(await env.RATE_LIMIT_KV.get(cacheKey));
   if (cached === null) {
-    const refreshed = await fetchAndCacheLatestRelease(env, line);
+    let refreshed: LatestReleaseCacheEntry | null;
+    try {
+      refreshed = await fetchAndCacheLatestRelease(env, line);
+    } catch (error) {
+      if (error instanceof UpstreamFetchError) {
+        console.error("latest release fetch failed", error);
+        return jsonResponse({ error: "upstream_unavailable" }, 503);
+      }
+      throw error;
+    }
     if (refreshed === null) {
       return jsonResponse(
         { error: line === null ? "upstream_unavailable" : "no_release_for_line" },
@@ -276,7 +295,12 @@ async function refreshStaleLatestRelease(
   await env.RATE_LIMIT_KV.put(refreshingKey, "1", {
     expirationTtl: RELEASE_REFRESHING_TTL_SECONDS
   });
-  return fetchAndCacheLatestRelease(env, line);
+  try {
+    return await fetchAndCacheLatestRelease(env, line);
+  } catch (error) {
+    console.error("latest release background refresh failed", error);
+    return null;
+  }
 }
 
 async function fetchAndCacheLatestRelease(
@@ -302,14 +326,18 @@ async function fetchAndCacheLatestRelease(
     });
     return entry;
   } catch (error) {
+    // GitHub側の実障害（UpstreamFetchError）は呼び出し元が404/503を区別できるよう
+    // 伝播させる。それ以外（JSON parse失敗・KV書き込み失敗等）は従来通り握り潰してnull。
+    if (error instanceof UpstreamFetchError) {
+      throw error;
+    }
     console.error("latest release refresh failed", error);
     return null;
   }
 }
 
-async function fetchLatestTagForLine(line: ReleaseLine | null): Promise<string | null> {
-  const url = line === null ? GITHUB_LATEST_RELEASE_URL : GITHUB_RELEASES_LIST_URL;
-  const response = await fetch(url, {
+async function githubGet(url: string): Promise<Response> {
+  return fetch(url, {
     method: "GET",
     headers: {
       "User-Agent": "awase-update-check-worker (+https://awase.cc)",
@@ -317,26 +345,42 @@ async function fetchLatestTagForLine(line: ReleaseLine | null): Promise<string |
       "X-GitHub-Api-Version": "2022-11-28"
     }
   });
-  if (!response.ok) {
-    return null;
-  }
-
-  const body: unknown = await response.json();
-  if (line === null) {
-    return isRecord(body) && typeof body.tag_name === "string" ? body.tag_name : null;
-  }
-  return highestTagForLine(body, line);
 }
 
-/** `body` はGitHub `/releases` の一覧レスポンス。draft/prereleaseは除外し、自ライン
- * 内でSemVer最大のtag_nameを返す（`/releases/latest`はライン区別できないため使わない）。 */
-function highestTagForLine(body: unknown, line: ReleaseLine): string | null {
-  if (!Array.isArray(body)) {
-    return null;
+async function fetchLatestTagForLine(line: ReleaseLine | null): Promise<string | null> {
+  if (line === null) {
+    const response = await githubGet(GITHUB_LATEST_RELEASE_URL);
+    if (!response.ok) {
+      throw new UpstreamFetchError(`GitHub latest-release request failed: ${response.status}`);
+    }
+    const body: unknown = await response.json();
+    return isRecord(body) && typeof body.tag_name === "string" ? body.tag_name : null;
   }
 
+  const items: unknown[] = [];
+  for (let page = 1; page <= GITHUB_RELEASES_MAX_PAGES; page += 1) {
+    const response = await githubGet(`${GITHUB_RELEASES_LIST_URL}&page=${page}`);
+    if (!response.ok) {
+      throw new UpstreamFetchError(`GitHub releases list request failed: ${response.status}`);
+    }
+    const body: unknown = await response.json();
+    if (!Array.isArray(body)) {
+      break;
+    }
+    items.push(...body);
+    if (body.length < GITHUB_RELEASES_PER_PAGE) {
+      break; // 最終ページ
+    }
+  }
+  return highestTagForLine(items, line);
+}
+
+/** `items` はGitHub `/releases` 一覧レスポンス（複数ページ分をマージ済み）。draft/
+ * prereleaseは除外し、自ライン内でSemVer最大のtag_nameを返す（`/releases/latest`は
+ * ライン区別できないため使わない）。 */
+function highestTagForLine(items: unknown[], line: ReleaseLine): string | null {
   let best: { tag: string; version: Semver } | null = null;
-  for (const item of body) {
+  for (const item of items) {
     if (!isRecord(item) || item.draft === true || item.prerelease === true) {
       continue;
     }

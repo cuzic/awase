@@ -103,6 +103,12 @@ pub struct RawKeyAssignmentDwords {
 pub struct MsImeKeyAssignment {
     /// `IsKeyAssignmentEnabled` — 割当て機能のマスタースイッチ
     pub enabled: bool,
+    /// `KeyAssignmentMuhenkan` == 0 — 無変換キーに IME-オンが割り当てられている。
+    /// ADR-199 T12実機確認で「0は既定ではなく明示的なIME-オン割当て」と確定した
+    /// （opusコードレビュー指摘、値1/2と同じ「二重オーナー」リスクがあるため警告対象に含める）。
+    pub muhenkan_ime_on: bool,
+    /// `KeyAssignmentHenkan` == 0 — 変換キーに IME-オンが割り当てられている（無変換と対称）。
+    pub henkan_ime_on: bool,
     /// `KeyAssignmentMuhenkan` == 1 — 無変換キーに IME-オフが割り当てられている
     pub muhenkan_ime_off: bool,
     /// `KeyAssignmentHenkan` == 1 — 変換キーに IME-オフが割り当てられている（無変換と対称。
@@ -138,6 +144,8 @@ impl MsImeKeyAssignment {
             return None;
         }
         let assigned: Vec<&str> = [
+            self.muhenkan_ime_on.then_some("無変換キー → IME-オン"),
+            self.henkan_ime_on.then_some("変換キー → IME-オン"),
             self.muhenkan_ime_off.then_some("無変換キー → IME-オフ"),
             self.henkan_ime_off.then_some("変換キー → IME-オフ"),
             self.muhenkan_is_toggle
@@ -193,7 +201,9 @@ mod windows_impl {
         let packed = u8::from(assignment.henkan_ime_off)
             | (u8::from(assignment.muhenkan_ime_off) << 1)
             | (u8::from(assignment.henkan_is_toggle) << 2)
-            | (u8::from(assignment.muhenkan_is_toggle) << 3);
+            | (u8::from(assignment.muhenkan_is_toggle) << 3)
+            | (u8::from(assignment.henkan_ime_on) << 4)
+            | (u8::from(assignment.muhenkan_ime_on) << 5);
         if app.swap_msime_key_assignment_warned(packed) == Some(packed) {
             return; // 同じ内容で警告済み
         }
@@ -242,6 +252,8 @@ mod windows_impl {
         let henkan = read_dword(w!("KeyAssignmentHenkan"));
         MsImeKeyAssignment {
             enabled: read_dword(w!("IsKeyAssignmentEnabled")) == Some(1),
+            muhenkan_ime_on: muhenkan == Some(0),
+            henkan_ime_on: henkan == Some(0),
             muhenkan_ime_off: muhenkan == Some(1),
             henkan_ime_off: henkan == Some(1),
             muhenkan_is_toggle: muhenkan == Some(2),
@@ -299,17 +311,25 @@ mod windows_impl {
     pub(crate) fn read_key_effect_keymap_native_with_reassignment_bits(
     ) -> (crate::state::key_effect_predictor::KeyEffectKeymap, u8) {
         let raw = read_raw_key_assignment_dwords();
+        let assignment_enabled = raw.is_key_assignment_enabled == Some(1);
         let compat_mode = crate::msime_legacy_keymap::read_legacy_compat_mode_enabled();
         let keymap = crate::state::key_effect_predictor::KeyEffectKeymap::for_msime_native(
-            raw.is_key_assignment_enabled == Some(1),
+            assignment_enabled,
             raw.key_assignment_henkan,
             raw.key_assignment_muhenkan,
             compat_mode,
         );
         // 値0もADR-199 T12で明示的な割り当て(IME-オン)と確定した(既定ではない)ので、
-        // 「値があるか」だけを見る(`!= 0`ではない、M5)。
-        let bits = u8::from(raw.key_assignment_henkan.is_some())
-            | (u8::from(raw.key_assignment_muhenkan.is_some()) << 1);
+        // 「値があるか」だけを見る(`!= 0`ではない、M5)。マスタースイッチ
+        // (IsKeyAssignmentEnabled)もbitsに含める——`for_msime_native`のreassigned判定
+        // (`assignment_enabled && v.is_some()`、実際の警告分類henkan_reassigned/
+        // muhenkan_reassignedを左右する)と同じ条件でないと、マスタースイッチだけが
+        // 有効化/無効化された場合にreassignedはfalse→trueへ変わるのにbitsが不変のまま
+        // となり、新規に出すべき警告がWarningTrackerのdedupで握り潰される
+        // (opusコードレビュー指摘)。
+        let bits = u8::from(assignment_enabled)
+            | (u8::from(assignment_enabled && raw.key_assignment_henkan.is_some()) << 1)
+            | (u8::from(assignment_enabled && raw.key_assignment_muhenkan.is_some()) << 2);
         (keymap, bits)
     }
 
@@ -420,6 +440,8 @@ mod tests {
     ) -> MsImeKeyAssignment {
         MsImeKeyAssignment {
             enabled,
+            muhenkan_ime_on: false,
+            henkan_ime_on: false,
             muhenkan_ime_off: muhenkan,
             henkan_ime_off: henkan,
             muhenkan_is_toggle: false,
@@ -436,11 +458,30 @@ mod tests {
     ) -> MsImeKeyAssignment {
         MsImeKeyAssignment {
             enabled,
+            muhenkan_ime_on: false,
+            henkan_ime_on: false,
             muhenkan_ime_off: false,
             henkan_ime_off: false,
             muhenkan_is_toggle,
             henkan_is_toggle,
             compat_mode,
+        }
+    }
+
+    fn assign_ime_on(
+        enabled: bool,
+        muhenkan_ime_on: bool,
+        henkan_ime_on: bool,
+    ) -> MsImeKeyAssignment {
+        MsImeKeyAssignment {
+            enabled,
+            muhenkan_ime_on,
+            henkan_ime_on,
+            muhenkan_ime_off: false,
+            henkan_ime_off: false,
+            muhenkan_is_toggle: false,
+            henkan_is_toggle: false,
+            compat_mode: None,
         }
     }
 
@@ -504,6 +545,20 @@ mod tests {
             .conflict_warning()
             .unwrap();
         assert!(w.contains("無変換キー → IME-オン/オフ（トグル、awase未対応）"));
+    }
+
+    /// opusコードレビュー指摘: ADR-199 T12実機確認で「値0は既定ではなく明示的な
+    /// IME-オン割当て」と確定したため、値1/2と同様に警告対象に含めること。
+    #[test]
+    fn warns_on_muhenkan_ime_on() {
+        let w = assign_ime_on(true, true, false).conflict_warning().unwrap();
+        assert!(w.contains("無変換キー → IME-オン"));
+    }
+
+    #[test]
+    fn warns_on_henkan_ime_on() {
+        let w = assign_ime_on(true, false, true).conflict_warning().unwrap();
+        assert!(w.contains("変換キー → IME-オン"));
     }
 
     #[test]

@@ -25,6 +25,14 @@ pub const DESCRIPTION_MAX_CHARS: usize = 4_000;
 /// `full_size_journal_and_app_log_fit_within_max_body_bytes_without_shrinking`
 /// テストのケースで ~102KiB）。
 pub const LOG_EXCERPT_MAX_BYTES: usize = 200 * 1024;
+/// `running_processes`（issue #165用、実行中プロセス名一覧）の件数上限。
+///
+/// journal/app_log と違い `build_payload_json_fitting` の予算縮小ループの対象外
+/// （`build_payload_json_fitting`のドキュメント参照）だが、そのドキュメントが前提と
+/// する「急に肥大化しない」はプロセス一覧には成り立たない（常駐プロセスが多い高負荷
+/// マシンでは肥大化しうる、opusコードレビュー指摘）。縮小ループに参加させる代わりに、
+/// 常に有限件数へ切り詰めることで `MAX_BODY_BYTES` 超過に寄与しないようにする。
+pub const RUNNING_PROCESSES_MAX_ENTRIES: usize = 500;
 pub const SCHEMA_VERSION: u8 = 3;
 /// `services/report-worker/src/index.ts` の `MAX_BODY_BYTES` と同じ値。
 /// サーバ側の 413 応答を待たず、送信前にクライアント側で分かりやすく警告する
@@ -862,7 +870,13 @@ pub fn build_payload_with_log_budget(
         None
     };
     let running_processes = if input.attach_running_processes {
-        input.running_processes.clone()
+        input.running_processes.as_ref().map(|processes| {
+            processes
+                .iter()
+                .take(RUNNING_PROCESSES_MAX_ENTRIES)
+                .cloned()
+                .collect()
+        })
     } else {
         None
     };
@@ -916,7 +930,9 @@ pub fn build_payload_json(input: &BugReportInput<'_>) -> Result<String, BugRepor
 /// 再構築する。他の添付（内部状態スナップショット・設定ファイル・配列
 /// ファイル）は縮小の対象にしない — これらは journal/app_log と違って
 /// 個々のユーザー環境で急に肥大化するものではなく、診断上も基本情報として
-/// 全量が必要なため。
+/// 全量が必要なため。`running_processes` も縮小ループの対象外だが、これは
+/// 肥大化しないからではなく `RUNNING_PROCESSES_MAX_ENTRIES` で常時
+/// 有限件数に切り詰めているため（opusコードレビュー指摘）。
 ///
 /// 戻り値は `(生成された JSON, 実際に使った log_excerpt 上限バイト数)`。
 /// 予算が 0 になっても収まらない場合はそこで打ち切り、その JSON をそのまま
@@ -1597,6 +1613,23 @@ mod tests {
         assert_eq!(detached.keymap_learn, None);
         assert!(!detached.attach_running_processes);
         assert_eq!(detached.running_processes, None);
+    }
+
+    /// opusコードレビュー指摘: `running_processes` は縮小ループの対象外なので、
+    /// 上限が無いと高負荷マシン(常駐プロセス多数)でペイロードが際限なく肥大化しうる。
+    /// `RUNNING_PROCESSES_MAX_ENTRIES` で常に有限件数に切り詰めることを確認する。
+    #[test]
+    fn running_processes_is_capped_at_max_entries() {
+        let mut input = input("説明", true, Some("[]"));
+        let many: Vec<String> = (0..RUNNING_PROCESSES_MAX_ENTRIES + 100)
+            .map(|i| format!("proc{i}.exe"))
+            .collect();
+        input.running_processes = Some(many);
+        let payload = build_payload(&input).unwrap();
+        assert_eq!(
+            payload.running_processes.map(|p| p.len()),
+            Some(RUNNING_PROCESSES_MAX_ENTRIES)
+        );
     }
 
     #[test]

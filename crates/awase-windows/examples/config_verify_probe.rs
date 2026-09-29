@@ -73,10 +73,6 @@ fn sleep_ms(ms: u64) {
     std::thread::sleep(Duration::from_millis(ms));
 }
 
-fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(Some(0)).collect()
-}
-
 fn log(line: &str) {
     let path = LOG_PATH
         .get()
@@ -253,7 +249,7 @@ fn focus_ok() -> bool {
 fn create_form() -> HWND {
     unsafe {
         let instance = GetModuleHandleW(None).expect("module");
-        let top_w = wide("ConfigVerifyTop");
+        let top_w = awase_windows::win32::to_wide("ConfigVerifyTop");
         let top_wc = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
             lpfnWndProc: Some(top_proc),
@@ -365,7 +361,7 @@ fn run_caret_worker() {
         let _ = PostMessageW(Some(hwnd_of(&TOP)), WM_CV_FRONT, WPARAM(0), LPARAM(0));
     }
     sleep_ms(1500);
-    let text = wide(TEXT);
+    let text = awase_windows::win32::to_wide(TEXT);
     unsafe {
         let _ = SendMessageW(
             hwnd_of(&CHILD),

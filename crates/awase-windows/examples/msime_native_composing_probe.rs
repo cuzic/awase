@@ -128,14 +128,22 @@ mod windows_probe {
         unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
     }
 
-    fn to_wide(s: &str) -> Vec<u16> {
-        s.encode_utf16().chain(std::iter::once(0)).collect()
-    }
+    use awase_windows::win32::to_wide;
 
+    /// stdout に加えてログファイルへも書く（他のプローブ`config_verify_probe.rs`/
+    /// `msime_key_assignment_settings_probe.rs`と同様。stdoutのみでは、プローブが
+    /// クラッシュ/Ctrl+Cで中断された場合に出力が失われる、opusコードレビュー指摘）。
     fn log(msg: &str) {
         use std::io::Write as _;
         println!("{msg}");
         let _ = std::io::stdout().flush();
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("msime_native_composing_probe.log")
+        {
+            let _ = writeln!(f, "{msg}");
+        }
     }
 
     /// # Safety

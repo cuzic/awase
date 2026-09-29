@@ -1036,6 +1036,55 @@ describe("line-aware latest release (?current_version=)", () => {
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({ error: "no_release_for_line" });
   });
+
+  // opusコードレビュー指摘: GitHub側の実障害と「該当ラインのリリースが単に無い」は
+  // どちらもfetchLatestTagForLineの戻り値だけでは区別できなかった(常に404だった)。
+  it("returns 503 upstream_unavailable (not 404) when GitHub is unavailable for a line-specific request", async () => {
+    mockGithubResponse(new Response("rate limited", { status: 403 }));
+
+    const response = await handleRequest(
+      latestReleaseRequest({ currentVersion: "1.90.0" }),
+      latestReleaseEnv(new MemoryKv()),
+      fakeCtx([])
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "upstream_unavailable" });
+  });
+
+  // opusコードレビュー指摘: per_page=100の1ページ目だけを見ていたため、v1/v2合計が
+  // 100件を超えると古い方のラインの最新リリースがページ外に落ちて見えなくなっていた。
+  it("paginates through GitHub releases when the requested line's latest release is past the first page", async () => {
+    const firstPage = Array.from({ length: 100 }, (_, i) => ({ tag_name: `v1.95.${i}` }));
+    const secondPage = [{ tag_name: "v1.22.0" }];
+    const fetchMock = mockGithubReleasesPages([firstPage, secondPage]);
+
+    const response = await handleRequest(
+      latestReleaseRequest({ currentVersion: "1.21.0" }),
+      latestReleaseEnv(new MemoryKv()),
+      fakeCtx([])
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ latest_version: "1.22.0" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("page=1");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("page=2");
+  });
+
+  it("stops paginating once a short page is seen, without exceeding the page cap", async () => {
+    const fetchMock = mockGithubReleasesPages([[{ tag_name: "v1.22.0" }]]);
+
+    const response = await handleRequest(
+      latestReleaseRequest({ currentVersion: "1.21.0" }),
+      latestReleaseEnv(new MemoryKv()),
+      fakeCtx([])
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ latest_version: "1.22.0" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 function expectHttpError(action: () => unknown, status: number, message: string): void {
@@ -1103,6 +1152,23 @@ function mockGithubReleasesList(
   releases: Array<{ tag_name: string; draft?: boolean; prerelease?: boolean }>
 ) {
   return mockGithubResponse(Response.json(releases));
+}
+
+/** 呼び出しごとに異なるページ(`pages[0]`, `pages[1]`, ...)を返す。ページ数を超えた
+ * 呼び出しには空配列を返す（`GITHUB_RELEASES_MAX_PAGES`到達時の安全側動作の検証用）。 */
+function mockGithubReleasesPages(
+  pages: Array<Array<{ tag_name: string; draft?: boolean; prerelease?: boolean }>>
+) {
+  let call = 0;
+  const fetchMock = vi.fn(
+    async (_input: RequestInfo | URL, _init?: RequestInit): Promise<Response> => {
+      const page = pages[call] ?? [];
+      call += 1;
+      return Response.json(page);
+    }
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
 }
 
 function mockDeferredGithubLatestRelease(): {
