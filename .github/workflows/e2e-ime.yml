@@ -83,7 +83,7 @@ jobs:
           # workflow_call の runs 入力(空なら構成ごとの runs のまま)
           RUNS: ${{ inputs.runs || '' }}
         run: |
-          import json, os
+          import json, os, sys
           # name: 構成名 / bin: 使うビルド成果物(撤去なしの構成は baseline を使い回す) / mutator: ablations/ 下のスクリプト
           # (空=変更なし) / args: スパイクの追加引数
           # keymap: GJI の session_keymap(1=ATOK, 2=MS-IME) / custom_table: config1.db に古い custom_keymap_table
@@ -426,6 +426,12 @@ jobs:
           builds = [c for c in configs if c['bin'] == c['name']]
           if not any(c['bin'] == 'baseline' and c['name'] == 'baseline' for c in builds):
             builds.insert(0, cfg('baseline', 'pass'))
+          # GitHub Actions の matrix は 1 ジョブあたり 256 要素まで。超えると e2e の matrix 生成で run 全体が失敗するので、
+          # 何が原因か分かるメッセージで plan の段階で止める(only='ts-*,tsx-*' のような広い指定や runs の上書きで起きる)。
+          n_jobs = sum(c['runs'] for c in configs)
+          if n_jobs > 256:
+            print(f'::error::e2e の matrix が {n_jobs} ジョブで上限 256 を超える。only を絞る(tsx-* だけで約 240)か runs を減らす。')
+            sys.exit(1)
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
             f.write('configs=' + json.dumps(configs) + '\n')
             f.write('builds=' + json.dumps(builds) + '\n')
@@ -472,7 +478,8 @@ jobs:
           cargo build -p awase-windows --example compartment_notify_probe
           cargo build -p awase-windows --example compartment_notify_probe_diag
           cargo build -p awase-windows --example typing_stress
-          cargo build -p awase-settings --bin awase-settings
+          # awase-settings は tsx-bugreport-*(bin=baseline)だけが使う。撤去(mutator)ビルドでは egui の再リンクを払わない。
+          if ('${{ matrix.cfg.name }}' -eq 'baseline') { cargo build -p awase-settings --bin awase-settings }
           cargo build -p awase-windows --example chrome_probe
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target\debug\awase.exe dist\
@@ -481,7 +488,7 @@ jobs:
           Copy-Item target\debug\examples\compartment_notify_probe_diag.exe dist\
           Copy-Item target\debug\examples\typing_stress.exe dist\
           # tsx-bugreport-*(typing_stress --form=bugreport)が実体を起動するのに要る。typing_stress.exe と同じ dist\ に置く。
-          Copy-Item target\debug\awase-settings.exe dist\
+          if ('${{ matrix.cfg.name }}' -eq 'baseline') { Copy-Item target\debug\awase-settings.exe dist\ }
           Copy-Item target\debug\examples\chrome_probe.exe dist\
           Copy-Item config.toml dist\ -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
