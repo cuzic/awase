@@ -307,3 +307,25 @@ fn explicit_intent_drift_correction_fires_with_warrant() {
     assert_ok(&h, p1_no_warranted_write_without_intent(&h));
     assert_ok(&h, belief_matches_truth_at_end(&h));
 }
+
+/// BUG-173 追補2（Opus 発火削減 D4）: conv ビットからの推測（`ConvOpenInference`）だけを根拠にした
+/// 「開」の観測は、明示意図（ユーザーの IME OFF）と食い違っても drift correction を発火させない。
+/// GJI×TsfNative では IME を閉じても conv の NATIVE が残るので、推測は `VK_IME_OFF` を何度送っても
+/// 収束せず、ユーザー自身の OFF の直後に同じ OFF を重ねて送っていた（不具合報告 01M3NJ784NKMH120HM6QGKF7W7）。
+/// 実 API の読み取り（`ImmCross`）由来の乖離は従来どおり発火する（`explicit_intent_drift_correction_fires_with_warrant`）。
+#[test]
+fn conv_inference_alone_does_not_fire_drift_correction_despite_explicit_off() {
+    let mut h = Harness::start(Setup::imm_cross(state(true, CONV_HIRAGANA)));
+    // 実 API の観測は無い（読めない窓を想定）。conv 推測しか開閉の手掛かりが無い。
+    h.advance_ms(300)
+        .user_set_open(false)
+        .advance_ms(50)
+        .observe_value(Source::ConvInference, true)
+        .advance_ms(50)
+        .observe_value(Source::ConvInference, true);
+    assert!(
+        h.drift_fires.is_empty(),
+        "conv 推測だけの「開」では drift 補正を発火しない\n{}",
+        h.trace()
+    );
+}
