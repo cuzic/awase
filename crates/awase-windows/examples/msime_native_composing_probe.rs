@@ -82,6 +82,9 @@ mod windows_probe {
     const WS_BORDER: u32 = 0x0080_0000;
 
     const VK_NONCONVERT: u16 = 0x1D;
+    const VK_CONVERT: u16 = 0x1C;
+    const VK_SPACE: u16 = 0x20;
+    const VK_RETURN: u16 = 0x0D;
     const VK_IME_ON: u16 = 0x16;
     const VK_IME_OFF: u16 = 0x1A;
 
@@ -115,6 +118,11 @@ mod windows_probe {
     #[derive(Debug, Clone, Serialize)]
     struct ScenarioResult {
         scenario: String,
+        /// 押したキー（"muhenkan"=VK_NONCONVERT / "henkan"=VK_CONVERT）。
+        key: String,
+        /// キー押下の直前〜直後の UTC 時刻（awase.log の時刻と突き合わせて observed 件数を数える用、B4 計測）。
+        t_start: String,
+        t_end: String,
         edit_text: String,
         before: ConvState,
         after: ConvState,
@@ -364,7 +372,28 @@ mod windows_probe {
 
     const VK_ESCAPE: u16 = 0x1B;
 
-    fn run_scenario(name: &str, edit: HWND, setup: impl FnOnce(HWND)) -> ScenarioResult {
+    /// 現在時刻の UTC `HH:MM:SS.mmm`（awase.log の `T(\d\d:\d\d:\d\d\.\d{3})` と同じ書式）。
+    fn utc_hms() -> String {
+        let d = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let secs = d.as_secs() % 86_400;
+        format!(
+            "{:02}:{:02}:{:02}.{:03}",
+            secs / 3600,
+            (secs / 60) % 60,
+            secs % 60,
+            d.subsec_millis()
+        )
+    }
+
+    fn run_scenario(
+        name: &str,
+        key_name: &str,
+        key_vk: u16,
+        edit: HWND,
+        setup: impl FnOnce(HWND),
+    ) -> ScenarioResult {
         // 前のシナリオの未確定composition(あれば)をEscでキャンセルしてから始める。
         // clear_edit_text(SetWindowTextW)だけではTSF側のcomposition overlayは
         // リセットされず、次のシナリオへ状態が混入する(1回目の実行で確認)。
@@ -376,12 +405,17 @@ mod windows_probe {
         setup(edit);
         pump_messages(Duration::from_millis(300));
         let before = read_conv_state(edit);
-        // SAFETY: テスト目的での無変換キー注入。
-        unsafe { send_vk_tap(VK_NONCONVERT) };
+        let t_start = utc_hms();
+        // SAFETY: テスト目的での無変換/変換キー注入。
+        unsafe { send_vk_tap(key_vk) };
         pump_messages(Duration::from_millis(300));
         let after = read_conv_state(edit);
+        let t_end = utc_hms();
         ScenarioResult {
             scenario: name.to_string(),
+            key: key_name.to_string(),
+            t_start,
+            t_end,
             edit_text: get_edit_text(edit),
             before,
             after,
@@ -516,42 +550,95 @@ mod windows_probe {
 
         let mut results = Vec::new();
 
-        // (a) 直接入力(閉じている)状態 → 無変換 (T12既知: 開く、0→1)
-        results.push(run_scenario("direct_input_closed", edit, |e| {
-            // SAFETY: テスト目的での注入。
-            unsafe { send_vk_tap(VK_IME_OFF) };
-            let _ = e;
-        }));
-
-        // (b) 開いていて入力なし(アイドル) → 無変換 (T12既知: 閉じる、1→0)
-        results.push(run_scenario("open_idle", edit, |e| {
-            // SAFETY: テスト目的での注入。
-            unsafe { send_vk_tap(VK_IME_ON) };
-            let _ = e;
-        }));
-
-        // (c) 開いていて入力中(「あい」未確定) → 無変換 ★M1の核心、実機未確認だった論点
-        results.push(run_scenario("open_composing_ai", edit, |_e| {
-            // SAFETY: テスト目的での注入。
-            unsafe { send_vk_tap(VK_IME_ON) };
-            pump_messages(Duration::from_millis(200));
+        // `--matrix`: 無変換(VK_NONCONVERT)と変換(VK_CONVERT)の両方で、入力中・変換中・候補窓表示中・確定直後も測る
+        // （ADR-199 T17 Phase 4 の B4 計測。値2＝トグルの割り当てで各状態がどう動くか）。指定なしは従来どおり無変換の4シナリオ。
+        let matrix = std::env::args().any(|a| a == "--matrix");
+        let keys: Vec<(&str, u16)> = if matrix {
+            vec![("muhenkan", VK_NONCONVERT), ("henkan", VK_CONVERT)]
+        } else {
+            vec![("muhenkan", VK_NONCONVERT)]
+        };
+        let type_ai = || {
             send_ascii_tap('a');
             pump_messages(Duration::from_millis(150));
             send_ascii_tap('i');
-        }));
-
-        // (d) 開いていて入力中、まだ子音だけ(「k」未確定、かな1文字にすら達していない)
-        results.push(run_scenario("open_composing_k_only", edit, |_e| {
-            // SAFETY: テスト目的での注入。
-            unsafe { send_vk_tap(VK_IME_ON) };
-            pump_messages(Duration::from_millis(200));
-            send_ascii_tap('k');
-        }));
+            pump_messages(Duration::from_millis(150));
+        };
+        for (kn, kv) in keys {
+            // (a) 直接入力(閉じている)状態 (T12既知: 開く、0→1)
+            results.push(run_scenario("direct_input_closed", kn, kv, edit, |_e| {
+                // SAFETY: テスト目的での注入。
+                unsafe { send_vk_tap(VK_IME_OFF) };
+            }));
+            // (b) 開いていて入力なし(アイドル) (T12既知: 閉じる、1→0)
+            results.push(run_scenario("open_idle", kn, kv, edit, |_e| {
+                // SAFETY: テスト目的での注入。
+                unsafe { send_vk_tap(VK_IME_ON) };
+            }));
+            // (c) 開いていて入力中(「あい」未確定) (M1確定: 開閉は不変、かな⇔カタカナ変換が優先)
+            results.push(run_scenario("open_composing_ai", kn, kv, edit, |_e| {
+                // SAFETY: テスト目的での注入。
+                unsafe { send_vk_tap(VK_IME_ON) };
+                pump_messages(Duration::from_millis(200));
+                type_ai();
+            }));
+            // (d) 開いていて入力中、まだ子音だけ(「k」)
+            results.push(run_scenario("open_composing_k_only", kn, kv, edit, |_e| {
+                // SAFETY: テスト目的での注入。
+                unsafe { send_vk_tap(VK_IME_ON) };
+                pump_messages(Duration::from_millis(200));
+                send_ascii_tap('k');
+            }));
+            if !matrix {
+                continue;
+            }
+            // (e) 変換中（「あい」を Space 1回で変換、未確定のまま）
+            results.push(run_scenario("open_converting_space", kn, kv, edit, |_e| {
+                // SAFETY: テスト目的での注入。
+                unsafe { send_vk_tap(VK_IME_ON) };
+                pump_messages(Duration::from_millis(200));
+                type_ai();
+                unsafe { send_vk_tap(VK_SPACE) };
+                pump_messages(Duration::from_millis(300));
+            }));
+            // (f) 変換候補窓表示中（Space 2回。MS-IME は2回目で候補一覧を出す）
+            results.push(run_scenario("open_candidate_window", kn, kv, edit, |_e| {
+                // SAFETY: テスト目的での注入。
+                unsafe { send_vk_tap(VK_IME_ON) };
+                pump_messages(Duration::from_millis(200));
+                type_ai();
+                unsafe { send_vk_tap(VK_SPACE) };
+                pump_messages(Duration::from_millis(300));
+                unsafe { send_vk_tap(VK_SPACE) };
+                pump_messages(Duration::from_millis(300));
+            }));
+            // (g) 確定直後（Enter で確定して 300ms 待ってから。アイドルとの差の有無）
+            results.push(run_scenario("open_after_commit_settled", kn, kv, edit, |_e| {
+                // SAFETY: テスト目的での注入。
+                unsafe { send_vk_tap(VK_IME_ON) };
+                pump_messages(Duration::from_millis(200));
+                type_ai();
+                unsafe { send_vk_tap(VK_RETURN) };
+                pump_messages(Duration::from_millis(300));
+            }));
+            // (h) 確定の直後（Enter の 20ms 後に押す。確定処理の途中で押されたときの挙動）
+            results.push(run_scenario("open_after_commit_immediate", kn, kv, edit, |_e| {
+                // SAFETY: テスト目的での注入。
+                unsafe { send_vk_tap(VK_IME_ON) };
+                pump_messages(Duration::from_millis(200));
+                type_ai();
+                unsafe { send_vk_tap(VK_RETURN) };
+                pump_messages(Duration::from_millis(20));
+            }));
+        }
 
         for r in &results {
             log(&format!(
-                "[result] scenario={} edit_text={:?} before(open={:?} comp={:?}) after(open={:?} comp={:?})",
+                "[result] key={} scenario={} t={}..{} edit_text={:?} before(open={:?} comp={:?}) after(open={:?} comp={:?})",
+                r.key,
                 r.scenario,
+                r.t_start,
+                r.t_end,
                 r.edit_text,
                 r.before.open_status,
                 r.before.comp_str,

@@ -1,0 +1,140 @@
+name: b4-msime-toggle-probe
+
+# ADR-199 T17 Phase 4 の前提確認(B4): MS-IME 本体の KeyAssignmentMuhenkan/Henkan=2(IME-オン/オフ トグル)が
+# 入力中・変換中・候補窓表示中・確定直後にどう動くかを windows-latest で測る。測定用ブランチ専用(develop へ入れない)。
+#   phase1: 値の与え方の検証(設定アプリ UIA -> レジストリ直書き)。値が反映されたか(挙動が変わるか)を対照(既定)と比べる。
+#   phase2: awase 起動中(現行 develop は MS-IME の無変換/変換は受動)の同じマトリクスと、awase.log の observed 件数。
+on:
+  push:
+    branches: [ci/b4-msime-toggle-probe]
+  workflow_dispatch: {}
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: b4-msime-toggle-probe
+      - name: build
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --bin awase --example msime_native_composing_probe --example msime_key_assignment_settings_probe
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\awase.exe dist\
+          Copy-Item target\debug\examples\msime_native_composing_probe.exe dist\
+          Copy-Item target\debug\examples\msime_key_assignment_settings_probe.exe dist\
+          Copy-Item config.toml dist\
+          Copy-Item -Recurse layout dist\layout
+      - name: 入力言語に ja-JP を追加して Microsoft IME を使えるようにする
+        shell: pwsh
+        run: |
+          $msimeTip = '0411:{03B5835F-F03C-411B-9CE2-AA23E1171E36}{A76C93D9-5523-4E90-AAFA-4DB112F9AC76}'
+          $list = Get-WinUserLanguageList
+          $list.Add("ja-JP")
+          Set-WinUserLanguageList -LanguageList $list -Force
+          $tipKey = 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{03B5835F-F03C-411B-9CE2-AA23E1171E36}'
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          for ($i = 0; $i -lt 60 -and -not (Test-Path $tipKey); $i++) { Start-Sleep -Seconds 5 }
+          "TIP_REGISTERED=$(Test-Path $tipKey) after $([int]$sw.Elapsed.TotalSeconds)s"
+          if (-not (Test-Path $tipKey)) {
+            Add-WindowsCapability -Online -Name 'Language.Basic~~~ja-JP~0.0.1.0' 2>&1 | Select-Object -Last 3
+          }
+          try { Set-WinDefaultInputMethodOverride -InputTip $msimeTip -ErrorAction Stop } catch { "default input method override FAILED: $($_.Exception.Message)" }
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+          "UICulture=$((Get-UICulture).Name) Culture=$((Get-Culture).Name)"
+          "compat NoTsf3Override2=" + (Get-ItemProperty 'HKCU:\SOFTWARE\Microsoft\Input\TSF\Tsf3Override\{03b5835f-f03c-411b-9ce2-aa23e1171e36}' -ErrorAction SilentlyContinue).NoTsf3Override2
+
+      - name: phase1-control(既定の割り当て、awase なし)
+        shell: pwsh
+        run: |
+          Push-Location dist
+          .\msime_native_composing_probe.exe --matrix 2>&1 | Select-Object -Last 60
+          Copy-Item msime_native_composing_probe_result.json ..\p1-control.json -ErrorAction SilentlyContinue
+          Pop-Location
+
+      - name: phase1-A(設定アプリを UIA で操作して値2にする)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          [Console]::OutputEncoding = [Text.Encoding]::UTF8
+          Push-Location dist
+          "--- dump only ---"
+          .\msime_key_assignment_settings_probe.exe 2>&1 | Select-Object -Last 80
+          "--- set ---"
+          .\msime_key_assignment_settings_probe.exe --set-master=on '--set-muhenkan=IME-オン/オフ' '--set-henkan=IME-オン/オフ' 2>&1 | Select-Object -Last 80
+          Copy-Item msime_key_assignment_settings_probe.log ..\p1-uia.log -ErrorAction SilentlyContinue
+          Pop-Location
+          $k = Get-ItemProperty 'HKCU:\Software\Microsoft\IME\15.0\IMEJP\MSIME' -ErrorAction SilentlyContinue
+          "registry after UIA: IsKeyAssignmentEnabled=$($k.IsKeyAssignmentEnabled) Muhenkan=$($k.KeyAssignmentMuhenkan) Henkan=$($k.KeyAssignmentHenkan)"
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+          Push-Location dist
+          .\msime_native_composing_probe.exe --matrix 2>&1 | Select-Object -Last 60
+          Copy-Item msime_native_composing_probe_result.json ..\p1-uia.json -ErrorAction SilentlyContinue
+          Pop-Location
+
+      - name: phase1-B(レジストリ直書きで値2にする。T12 では反映されなかった方式の対照)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $base = 'HKCU:\Software\Microsoft\IME\15.0\IMEJP\MSIME'
+          New-Item -Path $base -Force | Out-Null
+          Set-ItemProperty -Path $base -Name IsKeyAssignmentEnabled -Value 1 -Type DWord -Force
+          Set-ItemProperty -Path $base -Name KeyAssignmentMuhenkan -Value 2 -Type DWord -Force
+          Set-ItemProperty -Path $base -Name KeyAssignmentHenkan -Value 2 -Type DWord -Force
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+          Push-Location dist
+          .\msime_native_composing_probe.exe --matrix 2>&1 | Select-Object -Last 60
+          Copy-Item msime_native_composing_probe_result.json ..\p1-registry.json -ErrorAction SilentlyContinue
+          Pop-Location
+
+      - name: phase2(awase 起動中、レジストリ値2のまま。observed 件数を数える)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"msime_native_composing_probe.exe`"]`r`nEdit = `"works`"`r`n")
+          $env:RUST_LOG = 'debug'
+          $env:AWASE_TEST_INJECTION = '1'
+          Push-Location dist
+          Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
+          Start-Sleep -Seconds 8
+          .\msime_native_composing_probe.exe --matrix 2>&1 | Select-Object -Last 60
+          Copy-Item msime_native_composing_probe_result.json ..\p2-awase.json -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Get-Process awase -ErrorAction SilentlyContinue | Stop-Process -Force
+          Pop-Location
+          Copy-Item dist\awase.log .\p2-awase.log -ErrorAction SilentlyContinue
+
+      - name: summary
+        if: always()
+        shell: pwsh
+        run: |
+          $env:PYTHONUTF8 = '1'
+          foreach ($p in 'p1-control','p1-uia','p1-registry') {
+            if (Test-Path "$p.json") { python tools\e2e\ime_key_matrix\check_b4_toggle.py $p "$p.json" | Tee-Object -Append -FilePath $env:GITHUB_STEP_SUMMARY }
+          }
+          if (Test-Path p2-awase.json) { python tools\e2e\ime_key_matrix\check_b4_toggle.py p2-awase p2-awase.json p2-awase.log | Tee-Object -Append -FilePath $env:GITHUB_STEP_SUMMARY }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: b4-logs
+          path: |
+            p1-*.json
+            p1-*.log
+            p2-*.json
+            p2-*.log
+            dist/*.log
+            awase-std*.log
+          retention-days: 7
