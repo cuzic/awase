@@ -651,9 +651,9 @@ impl WindowsPlatform {
 
     // ── CompositionFsm ディスパッチャ ─────────────────────────────────────────
 
-    /// `CompositionFsm` の `Response` を処理し、warmup 送信・cold mark・GJI reset を実行する。
+    /// `CompositionFsm` の `Response` を処理し、cold mark・GJI reset・warmup 基準点の latch を実行する。
     ///
-    /// `warmup_ime_on` は `EmitWarmup` の送信先 IME 状態（ADR-098 決定1-b）。
+    /// `warmup_ime_on` は `LatchWarmup` の準備チェック用 IME 状態（ADR-098 決定1-b）。
     fn dispatch_composition_response(
         &mut self,
         response: &timed_fsm::Response<
@@ -666,12 +666,6 @@ impl WindowsPlatform {
         use crate::tsf::composition_fsm::CompositionAction;
         for action in &response.actions {
             match *action {
-                CompositionAction::EmitWarmup { reason } => {
-                    tracing::debug!("[composition-fsm] EmitWarmup ({reason:?})");
-                    // conv mutation の可否は Output::send_eager_tsf_warmup が
-                    // `conv_mutation_allowed` で self-gate する（non-AwaseOwned なら内部で skip）。
-                    self.output.send_eager_tsf_warmup(warmup_ime_on, origin);
-                }
                 CompositionAction::MarkCold { reason } => {
                     self.output.mark_composition_cold(reason);
                 }
@@ -702,19 +696,6 @@ impl WindowsPlatform {
         tracing::trace!(
             "[composition-fsm] state={}",
             self.composition_fsm.state_label()
-        );
-    }
-
-    /// Ctrl↑ を `CompositionFsm` に通知し、cold 状態なら warmup を再送する。
-    ///
-    /// 唯一の呼び出し元（executor の `handle_ctrl_up_recovery`）は
-    /// `resolve_warmup_ime_on` 経由（ゲート適用済み）を渡すため `origin=WarmupOrigin::Gated` 固定。
-    pub(crate) fn composition_ctrl_up(&mut self, warmup_ime_on: awase::platform::WarmupImeOn) {
-        let warm = self.output.is_composition_warm();
-        self.feed_composition_event(
-            crate::tsf::composition_fsm::CompositionEvent::CtrlUp { warm },
-            warmup_ime_on,
-            crate::output::WarmupOrigin::Gated,
         );
     }
 

@@ -443,7 +443,7 @@ impl DecisionExecutor {
                         sync_outcomes: Vec::new(),
                     };
                 }
-                let callback = self.run_passthrough_pipeline(platform, ime, raw_event);
+                let callback = self.run_passthrough_pipeline(platform, raw_event);
                 BatchResult {
                     has_pending: self.has_pending(),
                     callback,
@@ -512,14 +512,11 @@ impl DecisionExecutor {
     ///
     /// 段階:
     ///   A. [transport] KeyUp 対称性 — deferred Down に対応する Up も reinject に揃える
-    ///   B. [platform]  確認キー KeyUp warmup / Ctrl↑ cold recovery（副作用のみ）
-    ///   C. [transport] output guard defer — 出力 in-flight 中は reinject 経由で順序保証
-    ///   D. [platform]  確認キー KeyDown passthrough 後処理（副作用のみ）
-    ///   → PassThrough
+    ///   B. [transport] output guard defer — 出力 in-flight 中は reinject 経由で順序保証
+    ///   → PassThrough（確認キー KeyDown の cold 化・warmup は reinject 段 `handle_reinject` だけが担う）
     fn run_passthrough_pipeline(
         &mut self,
-        platform: &mut WindowsPlatform,
-        ime: &ImeStateHub,
+        platform: &WindowsPlatform,
         raw_event: &RawKeyEvent,
     ) -> CallbackResult {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
@@ -530,10 +527,7 @@ impl DecisionExecutor {
             return CallbackResult::Consumed;
         }
 
-        // B. [platform] 副作用（defer されても FSM は進める）
-        self.handle_ctrl_up_recovery(platform, ime, raw_event);
-
-        // C. [transport] output guard defer
+        // B. [transport] output guard defer
         let in_flight_ms = platform.output_in_flight_ms();
         let output_in_flight = in_flight_ms < crate::tuning::OUTPUT_GUARD_MS;
         // BUG-58: `self.has_pending()` は executor 自身の effect queue しか見ない。
@@ -587,24 +581,6 @@ impl DecisionExecutor {
             );
         }
         CallbackResult::PassThrough
-    }
-
-    /// Ctrl↑: cold 状態であれば eager_warmup_sent_ms をリセット（この→kおの バグ対策）。
-    /// Ctrl が WezTerm に届いている間、GJI TSF 初期化が中断される可能性がある。
-    /// Ctrl↑ を起点としてタイマーを再計測し GJI recovery 時間（500ms）を確保する。
-    /// cold 判定・warmup 送信は `CompositionFsm`（CtrlUp）に委譲する。副作用のみ。
-    fn handle_ctrl_up_recovery(
-        &self,
-        platform: &mut WindowsPlatform,
-        ime: &ImeStateHub,
-        raw_event: &RawKeyEvent,
-    ) {
-        let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        if !is_key_down && raw_event.vk_code.is_ctrl_variant() {
-            platform.composition_ctrl_up(
-                ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
-            );
-        }
     }
 
     // ── 共通 ──

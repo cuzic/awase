@@ -1,45 +1,20 @@
-//! TSF composition の warmup タイミングを管理する FSM。
+//! 物理 F2 (VK_DBE_HIRAGANA) KeyDown 時の cold 化・GjiFsm 通知・warmup 基準点の latch を決める FSM。
 //!
-//! executor に散在していた `pending_warmup_on_keyup: bool` のミニ FSM を
-//! 状態として昇格させ、confirm キー（Space/Enter/Esc）・物理 F2・Ctrl↑ 等の
-//! passthrough イベントから「いつ eager warmup を送るか」を決定する。
+//! BUG-173 以降、awase は VK_IME_ON の eager warmup を自前で送らない（物理 F2 は素通しで、確定キーの
+//! warmup は reinject 段だけが担い、Ctrl↑ の warmup は撤去済み）。この FSM に残る役割は F2 だけ。
 //!
 //! ## 設計
 //!
 //! - 副作用なし。遷移ごとに [`CompositionAction`] を返し、dispatcher（`WindowsPlatform`）が
-//!   `EmitWarmup` / `LatchWarmup` / `MarkCold` / `GjiCompositionReset` / `GjiNativeF2Consumed` を実行する。
-//! - warm 判定そのものは GjiFsm が SSOT であり、この FSM は重複させない。ここが
-//!   所有するのは「confirm キー KeyDown 後、KeyUp まで warmup を保留する」という
-//!   executor 固有の遷移である。warm/tsf の現況は呼び出し元がイベントに載せて渡す。
-//! - confirm キー KeyDown は WezTerm 等で F2 と Enter が競合する（F2 で新規
-//!   composition 開始 → 即 Enter 確定）ため、warm+TSF では KeyUp まで warmup を遅らせる。
+//!   `LatchWarmup` / `MarkCold` / `GjiCompositionReset` / `GjiNativeF2Consumed` を実行する。
+//! - warm 判定そのものは GjiFsm が SSOT であり、この FSM は重複させない。
 //! - タイマーは不要なので `TimerId = std::convert::Infallible`。
-//!
-//! ## GjiFsm との warm/cold の違い
-//!
-//! `CompositionFsm` と `GjiFsm` はどちらも warm/cold の概念を持つが、意味が異なる。
-//!
-//! - **CompositionFsm**: 「最後の warmup シーケンスを送った」という**タイミング制御**の状態。
-//!   confirm キーや F2 の KeyDown/Up タイミングに応じて warmup の送信を遅延・即時化する。
-//!
-//! - **GjiFsm**: 「GJI が実際に readiness を確認済みか」という**事実推測**の状態。
-//!   probe（TsfReadinessProbe）による観測結果で更新される。
-//!
-//! 両者は独立して管理されており、統合は意図的にしていない。
-//! dispatcher（`platform.rs`）が両方に対して個別にイベントを送る。
 
 use std::convert::Infallible;
 
 use timed_fsm::{Response, TimedStateMachine};
 
 use crate::output::ColdReason;
-
-/// warmup を発火させる理由（診断用）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WarmupReason {
-    /// cold 状態の Ctrl↑（GJI recovery 再計測）
-    CtrlUp,
-}
 
 /// composition 状態。
 #[derive(Debug)]
@@ -59,8 +34,6 @@ pub(crate) enum CompositionEvent {
     ImeOff,
     /// フォーカス変更
     FocusChange { tsf_mode: bool },
-    /// Ctrl KeyUp（cold 状態で eager warmup リセット）
-    CtrlUp { warm: bool },
     /// 物理 F2 (VK_DBE_HIRAGANA) KeyDown。`warm` は現況（`tsf_mode=false` 側でのみ参照）。
     NativeF2Down { tsf_mode: bool, warm: bool },
 }
@@ -68,8 +41,6 @@ pub(crate) enum CompositionEvent {
 /// composition FSM が出力するアクション（dispatcher が副作用を実行する）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CompositionAction {
-    /// warmup を送信する。
-    EmitWarmup { reason: WarmupReason },
     /// composition を cold にマークする。
     MarkCold { reason: ColdReason },
     /// `VK_IME_ON` は送らず、`eager_warmup_sent_ms`（focus probe grace の基準点）だけを新しい物理 F2 の時刻に
@@ -142,18 +113,6 @@ impl TimedStateMachine for CompositionFsm {
                 Response::consume()
             }
 
-            // ── CtrlUp ─────────────────────────────────────────────────────
-            CompositionEvent::CtrlUp { warm } => {
-                if warm {
-                    Response::consume()
-                } else {
-                    // cold 状態の Ctrl↑: GJI recovery のために warmup を再送する。
-                    Response::emit_one(CompositionAction::EmitWarmup {
-                        reason: WarmupReason::CtrlUp,
-                    })
-                }
-            }
-
             // ── NativeF2Down ───────────────────────────────────────────────
             CompositionEvent::NativeF2Down { tsf_mode, warm } => {
                 if tsf_mode {
@@ -222,12 +181,6 @@ mod tests {
             tsf_mode: true,
             warm: false,
         });
-        assert!(
-            !r.actions
-                .iter()
-                .any(|a| matches!(a, CompositionAction::EmitWarmup { .. })),
-            "物理 F2 は素通しなので代わりの VK_IME_ON warmup は送らない（BUG-173）"
-        );
         assert!(r.actions.contains(&CompositionAction::LatchWarmup));
         assert!(r.actions.iter().any(|a| matches!(
             a,
@@ -272,24 +225,5 @@ mod tests {
             "warm 中の非 TSF F2 は cold 化・GJI reset とも不要 (actions={:?})",
             r.actions
         );
-    }
-
-    #[test]
-    fn ctrl_up_while_cold_emits_warmup() {
-        let mut fsm = CompositionFsm::new();
-        let r = fsm.on_event(CompositionEvent::CtrlUp { warm: false });
-        assert_eq!(
-            r.actions,
-            vec![CompositionAction::EmitWarmup {
-                reason: WarmupReason::CtrlUp
-            }]
-        );
-    }
-
-    #[test]
-    fn ctrl_up_while_warm_is_noop() {
-        let mut fsm = CompositionFsm::new();
-        let r = fsm.on_event(CompositionEvent::CtrlUp { warm: true });
-        assert!(r.actions.is_empty());
     }
 }
