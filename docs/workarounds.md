@@ -159,7 +159,7 @@ MS-IME 系の ImmCross 失敗後は冪等な `MsImeDirect`（VK_IME_ON/OFF）へ
 
 ### 6-A. Ctrl↑ で `eager_warmup_sent_ms` をリセット(**撤去済み・BUG-174**)
 
-**場所:** `crates/awase-windows/src/runtime/executor.rs:467-479`
+**場所:** 撤去済み(旧 `runtime/executor.rs` の `handle_ctrl_up_recovery`)
 
 **内容:** Ctrl が WezTerm に届いている間、GJI TSF 初期化が中断される可能性がある。Ctrl↑ 後に composition が cold 状態であれば `eager_warmup_sent_ms` をリセットし、GJI recovery 時間（500ms）を Ctrl↑ 起点で再計測する。
 
