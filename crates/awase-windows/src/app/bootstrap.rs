@@ -315,7 +315,11 @@ struct ConflictEntry {
 /// 実行中プロセス一覧を1回スキャンし、`candidates` に名前（大文字小文字を無視）が
 /// 一致したものの表示名を重複無しで返す。`detect_conflicting_software`/
 /// `detect_relay_or_remap_software` の共通実装。
-fn scan_running_processes(candidates: &[ConflictEntry]) -> Vec<String> {
+/// Toolhelp32スナップショットで実行中プロセスの`szExeFile`一覧を列挙する
+/// （OSの列挙順のまま、重複除去・ソートはしない）。`scan_running_processes`/
+/// `list_all_running_process_names`共通のヘルパー（opusコードレビュー指摘:
+/// 同一のCreateToolhelp32Snapshot手順が2箇所に重複していた）。
+fn enumerate_process_exe_names() -> Vec<String> {
     use std::mem::size_of;
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
@@ -333,7 +337,7 @@ fn scan_running_processes(candidates: &[ConflictEntry]) -> Vec<String> {
             dwSize: u32::try_from(size_of::<PROCESSENTRY32W>()).unwrap_or(0),
             ..Default::default()
         };
-        let mut results: Vec<String> = Vec::new();
+        let mut names: Vec<String> = Vec::new();
         if Process32FirstW(snap, &raw mut entry).is_ok() {
             loop {
                 let end = entry
@@ -341,23 +345,30 @@ fn scan_running_processes(candidates: &[ConflictEntry]) -> Vec<String> {
                     .iter()
                     .position(|&c| c == 0)
                     .unwrap_or(entry.szExeFile.len());
-                let exe_name = String::from_utf16_lossy(&entry.szExeFile[..end]);
-                for candidate in candidates {
-                    if exe_name.eq_ignore_ascii_case(candidate.exe)
-                        && !results.iter().any(|name| name == candidate.display)
-                    {
-                        results.push(candidate.display.to_owned());
-                        break;
-                    }
-                }
+                names.push(String::from_utf16_lossy(&entry.szExeFile[..end]));
                 if Process32NextW(snap, &raw mut entry).is_err() {
                     break;
                 }
             }
         }
         let _ = CloseHandle(snap);
-        results
+        names
     }
+}
+
+fn scan_running_processes(candidates: &[ConflictEntry]) -> Vec<String> {
+    let mut results: Vec<String> = Vec::new();
+    for exe_name in enumerate_process_exe_names() {
+        for candidate in candidates {
+            if exe_name.eq_ignore_ascii_case(candidate.exe)
+                && !results.iter().any(|name| name == candidate.display)
+            {
+                results.push(candidate.display.to_owned());
+                break;
+            }
+        }
+    }
+    results
 }
 
 /// 競合する親指シフトソフトウェアが起動中でないかチェックし、警告を出す
@@ -455,41 +466,10 @@ pub(crate) fn detect_relay_or_remap_software() -> Vec<String> {
 /// としてこちらも用意する。プロセス名のみでパス（ユーザー名を含みうる）は
 /// 含めない。
 pub(crate) fn list_all_running_process_names() -> Vec<String> {
-    use std::mem::size_of;
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-        TH32CS_SNAPPROCESS,
-    };
-
-    // SAFETY: scan_running_processes と同一の標準的な呼び出し手順。
-    unsafe {
-        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
-            return Vec::new();
-        };
-        let mut entry = PROCESSENTRY32W {
-            dwSize: u32::try_from(size_of::<PROCESSENTRY32W>()).unwrap_or(0),
-            ..Default::default()
-        };
-        let mut names: Vec<String> = Vec::new();
-        if Process32FirstW(snap, &raw mut entry).is_ok() {
-            loop {
-                let end = entry
-                    .szExeFile
-                    .iter()
-                    .position(|&c| c == 0)
-                    .unwrap_or(entry.szExeFile.len());
-                names.push(String::from_utf16_lossy(&entry.szExeFile[..end]));
-                if Process32NextW(snap, &raw mut entry).is_err() {
-                    break;
-                }
-            }
-        }
-        let _ = CloseHandle(snap);
-        names.sort_unstable_by_key(|n| n.to_ascii_lowercase());
-        names.dedup();
-        names
-    }
+    let mut names = enumerate_process_exe_names();
+    names.sort_unstable_by_key(|n| n.to_ascii_lowercase());
+    names.dedup();
+    names
 }
 
 pub(super) fn check_conflicting_software(diag: &mut StartupDiagnostics) {
