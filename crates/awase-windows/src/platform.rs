@@ -156,6 +156,38 @@ impl WindowsPlatform {
         });
     }
 
+    /// Unicode モードの long-cold（≥10s idle）`StartProbe` の処理。
+    /// deferred chars あり → VK_IME_ON poke + `UnicodeColdWarmupFsm`（GJI 起動待ち後に chars 送信）、
+    /// なし → 従来は VK_IME_OFF→VK_IME_ON reinit。ただし belief 起点（`GjiSyncOrigin::BeliefSync`）では
+    /// reinit を行わない（ADR-203 決定3: ADR-191「awase は書かない」・ADR-090 A-2）。
+    /// `dispatch_gji_response_from` 本体の cognitive complexity を抑えるため別関数に切り出している。
+    fn unicode_long_cold_probe(
+        &mut self,
+        origin: crate::state::gji_direct_mechanism::GjiSyncOrigin,
+        probe_id: crate::tsf::gji_fsm::ProbeId,
+    ) {
+        let deferred = self.output.take_unicode_cold_deferred();
+        if !deferred.is_empty() {
+            // probe_id (GjiFsm 側の probe 相関 ID) をそのまま cold_seq のログ相関値として転用する
+            // 既存の挙動を維持する（値そのものは変えず、型だけ Generation に揃える）。
+            self.start_unicode_cold_warmup(Generation::new(u64::from(probe_id.0)), deferred);
+            return;
+        }
+        if matches!(
+            origin,
+            crate::state::gji_direct_mechanism::GjiSyncOrigin::BeliefSync
+        ) {
+            tracing::debug!(
+                "[gji-fsm] Unicode long-cold StartProbe: reinit 抑止 (BeliefSync 起点)"
+            );
+        } else {
+            tracing::debug!(
+                "[gji-fsm] Unicode long-cold StartProbe: VK_IME_OFF→VK_IME_ON reinit (chars なし)"
+            );
+            self.output.send_f22_f21_reinit();
+        }
+    }
+
     /// `GjiAction::StartProbe` ハンドラから呼ぶ。ADR-123: `pending_deferred`
     /// （probe 実行中に届いた別モーラの VK 退避キュー）が非ゼロのまま
     /// この probe が開始しようとしているかを journal に記録する
@@ -570,32 +602,7 @@ impl WindowsPlatform {
                     if self.output.injection_mode == crate::output::InjectionMode::Unicode {
                         use crate::tsf::gji_fsm::GjiEvent;
                         if params.is_long_cold {
-                            let deferred = self.output.take_unicode_cold_deferred();
-                            if deferred.is_empty() {
-                                if matches!(
-                                    origin,
-                                    crate::state::gji_direct_mechanism::GjiSyncOrigin::BeliefSync
-                                ) {
-                                    // ADR-203 決定3: belief 起点の同期では awase 起点の IME 書き込み
-                                    // （reinit）を行わない（ADR-191「awase は書かない」、ADR-090 A-2）。
-                                    tracing::debug!(
-                                        "[gji-fsm] Unicode long-cold StartProbe: reinit 抑止 (BeliefSync 起点)"
-                                    );
-                                } else {
-                                    tracing::debug!(
-                                        "[gji-fsm] Unicode long-cold StartProbe: VK_IME_OFF→VK_IME_ON reinit (chars なし)"
-                                    );
-                                    self.output.send_f22_f21_reinit();
-                                }
-                            } else {
-                                // probe_id (GjiFsm 側の probe 相関 ID) をそのまま cold_seq の
-                                // ログ相関値として転用する既存の挙動を維持する（値そのものは
-                                // 変えず、型だけ Generation に揃える）。
-                                self.start_unicode_cold_warmup(
-                                    Generation::new(u64::from(probe_id.0)),
-                                    deferred,
-                                );
-                            }
+                            self.unicode_long_cold_probe(origin, *probe_id);
                         }
                         let state_before = self.gji_state_label();
                         let warmup_resp = self.output.gji_on_event(GjiEvent::WarmupComplete {
