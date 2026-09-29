@@ -370,12 +370,18 @@ jobs:
             # 取りこぼしの再現率測定(run 36222195067 で chromepage 2ms が 48 試行中 1 件 FAIL): 2ms/3ms を 1 回あたり 24 試行 × 20 回に増やす。
             *[cfg(f'ts-{form}-gji-{iv}ms', 'observe', check='typing', ime='gji', runs=runs, wait=1200,
                   stress=f'--form={form} --interval={iv} --trials=8 --layout=@REPO@/layout/nicola_keytop.yab')
-              for form, iv, runs in (('chromepage', 2, 30), ('chromebar', 2, 30))],
+              for form, iv, runs in (('chromepage', 2, 20), ('chromebar', 2, 20))],
             # 対照実験: awase なし・raw ローマ字 20ms で入力中(未確定)に、awase の chrome-reinit と同じ VK_IME_OFF→VK_IME_ON 等を送る。
             # 未確定文字が消える(loss>0)なら、awase の reinit が入力を破棄する根拠になる(run 36222195067 の chromepage 2ms で 35 文字消失)。
             *[cfg(f'ts-raw-{form}-gji-20ms-reinit-{ra}', 'observe', check='typing', ime='gji', awase='false', runs=2, wait=900,
                   stress=f'--form={form} --interval=20 --mode=raw --no-awase --kinds=single --trials=6 --reinit-after={ra} --layout=@REPO@/layout/nicola_keytop.yab')
-              for form in ('chromepage', 'chromebar') for ra in ('off_on', 'off', 'f2', 'none')],
+              for form in ('chromepage', 'chromebar') for ra in ('off_on', 'off', 'f2', 'esc', 'none')],
+            # C2 項目1(候補窓/未確定が残ったまま実 IME が OFF になる): 10 文字目の後に一映停止し、その間に awase を経由せず
+            # 前面 Chrome の実 IME を WM_IME_CONTROL で閉じて、再開後の打鍵の回復を見る(--close-ime-at)。
+            # 30ms は 10 文字=約300ms なので 350ms、2ms は 10 文字=約20ms なので 300ms に閉じる(いずれも停止中)。
+            *[cfg(f'ts-{form}-gji-{iv}ms-closeime', 'observe', check='typing', ime='gji', runs=5, wait=1500,
+                  stress=f'--form={form} --interval={iv} --kinds=single --trials=6 --len=25 --pause-after=10 --pause-ms=600 --close-ime-at={at} --layout=@REPO@/layout/nicola_keytop.yab')
+              for form in ('chromepage', 'chromebar') for iv, at in ((30, 350), (2, 300))],
             # 実利用に近い条件: アイドル → 別ウィンドウへ切替 → Chrome へ戻す → 100ms 後に打鍵(--idle/--switch-focus/--start-delay)。
             # 定常状態(連続打鍵)では 2000 試行超で失敗ゼロ。失敗は ready 直後の最初の 1〜2 試行に集中していたので、cold・フォーカス遷移直後を狙う。
             *[cfg(f'ts-{form}-gji-{iv}ms-idle{idle}', 'observe', check='typing', ime='gji', runs=6, wait=1500,

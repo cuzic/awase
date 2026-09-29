@@ -1292,8 +1292,33 @@ fn worker(form: Form) {
             if let Ok(mut g) = HOOK_EVENTS.lock() {
                 g.clear();
             }
+            // --close-ime-at=MS(C2 項目1の再現用): 打鍵開始から MS 後に、awase を経由せず前面窓(Chrome)の
+            // 実 IME を WM_IME_CONTROL(IMC_SETOPENSTATUS,0) で閉じる(候補窓/未確定が残ったまま GJI が OFF になる状況の近似)。
+            // --pause-after/--pause-ms と併用し、閉じたあとに打鍵を再開させる。結果は close_ime レコード(ret: 0=成功、-9999=IMEウィンドウ無し)。
+            let close_ime_at: u64 = arg_value("--close-ime-at=").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let close_ret = std::sync::Arc::new(AtomicIsize::new(-9998));
+            if close_ime_at > 0 {
+                let cr = close_ret.clone();
+                std::thread::spawn(move || {
+                    sleep_ms(close_ime_at);
+                    // SAFETY: 前面窓の既定 IME ウィンドウへ同期 SendMessage するだけ(chrome_probe.rs::ime_control と同じ)。
+                    let r = unsafe {
+                        let fg = GetForegroundWindow();
+                        let ime_wnd = windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd(fg);
+                        if ime_wnd.0.is_null() {
+                            -9999
+                        } else {
+                            SendMessageW(ime_wnd, 0x0283, Some(WPARAM(0x0006)), Some(LPARAM(0))).0
+                        }
+                    };
+                    cr.store(r, Ordering::SeqCst);
+                });
+            }
             let stats = run_schedule(&evs);
-            // 対照実験(--reinit-after=off_on|off|f2): 入力中(未確定)に awase の chrome-reinit と同じキー列を送ると、
+            if close_ime_at > 0 {
+                rec(&json!({"type":"close_ime","at_ms":close_ime_at,"ret":close_ret.load(Ordering::SeqCst),"n":t,"kind":kind}));
+            }
+            // 対照実験(--reinit-after=off_on|off|f2|esc): 入力中(未確定)に awase の chrome-reinit と同じキー列を送ると、
             // 未確定の文字が消えるかを見る(BUG-36 のコメントは「commit される」とするが、実測で確かめる)。
             if let Some(mode) = arg_value("--reinit-after=") {
                 sleep_ms(300);
@@ -1310,6 +1335,11 @@ fn worker(form: Form) {
                     }
                     "f2" => {
                         press(VK_DBE_HIRAGANA, 0x70, 50);
+                        sleep_ms(1000);
+                    }
+                    // C2 項目3: awase の per-VK give-up が送る ESC(escape_composition)が未確定を取り消すかの対照。
+                    "esc" => {
+                        press(0x1B, 0x01, 50);
                         sleep_ms(1000);
                     }
                     _ => {}
