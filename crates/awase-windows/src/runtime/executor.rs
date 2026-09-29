@@ -594,7 +594,7 @@ impl DecisionExecutor {
         generation: Option<crate::state::ApplyGeneration>,
     ) -> Option<ImeApplyCompletion> {
         if let Effect::Input(InputEffect::ReinjectKey(event)) = effect {
-            self.handle_reinject(platform, ime, event);
+            Self::handle_reinject(platform, event);
             return None;
         }
         self.dispatch_effect(platform, ime, effect, generation)
@@ -609,13 +609,8 @@ impl DecisionExecutor {
             })
     }
 
-    /// F2-TSF 特殊扱い + 通常 reinject + confirm キー後処理。
-    fn handle_reinject(
-        &self,
-        platform: &mut WindowsPlatform,
-        ime: &ImeStateHub,
-        event: RawKeyEvent,
-    ) {
+    /// 通常 reinject + confirm キー後処理。
+    fn handle_reinject(platform: &mut WindowsPlatform, event: RawKeyEvent) {
         let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
         let dir = if is_key_down { "down" } else { "up" };
 
@@ -635,11 +630,7 @@ impl DecisionExecutor {
         // on_reinject_key を reinject() の前後どちらで呼んでも観測可能な差がない。
         // これにより spawn_local 内の with_app 呼び出しを除去できる。
         if is_key_down && event.vk_code.is_composition_confirm_key() {
-            platform.on_reinject_key(
-                event.vk_code,
-                true,
-                ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
-            );
+            platform.on_reinject_key(event.vk_code, true);
         }
 
         // OutputActiveGuard を先に取得してから spawn_local で SendInput を RUNTIME 借用外に移す。

@@ -179,7 +179,7 @@ ADR-199 決定4の判定式として採用されている。以下は当初（20
   beliefがずれている間にキーをSuppressすると、その打鍵が黙って失われる（belief=ON・実IME=OFFで`!belief`=OFFの冪等な`VK_IME_OFF`を送っても何も起きない）ため。
   収束するのは2打鍵目で、ユーザーには「キーが効かないことがある」＝ADR-189が直した症状と同じ見え方になる（開閉軸でも起きる）。追加は1条件で削除は無い。
 
-**既存の既定の書き込みの扱い**: TSF cold-start warmup（`VK_IME_ON`を実送信、BUG-02/69。IME ONのときだけ発動）は、既存の例外として残す（撤去対象外）。ユーザーがopt-inした
+**既存の既定の書き込みの扱い**: TSF cold-start warmup（`VK_IME_ON`を実送信、BUG-02/69。IME ONのときだけ発動）は、既存の例外として残す（撤去対象外）。**（2026-09-29追記、BUG-173/Opus発火削減: キー打鍵を契機とする warmup 送信〈物理F2併走・確定キー・Ctrl↑〉は撤去した。残る `VK_IME_ON` の随伴 warmup は FocusChange と IME ON 適用直後〈`on_ime_applied` の随伴〉のみ。journalで確定キー1回に2発・物理F2に併走する実例を確認し、cold-start の安全網は per-VK confirm/literal 回収が担う。詳細は `docs/known-bugs/BUG-173.md`）**ユーザーがopt-inした
 機能（親指キーの単独タップの再送等）も残す。それ以外の既定の書き込みは撤去の対象（決定5）。
 
 例外のリスク: beliefが実状態と食い違うとき、ユーザーが望んだ方向と逆の結果になりうる。TsfNativeでは書き込みがUIミラーにしか届かない環境（BUG-25）でbeliefと実状態が同位相に揃い、自己訂正が起きない
