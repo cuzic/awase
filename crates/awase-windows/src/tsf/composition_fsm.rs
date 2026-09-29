@@ -41,8 +41,6 @@ use awase::types::VkCode;
 /// warmup を発火させる理由（診断用）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WarmupReason {
-    /// cold 状態の Ctrl↑（GJI recovery 再計測）
-    CtrlUp,
     /// TSF mode の物理 F2 を consume した代替 warmup
     NativeF2,
     /// cold / 非 TSF confirm キー KeyDown 直後の即時 warmup
@@ -83,8 +81,6 @@ pub(crate) enum CompositionEvent {
     },
     /// 確定キー KeyUp
     ConfirmKeyUp { vk: VkCode },
-    /// Ctrl KeyUp（cold 状態で eager warmup リセット）
-    CtrlUp { warm: bool },
     /// 物理 F2 (VK_DBE_HIRAGANA) KeyDown。`warm` は現況（`tsf_mode=false` 側でのみ参照）。
     NativeF2Down { tsf_mode: bool, warm: bool },
 }
@@ -253,18 +249,6 @@ impl TimedStateMachine for CompositionFsm {
                     }
                 }
                 Response::consume()
-            }
-
-            // ── CtrlUp ─────────────────────────────────────────────────────
-            CompositionEvent::CtrlUp { warm } => {
-                if warm {
-                    Response::consume()
-                } else {
-                    // cold 状態の Ctrl↑: GJI recovery のために warmup を再送する。
-                    Response::emit_one(CompositionAction::EmitWarmup {
-                        reason: WarmupReason::CtrlUp,
-                    })
-                }
             }
 
             // ── NativeF2Down ───────────────────────────────────────────────
@@ -501,24 +485,5 @@ mod tests {
             "warm 中の非 TSF F2 は cold 化・GJI reset とも不要 (actions={:?})",
             r.actions
         );
-    }
-
-    #[test]
-    fn ctrl_up_while_cold_emits_warmup() {
-        let mut fsm = CompositionFsm::new();
-        let r = fsm.on_event(CompositionEvent::CtrlUp { warm: false });
-        assert_eq!(
-            r.actions,
-            vec![CompositionAction::EmitWarmup {
-                reason: WarmupReason::CtrlUp
-            }]
-        );
-    }
-
-    #[test]
-    fn ctrl_up_while_warm_is_noop() {
-        let mut fsm = CompositionFsm::new();
-        let r = fsm.on_event(CompositionEvent::CtrlUp { warm: true });
-        assert!(r.actions.is_empty());
     }
 }

@@ -532,7 +532,6 @@ impl DecisionExecutor {
 
         // B. [platform] 副作用（defer されても FSM は進める）
         self.try_pending_warmup_on_keyup(platform, ime, raw_event);
-        self.handle_ctrl_up_recovery(platform, ime, raw_event);
 
         // C. [transport] output guard defer
         let in_flight_ms = platform.output_in_flight_ms();
@@ -610,24 +609,6 @@ impl DecisionExecutor {
         if !is_key_down && raw_event.vk_code.is_composition_confirm_key() {
             platform.composition_confirm_key_up(
                 raw_event.vk_code,
-                ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
-            );
-        }
-    }
-
-    /// Ctrl↑: cold 状態であれば eager_warmup_sent_ms をリセット（この→kおの バグ対策）。
-    /// Ctrl が WezTerm に届いている間、GJI TSF 初期化が中断される可能性がある。
-    /// Ctrl↑ を起点としてタイマーを再計測し GJI recovery 時間（500ms）を確保する。
-    /// cold 判定・warmup 送信は `CompositionFsm`（CtrlUp）に委譲する。副作用のみ。
-    fn handle_ctrl_up_recovery(
-        &self,
-        platform: &mut WindowsPlatform,
-        ime: &ImeStateHub,
-        raw_event: &RawKeyEvent,
-    ) {
-        let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        if !is_key_down && raw_event.vk_code.is_ctrl_variant() {
-            platform.composition_ctrl_up(
                 ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
             );
         }
