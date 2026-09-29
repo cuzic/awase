@@ -335,6 +335,12 @@ jobs:
               for tag, env, ft in (('a-base', '', 'true'), ('a-off', 'AWASE_EXP_NO_EAGER_WARMUP=1', 'true'),
                                    ('b-base', '', 'false'), ('b-off', 'AWASE_EXP_NO_UNICODE_COLD_WARMUP_KEYS=1', 'false'))
               for iv in (40, 10)],
+            # long-cold 版: 各試行の前に 12s 無入力で待ち(GjiFsm が 10s で OnCold(Long) へ)、最初のキーで long-cold warmup を踏ませる。
+            # B(Unicode)は b-long-*、A(Tsf)は a-long-*。awase.log の [unicode-cold-warmup] / [tsf-eager-warmup] 件数で経路の実行を確認する。
+            *[cfg(f'ab-{tag}-long-gji-10ms', 'observe', check='typing', ime='gji', runs=3, wait=420, env=env, force_tsf=ft,
+                  stress=f'--form=edit --interval=10 --trials=3 --idle-before=12000 --layout=@REPO@/layout/nicola_keytop.yab')
+              for tag, env, ft in (('a-base', '', 'true'), ('a-off', 'AWASE_EXP_NO_EAGER_WARMUP=1', 'true'),
+                                   ('b-base', '', 'false'), ('b-off', 'AWASE_EXP_NO_UNICODE_COLD_WARMUP_KEYS=1', 'false'))],
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
