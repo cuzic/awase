@@ -34,7 +34,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress]
+    branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/e2e-warmup-ab]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -75,7 +75,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/e2e-warmup-ab' && 'ab-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -94,9 +94,9 @@ jobs:
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome=''):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', env='', force_tsf='false'):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, env=env, force_tsf=force_tsf)
           SC_IMES = [('msime-native', 'msime', 1, ' --msime'), ('gji-msime', 'gji', 2, ''), ('gji-atok', 'gji', 1, '')]
           configs = [
             # --- 撤去実験(ATOK、実機E1〜E7bと同じ) ---
@@ -326,13 +326,28 @@ jobs:
                   stress=f'--form={form} --mode=drift-on --trials=10 --layout=@REPO@/layout/nicola_keytop.yab{msime}')
               for form in ('tsf', 'edit')
               for ime_name, ime, km, msime in (('gji-atok', 'gji', 1, ''), ('msime-native', 'msime', 1, ' --msime'))],
+            # --- warmup 予防送信の実験(ab-、ci/e2e-warmup-ab。docs/experiments.md エントリ30) ---
+            # A: eager VK_IME_ON(InjectionMode::Tsf のときだけ発火。typing_stress の Edit を force_tsf にして Tsf モードにする)
+            # B: Unicode long-cold の VK_IME_ON+VK_A+BS(既定の Win32 Edit=Unicode 注入モード)
+            # 各フラグ有無の対で、文字消失・リテラル化(check_typing_stress.py)が悪化しないかを比べる。expect=observe。
+            *[cfg(f'ab-{tag}-gji-{iv}ms', 'observe', check='typing', ime='gji', runs=3, wait=420, env=env, force_tsf=ft,
+                  stress=f'--form=edit --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab')
+              for tag, env, ft in (('a-base', '', 'true'), ('a-off', 'AWASE_EXP_NO_EAGER_WARMUP=1', 'true'),
+                                   ('b-base', '', 'false'), ('b-off', 'AWASE_EXP_NO_UNICODE_COLD_WARMUP_KEYS=1', 'false'))
+              for iv in (40, 10)],
+            # long-cold 版: 各試行の前に 12s 無入力で待ち(GjiFsm が 10s で OnCold(Long) へ)、最初のキーで long-cold warmup を踏ませる。
+            # B(Unicode)は b-long-*、A(Tsf)は a-long-*。awase.log の [unicode-cold-warmup] / [tsf-eager-warmup] 件数で経路の実行を確認する。
+            *[cfg(f'ab-{tag}-long-gji-10ms', 'observe', check='typing', ime='gji', runs=3, wait=420, env=env, force_tsf=ft,
+                  stress=f'--form=edit --interval=10 --trials=3 --idle-before=12000 --layout=@REPO@/layout/nicola_keytop.yab')
+              for tag, env, ft in (('a-base', '', 'true'), ('a-off', 'AWASE_EXP_NO_EAGER_WARMUP=1', 'true'),
+                                   ('b-base', '', 'false'), ('b-off', 'AWASE_EXP_NO_UNICODE_COLD_WARMUP_KEYS=1', 'false'))],
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
             configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-'))]
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'ab-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])
@@ -585,6 +600,11 @@ jobs:
             if ($cfg -match "(?m)^$key *=") { $cfg = $cfg -replace "(?m)^$key *=.*$", $line }
             else { $cfg = $cfg -replace '(?m)^\[keys\]\s*$', "[keys]`r`n$line" }
           }
+          if ('${{ matrix.cfg.force_tsf }}' -eq 'true') {
+            # typing_stress.exe の Edit を force_tsf(InjectionMode::Tsf)にする。
+            $cfg = $cfg -replace '(?m)^force_tsf = \[\s*$', "force_tsf = [`r`n    { process = `"typing_stress.exe`", class = `"Edit`" },"
+            if ($cfg -notmatch 'typing_stress\.exe') { throw 'force_tsf の置換に失敗(config.toml の書式変更?): a-* が Unicode モードで走ってしまう' }
+          }
           [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
           Select-String -Path "$PWD\dist\config.toml" -Pattern 'half_width_alnum_toggle'
           # CIランナーは初回のクロスプロセスIMMプローブが遅く(実測22ms)、awase がスパイク窓を「IMM不可」と誤学習して
@@ -592,6 +612,12 @@ jobs:
           [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"ime_key_matrix_spike.exe`"]`r`nEdit = `"${{ matrix.cfg.cache }}`"`r`nRICHEDIT50W = `"works`"`r`n[imm_capability.`"typing_stress.exe`"]`r`nEdit = `"works`"`r`nRICHEDIT50W = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))
           $env:RUST_LOG = 'debug'
           $env:AWASE_TEST_INJECTION = '1'
+          # 実験フラグ(;区切りの NAME=VALUE)。awase は Start-Process で起動するため、ここで設定した環境変数を継承する。
+          foreach ($kv in ('${{ matrix.cfg.env }}' -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+            $n, $v = $kv -split '=', 2
+            Set-Item -Path "Env:$n" -Value $v
+            Write-Host "experiment env: $n=$v"
+          }
           # 順序: スパイクを先に起動し、初期化(TSF/ActivateProfile)が終わってから awase を起動する。
           # スパイクの初期化中に awase がIMMをプローブすると応答が無く、3回連続の miss で Edit を「IMM不可」と
           # 誤学習して conv を読まなくなる。--activate-gji はキーフックをawase起動後に遅延インストールし、

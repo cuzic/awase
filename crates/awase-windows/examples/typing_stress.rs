@@ -19,7 +19,7 @@
 //! `--trials=N`(種別ごとの試行数。既定4。`--mode=drift` では試行回数として使う) / `--len=N`(1試行の文字数。既定40) / `--seed=S` /
 //! `--kinds=single,thumb,mixed` / `--layout=PATH`(.yab。既定 layout/nicola_keytop.yab) /
 //! `--activate-gji`(GJI/MS-IME のプロファイルを有効化。CI 用) / `--msime`(有効化する IME を Microsoft IME に) /
-//! `--no-awase`(awase を待たない。`--mode=raw` の対照実験用) / `--log=PATH`。
+//! `--idle-before=MS`(各試行の注入前に無入力で待つ。long-cold 再現用) / `--no-awase`(awase を待たない。`--mode=raw` の対照実験用) / `--log=PATH`。
 //! `--mode=raw` は awase なしで、期待文字列と同じ内容をローマ字の生キーで同じ速度で注入する対照実験
 //! (入力先+IME 単体がその速度を受けられるかを、awase と切り離して見る)。
 //!
@@ -1041,6 +1041,12 @@ fn worker(form: Form) {
         .split(',')
         .map(str::to_string)
         .collect();
+    // `--idle-before=MS`: 各試行の注入前に MS ミリ秒キーを打たずに待つ。awase の GjiFsm は GJI の I/O が 10s 無いと
+    // OnCold(Long) に入り(打鍵の無い 12s では GJI I/O も途切れる想定。awase 側のポーリングが GJI I/O を起こす場合は入らない)、次の最初のキーで long-cold warmup(Unicode モードなら犠牲キー、
+    // docs/experiments.md エントリ30)を踏むため、その経路を試行ごとに再現するのに使う。
+    let idle_before_ms: u64 = arg_value("--idle-before=")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
     let layout_path = arg_value("--layout=").unwrap_or_else(|| "layout/nicola_keytop.yab".into());
     let ime = if has_flag("--msime") { "msime" } else { "gji" };
 
@@ -1140,6 +1146,10 @@ fn worker(form: Form) {
             };
             clear_text(child);
             sleep_ms(300);
+            if idle_before_ms > 0 {
+                rec(&json!({"type":"idle","kind":kind,"n":t,"ms":idle_before_ms}));
+                sleep_ms(idle_before_ms);
+            }
             if let Ok(mut g) = HOOK_EVENTS.lock() {
                 g.clear();
             }
