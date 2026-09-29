@@ -188,6 +188,27 @@ pub(crate) fn apply_edits(doc: &mut DocumentMut, edits: &[Edit]) {
     }
 }
 
+/// 廃止済みの `general.confirm_mode`（v2 A2）が文書に残っていれば `"wait"` に書き換える。
+/// 読込時は `wait` 扱いなので値は変わらない。行末コメントなどの装飾は保つ。
+fn migrate_legacy_confirm_mode(doc: &mut DocumentMut) {
+    let Some(v) = doc
+        .get_mut("general")
+        .and_then(|g| g.get_mut("confirm_mode"))
+        .and_then(Item::as_value_mut)
+    else {
+        return;
+    };
+    if matches!(
+        v.as_str(),
+        Some("speculative" | "two_phase" | "adaptive_timing")
+    ) {
+        let decor = v.decor().clone();
+        let mut new = toml_edit::Value::from("wait");
+        *new.decor_mut() = decor;
+        *v = new;
+    }
+}
+
 /// `path` の `disk` を読み、`base` から `to_save` への差だけを書いて保存する。
 ///
 /// - ファイルが存在しない: 空の文書から始め、`to_save` のうち既定値と違う項目をすべて書く。
@@ -208,6 +229,7 @@ pub fn save_edit(to_save: &AppConfig, base: &AppConfig, path: &std::path::Path) 
         Err(e) => bail!("ファイルが外部で編集されていて読めません（{e}）"),
     };
     apply_edits(&mut doc, &diff(&base, to_save)?);
+    migrate_legacy_confirm_mode(&mut doc);
     crate::fs_atomic::write_atomic(path, doc.to_string().as_bytes())
 }
 
@@ -251,6 +273,30 @@ mod tests {
         [[keymap]]\n\
         from = \"Ctrl+VK_I\"\n\
         to = [\"F7\"]\n";
+
+    #[test]
+    fn legacy_confirm_mode_is_rewritten_to_wait_on_save() {
+        for old in ["speculative", "two_phase", "adaptive_timing"] {
+            let text = format!(
+                "# top\n[general]\nconfirm_mode = \"{old}\" # note\nsimultaneous_threshold_ms = 80\n\n[keys]\nengine_on = [\"Ctrl+A\"]\n"
+            );
+            let p = write("legacy_cm", &text);
+            let base = AppConfig::load(&p).unwrap();
+            assert!(base.load_warnings().iter().any(|w| w.contains("廃止")));
+            let mut edited = base.clone();
+            edited.general.simultaneous_threshold_ms = 90;
+            save_edit(&edited, &base, &p).unwrap();
+            let out = read(&p);
+            assert_eq!(
+                out,
+                text.replace(old, "wait").replace("= 80", "= 90"),
+                "{out}"
+            );
+            let re = AppConfig::load(&p).unwrap();
+            assert!(re.load_warnings().iter().all(|w| !w.contains("廃止")));
+            std::fs::remove_file(&p).ok();
+        }
+    }
 
     // (1) 何も編集せずに保存するとバイト単位で変わらない。
     #[test]

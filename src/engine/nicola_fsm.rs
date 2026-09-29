@@ -22,9 +22,6 @@ use super::fsm_types::{
 use super::retro_eval_stats::{self, RetroEvalStats};
 use super::timing::{self, DecisionPhase};
 
-/// AdaptiveTiming モードで連続打鍵と判定する閾値（マイクロ秒）
-pub(super) const CONTINUOUS_KEYSTROKE_THRESHOLD_US: u64 = 80_000;
-
 /// ソロ連打トリガーの連打間隔上限（マイクロ秒）
 const SOLO_OFF_TIMEOUT_US: u64 = 400_000;
 
@@ -181,11 +178,8 @@ pub struct NicolaFsm {
     /// 投機出力までの待機時間（マイクロ秒）
     pub(crate) speculative_delay_us: u64,
 
-    /// 直前のキー押下時刻（AdaptiveTiming 用）
+    /// 直前のキー押下時刻
     pub(crate) last_key_timestamp: Option<Timestamp>,
-
-    /// 直前のキーとの間隔（マイクロ秒）。on_key_down の冒頭で算出。
-    pub(crate) last_key_gap_us: Option<u64>,
 
     /// 出力履歴（押下中キーの追跡と直近出力の記録を統合管理）
     pub(crate) output_history: OutputHistory,
@@ -466,7 +460,6 @@ impl NicolaFsm {
             confirm_mode,
             speculative_delay_us: u64::from(speculative_delay_ms) * 1000,
             last_key_timestamp: None,
-            last_key_gap_us: None,
             output_history: OutputHistory::new(),
             phys: PhysicalKeyState::empty(),
             left_thumb_consumed: None,
@@ -652,7 +645,6 @@ impl NicolaFsm {
 
         // タイミング状態・ソロ連打カウンターもリセット
         self.last_key_timestamp = None;
-        self.last_key_gap_us = None;
         self.solo_counter.reset();
 
         // ADR-120 決定0a (`/code-review` 指摘): `own_decision_output`/
@@ -1299,11 +1291,8 @@ impl ShiftReduceParser for NicolaFsm {
 
 // ── KeyDown ディスパッチ ──
 impl NicolaFsm {
-    /// AdaptiveTiming 用: 直前キーとの間隔を算出してタイムスタンプを更新する
-    fn update_timing(&mut self, event: &RawKeyEvent) {
-        self.last_key_gap_us = self
-            .last_key_timestamp
-            .map(|prev| event.timestamp.saturating_sub(prev));
+    /// 直前キーのタイムスタンプを更新する
+    const fn update_timing(&mut self, event: &RawKeyEvent) {
         self.last_key_timestamp = Some(event.timestamp);
     }
 
