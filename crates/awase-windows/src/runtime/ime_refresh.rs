@@ -758,41 +758,6 @@ impl Runtime {
 
         self.ir_notify_drift_giveup_diagnostic(desired, observed, duration_ms, now);
 
-        // BUG-113残置課題(2026-09-06): conv NATIVE ビットはVK_IME_OFFを送っても
-        // 消えない持続的な設定であり、ConvOpenInference単独が根拠の乖離は
-        // classify_conv_transitionのBUG-26対策分岐によりidle-conv-checkの毎tick
-        // 無条件に再発火する(実機ログで約30ms間隔を確認)。これをそのまま
-        // Blindポリシーへ流すと、無操作でも「明示意図エピソード」の間ずっと
-        // VK_IME_OFF×5バーストが数十秒〜数分間隔で再送され続け、GJIのTSF
-        // composition破壊(BUG-113本体の機序)を誘発しうる。conv由来の乖離は
-        // 1回送れば十分(反証不能なので何度送っても収束しない)という前提で、
-        // 「明示ユーザー意図エピソードあたり実送信1回」に絞る。判定ロジックは
-        // 純関数decide_conv_inference_driftに集約(state/ime_actuation.rs)。
-        let conv_drift_episode = crate::state::ime_actuation::ConvDriftEpisode {
-            intent_at_ms: self
-                .platform_state
-                .ime
-                .model()
-                .last_intent
-                .as_ref()
-                .map(|i| i.at_ms),
-            desired,
-        };
-        if crate::state::ime_actuation::decide_conv_inference_drift(
-            drift.source,
-            conv_drift_episode,
-            self.conv_drift_latch,
-        ) == crate::state::ime_actuation::ConvDriftDecision::Suppress
-        {
-            tracing::debug!(
-                "[drift] conv-inference 由来の乖離は本エピソードで補正済み → 送信抑止 \
-                 (desired={desired} observed={observed} duration_ms={duration_ms} \
-                 intent_at_ms={:?})",
-                conv_drift_episode.intent_at_ms
-            );
-            return;
-        }
-
         match act_policy {
             FeedbackPolicy::Blind { .. } => {
                 let action = act_policy.decide_action(act_attempts);
@@ -948,15 +913,6 @@ impl Runtime {
             drift.source,
             drift.confidence,
         );
-        // BUG-113残置課題: ConvOpenInference由来の実送信が確定した
-        // (=ここに到達した)ので、次回以降の同一エピソードでの再送を
-        // 抑止するためラッチを立てる。他sourceでは触らない
-        // (decide_conv_inference_driftはsource≠ConvOpenInferenceなら
-        // ラッチの中身を見ないため実害はないが、無関係なepisodeで
-        // 上書きしない方が意図が明確なため)。
-        if drift.source == crate::state::ime_event::ObservationSource::ConvOpenInference {
-            self.conv_drift_latch = Some(conv_drift_episode);
-        }
         // ADR-082 Phase 0.5: 実送信する試行を出所・世代付きで構造化記録する。
         // `Blind` はここに到達する時点で必ず `Send`（`GiveUp` は上で return 済み）、
         // `Read` は常に `Send`。`action` は `ActuationRecord::new` が
