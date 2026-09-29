@@ -7125,7 +7125,10 @@ mod engine_integration_tests {
         // エンジン活性: 単独タップ確定でも書かない（生キーも出さない）
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(300).build(), &ime_on_ctx());
         let up = engine.on_input(Ev::up(VK_NONCONVERT).at(400).build(), &ime_on_ctx());
-        assert!(set_open_effects(&up).is_empty(), "Suppress は IME を動かさない");
+        assert!(
+            set_open_effects(&up).is_empty(),
+            "Suppress は IME を動かさない"
+        );
     }
 
     /// エンジン活性側: Passthrough なら単独タップ確定で役割由来の絶対指定 `SetOpen(false)`（生キーは出さない）。

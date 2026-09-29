@@ -872,7 +872,9 @@ fn ctrl_key_up_never_actuates_ime() {
             if path.is_dir() {
                 stack.push(path);
             } else if path.extension().is_some_and(|e| e == "rs") {
-                let content = fs::read_to_string(&path).expect("read").replace("\r\n", "\n");
+                let content = fs::read_to_string(&path)
+                    .expect("read")
+                    .replace("\r\n", "\n");
                 let production = production_code_only(&content);
                 for banned in [
                     "CompositionEvent::CtrlUp",
