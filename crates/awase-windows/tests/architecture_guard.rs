@@ -5392,13 +5392,23 @@ fn kanji_0x19_role_goes_through_the_shared_latch_and_only_overrides_gji() {
 /// runtime/ は Linux でテスト実行できない（CLAUDE.md）ため、この静的スキャンが唯一の検知手段。
 #[test]
 fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
-    // 1. plan() の F2 分岐は常に Allow（is_tsf_mode/f2_warmup_owned で Suppress を返さない）
+    // 1. plan() の F2 分岐は常に Allow（VK だけで決まり、TSF/warmup の状態で Suppress を返さない）
     let transport = read_crate_file("src/runtime/transport.rs");
     let transport = strip_any_test_module(&transport);
-    assert!(
-        !transport.contains("if is_tsf_mode && f2_warmup_owned"),
-        "runtime/transport.rs に F2 の Suppress 条件 `is_tsf_mode && f2_warmup_owned` が再び現れています（BUG-173: \
-         ADR-100 決定2 で warmup が VK_IME_ON 単発になり、物理 F2 の代替 F2 再送の契約は無い）"
+    let f2 = transport
+        .find("if event.vk_code == crate::vk::VK_DBE_HIRAGANA {")
+        .expect("plan() の F2 分岐が見つかりません（BUG-173）");
+    let f2_branch = &transport[f2..];
+    let f2_end = f2_branch.find("\n        }\n").expect("F2 分岐の終端");
+    assert_eq!(
+        f2_branch[..f2_end]
+            .lines()
+            .skip(1)
+            .map(str::trim)
+            .collect::<Vec<_>>(),
+        vec!["return Self::Allow;"],
+        "plan() の F2 分岐が `return Self::Allow;` 以外になっています（BUG-173: ADR-100 決定2 で warmup が \
+         VK_IME_ON 単発になり、物理 F2 の代替 F2 再送の契約は無い。Suppress を戻すと物理ひらがなキーが無反応になる）"
     );
 
     // 2. handle_reinject に VK_DBE_HIRAGANA の特例（TSF での握りつぶし）を戻さない
@@ -5413,6 +5423,17 @@ fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
         !body[..end].contains("VK_DBE_HIRAGANA"),
         "executor.rs::handle_reinject に VK_DBE_HIRAGANA の特例が再び現れています（BUG-173）"
     );
+    // F2 の握りつぶしを platform 側の reinject フックへ移し替えることも禁じる。
+    let platform_src = read_crate_file("src/platform.rs");
+    let platform_src = strip_any_test_module(&platform_src);
+    if let Some(at) = platform_src.find("fn on_reinject_key") {
+        let body = &platform_src[at..];
+        let end = body.find("\n    }\n").map_or(body.len(), |e| e + 7);
+        assert!(
+            !body[..end].contains("VK_DBE_HIRAGANA"),
+            "platform.rs::on_reinject_key に VK_DBE_HIRAGANA の特例が現れています（BUG-173）"
+        );
+    }
 
     // 2b. キー打鍵を契機とする eager warmup の送信は撤去済み（BUG-173 追補2）。reinject 段は cold 化と GjiFsm reset だけ。
     let platform = read_crate_file("src/platform.rs");

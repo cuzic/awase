@@ -36,7 +36,7 @@ pub enum ColdReason {
     SetOpenTrue,
     /// `ImeEffect::SetOpen(false)` 実行後（IME OFF → composition context 無効化）
     SetOpenFalse,
-    /// 物理 F2 (VK_DBE_HIRAGANA) をフックで Consume（TSF モード）
+    /// 物理 F2 (VK_DBE_HIRAGANA) KeyDown（TSF モード）。物理 F2 は素通し（BUG-173）で、名前は歴史的経緯
     NativeF2Consumed,
     /// Space/Enter/Escape のパススルー
     PassthroughConfirmKey,

@@ -54,8 +54,10 @@ impl PhysicalKeyDisposition {
 ///
 /// `deferred_vks` は `VkCode`（u16）の `HashSet` なので有界（メモリリークではない）。
 /// 0xF3/0xF4 のような「ペア表現」の KANJI 系キー（対応する KeyUp が原理的に来ない
-/// 場合がある）ではエントリが残留し得るが、BUG-46 の修正で KANJI 系 KeyUp は常に
-/// Suppress されるようになり `check_output_guard_defer` に到達しなくなったため inert。
+/// 場合がある）ではエントリが残留し得るが、BUG-46 の修正で KANJI 系 KeyUp は原則
+/// Suppress されるようになり `check_output_guard_defer` に到達しなくなったため inert
+/// （BUG-173 追補のラッチ `keyup_follows_keydown` が KeyUp を Allow に揃える場合は到達し得るが、
+/// KeyDown も Allow で defer 済みなら `check_keyup_symmetry` が対で処理するため残留しない）。
 /// 「leak しているように見える」からと TTL/クリア機構を追加する前に、まずこの残留が
 /// 実際に `check_keyup_symmetry` の誤発火につながる経路があるか確認すること。
 pub(crate) struct PassthroughQueue {
@@ -169,7 +171,8 @@ impl PhysicalKeyDisposition {
     /// **F2 (VK_DBE_HIRAGANA)**: 常に Allow（BUG-173）。以前は TSF mode かつ
     /// `f2_warmup_owned=true`（GJI 戦略）で Suppress していたが、ADR-100 決定2 で
     /// warmup が `VK_IME_ON` 単発になり「代わりに F2 を再送する」契約が崩れていた。
-    /// 詳細は下の F2 分岐のコメント参照。    ///
+    /// 詳細は下の F2 分岐のコメント参照。
+    ///
     /// **KANJI 関連キー**:
     /// - ImmCross プロファイル: Down/Up 共に Suppress（spurious 連鎖を構造的に遮断）
     /// - それ以外（Imm32Unavailable / TsfNative）: `apply-ime` が `GjiDirectStrategy` /
@@ -225,9 +228,9 @@ impl PhysicalKeyDisposition {
         // 必須）も見送られて物理ひらがなキーが完全に無反応になった（ADR-137 M-6、
         // BUG-173: GJI + Windows Terminal でカタカナから物理ひらがなキーで戻れない）。
         //
-        // warmup の `VK_IME_ON` は物理 F2 とは別に送られる open 軸のみの操作であり、
-        // 物理 F2 を素通ししても二重 actuation にならない（open は冪等、conv は GJI 自身が
-        // 物理キーとして処理する）。`is_tsf_mode`/`f2_warmup_owned` は今は判定に使わない。
+        // awase は物理 F2 の代わりに何も送らない（cold 化と GjiFsm 通知だけ、
+        // `WindowsPlatform::composition_native_f2_down`）ので、物理 F2 を素通ししても二重 actuation に
+        // ならない（conv は GJI 自身が物理キーとして処理する）。判定は VK だけで決まる。
         if event.vk_code == crate::vk::VK_DBE_HIRAGANA {
             return Self::Allow;
         }
@@ -305,8 +308,8 @@ impl PhysicalKeyDisposition {
         }
         let suppress = if profile.can_use_imm32_cross_process() {
             // ImmCross: KANJI 関連 VK は原則 Down/Up 共に Suppress。
-            // ただし 0xF2 HIRAGANA は上の専用分岐で先に Allow になる場合がある
-            // （MS-IME 本体が物理 F2 で開く経路を残す、ADR-190）。
+            // 0xF2 HIRAGANA は上の専用分岐で常に先に Allow になる（BUG-173。MS-IME 本体が物理 F2 で開く
+            // 経路も残る、ADR-190）。
             true
         } else {
             // apply-ime が GjiDirect/MsImeDirect で実際に actuate する場合のみ、
@@ -871,7 +874,7 @@ mod plan_tests {
     // PowerToys Mouse Without Borders 使用中に「英数」キーが効かない不具合報告
     // (docs/known-bugs.md BUG-90) の調査で、ImmCross プロファイル下では
     // VK_DBE_ALPHANUMERIC (英数) が Down/Up とも無条件 Suppress される一方、
-    // VK_DBE_HIRAGANA (かな) は専用分岐で TSF mode 以外 Allow されることが
+    // VK_DBE_HIRAGANA (かな) は専用分岐で Allow される（当時は TSF mode 以外のみ、BUG-173 で常に）ことが
     // 判明した（「かなは効くが英数は効かない」という報告症状と一致）。
     // この非対称性を journal から確認できるようにする `suppress_reason` を
     // ここで固定する。

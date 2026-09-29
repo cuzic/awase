@@ -61,6 +61,8 @@ Up=Suppress となる組が実在する**（M-2 節参照）ことが判明し�
 
 ## `plan()` の決定表（as-built、2026-09-11時点の実装）
 
+> **2026-09-29追記（BUG-173追補）**: `plan()` の結果は `key_pipeline.rs::kp_latch_keyup_to_keydown_disposition`（`key_effect_runtime::keyup_follows_keydown`）が KeyUp について上書きする。`shadow_action` を持つ IME 系キーの KeyUp は、対応する最初の KeyDown（scan_code で照合）の配送（Allow/Suppress）に従う（無変換/変換・role F13〜F24・注入は対象外）。本表は `plan()` 単体の決定表で、KeyUp の最終配送は上書き後の値。
+
 `plan(event, profile, shadow_toggled, active_ime_kind)`（BUG-173で`is_tsf_mode`/`f2_warmup_owned`を撤去）
 は以下の優先順位で早期 return する（`transport.rs:253-425`）。各段の条件に一致した時点で
 以降の段は評価されない。

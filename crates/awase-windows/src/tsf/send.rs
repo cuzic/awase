@@ -19,9 +19,8 @@ use super::output::make_tsf_key_input;
 /// Win キー押下中でスキップした場合 `None`。
 ///
 /// **呼び出し元は `None` を「送信していない」として扱うこと** — スキップを送信成功
-/// 扱いで `eager_warmup_sent_ms` にラッチすると、この warmup が「物理 F2 キーの代替」
-/// （`PhysicalKeyDisposition::plan` が物理キーを Suppress した埋め合わせ）である
-/// ケースで、GJI に IME-ON 信号が一度も届かないまま belief だけ ON 確定してしまう。
+/// 扱いで `eager_warmup_sent_ms` にラッチすると、GJI に IME-ON 信号が一度も届かないまま
+/// belief だけ ON 確定してしまう（当時は物理 F2 の代替 warmup が対象だった。BUG-173 で物理 F2 は素通しになった）。
 /// `crate::ime::send_ime_mode_key` の BUG-16 追補（2026-07-07）と同型の欠陥
 /// （`docs/known-bugs.md` BUG-32 参照）。
 #[must_use]
