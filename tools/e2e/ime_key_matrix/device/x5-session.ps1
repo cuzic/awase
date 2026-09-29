@@ -11,13 +11,6 @@ $st = "$Out/session.status"
 $env:X5_SESSION = '1'
 "waiting since $(Get-Date -Format o)" | Set-Content $st
 $deadline = (Get-Date).AddMinutes($WaitMin)
-while ((Test-Locked) -or ([Idle3]::Ms() -lt $IdleMs)) {
-  if ((Get-Date) -gt $deadline) { "gave up (owner never idle) $(Get-Date -Format o)" | Add-Content $st; exit 0 }
-  Start-Sleep 10
-}
-Start-Sleep 12
-if (Test-Locked) { "relocked during 30s settle, giving up $(Get-Date -Format o)" | Add-Content $st; exit 0 }
-"start $(Get-Date -Format o) idle_ms=$([Idle3]::Ms()) locked=$(Test-Locked)" | Add-Content $st
 $aw = 'C:/Users/cuzic/awase-dv/target/debug/awase.exe'
 $cw = 'C:/Users/cuzic/awase-dv'
 $runs = @(
@@ -26,11 +19,25 @@ $runs = @(
   @('d1-on', "--d1=6 --d1-state=on --d1-delay=800 --awase-exe=$aw --awase-cwd=$cw", $true),
   @('d1-off', "--d1=6 --d1-state=off --d1-delay=800 --awase-exe=$aw --awase-cwd=$cw", $true)
 )
-foreach ($r in $runs) {
-  if (Test-Locked) { "aborted before $($r[0]): screen locked $(Get-Date -Format o)" | Add-Content $st; break }
-  "run $($r[0]) $(Get-Date -Format o)" | Add-Content $st
-  $extra = @{}
-  if ($r[2]) { $extra['NoAwase'] = $true }
-  & C:/Users/cuzic/dv-x5.ps1 -Name $r[0] -ProbeArgs $r[1] -MinIdleMs 0 @extra *> "$Out/$($r[0])-runner.txt"
+$next = 0
+while ($next -lt $runs.Count) {
+  # wait until the screen has stayed unlocked for 15 consecutive seconds
+  $ok = 0
+  while ($ok -lt 15) {
+    if ((Get-Date) -gt $deadline) { "gave up (never stably unlocked) $(Get-Date -Format o)" | Add-Content $st; exit 0 }
+    if (Test-Locked) { $ok = 0 } else { $ok++ }
+    Start-Sleep 1
+  }
+  "unlocked-stable $(Get-Date -Format o) idle_ms=$([Idle3]::Ms())" | Add-Content $st
+  while ($next -lt $runs.Count) {
+    $r = $runs[$next]
+    if (Test-Locked) { "relocked before $($r[0]) $(Get-Date -Format o)" | Add-Content $st; break }
+    "run $($r[0]) $(Get-Date -Format o)" | Add-Content $st
+    $extra = @{}
+    if ($r[2]) { $extra['NoAwase'] = $true }
+    & C:/Users/cuzic/dv-x5.ps1 -Name $r[0] -ProbeArgs $r[1] -MinIdleMs 0 @extra *> "$Out/$($r[0])-runner.txt"
+    if (Test-Locked) { "relocked during $($r[0]) (result may be INVALID; will retry) $(Get-Date -Format o)" | Add-Content $st; Move-Item "$Out/$($r[0])-probe.log" "$Out/$($r[0])-probe.invalid-$(Get-Date -Format HHmmss).log" -Force -ErrorAction SilentlyContinue; break }
+    $next++
+  }
 }
 "done $(Get-Date -Format o)" | Add-Content $st
