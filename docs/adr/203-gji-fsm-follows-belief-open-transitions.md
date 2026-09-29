@@ -114,6 +114,12 @@ related_adr:
   (d) 既存の全 e2e に `StartComposition while engine off` 0件の不変条件チェック。**修正前 FAIL・修正後 PASS の両方を実測してからマージ**。
 - **step 0(マージ前必須)**: c8bc1adc 以降の既存 ts-*/sc-* artifact を `StartComposition while engine off` と `prepend_f2_warmup=true` の連続で grep。既存 CI が OffCold 固着で走っていた場合は
   BUG-168 の残りの失敗(文字重複)の読み方と ts-* のベースラインが変わる。
+  **結果(2026-09-29、e2e-ime.yml の11 artifact、詳細は step0 調査ログ)**: ts-*(GJI、7 run)は固着なし(打鍵前に OffCold→OnCold→OnWarm 済み、`StartComposition while engine off` 0件、Unwarranted 0件)。
+  よって **BUG-168 の文字重複を OffCold 固着で説明する仮説は ts-* の既存ログからは支持されない**(ts-tsf 系の `flush escape=true` 各1件=BUG-171 型のほうが疑わしい)。
+  一方 spike 系(develop@e174c6f6 の `baseline`/`atok-passthrough-cold`)は固着を再現している: 物理扱いの VK 0x1C(変換)→`KeyEffectPredicted{open:true}`→`Unwarranted`→ImeOn 欠落で
+  `OffCold->OffCold` が 10〜29 回、`StartComposition while engine off` が 2〜7 回(次の ImeOn まで約12〜32秒)。**既存構成が ADR-203 の対象条件をそのまま再現しているので、
+  e2e (a) は新規ハーネス無しで、この2構成の修正前後比較(`StartComposition while engine off` と `OffCold->OffCold` が0になること)で実証できる。**
+  c8bc1adc 以前の対照 run は artifact の retention(7日)切れで比較不能。GitHub リポジトリ名は `cuzic/awase`。
 
 ## 未決事項
 
