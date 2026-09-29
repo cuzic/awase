@@ -1485,7 +1485,9 @@ fn applied_direct_assignments_are_accounted_for() {
     const DIRECT_ASSIGNMENTS: [(&str, usize); 2] = [
         // ime_model.rs: 5→6。`KeyEffectPredicted`のreduce内で、予測がappliedと食い違う向きへ開閉を動かしたとき
         // appliedを`Unknown`へ落とす1件を追加（BUG-156、`reduce()`内の正規書き込み）。
-        ("src/state/ime_model.rs", 6),
+        // 6→7。`ModeKeyPassedThrough`のreduce内で、揃えた観測がappliedと食い違うときappliedを`Unknown`へ落とす
+        // 1件を追加（ADR-205 D6、BUG-172。`reduce()`内の正規書き込み）。
+        ("src/state/ime_model.rs", 7),
         ("src/state/platform_state.rs", 2),
     ];
     const STRUCT_LITERAL_FIELDS: [(&str, usize); 1] = [("src/state/ime_model.rs", 1)];
@@ -3495,6 +3497,38 @@ fn mode_key_passed_through_event_is_dispatched_from_one_place() {
             "src/{rel} 内の ModeKeyPassedThrough の出現数が想定と異なります(期待: \
              {expected}, 実際: {count})。ADR-187 の dispatch 元は1箇所に限定すること。"
         );
+    }
+}
+
+/// ADR-205（BUG-172）: 外部変化の監視窓は、arm が `kp_stage_post_decision` の1箇所、追随（`follow_external_change`）が
+/// `ir_follow_external_change` の1箇所だけ。追随は `ObserverPoll` の記録 + 意図削除 + `ModeKeyPassedThrough` で、
+/// awase は IME を書かない（`apply_ime_open_*`/`set_ime_open`/`send_ime` 系をこのファイル群から呼ばない）。
+#[test]
+fn external_change_watch_has_single_arm_and_follow_sites() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = Path::new(manifest_dir).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    for path in &files {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let content = fs::read_to_string(path).unwrap();
+        let production = non_comment_lines(production_code_only(&content));
+        for (needle, allowed) in [
+            (".arm_external_change_watch(", "runtime/key_pipeline.rs"),
+            (".follow_external_change(", "runtime/ime_refresh.rs"),
+        ] {
+            let count = production.matches(needle).count();
+            let expected = usize::from(rel == allowed);
+            assert_eq!(
+                count, expected,
+                "src/{rel} 内の {needle} の出現数が想定({expected})と異なります。ADR-205: 呼び出し元は {allowed} の1箇所に限定すること。"
+            );
+        }
     }
 }
 

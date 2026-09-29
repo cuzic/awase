@@ -1106,6 +1106,17 @@ impl Runtime {
         if is_tsf_native {
             return;
         }
+        // ADR-205: 外部注入の IME キー直後の監視窓が生きている間は、明示意図の有無に関わらず読み直しを予約する
+        // （明示意図があると下の分岐でポーリングが止まり、窓の中の読みが届かない）。
+        let now_for_watch = crate::hook::current_tick_ms();
+        if let Some(remaining) = self
+            .platform_state
+            .ime
+            .external_change_watch_remaining_ms(now_for_watch)
+        {
+            self.schedule_ime_refresh(crate::tuning::MODE_KEY_PASS_REREAD_MS.min(remaining + 1));
+            return;
+        }
         // ADR-187: 無変換/変換の生キー通過後、窓が有効な間は follow の読み直しを予約する。通常のポーリング間隔で
         // 上書きしない。意図を捨てた後は`explicit_intent()`が`None`になるため、ここで上書きすると読み直しが
         // 窓(300ms)より後(既定500ms)に飛び、最初の観測が古い状態を読んだ回で追随できない。
