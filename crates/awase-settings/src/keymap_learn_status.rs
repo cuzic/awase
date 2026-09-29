@@ -367,6 +367,8 @@ pub struct EnvProbe {
     current: EnvSnapshot,
     rx: Option<std::sync::mpsc::Receiver<EnvSnapshot>>,
     started: bool,
+    /// 設定画面がフォーカスを失っている間だけ`true`（[`Self::observe_window_focus`]）。
+    window_was_unfocused: bool,
     pub process_start: std::time::SystemTime,
 }
 
@@ -377,6 +379,7 @@ impl EnvProbe {
             current: EnvSnapshot::UNKNOWN,
             rx: None,
             started: false,
+            window_was_unfocused: false,
             process_start,
         }
     }
@@ -398,6 +401,22 @@ impl EnvProbe {
     pub fn request_reprobe(&mut self) {
         self.started = false;
         self.rx = None;
+    }
+
+    /// 毎フレーム、設定画面のフォーカス状態を渡す。フォーカスを失った後に取り戻したとき
+    /// （GJIの設定アプリなど別ウィンドウでキーマップ設定を変えて戻ってきた可能性がある）は
+    /// 版と指紋を取り直させ、`true`を返す。呼び出し側は`true`のとき状態表示を破棄する。
+    /// 取得が始まっていない間は何もせず`false`を返す（初回の取得がこれから走るため）。
+    pub fn observe_window_focus(&mut self, focused: bool) -> bool {
+        if !focused {
+            self.window_was_unfocused = true;
+            return false;
+        }
+        if !std::mem::take(&mut self.window_was_unfocused) || !self.started {
+            return false;
+        }
+        self.request_reprobe();
+        true
     }
 
     /// 取得中(開始前を含む)か。
@@ -593,6 +612,32 @@ mod tests {
             custom_keymap_without_prediction: true,
             fingerprint: None,
         }
+    }
+
+    /// 設定画面がフォーカスを失って取り戻したときだけ、版・指紋を取り直させる
+    /// （設定画面を開いたまま別アプリでIMEのキーマップを変えた場合の表示が古くなる問題、Codexレビュー指摘）。
+    #[test]
+    fn env_probe_reprobes_only_when_window_regains_focus() {
+        let mut probe = EnvProbe::new(std::time::SystemTime::UNIX_EPOCH);
+        // 取得開始前は、フォーカス変化があっても何もしない（初回取得がこれから走る）。
+        assert!(!probe.observe_window_focus(false));
+        assert!(!probe.observe_window_focus(true));
+        assert!(probe.needs_start());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        probe.attach(rx);
+        tx.send(snap(EnvVersionProbe::Unknown)).unwrap();
+        assert!(probe.poll());
+        assert!(!probe.needs_start());
+        // フォーカスしたままなら再取得しない。
+        assert!(!probe.observe_window_focus(true));
+        assert!(!probe.needs_start());
+        // 失った間は何もしない。取り戻した瞬間に1回だけ再取得を要求する。
+        assert!(!probe.observe_window_focus(false));
+        assert!(!probe.needs_start());
+        assert!(probe.observe_window_focus(true));
+        assert!(probe.needs_start());
+        assert!(probe.is_pending(), "取得完了まで古い状態で再計算しない");
     }
 
     #[test]

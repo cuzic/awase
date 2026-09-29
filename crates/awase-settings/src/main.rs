@@ -4160,6 +4160,12 @@ impl eframe::App for SettingsApp {
         self.update_ime_state(ctx);
         self.poll_pending_save(ctx);
         self.poll_keymap_learn(ctx);
+        // 別ウィンドウでIMEのキーマップ設定を変えて戻ってきたとき、学習表の状態表示
+        // （版・指紋に依存する）が古いままにならないよう取り直させる。
+        let window_focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        if self.keymap_env_probe.observe_window_focus(window_focused) {
+            self.keymap_table_state = None;
+        }
         self.commit_pending_layout_edit(ctx);
         // code-review指摘: キー捕捉モードだけでなく、確認モーダル表示中
         // （Dangerous確認・キャンセル3択・配列破棄確認）にもグローバル

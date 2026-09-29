@@ -190,3 +190,4 @@ source_review: 俯瞰レビュー（2026-09-24）の A-2
   `cargo check`/`clippy --target x86_64-pc-windows-msvc -p awase-settings -p awase-keymap-learn-win`は指摘なし。
 - 未実施: Windows実機確認（`keymap-learn-table.json`のセルを消してカバレッジ80%未満、キーマップ設定を変えて指紋不一致、
   の各構成で、awase.exeログの`学習済み表を不採用`と設定画面の状態行が一致すること）。測定環境表示（ADR196-T3待ち）。
+- **Codex レビュー指摘への対応（2026-09-28）**: 指紋・IME版は設定画面の起動後に一度しか取得されず、別ウィンドウでキーマップ設定を変えて戻っても表示が古いままだった。`EnvProbe::observe_window_focus` で、設定画面がフォーカスを失って取り戻したときに再取得させる（`update` が毎フレーム呼ぶ）。実機未確認。
