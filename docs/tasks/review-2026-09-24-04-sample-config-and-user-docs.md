@@ -1,6 +1,6 @@
 ---
 title: 古いサンプル設定・利用者向け文書の撤去済みキー案内と、未知キー警告の不在
-status: 一部実装済み（T1=924fa4eb・T2=f5ffa7a9 は develop に存在、T3 は ADR-201 段階2〈be5877e5〉が未知キー警告として実現。T4=トレイ「学習キャッシュをクリア」の実装のみ未着手、2026-09-28 確認）
+status: 一部実装済み（T1=924fa4eb・T2=f5ffa7a9 は develop に存在、T3 は ADR-201 段階2〈be5877e5〉が未知キー警告として実現。T4=トレイ「学習キャッシュをクリア」は案(b)で実装、PR で確認待ち・実機未確認、2026-09-28）
 created: 2026-09-24
 related_adr: ["ADR-191", "ADR-094", "ADR-125", "ADR-116", "ADR-099"]
 source_review: 俯瞰レビュー（受動化・actuation撤去・学習/較正・config棚卸し・v2方針、2026-09-24）の A-3 / A-9
@@ -284,3 +284,4 @@ source_review: 俯瞰レビュー（受動化・actuation撤去・学習/較正�
 - **T2（利用者向け文書）**: 実装済み（`f5ffa7a9`）。`usage.html`/`usage.en.html`/`README*`/`docs/index*.html` に `focus_overrides`・`output_mode`・`hook_mode` は無く、確定モードは4種で `wait` が既定・推奨に揃っている。学習キャッシュのクリアは「現状は動作しません（BUG-108）」と注記済みで、1.19.0 のリリースノート3本にも「実際には未修正だった」の注記がある。
 - **T3（撤去キーの警告）**: 方式が変わって実現。ADR-201 段階2（`be5877e5`、`src/config_load_diag.rs`）が `serde_ignored` で**未知キー**を警告する。`focus_overrides`・`engine_on_keys` 等の架空キーはこれで警告される。一方、`output_mode`・`hook_mode`・`conv_mode_policy`・`dbe_mode_key_policy`・`gji_thumb_key_ime_toggle`・`apply_calibrated_mode_keys`・`[[calibration]]` は `REMOVED_KEYS` として**意図的に警告しない**（ADR-191 の判断を維持）。本タスクの「ADR-191 の判断を覆す」案は採らない。
 - **T4（A-9）**: 未着手。`runtime/message_handlers.rs:1276` は今も `Some(tray::TrayCommand::ClearImmCache) | None => {}`（何もしない）。BUG-108 の `fix_commits` も `[]`。07(7) の判断（cache.toml の読込失敗時は上書きしない）は ADR-198 決定5 で確定済みなので、着手のブロッカーは無い。
+- **T4 の実装（2026-09-28、案(b)、`fix/bug108-clear-imm-cache`）**: `ImmCapabilityStore::clear()` でメモリ上のキャッシュ・疑いカウント・`[imm_capability]` だけを空にする。`[injection_mode]` と学習表は消さない。メニュー名は「IME 制御の学習キャッシュをクリア」。`usage.html`/`usage.en.html` の説明を実際の動作に直し、BUG-108 を更新した。Windows 実機確認は未実施。

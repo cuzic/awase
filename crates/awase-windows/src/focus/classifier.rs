@@ -273,6 +273,22 @@ impl ImmCapabilityStore {
         self.save();
     }
 
+    /// 学習済みの IMM 能力（メモリ上のキャッシュと、`cache.toml` の `[imm_capability]`）と、
+    /// 確定前の「疑い」カウントを全て捨てる。誤学習（BUG-56・BUG-107）の GUI 上の回復手段
+    /// （トレイの「IME 制御の学習キャッシュをクリア」、BUG-108）。捨てた学習済みエントリ数を返す。
+    ///
+    /// `[injection_mode]` など `cache.toml` の他セクションと、学習表
+    /// （`keymap-learn-table.json`）には触れない。ファイルが読めない・壊れているときは
+    /// `save_section` が上書きせず警告するので、メモリだけが空になる（次の学習で書き戻される
+    /// 分は、この時点のメモリ内容から作られる）。
+    pub(crate) fn clear(&mut self) -> usize {
+        let removed = count_imm_capability_entries(&self.cache);
+        self.cache.clear();
+        self.pending_unavailable.clear();
+        self.save();
+        removed
+    }
+
     /// `ImmGetDefaultIMEWnd`=NULL の観測を記録する。閾値回連続で観測されて初めて
     /// `Unavailable` として確定・永続化する（`UNAVAILABLE_CONFIRM_THRESHOLD` 参照）。
     /// 呼び出し元（`learn_imm_capability_on_focus`）は既に学習済みの process/class を
@@ -613,6 +629,48 @@ mod imm_capability_store_tests {
         assert_eq!(
             store.get("some-other-app.exe", "Window Class"),
             Some(ImmCapability::Unavailable)
+        );
+    }
+
+    /// BUG-108: クリアは `[imm_capability]` だけを空にし、`[injection_mode]` 等の他セクションは残す。
+    /// メモリ上のキャッシュも空になり、再読み込みしても復活しない。
+    #[test]
+    fn clear_empties_imm_capability_section_and_keeps_other_sections() {
+        let dir = temp_dir();
+        std::fs::write(
+            dir.join(CACHE_FILENAME),
+            "[injection_mode]\n\"Some.Class\" = \"tsf\"\n",
+        )
+        .expect("write cache.toml");
+        let mut store = ImmCapabilityStore::new(dir.clone());
+        store.learn(
+            "a.exe".to_string(),
+            "Cls".to_string(),
+            ImmCapability::Unavailable,
+        );
+        store.learn("b.exe".to_string(), "Cls".to_string(), ImmCapability::Works);
+        store.record_null_probe("c.exe".to_string(), "Cls".to_string());
+        assert_eq!(store.len(), 2);
+
+        assert_eq!(store.clear(), 2);
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.get("a.exe", "Cls"), None);
+        // 確定前の疑いも消える: クリア後の1回の NULL 観測では確定しない（閾値は2回）。
+        store.record_null_probe("c.exe".to_string(), "Cls".to_string());
+        assert_eq!(store.get("c.exe", "Cls"), None);
+
+        let content = std::fs::read_to_string(dir.join(CACHE_FILENAME)).expect("read cache.toml");
+        let table: toml::Table = content.parse().expect("parse cache.toml");
+        let imm = table.get("imm_capability").and_then(toml::Value::as_table);
+        assert!(imm.is_none_or(toml::Table::is_empty), "{content}");
+        assert!(
+            table.contains_key("injection_mode"),
+            "他セクションが消えた: {content}"
+        );
+        assert_eq!(
+            ImmCapabilityStore::new(dir).len(),
+            0,
+            "再読み込みで復活した"
         );
     }
 

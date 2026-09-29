@@ -663,7 +663,11 @@ pub fn handle_tray_message(
         append_menu_sep(hmenu);
 
         append_menu_item(hmenu, IDM_SETTINGS, "設定...");
-        append_menu_item(hmenu, IDM_CLEAR_IMM_CACHE, "学習キャッシュをクリア");
+        append_menu_item(
+            hmenu,
+            IDM_CLEAR_IMM_CACHE,
+            "IME 制御の学習キャッシュをクリア",
+        );
         append_menu_item(hmenu, IDM_RESTART, "再起動");
         let autostart_registered = crate::autostart::is_registered();
         append_menu_item_checked(
