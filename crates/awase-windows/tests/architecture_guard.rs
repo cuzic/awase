@@ -3993,7 +3993,7 @@ fn explicit_ime_action_case1_keeps_m13_but_case2_3_does_not() {
 fn input_relay_profile_wiring_occurrence_counts_are_pinned() {
     let expectations: &[(&str, usize)] = &[
         ("src/focus/class_names.rs", 12),
-        ("src/runtime/transport.rs", 4),
+        ("src/runtime/transport.rs", 2),
         // ADR-163 TH1b-2a: `executor.rs::dispatch_ime_set_open` の InputRelay
         // ゲートは、5箇所（この関数 + `ime_controller.rs::apply` +
         // `open_chain.rs`の3関数）に重複していた同一条件のリテラル比較を
@@ -4704,18 +4704,9 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
     let kp = read_crate_file("src/runtime/key_pipeline.rs");
     let kp = strip_any_test_module(&kp);
     for token in [
-        "fn kp_restore_hiragana_for_suppressed_mode_key",
         "is_configured_thumb_key",
-        "is_composition_warm",
-        "PhysicalKeyDisposition::Suppress",
         "read_kana_lock",
         "conv_mutation_allowed",
-        "kana_mode_restore_key_down",
-        // BUG-131（opus-adversarial-consult指摘m-9）: ラッチ解除条件が
-        // scan_code一致であること自体を固定する。この関数名が消える・
-        // vkベースの比較へ戻る変更は、runtime/配下がLinuxでテスト実行
-        // できない（CLAUDE.md参照）ためこの静的スキャンでしか検知できない。
-        "fn should_clear_kana_mode_restore_latch",
         // ADR-199 T4: 役割由来の `shadow_action` は `kp_run_inner` の冒頭（`kp_stage_shadow_ime_toggle`・
         // `plan()` より前）で付く。この呼び出しが消えると 0xF3/0xF4 が `shadow_action` なしで
         // Allow され、awase の書き込みと生キーの二重 actuation（BUG-46/BUG-52）に退行する。
@@ -5394,6 +5385,74 @@ fn kanji_0x19_role_goes_through_the_shared_latch_and_only_overrides_gji() {
     );
     // `shadow_action` の代入は1箇所のまま（`ime_relevance_shadow_action_writes_are_accounted_for`）。
     assert_eq!(rt.matches("ime_relevance.shadow_action =").count(), 1);
+}
+
+/// BUG-173（Opus レビュー D1）: 物理 F2 を Suppress/握りつぶす経路が再導入されないこと、および
+/// KeyUp ラッチが `plan()` の直後・journal 記録と実配送の前に呼ばれることを固定する。
+/// runtime/ は Linux でテスト実行できない（CLAUDE.md）ため、この静的スキャンが唯一の検知手段。
+#[test]
+fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
+    // 1. plan() の F2 分岐は常に Allow（VK だけで決まり、TSF/warmup の状態で Suppress を返さない）
+    let transport = read_crate_file("src/runtime/transport.rs");
+    let transport = strip_any_test_module(&transport);
+    let f2 = transport
+        .find("if event.vk_code == crate::vk::VK_DBE_HIRAGANA {")
+        .expect("plan() の F2 分岐が見つかりません（BUG-173）");
+    let f2_branch = &transport[f2..];
+    let f2_end = f2_branch.find("\n        }\n").expect("F2 分岐の終端");
+    assert_eq!(
+        f2_branch[..f2_end]
+            .lines()
+            .skip(1)
+            .map(str::trim)
+            .collect::<Vec<_>>(),
+        vec!["return Self::Allow;"],
+        "plan() の F2 分岐が `return Self::Allow;` 以外になっています（BUG-173: ADR-100 決定2 で warmup が \
+         VK_IME_ON 単発になり、物理 F2 の代替 F2 再送の契約は無い。Suppress を戻すと物理ひらがなキーが無反応になる）"
+    );
+
+    // 2. handle_reinject に VK_DBE_HIRAGANA の特例（TSF での握りつぶし）を戻さない
+    let executor = read_crate_file("src/runtime/executor.rs");
+    let executor = strip_any_test_module(&executor);
+    let start = executor
+        .find("fn handle_reinject")
+        .expect("handle_reinject が見つかりません");
+    let body = &executor[start..];
+    let end = body[10..].find("\n    fn ").map_or(body.len(), |e| e + 10);
+    assert!(
+        !body[..end].contains("VK_DBE_HIRAGANA"),
+        "executor.rs::handle_reinject に VK_DBE_HIRAGANA の特例が再び現れています（BUG-173）"
+    );
+    // F2 の握りつぶしを platform 側の reinject フックへ移し替えることも禁じる。
+    let platform_src = read_crate_file("src/platform.rs");
+    let platform_src = strip_any_test_module(&platform_src);
+    if let Some(at) = platform_src.find("fn on_reinject_key") {
+        let body = &platform_src[at..];
+        let end = body.find("\n    }\n").map_or(body.len(), |e| e + 7);
+        assert!(
+            !body[..end].contains("VK_DBE_HIRAGANA"),
+            "platform.rs::on_reinject_key に VK_DBE_HIRAGANA の特例が現れています（BUG-173）"
+        );
+    }
+
+    // 3. KeyUp ラッチの呼び出し順: plan() → latch → record_key_input → kp_stage_execute
+    let kp = read_crate_file("src/runtime/key_pipeline.rs");
+    let kp = strip_any_test_module(&kp);
+    let plan = kp
+        .find("PhysicalKeyDisposition::plan(")
+        .expect("plan( 呼び出し");
+    let latch = kp
+        .find("self.kp_latch_keyup_to_keydown_disposition(&event, physical)")
+        .expect("ラッチ呼び出し");
+    let record = kp.find("record_key_input(").expect("record_key_input(");
+    let execute = kp
+        .find("self.kp_stage_execute(decision, &event, profile, physical)")
+        .expect("kp_stage_execute 呼び出し");
+    assert!(
+        plan < latch && latch < record && record < execute,
+        "kp_run_inner の順序が壊れています: plan → kp_latch_keyup_to_keydown_disposition → \
+         record_key_input(journal) → kp_stage_execute（BUG-173追補: journal の physical と実配送を一致させる）"
+    );
 }
 
 /// ADR-203 決定9 / BUG-170: `GjiFsm` へ ON/開き直しを同期する入口の一覧を固定する。

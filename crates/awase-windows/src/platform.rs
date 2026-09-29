@@ -651,11 +651,9 @@ impl WindowsPlatform {
 
     // ── CompositionFsm ディスパッチャ ─────────────────────────────────────────
 
-    /// `CompositionFsm` の `Response` を処理し、warmup 送信・cold mark・GJI reset を実行する。
+    /// `CompositionFsm` の `Response` を処理し、cold mark・GJI reset・warmup 基準点の latch を実行する。
     ///
-    /// `warmup_ime_on` は `EmitWarmup` の送信先 IME 状態（ADR-098 決定1-b）。
-    /// 戻り値は F2 を consume すべきか（`ConsumeF2` アクションの有無）で、TSF mode
-    /// で物理 F2 を swallow する判断に使う。
+    /// `warmup_ime_on` は `LatchWarmup` の準備チェック用 IME 状態（ADR-098 決定1-b）。
     fn dispatch_composition_response(
         &mut self,
         response: &timed_fsm::Response<
@@ -664,17 +662,10 @@ impl WindowsPlatform {
         >,
         warmup_ime_on: awase::platform::WarmupImeOn,
         origin: crate::output::WarmupOrigin,
-    ) -> bool {
+    ) {
         use crate::tsf::composition_fsm::CompositionAction;
-        let mut consume_f2 = false;
         for action in &response.actions {
             match *action {
-                CompositionAction::EmitWarmup { reason } => {
-                    tracing::debug!("[composition-fsm] EmitWarmup ({reason:?})");
-                    // conv mutation の可否は Output::send_eager_tsf_warmup が
-                    // `conv_mutation_allowed` で self-gate する（non-AwaseOwned なら内部で skip）。
-                    self.output.send_eager_tsf_warmup(warmup_ime_on, origin);
-                }
                 CompositionAction::MarkCold { reason } => {
                     self.output.mark_composition_cold(reason);
                 }
@@ -684,64 +675,47 @@ impl WindowsPlatform {
                 CompositionAction::GjiNativeF2Consumed => {
                     self.gji_on_native_f2_consumed();
                 }
-                CompositionAction::ConsumeF2 => {
-                    consume_f2 = true;
+                CompositionAction::LatchWarmup => {
+                    self.output
+                        .latch_eager_warmup_without_send(warmup_ime_on, origin);
                 }
             }
         }
-        consume_f2
     }
 
     /// `CompositionFsm` にイベントを feed し、`Response` を dispatch する。
-    /// 戻り値は F2 を consume すべきか（`ConsumeF2` の有無）。
     fn feed_composition_event(
         &mut self,
         event: crate::tsf::composition_fsm::CompositionEvent,
         warmup_ime_on: awase::platform::WarmupImeOn,
         origin: crate::output::WarmupOrigin,
-    ) -> bool {
+    ) {
         use timed_fsm::TimedStateMachine;
         let response = self.composition_fsm.on_event(event);
-        let consume_f2 = self.dispatch_composition_response(&response, warmup_ime_on, origin);
+        self.dispatch_composition_response(&response, warmup_ime_on, origin);
         tracing::trace!(
             "[composition-fsm] state={}",
             self.composition_fsm.state_label()
         );
-        consume_f2
-    }
-
-    /// confirm キー KeyUp を `CompositionFsm` に通知し、保留 warmup があれば送信する。
-    ///
-    /// 唯一の呼び出し元（executor の `try_pending_warmup_on_keyup`）は
-    /// `resolve_warmup_ime_on` 経由（ゲート適用済み）を渡すため `origin=WarmupOrigin::Gated` 固定。
-    pub(crate) fn composition_confirm_key_up(
-        &mut self,
-        vk: awase::types::VkCode,
-        warmup_ime_on: awase::platform::WarmupImeOn,
-    ) {
-        self.feed_composition_event(
-            crate::tsf::composition_fsm::CompositionEvent::ConfirmKeyUp { vk },
-            warmup_ime_on,
-            crate::output::WarmupOrigin::Gated,
-        );
     }
 
     /// 物理 F2 (VK_DBE_HIRAGANA) KeyDown を `CompositionFsm` に通知する。
-    /// 戻り値 `true` なら物理 F2 を consume すべき（TSF mode、`ConsumeF2` action）。
+    /// 物理 F2 は素通し（BUG-173）。ここでは cold 化・GjiFsm 通知・warmup 基準点の latch だけ行い、
+    /// `VK_IME_ON` は送らない。
     ///
     /// 唯一の呼び出し元（`key_pipeline.rs` の物理 F2 down 処理）は
     /// `warmup_ime_on()` 経由（ゲート適用済み）を渡すため `origin=WarmupOrigin::Gated` 固定。
     pub(crate) fn composition_native_f2_down(
         &mut self,
         warmup_ime_on: awase::platform::WarmupImeOn,
-    ) -> bool {
+    ) {
         let tsf_mode = self.output.is_tsf_mode();
         let warm = self.output.is_composition_warm();
         self.feed_composition_event(
             crate::tsf::composition_fsm::CompositionEvent::NativeF2Down { tsf_mode, warm },
             warmup_ime_on,
             crate::output::WarmupOrigin::Gated,
-        )
+        );
     }
 
     // ── GjiFsm イベント通知 ──────────────────────────────────────────────────
@@ -1465,38 +1439,6 @@ impl TsfComposition for WindowsPlatform {
         self.on_ime_applied_inner(open, outcome);
     }
 
-    fn on_passthrough_key(
-        &mut self,
-        vk: awase::types::VkCode,
-        is_keydown: bool,
-        warmup_ime_on: awase::platform::WarmupImeOn,
-    ) -> bool {
-        use crate::tsf::composition_fsm::CompositionEvent;
-        use crate::vk::VkCodeExt as _;
-
-        // confirm キー KeyDown を CompositionFsm に委譲する。
-        // FSM が cold mark / GJI reset / warmup 送信 を action として返し dispatcher が実行する。
-        // warm+TSF では warmup を KeyUp まで遅延し PendingWarmupOnKeyUp に入るので、
-        // その有無を deferral 戻り値とする。
-        // （物理 F2 は composition_native_f2_down を直接呼ぶ別経路で処理する。）
-        if is_keydown && vk.is_composition_confirm_key() {
-            let tsf_mode = self.output.is_tsf_mode();
-            let warm = self.output.is_composition_warm();
-            // 呼び出し元（executor の `handle_confirm_key_passthrough`）は
-            // `resolve_warmup_ime_on` 経由（ゲート適用済み）を渡す。
-            self.feed_composition_event(
-                CompositionEvent::ConfirmKeyDown { vk, tsf_mode, warm },
-                warmup_ime_on,
-                crate::output::WarmupOrigin::Gated,
-            );
-            return self.composition_fsm.pending_warmup_vk() == Some(vk);
-        }
-        false
-    }
-
-    /// 呼び出し元（executor の `handle_reinject`）は `resolve_warmup_ime_on` 経由
-    /// （ゲート適用済み）を渡すため、以下2箇所の `send_eager_tsf_warmup` は
-    /// いずれも `origin=WarmupOrigin::Gated` 固定。
     fn on_reinject_key(
         &mut self,
         vk: awase::types::VkCode,
@@ -1504,19 +1446,6 @@ impl TsfComposition for WindowsPlatform {
         warmup_ime_on: awase::platform::WarmupImeOn,
     ) {
         use crate::vk::VkCodeExt as _;
-
-        if vk == crate::vk::VK_DBE_HIRAGANA && is_keydown && self.output.is_tsf_mode() {
-            tracing::debug!(
-                "[reinject-tsf] vk=0xf2 KeyDown TSF mode → marking cold (NativeF2Consumed)",
-            );
-            self.output
-                .mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
-            self.gji_on_native_f2_consumed();
-            // conv mutation の可否は send_eager_tsf_warmup が conv_mutation_allowed で self-gate する。
-            self.output
-                .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Gated);
-            return;
-        }
 
         if is_keydown && vk.is_composition_confirm_key() {
             // 2026-07-11: この confirm キーは on_passthrough_key で既に一度処理済みの

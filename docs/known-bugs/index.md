@@ -174,6 +174,7 @@
 | [BUG-170](BUG-170.md) | Unwarranted 経路で GjiFsm への同期が届かず OffCold に固着、毎打鍵 per-VK→StaleConfirm→ESC で未確定文字が消える(GJI+Edge/Meet。修正済み・実機未検証・残作業あり) |
 | [BUG-171](BUG-171.md) | per-VK confirm の StaleConfirm(escape=true)が途中の語で既存の未確定文字まで ESC で消す(未修正) |
 | [BUG-172](BUG-172.md) | MS-IME+TsfNative で IME が閉じていても、msime-ready ゲートが conv の NATIVE を「ON確認」と扱い生ローマ字が入る(CI観測、実機未確認) |
+| [BUG-173](BUG-173.md) | GJI + TSFネイティブで物理ひらがなキー(0xF2)が常にSuppressされ、カタカナ固着から戻れない（ADR-100でwarmupがVK_IME_ON化し代替F2再送の契約が崩れていた） |
 | [BUG-174](BUG-174.md) | Ctrl↑のたびに awase 自身が `VK_IME_ON` を注入していた(CtrlUp warmup)。「@」報告の被疑箇所として撤去(原因かは実機未確認) |
 
 ## その他の資料

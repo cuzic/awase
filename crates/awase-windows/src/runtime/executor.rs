@@ -443,7 +443,7 @@ impl DecisionExecutor {
                         sync_outcomes: Vec::new(),
                     };
                 }
-                let callback = self.run_passthrough_pipeline(platform, ime, raw_event);
+                let callback = self.run_passthrough_pipeline(platform, raw_event);
                 BatchResult {
                     has_pending: self.has_pending(),
                     callback,
@@ -512,14 +512,11 @@ impl DecisionExecutor {
     ///
     /// 段階:
     ///   A. [transport] KeyUp 対称性 — deferred Down に対応する Up も reinject に揃える
-    ///   B. [platform]  確認キー KeyUp の保留 warmup 解除（副作用のみ）
-    ///   C. [transport] output guard defer — 出力 in-flight 中は reinject 経由で順序保証
-    ///   D. [platform]  確認キー KeyDown passthrough 後処理（副作用のみ）
-    ///   → PassThrough
+    ///   B. [transport] output guard defer — 出力 in-flight 中は reinject 経由で順序保証
+    ///   → PassThrough（確認キー KeyDown の cold 化・warmup は reinject 段 `handle_reinject` だけが担う）
     fn run_passthrough_pipeline(
         &mut self,
-        platform: &mut WindowsPlatform,
-        ime: &ImeStateHub,
+        platform: &WindowsPlatform,
         raw_event: &RawKeyEvent,
     ) -> CallbackResult {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
@@ -530,10 +527,7 @@ impl DecisionExecutor {
             return CallbackResult::Consumed;
         }
 
-        // B. [platform] 副作用（defer されても FSM は進める）
-        self.try_pending_warmup_on_keyup(platform, ime, raw_event);
-
-        // C. [transport] output guard defer
+        // B. [transport] output guard defer
         let in_flight_ms = platform.output_in_flight_ms();
         let output_in_flight = in_flight_ms < crate::tuning::OUTPUT_GUARD_MS;
         // BUG-58: `self.has_pending()` は executor 自身の effect queue しか見ない。
@@ -576,9 +570,6 @@ impl DecisionExecutor {
             return CallbackResult::Consumed;
         }
 
-        // D. [platform] 確認キー後処理
-        self.handle_confirm_key_passthrough(platform, ime, raw_event);
-
         if matches!(
             raw_event.key_classification,
             awase::types::KeyClassification::Passthrough
@@ -590,50 +581,6 @@ impl DecisionExecutor {
             );
         }
         CallbackResult::PassThrough
-    }
-
-    /// warm+TSF Enter/Space/Escape KeyDown で保留した eager warmup を KeyUp で送信する。
-    /// KeyDown 時は SendInput(F2) → CallNextHookEx(Enter↓) の順になり WezTerm が
-    /// F2 (新 composition 開始) を受け取った後に Enter で即確定してしまう。
-    /// KeyUp タイミングでは Enter↓ が既に処理済みのため F2 との競合なし。
-    ///
-    /// 保留状態は `CompositionFsm` が `PendingWarmupOnKeyUp` として持つ。
-    /// KeyUp を FSM に feed し、保留があれば dispatcher が warmup を送信する。
-    fn try_pending_warmup_on_keyup(
-        &self,
-        platform: &mut WindowsPlatform,
-        ime: &ImeStateHub,
-        raw_event: &RawKeyEvent,
-    ) {
-        let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        if !is_key_down && raw_event.vk_code.is_composition_confirm_key() {
-            platform.composition_confirm_key_up(
-                raw_event.vk_code,
-                ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
-            );
-        }
-    }
-
-    /// Space/Enter/Esc KeyDown の直接 passthrough: warm+TSF または cold の composition 確定処理。
-    /// 副作用のみで CallbackResult は返さない。
-    fn handle_confirm_key_passthrough(
-        &self,
-        platform: &mut WindowsPlatform,
-        ime: &ImeStateHub,
-        raw_event: &RawKeyEvent,
-    ) {
-        let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        // Space/Enter/Escape の直接 passthrough (KeyDown) は composition を
-        // 確定・キャンセルしてコンテキストをアイドル状態に戻す。
-        // mark_cold / eager warmup / warmup の KeyUp 遅延は CompositionFsm（on_passthrough_key
-        // 経由）に委譲する。保留状態は FSM が PendingWarmupOnKeyUp として持つ。
-        if is_key_down && raw_event.vk_code.is_composition_confirm_key() {
-            platform.on_passthrough_key(
-                raw_event.vk_code,
-                true,
-                ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
-            );
-        }
     }
 
     // ── 共通 ──
@@ -672,24 +619,11 @@ impl DecisionExecutor {
         let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
         let dir = if is_key_down { "down" } else { "up" };
 
-        // F2 (VK_DBE_HIRAGANA) in TSF mode: deferred F2 も reinject しない。
-        // pending 中に F2 が来た場合も ReinjectKey としてキューに入るが、
-        // TSF モードでは物理 F2 を WezTerm に届けないことで double-F2 を防ぐ。
-        if event.vk_code == crate::vk::VK_DBE_HIRAGANA && platform.is_tsf_mode() {
-            if is_key_down {
-                // mark_cold(NativeF2Consumed) + eager warmup を platform に委譲する。
-                platform.on_reinject_key(
-                    event.vk_code,
-                    true,
-                    ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
-                );
-            } else {
-                tracing::debug!(
-                    "[reinject-tsf] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
-                );
-            }
-            return;
-        }
+        // BUG-173: 以前はここで TSF mode の deferred F2 を reinject せず握りつぶしていた
+        // （「warmup が F2 を代わりに再送する」double-F2 防止）。ADR-100 決定2 で warmup が
+        // `VK_IME_ON` 単発になり代替 F2 が無くなったため、物理 F2 は通常キーと同様に
+        // reinject する。cold 化は `kp_stage_execute` の `composition_native_f2_down` が
+        // KeyDown ごとに既に実行している（`VK_IME_ON` は送らない）。
 
         tracing::debug!(
             "[reinject] vk={:#04x} {dir} (queued passthrough now firing)",

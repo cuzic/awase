@@ -34,9 +34,7 @@ impl PhysicalKeyDisposition {
         if self != Self::Suppress {
             return None;
         }
-        Some(if event.vk_code == crate::vk::VK_DBE_HIRAGANA {
-            "tsf-f2"
-        } else if crate::vk::is_role_fkey(event.vk_code) {
+        Some(if crate::vk::is_role_fkey(event.vk_code) {
             // F13〜F24（ADR-199 決定18）。profile に依らず「awase が実際に書いた打鍵」だけ Suppress される。
             "role-fkey"
         } else if profile.can_use_imm32_cross_process() {
@@ -56,8 +54,10 @@ impl PhysicalKeyDisposition {
 ///
 /// `deferred_vks` は `VkCode`（u16）の `HashSet` なので有界（メモリリークではない）。
 /// 0xF3/0xF4 のような「ペア表現」の KANJI 系キー（対応する KeyUp が原理的に来ない
-/// 場合がある）ではエントリが残留し得るが、BUG-46 の修正で KANJI 系 KeyUp は常に
-/// Suppress されるようになり `check_output_guard_defer` に到達しなくなったため inert。
+/// 場合がある）ではエントリが残留し得るが、BUG-46 の修正で KANJI 系 KeyUp は原則
+/// Suppress されるようになり `check_output_guard_defer` に到達しなくなったため inert
+/// （BUG-173 追補のラッチ `keyup_follows_keydown` が KeyUp を Allow に揃える場合は到達し得るが、
+/// KeyDown も Allow で defer 済みなら `check_keyup_symmetry` が対で処理するため残留しない）。
 /// 「leak しているように見える」からと TTL/クリア機構を追加する前に、まずこの残留が
 /// 実際に `check_keyup_symmetry` の誤発火につながる経路があるか確認すること。
 pub(crate) struct PassthroughQueue {
@@ -168,16 +168,10 @@ impl PhysicalKeyDisposition {
 
     /// 物理キーを OS に届けるかどうかの純粋関数。
     ///
-    /// **F2 (VK_DBE_HIRAGANA)**:
-    /// - TSF mode かつ `f2_warmup_owned=true`（GJI 戦略）: Down/Up 共に Suppress。
-    ///   awase 自身が warmup として SendInput(F2) を再送する契約とセットの
-    ///   double-F2 防止（`send_eager_tsf_warmup` の NativeF2Consumed 代替送信）。
-    /// - TSF mode かつ `f2_warmup_owned=false`（MsImeStrategy）: **Allow**。
-    ///   MS-IME 戦略は F2 warmup を送らない（`needs_f2_probe()=false`）ため、
-    ///   ここで消すと物理ひらがなキーが「食い逃げ」され、intent/Engine だけ ON で
-    ///   実 IME が OFF のまま乖離する（BUG-10、2026-07-06 実機）。MS-IME は
-    ///   VK_DBE_HIRAGANA をネイティブ処理して IME ON にするため素通しが正しい。
-    /// - 非 TSF mode: Allow
+    /// **F2 (VK_DBE_HIRAGANA)**: 常に Allow（BUG-173）。以前は TSF mode かつ
+    /// `f2_warmup_owned=true`（GJI 戦略）で Suppress していたが、ADR-100 決定2 で
+    /// warmup が `VK_IME_ON` 単発になり「代わりに F2 を再送する」契約が崩れていた。
+    /// 詳細は下の F2 分岐のコメント参照。
     ///
     /// **KANJI 関連キー**:
     /// - ImmCross プロファイル: Down/Up 共に Suppress（spurious 連鎖を構造的に遮断）
@@ -208,57 +202,37 @@ impl PhysicalKeyDisposition {
     #[tracing::instrument(
         level = "debug",
         skip_all,
-        fields(
-            ?profile,
-            shadow_toggled = shadow_toggled,
-            is_tsf_mode = is_tsf_mode,
-            f2_warmup_owned = f2_warmup_owned,
-            ?active_ime_kind
-        )
+        fields(?profile, shadow_toggled = shadow_toggled, ?active_ime_kind)
     )]
     pub(crate) fn plan(
         event: &RawKeyEvent,
         profile: AppImeProfile,
         shadow_toggled: bool,
-        is_tsf_mode: bool,
-        f2_warmup_owned: bool,
         active_ime_kind: ActiveImeKind,
     ) -> Self {
         // InputRelay: この窓は入力面ではなく、awase は actuation を所有しない
-        // （issue #136 / BUG-90 決定4）。**F2分岐より先に判定する**
-        // （/code-review指摘で発見・修正）: F2分岐のSuppressは「awase自身の
-        // warmup F2送信との衝突防止」が目的だが、`is_tsf_mode`/
-        // `f2_warmup_owned`はグローバルな状態でありAppImeProfileとは独立に
-        // 決まるため、理論上InputRelay windowにフォーカス中でも両方が
-        // 真になりうる（MWB自身の中継ウィンドウがTSFネイティブ判定される
-        // ことは通常無いが、将来別の中継ツールで起こりうる一般的な穴）。
-        // InputRelay windowではawaseがそもそもこの窓向けのactuationを
-        // 行わない（condition (a)）ため、F2分岐が守ろうとしている「awase
-        // 自身のwarmup F2との衝突」という保護対象自体が存在しない。ここを
-        // F2分岐より前に置くことで、この組み合わせでも物理かなキーが
-        // Suppressされない（condition (b)）ことを構造的に保証する。
+        // （issue #136 / BUG-90 決定4）。物理 IME キーは常に Allow。
         if profile == AppImeProfile::InputRelay {
             return Self::Allow;
         }
 
-        // F2 (VK_DBE_HIRAGANA): TSF mode かつ warmup 戦略が F2 を自前送信する場合のみ Suppress。
+        // F2 (VK_DBE_HIRAGANA): 常に Allow（BUG-173）。
         //
-        // **訂正（2026-09-06、BUG-116/ADR-137）**: このコメントは元々「awase 自身が
-        // warmup として物理 F2 の代わりに SendInput(F2) を再送する契約」を前提に
-        // 書かれていたが、ADR-100 決定2（2026-08-22）で eager warmup の送信キーは
-        // `VK_DBE_HIRAGANA` から `VK_IME_ON` 単発（open 軸のみ）へ変更済み
-        // （`output/mod.rs::send_eager_tsf_warmup`）。つまり物理 F2 の代替として
-        // 実際に送られるのは open 軸のみで、charset 軸（カタカナ→ひらがな）を
-        // 戻す効果は無い。この「埋め合わせの片肺化」が、GJI 環境で物理かなキー
-        // 単独ではひらがなに戻せない副問題（ADR-137 M-6）の真因であり、
-        // `key_pipeline.rs::kp_restore_hiragana_for_suppressed_mode_key`
-        // （BUG-116 決定2）がこの埋め合わせを別経路で補っている。
+        // 旧実装は「TSF mode かつ GJI 戦略（`f2_warmup_owned`）なら Suppress」だった。この
+        // Suppress は「awase 自身が warmup として物理 F2 の代わりに SendInput(F2) を再送する」
+        // 契約（double-F2 防止）とセットの設計だったが、ADR-100 決定2（2026-08-22）で eager
+        // warmup の送信キーが `VK_DBE_HIRAGANA` から `VK_IME_ON` 単発（open 軸のみ）へ変わった
+        // 時点で契約が崩れていた。物理 F2 は消されるのに、代わりに届くのは open 軸だけで
+        // charset 軸（カタカナ→ひらがな）は戻らない「食い逃げ」になり、IME belief が OFF の
+        // ときは埋め合わせ（`kp_restore_hiragana_for_suppressed_mode_key`、`effective_open`
+        // 必須）も見送られて物理ひらがなキーが完全に無反応になった（ADR-137 M-6、
+        // BUG-173: GJI + Windows Terminal でカタカナから物理ひらがなキーで戻れない）。
+        //
+        // awase は物理 F2 の代わりに何も送らない（cold 化と GjiFsm 通知だけ、
+        // `WindowsPlatform::composition_native_f2_down`）ので、物理 F2 を素通ししても二重 actuation に
+        // ならない（conv は GJI 自身が物理キーとして処理する）。判定は VK だけで決まる。
         if event.vk_code == crate::vk::VK_DBE_HIRAGANA {
-            return if is_tsf_mode && f2_warmup_owned {
-                Self::Suppress
-            } else {
-                Self::Allow
-            };
+            return Self::Allow;
         }
 
         // BUG-136 (issue #136): 他プロセスの SendInput (LLKHF_INJECTED) 由来のイベントは、
@@ -334,8 +308,8 @@ impl PhysicalKeyDisposition {
         }
         let suppress = if profile.can_use_imm32_cross_process() {
             // ImmCross: KANJI 関連 VK は原則 Down/Up 共に Suppress。
-            // ただし 0xF2 HIRAGANA は上の専用分岐で先に Allow になる場合がある
-            // （MS-IME 本体が物理 F2 で開く経路を残す、ADR-190）。
+            // 0xF2 HIRAGANA は上の専用分岐で常に先に Allow になる（BUG-173。MS-IME 本体が物理 F2 で開く
+            // 経路も残る、ADR-190）。
             true
         } else {
             // apply-ime が GjiDirect/MsImeDirect で実際に actuate する場合のみ、
@@ -502,73 +476,28 @@ mod plan_tests {
     // active_ime_kind はどちらでもよい filler として GoogleJapaneseInput を使う。
     const ANY_IME_KIND: ActiveImeKind = ActiveImeKind::GoogleJapaneseInput;
 
-    // ── F2 (VK_DBE_HIRAGANA): TSF mode 判定は KANJI/shadow_toggle と独立 ──
+    // ── F2 (VK_DBE_HIRAGANA): 常に Allow（BUG-173） ──
 
+    /// 旧 `f2_tsf_mode_suppresses_down_and_up` / BUG-10 回帰 / 非TSF の3テストを統合。TSF mode + GJI 戦略でも
+    /// 物理 F2 は Down/Up とも全プロファイルで素通しする（ADR-100 決定2 で warmup が `VK_IME_ON` 単発になり、
+    /// 「代わりに F2 を再送する」契約が無い。MS-IME も従来から素通し＝BUG-10）。
     #[test]
-    fn f2_tsf_mode_suppresses_down_and_up() {
-        let ev = f2_event(KeyEventType::KeyDown);
-        assert_eq!(
-            PhysicalKeyDisposition::plan(
-                &ev,
-                AppImeProfile::TsfNative,
-                false,
-                true,
-                true,
-                ANY_IME_KIND
-            ),
-            PhysicalKeyDisposition::Suppress
-        );
-        let ev = f2_event(KeyEventType::KeyUp);
-        assert_eq!(
-            PhysicalKeyDisposition::plan(
-                &ev,
-                AppImeProfile::TsfNative,
-                false,
-                true,
-                true,
-                ANY_IME_KIND
-            ),
-            PhysicalKeyDisposition::Suppress,
-            "TSF mode では F2 Up も double-F2 防止のため Suppress"
-        );
-    }
-
-    /// BUG-10 回帰: MsImeStrategy（f2_warmup_owned=false）では TSF mode でも物理 F2 を通す。
-    /// Suppress すると代替の F2 warmup が送られず、ユーザーの物理ひらがなキーが
-    /// 食い逃げされて「Engine ON なのに実 IME OFF」の乖離を作る（2026-07-06 実機）。
-    #[test]
-    fn f2_tsf_mode_msime_strategy_allows_physical_key() {
+    fn f2_is_always_allowed_down_and_up() {
         for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
-            let ev = f2_event(event_type);
-            assert_eq!(
-                PhysicalKeyDisposition::plan(
-                    &ev,
-                    AppImeProfile::TsfNative,
-                    false,
-                    true,
-                    false,
-                    ANY_IME_KIND
-                ),
-                PhysicalKeyDisposition::Allow,
-                "MsImeStrategy は F2 warmup を送らないため物理 F2 ({event_type:?}) を素通しする"
-            );
-        }
-    }
-
-    #[test]
-    fn f2_non_tsf_mode_allows() {
-        let ev = f2_event(KeyEventType::KeyDown);
-        assert_eq!(
-            PhysicalKeyDisposition::plan(
-                &ev,
+            for profile in [
                 AppImeProfile::Standard,
-                false,
-                false,
-                false,
-                ANY_IME_KIND
-            ),
-            PhysicalKeyDisposition::Allow
-        );
+                AppImeProfile::Imm32Unavailable,
+                AppImeProfile::TsfNative,
+                AppImeProfile::InputRelay,
+            ] {
+                let ev = f2_event(event_type);
+                assert_eq!(
+                    PhysicalKeyDisposition::plan(&ev, profile, false, ANY_IME_KIND),
+                    PhysicalKeyDisposition::Allow,
+                    "{profile:?} {event_type:?}: 物理 F2 は常に素通し（BUG-173）"
+                );
+            }
+        }
     }
 
     // ── 非 KANJI イベントは常に Allow (プロファイル/shadow_toggle 不問) ──
@@ -592,8 +521,6 @@ mod plan_tests {
                                 &ev,
                                 profile,
                                 shadow_toggled,
-                                false,
-                                false,
                                 active_ime_kind
                             ),
                             PhysicalKeyDisposition::Allow,
@@ -618,8 +545,6 @@ mod plan_tests {
                         &ev,
                         AppImeProfile::Standard,
                         shadow_toggled,
-                        false,
-                        false,
                         ActiveImeKind::MicrosoftIme
                     ),
                     PhysicalKeyDisposition::Suppress,
@@ -658,8 +583,6 @@ mod plan_tests {
                         &ev,
                         AppImeProfile::Standard,
                         false,
-                        false,
-                        false,
                         ActiveImeKind::MicrosoftIme
                     ),
                     PhysicalKeyDisposition::Allow,
@@ -676,8 +599,6 @@ mod plan_tests {
                         &ev2,
                         AppImeProfile::TsfNative,
                         true,
-                        false,
-                        false,
                         ActiveImeKind::GoogleJapaneseInput
                     ),
                     PhysicalKeyDisposition::Allow,
@@ -703,8 +624,6 @@ mod plan_tests {
                         &ev,
                         AppImeProfile::Standard,
                         false,
-                        false,
-                        false,
                         ActiveImeKind::MicrosoftIme
                     ),
                     PhysicalKeyDisposition::Suppress,
@@ -727,8 +646,6 @@ mod plan_tests {
                 PhysicalKeyDisposition::plan(
                     &ev,
                     AppImeProfile::Standard,
-                    false,
-                    false,
                     false,
                     ActiveImeKind::MicrosoftIme
                 ),
@@ -780,7 +697,7 @@ mod plan_tests {
         for (profile, active_ime_kind, label) in owned_actuation_cases() {
             let ev = kanji_event(KeyEventType::KeyDown, Some(ShadowImeAction::TurnOn));
             assert_eq!(
-                PhysicalKeyDisposition::plan(&ev, profile, false, false, false, active_ime_kind),
+                PhysicalKeyDisposition::plan(&ev, profile, false, active_ime_kind),
                 PhysicalKeyDisposition::Allow,
                 "{label}: shadow_toggle が発火していない KeyDown は物理キーを通す"
             );
@@ -796,8 +713,6 @@ mod plan_tests {
                     &ev,
                     profile,
                     true,
-                    false,
-                    false,
                     active_ime_kind
                 ),
                 PhysicalKeyDisposition::Suppress,
@@ -819,14 +734,7 @@ mod plan_tests {
             for (profile, active_ime_kind, label) in owned_actuation_cases() {
                 let ev = dbe_mode_event(vk, action, KeyEventType::KeyDown);
                 assert_eq!(
-                    PhysicalKeyDisposition::plan(
-                        &ev,
-                        profile,
-                        false,
-                        false,
-                        false,
-                        active_ime_kind
-                    ),
+                    PhysicalKeyDisposition::plan(&ev, profile, false, active_ime_kind),
                     PhysicalKeyDisposition::Suppress,
                     "{vk_label} / {label}: shadow_toggle 不発でも実IMEへの意図しない \
                      モード切替を防ぐため Suppress"
@@ -847,8 +755,6 @@ mod plan_tests {
                 &ev,
                 AppImeProfile::TsfNative,
                 false,
-                false,
-                false,
                 ActiveImeKind::GoogleJapaneseInput
             ),
             PhysicalKeyDisposition::Allow
@@ -867,8 +773,6 @@ mod plan_tests {
                 &ev,
                 AppImeProfile::TsfNative,
                 false,
-                false,
-                false,
                 ActiveImeKind::GoogleJapaneseInput
             ),
             PhysicalKeyDisposition::Suppress
@@ -886,8 +790,6 @@ mod plan_tests {
                 &ev,
                 AppImeProfile::TsfNative,
                 false,
-                false,
-                false,
                 ActiveImeKind::GoogleJapaneseInput
             ),
             PhysicalKeyDisposition::Allow
@@ -895,18 +797,11 @@ mod plan_tests {
     }
 
     #[test]
-    fn injected_f2_stays_suppressed_when_tsf_warmup_owns_f2() {
+    fn injected_f2_is_allowed() {
         let ev = injected(f2_event(KeyEventType::KeyDown));
         assert_eq!(
-            PhysicalKeyDisposition::plan(
-                &ev,
-                AppImeProfile::TsfNative,
-                false,
-                true,
-                true,
-                ANY_IME_KIND
-            ),
-            PhysicalKeyDisposition::Suppress
+            PhysicalKeyDisposition::plan(&ev, AppImeProfile::TsfNative, false, ANY_IME_KIND),
+            PhysicalKeyDisposition::Allow
         );
     }
 
@@ -920,8 +815,6 @@ mod plan_tests {
             PhysicalKeyDisposition::plan(
                 &ev,
                 AppImeProfile::Standard,
-                false,
-                false,
                 false,
                 ActiveImeKind::MicrosoftIme
             ),
@@ -938,36 +831,12 @@ mod plan_tests {
                     &ev,
                     AppImeProfile::InputRelay,
                     true,
-                    false,
-                    false,
                     ActiveImeKind::GoogleJapaneseInput
                 ),
                 PhysicalKeyDisposition::Allow,
                 "{event_type:?}"
             );
         }
-    }
-
-    /// /code-review指摘: F2(VK_DBE_HIRAGANA)分岐は`is_tsf_mode`/`f2_warmup_owned`という
-    /// AppImeProfileとは独立なグローバル状態で判定するため、理論上InputRelay window
-    /// にフォーカス中でも両方が真になりうる。InputRelayの判定をF2分岐より前に置く
-    /// ことで、この組み合わせでも物理かなキーがSuppressされない(condition (b))ことを
-    /// 固定する（この2条件が偶然両方trueでもAllowになることが本テストの主眼）。
-    #[test]
-    fn input_relay_f2_is_allowed_even_when_tsf_warmup_flags_are_true() {
-        let ev = f2_event(KeyEventType::KeyDown);
-        assert_eq!(
-            PhysicalKeyDisposition::plan(
-                &ev,
-                AppImeProfile::InputRelay,
-                false,
-                true, // is_tsf_mode
-                true, // f2_warmup_owned
-                ActiveImeKind::GoogleJapaneseInput
-            ),
-            PhysicalKeyDisposition::Allow,
-            "InputRelay では is_tsf_mode/f2_warmup_owned が真でも F2 を Suppress してはならない"
-        );
     }
 
     /// 対照実験: 同じ「shadow_toggle 不発」条件でも `VK_KANJI` 等の DBE 範囲外の
@@ -978,7 +847,7 @@ mod plan_tests {
         for (profile, active_ime_kind, label) in owned_actuation_cases() {
             let ev = kanji_event(KeyEventType::KeyDown, Some(ShadowImeAction::TurnOn));
             assert_eq!(
-                PhysicalKeyDisposition::plan(&ev, profile, false, false, false, active_ime_kind),
+                PhysicalKeyDisposition::plan(&ev, profile, false, active_ime_kind),
                 PhysicalKeyDisposition::Allow,
                 "{label}: VK_KANJI は VK_DBE_* 向け修正の影響を受けない"
             );
@@ -991,14 +860,7 @@ mod plan_tests {
             for shadow_toggled in [false, true] {
                 let ev = kanji_event(KeyEventType::KeyUp, Some(ShadowImeAction::TurnOn));
                 assert_eq!(
-                    PhysicalKeyDisposition::plan(
-                        &ev,
-                        profile,
-                        shadow_toggled,
-                        false,
-                        false,
-                        active_ime_kind
-                    ),
+                    PhysicalKeyDisposition::plan(&ev, profile, shadow_toggled, active_ime_kind),
                     PhysicalKeyDisposition::Suppress,
                     "{label}: KANJI KeyUp は shadow_toggled={shadow_toggled} でも常に Suppress \
                      (二重制御による物理キー再送を防ぐ、BUG-46)"
@@ -1012,7 +874,7 @@ mod plan_tests {
     // PowerToys Mouse Without Borders 使用中に「英数」キーが効かない不具合報告
     // (docs/known-bugs.md BUG-90) の調査で、ImmCross プロファイル下では
     // VK_DBE_ALPHANUMERIC (英数) が Down/Up とも無条件 Suppress される一方、
-    // VK_DBE_HIRAGANA (かな) は専用分岐で TSF mode 以外 Allow されることが
+    // VK_DBE_HIRAGANA (かな) は専用分岐で Allow される（当時は TSF mode 以外のみ、BUG-173 で常に）ことが
     // 判明した（「かなは効くが英数は効かない」という報告症状と一致）。
     // この非対称性を journal から確認できるようにする `suppress_reason` を
     // ここで固定する。
@@ -1020,14 +882,8 @@ mod plan_tests {
     #[test]
     fn suppress_reason_is_none_when_allowed() {
         let ev = f2_event(KeyEventType::KeyDown);
-        let disposition = PhysicalKeyDisposition::plan(
-            &ev,
-            AppImeProfile::TsfNative,
-            false,
-            false, // 非 TSF mode → Allow
-            true,
-            ANY_IME_KIND,
-        );
+        let disposition =
+            PhysicalKeyDisposition::plan(&ev, AppImeProfile::TsfNative, false, ANY_IME_KIND);
         assert_eq!(disposition, PhysicalKeyDisposition::Allow);
         assert_eq!(
             disposition.suppress_reason(&ev, AppImeProfile::TsfNative),
@@ -1036,20 +892,15 @@ mod plan_tests {
     }
 
     #[test]
-    fn suppress_reason_is_tsf_f2_for_hiragana_in_tsf_mode() {
+    fn hiragana_in_tsf_mode_has_no_suppress_reason() {
+        // BUG-173: 物理 F2 は TSF mode でも Suppress されないので reason も無い。
         let ev = f2_event(KeyEventType::KeyDown);
-        let disposition = PhysicalKeyDisposition::plan(
-            &ev,
-            AppImeProfile::TsfNative,
-            false,
-            true,
-            true,
-            ANY_IME_KIND,
-        );
-        assert_eq!(disposition, PhysicalKeyDisposition::Suppress);
+        let disposition =
+            PhysicalKeyDisposition::plan(&ev, AppImeProfile::TsfNative, false, ANY_IME_KIND);
+        assert_eq!(disposition, PhysicalKeyDisposition::Allow);
         assert_eq!(
             disposition.suppress_reason(&ev, AppImeProfile::TsfNative),
-            Some("tsf-f2")
+            None
         );
     }
 
@@ -1075,8 +926,6 @@ mod plan_tests {
                     &ev,
                     AppImeProfile::Standard,
                     shadow_toggled,
-                    false,
-                    false,
                     ActiveImeKind::GoogleJapaneseInput,
                 );
                 assert_eq!(
@@ -1103,8 +952,6 @@ mod plan_tests {
         let disposition = PhysicalKeyDisposition::plan(
             &ev,
             AppImeProfile::TsfNative,
-            false,
-            false,
             false,
             ActiveImeKind::GoogleJapaneseInput,
         );
@@ -1143,14 +990,7 @@ mod plan_tests {
                         }
                         {
                             assert_eq!(
-                                PhysicalKeyDisposition::plan(
-                                    &ev,
-                                    profile,
-                                    false,
-                                    false,
-                                    false,
-                                    active_ime_kind
-                                ),
+                                PhysicalKeyDisposition::plan(&ev, profile, false, active_ime_kind),
                                 PhysicalKeyDisposition::Allow,
                                 "{vk_label} / {label} / {event_type:?} / shift={shift}: \
                                  awase が書かないキーは IME へ素通し（ADR-191）"
@@ -1174,14 +1014,7 @@ mod plan_tests {
                         ev = with_shift(ev);
                     }
                     assert_eq!(
-                        PhysicalKeyDisposition::plan(
-                            &ev,
-                            profile,
-                            false,
-                            false,
-                            false,
-                            active_ime_kind
-                        ),
+                        PhysicalKeyDisposition::plan(&ev, profile, false, active_ime_kind),
                         PhysicalKeyDisposition::Allow,
                         "{vk_label} / {label} / shift={shift}: \
                          awase が書かない英数/カタカナを握りつぶさない（ADR-191）"
@@ -1209,14 +1042,7 @@ mod plan_tests {
                         ev = with_shift(ev);
                     }
                     assert_eq!(
-                        PhysicalKeyDisposition::plan(
-                            &ev,
-                            profile,
-                            false,
-                            false,
-                            false,
-                            active_ime_kind
-                        ),
+                        PhysicalKeyDisposition::plan(&ev, profile, false, active_ime_kind),
                         PhysicalKeyDisposition::Suppress,
                         "{vk_label} / {label} / shift={shift}: awase が beliefトグルとして書く \
                          キーは二重 actuation 防止のため Suppress（ADR-189/191）"
@@ -1247,8 +1073,6 @@ mod plan_tests {
                         PhysicalKeyDisposition::plan(
                             &ev,
                             profile,
-                            false,
-                            false,
                             false,
                             ActiveImeKind::GoogleJapaneseInput
                         ),
@@ -1290,8 +1114,6 @@ mod plan_tests {
         event_type: KeyEventType,
         profile: AppImeProfile,
         shadow_toggled: bool,
-        is_tsf_mode: bool,
-        f2_warmup_owned: bool,
         active_ime_kind: ActiveImeKind,
         injected: bool,
         explicit_ime_action_consumed: bool,
@@ -1324,33 +1146,25 @@ mod plan_tests {
         //    固定値(既定値)1通りに絞る。
         for &event_type in &ALL_EVENT_TYPES {
             for &profile in &ALL_PROFILES {
-                for &is_tsf_mode in &ALL_BOOLS {
-                    for &f2_warmup_owned in &ALL_BOOLS {
-                        for &injected in &ALL_BOOLS {
-                            let mut ev = f2_event(event_type);
-                            ev.injected = injected;
-                            let result = PhysicalKeyDisposition::plan(
-                                &ev,
-                                profile,
-                                false,
-                                is_tsf_mode,
-                                f2_warmup_owned,
-                                ActiveImeKind::GoogleJapaneseInput,
-                            );
-                            rows.push(PlanRow {
-                                vk_label: "VK_DBE_HIRAGANA",
-                                event_type,
-                                profile,
-                                shadow_toggled: false,
-                                is_tsf_mode,
-                                f2_warmup_owned,
-                                active_ime_kind: ActiveImeKind::GoogleJapaneseInput,
-                                injected,
-                                explicit_ime_action_consumed: false,
-                                result,
-                            });
-                        }
-                    }
+                for &injected in &ALL_BOOLS {
+                    let mut ev = f2_event(event_type);
+                    ev.injected = injected;
+                    let result = PhysicalKeyDisposition::plan(
+                        &ev,
+                        profile,
+                        false,
+                        ActiveImeKind::GoogleJapaneseInput,
+                    );
+                    rows.push(PlanRow {
+                        vk_label: "VK_DBE_HIRAGANA",
+                        event_type,
+                        profile,
+                        shadow_toggled: false,
+                        active_ime_kind: ActiveImeKind::GoogleJapaneseInput,
+                        injected,
+                        explicit_ime_action_consumed: false,
+                        result,
+                    });
                 }
             }
         }
@@ -1373,8 +1187,6 @@ mod plan_tests {
                                     &ev,
                                     profile,
                                     shadow_toggled,
-                                    false,
-                                    false,
                                     active_ime_kind,
                                 );
                                 rows.push(PlanRow {
@@ -1382,8 +1194,6 @@ mod plan_tests {
                                     event_type,
                                     profile,
                                     shadow_toggled,
-                                    is_tsf_mode: false,
-                                    f2_warmup_owned: false,
                                     active_ime_kind,
                                     injected,
                                     explicit_ime_action_consumed: false,
@@ -1411,8 +1221,6 @@ mod plan_tests {
                                 &ev,
                                 profile,
                                 false,
-                                false,
-                                false,
                                 ActiveImeKind::GoogleJapaneseInput,
                             );
                             rows.push(PlanRow {
@@ -1424,8 +1232,6 @@ mod plan_tests {
                                 event_type,
                                 profile,
                                 shadow_toggled: false,
-                                is_tsf_mode: false,
-                                f2_warmup_owned: false,
                                 active_ime_kind: ActiveImeKind::GoogleJapaneseInput,
                                 injected,
                                 explicit_ime_action_consumed: explicit_consumed,
@@ -1454,8 +1260,6 @@ mod plan_tests {
                                 &ev,
                                 profile,
                                 shadow_toggled,
-                                false,
-                                false,
                                 active_ime_kind,
                             );
                             rows.push(PlanRow {
@@ -1463,8 +1267,6 @@ mod plan_tests {
                                 event_type,
                                 profile,
                                 shadow_toggled,
-                                is_tsf_mode: false,
-                                f2_warmup_owned: false,
                                 active_ime_kind,
                                 injected,
                                 explicit_ime_action_consumed: false,
@@ -1486,8 +1288,6 @@ mod plan_tests {
                         &ev,
                         profile,
                         false,
-                        false,
-                        false,
                         ActiveImeKind::GoogleJapaneseInput,
                     );
                     rows.push(PlanRow {
@@ -1495,8 +1295,6 @@ mod plan_tests {
                         event_type,
                         profile,
                         shadow_toggled: false,
-                        is_tsf_mode: false,
-                        f2_warmup_owned: false,
                         active_ime_kind: ActiveImeKind::GoogleJapaneseInput,
                         injected,
                         explicit_ime_action_consumed: false,
@@ -1618,8 +1416,7 @@ mod plan_tests {
                 ActiveImeKind::GoogleJapaneseInput,
                 ActiveImeKind::MicrosoftIme,
             ] {
-                let d =
-                    PhysicalKeyDisposition::plan(ev, profile, shadow_toggled, false, false, kind);
+                let d = PhysicalKeyDisposition::plan(ev, profile, shadow_toggled, kind);
                 assert!(
                     seen.is_none_or(|p| p == d),
                     "{profile:?}/{kind:?} で規則が変わってはいけない"
@@ -1683,8 +1480,6 @@ mod plan_tests {
                 &ev,
                 AppImeProfile::Standard,
                 false,
-                false,
-                false,
                 ActiveImeKind::GoogleJapaneseInput
             ),
             PhysicalKeyDisposition::Allow
@@ -1694,8 +1489,6 @@ mod plan_tests {
             &ev,
             AppImeProfile::Standard,
             true,
-            false,
-            false,
             ActiveImeKind::GoogleJapaneseInput,
         );
         assert_eq!(
