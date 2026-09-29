@@ -7,7 +7,7 @@
 //! ## 設計
 //!
 //! - 副作用なし。遷移ごとに [`CompositionAction`] を返し、dispatcher（`WindowsPlatform`）が
-//!   `EmitWarmup` / `MarkCold` / `ConsumeF2` / `GjiCompositionReset` / `GjiNativeF2Consumed` を実行する。
+//!   `EmitWarmup` / `LatchWarmup` / `MarkCold` / `GjiCompositionReset` / `GjiNativeF2Consumed` を実行する。
 //! - warm 判定そのものは GjiFsm が SSOT であり、この FSM は重複させない。ここが
 //!   所有するのは「confirm キー KeyDown 後、KeyUp まで warmup を保留する」という
 //!   executor 固有の遷移である。warm/tsf の現況は呼び出し元がイベントに載せて渡す。
@@ -43,8 +43,6 @@ use awase::types::VkCode;
 pub(crate) enum WarmupReason {
     /// cold 状態の Ctrl↑（GJI recovery 再計測）
     CtrlUp,
-    /// TSF mode の物理 F2 を consume した代替 warmup
-    NativeF2,
     /// cold / 非 TSF confirm キー KeyDown 直後の即時 warmup
     ConfirmKeyDown,
 }
@@ -96,8 +94,10 @@ pub(crate) enum CompositionAction {
     EmitWarmup { reason: WarmupReason },
     /// composition を cold にマークする。
     MarkCold { reason: ColdReason },
-    /// F2 を consume する（TSF mode で物理 F2 を swallow する）。
-    ConsumeF2,
+    /// `VK_IME_ON` は送らず、`eager_warmup_sent_ms`（focus probe grace の基準点）だけを新しい物理 F2 の時刻に
+    /// 更新する（BUG-173: 物理 F2 は素通しなので代わりの warmup 送信は不要。ただし F2 が TSF 初期化を再トリガー
+    /// するため、`mark_composition_cold(NativeF2Consumed)` が 0 に戻した基準点は保つ。BUG-06 の派生形の回避）。
+    LatchWarmup,
     /// GJI composition reset を通知する。
     GjiCompositionReset,
     /// TSF mode での物理 F2 消費を GjiFsm に通知する（NativeF2Down(tsf_mode=true) 専用）。
@@ -270,7 +270,9 @@ impl TimedStateMachine for CompositionFsm {
             // ── NativeF2Down ───────────────────────────────────────────────
             CompositionEvent::NativeF2Down { tsf_mode, warm } => {
                 if tsf_mode {
-                    // 物理 F2 を consume し、代替の warmup F2 で一本化する（double-F2 防止）。
+                    // 物理 F2 は素通し（BUG-173、`PhysicalKeyDisposition::plan`）。awase は代わりの
+                    // warmup を送らない（送ると F2 と VK_IME_ON の SendInput 2連送になり、ADR-149/BUG-113 の
+                    // 「@」の必要条件を作る）。cold 化と GjiFsm への通知、warmup 基準点の latch だけ行う。
                     // GjiNativeF2Consumed を使うことで GjiFsm が Medium/Long cold 状態を維持できる。
                     // GjiCompositionReset を使うと handle_composition_reset が Short に降格してしまい、
                     // Long cold の forces_prepend_f2/is_long_cold が失われる（Bug 1 の原因）。
@@ -278,14 +280,11 @@ impl TimedStateMachine for CompositionFsm {
                         reason: ColdReason::NativeF2Consumed,
                     };
                     Response::emit(vec![
-                        CompositionAction::ConsumeF2,
                         CompositionAction::MarkCold {
                             reason: ColdReason::NativeF2Consumed,
                         },
                         CompositionAction::GjiNativeF2Consumed,
-                        CompositionAction::EmitWarmup {
-                            reason: WarmupReason::NativeF2,
-                        },
+                        CompositionAction::LatchWarmup,
                     ])
                 } else if warm {
                     // 2026-07-19 (BUG-31): warm な状態で「TSF を経由しない F2 系キー」が
@@ -452,29 +451,36 @@ mod tests {
     }
 
     #[test]
-    fn native_f2_in_tsf_consumes_and_warms() {
+    fn native_f2_in_tsf_marks_cold_and_latches_without_sending() {
         let mut fsm = CompositionFsm::new();
         let r = fsm.on_event(CompositionEvent::NativeF2Down {
             tsf_mode: true,
             warm: false,
         });
-        assert!(r.actions.contains(&CompositionAction::ConsumeF2));
+        assert!(
+            !r.actions
+                .iter()
+                .any(|a| matches!(a, CompositionAction::EmitWarmup { .. })),
+            "物理 F2 は素通しなので代わりの VK_IME_ON warmup は送らない（BUG-173）"
+        );
+        assert!(r.actions.contains(&CompositionAction::LatchWarmup));
         assert!(r.actions.iter().any(|a| matches!(
             a,
-            CompositionAction::EmitWarmup {
-                reason: WarmupReason::NativeF2
+            CompositionAction::MarkCold {
+                reason: ColdReason::NativeF2Consumed
             }
         )));
+        assert!(r.actions.contains(&CompositionAction::GjiNativeF2Consumed));
     }
 
     #[test]
-    fn native_f2_non_tsf_marks_cold_without_consume() {
+    fn native_f2_non_tsf_marks_cold_without_latch() {
         let mut fsm = CompositionFsm::new();
         let r = fsm.on_event(CompositionEvent::NativeF2Down {
             tsf_mode: false,
             warm: false,
         });
-        assert!(!r.actions.contains(&CompositionAction::ConsumeF2));
+        assert!(!r.actions.contains(&CompositionAction::LatchWarmup));
         assert!(r.actions.iter().any(|a| matches!(
             a,
             CompositionAction::MarkCold {

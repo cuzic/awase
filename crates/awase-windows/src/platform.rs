@@ -654,8 +654,6 @@ impl WindowsPlatform {
     /// `CompositionFsm` の `Response` を処理し、warmup 送信・cold mark・GJI reset を実行する。
     ///
     /// `warmup_ime_on` は `EmitWarmup` の送信先 IME 状態（ADR-098 決定1-b）。
-    /// 戻り値は F2 を consume すべきか（`ConsumeF2` アクションの有無）で、TSF mode
-    /// で物理 F2 を swallow する判断に使う。
     fn dispatch_composition_response(
         &mut self,
         response: &timed_fsm::Response<
@@ -664,9 +662,8 @@ impl WindowsPlatform {
         >,
         warmup_ime_on: awase::platform::WarmupImeOn,
         origin: crate::output::WarmupOrigin,
-    ) -> bool {
+    ) {
         use crate::tsf::composition_fsm::CompositionAction;
-        let mut consume_f2 = false;
         for action in &response.actions {
             match *action {
                 CompositionAction::EmitWarmup { reason } => {
@@ -684,30 +681,28 @@ impl WindowsPlatform {
                 CompositionAction::GjiNativeF2Consumed => {
                     self.gji_on_native_f2_consumed();
                 }
-                CompositionAction::ConsumeF2 => {
-                    consume_f2 = true;
+                CompositionAction::LatchWarmup => {
+                    self.output
+                        .latch_eager_warmup_without_send(warmup_ime_on, origin);
                 }
             }
         }
-        consume_f2
     }
 
     /// `CompositionFsm` にイベントを feed し、`Response` を dispatch する。
-    /// 戻り値は F2 を consume すべきか（`ConsumeF2` の有無）。
     fn feed_composition_event(
         &mut self,
         event: crate::tsf::composition_fsm::CompositionEvent,
         warmup_ime_on: awase::platform::WarmupImeOn,
         origin: crate::output::WarmupOrigin,
-    ) -> bool {
+    ) {
         use timed_fsm::TimedStateMachine;
         let response = self.composition_fsm.on_event(event);
-        let consume_f2 = self.dispatch_composition_response(&response, warmup_ime_on, origin);
+        self.dispatch_composition_response(&response, warmup_ime_on, origin);
         tracing::trace!(
             "[composition-fsm] state={}",
             self.composition_fsm.state_label()
         );
-        consume_f2
     }
 
     /// confirm キー KeyUp を `CompositionFsm` に通知し、保留 warmup があれば送信する。
@@ -740,21 +735,22 @@ impl WindowsPlatform {
     }
 
     /// 物理 F2 (VK_DBE_HIRAGANA) KeyDown を `CompositionFsm` に通知する。
-    /// 戻り値 `true` なら物理 F2 を consume すべき（TSF mode、`ConsumeF2` action）。
+    /// 物理 F2 は素通し（BUG-173）。ここでは cold 化・GjiFsm 通知・warmup 基準点の latch だけ行い、
+    /// `VK_IME_ON` は送らない。
     ///
     /// 唯一の呼び出し元（`key_pipeline.rs` の物理 F2 down 処理）は
     /// `warmup_ime_on()` 経由（ゲート適用済み）を渡すため `origin=WarmupOrigin::Gated` 固定。
     pub(crate) fn composition_native_f2_down(
         &mut self,
         warmup_ime_on: awase::platform::WarmupImeOn,
-    ) -> bool {
+    ) {
         let tsf_mode = self.output.is_tsf_mode();
         let warm = self.output.is_composition_warm();
         self.feed_composition_event(
             crate::tsf::composition_fsm::CompositionEvent::NativeF2Down { tsf_mode, warm },
             warmup_ime_on,
             crate::output::WarmupOrigin::Gated,
-        )
+        );
     }
 
     // ── GjiFsm イベント通知 ──────────────────────────────────────────────────
