@@ -2596,7 +2596,8 @@ impl SettingsApp {
                 self.config.keys.engine_off = vec!["Ctrl+Shift+無変換".to_string()];
                 self.config.keys.ime_on = vec!["Ctrl+変換".to_string()];
                 self.config.keys.ime_off = vec!["Ctrl+無変換".to_string()];
-                self.config.keys.ime_toggle = vec!["VK_KANJI".to_string()];
+                // 既定は空（ADR-199 決定15）。ime_on/ime_off の既定は従来どおり。
+                self.config.keys.ime_toggle = awase::config::KeysConfig::default().ime_toggle;
                 self.config.keys.engine_off_solo_repeat = Some("VK_INSERT".to_string());
             }
             // JIS → US への切替時、エンジンON/OFF・IME ON/OFF の既定値
@@ -2870,7 +2871,7 @@ impl SettingsApp {
             "ime_toggle",
             &mut self.config.keys.ime_toggle,
             &mut self.new_ime_toggle,
-            "IME の ON/OFF をトグルするキーの組み合わせです。\n現在の状態に応じて ON⇔OFF が切り替わります。",
+            "IME の ON/OFF をトグルするキーの組み合わせです。\n現在の状態に応じて ON⇔OFF が切り替わります。\n既定は空（IME 側の設定に従います）。",
             &mut self.status,
         );
     }
@@ -4022,9 +4023,9 @@ impl SettingsApp {
 
         // confirm_mode / speculative_delay_ms は設定画面から完全に非表示にした
         // （2026-08-30、ユーザー判断: 「wait 単一表示というか設定UIから見えなく
-        // したらいい」）。ConfirmMode のバリアント・`dispatch_confirm_mode` の
-        // 分岐ロジックは残してあり、`config.toml` に `confirm_mode = "two_phase"`
-        // 等と手書きすれば引き続き使える純粋な toml 裏設定になった。
+        // したらいい」）。`config.toml` に `confirm_mode = "ngram_predictive"` と
+        // 手書きすれば使える純粋な toml 裏設定（v2 で選択肢は wait / ngram_predictive
+        // の2択。旧値 speculative / two_phase / adaptive_timing は wait として読む）。
 
         let slider_with_tip = |ui: &mut egui::Ui,
                                label: &str,
@@ -4871,8 +4872,8 @@ const SOLO_REPEAT_EXTRA_OPTIONS: &[(&str, &str)] = &[("Insert", "VK_INSERT")];
 /// 解決可能で `config.toml` に手書きすれば従来から機能していたが、
 /// `THUMB_KEY_OPTIONS` に候補が無く GUI 上選べなかった
 /// （2026-08-03 ユーザー報告「エンジンOFFの条件で英数キーが選択出来ない」）。
-/// `VK_KANJI`（漢字）は「IME ON/OFF トグル」（`keys.ime_toggle`）の既定値
-/// （2026-08-16 ユーザー要望）として選べるようにするため追加。
+/// `VK_KANJI`（漢字）は「IME ON/OFF トグル」（`keys.ime_toggle`）で選べるようにするため
+/// 追加（2026-08-16 ユーザー要望。既定値は 2026-09-29 に空へ変更済みで、候補としては残す）。
 ///
 /// `THUMB_KEY_OPTIONS` には**混ぜない**: `thumb_key_combo`/`solo_repeat_combo`
 /// （親指キー・単独連打候補）は同時打鍵の相手や単独タップ判定に使われるため、
@@ -4898,7 +4899,7 @@ mod ime_mode_key_options_tests {
     }
 
     /// 「漢字」が IME ON/OFF トグル欄のドロップダウン候補に出るようにする
-    /// （`keys.ime_toggle` の既定値 `VK_KANJI` が選択可能である必要がある）。
+    /// （既存 config.toml の明示値 `VK_KANJI` が選択可能である必要がある）。
     #[test]
     fn ime_mode_key_options_contains_kanji() {
         assert!(
@@ -7261,69 +7262,38 @@ mod layout_tab_repro {
         );
     }
 
-    /// /code-review指摘（PR #127）: apply_confirmed()はvalidate()の戻り値
-    /// （confirm_mode="speculative"→two_phase正規化を含む）を警告文の表示
-    /// にしか使わず、保存対象は未検証のself.configのcloneのままだった。
-    /// 設定画面がconfirm_modeを一切表示しなくなったため、この正規化を
-    /// ユーザーが手で直す手段が無く、警告が「適用」を押すたび永遠に
-    /// 再表示され続けるバグになっていた。正規化後の値がファイルへ保存され、
-    /// かつ self.config にも反映されることを確認する。
+    /// 旧 confirm_mode（廃止済み）が config.toml に残っていても、読込時に
+    /// `wait` として扱われ、警告が出て、保存後のファイルに旧値が残らないこと。
     #[test]
-    fn apply_confirmed_persists_normalized_confirm_mode_not_raw_config() {
-        let config: awase::config::AppConfig = toml::from_str(
-            r#"
-[general]
-confirm_mode = "speculative"
-speculative_delay_ms = 30
-"#,
+    fn apply_confirmed_legacy_confirm_mode_loads_as_wait_with_warning() {
+        let config = awase::config::AppConfig::from_toml_str(
+            "[general]\nconfirm_mode = \"two_phase\"\nspeculative_delay_ms = 30\n",
         )
         .unwrap();
         assert_eq!(
             config.general.confirm_mode,
-            awase::config::ConfirmMode::Speculative,
-            "sanity: toml側の記述が期待通りspeculativeとしてパースされているか"
+            awase::config::ConfirmMode::Wait
         );
         let mut app = test_settings_app(config);
         let config_path = std::env::temp_dir().join(format!(
-            "awase_test_normalize_persist_{}_{}.toml",
+            "awase_test_legacy_confirm_{}_{}.toml",
             std::process::id(),
             unique_test_id()
         ));
         app.config_path = config_path.clone();
-        // ADR-201 決定3: 保存は `base`（読み込んだ生の値）との差だけを書くので、
-        // 実際に読み込んだファイルがある状態にする（`base` の speculative → 正規化後の
-        // two_phase が差分として書かれる）。
         std::fs::write(
             &config_path,
-            "[general]\nconfirm_mode = \"speculative\"\nspeculative_delay_ms = 30\n",
+            "[general]\nconfirm_mode = \"two_phase\"\nspeculative_delay_ms = 30\n",
         )
         .unwrap();
 
         app.apply_confirmed();
         wait_for_pending_save(&mut app);
 
-        let saved = std::fs::read_to_string(&config_path).unwrap();
         let _ = std::fs::remove_file(&config_path);
-
-        assert!(
-            saved.contains(r#"confirm_mode = "two_phase""#),
-            "保存されたファイルはconfirm_mode正規化後(two_phase)であるべき: {saved}"
-        );
-        assert!(
-            !saved.contains(r#"confirm_mode = "speculative""#),
-            "保存されたファイルに廃止済みのconfirm_mode=\"speculative\"が\
-             残ってはいけない: {saved}"
-        );
         assert_eq!(
             app.config.general.confirm_mode,
-            awase::config::ConfirmMode::TwoPhase,
-            "self.configも正規化後の値へ更新されるべき（次回のApplyで同じ警告が\
-             永遠に再表示されるのを防ぐため）"
-        );
-        assert!(
-            app.status.contains("speculative"),
-            "1回目のApplyでは廃止警告が表示されるべき: {}",
-            app.status
+            awase::config::ConfirmMode::Wait
         );
     }
 

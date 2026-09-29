@@ -84,6 +84,16 @@ pub(crate) struct ImeStateHub {
     /// 適用する側に回る。
     mode_key_pass_mark: ModeKeyPassLatch<crate::win32::ForegroundScope>,
 
+    /// 外部注入の IME キー直後だけ開く短い監視窓（ADR-205、BUG-172）。読めない窓（`Imm32Unavailable`）で、
+    /// 窓の中の prefetch 済みの開閉の読みが基準値から変わったときだけ実状態へ追随する。寿命・基準値の判断は
+    /// `state/external_change_watch.rs`（Win32非依存）に委譲し、ここは副作用の適用側。
+    external_change_watch:
+        super::external_change_watch::ExternalChangeWatch<crate::win32::ForegroundScope>,
+
+    /// 最後に外部変化へ追随した時刻（ms）。追随の直後に、閉じる前の GJI I/O 推測が `ObserverPoll(true)` で
+    /// 追随結果を上書きしないための柵（`observe_gji_after_focus` の第1引数）に使う（ADR-205 round3 m1）。
+    last_external_change_ms: u64,
+
     /// `effective_open()` の IntentStore 分岐が `shadow_model` と異なる値を
     /// 返している（＝実際に override している）間 `true`。遷移時のみ INFO
     /// ログを出すための dedup 用（BUG-51 追補 v3）。`&self` の `effective_open()`
@@ -133,6 +143,8 @@ impl ImeStateHub {
             last_explicit_ime_action_ms: 0,
             intent_store: super::intent_store::IntentStore::default(),
             mode_key_pass_mark: ModeKeyPassLatch::new(),
+            external_change_watch: super::external_change_watch::ExternalChangeWatch::new(),
+            last_external_change_ms: 0,
             intent_override_logged: std::cell::Cell::new(false),
             warmup_gate_suppression_logged: std::cell::Cell::new(false),
             generation_alloc: super::GenerationAllocator::new(),
@@ -337,6 +349,68 @@ impl ImeStateHub {
             self.pass_through_observed(tick_ms, !on_expiry);
         }
         true
+    }
+
+    // ── 外部変化の監視窓（ADR-205、BUG-172）──
+
+    /// 外部注入の IME キーを見たら呼ぶ（読めない窓のみ）。現在のフォアグラウンドに対する監視窓を開く／延ばす。
+    pub(crate) fn arm_external_change_watch(&mut self, now_ms: u64) {
+        self.external_change_watch.arm(
+            crate::win32::foreground_scope(),
+            now_ms,
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+        );
+    }
+
+    /// 監視窓の残り時間(ms)。無い・切れた・フォアグラウンドが変わったなら`None`（`reschedule_ime_refresh`の読み直し予約用）。
+    pub(crate) fn external_change_watch_remaining_ms(&mut self, now_ms: u64) -> Option<u64> {
+        self.external_change_watch.remaining_ms(
+            crate::win32::foreground_scope(),
+            now_ms,
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+        )
+    }
+
+    /// 最後に外部変化へ追随した時刻（ms）。0 は未追随。
+    pub(crate) const fn last_external_change_ms(&self) -> u64 {
+        self.last_external_change_ms
+    }
+
+    /// prefetch 済みの開閉の読み（`read`）を監視窓に照合し、窓の中で基準値から変わっていれば実状態へ追随する。
+    ///
+    /// 追随 = `ObserverPoll(v)` を記録 → 対象の明示意図（`IntentStore`）を削除 → `ModeKeyPassedThrough{align_desired:true}`
+    /// （`last_intent` を捨て、`desired_open` を観測へ揃え、食い違う `applied` を未確認へ落とす）。awase は IME を書かない。
+    /// 開く方向（0→1）は `allow_open`（GJI が有効なとき）だけ追随する。戻り値は追随した値。
+    /// どのフォーカスでも直近の読みは記録する（基準値の初期値になる）。
+    pub(crate) fn follow_external_change(
+        &mut self,
+        read: Option<bool>,
+        allow_open: bool,
+        now_ms: u64,
+        tick_ms: TickMs,
+        accepted: crate::state::probe_admission::AcceptedObservation,
+    ) -> Option<bool> {
+        let scope = crate::win32::foreground_scope();
+        let verdict = self.external_change_watch.observe(
+            scope,
+            now_ms,
+            crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS,
+            read,
+        );
+        self.external_change_watch.record_read(scope, read);
+        let super::external_change_watch::ChangeVerdict::Changed(v) = verdict else {
+            return None;
+        };
+        if v && !allow_open {
+            return None;
+        }
+        self.write_observer_poll(v, tick_ms, accepted);
+        if let Some(hwnd) = self.shadow_model.current_focus() {
+            self.intent_store.remove(hwnd);
+        }
+        self.pass_through_observed(tick_ms, true);
+        self.last_external_change_ms = now_ms;
+        Some(v)
     }
 
     /// `ModeKeyPassedThrough` のdispatch元（ADR-187の「1箇所に限定」）。reducerは`last_intent`を捨て、

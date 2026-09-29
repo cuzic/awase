@@ -551,9 +551,6 @@ footer p{margin-bottom:0.3rem}
       <table class="tab-table">
         <tr><th>Mode</th><th>Behavior</th><th>Suited for</th></tr>
         <tr><td>wait (default, recommended)</td><td>Holds until the timeout before committing. Most accurate</td><td>People who want to type slowly and accurately</td></tr>
-        <tr><td>speculative<br><span style="color:var(--text-secondary);font-size:0.85rem">(deprecated)</span></td><td>Outputs immediately and replaces on a simultaneous keystroke. Exactly equivalent to <code>two_phase</code> (<code>speculative_delay_ms=0</code>), so setting it is automatically read as that</td><td>—</td></tr>
-        <tr><td>two_phase</td><td>Speculative output after a short wait. Between wait and speculative</td><td>People who want a balance</td></tr>
-        <tr><td>adaptive_timing</td><td>wait during continuous typing, speculative once typing pauses. Adapts to speed automatically</td><td>People whose typing speed varies</td></tr>
         <tr><td>ngram_predictive</td><td>Dynamically decides speculative vs. wait using n-gram statistics. Uses context to improve accuracy</td><td>People who want the smartest decision</td></tr>
       </table>
     </div>
@@ -565,7 +562,7 @@ footer p{margin-bottom:0.3rem}
         <tr><td>Left thumb key</td><td>The key used for the left thumb-shift key (default: VK_NONCONVERT = Muhenkan)</td></tr>
         <tr><td>Right thumb key</td><td>The key used for the right thumb-shift key (default: VK_CONVERT = Henkan)</td></tr>
         <tr><td>IME ON/OFF keys</td><td>The keys awase actively sends to turn the IME ON/OFF (idempotent). Multiple entries allowed</td></tr>
-        <tr><td>IME ON/OFF toggle</td><td>Key that flips ON⇔OFF based on the IME state at the moment it's pressed. Default: the Kanji key. Multiple entries allowed</td></tr>
+        <tr><td>IME ON/OFF toggle</td><td>Key that flips ON⇔OFF based on the IME state at the moment it's pressed. Default: empty (follows the IME's own settings). Multiple entries allowed</td></tr>
         <tr><td>Thumb Shift ON key</td><td>The key that turns the NICOLA engine ON. Multiple entries allowed</td></tr>
         <tr><td>Thumb Shift OFF key</td><td>The key that turns the NICOLA engine OFF. Multiple entries allowed</td></tr>
         <tr><td>Thumb Shift-toggle hotkey</td><td>A global hotkey that toggles the engine ON/OFF</td></tr>
@@ -647,8 +644,8 @@ ime_on = ["Ctrl+変換"]
 # IME OFF (switch to direct input mode)
 ime_off = ["Ctrl+無変換"]
 
-# IME ON/OFF toggle (flips based on the IME state at the moment it's pressed)
-ime_toggle = ["VK_KANJI"]
+# IME ON/OFF toggle (flips based on the IME state at the moment it's pressed. Default: empty = follow the IME's own settings)
+ime_toggle = []
 
 # Emergency: pressing Muhenkan alone three times within 400 ms turns the engine OFF.
 # A last resort for when Ctrl gets stuck and the shortcuts stop working.
@@ -668,9 +665,7 @@ simultaneous_threshold_ms = 100
 # Confirm-mode selection
 #   wait              - hold until the timeout (most accurate, default, recommended)
 #   ngram_predictive  - dynamically switch speculative/wait with n-gram prediction
-#   speculative       - (deprecated) equivalent to two_phase (speculative_delay_ms=0)
-#   two_phase         - short wait -> speculative output -> replace
-#   adaptive_timing   - automatically adjust the threshold to typing speed
+#   (the old speculative / two_phase / adaptive_timing were removed; if left in place awase warns and treats them as wait)
 confirm_mode = "wait"</div>
     </div>
 
@@ -736,7 +731,7 @@ force_tsf = [
 
     <div class="card">
       <h3>Manually setting IME-detection keys</h3>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">Detects external IME state changes (e.g. the Hankaku/Zenkaku key). Not in the GUI — edit <code>config.toml</code> directly (most people don't need it). <code>toggle</code> defaults to empty. The Kanji key is already actively handled by the "IME ON/OFF toggle" setting on the Keys tab (<code>keys.ime_toggle</code>, default: the Kanji key) — assigning it here too would double-process the same key and break it.</p>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">Detects external IME state changes (e.g. the Hankaku/Zenkaku key). Not in the GUI — edit <code>config.toml</code> directly (most people don't need it). <code>toggle</code> defaults to empty. Keys set in the "IME ON/OFF toggle" setting on the Keys tab (<code>keys.ime_toggle</code>, default: empty) are handled actively by awase — assigning the same key here too would double-process it and break it.</p>
       <div class="code-block" data-example="usage-en-9" data-mode="uncomment">[keys.ime_detect]
 # Key that toggles the IME ON/OFF (default: empty. Don't set this to the
 # same key as "IME ON/OFF toggle" above — that causes double-processing)
@@ -935,7 +930,6 @@ engine_off_solo_triple = "VK_NONCONVERT"
       <ul>
         <li>First try the default <code>confirm_mode = "wait"</code> (recommended; accurate but somewhat slower)</li>
         <li>If the delay bothers you, try <code>"ngram_predictive"</code></li>
-        <li>If fast typing feels off, try <code>"adaptive_timing"</code></li>
       </ul>
     </div>
 

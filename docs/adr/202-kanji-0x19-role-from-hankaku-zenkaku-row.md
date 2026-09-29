@@ -14,7 +14,7 @@ summary: |-
   (4) T14（学習表の `Kanji` セルで狭める移行）は撤回。学習表による狭め（決定6-2）は `Kanji` セルで従来どおり効かせる。
   (5) 実機検証を e2e に常設する（行を変えた CUSTOM 表で、awase 起動中に belief が実 IME とずれないこと）。
 status: |-
-  **採用（2026-09-26 所有者承認、未決2件も確定）。** T16-1・T16-2 実装済み（PR #341）。T16-3（e2e 常設）実装済み（PR #342）。T16-6（MS-IME 本体の確認）確認済み（本体の 0x19 は固定トグル）。ADR-202 の実装タスクは全て完了（T16-5 は所有者判断で保留）。
+  **採用（2026-09-26 所有者承認、未決2件も確定）。** T16-1・T16-2 実装済み（PR #341）。T16-3（e2e 常設）実装済み（PR #342）。T16-6（MS-IME 本体の確認）確認済み（本体の 0x19 は固定トグル）。ADR-202 の実装タスクは全て完了。T16-5（`keys.ime_toggle` 既定を空にする）は当初保留だったが、2026-09-29 の所有者決定で保留を覆して実装した（未決1 参照）。
 related_adr:
   - "ADR-199"
   - "ADR-189"
@@ -93,9 +93,19 @@ related_adr:
 
 ## 確定した未決（所有者判断、2026-09-26）
 
-1. **`keys.ime_toggle` の既定（`VK_KANJI`）は当面空にしない。** ADR-199 決定15 の「T14 と同時に空にする」は、T14 撤回により前提が変わったので保留とする
-   （GJI では役割由来の値と重なるときは `explicit_overlap` で役割を付けないので二重処理は起きない。GJI 以外では静的 `Toggle` が残る）。空にするなら別 PR で、
-   `awase-settings/src/main.rs:2593`（JIS 切替の書き込み）も揃える。
+1. **`keys.ime_toggle` の既定（`VK_KANJI`）は当面空にしない。→ 2026-09-29 に覆した（空にした）。** 2026-09-26 時点の保留理由は、ADR-199 決定15 の「T14 と同時に空にする」が
+   T14 撤回で前提を失ったことだった（GJI では役割由来の値と重なるときは `explicit_overlap` で役割を付けないので二重処理は起きない、と判断していた）。
+   2026-09-29 の所有者決定で、「IME の設定に従う」原則のため既定は空（ADR-199 決定15 の当初決定 2026-09-25）に戻した。保留の前提だった「T14 撤回で前提が変わった」は、
+   T16（GJI の役割判定、PR #341・#342）と T16-6（MS-IME 本体の 0x19 は固定トグルと確認）の実装・確認で解消したため。実装時に調べて分かったこと:
+   - **既定の `VK_KANJI` は GJI の 0x19 役割判定を常に無効化していた。** `kanji_shadow_action` の `Derive` は `derive_key_shadow_action` を通り、そこで
+     `Engine::has_bare_ime_combo(0x19)`（無修飾の `keys.ime_*` との重なり）が真だと役割を付けない。既定の `ime_toggle = ["VK_KANJI"]` は無修飾なので、既定設定の GJI では
+     0x19 が常に受動（belief は実 IME の開閉の観測に追随）だった。決定1 の「行がトグルなら `Toggle`」は既定設定では働いておらず、T16-3 の e2e（同梱 `config.toml` の既定 `[keys]`）が
+     通っていたのも受動だったためで、能動の `Derive` 経路の実機確認は既定を空にしたあとの `sc-kanji-role-*` で初めて行われる（未検証点）。
+   - 物理の 0x19 は Alt 付きで届き、Engine の照合は修飾の完全一致（`matches_key_combo`）なので、無修飾の既定 `VK_KANJI` に一致するのは
+     無修飾の 0x19 を出す構成（リマッパー等。injected でも手動設定は照合する）だけだった。物理の Alt+半角/全角の開閉は元から `keys.ime_toggle` ではなく `hook.rs` の静的 `Toggle` が担っていた。
+   - 既定を空にしても、GJI 以外（MS-IME 本体・ATOK・未検出）の Alt+半角/全角は静的 `Toggle` のまま（`kanji_role_plan` の `KeepStatic`）。`hook.rs` は変えない（T16-7 は対象外のまま）。
+   - 既存 config.toml の明示 `ime_toggle = ["VK_KANJI"]`（旧既定を GUI の `AppConfig::save` が書き出したもの）は、読込時に消さず尊重する（実行時にユーザーが書いた値と区別できない、決定8）。
+     その利用者は従来どおり GJI の 0x19 が受動のまま（belief は観測に追随、後退なし）。GUI の JIS 切替の書き込みは空（`KeysConfig::default()` に揃える）に変更した。
 2. **GJI 以外の 0x19 は現行維持（静的 `Toggle`）。** MS-IME 本体は、T16 の実装後に GJI と同じ手順の CI 構成（Alt+0x19）で確認し、固定トグルと確定できれば別途反映する（T16-6）。
 
 ## 実装タスク
@@ -108,7 +118,7 @@ related_adr:
   （`open` 1→0、閉じる書き込み2件、Engine OFF）＝GJI の設定では閉じないはずが閉じる不具合、run 36270771941（2/2 FAIL）。修正後は IME は開いたまま・Engine も ON のまま、run 36270770311（2/2 PASS）。
   行がトグルの表は修正前後とも IME が閉じ Engine が追随（回帰防止、両方 PASS）。
 - T16-4: ADR-199 の決定14・T16・影響表（ADR-189 固定セット行）を本 ADR 参照に更新。
-- T16-5（保留）: `keys.ime_toggle` 既定を空にする場合の設定 GUI 変更。所有者判断で当面行わない。
+- T16-5（実装済み、2026-09-29 所有者決定で保留を解除）: `keys.ime_toggle` の既定を空にし、設定 GUI の JIS 切替の書き込み・説明、同梱 `config.toml`、`docs/usage*.html` を揃えた。`ime_on`/`ime_off` の既定と記述は変えない。回帰は `src/config.rs` の既定・明示値保持のテストと `architecture_guard` の `keys_ime_toggle_default_stays_empty_and_gui_jis_switch_follows_default`。実機（GJI の既定 `[keys]` で `sc-kanji-role-toggle`/`sc-kanji-role-nontoggle` の e2e）での能動 `Derive` 経路の確認は未実施。
 - T16-6（確認済み、2026-09-26）: MS-IME 本体の Alt+0x19 は IME の開閉トグル（固定）。GitHub Actions windows-latest、run 36278942088。awase なし: F2 で IME を開いた状態で Alt+0x19 を押すと
   `open` 1→0（+100ms、`sc-t166-msime-real`）。awase 起動中: 実 IME が閉じ Engine も OFF に追随（`kanjirole-closed` PASS、閉じる書き込み 0 件）。よって MS-IME 本体では静的 `Toggle`（決定2 の現行維持）が正しく、
   変更は不要。n は少ない（awase なしの有効な回は1回、もう1回は F2 で開いた IME が自然に閉じて無効、awase ありは有効1回・無効1回）ので、揺れが見えたら再確認する。

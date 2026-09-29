@@ -447,9 +447,9 @@ State machine sketch (simplified):
 
   <div class="callout">
     <strong>What confirm mode is:</strong>
-    It is the strategy for "when to commit output." There are five kinds, such as waiting until the
-    timeout (<code>wait</code>) or emitting right away and swapping the output if a shift key follows
-    (<code>speculative</code>), so you can choose one to match your typing style.
+    It is the strategy for "when to commit output." There are two kinds: waiting until the
+    timeout (<code>wait</code>), or switching dynamically between speculative output and waiting using
+    n-gram statistics (<code>ngram_predictive</code>).
   </div>
 
   <!-- Section 4 -->

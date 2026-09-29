@@ -111,6 +111,9 @@ pub(crate) mod imm_evidence;
 // alt_impersonation等と同じ「純粋判定をLinuxでテストできるようにする」ungatedパターン。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod mode_key_pass;
+// ADR-205: 外部注入 IME キー直後の監視窓（`ImeStateHub::follow_external_change` からしか呼ばれない純粋な状態機械）。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod external_change_watch;
 // ADR-089 §2.8「K 軸の型」。`caps(p, k)` の導入（Phase C）に先立ち、Linux で
 // 全数テストできる ungated な IME 種別を置く。変換は `tsf/observer.rs` の
 // `From<ActiveImeKind>` 1 箇所のみ。

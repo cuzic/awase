@@ -827,9 +827,7 @@ mod tests {
     #[test]
     fn set_confirm_mode_does_not_panic() {
         let mut adapter = make_adapter();
-        adapter.set_confirm_mode(ConfirmMode::Speculative, 30);
-        adapter.set_confirm_mode(ConfirmMode::TwoPhase, 50);
-        adapter.set_confirm_mode(ConfirmMode::AdaptiveTiming, 0);
+        adapter.set_confirm_mode(ConfirmMode::NgramPredictive, 30);
         adapter.set_confirm_mode(ConfirmMode::Wait, 100);
     }
 

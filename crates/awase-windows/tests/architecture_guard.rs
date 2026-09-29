@@ -1485,7 +1485,9 @@ fn applied_direct_assignments_are_accounted_for() {
     const DIRECT_ASSIGNMENTS: [(&str, usize); 2] = [
         // ime_model.rs: 5→6。`KeyEffectPredicted`のreduce内で、予測がappliedと食い違う向きへ開閉を動かしたとき
         // appliedを`Unknown`へ落とす1件を追加（BUG-156、`reduce()`内の正規書き込み）。
-        ("src/state/ime_model.rs", 6),
+        // 6→7。`ModeKeyPassedThrough`のreduce内で、揃えた観測がappliedと食い違うときappliedを`Unknown`へ落とす
+        // 1件を追加（ADR-205 D6、BUG-172。`reduce()`内の正規書き込み）。
+        ("src/state/ime_model.rs", 7),
         ("src/state/platform_state.rs", 2),
     ];
     const STRUCT_LITERAL_FIELDS: [(&str, usize); 1] = [("src/state/ime_model.rs", 1)];
@@ -3498,6 +3500,38 @@ fn mode_key_passed_through_event_is_dispatched_from_one_place() {
     }
 }
 
+/// ADR-205（BUG-172）: 外部変化の監視窓は、arm が `kp_stage_post_decision` の1箇所、追随（`follow_external_change`）が
+/// `ir_follow_external_change` の1箇所だけ。追随は `ObserverPoll` の記録 + 意図削除 + `ModeKeyPassedThrough` で、
+/// awase は IME を書かない（`apply_ime_open_*`/`set_ime_open`/`send_ime` 系をこのファイル群から呼ばない）。
+#[test]
+fn external_change_watch_has_single_arm_and_follow_sites() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = Path::new(manifest_dir).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    for path in &files {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let content = fs::read_to_string(path).unwrap();
+        let production = non_comment_lines(production_code_only(&content));
+        for (needle, allowed) in [
+            (".arm_external_change_watch(", "runtime/key_pipeline.rs"),
+            (".follow_external_change(", "runtime/ime_refresh.rs"),
+        ] {
+            let count = production.matches(needle).count();
+            let expected = usize::from(rel == allowed);
+            assert_eq!(
+                count, expected,
+                "src/{rel} 内の {needle} の出現数が想定({expected})と異なります。ADR-205: 呼び出し元は {allowed} の1箇所に限定すること。"
+            );
+        }
+    }
+}
+
 /// BUG-148/ADR-186: `ImeEvent::InitialFocusHwndEstablished` は bootstrap 専用であり、
 /// dispatch 元は `sync_initial_focus_hwnd` の1箇所だけ。reducer 側のアームは
 /// `self.current_focus = Some(hwnd)`（current_focus 1フィールドの差し替え）しか行わない。
@@ -5385,6 +5419,41 @@ fn kanji_0x19_role_goes_through_the_shared_latch_and_only_overrides_gji() {
     );
     // `shadow_action` の代入は1箇所のまま（`ime_relevance_shadow_action_writes_are_accounted_for`）。
     assert_eq!(rt.matches("ime_relevance.shadow_action =").count(), 1);
+}
+
+/// ADR-199 決定15（2026-09-29 所有者決定）: `keys.ime_toggle` の既定は空（「IME の設定に従う」原則）。
+/// 既定に無修飾の `VK_KANJI` を戻すと、`Engine::has_bare_ime_combo(0x19)` が常に真になり、
+/// GJI の 0x19 役割判定（ADR-202、`derive_key_shadow_action` の `explicit_overlap`）が既定で無効化される。
+/// `KeysConfig::default()` の書式と、設定 GUI の JIS 切替書き込みが既定へ揃っていることを固定する
+/// （`ime_on`/`ime_off` の既定は変えない）。
+#[test]
+fn keys_ime_toggle_default_stays_empty_and_gui_jis_switch_follows_default() {
+    let cfg = read_workspace_file("src/config.rs");
+    let cfg = production_code_only(&cfg);
+    assert!(
+        cfg.contains("ime_toggle: Vec::new(),"),
+        "src/config.rs: `KeysConfig::default()` の `ime_toggle` は空 (`Vec::new()`) のままにすること（ADR-199 決定15）"
+    );
+    assert!(
+        !cfg.contains("ime_toggle: vec![\"VK_KANJI\""),
+        "src/config.rs: `keys.ime_toggle` の既定に `VK_KANJI` を戻さないこと（ADR-199 決定15・ADR-202）"
+    );
+    assert!(
+        cfg.contains("ime_on: vec![\"Ctrl+変換\".to_string()],")
+            && cfg.contains("ime_off: vec![\"Ctrl+無変換\".to_string()],"),
+        "src/config.rs: `keys.ime_on`/`ime_off` の既定（Ctrl+変換/Ctrl+無変換）は変えないこと（決定15）"
+    );
+    let gui = read_workspace_file("crates/awase-settings/src/main.rs");
+    assert!(
+        !gui.contains("keys.ime_toggle = vec![\"VK_KANJI\""),
+        "awase-settings: JIS 切替で `keys.ime_toggle` に `VK_KANJI` を書かないこと（既定は空、決定15）"
+    );
+    assert!(
+        gui.contains(
+            "self.config.keys.ime_toggle = awase::config::KeysConfig::default().ime_toggle;"
+        ),
+        "awase-settings: JIS 切替の `ime_toggle` は `KeysConfig::default()` に揃えること"
+    );
 }
 
 /// BUG-173（Opus レビュー D1）: 物理 F2 を Suppress/握りつぶす経路が再導入されないこと、および

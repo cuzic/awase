@@ -62,28 +62,32 @@ pub enum HalfWidthAlnumTogglePolicy {
     All,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfirmMode {
     /// 待機モード: タイムアウトまで出力を保留
     #[default]
     Wait,
-    /// 先行確定モード: 即座に出力、同時打鍵時に BS で差し替え。
-    ///
-    /// **廃止済み・本番では到達不能。** `AppConfig::validate()`
-    /// （`validate_thresholds`）がロード時に必ず `TwoPhase` +
-    /// `speculative_delay_ms=0` へ正規化する（両者は完全に等価、
-    /// `NicolaFsm::dispatch_confirm_mode` 参照）。このバリアント自体は
-    /// 既存 `config.toml` との `Deserialize` 互換のためだけに残しており、
-    /// 実際に構築される `NicolaFsm` がこの値を保持することはない
-    /// （テストでの直接構築を除く）。
-    Speculative,
-    /// 二段タイマー: 短い待機→投機出力→差し替え
-    TwoPhase,
-    /// 連続中は待機、途切れたら投機
-    AdaptiveTiming,
     /// n-gram 予測で投機/待機を動的切替
     NgramPredictive,
+}
+
+// 旧値 `speculative` / `two_phase` / `adaptive_timing` は v2 で廃止（A2）。
+// 既存 config.toml を読めるよう `Wait` として受ける（`#[serde(alias)]` は
+// キー名用の KEY_ALIASES ガードに数えられるので手書きにしている）。
+// 警告は `AppConfig::from_toml_str` が `load_warnings` に積む。
+impl<'de> Deserialize<'de> for ConfirmMode {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        match s.as_str() {
+            "wait" | "speculative" | "two_phase" | "adaptive_timing" => Ok(Self::Wait),
+            "ngram_predictive" => Ok(Self::NgramPredictive),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["wait", "ngram_predictive"],
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -127,8 +131,8 @@ pub struct GeneralConfig {
     pub min_overlap_margin_percent: u32,
     /// 確定モード（デフォルト: wait）
     pub confirm_mode: ConfirmMode,
-    /// 投機出力までの待機時間（ミリ秒、TwoPhase/AdaptiveTiming と
-    /// NgramPredictive のフォールバック/投機待機で使用）
+    /// 投機出力までの待機時間（ミリ秒、NgramPredictive のフォールバック/
+    /// 投機待機で使用）
     pub speculative_delay_ms: u32,
     /// フォーカス遷移デバウンス時間（ミリ秒）。
     /// Alt-Tab 等でフォーカスが連続変更される際に IME 状態の誤検知を防ぐ。
@@ -520,9 +524,11 @@ impl Default for ImeDetectConfig {
     fn default() -> Self {
         Self {
             // 2026-08-16: 「漢字」（VK_KANJI）を既定から外した。
-            // `KeysConfig::default().ime_toggle`（`keys.ime_toggle`、awase
+            // （2026-09-29 追記: `keys.ime_toggle` の既定も空になったので、既定同士の
+            // 衝突は起きない。ユーザーが両方に同じキーを書いたときの二重処理は下記のまま。）
+            // 当時は `KeysConfig::default().ime_toggle`（`keys.ime_toggle`、awase
             // 自身が能動的に漢字キーを消費し冪等な VK_IME_ON/OFF へ変換して
-            // 送出する）が同じ VK_KANJI を既定で持つようになったため、両方が
+            // 送出する）が同じ VK_KANJI を既定で持っていたため、両方が
             // 既定で有効だと同一の物理キー押下に対して
             // `kp_stage_shadow_ime_toggle`（このフィールド由来、belief を
             // 反転）→ `Engine::apply_special_key_match`（`keys.ime_toggle`
@@ -607,7 +613,15 @@ impl Default for KeysConfig {
             engine_off: vec!["Ctrl+Shift+無変換".to_string()],
             ime_on: vec!["Ctrl+変換".to_string()],
             ime_off: vec!["Ctrl+無変換".to_string()],
-            ime_toggle: vec!["VK_KANJI".to_string()],
+            // 既定は空（ADR-199 決定15、2026-09-29 所有者決定で確定）。「IME の設定に従う」
+            // 原則のため、awase 自身の設定としては漢字キー（VK_KANJI）を能動的に
+            // 消費しない。物理の 0x19 は JIS 配列で Alt+半角/全角として届くので、
+            // 無修飾の `VK_KANJI` は Engine の照合（修飾の完全一致）には元々一致せず、
+            // 一致するのはリマッパー等が出す無修飾の 0x19 だけだった。Alt+半角/全角は
+            // `hook.rs` の静的 `Toggle`（GJI は `Hankaku/Zenkaku` 行から役割判定、
+            // ADR-202）が担い続ける。既定に `VK_KANJI` があると、GJI では役割判定が
+            // `explicit_overlap`（`has_bare_ime_combo`）で常に無効化されていた。
+            ime_toggle: Vec::new(),
             ime_detect: ImeDetectConfig::default(),
             engine_off_solo_repeat: Some("VK_INSERT".to_string()),
             engine_on_ime_key: None,
@@ -880,6 +894,23 @@ impl AppConfig {
                     &path, &siblings,
                 ));
         }
+        // 廃止済みの confirm_mode（A2）: serde alias で `Wait` として読まれているので、
+        // 元の文字列を見て警告だけ積む。
+        if let Some(old) = toml::from_str::<toml::Table>(text)
+            .ok()
+            .and_then(|t| {
+                t.get("general")?
+                    .get("confirm_mode")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .filter(|v| matches!(v.as_str(), "speculative" | "two_phase" | "adaptive_timing"))
+        {
+            config.load_warnings.push(format!(
+                "confirm_mode \"{old}\" は廃止されました。wait として扱います\
+                 （使える値は wait / ngram_predictive）"
+            ));
+        }
         if !config.legacy_keymap.is_empty() {
             let n = config.legacy_keymap.len();
             let both = !config.keymaps.is_empty();
@@ -1033,25 +1064,6 @@ impl From<ValidatedConfig> for AppConfig {
 
 impl AppConfig {
     fn validate_thresholds(g: &mut GeneralConfig, w: &mut Vec<String>) {
-        // confirm_mode = "speculative" は廃止（TwoPhase の speculative_delay_ms=0 と
-        // 完全に等価なため独立バリアントとして残す理由がない）。既存 config.toml との
-        // 互換のため ConfirmMode::Speculative 自体は型として残すが、ここで必ず
-        // TwoPhase + delay=0 に正規化し、以降 FSM が Speculative を受け取ることはない。
-        // 「完全に等価」が成り立つのは、NicolaFsm::dispatch_confirm_mode
-        // （engine/confirm_policy.rs）がTwoPhase(delay=0)をidle_speculative
-        // へ直接ディスパッチするため（/code-review指摘、PR #127: idle_two_phase
-        // 経由だとWindowsのSetTimerがUSER_TIMER_MINIMUM未満に短縮されないため
-        // 0ms待機が実質10ms前後の待機になり、その間に届く後続キーの状態が
-        // 変わってしまい「等価」が崩れていた）。
-        if g.confirm_mode == ConfirmMode::Speculative {
-            w.push(
-                "confirm_mode \"speculative\" は廃止されました。\
-                 two_phase (speculative_delay_ms=0) として扱います。"
-                    .to_string(),
-            );
-            g.confirm_mode = ConfirmMode::TwoPhase;
-            g.speculative_delay_ms = 0;
-        }
         if g.simultaneous_threshold_ms < 10 || g.simultaneous_threshold_ms > 500 {
             w.push(format!(
                 "simultaneous_threshold_ms ({}) は 10-500 の範囲外です。100 にリセットします",
@@ -1618,15 +1630,28 @@ default_layout = "nicola.yab"
         assert_eq!(config.keys.engine_off_ime_key, None);
     }
 
-    /// `keys.ime_toggle` の既定値は漢字キー（`VK_KANJI`）（2026-08-16
-    /// ユーザー要望）。`VK_KANJI` は ADR-091 §1.2 で「Imm32Unavailable
-    /// プロファイル向けの真のトグル」として既に確立済みの冪等な IME
-    /// ON/OFF トグルキーであり、新設の GUI「IME ON/OFF トグル」欄の
-    /// 既定候補として妥当（`msime_key_assignment.rs`のドキュメント参照）。
+    /// `keys.ime_toggle` の既定値は空（ADR-199 決定15、2026-09-29 所有者決定）。
+    /// 「IME の設定に従う」原則のため、awase 自身は漢字キー（`VK_KANJI`）を能動的に消費しない。
+    /// 0x19（Alt+半角/全角）の開閉は `hook.rs` の静的 `Toggle`／GJI の役割判定（ADR-202）が担う。
+    /// `ime_on`/`ime_off`（awase 自身が actuate する設定）の既定は変えない。
     #[test]
-    fn test_keys_config_default_ime_toggle_is_kanji_key() {
+    fn test_keys_config_default_ime_toggle_is_empty() {
         let keys = KeysConfig::default();
-        assert_eq!(keys.ime_toggle, vec!["VK_KANJI".to_string()]);
+        assert!(keys.ime_toggle.is_empty());
+        assert_eq!(keys.ime_on, vec!["Ctrl+変換".to_string()]);
+        assert_eq!(keys.ime_off, vec!["Ctrl+無変換".to_string()]);
+    }
+
+    /// 既存ユーザーの config.toml に残る明示の `ime_toggle = ["VK_KANJI"]`
+    /// （旧既定値を GUI の `AppConfig::save` が書き出したもの）は、読込時に消さず尊重する
+    /// （既定値の変更は明示値に影響しない）。
+    #[test]
+    fn test_explicit_ime_toggle_vk_kanji_is_preserved_on_load() {
+        let config: AppConfig = toml::from_str("[keys]\nime_toggle = [\"VK_KANJI\"]\n").unwrap();
+        assert_eq!(config.keys.ime_toggle, vec!["VK_KANJI".to_string()]);
+        // [keys] を書いても ime_toggle を省略すれば既定（空）。
+        let config: AppConfig = toml::from_str("[keys]\nime_on = [\"Ctrl+変換\"]\n").unwrap();
+        assert!(config.keys.ime_toggle.is_empty());
     }
 
     /// 撤去済みフィールド（output_mode / hook_mode）が
@@ -1793,9 +1818,6 @@ engine_off_solo_triple = "VK_NONCONVERT"
     fn test_confirm_mode_all_variants() {
         for (input, expected) in [
             ("wait", ConfirmMode::Wait),
-            ("speculative", ConfirmMode::Speculative),
-            ("two_phase", ConfirmMode::TwoPhase),
-            ("adaptive_timing", ConfirmMode::AdaptiveTiming),
             ("ngram_predictive", ConfirmMode::NgramPredictive),
         ] {
             let toml_str = format!("[general]\nconfirm_mode = \"{input}\"");
@@ -2063,17 +2085,32 @@ speculative_delay_ms = 80
     }
 
     #[test]
-    fn test_validate_confirm_mode_speculative_is_normalized_to_two_phase_zero_delay() {
-        let toml_str = r#"
-[general]
-confirm_mode = "speculative"
-speculative_delay_ms = 30
-"#;
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        let (validated, warnings) = config.validate();
-        assert_eq!(validated.general.confirm_mode, ConfirmMode::TwoPhase);
-        assert_eq!(validated.general.speculative_delay_ms, 0);
-        assert!(warnings.iter().any(|w| w.contains("speculative")));
+    fn test_legacy_confirm_mode_values_load_as_wait_with_warning() {
+        for old in ["speculative", "two_phase", "adaptive_timing"] {
+            let c = AppConfig::from_toml_str(&format!(
+                "[general]\nconfirm_mode = \"{old}\"\nspeculative_delay_ms = 30\n"
+            ))
+            .unwrap();
+            assert_eq!(c.general.confirm_mode, ConfirmMode::Wait, "{old}");
+            let (validated, warnings) = c.validate();
+            assert_eq!(validated.general.confirm_mode, ConfirmMode::Wait, "{old}");
+            assert!(
+                warnings
+                    .iter()
+                    .any(|w| w.contains(old) && w.contains("廃止")),
+                "{old}: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_current_confirm_mode_values_load_without_warning() {
+        for v in ["wait", "ngram_predictive"] {
+            let c =
+                AppConfig::from_toml_str(&format!("[general]\nconfirm_mode = \"{v}\"\n")).unwrap();
+            let (_, warnings) = c.validate();
+            assert!(warnings.is_empty(), "{v}: {warnings:?}");
+        }
     }
 
     #[test]

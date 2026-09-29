@@ -10,7 +10,7 @@ summary: |-
   役割を持つキーだけ（キー名・VK で固定しない）。(3) 設定を知る手段は `config1.db`・MS-IME 本体のレジストリ・学習表（ADR-195/196）だけ（U7 回答で確定）。
   所有者回答（第2回、決定11〜18）: 全ての開状態で閉じるキーだけトグル（U1）、belief の観測追随は存続（U2）、モード指定で開くキーも
   開閉だけ書く（U3）、0x19 は現状維持を経て既知のトグルへ（U4）、awase 既定の `keys.ime_on/ime_off`（Ctrl+変換/Ctrl+無変換）は
-  「awase 自身が actuate する設定」として**残す**（U5 修正・U10 消滅）。`keys.ime_toggle` の既定（`VK_KANJI`）は決定14 の移行と同時に空にする（2026-09-25 確定）、
+  「awase 自身が actuate する設定」として**残す**（U5 修正・U10 消滅）。`keys.ime_toggle` の既定（`VK_KANJI`）は空にする（2026-09-25 確定。T14 撤回で ADR-202 が一度保留したが、2026-09-29 の所有者決定で空にした）、
   無変換/変換は単独タップと解決したときだけ能動（U6）、MS-IME 互換モードの半角/全角は受動（U8）、初期範囲の候補は
   半角/全角・F13〜F24・無変換/変換（U9）。
   要点: プリセットは定数表・動的逆算は CUSTOM だけ・学習表は狭める方向だけ・役割は保持せず打鍵時に求める・`config1.db` 不在は既定プリセット扱い・
@@ -24,7 +24,8 @@ status: |-
   同日の所有者回答で U7（MS-IME 本体のレジストリは `config1.db` と同様にユーザー設定の一次情報源）を確定。
   同日の所有者回答で U5 を修正（`keys.ime_on`/`ime_off` の既定は空にせず残す。awase 自身が actuate する設定として扱う）。これで U10（旧既定値の移行）は消滅。
   Q2（明示 config と役割が重なったら config 優先・役割なし）も確定。同日の所有者回答で `keys.ime_toggle` の既定（`VK_KANJI`）は空にする（U4 の移行と同時、T14）と確定し、未決事項は無くなった。opus round8 の軽微指摘2件も反映。
-  所有者は実装着手を指示していない。実装は未着手。review-2026-09-24-08 の方針（(B) 案、PR #308 で実装済み）を一般化・置換する。
+  実装状況（2026-09-29）: T1〜T13・T16・T17 の主要部分は develop に実装・マージ済み（各タスク行を参照）。T14 は撤回・T16（ADR-202）に置換。
+  `keys.ime_toggle` の既定を空にする変更（決定15、T11 の文書追随を含む）は 2026-09-29 に実装した（ADR-202 T16-5）。review-2026-09-24-08 の方針（(B) 案、PR #308 で実装済み）を一般化・置換する。
 related_adr:
   - "ADR-189"
   - "ADR-191"
@@ -309,7 +310,7 @@ kotoeri/mobile のユーザーで使われていない古い `custom_keymap_tabl
 - **明示 config と重なったら config が優先（役割を付けない）**（round7 M1）: 無修飾のそのキーが config.toml の `keys.ime_on`/`ime_off`/`ime_toggle`
   （読み込んだ実効値、`SpecialKeyCombos`）に含まれるなら役割を求めない（`shadow_action` なし）。読み込み後の `KeysConfig` では、ユーザーが書いた値と
   既定値（`KeysConfig::default()`・`AppConfig::save` が書き出した既定）を実行時に区別できないので、比較対象は既定値を含む実効値になる。
-  既定値のうち無修飾は `ime_toggle` の `VK_KANJI` だけで、0x19 は候補キーでない（決定4・決定14）ので既定値との重なりは起きない（決定15 で空にした後も同じ）。重ねると1回の押下で開閉が2回書かれ打ち消し合う:
+  （2026-09-29 訂正: 旧既定の `ime_toggle = ["VK_KANJI"]`〈無修飾〉は、0x19 が候補集合には入らなくても ADR-202 の専用経路〈`kanji_shadow_action` → `derive_key_shadow_action`〉が同じ重なり判定を通るため、GJI の 0x19 役割判定を既定で無効化していた。決定15 で既定を空にしたので既定値との重なりは無い。）重ねると1回の押下で開閉が2回書かれ打ち消し合う:
   `kp_run_inner` は `kp_stage_shadow_ime_toggle`（`key_pipeline.rs:328`）が belief を反転した**後**で ctx を作り（`:338`）`engine.on_input`（`:426`）を呼ぶ。
   Engine の `ImeToggle` は反転後の `!ctx.ime_on` を読む（`engine.rs:994-1001`）ので元に戻し、`VK_IME_OFF`→`VK_IME_ON` が続けて送られる。
   `match_event` が ime 系コンボの照合を止めるのは `sync_direction.is_some()` のときだけ（`engine.rs:1070-1083`、ADR-092 の `ime_detect` との二重処理と同じ形）で、
@@ -416,6 +417,7 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
   このとき JIS 配列切替の書き込み（`main.rs:2591`）の `ime_toggle` も空に揃え、`AppConfig::save`（`src/config.rs:830-833`）が構造体全体を書くことで
   既存 config.toml に書き出された旧既定値 `ime_toggle = ["VK_KANJI"]`（旧 U10 と同型）が残る。実行時はユーザーが書いた値と区別できない（決定8）ので、
   移行処理の要否は T14 の実装時に確認する（所有者判断を要する未決ではない。上記のとおり無修飾 `VK_KANJI` が一致する構成は限られる）。
+- **実装済み（2026-09-29、ADR-202 T16-5）**: 既定は空。GUI の JIS 切替の書き込みも空。既存 config.toml の明示 `VK_KANJI` は読込時に消さず尊重する（実行時に区別できない〈決定8〉。移行処理は入れない）。
 - 文書の追随（T11、T14 と同時）: 同梱の `config.toml:27-29`（`ime_detect.toggle` の注意書き）、`docs/usage.html:674-675`・`:779`、
   `docs/usage.en.html` の対応箇所、`crates/awase-settings/src/main.rs:4856-4883`（漢字キーを既定とする説明）。`ime_on`/`ime_off` の既定の記述（`README.md:82-83` 等）は変えない。
 
@@ -539,8 +541,8 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
 | `tests/architecture_guard.rs:4516-4541`（`bug116_shift_katakana_guards_are_present_in_production_code`）・`:816` の説明文 | transport.rs 本番コードに `is_open_toggle_for` があることを assert（Linux での Suppress 判定の唯一の防波堤） | 必須トークンを新しい判定（`Some(ShadowImeAction::Toggle)` と 0xF3/0xF4 の組）に差し替え、否定側メッセージと `:816` の説明を更新（T4。削るだけにしない） |
 | `awase-gji-config`（`extract_ime_keys`・`mozc_key_to_vk_name`） | 状態完備を見ない。`Hankaku/Zenkaku`→`VK_KANJI` のみ（doc も不正確） | 継承規則つきの状態表と決定4の判定関数（純粋関数）を追加。キー名→VK 写像（`Hankaku/Zenkaku`→0xF3/0xF4）を予測側と一本化し、別名表の doc を直す |
 | `state/key_effect_table.rs:511-`（ADR-192 分類） | 0x19 を `Kanji` として独立扱い | 決定14（移行後は `Kanji` セルで狭める） |
-| `src/config.rs:581-583`（`keys.ime_on`/`ime_off`/`ime_toggle` 既定）・`engine.rs:975` | awase の既定値で Engine が消費 | `ime_on`/`ime_off` は不変（awase 自身が actuate する設定、決定1 の例外(2)・決定15）。`ime_toggle` の既定（`VK_KANJI`）は決定14 の移行と同時に空にする（T14、所有者回答 2026-09-25 で確定） |
-| `crates/awase-settings/src/main.rs:2587-2591`（JIS 配列へ切替時の既定値書き込み） | 既定値を書き込む | `ime_on`/`ime_off` は不変。`ime_toggle`（`:2591`）だけ T14 で既定に揃える（決定15） |
+| `src/config.rs:581-583`（`keys.ime_on`/`ime_off`/`ime_toggle` 既定）・`engine.rs:975` | awase の既定値で Engine が消費 | `ime_on`/`ime_off` は不変（awase 自身が actuate する設定、決定1 の例外(2)・決定15）。`ime_toggle` の既定（`VK_KANJI`）は空にした（2026-09-29、ADR-202 T16-5。T14 は撤回されたが所有者決定で単独実施） |
+| `crates/awase-settings/src/main.rs:2587-2591`（JIS 配列へ切替時の既定値書き込み） | 既定値を書き込む | `ime_on`/`ime_off` は不変。`ime_toggle`（`:2591`）だけ既定（空）に揃えた（2026-09-29、決定15・ADR-202 T16-5） |
 | `src/engine/nicola_fsm.rs`（`forced_open_action`・`resolve_pending_thumb_as_single`）・`runtime/mod.rs:39-66`（`thumb_forced_open_actions`） | bare `keys.ime_*` 由来だけ | Engine 側は変えない。Windows 側で `config由来.or(役割由来)` を渡す（決定16） |
 | `message_handlers.rs:878-887`・`:939-942`・`app/mod.rs:811-817`・`gji_monitor.rs`（`sync_ime_toggle_auto_detect`・`check_and_warn`） | GJI 以外すべてで適用、種別変更で消えない、同定の変化で再評価されない | 決定10 |
 | `msime_key_assignment.rs`（`check_and_warn`） | 変換/無変換の「IME-オン/オフの割り当ては有害なので解除を」と案内 | 決定16（GJI では無変換/変換のトグルを尊重する）と逆向き。U7 でレジストリはユーザー設定と確定したので、トグルの割り当ては尊重する側（決定16）に揃えて案内の文言を直す（T12）。呼び出し条件は決定10-1 |
@@ -627,16 +629,16 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
 | T8 | 決定10（別件の BUG・fix PR として先行してよい） | — |
 | T9 | **（実装済み・develop にマージ済み（2026-09-28 コード存在確認））** 決定18（F13〜F24）: 候補集合の入口（`ime_kind()` の早期 return の前）、ラッチへの `shadow_toggled` の書き込み（`key_pipeline.rs:328` の直後）、`was_down` の Down で昇格させない条件、`transport.rs::plan` の F キー分岐と `suppress_reason` のラベル。T4 の後 **実装状況**: 候補集合の入口は `enrich_key_role`（`vk::is_role_fkey`、半角/全角と F13〜F24 だけ配線。無変換/変換は T10）。最初の Down の判定は暫定で、`kp_stage_shadow_ime_toggle` 直後の `settle_fkey_role_latch` が `shadow_toggled` で上書きする。F キーの Up・リピートでラッチの scan が不一致なら `None`（Allow）、injected には付けない。`kp_stage_shadow_ime_toggle` の `intent_kind` は F13〜F24 の `was_down` Down では昇格させない（決定18(ii)）。`transport.rs` は `thumb_or_role_fkey_disposition`（無変換/変換の従来分岐を移したものと F キー分岐。`plan` の認知的複雑度のため関数化）で最初の Down は `shadow_toggled`、リピート/Up は `shadow_action.is_some()` で Suppress（ImmCross でも同じ）、`suppress_reason` は `role-fkey`。MS-IME 本体では F キーは受動（`key_shadow_action` の `msime_fixed_toggle`）。`is_japanese_ime` は上げない（`should_upgrade_is_japanese_ime` は 0xF0〜0xF4 のまま、ホストテストで固定）。PR #328 Opus レビュー反映: 同期キー（`keys.ime_detect`）に F キーを書いたときは役割を付けない（`passive_without_lookup`。付けると `shadow_toggled` が同期キー由来で立ち、書かなかった打鍵まで Suppress される。決定9）、F キーの一致する Up でラッチを捨てる（`settle_fkey_latch`。次の Down が `kp_run_inner` を通らないとき Up だけ Suppress される非対称の防止）。**既知の制約**: 同期キー経路には `was_down` の除外が無く、リピートのたびに belief が反転する（旧来から） | — |
 | T10 | **（実装済み・develop にマージ済み（2026-09-28 コード存在確認））** 決定16（無変換/変換）: 親指キーの KeyDown で役割を求め、`config由来.or(役割由来)` を `set_thumb_forced_open_actions` に渡す。ADR-192 決定3b のテスト群（`src/engine/tests.rs`）に役割由来のケースを足す **実装状況**: `Runtime::enrich_thumb_key_role`（`kp_run_inner` の `engine.on_input` より前。非injected・非リピートの無変換/変換の KeyDown だけ）が`config由来（Engine::bare_ime_action = SpecialKeyCombos::bare_ime_action）.or(役割由来)` を `set_thumb_forced_open_actions` に打鍵ごとに設定し直す。役割由来は T4 の `derive_key_shadow_action`（GJI の `config1.db` 逆算・学習表による狭め）を再利用し、修飾付きの押下・MS-IME 本体（T17 Phase 4まで受動。`KeyEffectKeymap::msime_native_key_role` は半角/全角だけトグルを返し、無変換/変換は値2で入力中・変換中にどう動くかの実機確認待ちで常に`None`——`key_shadow_action` 自体はIME種別を見ない設計に変更済み、ADR-199 T17 opusレビュー）・IME 未同定では config 由来だけに戻す。`shadow_action` は付けず物理配送は変えない。`thumb_forced_open_actions`（config 由来の分類）は `SpecialKeyCombos::bare_ime_action` に一本化。ADR-192 の status への追記は T7。PR #331 Opus レビュー反映: 合成は純関数 `thumb_forced_action`（ホストテスト）、injected の Down も設定し直す（役割は引かず config 由来へ戻す。早期 return だと直前の物理打鍵の役割を引き継ぐ）、押した側の値だけを書く（`Engine::thumb_forced_open_actions` getter）。**所有者決定A（2026-09-26）**: `PendingCharThumb` のタイムアウトでは、forced 開閉を持つ親指は確定せず `PendingThumb` に戻し、KeyUp（か次のキー）で解決する（`defers_forced_open_until_release`。char1 だけ単独確定）。親指を押したまま IME が閉じない。変換パススルー（ADR-182 決定1c）の親指は従来どおりタイムアウトで確定。**この経路に入るのは `min_overlap_margin_percent` が 0 より大きいときだけ**（既定 0 では重なり不足にならず、文字→親指は常に同時打鍵と確定する）。実機E2E `sc-charthumb-gji-atok`（GJI ATOK、`min_overlap_margin_percent=15`、`keys.ime_off=VK_NONCONVERT`、文字→親指を押し続ける×3ラウンド×2回）: 修正なし(develop) run 36239250076 は 0/6 PASS（タイムアウトで閉じる要求が `Unwarranted` になり直後に開き直され、離しても IME が閉じない）、修正あり run 36239248412 は 6/6 PASS（保持中は開いたまま、離すと閉じる） | — |
-| T11 | 決定15 の文書追随（`ime_toggle` の既定を空にする T14 と同時、別タスク）: 同梱 `config.toml:27-29`、`docs/usage.html:674-675`・`:779`、`docs/usage.en.html` の対応箇所、`crates/awase-settings/src/main.rs:4856-4883` の説明。`ime_on`/`ime_off` の記述は変えない | 10（status・文書同期） |
+| T11 | **（実装済み 2026-09-29、ADR-202 T16-5 と同時）** 決定15 の文書追随（`ime_toggle` の既定を空にする変更と同時）: 同梱 `config.toml:27-29`、`docs/usage.html:674-675`・`:779`、`docs/usage.en.html` の対応箇所、`crates/awase-settings/src/main.rs:4856-4883` の説明。`ime_on`/`ime_off` の記述は変えない | 10（status・文書同期） |
 | T12 | **確定（2026-09-26、実機 dragonflyg4、設定アプリを UI Automation で自動操作して確認）**。値と機能名の対応（無変換=`KeyAssignmentMuhenkan`・変換=`KeyAssignmentHenkan`、共通で 0=IME-オン・1=IME-オフ・**2=IME-オン/オフ（トグル）**、3 だけ無変換=ひらがな/カタカナ・変換=再変換で異なる）。実機で値2を選び実際に打鍵して確認: 直接入力→無変換で開く（open 0→1）、IME ON→無変換で閉じる（open 1→0）、真のトグル。既存コード注記の「`KeyAssignmentHenkan`=1 は IME-オン」は誤りで、実際は無変換/変換とも 1=IME-オフ（対称）——修正が要る。
   **CI（T1(d) 行・PR #344）で値を確定できなかった理由が判明**: windows-latest でレジストリ直書きが反映されなかったのは、値そのものの問題ではなく、**実機側が「以前のバージョンの Microsoft IME を使う」（`NoTsf3Override2=1`、ADR-197 の互換モード）を ON にしていたため**、新しいバージョンのキー割り当て機構自体が使われていなかったから（実機で確認: 互換モード ON のままレジストリへ 0/1/2 のどれを書いても無変換の挙動は同一〈かな切替〉、`IsKeyAssignmentEnabled=0` でも同じ）。互換モードを OFF にし、設定アプリの UI（`ms-settings:regionlanguage-jpnime` →「全般」→「キーとタッチのカスタマイズ」→「キーの割り当て」）で値を選んで初めて反映される。レジストリを直接書くだけでは（`IsKeyAssignmentEnabled=1` にしても、ctfmon 再起動をしても）実際の変換エンジンには反映されない（CI・実機とも共通）。
   作業は実機のレジストリ・互換モードとも元の値（`IsKeyAssignmentEnabled=0`・`KeyAssignmentMuhenkan/Henkan=2`・`NoTsf3Override2=1`）に復元済み、`awase.exe` 再起動済み。`check_and_warn` の案内文言・実装（値2＝トグルを検出）は T17 として別タスク化 | — |
 | T17 | **（案内・警告部分は実装済み・develop にマージ済み（2026-09-28 コード存在確認）、2026-09-27。能動化配線はPhase 4として保留）** T12 の実装: `msime_key_assignment.rs` に `KeyAssignmentMuhenkan/Henkan == 2`（トグル）の検出を追加し、決定17（半角/全角は受動のまま）と同様に案内・警告に反映する。既存の「`Henkan`=1 は IME-オン」という誤った注記の訂正も含む。**実装状況**: `MsImeKeyAssignment.henkan_ime_on`→`henkan_ime_off`に改名（値1は無変換と対称にIME-オフ、T12で確定）、`conflict_warning`は互換モードON（値が効かない、T12）なら誤警告を避けるため出さない。値2（トグル）自体を awase が能動的に尊重する配線（決定16のMS-IME本体版）は、値2で入力中・変換中にどう動くかの実機確認（opusレビューM1）が済むまでT17 Phase 4として別途保留（`state/key_effect_predictor.rs::KeyEffectKeymap::msime_native_key_role`の無変換/変換分岐は常に`None`を返す）。
   **コードレビュー指摘（2026-09-28、PR #346）で修正**: Phase 4が未実装のあいだ値2は「決定16で肩代わりするので競合しない」わけではなく、値1と全く同じ「二重オーナー」リスクを持つ（`conflict_warning`が無変換/変換を放置し、MS-IME側だけがIME開閉する事故になりうる）。`MsImeKeyAssignment`に`muhenkan_is_toggle`/`henkan_is_toggle`（値==2）を追加し、Phase 4が実装されるまでは値2も警告対象に含めるよう修正した。ダイアログの「IME-オン/オフ（トグル）を選ぶ」という回避策の案内（誤った回避策だった）も削除した。Phase 4実装時にこの2フィールドと対応する警告分岐を外すこと。**T17実装レビューM1確定（2026-09-28実機確認、dragonflyg4）**: composing中は無変換キー本来の既定動作（かな⇔カタカナ変換）が優先され、IME-オン/オフの発火自体が起きない（`open`状態は不変、未確定文字列だけがカタカナへ変換される）。直接入力→開く・アイドル→閉じる、の2状態はT12どおりトグルとして機能する。Phase 4を実装する場合は、`msime_native_key_role`の無変換/変換分岐を「非composing中だけ`Some(ImeToggle)`」にする追加ガードが要る（`ime.model().key_track()`等でcomposing中かどうかを判定）。実機確認の手順（`spike_msime_settings_uia_probe.rs --set-master=on/off`でマスタースイッチ切替、`spike_msime_native_composing_probe.rs`でIMM32直読みのシナリオ測定、終了時に元のTSFプロファイル・マスタースイッチへ自動復元）は`spike/msime-settings-uia-ci`ブランチに残っている（develop未マージ、使い捨て） | T12・T17実装レビューM1 |
 | T13 | **（実装済み・develop にマージ済み（2026-09-28 コード存在確認）、2026-09-27）** 決定17: 互換モードのとき MS-IME 本体の半角/全角を受動に（レジストリ読み取りは予測経路と同じ間引き）。**実装状況**: `msime_legacy_keymap::read_legacy_compat_mode_enabled()`を`KeymapCache::get_native`の間引き（`native_assignment_stamp`の1つ目のタプル要素の上位32bitに詰める）に相乗りさせ、`KeyEffectKeymap::msime_compat_mode`として保持。`msime_native_key_role`が半角/全角のトグル判定でこの値を参照（`Some(true)`なら受動）。予測経路（`predict_with_override`）は変更しない（決定17の「受動」は「役割を付けない」の意味であり「予測をやめる」ではない、opusレビューM2）。`KeyEffectKeymap::for_msime_native`の呼び出し元3箇所（予測経路・役割判定経路・`runtime/mod.rs::check_state_dependent_mode_keys`のADR-192状態依存キー警告）を`msime_key_assignment::read_key_effect_keymap_native_with_reassignment_bits`に一本化（opusレビューM3）。指紋には互換モードを混ぜない（ADR196-T5の`env_version`が別途担当） | — |
-| T14 | **（撤回・T16 に置換: 2026-09-26 の所有者決定で 0x19 は役割判定に入れる）** 決定14 の移行（T1(b) の後）: 0x19 を既知のトグルとして学習表の `Kanji` セルで狭める＋`keys.ime_toggle` の既定を空に（決定15、所有者回答で確定。JIS 切替の書き込み `main.rs:2591` を空に揃える、既存 config.toml に残る `VK_KANJI` の移行処理の要否の確認、0x19 が無修飾コンボに一致しないことの確認を含む） | — |
+| T14 | **（撤回・T16 に置換: 2026-09-26 の所有者決定で 0x19 は役割判定に入れる。ただし `keys.ime_toggle` 既定を空にする部分だけは 2026-09-29 に ADR-202 T16-5 として実施済み）** 決定14 の移行（T1(b) の後）: 0x19 を既知のトグルとして学習表の `Kanji` セルで狭める＋`keys.ime_toggle` の既定を空に（決定15、所有者回答で確定。JIS 切替の書き込み `main.rs:2591` を空に揃える、既存 config.toml に残る `VK_KANJI` の移行処理の要否の確認、0x19 が無修飾コンボに一致しないことの確認を含む） | — |
 | T15 | **（実装済み・PR #339 マージ済み）** 決定13（確定）: `awase-gji-config/src/command.rs::classify_command` で DirectInput 行の `CompositionMode*`/旧名 `InputMode*` を Open に数える（テスト: 決定13 の例〈ひらがな/カタカナ指定で開くキー〉。awase が書くのは開閉だけ、変換モード軸は書かない）。実機確認は済み（T1(c)、run 36241517512）。**実装状況**: 純関数 `command::sets_absolute_mode`（`CompositionMode*`/旧名 `InputMode*` の絶対設定系5種）を `role.rs::Effect::of` の DirectInput 行で Open に数える。`classify_command` は変えない（`keymap.rs` のモード追随が旧名の行まで拾う挙動変更を避ける）。DirectInput 以外・相対トグル系は従来どおり受動 | 決定13 |
-| T16 | **設計は [ADR-202](202-kanji-0x19-role-from-hankaku-zenkaku-row.md)（採用・未決2件も確定、実装未着手）**。決定14（確定）: 0x19 を `Hankaku/Zenkaku` 行から役割逆算する専用経路（Alt 付きで届くので決定4 の候補集合・無修飾ガードは通さない、`Kanji` 行は見ない）。`hook.rs` の静的 Toggle の置換範囲、`keys.ime_toggle` 既定（`VK_KANJI`）の扱い、MS-IME 本体の 0x19（未確認）を決める。実機根拠: run 36242111739・36242940343 | 決定14 |
+| T16 | **設計は [ADR-202](202-kanji-0x19-role-from-hankaku-zenkaku-row.md)（採用・未決2件も確定。T16-1〜T16-3・T16-5・T16-6 実装・確認済み、T16-7 は対象外）**。決定14（確定）: 0x19 を `Hankaku/Zenkaku` 行から役割逆算する専用経路（Alt 付きで届くので決定4 の候補集合・無修飾ガードは通さない、`Kanji` 行は見ない）。`hook.rs` の静的 Toggle の置換範囲、`keys.ime_toggle` 既定（`VK_KANJI`）の扱い（2026-09-29 に空にした）、MS-IME 本体の 0x19（T16-6 で固定トグルと確認済み）。実機根拠: run 36242111739・36242940343 | 決定14 |
 
 ## テスト方針
 
@@ -665,7 +667,7 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
   - 決定16: `src/engine/tests.rs`（ホスト）に、役割由来の `forced_open_action` で単独タップ→開閉要求、チョード→要求なし、`*_solo_tap_ime_action` 併設→役割由来は自己無効化、
     config 由来と役割由来が両方あれば config 由来、を足す（ADR-192 決定3b の既存テストと同じ形）。`config由来.or(役割由来)` の合成は純関数にしてホストでテストする。
   - 決定15: `KeysConfig::default()` の `ime_on`/`ime_off` が Ctrl+変換/Ctrl+無変換 のまま（既存テストで固定されていなければ足す）、config.toml に書いた値はそのまま読める
-    （`src/config.rs` のテスト）。T14 で `ime_toggle` の既定が空になったこと（`KeysConfig::default()` と JIS 配列切替の書き込みの両方）を足す。
+    （`src/config.rs` のテスト）。`ime_toggle` の既定が空になったこと（2026-09-29 実施済み、`src/config.rs` のテストと `architecture_guard`）（`KeysConfig::default()` と JIS 配列切替の書き込みの両方）を足す。
   - 決定17: 互換モード `Some(true)`→受動、`Some(false)`・`None`→トグル（純関数に切り出す）。
 - **source-scanning ガード**（Linux）: `architecture_guard.rs` の `shadow_action` 書き込み箇所数、`bug116_...`（差し替え後のトークン）、`layer_boundary_guard`。役割の判定以外から `Toggle` を付ける経路が無いこと。
 - **Windows ターゲットのコンパイル**: `cargo check --target x86_64-pc-windows-msvc -p awase-windows --tests --lib`（`runtime/` は `#[cfg(windows)]` で Linux のテストバイナリに存在しない）。
@@ -727,6 +729,7 @@ awase の「未確定文字があるか」の推定（予測器の Stage）は�
 | r7 m1〜m7・簡素化案 | 未反映 | 本反映の範囲外（中程度3件と所有者回答のみを反映）。実装前の次 round で扱う |
 | 所有者回答 U7（2026-09-25） | 反映 | レジストリを `config1.db` と同様の一次情報源とし決定3 に明記。MS-IME 本体の変換/無変換は、トグルと判断できる値を実機で確認してから能動に足す（T12） |
 | 所有者回答 U5 修正・Q2（2026-09-25） | 反映 | `keys.ime_on`/`ime_off` の既定は空にせず awase 自身の actuate 設定として残す（決定1 の例外(2)・決定15）。既定を空にする記述と T5（既定変更・移行）を撤回し、U10 は消滅。Q2 は config 優先・役割なしで確定。`keys.ime_toggle` 既定だけ未確認として残す（下の行で確定） |
+| 所有者決定 `keys.ime_toggle` 既定を空に（2026-09-29） | 反映・実装 | ADR-202 の「当面空にしない」（2026-09-26）を覆し、決定15 の当初決定に戻して実装（ADR-202 T16-5）。保留の前提（T14 撤回）は T16・T16-6 の実装・確認で解消。調べて分かったこと: 既定の無修飾 `VK_KANJI` が GJI の 0x19 役割判定を `explicit_overlap` で無効化していた（ADR-202 未決1 参照）。既存の明示値は尊重し移行しない |
 | 所有者回答 `keys.ime_toggle` 既定（2026-09-25） | 反映 | 既定（`VK_KANJI`）は空にする（U4 の移行と同時、T14）で確定。決定14・決定15・T0/T11/T14・影響表・テスト方針の「未確認」を確定に直し、未決節を空にした |
 | round8 軽微（r7 M2 の行に U10 消滅を追記） | 反映 | 上の r7 M2 の行に追記 |
 | PR #315 コードレビュー M1（overlay） | 反映 | 決定4 末尾の「overlay は候補外なので使わない」は U9 で変換/無変換を候補に入れる前の記述だった。overlay 100 は変換/無変換を、未知の overlay は全候補を受動にする |
