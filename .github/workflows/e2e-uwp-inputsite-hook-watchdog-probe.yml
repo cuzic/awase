@@ -51,10 +51,17 @@ jobs:
       # 不具合報告のタイムライン(無関係アプリ間往復 → UWP系入力面へフォーカス)を
       # 模して、フォーカス往復を繰り返しながらキーを注入する。詳細は
       # `crates/e2e-uwp-inputsite-probe/src/main.rs` のモジュールdoc参照。
+      #
+      # `--force-starvation-swallow-all`(opus round3 M1追記): 目印の有無を
+      # 問わず全キーを握りつぶす「最悪ケース」。issue #165 自己修復
+      # (`state::hook_watchdog`)のカナリアもこのモードで確実に握りつぶされる
+      # ため、自己修復(フック再インストール)が実際に発火し復帰することを
+      # このジョブで検証できる。既定の強制窓(25秒)は検知遅延(最大約11秒)に
+      # 十分なマージンを足した値。
       - name: Run probe
-        run: target\debug\uwp_inputsite_probe.exe --iterations=80 --dwell-ms=120
+        run: target\debug\uwp_inputsite_probe.exe --iterations=80 --dwell-ms=120 --force-starvation-swallow-all
 
-      - name: Stop awase.exe and check for the hook_starved signature
+      - name: Stop awase.exe and check for the hook_starved signature and self-heal recovery
         if: always()
         shell: pwsh
         run: |
@@ -77,6 +84,29 @@ jobs:
               Write-Host "::notice::hook_starved signature reproduced ($($starved.Count) hit(s)) — issue #165"
             } else {
               Write-Host "::notice::hook_starved signature NOT observed this run (inconclusive, not a failure)"
+            }
+
+            # opus round3 M1 / round1 m3: 自己修復(state::hook_watchdog)が実際に
+            # フックを再インストールしたかを確認する。--force-starvation-swallow-all
+            # で全キーを握りつぶす「最悪ケース」を作っているので、hook_starved
+            # が再現したのに再インストールのログが一度も無ければ、自己修復
+            # そのものが機能していないことを意味する。このチェックは「awaseの
+            # フックが再びキーを受け取ること」のみを確認しており、文字が実際に
+            # 正しくアプリへ届くかまでのend-to-end確認ではない(既知の限界)。
+            #
+            # round1 m3: 従来は再インストールが0回でも warning を出すだけで
+            # ジョブは成功していた。このジョブは既定でswallow-allモードを
+            # 使い自己修復の健全性そのものを検証する目的なので、
+            # hook_starvedが再現したのに再インストールが起きない場合は
+            # 回帰とみなしてジョブを失敗させる。
+            $reinstalled = Select-String -Path $logPath -Pattern '\[hook-watchdog\] キーボードフックを再インストールしました'
+            if ($reinstalled) {
+              Write-Host "::notice::self-heal reinstalled the hook $($reinstalled.Count) time(s) — issue #165 self-heal confirmed working (hook receives keys again; not a full end-to-end input-correctness proof)"
+            } elseif ($starved) {
+              Write-Host "::error::hook_starved was reproduced but self-heal never reinstalled the hook — check state::hook_watchdog / [diagnostics] hook_self_heal"
+              exit 1
+            } else {
+              Write-Host "::warning::self-heal reinstall not observed because hook_starved itself was not reproduced this run (inconclusive, not a failure)"
             }
           } else {
             Write-Host "::warning::target/debug/awase.log was never created"

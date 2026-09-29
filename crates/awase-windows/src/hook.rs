@@ -1,5 +1,4 @@
 #![allow(unsafe_code)] // Win32 API 呼び出しに unsafe が必須(lib.rsのクレート全体allowから個別移管、Task #9)
-use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -562,6 +561,71 @@ pub(crate) fn clear_hook_latches_for_app_disable(
     tracing::info!("[app-disable] {edge:?}: hook latches をクリア");
 }
 
+/// issue #165 自己修復（hook watchdog reinstall）専用のラッチ後始末
+/// （opus round2 M2）。
+///
+/// `clear_hook_latches_for_app_disable`の`Leave`分岐と**意図的に同じ内容を
+/// 独立に持つ**（呼び出し元の意味的な文脈が異なるため共有しない——上の
+/// 関数のdocが言う「フォーカス遷移は高頻度」という前提はこちらには
+/// 当てはまらず、逆に「この関数の本体は"BUG-78対策としてCtrl/Shiftのみ
+/// 対象にする"という契約を"disable_apps文脈"専用に固定している」ことを
+/// `tests/architecture_guard.rs::app_disable_leave_edge_clears_only_ctrl_and_shift_not_alt_or_win`
+/// が関数本体を直接スキャンして保証しているため、共有ヘルパーへ抽出すると
+/// そのガードテストの意味が失われる）。
+///
+/// 旧実装は`reset_physical_key_state()`（全256 VKを無条件クリア）を
+/// 「`WTS_SESSION_UNLOCK`と同型の前提（ロック中ずっと押しっぱなしということは
+/// まず無い）」を根拠に流用していたが、その前提は誤りだった。3秒周期の
+/// watchdogでは、Reinstallの大半（M1）が「打鍵→マウスのみ5秒」という
+/// **誤検知**であり、そのときフックは正常に全てを見ていたので
+/// `PHYSICAL_KEY_STATE`は正しい。それを無条件で false 上書きすると、
+/// 「Ctrlを押したままCtrl+クリックで複数選択→5秒超の誤検知Reinstall→
+/// 物理的に押されたままのCtrlがstate上はfalseに→Ctrl+Cがローマ字文字として
+/// 処理されアプリのショートカットと合成される」という新しい事故を生む。
+/// こちらは**カナリアで本物の starvation と確認できたとき**だけ呼ぶ
+/// （`runtime/mod.rs::reinstall_keyboard_hook_for_watchdog`参照）。
+pub(crate) fn clear_hook_latches_for_watchdog_reinstall() {
+    use crate::vk::{VK_CONTROL, VK_LCONTROL, VK_LSHIFT, VK_RCONTROL, VK_RSHIFT, VK_SHIFT};
+
+    HOOK_STATE.alt_l_was_down.store(false, Ordering::Relaxed);
+    HOOK_STATE.alt_r_was_down.store(false, Ordering::Relaxed);
+    HOOK_STATE
+        .alt_l_impersonating
+        .store(false, Ordering::Relaxed);
+    HOOK_STATE
+        .alt_r_impersonating
+        .store(false, Ordering::Relaxed);
+    HOOK_STATE
+        .ctrl_consumed_since_down
+        .store(false, Ordering::Relaxed);
+    HOOK_STATE.left_thumb_down_at_us.store(0, Ordering::Relaxed);
+    HOOK_STATE
+        .right_thumb_down_at_us
+        .store(0, Ordering::Relaxed);
+    HOOK_STATE.left_thumb_down_scan.store(0, Ordering::Relaxed);
+    HOOK_STATE.right_thumb_down_scan.store(0, Ordering::Relaxed);
+
+    for vk in [
+        VK_CONTROL,
+        VK_LCONTROL,
+        VK_RCONTROL,
+        VK_SHIFT,
+        VK_LSHIFT,
+        VK_RSHIFT,
+    ] {
+        if let Some(slot) = HOOK_STATE.physical_key_state.get(vk.0 as usize) {
+            slot.store(false, Ordering::Relaxed);
+        }
+        if let Some(slot) = HOOK_STATE.physical_key_down_at_ms.get(vk.0 as usize) {
+            slot.store(0, Ordering::Relaxed);
+        }
+    }
+    tracing::info!(
+        "[hook-watchdog] 再インストール後: Ctrl/Shift の PHYSICAL_KEY_STATE を\
+         クリア（BUG-78型のKeyUp消失スタック対策、issue #165）"
+    );
+}
+
 /// 直近の物理 Ctrl 押下以降に他の VK KeyDown を観測したか返す。
 #[must_use]
 pub fn ctrl_consumed_since_down() -> bool {
@@ -711,16 +775,15 @@ pub fn is_alt_impersonation_active() -> bool {
 /// Alt なりすまし発動中は `CallNextHookEx` に本物の `KBDLLHOOKSTRUCT`（本物の
 /// Alt）が渡ってしまい、Alt 単独タップとしてシステムメニューが起動しうる
 /// ため、この場合のみ飲み込む（`LRESULT(1)`）。それ以外は OS へパススルーする。
-fn passthrough_or_swallow_for_impersonation(
-    hook_handle: HHOOK,
-    ncode: i32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
+///
+/// `CallNextHookEx`の第1引数（hHook）はWindows 95以降無視される後方互換
+/// パラメータのため`None`を渡す（opus round2 M6、`hook.rs::hook_callback`の
+/// 呼び出し元参照）。
+fn passthrough_or_swallow_for_impersonation(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if is_alt_impersonation_active() {
         LRESULT(1)
     } else {
-        unsafe { CallNextHookEx(Some(hook_handle), ncode, wparam, lparam) }
+        unsafe { CallNextHookEx(None, ncode, wparam, lparam) }
     }
 }
 
@@ -752,6 +815,144 @@ pub fn os_last_input_tick_ms() -> Option<u64> {
     //         GetLastInputInfo はどのスレッドからも呼び出し可能。
     let ok = unsafe { GetLastInputInfo(&raw mut info) };
     ok.as_bool().then_some(u64::from(info.dwTime))
+}
+
+/// OS 全体の最終入力からの経過時間（ms）を返す。取得失敗時は `None`。
+///
+/// `now_tick_ms` は `current_tick_ms()`（`GetTickCount64`、64bit）由来の現在時刻を
+/// 呼び出し元から渡す。`os_last_input_tick_ms()` の値は Win32 の
+/// `GetLastInputInfo`（`LASTINPUTINFO.dwTime`）が返す `GetTickCount()` 由来の
+/// **32bit** 値であるため、64bit の `now_tick_ms` と単純減算すると、稼働約49.7日で
+/// `dwTime` が32bit空間で0近辺へ巻き戻った直後に桁あふれで巨大な差分になり、
+/// `hook_starved` の判定（`os_idle_ms < 5000`）が以後永久に成立しなくなる
+/// （issue #165 自己修復レビュー F6）。両者を32bit空間の `wrapping_sub` で比較する
+/// ことで、通常の桁上がり同様に巻き戻りを正しく吸収する（想定する経過時間は
+/// 高々数秒のオーダーなので、32bit空間での折り返し境界をまたぐ心配はない）。
+///
+/// opus round2 m1: 呼び出し元は `now_tick_ms` を `GetLastInputInfo`（この関数内部）
+/// より**先に**取得する（`message_handlers.rs`）。その間に新規入力があると
+/// `last32` が `now32` よりわずかに（数ms）大きくなり、`wrapping_sub` が
+/// 約4.29e9（≒49.7日）という巻き戻り相当の巨大値を返してしまう——本物の
+/// 巻き戻りではなく、取得タイミングのズレによる見かけの負数。想定する経過
+/// 時間は高々数秒であり、32bit空間の半分（約24.8日）を超える差分が観測される
+/// ことはあり得ないため、符号付きとして解釈し負数は0に丸める。
+#[must_use]
+pub fn os_idle_ms(now_tick_ms: u64) -> Option<u64> {
+    let os_last_input = os_last_input_tick_ms()?;
+    #[expect(clippy::cast_possible_truncation)] // 下位32bitのみ使う意図的な切り詰め
+    let now32 = now_tick_ms as u32;
+    // os_last_input は `u64::from(info.dwTime)`（u32 由来）なので u32::MAX を超えない。
+    #[expect(clippy::cast_possible_truncation)]
+    let last32 = os_last_input as u32;
+    #[expect(clippy::cast_possible_wrap)] // 符号付き解釈で「取得順の逆転」を検出するため意図的
+    let diff = now32.wrapping_sub(last32) as i32;
+    #[expect(clippy::cast_sign_loss)] // 直前で .max(0) 済みのため非負が保証される
+    let clamped = diff.max(0) as u32;
+    Some(u64::from(clamped))
+}
+
+/// フォアグラウンドウィンドウの所有プロセスが昇格（管理者権限）しているかを返す。
+///
+/// 取得できない場合（`GetForegroundWindow`がNULL、`OpenProcess`/トークン取得失敗等）
+/// は `false`（＝昇格していない扱い）を返す——判定できないことを理由に自己修復を
+/// 常時スキップしてしまうと watchdog の目的自体が失われるため、安全側ではなく
+/// 「わかる範囲でだけガードする」側に倒す。
+///
+/// issue #165 自己修復レビュー F2: 自分（awase）が非昇格で動作中、フォアグラウンドが
+/// 昇格プロセスのときに再インストールしても効果が無い（UIPI）まま同じ判定を
+/// 繰り返しうるため、この関数の結果と `!crate::is_elevated()` を組み合わせて
+/// 呼び出し元がスキップ判定に使う。
+#[must_use]
+pub fn foreground_window_is_elevated() -> bool {
+    use windows::Win32::Foundation::{CloseHandle, E_ACCESSDENIED, HANDLE};
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::{
+        OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+    // SAFETY: GetForegroundWindow は引数なしで呼べる副作用のない Win32 API。
+    //         戻り値が NULL（フォアグラウンドウィンドウ無し）でも安全に扱う。
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_invalid() {
+        return false;
+    }
+    let pid = crate::focus::classify::get_window_process_id(hwnd);
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: pid は GetWindowThreadProcessId 経由で取得した値。
+    //         PROCESS_QUERY_LIMITED_INFORMATION は最小権限（get_process_name と同じ流儀）。
+    let Ok(process_handle) =
+        (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) })
+    else {
+        return false;
+    };
+    let mut token_handle = HANDLE::default();
+    // SAFETY: process_handle は直前の OpenProcess が返した有効なハンドル。
+    //         token_handle はスタック上の有効な出力先ポインタ。
+    let opened = unsafe { OpenProcessToken(process_handle, TOKEN_QUERY, &raw mut token_handle) };
+    // SAFETY: process_handle は1回のみ Close する。
+    let _ = unsafe { CloseHandle(process_handle) };
+    if let Err(e) = opened {
+        // opus round2 M3: 昇格トークンのオブジェクトDACLは既定でAdministrators/SYSTEM
+        // にしかアクセスを許さず、medium ILのトークンではAdministrators SIDが
+        // deny-onlyになっているため、`OpenProcess`は成功したのに
+        // `OpenProcessToken(TOKEN_QUERY)`がACCESS_DENIEDになるケースが広く
+        // 報告されている。これは「判定できない」状況ではなく、まさに
+        // 「昇格していることの強い証拠」なので、falseではなくtrueを返す
+        // （守りたい状況——非昇格awaseが昇格フォアグラウンドを検出する場面
+        // ——でこそACCESS_DENIEDになりやすく、これをfalseにすると
+        // F2ガードが対象の状況でだけ死にコードになっていた）。
+        return e.code() == E_ACCESSDENIED;
+    }
+    let mut elevation = TOKEN_ELEVATION::default();
+    let mut returned_len: u32 = 0;
+    // SAFETY: token_handle は直前の OpenProcessToken が返した有効なハンドル。
+    //         elevation はスタック上の有効なバッファで、正しいサイズを渡す。
+    let queried = unsafe {
+        GetTokenInformation(
+            token_handle,
+            TokenElevation,
+            Some((&raw mut elevation).cast()),
+            u32::try_from(size_of::<TOKEN_ELEVATION>()).unwrap_or(0),
+            &raw mut returned_len,
+        )
+    };
+    // SAFETY: token_handle は1回のみ Close する。
+    let _ = unsafe { CloseHandle(token_handle) };
+    queried.is_ok() && elevation.TokenIsElevated != 0
+}
+
+/// secure desktop（UAC 昇格プロンプト・ロック画面遷移中等）がアクティブかを返す。
+///
+/// `OpenInputDesktop` が現在の入力デスクトップを開けない（`Err`を返す）ことを
+/// もって secure desktop 中と判定する、広く使われる手法
+/// （通常デスクトップ上で動作する非昇格プロセスには secure desktop オブジェクトへの
+/// アクセス権が無いため）。
+///
+/// issue #165 自己修復レビュー F2: secure desktop 中は `WH_KEYBOARD_LL` が
+/// そもそもそのデスクトップの入力を観測できない設計上の境界であり、
+/// 「フックが握りつぶされている」わけではない。この状態で再インストールしても
+/// 意味が無いうえ、ユーザーが機微な操作（UAC 昇格・ロック解除）の最中に不要な
+/// フック入れ替えを行う実害の方が大きいためスキップする。
+#[must_use]
+pub fn is_secure_desktop_active() -> bool {
+    use windows::Win32::System::StationsAndDesktops::{
+        CloseDesktop, OpenInputDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_READOBJECTS,
+    };
+
+    // SAFETY: 引数は全て値渡しの定数/フラグで、ポインタは扱わない。
+    unsafe { OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS) }.map_or(
+        true,
+        |hdesk| {
+            // SAFETY: hdesk は直前の OpenInputDesktop が返した有効なハンドル。
+            let _ = unsafe { CloseDesktop(hdesk) };
+            false
+        },
+    )
 }
 
 /// `HKCU\Control Panel\Desktop\LowLevelHooksTimeout` の実値（ms）を読む。
@@ -789,26 +990,80 @@ pub fn low_level_hooks_timeout_ms() -> Option<u32> {
     })
 }
 
-/// シングルスレッド専用のグローバルセル（main.rs と同じパターン）
-struct SingleThreadCell<T>(UnsafeCell<T>);
-unsafe impl<T> Sync for SingleThreadCell<T> {}
+std::thread_local! {
+    /// このフックスレッドがインストールした自分自身の `HHOOK`。
+    ///
+    /// opus round2 M6: 旧実装は全フックスレッド共有のグローバル `static
+    /// HOOK_HANDLE` を使っていた。issue #165 自己修復（`reinstall_keyboard_hook_for_watchdog`）
+    /// で旧フックの `HookGuard::drop`（→ `join()`）が詰まっている間に新しい
+    /// フックを先に install すると、共有グローバルは新フックのハンドルに
+    /// 上書きされる。その後ようやく旧スレッドの `join()` が完了して旧スレッド
+    /// 自身の cleanup コード（下記 `install_hook` 末尾）が走ると、
+    /// 「グローバルの現在値」＝新フックのハンドルを誤って `UnhookWindowsHookEx`
+    /// してしまい、生きているはずの新フックを外してしまう。各フックスレッドが
+    /// 自分の `HHOOK` だけを thread-local に持つことで、この取り違えが
+    /// 構造的に起こらなくなる。
+    ///
+    /// `hook_callback`（`CallNextHookEx`の第1引数）はこの値を読まない——
+    /// `hHook` はWindows 95以降 OS 側で無視される後方互換パラメータであり、
+    /// `None` を渡してよい（下記 `hook_callback` 参照）。
+    static OWN_HOOK_HANDLE: std::cell::Cell<HHOOK> =
+        const { std::cell::Cell::new(HHOOK(std::ptr::null_mut())) };
 
-impl<T> SingleThreadCell<T> {
-    const fn new(val: T) -> Self {
-        Self(UnsafeCell::new(val))
-    }
-
-    unsafe fn get_mut(&self) -> &mut T {
-        &mut *self.0.get()
-    }
-
-    unsafe fn set(&self, val: T) {
-        *self.0.get() = val;
-    }
+    /// このフックスレッドに`install_hook()`が割り当てた世代番号（M2参照）。
+    /// 既定値の`Generation::INITIAL`（内部値0）はどの`install_hook()`呼び出しも
+    /// 割り当てない値（[`HOOK_GEN`]は1から払い出しが始まる）なので、スレッド
+    /// 開始直後・世代未設定の状態で誤って「現行世代」と一致してしまうことは
+    /// ない。
+    static MY_HOOK_GEN: std::cell::Cell<crate::state::event_origin::Generation> =
+        const { std::cell::Cell::new(crate::state::event_origin::Generation::INITIAL) };
 }
 
-/// グローバルなフックハンドル（構造的に必要: OS コールバックから参照）
-static HOOK_HANDLE: SingleThreadCell<HHOOK> = SingleThreadCell::new(HHOOK(std::ptr::null_mut()));
+/// 直近の`install_hook()`呼び出しが払い出した世代番号（opus round1 M2）。
+///
+/// `HookGuard::drop`の`join()`は`HOOK_JOIN_TIMEOUT_MS`で有界化されている
+/// （タイムアウト時はリークし、[`HOOK_JOIN_LEAKED_THREADS`]が満杯なら
+/// join を一切待たずdetachされる）ため、旧フックスレッドが
+/// `tracing`の同期I/O等で詰まっている間に新フックのinstallが先に完了する
+/// 経路が実在する。その窓では新旧2つの`WH_KEYBOARD_LL`スレッドが同時に
+/// 生存し、どちらも`hook_callback`から共有状態（`tick_hook_alive()`・
+/// `HOOK_STATE`の各フィールド・`hook_channel::HOOK_KEYS.produce()`＝
+/// 単一producer前提のSPSCリング）へ書き込みうる——データ競合。
+/// `install_hook()`の呼び出しごとにこの値をインクリメントし、各フック
+/// スレッドは自分が受け取った世代（[`MY_HOOK_GEN`]）と比較する
+/// （[`is_zombie_hook_thread`]）。一致しない（＝自分より新しいinstallが
+/// 既に行われた）場合は`hook_callback`が共有状態に一切触れず
+/// `CallNextHookEx`だけ行う「ゾンビ」状態になる——実際に`UnhookWindowsHookEx`
+/// されるまでの短い間、フックチェーンには残り続けるが実害は無い。
+///
+/// PR #349コードレビュー指摘（reuse）: 「単調増加する世代カウンタでstaleな
+/// 応答を弾く」という仕組み自体は`WarmEpoch`/`cold_seq`/`Actuation.attempts`
+/// が個別に再実装してきた経緯があり、`state::event_origin::Generation`
+/// （ADR-082）がその統合型として既に存在する。生の`AtomicU32`ではなく
+/// `Generation`（`AtomicU64`に払い出し値を格納し、比較・取り出しは
+/// `Generation`のAPIを介する）を使うことで、この再実装の4例目になることを
+/// 避ける。
+///
+/// opus round2 M2' / PR #349コードレビュー指摘: 判定は[`is_zombie_hook_thread`]
+/// を`hook_callback`の複数箇所——(1)冒頭（これから始まるコールバック全体を
+/// 早期に弾く）、(2)IME モードキー診断の記録直前、(3)物理キー状態
+/// （`physical_key_state`/`physical_key_down_at_ms`）の書き込み直前、(4)
+/// 親指ラッチ/Ctrl消費追跡の書き込み直前、(5)`hook_channel::HOOK_KEYS.produce()`
+/// の直前——**それぞれ**で呼ぶ。`tracing`の同期I/Oはこの関数の随所
+/// （IME診断ログ・VK_KANA/VK_DBE_ROMAN分岐・Alt なりすまし診断）に散在して
+/// おり、どこで詰まって世代が進んでも、次に共有状態へ書き込む直前に必ず
+/// 再判定することで、(1)だけでは防げない「詰まってから復帰した後の
+/// 書き込み」を漏れなく弾く。
+static HOOK_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// 現在のフックスレッドが世代不一致（ゾンビ）かどうかを判定する
+/// （[`HOOK_GEN`]のdoc参照）。`hook_callback`内の複数箇所から呼ぶための
+/// 共通ヘルパー（PR #349コードレビュー指摘、比較ロジックの重複排除）。
+#[inline]
+fn is_zombie_hook_thread() -> bool {
+    MY_HOOK_GEN.get()
+        != crate::state::event_origin::Generation::new(HOOK_GEN.load(Ordering::Acquire))
+}
 
 /// コールバックの戻り値
 #[derive(Debug)]
@@ -836,16 +1091,74 @@ impl std::fmt::Debug for HookGuard {
     }
 }
 
+/// `HookGuard::drop`の`join()`待機上限（issue #165自己修復、opus round2 M6
+/// fast-follow）。
+///
+/// フックスレッドは通常 `WM_QUIT` 受信直後（`GetMessageW`が即座に抜ける）に
+/// `UnhookWindowsHookEx`して終了するだけで、ミリ秒未満〜数msで完了する見込みだが、
+/// `tracing`の同期ファイルI/O（`app/logging.rs`、`Mutex`+`BufWriter`）がAVスキャン・
+/// OneDrive同期等でディスク停止に巻き込まれると、コールバック自体がそこで
+/// ブロックされうる（M6の実際の詰まり経路）。`WM_TIMER`ハンドラ（issue #165
+/// 自己修復の再インストール経路）の中で`join()`するため、無制限待機だと本体の
+/// メッセージループ（IME・タイマー・トレイ全て）ごとハングする。
+/// `win32_async::run_with_timeout_in`（IMM32/MSAA/UIA等が使う`run_with_timeout`と
+/// 同じ有界化パターンだが、専用プールを使う版）で待機を有界化し、超過時は
+/// ワーカースレッド（`join()`の呼び出し元）ごと[`HOOK_JOIN_LEAKED_THREADS`]
+/// （このモジュール専用の孤児リスト）へリークする。
+///
+/// opus round2レビュー（PR #349）指摘: 当初はIMM32/MSAA/UIAと共有の既定プール
+/// （8枠）を使っていたが、hook_starvedが繰り返し発生する環境（自己修復自体が
+/// join timeoutを繰り返す）で共有枠を消費すると、無関係なフォーカス分類の
+/// ブロッキング呼び出しまで巻き添えで「タイムアウト」扱いになりうる
+/// クロスサブシステム結合になっていた。専用プールに分離し、この結合を断つ。
+///
+/// フックスレッド自体はその後も生存し続け、`OWN_HOOK_HANDLE`がthread-local化
+/// （M6）されているため、いずれ終了して自分のハンドルをUnhookしても新しい
+/// フックには一切影響しない。生存中も`HOOK_GEN`/`MY_HOOK_GEN`（opus round1 M2、
+/// round2 M2'で`HOOK_KEYS.produce()`直前にも拡張）により`hook_callback`の
+/// 各共有状態書き込み箇所が世代不一致を検出すると素通りするだけになるため、
+/// 新フックとの二重書き込みは起きない。
+const HOOK_JOIN_TIMEOUT_MS: u64 = 500;
+
+/// [`HOOK_JOIN_TIMEOUT_MS`]超過時の孤児スレッドプール（このモジュール専用、
+/// IMM32/MSAA/UIA用の既定共有プールとは分離。上記doc参照）。
+static HOOK_JOIN_LEAKED_THREADS: crate::win32::LeakedThreadPool =
+    crate::win32::LeakedThreadPool::new(4);
+
 impl Drop for HookGuard {
     fn drop(&mut self) {
         // フックスレッドに WM_QUIT を送り、GetMessageW ループを終了させる。
         // フックスレッド側で UnhookWindowsHookEx を実行してから終了する。
         // SAFETY: hook_thread_id はフックスレッドの有効な TID。
-        unsafe {
-            let _ = PostThreadMessageW(self.hook_thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+        let posted =
+            unsafe { PostThreadMessageW(self.hook_thread_id, WM_QUIT, WPARAM(0), LPARAM(0)) };
+        if let Err(e) = posted {
+            // opus round2 M6: 戻り値を無視すると、キュー満杯等でWM_QUITが
+            // 届かず届かないまま無制限joinしてしまう経路があった。失敗時は
+            // join を試みずリークする（旧スレッドはいずれタイムアウトで
+            // Windowsに外されるか、次のメッセージで自然終了する）。
+            tracing::error!(
+                "HookGuard::drop: WM_QUIT送信(PostThreadMessageW)失敗 ({e})、\
+                 joinをスキップしてリークします"
+            );
+            self.thread = None;
+            return;
         }
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            let joined = crate::win32::run_with_timeout_in(
+                &HOOK_JOIN_LEAKED_THREADS,
+                std::time::Duration::from_millis(HOOK_JOIN_TIMEOUT_MS),
+                move || {
+                    let _ = thread.join();
+                },
+            );
+            if joined.is_none() {
+                tracing::error!(
+                    "HookGuard::drop: フックスレッドの終了待ちが{HOOK_JOIN_TIMEOUT_MS}msを\
+                     超過、リークして続行します（旧フックスレッドは生存中、次回GCで回収）"
+                );
+                return;
+            }
         }
         tracing::info!("Keyboard hook uninstalled");
     }
@@ -862,18 +1175,23 @@ impl Drop for HookGuard {
 pub fn install_hook() -> windows::core::Result<HookGuard> {
     // 多重呼び出し対策: スロットをリセット
     hook_tid_reset();
+    // opus round1 M2: 世代番号を先に払い出す。以降、これより古い世代の
+    // フックスレッド（旧HookGuard::dropのjoinがタイムアウトしてまだ生存中
+    // でも）は`hook_callback`内で共有状態に一切触れなくなる
+    // （`is_zombie_hook_thread`の呼び出し箇所参照）。
+    let my_gen = crate::state::event_origin::Generation::new(
+        HOOK_GEN.fetch_add(1, Ordering::AcqRel).wrapping_add(1),
+    );
 
     let thread = std::thread::Builder::new()
         .name("awase-hook".into())
-        .spawn(|| {
+        .spawn(move || {
             let hook_result =
                 unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_callback), None, 0) };
             match hook_result {
                 Ok(hook) => {
-                    // SAFETY: HOOK_HANDLE はこのスレッドのみがアクセスする。
-                    unsafe {
-                        HOOK_HANDLE.set(hook);
-                    }
+                    OWN_HOOK_HANDLE.set(hook);
+                    MY_HOOK_GEN.set(my_gen);
                     let tid = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
                     hook_tid_set(tid);
 
@@ -892,13 +1210,16 @@ pub fn install_hook() -> windows::core::Result<HookGuard> {
                     }
 
                     // ループ終了（WM_QUIT 受信）: フックを解除
-                    // SAFETY: HOOK_HANDLE はこのスレッドのみがアクセスする。
-                    unsafe {
-                        let h = *HOOK_HANDLE.get_mut();
-                        if !h.0.is_null() {
-                            let _ = UnhookWindowsHookEx(h);
-                            HOOK_HANDLE.set(HHOOK(std::ptr::null_mut()));
-                        }
+                    // opus round2 M6: 自分がinstallした自分自身のハンドル
+                    // （thread-local）だけをUnhookする。共有グローバルの
+                    // 「現在値」を読むと、既に次のフックが再インストール
+                    // 済みの場合にそちらを誤って外してしまう。
+                    let h = OWN_HOOK_HANDLE.get();
+                    if !h.0.is_null() {
+                        // SAFETY: h は自スレッドが SetWindowsHookExW で取得した
+                        //         有効なハンドルで、まだ Unhook していない。
+                        let _ = unsafe { UnhookWindowsHookEx(h) };
+                        OWN_HOOK_HANDLE.set(HHOOK(std::ptr::null_mut()));
                     }
                     tracing::info!("Keyboard hook thread exiting cleanly");
                 }
@@ -977,6 +1298,48 @@ fn build_raw_key_event(
 /// ドライバ側はこの定数を参照する（二重定義しない）。
 pub const TEST_INJECTION_MARKER: usize = 0x5350_494B;
 
+/// issue #165 自己修復のカナリア（`send_hook_watchdog_canary`）専用マーカー。
+/// `INJECTED_MARKER`/`TSF_MARKER`/`IME_KANJI_MARKER`とは別系統: あちらは
+/// `is_self_injected`経由で最終的に`CallNextHookEx`でOSへ通すが、カナリアは
+/// `hook_callback`冒頭（`tick_hook_alive()`直後）で`LRESULT(1)`により即座に
+/// 握りつぶし、OS・エンジンのどちらにも一切渡さない（opus round2レビュー
+/// B1(i)推奨）。
+const HOOK_WATCHDOG_CANARY_MARKER: usize = 0x4B45_5943;
+
+/// hook watchdog（issue #165 自己修復、opus round2 B1(i)対応）用のカナリア
+/// キーを送る。
+///
+/// 「OS全体では直近入力があるのにawaseのフックだけ古いまま」
+/// （`stale_ms>5000 && os_idle_ms<5000`）を検知した tick で、実際に再インストール
+/// する前にこの無害な自己注入キーを送り、`state::hook_watchdog::CANARY_CONFIRM_MS`
+/// 後に`hook::hook_alive_tick_ms()`が送信時刻より進んだかを確認する
+/// （`runtime/mod.rs::confirm_hook_watchdog_canary`）。進んでいれば「マウス操作
+/// だけでキー入力が無かった」false positiveと判断でき、進んでいなければ他
+/// プロセスのフックが`CallNextHookEx`を呼ばずカナリアごと握りつぶしている
+/// ＝本物の hook_starved と確定できる。
+///
+/// Ctrl down+up を使う（`inject_alt_menu_mask`と同じ、可視の副作用が無いことが
+/// 既に実証済みの選択）。**フックが1つも存在しない場合**（`install_hook()`失敗中、
+/// opus round2 M5）は、このキーを握りつぶすものが無いため素通りしフォアグラウンド
+/// へ届きうる——Ctrlはほぼ全てのアプリで既定の可視効果を持たないため実害は
+/// 無視できると判断した。
+pub(crate) fn send_hook_watchdog_canary() {
+    let canary_inputs = [
+        crate::tsf::output::make_key_input_ex(
+            crate::vk::VK_CONTROL,
+            false,
+            HOOK_WATCHDOG_CANARY_MARKER,
+        ),
+        crate::tsf::output::make_key_input_ex(
+            crate::vk::VK_CONTROL,
+            true,
+            HOOK_WATCHDOG_CANARY_MARKER,
+        ),
+    ];
+    let sent = crate::win32::send_input_safe(&canary_inputs);
+    tracing::debug!("[hook-watchdog] カナリア Ctrl down+up 注入 sent={sent}/2");
+}
+
 /// `AWASE_TEST_INJECTION=1` が設定されているとき、かつ目印が一致するときだけ true。
 /// 環境変数はプロセス生存期間中1回だけ読む。
 ///
@@ -1031,12 +1394,24 @@ pub(crate) fn drain_hook_ime_mode_diagnostics() -> Vec<crate::journal::HookImeMo
 /// フックスレッドの GetMessageW ループ内でのみ呼ばれる。
 #[expect(clippy::cognitive_complexity)]
 unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // opus round1 M2 / round2 M2' / PR #349コードレビュー指摘: `HookGuard::drop`の
+    // joinがタイムアウトし、旧フックスレッドがまだ生存したまま新フックが
+    // installされた「ゾンビ」の場合、自分の世代（`MY_HOOK_GEN`）は既に古い。
+    // この間は共有状態に一切触れず、ただ次のフックへ渡すだけにする（`HOOK_GEN`
+    // のdoc参照——この関数の他の共有状態書き込み箇所でも同様に再判定する）。
+    if is_zombie_hook_thread() {
+        return CallNextHookEx(None, ncode, wparam, lparam);
+    }
+
     // ウォッチドッグ用タイムスタンプを更新（自己注入キーも含む全コールバック）
     tick_hook_alive();
 
-    let hook_handle = *HOOK_HANDLE.get_mut();
+    // opus round2 M6: `CallNextHookEx`の第1引数（hHook）はWindows 95以降
+    // OS側で無視される後方互換パラメータなので、`None`を渡してよい
+    // （厳密な自スレッドのハンドルは`OWN_HOOK_HANDLE`にthread-localで
+    // 保持しているが、ここでは不要）。
     if ncode < 0 {
-        return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
+        return CallNextHookEx(None, ncode, wparam, lparam);
     }
 
     let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
@@ -1045,6 +1420,15 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     let scan = ScanCode(kb.scanCode);
     let is_keydown = matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
     let self_injected = is_self_injected(kb.dwExtraInfo);
+
+    // issue #165 自己修復のカナリア（`send_hook_watchdog_canary`）: 自分の
+    // フックコールバックが実際に呼ばれるかを確認するためだけの往復信号。
+    // `tick_hook_alive()`は関数冒頭で既に実行済みなので、ここでは何も観測・
+    // 分類せず即座に握りつぶす（`CallNextHookEx`すら呼ばない——OS/他アプリへ
+    // 一切見せない、opus round2 B1(i)）。
+    if kb.dwExtraInfo == HOOK_WATCHDOG_CANARY_MARKER {
+        return LRESULT(1);
+    }
 
     // テスト専用（実機E2Eの自動化、ADR-186）: 環境変数 `AWASE_TEST_INJECTION=1` のときだけ、
     // テストドライバの目印（`TEST_INJECTION_MARKER`）を付けた注入を物理キーとして扱う。
@@ -1078,6 +1462,12 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             "[hook] IME-mode vk=0x{:02X} {dir} self_injected={self_injected} injected={is_injected} scan=0x{:X} extra=0x{:X} since_actuation_us={since_actuation_us:?}",
             vk.0, kb.scanCode, kb.dwExtraInfo,
         );
+        // PR #349コードレビュー指摘: 直前のログ出力がブロックしうる
+        // （`HOOK_GEN`のdoc参照）ため、共有状態（診断キューの`Mutex`）へ
+        // 書き込む直前に再判定する。
+        if is_zombie_hook_thread() {
+            return CallNextHookEx(None, ncode, wparam, lparam);
+        }
         push_hook_ime_mode_diagnostic(crate::journal::HookImeModeDiagnosticRecord {
             vk_code: vk.0,
             is_down: is_keydown,
@@ -1091,7 +1481,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
 
     // 自己注入キー（SendInput with INJECTED_MARKER 等）は OS にそのまま通す
     if self_injected {
-        return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
+        return CallNextHookEx(None, ncode, wparam, lparam);
     }
 
     // BUG-14 追記 (2026-07-06): ここにあった「foreign-injected IME モードキー全般の
@@ -1111,6 +1501,14 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // issue #136 系の foreign-injected 連打を誤って auto-repeat とみなさないよう、
     // 呼び出し側は was_down の値に関わらず injected を常に非畳み込みとして扱う）。
     let mut was_down = false;
+    // PR #349コードレビュー指摘: 手前のIME診断分岐のログ出力でブロックしうる
+    // （未実行の場合でも「このコールバックの直前で詰まった経路があった
+    // かもしれない」という前提を各書き込み直前で確認する方が、どの分岐が
+    // 詰まりうるかを個別に追跡し続けるより堅牢）ため、`physical_key_state`
+    // 書き込み直前でも再判定する。
+    if !is_injected && is_zombie_hook_thread() {
+        return CallNextHookEx(None, ncode, wparam, lparam);
+    }
     if !is_injected {
         if let Some(slot) = HOOK_STATE.physical_key_state.get(vk.0 as usize) {
             was_down = slot.swap(is_keydown, Ordering::Relaxed);
@@ -1141,7 +1539,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // それらの介入（BUG-08/BUG-61/BUG-62 対策含む）も無効化中は一切効かなくする
     // （ユーザー判断により例外なく無効化する）。
     if HOOK_STATE.focus_app_disabled.load(Ordering::Relaxed) {
-        return CallNextHookEx(Some(hook_handle), ncode, wparam, lparam);
+        return CallNextHookEx(None, ncode, wparam, lparam);
     }
 
     // VK_KANA down/up は OS のかなロックをトグルし、GJI/MS-IME がローマ字入力→JISかな
@@ -1263,7 +1661,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // いたはずの復旧不能な破損が起こりえた。overflow は稀にしか起きない上
     // 一時的な状態なので、破損防止ガードを常に優先する。
     if crate::hook_channel::HOOK_KEYS.is_overflow_latched() {
-        return passthrough_or_swallow_for_impersonation(hook_handle, ncode, wparam, lparam);
+        return passthrough_or_swallow_for_impersonation(ncode, wparam, lparam);
     }
 
     // CTRL_CONSUMED チェックと classify_key で共用するため先に取得する。
@@ -1299,6 +1697,13 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     }
     vk = rewritten_vk;
 
+    // PR #349コードレビュー指摘: ここまでの間（VK_KANA/VK_DBE_ROMAN分岐・
+    // Alt なりすまし診断）に複数のログ出力があり、いずれかでブロックしうる。
+    // 親指ラッチ（`HOOK_STATE.left/right_thumb_down_*`）を書き込む直前で
+    // 再判定する。
+    if !is_injected && is_zombie_hook_thread() {
+        return CallNextHookEx(None, ncode, wparam, lparam);
+    }
     if !is_injected {
         // BUG-132: `VK_DBE_*` を親指キーに割り当てた構成では、Windows が
         // KeyDown と KeyUp で異なる vk を合成する非対称性がある（BUG-131 と
@@ -1402,6 +1807,16 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         was_down,
     );
 
+    // opus round2 M2': 入口（`hook_callback`冒頭）のガードは、これから
+    // 始まるコールバックしか守らない。旧フックスレッドが`tracing`の
+    // 同期I/O等でここまでの処理中に詰まり、詰まっている間に世代が進んだ
+    // 場合は、この直前まで来ても`produce`する前にもう一度判定する必要が
+    // ある——`HOOK_KEYS`は単一producer前提のSPSCリングであり、新旧2つの
+    // フックスレッドが同時に`produce`するとデータ競合になる。ここで弾く
+    // 場合、既に組み立てた`event`は破棄して通常のパススルーへ委ねる。
+    if is_zombie_hook_thread() {
+        return CallNextHookEx(None, ncode, wparam, lparam);
+    }
     let produce_result = crate::hook_channel::HOOK_KEYS.produce(event);
     crate::hook_channel::request_engine_wake();
     match produce_result {
@@ -1411,7 +1826,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         // OS へそのままパススルーする方が実害が小さい。ただし Alt なりすまし中は
         // 上の overflow ラッチ分岐と同じ理由で飲み込む（dropped 計上のみ）。
         crate::hook_channel::ProduceResult::Overflow => {
-            passthrough_or_swallow_for_impersonation(hook_handle, ncode, wparam, lparam)
+            passthrough_or_swallow_for_impersonation(ncode, wparam, lparam)
         }
     }
 }

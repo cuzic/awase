@@ -84,3 +84,9 @@ force_tsf = [
 # key = "Ctrl+J"
 # process = "WindowsTerminal"   # Windows Terminal (wt.exe) でのみ有効
 # example-end
+
+# 診断・自己修復系のキルスイッチ（issue #165）。既定で全て有効。
+# example-begin: config-diagnostics uncomment
+# [diagnostics]
+# hook_self_heal = true  # hook_starved 検知時にキーボードフックを自己修復する
+# example-end

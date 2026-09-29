@@ -234,6 +234,17 @@ mod probe {
     /// 人為的に作り出す。真の自然発生条件（何が実際に awase のフックを詰まらせる
     /// のか）を特定するものではないが、「その状態になったら watchdog が正しく
     /// 検知し、実際に文字入力が壊れるか」という**下流の因果関係**を検証できる。
+    ///
+    /// **`--force-starvation-swallow-all`（opus round3 M1追記）**: 既定では
+    /// このプローブ自身のマーク付きキーだけを握りつぶす（`blocking_hook::proc`
+    /// の`info.dwExtraInfo == MARKER`判定）。issue #165 自己修復（`state::
+    /// hook_watchdog`）のカナリアは別のマーカーを使うため、既定モードでは
+    /// カナリアが常に素通りしてawase側に届いてしまい、**自己修復が一度も
+    /// 発火しないまま「正常」に見える**。このフラグを付けると目印の有無を
+    /// 問わず全イベントを握りつぶす「最悪ケース」になり、自己修復が実際に
+    /// フックを再インストールして復帰することを検証できる（`state::
+    /// hook_watchdog`モジュールdoc「既知の限界」も参照——注入イベントだけ
+    /// 通す実装の原因フックには、この自己修復は効かない）。
     mod blocking_hook {
         use super::{log, send_marked_key, PROBE_KEYS};
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -245,9 +256,24 @@ mod probe {
         };
 
         static BLOCKING: AtomicBool = AtomicBool::new(false);
+        /// opus round3 M1: `true` の間は目印の有無を問わず**全キーイベント**を
+        /// 握りつぶす。issue #165 自己修復のカナリア（`awase_windows::hook::
+        /// send_hook_watchdog_canary`）は自前の別マーカーを使うため、従来の
+        /// 「`super::MARKER` のときだけ握りつぶす」実装だとカナリアは素通りして
+        /// awase 側に届いてしまい、自己修復（フック再インストール）が一度も
+        /// 発火しないまま「再現した」ことになってしまう。実際の issue #165 の
+        /// 原因フックが注入イベントを区別せず握りつぶす実装かどうかは不明の
+        /// ままだが（`docs/known-bugs/`にも確証は無い）、この「最悪ケース」
+        /// （何も通さない）で自己修復が機能することを確認するのが目的。
+        static SWALLOW_ALL: AtomicBool = AtomicBool::new(false);
 
         unsafe extern "system" fn proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
             if code >= 0 && BLOCKING.load(Ordering::SeqCst) {
+                if SWALLOW_ALL.load(Ordering::SeqCst) {
+                    // 意図的に CallNextHookEx を呼ばない = 目印の有無を問わず
+                    // 後段(awase含む)へこのイベントは一切届かない。
+                    return LRESULT(1);
+                }
                 // SAFETY: Win32 契約により code>=0 のとき lparam は有効な
                 // KBDLLHOOKSTRUCT を指す。
                 let info = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
@@ -264,7 +290,8 @@ mod probe {
         pub(super) struct Guard(HHOOK);
 
         impl Guard {
-            pub(super) fn install() -> anyhow::Result<Self> {
+            pub(super) fn install(swallow_all: bool) -> anyhow::Result<Self> {
+                SWALLOW_ALL.store(swallow_all, Ordering::SeqCst);
                 // SAFETY: proc は正しい HOOKPROC シグネチャ、hMod は同一プロセス内
                 // フックのため None で良い（Win32 の標準的な用法）。
                 let hhook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(proc), None, 0) }
@@ -490,9 +517,20 @@ mod probe {
         let dwell_ms: u64 = arg_value("--dwell-ms=")
             .and_then(|s| s.parse().ok())
             .unwrap_or(120);
+        // opus round3 M1: 目印の有無を問わず全キーを握りつぶす「最悪ケース」
+        // モード（`blocking_hook::SWALLOW_ALL`）。issue #165 自己修復の
+        // カナリアもこのモードでは確実に握りつぶされるため、自己修復が
+        // 実際に機能するかをこのプローブで検証できる（従来のマーカー限定
+        // ブロックでは、カナリアが常に素通りして自己修復が一度も発火しない）。
+        let force_starvation_swallow_all =
+            std::env::args().any(|a| a == "--force-starvation-swallow-all");
+        // 既定の強制窓は、swallow-allモードでは自己修復の検知遅延
+        // （3秒周期tickの量子化5〜8秒 + カナリア確認200ms = 最大約8.2秒、
+        // opus round1 m5で訂正）に十分なマージンを足した25秒にする。
+        // 従来モード(自己修復を前提としない)は既定7秒のまま変えない。
         let force_starvation_secs: u64 = arg_value("--force-starvation-secs=")
             .and_then(|s| s.parse().ok())
-            .unwrap_or(7);
+            .unwrap_or(if force_starvation_swallow_all { 25 } else { 7 });
         let config = ProbeConfig {
             iterations,
             dwell_ms,
@@ -501,7 +539,7 @@ mod probe {
         // issue #165 を確実に発火させる強制実験（詳細は `blocking_hook` モジュール
         // doc参照）。`--force-starvation-secs=0` で無効化できる。
         let _blocking_hook_guard = if force_starvation_secs > 0 {
-            let guard = blocking_hook::Guard::install()?;
+            let guard = blocking_hook::Guard::install(force_starvation_swallow_all)?;
             blocking_hook::spawn_forced_starvation_window(
                 Duration::from_secs(3),
                 force_starvation_secs,

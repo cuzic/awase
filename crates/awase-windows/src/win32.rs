@@ -18,6 +18,13 @@ use windows::Win32::UI::WindowsAndMessaging::{
 /// `win32_async::run_with_timeout` の re-export。
 pub use win32_async::run_with_timeout;
 
+/// 呼び出し元専用の孤児スレッドプールで`run_with_timeout`する版、および
+/// そのプール型自体の re-export（`win32_async::run_with_timeout_in`/
+/// `win32_async::LeakedThreadPool`）。IMM32/MSAA/UIA用の既定共有プールとは
+/// 別に、独立した用途（例: キーボードフック再インストールのjoin待ち）が
+/// 専用プールを持てるようにするためのもの。
+pub use win32_async::{run_with_timeout_in, LeakedThreadPool};
+
 /// `HWND` の null チェック拡張トレイト。
 pub trait HwndExt {
     /// null なら `None`、非 null なら `Some(self)` を返す。

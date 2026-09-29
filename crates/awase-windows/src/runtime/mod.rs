@@ -366,6 +366,57 @@ pub struct Runtime {
     drift_giveup_notified_this_focus: bool,
     /// ADR-132 Phase 1 診断用: 直近の GiveUp 通知区間の開始時刻。
     drift_giveup_started_at: Option<std::time::Instant>,
+    /// issue #165（hook_starved）自己修復用（2026-09-28追記）。`bootstrap.rs`が
+    /// `install_hook()`直後に`set_hook_guard`で格納する（起動時は必ず`Some`）。
+    /// `reinstall_keyboard_hook_for_watchdog`がwatchdog検知時にドロップ→
+    /// 再インストールして差し替える。ここに保持する理由は、`HookGuard`の
+    /// ライフタイムを`Runtime`（`RUNTIME`グローバル、プロセス終了まで生存）に
+    /// 揃えることで、watchdogタイマー（`with_app`経由、`Runtime`にしか
+    /// アクセスできない）から直接差し替えられるようにするため
+    /// （`bootstrap.rs::run`のローカル変数のままでは他所から触れない）。
+    hook_guard: Option<crate::hook::HookGuard>,
+    /// `[diagnostics] hook_self_heal`（既定 true）。issue #165 自己修復の
+    /// ビルド無しキルスイッチ。`state::hook_watchdog::decide` へそのまま渡す。
+    hook_self_heal_enabled: bool,
+    /// カナリア確認済みの本物のstarvation再インストールを、現在の
+    /// hook_starved episode（`hook::hook_alive_tick_ms()`が自然回復するまでの
+    /// 連続区間）で何回試みたか。`note_hook_watchdog_recovered`が`0`に
+    /// リセットする。`state::hook_watchdog::backoff_delay_ms`の入力
+    /// （opus round2 B1(ii)、旧`hook_watchdog_episode_attempted: bool`を置換）。
+    hook_watchdog_confirmed_attempt_count: u32,
+    /// 次に自己修復（カナリア送信）を試みてよい tick_ms。`None`なら即座に
+    /// 試みてよい。カナリア確認済みの再インストール成功/失敗どちらでも
+    /// `reinstall_keyboard_hook_for_watchdog`が更新する
+    /// （`state::hook_watchdog::backoff_delay_ms`、opus round2 B1(ii)）。
+    hook_watchdog_next_retry_at_ms: Option<u64>,
+    /// 自己修復（カナリア確認済みの再インストール）を試行した tick_ms の履歴
+    /// （レート上限判定用、`state::hook_watchdog::THRASH_WINDOW_MS`より古い
+    /// エントリは`reinstall_keyboard_hook_for_watchdog`が随時刈り取る）。
+    hook_watchdog_reinstall_history_ms: Vec<u64>,
+    /// `WM_WTSSESSION_CHANGE`（`WTS_SESSION_LOCK`/`WTS_SESSION_UNLOCK`）から
+    /// 更新する、現在セッションがロック中かの永続フラグ。issue #165 自己修復の
+    /// F2ガード（ロック中は再インストールしても意味が無い）に使う。
+    session_locked: bool,
+    /// issue #165 自己修復のカナリア（`hook::send_hook_watchdog_canary`）を
+    /// 送信した tick_ms（opus round2 B1(i)）。`Some`の間は確認待ち
+    /// （`TIMER_HOOK_WATCHDOG_CANARY_CHECK`発火まで）で、多重送信を防ぐ
+    /// ガードにも使う。確認タイマー発火時に`confirm_hook_watchdog_canary`が
+    /// `take()`してクリアする。
+    hook_watchdog_canary_sent_at_ms: Option<u64>,
+    /// カナリア送信**前**に読んだ`hook::hook_alive_tick_ms()`のスナップ
+    /// ショット（opus round1 B1）。`hook_watchdog_canary_sent_at_ms`と常に
+    /// 同時にSome/Noneが揃う。`canary_confirmed_starved`の基準値として使う
+    /// ——送信「時刻」を基準にすると`GetTickCount64`の分解能（約15.6ms）に
+    /// 負けて誤検知するため、代わりにこの「最後にフックが呼ばれた時刻」の
+    /// 古い値（この分岐に入る時点で既に5秒以上古い）を基準にする。
+    hook_watchdog_canary_baseline_alive_ms: Option<u64>,
+    /// `stale_ms<=5000`（フック生存を確認できた）が連続した watchdog tick 数。
+    /// `stale_ms>5000`のtickで0にリセットされる。
+    /// `state::hook_watchdog::RECOVERY_CONFIRM_TICKS`に達して初めて
+    /// `note_hook_watchdog_recovered`（バックオフ/thrash履歴のリセット）を
+    /// 実行する（PR #349コードレビュー指摘: 1回のflickerで丸ごとリセット
+    /// されないようにするため、`note_hook_watchdog_tick_alive`参照）。
+    hook_watchdog_consecutive_alive_ticks: u32,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -1381,6 +1432,15 @@ impl Runtime {
             watchdog_kana_edge: None,
             drift_giveup_notified_this_focus: false,
             drift_giveup_started_at: None,
+            hook_guard: None,
+            hook_self_heal_enabled: true,
+            hook_watchdog_confirmed_attempt_count: 0,
+            hook_watchdog_next_retry_at_ms: None,
+            hook_watchdog_reinstall_history_ms: Vec::new(),
+            session_locked: false,
+            hook_watchdog_canary_sent_at_ms: None,
+            hook_watchdog_canary_baseline_alive_ms: None,
+            hook_watchdog_consecutive_alive_ticks: 0,
         }
     }
 
@@ -1681,6 +1741,284 @@ impl Runtime {
         );
     }
 
+    /// `bootstrap.rs`が起動時に`install_hook()`直後へ1回だけ呼ぶ。以後は
+    /// `reinstall_keyboard_hook_for_watchdog`が差し替える。
+    pub(crate) fn set_hook_guard(&mut self, guard: crate::hook::HookGuard) {
+        self.hook_guard = Some(guard);
+    }
+
+    /// `bootstrap.rs::run`終了時（`run_message_loop`/`cleanup`の後）に呼び、
+    /// フックを明示的に解除する（旧来の`drop(hook_guard)`と同じタイミング）。
+    pub(crate) fn drop_hook_guard(&mut self) {
+        self.hook_guard = None;
+    }
+
+    /// `[diagnostics] hook_self_heal`を反映する（起動時`bootstrap.rs`、
+    /// リロード時`apply_config_update`の両方から呼ぶ）。
+    pub(crate) const fn set_hook_self_heal_enabled(&mut self, enabled: bool) {
+        self.hook_self_heal_enabled = enabled;
+    }
+
+    /// `WM_WTSSESSION_CHANGE`（`handle_wts_session_change`）から呼び、セッション
+    /// ロック状態を更新する（issue #165 自己修復 F2ガード用）。
+    pub(crate) const fn set_session_locked(&mut self, locked: bool) {
+        self.session_locked = locked;
+    }
+
+    /// hook watchdog が stale_ms<=5000（＝フック生存を確認できた）と判定した
+    /// tick（`message_handlers.rs`の`TIMER_HOOK_WATCHDOG`分岐、else側）で
+    /// 呼ぶ。`state::hook_watchdog::RECOVERY_CONFIRM_TICKS`連続でこれが
+    /// 呼ばれて初めて実際に`note_hook_watchdog_recovered`（バックオフ/
+    /// thrash履歴のリセット）へ進む。
+    ///
+    /// PR #349コードレビュー指摘: 以前は`note_hook_watchdog_recovered`を
+    /// stale_ms<=5000の**最初の1tick**で即座に呼んでいたため、他プロセスの
+    /// フックが打鍵を断続的にしか握りつぶさない「flicker」型のstarvation
+    /// では、1回フックが生き返っただけで段階的バックオフが丸ごと0へ戻り、
+    /// このケースのために存在するはずの段階的抑制が機能しなかった。
+    pub(crate) fn note_hook_watchdog_tick_alive(&mut self) {
+        self.hook_watchdog_consecutive_alive_ticks =
+            self.hook_watchdog_consecutive_alive_ticks.saturating_add(1);
+        if self.hook_watchdog_consecutive_alive_ticks
+            >= crate::state::hook_watchdog::RECOVERY_CONFIRM_TICKS
+        {
+            self.note_hook_watchdog_recovered();
+        }
+    }
+
+    /// hook watchdog が stale_ms>5000（＝フックが生存確認できていない）と
+    /// 判定したtickで呼ぶ。「連続してフック生存を確認できたtick数」の
+    /// カウント（[`note_hook_watchdog_tick_alive`]参照）を途切れさせる。
+    pub(crate) const fn note_hook_watchdog_tick_not_alive(&mut self) {
+        self.hook_watchdog_consecutive_alive_ticks = 0;
+    }
+
+    /// 次に hook_starved を検知したときは新しい episode として扱われ、
+    /// バックオフ/thrash履歴の起点がリセットされる（opus round2 B1(ii)、
+    /// 旧`hook_watchdog_episode_attempted`ラッチの後継）。
+    /// [`note_hook_watchdog_tick_alive`]経由でのみ呼ぶこと（直接呼ぶと
+    /// flicker耐性が失われる）。
+    const fn note_hook_watchdog_recovered(&mut self) {
+        self.hook_watchdog_confirmed_attempt_count = 0;
+        self.hook_watchdog_next_retry_at_ms = None;
+    }
+
+    /// issue #165（hook_starved）の自己修復トリガー判定（opus-adversarial-consult
+    /// round1・round2 指摘対応版）。
+    ///
+    /// `message_handlers.rs`のhook_starved分岐から、`stale_ms>5000 &&
+    /// os_idle_ms<5000`成立時に呼ぶ。環境情報（昇格/セッションロック/
+    /// secure desktop/relayソフト/フック有無/バックオフ/thrash上限）を集めて
+    /// `state::hook_watchdog::decide`（純粋関数）へ渡し、`SendCanary`が返った
+    /// 場合のみ`send_hook_watchdog_canary`を呼ぶ（round2 B1(i)、即座の
+    /// 再インストールではなくカナリア確認を経る）。それ以外のバリアントは
+    /// 全て「何もしない」を意味し、呼び出し元がスキップ理由のログに使う。
+    pub(crate) fn evaluate_hook_watchdog(
+        &mut self,
+        now_ms: u64,
+    ) -> crate::state::hook_watchdog::HookWatchdogAction {
+        let is_elevated_foreground =
+            !crate::is_elevated() && crate::hook::foreground_window_is_elevated();
+        let is_secure_desktop = crate::hook::is_secure_desktop_active();
+        let process_name = self.platform.focus.process_name();
+        let is_relay_or_remap_foreground = self.platform.focus.is_app_disabled()
+            || crate::state::app_suppression::matches_disabled_app(
+                self.platform.focus.input_relay_apps(),
+                process_name,
+            )
+            || crate::app::is_relay_or_remap_software_process(process_name);
+        let reinstalls_in_window = crate::state::hook_watchdog::count_within_window(
+            &self.hook_watchdog_reinstall_history_ms,
+            now_ms,
+            crate::state::hook_watchdog::THRASH_WINDOW_MS,
+        );
+        let action = crate::state::hook_watchdog::decide(
+            self.hook_self_heal_enabled,
+            is_elevated_foreground,
+            self.session_locked,
+            is_secure_desktop,
+            is_relay_or_remap_foreground,
+            self.hook_guard.is_some(),
+            now_ms,
+            self.hook_watchdog_next_retry_at_ms,
+            reinstalls_in_window,
+            crate::state::hook_watchdog::THRASH_LIMIT,
+        );
+        match action {
+            crate::state::hook_watchdog::HookWatchdogAction::SendCanary => {
+                self.send_hook_watchdog_canary(now_ms);
+            }
+            crate::state::hook_watchdog::HookWatchdogAction::ReinstallWithoutCanary => {
+                // opus round1 M1: フック不在時はカナリアを経由しない
+                // （確認相手が無く、Ctrl漏れ/ジグラー化を招くため）。
+                // PR #349コードレビュー指摘: `decide`はこの経路をバックオフ/
+                // thrash上限の対象外としているため、`record_thrash=false`で
+                // 履歴を汚染しない。
+                self.reinstall_keyboard_hook_for_watchdog(now_ms, false);
+            }
+            _ => {}
+        }
+        action
+    }
+
+    /// issue #165 自己修復 round2 B1(i): カナリア（自己注入 Ctrl down+up）を
+    /// 送信し、`state::hook_watchdog::CANARY_CONFIRM_MS`後に
+    /// `confirm_hook_watchdog_canary`で結果を判定できるよう一発タイマーを
+    /// 起動する。
+    ///
+    /// 既に確認待ち（前回のカナリアがまだ`TIMER_HOOK_WATCHDOG_CANARY_CHECK`を
+    /// 待っている）なら二重送信・二重タイマーを避けるため何もしない。3秒周期の
+    /// watchdog tickに対し確認は`CANARY_CONFIRM_MS`（既定200ms）で完了する
+    /// はずなので、通常はここに到達しない防御的ガード。
+    fn send_hook_watchdog_canary(&mut self, now_ms: u64) {
+        if let Some(sent_at_ms) = self.hook_watchdog_canary_sent_at_ms {
+            // opus round1 m2: `SetTimer`（`TIMER_HOOK_WATCHDOG_CANARY_CHECK`）が
+            // 失敗する（戻り値未検査）、またはUSERオブジェクト枯渇等で
+            // `WM_TIMER`自体が届かないと、`confirm_hook_watchdog_canary`が
+            // 一度も呼ばれず確認待ちフラグが永久に残り、以後の自己修復が
+            // 完全に止まる。`CANARY_CONFIRM_MS`の10倍を過ぎてもまだ
+            // 確認待ちのままなら、確認処理が失われたとみなして古い状態を
+            // 破棄し、新しいカナリアを送り直す。
+            let confirm_lost_threshold_ms =
+                crate::state::hook_watchdog::CANARY_CONFIRM_MS.saturating_mul(10);
+            if now_ms.saturating_sub(sent_at_ms) < confirm_lost_threshold_ms {
+                tracing::debug!("[hook-watchdog] カナリア確認待ち中のため送信をスキップ");
+                return;
+            }
+            tracing::warn!(
+                "[hook-watchdog] カナリア確認が{}ms以上届いていない（確認タイマー \
+                 消失の疑い）、状態を破棄して送り直します",
+                now_ms.saturating_sub(sent_at_ms)
+            );
+        }
+        self.hook_watchdog_canary_sent_at_ms = Some(now_ms);
+        // opus round1 B1: 基準値は送信「前」の`hook_alive_tick_ms()`
+        // （この分岐に入る時点で既に5秒以上古い値）。送信「時刻」
+        // （`now_ms`）を基準にすると`GetTickCount64`の分解能（約15.6ms）に
+        // 負けて誤検知する。
+        self.hook_watchdog_canary_baseline_alive_ms = Some(crate::hook::hook_alive_tick_ms());
+        crate::hook::send_hook_watchdog_canary();
+        self.platform.timer.set(
+            crate::TIMER_HOOK_WATCHDOG_CANARY_CHECK,
+            std::time::Duration::from_millis(crate::state::hook_watchdog::CANARY_CONFIRM_MS),
+        );
+    }
+
+    /// issue #165 自己修復 round2 B1(i): `TIMER_HOOK_WATCHDOG_CANARY_CHECK`
+    /// 発火時に`message_handlers.rs`から呼ぶ。カナリア送信後に
+    /// `hook::hook_alive_tick_ms()`が進んでいなければ真の hook_starved と
+    /// 確定し、実際の再インストールへ進む。進んでいれば「hookは生きている
+    /// がユーザーが実キーを打っていないだけ」の偽陽性と分かり、
+    /// バックオフ/thrash履歴を一切消費せずスキップする。
+    pub(crate) fn confirm_hook_watchdog_canary(&mut self, now_ms: u64) {
+        let Some(canary_sent_at_ms) = self.hook_watchdog_canary_sent_at_ms.take() else {
+            // 通常は起こらない（確認タイマーはカナリア送信時にしか起動しない）。
+            return;
+        };
+        // `hook_watchdog_canary_sent_at_ms`と常に同時にSome/Noneが揃う
+        // （どちらも`send_hook_watchdog_canary`でのみSomeになる）。
+        let baseline_hook_alive_ms = self
+            .hook_watchdog_canary_baseline_alive_ms
+            .take()
+            .unwrap_or(canary_sent_at_ms);
+        let hook_alive_tick_ms_after = crate::hook::hook_alive_tick_ms();
+        if crate::state::hook_watchdog::canary_confirmed_starved(
+            hook_alive_tick_ms_after,
+            baseline_hook_alive_ms,
+        ) {
+            tracing::warn!(
+                "[hook-watchdog] カナリア({}ms前送信)が届かず確認 → 真の \
+                 hook_starved と判定、再インストールします",
+                now_ms.saturating_sub(canary_sent_at_ms)
+            );
+            self.reinstall_keyboard_hook_for_watchdog(now_ms, true);
+        } else {
+            tracing::debug!(
+                "[hook-watchdog] カナリアが届いた（フックは生存中）→ \
+                 誤検知として再インストールをスキップ"
+            );
+        }
+    }
+
+    /// issue #165（hook_starved）の自己修復本体。
+    ///
+    /// `confirm_hook_watchdog_canary`がカナリア不着＝本物のstarvationと
+    /// 確定した場合のみ呼ばれる（round2 B1: 誤検知ではepisodeラッチ/
+    /// thrash履歴を一切消費しない設計）。`WH_KEYBOARD_LL`はLIFO（最後に
+    /// 登録したフックが最初に呼ばれる）で配送されるため、旧フックを
+    /// `UnhookWindowsHookEx`してから新しく`SetWindowsHookExW`し直すと、
+    /// このタイミング以降にチェーンへ割り込んでいた他プロセスのフックより
+    /// 手前（先頭）に戻れる。失われた打鍵は戻せないが、同じ停止が続くのを
+    /// 防ぐ。
+    ///
+    /// `install_hook()`が失敗した場合はフック無しの状態になりうる。この場合
+    /// `state::hook_watchdog::decide`の`hook_guard_present=false`分岐が
+    /// バックオフ/thrash上限をバイパスするため、次のwatchdog tick（3秒後）で
+    /// 即座に再試行される（opus round2 M5: 旧実装はエピソードラッチが
+    /// 立ったまま二度とフックが来ないため永久にリトライされなかった）。
+    /// ここでpanicはしない——フック関連の失敗で常駐アプリを丸ごと落とすのは
+    /// 実害が大きすぎる。
+    ///
+    /// `record_thrash`: バックオフ/thrash履歴を更新するか。`true`は
+    /// `confirm_hook_watchdog_canary`（カナリア確認済み、`decide`の
+    /// `hook_guard_present=true`分岐がこの履歴を見て次回の
+    /// SkipBackoffPending/SkipThrashLimitを判定する）から呼ばれた場合。
+    /// `false`は`ReinstallWithoutCanary`（フック不在時の直接再試行、`decide`は
+    /// `hook_guard_present=false`の間バックオフ/thrash上限を無条件バイパス
+    /// する設計）から呼ばれた場合——PR #349コードレビュー指摘: 以前は
+    /// この経路でも無条件に履歴を積んでいたため、フック不在が続いた後に
+    /// 復旧しても、フック不在中に積み上がった履歴のせいで直後の本物の
+    /// starvationがSkipThrashLimit/SkipBackoffPendingで最長1時間直らない
+    /// 「予算の汚染」が起きていた。
+    fn reinstall_keyboard_hook_for_watchdog(&mut self, now_ms: u64, record_thrash: bool) {
+        if record_thrash {
+            // バックオフ/thrash履歴は「カナリア確認済みで実際に試行した」事実
+            // そのものを記録する（install_hook()の成否に関わらず）。
+            let backoff_ms = crate::state::hook_watchdog::backoff_delay_ms(
+                self.hook_watchdog_confirmed_attempt_count,
+            );
+            self.hook_watchdog_confirmed_attempt_count =
+                self.hook_watchdog_confirmed_attempt_count.saturating_add(1);
+            self.hook_watchdog_next_retry_at_ms = Some(now_ms.saturating_add(backoff_ms));
+            self.hook_watchdog_reinstall_history_ms.push(now_ms);
+            // 履歴は thrash 判定用の直近分だけで十分。THRASH_WINDOW_MS より古い
+            // エントリを刈り取り、無期限に肥大化しないようにする。
+            self.hook_watchdog_reinstall_history_ms.retain(|&t| {
+                now_ms.saturating_sub(t) < crate::state::hook_watchdog::THRASH_WINDOW_MS
+            });
+        }
+
+        // 旧ガードをここで明示的にdropしてから新規installする
+        // （両方生存する瞬間を作らない。`WM_QUIT`→スレッドjoin→
+        // `UnhookWindowsHookEx`が完了してから次のSetWindowsHookExWへ進む）。
+        self.hook_guard = None;
+        match crate::hook::install_hook() {
+            Ok(guard) => {
+                self.hook_guard = Some(guard);
+                // issue #165 自己修復 F4（round2 M2で根拠づけを訂正）: この
+                // 関数はカナリアで本物のstarvationと確認できたときにしか
+                // 呼ばれないため（誤検知では呼ばれない）、握りつぶされていた
+                // 間のKeyUp消失で物理キーラッチ（Ctrl/Shift）がスタックした
+                // まま残る（BUG-78/BUG-48と同型）前提が実際に成り立つ。
+                // `reset_physical_key_state()`（全256 VK無条件クリア）は
+                // 誤検知時にも呼ばれていた旧実装では「押されたままのCtrlが
+                // stateだけfalseになりCtrl+Cがローマ字文字と合成される」
+                // 新しい事故を生んでいたため、Ctrl/Shiftのみを対象にする
+                // narrow版に切り替えた。
+                crate::hook::clear_hook_latches_for_watchdog_reinstall();
+                self.platform_state.keymap.keymap_latch.release_all();
+                tracing::warn!(
+                    "[hook-watchdog] キーボードフックを再インストールしました（issue #165 自己修復）"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    "[hook-watchdog] キーボードフックの再インストールに失敗しました: {e}"
+                );
+            }
+        }
+    }
+
     /// UIA ワーカースレッドへの送信チャネルを登録する。
     pub(crate) fn set_uia_sender(
         &mut self,
@@ -1750,6 +2088,7 @@ impl Runtime {
         self.set_keyboard_model(config.general.keyboard_model);
         self.set_update_check_enabled(config.general.update_check);
         self.set_warn_state_dependent_mode_keys(config.general.warn_state_dependent_mode_keys);
+        self.set_hook_self_heal_enabled(config.diagnostics.hook_self_heal);
         self.set_half_width_alnum_toggle_policy(config.general.half_width_alnum_toggle);
         crate::hook::set_swallow_alt_kana_mode_switch(
             config.general.swallow_alt_kana_input_method_switch,

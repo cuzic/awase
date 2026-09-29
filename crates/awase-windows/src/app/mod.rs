@@ -3,7 +3,8 @@ mod bootstrap;
 mod logging;
 pub(crate) use bootstrap::log_path as bug_report_log_path;
 pub(crate) use bootstrap::{
-    detect_conflicting_software, detect_relay_or_remap_software, list_all_running_process_names,
+    detect_conflicting_software, detect_relay_or_remap_software,
+    is_relay_or_remap_software_process, list_all_running_process_names,
     thumb_shift_faces_enabled_for,
 };
 pub(crate) use logging::flush_log_writer;

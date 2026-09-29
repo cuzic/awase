@@ -7,13 +7,31 @@ use std::time::Duration;
 /// 次の `run_with_timeout` 呼び出し時に完了済みのものを刈り取る（GC）。
 /// 永久にブロックする API を叩いたスレッドは `is_finished()` が false のままなので
 /// GC できない。そのため上限を設け、満杯なら新規 spawn を拒否してリソース暴走を防ぐ。
-struct LeakedThreadPool {
+///
+/// 呼び出し元は用途ごとに別々の `static` インスタンスを持てる（[`run_with_timeout_in`]）。
+/// 無関係な用途（例: IMM32/MSAA/UIAのフォーカス分類と、キーボードフックの
+/// 再インストール待ち）が同じ8枠のプールを共有すると、一方の詰まりが他方の
+/// 枠を奪い合う結合が生まれるため（issue #165自己修復のPR #349レビューで指摘）、
+/// 気にする粒度で分けられるようにしてある。デフォルトの共有プール
+/// （[`run_with_timeout`]が使う）は既存の全呼び出し元向けに残す。
+pub struct LeakedThreadPool {
     threads: Mutex<Vec<JoinHandle<()>>>,
     max: usize,
 }
 
+impl std::fmt::Debug for LeakedThreadPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let len = self.threads.lock().map_or(0, |l| l.len());
+        f.debug_struct("LeakedThreadPool")
+            .field("len", &len)
+            .field("max", &self.max)
+            .finish()
+    }
+}
+
 impl LeakedThreadPool {
-    const fn new(max: usize) -> Self {
+    #[must_use]
+    pub const fn new(max: usize) -> Self {
         Self {
             threads: Mutex::new(Vec::new()),
             max,
@@ -56,7 +74,9 @@ static LEAKED_THREADS: LeakedThreadPool = LeakedThreadPool::new(8);
 ///
 /// ブロッキング Win32 API（IMM32, MSAA, UIA 等）を安全に呼び出すために使用する。
 /// タイムアウトした場合は `None` を返し、ワーカースレッドは孤児スレッドリストに追加され、
-/// 次回の呼び出し時に完了していれば刈り取られる（GC）。
+/// 次回の呼び出し時に完了していれば刈り取られる（GC）。全呼び出し元共有の
+/// デフォルトプールを使う。無関係な用途との枠の奪い合いを避けたい場合は
+/// [`run_with_timeout_in`] で専用の `LeakedThreadPool` を渡すこと。
 ///
 /// # Type parameters
 /// - `T`: 戻り値の型。`Send + 'static` である必要がある。
@@ -71,13 +91,32 @@ where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
 {
-    LEAKED_THREADS.reap();
+    run_with_timeout_in(&LEAKED_THREADS, timeout, f)
+}
 
-    if LEAKED_THREADS.is_full() {
+/// [`run_with_timeout`]と同じだが、孤児スレッドの上限管理を呼び出し元指定の
+/// `pool`で行う（デフォルトの共有プールを使わない）。
+///
+/// 用途の異なるブロッキング呼び出し（例: フォーカス分類のIMM32/MSAA/UIAと、
+/// キーボードフック再インストールのjoin待ち）が同じ枠を奪い合わないよう、
+/// 呼び出し元は`static`な専用`LeakedThreadPool`を用意して渡せる。
+#[must_use]
+pub fn run_with_timeout_in<T, F>(
+    pool: &'static LeakedThreadPool,
+    timeout: Duration,
+    f: F,
+) -> Option<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    pool.reap();
+
+    if pool.is_full() {
         tracing::error!(
             "Leaked thread list is full ({}), refusing to spawn new worker. \
              A Win32 API is persistently blocking.",
-            LEAKED_THREADS.max
+            pool.max
         );
         return None;
     }
@@ -103,7 +142,7 @@ where
                 "run_with_timeout: worker thread exceeded {}ms, leaked for later GC",
                 timeout.as_millis()
             );
-            LEAKED_THREADS.leak(handle);
+            pool.leak(handle);
             None
         }
     }

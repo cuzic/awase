@@ -62,6 +62,7 @@ const DOC_BASELINE: &[(&str, usize)] = &[
     ("config-ime-detect", 0),
     ("config-app-overrides", 0),
     ("config-post-bypass", 0),
+    ("config-diagnostics", 0),
     ("readme-minimal", 0),
     ("readme-app-overrides", 0),
     ("usage-ja-1", 0),
