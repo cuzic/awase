@@ -143,7 +143,7 @@ impl ImeKeyKind {
     ///
     /// ADR-191: 開閉だけに作用し、どのIMEでも結果が同じキーだけを静的に扱う。
     /// - `VK_IME_ON`/`VK_IME_OFF`: Windows標準で冪等。
-    /// - `VK_KANJI`(0x19): どのIMEでも開閉トグル（ADR-189、`keys.ime_toggle`の既定）。ただし GJI のときは
+    /// - `VK_KANJI`(0x19): どのIMEでも開閉トグル（ADR-189。`keys.ime_toggle`の既定は2026-09-29に空へ変更、ADR-199決定15）。ただし GJI のときは
     ///   `Runtime::enrich_key_role` が `Hankaku/Zenkaku` 行の役割で上書きする（ADR-202。GJI 以外はこの静的値のまま）。
     ///
     /// ひらがな・カタカナ・英数・`VK_KANA`など、入力モードも動かしうる/IMEの種類・キーマップ・

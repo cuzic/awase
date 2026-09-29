@@ -520,9 +520,11 @@ impl Default for ImeDetectConfig {
     fn default() -> Self {
         Self {
             // 2026-08-16: 「漢字」（VK_KANJI）を既定から外した。
-            // `KeysConfig::default().ime_toggle`（`keys.ime_toggle`、awase
+            // （2026-09-29 追記: `keys.ime_toggle` の既定も空になったので、既定同士の
+            // 衝突は起きない。ユーザーが両方に同じキーを書いたときの二重処理は下記のまま。）
+            // 当時は `KeysConfig::default().ime_toggle`（`keys.ime_toggle`、awase
             // 自身が能動的に漢字キーを消費し冪等な VK_IME_ON/OFF へ変換して
-            // 送出する）が同じ VK_KANJI を既定で持つようになったため、両方が
+            // 送出する）が同じ VK_KANJI を既定で持っていたため、両方が
             // 既定で有効だと同一の物理キー押下に対して
             // `kp_stage_shadow_ime_toggle`（このフィールド由来、belief を
             // 反転）→ `Engine::apply_special_key_match`（`keys.ime_toggle`
@@ -607,7 +609,15 @@ impl Default for KeysConfig {
             engine_off: vec!["Ctrl+Shift+無変換".to_string()],
             ime_on: vec!["Ctrl+変換".to_string()],
             ime_off: vec!["Ctrl+無変換".to_string()],
-            ime_toggle: vec!["VK_KANJI".to_string()],
+            // 既定は空（ADR-199 決定15、2026-09-29 所有者決定で確定）。「IME の設定に従う」
+            // 原則のため、awase 自身の設定としては漢字キー（VK_KANJI）を能動的に
+            // 消費しない。物理の 0x19 は JIS 配列で Alt+半角/全角として届くので、
+            // 無修飾の `VK_KANJI` は Engine の照合（修飾の完全一致）には元々一致せず、
+            // 一致するのはリマッパー等が出す無修飾の 0x19 だけだった。Alt+半角/全角は
+            // `hook.rs` の静的 `Toggle`（GJI は `Hankaku/Zenkaku` 行から役割判定、
+            // ADR-202）が担い続ける。既定に `VK_KANJI` があると、GJI では役割判定が
+            // `explicit_overlap`（`has_bare_ime_combo`）で常に無効化されていた。
+            ime_toggle: Vec::new(),
             ime_detect: ImeDetectConfig::default(),
             engine_off_solo_repeat: Some("VK_INSERT".to_string()),
             engine_on_ime_key: None,
@@ -1618,15 +1628,28 @@ default_layout = "nicola.yab"
         assert_eq!(config.keys.engine_off_ime_key, None);
     }
 
-    /// `keys.ime_toggle` の既定値は漢字キー（`VK_KANJI`）（2026-08-16
-    /// ユーザー要望）。`VK_KANJI` は ADR-091 §1.2 で「Imm32Unavailable
-    /// プロファイル向けの真のトグル」として既に確立済みの冪等な IME
-    /// ON/OFF トグルキーであり、新設の GUI「IME ON/OFF トグル」欄の
-    /// 既定候補として妥当（`msime_key_assignment.rs`のドキュメント参照）。
+    /// `keys.ime_toggle` の既定値は空（ADR-199 決定15、2026-09-29 所有者決定）。
+    /// 「IME の設定に従う」原則のため、awase 自身は漢字キー（`VK_KANJI`）を能動的に消費しない。
+    /// 0x19（Alt+半角/全角）の開閉は `hook.rs` の静的 `Toggle`／GJI の役割判定（ADR-202）が担う。
+    /// `ime_on`/`ime_off`（awase 自身が actuate する設定）の既定は変えない。
     #[test]
-    fn test_keys_config_default_ime_toggle_is_kanji_key() {
+    fn test_keys_config_default_ime_toggle_is_empty() {
         let keys = KeysConfig::default();
-        assert_eq!(keys.ime_toggle, vec!["VK_KANJI".to_string()]);
+        assert!(keys.ime_toggle.is_empty());
+        assert_eq!(keys.ime_on, vec!["Ctrl+変換".to_string()]);
+        assert_eq!(keys.ime_off, vec!["Ctrl+無変換".to_string()]);
+    }
+
+    /// 既存ユーザーの config.toml に残る明示の `ime_toggle = ["VK_KANJI"]`
+    /// （旧既定値を GUI の `AppConfig::save` が書き出したもの）は、読込時に消さず尊重する
+    /// （既定値の変更は明示値に影響しない）。
+    #[test]
+    fn test_explicit_ime_toggle_vk_kanji_is_preserved_on_load() {
+        let config: AppConfig = toml::from_str("[keys]\nime_toggle = [\"VK_KANJI\"]\n").unwrap();
+        assert_eq!(config.keys.ime_toggle, vec!["VK_KANJI".to_string()]);
+        // [keys] を書いても ime_toggle を省略すれば既定（空）。
+        let config: AppConfig = toml::from_str("[keys]\nime_on = [\"Ctrl+変換\"]\n").unwrap();
+        assert!(config.keys.ime_toggle.is_empty());
     }
 
     /// 撤去済みフィールド（output_mode / hook_mode）が
