@@ -209,6 +209,7 @@
 | [200](200-reinit-must-not-run-during-live-composition.md) | chrome-reinit(VK_IME_OFF→ON)は SuspectedLiteral の証拠が2回そろったときだけ送る(StaleConfirm では reinit しない) | 採用・決定1 実装済み(opus round1〜3 で収束) |
 | [201](201-config-key-resolution-and-load-diagnostics.md) | 設定のキー名解決を from_name に集約して寛容にし、握りつぶしを既存診断へ流す。toml_edit保存(三者比較)・GUI候補×読み手のCI検証 | 採用・実装済み（2026-09-26、段階0〜3。windows-latest の実 awase.exe で起動ログ・ホットキー・矢印キーを確認、GUI操作は未確認） |
 | [202](202-kanji-0x19-role-from-hankaku-zenkaku-row.md) | 0x19（Alt+半角/全角）を GJI では CUSTOM 表の Hankaku/Zenkaku 行から役割判定する（ADR-199 決定14 の実装設計） | 採用・実装済み（T16-1〜3・6、T16-5 は保留）
+| [203](203-gji-fsm-follows-belief-open-transitions.md) | GjiFsm を belief の開閉変化に追随させる(BUG-170、OffCold 固着→毎打鍵 per-VK→StaleConfirm→ESC) | 起票・Opusレビュー待ち |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
