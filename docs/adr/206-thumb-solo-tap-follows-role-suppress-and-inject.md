@@ -11,7 +11,7 @@ summary: |-
   belief OFF 側を独自に持ち(ケース2/3改、`explicit_ime_action_target`＋`transport.rs` の M19 例外)、belief ON 側も独自の経路(ケース1)を持つ二重系統になっている。
   本 ADR は「役割(config.toml の bare `keys.ime_*` または IME 設定由来)」を唯一の入力にして二重系統を1本にし、旧設定を読込時に bare `keys.ime_*` 相当へ移して警告する。
 status: |-
-  起草(2026-09-29)。opus round1・round2 反映済み(エンジン側合流、リピート印、eisu 保持、削除一覧、3(b)撤回、非固着の条件、ADR-205 相互参照)。round3 待ち。実装未着手。
+  起草(2026-09-29)。opus round1〜3 反映済み(エンジン側合流、リピート印、eisu 保持、削除一覧、3(b)撤回、非固着の条件、ADR-205 相互参照)。round1〜3 の指摘と固着の定義(所有者)を反映済み。round4 待ち。実装未着手。
 related_adr:
   - "ADR-092"
   - "ADR-119"
@@ -64,7 +64,8 @@ S3 は「@」抑止の同等性が S1/S2 経路で未検証のため v2.0 では
 ## 所有者方針(2026-09-29 追加)と受け入れ基準 — ADR-205 と共通
 
 **方針**: awase は能動書き込み(自発的な開け直し等)を一切しない。ユーザーがモードキー(Ctrl+変換/半角全角/漢字/かな/無変換・変換の単独タップ等)を押したときだけ、awase が belief に従って正しいキーを送り、モードずれを解消する。
-**受け入れ基準: 固着する不具合を絶対に起こさない** = 同じキーを何度押しても直らない状態を作らない。トグル系は belief が古いときの最悪ケースを「2 回押しで期待どおり」までとする。
+**受け入れ基準: 固着する不具合を絶対に起こさない。「固着」の定義(所有者、2026-09-29)= 何度モードキーを押しても状態が変わらないこと。** belief が古くて1回目が逆方向に効き、2回押せば期待した状態になるのは**許容**(問題なし。そのために設計を複雑化しない)。
+したがって基準は「押すたびに状態が変化する、または絶対指定で確実に収束する」。検証シナリオでは「2回目で期待状態になる」を PASS、「N回押しても変化しない」を FAIL とする。
 前提の相互参照: [ADR-205](205-observe-external-ime-close-in-imm32-unavailable-windows.md)(外部 close の追随と `applied` の実状態への訂正〈D6〉・Blind 窓での `applied` の押下ごとの Unknown 化〈D7〉)。本 ADR の単独タップ解決の書き込みは、ADR-205 が「絶対指定キー」の保証を置く経路
 (`handle_engine_set_open`)そのものなので、belief/`applied` の鮮度の前提(下記「非固着の条件」)を ADR-205 と共有する。
 
@@ -112,20 +113,29 @@ S3 は「@」抑止の同等性が S1/S2 経路で未検証のため v2.0 では
 - 動作: `Toggle` なら `SpecialKeyMatch::ImeToggle`(`!ctx.ime_on` への絶対指定 `SetOpen`)。`ime_set_open_effects` は状態遷移が無い場合も `SetOpen` を明示的に積む(`engine.rs:848-855`)ので `NotRomajiInput` でも書かれる。
   生キーは `Decision::consumed_with` で抑止され、KeyUp は `UpDuty::Consume`(`on_input`)で Down と対になる(round2 で Phase1〜KeyUp の噛み合わせを確認済み)。書き込みは S1 と同じ経路(`handle_engine_set_open` → `dispatch_ime_set_open`)で、
   **新しい書き込みの入口は増えない**。意図の記録は `PhysicalImeKey` から `Command`(`record_explicit_intent`)になる(S1 の既存挙動と同じ)。
-- **リピート(round2 1-1 の重大指摘)**: 最初の Down でエンジンが活性化するので、リピートの Down は `!engine_active` 分岐に来ず、FSM に新しい PendingThumb として入り、離した時に `forced_open_action` の Toggle がもう一度発火する
-  (押して開き、離して閉じる二重トグル。旧マーカーが守っていた経路。既存の S1 も同じ穴)。直し: Phase 1(`check_special_keys`)で親指の Down を Consume したとき、その vk を Engine の小さな印(`phase1_held: Option<VkCode>`)に記録し、
-  同じ vk の `was_down` Down は Phase 1 の前で `Decision::consumed()` を返して FSM に渡さない。印は同じ vk の KeyUp、`flush`、フォーカス変更で消す。「Phase 1 で消費した押下は、リピートも Phase 1 で閉じる」という一般則になり、S1 の穴も塞がる。
-- **旧案の (b)「`ImeOff × !ctx.ime_on` × bare 親指は Consume するだけ」は採用しない**(round2 §3 と ADR-205 D7、受け入れ基準による撤回)。belief OFF/実 ON のとき OFF キーを食うだけにすると、何度押しても閉じられない固着になる。
-  代わりに OFF 方向は常に絶対指定の `SetOpen(false)` を書く(現行の S1 と同じ)。**残る代償**: フォーカス変更直後(`applied` が Unknown)に belief OFF で OFF キーを押すと `VK_IME_OFF` を単発で送り、GJI + Windows Terminal で
-  「@」を誘発する可能性がある(BUG-124 の旧ケース3と同じ構成。**未検証、実機 A/B で確認する**)。「@」が確認された場合の緩和は ADR-205 D7 の残余リスクと同じ扱い(TsfNative だけ抑止のみ=固着の窓を作る)で、受け入れ基準と衝突するため**所有者判断**に上げる。
-- 実装時の確認: フォーカス settle 中の押下では `strip_ime_set_open_if_settling` が `SetOpen` だけ剥がし `prev_activation` が進んだままになる(round2 1-2)。次の打鍵で `ActivationSync` の `SetOpen(false)` が出て、押しっぱなしの親指の KeyUp が再注入される。
-  S1 も同じ性質(既存)で窓は狭いが、本 ADR の方針(自発的な書き込みをしない)に照らすと `ActivationSync` の自動 OFF は例外なので、`schedule_settle_retry` 任せでよいかを実装時に判断して記録する。
+- **リピートは指令を作らない(不変条件、round2 1-1・round3 2-2)**: 最初の Down でエンジンが活性化するので、リピートの Down は `!engine_active` 分岐に来ず FSM に新しい PendingThumb として入り、離した時に `forced_open_action` の Toggle がもう一度発火する
+  (押して開き、離して閉じる二重トグル。旧マーカーが守っていた経路。既存の S1 も同じ穴)。二重に守る: (i) 新分岐の条件に **`!event.was_down`** を入れ、`was_down` の Down は `Decision::consumed()` だけを返して `SetOpen` を積まない。
+  (ii) Phase 1(`check_special_keys`)で親指の Down を Consume したとき、その vk を Engine の小さな印(`phase1_held: Option<VkCode>`)に記録し、同じ vk の `was_down` Down は Phase 1 の前で `Decision::consumed()` を返して FSM に渡さない
+  (「活性化の後に FSM へ新しい PendingThumb として入る」側を塞ぐ)。印は同じ vk の KeyUp、同じ vk の非リピート Down(置き直し)で更新し、`flush`・フォーカス変更で消す。flush で消えた後のリピートは (i) が指令を作らせない。
+  KeyUp を取りこぼして印が残った場合(hook の張り直し、issue #165)は、フック側の `was_down` も同じ理由で古くなるので、次の本物の押下が1回食われて KeyUp で印が消える(失われるのは押下1回で、永続しない)。
+- **旧案の (b)「`ImeOff × !ctx.ime_on` × bare 親指は Consume するだけ」は採用しない**(受け入れ基準による撤回)。belief OFF/実 ON のとき OFF キーを食うだけにすると、何度押しても閉じられない固着になる(所有者定義の固着そのもの)。
+  代わりに OFF 方向は常に絶対指定の `SetOpen(false)` を書く(現行の S1 と同じ)。ADR-205 D7 が Blind 窓で押下ごとに `applied` を Unknown に落とすなら、`applied` が Unknown の間は毎押下 `VK_IME_OFF` が送られる。
+  **残る代償**: belief OFF で OFF キー(旧 `"off"` からの移行、GUI T3 が書く `ime_off=[無変換]`)を押すたびに `VK_IME_OFF` を単発で送る形になり、GJI + Windows Terminal では「@」を誘発する可能性がある
+  (BUG-124 の旧ケース3=毎回強制 actuate と同じ構成。**未検証。実機 A/B を develop マージの条件にする**。CI では観測できない)。
+  「@」が確認された場合の**所有者判断の選択肢**: (iii) 間に他のキーを挟まず同じ OFF キーを2回続けて押したときだけ送る(1回目は抑止のみ。固着せず最悪 2 回で閉じる。「@」は半角での2連打時だけ。時間定数は使わない)。
+  抑止のみ(旧 (b))は受け入れ基準に違反するので選択肢にならない。ADR-205 D7 の「Imm32Unavailable かつ非 TsfNative では `VK_IME_OFF` を1回送る」との整合は、本 ADR が(b)を採らないので常に送る側に含まれる。TsfNative だけ (iii) にする、が最小の調整になる。
+- **InputRelay の窓(round3 5-1、受け入れ基準への反例の遮断)**: `enrich_thumb_key_role` はプロファイルを見ずに役割を付ける。InputRelay(RDP/VM/PowerToys MWB、ADR-119)ではエンジン非活性で新分岐が生キーを Consume する一方、
+  `dispatch_ime_set_open` のゲートは `NotOwned` を返して何も送らず、リモート側の IME に何も届かない(ADR-119/issue #136 の「二重の空振り」)。**`enrich_thumb_key_role` は `current_app_profile() == InputRelay` のとき役割を付けない**(config の bare だけにする)。
+  architecture_guard に「`enrich_thumb_key_role` が InputRelay を見ている」を入れる。S1 の bare と出荷済みのエンジン活性側(ADR-199 決定16)も同じ穴を既に持つ(既知差として記録。根治は「この打鍵は actuation を所有しない窓」をエンジンに伝える経路で、別件)。
+- **ActivationSync という例外(方針との関係、round3 5-2)**: フォーカス settle 中の押下では `strip_ime_set_open_if_settling` が `SetOpen` だけ剥がし `prev_activation` が進んだままになる。次の**文字キー**で `check_active_transition` が
+  `SetOpen(false, ActivationSync)` を出し、押しっぱなしの親指の KeyUp が再注入される。ユーザーがモードキーを押していないのに awase が書く点で、所有者方針(自発的に書かない)の例外である。S1 も同じ既存の性質。
+  根治(剥がすときに `prev_activation` を戻す、またはエンジンに通知する)は別 ADR の候補として残し、本 ADR の範囲外とする。窓は狭く、固着ではない(次の押下で状態が変わる)。
 
 ### 決定4: 旧設定の移行 — 親指キーのときだけ、読込時にメモリ上で S1 相当へ移し、警告する
 
-- `muhenkan/henkan_solo_tap_ime_action = "on"/"off"/"toggle"` が残っていて、そのキーが**親指キーに割り当てられている**config は、`SpecialKeyCombos` を組み立てる箇所(`runtime/mod.rs` の reload 経路・`bootstrap.rs`)で
+- `muhenkan/henkan_solo_tap_ime_action = "on"/"off"/"toggle"` が残っていて、そのキーが**親指キーに割り当てられている**config は、`SpecialKeyCombos` を組み立てる箇所(`app/mod.rs:845` の reload 経路と `app/bootstrap.rs:1214` の起動経路。`runtime/mod.rs::apply_config_update` は組み立て済みの値を受け取るだけで、冒頭で `thumb_forced_open_actions(&special_keys)` を求めるので、**その前=組み立ての時点**で足す)で
   該当キーの bare コンボを `ime_on`/`ime_off`/`ime_toggle` に**メモリ上でだけ**追加する(config.toml は書き換えない)。同じキーに既存の bare があれば旧 S3 が勝つ(旧実装の優先順位を保つ)。
-- 親指キーでない無変換/変換の旧設定は移行せず警告して読み捨てる(旧 S3 のエンジン非活性側は親指かどうかを見ていなかったが、S1 に移すと非親指キーは `suppress_ime_combos` の対象外で**エンジン活性中も毎回 awase が書く**ようになるため、意味が広がりすぎる。受動〈IME が自分で処理〉に戻る)。
+- 親指キーでない無変換/変換の旧設定は移行せず警告して読み捨てる(旧 S3 のエンジン非活性側は親指かどうかを見ていなかったが、S1 に移すと非親指キーは `suppress_ime_combos` の対象外で**エンジン活性中も毎回 awase が書く**ようになるため、意味が広がりすぎる。受動〈IME が自分で処理〉に戻る)。読み捨てた非親指の旧 `"off"` は旧実装では抑止のみで「@」から守られていたので、警告文に「この設定は今後効きません。半角で『@』が出る場合は無変換/変換を親指キーにしてください」と回避策を書く(GUI は親指のときにしか旧設定を書かないので、対象は手書きのユーザーだけ)。
 - 警告(ADR-201 の診断経路、`validate_thumb_key_in_ime_combos` の該当分岐を置換): 「`*_solo_tap_ime_action` は非推奨です。`keys.ime_on/off/toggle` に bare で書くか、削除してください。GJI の CUSTOM 表で無変換/変換がトグルなら設定なしで動きます」。
 - 移行で変わる差(既知・許容。所有者決定が M13 を上書きする): (1) M13(旧 `"toggle"`/`"on"` × `ModeKeyConfig`=Passthrough の「エンジン活性中は GJI 自身のかな切替」は実現できなくなる)。
   (2) composing 中も発火する(旧ケース1は発火しなかった。IME 側もそのキーで閉じる設定であることが前提)。(3) エンジン無効中: S1 の `match_event` は `engine_enabled` を見ないので無効中も能動(S2 は決定3のゲートで受動)。
@@ -144,27 +154,32 @@ Decision 経由の `SetOpen(true)` の救済 `kp_stage_post_decision` の `eisu_
 
 ### 決定7: 非固着の条件(受け入れ基準への回答)
 
-「同じキーを何度押しても直らない」状態が作られないことを、押すキーの種類ごとに示す。前提: `SetOpen(v)` の送信が実際に行われれば `applied := v` になり、`applied == v` のときだけ `already_matches` が送信を省く(`gji_direct_already_matches`、陽性の確認済み証拠にだけ基づく)。
+**固着の定義(所有者、2026-09-29)= 何度モードキーを押しても状態が変わらないこと。** 1回目が期待と逆になり2回押せば期待どおり、は許容する。以下は「どの構成でも、押し続ければ状態が変わる」ことを示す。
+前提: (P1) `SetOpen(v)` の送信が実際に行われれば `applied := v` になり、`applied == v` のときだけ `already_matches` が送信を省く(`gji_direct_already_matches`、GjiDirect のみ。ImmCross・MsImeDirect は常に送る)。
+(P2) 送った `VK_IME_ON/OFF` が実 IME に効く。**Chrome は `VK_IME_ON/OFF` を受け付けなかった記録がある(`docs/experiments.md:103`、2026-05-22)。その後 GJI 全般を `VK_IME_*` に移した(`b271aee`/`489cdf1`)ので今は効くと推定されるが、
+S2 は「生キーで GJI 自身が確実に処理していた打鍵」を awase の送信に置き換える。受け付けない入力先が残っていれば、生キーは抑止され送信は無視され、何度押しても変わらない=固着になる**。よって CI (a) に実 Chrome の入力先を必ず入れて P2 を確かめる。
 
-1. **S2(トグル役割)とS1 の `keys.ime_toggle`**: 各押下で必ず belief が反転し、次の押下の指令は反対向きになる(ON, OFF, ON, …)。連続する2回の指令のうち少なくとも1回は `applied` と異なるので必ず送信される。したがって
-   belief/`applied` がどう古くても、**3 回以内**に ON と OFF の両方が実 IME に届き、最後の指令の状態になる。永続的な固着は無い。内訳: belief が古いだけなら 2 回で期待どおり(ADR-205 の表と同じ)。
-   `applied` も古く指令が一致して省略される場合(素通しの別キーで閉じた後に `ModeKeyPassedThrough` が `applied` を触らない BUG-156 型)は 3 回。**ADR-205 D6(`ModeKeyPassedThrough` で `applied` を実状態に合わせて Unknown に落とす)が入れば 2 回になる**。
+1. **S2(トグル役割)と S1 の `keys.ime_toggle`**: 各押下で必ず belief が反転し(送信を省いても belief は書かれる、`handle_engine_set_open`)、次の押下の指令は反対向きになる(ON, OFF, ON, …)。連続する2回の指令のうち少なくとも1回は `applied` と異なるので必ず送信される(P1)。
+   したがって belief/`applied` がどう古くても、押し続ければ ON と OFF の両方が実 IME に届き、状態は押すたびに変わる。永続的な固着は無い。最悪ケースは、`applied` も古く最初の指令が一致して省略される場合(素通しの別キーで閉じた後に
+   `ModeKeyPassedThrough` が `applied` を触らない BUG-156 型)の「1 回目は変化なし、2 回目は逆向き、3 回目で期待どおり」で、所有者の定義では許容範囲。ADR-205 D6/D7 が入れば無駄押しは減る(D6 は観測できた外部 close だけ、D7 は Blind 窓の押下ごと)。
    生キーは常に抑止するので、IME 自身のトグルと awase の指令が打ち消し合うこともない。
-2. **S1 の方向固定キー(`ime_on`/`ime_off`)**: 決定3(b)の撤回により、常に絶対指定で書く。省略されるのは `applied` が指令と同じ陽性証拠を持つときだけで、`applied` が実状態と食い違う場合(検出できなかった外部変化)は ADR-205 D7
-   (Blind 窓で押下ごとに `applied` を Unknown に落とす)が保証する。D7 が入るまでの既知の穴は ADR-205 に記録済み(本 ADR は新しい穴を足さない: 決定3(b)を採らないので既存の S1 と同じ)。
-3. **失われる押下は固着ではない**: settle 中の `SetOpen` 剥がし・`already_matches` の省略・belief が古いときの「見た目変化なし」は、いずれも次の押下で状態が変わる(1 のとおり)。押下 1 回分が失われる場面は受け入れる(受動より劣る点)。
-4. **自発的な書き込みはしない**: 本 ADR が増やす書き込みは、ユーザーが親指キーを押した打鍵に対する1回の `SetOpen` だけ。タイマー・観測起点の開け直しは無い(既存の `ActivationSync` は別)。
+2. **S1 の方向固定キー(`ime_on`/`ime_off`)**: 決定3で(b)を採らないので常に絶対指定で書き、belief が古くても押下ごとに送信される。ただし `applied` が実状態と食い違ったまま指令と一致する(検出できなかった外部変化)と送信が省かれ、何度押しても変わらない
+   (BUG-156 型)。これは既存の S1 の性質で、ADR-205 D7(Blind 窓で押下ごとに `applied` を Unknown にする)が塞ぐ。**D7 の対象には、`bare_ime_action` または `forced_open_action` を持つ親指の非リピート Down を明示する**
+   (親指の S1/S2 は `shadow_action`/`sync_direction` を持たないので、「shadow toggle で扱うキー」だけを対象にすると親指が漏れる。エンジン活性側は Down → FSM → KeyUp で送るが間に `applied` を書くものは無いので、Down で Unknown にしておけば KeyUp の送信は省かれない。round3 1-2)。
+   出荷順は「ADR-205 D7 と同時、または D7 の後」。相互参照: ADR-205、ADR-208(BUG-172 の草稿)。
+3. **失われる押下は固着ではない**: settle 中の `SetOpen` 剥がし・`already_matches` の省略・belief が古いときの「見た目変化なし」は、いずれも次の押下で状態が変わる(1 のとおり)。
+4. **自発的な書き込みは増やさない**: 本 ADR が増やす書き込みは、ユーザーが親指キーを押した打鍵に対する1回の `SetOpen` だけ。タイマー・観測起点の開け直しは無い。例外は既存の `ActivationSync`(決定3の最後の項)。
 
 ## 検証計画
 
 - 単体(Linux で走る、`src/engine/tests.rs`): エンジン非活性(IME OFF/`NotRomajiInput`)× 親指の役割由来 Toggle で「Consume＋絶対指定 `SetOpen(true)` が1つ、KeyUp も Consume」。
   **「belief OFF → Down → リピート Down ×3 → Up で `SetOpen` がちょうど1つ」**(round2 1-1)。`ImeOff`×belief OFF でも `SetOpen(false)` が積まれること(決定3の撤回の固定)。ユーザー無効・専用 Fn・`is_japanese_ime=false`・`sync_direction` あり・修飾付きで「素通し」。
   エンジン活性(FSM の `forced_open_action` の KeyUp 解決)は従来どおり。S3 依存の既存テストは S1 ベースに置き換える。`config.rs` に旧設定→S1 相当(親指のみ、同キー既存 bare より旧 S3 が勝つ、非親指は読み捨て)と警告のテスト。
-- 統合(`architecture_guard.rs`): 決定2 の置き換えガード、`match_special_keys` の新分岐が `is_user_enabled`・`sync_direction`・専用 Fn のゲートを持ち `SetOpen` を直接積まないこと、`phase1_held` の存在、post_decision の eisu 救済が `mode_retained` を渡すこと。
+- 統合(`architecture_guard.rs`): 決定2 の置き換えガード、`match_special_keys` の新分岐が `is_user_enabled`・`sync_direction`・専用 Fn のゲートを持ち `SetOpen` を直接積まないこと、`phase1_held` と `!was_down` ガードの存在、post_decision の eisu 救済が `mode_retained` を渡すこと、`enrich_thumb_key_role` が InputRelay で役割を付けないこと。
   `ime_key_sequence_golden.rs` は `ImeController` の戦略選択と送信列の検証であり「1回の押下で何回書くか」は表現できない(`runtime/` は `#[cfg(windows)]`)ので対象にしない。`cargo check --target x86_64-pc-windows-msvc -p awase -p awase-windows -p awase-settings --tests` でコンパイル確認。
 - CI e2e(`e2e-ime.yml` に `sc-solotap-*` を追加、`gh workflow run e2e-ime.yml --ref <ブランチ> -f only='sc-solotap-*'`)。**次の3系統は develop マージのゲート**(round2 §4):
-  (a) GJI + CUSTOM 表で無変換=トグル/非トグル × 直接入力/かな入力 × `--seq=1D,1D` の consistency と、1回の押下での開閉回数=1、変換側の対称。
-  (b) **belief が古い状態でトグル系を押す(所有者要求)**: 外部注入(ADR-205 の `cal-driftrec` 系と同じ手段)で IME を閉じた直後に無変換を 1〜3 回押し、**3 回以内(ADR-205 D6 が入れば 2 回以内)に期待状態**に到達し、その後も固着しないことを見る。閉じた後 / 開いた後の両方向。
+  (a) GJI + CUSTOM 表(入力先に実 Chrome 相当を含め、awase の `VK_IME_*` が効くこと=P2 を確かめる)で無変換=トグル/非トグル × 直接入力/かな入力 × `--seq=1D,1D` の consistency と、1回の押下での開閉回数=1、変換側の対称。
+  (b) **belief が古い状態でトグル系を押す(所有者要求。判定: 押下を重ねて状態が変わり、2〜3 回目で期待状態に到達すれば PASS、N 回押しても変化しなければ FAIL)**: 外部注入(ADR-205 の `cal-driftrec` 系と同じ手段)で IME を閉じた直後に無変換を 1〜3 回押し、期待状態に到達し、その後も押すたびに状態が変わることを見る。閉じた後 / 開いた後の両方向。
   (c) **素通しの英数キーで閉じた直後に無変換**(BUG-156 型。CUSTOM 表に「英数=IME を無効化」を明示的に入れる。GJI の状態〈GjiFsm が OffCold のまま残り BUG-170 型になっていないか〉も見る)。
   判定は consistency(実 IME の開閉と Engine の追随)、`observed` 件数、`[shadow-toggle]`/物理配送のログ。「@」は CI の入力先では出ない可能性が高いので CI では「生キーが GJI に届かない」で代替し、実機 A/B(Windows Terminal + GJI、半角状態で無変換/変換の単独タップ、旧 `"off"` 設定)で確認する。
 - 記録: `docs/known-bugs/` には新規 BUG を起こさず、BUG-113/123/124 に本 ADR への追記を1行足す。ADR-153・192・199 のステータスに本 ADR による置換を追記する。
