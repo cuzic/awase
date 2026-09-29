@@ -163,26 +163,40 @@ BUG-163（起動時 `desired_open=true` の強制ON）は修正が develop に�
 - F: `architecture_guard.rs:1874`・`:2128` の既存ガードを確認し、T6 の範囲を絞った。
 - G: `runtime/mod.rs:1791-1792` に加え、トレイリセットの `set_ime_mode_for_target(hwnd, true, …)` も `ime.rs:1763` で開閉を書くことを確認した（レビューが挙げていない点）。08 → 09 の向きと中身も依存節に書いた。
 
-### CI での代替観測（2026-09-29、`cal-driftrec-*`）
+### CI での代替観測（2026-09-29、`cal-driftrec-*`。A/B-2 の代替ではない）
 
-上の A/B-2 のうち「ずれを作って drift correction だけで ON に戻るか」は、物理キーが要らないため CI で観測できる。
-`typing_stress --mode=drift-on`（ハーネスが自プロセスの入力欄の IME へ `WM_IME_CONTROL(IMC_SETOPENSTATUS,0)` を送って awase を
-経由せず閉じ、+500/+1500/+3000ms の API 開閉と、かな単打の実打鍵結果を記録）＋ `check_drift_recovery.py`。構成は
-tsf（TsfNative 相当、ADR-193）と edit（ImmCross の Win32 対照）× GJI/MS-IME、各 10 試行×3 回。
-実測（run [36508587614](https://github.com/cuzic/awase/actions/runs/36508587614)、windows-latest、develop `e174c6f6` + 本構成）:
+**位置づけ:** 09 の A/B-2 手順1は「明示意図 OFF・実 ON」の向きで、この観測は逆向き（明示意図 ON・実 OFF）。T4 の終了条件
+（明示意図の回復シナリオが作れるか）にはまだ答えていない。ここで測ったのは「**外部から閉じられた IME を awase が観測するか／観測した後に戻すか**」。
 
-| 入力先 × IME | 3秒後の API | 実打鍵 | drift correction 発火 | 判定 |
+方法: `typing_stress --mode=drift-on`。`VK_IME_ON`（awase の明示意図 ON になるキー）で ON にそろえ、ハーネスが自プロセスの入力欄の IME へ
+`WM_IME_CONTROL(IMC_SETOPENSTATUS,0)` を送って awase を経由せず閉じ（別スレッドからの `ImmSetOpenStatus` は失敗する）、+500/+1500/+3000ms の
+API 開閉とかな単打の実打鍵結果を記録する。`check_drift_recovery.py` が awase.log を「閉じてから打鍵まで」の時間窓で突合せ、
+observed（awase が IME 状態を新たに観測した回数）・drift（drift correction 発火）・reinit・unicode を数える。
+構成: tsf（TsfNative 相当、ADR-193）と edit（Win32 対照）× GJI/MS-IME、各 10 試行×3 回。
+
+実測（run [36510380572](https://github.com/cuzic/awase/actions/runs/36510380572)、windows-latest、`ci/adr178-tsfnative-on-recovery`、判定スクリプトはこの run の版）:
+
+| 入力先 × IME | 閉じた直後〜打鍵の間に awase が観測 | drift 補正 | 実打鍵 | 何が起きたか |
 |---|---|---|---|---|
-| tsf × GJI | 閉のまま | **`か`（打てる）** ×30 | 0 | UNDETERMINED（API が実態を映さない。閉じた「ずれ」が効いたか不明） |
-| tsf × MS-IME | 閉のまま | **`ka`（生ローマ字）** ×30 | 0 | NOT_RECOVERED |
-| edit × GJI | 閉のまま | `か` ×30 | 0〜1 | UNDETERMINED |
-| edit × MS-IME | 閉のまま | 生ローマ字 ×30 | 0 | NOT_RECOVERED |
+| tsf × GJI | **0**（30試行中） | 0 | `か`（reopened_by_typing ×30） | 最初の "ka" はリテラル化。その後 raw-tsf-literal の give-up → **GJI reinit**（`VK_IME_OFF→ON` 注入、`probe_io.rs:186`）が開け直し、打鍵後の API は 10/10 で開 |
+| tsf × MS-IME | **0** | 0 | 生ローマ字 `ka`（not_recovered ×30） | 戻らない。ただし理由は「補正が戻さない」ではなく「観測していない」 |
+| edit × GJI | **0** | 0 | `か`（typed_blind ×30） | awase が **Unicode 注入**するので打鍵結果は IME 状態の証拠にならない |
+| edit × MS-IME | **0** | 0 | `か`（typed_blind ×30） | 同上（VK_IME_ON で ON にした場合、awase は Unicode 注入する） |
 
-- 撤去済み状態（reassert/force-on 無し）で、外部から閉じられた IME を drift correction が **ON へ戻さない**ことが MS-IME で確認できた
-  （TsfNative・ImmCross の両方）。ADR-191 決定1（IME が状態の正、awase は書かない）・BUG-163 1段目（授権が下りない補正は検知へ進めない）と整合する。
-  「回復力が落ちた」というより「そもそも戻さない設計」になっている。戻したい場合は別の機構が要る（既定では戻さないのが方針）。
-- GJI は API（`ImmGetOpenStatus`）が閉のままでも打てた。TsfNative に限らず edit でも同じで、`ImmSetOpenStatus` 系の直接操作が GJI の実状態に効かない
-  可能性がある（GJI は TSF で状態を持つ）。GJI の回復可否は、この方法では判別できない（UNDETERMINED）。判別には TSF compartment を直接書く等の別のずれ作成が要る。
-- 落とし穴: `ImmSetOpenStatus` を別スレッドから呼ぶと失敗する（`set_ok=false`、run 36508003461 で全 12 run INVALID）。既定 IME ウィンドウへの
-  `WM_IME_CONTROL` にすると閉じられる。`turn_ime_on` の回転キーの一部は ON にならないので、実 IME が開くまでリトライする。
-- 実行: `gh workflow run e2e-ime.yml --ref <branch> -f only='cal-driftrec-*'`（cal-* は only 指定時だけ走る）。観測のみで合否には含めない。
+分かったこと（言えること）:
+- 4構成すべてで、外部から閉じられた後、awase は IME 状態を**一度も観測しなかった**（observed=0）。したがって drift correction の判断（`check_drift_correction`、
+  授権の有無、鮮度上限）には**一度も届いていない**。「drift correction は ON へ戻さない」とは**言えない**（測れていない）。
+- 観測しない理由: TsfNative では `reschedule_ime_refresh`（`runtime/mod.rs:1102-1108`）が定期ポーリングを予約しない。明示意図がある場合も同関数（`:1146-1148`）が
+  ポーリングを止める。再開の契機はフォーカス変更・may_change_ime キー・`ReportOpenInference` だけ。キー・フォーカス変化の無い外部変化は検知経路に乗らない。
+- **C-2「TsfNative の ON 方向の救済は drift correction だけ」は反証された**: GJI では、打鍵時に raw-tsf-literal を検出して give-up すると **GJI reinit（VK_IME_OFF→ON 注入）が
+  ON 方向の能動書き込みとして働き、開け直す**（tsf × GJI、30/30）。ただし最初の打鍵は1回リテラル化する。この経路は開閉軸の棚卸し（上表）に載っていない → 追記が要る。
+- 別件（不具合候補、要調査・未起票）: tsf × MS-IME では、閉じた IME に "ka" が生ローマ字で流れた。送信前チェック（`output/probe_io.rs` の msime-ready）が開閉ではなく
+  conv の NATIVE ビットで「ON 確認」している疑いがある（conv は閉じても NATIVE のまま残る、`ime_refresh.rs:862-866`）。conv を actuation の判断に使わない方針と同型。裏取りは別途。
+
+言えないこと（未確認のまま）:
+- 撤去前（reassert/force-on あり）のビルドでの同シナリオの対照は無く、領域A撤去で回復力が落ちたかは不明。
+- 観測が発生した後（フォーカス変更など）に drift correction が戻すか、BUG-163 1段目の「授権が下りない補正は検知へ進めない」が働くか。ログに `[drift] 授権が下りないため補正を見送る` は0件。
+- GJI × edit・MS-IME × edit は Unicode 注入のため、打鍵結果から IME の開閉は判別できない（VK 注入になる構成でないと ON/OFF を打鍵で確認できない）。
+
+実行: `gh workflow run e2e-ime.yml --ref <branch> -f only='cal-driftrec-*'`（cal-* は only 指定時だけ走る）。観測のみで合否には含めない。
+次の一手の候補: ずれを作った後にフォーカス変更（観測を1回起こす）を挟み、drift correction 自体の判断まで届く条件を作る。
