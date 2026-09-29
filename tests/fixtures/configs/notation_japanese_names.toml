@@ -10,8 +10,6 @@ engine_off = ["Ctrl+Shift+無変換"]
 ime_on = ["Ctrl+Convert"]
 ime_off = ["Ctrl+Nonconvert"]
 ime_toggle = ["漢字", "かな"]
-engine_on_ime_key = "IMEオン"
-engine_off_ime_key = "IMEオフ"
 
 [keys.ime_detect]
 toggle = ["Kanji"]

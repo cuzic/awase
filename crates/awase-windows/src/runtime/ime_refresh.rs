@@ -331,7 +331,7 @@ impl Runtime {
         }
         let ctx = self.build_ctx();
         let decision = self.engine.on_command(EngineCommand::FocusChanged, &ctx);
-        self.execute_decision_suppressed(decision);
+        self.execute_decision(decision);
     }
 
     // ── 読み取り方針の決定 ──
@@ -1094,6 +1094,6 @@ impl Runtime {
             self.platform_state.ime.explicit_intent(),
         );
         let decision = self.engine.on_command(EngineCommand::RefreshState, &ctx);
-        self.execute_decision_suppressed(decision);
+        self.execute_decision(decision);
     }
 }

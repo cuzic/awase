@@ -122,7 +122,7 @@ pub(crate) fn begin_key_batch(app: &mut Runtime) {
         let decision = app
             .engine
             .on_command(awase::engine::EngineCommand::FocusChanged, &ctx);
-        app.execute_decision_suppressed(decision);
+        app.execute_decision(decision);
     }
 }
 

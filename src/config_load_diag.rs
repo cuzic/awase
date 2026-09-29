@@ -17,6 +17,37 @@ const REMOVED_KEYS: &[&str] = &[
     "calibration",
 ];
 
+/// 撤去済みで、旧 `config.toml` に残っていると**効果があった**キー(パス)と、その通知文(ADR-207)。
+///
+/// `REMOVED_KEYS`(効果の無い死んだ設定。無警告で許容)とは別の表。効果があった設定を黙って
+/// 消すと、ユーザーは挙動が変わった理由に気づけないため、読込時に警告して無視する
+/// (`AppConfig::validate` が警告として返し、トレイに出る。設定の保存で該当行は消える)。
+const REMOVED_WITH_NOTICE: &[(&str, &str)] = &[
+    (
+        "keys.engine_on_ime_key",
+        "keys.engine_on_ime_key は撤去されました。値は無視されます。エンジンの ON/OFF に合わせて \
+         IME のモードキーを送る機能は無くなり、代わりの設定はありません。config.toml から削除してください",
+    ),
+    (
+        "keys.engine_off_ime_key",
+        "keys.engine_off_ime_key は撤去されました。値は無視されます。エンジンの ON/OFF に合わせて \
+         IME のモードキーを送る機能は無くなり、代わりの設定はありません。config.toml から削除してください",
+    ),
+];
+
+/// 撤去済みで効果があったキーなら、通知文を返す。
+#[must_use]
+pub fn removed_notice(path: &str) -> Option<&'static str> {
+    REMOVED_WITH_NOTICE
+        .iter()
+        .find_map(|(p, msg)| (*p == path).then_some(*msg))
+}
+
+/// 撤去済みで効果があったキー(パス)の一覧。設定の保存が、ファイルから消す対象に使う。
+pub fn removed_notice_paths() -> impl Iterator<Item = &'static str> {
+    REMOVED_WITH_NOTICE.iter().map(|(p, _)| *p)
+}
+
 /// 撤去済みのキーか。
 #[must_use]
 pub fn is_removed_key(path: &str) -> bool {
@@ -104,6 +135,17 @@ mod tests {
         assert!(is_removed_key("general.apply_calibrated_mode_keys"));
         assert!(is_removed_key("calibration"));
         assert!(!is_removed_key("general.no_such"));
+    }
+
+    #[test]
+    fn removed_with_notice_keys_have_a_notice_and_are_not_silent() {
+        for p in ["keys.engine_on_ime_key", "keys.engine_off_ime_key"] {
+            let m = removed_notice(p).expect("通知文がある");
+            assert!(m.contains(p) && m.contains("撤去"), "{m}");
+            assert!(!is_removed_key(p), "無警告の表に重複登録しない: {p}");
+        }
+        assert!(removed_notice("keys.engine_on").is_none());
+        assert_eq!(removed_notice_paths().count(), 2);
     }
 
     #[test]

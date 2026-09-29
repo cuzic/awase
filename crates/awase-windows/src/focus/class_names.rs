@@ -194,7 +194,8 @@ impl AppImeProfile {
     /// 物理 KANJI 系キーを awase 側で特別扱いするプロファイルか。
     ///
     /// `Imm32Unavailable`（Chrome/Edge 等）のみ `true`。
-    /// 名前は古いが、現在は `send_engine_state_ime_key` での mode-key 送信スキップ判定に使用する。
+    /// 名前は古い。かつて `send_engine_state_ime_key` での mode-key 送信スキップ判定に使っていたが（ADR-207 で撤去）、
+    /// 現在の本番の呼び出し元は無く、プロファイル分類の API とテストの oracle として残している。
     #[must_use]
     pub const fn uses_kanji_toggle(&self) -> bool {
         match self {
