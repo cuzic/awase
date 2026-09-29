@@ -3532,6 +3532,32 @@ fn external_change_watch_has_single_arm_and_follow_sites() {
     }
 }
 
+/// ADR-205（PR #377 Opus レビュー 1・2）: 外部変化の監視窓は Imm32Unavailable かつ GJI の窓だけに適用する。
+/// arm 側（`kp_arm_external_change_watch`）と追随側（`ir_follow_external_change`）の両方が
+/// `external_change_watch_applies` を通ること、その述語が両条件を持つことを固定する。
+#[test]
+fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let read = |rel: &str| {
+        non_comment_lines(production_code_only(
+            &fs::read_to_string(Path::new(manifest_dir).join("src").join(rel)).unwrap(),
+        ))
+    };
+    let mod_rs = read("runtime/mod.rs");
+    let pred = mod_rs
+        .split("fn external_change_watch_applies")
+        .nth(1)
+        .expect("述語が無い");
+    let pred = &pred[..pred.find("\n    }\n").unwrap_or(pred.len())];
+    assert!(pred.contains("AppImeProfile::Imm32Unavailable"), "{pred}");
+    assert!(
+        pred.contains("ActiveImeKind::GoogleJapaneseInput"),
+        "{pred}"
+    );
+    assert!(read("runtime/key_pipeline.rs").contains("self.external_change_watch_applies()"));
+    assert!(read("runtime/ime_refresh.rs").contains("self.external_change_watch_applies()"));
+}
+
 /// BUG-148/ADR-186: `ImeEvent::InitialFocusHwndEstablished` は bootstrap 専用であり、
 /// dispatch 元は `sync_initial_focus_hwnd` の1箇所だけ。reducer 側のアームは
 /// `self.current_focus = Some(hwnd)`（current_focus 1フィールドの差し替え）しか行わない。

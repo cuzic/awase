@@ -546,7 +546,14 @@ pub enum ImeEvent {
     /// `align_desired == false` は、観測が一度も成功しないまま窓が切れた破棄（BUG-158）用: `last_intent` だけを捨て、
     /// `desired_open` は書かない。観測プールに残る打鍵**より前**の値を「ユーザーの結果」として採らないため
     /// （レビュー round2 A-N1）。
-    ModeKeyPassedThrough { align_desired: bool },
+    ///
+    /// `demote_applied`（ADR-205 D6）は外部変化への追随（`ImeStateHub::follow_external_change`）だけが `true` にする: 揃えた観測と
+    /// 食い違う `applied`（awase 自身の書き込みの記録）を未確認へ落とす。ADR-187 の通過マーク・BUG-163 の初期値揃えは `false`
+    /// （従来どおり `applied` に触れない）。
+    ModeKeyPassedThrough {
+        align_desired: bool,
+        demote_applied: bool,
+    },
 
     /// 物理モードキーの打鍵時点で、キーマップの表（`key_effect_predictor`）から予測した効果を
     /// beliefへ反映する（ADR-191 決定3）。**観測ではなく予測**で、awaseはIMEへ書かない。

@@ -51,7 +51,7 @@ impl<S: Copy + PartialEq> ExternalChangeWatch<S> {
     }
 
     /// 外部注入の IME キーを見たら呼ぶ。同じスコープの窓が生きていれば基準値を保ったまま延ばす
-    /// （上限は最初の arm から `window_ms * 2`）。そうでなければ新しく開き、基準値は直近の読み（同じスコープ）。
+    /// （延長は最初の arm から `window_ms * 2` までで、窓の寿命は最大でその時点から `window_ms` 後＝`window_ms * 3`）。そうでなければ新しく開き、基準値は直近の読み（同じスコープ）。
     pub(crate) fn arm(&mut self, scope: S, now_ms: u64, window_ms: u64) {
         if let Some(a) = self.armed.as_mut() {
             let alive = a.scope == scope && now_ms.saturating_sub(a.last_arm_ms) <= window_ms;

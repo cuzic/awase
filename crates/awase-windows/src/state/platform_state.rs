@@ -346,7 +346,7 @@ impl ImeStateHub {
         }
         if effect.pass_through {
             // 窓の終了時の破棄（`on_expiry`）は観測を得ていない: 意図だけ捨て、desired は書かない（A-N1）。
-            self.pass_through_observed(tick_ms, !on_expiry);
+            self.pass_through_observed(tick_ms, !on_expiry, false);
         }
         true
     }
@@ -380,12 +380,11 @@ impl ImeStateHub {
     ///
     /// 追随 = `ObserverPoll(v)` を記録 → 対象の明示意図（`IntentStore`）を削除 → `ModeKeyPassedThrough{align_desired:true}`
     /// （`last_intent` を捨て、`desired_open` を観測へ揃え、食い違う `applied` を未確認へ落とす）。awase は IME を書かない。
-    /// 開く方向（0→1）は `allow_open`（GJI が有効なとき）だけ追随する。戻り値は追随した値。
+    /// 開く・閉じるの両方向を同じ規則で追随する（呼び出し側が GJI × Imm32Unavailable に限る）。戻り値は追随した値。
     /// どのフォーカスでも直近の読みは記録する（基準値の初期値になる）。
     pub(crate) fn follow_external_change(
         &mut self,
         read: Option<bool>,
-        allow_open: bool,
         now_ms: u64,
         tick_ms: TickMs,
         accepted: crate::state::probe_admission::AcceptedObservation,
@@ -401,14 +400,11 @@ impl ImeStateHub {
         let super::external_change_watch::ChangeVerdict::Changed(v) = verdict else {
             return None;
         };
-        if v && !allow_open {
-            return None;
-        }
         self.write_observer_poll(v, tick_ms, accepted);
         if let Some(hwnd) = self.shadow_model.current_focus() {
             self.intent_store.remove(hwnd);
         }
-        self.pass_through_observed(tick_ms, true);
+        self.pass_through_observed(tick_ms, true, true);
         self.last_external_change_ms = now_ms;
         Some(v)
     }
@@ -416,8 +412,19 @@ impl ImeStateHub {
     /// `ModeKeyPassedThrough` のdispatch元（ADR-187の「1箇所に限定」）。reducerは`last_intent`を捨て、
     /// `desired_open`を観測から導ける開閉へ揃える（BUG-157）。窓の間の揃えと、窓が切れた後の最初の成功観測での
     /// 揃え（BUG-158追補2）の両方がここを通る。
-    fn pass_through_observed(&mut self, tick_ms: TickMs, align_desired: bool) {
-        self.dispatch_event(ImeEvent::ModeKeyPassedThrough { align_desired }, tick_ms);
+    fn pass_through_observed(
+        &mut self,
+        tick_ms: TickMs,
+        align_desired: bool,
+        demote_applied: bool,
+    ) {
+        self.dispatch_event(
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired,
+                demote_applied,
+            },
+            tick_ms,
+        );
     }
 
     /// `desired_open` が起動時の初期値のまま（BUG-163）か。`true` の間、`desired_open` は awase の意図ではない。
@@ -442,7 +449,7 @@ impl ImeStateHub {
             return None;
         }
         self.shadow_model.observations.derive_any(now)?;
-        self.pass_through_observed(tick_ms, true);
+        self.pass_through_observed(tick_ms, true, false);
         Some(self.shadow_model.desired_open())
     }
 
@@ -476,7 +483,7 @@ impl ImeStateHub {
         ) {
             return false;
         }
-        self.pass_through_observed(tick_ms, true);
+        self.pass_through_observed(tick_ms, true, false);
         true
     }
 
@@ -2674,6 +2681,94 @@ mod tests {
             pid: 42,
             hwnd: 0x1234,
         }
+    }
+
+    fn follow_fence() -> crate::state::probe_admission::AcceptedObservation {
+        crate::state::probe_admission::AcceptedObservation::for_sync(
+            crate::state::probe_admission::FocusFence {
+                epoch: 1,
+                hwnd: TARGET_HWND,
+            },
+        )
+    }
+
+    /// ADR-205 D2/D6: IntentStore に ON の意図がある状態で、監視窓の中の 1→0 を観測すると、意図を捨て desired を
+    /// 実状態へ揃え、`effective_open()` が false になる。追随時刻も記録する（GJI I/O 推測の柵に使う）。
+    #[test]
+    fn follow_external_change_closes_belief_even_with_explicit_on_intent() {
+        let mut ps = PlatformState::new();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, true, 100);
+        assert!(ps.ime.effective_open_at(TickMs(110)), "明示 ON 直後は true");
+        // arm 前の直近の読み（基準値になる）。窓が無いので追随しない。
+        assert_eq!(
+            ps.ime
+                .follow_external_change(Some(true), 900, TickMs(900), follow_fence()),
+            None
+        );
+        ps.ime.arm_external_change_watch(1000);
+        assert_eq!(
+            ps.ime
+                .follow_external_change(Some(false), 1032, TickMs(1032), follow_fence()),
+            Some(false)
+        );
+        assert!(
+            !ps.ime.effective_open_at(TickMs(1040)),
+            "IntentStore の ON の意図が残ると belief が ON のまま（ADR-205 R3-1）"
+        );
+        assert!(ps.ime.explicit_intent().is_none());
+        assert_eq!(ps.ime.last_external_change_ms(), 1032);
+    }
+
+    /// 監視窓の外（arm していない・窓が切れた後）の読みの変化では追随しない。
+    #[test]
+    fn follow_external_change_ignores_reads_outside_the_window() {
+        let mut ps = PlatformState::new();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, true, 100);
+        let _ = ps
+            .ime
+            .follow_external_change(Some(true), 900, TickMs(900), follow_fence());
+        // arm していない
+        assert_eq!(
+            ps.ime
+                .follow_external_change(Some(false), 1032, TickMs(1032), follow_fence()),
+            None
+        );
+        // 窓が切れた後
+        ps.ime.arm_external_change_watch(2000);
+        let _ = ps
+            .ime
+            .follow_external_change(Some(true), 2010, TickMs(2010), follow_fence());
+        assert_eq!(
+            ps.ime.follow_external_change(
+                Some(false),
+                2000 + crate::tuning::MODE_KEY_PASS_MARK_WINDOW_MS + 1,
+                TickMs(2400),
+                follow_fence()
+            ),
+            None
+        );
+        assert!(ps.ime.effective_open_at(TickMs(2410)), "追随していない");
+        assert_eq!(ps.ime.last_external_change_ms(), 0);
+    }
+
+    /// 開く方向（0→1）も同じ規則で追随する（適用窓の GJI 限定は呼び出し側の `external_change_watch_applies`）。
+    #[test]
+    fn follow_external_change_opens_belief_on_zero_to_one() {
+        let mut ps = PlatformState::new();
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, false, 100);
+        let _ = ps
+            .ime
+            .follow_external_change(Some(false), 900, TickMs(900), follow_fence());
+        ps.ime.arm_external_change_watch(1000);
+        assert_eq!(
+            ps.ime
+                .follow_external_change(Some(true), 1040, TickMs(1040), follow_fence()),
+            Some(true)
+        );
+        assert!(ps.ime.effective_open_at(TickMs(1050)));
     }
 
     /// 中核の回帰テスト: 明示 OFF → 同一対象への FocusChanged（last_intent 消失）→

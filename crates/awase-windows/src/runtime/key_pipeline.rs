@@ -1702,7 +1702,7 @@ impl Runtime {
     /// 昇格させない。読めない窓では実状態の追随が観測に委ねられるが、この直後の refresh は打鍵中扱いで届かないため、
     /// 短い監視窓を開いて prefetch 済みの読みの変化を拾う。
     fn kp_arm_external_change_watch(&mut self, event: &RawKeyEvent) {
-        if event.injected && !self.can_use_imm32_cross_process() {
+        if event.injected && self.external_change_watch_applies() {
             self.platform_state
                 .ime
                 .arm_external_change_watch(hook::current_tick_ms());

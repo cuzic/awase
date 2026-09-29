@@ -257,7 +257,8 @@ impl Runtime {
     /// ADR-205（BUG-172）: 読めない窓（`Imm32Unavailable`）で、外部注入の IME キー直後の監視窓の中に、
     /// prefetch 済みの開閉の読みが基準値から変わったら実状態へ追随する。書き込み（開け直し）はしない。
     fn ir_follow_external_change(&mut self, ime_snap: Option<&crate::ime::ImeSnapshot>) {
-        if self.can_use_imm32_cross_process() {
+        // Imm32Unavailable かつ GJI のときだけ（InputRelay・TsfNative・MS-IME は対象外。`external_change_watch_applies` 参照）。
+        if !self.external_change_watch_applies() {
             return;
         }
         let read = ime_snap.and_then(|snap| snap.ime_on);
@@ -265,13 +266,10 @@ impl Runtime {
         let tick_ms = crate::state::TickMs(now);
         let accepted =
             crate::state::probe_admission::AcceptedObservation::for_sync(self.focus_fence());
-        // 開く方向（0→1）の追随は GJI が有効なときだけ（MS-IME/CTF 自身の注入が開いた場合の誤追随を避ける。ADR-205 round5）。
-        let allow_open = crate::tsf::observer::tsf_obs().active_ime_kind()
-            == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput;
         if let Some(open) = self
             .platform_state
             .ime
-            .follow_external_change(read, allow_open, now, tick_ms, accepted)
+            .follow_external_change(read, now, tick_ms, accepted)
         {
             tracing::info!(
                 "[external-change] 監視窓の中で開閉の読みが変わった → 実状態 open={open} へ追随 \

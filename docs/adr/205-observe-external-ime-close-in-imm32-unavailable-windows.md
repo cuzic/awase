@@ -131,17 +131,20 @@ awase が IME に送るのは冪等な絶対キー(GJI・MS-IME とも `VK_IME_O
 ### D3. 「常に 0」説と「1→0 が読める」説の両立
 
 遷移(同じ窓の中で 1 の後に 0)を観測したときだけ追随するので、どちらが正しくても安全側:「常に 0」なら遷移が起きず従来どおり。読めるなら本物の閉じを拾う。偽 OFF の露出は
-「外部注入 IME キー直後 300ms の間に、値が 1→0 と動いた」場合に限られる。入力欄/本文の HIMC 付け外し(round1 M1 仮説)が同じ窓の中で起きる確率は低いが、ゼロではないので e2e で確認する(下記)。
+「外部注入 IME キー直後の監視窓（300ms。連続注入で延長されると最大 900ms＝最初の arm から 2W まで延長 + W）の間に、値が 1→0 と動いた」場合に限られる。入力欄/本文の HIMC 付け外し(round1 M1 仮説)が同じ窓の中で起きる確率は低いが、ゼロではないので e2e で確認する(下記)。
 
 ### D4. 書き込み・合流点・定数
 
 新しい actuation 合流点なし。`ImeEvent` の新 variant なし(`ModeKeyPassedThrough` の構築点は `pass_through_observed` のまま)。`ObserverPoll` は既存の `write_observer_poll` 経由。新しい `_MS` 定数なし(D1 の窓が実測で収まる場合)。
 awase は IME を開け直さない。ADR-178 領域A撤去・ADR-191 の方針(能動書き込みを足さず観測に従う)に沿う。
 
-### D5. 対象範囲
+### D5. 対象範囲（PR #377 Opus レビュー 1・2 で訂正）
 
-`Imm32Unavailable` の窓すべて。**ADR-193 の CI 入力先(RichEdit を `Chrome_RenderWidgetHostHWND` としてスーパークラス化したもの)も `AppImeProfile::Imm32Unavailable`** で `read_ime_state_full` の早期 return 対象外のため対象に入る(round2 m1、`cal-driftrec-tsf-*` の対照に入れる)。
-`TsfNative` プロファイル・`InputRelay` は `ime_on=None` になり影響を受けない。MS-IME/CTF が注入するキーでも watch は立ちうるが(明示操作直後の除外は置かない〈D1〉)、追随するのは実際に 1→0 を観測したときだけで、上書きの向きは常に「実状態」である。
+**`AppImeProfile::Imm32Unavailable` かつ有効な IME が GJI の窓だけ**（arm・追随の両方、述語 `Runtime::external_change_watch_applies`、architecture_guard で固定）。
+- MS-IME を除く理由: CI 実測で MS-IME × 実 Chrome の開閉の読みは常に 0 で信用できず、GJI で ON の読みを記録した後に Win+Space で MS-IME へ切り替え、注入キー（AHK や CTF の 0xF0/0xF2）で窓が開くと、古い基準値との差で偽の Changed(false) になり得る。
+  閉じる方向も GJI に限る（レビュー 1(a)）。(b) スコープに IME 種別を含める／(c) 読みに時刻上限を付ける案は、(a) で足りるため採らない（GJI 以外へ切り替えた後に GJI へ戻った場合の基準値は、戻った後の最初の窓の中の読みか、GJI 有効中の直近の読みで決まり、実状態と一致する）。
+- **InputRelay は対象外**（awase が actuation を所有しない、BUG-90 決定4 条件(c)）。以前の記述「InputRelay は `ime_on=None`」は事前読み取り経路（`read_ime_state_full` は TsfNative だけ `None`）では事実と違ったため、プロファイル比較で明示的に除く。TsfNative は読みが `None` で影響を受けない。
+- ADR-193 の CI 入力先（RichEdit を `Chrome_RenderWidgetHostHWND` 名でスーパークラス化したもの）は Imm32Unavailable なので、GJI のとき対象に入る。
 
 ### D6. 外部 close の追随で `applied`（awase 自身の書き込み記録）も実状態に合わせる
 
@@ -252,3 +255,12 @@ Blind 窓で学習表が「開閉トグルではない」とする半角/全角�
 - observed（追随）件数は GJI × 注入で 0 → 10/10。ハーネスの PASS 判定は「開け直して NICOLA」なので、追随後の `ka` は FAIL 表示のまま（期待どおり。判定の書き換えは未実施）。
 - **「常に 0」は MS-IME × 実 Chrome で実在した**: MS-IME 構成の prefetch は IME が開いているセットアップ中も `CrossProcess(hwndFocus) open=0` を返し続ける（`imeoff-ext-msime-native` のログ）。基準値 0 のままなので遷移が起きず追随しない＝偽の OFF を採用していない（D3 が実環境で効いた）。GJI の prefetch は 1→0 を正しく読む。
 - 未検証: (1) 追随後にモードキーを押して期待状態になるか（受け入れ基準の CI 検証。ハーネス未実装）。(2) MS-IME × 実 Chrome の awase 自身の `VK_IME_OFF`（ADR-208 の前提）。(3) 実機。(4) 通常打鍵・入力欄/本文移動での偽追随 0 件の長時間確認（今回の対照 10 構成では偽追随 0）。
+
+### PR #377 の Opus コードレビュー（HEAD 1bc16b37）への対応
+
+1. 偽 OFF（基準値が古い＋MS-IME）→ 閉じる方向も GJI × Imm32Unavailable に限定（D5、(a) を採用。(b)(c) は不要と判断した根拠は D5）。
+2. InputRelay の混入 → 述語で Imm32Unavailable に絞る（D5 訂正、architecture_guard で固定）。
+3. D6 が共有 reducer の全経路に効いていた → `ModeKeyPassedThrough` に `demote_applied: bool` を足し、追随経路（`follow_external_change`）だけ `true`。ADR-187 の通過マーク・BUG-163 の揃えは `false` で従来どおり（variant は増やしていない、既存テストの期待値も元に戻した）。
+4. テストの穴 → `follow_external_change` の単体テスト3件（IntentStore に ON の意図があっても Changed(false) 後に `effective_open()==false`／窓の外は追随しない／0→1）、適用窓の限定を固定する architecture_guard を追加。
+5. 追随の不発 → 既知の制限として記載: `ImeSnapshot` は読み取り時刻を持たないため、窓が開く前に読み始めた読みが反映時点の時刻で窓の中として扱われ、基準値と違うと（注入前の値で）Changed になって窓を閉じ、注入による本当の変化を取りこぼしうる（誤った方向へは書かない）。
+   窓の寿命の記述は「最大 3W」に訂正（doc と D3）。
