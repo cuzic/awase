@@ -1277,12 +1277,19 @@ pub(crate) unsafe fn handle_wm_command(wparam: WPARAM) {
             // BUG-108: 誤学習した IMM32 能力キャッシュ（BUG-56・BUG-107）の回復手段。
             // 学習表（keymap-learn-table.json）と cache.toml の他セクションには触れない。
             let _ = with_app(|app| {
-                let removed = app.platform.clear_imm_capability_cache();
-                tracing::info!("[tray] IMM capability cache cleared: {removed} entries");
-                app.platform.tray.show_balloon(
-                    "awase",
-                    &format!("IME 制御の学習キャッシュをクリアしました（{removed} 件）"),
+                let (removed, persisted) = app.platform.clear_imm_capability_cache();
+                tracing::info!(
+                    "[tray] IMM capability cache cleared: {removed} entries (persisted={persisted})"
                 );
+                // cache.toml へ書けなかったときは再起動で旧エントリが戻るので、成功と伝えない。
+                let message = if persisted {
+                    format!("IME 制御の学習キャッシュをクリアしました（{removed} 件）")
+                } else {
+                    format!(
+                        "メモリ上の学習キャッシュは消しましたが、cache.toml に反映できませんでした（{removed} 件）。再起動すると元に戻ります。cache.toml を確認してください"
+                    )
+                };
+                app.platform.tray.show_balloon("awase", &message);
             });
         }
         None => {}

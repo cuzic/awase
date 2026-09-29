@@ -1756,8 +1756,8 @@ impl WindowsPlatform {
             .learn_imm_capability(process_name, class_name, cap);
     }
 
-    /// 学習済みの IMM 能力を全て捨てる（BUG-108）。捨てた件数を返す。
-    pub fn clear_imm_capability_cache(&mut self) -> usize {
+    /// 学習済みの IMM 能力を全て捨てる（BUG-108）。捨てた件数と、`cache.toml` へ反映できたかを返す。
+    pub fn clear_imm_capability_cache(&mut self) -> (usize, bool) {
         self.focus.clear_imm_capability_cache()
     }
 
