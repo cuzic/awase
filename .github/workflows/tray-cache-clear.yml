@@ -1,0 +1,61 @@
+name: tray-cache-clear
+
+# トレイ「IME 制御の学習キャッシュをクリア」(BUG-108, PR #353)を windows-latest 上の実 awase.exe で確かめる。
+# 誤学習した cache.toml を仕込んで起動し、トレイウィンドウへ WM_COMMAND を送って、
+# [imm_capability] だけが空になり [injection_mode]・学習表は残ること、壊れた cache.toml は上書きしないことを判定する。
+# 判定は tools/e2e/tray_cache_clear/run.py(約3分)。config-verify.yml と同じ流儀。
+on:
+  pull_request:
+    branches: [develop, v1-develop]
+    paths:
+      - 'crates/awase-windows/src/focus/classifier.rs'
+      - 'crates/awase-windows/src/focus/tracker.rs'
+      - 'crates/awase-windows/src/tray.rs'
+      - 'crates/awase-windows/src/runtime/message_handlers.rs'
+      - 'crates/awase-windows/src/platform.rs'
+      - 'tools/e2e/tray_cache_clear/**'
+      - '.github/workflows/tray-cache-clear.yml'
+  push:
+    branches: [ci/tray-cache-clear]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tray-cache-clear-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: config-verify
+      - name: awase(デバッグ)をビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-windows --bin awase
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\awase.exe dist\
+      - name: トレイのキャッシュクリアを実機確認
+        shell: pwsh
+        env:
+          PYTHONUTF8: '1'
+        run: python tools\e2e\tray_cache_clear\run.py --dist dist --out out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tray-cache-clear-out
+          path: |
+            out/summary.md
+            out/results.json
+            out/logs/
+          retention-days: 7
