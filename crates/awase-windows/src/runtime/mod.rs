@@ -557,21 +557,22 @@ impl Runtime {
     /// 真の呼び出し元（このラッパをさらに呼んでいる側）が観測ログから消える。
     #[must_use]
     #[track_caller]
+    pub fn can_use_imm32_cross_process(&self) -> bool {
+        self.platform
+            .current_app_profile()
+            .can_use_imm32_cross_process()
+    }
+
     /// ADR-205: 外部変化の監視窓（arm・追随の両方）を適用する窓か。`Imm32Unavailable`（Chrome 等）かつ有効な IME が
     /// GJI のときだけ。InputRelay（awase が actuation を所有しない、BUG-90 決定4）と TsfNative（読みが `None`）は対象外。
-    /// MS-IME × 実 Chrome の開閉の読みは常に 0 で信用できず（CI 実測）、GJI 以外への切替後に古い基準値が残る偽 OFF を
+    /// MS-IME × 実 Chrome の開閉の読みは IME が開いている間も 0 で信用できず（CI 実測: run 36548761653 `imeoff-ext-msime-native` の trace）、GJI 以外への切替後に古い基準値が残る偽 OFF を
     /// 避けるため、開く・閉じるの両方向とも GJI に限る（round: PR #377 Opus レビュー 1・2）。
+    #[must_use]
     pub fn external_change_watch_applies(&self) -> bool {
         self.platform.current_app_profile()
             == crate::focus::class_names::AppImeProfile::Imm32Unavailable
             && crate::tsf::observer::tsf_obs().active_ime_kind()
                 == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
-    }
-
-    pub fn can_use_imm32_cross_process(&self) -> bool {
-        self.platform
-            .current_app_profile()
-            .can_use_imm32_cross_process()
     }
 
     /// IMM 検出の前後ミス数から、クラス名単位の IMM 能力をキャッシュに記録する。

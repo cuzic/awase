@@ -3558,6 +3558,23 @@ fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
     assert!(read("runtime/ime_refresh.rs").contains("self.external_change_watch_applies()"));
 }
 
+/// ADR-158 TE3 / PR #377 レビュー M6-1: `Runtime::can_use_imm32_cross_process` は `#[track_caller]` を持つ。
+/// 直前に別の関数を挿入すると属性と doc だけが新しい関数へ移り、呼び出し元の棚卸しが黙って壊れる。
+#[test]
+fn can_use_imm32_cross_process_wrapper_keeps_track_caller() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = fs::read_to_string(Path::new(manifest_dir).join("src/runtime/mod.rs")).unwrap();
+    let lines: Vec<&str> = src.lines().collect();
+    let idx = lines
+        .iter()
+        .position(|l| l.contains("pub fn can_use_imm32_cross_process(&self)"))
+        .expect("ラッパが無い");
+    let prev = lines[idx - 1].trim();
+    let prev2 = lines[idx - 2].trim();
+    assert_eq!(prev, "#[track_caller]", "直前の行: {prev}");
+    assert_eq!(prev2, "#[must_use]", "その前の行: {prev2}");
+}
+
 /// BUG-148/ADR-186: `ImeEvent::InitialFocusHwndEstablished` は bootstrap 専用であり、
 /// dispatch 元は `sync_initial_focus_hwnd` の1箇所だけ。reducer 側のアームは
 /// `self.current_focus = Some(hwnd)`（current_focus 1フィールドの差し替え）しか行わない。

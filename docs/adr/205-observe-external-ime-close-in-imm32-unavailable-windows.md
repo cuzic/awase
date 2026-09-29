@@ -264,3 +264,10 @@ Blind 窓で学習表が「開閉トグルではない」とする半角/全角�
 4. テストの穴 → `follow_external_change` の単体テスト3件（IntentStore に ON の意図があっても Changed(false) 後に `effective_open()==false`／窓の外は追随しない／0→1）、適用窓の限定を固定する architecture_guard を追加。
 5. 追随の不発 → 既知の制限として記載: `ImeSnapshot` は読み取り時刻を持たないため、窓が開く前に読み始めた読みが反映時点の時刻で窓の中として扱われ、基準値と違うと（注入前の値で）Changed になって窓を閉じ、注入による本当の変化を取りこぼしうる（誤った方向へは書かない）。
    窓の寿命の記述は「最大 3W」に訂正（doc と D3）。
+
+### round6（Opus、PR #377 の対応差分 92fe08b2）: M6-1 を直せば収束
+
+- M6-1 述語を `can_use_imm32_cross_process` の `#[must_use]`/`#[track_caller]`/doc の間に挿入して属性が剥がれた（ADR-158 TE3 の呼び出し元記録が壊れる）→ 述語をラッパの後ろへ移し、`can_use_imm32_cross_process_wrapper_keeps_track_caller` ガードを追加。
+- belief 更新範囲（`demote_applied=true` は追随経路だけ、構築点は `pass_through_observed` の1か所）、GJI × Imm32Unavailable への限定は意図どおりと確認された。
+- 追加テスト: ハブ経路で追随後に `applied` が未確認へ落ちること。GJI→MS-IME→GJI の往復で古い基準値が残る件は、採用されるのが常に窓内で読んだ現在値であり実状態への追随になるため害は小さい（IME 種別変更で基準値を捨てる案は採らない）。
+- MS-IME の読みの根拠: run 36548761653 `imeoff-ext-msime-native` の trace で、IME が開いているセットアップ中も `CrossProcess(hwndFocus) open=0` が続いた。BUG-172 の「chrome_probe は MS-IME も 1→0 を読めた」とは測定方法（トップレベル窓と awase の hwndFocus 経路）が異なる可能性があり、MS-IME を外す判断は M5-3（awase 自身の VK_IME_OFF が効かない測定）だけでも正当化できる。
