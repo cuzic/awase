@@ -182,10 +182,9 @@ fn input_may_mutate_conv(input: &INPUT) -> bool {
 /// 判定する（ADR-140 Step0 診断ログ用）。判定できた場合、どちらのマーカー由来かを
 /// ログの `kind=` に出せるよう返す。
 ///
-/// VK の固定リストでは判定しない: `keys.engine_on_ime_key`/`engine_off_ime_key`
-/// （`src/config.rs:550-556`）はユーザー設定可能な自由文字列で `VkCodeExt::from_name`
-/// 経由で F13-F24 等にもなりうるため、VK 値の固定リストでは設定済みマシンで
-/// actuation が不可視になり、測定したい対象が測定できなくなる本末転倒を招く。
+/// VK の固定リストでは判定しない: 送る VK が経路ごとに違い（`VK_IME_ON/OFF`・`VK_DBE_*` 等、
+/// かつて `keys.engine_on_ime_key` で任意の VK もありえた〈ADR-207 で撤去〉）、固定リストでは
+/// actuation が不可視になる経路が出て、測定したい対象が測定できなくなる本末転倒を招く。
 ///
 /// **`IME_KANJI_MARKER` だけでは不十分**（ADR-140コードレビュー指摘、MAJOR）:
 /// `tsf/send.rs::send_eager_warmup_vk_pair`（ADR-140が確認済みの3経路のうち

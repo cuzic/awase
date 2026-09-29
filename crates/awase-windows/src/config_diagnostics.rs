@@ -105,17 +105,8 @@ pub fn newly_effective_keys(c: &AppConfig) -> Vec<String> {
             name(label, s);
         }
     }
-    for (label, v) in [
-        (
-            "keys.engine_off_solo_repeat",
-            &c.keys.engine_off_solo_repeat,
-        ),
-        ("keys.engine_on_ime_key", &c.keys.engine_on_ime_key),
-        ("keys.engine_off_ime_key", &c.keys.engine_off_ime_key),
-    ] {
-        if let Some(s) = v.as_deref() {
-            name(label, s);
-        }
+    if let Some(s) = c.keys.engine_off_solo_repeat.as_deref() {
+        name("keys.engine_off_solo_repeat", s);
     }
     for r in &c.keymaps {
         for to in &r.to {
@@ -181,23 +172,6 @@ pub fn resolve_post_bypass_key(rule: &PostBypassRule) -> Result<VkCode, String> 
         ));
     }
     Ok(combo.vk)
-}
-
-/// `Option<&str>` のキー名を解決する。空文字は「未設定」として扱う(`engine_off_solo_repeat` と同じ)。
-/// 解決できない名前は `Err`(診断に流す文言)。
-///
-/// # Errors
-///
-/// 名前が VK として解決できないとき。
-pub fn resolve_optional_key_name(
-    label: &str,
-    name: Option<&str>,
-) -> Result<Option<VkCode>, String> {
-    name.filter(|s| !s.is_empty()).map_or(Ok(None), |s| {
-        VkCode::from_name(s)
-            .map(Some)
-            .ok_or_else(|| format!("{label} のキー名を解決できません: \"{s}\""))
-    })
 }
 
 #[cfg(test)]
@@ -301,11 +275,5 @@ mod tests {
         assert!(resolve_post_bypass_key(&no_ctrl)
             .unwrap_err()
             .contains("Ctrl+"));
-        assert_eq!(resolve_optional_key_name("x", None), Ok(None));
-        assert_eq!(resolve_optional_key_name("x", Some("")), Ok(None));
-        assert!(resolve_optional_key_name("x", Some("NoSuch")).is_err());
-        assert!(resolve_optional_key_name("x", Some("F13"))
-            .unwrap()
-            .is_some());
     }
 }

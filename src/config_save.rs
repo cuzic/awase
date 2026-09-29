@@ -209,6 +209,19 @@ fn migrate_legacy_confirm_mode(doc: &mut DocumentMut) {
     }
 }
 
+/// 撤去済みで効果があったキー（`config_load_diag::removed_notice_paths`。ADR-207）が文書に残っていれば消す。
+/// 読込時に「撤去されました、削除してください」と通知しているキーなので、保存で消して通知を止める。
+fn remove_retired_keys(doc: &mut DocumentMut) {
+    for path in crate::config_load_diag::removed_notice_paths() {
+        let Some((table, key)) = path.rsplit_once('.') else {
+            continue;
+        };
+        if let Some(t) = doc.get_mut(table).and_then(Item::as_table_like_mut) {
+            t.remove(key);
+        }
+    }
+}
+
 /// `path` の `disk` を読み、`base` から `to_save` への差だけを書いて保存する。
 ///
 /// - ファイルが存在しない: 空の文書から始め、`to_save` のうち既定値と違う項目をすべて書く。
@@ -230,6 +243,7 @@ pub fn save_edit(to_save: &AppConfig, base: &AppConfig, path: &std::path::Path) 
     };
     apply_edits(&mut doc, &diff(&base, to_save)?);
     migrate_legacy_confirm_mode(&mut doc);
+    remove_retired_keys(&mut doc);
     crate::fs_atomic::write_atomic(path, doc.to_string().as_bytes())
 }
 
@@ -296,6 +310,47 @@ mod tests {
             assert!(re.load_warnings().iter().all(|w| !w.contains("廃止")));
             std::fs::remove_file(&p).ok();
         }
+    }
+
+    /// ADR-207: 撤去した `keys.engine_on_ime_key`/`engine_off_ime_key` は、読込時に通知され（`removed_notices`）、
+    /// 無視される。保存（`save_edit` を通る全ての保存）で該当行だけが消え、他の行・コメントは変わらない。
+    #[test]
+    fn retired_engine_ime_keys_are_notified_on_load_and_removed_on_save() {
+        let text = "[general]\nsimultaneous_threshold_ms = 80 # c\n\n[keys]\n\
+                    engine_on_ime_key = \"VK_DBE_DBCSCHAR\"\nengine_off_ime_key = \"VK_DBE_SBCSCHAR\"\n\
+                    engine_on = [\"Ctrl+A\"]\n";
+        let p = write("retired_engine_ime_keys", text);
+        let base = AppConfig::load(&p).unwrap();
+        assert_eq!(
+            base.removed_notices().len(),
+            2,
+            "{:?}",
+            base.removed_notices()
+        );
+        // 未知キー警告（ログだけ）には出ない。`suggest` が `keys.engine_on` を提案する誤誘導も無い。
+        assert!(
+            base.load_warnings().is_empty(),
+            "{:?}",
+            base.load_warnings()
+        );
+        assert!(base.removed_notices().iter().all(|m| !m.contains("間違い")));
+        // 警告として返る（トレイに出る側）。
+        let (_v, warnings) = base.clone().validate();
+        assert_eq!(
+            warnings.iter().filter(|w| w.contains("撤去")).count(),
+            2,
+            "{warnings:?}"
+        );
+        let mut edited = base.clone();
+        edited.general.simultaneous_threshold_ms = 90;
+        save_edit(&edited, &base, &p).unwrap();
+        assert_eq!(
+            read(&p),
+            "[general]\nsimultaneous_threshold_ms = 90 # c\n\n[keys]\nengine_on = [\"Ctrl+A\"]\n"
+        );
+        let re = AppConfig::load(&p).unwrap();
+        assert!(re.removed_notices().is_empty());
+        std::fs::remove_file(&p).ok();
     }
 
     // (1) 何も編集せずに保存するとバイト単位で変わらない。
