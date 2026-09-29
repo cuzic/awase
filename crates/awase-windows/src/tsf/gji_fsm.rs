@@ -217,6 +217,19 @@ pub(crate) enum GjiEvent {
         injection_mode: InjectionMode,
         gji_idle_ms: u64,
     },
+    /// 確かな ON 系イベント（物理キー予測 ON・shadow toggle ON・`sync_direction` の on キー）で
+    /// GJI を開き直す（ADR-203 決定2）。遷移表:
+    ///
+    /// | 状態 | 遷移 |
+    /// |---|---|
+    /// | `OffCold` | 通常の `ImeOn` と同じ（`OnCold` proactive） |
+    /// | `OnWarm` | `OnCold(kind, Authorized)`（`handle_composition_reset` と違い Short でも warm に留めない） |
+    /// | `OnCold(*)` | 何もしない（probe・pending・deferred を保持。`CancelProbe` で deferred VK を捨てない） |
+    /// | `OnComposing(*)` | 何もしない（未確定文字は IME ON の証拠。cold に落とすと per-VK→StaleConfirm→ESC で消える） |
+    Reopen {
+        injection_mode: InjectionMode,
+        gji_idle_ms: u64,
+    },
     /// IME OFF（エンジン停止）
     ImeOff,
     /// フォーカス変更。`gji_idle_ms` で ColdKind を分類する。
@@ -624,6 +637,32 @@ impl TimedStateMachine for GjiFsm {
                         self.state.state_label()
                     );
                     Response::consume()
+                }
+            }
+
+            // ── Reopen（ADR-203 決定2） ────────────────────────────────────
+            GjiEvent::Reopen {
+                injection_mode,
+                gji_idle_ms,
+            } => {
+                self.injection_mode = injection_mode;
+                match &self.state {
+                    GjiState::OffCold | GjiState::OnWarm { .. } => {
+                        let kind = ColdKind::classify(gji_idle_ms);
+                        tracing::debug!(
+                            "[gji-fsm] Reopen from {} gji_idle={gji_idle_ms}ms → {kind:?}",
+                            self.state.state_label()
+                        );
+                        // OnWarm には probe が無い（`CancelProbe` 不要）。OffCold は ImeOn と同じ。
+                        self.transition_to_cold_proactive(kind, vec![], None)
+                    }
+                    GjiState::OnCold { .. } | GjiState::OnComposing { .. } => {
+                        tracing::debug!(
+                            "[gji-fsm] Reopen: {} のため無視（probe/pending/未確定文字を保持）",
+                            self.state.state_label()
+                        );
+                        Response::consume()
+                    }
                 }
             }
 
@@ -2424,5 +2463,108 @@ mod tests {
             }
             other => panic!("expected StartProbe after re-authorization, got {other:?}"),
         }
+    }
+
+    // ── Reopen（ADR-203 決定2、遷移表を固定） ────────────────────────────
+
+    fn reopen_with_idle(gji_idle_ms: u64) -> GjiEvent {
+        GjiEvent::Reopen {
+            injection_mode: InjectionMode::Vk,
+            gji_idle_ms,
+        }
+    }
+
+    fn warm_fsm() -> GjiFsm {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        let ev = complete(&fsm);
+        fsm.on_event(ev);
+        assert!(matches!(fsm.state(), GjiState::OnWarm { .. }));
+        fsm
+    }
+
+    #[test]
+    fn reopen_from_off_cold_behaves_like_ime_on() {
+        let mut fsm = GjiFsm::new();
+        let r = fsm.on_event(reopen_with_idle(9_359));
+        r.assert_action_count(1);
+        assert!(matches!(r.actions[0], GjiAction::StartProbe { .. }));
+        assert!(matches!(fsm.state(), GjiState::OnCold { .. }));
+    }
+
+    #[test]
+    fn reopen_from_on_warm_drops_to_cold_even_when_short() {
+        // handle_composition_reset は Short(GJI 確実に生存)では warm に留めるが、Reopen は留めない。
+        let mut fsm = warm_fsm();
+        let r = fsm.on_event(reopen_with_idle(0));
+        assert!(
+            !r.actions
+                .iter()
+                .any(|a| matches!(a, GjiAction::CancelProbe { .. })),
+            "OnWarm には probe が無いので CancelProbe は出ない"
+        );
+        assert!(r
+            .actions
+            .iter()
+            .any(|a| matches!(a, GjiAction::StartProbe { .. })));
+        assert!(matches!(
+            fsm.state(),
+            GjiState::OnCold {
+                kind: ColdKind::Short,
+                probe: ProbeStatus::Authorized { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn reopen_on_cold_keeps_probe_and_pending() {
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        fsm.on_event(GjiEvent::KeyInput(PendingInput::new("ka")));
+        let before = match fsm.state() {
+            GjiState::OnCold {
+                probe: ProbeStatus::Authorized { probe_id, .. },
+                pending,
+                ..
+            } => (*probe_id, pending.len()),
+            s => panic!("expected OnCold(Authorized), got {}", s.state_label()),
+        };
+        let r = fsm.on_event(reopen_with_idle(0));
+        r.assert_action_count(0); // CancelProbe しない(deferred VK を捨てない)
+        match fsm.state() {
+            GjiState::OnCold {
+                probe: ProbeStatus::Authorized { probe_id, .. },
+                pending,
+                ..
+            } => assert_eq!((*probe_id, pending.len()), before),
+            s => panic!("OnCold(Authorized) を保持するはず、got {}", s.state_label()),
+        }
+    }
+
+    #[test]
+    fn reopen_while_composing_is_a_no_op() {
+        // 未確定文字がある=IME は実際に ON。cold に落とすと per-VK→StaleConfirm→ESC で消える(BUG-171 型)。
+        let mut fsm = warm_fsm();
+        fsm.on_event(GjiEvent::StartComposition);
+        assert!(matches!(fsm.state(), GjiState::OnComposing { .. }));
+        let r = fsm.on_event(reopen_with_idle(9_359));
+        r.assert_action_count(0);
+        assert!(matches!(fsm.state(), GjiState::OnComposing { .. }));
+    }
+
+    #[test]
+    fn stuck_off_cold_persists_without_sync_and_reopen_releases_it() {
+        // BUG-170 の journal 順序: 実 GJI は ON なのに GjiFsm に ON 系の同期が届かない。
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(GjiEvent::CompositionReset { gji_idle_ms: 9_359 });
+        fsm.on_event(GjiEvent::KeyInput(PendingInput::new("ko")));
+        fsm.on_event(GjiEvent::StartComposition);
+        assert!(
+            matches!(fsm.state(), GjiState::OffCold),
+            "同期が無いと OffCold に固着する(is_warm()==false → 毎打鍵 cold 経路)"
+        );
+        fsm.on_event(reopen_with_idle(9_359));
+        assert!(matches!(fsm.state(), GjiState::OnCold { .. }));
     }
 }

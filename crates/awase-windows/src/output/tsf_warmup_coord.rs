@@ -92,6 +92,11 @@ impl TsfWarmupCoordinator {
         self.tsf_warmup.borrow().needs_f2_probe()
     }
 
+    /// `GjiFsm` が `OffCold` か（ADR-203 (i) level 突合）。
+    pub(crate) fn is_off_cold(&self) -> bool {
+        self.tsf_warmup.borrow().is_off_cold()
+    }
+
     pub(crate) fn gji_state_label(&self) -> String {
         self.tsf_warmup.borrow().diagnostic_state_label()
     }

@@ -5396,25 +5396,75 @@ fn kanji_0x19_role_goes_through_the_shared_latch_and_only_overrides_gji() {
     assert_eq!(rt.matches("ime_relevance.shadow_action =").count(), 1);
 }
 
-/// BUG-170: 物理モードキー（かな/F2 等）の開閉予測でbeliefだけがONになっても`GjiFsm`が
-/// `OffCold`のまま取り残されると、直後の打鍵が cold-start 保護なしで素通しされ先頭数文字が
-/// 落ちる（report `01M3NBQA8KH2JN6S1PYHP8DJRF`、GJI+Edge/Google Meet）。
-/// `kp_predict_key_effect`が予測適用後に`gji_on_ime_on`を呼ぶことを固定する。
+/// ADR-203 決定9 / BUG-170: `GjiFsm` へ ON/開き直しを同期する入口の一覧を固定する。
+///
+/// BUG-170 は「belief だけが ON になり `GjiFsm` が `OffCold` に取り残される」同期漏れで、
+/// 入口ごとに点パッチを足すたびに別の入口が漏れる再発ファミリー（BUG-18/22/170）だった。
+/// 入口を宣言して件数を固定しておけば、新しい入口（または既存入口の削除）が黙って増減しない。
+/// 入口を足す/消すときは、ADR-203 の決定表（`docs/adr/203-*.md`）と一緒にこの表を更新すること。
+///
+/// - `gji_on_ime_on(`: receipt（`sync_gji` の `OnImeOn` 腕）・フォーカス復帰の presync
+///   （`focus_tracking.rs`、BUG-18）・IME 種別同期（`message_handlers.rs`）
+/// - `gji_on_ime_off(`: receipt（`sync_gji` の `OnImeOff` 腕）のみ（OFF は awase の actuation 由来だけ）
+/// - `sync_gji(`（ungated 側の `state/gji_direct_mechanism.rs` を除く）: (i) `send_keys` の level 突合
+///   （`platform.rs`）、(ii) `kp_reopen_gji_fsm`（`key_pipeline.rs`）
+/// - `kp_reopen_gji_fsm(`: 物理キー予測 ON・shadow toggle の既に ON（no-op 分岐）・OFF→ON に倒した瞬間の3か所
 #[test]
-fn key_effect_prediction_open_true_notifies_gji_fsm() {
-    let src = read_crate_file("src/runtime/key_pipeline.rs");
-    let body = src
-        .split("fn kp_predict_key_effect(")
-        .nth(1)
-        .expect("kp_predict_key_effect exists");
-    let body = body.split("\n    fn ").next().expect("function body");
-    let after_apply = body
-        .split(".apply_key_effect_prediction(")
-        .nth(1)
-        .expect("prediction is applied");
+fn gji_fsm_sync_entry_points_are_accounted_for() {
+    let table: &[(&str, &[(&str, usize)])] = &[
+        (
+            "gji_on_ime_on(",
+            &[
+                ("src/platform.rs", 1),
+                ("src/runtime/focus_tracking.rs", 1),
+                ("src/runtime/message_handlers.rs", 1),
+            ],
+        ),
+        ("gji_on_ime_off(", &[("src/platform.rs", 1)]),
+        (
+            "sync_gji(",
+            &[("src/platform.rs", 1), ("src/runtime/key_pipeline.rs", 1)],
+        ),
+        ("kp_reopen_gji_fsm(", &[("src/runtime/key_pipeline.rs", 3)]),
+    ];
+    for (needle, expected) in table {
+        for rel in list_src_files() {
+            if rel == "src/state/gji_direct_mechanism.rs" && *needle == "sync_gji(" {
+                continue; // receipt.settle の sink 呼び出し（INV-43）
+            }
+            let content = read_crate_file(&rel);
+            let count = count_real_calls(production_code_only(&content), needle);
+            let want = expected
+                .iter()
+                .find(|(f, _)| *f == rel)
+                .map_or(0, |(_, n)| *n);
+            assert_eq!(
+                count, want,
+                "{rel}: `{needle}` の呼び出し数が {count}（期待 {want}）。GjiFsm 同期の入口を増減したら \
+                 ADR-203 の決定表とこの表を更新すること（点パッチの再発防止、BUG-18/22/170）"
+            );
+        }
+    }
+}
+
+/// ADR-203 (ii): ユーザーの IME-ON 経路（`write_sync_key`/`write_physical_key`、既存の
+/// `user_ime_on_paths_are_paired_with_eisu_reset` が数える2か所）は、`GjiFsm` の開き直し
+/// （`kp_reopen_gji_fsm`）とも対で配線されていること。eisu 救済と同じく「新しい user IME-ON 経路を
+/// 足したら対で配線し忘れる」ことの検出（BUG-170 の入口漏れの再発防止）。
+#[test]
+fn user_ime_on_paths_are_paired_with_gji_reopen() {
+    let content = read_crate_file("src/runtime/key_pipeline.rs");
+    let prod = production_code_only(&content);
+    let on_paths =
+        count_real_calls(prod, "write_sync_key(") + count_real_calls(prod, "write_physical_key(");
+    let reopens = count_real_calls(prod, "kp_reopen_gji_fsm(");
+    assert_eq!(
+        on_paths, 2,
+        "user IME-ON 書き込み経路の数が変わった（eisu 救済ガードと同時に更新）"
+    );
+    // shadow toggle: no-op 分岐 + 実際に倒した瞬間の2か所、加えて予測経路の1か所。
     assert!(
-        after_apply.contains("prediction.effect.open == Some(true)")
-            && after_apply.contains("gji_on_ime_on("),
-        "BUG-170: open=Some(true) の予測後に GjiFsm へ ImeOn を通知すること"
+        reopens >= 3,
+        "kp_reopen_gji_fsm の呼び出しが {reopens} 件。shadow toggle の2分岐と予測経路に必要"
     );
 }

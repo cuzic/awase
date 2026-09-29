@@ -51,10 +51,36 @@ pub enum GjiFsmSync {
     OnImeOn,
     /// IME を閉じた（`gji_on_ime_off` 相当の同期が必要）。
     OnImeOff,
+    /// ADR-203 (i) level 突合: エンジンがローマ字を IME へ送ろうとしているのに `GjiFsm` が
+    /// `OffCold` のとき、`OnImeOn` と同じ遷移を **belief 起点**（awase は IME へ書いていない）で行う。
+    OnImeOnBelief,
+    /// ADR-203 (ii): 確かな ON 系イベント（物理キー予測 ON・shadow toggle ON・`sync_direction` の on キー）
+    /// で `GjiFsm` を開き直す（`GjiEvent::Reopen`。遷移表は `gji_fsm.rs` の `handle_reopen`）。
+    Reopen,
+}
+
+/// 同期の起点（ADR-203 決定3）。`BeliefSync` は awase が IME へ書いていない同期であり、
+/// long-cold の reinit（VK_IME_OFF→VK_IME_ON の awase 起点書き込み）を行ってはならない
+/// （ADR-191「awase は書かない」、ADR-090 A-2 の warrant を迂回しない）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GjiSyncOrigin {
+    /// awase 自身の actuation の結果としての同期（従来の `OnImeOn`/`OnImeOff`）。
+    Actuation,
+    /// belief・観測・予測からの同期。
+    BeliefSync,
 }
 
 impl GjiFsmSync {
-    /// モジュール private。外から `GjiFsmSync` を作る唯一の経路は
+    /// この同期の起点。
+    #[must_use]
+    pub const fn origin(self) -> GjiSyncOrigin {
+        match self {
+            Self::OnImeOn | Self::OnImeOff => GjiSyncOrigin::Actuation,
+            Self::OnImeOnBelief | Self::Reopen => GjiSyncOrigin::BeliefSync,
+        }
+    }
+
+    /// モジュール private。外から `GjiFsmSync::OnImeOn/OnImeOff` を作る唯一の経路は
     /// [`legacy_gji_sync_obligation`] であり、導出式が 1 箇所であることを
     /// 可視性で担保する（INV-42）。
     #[must_use]
@@ -233,6 +259,45 @@ pub fn legacy_gji_sync_obligation(open: bool, outcome: ImeOpenOutcome) -> Option
     Some(GjiFsmSync::for_open(open))
 }
 
+/// ADR-203 (i) level 突合: `send_keys` の直前に `GjiFsm` を `OnImeOnBelief` で同期すべきか。
+///
+/// エンジンがローマ字を IME 経由で送るのは belief が ON のときだけなので、`GjiFsm` が `OffCold` の
+/// ままなのに送ろうとしている不一致はそれ自体が同期漏れの証拠になる（時刻反転・起動時既定値・観測の
+/// 揺れの影響を受けない、入口も問わない）。**種別（K 軸）ではなく戦略の実体（`needs_f2_probe`）で
+/// ゲートする**（INV-42）。
+///
+/// 対象外: Unicode 注入モード（`GjiFsm` に `KeyInput` を送らず composition も迂回するため per-VK/ESC
+/// の害が無い）、probe・raw recovery/reinit の実行中（probe_id の相関が崩れる。次の送信で拾う）。
+#[must_use]
+pub const fn needs_belief_sync_on(
+    send_has_romaji: bool,
+    injection_is_unicode: bool,
+    strategy_needs_f2_probe: bool,
+    gji_is_off_cold: bool,
+    probe_or_recovery_blocking: bool,
+) -> bool {
+    send_has_romaji
+        && !injection_is_unicode
+        && strategy_needs_f2_probe
+        && gji_is_off_cold
+        && !probe_or_recovery_blocking
+}
+
+/// ADR-203 (ii): 確かな ON 系イベントで `GjiFsm` を開き直す同期義務。
+///
+/// 候補窓が可視（=入力中）なら出さない。`GjiFsm` の `OnWarm` は `EndComposition` の取りこぼしで
+/// 候補窓が出ていても `OnWarm` に見えうるための二重防御（`GjiFsm` 側も `OnComposing`/`OnCold` では
+/// 何もしない）。入力の途中で cold に落とすと per-VK confirm → StaleConfirm → ESC で未確定文字が
+/// 消える（BUG-171、BUG-033 追補3・4 と同型）。
+#[must_use]
+pub const fn reopen_obligation(candidate_visible: bool) -> Option<GjiFsmSync> {
+    if candidate_visible {
+        None
+    } else {
+        Some(GjiFsmSync::Reopen)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,5 +397,37 @@ mod tests {
         let mut receipt = receipt;
         let mut sink = RecordingSink::default();
         receipt.settle(&mut sink);
+    }
+
+    #[test]
+    fn belief_sync_on_decision_table_is_exhaustive() {
+        // 全 2^5 組: 真になるのは「ローマ字あり・非Unicode・GjiFsm戦略・OffCold・非blocking」の1通りだけ。
+        for bits in 0u8..32 {
+            let b = |i: u8| bits & (1 << i) != 0;
+            let (romaji, unicode, f2, off, blocking) = (b(0), b(1), b(2), b(3), b(4));
+            let want = romaji && !unicode && f2 && off && !blocking;
+            assert_eq!(
+                needs_belief_sync_on(romaji, unicode, f2, off, blocking),
+                want,
+                "bits={bits:05b}"
+            );
+        }
+    }
+
+    #[test]
+    fn reopen_is_suppressed_while_candidate_window_is_visible() {
+        assert_eq!(reopen_obligation(false), Some(GjiFsmSync::Reopen));
+        assert_eq!(reopen_obligation(true), None);
+    }
+
+    #[test]
+    fn belief_origin_syncs_never_claim_actuation_origin() {
+        assert_eq!(GjiFsmSync::OnImeOn.origin(), GjiSyncOrigin::Actuation);
+        assert_eq!(GjiFsmSync::OnImeOff.origin(), GjiSyncOrigin::Actuation);
+        assert_eq!(
+            GjiFsmSync::OnImeOnBelief.origin(),
+            GjiSyncOrigin::BeliefSync
+        );
+        assert_eq!(GjiFsmSync::Reopen.origin(), GjiSyncOrigin::BeliefSync);
     }
 }

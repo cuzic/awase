@@ -511,6 +511,22 @@ impl WindowsPlatform {
             crate::tsf::gji_fsm::GjiTimer,
         >,
     ) {
+        self.dispatch_gji_response_from(
+            crate::state::gji_direct_mechanism::GjiSyncOrigin::Actuation,
+            response,
+        );
+    }
+
+    /// [`Self::dispatch_gji_response`] の起点付き版（ADR-203 決定3）。`BeliefSync` 起点では
+    /// Unicode long-cold の reinit（awase 起点の VK_IME_OFF→VK_IME_ON 書き込み）を行わない。
+    pub(crate) fn dispatch_gji_response_from(
+        &mut self,
+        origin: crate::state::gji_direct_mechanism::GjiSyncOrigin,
+        response: &timed_fsm::Response<
+            crate::tsf::gji_fsm::GjiAction,
+            crate::tsf::gji_fsm::GjiTimer,
+        >,
+    ) {
         use crate::tsf::gji_fsm::{GjiAction, GjiTimer};
         use timed_fsm::TimerCommand;
         for cmd in &response.timers {
@@ -556,10 +572,21 @@ impl WindowsPlatform {
                         if params.is_long_cold {
                             let deferred = self.output.take_unicode_cold_deferred();
                             if deferred.is_empty() {
-                                tracing::debug!(
-                                    "[gji-fsm] Unicode long-cold StartProbe: VK_IME_OFF→VK_IME_ON reinit (chars なし)"
-                                );
-                                self.output.send_f22_f21_reinit();
+                                if matches!(
+                                    origin,
+                                    crate::state::gji_direct_mechanism::GjiSyncOrigin::BeliefSync
+                                ) {
+                                    // ADR-203 決定3: belief 起点の同期では awase 起点の IME 書き込み
+                                    // （reinit）を行わない（ADR-191「awase は書かない」、ADR-090 A-2）。
+                                    tracing::debug!(
+                                        "[gji-fsm] Unicode long-cold StartProbe: reinit 抑止 (BeliefSync 起点)"
+                                    );
+                                } else {
+                                    tracing::debug!(
+                                        "[gji-fsm] Unicode long-cold StartProbe: VK_IME_OFF→VK_IME_ON reinit (chars なし)"
+                                    );
+                                    self.output.send_f22_f21_reinit();
+                                }
                             } else {
                                 // probe_id (GjiFsm 側の probe 相関 ID) をそのまま cold_seq の
                                 // ログ相関値として転用する既存の挙動を維持する（値そのものは
@@ -831,6 +858,26 @@ impl WindowsPlatform {
             });
         self.note_gji_transition(format!("ImeOn(gji_idle_ms={gji_idle_ms})"), state_before);
         self.dispatch_gji_response(&resp);
+    }
+
+    /// ADR-203 (i)/(ii): belief 起点で `GjiFsm` を同期する（`trigger` に発生元を残す）。
+    /// `event_for` は `gji_idle_ms` から `GjiEvent` を作る。
+    fn gji_sync_from_belief(
+        &mut self,
+        trigger: &str,
+        event_for: impl FnOnce(u64) -> crate::tsf::gji_fsm::GjiEvent,
+    ) {
+        let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
+        let state_before = self.gji_state_label();
+        let resp = self.output.gji_on_event(event_for(gji_idle_ms));
+        self.note_gji_transition(
+            format!("{trigger}(gji_idle_ms={gji_idle_ms})"),
+            state_before,
+        );
+        self.dispatch_gji_response_from(
+            crate::state::gji_direct_mechanism::GjiSyncOrigin::BeliefSync,
+            &resp,
+        );
     }
 
     fn dispatch_gji_event(
@@ -1167,6 +1214,24 @@ impl PlatformRuntime for WindowsPlatform {
     // ── キー出力 ──
 
     fn send_keys(&mut self, actions: &[KeyAction]) {
+        // ADR-203 (i) level 突合: エンジンがローマ字を IME 経由で送ろうとしているのに GjiFsm が
+        // OffCold のままなら、同期漏れ（c8bc1adc 以降 Unwarranted 経路・GjiFsm 作り直し等）の証拠。
+        // per-VK confirm を毎打鍵通る状態（→ StaleConfirm → ESC、BUG-170）に固着させないため、
+        // belief 起点で ON 同期する。判定は state/gji_direct_mechanism.rs の純粋関数、実行は sync_gji。
+        if crate::state::gji_direct_mechanism::needs_belief_sync_on(
+            actions
+                .iter()
+                .any(|a| matches!(a, KeyAction::Char(_) | KeyAction::Romaji(_))),
+            self.output.injection_mode == crate::output::InjectionMode::Unicode,
+            self.output.f2_warmup_owned(),
+            self.output.gji_is_off_cold(),
+            self.output.probe_or_recovery_in_flight(),
+        ) {
+            crate::state::gji_direct_mechanism::GjiSyncSink::sync_gji(
+                self,
+                crate::state::gji_direct_mechanism::GjiFsmSync::OnImeOnBelief,
+            );
+        }
         // Unicode モード + 未学習クラスなら、Romaji 送信後に GJI write 観測をリクエストする（事後昇格）。
         if self.output.injection_mode == crate::output::InjectionMode::Unicode
             && !self
@@ -1350,6 +1415,24 @@ impl crate::state::gji_direct_mechanism::GjiSyncSink for WindowsPlatform {
                 self.gji_on_ime_on(mode);
             }
             GjiFsmSync::OnImeOff => self.gji_on_ime_off(),
+            GjiFsmSync::OnImeOnBelief => {
+                let injection_mode = self.output.injection_mode;
+                self.gji_sync_from_belief("ImeOn(BeliefSync:level)", |gji_idle_ms| {
+                    crate::tsf::gji_fsm::GjiEvent::ImeOn {
+                        injection_mode,
+                        gji_idle_ms,
+                    }
+                });
+            }
+            GjiFsmSync::Reopen => {
+                let injection_mode = self.output.injection_mode;
+                self.gji_sync_from_belief("Reopen(BeliefSync:on-key)", |gji_idle_ms| {
+                    crate::tsf::gji_fsm::GjiEvent::Reopen {
+                        injection_mode,
+                        gji_idle_ms,
+                    }
+                });
+            }
         }
     }
 }

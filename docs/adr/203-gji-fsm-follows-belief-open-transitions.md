@@ -8,7 +8,7 @@ summary: |-
   全打鍵が cold 経路(per-VK confirm)を通り、StaleConfirm(約15%/語)で `escape=true` の VK_ESCAPE が送られ、未確定の直前文字ごと消える。
   75eb3f60(予測経路1点だけ ImeOn を足す)は点パッチであり、半角/全角・sync_direction・OFF 方向・外部開閉は塞がらない。本 ADR は同期の入口の選択(決定)を定める。
 status: |-
-  起票(2026-09-29)。Opus round3 まで反映(検出点を `WindowsPlatform::send_keys` へ、OFF 同期を廃し ON 系イベントで Reopen、案C は別PR)、round4 まで反映し収束(Opus 条件付き収束の3点を反映済み)。実装未着手。
+  起票(2026-09-29)。Opus round3 まで反映(検出点を `WindowsPlatform::send_keys` へ、OFF 同期を廃し ON 系イベントで Reopen、案C は別PR)、round4 で収束。実装済み(Linux/Windows 型検査・純粋関数/FSM/architecture_guard、2026-09-29、fix/bugreport-01M3NBQA)。windows-latest e2e・step 0・実機確認は未実施。
 related_adr:
   - "ADR-089"
   - "ADR-090"
