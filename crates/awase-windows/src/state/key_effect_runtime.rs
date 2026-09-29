@@ -1750,7 +1750,7 @@ mod tests {
         assert_eq!(thumb_forced_action(None, true, false, true, never), None);
     }
 
-    // MS-IME 本体の無変換/変換の受動・半角/全角トグル判定は`msime_native_key_role`側のテスト
+    // MS-IME 本体の無変換/変換（値2のみトグル）・半角/全角トグル判定は`msime_native_key_role`側のテスト
     // （`state/key_effect_predictor.rs`）に移した。この関数（`key_shadow_action`）はIME種別を
     // 見ないため（上のコメント参照）、ここに同種のテストを重複させない。
 

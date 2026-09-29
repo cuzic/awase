@@ -5596,31 +5596,26 @@ fn gji_sync_origin_comes_from_the_sync_variant() {
     );
 }
 
-/// ADR-199 T17 Phase 4: MS-IME 本体の無変換/変換が値2（トグル）のとき役割を付ける配線が、黙って外されないこと。
-/// (1) `msime_native_key_role` が 0x1D/0x1C の腕で `muhenkan_toggle`/`henkan_toggle` を見て互換モードで受動化する、
-/// (2) `for_msime_native` が `IsKeyAssignmentEnabled` かつ値==2 でフラグを立てる、
-/// (3) `enrich_thumb_key_role` が `derive_key_shadow_action`（MS-IME も同じ入口）を通す。
-/// 入力中/変換中/候補窓の除外は所有者決定（2026-09-29）で不要なので、composing ガードは要求しない。
+/// ADR-199 T17 Phase 4: 役割判定の「つなぎ目」を固定する。`runtime/mod.rs` は `#[cfg(windows)]` で Linux のホストテストに現れず、
+/// `derive_key_shadow_action` の `ImeKindId::MsIme` 腕が `msime_native_key_role` 以外（例えば `None`）へ差し替わっても
+/// 他のテストは全て通ってしまう。空白を除いて照合するので rustfmt の整形に依存しない。
+/// 判定そのものの網羅は `key_effect_predictor.rs` の単体テストが持つ（ここでは重複させない）。
 #[test]
-fn msime_native_thumb_toggle_role_is_wired_for_value_2() {
-    let pred = read_crate_file("src/state/key_effect_predictor.rs");
+fn derive_key_shadow_action_routes_ms_ime_to_msime_native_key_role() {
+    let rt: String = read_crate_file("src/runtime/mod.rs")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
     for token in [
-        "self.muhenkan_toggle",
-        "self.henkan_toggle",
-        "thumb_toggle && self.msime_compat_mode != Some(true)",
-        "muhenkan_toggle: assignment_enabled && muhenkan == Some(2)",
-        "henkan_toggle: assignment_enabled && henkan == Some(2)",
+        "ImeKindId::Gji=>k.gji_key_role(vk.0)",
+        "ImeKindId::MsIme=>k.msime_native_key_role(vk.0)",
+        "ime.and_then(|ime|self.derive_key_shadow_action(ime,vk))",
     ] {
         assert!(
-            pred.contains(token),
-            "key_effect_predictor.rs: `{token}` が無い。ADR-199 T17 Phase 4（MS-IME 本体の値2トグルを能動化する配線）が外れている"
+            rt.contains(token),
+            "runtime/mod.rs: `{token}` が無い。MS-IME 本体の役割判定（ADR-199 T17 Phase 4）のつなぎ目が外れている"
         );
     }
-    let rt = read_crate_file("src/runtime/mod.rs");
-    assert!(
-        rt.contains("ime.and_then(|ime| self.derive_key_shadow_action(ime, vk))"),
-        "runtime/mod.rs: enrich_thumb_key_role の役割由来は derive_key_shadow_action（GJI/MS-IME 共通の入口）を通すこと"
-    );
     let warn = read_crate_file("src/msime_key_assignment.rs");
     assert!(
         !warn.contains("トグル、awase未対応"),
