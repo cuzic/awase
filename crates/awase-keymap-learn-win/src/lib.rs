@@ -17,8 +17,8 @@ mod ime_notify;
 pub use driver::RealImeDriver;
 #[cfg(windows)]
 pub use env_version::{
-    file_version, probe_custom_keymap_without_prediction, probe_gji_env_version,
-    probe_gji_env_version_with_timeout,
+    file_version, probe_current_fingerprint, probe_custom_keymap_without_prediction,
+    probe_gji_env_version, probe_gji_env_version_with_timeout,
 };
 #[cfg(windows)]
 pub use hook_monitor::HookMonitor;

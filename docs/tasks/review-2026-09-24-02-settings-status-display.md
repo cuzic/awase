@@ -1,6 +1,6 @@
 ---
 title: 設定画面の「使用中: 学習表」表示が awase.exe の実際の採否と食い違う
-status: 一部実装済み（条件2・3・5・doc修正。条件1・4・6と測定環境表示は未実施）
+status: 実装済み（条件1は判定廃止で消滅、条件2・3・4(a)・5・6・doc修正。測定環境表示のみ ADR196-T3 待ち。実機確認は未実施）
 priority: 次リリース前（俯瞰レビュー A-2【重大】、同 D節の優先度2位）
 created: 2026-09-24
 related_adr: ["ADR-196", "ADR-195"]
@@ -171,3 +171,22 @@ source_review: 俯瞰レビュー（2026-09-24）の A-2
 - 未実施: 条件1（不一致率。`(preset, check_against_bundled)`を得る`awase-windows`側`pub`ラッパーが必要で、条件4の(a)/(b)決定が先）、
   条件4、条件6（06待ち）、測定環境表示（ADR196-T3待ち）。`RuntimeRejection`には不一致variantをまだ足していない。
 - 設定画面への`use_learned_keymap_table`チェックボックス追加は未実施。
+
+## 実装メモ（feat/open-close-fixed-set-vs-custom-keymap、2026-09-28）
+
+- 条件1（不一致率5%超の棄却）: 01（PR #305）で判定自体が廃止され、`validate_and_convert`の署名が
+  `(table, current_fingerprint)`になった。`(preset, check_against_bundled)`を得るラッパーは不要になり、消滅。
+- 条件6（指紋不一致による失効）と条件4（今のIMEが対象外）: `validate_and_convert`が`staleness::check`を
+  内部で呼ぶので、設定画面から「今の指紋」を渡せば両方が同じ棄却（`RejectReason::Stale`）として出る。
+  `awase-keymap-learn-win::probe_current_fingerprint`を足した（設定画面のワーカースレッドで
+  `query_tip_identity_on_current_sta`→既存の`current_fingerprint_probe`を呼ぶ。awase.exeの読込と同じ計算）。
+  結果は`EnvSnapshot::fingerprint`に載せ、`runtime_rejection_of(table, fingerprint)`が`RuntimeRejection::Stale`を返す。
+- **条件4は (a) を採用**: 近似の元は**設定画面自身のスレッド**の TIP で、awase.exeがフォーカス先で見る IME とは
+  食い違いうる。TIP を同定できないとき（非Windows・COM失敗）は`fingerprint: None`で、従来どおりカバレッジ判定だけ
+  （表自身の指紋を渡す）になる。文言は「今のIMEはGoogle日本語入力・Microsoft IME本体ではないため学習表を使えません」と
+  事実ベースで、近似である旨は出していない（要判断）。
+- テスト: `fingerprint_mismatch_is_reported_as_rejected_at_runtime`、`unsupported_ime_is_reported_as_rejected_at_runtime`
+  （`cargo test -p awase-settings --bin awase-settings keymap_learn_status`、Linuxで17件通過）。
+  `cargo check`/`clippy --target x86_64-pc-windows-msvc -p awase-settings -p awase-keymap-learn-win`は指摘なし。
+- 未実施: Windows実機確認（`keymap-learn-table.json`のセルを消してカバレッジ80%未満、キーマップ設定を変えて指紋不一致、
+  の各構成で、awase.exeログの`学習済み表を不採用`と設定画面の状態行が一致すること）。測定環境表示（ADR196-T3待ち）。
