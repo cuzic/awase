@@ -76,11 +76,16 @@ jobs:
           Start-Sleep -Seconds 2
           Start-Process 'ms-settings:regionlanguage-jpnime'
           Start-Sleep -Seconds 10
+          foreach ($w in $AE::RootElement.FindAll($TS::Children, $TC)) { "top: [$($w.Current.Name)] class=$($w.Current.ClassName) pid=$($w.Current.ProcessId)" }
           function Get-Win {
-            $p = Get-Process SystemSettings -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $p) { return $null }
-            $c = New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, [int]$p.Id)
-            $AE::RootElement.FindFirst($TS::Children, $c)
+            # UWP 設定アプリの窓は ApplicationFrameHost 配下にあるので pid では引けない。Name が Settings の最上位窓のうち、子孫が最も多いものを使う。
+            $c = New-Object System.Windows.Automation.PropertyCondition($AE::NameProperty, 'Settings')
+            $best = $null; $bestN = 0
+            foreach ($w in $AE::RootElement.FindAll($TS::Children, $c)) {
+              $n = $w.FindAll($TS::Descendants, $TC).Count
+              if ($n -gt $bestN) { $best = $w; $bestN = $n }
+            }
+            return $best
           }
           function Dump($tag) {
             $w = Get-Win
