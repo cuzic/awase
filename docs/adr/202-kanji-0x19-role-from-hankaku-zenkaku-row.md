@@ -116,6 +116,10 @@ related_adr:
 - **既知の非対称（ADR-199 T13実装、2026-09-27）**: MS-IME互換モード（`NoTsf3Override2=1`）では、半角/全角（0xF3/0xF4）は決定17により受動化される
   （`KeyEffectKeymap::msime_native_key_role`）が、**0x19（Alt+半角/全角）は`hook.rs`の静的`Toggle`のまま能動が残る**（`kanji_role_plan`の`KeepStatic`、GJI以外は現行維持のため）。
   互換モードで0x19の役割判定を止める変更は本ADRの範囲外。
+- T16-7（未着手、opusコードレビュー指摘で追記、2026-09-28）: 上記の非対称そのものを解消する
+  （MS-IME互換モードでの0x19能動化を、0xF3/0xF4と同じ一般機構で受動化する）作業は、[fix-requires-evidence](../../.claude/rules/fix-requires-evidence.md)
+  の「IME actuation 合流点」「キー選択」ファミリーに該当し実機検証が必須のため、本ADRのスコープ外・
+  別ADR/別PRとして着手する。着手までは上記の非対称を維持する（`hook.rs`の静的`Toggle`に手を入れない）。
 
 ## 影響
 
