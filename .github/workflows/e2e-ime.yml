@@ -94,9 +94,9 @@ jobs:
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv=''):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome)
           SC_IMES = [('msime-native', 'msime', 1, ' --msime'), ('gji-msime', 'gji', 2, ''), ('gji-atok', 'gji', 1, '')]
           configs = [
             # --- 撤去実験(ATOK、実機E1〜E7bと同じ) ---
@@ -257,6 +257,14 @@ jobs:
             cfg('sc-kanji-role-toggle', 'pass', check='kanjirole-closed', keymap=0, runs=2,
                 args='--chord=A4,19 --chord-at=20000 --chord-prep=16',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,Hankaku/Zenkaku,IMEOn|Precomposition,Hankaku/Zenkaku,IMEOff|Composition,Hankaku/Zenkaku,IMEOff|Conversion,Hankaku/Zenkaku,IMEOff'),
+            # ADR-199 T1(e): 実 Chrome(TsfNative)への実タイピング。GJI の CUSTOM 表で F13 をトグルにし、F13 で閉↔開、awase の belief が追随して NICOLA 文字が出るか
+            # (chrome_probe --f13、判定は打った文字)。対照(-noawase)は awase なし(GJI 単体で F13 が Chrome に効くか。かな時は `か`)。
+            cfg('sc-t1e-chrome-f13', 'pass', check='chromeprobe', keymap=0, runs=1, wait=400,
+                chrome='--f13 --repeat=2 --settle=800',
+                tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff|Conversion,F13,IMEOff'),
+            cfg('sc-t1e-chrome-f13-noawase', 'observe', check='chromeprobe', keymap=0, runs=1, wait=400, awase='false',
+                chrome='--f13 --no-awase --repeat=2 --settle=800',
+                tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff|Conversion,F13,IMEOff'),
             # T1(e) の一部(ADR-199 決定18): F13 をトグルにした CUSTOM 表で、F13(0x7C)が GJI に効くか。IME OFF から F13→開、もう一度→閉。
             cfg('sc-t1e-f13-toggle', 'observe', check='consistency', awase='false', keymap=0, runs=1,
                 args='--seq=1A,7C,7C', tsv='DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff'),
@@ -368,12 +376,14 @@ jobs:
           cargo build -p awase-windows --example compartment_notify_probe
           cargo build -p awase-windows --example compartment_notify_probe_diag
           cargo build -p awase-windows --example typing_stress
+          cargo build -p awase-windows --example chrome_probe
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target\debug\awase.exe dist\
           Copy-Item target\debug\examples\ime_key_matrix_spike.exe dist\
           Copy-Item target\debug\examples\compartment_notify_probe.exe dist\
           Copy-Item target\debug\examples\compartment_notify_probe_diag.exe dist\
           Copy-Item target\debug\examples\typing_stress.exe dist\
+          Copy-Item target\debug\examples\chrome_probe.exe dist\
           Copy-Item config.toml dist\ -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         with:
@@ -614,6 +624,19 @@ jobs:
               Start-Sleep -Seconds 2
               if ((Test-Path "$probeBin.log") -and (Select-String -Path "$probeBin.log" -Pattern '=== 完了 ===' -Quiet)) { break }
             }
+          } elseif ('${{ matrix.cfg.chrome }}' -ne '') {
+            # 実 Chrome(TsfNative)への実タイピング(chrome_probe.exe、ADR-199 T1(e))。awase を先に起動して TIP を検出させてから、Chrome を起動して打鍵する。
+            # 判定は打った文字(k,a の出力)。GJI は既定の入力方式(Set-WinDefaultInputMethodOverride)で Chrome に効く。
+            if ('${{ matrix.cfg.awase }}' -ne 'false') {
+              Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
+              Start-Sleep -Seconds 10
+            }
+            Start-Process -FilePath .\chrome_probe.exe -ArgumentList '${{ matrix.cfg.chrome }} --log=chrome_probe.log'
+            $deadline = (Get-Date).AddSeconds(${{ matrix.cfg.wait }})
+            while ((Get-Date) -lt $deadline) {
+              Start-Sleep -Seconds 2
+              if ((Test-Path chrome_probe.log) -and (Select-String -Path chrome_probe.log -Pattern '全ケース完了' -Quiet)) { break }
+            }
           } elseif ('${{ matrix.cfg.stress }}' -ne '') {
             # 高速打鍵ストレス(typing_stress.exe): 入力欄の窓を作り GJI/MS-IME を有効化 → 「READY-FOR-AWASE」を出したら awase を起動 →
             # exe が awase.log を確認して10秒待ち、IME を ON にして各速度で打鍵・読み戻し → 「=== 完了 ===」。seed は回番号。
@@ -676,6 +699,8 @@ jobs:
           } elseif ('${{ matrix.cfg.check }}' -like 'kanjirole-*') {
             $kexp = '${{ matrix.cfg.check }}'.Substring('kanjirole-'.Length)
             python tools\e2e\ime_key_matrix\check_kanji_role.py --expect=$kexp dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
+          } elseif ('${{ matrix.cfg.check }}' -eq 'chromeprobe') {
+            python tools\e2e\ime_key_matrix\check_chrome_probe.py dist\chrome_probe.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'resync') {
             python tools\e2e\ime_key_matrix\check_resync.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'collect') {
@@ -731,6 +756,7 @@ jobs:
             dist/compartment_notify_probe.log
             dist/compartment_notify_probe_diag.log
             dist/awase.log
+            dist/chrome_probe.log
             awase-stderr.log
             awase-filtered.log
             invariants.txt
