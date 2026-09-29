@@ -133,6 +133,25 @@ footer p{margin:0.3rem 0}
 </li>
 <li><p><code>keys.ime_detect.on</code>/<code>off</code> の既定を空にした（以前は <code>IMEオン</code>/<code>IMEオフ</code>）。IMEオン/IMEオフ キー（VK_IME_ON/OFF）の追随は、指定しなくても自動で行われる（入力言語の判定が一時的に日本語でないと出る環境でも追随するよう直した）。書いてある値はそのまま使われる</p>
 </li>
+<li><p><strong><code>keys.ime_toggle</code> の既定を空にした（以前は <code>VK_KANJI</code>＝半角/全角）。</strong> <code>config.toml</code> に <code>VK_KANJI</code> を明示している場合はその設定を尊重し、消さない</p>
+</li>
+<li><p><strong>無変換/変換の単独タップの動作を整理した（ADR-206）。<code>muhenkan_solo_tap_ime_action</code>/<code>henkan_solo_tap_ime_action</code> を撤去した。</strong></p>
+<ul>
+<li>単独タップは Suppress／Passthrough の設定に従う。IME 側でそのキーが IME オン/オフ/トグルに割り当てられているとき（<code>keys.ime_on</code>/<code>ime_off</code> に書いた場合を含む）は、Passthrough のときだけ、生キーを抑止して awase が現在の状態に従って ON/OFF を明示的に送る。Suppress は IME を動かさない</li>
+<li>旧設定は読み込み時に <code>keys.ime_*</code> 相当へ移して警告する。同じキーの設定が既にあれば移行しない。設定画面で保存すると旧設定は消える</li>
+<li>「@」が出る問題（Windows Terminal + Google 日本語入力）に効くかの実機確認は未実施</li>
+</ul>
+</li>
+<li><p><strong><code>confirm_mode</code> を <code>wait</code> と <code>ngram_predictive</code> の 2 択にした。</strong> 廃止済みの値は読み込み時に <code>wait</code> として扱って警告し、設定を保存すると <code>wait</code> に書き換わる</p>
+</li>
+<li><p><strong>MS-IME 本体で、無変換/変換に割り当てられた「値 2（トグル）」を、IME のオン/オフを切り替えるキーとして扱うようにした。</strong> 入力中でも切り替わり、未確定の文字列は確定される（捨てられる）。CI では値 2 を作れないため、実際の切り替えは実機では未検証</p>
+</li>
+</ul>
+<h3>修正</h3>
+<ul>
+<li><strong>Google 日本語入力 + Windows Terminal など（TSF ネイティブ）で、カタカナになったあと物理のひらがなキーで戻れなくなる不具合を修正（BUG-173）。</strong> 物理のひらがなキー（F2 相当）を常に IME へ渡すようにした。最初にカタカナへ入る契機は未特定。実機での確認は未実施</li>
+<li><strong>Chrome + Google 日本語入力で、他のプログラムなど外部から IME を閉じられると、閉じたまま awase が ON と思い込み、ローマ字がそのまま入る不具合を修正（BUG-172、ADR-205）。</strong> 外部から送られた IME キーの直後 300ms だけ状態を監視し、開閉が閉じに変わったときだけ実際の状態に追随する（awase は開け直さない）。<strong>Google 日本語入力 + Chrome など IMM32 が使えない窓に限る</strong>（MS-IME・メモ帳などは対象外）。CI では追随 10/10。追随後にモードキーを押した挙動と実機は未検証</li>
+<li><strong>Chrome + Google 日本語入力で、超高速の打鍵（2〜10ms 間隔）中に、入力中の未確定文字が全部消えることがある不具合を修正（BUG-168）。</strong> 再確認が 2 回続いたあとの回復処理が IME を OFF→ON し直していた。通常の速度ではほぼ起きない</li>
 </ul>
 <h2>[1.21.0] - 2026-09-21</h2>
 <h3>追加</h3>
