@@ -1005,7 +1005,7 @@ fn ime_ready(raw: bool, cells: &[Vec<Cell>; 3], child: HWND) -> bool {
         sleep_ms(700);
         let text = read_text(child);
         let open = real_ime_open(child);
-        // `None`(取れない)は通す: ts-chrome* は入力欄が別プロセス(Chrome)で HIMC を取れないため。
+        // `None`(取れない)は通す: tsx-chrome* は入力欄が別プロセス(Chrome)で HIMC を取れないため。
         // 自プロセスの入力欄(edit/tsf/rich/multi)では CI で 41/41 回とも値が取れた(run 36224603306)。
         let ok = text.trim() == c.kana.to_string() && open != Some(false);
         rec(
@@ -1266,13 +1266,6 @@ fn worker(form: Form) {
         return;
     }
 
-    if (drift || drift_on) && !target().owns_himc() {
-        rec(
-            &json!({"type":"abort","reason":"drift 系モードは自プロセスの窓(--form=edit|multi|rich|tsf)でのみ使える"}),
-        );
-        finish();
-        return;
-    }
     if drift {
         drift_scenario(child);
         finish();
@@ -1327,7 +1320,8 @@ fn worker(form: Form) {
             sleep_ms(1200);
             let actual_at_1200 = read_text(child);
             let mut actual = actual_at_1200.clone();
-            let mut settle_ms = 0u64;
+            // --settle-read を付けなかったときは、読み直していない(0 ではなく null で記録する)。
+            let mut settle_ms: Option<u64> = None;
             if perturb.settle_read {
                 // 取りこぼしか遅延かを分けるため、内容が 800ms 変わらなくなるまで(最大 8 秒)読み直す。
                 let t0 = Instant::now();
@@ -1342,7 +1336,7 @@ fn worker(form: Form) {
                         stable_since = Instant::now();
                     }
                 }
-                settle_ms = u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX);
+                settle_ms = Some(u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX));
             }
             let (seen, deliv_p50, deliv_max) = delivery_stats(&stats, &hook);
             let downs = hook.iter().filter(|h| h.down).count();
@@ -1402,6 +1396,14 @@ fn main() {
         log(&format!("[FATAL] 引数エラー: --form={form_arg}"));
         std::process::exit(2);
     };
+    // drift 系は自プロセスの窓の HIMC を直接観測/操作するので、別プロセスの入力先とは組み合わせられない。
+    // 入力先(Chrome など)を起動する前に弾く。
+    if matches!(arg_value("--mode=").as_deref(), Some("drift" | "drift-on"))
+        && !matches!(form, Form::Edit | Form::Multi | Form::Rich | Form::Tsf)
+    {
+        log("[FATAL] 引数エラー: --mode=drift|drift-on は --form=edit|multi|rich|tsf でのみ使える");
+        std::process::exit(2);
+    }
     unsafe {
         timeBeginPeriod(1);
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();

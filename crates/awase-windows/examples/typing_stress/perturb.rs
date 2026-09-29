@@ -8,7 +8,7 @@
 //! | `--idle=MS`                         | 各試行の前に MS だけ何もせず待つ                                   |
 //! | `--switch-focus`                    | 各試行の前に別窓へ前面を渡し、入力先へ戻す                         |
 //! | `--start-delay=MS`                  | 入力欄を空にしてから打鍵を始めるまでの待ち(既定 300)              |
-//! | `--interrupt=off_on\|off\|f2`       | 打鍵直後(未確定)に IME 制御キーを送る(未確定文字が消えるかの対照) |
+//! | `--interrupt=off_on\|off\|f2\|none`  | 打鍵直後(未確定)に IME 制御キーを送る(未確定文字が消えるかの対照) |
 //! | `--settle-read`                     | 内容が 800ms 変わらなくなるまで読み直す(取りこぼしと遅延の切り分け) |
 
 use serde_json::json;
@@ -27,6 +27,8 @@ pub(crate) enum Interrupt {
     Off,
     /// `VK_DBE_HIRAGANA`(F2 相当)。
     F2,
+    /// 何も送らない対照(待ち時間と `interrupt` レコードは他と揃える)。
+    None,
 }
 
 impl Interrupt {
@@ -35,6 +37,7 @@ impl Interrupt {
             "off_on" => Some(Self::OffOn),
             "off" => Some(Self::Off),
             "f2" => Some(Self::F2),
+            "none" => Some(Self::None),
             _ => None,
         }
     }
@@ -43,6 +46,7 @@ impl Interrupt {
             Self::OffOn => "off_on",
             Self::Off => "off",
             Self::F2 => "f2",
+            Self::None => "none",
         }
     }
 }
@@ -71,9 +75,14 @@ impl Perturbation {
             idle_ms: num("--idle=").unwrap_or(0),
             switch_focus: has_flag("--switch-focus"),
             start_delay_ms: num("--start-delay=").unwrap_or(300),
-            interrupt: arg_value("--interrupt=")
-                .as_deref()
-                .and_then(Interrupt::parse),
+            interrupt: arg_value("--interrupt=").map(|v| {
+                Interrupt::parse(&v).unwrap_or_else(|| {
+                    crate::log(&format!(
+                        "[FATAL] 引数エラー: --interrupt={v}(off_on|off|f2|none)"
+                    ));
+                    std::process::exit(2);
+                })
+            }),
             settle_read: has_flag("--settle-read"),
         }
     }
@@ -135,6 +144,7 @@ impl Perturbation {
                 press(VK_DBE_HIRAGANA, 0x70, 50);
                 sleep_ms(1000);
             }
+            Interrupt::None => {}
         }
         rec(&json!({"type":"interrupt","mode":mode.name(),"n":n,"kind":kind}));
     }

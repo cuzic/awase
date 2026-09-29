@@ -107,6 +107,8 @@ jobs:
             if trials: flags.append(f'--trials={trials}')
             if len: flags.append(f'--len={len}')
             if extra: flags.append(extra)
+            # 実アプリは描画が 1200ms に間に合わないことがある。遅延と消失を分けるため、内容が安定するまで読み直す。
+            flags.append('--settle-read')
             flags.append('--layout=@REPO@/layout/nicola_keytop.yab')
             if ime == 'msime': flags.append('--msime')
             return cfg(f"tsx-{'raw-' if raw else ''}{name}", 'observe', check='typing', ime=ime, awase='false' if raw else 'true', runs=runs, wait=wait, stress=' '.join(flags))
@@ -923,7 +925,7 @@ jobs:
                 continue
               ts_rows.append(f"| {c['name']} | {run} | {kv.get('verdict')} | {kv.get('trials')} | {kv.get('fail')} | {kv.get('loss')} | {kv.get('extra')} | {kv.get('reorder')} | {kv.get('literal')} | {kv.get('substitute')} | {kv.get('inject_late_max_us')} | {kv.get('hook_seen_min_ratio')} |")
           if ts_rows:
-            out += ["", "## 高速打鍵ストレス(ts-*、判定は入力先のテキストと期待文字列の比較。検出のみで合否には含めない)", "",
+            out += ["", "## 高速打鍵ストレス(ts-*・tsx-*、判定は入力先のテキストと期待文字列の比較。検出のみで合否には含めない)", "",
                     "loss=消失 / extra=余計 / reorder=入れ替わり / literal=ローマ字リテラル化 / substitute=別のかなに置換。注入遅れmax=予定時刻に対する実注入の最大遅れ(us)、フック到着比=自プロセスのLLフックに届いた数/送信数の最小(1.000で落ち無し)。", "",
                     "| 構成 | 回 | 判定 | 試行 | FAIL試行 | 消失 | 余計 | 入れ替わり | リテラル化 | 置換 | 注入遅れmax(us) | フック到着比 |",
                     "|---|---|---|---|---|---|---|---|---|---|---|---|"] + ts_rows

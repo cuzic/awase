@@ -222,6 +222,7 @@ impl Chrome {
         // 起動した pid の窓だけを待つ。pid を問わない探索は、開発機でユーザー自身の Chrome を
         // 操作してしまうので行わない(専用プロファイルなので、起動した pid が窓を持つ)。
         let top = find_window(pid, &is_chrome_top, 120).unwrap_or_else(|| {
+            kill_tree(pid);
             fatal("Chrome の窓が見つからない(起動した pid の Chrome_WidgetWin_1 なし)")
         });
         TOP.store(top.0 as isize, Ordering::SeqCst);
@@ -242,13 +243,20 @@ impl Chrome {
 
 impl InputTarget for Chrome {
     fn read(&self) -> String {
-        for el in uia::edit_elements(hwnd_of(&TOP)) {
-            let is_page_input = uia::name_of(&el) == PAGE_INPUT_NAME;
-            if is_page_input == self.page {
-                return uia::read_value(&el);
-            }
-        }
-        uia::NOT_FOUND.into()
+        // 目的の Edit(ページ=名前が一致、アドレスバー=一致しない)が値つきで現れるまで待つ。
+        // omnibox の Edit は常にあるので、「Edit が 1 つでもあれば良い」とするとレンダラのツリーが
+        // 作り直し中の瞬間に、消失ではない読み損ねを消失として数えてしまう。
+        uia::wait_edits(hwnd_of(&TOP), |edits| {
+            edits.iter().find_map(|el| {
+                let is_page_input = uia::name_of(el) == PAGE_INPUT_NAME;
+                if is_page_input == self.page {
+                    uia::try_read_value(el)
+                } else {
+                    None
+                }
+            })
+        })
+        .unwrap_or_else(|| uia::NOT_FOUND.into())
     }
     fn clear(&self) {
         if !self.page {
@@ -300,6 +308,7 @@ impl BugReport {
         // bug_report.rs::run() の with_title("awase 不具合報告") と一致させる。
         let top =
             find_window(pid, &|h| title_of(h).contains("不具合報告"), 60).unwrap_or_else(|| {
+                kill_tree(pid);
                 fatal("不具合報告窓が見つからない(タイトル「不具合報告」を含む可視窓なし)")
             });
         TOP.store(top.0 as isize, Ordering::SeqCst);
@@ -313,7 +322,8 @@ impl BugReport {
     /// (説明欄が先、JSON プレビューが後)に頼って走査順の先頭を選ぶ。順序の仮定が崩れたときに
     /// ログから気付けるよう、`log_all` で見つかった全 Edit の名前と位置を残す。
     fn description(log_all: bool) -> Option<IUIAutomationElement> {
-        let mut edits = uia::edit_elements(hwnd_of(&TOP));
+        let mut edits =
+            uia::wait_edits(hwnd_of(&TOP), |e| (!e.is_empty()).then_some(e)).unwrap_or_default();
         if log_all {
             for (i, el) in edits.iter().enumerate() {
                 // SAFETY: UIA プロパティの読み取りのみ。
