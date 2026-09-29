@@ -94,6 +94,10 @@ const VK_CONVERT: VkCode = VkCode(0x1C);
 
 /// Create a test engine
 fn make_test_engine(mode: ConfirmMode) -> TestHarness {
+    make_test_engine_with_delay(mode, 30)
+}
+
+fn make_test_engine_with_delay(mode: ConfirmMode, speculative_delay_ms: u32) -> TestHarness {
     let layout = load_test_layout();
     TestHarness {
         tracker: InputTracker::new(),
@@ -103,7 +107,7 @@ fn make_test_engine(mode: ConfirmMode) -> TestHarness {
             VK_CONVERT,
             100, // threshold_ms
             mode,
-            30, // speculative_delay_ms
+            speculative_delay_ms,
         ),
     }
 }
@@ -277,7 +281,7 @@ fn e2e_engine_simultaneous_keystroke() {
 #[test]
 fn e2e_engine_speculative_mode() {
     init_test_logging();
-    let mut engine = make_test_engine(ConfirmMode::Speculative);
+    let mut engine = make_test_engine_with_delay(ConfirmMode::NgramPredictive, 0);
 
     tracing::info!("=== E2E: Speculative mode ===");
 
@@ -317,13 +321,7 @@ fn e2e_engine_speculative_mode() {
 fn e2e_engine_all_confirm_modes() {
     init_test_logging();
 
-    for mode in [
-        ConfirmMode::Wait,
-        ConfirmMode::Speculative,
-        ConfirmMode::TwoPhase,
-        ConfirmMode::AdaptiveTiming,
-        ConfirmMode::NgramPredictive,
-    ] {
+    for mode in [ConfirmMode::Wait, ConfirmMode::NgramPredictive] {
         tracing::info!("=== E2E: Testing {:?} mode ===", mode);
         let mut engine = make_test_engine(mode);
 
@@ -378,7 +376,7 @@ fn e2e_engine_flush_pending_all_states() {
     );
 
     // SpeculativeChar
-    let mut engine = make_test_engine(ConfirmMode::Speculative);
+    let mut engine = make_test_engine_with_delay(ConfirmMode::NgramPredictive, 0);
     engine.on_event(key_down(0x41, 0x1E, 1_000_000));
     let r = engine.flush_pending(
         ContextChange::InputLanguageChanged,
@@ -2244,7 +2242,7 @@ fn e2e_three_key_arbitration_reversed() {
 #[test]
 fn e2e_two_phase_mode_transition() {
     init_test_logging();
-    let mut engine = make_test_engine(ConfirmMode::TwoPhase);
+    let mut engine = make_test_engine(ConfirmMode::NgramPredictive);
     tracing::info!("=== E2E: TwoPhase mode Phase 1->2 transition ===");
 
     let t0 = 1_000_000u64;
@@ -2274,7 +2272,7 @@ fn e2e_two_phase_mode_transition() {
 #[test]
 fn e2e_speculative_retraction_then_normal() {
     init_test_logging();
-    let mut engine = make_test_engine(ConfirmMode::Speculative);
+    let mut engine = make_test_engine_with_delay(ConfirmMode::NgramPredictive, 0);
     tracing::info!("=== E2E: Speculative retraction followed by normal input ===");
 
     let t0 = 1_000_000u64;

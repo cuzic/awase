@@ -4,7 +4,7 @@ engine_toggle_hotkey = "Ctrl+Shift+F12"
 layouts_dir = "layout"
 default_layout = "nicola_keytop.yab"
 
-# confirm_mode = "wait"  # wait / two_phase / adaptive_timing / ngram_predictive
+# confirm_mode = "wait"  # wait / ngram_predictive（旧 speculative / two_phase / adaptive_timing は wait 扱い）
 # speculative_delay_ms = 30
 
 # n-gram コーパスファイル（実行ファイルからの相対パス）。

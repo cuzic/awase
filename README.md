@@ -17,7 +17,7 @@ awase は低レベルキーボードフックで物理キー入力を横取り�
 ## 特徴
 
 - **NICOLA 準拠の同時打鍵判定** — d1/d2 比較による 3 キー仲裁
-- **4 つの確定モード** — wait / two\_phase / adaptive\_timing / ngram\_predictive
+- **2 つの確定モード** — wait / ngram\_predictive
 - **n-gram 適応閾値** — Wikipedia コーパス由来の 2/3-gram で判定ウィンドウを動的調整し精度向上
 - **やまぶき互換 `.yab` 配列ファイル** — 既存の配列データをそのまま利用可能
 - **幅広いアプリ対応** — Win32 / UWP / TSF ネイティブ（Chrome・VS Code・WezTerm 等）を自動識別
@@ -126,11 +126,11 @@ default_layout  = "nicola_keytop.yab"
 | モード | 特徴 |
 |--------|------|
 | `wait` | タイムアウトまで待機。最も正確、わずかに遅延あり |
-| `two_phase` | 短い待機後に投機出力。wait と即時出力の中間 |
-| `adaptive_timing` | 打鍵速度に応じて自動調整 |
 | `ngram_predictive` | Wikipedia 由来の n-gram 統計で閾値を動的調整（n-gram ファイル推奨） |
 
-迷ったら `wait` から始め、遅延が気になったら `adaptive_timing` を試してください。
+迷ったら `wait` から始め、遅延が気になったら `ngram_predictive` を試してください。
+
+> 旧バージョンの `speculative` / `two_phase` / `adaptive_timing` は廃止されました。`config.toml` に残っていても読込時に警告を出し、`wait` として扱います。
 
 n-gram の仕組みの詳細は [ARCHITECTURE.md](ARCHITECTURE.md#n-gram-による同時打鍵判定の精度向上) を参照してください。
 

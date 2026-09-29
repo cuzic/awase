@@ -4022,9 +4022,9 @@ impl SettingsApp {
 
         // confirm_mode / speculative_delay_ms は設定画面から完全に非表示にした
         // （2026-08-30、ユーザー判断: 「wait 単一表示というか設定UIから見えなく
-        // したらいい」）。ConfirmMode のバリアント・`dispatch_confirm_mode` の
-        // 分岐ロジックは残してあり、`config.toml` に `confirm_mode = "two_phase"`
-        // 等と手書きすれば引き続き使える純粋な toml 裏設定になった。
+        // したらいい」）。`config.toml` に `confirm_mode = "ngram_predictive"` と
+        // 手書きすれば使える純粋な toml 裏設定（v2 で選択肢は wait / ngram_predictive
+        // の2択。旧値 speculative / two_phase / adaptive_timing は wait として読む）。
 
         let slider_with_tip = |ui: &mut egui::Ui,
                                label: &str,
@@ -7261,69 +7261,38 @@ mod layout_tab_repro {
         );
     }
 
-    /// /code-review指摘（PR #127）: apply_confirmed()はvalidate()の戻り値
-    /// （confirm_mode="speculative"→two_phase正規化を含む）を警告文の表示
-    /// にしか使わず、保存対象は未検証のself.configのcloneのままだった。
-    /// 設定画面がconfirm_modeを一切表示しなくなったため、この正規化を
-    /// ユーザーが手で直す手段が無く、警告が「適用」を押すたび永遠に
-    /// 再表示され続けるバグになっていた。正規化後の値がファイルへ保存され、
-    /// かつ self.config にも反映されることを確認する。
+    /// 旧 confirm_mode（廃止済み）が config.toml に残っていても、読込時に
+    /// `wait` として扱われ、警告が出て、保存後のファイルに旧値が残らないこと。
     #[test]
-    fn apply_confirmed_persists_normalized_confirm_mode_not_raw_config() {
-        let config: awase::config::AppConfig = toml::from_str(
-            r#"
-[general]
-confirm_mode = "speculative"
-speculative_delay_ms = 30
-"#,
+    fn apply_confirmed_legacy_confirm_mode_loads_as_wait_with_warning() {
+        let config = awase::config::AppConfig::from_toml_str(
+            "[general]\nconfirm_mode = \"two_phase\"\nspeculative_delay_ms = 30\n",
         )
         .unwrap();
         assert_eq!(
             config.general.confirm_mode,
-            awase::config::ConfirmMode::Speculative,
-            "sanity: toml側の記述が期待通りspeculativeとしてパースされているか"
+            awase::config::ConfirmMode::Wait
         );
         let mut app = test_settings_app(config);
         let config_path = std::env::temp_dir().join(format!(
-            "awase_test_normalize_persist_{}_{}.toml",
+            "awase_test_legacy_confirm_{}_{}.toml",
             std::process::id(),
             unique_test_id()
         ));
         app.config_path = config_path.clone();
-        // ADR-201 決定3: 保存は `base`（読み込んだ生の値）との差だけを書くので、
-        // 実際に読み込んだファイルがある状態にする（`base` の speculative → 正規化後の
-        // two_phase が差分として書かれる）。
         std::fs::write(
             &config_path,
-            "[general]\nconfirm_mode = \"speculative\"\nspeculative_delay_ms = 30\n",
+            "[general]\nconfirm_mode = \"two_phase\"\nspeculative_delay_ms = 30\n",
         )
         .unwrap();
 
         app.apply_confirmed();
         wait_for_pending_save(&mut app);
 
-        let saved = std::fs::read_to_string(&config_path).unwrap();
         let _ = std::fs::remove_file(&config_path);
-
-        assert!(
-            saved.contains(r#"confirm_mode = "two_phase""#),
-            "保存されたファイルはconfirm_mode正規化後(two_phase)であるべき: {saved}"
-        );
-        assert!(
-            !saved.contains(r#"confirm_mode = "speculative""#),
-            "保存されたファイルに廃止済みのconfirm_mode=\"speculative\"が\
-             残ってはいけない: {saved}"
-        );
         assert_eq!(
             app.config.general.confirm_mode,
-            awase::config::ConfirmMode::TwoPhase,
-            "self.configも正規化後の値へ更新されるべき（次回のApplyで同じ警告が\
-             永遠に再表示されるのを防ぐため）"
-        );
-        assert!(
-            app.status.contains("speculative"),
-            "1回目のApplyでは廃止警告が表示されるべき: {}",
-            app.status
+            awase::config::ConfirmMode::Wait
         );
     }
 

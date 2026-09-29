@@ -551,9 +551,6 @@ footer p{margin-bottom:0.3rem}
       <table class="tab-table">
         <tr><th>Mode</th><th>Behavior</th><th>Suited for</th></tr>
         <tr><td>wait (default, recommended)</td><td>Holds until the timeout before committing. Most accurate</td><td>People who want to type slowly and accurately</td></tr>
-        <tr><td>speculative<br><span style="color:var(--text-secondary);font-size:0.85rem">(deprecated)</span></td><td>Outputs immediately and replaces on a simultaneous keystroke. Exactly equivalent to <code>two_phase</code> (<code>speculative_delay_ms=0</code>), so setting it is automatically read as that</td><td>—</td></tr>
-        <tr><td>two_phase</td><td>Speculative output after a short wait. Between wait and speculative</td><td>People who want a balance</td></tr>
-        <tr><td>adaptive_timing</td><td>wait during continuous typing, speculative once typing pauses. Adapts to speed automatically</td><td>People whose typing speed varies</td></tr>
         <tr><td>ngram_predictive</td><td>Dynamically decides speculative vs. wait using n-gram statistics. Uses context to improve accuracy</td><td>People who want the smartest decision</td></tr>
       </table>
     </div>
@@ -668,9 +665,7 @@ simultaneous_threshold_ms = 100
 # Confirm-mode selection
 #   wait              - hold until the timeout (most accurate, default, recommended)
 #   ngram_predictive  - dynamically switch speculative/wait with n-gram prediction
-#   speculative       - (deprecated) equivalent to two_phase (speculative_delay_ms=0)
-#   two_phase         - short wait -> speculative output -> replace
-#   adaptive_timing   - automatically adjust the threshold to typing speed
+#   (the old speculative / two_phase / adaptive_timing were removed; if left in place awase warns and treats them as wait)
 confirm_mode = "wait"</div>
     </div>
 
@@ -935,7 +930,6 @@ engine_off_solo_triple = "VK_NONCONVERT"
       <ul>
         <li>First try the default <code>confirm_mode = "wait"</code> (recommended; accurate but somewhat slower)</li>
         <li>If the delay bothers you, try <code>"ngram_predictive"</code></li>
-        <li>If fast typing feels off, try <code>"adaptive_timing"</code></li>
       </ul>
     </div>
 

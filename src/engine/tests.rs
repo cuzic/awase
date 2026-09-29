@@ -118,8 +118,8 @@ fn make_speculative_engine() -> TestHarness {
             VK_NONCONVERT,
             VK_CONVERT,
             100,
-            ConfirmMode::Speculative,
-            30,
+            ConfirmMode::NgramPredictive,
+            0,
         ),
     }
 }
@@ -4510,8 +4510,8 @@ fn test_speculative_simultaneous_with_romaji() {
             VK_NONCONVERT,
             VK_CONVERT,
             100,
-            ConfirmMode::Speculative,
-            30,
+            ConfirmMode::NgramPredictive,
+            0,
         ),
     };
     let t0 = 1_000_000;
@@ -4634,7 +4634,7 @@ fn make_two_phase_engine() -> TestHarness {
             VK_NONCONVERT,
             VK_CONVERT,
             100,
-            ConfirmMode::TwoPhase,
+            ConfirmMode::NgramPredictive,
             30,
         ),
     }
@@ -4793,127 +4793,6 @@ fn test_two_phase_char_sequence() {
     );
 }
 
-// ── AdaptiveTiming モード テスト ──
-
-fn make_adaptive_engine() -> TestHarness {
-    TestHarness {
-        tracker: input_tracker::InputTracker::new(),
-        engine: NicolaFsm::new(
-            make_layout(),
-            VK_NONCONVERT,
-            VK_CONVERT,
-            100,
-            ConfirmMode::AdaptiveTiming,
-            30,
-        ),
-    }
-}
-
-/// 最初のキー（前キーなし）→ TwoPhase 動作（PendingChar + TIMER_SPECULATIVE）
-#[test]
-fn test_adaptive_first_key_uses_two_phase() {
-    let mut engine = make_adaptive_engine();
-    let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
-
-    // TwoPhase: PendingChar 状態 + TIMER_SPECULATIVE が設定される
-    r.assert_consumed();
-    assert!(
-        r.actions.is_empty(),
-        "TwoPhase Phase 1 should have no actions"
-    );
-    assert!(
-        matches!(engine.state, EngineState::PendingChar(_)),
-        "state should be PendingChar, got {:?}",
-        engine.state
-    );
-    r.assert_timer_set(TIMER_SPECULATIVE);
-}
-
-/// 連続打鍵（50ms 間隔）→ Wait 動作（PendingChar + TIMER_PENDING）
-#[test]
-fn test_adaptive_rapid_typing_uses_wait() {
-    let mut engine = make_adaptive_engine();
-
-    // 1 文字目（TwoPhase 動作）
-    let t0 = 1_000_000;
-    let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
-    // タイムアウトで確定させて Idle に戻す
-    let _ = engine.on_timeout(TIMER_SPECULATIVE);
-    let _ = engine.on_timeout(TIMER_PENDING);
-
-    // 2 文字目: 50ms 後（< 80ms → continuous → Wait）
-    let t1 = t0 + 50_000;
-    let r = engine.on_event(Ev::down(VK_S).at(t1).build());
-
-    r.assert_consumed();
-    assert!(
-        r.actions.is_empty(),
-        "Wait mode should have no immediate actions"
-    );
-    assert!(
-        matches!(engine.state, EngineState::PendingChar(_)),
-        "state should be PendingChar, got {:?}",
-        engine.state
-    );
-    r.assert_timer_set(TIMER_PENDING);
-}
-
-/// ポーズ後（200ms 間隔）→ TwoPhase 動作（PendingChar + TIMER_SPECULATIVE）
-#[test]
-fn test_adaptive_after_pause_uses_two_phase() {
-    let mut engine = make_adaptive_engine();
-
-    // 1 文字目
-    let t0 = 1_000_000;
-    let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
-    let _ = engine.on_timeout(TIMER_SPECULATIVE);
-    let _ = engine.on_timeout(TIMER_PENDING);
-
-    // 2 文字目: 200ms 後（>= 80ms → paused → TwoPhase）
-    let t1 = t0 + 200_000;
-    let r = engine.on_event(Ev::down(VK_S).at(t1).build());
-
-    r.assert_consumed();
-    assert!(
-        r.actions.is_empty(),
-        "TwoPhase Phase 1 should have no actions"
-    );
-    assert!(
-        matches!(engine.state, EngineState::PendingChar(_)),
-        "state should be PendingChar, got {:?}",
-        engine.state
-    );
-    r.assert_timer_set(TIMER_SPECULATIVE);
-}
-
-/// 連続打鍵 → ポーズ → 最後のキーは TwoPhase を使用
-#[test]
-fn test_adaptive_continuous_then_pause() {
-    let mut engine = make_adaptive_engine();
-
-    // 1 文字目 t=1000ms
-    let t0 = 1_000_000;
-    let _ = engine.on_event(Ev::down(VK_A).at(t0).build());
-    let _ = engine.on_timeout(TIMER_SPECULATIVE);
-    let _ = engine.on_timeout(TIMER_PENDING);
-
-    // 2 文字目 t=1050ms (50ms gap → continuous → Wait)
-    let t1 = t0 + 50_000;
-    let r1 = engine.on_event(Ev::down(VK_S).at(t1).build());
-    r1.assert_timer_set(TIMER_PENDING); // Wait mode
-    let _ = engine.on_timeout(TIMER_PENDING);
-
-    // 3 文字目 t=1300ms (250ms gap → paused → TwoPhase)
-    let t2 = t1 + 250_000;
-    let r2 = engine.on_event(Ev::down(VK_A).at(t2).build());
-    r2.assert_consumed();
-    assert!(
-        r2.actions.is_empty(),
-        "TwoPhase Phase 1 should have no actions"
-    );
-    r2.assert_timer_set(TIMER_SPECULATIVE);
-}
-
 // ── NgramPredictive confirm mode tests ──
 
 fn make_ngram_predictive_engine() -> TestHarness {
@@ -5061,18 +4940,21 @@ fn test_ngram_predictive_no_history_uses_wait() {
 // depends on context history.
 
 /// Modes to include in cross-mode comparison tests.
-const CROSS_MODES: [ConfirmMode; 4] = [
-    ConfirmMode::Wait,
-    ConfirmMode::Speculative,
-    ConfirmMode::TwoPhase,
-    ConfirmMode::AdaptiveTiming,
+///
+/// v2 で公開される確定モードは Wait / NgramPredictive の2択。n-gram モデル未設定の
+/// NgramPredictive は `speculative_delay_ms` が 0 なら即時投機出力、0 超なら
+/// 短い待機→投機出力になるため、その2通りを含めて比較する。
+const CROSS_MODES: [(ConfirmMode, u32); 3] = [
+    (ConfirmMode::Wait, 30),
+    (ConfirmMode::NgramPredictive, 0),
+    (ConfirmMode::NgramPredictive, 30),
 ];
 
-fn make_engine_with_mode(mode: ConfirmMode) -> TestHarness {
+fn make_engine_with_mode(mode: ConfirmMode, delay_ms: u32) -> TestHarness {
     let layout = make_layout();
     TestHarness {
         tracker: input_tracker::InputTracker::new(),
-        engine: NicolaFsm::new(layout, VK_NONCONVERT, VK_CONVERT, 100, mode, 30),
+        engine: NicolaFsm::new(layout, VK_NONCONVERT, VK_CONVERT, 100, mode, delay_ms),
     }
 }
 
@@ -5108,8 +4990,8 @@ fn collect_chars(responses: &[Resp]) -> Vec<char> {
 #[test]
 fn test_all_modes_single_char_same_output() {
     let mut reference: Option<Vec<char>> = None;
-    for mode in CROSS_MODES {
-        let mut engine = make_engine_with_mode(mode);
+    for (mode, delay) in CROSS_MODES {
+        let mut engine = make_engine_with_mode(mode, delay);
         let mut responses = vec![];
 
         // Press A key
@@ -5147,8 +5029,8 @@ fn test_all_modes_single_char_same_output() {
 #[test]
 fn test_all_modes_simultaneous_same_final_output() {
     let mut reference: Option<Vec<char>> = None;
-    for mode in CROSS_MODES {
-        let mut engine = make_engine_with_mode(mode);
+    for (mode, delay) in CROSS_MODES {
+        let mut engine = make_engine_with_mode(mode, delay);
         let mut responses = vec![];
         let t = 1_000_000u64;
 
@@ -5183,8 +5065,8 @@ fn test_all_modes_simultaneous_same_final_output() {
 #[test]
 fn test_all_modes_simultaneous_right_thumb_same_final_output() {
     let mut reference: Option<Vec<char>> = None;
-    for mode in CROSS_MODES {
-        let mut engine = make_engine_with_mode(mode);
+    for (mode, delay) in CROSS_MODES {
+        let mut engine = make_engine_with_mode(mode, delay);
         let mut responses = vec![];
         let t = 1_000_000u64;
 
@@ -5219,12 +5101,8 @@ fn test_all_modes_simultaneous_right_thumb_same_final_output() {
 #[test]
 fn test_all_modes_rapid_sequence_same_output() {
     let mut reference: Option<Vec<char>> = None;
-    for mode in [
-        ConfirmMode::Wait,
-        ConfirmMode::Speculative,
-        ConfirmMode::TwoPhase,
-    ] {
-        let mut engine = make_engine_with_mode(mode);
+    for (mode, delay) in CROSS_MODES {
+        let mut engine = make_engine_with_mode(mode, delay);
         let mut responses = vec![];
 
         // Type A, S rapidly (50ms apart), well outside threshold for simultaneous
@@ -5260,8 +5138,8 @@ fn test_all_modes_rapid_sequence_same_output() {
 #[test]
 fn test_all_modes_thumb_first_then_char_same_output() {
     let mut reference: Option<Vec<char>> = None;
-    for mode in CROSS_MODES {
-        let mut engine = make_engine_with_mode(mode);
+    for (mode, delay) in CROSS_MODES {
+        let mut engine = make_engine_with_mode(mode, delay);
         let mut responses = vec![];
         let t = 1_000_000u64;
 
@@ -5296,8 +5174,8 @@ fn test_all_modes_thumb_first_then_char_same_output() {
 fn test_all_modes_char_alone_after_threshold_same_output() {
     // Char is pressed, thumb arrives after threshold → char confirmed as normal face
     let mut reference: Option<Vec<char>> = None;
-    for mode in CROSS_MODES {
-        let mut engine = make_engine_with_mode(mode);
+    for (mode, delay) in CROSS_MODES {
+        let mut engine = make_engine_with_mode(mode, delay);
         let mut responses = vec![];
         let t = 1_000_000u64;
 
@@ -5334,7 +5212,7 @@ fn test_all_modes_char_alone_after_threshold_same_output() {
 
 #[test]
 fn test_speculative_has_immediate_output() {
-    let mut engine = make_engine_with_mode(ConfirmMode::Speculative);
+    let mut engine = make_engine_with_mode(ConfirmMode::NgramPredictive, 0);
     let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
     assert!(
         !r.actions.is_empty(),
@@ -5349,7 +5227,7 @@ fn test_speculative_has_immediate_output() {
 
 #[test]
 fn test_wait_has_no_immediate_output() {
-    let mut engine = make_engine_with_mode(ConfirmMode::Wait);
+    let mut engine = make_engine_with_mode(ConfirmMode::Wait, 30);
     let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
     assert!(
         r.actions.is_empty(),
@@ -5359,7 +5237,7 @@ fn test_wait_has_no_immediate_output() {
 
 #[test]
 fn test_two_phase_no_output_before_speculative_timer() {
-    let mut engine = make_engine_with_mode(ConfirmMode::TwoPhase);
+    let mut engine = make_engine_with_mode(ConfirmMode::NgramPredictive, 30);
     let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
     assert!(
         r.actions.is_empty(),
@@ -5379,28 +5257,12 @@ fn test_two_phase_no_output_before_speculative_timer() {
 }
 
 #[test]
-fn test_adaptive_first_key_behaves_like_two_phase() {
-    // AdaptiveTiming with no prior key history should use TwoPhase behavior
-    let mut engine = make_engine_with_mode(ConfirmMode::AdaptiveTiming);
-    let r = engine.on_event(Ev::down(VK_A).at(1_000_000).build());
-    assert!(
-        r.actions.is_empty(),
-        "AdaptiveTiming first key should not output immediately (TwoPhase Phase 1)"
-    );
-    let r = engine.on_timeout(TIMER_SPECULATIVE);
-    assert!(
-        !r.actions.is_empty(),
-        "AdaptiveTiming first key should output after speculative timer"
-    );
-}
-
-#[test]
 fn test_speculative_retraction_on_simultaneous() {
     // Verify that Speculative mode resolves to thumb face when thumb arrives
     // within threshold.  The engine emits the speculative char immediately,
     // then when thumb arrives it retracts (BS) and emits the thumb face.
     // collect_output neutralises the BS+original pair.
-    let mut engine = make_engine_with_mode(ConfirmMode::Speculative);
+    let mut engine = make_engine_with_mode(ConfirmMode::NgramPredictive, 0);
     let t = 1_000_000u64;
 
     let r1 = engine.on_event(Ev::down(VK_A).at(t).build());
@@ -6122,7 +5984,7 @@ mod fsm_adapter_tests {
     fn set_confirm_mode_updates() {
         let mut adapter = make_adapter();
         // Should not panic
-        adapter.set_confirm_mode(ConfirmMode::Speculative, 50);
+        adapter.set_confirm_mode(ConfirmMode::NgramPredictive, 50);
         adapter.set_confirm_mode(ConfirmMode::Wait, 30);
     }
 
@@ -6569,7 +6431,7 @@ mod engine_integration_tests {
     fn on_command_update_fsm_params() {
         let mut engine = make_test_engine();
         let d = engine.on_command(
-            update_fsm_params(200, ConfirmMode::Speculative, 50),
+            update_fsm_params(200, ConfirmMode::NgramPredictive, 50),
             &ime_on_ctx(),
         );
         assert!(!d.is_consumed());
@@ -9515,7 +9377,7 @@ mod engine_integration_tests {
         // 既定の Wait のままになり、文字キー押下時に即座出力（投機）されなくなる。
         let mut engine = make_test_engine();
         engine.on_command(
-            update_fsm_params(100, ConfirmMode::Speculative, 40),
+            update_fsm_params(100, ConfirmMode::NgramPredictive, 0),
             &ime_on_ctx(),
         );
 
@@ -9544,7 +9406,7 @@ mod engine_integration_tests {
         // remaining_us = 100_000 - 40_000 = 60_000 (60ms) を直接検証する。
         let mut engine = make_test_engine();
         engine.on_command(
-            update_fsm_params(100, ConfirmMode::TwoPhase, 40),
+            update_fsm_params(100, ConfirmMode::NgramPredictive, 40),
             &ime_on_ctx(),
         );
 
