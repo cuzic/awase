@@ -8,7 +8,7 @@ summary: |-
   全打鍵が cold 経路(per-VK confirm)を通り、StaleConfirm(約15%/語)で `escape=true` の VK_ESCAPE が送られ、未確定の直前文字ごと消える。
   75eb3f60(予測経路1点だけ ImeOn を足す)は点パッチであり、半角/全角・sync_direction・OFF 方向・外部開閉は塞がらない。本 ADR は同期の入口の選択(決定)を定める。
 status: |-
-  起票(2026-09-29)。Opus round3 まで反映(検出点を `WindowsPlatform::send_keys` へ、OFF 同期を廃し ON 系イベントで Reopen、案C は別PR)、round4 の収束確認待ち。実装未着手。
+  起票(2026-09-29)。Opus round3 まで反映(検出点を `WindowsPlatform::send_keys` へ、OFF 同期を廃し ON 系イベントで Reopen、案C は別PR)、round4 まで反映し収束(Opus 条件付き収束の3点を反映済み)。実装未着手。
 related_adr:
   - "ADR-089"
   - "ADR-090"
@@ -50,19 +50,35 @@ related_adr:
 
 1. **(i) level 突合(ON 方向の主機構)。検出点は `WindowsPlatform::send_keys`(`platform.rs:1169`〜、`&mut self`)の冒頭、`self.output.send_keys(actions)` の前**。
    条件はすべて満たすとき: `actions` に `Char`/`Romaji`(Sequence 内含む)がある、`injection_mode != Unicode`、`output.needs_f2_probe()`(GjiFsm 戦略の実体であり種別推測ではないので INV-42 の K 軸ゲートには当たらない)、
-   `gji_state == OffCold`、`!output.has_pending_tsf_work()`(probe 実行中は突合しない。次の send で拾う)。揃ったら `self.sync_gji(GjiFsmSync::OnImeOn{origin: BeliefSync})`。
+   `gji_state == OffCold`、`!output.is_probe_or_recovery_blocking(true)` 相当(= `has_pending_tsf() || raw_recovery_owns_deferred()`、`output/mod.rs:1471-1474`。probe 実行中に加え raw recovery/reinit の実行中も突合しない。次の send で拾う。`has_pending_tsf_work()` だけでは、StaleConfirm 後に machine が drop されても raw recovery が実行中の窓で ImeOn が probe_id を採番して recovery の段に奪われる)。`pub(super)` なので platform 用の読み取り専用 accessor を1つ足す(`architecture_guard::raw_recovery_owns_deferred_call_sites_are_accounted_for` を壊さない形で)。揃ったら `self.sync_gji(GjiFsmSync::OnImeOn{origin: BeliefSync})`。
    - 旧案(`send_romaji_*_gated` の冒頭)は不採用: `Output` は `&self` で `sync_gji`/`dispatch_gji_response` を呼べない(StartProbe→probe_id 保存・TsfProbeStarted 記録・LongIdle タイマー kill が要る)。
      また raw recovery の再送(`*_bypass_gate`、log 737 の `re-sending raw TSF literal`)でも発火し、走行中の古い段の `finish_probe_stage` が新 probe_id を奪って新 Authorized probe を倒す(`output/mod.rs:1719-1729`)。
-   - 判定は `state/gji_direct_mechanism.rs` の純粋関数 `needs_belief_sync_on(send_has_romaji, mode, strategy_is_gji, state_label)` に置いてホストで全数テスト。
+   - 判定は `state/gji_direct_mechanism.rs` の純粋関数 `needs_belief_sync_on(send_has_romaji, mode, strategy_is_gji, state_label, blocking)` に置いてホストで全数テスト。
    - Unicode 注入モードは対象外(`send_romaji_as_unicode` は GjiFsm に KeyInput を送らず composition も迂回する。OffCold のままでも per-VK/ESC の害は無く、失うのは long-cold の defer だけで別件)。
    - 「エンジンがローマ字を送る ⇒ belief ON」: 不一致は engine 活性の更新遅れ(belief OFF→refresh 前の打鍵)か「IME OFF なのに Engine ON」(BUG-162 系)に限られ、後者はどのみちリテラル化するので
      GjiFsm を ON にしても悪化しない。**belief の誤りは (i) では直らないし、悪化もしない。**
-2. **(ii) 確かな ON 系イベントでは、GjiFsm がどの状態でも開き直す(新イベント `GjiEvent::Reopen{gji_idle_ms}`)**。OffCold は通常の ImeOn、OnWarm/OnComposing/OnCold は OnCold(Short 以上、proactive)へ。
-   対象: `KeyEffectPredicted{open: Some(true)}`(物理キー予測)、shadow toggle で ON に倒した瞬間、`sync_direction` の on キー(ユーザーが意図を宣言したキー)。
-   `ImeOn` の「already on, ignored」は変えない。`handle_composition_reset` は Short で warm に留めるが Reopen は留めない、という違いを FSM 特性テストで固定する。
-   **OFF は同期しない**(ImeOff は従来どおり awase の actuation〈Applied の receipt〉のみ)。OFF 同期が要る唯一の理由「次の ON で already on にならず cold にならない」は、ON キーで常に開き直すことで消える。
-   これにより B3(belief 由来 ImeOff が deferred VK を捨てる/flush 順序)と OFF の信頼度の議論は不要。代償は、既に ON のときの ON キーで1語だけ per-VK になること(GJI の F2 は ON 中でも
-   composition context を触り、F2NonTsf の CompositionReset が既に出ているので追加の損失は小さい)。
+2. **(ii) 確かな ON 系イベントでは、未確定文字が無いときに限って開き直す(新イベント `GjiEvent::Reopen{gji_idle_ms}`)**。
+   対象イベント: `KeyEffectPredicted{open: Some(true)}`(物理キー予測)、shadow toggle で ON に倒した瞬間、`sync_direction` の on キー(ユーザーが意図を宣言したキー)。
+   **Reopen の遷移表(FSM 特性テストでこのとおり固定)**:
+
+   | 状態 | Reopen の遷移 |
+   |---|---|
+   | OffCold | 通常の `ImeOn` と同じ(OnCold(kind, proactive)) |
+   | OnWarm | OnCold(max(kind, Short), proactive)。`CancelProbe` なし(OnWarm には probe が無い)。`handle_composition_reset` と違い Short でも warm に留めない |
+   | OnCold(*) | 何もしない(`Response::consume()`)。probe・pending・deferred を保持する |
+   | OnComposing(*) | 何もしない。未確定文字は IME ON の証拠 |
+
+   理由: (a) 入力の途中(OnComposing)で cold に落とすと、候補窓が既存の未確定文字で可視なので per-VK → StaleConfirm → `escape=true` の ESC が未確定文字を消す(BUG-171 型を自分で作る。
+   BUG-033 追補3・4「弱い代理指標で genuinely warm を cold へ送り込み確定済み文字を消した」の再演。`handle_composition_reset` が Short で warm に留めるのはその反省)。
+   未確定文字がある以上 IME は実際に ON で、OFF を見逃した後の開き直しはこの状態では起こりえない。(b) 走行中の probe(OnCold Authorized / OnComposing AwaitingProbe)で遷移し直すと
+   `CancelProbe` → `cancel_probe()` の `take_pending_deferred()` で deferred VK を捨てる(B3 の再来)。OnCold は既に cold で probe を作り直す利益も無い。
+   **runtime 側の発火条件**: `gji_candidate_visible_now()` が true(候補窓が出ている=入力中)なら Reopen を出さない(GjiFsm の OnWarm は EndComposition の取りこぼしで候補窓が出ていても OnWarm に見えうるための二重防御)。
+   composing 中に F2 が押された場合は上の表で何もせず、既存の F2 処理(NativeF2Consumed / F2NonTsf の CompositionReset、Short なら warm のまま)が従来どおり効く。
+   `ImeOn` の「already on, ignored」は変えない。**OFF は同期しない**(ImeOff は従来どおり awase の actuation〈Applied の receipt〉のみ)。OFF 同期が要る唯一の理由
+   「次の ON で already on にならず cold にならない」は、OnWarm での ON キーによる開き直しで消える。B3(belief 由来 ImeOff が deferred を捨てる)と OFF の信頼度の議論は不要。
+   **代償は「OnWarm(未確定文字なし)で ON 系キーを単独タップした直後の1語だけ per-VK になる」こと**(実測で per-VK の1語は `[vk-send]` から `全 2 VK 確認済み` まで約 30〜60ms。
+   その間の後続打鍵は OUTPUT_GATE で遅れる)。1語ごとに StaleConfirm 誤検出による romaji 再送重複(BUG-075 系、CI で約0.14%)へ触れる機会が1回増えるが、最初の語だけなので
+   ESC による既存未確定文字の消失(BUG-171)には当たらない。NICOLA の親指キー(0x1C/0x1D)は同時打鍵でエンジンが消費するため予測経路に来ない。
    `ImeApplySucceeded` は対象外(generation 付き awase actuation 専用で receipt が INV-42 で同期済み、重複するうえ Unwarranted を含まない)。shadow toggle は ON 方向のみ(向きは belief 次第で
    Imm32Unavailable では逆になりうるため)。
 3. **origin を FSM を通して運ぶ**: `GjiFsmSync`/`Reopen`/`ImeOn` に origin(`Actuation` | `BeliefSync`)を持たせ、`GjiAction::StartProbe` は origin を持たないので `ProbeParams` に `suppress_reinit` を足す等で
@@ -89,12 +105,12 @@ related_adr:
 - **journal 追跡(Opus round3、期待)**: 今回の journal を新設計で追うと、193002 で固着の起点が消え(予測 ON → Reopen → OnCold(Short))、Edge では1語目だけ per-VK(ChromeProbe cold=53)で StartComposition 後に AlreadyWarm、
   以後は warm 経路(per-VK/StaleConfirm/ESC なし)で4回目の消失は起きない。ただし1語目の probe が StartComposition より前に Stale で終わると決定8の経路が残る。実機で確認する。
 - **Linux**: `needs_belief_sync_on`(`{OffCold,OnCold,OnWarm,OnComposing}` × 送信意図 × Unicode × 戦略 × pending tsf work)と (ii) の対象イベント判定を純粋関数で全数テスト。GjiFsm 特性テスト
-  (Reopen が OnWarm/OnComposing から OnCold(Short 以上)へ落ちること、ImeOn は already on を無視すること、今回の journal の順序で OnComposing(AlreadyWarm) になること)。journal リプレイは同じ純粋関数に
+  (Reopen の遷移表(OffCold→ImeOn、OnWarm→OnCold(Short 以上)、OnCold/OnComposing→何もしない〈deferred・probe を保持〉)、ImeOn は already on を無視すること、今回の journal の順序で OnComposing(AlreadyWarm) になること)。journal リプレイは同じ純粋関数に
   `elapsed_ms` から時刻を合成して流す表駆動(runtime が同じ関数を通らないと写しの検査になるため)。不変条件 I1「エンジンが送信した時点で GjiFsm が OffCold でない」、I2「OffCold で StartComposition を受けない」。
 - **windows-latest e2e(判定は awase log の GjiFsm 遷移、文字消失は主判定にしない)**: (a) IME を閉じて起動 → **F2 注入の直前に OffCold であることを確認**(無ければ INCONCLUSIVE)→ `AWASE_TEST_INJECTION` 付き 0xF2 →
   最初の文字の前に `Reopen(BeliefSync:predict)` による OffCold→OnCold(0xF2 の予測より後に初めて起きたことが条件)、`StartComposition while engine off` 0件、Enter 区間ごとの `prepend_f2_warmup=true` が1回以下。
   (b) B2: IME ON のまま GJI 種別を検出し直させる → 打鍵 → (i) の `ImeOn(BeliefSync:level)` で OffCold 固着が解けること(点パッチ撤去の判断材料)。
-  (c) 開き直し: 物理 OFF(TEST マーカー付き 0xF3 等)→ 1秒以内に物理 ON → 即打鍵。**PASS 条件は「ON 後の最初の語が cold 経路になる(`prepend_f2_warmup=true`)」**(開き直しの確認)。
+  (c) 開き直し: **OFF 前に1語打って Enter で確定し(OnWarm にする。OnComposing/OnCold からだと no-op 経路を踏み判定が不定になる)**、物理 OFF(TEST マーカー付き 0xF3 等)→ 1秒以内に物理 ON → 即打鍵。**PASS 条件は「ON 後の最初の語が cold 経路になる(`prepend_f2_warmup=true`)」**(開き直しの確認)。あわせて (a)/(c) で ON キー単独タップ直後の1語の遅延を `[vk-send]` から `セッション確認` までの ms で記録し、修正前(OffCold で毎語 per-VK)と比較する。
   (d) 既存の全 e2e に `StartComposition while engine off` 0件の不変条件チェック。**修正前 FAIL・修正後 PASS の両方を実測してからマージ**。
 - **step 0(マージ前必須)**: c8bc1adc 以降の既存 ts-*/sc-* artifact を `StartComposition while engine off` と `prepend_f2_warmup=true` の連続で grep。既存 CI が OffCold 固着で走っていた場合は
   BUG-168 の残りの失敗(文字重複)の読み方と ts-* のベースラインが変わる。
