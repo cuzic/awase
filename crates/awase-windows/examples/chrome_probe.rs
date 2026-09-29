@@ -37,7 +37,7 @@ use windows::Win32::UI::TextServices::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, FindWindowW, GetForegroundWindow, GetWindowThreadProcessId, SendMessageW,
-    SetForegroundWindow,
+    SetForegroundWindow, SwitchToThisWindow,
 };
 
 /// スパイクと同じ目印。`AWASE_TEST_INJECTION=1` の awase は、この目印の注入を物理キーとして扱う。
@@ -517,6 +517,10 @@ fn find_chrome(arg: Option<String>) -> Option<String> {
 }
 
 /// タスクバーを前面にしてテスト窓からフォーカスを外す(`--refocus`。フォーカス変更イベントを awase に見せる)。
+fn sleep_ms_away() {
+    std::thread::sleep(std::time::Duration::from_millis(200));
+}
+
 fn focus_away() -> bool {
     unsafe {
         let Ok(tray) = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) else {
@@ -531,7 +535,13 @@ fn focus_away() -> bool {
         let my_tid = GetCurrentThreadId();
         let attached =
             fg_tid != 0 && fg_tid != my_tid && AttachThreadInput(my_tid, fg_tid, true).as_bool();
-        let ok = SetForegroundWindow(tray).as_bool();
+        let mut ok = SetForegroundWindow(tray).as_bool();
+        if !ok {
+            // CI では SetForegroundWindow がタスクバーに対して拒否される(chrome_probe run 36530291568 で away=false)。
+            SwitchToThisWindow(tray, true);
+            sleep_ms_away();
+            ok = GetForegroundWindow() == tray;
+        }
         if attached {
             let _ = AttachThreadInput(my_tid, fg_tid, false);
         }
