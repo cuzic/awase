@@ -162,3 +162,27 @@ BUG-163（起動時 `desired_open=true` の強制ON）は修正が develop に�
 - E: `set_ime_open_ordered` が授権なしで `false` を返すことを確認し、T2 に記録項目を足した。
 - F: `architecture_guard.rs:1874`・`:2128` の既存ガードを確認し、T6 の範囲を絞った。
 - G: `runtime/mod.rs:1791-1792` に加え、トレイリセットの `set_ime_mode_for_target(hwnd, true, …)` も `ime.rs:1763` で開閉を書くことを確認した（レビューが挙げていない点）。08 → 09 の向きと中身も依存節に書いた。
+
+### CI での代替観測（2026-09-29、`cal-driftrec-*`）
+
+上の A/B-2 のうち「ずれを作って drift correction だけで ON に戻るか」は、物理キーが要らないため CI で観測できる。
+`typing_stress --mode=drift-on`（ハーネスが自プロセスの入力欄の IME へ `WM_IME_CONTROL(IMC_SETOPENSTATUS,0)` を送って awase を
+経由せず閉じ、+500/+1500/+3000ms の API 開閉と、かな単打の実打鍵結果を記録）＋ `check_drift_recovery.py`。構成は
+tsf（TsfNative 相当、ADR-193）と edit（ImmCross の Win32 対照）× GJI/MS-IME、各 10 試行×3 回。
+実測（run [36508587614](https://github.com/cuzic/awase/actions/runs/36508587614)、windows-latest、develop `e174c6f6` + 本構成）:
+
+| 入力先 × IME | 3秒後の API | 実打鍵 | drift correction 発火 | 判定 |
+|---|---|---|---|---|
+| tsf × GJI | 閉のまま | **`か`（打てる）** ×30 | 0 | UNDETERMINED（API が実態を映さない。閉じた「ずれ」が効いたか不明） |
+| tsf × MS-IME | 閉のまま | **`ka`（生ローマ字）** ×30 | 0 | NOT_RECOVERED |
+| edit × GJI | 閉のまま | `か` ×30 | 0〜1 | UNDETERMINED |
+| edit × MS-IME | 閉のまま | 生ローマ字 ×30 | 0 | NOT_RECOVERED |
+
+- 撤去済み状態（reassert/force-on 無し）で、外部から閉じられた IME を drift correction が **ON へ戻さない**ことが MS-IME で確認できた
+  （TsfNative・ImmCross の両方）。ADR-191 決定1（IME が状態の正、awase は書かない）・BUG-163 1段目（授権が下りない補正は検知へ進めない）と整合する。
+  「回復力が落ちた」というより「そもそも戻さない設計」になっている。戻したい場合は別の機構が要る（既定では戻さないのが方針）。
+- GJI は API（`ImmGetOpenStatus`）が閉のままでも打てた。TsfNative に限らず edit でも同じで、`ImmSetOpenStatus` 系の直接操作が GJI の実状態に効かない
+  可能性がある（GJI は TSF で状態を持つ）。GJI の回復可否は、この方法では判別できない（UNDETERMINED）。判別には TSF compartment を直接書く等の別のずれ作成が要る。
+- 落とし穴: `ImmSetOpenStatus` を別スレッドから呼ぶと失敗する（`set_ok=false`、run 36508003461 で全 12 run INVALID）。既定 IME ウィンドウへの
+  `WM_IME_CONTROL` にすると閉じられる。`turn_ime_on` の回転キーの一部は ON にならないので、実 IME が開くまでリトライする。
+- 実行: `gh workflow run e2e-ime.yml --ref <branch> -f only='cal-driftrec-*'`（cal-* は only 指定時だけ走る）。観測のみで合否には含めない。

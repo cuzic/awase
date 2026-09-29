@@ -8,9 +8,12 @@
 
 試行の分類:
   invalid      前提が成立しない(pre が True でない / close 直後に閉じていない=ずれを作れていない / 全チェック不能)
-  recovered    いずれかのチェックポイントで実 IME が再び開き、かつ打鍵結果が期待どおりのかな
-  api_only     実 IME は開いたが打鍵結果が期待と違う(API 表示と実タイピングの食い違い)
-  not_recovered 3秒間閉じたまま(drift correction では戻らない)
+  recovered    API 上も再び開き、かつ打鍵結果が期待どおりのかな
+  api_lies     API(ImmGetOpenStatus)は閉じたままなのに打鍵結果は期待どおりのかな(TsfNative で API が実態を
+               映さない。GJI × tsf で run 36508587614 に確認。閉じた「ずれ」自体が実 IME に効いていない可能性もある)
+  api_only     API 上は開いたが打鍵結果が期待と違う(API 表示と実タイピングの食い違い)
+  not_recovered 3秒間 API も閉じたまま、打鍵結果も期待と違う(生ローマ字等。drift correction では戻らない)
+verdict: 全有効試行が recovered=RECOVERED / 打鍵が期待どおりの試行が1件も無い=NOT_RECOVERED / 全て api_lies=UNDETERMINED(ずれが効いたか不明) / それ以外=PARTIAL。
 判定は観測用(CI の expect は 'observe')。撤去した経路の代替として drift correction が十分かの材料にする。
 使い方: check_drift_recovery.py [--json out.json] <typing_stress.log> <awase.log>
 終了コード: 0=有効試行が全て recovered / 1=recovered でない試行あり / 3=INVALID / 2=使い方の誤り
@@ -56,7 +59,7 @@ def analyze(recs: list, drift_lines: int) -> dict:
     pre, close, checks, typed = by_n("drift_on_pre"), by_n("drift_on_close"), by_n("drift_on_check"), by_n("drift_on_typed")
     ns = sorted(set(pre) | set(close) | set(checks) | set(typed))
     trials = []
-    counts = {"recovered": 0, "api_only": 0, "not_recovered": 0, "invalid": 0}
+    counts = {"recovered": 0, "api_lies": 0, "api_only": 0, "not_recovered": 0, "invalid": 0}
     for n in ns:
         p = pre.get(n, [{}])[0].get("real_ime_open")
         c = close.get(n, [{}])[0]
@@ -76,7 +79,7 @@ def analyze(recs: list, drift_lines: int) -> dict:
         else:
             opened = [x["checkpoint_ms"] for x in cps if x["real_ime_open"] is True]
             if not opened:
-                kind = "not_recovered"
+                kind = "api_lies" if t.get("ok") else "not_recovered"
             elif t.get("ok"):
                 kind = "recovered"
             else:
@@ -97,8 +100,12 @@ def analyze(recs: list, drift_lines: int) -> dict:
         verdict = "INVALID"
     elif counts["recovered"] == len(trials) - counts["invalid"]:
         verdict = "RECOVERED"
-    elif counts["recovered"] == 0:
+    elif counts["recovered"] + counts["api_lies"] == 0:
         verdict = "NOT_RECOVERED"
+    elif counts["recovered"] == 0 and counts["not_recovered"] == 0 and counts["api_only"] == 0:
+        # 全試行が api_lies: 打鍵は正常だが、直接閉じた「ずれ」が実 IME に効いたか判別できない
+        # (drift correction が働いて戻したのか、そもそも閉じていないのか)。RECOVERED とは言わない。
+        verdict = "UNDETERMINED"
     else:
         verdict = "PARTIAL"
     return {"verdict": verdict, "cfg": cfg, "trials": trials, "counts": counts, "invalid": invalid,
@@ -109,7 +116,7 @@ def summary_line(r: dict) -> str:
     c, k = r["cfg"], r["counts"]
     return (
         f"DRIFT_RECOVERY: verdict={r['verdict']} form={c.get('form', '?')} ime={c.get('ime', '?')} "
-        f"trials={len(r['trials'])} recovered={k['recovered']} api_only={k['api_only']} "
+        f"trials={len(r['trials'])} recovered={k['recovered']} api_lies={k['api_lies']} api_only={k['api_only']} "
         f"not_recovered={k['not_recovered']} invalid_trials={k['invalid']} drift_log_fired={r['drift_log_fired']}"
     )
 
@@ -150,7 +157,7 @@ def main(argv) -> int:
         with open(json_out, "w", encoding="utf-8") as f:
             json.dump({"verdict": r["verdict"], "cfg": cfg, "counts": r["counts"], "line": line,
                        "invalid": r["invalid"]}, f, ensure_ascii=False)
-    return {"RECOVERED": 0, "PARTIAL": 1, "NOT_RECOVERED": 1, "INVALID": 3}[r["verdict"]]
+    return {"RECOVERED": 0, "PARTIAL": 1, "NOT_RECOVERED": 1, "UNDETERMINED": 1, "INVALID": 3}[r["verdict"]]
 
 
 if __name__ == "__main__":

@@ -899,14 +899,14 @@ jobs:
                     line = l
               kv = dict(re.findall(r'(\w+)=(\S+)', line))
               if not kv:
-                rec_rows.append(f"| {c['name']} | {run} | 欠落 | - | - | - | - | - | - |")
+                rec_rows.append(f"| {c['name']} | {run} | 欠落 | - | - | - | - | - | - | - |")
                 continue
-              rec_rows.append(f"| {c['name']} | {run} | {kv.get('verdict')} | {kv.get('trials')} | {kv.get('recovered')} | {kv.get('api_only')} | {kv.get('not_recovered')} | {kv.get('invalid_trials')} | {kv.get('drift_log_fired')} |")
+              rec_rows.append(f"| {c['name']} | {run} | {kv.get('verdict')} | {kv.get('trials')} | {kv.get('recovered')} | {kv.get('api_lies')} | {kv.get('api_only')} | {kv.get('not_recovered')} | {kv.get('invalid_trials')} | {kv.get('drift_log_fired')} |")
           if rec_rows:
             out += ["", "## drift correction による ON 回復観測(cal-driftrec-*、観測のみで合否には含めない。ADR-178 領域A撤去後)", "",
-                    "ハーネスが実 IME を直接閉じた「ずれ」から、awase の drift correction だけで ON へ戻るか。recovered=開き直り+実打鍵でかなが出た試行 / api_only=API上は開いたが打鍵結果が期待と違う / not_recovered=3秒間閉じたまま / invalid=ずれを作れなかった等。", "",
-                    "| 構成 | 回 | 判定 | 試行 | recovered | api_only | not_recovered | invalid | drift発火行数 |",
-                    "|---|---|---|---|---|---|---|---|---|"] + rec_rows
+                    "ハーネスが実 IME を直接閉じた「ずれ」から、awase の drift correction だけで ON へ戻るか。recovered=API上も開き直り実打鍵でかなが出た / api_lies=API上は閉じたままだが実打鍵ではかなが出た(TsfNativeでAPIが実態を映さない) / api_only=API上は開いたが打鍵結果が期待と違う / not_recovered=API上も閉じたままで実打鍵も生ローマ字等 / invalid=ずれを作れなかった等。判定は実打鍵基準。", "",
+                    "| 構成 | 回 | 判定 | 試行 | recovered | api_lies | api_only | not_recovered | invalid | drift発火行数 |",
+                    "|---|---|---|---|---|---|---|---|---|---|"] + rec_rows
           open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8').write('\n'.join(out) + '\n')
           print('\n'.join(out))
           if os.environ.get('GATE_MODE') == 'invariants':
