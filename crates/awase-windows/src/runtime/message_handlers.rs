@@ -573,6 +573,10 @@ pub(crate) unsafe fn handle_wm_timer(
             let now = hook::current_tick_ms();
             let stale_ms = now.saturating_sub(last_activity);
             if stale_ms > 5000 {
+                // PR #349コードレビュー指摘: 「連続してフック生存を確認できた
+                // tick数」のカウントをここで途切れさせる（flicker耐性、
+                // `note_hook_watchdog_tick_alive`のdoc参照）。
+                app.note_hook_watchdog_tick_not_alive();
                 // issue #165（D&D不可・印刷不能、Geminiの「キーフックのフック落ち」説）
                 // の切り分け用診断。OS全体では直近に入力があったのに awase のフックだけ
                 // 古いままなら「フックにイベントが届いていない」疑いが強まる。OS側も
@@ -638,10 +642,13 @@ pub(crate) unsafe fn handle_wm_timer(
                 }
             } else {
                 tracing::trace!("Hook watchdog: last activity {stale_ms}ms ago");
-                // hook が生存確認できた＝現在の hook_starved episode は終わった
-                // （episode境界）。次に検知したときは新しい episode として
-                // バックオフ/thrash履歴の起点をリセットする（round2 B1(ii)）。
-                app.note_hook_watchdog_recovered();
+                // hook が生存確認できた。`state::hook_watchdog::
+                // RECOVERY_CONFIRM_TICKS`連続でこれが起きて初めて、現在の
+                // hook_starved episodeが終わった（episode境界）とみなし、
+                // 次に検知したときのバックオフ/thrash履歴の起点をリセット
+                // する（round2 B1(ii)、PR #349コードレビュー指摘でflicker
+                // 耐性を追加）。
+                app.note_hook_watchdog_tick_alive();
             }
             crate::hook_channel::recover_stuck_wake_if_needed();
             recover_pending_drain_request();

@@ -410,6 +410,13 @@ pub struct Runtime {
     /// 負けて誤検知するため、代わりにこの「最後にフックが呼ばれた時刻」の
     /// 古い値（この分岐に入る時点で既に5秒以上古い）を基準にする。
     hook_watchdog_canary_baseline_alive_ms: Option<u64>,
+    /// `stale_ms<=5000`（フック生存を確認できた）が連続した watchdog tick 数。
+    /// `stale_ms>5000`のtickで0にリセットされる。
+    /// `state::hook_watchdog::RECOVERY_CONFIRM_TICKS`に達して初めて
+    /// `note_hook_watchdog_recovered`（バックオフ/thrash履歴のリセット）を
+    /// 実行する（PR #349コードレビュー指摘: 1回のflickerで丸ごとリセット
+    /// されないようにするため、`note_hook_watchdog_tick_alive`参照）。
+    hook_watchdog_consecutive_alive_ticks: u32,
 }
 
 impl std::fmt::Debug for Runtime {
@@ -1433,6 +1440,7 @@ impl Runtime {
             session_locked: false,
             hook_watchdog_canary_sent_at_ms: None,
             hook_watchdog_canary_baseline_alive_ms: None,
+            hook_watchdog_consecutive_alive_ticks: 0,
         }
     }
 
@@ -1757,12 +1765,40 @@ impl Runtime {
         self.session_locked = locked;
     }
 
-    /// hook watchdog が stale_ms<=5000（＝フック生存を確認できた）へ戻った tick
-    /// （`message_handlers.rs`の`TIMER_HOOK_WATCHDOG`分岐、else側）で呼ぶ。
+    /// hook watchdog が stale_ms<=5000（＝フック生存を確認できた）と判定した
+    /// tick（`message_handlers.rs`の`TIMER_HOOK_WATCHDOG`分岐、else側）で
+    /// 呼ぶ。`state::hook_watchdog::RECOVERY_CONFIRM_TICKS`連続でこれが
+    /// 呼ばれて初めて実際に`note_hook_watchdog_recovered`（バックオフ/
+    /// thrash履歴のリセット）へ進む。
+    ///
+    /// PR #349コードレビュー指摘: 以前は`note_hook_watchdog_recovered`を
+    /// stale_ms<=5000の**最初の1tick**で即座に呼んでいたため、他プロセスの
+    /// フックが打鍵を断続的にしか握りつぶさない「flicker」型のstarvation
+    /// では、1回フックが生き返っただけで段階的バックオフが丸ごと0へ戻り、
+    /// このケースのために存在するはずの段階的抑制が機能しなかった。
+    pub(crate) fn note_hook_watchdog_tick_alive(&mut self) {
+        self.hook_watchdog_consecutive_alive_ticks =
+            self.hook_watchdog_consecutive_alive_ticks.saturating_add(1);
+        if self.hook_watchdog_consecutive_alive_ticks
+            >= crate::state::hook_watchdog::RECOVERY_CONFIRM_TICKS
+        {
+            self.note_hook_watchdog_recovered();
+        }
+    }
+
+    /// hook watchdog が stale_ms>5000（＝フックが生存確認できていない）と
+    /// 判定したtickで呼ぶ。「連続してフック生存を確認できたtick数」の
+    /// カウント（[`note_hook_watchdog_tick_alive`]参照）を途切れさせる。
+    pub(crate) const fn note_hook_watchdog_tick_not_alive(&mut self) {
+        self.hook_watchdog_consecutive_alive_ticks = 0;
+    }
+
     /// 次に hook_starved を検知したときは新しい episode として扱われ、
     /// バックオフ/thrash履歴の起点がリセットされる（opus round2 B1(ii)、
     /// 旧`hook_watchdog_episode_attempted`ラッチの後継）。
-    pub(crate) const fn note_hook_watchdog_recovered(&mut self) {
+    /// [`note_hook_watchdog_tick_alive`]経由でのみ呼ぶこと（直接呼ぶと
+    /// flicker耐性が失われる）。
+    const fn note_hook_watchdog_recovered(&mut self) {
         self.hook_watchdog_confirmed_attempt_count = 0;
         self.hook_watchdog_next_retry_at_ms = None;
     }
@@ -1815,7 +1851,10 @@ impl Runtime {
             crate::state::hook_watchdog::HookWatchdogAction::ReinstallWithoutCanary => {
                 // opus round1 M1: フック不在時はカナリアを経由しない
                 // （確認相手が無く、Ctrl漏れ/ジグラー化を招くため）。
-                self.reinstall_keyboard_hook_for_watchdog(now_ms);
+                // PR #349コードレビュー指摘: `decide`はこの経路をバックオフ/
+                // thrash上限の対象外としているため、`record_thrash=false`で
+                // 履歴を汚染しない。
+                self.reinstall_keyboard_hook_for_watchdog(now_ms, false);
             }
             _ => {}
         }
@@ -1892,7 +1931,7 @@ impl Runtime {
                  hook_starved と判定、再インストールします",
                 now_ms.saturating_sub(canary_sent_at_ms)
             );
-            self.reinstall_keyboard_hook_for_watchdog(now_ms);
+            self.reinstall_keyboard_hook_for_watchdog(now_ms, true);
         } else {
             tracing::debug!(
                 "[hook-watchdog] カナリアが届いた（フックは生存中）→ \
@@ -1919,20 +1958,35 @@ impl Runtime {
     /// 立ったまま二度とフックが来ないため永久にリトライされなかった）。
     /// ここでpanicはしない——フック関連の失敗で常駐アプリを丸ごと落とすのは
     /// 実害が大きすぎる。
-    fn reinstall_keyboard_hook_for_watchdog(&mut self, now_ms: u64) {
-        // バックオフ/thrash履歴は「カナリア確認済みで実際に試行した」事実
-        // そのものを記録する（install_hook()の成否に関わらず）。
-        let backoff_ms = crate::state::hook_watchdog::backoff_delay_ms(
-            self.hook_watchdog_confirmed_attempt_count,
-        );
-        self.hook_watchdog_confirmed_attempt_count =
-            self.hook_watchdog_confirmed_attempt_count.saturating_add(1);
-        self.hook_watchdog_next_retry_at_ms = Some(now_ms.saturating_add(backoff_ms));
-        self.hook_watchdog_reinstall_history_ms.push(now_ms);
-        // 履歴は thrash 判定用の直近分だけで十分。THRASH_WINDOW_MS より古い
-        // エントリを刈り取り、無期限に肥大化しないようにする。
-        self.hook_watchdog_reinstall_history_ms
-            .retain(|&t| now_ms.saturating_sub(t) < crate::state::hook_watchdog::THRASH_WINDOW_MS);
+    ///
+    /// `record_thrash`: バックオフ/thrash履歴を更新するか。`true`は
+    /// `confirm_hook_watchdog_canary`（カナリア確認済み、`decide`の
+    /// `hook_guard_present=true`分岐がこの履歴を見て次回の
+    /// SkipBackoffPending/SkipThrashLimitを判定する）から呼ばれた場合。
+    /// `false`は`ReinstallWithoutCanary`（フック不在時の直接再試行、`decide`は
+    /// `hook_guard_present=false`の間バックオフ/thrash上限を無条件バイパス
+    /// する設計）から呼ばれた場合——PR #349コードレビュー指摘: 以前は
+    /// この経路でも無条件に履歴を積んでいたため、フック不在が続いた後に
+    /// 復旧しても、フック不在中に積み上がった履歴のせいで直後の本物の
+    /// starvationがSkipThrashLimit/SkipBackoffPendingで最長1時間直らない
+    /// 「予算の汚染」が起きていた。
+    fn reinstall_keyboard_hook_for_watchdog(&mut self, now_ms: u64, record_thrash: bool) {
+        if record_thrash {
+            // バックオフ/thrash履歴は「カナリア確認済みで実際に試行した」事実
+            // そのものを記録する（install_hook()の成否に関わらず）。
+            let backoff_ms = crate::state::hook_watchdog::backoff_delay_ms(
+                self.hook_watchdog_confirmed_attempt_count,
+            );
+            self.hook_watchdog_confirmed_attempt_count =
+                self.hook_watchdog_confirmed_attempt_count.saturating_add(1);
+            self.hook_watchdog_next_retry_at_ms = Some(now_ms.saturating_add(backoff_ms));
+            self.hook_watchdog_reinstall_history_ms.push(now_ms);
+            // 履歴は thrash 判定用の直近分だけで十分。THRASH_WINDOW_MS より古い
+            // エントリを刈り取り、無期限に肥大化しないようにする。
+            self.hook_watchdog_reinstall_history_ms.retain(|&t| {
+                now_ms.saturating_sub(t) < crate::state::hook_watchdog::THRASH_WINDOW_MS
+            });
+        }
 
         // 旧ガードをここで明示的にdropしてから新規installする
         // （両方生存する瞬間を作らない。`WM_QUIT`→スレッドjoin→

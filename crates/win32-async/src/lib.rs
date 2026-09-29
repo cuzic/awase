@@ -12,7 +12,7 @@ pub mod thread_timeout;
 pub use offload::{offload, offload_timeout};
 pub use race_timeout::race_with_timeout;
 pub use sleep::sleep_ms;
-pub use thread_timeout::run_with_timeout;
+pub use thread_timeout::{run_with_timeout, run_with_timeout_in, LeakedThreadPool};
 
 /// winmsg-executor の `block_on` を再エクスポート。
 /// メッセージループを内部で動かしながら Future を完了まで実行する。

@@ -1011,35 +1011,58 @@ std::thread_local! {
         const { std::cell::Cell::new(HHOOK(std::ptr::null_mut())) };
 
     /// このフックスレッドに`install_hook()`が割り当てた世代番号（M2参照）。
-    /// 既定値の`0`はどの`install_hook()`呼び出しも割り当てない値
-    /// （[`HOOK_GEN`]は1から始まる）なので、スレッド開始直後・世代未設定の
-    /// 状態で誤って「現行世代」と一致してしまうことはない。
-    static MY_HOOK_GEN: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// 既定値の`Generation::INITIAL`（内部値0）はどの`install_hook()`呼び出しも
+    /// 割り当てない値（[`HOOK_GEN`]は1から払い出しが始まる）なので、スレッド
+    /// 開始直後・世代未設定の状態で誤って「現行世代」と一致してしまうことは
+    /// ない。
+    static MY_HOOK_GEN: std::cell::Cell<crate::state::event_origin::Generation> =
+        const { std::cell::Cell::new(crate::state::event_origin::Generation::INITIAL) };
 }
 
 /// 直近の`install_hook()`呼び出しが払い出した世代番号（opus round1 M2）。
 ///
 /// `HookGuard::drop`の`join()`は`HOOK_JOIN_TIMEOUT_MS`で有界化されている
-/// （タイムアウト時はリークし、共有`LEAKED_THREADS`プールが満杯なら
+/// （タイムアウト時はリークし、[`HOOK_JOIN_LEAKED_THREADS`]が満杯なら
 /// join を一切待たずdetachされる）ため、旧フックスレッドが
 /// `tracing`の同期I/O等で詰まっている間に新フックのinstallが先に完了する
 /// 経路が実在する。その窓では新旧2つの`WH_KEYBOARD_LL`スレッドが同時に
-/// 生存し、どちらも`hook_callback`から`tick_hook_alive()`や
-/// `hook_channel::HOOK_KEYS.produce()`（単一producer前提のSPSCリング）を
-/// 呼びうる——producerが2つになるデータ競合。`install_hook()`の呼び出し
-/// ごとにこの値をインクリメントし、各フックスレッドは自分が受け取った
-/// 世代（[`MY_HOOK_GEN`]）と比較する。一致しない（＝自分より新しい
-/// installが既に行われた）場合は`hook_callback`が共有状態に一切触れず
+/// 生存し、どちらも`hook_callback`から共有状態（`tick_hook_alive()`・
+/// `HOOK_STATE`の各フィールド・`hook_channel::HOOK_KEYS.produce()`＝
+/// 単一producer前提のSPSCリング）へ書き込みうる——データ競合。
+/// `install_hook()`の呼び出しごとにこの値をインクリメントし、各フック
+/// スレッドは自分が受け取った世代（[`MY_HOOK_GEN`]）と比較する
+/// （[`is_zombie_hook_thread`]）。一致しない（＝自分より新しいinstallが
+/// 既に行われた）場合は`hook_callback`が共有状態に一切触れず
 /// `CallNextHookEx`だけ行う「ゾンビ」状態になる——実際に`UnhookWindowsHookEx`
 /// されるまでの短い間、フックチェーンには残り続けるが実害は無い。
 ///
-/// opus round2 M2': 判定は`hook_callback`の**2箇所**で行う——(1)冒頭
-/// （これから始まるコールバック全体を早期に弾く）と、(2)
-/// `hook_channel::HOOK_KEYS.produce()`の直前（`tracing`の同期I/O等で
-/// 冒頭通過後に詰まり、詰まっている間に世代が進んだ「復帰したゾンビ」を
-/// 弾く）。(1)だけでは、詰まってから復帰するまでの間に世代が進んだ
-/// コールバックを防げない。
-static HOOK_GEN: AtomicU32 = AtomicU32::new(0);
+/// PR #349コードレビュー指摘（reuse）: 「単調増加する世代カウンタでstaleな
+/// 応答を弾く」という仕組み自体は`WarmEpoch`/`cold_seq`/`Actuation.attempts`
+/// が個別に再実装してきた経緯があり、`state::event_origin::Generation`
+/// （ADR-082）がその統合型として既に存在する。生の`AtomicU32`ではなく
+/// `Generation`（`AtomicU64`に払い出し値を格納し、比較・取り出しは
+/// `Generation`のAPIを介する）を使うことで、この再実装の4例目になることを
+/// 避ける。
+///
+/// opus round2 M2' / PR #349コードレビュー指摘: 判定は[`is_zombie_hook_thread`]
+/// を`hook_callback`の複数箇所——(1)冒頭（これから始まるコールバック全体を
+/// 早期に弾く）、(2)IME モードキー診断の記録直前、(3)物理キー状態
+/// （`physical_key_state`/`physical_key_down_at_ms`）の書き込み直前、(4)
+/// 親指ラッチ/Ctrl消費追跡の書き込み直前、(5)`hook_channel::HOOK_KEYS.produce()`
+/// の直前——**それぞれ**で呼ぶ。`tracing`の同期I/Oはこの関数の随所
+/// （IME診断ログ・VK_KANA/VK_DBE_ROMAN分岐・Alt なりすまし診断）に散在して
+/// おり、どこで詰まって世代が進んでも、次に共有状態へ書き込む直前に必ず
+/// 再判定することで、(1)だけでは防げない「詰まってから復帰した後の
+/// 書き込み」を漏れなく弾く。
+static HOOK_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// 現在のフックスレッドが世代不一致（ゾンビ）かどうかを判定する
+/// （[`HOOK_GEN`]のdoc参照）。`hook_callback`内の複数箇所から呼ぶための
+/// 共通ヘルパー（PR #349コードレビュー指摘、比較ロジックの重複排除）。
+#[inline]
+fn is_zombie_hook_thread() -> bool {
+    MY_HOOK_GEN.get() != crate::state::event_origin::Generation::new(HOOK_GEN.load(Ordering::Acquire))
+}
 
 /// コールバックの戻り値
 #[derive(Debug)]
@@ -1077,15 +1100,29 @@ impl std::fmt::Debug for HookGuard {
 /// ブロックされうる（M6の実際の詰まり経路）。`WM_TIMER`ハンドラ（issue #165
 /// 自己修復の再インストール経路）の中で`join()`するため、無制限待機だと本体の
 /// メッセージループ（IME・タイマー・トレイ全て）ごとハングする。
-/// `win32_async::run_with_timeout`（IMM32/MSAA/UIA等の既存パターンと同じ）で
-/// 待機を有界化し、超過時はワーカースレッド（`join()`の呼び出し元）ごと
-/// 孤児リストへリークする。フックスレッド自体はその後も生存し続け、
-/// `OWN_HOOK_HANDLE`がthread-local化（M6）されているため、いずれ終了して
-/// 自分のハンドルをUnhookしても新しいフックには一切影響しない。生存中も
-/// `HOOK_GEN`/`MY_HOOK_GEN`（opus round1 M2）により`hook_callback`が
-/// 共有状態（`tick_hook_alive`/`HOOK_KEYS`）へ一切書き込まなくなるため、
-/// 新フックとの二重producerも起きない。
+/// `win32_async::run_with_timeout_in`（IMM32/MSAA/UIA等が使う`run_with_timeout`と
+/// 同じ有界化パターンだが、専用プールを使う版）で待機を有界化し、超過時は
+/// ワーカースレッド（`join()`の呼び出し元）ごと[`HOOK_JOIN_LEAKED_THREADS`]
+/// （このモジュール専用の孤児リスト）へリークする。
+///
+/// opus round2レビュー（PR #349）指摘: 当初はIMM32/MSAA/UIAと共有の既定プール
+/// （8枠）を使っていたが、hook_starvedが繰り返し発生する環境（自己修復自体が
+/// join timeoutを繰り返す）で共有枠を消費すると、無関係なフォーカス分類の
+/// ブロッキング呼び出しまで巻き添えで「タイムアウト」扱いになりうる
+/// クロスサブシステム結合になっていた。専用プールに分離し、この結合を断つ。
+///
+/// フックスレッド自体はその後も生存し続け、`OWN_HOOK_HANDLE`がthread-local化
+/// （M6）されているため、いずれ終了して自分のハンドルをUnhookしても新しい
+/// フックには一切影響しない。生存中も`HOOK_GEN`/`MY_HOOK_GEN`（opus round1 M2、
+/// round2 M2'で`HOOK_KEYS.produce()`直前にも拡張）により`hook_callback`の
+/// 各共有状態書き込み箇所が世代不一致を検出すると素通りするだけになるため、
+/// 新フックとの二重書き込みは起きない。
 const HOOK_JOIN_TIMEOUT_MS: u64 = 500;
+
+/// [`HOOK_JOIN_TIMEOUT_MS`]超過時の孤児スレッドプール（このモジュール専用、
+/// IMM32/MSAA/UIA用の既定共有プールとは分離。上記doc参照）。
+static HOOK_JOIN_LEAKED_THREADS: crate::win32::LeakedThreadPool =
+    crate::win32::LeakedThreadPool::new(4);
 
 impl Drop for HookGuard {
     fn drop(&mut self) {
@@ -1107,7 +1144,8 @@ impl Drop for HookGuard {
             return;
         }
         if let Some(thread) = self.thread.take() {
-            let joined = crate::win32::run_with_timeout(
+            let joined = crate::win32::run_with_timeout_in(
+                &HOOK_JOIN_LEAKED_THREADS,
                 std::time::Duration::from_millis(HOOK_JOIN_TIMEOUT_MS),
                 move || {
                     let _ = thread.join();
@@ -1138,9 +1176,11 @@ pub fn install_hook() -> windows::core::Result<HookGuard> {
     hook_tid_reset();
     // opus round1 M2: 世代番号を先に払い出す。以降、これより古い世代の
     // フックスレッド（旧HookGuard::dropのjoinがタイムアウトしてまだ生存中
-    // でも）は`hook_callback`内で共有状態（tick_hook_alive/HOOK_KEYS）に
-    // 一切触れなくなる（下記`hook_callback`のガード参照）。
-    let my_gen = HOOK_GEN.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+    // でも）は`hook_callback`内で共有状態に一切触れなくなる
+    // （`is_zombie_hook_thread`の呼び出し箇所参照）。
+    let my_gen = crate::state::event_origin::Generation::new(
+        HOOK_GEN.fetch_add(1, Ordering::AcqRel).wrapping_add(1),
+    );
 
     let thread = std::thread::Builder::new()
         .name("awase-hook".into())
@@ -1353,13 +1393,12 @@ pub(crate) fn drain_hook_ime_mode_diagnostics() -> Vec<crate::journal::HookImeMo
 /// フックスレッドの GetMessageW ループ内でのみ呼ばれる。
 #[expect(clippy::cognitive_complexity)]
 unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // opus round1 M2: `HookGuard::drop`のjoinがタイムアウトし、旧フック
-    // スレッドがまだ生存したまま新フックがinstallされた「ゾンビ」の場合、
-    // 自分の世代（`MY_HOOK_GEN`）は既に古い。この間は`tick_hook_alive()`も
-    // `HOOK_KEYS`のproduceも一切行わず、ただ次のフックへ渡すだけにする——
-    // 新旧2スレッドが同時に共有状態（特にSPSCリング`HOOK_KEYS`、
-    // 単一producer前提）へ書き込むデータ競合を防ぐ。
-    if MY_HOOK_GEN.get() != HOOK_GEN.load(Ordering::Acquire) {
+    // opus round1 M2 / round2 M2' / PR #349コードレビュー指摘: `HookGuard::drop`の
+    // joinがタイムアウトし、旧フックスレッドがまだ生存したまま新フックが
+    // installされた「ゾンビ」の場合、自分の世代（`MY_HOOK_GEN`）は既に古い。
+    // この間は共有状態に一切触れず、ただ次のフックへ渡すだけにする（`HOOK_GEN`
+    // のdoc参照——この関数の他の共有状態書き込み箇所でも同様に再判定する）。
+    if is_zombie_hook_thread() {
         return CallNextHookEx(None, ncode, wparam, lparam);
     }
 
@@ -1422,6 +1461,12 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
             "[hook] IME-mode vk=0x{:02X} {dir} self_injected={self_injected} injected={is_injected} scan=0x{:X} extra=0x{:X} since_actuation_us={since_actuation_us:?}",
             vk.0, kb.scanCode, kb.dwExtraInfo,
         );
+        // PR #349コードレビュー指摘: 直前のログ出力がブロックしうる
+        // （`HOOK_GEN`のdoc参照）ため、共有状態（診断キューの`Mutex`）へ
+        // 書き込む直前に再判定する。
+        if is_zombie_hook_thread() {
+            return CallNextHookEx(None, ncode, wparam, lparam);
+        }
         push_hook_ime_mode_diagnostic(crate::journal::HookImeModeDiagnosticRecord {
             vk_code: vk.0,
             is_down: is_keydown,
@@ -1455,6 +1500,14 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // issue #136 系の foreign-injected 連打を誤って auto-repeat とみなさないよう、
     // 呼び出し側は was_down の値に関わらず injected を常に非畳み込みとして扱う）。
     let mut was_down = false;
+    // PR #349コードレビュー指摘: 手前のIME診断分岐のログ出力でブロックしうる
+    // （未実行の場合でも「このコールバックの直前で詰まった経路があった
+    // かもしれない」という前提を各書き込み直前で確認する方が、どの分岐が
+    // 詰まりうるかを個別に追跡し続けるより堅牢）ため、`physical_key_state`
+    // 書き込み直前でも再判定する。
+    if !is_injected && is_zombie_hook_thread() {
+        return CallNextHookEx(None, ncode, wparam, lparam);
+    }
     if !is_injected {
         if let Some(slot) = HOOK_STATE.physical_key_state.get(vk.0 as usize) {
             was_down = slot.swap(is_keydown, Ordering::Relaxed);
@@ -1643,6 +1696,13 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     }
     vk = rewritten_vk;
 
+    // PR #349コードレビュー指摘: ここまでの間（VK_KANA/VK_DBE_ROMAN分岐・
+    // Alt なりすまし診断）に複数のログ出力があり、いずれかでブロックしうる。
+    // 親指ラッチ（`HOOK_STATE.left/right_thumb_down_*`）を書き込む直前で
+    // 再判定する。
+    if !is_injected && is_zombie_hook_thread() {
+        return CallNextHookEx(None, ncode, wparam, lparam);
+    }
     if !is_injected {
         // BUG-132: `VK_DBE_*` を親指キーに割り当てた構成では、Windows が
         // KeyDown と KeyUp で異なる vk を合成する非対称性がある（BUG-131 と
@@ -1753,7 +1813,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
     // ある——`HOOK_KEYS`は単一producer前提のSPSCリングであり、新旧2つの
     // フックスレッドが同時に`produce`するとデータ競合になる。ここで弾く
     // 場合、既に組み立てた`event`は破棄して通常のパススルーへ委ねる。
-    if MY_HOOK_GEN.get() != HOOK_GEN.load(Ordering::Acquire) {
+    if is_zombie_hook_thread() {
         return CallNextHookEx(None, ncode, wparam, lparam);
     }
     let produce_result = crate::hook_channel::HOOK_KEYS.produce(event);

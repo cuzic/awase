@@ -125,6 +125,20 @@ pub const THRASH_WINDOW_MS: u64 = 60 * 60 * 1000;
 /// `THRASH_WINDOW_MS` 内で許容する最大再インストール回数。
 pub const THRASH_LIMIT: u32 = 5;
 
+/// バックオフ/thrash履歴をリセット（`note_hook_watchdog_recovered`相当）して
+/// よいと判定するために必要な、連続した「stale_ms<=5000」watchdog tick数。
+///
+/// PR #349コードレビュー指摘: 以前は`stale_ms<=5000`になった**最初の1tick**で
+/// 即座にリセットしていたため、他プロセスのフックが打鍵を断続的にしか
+/// （100%ではなく）握りつぶす「flicker」型のstarvationでは、1回でもフックが
+/// 生き返った瞬間に段階的バックオフ（[`BACKOFF_SCHEDULE_MS`]）が丸ごと0へ
+/// 戻ってしまい、まさにこのケースのために存在するはずの段階的抑制が機能
+/// しなかった。連続2tick（3秒周期なので実質6秒以上）確認できて初めて
+/// 「本当に回復した」とみなす。`THRASH_LIMIT`/`THRASH_WINDOW_MS`と同種の
+/// 安全弁の閾値であり、`tuning.rs`が要求する実測msの対象外（実機タイミングの
+/// モデル化ではなく、フラップ耐性のための回数）。
+pub const RECOVERY_CONFIRM_TICKS: u32 = 2;
+
 /// カナリア注入（`hook::send_hook_watchdog_canary`）から確認タイマー
 /// （`TIMER_HOOK_WATCHDOG_CANARY_CHECK`）発火までの待機時間。
 ///
