@@ -66,7 +66,7 @@ def analyze(recs: list, drift_lines: int) -> dict:
         if p is not True:
             reason = f"ON前提が未成立(pre_open={p})"
         elif c.get("real_ime_open") is not False:
-            reason = f"ずれを作れていない(close 直後 open={c.get('real_ime_open')}, set_ok={c.get('set_ok')})"
+            reason = f"ずれを作れていない(close 直後 open={c.get('real_ime_open')}, set_ret={c.get('set_ret')})"
         elif not cps or all(x["real_ime_open"] is None for x in cps):
             reason = "全チェックポイントが読み取り不能"
         elif not t:

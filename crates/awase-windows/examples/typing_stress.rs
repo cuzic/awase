@@ -905,17 +905,27 @@ fn drift_scenario(child: HWND) {
 }
 
 /// ハーネス自身の入力欄の IME を、awase を経由せず直接閉じる(外部要因による「ずれ」の再現)。
-/// 戻り値は `ImmSetOpenStatus` の成否(HIMC が取れなければ `None`)。
-fn force_close_real_ime(child: HWND) -> Option<bool> {
-    // SAFETY: 自プロセスの入力欄の HWND に対する IMM 呼び出し。取得した HIMC は必ず解放する。
+/// `ImmSetOpenStatus` は HIMC を持つスレッド以外から呼ぶと失敗する(run 36508003461 で `set_ok=false`)ため、
+/// 既定 IME ウィンドウへ `WM_IME_CONTROL(IMC_SETOPENSTATUS, 0)` を送る。戻り値は `SendMessage` の戻り値
+/// (0=成功)。既定 IME ウィンドウが取れなければ `None`。
+fn force_close_real_ime(child: HWND) -> Option<isize> {
+    const WM_IME_CONTROL: u32 = 0x0283;
+    const IMC_SETOPENSTATUS: usize = 0x0006;
+    // SAFETY: 自プロセスの入力欄に対応する既定 IME ウィンドウへ同期 SendMessage するだけ。
     unsafe {
-        let himc = windows::Win32::UI::Input::Ime::ImmGetContext(child);
-        if himc.is_invalid() {
+        let ime_wnd = windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd(child);
+        if ime_wnd.0.is_null() {
             return None;
         }
-        let ok = windows::Win32::UI::Input::Ime::ImmSetOpenStatus(himc, false).as_bool();
-        let _ = windows::Win32::UI::Input::Ime::ImmReleaseContext(child, himc);
-        Some(ok)
+        Some(
+            SendMessageW(
+                ime_wnd,
+                WM_IME_CONTROL,
+                Some(WPARAM(IMC_SETOPENSTATUS)),
+                Some(LPARAM(0)),
+            )
+            .0,
+        )
     }
 }
 
@@ -946,12 +956,19 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
             );
             return;
         }
-        turn_ime_on(n);
+        // 回転する ON キーの一部は ON にならない(run 36508003461 で pre_open=false が 10 試行中 2〜3 回)ので、
+        // 実 IME が開くまで別のキーで最大 3 回そろえ直す。
+        for k in 0..3 {
+            turn_ime_on(n * 3 + k);
+            if real_ime_open(child) != Some(false) {
+                break;
+            }
+        }
         rec(&json!({"type":"drift_on_pre","n":n,"real_ime_open":real_ime_open(child)}));
-        let set_ok = force_close_real_ime(child);
+        let set_ret = force_close_real_ime(child);
         sleep_ms(50);
         rec(
-            &json!({"type":"drift_on_close","n":n,"set_ok":set_ok,"real_ime_open":real_ime_open(child)}),
+            &json!({"type":"drift_on_close","n":n,"set_ret":set_ret,"real_ime_open":real_ime_open(child)}),
         );
         let mut waited_ms = 0u64;
         for &cp in &CHECKPOINTS_MS {
