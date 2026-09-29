@@ -8,7 +8,7 @@ summary: |-
   本 ADR は、目印なしの外部注入 IME キーで専用の短い監視窓(300ms)を立て、prefetch 済み snapshot で窓内に 1→0 の遷移を観測したときだけ
   実状態へ追随する(意図を捨て desired を揃える。awase は開け直さない)。新 I/O・新 actuation 合流点・新イベント種別なし。
 status: |-
-  起草(2026-09-29)。opus-adversarial-consult round1〜3 反映済み、round4(収束確認)待ち。実装未着手。
+  採択(2026-09-29)。opus-adversarial-consult round4 で収束宣言(blocker/major 0、minor 5 は実装時対応に反映)。実装は第0段(trace 測定)の結果を受けて確定。実装未着手。
 related_adr:
   - "ADR-029"
   - "ADR-089"
@@ -111,7 +111,7 @@ awase は IME を開け直さない。ADR-178 領域A撤去・ADR-191 の方針(
 ### D5. 対象範囲
 
 `Imm32Unavailable` の窓すべて。**ADR-193 の CI 入力先(RichEdit を `Chrome_RenderWidgetHostHWND` としてスーパークラス化したもの)も `AppImeProfile::Imm32Unavailable`** で `read_ime_state_full` の早期 return 対象外のため対象に入る(round2 m1、`cal-driftrec-tsf-*` の対照に入れる)。
-`TsfNative` プロファイル・`InputRelay` は `ime_on=None` になり影響を受けない。MS-IME/CTF が注入するキーでも watch は立ちうるが(D1-3 で明示操作直後は除外)、追随するのは実際に 1→0 を観測したときだけで、上書きの向きは常に「実状態」である。
+`TsfNative` プロファイル・`InputRelay` は `ime_on=None` になり影響を受けない。MS-IME/CTF が注入するキーでも watch は立ちうるが(明示操作直後の除外は置かない〈D1〉)、追随するのは実際に 1→0 を観測したときだけで、上書きの向きは常に「実状態」である。
 
 ## リスクと検証計画
 
@@ -169,3 +169,11 @@ awase は IME を開け直さない。ADR-178 領域A撤去・ADR-191 の方針(
 - R3-2 明示操作 1500ms の除外がハーネスの再現条件を弾く(VK_IME_ON から注入まで約 1.1〜1.3 秒)、しかも 1→0 限定の設計では不要 → 反映(除外を撤去)。
 - R3-3 最初の読みが既に 0 の取りこぼしの競合 → 第0段で確定、代案(scope 付き直近値で `saw_open` 初期化)を D2 に記載。
 - m1(GJI I/O の上書き)・m2(連続 arm は `saw_open` 保持)・m3(文書の残骸)→ 反映。
+
+### round4(Opus、2026-09-29): **収束**(blocker 0・major 0・minor 5、実装時に対応)
+
+- adopt_external_close の順序(`write_observer_poll` → `intent_store.remove` → `pass_through_observed`)、IntentStore の除去対象(`current_focus`)、`last_external_close_ms` の柵の意味、連続 arm の規則を独立に確認。順序はテストで固定する。
+- n1 awase 自身のトグル actuation による 1→0 で、ユーザーの明示 ON を捨てうる → watch に `awase_wrote`(ADR-187 の `note_awase_write` と同型)を持たせ、窓の中で awase が書いていたら ObserverPoll(false) の記録だけにして意図除去・desired 揃えはしない(送信がトグルかは `characterize_strategy` で実装前に確認)。
+- n2 D5 の残骸 → 修正済み。n3 注入が続くと窓が延び続ける → 延長は `saw_open` が未成立の間だけ、かつ最初の arm から窓の2倍を上限とする。
+- n4 KeyEffectPrediction(170ms 柵)が Closed を隠しうる → `adopt_external_close` で key_effect の open 予測も消すか、起きないことをテストで固定する。
+- n5 第0段の確認項目: (a) 注入キーが Engine に消費されず 20ms の refresh が予約される (b) GJI が閉じるまでの時間と窓の最初の読みの値 (c) 閉じるときの GJI I/O (d) prefetch が chrome_probe と同じ 1→0 を読む (e) 目印付き VK_IME_ON が IntentStore に意図を記録する。
