@@ -862,8 +862,13 @@ impl WindowsPlatform {
 
     /// ADR-203 (i)/(ii): belief 起点で `GjiFsm` を同期する（`trigger` に発生元を残す）。
     /// `event_for` は `gji_idle_ms` から `GjiEvent` を作る。
+    ///
+    /// 起点は `sync.origin()`（`GjiFsmSync` の variant が唯一の出所）から取る。ここで
+    /// `GjiSyncOrigin` を直書きすると、新しい variant の起点の取り違えがテストで検出できない
+    /// （`architecture_guard::gji_sync_origin_comes_from_the_sync_variant`）。
     fn gji_sync_from_belief(
         &mut self,
+        sync: crate::state::gji_direct_mechanism::GjiFsmSync,
         trigger: &str,
         event_for: impl FnOnce(u64) -> crate::tsf::gji_fsm::GjiEvent,
     ) {
@@ -874,10 +879,14 @@ impl WindowsPlatform {
             format!("{trigger}(gji_idle_ms={gji_idle_ms})"),
             state_before,
         );
-        self.dispatch_gji_response_from(
-            crate::state::gji_direct_mechanism::GjiSyncOrigin::BeliefSync,
-            &resp,
+        debug_assert!(
+            matches!(
+                sync.origin(),
+                crate::state::gji_direct_mechanism::GjiSyncOrigin::BeliefSync
+            ),
+            "gji_sync_from_belief は belief 起点の同期専用: {sync:?}"
         );
+        self.dispatch_gji_response_from(sync.origin(), &resp);
     }
 
     fn dispatch_gji_event(
@@ -1417,7 +1426,7 @@ impl crate::state::gji_direct_mechanism::GjiSyncSink for WindowsPlatform {
             GjiFsmSync::OnImeOff => self.gji_on_ime_off(),
             GjiFsmSync::OnImeOnBelief => {
                 let injection_mode = self.output.injection_mode;
-                self.gji_sync_from_belief("ImeOn(BeliefSync:level)", |gji_idle_ms| {
+                self.gji_sync_from_belief(sync, "ImeOn(BeliefSync:level)", |gji_idle_ms| {
                     crate::tsf::gji_fsm::GjiEvent::ImeOn {
                         injection_mode,
                         gji_idle_ms,
@@ -1426,7 +1435,7 @@ impl crate::state::gji_direct_mechanism::GjiSyncSink for WindowsPlatform {
             }
             GjiFsmSync::Reopen => {
                 let injection_mode = self.output.injection_mode;
-                self.gji_sync_from_belief("Reopen(BeliefSync:on-key)", |gji_idle_ms| {
+                self.gji_sync_from_belief(sync, "Reopen(BeliefSync:on-key)", |gji_idle_ms| {
                     crate::tsf::gji_fsm::GjiEvent::Reopen {
                         injection_mode,
                         gji_idle_ms,

@@ -5468,3 +5468,24 @@ fn user_ime_on_paths_are_paired_with_gji_reopen() {
         "kp_reopen_gji_fsm の呼び出しが {reopens} 件。shadow toggle の2分岐と予測経路に必要"
     );
 }
+
+/// ADR-203 決定3（/code-review 指摘）: `GjiSyncOrigin` は `GjiFsmSync::origin()` が唯一の出所。
+/// `platform.rs` が `GjiSyncOrigin::BeliefSync` を直書きしてよいのは、Unicode long-cold の reinit を
+/// 抑止する判定（`dispatch_gji_response_from` の StartProbe 分岐）と、`gji_sync_from_belief` の
+/// `debug_assert!`（belief 起点専用であることの表明）の2か所だけ。同期の呼び出し側
+/// （`gji_sync_from_belief`）は `sync.origin()` を渡す。直書きに戻ると、新しい variant の起点の
+/// 取り違え（`origin()` のユニットテストは実経路を通らない）がテストで検出できなくなる。
+#[test]
+fn gji_sync_origin_comes_from_the_sync_variant() {
+    let content = read_crate_file("src/platform.rs");
+    let prod = production_code_only(&content);
+    assert_eq!(
+        count_real_calls(prod, "GjiSyncOrigin::BeliefSync"),
+        2,
+        "platform.rs の `GjiSyncOrigin::BeliefSync` 直書きは reinit 抑止判定と debug_assert の2か所だけ"
+    );
+    assert!(
+        count_real_calls(prod, "sync.origin()") >= 2,
+        "gji_sync_from_belief は sync.origin() を dispatch_gji_response_from に渡すこと"
+    );
+}
