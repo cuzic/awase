@@ -575,6 +575,7 @@ fn load_keymap_table_state(
     current_env: awase_keymap_learn::revalidation::EnvVersionProbe,
     custom_keymap_without_prediction: bool,
     use_learned_keymap_table: bool,
+    current_fingerprint: Option<awase_keymap_learn::staleness::FingerprintProbe>,
 ) -> keymap_learn_status::TableState {
     let config_path = find_config_path();
     let path = config_path
@@ -599,7 +600,7 @@ fn load_keymap_table_state(
         .unzip();
     let runtime_rejection = table
         .as_ref()
-        .and_then(keymap_learn_status::runtime_rejection_of);
+        .and_then(|t| keymap_learn_status::runtime_rejection_of(t, current_fingerprint));
     keymap_learn_status::TableState::from_inputs(&keymap_learn_status::StatusInputs {
         table: table.as_ref(),
         current_env,
@@ -1188,6 +1189,7 @@ impl SettingsApp {
                         version: awase_keymap_learn_win::probe_gji_env_version(start),
                         custom_keymap_without_prediction:
                             awase_keymap_learn_win::probe_custom_keymap_without_prediction(),
+                        fingerprint: awase_keymap_learn_win::probe_current_fingerprint(),
                     });
                     ctx.request_repaint();
                 });
@@ -1209,6 +1211,7 @@ impl SettingsApp {
                 self.keymap_env_probe.current(),
                 self.keymap_env_probe.custom_keymap_without_prediction(),
                 self.config.general.use_learned_keymap_table,
+                self.keymap_env_probe.fingerprint(),
             ));
         }
     }
@@ -4157,6 +4160,12 @@ impl eframe::App for SettingsApp {
         self.update_ime_state(ctx);
         self.poll_pending_save(ctx);
         self.poll_keymap_learn(ctx);
+        // 別ウィンドウでIMEのキーマップ設定を変えて戻ってきたとき、学習表の状態表示
+        // （版・指紋に依存する）が古いままにならないよう取り直させる。
+        let window_focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
+        if self.keymap_env_probe.observe_window_focus(window_focused) {
+            self.keymap_table_state = None;
+        }
         self.commit_pending_layout_edit(ctx);
         // code-review指摘: キー捕捉モードだけでなく、確認モーダル表示中
         // （Dangerous確認・キャンセル3択・配列破棄確認）にもグローバル

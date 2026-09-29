@@ -1,6 +1,6 @@
 ---
 title: ADR status/index の追随、撤去記録の欠落、撤去済み機構を現在形で書く文書・コメント、CLAUDE.md 一覧、pre-push 対象
-status: 未着手
+status: 実装済み（P1・P2・P3 は develop に反映済みを 2026-09-28 に確認。B-6 の `SetOpenCrossProcessSync` 到達経路の判定のみ未確認）
 created: 2026-09-24
 related_adr: ["ADR-191", "ADR-187", "ADR-189", "ADR-190", "ADR-195", "ADR-196", "ADR-176", "ADR-179", "ADR-185", "ADR-090", "ADR-121", "ADR-098", "ADR-153", "ADR-172", "ADR-173", "ADR-158"]
 source_review: 俯瞰レビュー（2026-09-24）の A-4 / A-5 / A-6 / A-7 / B-6 / B-8
@@ -219,3 +219,10 @@ grep -rn "try_force_on_bootstrap\|apply_force_on_for_imm_broken" crates/awase-wi
   - 補足: ADR-176 本体の status は 07 が直す（07:120）と明記した。07 は index.md の 176 行に触れないので、index の追随は 10 に残した。
 - **一部修正して反映**
   - A の受け入れ grep 案（`grep -v "…\|決定[0-9]\|v14"`）は、`決定[0-9]` の除外で `fix-requires-evidence.md:41`（「ADR-180決定1」を含む）が対象行ごと落ちることを実行して確かめた。`ADR-178 \?決定[0-9]` に絞った。
+
+## 実装状況の確認（2026-09-28、origin/develop `c448d30a` で裏取り）
+
+- **P1（A-4/A-5/A-6文書/A-7）**: 反映済み。ADR-187/189/190/191/195/196 の status は「マージ済み」に直っている。ADR-179 は status に `502c6673` での撤去が入り、「領域A・Cの撤去（旧称: ADR-178撤去プロジェクト）」節（`:532`）がある。ADR-121/098/153 には撤去の追記（`f83084b3`・`621bf93c`・ADR-191）がある。`docs/adr/index.md` に 172/173 のリンク無し行がある。`ARCHITECTURE.md:43-47`・`docs/ime-control-overview.md` は撤去済みの過去形。CLAUDE.md の crate 一覧に4 crate がある。
+- **P2（A-6コード）**: 反映済み。`try_force_on_bootstrap`/`apply_force_on_for_imm_broken` の残る出現は全て過去形の記述。`platform_state.rs` の「will force IME ON」ログは無い。`crates/awase-windows/src` に「ADR-178」で撤去プロジェクトを指す箇所は無い（`app/mod.rs:279` は MSI の ADR-178 で正しい）。`ime.rs::set_ime_mode` は削除済み。
+- **P3（B-8）**: 反映済み。`.githooks/pre-push` の `target` に `platform_state|mode_key_pass|key_effect_` があり、`fix-requires-evidence.md:94` も「実行されるのは `.githooks`」に直っている。
+- **未確認のまま**: B-6 の `MechanismCommand::SetOpenCrossProcessSync` の分岐（`ime_controller.rs:220`）に本番で到達する経路が残っているか。死蔵と断定するには `decide_attempt(.., Sync, ImmCross, ..)` に到達する入力の有無を調べる必要がある（別タスク、コード削除を伴う）。
