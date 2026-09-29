@@ -219,11 +219,11 @@ impl Chrome {
         };
         log(&format!("[init] Chrome 起動 pid={pid} url={url}"));
         let is_chrome_top = |h: HWND| class_of(h) == "Chrome_WidgetWin_1";
-        // 起動した pid の窓を待つ。Chrome が既存インスタンスへ委譲して pid が変わる場合に備え、
-        // 最後は pid を問わずに探す。
-        let top = find_window(pid, &is_chrome_top, 120)
-            .or_else(|| find_window(0, &is_chrome_top, 1))
-            .unwrap_or_else(|| fatal("Chrome の窓が見つからない"));
+        // 起動した pid の窓だけを待つ。pid を問わない探索は、開発機でユーザー自身の Chrome を
+        // 操作してしまうので行わない(専用プロファイルなので、起動した pid が窓を持つ)。
+        let top = find_window(pid, &is_chrome_top, 120).unwrap_or_else(|| {
+            fatal("Chrome の窓が見つからない(起動した pid の Chrome_WidgetWin_1 なし)")
+        });
         TOP.store(top.0 as isize, Ordering::SeqCst);
         // 初回描画とアクセシビリティツリーの構築を待つ余裕。
         sleep_ms(4000);
