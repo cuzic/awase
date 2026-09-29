@@ -45,6 +45,28 @@ run 35947850606: decode_errors=95）。`Conv`(C10/C19/C1B)に半角カタカナ(
 検討事項: `Conv`に0x13を追加するか、未知convを「復号失敗」でなく別状態として扱うか
 （ADR-195「誤りに強い分類は未実装」との関係）。
 
+## 再検証（2026-09-29、develop fe4b5573、v2チェックリストD4）
+
+`.github/workflows/`の検証専用WF（`ci/v2-msime-learning-verify`、windows-latest、MS-IME本体、developへは入れない）を
+5並列で実行（run 36569030546、全5本success）。学習→`--adopt-pending-judgement`2回（冪等確認）まで通した。
+
+| rep | presses | cells | decode_errors | verify_accuracy | judgement | 採用1回目 | 採用2回目 | verify-step行数 |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 1275 | 154/210 | 0 | 0.953 | needs_confirmation | success | success | 315 |
+| 2 | 2178 | 154/210 | 0 | 0.963 | needs_confirmation | success | success | 319 |
+| 3 | 2811 | 154/210 | 0 | 0.963 | needs_confirmation | success | success | 341 |
+| 4 | 2811 | 154/210 | 0 | 0.953 | needs_confirmation | success | success | 329 |
+| 5 | 1275 | 154/210 | 0 | 0.973 | needs_confirmation | success | success | 314 |
+
+- (a) 半角カタカナ0x13: `decode_errors=0`（5/5）。未解決2は解消済みを再確認。
+- (b) 採用経路: 要確認の退避ファイル（last-attempt.json）から`--adopt-pending-judgement`で`keymap-learn-table.json`が生成され、
+  再実行も冪等に成功（5/5）。キーマップ指紋ゲート（1fee16b4）導入後のdevelopで通ることを確認した。
+  観測経路に乗った件数はverify-step 314〜341行、presses 1275〜2811。
+- 精度: 5/5が0.95以上（0.953〜0.973）。2026-09-24の10回中9回と合わせ、0.95付近の回（0.953が2本）があるため
+  閾値ちょうど付近の不採用は今後も起こりうる（0.920の前例）。閾値は変更しない。隠れ状態の吸収は
+  [adr196-t2-msime-hidden-state-hypothesis.md](adr196-t2-msime-hidden-state-hypothesis.md)の決定（現状維持）を継続。
+- 未検証: 未解決1（生存確認の配線）、実機（所有者決定によりCIのみ）。
+
 ## 参考
 
 - 診断runで「IMEが開かず'k'が入力される」現象は、`--activate-gji`(+`--msime`)の付け忘れによる診断構成の不備で実バグではない。
