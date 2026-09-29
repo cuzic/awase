@@ -22,7 +22,7 @@ v2 ラインは `develop` → `main`（`.claude/rules/main-develop-branch-flow.m
 
 ## A. 設計変更3点
 
-- [ ] **A1 calibration を config.toml から cache.toml へ移す**。`AppConfig::calibration` を外し、`focus/classifier.rs` の `save_section` に相乗りする新セクションへ。ADR-176 手動較正は撤去決定済み（ADR-198 決定3、PR #304）なので、残る `[[calibration]]` 読み書きと移行処理の要否を確認する。
+- [x] **A1 calibration を config.toml から cache.toml へ移す**。**移設は行わない（ADR-198 決定3）**。手動較正の撤去（PR #304、`refactor/remove-manual-calibration`）で `AppConfig::calibration` と `[[calibration]]` の読み書きは既に無く、読み手の無いデータを cache.toml へ移す意味が無い。旧 config.toml に `[[calibration]]` が残っていても読込エラー・警告にならず無視される（`src/config.rs::test_removed_calibration_section_is_ignored_on_load`、`config_load_diag` の撤去済みキー表）。awase-settings で保存すると `AppConfig::save` の全書き直しで消える（読み手が無いので可）。残作業なし。
 - [ ] **A2 `ConfirmMode` を `Wait` / `NgramPredictive` の2択にする**。`Speculative` は死んだバリアント、`TwoPhase`・`AdaptiveTiming` は撤去。既存 config に旧値が残るときの読込時の扱いを決める。`app_overrides` は現状維持。
 - [ ] **A3 ADR-198（永続化先の分類）を確定**。status は「採用」だが、`review-2026-09-24-07` の (1)(5)〜(7) が未着手。
 - [ ] **A4 `keys.ime_detect.*`・`muhenkan/henkan_solo_tap_ime_action`・`keyboard_model` の扱い**。「学習が完成すれば不要」の候補で未確定。v2 で外すか残すかを決める（決めるまで触らない）。

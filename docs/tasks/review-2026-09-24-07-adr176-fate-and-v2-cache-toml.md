@@ -1,6 +1,6 @@
 ---
 title: ADR-176 手動較正パネルの撤去と v2 方針（永続化先の分類）の ADR 化
-status: 一部完了（(2)(3)(4)は refactor/remove-manual-calibration で実施、(1)(5)〜(7)は未着手）
+status: 完了（(1)(5)〜(7)は ADR-198・PR #302 等で実施済み、(2)(3)(4)は refactor/remove-manual-calibration で実施。v2 の calibration→cache.toml 移設は ADR-198 決定3 により不要と確定、2026-09-29 に status を実態へ同期）
 created: 2026-09-24
 related_adr: ["ADR-176", "ADR-191", "ADR-195", "ADR-058", "ADR-125", "ADR-162"]
 source_review: 俯瞰レビュー（2026-09-24）の A-8 / A-10 / C-4 / C-5
