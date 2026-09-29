@@ -1,15 +1,18 @@
 ---
 title: 受動化後も残る能動的な書き込みの棚卸し（フォーカス変更時強制OFF・drift correction・conv軸）と回復手段の喪失
-status: 未着手
+status: 一部実施済み（フォーカス変更時強制OFF・ROMAN補完系の撤去済み。T4 実機A/Bと能動書き込み増加方向の再設計が未了）。2026-09-29 に B5 として現状を同期
 created: 2026-09-24
-related_adr: ["ADR-191", "ADR-090", "ADR-193", "ADR-098", "ADR-121"]
+updated: 2026-09-29
+related_adr: ["ADR-191", "ADR-090", "ADR-193", "ADR-098", "ADR-121", "ADR-199", "ADR-202"]
 source_review: 俯瞰レビュー（2026-09-24）の B-5（起動時強制ON以外）/ C-2
 ---
 
 # 残存する能動書き込みの棚卸し（俯瞰レビュー B-5 後半 / C-2）
 
 索引: [11](review-2026-09-24-11-low-priority-backlog.md)。起動時の `desired_open=true` は [05](review-2026-09-24-05-startup-desired-open-forced-on.md)。
-裏取り基準は `5877f982`（origin/develop）。`cbae84ff` 以降の差分（PR #293〜#296）で `crates/awase-windows/src` に入った変更は `tuning.rs`（`KEY_EFFECT_SETTLE_MS`）だけで、`lints/` は変わっていない。本文の行番号は `5877f982` で再確認した。
+**2026-09-29 追記（B5 同期）**: 下の「## 2026-09-29 時点の現状（B5 同期）」が最新。それより下の各節は 2026-09-24 時点（基準 `5877f982`）の記述で、
+撤去・再設計の決定により古くなった箇所には各所に「→ 2026-09-29」の注記を付けた。行番号は、`origin/develop`（`2c4d48b2`）で再確認したものにだけ新しい番号を書いた。
+元の裏取り基準は `5877f982`（origin/develop）。`cbae84ff` 以降の差分（PR #293〜#296）で `crates/awase-windows/src` に入った変更は `tuning.rs`（`KEY_EFFECT_SETTLE_MS`）だけで、`lints/` は変わっていない。本文の行番号は `5877f982` で再確認した。
 `.claude/rules/ime-belief-architecture.md`・`fix-requires-evidence.md`（IME actuation 合流点・warmup・focus 遷移・conv mode の各ファミリー）の対象領域。
 
 旧称「ADR-178撤去プロジェクト領域A」（force-on / reassert の撤去）の「ADR-178」は、現 ADR-179 の旧番号（`docs/adr/index.md:186`「元178番…179へ採番し直し」）。現在の `docs/adr/178-*.md` は MSI アンインストールの別 ADR。ADR-179 本文には領域A の記述が無く（撤去の決定はどの ADR にも書かれていない）、[10](review-2026-09-24-10-adr-status-and-stale-docs-sync.md) の A-5 が ADR-179 に「領域A・C の撤去」節を追記する。本文書では以下「ADR-179（旧178）領域A」と書き、ADR-178 は関連 ADR に含めない。
@@ -20,9 +23,9 @@ source_review: 俯瞰レビュー（2026-09-24）の B-5（起動時強制ON以�
 
 | 経路 | 場所 | 条件・由来 |
 |---|---|---|
-| フォーカス変更時の強制OFF | `runtime/ime_refresh.rs:599-609`（`issue_actuation_order(false, "focus_change_enforce_off")` が `:602`、`set_ime_open_ordered(order)` が `:603`） | `if !applied_ime_on && !new_profile_is_tsf_native`。**非TsfNative だけが対象**。コードコメントの由来は ADR-090 §2.A 設計案3 / A-2 |
-| drift correction | `ir_apply_drift_correction`（`ime_refresh.rs:645`）。`set_ime_open_ordered` が `:934`、`apply_ime_open_with_belief(order, None, belief)` が `:947` | 判定は `state/platform_state.rs` の `check_drift_correction`。BUG-020（TsfNative 救済）/ BUG-043（16回連続送信） |
-| GJI reinit（打鍵時の事後回復。`set_ime_open_ordered` の外） | `output/probe_io.rs:186`（VK_IME_OFF→ON 注入） | GJI × TsfNative で打鍵時に literal を2回検出→give-up した後。**GJI 限定**（MS-IME に同等の経路は無い）。RichEdit 入力先の tsf × GJI では 30/30 で開け直したが、**実 Chrome × GJI では 0/10**（2026-09-29 追補）。この表は `set_ime_open_ordered` の2箇所（指標3）に対応するので、指標3には数えず参考行として載せる |
+| フォーカス変更時の強制OFF（**→ 2026-09-29: 撤去済み**、PR #313・`f2a875cd`、2026-09-25） | 旧 `runtime/ime_refresh.rs:599-609`。今は `ime_refresh.rs:589-593` に撤去を記したコメントだけが残る | 旧条件は `if !applied_ime_on && !new_profile_is_tsf_native`（非TsfNative だけ）。撤去根拠は CI 実測で撤去前後に差が出なかったこと（`docs/adr/191-calibration-experiments.md` A/B-1）。以下の T2・T3 参照 |
+| drift correction | `ir_apply_drift_correction`（`ime_refresh.rs:658`）。`set_ime_open_ordered` が `:966`、`apply_ime_open_with_belief(order, None, belief)` が `:978-979`（2026-09-29 に `2c4d48b2` で再確認。呼び出し元は `ir_stage_notify`〈`:278`〉のみ） | 判定は `state/platform_state.rs` の `check_drift_correction`。BUG-020（TsfNative 救済）/ BUG-043（16回連続送信） |
+| GJI reinit（打鍵時の事後回復。`set_ime_open_ordered` の外） | `output/probe_io.rs:186`（`send_chrome_gji_reinit_and_poll`。`:212-217` が VK_IME_OFF→ON の SendInput。give-up 時の予約は BUG-168/ADR-200 で否定的証拠が累計2回そろったときだけに限定済み） | GJI × TsfNative で打鍵時に literal を2回検出→give-up した後。**GJI 限定**（MS-IME に同等の経路は無い）。RichEdit 入力先の tsf × GJI では 30/30 で開け直したが、**実 Chrome × GJI では 0/10**（2026-09-29 追補）。この表は `set_ime_open_ordered` の2箇所（指標3）に対応するので、指標3には数えず参考行として載せる。**指標3の実数は、強制OFF撤去後は drift correction の1箇所**（`set_ime_open_ordered` の呼び出しは `ime_refresh.rs:966` のみ。`grep -rn "set_ime_open_ordered(" crates/awase-windows/src` で確認） |
 
 起動時の強制ON（`desired_open=true` 初期値）は drift correction の経路で書かれる。これは [05](review-2026-09-24-05-startup-desired-open-forced-on.md) が扱い、ここでは別の行として数えない。
 
@@ -48,7 +51,8 @@ source_review: 俯瞰レビュー（2026-09-24）の B-5（起動時強制ON以�
 
 ### フォーカス変更時の eager warmup
 
-強制OFFの直前、`ime_refresh.rs:594` の `self.platform.send_eager_warmup(warmup_ime_on)` がフォーカス変更ごとに ON 方向の warmup を送る。コメントに「トレイで半角英数へ切り替えた直後のフォーカス復帰で、一度だけひらがなへ戻る（既知の制限）」とあり、conv 軸にも作用する。ADR-191 決定1は warmup を既存の例外として撤去対象外にしているので、棚卸し表には「例外として維持」の行として載せる。
+（→ 2026-09-29: 強制OFF は撤去済みなので「直前」の相手は無い。呼び出しは `ime_refresh.rs:588` に移動。Ctrl↑ の eager warmup は BUG-174〈PR #358〉で撤去済みで、これとは別。確定キー warmup の全面削除は PR #360 が担うが未マージ）
+`ime_refresh.rs`（旧 `:594`）の `self.platform.send_eager_warmup(warmup_ime_on)` がフォーカス変更ごとに ON 方向の warmup を送る。コメントに「トレイで半角英数へ切り替えた直後のフォーカス復帰で、一度だけひらがなへ戻る（既知の制限）」とあり、conv 軸にも作用する。ADR-191 決定1は warmup を既存の例外として撤去対象外にしているので、棚卸し表には「例外として維持」の行として載せる。
 
 ### conv 軸（変換モード）の書き込み
 
@@ -74,21 +78,92 @@ ADR-191 決定5の指標5（IME へ書く振る舞いの数）の列挙は「固
 
 lint（`lints/actuation_call_guard/src/lib.rs:98-101`）は `actuate_ime_control` の許可呼び出し元として `set_ime_open_for_target` と `modify_conv_mode` を持つだけで、`set_ime_conv_for_target` / `set_ime_mode_for_target` / `set_ime_romaji_mode_for_hwnd` を呼ぶ側は数えていない（確認済み）。
 
+## 2026-09-29 時点の現状（B5 同期）
+
+`origin/develop`（`2c4d48b2`）でコミット履歴・コードを突き合わせた。**この節が最新で、下の古い記述と食い違う場合はこちらが正**。
+
+### 開閉軸の能動書き込みの一覧（現状列）
+
+| 経路 | 現状（2026-09-29） | 根拠・備考 |
+|---|---|---|
+| フォーカス変更時の強制OFF | **撤去済み**（2026-09-25、PR #313 `f2a875cd`） | CI 実測で撤去前後に差なし。実機未検証は限界として ADR-191 に記録済み（T3） |
+| 起動時の強制ON（`desired_open=true`） | 修正が develop に入った（BUG-163。詳細は [05](review-2026-09-24-05-startup-desired-open-forced-on.md)） | 本表の管轄外 |
+| force-on / reassert | **撤去済み**（`621bf93c`/`f83084b3`、2026-09-18）。TsfNative の ON 方向救済は drift correction のみ、GJI は加えて reinit | reassert 側の撤去前対照は復元不能で未実施（BUG-172） |
+| drift correction | **存続**（`ime_refresh.rs:658`、`set_ime_open_ordered` は `:966` の1箇所）。ただし **実 Chrome では判断に届かない** | 下の「BUG-172 の測定結果」。PR #360（未マージ）は `ConvOpenInference` 由来の drift 発火を撤去する内容 |
+| GJI reinit（打鍵時） | 存続（`probe_io.rs:186`）。give-up からの予約は BUG-168/ADR-200 で「否定的証拠が累計2回」に限定済み | 実 Chrome × GJI では開け直せなかった（下） |
+| フォーカス変更時の eager warmup | 存続（`ime_refresh.rs:588`）。Ctrl↑ の eager warmup は撤去済み（BUG-174、PR #358） | ADR-191 決定1で例外として維持 |
+| GJI の 0x19（Alt+半角/全角）の役割由来 Toggle | **既定設定で初めて能動経路が動く**（PR #367、`d1456a4b`） | 下の「ime_toggle 既定を空にした影響」 |
+| `keys.ime_on`/`ime_off`、役割由来の Toggle（0xF3/0xF4・F13〜F24・無変換/変換の単独タップ） | 存続（ADR-199 決定15。`ime_on`/`ime_off` の既定は残す） | 08 の結論 |
+| `keys.engine_on_ime_key`/`engine_off_ime_key`（エンジン ON/OFF 時の IME モードキー送信） | **撤去決定**（所有者決定 2026-09-29。実装は `feat/v2-keys-cleanup`） | 配線は `app/bootstrap.rs:722-728` → `platform.rs:29-31,109-120`。実装後に本表から削除。actuation 合流点を減らす方向（複雑性予算では削除側）。詳細は [v2-a4 棚卸し](v2-a4-config-cleanup-inventory-2026-09-29.md) |
+| `muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action` | **再設計決定**（所有者決定 2026-09-29。実装は `feat/v2-solo-tap-redesign`、ADR・敵対レビューが先）。**能動書き込みが増える方向** | 下の「撤去決定と再設計決定」。現行は `key_pipeline.rs:974` の `explicit_ime_action_target`（`SuppressOnly` は書かない） |
+
+### ADR-178（現 ADR-179）領域A撤去後の状態
+
+- 領域A（force-on・reassert）の撤去は `f83084b3`/`621bf93c`（2026-09-18）。その後に強制OFF（2026-09-25、#313）と conv 軸の経路9（焦点プローブの ROMAN 修正、2026-09-26、PR #329）も撤去された。
+  conv 軸の経路の最新の分類・状態は [conv-write-paths-inventory.md](conv-write-paths-inventory.md) が正で、本文書の conv 軸の表（`5877f982` 時点の行番号）は**古い**（`ime.rs`・`key_pipeline.rs` の行番号がずれている。経路9は撤去済み）。
+- 撤去後の ON 回復の CI 観測（`cal-driftrec-*`）と結果は、末尾の「CI での代替観測」「追補」の節にある。要点: 4構成（tsf/edit × GJI/MS-IME）すべてで awase は外部 close を観測せず（observed=0）、drift correction は一度も判断に届いていない。
+  「drift correction は ON へ戻さない」とは言えず、「観測の経路に乗っていない」が事実。
+- 撤去前ビルドとの対照は force-ON のみ復元して実施済み。reassert は後続変更と衝突して復元不能（未実施）。
+
+### BUG-172 の測定結果（PR #365 マージ済み、その後の測定は未マージ）
+
+[BUG-172](../known-bugs/BUG-172.md) の記録に沿う。
+
+- **PR #365（マージ済み）**: 別窓方式のフォーカス変更を挟んだ実 Chrome 測定（`cal-driftrec-chrome-refocus-*`、run 36537797446）。実 Chrome × MS-IME 0/10・× GJI 0/10 で回復せず、
+  **observed（Chrome の開閉を ImeModel が観測した回数）= 0**。Chrome 系は `profile=Imm32Unavailable` で開閉の観測を捨て、belief が古い ON のまま残る。撤去の有無（force-ON のみ復元）でも差なし。
+- **`origin/docs/bug172-realistic-close-measurement`（f7a96923、未マージ）**: 実運用に近い外部 IME OFF（他プロセスの `SendInput` 注入、メモ帳経由）の実 Chrome 測定（run 36540419485）。
+  - **GJI × 実 Chrome は外部注入の 半角/全角（0xF3）・VK_IME_OFF（0x1A）で 10/10 再現**。IME は閉じたまま、打鍵は `kiu`（Engine は ON のまま）。observed=0。
+    awase は注入キーを hook で見ているが `[shadow-toggle] injected ... ユーザー意図に昇格させない (BUG-14)` で belief 追従を may_change_ime の refresh に委譲し、その refresh が Chrome では読めない。
+  - awase の目印付き（物理キー相当）の 0xF3 は awase が Engine も OFF にするので症状ではない。**物理キー押下（awase 経由）では起きない**。
+  - MS-IME × 実 Chrome は再現できず（外部注入の 0xF3/0x1A を MS-IME が効かせない、理由は未特定）。メモ帳経由は 0/10（IME 開閉は窓/スレッドごと）。
+  - 影響: **C-2 の「TsfNative の ON 回復は drift correction だけ」は、実 Chrome では成立しない**（判断に届かない）。ゲート修正（msime-ready に開閉を要求）は実 Chrome の症状を直さないため見送り。
+    次の一手（未着手）は、打鍵直前だけの読み取り専用照合、または `GUID_COMPARTMENT_KEYBOARD_OPENCLOSE` の通知購読（いずれも書き込みではなく belief の観測を増やす方向。判断は belief 更新の reduce 経由）。
+- 限界: 1台の CI 実機、各10試行。ユーザーが遭遇するのは AutoHotkey 等の注入やモード切替アイコン操作だが、頻度は未確認。
+
+### 撤去決定と再設計決定（所有者決定 2026-09-29、v2 A4）
+
+出典: [v2-a4 棚卸し](v2-a4-config-cleanup-inventory-2026-09-29.md)（PR #368）。
+
+- **`engine_on_ime_key`/`engine_off_ime_key` は撤去**。「受動が原則」に反する能動送信の残骸（`platform.rs` から SendInput）。実装は `feat/v2-keys-cleanup`。撤去で能動書き込みが1経路減る。
+- **`keys.ime_detect.{on,off}` の既定は空にする**。これは belief の追随（受動）の既定を減らすもので、能動書き込みではない。`is_japanese_ime()` が偽の間の 0x16/0x1A の追随が一瞬効かなくなりうる（推論、実機未確認）。
+- **`*_solo_tap_ime_action` は再設計**。Suppress/Passthrough の設定に従い、IME 側がトグルなら生キーを抑止して awase が **belief に従って ON/OFF を明示 inject** する。現行の `SuppressOnly`（書かない）に対して、
+  **能動書き込みが増える**。この文書の観点（棚卸し・回復手段の喪失）で新たに生じる問題:
+  - belief が実 IME とずれていると、ON にしたいのに OFF を送る等の逆動作になる。特に TsfNative（実 Chrome では belief が観測できず古い ON のまま残る〈BUG-172〉）と重なる。
+    inject の前提となる belief の鮮度・確からしさを設計に含める（BUG-113 の `shadow_on` を `Option<bool>` のまま扱う教訓）。
+  - IME 側が生キーでもトグルする場合、生キー抑止と inject を対にしないと二重トグルになる（BUG-46 型）。`transport.rs::PhysicalKeyDisposition::plan` と食い違わないこと。
+  - inject は `apply_ime_open_with_view` 系の合流点を通す新しい呼び出し元になりうる。`lints/actuation_call_guard` の許可リストと `architecture_guard` の件数ガードへの影響を洗い出す（`complexity-budget.md` は未発効だが、`engine_on/off_ime_key` の撤去と対にして差し引きを説明できると望ましい）。
+  - 指標3（`set_ime_open_ordered` の呼び出し）が1箇所のままか、増えるかは設計次第。増やす場合は ADR-191 決定5 の指標に反映する。
+
+### `ime_toggle` 既定を空にした影響（PR #367）
+
+- `keys.ime_toggle` の既定が `VK_KANJI` から空になった（`d1456a4b`、所有者決定 2026-09-29、ADR-199 決定15・ADR-202 T16-5）。
+- 従来は既定の無修飾 `VK_KANJI` が `Engine::has_bare_ime_combo(0x19)` を真にし、GJI の 0x19 役割判定（`derive_key_shadow_action`）を `explicit_overlap` で常に無効化していた。
+  つまり**既定設定の GJI では Alt+半角/全角が常に受動**（belief は実 IME の開閉の観測に追随）だった。
+- 既定を空にしたので、**既定設定の GJI で ADR-202 の能動 `Derive` 経路（0x19 の行がトグルなら役割由来の `Toggle`）が初めて働く**。開閉軸の能動書き込み（役割由来の Toggle、上の表）に、GJI の 0x19 が既定で加わる。
+- 未検証: 能動 `Derive` 経路の実機確認は未実施（ADR-202 T16-5。GJI の既定 `[keys]` での `sc-kanji-role-toggle`/`sc-kanji-role-nontoggle` の e2e）。既存 config の明示 `ime_toggle = ["VK_KANJI"]`（旧既定を GUI が書き出したもの）は尊重するので、その利用者は受動のまま。
+- 変わらないもの: GJI 以外（MS-IME 本体・ATOK・未検出）の 0x19 は `hook.rs` の静的 `Toggle`（`KeepStatic`）のまま。互換モードの非対称は ADR-202 T16-7。物理の Alt+半角/全角は元から静的 `Toggle` が担っていた。
+
+### 今後の作業（この文書の未了）
+
+- T4 の実機 A/B（既定チョードでの外部 close 回復）。ただし BUG-172 の測定で、実 Chrome では drift correction が判断に届かないことが分かったため、A/B の意味は「届く条件を作る」ことから先に変わった。
+- 上の再設計（solo-tap）が入ったら、開閉軸の表と指標3を更新する。
+- conv 軸の表を [conv-write-paths-inventory.md](conv-write-paths-inventory.md) に一本化するか、本文書の表を削る（重複と行番号の陳腐化を避ける。判断は所有者）。
+
 ## C-2: 回復手段の喪失と非対称
 
-- force-on と reassert は撤去済み（`f83084b3` / `621bf93c`、`5877f982` に含まれる）。TsfNative の ON 方向の救済は drift correction だけ（**GJI については打鍵時の GJI reinit も ON 方向に働く**が、RichEdit 入力先でのみで実 Chrome では回復しなかった。下の「追補 2026-09-29」参照）。記憶メモによれば、撤去時点で「drift 単独で代替できるか」の実機 A/B は未実施で、その後の実施記録もリポジトリ内で見つからない（**未確認**）。
+- force-on と reassert は撤去済み（`f83084b3` / `621bf93c`、`5877f982` に含まれる。2026-09-18。旧称「ADR-178 領域A」＝ADR-179〈旧178〉領域A）。TsfNative の ON 方向の救済は drift correction だけ（**GJI については打鍵時の GJI reinit も ON 方向に働く**が、RichEdit 入力先でのみで実 Chrome では回復しなかった。下の「追補 2026-09-29」参照）。記憶メモによれば、撤去時点で「drift 単独で代替できるか」の実機 A/B は未実施で、その後の実施記録もリポジトリ内で見つからない（**未確認**）。
 - 一方で、状態を押し付ける書き込みは残る: 起動時の強制ON（[05](review-2026-09-24-05-startup-desired-open-forced-on.md)）と、ImmCross へのフォーカス変更時の強制OFF。「救済のための書き込みは消したのに、押し付ける書き込みは残っている」形。
-- 注意: 強制OFFは TsfNative では発火しないので、TsfNative の「回復手段の喪失」は drift correction だけの問題。強制OFFの撤去で確かめるべきなのは ImmCross 側のずれの持続時間。
+- 注意（→ 2026-09-29: 強制OFF は撤去済みなので、「押し付ける書き込み」は起動時の強制ON〈05〉だけになった）: 強制OFFは TsfNative では発火しないので、TsfNative の「回復手段の喪失」は drift correction だけの問題。強制OFFの撤去で確かめるべきなのは ImmCross 側のずれの持続時間。
 
 ## タスク
 
-- [ ] **T1 P1 調査結果の取り込み**:
+- [x] **T1 P1 調査結果の取り込み**（実施済み。`docs/teardown-verification-guide.md` と `docs/ime-passive-model-expected-results.md` が develop に存在する。以下は当時の手順）:
   - (a) worktree `adr191-p1` を使っているセッションを確認する（`worktree-per-session`。他セッションの作業中ブランチを勝手にマージしない）。
   - (b) `docs/teardown-verification-guide.md` と `docs/ime-passive-model-expected-results.md` を develop に入れる（docs のみ、`main-develop-branch-flow` に従い develop へ直接マージ可）。手段は先行5コミットの cherry-pick か2ファイルのチェックアウト（ブランチは471コミット遅れているので、ブランチごとのマージや二点 diff での確認はしない）。取り込むとき、ガイド中のコード参照（関数名・行番号）を `5877f982` 以降の develop で再確認して直す（例: §7.1 の `set_ime_open` → `set_ime_open_ordered`）。
   - (c) ADR-191 決定5の P1 行から `teardown-verification-guide.md` §7.1 へリンクする。
 - [x] **T2 強制OFFの確認手段を先に作る**（同ガイド §8-1）: `ime_key_matrix_spike` に2窓のフォーカス切替モードを足し、片方を IME ON にしてから belief OFF のままもう片方へ移り、移動後 +100/+400/+1500ms で実IMEと Engine の一致を記録する。撤去前のビルドでは、`focus_change_enforce_off` が実際に書いたか（`set_ime_open_ordered` の戻り値 `sent`、`ime_refresh.rs:603` 以降のログ）を各試行で記録する。授権が下りずに書いていない試行は、撤去前後の差がゼロでも「撤去しても影響なし」の証拠にならないため分けて数える。対象は ImmCross（CI の GJI 構成は Win32 `Edit` が入力先なのでそのまま測れる）。 → 2026-09-25 CIで4通り試行し、いずれも差が出ず判定不能（記録: `docs/adr/191-calibration-experiments.md`）。
 - [x] **T3 強制OFFの撤去要否を ADR-191 で決める**: T2 で撤去前後の「不一致が続く時間」を比べる。撤去するなら撤去コミットに T2 のモードを CI の構成として含める。 → 2026-09-25 ユーザー判断で「CI結果（現developでは実質no-op、`sent=false`はwarrant拒否）を根拠に撤去」と決定。実機未検証は限界として記録。
-- [ ] **T4 drift correction（P2 の前提）**:
+- [ ] **T4 drift correction（P2 の前提）**（→ 2026-09-29: BUG-172 の測定で、実 Chrome では drift correction が判断に届かない〈observed=0〉と分かった。上の B5 節参照）:
   - 判定側: 既存テスト（`check_drift_correction` の単体テスト、`drift_correction_replay.rs`）で足りる。追加は不要。
   - 書く側: ADR-193 の入力先を `e2e-ime.yml` に配線し（同ガイド §8-2、GJI 有効化と `awase=true/false` の対照が要る）、明示意図の回復シナリオ（§8-3）を作る。
     → **2026-09-27 CI配線完了**（`cal-drift-tsf-{gji-atok,msime-native}`、`typing_stress --mode=drift`、
@@ -239,7 +314,7 @@ API 開閉とかな単打の実打鍵結果を記録する。`check_drift_recove
 - したがって「閉じられた IME を drift correction が ON へ戻す」経路は、フォーカス変更を挟んでも成立しない（Chrome 系は観測不能、ImmCross は意図が消える）。ON への回復は GJI reinit だけで、実 Chrome では効かなかった。
 
 限界:
-- 実 Chrome に対する `--refocus`（chrome_probe）は `SetForegroundWindow`/`SwitchToThisWindow` がタスクバーに拒否され（`away=false`）、**フォーカス変更は起きていない**（FAIL 10/10 は refocus 無しと同じ）。tsf の結果は同じクラス名の RichEdit での代用で、分類の理由がクラス名なので実 Chrome でも同じと推定しているが未確認。
-- 閉じ方は `WM_IME_CONTROL`（外部要因の再現）で、実運用の閉じ方との対応は未確認。撤去前ビルドとの対照も未実施。
+- 実 Chrome に対する `--refocus`（chrome_probe）は `SetForegroundWindow`/`SwitchToThisWindow` がタスクバーに拒否され（`away=false`。2026-09-29 に別窓方式へ修正し `away=true`、測定結果は BUG-172）、**フォーカス変更は起きていない**（FAIL 10/10 は refocus 無しと同じ）。tsf の結果は同じクラス名の RichEdit での代用で、分類の理由がクラス名なので実 Chrome でも同じと推定しているが未確認。
+- 閉じ方は `WM_IME_CONTROL`（外部要因の再現）で、実運用の閉じ方との対応は未確認。撤去前ビルドとの対照は force-ON のみ復元して実施済み(reassert は復元不能、[BUG-172](../known-bugs/BUG-172.md) 参照)。
 
 次の一手の候補: 実 Chrome で観測できないこと（`Imm32Unavailable`）が「外部から閉じられた」ケースの本質的な限界かを、実運用の経路（他アプリ・OS による IME OFF）の頻度から判断する。頻度が低ければ対処しない選択もある。

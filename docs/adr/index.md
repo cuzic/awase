@@ -211,6 +211,8 @@
 | [202](202-kanji-0x19-role-from-hankaku-zenkaku-row.md) | 0x19（Alt+半角/全角）を GJI では CUSTOM 表の Hankaku/Zenkaku 行から役割判定する（ADR-199 決定14 の実装設計） | 採用・実装済み（T16-1〜3・5・6）
 | [203](203-gji-fsm-follows-belief-open-transitions.md) | GjiFsm を belief の開閉変化に追随させる(BUG-170、OffCold 固着→毎打鍵 per-VK→StaleConfirm→ESC) | 採用・実装済み(e2e・実機未検証) |
 | [204](204-gji-sync-obligation-cannot-be-silently-dropped.md) | ImeOpenOutcome の処遇の重複を1メソッドへ集約し legacy_gji_sync_obligation を網羅化する最小版(初稿の D2/D3/D4 は取り下げ) | 採択(縮小版)・実装未着手 |
+| [207](207-keys-ime-detect-default-empty-and-remove-engine-ime-keys.md) | keys.ime_detect.on/off の既定を空に、engine_on/off_ime_key(Engine ON/OFF 時の IME モードキー能動送信)を撤去 | 起草・レビュー中 |
+| [205](205-observe-external-ime-close-in-imm32-unavailable-windows.md) | Imm32Unavailable(Chrome)で外部注入の IME キーによる close を窓内の 1→0 遷移観測で実状態へ追随する(BUG-172) | 採択(round4 収束)・実装未着手 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

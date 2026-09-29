@@ -75,6 +75,7 @@ IME・キー効果に関する永続化だけを対象にする。`update_check.
   2026-09-23 のユーザー決定の目的（config.toml から機械依存データを追い出す）は、撤去で達成される。
 - `AppConfig` のフィールドを消すと、awase-settings の保存（`AppConfig::save` はファイル全体を書き直す）で既存の `[[calibration]]` は消える。
   読む側が無いので消えてよい。読み込みは `deny_unknown_fields` が無いので壊れない。
+  （実装確認 2026-09-29: `AppConfig::calibration` は撤去済みで、互換テスト `test_removed_calibration_section_is_ignored_on_load` が通る。v2 チェックリスト A1 はこれで完了扱い。）
 - ADR-176 の frontmatter status は今も「適用あり」の状態を書いている。適用は ADR-191（`9dc52c89`）で撤去済みで、
   status の訂正と撤去の実施は 07 (2) で行う。
 
@@ -107,7 +108,7 @@ warn を出して中止する（PR #302 に含める）。壊れたファイル�
 - ConfirmMode の2択化（確定エンジンの設定）。04 T2（推奨モード統一）の後に、新規 ADR として起票する。担当は 07 (5) の後継。
   04 が「07 の ADR で覆す」と書いている箇所（`review-2026-09-24-04` の推奨モード統一に関する2行）は、その新規 ADR を指すよう直す。
 - `keys.ime_detect.*`、`keys.ime_on`、`*_solo_tap_ime_action`、`keyboard_model` などの config 簡略化（v2 の別論点）。
-- 手動較正パネルの撤去の実施（07 (2)）。
+- 手動較正パネルの撤去の実施（07 (2)。実施済み: `refactor/remove-manual-calibration`、PR #304）。
 
 ## 採らなかった案
 
