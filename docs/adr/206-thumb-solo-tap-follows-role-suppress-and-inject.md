@@ -217,3 +217,7 @@ S2 は「生キーで GJI 自身が確実に処理していた打鍵」を awase
 - 旧 `"off"`(GUI T3 の設定)が決定3の代償(フォーカス直後の `VK_IME_OFF` 単発)で「@」を出すか。
 - `applied` が古いときの S2(決定7-1)の実測(CI シナリオ (b)(c))。ADR-205 D6/D7 の実装状況に依存する。
 - MS-IME 本体・ATOK は対象外(受動のまま)。MS-IME 本体は ADR-199 T17 Phase 4 と B4 計画が決まってから同じ入力(S2)に合流させる。
+- **CI e2e `sc-solotap-*` の限界（2026-09-29 実行結果を受けて）**: 5 構成×2 回すべて完走（toggle/henkan-toggle/nontoggle は consistency PASS 2/2、stale/after-passthrough は observe で FAIL 0）。
+  ただしハーネスは `SendInput` で注入したキーを送り、awase は注入イベントを対象にしない（`is_bare_thumb` は `!event.injected`、BUG-14）ので、**この構成は本 ADR の新分岐（物理の親指単独押下）を通らない**。
+  PASS は「この設定で awase が追随を壊さない」ことの確認であり、Consume＋絶対指定 `SetOpen`・リピート・stale belief の挙動そのものは検証していない（`src/engine/tests.rs` の単体テストが代わりに固定）。
+  実際の物理押下は実機 A/B でしか検証できない（`SendInput` 注入では物理キー状態が作れない、`feedback_sendinput_cannot_test_physical_key_state`）。
