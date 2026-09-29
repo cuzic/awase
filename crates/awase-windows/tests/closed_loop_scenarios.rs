@@ -329,3 +329,29 @@ fn conv_inference_alone_does_not_fire_drift_correction_despite_explicit_off() {
         h.trace()
     );
 }
+
+/// Opus round2 R2-2: conv 推測を根拠から外すのは「選ぶ前に除外」する形でなければならない。選んだ後に捨てる形だと、
+/// 同じ Medium の `ObserverPoll` が検出した正当な drift まで、後から来た conv 推測が「最新の信頼できる観測」になって覆い隠す。
+#[test]
+fn conv_inference_does_not_mask_a_poll_drift() {
+    let mut h = Harness::start(Setup::imm_cross(state(true, CONV_HIRAGANA)));
+    h.advance_ms(300)
+        .block_writes(true)
+        .user_set_open(false)
+        .advance_ms(50)
+        .observe(Source::Poll);
+    assert!(
+        !h.drift_fires.is_empty(),
+        "実 API（Poll）の観測は drift を検出する\n{}",
+        h.trace()
+    );
+    // 時間の経過だけでも drift 判定が走るので、conv 推測を記録する直前の件数を取ってから観測する。
+    h.advance_ms(50);
+    let fires_before_conv = h.drift_fires.len();
+    h.observe_value(Source::ConvInference, true);
+    assert!(
+        h.drift_fires.len() > fires_before_conv,
+        "後から conv 推測が来ても、Poll の drift は隠れない\n{}",
+        h.trace()
+    );
+}

@@ -16,8 +16,7 @@ use super::ime_model::ImeModel;
 /// [`check_drift_correction`] の戻り値（BUG-113残置課題）。
 ///
 /// 旧 `(bool, bool, u64)` タプルから構造体化したのは、`ir_apply_drift_correction`
-/// （`runtime/ime_refresh.rs`）が `ConvOpenInference` 由来の drift を
-/// 「明示意図エピソードあたり1送信」に絞る際の根拠（`source`）を、呼び出し元が
+/// （`runtime/ime_refresh.rs`）が drift の根拠（`source`）を、呼び出し元が
 /// 別途 `most_recent_trusted()` を再計算せずに受け取れるようにするため
 /// （独立再計算は BUG-110 と同型の構造的欠陥、`resolve_warmup_ime_on` の doc 参照）。
 /// `confidence` は診断ログ専用で判定には使わない。
@@ -35,13 +34,8 @@ pub struct DriftCorrection {
 /// 戻り値: 補正が必要な場合 `Some(DriftCorrection { .. })`。
 /// `explicit_intent`: `ImeStateHub::explicit_intent`（= `model.last_intent` の `target`）の値をそのまま渡す。
 ///
-/// BUG-113残置課題（2026-09-06）: 従来 `(bool, bool, u64)` タプルだったが、
-/// `ir_apply_drift_correction`側でconv由来drift（`ConvOpenInference`）を
-/// 「明示意図エピソードあたり1送信」に絞るために`source`/`confidence`を
-/// 追加した構造体に変えた。**判定ロジック自体は1行も変えていない**——
-/// `resolve_warmup_ime_on`が同じ述語を`matches!(.., Some(DriftCorrection
-/// { desired: false, observed: true, .. }))`として使うため、旧
-/// `Some((false, true, _))`とビット同値であること（ADR-132/INV-B1'）。
+/// `ConvOpenInference` は根拠にしない（BUG-173 追補3）。`resolve_warmup_ime_on` が同じ述語を
+/// `matches!(.., Some(DriftCorrection { desired: false, observed: true, .. }))` として使う（ADR-132/INV-B1'）。
 #[must_use]
 pub fn check_drift_correction(
     model: &ImeModel,
@@ -65,20 +59,20 @@ pub fn check_drift_correction(
     }
 
     let max_age = std::time::Duration::from_millis(crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS);
-    let trusted = model.observations.most_recent_trusted(now)?;
+    // `ConvOpenInference` は drift correction の根拠にしない（下記）。選んだ後に捨てると、同じ Medium の他ソースの
+    // 正当な観測まで覆い隠すので、選ぶ前に除外する。
+    let trusted = model
+        .observations
+        .most_recent_trusted_excluding(now, &[ObservationSource::ConvOpenInference])?;
     if trusted.age(now) > max_age {
         return None;
     }
-    // ConvOpenInference（conv ビットからの間接推測、KatakanaShadowOff/NativeToggleShadowOff 由来）は
-    // drift correction の根拠にしない（BUG-173 追補2 / Opus 発火削減 D4）。conv の NATIVE ビットは IME を閉じても
-    // 残る持続的な設定で（`ime_refresh.rs` の conv 読み取りコメント・BUG-172・BUG-68）、`VK_IME_OFF` を何度送っても
-    // 観測が変わらない（反証不能）。「conv-mode を actuation のゲートに使わない」方針とも矛盾する。journal
-    // 01M3NJ784NKMH120HM6QGKF7W7 では、ユーザー自身の Ctrl+無変換（`VK_IME_OFF`）の 106ms 後に、この推測が
-    // 根拠の drift correction が同じ `VK_IME_OFF` を重ねて送っていた。開閉を読む手段が無い TsfNative×GJI では、
-    // 最初の OFF が失われても自動では再送せずユーザーの押し直しに委ねる（受動化の方針）。
-    if trusted.source == ObservationSource::ConvOpenInference {
-        return None;
-    }
+    // ConvOpenInference（conv ビットからの間接推測、KatakanaShadowOff/NativeToggleShadowOff 由来）は drift correction の
+    // 根拠にしない（BUG-173 追補3 / Opus 発火削減 D4。上の `most_recent_trusted_excluding` で除外済み）。conv の NATIVE ビットは
+    // IME を閉じても残る持続的な設定で（BUG-172・BUG-68）、`VK_IME_OFF` を何度送っても観測が変わらない（反証不能）。
+    // 「conv-mode を actuation のゲートに使わない」方針とも矛盾する。journal 01M3NJ784NKMH120HM6QGKF7W7 では、ユーザー自身の
+    // Ctrl+無変換（`VK_IME_OFF`）の 106ms 後に、この推測が根拠の drift correction が同じ `VK_IME_OFF` を重ねて送っていた。
+    // 開閉を読む手段が無い TsfNative×GJI では、最初の OFF が失われても自動では再送せずユーザーの押し直しに委ねる（受動化）。
     // HeuristicDefault（観測ゼロの安全デフォルト、`reset_stale_ime_on_for_imm_broken` が Imm32Unavailable
     // ウィンドウ入場時に記録する）は、明示的なユーザー意図が一度も無い間は単独で drift correction を
     // 発火させない（BUG-110 追補7〜9・issue #189: `FocusChanged` で `last_intent` がクリアされた直後に
