@@ -5607,6 +5607,26 @@ fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
         );
     }
 
+    // 2b. キー打鍵を契機とする eager warmup の送信は撤去済み（BUG-173 追補2）。reinject 段は cold 化と GjiFsm reset だけ。
+    let platform = read_crate_file("src/platform.rs");
+    let platform = strip_any_test_module(&platform);
+    let reinject = platform
+        .find("fn on_reinject_key")
+        .expect("on_reinject_key が見つかりません");
+    let reinject_body = &platform[reinject..];
+    let reinject_end = reinject_body
+        .find("\n    }\n")
+        .map_or(reinject_body.len(), |e| e + 7);
+    assert!(
+        !reinject_body[..reinject_end].contains("send_eager_tsf_warmup"),
+        "platform.rs::on_reinject_key が `send_eager_tsf_warmup` を呼んでいます（BUG-173 追補2: 確定キー reinject 時の \
+         VK_IME_ON 送信は撤去済み。Enter1回で2発出ていた発火の再導入になる）"
+    );
+    assert!(
+        !platform.contains("fn on_passthrough_key"),
+        "platform.rs に `on_passthrough_key`（確定キー D 段の warmup 後処理）が戻っています（BUG-173 追補2）"
+    );
+
     // 3. KeyUp ラッチの呼び出し順: plan() → latch → record_key_input → kp_stage_execute
     let kp = read_crate_file("src/runtime/key_pipeline.rs");
     let kp = strip_any_test_module(&kp);

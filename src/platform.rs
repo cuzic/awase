@@ -477,17 +477,8 @@ pub trait TsfComposition {
 
     /// キー再注入時の composition 状態更新フック。
     ///
-    /// F2-TSF deferred / confirm キー reinject の mark_cold + eager warmup を処理する。
-    ///
-    /// `warmup_ime_on`: warmup を送ってよいかの判定に使う IME 開状態。`applied` が `Unknown`（TsfNative のフォーカス復帰直後など）のときは
-    /// belief にフォールバックした値が入る（`WarmupImeOn::from_applied_or_belief`、ADR-098 決定1-b）。呼び出し側が生の `bool`/`Option<bool>` を渡すことはできない。
-    fn on_reinject_key(
-        &mut self,
-        _vk: crate::types::VkCode,
-        _is_keydown: bool,
-        _warmup_ime_on: WarmupImeOn,
-    ) {
-    }
+    /// confirm キー KeyDown の reinject 時に cold 化する（`VK_IME_ON` の eager warmup は送らない）。
+    fn on_reinject_key(&mut self, _vk: crate::types::VkCode, _is_keydown: bool) {}
 }
 
 #[cfg(test)]
