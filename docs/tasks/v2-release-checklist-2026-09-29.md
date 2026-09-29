@@ -24,6 +24,8 @@ v2 ラインは `develop` → `main`（`.claude/rules/main-develop-branch-flow.m
 | `keys.ime_detect.*` の既定（IMEオン・IMEオフ） | **空にする**（棚卸しの推奨「残す」を覆す） |
 | `engine_on_ime_key` / `engine_off_ime_key` | **撤去する**（awase が IME に能動送信する設定） |
 | 無変換/変換の単独タップ | Suppress / Passthrough の設定に従う。ただし IME 側がトグルに割り当てているときは、**生キーを抑止し、awase が belief に従って ON/OFF を明示で inject** する（ADR・敵対レビューを通してから実装） |
+| BUG-173（v1 への backport） | **しない**。v2 への移行を案内し、告知に既知の問題として載せる |
+| C2 の(2)〜(5) | ブロッカーから外す（(1) は BUG-172 の修正で再判定）。発生したら BUG を起票する運用 |
 | `keyboard_model` | 残す（棚卸しの推奨どおり。物理配列の軸で学習や IME 設定では代替できない） |
 
 ## A. 設計変更
@@ -66,7 +68,7 @@ v2 ラインは `develop` → `main`（`.claude/rules/main-develop-branch-flow.m
 ## E. リリース作業
 
 - [ ] **E1 v1 の保守終了の告知**: README・更新通知・Scoop の案内。v1 の最後のパッチを出すなら、v2 リリース前に `release-v1develop-to-v1main` で済ませる（`report.awase.cc` は `latest-release` を v1/v2 ラインごとに返す〈`0a38590a`〉）。
-- [ ] **E2 backport の棚卸し**: BUG-168・170・171 ほか、v1 に無い修正の重大度判定。重大なものだけ `Backport of <hash>` つきで `v1-develop` へ。
+- [x] **E2 backport の棚卸し**: 完了（`v2-e2-v1-backport-inventory-2026-09-29.md`）。重大と判定したのは BUG-173 のみで、**所有者決定（2026-09-29）により backport せず v2 への移行を案内する**。BUG-171・172 は develop でも未修正のため backport 不可。E1 の告知に『v1 に残る既知の問題』（同文書の一覧）を載せる。
 - [ ] **E3 リリース**: `release-develop-to-main`（CHANGELOG、2.0.0 への bump、タグ、GitHub Release）。`docs/changelog.en.html` も更新する。
 
 ## 運用メモ
