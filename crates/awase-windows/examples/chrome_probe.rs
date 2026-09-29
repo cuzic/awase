@@ -199,6 +199,7 @@ fn scan_for(vk: u32) -> u16 {
         0x1D => 0x7B, // 無変換
         0x1C => 0x79, // 変換
         0xF2 => 0x70, // ひらがな
+        0xF3 | 0xF4 => 0x29, // 半角/全角
         0x4B => 0x25, // K
         0x41 => 0x1E, // A
         0xA0 => 0x2A, // LShift
@@ -207,6 +208,11 @@ fn scan_for(vk: u32) -> u16 {
 }
 
 fn send_key(vk: u32, down: bool) {
+    send_key_with(vk, down, AUTO_MARKER);
+}
+
+/// `extra` は dwExtraInfo。0 なら awase は注入(LLKHF_INJECTED)として無視する=他プロセスが注入した外部キーの再現。
+fn send_key_with(vk: u32, down: bool, extra: usize) {
     let input = INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -219,7 +225,7 @@ fn send_key(vk: u32, down: bool) {
                     KEYEVENTF_KEYUP
                 },
                 time: 0,
-                dwExtraInfo: AUTO_MARKER,
+                dwExtraInfo: extra,
             },
         },
     };
@@ -580,8 +586,12 @@ fn focus_away() -> bool {
 }
 
 fn bring_to_front() -> bool {
+    let hwnd = unsafe { FindWindowW(PCWSTR::null(), w!("IMEPROBE")).unwrap_or_default() };
+    bring_hwnd(hwnd)
+}
+
+fn bring_hwnd(hwnd: windows::Win32::Foundation::HWND) -> bool {
     unsafe {
-        let hwnd = FindWindowW(PCWSTR::null(), w!("IMEPROBE")).unwrap_or_default();
         if hwnd.0.is_null() {
             return false;
         }
@@ -606,15 +616,21 @@ fn bring_to_front() -> bool {
 /// 前面の Chrome の既定 IME ウィンドウへ `WM_IME_CONTROL` を送る(awase を経由しない外部要因の再現。awase 自身が読む経路と同じ)。
 /// `IMC_GETOPENSTATUS`=0x0005 / `IMC_SETOPENSTATUS`=0x0006。IME ウィンドウが取れなければ `None`。
 fn ime_control(cmd: usize, value: isize) -> Option<isize> {
+    // SAFETY: 検証ページの窓を探すだけ。
+    let hwnd = unsafe { FindWindowW(PCWSTR::null(), w!("IMEPROBE")).unwrap_or_default() };
+    let target = if hwnd.0.is_null() {
+        unsafe { GetForegroundWindow() }
+    } else {
+        hwnd
+    };
+    ime_control_at(target, cmd, value)
+}
+
+/// 任意の窓の既定 IME ウィンドウへ `WM_IME_CONTROL` を送る。
+fn ime_control_at(target: windows::Win32::Foundation::HWND, cmd: usize, value: isize) -> Option<isize> {
     const WM_IME_CONTROL: u32 = 0x0283;
-    // SAFETY: 検証ページの窓の既定 IME ウィンドウへ同期 SendMessage するだけ。
+    // SAFETY: 指定窓の既定 IME ウィンドウへ同期 SendMessage するだけ。
     unsafe {
-        let hwnd = FindWindowW(PCWSTR::null(), w!("IMEPROBE")).unwrap_or_default();
-        let target = if hwnd.0.is_null() {
-            GetForegroundWindow()
-        } else {
-            hwnd
-        };
         let ime_wnd = ImmGetDefaultIMEWnd(target);
         if ime_wnd.0.is_null() {
             return None;
@@ -789,6 +805,39 @@ fn main() {
             .and_then(|v| v.parse::<usize>().ok())
     }) {
         let (mut ok, mut bad, mut invalid) = (0usize, 0usize, 0usize);
+        // `--close-via=` 閉じ方(BUG-172 実運用に近い外部 OFF の再現): 省略/`wm`=WM_IME_CONTROL(従来)、`vk:0xNN`=Chrome 前面のまま SendInput、
+        // `notepad-vk:0xNN`=メモ帳を前面にして IME を ON にそろえた後キーを注入→Chrome へ戻す、`notepad-wm`=メモ帳の IME を WM_IME_CONTROL で閉じる。
+        // `--close-marker`: 注入に awase のテスト目印を付ける(物理キー扱い)。付けないと awase は注入として無視する(他プロセスの注入相当)。
+        let via = args
+            .iter()
+            .find_map(|a| a.strip_prefix("--close-via="))
+            .unwrap_or("wm")
+            .to_string();
+        let marker = if args.iter().any(|a| a == "--close-marker") {
+            AUTO_MARKER
+        } else {
+            0
+        };
+        let parse_vk = |v: &str| -> Option<u32> {
+            v.rsplit(':')
+                .next()
+                .and_then(|h| u32::from_str_radix(h.trim_start_matches("0x"), 16).ok())
+        };
+        let mut notepad = None;
+        let mut notepad_hwnd = windows::Win32::Foundation::HWND::default();
+        if via.starts_with("notepad") {
+            notepad = std::process::Command::new("notepad.exe").spawn().ok();
+            sleep(2500);
+            notepad_hwnd =
+                unsafe { FindWindowW(w!("Notepad"), PCWSTR::null()).unwrap_or_default() };
+            p.log.line(&format!(
+                "NOTEPAD spawned={} hwnd_found={}",
+                notepad.is_some(),
+                !notepad_hwnd.0.is_null()
+            ));
+        }
+        p.log
+            .line(&format!("CLOSE_VIA via={via} marker={}", marker != 0));
         for i in 0..n {
             p.log.line(&format!("[CLOSE {}/{n}]", i + 1));
             p.focus_lost = false;
@@ -799,8 +848,45 @@ fn main() {
                 continue;
             }
             let before = ime_control(0x0005, 0);
-            let set_ret = ime_control(0x0006, 0);
-            sleep(50);
+            let mut set_ret = None;
+            if via == "wm" {
+                set_ret = ime_control(0x0006, 0);
+            } else if let Some(vk) = via.strip_prefix("vk:").and_then(|_| parse_vk(&via)) {
+                send_key_with(vk, true, marker);
+                sleep(60);
+                send_key_with(vk, false, marker);
+            } else if via.starts_with("notepad") {
+                if notepad_hwnd.0.is_null() {
+                    p.log.line("RESULT INVALID: メモ帳の窓が取れない");
+                    invalid += 1;
+                    continue;
+                }
+                let fg = bring_hwnd(notepad_hwnd);
+                sleep(600);
+                let np0 = ime_control_at(notepad_hwnd, 0x0005, 0);
+                if np0 == Some(0) {
+                    let _ = ime_control_at(notepad_hwnd, 0x0006, 1);
+                    sleep(200);
+                }
+                let np1 = ime_control_at(notepad_hwnd, 0x0005, 0);
+                if via == "notepad-wm" {
+                    let _ = ime_control_at(notepad_hwnd, 0x0006, 0);
+                } else if let Some(vk) = parse_vk(&via) {
+                    send_key_with(vk, true, marker);
+                    sleep(60);
+                    send_key_with(vk, false, marker);
+                }
+                sleep(300);
+                let np2 = ime_control_at(notepad_hwnd, 0x0005, 0);
+                let mid = ime_control(0x0005, 0);
+                p.log.line(&format!(
+                    "NOTEPAD fg={fg} open_initial={np0:?} open_on={np1:?} open_after_close={np2:?} chrome_open_while_away={mid:?}"
+                ));
+                let back = bring_to_front();
+                sleep(300);
+                p.log.line(&format!("NOTEPAD back={back}"));
+            }
+            sleep(300);
             let after = ime_control(0x0005, 0);
             p.log.line(&format!(
                 "CLOSE_IME open_before={before:?} set_ret={set_ret:?} open_after={after:?}"
@@ -812,7 +898,7 @@ fn main() {
                 p.log.line(&format!("REFOCUS away={away} back={back}"));
                 sleep(2700);
             } else {
-                sleep(3000);
+                sleep(2700);
             }
             let open_late = ime_control(0x0005, 0);
             let got = p.probe_logged("閉じて3秒後");
@@ -837,6 +923,9 @@ fn main() {
             "SUMMARY PASS={ok} RECOVER=0 FAIL={bad} INVALID={invalid}"
         ));
         p.log.line("=== 全ケース完了 ===");
+        if let Some(mut np) = notepad {
+            let _ = np.kill();
+        }
         let _ = child.kill();
         return;
     }
