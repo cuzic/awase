@@ -155,6 +155,8 @@ impl Runtime {
             self.platform_state.ime.effective_open(),
             self.platform_state.ime.explicit_intent(),
         );
+        // ADR-205: 打鍵中（SkipTyping）でも、prefetch 済みの開閉の読みを外部変化の監視窓に照合する（追加 I/O なし）。
+        self.ir_follow_external_change(ime_snap);
         match strategy {
             ImeReadStrategy::SkipTyping => {}
             ImeReadStrategy::Blacklist => {
@@ -166,7 +168,11 @@ impl Runtime {
                     == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
                 {
                     let obs = crate::observer::gji_observer::observe_gji_after_focus(
-                        self.platform_state.focus.last_focus_change_ms,
+                        // 外部変化へ追随した直後は、閉じる前の GJI I/O 推測が追随結果を上書きしないよう柵を進める。
+                        self.platform_state
+                            .focus
+                            .last_focus_change_ms
+                            .max(self.platform_state.ime.last_external_change_ms()),
                         self.platform_state.ime.input_mode(),
                     );
                     tracing::debug!(
@@ -245,6 +251,30 @@ impl Runtime {
         // Phase 3.7: 診断スナップショット（フォーカス変更確定直後）
         if focus.focus_changed {
             self.ir_post_focus_change_snapshot(focus.skip_imm_query);
+        }
+    }
+
+    /// ADR-205（BUG-172）: 読めない窓（`Imm32Unavailable`）で、外部注入の IME キー直後の監視窓の中に、
+    /// prefetch 済みの開閉の読みが基準値から変わったら実状態へ追随する。書き込み（開け直し）はしない。
+    fn ir_follow_external_change(&mut self, ime_snap: Option<&crate::ime::ImeSnapshot>) {
+        // Imm32Unavailable かつ GJI のときだけ（InputRelay・TsfNative・MS-IME は対象外。`external_change_watch_applies` 参照）。
+        if !self.external_change_watch_applies() {
+            return;
+        }
+        let read = ime_snap.and_then(|snap| snap.ime_on);
+        let now = crate::hook::current_tick_ms();
+        let tick_ms = crate::state::TickMs(now);
+        let accepted =
+            crate::state::probe_admission::AcceptedObservation::for_sync(self.focus_fence());
+        if let Some(open) = self
+            .platform_state
+            .ime
+            .follow_external_change(read, now, tick_ms, accepted)
+        {
+            tracing::info!(
+                "[external-change] 監視窓の中で開閉の読みが変わった → 実状態 open={open} へ追随 \
+                 (意図を捨て desired を揃える。awase は IME を書かない)"
+            );
         }
     }
 

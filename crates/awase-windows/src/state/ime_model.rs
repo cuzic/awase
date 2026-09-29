@@ -888,7 +888,10 @@ impl ImeModel {
                     }
                 }
             }
-            ImeEvent::ModeKeyPassedThrough { align_desired } => {
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired,
+                demote_applied,
+            } => {
                 // ADR-187: 明示意図が残ると resolve_open_at の ExplicitIntent 分岐が
                 // 直前の観測を固定してしまうため、観測成功後に意図だけ外す。
                 self.last_intent = None;
@@ -902,6 +905,17 @@ impl ImeModel {
                     if let Some(outcome) = self.observations.derive_any(envelope.time.monotonic) {
                         self.desired_open = outcome.value();
                         self.desired_is_placeholder = false;
+                        // ADR-205 D6: 観測が awase 自身の書き込みの記録（`applied`）と食い違うなら、その記録はもう実状態の
+                        // 証拠ではない。未確認へ落とす（GjiDirect の already-matched が古い記録を根拠に絶対指定キー
+                        // 〈Ctrl+変換等〉の送信を省き続け、状態が変わらなくなるのを防ぐ。BUG-156 と同じ原則）。
+                        if demote_applied
+                            && self
+                                .applied
+                                .applied_open()
+                                .is_some_and(|a| a != outcome.value())
+                        {
+                            self.applied = AppliedImeState::Unknown;
+                        }
                     }
                 }
             }
@@ -1348,6 +1362,7 @@ mod tests {
             1,
             ImeEvent::ModeKeyPassedThrough {
                 align_desired: true,
+                demote_applied: false,
             },
         ));
         assert!(
@@ -1367,8 +1382,8 @@ mod tests {
         assert_eq!(
             format!("{model:?}"),
             format!("{expected:?}"),
-            "ModeKeyPassedThrough は last_intent と desired_open（と、それに伴う desired_is_placeholder）\
-             以外を書き換えてはならない"
+            "ModeKeyPassedThrough は last_intent と desired_open（と、それに伴う desired_is_placeholder・\
+             食い違う applied の未確認化）以外を書き換えてはならない"
         );
     }
 
@@ -1415,6 +1430,7 @@ mod tests {
             1,
             ImeEvent::ModeKeyPassedThrough {
                 align_desired: true,
+                demote_applied: false,
             },
         ));
         assert!(m.desired_is_placeholder(), "観測が無ければ揃えない");
@@ -1426,11 +1442,75 @@ mod tests {
             1,
             ImeEvent::ModeKeyPassedThrough {
                 align_desired: true,
+                demote_applied: false,
             },
         ));
         assert!(
             !m.desired_is_placeholder(),
             "観測から揃えたら初期値ではない"
+        );
+    }
+
+    /// ADR-205 D6: 追随で観測（ObserverPoll=open）が `applied` と食い違うなら、`applied` は未確認へ落ちる
+    /// （GjiDirect の already-matched が古い記録を根拠に絶対指定キーの送信を省き続けない）。一致なら残す。
+    #[test]
+    fn mode_key_passed_through_demotes_contradicted_applied_only() {
+        let now = Instant::now();
+        // 観測は open=true。applied=false は食い違う → Unknown。
+        let mut model = fully_populated_model(now);
+        model.applied = AppliedImeState::Confirmed {
+            open: false,
+            at_ms: 5,
+        };
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: true,
+                demote_applied: true,
+            },
+        ));
+        assert_eq!(model.applied, AppliedImeState::Unknown);
+
+        // applied=true は観測と一致 → 残す。
+        let mut model = fully_populated_model(now);
+        model.applied = AppliedImeState::Confirmed {
+            open: true,
+            at_ms: 5,
+        };
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: true,
+                demote_applied: true,
+            },
+        ));
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Confirmed {
+                open: true,
+                at_ms: 5
+            }
+        );
+
+        // 窓切れの破棄（align_desired=false）は applied に触れない。
+        let mut model = fully_populated_model(now);
+        model.applied = AppliedImeState::Confirmed {
+            open: false,
+            at_ms: 5,
+        };
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ModeKeyPassedThrough {
+                align_desired: false,
+                demote_applied: false,
+            },
+        ));
+        assert_eq!(
+            model.applied,
+            AppliedImeState::Confirmed {
+                open: false,
+                at_ms: 5
+            }
         );
     }
 
@@ -1444,6 +1524,7 @@ mod tests {
             1,
             ImeEvent::ModeKeyPassedThrough {
                 align_desired: true,
+                demote_applied: false,
             },
         ));
         assert!(model.last_intent.is_none());
@@ -1464,6 +1545,7 @@ mod tests {
             1,
             ImeEvent::ModeKeyPassedThrough {
                 align_desired: false,
+                demote_applied: false,
             },
         ));
         assert!(model.last_intent.is_none(), "意図は捨てる");

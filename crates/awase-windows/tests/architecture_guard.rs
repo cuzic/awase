@@ -1626,7 +1626,9 @@ fn applied_direct_assignments_are_accounted_for() {
     const DIRECT_ASSIGNMENTS: [(&str, usize); 2] = [
         // ime_model.rs: 5→6。`KeyEffectPredicted`のreduce内で、予測がappliedと食い違う向きへ開閉を動かしたとき
         // appliedを`Unknown`へ落とす1件を追加（BUG-156、`reduce()`内の正規書き込み）。
-        ("src/state/ime_model.rs", 6),
+        // 6→7。`ModeKeyPassedThrough`のreduce内で、揃えた観測がappliedと食い違うときappliedを`Unknown`へ落とす
+        // 1件を追加（ADR-205 D6、BUG-172。`reduce()`内の正規書き込み）。
+        ("src/state/ime_model.rs", 7),
         ("src/state/platform_state.rs", 2),
     ];
     const STRUCT_LITERAL_FIELDS: [(&str, usize); 1] = [("src/state/ime_model.rs", 1)];
@@ -3637,6 +3639,81 @@ fn mode_key_passed_through_event_is_dispatched_from_one_place() {
              {expected}, 実際: {count})。ADR-187 の dispatch 元は1箇所に限定すること。"
         );
     }
+}
+
+/// ADR-205（BUG-172）: 外部変化の監視窓は、arm が `kp_stage_post_decision` の1箇所、追随（`follow_external_change`）が
+/// `ir_follow_external_change` の1箇所だけ。追随は `ObserverPoll` の記録 + 意図削除 + `ModeKeyPassedThrough` で、
+/// awase は IME を書かない（`apply_ime_open_*`/`set_ime_open`/`send_ime` 系をこのファイル群から呼ばない）。
+#[test]
+fn external_change_watch_has_single_arm_and_follow_sites() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = Path::new(manifest_dir).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&src, &mut files);
+
+    for path in &files {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        let content = fs::read_to_string(path).unwrap();
+        let production = non_comment_lines(production_code_only(&content));
+        for (needle, allowed) in [
+            (".arm_external_change_watch(", "runtime/key_pipeline.rs"),
+            (".follow_external_change(", "runtime/ime_refresh.rs"),
+        ] {
+            let count = production.matches(needle).count();
+            let expected = usize::from(rel == allowed);
+            assert_eq!(
+                count, expected,
+                "src/{rel} 内の {needle} の出現数が想定({expected})と異なります。ADR-205: 呼び出し元は {allowed} の1箇所に限定すること。"
+            );
+        }
+    }
+}
+
+/// ADR-205（PR #377 Opus レビュー 1・2）: 外部変化の監視窓は Imm32Unavailable かつ GJI の窓だけに適用する。
+/// arm 側（`kp_arm_external_change_watch`）と追随側（`ir_follow_external_change`）の両方が
+/// `external_change_watch_applies` を通ること、その述語が両条件を持つことを固定する。
+#[test]
+fn external_change_watch_is_limited_to_imm32_unavailable_and_gji() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let read = |rel: &str| {
+        non_comment_lines(production_code_only(
+            &fs::read_to_string(Path::new(manifest_dir).join("src").join(rel)).unwrap(),
+        ))
+    };
+    let mod_rs = read("runtime/mod.rs");
+    let pred = mod_rs
+        .split("fn external_change_watch_applies")
+        .nth(1)
+        .expect("述語が無い");
+    let pred = &pred[..pred.find("\n    }\n").unwrap_or(pred.len())];
+    assert!(pred.contains("AppImeProfile::Imm32Unavailable"), "{pred}");
+    assert!(
+        pred.contains("ActiveImeKind::GoogleJapaneseInput"),
+        "{pred}"
+    );
+    assert!(read("runtime/key_pipeline.rs").contains("self.external_change_watch_applies()"));
+    assert!(read("runtime/ime_refresh.rs").contains("self.external_change_watch_applies()"));
+}
+
+/// ADR-158 TE3 / PR #377 レビュー M6-1: `Runtime::can_use_imm32_cross_process` は `#[track_caller]` を持つ。
+/// 直前に別の関数を挿入すると属性と doc だけが新しい関数へ移り、呼び出し元の棚卸しが黙って壊れる。
+#[test]
+fn can_use_imm32_cross_process_wrapper_keeps_track_caller() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let src = fs::read_to_string(Path::new(manifest_dir).join("src/runtime/mod.rs")).unwrap();
+    let lines: Vec<&str> = src.lines().collect();
+    let idx = lines
+        .iter()
+        .position(|l| l.contains("pub fn can_use_imm32_cross_process(&self)"))
+        .expect("ラッパが無い");
+    let prev = lines[idx - 1].trim();
+    let prev2 = lines[idx - 2].trim();
+    assert_eq!(prev, "#[track_caller]", "直前の行: {prev}");
+    assert_eq!(prev2, "#[must_use]", "その前の行: {prev2}");
 }
 
 /// BUG-148/ADR-186: `ImeEvent::InitialFocusHwndEstablished` は bootstrap 専用であり、

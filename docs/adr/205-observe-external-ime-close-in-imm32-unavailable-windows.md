@@ -8,12 +8,14 @@ summary: |-
   本 ADR は、目印なしの外部注入 IME キーで専用の短い監視窓(300ms)を立て、prefetch 済み snapshot で窓内に 1→0 の遷移を観測したときだけ
   実状態へ追随する(意図を捨て desired を揃える。awase は開け直さない)。新 I/O・新 actuation 合流点・新イベント種別なし。
 status: |-
-  採択(2026-09-29)。opus-adversarial-consult round4 で収束宣言(blocker/major 0、minor 5 は実装時対応に反映)。実装は第0段(trace 測定)の結果を受けて確定。実装未着手。
+  採択・実装済み(2026-09-29、`fd41bf88`)。opus-adversarial-consult round5 で観測部は収束(D7 は ADR-208 へ切り出し)。CI 検証: GJI × 実 Chrome 注入で追随 10/10。実機・モードキー押下の検証は未了。
 related_adr:
   - "ADR-029"
   - "ADR-089"
   - "ADR-178"
   - "ADR-191"
+  - "ADR-206"
+  - "ADR-208"
 ---
 
 # ADR-205: 外部から閉じられた IME を Imm32Unavailable の窓で観測する
@@ -56,11 +58,10 @@ related_adr:
 **所有者方針(決定の根拠)**: 外部から IME が閉じられたとき、awase は能動書き込み(開け直し)を一切しない。ユーザーが Ctrl+変換 / 半角全角 / 漢字 / かな などのモードキーを押したとき、
 awase が belief に従って正しいキーを送ることでモードずれを解消する。**「固着する不具合は絶対に起こさない」**。本 ADR の「実状態に追随、開け直さない」(D4)はこの方針の承認を受けたものである。
 
-**受け入れ基準(追加)**: **どの構成でも固着しない = ユーザーが次にモードキーを押せば、期待した状態になる**。「期待した状態」は押したキーの種類で定義する:
-- 絶対指定キー(Ctrl+変換=ON、Ctrl+無変換=OFF、`VK_IME_ON/OFF`、ADR-206 の単独タップが解決する ON/OFF): **1 回の押下で**指定の状態になる。
-- トグル系(半角全角、漢字、および IME 側でトグルに割り当てた無変換/変換〈ADR-206〉): belief が正しければ 1 回で反転。belief が古いときの最悪ケースは「**2 回押し**で期待どおり」までとし、
-  **同じキーを何度押しても直らない(永続的な固着)状態を作らない**。
-- ハーネスでは「注入で閉じた後、モードキーを 1〜2 回押して期待状態に到達する」を CI で確認する(下記 検証計画)。
+**固着の定義(所有者、2026-09-29)**: **固着 = 何度モードキーを押しても状態が変わらないこと**。belief が古くて 1 回目が逆方向に効き、2 回押せば期待した状態になるのは**許容**（固着ではない）。
+**受け入れ基準**: 固着（N 回押しても変化しない状態）が起きないこと = 押すたびに状態が変化するか、絶対指定キーで確実に収束すること。
+検証では「2 回目で期待状態になる」を PASS、「N 回押しても変化しない」を FAIL とする。GJI と MS-IME は分けて集計する。
+（トグル系で belief が古い場合の「2 回押し」は本 ADR では許容と明記し、追加の緩和は置かない。絶対指定キーが `AlreadyMatched` で握り潰され続けるケースだけが固着に当たり、ADR-208 で扱う。）
 
 ### トグル系と belief 依存の検討(所有者の懸念への回答)
 
@@ -73,10 +74,10 @@ awase が IME に送るのは冪等な絶対キー(GJI・MS-IME とも `VK_IME_O
 | 同上 | トグル(2 回目) | `VK_IME_ON` | 実 ON。**2 回押しで直る。固着ではない**。 |
 | belief OFF / 実 ON(外部 open 後) | トグル | `VK_IME_ON` | 見た目変化なし、belief ON(エンジン活性)。2 回目で OFF。同上。 |
 | belief ON / 実 OFF | 絶対 ON(Ctrl+変換) | **`applied` が ON なら `gji_direct_already_matches` により送信を省略** | **実 OFF のまま。何度押しても直らない = 固着**(BUG-156 と同型の「古い記録を根拠に送信を省く」) |
-| belief OFF / 実 ON | 絶対 OFF(ADR-206 決定3(b): `ImeOff × !ctx.ime_on` は Consume のみで `SetOpen` を積まない) | 何も送らない | 実 ON のまま。何度押しても直らない = 固着 |
+| belief OFF / 実 ON | 絶対 OFF（GJI: applied が Some(false) なら `gji_direct_already_matches` で省略。なお ADR-206 の決定3(b)〈Consume のみ〉は ADR-206 側で撤回済み〈2026-09-29〉） | 何も送らない | 実 ON のまま。何度押しても直らない = 固着 |
 
-したがって **トグル系は 2 回押しが最悪で固着に当たらない**。**固着に当たるのは絶対指定キーが「belief/applied を根拠に送信を省く」場合**であり、所有者の「絶対指定は belief が古くても確実」という前提は、
-現行コードでは `applied` の AlreadyMatched 省略(GJI)と ADR-206 (b) の Consume のみの分岐に対しては成り立たない。緩和を D6・D7 に置く。
+したがって **GJI では、トグル系は 2 回押しが最悪で固着に当たらない**（注: 「AlreadyMatched で省略」は `GjiDirect` にだけある。MsImeDirect は常に送る。ただし **MS-IME × 実 Chrome では awase 自身の `VK_IME_OFF` が効かなかった測定がある**〈BUG-172 の対照、目印付き 0xF3 で 10/10 閉じず〉ため、MS-IME のトグル系は 2 回押しでも直らない可能性があり、ADR-205 とは独立の既存の制限。実機確認を第0段に加える）。**固着に当たるのは絶対指定キーが「belief/applied を根拠に送信を省く」場合**であり、所有者の「絶対指定は belief が古くても確実」という前提は、
+現行コードでは `applied` の AlreadyMatched 省略(GJI)に対しては成り立たない。緩和を D6（検出できた場合）と ADR-208（検出できない場合）に置く。なお表の Ctrl+無変換（GJI、belief OFF/実 ON）も同じ握り潰しに当たる（ADR-206 (b) に限らない）。
 
 ## 案の比較
 
@@ -93,7 +94,7 @@ awase が IME に送るのは冪等な絶対キー(GJI・MS-IME とも `VK_IME_O
 ## 決定
 
 方針: **「IME の実状態が真実」**(ADR-191)。外部が閉じたなら awase の belief と desired を実状態へ揃え、awase が開け直して外部の操作に逆らうことはしない(BUG-14: 注入キーはユーザー意図に昇格させない、の延長)。
-**追随するのは「1→0 の遷移を窓の中で実際に観測したとき」だけ**(round2 で、arm 時点の値による readable 判定を、窓内の遷移観測へ置き換えた)。「常に 0」の環境では遷移が起きないので何も変わらない。
+**追随するのは「窓の中で 1→0（GJI のときは 0→1 も）の遷移を実際に観測したとき」だけ**(round2 で、arm 時点の値による readable 判定を、窓内の遷移観測へ置き換えた)。「常に 0」の環境では遷移が起きないので何も変わらない。
 既存の ADR-187 通過マーク自体は使わない(round2 M4: `readable_at_arm` の副作用〈観測が全部失敗したら窓の終了で意図を捨てる、「常に 0」でも観測成功で desired を 0 に揃える〉と、既存の物理モードキー通過の挙動変更を避けるため)。
 追随の最後の一手だけ既存の `ImeEvent::ModeKeyPassedThrough{align_desired:true}`(唯一の構築点は `ImeStateHub::pass_through_observed`)を再利用する。
 
@@ -118,42 +119,49 @@ awase が IME に送るのは冪等な絶対キー(GJI・MS-IME とも `VK_IME_O
   (`NoEvidence`〈`None`〉/ `SawOpen`〈`Some(true)`〉/ `Closed`〈`saw_open` かつ `Some(false)`〉/ `IgnoreZero`〈`!saw_open` かつ `Some(false)`〉)。
 - `SawOpen` は watch の `saw_open=true` を立てるだけ(belief に書かない)。`IgnoreZero` は捨ててログ(`[external-close] ignored 0 without prior 1`)。
 - `Closed` のとき: `ImeStateHub` に新設する 1 メソッド `adopt_external_close(tick, accepted)` を呼ぶ(round3 R3-1)。中身は `write_observer_poll(false, ..)` → **`intent_store.remove(current_focus)`**(`effective_open_at` は IntentStore の意図を shadow_model より優先し TTL は約30秒。物理キー経由の VK_IME_ON の意図が残ると belief が ON のままになる。既存の通過マークの経路も `drop_intents_for_mode_key_pass_in_scope` で同じ除去をしている)→ private の `pass_through_observed(tick, true)`(`shadow_model.last_intent` を捨て、`derive_any` から `desired_open` を実状態へ揃える)。最後に watch を解除。`pass_through_observed` は private なので `runtime/` からはこのメソッド越しにだけ呼べる。回帰テスト: IntentStore に ON の意図がある状態から Closed 後に `effective_open()` が false。
-  （round5 で変更）閉じる方向(1→0)だけでなく**開く方向(0→1)も同じ規則で追随する**。理由: 実状態が真実、かつ ADR-206 (b) が「belief OFF の OFF キーは何も送らない」ため、外部 open で belief OFF/実 ON のまま残ると固着する（上の表）。BUG-14 型の上書きは、追随先が常に「窓の中で実際に読んだ値」であり stale な値へ揃える経路が無いので、双方向でも起きない。`classify_external_close` は `ExternalStateVerdict::{NoEvidence, Baseline(bool), Changed(bool), IgnoreFirst(bool)}` の形に一般化する（`Baseline`＝窓内の最初の読みまたは変化前の値を保持、`Changed(v)`＝ベースラインと逆の値を読んだ）。
+  （round5 で変更）閉じる方向(1→0)だけでなく**開く方向(0→1)も同じ規則で追随する（ただし 0→1 の追随は GJI が有効な間に限って始める。MS-IME/CTF 自身の注入が IME を開いた場合に Engine が ON になり、MS-IME では次の絶対 OFF が効かない可能性があるため。round5）**。理由: 実状態が真実、かつ ADR-206 (b) が「belief OFF の OFF キーは何も送らない」ため、外部 open で belief OFF/実 ON のまま残ると固着する（上の表）。BUG-14 型の上書きは、追随先が常に「窓の中で実際に読んだ値」であり stale な値へ揃える経路が無いので、双方向でも起きない。`classify_external_close` は `ExternalStateVerdict::{NoEvidence, Baseline(bool), Changed(bool), IgnoreFirst(bool)}` の形に一般化する（`Baseline`＝窓内の最初の `Some` の読み〈代案を採る場合のみ、同じ scope で直近の値〉を保持、`Changed(v)`＝ベースラインと逆の値を読んだ）。
 - `reschedule_ime_refresh`: watch が生きている間は、明示意図の停止(`runtime/mod.rs:1128-1133`)より前で `MODE_KEY_PASS_REREAD_MS`(60ms)の読み直しを予約する。窓が切れたら watch を破棄して従来どおり(意図は捨てない)。
-- 最初の読みが既に 0(閉じるのが最初の読み〈KeyDown から約 25〜40ms 後〉より速い)なら `IgnoreZero` で追随しない。**両側の競合(閉じる前の 1 を読む/閉じた後の 0 しか読めない)のどちらが優勢かは未測定**。第0段の trace(KeyDown の時刻と各 prefetch の時刻・値)で確定する。
-  「毎回取りこぼす」だった場合の代案(実装時に採用可、round3 R3-3): 全 refresh の入口で `foreground_scope` 付きの直近 prefetch 値を1つ記録し、arm 時にそれが `Some(true)` なら `saw_open` の初期値を true にする。採用条件は「注入 IME キー直後の窓の中で実際に 0 を読んだ」ことのままなので、古い 1 を検証と誤認する危険(round2 M1)は、HIMC の付け外しと注入キーが同時に起きない限り増えない。
-
+- **第0段の実測（run 36545236017、`cal-driftrec-chrome-real-hz-ext-gji`、GJI × 実 Chrome、trace ログ）**: 注入 0xF3 の KeyDown は 08:53:20.826、`may_change_ime key passed through → IME refresh scheduled (20ms)` が出て Engine は消費しない。
+  最初の prefetch 読みは KeyDown の **32ms 後（20.858）で既に `open=0`**、strategy は `SkipTyping`（idle=32ms）、`explicit_intent=Some(true)`。つまり **GJI は 32ms 以内に閉じ、窓内の読みは最初から 0** で、`saw_open` を窓内の読みだけで立てる方式は効かない。
+  注入前の直近の読みは 19.670 の `open=1`（1.16 秒前、目印付き VK_IME_ON の 20ms 後の refresh）。よって **R3-3 の代案を採用する**: 全 refresh の入口で `foreground_scope` 付きの直近 prefetch 値を1つ記録し、arm 時にそれが `Some(true)` なら `saw_open` の初期値を true にする。
+  採用条件は「注入 IME キー直後の窓の中で実際に 0 を読んだ」ことのままなので、古い 1 を検証と誤認する危険（round2 M1）は、HIMC の付け外しと注入キーが同時に起きない限り増えない。プローブ側の `open_before=Some(1) → open_after=Some(0)` と prefetch の 1→0 は一致（(d) 確認）。
+  窓 300ms は閉じるまでの実測 32ms 以内に収まる（新しい定数なし、tuning-constants の対象外）。
 - Closed の後の `observe_gji_after_focus` の `ObserverPoll(true)` 上書き(round3 m1): その第1引数を `max(last_focus_change_ms, last_external_close_ms)` にして、閉じる前の GJI I/O を無視する(実装時。GJI が閉じるときに I/O を出すかは第0段の `[gji-poll]` で確認)。
 
 ### D3. 「常に 0」説と「1→0 が読める」説の両立
 
 遷移(同じ窓の中で 1 の後に 0)を観測したときだけ追随するので、どちらが正しくても安全側:「常に 0」なら遷移が起きず従来どおり。読めるなら本物の閉じを拾う。偽 OFF の露出は
-「外部注入 IME キー直後 300ms の間に、値が 1→0 と動いた」場合に限られる。入力欄/本文の HIMC 付け外し(round1 M1 仮説)が同じ窓の中で起きる確率は低いが、ゼロではないので e2e で確認する(下記)。
+「外部注入 IME キー直後の監視窓（300ms。連続注入で延長されると最大 900ms＝最初の arm から 2W まで延長 + W）の間に、値が 1→0 と動いた」場合に限られる。入力欄/本文の HIMC 付け外し(round1 M1 仮説)が同じ窓の中で起きる確率は低いが、ゼロではないので e2e で確認する(下記)。
 
 ### D4. 書き込み・合流点・定数
 
 新しい actuation 合流点なし。`ImeEvent` の新 variant なし(`ModeKeyPassedThrough` の構築点は `pass_through_observed` のまま)。`ObserverPoll` は既存の `write_observer_poll` 経由。新しい `_MS` 定数なし(D1 の窓が実測で収まる場合)。
 awase は IME を開け直さない。ADR-178 領域A撤去・ADR-191 の方針(能動書き込みを足さず観測に従う)に沿う。
 
-### D5. 対象範囲
+### D5. 対象範囲（PR #377 Opus レビュー 1・2 で訂正）
 
-`Imm32Unavailable` の窓すべて。**ADR-193 の CI 入力先(RichEdit を `Chrome_RenderWidgetHostHWND` としてスーパークラス化したもの)も `AppImeProfile::Imm32Unavailable`** で `read_ime_state_full` の早期 return 対象外のため対象に入る(round2 m1、`cal-driftrec-tsf-*` の対照に入れる)。
-`TsfNative` プロファイル・`InputRelay` は `ime_on=None` になり影響を受けない。MS-IME/CTF が注入するキーでも watch は立ちうるが(明示操作直後の除外は置かない〈D1〉)、追随するのは実際に 1→0 を観測したときだけで、上書きの向きは常に「実状態」である。
+**`AppImeProfile::Imm32Unavailable` かつ有効な IME が GJI の窓だけ**（arm・追随の両方、述語 `Runtime::external_change_watch_applies`、architecture_guard で固定）。
+- MS-IME を除く理由: CI 実測で MS-IME × 実 Chrome の開閉の読みは常に 0 で信用できず、GJI で ON の読みを記録した後に Win+Space で MS-IME へ切り替え、注入キー（AHK や CTF の 0xF0/0xF2）で窓が開くと、古い基準値との差で偽の Changed(false) になり得る。
+  閉じる方向も GJI に限る（レビュー 1(a)）。(b) スコープに IME 種別を含める／(c) 読みに時刻上限を付ける案は、(a) で足りるため採らない（GJI 以外へ切り替えた後に GJI へ戻った場合の基準値は、戻った後の最初の窓の中の読みか、GJI 有効中の直近の読みで決まり、実状態と一致する）。
+- **InputRelay は対象外**（awase が actuation を所有しない、BUG-90 決定4 条件(c)）。以前の記述「InputRelay は `ime_on=None`」は事前読み取り経路（`read_ime_state_full` は TsfNative だけ `None`）では事実と違ったため、プロファイル比較で明示的に除く。TsfNative は読みが `None` で影響を受けない。
+- ADR-193 の CI 入力先（RichEdit を `Chrome_RenderWidgetHostHWND` 名でスーパークラス化したもの）は Imm32Unavailable なので、GJI のとき対象に入る。
 
 ### D6. 外部 close の追随で `applied`（awase 自身の書き込み記録）も実状態に合わせる
 
 `adopt_external_close`（0→1 も含めて `adopt_external_change`）は、`ModeKeyPassedThrough` の reducer 腕（または同等の 1 か所）で、観測値と `applied` が食い違うとき `applied = Unknown` に落とす
 （`KeyEffectPredicted` 腕が BUG-156 で既にやっている規則の再利用。「送信を省略してよいか」は陽性の確認済み証拠にだけ基づく〈ADR-098 決定1-b〉）。これで、検出できた外部変化の後は Ctrl+変換 が `AlreadyMatched` で握り潰されない。
 
-### D7. 検出できない stale（アイコン操作など、注入キーを伴わない変化）に対する絶対指定キーの保証
+### D7. 検出できない stale に対する絶対指定キーの保証は ADR-208 に切り出す
 
-検出できなかった外部変化では `applied` が古いまま残る。絶対指定キー（`SyncKey`/`PhysicalImeKey` 由来の `SetOpen`、ADR-206 の単独タップ解決）について、**Blind 窓（`!can_use_imm32_cross_process()`）では 1 回の物理押下の先頭で `applied` を `Unknown` に落とす**
-（`kp_stage_shadow_ime_toggle` の入口で 1 回。同じ押下内の二重呼び出し〈BUG-113: `shadow_toggle_off_sync` と `engine_decision_sync`〉は最初の送信が `applied` を再び `Optimistic(open)` にするので従来のガードで守られる）。
-Readable 窓（ImmCross）は観測が `applied` を訂正するので対象外。ADR-206 決定3(b)（`ImeOff × !ctx.ime_on` は Consume のみ）は Blind 窓の belief OFF/実 ON で固着するため、
-**Blind 窓では (b) を適用せず `VK_IME_OFF` を 1 回送る**ことをコーディネータ経由で ADR-206 側に要請する（「@」対策〈BUG-124〉は WT×GJI の TsfNative 限定の現象で、Chrome〈Imm32Unavailable〉では実測がない。TsfNative では (b) を維持し、その窓は下の残余リスクとする）。
-この D7 は敵対レビュー（round5）にかける。
+検出できなかった外部変化（アイコン操作など注入キーを伴わない変化）では `applied` が古いまま残り、GJI の絶対指定キーが `AlreadyMatched` で握り潰される。これは actuation の判断を変える変更で、本 ADR の主題（観測だけを足す）の外なので、
+**[ADR-208](208-absolute-ime-keys-must-not-be-elided-on-stale-applied-in-blind-windows.md)（起草）へ切り出す**（round5 の推奨。置き場所〈ADR-206 の要請: 対象に「bare_ime_action または forced_open_action を持つ親指の非リピート Down」を含める〉・書き込み口・TsfNative の「@」・MS-IME の実測を含め ADR-208 で検討。ADR-206 は決定3(b) を撤回し、OFF 方向を常に絶対指定 SetOpen(false) で書く。代償の単発 VK_IME_OFF の「@」は ADR-206 側で実機 A/B をマージ条件にしている。出荷順は ADR-208 と同時か後）。
+本 ADR 単体で保証するのは「検出できた外部変化の後は絶対指定キーが握り潰されない」（D6）まで。
 
-**残余リスク（明記）**: TsfNative（WT/WezTerm 等）では (b) を維持するため、belief OFF/実 ON の絶対 OFF キーは固着しうる。この窓は ADR-205 の watch の対象外（`ime_on=None`）。受け入れ基準を満たすには D7 の (b) 例外か、別の観測経路が要る（未解決、所有者判断）。
+### 受け入れ基準の対象外（明記）
+
+InputRelay（awase は actuation を持たない）。ATOK/未同定 IME × Blind 窓（GJI/MS-IME の actuation を持たず、物理キーは Allow で awase は書かない）。TsfNative の絶対 OFF は ADR-208 で扱う。
+Blind 窓で学習表が「開閉トグルではない」とする半角/全角や 0xF0/0xF1（常に Allow）は IME が自分で処理し belief は打鍵予測（ADR-191）に従う。予測が外れても観測では訂正されない（watch は注入キーでしか立たない）が、
+次の絶対キー（ADR-208 の範囲）で直るので固着ではない。watch を物理キーの Allow 通過にも立てる拡張は将来課題。
 
 ## リスクと検証計画
 
@@ -218,4 +226,48 @@ Readable 窓（ImmCross）は観測が `applied` を訂正するので対象外�
 - n1 awase 自身のトグル actuation による 1→0 で、ユーザーの明示 ON を捨てうる → watch に `awase_wrote`(ADR-187 の `note_awase_write` と同型)を持たせ、窓の中で awase が書いていたら ObserverPoll(false) の記録だけにして意図除去・desired 揃えはしない(送信がトグルかは `characterize_strategy` で実装前に確認)。
 - n2 D5 の残骸 → 修正済み。n3 注入が続くと窓が延び続ける → 延長は `saw_open` が未成立の間だけ、かつ最初の arm から窓の2倍を上限とする。
 - n4 KeyEffectPrediction(170ms 柵)が Closed を隠しうる → `adopt_external_close` で key_effect の open 予測も消すか、起きないことをテストで固定する。
-- n5 第0段の確認項目: (a) 注入キーが Engine に消費されず 20ms の refresh が予約される (b) GJI が閉じるまでの時間と窓の最初の読みの値 (c) 閉じるときの GJI I/O (d) prefetch が chrome_probe と同じ 1→0 を読む (e) 目印付き VK_IME_ON が IntentStore に意図を記録する。
+- n5 第0段の確認項目: (a) 注入キーが Engine に消費されず 20ms の refresh が予約される (b) GJI が閉じるまでの時間と窓の最初の読みの値 (c) 閉じるときの GJI I/O (d) prefetch が chrome_probe と同じ 1→0 を読む (e) 目印付き VK_IME_ON が IntentStore に意図を記録する (f) MS-IME × 実 Chrome で awase 自身の `VK_IME_OFF`(目印付き 0xF3 の Suppress→MsImeDirect)が実際に IME を閉じるか。
+
+### round5(Opus、2026-09-29): 観測部は健全、D7 が未収束（major 3）→ D7 を ADR-208 へ切り出し
+
+- 観測部（双方向化を含む watch、BUG-14 型の不発）は健全と確認。0→1 の追随は GJI 限定で始める（反映済み）。
+- M5-1 D7 の置き場所は `kp_stage_shadow_ime_toggle` の入口では Ctrl+変換（エンジンのコンボ）に効かない、`applied` の書き込み口は reducer 経由で新 event が要る（D4 と両立しない）。M5-2 D7 を TsfNative に適用すると BUG-124 の「@」の構成を作り直す。
+  M5-3 MS-IME × 実 Chrome では awase の `VK_IME_OFF` が効かない測定があり、受け入れ基準が belief と無関係に満たせない可能性。→ いずれも ADR-208 に移し、本 ADR は観測+D6 で収束扱い（D6 の影響範囲は `adopt_external_change` 専用の経路に限る）。
+- n1〜n4（D5 の残骸、表の脚注、件数ガード〈ime_model.rs の applied 直接代入 6→7〉、GJI/MS-IME の分離集計）を反映。
+
+### 第0段の実測結果（2026-09-29、run 36545236017、GJI × 実 Chrome、1試行目）
+
+(a) 注入 0xF3 は Engine に消費されず 20ms の refresh が予約される: 確認。(b) GJI が閉じるまで <32ms（最初の読みで既に 0）→ arm 前の直近値を `saw_open` の初期値にする（D2）。
+(d) prefetch（フォーカス HWND）は chrome_probe と同じ 1→0 を読む: 確認。(e) 目印付き VK_IME_ON が明示意図を記録する（`explicit_intent=Some(true)`）: 確認。
+(c) 閉じるときの GJI I/O: 該当ログなし（`[gji-poll]` は SkipTyping で走らない）。(f) MS-IME × 実 Chrome の awase `VK_IME_OFF` は本 run の対象外（ADR-208 の前提として別 run が要る）。
+補足: 3秒後の打鍵の後、GJI の `Reopen(BeliefSync:shadow-noop)` の reinit が走り、次の読みは `open=1` に戻った（既存の GJI 経路による再オープン。watch の窓の外なので追随の対象外）。
+
+### 実装後の CI 検証（2026-09-29、`ci/bug172-step0-trace` = 実装 `fd41bf88` を測定ハーネスへ merge、各10試行）
+
+| 構成 | 追随（`[external-change]` 件数） | 3秒後の打鍵 | 従来 |
+|---|---|---|---|
+| hz-ext-gji（注入 0xF3、run 36548371652） | **10/10** | `ka`（IME OFF と一致）10/10 | `kiu` 10/10 |
+| imeoff-ext-gji（注入 0x1A、run 36547215222・36548761653） | **10/10** | `ka` 10/10 | `kiu` 10/10 |
+| hz-phys-gji（目印付き=物理キー相当） | 0（awase 経由で Engine も OFF、従来どおり） | `ka` 10/10 | 同じ |
+| np-hz/np-wm × GJI/MS-IME（メモ帳側で閉じる） | 0 | NICOLA 継続 10/10 | 同じ |
+| hz-ext/imeoff-ext/hz-phys × MS-IME | 1/0/0 | 9〜10 回は IME が閉じず NICOLA 継続、閉じた回は `ka` か従来の `kiu`（各1件） | 概ね同じ |
+
+- observed（追随）件数は GJI × 注入で 0 → 10/10。ハーネスの PASS 判定は「開け直して NICOLA」なので、追随後の `ka` は FAIL 表示のまま（期待どおり。判定の書き換えは未実施）。
+- **「常に 0」は MS-IME × 実 Chrome で実在した**: MS-IME 構成の prefetch は IME が開いているセットアップ中も `CrossProcess(hwndFocus) open=0` を返し続ける（`imeoff-ext-msime-native` のログ）。基準値 0 のままなので遷移が起きず追随しない＝偽の OFF を採用していない（D3 が実環境で効いた）。GJI の prefetch は 1→0 を正しく読む。
+- 未検証: (1) 追随後にモードキーを押して期待状態になるか（受け入れ基準の CI 検証。ハーネス未実装）。(2) MS-IME × 実 Chrome の awase 自身の `VK_IME_OFF`（ADR-208 の前提）。(3) 実機。(4) 通常打鍵・入力欄/本文移動での偽追随 0 件の長時間確認（今回の対照 10 構成では偽追随 0）。
+
+### PR #377 の Opus コードレビュー（HEAD 1bc16b37）への対応
+
+1. 偽 OFF（基準値が古い＋MS-IME）→ 閉じる方向も GJI × Imm32Unavailable に限定（D5、(a) を採用。(b)(c) は不要と判断した根拠は D5）。
+2. InputRelay の混入 → 述語で Imm32Unavailable に絞る（D5 訂正、architecture_guard で固定）。
+3. D6 が共有 reducer の全経路に効いていた → `ModeKeyPassedThrough` に `demote_applied: bool` を足し、追随経路（`follow_external_change`）だけ `true`。ADR-187 の通過マーク・BUG-163 の揃えは `false` で従来どおり（variant は増やしていない、既存テストの期待値も元に戻した）。
+4. テストの穴 → `follow_external_change` の単体テスト3件（IntentStore に ON の意図があっても Changed(false) 後に `effective_open()==false`／窓の外は追随しない／0→1）、適用窓の限定を固定する architecture_guard を追加。
+5. 追随の不発 → 既知の制限として記載: `ImeSnapshot` は読み取り時刻を持たないため、窓が開く前に読み始めた読みが反映時点の時刻で窓の中として扱われ、基準値と違うと（注入前の値で）Changed になって窓を閉じ、注入による本当の変化を取りこぼしうる（誤った方向へは書かない）。
+   窓の寿命の記述は「最大 3W」に訂正（doc と D3）。
+
+### round6（Opus、PR #377 の対応差分 92fe08b2）: M6-1 を直せば収束
+
+- M6-1 述語を `can_use_imm32_cross_process` の `#[must_use]`/`#[track_caller]`/doc の間に挿入して属性が剥がれた（ADR-158 TE3 の呼び出し元記録が壊れる）→ 述語をラッパの後ろへ移し、`can_use_imm32_cross_process_wrapper_keeps_track_caller` ガードを追加。
+- belief 更新範囲（`demote_applied=true` は追随経路だけ、構築点は `pass_through_observed` の1か所）、GJI × Imm32Unavailable への限定は意図どおりと確認された。
+- 追加テスト: ハブ経路で追随後に `applied` が未確認へ落ちること。GJI→MS-IME→GJI の往復で古い基準値が残る件は、採用されるのが常に窓内で読んだ現在値であり実状態への追随になるため害は小さい（IME 種別変更で基準値を捨てる案は採らない）。
+- MS-IME の読みの根拠: run 36548761653 `imeoff-ext-msime-native` の trace で、IME が開いているセットアップ中も `CrossProcess(hwndFocus) open=0` が続いた。BUG-172 の「chrome_probe は MS-IME も 1→0 を読めた」とは測定方法（トップレベル窓と awase の hwndFocus 経路）が異なる可能性があり、MS-IME を外す判断は M5-3（awase 自身の VK_IME_OFF が効かない測定）だけでも正当化できる。

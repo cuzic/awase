@@ -579,6 +579,18 @@ impl Runtime {
             .can_use_imm32_cross_process()
     }
 
+    /// ADR-205: 外部変化の監視窓（arm・追随の両方）を適用する窓か。`Imm32Unavailable`（Chrome 等）かつ有効な IME が
+    /// GJI のときだけ。InputRelay（awase が actuation を所有しない、BUG-90 決定4）と TsfNative（読みが `None`）は対象外。
+    /// MS-IME × 実 Chrome の開閉の読みは IME が開いている間も 0 で信用できず（CI 実測: run 36548761653 `imeoff-ext-msime-native` の trace）、GJI 以外への切替後に古い基準値が残る偽 OFF を
+    /// 避けるため、開く・閉じるの両方向とも GJI に限る（round: PR #377 Opus レビュー 1・2）。
+    #[must_use]
+    pub fn external_change_watch_applies(&self) -> bool {
+        self.platform.current_app_profile()
+            == crate::focus::class_names::AppImeProfile::Imm32Unavailable
+            && crate::tsf::observer::tsf_obs().active_ime_kind()
+                == crate::tsf::observer::ActiveImeKind::GoogleJapaneseInput
+    }
+
     /// IMM 検出の前後ミス数から、クラス名単位の IMM 能力をキャッシュに記録する。
     ///
     /// 判定は [`FocusTracker::decide_imm_capability`]（純粋関数）に委譲し、
@@ -1119,6 +1131,17 @@ impl Runtime {
             .current_app_profile()
             .is_effectively_tsf_native(self.platform.focus.class_name());
         if is_tsf_native {
+            return;
+        }
+        // ADR-205: 外部注入の IME キー直後の監視窓が生きている間は、明示意図の有無に関わらず読み直しを予約する
+        // （明示意図があると下の分岐でポーリングが止まり、窓の中の読みが届かない）。
+        let now_for_watch = crate::hook::current_tick_ms();
+        if let Some(remaining) = self
+            .platform_state
+            .ime
+            .external_change_watch_remaining_ms(now_for_watch)
+        {
+            self.schedule_ime_refresh(crate::tuning::MODE_KEY_PASS_REREAD_MS.min(remaining + 1));
             return;
         }
         // ADR-187: 無変換/変換の生キー通過後、窓が有効な間は follow の読み直しを予約する。通常のポーリング間隔で
