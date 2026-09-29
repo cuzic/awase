@@ -88,7 +88,7 @@ Your `config.toml` carries over. These settings behave differently in v2.
 - **Key-name parsing is now uniform.** Spellings that were silently ignored before (no `VK_`, lowercase, Japanese names, ...) now take effect, so a remap you forgot about may start working after the update.
 ```
 
-注意（CHANGELOG との整合）: 上の移行項目のうち、`ime_toggle` 既定・`*_solo_tap_ime_action` 移行・`confirm_mode` 2 択は、この下書き作成時点の `CHANGELOG.md` の Unreleased に**まだ書かれていない**（書かれているのは ADR-201 段階1・2、`engine_on/off_ime_key` 撤去、`ime_detect` 既定空の 4 点）。根拠はチェックリスト（PR #366・#367・#376）と ADR-206。CHANGELOG 側の追記が済んでから README を確定すること。
+CHANGELOG との整合: 上の移行項目は、本 PR で追記した `CHANGELOG.md` の Unreleased（ime_toggle 既定・単独タップ再設計と `*_solo_tap_ime_action` 撤去・`confirm_mode` 2 択・`ime_detect` 既定空・`engine_on/off_ime_key` 撤去・キー名規則）と突き合わせ済み。
 
 ## 2. アプリ内更新通知
 
@@ -104,22 +104,20 @@ Your `config.toml` carries over. These settings behave differently in v2.
 | ライン判定 | worker は `current_version` が `1.90.0` 以上なら v2 ライン、未満なら v1 ラインとし、`/releases` 一覧から自ラインの最大バージョンだけを返す。`current_version` が無い・読めない旧クライアントには従来どおり全体の latest を返す | `services/report-worker/src/index.ts`（`V2_LINE_MIN_VERSION`、`0a38590a`） |
 | 自バージョンを送るクライアント | **v1.21.1 以降**（`6b47d1c8` は v1.21.1 のタグに含まれる）。v1.21.0 以前は送らない | `git show v1.21.0:` / `v1.21.1:crates/awase-settings/src/update_check.rs` |
 
-### v1 ユーザーに出せる範囲
+### v1 ユーザーに出せる範囲と決定
 
-v1 のバイナリは変えられないので、出せるのは「`latest_version` に何を返すか」だけで、**通知の文言は変えられない**（常に「新しいバージョン {version} があります」）。
+v1 のバイナリは変えられず、通知の文言も変えられない（常に「新しいバージョン {version} があります」）。
 
 | v1 のバージョン | v2 リリース後に今の worker が返すもの | v1 ユーザーに見えるもの |
 |---|---|---|
-| 1.21.1（`current_version` を送る） | v1 ライン内の最大 = 1.21.1 | **何も通知されない**（更新なし）。v2 の存在が伝わらない |
-| 1.21.0 以前（送らない） | 全体の最新（GitHub の release 一覧で最大）= v2 のバージョン | 「新しいバージョン {v2} があります」が出て、v2 のリリースページが開く |
+| 1.21.1（`current_version` を送る） | v1 ライン内の最大 = 1.21.1 | 何も通知されない |
+| 1.21.0 以前（送らない） | 全体の最新 = v2 のバージョン | 「新しいバージョン {v2} があります」が出て、v2 のリリースページが開く |
 
-したがって v1.21.1 の利用者に知らせるには、**サーバー側（report worker）の変更が要る**。案:
+**決定済み（所有者、2026-09-29）: v1.21.1 の利用者には v2 を通知しない。report worker は変更しない。** v1.21.1 の利用者への案内は README と GitHub Release 本文に頼る。v1.21.0 以前の利用者には今の仕組みのまま v2 が通知される。
 
-- **案A（推奨候補）: v1 ラインの問い合わせにも、v2 リリース後は v2 の最新版を返す。** v1 のバイナリは無改造のまま、メニューに「新しいバージョン {v2} があります...」が出て、クリックで v2 のリリースページが開く。v1 の最新（1.21.1）は保守終了で今後増えないので、v1 ラインの結果を返す意味は無くなる。実装は worker の `fetchLatestTagForLine` で、v1 ラインのときも全体最大を返すようにする程度と思われる（コードは今回は触らない。テスト `services/report-worker/test/index.test.ts` の更新が要る）。
-- 案B: worker は変えない。v1.21.1 の利用者には通知が届かない（README・Scoop・GitHub の告知のみ）。
-- 文言の差し込み場所は、v1 側には無い。代わりに **v2 のリリースページ（GitHub Release の本文）が唯一の「文言の置き場所」**になる（通知をクリックするとそのページが開くため）。ここに次の節の文案を載せる。
+採らなかった案: v1 ラインの問い合わせにも v2 の最新を返すよう worker を変える（案 A）。
 
-### 通知のクリック先（GitHub Release 本文）に載せる文言の案
+### GitHub Release 本文に載せる文言の案（v1.21.0 以前は通知のクリック先にもなる）
 
 日本語:
 
@@ -147,16 +145,14 @@ v2 側（新しいバイナリ）の通知は、v2 のバイナリが自バー�
 - `docs/index.html` / `docs/index.en.html` のインストール節では、Scoop の手順は「Scoop 未対応のため非表示」のコメントアウトのまま（機能一覧には「Scoop でのワンコマンドインストールに対応」の行が残っている）。README には Scoop の記述が無い。実際に Scoop 経由の利用者がどれだけいるかは、このリポジトリからは分からない。
 - `.claude/skills/release-v1develop-to-v1main/SKILL.md`「v1固有の注意点」3: v2 リリース後に v1 のタグを push すると Scoop の latest が巻き戻る、Scoop／更新通知はライン識別を持たない設計、と警告している。**本決定（v1 のタグを push しない＝v1 パッチを出さない）が前提なら、この巻き戻りは起きない。**
 
-### 方針の案（決定は所有者）
+### 方針（決定済み・所有者、2026-09-29）
 
-1. **v1 のタグ・GitHub Release を今後 push しない**（前提）。これでバケットの latest は v2 になり、`scoop update awase` で v2 に上がる。`persist` に `config.toml` `layout` `data` などが入っているので設定は引き継がれる。
-2. v1 用のバケットを残すか: 
-   - 案S1（最小）: 残さない。`scoop install awase` は常に最新（v2）。v1 を使い続けたい人は、GitHub Releases の v1.21.1 の zip/MSI を手で使う（保守なしの旨を明記）。
-   - 案S2: `scoop-awase` に `awase-v1.json`（version 1.21.1 固定・`checkver` なし）を置き、`scoop install awase-v1` で v1 に留まれるようにする。手間は小さいが「保守終了」と両立する導線を増やすので、必要か要判断。
-3. 告知文（scoop-awase の README／`awase.json` の `description`）の案: 
-   - 日本語: `awase v2 をインストールします。v1 系は保守を終了しました（最後の版 1.21.1）。設定は引き継がれます。v1 との違いは https://github.com/cuzic/awase の README を参照。`
-   - English: `Installs awase v2. The v1 line (1.x) is no longer maintained (last release 1.21.1). Your settings are kept. See the README at https://github.com/cuzic/awase for the differences from v1.`
-4. Scoop の `persist` に v2 で新しく増えるファイルがあるかは、この下書きでは未確認（`release.yml` の現行 `persist` は `config.toml` `layout` `data` `keymap-learn-table.json` `keymap-learn-last-attempt.json`）。
+1. `scoop-awase` は v2 を latest にする。v1 のタグ・GitHub Release は今後 push しない（前提）。バケットの `awase.json` はタグ push で自動更新されるため、`scoop update awase` で v2 に上がる。`persist` に `config.toml` `layout` `data` などが入っているので設定は引き継がれる。
+2. **v1 用バケット（`awase-v1`）は残さない。** v1 に戻りたい人は GitHub Releases の v1.21.1（zip／MSI）を手で取得する（保守なしの旨を明記）。
+3. 告知文（`scoop-awase` の README／`awase.json` の `description`）の案:
+   - 日本語: `awase v2 をインストールします。v1 系は保守を終了しました（最後の版 1.21.1。戻したい場合は GitHub Releases から取得）。設定は引き継がれます。v1 との違いは https://github.com/cuzic/awase の README を参照。`
+   - English: `Installs awase v2. The v1 line (1.x) is no longer maintained (last release 1.21.1; get it from GitHub Releases if you need it). Your settings are kept. See the README at https://github.com/cuzic/awase for the differences from v1.`
+4. Scoop の `persist` に v2 で新しく増えるファイルがあるかは未確認（現行は `config.toml` `layout` `data` `keymap-learn-table.json` `keymap-learn-last-attempt.json`）。
 
 ## 4. v1 に残る既知の問題（ユーザー向け）
 
@@ -173,7 +169,7 @@ v2 側（新しいバイナリ）の通知は、v2 のバイナリが自バー�
 | 7 | 半角/全角キーを連打すると IME が ON に固まる | Windows Terminal + Google 日本語入力 | `keys.ime_detect.toggle` を設定する | 恒久修正は未（設定の既定値変更待ち） | [BUG-142](../known-bugs/BUG-142.md) |
 | 8 | NICOLA 変換が効かなくなり、ウィンドウを切り替えるまで戻らない | IME キーの検出が低い確度になったとき（頻度不明） | 別のウィンドウへ移って戻る | 根本修正は未着手 | [BUG-110](../known-bugs/BUG-110.md) |
 | 9 | 設定画面で n-gram ファイル欄を空にしても既定の値に戻ってしまい、無効にできない | 設定画面 | `config.toml` で直接設定する | v2 でも未修正 | [BUG-169](../known-bugs/BUG-169.md) |
-| 10 | アプリ内の更新通知や Scoop が v1／v2 を区別しない | v2 リリース後、v1.21.1 では v2 の通知が出ない（案A を採らない場合）。Scoop は常に最新（v2）になる | README・GitHub Releases の告知を見る | — | 本書 2・3 節 |
+| 10 | v1.21.1 のアプリ内更新通知では v2 が通知されない | v2 リリース後。Scoop は常に最新（v2）になる | README・GitHub Releases の告知を見る | — | 本書 2・3 節 |
 
 リンク先の BUG-110・142・152・163・168・169・171・172・173 のファイルは `docs/known-bugs/` に存在することを確認した。「v2 での状況」の列は棚卸し（2026-09-29）時点の記述で、BUG 個別ファイルの最新状態との突き合わせは未了。
 
@@ -181,11 +177,13 @@ v2 側（新しいバイナリ）の通知は、v2 のバイナリが自バー�
 
 1. v2 の正式なリリース日、および v1 の保守終了日（README 冒頭・GitHub Release に入れる日付）。
 2. v2 の呼称。チェックリストは「v2.0.0」。本文は「v2」と書いた。`awase.cc`／Scoop の文言も合わせる。
-3. Scoop の方針: v1 用バケット（`awase-v1`）を残すか（案S1／S2）、`scoop-awase` の README・`description` を変えるか。Scoop 利用者の実数（不明）。
-4. 更新通知: 案A（v1 ラインの問い合わせにも v2 の最新を返す worker の変更）を採るか。採る場合、いつ deploy するか（v2 の GitHub Release 公開後。draft／prerelease は除外されるため、v2 が prerelease のままなら v1 には届かない）。
-5. CHANGELOG の Unreleased に、`keys.ime_toggle` 既定の空化（PR #367）、`*_solo_tap_ime_action` の移行（PR #376）、`ConfirmMode` 2 択化（PR #366）が未記載。先に追記し、README の移行の節を CHANGELOG と突き合わせる。
-6. 「v2 で良くなった点」の 3 件目（BUG-172）と、BUG-163 の状況（実装済み・実機未検証）の書き方: 実機未検証をどこまで README に書くか。
-7. 本書 4 節の各「v2 での状況」を、リリース時点の BUG 個別ファイルと突き合わせて最新化する（棚卸し作成時点の記述）。
-8. README の差し込み位置（「動作環境」直前を仮置き）と、英語版のアンカー名。
-9. docs（`docs/index.html`／`index.en.html`）に同内容を載せるか。載せる場合の Scoop の記述（現状は非表示コメントと機能一覧の行が食い違っている）。
-10. v1 の最後のパッチを出すか（チェックリスト E1 の記述）。本書は「出さない（タグを push しない）」を前提にした。出す場合は Scoop の巻き戻りに関する SKILL.md の警告が現実になる。
+3. 「v2 で良くなった点」の 3 件目（BUG-172）と、BUG-163 の状況（実装済み・実機未検証）の書き方: 実機未検証をどこまで README に書くか。
+4. 本書 4 節の各「v2 での状況」を、リリース時点の BUG 個別ファイルと突き合わせて最新化する（棚卸し作成時点の記述）。
+5. README の差し込み位置（「動作環境」直前を仮置き）と、英語版のアンカー名。
+6. docs（`docs/index.html`／`index.en.html`）に同内容を載せるか。載せる場合の Scoop の記述（現状は非表示コメントと機能一覧の行が食い違っている）。
+7. v1 の最後のパッチを出すか（チェックリスト E1 の記述）。本書は「出さない（タグを push しない）」を前提にした。出す場合は Scoop の巻き戻りに関する SKILL.md の警告が現実になる。
+
+## 決定済み（所有者、2026-09-29）
+
+- 更新通知: v1.21.1 の利用者には v2 を通知しない。report worker は変更しない。案内は README と GitHub Release 本文。
+- Scoop: `scoop-awase` を v2 の latest にし、v1 用バケット `awase-v1` は残さない（v1 は GitHub Release から取得）。
