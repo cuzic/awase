@@ -93,12 +93,12 @@ jobs:
             Start-Process 'ms-settings:regionlanguage-jpnime'
             Start-Sleep -Seconds 10
             $w = Get-Win
-            if (-not $w) { "[$tag] no settings window"; return $false }
+            if (-not $w) { Write-Host "[$tag] no settings window"; return $false }
             foreach ($e in $w.FindAll($TS::Descendants, $TC)) { if ($e.Current.AutomationId -like '*KeyAndTouchCustomization*') { $e.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); Start-Sleep -Seconds 3; break } }
             $w = Get-Win
             $ids = @(); foreach ($e in $w.FindAll($TS::Descendants, $TC)) { if ($e.Current.AutomationId -like 'SystemSettings_Language_JapaneseIME*') { $ids += $e.Current.AutomationId } }
-            "[$tag] JapaneseIME ids: " + ($ids -join ', ')
-            return [bool]($ids -like '*IsKeyAssignmentEnabled*')
+            Write-Host ("[$tag] JapaneseIME ids: " + ($ids -join ", "))
+            return (@($ids | Where-Object { $_ -like "*IsKeyAssignmentEnabled*" }).Count -gt 0)
           }
           "GeoId before: " + (Get-WinHomeLocation).GeoId
           Set-WinHomeLocation -GeoId 122
