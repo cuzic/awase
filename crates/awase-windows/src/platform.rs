@@ -726,19 +726,6 @@ impl WindowsPlatform {
         );
     }
 
-    /// Ctrl↑ を `CompositionFsm` に通知し、cold 状態なら warmup を再送する。
-    ///
-    /// 唯一の呼び出し元（executor の `handle_ctrl_up_recovery`）は
-    /// `resolve_warmup_ime_on` 経由（ゲート適用済み）を渡すため `origin=WarmupOrigin::Gated` 固定。
-    pub(crate) fn composition_ctrl_up(&mut self, warmup_ime_on: awase::platform::WarmupImeOn) {
-        let warm = self.output.is_composition_warm();
-        self.feed_composition_event(
-            crate::tsf::composition_fsm::CompositionEvent::CtrlUp { warm },
-            warmup_ime_on,
-            crate::output::WarmupOrigin::Gated,
-        );
-    }
-
     /// 物理 F2 (VK_DBE_HIRAGANA) KeyDown を `CompositionFsm` に通知する。
     /// 戻り値 `true` なら物理 F2 を consume すべき（TSF mode、`ConsumeF2` action）。
     ///
