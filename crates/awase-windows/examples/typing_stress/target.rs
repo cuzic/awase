@@ -170,6 +170,7 @@ struct Chrome {
     pid: u32,
     page: bool,
     profile: PathBuf,
+    page_file: PathBuf,
 }
 
 /// ページ内 textarea のアクセシビリティ名(アドレスバーの Edit と区別するため)。
@@ -229,7 +230,12 @@ impl Chrome {
         // 初回描画とアクセシビリティツリーの構築を待つ余裕。
         sleep_ms(4000);
         CHILD.store(top.0 as isize, Ordering::SeqCst);
-        Self { pid, page, profile }
+        Self {
+            pid,
+            page,
+            profile,
+            page_file: html_path,
+        }
     }
 
     fn focus_omnibox() {
@@ -276,7 +282,14 @@ impl InputTarget for Chrome {
     }
     fn shutdown(&self) {
         kill_tree(self.pid);
-        let _ = std::fs::remove_dir_all(&self.profile);
+        let _ = std::fs::remove_file(&self.page_file);
+        // 子プロセスがプロファイルを解放しきるまで少し待って消す(開発機の %TEMP% に溜めない)。
+        for _ in 0..5 {
+            if std::fs::remove_dir_all(&self.profile).is_ok() || !self.profile.exists() {
+                break;
+            }
+            sleep_ms(300);
+        }
     }
 }
 
