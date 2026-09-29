@@ -1107,10 +1107,11 @@ impl WindowsPlatform {
             return;
         }
         let baseline = crate::tsf::observer::gji_write_bytes();
-        self.output.send_unicode_cold_warmup_keys(cold_seq);
+        let sent = self.output.send_unicode_cold_warmup_keys(cold_seq);
         tracing::info!(
             "[unicode-cold-warmup] cold={cold_seq} long-cold Unicode warm-up: \
-             VK_IME_ON+VK_A+BS → {} chars defer",
+             {} → {} chars defer",
+            if sent { "VK_IME_ON+VK_A+BS 送信" } else { "送信なし(実験フラグ)" },
             deferred.len(),
             cold_seq = cold_seq.value(),
         );

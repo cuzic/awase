@@ -1041,8 +1041,8 @@ fn worker(form: Form) {
         .split(',')
         .map(str::to_string)
         .collect();
-    // `--idle-before=MS`: 各試行の注入前に MS ミリ秒キーを打たずに待つ。awase の GjiFsm は 10s 無入力で
-    // OnCold(Long) に入り、次の最初のキーで long-cold warmup(Unicode モードなら犠牲キー、
+    // `--idle-before=MS`: 各試行の注入前に MS ミリ秒キーを打たずに待つ。awase の GjiFsm は GJI の I/O が 10s 無いと
+    // OnCold(Long) に入り(打鍵の無い 12s では GJI I/O も途切れる想定。awase 側のポーリングが GJI I/O を起こす場合は入らない)、次の最初のキーで long-cold warmup(Unicode モードなら犠牲キー、
     // docs/experiments.md エントリ30)を踏むため、その経路を試行ごとに再現するのに使う。
     let idle_before_ms: u64 = arg_value("--idle-before=")
         .and_then(|v| v.parse().ok())

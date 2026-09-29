@@ -1185,6 +1185,8 @@ belief=実IME(ON)でトグル(true→false)を決めたのに、GjiDirect が「
 
 ## エントリ 30: warmup の予防的 SendInput（eager `VK_IME_ON`／Unicode long-cold 犠牲キー）を実験フラグで無効化（`experiment/warmup-ab-flags`、実機ソーク待ち）
 
+**背景**: 失敗による revert ではなく、実験フラグの追加（PR #363）。結果は実機ソーク後に追記する。
+
 | 日付 | 仮説 | 環境 | 変更 | 観測結果 | 判定 |
 | --- | --- | --- | --- | --- | --- |
-| 2026-09-29 | A: eager `VK_IME_ON`（対象は force_tsf の WezTerm/WT×GJI のみ、Chrome は対象外〈ADR-100〉）は、per-VK confirm と literal 回収があれば不要。B: Unicode long-cold の `VK_IME_ON`+`VK_A`+`BS` は「あ」残置の疑い（BUG-112 追記2/BUG-140）があり、200ms タイムアウトと `UnicodeLiteralObserverFsm` で代替できる | A: WezTerm/WT×GJI、B: Unicode 注入モードのアプリ×GJI long-cold | `AWASE_EXP_NO_EAGER_WARMUP=1` / `AWASE_EXP_NO_UNICODE_COLD_WARMUP_KEYS=1`（既定は従来動作）。A は `eager_warmup_sent_ms` の latch を維持 | 未実施。数日ソークで `RawTsfLiteralRecovery`/`SuspectedLiteral` 件数を比較する | 未判定 |
+| 2026-09-29 | A: eager `VK_IME_ON`（対象は force_tsf の WezTerm/WT×GJI のみ、Chrome は対象外〈ADR-100〉）は、per-VK confirm と literal 回収があれば不要。B: Unicode long-cold の `VK_IME_ON`+`VK_A`+`BS` は「あ」残置の疑い（BUG-112 追記2/BUG-140）があり、無くても後続の入力が壊れない | A: GitHub windows-latest、typing_stress の Edit を force_tsf 化×GJI。B: 同 Edit（Unicode 注入）×GJI、各試行前 12s 無入力（`--idle-before`） | `AWASE_EXP_NO_EAGER_WARMUP=1` / `AWASE_EXP_NO_UNICODE_COLD_WARMUP_KEYS=1`（既定は従来動作、プロセス起動時に1回だけ読む）。A は `eager_warmup_sent_ms` の latch を維持（Win キー押下中は base 同様 latch しない） | CI（run 36521639058/36523892419、全 `ab-*` 全試行 PASS、消失/入れ替わり/リテラル化 0）。**B**: long-cold 経路は base 9/9 で犠牲キー送信（`elapsed=10ms gji_wrote=true`）、off は 9/9 スキップ（`elapsed=200ms timed_out=true`）。両者とも PASS だが、判定器は確定後の文字列しか見ず「composition を経由せず直接確定された」故障を検出できない／CI の GJI が 12s で実際に寝る保証と「犠牲キーが無いと壊れる」ネガティブコントロールが無い／27 回中 0 回（失敗率上限 約 11%）。off の 200ms は FSM の確定タイムアウトで GJI の準備を測っておらず（待つ間に GJI write を起こす要素が無い）、待ちなし即 flush 版は未比較。**A**: 試行中に発火せず（起動時 1〜2 回）CI では**測定していない**。未検証: 実アプリ（WezTerm/WT/Chrome）、idle 中に IME が OFF へ落ちた場合（base の `VK_IME_ON` が直していた可能性）、実機の分単位 long-idle、A-off で F2 probe が増えないか、MS-IME | 未判定 |

@@ -769,7 +769,9 @@ impl Output {
     /// 2. VK_A + BS を `INJECTED_MARKER` 付きで同一バッチ送信（犠牲キー）。
     ///    VK_A が GJI の hiragana composition を起動して `gji_write_bytes` を増やし、
     ///    BS が即キャンセルするため文字フラッシュは発生しない。
-    pub(crate) fn send_unicode_cold_warmup_keys(&self, cold_seq: Generation) {
+    ///
+    /// 実際に送信したら `true`。実験フラグ（`AWASE_EXP_NO_UNICODE_COLD_WARMUP_KEYS`）で止めたら `false`。
+    pub(crate) fn send_unicode_cold_warmup_keys(&self, cold_seq: Generation) -> bool {
         use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER, INJECTED_MARKER};
         use crate::vk::{VK_A, VK_BACK, VK_IME_ON};
 
@@ -779,7 +781,7 @@ impl Output {
                  (AWASE_EXP_NO_UNICODE_COLD_WARMUP_KEYS=1)",
                 cold_seq = cold_seq.value(),
             );
-            return;
+            return false;
         }
 
         let ime_on_inputs = [
@@ -804,6 +806,7 @@ impl Output {
             cold_seq = cold_seq.value(),
         );
         let _ = crate::win32::send_input_safe(&sacr_inputs);
+        true
     }
 
     /// フォーカス変更時に Runtime から呼ばれ、注入モードを更新する。
@@ -1221,6 +1224,12 @@ impl Output {
             return;
         }
         if send_vk && exp_no_eager_warmup() {
+            // 通常経路(`send_eager_warmup_vk_pair`)は Win キー押下中に送信せず latch もしない(BUG-32)。
+            // 実験フラグ ON でも同じ条件で latch を飛ばし、grace の供給条件を base と揃える。
+            if crate::hook::win_key_held() {
+                tracing::debug!("[tsf-eager-warmup] 実験フラグ ON かつ Win key held → latch もしない");
+                return;
+            }
             let ms = crate::hook::current_tick_ms();
             tracing::info!(
                 "[tsf-eager-warmup] 実験フラグにより送信スキップ (origin={origin}, \

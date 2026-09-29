@@ -603,7 +603,7 @@ jobs:
           if ('${{ matrix.cfg.force_tsf }}' -eq 'true') {
             # typing_stress.exe の Edit を force_tsf(InjectionMode::Tsf)にする。
             $cfg = $cfg -replace '(?m)^force_tsf = \[\s*$', "force_tsf = [`r`n    { process = `"typing_stress.exe`", class = `"Edit`" },"
-            Select-String -InputObject $cfg -Pattern 'typing_stress' | Out-Host
+            if ($cfg -notmatch 'typing_stress\.exe') { throw 'force_tsf の置換に失敗(config.toml の書式変更?): a-* が Unicode モードで走ってしまう' }
           }
           [IO.File]::WriteAllText("$PWD\dist\config.toml", $cfg, (New-Object Text.UTF8Encoding($false)))
           Select-String -Path "$PWD\dist\config.toml" -Pattern 'half_width_alnum_toggle'
