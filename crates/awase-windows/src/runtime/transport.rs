@@ -168,16 +168,11 @@ impl PhysicalKeyDisposition {
 
     /// 物理キーを OS に届けるかどうかの純粋関数。
     ///
-    /// **F2 (VK_DBE_HIRAGANA)**:
-    /// - TSF mode かつ `f2_warmup_owned=true`（GJI 戦略）: Down/Up 共に Suppress。
-    ///   awase 自身が warmup として SendInput(F2) を再送する契約とセットの
-    ///   double-F2 防止（`send_eager_tsf_warmup` の NativeF2Consumed 代替送信）。
-    /// - TSF mode かつ `f2_warmup_owned=false`（MsImeStrategy）: **Allow**。
-    ///   MS-IME 戦略は F2 warmup を送らない（`needs_f2_probe()=false`）ため、
-    ///   ここで消すと物理ひらがなキーが「食い逃げ」され、intent/Engine だけ ON で
-    ///   実 IME が OFF のまま乖離する（BUG-10、2026-07-06 実機）。MS-IME は
-    ///   VK_DBE_HIRAGANA をネイティブ処理して IME ON にするため素通しが正しい。
-    /// - 非 TSF mode: Allow
+    /// **F2 (VK_DBE_HIRAGANA)**: 常に Allow（BUG-173）。以前は TSF mode かつ
+    /// `f2_warmup_owned=true`（GJI 戦略）で Suppress していたが、ADR-100 決定2 で
+    /// warmup が `VK_IME_ON` 単発になり「代わりに F2 を再送する」契約が崩れていた。
+    /// 詳細は下の F2 分岐のコメント参照。`is_tsf_mode`/`f2_warmup_owned` 引数は
+    /// 判定に使わない（ADR-166 の決定表・呼び出し元を保つため残置）。
     ///
     /// **KANJI 関連キー**:
     /// - ImmCross プロファイル: Down/Up 共に Suppress（spurious 連鎖を構造的に遮断）
@@ -241,24 +236,23 @@ impl PhysicalKeyDisposition {
             return Self::Allow;
         }
 
-        // F2 (VK_DBE_HIRAGANA): TSF mode かつ warmup 戦略が F2 を自前送信する場合のみ Suppress。
+        // F2 (VK_DBE_HIRAGANA): 常に Allow（BUG-173）。
         //
-        // **訂正（2026-09-06、BUG-116/ADR-137）**: このコメントは元々「awase 自身が
-        // warmup として物理 F2 の代わりに SendInput(F2) を再送する契約」を前提に
-        // 書かれていたが、ADR-100 決定2（2026-08-22）で eager warmup の送信キーは
-        // `VK_DBE_HIRAGANA` から `VK_IME_ON` 単発（open 軸のみ）へ変更済み
-        // （`output/mod.rs::send_eager_tsf_warmup`）。つまり物理 F2 の代替として
-        // 実際に送られるのは open 軸のみで、charset 軸（カタカナ→ひらがな）を
-        // 戻す効果は無い。この「埋め合わせの片肺化」が、GJI 環境で物理かなキー
-        // 単独ではひらがなに戻せない副問題（ADR-137 M-6）の真因であり、
-        // `key_pipeline.rs::kp_restore_hiragana_for_suppressed_mode_key`
-        // （BUG-116 決定2）がこの埋め合わせを別経路で補っている。
+        // 旧実装は「TSF mode かつ GJI 戦略（`f2_warmup_owned`）なら Suppress」だった。この
+        // Suppress は「awase 自身が warmup として物理 F2 の代わりに SendInput(F2) を再送する」
+        // 契約（double-F2 防止）とセットの設計だったが、ADR-100 決定2（2026-08-22）で eager
+        // warmup の送信キーが `VK_DBE_HIRAGANA` から `VK_IME_ON` 単発（open 軸のみ）へ変わった
+        // 時点で契約が崩れていた。物理 F2 は消されるのに、代わりに届くのは open 軸だけで
+        // charset 軸（カタカナ→ひらがな）は戻らない「食い逃げ」になり、IME belief が OFF の
+        // ときは埋め合わせ（`kp_restore_hiragana_for_suppressed_mode_key`、`effective_open`
+        // 必須）も見送られて物理ひらがなキーが完全に無反応になった（ADR-137 M-6、
+        // BUG-173: GJI + Windows Terminal でカタカナから物理ひらがなキーで戻れない）。
+        //
+        // warmup の `VK_IME_ON` は物理 F2 とは別に送られる open 軸のみの操作であり、
+        // 物理 F2 を素通ししても二重 actuation にならない（open は冪等、conv は GJI 自身が
+        // 物理キーとして処理する）。`is_tsf_mode`/`f2_warmup_owned` は今は判定に使わない。
         if event.vk_code == crate::vk::VK_DBE_HIRAGANA {
-            return if is_tsf_mode && f2_warmup_owned {
-                Self::Suppress
-            } else {
-                Self::Allow
-            };
+            return Self::Allow;
         }
 
         // BUG-136 (issue #136): 他プロセスの SendInput (LLKHF_INJECTED) 由来のイベントは、
@@ -504,8 +498,10 @@ mod plan_tests {
 
     // ── F2 (VK_DBE_HIRAGANA): TSF mode 判定は KANJI/shadow_toggle と独立 ──
 
+    /// BUG-173: 旧 `f2_tsf_mode_suppresses_down_and_up`。TSF mode + GJI 戦略でも物理 F2 は
+    /// Down/Up とも素通しする（warmup が `VK_IME_ON` 単発になり代替 F2 再送が無いため）。
     #[test]
-    fn f2_tsf_mode_suppresses_down_and_up() {
+    fn f2_tsf_mode_gji_strategy_allows_down_and_up() {
         let ev = f2_event(KeyEventType::KeyDown);
         assert_eq!(
             PhysicalKeyDisposition::plan(
@@ -516,7 +512,7 @@ mod plan_tests {
                 true,
                 ANY_IME_KIND
             ),
-            PhysicalKeyDisposition::Suppress
+            PhysicalKeyDisposition::Allow
         );
         let ev = f2_event(KeyEventType::KeyUp);
         assert_eq!(
@@ -528,8 +524,8 @@ mod plan_tests {
                 true,
                 ANY_IME_KIND
             ),
-            PhysicalKeyDisposition::Suppress,
-            "TSF mode では F2 Up も double-F2 防止のため Suppress"
+            PhysicalKeyDisposition::Allow,
+            "TSF mode でも F2 Up は素通し（BUG-173）"
         );
     }
 
@@ -895,7 +891,7 @@ mod plan_tests {
     }
 
     #[test]
-    fn injected_f2_stays_suppressed_when_tsf_warmup_owns_f2() {
+    fn injected_f2_is_allowed_even_when_tsf_warmup_owns_f2() {
         let ev = injected(f2_event(KeyEventType::KeyDown));
         assert_eq!(
             PhysicalKeyDisposition::plan(
@@ -906,7 +902,7 @@ mod plan_tests {
                 true,
                 ANY_IME_KIND
             ),
-            PhysicalKeyDisposition::Suppress
+            PhysicalKeyDisposition::Allow
         );
     }
 
@@ -1036,7 +1032,8 @@ mod plan_tests {
     }
 
     #[test]
-    fn suppress_reason_is_tsf_f2_for_hiragana_in_tsf_mode() {
+    fn hiragana_in_tsf_mode_has_no_suppress_reason() {
+        // BUG-173: 物理 F2 は TSF mode でも Suppress されないので reason も無い。
         let ev = f2_event(KeyEventType::KeyDown);
         let disposition = PhysicalKeyDisposition::plan(
             &ev,
@@ -1046,10 +1043,10 @@ mod plan_tests {
             true,
             ANY_IME_KIND,
         );
-        assert_eq!(disposition, PhysicalKeyDisposition::Suppress);
+        assert_eq!(disposition, PhysicalKeyDisposition::Allow);
         assert_eq!(
             disposition.suppress_reason(&ev, AppImeProfile::TsfNative),
-            Some("tsf-f2")
+            None
         );
     }
 

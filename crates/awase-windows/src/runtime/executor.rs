@@ -691,24 +691,11 @@ impl DecisionExecutor {
         let is_key_down = matches!(event.event_type, awase::types::KeyEventType::KeyDown);
         let dir = if is_key_down { "down" } else { "up" };
 
-        // F2 (VK_DBE_HIRAGANA) in TSF mode: deferred F2 も reinject しない。
-        // pending 中に F2 が来た場合も ReinjectKey としてキューに入るが、
-        // TSF モードでは物理 F2 を WezTerm に届けないことで double-F2 を防ぐ。
-        if event.vk_code == crate::vk::VK_DBE_HIRAGANA && platform.is_tsf_mode() {
-            if is_key_down {
-                // mark_cold(NativeF2Consumed) + eager warmup を platform に委譲する。
-                platform.on_reinject_key(
-                    event.vk_code,
-                    true,
-                    ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
-                );
-            } else {
-                tracing::debug!(
-                    "[reinject-tsf] vk=0xf2 KeyUp TSF mode → consuming (paired KeyDown was consumed)",
-                );
-            }
-            return;
-        }
+        // BUG-173: 以前はここで TSF mode の deferred F2 を reinject せず握りつぶしていた
+        // （「warmup が F2 を代わりに再送する」double-F2 防止）。ADR-100 決定2 で warmup が
+        // `VK_IME_ON` 単発になり代替 F2 が無くなったため、物理 F2 は通常キーと同様に
+        // reinject する。cold 化と eager warmup は `kp_stage_execute` の
+        // `composition_native_f2_down` が KeyDown ごとに既に実行している。
 
         tracing::debug!(
             "[reinject] vk={:#04x} {dir} (queued passthrough now firing)",

@@ -68,7 +68,7 @@ Up=Suppress となる組が実在する**（M-2 節参照）ことが判明し�
 | 優先順 | 条件 | 結果 | 備考 |
 |---|---|---|---|
 | 1 | `profile == InputRelay` | **Allow** | awase はこの窓の actuation を所有しない（issue #136/BUG-90決定4）。他の全軸に関わらず常にAllow |
-| 2 | `vk == VK_DBE_HIRAGANA (0xF2)` | `is_tsf_mode && f2_warmup_owned` なら **Suppress**、他は **Allow** | `injected` を含む他の全軸を一切参照しない専用分岐。TSFモード外・MsImeStrategy(`f2_warmup_owned=false`)では素通し必須（BUG-10） |
+| 2 | `vk == VK_DBE_HIRAGANA (0xF2)` | **常に Allow**（BUG-173で変更。旧: `is_tsf_mode && f2_warmup_owned` なら Suppress） | `injected` を含む他の全軸を一切参照しない専用分岐。旧Suppressは「warmupが物理F2の代わりにF2を再送する」契約が前提だったが、ADR-100決定2でwarmupが`VK_IME_ON`単発になり契約が崩れていた |
 | 3 | `event.injected == true` | **Allow** | 他プロセスSendInput由来。`shadow_toggled`は設計上ここでは常にfalse（BUG-14ガード、`debug_assert!`で固定） |
 | 4 | `vk in {VK_CONVERT, VK_NONCONVERT}` | `ime_relevance.explicit_ime_action_consumed` なら **Suppress**、他は **Allow** | ADR-141: follow-only原則、ADR-153決定1ケース3改のみが例外的にSuppress |
 | 5 | `ime_relevance.shadow_action.is_none()`（非KANJI系VK） | **Allow** | 上記以外の一般キーは常に素通し |
