@@ -1414,8 +1414,10 @@ fn main() {
             let _ = tm.Activate();
         }
     }
+    // 引数の誤り(--interrupt の値など)は、入力先(Chrome など)を起動する前に検出する。
+    let perturbation = perturb::Perturbation::from_args();
     let _ = TARGET.set(target::launch(form));
-    if perturb::Perturbation::from_args().needs_distractor() {
+    if perturbation.needs_distractor() {
         create_distractor();
     }
     if has_flag("--activate-gji") || has_flag("--msime") {

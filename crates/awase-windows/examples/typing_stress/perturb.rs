@@ -144,7 +144,8 @@ impl Perturbation {
                 press(VK_DBE_HIRAGANA, 0x70, 50);
                 sleep_ms(1000);
             }
-            Interrupt::None => {}
+            // 何も送らない対照。他の mode がキー送信後に待つ 1000ms 相当を揃える。
+            Interrupt::None => sleep_ms(1000),
         }
         rec(&json!({"type":"interrupt","mode":mode.name(),"n":n,"kind":kind}));
     }
