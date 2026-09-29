@@ -445,4 +445,4 @@ TSF 状態破壊 → 1文字目化け、という連鎖が複数の「別バグ�
   同一 SendInput バッチで送ることで描画前に削除が完了し、ユーザーに
   プローブ文字が見えない（ADR-048）。Win32 の SendInput は同一バッチが
   連続キューに積まれる保証がある
-| [206](206-thumb-solo-tap-follows-role-suppress-and-inject.md) | 無変換/変換の単独タップ再設計(役割があれば生キー抑止＋belief に従う明示注入、なければ Suppress/Passthrough。`*_solo_tap_ime_action` 撤去) | 起草(opus 未実施) |
+| [206](206-thumb-solo-tap-follows-role-suppress-and-inject.md) | 無変換/変換の単独タップ再設計(役割があれば生キー抑止＋belief に従う明示注入、なければ Suppress/Passthrough。`*_solo_tap_ime_action` 撤去) | 起草・opus 4ラウンドで収束(実装前) |

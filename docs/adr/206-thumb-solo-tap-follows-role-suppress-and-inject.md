@@ -11,7 +11,7 @@ summary: |-
   belief OFF 側を独自に持ち(ケース2/3改、`explicit_ime_action_target`＋`transport.rs` の M19 例外)、belief ON 側も独自の経路(ケース1)を持つ二重系統になっている。
   本 ADR は「役割(config.toml の bare `keys.ime_*` または IME 設定由来)」を唯一の入力にして二重系統を1本にし、旧設定を読込時に bare `keys.ime_*` 相当へ移して警告する。
 status: |-
-  起草(2026-09-29)。opus round1〜3 反映済み(エンジン側合流、リピート印、eisu 保持、削除一覧、3(b)撤回、非固着の条件、ADR-205 相互参照)。round1〜3 の指摘と固着の定義(所有者)を反映済み。round4 待ち。実装未着手。
+  起草(2026-09-29)。opus round1〜3 反映済み(エンジン側合流、リピート印、eisu 保持、削除一覧、3(b)撤回、非固着の条件、ADR-205 相互参照)。opus round1〜4 で収束(round4: 設計変更不要、前提 P3/P4 等の記述3点を反映済み)。固着の定義(所有者)反映済み。実装未着手。
 related_adr:
   - "ADR-092"
   - "ADR-119"
@@ -126,7 +126,7 @@ S3 は「@」抑止の同等性が S1/S2 経路で未検証のため v2.0 では
   抑止のみ(旧 (b))は受け入れ基準に違反するので選択肢にならない。ADR-205 D7 の「Imm32Unavailable かつ非 TsfNative では `VK_IME_OFF` を1回送る」との整合は、本 ADR が(b)を採らないので常に送る側に含まれる。TsfNative だけ (iii) にする、が最小の調整になる。
 - **InputRelay の窓(round3 5-1、受け入れ基準への反例の遮断)**: `enrich_thumb_key_role` はプロファイルを見ずに役割を付ける。InputRelay(RDP/VM/PowerToys MWB、ADR-119)ではエンジン非活性で新分岐が生キーを Consume する一方、
   `dispatch_ime_set_open` のゲートは `NotOwned` を返して何も送らず、リモート側の IME に何も届かない(ADR-119/issue #136 の「二重の空振り」)。**`enrich_thumb_key_role` は `current_app_profile() == InputRelay` のとき役割を付けない**(config の bare だけにする)。
-  architecture_guard に「`enrich_thumb_key_role` が InputRelay を見ている」を入れる。S1 の bare と出荷済みのエンジン活性側(ADR-199 決定16)も同じ穴を既に持つ(既知差として記録。根治は「この打鍵は actuation を所有しない窓」をエンジンに伝える経路で、別件)。
+  architecture_guard に「`enrich_thumb_key_role` が InputRelay を見ている」を入れる。この修正は S2 のエンジン活性側(出荷済み、ADR-199 決定16)も同時に直す(`thumb_solo_special_handling` は同じ `forced_open_action` を読む)。残るのは S1 の bare だけ(既知差として記録。根治は「この打鍵は actuation を所有しない窓」をエンジンに伝える経路で、別件)。
 - **ActivationSync という例外(方針との関係、round3 5-2)**: フォーカス settle 中の押下では `strip_ime_set_open_if_settling` が `SetOpen` だけ剥がし `prev_activation` が進んだままになる。次の**文字キー**で `check_active_transition` が
   `SetOpen(false, ActivationSync)` を出し、押しっぱなしの親指の KeyUp が再注入される。ユーザーがモードキーを押していないのに awase が書く点で、所有者方針(自発的に書かない)の例外である。S1 も同じ既存の性質。
   根治(剥がすときに `prev_activation` を戻す、またはエンジンに通知する)は別 ADR の候補として残し、本 ADR の範囲外とする。窓は狭く、固着ではない(次の押下で状態が変わる)。
@@ -158,6 +158,10 @@ Decision 経由の `SetOpen(true)` の救済 `kp_stage_post_decision` の `eisu_
 前提: (P1) `SetOpen(v)` の送信が実際に行われれば `applied := v` になり、`applied == v` のときだけ `already_matches` が送信を省く(`gji_direct_already_matches`、GjiDirect のみ。ImmCross・MsImeDirect は常に送る)。
 (P2) 送った `VK_IME_ON/OFF` が実 IME に効く。**Chrome は `VK_IME_ON/OFF` を受け付けなかった記録がある(`docs/experiments.md:103`、2026-05-22)。その後 GJI 全般を `VK_IME_*` に移した(`b271aee`/`489cdf1`)ので今は効くと推定されるが、
 S2 は「生キーで GJI 自身が確実に処理していた打鍵」を awase の送信に置き換える。受け付けない入力先が残っていれば、生キーは抑止され送信は無視され、何度押しても変わらない=固着になる**。よって CI (a) に実 Chrome の入力先を必ず入れて P2 を確かめる。
+(P3) force guard(`apply_panic_reset` の `PanicReset`、`expires_at: None`)が有効でないこと。有効な間は OFF 方向の要求がすべて Unwarranted(`ImeController::apply` は授権の無い order を実行しない)になり、guard は belief も上書きするので
+トグルの指令も毎回 OFF のままになる。フォーカス変更で解ける既存の性質で、「状態をリセット」の後にフォーカスを変えず OFF 方向を押した場合の既知の制限として記録する(CI のゲートにはしない)。根治(明示のユーザー押下の OFF は guard より優先する等)は ADR-087/090 の領域で、別件の候補。
+(P4) リレー型の窓が InputRelay に分類されていること。`INPUT_RELAY_APPS` に載っていない独自のリモートビューア・VM コンソールでは NotOwned にならず、ローカルに `VK_IME_*` が送られて生キーが消費され、リモート側の IME に何も届かない
+(回避策は `input_relay_apps` への追加。分類漏れの窓では固着しうる既知の制限)。
 
 1. **S2(トグル役割)と S1 の `keys.ime_toggle`**: 各押下で必ず belief が反転し(送信を省いても belief は書かれる、`handle_engine_set_open`)、次の押下の指令は反対向きになる(ON, OFF, ON, …)。連続する2回の指令のうち少なくとも1回は `applied` と異なるので必ず送信される(P1)。
    したがって belief/`applied` がどう古くても、押し続ければ ON と OFF の両方が実 IME に届き、状態は押すたびに変わる。永続的な固着は無い。最悪ケースは、`applied` も古く最初の指令が一致して省略される場合(素通しの別キーで閉じた後に
@@ -166,7 +170,7 @@ S2 は「生キーで GJI 自身が確実に処理していた打鍵」を awase
 2. **S1 の方向固定キー(`ime_on`/`ime_off`)**: 決定3で(b)を採らないので常に絶対指定で書き、belief が古くても押下ごとに送信される。ただし `applied` が実状態と食い違ったまま指令と一致する(検出できなかった外部変化)と送信が省かれ、何度押しても変わらない
    (BUG-156 型)。これは既存の S1 の性質で、ADR-205 D7(Blind 窓で押下ごとに `applied` を Unknown にする)が塞ぐ。**D7 の対象には、`bare_ime_action` または `forced_open_action` を持つ親指の非リピート Down を明示する**
    (親指の S1/S2 は `shadow_action`/`sync_direction` を持たないので、「shadow toggle で扱うキー」だけを対象にすると親指が漏れる。エンジン活性側は Down → FSM → KeyUp で送るが間に `applied` を書くものは無いので、Down で Unknown にしておけば KeyUp の送信は省かれない。round3 1-2)。
-   出荷順は「ADR-205 D7 と同時、または D7 の後」。相互参照: ADR-205、ADR-208(BUG-172 の草稿)。
+   出荷順は「ADR-205 D7 と同時、または D7 の後」(理由: 方向固定キー〈S1、移行した旧 S3 を含む〉のため。トグル系は D7 なしでも基準を満たす)。相互参照: ADR-205、ADR-208(BUG-172 の草稿)。
 3. **失われる押下は固着ではない**: settle 中の `SetOpen` 剥がし・`already_matches` の省略・belief が古いときの「見た目変化なし」は、いずれも次の押下で状態が変わる(1 のとおり)。
 4. **自発的な書き込みは増やさない**: 本 ADR が増やす書き込みは、ユーザーが親指キーを押した打鍵に対する1回の `SetOpen` だけ。タイマー・観測起点の開け直しは無い。例外は既存の `ActivationSync`(決定3の最後の項)。
 
