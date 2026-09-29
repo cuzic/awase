@@ -904,7 +904,9 @@ fn wait_for_awase() {
         sleep_ms(500);
     }
     log("[init] awase.log を確認。起動後の落ち着きを待つ");
-    sleep_ms(10_000);
+    // C2 項目5: --awase-settle-ms=MS で起動後の待ちを短くし、起動直後の打鍵を狙う(既定 10 秒)。
+    let settle: u64 = arg_value("--awase-settle-ms=").and_then(|v| v.parse().ok()).unwrap_or(10_000);
+    sleep_ms(settle);
 }
 
 fn expect_string(seq: &[Cell]) -> String {
@@ -1285,6 +1287,13 @@ fn worker(form: Form) {
                 front_and_focus_foreign(hwnd_of(&OTHER));
                 sleep_ms(500);
                 chrome_front();
+            }
+            // C2 項目2/3: --reopen-before-trial=GAP_MS で、試行ごとに ime_ready() と同じ OFF→ON を行い(cold→ready 直後の
+            // 最初の打鍵を毎試行つくる=StaleConfirm を試行中に発火させる狙い)、GAP_MS 待ってから打鍵する。
+            if let Some(gap) = arg_value("--reopen-before-trial=").and_then(|v| v.parse::<u64>().ok()) {
+                turn_ime_on(0);
+                sleep_ms(gap);
+                rec(&json!({"type":"reopen_before_trial","gap_ms":gap,"n":t,"kind":kind}));
             }
             clear_text(child);
             let start_delay: u64 = arg_value("--start-delay=").and_then(|v| v.parse().ok()).unwrap_or(300);

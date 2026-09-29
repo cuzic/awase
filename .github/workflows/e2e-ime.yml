@@ -382,6 +382,23 @@ jobs:
             *[cfg(f'ts-{form}-gji-{iv}ms-closeime', 'observe', check='typing', ime='gji', runs=5, wait=1500,
                   stress=f'--form={form} --interval={iv} --kinds=single --trials=6 --len=25 --pause-after=10 --pause-ms=600 --close-ime-at={at} --layout=@REPO@/layout/nicola_keytop.yab')
               for form in ('chromepage', 'chromebar') for iv, at in ((30, 350), (2, 300))],
+            # C2 項目2/3(StaleConfirm の romaji 再送重複 / awase 自身の ESC): 試行ごとに OFF→ON して cold→ready 直後の最初の打鍵を毎試行つくる
+            # (ready 段階の StaleConfirm と同じ状況)。gap=OFF→ON 後の追加待ち。idle12 は 12 秒アイドル(long-cold)を挟む。
+            *[cfg(f'ts-{form}-gji-{iv}ms-reopen{gap}', 'observe', check='typing', ime='gji', runs=3, wait=1500,
+                  stress=f'--form={form} --interval={iv} --kinds=single --trials=8 --len=25 --reopen-before-trial={gap} --layout=@REPO@/layout/nicola_keytop.yab')
+              for form in ('chromepage', 'chromebar') for iv in (30, 2) for gap in (0, 1500)],
+            *[cfg(f'ts-{form}-gji-30ms-reopen0-idle12', 'observe', check='typing', ime='gji', runs=3, wait=1800,
+                  stress=f'--form={form} --interval=30 --kinds=single --trials=6 --len=25 --reopen-before-trial=0 --idle=12000 --layout=@REPO@/layout/nicola_keytop.yab')
+              for form in ('chromepage', 'chromebar')],
+            # C2 項目4(Unicode long-cold が Chrome で入るか): フォーカス復帰直後は injection_mode が古い(別窓=Unicode)ままの窓があり得る。
+            # 12 秒アイドル(long-cold)→別窓→Chrome 復帰→待ち 0ms で打鍵し、awase.log の 'Unicode long-cold'/'injection_mode: Unicode' を数える。
+            *[cfg(f'ts-{form}-gji-30ms-idle12-sw0', 'observe', check='typing', ime='gji', runs=4, wait=1800,
+                  stress=f'--form={form} --interval=30 --kinds=single --trials=6 --len=25 --idle=12000 --switch-focus --start-delay=0 --layout=@REPO@/layout/nicola_keytop.yab')
+              for form in ('chromepage', 'chromebar')],
+            # C2 項目5(起動直後): ready を省略(--cold)し、awase 起動から 1 秒/3 秒で最初の打鍵をする。
+            *[cfg(f'ts-{form}-gji-startup{st}s', 'observe', check='typing', ime='gji', runs=6, wait=900,
+                  stress=f'--form={form} --interval=20 --cold --awase-settle-ms={st * 1000} --trials=1 --kinds=single --len=20 --start-delay=100 --layout=@REPO@/layout/nicola_keytop.yab')
+              for form in ('chromepage', 'chromebar') for st in (1, 3)],
             # 実利用に近い条件: アイドル → 別ウィンドウへ切替 → Chrome へ戻す → 100ms 後に打鍵(--idle/--switch-focus/--start-delay)。
             # 定常状態(連続打鍵)では 2000 試行超で失敗ゼロ。失敗は ready 直後の最初の 1〜2 試行に集中していたので、cold・フォーカス遷移直後を狙う。
             *[cfg(f'ts-{form}-gji-{iv}ms-idle{idle}', 'observe', check='typing', ime='gji', runs=6, wait=1500,
