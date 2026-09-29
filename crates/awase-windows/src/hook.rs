@@ -1061,7 +1061,8 @@ static HOOK_GEN: AtomicU64 = AtomicU64::new(0);
 /// 共通ヘルパー（PR #349コードレビュー指摘、比較ロジックの重複排除）。
 #[inline]
 fn is_zombie_hook_thread() -> bool {
-    MY_HOOK_GEN.get() != crate::state::event_origin::Generation::new(HOOK_GEN.load(Ordering::Acquire))
+    MY_HOOK_GEN.get()
+        != crate::state::event_origin::Generation::new(HOOK_GEN.load(Ordering::Acquire))
 }
 
 /// コールバックの戻り値

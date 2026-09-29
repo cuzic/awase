@@ -101,7 +101,11 @@ where
 /// キーボードフック再インストールのjoin待ち）が同じ枠を奪い合わないよう、
 /// 呼び出し元は`static`な専用`LeakedThreadPool`を用意して渡せる。
 #[must_use]
-pub fn run_with_timeout_in<T, F>(pool: &'static LeakedThreadPool, timeout: Duration, f: F) -> Option<T>
+pub fn run_with_timeout_in<T, F>(
+    pool: &'static LeakedThreadPool,
+    timeout: Duration,
+    f: F,
+) -> Option<T>
 where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,

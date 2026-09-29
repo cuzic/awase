@@ -565,8 +565,16 @@ mod tests {
         // カナリアは経由しない（opus round1 M1）。
         assert_eq!(
             decide(
-                true, false, false, false, false, false, // hook_guard_present
-                1_000, NO_RETRY_PENDING, 0, THRASH_LIMIT,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false, // hook_guard_present
+                1_000,
+                NO_RETRY_PENDING,
+                0,
+                THRASH_LIMIT,
             ),
             HookWatchdogAction::ReinstallWithoutCanary
         );
@@ -579,9 +587,16 @@ mod tests {
         // M4のガード意図はフック不在時にも及ぶ）。
         assert_eq!(
             decide(
-                true, false, false, false, true, // is_relay_or_remap_foreground
+                true,
+                false,
+                false,
+                false,
+                true,  // is_relay_or_remap_foreground
                 false, // hook_guard_present
-                1_000, NO_RETRY_PENDING, 0, THRASH_LIMIT,
+                1_000,
+                NO_RETRY_PENDING,
+                0,
+                THRASH_LIMIT,
             ),
             HookWatchdogAction::SkipRelayOrRemapForeground
         );
