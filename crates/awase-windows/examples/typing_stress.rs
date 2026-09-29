@@ -34,10 +34,12 @@
 //!
 //! `--mode=drift-on`(ADR-178 領域A撤去後の回帰観測): reassert/force-on 撤去後、drift correction「だけ」で
 //! TsfNative 相当の入力先(`--form=tsf`)の ON 回復が働くかを見る。手順は「IME を ON にそろえる(awase が明示意図 ON を
-//! 持つ)→ **ハーネスが自プロセスの入力欄の IME を `ImmSetOpenStatus(false)` で直接閉じる**(awase を経由しない
-//! 「ずれ」)→ +500/+1500/+3000ms で `ImmGetOpenStatus` を読む → かな単打を1回打って確定し、結果のテキストを読む
+//! 持つ)→ **ハーネスが自プロセスの入力欄の IME を直接閉じる**(awase を経由しない
+//! 「ずれ」。`ImmSetOpenStatus` は別スレッドから失敗するので既定 IME ウィンドウへ `WM_IME_CONTROL` を送る)→ +500/+1500/+3000ms で `ImmGetOpenStatus` を読む → かな単打を1回打って確定し、結果のテキストを読む
 //! (API の成功表示だけでなく実タイピングで ON/OFF を確認する)」を `--trials` 回繰り返す。
-//! 記録は `drift_on_pre` / `drift_on_close` / `drift_on_check` / `drift_on_typed`。
+//! 記録は `drift_on_pre`(`on_key`=ON にしたキー) / `drift_on_close`(`set_ret` は記録のみ) / `drift_on_check` / `drift_on_typed`。
+//! pre/close/typed には `utc`(HH:MM:SS.mmm、awase.log の時刻と突合せる用)を付ける。ON キーは awase の明示意図(SyncKey)に
+//! なる `VK_IME_ON`(0x16)を先頭にする(MS-IME の 0xF2 は mode-key passthrough で意図が消える)。
 //!
 //! ## 注入の作法
 //! `dwExtraInfo = hook::TEST_INJECTION_MARKER`(`AWASE_TEST_INJECTION=1` の debug ビルド awase が物理キー扱い)。
@@ -153,6 +155,13 @@ fn epoch_us() -> u64 {
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
+}
+
+/// `utc_stamp()` の `[` `]` `Z` を除いた `HH:MM:SS.mmm`(awase.log の ISO8601 時刻部分と文字列比較できる)。
+fn utc_hms() -> String {
+    utc_stamp()
+        .trim_matches(|c| c == '[' || c == ']' || c == 'Z')
+        .to_string()
 }
 
 fn utc_stamp() -> String {
@@ -958,17 +967,26 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
         }
         // 回転する ON キーの一部は ON にならない(run 36508003461 で pre_open=false が 10 試行中 2〜3 回)ので、
         // 実 IME が開くまで別のキーで最大 3 回そろえ直す。
+        // 先頭は毎回 VK_IME_ON(awase の明示意図 ON になるキー)。効かなければ ime_on_key の他候補へ進む。
+        let mut on_key = VK_IME_ON;
         for k in 0..3 {
-            turn_ime_on(n * 3 + k);
+            on_key = if k == 0 { VK_IME_ON } else { ime_on_key(k) };
+            press(VK_IME_OFF, 0x70, 50);
+            sleep_ms(600);
+            press(on_key, 0x70, 50);
+            sleep_ms(1500);
             if real_ime_open(child) != Some(false) {
                 break;
             }
         }
-        rec(&json!({"type":"drift_on_pre","n":n,"real_ime_open":real_ime_open(child)}));
+        rec(
+            &json!({"type":"drift_on_pre","n":n,"utc":utc_hms(),"on_key":format!("0x{on_key:02X}"),
+            "real_ime_open":real_ime_open(child)}),
+        );
         let set_ret = force_close_real_ime(child);
         sleep_ms(50);
         rec(
-            &json!({"type":"drift_on_close","n":n,"set_ret":set_ret,"real_ime_open":real_ime_open(child)}),
+            &json!({"type":"drift_on_close","n":n,"utc":utc_hms(),"set_ret":set_ret,"real_ime_open":real_ime_open(child)}),
         );
         let mut waited_ms = 0u64;
         for &cp in &CHECKPOINTS_MS {
@@ -978,6 +996,7 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
                 &json!({"type":"drift_on_check","n":n,"checkpoint_ms":cp,"real_ime_open":real_ime_open(child)}),
             );
         }
+        let focus_lost = !focus_ok();
         clear_text(child);
         sleep_ms(200);
         press(probe.vk, probe.scan, 60);
@@ -986,7 +1005,7 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
         sleep_ms(700);
         let text = read_text(child);
         rec(
-            &json!({"type":"drift_on_typed","n":n,"text":text,"expect":probe.kana.to_string(),
+            &json!({"type":"drift_on_typed","n":n,"utc":utc_hms(),"focus_lost":focus_lost,"text":text,"expect":probe.kana.to_string(),
             "ok":text.trim() == probe.kana.to_string(),"real_ime_open":real_ime_open(child)}),
         );
         clear_text(child);
