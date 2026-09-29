@@ -965,11 +965,13 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
             );
             return;
         }
-        // 回転する ON キーの一部は ON にならない(run 36508003461 で pre_open=false が 10 試行中 2〜3 回)ので、
-        // 実 IME が開くまで別のキーで最大 3 回そろえ直す。
-        // 先頭は毎回 VK_IME_ON(awase の明示意図 ON になるキー)。効かなければ ime_on_key の他候補へ進む。
+        // 先頭は毎回 VK_IME_ON(awase の明示意図 ON になるキー)。ON にならなければ最大 3 回そろえ直す(k=1 は
+        // `--msime` でなければ 0xF2、`--msime` なら VK_IME_ON の再試行になる)。VK_IME_ON 以外で ON になった試行は
+        // 明示意図が消えうるので、checker が on_key!=0x16 を invalid にする。
         let mut on_key = VK_IME_ON;
+        let mut on_utc = utc_hms();
         for k in 0..3 {
+            on_utc = utc_hms();
             on_key = if k == 0 { VK_IME_ON } else { ime_on_key(k) };
             press(VK_IME_OFF, 0x70, 50);
             sleep_ms(600);
@@ -980,7 +982,7 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
             }
         }
         rec(
-            &json!({"type":"drift_on_pre","n":n,"utc":utc_hms(),"on_key":format!("0x{on_key:02X}"),
+            &json!({"type":"drift_on_pre","n":n,"utc":utc_hms(),"on_utc":on_utc,"on_key":format!("0x{on_key:02X}"),
             "real_ime_open":real_ime_open(child)}),
         );
         let set_ret = force_close_real_ime(child);
@@ -997,6 +999,7 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
             );
         }
         let focus_lost = !focus_ok();
+        let press_utc = utc_hms();
         clear_text(child);
         sleep_ms(200);
         press(probe.vk, probe.scan, 60);
@@ -1005,7 +1008,7 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
         sleep_ms(700);
         let text = read_text(child);
         rec(
-            &json!({"type":"drift_on_typed","n":n,"utc":utc_hms(),"focus_lost":focus_lost,"text":text,"expect":probe.kana.to_string(),
+            &json!({"type":"drift_on_typed","n":n,"utc":utc_hms(),"press_utc":press_utc,"focus_lost":focus_lost,"text":text,"expect":probe.kana.to_string(),
             "ok":text.trim() == probe.kana.to_string(),"real_ime_open":real_ime_open(child)}),
         );
         clear_text(child);
