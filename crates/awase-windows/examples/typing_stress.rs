@@ -12,14 +12,24 @@
 //! - `rich`  : 素の `RICHEDIT50W`(Msftedit。TSF text store を自前で持つ)。
 //! - `tsf`   : `RICHEDIT50W` を `Chrome_RenderWidgetHostHWND` へスーパークラス化(ADR-193)。awase から
 //!   `AppKind::TsfNative` 相当に見える決定的な入力先(親窓も `Chrome_WidgetWin_1`)。
+//! - `bugreport` : 本物の `awase-settings.exe --bug-report`(不具合報告フォーム、ADR-095)の「説明」欄
+//!   (egui `TextEdit::multiline`)。入力遅延+謎の「あ」報告(自己言及的: 不具合報告フォーム自体が
+//!   awase のキー変換を経由してタイプされるため、awase側の不具合がそのまま報告フォームの入力に出る)
+//!   の再現用。ウィンドウは別プロセス(egui/eframe、accesskit経由でUI Automationに公開)なので、
+//!   Chrome と同じく UI Automation(`IUIAutomationValuePattern`)で値を読み書きする。
 //! CI で安定して動かせない Chrome・Zoom・UWP は対象外(フォーカス/起動が不確定でストレスと切り分けられない)。
 //!
 //! ## フラグ
-//! `--form=edit|multi|rich|tsf` / `--mode=nicola|raw|drift|drift-on` / `--interval=MS`(1文字あたりの間隔。既定20) /
+//! `--form=edit|multi|rich|tsf|bugreport` / `--mode=nicola|raw|drift|drift-on` / `--interval=MS`(1文字あたりの間隔。既定20) /
 //! `--trials=N`(種別ごとの試行数。既定4。`--mode=drift` では試行回数として使う) / `--len=N`(1試行の文字数。既定40) / `--seed=S` /
 //! `--kinds=single,thumb,mixed` / `--layout=PATH`(.yab。既定 layout/nicola_keytop.yab) /
 //! `--activate-gji`(GJI/MS-IME のプロファイルを有効化。CI 用) / `--msime`(有効化する IME を Microsoft IME に) /
-//! `--no-awase`(awase を待たない。`--mode=raw` の対照実験用) / `--log=PATH`。
+//! `--no-awase`(awase を待たない。`--mode=raw` の対照実験用) / `--log=PATH` /
+//! `--cold`(`ime_ready()` の確認ウォームアップ〈「か」を打って確定〉を省略し、最初の本試行を
+//! 窓に対する最初の実際の確定入力にする。起動直後特有の不具合の再現用) /
+//! `--pause-after=N --pause-ms=MS`(N文字目の直後にMSだけ一映停止してから再開する。連続打鍵では
+//! 作れない「入力の間」を意図的に挿む。bugreport フォームの `PREVIEW_DEBOUNCE` のような
+//! 「止まってから発火する重い処理」との衝突を狙う再現用)。
 //! `--mode=raw` は awase なしで、期待文字列と同じ内容をローマ字の生キーで同じ速度で注入する対照実験
 //! (入力先+IME 単体がその速度を受けられるかを、awase と切り離して見る)。
 //!
@@ -57,6 +67,7 @@
 #![allow(unsafe_code)]
 
 use std::io::Write as _;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicIsize, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -80,12 +91,17 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
     KEYEVENTF_KEYUP, VIRTUAL_KEY,
 };
+use windows::Win32::System::Com::{CoInitializeEx as CoInitEx, COINIT_MULTITHREADED};
+use windows::Win32::UI::Accessibility::{
+    CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationValuePattern,
+    TreeScope_Descendants, UIA_EditControlTypeId, UIA_ValuePatternId,
+};
 use windows::Win32::UI::TextServices::{
     CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfInputProcessorProfileMgr, ITfThreadMgr,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-    FindWindowW, GetClassInfoExW, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo,
+    FindWindowW, EnumWindows, GetWindowTextW, IsWindowVisible, GetClassInfoExW, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo,
     GetMessageW, GetWindowThreadProcessId, PostMessageW, PostQuitMessage, RegisterClassExW,
     SendMessageW, SetForegroundWindow, SetWindowsHookExW, ShowWindow, SwitchToThisWindow,
     TranslateMessage, CW_USEDEFAULT, GUITHREADINFO, KBDLLHOOKSTRUCT, MSG, SW_SHOW, WH_KEYBOARD_LL,
@@ -213,6 +229,9 @@ enum Form {
     Multi,
     Rich,
     Tsf,
+    ChromeBar,
+    ChromePage,
+    BugReport,
 }
 
 impl Form {
@@ -222,6 +241,9 @@ impl Form {
             "multi" => Some(Self::Multi),
             "rich" => Some(Self::Rich),
             "tsf" => Some(Self::Tsf),
+            "chromebar" => Some(Self::ChromeBar),
+            "chromepage" => Some(Self::ChromePage),
+            "bugreport" => Some(Self::BugReport),
             _ => None,
         }
     }
@@ -231,7 +253,17 @@ impl Form {
             Self::Multi => "multi",
             Self::Rich => "rich",
             Self::Tsf => "tsf",
+            Self::ChromeBar => "chromebar",
+            Self::ChromePage => "chromepage",
+            Self::BugReport => "bugreport",
         }
+    }
+}
+
+impl Form {
+    /// 本物の Chrome(別プロセス)を入力先にする形態。
+    fn is_chrome(self) -> bool {
+        matches!(self, Self::ChromeBar | Self::ChromePage)
     }
 }
 
@@ -282,6 +314,12 @@ fn front_and_focus(top: HWND) {
 }
 
 fn create_form(form: Form) -> HWND {
+    if form == Form::BugReport {
+        return launch_bugreport();
+    }
+    if form.is_chrome() {
+        return launch_chrome(form);
+    }
     unsafe {
         let _ = LoadLibraryW(w!("Msftedit.dll"));
         let instance = GetModuleHandleW(None).expect("module");
@@ -323,6 +361,8 @@ fn create_form(form: Form) -> HWND {
                 700,
                 240,
             ),
+            Form::ChromeBar | Form::ChromePage => unreachable!("launch_chrome で処理済み"),
+            Form::BugReport => unreachable!("launch_bugreport で処理済み"),
             Form::Rich => ("RICHEDIT50W".into(), WS_BORDER.0 | ES_AUTOHSCROLL, 700, 240),
             Form::Tsf => {
                 // RICHEDIT50W をスーパークラス化して、Chrome の描画窓のクラス名で登録し直す(ADR-193)。
@@ -376,6 +416,12 @@ fn create_form(form: Form) -> HWND {
 }
 
 fn read_text(h: HWND) -> String {
+    if is_chrome_mode() {
+        return chrome_read();
+    }
+    if is_bugreport_mode() {
+        return bugreport_read();
+    }
     unsafe {
         let len = SendMessageW(h, WM_GETTEXTLENGTH, None, None).0;
         let len = usize::try_from(len).unwrap_or(0);
@@ -392,6 +438,14 @@ fn read_text(h: HWND) -> String {
 }
 
 fn clear_text(h: HWND) {
+    if is_chrome_mode() {
+        chrome_clear();
+        return;
+    }
+    if is_bugreport_mode() {
+        bugreport_clear();
+        return;
+    }
     unsafe {
         let empty = wide("");
         let _ = SendMessageW(h, WM_SETTEXT, None, Some(LPARAM(empty.as_ptr() as isize)));
@@ -400,6 +454,9 @@ fn clear_text(h: HWND) {
 
 /// 前面窓が `top`、かつそのスレッドのフォーカスが入力欄にあるか。
 fn focus_ok() -> bool {
+    if is_chrome_mode() || is_bugreport_mode() {
+        return unsafe { GetForegroundWindow() == hwnd_of(&TOP) };
+    }
     unsafe {
         if GetForegroundWindow() != hwnd_of(&TOP) {
             return false;
@@ -460,6 +517,14 @@ fn focus_away() -> bool {
 }
 
 fn refocus() {
+    if is_chrome_mode() {
+        chrome_front();
+        return;
+    }
+    if is_bugreport_mode() {
+        bugreport_front();
+        return;
+    }
     unsafe {
         let _ = PostMessageW(Some(hwnd_of(&TOP)), WM_TS_FRONT, WPARAM(0), LPARAM(0));
     }
@@ -811,6 +876,23 @@ fn raw_events(seq: &[Cell], iv_us: u64) -> Vec<Ev> {
     evs
 }
 
+/// 打鍵列の `after_chars` 文字目の直後に `pause_us` だけ間を空ける(その後は詰めて続ける)。
+/// `nicola_events`/`raw_events` はどちらも文字 `i` の各イベントを `t_us = i*iv_us + offset`
+/// (`offset < iv_us`)で生成しているため、`t_us / iv_us` から文字境界 `i` を逆算できる。
+/// `bug_report.rs::PREVIEW_DEBOUNCE`(300ms、最後の変更から一定時間止まったらJSON再生成)の
+/// ような「一旦止まってから再開」で発火する重い処理との衝突を、連続打鍵では作れないため
+/// 意図的に狙う(実際のユーザーは文章を考えながら間を置いて打つ)。
+fn insert_mid_pause(evs: &mut [Ev], iv_us: u64, after_chars: usize, pause_us: u64) {
+    if pause_us == 0 || iv_us == 0 {
+        return;
+    }
+    for e in evs.iter_mut() {
+        if (e.t_us / iv_us) as usize >= after_chars {
+            e.t_us += pause_us;
+        }
+    }
+}
+
 // ---------------------------------------------------------------- シナリオ
 
 /// awase を起動する CI では、awase.log が現れてからさらに待つ(起動直後の TIP 検出・belief 同期のため)。
@@ -889,8 +971,6 @@ fn ime_ready(raw: bool, cells: &[Vec<Cell>; 3], child: HWND) -> bool {
         sleep_ms(700);
         let text = read_text(child);
         let open = real_ime_open(child);
-        // `None`(取れない)は通す: ts-chrome* は入力欄が別プロセス(Chrome)で HIMC を取れないため。
-        // 自プロセスの入力欄(edit/tsf/rich/multi)では CI で 41/41 回とも値が取れた(run 36224603306)。
         let ok = text.trim() == c.kana.to_string() && open != Some(false);
         rec(
             &json!({"type":"ready","attempt":attempt,"text":text,"expect":c.kana.to_string(),"ime_open":open,"ok":ok}),
@@ -1139,7 +1219,16 @@ fn worker(form: Form) {
 
     // IME を ON にそろえる(OFF → ひらがな)。
     turn_ime_on(0);
-    if !ime_ready(raw, &cells, child) {
+    // --cold: ime_ready() の「か」を打って確認・最大3回リトライする準備ウォームアップを省略する。
+    // このウォームアップ自体が、窓に対する最初の実際の確定入力になってしまい、
+    // 「起動直後にユーザーが最初に打つ文字」を汚してしまう(bugreport フォームでの
+    // 「開いてすぐ打つと謎の「あ」が混じる」報告の再現用。ウォームアップで一度
+    // 正常に確定できてしまうと、その後の本試行では窓/awase の分類が既に
+    // 済んでしまっており、起動直後特有の不具合を素通りしてしまう可能性がある)。
+    if has_flag("--cold") {
+        rec(&json!({"type":"ready","attempt":0,"skipped":true,
+            "reason":"--cold: 起動直後の最初の1文字を汚さないためウォームアップ省略"}));
+    } else if !ime_ready(raw, &cells, child) {
         rec(&json!({"type":"abort","reason":"IME/awase の準備確認に失敗(ready の text を参照)"}));
         finish();
         return;
@@ -1176,17 +1265,57 @@ fn worker(form: Form) {
                 .wrapping_add(kind.len() as u64);
             let seq = gen_sequence(kind, len, trial_seed, &cells);
             let expect = expect_string(&seq);
-            let evs = if raw {
+            let mut evs = if raw {
                 raw_events(&seq, iv_us)
             } else {
                 nicola_events(&seq, iv_us)
             };
+            // --pause-after=N --pause-ms=MS: N 文字目の直後に MS だけ一映停止してから打鍵を再開する。
+            let pause_after: usize = arg_value("--pause-after=").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let pause_ms: u64 = arg_value("--pause-ms=").and_then(|v| v.parse().ok()).unwrap_or(0);
+            if pause_after > 0 && pause_ms > 0 {
+                insert_mid_pause(&mut evs, iv_us, pause_after, pause_ms * 1000);
+            }
+            // 実利用に近い条件: アイドル(--idle=MS)→別ウィンドウへ切替→Chrome へ戻す(--switch-focus)→すぐ打鍵(--start-delay=MS)。
+            let idle_ms: u64 = arg_value("--idle=").and_then(|v| v.parse().ok()).unwrap_or(0);
+            if idle_ms > 0 {
+                sleep_ms(idle_ms);
+            }
+            if has_flag("--switch-focus") && is_chrome_mode() && OTHER.load(Ordering::SeqCst) != 0 {
+                front_and_focus_foreign(hwnd_of(&OTHER));
+                sleep_ms(500);
+                chrome_front();
+            }
             clear_text(child);
-            sleep_ms(300);
+            let start_delay: u64 = arg_value("--start-delay=").and_then(|v| v.parse().ok()).unwrap_or(300);
+            sleep_ms(start_delay);
             if let Ok(mut g) = HOOK_EVENTS.lock() {
                 g.clear();
             }
             let stats = run_schedule(&evs);
+            // 対照実験(--reinit-after=off_on|off|f2): 入力中(未確定)に awase の chrome-reinit と同じキー列を送ると、
+            // 未確定の文字が消えるかを見る(BUG-36 のコメントは「commit される」とするが、実測で確かめる)。
+            if let Some(mode) = arg_value("--reinit-after=") {
+                sleep_ms(300);
+                match mode.as_str() {
+                    "off_on" => {
+                        press(VK_IME_OFF, 0x70, 50);
+                        sleep_ms(100);
+                        press(VK_IME_ON, 0x70, 50);
+                        sleep_ms(1500);
+                    }
+                    "off" => {
+                        press(VK_IME_OFF, 0x70, 50);
+                        sleep_ms(1000);
+                    }
+                    "f2" => {
+                        press(VK_DBE_HIRAGANA, 0x70, 50);
+                        sleep_ms(1000);
+                    }
+                    _ => {}
+                }
+                rec(&json!({"type":"reinit_after","mode":mode,"n":t,"kind":kind}));
+            }
             // 最後の同時打鍵判定・出力の落ち着きを待ってから確定(Enter)。
             sleep_ms(300);
             // 注入したキーだけのフック到着を、確定キー(Enter)を打つ前に確定させる。
@@ -1194,7 +1323,20 @@ fn worker(form: Form) {
             sleep_ms(600);
             press(VK_RETURN, 0x1C, 50);
             sleep_ms(1200);
-            let actual = read_text(child);
+            let actual_at_1200 = read_text(child);
+            // 取りこぼしか遅延かを分けるため、内容が 800ms 変わらなくなるまで(最大 8 秒)読み直す。
+            let settle_t0 = Instant::now();
+            let mut actual = actual_at_1200.clone();
+            let mut stable_since = Instant::now();
+            while settle_t0.elapsed() < Duration::from_secs(8) && stable_since.elapsed() < Duration::from_millis(800) {
+                sleep_ms(200);
+                let now_text = read_text(child);
+                if now_text != actual {
+                    actual = now_text;
+                    stable_since = Instant::now();
+                }
+            }
+            let settle_ms = settle_t0.elapsed().as_millis() as u64;
             let (seen, deliv_p50, deliv_max) = delivery_stats(&stats, &hook);
             let downs = hook.iter().filter(|h| h.down).count();
             let mut late = stats.late_us.clone();
@@ -1213,7 +1355,8 @@ fn worker(form: Form) {
                 .collect();
             rec(
                 &json!({"type":"trial","kind":kind,"n":t,"chars":seq.len(),"expect":expect,
-                "actual":actual,"keys":seq_desc.join(" "),"focus_ok":focus_ok()}),
+                "actual":actual,"actual_at_1200ms":actual_at_1200,"settle_ms":settle_ms,
+                "keys":seq_desc.join(" "),"focus_ok":focus_ok()}),
             );
             rec(
                 &json!({"type":"inject","kind":kind,"n":t,"planned":stats.planned,"sent_ok":stats.sent_ok,
@@ -1229,9 +1372,412 @@ fn worker(form: Form) {
     finish();
 }
 
+// ---------------------------------------------------------------- 本物の Chrome(chromebar / chromepage)
+
+static CHROME_MODE: AtomicIsize = AtomicIsize::new(0);
+static CHROME_PAGE: AtomicIsize = AtomicIsize::new(0);
+/// フォーカス切替の再現用に、Chrome から前面を奪う別ウィンドウ(--switch-focus)。
+static OTHER: AtomicIsize = AtomicIsize::new(0);
+
+fn is_chrome_mode() -> bool {
+    CHROME_MODE.load(Ordering::SeqCst) != 0
+}
+
+const PAGE_INPUT_NAME: &str = "stress-input";
+
+unsafe extern "system" fn enum_chrome(hwnd: HWND, lp: LPARAM) -> windows::core::BOOL {
+    unsafe {
+        let want_pid = lp.0 as u32;
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
+        if IsWindowVisible(hwnd).as_bool()
+            && class_of(hwnd) == "Chrome_WidgetWin_1"
+            && (pid == want_pid || want_pid == 0)
+        {
+            TOP.store(hwnd.0 as isize, Ordering::SeqCst);
+            return false.into();
+        }
+        true.into()
+    }
+}
+
+/// 本物の Chrome を新しいプロファイルで起動し、その最上位窓を TOP/CHILD にする。
+/// chromebar=アドレスバー(Alt+D でフォーカス) / chromepage=ページ内の textarea(autofocus)。
+fn launch_chrome(form: Form) -> HWND {
+    CHROME_MODE.store(1, Ordering::SeqCst);
+    let tmp = std::env::temp_dir();
+    let profile = tmp.join("ts-chrome-profile");
+    let page = tmp.join("ts-chrome-page.html");
+    let html = format!(
+        "<!doctype html><meta charset=utf-8><title>ts</title>\n<textarea id=t aria-label=\"{PAGE_INPUT_NAME}\" autofocus rows=8 cols=80></textarea>\n"
+    );
+    let _ = std::fs::write(&page, html);
+    let url = if form == Form::ChromePage {
+        format!("file:///{}", page.to_string_lossy().replace('\\', "/"))
+    } else {
+        "about:blank".to_string()
+    };
+    CHROME_PAGE.store(isize::from(form == Form::ChromePage), Ordering::SeqCst);
+    let exe = [
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ]
+    .into_iter()
+    .find(|p| std::path::Path::new(p).exists())
+    .unwrap_or("chrome.exe");
+    let child = std::process::Command::new(exe)
+        .arg(format!("--user-data-dir={}", profile.display()))
+        .args([
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-extensions",
+            "--force-renderer-accessibility",
+            "--new-window",
+        ])
+        .arg(&url)
+        .spawn();
+    let pid = match child {
+        Ok(c) => c.id(),
+        Err(e) => {
+            log(&format!("[FATAL] Chrome の起動に失敗: {exe} {e}"));
+            std::process::exit(2);
+        }
+    };
+    log(&format!("[init] Chrome 起動 pid={pid} url={url}"));
+    for _ in 0..120 {
+        sleep_ms(500);
+        unsafe {
+            let _ = EnumWindows(Some(enum_chrome), LPARAM(pid as isize));
+        }
+        if !hwnd_of(&TOP).0.is_null() {
+            break;
+        }
+    }
+    if hwnd_of(&TOP).0.is_null() {
+        unsafe {
+            let _ = EnumWindows(Some(enum_chrome), LPARAM(0));
+        }
+    }
+    if hwnd_of(&TOP).0.is_null() {
+        log("[FATAL] Chrome の窓が見つからない");
+        std::process::exit(2);
+    }
+    sleep_ms(4000);
+    CHILD.store(TOP.load(Ordering::SeqCst), Ordering::SeqCst);
+    unsafe {
+        let instance = GetModuleHandleW(None).expect("module");
+        let cls = wide("TypingStressOther");
+        let wc = WNDCLASSEXW {
+            cbSize: size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: Some(top_proc),
+            hInstance: instance.into(),
+            lpszClassName: PCWSTR(cls.as_ptr()),
+            ..Default::default()
+        };
+        RegisterClassExW(&raw const wc);
+        if let Ok(other) = CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            PCWSTR(cls.as_ptr()),
+            w!("typing stress other"),
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            300,
+            120,
+            None,
+            None,
+            Some(instance.into()),
+            None,
+        ) {
+            OTHER.store(other.0 as isize, Ordering::SeqCst);
+        }
+    }
+    hwnd_of(&TOP)
+}
+
+fn chrome_front() {
+    front_and_focus_foreign(hwnd_of(&TOP));
+    sleep_ms(400);
+    if !chrome_is_page() {
+        chrome_focus_omnibox();
+    }
+}
+
+fn chrome_is_page() -> bool {
+    CHROME_PAGE.load(Ordering::SeqCst) != 0
+}
+
+/// 別プロセスの窓を前面化する(前面スレッドへの AttachThreadInput。フォーカスの SetFocus は行わない)。
+fn front_and_focus_foreign(top: HWND) {
+    unsafe {
+        let fg = GetForegroundWindow();
+        let fg_tid = if fg.0.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(fg, None)
+        };
+        let my_tid = GetCurrentThreadId();
+        let attached =
+            fg_tid != 0 && fg_tid != my_tid && AttachThreadInput(my_tid, fg_tid, true).as_bool();
+        let _ = BringWindowToTop(top);
+        let _ = SetForegroundWindow(top);
+        if attached {
+            let _ = AttachThreadInput(my_tid, fg_tid, false);
+        }
+    }
+}
+
+/// Alt+D でアドレスバーにフォーカスする。
+fn chrome_focus_omnibox() {
+    send_key(0x12, 0x38, true);
+    sleep_ms(30);
+    press(0x44, 0x20, 30);
+    send_key(0x12, 0x38, false);
+    sleep_ms(200);
+}
+
+/// 入力欄の内容を全消去する(アドレスバーは Alt+D、ページは既存フォーカスのまま Ctrl+A → Backspace)。
+fn chrome_clear() {
+    if !chrome_is_page() {
+        chrome_focus_omnibox();
+    }
+    send_key(0x11, 0x1D, true);
+    sleep_ms(20);
+    press(0x41, 0x1E, 30);
+    send_key(0x11, 0x1D, false);
+    sleep_ms(50);
+    press(0x08, 0x0E, 30);
+    sleep_ms(150);
+}
+
+/// UI Automation で入力欄の値を読む(アドレスバー=名前が PAGE_INPUT_NAME でない Edit、ページ=名前が一致する Edit)。
+fn chrome_read() -> String {
+    unsafe {
+        let _ = CoInitEx(None, COINIT_MULTITHREADED);
+        let Ok(ua) = CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+        else {
+            return "<uia-init-failed>".into();
+        };
+        for _ in 0..10 {
+            if let Ok(root) = ua.ElementFromHandle(hwnd_of(&TOP)) {
+                if let (Ok(cond), true) = (ua.CreateTrueCondition(), true) {
+                    if let Ok(all) = root.FindAll(TreeScope_Descendants, &cond) {
+                        let n = all.Length().unwrap_or(0);
+                        for i in 0..n {
+                            let Ok(el) = all.GetElement(i) else { continue };
+                            if el.CurrentControlType().ok() != Some(UIA_EditControlTypeId) {
+                                continue;
+                            }
+                            let name = el.CurrentName().map(|b| b.to_string()).unwrap_or_default();
+                            let is_page_input = name == PAGE_INPUT_NAME;
+                            if is_page_input != chrome_is_page() {
+                                continue;
+                            }
+                            if let Ok(vp) =
+                                el.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
+                            {
+                                if let Ok(v) = vp.CurrentValue() {
+                                    return v.to_string();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            sleep_ms(300);
+        }
+        "<uia-not-found>".into()
+    }
+}
+
+// ---------------------------------------------------------------- 本物の awase-settings --bug-report
+
+static BUGREPORT_MODE: AtomicIsize = AtomicIsize::new(0);
+
+fn is_bugreport_mode() -> bool {
+    BUGREPORT_MODE.load(Ordering::SeqCst) != 0
+}
+
+unsafe extern "system" fn enum_bugreport(hwnd: HWND, lp: LPARAM) -> windows::core::BOOL {
+    unsafe {
+        let want_pid = lp.0 as u32;
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
+        if IsWindowVisible(hwnd).as_bool() && pid == want_pid {
+            let mut buf = [0u16; 256];
+            let n = GetWindowTextW(hwnd, &mut buf);
+            let title = String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0)]);
+            // bug_report.rs::run() の with_title("awase 不具合報告") と一致させる。
+            if title.contains("不具合報告") {
+                TOP.store(hwnd.0 as isize, Ordering::SeqCst);
+                return false.into();
+            }
+        }
+        true.into()
+    }
+}
+
+/// 本物の `awase-settings.exe --bug-report` を起動し、その窓を TOP/CHILD にする(自プロセスの
+/// exe と同じディレクトリに置かれている前提。CI の `dist/` はビルド成果物をフラットにコピーする)。
+fn launch_bugreport() -> HWND {
+    BUGREPORT_MODE.store(1, Ordering::SeqCst);
+    let exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("awase-settings.exe")))
+        .unwrap_or_else(|| PathBuf::from("awase-settings.exe"));
+    let child = std::process::Command::new(&exe).arg("--bug-report").spawn();
+    let pid = match child {
+        Ok(c) => c.id(),
+        Err(e) => {
+            log(&format!(
+                "[FATAL] awase-settings.exe の起動に失敗: {} {e}",
+                exe.display()
+            ));
+            std::process::exit(2);
+        }
+    };
+    log(&format!(
+        "[init] awase-settings --bug-report 起動 pid={pid} exe={}",
+        exe.display()
+    ));
+    for _ in 0..60 {
+        sleep_ms(500);
+        unsafe {
+            let _ = EnumWindows(Some(enum_bugreport), LPARAM(pid as isize));
+        }
+        if !hwnd_of(&TOP).0.is_null() {
+            break;
+        }
+    }
+    if hwnd_of(&TOP).0.is_null() {
+        log("[FATAL] 不具合報告窓が見つからない(タイトル「不具合報告」を含む可視窓なし)");
+        std::process::exit(2);
+    }
+    // フォント読み込み(初回フレーム、CJK .ttc)の完了を待つ余裕。
+    sleep_ms(1500);
+    CHILD.store(TOP.load(Ordering::SeqCst), Ordering::SeqCst);
+    hwnd_of(&TOP)
+}
+
+/// 「説明」欄(症状カテゴリの下、添付チェックボックスより前)の Edit を UI Automation で探す。
+/// egui は accesskit 経由でウィジェットを Edit ロールとして公開するが、`ui.label` と
+/// 明示的に紐付けていない(`.labelled_by` 未使用)ため Name が空のことがある。代わりに、
+/// `draw_form` の描画順(説明欄が先、JSON プレビューが後)に対応する走査順で先頭の Edit を選ぶ。
+/// `log_all=true` のとき、見つかった全 Edit の Name/BoundingRectangle をログへ残す
+/// (この順序の仮定が実機で崩れていた場合に awase.log 相当のログから気付けるようにするため)。
+fn bugreport_find_description_element(log_all: bool) -> Option<IUIAutomationElement> {
+    unsafe {
+        let _ = CoInitEx(None, COINIT_MULTITHREADED);
+        let Ok(ua) =
+            CoCreateInstance::<_, IUIAutomation>(&CUIAutomation, None, CLSCTX_INPROC_SERVER)
+        else {
+            log("[bugreport] UIA初期化に失敗");
+            return None;
+        };
+        for _ in 0..10 {
+            let Ok(root) = ua.ElementFromHandle(hwnd_of(&TOP)) else {
+                sleep_ms(300);
+                continue;
+            };
+            let Ok(cond) = ua.CreateTrueCondition() else {
+                sleep_ms(300);
+                continue;
+            };
+            let Ok(all) = root.FindAll(TreeScope_Descendants, &cond) else {
+                sleep_ms(300);
+                continue;
+            };
+            let n = all.Length().unwrap_or(0);
+            let mut edits: Vec<IUIAutomationElement> = Vec::new();
+            for i in 0..n {
+                let Ok(el) = all.GetElement(i) else { continue };
+                if el.CurrentControlType().ok() != Some(UIA_EditControlTypeId) {
+                    continue;
+                }
+                if log_all {
+                    let name = el.CurrentName().map(|b| b.to_string()).unwrap_or_default();
+                    let rect = el.CurrentBoundingRectangle().ok();
+                    log(&format!(
+                        "[bugreport] edit#{} name={name:?} rect={rect:?}",
+                        edits.len()
+                    ));
+                }
+                edits.push(el);
+            }
+            if !edits.is_empty() {
+                return Some(edits.remove(0));
+            }
+            sleep_ms(300);
+        }
+        log("[bugreport] 説明欄のEditが見つからない(リトライ上限)");
+        None
+    }
+}
+
+fn bugreport_focus_description() {
+    if let Some(el) = bugreport_find_description_element(true) {
+        unsafe {
+            if let Err(e) = el.SetFocus() {
+                log(&format!("[bugreport] SetFocus失敗: {e}"));
+            }
+        }
+        sleep_ms(150);
+    } else {
+        log("[bugreport] フォーカス設定をスキップ(要素が見つからない)");
+    }
+}
+
+fn bugreport_front() {
+    front_and_focus_foreign(hwnd_of(&TOP));
+    sleep_ms(300);
+    bugreport_focus_description();
+}
+
+fn bugreport_read() -> String {
+    let Some(el) = bugreport_find_description_element(false) else {
+        return "<uia-not-found>".into();
+    };
+    unsafe {
+        match el.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) {
+            Ok(vp) => vp.CurrentValue().map(|v| v.to_string()).unwrap_or_default(),
+            Err(_) => "<uia-no-value-pattern>".into(),
+        }
+    }
+}
+
+/// UIA の ValuePattern に SetValue は使わない(egui/accesskit 側が外部からの値書き換えに
+/// 対応しているか不明なため)。フォーカスしてから通常のキー操作(Ctrl+A → Backspace)で消す。
+fn bugreport_clear() {
+    bugreport_focus_description();
+    send_key(0x11, 0x1D, true);
+    sleep_ms(20);
+    press(0x41, 0x1E, 30);
+    send_key(0x11, 0x1D, false);
+    sleep_ms(50);
+    press(0x08, 0x0E, 30);
+    sleep_ms(150);
+}
+
 fn finish() {
     rec(&json!({"type":"done"}));
     log("=== 完了 ===");
+    if is_chrome_mode() {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "chrome.exe"])
+            .output();
+        std::process::exit(0);
+    }
+    if is_bugreport_mode() {
+        unsafe {
+            let _ = PostMessageW(Some(hwnd_of(&TOP)), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+        sleep_ms(500);
+        // WM_CLOSE で閉じ損ねた場合の保険(次の構成/試行を巻き込まないため)。
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", "awase-settings.exe"])
+            .output();
+        std::process::exit(0);
+    }
     unsafe {
         let _ = PostMessageW(Some(hwnd_of(&TOP)), WM_CLOSE, WPARAM(0), LPARAM(0));
     }

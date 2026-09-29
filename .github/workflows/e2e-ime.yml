@@ -75,7 +75,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-bugreport-pause*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -290,7 +290,7 @@ jobs:
             # 名前: ts-<入力先>-<gji|msime>-<間隔ms>ms。ts-raw-* は awase なしで同じ文字列を生のローマ字として同じ速度で打つ対照実験(入力先+IME単体が受けられるか)。
             # tsf+GJI の 5/3/2ms は、run 36209255447 で 2ms・run1 だけが全12試行 FAIL(awase.log に [pending-deferred] count limit exceeded が182件=消失文字数と一致)
             # だったため、再現率を見るため6回にする。
-            *[cfg(f'ts-{form}-{ime_name}-{iv}ms', 'observe', check='typing', ime=ime, runs=6 if (form == 'tsf' and ime == 'gji' and iv <= 5) else 2, wait=420,
+            *[cfg(f'ts-{form}-{ime_name}-{iv}ms', 'observe', check='typing', ime=ime, runs=20 if ((form == 'tsf' and ime == 'gji' and iv == 2) or (form == 'edit' and ime == 'msime' and iv == 10)) else (6 if (form == 'tsf' and ime == 'gji' and iv <= 5) else 2), wait=420,
                   stress=f'--form={form} --interval={iv} --layout=@REPO@/layout/nicola_keytop.yab{msime}')
               for form in ('edit', 'multi', 'rich', 'tsf')
               for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
@@ -342,6 +342,51 @@ jobs:
                 chrome='--close-ime=10 --settle=800 --msime'),
             cfg('cal-driftrec-chrome-gji', 'observe', check='chromeprobe', keymap=1, runs=1, wait=400,
                 chrome='--close-ime=10 --settle=800'),
+            # --- 本物の awase-settings --bug-report(不具合報告フォーム、ADR-095)の「説明」欄。UIA で読み戻す。---
+            # ユーザー報告「入力欄がとても反応が遅い、謎の「あ」が含まれる」の再現手順(まずは再現できるかの確認、wait は
+            # 実プロセス起動+CJKフォント読み込み分の余裕を chrome 系(1200s)に合わせて多めに取る)。
+            *[cfg(f'ts-bugreport-{ime_name}-{iv}ms', 'observe', check='typing', ime=ime, runs=3, wait=900,
+                  stress=f'--form=bugreport --interval={iv} --trials=6 --kinds=single,mixed --len=30 --layout=@REPO@/layout/nicola_keytop.yab{msime}')
+              for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
+              for iv in (40, 10)],
+            # --cold: ime_ready() のウォームアップ(「か」を打って確定)を省略し、起動直後の最初の本試行が
+            # 窓への最初の実際の確定入力になるようにする(BUG-166 と同型の起動直後特有の不具合の再現狙い)。
+            # trials=1・kinds=single・len を短くして「最初の数文字」に信号を集中させ、runs で独立な
+            # 起動を繰り返す(BUG-166 が 8 回中 2 回だった非決定性に合わせ、runs=10)。
+            *[cfg(f'ts-bugreport-cold-{ime_name}-{iv}ms', 'observe', check='typing', ime=ime, runs=10, wait=900,
+                  stress=f'--form=bugreport --interval={iv} --cold --trials=1 --kinds=single --len=15 --layout=@REPO@/layout/nicola_keytop.yab{msime}')
+              for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
+              for iv in (20,)],
+            # PREVIEW_DEBOUNCE(bug_report.rs、300ms)衝突狙い: 連続打鍵では発火させられない「入力が
+            # 止まってから一定時間後に走る重い処理」と、打鍵再開のタイミングをぶつける。10文字目の直後に
+            # pause だけ一映停止してから続きを打つ(300msちょうど際どい320msと、処理が走り切る猶予を
+            # 見た500msの2通り)。
+            *[cfg(f'ts-bugreport-pause{pause}-{ime_name}-30ms', 'observe', check='typing', ime=ime, runs=6, wait=900,
+                  stress=f'--form=bugreport --interval=30 --trials=6 --kinds=single,mixed --len=25 '
+                         f'--pause-after=10 --pause-ms={pause} --layout=@REPO@/layout/nicola_keytop.yab{msime}')
+              for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
+              for pause in (320, 500)],
+            # --- 本物の Chrome(chromebar=アドレスバー、Alt+D でフォーカス / chromepage=ページ内 textarea)。読み戻しは UI Automation。GJI のみ。---
+            # 取りこぼしの再現率測定(run 36222195067 で chromepage 2ms が 48 試行中 1 件 FAIL): 2ms/3ms を 1 回あたり 24 試行 × 20 回に増やす。
+            *[cfg(f'ts-{form}-gji-{iv}ms', 'observe', check='typing', ime='gji', runs=runs, wait=1200,
+                  stress=f'--form={form} --interval={iv} --trials=8 --layout=@REPO@/layout/nicola_keytop.yab')
+              for form, iv, runs in (('chromepage', 2, 30), ('chromebar', 2, 30))],
+            # 対照実験: awase なし・raw ローマ字 20ms で入力中(未確定)に、awase の chrome-reinit と同じ VK_IME_OFF→VK_IME_ON 等を送る。
+            # 未確定文字が消える(loss>0)なら、awase の reinit が入力を破棄する根拠になる(run 36222195067 の chromepage 2ms で 35 文字消失)。
+            *[cfg(f'ts-raw-{form}-gji-20ms-reinit-{ra}', 'observe', check='typing', ime='gji', awase='false', runs=2, wait=900,
+                  stress=f'--form={form} --interval=20 --mode=raw --no-awase --kinds=single --trials=6 --reinit-after={ra} --layout=@REPO@/layout/nicola_keytop.yab')
+              for form in ('chromepage', 'chromebar') for ra in ('off_on', 'off', 'f2', 'none')],
+            # 実利用に近い条件: アイドル → 別ウィンドウへ切替 → Chrome へ戻す → 100ms 後に打鍵(--idle/--switch-focus/--start-delay)。
+            # 定常状態(連続打鍵)では 2000 試行超で失敗ゼロ。失敗は ready 直後の最初の 1〜2 試行に集中していたので、cold・フォーカス遷移直後を狙う。
+            *[cfg(f'ts-{form}-gji-{iv}ms-idle{idle}', 'observe', check='typing', ime='gji', runs=6, wait=1500,
+                  stress=f'--form={form} --interval={iv} --kinds=single,mixed --trials=6 --idle={idle * 1000} --switch-focus --start-delay=100 --layout=@REPO@/layout/nicola_keytop.yab')
+              for form in ('chromepage', 'chromebar') for iv in (30, 10, 2) for idle in (3, 20)],
+            *[cfg(f'ts-raw-{form}-gji-{iv}ms-idle{idle}', 'observe', check='typing', ime='gji', awase='false', runs=6, wait=1500,
+                  stress=f'--form={form} --interval={iv} --mode=raw --no-awase --kinds=single,mixed --trials=6 --idle={idle * 1000} --switch-focus --start-delay=100 --layout=@REPO@/layout/nicola_keytop.yab')
+              for form in ('chromepage', 'chromebar') for iv in (10,) for idle in (3, 20)],
+            *[cfg(f'ts-raw-{form}-gji-2ms', 'observe', check='typing', ime='gji', awase='false', runs=6, wait=900,
+                  stress=f'--form={form} --interval=2 --mode=raw --no-awase --trials=8 --layout=@REPO@/layout/nicola_keytop.yab')
+              for form in ('chromebar', 'chromepage')],
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
@@ -403,6 +448,7 @@ jobs:
           cargo build -p awase-windows --example compartment_notify_probe_diag
           cargo build -p awase-windows --example typing_stress
           cargo build -p awase-windows --example chrome_probe
+          cargo build -p awase-settings --bin awase-settings
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target\debug\awase.exe dist\
           Copy-Item target\debug\examples\ime_key_matrix_spike.exe dist\
@@ -410,6 +456,9 @@ jobs:
           Copy-Item target\debug\examples\compartment_notify_probe_diag.exe dist\
           Copy-Item target\debug\examples\typing_stress.exe dist\
           Copy-Item target\debug\examples\chrome_probe.exe dist\
+          # ts-bugreport-*(typing_stress.rs --form=bugreport)が実体を起動するのに要る。typing_stress.exe と
+          # 同じ dist\ に置く(launch_bugreport() は自 exe と同じディレクトリの awase-settings.exe を探す)。
+          Copy-Item target\debug\awase-settings.exe dist\
           Copy-Item config.toml dist\ -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         with:
@@ -757,7 +806,7 @@ jobs:
           $rc = $LASTEXITCODE
           "rc=$rc" | Out-File -FilePath rc.txt -Encoding ascii
           "exit code: $rc"
-          Get-Process awase, ime_key_matrix_spike, typing_stress, compartment_notify_probe, compartment_notify_probe_diag -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process awase, awase-settings, ime_key_matrix_spike, typing_stress, chrome, compartment_notify_probe, compartment_notify_probe_diag -ErrorAction SilentlyContinue | Stop-Process -Force
           exit 0
 
       # 不変条件(異常検出器): 上の期待表(rc.txt)とは別に数え、結果は invariants.json / inv_rc.txt に書く(summary が別の表で集計)。
