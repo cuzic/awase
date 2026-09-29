@@ -37,7 +37,7 @@ use windows::Win32::UI::TextServices::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, FindWindowW, GetForegroundWindow, GetWindowThreadProcessId, SendMessageW,
-    SetForegroundWindow, SwitchToThisWindow,
+    SetForegroundWindow,
 };
 
 /// スパイクと同じ目印。`AWASE_TEST_INJECTION=1` の awase は、この目印の注入を物理キーとして扱う。
@@ -516,16 +516,41 @@ fn find_chrome(arg: Option<String>) -> Option<String> {
     .find(|p| std::path::Path::new(p).exists())
 }
 
-/// タスクバーを前面にしてテスト窓からフォーカスを外す(`--refocus`。フォーカス変更イベントを awase に見せる)。
-fn sleep_ms_away() {
-    std::thread::sleep(std::time::Duration::from_millis(200));
-}
+/// 直前の `focus_away` が作った別窓(次回の呼び出し冒頭で破棄する)。
+static AWAY_WINDOW: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
+/// 別の最上位窓を作って前面にし、テスト窓からフォーカスを外す(`--refocus`。フォーカス変更イベントを awase に見せる)。
+/// タスクバー(Shell_TrayWnd)はCIで前面化を拒否される(run 36530291568 で away=false)ため、自プロセスの窓を使う。
+/// 前面化は AttachThreadInput で現前面スレッドの入力状態に相乗りして行う(`bring_to_front` と同じ方式)。
 fn focus_away() -> bool {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, DispatchMessageW, PeekMessageW, ShowWindow,
+        TranslateMessage, MSG, PM_REMOVE, SW_SHOW, WINDOW_EX_STYLE, WS_POPUP, WS_VISIBLE,
+    };
     unsafe {
-        let Ok(tray) = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) else {
+        let old = AWAY_WINDOW.swap(0, std::sync::atomic::Ordering::SeqCst);
+        if old != 0 {
+            let _ = DestroyWindow(HWND(old as *mut core::ffi::c_void));
+        }
+        let Ok(win) = CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("STATIC"),
+            w!("AWAYWIN"),
+            WS_POPUP | WS_VISIBLE,
+            100,
+            100,
+            300,
+            200,
+            None,
+            None,
+            None,
+            None,
+        ) else {
             return false;
         };
+        AWAY_WINDOW.store(win.0 as isize, std::sync::atomic::Ordering::SeqCst);
+        let _ = ShowWindow(win, SW_SHOW);
         let fg = GetForegroundWindow();
         let fg_tid = if fg.0.is_null() {
             0
@@ -535,17 +560,22 @@ fn focus_away() -> bool {
         let my_tid = GetCurrentThreadId();
         let attached =
             fg_tid != 0 && fg_tid != my_tid && AttachThreadInput(my_tid, fg_tid, true).as_bool();
-        let mut ok = SetForegroundWindow(tray).as_bool();
-        if !ok {
-            // CI では SetForegroundWindow がタスクバーに対して拒否される(chrome_probe run 36530291568 で away=false)。
-            SwitchToThisWindow(tray, true);
-            sleep_ms_away();
-            ok = GetForegroundWindow() == tray;
-        }
+        let _ = BringWindowToTop(win);
+        let _ = SetForegroundWindow(win);
         if attached {
             let _ = AttachThreadInput(my_tid, fg_tid, false);
         }
-        ok
+        // 窓のメッセージ(WM_ACTIVATE 等)を処理して前面化を確定させる。
+        let end = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < end {
+            let mut msg = MSG::default();
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        GetForegroundWindow() == win
     }
 }
 
