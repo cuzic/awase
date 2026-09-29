@@ -834,7 +834,11 @@ impl SettingsApp {
         // `self.config.clone()`はvalidate()に渡した瞬間に捨てられる
         // 無駄なdeep clone（keymaps/app_overridesのVecまで含む）だった。
         // mem::takeで元の値をmoveし、cloneを避ける。
-        let (validated, warnings) = std::mem::take(&mut self.config).validate();
+        // ADR-207: 撤去済みキーの通知は、この保存（`save_edit`/`save`）でファイルから消えるので、
+        // 保存直後の警告には出さない（出すと「削除してください」が、消したのと同じ保存で表示される）。
+        let removed_notices = self.config.removed_notices().to_vec();
+        let (validated, mut warnings) = std::mem::take(&mut self.config).validate();
+        warnings.retain(|w| !removed_notices.contains(w));
         if !warnings.is_empty() {
             self.status = format!("警告: {}", warnings.join("; "));
         }
@@ -7427,9 +7431,8 @@ mod layout_tab_repro {
     }
 
     /// /code-review指摘（PR #168）の回帰テスト: `keys.ime_detect`と同じく
-    /// GUIに編集ウィジェットが無い他のフィールド（`engine_on_ime_key`/
-    /// `engine_off_ime_key`/`app_overrides.input_relay_apps`/
-    /// `keystroke_macro`）も、外部エディタでの手動編集が「適用」で
+    /// GUIに編集ウィジェットが無い他のフィールド（
+    /// `app_overrides.input_relay_apps`/`keystroke_macro`）も、外部エディタでの手動編集が「適用」で
     /// 上書きされてはならない（上記`apply_confirmed_preserves_externally_edited_ime_detect`
     /// と同型、対象フィールドを拡張した回帰）。
     #[test]
@@ -7442,9 +7445,6 @@ mod layout_tab_repro {
         std::fs::write(
             &config_path,
             "[general]\n\
-             [keys]\n\
-             engine_on_ime_key = \"VK_F16\"\n\
-             engine_off_ime_key = \"VK_F17\"\n\
              [keys.ime_detect]\n\
              [app_overrides]\n\
              input_relay_apps = [\"old.exe\"]\n\
@@ -7463,9 +7463,6 @@ mod layout_tab_repro {
         std::fs::write(
             &config_path,
             "[general]\n\
-             [keys]\n\
-             engine_on_ime_key = \"VK_F18\"\n\
-             engine_off_ime_key = \"VK_F19\"\n\
              [keys.ime_detect]\n\
              [app_overrides]\n\
              input_relay_apps = [\"new.exe\"]\n\
@@ -7483,14 +7480,42 @@ mod layout_tab_repro {
         let bak_path = config_path.with_extension("toml.bak");
         let _ = std::fs::remove_file(&bak_path);
 
-        assert_eq!(saved.keys.engine_on_ime_key, Some("VK_F18".to_string()));
-        assert_eq!(saved.keys.engine_off_ime_key, Some("VK_F19".to_string()));
         assert_eq!(
             saved.app_overrides.input_relay_apps,
             vec!["new.exe".to_string()]
         );
         assert_eq!(saved.keystroke_macro.len(), 1);
         assert_eq!(saved.keystroke_macro[0].name, "new");
+    }
+
+    /// ADR-207: 撤去した `keys.engine_on_ime_key` が config.toml に残っていても、GUI の保存で
+    /// 行が消え、保存直後の警告に「削除してください」が出ない。
+    #[test]
+    fn apply_confirmed_removes_retired_engine_ime_keys_without_warning() {
+        let config_path = std::env::temp_dir().join(format!(
+            "awase_test_retired_engine_ime_keys_{}_{}.toml",
+            std::process::id(),
+            unique_test_id()
+        ));
+        std::fs::write(
+            &config_path,
+            "[general]\n[keys]\nengine_on_ime_key = \"VK_DBE_DBCSCHAR\"\n",
+        )
+        .unwrap();
+        let config = awase::config::AppConfig::load(&config_path).unwrap();
+        assert_eq!(config.removed_notices().len(), 1);
+        let mut app = test_settings_app(config);
+        app.config_path = config_path.clone();
+        app.config_load_state = ConfigLoadState::Loaded;
+
+        app.apply_confirmed();
+        wait_for_pending_save(&mut app);
+
+        let text = std::fs::read_to_string(&config_path).unwrap();
+        let _ = std::fs::remove_file(&config_path);
+        let _ = std::fs::remove_file(config_path.with_extension("toml.bak"));
+        assert!(!text.contains("engine_on_ime_key"), "{text}");
+        assert!(!app.status.contains("撤去"), "{}", app.status);
     }
 
     fn loaded_app_with_file(text: &str) -> (SettingsApp, std::path::PathBuf) {

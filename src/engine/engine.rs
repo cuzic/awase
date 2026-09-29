@@ -435,12 +435,10 @@ impl Engine {
                     origin,
                 }));
             }
-            // NotRomajiInput の場合は SetOpen も engine-state キーも不要。
+            // NotRomajiInput の場合は SetOpen が不要。
             // ユーザーが選択した kana/katakana モードをそのまま維持する。
-            let suppress_ime_key = suppress_set_open; // 同じ条件
             effects.push(Effect::Ui(UiEffect::EngineStateChanged {
                 enabled: now_active,
-                send_ime_key: !suppress_ime_key,
             }));
             self.prev_activation = new_state;
         }

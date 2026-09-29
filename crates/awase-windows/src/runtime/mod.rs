@@ -838,21 +838,6 @@ impl Runtime {
         key_shadow_action(explicit_overlap, keymap_role, use_learned, contradiction)
     }
 
-    /// Decision の副作用を実行する（メッセージループ用）。
-    /// `suppress_engine_state_key = true` で囲んで decision を実行する。
-    ///
-    /// ポーリング / フォーカス変化起因の RefreshState で使う。
-    /// Kanji 等の sync key がすでに IME を正しい状態にしているとき、
-    /// `engine_on/off_ime_key`（VK_DBE_DBCSCHAR 等）を追加送信してしまう
-    /// フィードバックループを防ぐ。
-    pub fn execute_decision_suppressed(
-        &mut self,
-        decision: awase::engine::Decision,
-    ) -> CallbackResult {
-        let _guard = self.platform.suppress_engine_state_key_guard();
-        self.execute_decision(decision)
-    }
-
     /// `ImeCoordinator::pending_ime_off_rescue` を取り出し、`TIMER_IME_OFF_RESCUE` をキャンセルする。
     ///
     /// `.take()` と `timer.kill()` は常にペアで呼ぶ必要があるため一元化する。
@@ -1213,7 +1198,7 @@ impl Runtime {
     /// IME を実際に ON/OFF する直接呼び出し（`Decision`/`Effect` を経由しない経路）が、
     /// フォーカス遷移の settle 期間中に実行されるべきでないかどうかを判定する。
     ///
-    /// `execute_decision`/`execute_decision_suppressed` 経由の `Decision` ベースの経路は
+    /// `execute_decision` 経由の `Decision` ベースの経路は
     /// `Executor::execute_from_loop` が一括でガードするが、`platform.set_ime_open` を
     /// 直接呼ぶ経路（`ir_apply_drift_correction` 等。撤去済みの
     /// `apply_force_on_for_imm_broken`/`try_force_on_bootstrap` も同型だった）は `Decision`/`Effect` という抽象を経由しないため
@@ -1384,13 +1369,10 @@ impl Runtime {
         tracing::debug!("[process-deferred] applied_open → {observed_ime_on} (sync with OS poll)");
 
         // Engine に IME 状態変化を即通知する（deferred keys の有無にかかわらず）。
-        // suppress_engine_state_key = true: sync key（Kanji 等）がすでに IME を正しい状態に
-        // 設定しているため、engine_on/off_ime_key（VK_DBE_DBCSCHAR 等）を追加送信しない。
-        // 送ると IME モードが ひらがな→全角英数 等に意図せず変わる可能性がある。
         {
             let ctx = self.build_ctx();
             let decision = self.engine.on_command(EngineCommand::RefreshState, &ctx);
-            self.execute_decision_suppressed(decision);
+            self.execute_decision(decision);
         }
 
         if keys.is_empty() {

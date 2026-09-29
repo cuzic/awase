@@ -124,10 +124,14 @@ footer p{margin:0.3rem 0}
 <li><p><strong><code>config.toml</code> の間違いを黙って無視せず、警告として知らせるようにした（ADR-201 段階2）。旧表記 <code>[[keymap]]</code> が効くようになる</strong></p>
 <ul>
 <li>文書や過去の記述にある <code>[[keymap]]</code>（実際の項目名は <code>[[keymaps]]</code>）は、今までは無言で読まれず、キー割り当てが効かなかった。<strong>更新すると <code>[[keymap]]</code> の割り当てが効き始める</strong>（<code>[[keymaps]]</code> と両方あれば連結して読む）。心当たりがあれば <code>config.toml</code> を確認すること</li>
-<li>次の項目は、解決できない値があると警告が出る（トレイ通知とログ）: <code>[[post_bypass]]</code> の key、<code>[[keymaps]]</code> の from/to、<code>keys.engine_on_ime_key</code>/<code>engine_off_ime_key</code>、<code>muhenkan_solo_tap_dedicated_fn_key</code>、<code>engine_toggle_hotkey</code>（名前が解決できない場合と、他のアプリが先に使っていて登録できない場合の両方）。設定を再読み込みしても、同じ内容ならトレイ通知は繰り返さない</li>
+<li>次の項目は、解決できない値があると警告が出る（トレイ通知とログ）: <code>[[post_bypass]]</code> の key、<code>[[keymaps]]</code> の from/to、<code>muhenkan_solo_tap_dedicated_fn_key</code>、<code>engine_toggle_hotkey</code>（名前が解決できない場合と、他のアプリが先に使っていて登録できない場合の両方）。設定を再読み込みしても、同じ内容ならトレイ通知は繰り返さない</li>
 <li>未知の項目名（<code>[general]</code> の綴り間違いなど）は、近い名前の候補つきで警告する。<strong>この警告はログと設定画面の警告欄だけ</strong>に出し、トレイ通知は出さない。撤去済みの項目（<code>apply_calibrated_mode_keys</code>・<code>[[calibration]]</code> など）は警告しない</li>
 <li>上の「今まで無視されていた設定が有効になる」設定があるときは、起動時のログに「以前は無視されていた設定 N 件が有効になりました」と該当項目を出す（トレイ通知・設定画面には出さない）</li>
 </ul>
+</li>
+<li><p><strong><code>keys.engine_on_ime_key</code>/<code>engine_off_ime_key</code>（エンジン ON/OFF 時に IME のモードキーを送る上級者向け設定）を撤去した（ADR-207）。</strong> 既定は無効で設定画面にも無かったが、2026-08-15 より前に設定画面で一度でも保存した人の <code>config.toml</code> には旧既定（<code>VK_DBE_DBCSCHAR</code>/<code>VK_DBE_SBCSCHAR</code>）が残っていて、エンジンの ON/OFF に合わせて全角/半角モードを送る機能が有効だった。更新するとそれが止まる。<code>config.toml</code> に残っていても無視され、起動時に通知が出る（設定画面で保存するとその行は消える）。代わりの設定は無い。IME の開閉は <code>keys.ime_on</code>/<code>ime_off</code> で設定できる</p>
+</li>
+<li><p><code>keys.ime_detect.on</code>/<code>off</code> の既定を空にした（以前は <code>IMEオン</code>/<code>IMEオフ</code>）。IMEオン/IMEオフ キー（VK_IME_ON/OFF）の追随は、指定しなくても自動で行われる（入力言語の判定が一時的に日本語でないと出る環境でも追随するよう直した）。書いてある値はそのまま使われる</p>
 </li>
 </ul>
 <h2>[1.21.0] - 2026-09-21</h2>

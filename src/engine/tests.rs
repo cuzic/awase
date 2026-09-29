@@ -8814,13 +8814,10 @@ mod engine_integration_tests {
         );
     }
 
-    /// `transition_activation` の `EngineStateChanged.send_ime_key: !suppress_ime_key`
-    /// 自体は上の `active_to_inactive_transition_emits_set_open_false`（`suppress_set_open`
-    /// の `!` を検証）とは別の変異体で、これまで `send_ime_key` フィールドを直接見る
-    /// テストが無かった。通常の ImeOff 遷移（NotRomajiInput ではない）では
-    /// `send_ime_key=true` のはず。
+    /// 通常の ImeOff 遷移（NotRomajiInput ではない）は `EngineStateChanged{enabled:false}` を出す
+    /// （ADR-207 で `send_ime_key` フィールドは撤去済み）。
     #[test]
-    fn active_to_inactive_transition_normal_send_ime_key_true() {
+    fn active_to_inactive_transition_normal_emits_engine_state_changed() {
         let mut engine = make_test_engine();
         assert!(engine.compute_active(&ime_on_ctx()));
 
@@ -8828,21 +8825,17 @@ mod engine_integration_tests {
         assert!(
             has_effect(&d, |e| matches!(
                 e,
-                Effect::Ui(UiEffect::EngineStateChanged {
-                    send_ime_key: true,
-                    ..
-                })
+                Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
             )),
-            "normal ImeOff transition must set send_ime_key=true, got {:?}",
+            "normal ImeOff transition must emit EngineStateChanged, got {:?}",
             effects_of(&d)
         );
     }
 
-    /// `NotRomajiInput`（tray での英数モード選択等）への遷移では `suppress_set_open`
-    /// (=`suppress_ime_key`) が true になり、`SetOpen` を出さず `send_ime_key=false`
-    /// のはず（ユーザーが選択した kana/katakana モードを維持するため）。
+    /// `NotRomajiInput`（tray での英数モード選択等）への遷移では `suppress_set_open` が
+    /// true になり、`SetOpen` を出さない（ユーザーが選択した kana/katakana モードを維持するため）。
     #[test]
-    fn active_to_inactive_transition_not_romaji_input_suppresses_send_ime_key() {
+    fn active_to_inactive_transition_not_romaji_input_suppresses_set_open() {
         let mut engine = make_test_engine();
         assert!(engine.compute_active(&ime_on_ctx()));
 
@@ -8858,12 +8851,9 @@ mod engine_integration_tests {
         assert!(
             has_effect(&d, |e| matches!(
                 e,
-                Effect::Ui(UiEffect::EngineStateChanged {
-                    send_ime_key: false,
-                    ..
-                })
+                Effect::Ui(UiEffect::EngineStateChanged { enabled: false })
             )),
-            "NotRomajiInput transition must set send_ime_key=false, got {:?}",
+            "NotRomajiInput transition must still emit EngineStateChanged, got {:?}",
             effects_of(&d)
         );
         assert!(

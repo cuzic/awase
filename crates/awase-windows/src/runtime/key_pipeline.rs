@@ -983,6 +983,15 @@ impl Runtime {
         // エンジンの特殊キー照合・FSM の単独タップ解決が担う（ADR-206）。
         let intent_kind = if let Some(a) = event.ime_relevance.sync_direction {
             Some((a, IntentKind::SyncKey))
+        } else if let Some(a) = event
+            .ime_relevance
+            .shadow_action
+            .filter(|_| crate::vk::is_static_idempotent_open_key(event.vk_code))
+        {
+            // ADR-207: VK_IME_ON/OFF（0x16/0x1A）は IME の種類に依らず冪等なので、`is_japanese_ime()`
+            // （awase のワーカースレッドの HKL 由来で偽になりうる）を問わず採用する。`keys.ime_detect`
+            // の既定（IMEオン/IMEオフ）を空にしても、従来 sync 既定が担っていた追随を保つ。
+            Some((a, IntentKind::PhysicalImeKey))
         } else if self.platform_state.ime.belief.is_japanese_ime() {
             event
                 .ime_relevance

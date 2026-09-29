@@ -181,14 +181,10 @@ fn unresolved_keys(c: &AppConfig) -> Vec<String> {
             }
         }
     }
-    for (name, v) in [
-        (
-            "keys.engine_off_solo_repeat",
-            &c.keys.engine_off_solo_repeat,
-        ),
-        ("keys.engine_on_ime_key", &c.keys.engine_on_ime_key),
-        ("keys.engine_off_ime_key", &c.keys.engine_off_ime_key),
-    ] {
+    for (name, v) in [(
+        "keys.engine_off_solo_repeat",
+        &c.keys.engine_off_solo_repeat,
+    )] {
         if let Some(s) = v.as_deref().filter(|s| !s.is_empty()) {
             if VkCode::from_name(s).is_none() {
                 out.push(format!("{name}={s}"));

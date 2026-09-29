@@ -269,10 +269,9 @@ pub const fn is_followed_mode_key(vk_code: VkCode) -> bool {
 ///   触れない。`VK_NONCONVERT`（0x1D）も対象外——composition のキャンセル
 ///   キーであり mode 選択キーではない。
 ///
-/// `send_ime_mode_key`（`ime.rs`）はユーザー設定 VK（`engine_on_ime_vk`/
-/// `engine_off_ime_vk`）を送るため、同じ関数呼び出しが open-only にも
-/// conv-mutating にもなりうる。呼び出し元（call site）単位では区別できず、
-/// **実際に送信する VK の値**で判定する必要がある——`win32::send_input_safe`
+/// `send_ime_mode_key`（`ime.rs`）は VK_IME_ON/OFF 以外の VK も送りうる（`VK_DBE_*` 等）ため、
+/// 同じ関数呼び出しが open-only にも conv-mutating にもなりうる。呼び出し元（call site）単位では
+/// 区別できず、**実際に送信する VK の値**で判定する必要がある——`win32::send_input_safe`
 /// がこの関数を唯一のゲートとして経由する設計はこのため。
 #[must_use]
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -328,6 +327,19 @@ pub const fn is_synthetic_dbe_ime_hotkey(vk_code: VkCode) -> bool {
 #[must_use]
 pub const fn should_upgrade_is_japanese_ime(injected: bool, vk_code: VkCode) -> bool {
     !injected && is_synthetic_dbe_ime_hotkey(vk_code)
+}
+
+/// `VK_IME_ON`/`VK_IME_OFF`（0x16/0x1A）か。どの IME でも開閉だけに作用し冪等な、静的に確定しているキー。
+///
+/// `kp_stage_shadow_ime_toggle` はこのキーの静的 `shadow_action` を `is_japanese_ime()` に関係なく採用する
+/// （ADR-207）。`is_japanese_ime()` は awase のワーカースレッドの HKL 由来で偽になりうる
+/// （既定入力言語が en-US で ja-JP + MS-IME を追加した環境など）うえ、ADR-093 の救済
+/// （`should_upgrade_is_japanese_ime`）はこの2キーを対象外にしているため、
+/// `keys.ime_detect` の既定（`IMEオン`/`IMEオフ`）を空にしても従来どおり追随させるための条件。
+/// 0x19（トグル）・役割由来の F13〜F24・0xF3/0xF4 は含めない。
+#[must_use]
+pub const fn is_static_idempotent_open_key(vk_code: VkCode) -> bool {
+    matches!(vk_code.0, 0x16 | 0x1A)
 }
 
 /// 親指キー押下ラッチの識別子（BUG-132）。
@@ -992,10 +1004,11 @@ mod tests {
 
     use super::{
         ascii_to_vk, build_symbol_to_vk, interpret_combo, is_ime_mode_key_for_ime,
-        is_synthetic_dbe_ime_hotkey, may_change_ime, parse_key_combo, reinject_scan_code,
-        should_release_thumb_latch, should_upgrade_is_japanese_ime, thumb_latch_identity,
-        vk_may_mutate_conv, vk_pair_to_ascii, ImeKeyKind, VkCode, VkCodeExt, VK_A, VK_LEFT,
-        VK_RETURN, VK_SPACE, VK_UP,
+        is_static_idempotent_open_key, is_synthetic_dbe_ime_hotkey, may_change_ime,
+        parse_key_combo, reinject_scan_code, should_release_thumb_latch,
+        should_upgrade_is_japanese_ime, thumb_latch_identity, vk_may_mutate_conv, vk_pair_to_ascii,
+        ImeKeyKind, VkCode, VkCodeExt, VK_A, VK_IME_OFF, VK_IME_ON, VK_LEFT, VK_RETURN, VK_SPACE,
+        VK_UP,
     };
     use awase::types::ScanCode;
 
@@ -1226,6 +1239,18 @@ mod tests {
                 !should_upgrade_is_japanese_ime(false, VkCode(vk)),
                 "0x{vk:02X}"
             );
+        }
+    }
+
+    /// ADR-207: 0x16/0x1A だけが真。0x19（トグル）・半角/全角・F13〜F24・通常キーは偽。
+    #[test]
+    fn is_static_idempotent_open_key_only_ime_on_off() {
+        assert!(is_static_idempotent_open_key(VK_IME_ON));
+        assert!(is_static_idempotent_open_key(VK_IME_OFF));
+        for vk in [
+            0x15, 0x17, 0x19, 0x1C, 0x1D, 0xF0, 0xF2, 0xF3, 0xF4, 0x7C, 0x87, 0x41,
+        ] {
+            assert!(!is_static_idempotent_open_key(VkCode(vk)), "0x{vk:02X}");
         }
     }
 
