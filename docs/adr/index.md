@@ -211,7 +211,7 @@
 | [202](202-kanji-0x19-role-from-hankaku-zenkaku-row.md) | 0x19（Alt+半角/全角）を GJI では CUSTOM 表の Hankaku/Zenkaku 行から役割判定する（ADR-199 決定14 の実装設計） | 採用・実装済み（T16-1〜3・5・6）
 | [203](203-gji-fsm-follows-belief-open-transitions.md) | GjiFsm を belief の開閉変化に追随させる(BUG-170、OffCold 固着→毎打鍵 per-VK→StaleConfirm→ESC) | 採用・実装済み(e2e・実機未検証) |
 | [204](204-gji-sync-obligation-cannot-be-silently-dropped.md) | ImeOpenOutcome の処遇の重複を1メソッドへ集約し legacy_gji_sync_obligation を網羅化する最小版(初稿の D2/D3/D4 は取り下げ) | 採択(縮小版)・実装未着手 |
-| [205](205-observe-external-ime-close-in-imm32-unavailable-windows.md) | Imm32Unavailable(Chrome)で外部注入の IME キーによる close を窓内の 1→0 遷移観測で実状態へ追随する(BUG-172) | 採択(round4 収束)・実装未着手 |
+| [205](205-observe-external-ime-close-in-imm32-unavailable-windows.md) | Imm32Unavailable(Chrome)で外部注入の IME キーによる close を窓内の 1→0 遷移観測で実状態へ追随する(BUG-172) | 採択・実装済み(CI 検証済み、実機未) |
 | [208](208-absolute-ime-keys-must-not-be-elided-on-stale-applied-in-blind-windows.md) | Blind 窓で絶対指定 IME キーが古い applied で握り潰され続ける固着を防ぐ(草稿、ADR-205 から切り出し) | 草稿・未着手 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029

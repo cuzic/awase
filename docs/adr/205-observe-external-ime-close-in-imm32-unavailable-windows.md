@@ -8,7 +8,7 @@ summary: |-
   本 ADR は、目印なしの外部注入 IME キーで専用の短い監視窓(300ms)を立て、prefetch 済み snapshot で窓内に 1→0 の遷移を観測したときだけ
   実状態へ追随する(意図を捨て desired を揃える。awase は開け直さない)。新 I/O・新 actuation 合流点・新イベント種別なし。
 status: |-
-  採択(2026-09-29)。opus-adversarial-consult round5 で観測部は収束(D7 は ADR-208 へ切り出し)。実装は第0段(trace 測定)の結果を受けて確定。
+  採択・実装済み(2026-09-29、`fd41bf88`)。opus-adversarial-consult round5 で観測部は収束(D7 は ADR-208 へ切り出し)。CI 検証: GJI × 実 Chrome 注入で追随 10/10。実機・モードキー押下の検証は未了。
 related_adr:
   - "ADR-029"
   - "ADR-089"
@@ -238,3 +238,17 @@ Blind 窓で学習表が「開閉トグルではない」とする半角/全角�
 (d) prefetch（フォーカス HWND）は chrome_probe と同じ 1→0 を読む: 確認。(e) 目印付き VK_IME_ON が明示意図を記録する（`explicit_intent=Some(true)`）: 確認。
 (c) 閉じるときの GJI I/O: 該当ログなし（`[gji-poll]` は SkipTyping で走らない）。(f) MS-IME × 実 Chrome の awase `VK_IME_OFF` は本 run の対象外（ADR-208 の前提として別 run が要る）。
 補足: 3秒後の打鍵の後、GJI の `Reopen(BeliefSync:shadow-noop)` の reinit が走り、次の読みは `open=1` に戻った（既存の GJI 経路による再オープン。watch の窓の外なので追随の対象外）。
+
+### 実装後の CI 検証（2026-09-29、`ci/bug172-step0-trace` = 実装 `fd41bf88` を測定ハーネスへ merge、各10試行）
+
+| 構成 | 追随（`[external-change]` 件数） | 3秒後の打鍵 | 従来 |
+|---|---|---|---|
+| hz-ext-gji（注入 0xF3、run 36548371652） | **10/10** | `ka`（IME OFF と一致）10/10 | `kiu` 10/10 |
+| imeoff-ext-gji（注入 0x1A、run 36547215222・36548761653） | **10/10** | `ka` 10/10 | `kiu` 10/10 |
+| hz-phys-gji（目印付き=物理キー相当） | 0（awase 経由で Engine も OFF、従来どおり） | `ka` 10/10 | 同じ |
+| np-hz/np-wm × GJI/MS-IME（メモ帳側で閉じる） | 0 | NICOLA 継続 10/10 | 同じ |
+| hz-ext/imeoff-ext/hz-phys × MS-IME | 1/0/0 | 9〜10 回は IME が閉じず NICOLA 継続、閉じた回は `ka` か従来の `kiu`（各1件） | 概ね同じ |
+
+- observed（追随）件数は GJI × 注入で 0 → 10/10。ハーネスの PASS 判定は「開け直して NICOLA」なので、追随後の `ka` は FAIL 表示のまま（期待どおり。判定の書き換えは未実施）。
+- **「常に 0」は MS-IME × 実 Chrome で実在した**: MS-IME 構成の prefetch は IME が開いているセットアップ中も `CrossProcess(hwndFocus) open=0` を返し続ける（`imeoff-ext-msime-native` のログ）。基準値 0 のままなので遷移が起きず追随しない＝偽の OFF を採用していない（D3 が実環境で効いた）。GJI の prefetch は 1→0 を正しく読む。
+- 未検証: (1) 追随後にモードキーを押して期待状態になるか（受け入れ基準の CI 検証。ハーネス未実装）。(2) MS-IME × 実 Chrome の awase 自身の `VK_IME_OFF`（ADR-208 の前提）。(3) 実機。(4) 通常打鍵・入力欄/本文移動での偽追随 0 件の長時間確認（今回の対照 10 構成では偽追随 0）。
