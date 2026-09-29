@@ -625,12 +625,12 @@ impl ModeKeyConfig {
 /// `resolve_pending_thumb_as_single` の戻り値の中間表現。`DedicatedFnKey`
 /// は `ModeKeyConfig` を経由せず独立に優先される（上記 doc 参照）。
 ///
-/// ユーザー明示config（`*_solo_tap_ime_action`、ADR-153）による IME open 軸への
-/// 副作用（旧ADR-092 決定Bの `DelegateToOpenAxis` 相当）は、この enum には**追加しない**。
+/// 開閉の役割（bare `keys.ime_*`／IME 設定由来のトグル、ADR-192 決定3b・ADR-199 決定16・ADR-206）による
+/// IME open 軸への副作用（旧ADR-092 決定Bの `DelegateToOpenAxis` 相当）は、この enum には**追加しない**。
 /// `DedicatedFnKey` と同様「`ModeKeyConfig` を経由せず独立に優先される」上書きであり、
-/// `NicolaFsm` の独立フィールドとして保持し、`resolve_pending_thumb_as_single` が
-/// `SoloTapAction` を構築する**前**に判定する。GJI/MS-IME の設定からの自動採用
-/// （旧 `*_delegate_to_open_axis`）は ADR-191 で撤去した。
+/// `NicolaFsm` の独立フィールド（`forced_open_action`）として保持し、`resolve_pending_thumb_as_single` が
+/// `SoloTapAction` を構築する**前**に判定する。旧 `*_solo_tap_ime_action`（ADR-153）は ADR-206 で撤去し、
+/// GJI/MS-IME の設定からの旧自動採用（`*_delegate_to_open_axis`）は ADR-191 で撤去した。
 /// IME open 軸への副作用要求は `ResolvedAction` を経由せず、
 /// `NicolaFsm::ime_open_requested`（`take_engine_off_requested` と同型の
 /// ワンショットチャネル）で `Engine` 層へ伝える。

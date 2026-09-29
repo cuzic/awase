@@ -130,12 +130,13 @@ impl PhysicalKeyDisposition {
     /// `plan` の認知的複雑度（clippy 上限）のため関数に切り出した（分岐の中身は下の各コメントのとおり、
     /// 従来の無変換/変換の分岐をそのまま移したもの）。
     ///
-    /// - **無変換/変換**: `shadow_action` は belief 追随専用で、物理配送は既定で Allow（GJI 自身がこの物理キーを見て
+    /// - **無変換/変換**: `shadow_action` は belief 追随専用で、物理配送は常に Allow を返す（GJI 自身がこの物理キーを見て
     ///   IME を切り替える設計、BUG-115。Suppress すると「OS 側にも awase 側にも誰も切り替えない」二重の空振りになる）。
-    ///   **例外（ADR-153決定1 M19）**: 明示 config が `kp_stage_shadow_ime_toggle` でこの打鍵に反応済み
-    ///   （`explicit_ime_action_consumed`）の場合のみ Suppress。ケース3改（"off"×既に OFF）では、この分岐が
-    ///   生の `VK_NONCONVERT`/`VK_CONVERT` を GJI に届けない**唯一の実効的な Suppress 手段**（届くと GJI の TSF キー
-    ///   横取りが「@」を誘発する、BUG-113/BUG-124）。「無害な冗長値」と誤認して削除しないこと。
+    ///   awase が開閉を書く打鍵（開閉の役割があるとき、ADR-206）は、生キーを届けない責務をエンジンの `Decision::Consume`
+    ///   （Phase 1 の特殊キー照合・FSM の PendingThumb と、その KeyUp の `UpDuty::Consume`）が負う。`execute_relay` の
+    ///   Consume アームは `physical` を参照しないので、この分岐の値は Consume された打鍵には影響しない。
+    ///   **VK 分岐そのものは削除しないこと**: 将来この2キーに `shadow_action` が付いたとき（C2 対策の経緯）、下の
+    ///   `is_kanji_event` 判定に落ちて ImmCross で無条件に Suppress される（二重の空振り）のを、この分岐が Allow で防ぐ。
     /// - **F13〜F24**: 最初の Down は `shadow_toggled`（awase が実際に開閉を書いたか）で、リピートの Down と Up は
     ///   ラッチ由来の `shadow_action.is_some()` で Suppress する。書かなかった打鍵は Down/Up とも Allow（IME が
     ///   ユーザー設定どおり処理する）。ImmCross でも同じ（`shadow_action` があるだけで Suppress する従来規則だと、
@@ -145,7 +146,7 @@ impl PhysicalKeyDisposition {
             event.vk_code,
             crate::vk::VK_CONVERT | crate::vk::VK_NONCONVERT
         ) {
-            event.ime_relevance.explicit_ime_action_consumed
+            false
         } else if crate::vk::is_role_fkey(event.vk_code) {
             let first_down = event.event_type == KeyEventType::KeyDown && !event.was_down;
             // 役割由来の昇格（`shadow_action` あり）で書いたときだけ。同期キー（`keys.ime_detect`）由来の
@@ -276,28 +277,8 @@ impl PhysicalKeyDisposition {
         // 実際の切替はGJI自身が物理キー配送を通じて行う）ため、
         // `is_kanji_event`判定より前でこの分岐を置く。
         //
-        // **例外（ADR-153決定1 M19）**: 明示config
-        // （`muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action`）が
-        // `kp_stage_shadow_ime_toggle`でこの打鍵に反応済み
-        // （`event.ime_relevance.explicit_ime_action_consumed`）の場合のみ
-        // Suppress する。このマーカーは2つの別経路から立つ:
-        //
-        // - **ケース2**（belief OFF→ON昇格）: 実際にIME open軸のactuationを
-        //   発行済み。ただしこの経路の物理配送停止は`Decision::Consume`
-        //   （NicolaFsmがこの打鍵をPendingThumbとして消費する）が別途
-        //   担っており、`execute_relay`の`Decision::Consume`アームは
-        //   `physical`を一切参照しないため、ケース2単独ではこの分岐の値は
-        //   無害な冗長値になる。
-        // - **ケース3改**（2026-09-08再設計、BUG-124対策、"off"×既にOFF）:
-        //   `kp_stage_shadow_ime_toggle`はactuationを一切行わず
-        //   マーカーだけを立てる——**この経路にとって、この分岐こそが
-        //   唯一の実効的なSuppress手段**である（`Decision::Consume`には
-        //   乗らない）。ここでSuppressしないと生の`VK_NONCONVERT`/
-        //   `VK_CONVERT`がGJIへ届き、GJI自身のTSFキー横取り
-        //   （`ITfKeyEventSink`）が「@」を誘発する（BUG-113の根本原因
-        //   そのもの、実機A/B確認済み・BUG-124参照）。この分岐を
-        //   「無害な冗長値」と誤認して削除すると、ケース3改が事実上の
-        //   無防備になり「@」が再発する。
+        // 例外（旧 ADR-153 決定1 M19）は ADR-206 で撤去した: 生キーを届けない責務は、開閉を書く打鍵では
+        // エンジンの `Decision::Consume` が負う（`thumb_or_role_fkey_disposition` の doc 参照）。
         if let Some(disposition) = Self::thumb_or_role_fkey_disposition(event, shadow_toggled) {
             return disposition;
         }
@@ -606,52 +587,6 @@ mod plan_tests {
                      かつ ime_actuation_owned な状況でも常に Allow（follow-only、ADR-141）"
                 );
             }
-        }
-    }
-
-    // ── ADR-153 決定1 M19対策: 明示config（ケース3）が既にこの打鍵の
-    //    IME open軸actuationを発行済み（explicit_ime_action_consumed）の
-    //    場合のみ、上記follow-only原則の例外としてSuppressする ──
-
-    #[test]
-    fn henkan_muhenkan_suppressed_when_explicit_ime_action_already_consumed() {
-        for vk in [crate::vk::VK_CONVERT, crate::vk::VK_NONCONVERT] {
-            for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
-                let mut ev = henkan_muhenkan_event(vk, None, event_type);
-                ev.ime_relevance.explicit_ime_action_consumed = true;
-                assert_eq!(
-                    PhysicalKeyDisposition::plan(
-                        &ev,
-                        AppImeProfile::Standard,
-                        false,
-                        ActiveImeKind::MicrosoftIme
-                    ),
-                    PhysicalKeyDisposition::Suppress,
-                    "無変換/変換(vk={vk:?}, event_type={event_type:?}) は明示config \
-                     （ADR-153決定1ケース3）が既にactuate済みならSuppressする \
-                     （抑止とactuationの1対1対応、B7/B8対策）"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn henkan_muhenkan_allowed_when_explicit_ime_action_not_consumed() {
-        // マーカーが立っていない（既定値 false）通常時は、明示config未使用
-        // ユーザーも含め従来どおり follow-only Allow のまま。
-        for vk in [crate::vk::VK_CONVERT, crate::vk::VK_NONCONVERT] {
-            let ev = henkan_muhenkan_event(vk, None, KeyEventType::KeyDown);
-            assert!(!ev.ime_relevance.explicit_ime_action_consumed);
-            assert_eq!(
-                PhysicalKeyDisposition::plan(
-                    &ev,
-                    AppImeProfile::Standard,
-                    false,
-                    ActiveImeKind::MicrosoftIme
-                ),
-                PhysicalKeyDisposition::Allow,
-                "vk={vk:?}: マーカー未設定時は既定のfollow-only Allowのまま"
-            );
         }
     }
 
@@ -1116,7 +1051,6 @@ mod plan_tests {
         shadow_toggled: bool,
         active_ime_kind: ActiveImeKind,
         injected: bool,
-        explicit_ime_action_consumed: bool,
         result: PhysicalKeyDisposition,
     }
 
@@ -1162,7 +1096,6 @@ mod plan_tests {
                         shadow_toggled: false,
                         active_ime_kind: ActiveImeKind::GoogleJapaneseInput,
                         injected,
-                        explicit_ime_action_consumed: false,
                         result,
                     });
                 }
@@ -1196,7 +1129,6 @@ mod plan_tests {
                                     shadow_toggled,
                                     active_ime_kind,
                                     injected,
-                                    explicit_ime_action_consumed: false,
                                     result,
                                 });
                             }
@@ -1213,31 +1145,27 @@ mod plan_tests {
             for &event_type in &ALL_EVENT_TYPES {
                 for &profile in &ALL_PROFILES {
                     for &injected in &ALL_BOOLS {
-                        for &explicit_consumed in &ALL_BOOLS {
-                            let mut ev = henkan_muhenkan_event(vk, None, event_type);
-                            ev.injected = injected;
-                            ev.ime_relevance.explicit_ime_action_consumed = explicit_consumed;
-                            let result = PhysicalKeyDisposition::plan(
-                                &ev,
-                                profile,
-                                false,
-                                ActiveImeKind::GoogleJapaneseInput,
-                            );
-                            rows.push(PlanRow {
-                                vk_label: if vk == crate::vk::VK_CONVERT {
-                                    "VK_CONVERT"
-                                } else {
-                                    "VK_NONCONVERT"
-                                },
-                                event_type,
-                                profile,
-                                shadow_toggled: false,
-                                active_ime_kind: ActiveImeKind::GoogleJapaneseInput,
-                                injected,
-                                explicit_ime_action_consumed: explicit_consumed,
-                                result,
-                            });
-                        }
+                        let mut ev = henkan_muhenkan_event(vk, None, event_type);
+                        ev.injected = injected;
+                        let result = PhysicalKeyDisposition::plan(
+                            &ev,
+                            profile,
+                            false,
+                            ActiveImeKind::GoogleJapaneseInput,
+                        );
+                        rows.push(PlanRow {
+                            vk_label: if vk == crate::vk::VK_CONVERT {
+                                "VK_CONVERT"
+                            } else {
+                                "VK_NONCONVERT"
+                            },
+                            event_type,
+                            profile,
+                            shadow_toggled: false,
+                            active_ime_kind: ActiveImeKind::GoogleJapaneseInput,
+                            injected,
+                            result,
+                        });
                     }
                 }
             }
@@ -1269,7 +1197,6 @@ mod plan_tests {
                                 shadow_toggled,
                                 active_ime_kind,
                                 injected,
-                                explicit_ime_action_consumed: false,
                                 result,
                             });
                         }
@@ -1297,7 +1224,6 @@ mod plan_tests {
                         shadow_toggled: false,
                         active_ime_kind: ActiveImeKind::GoogleJapaneseInput,
                         injected,
-                        explicit_ime_action_consumed: false,
                         result,
                     });
                 }

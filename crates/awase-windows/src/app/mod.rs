@@ -842,13 +842,16 @@ pub(crate) fn reload_config() {
         &ime_toggle,
         config.general.engine_toggle_hotkey.as_deref(),
     );
-    let special_keys = SpecialKeyCombos {
+    let mut special_keys = SpecialKeyCombos {
         engine_on,
         engine_off,
         ime_on,
         ime_off,
         ime_toggle,
     };
+    // ADR-206 決定4: 非推奨の `*_solo_tap_ime_action`（親指キーのもの）は bare の開閉として扱う。
+    // `apply_config_update` は冒頭で `thumb_forced_open_actions(&special_keys)` を求めるので、その前に移す。
+    crate::runtime::migrate_legacy_solo_tap_actions(&config.general, &mut special_keys);
     let mut apply_warnings: Vec<String> = Vec::new();
     let _ = with_app(|app| {
         apply_warnings = app.apply_config_update(&config, special_keys, toggle, on, off);

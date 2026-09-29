@@ -11,7 +11,7 @@ summary: |-
   belief OFF 側を独自に持ち(ケース2/3改、`explicit_ime_action_target`＋`transport.rs` の M19 例外)、belief ON 側も独自の経路(ケース1)を持つ二重系統になっている。
   本 ADR は「役割(config.toml の bare `keys.ime_*` または IME 設定由来)」を唯一の入力にして二重系統を1本にし、旧設定を読込時に bare `keys.ime_*` 相当へ移して警告する。
 status: |-
-  起草(2026-09-29)。opus round1〜3 反映済み(エンジン側合流、リピート印、eisu 保持、削除一覧、3(b)撤回、非固着の条件、ADR-205 相互参照)。opus round1〜4 で収束(round4: 設計変更不要、前提 P3/P4 等の記述3点を反映済み)。固着の定義(所有者)反映済み。実装未着手。
+  起草(2026-09-29)。opus round1〜3 反映済み(エンジン側合流、リピート印、eisu 保持、削除一覧、3(b)撤回、非固着の条件、ADR-205 相互参照)。opus round1〜4 で収束(round4: 設計変更不要、前提 P3/P4 等の記述3点を反映済み)。固着の定義(所有者)反映済み。コア・Windows・GUI・テスト・CI シナリオを実装済み(PR)。実機 A/B(「@」)と CI e2e は未検証。
 related_adr:
   - "ADR-092"
   - "ADR-119"

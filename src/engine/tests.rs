@@ -7025,7 +7025,10 @@ mod engine_integration_tests {
                 &ime_on_ctx(),
             );
             assert!(rep.is_consumed(), "リピートも Consume");
-            assert!(set_open_effects(&rep).is_empty(), "リピートは指令を作らない");
+            assert!(
+                set_open_effects(&rep).is_empty(),
+                "リピートは指令を作らない"
+            );
         }
         let up = engine.on_input(Ev::up(VK_NONCONVERT).at(900).build(), &ime_on_ctx());
         assert!(up.is_consumed());

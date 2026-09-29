@@ -48,6 +48,22 @@ pub(crate) fn thumb_forced_open_actions(
     )
 }
 
+/// ADR-206 決定4: 非推奨の `*_solo_tap_ime_action`（親指キーに割り当てられているものだけ）を、
+/// 該当キーの bare コンボ（`keys.ime_on/off/toggle` に単独で書いたのと同じ）としてメモリ上の照合表へ移す。
+/// `SpecialKeyCombos` を組み立てた直後、`thumb_forced_open_actions` を求める**前**に呼ぶこと。
+pub(crate) fn migrate_legacy_solo_tap_actions(
+    general: &awase::config::GeneralConfig,
+    special: &mut SpecialKeyCombos,
+) {
+    let (muhenkan, henkan) = general.legacy_thumb_solo_tap_actions();
+    if let Some(action) = muhenkan {
+        special.set_bare_ime_action_overriding(crate::vk::VK_NONCONVERT, action);
+    }
+    if let Some(action) = henkan {
+        special.set_bare_ime_action_overriding(crate::vk::VK_CONVERT, action);
+    }
+}
+
 #[cfg(test)]
 mod adr192_tests {
     use super::*;
@@ -749,9 +765,16 @@ impl Runtime {
         let configured = self.engine.bare_ime_action(vk);
         // injected の Down も設定し直す（役割は引かず config 由来へ戻す）: 早期 return すると、直前の物理打鍵で
         // 決めた役割を引き継いでしまう（BUG-14 の原則・決定8「古い役割を残さない」、PR #331 Opus レビュー）。
+        // InputRelay の窓（RDP/VM/PowerToys MWB 等、ADR-119）は actuation を所有しない（`decide_gate` が NotOwned）。
+        // ここで役割を付けると、エンジンが生キーを Consume したのに何も送られず、リモート側の IME に届かない
+        // （何度押しても変わらない=固着、ADR-206 決定3・7）ので、役割は付けず config の bare だけにする。
+        let input_relay = matches!(
+            self.platform.current_app_profile(),
+            crate::focus::class_names::AppImeProfile::InputRelay
+        );
         let action = crate::state::key_effect_runtime::thumb_forced_action(
             configured,
-            ime.is_some(),
+            ime.is_some() && !input_relay,
             modified,
             event.injected,
             || ime.and_then(|ime| self.derive_key_shadow_action(ime, vk)),
@@ -1460,12 +1483,17 @@ impl Runtime {
         self.warn_state_dependent_mode_keys = enabled;
     }
 
-    /// 状態依存キー警告の対象にする親指キーを、設定（抑止・専用Fnキー・単独タップaction）から決める。
+    /// 状態依存キー警告の対象にする親指キーを、設定（抑止・専用Fnキー・bare `keys.ime_*`）から決める。
+    /// bare の開閉（旧 `*_solo_tap_ime_action` の移行分を含む）を持つキーは awase が単独タップを消費する。
+    /// IME 設定由来の役割は打鍵ごとにしか求まらず静的に判定できないため、ここでは含めない
+    /// （役割のあるキーで警告が出ることがあるが、警告は案内であり動作には影響しない）。
     pub(crate) fn set_passthrough_thumb_mode_keys(
         &mut self,
         general: &awase::config::GeneralConfig,
     ) {
         use awase::engine::ModeKeyConfig;
+        // bare の開閉は `set_thumb_forced_open_actions`（起動時・`apply_config_update` の冒頭）が設定済み。
+        let (muhenkan_bare, henkan_bare) = self.engine.thumb_forced_open_actions();
         self.passthrough_thumb_mode_keys =
             crate::state::state_dependent_key_warning::passthrough_thumb_vks(
                 ModeKeyConfig::from_legacy_bools(
@@ -1473,14 +1501,13 @@ impl Runtime {
                     general.muhenkan_solo_tap_always_suppress,
                 )
                 .is_passthrough(),
-                general.muhenkan_solo_tap_dedicated_fn_key.is_some()
-                    || general.muhenkan_solo_tap_ime_action.is_some(),
+                general.muhenkan_solo_tap_dedicated_fn_key.is_some() || muhenkan_bare.is_some(),
                 ModeKeyConfig::from_legacy_bools(
                     general.henkan_solo_tap_ignore_composing_guard,
                     general.henkan_solo_tap_always_suppress,
                 )
                 .is_passthrough(),
-                general.henkan_solo_tap_ime_action.is_some(),
+                henkan_bare.is_some(),
             );
     }
 
@@ -1630,25 +1657,6 @@ impl Runtime {
     /// `apply_config_update`（reload 時）の両方から呼ぶ。
     pub(crate) fn set_space_is_thumb_key(&mut self, space_is_thumb_key: bool) {
         self.space_is_thumb_key = space_is_thumb_key;
-    }
-
-    /// ADR-153 決定1: ユーザー明示config（`GeneralConfig::
-    /// muhenkan_solo_tap_ime_action`）を`Engine`へ設定する。`Engine::adapter`
-    /// が private なため、`bootstrap.rs`/`apply_config`双方から呼べる薄い
-    /// ラッパーを公開する。
-    pub(crate) fn set_muhenkan_solo_tap_ime_action(
-        &mut self,
-        action: Option<awase::types::ShadowImeAction>,
-    ) {
-        self.engine.set_muhenkan_solo_tap_ime_action(action);
-    }
-
-    /// `set_muhenkan_solo_tap_ime_action` と対称（変換キー用）。
-    pub(crate) fn set_henkan_solo_tap_ime_action(
-        &mut self,
-        action: Option<awase::types::ShadowImeAction>,
-    ) {
-        self.engine.set_henkan_solo_tap_ime_action(action);
     }
 
     /// `sync_ime_toggle_auto_detect`（`message_handlers.rs`）が Shift+Space の
@@ -2156,21 +2164,6 @@ impl Runtime {
             warnings.extend(fn_key_warning);
             self.set_muhenkan_dedicated_fn_key_config(fn_key);
             self.set_passthrough_thumb_mode_keys(&config.general);
-            // ADR-153 決定1: ユーザー明示config。config.toml 由来のため毎回の
-            // reload で再設定される（自動検出由来の delegate と異なり消去
-            // されて構わない、`muhenkan_solo_tap_ime_action` フィールドdoc参照）。
-            self.engine.set_muhenkan_solo_tap_ime_action(
-                config
-                    .general
-                    .muhenkan_solo_tap_ime_action
-                    .map(awase::config::ShadowImeActionConfig::to_core),
-            );
-            self.engine.set_henkan_solo_tap_ime_action(
-                config
-                    .general
-                    .henkan_solo_tap_ime_action
-                    .map(awase::config::ShadowImeActionConfig::to_core),
-            );
             self.set_space_is_thumb_key(crate::state::alt_impersonation::is_thumb_key_vk(
                 &config.general.left_thumb_key,
                 &config.general.right_thumb_key,
