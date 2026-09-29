@@ -14,6 +14,9 @@ param(
 Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class Idle2{[StructLayout(LayoutKind.Sequential)]public struct LII{public uint cb;public uint t;}[DllImport("user32.dll")]public static extern bool GetLastInputInfo(ref LII p);public static uint Ms(){LII l=new LII();l.cb=8;GetLastInputInfo(ref l);return (uint)Environment.TickCount-l.t;}}'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 New-Item -ItemType Directory -Force $Out | Out-Null
+Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public class Lk{[DllImport("user32.dll")]public static extern IntPtr GetForegroundWindow();[DllImport("user32.dll")]public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);public static uint FgPid(){uint p;GetWindowThreadProcessId(GetForegroundWindow(),out p);return p;}}'
+function Test-Locked { $p = [Lk]::FgPid(); if ($p -eq 0) { return $true }; $n = (Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName; return ($n -eq 'LockApp' -or $n -eq 'LogonUI') }
+if (Test-Locked) { "SKIP screen is locked (LockApp/LogonUI is foreground): injected keys cannot reach apps"; exit 0 }
 $idle = [Idle2]::Ms()
 if ($idle -lt $MinIdleMs) { "SKIP idle_ms=$idle < $MinIdleMs (owner is using the machine)"; exit 0 }
 $owner = Get-CimInstance Win32_Process -Filter "Name='awase.exe'" | Where-Object { $_.ExecutablePath -notlike '*awase-dv*' }
