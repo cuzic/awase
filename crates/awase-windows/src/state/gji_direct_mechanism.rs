@@ -39,6 +39,7 @@
 //! （`.claude/rules/experiment-logging.md`）の drift 源になる）。
 
 use awase::platform::ImeOpenOutcome;
+use awase::types::KeyAction;
 
 /// GJI 機構経由の IME 状態遷移が課す `GjiFsm` 同期義務のマーカー。
 ///
@@ -54,9 +55,34 @@ pub enum GjiFsmSync {
     /// ADR-203 (i) level 突合: エンジンがローマ字を IME へ送ろうとしているのに `GjiFsm` が
     /// `OffCold` のとき、`OnImeOn` と同じ遷移を **belief 起点**（awase は IME へ書いていない）で行う。
     OnImeOnBelief,
-    /// ADR-203 (ii): 確かな ON 系イベント（物理キー予測 ON・shadow toggle ON・`sync_direction` の on キー）
-    /// で `GjiFsm` を開き直す（`GjiEvent::Reopen`。遷移表は `gji_fsm.rs` の `handle_reopen`）。
-    Reopen,
+    /// ADR-203 (ii): 確かな ON 系イベント（物理キー予測 ON・shadow toggle ON〈`sync_direction` の on キーを含む〉）
+    /// で `GjiFsm` を開き直す（`GjiEvent::Reopen`。遷移表は `tsf/gji_fsm.rs` の `GjiEvent::Reopen` の doc）。
+    /// 発生元は journal の trigger に残す（[`ReopenSource`]）。
+    Reopen(ReopenSource),
+}
+
+/// [`GjiFsmSync::Reopen`] の発生元（journal の `GjiFsmTransition.trigger` に残し、e2e・bug report から
+/// どの入口で開き直したかを区別できるようにする。ADR-203 決定9）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReopenSource {
+    /// 物理キー予測（`KeyEffectPredicted{open: Some(true)}`）。
+    Predict,
+    /// shadow toggle の no-op 分岐（belief が既に ON の `TurnOn` キー。OFF を見逃した後の ON）。
+    ShadowNoop,
+    /// shadow toggle で OFF→ON に倒した瞬間。
+    ShadowToggle,
+}
+
+impl ReopenSource {
+    /// journal の trigger 文字列。
+    #[must_use]
+    pub const fn trigger(self) -> &'static str {
+        match self {
+            Self::Predict => "Reopen(BeliefSync:predict)",
+            Self::ShadowNoop => "Reopen(BeliefSync:shadow-noop)",
+            Self::ShadowToggle => "Reopen(BeliefSync:shadow-toggle)",
+        }
+    }
 }
 
 /// 同期の起点（ADR-203 決定3）。`BeliefSync` は awase が IME へ書いていない同期であり、
@@ -76,7 +102,7 @@ impl GjiFsmSync {
     pub const fn origin(self) -> GjiSyncOrigin {
         match self {
             Self::OnImeOn | Self::OnImeOff => GjiSyncOrigin::Actuation,
-            Self::OnImeOnBelief | Self::Reopen => GjiSyncOrigin::BeliefSync,
+            Self::OnImeOnBelief | Self::Reopen(_) => GjiSyncOrigin::BeliefSync,
         }
     }
 
@@ -272,15 +298,29 @@ pub fn legacy_gji_sync_obligation(open: bool, outcome: ImeOpenOutcome) -> Option
 pub const fn needs_belief_sync_on(
     send_has_romaji: bool,
     injection_is_unicode: bool,
-    strategy_needs_f2_probe: bool,
+    strategy_is_gji_fsm: bool,
     gji_is_off_cold: bool,
     probe_or_recovery_blocking: bool,
 ) -> bool {
     send_has_romaji
         && !injection_is_unicode
-        && strategy_needs_f2_probe
+        && strategy_is_gji_fsm
         && gji_is_off_cold
         && !probe_or_recovery_blocking
+}
+
+/// `send_keys` の `actions` が、IME 経由のローマ字/文字の送信を含むか。
+///
+/// 対象は cold-start 保護（per-VK confirm）経路を通るもの。`Char`/`Romaji` に加え、`KeySequence`（`.yab` の全角記号 `，` `－` 等。VK モードでは
+/// `send_char` を1文字ずつ呼び `Char` と同じ経路に進む）と、`Sequence` の中身（再帰）を見る。
+/// ADR-203 決定1「Sequence 内含む」（PR #354 のコードレビュー M1）。`Key`/`KeyUp`/`CtrlChord` は含めない。
+#[must_use]
+pub fn send_carries_romaji(actions: &[KeyAction]) -> bool {
+    actions.iter().any(|a| match a {
+        KeyAction::Char(_) | KeyAction::Romaji(_) | KeyAction::KeySequence(_) => true,
+        KeyAction::Sequence(items) => send_carries_romaji(items),
+        _ => false,
+    })
 }
 
 /// ADR-203 (ii): 確かな ON 系イベントで `GjiFsm` を開き直す同期義務。
@@ -289,12 +329,21 @@ pub const fn needs_belief_sync_on(
 /// 候補窓が出ていても `OnWarm` に見えうるための二重防御（`GjiFsm` 側も `OnComposing`/`OnCold` では
 /// 何もしない）。入力の途中で cold に落とすと per-VK confirm → StaleConfirm → ESC で未確定文字が
 /// 消える（BUG-171、BUG-033 追補3・4 と同型）。
+///
+/// Unicode 注入モードでは出さない（PR #354 のコードレビュー M2）: `send_romaji_as_unicode` は GjiFsm に
+/// `KeyInput` を送らず composition も迂回するので per-VK/ESC の害が無く（(i) の除外理由と同じ）、
+/// Reopen で OnWarm→OnCold になった後の long-idle で `needs_unicode_cold_warmup` が awase 起点の
+/// VK_IME_ON poke を復活させてしまい、ADR-191「awase は書かない」に反する。
 #[must_use]
-pub const fn reopen_obligation(candidate_visible: bool) -> Option<GjiFsmSync> {
-    if candidate_visible {
+pub const fn reopen_obligation(
+    candidate_visible: bool,
+    injection_is_unicode: bool,
+    source: ReopenSource,
+) -> Option<GjiFsmSync> {
+    if candidate_visible || injection_is_unicode {
         None
     } else {
-        Some(GjiFsmSync::Reopen)
+        Some(GjiFsmSync::Reopen(source))
     }
 }
 
@@ -415,9 +464,49 @@ mod tests {
     }
 
     #[test]
-    fn reopen_is_suppressed_while_candidate_window_is_visible() {
-        assert_eq!(reopen_obligation(false), Some(GjiFsmSync::Reopen));
-        assert_eq!(reopen_obligation(true), None);
+    fn reopen_is_suppressed_while_candidate_visible_or_unicode() {
+        use ReopenSource::*;
+        for src in [Predict, ShadowNoop, ShadowToggle] {
+            assert_eq!(
+                reopen_obligation(false, false, src),
+                Some(GjiFsmSync::Reopen(src))
+            );
+            assert_eq!(reopen_obligation(true, false, src), None);
+            assert_eq!(reopen_obligation(false, true, src), None);
+            assert_eq!(reopen_obligation(true, true, src), None);
+        }
+    }
+
+    #[test]
+    fn reopen_triggers_distinguish_every_entry() {
+        use ReopenSource::*;
+        let t = [
+            Predict.trigger(),
+            ShadowNoop.trigger(),
+            ShadowToggle.trigger(),
+        ];
+        assert!(t.iter().all(|s| s.starts_with("Reopen(BeliefSync:")));
+        assert_eq!(t.iter().collect::<std::collections::HashSet<_>>().len(), 3);
+    }
+
+    #[test]
+    fn send_carries_romaji_sees_key_sequence_and_nested_sequence() {
+        use awase::types::VkCode;
+        assert!(send_carries_romaji(&[KeyAction::Char('あ')]));
+        assert!(send_carries_romaji(&[KeyAction::Romaji("ka".into())]));
+        // 全角記号（`.yab` のクォート無し記号）は KeySequence（M1）
+        assert!(send_carries_romaji(&[KeyAction::KeySequence("，".into())]));
+        assert!(send_carries_romaji(&[KeyAction::Sequence(vec![
+            KeyAction::Suppress,
+            KeyAction::Sequence(vec![KeyAction::Romaji("ka".into())]),
+        ])]));
+        assert!(!send_carries_romaji(&[]));
+        assert!(!send_carries_romaji(&[
+            KeyAction::Key(VkCode(0x41)),
+            KeyAction::KeyUp(VkCode(0x41)),
+            KeyAction::CtrlChord(VkCode(0x41)),
+            KeyAction::Suppress,
+        ]));
     }
 
     #[test]
@@ -428,6 +517,9 @@ mod tests {
             GjiFsmSync::OnImeOnBelief.origin(),
             GjiSyncOrigin::BeliefSync
         );
-        assert_eq!(GjiFsmSync::Reopen.origin(), GjiSyncOrigin::BeliefSync);
+        assert_eq!(
+            GjiFsmSync::Reopen(ReopenSource::Predict).origin(),
+            GjiSyncOrigin::BeliefSync
+        );
     }
 }

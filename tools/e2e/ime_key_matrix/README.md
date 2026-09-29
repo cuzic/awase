@@ -90,7 +90,7 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 | I1 `i1_startup_drift_no_intent` | 起動(ログ先頭行)から `window_s` 秒以内の `[drift] correction: … set_ime_open(…)` のうち、同じ観測サイクル(直前 100ms 以内の `explicit_intent=` 行)が `explicit_intent=None` のもの。直前に `explicit_intent=` 行が無いものも「意図の証拠なし」として数える(書式変更で黙って0件にならないように) | BUG-163 |
 | I1 `i1_drift_no_intent_total` | 同じ条件でログ全体 | BUG-163 |
 | I2 `i2_unwarranted` | journal の `ime open applied seq=… outcome="Unwarranted"` 行(同じ seq は1件)。同じ span(`on_ime_apply_complete{… outcome=Unwarranted …}`)の別の行は数えない(`check.py` は2行を2件と数える) | BUG-162 |
-| I4 `i4_gji_fsm_off_cold_composition` | awase.log の `[gji-fsm] StartComposition while engine off`(GjiFsm が OffCold のまま候補窓の表示=composition 開始を受けた回数)。実 GJI は ON なのに ON 同期が届かず OffCold に固着している証拠(全打鍵が cold 経路→StaleConfirm→ESC)。ImeOff 後の正常な OffCold では出ない。上限0 | BUG-170(ADR-203) |
+| I4 `i4_gji_fsm_off_cold_composition` | awase.log の `[gji-fsm] StartComposition while engine off`(GjiFsm が OffCold のまま候補窓の表示=composition 開始を受けた回数)。実 GJI は ON なのに ON 同期が届かず OffCold に固着している証拠(全打鍵が cold 経路→StaleConfirm→ESC)。ImeOff 後の正常な OffCold では出ない。上限0。ただし awase を経由しない開閉(言語バー・他アプリ等の外部 ON)の後は 0 にならない(ADR-203 の既知の未対応入口)ので、そのシナリオは `config_overrides` で別の上限を持たせる | BUG-170(ADR-203) |
 | I3(情報のみ) | 自己注入の IME モードキー(`[hook] IME-mode vk=… down self_injected=true`、vk 別)と `[warrant-shadow] … would_have_blocked=true`(chain/strategy 別) | 上限なし |
 
 - 使い方: `python3 check_invariants.py [--config 構成名] [--window 秒] [--json out.json] awase.log`。

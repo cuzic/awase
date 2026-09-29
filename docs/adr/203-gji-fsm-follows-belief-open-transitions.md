@@ -50,7 +50,7 @@ related_adr:
 
 1. **(i) level 突合(ON 方向の主機構)。検出点は `WindowsPlatform::send_keys`(`platform.rs:1169`〜、`&mut self`)の冒頭、`self.output.send_keys(actions)` の前**。
    条件はすべて満たすとき: `actions` に `Char`/`Romaji`(Sequence 内含む)がある、`injection_mode != Unicode`、`output.needs_f2_probe()`(GjiFsm 戦略の実体であり種別推測ではないので INV-42 の K 軸ゲートには当たらない)、
-   `gji_state == OffCold`、`!output.is_probe_or_recovery_blocking(true)` 相当(= `has_pending_tsf() || raw_recovery_owns_deferred()`、`output/mod.rs:1471-1474`。probe 実行中に加え raw recovery/reinit の実行中も突合しない。次の send で拾う。`has_pending_tsf_work()` だけでは、StaleConfirm 後に machine が drop されても raw recovery が実行中の窓で ImeOn が probe_id を採番して recovery の段に奪われる)。`pub(super)` なので platform 用の読み取り専用 accessor を1つ足す(`architecture_guard::raw_recovery_owns_deferred_call_sites_are_accounted_for` を壊さない形で)。揃ったら `self.sync_gji(GjiFsmSync::OnImeOn{origin: BeliefSync})`。
+   `gji_state == OffCold`、`!output.is_probe_or_recovery_blocking(true)` 相当(= `has_pending_tsf() || raw_recovery_owns_deferred()`、`output/mod.rs:1471-1474`。probe 実行中に加え raw recovery/reinit の実行中も突合しない。次の send で拾う。`has_pending_tsf_work()` だけでは、StaleConfirm 後に machine が drop されても raw recovery が実行中の窓で ImeOn が probe_id を採番して recovery の段に奪われる)。`pub(super)` なので platform 用の読み取り専用 accessor を1つ足す(`architecture_guard::raw_recovery_owns_deferred_call_sites_are_accounted_for` を壊さない形で)。揃ったら `self.sync_gji(GjiFsmSync::OnImeOnBelief)`(実装は別 variant。`OnImeOn` は `legacy_gji_sync_obligation` だけが作る、という INV-42 と整合させるため。起点は `GjiFsmSync::origin()` で `BeliefSync`)。送信内容の判定は `send_carries_romaji`(`Char`/`Romaji`/`KeySequence` と `Sequence` の再帰)。
    - 旧案(`send_romaji_*_gated` の冒頭)は不採用: `Output` は `&self` で `sync_gji`/`dispatch_gji_response` を呼べない(StartProbe→probe_id 保存・TsfProbeStarted 記録・LongIdle タイマー kill が要る)。
      また raw recovery の再送(`*_bypass_gate`、log 737 の `re-sending raw TSF literal`)でも発火し、走行中の古い段の `finish_probe_stage` が新 probe_id を奪って新 Authorized probe を倒す(`output/mod.rs:1719-1729`)。
    - 判定は `state/gji_direct_mechanism.rs` の純粋関数 `needs_belief_sync_on(send_has_romaji, mode, strategy_is_gji, state_label, blocking)` に置いてホストで全数テスト。
@@ -76,17 +76,19 @@ related_adr:
    composing 中に F2 が押された場合は上の表で何もせず、既存の F2 処理(NativeF2Consumed / F2NonTsf の CompositionReset、Short なら warm のまま)が従来どおり効く。
    `ImeOn` の「already on, ignored」は変えない。**OFF は同期しない**(ImeOff は従来どおり awase の actuation〈Applied の receipt〉のみ)。OFF 同期が要る唯一の理由
    「次の ON で already on にならず cold にならない」は、OnWarm での ON キーによる開き直しで消える。B3(belief 由来 ImeOff が deferred を捨てる)と OFF の信頼度の議論は不要。
+   **Unicode 注入モードでは Reopen を出さない**(PR #354 コードレビュー M2: per-VK/ESC の害が無く、Reopen 後の long-idle で awase 起点の VK_IME_ON poke が復活するため)。
+   **既知の穴(M3)**: 予測経路の `open` は「変化するときだけ `Some`」なので、belief が既に ON の予測経路キーでは Reopen が出ない。「OFF を見逃した後の ON を開き直しで覆う」根拠は、shadow toggle の no-op 分岐の `TurnOn` に限って成り立つ(BUG-170.md に記録)。
    **代償は「OnWarm(未確定文字なし)で ON 系キーを単独タップした直後の1語だけ per-VK になる」こと**(実測で per-VK の1語は `[vk-send]` から `全 2 VK 確認済み` まで約 30〜60ms。
    その間の後続打鍵は OUTPUT_GATE で遅れる)。1語ごとに StaleConfirm 誤検出による romaji 再送重複(BUG-075 系、CI で約0.14%)へ触れる機会が1回増えるが、最初の語だけなので
    ESC による既存未確定文字の消失(BUG-171)には当たらない。NICOLA の親指キー(0x1C/0x1D)は同時打鍵でエンジンが消費するため予測経路に来ない。
    `ImeApplySucceeded` は対象外(generation 付き awase actuation 専用で receipt が INV-42 で同期済み、重複するうえ Unwarranted を含まない)。shadow toggle は ON 方向のみ(向きは belief 次第で
    Imm32Unavailable では逆になりうるため)。
-3. **origin を FSM を通して運ぶ**: `GjiFsmSync`/`Reopen`/`ImeOn` に origin(`Actuation` | `BeliefSync`)を持たせ、`GjiAction::StartProbe` は origin を持たないので `ProbeParams` に `suppress_reinit` を足す等で
+3. **origin を運ぶ**(実装は `dispatch_gji_response_from` の引数まで。FSM/`ProbeParams` には持たせていない。Unicode の `needs_unicode_cold_warmup` 経路は origin を見ないため、Unicode では Reopen 自体を出さないことで補った〈M2〉): `GjiFsmSync`/`Reopen`/`ImeOn` に origin(`Actuation` | `BeliefSync`)を持たせ、`GjiAction::StartProbe` は origin を持たないので `ProbeParams` に `suppress_reinit` を足す等で
    `dispatch_gji_response` の StartProbe の Unicode 分岐(`platform.rs:554-563`)へ届ける。`BeliefSync` 由来では long-cold reinit(`send_f22_f21_reinit`、フックコールバック内の VK_IME_OFF→ON)を行わない
    (ADR-191「awase は書かない」・ADR-090 A-2 の warrant を迂回しない)。(ii) は Unicode モードの窓でも発火するため必須。
 4. **既存の点パッチの扱い**: `presync_applied_open_on`(HwndCacheRestored 相当、BUG-18)と `sync_ime_kind_from_observation` の `applied_open()==Some(true)` の ImeOn は、(i) が GjiFsm 作り直し(B2)も拾うため
    最終的には撤去可能。ただし本 PR では残し、(i) が e2e(b) で B2 を拾えると実証できてから別コミットで撤去するか決める。
-5. **75eb3f60(予測経路の直呼び)は撤去**し、(ii) の Reopen に置き換える。撤去は本実装と**同じ PR**(単独だと OFF/開き直しの穴が残る/先に外すと何も同期しない)。
+5. **75eb3f60(予測経路の直呼び)は撤去**し(PR #354 の最終ツリーに 75eb3f60 の直呼びもそのガードも存在しない。履歴にだけ残る)、(ii) の Reopen に置き換える。撤去は本実装と**同じ PR**(単独だと OFF/開き直しの穴が残る/先に外すと何も同期しない)。
    `architecture_guard::key_effect_prediction_open_true_notifies_gji_fsm` も削除し、BUG-170.md の「修正」「回帰テスト」欄を書き換える。撤去コミット本文に
    「失敗による revert ではなく ADR-203 による置き換え(観測した失敗なし)」と明記(experiment-logging.md)。
 6. **案C(OffCold で StartComposition を受けたら ON へ自己修復)は本 ADR の実装から分離し別 PR**とする。(i) が主機構で C 無しでも効果は成立し、猶予 N ms は tuning-constants.md により
@@ -97,7 +99,7 @@ related_adr:
 8. **StaleConfirm → ESC が途中の語で既存の未確定文字を巻き込む問題は対象外**(BUG-171 として別起票)。GjiFsm を直しても残るため、本 ADR の検証で「文字消失が止まった」ことを効果の証明としない。
    **ADR-203 を入れても消失経路が残る具体的な順序**: 1語目の probe が `StartComposition` より前に Stale/recovered で終わると `WarmupAborted` → `OnCold(kind, NotStarted)` に戻り、
    候補窓は1語目の未確定文字で既に可視なので、2語目の per-VK が StaleConfirm → ESC で1語目を消す(BUG-171 そのもの)。
-9. **可視性**: (i)/(ii) の同期は `GjiFsmTransition.trigger` に発生元を残す(`ImeOn(BeliefSync:level)`、`Reopen(BeliefSync:predict)` 等)。`architecture_guard` で GjiFsm の
+9. **可視性**: (i)/(ii) の同期は `GjiFsmTransition.trigger` に発生元を残す(`ImeOn(BeliefSync:level)`、`Reopen(BeliefSync:predict)`/`:shadow-noop`/`:shadow-toggle`、`ReopenSource::trigger`)。`architecture_guard` で GjiFsm の
    ImeOn/ImeOff/Reopen の呼び出し元(presync・kind 同期・(i)・(ii)・receipt)を列挙して件数を固定し、入口が増えたら検出できるようにする。
 
 ## 検証方針
