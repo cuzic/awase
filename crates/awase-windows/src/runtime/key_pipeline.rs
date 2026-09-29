@@ -2004,6 +2004,20 @@ impl Runtime {
         self.platform_state
             .ime
             .apply_key_effect_prediction(prediction, tick);
+        // BUG-170: 予測でbeliefだけがONになり、GjiFsmが`OffCold`のまま取り残されると、
+        // 直後の打鍵が`OffCold`で素通しされ（cold-start保護が働かず）Chrome/Edge系TSFの
+        // 準備前に届いて先頭数文字が落ちる。awaseはIMEへ書かない（`GjiDirect`のsettleを
+        // 通らない）ので、`presync_applied_open_on`と同じく「belief=ONならGjiFsmへもImeOnを
+        // 通知する」。GjiFsmが既にONなら`ImeOn`ハンドラ側でno-op。
+        if prediction.effect.open == Some(true)
+            && matches!(obs.active_ime_kind(), ActiveImeKind::GoogleJapaneseInput)
+        {
+            let mode = self.platform.output.injection_mode;
+            self.platform.gji_on_ime_on(mode);
+            for entry in self.platform.drain_journal_entries() {
+                self.platform_state.ime.journal.absorb(entry);
+            }
+        }
         // 予測をEngineへ即反映する（active遷移の検知）。
         if !prediction.effect.is_noop() {
             self.notify_engine_refresh();

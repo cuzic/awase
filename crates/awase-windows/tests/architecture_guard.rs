@@ -5395,3 +5395,26 @@ fn kanji_0x19_role_goes_through_the_shared_latch_and_only_overrides_gji() {
     // `shadow_action` の代入は1箇所のまま（`ime_relevance_shadow_action_writes_are_accounted_for`）。
     assert_eq!(rt.matches("ime_relevance.shadow_action =").count(), 1);
 }
+
+/// BUG-170: 物理モードキー（かな/F2 等）の開閉予測でbeliefだけがONになっても`GjiFsm`が
+/// `OffCold`のまま取り残されると、直後の打鍵が cold-start 保護なしで素通しされ先頭数文字が
+/// 落ちる（report `01M3NBQA8KH2JN6S1PYHP8DJRF`、GJI+Edge/Google Meet）。
+/// `kp_predict_key_effect`が予測適用後に`gji_on_ime_on`を呼ぶことを固定する。
+#[test]
+fn key_effect_prediction_open_true_notifies_gji_fsm() {
+    let src = read_crate_file("src/runtime/key_pipeline.rs");
+    let body = src
+        .split("fn kp_predict_key_effect(")
+        .nth(1)
+        .expect("kp_predict_key_effect exists");
+    let body = body.split("\n    fn ").next().expect("function body");
+    let after_apply = body
+        .split(".apply_key_effect_prediction(")
+        .nth(1)
+        .expect("prediction is applied");
+    assert!(
+        after_apply.contains("prediction.effect.open == Some(true)")
+            && after_apply.contains("gji_on_ime_on("),
+        "BUG-170: open=Some(true) の予測後に GjiFsm へ ImeOn を通知すること"
+    );
+}
