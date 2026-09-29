@@ -130,3 +130,18 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 スーパークラス化(ADR-193、TsfNative 相当)。Chrome・Zoom・UWP は CI で起動/フォーカスが安定せず、ストレスの影響と切り分けられないので対象外。
 構成名: `ts-<入力先>-<gji|msime>-<間隔ms>ms`。`ts-raw-*` は awase なしで同じ文字列を生のローマ字として同じ速度で打つ対照実験。
 自己検証(各試行の `inject` 記録): 予定時刻に対する実注入の遅れ、`SendInput` の成功数、自プロセスの LL フックに届いたイベント数と配送遅延。
+
+## v2 実機確認の e2e(`sc-reopen-*`・`sc-kanji-role-default-*`・`tsx-*-cold`、`check_reopen.py`)
+
+`docs/tasks/v2-release-checklist-2026-09-29.md` の実機確認項目のうち、CI で作れるものを構成にした(いずれも実測前なので `expect=observe`。最初の実測で fail が 0 なら pass へ上げる)。
+
+| 構成 | チェックリスト | 見るもの |
+|---|---|---|
+| `sc-reopen-{tsf-gji-gap300\|600\|900, edit-gji-gap600, tsf-msime-gap600, chromepage-gji-gap600}` | D2 / ADR-203 e2e (c)・BUG-170・171 | `typing_stress --mode=reopen`: 1語確定 → 物理 OFF → gap ms 後に物理 ON(0xF2)→ 即打鍵。判定は `check_reopen.py`(入力先のテキスト、`StartComposition while engine off`=OffCold 固着、StaleConfirm の `escape=true`)。ON キー押下から最初の `[vk-send]` までの遅延と cold 経路かは情報として出す |
+| `sc-kanji-role-default-{atok,msime}` | B2 副次 | tsv も keys 上書きも無い既定 config × GJI プリセットの Alt+半角/全角(0x19)。IME が閉じ Engine が追随するか(`check_kanji_role.py --expect=closed`) |
+| `tsx-{edit,rich,tsf}-{gji,msime}-20ms-cold`・`tsx-{chromepage,chromebar}-gji-20ms-cold` | D1 / BUG-163 | awase 起動直後に最初に打つ文字が欠けないか(メモ帳の代わりに素の EDIT/RichEdit/TSF 相当と実 Chrome)。起動直後の意図なし drift(I1)は不変条件の表に出る |
+| 各 e2e ジョブの `env.txt` | B3(d) | `NoTsf3Override2` の状態(まっさらなランナーでは `absent` のはず) |
+
+**CI で作れない項目**: B3(a)(GJI の設定ダイアログで利用者が保存した CUSTOM 表に Hankaku/Zenkaku 行が残るか。ダイアログ操作は自動化できない。表の解釈自体は `sc-t1b-*` が見ている)、
+B4(MS-IME 本体の値2。設定アプリの「キーの割り当て」が出ず作れない、PR #378)、D3(物理 Ctrl は SendInput で作れない)。
+単体テスト: `python3 -m unittest discover -s tools/e2e/ime_key_matrix -p 'test_*.py'`。

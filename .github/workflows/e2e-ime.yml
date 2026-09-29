@@ -283,6 +283,27 @@ jobs:
             # T1(e) の一部(ADR-199 決定18): F13 をトグルにした CUSTOM 表で、F13(0x7C)が GJI に効くか。IME OFF から F13→開、もう一度→閉。
             cfg('sc-t1e-f13-toggle', 'observe', check='consistency', awase='false', keymap=0, runs=1,
                 args='--seq=1A,7C,7C', tsv='DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff'),
+            # v2 チェックリスト B2 副次: 既定の [keys](keys.ime_toggle が空)× GJI プリセットで、Alt+半角/全角(0x19)が実 IME と Engine(belief)をずらさないこと。
+            # sc-kanji-role-* は CUSTOM 表(keymap=0)+ tsv だったが、こちらは tsv も keys 上書きも無い「既定のまま」。プリセット(ATOK=1 / MS-IME=2)の
+            # Hankaku/Zenkaku 行はトグルのはずなので kanjirole-closed(IME が閉じ、Engine も OFF に追随)を期待する。実測前なので observe。
+            # 旧既定の keys.ime_toggle=VK_KANJI は explicit_overlap で 0x19 の役割判定を常に無効にしていたため、既定でこの経路が動くのは今回が初めて。
+            *[cfg(f'sc-kanji-role-default-{name}', 'observe', check='kanjirole-closed', keymap=km, runs=2,
+                  args='--chord=A4,19 --chord-at=20000 --chord-prep=16')
+              for name, km in (('atok', 1), ('msime', 2))],
+            # ADR-203 e2e (c) / BUG-170・171(判定は check_reopen.py): 「OFF 前に1語確定 → 物理 OFF → gap ms 後に物理 ON(0xF2)→ 即打鍵」。
+            # GjiFsm が OffCold に固着せず(`StartComposition while engine off` が 0)、StaleConfirm の escape=true も無く、ON 直後の語が欠けないか。
+            # 同時に ON キー押下から最初の [vk-send] までの遅延(ADR-203 D2 の再測定)と、最初の語が cold 経路かを result.txt の REOPEN 行に出す。
+            # tsf=TsfNative 相当(ADR-193、GjiFsm の固着が起きた TSF 経路)、edit=素の EDIT、chromepage=実 Chrome。gap は 1 秒以内(300/600/900)。
+            # 期待値は実測前なので observe(最初の実測後に、fail が 0 なら pass へ上げる)。
+            *[cfg(f'sc-reopen-tsf-gji-gap{gap}', 'observe', check='reopen', runs=3, wait=420,
+                  stress=f'--form=tsf --mode=reopen --trials=8 --reopen-gap={gap} --layout=@REPO@/layout/nicola_keytop.yab')
+              for gap in (300, 600, 900)],
+            cfg('sc-reopen-edit-gji-gap600', 'observe', check='reopen', runs=3, wait=420,
+                stress='--form=edit --mode=reopen --trials=8 --reopen-gap=600 --layout=@REPO@/layout/nicola_keytop.yab'),
+            cfg('sc-reopen-tsf-msime-gap600', 'observe', check='reopen', ime='msime', runs=3, wait=420,
+                stress='--form=tsf --mode=reopen --trials=8 --reopen-gap=600 --layout=@REPO@/layout/nicola_keytop.yab --msime'),
+            cfg('sc-reopen-chromepage-gji-gap600', 'observe', check='reopen', runs=3, wait=900,
+                stress='--form=chromepage --mode=reopen --trials=6 --reopen-gap=600 --settle-read --layout=@REPO@/layout/nicola_keytop.yab'),
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
@@ -331,6 +352,14 @@ jobs:
             *[tsx(f'{form}-{ime_name}-20ms-cold', form, ime, 20, extra='--cold', kinds='single', trials=1, len=15, runs=10, wait=900)
               for form in ('bugreport',)
               for ime_name, ime in (('gji', 'gji'), ('msime', 'msime'))],
+            # v2 チェックリスト D1(BUG-163): 起動直後の最初の 1 文字が欠けないこと。メモ帳の代わりに素の EDIT・RichEdit・TSF 相当(tsf)と実 Chrome を入力先にする
+            # (bugreport は上の tsx-bugreport-*-cold)。--cold で準備確認を省き、awase 起動後に最初に打つ文字を見る(trials=1・len 短め、runs で起動を繰り返す)。
+            # 起動直後の意図なし drift(I1)と Unwarranted(I2)は不変条件の表に自動で出る(BUG-163 の修正の確認)。
+            *[tsx(f'{form}-{ime_name}-20ms-cold', form, ime, 20, extra='--cold', kinds='single', trials=1, len=15, runs=10, wait=900)
+              for form in ('edit', 'rich', 'tsf')
+              for ime_name, ime in (('gji', 'gji'), ('msime', 'msime'))],
+            *[tsx(f'{form}-gji-20ms-cold', form, 'gji', 20, extra='--cold', kinds='single', trials=1, len=15, runs=10, wait=900)
+              for form in ('chromepage', 'chromebar')],
             # 「止まってから発火する処理」と打鍵再開のタイミングをぶつける(--pause-after 文字目の直後に --pause-ms だけ止める)。
             *[tsx(f'{form}-{ime_name}-30ms-pause{pause}', form, ime, 30, extra=f'--pause-after=10 --pause-ms={pause}', kinds='single,mixed', trials=6, len=25, runs=6, wait=900)
               for form in ('bugreport',)
@@ -599,6 +628,20 @@ jobs:
           Start-Sleep -Seconds 5
           "keystyle=$((Get-ItemProperty "$base\MSIME" -Name keystyle).keystyle) key_len=$($table.Count) NoTsf3Override2=$((Get-ItemProperty $tsfBase -Name NoTsf3Override2).NoTsf3Override2)"
 
+      # v2 チェックリスト B3(d): MS-IME「以前のバージョンのMicrosoft IMEを使う」互換モード(NoTsf3Override2)を触っていない環境では、
+      # レジストリに値が無い(または 0)こと。awase はこの値が 1 のときだけ互換モードとして扱う(msime_legacy_keymap.rs::read_legacy_compat_mode_enabled)。
+      # 判定はしない(まっさらな CI ランナーの状態の記録)。legacy_custom 構成は意図して 1 にするので、その構成は除く。結果は env.txt と summary の値で確認する。
+      - name: 互換モード(NoTsf3Override2)の状態を記録する
+        if: matrix.cfg.legacy_custom != 'true'
+        shell: pwsh
+        run: |
+          $tsfBase = 'HKCU:\SOFTWARE\Microsoft\Input\TSF\Tsf3Override\{03b5835f-f03c-411b-9ce2-aa23e1171e36}'
+          $v = $null
+          try { $v = (Get-ItemProperty -Path $tsfBase -Name NoTsf3Override2 -ErrorAction Stop).NoTsf3Override2 } catch { }
+          $line = 'NoTsf3Override2=' + $(if ($null -eq $v) { 'absent' } else { $v })
+          $line | Tee-Object -FilePath env.txt
+          "$line (config=${{ matrix.cfg.name }} ime=${{ matrix.cfg.ime }})" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
       # smoke ゲート: 本番シャードは、同じ run 内の smoke ジョブ(matrix.cfg.gate)が成功するまで待ち、失敗したら中身を実行しない。
       # smoke と同時に起動する(GJI導入・言語設定は smoke と並行して済ませる)ので、待ちは smoke の残り時間だけで済む。
       - name: smoke の成功を待つ(ゲート)
@@ -768,6 +811,8 @@ jobs:
             python tools\e2e\ime_key_matrix\check_typing_stress.py --json typing.json dist\typing_stress.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'driftcorrection') {
             python tools\e2e\ime_key_matrix\check_drift_correction.py --json drift.json dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
+          } elseif ('${{ matrix.cfg.check }}' -eq 'reopen') {
+            python tools\e2e\ime_key_matrix\check_reopen.py --json reopen.json dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'driftrecovery') {
             python tools\e2e\ime_key_matrix\check_drift_recovery.py --json driftrec.json dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'toggle') {
@@ -831,6 +876,8 @@ jobs:
             dist/ime_key_matrix_spike.log
             dist/typing_stress.log
             typing.json
+            reopen.json
+            env.txt
             dist/compartment_notify_probe.log
             dist/compartment_notify_probe_diag.log
             dist/awase.log
@@ -973,6 +1020,29 @@ jobs:
                     "ハーネスが実 IME を直接閉じた「ずれ」から、awase の drift correction だけで ON へ戻るか。各数は「その現象があった試行数」。recovered=打鍵前に API 上も開き直り実打鍵でかなが出た / reopened_by_typing=3秒間は閉じたまま打鍵後に開いた(打鍵時の別経路=GJI reinit 等) / typed_blind=かなは出たが Unicode 注入で IME 状態の証拠にならない(edit は ON キーと無関係に常に Unicode 注入) / unexplained=原因不明でかなが出た / api_only=API上は開いたが実打鍵が期待と違う / not_recovered=API上も閉じたままで実打鍵も生ローマ字等 / invalid=前提未成立(VK_IME_ON 以外で ON、明示意図 ON 未確認、窓の逆転等)。awase.log の時間窓: observed・drift=閉じてから打鍵直前まで(observed=ImeModel への開閉観測、0なら drift correction の判断まで届いていない。drift=drift correction の発火) / conv_read・reinit・unicode=打鍵中〜確定後(conv_read=打鍵時に conv を読んだ、reinit=literal 回収の GJI reinit、unicode=Unicode 注入)。verdict: NOT_OBSERVED=戻さないのではなく見ていない、REOPENED_BY_OTHER_PATH=drift correction 以外の経路が開け直した。", "",
                     "| 構成 | 回 | 判定 | 試行 | recovered | reopened_by_typing | typed_blind | unexplained | api_only | not_recovered | invalid | observed | drift | conv_read | reinit | unicode | intent_true |",
                     "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"] + rec_rows
+          # 物理 OFF→ON の開き直し観測(sc-reopen-*、ADR-203 e2e (c)・BUG-170): result.txt 末尾の REOPEN 行を表にする。
+          reopen_rows = []
+          for c in configs:
+            if c.get('check') != 'reopen':
+              continue
+            for run in range(1, c.get('runs', 3) + 1):
+              f = f"results/result-{c['name']}-{run}/result.txt"
+              line = ''
+              if os.path.exists(f):
+                for l in open(f, encoding='utf-8', errors='replace').read().splitlines():
+                  if l.startswith('REOPEN:'):
+                    line = l
+              kv = dict(re.findall(r'(\w+)=(\S+)', line))
+              if not kv:
+                reopen_rows.append(f"| {c['name']} | {run} | 欠落 | - | - | - | - | - | - |")
+                continue
+              reopen_rows.append(f"| {c['name']} | {run} | {kv.get('verdict')} | {kv.get('pass')} | {kv.get('fail')} | {kv.get('invalid')} | {kv.get('first_vk_cold')} | {kv.get('delay_p50_ms')} | {kv.get('delay_max_ms')} |")
+          if reopen_rows:
+            out += ["", "## 物理 OFF→ON の開き直し観測(sc-reopen-*、ADR-203 e2e (c)・BUG-170。expect=observe なので合否には含めない)", "",
+                    "pass/fail/invalid=試行数。fail は「ON 直後の語が期待と違う」か「OffCold 固着(StartComposition while engine off)」か「StaleConfirm の escape=true」。"
+                    "first_vk_cold=最初の [vk-send] が cold 経路(prepend_f2_warmup=true)だった試行数、delay=ON キー押下から最初の [vk-send] までの ms(p50/最大)。", "",
+                    "| 構成 | 回 | 判定 | pass | fail | invalid | first_vk_cold | 遅延p50(ms) | 遅延max(ms) |",
+                    "|---|---|---|---|---|---|---|---|---|"] + reopen_rows
           open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8').write('\n'.join(out) + '\n')
           print('\n'.join(out))
           if os.environ.get('GATE_MODE') == 'invariants':
