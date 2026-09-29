@@ -53,7 +53,7 @@
 //! なる `VK_IME_ON`(0x16)を先頭にする(MS-IME の 0xF2 は mode-key passthrough で意図が消える)。
 //!
 //! `--mode=reopen`(ADR-203 e2e (c)、BUG-170 の実機確認): 「OFF 前に1語確定 → 物理 OFF(`VK_IME_OFF`)→ `--reopen-gap`(既定600ms、1秒以内)後に
-//! 物理 ON(`--reopen-on-key`、既定 0xF2)→ 即打鍵(`--reopen-type-delay`、既定0)」を `--trials` 回。別プロセスの入力先(Chrome)でも動く
+//! 物理 ON(`--reopen-on-key`、既定は GJI 0x16・MS-IME 0xF2。GJI の ATOK プリセットで 0xF2 は ON にならないことを run 36555043470 で確認)→ 即打鍵(`--reopen-type-delay`、既定0)」を `--trials` 回。別プロセスの入力先(Chrome)でも動く
 //! (実 IME の開閉は読まず、入力先のテキストと awase.log で判定する)。記録は `reopen_pre` / `reopen_on` / `reopen_typed`。判定は check_reopen.py。
 //!
 //! ## 注入の作法
@@ -1184,7 +1184,7 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
 /// `ime_ready` の後に呼ぶ。GjiFsm が OffCold に固着せず、ON 後の最初の語が欠けない/リテラル化しないかを、入力先のテキストと
 /// awase.log(checker が `[vk-send]`・`[gji-fsm]` を数える)の両方で見る。
 /// 1試行: IME を ON にそろえる → かな単打を1語打って Enter で確定(`reopen_pre`) → `VK_IME_OFF` を押す →
-/// `--reopen-gap=MS`(既定 600、1000 未満)待つ → ON キー(`--reopen-on-key=0xNN`、既定 0xF2)を押す(`reopen_on`) →
+/// `--reopen-gap=MS`(既定 600、1000 未満)待つ → ON キー(`--reopen-on-key=0xNN`、既定は `ime_on_key(0)`=GJI は 0x16・MS-IME は 0xF2)を押す(`reopen_on`) →
 /// `--reopen-type-delay=MS`(既定 0=即)後に同じかなを打って確定(`reopen_typed`)。
 /// 記録の `utc` は awase.log の時刻(HH:MM:SS.mmm)と突合せる用。ON キー押下から最初の `[vk-send]` までの遅延は checker が出す。
 fn reopen_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
@@ -1199,7 +1199,7 @@ fn reopen_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
         .unwrap_or(0);
     let on_key: u32 = arg_value("--reopen-on-key=")
         .and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok())
-        .unwrap_or(VK_DBE_HIRAGANA);
+        .unwrap_or_else(|| ime_on_key(0));
     let Some(probe) = cells[0]
         .iter()
         .find(|c| c.romaji == "ka")

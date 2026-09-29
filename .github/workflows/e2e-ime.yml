@@ -291,13 +291,17 @@ jobs:
                   args='--chord=A4,19 --chord-at=20000 --chord-prep=16')
               for name, km in (('atok', 1), ('msime', 2))],
             # ADR-203 e2e (c) / BUG-170・171(判定は check_reopen.py): 「OFF 前に1語確定 → 物理 OFF → gap ms 後に物理 ON(0xF2)→ 即打鍵」。
-            # GjiFsm が OffCold に固着せず(`StartComposition while engine off` が 0)、StaleConfirm の escape=true も無く、ON 直後の語が欠けないか。
+            # ON キーは既定(GJI=0x16、MS-IME=0xF2。GJI の 0xF2 は ATOK プリセットで ON にならず、初回 run 36555043470 で全 FAIL だった)。GjiFsm が OffCold に固着せず(`StartComposition while engine off` が 0)、StaleConfirm の escape=true も無く、ON 直後の語が欠けないか。
             # 同時に ON キー押下から最初の [vk-send] までの遅延(ADR-203 D2 の再測定)と、最初の語が cold 経路かを result.txt の REOPEN 行に出す。
             # tsf=TsfNative 相当(ADR-193、GjiFsm の固着が起きた TSF 経路)、edit=素の EDIT、chromepage=実 Chrome。gap は 1 秒以内(300/600/900)。
             # 期待値は実測前なので observe(最初の実測後に、fail が 0 なら pass へ上げる)。
             *[cfg(f'sc-reopen-tsf-gji-gap{gap}', 'observe', check='reopen', runs=3, wait=420,
                   stress=f'--form=tsf --mode=reopen --trials=8 --reopen-gap={gap} --layout=@REPO@/layout/nicola_keytop.yab')
               for gap in (300, 600, 900)],
+            # ON キーの比較(GJI の ATOK プリセット): 0xF2(ひらがな)と 0x1C(変換)。既定の 0x16 と何が違うかを見る観測用。
+            *[cfg(f'sc-reopen-tsf-gji-{name}-gap600', 'observe', check='reopen', runs=3, wait=420,
+                  stress=f'--form=tsf --mode=reopen --trials=8 --reopen-gap=600 --reopen-on-key={vk} --layout=@REPO@/layout/nicola_keytop.yab')
+              for name, vk in (('f2', '0xF2'), ('henkan', '0x1C'))],
             cfg('sc-reopen-edit-gji-gap600', 'observe', check='reopen', runs=3, wait=420,
                 stress='--form=edit --mode=reopen --trials=8 --reopen-gap=600 --layout=@REPO@/layout/nicola_keytop.yab'),
             cfg('sc-reopen-tsf-msime-gap600', 'observe', check='reopen', ime='msime', runs=3, wait=420,
