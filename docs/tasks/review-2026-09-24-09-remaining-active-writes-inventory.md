@@ -128,6 +128,7 @@ BUG-163（起動時 `desired_open=true` の強制ON）は修正が develop に�
 
 - [05](review-2026-09-24-05-startup-desired-open-forced-on.md): 05 は 09 に依存しない。09 の A/B（T4）は 05 の修正の有無を前提条件として持つ（どちらのビルドで測るかを固定する）。起動時に ON を書き、ImmCross の窓へフォーカスが移ると強制OFFが OFF を書く往復は、05 と T3 の両方に関わる。
 - [08](review-2026-09-24-08-open-close-fixed-set-vs-custom-keymap.md) → 09: 08 の開閉書き込み固定セットの結論を、T5 の棚卸し表の分類に反映する。
+  - **反映（2026-09-28）**: 08 の結論は ADR-199 で確定済み。開閉軸の能動書き込みは、(1) 役割が Toggle と判定されたキー（0xF3/0xF4・F13〜F24・無変換/変換の単独タップ・GJI の 0x19）、(2) awase 自身の `keys.ime_on/ime_off` 設定のキー、(3) GJI 以外の 0x19（`hook.rs` の静的 Toggle、MS-IME 本体は固定トグルと実機確認済み、互換モードの非対称は ADR-202 T16-7 で別途）の3系統に整理された。固定セットを VK で無条件に書く経路は撤去済み（`is_open_toggle_for` 撤去、`architecture_guard` が再出現を監視）。
 - [10](review-2026-09-24-10-adr-status-and-stale-docs-sync.md): A-5（領域A撤去の記録が ADR-179 に無い）が C-2 の「未確認」の原因。09 は 10 A-5 が ADR-179 に書く「領域A・C の撤去」節を参照し、09 の A/B 結果はその節へ戻す（双方向）。`set_ime_mode`（`ime.rs:1733`）のデッドコードは 10 の B-6 へ渡す。**要追随（09 の担当外）**: 10 B-6 には現在 `set_ime_mode` の行が無いので1行加える。10 `:155` の「09 の `related_adr: ADR-178`」は 09 側で既に外しているので 10 側で削る。
 - [11](review-2026-09-24-11-low-priority-backlog.md): **要追随（09 の担当外）**: 11 `:57` の「conv 軸の書き込みは `ime.rs:1742` の `set_ime_mode_for_target` 呼び出しも含む（09）」は 09 の結論と逆。「`ime.rs:1742` は呼び出し元ゼロの `set_ime_mode` 内の委譲で独立経路ではない（09、デッドコードとして 10 B-6 へ）」に直す。
 
