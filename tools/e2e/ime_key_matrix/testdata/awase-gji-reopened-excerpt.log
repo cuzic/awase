@@ -1,2 +1,16 @@
 2026-09-29T02:34:13.482914Z  INFO awase_windows::app::bootstrap: Keyboard Layout Emulator starting... (log → D:\a\awase\awase\dist\awase.log)
 2026-09-29T02:34:27.479367Z DEBUG awase::journal: gji fsm transition seq=39 elapsed_ms=13640 trigger="Reopen(BeliefSync:on-key)(gji_idle_ms=229062)" state_before="OffCold" state_after="OnCold(Long)"
+2026-09-29T02:34:30.861035Z DEBUG awase_windows::platform: [gji-fsm] StartComposition (candidate SHOW)
+2026-09-29T02:34:30.861070Z DEBUG gji_on_event{event=StartComposition}: awase_windows::tsf::gji_fsm: [gji-fsm] StartComposition: OnWarm → OnComposing(AlreadyWarm)
+2026-09-29T02:34:30.861115Z DEBUG awase::journal: gji fsm transition seq=80 elapsed_ms=17022 trigger="StartComposition(candidate SHOW)" state_before="OnWarm" state_after="OnComposing(Warm)"
+2026-09-29T02:34:36.287782Z DEBUG awase::journal: gji fsm transition seq=109 elapsed_ms=22448 trigger="Reopen(BeliefSync:on-key)(gji_idle_ms=3109)" state_before="OnWarm" state_after="OnCold(Short)"
+2026-09-29T02:34:37.103593Z DEBUG awase_windows::platform: [gji-fsm] StartComposition (candidate SHOW)
+2026-09-29T02:34:37.103613Z DEBUG gji_on_event{event=StartComposition}: awase_windows::tsf::gji_fsm: [gji-fsm] StartComposition: OnWarm → OnComposing(AlreadyWarm)
+2026-09-29T02:34:37.103673Z DEBUG awase::journal: gji fsm transition seq=125 elapsed_ms=23264 trigger="StartComposition(candidate SHOW)" state_before="OnWarm" state_after="OnComposing(Warm)"
+2026-09-29T02:34:40.344594Z DEBUG execute_one{generation=None}: awase_windows::platform: [gji-fsm] StartComposition (candidate SHOW)
+2026-09-29T02:34:40.344634Z DEBUG execute_one{generation=None}:gji_on_event{event=StartComposition}: awase_windows::tsf::gji_fsm: [gji-fsm] StartComposition: OnWarm → OnComposing(AlreadyWarm)
+2026-09-29T02:34:40.344764Z DEBUG awase::journal: gji fsm transition seq=162 elapsed_ms=26505 trigger="StartComposition(candidate SHOW)" state_before="OnWarm" state_after="OnComposing(Warm)"
+2026-09-29T02:34:43.538525Z DEBUG execute_one{generation=None}: awase_windows::platform: [gji-fsm] StartComposition (candidate SHOW)
+2026-09-29T02:34:43.538544Z DEBUG execute_one{generation=None}:gji_on_event{event=StartComposition}: awase_windows::tsf::gji_fsm: [gji-fsm] StartComposition: OnWarm → OnComposing(AlreadyWarm)
+2026-09-29T02:34:43.538627Z DEBUG awase::journal: gji fsm transition seq=178 elapsed_ms=29699 trigger="StartComposition(candidate SHOW)" state_before="OnWarm" state_after="OnComposing(Warm)"
+2026-09-29T02:35:07.278770Z DEBUG awase::journal: gji fsm transition seq=295 elapsed_ms=53439 trigger="Reopen(BeliefSync:on-key)(gji_idle_ms=3125)" state_before="OnWarm" state_after="OnCold(Short)"

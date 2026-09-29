@@ -111,7 +111,11 @@ class GjiStuckOffCold(unittest.TestCase):
         self.assertEqual(r["counts"]["i4_gji_fsm_off_cold_composition"], 2)
 
     def test_reopened_log_has_none(self):
-        r = ci.analyze(read("awase-gji-reopened-excerpt.log"), 10)
+        lines = read("awase-gji-reopened-excerpt.log")
+        # 正常な StartComposition(OnWarm/OnCold → OnComposing)の行を含む抜粋。何もしなくても0になる
+        # 空の fixture ではなく、正規表現が正常な StartComposition を誤って数えないことまで固定する。
+        self.assertTrue(any("StartComposition" in l for l in lines))
+        r = ci.analyze(lines, 10)
         self.assertEqual(r["counts"]["i4_gji_fsm_off_cold_composition"], 0)
 
     def test_stuck_log_fails_the_zero_limit(self):
