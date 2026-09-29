@@ -72,6 +72,13 @@ pub struct Engine {
     /// 直近の `on_timeout` でソロ連打緊急 OFF が発動したかの 1 ショットフラグ。
     /// Platform 層がトレイ通知を出すかどうかの判定に使う（`take_solo_off_notification`）。
     solo_off_notify: bool,
+    /// ADR-206: Phase 1（特殊キー照合）で KeyDown を Consume した**親指キー**の VK。
+    /// 最初の Down で開閉を書くとエンジンが活性化するため、自動リピートの Down は Phase 1 に来ず
+    /// FSM に新しい PendingThumb として入り、離した時に `forced_open_action` がもう一度発火してしまう
+    /// （押して開き離して閉じる二重トグル）。この印がある間の同じ VK の `was_down` Down は Phase 1 の前で
+    /// `Decision::consumed()` を返して FSM に渡さない。同じ VK の KeyUp・非リピート Down（置き直し）・
+    /// `release_pending_and_reinject`（flush・フォーカス変更）で更新/消去する。印が残っても失われるのは押下1回で、永続しない。
+    phase1_held: Option<VkCode>,
 }
 
 impl Engine {
@@ -84,6 +91,7 @@ impl Engine {
             lifecycle: KeyLifecycle::new(),
             prev_activation: ActivationState::Inactive(InactiveReason::UserDisabled),
             solo_off_notify: false,
+            phase1_held: None,
         }
     }
 
@@ -157,18 +165,6 @@ impl Engine {
         self.adapter.set_muhenkan_solo_tap_dedicated_fn_key(vk);
     }
 
-    /// ADR-153 決定1: 無変換単独タップの IME ON/OFF/Toggle を、GJI/MS-IME
-    /// 自動検出に頼らずユーザーが直接指定する明示config
-    /// （`GeneralConfig::muhenkan_solo_tap_ime_action`）を設定する。
-    pub const fn set_muhenkan_solo_tap_ime_action(&mut self, action: Option<ShadowImeAction>) {
-        self.adapter.set_muhenkan_solo_tap_ime_action(action);
-    }
-
-    /// `set_muhenkan_solo_tap_ime_action` と対称（変換キー用）。
-    pub const fn set_henkan_solo_tap_ime_action(&mut self, action: Option<ShadowImeAction>) {
-        self.adapter.set_henkan_solo_tap_ime_action(action);
-    }
-
     /// ADR-192 決定3b: Platform 層で bare `keys.ime_*` と分類した
     /// 無変換/変換の強制 open 軸操作を設定する。
     pub const fn set_thumb_forced_open_actions(
@@ -185,20 +181,6 @@ impl Engine {
         &self,
     ) -> (Option<ShadowImeAction>, Option<ShadowImeAction>) {
         self.adapter.thumb_forced_open_actions()
-    }
-
-    /// `crates/awase-windows::runtime::key_pipeline::kp_stage_shadow_ime_toggle`
-    /// （ケース2/3、belief OFF側）がGJI/MS-IME自動検出の成否に関わらず
-    /// 明示config自体を読むためのgetter。
-    #[must_use]
-    pub const fn muhenkan_solo_tap_ime_action(&self) -> Option<ShadowImeAction> {
-        self.adapter.muhenkan_solo_tap_ime_action()
-    }
-
-    /// `muhenkan_solo_tap_ime_action` と対称（変換キー用）。
-    #[must_use]
-    pub const fn henkan_solo_tap_ime_action(&self) -> Option<ShadowImeAction> {
-        self.adapter.henkan_solo_tap_ime_action()
     }
 
     /// 修飾なしの `vk` が、明示された IME 制御コンボ（`ime_on`/`ime_off`/`ime_toggle`、自動検出トグル）に
@@ -327,6 +309,7 @@ impl Engine {
         // take_key_up_duty は既に空になった active_keys から UpDuty::None を
         // 返し、Engine が非活性であれば生の KeyUp がそのまま OS へ通ってしまう。
         let pending_key_ups = self.lifecycle.flush_pending_key_ups();
+        self.phase1_held = None;
         for evt in pending_key_ups {
             if !released_vks.contains(&evt.vk_code) {
                 effects.push(Effect::Input(InputEffect::ReinjectKey(evt)));
@@ -470,6 +453,9 @@ impl Engine {
         let up_duty = if is_key_down {
             UpDuty::None
         } else {
+            if self.phase1_held == Some(event.vk_code) {
+                self.phase1_held = None;
+            }
             self.lifecycle.take_key_up_duty(event.vk_code)
         };
 
@@ -494,11 +480,19 @@ impl Engine {
         is_key_down: bool,
         up_duty: UpDuty,
     ) -> Decision {
+        // ADR-206: Phase 1 で Consume した親指の自動リピートは Phase 1 に閉じる（FSM に新しい PendingThumb として入れない）。
+        if is_key_down && event.was_down && self.phase1_held == Some(event.vk_code) {
+            return Decision::consumed();
+        }
+
         // Phase 1: Special keys (engine toggle + IME control)
         if is_key_down {
             if let Some(decision) = self.check_special_keys(ctx, &event) {
                 if decision.is_consumed() {
                     self.lifecycle.on_key_down_consumed(&event);
+                    if !event.was_down && Self::is_bare_thumb(&event, ctx.modifiers) {
+                        self.phase1_held = Some(event.vk_code);
+                    }
                 }
                 return decision;
             }
@@ -899,6 +893,45 @@ impl Engine {
                     .then(|| self.match_ime_toggle_auto(ctx, event))
                     .flatten()
             })
+            .or_else(|| {
+                // ADR-206: 自動リピートの Down は指令を作らない（`check_special_keys` が Consume だけ返す）。
+                (!event.was_down)
+                    .then(|| self.thumb_open_role_action(ctx, event))
+                    .flatten()
+                    .map(Self::special_match_of_open_action)
+            })
+    }
+
+    /// ADR-206: エンジン非活性（IME OFF、または開いていても英数等の `NotRomajiInput`）のとき、
+    /// 開閉の役割（IME 設定由来のトグル、または bare `keys.ime_*`）を持つ親指キーの単独押下が要求する open 軸操作。
+    /// 生キーを IME に通さず、awase が belief に従う絶対指定の `SetOpen` を1回書くための入口
+    /// （エンジン活性側は FSM の KeyUp 解決＝`forced_open_action`）。
+    ///
+    /// ユーザーがエンジンを無効化している間・日本語 IME でない間・`keys.ime_detect` と重なるキー
+    /// （`sync_direction`、`match_event` と同じ二重処理の防止）・専用 Fn キー設定済みの無変換は対象外（受動）。
+    /// bare `keys.ime_*` は `match_event` が先に一致するので、ここに来るのは実質、役割由来だけ。
+    fn thumb_open_role_action(
+        &self,
+        ctx: &InputContext,
+        event: &RawKeyEvent,
+    ) -> Option<ShadowImeAction> {
+        if self.compute_active(ctx)
+            || !ctx.is_japanese_ime
+            || !self.adapter.is_enabled()
+            || !Self::is_bare_thumb(event, ctx.modifiers)
+            || event.ime_relevance.sync_direction.is_some()
+        {
+            return None;
+        }
+        self.adapter.thumb_open_role_action(event.vk_code)
+    }
+
+    const fn special_match_of_open_action(action: ShadowImeAction) -> SpecialKeyMatch {
+        match action {
+            ShadowImeAction::TurnOn => SpecialKeyMatch::ImeOn,
+            ShadowImeAction::TurnOff => SpecialKeyMatch::ImeOff,
+            ShadowImeAction::Toggle => SpecialKeyMatch::ImeToggle,
+        }
     }
 
     /// 修飾キーを伴わない親指キーの**物理**単独押下か。Phase 1/Phase 1.5 の
@@ -1032,6 +1065,11 @@ impl Engine {
 
     /// 変換/無変換系の特殊キーを一括チェックし、一致した場合は状態変更して結果を返す。
     fn check_special_keys(&mut self, ctx: &InputContext, event: &RawKeyEvent) -> Option<Decision> {
+        // ADR-206 不変条件: 自動リピートの Down は開閉の指令を作らない。`phase1_held` が flush 等で消えた後でも、
+        // 役割由来の入口ではリピートを Consume するだけにする（生キーを IME に通さず、二重に書かない）。
+        if event.was_down && self.thumb_open_role_action(ctx, event).is_some() {
+            return Some(Decision::consumed());
+        }
         let m = self.match_special_keys(ctx, event)?;
         Some(self.apply_special_key_match(&m, ctx))
     }
