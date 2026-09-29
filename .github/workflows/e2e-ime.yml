@@ -586,6 +586,25 @@ jobs:
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 5
 
+      # ADR-199 T1(d) 再確認(検証専用ブランチ、develop にはマージしない): 互換モードを触っていない既定の環境で NoTsf3Override2 が無いかを、何も書く前に読む。
+      - name: T1(d) 互換モード(NoTsf3Override2)の既定状態を読む
+        if: matrix.cfg.ime == 'msime'
+        shell: pwsh
+        run: |
+          $tsfRoot = 'HKCU:\SOFTWARE\Microsoft\Input\TSF\Tsf3Override'
+          $tsfBase = "$tsfRoot\{03b5835f-f03c-411b-9ce2-aa23e1171e36}"
+          "T1D Tsf3Override root exists: $(Test-Path $tsfRoot)"
+          if (Test-Path $tsfRoot) { "T1D Tsf3Override subkeys: $((Get-ChildItem $tsfRoot | ForEach-Object { $_.PSChildName }) -join ',')" }
+          "T1D Tsf3Override MS-IME key exists: $(Test-Path $tsfBase)"
+          $v = try { (Get-ItemProperty $tsfBase -Name NoTsf3Override2 -ErrorAction Stop).NoTsf3Override2 } catch { '(none)' }
+          "T1D NoTsf3Override2 value: $v"
+          "T1D IMEJP MSIME key exists: $(Test-Path 'HKCU:\Software\Microsoft\IME\15.0\IMEJP\MSIME')"
+          $tip = Test-Path 'HKLM:\SOFTWARE\Microsoft\CTF\TIP\{03B5835F-F03C-411B-9CE2-AA23E1171E36}'
+          "T1D MS-IME TIP registered: $tip"
+          Start-Sleep -Seconds 10
+          $v2 = try { (Get-ItemProperty $tsfBase -Name NoTsf3Override2 -ErrorAction Stop).NoTsf3Override2 } catch { '(none)' }
+          "T1D NoTsf3Override2 value after 10s: $v2 (key exists: $(Test-Path $tsfBase))"
+
       # ADR-197: MS-IME「以前のバージョンのMicrosoft IMEを使う」互換モード限定の詳細キーカスタマイズ(旧UI)を
       # 再現する。2026-09-23 dragonflyg4実機の StyleList\Custom\key の実測データ(無変換=CE CD CD CD CD CD、
       # 変換=CE CD CD CD CD CD、1列目=直接入力状態での機能コード="IMEオン/オフ"トグル)と同じ2レコードだけを
