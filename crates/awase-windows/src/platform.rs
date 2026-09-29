@@ -594,30 +594,22 @@ impl WindowsPlatform {
 
     // ── 物理 F2 の cold 化 ─────────────────────────────────────────────────────
 
-    /// 物理 F2 (VK_DBE_HIRAGANA) KeyDown の cold 化・GjiFsm 通知・warmup 基準点の latch。
+    /// 物理 F2 (VK_DBE_HIRAGANA) KeyDown の cold 化・GjiFsm 通知。
     ///
     /// 物理 F2 は素通し（BUG-173）なので `VK_IME_ON` は送らない（送ると F2 と VK_IME_ON の
-    /// SendInput 2連送になり、ADR-149/BUG-113 の「@」の必要条件を作る）。
+    /// SendInput 2連送になり、ADR-149/BUG-113 の「@」の必要条件を作る）。`eager_warmup_sent_ms` の latch もしない
+    /// （唯一の読み手 `compute_focus_probe_grace` はフォーカス変更で 0 に戻された値をフォーカス直後の最初の打鍵で読むため、
+    /// F2 の latch は読まれない。BUG-06 の「新F2から500ms待機」自体も 2026-07-18 に撤去済み。Opus round2 R2-6）。
     /// - TSF mode: `GjiNativeF2Consumed` を使うことで GjiFsm が Medium/Long cold 状態を維持できる
     ///   （`GjiCompositionReset` だと Short に降格して Long cold の forces_prepend_f2/is_long_cold が失われる）。
-    ///   `mark_composition_cold(NativeF2Consumed)` が 0 に戻した `eager_warmup_sent_ms` は latch で新しい F2 の時刻に保つ
-    ///   （BUG-06 の派生形の回避）。
     /// - 非 TSF・非 warm: cold mark と GjiFsm reset のみ（Chrome/Win32 向け）。
     /// - 非 TSF・warm: 何もしない（BUG-31: warm 中の無関係な物理 IME キーで cold 化すると、直後の無関係な
     ///   タイピングが cold-start 経路に落ちて GJI 候補ウィンドウ可視性のレースで文字が消える）。
-    ///
-    /// 唯一の呼び出し元（`key_pipeline.rs` の物理 F2 down 処理）は `warmup_ime_on()` 経由（ゲート適用済み）を渡すため
-    /// `origin=WarmupOrigin::Gated` 固定。
-    pub(crate) fn composition_native_f2_down(
-        &mut self,
-        warmup_ime_on: awase::platform::WarmupImeOn,
-    ) {
+    pub(crate) fn composition_native_f2_down(&mut self) {
         if self.output.is_tsf_mode() {
             self.output
                 .mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
             self.gji_on_native_f2_consumed();
-            self.output
-                .latch_eager_warmup_without_send(warmup_ime_on, crate::output::WarmupOrigin::Gated);
         } else if !self.output.is_composition_warm() {
             self.output
                 .mark_composition_cold(crate::output::ColdReason::F2NonTsf);
@@ -782,7 +774,7 @@ impl WindowsPlatform {
 
     /// IME ON/OFF やフォーカス変化なしに composition context が無効化されたことを GjiFsm に通知する。
     ///
-    /// `on_passthrough_key` の PassthroughKey / F2NonTsf や
+    /// `on_reinject_key`（確定キー）・`composition_native_f2_down`（非 TSF の F2）や
     /// `mark_cold_raw_tsf`（`step_probe` 経由）から呼ぶ。
     pub(crate) fn gji_on_composition_reset(&mut self) {
         // `gji_on_focus_change` と同じパターン: 実測 idle を観測して渡す。

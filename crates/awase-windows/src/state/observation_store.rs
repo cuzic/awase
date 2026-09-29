@@ -692,9 +692,21 @@ impl ObservationStore {
     /// `platform_state.rs`）専用であり、actuation の読み戻しではない。
     #[must_use]
     pub fn most_recent_trusted(&self, now: Instant) -> Option<&ImeObservation> {
+        self.most_recent_trusted_excluding(now, &[])
+    }
+
+    /// [`most_recent_trusted`] と同じだが、指定した `ObservationSource` 群を選ぶ前に除外する。
+    /// drift correction が `ConvOpenInference` を根拠にしない（BUG-173 追補3）ために、選んだ後に捨てる形にすると
+    /// 同じ Medium の他ソース（`ObserverPoll` 等）の正当な観測まで覆い隠すので、選ぶ前に除外する（Opus round2 R2-2）。
+    #[must_use]
+    pub fn most_recent_trusted_excluding(
+        &self,
+        now: Instant,
+        exclude: &[ObservationSource],
+    ) -> Option<&ImeObservation> {
         self.per_source
             .iter()
-            .filter(|o| !o.is_expired(now))
+            .filter(|o| !o.is_expired(now) && !exclude.contains(&o.source))
             .max_by(|a, b| a.confidence.cmp(&b.confidence).then(a.at.cmp(&b.at)))
     }
 

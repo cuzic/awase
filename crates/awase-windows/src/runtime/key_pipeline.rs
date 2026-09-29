@@ -2384,12 +2384,7 @@ impl Runtime {
             && !event.was_down
             && !crate::gji_charset_autodetect::is_configured_thumb_key(event.vk_code)
         {
-            // ADR-098 決定1-b: 生値ではなく warmup_ime_on()（`applied ?? belief`）。
-            let warmup_ime_on = self
-                .platform_state
-                .ime
-                .warmup_ime_on(std::time::Instant::now());
-            self.platform.composition_native_f2_down(warmup_ime_on);
+            self.platform.composition_native_f2_down();
         }
 
         self.kp_stage_kana_lock_warn(&decision);

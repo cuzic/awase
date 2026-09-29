@@ -1175,13 +1175,9 @@ impl ImeStateHub {
     /// 戻り値: 補正が必要な場合 `Some(DriftCorrection { .. })`。
     /// `explicit_intent`: [`Self::explicit_intent`] の値をそのまま渡す。
     ///
-    /// BUG-113残置課題（2026-09-06）: 従来 `(bool, bool, u64)` タプルだったが、
-    /// `ir_apply_drift_correction`側でconv由来drift（`ConvOpenInference`）を
-    /// 「明示意図エピソードあたり1送信」に絞るために`source`/`confidence`を
-    /// 追加した構造体に変えた。**判定ロジック自体は1行も変えていない**——
-    /// `resolve_warmup_ime_on`が同じ述語を`matches!(.., Some(DriftCorrection
-    /// { desired: false, observed: true, .. }))`として使うため、旧
-    /// `Some((false, true, _))`とビット同値であること（ADR-132/INV-B1'）。
+    /// `ConvOpenInference` は根拠にしない（BUG-173 追補3。`state/drift_correction.rs` 参照）。
+    /// `resolve_warmup_ime_on` が同じ述語を `matches!(.., Some(DriftCorrection { desired: false, observed: true, .. }))`
+    /// として使う（ADR-132/INV-B1'）。
     pub(crate) fn check_drift_correction(
         &self,
         now: std::time::Instant,
@@ -2359,28 +2355,21 @@ mod tests {
         );
     }
 
-    // BUG-19 再発の実ログ相当: last_intent=Some(false) (explicit_intent==desired) なので
-    // threshold=0 となり、conv の一発観測直後でも正しい方向 (false の再送) が返る。
+    // BUG-173 追補3（D4）: conv 由来の open 推論は、明示意図（ユーザーの IME OFF）と食い違っても drift correction を
+    // 発火させない（旧: BUG-19 再発対策として threshold=0 で即時に false を再送していた）。GJI×TsfNative では IME を
+    // 閉じても conv の NATIVE が残り、この推測は `VK_IME_OFF` を何度送っても収束しなかった。
     #[test]
-    fn check_drift_correction_fires_immediately_when_explicit_off_intent_conflicts_with_conv_inference(
-    ) {
+    fn check_drift_correction_ignores_conv_inference_even_when_explicit_off_intent_conflicts() {
         let mut ps = ps_with_shadow(false, Some(UserIntentSource::PhysicalImeKey), true);
         ps.ime
             .report_conv_open_inference(true, ConvSyncReason::NativeToggleShadowOff, TickMs(0));
         let now = std::time::Instant::now();
         let explicit_intent = ps.ime.explicit_intent();
-        match ps.ime.check_drift_correction(now, explicit_intent) {
-            Some(DriftCorrection {
-                desired, observed, ..
-            }) => {
-                assert!(!desired, "desired は false のまま保持されている");
-                assert!(observed, "conv 推論が observed=true として記録されている");
-            }
-            None => panic!(
-                "explicit intent が desired と一致する場合は即時 (threshold=0) で \
-                 補正が返るべき"
-            ),
-        }
+        assert_eq!(
+            ps.ime.check_drift_correction(now, explicit_intent),
+            None,
+            "conv 推論だけを根拠にした drift は、明示意図があっても補正を発火させない"
+        );
     }
 
     // 明示意図が一度も無い（起動直後等）状態では、conv 推論単独で drift correction
@@ -2424,38 +2413,8 @@ mod tests {
         );
     }
 
-    // GJI 候補ポップアップの観測が古くなった場合 (DRIFT_CORRECTION_OBS_MAX_AGE_MS 超過)
-    // は、明示意図があっても採用しない（BUG-20 の max_age ガードが ConvOpenInference
-    // にも同じく効くことの確認）。
-    #[test]
-    fn check_drift_correction_ignores_stale_conv_inference_beyond_max_age() {
-        let mut ps = ps_with_shadow(false, Some(UserIntentSource::PhysicalImeKey), true);
-        ps.ime
-            .report_conv_open_inference(true, ConvSyncReason::NativeToggleShadowOff, TickMs(0));
-        let stale_at = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_millis(
-                crate::tuning::DRIFT_CORRECTION_OBS_MAX_AGE_MS + 200,
-            ))
-            .expect("test instant can be backdated");
-        ps.ime
-            .shadow_model
-            .observations
-            .per_source
-            .conv_open_inference
-            .as_mut()
-            .unwrap()
-            .at = stale_at;
-        let now = std::time::Instant::now();
-        let explicit_intent = ps.ime.explicit_intent();
-        assert_eq!(
-            ps.ime.check_drift_correction(now, explicit_intent),
-            None,
-            "max_age を超えた観測は無視される"
-        );
-    }
-
     // BUG-110 追補7（issue #189）: `HeuristicDefault`（観測ゼロの安全デフォルト）も
-    // `ConvOpenInference` と全く同じ理由で、明示意図が無い間は単独で drift
+    // （当時の `ConvOpenInference` と全く同じ理由で）、明示意図が無い間は単独で drift
     // correction を発火させない。拡張前は、Word 等で明示 OFF → Chrome へ
     // フォーカス移動 → `reset_stale_ime_on_for_imm_broken` が `HeuristicDefault(true)`
     // を記録、という経路で `check_drift_correction` が
