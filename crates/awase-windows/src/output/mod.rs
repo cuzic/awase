@@ -1019,6 +1019,17 @@ impl Output {
         self.warmup_coord.needs_f2_probe()
     }
 
+    /// ADR-203 (i): `GjiFsm` が `OffCold` か。
+    pub(crate) fn gji_is_off_cold(&self) -> bool {
+        self.warmup_coord.is_off_cold()
+    }
+
+    /// ADR-203 (i): probe または raw recovery/reinit が実行中か（`is_probe_or_recovery_blocking(true)`
+    /// と同一条件）。実行中に `ImeOn` を出すと probe_id の相関が崩れるため level 突合は行わない。
+    pub(crate) fn probe_or_recovery_in_flight(&self) -> bool {
+        self.is_probe_or_recovery_blocking(true)
+    }
+
     /// `WM_IME_KIND_CHANGED` がメインスレッドで受信されたときに呼ぶこと。
     pub(crate) fn set_active_ime_kind(&self, kind: crate::tsf::observer::ActiveImeKind) {
         self.warmup_coord.set_active_ime_kind(kind);

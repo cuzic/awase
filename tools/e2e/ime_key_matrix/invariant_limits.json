@@ -5,7 +5,8 @@
     "上限を上げる・新しく足すときは、必ず対応する BUG 番号(bug)と実測(measured)を書くこと。BUG が直ったら max を 0 にする。",
     "実測: CI windows-latest・GJI+ATOK。当初の上限は run 36103384502(f2a875cd)・36104015748(c82b1d3d)の計9本。",
     "BUG-163 の修正（#318・#321）後の run 36140615943（baseline・atok-passthrough-cold）で i1 は 0 件になったので、i1 の上限を 0 に下げた。",
-    "MS-IME 系シナリオ(sc-*-msime-*)は GJI+ATOK と別に config_overrides で上限を持つ(未実測の既定値1では毎回FAILになるため)。"
+    "MS-IME 系シナリオ(sc-*-msime-*)は GJI+ATOK と別に config_overrides で上限を持つ(未実測の既定値1では毎回FAILになるため)。",
+    "i4(GjiFsm が OffCold のまま StartComposition を受けた回数、BUG-170/ADR-203)は、修正後の run 36513008912(baseline・atok-passthrough-cold 各3回)で 0 件、ts-*(GJI、7 run)・sc-kanji-role-toggle・sc-t1e-chrome-f13 の既存 artifact でも 0 件。修正前は baseline 2 件・atok-passthrough-cold 7 件(run 36506566832)。"
   ],
   "window_s": 10,
   "measured_configs": [
@@ -30,6 +31,12 @@
       "observed_min": 1,
       "bug": "BUG-162",
       "measured": "9本すべて 1 件(ime open applied seq=… outcome=\"Unwarranted\" reason=\"EngineDecision\"、約14秒後)。check.py はこれを span 由来の行と合わせて 2 件と数える"
+    },
+    "i4_gji_fsm_off_cold_composition": {
+      "max": 0,
+      "observed_min": 0,
+      "bug": "BUG-170",
+      "measured": "修正後(run 36513008912、baseline・atok-passthrough-cold 各3回)で 0 件。修正前(develop@e174c6f6、run 36506566832)は 2 件と 7 件。ImeOff 後の正常な OffCold では出ない(sc-t1e-chrome-f13 の OffCold->OffCold ×4 でも 0 件)"
     }
   },
   "config_overrides": {

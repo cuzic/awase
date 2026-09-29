@@ -5442,3 +5442,97 @@ fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
          record_key_input(journal) → kp_stage_execute（BUG-173追補: journal の physical と実配送を一致させる）"
     );
 }
+
+/// ADR-203 決定9 / BUG-170: `GjiFsm` へ ON/開き直しを同期する入口の一覧を固定する。
+///
+/// BUG-170 は「belief だけが ON になり `GjiFsm` が `OffCold` に取り残される」同期漏れで、
+/// 入口ごとに点パッチを足すたびに別の入口が漏れる再発ファミリー（BUG-18/22/170）だった。
+/// 入口を宣言して件数を固定しておけば、新しい入口（または既存入口の削除）が黙って増減しない。
+/// 入口を足す/消すときは、ADR-203 の決定表（`docs/adr/203-*.md`）と一緒にこの表を更新すること。
+///
+/// - `gji_on_ime_on(`: receipt（`sync_gji` の `OnImeOn` 腕）・フォーカス復帰の presync
+///   （`focus_tracking.rs`、BUG-18）・IME 種別同期（`message_handlers.rs`）
+/// - `gji_on_ime_off(`: receipt（`sync_gji` の `OnImeOff` 腕）のみ（OFF は awase の actuation 由来だけ）
+/// - `sync_gji(`（ungated 側の `state/gji_direct_mechanism.rs` を除く）: (i) `send_keys` の level 突合
+///   （`platform.rs`）、(ii) `kp_reopen_gji_fsm`（`key_pipeline.rs`）
+/// - `kp_reopen_gji_fsm(`: 物理キー予測 ON・shadow toggle の既に ON（no-op 分岐）・OFF→ON に倒した瞬間の3か所
+#[test]
+fn gji_fsm_sync_entry_points_are_accounted_for() {
+    let table: &[(&str, &[(&str, usize)])] = &[
+        (
+            "gji_on_ime_on(",
+            &[
+                ("src/platform.rs", 1),
+                ("src/runtime/focus_tracking.rs", 1),
+                ("src/runtime/message_handlers.rs", 1),
+            ],
+        ),
+        ("gji_on_ime_off(", &[("src/platform.rs", 1)]),
+        (
+            "sync_gji(",
+            &[("src/platform.rs", 1), ("src/runtime/key_pipeline.rs", 1)],
+        ),
+        ("kp_reopen_gji_fsm(", &[("src/runtime/key_pipeline.rs", 3)]),
+    ];
+    for (needle, expected) in table {
+        for rel in list_src_files() {
+            if rel == "src/state/gji_direct_mechanism.rs" && *needle == "sync_gji(" {
+                continue; // receipt.settle の sink 呼び出し（INV-43）
+            }
+            let content = read_crate_file(&rel);
+            let count = count_real_calls(production_code_only(&content), needle);
+            let want = expected
+                .iter()
+                .find(|(f, _)| *f == rel)
+                .map_or(0, |(_, n)| *n);
+            assert_eq!(
+                count, want,
+                "{rel}: `{needle}` の呼び出し数が {count}（期待 {want}）。GjiFsm 同期の入口を増減したら \
+                 ADR-203 の決定表とこの表を更新すること（点パッチの再発防止、BUG-18/22/170）"
+            );
+        }
+    }
+}
+
+/// ADR-203 (ii): ユーザーの IME-ON 経路（`write_sync_key`/`write_physical_key`、既存の
+/// `user_ime_on_paths_are_paired_with_eisu_reset` が数える2か所）は、`GjiFsm` の開き直し
+/// （`kp_reopen_gji_fsm`）とも対で配線されていること。eisu 救済と同じく「新しい user IME-ON 経路を
+/// 足したら対で配線し忘れる」ことの検出（BUG-170 の入口漏れの再発防止）。
+#[test]
+fn user_ime_on_paths_are_paired_with_gji_reopen() {
+    let content = read_crate_file("src/runtime/key_pipeline.rs");
+    let prod = production_code_only(&content);
+    let on_paths =
+        count_real_calls(prod, "write_sync_key(") + count_real_calls(prod, "write_physical_key(");
+    let reopens = count_real_calls(prod, "kp_reopen_gji_fsm(");
+    assert_eq!(
+        on_paths, 2,
+        "user IME-ON 書き込み経路の数が変わった（eisu 救済ガードと同時に更新）"
+    );
+    // shadow toggle: no-op 分岐 + 実際に倒した瞬間の2か所、加えて予測経路の1か所。
+    assert!(
+        reopens >= 3,
+        "kp_reopen_gji_fsm の呼び出しが {reopens} 件。shadow toggle の2分岐と予測経路に必要"
+    );
+}
+
+/// ADR-203 決定3（/code-review 指摘）: `GjiSyncOrigin` は `GjiFsmSync::origin()` が唯一の出所。
+/// `platform.rs` が `GjiSyncOrigin::BeliefSync` を直書きしてよいのは、Unicode long-cold の reinit を
+/// 抑止する判定（`dispatch_gji_response_from` の StartProbe 分岐）と、`gji_sync_from_belief` の
+/// `debug_assert!`（belief 起点専用であることの表明）の2か所だけ。同期の呼び出し側
+/// （`gji_sync_from_belief`）は `sync.origin()` を渡す。直書きに戻ると、新しい variant の起点の
+/// 取り違え（`origin()` のユニットテストは実経路を通らない）がテストで検出できなくなる。
+#[test]
+fn gji_sync_origin_comes_from_the_sync_variant() {
+    let content = read_crate_file("src/platform.rs");
+    let prod = production_code_only(&content);
+    assert_eq!(
+        count_real_calls(prod, "GjiSyncOrigin::BeliefSync"),
+        2,
+        "platform.rs の `GjiSyncOrigin::BeliefSync` 直書きは reinit 抑止判定と debug_assert の2か所だけ"
+    );
+    assert!(
+        count_real_calls(prod, "sync.origin()") >= 2,
+        "gji_sync_from_belief は sync.origin() を dispatch_gji_response_from に渡すこと"
+    );
+}

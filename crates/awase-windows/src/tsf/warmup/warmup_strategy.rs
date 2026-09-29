@@ -64,6 +64,12 @@ pub(crate) trait ImeWarmupStrategy {
         true
     }
 
+    /// `GjiFsm` が `OffCold`（IME OFF 扱い）か。MS-IME 戦略は FSM を持たないので常に `false`。
+    /// ADR-203 (i) の level 突合が使う。
+    fn is_off_cold(&self) -> bool {
+        false
+    }
+
     /// 診断ログ用の現在状態ラベル。
     fn diagnostic_state_label(&self) -> String {
         "MsImeStrategy".to_owned()
@@ -73,6 +79,10 @@ pub(crate) trait ImeWarmupStrategy {
 // ── GjiFsm 実装 ───────────────────────────────────────────────────────────────
 
 impl ImeWarmupStrategy for crate::tsf::gji_fsm::GjiFsm {
+    fn is_off_cold(&self) -> bool {
+        matches!(self.state(), crate::tsf::gji_fsm::GjiState::OffCold)
+    }
+
     fn is_warm(&self) -> bool {
         use crate::tsf::gji_fsm::GjiState;
         matches!(
