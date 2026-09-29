@@ -12,10 +12,21 @@
 //! - `rich`  : 素の `RICHEDIT50W`(Msftedit。TSF text store を自前で持つ)。
 //! - `tsf`   : `RICHEDIT50W` を `Chrome_RenderWidgetHostHWND` へスーパークラス化(ADR-193)。awase から
 //!   `AppKind::TsfNative` 相当に見える決定的な入力先(親窓も `Chrome_WidgetWin_1`)。
-//! CI で安定して動かせない Chrome・Zoom・UWP は対象外(フォーカス/起動が不確定でストレスと切り分けられない)。
+//! - `chromebar` / `chromepage` : 本物の Chrome(専用プロファイル。アドレスバー / ページ内 textarea)。UI Automation で読む。
+//! - `bugreport` : 本物の `awase-settings.exe --bug-report` の「説明」欄。UI Automation で読む。
+//!
+//! 入力先ごとの差は `target.rs` の `InputTarget` に閉じ込めてある(読む・空にする・前面へ戻す・フォーカス確認・終了)。
+//! 新しい入力先は `InputTarget` を実装して `target::launch` に 1 行足すだけでよく、シナリオ側は触らない。
+//! Zoom・UWP は CI で安定して動かせない(フォーカス/起動が不確定でストレスと切り分けられない)ので対象外。
+//! 別プロセスの入力先は自プロセスの HIMC を持たないため、`--mode=drift|drift-on` は使えない(abort する)。
+//!
+//! ## 摂動(`perturb.rs`、すべて既定オフ)
+//! 連続打鍵では作れない実利用に近い状況を試行に差し込む: `--cold` / `--pause-after=N --pause-ms=MS` / `--idle=MS` /
+//! `--switch-focus` / `--start-delay=MS` / `--interrupt=off_on|off|f2` / `--settle-read`。意味は `perturb.rs` の表を参照。
+//! 指定した摂動は `config` レコードの `perturb` に記録される。
 //!
 //! ## フラグ
-//! `--form=edit|multi|rich|tsf` / `--mode=nicola|raw|drift|drift-on` / `--interval=MS`(1文字あたりの間隔。既定20) /
+//! `--form=edit|multi|rich|tsf|chromebar|chromepage|bugreport`(`--chrome-path=PATH` で Chrome を指定) / `--mode=nicola|raw|drift|drift-on` / `--interval=MS`(1文字あたりの間隔。既定20) /
 //! `--trials=N`(種別ごとの試行数。既定4。`--mode=drift` では試行回数として使う) / `--len=N`(1試行の文字数。既定40) / `--seed=S` /
 //! `--kinds=single,thumb,mixed` / `--layout=PATH`(.yab。既定 layout/nicola_keytop.yab) /
 //! `--activate-gji`(GJI/MS-IME のプロファイルを有効化。CI 用) / `--msime`(有効化する IME を Microsoft IME に) /
@@ -56,6 +67,10 @@
 #![windows_subsystem = "windows"]
 #![allow(unsafe_code)]
 
+mod perturb;
+mod target;
+mod uia;
+
 use std::io::Write as _;
 use std::sync::atomic::{AtomicIsize, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -89,8 +104,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetMessageW, GetWindowThreadProcessId, PostMessageW, PostQuitMessage, RegisterClassExW,
     SendMessageW, SetForegroundWindow, SetWindowsHookExW, ShowWindow, SwitchToThisWindow,
     TranslateMessage, CW_USEDEFAULT, GUITHREADINFO, KBDLLHOOKSTRUCT, MSG, SW_SHOW, WH_KEYBOARD_LL,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_GETTEXT, WM_GETTEXTLENGTH,
-    WM_KEYDOWN, WM_KEYUP, WM_SETTEXT, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSEXW, WS_BORDER, WS_CHILD,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_DESTROY, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN,
+    WM_KEYUP, WM_SETTEXT, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSEXW, WS_BORDER, WS_CHILD,
     WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
 };
 
@@ -213,6 +228,9 @@ enum Form {
     Multi,
     Rich,
     Tsf,
+    ChromeBar,
+    ChromePage,
+    BugReport,
 }
 
 impl Form {
@@ -222,6 +240,9 @@ impl Form {
             "multi" => Some(Self::Multi),
             "rich" => Some(Self::Rich),
             "tsf" => Some(Self::Tsf),
+            "chromebar" => Some(Self::ChromeBar),
+            "chromepage" => Some(Self::ChromePage),
+            "bugreport" => Some(Self::BugReport),
             _ => None,
         }
     }
@@ -231,6 +252,9 @@ impl Form {
             Self::Multi => "multi",
             Self::Rich => "rich",
             Self::Tsf => "tsf",
+            Self::ChromeBar => "chromebar",
+            Self::ChromePage => "chromepage",
+            Self::BugReport => "bugreport",
         }
     }
 }
@@ -281,7 +305,8 @@ fn front_and_focus(top: HWND) {
     }
 }
 
-fn create_form(form: Form) -> HWND {
+/// 自前の Win32 窓(`edit`/`multi`/`rich`/`tsf`)を作り、`TOP`/`CHILD` を設定する。
+fn create_own_window(form: Form) {
     unsafe {
         let _ = LoadLibraryW(w!("Msftedit.dll"));
         let instance = GetModuleHandleW(None).expect("module");
@@ -323,6 +348,9 @@ fn create_form(form: Form) -> HWND {
                 700,
                 240,
             ),
+            Form::ChromeBar | Form::ChromePage | Form::BugReport => {
+                unreachable!("別プロセスの入力先は target::launch が扱う")
+            }
             Form::Rich => ("RICHEDIT50W".into(), WS_BORDER.0 | ES_AUTOHSCROLL, 700, 240),
             Form::Tsf => {
                 // RICHEDIT50W をスーパークラス化して、Chrome の描画窓のクラス名で登録し直す(ADR-193)。
@@ -371,11 +399,10 @@ fn create_form(form: Form) -> HWND {
         CHILD.store(child.0 as isize, Ordering::SeqCst);
         let _ = ShowWindow(top, SW_SHOW);
         let _ = SetFocus(Some(child));
-        top
     }
 }
 
-fn read_text(h: HWND) -> String {
+fn own_read_text(h: HWND) -> String {
     unsafe {
         let len = SendMessageW(h, WM_GETTEXTLENGTH, None, None).0;
         let len = usize::try_from(len).unwrap_or(0);
@@ -391,15 +418,15 @@ fn read_text(h: HWND) -> String {
     }
 }
 
-fn clear_text(h: HWND) {
+fn own_clear_text(h: HWND) {
     unsafe {
         let empty = wide("");
         let _ = SendMessageW(h, WM_SETTEXT, None, Some(LPARAM(empty.as_ptr() as isize)));
     }
 }
 
-/// 前面窓が `top`、かつそのスレッドのフォーカスが入力欄にあるか。
-fn focus_ok() -> bool {
+/// 前面窓が `top`、かつそのスレッドのフォーカスが入力欄にあるか(自前の窓用)。
+fn own_focus_ok() -> bool {
     unsafe {
         if GetForegroundWindow() != hwnd_of(&TOP) {
             return false;
@@ -459,11 +486,100 @@ fn focus_away() -> bool {
     }
 }
 
-fn refocus() {
+fn own_refocus() {
     unsafe {
         let _ = PostMessageW(Some(hwnd_of(&TOP)), WM_TS_FRONT, WPARAM(0), LPARAM(0));
     }
     sleep_ms(400);
+}
+
+// 以降のシナリオは入力先の種類を知らず、これらの薄いラッパー越しに `InputTarget` を使う。
+
+static TARGET: OnceLock<Box<dyn target::InputTarget>> = OnceLock::new();
+
+fn target() -> &'static dyn target::InputTarget {
+    TARGET.get().expect("入力先は main で起動済み").as_ref()
+}
+
+/// `_h` は自前の窓の HWND を渡していた従来の呼び出し形を保つための引数(入力先が決めるので使わない)。
+fn read_text(_h: HWND) -> String {
+    target().read()
+}
+
+fn clear_text(_h: HWND) {
+    target().clear();
+}
+
+fn focus_ok() -> bool {
+    target().focus_ok()
+}
+
+fn refocus() {
+    target().refocus();
+}
+
+/// 別プロセスの窓を前面化する(前面スレッドへ `AttachThreadInput`。入力欄への `SetFocus` は行わない)。
+fn raise_foreign(top: HWND) {
+    unsafe {
+        let fg = GetForegroundWindow();
+        let fg_tid = if fg.0.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(fg, None)
+        };
+        let my_tid = GetCurrentThreadId();
+        let attached =
+            fg_tid != 0 && fg_tid != my_tid && AttachThreadInput(my_tid, fg_tid, true).as_bool();
+        let _ = BringWindowToTop(top);
+        let _ = SetForegroundWindow(top);
+        if attached {
+            let _ = AttachThreadInput(my_tid, fg_tid, false);
+        }
+    }
+}
+
+/// `--switch-focus` で入力先から前面を奪う無関係な窓。メッセージループのあるメインスレッドで作る。
+static DISTRACTOR: AtomicIsize = AtomicIsize::new(0);
+
+fn create_distractor() {
+    unsafe {
+        let instance = GetModuleHandleW(None).expect("module");
+        let cls = wide("TypingStressDistractor");
+        let wc = WNDCLASSEXW {
+            cbSize: size_of::<WNDCLASSEXW>() as u32,
+            lpfnWndProc: Some(top_proc),
+            hInstance: instance.into(),
+            lpszClassName: PCWSTR(cls.as_ptr()),
+            ..Default::default()
+        };
+        RegisterClassExW(&raw const wc);
+        if let Ok(h) = CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            PCWSTR(cls.as_ptr()),
+            w!("typing stress distractor"),
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            300,
+            120,
+            None,
+            None,
+            Some(instance.into()),
+            None,
+        ) {
+            DISTRACTOR.store(h.0 as isize, Ordering::SeqCst);
+        }
+    }
+}
+
+/// 別窓へ前面を渡す。別窓が無ければ何もせず `false`。
+fn front_distractor() -> bool {
+    let h = hwnd_of(&DISTRACTOR);
+    if h.0.is_null() {
+        return false;
+    }
+    raise_foreign(h);
+    true
 }
 
 // ---------------------------------------------------------------- IME プロファイル
@@ -889,7 +1005,7 @@ fn ime_ready(raw: bool, cells: &[Vec<Cell>; 3], child: HWND) -> bool {
         sleep_ms(700);
         let text = read_text(child);
         let open = real_ime_open(child);
-        // `None`(取れない)は通す: ts-chrome* は入力欄が別プロセス(Chrome)で HIMC を取れないため。
+        // `None`(取れない)は通す: tsx-chrome* は入力欄が別プロセス(Chrome)で HIMC を取れないため。
         // 自プロセスの入力欄(edit/tsf/rich/multi)では CI で 41/41 回とも値が取れた(run 36224603306)。
         let ok = text.trim() == c.kana.to_string() && open != Some(false);
         rec(
@@ -1062,6 +1178,7 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
 
 fn worker(form: Form) {
     let child = hwnd_of(&CHILD);
+    let perturb = perturb::Perturbation::from_args();
     let mode_arg = arg_value("--mode=");
     let raw = mode_arg.as_deref() == Some("raw");
     let drift = mode_arg.as_deref() == Some("drift");
@@ -1111,7 +1228,7 @@ fn worker(form: Form) {
         &json!({"type":"config","form":form.name(),"ime":ime,"mode":if drift {"drift"} else if drift_on {"drift-on"} else if raw {"raw"} else {"nicola"},
         "interval_ms":iv_ms,"len":len,"trials":trials,"seed":seed,"kinds":kinds,
         "layout":layout_path,"cells":[cells[0].len(),cells[1].len(),cells[2].len()],
-        "child_class":class_of(child)}),
+        "child_class":class_of(child),"perturb":perturb.describe()}),
     );
     if cells.iter().any(Vec::is_empty) {
         rec(&json!({"type":"abort","reason":"候補セルが空(layout の読み取り失敗?)"}));
@@ -1139,7 +1256,11 @@ fn worker(form: Form) {
 
     // IME を ON にそろえる(OFF → ひらがな)。
     turn_ime_on(0);
-    if !ime_ready(raw, &cells, child) {
+    // --cold: 準備確認(「か」を打って確認・最大3回リトライ)を省く。この確認自体が窓への最初の実際の
+    // 確定入力になり、「起動直後にユーザーが最初に打つ文字」を素通りさせてしまうため。
+    if perturb.cold {
+        rec(&json!({"type":"ready","attempt":0,"skipped":true,"reason":"--cold"}));
+    } else if !ime_ready(raw, &cells, child) {
         rec(&json!({"type":"abort","reason":"IME/awase の準備確認に失敗(ready の text を参照)"}));
         finish();
         return;
@@ -1176,17 +1297,20 @@ fn worker(form: Form) {
                 .wrapping_add(kind.len() as u64);
             let seq = gen_sequence(kind, len, trial_seed, &cells);
             let expect = expect_string(&seq);
-            let evs = if raw {
+            let mut evs = if raw {
                 raw_events(&seq, iv_us)
             } else {
                 nicola_events(&seq, iv_us)
             };
+            perturb.apply_pause(&mut evs, iv_us);
+            perturb.before_trial(target());
             clear_text(child);
-            sleep_ms(300);
+            sleep_ms(perturb.start_delay_ms);
             if let Ok(mut g) = HOOK_EVENTS.lock() {
                 g.clear();
             }
             let stats = run_schedule(&evs);
+            perturb.after_inject(kind, t);
             // 最後の同時打鍵判定・出力の落ち着きを待ってから確定(Enter)。
             sleep_ms(300);
             // 注入したキーだけのフック到着を、確定キー(Enter)を打つ前に確定させる。
@@ -1194,7 +1318,26 @@ fn worker(form: Form) {
             sleep_ms(600);
             press(VK_RETURN, 0x1C, 50);
             sleep_ms(1200);
-            let actual = read_text(child);
+            let actual_at_1200 = read_text(child);
+            let mut actual = actual_at_1200.clone();
+            // --settle-read を付けなかったときは、読み直していない(0 ではなく null で記録する)。
+            let mut settle_ms: Option<u64> = None;
+            if perturb.settle_read {
+                // 取りこぼしか遅延かを分けるため、内容が 800ms 変わらなくなるまで(最大 8 秒)読み直す。
+                let t0 = Instant::now();
+                let mut stable_since = Instant::now();
+                while t0.elapsed() < Duration::from_secs(8)
+                    && stable_since.elapsed() < Duration::from_millis(800)
+                {
+                    sleep_ms(200);
+                    let now = read_text(child);
+                    if now != actual {
+                        actual = now;
+                        stable_since = Instant::now();
+                    }
+                }
+                settle_ms = Some(u64::try_from(t0.elapsed().as_millis()).unwrap_or(u64::MAX));
+            }
             let (seen, deliv_p50, deliv_max) = delivery_stats(&stats, &hook);
             let downs = hook.iter().filter(|h| h.down).count();
             let mut late = stats.late_us.clone();
@@ -1213,7 +1356,8 @@ fn worker(form: Form) {
                 .collect();
             rec(
                 &json!({"type":"trial","kind":kind,"n":t,"chars":seq.len(),"expect":expect,
-                "actual":actual,"keys":seq_desc.join(" "),"focus_ok":focus_ok()}),
+                "actual":actual,"actual_at_1200ms":actual_at_1200,"settle_ms":settle_ms,
+                "keys":seq_desc.join(" "),"focus_ok":focus_ok()}),
             );
             rec(
                 &json!({"type":"inject","kind":kind,"n":t,"planned":stats.planned,"sent_ok":stats.sent_ok,
@@ -1232,8 +1376,10 @@ fn worker(form: Form) {
 fn finish() {
     rec(&json!({"type":"done"}));
     log("=== 完了 ===");
-    unsafe {
-        let _ = PostMessageW(Some(hwnd_of(&TOP)), WM_CLOSE, WPARAM(0), LPARAM(0));
+    target().shutdown();
+    if !target().owns_himc() {
+        // 別プロセスの入力先では自前のメッセージループが閉じ窓で終わらないので、ここで終える。
+        std::process::exit(0);
     }
 }
 
@@ -1250,6 +1396,14 @@ fn main() {
         log(&format!("[FATAL] 引数エラー: --form={form_arg}"));
         std::process::exit(2);
     };
+    // drift 系は自プロセスの窓の HIMC を直接観測/操作するので、別プロセスの入力先とは組み合わせられない。
+    // 入力先(Chrome など)を起動する前に弾く。
+    if matches!(arg_value("--mode=").as_deref(), Some("drift" | "drift-on"))
+        && !matches!(form, Form::Edit | Form::Multi | Form::Rich | Form::Tsf)
+    {
+        log("[FATAL] 引数エラー: --mode=drift|drift-on は --form=edit|multi|rich|tsf でのみ使える");
+        std::process::exit(2);
+    }
     unsafe {
         timeBeginPeriod(1);
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
@@ -1260,7 +1414,12 @@ fn main() {
             let _ = tm.Activate();
         }
     }
-    let _top = create_form(form);
+    // 引数の誤り(--interrupt の値など)は、入力先(Chrome など)を起動する前に検出する。
+    let perturbation = perturb::Perturbation::from_args();
+    let _ = TARGET.set(target::launch(form));
+    if perturbation.needs_distractor() {
+        create_distractor();
+    }
     if has_flag("--activate-gji") || has_flag("--msime") {
         activate_profile();
     }

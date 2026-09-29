@@ -212,6 +212,7 @@
 | [203](203-gji-fsm-follows-belief-open-transitions.md) | GjiFsm を belief の開閉変化に追随させる(BUG-170、OffCold 固着→毎打鍵 per-VK→StaleConfirm→ESC) | 採用・実装済み(e2e・実機未検証) |
 | [204](204-gji-sync-obligation-cannot-be-silently-dropped.md) | ImeOpenOutcome の処遇の重複を1メソッドへ集約し legacy_gji_sync_obligation を網羅化する最小版(初稿の D2/D3/D4 は取り下げ) | 採択(縮小版)・実装未着手 |
 | [205](205-observe-external-ime-close-in-imm32-unavailable-windows.md) | Imm32Unavailable(Chrome)で外部注入の IME キーによる close を窓内の 1→0 遷移観測で実状態へ追随する(BUG-172) | 採択(round4 収束)・実装未着手 |
+| [206](206-thumb-solo-tap-follows-role-suppress-and-inject.md) | 無変換/変換の単独タップ再設計(役割があれば生キー抑止＋belief に従う明示注入、なければ Suppress/Passthrough。`*_solo_tap_ime_action` 撤去) | opus 4ラウンドで収束・実装済み(実機A/B未検証) |
 | [207](207-keys-ime-detect-default-empty-and-remove-engine-ime-keys.md) | keys.ime_detect.on/off の既定を空に、engine_on/off_ime_key(Engine ON/OFF 時の IME モードキー能動送信)を撤去 | 採択・実装済み(実機/CI 確認は未実施) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
@@ -447,4 +448,4 @@ TSF 状態破壊 → 1文字目化け、という連鎖が複数の「別バグ�
   同一 SendInput バッチで送ることで描画前に削除が完了し、ユーザーに
   プローブ文字が見えない（ADR-048）。Win32 の SendInput は同一バッチが
   連続キューに積まれる保証がある
-| [206](206-thumb-solo-tap-follows-role-suppress-and-inject.md) | 無変換/変換の単独タップ再設計(役割があれば生キー抑止＋belief に従う明示注入、なければ Suppress/Passthrough。`*_solo_tap_ime_action` 撤去) | 起草(opus 未実施) |
+

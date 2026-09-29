@@ -9,7 +9,8 @@ name: e2e-ime
 # 通常のCI(ci.yml)には影響しない。ci/e2e-ime ブランチへの関連ファイルの push と手動起動でだけ動く。
 # ci/e2e-scenarios ブランチへの push は、操作シナリオ(名前が sc- で始まる構成、下のplan参照)だけを回す。
 # ci/e2e-calibration ブランチへの push は、ADR-191 の学習/検証ラウンド(名前が cal- で始まる構成)だけを回す。
-# ci/e2e-typing-stress ブランチへの push は、高速打鍵ストレス(名前が ts- で始まる構成、examples/typing_stress.rs)だけを回す。
+# ci/e2e-typing-stress ブランチへの push は、高速打鍵ストレス(名前が ts- で始まる構成、examples/typing_stress/)だけを回す。
+# 実アプリ(Chrome・不具合報告フォーム)を入力先にする/摂動を足す拡張構成は tsx- で始まる。重いので既定では回さず、only='tsx-*' で回す。
 # (workflow_dispatch は既定ブランチにワークフローが無いと使えないので、構成を絞るには only 入力かこのブランチを使う)
 #
 # awase を起動する構成では、期待表(expect/rc)とは別に、ログの不変条件(異常検出器、check_invariants.py と
@@ -76,7 +77,7 @@ jobs:
         shell: python
         env:
           ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || '' }}
-          # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)を除く。
+          # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
           # workflow_call の runs 入力(空なら構成ごとの runs のまま)
@@ -97,6 +98,20 @@ jobs:
           def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
                         keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome)
+          # tsx-* 構成(高速打鍵ストレスの拡張): name は 'tsx-' を自動で付ける。raw=True なら awase なしの対照(生ローマ字)。
+          # extra は typing_stress.exe への追加フラグ(摂動など)。kinds/trials/len は省略すると typing_stress の既定。
+          def tsx(name, form, ime, iv, raw=False, extra='', kinds='', trials=None, len=None, runs=3, wait=900):
+            flags = [f'--form={form}', f'--interval={iv}']
+            if raw: flags += ['--mode=raw', '--no-awase']
+            if kinds: flags.append(f'--kinds={kinds}')
+            if trials: flags.append(f'--trials={trials}')
+            if len: flags.append(f'--len={len}')
+            if extra: flags.append(extra)
+            # 実アプリは描画が 1200ms に間に合わないことがある。遅延と消失を分けるため、内容が安定するまで読み直す。
+            flags.append('--settle-read')
+            flags.append('--layout=@REPO@/layout/nicola_keytop.yab')
+            if ime == 'msime': flags.append('--msime')
+            return cfg(f"tsx-{'raw-' if raw else ''}{name}", 'observe', check='typing', ime=ime, awase='false' if raw else 'true', runs=runs, wait=wait, stress=' '.join(flags))
           SC_IMES = [('msime-native', 'msime', 1, ' --msime'), ('gji-msime', 'gji', 2, ''), ('gji-atok', 'gji', 1, '')]
           configs = [
             # --- 撤去実験(ATOK、実機E1〜E7bと同じ) ---
@@ -239,6 +254,29 @@ jobs:
             # 親指を押している間は forced の IME OFF(keys.ime_off)を発火せず、離した時に発火する(check_charthumb.py)。修正前の awase は押している間に閉じる。
             cfg('sc-charthumb-gji-atok', 'pass', check='charthumb', args='--charthumb=41,1D', runs=2,
                 general='min_overlap_margin_percent = 15', keys='ime_off = ["VK_NONCONVERT"]'),
+            # ADR-206: 無変換/変換の単独タップ。GJI の CUSTOM 表で無変換(変換)を「全開状態で閉じるトグル」にしたとき、awase は生キーを GJI に通さず、
+            # belief に従う絶対指定の ON/OFF を1回だけ書く(エンジン非活性側もエンジンの特殊キー照合で)。--seq: 16=IME ON、1D=無変換、1C=変換、1A=IME OFF。
+            # 判定は consistency(実 IME の開閉と Engine の追随)。押下1回で開閉1回(二重トグルなし)であること、押すたびに状態が変わること(固着なし)を見る。
+            cfg('sc-solotap-toggle-gji-atok', 'pass', check='consistency', keymap=0, runs=2,
+                args='--seq=16,1D,1D,1D,1D',
+                tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,Muhenkan,IMEOn|Precomposition,Muhenkan,IMEOff|Composition,Muhenkan,IMEOff|Conversion,Muhenkan,IMEOff'),
+            cfg('sc-solotap-henkan-toggle-gji-atok', 'pass', check='consistency', keymap=0, runs=2,
+                args='--seq=16,1C,1C,1C,1C',
+                tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,Henkan,IMEOn|Precomposition,Henkan,IMEOff|Composition,Henkan,IMEOff|Conversion,Henkan,IMEOff'),
+            # 対照: 無変換が閉じないコマンド(InputModeHiragana)のとき、awase は能動にならず(役割なし=受動)、Engine は実 IME に追随する。
+            cfg('sc-solotap-nontoggle-gji-atok', 'pass', check='consistency', keymap=0, runs=2,
+                args='--seq=16,1D,1D',
+                tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|Precomposition,Muhenkan,InputModeHiragana'),
+            # belief が古い状態(観測できない窓=cache=unavailable で、注入した IME OFF は awase の意図にならない=外部 close 相当)でトグルを押す。
+            # 所有者定義: 押下を重ねて状態が変わり 2〜3 回目で期待状態になれば PASS、N 回押しても変化しなければ FAIL(BUG-172、ADR-205/206)。
+            # 自動判定はまだ無い(consistency は 1 回目の逆向きも不一致とみなす)ので observe でログを見る。
+            cfg('sc-solotap-stale-toggle-gji-atok', 'observe', check='consistency', keymap=0, runs=2, cache='unavailable',
+                args='--seq=16,1A,1D,1D,1D',
+                tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,Muhenkan,IMEOn|Precomposition,Muhenkan,IMEOff|Composition,Muhenkan,IMEOff|Conversion,Muhenkan,IMEOff'),
+            # 素通しの英数キーで閉じた直後に無変換(BUG-156 型、applied が古いと already_matches で送信が省略され誰も開かない。ADR-206 決定7)。
+            cfg('sc-solotap-after-passthrough-close-gji-atok', 'observe', check='consistency', keymap=0, runs=2,
+                args='--seq=16,F0,1D,1D,1D',
+                tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|Precomposition,Eisu,IMEOff|Composition,Eisu,IMEOff|Conversion,Eisu,IMEOff|DirectInput,Muhenkan,IMEOn|Precomposition,Muhenkan,IMEOff|Composition,Muhenkan,IMEOff|Conversion,Muhenkan,IMEOff'),
             # T1(b)(ADR-199): TSF 経路で Alt+半角/全角(VK 0x19)が CUSTOM 表の Hankaku/Zenkaku 行に従うか。
             # 変換(IMEOn)で IME を開き、Alt+0x19。行=IMEOff の表で閉じ、行なしの対照で閉じなければ「行に従う」。両方閉じれば行を見ない(0x19 は固定)。
             cfg('sc-t1b-row-imeoff', 'observe', check='consistency', awase='false', keymap=0, runs=1,
@@ -301,6 +339,38 @@ jobs:
               for form in ('edit', 'tsf')
               for ime_name, ime, msime in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
               for iv in (10, 2)],
+            # --- 拡張ストレス(tsx-): 実アプリを入力先にする / 実利用に近い摂動を足す構成。既定の ts-* には含めない(only='tsx-*' で回す)。---
+            # 入力先(--form=、examples/typing_stress/target.rs): chromebar=Chrome のアドレスバー / chromepage=Chrome のページ内 textarea /
+            # bugreport=awase-settings --bug-report の「説明」欄。別プロセスなので読み戻しは UI Automation。Chrome は GJI のみ。
+            # 摂動(examples/typing_stress/perturb.rs、既定オフ): --cold / --pause-after+--pause-ms / --idle / --switch-focus / --start-delay / --interrupt。
+            # 名前: tsx-<入力先>-<gji|msime>-<間隔ms>ms[-<摂動>]。tsx-raw-* は同じ条件で awase なし(生ローマ字)の対照実験。
+            # 構成の足し方: 下の tsx() に (入力先, IME, 間隔, 摂動フラグ) を渡す。runs は「独立な起動を何回繰り返すか」で、
+            # 非決定的な不具合ほど大きくする(1/48 試行で出る類は 20〜30)。
+            *[tsx(f'{form}-{ime_name}-{iv}ms', form, ime, iv, kinds='single,mixed', trials=6, len=30, runs=3, wait=900)
+              for form in ('bugreport',)
+              for ime_name, ime in (('gji', 'gji'), ('msime', 'msime'))
+              for iv in (40, 10)],
+            # 起動直後の最初の 1 文字を狙う(--cold)。trials=1・len 短めで信号を先頭に集中させ、runs で起動を繰り返す。
+            *[tsx(f'{form}-{ime_name}-20ms-cold', form, ime, 20, extra='--cold', kinds='single', trials=1, len=15, runs=10, wait=900)
+              for form in ('bugreport',)
+              for ime_name, ime in (('gji', 'gji'), ('msime', 'msime'))],
+            # 「止まってから発火する処理」と打鍵再開のタイミングをぶつける(--pause-after 文字目の直後に --pause-ms だけ止める)。
+            *[tsx(f'{form}-{ime_name}-30ms-pause{pause}', form, ime, 30, extra=f'--pause-after=10 --pause-ms={pause}', kinds='single,mixed', trials=6, len=25, runs=6, wait=900)
+              for form in ('bugreport',)
+              for ime_name, ime in (('gji', 'gji'), ('msime', 'msime'))
+              for pause in (320, 500)],
+            # Chrome の定常状態の取りこぼし(高速: 2ms)。
+            *[tsx(f'{form}-gji-2ms', form, 'gji', 2, trials=8, runs=30, wait=1200) for form in ('chromepage', 'chromebar')],
+            # 実利用に近い条件: アイドル → 別窓へ切替 → 入力先へ戻す → 100ms 後に打鍵。失敗は ready 直後の最初の 1〜2 試行に集中しやすい。
+            *[tsx(f'{form}-gji-{iv}ms-idle{idle}s', form, 'gji', iv, extra=f'--idle={idle * 1000} --switch-focus --start-delay=100', kinds='single,mixed', trials=6, runs=6, wait=1500)
+              for form in ('chromepage', 'chromebar') for iv in (30, 10, 2) for idle in (3, 20)],
+            # 対照: awase なし(生ローマ字)。入力先+IME だけで受けられるか。
+            *[tsx(f'{form}-gji-2ms', form, 'gji', 2, raw=True, trials=8, runs=6, wait=900) for form in ('chromebar', 'chromepage')],
+            *[tsx(f'{form}-gji-10ms-idle{idle}s', form, 'gji', 10, raw=True, extra=f'--idle={idle * 1000} --switch-focus --start-delay=100', kinds='single,mixed', trials=6, runs=6, wait=1500)
+              for form in ('chromepage', 'chromebar') for idle in (3, 20)],
+            # 対照: 入力中(未確定)に IME 制御キー列(--interrupt)を送ると未確定文字が消えるか(awase の再初期化が入力を破棄する根拠になるか)。
+            *[tsx(f'{form}-gji-20ms-interrupt-{mode}', form, 'gji', 20, raw=True, extra=f'--interrupt={mode}', kinds='single', trials=6, runs=2, wait=900)
+              for form in ('chromepage', 'chromebar') for mode in ('off_on', 'off', 'f2', 'none')],
             # --- drift correction の実機観測(cal-drift-、ci/e2e-calibration。ADR-191 09-T4、BUG-020) ---
             # `runtime/ime_refresh.rs::ir_apply_drift_correction` が、明示意図の OFF 直後に実 IME を不適切に
             # ON へ戻す/固定するか(2026-07-08 の実機症状)を、TsfNative相当の入力先(--form=tsf、ADR-193)で観測する。
@@ -310,7 +380,7 @@ jobs:
             # (2026-09-22、TsfNativeでのCtrl+変換強制ON不発火の根本原因調査で確認)。
             # 判定は check_drift_correction.py。expect=observe(まだ「作れる」と確定していないため、赤くしない。
             # docs/tasks/review-2026-09-24-09-remaining-active-writes-inventory.md T4 の第一段階)。
-            # --drift-off-vk=0x1D は typing_stress.rs の既定(VK_MUHENKAN)と同じ値だが、既定に暗黙で
+            # --drift-off-vk=0x1D は typing_stress/main.rs の既定(VK_MUHENKAN)と同じ値だが、既定に暗黙で
             # 頼らず明示する(既定が変わっても keys.ime_off の上書き先と食い違わないように)。
             *[cfg(f'cal-drift-tsf-{ime_name}', 'observe', check='driftcorrection', ime=ime, keymap=km, wait=200,
                   keys='ime_off = ["VK_NONCONVERT"]',
@@ -348,7 +418,7 @@ jobs:
             configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-'))]
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])
@@ -402,6 +472,7 @@ jobs:
           cargo build -p awase-windows --example compartment_notify_probe
           cargo build -p awase-windows --example compartment_notify_probe_diag
           cargo build -p awase-windows --example typing_stress
+          cargo build -p awase-settings --bin awase-settings
           cargo build -p awase-windows --example chrome_probe
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target\debug\awase.exe dist\
@@ -409,6 +480,8 @@ jobs:
           Copy-Item target\debug\examples\compartment_notify_probe.exe dist\
           Copy-Item target\debug\examples\compartment_notify_probe_diag.exe dist\
           Copy-Item target\debug\examples\typing_stress.exe dist\
+          # tsx-bugreport-*(typing_stress --form=bugreport)が実体を起動するのに要る。typing_stress.exe と同じ dist\ に置く。
+          Copy-Item target\debug\awase-settings.exe dist\
           Copy-Item target\debug\examples\chrome_probe.exe dist\
           Copy-Item config.toml dist\ -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
@@ -757,7 +830,7 @@ jobs:
           $rc = $LASTEXITCODE
           "rc=$rc" | Out-File -FilePath rc.txt -Encoding ascii
           "exit code: $rc"
-          Get-Process awase, ime_key_matrix_spike, typing_stress, compartment_notify_probe, compartment_notify_probe_diag -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process awase, awase-settings, ime_key_matrix_spike, typing_stress, chrome, compartment_notify_probe, compartment_notify_probe_diag -ErrorAction SilentlyContinue | Stop-Process -Force
           exit 0
 
       # 不変条件(異常検出器): 上の期待表(rc.txt)とは別に数え、結果は invariants.json / inv_rc.txt に書く(summary が別の表で集計)。
@@ -875,7 +948,7 @@ jobs:
                 continue
               ts_rows.append(f"| {c['name']} | {run} | {kv.get('verdict')} | {kv.get('trials')} | {kv.get('fail')} | {kv.get('loss')} | {kv.get('extra')} | {kv.get('reorder')} | {kv.get('literal')} | {kv.get('substitute')} | {kv.get('inject_late_max_us')} | {kv.get('hook_seen_min_ratio')} |")
           if ts_rows:
-            out += ["", "## 高速打鍵ストレス(ts-*、判定は入力先のテキストと期待文字列の比較。検出のみで合否には含めない)", "",
+            out += ["", "## 高速打鍵ストレス(ts-*・tsx-*、判定は入力先のテキストと期待文字列の比較。検出のみで合否には含めない)", "",
                     "loss=消失 / extra=余計 / reorder=入れ替わり / literal=ローマ字リテラル化 / substitute=別のかなに置換。注入遅れmax=予定時刻に対する実注入の最大遅れ(us)、フック到着比=自プロセスのLLフックに届いた数/送信数の最小(1.000で落ち無し)。", "",
                     "| 構成 | 回 | 判定 | 試行 | FAIL試行 | 消失 | 余計 | 入れ替わり | リテラル化 | 置換 | 注入遅れmax(us) | フック到着比 |",
                     "|---|---|---|---|---|---|---|---|---|---|---|---|"] + ts_rows

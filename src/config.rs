@@ -360,43 +360,19 @@ pub struct GeneralConfig {
     /// 使いたい場合（= awase の Engine を OFF にして使う想定）のみ `false` にする。
     pub swallow_alt_kana_input_method_switch: bool,
 
-    /// ADR-153 決定1: 無変換単独タップ確定時に、素の `VK_NONCONVERT` の代わりに
-    /// awase 自身が直接 IME を ON/OFF/Toggle する（隠し設定、上級者向け）。
-    /// `None`（既定）なら無効で、従来どおり `ModeKeyConfig` の
-    /// 抑制/パススルー判定に委ねる（GJI/MS-IME 設定からの自動採用は ADR-191 で撤去した）。
+    /// **非推奨（ADR-206、読み込み専用）**: 無変換単独タップ確定時の IME ON/OFF/Toggle（旧 ADR-153 決定1、隠し設定）。
     ///
-    /// GJI 自身が無変換/変換に何らかの IME 制御コマンドを割り当てていると、
-    /// GJI の TSF キー横取り（`ITfKeyEventSink`）が発火し「@」等の疑似文字が
-    /// 挿入されうる（BUG-113 残置症状、実機3段階検証で確定）。この設定を使うと
-    /// 生の `VK_NONCONVERT`/`VK_CONVERT` を一切 GJI に渡さなくなり、GJI 側の
-    /// キーマップ設定に依存しなくなる。
+    /// 値は読み込むが、エンジンには直接渡さない。そのキーが親指キー（`left_thumb_key`/`right_thumb_key`）に
+    /// 割り当てられているときだけ、読込時にメモリ上で `keys.ime_on/off/toggle` に bare で書いたのと同じ扱いへ
+    /// 移し（`GeneralConfig::legacy_thumb_solo_tap_actions`）、`validate` が非推奨の警告を出す。親指キーでなければ
+    /// 効かない（IME が自分で処理する）。config.toml は書き換えない。
     ///
-    /// `Toggle` は belief（awase が推定する現在の IME 状態）依存であり、
-    /// TSF ネイティブアプリ（Windows Terminal 等、`FeedbackPolicy::Blind`）
-    /// では実際の IME 状態を読み戻せないため、belief がズレていると逆方向へ
-    /// 切り替わりうる。
-    ///
-    /// `kp_stage_shadow_ime_toggle` の intent 昇格（ケース2/3）は
-    /// `is_japanese_ime()` を要求するが、この belief はスリープ復帰/フォーカス
-    /// 変更直後の grace 期間中に一時的に `false` を誤答しうる既知の弱点を
-    /// 持つ——この明示config もこの窓では一時的に無反応になりうる
-    /// （既存の自動検出経路と共通の制約、新規リスクではない）。
-    ///
-    /// **既知の問題と再設計の経緯（2026-09-08、実機A/B確認3回で発見・
-    /// 修正したBUG-122/BUG-123/BUG-124）**: `"on"`（belief OFF→ON昇格、
-    /// ケース2）・`"off"`（belief既にOFFのまま維持、"抑止のみ・actuate
-    /// しない"設計）とも実機確認済みで現在有効。詳細な経緯（なぜ"off"側が
-    /// 「抑止する・actuateしない」という設計に落ち着いたか、過去に
-    /// 試して撤回した設計を再度検討する前に必ず読むべき内容）は
-    /// `crates/awase-windows/src/runtime/key_pipeline.rs::
-    /// explicit_ime_action_target`のdoc commentを正本とする——同じ内容を
-    /// 重複して書かない（`docs/known-bugs.md` BUG-113/BUG-122/BUG-123/
-    /// BUG-124節にも記録）。belief ON中の実際のON→OFF遷移（ケース1、
-    /// `resolve_explicit_ime_action`〈コア側〉）はこの経緯の対象外で、
-    /// `"off"`は引き続きそちらでは正常なactuationを伴う値。
+    /// 単独タップの扱いは ADR-206 の規則に従う: 開閉の役割（bare `keys.ime_*`、または GJI の CUSTOM 表で無変換/変換が
+    /// トグル）があれば生キーを抑止して awase が絶対指定の ON/OFF を1回書き、なければ `ModeKeyConfig` の
+    /// Suppress/Passthrough に従う。
     #[serde(default)]
     pub muhenkan_solo_tap_ime_action: Option<ShadowImeActionConfig>,
-    /// `muhenkan_solo_tap_ime_action` と対称（変換キー用）。
+    /// `muhenkan_solo_tap_ime_action` と対称（変換キー用、非推奨）。
     #[serde(default)]
     pub henkan_solo_tap_ime_action: Option<ShadowImeActionConfig>,
     /// ADR-195段階4: `<config dir>/keymap-learn-table.json`（段階3永続化）が存在し
@@ -453,6 +429,34 @@ impl Default for GeneralConfig {
             henkan_solo_tap_ime_action: None,
             use_learned_keymap_table: true,
         }
+    }
+}
+
+impl GeneralConfig {
+    /// ADR-206 決定4: 非推奨の `*_solo_tap_ime_action` のうち、そのキーが親指キー
+    /// （`left_thumb_key`/`right_thumb_key`）に割り当てられているものだけを `(無変換, 変換)` で返す。
+    /// 呼び出し側（Platform 層）が、該当キーの bare コンボを `keys.ime_on/off/toggle` に相当する形で
+    /// メモリ上でだけ追加する。親指キーでないキーの旧設定は返さない（読み捨てて警告する）。
+    #[must_use]
+    pub fn legacy_thumb_solo_tap_actions(
+        &self,
+    ) -> (
+        Option<crate::types::ShadowImeAction>,
+        Option<crate::types::ShadowImeAction>,
+    ) {
+        let is_thumb = |canonical: &str| {
+            [self.left_thumb_key.as_str(), self.right_thumb_key.as_str()]
+                .into_iter()
+                .any(|k| key_identity(k) == canonical)
+        };
+        (
+            self.muhenkan_solo_tap_ime_action
+                .filter(|_| is_thumb("NONCONVERT"))
+                .map(ShadowImeActionConfig::to_core),
+            self.henkan_solo_tap_ime_action
+                .filter(|_| is_thumb("CONVERT"))
+                .map(ShadowImeActionConfig::to_core),
+        )
     }
 }
 
@@ -1174,29 +1178,14 @@ impl AppConfig {
             mods.is_empty() && key_identity(main) == key_identity(thumb_key)
         }
 
-        fn warn_for_field(
-            g: &GeneralConfig,
-            field: &str,
-            combos: &[String],
-            thumb_key: &str,
-            w: &mut Vec<String>,
-        ) {
+        fn warn_for_field(field: &str, combos: &[String], thumb_key: &str, w: &mut Vec<String>) {
             if combos
                 .iter()
                 .any(|combo| is_bare_same_key(combo, thumb_key))
             {
                 let canonical = key_identity(thumb_key);
-                let solo_action = if canonical == "NONCONVERT" {
-                    g.muhenkan_solo_tap_ime_action
-                } else if canonical == "CONVERT" {
-                    g.henkan_solo_tap_ime_action
-                } else {
-                    None
-                };
                 let is_supported = canonical == "NONCONVERT" || canonical == "CONVERT";
-                let detail = if solo_action.is_some() {
-                    "同じキーの `*_solo_tap_ime_action` の設定が優先され、この強制ON/OFFの設定は無視されます。"
-                } else if is_supported {
+                let detail = if is_supported {
                     "このキーは同時打鍵かどうかの判定後、単独タップ確定時に強制ON/OFFが発火します。composing中も発火し、未確定文字列が破棄されるか確定されるかはIME実装に依存します。"
                 } else if field == "keys.ime_on" {
                     "このキーは同時打鍵（親指シフト入力）にも使うキーなので、IME が \
@@ -1225,9 +1214,59 @@ impl AppConfig {
         }
 
         for thumb_key in [g.left_thumb_key.as_str(), g.right_thumb_key.as_str()] {
-            warn_for_field(g, "keys.ime_on", &keys.ime_on, thumb_key, w);
-            warn_for_field(g, "keys.ime_off", &keys.ime_off, thumb_key, w);
-            warn_for_field(g, "keys.ime_toggle", &keys.ime_toggle, thumb_key, w);
+            warn_for_field("keys.ime_on", &keys.ime_on, thumb_key, w);
+            warn_for_field("keys.ime_off", &keys.ime_off, thumb_key, w);
+            warn_for_field("keys.ime_toggle", &keys.ime_toggle, thumb_key, w);
+        }
+    }
+
+    /// 非推奨の `*_solo_tap_ime_action` が残っているときの警告（ADR-206 決定4）。
+    fn validate_legacy_solo_tap_action(g: &GeneralConfig, keys: &KeysConfig, w: &mut Vec<String>) {
+        // 同じキーの bare が `keys.ime_*` に既にあれば、旧設定は移行されず bare が優先される（ADR-206 決定4）。
+        let has_bare = |canonical: &str| {
+            [&keys.ime_on, &keys.ime_off, &keys.ime_toggle]
+                .into_iter()
+                .flatten()
+                .any(|combo| {
+                    let (mods, main) = split_combo(combo);
+                    mods.is_empty() && key_identity(main) == canonical
+                })
+        };
+        let (muhenkan_migrated, henkan_migrated) = g.legacy_thumb_solo_tap_actions();
+        for (field, set, migrated, key_name, bare_present) in [
+            (
+                "muhenkan_solo_tap_ime_action",
+                g.muhenkan_solo_tap_ime_action.is_some(),
+                muhenkan_migrated.is_some(),
+                "無変換",
+                has_bare("NONCONVERT"),
+            ),
+            (
+                "henkan_solo_tap_ime_action",
+                g.henkan_solo_tap_ime_action.is_some(),
+                henkan_migrated.is_some(),
+                "変換",
+                has_bare("CONVERT"),
+            ),
+        ] {
+            if !set {
+                continue;
+            }
+            if migrated && bare_present {
+                w.push(format!(
+                    "general.{field} は非推奨で、`keys.ime_on`/`ime_off`/`ime_toggle` に「{key_name}」が既にあるため無視されます（そちらが優先されます）。削除してください。"
+                ));
+            } else if migrated {
+                w.push(format!(
+                    "general.{field} は非推奨です。`keys.ime_on`/`ime_off`/`ime_toggle` に「{key_name}」を単独で書くか、削除してください。\
+                     現在は、そこに単独で書いたのと同じ扱いで動いています。GJI の CUSTOM 表で{key_name}がトグルなら、設定なしで動きます。"
+                ));
+            } else {
+                w.push(format!(
+                    "general.{field} は非推奨で、{key_name}が親指キーに割り当てられていないため今後は効きません（IME が自分で処理します）。\
+                     半角状態で「@」が出る場合は、{key_name}を親指キーに割り当ててください。"
+                ));
+            }
         }
     }
 
@@ -1370,6 +1409,7 @@ impl AppConfig {
         Self::validate_thumb_keys(&general, &mut warnings);
         Self::validate_dedicated_fn_key(&general, &mut warnings);
         Self::validate_thumb_key_in_ime_combos(&general, &self.keys, &mut warnings);
+        Self::validate_legacy_solo_tap_action(&general, &self.keys, &mut warnings);
         Self::validate_keyboard_model(&general, &self.keys, &mut warnings);
         Self::validate_linux_backend(&mut general, &mut warnings);
         Self::validate_app_override_entries(&app_overrides, &mut warnings);
@@ -2376,25 +2416,67 @@ ime_toggle = []
     }
 
     #[test]
-    fn test_validate_warns_that_solo_tap_action_wins_over_bare_ime_combo() {
+    fn test_legacy_solo_tap_action_migrates_only_for_thumb_keys_and_warns() {
+        let toml_str = r#"
+[general]
+left_thumb_key = "無変換"
+right_thumb_key = "Space"
+muhenkan_solo_tap_ime_action = "off"
+henkan_solo_tap_ime_action = "on"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        // 無変換だけが親指キー。変換は親指に割り当てられていないので移行しない。
+        assert_eq!(
+            config.general.legacy_thumb_solo_tap_actions(),
+            (Some(crate::types::ShadowImeAction::TurnOff), None)
+        );
+        let (_validated, warnings) = config.validate();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("general.muhenkan_solo_tap_ime_action")
+                    && w.contains("非推奨です")
+                    && w.contains("同じ扱いで動いています")),
+            "親指キーの旧設定は移行の警告、got: {warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("general.henkan_solo_tap_ime_action")
+                    && w.contains("今後は効きません")),
+            "親指でないキーの旧設定は読み捨ての警告、got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_legacy_solo_tap_action_is_ignored_when_bare_combo_exists() {
         let toml_str = r#"
 [general]
 left_thumb_key = "無変換"
 muhenkan_solo_tap_ime_action = "toggle"
 
 [keys]
-ime_on = []
-ime_off = []
-ime_toggle = ["VK_NONCONVERT"]
+ime_off = ["無変換"]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         let (_validated, warnings) = config.validate();
-        assert!(warnings.iter().any(|w| {
-            w.contains("keys.ime_toggle")
-                && w.contains("*_solo_tap_ime_action")
-                && w.contains("優先され")
-                && w.contains("無視されます")
-        }));
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("general.muhenkan_solo_tap_ime_action")
+                    && w.contains("無視されます")
+                    && w.contains("優先されます")),
+            "bare が既にあれば旧設定は無視される旨を警告する、got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_no_legacy_warning_without_solo_tap_action() {
+        let (_validated, warnings) = AppConfig::default().validate();
+        assert!(
+            !warnings.iter().any(|w| w.contains("_solo_tap_ime_action")),
+            "旧設定が無ければ警告しない、got: {warnings:?}"
+        );
     }
 
     #[test]

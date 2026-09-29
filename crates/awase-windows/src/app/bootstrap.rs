@@ -793,20 +793,6 @@ pub(super) fn initialize_app(
             &config.general.right_thumb_key,
             crate::vk::VK_SPACE,
         ));
-        // ADR-153 決定1: ユーザー明示config。`apply_config`（reload時）と
-        // 同じ配線を起動時にも行う。
-        app.set_muhenkan_solo_tap_ime_action(
-            config
-                .general
-                .muhenkan_solo_tap_ime_action
-                .map(awase::config::ShadowImeActionConfig::to_core),
-        );
-        app.set_henkan_solo_tap_ime_action(
-            config
-                .general
-                .henkan_solo_tap_ime_action
-                .map(awase::config::ShadowImeActionConfig::to_core),
-        );
     });
     RAPID_IME_TIMESTAMPS.set(RapidPressTracker::new());
     DUMP_TRIGGER.set(crate::journal::DumpTriggerTracker::new());
@@ -1192,13 +1178,15 @@ pub(super) fn run_all() -> Result<()> {
         config.general.engine_toggle_hotkey.as_deref(),
     );
 
-    let special_keys = SpecialKeyCombos {
+    let mut special_keys = SpecialKeyCombos {
         engine_on: engine_on_keys,
         engine_off: engine_off_keys,
         ime_on: ime_control_on_keys,
         ime_off: ime_control_off_keys,
         ime_toggle: ime_control_toggle_keys,
     };
+    // ADR-206 決定4: 非推奨の `*_solo_tap_ime_action`（親指キーのもの）は bare の開閉として扱う。
+    crate::runtime::migrate_legacy_solo_tap_actions(&config.general, &mut special_keys);
     let forced_open_actions = crate::runtime::thumb_forced_open_actions(&special_keys);
     let mut engine = Engine::new(fsm, special_keys);
     engine.set_thumb_forced_open_actions(forced_open_actions.0, forced_open_actions.1);

@@ -291,7 +291,6 @@ pub fn classify_ime_relevance(vk: VkCode) -> ImeRelevance {
         // ADR-153 決定1: `kp_stage_shadow_ime_toggle`（ケース2/3）が
         // 実際に明示config actuationを発行した打鍵についてのみ後から立てる
         // マーカー。分類の時点では常にfalse。
-        explicit_ime_action_consumed: false,
         // ADR-154: kp_stage_shadow_ime_toggleが実際にbeliefをOFF→ONへ動かした
         // 打鍵についてのみ後から立てるマーカー。分類の時点では常にfalse。
     }

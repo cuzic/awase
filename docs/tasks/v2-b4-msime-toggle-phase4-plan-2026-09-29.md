@@ -218,3 +218,69 @@ run 36542333857 と 36543097358 で差は ±2 件程度（36543097358 では最�
   `crates/awase-windows/src/state/key_effect_runtime.rs`（`thumb_forced_action`, `key_shadow_action`）、`crates/awase-windows/src/msime_key_assignment.rs`、`src/engine/nicola_fsm.rs`（`resolve_pending_thumb_as_single`）、`src/engine/engine.rs`（`apply_ime_open_request`）
 - 既存ハーネス: `crates/awase-windows/examples/msime_native_composing_probe.rs`, `msime_key_assignment_settings_probe.rs`, `ime_key_matrix_spike.rs`（`--seq`）, `tools/e2e/ime_key_matrix/check_consistency.py`
 - CI run: 36541369039, 36542333857, 36543097358, 36543901149（`ci/b4-msime-toggle-probe`、artifact `b4-logs`、保持7日）
+
+## 8. 追加実測（所有者決定 2026-09-29 を受けた CI 検証、run 36545534536 / 36546369830 / 36547197438 / 36550383544）
+
+所有者決定: 入力中/変換中/候補窓の除外（`composing || stage != None`、KeyDown 時判定）を安全条件として固定、実機確認は CI で行う、能動は値2のみ、
+Toggle の belief 依存は許容（固着＝何度押しても変わらない、を不具合と定義）、値2の警告は同じ PR で外す。半角/全角の入力中は計測のみ。
+この節の結論: **Phase 4 は実装に進めない**（理由は 8.1 と 8.2 の2つ、どちらも実装前に解決が要る）。
+
+### 8.1 CI で値2を作れない（(a) 未達）
+
+ADR196-T2 の知見（ja-JP のみ＋MS-IME TIP のリスト）を流用し、設定アプリ（`ms-settings:regionlanguage-jpnime` →「Key & touch customization」）に
+`IsKeyAssignmentEnabled` のトグルが出るかを段階的に試した（UIA の AutomationId で判定。`Has-Section` の出力汚染による偽陽性を run 36547197438 で修正）:
+
+| 段階 | 操作 | 結果 |
+|---|---|---|
+| ベース | 言語リスト＝ja-JP のみ＋MS-IME TIP（`Set-WinUserLanguageList`）、`Set-WinDefaultInputMethodOverride`、`Set-WinUILanguageOverride ja-JP` | ページは Key template（Microsoft IME / ATOK）と Touch keyboard のみ。UICulture は en-US のまま |
+| S1 | `Set-WinHomeLocation -GeoId 122`（日本）＋`Set-Culture ja-JP` | 変化なし（`SystemSettings_Language_JapaneseIME_` の ID は KeyTemplate/Kana10KeyInputMode/HowToUseLink の3つだけ） |
+| S2 | JP106 キーボード上書き（`i8042prt\Parameters` の `LayerDriver JPN`/`OverrideKeyboardType=7`/`Subtype=2`） | 変化なし（再起動なしなので反映されない可能性あり。未確定） |
+| S3 | `Install-Language -Language ja-JP`（run 36547197438、15分でタイムアウト） | 完了せず。UI 言語は job 内でサインアウトなしには切り替わらない |
+| レジストリ差分 | 設定アプリ操作前後の `HKCU\Software\Microsoft\IME`/`Input` の `reg export` 差分 | 操作できる項目が無く差分ゼロ（本当の保存先は特定できず） |
+
+残る手段は (i) 日本語表示言語パックの導入とサインアウト/再起動を含む job 分割（windows-latest は Server 系で `Install-Language` が完走しない）、
+(ii) 実機での設定アプリ操作前後のレジストリ差分。**どちらも CI 単独では届いていない**。直書き（run 36541369039）は反映されない（T12 と一致）。
+
+### 8.2 composing 信号は MS-IME 本体で偽のまま（安全条件の前提が崩れる）
+
+`msime_native_composing_probe --matrix` を **awase 起動下**（Engine 非活性、生キーが IME に届き実際に未確定文字列ができる状態）で回し、無変換/変換/半角/全角の
+KeyDown 時の `[engine-input] ... composing=`（`ime_composition_active_now()`、`EVENT_OBJECT_IME_SHOW/HIDE` 由来）を、同じ手順で IMM32 が返す `comp_str` と突き合わせた
+（run 36541369039 と 36550383544、計2回）:
+
+- `comp_str` が `あい`（入力中）・`愛会`（変換中）・`アイアイ会`（候補窓）と**実際に非空**の全シナリオで、KeyDown 時の `ctx.composing` は **false**（全32手順、2 run とも）。
+- 観測件数は全手順 observed=0（`SkipTyping`。注入した VK_IME_ON が意図に昇格せず belief が追随しないため Engine は非活性）。これは「観測経路に乗らなかった」であり、
+  信号が偽なのは `composing` の直接ログ値で確認している（observed とは別の証拠）。
+
+つまり所有者が固定した除外条件 `composing || stage != None` のうち `composing` 側は MS-IME 本体では**入力中でも立たない**。`stage`（`key_track` の隠れ状態）は
+打鍵履歴からの追跡で、**Engine が消費して自分で出力した文字（NICOLA の打鍵）は通したキーの追跡に入らない**（`kp_predict_key_effect` は通したキーだけを更新する）。
+NICOLA で入力した直後の入力中は `stage == None` のままになりうる。この2つが両方偽だと、除外が効かず**入力中に単独タップで IME を閉じ、未確定文字列を捨てる**
+（M1 が警告した事故）。安全条件を実装で満たすには、少なくとも次のどれかが必要:
+
+1. awase 自身が「最後の確定/取消キー以降に出力した文字がある」を持つ（Engine の出力状態から導く。IME 側の自動確定は見えない）。
+2. MS-IME 本体の未確定文字列を直接読む（UIA の `IUIAutomationTextEditPattern::GetActiveComposition`、`run_with_timeout` 配下。新しい観測機構）。
+3. Phase 4 の対象を「直前に awase が文字を出力していない」ことが分かる状態に限る（保守的、実用範囲は狭い）。
+
+いずれも新しい機構で、「新しい観測/belief 機構を足さない」という Phase 4 の前提を超える。**所有者の判断が要る**。
+
+### 8.3 半角/全角の入力中（計測のみ、既定割り当て、awase 起動下、run 36550383544）
+
+MS-IME 本体の F3/F4（0xF3/0xF4）は、入力中・変換中・候補窓表示中は `open` も未確定文字列も変わらず（NO_EFFECT）、確定後（Enter の後）は 1→0 に閉じた。
+F4 はアイドル（コンテキストが空のとき）でも 1→0 と直接入力から 0→1 を確認。つまり **半角/全角も入力中は発火しない**（無変換と同じ）。現状の静的 `Toggle`
+（`derive_key_shadow_action` 経由の `shadow_action`、入力中も付く）は、入力中の半角/全角で awase が閉じる書き込みをすると MS-IME 本来の動作と食い違う可能性がある
+（この行は前シナリオの未確定文字列が残る汚染があり `open` 遷移のみ信頼、n=1）。別 PR で扱うか、Phase 4 と同じ除外を半角/全角にも適用するかを決める必要がある。
+
+### 8.4 結論と次の一手
+
+- 値2を CI で作れず、composing 信号も偽のため、「結果が安全条件を支持する」を満たせない。**実装（feat/v2-msime-toggle-phase4）は作成していない。**
+- 次の一手の候補: (A) §8.2 の1〜3のどれで入力中を検出するかを決めて Phase 4 の設計に組み込む（推奨は 1 と 2 の併用を小さく試作して CI で信号を測る）、
+  (B) 値2の作成は実機（日本語 UI）でのレジストリ差分の取得を先にやる、(C) Phase 4 を v2 から外し、値2の利用者には警告（現状）を維持する。
+- 測定用ブランチ `ci/b4-msime-toggle-probe` は develop にマージしない（`--matrix` に半角/全角を追加、`phase1-pre` の環境探索、`check_b4_*.py`）。
+
+### 8.5 所有者の最終方針と実装（PR #379）
+
+所有者決定（2026-09-29）: 「入力確定文字列を捨てていい。安全にする必要自体がありません」。よって 8.2 の入力中の除外（`composing`/`stage`）は**不要**とし、
+`ctx.composing` が偽固定だった問題も扱わない（§2.2 の除外条件と 8.4 の (A) は破棄）。新方針: MS-IME 本体で値==2 のとき無変換/変換を、状態（休止中・入力中・変換中・候補窓）に
+関係なくトグルに該当するキーとして扱い、GJI と同水準で awase が belief に従う明示 ON/OFF を注入する（ADR-206 の枠組み）。
+
+実装は feat/v2-msime-toggle-phase4（PR #379）: `KeyEffectKeymap` に値==2 のフラグ、`msime_native_key_role` の無変換/変換の腕（互換モードは受動）、`conflict_warning` から値2を削除、
+回帰テスト（役割判定の全組み合わせ、警告文、`architecture_guard` の必須トークン）、ADR-199 T17 行の更新。値2は CI で作れず**未検証・ホストテストのみ**（所有者了承）。
