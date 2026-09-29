@@ -18,20 +18,25 @@ related_adr: ["ADR-178", "ADR-191", "ADR-196", "ADR-200", "ADR-203"]
 | ADR-203 / BUG-170・171（GjiFsm の OffCold 固着） | PR #354 が develop にマージ済み（`efe66f45`）、CI 全通過。 | ADR-203 の実機シナリオ: OFF 前に1語打って Enter で確定（OnWarm にする）→ 物理 OFF → 1秒以内に物理 ON → 即打鍵。ON 後の最初の語が cold 経路になること。ON キー単独タップ直後の1語の遅延（実測30〜60ms 想定）の再測定。 |
 | ADR-178 領域A撤去（reassert・force-on） | develop に撤去済み（`f83084b3`・`621bf93c`）。実機 A/B は未実施。 | 09 の A/B-2（`docs/tasks/review-2026-09-24-09-...` の「実機 A/B 手順」）。物理 Ctrl は SendInput で作れないので実機のみ。 |
 
-## 2. CI で観測を進める次の一手（ADR-178 領域A撤去後の ON 回復）
+## 2. ADR-178 領域A撤去後の ON 回復の観測（2026-09-29 に CI で実施済み、PR #361 `0f47bac5`）
 
-`cal-driftrec-*`（PR #352、`typing_stress --mode=drift-on`、`check_drift_recovery.py`）の結果、**4構成とも awase は閉じられた後に IME を ImeModel へ観測しておらず（observed=0）、drift correction の判断まで届いていない**。
-「drift correction は戻さない」とは言えない。詳細は `review-2026-09-24-09-...` の「CI での代替観測」節。
+`cal-driftrec-*`（PR #352）に加え、`--refocus`（閉じた直後にフォーカスを外して戻す、run 36530903798）と実 Chrome（`chrome_probe --close-ime=10 --msime`、run 36518453739・36524071258）で測った。詳細と表は `review-2026-09-24-09-...` の「追補 2026-09-29」。
 
-- **観測を1回起こす**: ずれを作った後にフォーカス変更（または may_change_ime キー）を挟み、drift correction の判断（授権・鮮度上限）まで届く条件で再測定する。BUG-163 1段目（授権が下りない補正は検知へ進めない）が働くかもここで見える。
-- **撤去前ビルドとの対照**: reassert/force-on を撤去する前のコミットで同シナリオを回し、領域A撤去で回復力が落ちたかを比べる。
-- **VK 注入で打鍵確認できる入力先**: edit 構成は awase が Unicode 注入するため、打鍵結果が IME の開閉の証拠にならない（typed_blind）。VK 注入になる入力先が要る。
-- **棚卸し表の更新**: `review-2026-09-24-09-...` の開閉軸の表と C-2「TsfNative の ON 救済は drift correction だけ」に、**GJI reinit（打鍵時の literal 回収 → VK_IME_OFF→ON 注入、`probe_io.rs:186`）が GJI × TsfNative の ON 方向の能動書き込みとして働く**ことを反映する（tsf × GJI、30/30 で確認）。
-- 実行: `gh workflow run e2e-ime.yml --ref <branch> -f only='cal-driftrec-*'`（cal-* は only 指定時だけ走る。観測のみで合否には含めない）。
+- **結論**: 閉じられた IME を drift correction が ON へ戻す経路は、フォーカス変更を挟んでも成立しない。
+  - Chrome 系クラスは FocusChange 後も `profile=Imm32Unavailable`（`Skipping IMM query for known-broken class`）で開閉を観測せず、判断に届かない（observed=0）。
+  - ImmCross（edit）は観測が届くが、フォーカス変更で `explicit_intent=None` になり、閉じた状態を新しい belief として採用する（設計どおり、drift=0）。
+  - ON へ戻るのは GJI reinit だけ。RichEdit の tsf × GJI は 30/30 で回復（refocus 有りも 10/10）、**実 Chrome × GJI は 0/10**（打鍵1回のみの観測）。
+- **反映済み**: 開閉軸の表へ GJI reinit の行、C-2 の但し書き、BUG-172 起票済みの記述。
+- **残り**:
+  - 実 Chrome でのフォーカス変更: `chrome_probe --refocus` は `SetForegroundWindow`/`SwitchToThisWindow` がタスクバーに拒否され `away=false`（フォーカス変更は起きていない）。別窓を作って前面にする方式に変える。
+  - 撤去前ビルド（`f83084b3`・`621bf93c` の前）との対照は未実施。
+  - 外部から IME を閉じられるケース（他アプリ・OS による IME OFF）の実運用での頻度の判断。頻度が低ければ対処しない選択もある。
+  - edit 構成は Unicode 注入で打鍵結果が開閉の証拠にならない（VK 注入になる入力先が要る）。
+- 実行: `gh workflow run e2e-ime.yml --ref <branch> -f only='cal-driftrec-*'`（`cal-driftrec-refocus-*`・`cal-driftrec-chrome-*` も同様。cal-* は only 指定時だけ走る。観測のみで合否には含めない）。
 
 ## 3. 未修正の不具合
 
-- **BUG-172**（`docs/known-bugs/BUG-172.md`、修正方針は未着手）: MS-IME + TsfNative で IME が閉じていても、送信前ゲート（msime-ready）が conv の NATIVE ビットを「ON 確認」と扱い、`ka` が生ローマ字で入る。CI で30/30再現（`cal-driftrec-tsf-msime-native`）。**実 Chrome で同じ状況になるか、実運用の外部要因で閉じられたときも起きるかは未確認**。修正時は回帰テスト（journal replay か、`cal-driftrec-tsf-msime-native` の not_recovered→recovered）を添える（`fix-requires-evidence`）。
+- **BUG-172**（`docs/known-bugs/BUG-172.md`）: CI の RichEdit 入力先（TsfNative 相当）では、msime-ready ゲートが conv の NATIVE を「ON 確認」と扱い `ka` が生ローマ字で入る（30/30）。**実 Chrome では別経路と確認**（2026-09-29、run 36524071258）: 症状は出る（9/9）が msime-ready ゲートは経由せず、原因は Imm32Unavailable による観測不能。ゲートへ開閉を要求する修正は実 Chrome の症状を直さず、TsfNative では開閉が信頼できないため**見送り**。実 Chrome の症状は上の「2.」の残りとして扱う。
 - **ts-chrome 高速打鍵（BUG-168 / ADR-200）**: 修正は develop にマージ済み（PR #334、CI 実 Chrome 2ms 1,440試行で失敗0）。BUG-168 の frontmatter は「修正済み・実機/CI 確認待ち」。残り（記録: 2026-09-26 のメモ、**未再確認**）: 候補窓が残ったまま GJI が OFF のときの回復低下（ADR-200 のリスク）、StaleConfirm の romaji 再送重複（BUG-075 系）、Escape 経路、他の reinit 呼び出し元、起動直後の IME モード不整合と awase 主スレッド7秒停止（未解明）。
 
 ## 4. MS-IME 本体の学習（ADR-196 T2）— 記録は 2026-09-24 時点、未再確認
@@ -41,7 +46,7 @@ related_adr: ["ADR-178", "ADR-191", "ADR-196", "ADR-200", "ADR-203"]
 
 ## 5. 後片付け・運用メモ
 
-- 残っている作業ブランチ/ワークツリー: リモート `ci/adr178-tsfnative-on-recovery`（#352 マージ済み）、ワークツリー `/home/cuzic/rust-nicola-wt/ci-verify-remaining`。削除は使用者の確認後（`worktree-per-session.md`）。
+- 残っている作業ブランチ/ワークツリー: リモート `ci/adr178-tsfnative-on-recovery`（#352 マージ済み）、ワークツリー `/home/cuzic/rust-nicola-wt/ci-verify-remaining`。BUG-172 用の `fix/bug172-msime-ready-open-check`・`ci/bug172-chrome-close-ime` は #361 マージ後に削除済み。削除は使用者の確認後（`worktree-per-session.md`）。
 - v1 ラインへの backport 要否は未確認（`main-develop-branch-flow.md`: 修正は develop で先に直し `v1-develop` へ backport。BUG-168・170・171 等が対象になるかは未判断）。
 - BUG-170/171 は別ブランチで採番されていたため、今回の BUG-172 は衝突を避けて 172。新規採番前に他ブランチの `docs/known-bugs/` を確認する。
 - ワークフロー実行の落とし穴: `workflow_dispatch` は develop 以外のブランチでも `--ref` で指定して使える。cal-* と ts-* は `only` 指定時だけ走る。`ImmSetOpenStatus` は別スレッドから呼ぶと失敗するので、外部からの開閉操作は既定 IME ウィンドウへの `WM_IME_CONTROL` にする。
