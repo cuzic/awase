@@ -2742,7 +2742,10 @@ mod tests {
                 .follow_external_change(Some(false), 1032, TickMs(1032), follow_fence()),
             None
         );
-        // 窓が切れた後
+        // 窓が切れた後（arm 前の直近の読みを 1 にしてから arm し、窓内の最初の読みも 1 = 変化なし）
+        let _ = ps
+            .ime
+            .follow_external_change(Some(true), 1990, TickMs(1990), follow_fence());
         ps.ime.arm_external_change_watch(2000);
         let _ = ps
             .ime
