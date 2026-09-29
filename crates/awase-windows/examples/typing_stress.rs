@@ -15,7 +15,7 @@
 //! CI で安定して動かせない Chrome・Zoom・UWP は対象外(フォーカス/起動が不確定でストレスと切り分けられない)。
 //!
 //! ## フラグ
-//! `--form=edit|multi|rich|tsf` / `--mode=nicola|raw|drift` / `--interval=MS`(1文字あたりの間隔。既定20) /
+//! `--form=edit|multi|rich|tsf` / `--mode=nicola|raw|drift|drift-on` / `--interval=MS`(1文字あたりの間隔。既定20) /
 //! `--trials=N`(種別ごとの試行数。既定4。`--mode=drift` では試行回数として使う) / `--len=N`(1試行の文字数。既定40) / `--seed=S` /
 //! `--kinds=single,thumb,mixed` / `--layout=PATH`(.yab。既定 layout/nicola_keytop.yab) /
 //! `--activate-gji`(GJI/MS-IME のプロファイルを有効化。CI 用) / `--msime`(有効化する IME を Microsoft IME に) /
@@ -31,6 +31,13 @@
 //! `keys.ime_off` をこの単一キーに上書きした状態で使うこと(既定の `Ctrl+無変換` は、`modifier_snapshot.ctrl`
 //! が `is_physical_key_down`(PHYSICAL_KEY_STATE)で判定されるため、SendInput 注入では物理 Ctrl 押下として
 //! 認識されず駆動できない)。追加フラグ: `--drift-off-vk=0xNN`(既定 0x1D=VK_NONCONVERT)。
+//!
+//! `--mode=drift-on`(ADR-178 領域A撤去後の回帰観測): reassert/force-on 撤去後、drift correction「だけ」で
+//! TsfNative 相当の入力先(`--form=tsf`)の ON 回復が働くかを見る。手順は「IME を ON にそろえる(awase が明示意図 ON を
+//! 持つ)→ **ハーネスが自プロセスの入力欄の IME を `ImmSetOpenStatus(false)` で直接閉じる**(awase を経由しない
+//! 「ずれ」)→ +500/+1500/+3000ms で `ImmGetOpenStatus` を読む → かな単打を1回打って確定し、結果のテキストを読む
+//! (API の成功表示だけでなく実タイピングで ON/OFF を確認する)」を `--trials` 回繰り返す。
+//! 記録は `drift_on_pre` / `drift_on_close` / `drift_on_check` / `drift_on_typed`。
 //!
 //! ## 注入の作法
 //! `dwExtraInfo = hook::TEST_INJECTION_MARKER`(`AWASE_TEST_INJECTION=1` の debug ビルド awase が物理キー扱い)。
@@ -897,11 +904,84 @@ fn drift_scenario(child: HWND) {
     }
 }
 
+/// ハーネス自身の入力欄の IME を、awase を経由せず直接閉じる(外部要因による「ずれ」の再現)。
+/// 戻り値は `ImmSetOpenStatus` の成否(HIMC が取れなければ `None`)。
+fn force_close_real_ime(child: HWND) -> Option<bool> {
+    // SAFETY: 自プロセスの入力欄の HWND に対する IMM 呼び出し。取得した HIMC は必ず解放する。
+    unsafe {
+        let himc = windows::Win32::UI::Input::Ime::ImmGetContext(child);
+        if himc.is_invalid() {
+            return None;
+        }
+        let ok = windows::Win32::UI::Input::Ime::ImmSetOpenStatus(himc, false).as_bool();
+        let _ = windows::Win32::UI::Input::Ime::ImmReleaseContext(child, himc);
+        Some(ok)
+    }
+}
+
+/// `--mode=drift-on`(ADR-178 領域A撤去後の ON 回復の観測)。`ime_ready` の後に呼ぶ。
+/// 1試行: IME を ON にそろえる → 実 IME を直接閉じる → +500/+1500/+3000ms で `real_ime_open` を記録 →
+/// かな単打を1回打って確定し、入力欄のテキストを記録する(IME が閉じたままなら生ローマ字になる)。
+fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
+    let trials: usize = arg_value("--trials=")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    const CHECKPOINTS_MS: [u64; 3] = [500, 1500, 3000];
+    let Some(probe) = cells[0]
+        .iter()
+        .find(|c| c.romaji == "ka")
+        .cloned()
+        .or_else(|| cells[0].first().cloned())
+    else {
+        rec(&json!({"type":"abort","reason":"drift-on の打鍵確認に使う単打セルが無い"}));
+        return;
+    };
+    for n in 0..trials {
+        if !focus_ok() {
+            refocus();
+        }
+        if !focus_ok() {
+            rec(
+                &json!({"type":"abort","reason":format!("drift-on試行前にフォーカスが外れた n={n}")}),
+            );
+            return;
+        }
+        turn_ime_on(n);
+        rec(&json!({"type":"drift_on_pre","n":n,"real_ime_open":real_ime_open(child)}));
+        let set_ok = force_close_real_ime(child);
+        sleep_ms(50);
+        rec(
+            &json!({"type":"drift_on_close","n":n,"set_ok":set_ok,"real_ime_open":real_ime_open(child)}),
+        );
+        let mut waited_ms = 0u64;
+        for &cp in &CHECKPOINTS_MS {
+            sleep_ms(cp - waited_ms);
+            waited_ms = cp;
+            rec(
+                &json!({"type":"drift_on_check","n":n,"checkpoint_ms":cp,"real_ime_open":real_ime_open(child)}),
+            );
+        }
+        clear_text(child);
+        sleep_ms(200);
+        press(probe.vk, probe.scan, 60);
+        sleep_ms(700);
+        press(VK_RETURN, 0x1C, 50);
+        sleep_ms(700);
+        let text = read_text(child);
+        rec(
+            &json!({"type":"drift_on_typed","n":n,"text":text,"expect":probe.kana.to_string(),
+            "ok":text.trim() == probe.kana.to_string(),"real_ime_open":real_ime_open(child)}),
+        );
+        clear_text(child);
+    }
+}
+
 fn worker(form: Form) {
     let child = hwnd_of(&CHILD);
     let mode_arg = arg_value("--mode=");
     let raw = mode_arg.as_deref() == Some("raw");
     let drift = mode_arg.as_deref() == Some("drift");
+    let drift_on = mode_arg.as_deref() == Some("drift-on");
     let iv_ms: f64 = arg_value("--interval=")
         .and_then(|v| v.parse().ok())
         .unwrap_or(20.0);
@@ -944,7 +1024,7 @@ fn worker(form: Form) {
         collect_cells(&layout.right_thumb, Face::Right, &table),
     ];
     rec(
-        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if drift {"drift"} else if raw {"raw"} else {"nicola"},
+        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if drift {"drift"} else if drift_on {"drift-on"} else if raw {"raw"} else {"nicola"},
         "interval_ms":iv_ms,"len":len,"trials":trials,"seed":seed,"kinds":kinds,
         "layout":layout_path,"cells":[cells[0].len(),cells[1].len(),cells[2].len()],
         "child_class":class_of(child)}),
@@ -983,6 +1063,11 @@ fn worker(form: Form) {
 
     if drift {
         drift_scenario(child);
+        finish();
+        return;
+    }
+    if drift_on {
+        drift_on_scenario(child, &cells);
         finish();
         return;
     }
