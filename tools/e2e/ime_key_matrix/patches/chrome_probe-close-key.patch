@@ -1,5 +1,5 @@
 diff --git a/crates/awase-windows/examples/chrome_probe.rs b/crates/awase-windows/examples/chrome_probe.rs
-index 22c492c2..68fa99e2 100644
+index 22c492c2..afcc2cb0 100644
 --- a/crates/awase-windows/examples/chrome_probe.rs
 +++ b/crates/awase-windows/examples/chrome_probe.rs
 @@ -207,6 +207,11 @@ fn scan_for(vk: u32) -> u16 {
@@ -38,7 +38,72 @@ index 22c492c2..68fa99e2 100644
          if attached {
              let _ = AttachThreadInput(my_tid, fg_tid, false);
          }
-@@ -759,6 +770,18 @@ fn main() {
+@@ -751,6 +762,64 @@ fn main() {
+         let _ = child.kill();
+         return;
+     }
++    // `--d1=N`(BUG-163 の実機確認・実機確認用パッチ): awase を「この試行の中で」起動し直し、起動直後の最初の打鍵が欠落しないか、
++    // IME を閉じて起動したとき awase が勝手に開けないかを見る。`--awase-exe=` `--awase-cwd=` 必須。`--d1-state=on|off`(既定 on)、
++    // `--d1-delay=MS`(awase 起動から打鍵まで、既定 800)。awase は RUST_LOG=debug・AWASE_TEST_INJECTION=1 で起動し、試行ごとに終了させる。
++    if let Some(n) = args.iter().find_map(|a| {
++        a.strip_prefix("--d1=")
++            .and_then(|v| v.parse::<usize>().ok())
++    }) {
++        let exe = args
++            .iter()
++            .find_map(|a| a.strip_prefix("--awase-exe=").map(str::to_string))
++            .expect("--awase-exe=");
++        let cwd = args
++            .iter()
++            .find_map(|a| a.strip_prefix("--awase-cwd=").map(str::to_string))
++            .expect("--awase-cwd=");
++        let state_on = args
++            .iter()
++            .find_map(|a| a.strip_prefix("--d1-state="))
++            .map_or(true, |v| v != "off");
++        let delay: u64 = args
++            .iter()
++            .find_map(|a| a.strip_prefix("--d1-delay=").and_then(|v| v.parse().ok()))
++            .unwrap_or(800);
++        for i in 0..n {
++            p.log.line(&format!("[D1 {}/{n}] state={}", i + 1, if state_on { "on" } else { "off" }));
++            p.focus_lost = false;
++            bring_to_front();
++            // awase なしで IME の状態を作る(目印なし注入)。
++            let vk = if state_on { 0x16 } else { 0x1A };
++            send_key_extra(vk, true, 0);
++            sleep(40);
++            send_key_extra(vk, false, 0);
++            sleep(1500);
++            let _ = p.command("clear", "cleared");
++            let mut aw = std::process::Command::new(&exe)
++                .current_dir(&cwd)
++                .env("RUST_LOG", "debug")
++                .env("AWASE_TEST_INJECTION", "1")
++                .spawn()
++                .expect("awase を起動できません");
++            p.log.line(&format!("D1_AWASE_SPAWN pid={} (打鍵まで {delay}ms)", aw.id()));
++            sleep(delay);
++            let got = p.probe_logged("D1 起動直後の最初の打鍵");
++            p.log.line(&format!("D1_RESULT state={} got={}", if state_on { "on" } else { "off" }, got.label()));
++            if p.focus_lost {
++                p.log.line("RESULT INVALID: ページのフォーカスが外れた");
++            }
++            sleep(3000);
++            let open_late = ime_control(0x0005, 0);
++            p.log.line(&format!("D1_OPEN_AFTER_3S {open_late:?}"));
++            let _ = aw.kill();
++            let _ = aw.wait();
++            sleep(1500);
++        }
++        p.log.line("=== 全ケース完了 ===");
++        let _ = child.kill();
++        return;
++    }
+     // `--close-ime=N`(BUG-172 の実 Chrome 確認): IME を ON にそろえた後、実 IME を WM_IME_CONTROL で直接閉じ、
+     // 3 秒待ってからかな単打(k,a)を打って結果を見る。閉じたまま `ka`/ローマ字が出れば BUG-172 が実 Chrome でも起きる。
+     // `open=` は awase と同じ経路(IMC_GETOPENSTATUS)の読み取り値(TsfNative では信頼できない可能性がある)。
+@@ -759,6 +828,18 @@ fn main() {
              .and_then(|v| v.parse::<usize>().ok())
      }) {
          let (mut ok, mut bad, mut invalid) = (0usize, 0usize, 0usize);
@@ -57,7 +122,7 @@ index 22c492c2..68fa99e2 100644
          for i in 0..n {
              p.log.line(&format!("[CLOSE {}/{n}]", i + 1));
              p.focus_lost = false;
-@@ -769,7 +792,16 @@ fn main() {
+@@ -769,7 +850,16 @@ fn main() {
                  continue;
              }
              let before = ime_control(0x0005, 0);
@@ -75,7 +140,7 @@ index 22c492c2..68fa99e2 100644
              sleep(50);
              let after = ime_control(0x0005, 0);
              p.log.line(&format!(
-@@ -786,6 +818,19 @@ fn main() {
+@@ -786,6 +876,19 @@ fn main() {
              }
              let open_late = ime_control(0x0005, 0);
              let got = p.probe_logged("閉じて3秒後");

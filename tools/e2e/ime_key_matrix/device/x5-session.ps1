@@ -16,14 +16,19 @@ while ((Test-Locked) -or ([Idle3]::Ms() -lt $IdleMs)) {
   Start-Sleep 10
 }
 "start $(Get-Date -Format o) idle_ms=$([Idle3]::Ms()) locked=$(Test-Locked)" | Add-Content $st
+$aw = 'C:/Users/cuzic/awase-dv/target/debug/awase.exe'
+$cw = 'C:/Users/cuzic/awase-dv'
 $runs = @(
-  @('x5-1a', '--close-ime=10 --close-key=1A --then-chord=A2,1C --settle=800'),
-  @('x5-f3', '--close-ime=10 --close-key=F3 --then-chord=A2,1C --settle=800'),
-  @('x5-wm', '--close-ime=10 --settle=800')
+  @('x5b-1a', '--close-ime=10 --close-key=1A --then-chord=A2,1C --settle=800', $false),
+  @('x5b-f3', '--close-ime=10 --close-key=F3 --then-chord=A2,1C --settle=800', $false),
+  @('d1-on', "--d1=6 --d1-state=on --d1-delay=800 --awase-exe=$aw --awase-cwd=$cw", $true),
+  @('d1-off', "--d1=6 --d1-state=off --d1-delay=800 --awase-exe=$aw --awase-cwd=$cw", $true)
 )
 foreach ($r in $runs) {
   if (Test-Locked) { "aborted before $($r[0]): screen locked $(Get-Date -Format o)" | Add-Content $st; break }
   "run $($r[0]) $(Get-Date -Format o)" | Add-Content $st
-  & powershell -NonInteractive -ExecutionPolicy Bypass -File C:/Users/cuzic/dv-x5.ps1 -Name $r[0] -ProbeArgs $r[1] -MinIdleMs 0 *> "$Out/$($r[0])-runner.txt"
+  $extra = @{}
+  if ($r[2]) { $extra['NoAwase'] = $true }
+  & C:/Users/cuzic/dv-x5.ps1 -Name $r[0] -ProbeArgs $r[1] -MinIdleMs 0 @extra *> "$Out/$($r[0])-runner.txt"
 }
 "done $(Get-Date -Format o)" | Add-Content $st

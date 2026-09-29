@@ -26,8 +26,8 @@ try {
   $owner | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
   Start-Sleep 1
   $aw = $null
+  Remove-Item "$TestDir/target/debug/awase.log" -ErrorAction SilentlyContinue
   if (-not $NoAwase) {
-    Remove-Item "$TestDir/target/debug/awase.log" -ErrorAction SilentlyContinue
     $env:RUST_LOG = 'debug'; $env:AWASE_TEST_INJECTION = '1'
     $aw = Start-Process -FilePath "$TestDir/target/debug/awase.exe" -WorkingDirectory $TestDir -PassThru
     Remove-Item Env:RUST_LOG; Remove-Item Env:AWASE_TEST_INJECTION
@@ -46,8 +46,8 @@ finally {
   Get-Process chrome_probe -ErrorAction SilentlyContinue | Stop-Process -Force
   Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" | Where-Object { $_.CommandLine -like '*chrome_probe_profile*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
   Start-Sleep 1
-  if ($aw) {
-    Stop-Process -Id $aw.Id -Force -ErrorAction SilentlyContinue
+  if ($aw -or $NoAwase) {
+    Get-CimInstance Win32_Process -Filter "Name='awase.exe'" | Where-Object { $_.ExecutablePath -like '*awase-dv*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Start-Sleep 1
     Copy-Item "$TestDir/target/debug/awase.log" "$Out/$Name-awase.log" -Force -ErrorAction SilentlyContinue
   }
