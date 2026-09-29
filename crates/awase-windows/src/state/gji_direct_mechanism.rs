@@ -330,17 +330,17 @@ pub fn send_carries_romaji(actions: &[KeyAction]) -> bool {
 /// 何もしない）。入力の途中で cold に落とすと per-VK confirm → StaleConfirm → ESC で未確定文字が
 /// 消える（BUG-171、BUG-033 追補3・4 と同型）。
 ///
-/// Unicode 注入モードでは出さない（PR #354 のコードレビュー M2）: `send_romaji_as_unicode` は GjiFsm に
-/// `KeyInput` を送らず composition も迂回するので per-VK/ESC の害が無く（(i) の除外理由と同じ）、
-/// Reopen で OnWarm→OnCold になった後の long-idle で `needs_unicode_cold_warmup` が awase 起点の
-/// VK_IME_ON poke を復活させてしまい、ADR-191「awase は書かない」に反する。
+/// **Unicode 注入モードでも出す**（PR #354 のコードレビュー M2 で一度「Unicode では出さない」にしたが、
+/// e2e-ime-smoke の baseline/atok-passthrough-cold（Unicode モードで動く）で GjiFsm が OffCold に固着して
+/// I4 が FAIL したため取り下げた）。Reopen 後の long-idle で `needs_unicode_cold_warmup` が VK_IME_ON poke
+/// を出すのは Unicode long-cold の既存設計（同期が正常に届く Unicode ユーザーでは元から起きる挙動）で、
+/// OffCold に固着すると失われるのは「long-cold の defer」であり、それを取り戻すのが同期の目的である。
 #[must_use]
 pub const fn reopen_obligation(
     candidate_visible: bool,
-    injection_is_unicode: bool,
     source: ReopenSource,
 ) -> Option<GjiFsmSync> {
-    if candidate_visible || injection_is_unicode {
+    if candidate_visible {
         None
     } else {
         Some(GjiFsmSync::Reopen(source))
@@ -464,16 +464,11 @@ mod tests {
     }
 
     #[test]
-    fn reopen_is_suppressed_while_candidate_visible_or_unicode() {
+    fn reopen_is_suppressed_only_while_candidate_visible() {
         use ReopenSource::*;
         for src in [Predict, ShadowNoop, ShadowToggle] {
-            assert_eq!(
-                reopen_obligation(false, false, src),
-                Some(GjiFsmSync::Reopen(src))
-            );
-            assert_eq!(reopen_obligation(true, false, src), None);
-            assert_eq!(reopen_obligation(false, true, src), None);
-            assert_eq!(reopen_obligation(true, true, src), None);
+            assert_eq!(reopen_obligation(false, src), Some(GjiFsmSync::Reopen(src)));
+            assert_eq!(reopen_obligation(true, src), None);
         }
     }
 

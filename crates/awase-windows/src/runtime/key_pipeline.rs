@@ -1965,7 +1965,6 @@ impl Runtime {
         }
         let Some(sync) = crate::state::gji_direct_mechanism::reopen_obligation(
             crate::tsf::observer::gji_candidate_visible_now(),
-            self.platform.output.injection_mode == crate::output::InjectionMode::Unicode,
             source,
         ) else {
             return;

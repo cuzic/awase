@@ -76,14 +76,15 @@ related_adr:
    composing 中に F2 が押された場合は上の表で何もせず、既存の F2 処理(NativeF2Consumed / F2NonTsf の CompositionReset、Short なら warm のまま)が従来どおり効く。
    `ImeOn` の「already on, ignored」は変えない。**OFF は同期しない**(ImeOff は従来どおり awase の actuation〈Applied の receipt〉のみ)。OFF 同期が要る唯一の理由
    「次の ON で already on にならず cold にならない」は、OnWarm での ON キーによる開き直しで消える。B3(belief 由来 ImeOff が deferred を捨てる)と OFF の信頼度の議論は不要。
-   **Unicode 注入モードでは Reopen を出さない**(PR #354 コードレビュー M2: per-VK/ESC の害が無く、Reopen 後の long-idle で awase 起点の VK_IME_ON poke が復活するため)。
+   **Unicode 注入モードでも Reopen を出す**((i) の level 突合だけが Unicode を除外する)。PR #354 コードレビュー M2 で一度「Unicode では出さない」にしたが、e2e-ime-smoke の baseline/atok-passthrough-cold
+   (Unicode モードで動く)で GjiFsm が OffCold に固着し I4 が FAIL したため取り下げた。Reopen 後の long-idle の VK_IME_ON poke は Unicode long-cold の既存設計で、OffCold 固着で失われるのは long-cold の defer である。
    **既知の穴(M3)**: 予測経路の `open` は「変化するときだけ `Some`」なので、belief が既に ON の予測経路キーでは Reopen が出ない。「OFF を見逃した後の ON を開き直しで覆う」根拠は、shadow toggle の no-op 分岐の `TurnOn` に限って成り立つ(BUG-170.md に記録)。
    **代償は「OnWarm(未確定文字なし)で ON 系キーを単独タップした直後の1語だけ per-VK になる」こと**(実測で per-VK の1語は `[vk-send]` から `全 2 VK 確認済み` まで約 30〜60ms。
    その間の後続打鍵は OUTPUT_GATE で遅れる)。1語ごとに StaleConfirm 誤検出による romaji 再送重複(BUG-075 系、CI で約0.14%)へ触れる機会が1回増えるが、最初の語だけなので
    ESC による既存未確定文字の消失(BUG-171)には当たらない。NICOLA の親指キー(0x1C/0x1D)は同時打鍵でエンジンが消費するため予測経路に来ない。
    `ImeApplySucceeded` は対象外(generation 付き awase actuation 専用で receipt が INV-42 で同期済み、重複するうえ Unwarranted を含まない)。shadow toggle は ON 方向のみ(向きは belief 次第で
    Imm32Unavailable では逆になりうるため)。
-3. **origin を運ぶ**(実装は `dispatch_gji_response_from` の引数まで。FSM/`ProbeParams` には持たせていない。Unicode の `needs_unicode_cold_warmup` 経路は origin を見ないため、Unicode では Reopen 自体を出さないことで補った〈M2〉): `GjiFsmSync`/`Reopen`/`ImeOn` に origin(`Actuation` | `BeliefSync`)を持たせ、`GjiAction::StartProbe` は origin を持たないので `ProbeParams` に `suppress_reinit` を足す等で
+3. **origin を運ぶ**(実装は `dispatch_gji_response_from` の引数まで。FSM/`ProbeParams` には持たせていない。Unicode の `needs_unicode_cold_warmup` 経路は origin を見ないが、poke は Unicode long-cold の既存設計なので抑止しない〈M2 は取り下げ〉): `GjiFsmSync`/`Reopen`/`ImeOn` に origin(`Actuation` | `BeliefSync`)を持たせ、`GjiAction::StartProbe` は origin を持たないので `ProbeParams` に `suppress_reinit` を足す等で
    `dispatch_gji_response` の StartProbe の Unicode 分岐(`platform.rs:554-563`)へ届ける。`BeliefSync` 由来では long-cold reinit(`send_f22_f21_reinit`、フックコールバック内の VK_IME_OFF→ON)を行わない
    (ADR-191「awase は書かない」・ADR-090 A-2 の warrant を迂回しない)。(ii) は Unicode モードの窓でも発火するため必須。
 4. **既存の点パッチの扱い**: `presync_applied_open_on`(HwndCacheRestored 相当、BUG-18)と `sync_ime_kind_from_observation` の `applied_open()==Some(true)` の ImeOn は、(i) が GjiFsm 作り直し(B2)も拾うため
