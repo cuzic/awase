@@ -16,7 +16,7 @@ use super::output::make_tsf_key_input;
 /// MAPVK_VK_TO_VSC)` が非ゼロ (`0xF2`) であることを実機確認済み）。
 ///
 /// 戻り値: 実際に注入した場合 `Some(送信時刻ms)`（`current_tick_ms` の値）。
-/// Win キー押下中でスキップした場合 `None`。
+/// 修飾キー（Win/Alt/Ctrl/Shift）押下中でスキップした場合 `None`。
 ///
 /// **呼び出し元は `None` を「送信していない」として扱うこと** — スキップを送信成功
 /// 扱いで `eager_warmup_sent_ms` にラッチすると、この warmup が「物理 F2 キーの代替」
@@ -28,11 +28,12 @@ use super::output::make_tsf_key_input;
 pub(crate) fn send_eager_warmup_vk_pair() -> Option<u64> {
     use crate::vk::VK_IME_ON;
 
-    // Win キー押下中は送信をスキップする。
-    // Win を押したまま IME モードキーを注入すると Win+key として届き、
-    // Win↑ 時にスタートメニューが開く原因になる。
-    if crate::hook::win_key_held() {
-        tracing::debug!("[tsf-warmup] skipped VK_IME_ON (Win key held)");
+    // 修飾キー（Win/Alt/Ctrl/Shift）押下中は送信をスキップする。
+    // Win: Win+key として届き、Win↑ 時にスタートメニューが開く原因になる。
+    // Ctrl/Shift/Alt: 「修飾キー+VK_IME_ON」として届く。実機 A/B（BUG-175）で
+    // Ctrl+Shift 押下中の注入で「@」が出ることを確認した。
+    if crate::hook::eager_warmup_blocked_by_modifier() {
+        tracing::debug!("[tsf-warmup] skipped VK_IME_ON (modifier key held)");
         return None;
     }
 

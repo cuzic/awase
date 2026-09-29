@@ -1227,7 +1227,7 @@ impl Output {
             }
             None => {
                 tracing::debug!(
-                    "[tsf-eager-warmup] スキップ (Win key held) → eager_warmup_sent_ms は \
+                    "[tsf-eager-warmup] スキップ (modifier key held) → eager_warmup_sent_ms は \
                      更新しない (BUG-32)"
                 );
             }

@@ -408,6 +408,52 @@ pub fn alt_key_held() -> bool {
     )
 }
 
+/// Ctrl キー（左右どちらか）が「新鮮に」押下中かを返す（BUG-175）。
+///
+/// `alt_key_held()` と同型（`is_held_fresh` を共有し、`WIN_KEY_HELD_STALE_MS` を
+/// そのまま再利用する。新規タイミング定数は実測無しに追加しない）。
+#[must_use]
+pub fn ctrl_key_held() -> bool {
+    use crate::state::win_key_guard::is_held_fresh;
+    use crate::vk::{VK_CONTROL, VK_LCONTROL, VK_RCONTROL};
+    [VK_CONTROL, VK_LCONTROL, VK_RCONTROL]
+        .into_iter()
+        .any(|vk| {
+            is_held_fresh(
+                physical_key_held_ms(vk),
+                crate::tuning::WIN_KEY_HELD_STALE_MS,
+            )
+        })
+}
+
+/// Shift キー（左右どちらか）が「新鮮に」押下中かを返す（BUG-175）。
+#[must_use]
+pub fn shift_key_held() -> bool {
+    use crate::state::win_key_guard::is_held_fresh;
+    use crate::vk::{VK_LSHIFT, VK_RSHIFT, VK_SHIFT};
+    [VK_SHIFT, VK_LSHIFT, VK_RSHIFT].into_iter().any(|vk| {
+        is_held_fresh(
+            physical_key_held_ms(vk),
+            crate::tuning::WIN_KEY_HELD_STALE_MS,
+        )
+    })
+}
+
+/// eager warmup（`VK_IME_ON` の合成注入）を、修飾キー押下中にスキップすべきか（BUG-175）。
+///
+/// Win/Alt/Ctrl/Shift のいずれか押下中は `true`。判定の中身は
+/// `state::win_key_guard::eager_warmup_blocked`（純粋関数）。
+/// `tsf/send.rs::send_eager_warmup_vk_pair` の唯一の判定点。
+#[must_use]
+pub fn eager_warmup_blocked_by_modifier() -> bool {
+    crate::state::win_key_guard::eager_warmup_blocked(
+        win_key_held(),
+        alt_key_held(),
+        ctrl_key_held(),
+        shift_key_held(),
+    )
+}
+
 /// 合成 IME モードキー（`VK_DBE_*`/`VK_KANJI` 等）を注入してよいかの
 /// Win/Alt ガード。`false` の場合、呼び出し元は注入をスキップすべき。
 ///

@@ -174,6 +174,7 @@
 | [BUG-170](BUG-170.md) | Unwarranted 経路で GjiFsm への同期が届かず OffCold に固着、毎打鍵 per-VK→StaleConfirm→ESC で未確定文字が消える(GJI+Edge/Meet) |
 | [BUG-171](BUG-171.md) | per-VK confirm の StaleConfirm(escape=true)が途中の語で既存の未確定文字まで ESC で消す(未修正) |
 | [BUG-172](BUG-172.md) | MS-IME+TsfNative で IME が閉じていても、msime-ready ゲートが conv の NATIVE を「ON確認」と扱い生ローマ字が入る(CI観測、実機未確認) |
+| [BUG-175](BUG-175.md) | eager warmup(`VK_IME_ON` 合成注入)が Ctrl/Shift/Alt 押下中にも送られ「@」が出る(実機A/Bで確認、Win 以外の修飾キーガードを追加) |
 
 ## その他の資料
 
