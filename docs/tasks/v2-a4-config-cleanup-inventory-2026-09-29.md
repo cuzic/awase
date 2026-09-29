@@ -1,6 +1,6 @@
 ---
 title: v2 A4 設定項目整理の棚卸し（keys.ime_detect・*_solo_tap_ime_action・keyboard_model）
-status: 棚卸しのみ（実装なし）。推奨は下の結論表。所有者の判断待ち論点あり（末尾）
+status: 棚卸し済み。所有者決定（2026-09-29）を反映済み。実装は feat/v2-keys-cleanup と feat/v2-solo-tap-redesign で別途進行
 created: 2026-09-29
 related_adr: ["ADR-153", "ADR-192", "ADR-195", "ADR-196", "ADR-199", "ADR-201", "ADR-202"]
 source: docs/tasks/v2-release-checklist-2026-09-29.md A4
@@ -10,19 +10,44 @@ base_commit: 88f9c1f8（origin/develop、PR #367 マージ直後）
 # v2 A4: 設定項目整理の棚卸し（2026-09-29）
 
 所有者決定（2026-09-29）で v2 のスコープに A4 を含めた。A4 の前提は「学習・較正が完成すれば不要になる設定項目」。
-この文書は **実装せず**、撤去または既定変更の判断材料を作る。根拠はすべて `88f9c1f8` のコードを読んで確認した
+この文書は **実装せず**、撤去または既定変更の判断材料を作った。所有者決定（同日）を受けて「結論」の節と論点の節を書き換えた（各項の棚卸しの事実は変えていない）。根拠はすべて `88f9c1f8` のコードを読んで確認した
 （ビルド・テストは実行していない。行番号は同コミット）。ADR-199 の決定1・9・12・15 と矛盾する提案はしない。
 
-## 結論（推奨）
+## 結論（所有者決定 2026-09-29）
 
-| 項目 | 推奨 | 一言の理由 |
+当初の棚卸しでは「残す」を推奨していたが、所有者が次のとおり決定した。以降の実装はこの決定に従う。
+下の各項（1〜4）の「定義・使われ方・撤去した場合の影響」は棚卸し時点（`88f9c1f8`）の事実であり、決定後も参照用に残す。
+
+| 項目 | 所有者決定 | 実装の受け皿 |
 |---|---|---|
-| `keys.ime_detect.{toggle,on,off}` | **残す**（既定も現状維持） | ADR-199 決定9・12 が「存続」と明記。ATOK 本体・未検出・MS-IME 互換モードで唯一のユーザー側の手段。既定 `on`/`off` を空にする案は挙動差があり、v2.0 では見送り（論点 Q1） |
-| `muhenkan_solo_tap_ime_action` / `henkan_solo_tap_ime_action` | **残す（v2.0）**。撤去は実機 A/B 後の別ラウンド | 学習・逆算では置き換わっていない。ADR-153 の「@」対策（ケース3改）と GUI の案内（ADR-192 T3）が依存。`keys.ime_on/off` の bare 指定（ADR-192 決定3b）で機能的にはほぼ代替できるが、「@」抑止の同等性が未検証（論点 Q2） |
-| `general.keyboard_model` | **残す** | IME の学習・逆算とは別の軸（物理配列 JIS/US）。A4 の前提が当てはまらない |
+| `keys.ime_detect.{on,off}` の既定 | **空にする**（`toggle` は元から空）。フィールド自体と手動指定の手段は残す | `feat/v2-keys-cleanup` |
+| `keys.engine_on_ime_key` / `engine_off_ime_key` | **撤去する** | `feat/v2-keys-cleanup` |
+| `muhenkan_solo_tap_ime_action` / `henkan_solo_tap_ime_action` | **再設計する**。`keys.*` の Suppress/Passthrough の設定に従う。IME 側がトグル動作なら生キーを抑止し、awase が belief に従って ON/OFF を **明示的に inject** する。ADR 起票と敵対レビューを通してから実装する | `feat/v2-solo-tap-redesign` |
+| `general.keyboard_model` | **残す**（変更なし） | — |
 
-「撤去可」と言える項目は今回のところ無い。理由は各項の「撤去した場合」に書いた。
-なお、類する設定として `keys.engine_on_ime_key` / `engine_off_ime_key` が「能動書き込みの残骸」候補（論点 Q4）。
+論点 Q1〜Q5 は下の節のとおり **すべて決定済み**（Q2 は再設計に、Q1 は既定を空にする方向に、Q4 は撤去に確定）。
+
+### 決定によって新たに生じる注意点
+
+棚卸しの時点では存在しなかった論点。実装と ADR のレビューで必ず扱うこと。
+
+1. **`sync_direction` の優先**: `kp_stage_shadow_ime_toggle`（`key_pipeline.rs:1172-1173`）は `sync_direction` を `shadow_action` より優先する。
+   `ime_detect` の `on`/`off` を空にすると、0x16/0x1A は `shadow_action`（`vk.rs:146-160` の静的な `shadow_effect`）経由になり、
+   意図の種別が `SyncKey` から `PhysicalImeKey` に変わる。加えて `is_japanese_ime()` が偽のとき（grace 期間中の誤答）は追随されない（棚卸し (2) の推論。実機未確認）。
+   利用者が `toggle` / `on` / `off` に **手動で書いた**キーは従来どおり `sync_direction` が最優先になる。
+   両方に同じキーがある構成（既定を空にした後にユーザーが 0x16 を `on` に書く等）で優先が変わらないことを、テストで固定する。
+2. **belief が古い場合の逆動作**: 再設計後の単独タップは「belief に従って ON/OFF を明示 inject」する。
+   belief が実際の IME 状態とずれている（TsfNative で API が嘘をつく、外部から IME を切り替えた、等）と、
+   ON にしたいのに OFF を送る、またはその逆が起きる。従来の `explicit_ime_action_target` の `PromoteToOn`/`SuppressOnly` は
+   「書かない」経路を含んでいたため、この種のずれは表面化しにくかった。能動書き込みが **増える**設計になるため、
+   誤った inject は直接ユーザーに見える。inject 前の belief の確からしさ（観測の鮮度、`applied_pair` の有無、BUG-113 の `shadow_on` の `Option<bool>` 扱い）を設計に含める。
+3. **二重トグル**: IME 側が無変換/変換の生キーでトグルする場合、生キーを抑止しないまま awase も inject すると二重に切り替わる（BUG-46 型）。
+   「生キー抑止」と「awase の inject」は必ず対で入れ、`transport.rs::PhysicalKeyDisposition::plan` の M19 例外（`transport.rs:270-300`）と
+   `keys.*` の Suppress/Passthrough の分岐が食い違わないこと。Passthrough を選んだ場合は inject しない（IME が自分で切り替えるため）ことの確認が要る。
+4. **actuation 合流点**: inject は `apply_ime_open_with_view` 系の合流点を通す（`fix-requires-evidence.md` の「IME actuation 合流点」行）。
+   新しい経路を足すので、同期・非同期の全合流点とその許可リスト（`lints/actuation_call_guard`）を洗い出す。
+5. **移行**: 既存 config.toml に `*_solo_tap_ime_action` や `engine_on/off_ime_key` が残っている場合の扱いは Q5 のとおり
+   （効果があった設定は 1 回限りの移行警告、死んだ設定は `REMOVED_KEYS`）。`engine_on/off_ime_key` は効果があった設定なので移行警告が要る。
 
 ---
 
@@ -73,7 +98,7 @@ base_commit: 88f9c1f8（origin/develop、PR #367 マージ直後）
 ### (5) 再発ファミリー・必要な回帰テスト
 
 キー選択・IME belief の両ファミリー（`runtime/key_pipeline.rs`、`runtime/focus_tracker.rs`）。現状維持なら変更なし。
-**既定を空にする場合**（Q1 で所有者が選んだときだけ）は、(a) `kp_stage_shadow_ime_toggle` の `SyncKey`→`PhysicalImeKey` 切替と `is_japanese_ime()` 偽のときの 0x16/0x1A、(b) `transport.rs` の配送（0x16/0x1A は元々 `shadow_action` を持つ）を `crates/awase-windows/tests/golden_scenarios.rs` または `journal_replay.rs` で固定する。`vk.rs:1318` の衝突テストは空でも通る。
+**既定を空にする場合**（Q1 で「空にする」と決定済み。feat/v2-keys-cleanup で実施）は、(a) `kp_stage_shadow_ime_toggle` の `SyncKey`→`PhysicalImeKey` 切替と `is_japanese_ime()` 偽のときの 0x16/0x1A、(b) `transport.rs` の配送（0x16/0x1A は元々 `shadow_action` を持つ）を `crates/awase-windows/tests/golden_scenarios.rs` または `journal_replay.rs` で固定する。`vk.rs:1318` の衝突テストは空でも通る。
 
 ---
 
@@ -153,26 +178,25 @@ base_commit: 88f9c1f8（origin/develop、PR #367 マージ直後）
 
 ---
 
-## 実装の分割案（PR 単位）
+## 実装の分割（所有者決定後）
 
-前提: **#366（ConfirmMode）が `src/config.rs`・`config_save.rs`・`settings/main.rs`・`config.toml`・README・usage を編集済み**。A4 の config.rs 編集は #366 のマージ後に develop から切る。
+前提: **#366（ConfirmMode）が `src/config.rs`・`config_save.rs`・`settings/main.rs`・`config.toml`・README・usage を編集済み**。config.rs を触る PR は #366 のマージ後の develop から切る。
 
-| PR | 内容 | 触るファイル | 条件 |
+| 受け皿 | 内容 | 主に触るファイル | 条件 |
 |---|---|---|---|
-| A4-0（推奨、今すぐ可） | 文書の整理のみ: `docs/design/settings-gui.md` の撤去済み「タブ3 IME 検出」節の更新、`ime_detect` の説明を「ATOK 本体・未検出・MS-IME 互換モード向けの手動指定」と明確化（`config.toml:27-34`・`usage*.html`・README の該当行） | docs、`config.toml`（コメントのみ）。例ブロックの中身は変えない | #366 と `config.toml`・usage が重なるので、#366 マージ後に。挙動変更なし |
-| A4-1（Q1 で「空にする」を選んだ場合のみ） | `ImeDetectConfig::default()` の `on`/`off` を空に | `src/config.rs:519-543`、`vk.rs:1318`、golden/journal テスト、docs | キー選択・belief ファミリー。回帰テスト必須（上記(5)） |
-| A4-2（Q2 で「撤去」を選んだ場合） | 1) 実機 A/B と ADR（ADR-153 を supersede する新 ADR）→ 2) GUI の案内を bare 書き込みのみに変更 → 3) 読込警告つきで値を読み続ける期間 → 4) 削除と `REMOVED_KEYS` 登録 | 「2(3)」に列挙 | 大きい。v2.0 に間に合わせるより v2.x が現実的。1)〜4) は別 PR |
-| A4-3 | `keyboard_model` は変更なし | — | — |
+| `feat/v2-keys-cleanup`（別エージェントが進行中） | (1) `ImeDetectConfig::default()` の `on`/`off` を空に、(2) `engine_on/off_ime_key` の撤去（`bootstrap.rs:721-727` → `platform.rs:1353` の送信経路を含む）と移行警告、(3) `docs/design/settings-gui.md` の撤去済みタブ3節・`config.toml`・usage・README の更新 | `src/config.rs:519-543`、`vk.rs:1318`、`bootstrap.rs`、`platform.rs`、golden/journal テスト、docs | キー選択・belief ファミリー。回帰テスト必須（棚卸し1(5)）。`engine_on/off_ime_key` は actuation 合流点を減らす方向（複雑性予算では削除側） |
+| `feat/v2-solo-tap-redesign`（別エージェントが進行中） | 新 ADR（ADR-153 の該当部分を置き換え）→ opus 敵対レビューで収束 → 実装。再設計の要件は上の「注意点」1〜5 | `nicola_fsm.rs`、`key_pipeline.rs`、`transport.rs`、`config.rs`、GUI の ADR-192 T3 | ADR とレビューが先。能動書き込みが増える設計なので、実機 A/B（Windows Terminal + GJI、エンジン OFF/ON 両方）が必要 |
+| `keyboard_model` | 変更なし | — | — |
 
-`config_load_diag.rs`・`config_diagnostics.rs` の変更は A4-2 の最後の PR に集約する（撤去済みキー表を複数 PR で触らない）。
+`config_load_diag.rs`・`config_diagnostics.rs` の変更（`REMOVED_KEYS` 等）は、移行期間が終わる最後の PR に集約する（撤去済みキー表を複数 PR で触らない）。
 
-## 所有者に決めてほしい論点
+## 論点 Q1〜Q5（すべて決定済み・2026-09-29）
 
-- **Q1**: `keys.ime_detect` の既定 `on=["IMEオン"]`/`off=["IMEオフ"]` を空にするか。静的な `VK_IME_ON/OFF` の追随（`shadow_effect`）と重複するが、`is_japanese_ime()` 偽のときの追随と意図の種別が変わる。推奨は **空にしない**（削る利益が小さく、キー選択ファミリーの回帰リスクがある）。
-- **Q2**: `*_solo_tap_ime_action` の扱い。(a) v2.0 は残し文書で「非推奨・`keys.ime_on/off` の bare 指定へ」と案内、(b) 実機 A/B のうえ v2.0 で読込警告つきの移行期間に入る、(c) v2.x 以降に撤去。推奨は (a) から (c)。A/B は Windows Terminal + GJI（無変換を IME Off 系に割り当て）とエンジン OFF の両方で、これは実機が要る。
-- **Q3**: `keyboard_model` の自動検出（`GetKeyboardType`）を既定にするか。推奨は **しない**（設定は残す）。
-- **Q4**: `engine_on/off_ime_key` を A4 に含めるか。含めるなら使用実績（不具合報告に載せる、または警告ログ）を先に取る。
-- **Q5**: 撤去した設定が既存 config.toml に残っていたときの扱い。効果のあった設定は **1回限りの移行警告**、死んだ設定は `REMOVED_KEYS` で無警告、を推奨する（ADR-201 決定2 の方針と整合）。
+- **Q1**: `keys.ime_detect` の既定 `on`/`off` → **空にする**。（棚卸し時の推奨「空にしない」は不採用）
+- **Q2**: `*_solo_tap_ime_action` の扱い → **撤去ではなく再設計**。Suppress/Passthrough の設定に従い、IME 側がトグルなら生キー抑止＋awase が belief に従って明示 inject。ADR・敵対レビューを通してから実装。（棚卸し時の (a)〜(c) のどれでもない第4案）
+- **Q3**: `keyboard_model` の自動検出 → **しない**、設定は残す。
+- **Q4**: `engine_on/off_ime_key` → **撤去する**（A4 に含める）。移行時の扱いは Q5 に従う。
+- **Q5**: 撤去した設定が config.toml に残っていた場合 → 効果のあった設定は **1 回限りの移行警告**、死んだ設定は `REMOVED_KEYS`（ADR-201 決定2 と整合）。
 
 ## 調べて分かったこと／未確認
 
