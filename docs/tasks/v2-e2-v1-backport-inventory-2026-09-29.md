@@ -22,7 +22,7 @@ related_bugs: ["BUG-168", "BUG-170", "BUG-171", "BUG-172", "BUG-173", "BUG-174"]
 
 | 区分 | BUG | 推奨 |
 |---|---|---|
-| **重大・backport する（条件付き）** | BUG-173 | 最小セットを backport。実機確認が前提 |
+| **重大・backport しない（所有者決定 2026-09-29）** | BUG-173 | v1 へは backport せず、v2 への移行を案内する。既知の問題として告知に載せる |
 | 中〜重大寄りだが backport 不可 | BUG-171 | develop でも未修正。v1 の既知の問題に載せる |
 | 中・切り出しやすい | BUG-168 | 任意。所有者が「文字消失＝重大」とみなすなら backport |
 | v1 に主因が無い | BUG-170 | 不要 |
@@ -38,7 +38,7 @@ related_bugs: ["BUG-168", "BUG-170", "BUG-171", "BUG-172", "BUG-173", "BUG-174"]
 | **170** | GjiFsm が OffCold に固着し、毎打鍵 per-VK→StaleConfirm→ESC で「これでいい」→「でいい」（GJI+Edge/Meet。develop 系ビルドの報告） | **主因は無い**。起点 `c8bc1adc`（ADR-090 A-2 warrant 強制、2026-09-18）は v1 の祖先でなく、v1 の `Authorization::LegacyUnwarranted` は警告のみで書込みを止めない。別経路 `sync_ime_kind_from_observation` の GjiFsm 作り直し固着は v1 でも起きうる（未確認） | `52cd221f` は 14 ファイル +502/-49。ADR-203 の新機構（`needs_belief_sync_on` は v1 に 0 件）が前提で切り出せない | 軽（v1 では主因なし） | **しない** |
 | **171** | 途中の語で StaleConfirm→`VK_ESCAPE` が既存の未確定文字まで消す（journal 上 per-VK 約 26 セッション中 4 回） | **存在する**。`per_vk_recovery_params`（`tsf/warmup/literal_detect_fsm.rs`）は v1 にも同一で `failed_idx>0` なら `escape_composition=true` | **develop でも未修正**（`fix_commits: []`）。backport 対象なし | **中〜重大寄り**（実報告あり。v1 は BUG-170 の固着が無いぶん頻度は低い見込み。未測定） | **しない**（直せない）。既知の問題に載せ、v2 へ案内 |
 | **172** | MS-IME+TsfNative で IME が閉じていても msime-ready ゲートが conv の NATIVE を ON 確認と扱いローマ字が入る（CI の RichEdit 入力先で 30/30）。実 Chrome の症状はこのゲートを経由せず、Chrome の開閉を awase が観測できない別問題 | **存在する**。v1 に同じゲート（`probe_io.rs` の `[msime-ready] … NATIVE 確認 → 終了`）。実 Chrome 側も同じ構造のはず（未確認） | **develop でも未修正**（ゲート修正は見送り、観測手段を設計中。v2 のブロッカー C1） | 中（外部から IME を閉じられたときのみ。物理キーでは起きない） | **しない**（直せない）。既知の問題に載せる |
-| **173** | GJI+TSF ネイティブ（Windows Terminal 等）で物理ひらがなキー（0xF2）が常に Suppress され、カタカナ固着から戻れない（報告 `01M3NJ784NKMH120HM6QGKF7W7` は **v1.21.0**、約 25 回 Suppress） | **存在する**。v1 `runtime/transport.rs:293` は `if is_tsf_mode && f2_warmup_owned` で F2 を Suppress（develop の修正前と同一）。`kp_restore_hiragana_for_suppressed_mode_key`（v1 に 8 件）・`ConsumeF2`（9 件）も残る。報告者は v1 ユーザー | 核は `d4d7c8b1`（5 ファイル +71/-54、`plan()` で F2 を常に Allow、`handle_reinject` の握り潰し撤去）。Allow 化で Down=Allow/Up=Suppress の非対称が出るため KeyUp ラッチ `bb6e9440`（+55）・`feb00e78`（+271/-45）も要る。`35f95eba`・`8748d481`（-621）・`1b00a9a2` は整理で必須ではない。PR #359 の merge は `a29b4cc2` | **重大**（該当状態の間かな入力がカタカナで出続ける＝誤入力が継続。ユーザー報告あり）。最初にカタカナへ入る契機は未特定 | **backport する（最小セット）**: `d4d7c8b1`＋`bb6e9440`＋`feb00e78`。前提: (1) v1 に ADR-100 決定 2（warmup=VK_IME_ON 単発）が入っているか確認（`WarmupImeOn` は v1 に 54 件あり入っているとみられる）、(2) v1 には BUG-170 修正が無く `composition_warm` の扱いが違う、(3) develop 側の実機検証が未実施（`bug173-remaining-work-2026-09-29.md` §3）。実機確認が取れるまで v1 リリースを出さない。v1 に無い機構の撤去は backport しない |
+| **173** | GJI+TSF ネイティブ（Windows Terminal 等）で物理ひらがなキー（0xF2）が常に Suppress され、カタカナ固着から戻れない（報告 `01M3NJ784NKMH120HM6QGKF7W7` は **v1.21.0**、約 25 回 Suppress） | **存在する**。v1 `runtime/transport.rs:293` は `if is_tsf_mode && f2_warmup_owned` で F2 を Suppress（develop の修正前と同一）。`kp_restore_hiragana_for_suppressed_mode_key`（v1 に 8 件）・`ConsumeF2`（9 件）も残る。報告者は v1 ユーザー | 核は `d4d7c8b1`（5 ファイル +71/-54、`plan()` で F2 を常に Allow、`handle_reinject` の握り潰し撤去）。Allow 化で Down=Allow/Up=Suppress の非対称が出るため KeyUp ラッチ `bb6e9440`（+55）・`feb00e78`（+271/-45）も要る。`35f95eba`・`8748d481`（-621）・`1b00a9a2` は整理で必須ではない。PR #359 の merge は `a29b4cc2` | **重大**（該当状態の間かな入力がカタカナで出続ける＝誤入力が継続。ユーザー報告あり）。最初にカタカナへ入る契機は未特定 | **backport しない（所有者決定 2026-09-29: v2 への移行を案内）**。参考（backport する場合の最小セット）: `d4d7c8b1`＋`bb6e9440`＋`feb00e78`。前提: (1) v1 に ADR-100 決定 2（warmup=VK_IME_ON 単発）が入っているか確認（`WarmupImeOn` は v1 に 54 件あり入っているとみられる）、(2) v1 には BUG-170 修正が無く `composition_warm` の扱いが違う、(3) develop 側の実機検証が未実施（`bug173-remaining-work-2026-09-29.md` §3）。実機確認が取れるまで v1 リリースを出さない。v1 に無い機構の撤去は backport しない |
 | **174** | Ctrl↑のたびに awase 自身が `VK_IME_ON` を注入（CtrlUp warmup）。GJI の「@」報告の被疑箇所（原因かは実機未確認） | **存在する**。v1 `platform.rs::composition_ctrl_up` と executor `handle_ctrl_up_recovery` が同じ経路 | `889aff2f`（#358）8 ファイル +39/-72。#359 に取り込み済みで実質 BUG-173 の一部 | 軽〜中（因果未確認） | **しない**。BUG-173 backport 時に v1 側の依存が小さければ同梱を検討 |
 
 ## その他（BUG-141〜169 のうち v1 に関係するもの）
@@ -71,11 +71,11 @@ related_bugs: ["BUG-168", "BUG-170", "BUG-171", "BUG-172", "BUG-173", "BUG-174"]
 
 ## E1（v1 保守終了の告知）に載せる「v1 に残る既知の問題」
 
-v1.21.1 で**修正されない**問題。BUG-173 を backport した場合は #1 を外す。
+v1.21.1 で**修正されない**問題。BUG-173 は backport しない（所有者決定 2026-09-29）ので #1 に載せる。
 
 | # | 問題 | 条件・影響 | 回避策（案） |
 |---|---|---|---|
-| 1 | カタカナ固着（BUG-173） | GJI + Windows Terminal 等の TSF ネイティブ環境で、カタカナになると物理ひらがなキーで戻れない | 半角/全角キーで切り替え直す。backport するなら削除 |
+| 1 | カタカナ固着（BUG-173） | GJI + Windows Terminal 等の TSF ネイティブ環境で、カタカナになると物理ひらがなキーで戻れない | 半角/全角キーで切り替え直す。v2 への移行を案内 |
 | 2 | 入力中の未確定文字が消える（BUG-171 / BUG-168） | Chrome・Edge 系で GJI の cold 状態から打つとき、途中の語や超高速打鍵で ESC/IME 再初期化が未確定文字を消すことがある | v2 へ移行（BUG-168 は v2 で修正済み。BUG-171 は v2 でも未修正） |
 | 3 | 外部から閉じられた IME が ON に戻らない（BUG-172） | 他プロセスが IME を閉じたあと、実 Chrome で NICOLA のローマ字がそのまま入る | 物理キーで切り替える |
 | 4 | IME の開閉・モードに Engine が追随しない場合がある | 無変換/変換・ひらがな/英数キーで IME の状態を変えても Engine が ON のまま（v1 に ADR-186〜191 の追随機構が無い）。BUG-146/149/150/151/159 相当 | v2 へ移行 |
@@ -88,6 +88,6 @@ v1.21.1 で**修正されない**問題。BUG-173 を backport した場合は #
 
 ## 次の一手（所有者判断）
 
-1. **BUG-173 の最小 backport を行うか**: 行うなら `v1-develop` へ専用ブランチで `d4d7c8b1`＋`bb6e9440`＋`feb00e78` を cherry-pick（本文に `Backport of <hash>`）。GJI+Windows Terminal で belief OFF＋カタカナから物理 F2 の実機確認が取れてから v1.21.2。行わないなら告知の #1 に載せる。
+1. **BUG-173 の最小 backport（決定済み: 行わない、2026-09-29）**。以下は参考: 行うなら `v1-develop` へ専用ブランチで `d4d7c8b1`＋`bb6e9440`＋`feb00e78` を cherry-pick（本文に `Backport of <hash>`）。GJI+Windows Terminal で belief OFF＋カタカナから物理 F2 の実機確認が取れてから v1.21.2。行わないなら告知の #1 に載せる。
 2. **BUG-168 を重大とみなすか**: 実機頻度は未測定。みなす場合は `bc12ce95` を単独で backport（3 ファイル）。
 3. 本書は「v1 のコードにも同じ経路がある」までの確認。backport 前に v1 上で衝突解消と `cargo check --target x86_64-pc-windows-msvc` を通すこと（本棚卸しではビルドしていない）。
