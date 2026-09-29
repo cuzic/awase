@@ -714,6 +714,56 @@ pub fn settle_fkey_latch(
     latch
 }
 
+/// [`keyup_follows_keydown`] の入力（BUG-173追補）。
+#[derive(Debug, Clone, Copy)]
+pub struct KeyUpLatchInput {
+    pub scan: awase::types::ScanCode,
+    pub is_down: bool,
+    pub is_up: bool,
+    /// OS auto-repeat（`RawKeyEvent::was_down`）。最初の KeyDown だけがラッチを更新する。
+    pub was_down: bool,
+    /// `shadow_action` を持つ IME 系キーの打鍵か（Down を記録する対象か）。
+    pub relevant: bool,
+    /// 別の所有者が Down/Up を揃えているキー（無変換/変換・role F13〜F24）や注入イベント。ラッチに触れない。
+    pub excluded: bool,
+}
+
+/// KeyUp の物理配送（Suppress するか）を、対応する最初の KeyDown の配送に揃える（BUG-173追補、
+/// Opus レビュー C1〜C3/C7）。`plan()` は非 ImmCross の IME 系キーの KeyUp を KeyDown の結果と無関係に
+/// 常に Suppress するため、Down=Allow・Up=Suppress の非対称（BUG-131/132 型）があった。
+///
+/// - ラッチは **scan_code** で引く（BUG-131: KeyUp の vk は KeyDown と一致するとは限らない。0xF3/0xF4 の
+///   ペア表現等。`key_role_latch` / `kana_mode_restore_key_down` と同じ規約）。
+/// - Down の結果は Allow/Suppress **両方**記録し、KeyUp は常にそれに従う（Down=Suppress → Up=Allow の
+///   非対称も防ぐ）。対応する Down が無い KeyUp（awase 起動前の押下等）は `planned_suppress` のまま。
+/// - `relevant` でない Down は記録しない。KeyUp は `relevant` に関係なくエントリを消費する（古いエントリを残さない）。
+/// - `excluded` は一切触れない。
+///
+/// 戻り値は最終的に Suppress するか。
+#[must_use]
+pub fn keyup_follows_keydown(
+    latch: &mut Vec<(awase::types::ScanCode, bool)>,
+    input: KeyUpLatchInput,
+    planned_suppress: bool,
+) -> bool {
+    if input.excluded {
+        return planned_suppress;
+    }
+    if input.is_down {
+        if !input.was_down && input.relevant {
+            latch.retain(|(s, _)| *s != input.scan);
+            latch.push((input.scan, planned_suppress));
+        }
+        return planned_suppress;
+    }
+    if input.is_up {
+        if let Some(pos) = latch.iter().position(|(s, _)| *s == input.scan) {
+            return latch.swap_remove(pos).1;
+        }
+    }
+    planned_suppress
+}
+
 /// `config1.db`スタンプ（[`super::key_effect_predictor::KeymapCache`]）と同じ方式のfsキャッシュ。
 /// `RECHECK_MS`ごとにファイルの版（更新時刻+長さ）だけを問い合わせ、変わったときだけ読み直す。
 /// 判定は純関数で、fs/時計は呼び出し側が渡す（テスト容易性のため`KeymapCache`と同じ形にする）。
@@ -1813,5 +1863,139 @@ mod tests {
         }
         assert!(hz_omit_may_apply(true));
         assert!(!hz_omit_may_apply(false));
+    }
+}
+
+#[cfg(test)]
+mod keyup_latch_tests {
+    use super::*;
+    use awase::types::ScanCode;
+
+    fn input(scan: u32, down: bool, was_down: bool) -> KeyUpLatchInput {
+        KeyUpLatchInput {
+            scan: ScanCode(scan),
+            is_down: down,
+            is_up: !down,
+            was_down,
+            relevant: true,
+            excluded: false,
+        }
+    }
+
+    #[test]
+    fn up_follows_allowed_down() {
+        let mut l = Vec::new();
+        assert!(!keyup_follows_keydown(
+            &mut l,
+            input(0x70, true, false),
+            false
+        ));
+        // plan() は Up を Suppress と言うが、Down が Allow だったので Allow に揃える
+        assert!(!keyup_follows_keydown(
+            &mut l,
+            input(0x70, false, true),
+            true
+        ));
+        assert!(l.is_empty());
+    }
+
+    #[test]
+    fn up_follows_suppressed_down_even_if_plan_says_allow() {
+        let mut l = Vec::new();
+        assert!(keyup_follows_keydown(
+            &mut l,
+            input(0x29, true, false),
+            true
+        ));
+        assert!(keyup_follows_keydown(
+            &mut l,
+            input(0x29, false, true),
+            false
+        ));
+    }
+
+    #[test]
+    fn lookup_is_by_scan_not_vk() {
+        // 0xF3/0xF4 のペア表現: Down と Up で vk が違っても scan が同じなら揃う（入力に vk は無い）
+        let mut l = Vec::new();
+        assert!(!keyup_follows_keydown(
+            &mut l,
+            input(0x29, true, false),
+            false
+        ));
+        assert!(!keyup_follows_keydown(
+            &mut l,
+            input(0x29, false, true),
+            true
+        ));
+    }
+
+    #[test]
+    fn auto_repeat_does_not_update_latch() {
+        let mut l = Vec::new();
+        assert!(keyup_follows_keydown(
+            &mut l,
+            input(0x29, true, false),
+            true
+        ));
+        // リピート Down は shadow_toggled が立たず Allow と判定されても、記録は最初の Down のまま
+        assert!(!keyup_follows_keydown(
+            &mut l,
+            input(0x29, true, true),
+            false
+        ));
+        assert!(keyup_follows_keydown(
+            &mut l,
+            input(0x29, false, true),
+            false
+        ));
+    }
+
+    #[test]
+    fn up_without_down_uses_plan() {
+        let mut l = Vec::new();
+        assert!(keyup_follows_keydown(
+            &mut l,
+            input(0x29, false, false),
+            true
+        ));
+        assert!(!keyup_follows_keydown(
+            &mut l,
+            input(0x29, false, false),
+            false
+        ));
+    }
+
+    #[test]
+    fn irrelevant_down_is_not_recorded_but_up_consumes_stale_entry() {
+        let mut l = vec![(ScanCode(0x29), false)];
+        let mut d = input(0x29, true, false);
+        d.relevant = false;
+        assert!(keyup_follows_keydown(&mut l, d, true));
+        assert_eq!(l.len(), 1, "irrelevant Down は記録もクリアもしない");
+        let mut u = input(0x29, false, true);
+        u.relevant = false;
+        assert!(!keyup_follows_keydown(&mut l, u, true));
+        assert!(l.is_empty(), "Up は relevant に関係なくエントリを消費する");
+    }
+
+    #[test]
+    fn fresh_down_replaces_stale_entry() {
+        let mut l = vec![(ScanCode(0x29), false)];
+        assert!(keyup_follows_keydown(
+            &mut l,
+            input(0x29, true, false),
+            true
+        ));
+        assert_eq!(l, vec![(ScanCode(0x29), true)]);
+    }
+
+    #[test]
+    fn excluded_keys_are_untouched() {
+        let mut l = vec![(ScanCode(0x29), false)];
+        let mut d = input(0x29, false, true);
+        d.excluded = true;
+        assert!(keyup_follows_keydown(&mut l, d, true));
+        assert_eq!(l.len(), 1);
     }
 }

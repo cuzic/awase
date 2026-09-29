@@ -523,46 +523,38 @@ impl Runtime {
         callback
     }
 
-    /// BUG-173追補: KeyUp の配送を、対応する最初の KeyDown の配送に揃える。
-    ///
-    /// `plan()` は非 ImmCross の IME 系キー（`shadow_action` あり）の KeyUp を KeyDown の結果と無関係に
-    /// 常に Suppress するため、KeyDown が素通しされたキーでも KeyUp だけが握りつぶされていた
-    /// （BUG-131/132 型の Down/Up 非対称）。最初の KeyDown が Allow だった VK を覚えておき、その KeyUp は
-    /// Allow に揃える。Down が Suppress だった場合・ラッチが無い場合（awase 起動前の押下等）は `plan()` の結果を
-    /// そのまま使う。無変換/変換は KeyUp 側で明示設定の消費が確定する（BUG-113/124）ため対象外。
+    /// BUG-173追補: KeyUp の配送を、対応する最初の KeyDown の配送に揃える（純粋部は
+    /// `key_effect_runtime::keyup_follows_keydown`）。無変換/変換と role F13〜F24 は別の所有者
+    /// （`thumb_or_role_fkey_disposition` のステートレス再評価 / `key_role_latch`）が Down/Up を揃えるため、
+    /// 注入イベントとともに対象外。記録するのは `plan()` の判定値であり、実際に OS へ届いたかではない。
     fn kp_latch_keyup_to_keydown_disposition(
         &mut self,
         event: &RawKeyEvent,
         physical: crate::runtime::PhysicalKeyDisposition,
     ) -> crate::runtime::PhysicalKeyDisposition {
         use crate::runtime::PhysicalKeyDisposition::{Allow, Suppress};
-        if event.ime_relevance.shadow_action.is_none()
-            || matches!(
-                event.vk_code,
-                crate::vk::VK_CONVERT | crate::vk::VK_NONCONVERT
-            )
-        {
-            return physical;
-        }
-        let latch = &mut self.platform_state.gate.shadow_key_down_allowed;
-        match event.event_type {
-            KeyEventType::KeyDown if !event.was_down => {
-                latch.retain(|v| *v != event.vk_code);
-                if physical == Allow {
-                    latch.push(event.vk_code);
-                }
-                physical
-            }
-            KeyEventType::KeyUp => {
-                if let Some(pos) = latch.iter().position(|v| *v == event.vk_code) {
-                    latch.swap_remove(pos);
-                    if physical == Suppress {
-                        return Allow;
-                    }
-                }
-                physical
-            }
-            KeyEventType::KeyDown => physical,
+        let input = crate::state::key_effect_runtime::KeyUpLatchInput {
+            scan: event.scan_code,
+            is_down: event.event_type == KeyEventType::KeyDown,
+            is_up: event.event_type == KeyEventType::KeyUp,
+            was_down: event.was_down,
+            relevant: event.ime_relevance.shadow_action.is_some(),
+            excluded: event.injected
+                || matches!(
+                    event.vk_code,
+                    crate::vk::VK_CONVERT | crate::vk::VK_NONCONVERT
+                )
+                || crate::vk::is_role_fkey(event.vk_code),
+        };
+        let suppress = crate::state::key_effect_runtime::keyup_follows_keydown(
+            &mut self.platform_state.gate.shadow_key_down_disposition,
+            input,
+            physical == Suppress,
+        );
+        if suppress {
+            Suppress
+        } else {
+            Allow
         }
     }
 
@@ -2701,7 +2693,8 @@ impl Runtime {
     /// journal 記録値との理論上の乖離窓があった）。判断ロジック自体は
     /// `PhysicalKeyDisposition::plan` のドキュメントコメント参照:
     /// - Imm32Unavailable (Chrome/Edge) / TsfNative (WezTerm/Windows Terminal) で GJI/MS-IME
-    ///   が actuate する場合: KeyDown は shadow_toggle 発火時のみ、KeyUp は常に Suppress。
+    ///   が actuate する場合: KeyDown は shadow_toggle 発火時のみ Suppress。KeyUp は `plan()` 上は常に
+    ///   Suppress だが、直前に `kp_latch_keyup_to_keydown_disposition` が最初の KeyDown の配送に揃える。
     ///   awase 自身が apply-ime で VK_IME_ON/OFF 等を SendInput 済みなので物理キーを
     ///   届けると二重制御になる（TsfNative + GJI の実例: BUG-46）。
     /// - ImmCross (LINE/Qt): Down/Up 共に Suppress。set_ime_open_cross_process で IME 制御済み。
@@ -2721,9 +2714,13 @@ impl Runtime {
         }
 
         // F2 (VK_DBE_HIRAGANA) KeyDown: CompositionFsm に副作用を委譲。
-        // Suppress（TSF mode）・Allow（非 TSF mode）いずれの場合も mark_cold + eager warmup を実行。
+        // 物理 F2 は常に Allow（BUG-173）。TSF mode では mark_cold + eager warmup（VK_IME_ON）も実行。
+        // A5/A6（Opus レビュー）: auto-repeat では cold 化/warmup を繰り返さない。F2 を親指キーに
+        // 割り当てている構成では NICOLA の同時打鍵入力であって IME モードキーではない（BUG-115）。
         if event.vk_code == crate::vk::VK_DBE_HIRAGANA
             && matches!(event.event_type, KeyEventType::KeyDown)
+            && !event.was_down
+            && !crate::gji_charset_autodetect::is_configured_thumb_key(event.vk_code)
         {
             // ADR-098 決定1-b: 生値ではなく warmup_ime_on()（`applied ?? belief`）。
             let warmup_ime_on = self

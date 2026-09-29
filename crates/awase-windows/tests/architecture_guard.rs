@@ -5395,3 +5395,50 @@ fn kanji_0x19_role_goes_through_the_shared_latch_and_only_overrides_gji() {
     // `shadow_action` の代入は1箇所のまま（`ime_relevance_shadow_action_writes_are_accounted_for`）。
     assert_eq!(rt.matches("ime_relevance.shadow_action =").count(), 1);
 }
+
+/// BUG-173（Opus レビュー D1）: 物理 F2 を Suppress/握りつぶす経路が再導入されないこと、および
+/// KeyUp ラッチが `plan()` の直後・journal 記録と実配送の前に呼ばれることを固定する。
+/// runtime/ は Linux でテスト実行できない（CLAUDE.md）ため、この静的スキャンが唯一の検知手段。
+#[test]
+fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
+    // 1. plan() の F2 分岐は常に Allow（is_tsf_mode/f2_warmup_owned で Suppress を返さない）
+    let transport = read_crate_file("src/runtime/transport.rs");
+    let transport = strip_any_test_module(&transport);
+    assert!(
+        !transport.contains("if is_tsf_mode && f2_warmup_owned"),
+        "runtime/transport.rs に F2 の Suppress 条件 `is_tsf_mode && f2_warmup_owned` が再び現れています（BUG-173: \
+         ADR-100 決定2 で warmup が VK_IME_ON 単発になり、物理 F2 の代替 F2 再送の契約は無い）"
+    );
+
+    // 2. handle_reinject に VK_DBE_HIRAGANA の特例（TSF での握りつぶし）を戻さない
+    let executor = read_crate_file("src/runtime/executor.rs");
+    let executor = strip_any_test_module(&executor);
+    let start = executor
+        .find("fn handle_reinject")
+        .expect("handle_reinject が見つかりません");
+    let body = &executor[start..];
+    let end = body[10..].find("\n    fn ").map_or(body.len(), |e| e + 10);
+    assert!(
+        !body[..end].contains("VK_DBE_HIRAGANA"),
+        "executor.rs::handle_reinject に VK_DBE_HIRAGANA の特例が再び現れています（BUG-173）"
+    );
+
+    // 3. KeyUp ラッチの呼び出し順: plan() → latch → record_key_input → kp_stage_execute
+    let kp = read_crate_file("src/runtime/key_pipeline.rs");
+    let kp = strip_any_test_module(&kp);
+    let plan = kp
+        .find("PhysicalKeyDisposition::plan(")
+        .expect("plan( 呼び出し");
+    let latch = kp
+        .find("self.kp_latch_keyup_to_keydown_disposition(&event, physical)")
+        .expect("ラッチ呼び出し");
+    let record = kp.find("record_key_input(").expect("record_key_input(");
+    let execute = kp
+        .find("self.kp_stage_execute(decision, &event, profile, physical)")
+        .expect("kp_stage_execute 呼び出し");
+    assert!(
+        plan < latch && latch < record && record < execute,
+        "kp_run_inner の順序が壊れています: plan → kp_latch_keyup_to_keydown_disposition → \
+         record_key_input(journal) → kp_stage_execute（BUG-173追補: journal の physical と実配送を一致させる）"
+    );
+}

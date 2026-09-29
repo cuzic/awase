@@ -1769,11 +1769,9 @@ pub(crate) struct GateStore {
     /// 恒久固着より遥かに軽いというトレードオフで採用した（不変条件では
     /// なく許容可能なリスクとして受け入れている）。
     pub kana_mode_restore_key_down: Option<awase::types::ScanCode>,
-    /// BUG-173追補: `shadow_action` を持つ IME 系キー（`VK_IME_ON`/`OFF`・`VK_KANJI` 等）のうち、
-    /// **最初の KeyDown が素通し（Allow）された**ものの VK。対応する KeyUp を Suppress しないための
-    /// ラッチ（`PhysicalKeyDisposition::plan` は KeyUp を Down の結果と無関係に常に Suppress するため、
-    /// Down=Allow・Up=Suppress の非対称になっていた）。最初の KeyDown ごとに登録/解除し、KeyUp で消費する。
-    pub shadow_key_down_allowed: Vec<awase::types::VkCode>,
+    /// BUG-173追補: `shadow_action` を持つ IME 系キーの最初の KeyDown の配送結果（scan_code, Suppress したか）。
+    /// KeyUp を Down に揃えるためのラッチ（`key_effect_runtime::keyup_follows_keydown`）。
+    pub shadow_key_down_disposition: Vec<(awase::types::ScanCode, bool)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1799,7 +1797,7 @@ impl GateStore {
             half_width_alnum: crate::state::half_width_alnum::HalfWidthAlnumState::default(),
             idle_conv_check_in_flight_since_ms: None,
             kana_mode_restore_key_down: None,
-            shadow_key_down_allowed: Vec::new(),
+            shadow_key_down_disposition: Vec::new(),
         }
     }
 }
