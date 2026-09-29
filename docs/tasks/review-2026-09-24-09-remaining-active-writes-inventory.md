@@ -239,7 +239,7 @@ API 開閉とかな単打の実打鍵結果を記録する。`check_drift_recove
 - したがって「閉じられた IME を drift correction が ON へ戻す」経路は、フォーカス変更を挟んでも成立しない（Chrome 系は観測不能、ImmCross は意図が消える）。ON への回復は GJI reinit だけで、実 Chrome では効かなかった。
 
 限界:
-- 実 Chrome に対する `--refocus`（chrome_probe）は `SetForegroundWindow`/`SwitchToThisWindow` がタスクバーに拒否され（`away=false`）、**フォーカス変更は起きていない**（FAIL 10/10 は refocus 無しと同じ）。tsf の結果は同じクラス名の RichEdit での代用で、分類の理由がクラス名なので実 Chrome でも同じと推定しているが未確認。
-- 閉じ方は `WM_IME_CONTROL`（外部要因の再現）で、実運用の閉じ方との対応は未確認。撤去前ビルドとの対照も未実施。
+- 実 Chrome に対する `--refocus`（chrome_probe）は `SetForegroundWindow`/`SwitchToThisWindow` がタスクバーに拒否され（`away=false`。2026-09-29 に別窓方式へ修正し `away=true`、測定結果は BUG-172）、**フォーカス変更は起きていない**（FAIL 10/10 は refocus 無しと同じ）。tsf の結果は同じクラス名の RichEdit での代用で、分類の理由がクラス名なので実 Chrome でも同じと推定しているが未確認。
+- 閉じ方は `WM_IME_CONTROL`（外部要因の再現）で、実運用の閉じ方との対応は未確認。撤去前ビルドとの対照は force-ON のみ復元して実施済み(reassert は復元不能、[BUG-172](../known-bugs/BUG-172.md) 参照)。
 
 次の一手の候補: 実 Chrome で観測できないこと（`Imm32Unavailable`）が「外部から閉じられた」ケースの本質的な限界かを、実運用の経路（他アプリ・OS による IME OFF）の頻度から判断する。頻度が低ければ対処しない選択もある。
