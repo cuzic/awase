@@ -531,7 +531,6 @@ impl DecisionExecutor {
         }
 
         // B. [platform] 副作用（defer されても FSM は進める）
-        self.try_pending_warmup_on_keyup(platform, ime, raw_event);
         self.handle_ctrl_up_recovery(platform, ime, raw_event);
 
         // C. [transport] output guard defer
@@ -577,9 +576,6 @@ impl DecisionExecutor {
             return CallbackResult::Consumed;
         }
 
-        // D. [platform] 確認キー後処理
-        self.handle_confirm_key_passthrough(platform, ime, raw_event);
-
         if matches!(
             raw_event.key_classification,
             awase::types::KeyClassification::Passthrough
@@ -591,28 +587,6 @@ impl DecisionExecutor {
             );
         }
         CallbackResult::PassThrough
-    }
-
-    /// warm+TSF Enter/Space/Escape KeyDown で保留した eager warmup を KeyUp で送信する。
-    /// KeyDown 時は SendInput(F2) → CallNextHookEx(Enter↓) の順になり WezTerm が
-    /// F2 (新 composition 開始) を受け取った後に Enter で即確定してしまう。
-    /// KeyUp タイミングでは Enter↓ が既に処理済みのため F2 との競合なし。
-    ///
-    /// 保留状態は `CompositionFsm` が `PendingWarmupOnKeyUp` として持つ。
-    /// KeyUp を FSM に feed し、保留があれば dispatcher が warmup を送信する。
-    fn try_pending_warmup_on_keyup(
-        &self,
-        platform: &mut WindowsPlatform,
-        ime: &ImeStateHub,
-        raw_event: &RawKeyEvent,
-    ) {
-        let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        if !is_key_down && raw_event.vk_code.is_composition_confirm_key() {
-            platform.composition_confirm_key_up(
-                raw_event.vk_code,
-                ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
-            );
-        }
     }
 
     /// Ctrl↑: cold 状態であれば eager_warmup_sent_ms をリセット（この→kおの バグ対策）。
@@ -628,28 +602,6 @@ impl DecisionExecutor {
         let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
         if !is_key_down && raw_event.vk_code.is_ctrl_variant() {
             platform.composition_ctrl_up(
-                ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
-            );
-        }
-    }
-
-    /// Space/Enter/Esc KeyDown の直接 passthrough: warm+TSF または cold の composition 確定処理。
-    /// 副作用のみで CallbackResult は返さない。
-    fn handle_confirm_key_passthrough(
-        &self,
-        platform: &mut WindowsPlatform,
-        ime: &ImeStateHub,
-        raw_event: &RawKeyEvent,
-    ) {
-        let is_key_down = matches!(raw_event.event_type, awase::types::KeyEventType::KeyDown);
-        // Space/Enter/Escape の直接 passthrough (KeyDown) は composition を
-        // 確定・キャンセルしてコンテキストをアイドル状態に戻す。
-        // mark_cold / eager warmup / warmup の KeyUp 遅延は CompositionFsm（on_passthrough_key
-        // 経由）に委譲する。保留状態は FSM が PendingWarmupOnKeyUp として持つ。
-        if is_key_down && raw_event.vk_code.is_composition_confirm_key() {
-            platform.on_passthrough_key(
-                raw_event.vk_code,
-                true,
                 ime.resolve_warmup_ime_on(self.applied_snapshot, std::time::Instant::now()),
             );
         }

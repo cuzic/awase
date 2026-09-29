@@ -43,9 +43,6 @@ use crate::tuning;
 pub(crate) struct FocusEpoch(u32);
 
 impl FocusEpoch {
-    /// 初期 epoch。
-    pub(crate) const ZERO: Self = Self(0);
-
     /// 次の epoch（単調増加、wrapping）。
     pub(crate) const fn next(self) -> Self {
         Self(self.0.wrapping_add(1))

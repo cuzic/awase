@@ -484,30 +484,12 @@ pub trait TsfComposition {
     /// executor は outcome を受け取ったら必ずこのメソッドを呼ぶこと。
     fn on_ime_applied(&mut self, _open: bool, _outcome: ImeOpenOutcome) {}
 
-    /// キー通過（パススルー）時の composition 状態更新フック。
-    ///
-    /// F2+TSF mark_cold、confirm キー KeyDown の mark_cold を処理する。
-    /// executor がキーを OS に通す直前（late path — output_guard_defer チェック後）に呼ぶ。
-    ///
-    /// 戻り値: `true` なら KeyUp タイミングで eager warmup を送るべき（warmup deferred）。
-    /// `warmup_ime_on`: warmup を送ってよいかの判定に使う IME 開状態。`applied` が
-    /// `Unknown`（TsfNative のフォーカス復帰直後など）のときは belief にフォール
-    /// バックした値が入る（`WarmupImeOn::from_applied_or_belief`、ADR-098 決定1-b）。
-    /// 呼び出し側が生の `bool`/`Option<bool>` を渡すことはできない。
-    fn on_passthrough_key(
-        &mut self,
-        _vk: crate::types::VkCode,
-        _is_keydown: bool,
-        _warmup_ime_on: WarmupImeOn,
-    ) -> bool {
-        false
-    }
-
     /// キー再注入時の composition 状態更新フック。
     ///
     /// F2-TSF deferred / confirm キー reinject の mark_cold + eager warmup を処理する。
     ///
-    /// `warmup_ime_on`: 上記 `on_passthrough_key` と同じ（ADR-098 決定1-b）。
+    /// `warmup_ime_on`: warmup を送ってよいかの判定に使う IME 開状態。`applied` が `Unknown`（TsfNative のフォーカス復帰直後など）のときは
+    /// belief にフォールバックした値が入る（`WarmupImeOn::from_applied_or_belief`、ADR-098 決定1-b）。呼び出し側が生の `bool`/`Option<bool>` を渡すことはできない。
     fn on_reinject_key(
         &mut self,
         _vk: crate::types::VkCode,

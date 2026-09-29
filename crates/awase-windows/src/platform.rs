@@ -705,22 +705,6 @@ impl WindowsPlatform {
         );
     }
 
-    /// confirm キー KeyUp を `CompositionFsm` に通知し、保留 warmup があれば送信する。
-    ///
-    /// 唯一の呼び出し元（executor の `try_pending_warmup_on_keyup`）は
-    /// `resolve_warmup_ime_on` 経由（ゲート適用済み）を渡すため `origin=WarmupOrigin::Gated` 固定。
-    pub(crate) fn composition_confirm_key_up(
-        &mut self,
-        vk: awase::types::VkCode,
-        warmup_ime_on: awase::platform::WarmupImeOn,
-    ) {
-        self.feed_composition_event(
-            crate::tsf::composition_fsm::CompositionEvent::ConfirmKeyUp { vk },
-            warmup_ime_on,
-            crate::output::WarmupOrigin::Gated,
-        );
-    }
-
     /// Ctrl↑ を `CompositionFsm` に通知し、cold 状態なら warmup を再送する。
     ///
     /// 唯一の呼び出し元（executor の `handle_ctrl_up_recovery`）は
@@ -1470,38 +1454,6 @@ impl TsfComposition for WindowsPlatform {
         self.on_ime_applied_inner(open, outcome);
     }
 
-    fn on_passthrough_key(
-        &mut self,
-        vk: awase::types::VkCode,
-        is_keydown: bool,
-        warmup_ime_on: awase::platform::WarmupImeOn,
-    ) -> bool {
-        use crate::tsf::composition_fsm::CompositionEvent;
-        use crate::vk::VkCodeExt as _;
-
-        // confirm キー KeyDown を CompositionFsm に委譲する。
-        // FSM が cold mark / GJI reset / warmup 送信 を action として返し dispatcher が実行する。
-        // warm+TSF では warmup を KeyUp まで遅延し PendingWarmupOnKeyUp に入るので、
-        // その有無を deferral 戻り値とする。
-        // （物理 F2 は composition_native_f2_down を直接呼ぶ別経路で処理する。）
-        if is_keydown && vk.is_composition_confirm_key() {
-            let tsf_mode = self.output.is_tsf_mode();
-            let warm = self.output.is_composition_warm();
-            // 呼び出し元（executor の `handle_confirm_key_passthrough`）は
-            // `resolve_warmup_ime_on` 経由（ゲート適用済み）を渡す。
-            self.feed_composition_event(
-                CompositionEvent::ConfirmKeyDown { vk, tsf_mode, warm },
-                warmup_ime_on,
-                crate::output::WarmupOrigin::Gated,
-            );
-            return self.composition_fsm.pending_warmup_vk() == Some(vk);
-        }
-        false
-    }
-
-    /// 呼び出し元（executor の `handle_reinject`）は `resolve_warmup_ime_on` 経由
-    /// （ゲート適用済み）を渡すため、以下2箇所の `send_eager_tsf_warmup` は
-    /// いずれも `origin=WarmupOrigin::Gated` 固定。
     fn on_reinject_key(
         &mut self,
         vk: awase::types::VkCode,
