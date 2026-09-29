@@ -5629,3 +5629,30 @@ fn gji_sync_origin_comes_from_the_sync_variant() {
         "gji_sync_from_belief は sync.origin() を dispatch_gji_response_from に渡すこと"
     );
 }
+
+/// ADR-199 T17 Phase 4: 役割判定の「つなぎ目」を固定する。`runtime/mod.rs` は `#[cfg(windows)]` で Linux のホストテストに現れず、
+/// `derive_key_shadow_action` の `ImeKindId::MsIme` 腕が `msime_native_key_role` 以外（例えば `None`）へ差し替わっても
+/// 他のテストは全て通ってしまう。空白を除いて照合するので rustfmt の整形に依存しない。
+/// 判定そのものの網羅は `key_effect_predictor.rs` の単体テストが持つ（ここでは重複させない）。
+#[test]
+fn derive_key_shadow_action_routes_ms_ime_to_msime_native_key_role() {
+    let rt: String = read_crate_file("src/runtime/mod.rs")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    for token in [
+        "ImeKindId::Gji=>k.gji_key_role(vk.0)",
+        "ImeKindId::MsIme=>k.msime_native_key_role(vk.0)",
+        "ime.and_then(|ime|self.derive_key_shadow_action(ime,vk))",
+    ] {
+        assert!(
+            rt.contains(token),
+            "runtime/mod.rs: `{token}` が無い。MS-IME 本体の役割判定（ADR-199 T17 Phase 4）のつなぎ目が外れている"
+        );
+    }
+    let warn = read_crate_file("src/msime_key_assignment.rs");
+    assert!(
+        !warn.contains("トグル、awase未対応"),
+        "msime_key_assignment.rs: 値2（トグル）は Phase 4 で awase が肩代わりするので競合警告に含めない"
+    );
+}

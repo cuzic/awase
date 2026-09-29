@@ -472,6 +472,10 @@ pub struct KeyEffectKeymap {
     /// 確認できるまでは明示値なら一律に予測しない（決定C R3・M5、推測で値を決めない）。
     henkan_reassigned: bool,
     muhenkan_reassigned: bool,
+    /// 同じ明示値が**2（IME-オン/オフのトグル）**（`IsKeyAssignmentEnabled=1`かつ値==2）。ADR-199 T17 Phase 4:
+    /// [`Self::msime_native_key_role`]が無変換/変換に`ImeToggle`を返す根拠。指紋は生の値を含むのでここは指紋に混ぜない。
+    henkan_toggle: bool,
+    muhenkan_toggle: bool,
     /// MS-IME本体の「以前のバージョンのMicrosoft IMEを使う」互換モード（ADR-197決定4、
     /// [`crate::msime_legacy_keymap::read_legacy_compat_mode_enabled`]）。`Some(true)`=ON・
     /// `Some(false)`=OFF・`None`=読めない（決定17により「新しい版」として扱う）。GJIのキーマップ
@@ -610,6 +614,8 @@ impl KeyEffectKeymap {
             overlay_keymaps: overlay_keymaps.to_vec(),
             henkan_reassigned: false,
             muhenkan_reassigned: false,
+            henkan_toggle: false,
+            muhenkan_toggle: false,
             msime_compat_mode: None,
             fingerprint,
         })
@@ -665,8 +671,10 @@ impl KeyEffectKeymap {
     ///
     /// - 半角/全角（0xF3/0xF4）: 仕様固定トグル（決定6-4）。互換モード（[`Self::msime_compat_mode`]相当）が
     ///   `Some(true)`なら受動（決定17・T13）。
-    /// - 無変換/変換（0x1C/0x1D）・F13〜F24・その他: 常に`None`（受動）。無変換/変換の能動化（決定16）は
-    ///   ADR-199 T17 Phase 4——値2で入力中・変換中にどう動くかの実機確認待ちで保留中（2026-09-27）。
+    /// - 無変換/変換（0x1C/0x1D）: マスタースイッチ有効かつ値==2（トグル、T12）のときだけ`Some(ImeToggle)`（ADR-199 T17 Phase 4、決定16）。
+    ///   互換モード`Some(true)`は値が効かない（T12）ので受動。値0/1/3・値なしは受動。入力中・変換中・候補窓でも除外しない
+    ///   （所有者決定 2026-09-29: 未確定文字列を捨ててよい）。実際の発火は ADR-206 の role_open_action（単独タップが Passthrough のときだけ。Suppress は IME を動かさない）。
+    /// - F13〜F24・その他: 常に`None`（受動）。
     #[must_use]
     pub fn msime_native_key_role(&self, vk: u16) -> Option<awase_gji_config::role::KeyRole> {
         use crate::vk::{VK_DBE_DBCSCHAR, VK_DBE_SBCSCHAR};
@@ -677,7 +685,14 @@ impl KeyEffectKeymap {
         if vk == VK_DBE_SBCSCHAR.0 || vk == VK_DBE_DBCSCHAR.0 {
             return (self.msime_compat_mode != Some(true)).then_some(KeyRole::ImeToggle);
         }
-        None
+        let thumb_toggle = if vk == 0x1D {
+            self.muhenkan_toggle
+        } else if vk == 0x1C {
+            self.henkan_toggle
+        } else {
+            false
+        };
+        (thumb_toggle && self.msime_compat_mode != Some(true)).then_some(KeyRole::ImeToggle)
     }
 
     /// Microsoft IME本体のキーマップ。`assignment_enabled`は`IsKeyAssignmentEnabled == 1`、`henkan`/`muhenkan`は
@@ -703,6 +718,8 @@ impl KeyEffectKeymap {
             overlay_keymaps: Vec::new(),
             henkan_reassigned: reassigned(henkan),
             muhenkan_reassigned: reassigned(muhenkan),
+            henkan_toggle: assignment_enabled && henkan == Some(2),
+            muhenkan_toggle: assignment_enabled && muhenkan == Some(2),
             msime_compat_mode: compat_mode,
             fingerprint: awase_keymap_learn::fingerprint::msime_native_keymap_fingerprint(
                 assignment_enabled,
@@ -1695,7 +1712,7 @@ mod tests {
         assert_eq!(km.predict(0x1D, &closed), None);
     }
 
-    // ── ADR-199 T17: `msime_native_key_role`（半角/全角トグル・互換モードでの受動化、無変換/変換は保留） ──
+    // ── ADR-199 T17: `msime_native_key_role`（半角/全角トグル・互換モードでの受動化、無変換/変換は値2のときだけトグル） ──
 
     #[test]
     fn msime_native_key_role_hz_is_toggle_unless_compat_mode() {
@@ -1712,21 +1729,32 @@ mod tests {
     }
 
     #[test]
-    fn msime_native_key_role_thumb_keys_stay_passive_until_phase4() {
-        // 無変換/変換の能動化(決定16)はADR-199 T17 Phase 4で実施予定——値2で入力中・変換中に
-        // どう動くかの実機確認待ちで保留中(2026-09-27)。それまでは常に受動。
-        for (enabled, henkan, muhenkan, compat) in [
-            (false, None, None, None),
-            (true, Some(2), Some(2), None),
-            (true, Some(2), Some(2), Some(false)),
-        ] {
-            let km = KeyEffectKeymap::for_msime_native(enabled, henkan, muhenkan, compat);
-            assert_eq!(
-                km.msime_native_key_role(0x1C),
-                None,
-                "{enabled:?}/{henkan:?}/{muhenkan:?}/{compat:?}"
-            );
-            assert_eq!(km.msime_native_key_role(0x1D), None);
+    fn msime_native_key_role_thumb_keys_toggle_only_for_value_2() {
+        use awase_gji_config::role::KeyRole::ImeToggle;
+        // ADR-199 T17 Phase 4: マスタースイッチ{ON,OFF} x 値{なし,0,1,2,3} x 互換{None,Some(false),Some(true)} x キー{変換0x1C,無変換0x1D}。
+        // Some(ImeToggle)になるのは「ON・そのキーの値==2・互換!=Some(true)」だけ。取り違え防止に無変換と変換で別の値を与える。
+        let values = [None, Some(0), Some(1), Some(2), Some(3)];
+        for enabled in [true, false] {
+            for h in values {
+                for m in values {
+                    for compat in [None, Some(false), Some(true)] {
+                        let km = KeyEffectKeymap::for_msime_native(enabled, h, m, compat);
+                        let want = |v: Option<u32>| {
+                            (enabled && v == Some(2) && compat != Some(true)).then_some(ImeToggle)
+                        };
+                        assert_eq!(
+                            km.msime_native_key_role(0x1C),
+                            want(h),
+                            "henkan {enabled}/{h:?}/{m:?}/{compat:?}"
+                        );
+                        assert_eq!(
+                            km.msime_native_key_role(0x1D),
+                            want(m),
+                            "muhenkan {enabled}/{h:?}/{m:?}/{compat:?}"
+                        );
+                    }
+                }
+            }
         }
     }
 

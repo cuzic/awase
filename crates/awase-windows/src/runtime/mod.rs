@@ -746,8 +746,9 @@ impl Runtime {
     /// - 打鍵ごとに求め直すので、IME を切り替えたときに古い役割が残らない（決定8 と同じ考え方）。役割が無ければ
     ///   config 由来だけ（無ければ `None`＝従来どおり受動）に戻す。
     /// - 役割は [`Self::derive_key_shadow_action`]（GJI の `config1.db` の逆算・学習表による狭め・config との重なり）。
-    ///   MS-IME 本体は無変換/変換については受動のまま（トグルと判断できる値〈2〉はADR-199 T12で確定したが、
-    ///   能動化はT17 Phase 4——入力中・変換中の挙動の実機確認待ちで保留中、2026-09-27）。修飾付きの押下では役割を求めない。
+    ///   MS-IME 本体は `KeyAssignmentMuhenkan`/`Henkan == 2`（トグル、T12）のときだけ役割が付く（T17 Phase 4、
+    ///   `KeyEffectKeymap::msime_native_key_role`）。入力中・変換中・候補窓でも除外しない（所有者決定 2026-09-29）。
+    ///   発火は ADR-206 の role_open_action（単独タップの ModeKeyConfig が Passthrough のときだけ。Suppress は IME を動かさない。エンジン活性時のみ）。修飾付きの押下では役割を求めない。
     /// - `shadow_action` は付けない（付けると `transport.rs` の先行 Allow と awase の書き込みで二重 actuation、BUG-46 型）。
     ///   物理配送は `Decision::Consume`（PendingThumb）に任せる。発火は FSM が単独タップと解決したときだけ（チョード優先）。
     pub(crate) fn enrich_thumb_key_role(&mut self, event: &RawKeyEvent) {
