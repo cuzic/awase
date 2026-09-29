@@ -72,7 +72,10 @@ def wait_for_tray(proc: subprocess.Popen, timeout: float = 40.0) -> int:
 
 def send_clear(hwnd: int) -> None:
     # メニュー選択確定と同じ WM_COMMAND。SendMessageW は awase 側の処理完了まで戻らない。
-    ctypes.windll.user32.SendMessageW(wintypes.HWND(hwnd), WM_COMMAND, IDM_CLEAR_IMM_CACHE, 0)
+    send = ctypes.windll.user32.SendMessageW
+    send.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    send.restype = wintypes.LPARAM
+    send(wintypes.HWND(hwnd), WM_COMMAND, IDM_CLEAR_IMM_CACHE, 0)
 
 
 def read_log(work: Path) -> list[str]:
@@ -80,10 +83,11 @@ def read_log(work: Path) -> list[str]:
     return p.read_text(encoding="utf-8", errors="replace").splitlines() if p.exists() else []
 
 
-def wait_for_cleared(work: Path, timeout: float = 15.0):
+def wait_for_cleared(work: Path, skip_lines: int = 0, timeout: float = 15.0):
+    """送信前の行(skip_lines 行)は見ない。起動時に同形式のログが出ても古い件数を拾わない。"""
     t0 = time.time()
     while time.time() - t0 < timeout:
-        for line in read_log(work):
+        for line in read_log(work)[skip_lines:]:
             m = CLEARED_RE.search(line)
             if m:
                 return int(m.group(1)), m.group(2) == "true"
@@ -110,8 +114,9 @@ def run_case(dist: Path, out: Path, name: str, cache_text: str) -> dict:
         info["tray_found"] = bool(hwnd)
         if hwnd:
             time.sleep(3.0)  # 起動直後の初期化(自身の cache.toml 書込み等)が落ち着くのを待つ
+            before = len(read_log(work))
             send_clear(hwnd)
-            info["cleared"] = wait_for_cleared(work)
+            info["cleared"] = wait_for_cleared(work, before)
     finally:
         stop_awase(proc)
     info["cache_after"] = (work / "cache.toml").read_text(encoding="utf-8", errors="replace")
