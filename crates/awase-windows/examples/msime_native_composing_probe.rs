@@ -554,7 +554,7 @@ mod windows_probe {
         // （ADR-199 T17 Phase 4 の B4 計測。値2＝トグルの割り当てで各状態がどう動くか）。指定なしは従来どおり無変換の4シナリオ。
         let matrix = std::env::args().any(|a| a == "--matrix");
         let keys: Vec<(&str, u16)> = if matrix {
-            vec![("muhenkan", VK_NONCONVERT), ("henkan", VK_CONVERT)]
+            vec![("muhenkan", VK_NONCONVERT), ("henkan", VK_CONVERT), ("hz_f3", 0xF3), ("hz_f4", 0xF4)]
         } else {
             vec![("muhenkan", VK_NONCONVERT)]
         };

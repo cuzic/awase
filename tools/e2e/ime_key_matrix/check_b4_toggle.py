@@ -14,6 +14,7 @@ TIME = re.compile(r"T(\d\d:\d\d:\d\d\.\d{3})")
 OBSERVED = re.compile(r"\[stage-observe\] observer_poll=Some|ObserverReported")
 ENGINE = re.compile(r"Engine (de)?activated")
 SEND = re.compile(r"apply_ime_open|send_ime_control|IME open axis delegated")
+KEYDOWN = re.compile(r"\[engine-input\] vk=0x(1C|1D|F3|F4) KeyDown.*?composing=(\w+)")
 
 
 def load(path):
@@ -52,7 +53,7 @@ def main():
     print("### %s" % label)
     hdr = "| key | scenario | verdict | before open/comp | after open/comp | text |"
     if lines is not None:
-        hdr += " observed | engine | send |"
+        hdr += " observed | engine | send | ctx.composing@KeyDown |"
     print(hdr)
     print("|" + "---|" * (hdr.count("|") - 1))
     for r in rows:
@@ -62,7 +63,14 @@ def main():
             a.get("open_status"), a.get("comp_str"), r.get("edit_text"))
         if lines is not None:
             lo, hi = r["t_start"], r["t_end"]
-            row += " %d | %d | %d |" % (count(lines, OBSERVED, lo, hi), count(lines, ENGINE, lo, hi), count(lines, SEND, lo, hi))
+            comp = "-"
+            for ts, ln in lines:
+                if lo <= ts <= hi:
+                    m = KEYDOWN.search(ln)
+                    if m:
+                        comp = m.group(2)
+                        break
+            row += " %d | %d | %d | %s |" % (count(lines, OBSERVED, lo, hi), count(lines, ENGINE, lo, hi), count(lines, SEND, lo, hi), comp)
         print(row)
 
 

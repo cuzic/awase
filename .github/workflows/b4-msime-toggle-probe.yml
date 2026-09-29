@@ -113,12 +113,6 @@ jobs:
             "kbd106 override written"
           } catch { "kbd override FAILED: $($_.Exception.Message)" }
           if (Has-Section 'S2-kbd106') { "SECTION FOUND at S2"; exit 0 }
-          if (Get-Command Install-Language -ErrorAction SilentlyContinue) {
-            $j = Start-Job { Install-Language -Language ja-JP -ErrorAction Stop; 'installed' }
-            if (Wait-Job $j -Timeout 900) { "Install-Language: " + ((Receive-Job $j 2>&1) -join ' ') } else { "Install-Language timed out"; Stop-Job $j }
-            try { Set-WinUILanguageOverride -Language ja-JP } catch { "UILang FAILED: $($_.Exception.Message)" }
-            if (Has-Section 'S3-install-language') { "SECTION FOUND at S3"; exit 0 }
-          } else { "Install-Language not available" }
           "SECTION NOT FOUND"
           Get-Process SystemSettings -ErrorAction SilentlyContinue | Stop-Process -Force
 
@@ -257,6 +251,26 @@ jobs:
             Run-Seq "$($key[0])-awase" $seq $true
           }
 
+      # phase2: awase を先に起動してから composing_probe(--matrix)を回し、キー押下時の ctx.composing(EVENT_OBJECT_IME_SHOW 由来)が
+      # 実際の未確定文字列(comp_str)と一致するかを見る。Engine は非活性のままで生キーが IME へ届く(NICOLA 変換が入らない)ので、
+      # 本物の composition があるときの信号の有無を測れる。observed は Engine が判断に使えたかの参考(SkipTyping なら 0)。
+      - name: phase2(awase 起動下の composing 信号と半角/全角の入力中)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"msime_native_composing_probe.exe`"]`r`nEdit = `"works`"`r`n")
+          $env:RUST_LOG = 'debug'
+          $env:AWASE_TEST_INJECTION = '1'
+          Push-Location dist
+          Start-Process -FilePath "$PWD\awase.exe" -WorkingDirectory "$PWD" -RedirectStandardError "$PWD\..\awase-stderr.log" -RedirectStandardOutput "$PWD\..\awase-stdout.log"
+          Start-Sleep -Seconds 8
+          .\msime_native_composing_probe.exe --matrix 2>&1 | Select-Object -Last 80
+          Copy-Item msime_native_composing_probe_result.json ..\p2-awase.json -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Get-Process awase -ErrorAction SilentlyContinue | Stop-Process -Force
+          Pop-Location
+          Copy-Item dist\awase.log .\p2-awase.log -ErrorAction SilentlyContinue
+
       - name: summary
         if: always()
         shell: pwsh
@@ -265,6 +279,7 @@ jobs:
           foreach ($p in 'p1-control','p1-uia') {
             if (Test-Path "$p.json") { python tools\e2e\ime_key_matrix\check_b4_toggle.py $p "$p.json" | Tee-Object -Append -FilePath $env:GITHUB_STEP_SUMMARY }
           }
+          if (Test-Path p2-awase.json) { python tools\e2e\ime_key_matrix\check_b4_toggle.py p2-awase p2-awase.json p2-awase.log | Tee-Object -Append -FilePath $env:GITHUB_STEP_SUMMARY }
           foreach ($n in 'muhenkan','henkan') {
             if (Test-Path "p3-$n-noawase-spike.log") { python tools\e2e\ime_key_matrix\check_b4_seq.py "p3-$n-noawase" "p3-$n-noawase-spike.log" | Tee-Object -Append -FilePath $env:GITHUB_STEP_SUMMARY }
             if (Test-Path "p3-$n-awase-spike.log") { python tools\e2e\ime_key_matrix\check_b4_seq.py "p3-$n-awase" "p3-$n-awase-spike.log" "p3-$n-awase-awase.log" | Tee-Object -Append -FilePath $env:GITHUB_STEP_SUMMARY }
@@ -276,6 +291,8 @@ jobs:
           path: |
             p1-*.json
             p3-*.log
+            p2-*.json
+            p2-*.log
             dist/*.log
             awase-std*.log
           retention-days: 7
