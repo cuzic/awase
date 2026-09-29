@@ -45,7 +45,14 @@ jobs:
           if (-not (Test-Path $tipKey)) {
             Add-WindowsCapability -Online -Name 'Language.Basic~~~ja-JP~0.0.1.0' 2>&1 | Select-Object -Last 3
           }
+          # ADR196-T2 の知見(PR #274 系): 既存リストへ ja-JP を足すだけだと en-US が既定のまま MS-IME がアクティブにならない。ja-JP のみ + MS-IME TIP にする。
+          $only = New-WinUserLanguageList ja-JP
+          $only[0].InputMethodTips.Clear()
+          $only[0].InputMethodTips.Add($msimeTip)
+          Set-WinUserLanguageList $only -Force
+          try { Set-WinUILanguageOverride -Language ja-JP -ErrorAction Stop } catch { "UILanguageOverride FAILED: $($_.Exception.Message)" }
           try { Set-WinDefaultInputMethodOverride -InputTip $msimeTip -ErrorAction Stop } catch { "default input method override FAILED: $($_.Exception.Message)" }
+          Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips
           Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep -Seconds 1
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue
@@ -110,18 +117,9 @@ jobs:
           }
           $kt = FindId '*KeyAndTouchCustomization*'
           if ($kt) { $kt.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); "invoked KeyAndTouchCustomization"; Start-Sleep -Seconds 3 } else { "KeyAndTouchCustomization not found" }
-          $combo = FindId '*KeyTemplate_ComboBox*'
-          if ($combo) {
-            $combo.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()
-            Start-Sleep -Seconds 2
-            Dump 'template-expanded'
-            $items = ListItems
-            "list items: " + (($items | ForEach-Object { $_.Current.Name }) -join ' | ')
-            $target = $items | Where-Object { $_.Current.Name -match 'Custom|User' } | Select-Object -First 1
-            if (-not $target) { $target = $items | Where-Object { $_.Current.Name -notmatch '^Microsoft IME$' } | Select-Object -First 1 }
-            if ($target) { "selecting template: $($target.Current.Name)"; $target.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select(); Start-Sleep -Seconds 3 } else { "no alternative template item" }
-          } else { "KeyTemplate combo not found" }
-          Dump 'after-template'
+          Dump 'page'
+          reg export 'HKCU\Software\Microsoft\IME' reg-before.reg /y | Out-Null
+          reg export 'HKCU\Software\Microsoft\Input' reg-before-input.reg /y | Out-Null
           $k = Get-ItemProperty 'HKCU:\Software\Microsoft\IME\15.0\IMEJP\MSIME' -ErrorAction SilentlyContinue
           "registry: IsKeyAssignmentEnabled=$($k.IsKeyAssignmentEnabled) Muhenkan=$($k.KeyAssignmentMuhenkan) Henkan=$($k.KeyAssignmentHenkan) keystyle=$($k.keystyle)"
           $tg = FindId '*IsKeyAssignmentEnabled_ToggleSwitch*'
@@ -138,12 +136,18 @@ jobs:
                 Start-Sleep -Seconds 1
                 $its = ListItems
                 "$which items: " + (($its | ForEach-Object { $_.Current.Name }) -join ' | ')
-                $pick = $its | Where-Object { $_.Current.Name -match 'On.?/.?Off|toggle' } | Select-Object -First 1
+                $pick = $its | Where-Object { $_.Current.Name -match '^IME-|On.?/.?Off|toggle' } | Select-Object -First 1
                 if ($pick) { "$which select: $($pick.Current.Name)"; $pick.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select(); Start-Sleep -Seconds 2 }
               } else { "$which combo not found" }
             }
           } else { "master toggle not found" }
           Dump 'final'
+          reg export 'HKCU\Software\Microsoft\IME' reg-after.reg /y | Out-Null
+          reg export 'HKCU\Software\Microsoft\Input' reg-after-input.reg /y | Out-Null
+          "--- reg diff (IME) ---"
+          Compare-Object (Get-Content reg-before.reg) (Get-Content reg-after.reg) | ForEach-Object { "$($_.SideIndicator) $($_.InputObject)" }
+          "--- reg diff (Input) ---"
+          Compare-Object (Get-Content reg-before-input.reg) (Get-Content reg-after-input.reg) | ForEach-Object { "$($_.SideIndicator) $($_.InputObject)" }
           $k = Get-ItemProperty 'HKCU:\Software\Microsoft\IME\15.0\IMEJP\MSIME' -ErrorAction SilentlyContinue
           "registry after: IsKeyAssignmentEnabled=$($k.IsKeyAssignmentEnabled) Muhenkan=$($k.KeyAssignmentMuhenkan) Henkan=$($k.KeyAssignmentHenkan) keystyle=$($k.keystyle)"
           Get-Process SystemSettings -ErrorAction SilentlyContinue | Stop-Process -Force
