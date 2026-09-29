@@ -76,3 +76,5 @@ v2 ラインは `develop` → `main`（`.claude/rules/main-develop-branch-flow.m
 
 - ディスクが逼迫している（空き 1〜2GB）。エージェントの並列ビルドは共有 `target`（`CARGO_TARGET_DIR=/home/cuzic/rust-nicola/target`）を使い、他の worktree の `target` は消さない。
 - 設計判断を含む変更は、ADR 起票 → `opus-adversarial-consult` で収束 → 実装の順にする。
+
+- E1 の告知文の下書き: [v2-e1-v1-eol-announcement-draft-2026-09-29.md](v2-e1-v1-eol-announcement-draft-2026-09-29.md)
