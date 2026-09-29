@@ -254,6 +254,8 @@ impl Runtime {
     // Phase 5: 次回ポーリングをスケジュール
 
     fn ir_stage_notify(&mut self) {
+        // Phase 4a: IMM-broken アプリの force-ON（Blacklist パス専用）
+        self.apply_force_on_for_imm_broken();
         // Phase 4: Engine に RefreshState（active 遷移検知）
         self.ir_notify_engine_refresh();
         // Phase 4a: 通過マークの窓が切れても観測が一度も成功しなかったなら、古い明示意図を捨てる
@@ -459,6 +461,7 @@ impl Runtime {
         );
 
         self.learn_imm_capability_from_miss(miss_before, miss_after);
+        self.try_force_on_bootstrap();
         observed
     }
 
