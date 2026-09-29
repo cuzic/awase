@@ -122,7 +122,7 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 
 | ファイル | 役割 |
 |---|---|
-| `crates/awase-windows/examples/typing_stress.rs` | 入力欄の窓を作り(`--form=edit\|multi\|rich\|tsf`)、GJI/MS-IME を有効化して IME ON にし、打鍵列を busy-wait で1イベントずつ注入して読み戻す。ログは `typing_stress.log`(`[TS-JSON]` 行) |
+| `crates/awase-windows/examples/typing_stress/` | 入力先(`--form=edit\|multi\|rich\|tsf` は自前の窓、`chromebar\|chromepage\|bugreport` は本物の Chrome / 不具合報告フォーム)を用意し、GJI/MS-IME を有効化して IME ON にし、打鍵列を busy-wait で1イベントずつ注入して読み戻す。`main.rs`=注入・記録・シナリオ、`target.rs`=入力先(`InputTarget`)、`perturb.rs`=実利用に近い摂動(`--cold`/`--pause-*`/`--idle`/`--switch-focus`/`--interrupt`)、`uia.rs`=UI Automation の共通部品。ログは `typing_stress.log`(`[TS-JSON]` 行)。CI の構成は `ts-*`(内蔵窓)と `tsx-*`(拡張。`only='tsx-*'` で回す) |
 | `check_typing_stress.py` | ログを判定し、崩れ方(消失 loss / 余計 extra / 入れ替わり reorder / リテラル化 literal / 置換 substitute)を分類する。0=PASS / 1=FAIL / 3=INVALID(中断・注入の落ち・フォーカス喪失) |
 | `test_check_typing_stress.py` + `testdata/typing-stress-*.log` | 単体テスト(手書きのログ) |
 

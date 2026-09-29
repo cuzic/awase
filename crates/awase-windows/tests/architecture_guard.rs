@@ -739,7 +739,7 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
     let eisu = read_crate_file("src/state/eisu_recovery.rs");
     assert!(
         engine.contains("forced_open_action")
-            && eisu.contains("bare 無変換/変換の強制open操作")
+            && eisu.contains("無変換/変換の開閉の役割")
             && eisu.contains("PostSetOpenEisuReset")
             && eisu.contains("eisu_reset_on_ime_on"),
         "ADR-192決定3bの user IME-ON 経路は Decision 経由の \
@@ -775,26 +775,167 @@ fn user_ime_on_paths_are_paired_with_eisu_reset() {
     }
 }
 
-/// ADR-192決定3bは、engine非活性時にも必要なADR-153ケース3改の
-/// 「孤立KeyUpをSuppressする」経路を置換・短絡してはならない。
+/// ADR-206: エンジン非活性側の無変換/変換の開閉（役割由来）は Windows パイプライン（旧ケース2/3改）ではなく
+/// エンジンの特殊キー照合（S1 と同じ入口）に合流する。生キーの抑止は `Decision::Consume`（Down）と
+/// `UpDuty::Consume`（Up）が対で負うので、旧マーカーや KeyUp の再評価が再導入されていないことと、
+/// エンジン側の入口が必要なゲートを持つことを固定する。
 #[test]
-fn forced_thumb_path_preserves_inactive_orphan_keyup_suppression() {
+fn forced_thumb_path_lives_in_the_engine_special_key_match() {
     let kp = read_crate_file("src/runtime/key_pipeline.rs");
-    let body = extract_fn_body(production_code_only(&kp), "fn kp_stage_shadow_ime_toggle(");
+    let kp_production = production_code_only(&kp);
+    for banned in [
+        "explicit_ime_action_target",
+        "ExplicitImeActionOutcome",
+        "explicit_ime_action_consumed",
+        "explicit_action_for_pipeline",
+    ] {
+        assert!(
+            !kp_production.contains(banned),
+            "key_pipeline.rs に旧ケース2/3改の `{banned}` が再導入されています。無変換/変換の開閉は \
+             エンジンの特殊キー照合（`Engine::thumb_open_role_action`）と FSM の単独タップ解決が担い、\
+             生キーの抑止は Decision::Consume/UpDuty::Consume に任せる（ADR-206。旧経路は belief を書くだけで \
+             実 IME へ ON を書かず、NotRomajiInput 等で「抑止したのに何も書かない」空振りになった）。"
+        );
+    }
+    let shadow = extract_fn_body(kp_production, "fn kp_stage_shadow_ime_toggle(");
     assert!(
-        body.contains("matches!(event.event_type, KeyEventType::KeyUp)")
-            && body.contains("ExplicitImeActionOutcome::SuppressOnly")
-            && body.contains("event.ime_relevance.explicit_ime_action_consumed = true")
-            && body.contains("return false"),
-        "engine非活性時もケース3改の無変換/変換 KeyUp 抑止を維持すること \
-         (BUG-113/124の孤立KeyUp・@再発防止)"
+        !shadow.contains("forced_open_action") && !shadow.contains("VK_NONCONVERT"),
+        "kp_stage_shadow_ime_toggle は無変換/変換の開閉を扱わない（ADR-206）"
     );
 
-    let core = read_workspace_file("src/engine/nicola_fsm.rs");
-    assert!(core.contains("forced_open_action"));
+    let engine = read_workspace_file("src/engine/engine.rs");
+    let engine_production = production_code_only(&engine);
+    let body = extract_fn_body(engine_production, "fn thumb_open_role_action(");
+    for gate in [
+        "self.compute_active(ctx)",
+        "ctx.is_japanese_ime",
+        "self.adapter.is_enabled()",
+        "Self::is_bare_thumb(event, ctx.modifiers)",
+        "sync_direction.is_some()",
+    ] {
+        assert!(
+            body.contains(gate),
+            "Engine::thumb_open_role_action のゲート `{gate}` がありません（ADR-206 決定3）。\
+             エンジン無効中・日本語 IME でない・修飾付き・ime_detect と重なるキーを能動にしてはならない。"
+        );
+    }
+    let check = extract_fn_body(engine_production, "fn check_special_keys(");
     assert!(
-        !kp.contains("forced_open_action") && !kp.contains("forced_open_action_consumed"),
-        "新経路用マーカーをkey_pipelineに追加せず、Decision::Consumeに配送停止を委ねること"
+        check.contains("event.was_down") && check.contains("Decision::consumed()"),
+        "check_special_keys は自動リピートの Down で指令を作らず Consume だけ返すこと（ADR-206 不変条件）"
+    );
+    assert!(
+        engine_production.contains("phase1_held"),
+        "Phase 1 で消費した親指のリピートを FSM に渡さない印 `phase1_held` が必要です（ADR-206 決定3）"
+    );
+    assert!(
+        !engine_production.contains("SetOpen {\n                open: action")
+            && !body.contains("ImeEffect::SetOpen"),
+        "thumb_open_role_action は SetOpen を直接積まない（`ime_set_open_effects` 経由。ADR-206）"
+    );
+
+    // 無変換/変換の VK 分岐は transport.rs に残す（Allow を返す形。分岐ごと消すと将来 shadow_action が付いたとき
+    // ImmCross で無条件 Suppress される）。
+    let transport = read_crate_file("src/runtime/transport.rs");
+    let disposition = extract_fn_body(
+        production_code_only(&transport),
+        "fn thumb_or_role_fkey_disposition(",
+    );
+    assert!(
+        disposition.contains("VK_CONVERT | crate::vk::VK_NONCONVERT")
+            && !disposition.contains("explicit_ime_action_consumed"),
+        "transport.rs の無変換/変換の VK 分岐は Allow を返す形で残すこと（マーカーは撤去済み、ADR-206）"
+    );
+
+    // InputRelay の窓では役割を付けない（エンジンが Consume して actuation が NotOwned だと誰も書かない）。
+    let rt = read_crate_file("src/runtime/mod.rs");
+    let role = extract_fn_body(production_code_only(&rt), "fn enrich_thumb_key_role(");
+    assert!(
+        role.contains("AppImeProfile::InputRelay"),
+        "enrich_thumb_key_role は InputRelay の窓で役割を付けないこと（ADR-206 決定3、ADR-119）"
+    );
+}
+
+/// ADR-206 / BUG-174 の回帰ガード（所有者のマージ条件、2026-09-29）: **Ctrl を離したとき（Ctrl↑）に awase は
+/// IME への actuation（SendInput・ImmSetOpenStatus・apply_ime_open_*）をしない。**
+/// 旧 `CompositionEvent::CtrlUp` の eager warmup は Ctrl 押下中に `VK_IME_ON` を注入し、GJI + Windows Terminal で
+/// 「@」の被疑箇所だった（BUG-174、`aa53eb4b` で撤去）。再導入と、Ctrl↑ 経路への actuation の混入を検知する。
+/// 「@」そのものの再現は実機 A/B で、ここでは Ctrl↑ 経路に actuation 呼び出しが存在しないことをホストで固定する。
+#[test]
+fn ctrl_key_up_never_actuates_ime() {
+    // 1. 旧 CtrlUp warmup の識別子が復活していない（crate 全体）。
+    let workspace_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut stack = vec![workspace_src];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).expect("read_dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let content = fs::read_to_string(&path)
+                    .expect("read")
+                    .replace("\r\n", "\n");
+                let production = production_code_only(&content);
+                for banned in [
+                    "CompositionEvent::CtrlUp",
+                    "WarmupReason::CtrlUp",
+                    "composition_ctrl_up",
+                    "handle_ctrl_up_recovery",
+                ] {
+                    assert!(
+                        !production.contains(banned),
+                        "{} に `{banned}` が復活しています。Ctrl↑ で awase が VK_IME_ON を注入する経路は \
+                         BUG-174（Windows Terminal + GJI の「@」被疑、`aa53eb4b` で撤去）です。",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+
+    // 2. Ctrl↑ 専用のハンドラ（`on_ctrl_key_up`）は belief のバリア解除だけで、actuation を呼ばない。
+    let ps = read_crate_file("src/state/platform_state.rs");
+    let body = extract_fn_body(production_code_only(&ps), "fn on_ctrl_key_up(");
+    for banned in [
+        "SendInput",
+        "send_input",
+        "send_ime_control",
+        "set_ime_open",
+        "apply_ime_open",
+        "issue_actuation_order",
+        "ImmSetOpenStatus",
+        "send_eager_warmup",
+    ] {
+        assert!(
+            !body.contains(banned),
+            "on_ctrl_key_up が `{banned}` を含んでいます。Ctrl↑ で IME に actuation してはならない（BUG-174）。"
+        );
+    }
+
+    // 3. パイプラインの Ctrl 系 KeyUp ブロックは `on_ctrl_key_up` を呼ぶだけ。
+    let kp = read_crate_file("src/runtime/key_pipeline.rs");
+    let kp_prod = production_code_only(&kp);
+    let start = kp_prod
+        .find("is_ctrl_variant(event.vk_code)\n        {")
+        .expect("Ctrl 系 KeyUp ブロック（is_ctrl_variant）が見つかりません");
+    let block = &kp_prod[start..start + 400.min(kp_prod.len() - start)];
+    assert!(
+        block.contains("on_ctrl_key_up(") && !block.contains("apply_") && !block.contains("send_"),
+        "Ctrl 系 KeyUp ブロックは on_ctrl_key_up の呼び出しだけであること（Ctrl↑ で actuation しない、BUG-174）: {block}"
+    );
+}
+
+/// ADR-206 決定5: Decision 経由の `SetOpen(true)` の eisu 救済（`kp_stage_post_decision`）は GJI の英数保持
+/// （`gji_retains_tracked_eisu`、BUG-159）を渡すこと。`false` 固定だと awase だけ AssumedRomaji に戻り、
+/// GJI が英数を保持したまま NICOLA のローマ字がリテラルで出る。
+#[test]
+fn post_decision_eisu_reset_passes_gji_retained_mode() {
+    let kp = read_crate_file("src/runtime/key_pipeline.rs");
+    let body = extract_fn_body(production_code_only(&kp), "fn kp_stage_post_decision(");
+    assert!(
+        body.contains("gji_retains_tracked_eisu("),
+        "kp_stage_post_decision の eisu 救済に `gji_retains_tracked_eisu` の結果（mode_retained）を渡すこと \
+         （BUG-159 の再発防止、ADR-206 決定5）"
     );
 }
 
@@ -3943,126 +4084,19 @@ fn strip_any_test_module(content: &str) -> &str {
     content
 }
 
-/// ADR-153 決定1「ケース3」（"off"×belief既にOFFの強制actuate）再導入
-/// 防止ガード（2026-09-08、実機A/B実験で「@」再現の直接原因と確定、
-/// `docs/known-bugs.md` BUG-113節・`docs/experiments.md`エントリ25参照）。
-///
-/// ケース3は`apply_ime_open_with_belief(order, None, belief)`の
-/// `shadow_on: None`バイパスで「beliefが変化しなくても毎回強制
-/// actuateする」設計そのものが「単発のIME制御SendInputが1回飛ぶだけで
-/// 『@』を誘発するのに十分」という機序の十分条件を毎回満たしてしまう
-/// ことが確定し、撤回した。撤回に伴い、対応するKeyUpのM19ペアリング
-/// 早期分岐（`explicit_ime_action_target(...) == Some(false)`を見る
-/// KeyUp特別扱い）も不要になり削除済み。このガードは、ケース3固有の
-/// アクチュエーション理由タグ（`"explicit_ime_action_case3_off"`）が
-/// 再導入されていないか、また`explicit_ime_action_target`が
-/// `Option<bool>`（`Some(false)`=ケース3）に巻き戻されていないかを固定
-/// する——「off方向の強制actuateが欲しい」という要望が再浮上したときに、
-/// 実機実験で確定済みの失敗機序を読まずに同じ設計へ戻ることを防ぐ。
+/// ADR-153 決定1「ケース3」（"off"×belief既にOFFの強制actuate）は、ADR-206 で `*_solo_tap_ime_action` ごと撤去した。
+/// 旧ケース3専用のアクチュエーション理由タグが復活しないことだけを固定する（強制 actuate が「@」の直接原因と
+/// 確定した経緯は BUG-113/BUG-124、`docs/experiments.md` エントリ25）。ADR-206 の OFF 方向は、
+/// エンジンの `SetOpen(false)`（`applied` の陽性証拠があれば `already_matches` で省略）であり、
+/// `shadow_on: None` バイパスの毎回強制 actuate ではない。
 #[test]
 fn kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate() {
     let content = read_crate_file("src/runtime/key_pipeline.rs");
     let production = production_code_only(&content);
-
-    // 旧ケース3（2026-09-08に一度全面撤回）専用だったアクチュエーション
-    // 理由タグ。ケース3改（抑止のみ）は`apply_ime_open_with_belief`等の
-    // actuationを一切呼ばないため、このタグ自体が復活してはならない。
     assert!(
         !production.contains("explicit_ime_action_case3_off"),
-        "旧ケース3（\"off\"×belief既にOFFの強制actuate、2026-09-08に全面 \
-         撤回）専用のアクチュエーション理由タグ`explicit_ime_action_case3_off`\
-         が再導入されています。この設計は「beliefが変化しなくても毎回 \
-         強制actuateする」ことが「@」再現の直接原因と確定済みです \
-         ——再導入前に`docs/known-bugs.md` BUG-113節・BUG-124節と \
-         `docs/experiments.md`エントリ25を必ず読んでください。"
-    );
-
-    // ケース3改（`ExplicitImeActionOutcome::SuppressOnly`）の分岐本体には、
-    // 実際のactuation呼び出し（`apply_ime_open_with_belief`/
-    // `issue_actuation_order`/`on_ime_apply_complete`）が一切含まれては
-    // ならない——抑止（`explicit_ime_action_consumed = true`）だけを行い、
-    // そのまま`return false`することを固定する（BUG-124: 抑止まで失うと
-    // 旧BUG-113の「GJI自身のTSFキー横取りが『@』を誘発する」根本原因に
-    // 逆戻りする一方、actuateを復活させると旧ケース3の「@」原因が再発する
-    // ——「抑止する・actuateしない」の両立が本節の核心）。
-    let body = extract_fn_body(production, "fn kp_stage_shadow_ime_toggle(");
-    let arm_start = body
-        .find("ExplicitImeActionOutcome::SuppressOnly => {")
-        .expect(
-            "kp_stage_shadow_ime_toggle に `ExplicitImeActionOutcome::\
-             SuppressOnly` のmatch armが見つかりません。",
-        );
-    let arm_open_brace = arm_start + "ExplicitImeActionOutcome::SuppressOnly => {".len() - 1;
-    let arm_end = find_balanced_close(&body, arm_open_brace)
-        .expect("SuppressOnlyアームの閉じ括弧が見つかりません。");
-    let suppress_only_arm_body = &body[arm_start..=arm_end];
-
-    assert!(
-        !suppress_only_arm_body.contains("apply_ime_open_with_belief(")
-            && !suppress_only_arm_body.contains("issue_actuation_order(")
-            && !suppress_only_arm_body.contains("on_ime_apply_complete("),
-        "ケース3改（SuppressOnly）のアームにactuation呼び出しが含まれて \
-         います。この節は生キーの抑止マーカーを立てるだけで、実際の \
-         actuationは一切行ってはならない（旧ケース3の「毎回強制actuate」\
-         設計が「@」を誘発した、BUG-113/BUG-124参照）。"
-    );
-    assert!(
-        suppress_only_arm_body.contains("explicit_ime_action_consumed = true")
-            && suppress_only_arm_body.contains("return false"),
-        "ケース3改（SuppressOnly）のアームは、`explicit_ime_action_\
-         consumed = true`（生キーの抑止マーカー）を立てて`return false`\
-         するだけの実装であるはずです。この構造が崩れています。"
-    );
-
-    let target_calls = body.matches("explicit_ime_action_target(").count();
-    assert!(
-        target_calls >= 2,
-        "kp_stage_shadow_ime_toggle は `explicit_ime_action_target(` を \
-         KeyUpペアリング判定とKeyDownケース2/3改判定の両方から呼ぶはず \
-         （実際の呼び出し数: {target_calls}）。片方だけになっている場合、\
-         KeyDown/KeyUpいずれかの経路でケース3改の判定条件が乖離している \
-         おそれがある。"
-    );
-}
-
-/// ADR-153 決定1 M13の非対称性回帰ガード（2026-09-08、実機検証＋ユーザー
-/// 協議で確定）。
-///
-/// ケース2/3（`explicit_ime_action_target`、belief OFF側）はM13を撤廃
-/// 済み——`mode_key_config`のPassthrough判定を参照してはならない（実機の
-/// legacy設定`muhenkan_solo_tap_always_suppress=false`が常にPassthrough
-/// へ解決され、明示config機能を恒久的に無効化していたため）。一方
-/// ケース1（`resolve_explicit_ime_action`、コア側・belief ON）はM13を
-/// 維持する——「IME ON中はGJI自身のかな切替に任せたい」という正当な
-/// ユースケースを守るため。この非対称性が崩れていないかを固定する。
-#[test]
-fn explicit_ime_action_case1_keeps_m13_but_case2_3_does_not() {
-    let windows_content = read_crate_file("src/runtime/key_pipeline.rs");
-    let windows_production = production_code_only(&windows_content);
-    let case23_body = extract_fn_body(windows_production, "fn explicit_ime_action_target(");
-    // コード上の実参照（メソッド呼び出し/フィールドアクセス）だけを見る。
-    // doc/inlineコメント中の説明的な言及（「M13は...撤廃済み」等）を
-    // 誤検出しないよう `.is_passthrough(`/`.mode_key_config` の形に限定する。
-    assert!(
-        !case23_body.contains(".is_passthrough(") && !case23_body.contains(".mode_key_config"),
-        "ケース2/3（explicit_ime_action_target、belief OFF側）はM13を \
-         撤廃済みのはず——`mode_key_config`/`is_passthrough`への実コード \
-         参照が復活している場合、実機で「@」が再発した2026-09-08の退行が \
-         再発している可能性がある。"
-    );
-
-    let core_content = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/engine/nicola_fsm.rs"),
-    )
-    .expect("failed to read src/engine/nicola_fsm.rs (awase core crate)");
-    let core_production = production_code_only(&core_content);
-    let case1_body = extract_fn_body(core_production, "fn resolve_explicit_ime_action(");
-    assert!(
-        case1_body.contains("is_passthrough") && case1_body.contains("mode_key_config"),
-        "ケース1（resolve_explicit_ime_action、コア側・belief ON）は \
-         M13（mode_key_config=Passthroughなら発火しない）を維持する \
-         はず——「IME ON中はGJI自身のかな切替に任せたい」ユースケースを \
-         守るための意図的な非対称設計（2026-09-08 ユーザー協議）。"
+        "旧ケース3専用のアクチュエーション理由タグ`explicit_ime_action_case3_off`が再導入されています。\
+         この設計は「beliefが変化しなくても毎回強制actuateする」ことが「@」再現の直接原因と確定済みです。"
     );
 }
 
@@ -4817,7 +4851,7 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
     );
     // `settle_fkey_role_latch` は `kp_stage_shadow_ime_toggle` の結果（`shadow_toggled`）を受けるので直後、`plan()` より前。
     let toggle_at = kp
-        .find("self.kp_stage_shadow_ime_toggle(&mut event)")
+        .find("self.kp_stage_shadow_ime_toggle(&event)")
         .expect("kp_stage_shadow_ime_toggle の呼び出し");
     let settle_at = kp
         .find("self.settle_fkey_role_latch(&event, shadow_toggled)")
@@ -4834,7 +4868,7 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
         .find("self.enrich_key_role(&mut event)")
         .expect("enrich_key_role の呼び出し");
     for later in [
-        "self.kp_stage_shadow_ime_toggle(&mut event)",
+        "self.kp_stage_shadow_ime_toggle(&event)",
         "PhysicalKeyDisposition::plan(",
     ] {
         let at = kp
@@ -5670,5 +5704,32 @@ fn gji_sync_origin_comes_from_the_sync_variant() {
     assert!(
         count_real_calls(prod, "sync.origin()") >= 2,
         "gji_sync_from_belief は sync.origin() を dispatch_gji_response_from に渡すこと"
+    );
+}
+
+/// ADR-199 T17 Phase 4: 役割判定の「つなぎ目」を固定する。`runtime/mod.rs` は `#[cfg(windows)]` で Linux のホストテストに現れず、
+/// `derive_key_shadow_action` の `ImeKindId::MsIme` 腕が `msime_native_key_role` 以外（例えば `None`）へ差し替わっても
+/// 他のテストは全て通ってしまう。空白を除いて照合するので rustfmt の整形に依存しない。
+/// 判定そのものの網羅は `key_effect_predictor.rs` の単体テストが持つ（ここでは重複させない）。
+#[test]
+fn derive_key_shadow_action_routes_ms_ime_to_msime_native_key_role() {
+    let rt: String = read_crate_file("src/runtime/mod.rs")
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    for token in [
+        "ImeKindId::Gji=>k.gji_key_role(vk.0)",
+        "ImeKindId::MsIme=>k.msime_native_key_role(vk.0)",
+        "ime.and_then(|ime|self.derive_key_shadow_action(ime,vk))",
+    ] {
+        assert!(
+            rt.contains(token),
+            "runtime/mod.rs: `{token}` が無い。MS-IME 本体の役割判定（ADR-199 T17 Phase 4）のつなぎ目が外れている"
+        );
+    }
+    let warn = read_crate_file("src/msime_key_assignment.rs");
+    assert!(
+        !warn.contains("トグル、awase未対応"),
+        "msime_key_assignment.rs: 値2（トグル）は Phase 4 で awase が肩代わりするので競合警告に含めない"
     );
 }

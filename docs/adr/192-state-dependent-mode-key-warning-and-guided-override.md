@@ -18,6 +18,7 @@ summary: |-
   (rev2、round1のC-1案)。
   (4)`[[keymap]]`（ADR-114）は親指キー・IME制御VKを扱えないので使わない。GJIの`config1.db`の書き換えはしない。
 status: |-
+  **ADR-206（2026-09-29）追記: 決定3b の優先順位2（`*_solo_tap_ime_action`）は撤去した。GUI T3 は親指キーでも bare の `keys.ime_on/off` を追記する（`*_solo_tap_ime_action`/`always_suppress` は書かない）。**
   **実装完了（2026-09-23）。** 決定1〜3b（T0〜T4、PR #249）・決定2b（T2b、警告の
   ユーザー可視化、PR #254）まで全てdevelopマージ済み。設計はrev8（2026-09-22、
   opus-adversarial-consult round7で「収束。レビューループは終了してよい」と判定・

@@ -114,16 +114,8 @@ pub struct MsImeKeyAssignment {
     /// `KeyAssignmentHenkan` == 1 — 変換キーに IME-オフが割り当てられている（無変換と対称。
     /// ADR-199 T12で確定するまでは「1 = IME-オン」という誤った前提だった）
     pub henkan_ime_off: bool,
-    /// `KeyAssignmentMuhenkan` == 2 — 無変換キーに IME-オン/オフ（トグル）が割り当てられている。
-    /// 決定16でawaseが将来肩代わりする予定の値だが、能動化配線（ADR-199 T17 Phase 4）は
-    /// 入力中・変換中の実機確認待ちでまだ未実装（`state/key_effect_predictor.rs::
-    /// KeyEffectKeymap::msime_native_key_role`の無変換/変換分岐は常に`None`）。Phase 4が
-    /// 実装されるまでは値1と同じ「二重オーナー」リスクがあるため[`Self::conflict_warning`]の
-    /// 対象に含める。
-    pub muhenkan_is_toggle: bool,
-    /// `KeyAssignmentHenkan` == 2 — 変換キーに IME-オン/オフ（トグル）が割り当てられている。
-    /// `muhenkan_is_toggle`と同じ理由でPhase 4実装までは警告対象。
-    pub henkan_is_toggle: bool,
+    // 値2（IME-オン/オフのトグル）は警告対象にしない: ADR-199 T17 Phase 4 で awase が単独タップの開閉を肩代わりする
+    // （`KeyEffectKeymap::msime_native_key_role`、発火は ADR-206 の role_open_action（単独タップが Passthrough のときだけ。Suppress は IME を動かさない））。
     /// MS-IME本体の「以前のバージョンのMicrosoft IMEを使う」互換モード（ADR-197決定4）。
     /// `Some(true)`のときは、この値がどれであっても実際には効かない（T12実機確認）ので、
     /// [`Self::conflict_warning`]は警告そのものを抑制する（誤警告防止）。
@@ -134,10 +126,8 @@ impl MsImeKeyAssignment {
     /// awase と競合する割当てが有効なら、警告文（診断ログ/ポップアップ共用の本文）を返す。
     ///
     /// マスタースイッチが無効、全キーとも既定（かな切替/再変換）、または互換モードON
-    /// （値が効かないので警告しても誤り、T12）なら `None`。値2（トグル）は将来（ADR-199 T17
-    /// Phase 4実装後）decision16でawaseが尊重・肩代わりする予定だが、**Phase 4が未実装の
-    /// あいだは値1と同じ「二重オーナー」リスクがあるため、値1と同様に警告対象に含める**
-    /// （Phase 4実装時にこの分岐を外すこと）。
+    /// （値が効かないので警告しても誤り、T12）なら `None`。値2（トグル）は ADR-199 T17 Phase 4 で
+    /// awaseが決定16のとおり尊重・肩代わりする（互換モードOFFのとき）ので警告しない。
     #[must_use]
     pub fn conflict_warning(&self) -> Option<String> {
         if !self.enabled || self.compat_mode == Some(true) {
@@ -148,10 +138,6 @@ impl MsImeKeyAssignment {
             self.henkan_ime_on.then_some("変換キー → IME-オン"),
             self.muhenkan_ime_off.then_some("無変換キー → IME-オフ"),
             self.henkan_ime_off.then_some("変換キー → IME-オフ"),
-            self.muhenkan_is_toggle
-                .then_some("無変換キー → IME-オン/オフ（トグル、awase未対応）"),
-            self.henkan_is_toggle
-                .then_some("変換キー → IME-オン/オフ（トグル、awase未対応）"),
         ]
         .into_iter()
         .flatten()
@@ -200,8 +186,6 @@ mod windows_impl {
         };
         let packed = u8::from(assignment.henkan_ime_off)
             | (u8::from(assignment.muhenkan_ime_off) << 1)
-            | (u8::from(assignment.henkan_is_toggle) << 2)
-            | (u8::from(assignment.muhenkan_is_toggle) << 3)
             | (u8::from(assignment.henkan_ime_on) << 4)
             | (u8::from(assignment.muhenkan_ime_on) << 5);
         if app.swap_msime_key_assignment_warned(packed) == Some(packed) {
@@ -256,8 +240,6 @@ mod windows_impl {
             henkan_ime_on: henkan == Some(0),
             muhenkan_ime_off: muhenkan == Some(1),
             henkan_ime_off: henkan == Some(1),
-            muhenkan_is_toggle: muhenkan == Some(2),
-            henkan_is_toggle: henkan == Some(2),
             compat_mode: crate::msime_legacy_keymap::read_legacy_compat_mode_enabled(),
         }
     }
@@ -444,26 +426,6 @@ mod tests {
             henkan_ime_on: false,
             muhenkan_ime_off: muhenkan,
             henkan_ime_off: henkan,
-            muhenkan_is_toggle: false,
-            henkan_is_toggle: false,
-            compat_mode,
-        }
-    }
-
-    fn assign_toggle(
-        enabled: bool,
-        muhenkan_is_toggle: bool,
-        henkan_is_toggle: bool,
-        compat_mode: Option<bool>,
-    ) -> MsImeKeyAssignment {
-        MsImeKeyAssignment {
-            enabled,
-            muhenkan_ime_on: false,
-            henkan_ime_on: false,
-            muhenkan_ime_off: false,
-            henkan_ime_off: false,
-            muhenkan_is_toggle,
-            henkan_is_toggle,
             compat_mode,
         }
     }
@@ -479,8 +441,6 @@ mod tests {
             henkan_ime_on,
             muhenkan_ime_off: false,
             henkan_ime_off: false,
-            muhenkan_is_toggle: false,
-            henkan_is_toggle: false,
             compat_mode: None,
         }
     }
@@ -535,16 +495,14 @@ mod tests {
             .is_some());
     }
 
-    /// opusレビュー指摘: 値2（トグル）を能動的に肩代わりする配線（決定16のMS-IME本体版）は
-    /// ADR-199 T17 Phase 4としてまだ未実装。それまでは値1と同じ「二重オーナー」リスクが
-    /// あるため、値2も警告対象に含めること（`check_and_warn`のダイアログから「トグルを
-    /// 選んでください」という誤った回避策の案内を消したことと対になる）。
+    /// ADR-199 T17 Phase 4: 値2（トグル）は awase が肩代わりするので警告しない（`MsImeKeyAssignment`は値2を持たない。
+    /// 値2だけの構成は他の割り当てフラグがすべて false になり、警告なしになる）。値2と値1が混在するときは値1だけが列挙される。
     #[test]
-    fn warns_on_toggle_assignment_until_phase4_implemented() {
-        let w = assign_toggle(true, true, false, None)
-            .conflict_warning()
-            .unwrap();
-        assert!(w.contains("無変換キー → IME-オン/オフ（トグル、awase未対応）"));
+    fn value_2_alone_does_not_warn_and_mixed_lists_only_value_1() {
+        assert_eq!(assign(true, false, false).conflict_warning(), None);
+        let w = assign(true, true, false).conflict_warning().unwrap();
+        assert!(w.contains("無変換キー → IME-オフ"));
+        assert!(!w.contains("トグル"));
     }
 
     /// opusコードレビュー指摘: ADR-199 T12実機確認で「値0は既定ではなく明示的な
@@ -559,15 +517,6 @@ mod tests {
     fn warns_on_henkan_ime_on() {
         let w = assign_ime_on(true, false, true).conflict_warning().unwrap();
         assert!(w.contains("変換キー → IME-オン"));
-    }
-
-    #[test]
-    fn no_warning_for_toggle_when_compat_mode_on() {
-        // 互換モードONでは値そのものが効かない(T12)ので、トグル(値2)であっても警告しない。
-        assert_eq!(
-            assign_toggle(true, true, true, Some(true)).conflict_warning(),
-            None
-        );
     }
 
     // ── ADR-092 決定D Step4a: MsImeToggleAssignment::to_combos ──

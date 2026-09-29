@@ -40,7 +40,7 @@ impl KeyClass {
 
 /// classify() の結果。キー分類と物理位置を一度に計算する。
 ///
-/// `injected`/`is_ime_control`/`explicit_ime_action_consumed`の3個のboolは、それぞれ独立した
+/// `injected`/`is_ime_control`の2個のboolは、それぞれ独立した
 /// プラットフォーム層の分類結果（互いに排他でも状態遷移でもない）。`RawKeyEvent`（この型の
 /// 変換元）からそのまま引き継ぐ。
 #[derive(Debug, Clone, Copy)]
@@ -66,13 +66,6 @@ pub struct ClassifiedEvent {
     /// 素通しして良いか（無変換/変換等）／してはいけないか（Alt 等、
     /// 単独タップで OS 側の副作用があるキー）を判定するために使う。
     pub modifier_key: Option<ModifierKey>,
-    /// ADR-153 決定1（B13/B14対策）: `RawKeyEvent.ime_relevance.
-    /// explicit_ime_action_consumed` をそのまま引き継ぐ。`kp_stage_shadow_
-    /// ime_toggle`（ケース2）が既にこの打鍵のIME open軸actuationを発行
-    /// 済みなら true——`PendingThumbData` へ格納され、100ms後の
-    /// `resolve_pending_thumb_as_single`（ケース1）が同じ打鍵を二重
-    /// 評価しないためのガードに使われる。
-    pub explicit_ime_action_consumed: bool,
 }
 
 impl ClassifiedEvent {
@@ -88,7 +81,6 @@ impl ClassifiedEvent {
             injected: false,
             is_ime_control: false,
             modifier_key: None,
-            explicit_ime_action_consumed: false,
         }
     }
 }
@@ -483,7 +475,7 @@ impl PendingKey {
 
 /// 保留中の親指キーデータ
 ///
-/// `is_left`/`explicit_ime_action_consumed`/`after_char_flush`は独立した分類結果で
+/// `is_left`/`after_char_flush`は独立した分類結果で
 /// あり（互いに排他でも状態遷移でもない）、状態機械やenumへの統合は不自然。
 /// `ClassifiedEvent`の値をそのまま引き継ぐ。
 #[derive(Debug, Clone, Copy)]
@@ -495,11 +487,6 @@ pub struct PendingThumbData {
     /// この親指キーが OS 修飾キー（Ctrl/Shift/Alt/Meta）に割り当てられているか。
     /// `NicolaFsm::timeout_pending_thumb` 参照。
     pub modifier_key: Option<ModifierKey>,
-    /// ADR-153 決定1（B13/B14対策）: `ClassifiedEvent.explicit_ime_action_
-    /// consumed` を引き継ぐ。true なら `resolve_pending_thumb_as_single`
-    /// はこの打鍵の `explicit_ime_action` を読まずスキップする
-    /// （`kp_stage_shadow_ime_toggle` のケース2が既に処理済みのため）。
-    pub explicit_ime_action_consumed: bool,
     /// ADR-182 決定1: この親指は、文字キー保留中に到着し、その文字が時間超過で単独確定された
     /// 結果として`PendingThumb`になった（`step_pending_char_thumb`の時間超過分岐）。
     /// 文字が既に単独確定済みで、親指を生のIME操作キーとしても出すと、
@@ -518,7 +505,6 @@ impl PendingThumbData {
             is_left: ev.key_class.is_left_thumb(),
             timestamp: ev.timestamp,
             modifier_key: ev.modifier_key,
-            explicit_ime_action_consumed: ev.explicit_ime_action_consumed,
             after_char_flush: false,
         }
     }
@@ -639,12 +625,12 @@ impl ModeKeyConfig {
 /// `resolve_pending_thumb_as_single` の戻り値の中間表現。`DedicatedFnKey`
 /// は `ModeKeyConfig` を経由せず独立に優先される（上記 doc 参照）。
 ///
-/// ユーザー明示config（`*_solo_tap_ime_action`、ADR-153）による IME open 軸への
-/// 副作用（旧ADR-092 決定Bの `DelegateToOpenAxis` 相当）は、この enum には**追加しない**。
+/// 開閉の役割（bare `keys.ime_*`／IME 設定由来のトグル、ADR-192 決定3b・ADR-199 決定16・ADR-206）による
+/// IME open 軸への副作用（旧ADR-092 決定Bの `DelegateToOpenAxis` 相当）は、この enum には**追加しない**。
 /// `DedicatedFnKey` と同様「`ModeKeyConfig` を経由せず独立に優先される」上書きであり、
-/// `NicolaFsm` の独立フィールドとして保持し、`resolve_pending_thumb_as_single` が
-/// `SoloTapAction` を構築する**前**に判定する。GJI/MS-IME の設定からの自動採用
-/// （旧 `*_delegate_to_open_axis`）は ADR-191 で撤去した。
+/// `NicolaFsm` の独立フィールド（`forced_open_action`）として保持し、`resolve_pending_thumb_as_single` が
+/// `SoloTapAction` を構築する**前**に判定する。旧 `*_solo_tap_ime_action`（ADR-153）は ADR-206 で撤去し、
+/// GJI/MS-IME の設定からの旧自動採用（`*_delegate_to_open_axis`）は ADR-191 で撤去した。
 /// IME open 軸への副作用要求は `ResolvedAction` を経由せず、
 /// `NicolaFsm::ime_open_requested`（`take_engine_off_requested` と同型の
 /// ワンショットチャネル）で `Engine` 層へ伝える。
@@ -1057,7 +1043,6 @@ mod tests {
             is_left,
             timestamp: 2000,
             modifier_key: None,
-            explicit_ime_action_consumed: false,
             after_char_flush: false,
         }
     }
@@ -1338,7 +1323,6 @@ mod tests {
             injected: false,
             is_ime_control: false,
             modifier_key: None,
-            explicit_ime_action_consumed: false,
         };
         assert_eq!(ev.key_class, KeyClass::Char);
         assert!(ev.pos.is_some());
@@ -1356,7 +1340,6 @@ mod tests {
             injected: false,
             is_ime_control: false,
             modifier_key: None,
-            explicit_ime_action_consumed: false,
         };
         assert!(ev.key_class.is_thumb());
         assert!(ev.pos.is_none());
@@ -1373,7 +1356,6 @@ mod tests {
             injected: false,
             is_ime_control: true,
             modifier_key: None,
-            explicit_ime_action_consumed: false,
         };
         assert!(ev.is_ime_control);
     }
@@ -1470,7 +1452,6 @@ mod tests {
             injected: false,
             is_ime_control: false,
             modifier_key: None,
-            explicit_ime_action_consumed: false,
         };
         let pa = ParseAction::ReduceAndContinue {
             actions: smallvec::smallvec![KeyAction::Suppress],
