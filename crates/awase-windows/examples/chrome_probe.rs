@@ -516,6 +516,29 @@ fn find_chrome(arg: Option<String>) -> Option<String> {
     .find(|p| std::path::Path::new(p).exists())
 }
 
+/// タスクバーを前面にしてテスト窓からフォーカスを外す(`--refocus`。フォーカス変更イベントを awase に見せる)。
+fn focus_away() -> bool {
+    unsafe {
+        let Ok(tray) = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) else {
+            return false;
+        };
+        let fg = GetForegroundWindow();
+        let fg_tid = if fg.0.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(fg, None)
+        };
+        let my_tid = GetCurrentThreadId();
+        let attached =
+            fg_tid != 0 && fg_tid != my_tid && AttachThreadInput(my_tid, fg_tid, true).as_bool();
+        let ok = SetForegroundWindow(tray).as_bool();
+        if attached {
+            let _ = AttachThreadInput(my_tid, fg_tid, false);
+        }
+        ok
+    }
+}
+
 fn bring_to_front() -> bool {
     unsafe {
         let hwnd = FindWindowW(PCWSTR::null(), w!("IMEPROBE")).unwrap_or_default();
@@ -742,7 +765,15 @@ fn main() {
             p.log.line(&format!(
                 "CLOSE_IME open_before={before:?} set_ret={set_ret:?} open_after={after:?}"
             ));
-            sleep(3000);
+            if args.iter().any(|a| a == "--refocus") {
+                let away = focus_away();
+                sleep(300);
+                let back = bring_to_front();
+                p.log.line(&format!("REFOCUS away={away} back={back}"));
+                sleep(2700);
+            } else {
+                sleep(3000);
+            }
             let open_late = ime_control(0x0005, 0);
             let got = p.probe_logged("閉じて3秒後");
             p.log
