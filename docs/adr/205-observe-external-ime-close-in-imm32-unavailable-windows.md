@@ -74,10 +74,10 @@ awase が IME に送るのは冪等な絶対キー(GJI・MS-IME とも `VK_IME_O
 | 同上 | トグル(2 回目) | `VK_IME_ON` | 実 ON。**2 回押しで直る。固着ではない**。 |
 | belief OFF / 実 ON(外部 open 後) | トグル | `VK_IME_ON` | 見た目変化なし、belief ON(エンジン活性)。2 回目で OFF。同上。 |
 | belief ON / 実 OFF | 絶対 ON(Ctrl+変換) | **`applied` が ON なら `gji_direct_already_matches` により送信を省略** | **実 OFF のまま。何度押しても直らない = 固着**(BUG-156 と同型の「古い記録を根拠に送信を省く」) |
-| belief OFF / 実 ON | 絶対 OFF(ADR-206 決定3(b): `ImeOff × !ctx.ime_on` は Consume のみで `SetOpen` を積まない) | 何も送らない | 実 ON のまま。何度押しても直らない = 固着 |
+| belief OFF / 実 ON | 絶対 OFF（GJI: applied が Some(false) なら `gji_direct_already_matches` で省略。なお ADR-206 の決定3(b)〈Consume のみ〉は ADR-206 側で撤回済み〈2026-09-29〉） | 何も送らない | 実 ON のまま。何度押しても直らない = 固着 |
 
 したがって **GJI では、トグル系は 2 回押しが最悪で固着に当たらない**（注: 「AlreadyMatched で省略」は `GjiDirect` にだけある。MsImeDirect は常に送る。ただし **MS-IME × 実 Chrome では awase 自身の `VK_IME_OFF` が効かなかった測定がある**〈BUG-172 の対照、目印付き 0xF3 で 10/10 閉じず〉ため、MS-IME のトグル系は 2 回押しでも直らない可能性があり、ADR-205 とは独立の既存の制限。実機確認を第0段に加える）。**固着に当たるのは絶対指定キーが「belief/applied を根拠に送信を省く」場合**であり、所有者の「絶対指定は belief が古くても確実」という前提は、
-現行コードでは `applied` の AlreadyMatched 省略(GJI)と ADR-206 (b) の Consume のみの分岐に対しては成り立たない。緩和を D6（検出できた場合）と ADR-208（検出できない場合）に置く。なお表の Ctrl+無変換（GJI、belief OFF/実 ON）も同じ握り潰しに当たる（ADR-206 (b) に限らない）。
+現行コードでは `applied` の AlreadyMatched 省略(GJI)に対しては成り立たない。緩和を D6（検出できた場合）と ADR-208（検出できない場合）に置く。なお表の Ctrl+無変換（GJI、belief OFF/実 ON）も同じ握り潰しに当たる（ADR-206 (b) に限らない）。
 
 ## 案の比較
 
@@ -121,9 +121,11 @@ awase が IME に送るのは冪等な絶対キー(GJI・MS-IME とも `VK_IME_O
 - `Closed` のとき: `ImeStateHub` に新設する 1 メソッド `adopt_external_close(tick, accepted)` を呼ぶ(round3 R3-1)。中身は `write_observer_poll(false, ..)` → **`intent_store.remove(current_focus)`**(`effective_open_at` は IntentStore の意図を shadow_model より優先し TTL は約30秒。物理キー経由の VK_IME_ON の意図が残ると belief が ON のままになる。既存の通過マークの経路も `drop_intents_for_mode_key_pass_in_scope` で同じ除去をしている)→ private の `pass_through_observed(tick, true)`(`shadow_model.last_intent` を捨て、`derive_any` から `desired_open` を実状態へ揃える)。最後に watch を解除。`pass_through_observed` は private なので `runtime/` からはこのメソッド越しにだけ呼べる。回帰テスト: IntentStore に ON の意図がある状態から Closed 後に `effective_open()` が false。
   （round5 で変更）閉じる方向(1→0)だけでなく**開く方向(0→1)も同じ規則で追随する（ただし 0→1 の追随は GJI が有効な間に限って始める。MS-IME/CTF 自身の注入が IME を開いた場合に Engine が ON になり、MS-IME では次の絶対 OFF が効かない可能性があるため。round5）**。理由: 実状態が真実、かつ ADR-206 (b) が「belief OFF の OFF キーは何も送らない」ため、外部 open で belief OFF/実 ON のまま残ると固着する（上の表）。BUG-14 型の上書きは、追随先が常に「窓の中で実際に読んだ値」であり stale な値へ揃える経路が無いので、双方向でも起きない。`classify_external_close` は `ExternalStateVerdict::{NoEvidence, Baseline(bool), Changed(bool), IgnoreFirst(bool)}` の形に一般化する（`Baseline`＝窓内の最初の `Some` の読み〈代案を採る場合のみ、同じ scope で直近の値〉を保持、`Changed(v)`＝ベースラインと逆の値を読んだ）。
 - `reschedule_ime_refresh`: watch が生きている間は、明示意図の停止(`runtime/mod.rs:1128-1133`)より前で `MODE_KEY_PASS_REREAD_MS`(60ms)の読み直しを予約する。窓が切れたら watch を破棄して従来どおり(意図は捨てない)。
-- 最初の読みが既に 0(閉じるのが最初の読み〈KeyDown から約 25〜40ms 後〉より速い)なら `IgnoreZero` で追随しない。**両側の競合(閉じる前の 1 を読む/閉じた後の 0 しか読めない)のどちらが優勢かは未測定**。第0段の trace(KeyDown の時刻と各 prefetch の時刻・値)で確定する。
-  「毎回取りこぼす」だった場合の代案(実装時に採用可、round3 R3-3): 全 refresh の入口で `foreground_scope` 付きの直近 prefetch 値を1つ記録し、arm 時にそれが `Some(true)` なら `saw_open` の初期値を true にする。採用条件は「注入 IME キー直後の窓の中で実際に 0 を読んだ」ことのままなので、古い 1 を検証と誤認する危険(round2 M1)は、HIMC の付け外しと注入キーが同時に起きない限り増えない。
-
+- **第0段の実測（run 36545236017、`cal-driftrec-chrome-real-hz-ext-gji`、GJI × 実 Chrome、trace ログ）**: 注入 0xF3 の KeyDown は 08:53:20.826、`may_change_ime key passed through → IME refresh scheduled (20ms)` が出て Engine は消費しない。
+  最初の prefetch 読みは KeyDown の **32ms 後（20.858）で既に `open=0`**、strategy は `SkipTyping`（idle=32ms）、`explicit_intent=Some(true)`。つまり **GJI は 32ms 以内に閉じ、窓内の読みは最初から 0** で、`saw_open` を窓内の読みだけで立てる方式は効かない。
+  注入前の直近の読みは 19.670 の `open=1`（1.16 秒前、目印付き VK_IME_ON の 20ms 後の refresh）。よって **R3-3 の代案を採用する**: 全 refresh の入口で `foreground_scope` 付きの直近 prefetch 値を1つ記録し、arm 時にそれが `Some(true)` なら `saw_open` の初期値を true にする。
+  採用条件は「注入 IME キー直後の窓の中で実際に 0 を読んだ」ことのままなので、古い 1 を検証と誤認する危険（round2 M1）は、HIMC の付け外しと注入キーが同時に起きない限り増えない。プローブ側の `open_before=Some(1) → open_after=Some(0)` と prefetch の 1→0 は一致（(d) 確認）。
+  窓 300ms は閉じるまでの実測 32ms 以内に収まる（新しい定数なし、tuning-constants の対象外）。
 - Closed の後の `observe_gji_after_focus` の `ObserverPoll(true)` 上書き(round3 m1): その第1引数を `max(last_focus_change_ms, last_external_close_ms)` にして、閉じる前の GJI I/O を無視する(実装時。GJI が閉じるときに I/O を出すかは第0段の `[gji-poll]` で確認)。
 
 ### D3. 「常に 0」説と「1→0 が読める」説の両立
@@ -149,7 +151,7 @@ awase は IME を開け直さない。ADR-178 領域A撤去・ADR-191 の方針(
 ### D7. 検出できない stale に対する絶対指定キーの保証は ADR-208 に切り出す
 
 検出できなかった外部変化（アイコン操作など注入キーを伴わない変化）では `applied` が古いまま残り、GJI の絶対指定キーが `AlreadyMatched` で握り潰される。これは actuation の判断を変える変更で、本 ADR の主題（観測だけを足す）の外なので、
-**[ADR-208](208-absolute-ime-keys-must-not-be-elided-on-stale-applied-in-blind-windows.md)（起草）へ切り出す**（round5 の推奨。置き場所・書き込み口・TsfNative の「@」・MS-IME の実測を含め ADR-208 で検討）。
+**[ADR-208](208-absolute-ime-keys-must-not-be-elided-on-stale-applied-in-blind-windows.md)（起草）へ切り出す**（round5 の推奨。置き場所〈ADR-206 の要請: 対象に「bare_ime_action または forced_open_action を持つ親指の非リピート Down」を含める〉・書き込み口・TsfNative の「@」・MS-IME の実測を含め ADR-208 で検討。ADR-206 は決定3(b) を撤回し、OFF 方向を常に絶対指定 SetOpen(false) で書く。代償の単発 VK_IME_OFF の「@」は ADR-206 側で実機 A/B をマージ条件にしている。出荷順は ADR-208 と同時か後）。
 本 ADR 単体で保証するのは「検出できた外部変化の後は絶対指定キーが握り潰されない」（D6）まで。
 
 ### 受け入れ基準の対象外（明記）
@@ -229,3 +231,10 @@ Blind 窓で学習表が「開閉トグルではない」とする半角/全角�
 - M5-1 D7 の置き場所は `kp_stage_shadow_ime_toggle` の入口では Ctrl+変換（エンジンのコンボ）に効かない、`applied` の書き込み口は reducer 経由で新 event が要る（D4 と両立しない）。M5-2 D7 を TsfNative に適用すると BUG-124 の「@」の構成を作り直す。
   M5-3 MS-IME × 実 Chrome では awase の `VK_IME_OFF` が効かない測定があり、受け入れ基準が belief と無関係に満たせない可能性。→ いずれも ADR-208 に移し、本 ADR は観測+D6 で収束扱い（D6 の影響範囲は `adopt_external_change` 専用の経路に限る）。
 - n1〜n4（D5 の残骸、表の脚注、件数ガード〈ime_model.rs の applied 直接代入 6→7〉、GJI/MS-IME の分離集計）を反映。
+
+### 第0段の実測結果（2026-09-29、run 36545236017、GJI × 実 Chrome、1試行目）
+
+(a) 注入 0xF3 は Engine に消費されず 20ms の refresh が予約される: 確認。(b) GJI が閉じるまで <32ms（最初の読みで既に 0）→ arm 前の直近値を `saw_open` の初期値にする（D2）。
+(d) prefetch（フォーカス HWND）は chrome_probe と同じ 1→0 を読む: 確認。(e) 目印付き VK_IME_ON が明示意図を記録する（`explicit_intent=Some(true)`）: 確認。
+(c) 閉じるときの GJI I/O: 該当ログなし（`[gji-poll]` は SkipTyping で走らない）。(f) MS-IME × 実 Chrome の awase `VK_IME_OFF` は本 run の対象外（ADR-208 の前提として別 run が要る）。
+補足: 3秒後の打鍵の後、GJI の `Reopen(BeliefSync:shadow-noop)` の reinit が走り、次の読みは `open=1` に戻った（既存の GJI 経路による再オープン。watch の窓の外なので追随の対象外）。

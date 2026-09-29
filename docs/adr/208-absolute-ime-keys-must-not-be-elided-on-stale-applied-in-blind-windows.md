@@ -29,5 +29,5 @@ related_adr:
    BUG-113 の同一押下での二重送信は、最初の送信が `applied` を `Optimistic(open)` にするので従来ガードで守られる。
 2. 書き込み口: `applied` を落とす専用 event が必要(`ModeKeyPassedThrough` は `last_intent` も捨てるので不可)。`ime_event_guard` に登録し構築点を固定する。
 3. 適用範囲: Imm32Unavailable かつ非 TsfNative。TsfNative(WT×GJI)は実 ON 時の単発 `VK_IME_OFF` が「@」を誘発するか A/B を取ってから(推奨)。だめなら既知の制限として明記する。
-4. ADR-206 決定3(b)(`ImeOff × !ctx.ime_on` は Consume のみ)を Imm32Unavailable かつ非 TsfNative では適用しない(`VK_IME_OFF` を 1 回送る)よう ADR-206 側へ要請する。
+4. ADR-206 は決定3(b)（Consume のみ）を撤回済み（OFF 方向は常に絶対指定 `SetOpen(false)`）。代償は belief OFF での OFF キーごとの単発 `VK_IME_OFF`（WT×GJI で BUG-124 型の「@」の可能性、ADR-206 側の実機 A/B がマージ条件、代替は同じ OFF キー2連打時だけ送る案）。本 ADR の対象に「`bare_ime_action` または `forced_open_action` を持つ親指の非リピート Down」を含める（親指の S1/S2 は `shadow_action`/`sync_direction` を持たず、`kp_stage_shadow_ime_toggle` の入口だけでは漏れる）。出荷順は ADR-206 と同時、または本 ADR の後。
 5. MS-IME × 実 Chrome: awase の `VK_IME_OFF` が閉じない可能性(BUG-172 対照)。実機確認が先。
