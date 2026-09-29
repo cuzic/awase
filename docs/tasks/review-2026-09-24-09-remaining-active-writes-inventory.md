@@ -22,6 +22,7 @@ source_review: 俯瞰レビュー（2026-09-24）の B-5（起動時強制ON以�
 |---|---|---|
 | フォーカス変更時の強制OFF | `runtime/ime_refresh.rs:599-609`（`issue_actuation_order(false, "focus_change_enforce_off")` が `:602`、`set_ime_open_ordered(order)` が `:603`） | `if !applied_ime_on && !new_profile_is_tsf_native`。**非TsfNative だけが対象**。コードコメントの由来は ADR-090 §2.A 設計案3 / A-2 |
 | drift correction | `ir_apply_drift_correction`（`ime_refresh.rs:645`）。`set_ime_open_ordered` が `:934`、`apply_ime_open_with_belief(order, None, belief)` が `:947` | 判定は `state/platform_state.rs` の `check_drift_correction`。BUG-020（TsfNative 救済）/ BUG-043（16回連続送信） |
+| GJI reinit（打鍵時の事後回復。`set_ime_open_ordered` の外） | `output/probe_io.rs:186`（VK_IME_OFF→ON 注入） | GJI × TsfNative で打鍵時に literal を2回検出→give-up した後。**GJI 限定**（MS-IME に同等の経路は無い）。RichEdit 入力先の tsf × GJI では 30/30 で開け直したが、**実 Chrome × GJI では 0/10**（2026-09-29 追補）。この表は `set_ime_open_ordered` の2箇所（指標3）に対応するので、指標3には数えず参考行として載せる |
 
 起動時の強制ON（`desired_open=true` 初期値）は drift correction の経路で書かれる。これは [05](review-2026-09-24-05-startup-desired-open-forced-on.md) が扱い、ここでは別の行として数えない。
 
@@ -75,7 +76,7 @@ lint（`lints/actuation_call_guard/src/lib.rs:98-101`）は `actuate_ime_control
 
 ## C-2: 回復手段の喪失と非対称
 
-- force-on と reassert は撤去済み（`f83084b3` / `621bf93c`、`5877f982` に含まれる）。TsfNative の ON 方向の救済は drift correction だけ。記憶メモによれば、撤去時点で「drift 単独で代替できるか」の実機 A/B は未実施で、その後の実施記録もリポジトリ内で見つからない（**未確認**）。
+- force-on と reassert は撤去済み（`f83084b3` / `621bf93c`、`5877f982` に含まれる）。TsfNative の ON 方向の救済は drift correction だけ（**GJI については打鍵時の GJI reinit も ON 方向に働く**が、RichEdit 入力先でのみで実 Chrome では回復しなかった。下の「追補 2026-09-29」参照）。記憶メモによれば、撤去時点で「drift 単独で代替できるか」の実機 A/B は未実施で、その後の実施記録もリポジトリ内で見つからない（**未確認**）。
 - 一方で、状態を押し付ける書き込みは残る: 起動時の強制ON（[05](review-2026-09-24-05-startup-desired-open-forced-on.md)）と、ImmCross へのフォーカス変更時の強制OFF。「救済のための書き込みは消したのに、押し付ける書き込みは残っている」形。
 - 注意: 強制OFFは TsfNative では発火しないので、TsfNative の「回復手段の喪失」は drift correction だけの問題。強制OFFの撤去で確かめるべきなのは ImmCross 側のずれの持続時間。
 
@@ -196,7 +197,7 @@ API 開閉とかな単打の実打鍵結果を記録する。`check_drift_recove
 - 打鍵時の送信前チェックは conv を読む（conv_read）。ただし ImeModel の開閉観測ではない。**tsf × MS-IME では、この送信前チェック（`output/probe_io.rs` の msime-ready）が
   conv の NATIVE を「ON 確認」と扱い、閉じた IME へ "ka" を送って生ローマ字になった**（30/30。`state=Hiragana confirmed=false` → `NATIVE 確認 → 送信 "ka"`、
   run 36510380572 の `result-cal-driftrec-tsf-msime-native-1` の awase.log。run 36511231753 でも conv_read 10/10 で再現）。conv は閉じても NATIVE のまま残る（`ime_refresh.rs:862-866`）。開閉ではなく conv で
-  送信可否を決めていることが、ログで確認できた。conv mode ファミリーの再発として `docs/known-bugs/` に起票する対象（未起票）。
+  送信可否を決めていることが、ログで確認できた。conv mode ファミリーの再発として [BUG-172](../known-bugs/BUG-172.md) に起票済み（2026-09-29。実 Chrome では別経路と判明し、ゲート修正は見送り。追補参照）。
 - **C-2「TsfNative の ON 方向の救済は drift correction だけ」は、GJI × TsfNative については反証された**: 打鍵して literal を 2 回検出（count=2）→ give-up →
   **GJI reinit（VK_IME_OFF→ON 注入、`probe_io.rs:186`）**が ON 方向の能動書き込みとして開け直す（tsf × GJI、30/30、打鍵後の API は各 run 10/10 で開）。これは
   ずれの検知ではなく打鍵時の事後回復。確定テキストは 30/30 で `か` だが、最初は一時的にリテラルが入り、BS と再送で補正される。MS-IME には同等の経路が無い。この reinit は開閉軸の棚卸し（上表）に載っていない → 追記が要る。
@@ -209,3 +210,36 @@ API 開閉とかな単打の実打鍵結果を記録する。`check_drift_recove
 
 実行: `gh workflow run e2e-ime.yml --ref <branch> -f only='cal-driftrec-*'`（cal-* は only 指定時だけ走る）。観測のみで合否には含めない。
 次の一手の候補: ずれを作った後にフォーカス変更（観測を1回起こす）を挟み、drift correction 自体の判断まで届く条件を作る。
+
+### 追補 2026-09-29: フォーカス変更を挟んだ測定と実 Chrome（計画2・3）
+
+**実 Chrome（`chrome_probe --close-ime=10`、run [36524071258](https://github.com/cuzic/awase/actions/runs/36524071258)〈MS-IME、`--msime` でプロファイルを Chrome 起動前に有効化〉・
+[36518453739](https://github.com/cuzic/awase/actions/runs/36518453739)〈GJI〉）**: IME を `WM_IME_CONTROL` で閉じ、3秒後にかな単打。
+- 結果: MS-IME 9/10 と GJI 10/10 が `kiu`（閉じたままローマ字。MS-IME の残り1回はフォーカス外れで INVALID）。**GJI reinit も実 Chrome では回復しなかった**
+  （RichEdit の tsf × GJI 30/30 との差。reinit は打鍵1回だけを見ており、2回目以降は未確認）。
+- MS-IME でも msime-ready ゲートは**経由していない**（`[msime-ready]` は最初の準備打鍵の3件のみ）。BUG-172 の「NATIVE 誤認」は RichEdit 入力先の現象で、実 Chrome では別原因（次項）。
+  詳細は [BUG-172](../known-bugs/BUG-172.md)。
+- `IMC_GETOPENSTATUS` 自体は実 Chrome の窓でも 1→0 と読める。awase が読まないだけ（次項）。
+
+**フォーカス変更を挟んだ測定（`--refocus`、run [36530903798](https://github.com/cuzic/awase/actions/runs/36530903798)、`cal-driftrec-refocus-*`、各10試行）**:
+閉じた直後にタスクバーへフォーカスを外して戻し（`drift_on_refocus` の `away_ok=true`）、awase の FocusChange 経路を通してから打鍵した。
+
+| 入力先 × IME | verdict | observed | drift | 補足 |
+|---|---|---|---|---|
+| tsf × GJI | REOPENED_BY_OTHER_PATH | 0 | 0 | 打鍵時 reinit で 10/10 回復（reopened_by_typing） |
+| tsf × MS-IME | NOT_OBSERVED | 0 | 0 | 10/10 生ローマ字 |
+| edit × GJI | NOT_RECOVERED | 10 | 0 | 10/10 未回復（Unicode 注入の窓は無く、実打鍵がローマ字） |
+| edit × MS-IME | NOT_RECOVERED | 10 | 0 | 同上 |
+
+言えること（awase.log で確認）:
+- **Chrome 系クラス（`Chrome_RenderWidgetHostHWND`）は FocusChange の分類が `profile=Imm32Unavailable`** で、`Skipping IMM query for known-broken class (shadow state SSOT)`。
+  フォーカス変更後も開閉を観測せず、drift correction の判断に**届かない**（observed=0）。前回の「届いていない」は、フォーカス変更を挟んでも変わらない。
+- **edit（ImmCross）は観測が届く**（`ObserverPoll ime_on true → false`）が、フォーカス変更で **`explicit_intent=None`**（明示意図 ON が消える）になり、awase は閉じた状態を新しい belief として採用する。
+  戻す理由が無いので drift=0。これは設計どおりで、バグではない。
+- したがって「閉じられた IME を drift correction が ON へ戻す」経路は、フォーカス変更を挟んでも成立しない（Chrome 系は観測不能、ImmCross は意図が消える）。ON への回復は GJI reinit だけで、実 Chrome では効かなかった。
+
+限界:
+- 実 Chrome に対する `--refocus`（chrome_probe）は `SetForegroundWindow`/`SwitchToThisWindow` がタスクバーに拒否され（`away=false`）、**フォーカス変更は起きていない**（FAIL 10/10 は refocus 無しと同じ）。tsf の結果は同じクラス名の RichEdit での代用で、分類の理由がクラス名なので実 Chrome でも同じと推定しているが未確認。
+- 閉じ方は `WM_IME_CONTROL`（外部要因の再現）で、実運用の閉じ方との対応は未確認。撤去前ビルドとの対照も未実施。
+
+次の一手の候補: 実 Chrome で観測できないこと（`Imm32Unavailable`）が「外部から閉じられた」ケースの本質的な限界かを、実運用の経路（他アプリ・OS による IME OFF）の頻度から判断する。頻度が低ければ対処しない選択もある。

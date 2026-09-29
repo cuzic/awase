@@ -22,14 +22,22 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use windows::core::{w, PCWSTR};
+use windows::Win32::Foundation::{LPARAM, WPARAM};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
     VIRTUAL_KEY,
 };
+use windows::Win32::UI::TextServices::{
+    CLSID_TF_InputProcessorProfiles, ITfInputProcessorProfileMgr,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, FindWindowW, GetForegroundWindow, GetWindowThreadProcessId,
-    SetForegroundWindow,
+    BringWindowToTop, FindWindowW, GetForegroundWindow, GetWindowThreadProcessId, SendMessageW,
+    SetForegroundWindow, SwitchToThisWindow,
 };
 
 /// スパイクと同じ目印。`AWASE_TEST_INJECTION=1` の awase は、この目印の注入を物理キーとして扱う。
@@ -508,6 +516,39 @@ fn find_chrome(arg: Option<String>) -> Option<String> {
     .find(|p| std::path::Path::new(p).exists())
 }
 
+/// タスクバーを前面にしてテスト窓からフォーカスを外す(`--refocus`。フォーカス変更イベントを awase に見せる)。
+fn sleep_ms_away() {
+    std::thread::sleep(std::time::Duration::from_millis(200));
+}
+
+fn focus_away() -> bool {
+    unsafe {
+        let Ok(tray) = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) else {
+            return false;
+        };
+        let fg = GetForegroundWindow();
+        let fg_tid = if fg.0.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(fg, None)
+        };
+        let my_tid = GetCurrentThreadId();
+        let attached =
+            fg_tid != 0 && fg_tid != my_tid && AttachThreadInput(my_tid, fg_tid, true).as_bool();
+        let mut ok = SetForegroundWindow(tray).as_bool();
+        if !ok {
+            // CI では SetForegroundWindow がタスクバーに対して拒否される(chrome_probe run 36530291568 で away=false)。
+            SwitchToThisWindow(tray, true);
+            sleep_ms_away();
+            ok = GetForegroundWindow() == tray;
+        }
+        if attached {
+            let _ = AttachThreadInput(my_tid, fg_tid, false);
+        }
+        ok
+    }
+}
+
 fn bring_to_front() -> bool {
     unsafe {
         let hwnd = FindWindowW(PCWSTR::null(), w!("IMEPROBE")).unwrap_or_default();
@@ -529,6 +570,66 @@ fn bring_to_front() -> bool {
             let _ = AttachThreadInput(my_tid, fg_tid, false);
         }
         ok || GetForegroundWindow() == hwnd
+    }
+}
+
+/// 前面の Chrome の既定 IME ウィンドウへ `WM_IME_CONTROL` を送る(awase を経由しない外部要因の再現。awase 自身が読む経路と同じ)。
+/// `IMC_GETOPENSTATUS`=0x0005 / `IMC_SETOPENSTATUS`=0x0006。IME ウィンドウが取れなければ `None`。
+fn ime_control(cmd: usize, value: isize) -> Option<isize> {
+    const WM_IME_CONTROL: u32 = 0x0283;
+    // SAFETY: 検証ページの窓の既定 IME ウィンドウへ同期 SendMessage するだけ。
+    unsafe {
+        let hwnd = FindWindowW(PCWSTR::null(), w!("IMEPROBE")).unwrap_or_default();
+        let target = if hwnd.0.is_null() {
+            GetForegroundWindow()
+        } else {
+            hwnd
+        };
+        let ime_wnd = ImmGetDefaultIMEWnd(target);
+        if ime_wnd.0.is_null() {
+            return None;
+        }
+        Some(
+            SendMessageW(
+                ime_wnd,
+                WM_IME_CONTROL,
+                Some(WPARAM(cmd)),
+                Some(LPARAM(value)),
+            )
+            .0,
+        )
+    }
+}
+
+/// Microsoft IME の TSF プロファイルをこのセッションで有効化する(typing_stress.rs::activate_profile と同じ手順)。
+/// 既定の入力方式の上書きだけでは、後から起動した Chrome が日本語 IME のレイアウトにならなかった(CI 観測)ため、
+/// Chrome を起動する前に呼ぶ。
+fn activate_msime_profile(log: &mut Log) {
+    const TF_PROFILETYPE_INPUTPROCESSOR: u32 = 1;
+    const TF_IPPMF_ENABLEPROFILE: u32 = 0x1;
+    const TF_IPPMF_FORSESSION: u32 = 0x2000_0000;
+    let clsid = windows::core::GUID::from_u128(0x03B5835F_F03C_411B_9CE2_AA23E1171E36);
+    let profile = windows::core::GUID::from_u128(0xA76C93D9_5523_4E90_AAFA_4DB112F9AC76);
+    // SAFETY: COM を初期化してプロファイルマネージャを呼ぶだけ。
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
+        let mgr: windows::core::Result<ITfInputProcessorProfileMgr> =
+            CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER);
+        match mgr {
+            Ok(m) => {
+                let r = m.ActivateProfile(
+                    TF_PROFILETYPE_INPUTPROCESSOR,
+                    0x0411,
+                    &clsid,
+                    &profile,
+                    windows::Win32::UI::Input::KeyboardAndMouse::HKL(std::ptr::null_mut()),
+                    TF_IPPMF_ENABLEPROFILE | TF_IPPMF_FORSESSION,
+                );
+                log.line(&format!("MS-IME プロファイルをアクティブ化: {r:?}"));
+                sleep(1500);
+            }
+            Err(e) => log.line(&format!("ITfInputProcessorProfileMgr取得失敗: {e}")),
+        }
     }
 }
 
@@ -577,6 +678,9 @@ fn main() {
     log.line(&format!(
         "chrome={chrome} port={port} awase={awase} repeat={repeat} settle={settle_ms}ms"
     ));
+    if args.iter().any(|a| a == "--msime") {
+        activate_msime_profile(&mut log);
+    }
     let mut child = std::process::Command::new(&chrome)
         .args([
             &format!("--user-data-dir={}", profile.display()),
@@ -643,6 +747,65 @@ fn main() {
         }
         let _ = p.command("clear", "cleared");
         p.log.line("STORM end");
+        p.log.line("=== 全ケース完了 ===");
+        let _ = child.kill();
+        return;
+    }
+    // `--close-ime=N`(BUG-172 の実 Chrome 確認): IME を ON にそろえた後、実 IME を WM_IME_CONTROL で直接閉じ、
+    // 3 秒待ってからかな単打(k,a)を打って結果を見る。閉じたまま `ka`/ローマ字が出れば BUG-172 が実 Chrome でも起きる。
+    // `open=` は awase と同じ経路(IMC_GETOPENSTATUS)の読み取り値(TsfNative では信頼できない可能性がある)。
+    if let Some(n) = args.iter().find_map(|a| {
+        a.strip_prefix("--close-ime=")
+            .and_then(|v| v.parse::<usize>().ok())
+    }) {
+        let (mut ok, mut bad, mut invalid) = (0usize, 0usize, 0usize);
+        for i in 0..n {
+            p.log.line(&format!("[CLOSE {}/{n}]", i + 1));
+            p.focus_lost = false;
+            bring_to_front();
+            if !ensure(&mut p, Setup::Kana, awase) {
+                p.log.line("RESULT INVALID: 前提状態(かな)にできなかった");
+                invalid += 1;
+                continue;
+            }
+            let before = ime_control(0x0005, 0);
+            let set_ret = ime_control(0x0006, 0);
+            sleep(50);
+            let after = ime_control(0x0005, 0);
+            p.log.line(&format!(
+                "CLOSE_IME open_before={before:?} set_ret={set_ret:?} open_after={after:?}"
+            ));
+            if args.iter().any(|a| a == "--refocus") {
+                let away = focus_away();
+                sleep(300);
+                let back = bring_to_front();
+                p.log.line(&format!("REFOCUS away={away} back={back}"));
+                sleep(2700);
+            } else {
+                sleep(3000);
+            }
+            let open_late = ime_control(0x0005, 0);
+            let got = p.probe_logged("閉じて3秒後");
+            p.log
+                .line(&format!("CLOSE_IME open_at_probe={open_late:?}"));
+            if p.focus_lost {
+                p.log.line("RESULT INVALID: ページのフォーカスが外れた");
+                invalid += 1;
+            } else if got == Class::Nicola {
+                p.log
+                    .line("RESULT PASS: IME が開き直りNICOLA文字が出た(回復)");
+                ok += 1;
+            } else {
+                p.log.line(&format!(
+                    "RESULT FAIL: 閉じたまま/未回復 実際={}",
+                    got.label()
+                ));
+                bad += 1;
+            }
+        }
+        p.log.line(&format!(
+            "SUMMARY PASS={ok} RECOVER=0 FAIL={bad} INVALID={invalid}"
+        ));
         p.log.line("=== 全ケース完了 ===");
         let _ = child.kill();
         return;

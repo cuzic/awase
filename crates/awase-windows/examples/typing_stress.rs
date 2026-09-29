@@ -85,13 +85,13 @@ use windows::Win32::UI::TextServices::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-    GetClassInfoExW, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GetMessageW,
-    GetWindowThreadProcessId, PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW,
-    SetForegroundWindow, SetWindowsHookExW, ShowWindow, TranslateMessage, CW_USEDEFAULT,
-    GUITHREADINFO, KBDLLHOOKSTRUCT, MSG, SW_SHOW, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_APP, WM_CLOSE, WM_DESTROY, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP, WM_SETTEXT,
-    WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSEXW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
-    WS_VSCROLL,
+    FindWindowW, GetClassInfoExW, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo,
+    GetMessageW, GetWindowThreadProcessId, PostMessageW, PostQuitMessage, RegisterClassExW,
+    SendMessageW, SetForegroundWindow, SetWindowsHookExW, ShowWindow, SwitchToThisWindow,
+    TranslateMessage, CW_USEDEFAULT, GUITHREADINFO, KBDLLHOOKSTRUCT, MSG, SW_SHOW, WH_KEYBOARD_LL,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_GETTEXT, WM_GETTEXTLENGTH,
+    WM_KEYDOWN, WM_KEYUP, WM_SETTEXT, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSEXW, WS_BORDER, WS_CHILD,
+    WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
 };
 
 #[link(name = "winmm")]
@@ -422,6 +422,40 @@ fn focus_report() -> serde_json::Value {
         let got = GetGUIThreadInfo(0, &raw mut gi).is_ok();
         json!({"type":"focus","fg_class":class_of(fg),"focus_class":class_of(gi.hwndFocus),
                "gui_thread_info_ok":got,"on_target":focus_ok()})
+    }
+}
+
+/// タスクバーを前面にして、テスト窓からフォーカスを外す(`--refocus`。フォーカス変更イベントを awase に見せる)。
+/// 前面スレッドへ入力をアタッチする定番の回避策を使う。ワーカースレッドから呼ぶ。
+fn sleep_ms_away() {
+    std::thread::sleep(std::time::Duration::from_millis(200));
+}
+
+fn focus_away() -> bool {
+    unsafe {
+        let Ok(tray) = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) else {
+            return false;
+        };
+        let fg = GetForegroundWindow();
+        let fg_tid = if fg.0.is_null() {
+            0
+        } else {
+            GetWindowThreadProcessId(fg, None)
+        };
+        let my_tid = GetCurrentThreadId();
+        let attached =
+            fg_tid != 0 && fg_tid != my_tid && AttachThreadInput(my_tid, fg_tid, true).as_bool();
+        let mut ok = SetForegroundWindow(tray).as_bool();
+        if !ok {
+            // CI では SetForegroundWindow がタスクバーに対して拒否される(chrome_probe run 36530291568 で away=false)。
+            SwitchToThisWindow(tray, true);
+            sleep_ms_away();
+            ok = GetForegroundWindow() == tray;
+        }
+        if attached {
+            let _ = AttachThreadInput(my_tid, fg_tid, false);
+        }
+        ok
     }
 }
 
@@ -992,6 +1026,15 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
         rec(
             &json!({"type":"drift_on_close","n":n,"utc":close_utc,"set_ret":set_ret,"real_ime_open":real_ime_open(child)}),
         );
+        // `--refocus`: 閉じた直後にフォーカスを一度外して戻す(awase のフォーカス変更経路=drift correction 再開の契機を通す)。
+        if has_flag("--refocus") {
+            let away_ok = focus_away();
+            sleep_ms(300);
+            refocus();
+            rec(
+                &json!({"type":"drift_on_refocus","n":n,"utc":utc_hms(),"away_ok":away_ok,"on_target":focus_ok(),"real_ime_open":real_ime_open(child)}),
+            );
+        }
         let mut waited_ms = 0u64;
         for &cp in &CHECKPOINTS_MS {
             sleep_ms(cp - waited_ms);
