@@ -22,13 +22,15 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use windows::core::{w, PCWSTR};
+use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
     VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, FindWindowW, GetForegroundWindow, GetWindowThreadProcessId,
+    BringWindowToTop, FindWindowW, GetForegroundWindow, GetWindowThreadProcessId, SendMessageW,
     SetForegroundWindow,
 };
 
@@ -532,6 +534,34 @@ fn bring_to_front() -> bool {
     }
 }
 
+/// 前面の Chrome の既定 IME ウィンドウへ `WM_IME_CONTROL` を送る(awase を経由しない外部要因の再現。awase 自身が読む経路と同じ)。
+/// `IMC_GETOPENSTATUS`=0x0005 / `IMC_SETOPENSTATUS`=0x0006。IME ウィンドウが取れなければ `None`。
+fn ime_control(cmd: usize, value: isize) -> Option<isize> {
+    const WM_IME_CONTROL: u32 = 0x0283;
+    // SAFETY: 検証ページの窓の既定 IME ウィンドウへ同期 SendMessage するだけ。
+    unsafe {
+        let hwnd = FindWindowW(PCWSTR::null(), w!("IMEPROBE")).unwrap_or_default();
+        let target = if hwnd.0.is_null() {
+            GetForegroundWindow()
+        } else {
+            hwnd
+        };
+        let ime_wnd = ImmGetDefaultIMEWnd(target);
+        if ime_wnd.0.is_null() {
+            return None;
+        }
+        Some(
+            SendMessageW(
+                ime_wnd,
+                WM_IME_CONTROL,
+                Some(WPARAM(cmd)),
+                Some(LPARAM(value)),
+            )
+            .0,
+        )
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let repeat: usize = args
@@ -643,6 +673,57 @@ fn main() {
         }
         let _ = p.command("clear", "cleared");
         p.log.line("STORM end");
+        p.log.line("=== 全ケース完了 ===");
+        let _ = child.kill();
+        return;
+    }
+    // `--close-ime=N`(BUG-172 の実 Chrome 確認): IME を ON にそろえた後、実 IME を WM_IME_CONTROL で直接閉じ、
+    // 3 秒待ってからかな単打(k,a)を打って結果を見る。閉じたまま `ka`/ローマ字が出れば BUG-172 が実 Chrome でも起きる。
+    // `open=` は awase と同じ経路(IMC_GETOPENSTATUS)の読み取り値(TsfNative では信頼できない可能性がある)。
+    if let Some(n) = args.iter().find_map(|a| {
+        a.strip_prefix("--close-ime=")
+            .and_then(|v| v.parse::<usize>().ok())
+    }) {
+        let (mut ok, mut bad, mut invalid) = (0usize, 0usize, 0usize);
+        for i in 0..n {
+            p.log.line(&format!("[CLOSE {}/{n}]", i + 1));
+            p.focus_lost = false;
+            bring_to_front();
+            if !ensure(&mut p, Setup::Kana, awase) {
+                p.log.line("RESULT INVALID: 前提状態(かな)にできなかった");
+                invalid += 1;
+                continue;
+            }
+            let before = ime_control(0x0005, 0);
+            let set_ret = ime_control(0x0006, 0);
+            sleep(50);
+            let after = ime_control(0x0005, 0);
+            p.log.line(&format!(
+                "CLOSE_IME open_before={before:?} set_ret={set_ret:?} open_after={after:?}"
+            ));
+            sleep(3000);
+            let open_late = ime_control(0x0005, 0);
+            let got = p.probe_logged("閉じて3秒後");
+            p.log
+                .line(&format!("CLOSE_IME open_at_probe={open_late:?}"));
+            if p.focus_lost {
+                p.log.line("RESULT INVALID: ページのフォーカスが外れた");
+                invalid += 1;
+            } else if got == Class::Nicola {
+                p.log
+                    .line("RESULT PASS: IME が開き直りNICOLA文字が出た(回復)");
+                ok += 1;
+            } else {
+                p.log.line(&format!(
+                    "RESULT FAIL: 閉じたまま/未回復 実際={}",
+                    got.label()
+                ));
+                bad += 1;
+            }
+        }
+        p.log.line(&format!(
+            "SUMMARY PASS={ok} RECOVER=0 FAIL={bad} INVALID={invalid}"
+        ));
         p.log.line("=== 全ケース完了 ===");
         let _ = child.kill();
         return;
