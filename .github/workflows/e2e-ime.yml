@@ -308,12 +308,14 @@ jobs:
                 stress='--form=tsf --mode=reopen --trials=8 --reopen-gap=600 --layout=@REPO@/layout/nicola_keytop.yab --msime'),
             cfg('sc-reopen-chromepage-gji-gap600', 'observe', check='reopen', runs=3, wait=900,
                 stress='--form=chromepage --mode=reopen --trials=6 --reopen-gap=600 --settle-read --layout=@REPO@/layout/nicola_keytop.yab'),
-            # v2 B4: MS-IME 本体の「無変換=IME-オン/オフ(値2)」がレジストリ直書きで効くか。awase なしで無変換を4回押し(直接入力から)、実 IME の開閉の変化を見る。
-            # none=対照(既定の割り当て) / plain=値だけ書く(PR #378 と同じ) / bump=加えて InputMethod\\JPN\\roaming\\mon の Setting/MoSetting を進める。
-            # 効けば bump/plain で open が 1→0→1→0 と反転する(対照は変わらない)。判定は observe(スパイクの KEY 行の open を読む)。
-            *[cfg(f'sc-msime-keyassign-{v}', 'observe', check='consistency', ime='msime', awase='false', runs=2,
-                  args='--seq=1D,1D,1D,1D --msime', keyassign='' if v == 'none' else v)
-              for v in ('none', 'plain', 'bump')],
+            # v2 B4: MS-IME 本体の「無変換/変換=IME-オン/オフ(値2)」がレジストリ直書きで効くか(awase なし、実 IME の open の変化を見る)。
+            # run 36588886306: 直接入力(閉)から無変換4連打では none/plain/bump の全てで open=0 のまま(Setting/MoSetting の更新は契機ではなかった)。
+            # 追加で試す: (1) full=実機の MSIME キーの全値を再現(keystyle=NATURAL・ATOK フラグ等) (2) 開始状態を F2 で開いた状態にする(閉じる方向も見る)
+            # (3) 変換(0x1C)も押す。<名前>-<キー>: on=F2 で開いてから 3 回 / cold=閉じたまま 4 回。効けば open が反転する。判定は observe。
+            *[cfg(f'sc-msime-keyassign-{v}-{k}', 'observe', check='consistency', ime='msime', awase='false', runs=2,
+                  args=f'--seq={seq} --msime', keyassign='' if v == 'none' else v)
+              for v in ('none', 'plain', 'full', 'full-bump')
+              for k, seq in (('muhenkan-on', 'F2,1D,1D,1D'), ('henkan-on', 'F2,1C,1C,1C'), ('muhenkan-cold', '1D,1D,1D,1D'))],
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
@@ -617,7 +619,17 @@ jobs:
           Set-ItemProperty -Path $base -Name IsKeyAssignmentEnabled -Value 1 -Type DWord -Force
           Set-ItemProperty -Path $base -Name KeyAssignmentMuhenkan -Value 2 -Type DWord -Force
           Set-ItemProperty -Path $base -Name KeyAssignmentHenkan -Value 2 -Type DWord -Force
-          if ('${{ matrix.cfg.keyassign }}' -eq 'bump') {
+          # full: 実機(dragonflyg4)の MSIME キーにあった、キー割り当て以外の値も再現する(keystyle 等の有無が効くかを見る)。
+          if ('${{ matrix.cfg.keyassign }}' -like 'full*') {
+            Set-ItemProperty -Path $base -Name IsKeyAssignmentEnabled_ATOK -Value 1 -Type DWord -Force
+            Set-ItemProperty -Path $base -Name IsKanaInputToggleKeyEnabled -Value 1 -Type DWord -Force
+            Set-ItemProperty -Path $base -Name KeyAssignmentCtrlSpace -Value 2 -Type DWord -Force
+            Set-ItemProperty -Path $base -Name KeyAssignmentShiftSpace -Value 2 -Type DWord -Force
+            foreach ($kv in @(@('style','NATURAL'), @('keystyle','NATURAL'), @('romastyle','MS-IME'), @('colstyle','NATURAL'))) {
+              Set-ItemProperty -Path $base -Name $kv[0] -Value $kv[1] -Type String -Force
+            }
+          }
+          if ('${{ matrix.cfg.keyassign }}' -like '*bump') {
             $mon = 'HKCU:\Software\Microsoft\InputMethod\JPN\roaming\mon'
             New-Item -Path $mon -Force | Out-Null
             $cur = Get-ItemProperty -Path $mon -ErrorAction SilentlyContinue
@@ -629,7 +641,9 @@ jobs:
             "bump: Setting $s0 -> $($s0 + 1), MoSetting $m0 -> $([Math]::Min([double]4294967295, [double]$m0 + 1000))"
           }
           $k = Get-ItemProperty $base
-          "registry: IsKeyAssignmentEnabled=$($k.IsKeyAssignmentEnabled) Muhenkan=$($k.KeyAssignmentMuhenkan) Henkan=$($k.KeyAssignmentHenkan) keystyle=$($k.keystyle)" | Tee-Object -FilePath keyassign.txt
+          "registry(${{ matrix.cfg.keyassign }}): IsKeyAssignmentEnabled=$($k.IsKeyAssignmentEnabled) Muhenkan=$($k.KeyAssignmentMuhenkan) Henkan=$($k.KeyAssignmentHenkan) keystyle=$($k.keystyle) ATOK=$($k.IsKeyAssignmentEnabled_ATOK)" | Tee-Object -FilePath keyassign.txt
+          $mon = Get-ItemProperty 'HKCU:\Software\Microsoft\InputMethod\JPN\roaming\mon' -ErrorAction SilentlyContinue
+          "mon: Setting=$($mon.Setting) MoSetting=$($mon.MoSetting)" | Tee-Object -FilePath keyassign.txt -Append
           Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep -Seconds 1
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue
