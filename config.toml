@@ -27,8 +27,8 @@ ngram_file = "data/ngram_hiragana.csv.gz"
 # IME 検出設定（シャドウ IME 状態追跡用キー定義）
 # example-begin: config-ime-detect uncomment
 # [keys.ime_detect]
-# 注意: toggle は既定の keys.ime_toggle（VK_KANJI）と併用すると二重処理で漢字キーが壊れるため、
-# 通常は設定しないこと。
+# 注意: toggle に書いたキーを keys.ime_toggle（awase が能動的に処理する側）にも書くと二重処理で
+# そのキーが壊れるため、同じキーを両方に書かないこと（keys.ime_toggle の既定は空）。
 # toggle = ["VK_KANJI"]
 # on = ["VK_DBE_DBCSCHAR", "VK_IME_ON"]
 # off = ["VK_DBE_SBCSCHAR", "VK_IME_OFF"]

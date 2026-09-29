@@ -2596,7 +2596,8 @@ impl SettingsApp {
                 self.config.keys.engine_off = vec!["Ctrl+Shift+無変換".to_string()];
                 self.config.keys.ime_on = vec!["Ctrl+変換".to_string()];
                 self.config.keys.ime_off = vec!["Ctrl+無変換".to_string()];
-                self.config.keys.ime_toggle = vec!["VK_KANJI".to_string()];
+                // 既定は空（ADR-199 決定15）。ime_on/ime_off の既定は従来どおり。
+                self.config.keys.ime_toggle = awase::config::KeysConfig::default().ime_toggle;
                 self.config.keys.engine_off_solo_repeat = Some("VK_INSERT".to_string());
             }
             // JIS → US への切替時、エンジンON/OFF・IME ON/OFF の既定値
@@ -2870,7 +2871,7 @@ impl SettingsApp {
             "ime_toggle",
             &mut self.config.keys.ime_toggle,
             &mut self.new_ime_toggle,
-            "IME の ON/OFF をトグルするキーの組み合わせです。\n現在の状態に応じて ON⇔OFF が切り替わります。",
+            "IME の ON/OFF をトグルするキーの組み合わせです。\n現在の状態に応じて ON⇔OFF が切り替わります。\n既定は空（IME 側の設定に従います）。",
             &mut self.status,
         );
     }
@@ -4871,8 +4872,8 @@ const SOLO_REPEAT_EXTRA_OPTIONS: &[(&str, &str)] = &[("Insert", "VK_INSERT")];
 /// 解決可能で `config.toml` に手書きすれば従来から機能していたが、
 /// `THUMB_KEY_OPTIONS` に候補が無く GUI 上選べなかった
 /// （2026-08-03 ユーザー報告「エンジンOFFの条件で英数キーが選択出来ない」）。
-/// `VK_KANJI`（漢字）は「IME ON/OFF トグル」（`keys.ime_toggle`）の既定値
-/// （2026-08-16 ユーザー要望）として選べるようにするため追加。
+/// `VK_KANJI`（漢字）は「IME ON/OFF トグル」（`keys.ime_toggle`）で選べるようにするため
+/// 追加（2026-08-16 ユーザー要望。既定値は 2026-09-29 に空へ変更済みで、候補としては残す）。
 ///
 /// `THUMB_KEY_OPTIONS` には**混ぜない**: `thumb_key_combo`/`solo_repeat_combo`
 /// （親指キー・単独連打候補）は同時打鍵の相手や単独タップ判定に使われるため、
@@ -4898,7 +4899,7 @@ mod ime_mode_key_options_tests {
     }
 
     /// 「漢字」が IME ON/OFF トグル欄のドロップダウン候補に出るようにする
-    /// （`keys.ime_toggle` の既定値 `VK_KANJI` が選択可能である必要がある）。
+    /// （既存 config.toml の明示値 `VK_KANJI` が選択可能である必要がある）。
     #[test]
     fn ime_mode_key_options_contains_kanji() {
         assert!(

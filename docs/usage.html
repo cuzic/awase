@@ -569,7 +569,7 @@ footer p{margin-bottom:0.3rem}
         <tr><td>左親指キー</td><td>左親指シフトキーに使うキー（デフォルト: VK_NONCONVERT = 無変換）</td></tr>
         <tr><td>右親指キー</td><td>右親指シフトキーに使うキー（デフォルト: VK_CONVERT = 変換）</td></tr>
         <tr><td>IME ON/OFF キー</td><td>awase が能動的に送信する IME ON/OFF キー（冪等）。複数登録可</td></tr>
-        <tr><td>IME ON/OFF トグル</td><td>押した時点の IME 状態に応じて ON⇔OFF を反転するキー。既定: 漢字キー。複数登録可</td></tr>
+        <tr><td>IME ON/OFF トグル</td><td>押した時点の IME 状態に応じて ON⇔OFF を反転するキー。既定: 空（IME 側の設定に従う）。複数登録可</td></tr>
       </table>
       <p class="note">親指シフト入力／ローマ字入力の切り替えキー（旧称「親指シフト ON/OFF キー」）は「上級者向け設定」タブに移動しました。詳細は下記「上級者向け設定タブ」を参照してください。</p>
       <p class="note">GJI（Google 日本語入力）を使っていて無変換キーを親指キーに選んでいる場合、awase.exe は起動時・GJI 検出時に config1.db を読み、無変換キー単独タップで専用の Fn キー（既定候補: F21）を送るよう自動的に判定します（「専用Fnキー変換」、ADR-091 §D3.2）。これは無変換キーの単独タップで文字種（ひらがな/カタカナ等）をトグルしたく、かつ「モードずれ」（awase 側の想定と GJI 側の実際の状態が食い違う問題）を避けたい上級者向けの機能です。GJI 側の config1.db にこの Fn キーの「かな種別切替」バインドがまだ無い場合は、awase.exe がポップアップで設定を提案します（同意すれば自動で追加、バックアップ付き）。設定画面（本ページ）からの手動操作は現在提供していません。特定の Fn キーへ固定したい場合は下記「GJI 専用Fnキー変換の手動設定」の通り <code>config.toml</code> を直接編集してください。</p>
@@ -671,8 +671,8 @@ ime_on = ["Ctrl+変換"]
 # IME OFF（直接入力モードへ）
 ime_off = ["Ctrl+無変換"]
 
-# IME ON/OFF トグル（押した時点の IME 状態に応じて反転）
-ime_toggle = ["VK_KANJI"]
+# IME ON/OFF トグル（押した時点の IME 状態に応じて反転。既定: 空＝IME 側の設定に従う）
+ime_toggle = []
 
 # 緊急用: 無変換を単独で 400ms 以内に 3 連打するとエンジン OFF になる
 # Ctrl がスタックしてショートカットが効かなくなったときの最終手段。
@@ -776,7 +776,7 @@ force_tsf = [
 
     <div class="card">
       <h3>IME 検出キーの手動設定</h3>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">外部 IME の状態変化（半角/全角キー等）を awase が検出するための設定です。GUI には無く <code>config.toml</code> の直接編集でのみ設定できます（多くの利用者には不要なため、GUI からは意図的に外してあります）。<code>toggle</code> の既定は空です。漢字キーは「キー設定」タブの「IME ON/OFF トグル」（<code>keys.ime_toggle</code>、既定: 漢字キー）が能動的に処理するため、ここに重ねて設定すると同じキーを二重処理してしまい正しく動作しません。</p>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">外部 IME の状態変化（半角/全角キー等）を awase が検出するための設定です。GUI には無く <code>config.toml</code> の直接編集でのみ設定できます（多くの利用者には不要なため、GUI からは意図的に外してあります）。<code>toggle</code> の既定は空です。「キー設定」タブの「IME ON/OFF トグル」（<code>keys.ime_toggle</code>、既定: 空）に設定したキーは awase が能動的に処理するため、同じキーをここにも設定すると二重処理してしまい正しく動作しません。</p>
       <div class="code-block" data-example="usage-ja-10" data-mode="uncomment">[keys.ime_detect]
 # IME ON/OFF をトグルするキー（既定: 空。上記「IME ON/OFF トグル」と
 # 同じキーを指定すると二重処理になるため避けること）

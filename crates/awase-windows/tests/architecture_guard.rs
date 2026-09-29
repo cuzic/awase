@@ -5387,6 +5387,41 @@ fn kanji_0x19_role_goes_through_the_shared_latch_and_only_overrides_gji() {
     assert_eq!(rt.matches("ime_relevance.shadow_action =").count(), 1);
 }
 
+/// ADR-199 決定15（2026-09-29 所有者決定）: `keys.ime_toggle` の既定は空（「IME の設定に従う」原則）。
+/// 既定に無修飾の `VK_KANJI` を戻すと、`Engine::has_bare_ime_combo(0x19)` が常に真になり、
+/// GJI の 0x19 役割判定（ADR-202、`derive_key_shadow_action` の `explicit_overlap`）が既定で無効化される。
+/// `KeysConfig::default()` の書式と、設定 GUI の JIS 切替書き込みが既定へ揃っていることを固定する
+/// （`ime_on`/`ime_off` の既定は変えない）。
+#[test]
+fn keys_ime_toggle_default_stays_empty_and_gui_jis_switch_follows_default() {
+    let cfg = read_workspace_file("src/config.rs");
+    let cfg = production_code_only(&cfg);
+    assert!(
+        cfg.contains("ime_toggle: Vec::new(),"),
+        "src/config.rs: `KeysConfig::default()` の `ime_toggle` は空 (`Vec::new()`) のままにすること（ADR-199 決定15）"
+    );
+    assert!(
+        !cfg.contains("ime_toggle: vec![\"VK_KANJI\""),
+        "src/config.rs: `keys.ime_toggle` の既定に `VK_KANJI` を戻さないこと（ADR-199 決定15・ADR-202）"
+    );
+    assert!(
+        cfg.contains("ime_on: vec![\"Ctrl+変換\".to_string()],")
+            && cfg.contains("ime_off: vec![\"Ctrl+無変換\".to_string()],"),
+        "src/config.rs: `keys.ime_on`/`ime_off` の既定（Ctrl+変換/Ctrl+無変換）は変えないこと（決定15）"
+    );
+    let gui = read_workspace_file("crates/awase-settings/src/main.rs");
+    assert!(
+        !gui.contains("keys.ime_toggle = vec![\"VK_KANJI\""),
+        "awase-settings: JIS 切替で `keys.ime_toggle` に `VK_KANJI` を書かないこと（既定は空、決定15）"
+    );
+    assert!(
+        gui.contains(
+            "self.config.keys.ime_toggle = awase::config::KeysConfig::default().ime_toggle;"
+        ),
+        "awase-settings: JIS 切替の `ime_toggle` は `KeysConfig::default()` に揃えること"
+    );
+}
+
 /// BUG-173（Opus レビュー D1）: 物理 F2 を Suppress/握りつぶす経路が再導入されないこと、および
 /// KeyUp ラッチが `plan()` の直後・journal 記録と実配送の前に呼ばれることを固定する。
 /// runtime/ は Linux でテスト実行できない（CLAUDE.md）ため、この静的スキャンが唯一の検知手段。
