@@ -23,11 +23,17 @@ use std::time::{Duration, Instant};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
     VIRTUAL_KEY,
+};
+use windows::Win32::UI::TextServices::{
+    CLSID_TF_InputProcessorProfiles, ITfInputProcessorProfileMgr,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, FindWindowW, GetForegroundWindow, GetWindowThreadProcessId, SendMessageW,
@@ -562,6 +568,38 @@ fn ime_control(cmd: usize, value: isize) -> Option<isize> {
     }
 }
 
+/// Microsoft IME の TSF プロファイルをこのセッションで有効化する(typing_stress.rs::activate_profile と同じ手順)。
+/// 既定の入力方式の上書きだけでは、後から起動した Chrome が日本語 IME のレイアウトにならなかった(CI 観測)ため、
+/// Chrome を起動する前に呼ぶ。
+fn activate_msime_profile(log: &mut Log) {
+    const TF_PROFILETYPE_INPUTPROCESSOR: u32 = 1;
+    const TF_IPPMF_ENABLEPROFILE: u32 = 0x1;
+    const TF_IPPMF_FORSESSION: u32 = 0x2000_0000;
+    let clsid = windows::core::GUID::from_u128(0x03B5835F_F03C_411B_9CE2_AA23E1171E36);
+    let profile = windows::core::GUID::from_u128(0xA76C93D9_5523_4E90_AAFA_4DB112F9AC76);
+    // SAFETY: COM を初期化してプロファイルマネージャを呼ぶだけ。
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
+        let mgr: windows::core::Result<ITfInputProcessorProfileMgr> =
+            CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER);
+        match mgr {
+            Ok(m) => {
+                let r = m.ActivateProfile(
+                    TF_PROFILETYPE_INPUTPROCESSOR,
+                    0x0411,
+                    &clsid,
+                    &profile,
+                    windows::Win32::UI::Input::KeyboardAndMouse::HKL(std::ptr::null_mut()),
+                    TF_IPPMF_ENABLEPROFILE | TF_IPPMF_FORSESSION,
+                );
+                log.line(&format!("MS-IME プロファイルをアクティブ化: {r:?}"));
+                sleep(1500);
+            }
+            Err(e) => log.line(&format!("ITfInputProcessorProfileMgr取得失敗: {e}")),
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let repeat: usize = args
@@ -607,6 +645,9 @@ fn main() {
     log.line(&format!(
         "chrome={chrome} port={port} awase={awase} repeat={repeat} settle={settle_ms}ms"
     ));
+    if args.iter().any(|a| a == "--msime") {
+        activate_msime_profile(&mut log);
+    }
     let mut child = std::process::Command::new(&chrome)
         .args([
             &format!("--user-data-dir={}", profile.display()),
