@@ -617,7 +617,7 @@ impl WindowsPlatform {
                             None,
                             Some(u64::from(probe_id.0)),
                         );
-                        self.dispatch_gji_response(&warmup_resp);
+                        self.dispatch_gji_response_from(origin, &warmup_resp);
                     }
                 }
                 GjiAction::CancelProbe { probe_id } => {
@@ -840,19 +840,20 @@ impl WindowsPlatform {
         trigger: &str,
         event_for: impl FnOnce(u64) -> crate::tsf::gji_fsm::GjiEvent,
     ) {
-        let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
-        let state_before = self.gji_state_label();
-        let resp = self.output.gji_on_event(event_for(gji_idle_ms));
-        self.note_gji_transition(
-            format!("{trigger}(gji_idle_ms={gji_idle_ms})"),
-            state_before,
-        );
+        // 前提違反は FSM を更新する前に検出する（更新後だと panic しても状態が変わってしまう）。
         debug_assert!(
             matches!(
                 sync.origin(),
                 crate::state::gji_direct_mechanism::GjiSyncOrigin::BeliefSync
             ),
             "gji_sync_from_belief は belief 起点の同期専用: {sync:?}"
+        );
+        let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
+        let state_before = self.gji_state_label();
+        let resp = self.output.gji_on_event(event_for(gji_idle_ms));
+        self.note_gji_transition(
+            format!("{trigger}(gji_idle_ms={gji_idle_ms})"),
+            state_before,
         );
         self.dispatch_gji_response_from(sync.origin(), &resp);
     }
@@ -1195,15 +1196,18 @@ impl PlatformRuntime for WindowsPlatform {
         // OffCold のままなら、同期漏れ（c8bc1adc 以降 Unwarranted 経路・GjiFsm 作り直し等）の証拠。
         // per-VK confirm を毎打鍵通る状態（→ StaleConfirm → ESC、BUG-170）に固着させないため、
         // belief 起点で ON 同期する。判定は state/gji_direct_mechanism.rs の純粋関数、実行は sync_gji。
+        //
+        // 安い条件（送信内容・モード・戦略・OffCold）を先に評価し、Mutex を lock する
+        // `probe_or_recovery_in_flight()` は突合が成立しそうなときだけ呼ぶ（毎回の send_keys で
+        // lock しない。フックの応答時間に効く経路）。
         if crate::state::gji_direct_mechanism::needs_belief_sync_on(
-            actions
-                .iter()
-                .any(|a| matches!(a, KeyAction::Char(_) | KeyAction::Romaji(_))),
+            crate::state::gji_direct_mechanism::send_carries_romaji(actions),
             self.output.injection_mode == crate::output::InjectionMode::Unicode,
             self.output.f2_warmup_owned(),
             self.output.gji_is_off_cold(),
-            self.output.probe_or_recovery_in_flight(),
-        ) {
+            false,
+        ) && !self.output.probe_or_recovery_in_flight()
+        {
             crate::state::gji_direct_mechanism::GjiSyncSink::sync_gji(
                 self,
                 crate::state::gji_direct_mechanism::GjiFsmSync::OnImeOnBelief,
@@ -1401,9 +1405,9 @@ impl crate::state::gji_direct_mechanism::GjiSyncSink for WindowsPlatform {
                     }
                 });
             }
-            GjiFsmSync::Reopen => {
+            GjiFsmSync::Reopen(source) => {
                 let injection_mode = self.output.injection_mode;
-                self.gji_sync_from_belief(sync, "Reopen(BeliefSync:on-key)", |gji_idle_ms| {
+                self.gji_sync_from_belief(sync, source.trigger(), |gji_idle_ms| {
                     crate::tsf::gji_fsm::GjiEvent::Reopen {
                         injection_mode,
                         gji_idle_ms,

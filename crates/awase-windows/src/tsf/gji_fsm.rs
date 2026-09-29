@@ -2564,4 +2564,83 @@ mod tests {
         fsm.on_event(reopen_with_idle(9_359));
         assert!(matches!(fsm.state(), GjiState::OnCold { .. }));
     }
+
+    #[test]
+    fn reopen_on_not_started_cold_is_a_no_op() {
+        // Medium/Long の OnCold(NotStarted) は最初の KeyInput まで probe を始めない。Reopen で始めない。
+        let mut fsm = warm_fsm();
+        fsm.on_event(focus_change_with_idle(8_000)); // OnWarm → OnCold(Medium, NotStarted)
+        assert!(matches!(
+            fsm.state(),
+            GjiState::OnCold {
+                probe: ProbeStatus::NotStarted,
+                ..
+            }
+        ));
+        let r = fsm.on_event(reopen_with_idle(8_000));
+        r.assert_action_count(0);
+        assert!(matches!(
+            fsm.state(),
+            GjiState::OnCold {
+                probe: ProbeStatus::NotStarted,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn reopen_while_awaiting_probe_composition_is_a_no_op() {
+        // OnCold(Authorized) で StartComposition → OnComposing(AwaitingProbe)。probe 飛行中に Reopen しても
+        // CancelProbe しない(deferred VK を捨てない)。
+        let mut fsm = GjiFsm::new();
+        fsm.on_event(ime_on());
+        fsm.on_event(GjiEvent::StartComposition);
+        assert!(matches!(
+            fsm.state(),
+            GjiState::OnComposing {
+                warmup: ComposingWarmup::AwaitingProbe { .. },
+                ..
+            }
+        ));
+        let r = fsm.on_event(reopen_with_idle(0));
+        r.assert_action_count(0);
+        assert!(matches!(
+            fsm.state(),
+            GjiState::OnComposing {
+                warmup: ComposingWarmup::AwaitingProbe { .. },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn reopen_updates_injection_mode_even_when_ignored() {
+        // no-op 分岐でも injection_mode は更新される(以後の long_idle_ms 計算に効く)。
+        let mut fsm = warm_fsm();
+        fsm.on_event(GjiEvent::StartComposition);
+        assert!(matches!(fsm.state(), GjiState::OnComposing { .. }));
+        fsm.on_event(GjiEvent::Reopen {
+            injection_mode: InjectionMode::Unicode,
+            gji_idle_ms: 0,
+        });
+        assert_eq!(fsm.injection_mode, InjectionMode::Unicode);
+    }
+
+    #[test]
+    fn reopen_from_on_warm_kills_long_idle_timer() {
+        let mut fsm = warm_fsm();
+        let r = fsm.on_event(reopen_with_idle(0));
+        r.assert_timer_kill(GjiTimer::LongIdle);
+    }
+
+    #[test]
+    fn reopen_after_long_idle_starts_long_cold_probe() {
+        // gji_idle ≥ LONG_IDLE_MS(10s)なら is_long_cold=true の probe(Unicode の poke/reinit の起点になる)。
+        let mut fsm = GjiFsm::new();
+        let r = fsm.on_event(reopen_with_idle(tuning::LONG_IDLE_MS));
+        match &r.actions[0] {
+            GjiAction::StartProbe { params, .. } => assert!(params.is_long_cold),
+            other => panic!("expected StartProbe, got {other:?}"),
+        }
+    }
 }

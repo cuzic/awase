@@ -5526,6 +5526,18 @@ fn user_ime_on_paths_are_paired_with_gji_reopen() {
         reopens >= 3,
         "kp_reopen_gji_fsm の呼び出しが {reopens} 件。shadow toggle の2分岐と予測経路に必要"
     );
+    // 3つの入口はそれぞれ別の発生元(journal の trigger で区別、PR #354 コードレビュー L1)を渡す。
+    for src in [
+        "ReopenSource::Predict",
+        "ReopenSource::ShadowNoop",
+        "ReopenSource::ShadowToggle",
+    ] {
+        assert_eq!(
+            count_real_calls(prod, src),
+            1,
+            "{src} は kp_reopen_gji_fsm の入口ごとに1か所だけで使うこと"
+        );
+    }
 }
 
 /// ADR-203 決定3（/code-review 指摘）: `GjiSyncOrigin` は `GjiFsmSync::origin()` が唯一の出所。

@@ -326,6 +326,22 @@ jobs:
                   stress=f'--form={form} --mode=drift-on --trials=10 --layout=@REPO@/layout/nicola_keytop.yab{msime}')
               for form in ('tsf', 'edit')
               for ime_name, ime, km, msime in (('gji-atok', 'gji', 1, ''), ('msime-native', 'msime', 1, ' --msime'))],
+            # フォーカス変更を挟んだ版(cal-driftrec-refocus-*): 閉じた直後にタスクバーへ一度フォーカスを外して戻し、awase のフォーカス変更経路
+            # (drift correction 再開の契機)を通してから打鍵する。判断(授権・鮮度1500ms)まで届くか、observed/drift 列で見る。観測のみ。
+            *[cfg(f'cal-driftrec-refocus-{form}-{ime_name}', 'observe', check='driftrecovery', ime=ime, keymap=km, wait=200,
+                  stress=f'--form={form} --mode=drift-on --refocus --trials=10 --layout=@REPO@/layout/nicola_keytop.yab{msime}')
+              for form in ('tsf', 'edit')
+              for ime_name, ime, km, msime in (('gji-atok', 'gji', 1, ''), ('msime-native', 'msime', 1, ' --msime'))],
+            cfg('cal-driftrec-chrome-refocus-msime-native', 'observe', check='chromeprobe', ime='msime', keymap=2, runs=1, wait=400,
+                chrome='--close-ime=10 --refocus --settle=800 --msime'),
+            cfg('cal-driftrec-chrome-refocus-gji', 'observe', check='chromeprobe', keymap=1, runs=1, wait=400,
+                chrome='--close-ime=10 --refocus --settle=800'),
+            # BUG-172 の実 Chrome 確認(cal-driftrec-chrome-*): IME を WM_IME_CONTROL で閉じ、実 Chrome へかな単打して未回復かを見る(観測のみ)。
+            # TsfNative の実アプリで msime-ready ゲートが conv NATIVE を ON と誤認するか。対照は GJI。
+            cfg('cal-driftrec-chrome-msime-native', 'observe', check='chromeprobe', ime='msime', keymap=2, runs=1, wait=400,
+                chrome='--close-ime=10 --settle=800 --msime'),
+            cfg('cal-driftrec-chrome-gji', 'observe', check='chromeprobe', keymap=1, runs=1, wait=400,
+                chrome='--close-ime=10 --settle=800'),
           ]
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
