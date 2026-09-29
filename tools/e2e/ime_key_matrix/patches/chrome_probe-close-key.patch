@@ -1,5 +1,5 @@
 diff --git a/crates/awase-windows/examples/chrome_probe.rs b/crates/awase-windows/examples/chrome_probe.rs
-index 22c492c2..9026197a 100644
+index 22c492c2..68fa99e2 100644
 --- a/crates/awase-windows/examples/chrome_probe.rs
 +++ b/crates/awase-windows/examples/chrome_probe.rs
 @@ -207,6 +207,11 @@ fn scan_for(vk: u32) -> u16 {
@@ -23,7 +23,22 @@ index 22c492c2..9026197a 100644
              },
          },
      };
-@@ -759,6 +764,18 @@ fn main() {
+@@ -565,7 +570,13 @@ fn bring_to_front() -> bool {
+         let attached =
+             fg_tid != 0 && fg_tid != my_tid && AttachThreadInput(my_tid, fg_tid, true).as_bool();
+         let _ = BringWindowToTop(hwnd);
+-        let ok = SetForegroundWindow(hwnd).as_bool();
++        let mut ok = SetForegroundWindow(hwnd).as_bool();
++        if !ok {
++            // 実機確認用パッチ: 前面ロックで SetForegroundWindow が拒否される環境(clipwire 経由の起動)では SwitchToThisWindow で前面化する。
++            SwitchToThisWindow(hwnd, true);
++            std::thread::sleep(std::time::Duration::from_millis(300));
++            ok = GetForegroundWindow() == hwnd;
++        }
+         if attached {
+             let _ = AttachThreadInput(my_tid, fg_tid, false);
+         }
+@@ -759,6 +770,18 @@ fn main() {
              .and_then(|v| v.parse::<usize>().ok())
      }) {
          let (mut ok, mut bad, mut invalid) = (0usize, 0usize, 0usize);
@@ -42,7 +57,7 @@ index 22c492c2..9026197a 100644
          for i in 0..n {
              p.log.line(&format!("[CLOSE {}/{n}]", i + 1));
              p.focus_lost = false;
-@@ -769,7 +786,16 @@ fn main() {
+@@ -769,7 +792,16 @@ fn main() {
                  continue;
              }
              let before = ime_control(0x0005, 0);
@@ -60,7 +75,7 @@ index 22c492c2..9026197a 100644
              sleep(50);
              let after = ime_control(0x0005, 0);
              p.log.line(&format!(
-@@ -786,6 +812,19 @@ fn main() {
+@@ -786,6 +818,19 @@ fn main() {
              }
              let open_late = ime_control(0x0005, 0);
              let got = p.probe_logged("閉じて3秒後");
@@ -80,3 +95,90 @@ index 22c492c2..9026197a 100644
              p.log
                  .line(&format!("CLOSE_IME open_at_probe={open_late:?}"));
              if p.focus_lost {
+diff --git a/tools/e2e/ime_key_matrix/patches/chrome_probe-close-key.patch b/tools/e2e/ime_key_matrix/patches/chrome_probe-close-key.patch
+index 9e7c2fcb..a9f68198 100644
+--- a/tools/e2e/ime_key_matrix/patches/chrome_probe-close-key.patch
++++ b/tools/e2e/ime_key_matrix/patches/chrome_probe-close-key.patch
+@@ -1,82 +0,0 @@
+-diff --git a/crates/awase-windows/examples/chrome_probe.rs b/crates/awase-windows/examples/chrome_probe.rs
+-index 22c492c2..9026197a 100644
+---- a/crates/awase-windows/examples/chrome_probe.rs
+-+++ b/crates/awase-windows/examples/chrome_probe.rs
+-@@ -207,6 +207,11 @@ fn scan_for(vk: u32) -> u16 {
+- }
+- 
+- fn send_key(vk: u32, down: bool) {
+-+    send_key_extra(vk, down, AUTO_MARKER);
+-+}
+-+
+-+/// `extra` = dwExtraInfo。0 なら目印なし(他プロセスの注入、awase から見て物理でも自己注入でもない)。
+-+fn send_key_extra(vk: u32, down: bool, extra: usize) {
+-     let input = INPUT {
+-         r#type: INPUT_KEYBOARD,
+-         Anonymous: INPUT_0 {
+-@@ -219,7 +224,7 @@ fn send_key(vk: u32, down: bool) {
+-                     KEYEVENTF_KEYUP
+-                 },
+-                 time: 0,
+--                dwExtraInfo: AUTO_MARKER,
+-+                dwExtraInfo: extra,
+-             },
+-         },
+-     };
+-@@ -759,6 +764,18 @@ fn main() {
+-             .and_then(|v| v.parse::<usize>().ok())
+-     }) {
+-         let (mut ok, mut bad, mut invalid) = (0usize, 0usize, 0usize);
+-+        let close_key: Option<u32> = args.iter().find_map(|a| {
+-+            a.strip_prefix("--close-key=")
+-+                .and_then(|v| u32::from_str_radix(v, 16).ok())
+-+        });
+-+        let then_chord: Option<(u32, u32)> = args.iter().find_map(|a| {
+-+            let v = a.strip_prefix("--then-chord=")?;
+-+            let (x, y) = v.split_once(',')?;
+-+            Some((
+-+                u32::from_str_radix(x, 16).ok()?,
+-+                u32::from_str_radix(y, 16).ok()?,
+-+            ))
+-+        });
+-         for i in 0..n {
+-             p.log.line(&format!("[CLOSE {}/{n}]", i + 1));
+-             p.focus_lost = false;
+-@@ -769,7 +786,16 @@ fn main() {
+-                 continue;
+-             }
+-             let before = ime_control(0x0005, 0);
+--            let set_ret = ime_control(0x0006, 0);
+-+            // `--close-key=VK`(実機確認用パッチ): WM_IME_CONTROL の代わりに、目印なし(extra=0)の SendInput で VK を注入して閉じる。
+-+            let set_ret = if let Some(vk) = close_key {
+-+                send_key_extra(vk, true, 0);
+-+                sleep(40);
+-+                send_key_extra(vk, false, 0);
+-+                p.log.line(&format!("CLOSE_KEY unmarked vk=0x{vk:02X}"));
+-+                None
+-+            } else {
+-+                ime_control(0x0006, 0)
+-+            };
+-             sleep(50);
+-             let after = ime_control(0x0005, 0);
+-             p.log.line(&format!(
+-@@ -786,6 +812,19 @@ fn main() {
+-             }
+-             let open_late = ime_control(0x0005, 0);
+-             let got = p.probe_logged("閉じて3秒後");
+-+            // `--then-chord=VK1,VK2`: 追随後にモードキー(目印付き=物理相当)のチョードで戻し、もう一度 k,a を打つ。
+-+            if let Some((v1, v2)) = then_chord {
+-+                send_key(v1, true);
+-+                sleep(40);
+-+                send_key(v2, true);
+-+                sleep(60);
+-+                send_key(v2, false);
+-+                sleep(30);
+-+                send_key(v1, false);
+-+                p.log.line(&format!("THEN_CHORD 0x{v1:02X}+0x{v2:02X} (marked)"));
+-+                sleep(1000);
+-+                p.probe_logged("モードキーで戻した後");
+-+            }
+-             p.log
+-                 .line(&format!("CLOSE_IME open_at_probe={open_late:?}"));
+-             if p.focus_lost {
