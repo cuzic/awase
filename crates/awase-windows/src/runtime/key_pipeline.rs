@@ -1614,14 +1614,7 @@ impl Runtime {
         {
             self.schedule_ime_refresh(20);
             tracing::debug!("may_change_ime key passed through → IME refresh scheduled (20ms)");
-            // ADR-205（BUG-172）: 外部プロセスが注入した IME キー（awase 自身の注入は含まない）は、BUG-14 によりユーザー意図に
-            // 昇格させない。読めない窓では実状態の追随が観測に委ねられるが、この直後の refresh は打鍵中扱いで届かないため、
-            // 短い監視窓を開いて prefetch 済みの読みの変化を拾う。
-            if event.injected && !self.can_use_imm32_cross_process() {
-                self.platform_state
-                    .ime
-                    .arm_external_change_watch(hook::current_tick_ms());
-            }
+            self.kp_arm_external_change_watch(event);
         }
 
         self.kp_stage_mode_key_follow(decision, event);
@@ -1694,6 +1687,17 @@ impl Runtime {
                 );
             }
         });
+    }
+
+    /// ADR-205（BUG-172）: 外部プロセスが注入した IME キー（awase 自身の注入は含まない）は、BUG-14 によりユーザー意図に
+    /// 昇格させない。読めない窓では実状態の追随が観測に委ねられるが、この直後の refresh は打鍵中扱いで届かないため、
+    /// 短い監視窓を開いて prefetch 済みの読みの変化を拾う。
+    fn kp_arm_external_change_watch(&mut self, event: &RawKeyEvent) {
+        if event.injected && !self.can_use_imm32_cross_process() {
+            self.platform_state
+                .ime
+                .arm_external_change_watch(hook::current_tick_ms());
+        }
     }
 
     /// ADR-187 follow（ADR-191で全IMEモードキーへ一般化）: Engine OFF のとき、モードキーは FSM を通らず `PassThrough` 判定でそのまま OS へ渡る。
