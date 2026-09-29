@@ -11,7 +11,7 @@ summary: |-
   belief OFF 側を独自に持ち(ケース2/3改、`explicit_ime_action_target`＋`transport.rs` の M19 例外)、belief ON 側も独自の経路(ケース1)を持つ二重系統になっている。
   本 ADR は「役割(config.toml の bare `keys.ime_*` または IME 設定由来)」を唯一の入力にして二重系統を1本にし、旧設定を読込時に bare `keys.ime_*` 相当へ移して警告する。
 status: |-
-  起草(2026-09-29)。opus-adversarial-consult 未実施(実施後にここを更新する)。実装・実機検証は未着手。
+  起草(2026-09-29)。opus round1 反映済み(belief OFF 側をエンジンの特殊キー照合へ合流、旧 "off" の抑止のみを保存、移行の既知差を列挙)。round2 待ち。実装未着手。
 related_adr:
   - "ADR-092"
   - "ADR-119"
@@ -71,100 +71,110 @@ S3 は「@」抑止の同等性が S1/S2 経路で未検証のため v2.0 では
 2. **役割がない**(役割が無い・IME 未同定・MS-IME 本体〈Phase 4 まで〉・ATOK・修飾付き・injected)→ `ModeKeyConfig` の Suppress/Passthrough に従う(現状のまま)。
    Passthrough なら生キーがそのまま IME に届く(受動)。
 
-決定1-1 で「Suppress のときも役割があれば注入する」のは、出荷済みの ADR-199 決定16(役割由来は `ModeKeyConfig` より優先。`forced_open_action` は `ModeKeyConfig` の前)と同じで、
-新しい挙動ではない。所有者文面の「単独打鍵は Suppress か Passthrough かの設定に従う」は、決定1-2(役割なし)への言及と解釈する。
+- belief ON(エンジン活性)側は ADR-199 決定16 が出荷済みで、`ModeKeyConfig` より役割が優先される。**新しいのは belief OFF(エンジン非活性)側だけ**で、
+  これは ADR-199 の却下案 N(「エンジン非活性〈IME OFF〉でも能動にする」)と決定16 最終段(「エンジン非活性のときは能動にしない」)を、所有者決定(2026-09-29)で**覆す**ものである
+  (ユーザーがエンジンを無効化している間は受動を維持する、決定3)。
+- 所有者文面の「素通しになる場合でも」は、主に belief OFF の打鍵(エンジン非活性なので `ModeKeyConfig` が参照されず生キーが常に通る)を指すと読む。
+  「Suppress 設定 × トグル役割 × belief ON で awase が閉じる」は現状どおり(出荷済み)。**所有者への確認事項**: この読みでよいか。
 
-### 決定2: 入力は S1 と S2 だけ。S3(`*_solo_tap_ime_action`)を撤去する
+### 決定2: 入力は S1 と S2 だけ。S3(`*_solo_tap_ime_action`)と、それ専用の belief OFF 機構を撤去する
 
-- `nicola_fsm.rs` の `muhenkan/henkan_solo_tap_ime_action` フィールド・setter・getter、`ThumbSoloSpecialHandling.explicit_ime_action`、`resolve_explicit_ime_action`(ケース1)を削除する。
-  M13(`ModeKeyConfig` が Passthrough なら明示 config が発火しない)は消える(決定1-1 が所有者決定でそれを上書きする)。composing 中の非発火(ケース1)も消え、
-  `forced_open_action` の規則(composing 中も発火、ADR-192 決定3b)に揃う。
-- `fsm_adapter.rs`・`engine.rs`・`runtime/mod.rs`(`set_*_solo_tap_ime_action`、`ModeKeyConfig` 再構築の `is_some()` 参照)・`bootstrap.rs`・`state/evidence.rs` の関連コメント/引数を削る。
-- `config.rs::GeneralConfig` の2フィールドは**読み込み専用の非推奨項目として残す**(`ShadowImeActionConfig` ごと。既存の config.toml をエラーにしない・ADR-201 の診断で
-  警告を出すため)。値はエンジンに渡さない(決定4で S1 相当へ移す)。**`KeysConfig` 周辺は触らない**(並行編集中の a4b と衝突させない)。
+- 削除: `nicola_fsm.rs` の S3 フィールド・setter・getter・`ThumbSoloSpecialHandling.explicit_ime_action`・`resolve_explicit_ime_action`(ケース1)、
+  `fsm_adapter.rs`/`engine.rs`/`runtime/mod.rs`/`bootstrap.rs` の関連配線、`key_pipeline.rs::explicit_ime_action_target`・`ExplicitImeActionOutcome`・
+  `kp_stage_shadow_ime_toggle` のケース2/3改の分岐と KeyUp 早期分岐、`transport.rs` の M19 例外、マーカー `explicit_ime_action_consumed`
+  (`ImeRelevance`・`PendingThumbData` のフィールドとそれを渡す `resolve_pending_thumb_as_single` の引数、`input_tracker.rs`・`fsm_types.rs` の伝搬)、
+  `architecture_guard.rs` の関連ガード(内容を新構造の不変条件に書き換え)。
+  マーカーが要らなくなる理由は決定3: belief OFF の打鍵はエンジンの Phase 1(特殊キー照合)で完結し、FSM に PendingThumb を作らないので二重解決が構造的に起きない。
+  `kp_latch_keyup_to_keydown_disposition` の無変換/変換の除外(`key_pipeline.rs:303-324`)は、Down/Up を揃える所有者が「Consume の義務(`UpDuty`)」に変わるので、理由コメントを書き換える。
+- M13(`ModeKeyConfig` が Passthrough なら明示 config が発火しない)と、ケース1の composing 中の非発火は消える(決定1 が上書き。`forced_open_action` の規則=composing 中も発火、ADR-192 決定3b に揃う)。
+- `config.rs::GeneralConfig` の2フィールドは**読み込み専用の非推奨項目として残す**(既存 config.toml をエラーにしない・ADR-201 の診断で警告を出すため)。**`KeysConfig` 周辺は触らない**。
 
-### 決定3: belief OFF 側(エンジンは有効だが IME が閉じていて非活性)の役割由来は、旧ケース2の経路をそのまま使い、入力だけを差し替える
+### 決定3: belief OFF 側の役割由来は、旧ケース2の Windows パイプライン経路ではなく**エンジンの特殊キー照合(S1 と同じ入口)**に合流させる(round1 の代案7を採用)
 
-- `key_pipeline.rs::explicit_ime_action_target` の入力を、旧 `engine.muhenkan/henkan_solo_tap_ime_action()` から
-  「`engine.thumb_forced_open_actions()` の該当キーの値のうち、**config の bare(S1)が無いもの**(=役割由来 S2)」に差し替える
-  (S1 は belief OFF では `match_event` の特殊キー照合が既に処理する。両方が反応すると1回の押下で2回書く二重 actuation になる)。
-- 追加のゲート: **エンジンが有効(`engine.is_user_enabled()`)のときだけ**能動にする。エンジンをユーザーが無効化している間(Ctrl+Shift+無変換等)は
-  ADR-199 決定16「エンジン非活性のときは能動にしない」どおり受動(生キーを通す)。旧ケース2にはこのゲートが無く、エンジン無効中に Down だけ Suppress され
-  KeyUp が GJI へ漏れうる(`Decision::Consume` に乗らないため)ので、S2 の新設に合わせて閉じる。
-- 役割由来は `Toggle` だけなので、belief OFF の結果は常に `PromoteToOn`(ON を書く)。旧 `SuppressOnly`(`"off"`×belief OFF、BUG-124)のアームと
-  KeyUp のステートレス再評価は S3 専用の帰結なので撤去する(BUG-124 の回帰ガード `architecture_guard.rs` は「抑止のみ・actuate しない」の
-  形が S2 に無いことを固定する内容へ更新。S1 の `"off"` は決定4を参照)。
-- 二重注入の防止(BUG-123/BUG-46 型)は既存のマーカー `explicit_ime_action_consumed`(名前は変えない=ガードトークンの churn を避ける)で行う:
-  Down で `PromoteToOn` した打鍵は、100ms 後/KeyUp の `resolve_pending_thumb_as_single` で `forced_open_action` も `ModeKeyConfig` の Passthrough も打ち切られる
-  (`!explicit_action_consumed` は現行のまま)。物理配送は `transport.rs::plan` の M19 例外(マーカーで Suppress)と、活性化後の `Decision::Consume` の2段。
+旧案(ケース2の入力差し替え)は棄却した。理由(round1 指摘 1-A/1-B、コードで裏取り済み):
+`kp_stage_shadow_ime_toggle` の OFF→ON は belief を書くだけで、実 IME へ ON を書くのはエンジンの活性化遷移(`transition_activation`)任せである。
+`compute_state` が `NotRomajiInput`(GJI の半角英数 conv を保持したまま閉じていた場合等)や `UserDisabled` を返す打鍵では遷移が起きず SetOpen が出ない。
+その一方で生キーは M19 で抑止されるため「抑止したのに何も書かない」空振り(ADR-119 型)になり、現状の受動より退行する。KeyUp の Suppress も `Decision::Consume` に乗った場合だけで、非対称(BUG-131/132 型)が残る。
 
-### 決定4: 旧設定の移行 — 読込時に S1 相当へ移し、1回だけ警告する
+新案: `Engine::match_special_keys`(`engine.rs:878`)に、`match_event` が `None` のときの分岐を1つ足す。
 
-- `muhenkan/henkan_solo_tap_ime_action = "on"/"off"/"toggle"` が残っている config は、`SpecialKeyCombos` を組み立てる箇所で該当キーの bare コンボを
-  `ime_on`/`ime_off`/`ime_toggle` に**メモリ上でだけ**追加する(config.toml は書き換えない)。警告(ADR-201 の診断経路)は「`keys.ime_*` に bare で書くか、削除してください。
+- 条件: `!engine_active` かつ `ctx.is_japanese_ime` かつ `adapter.is_enabled()`(ユーザー無効中は受動)かつ `is_bare_thumb(event, ctx.modifiers)` かつ
+  そのキーの `forced_open_action` が `Some`(config の bare は `match_event` が先に一致するので、ここに来るのは役割由来だけ)かつ専用 Fn キー(`muhenkan_solo_tap_dedicated_fn_key`)が無い。
+- 動作: `Toggle` なら `SpecialKeyMatch::ImeToggle`(`!ctx.ime_on` へ絶対指定の `SetOpen`)。`ime_set_open_effects` は状態遷移が無い場合も `SetOpen` を明示的に積む(`engine.rs:848-855`)ので、
+  `NotRomajiInput` でも書かれる。生キーは `Decision::consumed_with` で抑止され、KeyUp は `UpDuty::Consume`(`on_input`)で Down と対になる。
+  以降の書き込みは S1 と同じ経路(`handle_engine_set_open` → `dispatch_ime_set_open`)なので、**新しい書き込みの入口は増えない**。
+- 親指の bare 照合(S1・S2 共通)に対する2つの追加:
+  (a) **自動リピートの Down(`was_down`)** では `SetOpen` を積まず、Consume だけ返す。現状の S1 は `matches_key_combo` が `was_down` を見ず、エンジン非活性で押し続けるとリピートのたびに反転する(既存の穴。round1 1-C)。
+  (b) **`ImeOff` × `!ctx.ime_on` × bare 親指は Consume するだけで `SetOpen` を積まない**(BUG-124 の「抑止のみ・強制 actuate しない」の等価物。`applied` が Unknown のとき
+  `already_matched` を通らず `VK_IME_OFF` を単発で送る形が旧ケース3=「@」の構成だった〈round1 3-A〉)。これは旧 S3 の `"off"`×belief OFF の挙動と一致し、GUI T3 が書く主流設定
+  (無変換=`"off"`)を守る。belief が古く実際は ON のときは、OFF 方向は「何も起きない」になる(受動より劣る。リスク3)。
+- 削れるもの: 上のとおり決定2 の Windows 側機構一式。エンジン側の追加は分岐1つ+(a)(b)で数十行、Windows 側は数十行の純減。
+
+### 決定4: 旧設定の移行 — 読込時にメモリ上で S1 相当へ移し、警告する
+
+- `muhenkan/henkan_solo_tap_ime_action = "on"/"off"/"toggle"` が残っている config は、`SpecialKeyCombos` を組み立てる箇所(`runtime/mod.rs` の reload 経路・`bootstrap.rs`)で、
+  該当キーの bare コンボを `ime_on`/`ime_off`/`ime_toggle` に**メモリ上でだけ**追加する(config.toml は書き換えない)。同じキーに既存の bare があれば**旧 S3 が勝つ**(旧実装の優先順位を保つため、
+  既存の同キー bare を除いてから追加する)。GUI が実際に書く形(無変換=`"off"`)は決定3(b)で保護される。
+- 警告(ADR-201 の診断経路、`validate_thumb_key_in_ime_combos` の該当分岐を置換): 「`*_solo_tap_ime_action` は非推奨です。`keys.ime_on/off/toggle` に bare で書くか、削除してください。
   GJI の CUSTOM 表で無変換/変換がトグルなら設定なしで動きます」。
-- 既知の差: 旧 `"off"` × belief OFF は「抑止のみ」(BUG-124)だったが、S1 になると `match_event` の `ImeOff` が belief OFF でも `SetOpen(false)` を発行する。
-  この経路が GJI で「@」を誘発するかは**未検証**(旧ケース3が誘発した「強制 actuate」に近い)。検証は決定6の e2e と実機 A/B に置く。
-  誘発が確認されたら、移行時に `"off"` だけは「無視して警告」に倒す(受動に戻る)案を代替として持つ。
+- 移行で変わる差(既知・許容。所有者決定が M13 を上書きする):
+  1. M13: 旧 `"toggle"`/`"on"` × `ModeKeyConfig`=Passthrough は「belief ON 中は GJI 自身のかな切替、OFF→ON の復帰だけ config」だった(`nicola_fsm.rs:2070-2076`)。S1 では belief ON でも `forced_open_action` が優先されるので、この使い分けは実現できなくなる。
+  2. composing 中: 旧ケース1は composing 中は発火しなかった。S1 は発火する(IME 側もそのキーで閉じる設定であることが前提。旧 S3 ユーザーの IME 設定がトグルとは限らない点に注意)。
+  3. エンジン無効中: 旧ケース2/3改は動いたが、旧ケース1(belief ON)は FSM に届かず生キーが通っていた。S1 の `match_event` は `engine_enabled` を見ないので、無効中も belief OFF/ON とも能動になる(S2 は決定3のゲートで受動)。
+  4. 旧 `"off"` × belief ON の挙動は同じ(閉じる)。旧 `"on"`/`"toggle"` × belief OFF は「PromoteToOn」から S1 の `ImeOn`/`ImeToggle` に代わり、意図の記録が `PhysicalImeKey` から `Command` になる(`IntentStore` の扱いは S1 の既存挙動)。
 
 ### 決定5: GUI(ADR-192 T3)と検証(`validate_thumb_key_in_ime_combos`)を書き換える
 
-- `apply_adr192_recommended_replacement` は親指キーでも bare コンボ(`ime_on=["変換"]`・`ime_off=["無変換"]`)を書く(S3 分岐を削除)。`*_always_suppress = true` の同時設定は
-  決定1-1 により不要(役割/bare があれば `ModeKeyConfig` に関わらず注入される)なので書かない。snapshot/undo から S3 の項目を外す。プレビュー文も更新する。
-- `validate_thumb_key_in_ime_combos` の「`*_solo_tap_ime_action` が優先され、この強制ON/OFFの設定は無視されます」の分岐を削除する。
-  旧設定が残っているときの警告は決定4に移す。
+- `apply_adr192_recommended_replacement` は、親指キーのとき `keys.ime_on`/`ime_off` に該当 bare 要素(`"変換"`/`"無変換"`)を**追記**する(既に含まれていれば何もしない。リストを丸ごと置き換えると
+  既定の `Ctrl+無変換` 等が消える〈round1 3-D〉)。`*_always_suppress = true` の同時設定は決定1 により不要なので書かない。非親指キーの既存の置き換え動作は変えない。
+  snapshot/undo から S3 の項目を外し、プレビュー文と単体テスト(`main.rs:7757-7798`)を更新する。
+- `validate_thumb_key_in_ime_combos` の「`*_solo_tap_ime_action` が優先され…無視されます」の分岐を削除し、旧設定の警告は決定4に移す。
+- 決定5 は決定3(b)(抑止のみ分岐)が入るまで単独で入れない(GUI が書く設定が BUG-124 の構成になるため)。同じ PR で扱う。
 
 ### 決定6: 検証計画
 
-- 単体: `src/engine/tests.rs`/`nicola_fsm.rs::tests` の S3 依存テストを、S1(`set_thumb_forced_open_actions`)で同じ意図を検証するテストへ置き換える
-  (belief ON で単独タップ→絶対指定の SetOpen が1回、`ModeKeyConfig` が Passthrough でも生キーが出ない、チョードでは発火しない、`explicit_action_consumed` で後続を打ち切る)。
-- 統合: `crates/awase-windows/tests/architecture_guard.rs` の必須トークン(`explicit_ime_action_target(` 呼び出し数・M19 マーカー・`fn resolve_explicit_ime_action(` の存在)を更新し、
-  「belief OFF 側の入力が bare(S1)を除いた役割由来だけ」「`is_user_enabled()` ゲートがある」を固定する。`transport.rs` の M19 例外は残す(名前とコメントは S2 用に直す)。
-  `ime_key_sequence_golden.rs` に、役割由来の Toggle × belief OFF/ON の期待送信列(書く回数=1)を足す。
-- CI e2e(`.github/workflows/e2e-ime.yml` の sc-* 構成に追加。`gh workflow run e2e-ime.yml --ref <ブランチ> -f only='sc-solotap-*'`):
-  GJI + CUSTOM 表で無変換=トグル/非トグル × 直接入力/かな入力(belief OFF/ON)× `--seq=1D,1D`(無変換の単独タップ2回)の consistency(実 IME の開閉と Engine の追随)、
-  二重トグルが起きないこと(1回の押下で開閉が1回)、変換側の対称、`observed` 件数(判定に使った観測の件数)を summary に出す。
-  「@」は CI の Windows Terminal では観測できない可能性が高いので、CI では「生キーが GJI に届かない=Down/Up とも Suppress/Consume」(awase.log の `[shadow-toggle]`/物理配送の disposition)で代替し、
-  「@」そのものは実機 A/B(Windows Terminal + GJI、半角状態で無変換/変換の単独タップ)で確認する(未検証事項として残す)。
-- 回帰の記録: `docs/known-bugs/` には新規 BUG を起こさず、BUG-113/123/124 に本 ADR への追記を1行足す(再発ファミリー「キー選択」「IME actuation 合流点」に触れるため、
-  fix-requires-evidence.md の (a) 回帰テスト を主とし、(b) は追記で足りる)。
+- 単体(Linux で走る): `src/engine/tests.rs` に、エンジン非活性(IME OFF/`NotRomajiInput`)× 親指の役割由来 Toggle で「Consume＋絶対指定 `SetOpen(true)` が1つ、KeyUp も Consume」、
+  `ImeOff`×belief OFF で「Consume だけ・`SetOpen` なし」、リピート Down で「Consume だけ」、ユーザー無効・専用 Fn キー設定・`is_japanese_ime=false` で「素通し」、
+  belief ON(エンジン活性)は FSM の `forced_open_action`(KeyUp 解決)で従来どおり、を固定する。S3 依存の既存テストは S1(`set_thumb_forced_open_actions`)ベースへ置き換える。
+  `config.rs` に、旧設定→S1 相当の移行(同キー既存 bare より旧 S3 が勝つ)と警告のテストを足す。
+- 統合: `architecture_guard.rs` を更新(旧ケース2/3改とマーカーの再導入禁止、`match_special_keys` の新分岐が `is_user_enabled` ゲートと `was_down` 分岐を持つこと、`SetOpen` 直積みをしないこと)。
+  `ime_key_sequence_golden.rs` は `ImeController` の戦略選択と与えた view への送信列の検証であり、「1回の押下で何回書くか」は表現できない(`runtime/` は `#[cfg(windows)]` で Linux では走らない)ので対象にしない。
+  `cargo check --target x86_64-pc-windows-msvc -p awase -p awase-windows -p awase-settings --tests` でコンパイルを確認する。
+- CI e2e(`e2e-ime.yml` に `sc-solotap-*` を追加。`gh workflow run e2e-ime.yml --ref <ブランチ> -f only='sc-solotap-*'`): GJI + CUSTOM 表で無変換=トグル/非トグル × 直接入力/かな入力 × `--seq=1D,1D`、
+  変換側の対称、および **round1 5 のシナリオ「素通しの英数キーで閉じた直後に無変換」**(`applied` が古いと `already_matched` で書き込みが省略され、抑止済みの生キーとあわせて誰も開かない BUG-156 型)。
+  判定は consistency(実 IME の開閉と Engine の追随)と、1回の押下での開閉回数=1、`[shadow-toggle]`/物理配送のログ、`observed` 件数。「@」は CI では出ない可能性が高いので、
+  CI では「生キーが GJI に届かない」で代替し、「@」そのものは実機 A/B(Windows Terminal + GJI、半角状態で無変換/変換の単独タップ、旧 `"off"` 設定も)で確認する(未検証事項)。
+- 記録: `docs/known-bugs/` には新規 BUG を起こさず、BUG-113/123/124 に本 ADR への追記を1行足す。ADR-153・192・199 のステータスに本 ADR による置換を追記する。
 
 ## リスクと反論(親エージェントの懸念への回答)
 
-1. **二重トグル(1回の押下で開閉が2回)**: 起きうる経路は3つ。(a) 書いた上に生キーも通る → 決定3の M19 例外＋`Decision::Consume` の2段で塞ぐ(実機確認済みのケース2と同じ構成)。
-   (b) belief OFF で書いた後、同じ打鍵が KeyUp で `forced_open_action` としてもう一度 `Toggle` を解決する → `explicit_action_consumed` で打ち切る(BUG-123 の修正と同じ機構、
-   S2 でも同じマーカーが立つことを単体テストで固定)。(c) 自動リピート Down → `enrich_thumb_key_role` は非リピートの Down だけで値を設定し直し、FSM は PendingThumb 中のリピートを
-   新しい打鍵として扱わない(要確認: 下の未検証事項)。
-2. **「@」**: 「生キー抑止＋awase が1回だけ書く」は BUG-122/123 の実機確認で「@」が出なかった構成。一方「生キー通過(Passthrough)」は BUG-124 で「@」を出した構成。
-   本設計は belief OFF でも役割があれば前者にする(現状 S2 は後者=受動)ので、GJI で無変換をトグルにしたユーザーの半角状態での「@」は**減る**方向。
-   ただし役割が方向固定(IME オン/オフだけ)・ATOK・MS-IME 本体の場合は受動のまま(所有者決定の範囲外)で、「@」が残りうる。
-3. **belief が古いとき逆方向に書く**: 役割由来の `Toggle` は belief から方向を決めるので、belief が古い(観測できていない、BUG-172)と、受動なら IME が正しく処理していたキーを
-   逆方向に書く/何も起きない。緩和: (i) 注入は `SetOpen(bool)` の絶対指定なので、同じ方向の再送は冪等(既に合っていれば no-op)。(ii) `ControlLog.shadow_on` は `Option<bool>`
-   のまま扱い、「送信を省略してよい」は陽性の確認済み証拠(`Some(x)`)にのみ基づく(fix-requires-evidence.md の罠。`already_matched` のバイパス条件は既存の
-   `apply_ime_open_with_belief` の規則に従い、この変更では増やさない)。(iii) belief の観測強化は別エージェント(BUG-172)の領域で、本 ADR は入力を差し替えるだけで
-   belief 更新経路は触らない。**受動より劣る点は残る**(古い belief では誤動作する)ことを許容するのが所有者の選択。
-4. **受動化の方針との整合**: ADR-191(IME が真実)・ADR-178 領域A撤去・ADR-199 決定1 の「役割を持つキーだけ能動」の範囲内。能動を増やすのは
-   「GJI の CUSTOM 表で無変換/変換がトグルのときの belief OFF 側」だけ(ADR-199 決定16 が belief ON 側で既にやっていることの対称化)。S1(ユーザーが config に書いた)は増えない。
-   旧 S3 という別系統を減らす分、能動経路の数は純減(ケース1・ケース2/3改・M19 のうち S3 専用部分を削除)。
-5. **NICOLA 同時打鍵(PendingCharThumb・BUG-119)**: 発火点は `resolve_pending_thumb_as_single`(単独タップ確定)だけで、同時打鍵と解決した打鍵は発火しない(チョード優先、変更なし)。
-   優先順位は 専用Fnキー ＞ bare/役割(`forced_open_action`) ＞ `ModeKeyConfig`(S3 が消えるので2.が無くなる)。`suppress_solo_output`(ADR-182 決定1b)と押下後 Shift の既存ガードは
-   `forced_open_action` 側にあり、そのまま効く。belief OFF 側(エンジン非活性)には同時打鍵がそもそも無い。
-6. **IME actuation 合流点**: 新しい書き込みの入口は作らない。belief OFF の書き込みは旧ケース2と同じ `kp_stage_shadow_ime_toggle` → `IntentKind::PhysicalImeKey` →
-   既存の共通処理(`eisu_reset_on_ime_on` を含む)に合流し、`ime_controller.rs::apply` 以降は変更しない。`RESTRICTED_CALLS`/tuning 定数は増減なし(複雑性予算に触れない)。
+1. **二重トグル/二重信号**: belief OFF はエンジンの Phase 1 で「Consume＋SetOpen 1つ」で完結し、FSM に PendingThumb が作られない(BUG-123 型の二重解決が起きない)。KeyUp は `UpDuty::Consume` で対になる。
+   リピートは決定3(a)。belief ON は FSM の KeyUp 解決(出荷済み、チョード優先)。S1 と S2 は同時に発火しない(`match_event` が先に一致すれば決定3の分岐は評価されない)。
+2. **「@」**: 「生キー抑止＋awase が1回だけ書く」は BUG-122/123 の実機確認で「@」なしだった構成(ただし旧ケース2は Windows パイプライン経由の書き込みで、S1 と同じエンジン経由の書き込みが同じ結果になるかは**未検証**)。
+   OFF 方向 × belief OFF は抑止のみ(BUG-124)。方向固定の役割・ATOK・MS-IME 本体は受動のまま(所有者決定の範囲外)。
+3. **belief が古いとき**: 絶対指定なので同方向の再送は冪等だが、(i) belief が実際と逆のとき、受動なら IME が 1 回で正しく処理していた打鍵が「何も起きない」(1打鍵消える)になる。これは所有者が受け入れるコスト(BUG-172 が窓を作る)。
+   (ii) round1 5: `dispatch_ime_set_open` は `applied_snapshot` の陽性証拠(`Some(x)`)で送信を省くが、`applied` は `ObserverReported`/`ModeKeyPassedThrough` ではリセットされない。素通しの別キーで閉じた直後の S2 で、
+   抑止済みの生キーと合わせて誰も開かない(BUG-156 型)可能性がある。**S1 と `ActivationSync` が既に同じ経路を通る既存の性質**で、本 ADR は S2 をその経路に載せる。緩和は `already_matched` を無効にする(=強制 actuate、「@」の危険)
+   のではなく、CI シナリオで実測して結果次第で別 ADR で扱う。`ControlLog.shadow_on` は `Option<bool>` のまま扱う(`bool` に潰さない)。
+4. **受動化の方針**: ADR-191・ADR-178 領域A撤去・ADR-199 決定1 の「役割を持つキーだけ能動」の範囲内。能動を増やすのは GJI の CUSTOM 表で無変換/変換がトグルのときの belief OFF 側だけ(決定1 の但し書きのとおり却下案 N を覆す)。
+   旧 S3 の専用機構(ケース1・ケース2/3改・M19・マーカー)を削るので、能動経路の数は純減。
+5. **NICOLA 同時打鍵(PendingCharThumb・BUG-119)**: belief ON の発火点は `resolve_pending_thumb_as_single`(単独タップ確定)だけで、チョードでは発火しない(変更なし)。優先順位は 専用Fnキー ＞ `forced_open_action`(bare ＞ 役割)＞ `ModeKeyConfig`
+   (S3 が消えるので旧2.が無くなる)。`suppress_solo_output`(ADR-182 決定1b)・押下後 Shift のガードはそのまま。belief OFF はエンジン非活性でチョード判定自体が無い。
+6. **IME actuation 合流点**: 新しい入口は作らない(エンジンの `SetOpen` → 既存の `dispatch_ime_set_open`)。旧ケース2 が `IntentKind::PhysicalImeKey` で合流していた分は減る。`RESTRICTED_CALLS`/tuning 定数は増減なし。
+   確認事項(実装時): (a) `kp_reopen_gji_fsm(ReopenSource::ShadowToggle)`(ADR-203)がエンジン経由の `SetOpen(true)` でも走るか(走らなければ S1 も同様で、別件)、(b) eisu 救済(BUG-159)は Decision 経由の `PostSetOpenEisuReset` が担う。
 
 ## 実装タスクの分割案
 
-- T1: `nicola_fsm.rs`/`fsm_adapter.rs`/`engine.rs` から S3(フィールド・setter・getter・`resolve_explicit_ime_action`・関連テスト)を削除し、
-  `thumb_solo_special_handling` から `explicit_ime_action` を外す。`defers_solo_until_release`・`resolve_pending_thumb_as_single` の分岐を整理する。
-- T2: `key_pipeline.rs::explicit_ime_action_target` の入力を役割由来(S1 除外)＋`is_user_enabled()` ゲートに差し替え、`SuppressOnly` アームと KeyUp 早期分岐を削除。`transport.rs` のコメント更新。
-- T3: `config.rs`(`GeneralConfig` の2項目を非推奨・読み込み専用に、doc 更新、`validate_thumb_key_in_ime_combos` の分岐削除、移行警告)、`SpecialKeyCombos` 組み立て(`runtime/mod.rs`・`bootstrap.rs`)での S1 相当への移行。
+- T1: エンジン: `match_special_keys` の新分岐・(a) リピート・(b) OFF×belief OFF の抑止のみ・専用 Fn ゲート、単体テスト。
+- T2: S3 とマーカーと Windows 側ケース2/3改・M19 の撤去(決定2)、`architecture_guard` の更新、`kp_latch_keyup_to_keydown_disposition` のコメント更新。
+- T3: `config.rs` の非推奨化・旧設定→S1 の移行(決定4)・警告・`validate_thumb_key_in_ime_combos` の整理。
 - T4: `awase-settings` の T3 書き換え(決定5)。
-- T5: 回帰テスト(決定6)・`architecture_guard` 更新・sc-solotap-* 構成の追加。
-- T6: docs(ADR-153/192/199 のステータス追記、BUG-113/123/124 に1行、`docs/adr/index.md` に1行、README/usage の隠し設定の記述があれば削除)。
+- T5: `sc-solotap-*` の追加(決定6)。
+- T6: docs(ADR-153/192/199 のステータス追記、BUG-113/123/124 に1行、README/usage の隠し設定の記述があれば削除)。
 
 ## 未検証事項(実装後も残るもの)
 
-- 半角状態(belief OFF)で GJI の CUSTOM 表の無変換=トグルを押したときの「@」の有無(実機 A/B、Windows Terminal + GJI)。
-- 旧 `"off"` の S1 相当への移行後、belief OFF での `SetOpen(false)` 発行が「@」を誘発するか(決定4)。
-- 親指キーの自動リピート Down が belief OFF の `explicit_ime_action_target` を再度通ったときの挙動(現行は `current` が ON になっているので `Inactive`。エンジンの活性化が同じ打鍵で間に合わない環境は未確認)。
+- 半角状態(belief OFF)で GJI の CUSTOM 表の無変換=トグルを押したときの「@」の有無(実機 A/B、Windows Terminal + GJI)。旧ケース2 と、エンジン経由の書き込み(S1 と同じ)で結果が同じかも含む。
+- 旧 `"off"`(GUI T3 の設定)の実機挙動が旧実装と同じか(半角状態で無変換/変換の単独タップ→「@」が出ない・生キーが GJI に届かない)。
+- `applied_snapshot` が古いときの S2(リスク3(ii))の CI 実測。
 - MS-IME 本体・ATOK は対象外(受動のまま)。MS-IME 本体は ADR-199 T17 Phase 4 と B4 計画が決まってから同じ入力(S2)に合流させる。
