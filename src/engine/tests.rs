@@ -135,6 +135,7 @@ impl Ev {
             event_type: KeyEventType::KeyDown,
             injected: false,
             sync_direction: None,
+            was_down: false,
         }
     }
     fn up(vk: VkCode) -> EvBuilder {
@@ -145,6 +146,7 @@ impl Ev {
             event_type: KeyEventType::KeyUp,
             injected: false,
             sync_direction: None,
+            was_down: false,
         }
     }
 }
@@ -156,9 +158,15 @@ struct EvBuilder {
     event_type: KeyEventType,
     injected: bool,
     sync_direction: Option<crate::types::ShadowImeAction>,
+    was_down: bool,
 }
 
 impl EvBuilder {
+    /// 自動リピートの Down（`RawKeyEvent::was_down`）にする。
+    fn repeat(mut self) -> Self {
+        self.was_down = true;
+        self
+    }
     fn at(mut self, ts: Timestamp) -> Self {
         self.ts = ts;
         self
@@ -181,7 +189,7 @@ impl EvBuilder {
     fn build(self) -> RawKeyEvent {
         let (kc, pos) = classify_test_key(self.vk, self.scan);
         RawKeyEvent {
-            was_down: false,
+            was_down: self.was_down,
             vk_code: self.vk,
             scan_code: self.scan,
             event_type: self.event_type,
@@ -6954,6 +6962,292 @@ mod engine_integration_tests {
         );
     }
 
+    // ── ADR-206: エンジン非活性側の役割由来（IME 設定由来のトグル）の親指単独押下 ──
+
+    /// IME 設定由来の役割（トグル）を持つ無変換。単独タップの `ModeKeyConfig` は Passthrough
+    /// （役割由来の開閉は Passthrough のときだけ発火する、ADR-206 の訂正）。
+    fn engine_with_role_toggle_on_muhenkan() -> Engine {
+        let mut engine = make_test_engine();
+        engine.set_thumb_key_solo_tap_config(
+            Some(VK_NONCONVERT),
+            ModeKeyConfig::from_legacy_bools(true, false),
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        engine.set_thumb_role_open_actions(Some(ShadowImeAction::Toggle), None);
+        engine
+    }
+
+    fn set_open_effects(d: &Decision) -> Vec<bool> {
+        effects_of(d)
+            .iter()
+            .filter_map(|e| match e {
+                Effect::Ime(ImeEffect::SetOpen { open, .. }) => Some(*open),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// belief OFF（エンジン非活性）: 生キーは Consume し、絶対指定の `SetOpen(true)` をちょうど1つ積む。
+    /// KeyUp も Consume で、追加の `SetOpen` は無い。
+    #[test]
+    fn role_toggle_thumb_while_ime_off_consumes_and_opens_once() {
+        let mut engine = engine_with_role_toggle_on_muhenkan();
+        let down = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
+        assert!(down.is_consumed(), "生キーは IME に通さない");
+        assert_eq!(set_open_effects(&down), vec![true]);
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
+        assert!(up.is_consumed(), "KeyUp も Down と対で Consume");
+        assert!(set_open_effects(&up).is_empty(), "KeyUp では書かない");
+    }
+
+    /// 開いていても英数等で `NotRomajiInput`（エンジン非活性）なら、Toggle は閉じる方向の `SetOpen(false)`。
+    #[test]
+    fn role_toggle_thumb_while_not_romaji_closes() {
+        let mut engine = engine_with_role_toggle_on_muhenkan();
+        let eisu_ctx = InputContext {
+            input_mode: InputModeState::ObservedEisu,
+            ..ime_on_ctx()
+        };
+        let down = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &eisu_ctx);
+        assert!(down.is_consumed());
+        assert_eq!(set_open_effects(&down), vec![false]);
+    }
+
+    /// 押しっぱなしの自動リピート: 最初の Down で書いた後にエンジンが活性化しても、リピートは FSM に入らず
+    /// 指令を作らない。離したときにもう一度トグルしない（押して開き離して閉じる二重トグルの防止）。
+    #[test]
+    fn role_toggle_thumb_repeat_and_release_never_write_again() {
+        let mut engine = engine_with_role_toggle_on_muhenkan();
+        let down = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
+        assert_eq!(set_open_effects(&down), vec![true]);
+        for i in 0..3 {
+            let rep = engine.on_input(
+                Ev::down(VK_NONCONVERT).at(600 + i * 30).repeat().build(),
+                &ime_on_ctx(),
+            );
+            assert!(rep.is_consumed(), "リピートも Consume");
+            assert!(
+                set_open_effects(&rep).is_empty(),
+                "リピートは指令を作らない"
+            );
+        }
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(900).build(), &ime_on_ctx());
+        assert!(up.is_consumed());
+        assert!(
+            set_open_effects(&up).is_empty(),
+            "離したときに逆向きの SetOpen を出してはならない, got {:?}",
+            effects_of(&up)
+        );
+    }
+
+    /// 印（`phase1_held`）が無い状態のリピート（flush 後など）でも、エンジン非活性なら指令を作らず Consume だけ。
+    #[test]
+    fn role_toggle_thumb_repeat_without_held_mark_only_consumes() {
+        let mut engine = engine_with_role_toggle_on_muhenkan();
+        let rep = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(100).repeat().build(),
+            &ime_off_ctx(),
+        );
+        assert!(rep.is_consumed());
+        assert!(set_open_effects(&rep).is_empty());
+    }
+
+    /// 対象外（受動＝素通し）: ユーザーによるエンジン無効化中・日本語 IME でない・`keys.ime_detect` と重なる・
+    /// 修飾付き・専用 Fn キー設定済み。
+    #[test]
+    fn role_toggle_thumb_is_passive_when_guards_do_not_hold() {
+        // エンジン無効化中
+        let mut engine = engine_with_role_toggle_on_muhenkan();
+        engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx());
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
+        assert!(!d.is_consumed(), "エンジン無効中は受動");
+        assert!(set_open_effects(&d).is_empty());
+
+        // 日本語 IME でない
+        let mut engine = engine_with_role_toggle_on_muhenkan();
+        let not_ja = InputContext {
+            is_japanese_ime: false,
+            ..ime_off_ctx()
+        };
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &not_ja);
+        assert!(!d.is_consumed());
+
+        // keys.ime_detect と重なるキー
+        let mut engine = engine_with_role_toggle_on_muhenkan();
+        let d = engine.on_input(
+            Ev::down(VK_NONCONVERT)
+                .at(100)
+                .sync_direction(ShadowImeAction::Toggle)
+                .build(),
+            &ime_off_ctx(),
+        );
+        assert!(!d.is_consumed());
+
+        // 修飾付き
+        let mut engine = engine_with_role_toggle_on_muhenkan();
+        let shift_ctx = InputContext {
+            modifiers: ModifierState {
+                shift: true,
+                ..ime_off_ctx().modifiers
+            },
+            ..ime_off_ctx()
+        };
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &shift_ctx);
+        assert!(!d.is_consumed());
+
+        // 専用 Fn キー設定済みの無変換
+        let mut engine = engine_with_role_toggle_on_muhenkan();
+        engine.set_muhenkan_solo_tap_dedicated_fn_key(Some(VkCode(0x7C)));
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
+        assert!(!d.is_consumed());
+    }
+
+    /// 訂正（所有者 2026-09-29）: 単独タップが Suppress のときは役割があっても IME を動かさない
+    /// （エンジン非活性側では従来どおり生キーが IME に届く=受動、エンジン活性側では生キーを飲み込むだけ）。
+    #[test]
+    fn role_toggle_thumb_never_writes_when_solo_tap_is_suppress() {
+        let mut engine = make_test_engine();
+        engine.set_thumb_key_solo_tap_config(
+            Some(VK_NONCONVERT),
+            ModeKeyConfig::from_legacy_bools(false, true), // Suppress
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        engine.set_thumb_role_open_actions(Some(ShadowImeAction::Toggle), None);
+        // エンジン非活性: 受動（awase は書かない、生キーは IME へ）
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
+        assert!(!d.is_consumed());
+        assert!(
+            !set_open_effects(&d).contains(&true),
+            "Suppress では役割由来の ON を書かない（test 用 prev_active による活性→非活性の同期 OFF は別物）"
+        );
+        // エンジン活性: 単独タップ確定でも書かない（生キーも出さない）
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(300).build(), &ime_on_ctx());
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(400).build(), &ime_on_ctx());
+        assert!(
+            set_open_effects(&up).is_empty(),
+            "Suppress は IME を動かさない"
+        );
+    }
+
+    /// エンジン活性側: Passthrough なら単独タップ確定で役割由来の絶対指定 `SetOpen(false)`（生キーは出さない）。
+    #[test]
+    fn role_toggle_thumb_writes_on_confirmed_solo_tap_when_passthrough() {
+        let mut engine = engine_with_role_toggle_on_muhenkan();
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
+        assert_eq!(set_open_effects(&up), vec![false]);
+    }
+
+    /// bare `keys.ime_*`（S1）は単独タップの設定に関係なく発火する（従来どおり）。
+    #[test]
+    fn bare_forced_action_fires_regardless_of_solo_tap_suppress() {
+        let mut engine = make_test_engine_with_muhenkan_forced_turn_off(); // Suppress + forced TurnOff
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
+        assert_eq!(set_open_effects(&up), vec![false]);
+    }
+
+    /// Ctrl↑ では awase は IME を書かない（BUG-174）。エンジン非活性で役割由来の親指を単独で押して開いた（Phase 1）後に、
+    /// Ctrl を押し、親指を離し、Ctrl を離しても、KeyUp 側の決定に IME 効果が載らない（開閉は最初の Down の1回だけ）。
+    #[test]
+    fn ctrl_release_after_role_thumb_open_never_emits_ime_effects() {
+        let mut engine = engine_with_role_toggle_on_muhenkan();
+        let down = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
+        assert_eq!(set_open_effects(&down), vec![true]);
+        let with_ctrl = InputContext {
+            modifiers: ModifierState {
+                ctrl: true,
+                ..ime_on_ctx().modifiers
+            },
+            ..ime_on_ctx()
+        };
+        let ctrl_down = engine.on_input(Ev::down(VK_LCTRL).at(150).build(), &with_ctrl);
+        let thumb_up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &with_ctrl);
+        let ctrl_up = engine.on_input(Ev::up(VK_LCTRL).at(300).build(), &ime_on_ctx());
+        for d in [&ctrl_down, &thumb_up, &ctrl_up] {
+            assert!(
+                !has_effect(d, |e| matches!(e, Effect::Ime(_))),
+                "Ctrl 押下・親指の KeyUp・Ctrl↑ の決定に IME 効果を載せてはならない, got {:?}",
+                effects_of(d)
+            );
+        }
+    }
+
+    /// `phase1_held` は `release_pending_and_reinject`（flush: 活性→非活性の遷移）で消える。
+    /// 消えた後は、エンジンが活性に戻っていても同じ親指のリピートは Phase 1 の早期 Consume には入らない
+    /// （FSM が新しい押下として扱う）。印が残り続けないこと（B14 型の恒久残留がない）の直接確認。
+    #[test]
+    fn phase1_held_is_cleared_by_flush() {
+        let mut engine = engine_with_role_toggle_on_muhenkan();
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
+        // 印がある間: 活性のままのリピートは Phase 1 で Consume され FSM の状態は Idle のまま。
+        let before = engine.debug_state_label();
+        let rep = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(400).repeat().build(),
+            &ime_on_ctx(),
+        );
+        assert!(rep.is_consumed());
+        assert_eq!(
+            engine.debug_state_label(),
+            before,
+            "印がある間は FSM に入らない"
+        );
+        // 別キーの到着で活性→非活性（flush）。
+        let _ = engine.on_input(Ev::down(VK_A).at(500).build(), &ime_off_ctx());
+        // 印が消えた後: 活性に戻ったリピートは FSM に入る（状態が Idle から変わる）。
+        let _ = engine.on_input(Ev::down(VK_A).at(600).build(), &ime_on_ctx());
+        let rep2 = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(700).repeat().build(),
+            &ime_on_ctx(),
+        );
+        assert!(rep2.is_consumed());
+        assert_ne!(
+            engine.debug_state_label(),
+            before,
+            "flush で印が消え、リピートが FSM に渡る"
+        );
+    }
+
+    /// 役割が無い親指は従来どおり（エンジン非活性なら素通し）。
+    #[test]
+    fn thumb_without_role_still_passes_through_while_ime_off() {
+        let mut engine = make_test_engine();
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
+        assert!(!d.is_consumed());
+    }
+
+    /// OFF 方向（bare `keys.ime_off` の親指）は belief OFF でも常に絶対指定の `SetOpen(false)` を積む
+    /// （抑止のみにすると、実 IME が開いたままのとき何度押しても閉じられない固着になる。ADR-206 決定3・7）。
+    #[test]
+    fn bare_ime_off_thumb_writes_close_even_when_belief_is_off() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_NONCONVERT,
+        };
+        let special = SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![combo],
+            ime_toggle: vec![],
+        };
+        let mut engine = make_engine_with_special(special);
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
+        assert!(d.is_consumed());
+        assert_eq!(set_open_effects(&d), vec![false]);
+        // bare の親指の自動リピートは、印がある間は指令を作らない
+        let rep = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(600).repeat().build(),
+            &ime_off_ctx(),
+        );
+        assert!(rep.is_consumed());
+        assert!(set_open_effects(&rep).is_empty());
+    }
+
     /// 【bare-thumbガード回帰テスト、旧P-9】`match_event`内だけにガードを
     /// 置くと`.or_else()`で連結される自動検出リスト（`ime_toggle_auto`）を
     /// 素通りしてしまう。`match_special_keys`レベルで一括適用した
@@ -7154,7 +7448,7 @@ mod engine_integration_tests {
             None,
             ModeKeyConfig::from_legacy_bools(false, true),
         );
-        engine.set_muhenkan_solo_tap_ime_action(Some(ShadowImeAction::TurnOff));
+        engine.set_thumb_forced_open_actions(Some(ShadowImeAction::TurnOff), None);
         engine
     }
 
@@ -7336,26 +7630,10 @@ mod engine_integration_tests {
         )));
     }
 
-    #[test]
-    fn solo_tap_ime_action_disables_forced_thumb_open_action() {
-        let mut engine = make_test_engine_with_muhenkan_forced_turn_off();
-        engine.set_muhenkan_solo_tap_ime_action(Some(ShadowImeAction::TurnOn));
-        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
-        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
-        assert!(has_effect(&up, |e| matches!(
-            e,
-            Effect::Ime(ImeEffect::SetOpen { open: true, .. })
-        )));
-        assert!(!has_effect(&up, |e| matches!(
-            e,
-            Effect::Ime(ImeEffect::SetOpen { open: false, .. })
-        )));
-    }
-
     /// 対照: 上の設定で無変換が単独タップ確定すると `SetOpen(false)` が出る（＝以下の
     /// 「漏れない」テストが、そもそも ime_open_requested が立つ設定で走っていることの裏付け）。
     #[test]
-    fn muhenkan_solo_tap_ime_action_fires_set_open_on_confirmed_solo_tap() {
+    fn forced_open_action_fires_set_open_on_confirmed_solo_tap() {
         let mut engine = make_test_engine_with_muhenkan_solo_tap_turn_off();
         let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
         let d = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
@@ -7364,17 +7642,17 @@ mod engine_integration_tests {
                 e,
                 Effect::Ime(ImeEffect::SetOpen { open: false, .. })
             )),
-            "confirmed solo tap with muhenkan_solo_tap_ime_action=TurnOff must emit SetOpen(false), got {:?}",
+            "confirmed solo tap with forced_open_action=TurnOff must emit SetOpen(false), got {:?}",
             effects_of(&d)
         );
     }
 
     /// ADR-186 残る問題2（レビュー round2 C-N1）: Shift を押したままの無変換/変換は、GJI(ATOK)では
-    /// 「かな⇔半角英数」のトグルで開閉トグルではない（実機で確認）。明示config `muhenkan_solo_tap_ime_action`
+    /// 「かな⇔半角英数」のトグルで開閉トグルではない（実機で確認）。明示config forced_open_action
     /// を持つユーザーでも、Shift 押下中は単独タップとして扱わず（→`SetOpen`を発火させず）素通しにする。
     /// Shift なしなら従来どおり明示configが発火する（対照）。
     #[test]
-    fn muhenkan_solo_tap_ime_action_not_fired_when_shift_held() {
+    fn forced_open_action_not_fired_when_shift_held() {
         let mut engine = make_test_engine_with_muhenkan_solo_tap_turn_off();
         let shift_ctx = InputContext {
             modifiers: ModifierState {

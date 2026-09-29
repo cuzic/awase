@@ -194,22 +194,6 @@ impl FsmAdapter {
         self.fsm.take_engine_off_requested()
     }
 
-    /// ADR-153 決定1: ユーザー明示config（`*_solo_tap_ime_action`）を設定する。
-    pub(super) const fn set_muhenkan_solo_tap_ime_action(
-        &mut self,
-        action: Option<crate::types::ShadowImeAction>,
-    ) {
-        self.fsm.set_muhenkan_solo_tap_ime_action(action);
-    }
-
-    /// `set_muhenkan_solo_tap_ime_action` と対称（変換キー用）。
-    pub(super) const fn set_henkan_solo_tap_ime_action(
-        &mut self,
-        action: Option<crate::types::ShadowImeAction>,
-    ) {
-        self.fsm.set_henkan_solo_tap_ime_action(action);
-    }
-
     pub(super) const fn thumb_forced_open_actions(
         &self,
     ) -> (
@@ -219,22 +203,38 @@ impl FsmAdapter {
         self.fsm.thumb_forced_open_actions()
     }
 
+    /// ADR-206: その親指の単独タップが要求する open 軸操作（`NicolaFsm::thumb_open_role_action`）。
+    pub(super) fn thumb_open_role_action(
+        &self,
+        vk: crate::types::VkCode,
+        composing: bool,
+    ) -> Option<crate::types::ShadowImeAction> {
+        self.fsm.thumb_open_role_action(vk, composing)
+    }
+
+    pub(super) const fn set_thumb_role_open_actions(
+        &mut self,
+        muhenkan: Option<crate::types::ShadowImeAction>,
+        henkan: Option<crate::types::ShadowImeAction>,
+    ) {
+        self.fsm.set_thumb_role_open_actions(muhenkan, henkan);
+    }
+
+    pub(super) const fn thumb_role_open_actions(
+        &self,
+    ) -> (
+        Option<crate::types::ShadowImeAction>,
+        Option<crate::types::ShadowImeAction>,
+    ) {
+        self.fsm.thumb_role_open_actions()
+    }
+
     pub(super) const fn set_thumb_forced_open_actions(
         &mut self,
         muhenkan: Option<crate::types::ShadowImeAction>,
         henkan: Option<crate::types::ShadowImeAction>,
     ) {
         self.fsm.set_thumb_forced_open_actions(muhenkan, henkan);
-    }
-
-    pub(super) const fn muhenkan_solo_tap_ime_action(
-        &self,
-    ) -> Option<crate::types::ShadowImeAction> {
-        self.fsm.muhenkan_solo_tap_ime_action()
-    }
-
-    pub(super) const fn henkan_solo_tap_ime_action(&self) -> Option<crate::types::ShadowImeAction> {
-        self.fsm.henkan_solo_tap_ime_action()
     }
 
     /// IME open 軸への副作用要求を取り出す（1ショット、ADR-092 決定D Step4b）。

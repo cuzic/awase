@@ -254,6 +254,29 @@ jobs:
             # 親指を押している間は forced の IME OFF(keys.ime_off)を発火せず、離した時に発火する(check_charthumb.py)。修正前の awase は押している間に閉じる。
             cfg('sc-charthumb-gji-atok', 'pass', check='charthumb', args='--charthumb=41,1D', runs=2,
                 general='min_overlap_margin_percent = 15', keys='ime_off = ["VK_NONCONVERT"]'),
+            # ADR-206: 無変換/変換の単独タップ。GJI の CUSTOM 表で無変換(変換)を「全開状態で閉じるトグル」にしたとき、awase は生キーを GJI に通さず、
+            # belief に従う絶対指定の ON/OFF を1回だけ書く(エンジン非活性側もエンジンの特殊キー照合で)。--seq: 16=IME ON、1D=無変換、1C=変換、1A=IME OFF。
+            # 判定は consistency(実 IME の開閉と Engine の追随)。押下1回で開閉1回(二重トグルなし)であること、押すたびに状態が変わること(固着なし)を見る。
+            cfg('sc-solotap-toggle-gji-atok', 'pass', check='consistency', keymap=0, runs=2,
+                args='--seq=16,1D,1D,1D,1D',
+                tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,Muhenkan,IMEOn|Precomposition,Muhenkan,IMEOff|Composition,Muhenkan,IMEOff|Conversion,Muhenkan,IMEOff'),
+            cfg('sc-solotap-henkan-toggle-gji-atok', 'pass', check='consistency', keymap=0, runs=2,
+                args='--seq=16,1C,1C,1C,1C',
+                tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,Henkan,IMEOn|Precomposition,Henkan,IMEOff|Composition,Henkan,IMEOff|Conversion,Henkan,IMEOff'),
+            # 対照: 無変換が閉じないコマンド(InputModeHiragana)のとき、awase は能動にならず(役割なし=受動)、Engine は実 IME に追随する。
+            cfg('sc-solotap-nontoggle-gji-atok', 'pass', check='consistency', keymap=0, runs=2,
+                args='--seq=16,1D,1D',
+                tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|Precomposition,Muhenkan,InputModeHiragana'),
+            # belief が古い状態(観測できない窓=cache=unavailable で、注入した IME OFF は awase の意図にならない=外部 close 相当)でトグルを押す。
+            # 所有者定義: 押下を重ねて状態が変わり 2〜3 回目で期待状態になれば PASS、N 回押しても変化しなければ FAIL(BUG-172、ADR-205/206)。
+            # 自動判定はまだ無い(consistency は 1 回目の逆向きも不一致とみなす)ので observe でログを見る。
+            cfg('sc-solotap-stale-toggle-gji-atok', 'observe', check='consistency', keymap=0, runs=2, cache='unavailable',
+                args='--seq=16,1A,1D,1D,1D',
+                tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,Muhenkan,IMEOn|Precomposition,Muhenkan,IMEOff|Composition,Muhenkan,IMEOff|Conversion,Muhenkan,IMEOff'),
+            # 素通しの英数キーで閉じた直後に無変換(BUG-156 型、applied が古いと already_matches で送信が省略され誰も開かない。ADR-206 決定7)。
+            cfg('sc-solotap-after-passthrough-close-gji-atok', 'observe', check='consistency', keymap=0, runs=2,
+                args='--seq=16,F0,1D,1D,1D',
+                tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|Precomposition,Eisu,IMEOff|Composition,Eisu,IMEOff|Conversion,Eisu,IMEOff|DirectInput,Muhenkan,IMEOn|Precomposition,Muhenkan,IMEOff|Composition,Muhenkan,IMEOff|Conversion,Muhenkan,IMEOff'),
             # T1(b)(ADR-199): TSF 経路で Alt+半角/全角(VK 0x19)が CUSTOM 表の Hankaku/Zenkaku 行に従うか。
             # 変換(IMEOn)で IME を開き、Alt+0x19。行=IMEOff の表で閉じ、行なしの対照で閉じなければ「行に従う」。両方閉じれば行を見ない(0x19 は固定)。
             cfg('sc-t1b-row-imeoff', 'observe', check='consistency', awase='false', keymap=0, runs=1,
