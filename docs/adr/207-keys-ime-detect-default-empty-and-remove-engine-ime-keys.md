@@ -4,16 +4,15 @@ title: |-
   `keys.ime_detect.{on,off}` の既定を空にし、`keys.engine_on_ime_key`/`engine_off_ime_key`(エンジン ON/OFF 時の IME モードキー能動送信)を撤去する
 summary: |-
   v2 A4(設定項目整理、棚卸し docs/tasks/v2-a4-config-cleanup-inventory-2026-09-29.md)への所有者決定(2026-09-29)の実装方針。
-  (1) `ime_detect.on/off` の既定 `IMEオン`/`IMEオフ`(VK 0x16/0x1A)は、hook の静的 `shadow_effect`(同じ 0x16→TurnOn、0x1A→TurnOff)と同方向で、
-  IME 種別(GJI/ATOK/MS-IME/未同定)に依らず `shadow_action` 経路が同じ belief 追随を担う。差は `is_japanese_ime()` が偽のときだけ
-  (キーボードレイアウトが日本語でないスレッド)で、その場面で日本語 IME の開閉キーを追随する意味は無い。よって代替の無い IME/構成は見つからず、既定を空にしてよい。
-  明示値は尊重する(既定だけ変える)。
-  (2) `engine_on_ime_key`/`engine_off_ime_key` は既定 None(ADR-092 決定D Step1)・GUI ウィジェット無し・docs は「上級者向け」と注記済みの残骸。
-  Engine の ON/OFF 遷移で `send_ime_mode_key` を SendInput する唯一の経路で、撤去すると `send_engine_state_ime_key`・`suppress_engine_state_key` ガード・
-  `UiEffect::EngineStateChanged.send_ime_key`・`Output::on_ime_mode_vk_sent` が連鎖して不要になる(すべて削除)。
-  既存 config.toml に値が残る場合は「撤去された・無視する」旨を読込時に警告する(無警告の `REMOVED_KEYS` とは別の表 `REMOVED_WITH_NOTICE`)。
+  (1) `ime_detect.on/off` の既定 `IMEオン`/`IMEオフ`(VK 0x16/0x1A)は hook の静的 `shadow_effect` と同方向で、IME 種別に依らず `shadow_action` 経路が同じ belief 追随を担う。
+  ただし `shadow_action` の採用は `is_japanese_ime()` に依り、それは awase のワーカースレッドの HKL 由来で偽になりうる(MS-IME + en-US 既定の環境など)。
+  そのため 0x16/0x1A の静的 `shadow_action` だけは `is_japanese_ime()` を問わず採用する小修正を同時に入れることを条件に、既定を空にする。明示値は尊重する。
+  (2) `engine_on_ime_key`/`engine_off_ime_key` は Engine の ON/OFF 遷移で `send_ime_mode_key` を SendInput する残骸(既定 None、GUI 無し)。撤去し、
+  `send_engine_state_ime_key`・`suppress_engine_state_key` ガード・`EngineStateChanged.send_ime_key`・`on_ime_mode_vk_sent` を連鎖削除する
+  (`applied_snapshot` の楽観更新と `uses_kanji_toggle` は他の消費者/テストがあるので残す)。旧 config に値が残る場合はトレイ警告で通知し(無警告の `REMOVED_KEYS` とは別の `REMOVED_WITH_NOTICE`)、
+  設定の保存(`save_edit` を通る全ての保存)で撤去キーを削除する。
 status: |-
-  起草(2026-09-29)。opus-adversarial-consult round1 の指摘(is_japanese_ime の前提誤り・警告の可視性・連鎖範囲の漏れ)を反映済み、round2 確認中。
+  起草(2026-09-29)。opus-adversarial-consult round1 の指摘(is_japanese_ime の前提誤り・警告の可視性・連鎖範囲の漏れ)を反映済み、round2 の整合指摘(旧記述の矛盾・(b) の過大主張・GUI 保存直後の警告)を反映済み、round3 確認中。
 related_adr:
   - "ADR-092"
   - "ADR-199"
@@ -41,9 +40,9 @@ related_adr:
 | 経路 | sync 既定あり(現状) | 空(`shadow_action` のみ) | 差 |
 | --- | --- | --- | --- |
 | belief の書き込み(`write_sync_key` / `write_physical_key`) | `UserImeSetIntent{source: SyncKey}` | 同 `{source: PhysicalImeKey}` | 呼び出す `dispatch_event`・`record_explicit_intent` は同一。`last_user_explicit_off_ms`(`platform_state.rs:157-160`)・`hwnd_cache` の `from_explicit_off_intent`(`focus_tracking.rs:429-440`)・drift 補正(`drift_correction.rs:56`)は両ソースを同列に扱う。**差なし** |
-| 採用条件 | `is_japanese_ime()` に依らない | `is_japanese_ime()` が真のときだけ(`key_pipeline.rs:1174`) | 下記「唯一の差」 |
+| 採用条件 | `is_japanese_ime()` に依らない | 0x16/0x1A は `is_japanese_ime()` に依らず採用する(下記「対策」)。それ以外は真のときだけ | 対策で差なし |
 | `may_change_ime` / `is_ime_mode_key` | 立つ | hook の分類で元から立つ(`vk.rs::may_change_ime`・`is_ime_mode_key_for_ime` は 0x15-0x1A) | 差なし |
-| 物理配送(`transport.rs::plan`) | `shadow_action` は静的にも Some | 同左 | 差なし(`sync_direction` を条件にする箇所は `transport.rs:1449` のテスト用 fixture だけ) |
+| 物理配送(`transport.rs::plan`・KeyUp ラッチ `kp_latch_keyup_to_keydown_disposition`) | `shadow_toggled` が立つ | 対策なしでは偽の窓で立たない。対策で同じ | 対策で差なし(`sync_direction` を条件にする箇所は `transport.rs:1449` のテスト fixture だけ) |
 | GjiFsm の Reopen(ADR-203 ii) | ON 系で発火 | 同じ `kp_stage_shadow_ime_toggle` の同じ枝 | 差なし |
 | モードキー追随(`kp_stage_mode_key_follow`)・キー効果追跡(`kp_stage_key_effect_track`) | `shadow_action.is_some() \|\| sync_direction.is_some()` で除外 | 同左(`shadow_action` 側で除外) | 差なし |
 | F13〜F24 の役割判定(`passive_without_lookup`) | 0x16/0x1A は対象外(`enrich_key_role` は `is_fkey`/半角全角/0x19 だけ) | 同左 | 差なし |
@@ -56,25 +55,29 @@ related_adr:
 結果はフォーカス変更ごとに `set_is_japanese_ime`(`key_pipeline.rs:2773-2778`)へ入るので、既定入力言語が en-US で ja-JP + MS-IME を追加した環境(CI の MS-IME ジョブ、`e2e-ime.yml:488-510` がまさにこれ)では、
 フォーカス変更後に偽になりうる。降格を抑える grace(`compute_focus_probe_grace`)は warmup 直後/GJI の I/O 後だけで、MS-IME には無い。
 救済の ADR-093(`should_upgrade_is_japanese_ime`)は 0x16/0x1A を意図的に対象外にしている(`vk.rs:295-303`)。
-つまり現状、偽の窓で 0x16/0x1A を追随しているのは sync 既定だけである。偽の窓で既定を空にすると:
-(a) belief に書かれない(`intent_kind=None`)、(b) `shadow_toggled` が偽になるため、`transport.rs::plan` は ImmCross では静的 `shadow_action` により Down/Up 無条件 Suppress
-(`transport.rs:305-313`)=キーは届かず awase も actuate しない「二重の空振り」、GJI/MS-IME actuation 所有の非 ImmCross では Down Allow・Up Suppress の非対称(BUG-131/132 型)、
-(c) 明示意図(`last_intent`・`last_user_explicit_off_ms`・hwnd_cache の `from_explicit_off_intent`)が記録されず、真に戻った後に drift 補正が逆向きに働きうる。
-よって上の表の「採用条件」と「物理配送」行は「差なし」ではなかった。
+つまり現状、偽の窓で 0x16/0x1A を追随しているのは sync 既定だけである。偽の窓で対策なしに既定を空にすると:
+(a) belief に書かれない(`intent_kind=None`)、(c) 明示意図(`last_intent`・`last_user_explicit_off_ms`・hwnd_cache の `from_explicit_off_intent`)が記録されず、
+真に戻った後に drift 補正が逆向きに働きうる。(b) 物理配送は `shadow_toggled` に依存するので、表の「差なし」は対策なしでは誤りだった
+(KeyUp は BUG-173 追補のラッチ `kp_latch_keyup_to_keydown_disposition` が最初の KeyDown にそろえるため、Down/Up の非対称は起きない。
+ImmCross の偽の窓では Engine が inactive で `SetOpen` が出ず、現状でもキーが Suppress されて実 IME が動かないのは sync 既定の有無に依らない既存の問題で、本 ADR の範囲外)。
+失われるのは (a)(c) で、対策でどちらも戻る。
 
 **対策(決定1に含める)**: `kp_stage_shadow_ime_toggle` の `intent_kind` 判定で、hook が付けた静的 `ImeOn`/`ImeOff`(0x16/0x1A)の `shadow_action` だけは `is_japanese_ime()` を問わず採用する。
 この2キーはどの IME でも冪等(`vk.rs:143-146`)なので、`sync_direction` と同じ扱いでよい。0x19(Toggle)・役割由来の F13〜F24・0xF3/0xF4 は現行どおり `is_japanese_ime()` で絞る。
-判定は純粋関数 `vk::is_language_independent_open_key(vk)` に切り出してホストで単体テストする。これで sync 既定を空にしても、上表の全行が本当に等価になる。
+判定は純粋関数 `vk::is_static_idempotent_open_key(vk)`(0x16/0x1A だけ真)に切り出してホストで単体テストし、`kp_stage_shadow_ime_toggle` では
+`sync_direction` の直後・`is_japanese_ime()` 分岐の**前**に `is_static_idempotent_open_key(vk) && shadow_action.is_some()` で採用する(`.or_else(explicit…)` の優先順位を変えないため)。
+これで sync 既定を空にしても上表の全行が等価になる(`SyncKey` と `PhysicalImeKey` で分岐する本番コードは無くラベルのみの差)。
+副作用(改善側): `ime_detect` に IMEオン を含めない明示値(`usage.html:781` の `on=["VK_DBE_HIRAGANA"]` など)を書いたユーザーも、偽の窓で 0x16/0x1A を追随するようになる。
 
 **二重処理の余地**: ユーザーが `keys.ime_on`/`ime_off` に無修飾の `IMEオン`/`IMEオフ` を書いていると、現状は sync 既定の素通しで Engine の照合が止まり、belief 追随だけになる。
-空にすると Engine の照合が有効になり `SetOpen` が発行される。方向固定(on/off)は、Engine の `SetOpen` が比較するのは OS 確認済みの `applied_snapshot` であり belief ではない(`executor.rs:762`)ため、belief が先に書かれていても early exit しない(コード読みのみ、未実機検証)。
+空にすると Engine の照合が有効になり `SetOpen` が発行される。方向固定(on/off)は、Engine の `SetOpen` が比較するのは OS 確認済みの `applied_snapshot` であり belief ではない(`executor.rs:762`)ため early exit しにくいが、`applied_snapshot` は `Optimistic` や古い `Confirmed` でありうる。applied が古い drift 中に明示設定の `ime_on=["IMEオン"]` を押すと、現状は Down が Allow されて OS が開き直すのに対し、変更後は Engine が消費して `already_matched` で送信しない場合がある(明示設定時のみの狭いケース。受け入れる。コード読みのみ、未実機検証)。
 `keys.ime_toggle` に無修飾 0x16/0x1A を書く構成は、静的 TurnOn の後に Engine の Toggle が反転して消費するので押しても動かない(`engine.rs:1118-1131` のガードが防いでいた不具合と同型。
 0x19 と `ime_toggle=["漢字"]` の組み合わせは静的 `shadow_action` に明示設定との重なり除外が無いため既に同じ状態)。ADR-199 で `ime_toggle` は任意キー指定になったが、開閉の方向が固定のキーをトグルに割り当てる構成は意味がなく、
 本 ADR では対処しない(Engine 側ガードの拡張は 0x19 を含む別件)。また `sync_direction` は修飾キーを見ずに VK だけで立つ(`focus_tracker.rs:57-76`)ため、現状は Ctrl+IMEオン等も Engine 照合から外れていた。
 空にすると修飾付きコンボも照合される。
 既定の `ime_on = ["Ctrl+変換"]`、`ime_off = ["Ctrl+無変換"]`、`ime_toggle = []` は 0x16/0x1A と重ならない。
 
-**結論(1)**: 0x16/0x1A の追随に代替の無い IME/構成は見つからない。既定を空にしてよい。
+**結論(1)**: 0x16/0x1A の追随に代替の無い IME/構成は見つからない。上記「対策」を同時に入れることを条件に、既定を空にしてよい。
 `ime_detect` 自体(`toggle`・`on`・`off` の3項目)は ADR-199 決定9・12 のとおり存続し、ユーザーが明示した値は既定と無関係に尊重される
 (構造体単位の `#[serde(default)]` なので、`[keys.ime_detect] toggle = [...]` だけ書いた既存 config では `on`/`off` は空になるが、上記のとおり静的経路が同じ追随を担う)。
 `AppConfig::save` は全フィールドを明示出力するため、GUI で一度保存した既存ユーザーの config.toml には `on = ["IMEオン"]`/`off = ["IMEオフ"]` が残り、従来どおり動く(害は無い)。
@@ -92,20 +95,16 @@ related_adr:
   ADR-092 は「ADR-091 決定1(open 軸は `VK_IME_ON`/`VK_IME_OFF`)より前の機構の残骸」と位置づけ、ADR-199 の「受動が原則」(awase が IME を能動的に動かさない)とも矛盾する。
   ADR-133 表の呼び出し元 #3・ADR-175 の「自己注入フィルタが唯一の防御」の記述も、この機構が無ければ不要になる。
 - 使用実績: 不明(bug_report に出力する項目が無い)。既定値を 2026-08-15 に None へ変えたが `AppConfig::save` が全フィールドを出力するため、
-  それ以前に GUI で保存したユーザーの config.toml には旧既定 `VK_DBE_DBCSCHAR`/`VK_DBE_SBCSCHAR` が残っている可能性がある(要注意: この人たちには警告が出る)。
+  それ以前に GUI で保存したユーザーの config.toml には旧既定 `VK_DBE_DBCSCHAR`/`VK_DBE_SBCSCHAR` が残っていて、機能は今も有効なはず(`e4cd0497`)。この層は変更で Engine ON/OFF 時の 0xF4/0xF3 送信が止まる。
 - 再発ファミリー: キー選択(`ime_controller.rs`/`output/vk_send.rs`)ではなく、`platform.rs` の force-write/actuation ターゲットに近い。
   `lints/actuation_call_guard`(`send_input_safe` 等の許可呼び出し元)・`architecture_guard.rs`・`ime_key_sequence_golden.rs`(`ime_controller.rs::characterize_strategy` の戦略/送信列)は
   `send_engine_state_ime_key`・`engine_on_ime_vk` を参照していない(grep 済み)ので、撤去で更新すべき許可リスト・必須トークンは無い。
   `send_ime_mode_key` は `ime_controller.rs`(GjiDirect/MsImeDirect)が引き続き使う。
-- 連鎖して不要になるもの(すべて削除): `WindowsPlatform::{engine_on_ime_vk, engine_off_ime_vk, suppress_engine_state_key}`・`SuppressEngineStateKeyGuard`・
-  `Runtime::execute_decision_suppressed`(ガードを立てるだけのラッパー、呼び出し元4箇所は `execute_decision` へ)・`PlatformRuntime::send_engine_state_ime_key`・
-  `executor.rs` の `applied_for_engine_key`・`Output::on_ime_mode_vk_sent`(唯一の呼び出し元)・`UiEffect::EngineStateChanged.send_ime_key`(コア `awase` の型。
-  `engine.rs::transition_activation` の `suppress_ime_key` 変数も消える。`SetOpen` の抑止条件 `suppress_set_open` は残る)。
-  `win32.rs`/`vk.rs`/`config.rs` のコメントにある「ユーザー設定 VK を送る」旨の記述も直す。
+- 連鎖して不要になるもの: 決定2に一覧する(`applied_snapshot` の楽観更新と `uses_kanji_toggle` は消費者/テストがあるので残す)。
 
 ## 決定
 
-1. `ImeDetectConfig::default()` の `on`/`off` を空にする(`toggle` は元から空)。あわせて上記「対策」の `vk::is_language_independent_open_key` を `kp_stage_shadow_ime_toggle` に入れる。
+1. `ImeDetectConfig::default()` の `on`/`off` を空にする(`toggle` は元から空)。あわせて上記「対策」の `vk::is_static_idempotent_open_key` を `kp_stage_shadow_ime_toggle` に入れる。
 2. `KeysConfig` から `engine_on_ime_key`/`engine_off_ime_key` を削除し、連鎖分を削除する。連鎖の完全な一覧(Opus round1 で漏れを補った):
    `config.rs`(フィールド・既定・既定テスト2件)、`config_diagnostics.rs`・`config_key_resolution_tests.rs` の対応行、`bootstrap.rs` の `resolve_ime_key` クロージャと `engine_on/off_ime_vk`、
    `platform.rs` の `engine_on_ime_vk`/`engine_off_ime_vk`/`suppress_engine_state_key`/`SuppressEngineStateKeyGuard`/`send_engine_state_ime_key`(実装)、`src/platform.rs:447` のトレイト既定実装、
@@ -125,7 +124,8 @@ related_adr:
      `load_warnings` の**後ろ**に足す。`load_notes` には含まれないので `warn` 側(トレイ通知、内容が同じなら再表示しない)に流れる。
    - 文言: 「`keys.engine_on_ime_key` は撤去されました。値は無視されます。エンジンの ON/OFF に合わせて IME のモードキーを送る機能は無くなり、代わりの設定はありません。config.toml から削除してください」
      (失われる機能は IME の開閉ではなく文字種モードの強制。旧既定は `VK_DBE_DBCSCHAR`/`VK_DBE_SBCSCHAR`)。
-   - 設定 GUI の保存(`config_save.rs::save_edit`)は、撤去キーをファイルから削除する(`migrate_legacy_confirm_mode` と同じ位置)。保存すれば警告が止まる。
+   - `save_edit` を通る全ての保存(設定 GUI の保存、トレイの自動起動切替 `save_auto_start`)は、撤去キーをファイルから削除する(`migrate_legacy_confirm_mode` と同じ位置)。
+     GUI は保存成功後に `removed_notices` を落とし、保存直後の `Saved{warnings}` に「削除してください」が残らないようにする(テストで固定)。
    - 影響層: 2026-08-15 の既定 None 化(`e4cd0497`)より前に GUI で一度でも保存したユーザーの config.toml には旧既定が残っていて、機能は今も有効。この人たちは、この変更で
      Engine ON/OFF 時の 0xF4/0xF3 送信が止まる。CHANGELOG(Unreleased)に明記し、トレイ警告で通知する。
 4. 文書: `docs/usage.html`/`usage.en.html` の注記を「撤去済み」に更新、`ime_detect` の説明と既定値の記述(`usage.html:780-784` の「既定: ["IMEオン"]」、`config.toml:29-35` の例)を新既定に合わせる。
@@ -135,7 +135,7 @@ related_adr:
 ## 検証
 
 - ホストで走る単体テスト: `config.rs` の既定テスト(`ime_detect.on/off` が空、明示値は尊重)、撤去キーが読み込めて `removed_notices` に文が積まれ `load_warnings` には入らないこと・
-  `suggest` より先に判定されること・`validate()` が警告として返すこと、`config_save` が撤去キーを保存時に削除すること、`vk::is_language_independent_open_key`(0x16/0x1A だけ真、0x19/0xF3/0xF4/F13〜F24 は偽)、
+  `suggest` より先に判定されること・`validate()` が警告として返すこと、`config_save` が撤去キーを保存時に削除すること、`vk::is_static_idempotent_open_key`(0x16/0x1A だけ真、0x19/0xF3/0xF4/F13〜F24 は偽)、
   コアの `engine/tests.rs`(`EngineStateChanged` の `send_ime_key` 参照2件の更新)。
 - Windows ビルドの確認: `cargo check --target x86_64-pc-windows-msvc -p awase -p awase-windows -p awase-settings --tests`。
 - 実機/CI での確認は 1 回だけ、`is_japanese_ime` が偽になりうる条件を踏む: MS-IME ジョブ(既定 en-US + ja-JP 追加)で、**フォーカス変更の直後に**物理(`AWASE_TEST_INJECTION=1` の debug ビルド。
