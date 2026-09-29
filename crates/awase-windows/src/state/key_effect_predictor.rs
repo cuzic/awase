@@ -673,7 +673,7 @@ impl KeyEffectKeymap {
     ///   `Some(true)`なら受動（決定17・T13）。
     /// - 無変換/変換（0x1C/0x1D）: マスタースイッチ有効かつ値==2（トグル、T12）のときだけ`Some(ImeToggle)`（ADR-199 T17 Phase 4、決定16）。
     ///   互換モード`Some(true)`は値が効かない（T12）ので受動。値0/1/3・値なしは受動。入力中・変換中・候補窓でも除外しない
-    ///   （所有者決定 2026-09-29: 未確定文字列を捨ててよい）。実際の発火は現状 ADR-199 決定16 の forced_open_action（エンジン活性時のみ。belief OFF 側は受動）。
+    ///   （所有者決定 2026-09-29: 未確定文字列を捨ててよい）。実際の発火は ADR-206 の role_open_action（単独タップが Passthrough のときだけ。Suppress は IME を動かさない）。
     /// - F13〜F24・その他: 常に`None`（受動）。
     #[must_use]
     pub fn msime_native_key_role(&self, vk: u16) -> Option<awase_gji_config::role::KeyRole> {

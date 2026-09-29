@@ -115,7 +115,7 @@ pub struct MsImeKeyAssignment {
     /// ADR-199 T12で確定するまでは「1 = IME-オン」という誤った前提だった）
     pub henkan_ime_off: bool,
     // 値2（IME-オン/オフのトグル）は警告対象にしない: ADR-199 T17 Phase 4 で awase が単独タップの開閉を肩代わりする
-    // （`KeyEffectKeymap::msime_native_key_role`、発火は現状 ADR-199 決定16 の forced_open_action（エンジン活性時のみ。belief OFF 側は受動で生キーが MS-IME に届く））。
+    // （`KeyEffectKeymap::msime_native_key_role`、発火は ADR-206 の role_open_action（単独タップが Passthrough のときだけ。Suppress は IME を動かさない））。
     /// MS-IME本体の「以前のバージョンのMicrosoft IMEを使う」互換モード（ADR-197決定4）。
     /// `Some(true)`のときは、この値がどれであっても実際には効かない（T12実機確認）ので、
     /// [`Self::conflict_warning`]は警告そのものを抑制する（誤警告防止）。
