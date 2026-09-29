@@ -728,8 +728,9 @@ pub struct KeyUpLatchInput {
     pub excluded: bool,
 }
 
-/// KeyUp の物理配送（Suppress するか）を、対応する最初の KeyDown の配送に揃える（BUG-173追補、
-/// Opus レビュー C1〜C3/C7）。`plan()` は非 ImmCross の IME 系キーの KeyUp を KeyDown の結果と無関係に
+/// KeyUp の物理配送を、対応する最初の KeyDown の配送に揃える（BUG-173追補）。
+///
+/// Opus レビュー C1〜C3/C7 反映。`plan()` は非 ImmCross の IME 系キーの KeyUp を KeyDown の結果と無関係に
 /// 常に Suppress するため、Down=Allow・Up=Suppress の非対称（BUG-131/132 型）があった。
 ///
 /// - ラッチは **scan_code** で引く（BUG-131: KeyUp の vk は KeyDown と一致するとは限らない。0xF3/0xF4 の
