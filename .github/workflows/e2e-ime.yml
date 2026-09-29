@@ -95,9 +95,9 @@ jobs:
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome=''):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', keyassign=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, keyassign=keyassign)
           # tsx-* 構成(高速打鍵ストレスの拡張): name は 'tsx-' を自動で付ける。raw=True なら awase なしの対照(生ローマ字)。
           # extra は typing_stress.exe への追加フラグ(摂動など)。kinds/trials/len は省略すると typing_stress の既定。
           def tsx(name, form, ime, iv, raw=False, extra='', kinds='', trials=None, len=None, runs=3, wait=900):
@@ -308,6 +308,12 @@ jobs:
                 stress='--form=tsf --mode=reopen --trials=8 --reopen-gap=600 --layout=@REPO@/layout/nicola_keytop.yab --msime'),
             cfg('sc-reopen-chromepage-gji-gap600', 'observe', check='reopen', runs=3, wait=900,
                 stress='--form=chromepage --mode=reopen --trials=6 --reopen-gap=600 --settle-read --layout=@REPO@/layout/nicola_keytop.yab'),
+            # v2 B4: MS-IME 本体の「無変換=IME-オン/オフ(値2)」がレジストリ直書きで効くか。awase なしで無変換を4回押し(直接入力から)、実 IME の開閉の変化を見る。
+            # none=対照(既定の割り当て) / plain=値だけ書く(PR #378 と同じ) / bump=加えて InputMethod\\JPN\\roaming\\mon の Setting/MoSetting を進める。
+            # 効けば bump/plain で open が 1→0→1→0 と反転する(対照は変わらない)。判定は observe(スパイクの KEY 行の open を読む)。
+            *[cfg(f'sc-msime-keyassign-{v}', 'observe', check='consistency', ime='msime', awase='false', runs=2,
+                  args='--seq=1D,1D,1D,1D --msime', keyassign='' if v == 'none' else v)
+              for v in ('none', 'plain', 'bump')],
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
@@ -591,6 +597,39 @@ jobs:
           try { Set-WinDefaultInputMethodOverride -InputTip $msimeTip -ErrorAction Stop }
           catch { "default input method override FAILED: $($_.Exception.Message)" }
           Get-WinUserLanguageList | Format-List LanguageTag, InputMethodTips
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+
+      # v2 B4(MS-IME 本体の無変換/変換=値2): 実機(dragonflyg4、2026-09-29)で保存先を確定した。
+      #   HKCU\Software\Microsoft\IME\15.0\IMEJP\MSIME の DWord IsKeyAssignmentEnabled(0/1)と KeyAssignmentMuhenkan/Henkan(2=IME-オン/オフ)。
+      #   設定アプリで値を変えるたびに HKCU\Software\Microsoft\InputMethod\JPN\roaming\mon の Setting(連番)と MoSetting も更新される。
+      # PR #378 の直書き(ctfmon 再起動のみ)は反映されなかった。IME が再読込の契機に Setting/MoSetting を見る、という仮説を確かめる:
+      #   keyassign=plain: 上の値だけを書く / keyassign=bump: 加えて Setting と MoSetting を進める。どちらも ctfmon を再起動する。
+      # 判定はしない(観測)。無変換を注入して実 IME の開閉が変わるかを、keyassign なしの対照と比べる(スパイクの KEY 行)。
+      - name: MS-IME キーの割り当て(無変換=値2)をレジストリに書く
+        if: matrix.cfg.ime == 'msime' && matrix.cfg.keyassign != ''
+        shell: pwsh
+        run: |
+          $base = 'HKCU:\Software\Microsoft\IME\15.0\IMEJP\MSIME'
+          New-Item -Path $base -Force | Out-Null
+          Set-ItemProperty -Path $base -Name IsKeyAssignmentEnabled -Value 1 -Type DWord -Force
+          Set-ItemProperty -Path $base -Name KeyAssignmentMuhenkan -Value 2 -Type DWord -Force
+          Set-ItemProperty -Path $base -Name KeyAssignmentHenkan -Value 2 -Type DWord -Force
+          if ('${{ matrix.cfg.keyassign }}' -eq 'bump') {
+            $mon = 'HKCU:\Software\Microsoft\InputMethod\JPN\roaming\mon'
+            New-Item -Path $mon -Force | Out-Null
+            $cur = Get-ItemProperty -Path $mon -ErrorAction SilentlyContinue
+            $s0 = if ($null -ne $cur.Setting) { [uint32]$cur.Setting } else { [uint32]0 }
+            $m0 = if ($null -ne $cur.MoSetting) { [uint32]$cur.MoSetting } else { [uint32]0 }
+            # DWORD は符号付きで返ることがあるので uint32 に直して進める。MoSetting は実機では設定のたびに変わる値(時刻系)なので、現在値より大きい値にする。
+            Set-ItemProperty -Path $mon -Name Setting -Value ([uint32]($s0 + 1)) -Type DWord -Force
+            Set-ItemProperty -Path $mon -Name MoSetting -Value ([uint32]([Math]::Min([double]4294967295, [double]$m0 + 1000))) -Type DWord -Force
+            "bump: Setting $s0 -> $($s0 + 1), MoSetting $m0 -> $([Math]::Min([double]4294967295, [double]$m0 + 1000))"
+          }
+          $k = Get-ItemProperty $base
+          "registry: IsKeyAssignmentEnabled=$($k.IsKeyAssignmentEnabled) Muhenkan=$($k.KeyAssignmentMuhenkan) Henkan=$($k.KeyAssignmentHenkan) keystyle=$($k.keystyle)" | Tee-Object -FilePath keyassign.txt
           Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep -Seconds 1
           Start-Process ctfmon.exe -ErrorAction SilentlyContinue
@@ -882,6 +921,7 @@ jobs:
             typing.json
             reopen.json
             env.txt
+            keyassign.txt
             dist/compartment_notify_probe.log
             dist/compartment_notify_probe_diag.log
             dist/awase.log
