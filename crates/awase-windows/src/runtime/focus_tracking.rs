@@ -543,22 +543,6 @@ impl Runtime {
     /// （Opus敵対的レビューで、この経路がbelief書き込みに繋がりうる非推移的な穴として
     /// 指摘され是正、2026-08-26）。`app_disabled` フラグ・フックラッチのクリアは
     /// belief を一切書かないため bootstrap でも通常どおり行う。
-    /// BUG-131: `GateStore::kana_mode_restore_key_down`ラッチは対応する
-    /// scan_codeのKeyUpで解除するが、そのKeyUpがパイプラインへ一切到達
-    /// しない残存経路が2種類ある——(1) `apply_app_disable_transition`の
-    /// FOCUS_APP_DISABLED遷移中（フックがdeliver_key_eventにイベントを
-    /// 渡さない）、(2) `on_focus_process_changed`のプロセス変更（**通常は**
-    /// 単一の物理押下中にフォーカスは変わらないため実害は無いが、spurious
-    /// FocusChangeの実績があり絶対的な不変条件ではない）。どちらか一方を
-    /// 単独では取りこぼす（(2)は無効化対象アプリがフォーカスを持ったまま
-    /// 起動したケースを、(1)はプロセス変更を伴わないフォーカス遷移を
-    /// それぞれ検知できない）ため両方の呼び出し元が必要。`keymap_latch`
-    /// （ADR-114決定4経路3）とは異なるトリガー条件を持つ別ラッチのため
-    /// 統合しない——仮に早期解除されても被害は重複注入1回に留まる。
-    fn clear_kana_mode_restore_latch(&mut self) {
-        self.platform_state.gate.kana_mode_restore_key_down = None;
-    }
-
     pub(super) fn apply_app_disable_transition(&mut self, process_id: u32, is_bootstrap: bool) {
         use crate::state::app_suppression::{edge, SuppressionEdge};
         use awase::types::ContextChange;
@@ -578,14 +562,6 @@ impl Runtime {
         // deliver_key_event に一切イベントを渡さないため、latch が残っていても
         // 対応する KeyUp が永遠に届かない。
         self.platform_state.keymap.keymap_latch.release_all();
-        // BUG-131（opus-adversarial-consult指摘m-7）: `kana_mode_restore_key_down`
-        // も同じ「FOCUS_APP_DISABLED 遷移中は対応する KeyUp が永遠に届かない」
-        // 穴を持つため、ADR-114 決定4 経路3 と同じ場所・同じタイミングで
-        // クリアする（無効化対象アプリがフォーカスを持ったまま起動した等の
-        // ケースを`on_focus_process_changed`単独では取りこぼすため、下記の
-        // 呼び出しとは独立に必要——詳細は`clear_kana_mode_restore_latch`
-        // のdoc参照）。
-        self.clear_kana_mode_restore_latch();
 
         if matches!(transition, SuppressionEdge::Enter) && !is_bootstrap {
             // 無効アプリに入った瞬間、pending だったチョードをタイマー満了に任せず
@@ -632,7 +608,6 @@ impl Runtime {
         // 他プロセス窓で候補ウィンドウが表示された履歴が新窓の dispatch-ime に影響すると
         // effective_open が誤って true になり VK_KANJI を誤送信する（shadow desync 偽陽性）。
         crate::tsf::observer::reset_candidate_was_seen();
-        self.clear_kana_mode_restore_latch();
         let tick_ms = self.enter_focus_scope(classified);
         let new_profile = self.platform.current_app_profile();
         let new_hwnd = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);

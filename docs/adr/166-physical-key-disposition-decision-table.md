@@ -61,7 +61,7 @@ Up=Suppress となる組が実在する**（M-2 節参照）ことが判明し�
 
 ## `plan()` の決定表（as-built、2026-09-11時点の実装）
 
-`plan(event, profile, shadow_toggled, is_tsf_mode, f2_warmup_owned, active_ime_kind, dbe_mode_key)`
+`plan(event, profile, shadow_toggled, active_ime_kind)`（BUG-173で`is_tsf_mode`/`f2_warmup_owned`を撤去）
 は以下の優先順位で早期 return する（`transport.rs:253-425`）。各段の条件に一致した時点で
 以降の段は評価されない。
 

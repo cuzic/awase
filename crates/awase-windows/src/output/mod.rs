@@ -1011,10 +1011,8 @@ impl Output {
     /// - MS-IME → `MsImeStrategy`（常に warm、probe なし）
     /// - GJI → `GjiFsm`（cold probe 機構あり、起動時と同じ）
     ///
-    /// 現在の warmup 戦略が物理 F2 の代替として VK_IME_ON を自前送信するか（= GJI 戦略か）。
-    ///
-    /// `PhysicalKeyDisposition::plan` の F2 Suppress 判断に使う。false（MsImeStrategy）
-    /// のとき物理 F2 を Suppress すると、代替送信が無いため IME ON にならない（BUG-10）。
+    /// 現在の warmup 戦略が GJI 戦略（cold probe を持つ）か。false（MsImeStrategy）なら eager warmup は送らない。
+    /// 物理 F2 の Suppress 判断には使わない（BUG-173: 物理 F2 は常に Allow）。
     pub(crate) fn f2_warmup_owned(&self) -> bool {
         self.warmup_coord.needs_f2_probe()
     }

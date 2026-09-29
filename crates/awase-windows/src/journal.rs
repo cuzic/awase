@@ -151,7 +151,7 @@ pub enum PhysicalDispositionSummary {
     /// 元の物理キーイベントをそのまま OS に通した
     Allow,
     /// 元の物理キーイベントを消費した（OS に届けない）。
-    /// `reason`: "tsf-f2" / "imm-cross" / "imm32-off"
+    /// `reason`: "imm-cross" / "imm32-off"
     /// （`PhysicalKeyDisposition::suppress_reason` 参照）。
     Suppress { reason: &'static str },
 }

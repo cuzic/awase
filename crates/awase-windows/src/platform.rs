@@ -1510,19 +1510,6 @@ impl TsfComposition for WindowsPlatform {
     ) {
         use crate::vk::VkCodeExt as _;
 
-        if vk == crate::vk::VK_DBE_HIRAGANA && is_keydown && self.output.is_tsf_mode() {
-            tracing::debug!(
-                "[reinject-tsf] vk=0xf2 KeyDown TSF mode → marking cold (NativeF2Consumed)",
-            );
-            self.output
-                .mark_composition_cold(crate::output::ColdReason::NativeF2Consumed);
-            self.gji_on_native_f2_consumed();
-            // conv mutation の可否は send_eager_tsf_warmup が conv_mutation_allowed で self-gate する。
-            self.output
-                .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Gated);
-            return;
-        }
-
         if is_keydown && vk.is_composition_confirm_key() {
             // 2026-07-11: この confirm キーは on_passthrough_key で既に一度処理済みの
             // 同じ物理キーイベントが reinject/defer キューを経由して再度届いたもの。

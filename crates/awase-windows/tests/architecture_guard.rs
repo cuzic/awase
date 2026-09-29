@@ -3993,7 +3993,7 @@ fn explicit_ime_action_case1_keeps_m13_but_case2_3_does_not() {
 fn input_relay_profile_wiring_occurrence_counts_are_pinned() {
     let expectations: &[(&str, usize)] = &[
         ("src/focus/class_names.rs", 12),
-        ("src/runtime/transport.rs", 4),
+        ("src/runtime/transport.rs", 2),
         // ADR-163 TH1b-2a: `executor.rs::dispatch_ime_set_open` の InputRelay
         // ゲートは、5箇所（この関数 + `ime_controller.rs::apply` +
         // `open_chain.rs`の3関数）に重複していた同一条件のリテラル比較を
@@ -4704,18 +4704,9 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
     let kp = read_crate_file("src/runtime/key_pipeline.rs");
     let kp = strip_any_test_module(&kp);
     for token in [
-        "fn kp_restore_hiragana_for_suppressed_mode_key",
         "is_configured_thumb_key",
-        "is_composition_warm",
-        "PhysicalKeyDisposition::Suppress",
         "read_kana_lock",
         "conv_mutation_allowed",
-        "kana_mode_restore_key_down",
-        // BUG-131（opus-adversarial-consult指摘m-9）: ラッチ解除条件が
-        // scan_code一致であること自体を固定する。この関数名が消える・
-        // vkベースの比較へ戻る変更は、runtime/配下がLinuxでテスト実行
-        // できない（CLAUDE.md参照）ためこの静的スキャンでしか検知できない。
-        "fn should_clear_kana_mode_restore_latch",
         // ADR-199 T4: 役割由来の `shadow_action` は `kp_run_inner` の冒頭（`kp_stage_shadow_ime_toggle`・
         // `plan()` より前）で付く。この呼び出しが消えると 0xF3/0xF4 が `shadow_action` なしで
         // Allow され、awase の書き込みと生キーの二重 actuation（BUG-46/BUG-52）に退行する。
