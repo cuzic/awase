@@ -7149,34 +7149,64 @@ mod engine_integration_tests {
         assert_eq!(set_open_effects(&up), vec![false]);
     }
 
-    /// Ctrl↑ では awase は IME を書かない（BUG-174。Ctrl+無変換の後の Ctrl 解放は、エンジンの決定に IME 効果を持たない）。
+    /// Ctrl↑ では awase は IME を書かない（BUG-174）。エンジン非活性で役割由来の親指を単独で押して開いた（Phase 1）後に、
+    /// Ctrl を押し、親指を離し、Ctrl を離しても、KeyUp 側の決定に IME 効果が載らない（開閉は最初の Down の1回だけ）。
     #[test]
-    fn ctrl_release_after_thumb_never_emits_ime_effects() {
+    fn ctrl_release_after_role_thumb_open_never_emits_ime_effects() {
         let mut engine = engine_with_role_toggle_on_muhenkan();
-        let ctrl = ModifierState {
-            ctrl: true,
-            ..ime_on_ctx().modifiers
-        };
+        let down = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
+        assert_eq!(set_open_effects(&down), vec![true]);
         let with_ctrl = InputContext {
-            modifiers: ctrl,
+            modifiers: ModifierState {
+                ctrl: true,
+                ..ime_on_ctx().modifiers
+            },
             ..ime_on_ctx()
         };
-        let _ = engine.on_input(Ev::down(VK_LCTRL).at(50).build(), &ime_on_ctx());
-        // Ctrl 押下中の無変換（Ctrl+無変換）は、役割由来の単独タップ開閉の対象外（修飾なしの親指だけ）。
-        let down = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &with_ctrl);
-        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &with_ctrl);
-        for d in [&down, &up] {
+        let ctrl_down = engine.on_input(Ev::down(VK_LCTRL).at(150).build(), &with_ctrl);
+        let thumb_up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &with_ctrl);
+        let ctrl_up = engine.on_input(Ev::up(VK_LCTRL).at(300).build(), &ime_on_ctx());
+        for d in [&ctrl_down, &thumb_up, &ctrl_up] {
             assert!(
-                set_open_effects(d).is_empty(),
-                "Ctrl+無変換で役割由来の開閉を書いてはならない, got {:?}",
+                !has_effect(d, |e| matches!(e, Effect::Ime(_))),
+                "Ctrl 押下・親指の KeyUp・Ctrl↑ の決定に IME 効果を載せてはならない, got {:?}",
                 effects_of(d)
             );
         }
-        let ctrl_up = engine.on_input(Ev::up(VK_LCTRL).at(300).build(), &ime_on_ctx());
-        assert!(
-            !has_effect(&ctrl_up, |e| matches!(e, Effect::Ime(_))),
-            "Ctrl↑ で IME 効果を出してはならない, got {:?}",
-            effects_of(&ctrl_up)
+    }
+
+    /// `phase1_held` は `release_pending_and_reinject`（flush: 活性→非活性の遷移）で消える。
+    /// 消えた後は、エンジンが活性に戻っていても同じ親指のリピートは Phase 1 の早期 Consume には入らない
+    /// （FSM が新しい押下として扱う）。印が残り続けないこと（B14 型の恒久残留がない）の直接確認。
+    #[test]
+    fn phase1_held_is_cleared_by_flush() {
+        let mut engine = engine_with_role_toggle_on_muhenkan();
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
+        // 印がある間: 活性のままのリピートは Phase 1 で Consume され FSM の状態は Idle のまま。
+        let before = engine.debug_state_label();
+        let rep = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(400).repeat().build(),
+            &ime_on_ctx(),
+        );
+        assert!(rep.is_consumed());
+        assert_eq!(
+            engine.debug_state_label(),
+            before,
+            "印がある間は FSM に入らない"
+        );
+        // 別キーの到着で活性→非活性（flush）。
+        let _ = engine.on_input(Ev::down(VK_A).at(500).build(), &ime_off_ctx());
+        // 印が消えた後: 活性に戻ったリピートは FSM に入る（状態が Idle から変わる）。
+        let _ = engine.on_input(Ev::down(VK_A).at(600).build(), &ime_on_ctx());
+        let rep2 = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(700).repeat().build(),
+            &ime_on_ctx(),
+        );
+        assert!(rep2.is_consumed());
+        assert_ne!(
+            engine.debug_state_label(),
+            before,
+            "flush で印が消え、リピートが FSM に渡る"
         );
     }
 

@@ -962,7 +962,7 @@ impl Engine {
     /// `general.left_thumb_key`/`right_thumb_key` に設定した**任意の** VK に
     /// 対して `LeftThumb`/`RightThumb` を返す（`hook.rs::classify_key`）。
     /// 一方 `resolve_pending_thumb_as_single`（`nicola_fsm.rs`）が
-    /// `dedicated_fn_key`/明示config 等の特別扱いをするのは
+    /// `dedicated_fn_key`/開閉の役割（`forced_open_action`）等の特別扱いをするのは
     /// `muhenkan_vk`/`henkan_vk` が `Some` のとき、すなわち
     /// `bootstrap.rs`/`runtime/mod.rs` が `VK_NONCONVERT`/`VK_CONVERT`
     /// **限定**でフィルタして設定した場合のみ。無変換/変換以外を
@@ -1100,15 +1100,14 @@ fn matches_key_combo(combo: ParsedKeyCombo, event: &RawKeyEvent, modifiers: Modi
 }
 
 impl SpecialKeyCombos {
-    /// ADR-206 決定4: `vk` の bare（無修飾）コンボを、既存の同キー bare を除いたうえで `action` の一覧に加える
-    /// （旧 `*_solo_tap_ime_action` の移行用。旧実装で明示 config が bare より優先されていた順位を保つ）。
-    /// 修飾付きのコンボには触れない。config.toml は書き換えず、メモリ上の照合表だけを変える。
-    pub fn set_bare_ime_action_overriding(&mut self, vk: VkCode, action: ShadowImeAction) {
-        let is_bare =
-            |combo: &ParsedKeyCombo| combo.vk == vk && !combo.ctrl && !combo.shift && !combo.alt;
-        self.ime_on.retain(|c| !is_bare(c));
-        self.ime_off.retain(|c| !is_bare(c));
-        self.ime_toggle.retain(|c| !is_bare(c));
+    /// ADR-206 決定4: 旧 `*_solo_tap_ime_action` の移行用。`vk` に**無修飾の bare が既にあれば何もしない**
+    /// （ユーザーが明示した `keys.ime_*` を優先。旧設定が残ったまま新しい bare を足した場合に黙って上書きしない）。
+    /// 無ければ `action` の一覧へ bare を加える。修飾付きのコンボには触れない。config.toml は書き換えず、メモリ上の照合表だけを変える。
+    /// 戻り値は移行したか。
+    pub fn set_bare_ime_action_if_absent(&mut self, vk: VkCode, action: ShadowImeAction) -> bool {
+        if self.bare_ime_action(vk).is_some() {
+            return false;
+        }
         let combo = ParsedKeyCombo {
             ctrl: false,
             shift: false,
@@ -1120,6 +1119,7 @@ impl SpecialKeyCombos {
             ShadowImeAction::TurnOff => self.ime_off.push(combo),
             ShadowImeAction::Toggle => self.ime_toggle.push(combo),
         }
+        true
     }
 
     /// 修飾なしの `vk` に対する open 軸操作。通常の特殊キー照合と同じく方向固定を toggle より優先し、

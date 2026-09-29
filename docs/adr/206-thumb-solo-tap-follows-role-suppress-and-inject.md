@@ -104,7 +104,7 @@ S3 は「@」抑止の同等性が S1/S2 経路で未検証のため v2.0 では
 - `nicola_fsm.rs`: S3 フィールド・setter・getter・`ThumbSoloSpecialHandling.explicit_ime_action`・`resolve_explicit_ime_action`(ケース1)。`resolve_pending_thumb_as_single`/`defers_solo_until_release` の S3 分岐と `explicit_action_consumed` 引数、
   `PendingThumbData.explicit_ime_action_consumed` とその全 flush 経路の受け渡し、`input_tracker.rs`・`fsm_types.rs` の伝搬、テストの構築子(`nicola_fsm.rs` のテスト、`confirm_policy.rs`、`fsm_types.rs`)。
 - `fsm_adapter.rs`/`engine.rs`/`runtime/mod.rs`/`bootstrap.rs` の S3 配線。`runtime/mod.rs::set_passthrough_thumb_mode_keys` と `state_dependent_key_warning.rs::passthrough_thumb_vks` は
-  S3 を「awase が単独タップを消費する=素通しでない」判定に使っているので、S3 を消すだけでは S1/S2 の Passthrough キーで**不要な状態依存キー警告**が出る。判定を `bare_ime_action`(と、静的に決まらない役割は「役割がありうる」として安全側=警告しない)に置き換える。
+  S3 を「awase が単独タップを消費する=素通しでない」判定に使っているので、S3 を消すだけでは S1/S2 の Passthrough キーで**不要な状態依存キー警告**が出る。判定を `bare_ime_action` に置き換える。IME 設定由来の役割は打鍵ごとにしか求まらず静的に判定できないので含めない(実装 `set_passthrough_thumb_mode_keys` のとおり。Passthrough かつトグル役割の無変換には、awase が消費するのに状態依存キー警告が出うる=案内であり動作には影響しない。2026-09-29 レビュー指摘2で ADR を実装に揃えた)。
 - `key_pipeline.rs`: `explicit_ime_action_target`・`ExplicitImeActionOutcome`・`kp_stage_shadow_ime_toggle` のケース2/3改の分岐と KeyUp 早期分岐。`kp_latch_keyup_to_keydown_disposition` の無変換/変換の除外は、Down/Up を揃える所有者が「Consume の義務(`UpDuty`)」に変わるので理由コメントだけ書き換える(除外は残す)。
 - マーカー `explicit_ime_action_consumed`: `ImeRelevance`(`hook.rs:291-296`、`platform_state.rs:2536` の構築子を含む)、`state/evidence.rs::IntentWitness::from_physical` の受理条件とテスト
   `explicit_config_consumed_marker_alone_is_a_valid_physical_witness`。
@@ -149,7 +149,7 @@ S3 は「@」抑止の同等性が S1/S2 経路で未検証のため v2.0 では
 ### 決定4: 旧設定の移行 — 親指キーのときだけ、読込時にメモリ上で S1 相当へ移し、警告する
 
 - `muhenkan/henkan_solo_tap_ime_action = "on"/"off"/"toggle"` が残っていて、そのキーが**親指キーに割り当てられている**config は、`SpecialKeyCombos` を組み立てる箇所(`app/mod.rs:845` の reload 経路と `app/bootstrap.rs:1214` の起動経路。`runtime/mod.rs::apply_config_update` は組み立て済みの値を受け取るだけで、冒頭で `thumb_forced_open_actions(&special_keys)` を求めるので、**その前=組み立ての時点**で足す)で
-  該当キーの bare コンボを `ime_on`/`ime_off`/`ime_toggle` に**メモリ上でだけ**追加する(config.toml は書き換えない)。同じキーに既存の bare があれば旧 S3 が勝つ(旧実装の優先順位を保つ)。
+  該当キーの bare コンボを `ime_on`/`ime_off`/`ime_toggle` に**メモリ上でだけ**追加する(config.toml は書き換えない)。同じキーに既存の bare が**あれば旧設定は移行しない**(ユーザーが明示した `keys.ime_*` を優先し、黙って上書きしない。2026-09-29 コードレビュー指摘1で「旧 S3 が勝つ」から変更。警告は「無視されます」)。GUI の置き換えは旧設定を `None` に戻す(undo で復元)。
 - 親指キーでない無変換/変換の旧設定は移行せず警告して読み捨てる(旧 S3 のエンジン非活性側は親指かどうかを見ていなかったが、S1 に移すと非親指キーは `suppress_ime_combos` の対象外で**エンジン活性中も毎回 awase が書く**ようになるため、意味が広がりすぎる。受動〈IME が自分で処理〉に戻る)。読み捨てた非親指の旧 `"off"` は旧実装では抑止のみで「@」から守られていたので、警告文に「この設定は今後効きません。半角で『@』が出る場合は無変換/変換を親指キーにしてください」と回避策を書く(GUI は親指のときにしか旧設定を書かないので、対象は手書きのユーザーだけ)。
 - 警告(ADR-201 の診断経路、`validate_thumb_key_in_ime_combos` の該当分岐を置換): 「`*_solo_tap_ime_action` は非推奨です。`keys.ime_on/off/toggle` に bare で書くか、削除してください。GJI の CUSTOM 表で無変換/変換がトグルなら設定なしで動きます」。
 - 移行で変わる差(既知・許容。所有者決定が M13 を上書きする): (1) M13(旧 `"toggle"`/`"on"` × `ModeKeyConfig`=Passthrough の「エンジン活性中は GJI 自身のかな切替」は実現できなくなる)。
@@ -200,7 +200,7 @@ S2 は「生キーで GJI 自身が確実に処理していた打鍵」を awase
 - **Ctrl↑ を契機とする専用の actuation が無い(マージ条件、所有者。BUG-174 の再導入禁止)**: BUG-113/124 の「@」は Ctrl↑ 側の actuation が関与した(BUG-174: 旧 `CompositionEvent::CtrlUp` の eager warmup が Ctrl 押下中に `VK_IME_ON` を注入、`aa53eb4b` で撤去済み)。
   新設計は Ctrl↑ に actuation を持たない: 親指の開閉は修飾なしの親指だけが対象(`is_bare_thumb`)で Ctrl+無変換/変換は対象外、`on_ctrl_key_up` は chord barrier の解除だけ。これを次で固定する:
   `architecture_guard::ctrl_key_up_never_actuates_ime`(旧 CtrlUp 識別子の不在、`on_ctrl_key_up` の本体に SendInput/apply_ime_open_* 等が無いこと、パイプラインの Ctrl 系 KeyUp ブロックが `on_ctrl_key_up` の呼び出しだけ)と、
-  `src/engine/tests.rs::ctrl_release_after_thumb_never_emits_ime_effects`(Ctrl+無変換の Down/Up と Ctrl↑ の決定に IME 効果が無い)。CI e2e は注入キーしか作れず物理の Ctrl↑ を再現できないため対象外(制約)。
+  `src/engine/tests.rs::ctrl_release_after_role_thumb_open_never_emits_ime_effects`(Ctrl+無変換の Down/Up と Ctrl↑ の決定に IME 効果が無い)。CI e2e は注入キーしか作れず物理の Ctrl↑ を再現できないため対象外(制約)。
   `origin/fix/eager-warmup-modifier-guard`(BUG-175: eager warmup を Ctrl/Shift/Alt/Win 押下中に抑止)は本 PR に含めない(別 PR。未マージ)。
   **この条件が保証する範囲と、範囲外の残る被疑**(round5 §3): 上のガードは「Ctrl↑ 専用の actuation ハンドラが無い」ことの固定で、文字どおりの「Ctrl↑ のイベントの決定に IME 効果が一切載らない」ではない。
   (1) Ctrl↑ も `engine.on_input` を通り、Phase 2 の `check_active_transition`(`engine.rs` の Phase 2)が、直前のキーから Ctrl↑ までの間に観測(poll・ADR-205 の watch・drift)で `ctx.ime_on` が変わっていれば
@@ -215,7 +215,7 @@ S2 は「生キーで GJI 自身が確実に処理していた打鍵」を awase
 
 - 単体(Linux で走る、`src/engine/tests.rs`): エンジン非活性(IME OFF/`NotRomajiInput`)× 親指の役割由来 Toggle で「Consume＋絶対指定 `SetOpen(true)` が1つ、KeyUp も Consume」。
   **「belief OFF → Down → リピート Down ×3 → Up で `SetOpen` がちょうど1つ」**(round2 1-1)。`ImeOff`×belief OFF でも `SetOpen(false)` が積まれること(決定3の撤回の固定)。ユーザー無効・専用 Fn・`is_japanese_ime=false`・`sync_direction` あり・修飾付きで「素通し」。
-  エンジン活性(FSM の `forced_open_action` の KeyUp 解決)は従来どおり。S3 依存の既存テストは S1 ベースに置き換える。`config.rs` に旧設定→S1 相当(親指のみ、同キー既存 bare より旧 S3 が勝つ、非親指は読み捨て)と警告のテスト。
+  エンジン活性(FSM の `forced_open_action` の KeyUp 解決)は従来どおり。S3 依存の既存テストは S1 ベースに置き換える。`config.rs` に旧設定→S1 相当(親指のみ、同キー既存 bare があれば旧設定は移行しない、非親指は読み捨て)と警告のテスト。
 - 統合(`architecture_guard.rs`): 決定2 の置き換えガード、`match_special_keys` の新分岐が `is_user_enabled`・`sync_direction`・専用 Fn のゲートを持ち `SetOpen` を直接積まないこと、`phase1_held` と `!was_down` ガードの存在、post_decision の eisu 救済が `mode_retained` を渡すこと、`enrich_thumb_key_role` が InputRelay で役割を付けないこと。
   `ime_key_sequence_golden.rs` は `ImeController` の戦略選択と送信列の検証であり「1回の押下で何回書くか」は表現できない(`runtime/` は `#[cfg(windows)]`)ので対象にしない。`cargo check --target x86_64-pc-windows-msvc -p awase -p awase-windows -p awase-settings --tests` でコンパイル確認。
 - CI e2e(`e2e-ime.yml` に `sc-solotap-*` を追加、`gh workflow run e2e-ime.yml --ref <ブランチ> -f only='sc-solotap-*'`)。**次の3系統は develop マージのゲート**(round2 §4):

@@ -88,7 +88,8 @@ use awase::engine::{AssumedReason, InputModeState};
 ///   - shadow toggle: `!was_open && now_open`
 /// - `mode`: 現在の `input_mode` belief。
 /// - `mode_retained`: 閉→開で実 IME が変換モードを保持していると分かっているか。
-///   Decision 経由の経路は従来どおり `false`（この判定を使わない）。
+///   Decision 経由の経路（`kp_stage_post_decision`）も GJI の英数保持を渡す（`gji_retains_tracked_eisu`、ADR-206 決定5。
+///   無変換/変換の単独タップも Decision 経由で開くため）。
 #[must_use]
 pub fn eisu_reset_on_ime_on(
     ime_turned_on: bool,

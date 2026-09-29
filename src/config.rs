@@ -1221,26 +1221,42 @@ impl AppConfig {
     }
 
     /// 非推奨の `*_solo_tap_ime_action` が残っているときの警告（ADR-206 決定4）。
-    fn validate_legacy_solo_tap_action(g: &GeneralConfig, w: &mut Vec<String>) {
+    fn validate_legacy_solo_tap_action(g: &GeneralConfig, keys: &KeysConfig, w: &mut Vec<String>) {
+        // 同じキーの bare が `keys.ime_*` に既にあれば、旧設定は移行されず bare が優先される（ADR-206 決定4）。
+        let has_bare = |canonical: &str| {
+            [&keys.ime_on, &keys.ime_off, &keys.ime_toggle]
+                .into_iter()
+                .flatten()
+                .any(|combo| {
+                    let (mods, main) = split_combo(combo);
+                    mods.is_empty() && key_identity(main) == canonical
+                })
+        };
         let (muhenkan_migrated, henkan_migrated) = g.legacy_thumb_solo_tap_actions();
-        for (field, set, migrated, key_name) in [
+        for (field, set, migrated, key_name, bare_present) in [
             (
                 "muhenkan_solo_tap_ime_action",
                 g.muhenkan_solo_tap_ime_action.is_some(),
                 muhenkan_migrated.is_some(),
                 "無変換",
+                has_bare("NONCONVERT"),
             ),
             (
                 "henkan_solo_tap_ime_action",
                 g.henkan_solo_tap_ime_action.is_some(),
                 henkan_migrated.is_some(),
                 "変換",
+                has_bare("CONVERT"),
             ),
         ] {
             if !set {
                 continue;
             }
-            if migrated {
+            if migrated && bare_present {
+                w.push(format!(
+                    "general.{field} は非推奨で、`keys.ime_on`/`ime_off`/`ime_toggle` に「{key_name}」が既にあるため無視されます（そちらが優先されます）。削除してください。"
+                ));
+            } else if migrated {
                 w.push(format!(
                     "general.{field} は非推奨です。`keys.ime_on`/`ime_off`/`ime_toggle` に「{key_name}」を単独で書くか、削除してください。\
                      現在は、そこに単独で書いたのと同じ扱いで動いています。GJI の CUSTOM 表で{key_name}がトグルなら、設定なしで動きます。"
@@ -1393,7 +1409,7 @@ impl AppConfig {
         Self::validate_thumb_keys(&general, &mut warnings);
         Self::validate_dedicated_fn_key(&general, &mut warnings);
         Self::validate_thumb_key_in_ime_combos(&general, &self.keys, &mut warnings);
-        Self::validate_legacy_solo_tap_action(&general, &mut warnings);
+        Self::validate_legacy_solo_tap_action(&general, &self.keys, &mut warnings);
         Self::validate_keyboard_model(&general, &self.keys, &mut warnings);
         Self::validate_linux_backend(&mut general, &mut warnings);
         Self::validate_app_override_entries(&app_overrides, &mut warnings);
@@ -2429,6 +2445,28 @@ henkan_solo_tap_ime_action = "on"
                 .any(|w| w.contains("general.henkan_solo_tap_ime_action")
                     && w.contains("今後は効きません")),
             "親指でないキーの旧設定は読み捨ての警告、got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn test_legacy_solo_tap_action_is_ignored_when_bare_combo_exists() {
+        let toml_str = r#"
+[general]
+left_thumb_key = "無変換"
+muhenkan_solo_tap_ime_action = "toggle"
+
+[keys]
+ime_off = ["無変換"]
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let (_validated, warnings) = config.validate();
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("general.muhenkan_solo_tap_ime_action")
+                    && w.contains("無視されます")
+                    && w.contains("優先されます")),
+            "bare が既にあれば旧設定は無視される旨を警告する、got: {warnings:?}"
         );
     }
 

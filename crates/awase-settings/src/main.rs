@@ -615,6 +615,8 @@ fn load_keymap_table_state(
 struct Adr192ReplacementSnapshot {
     ime_on: Vec<String>,
     ime_off: Vec<String>,
+    muhenkan_legacy_action: Option<awase::config::ShadowImeActionConfig>,
+    henkan_legacy_action: Option<awase::config::ShadowImeActionConfig>,
 }
 
 fn apply_adr192_recommended_replacement(
@@ -623,7 +625,13 @@ fn apply_adr192_recommended_replacement(
     let snapshot = Adr192ReplacementSnapshot {
         ime_on: config.keys.ime_on.clone(),
         ime_off: config.keys.ime_off.clone(),
+        muhenkan_legacy_action: config.general.muhenkan_solo_tap_ime_action,
+        henkan_legacy_action: config.general.henkan_solo_tap_ime_action,
     };
+    // 非推奨の `*_solo_tap_ime_action` は消す: 残すと、読込時に同じキーの旧設定が新しい bare と食い違う
+    // （bare が優先されるが、警告が出続け、消し忘れの原因になる。ADR-206 決定4）。置き換えの undo で元へ戻す。
+    config.general.muhenkan_solo_tap_ime_action = None;
+    config.general.henkan_solo_tap_ime_action = None;
     // ADR-206: 単独タップの開閉は「開閉の役割（bare `keys.ime_*`）があれば生キーを抑止して awase が絶対指定で書く」に
     // 一本化した。親指キーでも `*_solo_tap_ime_action`/`always_suppress` は書かず、bare のコンボを書く。
     // 親指キーのときは既存のリスト（既定の `Ctrl+無変換` 等）を消さないよう追記する。親指でない無変換/変換は
@@ -657,6 +665,8 @@ fn undo_adr192_recommended_replacement(
 ) {
     config.keys.ime_on = snapshot.ime_on;
     config.keys.ime_off = snapshot.ime_off;
+    config.general.muhenkan_solo_tap_ime_action = snapshot.muhenkan_legacy_action;
+    config.general.henkan_solo_tap_ime_action = snapshot.henkan_legacy_action;
 }
 
 /// バックグラウンドスレッドで実行する保存処理の結果。
@@ -7758,6 +7768,17 @@ mod layout_tab_repro {
             config.general.muhenkan_solo_tap_always_suppress, original_muhenkan_suppress,
             "always_suppressは書き換えない"
         );
+        // 旧設定が残っている場合の経路: 置き換えで旧設定は None に戻り、undo で元に戻る。
+        let mut legacy = awase::config::AppConfig::default();
+        legacy.general.muhenkan_solo_tap_ime_action =
+            Some(awase::config::ShadowImeActionConfig::Toggle);
+        legacy.general.henkan_solo_tap_ime_action = Some(awase::config::ShadowImeActionConfig::On);
+        let before = toml::to_string(&legacy).unwrap();
+        let snapshot = apply_adr192_recommended_replacement(&mut legacy);
+        assert_eq!(legacy.general.muhenkan_solo_tap_ime_action, None);
+        assert_eq!(legacy.general.henkan_solo_tap_ime_action, None);
+        undo_adr192_recommended_replacement(&mut legacy, snapshot);
+        assert_eq!(toml::to_string(&legacy).unwrap(), before);
         // 2回適用しても重複しない。
         let _ = apply_adr192_recommended_replacement(&mut config);
         assert_eq!(

@@ -910,7 +910,7 @@ impl NicolaFsm {
     /// だけは、belief書き込みを担うキーボード経路を通すため、別条件でKeyUp解決の対象にする。
     /// 除外: OS修飾キー、`engine_off_solo_repeat_vk`（タイムアウトでソロ連打を数える設計。既定は
     /// `VK_INSERT`なので無変換/変換では通常は当たらないが、無変換/変換に設定するとその親指では
-    /// 1cが無効になる）、専用Fnキー・ユーザー明示config（優先順位1・2、送出タイミングを保つ）。
+    /// 1cが無効になる）、専用Fnキー（優先順位1、送出タイミングを保つ）。bare `keys.ime_*` の強制操作と、Passthrough のときの IME 設定由来の役割は KeyUp 解決に載る。
     /// Space/Enter親指は`mode_key_config`を持たないので自然に除外される。
     fn defers_solo_until_release(&self, thumb: &PendingThumbData, composing: bool) -> bool {
         if thumb.modifier_key.is_some() {
@@ -2082,7 +2082,7 @@ impl NicolaFsm {
     /// `composing`/`modifier_key` を明示的に受け取る形にした）。
     ///
     /// 戻り値の第2要素は、無変換/変換単独タップが開閉の役割（`forced_open_action`、
-    /// 優先順位2）に該当した場合の `ShadowImeAction`。呼び出し元（`&mut self` のメソッド）はこれを
+    /// 優先順位1.5）に該当した場合の `ShadowImeAction`。呼び出し元（`&mut self` のメソッド）はこれを
     /// `self.ime_open_requested` へセットすること（このメソッド自体は `&self`
     /// のため直接セットできない）。
     ///

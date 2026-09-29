@@ -57,10 +57,10 @@ pub(crate) fn migrate_legacy_solo_tap_actions(
 ) {
     let (muhenkan, henkan) = general.legacy_thumb_solo_tap_actions();
     if let Some(action) = muhenkan {
-        special.set_bare_ime_action_overriding(crate::vk::VK_NONCONVERT, action);
+        special.set_bare_ime_action_if_absent(crate::vk::VK_NONCONVERT, action);
     }
     if let Some(action) = henkan {
-        special.set_bare_ime_action_overriding(crate::vk::VK_CONVERT, action);
+        special.set_bare_ime_action_if_absent(crate::vk::VK_CONVERT, action);
     }
 }
 
