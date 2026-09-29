@@ -18,6 +18,8 @@ All notable changes to this project will be documented in this file.
   - 次の項目は、解決できない値があると警告が出る（トレイ通知とログ）: `[[post_bypass]]` の key、`[[keymaps]]` の from/to、`keys.engine_on_ime_key`/`engine_off_ime_key`、`muhenkan_solo_tap_dedicated_fn_key`、`engine_toggle_hotkey`（名前が解決できない場合と、他のアプリが先に使っていて登録できない場合の両方）。設定を再読み込みしても、同じ内容ならトレイ通知は繰り返さない
   - 未知の項目名（`[general]` の綴り間違いなど）は、近い名前の候補つきで警告する。**この警告はログと設定画面の警告欄だけ**に出し、トレイ通知は出さない。撤去済みの項目（`apply_calibrated_mode_keys`・`[[calibration]]` など）は警告しない
   - 上の「今まで無視されていた設定が有効になる」設定があるときは、起動時のログに「以前は無視されていた設定 N 件が有効になりました」と該当項目を出す（トレイ通知・設定画面には出さない）
+- **`keys.engine_on_ime_key`/`engine_off_ime_key`（エンジン ON/OFF 時に IME のモードキーを送る上級者向け設定）を撤去した（ADR-207）。** 既定は無効で設定画面にも無かったが、2026-08-15 より前に設定画面で一度でも保存した人の `config.toml` には旧既定（`VK_DBE_DBCSCHAR`/`VK_DBE_SBCSCHAR`）が残っていて、エンジンの ON/OFF に合わせて全角/半角モードを送る機能が有効だった。更新するとそれが止まる。`config.toml` に残っていても無視され、起動時に通知が出る（設定画面で保存するとその行は消える）。代わりの設定は無い。IME の開閉は `keys.ime_on`/`ime_off` で設定できる
+- `keys.ime_detect.on`/`off` の既定を空にした（以前は `IMEオン`/`IMEオフ`）。IMEオン/IMEオフ キー（VK_IME_ON/OFF）の追随は、指定しなくても自動で行われる（入力言語の判定が一時的に日本語でないと出る環境でも追随するよう直した）。書いてある値はそのまま使われる
 
 ## [1.21.0] - 2026-09-21
 

@@ -675,7 +675,7 @@ ime_toggle = []
 # Ctrl がスタックしてショートカットが効かなくなったときの最終手段。
 # 空文字列 "" または削除で無効化できる。
 engine_off_solo_triple = "VK_NONCONVERT"</div>
-      <p class="note" style="margin-top:0.7rem"><code>engine_on_ime_key</code>/<code>engine_off_ime_key</code>（エンジン ON/OFF 時に IME の全角/半角モードを強制送信する上級者向け設定）は既定で無効（未設定）です。IME の開閉（ON/OFF）とモード強制を1つのキーで同時に行う複合的な設定のため、通常は上記の <code>ime_on</code>/<code>ime_off</code> で十分です。手動で <code>config.toml</code> に追記すれば有効化できます。</p>
+      <p class="note" style="margin-top:0.7rem"><code>engine_on_ime_key</code>/<code>engine_off_ime_key</code>（エンジン ON/OFF 時に IME のモードキーを送る設定）は撤去されました。<code>config.toml</code> に残っていても無視されます（起動時に通知が出るので、その行は削除してください）。IME の開閉は上記の <code>ime_on</code>/<code>ime_off</code> で設定できます。</p>
       <p class="note" style="margin-top:0.7rem">複数キーを割り当てるには配列に追加してください: <code>["Ctrl+Shift+変換", "Ctrl+F8"]</code></p>
       <p class="note">グローバルホットキー（アプリのフォーカスに関係なく機能）は <code>[general]</code> の <code>engine_toggle_hotkey = "Ctrl+Shift+F12"</code> で設定します。</p>
     </div>
@@ -771,16 +771,16 @@ force_tsf = [
 
     <div class="card">
       <h3>IME 検出キーの手動設定</h3>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">外部 IME の状態変化（半角/全角キー等）を awase が検出するための設定です。GUI には無く <code>config.toml</code> の直接編集でのみ設定できます（多くの利用者には不要なため、GUI からは意図的に外してあります）。<code>toggle</code> の既定は空です。「キー設定」タブの「IME ON/OFF トグル」（<code>keys.ime_toggle</code>、既定: 空）に設定したキーは awase が能動的に処理するため、同じキーをここにも設定すると二重処理してしまい正しく動作しません。</p>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">外部 IME の状態変化（半角/全角キー等）を awase が検出するための設定です。GUI には無く <code>config.toml</code> の直接編集でのみ設定できます（多くの利用者には不要なため、GUI からは意図的に外してあります）。<code>toggle</code>・<code>on</code>・<code>off</code> の既定はすべて空です（IMEオン/IMEオフ キーの追随は指定なしで自動的に行われます）。「キー設定」タブの「IME ON/OFF トグル」（<code>keys.ime_toggle</code>、既定: 空）に設定したキーは awase が能動的に処理するため、同じキーをここにも設定すると二重処理してしまい正しく動作しません。</p>
       <div class="code-block" data-example="usage-ja-10" data-mode="uncomment">[keys.ime_detect]
 # IME ON/OFF をトグルするキー（既定: 空。上記「IME ON/OFF トグル」と
 # 同じキーを指定すると二重処理になるため避けること）
 # toggle = ["VK_KANJI"]
 
-# IME を直接 ON にするキー（既定: ["IMEオン"]）
+# IME を直接 ON にするキー（既定: 空。IMEオン/IMEオフ キー〈VK_IME_ON/OFF〉は指定しなくても自動で追随します）
 # on = ["VK_DBE_HIRAGANA"]
 
-# IME を直接 OFF にするキー（既定: ["IMEオフ"]）
+# IME を直接 OFF にするキー（既定: 空）
 # off = ["VK_DBE_SBCSCHAR"]</div>
     </div>
 

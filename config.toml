@@ -30,6 +30,7 @@ ngram_file = "data/ngram_hiragana.csv.gz"
 # 注意: toggle に書いたキーを keys.ime_toggle（awase が能動的に処理する側）にも書くと二重処理で
 # そのキーが壊れるため、同じキーを両方に書かないこと（keys.ime_toggle の既定は空）。
 # toggle = ["VK_KANJI"]
+# 既定は toggle/on/off すべて空（VK_IME_ON/VK_IME_OFF＝IMEオン/IMEオフ キーの追随は指定なしで自動）。
 # on = ["VK_DBE_DBCSCHAR", "VK_IME_ON"]
 # off = ["VK_DBE_SBCSCHAR", "VK_IME_OFF"]
 # example-end

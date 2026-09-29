@@ -12,7 +12,7 @@ summary: |-
   (`applied_snapshot` の楽観更新と `uses_kanji_toggle` は他の消費者/テストがあるので残す)。旧 config に値が残る場合はトレイ警告で通知し(無警告の `REMOVED_KEYS` とは別の `REMOVED_WITH_NOTICE`)、
   設定の保存(`save_edit` を通る全ての保存)で撤去キーを削除する。
 status: |-
-  起草(2026-09-29)。opus-adversarial-consult round1 の指摘(is_japanese_ime の前提誤り・警告の可視性・連鎖範囲の漏れ)を反映済み、round2 の整合指摘(旧記述の矛盾・(b) の過大主張・GUI 保存直後の警告)を反映済み、round3 確認中。
+  採択・実装済み(2026-09-29)。opus-adversarial-consult round1〜2 で収束(round2 の必須指摘は本文の整合のみで、反映済み)。実機/CI での確認(MS-IME ジョブ、フォーカス変更直後の物理 0x16/0x1A)は未実施。
 related_adr:
   - "ADR-092"
   - "ADR-199"

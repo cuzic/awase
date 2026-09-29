@@ -651,7 +651,7 @@ ime_toggle = []
 # A last resort for when Ctrl gets stuck and the shortcuts stop working.
 # Disable it with an empty string "" or by deleting the line.
 engine_off_solo_triple = "VK_NONCONVERT"</div>
-      <p class="note" style="margin-top:0.7rem"><code>engine_on_ime_key</code>/<code>engine_off_ime_key</code> (an advanced setting that force-sends an IME full-width/half-width mode key when the engine turns ON/OFF) are disabled (unset) by default. This bundles opening/closing the IME with forcing its mode into a single key, so <code>ime_on</code>/<code>ime_off</code> above is usually enough. You can enable it by adding these lines to <code>config.toml</code> manually.</p>
+      <p class="note" style="margin-top:0.7rem"><code>engine_on_ime_key</code>/<code>engine_off_ime_key</code> (which sent an IME mode key when the engine turned ON/OFF) have been removed. They are ignored if still present in <code>config.toml</code> (a notice is shown at startup — delete those lines). Use <code>ime_on</code>/<code>ime_off</code> above to open/close the IME.</p>
       <p class="note" style="margin-top:0.7rem">To assign multiple keys, add them to the array: <code>["Ctrl+Shift+変換", "Ctrl+F8"]</code></p>
       <p class="note">A global hotkey (which works regardless of app focus) is set with <code>engine_toggle_hotkey = "Ctrl+Shift+F12"</code> under <code>[general]</code>.</p>
     </div>
@@ -731,16 +731,16 @@ force_tsf = [
 
     <div class="card">
       <h3>Manually setting IME-detection keys</h3>
-      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">Detects external IME state changes (e.g. the Hankaku/Zenkaku key). Not in the GUI — edit <code>config.toml</code> directly (most people don't need it). <code>toggle</code> defaults to empty. Keys set in the "IME ON/OFF toggle" setting on the Keys tab (<code>keys.ime_toggle</code>, default: empty) are handled actively by awase — assigning the same key here too would double-process it and break it.</p>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">Detects external IME state changes (e.g. the Hankaku/Zenkaku key). Not in the GUI — edit <code>config.toml</code> directly (most people don't need it). <code>toggle</code>, <code>on</code> and <code>off</code> all default to empty (the IME-On/IME-Off keys are followed automatically). Keys set in the "IME ON/OFF toggle" setting on the Keys tab (<code>keys.ime_toggle</code>, default: empty) are handled actively by awase — assigning the same key here too would double-process it and break it.</p>
       <div class="code-block" data-example="usage-en-9" data-mode="uncomment">[keys.ime_detect]
 # Key that toggles the IME ON/OFF (default: empty. Don't set this to the
 # same key as "IME ON/OFF toggle" above — that causes double-processing)
 # toggle = ["VK_KANJI"]
 
-# Key that turns the IME directly ON (default: ["IMEオン"])
+# Key that turns the IME directly ON (default: empty. The IME-On/IME-Off keys (VK_IME_ON/OFF) are followed automatically without listing them)
 # on = ["VK_DBE_HIRAGANA"]
 
-# Key that turns the IME directly OFF (default: ["IMEオフ"])
+# Key that turns the IME directly OFF (default: empty)
 # off = ["VK_DBE_SBCSCHAR"]</div>
     </div>
   </div>
