@@ -1012,20 +1012,16 @@ impl Output {
     /// IME composition context をコールド状態にマークする。
     ///
     /// 次の VK / TSF composition 送信時に VK_IME_ON ウォームアップを
-    /// 先行送信させる。Space/Enter/Escape passthrough・エンジン toggle 等のタイミングで呼ぶ。
+    /// 先行送信させる。Enter/Space/Escape の reinject・エンジン toggle 等のタイミングで呼ぶ。
     /// フォーカス変更は `on_focus_changed()` を使うこと（epoch も更新される）。
     ///
     /// # NativeF2Consumed でも eager_warmup_sent_ms をリセットする理由
     ///
-    /// 物理 F2 が押された = WezTerm に新しい F2 が届く = TSF 初期化が再トリガーされる。
-    /// FocusChange のタイムスタンプを保持すると「古い F2 からの経過時間」を elapsed として
-    /// 計算してしまい、sleep がスキップされる（"hoんらい" 化け: BUG-06 の派生形）。
+    /// 物理 F2 が押された = 新しい F2 が届き TSF 初期化が再トリガーされる。FocusChange 時の
+    /// タイムスタンプを保持すると「古い F2 からの経過時間」を elapsed として計算してしまう
+    /// （"hoんらい" 化け: BUG-06 の派生形）。BUG-173 以降は物理 F2 の代わりの warmup を送らないので、
+    /// 基準点は 0（未送信）のまま次の送信まで残る。
     ///
-    /// 例: FocusChange warmup(T=0) → 物理F2(T=2265ms) → ほ送信(T=2562ms)
-    ///   旧: elapsed=2562ms→即送信、新F2からは297ms→TSF未初期化→"ho"リテラル
-    ///   新: elapsed=297ms→sleep203ms→新F2から500ms待機→TSF初期化済み→"ほ" ✓
-    ///
-    /// 直後に send_eager_tsf_warmup() が新しいタイムスタンプをセットする。
     pub fn mark_composition_cold(&self, reason: ColdReason) {
         if matches!(reason, ColdReason::FocusChange | ColdReason::SetOpenTrue) {
             self.clear_gji_reinit_retry_tombstone();
@@ -1160,8 +1156,8 @@ impl Output {
     ///
     /// 以下のタイミングで呼ぶ:
     /// - FocusChange 直後: WezTerm に TSF 初期化の先行時間を与える
-    /// - NativeF2Consumed 直後: 物理 F2 の代替として送信（二重 F2 防止）
-    /// - PassthroughConfirmKey / ReinjectConfirmKey 直後: Enter/Escape 後の次打鍵を warmup
+    ///
+    /// キー打鍵を契機とする呼び出し（物理 F2 併走・確定キー・Ctrl↑）は BUG-173/174 で撤去済み。
     ///
     /// `warmup_ime_on`: 呼び出し元が知っている IME 開閉状態（ADR-098 決定1-b、
     /// `WarmupImeOn` 参照）。`is_on()==false` または TSF モード以外では何もしない。

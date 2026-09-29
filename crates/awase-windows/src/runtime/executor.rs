@@ -617,8 +617,8 @@ impl DecisionExecutor {
         // BUG-173: 以前はここで TSF mode の deferred F2 を reinject せず握りつぶしていた
         // （「warmup が F2 を代わりに再送する」double-F2 防止）。ADR-100 決定2 で warmup が
         // `VK_IME_ON` 単発になり代替 F2 が無くなったため、物理 F2 は通常キーと同様に
-        // reinject する。cold 化と eager warmup は `kp_stage_execute` の
-        // `composition_native_f2_down` が KeyDown ごとに既に実行している。
+        // reinject する。cold 化は `kp_stage_execute` の `composition_native_f2_down` が
+        // KeyDown ごとに既に実行している（`VK_IME_ON` は送らない）。
 
         tracing::debug!(
             "[reinject] vk={:#04x} {dir} (queued passthrough now firing)",

@@ -2525,21 +2525,16 @@ impl Runtime {
             );
         }
 
-        // F2 (VK_DBE_HIRAGANA) KeyDown: CompositionFsm に副作用を委譲。
-        // 物理 F2 は常に Allow（BUG-173）。TSF mode では mark_cold + eager warmup（VK_IME_ON）も実行。
-        // A5/A6（Opus レビュー）: auto-repeat では cold 化/warmup を繰り返さない。F2 を親指キーに
+        // F2 (VK_DBE_HIRAGANA) KeyDown: cold 化・GjiFsm 通知（`composition_native_f2_down`）。
+        // 物理 F2 は常に Allow（BUG-173）。awase は代わりの `VK_IME_ON` を送らない。
+        // A5/A6（Opus レビュー）: auto-repeat では cold 化を繰り返さない。F2 を親指キーに
         // 割り当てている構成では NICOLA の同時打鍵入力であって IME モードキーではない（BUG-115）。
         if event.vk_code == crate::vk::VK_DBE_HIRAGANA
             && matches!(event.event_type, KeyEventType::KeyDown)
             && !event.was_down
             && !crate::gji_charset_autodetect::is_configured_thumb_key(event.vk_code)
         {
-            // ADR-098 決定1-b: 生値ではなく warmup_ime_on()（`applied ?? belief`）。
-            let warmup_ime_on = self
-                .platform_state
-                .ime
-                .warmup_ime_on(std::time::Instant::now());
-            self.platform.composition_native_f2_down(warmup_ime_on);
+            self.platform.composition_native_f2_down();
         }
 
         self.kp_stage_kana_lock_warn(&decision);
