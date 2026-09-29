@@ -110,6 +110,8 @@ pub const fn can_warmup(&self) -> bool {
 | `platform.rs:1236` | `on_reinject_key`（`:1199`） | 再注入キー |
 | `output/vk_send.rs:531` | — | `WarmupImeOn::off()` 固定。**「到達不能」という判定は同ファイル 518-528 行のコードコメント（「現状は理論上到達しない」）に依拠しており、本 ADR は独立検証していない**（m12。この1点だけ他の F と検証の質が異なる） |
 
+**（2026-09-29追記: 上表のうち物理 F2・確定キー〈`on_passthrough_key` と reinject〉・Ctrl 解放の `EmitWarmup` は撤去済み〈BUG-173/174〉。残る送信元は FocusChange と `on_ime_applied` の随伴のみ。）**
+
 ADR-098 決定1-b の付け替え表が同じ集合を別の粒度（`composition_confirm_key_up` / `composition_ctrl_up` / `composition_native_f2_down` を含む10サイト）で列挙している。**要点は「フォーカス変更時だけでなく、Enter/Escape 確定・Ctrl 解放・物理 F2・再注入キーのたびに撃たれうる」**ことである。コード上のコメントも「ROMAN ビット確保のみで冪等なため反復送信も無害」と、この高頻度性を前提に書かれている（`output/mod.rs:716-717`）。
 
 ### F3: `send_chrome_gji_reinit_and_poll` の本番呼び出し元は2つ。うち give-up 経路は **`Tsf` モードでも `Vk` モードでも発火する**

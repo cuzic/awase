@@ -737,7 +737,7 @@ pub struct KeyUpLatchInput {
 ///   ペア表現等。`key_role_latch` / `kana_mode_restore_key_down` と同じ規約）。
 /// - Down の結果は Allow/Suppress **両方**記録し、KeyUp は常にそれに従う（Down=Suppress → Up=Allow の
 ///   非対称も防ぐ）。対応する Down が無い KeyUp（awase 起動前の押下等）は `planned_suppress` のまま。
-/// - `relevant` でない Down は記録しない。KeyUp は `relevant` に関係なくエントリを消費する（古いエントリを残さない）。
+/// - `relevant` でない最初の Down は記録しないが、同じ scan の古いエントリは消す。KeyUp は `relevant` に関係なくエントリを消費する。
 /// - `excluded` は一切触れない。
 ///
 /// 戻り値は最終的に Suppress するか。
@@ -751,9 +751,14 @@ pub fn keyup_follows_keydown(
         return planned_suppress;
     }
     if input.is_down {
-        if !input.was_down && input.relevant {
+        // 最初の Down は relevant かどうかに関係なく同じ scan の古いエントリを消す（修飾付きの Down などで
+        // `shadow_action` が付かない場合に、古い Suppress が後続の Up を握りつぶして Down だけが届いた
+        // 押しっぱなしにならないように、Opus round2 R2-3）。記録するのは relevant のときだけ。
+        if !input.was_down {
             latch.retain(|(s, _)| *s != input.scan);
-            latch.push((input.scan, planned_suppress));
+            if input.relevant {
+                latch.push((input.scan, planned_suppress));
+            }
         }
         return planned_suppress;
     }
@@ -1968,12 +1973,28 @@ mod keyup_latch_tests {
     }
 
     #[test]
-    fn irrelevant_down_is_not_recorded_but_up_consumes_stale_entry() {
-        let mut l = vec![(ScanCode(0x29), false)];
+    fn irrelevant_first_down_clears_stale_entry_and_is_not_recorded() {
+        // 古い Suppress が残っている状態で、修飾付きなどで relevant でない Down（Allow）が来た場合、
+        // 後続の Up が古い Suppress を拾って握りつぶさない（Down だけ届いて押しっぱなしになる経路）。
+        let mut l = vec![(ScanCode(0x29), true)];
         let mut d = input(0x29, true, false);
         d.relevant = false;
-        assert!(keyup_follows_keydown(&mut l, d, true));
-        assert_eq!(l.len(), 1, "irrelevant Down は記録もクリアもしない");
+        assert!(!keyup_follows_keydown(&mut l, d, false));
+        assert!(
+            l.is_empty(),
+            "irrelevant な最初の Down も古いエントリを消す"
+        );
+        let mut u = input(0x29, false, true);
+        u.relevant = false;
+        assert!(
+            !keyup_follows_keydown(&mut l, u, false),
+            "Up は plan() の結果のまま"
+        );
+    }
+
+    #[test]
+    fn up_consumes_stale_entry_even_when_irrelevant() {
+        let mut l = vec![(ScanCode(0x29), false)];
         let mut u = input(0x29, false, true);
         u.relevant = false;
         assert!(!keyup_follows_keydown(&mut l, u, true));

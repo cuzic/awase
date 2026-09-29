@@ -562,6 +562,10 @@ impl Runtime {
         // deliver_key_event に一切イベントを渡さないため、latch が残っていても
         // 対応する KeyUp が永遠に届かない。
         self.platform_state.keymap.keymap_latch.release_all();
+        // 物理 IME キーの KeyUp 配送ラッチ（`shadow_key_down_disposition`）も同じ理由で解放する:
+        // FOCUS_APP_DISABLED 遷移中はフックが `deliver_key_event` にイベントを渡さないため、対応する KeyUp が
+        // 永遠に届かずエントリが残る（旧 `kana_mode_restore_key_down` の M-3/m-7 対策を引き継ぐ）。
+        self.platform_state.gate.shadow_key_down_disposition.clear();
 
         if matches!(transition, SuppressionEdge::Enter) && !is_bootstrap {
             // 無効アプリに入った瞬間、pending だったチョードをタイマー満了に任せず
@@ -608,6 +612,8 @@ impl Runtime {
         // 他プロセス窓で候補ウィンドウが表示された履歴が新窓の dispatch-ime に影響すると
         // effective_open が誤って true になり VK_KANJI を誤送信する（shadow desync 偽陽性）。
         crate::tsf::observer::reset_candidate_was_seen();
+        // 前ウィンドウの物理キー押下の KeyUp が新窓へ届かない場合に備え、KeyUp 配送ラッチも解放する。
+        self.platform_state.gate.shadow_key_down_disposition.clear();
         let tick_ms = self.enter_focus_scope(classified);
         let new_profile = self.platform.current_app_profile();
         let new_hwnd = crate::state::ime_event::HwndId(classified.hwnd.0 as usize);
