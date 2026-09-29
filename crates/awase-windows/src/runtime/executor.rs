@@ -512,7 +512,7 @@ impl DecisionExecutor {
     ///
     /// 段階:
     ///   A. [transport] KeyUp 対称性 — deferred Down に対応する Up も reinject に揃える
-    ///   B. [platform]  確認キー KeyUp warmup / Ctrl↑ cold recovery（副作用のみ）
+    ///   B. [platform]  確認キー KeyUp の保留 warmup 解除（副作用のみ）
     ///   C. [transport] output guard defer — 出力 in-flight 中は reinject 経由で順序保証
     ///   D. [platform]  確認キー KeyDown passthrough 後処理（副作用のみ）
     ///   → PassThrough

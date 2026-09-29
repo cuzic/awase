@@ -1,7 +1,7 @@
 //! TSF composition の warmup タイミングを管理する FSM。
 //!
 //! executor に散在していた `pending_warmup_on_keyup: bool` のミニ FSM を
-//! 状態として昇格させ、confirm キー（Space/Enter/Esc）・物理 F2・Ctrl↑ 等の
+//! 状態として昇格させ、confirm キー（Space/Enter/Esc）・物理 F2 等の
 //! passthrough イベントから「いつ eager warmup を送るか」を決定する。
 //!
 //! ## 設計

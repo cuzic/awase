@@ -157,7 +157,7 @@ MS-IME 系の ImmCross 失敗後は冪等な `MsImeDirect`（VK_IME_ON/OFF）へ
 
 ## カテゴリ 6: アプリ固有バグ対応系
 
-### 6-A. Ctrl↑ で `eager_warmup_sent_ms` をリセット
+### 6-A. Ctrl↑ で `eager_warmup_sent_ms` をリセット(**撤去済み・BUG-174**)
 
 **場所:** `crates/awase-windows/src/runtime/executor.rs:467-479`
 
@@ -165,7 +165,7 @@ MS-IME 系の ImmCross 失敗後は冪等な `MsImeDirect`（VK_IME_ON/OFF）へ
 
 **症状:** Ctrl を離した直後にひらがなを入力すると「この → kおの」になる。
 
-**判定: 削除不可**（WezTerm × GJI の実際の挙動への対応）
+**判定: 撤去済み**（2026-09-29、[BUG-174](known-bugs/BUG-174.md)）。前提の 500ms 待機は 2026-07-18 に既に撤去されており（`output/vk_send.rs`）、Ctrl↑ の `VK_IME_ON` は「Ctrl 押下中に注入される」ため「@」の被疑箇所になった。WezTerm での「この→kおの」再発は未検証。再発したら、書き戻す前に BUG-174 を読むこと。
 
 ---
 
