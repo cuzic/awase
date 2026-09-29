@@ -162,3 +162,50 @@ BUG-163（起動時 `desired_open=true` の強制ON）は修正が develop に�
 - E: `set_ime_open_ordered` が授権なしで `false` を返すことを確認し、T2 に記録項目を足した。
 - F: `architecture_guard.rs:1874`・`:2128` の既存ガードを確認し、T6 の範囲を絞った。
 - G: `runtime/mod.rs:1791-1792` に加え、トレイリセットの `set_ime_mode_for_target(hwnd, true, …)` も `ime.rs:1763` で開閉を書くことを確認した（レビューが挙げていない点）。08 → 09 の向きと中身も依存節に書いた。
+
+### CI での代替観測（2026-09-29、`cal-driftrec-*`。A/B-2 の代替ではない）
+
+**位置づけ:** 09 の A/B-2 手順1は「明示意図 OFF・実 ON」の向きで、この観測は逆向き（明示意図 ON・実 OFF）。T4 の終了条件
+（明示意図の回復シナリオが作れるか）にはまだ答えていない。ここで測ったのは「**外部から閉じられた IME を awase が観測するか／観測した後に戻すか**」。
+
+方法: `typing_stress --mode=drift-on`。`VK_IME_ON`（awase の明示意図 ON になるキー）で ON にそろえ、ハーネスが自プロセスの入力欄の IME へ
+`WM_IME_CONTROL(IMC_SETOPENSTATUS,0)` を送って awase を経由せず閉じ（別スレッドからの `ImmSetOpenStatus` は失敗する）、+500/+1500/+3000ms の
+API 開閉とかな単打の実打鍵結果を記録する。`check_drift_recovery.py` が awase.log を2つの時間窓で突合せる。
+**閉→打鍵直前**: observed（ImeModel への開閉観測）・drift（drift correction 発火）。**打鍵中〜確定後**: conv_read・reinit・unicode。
+前提（`on_key=VK_IME_ON`、同試行の ON 操作〜close の最後の `explicit_intent=Some(true)`）が成り立たない試行は invalid。
+構成: tsf（TsfNative 相当、ADR-193）と edit（Win32 対照）× GJI/MS-IME、各 10 試行×3 回。
+
+実測（run [36511231753](https://github.com/cuzic/awase/actions/runs/36511231753)、windows-latest、`ci/adr178-tsfnative-on-recovery` の `10b5ed51`、
+判定スクリプトは同コミットの版。3 回とも同じ結果。数は「その現象があった試行数」、10 試行あたり）:
+
+| 入力先 × IME | verdict | 明示意図 ON | observed | drift 補正 | conv_read | reinit | 実打鍵 |
+|---|---|---|---|---|---|---|---|
+| tsf × GJI | REOPENED_BY_OTHER_PATH | 10 | **0** | 0 | 10 | 10 | `か`（reopened_by_typing 10/10、各 run） |
+| tsf × MS-IME | NOT_OBSERVED | 10 | **0** | 0 | 10 | 0 | 生ローマ字 `ka`（not_recovered 10/10） |
+| edit × GJI | UNDETERMINED | 10 | **0** | 0 | 0 | 0 | `か`（typed_blind 10/10、unicode 10） |
+| edit × MS-IME | UNDETERMINED | 10 | **0** | 0 | 0 | 0 | `か`（typed_blind 10/10、unicode 10） |
+
+言えること:
+- 4構成すべてで、閉じてから打鍵直前まで、awase は **ImeModel へ開閉を観測しなかった**（observed=0。窓内に `[stage-observe]` が無く、`ir_apply_drift_correction` の
+  唯一の呼び出し元 `ir_stage_notify`〈`ime_refresh.rs:278`〉に届いていない）。したがって drift correction の判断（`check_drift_correction`、授権、鮮度上限）は
+  **一度も走っていない**。「drift correction は ON へ戻さない」とは**言えない**（測れていない）。verdict の NOT_OBSERVED はこの意味。
+- 観測しない理由（コード上のコメントによる。`runtime/mod.rs`）: tsf は TsfNative の早期 return（`:1102-1108`、定期ポーリングを予約しない）。edit は明示意図が
+  あるときポーリングを止める条項（`:1146-1148`）。再開の契機は、同コメント（`:1094-1095`）によればフォーカス変更・may_change_ime キー・`ReportOpenInference` だけで、
+  この測定ではそれ以外は起きなかった。なお edit は ON キーと無関係に、awase が **Unicode 注入**するので、打鍵結果は IME の開閉の証拠にならない
+  （今回は明示意図 ON のまま Engine が ON で残ったので、閉じた IME にも `か` が入った）。
+- 打鍵時の送信前チェックは conv を読む（conv_read）。ただし ImeModel の開閉観測ではない。**tsf × MS-IME では、この送信前チェック（`output/probe_io.rs` の msime-ready）が
+  conv の NATIVE を「ON 確認」と扱い、閉じた IME へ "ka" を送って生ローマ字になった**（30/30。`state=Hiragana confirmed=false` → `NATIVE 確認 → 送信 "ka"`、
+  run 36510380572 の `result-cal-driftrec-tsf-msime-native-1` の awase.log。run 36511231753 でも conv_read 10/10 で再現）。conv は閉じても NATIVE のまま残る（`ime_refresh.rs:862-866`）。開閉ではなく conv で
+  送信可否を決めていることが、ログで確認できた。conv mode ファミリーの再発として `docs/known-bugs/` に起票する対象（未起票）。
+- **C-2「TsfNative の ON 方向の救済は drift correction だけ」は、GJI × TsfNative については反証された**: 打鍵して literal を 2 回検出（count=2）→ give-up →
+  **GJI reinit（VK_IME_OFF→ON 注入、`probe_io.rs:186`）**が ON 方向の能動書き込みとして開け直す（tsf × GJI、30/30、打鍵後の API は各 run 10/10 で開）。これは
+  ずれの検知ではなく打鍵時の事後回復。確定テキストは 30/30 で `か` だが、最初は一時的にリテラルが入り、BS と再送で補正される。MS-IME には同等の経路が無い。この reinit は開閉軸の棚卸し（上表）に載っていない → 追記が要る。
+
+言えないこと（未確認のまま）:
+- 撤去前（reassert/force-on あり）のビルドでの同シナリオの対照は無く、領域A撤去で回復力が落ちたかは不明。
+- 観測が発生した後（フォーカス変更など）に drift correction が戻すか、BUG-163 1段目の「授権が下りない補正は検知へ進めない」が働くか。ログに
+  `[drift] 授権が下りないため補正を見送る` は 0 件（判断に届いていないため）。
+- edit 構成（GJI・MS-IME）は Unicode 注入のため、`ime_ready` の前提確認も含め、打鍵結果から IME の開閉は原理的に判別できない。
+
+実行: `gh workflow run e2e-ime.yml --ref <branch> -f only='cal-driftrec-*'`（cal-* は only 指定時だけ走る）。観測のみで合否には含めない。
+次の一手の候補: ずれを作った後にフォーカス変更（観測を1回起こす）を挟み、drift correction 自体の判断まで届く条件を作る。
