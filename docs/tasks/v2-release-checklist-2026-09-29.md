@@ -61,9 +61,9 @@ v2 ラインは `develop` → `main`（`.claude/rules/main-develop-branch-flow.m
 
 ## D. 実機確認待ち
 
-- [ ] **D1 BUG-163**: GJI/MS-IME × メモ帳/実 Chrome で、最初の打鍵が欠落しないこと。
-- [ ] **D2 ADR-203 / BUG-170・171**: OFF 前に1語確定→物理 OFF→1秒以内に物理 ON→即打鍵。ON キー単独タップ直後の遅延（想定30〜60ms）の再測定。
-- [ ] **D3 ADR-178 領域A撤去**: 実機 A/B（`review-2026-09-24-09` の「実機 A/B 手順」）。物理 Ctrl は SendInput で作れない。
+- [ ] **D1 BUG-163**: GJI/MS-IME × メモ帳/実 Chrome で、最初の打鍵が欠落しないこと。 手順: [v2-manual-verification-guide-2026-09-29.md](v2-manual-verification-guide-2026-09-29.md)。
+- [ ] **D2 ADR-203 / BUG-170・171**: OFF 前に1語確定→物理 OFF→1秒以内に物理 ON→即打鍵。ON キー単独タップ直後の遅延（想定30〜60ms）の再測定。 手順: [v2-manual-verification-guide-2026-09-29.md](v2-manual-verification-guide-2026-09-29.md)。
+- [ ] **D3 ADR-178 領域A撤去**: 実機 A/B（`review-2026-09-24-09` の「実機 A/B 手順」）。物理 Ctrl は SendInput で作れない。 手順: [v2-manual-verification-guide-2026-09-29.md](v2-manual-verification-guide-2026-09-29.md)。
 - [x] **D4 MS-IME 本体の学習（ADR-196 T2）**（v2 に含める、所有者決定）: 半角カタカナ（conv 0x0013）が学習モデルの Conv に無く復号失敗する件と、`--adopt-pending-judgement`（精度≥0.95）の採用経路の検証。**CI検証完了**（run 36569030546、5/5でdecode_errors=0・採用/再採用success・精度0.953〜0.973。[adr196-t2-msime-learning-open-issues.md](adr196-t2-msime-learning-open-issues.md)「再検証」節。コード変更なし）。
 
 ## E. リリース作業
