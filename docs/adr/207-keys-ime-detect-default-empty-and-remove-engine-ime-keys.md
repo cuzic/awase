@@ -147,3 +147,12 @@ ImmCross の偽の窓では Engine が inactive で `SetOpen` が出ず、現状
 - `ime_detect` を空にした後の 0x16/0x1A 追随は、コードの静的な読み(上表)による。実機/CI での確認は上記1回のみ。
 - `keys.ime_toggle`/`ime_on`/`ime_off` に無修飾の 0x16/0x1A を書いた構成の Engine 側の二重処理は、上記のとおり冪等性を executor の読みで確認しただけ。
 - 撤去した `engine_*_ime_key` の使用ユーザーがいた場合、Engine ON/OFF 時のモード強制が無くなる。読込警告で通知する。追加の救済策は用意しない。
+
+## レビュー記録
+
+- round1(Opus): `is_japanese_ime` の前提の誤り、警告がログのみで不可視、連鎖範囲の漏れ、`suggest` の有害提案 → 反映。
+- round2(同じレビュアー): 静的採用の等価性を裏取りで確認。KeyUp 非対称は既存ラッチで防止済みと訂正。本文の旧記述の矛盾、GUI 保存直後の警告 → 反映。
+- round3(同じレビュアー、実装 PR #373 対象): **収束**(追加の必須指摘なし)。`kp_stage_shadow_ime_toggle` の分岐、`latch_step`・KeyUp ラッチ・`transport::plan` に副作用なし、
+  連鎖削除に漏れ・過剰なし(`actuation_call_guard` 許可リストは更新不要、`applied_snapshot` 楽観更新と `uses_kanji_toggle` を残す判断は妥当)、
+  通知の配線・頻度(起動ごとに 1 回、リロードでは同内容なら出ない)は意図どおり。任意の小修正(通知文に「設定画面で保存しても消えます」、CHANGELOG の ADR-201 項からの除外、
+  usage の「代わりの設定はありません」)は反映済み。ADR 番号は 205(BUG-172)・206(solo-tap)・208 と衝突なし。

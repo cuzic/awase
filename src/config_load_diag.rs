@@ -26,12 +26,12 @@ const REMOVED_WITH_NOTICE: &[(&str, &str)] = &[
     (
         "keys.engine_on_ime_key",
         "keys.engine_on_ime_key は撤去されました。値は無視されます。エンジンの ON/OFF に合わせて \
-         IME のモードキーを送る機能は無くなり、代わりの設定はありません。config.toml から削除してください",
+         IME のモードキーを送る機能は無くなり、代わりの設定はありません。config.toml から削除してください（設定画面で保存しても消えます）",
     ),
     (
         "keys.engine_off_ime_key",
         "keys.engine_off_ime_key は撤去されました。値は無視されます。エンジンの ON/OFF に合わせて \
-         IME のモードキーを送る機能は無くなり、代わりの設定はありません。config.toml から削除してください",
+         IME のモードキーを送る機能は無くなり、代わりの設定はありません。config.toml から削除してください（設定画面で保存しても消えます）",
     ),
 ];
 

@@ -651,7 +651,7 @@ ime_toggle = []
 # A last resort for when Ctrl gets stuck and the shortcuts stop working.
 # Disable it with an empty string "" or by deleting the line.
 engine_off_solo_triple = "VK_NONCONVERT"</div>
-      <p class="note" style="margin-top:0.7rem"><code>engine_on_ime_key</code>/<code>engine_off_ime_key</code> (which sent an IME mode key when the engine turned ON/OFF) have been removed. They are ignored if still present in <code>config.toml</code> (a notice is shown at startup — delete those lines). Use <code>ime_on</code>/<code>ime_off</code> above to open/close the IME.</p>
+      <p class="note" style="margin-top:0.7rem"><code>engine_on_ime_key</code>/<code>engine_off_ime_key</code> (which sent an IME mode key when the engine turned ON/OFF) have been removed. They are ignored if still present in <code>config.toml</code> (a notice is shown at startup — delete those lines). There is no replacement (use <code>ime_on</code>/<code>ime_off</code> above to open/close the IME).</p>
       <p class="note" style="margin-top:0.7rem">To assign multiple keys, add them to the array: <code>["Ctrl+Shift+変換", "Ctrl+F8"]</code></p>
       <p class="note">A global hotkey (which works regardless of app focus) is set with <code>engine_toggle_hotkey = "Ctrl+Shift+F12"</code> under <code>[general]</code>.</p>
     </div>
