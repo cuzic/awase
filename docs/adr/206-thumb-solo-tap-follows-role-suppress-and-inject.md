@@ -11,7 +11,7 @@ summary: |-
   belief OFF 側を独自に持ち(ケース2/3改、`explicit_ime_action_target`＋`transport.rs` の M19 例外)、belief ON 側も独自の経路(ケース1)を持つ二重系統になっている。
   本 ADR は「役割(config.toml の bare `keys.ime_*` または IME 設定由来)」を唯一の入力にして二重系統を1本にし、旧設定を読込時に bare `keys.ime_*` 相当へ移して警告する。
 status: |-
-  起草(2026-09-29)。opus round1〜3 反映済み(エンジン側合流、リピート印、eisu 保持、削除一覧、3(b)撤回、非固着の条件、ADR-205 相互参照)。opus round1〜4 で収束(2026-09-29 夕の仕様訂正後の追加ラウンドは round5)(round4: 設計変更不要、前提 P3/P4 等の記述3点を反映済み)。固着の定義(所有者)反映済み。コア・Windows・GUI・テスト・CI シナリオを実装済み(PR)。実機 A/B(「@」)と CI e2e は未検証。
+  起草(2026-09-29)。opus round1〜3 反映済み(エンジン側合流、リピート印、eisu 保持、削除一覧、3(b)撤回、非固着の条件、ADR-205 相互参照)。opus round1〜5 で収束(round5=2026-09-29 夕の仕様訂正後。記述3点を反映済み)(round4: 設計変更不要、前提 P3/P4 等の記述3点を反映済み)。固着の定義(所有者)反映済み。コア・Windows・GUI・テスト・CI シナリオを実装済み(PR)。実機 A/B(「@」)と CI e2e は未検証。
 related_adr:
   - "ADR-092"
   - "ADR-119"
@@ -90,7 +90,13 @@ S3 は「@」抑止の同等性が S1/S2 経路で未検証のため v2.0 では
   (α) 現状維持: 非活性側の Suppress は受動(IME が自分で処理)。既定が Suppress の全ユーザーで挙動が変わらない。「飲み込む」は活性側の単独タップにだけ効く、と読む。
   (β) 非活性側でも Suppress の親指単独押下を飲み込む(Down/Up とも Consume、リピート含む)。仕様には忠実だが、IME OFF 中に無変換で IME を開くという既存の使い方(GJI の既定プリセットで無変換=直接入力等)を全ユーザーで塞ぐ。
   (γ) 役割(S2)があるキーだけ、非活性側でも Suppress なら飲み込む。トグルを Suppress に設定した意図(IME を動かさない)に忠実で、影響が S2 を持つユーザーに限られるが、非活性側に「飲み込むだけ」の入口が増える。
-  本 PR は (α)。
+  本 PR は (α)。**所有者確認のため、影響を明記する**:
+  - (α) 既定(Suppress)のユーザーで GJI の CUSTOM 表の無変換がトグルの場合、無変換は**一方向のキー**になる: エンジン非活性(IME OFF)では生キーが GJI に届いて**開く**が、エンジン活性(IME ON)では単独タップの Suppress で飲み込まれて**閉じない**。
+    所有者の固着の定義(何度押しても変わらない)に文面上は当てはまり、ADR-199 決定16(出荷済み。Suppress でも閉じていた)からの**退行**でもある。Suppress をユーザー自身が選んだ場合の「IME を動かさない」としては筋が通るが、Suppress は既定値。
+    一方向になっていることをユーザーに知らせる手段(状態依存キー警告、または設定 GUI の「無変換は IME 側でトグルですが、単独タップが Suppress のため awase は閉じません」)は検討事項(コード変更は所有者判断の後)。
+  - (β) 両方向とも動かない(一貫はするが、IME OFF 中に無変換で開くという既存の使い方を全員から奪う)。
+  - (γ) 役割を持つ既定ユーザーでは両方向とも動かない(トグルを Suppress にした意図には忠実。影響は S2 のユーザーだけ)。
+  - 旧来の `always_suppress = false`(idle は Passthrough、composing は Suppress)のユーザーでは、S2 は入力中(composing)には発火しなくなる。ADR-199 決定16 の「composing 中も発火」も上書きする。
 
 ### 決定2: 入力は S1 と S2 だけ。S3(`*_solo_tap_ime_action`)と、それ専用の非活性側機構を撤去する
 
@@ -185,19 +191,26 @@ S2 は「生キーで GJI 自身が確実に処理していた打鍵」を awase
 
 ### 訂正に伴う整理(2026-09-29 夕、所有者回答)
 
-- **S1 × 単独タップ Suppress(`always_suppress`)**: S1 は設定に関係なく発火するので、`*_solo_tap_always_suppress = true` を残した設定でも bare の親指は書く。`always_suppress` は「役割が無いときの素通しを止める」だけになる。
+- **S1 × 単独タップ Suppress(`always_suppress`)**: S1 は設定に関係なく発火するので、`*_solo_tap_always_suppress = true` を残した設定でも bare の親指は書く。`always_suppress`（Suppress）は **S2（役割由来）の発火と、役割が無いときの素通しを止める**が、S1 bare の発火は止めない。
   意図に反しうる点: (i) 「Suppress にしたから IME を動かさない」と思ったユーザーが bare `keys.ime_*` に親指を書いていた場合、書かれる(bare は awase 側の明示設定なので従来どおり。所有者判断で S1 も Passthrough 限定にできるが、
-  GUI T3 が書く主流設定が動かなくなる)。(ii) 旧 GUI T3 が書いた `*_solo_tap_ime_action` + `always_suppress = true` の組(親指)は、移行後は S1 になり Suppress でも発火する(旧実装のケース1も Suppress では発火したので同じ)。
+  GUI T3 が書く主流設定が動かなくなる)。(ii) 旧 GUI T3 が書いた `*_solo_tap_ime_action` + `always_suppress = true` の組(親指)は、移行後は S1 になり Suppress でも発火する(旧実装のケース1も Suppress では発火したので同じ。ただし旧ケース1は Passthrough では発火しなかったので、移行後は Passthrough では新たに発火する〈M13〉)。
 - **GUI T3 が書く主流設定(旧 `muhenkan_solo_tap_ime_action = "off"` + `always_suppress = true`)の移行後の挙動**: bare の `keys.ime_off` に「無変換」が入った S1 になり、Suppress のままでも発火する。エンジン活性側は単独タップ確定で絶対指定の OFF、
   エンジン非活性側は Down のエンジン特殊キー照合で絶対指定の `SetOpen(false)`(旧ケース3改の「抑止のみ」ではない。固着回避の決定3・7のとおり。旧 `"off"` × belief OFF の「抑止のみ」は戻らない)。GUI の新しい書き込み(bare の追記)も同じ挙動。
 - **決定7(非固着)への影響**: S2 は Passthrough のときだけ能動なので、Suppress の S2 は「何もしない(飲み込むか素通し)」で状態を変えない設定であり、固着の議論の対象外。
   Passthrough の S2 は従来どおり(押すたびに belief が反転し指令が交互になる。2〜3回で期待状態)。S1 は変更なし。
-- **Ctrl↑ で actuation しない(マージ条件、所有者)**: BUG-113/124 の「@」は Ctrl↑ 側の actuation が関与した(BUG-174: 旧 `CompositionEvent::CtrlUp` の eager warmup が Ctrl 押下中に `VK_IME_ON` を注入、`aa53eb4b` で撤去済み)。
+- **Ctrl↑ を契機とする専用の actuation が無い(マージ条件、所有者。BUG-174 の再導入禁止)**: BUG-113/124 の「@」は Ctrl↑ 側の actuation が関与した(BUG-174: 旧 `CompositionEvent::CtrlUp` の eager warmup が Ctrl 押下中に `VK_IME_ON` を注入、`aa53eb4b` で撤去済み)。
   新設計は Ctrl↑ に actuation を持たない: 親指の開閉は修飾なしの親指だけが対象(`is_bare_thumb`)で Ctrl+無変換/変換は対象外、`on_ctrl_key_up` は chord barrier の解除だけ。これを次で固定する:
   `architecture_guard::ctrl_key_up_never_actuates_ime`(旧 CtrlUp 識別子の不在、`on_ctrl_key_up` の本体に SendInput/apply_ime_open_* 等が無いこと、パイプラインの Ctrl 系 KeyUp ブロックが `on_ctrl_key_up` の呼び出しだけ)と、
   `src/engine/tests.rs::ctrl_release_after_thumb_never_emits_ime_effects`(Ctrl+無変換の Down/Up と Ctrl↑ の決定に IME 効果が無い)。CI e2e は注入キーしか作れず物理の Ctrl↑ を再現できないため対象外(制約)。
   `origin/fix/eager-warmup-modifier-guard`(BUG-175: eager warmup を Ctrl/Shift/Alt/Win 押下中に抑止)は本 PR に含めない(別 PR。未マージ)。
-- **「@」の実機 A/B はマージ条件から外す**(所有者)。「@」の検証は未実施。
+  **この条件が保証する範囲と、範囲外の残る被疑**(round5 §3): 上のガードは「Ctrl↑ 専用の actuation ハンドラが無い」ことの固定で、文字どおりの「Ctrl↑ のイベントの決定に IME 効果が一切載らない」ではない。
+  (1) Ctrl↑ も `engine.on_input` を通り、Phase 2 の `check_active_transition`(`engine.rs` の Phase 2)が、直前のキーから Ctrl↑ までの間に観測(poll・ADR-205 の watch・drift)で `ctx.ime_on` が変わっていれば
+  `SetOpen(.., ActivationSync)` をその Decision に載せる(押されている修飾キーは `send_ime_mode_key` の `HeldModifiers` が一時的に離すので、BUG-174 の「Ctrl 押下中の `VK_IME_ON`」の構成にはならない見込みだが、条件の文面どおりではない)。
+  (2) BUG-174 の残る被疑2(確定キー Enter/Esc の `ConfirmKeyDown` と reinject の eager warmup が 1 打鍵あたり `VK_IME_ON` を 2 回送る。ADR-167 の「連続 2 回以上の SendInput」に関わる、より強い被疑)と、
+  BUG-175(修飾キー押下中の eager warmup、未マージ)は、Ctrl「押下中」の注入であり本条件の外。「@」の残りの被疑として別に追う。
+  文面どおりの保証が必要なら、エンジンに「OS 修飾キーの KeyUp では `check_active_transition` の `SetOpen` を出さず次の非修飾キーへ持ち越す」1 分岐とテストを足す案(ii)があるが、ActivationSync のタイミングを変えるので**所有者判断**(本 PR は範囲を広げず (i) の文面)。
+- **「@」の実機 A/B はマージ条件から外す**(所有者)。「@」の検証は未実施(旧 `"off"` × belief OFF の絶対指定 `VK_IME_OFF` 単発は BUG-124 の旧ケース3と同じ構成で、既知のリスクとして BUG-124 に追記)。
+- 副次: `apply_config_update` の `set_thumb_role_open_actions(None, None)` は reload のたびに押下中の役割を消す(親指を押したまま reload が入るとその 1 打鍵は開閉しない。二重 actuation の方向ではない)。
 
 ## 検証計画
 
