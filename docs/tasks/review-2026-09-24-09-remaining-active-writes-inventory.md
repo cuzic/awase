@@ -195,7 +195,7 @@ API 開閉とかな単打の実打鍵結果を記録する。`check_drift_recove
   （今回は明示意図 ON のまま Engine が ON で残ったので、閉じた IME にも `か` が入った）。
 - 打鍵時の送信前チェックは conv を読む（conv_read）。ただし ImeModel の開閉観測ではない。**tsf × MS-IME では、この送信前チェック（`output/probe_io.rs` の msime-ready）が
   conv の NATIVE を「ON 確認」と扱い、閉じた IME へ "ka" を送って生ローマ字になった**（30/30。`state=Hiragana confirmed=false` → `NATIVE 確認 → 送信 "ka"`、
-  run 36510380572 の `result-cal-driftrec-tsf-msime-native-1` の awase.log）。conv は閉じても NATIVE のまま残る（`ime_refresh.rs:862-866`）。開閉ではなく conv で
+  run 36510380572 の `result-cal-driftrec-tsf-msime-native-1` の awase.log。run 36511231753 でも conv_read 10/10 で再現）。conv は閉じても NATIVE のまま残る（`ime_refresh.rs:862-866`）。開閉ではなく conv で
   送信可否を決めていることが、ログで確認できた。conv mode ファミリーの再発として `docs/known-bugs/` に起票する対象（未起票）。
 - **C-2「TsfNative の ON 方向の救済は drift correction だけ」は、GJI × TsfNative については反証された**: 打鍵して literal を 2 回検出（count=2）→ give-up →
   **GJI reinit（VK_IME_OFF→ON 注入、`probe_io.rs:186`）**が ON 方向の能動書き込みとして開け直す（tsf × GJI、30/30、打鍵後の API は各 run 10/10 で開）。これは

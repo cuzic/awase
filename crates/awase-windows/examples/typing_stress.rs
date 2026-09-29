@@ -985,10 +985,12 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
             &json!({"type":"drift_on_pre","n":n,"utc":utc_hms(),"on_utc":on_utc,"on_key":format!("0x{on_key:02X}"),
             "real_ime_open":real_ime_open(child)}),
         );
+        // 窓の起点は閉じる操作の直前に取る(閉じた直後の観測が窓から漏れないように)。
+        let close_utc = utc_hms();
         let set_ret = force_close_real_ime(child);
         sleep_ms(50);
         rec(
-            &json!({"type":"drift_on_close","n":n,"utc":utc_hms(),"set_ret":set_ret,"real_ime_open":real_ime_open(child)}),
+            &json!({"type":"drift_on_close","n":n,"utc":close_utc,"set_ret":set_ret,"real_ime_open":real_ime_open(child)}),
         );
         let mut waited_ms = 0u64;
         for &cp in &CHECKPOINTS_MS {
