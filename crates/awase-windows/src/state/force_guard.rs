@@ -25,6 +25,8 @@ pub enum ForceOnReason {
     PanicReset,
     /// AppImePolicy が常時 force-on を要求
     ProfilePolicy,
+    /// 壊れた IMM32 アプリの起動直後 force-on(旧 try_force_on_bootstrap)
+    BrokenAppBootstrap,
 }
 
 /// 単一の force-on ガード。
