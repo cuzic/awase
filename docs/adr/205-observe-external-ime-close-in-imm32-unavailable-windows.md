@@ -8,7 +8,7 @@ summary: |-
   本 ADR は、目印なしの外部注入 IME キーで専用の短い監視窓(300ms)を立て、prefetch 済み snapshot で窓内に 1→0 の遷移を観測したときだけ
   実状態へ追随する(意図を捨て desired を揃える。awase は開け直さない)。新 I/O・新 actuation 合流点・新イベント種別なし。
 status: |-
-  起草(2026-09-29)。opus-adversarial-consult round1・round2 反映済み、round3 待ち。実装未着手。
+  起草(2026-09-29)。opus-adversarial-consult round1〜3 反映済み、round4(収束確認)待ち。実装未着手。
 related_adr:
   - "ADR-029"
   - "ADR-089"
@@ -72,10 +72,13 @@ related_adr:
 
 ### D1. 外部注入 IME キーで「外部クローズ監視」(`ExternalCloseWatch`)を立てる
 
-`ImeStateHub` に `Option<ExternalCloseWatch{armed_at_ms, scope, saw_open: bool}>` を1つ足す。`kp_stage_post_decision` の `may_change_ime && KeyDown && !consumed` 経路で、次を**すべて**満たすとき立てる:
+`ImeStateHub` に `Option<ExternalCloseWatch{armed_at_ms, scope, saw_open: bool}>` を1つ足す。`kp_stage_post_decision` の `may_change_ime && KeyDown && !consumed` 経路で、次の**両方**を満たすとき立てる:
 1. `event.injected`(hook の `is_injected` = LLKHF_INJECTED かつテスト目印なし)。awase 自身の注入は含まない。
 2. Blacklist 窓(`!can_use_imm32_cross_process()`)。
-3. `explicit_ime_action_age_ms >= EXPLICIT_IME_SUPPRESS_MS`(既存 1500ms。round2 M3: MS-IME/CTF が自分で注入する 0xF0/0xF2 が、ユーザーの明示操作の直後に来ても watch を立てない。idle-conv-check のガード4と同じ既存定数)。
+
+除外(明示操作直後は arm しない)は**置かない**(round3 R3-2): 追随は 1→0 の一方向だけで、MS-IME/CTF の注入がユーザーの明示 OFF の直後に来ても、観測される 1→0 は awase 自身の OFF が効いた瞬間で追随先は OFF(ユーザー意図と一致)。
+明示 ON の直後なら観測は 1→1 か 0→1 で追随しない。BUG-14 型の上書き(OFF 意図を ON で潰す)は構造的に起きない。ハーネスは VK_IME_ON から注入まで約 1.1〜1.3 秒で、除外(1500ms)を置くと再現条件そのものを弾いてしまう。
+窓の中で注入キーが連続する場合(0xF3 の2連、CTF の 0xF0 up + 0xF2 down)は、同じ scope なら `saw_open` を保持したまま `armed_at_ms` だけ延ばす(round3 m2)。
 `VK_IME_ON/OFF`(0x16/0x1A)も対象(方向を awase が決めない注入ではこれが再現キー)。既存の 20ms 後の refresh(`schedule_ime_refresh(20)`)がそのまま最初の読みになる。
 
 窓は既存の `MODE_KEY_PASS_MARK_WINDOW_MS`(300ms)を流用し、`foreground_scope` が変わったら失効(通過マークと同じ)。**GJI が注入キーで実際に閉じるまでの時間が 300ms に収まるかは未測定**(ハーネスは KeyDown の 360ms 後に閉状態を確認しただけ)。第0段の trace で prefetch の読みの時刻と値の列を測り、
@@ -87,10 +90,13 @@ related_adr:
 - 純粋関数 `observer/ime_observer.rs::classify_external_close(watch_saw_open: bool, snap_open: Option<bool>) -> ExternalCloseVerdict`
   (`NoEvidence`〈`None`〉/ `SawOpen`〈`Some(true)`〉/ `Closed`〈`saw_open` かつ `Some(false)`〉/ `IgnoreZero`〈`!saw_open` かつ `Some(false)`〉)。
 - `SawOpen` は watch の `saw_open=true` を立てるだけ(belief に書かない)。`IgnoreZero` は捨ててログ(`[external-close] ignored 0 without prior 1`)。
-- `Closed` のとき: `write_observer_poll(false, tick, AcceptedObservation::for_sync(focus_fence))` → `ImeStateHub::pass_through_observed(tick, true)`(`last_intent` を捨て、`derive_any` から `desired_open` を実状態へ揃える)→ watch を解除。
+- `Closed` のとき: `ImeStateHub` に新設する 1 メソッド `adopt_external_close(tick, accepted)` を呼ぶ(round3 R3-1)。中身は `write_observer_poll(false, ..)` → **`intent_store.remove(current_focus)`**(`effective_open_at` は IntentStore の意図を shadow_model より優先し TTL は約30秒。物理キー経由の VK_IME_ON の意図が残ると belief が ON のままになる。既存の通過マークの経路も `drop_intents_for_mode_key_pass_in_scope` で同じ除去をしている)→ private の `pass_through_observed(tick, true)`(`shadow_model.last_intent` を捨て、`derive_any` から `desired_open` を実状態へ揃える)。最後に watch を解除。`pass_through_observed` は private なので `runtime/` からはこのメソッド越しにだけ呼べる。回帰テスト: IntentStore に ON の意図がある状態から Closed 後に `effective_open()` が false。
   反映は 0→ の一方向(閉じた)だけ。ON 方向(0→1)の追随は本 ADR の範囲外(症状は「閉じたのに ON のまま」)。
 - `reschedule_ime_refresh`: watch が生きている間は、明示意図の停止(`runtime/mod.rs:1128-1133`)より前で `MODE_KEY_PASS_REREAD_MS`(60ms)の読み直しを予約する。窓が切れたら watch を破棄して従来どおり(意図は捨てない)。
-- 最初の読みが既に 0(閉じるのが 20ms の refresh より速い)なら `IgnoreZero` で追随しない。arm 時に直近の値を持つ案は、古い 1 を「検証」と誤認する穴があるため取らない(round2 M1)。取りこぼしは第0段の測定で頻度を確認する。
+- 最初の読みが既に 0(閉じるのが最初の読み〈KeyDown から約 25〜40ms 後〉より速い)なら `IgnoreZero` で追随しない。**両側の競合(閉じる前の 1 を読む/閉じた後の 0 しか読めない)のどちらが優勢かは未測定**。第0段の trace(KeyDown の時刻と各 prefetch の時刻・値)で確定する。
+  「毎回取りこぼす」だった場合の代案(実装時に採用可、round3 R3-3): 全 refresh の入口で `foreground_scope` 付きの直近 prefetch 値を1つ記録し、arm 時にそれが `Some(true)` なら `saw_open` の初期値を true にする。採用条件は「注入 IME キー直後の窓の中で実際に 0 を読んだ」ことのままなので、古い 1 を検証と誤認する危険(round2 M1)は、HIMC の付け外しと注入キーが同時に起きない限り増えない。
+
+- Closed の後の `observe_gji_after_focus` の `ObserverPoll(true)` 上書き(round3 m1): その第1引数を `max(last_focus_change_ms, last_external_close_ms)` にして、閉じる前の GJI I/O を無視する(実装時。GJI が閉じるときに I/O を出すかは第0段の `[gji-poll]` で確認)。
 
 ### D3. 「常に 0」説と「1→0 が読める」説の両立
 
@@ -116,13 +122,13 @@ awase は IME を開け直さない。ADR-178 領域A撤去・ADR-191 の方針(
 | AutoHotkey 等で意図して閉じた IME を awase が開け直す | 開け直さない(D4)。desired を観測へ揃える。 |
 | 通過マークの副作用(明示意図の破棄・既存の物理モードキー通過の挙動変更) | 通過マークを使わず専用の watch にした。遷移を観測したときだけ意図を捨てる(観測なしでの破棄なし)。 |
 | 物理 IME キー(目印付き)の経路への影響 | D1 は「目印なしの注入」のみ。目印付きは従来の shadow-toggle(awase が Engine も OFF)。 |
-| MS-IME・edit・他アプリ | Standard(OsPoll)は無変更。MS-IME は注入キーが効かないため追随の機会なし。 |
+| MS-IME・edit・他アプリ | Standard(OsPoll)は無変更。MS-IME は再現できていない(注入の 0xF3/0x1A が効かない)が、CTF の注入で watch は立ちうる——追随は 1→0 の観測時のみ。 |
 | 既存の複数窓口(fix-requires-evidence の表) | watch の arm/consume/expire/reschedule の各窓口(`kp_stage_post_decision`、`ir_stage_observe`、`reschedule_ime_refresh`、フォーカス変更での失効)すべてに配線したか、architecture_guard の件数で固定する。 |
 
 **実装の第0段(コード変更なし、推奨)**: 既存ハーネス(`cal-driftrec-chrome-real-hz-ext-gji`)を trace レベル(`ime.rs::detect_ime_open_for_hwnd` の `CrossProcess(hwndFocus)`)で1回走らせ、
 注入前後の prefetch 値(1→0)、注入後の refresh が `SkipTyping` であること、明示意図が `Some(true)` であることを確認する。前提(B0/B1/B3)の実測での裏取りで、「観測経路に乗ったか」の確認を兼ねる。
 
-**回帰テスト**(host で走るもの): `classify_external_close` の表(1→0 で Closed、0 のみは IgnoreZero、None は NoEvidence)、watch の arm 条件(明示操作直後は立てない=M3 の回帰テスト)、窓切れ・scope 変化での失効、
+**回帰テスト**(host で走るもの): `classify_external_close` の表(1→0 で Closed、0 のみは IgnoreZero、None は NoEvidence)、「明示 OFF 直後の注入 0xF2 で 1→0 → OFF のまま(整合)」「明示 ON 直後の注入は追随しない」の2本、watch の連続 arm(saw_open 保持)、窓切れ・scope 変化での失効、
 `state/drift_correction.rs` の closed_loop で「Closed 追随後は drift が発火しない」を固定。architecture_guard: `ModeKeyPassedThrough` の構築点が `pass_through_observed` のみであること、watch の arm 呼び出し元が1か所であること。
 
 **実機・CI**: 測定用ブランチから `gh workflow run e2e-ime.yml --ref <branch> -f only='cal-driftrec-chrome-real-*'`(乱発しない)。
@@ -133,8 +139,8 @@ awase は IME を開け直さない。ADR-178 領域A撤去・ADR-191 の方針(
 ## 未決事項(所有者判断の候補)
 
 1. 方針「IME の実状態が真実、awase は開け直さない」(D4)の確認。従来の drift correction 型の「開け直し」(ハーネスの旧 PASS 定義)を望む場合は設計が変わる。
-2. D3 の限界(フォーカス世代の初回の読みが 0 なら追随しない)の許容。
-3. ADR-187 の通過マークを外部注入キーへ広げること(BUG-14 の「注入はユーザー意図にしない」との整合。意図は昇格させず、実状態への追随だけを行う)。
+2. 取りこぼし(窓の最初の読みが既に 0 のとき追随しない)の許容。第0段の結果次第で D2 の代案(arm 前の直近値)を採る。
+3. 専用 watch による追随(BUG-14 の「注入はユーザー意図にしない」との整合。意図は昇格させず、実状態への追随だけを行う)。
 
 ## 敵対レビューの記録
 
@@ -156,3 +162,10 @@ awase は IME を開け直さない。ADR-178 領域A撤去・ADR-191 の方針(
 - M3 CTF 自身の注入で BUG-14 型の上書き → 反映(EXPLICIT_IME_SUPPRESS_MS の間は arm しない。かつ追随は 0 方向のみで 1 に揃える経路が無い)。
 - M4 通過マークの `readable_at_arm` 副作用・物理モードキー通過の挙動変更 → 反映(通過マークを使わず専用 watch、`ModeKeyPassedThrough` の再利用のみ)。
 - m1 D5 の誤り → 訂正。m2 世代の定義 → 廃止で解消。m3 打鍵中の GJI I/O 書き込み → strategy の外で消費して回避。
+
+### round3(Opus、2026-09-29): major 3・minor 3(未収束、修正は局所的)
+
+- R3-1 `pass_through_observed` だけでは IntentStore の意図が残り belief が ON のまま → 反映(`adopt_external_close` 新設、IntentStore 除去、回帰テスト)。
+- R3-2 明示操作 1500ms の除外がハーネスの再現条件を弾く(VK_IME_ON から注入まで約 1.1〜1.3 秒)、しかも 1→0 限定の設計では不要 → 反映(除外を撤去)。
+- R3-3 最初の読みが既に 0 の取りこぼしの競合 → 第0段で確定、代案(scope 付き直近値で `saw_open` 初期化)を D2 に記載。
+- m1(GJI I/O の上書き)・m2(連続 arm は `saw_open` 保持)・m3(文書の残骸)→ 反映。
