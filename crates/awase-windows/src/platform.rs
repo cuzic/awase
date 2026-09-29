@@ -25,13 +25,6 @@ pub struct WindowsPlatform {
     pub output: Output,
     pub tray: SystemTray,
     pub timer: Win32Timer,
-    /// Engine ON 時に送信する IME モード切り替え VK コード（None で無効）
-    pub engine_on_ime_vk: Option<awase::types::VkCode>,
-    /// Engine OFF 時に送信する IME モード切り替え VK コード（None で無効）
-    pub engine_off_ime_vk: Option<awase::types::VkCode>,
-    /// ポーリング/フォーカス変更起因の EngineStateChanged で engine_state_ime_key を
-    /// 送らないためのガード。IME 状態変化 → VK 送信 → IME 状態変化の無限ループを防ぐ。
-    pub suppress_engine_state_key: bool,
     /// フォーカス追跡の全状態（ウィンドウ情報・判定キャッシュ・IME キャッシュ等）。
     pub(crate) focus: FocusTracker,
     /// confirm キーの warmup タイミングを管理する FSM。
@@ -65,35 +58,6 @@ impl std::fmt::Debug for WindowsPlatform {
     }
 }
 
-/// [`WindowsPlatform::suppress_engine_state_key`] を `true` にし、Drop で `false` に戻す RAII ガード。
-///
-/// パニック時も含めてフラグが必ずリセットされることを保証する。
-/// [`WindowsPlatform::suppress_engine_state_key_guard`] 経由で取得する。
-pub(crate) struct SuppressEngineStateKeyGuard(*mut bool);
-
-impl SuppressEngineStateKeyGuard {
-    fn new(platform: &mut WindowsPlatform) -> Self {
-        let ptr = std::ptr::addr_of_mut!(platform.suppress_engine_state_key);
-        // SAFETY: ptr は platform の有効なフィールドを指し、
-        //         このガードはシングルスレッドのメインループ内でのみ使用される。
-        unsafe {
-            *ptr = true;
-        }
-        Self(ptr)
-    }
-}
-
-impl Drop for SuppressEngineStateKeyGuard {
-    fn drop(&mut self) {
-        // SAFETY: ポインタはシングルスレッドのメインループ内でのみ使用される。
-        //         WindowsPlatform は APP (SingleThreadCell) が保持しており、
-        //         with_app の外側では Drop しないことが保証されている。
-        unsafe {
-            *self.0 = false;
-        }
-    }
-}
-
 impl WindowsPlatform {
     // ── コンストラクタ ────────────────────────────────────────────────────────
 
@@ -106,9 +70,6 @@ impl WindowsPlatform {
         output: Output,
         tray: SystemTray,
         timer: Win32Timer,
-        engine_on_ime_vk: Option<awase::types::VkCode>,
-        engine_off_ime_vk: Option<awase::types::VkCode>,
-        suppress_engine_state_key: bool,
         focus: FocusTracker,
         composition_fsm: crate::tsf::composition_fsm::CompositionFsm,
         stamper: crate::journal::JournalStamper,
@@ -117,9 +78,6 @@ impl WindowsPlatform {
             output,
             tray,
             timer,
-            engine_on_ime_vk,
-            engine_off_ime_vk,
-            suppress_engine_state_key,
             focus,
             composition_fsm,
             stamper,
@@ -416,13 +374,6 @@ impl WindowsPlatform {
     /// キーを TsfGate で処理する。`true` = 保留（呼び出し元は Consumed を返すこと）。
     pub(crate) fn try_hold_key(&mut self, event: RawKeyEvent) -> bool {
         self.output.try_hold_key(event)
-    }
-
-    /// `suppress_engine_state_key = true` のスコープを RAII で管理する。
-    ///
-    /// 返されたガードが Drop されると `false` に戻る。パニック時も保証。
-    pub(crate) fn suppress_engine_state_key_guard(&mut self) -> SuppressEngineStateKeyGuard {
-        SuppressEngineStateKeyGuard::new(self)
     }
 
     /// eager warmup F2 を送信した時刻 (ms) を返す。0 = 未送信。
@@ -1315,54 +1266,6 @@ impl PlatformRuntime for WindowsPlatform {
             .set(crate::TIMER_IME_REFRESH, Duration::from_millis(20));
     }
 
-    // ── Engine 状態変化時 IME モードキー送信 ──
-
-    fn send_engine_state_ime_key(&self, enabled: bool, applied: Option<bool>) {
-        if self.suppress_engine_state_key {
-            // ポーリング/フォーカス変化起因の遷移では VK を送らない。
-            // 送ると IME 状態が変わり → 次のポーリングでエンジンが逆転 → 無限ループになる。
-            tracing::debug!(
-                "[engine-state-key] suppressed (polling/focus-triggered, enabled={enabled})"
-            );
-            return;
-        }
-        // apply_ime_open（VK_KANJI or IMM クロスプロセス）が既に IME 状態を確定させている場合、
-        // 追加の mode key 送信は不要かつ有害。MS-IME は IME 閉時に VK_DBE_SBCSCHAR を受け取ると
-        // 半角英数モードで再オープンする挙動があり、Engine OFF / 実 IME ON の乖離を引き起こす。
-        //
-        // mode key 送信の本来の用途は「Engine 状態は変わったが IME open/close は変わらない」
-        // ケース（例: user_enabled トグルで IME はそのまま）に限定する。
-        let last_applied = applied.unwrap_or(false);
-        if last_applied == enabled {
-            tracing::debug!(
-                "[engine-state-key] skipped (apply_ime_open aligned ime={enabled}, profile={:?})",
-                self.current_app_profile()
-            );
-            return;
-        }
-        // VK_KANJI トグルで IME を制御するアプリ（Imm32Unavailable: Chrome/Edge）では
-        // apply_ime_open が既に VK_KANJI を送信済み。VK_DBE_SBCSCHAR/DBCSCHAR を追加送信すると:
-        //   OFF 時: VK_KANJI でクローズ直後に VK_DBE_SBCSCHAR が IME を再オープンする恐れがある。
-        //   ON 時: VK_KANJI で開いた後に VK_DBE_DBCSCHAR を送ると全角カタカナモードになりかねない。
-        let profile = self.current_app_profile();
-        if profile.uses_kanji_toggle() {
-            tracing::debug!("[engine-state-key] skipped (profile={profile:?}, VK_KANJI済み)");
-            return;
-        }
-        let vk = if enabled {
-            self.engine_on_ime_vk
-        } else {
-            self.engine_off_ime_vk
-        };
-        if let Some(vk) = vk {
-            // Win キー押下中スキップ時は on_ime_mode_vk_sent も呼ばない
-            // （送っていないキーで ime_mode_fsm の belief を動かさない）。
-            if unsafe { crate::ime::send_ime_mode_key(vk) } {
-                self.output.on_ime_mode_vk_sent(vk);
-            }
-        }
-    }
-
     // ── トレイ ──
 
     fn update_tray(&mut self, enabled: bool) {
@@ -1509,7 +1412,7 @@ impl WindowsPlatform {
         // これをリセットしないと次の composition 検出で desync と誤判定される。
         crate::tsf::observer::reset_candidate_was_seen();
         // ImeModeFsm belief 更新（BUG-13）: 実際に適用が走った場合のみ unconfirmed 化する。
-        // MsImeDirect は VK_IME_ON/OFF を送らず on_ime_mode_vk_sent を経由しないため、
+        // MsImeDirect は VK_IME_ON/OFF を送っても ImeModeFsm の belief を更新しないため、
         // ここが唯一の invalidate 点。これにより IME ON 遷移直後の送信が
         // ms_ime_gate_defer で IMC 確認を待つようになる。
         // AlreadyMatched は状態不変（確認済み belief を降格させない）、Failed は

@@ -898,18 +898,6 @@ impl Output {
         fsm.on_f21_sent();
     }
 
-    /// VK_IME_ON/OFF 送信時に `ImeModeFsm` の belief を即時更新する。
-    ///
-    /// 通常 IME ON/OFF（`send_engine_state_ime_key` 経由）用。
-    pub(crate) fn on_ime_mode_vk_sent(&self, vk: VkCode) {
-        let mut fsm = self.ime_mode_fsm.borrow_mut();
-        if vk == crate::vk::VK_IME_ON {
-            fsm.on_f21_sent();
-        } else if vk == crate::vk::VK_IME_OFF {
-            fsm.on_f22_sent();
-        }
-    }
-
     /// GjiFsm に LongIdle タイムアウトを送り、Response を返す。
     pub(crate) fn gji_on_long_idle(
         &self,

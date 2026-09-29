@@ -508,8 +508,18 @@ impl Default for DiagnosticsConfig {
     }
 }
 
+// 既定はすべて空（`#[derive(Default)]`）。経緯:
+// - 2026-08-16: 「漢字」（VK_KANJI）を `toggle` の既定から外した。当時 `keys.ime_toggle` が同じ
+//   VK_KANJI を既定で持っており、同一の物理キー押下に対して `kp_stage_shadow_ime_toggle`（このフィールド由来、
+//   belief を反転）と `Engine::apply_special_key_match`（`keys.ime_toggle` 由来、反転後の belief を読んで
+//   逆方向へ再反転しキーを consume）が二重に働き、「押しても IME が動かない」キーになっていた。
+//   （2026-09-29 追記: `keys.ime_toggle` の既定も空になったので、既定同士の衝突は起きない。）
+// - 2026-09-29（ADR-207、所有者決定）: `on`/`off` の既定（`IMEオン`/`IMEオフ` = VK_IME_ON/OFF）も空にした。
+//   hook の静的 `shadow_action` が `kp_stage_shadow_ime_toggle` で `is_japanese_ime()` を問わず採用され
+//   （`vk::is_static_idempotent_open_key`）、同じ追随を担うため冗長だった。明示した値はそのまま尊重される。
+
 /// IME 検出設定（シャドウ IME 状態追跡用キー定義）
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ImeDetectConfig {
     /// Toggle keys (direction unknown, flip shadow state)
@@ -518,30 +528,6 @@ pub struct ImeDetectConfig {
     pub on: Vec<String>,
     /// OFF keys (IME is now OFF / hankaku)
     pub off: Vec<String>,
-}
-
-impl Default for ImeDetectConfig {
-    fn default() -> Self {
-        Self {
-            // 2026-08-16: 「漢字」（VK_KANJI）を既定から外した。
-            // （2026-09-29 追記: `keys.ime_toggle` の既定も空になったので、既定同士の
-            // 衝突は起きない。ユーザーが両方に同じキーを書いたときの二重処理は下記のまま。）
-            // 当時は `KeysConfig::default().ime_toggle`（`keys.ime_toggle`、awase
-            // 自身が能動的に漢字キーを消費し冪等な VK_IME_ON/OFF へ変換して
-            // 送出する）が同じ VK_KANJI を既定で持っていたため、両方が
-            // 既定で有効だと同一の物理キー押下に対して
-            // `kp_stage_shadow_ime_toggle`（このフィールド由来、belief を
-            // 反転）→ `Engine::apply_special_key_match`（`keys.ime_toggle`
-            // 由来、反転後の belief を読んで逆方向へ再反転しキーを consume）
-            // という二重処理が発生し、「押しても IME が動かない」壊れた
-            // キーになっていた（Opusコードレビュー指摘）。`keys.ime_toggle`
-            // が漢字キーを能動的に consume する以上、素通しを前提にした
-            // このフィールドの観測は漢字キーに対しては意味を持たない。
-            toggle: Vec::new(),
-            on: vec!["IMEオン".to_string()],
-            off: vec!["IMEオフ".to_string()],
-        }
-    }
 }
 
 /// キーバインディング設定
@@ -589,21 +575,6 @@ pub struct KeysConfig {
     /// `serde(alias)` で旧名も引き続き受け付ける。
     #[serde(alias = "engine_off_solo_triple")]
     pub engine_off_solo_repeat: Option<String>,
-    /// Engine ON 時に送信する IME モード切り替えキー（None で無効）
-    ///
-    /// エンジンが有効になったとき、このキーを `SendInput` で送信して
-    /// IME を全角/ひらがなモードに強制する。open 軸（IME の開閉）と
-    /// charset 軸（全角/半角モード強制）を1つのキーで束ねる複合副作用キー
-    /// であり、ADR-091 決定1（open 軸は `VK_IME_ON`/`VK_IME_OFF` で決着済み）
-    /// より前の機構の残骸。既定 `None`（ADR-092 決定D Step1、2026-08-15）。
-    /// 上級者が明示的に設定した場合のみ有効化される。
-    pub engine_on_ime_key: Option<String>,
-    /// Engine OFF 時に送信する IME モード切り替えキー（None で無効）
-    ///
-    /// エンジンが無効になったとき、このキーを `SendInput` で送信して
-    /// IME を半角/直接入力モードに強制する。`engine_on_ime_key` と同種の
-    /// 複合副作用キーの残骸。既定 `None`（ADR-092 決定D Step1）。
-    pub engine_off_ime_key: Option<String>,
 }
 
 impl Default for KeysConfig {
@@ -624,8 +595,6 @@ impl Default for KeysConfig {
             ime_toggle: Vec::new(),
             ime_detect: ImeDetectConfig::default(),
             engine_off_solo_repeat: Some("VK_INSERT".to_string()),
-            engine_on_ime_key: None,
-            engine_off_ime_key: None,
         }
     }
 }
@@ -814,6 +783,12 @@ pub struct AppConfig {
     /// 設定ファイルの項目ではない（保存しない）。
     #[serde(skip)]
     load_warnings: Vec<String>,
+    /// 読み込んだ config.toml に撤去済みで**効果があった**キー（`REMOVED_WITH_NOTICE`）が残っていたときの通知
+    /// （ADR-207）。`load_warnings`（ログだけ）と違い、`validate()` が**警告**として返しトレイに出る。
+    /// 設定の保存（`config_save::save_edit`）が該当キーをファイルから消すので、保存後は
+    /// [`AppConfig::clear_removed_notices`] で落とす。保存しない。
+    #[serde(skip)]
+    removed_notices: Vec<String>,
 }
 
 /// `AppConfig::load` の失敗を UI 側の扱い分けができる粒度に分類した結果
@@ -883,6 +858,12 @@ impl AppConfig {
             })?;
         let default_table = toml::Table::try_from(Self::default()).unwrap_or_default();
         for path in ignored {
+            // 効果があった撤去キーは専用の通知（未知キーの提案文より先に判定する。
+            // 接頭辞ルールが `engine_on_ime_key` に `keys.engine_on` を提案してしまうため）。
+            if let Some(msg) = crate::config_load_diag::removed_notice(&path) {
+                config.removed_notices.push(msg.to_string());
+                continue;
+            }
             if crate::config_load_diag::is_removed_key(&path) {
                 continue;
             }
@@ -949,6 +930,17 @@ impl AppConfig {
     #[must_use]
     pub fn load_warnings(&self) -> &[String] {
         &self.load_warnings
+    }
+
+    /// 撤去済みで効果があったキーが config.toml に残っていた通知（ADR-207）。`validate()` の警告にも含まれる。
+    #[must_use]
+    pub fn removed_notices(&self) -> &[String] {
+        &self.removed_notices
+    }
+
+    /// 設定の保存で撤去キーがファイルから消えた後に、通知を落とす。
+    pub fn clear_removed_notices(&mut self) {
+        self.removed_notices.clear();
     }
 
     /// 設定を TOML 形式でファイルに保存する
@@ -1058,6 +1050,7 @@ impl From<ValidatedConfig> for AppConfig {
             keystroke_macro: v.keystroke_macro,
             legacy_keymap: Vec::new(),
             load_warnings: Vec::new(),
+            removed_notices: Vec::new(),
         }
     }
 }
@@ -1367,6 +1360,8 @@ impl AppConfig {
     pub fn validate(self) -> (ValidatedConfig, Vec<String>) {
         // 読み込み時の診断（未知のキー・`[[keymap]]` の合流）を先頭に置く。
         let mut warnings = self.load_warnings;
+        // 撤去済みで効果があったキーの通知は、ログだけの `load_warnings` とは別に**警告**として返す（ADR-207）。
+        warnings.extend(self.removed_notices);
         let mut general = self.general;
         let app_overrides = self.app_overrides;
 
@@ -1606,28 +1601,51 @@ default_layout = "nicola.yab"
         );
     }
 
-    /// ADR-092 決定D Step1: engine_on_ime_key/engine_off_ime_key の既定値は
-    /// 複合副作用キー（open + charset強制を1発で行う）の残骸であり、
-    /// 既定 None に固定する（2026-08-15、実装時に既定値を変更）。
+    /// `keys.ime_detect.{toggle,on,off}` の既定はすべて空（ADR-207、2026-09-29 所有者決定）。
+    /// 旧既定の `IMEオン`/`IMEオフ`（VK_IME_ON/OFF）の追随は hook の静的 `shadow_action` が担う。
+    /// 明示した値は既定と無関係に尊重される（一部の項目だけ書いた場合、残りは空）。
     #[test]
-    fn test_keys_config_default_has_no_engine_ime_mode_keys() {
-        let keys = KeysConfig::default();
-        assert_eq!(keys.engine_on_ime_key, None);
-        assert_eq!(keys.engine_off_ime_key, None);
+    fn test_ime_detect_defaults_are_empty_and_explicit_values_are_respected() {
+        let d = ImeDetectConfig::default();
+        assert!(d.toggle.is_empty() && d.on.is_empty() && d.off.is_empty());
+        let config: AppConfig = toml::from_str("[general]\n").unwrap();
+        assert!(config.keys.ime_detect.on.is_empty() && config.keys.ime_detect.off.is_empty());
+
+        let config: AppConfig =
+            toml::from_str("[general]\n[keys.ime_detect]\non = [\"IMEオン\", \"VK_F16\"]\n")
+                .unwrap();
+        assert_eq!(config.keys.ime_detect.on, vec!["IMEオン", "VK_F16"]);
+        assert!(config.keys.ime_detect.off.is_empty());
     }
 
-    /// 新規インストール（config.toml に該当キー未指定）は None のまま
-    /// パースされる。既存 config.toml に明示値がある場合は
-    /// `AppConfig::save` が全フィールドを明示出力する仕様上、この
-    /// デフォルト変更は新規/未保存ユーザーにのみ効く（ADR-092 決定D Step1）。
+    /// ADR-207: 撤去した `keys.engine_on_ime_key`/`engine_off_ime_key` が旧 config.toml に残っていても
+    /// 読み込みエラーにならず、他の設定が読める。値は無視され、専用の通知（`removed_notices`）だけが積まれる
+    /// （未知キー警告〈`load_warnings`、ログだけ〉にも、近い名前の提案〈`keys.engine_on`〉にもならない）。
     #[test]
-    fn test_parse_app_config_engine_ime_keys_default_to_none() {
-        let toml_str = r#"
-[general]
-"#;
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(config.keys.engine_on_ime_key, None);
-        assert_eq!(config.keys.engine_off_ime_key, None);
+    fn test_removed_engine_ime_keys_are_ignored_with_a_notice() {
+        let c = AppConfig::from_toml_str(
+            "[general]\nleft_thumb_key = \"無変換\"\n[keys]\n\
+             engine_on_ime_key = \"VK_DBE_DBCSCHAR\"\nengine_off_ime_key = \"VK_DBE_SBCSCHAR\"\n\
+             engine_on = [\"Ctrl+A\"]\n",
+        )
+        .expect("撤去したキーが残っていても読める");
+        assert_eq!(c.general.left_thumb_key, "無変換");
+        assert_eq!(c.keys.engine_on, vec!["Ctrl+A"]);
+        assert!(c.load_warnings().is_empty(), "{:?}", c.load_warnings());
+        assert_eq!(c.removed_notices().len(), 2, "{:?}", c.removed_notices());
+        assert!(c
+            .removed_notices()
+            .iter()
+            .all(|m| m.contains("撤去") && !m.contains("間違い")));
+        let (_v, warnings) = c.validate();
+        assert_eq!(
+            warnings.iter().filter(|w| w.contains("撤去")).count(),
+            2,
+            "{warnings:?}"
+        );
+        // 撤去キーが無ければ通知は出ない。
+        let c = AppConfig::from_toml_str("[general]\n").unwrap();
+        assert!(c.removed_notices().is_empty());
     }
 
     /// `keys.ime_toggle` の既定値は空（ADR-199 決定15、2026-09-29 所有者決定）。

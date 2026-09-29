@@ -684,8 +684,6 @@ impl DecisionExecutor {
             // 発動条件。フックスレッドから同期的に読めるようキャッシュを更新する。
             crate::hook::set_engine_enabled(*enabled);
         }
-        // send_engine_state_ime_key に渡す applied 値をトレイトオブジェクト取得前に確定する。
-        let applied_for_engine_key = self.applied_snapshot.applied_open();
         if let Effect::Input(InputEffect::SendKeys(actions)) = &effect {
             let passes_mode_key = actions.iter().any(|action| {
                 matches!(
@@ -731,14 +729,8 @@ impl DecisionExecutor {
                 ImeEffect::SetOpen { .. } => unreachable!("handled above"),
             },
             Effect::Ui(ue) => match ue {
-                UiEffect::EngineStateChanged {
-                    enabled,
-                    send_ime_key,
-                } => {
+                UiEffect::EngineStateChanged { enabled } => {
                     platform_rt.update_tray(enabled);
-                    if send_ime_key {
-                        platform_rt.send_engine_state_ime_key(enabled, applied_for_engine_key);
-                    }
                     None
                 }
             },
@@ -803,21 +795,16 @@ impl DecisionExecutor {
             // OutputActiveGuard を先に取得しておくことで、await 中に走るフックコールバックは
             // INPUT_DEFER へ退避され、SetOpen 進行中に新キーが engine に届かない。
             //
-            // 同一エフェクトバッチ内で直後に処理される UiEffect::EngineStateChanged →
-            // send_engine_state_ime_key が applied_snapshot を見て VK_F4/VK_F3 を
-            // 送信するかを決める。async 完了前は applied_snapshot が旧値のままなので
-            // 「不整合あり→モードキー送信」と判断されてしまう。
-            // LINE/Qt 等の ImmCross アプリはこの VK_F4 Up に対して VK_F3 Down を
-            // 生成し（extra=0x0、マーカーなし）、shadow toggle が ON→OFF に反転する。
-            // → 楽観的に applied_snapshot を更新して send_engine_state_ime_key をスキップさせる。
+            // async 完了前は applied_snapshot が旧値のままなので、同一バッチ内の後続 effect や
+            // 次の判定（`build_ime_control_view` の `shadow_on` 供給、`resolve_warmup_ime_on`）が
+            // 「まだ揃っていない」と誤判断しないよう、楽観的に更新する。
+            // （かつては `send_engine_state_ime_key` のモードキー送信を止める役目もあった。
+            // ADR-207 で撤去したが、上記の消費者があるためこの更新は残す。）
             self.applied_snapshot = crate::state::AppliedImeState::Optimistic(open);
             // IMM が set_ime_open_cross_process(open) 完了後に注入する VK_DBE_DBCSCHAR/
             // VK_DBE_SBCSCHAR KeyUp は key_pipeline の suppress_physical (ImmCross プロファイル
             // の KANJI VK 全 Consume) で構造的に遮断されるため、ここでは applied_snapshot 更新のみ。
-            tracing::debug!(
-                "[dispatch-ime] ImmCross async: optimistic applied_snapshot={open} \
-                 (suppress send_engine_state_ime_key)"
-            );
+            tracing::debug!("[dispatch-ime] ImmCross async: optimistic applied_snapshot={open}");
             // ImmCross の set_ime_open_cross_process は IMC_SETOPENSTATUS のみ設定し
             // conv mode は変更しない。IME がかなモード (conv=0x09) のまま ON になると
             // NICOLA エンジンが is_romaji_capable=false で起動できない。
@@ -976,7 +963,7 @@ impl DecisionExecutor {
 
     /// intra-batch の applied_snapshot のみを更新する。
     ///
-    /// sync SetOpen 直後に同一バッチ内の後続 effect（`send_engine_state_ime_key` 等）が
+    /// sync SetOpen 直後に同一バッチ内の後続 effect が
     /// 参照するキャッシュを更新するためだけに使う（`execute_one` からのみ呼ばれる）。
     /// B（`on_ime_applied`）と C（ImeModel write-back）は `Runtime::on_ime_apply_complete`
     /// に委譲済み。UnsafeToToggle は送信していないので更新しない。

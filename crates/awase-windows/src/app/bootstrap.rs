@@ -711,22 +711,6 @@ pub(super) fn initialize_app(
     hook::set_alt_impersonation_enabled(left_alt_impersonates, right_alt_impersonates);
     hook::set_swallow_alt_kana_mode_switch(config.general.swallow_alt_kana_input_method_switch);
 
-    // 解決できない名前は診断に流す（ADR-201 決定2(c)。以前は無言で None になっていた）。
-    let mut resolve_ime_key = |label: &str, name: Option<&str>| {
-        crate::config_diagnostics::resolve_optional_key_name(label, name).unwrap_or_else(|w| {
-            diag.warn(w);
-            None
-        })
-    };
-    let engine_on_ime_vk = resolve_ime_key(
-        "keys.engine_on_ime_key",
-        config.keys.engine_on_ime_key.as_deref(),
-    );
-    let engine_off_ime_vk = resolve_ime_key(
-        "keys.engine_off_ime_key",
-        config.keys.engine_off_ime_key.as_deref(),
-    );
-
     let base_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf))
@@ -772,9 +756,6 @@ pub(super) fn initialize_app(
             Output::new(),
             tray,
             crate::timer::Win32Timer::new(),
-            engine_on_ime_vk,
-            engine_off_ime_vk,
-            false,
             crate::focus::tracker::FocusTracker::new(
                 crate::focus::cache::FocusCache::new(),
                 crate::focus::classifier::ForceOverrides::new(config.app_overrides.clone()),
