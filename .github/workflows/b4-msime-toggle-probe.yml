@@ -13,7 +13,7 @@ on:
 jobs:
   probe:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -67,6 +67,60 @@ jobs:
           .\msime_native_composing_probe.exe --matrix 2>&1 | Select-Object -Last 60
           Copy-Item msime_native_composing_probe_result.json ..\p1-control.json -ErrorAction SilentlyContinue
           Pop-Location
+
+      # 「キーの割り当て」セクションが出る条件の探索: 段階的に環境を日本向けに寄せ、各段階で設定アプリのページに
+      # IsKeyAssignmentEnabled のトグルが出るかを見る(出たら以降の段階は省略)。変更は後続の phase1 に引き継ぐ。
+      - name: phase1-pre(割り当てセクションが出る環境条件の探索)
+        continue-on-error: true
+        shell: powershell
+        run: |
+          Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+          $AE = [System.Windows.Automation.AutomationElement]
+          $TS = [System.Windows.Automation.TreeScope]
+          $TC = [System.Windows.Automation.Condition]::TrueCondition
+          function Get-Win {
+            $c = New-Object System.Windows.Automation.PropertyCondition($AE::NameProperty, 'Settings')
+            $best = $null; $bestN = 0
+            foreach ($w in $AE::RootElement.FindAll($TS::Children, $c)) {
+              $n = $w.FindAll($TS::Descendants, $TC).Count
+              if ($n -gt $bestN) { $best = $w; $bestN = $n }
+            }
+            return $best
+          }
+          function Has-Section($tag) {
+            Get-Process SystemSettings -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Seconds 2
+            Start-Process 'ms-settings:regionlanguage-jpnime'
+            Start-Sleep -Seconds 10
+            $w = Get-Win
+            if (-not $w) { "[$tag] no settings window"; return $false }
+            foreach ($e in $w.FindAll($TS::Descendants, $TC)) { if ($e.Current.AutomationId -like '*KeyAndTouchCustomization*') { $e.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); Start-Sleep -Seconds 3; break } }
+            $w = Get-Win
+            $ids = @(); foreach ($e in $w.FindAll($TS::Descendants, $TC)) { if ($e.Current.AutomationId -like 'SystemSettings_Language_JapaneseIME*') { $ids += $e.Current.AutomationId } }
+            "[$tag] JapaneseIME ids: " + ($ids -join ', ')
+            return [bool]($ids -like '*IsKeyAssignmentEnabled*')
+          }
+          "GeoId before: " + (Get-WinHomeLocation).GeoId
+          Set-WinHomeLocation -GeoId 122
+          try { Set-Culture ja-JP } catch { "Set-Culture FAILED: $($_.Exception.Message)" }
+          if (Has-Section 'S1-home-culture') { "SECTION FOUND at S1"; exit 0 }
+          $p = 'HKLM:\SYSTEM\CurrentControlSet\Services\i8042prt\Parameters'
+          try {
+            New-Item -Path $p -Force | Out-Null
+            Set-ItemProperty -Path $p -Name 'LayerDriver JPN' -Value 'kbd106.dll' -Type String -Force
+            Set-ItemProperty -Path $p -Name OverrideKeyboardType -Value 7 -Type DWord -Force
+            Set-ItemProperty -Path $p -Name OverrideKeyboardSubtype -Value 2 -Type DWord -Force
+            "kbd106 override written"
+          } catch { "kbd override FAILED: $($_.Exception.Message)" }
+          if (Has-Section 'S2-kbd106') { "SECTION FOUND at S2"; exit 0 }
+          if (Get-Command Install-Language -ErrorAction SilentlyContinue) {
+            $j = Start-Job { Install-Language -Language ja-JP -ErrorAction Stop; 'installed' }
+            if (Wait-Job $j -Timeout 900) { "Install-Language: " + ((Receive-Job $j 2>&1) -join ' ') } else { "Install-Language timed out"; Stop-Job $j }
+            try { Set-WinUILanguageOverride -Language ja-JP } catch { "UILang FAILED: $($_.Exception.Message)" }
+            if (Has-Section 'S3-install-language') { "SECTION FOUND at S3"; exit 0 }
+          } else { "Install-Language not available" }
+          "SECTION NOT FOUND"
+          Get-Process SystemSettings -ErrorAction SilentlyContinue | Stop-Process -Force
 
       # 英語UIのCIでは「Key & touch customization」ページに Key template と Touch keyboard しか無く、キーの割り当て
       # セクションが出ない(run 36541369039)。Key template の選択肢を列挙し、Microsoft IME 以外(Custom 等)へ切り替えて
