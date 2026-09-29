@@ -1,0 +1,14 @@
+2026-09-29T01:11:01.937182Z  INFO awase_windows::app::bootstrap: Keyboard Layout Emulator starting... (log → D:\a\awase\awase\dist\awase.log)
+2026-09-29T01:11:18.400371Z DEBUG awase::journal: gji fsm transition seq=57 elapsed_ms=16060 trigger="CompositionReset(gji_idle_ms=1000)" state_before="OffCold" state_after="OffCold"
+2026-09-29T01:11:19.227702Z  WARN gji_on_event{event=StartComposition}: awase_windows::tsf::gji_fsm: [gji-fsm] StartComposition while engine off — ignored
+2026-09-29T01:11:19.227775Z DEBUG awase::journal: gji fsm transition seq=73 elapsed_ms=16888 trigger="StartComposition(candidate SHOW)" state_before="OffCold" state_after="OffCold"
+2026-09-29T01:11:19.537766Z DEBUG awase::journal: gji fsm transition seq=76 elapsed_ms=17198 trigger="CompositionReset(gji_idle_ms=422)" state_before="OffCold" state_after="OffCold"
+2026-09-29T01:11:19.606740Z DEBUG awase::journal: gji fsm transition seq=77 elapsed_ms=17261 trigger="CompositionReset(gji_idle_ms=484)" state_before="OffCold" state_after="OffCold"
+2026-09-29T01:11:22.689206Z DEBUG awase::journal: gji fsm transition seq=97 elapsed_ms=20349 trigger="CompositionReset(gji_idle_ms=1109)" state_before="OffCold" state_after="OffCold"
+2026-09-29T01:11:22.761413Z DEBUG awase::journal: gji fsm transition seq=98 elapsed_ms=20412 trigger="CompositionReset(gji_idle_ms=1172)" state_before="OffCold" state_after="OffCold"
+2026-09-29T01:11:25.528932Z  WARN gji_on_event{event=StartComposition}: awase_windows::tsf::gji_fsm: [gji-fsm] StartComposition while engine off — ignored
+2026-09-29T01:11:25.528971Z DEBUG awase::journal: gji fsm transition seq=119 elapsed_ms=23189 trigger="StartComposition(candidate SHOW)" state_before="OffCold" state_after="OffCold"
+2026-09-29T01:11:25.837791Z DEBUG awase::journal: gji fsm transition seq=122 elapsed_ms=23498 trigger="CompositionReset(gji_idle_ms=485)" state_before="OffCold" state_after="OffCold"
+2026-09-29T01:11:25.897399Z DEBUG awase::journal: gji fsm transition seq=123 elapsed_ms=23549 trigger="CompositionReset(gji_idle_ms=547)" state_before="OffCold" state_after="OffCold"
+2026-09-29T01:11:27.850776Z DEBUG awase::journal: gji fsm transition seq=131 elapsed_ms=25511 trigger="CompositionReset(gji_idle_ms=1953)" state_before="OffCold" state_after="OffCold"
+2026-09-29T01:11:27.880576Z DEBUG awase::journal: gji fsm transition seq=135 elapsed_ms=25540 trigger="ImeOn(gji_idle_ms=1985)" state_before="OffCold" state_after="OnCold(Short)"

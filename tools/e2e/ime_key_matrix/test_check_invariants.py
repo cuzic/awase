@@ -101,11 +101,37 @@ class AnalyzeIntent(unittest.TestCase):
         self.assertTrue(ci.analyze(lines, 10)["started"])
 
 
+class GjiStuckOffCold(unittest.TestCase):
+    """I4(BUG-170/ADR-203): GjiFsm が OffCold のまま StartComposition を受けた回数。
+    フィクスチャは CI の実ログの抜粋: 修正前=develop@e174c6f6 の run 36506566832 baseline-1、
+    修正後=fix/bugreport-01M3NBQA の run 36513008912 baseline-1。"""
+
+    def test_stuck_log_counts_start_composition_while_off(self):
+        r = ci.analyze(read("awase-gji-stuck-offcold-excerpt.log"), 10)
+        self.assertEqual(r["counts"]["i4_gji_fsm_off_cold_composition"], 2)
+
+    def test_reopened_log_has_none(self):
+        r = ci.analyze(read("awase-gji-reopened-excerpt.log"), 10)
+        self.assertEqual(r["counts"]["i4_gji_fsm_off_cold_composition"], 0)
+
+    def test_stuck_log_fails_the_zero_limit(self):
+        rc, out = run_main(["--config", "baseline", os.path.join(DATA, "awase-gji-stuck-offcold-excerpt.log")])
+        self.assertEqual(rc, 1)
+        self.assertIn("i4_gji_fsm_off_cold_composition", out)
+        self.assertIn("i4_gji_stuck=2", out.splitlines()[-1])
+
+    def test_reopened_log_passes_the_i4_limit(self):
+        rc, out = run_main(["--config", "baseline", os.path.join(DATA, "awase-gji-reopened-excerpt.log")])
+        self.assertIn("i4_gji_stuck=0", out.splitlines()[-1])
+        self.assertNotIn("FAIL: 上限 0(BUG-170)", out)
+
+
 class Judge(unittest.TestCase):
     LIM = {"i1_startup_drift_no_intent": {"max": 3, "observed_min": 2, "bug": "BUG-163"}}
 
     def verdict(self, v):
-        counts = dict(i1_startup_drift_no_intent=v, i1_drift_no_intent_total=0, i2_unwarranted=0)
+        counts = dict(i1_startup_drift_no_intent=v, i1_drift_no_intent_total=0, i2_unwarranted=0,
+                      i4_gji_fsm_off_cold_composition=0)
         verdict, rows = ci.judge(counts, self.LIM)
         return verdict, rows[0][3]
 
@@ -126,7 +152,7 @@ class Judge(unittest.TestCase):
         self.assertIn("下げてよい", msg)
 
     def test_no_limit_is_info_only(self):
-        verdict, rows = ci.judge(dict(i1_startup_drift_no_intent=0, i1_drift_no_intent_total=99, i2_unwarranted=0), self.LIM)
+        verdict, rows = ci.judge(dict(i1_startup_drift_no_intent=0, i1_drift_no_intent_total=99, i2_unwarranted=0, i4_gji_fsm_off_cold_composition=0), self.LIM)
         self.assertEqual(verdict, "OK")
 
 

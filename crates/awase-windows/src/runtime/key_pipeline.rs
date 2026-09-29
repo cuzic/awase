@@ -1455,6 +1455,10 @@ impl Runtime {
             // で実発生: IME open のまま conv だけ Eisu に固着すると、ひらがなキーを
             // 押しても復帰できなかった）。
             //
+            // ADR-203 (ii): belief が既に ON でも、ON 系キー（OFF を見逃した後の ON 等）では GjiFsm を開き直す。
+            if matches!(action, ShadowImeAction::TurnOn) {
+                self.kp_reopen_gji_fsm();
+            }
             if let Some(new_mode) = crate::state::eisu_recovery::eisu_reset_on_turn_on_while_open(
                 matches!(action, ShadowImeAction::TurnOn),
                 self.platform_state.ime.input_mode(),
@@ -1483,6 +1487,11 @@ impl Runtime {
             return false;
         }
         self.platform_state.ime.on_ime_toggled();
+        // ADR-203 (ii): OFF→ON に倒した瞬間は GjiFsm を開き直す（ON 方向のみ。向きは belief 次第で
+        // Imm32Unavailable では逆になりうるため OFF は同期しない）。
+        if self.platform_state.ime.effective_open() {
+            self.kp_reopen_gji_fsm();
+        }
 
         // OFF→ON の場合、stale な ObservedEisu を先回りで訂正する。
         // ObservedEisu は engine activation を NotRomajiInput で塞ぎ、activation 側の
@@ -1941,6 +1950,28 @@ impl Runtime {
         self.kp_predict_key_effect(event.vk_code);
     }
 
+    /// ADR-203 (ii): 確かな ON 系イベント（物理キー予測 ON・shadow toggle ON・`sync_direction` の on キー）
+    /// で `GjiFsm` を開き直す（`GjiEvent::Reopen`）。awase は IME へ書かないので Unwarranted 経路では
+    /// `GjiFsmSync` の receipt が届かず、GjiFsm が OffCold/OnWarm に取り残されて毎打鍵 per-VK confirm →
+    /// StaleConfirm → ESC で未確定文字が消える（BUG-170、`c8bc1adc` 以降）。
+    ///
+    /// 発火は「GjiFsm 戦略のとき（`f2_warmup_owned`、種別推測ではなく戦略の実体。INV-42）」かつ
+    /// 候補窓が不可視のときだけ（`reopen_obligation`）。`GjiFsm` 側も `OnCold`/`OnComposing` では何もしない。
+    fn kp_reopen_gji_fsm(&mut self) {
+        if !self.platform.output.f2_warmup_owned() {
+            return;
+        }
+        let Some(sync) = crate::state::gji_direct_mechanism::reopen_obligation(
+            crate::tsf::observer::gji_candidate_visible_now(),
+        ) else {
+            return;
+        };
+        crate::state::gji_direct_mechanism::GjiSyncSink::sync_gji(&mut self.platform, sync);
+        for entry in self.platform.drain_journal_entries() {
+            self.platform_state.ime.journal.absorb(entry);
+        }
+    }
+
     /// ADR-191 決定3・4: 通したキーの効果を、学習した表（`key_effect_predictor`）から**打鍵の時点で**予測して
     /// beliefへ反映する（awaseはIMEへ書かない）。観測を待たないので、読めないアプリ（TsfNative等）でも
     /// Engineが即追随する。後続の観測（`MODE_KEY_PASS_*`の読み直し）がsettle後に照合し、食い違えば観測が勝つ
@@ -2004,6 +2035,10 @@ impl Runtime {
         self.platform_state
             .ime
             .apply_key_effect_prediction(prediction, tick);
+        // ADR-203 (ii): 予測で ON になったら GjiFsm を開き直す（BUG-170）。
+        if prediction.effect.open == Some(true) {
+            self.kp_reopen_gji_fsm();
+        }
         // 予測をEngineへ即反映する（active遷移の検知）。
         if !prediction.effect.is_noop() {
             self.notify_engine_refresh();

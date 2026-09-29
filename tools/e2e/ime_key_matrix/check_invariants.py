@@ -14,6 +14,9 @@
       (`on_ime_apply_complete{… outcome=Unwarranted …}`)の中で出た別の行(Timer set 等)は数えない。
       同じ seq の行が重複しても1件。(check.py / check_consistency.py は "outcome=Unwarranted" を含む行を
       数えるので、span 由来の行と合わせて1件を2件と数える)
+  I4  GjiFsm が OffCold のまま候補窓の表示(composition 開始)を受けた回数(`[gji-fsm] StartComposition while engine off`、
+      BUG-170/ADR-203)。実 GJI は ON なのに GjiFsm への ON 同期が届かず OffCold に固着している証拠で、全打鍵が cold 経路
+      (per-VK confirm)を通り StaleConfirm→ESC で未確定文字が消える。ImeOff 後の正常な OffCold では出ない。
   I3  情報のみ(上限なし): 自己注入の IME モードキー(`[hook] IME-mode vk=… down self_injected=true`)の件数と
       vk 別内訳、`[warrant-shadow] … would_have_blocked=true` の件数と chain/strategy 別内訳。
 
@@ -40,6 +43,7 @@ START_MARK = "Keyboard Layout Emulator starting"
 INTENT_RE = re.compile(r"explicit_intent=(\S+)")
 DRIFT_RE = re.compile(r"\[drift\] correction: .*?set_ime_open\((true|false)\)")
 DRIFT_SRC_RE = re.compile(r"source=(\w+)")
+GJI_STUCK_RE = re.compile(r"\[gji-fsm\] StartComposition while engine off")
 APPLIED_RE = re.compile(r"\bime open applied seq=(\d+)\b.*\boutcome=\"Unwarranted\"")
 HOOK_SELF_RE = re.compile(r"\[hook\] IME-mode vk=(0x[0-9A-Fa-f]+) down self_injected=true")
 WARRANT_RE = re.compile(r"\[warrant-shadow\] chain=(\S+) open=(\S+) .*?strategy: \"([^\"]*)\".*?would_have_blocked=true")
@@ -48,7 +52,7 @@ WARRANT_RE = re.compile(r"\[warrant-shadow\] chain=(\S+) open=(\S+) .*?strategy:
 # 実測(CI 12本、計 109 件): 0.03〜20.3ms。
 SAME_CYCLE_MS = 100.0
 
-GATED = ("i1_startup_drift_no_intent", "i1_drift_no_intent_total", "i2_unwarranted")
+GATED = ("i1_startup_drift_no_intent", "i1_drift_no_intent_total", "i2_unwarranted", "i4_gji_fsm_off_cold_composition")
 
 
 def parse_ts(s):
@@ -66,6 +70,7 @@ def analyze(lines, window_s):
     last_intent = None  # (ts, value)
     drifts = []  # dict(t, intent, target, source)
     unwarranted_seqs = []
+    gji_stuck = 0
     self_keys = {}
     warrant = {}
     for line in lines:
@@ -94,6 +99,9 @@ def analyze(lines, window_s):
             if ma.group(1) not in unwarranted_seqs:
                 unwarranted_seqs.append(ma.group(1))
             continue
+        if GJI_STUCK_RE.search(line):
+            gji_stuck += 1
+            continue
         mh = HOOK_SELF_RE.search(line)
         if mh:
             vk = mh.group(1).upper().replace("0X", "0x")
@@ -112,6 +120,7 @@ def analyze(lines, window_s):
             i1_startup_drift_no_intent=len(in_window),
             i1_drift_no_intent_total=len(no_intent),
             i2_unwarranted=len(unwarranted_seqs),
+            i4_gji_fsm_off_cold_composition=gji_stuck,
             i3_self_injected_ime_mode_keys=sum(self_keys.values()),
             i3_warrant_shadow_would_block=sum(warrant.values()),
         ),
@@ -201,10 +210,10 @@ def main(argv=None):
             print(f"  注意: 直前 {SAME_CYCLE_MS:g}ms 以内に explicit_intent= 行が無い drift が {d['drift_intent_unknown']} 件"
                   "(意図なしとして数えた。ログ書式の変更を疑う)")
     c = res.get("counts", {})
-    print("INVARIANTS: verdict={} rc={} i1_startup={} i1_total={} i2_unwarranted={} i3_self_keys={} i3_would_block={}".format(
+    print("INVARIANTS: verdict={} rc={} i1_startup={} i1_total={} i2_unwarranted={} i3_self_keys={} i3_would_block={} i4_gji_stuck={}".format(
         res["verdict"], res["rc"], c.get("i1_startup_drift_no_intent", "-"), c.get("i1_drift_no_intent_total", "-"),
         c.get("i2_unwarranted", "-"), c.get("i3_self_injected_ime_mode_keys", "-"),
-        c.get("i3_warrant_shadow_would_block", "-")))
+        c.get("i3_warrant_shadow_would_block", "-"), c.get("i4_gji_fsm_off_cold_composition", "-")))
     if a.json:
         with open(a.json, "w", encoding="utf-8") as f:
             json.dump(res, f, ensure_ascii=False, indent=1)

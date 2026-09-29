@@ -1,0 +1,2 @@
+2026-09-29T02:34:13.482914Z  INFO awase_windows::app::bootstrap: Keyboard Layout Emulator starting... (log → D:\a\awase\awase\dist\awase.log)
+2026-09-29T02:34:27.479367Z DEBUG awase::journal: gji fsm transition seq=39 elapsed_ms=13640 trigger="Reopen(BeliefSync:on-key)(gji_idle_ms=229062)" state_before="OffCold" state_after="OnCold(Long)"
