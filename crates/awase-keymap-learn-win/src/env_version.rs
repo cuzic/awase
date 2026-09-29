@@ -176,6 +176,25 @@ pub fn probe_custom_keymap_without_prediction() -> bool {
         )
 }
 
+/// 呼び出し元スレッドの TIP（GJI / Microsoft IME 本体 / それ以外）から、awase.exe の読込が使うのと同じ
+/// 「今のキーマップの指紋」を求める(ブロックしうる: COM・`config1.db`・レジストリ読み込み)。
+/// 呼び出し元スレッドでSTAを初期化する。TIP を同定できなかったときは`None`（呼び出し側は
+/// 指紋の照合を省く）。設定画面が学習表の採否を awase.exe と同じ`validate_and_convert`で
+/// 判定するための入力で、フォーカス先アプリの IME ではなく**設定画面自身のスレッド**の TIP で
+/// 決まる近似（ADR196-T4、俯瞰レビュー A-2 条件4・6）。
+#[must_use]
+pub fn probe_current_fingerprint() -> Option<awase_keymap_learn::staleness::FingerprintProbe> {
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+
+    let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() };
+    let tip = awase_windows::tsf::query_tip_identity_on_current_sta();
+    let probe = tip.map(awase_windows::state::key_effect_runtime::current_fingerprint_probe);
+    if initialized {
+        unsafe { CoUninitialize() };
+    }
+    probe
+}
+
 /// [`probe_gji_env_version`] を別スレッドで走らせ、`timeout` 内に返らなければ
 /// [`EnvVersionProbe::Unknown`](fail open)を返す。応答しないスレッドは切り離すだけで
 /// 回収しないため、短周期で繰り返し呼ぶ用途には向かない(現状は学習プロセスが1回だけ呼ぶ)。

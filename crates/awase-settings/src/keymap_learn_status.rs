@@ -8,6 +8,7 @@ use awase_keymap_learn::persist::PersistedTable;
 use awase_keymap_learn::revalidation::{
     EnvVersion, EnvVersionProbe, StoredEnvVersion, needs_revalidation,
 };
+use awase_keymap_learn::staleness::{FingerprintProbe, Staleness};
 
 /// 学習したが採用されなかった理由(表示用)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +27,8 @@ pub enum NotAdoptedReason {
 pub enum RuntimeRejection {
     /// 変換できたセルの割合(百分率)が閾値未満。
     CoverageTooLow { coverage_percent: u8 },
+    /// 学習時のキーマップ指紋と今の構成が一致しない/確認できない（ADR-195段階8）。
+    Stale(Staleness),
 }
 
 /// 表の状態(表示行の分類)。
@@ -74,16 +77,20 @@ pub struct StatusInputs<'a> {
 
 /// awase.exeと同じ`validate_and_convert`で読み込み時検証の棄却理由を求める。
 ///
-/// 指紋照合(`Stale`)は、awase.exeが`KeyEffectKeymap`(GJI/MS-IME本体のキーマップ読み取り、
-/// `pub(crate)`かつ`cfg(windows)`)から得る現在の指紋が要るため未対応で、ここでは表自身の
-/// 指紋を「現在の指紋」として渡す(常に一致扱い)。カバレッジ不足だけを反映する。
+/// `current_fingerprint`は、呼び出し側が設定画面自身のスレッドの TIP から求めた現在の指紋
+/// （[`EnvSnapshot::fingerprint`]）。`None`（TIP を同定できない・非Windows）のときは、表自身の
+/// 指紋を「現在の指紋」として渡す（常に一致扱い）ので、カバレッジ不足だけを反映する。
 #[must_use]
-pub fn runtime_rejection_of(table: &PersistedTable) -> Option<RuntimeRejection> {
-    use awase_keymap_learn::staleness::FingerprintProbe;
+pub fn runtime_rejection_of(
+    table: &PersistedTable,
+    current_fingerprint: Option<FingerprintProbe>,
+) -> Option<RuntimeRejection> {
     use awase_windows::state::key_effect_runtime::{RejectReason, validate_and_convert};
-    let current = table
-        .fingerprint
-        .map_or(FingerprintProbe::NotSupported, FingerprintProbe::Computed);
+    let current = current_fingerprint.unwrap_or_else(|| {
+        table
+            .fingerprint
+            .map_or(FingerprintProbe::NotSupported, FingerprintProbe::Computed)
+    });
     match validate_and_convert(table, current) {
         Err(RejectReason::CoverageTooLow { coverage }) => {
             #[expect(
@@ -94,6 +101,7 @@ pub fn runtime_rejection_of(table: &PersistedTable) -> Option<RuntimeRejection> 
             let coverage_percent = (coverage * 100.0).round().clamp(0.0, 100.0) as u8;
             Some(RuntimeRejection::CoverageTooLow { coverage_percent })
         }
+        Err(RejectReason::Stale(staleness)) => Some(RuntimeRejection::Stale(staleness)),
         _ => None,
     }
 }
@@ -227,6 +235,21 @@ impl TableState {
                     RuntimeRejection::CoverageTooLow { coverage_percent } => {
                         format!("使えるセルが{coverage_percent}%しかありません")
                     }
+                    RuntimeRejection::Stale(staleness) => match staleness {
+                        Staleness::FingerprintMismatch => {
+                            "学習後にIMEのキーマップ設定が変わりました。再学習してください".to_string()
+                        }
+                        Staleness::FingerprintNotSupported => {
+                            "今のIMEはGoogle日本語入力・Microsoft IME本体ではないため学習表を使えません"
+                                .to_string()
+                        }
+                        Staleness::FingerprintUnavailable => {
+                            "現在のキーマップ設定を読み取れませんでした".to_string()
+                        }
+                        Staleness::SchemaVersionMismatch { .. } | Staleness::Fresh => {
+                            "学習表の形式が古いため再学習してください".to_string()
+                        }
+                    },
                 };
                 format!("内蔵表を使用中（学習表は不採用: {why}）")
             }
@@ -319,12 +342,16 @@ pub struct EnvSnapshot {
     /// 使用中のIMEがGJIで、そのキーマップが内蔵表を持たない構成（カスタムキーマップ等）か。
     /// GJI以外のIMEや`config1.db`が読めない場合は`false`。
     pub custom_keymap_without_prediction: bool,
+    /// 設定画面自身のスレッドの TIP から求めた「今のキーマップの指紋」
+    /// （awase.exeの読込と同じ計算）。TIP を同定できない・非Windowsは`None`。
+    pub fingerprint: Option<FingerprintProbe>,
 }
 
 impl EnvSnapshot {
     pub const UNKNOWN: Self = Self {
         version: EnvVersionProbe::Unknown,
         custom_keymap_without_prediction: false,
+        fingerprint: None,
     };
 }
 
@@ -340,6 +367,8 @@ pub struct EnvProbe {
     current: EnvSnapshot,
     rx: Option<std::sync::mpsc::Receiver<EnvSnapshot>>,
     started: bool,
+    /// 設定画面がフォーカスを失っている間だけ`true`（[`Self::observe_window_focus`]）。
+    window_was_unfocused: bool,
     pub process_start: std::time::SystemTime,
 }
 
@@ -350,6 +379,7 @@ impl EnvProbe {
             current: EnvSnapshot::UNKNOWN,
             rx: None,
             started: false,
+            window_was_unfocused: false,
             process_start,
         }
     }
@@ -371,6 +401,22 @@ impl EnvProbe {
     pub fn request_reprobe(&mut self) {
         self.started = false;
         self.rx = None;
+    }
+
+    /// 毎フレーム、設定画面のフォーカス状態を渡す。フォーカスを失った後に取り戻したとき
+    /// （GJIの設定アプリなど別ウィンドウでキーマップ設定を変えて戻ってきた可能性がある）は
+    /// 版と指紋を取り直させ、`true`を返す。呼び出し側は`true`のとき状態表示を破棄する。
+    /// 取得が始まっていない間は何もせず`false`を返す（初回の取得がこれから走るため）。
+    pub fn observe_window_focus(&mut self, focused: bool) -> bool {
+        if !focused {
+            self.window_was_unfocused = true;
+            return false;
+        }
+        if !std::mem::take(&mut self.window_was_unfocused) || !self.started {
+            return false;
+        }
+        self.request_reprobe();
+        true
     }
 
     /// 取得中(開始前を含む)か。
@@ -397,6 +443,11 @@ impl EnvProbe {
     #[must_use]
     pub const fn custom_keymap_without_prediction(&self) -> bool {
         self.current.custom_keymap_without_prediction
+    }
+
+    #[must_use]
+    pub const fn fingerprint(&self) -> Option<FingerprintProbe> {
+        self.current.fingerprint
     }
 }
 
@@ -452,7 +503,7 @@ mod tests {
         let mut cells = vec![pcell(0xF2, true), pcell(0xF3, true)];
         cells.extend((0..8).map(|_| pcell(0x99, false)));
         let t = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
-        let rej = runtime_rejection_of(&t);
+        let rej = runtime_rejection_of(&t, None);
         assert!(
             matches!(rej, Some(RuntimeRejection::CoverageTooLow { .. })),
             "{rej:?}"
@@ -467,7 +518,7 @@ mod tests {
     fn well_covered_table_has_no_runtime_rejection() {
         let cells: Vec<_> = (0..10).map(|_| pcell(0xF2, true)).collect();
         let t = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
-        assert_eq!(runtime_rejection_of(&t), None);
+        assert_eq!(runtime_rejection_of(&t, None), None);
     }
 
     #[test]
@@ -484,6 +535,44 @@ mod tests {
         let line = s.status_line(None);
         assert!(line.starts_with("内蔵表を使用中"), "{line}");
         assert!(!line.contains("使用中: 学習表"), "{line}");
+    }
+
+    /// 学習後にキーマップが変わった（指紋不一致）表は、awase.exeが内蔵表へ切り戻すので
+    /// 「使用中: 学習表」にならない（俯瞰レビューA-2条件6、ADR-195段階8）。
+    #[test]
+    fn fingerprint_mismatch_is_reported_as_rejected_at_runtime() {
+        use awase_keymap_learn::persist::Fingerprint;
+        let cells: Vec<_> = (0..10).map(|_| pcell(0xF2, true)).collect();
+        let mut t = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
+        t.fingerprint = Some(Fingerprint(1, 2));
+        let now = FingerprintProbe::Computed(Fingerprint(3, 4));
+        let rej = runtime_rejection_of(&t, Some(now));
+        assert_eq!(
+            rej,
+            Some(RuntimeRejection::Stale(Staleness::FingerprintMismatch))
+        );
+        let mut i = inputs(Some(&t), EnvVersionProbe::Unknown);
+        i.runtime_rejection = rej;
+        let line = TableState::from_inputs(&i).status_line(None);
+        assert!(line.starts_with("内蔵表を使用中"), "{line}");
+        assert!(line.contains("キーマップ設定が変わりました"), "{line}");
+        // 一致していれば棄却しない。
+        let same = FingerprintProbe::Computed(Fingerprint(1, 2));
+        assert_eq!(runtime_rejection_of(&t, Some(same)), None);
+    }
+
+    /// 今のIMEがGJI/MS-IME本体以外（ATOK等、指紋方式なし）なら、表を持つ構成でも学習表は使われない。
+    #[test]
+    fn unsupported_ime_is_reported_as_rejected_at_runtime() {
+        use awase_keymap_learn::persist::Fingerprint;
+        let cells: Vec<_> = (0..10).map(|_| pcell(0xF2, true)).collect();
+        let mut t = PersistedTable::new(cells).with_judgement(TableJudgement::Accepted);
+        t.fingerprint = Some(Fingerprint(1, 2));
+        let rej = runtime_rejection_of(&t, Some(FingerprintProbe::NotSupported));
+        assert_eq!(
+            rej,
+            Some(RuntimeRejection::Stale(Staleness::FingerprintNotSupported))
+        );
     }
 
     #[test]
@@ -521,7 +610,34 @@ mod tests {
         EnvSnapshot {
             version,
             custom_keymap_without_prediction: true,
+            fingerprint: None,
         }
+    }
+
+    /// 設定画面がフォーカスを失って取り戻したときだけ、版・指紋を取り直させる
+    /// （設定画面を開いたまま別アプリでIMEのキーマップを変えた場合の表示が古くなる問題、Codexレビュー指摘）。
+    #[test]
+    fn env_probe_reprobes_only_when_window_regains_focus() {
+        let mut probe = EnvProbe::new(std::time::SystemTime::UNIX_EPOCH);
+        // 取得開始前は、フォーカス変化があっても何もしない（初回取得がこれから走る）。
+        assert!(!probe.observe_window_focus(false));
+        assert!(!probe.observe_window_focus(true));
+        assert!(probe.needs_start());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        probe.attach(rx);
+        tx.send(snap(EnvVersionProbe::Unknown)).unwrap();
+        assert!(probe.poll());
+        assert!(!probe.needs_start());
+        // フォーカスしたままなら再取得しない。
+        assert!(!probe.observe_window_focus(true));
+        assert!(!probe.needs_start());
+        // 失った間は何もしない。取り戻した瞬間に1回だけ再取得を要求する。
+        assert!(!probe.observe_window_focus(false));
+        assert!(!probe.needs_start());
+        assert!(probe.observe_window_focus(true));
+        assert!(probe.needs_start());
+        assert!(probe.is_pending(), "取得完了まで古い状態で再計算しない");
     }
 
     #[test]
