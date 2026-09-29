@@ -1182,3 +1182,9 @@ belief=実IME(ON)でトグル(true→false)を決めたのに、GjiDirect が「
 | --- | --- | --- | --- | --- | --- |
 | 2026-09-25 | 新窓へフォーカスが移った時に belief=OFF を IME へ押し込む書き込みは、撤去しても「Engine OFF なのに IME ON」を悪化させない | GJI(ATOK)、windows-latest CI、pwsh EDIT / notepad、4通りの試行(A/B) | ブロックを撤去 | 意図なし・belief OFF・新窓 ON の場面では warrant が OFF を必ず拒否(`sent=false`)し、撤去前後で差なし。再導入は warrant を緩める=ADR-191決定1違反。未検証: 実機、OFF意図 TTL(30秒)内に同じ窓へ戻る場面(撤去後は drift correction が約400ms遅れて OFF) | 撤去(ユーザー判断)。実機で不具合が出れば BUG 起票して再検討 |
 | 2026-09-29 | ADR-100 F16 群C(eager warmup 全面無効)の一部として、Ctrl↑ 契機の `VK_IME_ON` 再送を撤去しても cold-start が悪化しない | GJI、Windows Terminal(TsfNative)、報告 01M3NJYRQ5ZBYTKV55FV06KETP | `CompositionEvent::CtrlUp` 経路を撤去(BUG-174) | 実機未検証(WezTerm「この→kおの」再発と Ctrl+Shift の「@」消失が未確認) | 未判定 |
+
+## エントリ 30: warmup の予防的 SendInput（eager `VK_IME_ON`／Unicode long-cold 犠牲キー）を実験フラグで無効化（`experiment/warmup-ab-flags`、実機ソーク待ち）
+
+| 日付 | 仮説 | 環境 | 変更 | 観測結果 | 判定 |
+| --- | --- | --- | --- | --- | --- |
+| 2026-09-29 | A: eager `VK_IME_ON`（対象は force_tsf の WezTerm/WT×GJI のみ、Chrome は対象外〈ADR-100〉）は、per-VK confirm と literal 回収があれば不要。B: Unicode long-cold の `VK_IME_ON`+`VK_A`+`BS` は「あ」残置の疑い（BUG-112 追記2/BUG-140）があり、200ms タイムアウトと `UnicodeLiteralObserverFsm` で代替できる | A: WezTerm/WT×GJI、B: Unicode 注入モードのアプリ×GJI long-cold | `AWASE_EXP_NO_EAGER_WARMUP=1` / `AWASE_EXP_NO_UNICODE_COLD_WARMUP_KEYS=1`（既定は従来動作）。A は `eager_warmup_sent_ms` の latch を維持 | 未実施。数日ソークで `RawTsfLiteralRecovery`/`SuspectedLiteral` 件数を比較する | 未判定 |

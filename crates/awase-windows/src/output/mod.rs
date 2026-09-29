@@ -4,7 +4,28 @@ use crate::tsf::probe_bridge::OutputActiveGuard;
 use crate::tsf::warmup::probe_fsm::DeferredOrigin;
 use crate::vk::ascii_to_vk;
 use awase::types::{KeyAction, VkCode};
+use std::sync::OnceLock;
 use std::time::Duration;
+
+/// 実験フラグ: warmup の予防的 SendInput を無効化する（`docs/experiments.md` エントリ 30）。
+/// 環境変数が `1` のときのみ true。プロセス起動後の最初の参照で固定する。
+fn experiment_flag(cell: &'static OnceLock<bool>, var: &str) -> bool {
+    *cell.get_or_init(|| std::env::var(var).is_ok_and(|v| v == "1"))
+}
+
+/// `AWASE_EXP_NO_EAGER_WARMUP=1`: eager TSF warmup（`VK_IME_ON`）の送信を止める。
+/// `eager_warmup_sent_ms` の latch は維持する（focus probe grace の唯一の入力）。
+fn exp_no_eager_warmup() -> bool {
+    static CELL: OnceLock<bool> = OnceLock::new();
+    experiment_flag(&CELL, "AWASE_EXP_NO_EAGER_WARMUP")
+}
+
+/// `AWASE_EXP_NO_UNICODE_COLD_WARMUP_KEYS=1`: Unicode long-cold の `VK_IME_ON`+`VK_A`+`BS`
+/// 犠牲キー送信を止める。`UnicodeColdWarmupFsm` は 200ms タイムアウトで deferred chars を流す。
+fn exp_no_unicode_cold_warmup_keys() -> bool {
+    static CELL: OnceLock<bool> = OnceLock::new();
+    experiment_flag(&CELL, "AWASE_EXP_NO_UNICODE_COLD_WARMUP_KEYS")
+}
 
 pub use crate::tsf::output::ColdReason;
 pub use crate::tsf::output::{INJECTED_MARKER, TSF_MARKER};
@@ -752,6 +773,15 @@ impl Output {
         use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER, INJECTED_MARKER};
         use crate::vk::{VK_A, VK_BACK, VK_IME_ON};
 
+        if exp_no_unicode_cold_warmup_keys() {
+            tracing::info!(
+                "[unicode-cold-warmup] cold={cold_seq} 実験フラグにより犠牲キー送信スキップ \
+                 (AWASE_EXP_NO_UNICODE_COLD_WARMUP_KEYS=1)",
+                cold_seq = cold_seq.value(),
+            );
+            return;
+        }
+
         let ime_on_inputs = [
             make_key_input_ex(VK_IME_ON, false, IME_KANJI_MARKER),
             make_key_input_ex(VK_IME_ON, true, IME_KANJI_MARKER),
@@ -1188,6 +1218,15 @@ impl Output {
             return;
         }
         if !self.tsf_readiness(warmup_ime_on).can_warmup() {
+            return;
+        }
+        if send_vk && exp_no_eager_warmup() {
+            let ms = crate::hook::current_tick_ms();
+            tracing::info!(
+                "[tsf-eager-warmup] 実験フラグにより送信スキップ (origin={origin}, \
+                 AWASE_EXP_NO_EAGER_WARMUP=1) → eager_warmup_sent_ms={ms}ms のみ latch"
+            );
+            self.composition.set_eager_warmup_sent_ms(ms);
             return;
         }
         if !send_vk {
