@@ -856,6 +856,73 @@ fn forced_thumb_path_lives_in_the_engine_special_key_match() {
     );
 }
 
+/// ADR-206 / BUG-174 の回帰ガード（所有者のマージ条件、2026-09-29）: **Ctrl を離したとき（Ctrl↑）に awase は
+/// IME への actuation（SendInput・ImmSetOpenStatus・apply_ime_open_*）をしない。**
+/// 旧 `CompositionEvent::CtrlUp` の eager warmup は Ctrl 押下中に `VK_IME_ON` を注入し、GJI + Windows Terminal で
+/// 「@」の被疑箇所だった（BUG-174、`aa53eb4b` で撤去）。再導入と、Ctrl↑ 経路への actuation の混入を検知する。
+/// 「@」そのものの再現は実機 A/B で、ここでは Ctrl↑ 経路に actuation 呼び出しが存在しないことをホストで固定する。
+#[test]
+fn ctrl_key_up_never_actuates_ime() {
+    // 1. 旧 CtrlUp warmup の識別子が復活していない（crate 全体）。
+    let workspace_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut stack = vec![workspace_src];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).expect("read_dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let content = fs::read_to_string(&path).expect("read").replace("\r\n", "\n");
+                let production = production_code_only(&content);
+                for banned in [
+                    "CompositionEvent::CtrlUp",
+                    "WarmupReason::CtrlUp",
+                    "composition_ctrl_up",
+                    "handle_ctrl_up_recovery",
+                ] {
+                    assert!(
+                        !production.contains(banned),
+                        "{} に `{banned}` が復活しています。Ctrl↑ で awase が VK_IME_ON を注入する経路は \
+                         BUG-174（Windows Terminal + GJI の「@」被疑、`aa53eb4b` で撤去）です。",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+
+    // 2. Ctrl↑ 専用のハンドラ（`on_ctrl_key_up`）は belief のバリア解除だけで、actuation を呼ばない。
+    let ps = read_crate_file("src/state/platform_state.rs");
+    let body = extract_fn_body(production_code_only(&ps), "fn on_ctrl_key_up(");
+    for banned in [
+        "SendInput",
+        "send_input",
+        "send_ime_control",
+        "set_ime_open",
+        "apply_ime_open",
+        "issue_actuation_order",
+        "ImmSetOpenStatus",
+        "send_eager_warmup",
+    ] {
+        assert!(
+            !body.contains(banned),
+            "on_ctrl_key_up が `{banned}` を含んでいます。Ctrl↑ で IME に actuation してはならない（BUG-174）。"
+        );
+    }
+
+    // 3. パイプラインの Ctrl 系 KeyUp ブロックは `on_ctrl_key_up` を呼ぶだけ。
+    let kp = read_crate_file("src/runtime/key_pipeline.rs");
+    let kp_prod = production_code_only(&kp);
+    let start = kp_prod
+        .find("is_ctrl_variant(event.vk_code)\n        {")
+        .expect("Ctrl 系 KeyUp ブロック（is_ctrl_variant）が見つかりません");
+    let block = &kp_prod[start..start + 400.min(kp_prod.len() - start)];
+    assert!(
+        block.contains("on_ctrl_key_up(") && !block.contains("apply_") && !block.contains("send_"),
+        "Ctrl 系 KeyUp ブロックは on_ctrl_key_up の呼び出しだけであること（Ctrl↑ で actuation しない、BUG-174）: {block}"
+    );
+}
+
 /// ADR-206 決定5: Decision 経由の `SetOpen(true)` の eisu 救済（`kp_stage_post_decision`）は GJI の英数保持
 /// （`gji_retains_tracked_eisu`、BUG-159）を渡すこと。`false` 固定だと awase だけ AssumedRomaji に戻り、
 /// GJI が英数を保持したまま NICOLA のローマ字がリテラルで出る。

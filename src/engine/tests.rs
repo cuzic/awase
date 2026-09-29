@@ -6964,15 +6964,17 @@ mod engine_integration_tests {
 
     // ── ADR-206: エンジン非活性側の役割由来（IME 設定由来のトグル）の親指単独押下 ──
 
+    /// IME 設定由来の役割（トグル）を持つ無変換。単独タップの `ModeKeyConfig` は Passthrough
+    /// （役割由来の開閉は Passthrough のときだけ発火する、ADR-206 の訂正）。
     fn engine_with_role_toggle_on_muhenkan() -> Engine {
         let mut engine = make_test_engine();
         engine.set_thumb_key_solo_tap_config(
             Some(VK_NONCONVERT),
-            ModeKeyConfig::from_legacy_bools(false, true),
+            ModeKeyConfig::from_legacy_bools(true, false),
             None,
             ModeKeyConfig::from_legacy_bools(false, true),
         );
-        engine.set_thumb_forced_open_actions(Some(ShadowImeAction::Toggle), None);
+        engine.set_thumb_role_open_actions(Some(ShadowImeAction::Toggle), None);
         engine
     }
 
@@ -7099,6 +7101,80 @@ mod engine_integration_tests {
         engine.set_muhenkan_solo_tap_dedicated_fn_key(Some(VkCode(0x7C)));
         let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
         assert!(!d.is_consumed());
+    }
+
+    /// 訂正（所有者 2026-09-29）: 単独タップが Suppress のときは役割があっても IME を動かさない
+    /// （エンジン非活性側では従来どおり生キーが IME に届く=受動、エンジン活性側では生キーを飲み込むだけ）。
+    #[test]
+    fn role_toggle_thumb_never_writes_when_solo_tap_is_suppress() {
+        let mut engine = make_test_engine();
+        engine.set_thumb_key_solo_tap_config(
+            Some(VK_NONCONVERT),
+            ModeKeyConfig::from_legacy_bools(false, true), // Suppress
+            None,
+            ModeKeyConfig::from_legacy_bools(false, true),
+        );
+        engine.set_thumb_role_open_actions(Some(ShadowImeAction::Toggle), None);
+        // エンジン非活性: 受動（awase は書かない、生キーは IME へ）
+        let d = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_off_ctx());
+        assert!(!d.is_consumed());
+        assert!(
+            !set_open_effects(&d).contains(&true),
+            "Suppress では役割由来の ON を書かない（test 用 prev_active による活性→非活性の同期 OFF は別物）"
+        );
+        // エンジン活性: 単独タップ確定でも書かない（生キーも出さない）
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(300).build(), &ime_on_ctx());
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(400).build(), &ime_on_ctx());
+        assert!(set_open_effects(&up).is_empty(), "Suppress は IME を動かさない");
+    }
+
+    /// エンジン活性側: Passthrough なら単独タップ確定で役割由来の絶対指定 `SetOpen(false)`（生キーは出さない）。
+    #[test]
+    fn role_toggle_thumb_writes_on_confirmed_solo_tap_when_passthrough() {
+        let mut engine = engine_with_role_toggle_on_muhenkan();
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
+        assert_eq!(set_open_effects(&up), vec![false]);
+    }
+
+    /// bare `keys.ime_*`（S1）は単独タップの設定に関係なく発火する（従来どおり）。
+    #[test]
+    fn bare_forced_action_fires_regardless_of_solo_tap_suppress() {
+        let mut engine = make_test_engine_with_muhenkan_forced_turn_off(); // Suppress + forced TurnOff
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
+        assert_eq!(set_open_effects(&up), vec![false]);
+    }
+
+    /// Ctrl↑ では awase は IME を書かない（BUG-174。Ctrl+無変換の後の Ctrl 解放は、エンジンの決定に IME 効果を持たない）。
+    #[test]
+    fn ctrl_release_after_thumb_never_emits_ime_effects() {
+        let mut engine = engine_with_role_toggle_on_muhenkan();
+        let ctrl = ModifierState {
+            ctrl: true,
+            ..ime_on_ctx().modifiers
+        };
+        let with_ctrl = InputContext {
+            modifiers: ctrl,
+            ..ime_on_ctx()
+        };
+        let _ = engine.on_input(Ev::down(VK_LCTRL).at(50).build(), &ime_on_ctx());
+        // Ctrl 押下中の無変換（Ctrl+無変換）は、役割由来の単独タップ開閉の対象外（修飾なしの親指だけ）。
+        let down = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &with_ctrl);
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &with_ctrl);
+        for d in [&down, &up] {
+            assert!(
+                set_open_effects(d).is_empty(),
+                "Ctrl+無変換で役割由来の開閉を書いてはならない, got {:?}",
+                effects_of(d)
+            );
+        }
+        let ctrl_up = engine.on_input(Ev::up(VK_LCTRL).at(300).build(), &ime_on_ctx());
+        assert!(
+            !has_effect(&ctrl_up, |e| matches!(e, Effect::Ime(_))),
+            "Ctrl↑ で IME 効果を出してはならない, got {:?}",
+            effects_of(&ctrl_up)
+        );
     }
 
     /// 役割が無い親指は従来どおり（エンジン非活性なら素通し）。

@@ -175,7 +175,24 @@ impl Engine {
         self.adapter.set_thumb_forced_open_actions(muhenkan, henkan);
     }
 
-    /// 現在設定されている無変換/変換の強制 open 軸操作 `(無変換, 変換)`（ADR-199 決定16。押した側だけを更新するため）。
+    /// ADR-206: IME 設定由来の役割（`ModeKeyConfig` が Passthrough のときだけ発火）を設定する。
+    pub const fn set_thumb_role_open_actions(
+        &mut self,
+        muhenkan: Option<ShadowImeAction>,
+        henkan: Option<ShadowImeAction>,
+    ) {
+        self.adapter.set_thumb_role_open_actions(muhenkan, henkan);
+    }
+
+    /// 現在設定されている役割由来の open 軸操作 `(無変換, 変換)`（押した側だけを更新するため）。
+    #[must_use]
+    pub const fn thumb_role_open_actions(
+        &self,
+    ) -> (Option<ShadowImeAction>, Option<ShadowImeAction>) {
+        self.adapter.thumb_role_open_actions()
+    }
+
+    /// 現在設定されている無変換/変換の強制 open 軸操作 `(無変換, 変換)`（bare `keys.ime_*` 由来）。
     #[must_use]
     pub const fn thumb_forced_open_actions(
         &self,
@@ -923,7 +940,8 @@ impl Engine {
         {
             return None;
         }
-        self.adapter.thumb_open_role_action(event.vk_code)
+        self.adapter
+            .thumb_open_role_action(event.vk_code, ctx.composing)
     }
 
     const fn special_match_of_open_action(action: ShadowImeAction) -> SpecialKeyMatch {

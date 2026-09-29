@@ -11,7 +11,7 @@ summary: |-
   belief OFF 側を独自に持ち(ケース2/3改、`explicit_ime_action_target`＋`transport.rs` の M19 例外)、belief ON 側も独自の経路(ケース1)を持つ二重系統になっている。
   本 ADR は「役割(config.toml の bare `keys.ime_*` または IME 設定由来)」を唯一の入力にして二重系統を1本にし、旧設定を読込時に bare `keys.ime_*` 相当へ移して警告する。
 status: |-
-  起草(2026-09-29)。opus round1〜3 反映済み(エンジン側合流、リピート印、eisu 保持、削除一覧、3(b)撤回、非固着の条件、ADR-205 相互参照)。opus round1〜4 で収束(round4: 設計変更不要、前提 P3/P4 等の記述3点を反映済み)。固着の定義(所有者)反映済み。コア・Windows・GUI・テスト・CI シナリオを実装済み(PR)。実機 A/B(「@」)と CI e2e は未検証。
+  起草(2026-09-29)。opus round1〜3 反映済み(エンジン側合流、リピート印、eisu 保持、削除一覧、3(b)撤回、非固着の条件、ADR-205 相互参照)。opus round1〜4 で収束(2026-09-29 夕の仕様訂正後の追加ラウンドは round5)(round4: 設計変更不要、前提 P3/P4 等の記述3点を反映済み)。固着の定義(所有者)反映済み。コア・Windows・GUI・テスト・CI シナリオを実装済み(PR)。実機 A/B(「@」)と CI e2e は未検証。
 related_adr:
   - "ADR-092"
   - "ADR-119"
@@ -71,17 +71,26 @@ S3 は「@」抑止の同等性が S1/S2 経路で未検証のため v2.0 では
 
 ## 決定
 
-### 決定1(所有者決定・2026-09-29): 単独タップの扱いは「開閉の役割があるか」で分ける
+### 決定1(所有者決定・2026-09-29、同日訂正): 単独タップの Suppress は IME を動かさない。Passthrough のときだけ、IME 側でトグルの親指を awase が代わりに書く
 
-親指キー K(無変換/変換)の単独タップ(同時打鍵と解決されなかった打鍵)について:
+「単独タップの Suppress / Passthrough」は親指キー(無変換/変換)の単独タップの設定(`ModeKeyConfig`)である。親指キー K の単独タップ(同時打鍵と解決されなかった打鍵)について:
 
-1. **K に開閉の役割がある**(S1: config の bare `keys.ime_*`、または S2: IME 設定由来のトグル)→ **生キーを抑止し、awase が belief に従う明示の ON/OFF を1回だけ書く**
-   (belief が ON なら OFF、OFF なら ON。`Toggle` を絶対指定 `SetOpen(bool)` に解決して送る)。`ModeKeyConfig`(Suppress/Passthrough)は関与しない。
-2. **役割がない**(役割が無い・IME 未同定・MS-IME 本体〈Phase 4 まで〉・ATOK・修飾付き・injected)→ `ModeKeyConfig` の Suppress/Passthrough に従う(現状のまま)。
+1. **Suppress**: **IME を動かさない**。生キーを飲み込むだけで、awase は開閉しない(IME 設定でトグルでも同じ)。
+2. **Passthrough**: そのキーが IME 側の設定でトグルに割り当てられている(S2: GJI の CUSTOM 表で全開状態で閉じるトグル)なら、**生キーを抑止し、awase が belief に従う絶対指定の ON/OFF を1回だけ書く**
+   (belief が ON なら OFF、OFF なら ON)。トグルでなければ(役割が無い・IME 未同定・MS-IME 本体〈Phase 4 まで〉・ATOK・修飾付き・injected)生キーを素通しする。
+3. **bare `keys.ime_on/off/toggle`(S1、ユーザーが awase 側に明示した設定)**: 従来どおり、単独タップの設定に関係なく発火する(明示された awase 自身の設定)。意図に反しうる組み合わせは下の「訂正に伴う整理」に列挙する。
 
-- エンジン活性側(FSM の KeyUp 解決)は ADR-199 決定16 が出荷済みで、`ModeKeyConfig` より役割が優先される。**新しいのは「エンジン非活性側」**(IME OFF 中、および開いていても英数・カタカナ等で `NotRomajiInput` のとき)だけで、
-  これは ADR-199 の却下案 N(「エンジン非活性でも能動にする」)と決定16 最終段(「エンジン非活性のときは能動にしない」)を、所有者決定(2026-09-29)で**覆す**。ユーザーがエンジンを無効化している間は受動を維持する。
-- 所有者文面の「素通しになる場合でも」は、主にエンジン非活性の打鍵(`ModeKeyConfig` が参照されず生キーが常に通る)を指すと読む。**所有者への確認事項**: 「Suppress 設定 × トグル役割 × エンジン活性で awase が閉じる」(現状どおり)でよいか。
+実装上は、S1 を `forced_open_action`(設定に関係なく)、S2 を別入力 `role_open_action`(`ModeKeyConfig` が単独タップの `composing` の値で Passthrough のときだけ)として FSM に渡す。
+`enrich_thumb_key_role` は S2 だけを `set_thumb_role_open_actions` に設定する(bare がある側は役割を引かない)。この訂正前は S1 と S2 を `forced_open_action` 1つに合成していた(役割があれば設定に関係なく発火)ため、Suppress でも書いていた。
+
+- エンジン活性側(FSM の KeyUp 解決)の S2 は、この訂正で ADR-199 決定16(`ModeKeyConfig` より役割が優先)を**上書き**する(既定が Suppress なので、GJI で無変換をトグルにしただけのユーザーは何もしなくなる。Passthrough にしたときだけ awase が閉じる)。
+- **エンジン非活性側**(IME OFF 中、および開いていても英数等で `NotRomajiInput` のとき)の S2 も Passthrough のときだけ書く。これは ADR-199 の却下案 N を、Passthrough に限って所有者決定で覆す。ユーザーがエンジンを無効化している間は受動を維持する。
+- **Suppress × エンジン非活性で生キーが IME にそのまま届く従来動作**は、仕様(Suppress は IME を動かさず飲み込むだけ)と食い違う。エンジンが非活性だと FSM に届かず、`ModeKeyConfig` が参照されないため、
+  生キーは常に通る(GJI 自身が設定どおり開閉する=受動)。選択肢は次の3つ。**勝手に変えず、所有者判断にする。**
+  (α) 現状維持: 非活性側の Suppress は受動(IME が自分で処理)。既定が Suppress の全ユーザーで挙動が変わらない。「飲み込む」は活性側の単独タップにだけ効く、と読む。
+  (β) 非活性側でも Suppress の親指単独押下を飲み込む(Down/Up とも Consume、リピート含む)。仕様には忠実だが、IME OFF 中に無変換で IME を開くという既存の使い方(GJI の既定プリセットで無変換=直接入力等)を全ユーザーで塞ぐ。
+  (γ) 役割(S2)があるキーだけ、非活性側でも Suppress なら飲み込む。トグルを Suppress に設定した意図(IME を動かさない)に忠実で、影響が S2 を持つユーザーに限られるが、非活性側に「飲み込むだけ」の入口が増える。
+  本 PR は (α)。
 
 ### 決定2: 入力は S1 と S2 だけ。S3(`*_solo_tap_ime_action`)と、それ専用の非活性側機構を撤去する
 
@@ -173,6 +182,22 @@ S2 は「生キーで GJI 自身が確実に処理していた打鍵」を awase
    出荷順は「ADR-205 D7 と同時、または D7 の後」(理由: 方向固定キー〈S1、移行した旧 S3 を含む〉のため。トグル系は D7 なしでも基準を満たす)。相互参照: ADR-205、ADR-208(BUG-172 の草稿)。
 3. **失われる押下は固着ではない**: settle 中の `SetOpen` 剥がし・`already_matches` の省略・belief が古いときの「見た目変化なし」は、いずれも次の押下で状態が変わる(1 のとおり)。
 4. **自発的な書き込みは増やさない**: 本 ADR が増やす書き込みは、ユーザーが親指キーを押した打鍵に対する1回の `SetOpen` だけ。タイマー・観測起点の開け直しは無い。例外は既存の `ActivationSync`(決定3の最後の項)。
+
+### 訂正に伴う整理(2026-09-29 夕、所有者回答)
+
+- **S1 × 単独タップ Suppress(`always_suppress`)**: S1 は設定に関係なく発火するので、`*_solo_tap_always_suppress = true` を残した設定でも bare の親指は書く。`always_suppress` は「役割が無いときの素通しを止める」だけになる。
+  意図に反しうる点: (i) 「Suppress にしたから IME を動かさない」と思ったユーザーが bare `keys.ime_*` に親指を書いていた場合、書かれる(bare は awase 側の明示設定なので従来どおり。所有者判断で S1 も Passthrough 限定にできるが、
+  GUI T3 が書く主流設定が動かなくなる)。(ii) 旧 GUI T3 が書いた `*_solo_tap_ime_action` + `always_suppress = true` の組(親指)は、移行後は S1 になり Suppress でも発火する(旧実装のケース1も Suppress では発火したので同じ)。
+- **GUI T3 が書く主流設定(旧 `muhenkan_solo_tap_ime_action = "off"` + `always_suppress = true`)の移行後の挙動**: bare の `keys.ime_off` に「無変換」が入った S1 になり、Suppress のままでも発火する。エンジン活性側は単独タップ確定で絶対指定の OFF、
+  エンジン非活性側は Down のエンジン特殊キー照合で絶対指定の `SetOpen(false)`(旧ケース3改の「抑止のみ」ではない。固着回避の決定3・7のとおり。旧 `"off"` × belief OFF の「抑止のみ」は戻らない)。GUI の新しい書き込み(bare の追記)も同じ挙動。
+- **決定7(非固着)への影響**: S2 は Passthrough のときだけ能動なので、Suppress の S2 は「何もしない(飲み込むか素通し)」で状態を変えない設定であり、固着の議論の対象外。
+  Passthrough の S2 は従来どおり(押すたびに belief が反転し指令が交互になる。2〜3回で期待状態)。S1 は変更なし。
+- **Ctrl↑ で actuation しない(マージ条件、所有者)**: BUG-113/124 の「@」は Ctrl↑ 側の actuation が関与した(BUG-174: 旧 `CompositionEvent::CtrlUp` の eager warmup が Ctrl 押下中に `VK_IME_ON` を注入、`aa53eb4b` で撤去済み)。
+  新設計は Ctrl↑ に actuation を持たない: 親指の開閉は修飾なしの親指だけが対象(`is_bare_thumb`)で Ctrl+無変換/変換は対象外、`on_ctrl_key_up` は chord barrier の解除だけ。これを次で固定する:
+  `architecture_guard::ctrl_key_up_never_actuates_ime`(旧 CtrlUp 識別子の不在、`on_ctrl_key_up` の本体に SendInput/apply_ime_open_* 等が無いこと、パイプラインの Ctrl 系 KeyUp ブロックが `on_ctrl_key_up` の呼び出しだけ)と、
+  `src/engine/tests.rs::ctrl_release_after_thumb_never_emits_ime_effects`(Ctrl+無変換の Down/Up と Ctrl↑ の決定に IME 効果が無い)。CI e2e は注入キーしか作れず物理の Ctrl↑ を再現できないため対象外(制約)。
+  `origin/fix/eager-warmup-modifier-guard`(BUG-175: eager warmup を Ctrl/Shift/Alt/Win 押下中に抑止)は本 PR に含めない(別 PR。未マージ)。
+- **「@」の実機 A/B はマージ条件から外す**(所有者)。「@」の検証は未実施。
 
 ## 検証計画
 

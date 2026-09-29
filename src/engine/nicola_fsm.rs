@@ -289,6 +289,14 @@ pub struct NicolaFsm {
     /// `muhenkan_forced_open_action` と対称（変換キー用）。
     henkan_forced_open_action: Option<crate::types::ShadowImeAction>,
 
+    /// ADR-206（2026-09-29 訂正）: IME 設定由来の開閉の役割（GJI の CUSTOM 表でトグル、ADR-199 決定16）。
+    /// bare `keys.ime_*`（`*_forced_open_action`）と違い、**単独タップの `ModeKeyConfig` が Passthrough のときだけ**
+    /// 発火する（Suppress は「IME を動かさず生キーを飲み込むだけ」）。Platform 層が親指の KeyDown ごとに設定し直す。
+    muhenkan_role_open_action: Option<crate::types::ShadowImeAction>,
+
+    /// `muhenkan_role_open_action` と対称（変換キー用）。
+    henkan_role_open_action: Option<crate::types::ShadowImeAction>,
+
     /// `resolve_pending_thumb_as_single` が強制 open 軸操作（`forced_open_action`）の判定を
     /// 下した直後、`Engine` 層が次の `on_input`/`on_timeout` で取り出すまで
     /// 保持するワンショットの副作用要求（ADR-092 決定D Step4b）。
@@ -377,6 +385,8 @@ struct ThumbSoloSpecialHandling {
     dedicated_fn_key: Option<VkCode>,
     /// ADR-192 決定3b: bare `keys.ime_*` 由来の強制 open 軸操作（優先順位1.5）。
     forced_open_action: Option<crate::types::ShadowImeAction>,
+    /// ADR-206: IME 設定由来の役割（`ModeKeyConfig` が Passthrough のときだけ有効）。
+    role_open_action: Option<crate::types::ShadowImeAction>,
     mode_key_config: Option<ModeKeyConfig>,
 }
 
@@ -477,6 +487,8 @@ impl NicolaFsm {
             muhenkan_solo_tap_dedicated_fn_key: None,
             muhenkan_forced_open_action: None,
             henkan_forced_open_action: None,
+            muhenkan_role_open_action: None,
+            henkan_role_open_action: None,
             ime_open_requested: None,
             henkan_vk: None,
             mode_key_henkan: ModeKeyConfig::from_legacy_bools(false, true),
@@ -821,16 +833,56 @@ impl NicolaFsm {
         )
     }
 
-    /// ADR-206: 専用 Fn キー設定済みの無変換を除いた、その親指の開閉の役割（`forced_open_action`）。
-    /// エンジン非活性側の入口（`Engine::thumb_open_role_action`）が使う。
+    /// ADR-206: IME 設定由来の役割（`ModeKeyConfig` が Passthrough のときだけ発火）を設定する。
+    /// bare `keys.ime_*` 由来の `set_thumb_forced_open_actions` とは別の入力。
+    pub const fn set_thumb_role_open_actions(
+        &mut self,
+        muhenkan: Option<crate::types::ShadowImeAction>,
+        henkan: Option<crate::types::ShadowImeAction>,
+    ) {
+        self.muhenkan_role_open_action = muhenkan;
+        self.henkan_role_open_action = henkan;
+    }
+
+    /// 現在設定されている役割由来の open 軸操作 `(無変換, 変換)`。Platform 層が押した側だけを更新するために読む。
     #[must_use]
-    pub fn thumb_open_role_action(&self, vk: VkCode) -> Option<crate::types::ShadowImeAction> {
+    pub const fn thumb_role_open_actions(
+        &self,
+    ) -> (
+        Option<crate::types::ShadowImeAction>,
+        Option<crate::types::ShadowImeAction>,
+    ) {
+        (self.muhenkan_role_open_action, self.henkan_role_open_action)
+    }
+
+    /// ADR-206: その親指の単独タップが要求する open 軸操作（専用 Fn キー設定済みの無変換を除く）。
+    /// bare `keys.ime_*`（`forced_open_action`）は設定に関係なく、IME 設定由来の役割は単独タップの
+    /// `ModeKeyConfig`（`composing` での値）が Passthrough のときだけ。エンジン非活性側の入口
+    /// （`Engine::thumb_open_role_action`）と単独タップ解決が同じ規則を使う。
+    #[must_use]
+    pub fn thumb_open_role_action(
+        &self,
+        vk: VkCode,
+        composing: bool,
+    ) -> Option<crate::types::ShadowImeAction> {
         let special = self.thumb_solo_special_handling(vk);
         if special.dedicated_fn_key.is_some() {
-            None
-        } else {
-            special.forced_open_action
+            return None;
         }
+        special.forced_open_action.or_else(|| {
+            special
+                .role_open_action
+                .filter(|_| Self::solo_tap_is_passthrough(&special, composing))
+        })
+    }
+
+    fn solo_tap_is_passthrough(special: &ThumbSoloSpecialHandling, composing: bool) -> bool {
+        special.mode_key_config.is_some_and(|cfg| {
+            matches!(
+                SoloTapAction::from(cfg.for_composing(composing)),
+                SoloTapAction::Passthrough
+            )
+        })
     }
 
     /// `resolve_pending_thumb_as_single` がセットした IME open 軸への副作用
@@ -884,18 +936,21 @@ impl NicolaFsm {
             ThumbSoloSpecialHandling {
                 dedicated_fn_key: self.muhenkan_solo_tap_dedicated_fn_key,
                 forced_open_action: self.muhenkan_forced_open_action,
+                role_open_action: self.muhenkan_role_open_action,
                 mode_key_config: Some(self.mode_key_muhenkan),
             }
         } else if self.henkan_vk == Some(vk_code) {
             ThumbSoloSpecialHandling {
                 dedicated_fn_key: None,
                 forced_open_action: self.henkan_forced_open_action,
+                role_open_action: self.henkan_role_open_action,
                 mode_key_config: Some(self.mode_key_henkan),
             }
         } else {
             ThumbSoloSpecialHandling {
                 dedicated_fn_key: None,
                 forced_open_action: None,
+                role_open_action: None,
                 mode_key_config: None,
             }
         }
@@ -2077,7 +2132,12 @@ impl NicolaFsm {
         // ADR-192 決定3b・ADR-206: 開閉の役割（bare `keys.ime_*` または IME 設定由来の Toggle）を
         // 持つ親指の単独タップは、`ModeKeyConfig` より優先して絶対指定の open 軸操作を要求する
         // （生キーは出さない）。composing は意図的に発火条件から除外しない。
-        if let Some(forced_action) = special.forced_open_action.filter(|_| {
+        let open_action = special.forced_open_action.or_else(|| {
+            special
+                .role_open_action
+                .filter(|_| Self::solo_tap_is_passthrough(&special, composing))
+        });
+        if let Some(forced_action) = open_action.filter(|_| {
             !suppress_solo_output
                 // 押下後にShiftが押された場合（押下時のpassthroughガードをすり抜けた
                 // 経路）も強制操作を発火させない（レビュー2026-09-23 C-1）。

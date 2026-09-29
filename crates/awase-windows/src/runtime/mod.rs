@@ -736,9 +736,10 @@ impl Runtime {
         );
     }
 
-    /// 無変換/変換の親指キーの KeyDown で、Engine の単独タップ確定点に渡す open 軸操作を
-    /// 「config.toml の bare `keys.ime_*` 由来 ＞ 役割由来」で設定し直す（ADR-199 決定16。合流点は ADR-192 決定3b の
-    /// 既存の入力 `set_thumb_forced_open_actions` 1つだけ）。`kp_run_inner` の `engine.on_input` より前から呼ぶ。
+    /// 無変換/変換の親指キーの KeyDown で、Engine に渡す**役割由来**の open 軸操作を設定し直す
+    /// （ADR-199 決定16、ADR-206 の訂正: 役割由来は単独タップの `ModeKeyConfig` が Passthrough のときだけ発火するので、
+    /// config.toml の bare `keys.ime_*` 由来の `set_thumb_forced_open_actions`〈設定に関係なく発火〉とは別の入力
+    /// `set_thumb_role_open_actions` に渡す。bare がある側は役割を引かない）。`kp_run_inner` の `engine.on_input` より前から呼ぶ。
     ///
     /// - 対象は非リピートの KeyDown だけ（決定16）。Up・リピートは押下時に決めた値のまま。役割を引くのは非 injected のときだけで、
     ///   injected の Down は config 由来へ戻す。押した側の値だけを書き、もう一方は触らない。
@@ -772,19 +773,24 @@ impl Runtime {
             self.platform.current_app_profile(),
             crate::focus::class_names::AppImeProfile::InputRelay
         );
-        let action = crate::state::key_effect_runtime::thumb_forced_action(
-            configured,
-            ime.is_some() && !input_relay,
-            modified,
-            event.injected,
-            || ime.and_then(|ime| self.derive_key_shadow_action(ime, vk)),
-        );
-        // **押した側だけ**書く。もう一方の押下中の値を巻き込んで変えない。
-        let (muhenkan, henkan) = self.engine.thumb_forced_open_actions();
-        if is_muhenkan {
-            self.engine.set_thumb_forced_open_actions(action, henkan);
+        // bare（`configured`）がある側は config が勝つ（役割は付けない、ADR-199 Q2）。
+        let action = if configured.is_some() {
+            None
         } else {
-            self.engine.set_thumb_forced_open_actions(muhenkan, action);
+            crate::state::key_effect_runtime::thumb_forced_action(
+                None,
+                ime.is_some() && !input_relay,
+                modified,
+                event.injected,
+                || ime.and_then(|ime| self.derive_key_shadow_action(ime, vk)),
+            )
+        };
+        // **押した側だけ**書く。もう一方の押下中の値を巻き込んで変えない。
+        let (muhenkan, henkan) = self.engine.thumb_role_open_actions();
+        if is_muhenkan {
+            self.engine.set_thumb_role_open_actions(action, henkan);
+        } else {
+            self.engine.set_thumb_role_open_actions(muhenkan, action);
         }
     }
 
@@ -2080,6 +2086,7 @@ impl Runtime {
         let forced_open_actions = thumb_forced_open_actions(&special_keys);
         self.engine
             .set_thumb_forced_open_actions(forced_open_actions.0, forced_open_actions.1);
+        self.engine.set_thumb_role_open_actions(None, None);
         let _ = self.engine.on_command(
             EngineCommand::UpdateFsmParams {
                 threshold_ms: config.general.simultaneous_threshold_ms,

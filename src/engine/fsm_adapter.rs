@@ -203,12 +203,30 @@ impl FsmAdapter {
         self.fsm.thumb_forced_open_actions()
     }
 
-    /// ADR-206: 専用 Fn キー設定済みの無変換を除いた、その親指の開閉の役割（`forced_open_action`）。
+    /// ADR-206: その親指の単独タップが要求する open 軸操作（`NicolaFsm::thumb_open_role_action`）。
     pub(super) fn thumb_open_role_action(
         &self,
         vk: crate::types::VkCode,
+        composing: bool,
     ) -> Option<crate::types::ShadowImeAction> {
-        self.fsm.thumb_open_role_action(vk)
+        self.fsm.thumb_open_role_action(vk, composing)
+    }
+
+    pub(super) const fn set_thumb_role_open_actions(
+        &mut self,
+        muhenkan: Option<crate::types::ShadowImeAction>,
+        henkan: Option<crate::types::ShadowImeAction>,
+    ) {
+        self.fsm.set_thumb_role_open_actions(muhenkan, henkan);
+    }
+
+    pub(super) const fn thumb_role_open_actions(
+        &self,
+    ) -> (
+        Option<crate::types::ShadowImeAction>,
+        Option<crate::types::ShadowImeAction>,
+    ) {
+        self.fsm.thumb_role_open_actions()
     }
 
     pub(super) const fn set_thumb_forced_open_actions(
