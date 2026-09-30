@@ -217,8 +217,6 @@
 | [208](208-absolute-ime-keys-must-not-be-elided-on-stale-applied-in-blind-windows.md) | Blind 窓で絶対指定 IME キーが古い applied で握り潰され続ける固着を防ぐ(草稿、ADR-205 から切り出し) | 草稿・未着手 |
 | [209](209-predict-open-effect-from-gji-config-when-not-learned.md) | GJI の MS-IME プリセットでは TSF の窓で変換が IME を開く(モードは閉じる前のまま)。読めない窓の打鍵時予測に「変換で開く」を足し、素通しの変換に Engine を追随させる(ADR-186/191/199/206) | 実装済み(2026-09-30)。Opus round3 で収束。実機A/B・CI検証は未 |
 | [210](210-learned-table-hidden-state-converting-and-last-key.md) | 学習表の状態に「変換中」と「直前キーの文脈」を加える | 保留(2026-09-30)、Opus レビューで現案は不採用 |
-| [211](211-predict-open-close-from-gji-keymap-for-passive-keys.md) | 受動のキー(トグルの役割でない)が IME を開閉する設定でも Engine が追随するよう、GJI のキーマップから打鍵時の開閉を予測する(実 Chrome で MS-IME プリセットの F13 が追随しない実測、ADR-199/209) | 草案(2026-09-30)。Opus レビュー前 |
-| [211](211-predict-open-close-from-gji-keymap-for-passive-keys.md) | GJI の MS-IME/MOBILE プリセットの F13(閉状態からだけ IME を開く受動のキー)で Engine が追随するよう打鍵時に「開く」と予測する。キーマップ全体からの一般化は需要確認まで見送り(実 Chrome CI の実測、Opus round1、ADR-199/209) | 草案 v2(2026-09-30)。範囲を F13 に縮小。Opus round2 待ち |
 | [211](211-predict-open-close-from-gji-keymap-for-passive-keys.md) | GJI の MS-IME/MOBILE プリセットの F13(閉状態からだけ IME を開く受動のキー)で Engine が追随するよう打鍵時に「開く」と予測する。キーマップ全体からの一般化は需要確認まで見送り(実 Chrome CI の実測、Opus round1、ADR-199/209) | 採用(2026-09-30)。Opus round3 で収束。範囲を F13 の1規則に縮小。実装は未着手 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
