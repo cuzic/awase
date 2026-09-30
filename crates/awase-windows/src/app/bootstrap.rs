@@ -783,6 +783,10 @@ pub(super) fn initialize_app(
     let _ = with_app(|app| {
         app.set_keyboard_model(config.general.keyboard_model);
         app.set_update_check_enabled(config.general.update_check);
+        // ADR-209: 起動時にも反映する（`apply_config_update`は再読込でしか通らない）。
+        app.set_predict_henkan_open_in_unreadable_windows(
+            config.general.predict_henkan_open_in_unreadable_windows,
+        );
         app.set_warn_state_dependent_mode_keys(config.general.warn_state_dependent_mode_keys);
         app.set_hook_self_heal_enabled(config.diagnostics.hook_self_heal);
         app.set_passthrough_thumb_mode_keys(&config.general);

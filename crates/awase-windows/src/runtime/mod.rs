@@ -1490,6 +1490,10 @@ impl Runtime {
         self.keyboard_model = model;
     }
 
+    pub(crate) const fn set_predict_henkan_open_in_unreadable_windows(&mut self, enabled: bool) {
+        self.predict_henkan_open_in_unreadable_windows = enabled;
+    }
+
     pub(crate) const fn set_update_check_enabled(&mut self, enabled: bool) {
         self.update_check_enabled = enabled;
     }
