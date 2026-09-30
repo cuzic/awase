@@ -241,12 +241,6 @@ pub(crate) enum ProbeAction {
     /// dispatcher は `DispatchResult::LearnedTsf` を返し、呼び出し元 (`advance_tsf_probe`) が
     /// フォーカス中クラスを `InjectionModeStore` に学習し injection_mode を Tsf に昇格させる。
     UpgradeToTsf,
-    /// Unicode cold-start warmup 完了後にバッファ済み文字を送信する。
-    ///
-    /// [`crate::tsf::warmup::unicode_cold_warmup_fsm::UnicodeColdWarmupFsm`] が GJI write 確認
-    /// またはタイムアウト後に emit する。
-    /// dispatcher が各 `char` を `send_unicode_char_direct()` で送信する。
-    FlushDeferredUnicodeChars(Vec<char>),
     /// `DetectionResult::CompositionConfirmed`（非 partial）を確認した。
     ///
     /// dispatcher は必ず `consecutive_count`（`RawTsfLiteralRecovery` 連続発火数）を

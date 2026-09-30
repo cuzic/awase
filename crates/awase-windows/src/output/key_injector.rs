@@ -60,10 +60,6 @@ pub(crate) struct KeyInjector {
     pub(super) kana_table: KanaTable,
     /// Chrome VK モード用: 記号→VK コードマッピング
     pub(super) symbol_to_vk: HashMap<char, (VkCode, bool)>,
-    /// Unicode cold-start warmup: `send_unicode_char()` の送信を遅延させるフラグ
-    pub(super) unicode_cold_defer: std::sync::atomic::AtomicBool,
-    /// `unicode_cold_defer=true` 中に蓄積した Unicode 文字バッファ
-    pub(super) unicode_cold_deferred: std::cell::RefCell<Vec<char>>,
 }
 
 impl KeyInjector {
@@ -71,20 +67,7 @@ impl KeyInjector {
         Self {
             kana_table: KanaTable::build(),
             symbol_to_vk: crate::vk::build_symbol_to_vk(),
-            unicode_cold_defer: std::sync::atomic::AtomicBool::new(false),
-            unicode_cold_deferred: std::cell::RefCell::new(Vec::new()),
         }
-    }
-
-    /// `send_unicode_char()` の遅延モードを ON/OFF する。
-    pub(crate) fn set_unicode_cold_defer(&self, defer: bool) {
-        self.unicode_cold_defer
-            .store(defer, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// 蓄積した Unicode deferred 文字を取り出してバッファをクリアする。
-    pub(crate) fn take_unicode_cold_deferred(&self) -> Vec<char> {
-        std::mem::take(&mut *self.unicode_cold_deferred.borrow_mut())
     }
 
     // ── 文字解決 ───────────────────────────────────────────────────────────────
@@ -140,15 +123,8 @@ impl KeyInjector {
 
     /// Unicode 文字を直接送信する（`KEYEVENTF_UNICODE`）
     ///
-    /// `unicode_cold_defer` フラグが立っている場合は実送信せず `unicode_cold_deferred` に蓄積する。
+    #[expect(clippy::unused_self)]
     pub(super) fn send_unicode_char(&self, ch: char) {
-        if self
-            .unicode_cold_defer
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            self.unicode_cold_deferred.borrow_mut().push(ch);
-            return;
-        }
         let mut inputs = Vec::with_capacity(4);
         Self::push_unicode_char_inputs(&mut inputs, ch, INJECTED_MARKER);
         let _ = crate::win32::send_input_safe(&inputs);

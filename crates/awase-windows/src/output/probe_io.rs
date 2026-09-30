@@ -54,11 +54,6 @@ pub(crate) trait ProbeIo {
     fn set_raw_literal(&self, backs: usize, romaji: String, escape_composition: bool);
     /// composition を `RawTsfLiteralRecovery` で cold にマークする。
     fn mark_cold_raw_tsf(&self);
-    /// Unicode char を直接送信する（defer モードを無視して即送信）。
-    ///
-    /// `FlushDeferredUnicodeChars` ハンドラが deferred chars を送信するために使う。
-    /// `Output::send_unicode_char()` とは異なり defer フラグをチェックしない。
-    fn send_unicode_char_direct(&self, ch: char);
 }
 
 impl ProbeIo for Output {
@@ -126,11 +121,6 @@ impl ProbeIo for Output {
         self.mark_composition_cold(ColdReason::RawTsfLiteralRecovery);
         self.warmup_coord.note_stage_recovery();
         self.warmup_coord.mark_composition_reset();
-    }
-
-    fn send_unicode_char_direct(&self, ch: char) {
-        // FSM tick 時は unicode_cold_defer=false のため、通常の send_unicode_char で直接送信できる。
-        self.send_unicode_char(ch);
     }
 }
 
@@ -588,18 +578,6 @@ where
                     break 'stage Some(StageEndReason::UpgradedToTsf);
                 }
 
-                ProbeAction::FlushDeferredUnicodeChars(chars) => {
-                    // UnicodeColdWarmupFsm が GJI wake-up 確認後に emit する。
-                    // deferred chars を直接送信する（Done が続いて FSM 完了）。
-                    tracing::debug!(
-                        "[unicode-cold-warmup] FlushDeferredUnicodeChars: {} chars 送信",
-                        chars.len()
-                    );
-                    for ch in &chars {
-                        io.send_unicode_char_direct(*ch);
-                    }
-                }
-
                 ProbeAction::RawTsfLiteralRecovery {
                     cold_seq,
                     backs,
@@ -797,8 +775,6 @@ mod tests {
         fn mark_cold_raw_tsf(&self) {
             self.mark_cold_raw_tsf_called.set(true);
         }
-
-        fn send_unicode_char_direct(&self, _ch: char) {}
     }
 
     fn make_chrome_machine() -> crate::tsf::warmup::probe_fsm::TsfProbeCoro {

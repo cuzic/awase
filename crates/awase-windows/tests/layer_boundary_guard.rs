@@ -391,9 +391,7 @@ fn c6_single_reduce_call_site() {
 /// ない letter key のため暫定的に許容 (本来は vk.rs へ移すのが望ましい既存の借り)。
 #[test]
 fn d1_no_vk_magic_hex_outside_vk_rs() {
-    const ALLOW: &[(&str, &str)] = &[
-        ("output/mod.rs", "const VK_A: VkCode = VkCode(0x41);"), // send_unicode_cold_warmup_keys
-    ];
+    const ALLOW: &[(&str, &str)] = &[];
     let mut files = Vec::new();
     collect_rs(&manifest().join("src"), &mut files);
     files.retain(|f| f.file_name().and_then(|n| n.to_str()) != Some("vk.rs"));

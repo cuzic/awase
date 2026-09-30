@@ -80,11 +80,6 @@ impl TsfWarmupCoordinator {
         self.tsf_warmup.borrow().is_warm()
     }
 
-    /// GjiFsm が long-cold（≥10s idle）な次の KeyInput か判定する。
-    pub(crate) fn is_next_key_long_cold(&self) -> bool {
-        self.tsf_warmup.borrow().is_next_key_long_cold()
-    }
-
     /// 現在の戦略が F2 (VK_DBE_HIRAGANA) cold-start probe を必要とするか。
     ///
     /// GJI 戦略（[`GjiFsm`]）なら `true`、MS-IME 戦略（[`MsImeStrategy`]）なら `false`。
@@ -280,17 +275,6 @@ impl TsfWarmupCoordinator {
     /// probe が実行中かどうかを返す。
     pub(crate) fn has_pending_tsf(&self) -> bool {
         self.pending_tsf.borrow().is_some()
-    }
-
-    /// 飛行中の `UnicodeColdWarmupFsm` に chars を追記する。
-    ///
-    /// FSM が存在してかつ `push_deferred_unicode_chars` に対応していれば `true` を返す。
-    /// `false` の場合は呼び出し元が新しい FSM を生成すること。
-    pub(crate) fn try_push_unicode_chars_to_pending(&self, chars: &[char]) -> bool {
-        self.pending_tsf
-            .borrow_mut()
-            .as_mut()
-            .is_some_and(|m| m.push_deferred_unicode_chars(chars))
     }
 
     /// Chrome/LiteralDetect/GjiWarmup probe が実行中なら継続タイマー命令を返す。

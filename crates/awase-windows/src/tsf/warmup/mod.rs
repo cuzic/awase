@@ -37,6 +37,5 @@ pub(crate) mod ms_ime_ready_coro;
 pub(crate) mod probe_coro_state;
 pub(crate) mod probe_fsm;
 pub(crate) mod tickable_fsm;
-pub(crate) mod unicode_cold_warmup_fsm;
 pub(crate) mod unicode_literal_observer;
 pub(crate) mod warmup_strategy;
