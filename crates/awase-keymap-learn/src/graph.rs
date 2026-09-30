@@ -641,7 +641,7 @@ mod tests {
         }
         assert_eq!(g.add_status(new), None, "既知のstatusは重複して追加しない");
         // 既存の節点の辺は変わらない。
-        assert_eq!(g.press_to(g.initial_node, 0).is_some(), true);
+        assert!(g.press_to(g.initial_node, 0).is_some());
     }
 
     #[test]
