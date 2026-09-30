@@ -300,6 +300,17 @@ jobs:
             cfg('sc-t1e-chrome-f13', 'pass', check='chromeprobe', keymap=0, runs=1, wait=400,
                 chrome='--f13 --repeat=2 --settle=800',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff|Conversion,F13,IMEOff'),
+            # 調査(2026-09-30、ADR-209 の前提確認): GJI の MS-IME プリセット(keymap=2)で、IME OFF(直接入力)から変換(0x1C)を単独で押したとき IME が開くか。
+            # 実機(dragonflyg4、JIS)では、awase 停止でも WT・メモ帳・Edge の全てで開いた。CI の格子学習(素の EDIT)では開かない。
+            # 仮説: TSF のアプリ(実 Chrome)では開き、IMM32 の素の EDIT では開かない(プリセットの DirectInput Henkan=Reconvert)。
+            # awase なし。chrome=実 Chrome の chrome_probe 既定ケース(「直接入力→変換」の結果=`か` なら開いた)、edit=スパイクの --seq=1C(実 IME の open を記録)。
+            # custom=true は実機と同じ「プリセット2＋古い表(変換=IMEOn)」。
+            *[cfg(f'sc-henkan-chrome-msime{suf}-noawase', 'observe', check='chromeprobe', keymap=2, runs=2, wait=500, awase='false',
+                  custom_table=ct, chrome='--no-awase --repeat=2 --settle=800')
+              for suf, ct in (('', 'false'), ('-stale', 'true'))],
+            *[cfg(f'sc-henkan-edit-msime{suf}-noawase', 'observe', check='consistency', keymap=2, runs=2, awase='false',
+                  custom_table=ct, args='--seq=1C,1C,1C')
+              for suf, ct in (('', 'false'), ('-stale', 'true'))],
             cfg('sc-t1e-chrome-f13-noawase', 'observe', check='chromeprobe', keymap=0, runs=1, wait=400, awase='false',
                 chrome='--f13 --no-awase --repeat=2 --settle=800',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff|Conversion,F13,IMEOff'),
