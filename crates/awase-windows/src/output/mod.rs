@@ -105,35 +105,6 @@ impl GjiReinitStartResult {
     }
 }
 
-/// [`Output::send_eager_tsf_warmup`] へ渡す `warmup_ime_on` の構築経路
-/// （BUG-110/ADR-132 Phase 2、敵対的コードレビュー N6 指摘）。
-///
-/// `&'static str` を手で各呼び出し元へ配ると、タイポ（`"gate"`等）や
-/// 将来の新規呼び出し元での誤ラベルを型で防げない——この Phase の成果物
-/// （次回実機報告での B1由来/#6由来の内訳確定）を直接損なう種類のミスに
-/// なるため、enum で固定する。`WarmupImeOn` 自体には触れない（ADR-098の
-/// 型設計意図——生 belief を渡す経路をコンパイラで塞ぐ——を薄めないため、
-/// `origin` は独立した引数のまま並行して渡す）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WarmupOrigin {
-    /// `ImeStateHub::resolve_warmup_ime_on` 経由（`off_drift_active`
-    /// ゲートを通っている）。
-    Gated,
-    /// `WarmupImeOn::from_actuated`（`platform.rs::on_ime_applied` — 実
-    /// actuation 直後の随伴 warmup）経由。**このゲートは通らない**
-    /// （ADR-132「Phase 2」節「実装上の既知の限界」参照、意図的）。
-    Actuated,
-}
-
-impl std::fmt::Display for WarmupOrigin {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Gated => "gated",
-            Self::Actuated => "actuated",
-        })
-    }
-}
-
 /// async IMC poll の完了状態。`WM_GJI_REINIT_RETRY_COMPLETE` の lParam にも使う。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GjiReinitPollStatus {
@@ -946,13 +917,6 @@ impl Output {
         self.warmup_coord.drain_key_responses()
     }
 
-    /// eager warmup F2 を送信した時刻（ms）を返す。0 = 未送信。
-    /// WinEvent 観察コールバックが warmup からの経過時間をログするために使う。
-    #[must_use]
-    pub const fn eager_warmup_sent_ms(&self) -> u64 {
-        self.composition.eager_warmup_sent_ms()
-    }
-
     /// 最後の `send_keys` 完了からの経過時間（ms）。
     /// 一度も送信していない場合は `u64::MAX` を返す（= 永久に in-flight でない）。
     #[must_use]
@@ -1083,133 +1047,6 @@ impl Output {
     #[must_use]
     pub fn is_tsf_mode(&self) -> bool {
         self.injection_mode == InjectionMode::Tsf
-    }
-
-    /// 現在の TSF 準備状態を多次元スナップショットとして返す。
-    ///
-    /// `warmup_ime_on`: warmup を送ってよいかの判定に使う IME 開状態（ADR-098
-    /// 決定1-b）。`WarmupImeOn` の構築経路は `applied` が既知ならそれを、
-    /// `Unknown` のときだけ belief にフォールバックする——呼び出し側が
-    /// `unwrap_or(false)` を書く必要はもう無い。
-    #[must_use]
-    pub fn tsf_readiness(
-        &self,
-        warmup_ime_on: awase::platform::WarmupImeOn,
-    ) -> crate::tsf::TsfReadiness {
-        crate::tsf::TsfReadiness {
-            gate: self.tsf_gate.state(),
-            ime_on: warmup_ime_on.is_on(),
-            is_tsf_mode: self.is_tsf_mode(),
-        }
-    }
-
-    /// TSF composition context の事前ウォームアップ F2 を送信する。
-    ///
-    /// 以下のタイミングで呼ぶ:
-    /// - FocusChange 直後: WezTerm に TSF 初期化の先行時間を与える
-    ///
-    /// キー打鍵を契機とする呼び出し（物理 F2 併走・確定キー・Ctrl↑）は BUG-173/174 で撤去済み。
-    ///
-    /// `warmup_ime_on`: 呼び出し元が知っている IME 開閉状態（ADR-098 決定1-b、
-    /// `WarmupImeOn` 参照）。`is_on()==false` または TSF モード以外では何もしない。
-    ///
-    /// 実際に送信できた場合のみ `eager_warmup_sent_ms` を現在時刻で更新する。Win キー
-    /// 押下中で送信がスキップされた場合は更新しない（BUG-32: スキップを送信成功扱いに
-    /// すると、GJI に IME-ON 信号が一度も届かないまま belief だけ ON 確定する）。
-    /// 送信できた場合、NativeF2Consumed 等の前に `mark_composition_cold` が呼ばれて
-    /// 0 にリセットされるため二重更新は発生しない。
-    ///
-    /// # `origin`（BUG-110/ADR-132 Phase 2 敵対的コードレビュー指摘への対応）
-    ///
-    /// ログにだけ載せる診断用の [`WarmupOrigin`]。呼び出し元が渡す
-    /// `warmup_ime_on` の構築経路を表す（`Gated`/`Actuated`/`Off` の3値、
-    /// 詳細は [`WarmupOrigin`] のdoc参照）。次回実機報告で
-    /// `[tsf-eager-warmup]` の `origin=` を grep すれば、B1由来（gated）と
-    /// #6随伴分（actuated）を正確に分離できる（従来はこの区別が無く、
-    /// #6由来の随伴warmupがB1由来として過大計上されていた）。
-    pub fn send_eager_tsf_warmup(
-        &self,
-        warmup_ime_on: awase::platform::WarmupImeOn,
-        origin: WarmupOrigin,
-    ) {
-        self.eager_tsf_warmup_inner(warmup_ime_on, origin, true);
-    }
-
-    /// [`send_eager_tsf_warmup`] と同じ準備チェック（`conv_mutation_allowed`/
-    /// `needs_f2_probe`/`tsf_readiness`）を通すが、実際の `VK_IME_ON` SendInput
-    /// は行わず `eager_warmup_sent_ms` の latch のみ行う。
-    ///
-    /// ADR-149（BUG-113）で発見（Opus敵対的レビュー M3）: `on_ime_applied` の
-    /// 随伴 warmup を丸ごとスキップすると、`send_eager_tsf_warmup` が本来更新する
-    /// `eager_warmup_sent_ms`（`compute_focus_probe_grace` の唯一の入力）も
-    /// 一緒に失われ、focus probe の grace 期間が短縮される副作用がある。
-    /// 「戦略（`ImeOpenStrategy`）が既に `VK_IME_ON` を送った/確定させた」場合は、
-    /// 二重送信だけを避け、grace の供給元としての latch は維持する。
-    pub fn latch_eager_warmup_without_send(
-        &self,
-        warmup_ime_on: awase::platform::WarmupImeOn,
-        origin: WarmupOrigin,
-    ) {
-        self.eager_tsf_warmup_inner(warmup_ime_on, origin, false);
-    }
-
-    fn eager_tsf_warmup_inner(
-        &self,
-        warmup_ime_on: awase::platform::WarmupImeOn,
-        origin: WarmupOrigin,
-        send_vk: bool,
-    ) {
-        if !self.conv_mutation_allowed.get() {
-            tracing::trace!("[tsf-eager-warmup] non-AwaseOwned → warmup スキップ");
-            return;
-        }
-        if !self.warmup_coord.needs_f2_probe() {
-            tracing::trace!("[tsf-eager-warmup] non-GJI strategy → warmup スキップ");
-            return;
-        }
-        if !self.tsf_readiness(warmup_ime_on).can_warmup() {
-            return;
-        }
-        if !send_vk {
-            // ADR-149: 戦略が同じ apply で既に VK_IME_ON を送信/確定済みのため、
-            // 二重 SendInput は行わず eager_warmup_sent_ms だけ latch する
-            // （BUG-113: 重複 SendInput が GJI の TSF composition 追跡を乱す）。
-            let ms = crate::hook::current_tick_ms();
-            tracing::info!(
-                "[tsf-eager-warmup] スキップ (戦略が既に送信済み, origin={origin}) \
-                 → eager_warmup_sent_ms={ms}ms のみ latch"
-            );
-            self.composition.set_eager_warmup_sent_ms(ms);
-            return;
-        }
-        // OBJ_NAMECHANGE 連番をリセット（warmup 後のイベント順序追跡用）
-        crate::tsf::observer::reset_namechange_seq();
-        // カタカナ/英数系 charset への追従 warmup（F1/F0 系）は BUG-19 のロックイン
-        // 事故を受けて撤去した（`docs/known-bugs.md` BUG-19 参照）。常に VK_IME_ON
-        // のみを送る（open 軸のみの冪等キーなため反復送信も無害。2026-08-22、
-        // ADR-100 決定2により VK_DBE_HIRAGANA から変更——後者は「開く」と「ひらがなに
-        // 強制する」を束ねており BUG-50 デッドロックの前提だった）。
-        match crate::tsf::send::send_eager_warmup_vk_pair() {
-            Some(ms) => {
-                // BUG-110/ADR-132 Phase 2: `[warmup-gate]`(抑止側)とペアで INFO
-                // ログにすることで、`force-ON (ImmBrokenForceOn)`(既に info!)との
-                // grep 突合せから VK_IME_ON の内訳(warmup由来 vs force-on由来)を
-                // 確定できるようにする(追補4のアクション1)。`origin=` で
-                // gated(B1本来のゲート対象)/actuated(#6随伴、ゲート対象外)を
-                // 区別する(敵対的コードレビュー指摘への対応、追補6続き)。
-                tracing::info!(
-                    "[tsf-eager-warmup] VK_IME_ON 送信 (origin={origin}), \
-                     eager_warmup_sent_ms={ms}ms"
-                );
-                self.composition.set_eager_warmup_sent_ms(ms);
-            }
-            None => {
-                tracing::debug!(
-                    "[tsf-eager-warmup] スキップ (Win key held) → eager_warmup_sent_ms は \
-                     更新しない (BUG-32)"
-                );
-            }
-        }
     }
 
     /// BUG-25 GJI 用の「IME-ON 半角英数」entry/exit トグルを送信する。

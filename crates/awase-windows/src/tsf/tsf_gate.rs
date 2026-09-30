@@ -340,15 +340,6 @@ pub struct TsfReadiness {
 }
 
 impl TsfReadiness {
-    /// eager warmup (F2 前送信) を実行できる状態か。
-    ///
-    /// `ime_on && is_tsf_mode` が満たされればゲート状態によらず送信する。
-    /// `PendingWarmup` 中も warmup は送信可能（むしろ先行送信が目的）。
-    #[must_use]
-    pub const fn can_warmup(&self) -> bool {
-        self.ime_on && self.is_tsf_mode
-    }
-
     /// キーをゲートで保留すべき状態か。
     ///
     /// `PendingWarmup` 中はキーを `held` に蓄積し、TSF/Bypass 確定後に再投入する。
@@ -685,18 +676,6 @@ mod tests {
             ime_on,
             is_tsf_mode,
         }
-    }
-
-    /// can_warmup: ime_on && is_tsf_mode が必要十分条件
-    #[test]
-    fn readiness_can_warmup() {
-        // 両方 true → warmup 可
-        assert!(readiness(TsfGateState::PendingWarmup, true, true).can_warmup());
-        assert!(readiness(TsfGateState::Ready, true, true).can_warmup());
-        // ime_on=false → 不可
-        assert!(!readiness(TsfGateState::Ready, false, true).can_warmup());
-        // is_tsf_mode=false → 不可
-        assert!(!readiness(TsfGateState::Ready, true, false).can_warmup());
     }
 
     /// is_holding: PendingWarmup 中のみ true

@@ -102,14 +102,6 @@ pub(crate) struct ImeStateHub {
     intent_override_logged: std::cell::Cell<bool>,
 
     /// [`ImeStateHub::resolve_warmup_ime_on`] の `off_drift_active` ゲートが
-    /// 「ゲート無しなら実際に送信していたはずの warmup」を抑止している間 `true`。
-    /// 遷移時のみ `[warmup-gate]` INFO ログを出すための dedup 用
-    /// （BUG-110/ADR-132 Phase 2 敵対的コードレビュー指摘、`intent_override_logged`
-    /// と同じパターン）。打鍵駆動で頻繁に呼ばれる経路のため、抑止が継続する間
-    /// 毎回ログすると乖離が長時間続くケース（BUG-110 3件目報告の6分5秒）で
-    /// ログが飽和する。
-    warmup_gate_suppression_logged: std::cell::Cell<bool>,
-
     /// `ApplyGeneration` 専用アロケータ（ADR-106 決定1）。`event_log.next_seq()`
     /// から独立しており、診断ログの記録有無と generation の一意性が無関係になる。
     generation_alloc: super::GenerationAllocator,
@@ -146,7 +138,6 @@ impl ImeStateHub {
             external_change_watch: super::external_change_watch::ExternalChangeWatch::new(),
             last_external_change_ms: 0,
             intent_override_logged: std::cell::Cell::new(false),
-            warmup_gate_suppression_logged: std::cell::Cell::new(false),
             generation_alloc: super::GenerationAllocator::new(),
         }
     }
@@ -851,121 +842,6 @@ impl ImeStateHub {
     /// 使うテストは必ず [`Self::effective_open_at`] を呼ぶこと。
     pub(crate) fn effective_open(&self) -> bool {
         self.effective_open_at(TickMs(crate::hook::current_tick_ms()))
-    }
-
-    /// eager warmup の `ime_on` 入力を解決する（ADR-098 決定1-b、INV-A97-2）。
-    ///
-    /// `applied`（実 actuation の記録）が既知ならそれを、`Unknown` のときだけ
-    /// belief（`effective_open()`）へフォールバックする——**belief を `applied`
-    /// へ書き戻さない**。読む向きだけ belief を見るのが F2（belief を `applied`
-    /// に書いて下流全部を汚染した）との決定的な違いである。
-    ///
-    /// `applied` を引数で受け取るのは、executor が持つスナップショット
-    /// （`applied_snapshot`、batch 内で更新されうる）と hub の live な
-    /// `model().applied` の両方から呼べるようにするため。
-    ///
-    /// # BUG-110/ADR-132 Phase 2: OFF 方向 drift correction とのゲート
-    ///
-    /// `now` で評価した [`Self::check_drift_correction`] が OFF 方向
-    /// （`desired=false, observed=true`）を返している間は warmup
-    /// （`VK_IME_ON`）を送らない（[`awase::platform::WarmupImeOn::
-    /// from_applied_or_belief_unless_off_drift`]、INV-B1'）。drift
-    /// correction とまったく同じ判定式（`explicit_intent()` を含む）を
-    /// 共有することで、「別々の関数が別々の解決経路で独立に計算する」という
-    /// BUG-110 の構造的欠陥をこの2者間では作らない。
-    ///
-    /// `check_drift_correction` の判定材料（`observations` の drift 追跡・
-    /// `most_recent_trusted`）は `ImeEvent::FocusChanged` の reduce アーム
-    /// （`clear_on_focus_change`）でフォーカス変更ごとに必ずクリアされるため、
-    /// このゲートは focus-scoped——新しいフォーカスでは必ず解除され、cross-
-    /// window の cold-start warmup（BUG-02 対策）を壊さない。**ただし
-    /// 同一プロセス内の hwnd 切替（`update_focus_window`）は drift を
-    /// クリアしない**（既知の限界。BUG-110 追補6参照。実害が確認されるまで
-    /// 対応しない）。
-    ///
-    /// `now` は呼び出し元から注入する——`state/` 層は壁時計を直接読まない
-    /// （`state/mod.rs` の `TickMs` doc の規約。[`Self::effective_open`] が
-    /// 既にこの規約の負債を抱えているが、新規にここへ壁時計読みを追加しない）。
-    ///
-    /// # `now` はバッチ内で一貫しない（既知の限界、敵対的コードレビュー指摘）
-    ///
-    /// `runtime/executor.rs` の5呼び出し元はいずれも呼び出しごとに
-    /// `std::time::Instant::now()` を独立に取って渡す（`applied` 引数の
-    /// ように `execute_all` バッチ内でスナップショット・共有されていない）。
-    /// そのためバッチ処理が `DRIFT_CORRECTION_THRESHOLD_MS`（400ms）等の
-    /// 境界を跨ぐと、同一バッチ内でゲート判定（`off_drift_active`）が
-    /// 反転しうる。実害は小さいと判断し許容している——バッチ内一貫性が
-    /// 必要になった場合は `DecisionExecutor` に `applied_snapshot` と並ぶ
-    /// `batch_now: Instant` を導入すること。
-    pub(crate) fn resolve_warmup_ime_on(
-        &self,
-        applied: AppliedImeState,
-        now: std::time::Instant,
-    ) -> awase::platform::WarmupImeOn {
-        let applied_open = applied.applied_open();
-        let effective = self.effective_open();
-        // opus-adversarial-consult S2（BUG-110 追補9）: この `off_drift_active`
-        // は `check_drift_correction` と全く同じ述語を共有している（ADR-132
-        // Phase 2 / INV-B1'）。BUG-110 追補9 で `check_drift_correction` に
-        // `HeuristicDefault` の除外を加えたことにより、issue #189 のケース
-        // （Chrome 入場直後、明示意図なし）では `off_drift_active` が
-        // `false` になり、この warmup ゲートは以前より開きやすくなる。
-        // 検討済み・実害なし: (1) ADR-132 の発端シナリオ（物理 IME キー
-        // 1回）は `last_intent` が立つため `explicit_intent()`
-        // （`shadow_model.last_intent` のみを見る、`IntentStore` は無関係）
-        // が `Some` になり新ガードを通らず、ADR-132 の保護は保たれる
-        // （/code-review 指摘: 本コメントが誤って `IntentStore` も
-        // 関与すると書いていたのを訂正）。(2) issue #189 のケースでは
-        // warmup が向かう方向
-        // （ON）と force-ON が向かう方向（ON）が一致するため、そもそも
-        // ping-pong する相手がいない——ゲートは「drift correction と
-        // warmup が反対方向に書き合う」ことを防ぐためのものであり、
-        // drift correction 自体が発火しないなら不要になる。
-        let off_drift_active = matches!(
-            self.check_drift_correction(now, self.explicit_intent()),
-            Some(DriftCorrection {
-                desired: false,
-                observed: true,
-                ..
-            })
-        );
-        let gated = awase::platform::WarmupImeOn::from_applied_or_belief_unless_off_drift(
-            applied_open,
-            effective,
-            off_drift_active,
-        );
-        // 敵対的コードレビュー指摘（N1・N2）: ログの「抑止回数」を実際に
-        // 意味のある上限値にするため、ゲート無しでも元々送らない値だった
-        // 場合は「開始」ログを出さない。ただし dedup の**エピソード境界**は
-        // `off_drift_active` 単独で決める——`would_have_sent_without_gate`
-        // まで境界条件に含めると、ADR-132 自身が設計根拠として書いている
-        // 「OFF方向drift検出中は`applied`がdrift correctionとforce-ONの
-        // 両方に交互に書かれてping-pongする」性質により、`off_drift_active`
-        // がtrueのまま`applied`の反転だけで「抑止開始/終了」がフラップし、
-        // ゲートは閉じたままなのに「抑止終了」が誤って出る（N1指摘）。`would_send`
-        // （`from_applied_or_belief`と同じ判定、コンストラクタの呼び出し
-        // 件数固定テストに触れずに共有するための core 関数）は「開始行を
-        // 出す価値があるか」の判定にのみ使う。
-        let would_have_sent_without_gate =
-            awase::platform::WarmupImeOn::would_send(applied_open, effective);
-        if off_drift_active {
-            if would_have_sent_without_gate && !self.warmup_gate_suppression_logged.get() {
-                tracing::info!(
-                    "[warmup-gate] OFF方向 drift 検出中 → warmup 抑止開始 \
-                     (applied={applied_open:?} effective={effective})"
-                );
-                self.warmup_gate_suppression_logged.set(true);
-            }
-        } else if self.warmup_gate_suppression_logged.get() {
-            tracing::info!("[warmup-gate] warmup 抑止終了");
-            self.warmup_gate_suppression_logged.set(false);
-        }
-        gated
-    }
-
-    /// [`Self::resolve_warmup_ime_on`] を `model().applied` に対して呼ぶ版。
-    pub(crate) fn warmup_ime_on(&self, now: std::time::Instant) -> awase::platform::WarmupImeOn {
-        self.resolve_warmup_ime_on(self.model().applied, now)
     }
 
     /// [`Self::effective_open`] の判定本体。`now_ms` を明示的に受け取る版。
