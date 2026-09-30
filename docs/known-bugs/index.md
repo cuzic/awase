@@ -171,7 +171,7 @@
 | [BUG-167](BUG-167.md) | 設定GUIが書く `Ctrl+Shift+VK_F12` を `parse_hotkey` が `VK_VK_F12` と解釈し、エンジン切替ホットキーが無言で登録されない |
 | [BUG-168](BUG-168.md) | Chrome+GJI で StaleConfirm 2連続 → reinit(IME OFF→ON)が入力中の未確定文字を全消失させる(未修正) |
 | [BUG-169](BUG-169.md) | 設定GUIの n-gram ファイル欄を空にして保存しても、次の読み込みで既定のファイルに戻る(既存の制約・未修正) |
-| [BUG-170](BUG-170.md) | Unwarranted 経路で GjiFsm への同期が届かず OffCold に固着、毎打鍵 per-VK→StaleConfirm→ESC で未確定文字が消える(GJI+Edge/Meet。修正済み・実機未検証・残作業あり) |
+| [BUG-170](BUG-170.md) | Unwarranted 経路で GjiFsm への同期が届かず OffCold に固着、毎打鍵 per-VK→StaleConfirm→ESC で未確定文字が消える(GJI+Edge/Meet。修正済み・実機検証済み(2026-09-30)・残作業あり) |
 | [BUG-171](BUG-171.md) | per-VK confirm の StaleConfirm(escape=true)が途中の語で既存の未確定文字まで ESC で消す(未修正) |
 | [BUG-172](BUG-172.md) | MS-IME+TsfNative で IME が閉じていても、msime-ready ゲートが conv の NATIVE を「ON確認」と扱い生ローマ字が入る(CI観測、実機未確認) |
 | [BUG-173](BUG-173.md) | GJI + TSFネイティブで物理ひらがなキー(0xF2)が常にSuppressされ、カタカナ固着から戻れない（ADR-100でwarmupがVK_IME_ON化し代替F2再送の契約が崩れていた） |
