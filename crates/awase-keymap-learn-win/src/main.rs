@@ -32,6 +32,7 @@ mod app {
         classify_robust, predict, score_walk, ScoreReport, WalkObs, DEFAULT_MIN_MINORITY,
     };
     use awase_keymap_learn_win::reconvert_cells::blank_idle_reconvert_predictions;
+    use awase_keymap_learn_win::settle_tuning::SettleTuning;
     use awase_keymap_learn_win::RealImeDriver;
     use awase_windows::state::ime_kind::TipIdentity;
     use awase_windows::state::key_effect_predictor::TableKey;
@@ -842,6 +843,9 @@ mod app {
         let mut driver = build_driver(strategy);
         // 測定前のEDIT消去は既定で有効(ADR-210)。`--no-clear-idle-edit`で従来の挙動に戻せる。
         driver.set_clear_idle_edit(!std::env::args().any(|a| a == "--no-clear-idle-edit"));
+        // 診断用: 待ち時間の上書き(`--quiet-after-change-ms=N`/`--clear-edit-pump-ms=N`)。
+        // 指定が無ければ従来の固定値のまま。
+        driver.set_settle_tuning(SettleTuning::from_args(std::env::args()));
         let initial = driver.initial_status();
         // A-6/B-3: 開始時点のTIP・(GJIのときだけ)config1.dbを記録し、終了時に再取得して
         // 比較する(学習中のIME/GJI設定の切り替え検出)。
@@ -891,6 +895,7 @@ mod app {
         let training_elapsed_ms = executor.elapsed_ms();
         let training_presses = executor.stats.presses;
         let decode_errors = executor.driver.decode_error_count();
+        print_timing_summary("training", &executor.driver);
 
         // [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2
         // (opus-adversarial-consult round1 M1対応): セッション監視
@@ -925,6 +930,7 @@ mod app {
         }
         let reconciliation =
             reconcile_against_bundled(&mut executor, tip_at_start, &mut cells, &mut walk_rng);
+        print_timing_summary("session_end", &executor.driver);
 
         // round2 N1対応: 検証ウォーク中にセッション監視が失敗と判定していたら、
         // (学習フェーズ直後のチェックだけでは検証ウォーク中の汚染を見逃すため)
@@ -1412,6 +1418,15 @@ mod app {
                     "code {code:?} must be a single whitespace/colon-free token"
                 );
             }
+        }
+    }
+
+    /// 段階別の所要時間の内訳を標準エラーへ出す(`timing stage=... phase=...`)。
+    /// `training`は学習(+やり直し)終了時点、`session_end`は検証ウォーク・再測定まで
+    /// 含めた累計。差し引きで検証ウォーク・再測定分が分かる。
+    fn print_timing_summary(stage: &str, driver: &RealImeDriver) {
+        for line in driver.timing_summary_lines() {
+            eprintln!("[awase-keymap-learn-win] {line} stage={stage}");
         }
     }
 }

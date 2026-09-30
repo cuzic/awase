@@ -1655,12 +1655,19 @@ impl Runtime {
             None
         };
         let ime = &self.platform_state.ime;
+        // ADR-209: 窓の種類の判定だけをここで行い、規則そのものは純関数（`predict_with_override`）にある。
+        let unreadable = self.predict_henkan_open_in_unreadable_windows && {
+            let profile = self.platform.current_app_profile();
+            profile.cannot_verify_real_ime_state(self.platform.focus.class_name())
+                && profile != crate::focus::class_names::AppImeProfile::InputRelay
+        };
         let input = PredictInput {
             open: ime.effective_open(),
             mode: ime.input_mode(),
             conv_raw: self.platform_state.ime.belief.prev_conversion_mode(),
             composing: crate::tsf::observer::ime_composition_active_now(),
             track: ime.model().key_track(),
+            unreadable,
         };
         let Some(prediction) = keymap.predict_with_override(vk.0, &input, override_table) else {
             tracing::debug!(

@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::phase_timing::{Phase, PhaseTimers};
+use crate::settle_tuning::SettleTuning;
 use awase::config::AppConfig;
 use awase::paths::resolve_relative_to_exe;
 use awase_keymap_learn::anomaly::ResetLevel;
@@ -241,6 +243,10 @@ pub struct RealImeDriver {
     /// A-1/A-2)。学習中にユーザーがIMEを切り替える可能性への対処として、呼び出し側は
     /// 終了時に[`Self::query_tip_identity`]で再同定し、この値と比較すること。
     tip_identity: TipIdentity,
+    /// 段階別の所要時間の内訳(観測専用、挙動は変えない)。
+    timers: PhaseTimers,
+    /// `settle()`/`clear_edit()`の待ち時間(既定は従来の固定40ms、診断フラグで上書き)。
+    tuning: SettleTuning,
     /// **最後のフィールドでなければならない**(上記`ComApartment`の解放順の説明を参照)。
     _com: ComApartment,
 }
@@ -307,6 +313,8 @@ impl RealImeDriver {
             // 後段で`query_tip_identity_on_current_sta()`の結果に上書きする
             // プレースホルダ(この値のまま使われることはない)。
             tip_identity: TipIdentity::Other,
+            timers: PhaseTimers::default(),
+            tuning: SettleTuning::default(),
             _com: com,
         };
 
@@ -532,6 +540,11 @@ impl RealImeDriver {
     }
 
     fn observe_imm(&self) -> WinResult<Observation> {
+        self.timers
+            .time(Phase::ObserveImm, || self.observe_imm_untimed())
+    }
+
+    fn observe_imm_untimed(&self) -> WinResult<Observation> {
         unsafe {
             let himc = ImmGetContext(self.edit);
             if himc.is_invalid() {
@@ -562,7 +575,13 @@ impl RealImeDriver {
         }
     }
 
+    /// 内部で`observe_imm()`も呼ぶので、`ObserveTsf`は`ObserveImm`を含む値になる。
     fn observe_tsf(&self) -> Option<Status> {
+        self.timers
+            .time(Phase::ObserveTsf, || self.observe_tsf_untimed())
+    }
+
+    fn observe_tsf_untimed(&self) -> Option<Status> {
         let open = read_compartment(
             &self.thread_compartments,
             &GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
@@ -613,29 +632,76 @@ impl RealImeDriver {
     }
 
     fn settle(&self) -> Observation {
-        let deadline = Instant::now() + Duration::from_millis(SETTLE_TIMEOUT_MS);
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(SETTLE_TIMEOUT_MS);
         let mut last = self.observe_imm().unwrap_or_else(|_| Observation {
             status: self.initial,
             text: String::new(),
         });
         let mut quiet_since = Instant::now();
+        let mut first_change: Option<Duration> = None;
+        let mut settled = false;
         while Instant::now() < deadline {
             self.pump(Duration::from_millis(5));
             if let Ok(now) = self.observe_imm() {
                 if now.status != last.status || now.text != last.text {
+                    if first_change.is_some() {
+                        self.timers.note_inter_change(quiet_since.elapsed());
+                    }
                     last = now;
                     quiet_since = Instant::now();
-                } else if quiet_since.elapsed() >= Duration::from_millis(QUIET_MS) {
+                    first_change.get_or_insert_with(|| started.elapsed());
+                } else if quiet_since.elapsed()
+                    >= Duration::from_millis(if first_change.is_some() {
+                        self.tuning.quiet_after_change_ms
+                    } else {
+                        self.tuning.quiet_no_change_ms
+                    })
+                {
+                    settled = true;
                     break;
                 }
             }
         }
+        self.timers.record(Phase::Settle, started.elapsed());
+        match first_change {
+            Some(d) => {
+                self.timers.record(Phase::SettleFirstChange, d);
+                self.timers.note_first_change(d);
+            }
+            None => self.timers.note_settle_no_change(),
+        }
+        if settled {
+            self.timers
+                .record(Phase::SettleQuietTail, quiet_since.elapsed());
+        } else {
+            self.timers.note_settle_timeout();
+        }
         last
     }
 
+    /// 診断用の待ち時間の上書き(`main`がコマンドラインから作る)。
+    pub fn set_settle_tuning(&mut self, tuning: SettleTuning) {
+        self.tuning = tuning;
+    }
+
+    /// 段階別の所要時間の内訳(`timing ...`行)。学習終了時に標準エラーへ出す。
+    #[must_use]
+    pub fn timing_summary_lines(&self) -> Vec<String> {
+        self.timers.summary_lines()
+    }
+
     fn clear_edit(&self) {
-        let _ = unsafe { SetWindowTextW(self.edit, w!("")) };
-        self.pump(Duration::from_millis(QUIET_MS));
+        self.timers.time(Phase::ClearEdit, || {
+            let before = self.observe_imm().ok().map(|o| o.status);
+            let _ = unsafe { SetWindowTextW(self.edit, w!("")) };
+            self.pump(Duration::from_millis(self.tuning.clear_edit_pump_ms));
+            // 案2の根拠: このpump中にIME状態が変わることがあるか(あれば短縮は危険)。
+            let after = self.observe_imm().ok().map(|o| o.status);
+            if before != after {
+                self.timers.note_clear_edit_status_changed();
+            }
+        });
     }
 }
 
@@ -648,8 +714,8 @@ impl Drop for RealImeDriver {
     }
 }
 
-impl ImeDriver for RealImeDriver {
-    fn press(&mut self, key: usize) -> PressReport {
+impl RealImeDriver {
+    fn press_untimed(&mut self, key: usize) -> PressReport {
         let mut before = self.observe_imm().unwrap_or_else(|_| Observation {
             status: self.initial,
             text: String::new(),
@@ -696,32 +762,8 @@ impl ImeDriver for RealImeDriver {
         }
     }
 
-    fn press_setup(&mut self, key: usize) {
-        let _ = self.inject(key);
-        self.pump(Duration::from_millis(SETUP_GAP_MS));
-    }
-
-    fn read_primary(&mut self) -> Status {
-        self.observe_imm().map_or(self.initial, |o| o.status)
-    }
-
-    fn read_secondary(&mut self) -> Status {
-        self.observe_tsf().unwrap_or(self.initial)
-    }
-
-    fn reread_status(&mut self) -> Status {
-        self.observe_imm().map_or(self.initial, |o| o.status)
-    }
-
-    fn settle_setup(&mut self) -> Status {
-        self.settle().status
-    }
-
-    fn last_reset_key(&self) -> Option<usize> {
-        self.last_reset_key.get()
-    }
-
-    fn reset(&mut self, level: ResetLevel) -> bool {
+    fn reset_untimed(&mut self, level: ResetLevel) -> bool {
+        self.timers.note_reset_level(level as usize);
         // リセットが最後に送るキー(Mode以上はF2、SoftはEsc)を、直前キーとして記録させる。
         let last_vk = if level >= ResetLevel::Mode {
             0xF2
@@ -772,6 +814,49 @@ impl ImeDriver for RealImeDriver {
             }
         }
         self.settle().status == self.initial
+    }
+}
+
+impl ImeDriver for RealImeDriver {
+    fn last_reset_key(&self) -> Option<usize> {
+        self.last_reset_key.get()
+    }
+
+    fn press(&mut self, key: usize) -> PressReport {
+        let started = Instant::now();
+        let report = self.press_untimed(key);
+        self.timers.record(Phase::Press, started.elapsed());
+        report
+    }
+
+    fn press_setup(&mut self, key: usize) {
+        let started = Instant::now();
+        let _ = self.inject(key);
+        self.pump(Duration::from_millis(SETUP_GAP_MS));
+        self.timers.record(Phase::PressSetup, started.elapsed());
+    }
+
+    fn read_primary(&mut self) -> Status {
+        self.observe_imm().map_or(self.initial, |o| o.status)
+    }
+
+    fn read_secondary(&mut self) -> Status {
+        self.observe_tsf().unwrap_or(self.initial)
+    }
+
+    fn reread_status(&mut self) -> Status {
+        self.observe_imm().map_or(self.initial, |o| o.status)
+    }
+
+    fn settle_setup(&mut self) -> Status {
+        self.settle().status
+    }
+
+    fn reset(&mut self, level: ResetLevel) -> bool {
+        let started = Instant::now();
+        let ok = self.reset_untimed(level);
+        self.timers.record(Phase::Reset, started.elapsed());
+        ok
     }
 
     fn elapsed_ms(&self) -> f64 {

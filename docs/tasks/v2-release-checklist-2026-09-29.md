@@ -1,6 +1,6 @@
 ---
 title: awase v2.0.0 リリースの完成条件チェックリスト
-status: 進行中（2026-09-29 深夜時点。A・B・C・D4・E2 は完了。残りは D1〜D3（実機確認）と E1・E3）
+status: 進行中（2026-09-30 時点。A・B・D4・E2 は完了。C1 は実機で #377 の効果を確認したが偽 OFF 疑い1件が未解消〈BUG-176〉。残りは D1〜D3 と X 系の実機確認、E1・E3）
 created: 2026-09-29
 related_adr: ["ADR-198", "ADR-199", "ADR-200", "ADR-201", "ADR-202", "ADR-203"]
 ---
@@ -54,12 +54,14 @@ v2 ラインは `develop` → `main`（`.claude/rules/main-develop-branch-flow.m
 
 ## C. ブロッカーの不具合
 
-- [x] **C1 BUG-172（実 Chrome × 外部から閉じられた IME が ON に戻らない）**: 修正済み（PR #377、ADR-205）。外部注入 IME キーの直後300msの監視窓で、読み済みの開閉状態の 1→0 を検出したときだけ実状態へ追随する（開け直しはしない）。**GJI かつ `Imm32Unavailable` に限る**（MS-IME・InputRelay・TsfNative は対象外）。CI（各10試行）で GJI×実 Chrome は追随 10/10（observed 0→10、`kiu`→`ka`）、偽の追随は物理キー相当・メモ帳・MS-IME で無し。
+- [ ] **C1 BUG-172（実 Chrome × 外部から閉じられた IME が ON に戻らない）**: 修正済み（PR #377、ADR-205）。外部注入 IME キーの直後300msの監視窓で、読み済みの開閉状態の 1→0 を検出したときだけ実状態へ追随する（開け直しはしない）。**GJI かつ `Imm32Unavailable` に限る**（MS-IME・InputRelay・TsfNative は対象外）。CI（各10試行）で GJI×実 Chrome は追随 10/10（observed 0→10、`kiu`→`ka`）、偽の追随は物理キー相当・メモ帳・MS-IME で無し。 **【2026-09-30 実機確認・要判断】** 実機（dragonflyg4、GJI、Edge）で #377 の効果を確認: 外部注入の VK_IME_OFF の後、#377 の直前は `．`（追随せず Engine ON）、マージ後と develop 先端は `z`（IME 閉＋追随）。ON の準備を変えても先端は 9/9 正常、新しく起動した awase の手動（Ctrl+変換で ON）も正常。ただし**最初に起動した awase での手動の連続試行で、IME が開いたまま awase が OFF へ追随する偽 OFF/無変化が3回**出た（再現条件不明。[BUG-176](../known-bugs/BUG-176.md)）。F2 単独・変換単独で ON にした場合とマウスで ON にした後は未確認。ブロッカーとして扱うか観察継続にするかは所有者判断。
   - 未検証: 追随後にモードキーを押して期待状態になること、MS-IME×実 Chrome での awase 自身の `VK_IME_OFF`（効かなかった記録あり）、実機。
   - 既知の制限（ADR-208）: 外部変化を検出できず `applied` が古いままだと、絶対指定キーが省略され続ける固着があり得る。v2 のブロッカーにはしない。
 - [x] **C2 ts-chrome 高速打鍵（BUG-168 / ADR-200）の残課題**（2026-09-26 のメモ、**未再確認**）: 候補窓が残ったまま GJI が OFF のときの回復低下、StaleConfirm の romaji 再送重複（BUG-075 系）、Escape 経路、他の reinit 呼び出し元、起動直後の IME モード不整合と awase 主スレッド7秒停止（未解明）。まず再現するかを確認する。 **再確認済み(2026-09-29)**: (1) 合成条件で再現(ADR-200 で回復量が減る)、(2)〜(5) は強制シナリオで測定済み(2)(3)は入ったが重複・消失なし、(4)は Chrome で入らない、(5)は再現せず。v2 ブロッカーにしない提案。詳細は [BUG-168](../known-bugs/BUG-168.md) 末尾。 **所有者決定（2026-09-29）: (2)〜(5) はブロッカーから外す。(1) は BUG-172 の修正（#377）で再判定。**
 
 ## D. 実機確認待ち
+
+> **2026-09-30 実機確認の実施記録**: [v2-device-verification-results-2026-09-30.md](v2-device-verification-results-2026-09-30.md)（X5・X1・X2 を実施。X3・X4・D1・D3 は未実施）。
 
 - [ ] **D1 BUG-163**: GJI/MS-IME × メモ帳/実 Chrome で、最初の打鍵が欠落しないこと。 手順: [v2-manual-verification-guide-2026-09-29.md](v2-manual-verification-guide-2026-09-29.md)。 **CI 部分（PR #387、2026-09-29）**: 素の EDIT・TSF 相当（tsf）× GJI の `--cold`（awase 起動直後の最初の文字）を各10回、消失・リテラル化 0（メモ帳の代わり。MS-IME・RichEdit・実 Chrome は構成のみ追加、未実行）。実機のメモ帳・実 Chrome での実打鍵は残る。
 - [ ] **D2 ADR-203 / BUG-170・171**: OFF 前に1語確定→物理 OFF→1秒以内に物理 ON→即打鍵。ON キー単独タップ直後の遅延（想定30〜60ms）の再測定。 手順: [v2-manual-verification-guide-2026-09-29.md](v2-manual-verification-guide-2026-09-29.md)。 **CI 部分（PR #387、run 36655470405）**: `typing_stress --mode=reopen`（構成 `sc-reopen-*`）。GJI×tsf（gap 300/600/900ms）・変換キー・実 Chrome・MS-IME が全 PASS（OffCold 固着・StaleConfirm/flush の `escape=true` は 0、GJI は ON 後の最初の語が cold 経路で `Reopen(BeliefSync…)` が毎試行発火）。**BUG-170 の修正を撤去した負の対照（`ablations/a8`）で、入力先のテキスト・cold 経路・固着は修正版と同じ PASS だった**（awase 自身の ImeOn 遷移が GjiFsm を同期するため、物理 OFF→ON は BUG-170 の固着条件〈Windows Terminal の物理 F2 → Unwarranted〉に届かない）。違いは journal の `Reopen(BeliefSync…)` だけで、`--require-sync` で撤去版が FAIL（24/24）になる。**したがって CI で確認できるのは「ADR-203 の同期が働いたこと」までで、ユーザーに見える不具合（固着・ESC・文字の消失）の再現・防止は実機でしか確認できない**。遅延: `[vk-send]`→セッション確認は p50 約 45ms・最大 81ms（ADR-203 D2 の定義、windows-latest）。「打鍵→最初の `[vk-send]`」約61ms はほぼ打鍵の押下時間で awase の遅延ではない。GJI の ATOK プリセットで 0xF2 は ON にならない（ハーネスの既定は 0x16）。実機での確認は残る。

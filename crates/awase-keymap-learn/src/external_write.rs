@@ -9,9 +9,9 @@
 /// 観測した注入イベント1件の出所（ADR-196決定1b項目1）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InjectionOrigin {
-    /// `LLKHF_INJECTED`が立っていない、ユーザーの物理入力。
+    /// `LLKHF_INJECTED`が立っておらず、学習プロセス自身の目印も無い、ユーザーの物理入力。
     Physical,
-    /// 注入されていて、学習プロセス自身の目印が付いている。
+    /// 学習プロセス自身の目印が付いている（注入フラグの有無は問わない）。
     SelfInjected,
     /// それ以外の注入（目印が無い、または別の目印）。awase自身によるものかは問わない。
     External,
@@ -19,6 +19,11 @@ pub enum InjectionOrigin {
 
 /// 注入イベント1件を分類する（決定1b項目1）。
 ///
+/// **自分の目印が付いていれば、`LLKHF_INJECTED`の有無によらず自分の注入とする**（2026-09-30の実機で判明）。
+/// JISキーボードの実機（dragonflyg4、GJI）では、学習プロセスが注入した`VK_DBE_SBCSCHAR`(0xF3)/`VK_DBE_DBCSCHAR`(0xF4)の
+/// **キーアップだけ**が、OSから`LLKHF_INJECTED`なし（`extra_info`は自分の目印のまま）で届く。フラグだけで物理入力と
+/// 数えると、学習プロセスは自分の注入を汚染と誤判定し、序盤（14押下）で必ず`interference`失敗になる。
+/// 物理キー入力の`extra_info`は通常0で、自分の目印（"LRNM"）にはならない。
 /// 「自分の目印を列挙して探す」規則ではなく「自分の目印が無ければ外部」という規則に
 /// すること——awase本体は`INJECTED_MARKER`以外にも`TSF_MARKER`（warmup）・
 /// `IME_KANJI_MARKER`（漢字キーactuation）を使い分けており、前者だけを探す規則では
@@ -29,10 +34,10 @@ pub const fn classify_injection(
     extra_info: usize,
     self_marker: usize,
 ) -> InjectionOrigin {
-    if !is_injected {
-        InjectionOrigin::Physical
-    } else if extra_info == self_marker {
+    if extra_info == self_marker {
         InjectionOrigin::SelfInjected
+    } else if !is_injected {
+        InjectionOrigin::Physical
     } else {
         InjectionOrigin::External
     }
@@ -231,11 +236,20 @@ mod tests {
             classify_injection(false, 0, SELF_MARKER),
             InjectionOrigin::Physical
         );
-        // 注入フラグが立っていなければ、たとえ自分の目印と同じ値が偶然extra_infoに
-        // 入っていても物理入力として扱う（injectedフラグが優先）。
+        // 目印が自分のものでなければ、フラグ無しは（別の値がextra_infoに入っていても）物理入力。
+        assert_eq!(
+            classify_injection(false, OTHER_MARKER, SELF_MARKER),
+            InjectionOrigin::Physical
+        );
+    }
+
+    /// 実機(JISキーボード、GJI)の観測: 自分が注入した0xF3/0xF4のキーアップだけ、注入フラグ無し・
+    /// `extra_info`は自分の目印のままで届く。これを物理入力と数えると学習が必ず失敗する。
+    #[test]
+    fn own_marker_without_injected_flag_is_self_injected() {
         assert_eq!(
             classify_injection(false, SELF_MARKER, SELF_MARKER),
-            InjectionOrigin::Physical
+            InjectionOrigin::SelfInjected
         );
     }
 
