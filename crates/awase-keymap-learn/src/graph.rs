@@ -89,6 +89,9 @@ struct Edge {
 
 const INF: i64 = i64::MAX / 4;
 
+/// 節点として持てるstatus数の上限(動的追加の暴走防止)。開閉2×モード5×入力中2=20に余裕を足した値。
+pub const MAX_STATUSES: usize = 24;
+
 /// プランナ用グラフ。
 #[derive(Debug, Clone)]
 pub struct Graph {
@@ -183,6 +186,42 @@ impl Graph {
         if changed {
             self.compute_paths();
         }
+    }
+
+    /// 事前モデルに無かったstatusを、観測をもとに節点として追加する。
+    ///
+    /// 実機は事前モデルにない状態へ遷移することがある(例: GJIのMS-IMEプリセットでF1が
+    /// カタカナ0x0Bへ)。既知でない状態への遷移は`learn_edge`が捨てるため、計画は実際と
+    /// ずれ続け同期喪失を繰り返す。追加した節点の全キーの辺は「状態が変わらない」と
+    /// 楽観的に置き(測るまで結果は不明)、測れば`learn_edge`が実際の遷移に直す。
+    /// 節点数を`MAX_STATUSES`で頭打ちにする(暴走防止)。追加したら`Some(添字)`、
+    /// 既知または上限超えなら`None`。
+    pub fn add_status(&mut self, s: Status) -> Option<usize> {
+        if self.status_index(s).is_some() || self.statuses.len() >= MAX_STATUSES {
+            return None;
+        }
+        let si = self.statuses.len();
+        self.statuses.push(s);
+        self.n_nodes += self.n_ctx;
+        let n_keys = self.n_keys;
+        let ms = self.cost_model.expected_press_ms(false, 60.0) + self.cost_model.read_ms;
+        for c in 0..self.n_ctx {
+            let node = si * self.n_ctx + c;
+            for k in 0..n_keys {
+                let ctx = self
+                    .ctx_keys
+                    .iter()
+                    .position(|x| *x == k)
+                    .map_or(0, |p| p + 1);
+                self.edges.push(Some(Edge {
+                    to: si * self.n_ctx + ctx,
+                    cost: ms.round() as i64,
+                }));
+                debug_assert_eq!(self.edges.len(), (node * n_keys + k) + 1);
+            }
+        }
+        self.compute_paths();
+        Some(si)
     }
 
     pub fn status_index(&self, s: Status) -> Option<usize> {
@@ -576,6 +615,77 @@ mod tests {
         let mut rng = Rng::new(1);
         let prior = Prior::from_machine(&m, 0.0, &mut rng);
         (Graph::build(&prior, &[], &CostModel::event()), prior)
+    }
+
+    #[test]
+    fn add_status_appends_a_node_whose_edges_are_optimistic_self_loops() {
+        let (mut g, _) = graph();
+        let (n_nodes, n_status) = (g.n_nodes, g.statuses.len());
+        let new = Status {
+            open: true,
+            mode: 0x0B,
+            composing: false,
+        };
+        assert_eq!(g.status_index(new), None);
+        let si = g.add_status(new).expect("追加できる");
+        assert_eq!(si, n_status);
+        assert_eq!(g.n_nodes, n_nodes + g.n_ctx);
+        assert_eq!(g.status_index(new), Some(si));
+        let node = g.node_of(new, None).expect("節点がある");
+        for key in 0..g.n_keys {
+            assert_eq!(
+                g.press_to(node, key),
+                Some(node),
+                "測るまでは状態が変わらない扱い"
+            );
+        }
+        assert_eq!(g.add_status(new), None, "既知のstatusは重複して追加しない");
+        // 既存の節点の辺は変わらない。
+        assert_eq!(g.press_to(g.initial_node, 0).is_some(), true);
+    }
+
+    #[test]
+    fn add_status_is_capped() {
+        let (mut g, _) = graph();
+        let mut added = 0;
+        for i in 0..100u8 {
+            let s = Status {
+                open: i % 2 == 0,
+                mode: 0x20 + i,
+                composing: false,
+            };
+            if g.add_status(s).is_some() {
+                added += 1;
+            }
+        }
+        assert_eq!(g.statuses.len(), MAX_STATUSES);
+        assert!(added > 0 && g.statuses.len() <= MAX_STATUSES);
+    }
+
+    #[test]
+    fn learned_edge_into_a_discovered_status_makes_it_reachable() {
+        let (mut g, _) = graph();
+        let from = g.statuses[g.initial_node / g.n_ctx];
+        let new = Status {
+            open: true,
+            mode: 0x0B,
+            composing: false,
+        };
+        g.add_status(new);
+        let node = g.node_of(new, None).unwrap();
+        assert!(
+            !g.reachable_from_initial(node),
+            "遷移を観測するまで到達できない"
+        );
+        g.learn_edge(
+            from,
+            0,
+            Outcome {
+                status: new,
+                disp: crate::model::Disposition::None,
+            },
+        );
+        assert!(g.reachable_from_initial(node));
     }
 
     #[test]

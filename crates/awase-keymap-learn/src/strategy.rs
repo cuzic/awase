@@ -241,9 +241,19 @@ fn ctx_id(g: &Graph, last_key: Option<usize>) -> usize {
 /// 観測の多数派の結果でグラフの辺を直す。
 fn learn<D: ImeDriver>(exec: &Executor<D>, g: &mut Graph, info: PressInfo, key: usize) {
     if let Some(maj) = exec.table.majority(info.before, key) {
+        // 事前モデルに無い状態へ遷移したら、観測で2回確かめられた時点で節点に加える
+        // (観測誤りによる1回きりの状態でグラフを膨らませない)。
+        if g.status_index(maj.status).is_none()
+            && exec.table.outcome_status_count(maj.status) >= DISCOVER_MIN_OBS
+        {
+            let _ = g.add_status(maj.status);
+        }
         g.learn_edge(info.before, key, maj);
     }
 }
+
+/// 事前モデルに無いstatusを節点に加えるのに要る、結果としての観測回数。
+const DISCOVER_MIN_OBS: usize = 2;
 
 fn cur_node<D: ImeDriver>(exec: &Executor<D>, g: &Graph) -> Option<usize> {
     g.node_of(exec.current()?, exec.last_key())
@@ -573,6 +583,52 @@ mod tests {
                 m.presses
             );
         }
+    }
+
+    /// 事前モデルに無い状態(GJI MS-IMEプリセットで、F1がカタカナ0x0Bへ遷移する等)が
+    /// 実機にあっても、観測で見つけた状態を節点に加えて巡回が収束すること。
+    /// 真のモデルは5モード、事前モデルは2モードだけ(3モードぶんの状態を知らない)。
+    fn run_with_prior_lacking_modes(
+        s: Strategy,
+        prior_modes: u8,
+    ) -> (Executor, crate::metrics::Metrics) {
+        use crate::sample_models::atok_like_with_modes;
+        let truth = atok_like_with_modes(5);
+        let prior_model = atok_like_with_modes(prior_modes);
+        let mut rng = Rng::new(11);
+        let prior = Prior::from_machine(&prior_model, 0.0, &mut rng);
+        let suspects = truth.history_suspects.clone();
+        let cost = CostModel::event();
+        let sim = SimIme::new(truth.clone(), SimConfig::default(), cost);
+        let mut exec = Executor::new(sim, AnomalyPolicy::default(), ReadPolicy::Single);
+        run(
+            s,
+            &mut exec,
+            &prior,
+            &cost,
+            &suspects,
+            &Req::default(),
+            &mut rng,
+        );
+        let met = evaluate(&exec, &truth);
+        (exec, met)
+    }
+
+    #[test]
+    fn statuses_missing_from_the_prior_are_discovered_and_covered() {
+        let (_e, known) = run_with_prior_lacking_modes(Strategy::S6, 5);
+        let (_e, lacking) = run_with_prior_lacking_modes(Strategy::S6, 2);
+        assert!(
+            lacking.cov1 >= known.cov1 - 0.05,
+            "事前モデルに無い状態を見つけられていない: 2モード事前={} 5モード事前={}",
+            lacking.cov1,
+            known.cov1
+        );
+        assert!(
+            lacking.presses < 3000.0,
+            "事前モデルに無い状態があっても押下数が暴走しない: {}",
+            lacking.presses
+        );
     }
 
     #[test]
