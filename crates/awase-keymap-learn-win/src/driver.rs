@@ -204,6 +204,13 @@ pub struct RealImeDriver {
     thread_compartments: ITfCompartmentMgr,
     keys: Vec<u32>,
     initial: Status,
+    /// 入力中でない押下の前に、EDITに残った確定文字を消す(既定で有効、`--no-clear-idle-edit`で無効)。
+    /// MS-IME本体は、EDITに文字があるとアイドル状態の変換キーが再変換に入る(隠れ変数、
+    /// windows-latest実測: 結果が割れるセル20→11、検証精度0.990/0.970→1.000/1.000)。
+    /// 学習中の文書を常に空にして、この分岐を測定から除く(ADR-210)。
+    clear_idle_edit: bool,
+    /// 直前の`reset`が最後に送ったキーの添字(リセット直後の観測の文脈として使う)。
+    last_reset_key: Cell<Option<usize>>,
     /// `observe_imm()`がIME観測を復号できず`self.initial`へフォールバックした回数
     /// (ADR-195が前提とする「誤りに強い分類」が`awase-keymap-learn`に未実装のため、
     /// この駆動部だけでは異常として`Executor`に伝える経路が無い。せめて可視化する
@@ -296,6 +303,8 @@ impl RealImeDriver {
                 composing: false,
             },
             decode_errors: Cell::new(0),
+            clear_idle_edit: true,
+            last_reset_key: Cell::new(None),
             hook_monitor,
             notify_monitor,
             session_monitor: Cell::new(SessionMonitor::new(SESSION_INVALIDATION_LIMIT)),
@@ -513,6 +522,11 @@ impl RealImeDriver {
     /// `observe_imm()`が復号に失敗し`self.initial`へフォールバックした回数。
     /// 0でなければ学習表に信頼できない観測が混じっている可能性がある
     /// (呼び出し元は最終サマリで表示することを推奨)。
+    /// 測定前のEDIT消去を切り替える(`--no-clear-idle-edit`のA/B用)。
+    pub fn set_clear_idle_edit(&mut self, on: bool) {
+        self.clear_idle_edit = on;
+    }
+
     pub fn decode_error_count(&self) -> u32 {
         self.decode_errors.get()
     }
@@ -702,10 +716,22 @@ impl Drop for RealImeDriver {
 
 impl RealImeDriver {
     fn press_untimed(&mut self, key: usize) -> PressReport {
-        let before = self.observe_imm().unwrap_or_else(|_| Observation {
+        let mut before = self.observe_imm().unwrap_or_else(|_| Observation {
             status: self.initial,
             text: String::new(),
         });
+        if self.clear_idle_edit && !before.status.composing && !before.text.is_empty() {
+            // 消去で起きうる通知を外部の書き込みと数えないよう猶予窓を張ってから消し、
+            // 消去の後に状態を読み直す(状態が変わっていれば読み直した値を押下前とする)。
+            self.notify_monitor
+                .mark_expected_notify(Duration::from_millis(NOTIFY_EXPECT_WINDOW_MS + 40));
+            let _ = unsafe { SetWindowTextW(self.edit, w!("")) };
+            self.pump(Duration::from_millis(QUIET_MS));
+            match self.observe_imm() {
+                Ok(after_clear) => before = after_clear,
+                Err(_) => before.text.clear(),
+            }
+        }
         let delivered = self.inject(key);
         let after = self.settle();
         let disp = disposition(&before, &after);
@@ -738,6 +764,14 @@ impl RealImeDriver {
 
     fn reset_untimed(&mut self, level: ResetLevel) -> bool {
         self.timers.note_reset_level(level as usize);
+        // リセットが最後に送るキー(Mode以上はF2、SoftはEsc)を、直前キーとして記録させる。
+        let last_vk = if level >= ResetLevel::Mode {
+            0xF2
+        } else {
+            0x1B
+        };
+        self.last_reset_key
+            .set(self.keys.iter().position(|vk| *vk == last_vk));
         self.clear_edit();
         let esc = self.keys.iter().position(|vk| *vk == 0x1B);
         if let Some(key) = esc {
@@ -784,6 +818,10 @@ impl RealImeDriver {
 }
 
 impl ImeDriver for RealImeDriver {
+    fn last_reset_key(&self) -> Option<usize> {
+        self.last_reset_key.get()
+    }
+
     fn press(&mut self, key: usize) -> PressReport {
         let started = Instant::now();
         let report = self.press_untimed(key);
