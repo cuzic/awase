@@ -1,13 +1,19 @@
 //! `settle()`と`clear_edit()`の待ち時間の設定。
 //!
-//! 既定値は従来の固定値(すべて40ms)のまま。変更前後をA/B比較するために、
-//! 診断用のコマンドラインフラグで上書きできる(`--quiet-after-change-ms=N`、
-//! `--clear-edit-pump-ms=N`)。採用を決めたら既定値側を書き換えること。
+//! 既定値は windows-latest(MS-IME本体)のA/B実測で決めた(各3回、run 36650865715):
+//! 1押下あたり68〜77ms→44〜53ms(約33%短縮)、検証精度は平均0.967で同等、学習表の
+//! 差は実行間ばらつき(0〜4セル/143)の範囲内。従来値(すべて40ms)へ戻して比較する
+//! ための診断用フラグ(`--quiet-after-change-ms=N`、`--clear-edit-pump-ms=N`)も残す。
 //!
 //! OS非依存なのでLinuxでもユニットテストできる。
 
-/// 従来の静止待ち(ms)。
+/// 変化なし確定の静止待ち(ms)。従来の固定値のまま。
 pub const DEFAULT_QUIET_MS: u64 = 40;
+/// 変化検出後の静止待ち(ms)。実測: 変化つきsettle約2800回で再変化0件
+/// (`hist=inter_change`が全て0)。40msは待ち過ぎだったため10msへ。
+pub const DEFAULT_QUIET_AFTER_CHANGE_MS: u64 = 10;
+/// `clear_edit()`後のpump(ms)。実測: pump中にIME状態が変わった回数が約700回で0件。
+pub const DEFAULT_CLEAR_EDIT_PUMP_MS: u64 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SettleTuning {
@@ -25,9 +31,9 @@ pub struct SettleTuning {
 impl Default for SettleTuning {
     fn default() -> Self {
         Self {
-            quiet_after_change_ms: DEFAULT_QUIET_MS,
+            quiet_after_change_ms: DEFAULT_QUIET_AFTER_CHANGE_MS,
             quiet_no_change_ms: DEFAULT_QUIET_MS,
-            clear_edit_pump_ms: DEFAULT_QUIET_MS,
+            clear_edit_pump_ms: DEFAULT_CLEAR_EDIT_PUMP_MS,
         }
     }
 }
@@ -62,7 +68,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_matches_the_previous_fixed_values() {
+    fn default_shortens_only_the_waits_that_measurements_showed_unneeded() {
         let t = SettleTuning::default();
         assert_eq!(
             (
@@ -70,7 +76,7 @@ mod tests {
                 t.quiet_no_change_ms,
                 t.clear_edit_pump_ms
             ),
-            (40, 40, 40)
+            (10, 40, 5)
         );
     }
 
@@ -90,5 +96,18 @@ mod tests {
     fn invalid_values_fall_back_to_default() {
         let t = SettleTuning::from_args(["--quiet-after-change-ms=abc", "--clear-edit-pump-ms="]);
         assert_eq!(t, SettleTuning::default());
+    }
+
+    #[test]
+    fn flags_can_restore_the_previous_fixed_values_for_ab_comparison() {
+        let t = SettleTuning::from_args(["--quiet-after-change-ms=40", "--clear-edit-pump-ms=40"]);
+        assert_eq!(
+            (
+                t.quiet_after_change_ms,
+                t.quiet_no_change_ms,
+                t.clear_edit_pump_ms
+            ),
+            (40, 40, 40)
+        );
     }
 }
