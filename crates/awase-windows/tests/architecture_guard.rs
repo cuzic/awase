@@ -5622,8 +5622,8 @@ fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
         "platform.rs::on_reinject_key が `send_eager_tsf_warmup` を呼んでいます（BUG-173 追補2: 確定キー reinject 時の \
          VK_IME_ON 送信は撤去済み。Enter1回で2発出ていた発火の再導入になる）"
     );
-    // 残る eager warmup 送信元は FocusChange（platform.rs）・IME ON 適用直後の随伴（platform.rs）・vk_send の
-    // Off 固定（常に no-op）の3か所だけ。キー打鍵契機の呼び出しが増えたら（Enter 1回で2発・F2 併走の再発）ここで落ちる。
+    // 残る eager warmup 送信元は FocusChange（platform.rs）・IME ON 適用直後の随伴（platform.rs）の2か所だけ
+    // （vk_send の Off 固定＝常に no-op の呼び出しは ADR-212 P1 で撤去）。キー打鍵契機の呼び出しが増えたら（Enter 1回で2発・F2 併走の再発）ここで落ちる。
     let mut sends = 0;
     for f in [
         "src/platform.rs",
@@ -5639,8 +5639,8 @@ fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
             .count();
     }
     assert_eq!(
-        sends, 3,
-        "`send_eager_tsf_warmup(` の本番呼び出し箇所が3以外です（BUG-173 追補2: キー打鍵契機の warmup 送信は撤去済み。\
+        sends, 2,
+        "`send_eager_tsf_warmup(` の本番呼び出し箇所が2以外です（BUG-173 追補2: キー打鍵契機の warmup 送信は撤去済み。\
          意図した追加なら ADR-191 の warmup 節と BUG-173.md を更新してこの数を直すこと）"
     );
     assert!(

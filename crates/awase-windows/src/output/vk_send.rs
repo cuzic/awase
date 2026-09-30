@@ -689,10 +689,7 @@ impl Output {
                 // 安全側の挙動として常に cold マークする。
                 self.mark_composition_cold(ColdReason::SymbolVkSent);
                 self.warmup_coord.mark_composition_reset();
-                self.send_eager_tsf_warmup(
-                    awase::platform::WarmupImeOn::off(),
-                    crate::output::WarmupOrigin::Off,
-                );
+                // eager warmup は送らない(以前は、実送信されない `WarmupImeOn::off()` を渡す呼び出しがあった。デッドコード。ADR-212 P1)。
             }
             CharResolution::Unicode(ch) => {
                 tracing::debug!(
