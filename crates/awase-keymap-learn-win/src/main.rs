@@ -881,6 +881,7 @@ mod app {
         let training_elapsed_ms = executor.elapsed_ms();
         let training_presses = executor.stats.presses;
         let decode_errors = executor.driver.decode_error_count();
+        print_timing_summary("training", &executor.driver);
 
         // [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2
         // (opus-adversarial-consult round1 M1対応): セッション監視
@@ -909,6 +910,7 @@ mod app {
         let mut cells = build_persisted_cells(&executor.table);
         let reconciliation =
             reconcile_against_bundled(&mut executor, tip_at_start, &mut cells, &mut walk_rng);
+        print_timing_summary("session_end", &executor.driver);
 
         // round2 N1対応: 検証ウォーク中にセッション監視が失敗と判定していたら、
         // (学習フェーズ直後のチェックだけでは検証ウォーク中の汚染を見逃すため)
@@ -1396,6 +1398,15 @@ mod app {
                     "code {code:?} must be a single whitespace/colon-free token"
                 );
             }
+        }
+    }
+
+    /// 段階別の所要時間の内訳を標準エラーへ出す(`timing stage=... phase=...`)。
+    /// `training`は学習(+やり直し)終了時点、`session_end`は検証ウォーク・再測定まで
+    /// 含めた累計。差し引きで検証ウォーク・再測定分が分かる。
+    fn print_timing_summary(stage: &str, driver: &RealImeDriver) {
+        for line in driver.timing_summary_lines() {
+            eprintln!("[awase-keymap-learn-win] {line} stage={stage}");
         }
     }
 }
