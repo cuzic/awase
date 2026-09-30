@@ -783,7 +783,9 @@ pub(super) fn initialize_app(
     let _ = with_app(|app| {
         app.set_keyboard_model(config.general.keyboard_model);
         app.set_update_check_enabled(config.general.update_check);
-        // ADR-209: 起動時にも反映する（`apply_config_update`は再読込でしか通らない）。
+        // `use_learned_keymap_table`(ADR-195 段階4 の opt-out)と ADR-209 の設定は、起動時にも反映する
+        // （`apply_config_update`は再読込でしか通らず、起動時は既定の true のままだった）。
+        app.set_use_learned_keymap_table(config.general.use_learned_keymap_table);
         app.set_predict_henkan_open_in_unreadable_windows(
             config.general.predict_henkan_open_in_unreadable_windows,
         );

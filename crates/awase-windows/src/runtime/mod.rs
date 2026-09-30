@@ -1490,6 +1490,10 @@ impl Runtime {
         self.keyboard_model = model;
     }
 
+    pub(crate) const fn set_use_learned_keymap_table(&mut self, enabled: bool) {
+        self.use_learned_keymap_table = enabled;
+    }
+
     pub(crate) const fn set_predict_henkan_open_in_unreadable_windows(&mut self, enabled: bool) {
         self.predict_henkan_open_in_unreadable_windows = enabled;
     }
@@ -2112,9 +2116,10 @@ impl Runtime {
         );
         self.platform_state.focus.focus_debounce_ms = config.general.focus_debounce_ms;
         self.platform_state.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
-        self.use_learned_keymap_table = config.general.use_learned_keymap_table;
-        self.predict_henkan_open_in_unreadable_windows =
-            config.general.predict_henkan_open_in_unreadable_windows;
+        self.set_use_learned_keymap_table(config.general.use_learned_keymap_table);
+        self.set_predict_henkan_open_in_unreadable_windows(
+            config.general.predict_henkan_open_in_unreadable_windows,
+        );
         self.set_keyboard_model(config.general.keyboard_model);
         self.set_update_check_enabled(config.general.update_check);
         self.set_warn_state_dependent_mode_keys(config.general.warn_state_dependent_mode_keys);
