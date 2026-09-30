@@ -300,6 +300,30 @@ jobs:
             cfg('sc-t1e-chrome-f13', 'pass', check='chromeprobe', keymap=0, runs=1, wait=400,
                 chrome='--f13 --repeat=2 --settle=800',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff|Conversion,F13,IMEOff'),
+            # ADR-209(2026-09-30): 読めない窓(実 Chrome=Imm32Unavailable)で、GJI の MS-IME プリセット(keymap=2)の IME OFF から変換を
+            # 単独で押す(素通し)と IME が開き、awase の Engine が追随して NICOLA になる。stale=実機と同じ古い custom_keymap_table 付き。
+            # off=設定 predict_henkan_open_in_unreadable_windows=false の対照(追随しない=IME ON・Engine OFF で `か` になり FAIL するはず)。
+            *[cfg(f'sc-adr209-chrome-msime{suf}', exp, check='chromeprobe', keymap=2, runs=1, wait=500, custom_table=ct, general=gen,
+                  chrome='--henkan-open --repeat=3 --settle=800')
+              for suf, exp, ct, gen in (('', 'pass', 'false', ''), ('-stale', 'pass', 'true', ''),
+                                        ('-off', 'fail', 'false', 'predict_henkan_open_in_unreadable_windows = false'))],
+            # 追随できる条件の調査(2026-09-30、実 Chrome=読めない窓): GJI の ATOK(1)/MS-IME(2)プリセットで、閉状態から各キーを押して
+            # Engine が追随する(PASS=NICOLA)か、IME だけ開いて Engine OFF(FAIL=`か`)か、開かない(FAIL=`ka`)かを見る。表に出すだけ(observe)。
+            *[cfg(f'sc-follow-chrome-{pn}-{kn}', 'observe', check='chromeprobe', keymap=km, runs=1, wait=500,
+                  chrome=f'--key={kv} --repeat=2 --settle=800')
+              for pn, km in (('atok', 1), ('msime', 2))
+              for kn, kv in (('ime-on', '16'), ('henkan', '1c'), ('muhenkan', '1d'), ('eisu', 'f0'), ('hiragana', 'f2'),
+                             ('hankaku', 'f3'), ('f13', '7c'), ('f14', '7d'))],
+            # ADR-211: MS-IME/MOBILE プリセットの F13(閉状態からだけ開く受動のキー)。実 Chrome(読めない窓)で、IME OFF から F13 を押して
+            # Engine が追随する(NICOLA)こと(合否)。stale=古い表つき。noawase=対照(IME が実際に開く=`か`、awase なしの実挙動)。
+            *[cfg(f'sc-adr211-chrome-msime-f13{suf}', exp, check='chromeprobe', keymap=2, runs=1, wait=500, custom_table=ct, awase=aw,
+                  chrome=f'--key=7c --repeat=3 --settle=800{extra}')
+              for suf, exp, ct, aw, extra in (('', 'pass', 'false', 'true', ''), ('-stale', 'pass', 'true', 'true', ''),
+                                              ('-noawase', 'observe', 'false', 'false', ' --no-awase'))],
+            # ADR-211 決定4: 読める窓(素の EDIT)× MS-IME プリセットで、明示の IME OFF(1A)→F13(7C) を繰り返す。各押下の +1500ms まで観測する
+            # (DRIFT_CORRECTION_THRESHOLD_MS=400 より長い)ので、drift correction が F13 で開いた IME を閉じ直すなら awase.log の `[drift]` と
+            # 実 IME の open が 1→0 に戻ることで見える。観測のみ(observe)。
+            cfg('sc-adr211-edit-msime-f13', 'observe', check='consistency', keymap=2, runs=1, args='--seq=1A,7C,1A,7C,1A,7C'),
             cfg('sc-t1e-chrome-f13-noawase', 'observe', check='chromeprobe', keymap=0, runs=1, wait=400, awase='false',
                 chrome='--f13 --no-awase --repeat=2 --settle=800',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff|Conversion,F13,IMEOff'),

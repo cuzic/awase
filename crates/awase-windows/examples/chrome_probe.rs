@@ -196,12 +196,17 @@ fn utc_stamp() -> String {
 
 fn scan_for(vk: u32) -> u16 {
     match vk {
-        0x1D => 0x7B, // 無変換
-        0x1C => 0x79, // 変換
-        0xF2 => 0x70, // ひらがな
-        0x4B => 0x25, // K
-        0x41 => 0x1E, // A
-        0xA0 => 0x2A, // LShift
+        0x1D => 0x7B,        // 無変換
+        0x1C => 0x79,        // 変換
+        0xF2 => 0x70,        // ひらがな
+        0xF0 => 0x3A,        // 英数
+        0xF1 => 0x70,        // カタカナ(Shift 付きのひらがなキー)
+        0xF3 | 0xF4 => 0x29, // 半角/全角
+        0x7C => 0x64,        // F13
+        0x7D => 0x65,        // F14
+        0x4B => 0x25,        // K
+        0x41 => 0x1E,        // A
+        0xA0 => 0x2A,        // LShift
         _ => 0,
     }
 }
@@ -440,6 +445,17 @@ const F13_CASES: [Case; 2] = [
         expect_kana: true,
     },
 ];
+
+/// `--henkan-open`(ADR-209): GJI の MS-IME プリセット(keymap=2)で、IME OFF(直接入力)から変換を単独で押したとき、
+/// IME が開き(TSF の実 Chrome)、awase の Engine が追随して NICOLA になること。全ケースは keymap=1(ATOK)前提の
+/// 期待(「かな→変換=IME OFF」等)を含み MS-IME プリセットでは成り立たないので、このケースだけを走らせる。
+const HENKAN_OPEN_CASES: [Case; 1] = [Case {
+    name: "直接入力→変換=かなON(ADR-209)",
+    setup: Setup::Off,
+    vk: 0x1C,
+    shift: false,
+    expect_kana: true,
+}];
 
 const CASES: [Case; 8] = [
     Case {
@@ -814,8 +830,30 @@ fn main() {
     let mut fail = 0usize;
     let mut invalid = 0usize;
     let mut recover = 0usize;
-    let cases: &[Case] = if args.iter().any(|a| a == "--f13") {
+    // `--key=<hex>`(追随できる条件の調査): 閉状態(直接入力)からそのキーを1回押し、Engine が追随して NICOLA になるかを見る。
+    // 追随=PASS、IME は開いたが Engine OFF(`か`)や開かない(`ka`)=FAIL。呼び出し側は expect=observe で結果だけ表に出す。
+    let key_cases: Option<&'static [Case]> = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--key="))
+        .and_then(|h| u32::from_str_radix(h.trim_start_matches("0x"), 16).ok())
+        .map(|vk| {
+            let name: &'static str =
+                Box::leak(format!("直接入力→0x{vk:02X}=かなON").into_boxed_str());
+            let cases: &'static [Case] = Box::leak(Box::new([Case {
+                name,
+                setup: Setup::Off,
+                vk,
+                shift: false,
+                expect_kana: true,
+            }]));
+            cases
+        });
+    let cases: &[Case] = if let Some(k) = key_cases {
+        k
+    } else if args.iter().any(|a| a == "--f13") {
         &F13_CASES
+    } else if args.iter().any(|a| a == "--henkan-open") {
+        &HENKAN_OPEN_CASES
     } else {
         &CASES
     };
