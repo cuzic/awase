@@ -296,19 +296,20 @@ jobs:
             # ON 後に実 IME が閉じていないこと、物理 OFF が効いたこと。GJI の TSF 系構成は --require-cold(ADR-203 (c) の PASS 条件: 最初の語が cold 経路)と --require-sync(ADR-203 の Reopen/ImeOn(BeliefSync) が働いたこと)も判定する。
             # 遅延は「ON キー押下の打鍵から最初の [vk-send]」と「[vk-send] から セッション確認」(ADR-203 D2 の定義)を result.txt の REOPEN 行に出す。
             # tsf=TsfNative 相当(ADR-193、GjiFsm の固着が起きた TSF 経路)、chromepage=実 Chrome。素の EDIT は常に Unicode 注入で IME 状態の証拠にならないので構成にしない(review M4)。
-            # gap は 1 秒未満(300/600/900)。期待値は observe(修正前コードで FAIL する負の対照を実測してから pass に上げる。ADR-203 (d))。
-            *[cfg(f'sc-reopen-tsf-gji-gap{gap}', 'observe', check='reopen', runs=3, wait=420, checkargs='--require-cold --require-sync',
+            # gap は 1 秒未満(300/600/900)。期待値: tsf の GJI・変換キー・MS-IME は pass(run 36655470405 で3回×6〜8試行が全 PASS、負の対照 nofix が全 FAIL。ADR-203 (d))、
+            # 実 Chrome は起動が不安定になりうるので observe のまま、f2 は ON にならない比較用なので observe。
+            *[cfg(f'sc-reopen-tsf-gji-gap{gap}', 'pass', check='reopen', runs=3, wait=420, checkargs='--require-cold --require-sync',
                   stress=f'--form=tsf --mode=reopen --trials=8 --reopen-gap={gap} --layout=@REPO@/layout/nicola_keytop.yab')
               for gap in (300, 600, 900)],
             # ON キーの比較(GJI の ATOK プリセット): 0xF2(ひらがな)と 0x1C(変換。scan は 0x79)。f2 は ON にならず FAIL する比較用で --require-cold は付けない。
-            *[cfg(f'sc-reopen-tsf-gji-{name}-gap600', 'observe', check='reopen', runs=3, wait=420, checkargs=chk,
+            *[cfg(f'sc-reopen-tsf-gji-{name}-gap600', 'observe' if name == 'f2' else 'pass', check='reopen', runs=3, wait=420, checkargs=chk,
                   stress=f'--form=tsf --mode=reopen --trials=8 --reopen-gap=600 --reopen-on-key={vk} --layout=@REPO@/layout/nicola_keytop.yab')
               for name, vk, chk in (('f2', '0xF2', ''), ('henkan', '0x1C', '--require-cold --require-sync'))],
             # 負の対照(ADR-203 (d)): BUG-170 の修正(ADR-203 (i)(ii))を撤去したビルド(ablations/a8)で、上と同じ判定が FAIL する(退行を検出できる)こと。expect=fail。
             # run 36654801007: 撤去しても入力先のテキスト・cold 経路・固着は変わらず PASS した(awase 自身の ImeOn 遷移が GjiFsm を同期する)。修正の有無は --require-sync(journal 上の同期)だけが検出できる。
             cfg('sc-reopen-tsf-gji-gap600-nofix', 'fail', mutator='a8-no-gji-reopen-sync.sh', check='reopen', runs=3, wait=420, checkargs='--require-cold --require-sync',
                 stress='--form=tsf --mode=reopen --trials=8 --reopen-gap=600 --layout=@REPO@/layout/nicola_keytop.yab'),
-            cfg('sc-reopen-tsf-msime-gap600', 'observe', check='reopen', ime='msime', runs=3, wait=420,
+            cfg('sc-reopen-tsf-msime-gap600', 'pass', check='reopen', ime='msime', runs=3, wait=420,
                 stress='--form=tsf --mode=reopen --trials=8 --reopen-gap=600 --layout=@REPO@/layout/nicola_keytop.yab --msime'),
             cfg('sc-reopen-chromepage-gji-gap600', 'observe', check='reopen', runs=3, wait=900, checkargs='--require-cold --require-sync',
                 stress='--form=chromepage --mode=reopen --trials=6 --reopen-gap=600 --settle-read --layout=@REPO@/layout/nicola_keytop.yab'),
