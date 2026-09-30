@@ -134,6 +134,9 @@ mod app {
     /// 測る(`strategy::revisit_nondeterministic`)。全セルへ一律に`k`を課す旧実装は、
     /// 通過点として踏まれただけで観測数が数十に達するセルがあると`k`が跳ね上がり、
     /// 数千押下を使っていた。
+    /// やり直しパスで全セルを最低何回観測させるかの既定値(暫定、実機A/Bで決める)。
+    const RETRY_BASE_K: u32 = 2;
+
     fn retry_nondeterministic_cells_once<D: ImeDriver>(
         exec: &mut Executor<D>,
         prior: &Prior,
@@ -167,7 +170,17 @@ mod app {
         // 実行で予算を(実機の異常再試行等で)使い切っていた場合、over()の最初のチェックで
         // 即座にtrueとなり、「もう一度実行します」とログに出すだけで実際には1回も
         // 押下せずに戻ってしまう。やり直しパスに、1回目とは独立した新しい予算を与える。
+        // 診断用: やり直しパスで全セルを最低何回観測させるか(`--retry-k=N`)。既定は
+        // `RETRY_BASE_K`。A/Bで値を決めるためのフラグで、決まったら既定値だけ残す。
+        let retry_k = std::env::args()
+            .find_map(|a| {
+                a.strip_prefix("--retry-k=")
+                    .and_then(|v| v.parse::<u32>().ok())
+            })
+            .unwrap_or(RETRY_BASE_K)
+            .max(base_req.k);
         let retry_req = Req {
+            k: retry_k,
             max_presses: exec.stats.presses.saturating_add(base_req.max_presses),
             budget_ms: exec.elapsed_ms() + base_req.budget_ms,
             ..*base_req

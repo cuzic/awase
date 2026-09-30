@@ -228,7 +228,7 @@ fn seed_graph_from_table<D: ImeDriver>(exec: &Executor<D>, g: &mut Graph) {
 }
 
 /// やり直し(ADR-195段階2): 1回目の学習の後、誤りに強い分類でも決定的と言えなかった
-/// セルだけを、観測数が`req.adaptive_n`に達するまで再訪する。1回目で学んだ遷移と
+/// セルを、観測数が`req.adaptive_n`に達するまで再訪し、全セルも最低`req.k`回観測させる。1回目で学んだ遷移と
 /// 見つけた状態は、表から引き継ぐ。
 ///
 /// 旧実装は、非決定セルの最大観測数に2を足した`k`を全セルへ一律に課して全体を巡回し直して
@@ -245,8 +245,16 @@ pub fn revisit_nondeterministic<D: ImeDriver>(
     let mut g = Graph::build(prior, suspects, cost);
     seed_graph_from_table(exec, &mut g);
     let target = req.adaptive_n;
+    let k = req.k;
+    // 非決定と判定されたセルの再訪(`target`まで)に加え、全セルを最低`k`回観測させる。
+    // 1回目で2回しか観測されず決定的と判定されたセルの中に、隠れ状態で結果が割れるものが
+    // 混じる(検証ウォークの誤答の大半がこの種のセル)ため。
     tour(exec, &mut g, req, rng, true, move |e, g| {
-        need_revisit(e, g, target)
+        let mut need = need_ctx(e, g, k, suspects);
+        for (n, r) in need.iter_mut().zip(need_revisit(e, g, target)) {
+            *n = (*n).max(r);
+        }
+        need
     });
 }
 
@@ -759,6 +767,27 @@ mod tests {
             "非決定セルだけの再訪が{added}押下かかった(flagged={})",
             flagged.len()
         );
+    }
+
+    #[test]
+    fn revisit_also_raises_every_non_suspect_cell_to_the_base_k() {
+        let (mut exec, prior, suspects, cost) = after_first_pass();
+        let mut rng = Rng::new(12);
+        let req = Req {
+            k: 6,
+            ..Req::default()
+        };
+        revisit_nondeterministic(&mut exec, &prior, &cost, &suspects, &req, &mut rng);
+        for (&(s, key), obs) in exec.table.cells() {
+            if suspects.contains(&key) {
+                continue;
+            }
+            assert!(
+                obs.len() >= 6,
+                "全セルが最低k回観測されていない: ({s:?},{key}) = {}",
+                obs.len()
+            );
+        }
     }
 
     #[test]
