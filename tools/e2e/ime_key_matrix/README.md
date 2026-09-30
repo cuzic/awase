@@ -137,10 +137,12 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 
 | 構成 | チェックリスト | 見るもの |
 |---|---|---|
-| `sc-reopen-{tsf-gji-gap300\|600\|900, edit-gji-gap600, tsf-msime-gap600, chromepage-gji-gap600}` | D2 / ADR-203 e2e (c)・BUG-170・171 | `typing_stress --mode=reopen`: 1語確定 → 物理 OFF → gap ms 後に物理 ON(0xF2)→ 即打鍵。判定は `check_reopen.py`(入力先のテキスト、`StartComposition while engine off`=OffCold 固着、StaleConfirm の `escape=true`)。ON キー押下から最初の `[vk-send]` までの遅延と cold 経路かは情報として出す |
+| `sc-reopen-{tsf-gji-gap300\|600\|900, tsf-gji-henkan-gap600, chromepage-gji-gap600, tsf-msime-gap600}`、比較用 `tsf-gji-f2-gap600` | D2 / ADR-203 e2e (c)・BUG-170・171 | `typing_stress --mode=reopen`: 1語確定 → 物理 OFF(0x1A)→ gap ms 後に物理 ON(既定: GJI 0x16・MS-IME 0xF2。GJI の ATOK プリセットで 0xF2 は ON にならない)→ 即打鍵。判定は `check_reopen.py`(入力先のテキスト、OffCold 固着、StaleConfirm/flush の `escape=true`、物理 OFF が効いたか、ON 後に実 IME が閉じていないか。GJI の TSF 系は `--require-cold` で「最初の語が cold 経路」も判定)。遅延は「打鍵→最初の `[vk-send]`」と「`[vk-send]`→セッション確認(ADR-203 D2 の定義)」を別に出す。素の EDIT は Unicode 注入で IME 状態の証拠にならないので構成にしない |
 | `sc-kanji-role-default-{atok,msime}` | B2 副次 | tsv も keys 上書きも無い既定 config × GJI プリセットの Alt+半角/全角(0x19)。IME が閉じ Engine が追随するか(`check_kanji_role.py --expect=closed`) |
 | `tsx-{edit,rich,tsf}-{gji,msime}-20ms-cold`・`tsx-{chromepage,chromebar}-gji-20ms-cold` | D1 / BUG-163 | awase 起動直後に最初に打つ文字が欠けないか(メモ帳の代わりに素の EDIT/RichEdit/TSF 相当と実 Chrome)。起動直後の意図なし drift(I1)は不変条件の表に出る |
-| 各 e2e ジョブの `env.txt` | B3(d) | `NoTsf3Override2` の状態(まっさらなランナーでは `absent` のはず) |
+| 各 e2e ジョブの `env.txt` | B3(d) | `NoTsf3Override2` の状態(まっさらなランナーでは `absent` のはず)。値は各ジョブの step summary とアーティファクトの `env.txt` に出る(集計表には載らない) |
+
+**コスト**: `tsx-*-cold` は8構成×10回(各 wait=900)。`tsx-` 構成は既定では回らず、`only='tsx-*'`(または構成名の前方一致)の手動起動でだけ回る。
 
 **CI で作れない項目**: B3(a)(GJI の設定ダイアログで利用者が保存した CUSTOM 表に Hankaku/Zenkaku 行が残るか。ダイアログ操作は自動化できない。表の解釈自体は `sc-t1b-*` が見ている)、
 B4(MS-IME 本体の値2。設定アプリの「キーの割り当て」が出ず作れない、PR #378)、D3(物理 Ctrl は SendInput で作れない)。

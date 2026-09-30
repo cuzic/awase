@@ -54,7 +54,7 @@
 //!
 //! `--mode=reopen`(ADR-203 e2e (c)、BUG-170 の実機確認): 「OFF 前に1語確定 → 物理 OFF(`VK_IME_OFF`)→ `--reopen-gap`(既定600ms、1秒以内)後に
 //! 物理 ON(`--reopen-on-key`、既定は GJI 0x16・MS-IME 0xF2。GJI の ATOK プリセットで 0xF2 は ON にならないことを run 36555043470 で確認)→ 即打鍵(`--reopen-type-delay`、既定0)」を `--trials` 回。別プロセスの入力先(Chrome)でも動く
-//! (実 IME の開閉は読まず、入力先のテキストと awase.log で判定する)。記録は `reopen_pre` / `reopen_on` / `reopen_typed`。判定は check_reopen.py。
+//! (実 IME の開閉は読まず、入力先のテキストと awase.log で判定する)。記録は `reopen_pre` / `reopen_on` / `reopen_typed`。判定は check_reopen.py。`--settle-read`(Chrome 等の描画遅れ対策)にも対応する。
 //!
 //! ## 注入の作法
 //! `dwExtraInfo = hook::TEST_INJECTION_MARKER`(`AWASE_TEST_INJECTION=1` の debug ビルド awase が物理キー扱い)。
@@ -1180,6 +1180,36 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
     }
 }
 
+/// `--mode=reopen` の物理キー注入で使う scan。無変換/変換は物理位置(scancode)で分類されるので対応する scan を使う(BUG-131/132、
+/// `drift_scenario` と同じ)。ひらがな等の IME 専用 VK は scan を見ないので従来どおり 0x70。
+fn scan_for_key(vk: u32) -> u16 {
+    match vk {
+        VK_MUHENKAN => SCAN_MUHENKAN,
+        VK_HENKAN => SCAN_HENKAN,
+        _ => 0x70,
+    }
+}
+
+/// `--settle-read` 付きのとき、内容が 800ms 変わらなくなるまで(最大 8 秒)読み直す(Chrome の描画遅れで欠落と誤判定しない)。
+fn read_text_maybe_settled(child: HWND, settle: bool) -> String {
+    let mut actual = read_text(child);
+    if settle {
+        let t0 = Instant::now();
+        let mut stable_since = Instant::now();
+        while t0.elapsed() < Duration::from_secs(8)
+            && stable_since.elapsed() < Duration::from_millis(800)
+        {
+            sleep_ms(200);
+            let now = read_text(child);
+            if now != actual {
+                actual = now;
+                stable_since = Instant::now();
+            }
+        }
+    }
+    actual
+}
+
 /// `--mode=reopen`(ADR-203 の e2e (c)、BUG-170 の実機確認): 「OFF 前に 1 語確定 → 物理 OFF → 1 秒以内に物理 ON → 即打鍵」。
 /// `ime_ready` の後に呼ぶ。GjiFsm が OffCold に固着せず、ON 後の最初の語が欠けない/リテラル化しないかを、入力先のテキストと
 /// awase.log(checker が `[vk-send]`・`[gji-fsm]` を数える)の両方で見る。
@@ -1197,9 +1227,29 @@ fn reopen_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
     let type_delay_ms: u64 = arg_value("--reopen-type-delay=")
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
-    let on_key: u32 = arg_value("--reopen-on-key=")
-        .and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok())
-        .unwrap_or_else(|| ime_on_key(0));
+    // 書き間違いを黙って既定キーに戻さない(構成が意図と違うキーで走ったのに PASS する事故を防ぐ)。
+    let on_key: u32 = match arg_value("--reopen-on-key=") {
+        None => ime_on_key(0),
+        Some(v) => {
+            match u32::from_str_radix(v.trim_start_matches("0x").trim_start_matches("0X"), 16) {
+                Ok(k) => k,
+                Err(_) => {
+                    rec(
+                        &json!({"type":"abort","reason":format!("--reopen-on-key={v} を16進数として読めない")}),
+                    );
+                    return;
+                }
+            }
+        }
+    };
+    // ADR-203 (c) は「1秒以内に物理 ON」。1秒以上空けると別のシナリオ(idle 後)になる。
+    if gap_ms >= 1000 {
+        rec(
+            &json!({"type":"abort","reason":format!("--reopen-gap={gap_ms} は 1000 未満にする(ADR-203 (c) は1秒以内)")}),
+        );
+        return;
+    }
+    let settle = has_flag("--settle-read");
     let Some(probe) = cells[0]
         .iter()
         .find(|c| c.romaji == "ka")
@@ -1221,6 +1271,8 @@ fn reopen_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
             return;
         }
         // OFF 前の 1 語: ON にそろえてから打って確定する(BUG-170 の「OFF 前に語を打っている」条件)。
+        // この turn_ime_on(OFF→ON)自体も、前の試行の確定語の後の「開き直し」になる。checker は trial_utc〜off_utc の固着も数える(M5)。
+        let trial_utc = utc_hms();
         turn_ime_on(0);
         clear_text(child);
         sleep_ms(200);
@@ -1228,9 +1280,9 @@ fn reopen_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
         sleep_ms(500);
         press(VK_RETURN, 0x1C, 50);
         sleep_ms(500);
-        let pre_text = read_text(child);
+        let pre_text = read_text_maybe_settled(child, settle);
         rec(
-            &json!({"type":"reopen_pre","n":n,"utc":utc_hms(),"text":pre_text,"expect":expect,
+            &json!({"type":"reopen_pre","n":n,"trial_utc":trial_utc,"utc":utc_hms(),"text":pre_text,"expect":expect,
             "ok":pre_text.trim() == expect,"real_ime_open":real_ime_open(child)}),
         );
         clear_text(child);
@@ -1239,11 +1291,13 @@ fn reopen_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
         let off_utc = utc_hms();
         press(VK_IME_OFF, 0x70, 50);
         sleep_ms(gap_ms);
+        // 物理 OFF が効いたか(ON キーを押す直前の実 IME。別プロセスの入力先では None)。効いていないと無意味な試行になる(M3)。
+        let open_before_on = real_ime_open(child);
         let on_utc = utc_hms();
-        press(on_key, 0x70, 50);
+        press(on_key, scan_for_key(on_key), 50);
         rec(
             &json!({"type":"reopen_on","n":n,"off_utc":off_utc,"on_utc":on_utc,"gap_ms":gap_ms,
-            "on_key":format!("0x{on_key:02X}"),"type_delay_ms":type_delay_ms}),
+            "on_key":format!("0x{on_key:02X}"),"type_delay_ms":type_delay_ms,"open_before_on":open_before_on}),
         );
         sleep_ms(type_delay_ms);
         let focus_lost = !focus_ok();
@@ -1252,7 +1306,7 @@ fn reopen_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
         sleep_ms(700);
         press(VK_RETURN, 0x1C, 50);
         sleep_ms(700);
-        let text = read_text(child);
+        let text = read_text_maybe_settled(child, settle);
         rec(
             &json!({"type":"reopen_typed","n":n,"utc":utc_hms(),"on_utc":on_utc,"press_utc":press_utc,"focus_lost":focus_lost,
             "text":text,"expect":expect,"ok":text.trim() == expect,"real_ime_open":real_ime_open(child)}),

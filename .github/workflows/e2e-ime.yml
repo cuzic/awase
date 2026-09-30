@@ -95,9 +95,9 @@ jobs:
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome=''):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs)
           # tsx-* 構成(高速打鍵ストレスの拡張): name は 'tsx-' を自動で付ける。raw=True なら awase なしの対照(生ローマ字)。
           # extra は typing_stress.exe への追加フラグ(摂動など)。kinds/trials/len は省略すると typing_stress の既定。
           def tsx(name, form, ime, iv, raw=False, extra='', kinds='', trials=None, len=None, runs=3, wait=900):
@@ -290,23 +290,23 @@ jobs:
             *[cfg(f'sc-kanji-role-default-{name}', 'observe', check='kanjirole-closed', keymap=km, runs=2,
                   args='--chord=A4,19 --chord-at=20000 --chord-prep=16')
               for name, km in (('atok', 1), ('msime', 2))],
-            # ADR-203 e2e (c) / BUG-170・171(判定は check_reopen.py): 「OFF 前に1語確定 → 物理 OFF → gap ms 後に物理 ON(0xF2)→ 即打鍵」。
-            # ON キーは既定(GJI=0x16、MS-IME=0xF2。GJI の 0xF2 は ATOK プリセットで ON にならず、初回 run 36555043470 で全 FAIL だった)。GjiFsm が OffCold に固着せず(`StartComposition while engine off` が 0)、StaleConfirm の escape=true も無く、ON 直後の語が欠けないか。
-            # 同時に ON キー押下から最初の [vk-send] までの遅延(ADR-203 D2 の再測定)と、最初の語が cold 経路かを result.txt の REOPEN 行に出す。
-            # tsf=TsfNative 相当(ADR-193、GjiFsm の固着が起きた TSF 経路)、edit=素の EDIT、chromepage=実 Chrome。gap は 1 秒以内(300/600/900)。
-            # 期待値は実測前なので observe(最初の実測後に、fail が 0 なら pass へ上げる)。
-            *[cfg(f'sc-reopen-tsf-gji-gap{gap}', 'observe', check='reopen', runs=3, wait=420,
+            # ADR-203 e2e (c) / BUG-170・171(判定は check_reopen.py): 「OFF 前に1語確定 → 物理 OFF(VK_IME_OFF=0x1A。ADR は 0xF3 等と書くが、GJI で確実に閉じるこのキーを使う)→
+            # gap ms 後に物理 ON → 即打鍵」。ON キーは既定(GJI=0x16、MS-IME=0xF2)。GJI の ATOK プリセットで 0xF2 は ON にならない(初回 run 36555043470 で全 FAIL、下の f2 は比較用)。
+            # 見るもの: OffCold 固着(`StartComposition while engine off`)・StaleConfirm の escape=true・ESC の送信(試行の先頭の開き直しの窓も含む)、ON 直後の語の欠落、
+            # ON 後に実 IME が閉じていないこと、物理 OFF が効いたこと。GJI の TSF 系構成は --require-cold で ADR-203 (c) の PASS 条件(最初の語が cold 経路)も判定する。
+            # 遅延は「ON キー押下の打鍵から最初の [vk-send]」と「[vk-send] から セッション確認」(ADR-203 D2 の定義)を result.txt の REOPEN 行に出す。
+            # tsf=TsfNative 相当(ADR-193、GjiFsm の固着が起きた TSF 経路)、chromepage=実 Chrome。素の EDIT は常に Unicode 注入で IME 状態の証拠にならないので構成にしない(review M4)。
+            # gap は 1 秒未満(300/600/900)。期待値は observe(修正前コードで FAIL する負の対照を実測してから pass に上げる。ADR-203 (d))。
+            *[cfg(f'sc-reopen-tsf-gji-gap{gap}', 'observe', check='reopen', runs=3, wait=420, checkargs='--require-cold',
                   stress=f'--form=tsf --mode=reopen --trials=8 --reopen-gap={gap} --layout=@REPO@/layout/nicola_keytop.yab')
               for gap in (300, 600, 900)],
-            # ON キーの比較(GJI の ATOK プリセット): 0xF2(ひらがな)と 0x1C(変換)。既定の 0x16 と何が違うかを見る観測用。
-            *[cfg(f'sc-reopen-tsf-gji-{name}-gap600', 'observe', check='reopen', runs=3, wait=420,
+            # ON キーの比較(GJI の ATOK プリセット): 0xF2(ひらがな)と 0x1C(変換。scan は 0x79)。f2 は ON にならず FAIL する比較用で --require-cold は付けない。
+            *[cfg(f'sc-reopen-tsf-gji-{name}-gap600', 'observe', check='reopen', runs=3, wait=420, checkargs=chk,
                   stress=f'--form=tsf --mode=reopen --trials=8 --reopen-gap=600 --reopen-on-key={vk} --layout=@REPO@/layout/nicola_keytop.yab')
-              for name, vk in (('f2', '0xF2'), ('henkan', '0x1C'))],
-            cfg('sc-reopen-edit-gji-gap600', 'observe', check='reopen', runs=3, wait=420,
-                stress='--form=edit --mode=reopen --trials=8 --reopen-gap=600 --layout=@REPO@/layout/nicola_keytop.yab'),
+              for name, vk, chk in (('f2', '0xF2', ''), ('henkan', '0x1C', '--require-cold'))],
             cfg('sc-reopen-tsf-msime-gap600', 'observe', check='reopen', ime='msime', runs=3, wait=420,
                 stress='--form=tsf --mode=reopen --trials=8 --reopen-gap=600 --layout=@REPO@/layout/nicola_keytop.yab --msime'),
-            cfg('sc-reopen-chromepage-gji-gap600', 'observe', check='reopen', runs=3, wait=900,
+            cfg('sc-reopen-chromepage-gji-gap600', 'observe', check='reopen', runs=3, wait=900, checkargs='--require-cold',
                 stress='--form=chromepage --mode=reopen --trials=6 --reopen-gap=600 --settle-read --layout=@REPO@/layout/nicola_keytop.yab'),
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
@@ -816,7 +816,7 @@ jobs:
           } elseif ('${{ matrix.cfg.check }}' -eq 'driftcorrection') {
             python tools\e2e\ime_key_matrix\check_drift_correction.py --json drift.json dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'reopen') {
-            python tools\e2e\ime_key_matrix\check_reopen.py --json reopen.json dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
+            python tools\e2e\ime_key_matrix\check_reopen.py --json reopen.json ${{ matrix.cfg.checkargs }} dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'driftrecovery') {
             python tools\e2e\ime_key_matrix\check_drift_recovery.py --json driftrec.json dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'toggle') {
@@ -1038,15 +1038,16 @@ jobs:
                     line = l
               kv = dict(re.findall(r'(\w+)=(\S+)', line))
               if not kv:
-                reopen_rows.append(f"| {c['name']} | {run} | 欠落 | - | - | - | - | - | - |")
+                reopen_rows.append(f"| {c['name']} | {run} | 欠落 |" + " - |" * 9)
                 continue
-              reopen_rows.append(f"| {c['name']} | {run} | {kv.get('verdict')} | {kv.get('pass')} | {kv.get('fail')} | {kv.get('invalid')} | {kv.get('first_vk_cold')} | {kv.get('delay_p50_ms')} | {kv.get('delay_max_ms')} |")
+              reopen_rows.append(f"| {c['name']} | {run} | {kv.get('verdict')} | {kv.get('pass')} | {kv.get('fail')} | {kv.get('invalid')} | {kv.get('blind')} | {kv.get('require_cold')} | {kv.get('first_vk_cold')} | {kv.get('press_vk_p50_ms')}/{kv.get('press_vk_max_ms')} | {kv.get('confirm_p50_ms')}/{kv.get('confirm_max_ms')} |")
           if reopen_rows:
             out += ["", "## 物理 OFF→ON の開き直し観測(sc-reopen-*、ADR-203 e2e (c)・BUG-170。expect=observe なので合否には含めない)", "",
-                    "pass/fail/invalid=試行数。fail は「ON 直後の語が期待と違う」か「OffCold 固着(StartComposition while engine off)」か「StaleConfirm の escape=true」。"
-                    "first_vk_cold=最初の [vk-send] が cold 経路(prepend_f2_warmup=true)だった試行数、delay=ON キー押下から最初の [vk-send] までの ms(p50/最大)。", "",
-                    "| 構成 | 回 | 判定 | pass | fail | invalid | first_vk_cold | 遅延p50(ms) | 遅延max(ms) |",
-                    "|---|---|---|---|---|---|---|---|---|"] + reopen_rows
+                    "pass/fail/invalid/blind=試行数(blind=Unicode 注入で IME 状態の証拠にならない試行)。fail は「ON 直後の語が期待と違う」「OffCold 固着(StartComposition while engine off)」「StaleConfirm/flush の escape=true」"
+                    "「ON 後も実 IME が閉じている」「(require_cold のとき)最初の語が warm 経路」。first_vk_cold=最初の [vk-send] が cold 経路(prepend_f2_warmup=true)だった試行数。"
+                    "打鍵→vk-send=ON キー押下の打鍵から最初の [vk-send] まで(同時打鍵待ちと押下時間を含む、p50/最大 ms)、セッション確認=その [vk-send] から `per-VK 全 VK 確認済み → セッション確認` まで(ADR-203 D2 の定義、p50/最大 ms)。", "",
+                    "| 構成 | 回 | 判定 | pass | fail | invalid | blind | require_cold | first_vk_cold | 打鍵→vk-send | セッション確認 |",
+                    "|---|---|---|---|---|---|---|---|---|---|---|"] + reopen_rows
           open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8').write('\n'.join(out) + '\n')
           print('\n'.join(out))
           if os.environ.get('GATE_MODE') == 'invariants':
