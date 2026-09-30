@@ -302,6 +302,9 @@ pub struct PredictInput {
     pub composing: bool,
     /// 追跡中の隠れ状態。
     pub track: KeyTrack,
+    /// 前面窓が「IME の実状態を読めない」種類（`cannot_verify_real_ime_state`かつ`InputRelay`以外）で、
+    /// 窓別の規則（ADR-209）を使ってよいか。設定で止められる（止めるとき`false`）。
+    pub unreadable: bool,
 }
 
 const fn kana_mode() -> InputModeState {
@@ -761,6 +764,11 @@ impl KeyEffectKeymap {
         input: &PredictInput,
         override_table: Option<&[Cell]>,
     ) -> Option<Prediction> {
+        // ADR-209 決定1・3: 読めない窓（TSF）では、GJI は MS-IME プリセットの閉状態の変換で IME を開く
+        // （実機/CIで確認）。学習は素の EDIT で測るので、窓別の規則を学習表より先に引く（ADR-196の例外）。
+        if let Some(prediction) = self.unreadable_window_prediction(vk, input) {
+            return Some(prediction);
+        }
         // ADR-195段階4 B3対応: 学習済み表にこのキー・状態の答えがあれば、custom_table/overlay/
         // レジストリ再割り当てのガードより先にそれを使う。これらのガードは「同梱表はユーザーの
         // 独自割り当てを知らないので予測しない」という安全策であり、学習済み表はまさにその
@@ -772,10 +780,13 @@ impl KeyEffectKeymap {
                 return Some(prediction);
             }
         }
-        if self
-            .custom_table
-            .as_deref()
-            .is_some_and(|t| custom_table_overrides(t, vk))
+        // ADR-209 決定4: GJI はプリセット（ATOK/MS-IME/不在/NONE）のとき`custom_keymap_table`を読まない
+        // （ADR-186 決定2(c)、実機X1）ので、古い表の行を理由に打ち切らない。CUSTOM等のときだけ従来どおり。
+        if matches!(self.preset, KeymapPreset::Custom)
+            && self
+                .custom_table
+                .as_deref()
+                .is_some_and(|t| custom_table_overrides(t, vk))
         {
             return None;
         }
@@ -786,6 +797,33 @@ impl KeyEffectKeymap {
             return None;
         }
         predict(self.preset, vk, input)
+    }
+
+    /// ADR-209 決定1〜3: 読めない窓で、GJI の MS-IME プリセット（`session_keymap`が不在/NONE/MSIME）の
+    /// 閉状態の無修飾の変換（0x1C）は IME を開く。開閉だけを予測し、モード・段階は変えない
+    /// （`Unknown`のときだけ既存の種を使う）。overlay・レジストリ再割り当てがあるときは当てない。
+    fn unreadable_window_prediction(&self, vk: u16, input: &PredictInput) -> Option<Prediction> {
+        let msime_like = matches!(
+            self.session_keymap,
+            None | Some(SESSION_KEYMAP_NONE | SESSION_KEYMAP_MSIME)
+        );
+        if !input.unreadable
+            || !msime_like
+            || vk != 0x1C
+            || input.open
+            || self.has_overlay()
+            || self.henkan_reassigned
+        {
+            return None;
+        }
+        let mode = matches!(input.mode, InputModeState::Unknown).then(kana_mode);
+        Some(Prediction {
+            effect: PredictedEffect {
+                open: Some(true),
+                mode,
+            },
+            track: input.track,
+        })
     }
 
     /// この構成の`preset`。[`crate::state::key_effect_runtime`]が同梱表との突き合わせに使う。
@@ -1016,6 +1054,7 @@ mod tests {
             conv_raw: None,
             composing,
             track,
+            unreadable: false,
         }
     }
 
@@ -1417,11 +1456,14 @@ mod tests {
                 .preset(),
             KeymapPreset::Custom
         );
-        // ATOK + カスタム表が無変換の行を持つ → 無変換だけ予測しない。
+        // ATOK + 古いカスタム表: GJI はプリセットのとき表を読まないので、表の行を理由に打ち切らない
+        // （ADR-209 決定4）。CUSTOM のときは表が無変換の行を持てば予測しない（従来どおり）。
         let table = "Precomposition\tMuhenkan\tIMEOn\n".to_string();
-        let custom = KeyEffectKeymap::from_config(Some(1), Some(table), &[]).unwrap();
+        let stale = KeyEffectKeymap::from_config(Some(1), Some(table.clone()), &[]).unwrap();
+        assert!(stale.predict(0x1D, &base).is_some());
+        let custom = KeyEffectKeymap::from_config(Some(0), Some(table), &[]).unwrap();
         assert_eq!(custom.predict(0x1D, &base), None);
-        assert!(custom.predict(0xF2, &base).is_some());
+        assert!(stale.predict(0xF2, &base).is_some());
         // overlay があると 無変換/変換 だけ予測しない。
         let ov = KeyEffectKeymap::from_config(Some(1), None, &[100]).unwrap();
         assert_eq!(ov.predict(0x1C, &base), None);
@@ -1437,10 +1479,10 @@ mod tests {
         // 閉状態から始める: セルの遷移(閉→開)がbeliefへの実変化になるようにするため
         // (`effect.open`は`after_open != input.open`のときだけ`Some`を返す)。
         let base = input(false, ROMAJI, false, NOTRACK);
-        // ATOK + カスタム表が無変換(0x1D)の行を持つ → 通常のpredict()は無変換だけ予測しない
+        // CUSTOM + カスタム表が無変換(0x1D)の行を持つ → 通常のpredict()は無変換だけ予測しない
         // (観測に委ねる、まさにユーザーが学習させたいキー)。
         let table = "Precomposition\tMuhenkan\tIMEOn\n".to_string();
-        let custom = KeyEffectKeymap::from_config(Some(1), Some(table), &[]).unwrap();
+        let custom = KeyEffectKeymap::from_config(Some(0), Some(table), &[]).unwrap();
         assert_eq!(custom.predict(0x1D, &base), None);
 
         let learned = [cell(
@@ -1485,8 +1527,9 @@ mod tests {
     }
 
     /// 実機(ADR-191 実機検証、GJI + MS-IMEプリセット `session_keymap=2` + 既存の `custom_keymap_table` 175行)の
-    /// キーマップの代表行。GJIは`CUSTOM`以外ではこの表を使わずプリセットで動く(実機: 変換は直接入力から何もしない)が、
-    /// awaseは表が該当キーの行を持つ変換(Henkan)を予測しない(安全側)。ひらがな・英数・カタカナ・無変換は予測する。
+    /// キーマップの代表行。GJIは`CUSTOM`以外ではこの表を使わずプリセットで動く（ADR-186 決定2(c)、X1）ので、
+    /// 古い表の行を理由に予測を打ち切らない（ADR-209 決定4）。素の EDIT（読める窓）では変換は開かない
+    /// （同梱表どおり）。読める/読めないの区別は`unreadable`（TSF の窓では変換で開く、決定1）。
     #[test]
     fn realdev_msime_preset_with_stale_custom_table() {
         let table = "status\tkey\tcommand\nDirectInput\tEisu\tIMEOn\nDirectInput\tHenkan\tIMEOn\n\
@@ -1495,13 +1538,108 @@ mod tests {
             .to_string();
         let km = KeyEffectKeymap::from_config(Some(2), Some(table), &[]).unwrap();
         let closed = input(false, ROMAJI, false, NOTRACK);
-        // 変換: 表が行を持つので予測しない(観測に追随)。
-        assert_eq!(km.predict(0x1C, &closed), None);
+        // 変換（読める窓）: 表の行は無視し、同梱表（MS-IME プリセット、EDIT で測定）は開かないので予測は変えない。
+        assert!(km
+            .predict(0x1C, &closed)
+            .is_none_or(|p| p.effect.open != Some(true)));
         // ひらがな(0xF2): 閉から開く(実機の awase 無し実測: open 0→1、conv 0x09→0x19)。
         let hira = km.predict(0xF2, &closed).expect("ひらがなは予測する");
         assert_eq!(hira.effect.open, Some(true));
-        // 英数(0xF0): 表(カスタム)にEisu行があるので予測しない。
-        assert_eq!(km.predict(0xF0, &closed), None);
+        // 英数(0xF0): 古い表の行を理由に打ち切らない。同梱表の予測が引かれる。
+        assert!(km.predict(0xF0, &closed).is_some());
+    }
+
+    fn unreadable_input(open: bool, mode: InputModeState) -> PredictInput {
+        PredictInput {
+            unreadable: true,
+            ..input(open, mode, false, NOTRACK)
+        }
+    }
+
+    /// ADR-209 決定1・2: 読めない窓・閉状態の無修飾の変換は開閉だけ予測する（モードは変えない）。
+    #[test]
+    fn adr209_unreadable_window_henkan_opens_without_touching_mode() {
+        for session in [None, Some(-1), Some(2)] {
+            let km = KeyEffectKeymap::from_config(session, None, &[]).unwrap();
+            let p = km
+                .predict(0x1C, &unreadable_input(false, ROMAJI))
+                .expect("読めない窓の変換は開くと予測する");
+            assert_eq!(p.effect.open, Some(true), "session={session:?}");
+            assert_eq!(p.effect.mode, None);
+            // 半角英数のまま開く（X7）: モードは書かない。
+            let p = km
+                .predict(0x1C, &unreadable_input(false, InputModeState::ObservedEisu))
+                .unwrap();
+            assert_eq!(p.effect.mode, None);
+            // belief が Unknown のときだけ既定の種。
+            let p = km
+                .predict(0x1C, &unreadable_input(false, InputModeState::Unknown))
+                .unwrap();
+            assert_eq!(p.effect.mode, Some(kana_mode()));
+        }
+    }
+
+    /// 規則が当たらない条件: 読める窓・開状態・他のキー・他のプリセット・overlay・レジストリ再割り当て。
+    #[test]
+    fn adr209_rule_does_not_apply_outside_its_conditions() {
+        let km = KeyEffectKeymap::from_config(Some(2), None, &[]).unwrap();
+        let opens = |p: Option<Prediction>| p.is_some_and(|p| p.effect.open == Some(true));
+        assert!(
+            !opens(km.predict(0x1C, &input(false, ROMAJI, false, NOTRACK))),
+            "読める窓"
+        );
+        assert!(
+            !opens(km.predict(0x1C, &unreadable_input(true, ROMAJI))),
+            "開状態"
+        );
+        assert!(
+            !opens(km.predict(0x1D, &unreadable_input(false, ROMAJI))),
+            "無変換"
+        );
+        let custom = KeyEffectKeymap::from_config(Some(0), None, &[]).unwrap();
+        assert!(
+            !opens(custom.predict(0x1C, &unreadable_input(false, ROMAJI))),
+            "CUSTOM"
+        );
+        let overlay = KeyEffectKeymap::from_config(Some(2), None, &[100]).unwrap();
+        assert!(
+            !opens(overlay.predict(0x1C, &unreadable_input(false, ROMAJI))),
+            "overlay"
+        );
+    }
+
+    /// ADR-209 決定3: 学習表（素の EDIT で測ったため`off|henkan=OFF`）より窓別の規則が先。
+    #[test]
+    fn adr209_unreadable_rule_beats_learned_table() {
+        let km = KeyEffectKeymap::from_config(Some(2), None, &[]).unwrap();
+        let learned = vec![cell(
+            false,
+            None,
+            Stage::None,
+            TableKey::Henkan,
+            false,
+            None,
+            Disp::None,
+        )];
+        let p = km
+            .predict_with_override(0x1C, &unreadable_input(false, ROMAJI), Some(&learned))
+            .unwrap();
+        assert_eq!(p.effect.open, Some(true));
+        // 読める窓では学習表が引かれる（従来どおり）。
+        let p =
+            km.predict_with_override(0x1C, &input(false, ROMAJI, false, NOTRACK), Some(&learned));
+        assert!(p.is_none_or(|p| p.effect.open != Some(true)));
+    }
+
+    /// ADR-209 決定4: CUSTOM のときは従来どおり、表が行を持つキーは予測しない。
+    #[test]
+    fn adr209_custom_preset_keeps_custom_table_cutoff() {
+        let table = "DirectInput\tHenkan\tIMEOn\n".to_string();
+        let km = KeyEffectKeymap::from_config(Some(0), Some(table), &[]).unwrap();
+        assert_eq!(
+            km.predict(0x1C, &input(false, ROMAJI, false, NOTRACK)),
+            None
+        );
     }
 
     #[test]

@@ -240,6 +240,7 @@ impl Harness {
                 !matches!(truth_before.stage, super::pseudo_ime::TrueStage::None)
             },
             track: self.model.key_track(),
+            unreadable: false,
         };
         let prediction = self.keymap.predict(vk, &input);
         let press = self.ime.press(vk);
