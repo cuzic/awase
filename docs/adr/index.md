@@ -217,6 +217,7 @@
 | [208](208-absolute-ime-keys-must-not-be-elided-on-stale-applied-in-blind-windows.md) | Blind 窓で絶対指定 IME キーが古い applied で握り潰され続ける固着を防ぐ(草稿、ADR-205 から切り出し) | 草稿・未着手 |
 | [209](209-predict-open-effect-from-gji-config-when-not-learned.md) | GJI の MS-IME プリセットでは TSF の窓で変換が IME を開く(モードは閉じる前のまま)。読めない窓の打鍵時予測に「変換で開く」を足し、素通しの変換に Engine を追随させる(ADR-186/191/199/206) | 実装済み(2026-09-30)。Opus round3 で収束。実機A/B・CI検証は未 |
 | [210](210-learned-table-hidden-state-converting-and-last-key.md) | 学習表の状態に「変換中」と「直前キーの文脈」を加える | 保留(2026-09-30)、Opus レビューで現案は不採用 |
+| [211](211-predict-open-close-from-gji-keymap-for-passive-keys.md) | 受動のキー(トグルの役割でない)が IME を開閉する設定でも Engine が追随するよう、GJI のキーマップから打鍵時の開閉を予測する(実 Chrome で MS-IME プリセットの F13 が追随しない実測、ADR-199/209) | 草案(2026-09-30)。Opus レビュー前 |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
@@ -451,4 +452,3 @@ TSF 状態破壊 → 1文字目化け、という連鎖が複数の「別バグ�
   同一 SendInput バッチで送ることで描画前に削除が完了し、ユーザーに
   プローブ文字が見えない（ADR-048）。Win32 の SendInput は同一バッチが
   連続キューに積まれる保証がある
-
