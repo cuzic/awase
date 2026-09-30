@@ -33,6 +33,21 @@ Opus 戦略相談/レビュー（round1・round2・発火削減）の指摘。
 マージ前に develop を取り込み直し、Windows 専用テスト（`platform_state.rs` の drift テスト等）を windows-build CI で確認する。
 効果が無い/悪化した場合は revert しやすい単位（この PR 単独）で戻す。`docs/experiments.md` に判定を追記する。
 
+### 2-追記（2026-09-30）再検証の結果
+
+PR #360 のブランチには実験用の環境変数フラグと CI 構成（#363 由来）が混ざっているので、**本体の3コミット（`b5736a35`・`4ceec33b`・`090f505c`）だけを develop（`3b308697`）へ載せ直した `verify/pr360-core`（`2fbc34b0`）**で検証した。マージするならこの3コミットを新しい PR にする（#360 自体は閉じるか、本体の3コミットに置き換える）。
+
+- **コンパイル・Linux のテスト**: `cargo check --target x86_64-pc-windows-msvc`（`--tests`）、`architecture_guard`/`golden_scenarios`/`layer_boundary_guard`、core lib 1061 件が通る。windows-build（Windows 専用テスト）は未確認（PR にして CI で見る）。
+- **CI（実 Chrome・TSF 相当、GJI、cold 起動 各10回、`tsx-chromepage-gji-20ms-cold`・`tsx-tsf-gji-20ms-cold`、develop と `verify/pr360-core` を同条件）**: どちらも失敗・欠落・リテラル化・`gave_up`・`SuspectedLiteral` は0件。差は検出できない（失敗が0件の環境で感度が低い）。`ab-*`（eager `VK_IME_ON` の有無、EDIT）の2回も全構成で失敗0件。
+- **実機（dragonflyg4、Windows Terminal + GJI の MS-IME プリセット、目印つき注入）**: 確定キーの eager warmup の経路（`[composition] reinject KeyDown … marking cold + eager warmup`）は **Engine が OFF のまま生のローマ字を通す状態**（IME ON・Engine OFF）で Enter を打ったときだけ通る。NICOLA が ON の状態では通らない
+  （`[relay-defer]` の経路）。この状態を、変換に Engine を追随させる設定（`predict_henkan_open_in_unreadable_windows=false`）で再現した（IME OFF→変換→`ka`→Enter を8回、待ち 0.5s/12s、3回）。
+  - develop（`3b308697`）: Enter 24回中、`composition-reinject` 24・**eager `VK_IME_ON` 24**。入力は3回のうち1回で3/8がリテラル化（`ｋa`）、残り2回は8/8 `か`。
+  - `verify/pr360-core`（`2fbc34b0`）: Enter 24回中、`composition-reinject` 24・**eager `VK_IME_ON` 0**。入力は3回とも8/8 `か`（24/24）。
+  - 制約: n=24（3起動×8）。リテラル化は A の初回の起動直後に集中しており、偶然の可能性がある。NICOLA が ON の状態（実機A/B の別条件）では、Enter が `VK_IME_ON` warmup を通らないため差は出ない。
+- **awase-verify が途中で止まる問題**（原因未特定）: 標準エラーの記録つきの起動に変えると止まらなくなった。終了コードの記録は未取得。
+
+判定: 確定キーの eager `VK_IME_ON` は 24→0 に減り、この条件での入力の欠落・リテラル化は増えなかった。BUG-171（StaleConfirm の ESC で未確定文字が消える）・BUG-40 型の誤検出が増えるかは、NICOLA ON の状態と MS-IME・Chrome 等で未測定。
+
 ## 3. 実機検証【未実施】
 
 [BUG-173.md](../known-bugs/BUG-173.md) の検証項目:
