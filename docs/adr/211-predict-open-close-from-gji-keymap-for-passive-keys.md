@@ -11,7 +11,7 @@ summary: |-
   設計上の穴が多く(`predict_with_override` のガードの後ろに置くと届かない、トグル形なのに能動でないキーが取りこぼされる、一部の開状態だけ Close のキーで偽 ON になる、ほか)、
   所有者の実機は MS-IME プリセット(古い表つき)で CUSTOM ではないため、需要が確認できていない。よって本 ADR は **F13 の1規則+通過マーク** に範囲を絞る。
 status: |-
-  草案 v3(2026-09-30。Opus round1 で範囲を F13 の1規則に縮小、round2 の N1〜N9 を反映)。実装は未着手。次に Opus round3(同じレビュアーへの確認)。
+  採用(2026-09-30)。Opus round3 で収束(新しい Major なし。Minor m8〜m11 は反映済み)。実装は条件つき: 決定1・2(F13 の規則とゲート、ADR-209 の規則の本体除外)は先に実装してよい。決定3(通過マーク)は決定4の drift の測定結果を見てから要否を決める。実装は未着手。
 related_adr:
   - "ADR-186"
   - "ADR-191"
@@ -80,7 +80,8 @@ F13 は 1・2・3 のどれにも当たらない: MS-IME/MOBILE プリセット�
    **F13 の規則は窓の種類にも ADR-209 の設定(`predict_henkan_open_in_unreadable_windows`)にも連動しない**ので、ADR-209 の関数を写さず(`!input.unreadable` まで写してしまう罠がある)、別の関数にする。
 3. **通過マークに F13〜F24 の最初の Down を足す**(BUG-157 の揃え。読める窓では、通過マークが立てる 20ms 後の IME の読み直しが予測を訂正する。**読めない窓では、通過マークは `desired_open` に何もしない**(`ime_model.rs`、
    `derive_any` が `None` なら書かない)。ADR-205 の watch は ADR-187 の通過マークを使わず、injected のときだけ立つので、これで ADR-205 の観測が働くわけではない。N2)。
-   **述語はキーマップにも belief にも依らない VK の述語にする**(N5): 「F13〜F24(`vk::is_role_fkey`)で、`shadow_action`/`sync_direction` が無く、最初の Down(`!was_down`)を awase が通した/送った」。
+   **述語はキーマップにも belief にも依らない形にする**(N5)。述語は2つの部分に分ける: (a) **VK だけで評価できる部分**=F13〜F24(`vk::is_role_fkey`)であること(executor 側の `SendKeys` 経路もここまでは評価できる)、
+   (b) **イベントの情報が要る部分**=`shadow_action`/`sync_direction` が無く、最初の Down(`!was_down`)であること(`kp_stage_mode_key_follow` 側だけで評価する。executor 側は VK の部分だけで立てる)。
    決定1の条件(GJI・プリセット・閉状態の belief)を含めない。含めると、belief が誤って開(実 IME は閉)のときに F13 で開いた場合、予測も通過マークも無くなり、読める窓で `desired_open` が揃わない。
    キーマップ(`KeymapCache` は `Runtime` 側)は executor 側の `SendKeys` 経路には無いので、VK だけで評価できることが2か所に立てる条件になる。頻度は、F13〜F24 がまれなキーであることと `!was_down` で抑える。
    `is_followed_mode_key` 自体は広げず(`reinject_scan_code` と BUG-113 の軸と共有する関数)、別の述語を作って**2か所で OR する**: `kp_stage_mode_key_follow`(`key_pipeline.rs`)と FSM の `SendKeys` 経由(`runtime/executor.rs`)。
@@ -101,6 +102,7 @@ F13 は 1・2・3 のどれにも当たらない: MS-IME/MOBILE プリセット�
   学習表がある(`override_table=Some`)とき、追跡の段階が `None` でないとき、`input_mode=Unknown` のときにも規則が届くこと(`predict_in_table` が表に無いキーで先に `Some` を返す分岐があるので、規則は `predict_with_override` の先頭に置く=ADR-209 と同じ)。
 - **CI**: `sc-follow-chrome-msime-f13` が「開いて追随(`きう`)」になること(合否)。`--no-awase` の対照を同じ run に足す(IME が実際に開くこと)。古い表つき(`custom_table=true`)、Shift+F13 の負例、ATOK の F13(開かない=予測しない)も足す。
 - **読める窓**(決定4): メモ帳/素の EDIT で `[drift] correction` の件数を、実装の前後で比べる。
+- **検証しないもの**: 目印なしの注入(PowerToys・AutoHotkey 等の再割り当てで作られた F13)。injected は決定2で対象外(決定6)で、ADR-205 の watch の範囲。
 - **実機(dragonflyg4)**: 実 Chrome・WT・メモ帳・Edge で、偽 ON が無いこと。F13 は実機に物理キーが無いので、注入(injected でない目印つき)で。
 
 ## 一般化(見送り)と、再開の条件・設計上の制約
@@ -124,7 +126,7 @@ F13 は 1・2・3 のどれにも当たらない: MS-IME/MOBILE プリセット�
    変換/無変換は親指キーとして消費されることが多く、単独タップの扱い(ADR-206)が別の経路なので範囲外。**所有者の構成で overlay が使われているかは未確認**。
 2. **Microsoft IME 本体のキー割り当ての値0(IME-オン)・値1(IME-オフ)**(変換/無変換): 「MS-IME の設定で内部状態によらず IME ON」に当たる。今は「明示値なら予測しない」(`henkan_reassigned`/`muhenkan_reassigned`)。
    値0/1を**予測だけ**に使うのは受動の範囲だが、実機で予測の効果を測っていない(ADR-199 T12 が確認したのは値の意味まで)ので、実機の測定を先にする。値0/1を役割(能動=awase が書く)にするのは所有者の判断が要る(未決)。
-3. **トグルのキーが受動のまま残るか**: 所有者の構成(MS-IME プリセット)の半角/全角(0x19 も同じ経路)は、物理の受信で `is_japanese_ime` が即座に真になるので、「役割はあるのに書かなかった」はほぼ起きない。受動のトグルが残るのは
+3. **トグルのキーが受動のまま残るか**: 所有者の構成(MS-IME プリセット)の半角/全角(0xF3/0xF4。`should_upgrade_is_japanese_ime` の対象は物理の 0xF0〜0xF4 で、0x19 は含まない)は、物理の受信で `is_japanese_ime` が即座に真になるので、「役割はあるのに書かなかった」はほぼ起きない。受動のトグルが残るのは
    CUSTOM の F13〜F24 のトグル(`is_japanese_ime` を上げない)と自動リピート・候補外のトグル形・ON/OFF 行の欠けた表で、いずれも **CUSTOM 限定**。所有者の構成でトグルが受動のまま取りこぼされる経路は見当たらない(一般化の再開条件=CUSTOM の利用の確認)。
 
 ## 代替案
@@ -138,4 +140,5 @@ F13 は 1・2・3 のどれにも当たらない: MS-IME/MOBILE プリセット�
 ## リスク
 1. **偽 ON**: TSV と実挙動の食い違い(変換が前例)。F13 は TSV(MS-IME/MOBILE の `IMEOn`)と CI の実 Chrome の実測が一致しているが、他の窓の種類(WT・UWP・設定アプリの検索欄など)は測っていない。読める窓では観測が訂正する。読めない窓の偽 ON は自動で直せない。
 2. **設定の適用遅れ**: `KeymapCache::RECHECK_MS`(2秒)。config1.db の変更から awase が読み直すまで、キーマップが古い(表に無いキーでは新しい種類の誤り)。
+4. **F13〜F24 をホットキーに使う利用者でも通過マークが立つ**(決定3の述語は VK だけなので、IME と無関係な用途の F13 でも 20ms 後の IME の読み直しが1回走る。頻度は F13〜F24 がまれなキーであることと `!was_down` で抑える)。
 3. **BUG-157 の退行/既存不具合**: 決定3・4。通過マークを立てる場所を1つだけ直して2つ目を忘れる(ADR-119 型)ことに注意する。
