@@ -11,7 +11,7 @@ summary: |-
   設計上の穴が多く(`predict_with_override` のガードの後ろに置くと届かない、トグル形なのに能動でないキーが取りこぼされる、一部の開状態だけ Close のキーで偽 ON になる、ほか)、
   所有者の実機は MS-IME プリセット(古い表つき)で CUSTOM ではないため、需要が確認できていない。よって本 ADR は **F13 の1規則+通過マーク** に範囲を絞る。
 status: |-
-  採用(2026-09-30)。Opus round3 で収束(新しい Major なし。Minor m8〜m11 は反映済み)。実装は条件つき: 決定1・2(F13 の規則とゲート、ADR-209 の規則の本体除外)は先に実装してよい。決定3(通過マーク)は決定4の drift の測定結果を見てから要否を決める。実装は未着手。
+  採用(2026-09-30)。Opus round3 で収束(新しい Major なし。Minor m8〜m11 は反映済み)。決定1・2(F13 の規則とゲート、ADR-209 の規則の本体除外)は実装済み(PR #396)。決定3(通過マーク)は決定4の測定(2026-09-30、CI run 36706904790)で drift 補正の閉じ直しが起きなかったため**見送り**(下の「決定4の測定結果」)。
 related_adr:
   - "ADR-186"
   - "ADR-191"
@@ -78,7 +78,7 @@ F13 は 1・2・3 のどれにも当たらない: MS-IME/MOBILE プリセット�
    **配線**: 規則は純関数 `predict_with_override` の中にある(決定1)が、ゲートの条件はイベント側の情報で `PredictInput` に無い。`PredictInput` に bool を1つ足し(例: `passive_rule_eligible`)、
    `kp_stage_key_effect_track` が上のゲートを計算して渡し、規則はそれだけを見る(`kp_predict_key_effect` の呼び出しを丸ごと止めると、消費された打鍵でも段階を追跡する設計が壊れる)。
    **F13 の規則は窓の種類にも ADR-209 の設定(`predict_henkan_open_in_unreadable_windows`)にも連動しない**ので、ADR-209 の関数を写さず(`!input.unreadable` まで写してしまう罠がある)、別の関数にする。
-3. **通過マークに F13〜F24 の最初の Down を足す**(BUG-157 の揃え。読める窓では、通過マークが立てる 20ms 後の IME の読み直しが予測を訂正する。**読めない窓では、通過マークは `desired_open` に何もしない**(`ime_model.rs`、
+3. **(見送り。決定4の測定結果を参照)通過マークに F13〜F24 の最初の Down を足す**(BUG-157 の揃え。読める窓では、通過マークが立てる 20ms 後の IME の読み直しが予測を訂正する。**読めない窓では、通過マークは `desired_open` に何もしない**(`ime_model.rs`、
    `derive_any` が `None` なら書かない)。ADR-205 の watch は ADR-187 の通過マークを使わず、injected のときだけ立つので、これで ADR-205 の観測が働くわけではない。N2)。
    **述語はキーマップにも belief にも依らない形にする**(N5)。述語は2つの部分に分ける: (a) **VK だけで評価できる部分**=F13〜F24(`vk::is_role_fkey`)であること(executor 側の `SendKeys` 経路もここまでは評価できる)、
    (b) **イベントの情報が要る部分**=`shadow_action`/`sync_direction` が無く、最初の Down(`!was_down`)であること(`kp_stage_mode_key_follow` 側だけで評価する。executor 側は VK の部分だけで立てる)。
@@ -96,6 +96,16 @@ F13 は 1・2・3 のどれにも当たらない: MS-IME/MOBILE プリセット�
 5. **設定は増やさない**(ADR-209 の設定とは違い、規則の根拠は TSV と実測が一致した1キーで、窓の種類の誤分類に依らない。偽 ON が出たら、その時点で設定を足す)。新しいイベント・I/O・actuation の合流点・tuning 定数も作らない。
 6. **効果の範囲を明記する**: 本規則が効くのは、awase が物理キーとして見る F13(QMK 等の F13 を出すキーボード、テストの注入)。**PowerToys・AutoHotkey 等の再割り当てで作られた F13 は injected**なので対象外(BUG-14。ADR-205 の watch が Imm32Unavailable×GJI では拾う)。
    親指キーに F13 を割り当てた構成は初期範囲外(同時打鍵では F13 が IME に届かない、単独タップの再注入は injected で除外される。ADR-206 が変換/無変換で決めた扱いに揃える判断を別途)。
+
+## 決定4の測定結果(2026-09-30、CI run 36706904790、`sc-adr211-edit-msime-f13`)
+素の EDIT(読める窓)× GJI の MS-IME プリセット × awase あり。`VK_IME_OFF`(1A)→F13(7C)を3回繰り返し、各押下の +1500ms まで観測した(`DRIFT_CORRECTION_THRESHOLD_MS`=400ms より長い)。
+- F13 で実 IME は開き(open 0→1)、**+1500ms まで開いたまま**だった(閉じ直されなかった)。3回とも同じ。
+- awase.log には `[drift] 授権が下りないため補正を見送る(検知しない): desired=false observed=true for 508ms / 1003ms`(1回目の F13 のみ)が出ていた。つまり BUG-157 と同じ状態(`desired=false`・観測=開)にはなるが、
+  drift 補正は **BUG-163 の授権ガード(`ime_refresh.rs`、`would_have_blocked`)で書き込みを見送る**ので、閉じ直しは起きなかった。
+- 制約: 1構成1回。この run のチェッカーは「実行中にフォーカスが外れた(1回)」で INVALID(rc=3)としたが、スパイクのログの open の推移は上のとおり取れている。授権ガードが下りる条件(明示意図の鮮度など)は追っていないので、
+  ガードが通る別の状況(実機)で閉じ直しが起きないとは言えない。
+- 結論: 現状の develop では不具合を再現できなかったので、**決定3(通過マークを F13〜F24 に足す)は見送る**(通過マークを1か所も増やさない方が単純。決定4の「起きなかった」の分岐)。
+  実機で「F13 で開いたのに閉じ直される」が出たら、BUG として記録し、決定3を再開する。
 
 ## 検証方針
 - **単体テスト**(`state/`・`awase-gji-config`、Linux で走る): 決定1の定数表と固定した TSV の抜粋の一致。規則が当たる/当たらない条件を全て(MS-IME・MOBILE・不在/NONE・**CUSTOM で表が空/不在**で当たる、ATOK・KOTOERI・CUSTOM(表あり)・overlay あり・**Microsoft IME 本体のキーマップ(`for_msime_native`)**で当たらない、開状態・Shift・Ctrl・リピート・`shadow_action`・`sync_direction`・消費済みで当たらない)。
