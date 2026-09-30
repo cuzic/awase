@@ -26,7 +26,7 @@ mod app {
     use awase_keymap_learn::rng::Rng;
     use awase_keymap_learn::sample_models::{atok_like, atok_like_with_modes};
     use awase_keymap_learn::staleness::{self, FingerprintProbe};
-    use awase_keymap_learn::strategy::{run, Req, Strategy};
+    use awase_keymap_learn::strategy::{revisit_nondeterministic, run, Req, Strategy};
     use awase_keymap_learn::table::Table;
     use awase_keymap_learn::verify::{
         classify_robust, predict, score_walk, ScoreReport, WalkObs, DEFAULT_MIN_MINORITY,
@@ -127,19 +127,24 @@ mod app {
             .collect()
     }
 
+    /// やり直しパスで全セルを最低何回観測させるかの既定値。GJIのMS-IMEプリセットで
+    /// windows-latest実測(各3回): k=2は平均精度0.963(4回、うち非決定セル再訪のみの1回が
+    /// rejected)・約93秒、k=6は0.978・約116秒(rejected 0)、k=12は0.942・約151秒(rejected 1)。
+    /// 3回ずつでは有意差と言えず(精度は実行間で0.94〜0.99動く)、追加観測が精度を上げる
+    /// 証拠は得られなかった。k=6は観測された中で最良かつ追加コストが小さい(k=2比+約23秒)
+    /// ため暫定的に採る。精度の主な制約は隠れ状態(入力中のBS/Enter等)で、観測数では解けない。
+    const RETRY_BASE_K: u32 = 6;
+
     /// ADR-195段階2(round1 M-8、round3 m-3): 誤りに強い分類でも決定的と言えない
-    /// セルが1つでもあれば、学習をもう一度実行する(呼び出し元がこの関数自体を
+    /// セルが1つでもあれば、もう一度測る(呼び出し元がこの関数自体を
     /// 高々1回しか呼ばないため、やり直しは1回まで)。
     ///
-    /// code-review指摘: `tour()`の再訪問条件は`table.count(status, key) < req.k`
-    /// なので、非決定と判定されたセルは(その判定自体がmin_minority以上の観測を
-    /// 前提とするため)既に元の`req.k`以上の観測数を持っている。同じ`req`のまま
-    /// もう一度`run()`しても`need`が0のまま素通りし、観測が一切増えずに空振りする。
-    /// 実際に観測を追加するため、非決定と判定されたセルの現在の観測数を上回るよう
-    /// `k`を底上げしたリクエストで再実行する。
+    /// 非決定と判定されたセルは観測数が`Req::adaptive_n`に達するまで、他のセルは最低
+    /// `RETRY_BASE_K`回まで測る(`strategy::revisit_nondeterministic`)。全セルへ一律に
+    /// 非決定セルの最大観測数+2を課す旧実装は、通過点として踏まれただけで観測数が数十に
+    /// 達するセルがあると`k`が跳ね上がり、数千押下を使っていた。
     fn retry_nondeterministic_cells_once<D: ImeDriver>(
         exec: &mut Executor<D>,
-        strategy: Strategy,
         prior: &Prior,
         cost: &CostModel,
         suspects: &[usize],
@@ -160,31 +165,33 @@ mod app {
         if max_flagged_count == 0 {
             return;
         }
-        eprintln!("非決定的なセルがあるため、学習をもう一度実行します(やり直しは1回まで)。");
-        // code-review指摘(第三者の行単位差分スキャン): `k`は`run()`/`tour()`が
-        // グラフ全セルへ一様に適用する単一のスカラーしきい値であり、非決定と判定
-        // された一部のセルだけを狙い撃ちして再訪させる仕組みは無い。このため、
-        // 1件でも非決定セルがあれば、既に十分な観測数を得ていたセルも含め
-        // グラフ全体が新しいkまで再度巡回される(実機では巡回1周が数分単位)。
-        // セル単位の狙い撃ち再訪を`tour()`に持たせるには戦略API自体の変更が
-        // 要るため、今回はスコープ外とし、全体再巡回という単純だが確実な
-        // 挙動のままにしている(スコープを絞る改善は将来課題)。
-        let bumped_k = u32::try_from(max_flagged_count)
-            .unwrap_or(u32::MAX)
-            .saturating_add(2)
-            .max(base_req.k);
+        eprintln!("非決定的なセルがあるため、そのセルだけをもう一度測ります(やり直しは1回まで)。");
+        // やり直しパスは、非決定と判定されたセルだけを観測数`adaptive_n`まで再訪する
+        // (`strategy::revisit_nondeterministic`)。旧実装は非決定セルの最大観測数に2を足した
+        // `k`を全セルへ一律に課していたが、巡回の通過点として踏まれただけで観測数が数十に
+        // なるセルがあると`k`が跳ね上がり(GJIのMS-IMEプリセットで`n_obs=45`)、全セルへ数十回
+        // ずつを要求して約6600押下・数分〜数十分を使っていた。
         // code-review指摘: exec.stats.presses/elapsed_ms()は1回目のrun()からの累積値であり
         // リセットされない。base_reqのmax_presses/budget_msをそのまま使い回すと、1回目の
         // 実行で予算を(実機の異常再試行等で)使い切っていた場合、over()の最初のチェックで
         // 即座にtrueとなり、「もう一度実行します」とログに出すだけで実際には1回も
         // 押下せずに戻ってしまう。やり直しパスに、1回目とは独立した新しい予算を与える。
+        // 診断用: やり直しパスで全セルを最低何回観測させるか(`--retry-k=N`)。既定は
+        // `RETRY_BASE_K`。A/Bで値を決めるためのフラグで、決まったら既定値だけ残す。
+        let retry_k = std::env::args()
+            .find_map(|a| {
+                a.strip_prefix("--retry-k=")
+                    .and_then(|v| v.parse::<u32>().ok())
+            })
+            .unwrap_or(RETRY_BASE_K)
+            .max(base_req.k);
         let retry_req = Req {
-            k: bumped_k,
+            k: retry_k,
             max_presses: exec.stats.presses.saturating_add(base_req.max_presses),
             budget_ms: exec.elapsed_ms() + base_req.budget_ms,
             ..*base_req
         };
-        run(strategy, exec, prior, cost, suspects, &retry_req, rng);
+        revisit_nondeterministic(exec, prior, cost, suspects, &retry_req, rng);
     }
 
     /// ADR-195段階2: 学習に使っていない独立のランダムウォークで一段予測を採点する。
@@ -867,7 +874,6 @@ mod app {
         );
         retry_nondeterministic_cells_once(
             &mut executor,
-            strategy,
             &prior,
             &cost,
             &model.history_suspects,

@@ -14,7 +14,9 @@
 use crate::cost::CostModel;
 use crate::exec::{Executor, ImeDriver, PressInfo, ReadPolicy};
 use crate::graph::{cpp_plan, EdgeKind, Graph, Prior};
+use crate::model::Status;
 use crate::rng::Rng;
+use crate::verify::{classify_robust, DEFAULT_MIN_MINORITY};
 
 /// 戦略。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -185,6 +187,75 @@ fn need_full<D: ImeDriver>(exec: &Executor<D>, g: &Graph, k: u32) -> Vec<u32> {
         need[node * g.n_keys + key] = k.saturating_sub(c);
     }
     need
+}
+
+/// やり直し用: 非決定と判定されたセルだけを、観測数が`target`に達するまで再訪する。
+/// 判定は誤りに強い分類(`classify_robust`)で行い、[`Table::class`]の厳密一致による
+/// `need_adaptive`(S7・S8用)とは別。既に`target`以上観測したセルは十分な証拠があると
+/// みなして再訪しない。
+fn need_revisit<D: ImeDriver>(exec: &Executor<D>, g: &Graph, target: u32) -> Vec<u32> {
+    let mut need = vec![0u32; g.n_nodes * g.n_keys];
+    for (node, key) in edge_cells(g) {
+        let s = g.status_of_node(node);
+        if classify_robust(&exec.table, s, key, DEFAULT_MIN_MINORITY).declared_not_det() {
+            let c = exec.table.count(s, key) as u32;
+            need[node * g.n_keys + key] = target.saturating_sub(c);
+        }
+    }
+    need
+}
+
+/// 表に既にある観測を、グラフの辺と節点に反映する(やり直しで、事前モデルからグラフを
+/// 作り直したときに、1回目で学んだ遷移・見つけた状態を引き継ぐため)。
+fn seed_graph_from_table<D: ImeDriver>(exec: &Executor<D>, g: &mut Graph) {
+    // 先に結果として現れた未知の状態を節点に加え、その後で辺を反映する
+    // (加える前だと`learn_edge`が未知の遷移先を捨てるため)。
+    let cells: Vec<(Status, usize)> = exec.table.cells().map(|(&(s, k), _)| (s, k)).collect();
+    for &(status, key) in &cells {
+        if let Some(maj) = exec.table.majority(status, key) {
+            if g.status_index(maj.status).is_none()
+                && exec.table.outcome_status_count(maj.status) >= DISCOVER_MIN_OBS
+            {
+                let _ = g.add_status(maj.status);
+            }
+        }
+    }
+    for (status, key) in cells {
+        if let Some(maj) = exec.table.majority(status, key) {
+            g.learn_edge(status, key, maj);
+        }
+    }
+}
+
+/// やり直し(ADR-195段階2): 1回目の学習の後、誤りに強い分類でも決定的と言えなかった
+/// セルを、観測数が`req.adaptive_n`に達するまで再訪し、全セルも最低`req.k`回観測させる。1回目で学んだ遷移と
+/// 見つけた状態は、表から引き継ぐ。
+///
+/// 旧実装は、非決定セルの最大観測数に2を足した`k`を全セルへ一律に課して全体を巡回し直して
+/// いた。巡回の通過点として踏まれただけで観測数が数十に達するセルがあると`k`が跳ね上がり、
+/// 全セルへ数十回ずつを要求して数千押下を使った(GJIのMS-IMEプリセットで、約6600押下)。
+pub fn revisit_nondeterministic<D: ImeDriver>(
+    exec: &mut Executor<D>,
+    prior: &Prior,
+    cost: &CostModel,
+    suspects: &[usize],
+    req: &Req,
+    rng: &mut Rng,
+) {
+    let mut g = Graph::build(prior, suspects, cost);
+    seed_graph_from_table(exec, &mut g);
+    let target = req.adaptive_n;
+    let k = req.k;
+    // 非決定と判定されたセルの再訪(`target`まで)に加え、全セルを最低`k`回観測させる。
+    // 1回目で2回しか観測されず決定的と判定されたセルの中に、隠れ状態で結果が割れるものが
+    // 混じる(検証ウォークの誤答の大半がこの種のセル)ため。
+    tour(exec, &mut g, req, rng, true, move |e, g| {
+        let mut need = need_ctx(e, g, k, suspects);
+        for (n, r) in need.iter_mut().zip(need_revisit(e, g, target)) {
+            *n = (*n).max(r);
+        }
+        need
+    });
 }
 
 fn need_adaptive<D: ImeDriver>(exec: &Executor<D>, g: &Graph, n: u32) -> Vec<u32> {
@@ -628,6 +699,146 @@ mod tests {
             lacking.presses < 3000.0,
             "事前モデルに無い状態があっても押下数が暴走しない: {}",
             lacking.presses
+        );
+    }
+
+    /// やり直しの前提となる、S6を1回走らせた後の実行器。
+    fn after_first_pass() -> (Executor, Prior, Vec<usize>, CostModel) {
+        let m = atok_like();
+        let mut rng = Rng::new(11);
+        let prior = Prior::from_machine(&m, 0.0, &mut rng);
+        let suspects = m.history_suspects.clone();
+        let cost = CostModel::event();
+        let sim = SimIme::new(m, SimConfig::default(), cost);
+        let mut exec = Executor::new(sim, AnomalyPolicy::default(), ReadPolicy::Single);
+        run(
+            Strategy::S6,
+            &mut exec,
+            &prior,
+            &cost,
+            &suspects,
+            &Req::default(),
+            &mut rng,
+        );
+        (exec, prior, suspects, cost)
+    }
+
+    fn flagged_cells(exec: &Executor) -> Vec<(Status, usize)> {
+        exec.table
+            .cells()
+            .filter(|(&(s, k), _)| {
+                classify_robust(&exec.table, s, k, DEFAULT_MIN_MINORITY).declared_not_det()
+            })
+            .map(|(&(s, k), _)| (s, k))
+            .collect()
+    }
+
+    #[test]
+    fn revisit_measures_only_flagged_cells_up_to_the_target() {
+        let (mut exec, prior, suspects, cost) = after_first_pass();
+        let flagged = flagged_cells(&exec);
+        assert!(!flagged.is_empty(), "前提: 非決定と判定されるセルがある");
+        let before = exec.stats.presses;
+        let counts_before: Vec<usize> = flagged
+            .iter()
+            .map(|&(s, k)| exec.table.count(s, k))
+            .collect();
+        let mut rng = Rng::new(12);
+        let req = Req::default();
+        revisit_nondeterministic(&mut exec, &prior, &cost, &suspects, &req, &mut rng);
+        let added = exec.stats.presses - before;
+        for (&(s, k), &b) in flagged.iter().zip(&counts_before) {
+            let now = exec.table.count(s, k);
+            let still_flagged =
+                classify_robust(&exec.table, s, k, DEFAULT_MIN_MINORITY).declared_not_det();
+            // 目標まで測るか、測る途中で決定的と分かって再訪が要らなくなるか。
+            assert!(
+                now >= req.adaptive_n as usize || !still_flagged,
+                "非決定セル({s:?},{k})が目標まで測られていない: {b}->{now}"
+            );
+            assert!(
+                now > b || b >= req.adaptive_n as usize,
+                "観測が増えていない"
+            );
+        }
+        eprintln!("revisit: flagged={} added_presses={added}", flagged.len());
+        assert!(
+            added < 1500,
+            "非決定セルだけの再訪が{added}押下かかった(flagged={})",
+            flagged.len()
+        );
+    }
+
+    #[test]
+    fn revisit_also_raises_every_non_suspect_cell_to_the_base_k() {
+        let (mut exec, prior, suspects, cost) = after_first_pass();
+        let mut rng = Rng::new(12);
+        let req = Req {
+            k: 6,
+            ..Req::default()
+        };
+        revisit_nondeterministic(&mut exec, &prior, &cost, &suspects, &req, &mut rng);
+        for (&(s, key), obs) in exec.table.cells() {
+            if suspects.contains(&key) {
+                continue;
+            }
+            assert!(
+                obs.len() >= 6,
+                "全セルが最低k回観測されていない: ({s:?},{key}) = {}",
+                obs.len()
+            );
+        }
+    }
+
+    #[test]
+    fn revisit_uses_far_fewer_presses_than_the_old_uniform_k_rerun() {
+        // 旧実装: 非決定セルの最大観測数+2を全セルへ一律に課してS6を再実行。
+        let (mut old, prior, suspects, cost) = after_first_pass();
+        let max_flagged = old
+            .table
+            .cells()
+            .filter(|(&(s, k), _)| {
+                classify_robust(&old.table, s, k, DEFAULT_MIN_MINORITY).declared_not_det()
+            })
+            .map(|(_, obs)| obs.len())
+            .max()
+            .expect("前提: 非決定セルがある");
+        let old_before = old.stats.presses;
+        let mut rng = Rng::new(12);
+        let uniform = Req {
+            k: u32::try_from(max_flagged).unwrap() + 2,
+            ..Req::default()
+        };
+        run(
+            Strategy::S6,
+            &mut old,
+            &prior,
+            &cost,
+            &suspects,
+            &uniform,
+            &mut rng,
+        );
+        let old_added = old.stats.presses - old_before;
+
+        let (mut new, prior, suspects, cost) = after_first_pass();
+        let new_before = new.stats.presses;
+        let mut rng = Rng::new(12);
+        revisit_nondeterministic(
+            &mut new,
+            &prior,
+            &cost,
+            &suspects,
+            &Req::default(),
+            &mut rng,
+        );
+        let new_added = new.stats.presses - new_before;
+        eprintln!(
+            "uniform k={} added={old_added} / targeted added={new_added}",
+            uniform.k
+        );
+        assert!(
+            new_added < old_added,
+            "狙い撃ち{new_added}押下 vs 一律{old_added}押下"
         );
     }
 
