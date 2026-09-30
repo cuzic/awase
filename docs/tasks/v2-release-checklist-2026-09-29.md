@@ -61,6 +61,8 @@ v2 ラインは `develop` → `main`（`.claude/rules/main-develop-branch-flow.m
 
 ## D. 実機確認待ち
 
+> **2026-09-30 実機確認の実施記録**: [v2-device-verification-results-2026-09-30.md](v2-device-verification-results-2026-09-30.md)（X5・X1・X2 を実施。X3・X4・D1・D3 は未実施）。
+
 - [ ] **D1 BUG-163**: GJI/MS-IME × メモ帳/実 Chrome で、最初の打鍵が欠落しないこと。 手順: [v2-manual-verification-guide-2026-09-29.md](v2-manual-verification-guide-2026-09-29.md)。 **CI 部分（PR #387、2026-09-29）**: 素の EDIT・TSF 相当（tsf）× GJI の `--cold`（awase 起動直後の最初の文字）を各10回、消失・リテラル化 0（メモ帳の代わり。MS-IME・RichEdit・実 Chrome は構成のみ追加、未実行）。実機のメモ帳・実 Chrome での実打鍵は残る。
 - [ ] **D2 ADR-203 / BUG-170・171**: OFF 前に1語確定→物理 OFF→1秒以内に物理 ON→即打鍵。ON キー単独タップ直後の遅延（想定30〜60ms）の再測定。 手順: [v2-manual-verification-guide-2026-09-29.md](v2-manual-verification-guide-2026-09-29.md)。 **CI 部分（PR #387、run 36655470405）**: `typing_stress --mode=reopen`（構成 `sc-reopen-*`）。GJI×tsf（gap 300/600/900ms）・変換キー・実 Chrome・MS-IME が全 PASS（OffCold 固着・StaleConfirm/flush の `escape=true` は 0、GJI は ON 後の最初の語が cold 経路で `Reopen(BeliefSync…)` が毎試行発火）。**BUG-170 の修正を撤去した負の対照（`ablations/a8`）で、入力先のテキスト・cold 経路・固着は修正版と同じ PASS だった**（awase 自身の ImeOn 遷移が GjiFsm を同期するため、物理 OFF→ON は BUG-170 の固着条件〈Windows Terminal の物理 F2 → Unwarranted〉に届かない）。違いは journal の `Reopen(BeliefSync…)` だけで、`--require-sync` で撤去版が FAIL（24/24）になる。**したがって CI で確認できるのは「ADR-203 の同期が働いたこと」までで、ユーザーに見える不具合（固着・ESC・文字の消失）の再現・防止は実機でしか確認できない**。遅延: `[vk-send]`→セッション確認は p50 約 45ms・最大 81ms（ADR-203 D2 の定義、windows-latest）。「打鍵→最初の `[vk-send]`」約61ms はほぼ打鍵の押下時間で awase の遅延ではない。GJI の ATOK プリセットで 0xF2 は ON にならない（ハーネスの既定は 0x16）。実機での確認は残る。
 - [ ] **D3 ADR-178 領域A撤去**: 実機 A/B（`review-2026-09-24-09` の「実機 A/B 手順」）。物理 Ctrl は SendInput で作れない。 手順: [v2-manual-verification-guide-2026-09-29.md](v2-manual-verification-guide-2026-09-29.md)。
