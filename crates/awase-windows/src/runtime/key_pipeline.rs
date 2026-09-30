@@ -326,7 +326,6 @@ impl Runtime {
 
         // キャプチャ（async タスク内で使う）
         let probe_started_ms = hook::current_tick_ms();
-        let warmup_ms = self.platform.eager_warmup_sent_ms();
         let obs = crate::state::ObservedState::from_snapshot(crate::tsf::observer::tsf_obs());
         let gji_last_io_ms = obs.gji_last_io_ms;
         let active_ime_kind = obs.active_ime_kind;
@@ -355,7 +354,6 @@ impl Runtime {
                         app.apply_focus_probe(
                             probe,
                             probe_started_ms,
-                            warmup_ms,
                             gji_last_io_ms,
                             last_focus_change_ms,
                             shadow_on,
@@ -2490,39 +2488,25 @@ const fn streak_side(streak: KanaLockStreak) -> Option<bool> {
 /// shadow_grace は probe_admission の FocusEpoch 照合に置き換え済みのため
 /// このフラグには含まれない。
 struct FocusProbeGraceFlags {
-    warmup_grace_active: bool,
     gji_grace_active: bool,
-    warmup_elapsed: u64,
     gji_idle_ms: u64,
 }
 
 impl FocusProbeGraceFlags {
     const fn any(&self) -> bool {
-        self.warmup_grace_active || self.gji_grace_active
+        self.gji_grace_active
     }
 
-    const fn primary_reason(&self) -> &'static str {
-        if self.warmup_grace_active {
-            "warmup"
-        } else {
-            "gji-io"
-        }
+    const fn primary_reason() -> &'static str {
+        "gji-io"
     }
 }
 
 const fn compute_focus_probe_grace(
     now_ms: u64,
-    warmup_ms: u64,
     gji_last_io_ms: u64,
     last_focus_change_ms: u64,
 ) -> FocusProbeGraceFlags {
-    let warmup_elapsed = if warmup_ms > 0 {
-        now_ms.saturating_sub(warmup_ms)
-    } else {
-        u64::MAX
-    };
-    let warmup_grace_active = warmup_elapsed < crate::tuning::WARMUP_GRACE_MS;
-
     let gji_active_after_focus = gji_last_io_ms > 0 && gji_last_io_ms >= last_focus_change_ms;
     let gji_idle_ms = if gji_last_io_ms > 0 {
         now_ms.saturating_sub(gji_last_io_ms)
@@ -2533,9 +2517,7 @@ const fn compute_focus_probe_grace(
         gji_active_after_focus && gji_idle_ms < crate::tuning::GJI_SETTLE_GRACE_MS;
 
     FocusProbeGraceFlags {
-        warmup_grace_active,
         gji_grace_active,
-        warmup_elapsed,
         gji_idle_ms,
     }
 }
@@ -2550,7 +2532,6 @@ fn build_ime_on_suffix(
 ) -> String {
     if let Some(reason) = suppressed_reason {
         let detail = match reason {
-            "warmup" => format!("warmup:{}ms", signals.warmup_elapsed),
             "gji-io" => format!("gji-io:{}ms", signals.gji_idle_ms),
             _ => format!("shadow:{probe_age_ms}ms"),
         };
@@ -2592,7 +2573,6 @@ impl Runtime {
         &mut self,
         probe: crate::ime::FastImeProbeResult,
         probe_started_ms: u64,
-        warmup_ms: u64,
         gji_last_io_ms: u64,
         last_focus_change_ms: u64,
         shadow_on: bool,
@@ -2607,8 +2587,7 @@ impl Runtime {
         let ime_on_before_probe = self.platform_state.ime.effective_open();
 
         let now_ms = now_tick_ms.0;
-        let signals =
-            compute_focus_probe_grace(now_ms, warmup_ms, gji_last_io_ms, last_focus_change_ms);
+        let signals = compute_focus_probe_grace(now_ms, gji_last_io_ms, last_focus_change_ms);
 
         // スリープ復帰後など grace 期間中は read_ime_state_fast が一時的に
         // is_japanese_ime=false を返すことがある。
@@ -2651,7 +2630,7 @@ impl Runtime {
             status,
             probe.is_japanese_ime,
             signals.any(),
-            signals.primary_reason(),
+            FocusProbeGraceFlags::primary_reason(),
             shadow_on,
         ) {
             FocusProbeEffect::Record {
@@ -2840,13 +2819,12 @@ impl Runtime {
                 String::new()
             };
         tracing::info!(
-            "FocusProbe +{}ms: ime_on={}{} mode={:?} [ime={:?} sig1={}{}]",
+            "FocusProbe +{}ms: ime_on={}{} mode={:?} [ime={:?}{}]",
             probe_age_ms,
             ime_on_after_probe,
             ime_on_suffix,
             input_mode_after_probe,
             active_ime_kind,
-            signals.warmup_grace_active,
             gji_fields,
         );
 

@@ -164,8 +164,6 @@ pub struct WarmEpoch {
     last_send_ms: std::cell::Cell<u64>,
     /// Cold-start 発生回数カウンタ
     cold_start_count: std::cell::Cell<Generation>,
-    /// NativeF2Consumed 時に即送信した eager warmup F2 の送信時刻（ms）。0 = 未送信
-    eager_warmup_sent_ms: std::cell::Cell<u64>,
     /// KEYEVENTF_UNICODE で文字を送信した時刻（ms）。0 = 未送信 / リセット済み。
     ///
     /// GJI probe が settled=false で完了した後 unicode fallback を使った際にセットされる。
@@ -180,20 +178,17 @@ impl WarmEpoch {
         Self {
             last_send_ms: std::cell::Cell::new(0),
             cold_start_count: std::cell::Cell::new(Generation::INITIAL),
-            eager_warmup_sent_ms: std::cell::Cell::new(0),
             last_unicode_transmit_ms: std::cell::Cell::new(0),
         }
     }
 
-    /// コールド状態にマークする（eager_warmup_sent_ms / last_unicode_transmit_ms をリセット）。
+    /// コールド状態にマークする（last_unicode_transmit_ms をリセット）。
     pub fn mark_cold(&self) {
-        self.eager_warmup_sent_ms.set(0);
         self.last_unicode_transmit_ms.set(0);
     }
 
-    /// フォーカス変更時に eager_warmup_sent_ms / last_unicode_transmit_ms をリセットする。
+    /// フォーカス変更時に last_unicode_transmit_ms をリセットする。
     pub fn on_focus_changed(&self) {
-        self.eager_warmup_sent_ms.set(0);
         self.last_unicode_transmit_ms.set(0);
     }
 
@@ -224,17 +219,6 @@ impl WarmEpoch {
         let ms = crate::hook::current_tick_ms();
         tracing::debug!("[mark-send] last_send_ms={ms}");
         self.last_send_ms.set(ms);
-    }
-
-    /// eager warmup F2 を送信した時刻（ms）を返す。0 = 未送信。
-    #[must_use]
-    pub const fn eager_warmup_sent_ms(&self) -> u64 {
-        self.eager_warmup_sent_ms.get()
-    }
-
-    /// eager warmup F2 の送信時刻をセットする。
-    pub fn set_eager_warmup_sent_ms(&self, ms: u64) {
-        self.eager_warmup_sent_ms.set(ms);
     }
 
     /// cold-start 発生回数を返す。
@@ -432,17 +416,6 @@ impl CompositionState {
     /// `last_send_ms` を現在時刻に更新する。
     pub fn update_last_send_ms(&self) {
         self.warm_epoch.update_last_send_ms();
-    }
-
-    /// eager warmup F2 を送信した時刻（ms）を返す。0 = 未送信。
-    #[must_use]
-    pub const fn eager_warmup_sent_ms(&self) -> u64 {
-        self.warm_epoch.eager_warmup_sent_ms()
-    }
-
-    /// eager warmup F2 の送信時刻をセットする。
-    pub fn set_eager_warmup_sent_ms(&self, ms: u64) {
-        self.warm_epoch.set_eager_warmup_sent_ms(ms);
     }
 
     /// 最後に cold になった時点での idle 時間（ms）を返す。

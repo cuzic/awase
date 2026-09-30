@@ -338,13 +338,6 @@ pub const WIN_KEY_HELD_STALE_MS: u64 = 2_000;
 
 // === グレース・マージン ===
 
-/// TSF warmup 完了直後のグレース期間 (ms)。
-///
-/// warmup から WARMUP_GRACE_MS 以内に probe 結果が届いた場合、
-/// IME 状態変化によるフリップを抑制する。
-#[measured_macro::measured(pending = true)]
-pub const WARMUP_GRACE_MS: u64 = 300;
-
 /// GJI 静止直後のグレース期間 (ms)。
 ///
 /// フォーカス変更後に GJI I/O が発生し、最後の I/O からこの時間内なら

@@ -51,11 +51,6 @@ impl ChangeCounter {
         self.0.load(Ordering::Relaxed) != b.0
     }
 
-    /// カウンタを 0 にリセットする（ウォームアップ開始時等）。
-    pub(super) fn reset(&self) {
-        self.0.store(0, Ordering::Relaxed);
-    }
-
     /// 現在値をそのまま読み取る。診断ログ用（ADR-117、issue #138 切り分け）。
     ///
     /// `baseline()`/`has_changed()` の変化検出とは別に、「一度でも発火したか」
@@ -560,11 +555,6 @@ pub(crate) fn current_ime_product_name() -> Option<String> {
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
-}
-
-/// OBJ_NAMECHANGE カウンタをリセットする（`send_eager_tsf_warmup` 用）。
-pub(crate) fn reset_namechange_seq() {
-    TSF_OBS.focus_namechange.reset();
 }
 
 /// GJI candidate が SHOW になってから次の `reset_candidate_was_seen()` まで `true`。

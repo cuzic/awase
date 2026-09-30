@@ -4399,54 +4399,6 @@ fn list_rs_files_under(rel_root: &str) -> Vec<String> {
         .collect()
 }
 
-/// `WarmupImeOn::from_applied_or_belief`（`applied` が既知の間は belief に
-/// フォールバックしない、という単調性を持つ生のコンストラクタ）の本番コード
-/// からの実呼び出しは、BUG-110/ADR-132 Phase 2 のゲート版
-/// `from_applied_or_belief_unless_off_drift` の内部1箇所に限定する。
-///
-/// このゲートを迂回して `from_applied_or_belief` を直接呼ぶ新しい呼び出し元が
-/// 増えると、OFF 方向 drift correction と逆向きに warmup（`VK_IME_ON`）を
-/// 送る経路が黙って復活する（BUG-110 で実際に競合した経路そのもの）。
-/// `needle` の末尾に `(` を含めることで、4つ目のコンストラクタ
-/// `from_applied_or_belief_unless_off_drift(` を誤ってカウントしない
-/// （`from_applied_or_belief` は後者の**接頭辞**だが、直後に続く文字が
-/// `_unless_off_drift` であって `(` ではないため区別できる）。
-///
-/// # このガードが対象としない既知の別経路（敵対的コードレビュー指摘）
-///
-/// `WarmupImeOn::from_actuated`（`platform.rs::on_ime_applied` — 実
-/// actuation 直後の随伴 warmup）はこのガードの対象外で、`off_drift_active`
-/// ゲートを通らない。これは4つ目のコンストラクタとは別の、意図的な
-/// 未ゲート経路（ADR-132「Phase 2」節「実装上の既知の限界」参照）であり、
-/// `send_eager_tsf_warmup` へ渡す `origin` 引数（`"gated"`/`"actuated"`）で
-/// ログ上区別する対応を別途行った。
-#[test]
-fn warmup_ime_on_from_applied_or_belief_is_called_only_from_the_gated_constructor() {
-    let mut files = list_rs_files_under("../../src");
-    files.extend(list_src_files());
-    files.extend(list_rs_files_under("../awase-linux/src"));
-    files.extend(list_rs_files_under("../awase-macos/src"));
-
-    let mut total = 0usize;
-    let mut hits: Vec<String> = Vec::new();
-    for path in &files {
-        let content = read_crate_file(path);
-        let production = production_code_only(&content);
-        let count = count_real_calls(production, "from_applied_or_belief(");
-        if count > 0 {
-            total += count;
-            hits.push(format!("{path} ({count})"));
-        }
-    }
-    assert_eq!(
-        total, 1,
-        "`WarmupImeOn::from_applied_or_belief(` の本番コードでの実呼び出しが \
-         1箇所（`from_applied_or_belief_unless_off_drift` 内部）以外に \
-         見つかりました: {hits:?}。BUG-110/ADR-132 Phase 2 のゲートを \
-         迂回する新しい呼び出し元が追加されていないか確認してください。"
-    );
-}
-
 /// `needle` の実呼び出し（`fn {name}(` という定義行、および行コメント
 /// `//`/`///`/`//!` は除外——`non_comment_lines` を内部で適用する。ADR等の
 /// doc コメントに引用されたコード片や `#[cfg(test)]` 内の正当なリテラル
@@ -5622,8 +5574,8 @@ fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
         "platform.rs::on_reinject_key が `send_eager_tsf_warmup` を呼んでいます（BUG-173 追補2: 確定キー reinject 時の \
          VK_IME_ON 送信は撤去済み。Enter1回で2発出ていた発火の再導入になる）"
     );
-    // 残る eager warmup 送信元は FocusChange（platform.rs）・IME ON 適用直後の随伴（platform.rs）の2か所だけ
-    // （vk_send の Off 固定＝常に no-op の呼び出しは ADR-212 P1 で撤去）。キー打鍵契機の呼び出しが増えたら（Enter 1回で2発・F2 併走の再発）ここで落ちる。
+    // eager warmup（`send_eager_tsf_warmup`）は ADR-212 P4 で全て撤去した（確定キー〈#398〉・フォーカス変更・随伴・vk_send の Off 固定〈P1〉）。
+    // 再導入されたら（Enter 1回で2発・F2 併走の再発）ここで落ちる。
     let mut sends = 0;
     for f in [
         "src/platform.rs",
@@ -5639,8 +5591,8 @@ fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
             .count();
     }
     assert_eq!(
-        sends, 2,
-        "`send_eager_tsf_warmup(` の本番呼び出し箇所が2以外です（BUG-173 追補2: キー打鍵契機の warmup 送信は撤去済み。\
+        sends, 0,
+        "`send_eager_tsf_warmup(` の本番呼び出し箇所が0以外です（BUG-173 追補2: キー打鍵契機の warmup 送信は撤去済み。\
          意図した追加なら ADR-191 の warmup 節と BUG-173.md を更新してこの数を直すこと）"
     );
     assert!(

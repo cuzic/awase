@@ -278,15 +278,6 @@ impl WindowsPlatform {
 
     // ── Output 委譲メソッド ──────────────────────────────────────────────────
 
-    /// `warmup_ime_on` を指定して eager warmup を送信する（ADR-098 決定1-b）。
-    ///
-    /// 唯一の呼び出し元（`ime_refresh.rs` の FocusChange 処理）は
-    /// `warmup_ime_on()`（BUG-110ゲート適用済み）を渡すため `origin=WarmupOrigin::Gated` 固定。
-    pub(crate) fn send_eager_warmup(&self, warmup_ime_on: awase::platform::WarmupImeOn) {
-        self.output
-            .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Gated);
-    }
-
     /// conv mode 制御権限を更新する (H-3-e)。
     ///
     /// エンジンが有効になったとき `AwaseOwned`、無効になったとき `UserOwned` を渡す。
@@ -366,11 +357,6 @@ impl WindowsPlatform {
     /// キーを TsfGate で処理する。`true` = 保留（呼び出し元は Consumed を返すこと）。
     pub(crate) fn try_hold_key(&mut self, event: RawKeyEvent) -> bool {
         self.output.try_hold_key(event)
-    }
-
-    /// eager warmup F2 を送信した時刻 (ms) を返す。0 = 未送信。
-    pub(crate) const fn eager_warmup_sent_ms(&self) -> u64 {
-        self.output.eager_warmup_sent_ms()
     }
 
     /// `send_keys()` が開始した TSF/GJI probe がまだ完了していないか。
@@ -1328,15 +1314,6 @@ impl WindowsPlatform {
             receipt.settle(self);
             return;
         }
-        let effective = match outcome {
-            ImeOpenOutcome::Applied
-            | ImeOpenOutcome::AppliedWithoutSendInput
-            | ImeOpenOutcome::AlreadyMatched => open,
-            ImeOpenOutcome::Failed => !open,
-            ImeOpenOutcome::UnsafeToToggle
-            | ImeOpenOutcome::NotOwned
-            | ImeOpenOutcome::Unwarranted => unreachable!(),
-        };
         // IME 状態が変化したので GJI 候補ウィンドウの「見た」フラグをリセットする。
         // これをリセットしないと次の composition 検出で desync と誤判定される。
         crate::tsf::observer::reset_candidate_was_seen();
@@ -1368,57 +1345,19 @@ impl WindowsPlatform {
                 self.output.bump_shift_conv_guard_gen();
             }
         }
-        // BUG-110/ADR-132 Phase 2 敵対的コードレビュー指摘: この `warmup_ime_on` は
-        // `from_actuated`（実 actuation 直後の確定値）由来であり、`resolve_warmup_ime_on`
-        // が課す `off_drift_active` ゲートを通らない——force-ON
-        // （撤去済みの `apply_force_on_for_imm_broken`、`f83084b3`）が `SetOpen(true)` を適用した直後にも
-        // ここを通っていたため、drift correction が OFF 方向へ送り続けている最中でも
-        // 随伴 warmup（`VK_IME_ON`）が飛びうる。INV-B1'（`send_eager_tsf_warmup` が
-        // `VK_IME_ON` を送信する瞬間 OFF 方向 drift は検出されていない）は
-        // **この経路には及ばない**、既知の限界（ADR-132「Phase 2」節参照）。
-        // `origin=WarmupOrigin::Actuated` を付け、次回実機報告でゲート対象（Gated）の
-        // warmup と区別できるようにする。
-        let warmup_ime_on = awase::platform::WarmupImeOn::from_actuated(effective);
+        // 随伴 eager warmup（SetOpen(true) 直後の VK_IME_ON）は ADR-212 P4 で撤去した。
         if open {
             tracing::debug!("[composition] ImeEffect::SetOpen(true) → marking cold");
             self.output
                 .mark_composition_cold(crate::output::ColdReason::SetOpenTrue);
-            // `injection_mode` は receipt にも settle の引数にも積まない。
-            // `sync_gji` の実装内で settle 時点の値を読む（ADR-089 §2.4 細目2）。
-            receipt.settle(self);
-            // ADR-149/BUG-113: 戦略（`ImeOpenStrategy`）が今回の apply で実際に
-            // `VK_IME_ON` を送っている場合（`Applied`）は、この
-            // 随伴 warmup を重ねて送らない。1打鍵あたり最大3回の重複 SendInput
-            // が「@」の確立済み必要条件を満たしていた（実機ログで確認済み）。
-            //
-            // ADR-167: `ImmCrossProcessStrategy`（`ImmSetOpenStatus` クロス
-            // プロセス API のみ、SendInput 皆無、`Standard` プロファイル限定）
-            // が成功した場合は `outcome` に `Applied` ではなく専用の
-            // `AppliedWithoutSendInput` が返るため（`ime_controller.rs`/
-            // `open_chain.rs` 参照）、ここではプロファイルを一切見ず
-            // `should_send_accompanying_warmup(outcome)` の結果をそのまま
-            // 使えばよい。旧実装は「Standardプロファイルなら常に送る」という
-            // profile軸の粗い代理指標に頼っており、`ImmCrossProcessStrategy`
-            // が`Failed`を返して`GjiDirectStrategy`（実SendInputを伴う）へ
-            // フォールスルーした場合に、実送信の直後へ随伴warmupが重複して
-            // 「@」の必要条件（1打鍵あたり連続2回以上のSendInput）を
-            // Standardプロファイルでも再現しうる欠陥があった（ADR-167参照）。
-            let should_send = awase::platform::should_send_accompanying_warmup(outcome);
-            if should_send {
-                self.output
-                    .send_eager_tsf_warmup(warmup_ime_on, crate::output::WarmupOrigin::Actuated);
-            } else {
-                self.output.latch_eager_warmup_without_send(
-                    warmup_ime_on,
-                    crate::output::WarmupOrigin::Actuated,
-                );
-            }
         } else {
             tracing::debug!("[composition] ImeEffect::SetOpen(false) → marking cold (prevent warm+TSF Enter leak)");
             self.output
                 .mark_composition_cold(crate::output::ColdReason::SetOpenFalse);
-            receipt.settle(self);
         }
+        // `injection_mode` は receipt にも settle の引数にも積まない。
+        // `sync_gji` の実装内で settle 時点の値を読む（ADR-089 §2.4 細目2）。
+        receipt.settle(self);
     }
 
     /// `apply_ime_open` 用の `ImeControlView` を構築する。

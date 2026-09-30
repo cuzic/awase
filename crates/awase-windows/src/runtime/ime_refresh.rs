@@ -588,10 +588,6 @@ impl Runtime {
         // （`applied ?? belief`）を使う。決定1-a により TsfNative では `applied`
         // が `Unknown` のまま残るため、生値のままだと `unwrap_or(false)` で
         // warmup が握り潰され BUG-02 のリテラル化が再燃する。
-        let warmup_ime_on = self
-            .platform_state
-            .ime
-            .warmup_ime_on(std::time::Instant::now());
         // 旧 eisu_guard（tray で英数／カタカナ等に切り替えた直後の conv を読み、英数なら
         // warmup をスキップする防御）は 2026-08-20、BUG-34 横展開の一環として撤去した。
         //
@@ -615,10 +611,7 @@ impl Runtime {
         // 結論として、ユーザーが tray で明示的に半角英数へ切り替えた直後にフォーカス
         // 復帰すると、この warmup で一度だけひらがなへ戻る（既知の制限として受け入れ、
         // ガードでの防御はしない）。
-        self.platform.send_eager_warmup(warmup_ime_on);
-        tracing::debug!(
-            "[composition] FocusChange: send_eager_tsf_warmup called (ime_on via warmup_ime_on())"
-        );
+        // フォーカス変更時の eager warmup（VK_IME_ON）は ADR-212 P4 で撤去した。
         // 旧「フォーカス変更時の強制 OFF」（非 TsfNative で belief=OFF なら新窓へ
         // `set_ime_open_ordered(false)`）は 2026-09-25 に撤去した。CI 実測で現 develop では
         // warrant が拒否して書き込まないか発火しないかのどちらかで、撤去前後に差が出なかった
