@@ -11,7 +11,7 @@ summary: |-
   ADR-191 の「warmup は既存の例外として残す」「EngineDecision」は、本 ADR で縮小・改訂する(所有者方針が ADR-191 より新しい)。各段は1PR・revert しやすい単位・実機A/B と CI で退行を確認し、`docs/experiments.md` に判定を残す。
   所有者決定: 左 Shift 単独タップの半角英数トグルは残す(対象外)、ActivationSync は実機で実送信の件数を測ってから止める。ActivationSync の actuation は 2026-08-04 の再発対策ではなく(対策は belief 側で echo を明示意図に書かないこと)、止めても壊れない。
 status: |-
-  草案 v2(2026-09-30、Opus round1 の指摘を反映。P2 の計測は診断ログ PR #400、P1 はデッドコード撤去 PR #399)。実装済みは P0(#398)のみ。次に Opus round2。
+  草案 v3(2026-09-30、Opus round1・round2 の指摘を反映。P2 の計測は診断ログ PR #400、P1 はデッドコード撤去 PR #399)。実装済みは P0(#398)のみ。次に Opus round3(短い確認)。
 related_adr:
   - "ADR-098"
   - "ADR-100"
@@ -40,10 +40,10 @@ related_adr:
 - **予防的・補正的で、ユーザー操作を引き金にしないもの**(棚卸しの ID):
   A2 フォーカス変更時の eager warmup、A3 開く書き込みの後の随伴 eager warmup、A5 Unicode long-cold の `VK_IME_ON`+`VK_A`+`BS`、A6 Unicode long-cold の `VK_IME_OFF`→`VK_IME_ON` reinit(Actuation 起点のみ)、
   A6b Chrome/TSF リテラル2連続 give-up 後の reinit、B1 drift correction、C1 `ActivationSync` 起源の SetOpen(およびその関連: 下記 C2・C3)、D1/D2 ROMAN 補完、D3 cold 時の ROMAN 保護(conv 軸)。
-- **デッドコード**: 記号 VK の生フォールバック(`vk_send.rs`)の `send_eager_tsf_warmup(WarmupImeOn::off(), …)`(実送信されない)、`Platform::set_ime_open`(本番の呼び出し元ゼロ、`architecture_guard` が0件と固定)。
+- **デッドコード**: 記号 VK の生フォールバック(`vk_send.rs`)の `send_eager_tsf_warmup(WarmupImeOn::off(), …)`(実送信されない)。**`Platform::set_ime_open` はデッドコードではない**(`set_ime_open_ordered` が完全修飾の構文 `PlatformRuntime::set_ime_open(self, open)` で呼び、B1 drift correction の ImmCross の書き込み経路そのもの。`architecture_guard` の `.set_ime_open(` の0件はメソッド呼び出しの形しか数えていない。round2 M-N1 が round1 の誤りを撤回)。P6 で B1 の形が決まった後の整理(挙動を変えないリファクタ)として扱う。
 - **C1(ActivationSync)**: Engine の active/inactive 遷移が、対称性のために自動で `SetOpen` を発行し、executor が origin を見ずに実 VK/`ImmSetOpenStatus` の書き込みへ流す。
   ADR-191 は IME に書く振る舞いとして「EngineDecision」を認識しつつ、「発生元の軸が要るので、分離の是非を調査してから」と先送りしていた(L312・L322)。
-  - **C2**(第2の経路): idle-conv-check の `kp_apply_conv_engine_sync` が、`EngineSync::SetOpen(RomajiRecovered)` のとき Engine を経由せず `handle_engine_activation_sync` を**直接**呼ぶ。
+  - **C2**(実送信の経路ではなく、**書かないのに pending を立てる経路**): idle-conv-check の `kp_apply_conv_engine_sync` が、`EngineSync::SetOpen(RomajiRecovered)` のとき Engine を経由せず `handle_engine_activation_sync` を**直接**呼ぶ。`SetOpen` の effect は出さず実 IME には書かないが、今すでに、完了の来ない pending transition(タイムアウトあり)と、書いていない抑制窓(`last_explicit_ime_action_ms`)を立てている(コメントの「actuation は同一」は実装と食い違う)。
   - **C3**(再試行): 焦点の遷移中に落とした `SetOpen` を、settle 明けに出し直す仕組み(`strip_ime_set_open_if_settling`・`schedule_settle_retry`。2026-07-08「このせっけい→せっけい」対策=apply 完了通知でしか同期しないサブシステムの固着の防止)。
 - **ActivationSync の actuation が担っていること(M6)**: 2026-08-04(IME OFF 後に Engine が勝手に ON へ戻る)の対策は、echo を `last_intent`/`desired_open` に書かないこと(belief 側)で、**actuation 自体は対策ではない**。actuation が実際に担うのは
   (i) `engine.rs` の「inactive → active: OS IME を強制的に開く(『nonaiyo』問題対策)」= belief が開・実 IME が閉のとき awase が開ける補正、(ii) 予測(ADR-191 の表・ADR-209・ADR-211)が belief を開にしたとき、warrant が下りれば**予測を実 IME に書いて自己成就させる**こと。(ii) は ADR-191「予測は書かない」と矛盾する。
@@ -64,22 +64,25 @@ related_adr:
    | 段 | 対象 | 内容 | 進め方 |
    |---|---|---|---|
    | P0 | A4 確定キー reinject の eager warmup | 済み(#398)。実機 24→0、入力の欠落・リテラル化は増えなかった | **測った範囲**: 実機は IME ON・Engine OFF(生ローマ字を通す状態。NICOLA ON では、この経路は通らない〈`[relay-defer]`〉)、WT+GJI の MS-IME プリセット、n=24。**未測定**: NICOLA ON・MS-IME 本体・Chrome の実機 |
-   | P1 | デッドコード(記号 VK フォールバックの `send_eager_tsf_warmup(off)`、`Platform::set_ime_open` の trait 定義と実装) | 撤去。挙動は変わらない | PR #399。コンパイル+`architecture_guard`(`.set_ime_open(` の0件固定の更新を含む) |
+   | P1 | デッドコード(記号 VK フォールバックの `send_eager_tsf_warmup(off)`、`WarmupImeOn::off()`・`WarmupOrigin::Off`) | 撤去。挙動は変わらない | PR #399。コンパイル+`architecture_guard`(eager warmup 送信元の件数 3→2)。**`Platform::set_ime_open` は含めない**(上記) |
    | P2 | C1・C2・C3 ActivationSync | 下の決定4・5 | **計測の PR(#400)を入れてから**。実機で件数を測り、止めるかを決める |
    | P3 | A6b Chrome/TSF give-up 後の reinit | 撤去。BS/ESC の回収だけに縮退 | 実 Chrome×GJI で 0/10 と実測で効かず、BUG-168 で入力中文字を消す副作用も既知。**一方、自前の RichEdit 窓(tsf×GJI、ADR-193)では 30/30 効いた**(review-2026-09-24-09)。CI で、撤去後に RichEdit 窓の自己回復がどう変わるかを見る |
    | P4 | A2 フォーカス変更 eager warmup、A3 随伴 eager warmup | 撤去。InjectionMode::Tsf(WezTerm 等)+GJI だけに効く | **P2 の後に行う**(A3 の引き金の多くは C1 の書き込み結果なので、P2 で発火頻度が変わる)。**2つの PR に分ける**: (1) 環境変数フラグの PR(既定は従来どおり、撤去以外を混ぜない)、(2) 恒久化の PR。ソークの合格条件: フラグなしの期間に `[tsf-eager-warmup]` の送信の目印が N 件以上出ていた窓で、フラグありの期間に cold が 60 件超で無破損(経路が一度も通らないまま「無破損」にしない)。WezTerm+GJI を実際に使っていない機械では判断できない |
    | P5 | A6 Unicode long-cold の reinit(Actuation 起点)、A5 Unicode long-cold の `VK_IME_ON`+`VK_A`+`BS` | **P2 の後の状態を前提に判断する**(P2 で C1 が消えると、Actuation 起点はユーザーの IME キーだけになり、A6 は A3 と同じ「ユーザーの書き込みに付随する warmup」になる)。A5 は高リスク(Unicode 注入は GJI の確認を迂回する) | 実機: Windows Terminal+GJI、10s 以上 idle 後の1文字目(`bあ` 型欠落) |
-   | P6 | B1 drift correction の (b)(c) | **(b) 古い desired の補正と (c) HWND キャッシュの復元の押し付けを先に外す**。(a) は決定2 | (b)(c) の持続時間と、(a) の再試行が効いた件数(明示意図のあとに drift correction が送った件数と、その後の観測の一致)を**別に数える**。実 Chrome では観測が乗らない(BUG-172)が、ADR-205 の watch は injected のときに遷移を拾えるので、測定に使えるか検討する |
+   | P6 | B1 drift correction の (b)(c) | **(b) 古い desired の補正と (c) HWND キャッシュの復元の押し付けを先に外す**。(a) は決定2 | (b)(c) の持続時間と、(a) の再試行が効いた件数(明示意図のあとに drift correction が送った件数と、その後の観測の一致)を**別に数える**。実 Chrome では観測が乗らない(BUG-172)が、ADR-205 の watch は injected のときに遷移を拾えるので、測定に使えるか検討する。**(c) を外す前に、所有者に「awase が窓ごとの IME 状態を覚えて戻す」ことを機能として期待していないか確認する**(Windows の IME はもともとスレッド/窓ごとに開閉を保持する) |
    | P7 | D1/D2 ROMAN 補完、D3 cold 時の ROMAN 保護 | conv 軸。別に判断する | MS-IME 本体の実機。D3 は ADR-191 決定1が warmup 例外として維持 |
 4. **P2 の計測**(ActivationSync)。**今の journal では取れない**: `ActuationDecisionRecord` の `order.origin` は `EventOriginRecord { source: Physical|Injected|SelfActuated, epoch }` で、`SetOpenOrigin`(ExplicitUserAction/ActivationSync)を持たない。
    打鍵の経路には origin を出す info ログがあるが、`RefreshState` から来る遷移(キー入力と無関係。TsfNative × belief 未知が最も気にしている経路)は出ない。
-   → **計測専用の最小変更(PR #400)**: `dispatch_effect` の入口で `[set-open] origin=… open=…` を出す(key 経路・refresh 経路の両方が通る)。
+   → **計測専用の最小変更(PR #400)**: `dispatch_effect` で `[set-open] origin=… open=… generation=… outcome=…` を出す(key 経路・refresh 経路の両方が通る。sync は outcome を同じ行に、async〈ImmCross 先の窓〉は `outcome=async` で `generation` を出し、後から届く `on_ime_apply_complete{generation outcome}` の行と突き合わせる)。
    **数え方**: 実機(GJI+Windows Terminal、GJI+Chrome/Edge、MS-IME+メモ帳の通常使用)で、`[set-open] origin=ActivationSync` の件数を、直後の `actuation decision`/`[apply-ime]` の outcome(`Applied`/`AppliedWithoutSendInput`/`AlreadyMatched`/`Unwarranted`/`NotOwned`)別に数える。
+   **範囲外の2つは、別の既存のログで数える**: settle で落とされた SetOpen(C3)は `strip_ime_set_open_if_settling` の `[focus-settle] SetOpen(..) effect stripped`、C2 は `[idle-conv-check] TsfNative: engine ON 同期`(C2 は `dispatch_effect` を通らず、書かないので実送信の数える対象でもない)。
    **「実送信」は `outcome=Applied` だけで数えない**(ActuationDecision.outcome:Applied だけでは操作成功と判断できない、BUG-141)。`win32.rs` の SendInput のバッチ分類(`kanji_marker` 等の目印)と突き合わせる。窓の種類・belief の状態(既知/未知)別に。
-5. **P2 で止める範囲**。0件に近ければ、次を**まとめて**落とす(残す/落とすを分けると壊れる。B2):
-   - Engine の遷移が発行する `SetOpen`(ActivationSync 起源)の effect 発行元(key 経路 `key_pipeline.rs`、`RefreshState` 経路)。
-   - `handle_engine_activation_sync` の副作用: `on_set_open_requested`(検出状態のリセット)、`ImeApplyRequested`(pending transition を立てる。完了が来ないと pending がタイムアウトまで残る)、`last_explicit_ime_action_ms` の更新(書いていないのに「awase が書いた」扱いの抑制窓が開く)。**`EngineActivationSync` の記録(echo を明示意図にしない対策 BUG-48)だけを残す**。
-   - C2(idle-conv-check の直接呼び出し)と C3(settle 明けの出し直し)も同じ扱い。
+5. **P2 で止める範囲と場所**。0件に近ければ、**A. Engine(コア)で ActivationSync の `SetOpen` を出さない**(`engine.rs::transition_activation` で `origin == ActivationSync` のときは `SetOpen` を push せず、`EngineStateChanged` だけを出す)を選ぶ(round2 M-N3)。
+   - 理由: effect が無くなるので、key 経路の origin の分岐にも、`handle_engine_activation_sync` の pending・抑制窓・`on_set_open_requested` にも自動で到達しなくなる(B2 がまとめて片付く)。`SetOpenOrigin::ActivationSync` の構築箇所がゼロになるので、**列挙の variant ごと削除して型で固定できる**(コンパイラが保証する)。
+   - 注意: `transition_activation` は ExplicitUserAction の経路(`apply_active_transition`・`ime_set_open_effects` など)と共有なので、origin で分岐する。コアの `src/engine` のテストと `tests/support/harness.rs` を更新する。ADR-019(コアの OS 非依存)には影響しない。
+   - `EngineActivationSync` の記録は、belief への作用が無い(`ime_model.rs` の reducer は何もしない)ので、A では effect と一緒に不要になる。BUG-48 の対策(echo を明示意図にしない)は、echo そのものが無くなることで満たされる。
+   - **C2**(idle-conv-check の直接呼び出し)は、`handle_engine_activation_sync` の呼び出しを外す変更。**C3**(settle 明けの出し直し)は、落とす対象の SetOpen が無くなるので不要になる(`schedule_settle_retry` の他の用途を確認してから)。
+   B(executor で origin を見て捨てる)は、`handle_engine_activation_sync` の側を別に止める必要があり(2か所)、`ActivationSync` が構築され続けるので、決定7の型による固定と両立しない。採らない。
    **止めたときに戻りうる不具合(検証に入れる)**:
    - **BUG-170 型**: ActivationSync の書き込み結果は `on_ime_applied` → GjiFsm の同期・`feed_composition_event`・A3 の随伴 warmup を駆動している。書かなくなると、apply 完了通知でしか同期しない GjiFsm 等が `OffCold/OnWarm` に取り残され、毎打鍵 per-VK confirm → StaleConfirm → ESC で未確定文字が消える。ADR-203(ii)の `GjiEvent::Reopen` は予測 ON・shadow toggle ON の場合だけ発火する。**「Engine が観測/予測で active になった」ことを GjiFsm に伝える経路が無くなる可能性がある**ので、必要なら `Reopen` の発火元に「Engine の活性遷移」を足す判断を含める。検証: StaleConfirm の件数、ESC での未確定文字の消失。
    - **予測の誤りの表面化**(上の M6): ADR-209/211 の予測の偽 ON の件数(`[key-effect-miss]`)を見る。
@@ -94,8 +97,9 @@ related_adr:
 7. **完了条件と固定の方法**。`VK_IME_ON`/`VK_IME_OFF`/F2 を SendInput で送る経路、および `ImmSetOpenStatus`/`WM_IME_CONTROL` で**開閉**を書く経路が、【許可】(決定2)の起点だけになる。
    **固定の方法**: `lints/actuation_call_guard`(`RESTRICTED_CALLS`)は呼び出し元の**関数名**で制限し、【許可】と【補正】が同じ関数のチェーン(`ime_controller::apply` → `send_ime_mode_key`、`open_chain` → `set_ime_open_cross_process_async`、`actuate_ime_control` → `modify_conv_mode`)を共有するので、
    「共有チェーンに【補正】の origin が入らないこと」は固定できない(専用関数を持つ経路〈`send_eager_warmup_vk_pair`・`send_chrome_gji_reinit_and_poll`・`send_unicode_cold_warmup_keys`〉が**消えたこと**までは固定できる)。
-   よって、**`architecture_guard` の件数で固定する**: `dispatch_ime_set_open`/`apply_ime_open_with_belief`/`apply_ime_open_with_view` の呼び出し元の件数と、`SetOpenOrigin::ActivationSync` の構築箇所の件数(P2 の後は0)。
-   型で固定する案(`ActuationOrder` の構築子が受け取れる origin を【許可】の列挙に限る)は、P2・P6 の後に、残る origin が確定してから別途検討する。
+   よって、**P2(決定5 の A)では `SetOpenOrigin::ActivationSync` の variant ごと削除して型で固定する**(構築箇所がゼロ)。それ以外は **`architecture_guard` の件数で固定する**: `dispatch_ime_set_open`/`apply_ime_open_with_belief`/`apply_ime_open_with_view` の呼び出し元の件数。
+   件数のガードは「検出の仕掛け」であって証明ではない(P6 の後も (a) のために drift correction からの呼び出しが残るので、『残っているのが (a) だけ』は件数では示せない)。(a) だけを残すことは、`drift_correction.rs` の条件(明示意図があるときだけ発火)を Linux で走る単体テスト(`tests/closed_loop_scenarios.rs` 等)で固定する。
+   型で固定する案(`ActuationOrder` の構築子が受け取れる origin を【許可】の列挙に限る)は、P6 の後に、残る origin が確定してから別途検討する。
    **範囲**: P7 の判断が出るまで、完了条件は開閉軸だけ(conv 軸〈`IMC_SETCONVERSIONMODE`・D1〜D3〉、モードキーの注入〈`VK_DBE_*`・A7/A8、残す〉、CapsLock〈A9/A10、残す〉、ESC/BS の回収は含めない)。
 
 ## 検証方針(実機 A/B の手順)
