@@ -39,10 +39,6 @@ impl ImeModeState {
             Self::Hiragana
         }
     }
-
-    pub(crate) const fn is_hiragana(self) -> bool {
-        matches!(self, Self::Hiragana)
-    }
 }
 
 /// IME 入力モード belief を管理する状態機械。
@@ -123,14 +119,6 @@ impl ImeModeFsm {
             );
         }
         self.confirmed = false;
-    }
-
-    /// VK_IME_OFF 送信時に呼ぶ。Off belief に即時移行する。
-    pub(crate) fn on_f22_sent(&mut self) {
-        tracing::debug!("[ime-mode] VK_IME_OFF 送信 → Off (belief, unconfirmed)");
-        self.state = ImeModeState::Off;
-        self.confirmed = false;
-        self.last_vk_send_ms = crate::hook::current_tick_ms();
     }
 
     /// VK_IME_ON 送信時に呼ぶ。Hiragana belief に即時移行する。

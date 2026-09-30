@@ -131,10 +131,11 @@ impl WindowsPlatform {
                 "[gji-fsm] Unicode long-cold StartProbe: reinit 抑止 (BeliefSync 起点)"
             );
         } else {
+            // 以前は VK_IME_OFF→VK_IME_ON の reinit を送っていた(ADR-203 決定3 は BeliefSync 起点のみ抑止)が、
+            // Actuation 起点も含めて全て撤去した(ADR-212 P5)。
             tracing::debug!(
-                "[gji-fsm] Unicode long-cold StartProbe: VK_IME_OFF→VK_IME_ON reinit (chars なし)"
+                "[gji-fsm] Unicode long-cold StartProbe: reinit は送らない (chars なし、ADR-212 P5)"
             );
-            self.output.send_f22_f21_reinit();
         }
     }
 
@@ -842,18 +843,6 @@ impl WindowsPlatform {
     pub fn flush_raw_tsf_literal_recovery(&mut self) {
         let outcome = self.output.flush_raw_tsf_literal_recovery();
         let outcome = match outcome {
-            crate::output::RawRecoveryOutcome::DiscardedStale {
-                backs,
-                romaji_present,
-                deferred_vk_count,
-            } => crate::journal::DeferredRecoveryOutcomeSummary::DiscardedStale {
-                backs,
-                romaji_present,
-                deferred_vk_count,
-            },
-            crate::output::RawRecoveryOutcome::SkippedWhilePolling => {
-                crate::journal::DeferredRecoveryOutcomeSummary::SkippedWhilePolling
-            }
             crate::output::RawRecoveryOutcome::Flushed { vk_count } => {
                 crate::journal::DeferredRecoveryOutcomeSummary::Flushed { vk_count }
             }
@@ -876,92 +865,6 @@ impl WindowsPlatform {
             });
         }
         self.drain_output_post_send_effects();
-    }
-
-    /// `WM_GJI_REINIT_RETRY_COMPLETE` ハンドラから呼ぶ。ADR-101 決定4が要求する
-    /// 順序（`Confirmed` の場合）を、この関数の呼び出し順そのものとして固定する:
-    /// 1. `resend_gji_reinit_retry_romaji`（retry送信）
-    /// 2. `drain_output_post_send_effects`（送信後処理）
-    /// 3. `flush_deferred_vks_after_gji_reinit_completion`（deferred flush）
-    /// 4. `push_journal_entry(GjiReinitRetryCompleted)`（ADR-123: 診断ログ、
-    ///    flush/discard 件数の確定後・guard drop 前に記録する）
-    /// 5. `drop(completion.guard)`（関数末尾、`match` の外）
-    ///
-    /// `completion.guard` は成功/timeout/staleいずれの分岐でも関数末尾で1回だけ
-    /// dropする。Win32/`Platform`依存のためLinux上でこの呼び出し順自体をユニット
-    /// テストすることはできない（本関数の実装＝この doc コメントの記述が
-    /// SSOT。順序を変える場合はここも更新すること）。
-    pub(crate) fn complete_gji_reinit_retry(
-        &mut self,
-        token: u32,
-        status: crate::output::GjiReinitPollStatus,
-    ) {
-        let Some(completion) = self.output.take_gji_reinit_completion(token) else {
-            tracing::warn!(
-                "[chrome-reinit-retry] completion ignored: token={token} status={status:?}"
-            );
-            return;
-        };
-        let current_focus_gen = self.output.current_ime_mode_focus_gen();
-        let focus_matches = current_focus_gen == completion.focus_gen;
-        tracing::debug!(
-            "[chrome-reinit-retry] completion: token={} status={:?} cold={} \
-             origin_focus_gen={} current_focus_gen={} retry={}",
-            token,
-            status,
-            completion.cold_seq.value(),
-            completion.focus_gen,
-            current_focus_gen,
-            completion.retry_romaji.is_some(),
-        );
-
-        let retry_romaji_present = completion.retry_romaji.is_some();
-        let (deferred_flushed, deferred_discarded) = if status
-            == crate::output::GjiReinitPollStatus::Confirmed
-            && focus_matches
-        {
-            if let Some(romaji) = completion.retry_romaji {
-                self.output
-                    .mark_gji_reinit_retry_attempted(completion.focus_gen, romaji.clone());
-                self.output.resend_gji_reinit_retry_romaji(&romaji);
-                self.drain_output_post_send_effects();
-            }
-            let flushed = self.output.flush_deferred_vks_after_gji_reinit_completion();
-            if flushed > 0 {
-                self.drain_output_post_send_effects();
-            }
-            (flushed, 0)
-        } else if focus_matches && status == crate::output::GjiReinitPollStatus::Timeout {
-            let flushed = self.output.flush_deferred_vks_after_gji_reinit_completion();
-            if flushed > 0 {
-                self.drain_output_post_send_effects();
-            }
-            (flushed, 0)
-        } else {
-            let discarded = self
-                .output
-                .discard_pending_deferred_after_stale_gji_reinit();
-            tracing::warn!(
-                "[chrome-reinit-retry] stale completion: discard_deferred={discarded} token={token} status={status:?}",
-            );
-            (0, discarded)
-        };
-        // ADR-123: reinit retry の完了を journal（構造化・容量優先度あり）に
-        // 残す。従来は tracing::debug!/tracing::warn! の自由文字列のみで、issue #148
-        // の調査時に journal では確認できず app_log_excerpt を直接読む必要が
-        // あった。
-        self.push_journal_entry(crate::journal::JournalEntry::GjiReinitRetryCompleted {
-            token,
-            status: format!("{status:?}"),
-            cold_seq: completion.cold_seq.value(),
-            origin_focus_gen: completion.focus_gen,
-            current_focus_gen,
-            focus_matches,
-            retry_romaji_present,
-            deferred_flushed,
-            deferred_discarded,
-        });
-        drop(completion.guard);
     }
 
     /// `output.send_keys()` / `output.flush_raw_tsf_literal_recovery()` の直後に共通で

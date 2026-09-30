@@ -337,14 +337,6 @@ pub const WM_IME_KIND_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM
 #[cfg(windows)]
 pub const WM_ASYNC_IME_APPLY_COMPLETE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 22;
 
-/// GJI reinit retry 用 IMC poll の完了通知。
-///
-/// poll future は `with_app` 内で送信を行わず、`wparam=retry token`,
-/// `lparam=GjiReinitPollStatus` としてこのメッセージを投函する。メインメッセージ
-/// ループが `with_app_or_repost_with` で Runtime 境界へ戻してから retry 送信と
-/// post-send effects を実行する。
-#[cfg(windows)]
-pub const WM_GJI_REINIT_RETRY_COMPLETE: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 24;
 #[cfg(windows)]
 pub(crate) const WM_ENGINE_QUIT_REQUEST: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 25;
 /// OS かな入力ロック警告のトレイ表示を更新する契機。

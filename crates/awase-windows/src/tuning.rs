@@ -108,7 +108,7 @@ pub const RAW_TSF_LITERAL_DETECT_MS_LONG_IDLE: u64 = 500;
 /// 異常系でタイマーが永久に止まらないための安全弁）。
 ///
 /// **実測未了 — 暫定値**: 「候補ウィンドウ可視 → I/O/SHOW 確定」までの実測遅延データが
-/// まだ無い。300ms は `CHROME_GJI_REINIT_CONFIRM_MS`（IME ON→NATIVE確認 300ms）等、
+/// まだ無い。300ms は IME ON→NATIVE 確認の 300ms 等、
 /// 同程度の「確認待ち」定数から類推した仮値であり、`tuning-constants.md` が要求する
 /// 実測根拠を満たしていない。実機（Windows, Chrome/Teams/WezTerm 等）で計測してから
 /// 本番投入すること。
@@ -123,28 +123,6 @@ pub const GJI_CANDIDATE_VETO_CAP_MS: u64 = 300;
 /// をこの閾値以上でも有効にする。
 #[measured_macro::measured(pending = true)]
 pub const MEDIUM_IDLE_PROBE_MS: u64 = 7_000;
-
-/// Chrome/Unicode-mode GJI 再初期化（VK_IME_OFF→VK_IME_ON）後、`IMC_GETCONVERSIONMODE`
-/// で Hiragana を確認するまでの最大待機時間 (ms)。
-///
-/// `Output::send_f22_f21_reinit`（Unicode injection mode の long-cold GJI 再起動）が
-/// `send_chrome_gji_reinit_and_poll` 経由で使う。GJI は VK_IME_ON 受信後 ~50-100ms 以内に
-/// IME ON 状態に移行する実測値が多い。300ms あれば十分な余裕を確保できる。タイムアウト時は
-/// 強制再送する。
-///
-/// BUG-33（2026-07-22）: `probe_io.rs` の `RawTsfLiteralRecovery` give-up 分岐
-/// （per-VK confirm が2連続で literal 化を検出した場合）からも `send_chrome_gji_reinit_and_poll`
-/// を呼ぶようになった。この窓は同時に「連続 give-up による reinit 多重発火」のレート制限
-/// （`Output::last_gji_reinit_ms`）にも使われる。
-#[measured_macro::measured(pending = true)]
-pub const CHROME_GJI_REINIT_CONFIRM_MS: u64 = 300;
-
-/// [`CHROME_GJI_REINIT_CONFIRM_MS`] のポーリング間隔 (ms)。
-///
-/// `IMC_GETCONVERSIONMODE` を async でこの間隔ごとに発行する。
-/// 10ms 間隔で最大 30 回 = 300ms（`CHROME_GJI_REINIT_CONFIRM_MS` に対応）。
-#[measured_macro::measured(pending = true)]
-pub const CHROME_GJI_REINIT_POLL_INTERVAL_MS: u64 = 10;
 
 /// MS-IME confirm-then-transmit ゲート（BUG-13）の確認期限 (ms)。
 ///

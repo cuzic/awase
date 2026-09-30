@@ -894,20 +894,6 @@ pub(crate) fn handle_wm_async_ime_apply_complete(app: &mut Runtime, wparam: usiz
     app.on_ime_apply_complete(open, outcome, generation, reason);
 }
 
-/// WM_GJI_REINIT_RETRY_COMPLETE ハンドラ。
-pub(crate) fn handle_wm_gji_reinit_retry_complete(app: &mut Runtime, wparam: usize, lparam: isize) {
-    let Ok(token) = u32::try_from(wparam) else {
-        tracing::warn!("[chrome-reinit-retry] completion token out of range: {wparam}");
-        return;
-    };
-    let Some(status) = crate::output::GjiReinitPollStatus::decode(lparam) else {
-        tracing::warn!("[chrome-reinit-retry] unknown completion status: {lparam}");
-        return;
-    };
-    app.platform.complete_gji_reinit_retry(token, status);
-    app.drain_runtime_requests();
-}
-
 /// WM_PANIC_RESET ハンドラ
 pub(crate) unsafe fn handle_wm_panic_reset(app: &mut Runtime) {
     app.panic_reset();
