@@ -1,13 +1,13 @@
 ---
 id: ADR-209
 title: |-
-  GJI の MS-IME プリセットでは、TSF ネイティブの窓で、直接入力の変換が IME を開く。打鍵時予測の表を窓の種類(IMM32/TSF)別にして、素通しされた変換に Engine を追随させる
+  GJI の MS-IME プリセットでは、TSF の窓で、直接入力の変換が IME を開く(入力モードは閉じる前のまま)。読めない窓(TsfNative/Imm32Unavailable)の打鍵時予測に「変換で開く」を足し、素通しされた変換に Engine を追随させる
 summary: |-
   実機(dragonflyg4、JIS、GJI 3.34.6260.0、`session_keymap=2`)で、IME OFF から変換を単独タップすると、awase 停止でも WT・メモ帳・Edge の全てで IME が ON になる。awase は「予測しない」ため Engine が OFF のまま(`ka`→`か`)。
   GitHub Actions(windows-latest、GJI の MS-IME プリセット、awase なし、run 36690572075)で、**実 Chrome(TSF)は開き、素の EDIT(IMM32)は開かない**ことを再現した。古い custom 表の有無は無関係(表なしでも同じ)。
-  同梱表(`key_effect_table.rs`)は EDIT(IMM32)で学習したので、TSF ネイティブの窓では変換について誤っている。
+  同梱表(`key_effect_table.rs`)は EDIT(IMM32)で学習したので、TSF の窓では変換について誤っている。実機で、確定後の変換は候補窓を出さず開くだけ、半角英数で閉じた後の変換は半角英数のまま開くことも確認した。
 status: |-
-  草稿 v2(2026-09-30)。v1(「古い custom 表を実効とみなす」)は Opus 敵対レビューで Blocker 2件、実機の弁別実験と CI で棄却された。書き直し版を再レビュー待ち。
+  草稿 v3(2026-09-30)。v1(古い表を実効とみなす)は棄却。v2 は Opus round2 で Major 6件。X6・X7 の実機結果と指摘を反映した v3 を再レビュー待ち。
 related_adr:
   - "ADR-186"
   - "ADR-191"
@@ -18,7 +18,7 @@ related_adr:
   - "ADR-206"
 ---
 
-# ADR-209: 窓の種類別に、MS-IME プリセットの変換の効果を予測する(草稿 v2)
+# ADR-209: 読めない窓で、MS-IME プリセットの変換が IME を開くことを予測する(草稿 v3)
 
 ## 経緯(v1 の棄却)
 v1 は「MS-IME プリセット(2)で、古い `custom_keymap_table` を実効とみなす」という決定3を置いた。Opus 敵対レビュー(round1)が、次を指摘した: 根拠(実機1台の観測)は未同定で、既存の証拠(ADR-186 決定2(c)、Mozc `keymap.cc`、CI の格子)は逆を指す。
@@ -26,21 +26,26 @@ v1 は「MS-IME プリセット(2)で、古い `custom_keymap_table` を実効�
 - **X1**: IME ON で無変換を押すと、`カ`→`ｶ`→`か` と巡回した。古い表(無変換の行なし)が実効なら毎回 `か` のはずで、**プリセットが実効**。
 - **overlay**: `config1.db` の field 68 が無い(protobuf を全解析)。overlay 100 ではない。
 - **X3**: 変換を IME OFF から押すと、メモ帳・Edge でも IME が ON になった(WT と同じ)。**アプリ依存ではなく、TSF の窓で共通**。
+- **X6**(メモ帳、確定した「漢字」の直後で IME OFF から変換): 候補窓は出ず、IME が ON になるだけ(再変換は働いていない)。
+- **X7**(半角英数で IME を閉じてから変換): IME は ON になるが、**入力モードは半角英数のまま**(閉じる前のモードを引き継ぐ)。
 - **CI**(run 36690572075): GJI の MS-IME プリセット、awase なしで、**実 Chrome は「直接入力→変換」で開く(古い表の有無によらず)**。**素の EDIT(`ime_key_matrix_spike` の `--seq=1C`)は開かない(`open=0`)**。無変換は実 Chrome でも `か`→`カ` と巡回(実機と同じ)。
 
 ## 背景(実機・CI の事実)
-- GJI の MS-IME プリセットでは、直接入力の変換の定義は `Reconvert`(Mozc の `ms-ime.tsv`。IME の開閉とは無関係)。**それでも TSF ネイティブの窓では、再変換の処理が IME を開く。IMM32 の素の EDIT では開かない。**(仕組みは未確認。事実は CI と実機の観測)
+- GJI の MS-IME プリセットでは、直接入力の変換の定義は `Reconvert`(Mozc の `ms-ime.tsv`。IME の開閉とは無関係)。**それでも実 Chrome・WT・メモ帳・Edge では IME が開く(候補窓は出ない。入力モードは閉じる前のまま)。IMM32 の素の EDIT では開かない。**(仕組みは未確認。事実は CI と実機の観測)
+- **awase の窓の分類(`AppImeProfile`、`focus/class_names.rs`)は TSF/IMM32 の区別ではない**(クラス名の固定リスト)。メモ帳(RichEdit、TSF)・Firefox・WPF・Office は `Standard` になる。よって本 ADR は「**読めない窓(予測で追う: `TsfNative`/`Imm32Unavailable`)**」と「**読める窓(観測で追う: `Standard`/`ImmCross`)**」で分ける。`InputRelay` は awase が観測も actuation も持たない窓なので対象外。
 - 同梱表(`key_effect_table.rs` の MSIME 表、`grid-tables/msime.json`)は、学習プロセスの EDIT(IMM32)で測ったもの。**TSF ネイティブの窓の予測には、そのまま使えない**(変換だけでなく、他のキーも窓の種類で違う可能性。未測定)。
 - awase の予測(`key_effect_predictor.rs::predict_with_override`)は、`custom_keymap_table` がそのキーの行を持つと予測を打ち切る(`custom_table_overrides`)。**GJI はプリセット(CUSTOM 以外)のとき `custom_keymap_table` を読まない**(ADR-186 決定2(c)の ATOK、今日の X1)ので、この打ち切りは ATOK/MS-IME プリセットでは不要で、この実機では予測を止めている(古い表が変換の行を持つため)。
 - TsfNative の窓では開閉を観測できない(`read_ime_state_*` は `None`、`ConvOpenInference` は開閉を区別できない)。**追随の手段は打鍵時予測(`KeyEffectPredicted`)だけ**。
 - 学習(ADR-195/196)は、この実機では完走しない(BUG-178)。学習プロセスの入力先は素の EDIT なので、学習しても TSF の窓の効果は得られない。
 
 ## 決定
-1. **予測表を窓の種類別にする**: GJI の MS-IME プリセットで、TSF ネイティブの窓(`TsfNative`/`Imm32Unavailable` のプロファイル)では、**閉状態(DirectInput)の変換(0x1C)は「開く(ひらがな)」**と予測する。IMM32 の窓(`ImmCross`)は従来どおり(開かない)。根拠は CI と実機の観測(上)。他のキーの窓別の違いは未測定で、この ADR の対象外。
-2. **予測の打ち切りを見直す**: `session_keymap` が ATOK/MS-IME/KOTOERI/MOBILE のとき、`custom_keymap_table` の行を理由に予測を打ち切らない(GJI はその表を読まない)。CUSTOM のときの扱いは従来どおり。
-3. **予測は開閉軸と、絶対設定に限った入力モードだけ**: 変換で開くとき、入力モードは「ひらがな(ネイティブ)」とする(Reconvert 経由で IME が開いたときの実測: 実 Chrome で `か` = かな・ひらがな)。
-4. **止める設定**: 新しい bool 設定(例 `predict_open_from_gji_config` の類。名前は実装時に決める)を置き、既定は入れる。偽 ON が実機で出たとき、ビルドし直さずに止められる。
-5. 新しいイベント・I/O・actuation の合流点・tuning 定数は作らない。fence は既存の `KEY_EFFECT_SETTLE_MS`。
+1. **読めない窓の打鍵時予測に「変換で開く」を足す**: GJI の MS-IME プリセット(`session_keymap` が不在/`NONE`/MSIME。Windows の既定)で、`cannot_verify_real_ime_state` な profile(`TsfNative`/`Imm32Unavailable`。`InputRelay` は除く)では、**閉状態(DirectInput)の無修飾の変換(0x1C)は「IME を開く」**と予測する。**読める窓(`Standard`/`ImmCross`)は観測に任せる**(メモ帳は X3 で開くと確認済みで、観測で追随する)。
+2. **予測は開閉だけ**: 入力モード(`mode`)・段階(`stage`)は予測しない(`None`)。X7: 開いたときの入力モードは閉じる前のまま(半角英数なら半角英数)。belief が `Unknown` のときだけ、既存の種(`kana_mode()`)を使う(`predict_in_table` の既存の挙動と同じ)。X6: 候補窓は出ない(再変換は働かない)ので、段階は `None` のままでよい。
+3. **学習表より窓別の規則を優先する(読めない窓の、閉×変換のセルだけ)**: 学習プロセスは素の EDIT で測るので、学習が完走しても `off|henkan=OFF` が入る(CI の格子と同じ)。それを理由に、読めない窓の変換が「開かない」に戻らないよう、このセルは学習表より窓別の規則を先に引く。単体テストで固定する。
+4. **予測の打ち切りを見直す**: `session_keymap` が ATOK/MS-IME/不在/`NONE` のとき、`custom_keymap_table` の行を理由に予測を打ち切らない(GJI はプリセットのときこの表を読まない。ADR-186 決定2(c)、X1)。KOTOERI/MOBILE は `preset=Custom` で同梱表が空なので、外しても変わらない。ATOK+古い表では、同梱の ATOK 表で予測するようになる(ADR-186(c)の実機結果と一致)。CUSTOM のときは従来どおり。**この変更で新たに予測されるようになるキー**(古い表に行があった英数・ひらがな・Space/Enter/Esc/BS など)は、EDIT で測った同梱表の予測が当たる。既知の差の候補は、開状態の変換(`Reconvert`。TSF で直前に文字があっても再変換は働かないことを X6 で確認)。
+5. **止める設定**: 新しい bool 設定(名前は実装時)を置く。既定は有効。偽 ON が実機で出たら、ビルドし直さずに止められる。
+6. 新しいイベント・I/O・actuation の合流点・tuning 定数は作らない。fence は既存の `KEY_EFFECT_SETTLE_MS`。
+7. **記録**: BUG-143(根本原因の記述が X1 で否定された)・ADR-174 に訂正を追記し、本修正のコミットを `fix_commits` に入れる(新しい BUG を起こすなら相互に参照)。診断関数 `gji_charset_autodetect.rs::classify_mode_key_ime_action`(MSIME で表を優先)の doc に「X1 で前提は否定された」と書くか、決定4 と揃える。テスト `realdev_msime_preset_with_stale_custom_table` の期待値とコメントを、「EDIT では開かない/TSF の窓では開く」に更新する。
 
 ## 非目的
 素通し後に awase が IME へ書くこと(ADR-191 決定1)。ADR-206 決定1(α)(Suppress × エンジン非活性では生キーが IME に届く)の変更。窓別の表の**全キーの網羅**(別 ADR: TSF 形式の入力先での学習、または受動学習)。学習プロセスの修正(BUG-178)。PR #360(別件、保留)。
@@ -51,20 +56,22 @@ v1 は「MS-IME プリセット(2)で、古い `custom_keymap_table` を実効�
 - **受動学習(窓の種類別に、実際の効果を観測して覚える)**: 原理的に最も一般的だが、新しい保存・証拠・採否の設計が要る(v2 の後)。この ADR の窓別表は、その学習の初期値になる。
 - **候補窓の検出による自己修復(ADR-203 案C)**: 追随が遅れる(最初の数文字が `か`)。安全網として別 ADR。
 
-## リスク(再レビューで詰める)
-1. **偽 ON**: 窓の種類の判定を誤ると(例: ImmCross の窓を TSF と判定)、開かないのに「開く」と予測する。緩和: プロファイル判定は既存の `AppKind`/`profile` を使う。実機・CI で TSF/IMM32 それぞれを検証。
-2. **他の GJI バージョン**: 実機は 3.34.6260.0。CI の版は未取得。バージョンによって Reconvert の副作用が違う可能性。
-3. **予測は `desired_open` を書かない**: 直前の Ctrl+無変換(明示 OFF、TTL 30秒)の後、belief だけが ON になる。drift 補正・`ActivationSync`・hwnd キャッシュ(偽 ON の1時間保持)との相互作用を、テストで固定する(v1 レビュー M1・M2。予測が正しいときは問題にならないが、窓判定を誤ったときの被害)。
-4. **予測の後に GjiFsm の開き直し(`kp_reopen_gji_fsm(Predict)`)が走る**: 変換で IME が実際に開いているので、正しい動作のはず(要確認)。
+## リスク
+1. **偽 ON(窓の誤分類)**: 「開かない窓」を `TsfNative`/`Imm32Unavailable` と判定すると、開かないのに「開く」と予測する(読めない窓では自動で直らず、hwnd キャッシュ経由で `desired_open` に1時間残り、ActivationSync が `VK_IME_ON` を送りうる。round1 M1)。**未測定のクラス**: UWP の `Windows.UI.Core.CoreWindow`/`ApplicationFrameWindow`、`XamlExplorerHostIslandWindow`(エクスプローラーの検索欄等)、`Intermediate D3D Window`、`PseudoConsoleWindow`、wezterm(独自の TSF 実装)。緩和: profile 全体に当て、決定5の設定で逃がす(クラス許可リストは複雑さに見合わない)。未確認のクラスは未検証事項に名前で残す。
+2. **他の GJI バージョン**: 実機は 3.34.6260.0。CI の版は未記録。CI のワークフローで `GoogleIMEJaConverter.exe` のファイルバージョンを1行ログに出す。
+3. **予測は `desired_open` を書かない**: 直前の Ctrl+無変換(明示 OFF、TTL 30秒)の後、belief だけが ON になる。**Blind の窓(Edge/Chrome)では、drift の「検知」(`DriftDetected` で `applied` を `Optimistic` に偽装、試行回数の加算、「IME状態を確認できません」のバルーン)まで進みうる**(授権で送信は止まるが、BUG-163 の早期 return は ImmCross 限定)。テストと CI で固定する。
+4. **GjiFsm の開き直し(`kp_reopen_gji_fsm(Predict)`)**: 予測が正しければ IME は開いているので通常の ImeOn と同じ。偽 ON のときは round1 M1(d) のとおり(F2/ESC が漏れうる)。closed_loop の負の場合で送信キー列を見る。
 
 ## 検証方針
-- **CI(windows-latest)で閉ループ検証できる**: `chrome_probe`(実 Chrome)を **awase あり**で、GJI の MS-IME プリセットで実行し、「直接入力→変換」の後に Engine が追随して NICOLA の文字になることを確認する(今の awase では `か`)。素の EDIT(ImmCross)では従来どおり(開かない)ことも確認する。
-- 単体テスト(予測器: MS-IME × TsfNative × 閉 × 変換 → 開く。ImmCross → 開かない。`custom_keymap_table` に行があっても、プリセットでは予測する)。既存テスト `realdev_msime_preset_with_stale_custom_table` の期待値を更新する。
-- `closed_loop_scenarios`: 明示 OFF の後に変換を素通しして、drift・`VK_IME_ON` の送信が出ないこと。窓判定を誤った負の場合。
-- `architecture_guard`: `KeyEffectPredicted` の dispatch 元が1箇所のまま。
-- 実機 A/B(dragonflyg4、WT・メモ帳・Edge): 「IME OFF → 変換 → `ka`」が `きう`(NICOLA)になること。
+- **CI(windows-latest)の閉ループ**: `chrome_probe`(実 Chrome、`Imm32Unavailable`)を **awase あり**で、GJI の MS-IME プリセットで実行し、「直接入力→変換」の後に Engine が追随して NICOLA の文字になることを確認する(今の awase では `か`)。**合格条件に、「明示 OFF → 変換 → 2秒待つ」の後、`[drift]` の行・`VK_IME_ON`/`VK_IME_OFF` の送信・通知が無いことを含める**(`ka` が NICOLA になるだけでは、後から閉じられる事故を捕まえられない)。CI で試せるのは `Imm32Unavailable`(実 Chrome)だけで、`TsfNative`(WT の InputSite)は実機の A/B だけになる(明記)。
+- **単体テスト**: 予測器(MS-IME × `TsfNative`/`Imm32Unavailable` × 閉 × 変換 → 開く、mode/stage は `None`。`Standard`/`ImmCross` → 予測しない。`custom_keymap_table` に行があっても、プリセットでは予測する。学習表に `off|henkan=OFF` があっても、読めない窓では開くと予測する)。
+- **`closed_loop_scenarios`**: 疑似 IME(`pseudo_ime.rs`)は ATOK の格子しか持たない。MSIME の格子を読めるようにし、「窓の種類」で閉状態の変換の結果だけを差し替える形にして、正(開く窓)・負(窓判定を誤り、開かない)の両方を同じ仕組みで書く。負の場合で、drift・`VK_IME_ON`・F2/ESC の送信が無いこと。
+- **`architecture_guard`**: `KeyEffectPredicted` の dispatch 元が1箇所のまま。
+- **実機 A/B(dragonflyg4)**: 基準値として、**v2 を入れる前の awase が、メモ帳(`Standard`、観測経由)でどう振る舞うか**を記録する。そのうえで、WT(`Imm32Unavailable`)・Edge・未測定のクラス(設定アプリの検索欄〔UWP〕、エクスプローラーの検索欄〔XAML〕、WezTerm)で「IME OFF → 変換 → `ka`」が `きう`(NICOLA)になること。
+- `ime_key_sequence_golden`: キー列は変えないので影響なし(F2/`VK_IME_ON` が送られる負の場合は closed_loop で押さえる)。
 
 ## 未検証事項
-- Reconvert が TSF の窓で IME を開く仕組み。他の TSF の窓(VS Code、Electron、UWP)でも開くか。
-- 変換以外のキーの、窓の種類別の差。
+- Reconvert が TSF の窓で IME を開く仕組み。他の TSF の窓(VS Code、Electron、UWP、Firefox、WPF、Office)でも開くか。上の未測定クラス。
+- 変換以外のキー(この ADR で新たに予測されるようになるキーを含む)の、窓の種類別の差。
 - 実機以外の GJI のバージョンでの挙動。
+- 直前に文字を選択した状態での変換(X6 は確定後の直後のみ確認。候補窓は出なかった)。
