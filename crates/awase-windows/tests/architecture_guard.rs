@@ -4707,6 +4707,32 @@ fn declares_pub_field_detects_qualified_visibility() {
     assert!(!declares_pub_field("pub other_field: bool,", "toggle_held"));
 }
 
+/// `config.general.use_learned_keymap_table`・`predict_henkan_open_in_unreadable_windows` の反映が、起動時（`app/bootstrap.rs`）と
+/// 設定リロード時（`Runtime::apply_config_update`）の**両方**から setter 経由で呼ばれていることを固定する。
+/// 以前は再読込でしか反映されず、起動時は既定の true のままだった（opt-out が効かない。ADR-209 の CI の対照が PASS してしまい発覚）。
+#[test]
+fn general_keymap_prediction_flags_are_wired_at_bootstrap_and_reload() {
+    let bootstrap = read_crate_file("src/app/bootstrap.rs");
+    let bootstrap_production = non_comment_lines(production_code_only(&bootstrap));
+    let runtime_mod = read_crate_file("src/runtime/mod.rs");
+    let reload_body = extract_fn_body(&runtime_mod, "pub(crate) fn apply_config_update(");
+    for setter in [
+        "set_use_learned_keymap_table(",
+        "set_predict_henkan_open_in_unreadable_windows(",
+    ] {
+        assert_eq!(
+            count_real_calls(&bootstrap_production, setter),
+            1,
+            "src/app/bootstrap.rs は起動時に `{setter}...)` をちょうど1回呼ぶこと"
+        );
+        assert_eq!(
+            count_real_calls(reload_body, setter),
+            1,
+            "Runtime::apply_config_update は設定リロード時に `{setter}...)` をちょうど1回呼ぶこと"
+        );
+    }
+}
+
 /// `config.general.half_width_alnum_toggle` の反映（`Runtime::
 /// set_half_width_alnum_toggle_policy`）が、起動時（`app/bootstrap.rs`）と
 /// 設定リロード時（`Runtime::apply_config_update`）の**両方**から呼ばれて
