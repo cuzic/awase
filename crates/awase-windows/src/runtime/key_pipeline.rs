@@ -1593,7 +1593,15 @@ impl Runtime {
         {
             return;
         }
-        self.kp_predict_key_effect(event.vk_code);
+        // ADR-211 決定2: 表に無い受動のキー（プリセットの F13）の規則を当ててよい打鍵。表のキーの除外（上）は`in_table`のときだけなので、
+        // 表に無いキーではここで明示する。自動リピート・エンジンが消費した打鍵・`shadow_action`/`sync_direction` 付き・修飾付き（Shift も）は当てない。
+        let passive_rule_eligible = !in_table
+            && !event.was_down
+            && !decision.is_consumed()
+            && event.ime_relevance.shadow_action.is_none()
+            && event.ime_relevance.sync_direction.is_none()
+            && !(m.ctrl || m.alt || m.shift || m.win);
+        self.kp_predict_key_effect(event.vk_code, passive_rule_eligible);
     }
 
     /// ADR-203 (ii): 確かな ON 系イベント（物理キー予測 ON・shadow toggle ON。`sync_direction` の on キーは
@@ -1627,7 +1635,7 @@ impl Runtime {
     /// 変換モード5種・変換中の段階は`ImeModel::key_track`（隠れ状態）で追跡する。モードキーだけでなく、
     /// Space/Esc/Enter/BS・文字キーも通して追跡状態を更新する（変換中の出入りが打鍵履歴で決まるため）。
     /// ADR-189の固定セット（半角/全角）は`shadow_action`を持つ間この関数に来ない（呼び出し側が除外）。
-    fn kp_predict_key_effect(&mut self, vk: awase::types::VkCode) {
+    fn kp_predict_key_effect(&mut self, vk: awase::types::VkCode, passive_rule_eligible: bool) {
         use crate::state::key_effect_predictor::PredictInput;
         use crate::tsf::observer::{tsf_obs, ActiveImeKind};
         let obs = tsf_obs();
@@ -1668,6 +1676,7 @@ impl Runtime {
             composing: crate::tsf::observer::ime_composition_active_now(),
             track: ime.model().key_track(),
             unreadable,
+            passive_rule_eligible,
         };
         let Some(prediction) = keymap.predict_with_override(vk.0, &input, override_table) else {
             tracing::debug!(

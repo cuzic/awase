@@ -305,6 +305,10 @@ pub struct PredictInput {
     /// 前面窓が「IME の実状態を読めない」種類（`cannot_verify_real_ime_state`かつ`InputRelay`以外）で、
     /// 窓別の規則（ADR-209）を使ってよいか。設定で止められる（止めるとき`false`）。
     pub unreadable: bool,
+    /// 表に無い受動のキー（プリセットで閉状態から開く F13、ADR-211）の規則を当ててよい打鍵か。イベント側の条件
+    /// （KeyDown・自動リピートでない・非 injected・`shadow_action`/`sync_direction` が無い・エンジンが消費していない・修飾なし）を
+    /// `kp_stage_key_effect_track` が計算して渡す。規則は窓の種類にも ADR-209 の設定にも依らない。
+    pub passive_rule_eligible: bool,
 }
 
 const fn kana_mode() -> InputModeState {
@@ -769,6 +773,10 @@ impl KeyEffectKeymap {
         if let Some(prediction) = self.unreadable_window_prediction(vk, input) {
             return Some(prediction);
         }
+        // ADR-211 決定1: 表に無い受動のキー（プリセットの F13）は、閉状態から開く。学習表・打ち切りより先（ADR-209 と同じ理由）。
+        if let Some(prediction) = self.passive_open_key_prediction(vk, input) {
+            return Some(prediction);
+        }
         // ADR-195段階4 B3対応: 学習済み表にこのキー・状態の答えがあれば、custom_table/overlay/
         // レジストリ再割り当てのガードより先にそれを使う。これらのガードは「同梱表はユーザーの
         // 独自割り当てを知らないので予測しない」という安全策であり、学習済み表はまさにその
@@ -803,6 +811,10 @@ impl KeyEffectKeymap {
     /// 閉状態の無修飾の変換（0x1C）は IME を開く。開閉だけを予測し、モード・段階は変えない
     /// （`Unknown`のときだけ既存の種を使う）。overlay・レジストリ再割り当てがあるときは当てない。
     fn unreadable_window_prediction(&self, vk: u16, input: &PredictInput) -> Option<Prediction> {
+        // Microsoft IME 本体のキーマップも`session_keymap: None`を持つが、GJI の MS-IME プリセットの規則ではない（ADR-211 N1）。
+        if matches!(self.preset, KeymapPreset::MsImeNative) {
+            return None;
+        }
         let msime_like = matches!(
             self.session_keymap,
             None | Some(SESSION_KEYMAP_NONE | SESSION_KEYMAP_MSIME)
@@ -813,6 +825,38 @@ impl KeyEffectKeymap {
             || input.open
             || self.has_overlay()
             || self.henkan_reassigned
+        {
+            return None;
+        }
+        let mode = matches!(input.mode, InputModeState::Unknown).then(kana_mode);
+        Some(Prediction {
+            effect: PredictedEffect {
+                open: Some(true),
+                mode,
+            },
+            track: input.track,
+        })
+    }
+
+    /// ADR-211 決定1・2: GJI の MS-IME/MOBILE プリセット（`role::passive_open_vk_names_outside_table`）で、表に無い
+    /// 受動のキー（F13）の閉状態の無修飾の打鍵は IME を開く。開閉だけを予測し、モード・段階は変えない
+    /// （`Unknown`のときだけ既存の種）。Microsoft IME 本体・overlay ありでは当てない。
+    fn passive_open_key_prediction(&self, vk: u16, input: &PredictInput) -> Option<Prediction> {
+        use crate::vk::VkCodeExt;
+        if !input.passive_rule_eligible
+            || input.open
+            || matches!(self.preset, KeymapPreset::MsImeNative)
+            || self.has_overlay()
+        {
+            return None;
+        }
+        let names = awase_gji_config::role::passive_open_vk_names_outside_table(
+            self.session_keymap,
+            self.custom_table.as_deref(),
+        );
+        if !names
+            .iter()
+            .any(|n| awase::types::VkCode::from_name(n).is_some_and(|v| v.0 == vk))
         {
             return None;
         }
@@ -1055,6 +1099,7 @@ mod tests {
             composing,
             track,
             unreadable: false,
+            passive_rule_eligible: false,
         }
     }
 
@@ -1640,6 +1685,152 @@ mod tests {
             km.predict(0x1C, &input(false, ROMAJI, false, NOTRACK)),
             None
         );
+    }
+
+    fn eligible_input(open: bool, mode: InputModeState) -> PredictInput {
+        PredictInput {
+            passive_rule_eligible: true,
+            ..input(open, mode, false, NOTRACK)
+        }
+    }
+
+    const F13: u16 = 0x7C;
+
+    /// ADR-211 決定1: プリセットの F13 は閉状態から開く（開閉だけ。モードは変えない）。
+    #[test]
+    fn adr211_f13_opens_when_closed_in_ms_ime_like_presets() {
+        for (session, table) in [
+            (Some(2), None),
+            (Some(4), None),
+            (None, None),
+            (Some(-1), None),
+            (Some(0), None),
+            (Some(0), Some("".to_string())),
+            // 古い表が残っていても、プリセット(2)の GJI は表を読まない（ADR-186 決定2(c)）。
+            (Some(2), Some("DirectInput\tF13\tIMEOff\n".to_string())),
+        ] {
+            let km = KeyEffectKeymap::from_config(session, table.clone(), &[]).unwrap();
+            let p = km
+                .predict(F13, &eligible_input(false, ROMAJI))
+                .unwrap_or_else(|| panic!("session={session:?} table={table:?}"));
+            assert_eq!(p.effect.open, Some(true), "session={session:?}");
+            assert_eq!(p.effect.mode, None);
+            let p = km
+                .predict(F13, &eligible_input(false, InputModeState::Unknown))
+                .unwrap();
+            assert_eq!(p.effect.mode, Some(kana_mode()));
+        }
+    }
+
+    /// 規則が当たらない条件（決定1・2）。
+    #[test]
+    fn adr211_f13_rule_does_not_apply_outside_its_conditions() {
+        let opens = |p: Option<Prediction>| p.is_some_and(|p| p.effect.open == Some(true));
+        let ms = KeyEffectKeymap::from_config(Some(2), None, &[]).unwrap();
+        assert!(
+            !opens(ms.predict(F13, &input(false, ROMAJI, false, NOTRACK))),
+            "ゲート(eligible)が偽"
+        );
+        assert!(
+            !opens(ms.predict(F13, &eligible_input(true, ROMAJI))),
+            "開状態"
+        );
+        assert!(
+            !opens(ms.predict(0x7D, &eligible_input(false, ROMAJI))),
+            "F14"
+        );
+        for (session, name) in [(Some(1), "ATOK"), (Some(3), "KOTOERI")] {
+            let km = KeyEffectKeymap::from_config(session, None, &[]).unwrap();
+            assert!(
+                !opens(km.predict(F13, &eligible_input(false, ROMAJI))),
+                "{name}"
+            );
+        }
+        let custom =
+            KeyEffectKeymap::from_config(Some(0), Some("DirectInput\tF13\tIMEOn\n".into()), &[])
+                .unwrap();
+        assert!(
+            !opens(custom.predict(F13, &eligible_input(false, ROMAJI))),
+            "CUSTOM(表あり)"
+        );
+        let overlay = KeyEffectKeymap::from_config(Some(2), None, &[100]).unwrap();
+        assert!(
+            !opens(overlay.predict(F13, &eligible_input(false, ROMAJI))),
+            "overlay"
+        );
+        // Microsoft IME 本体（session_keymap は None だが GJI の規則ではない）。
+        let native = KeyEffectKeymap::for_msime_native(false, None, None, None);
+        assert!(
+            !opens(native.predict(F13, &eligible_input(false, ROMAJI))),
+            "MS-IME 本体"
+        );
+        // ADR-209 の規則そのもの（本体の同梱表は閉状態の変換を元々「開く」と予測するので、結果でなく規則の有無を見る）。
+        assert!(
+            native
+                .unreadable_window_prediction(0x1C, &unreadable_input(false, ROMAJI))
+                .is_none(),
+            "MS-IME 本体には ADR-209 の規則を当てない(N1)"
+        );
+        let gji = KeyEffectKeymap::from_config(Some(2), None, &[]).unwrap();
+        assert!(gji
+            .unreadable_window_prediction(0x1C, &unreadable_input(false, ROMAJI))
+            .is_some());
+    }
+
+    /// 学習表・追跡の段階・種があっても、規則は先頭で当たる（B1: 表に無いキーで `predict_in_table` が先に抜ける分岐を通らない）。
+    #[test]
+    fn adr211_f13_rule_precedes_learned_table_and_stage() {
+        let km = KeyEffectKeymap::from_config(Some(2), None, &[]).unwrap();
+        let learned = vec![cell(
+            false,
+            None,
+            Stage::None,
+            TableKey::Henkan,
+            false,
+            None,
+            Disp::None,
+        )];
+        let mut typing = eligible_input(false, ROMAJI);
+        typing.track = KeyTrack {
+            conv: None,
+            stage: Stage::Typing,
+        };
+        assert_eq!(
+            km.predict_with_override(F13, &typing, Some(&learned))
+                .unwrap()
+                .effect
+                .open,
+            Some(true)
+        );
+    }
+
+    /// 定数表の Mozc 名（`role.rs` のテストが使う `TABLE_KEY_MOZC_NAMES`）が、予測の表のキーと一致していること。
+    #[test]
+    fn adr211_table_key_names_used_by_the_gji_config_test_match_table_keys() {
+        for name in [
+            "Eisu",
+            "Hankaku/Zenkaku",
+            "Henkan",
+            "Hiragana",
+            "Kanji",
+            "Katakana",
+            "Muhenkan",
+            "ON",
+        ] {
+            let vks = awase_gji_config::keymap::mozc_key_vk_names(name);
+            // `Kanji`(0x19)は`mozc_key_vk_names`が VK に写さない（ADR-199 T2）ので、ここでは確認できない。
+            assert!(!vks.is_empty() || name == "Kanji", "{name}");
+            for vk_name in vks {
+                use crate::vk::VkCodeExt;
+                let vk =
+                    awase::types::VkCode::from_name(vk_name).unwrap_or_else(|| panic!("{vk_name}"));
+                assert!(
+                    TableKey::from_vk(vk.0).is_some(),
+                    "{name} -> {vk_name} は表のキー"
+                );
+            }
+        }
+        assert!(TableKey::from_vk(F13).is_none(), "F13 は表のキーではない");
     }
 
     #[test]

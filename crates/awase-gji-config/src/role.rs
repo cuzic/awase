@@ -98,6 +98,23 @@ const fn source(session_keymap: Option<i64>, custom_keymap_table: Option<&str>) 
     }
 }
 
+/// ADR-211: 閉状態から IME を開く受動のキーのうち、awase の予測の表に無いもの（VK 名）。
+///
+/// この GJI 設定で、**閉状態（DirectInput）から IME を開くが、トグルの役割ではない**（開状態の行が無い・受動）キーのうち、
+/// awase の打鍵時予測の表（`key_effect_table`、13キー）に**無い**もの（VK 名）。Mozc の `ms-ime.tsv`/`mobile.tsv` の F13 だけ
+/// （`b4bbc42f` の DirectInput の全行で確認。ATOK・KOTOERI には無い。テスト `passive_open_keys_outside_table_match_mozc_direct_input_rows`）。
+/// プリセットの判別は [`source`] と同じ（不在・NONE・表が空または無い CUSTOM は MS-IME 相当）。CUSTOM で表が空でないときは評価しない（空を返す）。
+#[must_use]
+pub const fn passive_open_vk_names_outside_table(
+    session_keymap: Option<i64>,
+    custom_keymap_table: Option<&str>,
+) -> &'static [&'static str] {
+    match source(session_keymap, custom_keymap_table) {
+        Source::Preset(Preset::MsIme | Preset::Mobile) => &["VK_F13"],
+        _ => &[],
+    }
+}
+
 /// `vk_name`（無修飾の打鍵）が、この GJI 設定で持つ役割（ADR-199 決定4）。
 /// 候補外のキー（[`ROLE_CANDIDATE_VK_NAMES`] に無い）は常に `None`。
 ///
@@ -370,6 +387,82 @@ Precomposition\tON\tIMEOn
 
     /// `mobile.tsv` の該当行は `ms-ime.tsv` と同一（取得時に diff で確認）。
     const MOBILE_TSV: &str = MS_IME_TSV;
+
+    // ADR-211: 上と同じ Mozc `b4bbc42f` の DirectInput の**全行**（修飾付きの行も含む）。「表の外で開くキーは F13 だけ」の完全性を固定する。
+    // TSV は同梱しないので、Mozc の更新でこのテストは落ちない（拾うには手で取り直す）。
+    const MS_IME_DIRECT_INPUT: &str = "DirectInput\tEisu\tIMEOn
+DirectInput\tF13\tIMEOn
+DirectInput\tHankaku/Zenkaku\tIMEOn
+DirectInput\tHenkan\tReconvert
+DirectInput\tHiragana\tIMEOn
+DirectInput\tKanji\tIMEOn
+DirectInput\tKatakana\tIMEOn
+DirectInput\tON\tIMEOn
+";
+    const ATOK_DIRECT_INPUT: &str = "DirectInput\tHankaku/Zenkaku\tIMEOn
+DirectInput\tHenkan\tIMEOn
+DirectInput\tKanji\tIMEOn
+DirectInput\tMuhenkan\tIMEOn
+DirectInput\tON\tIMEOn
+DirectInput\tShift Henkan\tReconvert
+";
+    const KOTOERI_DIRECT_INPUT: &str = "DirectInput\tCtrl Shift r\tReconvert
+DirectInput\tHankaku/Zenkaku\tIMEOn
+DirectInput\tKanji\tIMEOn
+DirectInput\tON\tIMEOn
+";
+
+    /// awase の打鍵時予測の表(`TableKey`)が持つキーの Mozc 名（`key_effect_predictor.rs::TableKey::from_vk` の VK に対応する名前）。
+    const TABLE_KEY_MOZC_NAMES: &[&str] = &[
+        "Eisu",
+        "Hankaku/Zenkaku",
+        "Henkan",
+        "Hiragana",
+        "Kanji",
+        "Katakana",
+        "Muhenkan",
+        "ON",
+    ];
+
+    #[test]
+    fn passive_open_keys_outside_table_match_mozc_direct_input_rows() {
+        // (session_keymap, DirectInput の全行)。MS-IME(2)・MOBILE(4)・不在・NONE・CUSTOM で表なしは MS-IME 相当。
+        let cases: [(Option<i64>, Option<&str>, &str); 8] = [
+            (Some(2), None, MS_IME_DIRECT_INPUT),
+            (Some(4), None, MS_IME_DIRECT_INPUT),
+            (None, None, MS_IME_DIRECT_INPUT),
+            (Some(-1), None, MS_IME_DIRECT_INPUT),
+            (Some(0), None, MS_IME_DIRECT_INPUT),
+            (Some(0), Some(""), MS_IME_DIRECT_INPUT),
+            (Some(1), None, ATOK_DIRECT_INPUT),
+            (Some(3), None, KOTOERI_DIRECT_INPUT),
+        ];
+        for (session, table, rows) in cases {
+            // 無修飾のキー名（空白なし）で、DirectInput が IMEOn の行。表のキーを除く。
+            let mut outside: Vec<&str> = rows
+                .lines()
+                .filter_map(|l| {
+                    let mut c = l.split('\t');
+                    let (_status, key, cmd) = (c.next()?, c.next()?, c.next()?);
+                    (cmd == "IMEOn" && !key.contains(' ') && !TABLE_KEY_MOZC_NAMES.contains(&key))
+                        .then_some(key)
+                })
+                .collect();
+            outside.sort_unstable();
+            let names = passive_open_vk_names_outside_table(session, table);
+            let expected: Vec<&str> = names.iter().map(|n| n.trim_start_matches("VK_")).collect();
+            assert_eq!(outside, expected, "session={session:?} table={table:?}");
+        }
+    }
+
+    #[test]
+    fn passive_open_keys_outside_table_are_empty_for_custom_with_table_and_unknown() {
+        assert!(
+            passive_open_vk_names_outside_table(Some(0), Some("DirectInput\tF13\tIMEOn\n"))
+                .is_empty()
+        );
+        assert!(passive_open_vk_names_outside_table(Some(99), None).is_empty());
+    }
 
     #[test]
     fn preset_table_matches_mozc_tsv() {

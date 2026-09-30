@@ -241,6 +241,8 @@ impl Harness {
             },
             track: self.model.key_track(),
             unreadable: false,
+            // 物理の無修飾の KeyDown で、エンジンが消費せず IME へ通した打鍵（上のコメント）なので、ゲートは真。
+            passive_rule_eligible: true,
         };
         let prediction = self.keymap.predict(vk, &input);
         let press = self.ime.press(vk);
