@@ -11,7 +11,7 @@ summary: |-
   ADR-191 の「warmup は既存の例外として残す」「EngineDecision」は、本 ADR で縮小・改訂する(所有者方針が ADR-191 より新しい)。各段は1PR・revert しやすい単位・実機A/B と CI で退行を確認し、`docs/experiments.md` に判定を残す。
   所有者決定: 左 Shift 単独タップの半角英数トグルは残す(対象外)、ActivationSync は実機で実送信の件数を測ってから止める。ActivationSync の actuation は 2026-08-04 の再発対策ではなく(対策は belief 側で echo を明示意図に書かないこと)、止めても壊れない。
 status: |-
-  採用(2026-09-30)。Opus round3 で収束(新しい Major なし)。P2 の計測は診断ログ PR #400、P1 はデッドコード撤去 PR #399。実装済みは P0(#398)のみ。
+  採用(2026-09-30)。Opus round3 で収束(新しい Major なし)。実装状況(2026-09-30): P0(#398)・P1(#399)・P3+P5 の reinit 分(#402)・P4(#401)・P5 の Unicode long-cold warmup(#403)・P6 の (b)(c)(#404)は develop に実装済み。P2(ActivationSync)は診断ログ(#400)まで。案Aのスパイクを CI で試したところ、半角/全角・漢字キーと cold 起動が壊れた(docs/experiments.md エントリ31)ので、設計を組み直すまで保留。
 related_adr:
   - "ADR-098"
   - "ADR-100"
