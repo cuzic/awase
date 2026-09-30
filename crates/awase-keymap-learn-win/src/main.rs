@@ -843,6 +843,8 @@ mod app {
         let mut driver = build_driver(strategy);
         // 測定前のEDIT消去は既定で有効(ADR-210)。`--no-clear-idle-edit`で従来の挙動に戻せる。
         driver.set_clear_idle_edit(!std::env::args().any(|a| a == "--no-clear-idle-edit"));
+        // 診断: 押下ごとの特徴量を`[feat]`行で出す(隠れ状態の分析用、分析は tools/keymap-learn/analyze_features.py)。
+        driver.set_trace_features(std::env::args().any(|a| a == "--trace-features"));
         // 診断用: 待ち時間の上書き(`--quiet-after-change-ms=N`/`--clear-edit-pump-ms=N`)。
         // 指定が無ければ従来の固定値のまま。
         driver.set_settle_tuning(SettleTuning::from_args(std::env::args()));

@@ -31,8 +31,9 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::Ime::{
-    ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus, ImmGetOpenStatus,
-    ImmReleaseContext, IME_COMPOSITION_STRING, IME_CONVERSION_MODE, IME_SENTENCE_MODE,
+    ImmGetCandidateListCountW, ImmGetCompositionStringW, ImmGetContext, ImmGetConversionStatus,
+    ImmGetOpenStatus, ImmReleaseContext, IME_COMPOSITION_STRING, IME_CONVERSION_MODE,
+    IME_SENTENCE_MODE,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetFocus, SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
@@ -211,6 +212,10 @@ pub struct RealImeDriver {
     clear_idle_edit: bool,
     /// 直前の`reset`が最後に送ったキーの添字(リセット直後の観測の文脈として使う)。
     last_reset_key: Cell<Option<usize>>,
+    /// 診断: 押下ごとに観測できる限りの特徴量を`[feat]`行で出す(`--trace-features`)。
+    /// 隠れ状態の候補を、学習の状態に加える前に実データで選ぶための観測(ADR-210)。挙動は変えない。
+    trace_features: bool,
+    feat_seq: Cell<u32>,
     /// `observe_imm()`がIME観測を復号できず`self.initial`へフォールバックした回数
     /// (ADR-195が前提とする「誤りに強い分類」が`awase-keymap-learn`に未実装のため、
     /// この駆動部だけでは異常として`Executor`に伝える経路が無い。せめて可視化する
@@ -305,6 +310,8 @@ impl RealImeDriver {
             decode_errors: Cell::new(0),
             clear_idle_edit: true,
             last_reset_key: Cell::new(None),
+            trace_features: false,
+            feat_seq: Cell::new(0),
             hook_monitor,
             notify_monitor,
             session_monitor: Cell::new(SessionMonitor::new(SESSION_INVALIDATION_LIMIT)),
@@ -527,6 +534,88 @@ impl RealImeDriver {
         self.clear_idle_edit = on;
     }
 
+    /// 診断: 押下ごとの特徴量出力を有効にする(`--trace-features`)。
+    pub fn set_trace_features(&mut self, on: bool) {
+        self.trace_features = on;
+    }
+
+    /// 診断: IMM/TSF/EDITから観測できる特徴量を1行の`k=v`列にする。隠れ状態の候補
+    /// (入力中の文字数・カーソル・文節・属性・候補窓・変換モード生値の全ビット・
+    /// 文モード・EDITの文字数とキャレット・TSFとIMMの不一致)を、学習の状態に加える前に
+    /// 実データで選ぶための観測(挙動は変えない)。
+    fn observe_features(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        unsafe {
+            let himc = ImmGetContext(self.edit);
+            if himc.is_invalid() {
+                return "himc=invalid".to_string();
+            }
+            let open = ImmGetOpenStatus(himc).as_bool();
+            let mut raw = IME_CONVERSION_MODE::default();
+            let mut sentence = IME_SENTENCE_MODE::default();
+            let _ = ImmGetConversionStatus(himc, Some(&raw mut raw), Some(&raw mut sentence));
+            let len = |flag: u32| -> i32 {
+                ImmGetCompositionStringW(himc, IME_COMPOSITION_STRING(flag), None, 0)
+            };
+            let comp_len = len(GCS_COMPSTR) / 2;
+            let cursor = len(0x0080);
+            let clause_bytes = len(0x0020);
+            let attr_len = len(0x0010);
+            let result_len = len(0x0800) / 2;
+            let mut attrs = 0u32;
+            if attr_len > 0 {
+                let mut buf = vec![0u8; usize::try_from(attr_len).unwrap_or(0)];
+                let got = ImmGetCompositionStringW(
+                    himc,
+                    IME_COMPOSITION_STRING(0x0010),
+                    Some(buf.as_mut_ptr().cast()),
+                    u32::try_from(attr_len).unwrap_or(0),
+                );
+                if got > 0 {
+                    for b in &buf[..usize::try_from(got).unwrap_or(0).min(buf.len())] {
+                        attrs |= 1 << (*b & 0x1F);
+                    }
+                }
+            }
+            let mut cand = 0u32;
+            let _ = ImmGetCandidateListCountW(himc, &raw mut cand);
+            let _ = ImmReleaseContext(self.edit, himc);
+            let mut sel_start = 0u32;
+            let mut sel_end = 0u32;
+            let _ = windows::Win32::UI::WindowsAndMessaging::SendMessageW(
+                self.edit,
+                0x00B0,
+                Some(windows::Win32::Foundation::WPARAM(
+                    &raw mut sel_start as usize,
+                )),
+                Some(windows::Win32::Foundation::LPARAM(
+                    &raw mut sel_end as isize,
+                )),
+            );
+            let text_len = window_text(self.edit).chars().count();
+            let tsf_open = read_compartment(
+                &self.thread_compartments,
+                &GUID_COMPARTMENT_KEYBOARD_OPENCLOSE,
+            );
+            let tsf_conv = read_compartment(
+                &self.thread_compartments,
+                &GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION,
+            );
+            let _ = write!(
+                out,
+                "open={} conv=0x{:02X} sent=0x{:X} comp_len={comp_len} cursor={cursor} \
+                 clause_bytes={clause_bytes} attr_mask=0x{attrs:X} result_len={result_len} \
+                 cand={cand} text_len={text_len} sel={sel_start}-{sel_end} tsf_open={tsf_open:?} \
+                 tsf_conv={tsf_conv:?}",
+                u8::from(open),
+                raw.0,
+                sentence.0
+            );
+        }
+        out
+    }
+
     pub fn decode_error_count(&self) -> u32 {
         self.decode_errors.get()
     }
@@ -720,6 +809,8 @@ impl RealImeDriver {
             status: self.initial,
             text: String::new(),
         });
+        let mut cleared = false;
+        let mut clear_changed = false;
         if self.clear_idle_edit && !before.status.composing && !before.text.is_empty() {
             // 消去で起きうる通知を外部の書き込みと数えないよう猶予窓を張ってから消し、
             // 消去の後に状態を読み直す(状態が変わっていれば読み直した値を押下前とする)。
@@ -727,14 +818,20 @@ impl RealImeDriver {
                 .mark_expected_notify(Duration::from_millis(NOTIFY_EXPECT_WINDOW_MS + 40));
             let _ = unsafe { SetWindowTextW(self.edit, w!("")) };
             self.pump(Duration::from_millis(QUIET_MS));
+            cleared = true;
             match self.observe_imm() {
-                Ok(after_clear) => before = after_clear,
+                Ok(after_clear) => {
+                    clear_changed = after_clear.status != before.status;
+                    before = after_clear;
+                }
                 Err(_) => before.text.clear(),
             }
         }
+        let feat_before = self.trace_features.then(|| self.observe_features());
         let delivered = self.inject(key);
         let after = self.settle();
         let disp = disposition(&before, &after);
+        let feat_after = self.trace_features.then(|| self.observe_features());
         let seen_b = self.observe_tsf().unwrap_or(after.status);
         // 決定1b項目5（セッション中の監視）・ADR195-T7項目2（round1 M1対応）:
         // この測定の間に外部からの書き込み・ユーザーの物理入力・フォーカス
@@ -750,6 +847,22 @@ impl RealImeDriver {
         // フォーカス喪失を重複して`session_monitor`へ計上してしまう
         // （未送達自体は`Anomaly::KeyNotDelivered`として別途数えられている）。
         let contaminated = delivered && self.check_session_interference();
+        if let (Some(fb), Some(fa)) = (feat_before, feat_after) {
+            let n = self.feat_seq.get();
+            self.feat_seq.set(n + 1);
+            eprintln!(
+                "[feat] n={n} key=0x{:02X} delivered={} contaminated={} cleared={} clear_changed={} \
+                 before_status={:?} after_status={:?} disp={:?} B[{fb}] A[{fa}]",
+                self.keys.get(key).copied().unwrap_or(0),
+                u8::from(delivered),
+                u8::from(contaminated),
+                u8::from(cleared),
+                u8::from(clear_changed),
+                before.status,
+                after.status,
+                disp,
+            );
+        }
         PressReport {
             delivered,
             cost_ms: 0.0,
