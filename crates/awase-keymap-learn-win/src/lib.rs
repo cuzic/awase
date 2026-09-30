@@ -4,6 +4,9 @@
 //! 書き込みを直接観測する」基盤（ADR196-T1）で、`driver::RealImeDriver`が
 //! 所有する。
 
+pub mod phase_timing;
+pub mod settle_tuning;
+
 #[cfg(windows)]
 mod driver;
 #[cfg(windows)]
