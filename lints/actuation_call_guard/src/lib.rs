@@ -84,7 +84,6 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
             "send_vk_run_batch",
             "flush_raw_tsf_literal_backspaces",
             "kp_restore_kana_from_half_width",
-            "send_unicode_cold_warmup_keys",
             "send_all_modifier_key_ups",
             // issue #165 自己修復（hook watchdog）のカナリア送信（opus round2 B1(i)）。
             // 2026-09-28追記、複雑性予算制（.claude/rules/complexity-budget.md）は

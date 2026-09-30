@@ -314,67 +314,6 @@ impl Output {
 
     // ── Unicode cold-start warmup ────────────────────────────────────────────
 
-    /// GjiFsm が long-cold（≥10s idle）な次の KeyInput か判定する（send_keys の defer 判定用）。
-    pub(crate) fn gji_is_next_key_long_cold(&self) -> bool {
-        self.warmup_coord.is_next_key_long_cold()
-    }
-
-    /// `send_unicode_char()` の遅延モードを ON/OFF する。
-    ///
-    /// ON 中は `send_unicode_char()` が実送信せず `unicode_cold_deferred` に蓄積する。
-    /// `Platform::send_keys` が `output.send_keys()` の前後でセット／クリアする。
-    pub(crate) fn set_unicode_cold_defer(&self, defer: bool) {
-        self.injector.set_unicode_cold_defer(defer);
-    }
-
-    /// 蓄積した Unicode deferred 文字を取り出してバッファをクリアする。
-    ///
-    /// `Platform::dispatch_gji_response` が `StartProbe { is_long_cold }` 処理時に呼ぶ。
-    pub(crate) fn take_unicode_cold_deferred(&self) -> Vec<char> {
-        self.injector.take_unicode_cold_deferred()
-    }
-
-    /// 飛行中の `UnicodeColdWarmupFsm` に chars を追記する。
-    ///
-    /// 成功（FSM が存在して追記できた）なら `true`、なければ `false`。
-    pub(crate) fn try_push_unicode_chars_to_pending(&self, chars: &[char]) -> bool {
-        self.warmup_coord.try_push_unicode_chars_to_pending(chars)
-    }
-
-    /// Unicode cold-start 用の GJI ウォームアップキーを送信する。
-    ///
-    /// 1. VK_IME_ON (0x16) を `IME_KANJI_MARKER` 付きで送信してひらがなモードへ切替。
-    /// 2. VK_A + BS を `INJECTED_MARKER` 付きで同一バッチ送信（犠牲キー）。
-    ///    VK_A が GJI の hiragana composition を起動して `gji_write_bytes` を増やし、
-    ///    BS が即キャンセルするため文字フラッシュは発生しない。
-    pub(crate) fn send_unicode_cold_warmup_keys(&self, cold_seq: Generation) {
-        use crate::tsf::output::{make_key_input_ex, IME_KANJI_MARKER, INJECTED_MARKER};
-        use crate::vk::{VK_A, VK_BACK, VK_IME_ON};
-
-        let ime_on_inputs = [
-            make_key_input_ex(VK_IME_ON, false, IME_KANJI_MARKER),
-            make_key_input_ex(VK_IME_ON, true, IME_KANJI_MARKER),
-        ];
-        tracing::debug!(
-            "[unicode-cold-warmup] cold={cold_seq} VK_IME_ON 送信 (ひらがなモード切替)",
-            cold_seq = cold_seq.value(),
-        );
-        let _ = crate::win32::send_input_safe(&ime_on_inputs);
-        self.ime_mode_fsm.borrow_mut().on_f21_sent();
-
-        let sacr_inputs = [
-            make_key_input_ex(VK_A, false, INJECTED_MARKER),
-            make_key_input_ex(VK_A, true, INJECTED_MARKER),
-            make_key_input_ex(VK_BACK, false, INJECTED_MARKER),
-            make_key_input_ex(VK_BACK, true, INJECTED_MARKER),
-        ];
-        tracing::debug!(
-            "[unicode-cold-warmup] cold={cold_seq} VK_A+BS 犠牲キー送信 (gji_write_bytes 上昇待ち)",
-            cold_seq = cold_seq.value(),
-        );
-        let _ = crate::win32::send_input_safe(&sacr_inputs);
-    }
-
     /// フォーカス変更時に Runtime から呼ばれ、注入モードを更新する。
     pub(crate) const fn update_injection_mode(&mut self, mode: InjectionMode) {
         self.injection_mode = mode;

@@ -386,20 +386,6 @@ impl GjiFsm {
         }
     }
 
-    /// 次の `KeyInput` が `StartProbe { is_long_cold: true }` を emit するか（Unicode cold defer 判定用）。
-    ///
-    /// `Long` cold + `NotStarted`（=10s 以上 idle 後の最初のキー入力直前）のときのみ `true`。
-    pub(crate) fn is_next_key_long_cold(&self) -> bool {
-        matches!(
-            &self.state,
-            GjiState::OnCold {
-                kind: ColdKind::Long,
-                probe: ProbeStatus::NotStarted,
-                ..
-            }
-        )
-    }
-
     /// `OnCold(Authorized)` なら `ProbeParams` を返す。
     ///
     /// `vk_send` が `GjiWarmupCoro::new` に渡すパラメータを読み出すために使う。

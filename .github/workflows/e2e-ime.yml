@@ -404,6 +404,10 @@ jobs:
               for form in ('bugreport',)
               for ime_name, ime in (('gji', 'gji'), ('msime', 'msime'))
               for iv in (40, 10)],
+            # ADR-212 P5: Unicode 注入モード(Edit/RichEdit)で GJI が long-cold(≥10s idle)のとき、各試行の最初の文字が欠けないこと。
+            # Unicode long-cold warmup(VK_IME_ON+VK_A+BS と文字の保留)を撤去する前後の比較用。`[unicode-cold-warmup]` の件数で経路が通ったことを確認する。
+            *[tsx(f'{form}-gji-10ms-idle12s', form, 'gji', 10, extra='--idle=12000', kinds='single,mixed', trials=3, runs=6, wait=900)
+              for form in ('edit', 'rich')],
             # 起動直後の最初の 1 文字を狙う(--cold)。trials=1・len 短めで信号を先頭に集中させ、runs で起動を繰り返す。
             *[tsx(f'{form}-{ime_name}-20ms-cold', form, ime, 20, extra='--cold', kinds='single', trials=1, len=15, runs=10, wait=900)
               for form in ('bugreport',)

@@ -89,8 +89,4 @@ pub(crate) trait TickableFsm {
     // 既存 FSM に追記することで FSM の上書きと文字消失を防ぐ。
     //
     // 対応していない FSM は `false` を返す（デフォルト）。
-
-    fn push_deferred_unicode_chars(&mut self, _chars: &[char]) -> bool {
-        false
-    }
 }

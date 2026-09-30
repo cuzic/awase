@@ -106,39 +106,6 @@ impl WindowsPlatform {
         });
     }
 
-    /// Unicode モードの long-cold（≥10s idle）`StartProbe` の処理。
-    /// deferred chars あり → VK_IME_ON poke + `UnicodeColdWarmupFsm`（GJI 起動待ち後に chars 送信）、
-    /// なし → 従来は VK_IME_OFF→VK_IME_ON reinit。ただし belief 起点（`GjiSyncOrigin::BeliefSync`）では
-    /// reinit を行わない（ADR-203 決定3: ADR-191「awase は書かない」・ADR-090 A-2）。
-    /// `dispatch_gji_response_from` 本体の cognitive complexity を抑えるため別関数に切り出している。
-    fn unicode_long_cold_probe(
-        &mut self,
-        origin: crate::state::gji_direct_mechanism::GjiSyncOrigin,
-        probe_id: crate::tsf::gji_fsm::ProbeId,
-    ) {
-        let deferred = self.output.take_unicode_cold_deferred();
-        if !deferred.is_empty() {
-            // probe_id (GjiFsm 側の probe 相関 ID) をそのまま cold_seq のログ相関値として転用する
-            // 既存の挙動を維持する（値そのものは変えず、型だけ Generation に揃える）。
-            self.start_unicode_cold_warmup(Generation::new(u64::from(probe_id.0)), deferred);
-            return;
-        }
-        if matches!(
-            origin,
-            crate::state::gji_direct_mechanism::GjiSyncOrigin::BeliefSync
-        ) {
-            tracing::debug!(
-                "[gji-fsm] Unicode long-cold StartProbe: reinit 抑止 (BeliefSync 起点)"
-            );
-        } else {
-            // 以前は VK_IME_OFF→VK_IME_ON の reinit を送っていた(ADR-203 決定3 は BeliefSync 起点のみ抑止)が、
-            // Actuation 起点も含めて全て撤去した(ADR-212 P5)。
-            tracing::debug!(
-                "[gji-fsm] Unicode long-cold StartProbe: reinit は送らない (chars なし、ADR-212 P5)"
-            );
-        }
-    }
-
     /// `GjiAction::StartProbe` ハンドラから呼ぶ。ADR-123: `pending_deferred`
     /// （probe 実行中に届いた別モーラの VK 退避キュー）が非ゼロのまま
     /// この probe が開始しようとしているかを journal に記録する
@@ -365,29 +332,6 @@ impl WindowsPlatform {
         self.output.has_pending_tsf_work()
     }
 
-    /// 出力モードを切り替える（設定変更時）。
-    /// pending_tsf をインストールし、TIMER_TSF_PROBE を起動する（vk_send async パス用）。
-    pub(crate) fn install_pending_tsf_and_set_timer(
-        &mut self,
-        machine: Box<dyn crate::tsf::warmup::tickable_fsm::TickableFsm>,
-    ) {
-        let cold_seq = machine.cold_seq_hint().value();
-        self.active_tsf_probe_started_ms = Some((crate::hook::current_tick_ms(), cold_seq));
-        self.reset_probe_tick_counters();
-        self.push_journal_entry(crate::journal::JournalEntry::TsfProbeStarted {
-            source: "install_pending_tsf_and_set_timer".to_owned(),
-            cold_seq,
-            probe_id: None,
-            gji_state: self.gji_state_label(),
-            consecutive_at_start: self.output.composition.consecutive_count(),
-            pending_deferred_len: self.output.pending_deferred_len(),
-        });
-        self.output.install_pending_tsf(machine);
-        if let Some(cmd) = self.output.pending_tsf_timer() {
-            self.apply_timer_command(cmd);
-        }
-    }
-
     // ── TIMER_TSF_PROBE / raw TSF literal ─────────────────────────────────
 
     /// TIMER_TSF_PROBE ハンドラ。`Output::step_probe` に委譲し、タイマー命令と GJI FSM 応答を処理する。
@@ -479,8 +423,9 @@ impl WindowsPlatform {
         );
     }
 
-    /// [`Self::dispatch_gji_response`] の起点付き版（ADR-203 決定3）。`BeliefSync` 起点では
-    /// Unicode long-cold の reinit（awase 起点の VK_IME_OFF→VK_IME_ON 書き込み）を行わない。
+    /// [`Self::dispatch_gji_response`] の起点付き版（ADR-203 決定3）。起点で分けていた Unicode long-cold の
+    /// reinit は ADR-212 P3/P5 で撤去したので、`origin` は今は再帰でしか使わない（同期の呼び出し側が起点を渡す形は残す）。
+    #[expect(clippy::only_used_in_recursion)]
     pub(crate) fn dispatch_gji_response_from(
         &mut self,
         origin: crate::state::gji_direct_mechanism::GjiSyncOrigin,
@@ -526,14 +471,9 @@ impl WindowsPlatform {
                     // Unicode injection mode では KEYEVENTF_UNICODE が GJI TSF context を迂回するため
                     // GjiWarmupFsm も ChromeProbe も作成されず GjiFsm が OnCold(Authorized) に留まり続ける。
                     // 即 WarmupComplete を dispatch して OnWarm に遷移させる。
-                    // long-cold（≥10s idle）の場合:
-                    //   deferred chars あり → VK_IME_ON poke + UnicodeColdWarmupFsm (GJI 起動待ち後に chars 送信)
-                    //   deferred chars なし → 従来通り VK_IME_OFF→VK_IME_ON reinit
+                    // long-cold（≥10s idle）でも何も送らない（VK_IME_ON poke・warmup FSM・reinit は ADR-212 P3/P5 で撤去）。
                     if self.output.injection_mode == crate::output::InjectionMode::Unicode {
                         use crate::tsf::gji_fsm::GjiEvent;
-                        if params.is_long_cold {
-                            self.unicode_long_cold_probe(origin, *probe_id);
-                        }
                         let state_before = self.gji_state_label();
                         let warmup_resp = self.output.gji_on_event(GjiEvent::WarmupComplete {
                             probe_id: *probe_id,
@@ -926,45 +866,6 @@ impl WindowsPlatform {
     }
 
     // ── Unicode cold-start warmup ヘルパー ────────────────────────────────
-
-    /// Unicode long-cold warm-up: 飛行中 FSM があれば `deferred` を追記、なければ新規 FSM を生成する。
-    ///
-    /// `send_keys()` と `dispatch_gji_response()` の両方から呼ぶ共通起点。
-    /// 飛行中 FSM への追記に成功した場合は VK_IME_ON / VK_A+BS を再送しない。
-    fn start_unicode_cold_warmup(&mut self, cold_seq: Generation, deferred: Vec<char>) {
-        if self.output.try_push_unicode_chars_to_pending(&deferred) {
-            tracing::debug!(
-                "[unicode-cold-warmup] {} chars を飛行中 FSM に追記 (新規 FSM/VK_A+BS 送信スキップ)",
-                deferred.len()
-            );
-            return;
-        }
-        let baseline = crate::tsf::observer::gji_write_bytes();
-        self.output.send_unicode_cold_warmup_keys(cold_seq);
-        tracing::info!(
-            "[unicode-cold-warmup] cold={cold_seq} long-cold Unicode warm-up: \
-             VK_IME_ON+VK_A+BS → {} chars defer",
-            deferred.len(),
-            cold_seq = cold_seq.value(),
-        );
-        let fsm = crate::tsf::warmup::unicode_cold_warmup_fsm::UnicodeColdWarmupFsm::new(
-            cold_seq, deferred, baseline,
-        );
-        self.install_pending_tsf_and_set_timer(Box::new(fsm));
-    }
-
-    /// `output` の Unicode cold deferred chars を取り出し、warm-up FSM を起動する。
-    ///
-    /// `send_keys()` の Unicode cold-start パスで `output.send_keys()` の直後に呼ぶ。
-    /// deferred が空なら何もしない。
-    fn flush_unicode_cold_deferred_chars(&mut self) {
-        let deferred = self.output.take_unicode_cold_deferred();
-        if deferred.is_empty() {
-            return;
-        }
-        let cold_seq = self.output.composition.cold_start_count();
-        self.start_unicode_cold_warmup(cold_seq, deferred);
-    }
 }
 
 impl PlatformRuntime for WindowsPlatform {
@@ -1000,54 +901,8 @@ impl PlatformRuntime for WindowsPlatform {
         {
             self.output.request_unicode_observation();
         }
-        // Unicode cold-start warmup: GjiFsm が long cold のとき chars を defer する。
-        //
-        // Unicode モードでは send_romaji_as_unicode() が GjiFsm::KeyInput を発行しないため
-        // GjiFsm が StartProbe を emit することがない。そのため dispatch_gji_response() を
-        // 経由せず、ここで直接 FSM をインストールする。
-        //
-        // defer は Char/Romaji のみが対象（`send_unicode_char` 経由）。CtrlChord/Key/
-        // KeyUp/SpecialKey は injector を直接叩き defer をバイパスし、送信ループ内で
-        // 即座に実行される。defer された Char/Romaji はループ完了後（send_keys 呼び出し
-        // 全体が終わった後）にまとめて flush されるため、バッチ内で「Char/Romaji の後に
-        // 非defer対象が続く」形（例: ADR-115 打鍵列 `'（'+CV4D+'）'+CV4D+左` の
-        // Char→CtrlChord→Char→CtrlChord→Special）だと、後続の非defer対象がまだ
-        // バッファに残っている Char より先に実行され、実行順序が入れ替わる
-        // （Opus実装後レビュー M1 で発見）。
-        //
-        // 逆に「非defer対象が先、Char/Romaji が後」の形（例: retract_and_replace が
-        // 出す `[Backspace, Char]`、ADR-115 以前から存在する）は安全——Backspace は
-        // 即座に実行され、Char は後で flush されても元の順序どおり
-        // Backspace→Char のまま変わらない。この安全な既存パターンまで一律で defer を
-        // 諦めると、GJI long-cold 時の warmup 保護（BUG-02 系文字化けの再発防止）が
-        // ADR-115 と無関係な既存経路にまで及んでしまう
-        // （初回のM1修正が過剰に広かった、との実装後レビュー2件目で発見・訂正）。
-        // 「Char/Romaji の後に非defer対象が続かない」ことだけを判定する。
-        //
-        // 走査自体は Unicode モードのときだけ行う（`&&` の短絡評価で非Unicodeモードでは
-        // スキップする、効率面の実装後レビュー指摘）。
-        let needs_unicode_cold_warmup = self.output.injection_mode
-            == crate::output::InjectionMode::Unicode
-            && {
-                let mut seen_deferrable = false;
-                actions.iter().all(|a| {
-                    if matches!(a, KeyAction::Char(_) | KeyAction::Romaji(_)) {
-                        seen_deferrable = true;
-                        true
-                    } else {
-                        !seen_deferrable
-                    }
-                })
-            }
-            && self.output.gji_is_next_key_long_cold();
-        if needs_unicode_cold_warmup {
-            self.output.set_unicode_cold_defer(true);
-        }
+        // Unicode long-cold warmup(VK_IME_ON+VK_A+BS と文字の保留)は ADR-212 P5 で撤去した。
         self.output.send_keys(actions);
-        if needs_unicode_cold_warmup {
-            self.output.set_unicode_cold_defer(false);
-            self.flush_unicode_cold_deferred_chars();
-        }
         self.drain_output_post_send_effects();
     }
 

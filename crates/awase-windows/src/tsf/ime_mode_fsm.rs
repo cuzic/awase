@@ -121,14 +121,6 @@ impl ImeModeFsm {
         self.confirmed = false;
     }
 
-    /// VK_IME_ON 送信時に呼ぶ。Hiragana belief に即時移行する。
-    pub(crate) fn on_f21_sent(&mut self) {
-        tracing::debug!("[ime-mode] VK_IME_ON 送信 → Hiragana (belief, unconfirmed)");
-        self.state = ImeModeState::Hiragana;
-        self.confirmed = false;
-        self.last_vk_send_ms = crate::hook::current_tick_ms();
-    }
-
     /// `IMC_GETCONVERSIONMODE` の結果を反映する。
     ///
     /// `None` = タイムアウト / IME ウィンドウなし（belief は変更しない）。
