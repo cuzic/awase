@@ -26,7 +26,7 @@
 //! 指定した摂動は `config` レコードの `perturb` に記録される。
 //!
 //! ## フラグ
-//! `--form=edit|multi|rich|tsf|chromebar|chromepage|bugreport`(`--chrome-path=PATH` で Chrome を指定) / `--mode=nicola|raw|drift|drift-on` / `--interval=MS`(1文字あたりの間隔。既定20) /
+//! `--form=edit|multi|rich|tsf|chromebar|chromepage|bugreport`(`--chrome-path=PATH` で Chrome を指定) / `--mode=nicola|raw|drift|drift-on|reopen` / `--interval=MS`(1文字あたりの間隔。既定20) /
 //! `--trials=N`(種別ごとの試行数。既定4。`--mode=drift` では試行回数として使う) / `--len=N`(1試行の文字数。既定40) / `--seed=S` /
 //! `--kinds=single,thumb,mixed` / `--layout=PATH`(.yab。既定 layout/nicola_keytop.yab) /
 //! `--activate-gji`(GJI/MS-IME のプロファイルを有効化。CI 用) / `--msime`(有効化する IME を Microsoft IME に) /
@@ -51,6 +51,10 @@
 //! 記録は `drift_on_pre`(`on_key`=ON にしたキー) / `drift_on_close`(`set_ret` は記録のみ) / `drift_on_check` / `drift_on_typed`。
 //! pre/close/typed には `utc`(HH:MM:SS.mmm、awase.log の時刻と突合せる用)を付ける。ON キーは awase の明示意図(SyncKey)に
 //! なる `VK_IME_ON`(0x16)を先頭にする(MS-IME の 0xF2 は mode-key passthrough で意図が消える)。
+//!
+//! `--mode=reopen`(ADR-203 e2e (c)、BUG-170 の実機確認): 「OFF 前に1語確定 → 物理 OFF(`VK_IME_OFF`)→ `--reopen-gap`(既定600ms、1秒以内)後に
+//! 物理 ON(`--reopen-on-key`、既定は GJI 0x16・MS-IME 0xF2。GJI の ATOK プリセットで 0xF2 は ON にならないことを run 36555043470 で確認)→ 即打鍵(`--reopen-type-delay`、既定0)」を `--trials` 回。別プロセスの入力先(Chrome)でも動く
+//! (実 IME の開閉は読まず、入力先のテキストと awase.log で判定する)。記録は `reopen_pre` / `reopen_on` / `reopen_typed`。判定は check_reopen.py。`--settle-read`(Chrome 等の描画遅れ対策)にも対応する。
 //!
 //! ## 注入の作法
 //! `dwExtraInfo = hook::TEST_INJECTION_MARKER`(`AWASE_TEST_INJECTION=1` の debug ビルド awase が物理キー扱い)。
@@ -1176,6 +1180,141 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
     }
 }
 
+/// `--mode=reopen` の物理キー注入で使う scan。無変換/変換は物理位置(scancode)で分類されるので対応する scan を使う(BUG-131/132、
+/// `drift_scenario` と同じ)。ひらがな等の IME 専用 VK は scan を見ないので従来どおり 0x70。
+fn scan_for_key(vk: u32) -> u16 {
+    match vk {
+        VK_MUHENKAN => SCAN_MUHENKAN,
+        VK_HENKAN => SCAN_HENKAN,
+        _ => 0x70,
+    }
+}
+
+/// `--settle-read` 付きのとき、内容が 800ms 変わらなくなるまで(最大 8 秒)読み直す(Chrome の描画遅れで欠落と誤判定しない)。
+fn read_text_maybe_settled(child: HWND, settle: bool) -> String {
+    let mut actual = read_text(child);
+    if settle {
+        let t0 = Instant::now();
+        let mut stable_since = Instant::now();
+        while t0.elapsed() < Duration::from_secs(8)
+            && stable_since.elapsed() < Duration::from_millis(800)
+        {
+            sleep_ms(200);
+            let now = read_text(child);
+            if now != actual {
+                actual = now;
+                stable_since = Instant::now();
+            }
+        }
+    }
+    actual
+}
+
+/// `--mode=reopen`(ADR-203 の e2e (c)、BUG-170 の実機確認): 「OFF 前に 1 語確定 → 物理 OFF → 1 秒以内に物理 ON → 即打鍵」。
+/// `ime_ready` の後に呼ぶ。GjiFsm が OffCold に固着せず、ON 後の最初の語が欠けない/リテラル化しないかを、入力先のテキストと
+/// awase.log(checker が `[vk-send]`・`[gji-fsm]` を数える)の両方で見る。
+/// 1試行: IME を ON にそろえる → かな単打を1語打って Enter で確定(`reopen_pre`) → `VK_IME_OFF` を押す →
+/// `--reopen-gap=MS`(既定 600、1000 未満)待つ → ON キー(`--reopen-on-key=0xNN`、既定は `ime_on_key(0)`=GJI は 0x16・MS-IME は 0xF2)を押す(`reopen_on`) →
+/// `--reopen-type-delay=MS`(既定 0=即)後に同じかなを打って確定(`reopen_typed`)。
+/// 記録の `utc` は awase.log の時刻(HH:MM:SS.mmm)と突合せる用。ON キー押下から最初の `[vk-send]` までの遅延は checker が出す。
+fn reopen_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
+    let trials: usize = arg_value("--trials=")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10);
+    let gap_ms: u64 = arg_value("--reopen-gap=")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(600);
+    let type_delay_ms: u64 = arg_value("--reopen-type-delay=")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    // 書き間違いを黙って既定キーに戻さない(構成が意図と違うキーで走ったのに PASS する事故を防ぐ)。
+    let on_key: u32 = match arg_value("--reopen-on-key=") {
+        None => ime_on_key(0),
+        Some(v) => {
+            match u32::from_str_radix(v.trim_start_matches("0x").trim_start_matches("0X"), 16) {
+                Ok(k) => k,
+                Err(_) => {
+                    rec(
+                        &json!({"type":"abort","reason":format!("--reopen-on-key={v} を16進数として読めない")}),
+                    );
+                    return;
+                }
+            }
+        }
+    };
+    // ADR-203 (c) は「1秒以内に物理 ON」。1秒以上空けると別のシナリオ(idle 後)になる。
+    if gap_ms >= 1000 {
+        rec(
+            &json!({"type":"abort","reason":format!("--reopen-gap={gap_ms} は 1000 未満にする(ADR-203 (c) は1秒以内)")}),
+        );
+        return;
+    }
+    let settle = has_flag("--settle-read");
+    let Some(probe) = cells[0]
+        .iter()
+        .find(|c| c.romaji == "ka")
+        .cloned()
+        .or_else(|| cells[0].first().cloned())
+    else {
+        rec(&json!({"type":"abort","reason":"reopen の打鍵確認に使う単打セルが無い"}));
+        return;
+    };
+    let expect = probe.kana.to_string();
+    for n in 0..trials {
+        if !focus_ok() {
+            refocus();
+        }
+        if !focus_ok() {
+            rec(
+                &json!({"type":"abort","reason":format!("reopen試行前にフォーカスが外れた n={n}")}),
+            );
+            return;
+        }
+        // OFF 前の 1 語: ON にそろえてから打って確定する(BUG-170 の「OFF 前に語を打っている」条件)。
+        // この turn_ime_on(OFF→ON)自体も、前の試行の確定語の後の「開き直し」になる。checker は trial_utc〜off_utc の固着も数える(M5)。
+        let trial_utc = utc_hms();
+        turn_ime_on(0);
+        clear_text(child);
+        sleep_ms(200);
+        press(probe.vk, probe.scan, 60);
+        sleep_ms(500);
+        press(VK_RETURN, 0x1C, 50);
+        sleep_ms(500);
+        let pre_text = read_text_maybe_settled(child, settle);
+        rec(
+            &json!({"type":"reopen_pre","n":n,"trial_utc":trial_utc,"utc":utc_hms(),"text":pre_text,"expect":expect,
+            "ok":pre_text.trim() == expect,"real_ime_open":real_ime_open(child)}),
+        );
+        clear_text(child);
+        sleep_ms(200);
+        // 物理 OFF → gap → 物理 ON。
+        let off_utc = utc_hms();
+        press(VK_IME_OFF, 0x70, 50);
+        sleep_ms(gap_ms);
+        // 物理 OFF が効いたか(ON キーを押す直前の実 IME。別プロセスの入力先では None)。効いていないと無意味な試行になる(M3)。
+        let open_before_on = real_ime_open(child);
+        let on_utc = utc_hms();
+        press(on_key, scan_for_key(on_key), 50);
+        rec(
+            &json!({"type":"reopen_on","n":n,"off_utc":off_utc,"on_utc":on_utc,"gap_ms":gap_ms,
+            "on_key":format!("0x{on_key:02X}"),"type_delay_ms":type_delay_ms,"open_before_on":open_before_on}),
+        );
+        sleep_ms(type_delay_ms);
+        let focus_lost = !focus_ok();
+        let press_utc = utc_hms();
+        press(probe.vk, probe.scan, 60);
+        sleep_ms(700);
+        press(VK_RETURN, 0x1C, 50);
+        sleep_ms(700);
+        let text = read_text_maybe_settled(child, settle);
+        rec(
+            &json!({"type":"reopen_typed","n":n,"utc":utc_hms(),"on_utc":on_utc,"press_utc":press_utc,"focus_lost":focus_lost,
+            "text":text,"expect":expect,"ok":text.trim() == expect,"real_ime_open":real_ime_open(child)}),
+        );
+        clear_text(child);
+    }
+}
+
 fn worker(form: Form) {
     let child = hwnd_of(&CHILD);
     let perturb = perturb::Perturbation::from_args();
@@ -1183,6 +1322,7 @@ fn worker(form: Form) {
     let raw = mode_arg.as_deref() == Some("raw");
     let drift = mode_arg.as_deref() == Some("drift");
     let drift_on = mode_arg.as_deref() == Some("drift-on");
+    let reopen = mode_arg.as_deref() == Some("reopen");
     let iv_ms: f64 = arg_value("--interval=")
         .and_then(|v| v.parse().ok())
         .unwrap_or(20.0);
@@ -1225,7 +1365,7 @@ fn worker(form: Form) {
         collect_cells(&layout.right_thumb, Face::Right, &table),
     ];
     rec(
-        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if drift {"drift"} else if drift_on {"drift-on"} else if raw {"raw"} else {"nicola"},
+        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if drift {"drift"} else if drift_on {"drift-on"} else if reopen {"reopen"} else if raw {"raw"} else {"nicola"},
         "interval_ms":iv_ms,"len":len,"trials":trials,"seed":seed,"kinds":kinds,
         "layout":layout_path,"cells":[cells[0].len(),cells[1].len(),cells[2].len()],
         "child_class":class_of(child),"perturb":perturb.describe()}),
@@ -1273,6 +1413,11 @@ fn worker(form: Form) {
     }
     if drift_on {
         drift_on_scenario(child, &cells);
+        finish();
+        return;
+    }
+    if reopen {
+        reopen_scenario(child, &cells);
         finish();
         return;
     }
