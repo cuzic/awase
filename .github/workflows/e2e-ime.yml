@@ -320,6 +320,10 @@ jobs:
                   chrome=f'--key=7c --repeat=3 --settle=800{extra}')
               for suf, exp, ct, aw, extra in (('', 'pass', 'false', 'true', ''), ('-stale', 'pass', 'true', 'true', ''),
                                               ('-noawase', 'observe', 'false', 'false', ' --no-awase'))],
+            # ADR-211 決定4: 読める窓(素の EDIT)× MS-IME プリセットで、明示の IME OFF(1A)→F13(7C) を繰り返す。各押下の +1500ms まで観測する
+            # (DRIFT_CORRECTION_THRESHOLD_MS=400 より長い)ので、drift correction が F13 で開いた IME を閉じ直すなら awase.log の `[drift]` と
+            # 実 IME の open が 1→0 に戻ることで見える。観測のみ(observe)。
+            cfg('sc-adr211-edit-msime-f13', 'observe', check='consistency', keymap=2, runs=1, args='--seq=1A,7C,1A,7C,1A,7C'),
             cfg('sc-t1e-chrome-f13-noawase', 'observe', check='chromeprobe', keymap=0, runs=1, wait=400, awase='false',
                 chrome='--f13 --no-awase --repeat=2 --settle=800',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff|Conversion,F13,IMEOff'),
