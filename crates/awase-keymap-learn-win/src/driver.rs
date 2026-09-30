@@ -7,6 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::phase_timing::{Phase, PhaseTimers};
+use crate::settle_tuning::SettleTuning;
 use awase::config::AppConfig;
 use awase::paths::resolve_relative_to_exe;
 use awase_keymap_learn::anomaly::ResetLevel;
@@ -237,6 +238,8 @@ pub struct RealImeDriver {
     tip_identity: TipIdentity,
     /// 段階別の所要時間の内訳(観測専用、挙動は変えない)。
     timers: PhaseTimers,
+    /// `settle()`/`clear_edit()`の待ち時間(既定は従来の固定40ms、診断フラグで上書き)。
+    tuning: SettleTuning,
     /// **最後のフィールドでなければならない**(上記`ComApartment`の解放順の説明を参照)。
     _com: ComApartment,
 }
@@ -302,6 +305,7 @@ impl RealImeDriver {
             // プレースホルダ(この値のまま使われることはない)。
             tip_identity: TipIdentity::Other,
             timers: PhaseTimers::default(),
+            tuning: SettleTuning::default(),
             _com: com,
         };
 
@@ -633,7 +637,13 @@ impl RealImeDriver {
                     last = now;
                     quiet_since = Instant::now();
                     first_change.get_or_insert_with(|| started.elapsed());
-                } else if quiet_since.elapsed() >= Duration::from_millis(QUIET_MS) {
+                } else if quiet_since.elapsed()
+                    >= Duration::from_millis(if first_change.is_some() {
+                        self.tuning.quiet_after_change_ms
+                    } else {
+                        self.tuning.quiet_no_change_ms
+                    })
+                {
                     settled = true;
                     break;
                 }
@@ -656,6 +666,11 @@ impl RealImeDriver {
         last
     }
 
+    /// 診断用の待ち時間の上書き(`main`がコマンドラインから作る)。
+    pub fn set_settle_tuning(&mut self, tuning: SettleTuning) {
+        self.tuning = tuning;
+    }
+
     /// 段階別の所要時間の内訳(`timing ...`行)。学習終了時に標準エラーへ出す。
     #[must_use]
     pub fn timing_summary_lines(&self) -> Vec<String> {
@@ -664,8 +679,14 @@ impl RealImeDriver {
 
     fn clear_edit(&self) {
         self.timers.time(Phase::ClearEdit, || {
+            let before = self.observe_imm().ok().map(|o| o.status);
             let _ = unsafe { SetWindowTextW(self.edit, w!("")) };
-            self.pump(Duration::from_millis(QUIET_MS));
+            self.pump(Duration::from_millis(self.tuning.clear_edit_pump_ms));
+            // 案2の根拠: このpump中にIME状態が変わることがあるか(あれば短縮は危険)。
+            let after = self.observe_imm().ok().map(|o| o.status);
+            if before != after {
+                self.timers.note_clear_edit_status_changed();
+            }
         });
     }
 }
@@ -716,6 +737,7 @@ impl RealImeDriver {
     }
 
     fn reset_untimed(&mut self, level: ResetLevel) -> bool {
+        self.timers.note_reset_level(level as usize);
         self.clear_edit();
         let esc = self.keys.iter().position(|vk| *vk == 0x1B);
         if let Some(key) = esc {

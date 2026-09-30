@@ -8,6 +8,7 @@
 //! OS非依存(`Instant`のみ)なのでLinuxでもユニットテストできる。
 
 use std::cell::Cell;
+use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 /// 計測する段階。
@@ -31,6 +32,12 @@ pub enum Phase {
     PressSetup,
     /// `clear_edit()`(入力欄クリア+QUIET_MSのpump)。
     ClearEdit,
+}
+
+/// マイクロ秒→ミリ秒(表示専用、桁落ちは無視できる)。
+#[allow(clippy::cast_precision_loss)]
+fn us_to_ms(us: u64) -> f64 {
+    us as f64 / 1000.0
 }
 
 const N: usize = 9;
@@ -73,7 +80,7 @@ impl Histogram {
             let label = BUCKETS_MS
                 .get(i)
                 .map_or_else(|| "inf".to_string(), |b| format!("lt{b}"));
-            out.push_str(&format!(" {label}={}", c.get()));
+            let _ = write!(out, " {label}={}", c.get());
         }
         out
     }
@@ -89,6 +96,10 @@ pub struct PhaseTimers {
     settle_timeouts: Cell<u32>,
     /// `settle()`の間に一度も状態が変化しなかった回数(「変化なし」の確定待ち)。
     settle_no_change: Cell<u32>,
+    /// `clear_edit()`のpump中にIME状態が変化した回数。
+    clear_edit_status_changed: Cell<u32>,
+    /// `reset()`の段階別回数(Soft/Mode/Hard)。
+    reset_levels: [Cell<u32>; 3],
     /// `settle()`開始から最初の変化までの遅延の分布。
     first_change: Histogram,
     /// `settle()`内で、直前の変化から次の変化までの間隔の分布(2回目以降の変化のみ)。
@@ -113,6 +124,17 @@ impl PhaseTimers {
         let out = f();
         self.record(phase, start.elapsed());
         out
+    }
+
+    pub fn note_clear_edit_status_changed(&self) {
+        self.clear_edit_status_changed
+            .set(self.clear_edit_status_changed.get() + 1);
+    }
+
+    pub fn note_reset_level(&self, level: usize) {
+        if let Some(c) = self.reset_levels.get(level) {
+            c.set(c.get() + 1);
+        }
     }
 
     pub fn note_first_change(&self, d: Duration) {
@@ -140,9 +162,9 @@ impl PhaseTimers {
             .map(|&(phase, name)| {
                 let i = phase as usize;
                 let n = self.count[i].get();
-                let total_ms = self.total_us[i].get() as f64 / 1000.0;
+                let total_ms = us_to_ms(self.total_us[i].get());
                 let mean_ms = if n == 0 { 0.0 } else { total_ms / f64::from(n) };
-                let max_ms = self.max_us[i].get() as f64 / 1000.0;
+                let max_ms = us_to_ms(self.max_us[i].get());
                 format!(
                     "timing phase={name} n={n} total_ms={total_ms:.0} mean_ms={mean_ms:.1} max_ms={max_ms:.0}"
                 )
@@ -152,6 +174,13 @@ impl PhaseTimers {
             "timing settle_timeouts={} settle_no_change={}",
             self.settle_timeouts.get(),
             self.settle_no_change.get()
+        ));
+        lines.push(format!(
+            "timing clear_edit_status_changed={} reset_soft={} reset_mode={} reset_hard={}",
+            self.clear_edit_status_changed.get(),
+            self.reset_levels[0].get(),
+            self.reset_levels[1].get(),
+            self.reset_levels[2].get()
         ));
         lines.push(self.first_change.line("first_change"));
         lines.push(self.inter_change.line("inter_change"));

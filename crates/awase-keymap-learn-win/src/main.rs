@@ -31,6 +31,7 @@ mod app {
     use awase_keymap_learn::verify::{
         classify_robust, predict, score_walk, ScoreReport, WalkObs, DEFAULT_MIN_MINORITY,
     };
+    use awase_keymap_learn_win::settle_tuning::SettleTuning;
     use awase_keymap_learn_win::RealImeDriver;
     use awase_windows::state::ime_kind::TipIdentity;
     use awase_windows::state::key_effect_predictor::TableKey;
@@ -830,7 +831,10 @@ mod app {
         } else {
             Strategy::S6
         };
-        let driver = build_driver(strategy);
+        let mut driver = build_driver(strategy);
+        // 診断用: 待ち時間の上書き(`--quiet-after-change-ms=N`/`--clear-edit-pump-ms=N`)。
+        // 指定が無ければ従来の固定値のまま。
+        driver.set_settle_tuning(SettleTuning::from_args(std::env::args()));
         let initial = driver.initial_status();
         // A-6/B-3: 開始時点のTIP・(GJIのときだけ)config1.dbを記録し、終了時に再取得して
         // 比較する(学習中のIME/GJI設定の切り替え検出)。

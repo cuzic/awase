@@ -5,6 +5,7 @@
 //! 所有する。
 
 pub mod phase_timing;
+pub mod settle_tuning;
 
 #[cfg(windows)]
 mod driver;
