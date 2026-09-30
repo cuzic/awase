@@ -31,6 +31,7 @@ mod app {
     use awase_keymap_learn::verify::{
         classify_robust, predict, score_walk, ScoreReport, WalkObs, DEFAULT_MIN_MINORITY,
     };
+    use awase_keymap_learn_win::reconvert_cells::blank_idle_reconvert_predictions;
     use awase_keymap_learn_win::RealImeDriver;
     use awase_windows::state::ime_kind::TipIdentity;
     use awase_windows::state::key_effect_predictor::TableKey;
@@ -469,7 +470,8 @@ mod app {
         if matches!(persisted.judgement, Some(TableJudgement::Rejected(_))) {
             return Err("already_rejected");
         }
-        let driver = build_driver(Strategy::S6);
+        let mut driver = build_driver(Strategy::S6);
+        driver.set_clear_idle_edit(!std::env::args().any(|a| a == "--no-clear-idle-edit"));
         let tip = driver.tip_identity();
         // 表が測った構成と今の構成が違えば、再検証に合格しても復活させない(GJIの表を
         // Microsoft IME本体の下で、あるいはキーマップ変更後に「再検証合格」させない)。
@@ -837,7 +839,9 @@ mod app {
         } else {
             Strategy::S6
         };
-        let driver = build_driver(strategy);
+        let mut driver = build_driver(strategy);
+        // 測定前のEDIT消去は既定で有効(ADR-210)。`--no-clear-idle-edit`で従来の挙動に戻せる。
+        driver.set_clear_idle_edit(!std::env::args().any(|a| a == "--no-clear-idle-edit"));
         let initial = driver.initial_status();
         // A-6/B-3: 開始時点のTIP・(GJIのときだけ)config1.dbを記録し、終了時に再取得して
         // 比較する(学習中のIME/GJI設定の切り替え検出)。
@@ -913,6 +917,12 @@ mod app {
         // ADR196-T2決定1b項目7〜8: 既知構成なら内蔵表との突き合わせ→再測定。学習・検証と
         // 同じセッション監視の下で行うため、後続のセッション失敗判定より前に実行する。
         let mut cells = build_persisted_cells(&executor.table);
+        if tip_at_start == TipIdentity::MsImeNative {
+            // 学習は文書を空にして測るため、実行時に文字が残ると成り立たない
+            // (再変換に入る)アイドル状態の変換キーのセルは、予測を出さない。
+            let blanked = blank_idle_reconvert_predictions(&mut cells);
+            eprintln!("再変換しうるセル(アイドルの変換キー)の予測を空にした: {blanked}件");
+        }
         let reconciliation =
             reconcile_against_bundled(&mut executor, tip_at_start, &mut cells, &mut walk_rng);
 

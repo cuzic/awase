@@ -46,6 +46,9 @@ pub struct Stats {
     /// [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2:
     /// `PressReport::contaminated`が立っていたため表への記録を見送った回数。
     pub contaminated_trials: u32,
+    /// 実機のIMMが矛盾した状態(`open=false`かつ`composing=true`)を報告したため、表への記録を
+    /// 見送った押下の回数(ADR-210 Opusレビュー B2-3)。
+    pub impossible_status_trials: u32,
     pub anomalies: HashMap<Anomaly, u32>,
     /// 押下ごとの (経過ms, 1回以上測ったセル数, 2回以上測ったセル数)。
     pub timeline: Vec<(f64, usize, usize)>,
@@ -82,6 +85,11 @@ pub trait ImeDriver {
     fn reset(&mut self, level: ResetLevel) -> bool;
     fn elapsed_ms(&self) -> f64;
     fn machine_initial_status(&self) -> Status;
+    /// 直前の`reset`が最後に送ったキーの添字(あれば)。リセット直後の観測は、実際には
+    /// このキーが直前キーなので、文脈として記録する(ADR-210 Opusレビュー B2-1)。
+    fn last_reset_key(&self) -> Option<usize> {
+        None
+    }
     /// [ADR195-T7](../../../docs/tasks/adr195-t7-safety-measures.md)項目2
     /// （opus-adversarial-consult round2 N3対応）: セッション監視が既に
     /// 失敗と判定した後は、`strategy::over()`が予算（時間・押下数）を使い切る
@@ -269,8 +277,12 @@ impl<D: ImeDriver> Executor<D> {
         // ウォーク中)と同様に扱う——両方とも「表を更新しない」という同じ効果を持つが、
         // 意味は異なる(前者は「無効化された観測」、後者は「意図的に記録しない」)ため
         // `contaminated_trials`で区別して数える。
+        let impossible = (!after.open && after.composing) || (!before.open && before.composing);
         if r.contaminated {
             self.stats.contaminated_trials += 1;
+        } else if impossible {
+            // 閉と報告されているのに入力中、はIMMの矛盾した観測。記録しない。
+            self.stats.impossible_status_trials += 1;
         } else if self.recording {
             self.table.record(before, key, self.last_key, outcome);
         }
@@ -330,7 +342,7 @@ impl<D: ImeDriver> Executor<D> {
         for _ in 0..6 {
             let ok = self.driver.reset(level);
             self.stats.resets += 1;
-            self.last_key = None;
+            self.last_key = self.driver.last_reset_key();
             let s = self.read_status();
             if ok && s == self.initial {
                 break;
@@ -574,5 +586,109 @@ mod tests {
         assert!(!e.should_reset());
         e.press(atok_keys::HIRAGANA);
         assert!(e.should_reset());
+    }
+
+    /// リセットが最後に送ったキーを返し、押下の結果を固定するテスト用ドライバ。
+    struct ScriptedDriver {
+        reset_key: Option<usize>,
+        status: Status,
+    }
+
+    impl ImeDriver for ScriptedDriver {
+        fn press(&mut self, _key: usize) -> PressReport {
+            PressReport {
+                delivered: true,
+                cost_ms: 0.0,
+                seen: Outcome {
+                    status: self.status,
+                    disp: Disposition::None,
+                },
+                seen_b: self.status,
+                contaminated: false,
+            }
+        }
+        fn press_setup(&mut self, _key: usize) {}
+        fn read_primary(&mut self) -> Status {
+            self.status
+        }
+        fn read_secondary(&mut self) -> Status {
+            self.status
+        }
+        fn reread_status(&mut self) -> Status {
+            self.status
+        }
+        fn settle_setup(&mut self) -> Status {
+            self.status
+        }
+        fn reset(&mut self, _level: ResetLevel) -> bool {
+            true
+        }
+        fn elapsed_ms(&self) -> f64 {
+            0.0
+        }
+        fn machine_initial_status(&self) -> Status {
+            self.status
+        }
+        fn last_reset_key(&self) -> Option<usize> {
+            self.reset_key
+        }
+    }
+
+    #[test]
+    fn reset_records_the_key_the_reset_sent_as_the_last_key() {
+        let s = Status {
+            open: false,
+            mode: 0x09,
+            composing: false,
+        };
+        let mut e = Executor::new(
+            ScriptedDriver {
+                reset_key: Some(2),
+                status: s,
+            },
+            AnomalyPolicy::default(),
+            ReadPolicy::Single,
+        );
+        e.reset();
+        assert_eq!(
+            e.last_key(),
+            Some(2),
+            "リセット直後の直前キーはリセットが送ったキー"
+        );
+        let mut e = Executor::new(
+            ScriptedDriver {
+                reset_key: None,
+                status: s,
+            },
+            AnomalyPolicy::default(),
+            ReadPolicy::Single,
+        );
+        e.reset();
+        assert_eq!(
+            e.last_key(),
+            None,
+            "何も送らないドライバは従来どおり文脈なし"
+        );
+    }
+
+    #[test]
+    fn impossible_closed_but_composing_observation_is_not_recorded() {
+        let impossible = Status {
+            open: false,
+            mode: 0x09,
+            composing: true,
+        };
+        let mut e = Executor::new(
+            ScriptedDriver {
+                reset_key: None,
+                status: impossible,
+            },
+            AnomalyPolicy::default(),
+            ReadPolicy::Single,
+        );
+        let _ = e.press(0);
+        assert_eq!(e.stats.impossible_status_trials, 1);
+        assert_eq!(e.table.covered1(), 0, "矛盾した観測は表に記録しない");
+        assert_eq!(e.stats.presses, 1, "押下自体は数える");
     }
 }
