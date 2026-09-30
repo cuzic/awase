@@ -176,7 +176,7 @@
 | [BUG-172](BUG-172.md) | MS-IME+TsfNative で IME が閉じていても、msime-ready ゲートが conv の NATIVE を「ON確認」と扱い生ローマ字が入る(CI観測、実機未確認) |
 | [BUG-173](BUG-173.md) | GJI + TSFネイティブで物理ひらがなキー(0xF2)が常にSuppressされ、カタカナ固着から戻れない（ADR-100でwarmupがVK_IME_ON化し代替F2再送の契約が崩れていた） |
 | [BUG-174](BUG-174.md) | Ctrl↑のたびに awase 自身が `VK_IME_ON` を注入していた(CtrlUp warmup)。「@」報告の被疑箇所として撤去(原因かは実機未確認) |
-| [BUG-176](BUG-176.md) | 実 Edge(GJI・Imm32Unavailable)で他プロセスが注入した VK_IME_OFF の後、IME は開いたままなのに awase が open=false へ追随して Engine を OFF にする(偽 OFF、ADR-205 の実機不合格) |
+| [BUG-176](BUG-176.md) | 実 Edge(GJI・Imm32Unavailable)で他プロセスが注入した VK_IME_OFF の後、IME は開いたままなのに awase が open=false へ追随して Engine を OFF にする(偽 OFF。初回セッションのみ・再現条件不明、#377 の効果自体は実機で確認済み) |
 
 ## その他の資料
 
