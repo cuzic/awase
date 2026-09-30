@@ -658,8 +658,21 @@ impl DecisionExecutor {
         // ImeEffect::SetOpen は ImmCross-first か否かで async / sync を分岐するため
         // 先に処理する（後段の `let platform_rt = platform` が `platform`
         // を独占する前に `build_ime_control_view` を呼ぶ必要がある）。
-        if let Effect::Ime(ImeEffect::SetOpen { open, .. }) = effect {
-            return self.dispatch_ime_set_open(platform, ime, open, generation);
+        if let Effect::Ime(ImeEffect::SetOpen { open, origin }) = effect {
+            // ADR-212 P2: Engine の遷移が自動発行する `ActivationSync` と、ユーザーの明示操作（`ExplicitUserAction`）を
+            // ログで区別する（以前は origin をここで捨てていたので、どちらが実 actuation を起こしたか数えられなかった）。
+            // sync の経路は結果（outcome）も同じ行に出す。async（ImmCross 先の窓）は `generation` で、後から届く
+            // `on_ime_apply_complete{generation outcome}` の行と突き合わせる。settle で落とされた SetOpen は
+            // `strip_ime_set_open_if_settling` の `[focus-settle]` ログで別に数える。
+            let result = self.dispatch_ime_set_open(platform, ime, open, generation);
+            let outcome = result.as_ref().map_or_else(
+                || "async".to_string(),
+                |(_, outcome)| format!("{outcome:?}"),
+            );
+            tracing::info!(
+                "[set-open] origin={origin:?} open={open} generation={generation:?} outcome={outcome}"
+            );
+            return result;
         }
         // EngineStateChanged: エンジン ON/OFF に連動して conv mutation ゲートを更新する。
         // platform_rt (&mut dyn PlatformRuntime) 変換前に行う必要がある。
