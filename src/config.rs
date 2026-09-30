@@ -382,6 +382,14 @@ pub struct GeneralConfig {
     /// （awase-settingsのUIチェックボックスは未実装、フォローアップが必要）。
     #[serde(default = "default_use_learned_keymap_table")]
     pub use_learned_keymap_table: bool,
+    /// ADR-209: IME の実状態を読めない窓（TSF）で、GJI の MS-IME プリセットの変換キーが IME を開くと
+    /// 予測して Engine を追随させる。`false`で止める（偽 ON が出たとき、ビルドし直さずに戻すため）。
+    #[serde(default = "default_predict_henkan_open_in_unreadable_windows")]
+    pub predict_henkan_open_in_unreadable_windows: bool,
+}
+
+const fn default_predict_henkan_open_in_unreadable_windows() -> bool {
+    true
 }
 
 const fn default_use_learned_keymap_table() -> bool {
@@ -428,6 +436,7 @@ impl Default for GeneralConfig {
             muhenkan_solo_tap_ime_action: None,
             henkan_solo_tap_ime_action: None,
             use_learned_keymap_table: true,
+            predict_henkan_open_in_unreadable_windows: true,
         }
     }
 }

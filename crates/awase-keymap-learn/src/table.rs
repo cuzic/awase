@@ -108,6 +108,17 @@ impl Table {
         self.cells.iter()
     }
 
+    /// 観測の結果(押下後のstatus)として`status`が現れた回数(全セルの合計)。
+    /// 事前モデルに無い状態を「本当に存在する」と見なしてよいかの判定に使う
+    /// (観測誤りによる1回きりの状態を除くため)。
+    pub fn outcome_status_count(&self, status: Status) -> usize {
+        self.cells
+            .values()
+            .flatten()
+            .filter(|o| o.outcome.status == status)
+            .count()
+    }
+
     /// 多数派の結果(同数なら先に現れたもの)。
     pub fn majority(&self, status: Status, key: usize) -> Option<Outcome> {
         let v = self.cells.get(&(status, key))?;

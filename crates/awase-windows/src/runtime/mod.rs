@@ -334,6 +334,8 @@ pub struct Runtime {
     key_effect_runtime_table: crate::state::key_effect_runtime::RuntimeTableCache,
     /// `config.general.use_learned_keymap_table`（opt-out、既定true）。
     use_learned_keymap_table: bool,
+    /// `config.general.predict_henkan_open_in_unreadable_windows`（ADR-209、既定true）。
+    predict_henkan_open_in_unreadable_windows: bool,
     /// 役割判定の候補キー（ADR-199決定18(i)、旧ADR-195追記の`hz_toggle_omit_latch`を一般化）の物理キー押下ごとの
     /// 「この打鍵の最終的な`shadow_action`」を、KeyDownで確定して KeyUp まで持ち越すラッチ
     /// （`(scan_code, 判定)`）。学習表の再読込がDownとUpの間に起きても、Down=Allow・Up=Suppressで
@@ -1457,6 +1459,7 @@ impl Runtime {
             key_effect_runtime_table: crate::state::key_effect_runtime::RuntimeTableCache::default(
             ),
             use_learned_keymap_table: true,
+            predict_henkan_open_in_unreadable_windows: true,
             key_role_latch: None,
             muhenkan_dedicated_fn_key_vk: None,
             space_is_thumb_key: false,
@@ -2106,6 +2109,8 @@ impl Runtime {
         self.platform_state.focus.focus_debounce_ms = config.general.focus_debounce_ms;
         self.platform_state.focus.ime_poll_interval_ms = config.general.ime_poll_interval_ms;
         self.use_learned_keymap_table = config.general.use_learned_keymap_table;
+        self.predict_henkan_open_in_unreadable_windows =
+            config.general.predict_henkan_open_in_unreadable_windows;
         self.set_keyboard_model(config.general.keyboard_model);
         self.set_update_check_enabled(config.general.update_check);
         self.set_warn_state_dependent_mode_keys(config.general.warn_state_dependent_mode_keys);
