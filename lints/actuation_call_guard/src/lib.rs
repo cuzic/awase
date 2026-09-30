@@ -77,7 +77,6 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
             "send_ime_mode_key",
             "send_ime_mode_key_with_shift_release_prefix",
             "toggle_caps_lock",
-            "send_chrome_gji_reinit_and_poll",
             "send_key",
             "send_ctrl_chord",
             "send_unicode_char",
@@ -86,7 +85,6 @@ const RESTRICTED_CALLS: &[(&str, &[&str])] = &[
             "flush_raw_tsf_literal_backspaces",
             "kp_restore_kana_from_half_width",
             "send_unicode_cold_warmup_keys",
-            "send_eager_warmup_vk_pair",
             "send_all_modifier_key_ups",
             // issue #165 自己修復（hook watchdog）のカナリア送信（opus round2 B1(i)）。
             // 2026-09-28追記、複雑性予算制（.claude/rules/complexity-budget.md）は
