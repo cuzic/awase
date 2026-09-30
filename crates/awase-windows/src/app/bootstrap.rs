@@ -762,7 +762,6 @@ pub(super) fn initialize_app(
                 crate::focus::classifier::ImmCapabilityStore::new(base_dir.clone()),
                 crate::focus::classifier::InjectionModeStore::new(base_dir),
             ),
-            crate::tsf::composition_fsm::CompositionFsm::new(),
             journal_stamper,
         ),
         layouts,

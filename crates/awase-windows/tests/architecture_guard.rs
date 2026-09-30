@@ -5607,6 +5607,47 @@ fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
         );
     }
 
+    // 2b. キー打鍵を契機とする eager warmup の送信は撤去済み（BUG-173 追補2）。reinject 段は cold 化と GjiFsm reset だけ。
+    let platform = read_crate_file("src/platform.rs");
+    let platform = strip_any_test_module(&platform);
+    let reinject = platform
+        .find("fn on_reinject_key")
+        .expect("on_reinject_key が見つかりません");
+    let reinject_body = &platform[reinject..];
+    let reinject_end = reinject_body
+        .find("\n    }\n")
+        .map_or(reinject_body.len(), |e| e + 7);
+    assert!(
+        !reinject_body[..reinject_end].contains("send_eager_tsf_warmup"),
+        "platform.rs::on_reinject_key が `send_eager_tsf_warmup` を呼んでいます（BUG-173 追補2: 確定キー reinject 時の \
+         VK_IME_ON 送信は撤去済み。Enter1回で2発出ていた発火の再導入になる）"
+    );
+    // 残る eager warmup 送信元は FocusChange（platform.rs）・IME ON 適用直後の随伴（platform.rs）・vk_send の
+    // Off 固定（常に no-op）の3か所だけ。キー打鍵契機の呼び出しが増えたら（Enter 1回で2発・F2 併走の再発）ここで落ちる。
+    let mut sends = 0;
+    for f in [
+        "src/platform.rs",
+        "src/runtime/key_pipeline.rs",
+        "src/runtime/executor.rs",
+        "src/output/vk_send.rs",
+        "src/runtime/ime_refresh.rs",
+        "src/runtime/message_handlers.rs",
+    ] {
+        let src = read_crate_file(f);
+        sends += strip_any_test_module(&src)
+            .matches(".send_eager_tsf_warmup(")
+            .count();
+    }
+    assert_eq!(
+        sends, 3,
+        "`send_eager_tsf_warmup(` の本番呼び出し箇所が3以外です（BUG-173 追補2: キー打鍵契機の warmup 送信は撤去済み。\
+         意図した追加なら ADR-191 の warmup 節と BUG-173.md を更新してこの数を直すこと）"
+    );
+    assert!(
+        !platform.contains("fn on_passthrough_key"),
+        "platform.rs に `on_passthrough_key`（確定キー D 段の warmup 後処理）が戻っています（BUG-173 追補2）"
+    );
+
     // 3. KeyUp ラッチの呼び出し順: plan() → latch → record_key_input → kp_stage_execute
     let kp = read_crate_file("src/runtime/key_pipeline.rs");
     let kp = strip_any_test_module(&kp);

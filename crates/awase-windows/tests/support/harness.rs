@@ -34,8 +34,9 @@ use awase::engine::{
 use awase::scanmap::KeyboardModel;
 use awase::types::VkCode;
 use awase::yab::YabLayout;
+use awase_windows::state::conv_classify::ConvSyncReason;
 use awase_windows::state::drift_correction::{check_drift_correction, DriftCorrection};
-use awase_windows::state::evidence::{ImmCrossProbe, Observed, ObserverPoll};
+use awase_windows::state::evidence::{ConvOpenInference, ImmCrossProbe, Observed, ObserverPoll};
 use awase_windows::state::ime_event::{
     EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile, ObservationConfidence,
     ObservationSource, UserIntentSource,
@@ -59,6 +60,9 @@ pub enum Source {
     ImmCross,
     /// `ObserverPoll`（Medium）。`apply_ime_update` 相当。
     Poll,
+    /// `ConvOpenInference`（Medium、conv ビットからの間接推測。`classify_conv_transition` の
+    /// `ReportOpenInference`）。GJI×TsfNative では IME を閉じても conv の NATIVE が残るため誤って「開」と推測する。
+    ConvInference,
 }
 
 /// 書き込み命令の出所。
@@ -284,6 +288,17 @@ impl Harness {
             Source::Poll => (
                 Observed::<ObserverPoll>::from_poll(&accepted, open).into(),
                 ObservationSource::ObserverPoll,
+                ObservationConfidence::Medium,
+            ),
+            Source::ConvInference => (
+                Observed::<ConvOpenInference>::from_conv(
+                    ConvSyncReason::NativeToggleShadowOff,
+                    open,
+                    self.focus,
+                    self.epoch,
+                )
+                .into(),
+                ObservationSource::ConvOpenInference,
                 ObservationConfidence::Medium,
             ),
         };
