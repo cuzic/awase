@@ -47,6 +47,38 @@ const ALL: [(Phase, &str); N] = [
     (Phase::ClearEdit, "clear_edit"),
 ];
 
+/// ヒストグラムの上限(ms、これ未満)。最後の要素は「150ms以上」。
+const BUCKETS_MS: [u64; 8] = [2, 5, 10, 20, 30, 40, 80, 150];
+
+/// 待ち時間の分布。静止待ち(`QUIET_MS`)を安全に縮められるかを、平均・最大だけでなく
+/// 分布で判断するために取る(`tuning-constants.md`の実測義務)。
+#[derive(Debug, Default)]
+struct Histogram {
+    buckets: [Cell<u32>; 9],
+}
+
+impl Histogram {
+    fn add(&self, elapsed: Duration) {
+        let ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+        let i = BUCKETS_MS
+            .iter()
+            .position(|&b| ms < b)
+            .unwrap_or(BUCKETS_MS.len());
+        self.buckets[i].set(self.buckets[i].get() + 1);
+    }
+
+    fn line(&self, name: &str) -> String {
+        let mut out = format!("timing hist={name}");
+        for (i, c) in self.buckets.iter().enumerate() {
+            let label = BUCKETS_MS
+                .get(i)
+                .map_or_else(|| "inf".to_string(), |b| format!("lt{b}"));
+            out.push_str(&format!(" {label}={}", c.get()));
+        }
+        out
+    }
+}
+
 /// 段階ごとの累計時間・回数・最大値。`&self`から更新するため`Cell`。
 #[derive(Debug, Default)]
 pub struct PhaseTimers {
@@ -57,6 +89,11 @@ pub struct PhaseTimers {
     settle_timeouts: Cell<u32>,
     /// `settle()`の間に一度も状態が変化しなかった回数(「変化なし」の確定待ち)。
     settle_no_change: Cell<u32>,
+    /// `settle()`開始から最初の変化までの遅延の分布。
+    first_change: Histogram,
+    /// `settle()`内で、直前の変化から次の変化までの間隔の分布(2回目以降の変化のみ)。
+    /// これの上側が`QUIET_MS`の下限を決める。
+    inter_change: Histogram,
 }
 
 impl PhaseTimers {
@@ -76,6 +113,14 @@ impl PhaseTimers {
         let out = f();
         self.record(phase, start.elapsed());
         out
+    }
+
+    pub fn note_first_change(&self, d: Duration) {
+        self.first_change.add(d);
+    }
+
+    pub fn note_inter_change(&self, d: Duration) {
+        self.inter_change.add(d);
     }
 
     pub fn note_settle_timeout(&self) {
@@ -108,6 +153,8 @@ impl PhaseTimers {
             self.settle_timeouts.get(),
             self.settle_no_change.get()
         ));
+        lines.push(self.first_change.line("first_change"));
+        lines.push(self.inter_change.line("inter_change"));
         lines
     }
 }
@@ -147,12 +194,39 @@ mod tests {
     }
 
     #[test]
+    fn histogram_buckets_by_upper_bound() {
+        let t = PhaseTimers::default();
+        t.note_first_change(Duration::from_millis(1));
+        t.note_first_change(Duration::from_millis(9));
+        t.note_first_change(Duration::from_millis(500));
+        t.note_inter_change(Duration::from_millis(30));
+        let lines = t.summary_lines();
+        let fc = lines
+            .iter()
+            .find(|l| l.contains("hist=first_change"))
+            .unwrap();
+        assert!(
+            fc.contains("lt2=1") && fc.contains("lt10=1") && fc.contains("inf=1"),
+            "{fc}"
+        );
+        let ic = lines
+            .iter()
+            .find(|l| l.contains("hist=inter_change"))
+            .unwrap();
+        assert!(ic.contains("lt40=1"), "{ic}");
+    }
+
+    #[test]
     fn counters_appear_in_last_line() {
         let t = PhaseTimers::default();
         t.note_settle_timeout();
         t.note_settle_no_change();
         t.note_settle_no_change();
-        let last = t.summary_lines().pop().unwrap();
+        let last = t
+            .summary_lines()
+            .into_iter()
+            .find(|l| l.contains("settle_timeouts"))
+            .unwrap();
         assert!(
             last.contains("settle_timeouts=1 settle_no_change=2"),
             "{last}"

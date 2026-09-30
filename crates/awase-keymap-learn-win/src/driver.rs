@@ -627,6 +627,9 @@ impl RealImeDriver {
             self.pump(Duration::from_millis(5));
             if let Ok(now) = self.observe_imm() {
                 if now.status != last.status || now.text != last.text {
+                    if first_change.is_some() {
+                        self.timers.note_inter_change(quiet_since.elapsed());
+                    }
                     last = now;
                     quiet_since = Instant::now();
                     first_change.get_or_insert_with(|| started.elapsed());
@@ -638,7 +641,10 @@ impl RealImeDriver {
         }
         self.timers.record(Phase::Settle, started.elapsed());
         match first_change {
-            Some(d) => self.timers.record(Phase::SettleFirstChange, d),
+            Some(d) => {
+                self.timers.record(Phase::SettleFirstChange, d);
+                self.timers.note_first_change(d);
+            }
             None => self.timers.note_settle_no_change(),
         }
         if settled {
