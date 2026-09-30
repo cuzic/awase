@@ -215,7 +215,7 @@
 | [206](206-thumb-solo-tap-follows-role-suppress-and-inject.md) | 無変換/変換の単独タップ再設計(役割があれば生キー抑止＋belief に従う明示注入、なければ Suppress/Passthrough。`*_solo_tap_ime_action` 撤去) | opus 4ラウンドで収束・実装済み(実機A/B未検証) |
 | [207](207-keys-ime-detect-default-empty-and-remove-engine-ime-keys.md) | keys.ime_detect.on/off の既定を空に、engine_on/off_ime_key(Engine ON/OFF 時の IME モードキー能動送信)を撤去 | 採択・実装済み(実機/CI 確認は未実施) |
 | [208](208-absolute-ime-keys-must-not-be-elided-on-stale-applied-in-blind-windows.md) | Blind 窓で絶対指定 IME キーが古い applied で握り潰され続ける固着を防ぐ(草稿、ADR-205 から切り出し) | 草稿・未着手 |
-| [209](209-predict-open-effect-from-gji-config-when-not-learned.md) | 学習表が無いとき、config1.db から開閉軸の打鍵時予測を作り、素通しされたモードキー(変換単独)に Engine を追随させる(草稿、ADR-191/199/206) | 草稿(2026-09-30)。Opus 敵対レビュー待ち |
+| [209](209-predict-open-effect-from-gji-config-when-not-learned.md) | GJI の MS-IME プリセットでは TSF の窓で変換が IME を開く。予測表を窓の種類(IMM32/TSF)別にして素通しの変換に Engine を追随させる(草稿v2、ADR-186/191/199/206) | 草稿v2(2026-09-30)。v1 は棄却、再レビュー待ち |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

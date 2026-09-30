@@ -1,79 +1,70 @@
 ---
 id: ADR-209
 title: |-
-  GJI で学習表が無いとき、config1.db(session_keymap＋custom_keymap_table)の状態別の効果から開閉軸の打鍵時予測を作り、素通しされたモードキー(変換単独など)に Engine を追随させる
+  GJI の MS-IME プリセットでは、TSF ネイティブの窓で、直接入力の変換が IME を開く。打鍵時予測の表を窓の種類(IMM32/TSF)別にして、素通しされた変換に Engine を追随させる
 summary: |-
-  実機(dragonflyg4、JIS、GJI `session_keymap=2`＋古い `custom_keymap_table` 191行)で、IME OFF で変換を単独タップすると GJI 自身が IME を ON にする(awase 停止でも 3/3)が、
-  awase の打鍵時予測は「古い表が変換の行を持つので予測しない」(`key_effect_predictor.rs::custom_table_overrides`)ため belief が更新されず、Engine が OFF のまま(`か`)。
-  学習表(`keymap-learn-table.json`、ADR-195/196)はこの実機では作れていない(BUG-177 修正後も BUG-178 で完走しない)。所有者決定(2026-09-30): v2 は設定の読み取りだけの推測を入れ、この実機の古い表は実効とみなす。
+  実機(dragonflyg4、JIS、GJI 3.34.6260.0、`session_keymap=2`)で、IME OFF から変換を単独タップすると、awase 停止でも WT・メモ帳・Edge の全てで IME が ON になる。awase は「予測しない」ため Engine が OFF のまま(`ka`→`か`)。
+  GitHub Actions(windows-latest、GJI の MS-IME プリセット、awase なし、run 36690572075)で、**実 Chrome(TSF)は開き、素の EDIT(IMM32)は開かない**ことを再現した。古い custom 表の有無は無関係(表なしでも同じ)。
+  同梱表(`key_effect_table.rs`)は EDIT(IMM32)で学習したので、TSF ネイティブの窓では変換について誤っている。
 status: |-
-  草稿(2026-09-30)。未レビュー。Opus 敵対レビューで収束させてから実装する。
+  草稿 v2(2026-09-30)。v1(「古い custom 表を実効とみなす」)は Opus 敵対レビューで Blocker 2件、実機の弁別実験と CI で棄却された。書き直し版を再レビュー待ち。
 related_adr:
+  - "ADR-186"
   - "ADR-191"
+  - "ADR-192"
   - "ADR-195"
   - "ADR-196"
-  - "ADR-198"
   - "ADR-199"
   - "ADR-206"
 ---
 
-# ADR-209: 学習表が無いとき、config1.db から開閉軸の打鍵時予測を作る(草稿)
+# ADR-209: 窓の種類別に、MS-IME プリセットの変換の効果を予測する(草稿 v2)
 
-## 背景(実機の事実、2026-09-30)
+## 経緯(v1 の棄却)
+v1 は「MS-IME プリセット(2)で、古い `custom_keymap_table` を実効とみなす」という決定3を置いた。Opus 敵対レビュー(round1)が、次を指摘した: 根拠(実機1台の観測)は未同定で、既存の証拠(ADR-186 決定2(c)、Mozc `keymap.cc`、CI の格子)は逆を指す。
+実機で仮説を弁別した結果(2026-09-30):
+- **X1**: IME ON で無変換を押すと、`カ`→`ｶ`→`か` と巡回した。古い表(無変換の行なし)が実効なら毎回 `か` のはずで、**プリセットが実効**。
+- **overlay**: `config1.db` の field 68 が無い(protobuf を全解析)。overlay 100 ではない。
+- **X3**: 変換を IME OFF から押すと、メモ帳・Edge でも IME が ON になった(WT と同じ)。**アプリ依存ではなく、TSF の窓で共通**。
+- **CI**(run 36690572075): GJI の MS-IME プリセット、awase なしで、**実 Chrome は「直接入力→変換」で開く(古い表の有無によらず)**。**素の EDIT(`ime_key_matrix_spike` の `--seq=1C`)は開かない(`open=0`)**。無変換は実 Chrome でも `か`→`カ` と巡回(実機と同じ)。
 
-環境: dragonflyg4(JIS キーボード、Windows 11)、GJI、Windows Terminal(TsfNative、開閉を読めない)。awase は既定の config(`muhenkan/henkan_solo_tap_always_suppress=true`)。
-- `config1.db`(protobuf を解析): `session_keymap = 2`(MS-IME プリセット)、`custom_keymap_table` は 191 行残っている(DirectInput の Henkan=IMEOn を含む。GJI のキー設定ダイアログで CUSTOM にしていた時代の表とみられる)。
-- **awase を止めた GJI 単体で、IME OFF(直接入力)から変換を単独タップすると毎回 IME が ON になる(3/3)。** つまり、プリセット2でもこの古い表の効果が出ている(または MS-IME プリセットが同じ効果を持つ)。
-- awase 稼働中(Suppress 既定、Engine 非活性)は、変換の生キーを素通し(`[reinject] vk=0x1c`)する。GJI は ON になるが、awase の belief は OFF のままで Engine も OFF になる(`ka`→`か`)。
-  打鍵時予測のログは `[key-effect-predict] vk=0x1C open=false composing=false: no prediction`。理由は、予測器が「古い表がそのキーの行を持つなら予測しない(安全側)」(`custom_table_overrides`)としているため。
-- 学習表 `keymap-learn-table.json`(ADR-195/196)は、この実機に無い。学習プロセスは、BUG-177(JIS 実機で自分の注入を物理入力と誤判定、修正済み #390)の後も、BUG-178(cell=73/84 で22分進まない)で完走しない。
-- TsfNative の窓では、開閉を観測する手段が実質無い(`read_ime_state_*` は `None`、`ConvOpenInference` は IME を閉じても NATIVE が残るので開閉を区別できない)。**読めない窓での追随手段は打鍵時予測(`KeyEffectPredicted`)だけ**。
-
-所有者の設計思想(2026-09-30): 「学習すると IME ON の効果を持つキーが学習されて追随する。ただし GJI なら、学習しなくても config1.db の読み取りだけで推測してほしい」。決定: **v2 に入れる。この実機の古い表は実効とみなす。**
-
-## 矛盾する既存の証拠(レビューで必ず突くこと)
-
-- ADR-199(`awase-gji-config/src/role.rs::source`)は「`session_keymap` が CUSTOM 以外ならプリセットで動き、`custom_keymap_table` は GJI が読まない」を前提とし、テスト `realdev_msime_preset_with_stale_custom_table`(`key_effect_predictor.rs`)も「実機(ADR-191 実機検証、MS-IME プリセット＋custom 表175行): 変換は直接入力から何もしない」と書く。**今日の観測(変換で ON)は、これと食い違う。** 食い違いの原因(GJI のバージョン、表の内容が175→191行に変わった、プリセット2の中身が Mozc の TSV と違う等)は未確定。
-- ADR-186 撤去実験 E2: **ATOK プリセット**では、GJI は古い `custom_keymap_table`(変換=IMEOn)を読まない(awase が読むと変換が On と誤分類される、CI で確認)。
+## 背景(実機・CI の事実)
+- GJI の MS-IME プリセットでは、直接入力の変換の定義は `Reconvert`(Mozc の `ms-ime.tsv`。IME の開閉とは無関係)。**それでも TSF ネイティブの窓では、再変換の処理が IME を開く。IMM32 の素の EDIT では開かない。**(仕組みは未確認。事実は CI と実機の観測)
+- 同梱表(`key_effect_table.rs` の MSIME 表、`grid-tables/msime.json`)は、学習プロセスの EDIT(IMM32)で測ったもの。**TSF ネイティブの窓の予測には、そのまま使えない**(変換だけでなく、他のキーも窓の種類で違う可能性。未測定)。
+- awase の予測(`key_effect_predictor.rs::predict_with_override`)は、`custom_keymap_table` がそのキーの行を持つと予測を打ち切る(`custom_table_overrides`)。**GJI はプリセット(CUSTOM 以外)のとき `custom_keymap_table` を読まない**(ADR-186 決定2(c)の ATOK、今日の X1)ので、この打ち切りは ATOK/MS-IME プリセットでは不要で、この実機では予測を止めている(古い表が変換の行を持つため)。
+- TsfNative の窓では開閉を観測できない(`read_ime_state_*` は `None`、`ConvOpenInference` は開閉を区別できない)。**追随の手段は打鍵時予測(`KeyEffectPredicted`)だけ**。
+- 学習(ADR-195/196)は、この実機では完走しない(BUG-178)。学習プロセスの入力先は素の EDIT なので、学習しても TSF の窓の効果は得られない。
 
 ## 決定
-
-1. **開閉軸の予測を config1.db から作る**: 学習表が無い(または該当セルが無い)GJI で、無修飾の物理キーの打鍵について、(現在の状態 × キー)に対する開閉の効果(開く/閉じる/変えない/不明)を、`custom_keymap_table` の行から求め、`KeyEffectPredicted` として belief に反映する。awase は IME へ書かない(ADR-191 決定1)。
-2. **予測の優先順位**: 採用済みの学習表(ADR-196)＞ config1.db 由来 ＞ 同梱表(プリセット)＞ 予測しない。学習表にセルが無ければ次へ落ちる。
-3. **どの表を実効とみなすか(所有者決定)**: `session_keymap` が CUSTOM のときは `custom_keymap_table`。**MS-IME プリセット(2)で `custom_keymap_table` が空でないときは、表がそのキーの行を持つ限り、その行を実効とみなす**(この実機の観測に従う)。ATOK・KOTOERI・MOBILE は従来どおり(古い表は読まれない、ADR-186 E2)。表がそのキーの行を持たなければ、同梱のプリセット表に落ちる。
-4. **状態の写像**(awase の belief → Mozc の状態): 閉(DirectInput)=表の DirectInput 行。開は「全ての開状態」を Precomposition/Composition/Conversion(継承を含む、`role.rs` の `KeyStates`)で評価する。
-   - 閉状態: `IMEOn` または `CompositionMode*` → 開く。行なし → 変わらない。`Reconvert` 等の他コマンド → 予測しない。
-   - 開状態: 全ての開状態で閉じる(`IMEOff`)→ 閉じる。どの開状態にも閉じる行が無い → 変わらない。一部の状態だけ閉じる → **予測しない**(読めない窓では入力中/変換中の段階の追跡が当てにならない)。
-5. **対象外**: 修飾付きのキー、注入されたキー、overlay(`HENKAN_MUHENKAN_TO_IME_ON_OFF` 等)が触るキー、未知の `session_keymap`、MS-IME 本体・ATOK 等の未同定 IME。`ImeKind` が GJI のときだけ。
-6. **開閉軸だけ**: 入力モード軸(ひらがな/カタカナ等)は予測しない(既存の規則・観測に任せる)。
-7. 新しいイベント・I/O・actuation の合流点・tuning 定数は作らない。fence は既存の `KEY_EFFECT_SETTLE_MS` を使う。
+1. **予測表を窓の種類別にする**: GJI の MS-IME プリセットで、TSF ネイティブの窓(`TsfNative`/`Imm32Unavailable` のプロファイル)では、**閉状態(DirectInput)の変換(0x1C)は「開く(ひらがな)」**と予測する。IMM32 の窓(`ImmCross`)は従来どおり(開かない)。根拠は CI と実機の観測(上)。他のキーの窓別の違いは未測定で、この ADR の対象外。
+2. **予測の打ち切りを見直す**: `session_keymap` が ATOK/MS-IME/KOTOERI/MOBILE のとき、`custom_keymap_table` の行を理由に予測を打ち切らない(GJI はその表を読まない)。CUSTOM のときの扱いは従来どおり。
+3. **予測は開閉軸と、絶対設定に限った入力モードだけ**: 変換で開くとき、入力モードは「ひらがな(ネイティブ)」とする(Reconvert 経由で IME が開いたときの実測: 実 Chrome で `か` = かな・ひらがな)。
+4. **止める設定**: 新しい bool 設定(例 `predict_open_from_gji_config` の類。名前は実装時に決める)を置き、既定は入れる。偽 ON が実機で出たとき、ビルドし直さずに止められる。
+5. 新しいイベント・I/O・actuation の合流点・tuning 定数は作らない。fence は既存の `KEY_EFFECT_SETTLE_MS`。
 
 ## 非目的
+素通し後に awase が IME へ書くこと(ADR-191 決定1)。ADR-206 決定1(α)(Suppress × エンジン非活性では生キーが IME に届く)の変更。窓別の表の**全キーの網羅**(別 ADR: TSF 形式の入力先での学習、または受動学習)。学習プロセスの修正(BUG-178)。PR #360(別件、保留)。
 
-素通し後に awase が IME へ書くこと(ADR-191 決定1)。ADR-206 決定1(α)(Suppress × エンジン非活性では生キーが IME に届く)の変更。TsfNative の新しい観測源(TSF の OPENCLOSE compartment 等)。学習プロセスの修正(BUG-178)。PR #360(ConvOpenInference の drift 撤去)は別件で保留。
+## 代替案
+- **v1(古い表を実効とみなす)**: 棄却(上)。
+- **利用者への案内(ADR-192 の `UserOverride`)**: 設定の食い違いではなく、プリセットの通常の挙動なので該当しない。
+- **受動学習(窓の種類別に、実際の効果を観測して覚える)**: 原理的に最も一般的だが、新しい保存・証拠・採否の設計が要る(v2 の後)。この ADR の窓別表は、その学習の初期値になる。
+- **候補窓の検出による自己修復(ADR-203 案C)**: 追随が遅れる(最初の数文字が `か`)。安全網として別 ADR。
 
-## 代替案と却下理由
-
-- **B: 学習を回すよう案内するだけ**: 学習していない・config1.db が変わった直後(指紋が stale)・カバレッジ80%未満では CUSTOM ユーザーが無防備。所有者の「学習しなくても」に反する。この実機では学習が完走しない(BUG-178)。
-- **C: 素通し後に観測して追随**: TsfNative には信頼できる観測源が無い。新 I/O が要り、ADR-205 の非目的と衝突。
-- **D: プリセット2では古い表を読まない(現状維持)**: 今日の実機観測(変換単独で ON)に反し、Engine が追随しない。
-
-## リスク(レビューで詰める)
-
-1. **偽 ON**: 表が実効でない環境(プリセット2が古い表を本当に読まない環境)で、awase が「開く」と予測し、実際は開かない。Engine だけが ON になり、`ka` が NICOLA として出る(BUG-176 型の偽追随)。緩和: 学習表が優先、ユーザーの ON/OFF キーで立て直せる、ただし自動では検出できない。
-2. **予測の後の drift**: 予測は `desired_open` を書かない。後で GJI の I/O 推測(`ObserverPoll`、Medium)が記録されると、明示意図が無くても `desired=false` との乖離で drift 補正(`VK_IME_OFF`)が走りうる構造か。`KeyEffectPredicted` が `last_intent`/IntentStore を消すので止まるはず(コード上の帰結、要テスト)。
-3. **Engine 活性化時の `SetOpen(true, ActivationSync)`** が warrant で拒否されるか `VK_IME_ON` を1回送るか。IME は既に ON なので BUG-113「@」(半角で生の無変換/変換)の構成とは違うが要確認。
-4. **入力モード軸**: TsfNative では `AssumedRomaji` のままなので Engine は活性化するはずだが要確認。
+## リスク(再レビューで詰める)
+1. **偽 ON**: 窓の種類の判定を誤ると(例: ImmCross の窓を TSF と判定)、開かないのに「開く」と予測する。緩和: プロファイル判定は既存の `AppKind`/`profile` を使う。実機・CI で TSF/IMM32 それぞれを検証。
+2. **他の GJI バージョン**: 実機は 3.34.6260.0。CI の版は未取得。バージョンによって Reconvert の副作用が違う可能性。
+3. **予測は `desired_open` を書かない**: 直前の Ctrl+無変換(明示 OFF、TTL 30秒)の後、belief だけが ON になる。drift 補正・`ActivationSync`・hwnd キャッシュ(偽 ON の1時間保持)との相互作用を、テストで固定する(v1 レビュー M1・M2。予測が正しいときは問題にならないが、窓判定を誤ったときの被害)。
+4. **予測の後に GjiFsm の開き直し(`kp_reopen_gji_fsm(Predict)`)が走る**: 変換で IME が実際に開いているので、正しい動作のはず(要確認)。
 
 ## 検証方針
-
-- 純関数の単体テスト(`role.rs`: 表に応じた開閉効果、閉=DirectInput の IMEOn、一部の状態だけ閉じるケース、継承、overlay、未知値)。
-- `key_effect_predictor.rs`: 優先順位(学習表＞config1.db＞同梱表)と、プリセット2＋古い表の実機由来の表(191 行から起こした代表行)。既存テスト `realdev_msime_preset_with_stale_custom_table` は、期待値を「変換は予測する(開く)」に更新し、コメントに今日の観測と食い違いを書く。
-- `closed_loop_scenarios.rs`(Linux で走る): 「明示 OFF の後、変換を素通しすると belief が ON になり Engine が追随し、drift が発火しない」。
+- **CI(windows-latest)で閉ループ検証できる**: `chrome_probe`(実 Chrome)を **awase あり**で、GJI の MS-IME プリセットで実行し、「直接入力→変換」の後に Engine が追随して NICOLA の文字になることを確認する(今の awase では `か`)。素の EDIT(ImmCross)では従来どおり(開かない)ことも確認する。
+- 単体テスト(予測器: MS-IME × TsfNative × 閉 × 変換 → 開く。ImmCross → 開かない。`custom_keymap_table` に行があっても、プリセットでは予測する)。既存テスト `realdev_msime_preset_with_stale_custom_table` の期待値を更新する。
+- `closed_loop_scenarios`: 明示 OFF の後に変換を素通しして、drift・`VK_IME_ON` の送信が出ないこと。窓判定を誤った負の場合。
 - `architecture_guard`: `KeyEffectPredicted` の dispatch 元が1箇所のまま。
-- 実機 A/B(dragonflyg4): 学習表なしで「IME OFF → 変換 → `ka`」が `きう`(NICOLA)になること。プリセット2＋古い表を持たない構成(表なし)で、変換を素通ししても Engine が動かないこと(偽 ON がないこと)。
+- 実機 A/B(dragonflyg4、WT・メモ帳・Edge): 「IME OFF → 変換 → `ka`」が `きう`(NICOLA)になること。
 
 ## 未検証事項
-
-- プリセット2で GJI が古い表を本当に読むのか(今日の1台の観測だけ。ADR-191 実機検証の「何もしない」との食い違いの原因)。
-- 予測後に ObserverPoll 由来の drift が走らないか。`ActivationSync` の `SetOpen(true)` の挙動。DirectInput の `Reconvert` 等で実際に開くか。入力モードが romaji 扱いのままか。
+- Reconvert が TSF の窓で IME を開く仕組み。他の TSF の窓(VS Code、Electron、UWP)でも開くか。
+- 変換以外のキーの、窓の種類別の差。
+- 実機以外の GJI のバージョンでの挙動。
