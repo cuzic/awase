@@ -658,7 +658,11 @@ impl DecisionExecutor {
         // ImeEffect::SetOpen は ImmCross-first か否かで async / sync を分岐するため
         // 先に処理する（後段の `let platform_rt = platform` が `platform`
         // を独占する前に `build_ime_control_view` を呼ぶ必要がある）。
-        if let Effect::Ime(ImeEffect::SetOpen { open, .. }) = effect {
+        if let Effect::Ime(ImeEffect::SetOpen { open, origin }) = effect {
+            // ADR-212 P2: Engine の遷移が自動発行する `ActivationSync` と、ユーザーの明示操作（`ExplicitUserAction`）を
+            // ログで区別する（以前は origin をここで捨てていたので、どちらが実 actuation を起こしたか数えられなかった）。
+            // 直後の `actuation decision`/`[apply-ime]` の行が結果（outcome）を持つ。
+            tracing::info!("[set-open] origin={origin:?} open={open}");
             return self.dispatch_ime_set_open(platform, ime, open, generation);
         }
         // EngineStateChanged: エンジン ON/OFF に連動して conv mutation ゲートを更新する。
