@@ -355,3 +355,37 @@ fn conv_inference_does_not_mask_a_poll_drift() {
         h.trace()
     );
 }
+
+/// ADR-212 P6: drift correction は**ユーザーの明示操作の書き込みが届かなかったときの再試行だけ**を残す。
+/// 明示意図が無い（フォーカス変更で意図がクリアされた後）まま、実 IME が awase の知らない経路で開いた
+/// （`desired_open` は古い OFF のまま）ときは、awase が自分の推測（古い desired）を実 IME へ書き戻さない。
+/// （以前は閾値 `DRIFT_CORRECTION_THRESHOLD_MS` を過ぎると `Poll` の観測を根拠に OFF を書いていた。
+/// 実機の過去ログでは drift 補正の書き込み 169 件が全て「IME を OFF にする」方向だった。）
+#[test]
+fn adr212_p6_drift_without_explicit_intent_does_not_write() {
+    let mut h = Harness::start(Setup::imm_cross(state(false, CONV_HIRAGANA)));
+    h.advance_ms(300)
+        .user_set_open(false)
+        .advance_ms(100)
+        .focus_change()
+        .advance_ms(100)
+        .external_set_open(true)
+        .advance_ms(600)
+        .observe(Source::Poll)
+        .advance_ms(1500)
+        .observe(Source::Poll)
+        .advance_ms(1500)
+        .observe(Source::Poll);
+    assert!(
+        h.drift_fires.is_empty(),
+        "明示意図が無いときは drift 補正で書かない\n{}",
+        h.trace()
+    );
+    assert!(
+        !h.writes
+            .iter()
+            .any(|w| w.origin == WriteOrigin::DriftCorrection),
+        "drift 補正の書き込みが無い\n{}",
+        h.trace()
+    );
+}
