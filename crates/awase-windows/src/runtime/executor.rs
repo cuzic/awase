@@ -665,14 +665,13 @@ impl DecisionExecutor {
             // `on_ime_apply_complete{generation outcome}` の行と突き合わせる。settle で落とされた SetOpen は
             // `strip_ime_set_open_if_settling` の `[focus-settle]` ログで別に数える。
             let result = self.dispatch_ime_set_open(platform, ime, open, generation);
-            match &result {
-                Some((_, outcome)) => tracing::info!(
-                    "[set-open] origin={origin:?} open={open} generation={generation:?} outcome={outcome:?}"
-                ),
-                None => tracing::info!(
-                    "[set-open] origin={origin:?} open={open} generation={generation:?} outcome=async"
-                ),
-            }
+            let outcome = result.as_ref().map_or_else(
+                || "async".to_string(),
+                |(_, outcome)| format!("{outcome:?}"),
+            );
+            tracing::info!(
+                "[set-open] origin={origin:?} open={open} generation={generation:?} outcome={outcome}"
+            );
             return result;
         }
         // EngineStateChanged: エンジン ON/OFF に連動して conv mutation ゲートを更新する。
