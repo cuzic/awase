@@ -1039,7 +1039,8 @@ impl PlatformRuntime for WindowsPlatform {
                     }
                 })
             }
-            && self.output.gji_is_next_key_long_cold();
+            && self.output.gji_is_next_key_long_cold()
+            && false; // SPIKE(ADR-212 P5): Unicode long-cold warmup(保留+FSM+キー)を使わない
         if needs_unicode_cold_warmup {
             self.output.set_unicode_cold_defer(true);
         }
