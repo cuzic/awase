@@ -123,9 +123,6 @@ pub enum WarmupOrigin {
     /// actuation 直後の随伴 warmup）経由。**このゲートは通らない**
     /// （ADR-132「Phase 2」節「実装上の既知の限界」参照、意図的）。
     Actuated,
-    /// `WarmupImeOn::off()`（構造的に `can_warmup()` が常に `false` になり、
-    /// この enum が実際にログへ現れることはない到達不能な保険経路）。
-    Off,
 }
 
 impl std::fmt::Display for WarmupOrigin {
@@ -133,7 +130,6 @@ impl std::fmt::Display for WarmupOrigin {
         f.write_str(match self {
             Self::Gated => "gated",
             Self::Actuated => "actuated",
-            Self::Off => "off",
         })
     }
 }

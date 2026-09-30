@@ -364,19 +364,6 @@ impl WarmupImeOn {
         Self::from_applied_or_belief(applied, belief_open)
     }
 
-    /// 「IME 状態不明・warmup しない」。
-    ///
-    /// 用途は2種類: (1) 到達不能な保険経路（呼び出し規約上ここには来ない
-    /// はずだが、シグネチャ上 `WarmupImeOn` が必須なので安全側の値を渡す）。
-    /// (2) warmup を出さないイベント種別（例: `CompositionEvent::FocusChange`
-    /// は `EmitWarmup` を一切返さないため値そのものが don't-care）に対する
-    /// 明示的なプレースホルダ。いずれも「この値で実際に warmup が発火する」
-    /// ことは無い、という点は共通。
-    #[must_use]
-    pub const fn off() -> Self {
-        Self(false)
-    }
-
     /// warmup 判定に使う IME 開状態。
     #[must_use]
     pub const fn is_on(self) -> bool {
