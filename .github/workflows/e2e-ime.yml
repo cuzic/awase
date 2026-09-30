@@ -314,6 +314,12 @@ jobs:
               for pn, km in (('atok', 1), ('msime', 2))
               for kn, kv in (('ime-on', '16'), ('henkan', '1c'), ('muhenkan', '1d'), ('eisu', 'f0'), ('hiragana', 'f2'),
                              ('hankaku', 'f3'), ('f13', '7c'), ('f14', '7d'))],
+            # ADR-211: MS-IME/MOBILE プリセットの F13(閉状態からだけ開く受動のキー)。実 Chrome(読めない窓)で、IME OFF から F13 を押して
+            # Engine が追随する(NICOLA)こと(合否)。stale=古い表つき。noawase=対照(IME が実際に開く=`か`、awase なしの実挙動)。
+            *[cfg(f'sc-adr211-chrome-msime-f13{suf}', exp, check='chromeprobe', keymap=2, runs=1, wait=500, custom_table=ct, awase=aw,
+                  chrome=f'--key=7c --repeat=3 --settle=800{extra}')
+              for suf, exp, ct, aw, extra in (('', 'pass', 'false', 'true', ''), ('-stale', 'pass', 'true', 'true', ''),
+                                              ('-noawase', 'observe', 'false', 'false', ' --no-awase'))],
             cfg('sc-t1e-chrome-f13-noawase', 'observe', check='chromeprobe', keymap=0, runs=1, wait=400, awase='false',
                 chrome='--f13 --no-awase --repeat=2 --settle=800',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff|Conversion,F13,IMEOff'),
