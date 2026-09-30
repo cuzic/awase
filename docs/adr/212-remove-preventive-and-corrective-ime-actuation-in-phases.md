@@ -11,7 +11,7 @@ summary: |-
   ADR-191 の「warmup は既存の例外として残す」「EngineDecision」は、本 ADR で縮小・改訂する(所有者方針が ADR-191 より新しい)。各段は1PR・revert しやすい単位・実機A/B と CI で退行を確認し、`docs/experiments.md` に判定を残す。
   所有者決定: 左 Shift 単独タップの半角英数トグルは残す(対象外)、ActivationSync は実機で実送信の件数を測ってから止める。ActivationSync の actuation は 2026-08-04 の再発対策ではなく(対策は belief 側で echo を明示意図に書かないこと)、止めても壊れない。
 status: |-
-  草案 v3(2026-09-30、Opus round1・round2 の指摘を反映。P2 の計測は診断ログ PR #400、P1 はデッドコード撤去 PR #399)。実装済みは P0(#398)のみ。次に Opus round3(短い確認)。
+  採用(2026-09-30)。Opus round3 で収束(新しい Major なし)。P2 の計測は診断ログ PR #400、P1 はデッドコード撤去 PR #399。実装済みは P0(#398)のみ。
 related_adr:
   - "ADR-098"
   - "ADR-100"
@@ -75,13 +75,14 @@ related_adr:
    打鍵の経路には origin を出す info ログがあるが、`RefreshState` から来る遷移(キー入力と無関係。TsfNative × belief 未知が最も気にしている経路)は出ない。
    → **計測専用の最小変更(PR #400)**: `dispatch_effect` で `[set-open] origin=… open=… generation=… outcome=…` を出す(key 経路・refresh 経路の両方が通る。sync は outcome を同じ行に、async〈ImmCross 先の窓〉は `outcome=async` で `generation` を出し、後から届く `on_ime_apply_complete{generation outcome}` の行と突き合わせる)。
    **数え方**: 実機(GJI+Windows Terminal、GJI+Chrome/Edge、MS-IME+メモ帳の通常使用)で、`[set-open] origin=ActivationSync` の件数を、直後の `actuation decision`/`[apply-ime]` の outcome(`Applied`/`AppliedWithoutSendInput`/`AlreadyMatched`/`Unwarranted`/`NotOwned`)別に数える。
+   **注意(round3 m9)**: refresh 経路の async では `generation` が `None` や前の値になり、完了ログとの突き合わせに使えない場合がある。その場合は時刻と `open` の一致で対応を取る。
    **範囲外の2つは、別の既存のログで数える**: settle で落とされた SetOpen(C3)は `strip_ime_set_open_if_settling` の `[focus-settle] SetOpen(..) effect stripped`、C2 は `[idle-conv-check] TsfNative: engine ON 同期`(C2 は `dispatch_effect` を通らず、書かないので実送信の数える対象でもない)。
    **「実送信」は `outcome=Applied` だけで数えない**(ActuationDecision.outcome:Applied だけでは操作成功と判断できない、BUG-141)。`win32.rs` の SendInput のバッチ分類(`kanji_marker` 等の目印)と突き合わせる。窓の種類・belief の状態(既知/未知)別に。
 5. **P2 で止める範囲と場所**。0件に近ければ、**A. Engine(コア)で ActivationSync の `SetOpen` を出さない**(`engine.rs::transition_activation` で `origin == ActivationSync` のときは `SetOpen` を push せず、`EngineStateChanged` だけを出す)を選ぶ(round2 M-N3)。
    - 理由: effect が無くなるので、key 経路の origin の分岐にも、`handle_engine_activation_sync` の pending・抑制窓・`on_set_open_requested` にも自動で到達しなくなる(B2 がまとめて片付く)。`SetOpenOrigin::ActivationSync` の構築箇所がゼロになるので、**列挙の variant ごと削除して型で固定できる**(コンパイラが保証する)。
    - 注意: `transition_activation` は ExplicitUserAction の経路(`apply_active_transition`・`ime_set_open_effects` など)と共有なので、origin で分岐する。コアの `src/engine` のテストと `tests/support/harness.rs` を更新する。ADR-019(コアの OS 非依存)には影響しない。
    - `EngineActivationSync` の記録は、belief への作用が無い(`ime_model.rs` の reducer は何もしない)ので、A では effect と一緒に不要になる。BUG-48 の対策(echo を明示意図にしない)は、echo そのものが無くなることで満たされる。
-   - **C2**(idle-conv-check の直接呼び出し)は、`handle_engine_activation_sync` の呼び出しを外す変更。**C3**(settle 明けの出し直し)は、落とす対象の SetOpen が無くなるので不要になる(`schedule_settle_retry` の他の用途を確認してから)。
+   - **C2**(idle-conv-check の直接呼び出し)は、`handle_engine_activation_sync` の呼び出しを外す変更。**C3**(settle 明けの出し直し)は、落とす対象の SetOpen が無くなるので不要になる。ただし settle の strip は ExplicitUserAction の SetOpen も落とす(round3 m10)ので、**P2 で C3 の要否を確認する**(`schedule_settle_retry` の他の用途も含めて)。
    B(executor で origin を見て捨てる)は、`handle_engine_activation_sync` の側を別に止める必要があり(2か所)、`ActivationSync` が構築され続けるので、決定7の型による固定と両立しない。採らない。
    **止めたときに戻りうる不具合(検証に入れる)**:
    - **BUG-170 型**: ActivationSync の書き込み結果は `on_ime_applied` → GjiFsm の同期・`feed_composition_event`・A3 の随伴 warmup を駆動している。書かなくなると、apply 完了通知でしか同期しない GjiFsm 等が `OffCold/OnWarm` に取り残され、毎打鍵 per-VK confirm → StaleConfirm → ESC で未確定文字が消える。ADR-203(ii)の `GjiEvent::Reopen` は予測 ON・shadow toggle ON の場合だけ発火する。**「Engine が観測/予測で active になった」ことを GjiFsm に伝える経路が無くなる可能性がある**ので、必要なら `Reopen` の発火元に「Engine の活性遷移」を足す判断を含める。検証: StaleConfirm の件数、ESC での未確定文字の消失。
