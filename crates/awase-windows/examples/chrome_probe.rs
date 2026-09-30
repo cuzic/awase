@@ -441,6 +441,17 @@ const F13_CASES: [Case; 2] = [
     },
 ];
 
+/// `--henkan-open`(ADR-209): GJI の MS-IME プリセット(keymap=2)で、IME OFF(直接入力)から変換を単独で押したとき、
+/// IME が開き(TSF の実 Chrome)、awase の Engine が追随して NICOLA になること。全ケースは keymap=1(ATOK)前提の
+/// 期待(「かな→変換=IME OFF」等)を含み MS-IME プリセットでは成り立たないので、このケースだけを走らせる。
+const HENKAN_OPEN_CASES: [Case; 1] = [Case {
+    name: "直接入力→変換=かなON(ADR-209)",
+    setup: Setup::Off,
+    vk: 0x1C,
+    shift: false,
+    expect_kana: true,
+}];
+
 const CASES: [Case; 8] = [
     Case {
         name: "かな→無変換=IME OFF",
@@ -816,6 +827,8 @@ fn main() {
     let mut recover = 0usize;
     let cases: &[Case] = if args.iter().any(|a| a == "--f13") {
         &F13_CASES
+    } else if args.iter().any(|a| a == "--henkan-open") {
+        &HENKAN_OPEN_CASES
     } else {
         &CASES
     };

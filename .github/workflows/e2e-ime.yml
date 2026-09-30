@@ -300,6 +300,13 @@ jobs:
             cfg('sc-t1e-chrome-f13', 'pass', check='chromeprobe', keymap=0, runs=1, wait=400,
                 chrome='--f13 --repeat=2 --settle=800',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff|Conversion,F13,IMEOff'),
+            # ADR-209(2026-09-30): 読めない窓(実 Chrome=Imm32Unavailable)で、GJI の MS-IME プリセット(keymap=2)の IME OFF から変換を
+            # 単独で押す(素通し)と IME が開き、awase の Engine が追随して NICOLA になる。stale=実機と同じ古い custom_keymap_table 付き。
+            # off=設定 predict_henkan_open_in_unreadable_windows=false の対照(追随しない=IME ON・Engine OFF で `か` になり FAIL するはず)。
+            *[cfg(f'sc-adr209-chrome-msime{suf}', exp, check='chromeprobe', keymap=2, runs=1, wait=500, custom_table=ct, general=gen,
+                  chrome='--henkan-open --repeat=3 --settle=800')
+              for suf, exp, ct, gen in (('', 'pass', 'false', ''), ('-stale', 'pass', 'true', ''),
+                                        ('-off', 'fail', 'false', 'predict_henkan_open_in_unreadable_windows = false'))],
             cfg('sc-t1e-chrome-f13-noawase', 'observe', check='chromeprobe', keymap=0, runs=1, wait=400, awase='false',
                 chrome='--f13 --no-awase --repeat=2 --settle=800',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff|Conversion,F13,IMEOff'),
