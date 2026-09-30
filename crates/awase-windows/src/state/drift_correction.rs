@@ -44,6 +44,14 @@ pub fn check_drift_correction(
 ) -> Option<DriftCorrection> {
     let desired = model.desired_open();
 
+    // ADR-212 P6: **ユーザーの明示操作の書き込みが届かなかったときの再試行だけ**を残す。`desired_open` が明示意図
+    // （`explicit_intent`）と一致しないとき（古い desired の補正、窓キャッシュの復元〈`HwndCacheRestored`〉の押し付け、
+    // 観測ゼロの安全デフォルト）は、awase が自分の推測を実 IME へ書くことになるので補正しない（「awase は IME に書かない」）。
+    // 実機の過去ログ(dragonflyg4)では drift 補正の書き込み 169 件が全て「IME を OFF にする」方向で、開ける方向は 0 件だった。
+    if explicit_intent != Some(desired) {
+        return None;
+    }
+
     let dur = model.observations.drift_duration(now)?;
     // last_intent は UserImeSetIntent / UserImeToggleIntent のみが設定する。
     // PanicReset / HwndCacheRestored は設定しないため、is_some() で十分。
