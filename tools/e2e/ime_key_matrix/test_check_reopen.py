@@ -39,12 +39,12 @@ UNICODE = P + '10.060000Z DEBUG awase_windows::output: send_keys: mode=Unicode\n
 CLEAN = REOPEN + VK_COLD + CONFIRM
 
 
-def run(recs, awase, require_cold=False):
+def run(recs, awase, require_cold=False, require_sync=False):
     with tempfile.TemporaryDirectory() as d:
         p, a = os.path.join(d, "ts.log"), os.path.join(d, "awase.log")
         open(p, "w", encoding="utf-8").write(ts_log(recs))
         open(a, "w", encoding="utf-8").write(awase)
-        return cr.analyze(cr.parse(p), cr.load_awase(a), require_cold)
+        return cr.analyze(cr.parse(p), cr.load_awase(a), require_cold, require_sync)
 
 
 class CheckReopen(unittest.TestCase):
@@ -125,6 +125,16 @@ class CheckReopen(unittest.TestCase):
         self.assertEqual(none["verdict"], "FAIL")
         self.assertIn("[vk-send] が無い", none["trials"][0]["why"])
         self.assertEqual(run(HEAD + base(0) + DONE, CLEAN, require_cold=True)["verdict"], "PASS")
+
+    def test_require_sync(self):
+        # 修正を外したビルド(a8)は Reopen/ImeOn(BeliefSync) が出ないが、テキストも cold 経路も同じ → --require-sync だけが検出できる。
+        nofix = VK_COLD + CONFIRM + IMEON_OTHER
+        self.assertEqual(run(HEAD + base(0) + DONE, nofix, require_cold=True)["verdict"], "PASS")
+        bad = run(HEAD + base(0) + DONE, nofix, require_cold=True, require_sync=True)
+        self.assertEqual(bad["verdict"], "FAIL")
+        self.assertIn("GjiFsm 同期", bad["trials"][0]["why"])
+        self.assertEqual(run(HEAD + base(0) + DONE, CLEAN, require_cold=True, require_sync=True)["verdict"], "PASS")
+        self.assertEqual(run(HEAD + base(0) + DONE, VK_COLD + IMEON_BELIEF, require_sync=True)["verdict"], "PASS")
 
     def test_abort_and_missing_done_are_invalid(self):
         self.assertEqual(run(HEAD + base(0), CLEAN)["verdict"], "INVALID")

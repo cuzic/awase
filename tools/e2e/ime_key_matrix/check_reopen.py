@@ -27,7 +27,10 @@ awase.log は次の窓で数える(いずれも実ログの書式で照合する
   fail     上のどれかを満たさない
 verdict: INVALID(有効試行が半数未満・中断・完走マーカー無し) / FAIL(有効試行に fail がある) / PASS。
 --require-cold: ADR-203 (c) の PASS 条件「ON 後の最初の語が cold 経路(prepend_f2_warmup=true)」を合否に含める(GJI の TSF 系構成用)。
-使い方: check_reopen.py [--require-cold] [--json out.json] <typing_stress.log> <awase.log>
+--require-sync: ON 後の窓に ADR-203 の GjiFsm 同期(`Reopen(BeliefSync:` か `ImeOn(BeliefSync:`)が1件以上あることを合否に含める(GJI 専用)。
+  BUG-170 の修正が働いた journal 上の証拠。**入力先のテキストや cold 経路は、修正を外しても変わらない**(awase 自身の ImeOn 遷移が GjiFsm を同期するため。
+  ablations/a8 の負の対照、run 36654801007 で確認)ので、修正の有無を検出できるのはこの条件だけ。挙動レベルの退行(固着・ESC)は上の stuck/stale_escape で見る。
+使い方: check_reopen.py [--require-cold] [--require-sync] [--json out.json] <typing_stress.log> <awase.log>
 終了コード: 0=PASS / 1=FAIL / 3=INVALID / 2=使い方の誤り
 """
 import argparse
@@ -98,7 +101,7 @@ def post_window(lines: list, on_utc: str, press_utc: str, end_utc: str) -> dict:
     return c
 
 
-def analyze(recs: list, lines: list, require_cold: bool = False) -> dict:
+def analyze(recs: list, lines: list, require_cold: bool = False, require_sync: bool = False) -> dict:
     cfg = next((r for r in recs if r.get("type") == "config"), {})
     aborts = [r["reason"] for r in recs if r.get("type") == "abort"]
     done = any(r.get("type") == "done" for r in recs)
@@ -157,6 +160,8 @@ def analyze(recs: list, lines: list, require_cold: bool = False) -> dict:
                 why.append("ON 後の語の [vk-send] が無い(cold 経路を確認できない)")
             elif w["first_vk_cold"] is False:
                 why.append("ON 後の最初の語が warm 経路(ADR-203 (c) は cold を要求)")
+        if require_sync and w["reopen_belief"] + w["imeon_belief"] == 0:
+            why.append("ADR-203 の GjiFsm 同期(Reopen/ImeOn の BeliefSync)が ON 後の窓に無い")
         finish("fail" if why else "pass", "; ".join(why))
         if w["vk_after_press_ms"] is not None:
             presses.append(w["vk_after_press_ms"])
@@ -177,7 +182,7 @@ def analyze(recs: list, lines: list, require_cold: bool = False) -> dict:
     confirms.sort()
     med = lambda v: v[len(v) // 2] if v else None  # noqa: E731
     return {"verdict": verdict, "invalid_reasons": invalid_run, "counts": counts, "trials": trials,
-            "form": cfg.get("form"), "ime": cfg.get("ime"), "require_cold": require_cold,
+            "form": cfg.get("form"), "ime": cfg.get("ime"), "require_cold": require_cold, "require_sync": require_sync,
             "first_vk_cold": sum(1 for r in trials if r.get("first_vk_cold") is True),
             "vk_after_press_p50_ms": med(presses), "vk_after_press_max_ms": presses[-1] if presses else None,
             "confirm_p50_ms": med(confirms), "confirm_max_ms": confirms[-1] if confirms else None}
@@ -186,13 +191,14 @@ def analyze(recs: list, lines: list, require_cold: bool = False) -> dict:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(add_help=False)
     ap.add_argument("--require-cold", action="store_true")
+    ap.add_argument("--require-sync", action="store_true")
     ap.add_argument("--json", dest="json_path")
     ap.add_argument("logs", nargs="*")
     a = ap.parse_args(argv)
     if len(a.logs) != 2:
         print(__doc__)
         return 2
-    res = analyze(parse(a.logs[0]), load_awase(a.logs[1]), a.require_cold)
+    res = analyze(parse(a.logs[0]), load_awase(a.logs[1]), a.require_cold, a.require_sync)
     for r in res["trials"]:
         if r["status"] in ("invalid", "blind"):
             print(f"{r['n']}: {r['status'].upper()} {r['why']}")
@@ -205,7 +211,7 @@ def main(argv=None) -> int:
         print("INVALID:", why)
     c = res["counts"]
     print(f"REOPEN: verdict={res['verdict']} form={res['form']} ime={res['ime']} pass={c['pass']} fail={c['fail']} invalid={c['invalid']} "
-          f"blind={c['blind']} require_cold={res['require_cold']} first_vk_cold={res['first_vk_cold']} "
+          f"blind={c['blind']} require_cold={res['require_cold']} require_sync={res['require_sync']} first_vk_cold={res['first_vk_cold']} "
           f"press_vk_p50_ms={res['vk_after_press_p50_ms']} press_vk_max_ms={res['vk_after_press_max_ms']} "
           f"confirm_p50_ms={res['confirm_p50_ms']} confirm_max_ms={res['confirm_max_ms']}")
     if a.json_path:
