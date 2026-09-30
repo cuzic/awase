@@ -54,7 +54,7 @@ v2 ラインは `develop` → `main`（`.claude/rules/main-develop-branch-flow.m
 
 ## C. ブロッカーの不具合
 
-- [x] **C1 BUG-172（実 Chrome × 外部から閉じられた IME が ON に戻らない）**: 修正済み（PR #377、ADR-205）。外部注入 IME キーの直後300msの監視窓で、読み済みの開閉状態の 1→0 を検出したときだけ実状態へ追随する（開け直しはしない）。**GJI かつ `Imm32Unavailable` に限る**（MS-IME・InputRelay・TsfNative は対象外）。CI（各10試行）で GJI×実 Chrome は追随 10/10（observed 0→10、`kiu`→`ka`）、偽の追随は物理キー相当・メモ帳・MS-IME で無し。
+- [ ] **C1 BUG-172（実 Chrome × 外部から閉じられた IME が ON に戻らない）**: 修正済み（PR #377、ADR-205）。外部注入 IME キーの直後300msの監視窓で、読み済みの開閉状態の 1→0 を検出したときだけ実状態へ追随する（開け直しはしない）。**GJI かつ `Imm32Unavailable` に限る**（MS-IME・InputRelay・TsfNative は対象外）。CI（各10試行）で GJI×実 Chrome は追随 10/10（observed 0→10、`kiu`→`ka`）、偽の追随は物理キー相当・メモ帳・MS-IME で無し。 **【2026-09-30 実機不合格→再オープン】** 実機（dragonflyg4、GJI、Edge、develop `1ec078ef`）で、外部注入の VK_IME_OFF の後に IME は開いたままなのに awase が `open=false` へ追随して Engine を OFF にする偽 OFF を確認（[BUG-176](../known-bugs/BUG-176.md)）。awase 停止なら閉じ、元の awase（未コミット変更入り）でも閉じる。CI（GJI × 実 Chrome 10/10）では再現しない。原因は調査中（#377 の前後・先端を3状態で判定し直す）。
   - 未検証: 追随後にモードキーを押して期待状態になること、MS-IME×実 Chrome での awase 自身の `VK_IME_OFF`（効かなかった記録あり）、実機。
   - 既知の制限（ADR-208）: 外部変化を検出できず `applied` が古いままだと、絶対指定キーが省略され続ける固着があり得る。v2 のブロッカーにはしない。
 - [x] **C2 ts-chrome 高速打鍵（BUG-168 / ADR-200）の残課題**（2026-09-26 のメモ、**未再確認**）: 候補窓が残ったまま GJI が OFF のときの回復低下、StaleConfirm の romaji 再送重複（BUG-075 系）、Escape 経路、他の reinit 呼び出し元、起動直後の IME モード不整合と awase 主スレッド7秒停止（未解明）。まず再現するかを確認する。 **再確認済み(2026-09-29)**: (1) 合成条件で再現(ADR-200 で回復量が減る)、(2)〜(5) は強制シナリオで測定済み(2)(3)は入ったが重複・消失なし、(4)は Chrome で入らない、(5)は再現せず。v2 ブロッカーにしない提案。詳細は [BUG-168](../known-bugs/BUG-168.md) 末尾。 **所有者決定（2026-09-29）: (2)〜(5) はブロッカーから外す。(1) は BUG-172 の修正（#377）で再判定。**
