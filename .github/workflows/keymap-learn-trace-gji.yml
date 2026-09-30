@@ -1,0 +1,137 @@
+name: keymap-learn-trace-gji
+
+# 学習の診断・分析用(`ci/keymap-learn-trace-*` ブランチへの push、または `workflow_dispatch`。
+# ワークフローがデフォルトブランチに無いと dispatch できないので、通常は develop から
+# `ci/keymap-learn-trace-<名前>` を切って push する): windows-latest で GJI(ATOK / MS-IME プリセット)の
+# 学習を `--trace-features`(押下ごとの特徴量)と `KEYMAP_LEARN_DEBUG_TOUR`(同期喪失・未達セルの出力)つきで
+# 走らせ、結果(result.txt、learn-stderr.log 等)を成果物に上げる。隠れ状態の分析は
+# `tools/keymap-learn/analyze_features.py learn-stderr.log`(ADR-210)。
+on:
+  push:
+    branches: ['ci/keymap-learn-trace-**']
+  workflow_dispatch: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        rep: [1]
+        preset: [atok, msime]
+        include:
+          - preset: atok
+            keymap: 1
+          - preset: msime
+            keymap: 2
+    runs-on: windows-latest
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: keymap-learn-trace-gji
+
+      - name: 学習プロセスをビルド
+        shell: pwsh
+        run: |
+          cargo build -p awase-keymap-learn-win
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\debug\awase-keymap-learn-win.exe dist\
+          Copy-Item config.toml dist\ -ErrorAction SilentlyContinue
+
+      - name: Google 日本語入力をインストールしキーマッププリセットを書く(ATOK=1 / MS-IME=2)
+        shell: pwsh
+        run: |
+          choco install googlejapaneseinput -y --no-progress 2>&1 | Select-Object -Last 3
+          $googleImeTip = '0411:{D5A86FD5-5308-47EA-AD16-9C4EB160EC3C}{773EB24E-CA1D-4B1B-B420-FA985BB0B80D}'
+          $l = New-WinUserLanguageList ja-JP
+          $l[0].InputMethodTips.Clear()
+          $l[0].InputMethodTips.Add($googleImeTip)
+          Set-WinUserLanguageList $l -Force 2>&1
+          try { Set-WinDefaultInputMethodOverride -InputTip $googleImeTip -ErrorAction Stop }
+          catch { "default input method override FAILED: $($_.Exception.Message)" }
+          # session_keymap: Mozc Config field 41。1=ATOK, 2=MS-IME。field 22=0で初回ダイアログを出さない。
+          $dir = Join-Path $env:USERPROFILE 'AppData\LocalLow\Google\Google Japanese Input'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          [IO.File]::WriteAllBytes((Join-Path $dir 'config1.db'), [byte[]](0xB0,0x01,0x00,0xC8,0x02,[byte]${{ matrix.keymap }}))
+          Get-Process | Where-Object { $_.Name -match 'googleime|mozc' } | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Get-Process ctfmon -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 1
+          Start-Process ctfmon.exe -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+
+      - name: 学習(要確認になるはず) -> 採用 -> 再採用(冪等)
+        id: run
+        shell: pwsh
+        run: |
+          Push-Location dist
+          Remove-Item keymap-learn-table.json, keymap-learn-last-attempt.json -ErrorAction SilentlyContinue
+          $env:KEYMAP_LEARN_DEBUG_TOUR = '1'
+          $learn = Start-Process -FilePath "$PWD\awase-keymap-learn-win.exe" -ArgumentList '--trace-walk --trace-features' -WorkingDirectory "$PWD" `
+            -RedirectStandardError "$PWD\..\learn-stderr.log" -RedirectStandardOutput "$PWD\..\learn-stdout.log" -PassThru
+          $deadline = (Get-Date).AddSeconds(8400)
+          while ((Get-Date) -lt $deadline -and -not $learn.HasExited) { Start-Sleep -Seconds 3; $learn.Refresh() }
+          $exited = $learn.HasExited
+          if (-not $exited) { Stop-Process -Id $learn.Id -Force -ErrorAction SilentlyContinue }
+          $exit = if ($exited) { $learn.ExitCode } else { 'timeout' }
+          $lines = @("学習プロセス: exit=$exit")
+          $out = Get-Content ..\learn-stdout.log -Encoding utf8 -ErrorAction SilentlyContinue
+          $result = $out | Select-String -Pattern '^result ' | Select-Object -Last 1
+          $lines += "result行: $($result.Line)"
+          $lines += "学習後 table.json: $(Test-Path keymap-learn-table.json) / last-attempt.json: $(Test-Path keymap-learn-last-attempt.json)"
+          $needs = [bool]($result -and $result.Line -match 'judgement=needs_confirmation')
+          $lines += "judgement=needs_confirmation: $needs"
+
+          $adopt1 = & "$PWD\awase-keymap-learn-win.exe" --adopt-pending-judgement 2>..\adopt1-stderr.log
+          $a1 = $LASTEXITCODE
+          $lines += "採用1回目: exit=$a1 stdout=$adopt1"
+          $lines += "採用後 table.json: $(Test-Path keymap-learn-table.json)"
+          $adopt2 = & "$PWD\awase-keymap-learn-win.exe" --adopt-pending-judgement 2>..\adopt2-stderr.log
+          $a2 = $LASTEXITCODE
+          $lines += "採用2回目(冪等): exit=$a2 stdout=$adopt2"
+          Pop-Location
+          # 検証ウォークの誤答を(状態,キー,セル分類)ごとに集計する(ばらつきの原因調査)。
+          $steps = Get-Content learn-stderr.log -Encoding utf8 -ErrorAction SilentlyContinue | Where-Object { $_ -like '`[verify-step`]*' }
+          $lines += "verify-step行数: $(@($steps).Count)"
+          $bad = @($steps | Where-Object { $_ -like '*verdict=incorrect*' })
+          $lines += "誤答: $($bad.Count)"
+          $bad | ForEach-Object {
+            $t = @{}; $_.Split(' ') | ForEach-Object { $kv = $_.Split('=', 2); if ($kv.Count -eq 2) { $t[$kv[0]] = $kv[1] } }
+            "$($t['before']) key=$($t['key']) class=$($t['class']) n_obs=$($t['n_obs']) n_distinct=$($t['n_distinct'])"
+          } | Group-Object | Sort-Object Count -Descending | ForEach-Object { $lines += "  x$($_.Count) $($_.Name)" }
+          $cls = @($steps | Where-Object { $_ -like '*verdict=incorrect*' } | ForEach-Object { if ($_ -match 'class=(\S+)') { $Matches[1] } }) | Group-Object | ForEach-Object { "$($_.Name)=$($_.Count)" }
+          $lines += "誤答のセル分類: $($cls -join ' ')"
+          $timing = Get-Content learn-stderr.log -Encoding utf8 -ErrorAction SilentlyContinue | Where-Object { $_ -like '*timing *' }
+          $lines += "timing行数: $(@($timing).Count)"
+          $lines += $timing
+          $lines | Tee-Object -FilePath result.txt
+          $ok = $exited
+          "rc=$(if ($ok) {0} else {1})" | Out-File -FilePath rc.txt -Encoding ascii
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: keymap-learn-trace-gji-result-${{ matrix.preset }}-${{ matrix.rep }}
+          path: |
+            result.txt
+            rc.txt
+            learn-stderr.log
+            learn-stdout.log
+            adopt1-stderr.log
+            adopt2-stderr.log
+            dist/keymap-learn-table.json
+            dist/keymap-learn-last-attempt.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: 判定
+        shell: pwsh
+        run: |
+          Get-Content result.txt -ErrorAction SilentlyContinue
+          $rc = (Get-Content rc.txt) -replace 'rc=', ''
+          if ($rc -ne '0') { exit 1 }

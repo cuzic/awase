@@ -5,6 +5,8 @@ awase の IME ON/OFF 制御・warmup・focus 分類まわりは、Windows / IME 
 別セッションで再検証したり、一度捨てた選択肢に戻ったりする「反転」が繰り返し起きて
 きた。それを見えるようにするのがこのログの目的。
 
+学習(キー効果の学習、`awase-keymap-learn`)の速度・精度の試行は [keymap-learn-experiments.md](keymap-learn-experiments.md) に別途記録している。
+
 ## 書き方
 
 新しい試行を行うたびに 1 行追記する。判定が後日ひっくり返ったら、元の行は消さずに

@@ -355,6 +355,7 @@ fn execute<D: ImeDriver>(
             EdgeKind::Reset { .. } => exec.reset(),
             EdgeKind::Press { node, key } => {
                 if cur_node(exec, g) != Some(node) {
+                    diag_mismatch(exec, g, "pre", node, key, None);
                     exec.note_sync_loss();
                     return Step::Mismatch;
                 }
@@ -364,6 +365,7 @@ fn execute<D: ImeDriver>(
                 learn(exec, g, info, key);
                 let after = g.node_of(info.outcome.status, exec.last_key());
                 if after != Some(g.kind_to(*k)) {
+                    diag_mismatch(exec, g, "post", node, key, Some(info.outcome.status));
                     exec.note_sync_loss();
                     return Step::Mismatch;
                 }
@@ -371,6 +373,57 @@ fn execute<D: ImeDriver>(
         }
     }
     Step::Done
+}
+
+/// 診断出力(`KEYMAP_LEARN_DEBUG_TOUR`が設定されているときだけ)を出すか。`s0`の
+/// `KEYMAP_LEARN_DEBUG_CELLS`と同じ流儀で、OS非依存クレートなので環境変数のreadだけに留める。
+fn debug_tour() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("KEYMAP_LEARN_DEBUG_TOUR").is_ok())
+}
+
+/// 診断(MS-IMEプリセットの非収束の調査で使った出力): 同期喪失の内容を、最初の60件と
+/// 以降500件ごとに標準エラーへ出す。`observed`が`None`なら計画の始点に居なかった(押す前の不一致)。
+fn diag_mismatch<D: ImeDriver>(
+    exec: &Executor<D>,
+    g: &Graph,
+    phase: &str,
+    node: usize,
+    key: usize,
+    observed: Option<Status>,
+) {
+    if !debug_tour() {
+        return;
+    }
+    let n = exec.stats.sync_losses;
+    if n > 60 && !n.is_multiple_of(500) {
+        return;
+    }
+    eprintln!(
+        "[mismatch] n={n} phase={phase} from={:?} key={key} cur={:?} observed={observed:?}",
+        g.status_of_node(node),
+        exec.current()
+    );
+}
+
+/// 診断: 巡回が終わったとき、満たされていない必要セルを一覧する(`why`は終わった理由)。
+fn diag_unmet<D: ImeDriver>(exec: &Executor<D>, g: &Graph, need: &[u32], why: &str) {
+    if !debug_tour() {
+        return;
+    }
+    let mut cells: Vec<String> = Vec::new();
+    for node in 0..g.n_nodes {
+        for key in 0..g.n_keys {
+            if need[node * g.n_keys + key] > 0 {
+                cells.push(format!("{:?}/key{key}", g.status_of_node(node)));
+            }
+        }
+    }
+    eprintln!(
+        "[unmet] why={why} presses={} n={} cells={cells:?}",
+        exec.stats.presses,
+        cells.len()
+    );
 }
 
 fn tour<D: ImeDriver>(
@@ -386,6 +439,8 @@ fn tour<D: ImeDriver>(
     }
     for _ in 0..3000 {
         if over(exec, req) {
+            let need = need_fn(exec, g);
+            diag_unmet(exec, g, &need, "over");
             return;
         }
         let need = need_fn(exec, g);
@@ -399,12 +454,16 @@ fn tour<D: ImeDriver>(
             start = g.initial_node;
         }
         let Some(plan) = cpp_plan(g, &need, start, rng, shuffle) else {
+            diag_unmet(exec, g, &need, "no_plan");
             return;
         };
         if matches!(execute(exec, g, &plan, req), Step::Done) && need_fn(exec, g) == need {
+            diag_unmet(exec, g, &need, "no_progress");
             return; // 進まなかった(必須辺に到達できない等)
         }
     }
+    let need = need_fn(exec, g);
+    diag_unmet(exec, g, &need, "loop_end");
 }
 
 fn s0<D: ImeDriver>(exec: &mut Executor<D>, g: &Graph, req: &Req) {
