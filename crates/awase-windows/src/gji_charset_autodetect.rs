@@ -167,6 +167,9 @@ impl ModeKeyCandidate {
 ///
 /// ADR-191: この分類は、bug report（ADR-148）の診断表示と較正結果の保存にだけ使う。awaseが
 /// この結果からIMEの開閉を代行・上書きすることはない（`gji_thumb_key_ime_toggle`設定と採用機構は撤去済み）。
+///
+/// 注（ADR-209、実機X1）: `MSIME`プリセットで「表を優先する」前提は否定された。GJI はプリセットのとき
+/// `custom_keymap_table`を読まない。この分類は診断用で、予測（`key_effect_predictor`）とは独立。
 #[must_use]
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn classify_mode_key_ime_action(

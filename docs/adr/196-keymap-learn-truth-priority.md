@@ -218,3 +218,6 @@ ADR-195 round3 Blocker B-1は「読める窓でしか測れない自己検証だ
 - `docs/adr/196-opus-review-round3.md`（opus-adversarial-consult round3の指摘全文。Blocker0件、設計の骨格が収束したと判定）
 - `docs/adr/196-opus-review-round4.md`（opus-adversarial-consult round4の指摘全文。round3の箇条書き挿入による内部参照番号ずれ3箇所を検出、Blocker0件）
 - `docs/adr/196-opus-review-round5.md`（opus-adversarial-consult round5の指摘全文。**最終判定: Blocker0件・Must-fix0件、実装着手可**）
+
+
+> 注(2026-09-30、ADR-209): 読めない窓（TSF）の、閉状態×変換のセルだけは窓別の規則を学習表より先に引く（学習の入力先が素の EDIT で窓の種類を表せないため）。本ADRの「学習結果を優先」の例外。
