@@ -618,34 +618,6 @@ impl ImeStateHub {
         true
     }
 
-    /// idle-conv-check の conv 観測由来の「engine ON 同期」（`EngineSync::SetOpen`、
-    /// `kp_apply_conv_engine_sync`）が呼ぶ。`last_intent`/`desired_open` は書かない
-    /// （conv 観測は明示操作ではなく、`desired_open := effective_open()` の循環 echo になる）。
-    ///
-    /// 呼び出し時点の副作用だけを残す（BUG-51 追補 v3）: 検出状態のリセット、`ImeApplyRequested`
-    /// （世代の記録）、`last_explicit_ime_action_ms` の更新（idle-conv-check が遷移途中の conv 値を
-    /// 汚染された観測として拾わないための抑制窓。Opus レビュー 2026-08-04）。
-    /// 旧 `handle_engine_activation_sync`（`SetOpenOrigin::ActivationSync` 用）から、撤去した
-    /// `ImeEvent::EngineActivationSync`（reducer は何も書かない no-op）・chord/settle フィルタ
-    /// （呼び出し元は常に `target=true`・`focus_transition_was_pending=false` を渡すので不到達）を除いた。
-    /// ADR-213 P2c。
-    pub(crate) fn handle_conv_engine_on_sync(
-        &mut self,
-        generation: ApplyGeneration,
-        tick_ms: TickMs,
-    ) {
-        self.on_set_open_requested();
-        self.dispatch_event(
-            ImeEvent::ImeApplyRequested {
-                target: true,
-                generation,
-                ctrl_held: false,
-            },
-            tick_ms,
-        );
-        self.last_explicit_ime_action_ms = tick_ms.0;
-    }
-
     /// Ctrl 系 KeyUp で chord barrier を解除する。
     ///
     /// パイプラインが chord 状態を直接参照しなくて済むよう、
@@ -1108,6 +1080,17 @@ impl ImeStateHub {
     /// IME トグルが実際に適用されたことを記録する。
     pub(crate) fn on_ime_toggled(&mut self) {
         self.reset_detect_state();
+    }
+
+    /// conv 観測由来の engine ON 同期（`EngineSync::SetOpen`）が陽性証拠を得たとき、
+    /// `PanicReset` ガードだけを解除する（他 reason のガードは残す）。
+    ///
+    /// 旧 `handle_conv_engine_on_sync` が `on_set_open_requested` 経由で全ガードを
+    /// 消していたうちの、PanicReset 解除だけを引き継ぐ（ADR-213 P2d-1）。
+    pub(crate) fn release_panic_reset_guard_on_positive_evidence(&mut self) {
+        self.shadow_model
+            .force_guards
+            .remove(ForceOnReason::PanicReset);
     }
 
     /// Engine の SetOpen リクエスト直後に呼ぶ。
@@ -2142,24 +2125,22 @@ mod tests {
         );
     }
 
-    // ── handle_conv_engine_on_sync（BUG-48/BUG-51 追補 v3、ADR-213 P2c）: ──
-    // conv 観測由来の engine ON 同期は last_intent/desired_open/IntentStore を書かない。
+    // ── release_panic_reset_guard_on_positive_evidence（ADR-213 P2d-1）: ──
+    // conv 観測由来の engine ON 同期は PanicReset ガードだけを外し、
+    // last_intent/desired_open/IntentStore は書かない。
 
-    // handle_engine_set_open との核心的な違い: last_intent が既にある間は
-    // desired_open を一切書き換えない（BUG-48 修正の中心的な不変条件）。
     #[test]
-    fn handle_conv_engine_on_sync_never_sets_last_intent_or_desired_open() {
+    fn release_panic_guard_never_sets_last_intent_or_desired_open() {
         let mut ps = ps_with_shadow(false, Some(UserIntentSource::PhysicalImeKey), true);
-        ps.ime
-            .handle_conv_engine_on_sync(ApplyGeneration::new(1).unwrap(), TickMs(0));
+        ps.ime.release_panic_reset_guard_on_positive_evidence();
         assert_eq!(
             ps.ime.model().last_intent.as_ref().map(|i| i.target),
             Some(false),
-            "conv 由来の engine ON 同期はユーザーの明示的な OFF 意図 (last_intent) を上書きしない"
+            "PanicReset ガード解除はユーザーの明示的な OFF 意図 (last_intent) を上書きしない"
         );
         assert!(
             !ps.ime.model().desired_open(),
-            "conv 由来の engine ON 同期は desired_open も一切書き換えない"
+            "PanicReset ガード解除は desired_open を書き換えない"
         );
         assert!(
             !ps.ime.effective_open(),
@@ -2167,26 +2148,40 @@ mod tests {
         );
     }
 
-    // 修正1a 回帰（BUG-51 追補 v3）: conv 由来の RomajiRecovered 同期は last_intent/desired_open だけでなく IntentStore にも記録されない
-    // こと。v1 のままだと DirectInput/RomajiRecovered が UserImeSetIntent{Command}
-    // を dispatch し IntentStore に「壊れた conv 読み由来の偽の明示意図」が
-    // FocusChanged を生き延びて残ってしまっていた（pre-mortem #1 角度2）。
     #[test]
-    fn handle_conv_engine_on_sync_does_not_record_intent_store_entry() {
+    fn release_panic_guard_removes_only_panic_reset_reason() {
+        let mut ps = PlatformState::new();
+        let guard = |reason| ForceGuard {
+            reason,
+            expires_at: None,
+            generation: 0,
+        };
+        ps.ime
+            .shadow_model
+            .force_guards
+            .add(guard(ForceOnReason::PanicReset));
+        ps.ime
+            .shadow_model
+            .force_guards
+            .add(guard(ForceOnReason::ProfilePolicy));
+        ps.ime.release_panic_reset_guard_on_positive_evidence();
+        assert_eq!(
+            ps.ime.shadow_model.force_guards.active_reason(),
+            Some(ForceOnReason::ProfilePolicy),
+            "PanicReset だけが外れ、ProfilePolicy ガードは残る"
+        );
+    }
+
+    #[test]
+    fn release_panic_guard_does_not_record_intent_store_entry() {
         let mut ps = PlatformState::new();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
-        ps.ime
-            .handle_conv_engine_on_sync(ApplyGeneration::new(1).unwrap(), TickMs(0));
-        // IntentStore にエントリが無いことを直接確認する:
-        // conv 観測が effective_open() を反転させても、IntentStore 側からの
-        // 上書きは発生しない（= 生の shadow_model の値がそのまま反映される）。
+        ps.ime.release_panic_reset_guard_on_positive_evidence();
         dispatch_conv_open_inference(&mut ps, true, 100);
         assert_eq!(
             ps.ime.effective_open_at(TickMs(100)),
             ps.ime.model().effective_open(),
-            "conv 由来の engine ON 同期は IntentStore に記録しないため、hub 版と生の \
-             ImeModel 版の effective_open() は一致し続ける（IntentStore 由来の \
-             上書きが存在しないことの証拠）"
+            "IntentStore に記録しないため、hub 版と生の ImeModel 版の effective_open() は一致し続ける"
         );
     }
 
