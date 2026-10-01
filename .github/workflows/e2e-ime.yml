@@ -383,6 +383,15 @@ jobs:
                   stress=f'--form={form} --mode=startup --startup-ime={state} --layout=@REPO@/layout/nicola_keytop.yab{msime}')
               for ime_name, ime, km, msime in (('gji', 'gji', 1, ''), ('msime', 'msime', 1, ' --msime'))
               for app, form in (('edit', 'edit'), ('chrome', 'chromepage')) for state in ('on', 'off')],
+            # MS-IME×実 Chrome の ON 起動で最初の文字が ka になる件の切り分け(sc-startup-msime-chrome-on が基準。すべて observe、runs=8 で割合を見る)。
+            # noawase=awase なしで生の k,a を打つ(結果が ka なら ハーネスの ON 前提が崩れている=環境側 / か なら awase 起因)。
+            # precheck=打鍵直前の IMC_GETOPENSTATUS(open_before)を記録し、ka(FAIL)⇔closed が成り立つかと、閉だった回が ka(awase が強制送信)か raw(生キー=Engine 停止)かを見る(text_class)。
+            # gated=open_before が closed/unknown の回を INVALID にする。ここで FAIL が出れば『IME が開いているのに ka』=awase 側の欠陥。
+            # norefocus2=2 回目の refocus() を省く(refocus で IME が閉に戻る説 と ハーネスの ON が効いていない説の切り分け)。
+            *[cfg(f'sc-startup-msime-chrome-on-{v}', 'observe', check='startup', ime='msime', keymap=1, runs=8, wait=180, awase=aw, checkargs=ca,
+                  stress=f'--form=chromepage --mode=startup --startup-ime=on --layout=@REPO@/layout/nicola_keytop.yab --msime{ex}')
+              for v, aw, ca, ex in (('noawase', 'false', '--evidence', ' --no-awase'), ('precheck', 'true', '--evidence', ''),
+                                    ('gated', 'true', '--gate --evidence', ''), ('norefocus2', 'true', '--evidence', ' --startup-skip-refocus2'))],
             *[cfg(f'sc-driftrecovery-{ime_name}-tsf', 'observe', check='driftrecovery', ime=ime, keymap=km, runs=1, wait=240,
                   stress=f'--form=tsf --mode=drift-on --trials=10 --layout=@REPO@/layout/nicola_keytop.yab{msime}')
               for ime_name, ime, km, msime in (('gji', 'gji', 1, ''), ('msime', 'msime', 1, ' --msime'))],
@@ -519,7 +528,8 @@ jobs:
             configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-'))]
+            # sc-startup-msime-chrome-on-*(切り分け実験、各 runs=8)も既定から除く(足すと既定が 256 を超える)。only で明示して回す。
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'sc-startup-msime-chrome-on-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])
@@ -922,7 +932,7 @@ jobs:
               python tools\e2e\ime_key_matrix\check_drift_recovery.py --json driftrec.json dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
             }
           } elseif ('${{ matrix.cfg.check }}' -eq 'startup') {
-            python tools\e2e\ime_key_matrix\check_startup.py --json startup.json dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
+            python tools\e2e\ime_key_matrix\check_startup.py --json startup.json ${{ matrix.cfg.checkargs }} dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'toggle') {
             python tools\e2e\ime_key_matrix\check_toggle.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'charthumb') {
@@ -1100,12 +1110,12 @@ jobs:
               if os.path.exists(f):
                 line = next((l for l in reversed(open(f, encoding='utf-8', errors='replace').read().splitlines()) if l.startswith('STARTUP:')), '')
               kv = dict(re.findall(r'(\w+)=(\S+)', line))
-              startup_rows.append(f"| {c['name']} | {run} | {kv.get('verdict','欠落')} | {kv.get('drift','-')} | {kv.get('align','-')} | {kv.get('reinit','-')} | {kv.get('imm32_default_on','-')} | {kv.get('first_engine_ms','-')} |")
+              startup_rows.append(f"| {c['name']} | {run} | {kv.get('verdict','欠落')} | {kv.get('drift','-')} | {kv.get('align','-')} | {kv.get('reinit','-')} | {kv.get('imm32_default_on','-')} | {kv.get('first_engine_ms','-')} | {kv.get('open_before','-')} | {kv.get('text_class','-')} |")
           if startup_rows:
             out += ["", "## D1 起動状態・最初の打鍵(sc-startup-*)", "",
-                    "Imm32 default ON は観察件数で合否には含めない。engine-input は awase 起動から最初の入力までの ms。", "",
-                    "| 構成 | 回 | 判定 | drift(30秒) | startup-align | OFF直後reinit | Imm32 default ON | engine-input ms |",
-                    "|---|---|---|---|---|---|---|---|"] + startup_rows
+                    "Imm32 default ON は観察件数で合否には含めない。engine-input は awase 起動から最初の入力までの ms。open_before=打鍵直前の IMC_GETOPENSTATUS(open/closed/unknown)、text_class=打鍵結果(kana=か / ka=ローマ字リテラル / raw=NICOLA の生キー文字 / other)。", "",
+                    "| 構成 | 回 | 判定 | drift(30秒) | startup-align | OFF直後reinit | Imm32 default ON | engine-input ms | open_before | text_class |",
+                    "|---|---|---|---|---|---|---|---|---|---|"] + startup_rows
           # drift correction 観測(cal-drift-*、ADR-191 09-T4): result.txt 末尾の DRIFT_CORRECTION 行を表にする。
           drift_rows = []
           for c in configs:
