@@ -66,6 +66,9 @@ pub struct ClassifiedEvent {
     /// 素通しして良いか（無変換/変換等）／してはいけないか（Alt 等、
     /// 単独タップで OS 側の副作用があるキー）を判定するために使う。
     pub modifier_key: Option<ModifierKey>,
+    /// 元の `RawKeyEvent::press_id`（非リピート KeyDown だけ Some）。Engine は中身を見ず、単独タップの確定
+    /// （`PendingThumbData::press_id` 経由）まで運んで `ImeEffect::SetOpen.press` に載せる（ADR-208 決定2 D1）。
+    pub press_id: Option<crate::types::PressId>,
 }
 
 impl ClassifiedEvent {
@@ -81,6 +84,7 @@ impl ClassifiedEvent {
             injected: false,
             is_ime_control: false,
             modifier_key: None,
+            press_id: None,
         }
     }
 }
@@ -494,6 +498,10 @@ pub struct PendingThumbData {
     /// `resolve_pending_thumb_as_single`は`ModeKeyConfig`のPassthrough（優先順位3）を抑止する
     /// （`suppresses_solo_output`）。Idle起点の親指ではfalse。
     pub after_char_flush: bool,
+    /// この親指の保留開始 KeyDown の押下 ID（`ClassifiedEvent::press_id`）。KeyUp/タイムアウトで単独タップが
+    /// 確定して IME 開閉を要求するとき、`ImeEffect::SetOpen.press` へ運ぶ（確定点は KeyDown ではないので、ここで保持する。
+    /// ADR-208 決定2 D1）。自動リピートの Down は `None`。
+    pub press_id: Option<crate::types::PressId>,
 }
 
 impl PendingThumbData {
@@ -506,6 +514,7 @@ impl PendingThumbData {
             timestamp: ev.timestamp,
             modifier_key: ev.modifier_key,
             after_char_flush: false,
+            press_id: ev.press_id,
         }
     }
 
@@ -651,6 +660,16 @@ impl From<GuardAction> for SoloTapAction {
             GuardAction::Passthrough => Self::Passthrough,
         }
     }
+}
+
+/// `NicolaFsm::ime_open_requested` のワンショット要求（無変換/変換の単独タップが要求する IME open 軸操作）。
+///
+/// `press` は単独タップの保留開始 KeyDown の押下 ID（`PendingThumbData::press_id`）。確定点（KeyUp/タイムアウト/次のキー）
+/// は KeyDown と別のイベントなので、`Engine` が `ImeEffect::SetOpen.press` に載せられるようここで運ぶ（ADR-208 決定2 D1）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImeOpenRequest {
+    pub action: crate::types::ShadowImeAction,
+    pub press: Option<crate::types::PressId>,
 }
 
 /// Space/Enter 親指キー（IME の正規機能を持つキー）の設定（ADR-092 決定B）。
@@ -1044,6 +1063,7 @@ mod tests {
             is_left,
             timestamp: 2000,
             modifier_key: None,
+            press_id: None,
             after_char_flush: false,
         }
     }
@@ -1324,6 +1344,7 @@ mod tests {
             injected: false,
             is_ime_control: false,
             modifier_key: None,
+            press_id: None,
         };
         assert_eq!(ev.key_class, KeyClass::Char);
         assert!(ev.pos.is_some());
@@ -1341,6 +1362,7 @@ mod tests {
             injected: false,
             is_ime_control: false,
             modifier_key: None,
+            press_id: None,
         };
         assert!(ev.key_class.is_thumb());
         assert!(ev.pos.is_none());
@@ -1357,6 +1379,7 @@ mod tests {
             injected: false,
             is_ime_control: true,
             modifier_key: None,
+            press_id: None,
         };
         assert!(ev.is_ime_control);
     }
@@ -1453,6 +1476,7 @@ mod tests {
             injected: false,
             is_ime_control: false,
             modifier_key: None,
+            press_id: None,
         };
         let pa = ParseAction::ReduceAndContinue {
             actions: smallvec::smallvec![KeyAction::Suppress],

@@ -424,7 +424,10 @@ impl Engine {
                 ActivationState::Inactive(InactiveReason::NotRomajiInput)
             );
             if !suppress_set_open && emit_set_open {
-                effects.push(Effect::Ime(ImeEffect::SetOpen { open: now_active }));
+                effects.push(Effect::Ime(ImeEffect::SetOpen {
+                    open: now_active,
+                    press: None,
+                }));
             }
             // NotRomajiInput の場合は SetOpen が不要。
             // ユーザーが選択した kana/katakana モードをそのまま維持する。
@@ -578,15 +581,26 @@ impl Engine {
     /// 当初案の `SyncKey` witness は無変換/変換の毎打鍵で誤発火する致命的な
     /// 欠陥があった）。
     fn apply_ime_open_request(&mut self, decision: &mut Decision, ctx: &InputContext) {
-        let Some(action) = self.adapter.take_ime_open_requested() else {
+        let Some(request) = self.adapter.take_ime_open_requested() else {
             return;
         };
-        let new_open = action.resolve(ctx.ime_on);
-        tracing::info!("IME open axis delegated (solo tap, key semantics absorption) → {new_open}");
+        let new_open = request.action.resolve(ctx.ime_on);
+        tracing::info!(
+            "IME open axis delegated (solo tap, key semantics absorption) → {new_open} press={:?}",
+            request.press
+        );
         // ime_on/ime_off コンボキーと同じ `ime_set_open_effects` を経由する
         // （`prev_activation` を進めて次打鍵での重複 SetOpen を防ぐため必須、
         // 直接 push_effect してはならない。上のdoc参照）。
-        for effect in self.ime_set_open_effects(ctx, new_open) {
+        // ADR-208 決定2 D1: 単独タップの確定点（KeyUp/タイムアウト/次のキー）は保留開始 KeyDown と別のイベントなので、
+        // 保留開始の押下 ID（`PendingThumbData::press_id`）を `SetOpen.press` へ運ぶ。
+        let mut effects = self.ime_set_open_effects(ctx, new_open);
+        for effect in &mut effects {
+            if let Effect::Ime(ImeEffect::SetOpen { press, .. }) = effect {
+                *press = request.press;
+            }
+        }
+        for effect in effects {
             decision.push_effect(effect);
         }
     }
@@ -807,7 +821,10 @@ impl Engine {
         let target_state = self.compute_state(&pseudo_ctx);
         let effects = self.transition_activation(target_state, true);
         if effects.is_empty() {
-            decision.push_effect(Effect::Ime(ImeEffect::SetOpen { open: true }));
+            decision.push_effect(Effect::Ime(ImeEffect::SetOpen {
+                open: true,
+                press: None,
+            }));
         } else {
             for e in effects {
                 decision.push_effect(e);
@@ -844,7 +861,7 @@ impl Engine {
         if was_active == now_active {
             // 状態遷移なし → transition_activation は空 effects を返す。
             // IME 制御の意図 (SetOpen) は明示的に追加する。
-            effects.push(Effect::Ime(ImeEffect::SetOpen { open }));
+            effects.push(Effect::Ime(ImeEffect::SetOpen { open, press: None }));
         }
         effects
     }
@@ -1071,7 +1088,12 @@ impl Engine {
             return Some(Decision::consumed());
         }
         let m = self.match_special_keys(ctx, event)?;
-        Some(self.apply_special_key_match(&m, ctx))
+        let mut decision = self.apply_special_key_match(&m, ctx);
+        // ADR-208 決定2 D1: コンボ（Ctrl+変換等）・`keys.ime_*` の `SetOpen` に、その打鍵の押下 ID を載せる。
+        // 自動リピートの Down は `event.press_id` が `None` なので載らない（特殊キー照合はリピートでも一致するが、
+        // 従来どおり `applied` の already-matched 省略に任せる）。
+        decision.stamp_set_open_press(event.press_id);
+        Some(decision)
     }
 }
 

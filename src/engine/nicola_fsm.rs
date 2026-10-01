@@ -15,9 +15,10 @@ use crate::yab::{YabFace, YabLayout, YabValue};
 
 use super::consecutive_counter::ConsecutiveSoloCounter;
 use super::fsm_types::{
-    BypassReason, ClassifiedEvent, EngineState, Face, IdleIntent, KeyClass, ModeKeyConfig,
-    OutputUpdate, ParseAction, PendingKey, PendingThumbData, ResolvedAction, SoloTapAction,
-    TextKeyConfig, ThumbRawVkEmission, ThumbSide, TimerIntent, TIMER_PENDING, TIMER_SPECULATIVE,
+    BypassReason, ClassifiedEvent, EngineState, Face, IdleIntent, ImeOpenRequest, KeyClass,
+    ModeKeyConfig, OutputUpdate, ParseAction, PendingKey, PendingThumbData, ResolvedAction,
+    SoloTapAction, TextKeyConfig, ThumbRawVkEmission, ThumbSide, TimerIntent, TIMER_PENDING,
+    TIMER_SPECULATIVE,
 };
 use super::retro_eval_stats::{self, RetroEvalStats};
 use super::timing::{self, DecisionPhase};
@@ -303,7 +304,7 @@ pub struct NicolaFsm {
     /// `engine_off_requested`（`:119`、`take_engine_off_requested`）と同型。
     /// `NicolaFsm`/`ParseAction`/`ResolvedAction` は IME への副作用を出す経路を
     /// 持たないため、このワンショットチャネルだけが唯一の伝達経路になる。
-    ime_open_requested: Option<crate::types::ShadowImeAction>,
+    ime_open_requested: Option<ImeOpenRequest>,
 
     /// `left_thumb_key`/`right_thumb_key` のいずれかが変換 (`VK_CONVERT`) に
     /// 割り当てられている場合、その VK コード。`muhenkan_vk` と同様の扱い。
@@ -598,9 +599,7 @@ impl NicolaFsm {
                         None,
                     ),
                 };
-                if ime_open_request.is_some() {
-                    self.ime_open_requested = ime_open_request;
-                }
+                self.request_ime_open(ime_open_request, thumb.press_id);
                 self.update_history_imprecise(
                     resolved.output,
                     self.last_key_timestamp.unwrap_or(0),
@@ -888,8 +887,20 @@ impl NicolaFsm {
     /// `resolve_pending_thumb_as_single` がセットした IME open 軸への副作用
     /// 要求を取り出す（1ショット、ADR-092 決定D Step4b）。`Engine::on_input`/
     /// `on_timeout` が呼ぶ。
-    pub const fn take_ime_open_requested(&mut self) -> Option<crate::types::ShadowImeAction> {
+    pub const fn take_ime_open_requested(&mut self) -> Option<ImeOpenRequest> {
         self.ime_open_requested.take()
+    }
+
+    /// `resolve_pending_thumb_as_single` の IME open 軸要求（あれば）を、保留開始 KeyDown の押下 ID つきで
+    /// ワンショットへ積む（ADR-208 決定2 D1）。
+    const fn request_ime_open(
+        &mut self,
+        action: Option<crate::types::ShadowImeAction>,
+        press: Option<crate::types::PressId>,
+    ) {
+        if let Some(action) = action {
+            self.ime_open_requested = Some(ImeOpenRequest { action, press });
+        }
     }
 
     /// この`PendingThumb`をタイムアウトでは単独確定せず、親指KeyUpか次のキーで解決するか。
@@ -1608,9 +1619,7 @@ impl NicolaFsm {
                     self.phys.composing,
                     thumb.suppresses_solo_output(),
                 );
-                if ime_open_request.is_some() {
-                    self.ime_open_requested = ime_open_request;
-                }
+                self.request_ime_open(ime_open_request, thumb.press_id);
                 resolved.into_reduce_and_continue(*ev)
             }
         }
@@ -1735,6 +1744,7 @@ impl NicolaFsm {
                     timestamp: ev.timestamp,
                     modifier_key: ev.modifier_key,
                     after_char_flush: false,
+                    press_id: ev.press_id,
                 },
             );
             return ParseAction::Shift {
@@ -1802,9 +1812,7 @@ impl NicolaFsm {
             self.phys.composing,
             thumb.suppresses_solo_output() || char_has_thumb_face,
         );
-        if ime_open_request.is_some() {
-            self.ime_open_requested = ime_open_request;
-        }
+        self.request_ime_open(ime_open_request, thumb.press_id);
         resolved.into_reduce_and_continue(*ev)
     }
 
@@ -1829,9 +1837,7 @@ impl NicolaFsm {
             self.phys.composing,
             thumb.suppresses_solo_output(),
         );
-        if ime_open_request.is_some() {
-            self.ime_open_requested = ime_open_request;
-        }
+        self.request_ime_open(ime_open_request, thumb.press_id);
         resolved.into_reduce_and_continue(*ev)
     }
 
@@ -2733,9 +2739,7 @@ impl NicolaFsm {
             self.phys.composing,
             thumb.suppresses_solo_output(),
         );
-        if ime_open_request.is_some() {
-            self.ime_open_requested = ime_open_request;
-        }
+        self.request_ime_open(ime_open_request, thumb.press_id);
         if precise {
             self.update_history(thumb_resolved.output, now);
         } else {
@@ -2752,17 +2756,21 @@ impl NicolaFsm {
     fn handle_key_up_pending(&mut self, event: &RawKeyEvent) -> Resp {
         let old_state = std::mem::replace(&mut self.state, EngineState::Idle);
 
+        let mut thumb_press = None;
         let (resolved, ime_open_request) = match old_state {
             EngineState::PendingChar(pending) => {
                 (self.resolve_pending_char_as_single(&pending), None)
             }
-            EngineState::PendingThumb(thumb) => self.resolve_pending_thumb_as_single(
-                thumb.scan_code,
-                thumb.vk_code,
-                thumb.modifier_key,
-                self.phys.composing,
-                thumb.suppresses_solo_output(),
-            ),
+            EngineState::PendingThumb(thumb) => {
+                thumb_press = thumb.press_id;
+                self.resolve_pending_thumb_as_single(
+                    thumb.scan_code,
+                    thumb.vk_code,
+                    thumb.modifier_key,
+                    self.phys.composing,
+                    thumb.suppresses_solo_output(),
+                )
+            }
             EngineState::Idle
             | EngineState::PendingCharThumb { .. }
             | EngineState::SpeculativeChar(_) => {
@@ -2773,9 +2781,7 @@ impl NicolaFsm {
                 Self::no_op_resolution()
             }
         };
-        if ime_open_request.is_some() {
-            self.ime_open_requested = ime_open_request;
-        }
+        self.request_ime_open(ime_open_request, thumb_press);
         self.update_history(resolved.output, event.timestamp);
         let mut result = resolved.actions;
         self.append_key_up_for(&mut result, event.scan_code);
@@ -2883,9 +2889,7 @@ impl NicolaFsm {
             composing,
             thumb.suppresses_solo_output(),
         );
-        if ime_open_request.is_some() {
-            self.ime_open_requested = ime_open_request;
-        }
+        self.request_ime_open(ime_open_request, thumb.press_id);
         self.update_history_imprecise(resolved.output, self.last_key_timestamp.unwrap_or(0));
         self.build_response(resolved.actions, true, TimerIntent::CancelAll)
     }
@@ -3836,6 +3840,7 @@ mod tests {
             is_left: true,
             timestamp: 1_000,
             modifier_key: None,
+            press_id: None,
             after_char_flush: false,
         }
     }
