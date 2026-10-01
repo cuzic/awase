@@ -304,6 +304,16 @@ pub enum JournalEntry {
         outcome: awase::platform::ImeOpenOutcome,
         reason: crate::state::ime_event::OpenApplyReason,
     },
+    /// 明示キー押下の書き込みの予約（`ImeStateHub::claim_press_write`、ADR-208 決定2 D1）。
+    ///
+    /// `verdict` は `PressClaim::label`（`fresh`/`duplicate`/`conflict_engine_wins`/`conflict_kept`）。同じ押下（`press`）の
+    /// 別経路が衝突した・二重送信を省いたことを、押下 ID つきで後から突合できる。押下 ID の無い order（`unpressed`）は記録しない。
+    PressWriteClaim {
+        press: u64,
+        open: bool,
+        source: &'static str,
+        verdict: &'static str,
+    },
     /// `ImeEvent::FocusChanged` と同じタイミングで、reducer に渡さない診断専用の
     /// アプリ名付きフォーカス遷移を記録する。
     FocusTransition {
@@ -626,6 +636,7 @@ impl JournalEntry {
             | Self::GjiReinitRetryCompleted { .. } => LaneKind::Timing,
             Self::ImeActuation { .. }
             | Self::ActuationDecision { .. }
+            | Self::PressWriteClaim { .. }
             | Self::DriftGiveUpDiagnostic { .. }
             | Self::DriftGiveUpIntervalEnded { .. }
             | Self::ConvClassifyCall { .. }
@@ -1074,6 +1085,23 @@ impl JournalEntry {
                     outcome = ime_open_outcome_str(*outcome),
                     reason = open_apply_reason_str(*reason),
                     "ime open applied"
+                );
+            }
+            Self::PressWriteClaim {
+                press,
+                open,
+                source,
+                verdict,
+            } => {
+                tracing::debug!(
+                    target: "awase::journal",
+                    seq,
+                    elapsed_ms,
+                    press,
+                    open,
+                    source,
+                    verdict,
+                    "press write claim"
                 );
             }
             Self::FocusTransition {

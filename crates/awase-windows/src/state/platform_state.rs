@@ -104,6 +104,10 @@ pub(crate) struct ImeStateHub {
     /// `ApplyGeneration` 専用アロケータ（ADR-106 決定1）。`event_log.next_seq()`
     /// から独立しており、診断ログの記録有無と generation の一意性が無関係になる。
     generation_alloc: super::GenerationAllocator,
+
+    /// 「この押下で既に書いた」の予約（`last_written_press`、ADR-208 決定2 D1）。belief ではない
+    /// （`ImeModel` の外。`ImeEvent` を介さず、order の発行時点で `claim_press_write` が更新する）。
+    press_ledger: super::press_ledger::PressLedger,
 }
 
 /// [`ImeStateHub::capture_poll_state`] で取得する IME ポーリング入力スナップショット。
@@ -138,6 +142,7 @@ impl ImeStateHub {
             last_external_change_ms: 0,
             intent_override_logged: std::cell::Cell::new(false),
             generation_alloc: super::GenerationAllocator::new(),
+            press_ledger: super::press_ledger::PressLedger::default(),
         }
     }
 }
@@ -185,6 +190,47 @@ impl ImeStateHub {
         self.journal.record(JournalEntry::ImeEvent {
             event: event_for_journal,
         });
+    }
+
+    /// 明示キー押下 `press` の向き `open` の書き込みを**予約**する（order の発行直前に呼ぶ。ADR-208 決定2 D1）。
+    ///
+    /// ImmCross の書き込みは async で完了が WM 経由で後から届くので、完了時でなく発行時に予約する
+    /// （同じ打鍵の Engine の `SetOpen` が先に評価されて二重に送るのを防ぐ）。`UnsafeToToggle`/`Failed` で書けなくても
+    /// 予約は解かない（同一押下内の再試行はしない。次の押下で直る）。判定は純粋な [`PressLedger::claim`]。
+    /// 戻り値の `writes()` が `false`（同じ押下で既に書いた）なら、呼び出し側は order を発行せず書かない。
+    /// 押下 ID の無い order（`press=None`）は記録に触れず `Unpressed`（従来どおり `applied` の省略に任せる）。
+    ///
+    /// 衝突（同じ押下で向きが違う経路）はログ（info）と journal に残す。優先順位は Engine の明示コンボ > shadow
+    /// （`state/press_ledger.rs` のモジュール doc）。
+    pub(crate) fn claim_press_write(
+        &mut self,
+        press: Option<awase::types::PressId>,
+        open: bool,
+        source: super::press_ledger::PressSource,
+    ) -> super::press_ledger::PressClaim {
+        let claim = self.press_ledger.claim(press, open, source);
+        if let Some(press) = press {
+            if claim.is_conflict() {
+                tracing::info!(
+                    "[press-ledger] 同一押下で向きが違う書き込み: press={press} source={} open={open} → {}",
+                    source.label(),
+                    claim.label()
+                );
+            } else {
+                tracing::debug!(
+                    "[press-ledger] press={press} source={} open={open} → {}",
+                    source.label(),
+                    claim.label()
+                );
+            }
+            self.journal.record(JournalEntry::PressWriteClaim {
+                press: press.get(),
+                open,
+                source: source.label(),
+                verdict: claim.label(),
+            });
+        }
+        claim
     }
 
     /// shadow_model から派生した最新の explicit intent。

@@ -319,6 +319,11 @@ pub struct ActuationOrder {
     warrant: Option<OpenWarrant>,
     /// どの入口が起案したか（ADR-082 `EventOrigin` と journal を揃える）。
     origin: EventOrigin,
+    /// この order を起こしたユーザー打鍵（非リピート KeyDown）の押下 ID（ADR-208 決定2 D1）。
+    /// `Some` の order は明示キー押下の書き込みで、(1) view の `shadow_on` を未知にして `applied` の already-matched
+    /// 省略を外し、(2) ImmCross の書き込みタイムアウトを「未確定」として追い送りしない。`None` はリピート・
+    /// drift correction 等（従来どおり）。
+    press: Option<awase::types::PressId>,
 }
 
 impl ActuationOrder {
@@ -339,7 +344,21 @@ impl ActuationOrder {
             open,
             warrant: issue_open_warrant(open, target, ctx),
             origin,
+            press: None,
         }
+    }
+
+    /// この order を起こしたユーザー打鍵の押下 ID を載せる（ADR-208 決定2 D1）。`None` は何も変えない。
+    /// 押下 ID の予約（`ImeStateHub::claim_press_write`）は order の**発行前**に済ませること。
+    pub fn with_press(mut self, press: Option<awase::types::PressId>) -> Self {
+        self.press = press;
+        self
+    }
+
+    /// この order を起こした押下の ID（`None` = リピート・drift correction 等）。
+    #[must_use]
+    pub const fn press(&self) -> Option<awase::types::PressId> {
+        self.press
     }
 
     /// この actuation が目指す open 値。
