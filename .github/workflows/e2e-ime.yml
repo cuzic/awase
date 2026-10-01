@@ -332,6 +332,15 @@ jobs:
                   chrome=f'--initial --settle=800{flags}')
               for n, exp, ime, aw, flags in (('gji', 'pass', 'gji', 'true', ''), ('gji-noawase', 'pass', 'gji', 'false', ' --no-awase'),
                                              ('msime', 'observe', 'msime', 'true', ' --msime'), ('msime-noawase', 'pass', 'msime', 'false', ' --no-awase --msime'))],
+            # ADR-213 P2d-2 の回帰ガード: 実 Chrome を一度別窓(ハーネスの helper 窓)へフォーカス外し→前面化した直後 t=50/150/300ms に
+            # 物理 Ctrl+変換(keys.ime_on の既定コンボ。マーカー付き注入で物理 Ctrl として認識される)を直接入力(IME OFF)から1回押し、
+            # +800ms で k,a を打って受け付けられたか(かな=NICOLA 文字、`ka`=無視=settle 中に SetOpen を落とす旧挙動の再発)を見る(1構成 5 回)。
+            # t50 は awase が focus を検知した約 20ms 後(旧 strip は 5/5 が落ちて IME が開かなかった)。focus を外せなかった回は INVALID(判定不能)。
+            # 名前は sc-settle-explicit-ctrlhenkan-<ime>-t<T>。docs/adr/213-*.md 決定5「P2d-2 の実測結果」、docs/experiments.md エントリ 30。
+            *[cfg(f'sc-settle-explicit-ctrlhenkan-{imen}-t{t}', 'pass', check='chromeprobe', keymap=1, runs=1, wait=240, ime=ime,
+                  chrome=f'--settle-explicit=ctrl+1c --settle-at={t} --repeat=5 --settle=800{flags}')
+              for imen, ime, flags in (('gji', 'gji', ''), ('msime', 'msime', ' --msime'))
+              for t in (50, 150, 300)],
             cfg('sc-t1e-chrome-f13-noawase', 'observe', check='chromeprobe', keymap=0, runs=1, wait=400, awase='false',
                 chrome='--f13 --no-awase --repeat=2 --settle=800',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff|Conversion,F13,IMEOff'),
@@ -899,6 +908,14 @@ jobs:
             python tools\e2e\ime_key_matrix\check_kanji_role.py --expect=$kexp dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'chromeprobe') {
             python tools\e2e\ime_key_matrix\check_chrome_probe.py dist\chrome_probe.log | Tee-Object -FilePath result.txt
+            $cprc = $LASTEXITCODE
+            # focus 遷移まわりのログ(settle 中に SetOpen を落としていないか=`[focus-settle] SetOpen … stripped` が 0 件か)も結果に添える。
+            if (Test-Path dist\awase.log) {
+              $fs = @(Select-String -Path dist\awase.log -Pattern 'focus-settle|\[focus|FocusChanged|focus_changed' | ForEach-Object { $_.Line })
+              "focus 関連ログ件数(focus-settle を含む)=$($fs.Count)" | Tee-Object -FilePath result.txt -Append
+              $fs | Select-Object -First 30 | Tee-Object -FilePath result.txt -Append
+            }
+            $global:LASTEXITCODE = $cprc
           } elseif ('${{ matrix.cfg.check }}' -eq 'resync') {
             python tools\e2e\ime_key_matrix\check_resync.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'collect') {

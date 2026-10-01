@@ -19,7 +19,7 @@ def main():
     counts = {"PASS": 0, "RECOVER": 0, "FAIL": 0, "INVALID": 0}
     for line in lines:
         line = re.sub(r"^\[[\d:.]+Z\] ", "", line)  # 行頭の時刻を落とす
-        if re.match(r"\[CASE |PROBE |RESULT |SUMMARY |前面化|chrome=", line):
+        if re.match(r"\[CASE |PROBE |RESULT |SUMMARY |SETTLE |前面化|chrome=", line):
             print(line)
         m = re.match(r"RESULT (PASS|RECOVER|FAIL|INVALID)", line)
         if m:
