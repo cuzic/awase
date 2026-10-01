@@ -36,8 +36,9 @@ use windows::Win32::UI::TextServices::{
     CLSID_TF_InputProcessorProfiles, ITfInputProcessorProfileMgr,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, FindWindowW, GetForegroundWindow, GetWindowThreadProcessId, SendMessageW,
-    SetForegroundWindow, SwitchToThisWindow,
+    BringWindowToTop, CreateWindowExW, DispatchMessageW, FindWindowW, GetForegroundWindow,
+    GetMessageW, GetWindowThreadProcessId, SendMessageW, SetForegroundWindow, SwitchToThisWindow,
+    TranslateMessage, MSG, WINDOW_EX_STYLE, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 
 /// スパイクと同じ目印。`AWASE_TEST_INJECTION=1` の awase は、この目印の注入を物理キーとして扱う。
@@ -207,6 +208,7 @@ fn scan_for(vk: u32) -> u16 {
         0x4B => 0x25,        // K
         0x41 => 0x1E,        // A
         0xA0 => 0x2A,        // LShift
+        0xA2 => 0x1D,        // LCtrl
         _ => 0,
     }
 }
@@ -537,6 +539,72 @@ fn sleep_ms_away() {
     std::thread::sleep(std::time::Duration::from_millis(200));
 }
 
+/// `--settle-explicit` 用: Chrome 以外の別トップレベル窓(別スレッドの可視窓。CI にはタスクバーへ移せない環境がある)。
+/// 作成済みなら使い回す。窓ハンドルは isize で保持する(スレッドをまたぐため)。
+fn helper_window() -> Option<windows::Win32::Foundation::HWND> {
+    use std::sync::OnceLock;
+    static H: OnceLock<isize> = OnceLock::new();
+    let raw = *H.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<isize>();
+        std::thread::spawn(move || unsafe {
+            let hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                w!("STATIC"),
+                w!("IMEPROBE_AWAY"),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                50,
+                50,
+                400,
+                200,
+                None,
+                None,
+                None,
+                None,
+            );
+            let _ = tx.send(hwnd.map_or(0, |h| h.0 as isize));
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        });
+        rx.recv_timeout(Duration::from_secs(5)).unwrap_or(0)
+    });
+    (raw != 0).then(|| windows::Win32::Foundation::HWND(raw as *mut _))
+}
+
+/// 別窓(`helper_window`)へフォーカスを移し、前面になったことを検証する。
+fn focus_away_to_helper() -> bool {
+    let Some(hwnd) = helper_window() else {
+        return false;
+    };
+    unsafe {
+        for _ in 0..3 {
+            let fg = GetForegroundWindow();
+            let fg_tid = if fg.0.is_null() {
+                0
+            } else {
+                GetWindowThreadProcessId(fg, None)
+            };
+            let my_tid = GetCurrentThreadId();
+            let attached = fg_tid != 0
+                && fg_tid != my_tid
+                && AttachThreadInput(my_tid, fg_tid, true).as_bool();
+            let _ = BringWindowToTop(hwnd);
+            let _ = SetForegroundWindow(hwnd);
+            SwitchToThisWindow(hwnd, true);
+            if attached {
+                let _ = AttachThreadInput(my_tid, fg_tid, false);
+            }
+            sleep(200);
+            if GetForegroundWindow() == hwnd {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn focus_away() -> bool {
     unsafe {
         let Ok(tray) = FindWindowW(w!("Shell_TrayWnd"), PCWSTR::null()) else {
@@ -782,6 +850,90 @@ fn main() {
             p.log
                 .line(&format!("RESULT FAIL: 期待=ka 実際={}", got.label()));
         }
+        p.log.line("=== 全ケース完了 ===");
+        let _ = child.kill();
+        return;
+    }
+    // `--settle-explicit=<key>` + `--settle-at=<ms>`(ADR-213 P2d-2 の実測スパイク): 直接入力(IME OFF)にそろえた後、窓を一度フォーカス外し→前面化し、
+    // 前面化が返った t=<ms> 後に明示操作(`<key>` = `ctrl+1c`(Ctrl+変換) / `1d`(無変換の単独タップ) / `f3`(物理の半角/全角))を1回押して、
+    // その +settle ms 後に k,a を打つ。結果は `Process(229)` と出た文字で測る(かな=受け付けられた、`ka`=無視された)。
+    // awase の focus settle は focus_settle_ms 経過で明ける。settle 中の明示操作 SetOpen は P2d-2 以降 awase が落とさない(ADR-213 決定5)。
+    if let Some(spec) = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--settle-explicit="))
+    {
+        let at_ms: u64 = args
+            .iter()
+            .find_map(|a| a.strip_prefix("--settle-at=").and_then(|v| v.parse().ok()))
+            .unwrap_or(150);
+        let (ctrl, hex) = match spec.strip_prefix("ctrl+") {
+            Some(h) => (true, h),
+            None => (false, spec),
+        };
+        let vk = u32::from_str_radix(hex.trim_start_matches("0x"), 16).unwrap_or(0);
+        let (mut ok, mut bad, mut invalid) = (0usize, 0usize, 0usize);
+        for r in 1..=repeat {
+            p.log.line(&format!(
+                "[CASE 1/1 run {r}/{repeat}] settle直後の明示操作 key={spec} at={at_ms}ms"
+            ));
+            p.focus_lost = false;
+            bring_to_front();
+            if !ensure(&mut p, Setup::Off, awase) {
+                p.log
+                    .line("RESULT INVALID: 前提状態(直接入力)にできなかった");
+                invalid += 1;
+                continue;
+            }
+            sleep(1000);
+            let away = focus_away_to_helper() || focus_away();
+            sleep(600);
+            let back = bring_to_front();
+            let t0 = Instant::now();
+            p.log
+                .line(&format!("SETTLE REFOCUS away={away} back={back} (t=0)"));
+            if !away || !back {
+                p.log.line("RESULT INVALID: フォーカスの外し/戻しに失敗");
+                invalid += 1;
+                continue;
+            }
+            sleep(at_ms);
+            if ctrl {
+                send_key(0xA2, true);
+                sleep(40);
+            }
+            send_key(vk, true);
+            sleep(60);
+            send_key(vk, false);
+            if ctrl {
+                sleep(40);
+                send_key(0xA2, false);
+            }
+            p.log.line(&format!(
+                "SETTLE KEY {spec} sent at t={}ms (目標 {at_ms}ms)",
+                t0.elapsed().as_millis()
+            ));
+            sleep(settle_ms);
+            let got = p.probe_logged("settle直後の操作後");
+            let want = if awase {
+                got == Class::Nicola
+            } else {
+                got == Class::RomajiKana
+            };
+            if p.focus_lost {
+                p.log.line("RESULT INVALID: ページのフォーカスが外れた");
+                invalid += 1;
+            } else if want {
+                p.log.line("RESULT PASS: 受け付けられた(かな)");
+                ok += 1;
+            } else {
+                p.log
+                    .line(&format!("RESULT FAIL: 無視/未追随 実際={}", got.label()));
+                bad += 1;
+            }
+        }
+        p.log.line(&format!(
+            "SUMMARY PASS={ok} RECOVER=0 FAIL={bad} INVALID={invalid}"
+        ));
         p.log.line("=== 全ケース完了 ===");
         let _ = child.kill();
         return;
