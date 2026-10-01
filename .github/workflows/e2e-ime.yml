@@ -324,6 +324,14 @@ jobs:
             # (DRIFT_CORRECTION_THRESHOLD_MS=400 より長い)ので、drift correction が F13 で開いた IME を閉じ直すなら awase.log の `[drift]` と
             # 実 IME の open が 1→0 に戻ることで見える。観測のみ(observe)。
             cfg('sc-adr211-edit-msime-f13', 'observe', check='consistency', keymap=2, runs=1, args='--seq=1A,7C,1A,7C,1A,7C'),
+            # ADR-212 P2: awase 起動後に起動した実 Chrome(新しいスレッド)の、IME 操作なしの初期状態。awase 有り(initial)と無し(対照)。
+            # GJI は CI で新スレッド=閉の記録が applied=true→ka と検証済み。同定済み MS-IME 本体にも適用されるが、CI 構成は TIP を
+            # MicrosoftIme(Other)(IMM32 HKL)と同定して条件を満たさないため、同定済み MS-IME 本体×新スレッド=閉の経路は CI 未検証。
+            # 現構成は従来の安全デフォルト ON のまま `kiu` になるため observe。Windows 11 実機で applied=true ime_kind=Some(MsIme)→ka を確認する。
+            *[cfg(f'sc-p2-initial-chrome-{n}', exp, check='chromeprobe', keymap=1, runs=5, wait=200, ime=ime, awase=aw,
+                  chrome=f'--initial --settle=800{flags}')
+              for n, exp, ime, aw, flags in (('gji', 'pass', 'gji', 'true', ''), ('gji-noawase', 'pass', 'gji', 'false', ' --no-awase'),
+                                             ('msime', 'observe', 'msime', 'true', ' --msime'), ('msime-noawase', 'pass', 'msime', 'false', ' --no-awase --msime'))],
             cfg('sc-t1e-chrome-f13-noawase', 'observe', check='chromeprobe', keymap=0, runs=1, wait=400, awase='false',
                 chrome='--f13 --no-awase --repeat=2 --settle=800',
                 tsv='DirectInput,ON,IMEOn|Precomposition,OFF,IMEOff|Composition,OFF,IMEOff|Conversion,OFF,IMEOff|DirectInput,F13,IMEOn|Precomposition,F13,IMEOff|Composition,F13,IMEOff|Conversion,F13,IMEOff'),
