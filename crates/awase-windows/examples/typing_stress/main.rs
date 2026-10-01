@@ -43,6 +43,9 @@
 //! が `is_physical_key_down`(PHYSICAL_KEY_STATE)で判定されるため、SendInput 注入では物理 Ctrl 押下として
 //! 認識されず駆動できない)。追加フラグ: `--drift-off-vk=0xNN`(既定 0x1D=VK_NONCONVERT)。
 //!
+//! `--mode=startup`(BUG-163 / D1): 対象窓を awase より先に IME ON/OFF にし、起動直後の初打鍵または
+//! 3 秒間の OFF 維持を検証する。`--startup-ime=on|off` は必須。
+//!
 //! `--mode=drift-on`(ADR-178 領域A撤去後の回帰観測): reassert/force-on 撤去後、drift correction「だけ」で
 //! TsfNative 相当の入力先(`--form=tsf`)の ON 回復が働くかを見る。手順は「IME を ON にそろえる(awase が明示意図 ON を
 //! 持つ)→ **ハーネスが自プロセスの入力欄の IME を直接閉じる**(awase を経由しない
@@ -51,6 +54,8 @@
 //! 記録は `drift_on_pre`(`on_key`=ON にしたキー) / `drift_on_close`(`set_ret` は記録のみ) / `drift_on_check` / `drift_on_typed`。
 //! pre/close/typed には `utc`(HH:MM:SS.mmm、awase.log の時刻と突合せる用)を付ける。ON キーは awase の明示意図(SyncKey)に
 //! なる `VK_IME_ON`(0x16)を先頭にする(MS-IME の 0xF2 は mode-key passthrough で意図が消える)。
+//! `--drift-off-ctrl-muhenkan` では直接 close の代わりに、マーカー付き SendInput で
+//! Ctrl↓→無変換↓→無変換↑→Ctrl↑を送る。debug awase はこの注入を物理キーとして扱う。
 //!
 //! `--mode=reopen`(ADR-203 e2e (c)、BUG-170 の実機確認): 「OFF 前に1語確定 → 物理 OFF(`VK_IME_OFF`)→ `--reopen-gap`(既定600ms、1秒以内)後に
 //! 物理 ON(`--reopen-on-key`、既定は GJI 0x16・MS-IME 0xF2。GJI の ATOK プリセットで 0xF2 は ON にならないことを run 36555043470 で確認)→ 即打鍵(`--reopen-type-delay`、既定0)」を `--trials` 回。別プロセスの入力先(Chrome)でも動く
@@ -127,6 +132,8 @@ const ES_AUTOHSCROLL: u32 = 0x0080;
 
 const VK_MUHENKAN: u32 = 0x1D;
 const SCAN_MUHENKAN: u16 = 0x7B;
+const VK_LCONTROL: u32 = 0xA2;
+const SCAN_LCONTROL: u16 = 0x1D;
 const VK_HENKAN: u32 = 0x1C;
 const SCAN_HENKAN: u16 = 0x79;
 const VK_RETURN: u32 = 0x0D;
@@ -660,6 +667,17 @@ fn press(vk: u32, scan: u16, hold_ms: u64) {
     send_key(vk, scan, false);
 }
 
+/// settle-explicit と同じ「修飾キーを先に押し、対象キーを離してから修飾キーを離す」順序。
+fn press_ctrl_muhenkan() {
+    send_key(VK_LCONTROL, SCAN_LCONTROL, true);
+    sleep_ms(40);
+    send_key(VK_MUHENKAN, SCAN_MUHENKAN, true);
+    sleep_ms(60);
+    send_key(VK_MUHENKAN, SCAN_MUHENKAN, false);
+    sleep_ms(30);
+    send_key(VK_LCONTROL, SCAN_LCONTROL, false);
+}
+
 fn wait_until(target: Instant) {
     loop {
         let now = Instant::now();
@@ -945,6 +963,17 @@ fn wait_for_awase() {
     sleep_ms(10_000);
 }
 
+fn wait_for_awase_startup() {
+    for _ in 0..200 {
+        if std::fs::metadata("awase.log").is_ok_and(|m| m.len() > 0) {
+            log("[init] awase.log を確認(startup; 安定待ちなし)");
+            return;
+        }
+        sleep_ms(25);
+    }
+    rec(&json!({"type":"abort","reason":"startup: awase.log を5秒以内に確認できない"}));
+}
+
 fn expect_string(seq: &[Cell]) -> String {
     seq.iter().map(|c| c.kana).collect()
 }
@@ -1099,7 +1128,7 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
     let trials: usize = arg_value("--trials=")
         .and_then(|v| v.parse().ok())
         .unwrap_or(10);
-    const CHECKPOINTS_MS: [u64; 3] = [500, 1500, 3000];
+    const CHECKPOINTS_MS: [u64; 2] = [500, 2000];
     let Some(probe) = cells[0]
         .iter()
         .find(|c| c.romaji == "ka")
@@ -1141,10 +1170,18 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
         );
         // 窓の起点は閉じる操作の直前に取る(閉じた直後の観測が窓から漏れないように)。
         let close_utc = utc_hms();
-        let set_ret = force_close_real_ime(child);
+        let ctrl_muhenkan = has_flag("--drift-off-ctrl-muhenkan");
+        let set_ret = if ctrl_muhenkan {
+            press_ctrl_muhenkan();
+            None
+        } else {
+            force_close_real_ime(child)
+        };
         sleep_ms(50);
         rec(
-            &json!({"type":"drift_on_close","n":n,"utc":close_utc,"set_ret":set_ret,"real_ime_open":real_ime_open(child)}),
+            &json!({"type":"drift_on_close","n":n,"utc":close_utc,"set_ret":set_ret,
+                "method":if ctrl_muhenkan {"ctrl_muhenkan"} else {"direct_close"},
+                "real_ime_open":real_ime_open(child)}),
         );
         // `--refocus`: 閉じた直後にフォーカスを一度外して戻す(awase のフォーカス変更経路=drift correction 再開の契機を通す)。
         if has_flag("--refocus") {
@@ -1177,6 +1214,48 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
             "ok":text.trim() == probe.kana.to_string(),"real_ime_open":real_ime_open(child)}),
         );
         clear_text(child);
+    }
+}
+
+fn startup_scenario(child: HWND, cells: &[Vec<Cell>; 3], initial_on: bool) {
+    let Some(probe) = cells[0].iter().find(|c| c.romaji == "ka").cloned() else {
+        rec(&json!({"type":"abort","reason":"startup の打鍵確認に使う ka セルが無い"}));
+        return;
+    };
+    let detected_utc = utc_hms();
+    start_hook_thread();
+    if initial_on {
+        clear_text(child);
+        let press_utc = utc_hms();
+        press(probe.vk, probe.scan, 60);
+        sleep_ms(700);
+        press(VK_RETURN, 0x1C, 50);
+        sleep_ms(900);
+        let text = read_text_maybe_settled(child, true);
+        rec(
+            &json!({"type":"startup_typed","initial":"on","detected_utc":detected_utc,
+            "press_utc":press_utc,"text":text,"expect":probe.kana.to_string(),
+            "ok":text.trim()==probe.kana.to_string(),"real_ime_open":real_ime_open(child)}),
+        );
+    } else {
+        sleep_ms(3000);
+        let open_after_idle = real_ime_open(child);
+        let before_on_utc = utc_hms();
+        press(VK_IME_ON, 0x70, 50);
+        sleep_ms(800);
+        clear_text(child);
+        let press_utc = utc_hms();
+        press(probe.vk, probe.scan, 60);
+        sleep_ms(700);
+        press(VK_RETURN, 0x1C, 50);
+        sleep_ms(900);
+        let text = read_text_maybe_settled(child, true);
+        rec(
+            &json!({"type":"startup_typed","initial":"off","detected_utc":detected_utc,
+            "before_on_utc":before_on_utc,"press_utc":press_utc,"open_after_idle":open_after_idle,
+            "text":text,"expect":probe.kana.to_string(),"ok":text.trim()==probe.kana.to_string(),
+            "real_ime_open":real_ime_open(child)}),
+        );
     }
 }
 
@@ -1323,6 +1402,8 @@ fn worker(form: Form) {
     let drift = mode_arg.as_deref() == Some("drift");
     let drift_on = mode_arg.as_deref() == Some("drift-on");
     let reopen = mode_arg.as_deref() == Some("reopen");
+    let startup = mode_arg.as_deref() == Some("startup");
+    let startup_on = arg_value("--startup-ime=").as_deref() == Some("on");
     let iv_ms: f64 = arg_value("--interval=")
         .and_then(|v| v.parse().ok())
         .unwrap_or(20.0);
@@ -1365,7 +1446,7 @@ fn worker(form: Form) {
         collect_cells(&layout.right_thumb, Face::Right, &table),
     ];
     rec(
-        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if drift {"drift"} else if drift_on {"drift-on"} else if reopen {"reopen"} else if raw {"raw"} else {"nicola"},
+        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if startup {"startup"} else if drift {"drift"} else if drift_on {"drift-on"} else if reopen {"reopen"} else if raw {"raw"} else {"nicola"},
         "interval_ms":iv_ms,"len":len,"trials":trials,"seed":seed,"kinds":kinds,
         "layout":layout_path,"cells":[cells[0].len(),cells[1].len(),cells[2].len()],
         "child_class":class_of(child),"perturb":perturb.describe()}),
@@ -1378,9 +1459,21 @@ fn worker(form: Form) {
 
     sleep_ms(500);
     refocus();
+    if startup {
+        press(if startup_on { VK_IME_ON } else { VK_IME_OFF }, 0x70, 50);
+        sleep_ms(800);
+        rec(
+            &json!({"type":"startup_pre","initial":if startup_on {"on"} else {"off"},
+            "utc":utc_hms(),"real_ime_open":real_ime_open(child)}),
+        );
+    }
     log("[TS] READY-FOR-AWASE");
     if !has_flag("--no-awase") {
-        wait_for_awase();
+        if startup {
+            wait_for_awase_startup();
+        } else {
+            wait_for_awase();
+        }
     }
     refocus();
     rec(&focus_report());
@@ -1388,6 +1481,11 @@ fn worker(form: Form) {
         rec(
             &json!({"type":"abort","reason":"前面化またはフォーカスに失敗したためキーを注入しない"}),
         );
+        finish();
+        return;
+    }
+    if startup {
+        startup_scenario(child, &cells, startup_on);
         finish();
         return;
     }

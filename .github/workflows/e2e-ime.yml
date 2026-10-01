@@ -377,6 +377,24 @@ jobs:
                 stress='--form=tsf --mode=reopen --trials=8 --reopen-gap=600 --layout=@REPO@/layout/nicola_keytop.yab --msime'),
             cfg('sc-reopen-chromepage-gji-gap600', 'observe', check='reopen', runs=3, wait=900, checkargs='--require-cold --require-sync',
                 stress='--form=chromepage --mode=reopen --trials=6 --reopen-gap=600 --settle-read --layout=@REPO@/layout/nicola_keytop.yab'),
+            # sc-startup-msime-edit-off は ON キー後の最初の文字が 2/10 で EDIT に出なかった(real_ime_open=true、awase は Unicode 注入で送出済み)。
+            # awase なしの対照で原因を切り分けるまで observe(合否に入れない)にする。
+            *[cfg(f'sc-startup-{ime_name}-{app}-{state}', 'observe' if (ime_name, app, state) == ('msime', 'edit', 'off') else 'pass', check='startup', ime=ime, keymap=km, runs=2, wait=180,
+                  stress=f'--form={form} --mode=startup --startup-ime={state} --layout=@REPO@/layout/nicola_keytop.yab{msime}')
+              for ime_name, ime, km, msime in (('gji', 'gji', 1, ''), ('msime', 'msime', 1, ' --msime'))
+              for app, form in (('edit', 'edit'), ('chrome', 'chromepage')) for state in ('on', 'off')],
+            *[cfg(f'sc-driftrecovery-{ime_name}-tsf', 'observe', check='driftrecovery', ime=ime, keymap=km, runs=1, wait=240,
+                  stress=f'--form=tsf --mode=drift-on --trials=10 --layout=@REPO@/layout/nicola_keytop.yab{msime}')
+              for ime_name, ime, km, msime in (('gji', 'gji', 1, ''), ('msime', 'msime', 1, ' --msime'))],
+            cfg('sc-driftrecovery-gji-chrome', 'observe', check='driftrecovery', runs=1, wait=400, chrome='--close-ime=10 --settle=800'),
+            cfg('sc-driftrecovery-msime-chrome', 'observe', check='driftrecovery', ime='msime', keymap=2, runs=1, wait=400, chrome='--close-ime=10 --settle=800 --msime'),
+            # D3 変種: OFF 操作をマーカー付き SendInput の物理 Ctrl+無変換(Ctrl↓→無変換↓↑→Ctrl↑)で行う。「ずれ」=awase の OFF 操作の後も実 IME が ON。
+            # check_drift_recovery(.py/_chrome.py)が gap_made/gap_not_made と phys_ctrl(awase.log の `vk=0x1D KeyDown … mods(c=true … phys_ctrl=true`、false は INVALID)を出す。
+            *[cfg(f'sc-driftrecovery-ctrlmuhenkan-{ime_name}-tsf', 'observe', check='driftrecovery', ime=ime, keymap=km, runs=1, wait=240,
+                  stress=f'--form=tsf --mode=drift-on --drift-off-ctrl-muhenkan --trials=10 --layout=@REPO@/layout/nicola_keytop.yab{msime}')
+              for ime_name, ime, km, msime in (('gji', 'gji', 1, ''), ('msime', 'msime', 1, ' --msime'))],
+            cfg('sc-driftrecovery-ctrlmuhenkan-gji-chrome', 'observe', check='driftrecovery', runs=1, wait=400, chrome='--close-ime=10 --ctrl-muhenkan-off --settle=800'),
+            cfg('sc-driftrecovery-ctrlmuhenkan-msime-chrome', 'observe', check='driftrecovery', ime='msime', keymap=2, runs=1, wait=400, chrome='--close-ime=10 --ctrl-muhenkan-off --settle=800 --msime'),
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
@@ -898,7 +916,13 @@ jobs:
           } elseif ('${{ matrix.cfg.check }}' -eq 'reopen') {
             python tools\e2e\ime_key_matrix\check_reopen.py --json reopen.json ${{ matrix.cfg.checkargs }} dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'driftrecovery') {
-            python tools\e2e\ime_key_matrix\check_drift_recovery.py --json driftrec.json dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
+            if ('${{ matrix.cfg.chrome }}' -ne '') {
+              python tools\e2e\ime_key_matrix\check_drift_recovery_chrome.py dist\chrome_probe.log dist\awase.log | Tee-Object -FilePath result.txt
+            } else {
+              python tools\e2e\ime_key_matrix\check_drift_recovery.py --json driftrec.json dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
+            }
+          } elseif ('${{ matrix.cfg.check }}' -eq 'startup') {
+            python tools\e2e\ime_key_matrix\check_startup.py --json startup.json dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'toggle') {
             python tools\e2e\ime_key_matrix\check_toggle.py dist\ime_key_matrix_spike.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'charthumb') {
@@ -1068,6 +1092,20 @@ jobs:
                     "loss=消失 / extra=余計 / reorder=入れ替わり / literal=ローマ字リテラル化 / substitute=別のかなに置換。注入遅れmax=予定時刻に対する実注入の最大遅れ(us)、フック到着比=自プロセスのLLフックに届いた数/送信数の最小(1.000で落ち無し)。", "",
                     "| 構成 | 回 | 判定 | 試行 | FAIL試行 | 消失 | 余計 | 入れ替わり | リテラル化 | 置換 | 注入遅れmax(us) | フック到着比 |",
                     "|---|---|---|---|---|---|---|---|---|---|---|---|"] + ts_rows
+          startup_rows = []
+          for c in configs:
+            if c.get('check') != 'startup': continue
+            for run in range(1, c.get('runs', 3) + 1):
+              f = f"results/result-{c['name']}-{run}/result.txt"; line = ''
+              if os.path.exists(f):
+                line = next((l for l in reversed(open(f, encoding='utf-8', errors='replace').read().splitlines()) if l.startswith('STARTUP:')), '')
+              kv = dict(re.findall(r'(\w+)=(\S+)', line))
+              startup_rows.append(f"| {c['name']} | {run} | {kv.get('verdict','欠落')} | {kv.get('drift','-')} | {kv.get('align','-')} | {kv.get('reinit','-')} | {kv.get('imm32_default_on','-')} | {kv.get('first_engine_ms','-')} |")
+          if startup_rows:
+            out += ["", "## D1 起動状態・最初の打鍵(sc-startup-*)", "",
+                    "Imm32 default ON は観察件数で合否には含めない。engine-input は awase 起動から最初の入力までの ms。", "",
+                    "| 構成 | 回 | 判定 | drift(30秒) | startup-align | OFF直後reinit | Imm32 default ON | engine-input ms |",
+                    "|---|---|---|---|---|---|---|---|"] + startup_rows
           # drift correction 観測(cal-drift-*、ADR-191 09-T4): result.txt 末尾の DRIFT_CORRECTION 行を表にする。
           drift_rows = []
           for c in configs:
@@ -1107,6 +1145,26 @@ jobs:
                 rec_rows.append(f"| {c['name']} | {run} | 欠落 |" + " - |" * 14)
                 continue
               rec_rows.append(f"| {c['name']} | {run} | {kv.get('verdict')} | {kv.get('trials')} | {kv.get('recovered')} | {kv.get('reopened_by_typing')} | {kv.get('typed_blind')} | {kv.get('unexplained')} | {kv.get('api_only')} | {kv.get('not_recovered')} | {kv.get('invalid_trials')} | {kv.get('observed')} | {kv.get('drift')} | {kv.get('conv_read')} | {kv.get('reinit')} | {kv.get('unicode')} | {kv.get('intent_true')} |")
+          # 物理 Ctrl+無変換変種(sc-driftrecovery-ctrlmuhenkan-*): rec_rows の列は意味が違う(recovered=corrected)ので別表にする。
+          rec_rows = [r for r in rec_rows if not r.startswith('| sc-driftrecovery-ctrlmuhenkan-')]
+          ctrl_rows2 = []
+          for c in configs:
+            if not c['name'].startswith('sc-driftrecovery-ctrlmuhenkan-'):
+              continue
+            for run in range(1, c.get('runs', 3) + 1):
+              f = f"results/result-{c['name']}-{run}/result.txt"
+              line = ''
+              if os.path.exists(f):
+                for l in open(f, encoding='utf-8', errors='replace').read().splitlines():
+                  if l.startswith('DRIFT_RECOVERY:'):
+                    line = l
+              kv = dict(re.findall(r'(\w+)=(\S+)', line))
+              ctrl_rows2.append(f"| {c['name']} | {run} | {kv.get('verdict', '欠落')} | {kv.get('trials', '-')} | {kv.get('phys_ctrl_ok', '-')} | {kv.get('gap_made', '-')} | {kv.get('gap_not_made', '-')} | {kv.get('recovered', '-')} | {kv.get('not_recovered', '-')} | {kv.get('invalid_trials', '-')} | {kv.get('observed', '-')} | {kv.get('drift', '-')} |")
+          if ctrl_rows2:
+            out += ["", "## D3 物理 Ctrl+無変換で OFF にした変種(sc-driftrecovery-ctrlmuhenkan-*、観測のみ)", "",
+                    "OFF 操作=マーカー付き SendInput の Ctrl↓→無変換↓↑→Ctrl↑(debug awase は物理 Ctrl+無変換として扱う)。phys_ctrl_ok=awase.log で物理 Ctrl 付き(mods(c=true…) phys_ctrl=true)を確認できた試行数(false は INVALID)。gap_made=OFF 操作の後も実 IME が ON のままだった(ずれを作れた)試行数 / gap_not_made=OFF が実 IME まで効きずれは作れなかった試行数 / corrected=ずれた後 ON のままではなくなった / not_corrected=ずれたまま最後まで ON でかなが出た。verdict: GAP_NOT_MADE=ずれを作れなかった、CORRECTED、NOT_CORRECTED、UNDETERMINED、INVALID。", "",
+                    "| 構成 | 回 | 判定 | 試行 | phys_ctrl_ok | gap_made | gap_not_made | corrected | not_corrected | invalid | observed | drift |",
+                    "|---|---|---|---|---|---|---|---|---|---|---|---|"] + ctrl_rows2
           if rec_rows:
             out += ["", "## drift correction による ON 回復観測(cal-driftrec-*、観測のみで合否には含めない。ADR-178 領域A撤去後)", "",
                     "ハーネスが実 IME を直接閉じた「ずれ」から、awase の drift correction だけで ON へ戻るか。各数は「その現象があった試行数」。recovered=打鍵前に API 上も開き直り実打鍵でかなが出た / reopened_by_typing=3秒間は閉じたまま打鍵後に開いた(打鍵時の別経路=GJI reinit 等) / typed_blind=かなは出たが Unicode 注入で IME 状態の証拠にならない(edit は ON キーと無関係に常に Unicode 注入) / unexplained=原因不明でかなが出た / api_only=API上は開いたが実打鍵が期待と違う / not_recovered=API上も閉じたままで実打鍵も生ローマ字等 / invalid=前提未成立(VK_IME_ON 以外で ON、明示意図 ON 未確認、窓の逆転等)。awase.log の時間窓: observed・drift=閉じてから打鍵直前まで(observed=ImeModel への開閉観測、0なら drift correction の判断まで届いていない。drift=drift correction の発火) / conv_read・reinit・unicode=打鍵中〜確定後(conv_read=打鍵時に conv を読んだ、reinit=literal 回収の GJI reinit、unicode=Unicode 注入)。verdict: NOT_OBSERVED=戻さないのではなく見ていない、REOPENED_BY_OTHER_PATH=drift correction 以外の経路が開け直した。", "",
