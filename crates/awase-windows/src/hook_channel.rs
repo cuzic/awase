@@ -94,7 +94,7 @@ impl HookKeyRing {
             // 状態が生じ、以後誰も clear を呼ばずラッチが恒久固着しえた。
             let _ = self
                 .overflow_state
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |old| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |old| {
                     let count = (old & OVERFLOW_COUNT_MASK).wrapping_add(1) & OVERFLOW_COUNT_MASK;
                     Some(count | OVERFLOW_LATCH_BIT)
                 });
