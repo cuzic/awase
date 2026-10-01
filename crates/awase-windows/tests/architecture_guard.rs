@@ -878,7 +878,7 @@ fn forced_thumb_path_lives_in_the_engine_special_key_match() {
 #[test]
 fn ctrl_key_up_never_actuates_ime() {
     // 1. 旧 CtrlUp warmup の識別子が復活していない（crate 全体）。
-    let workspace_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let workspace_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut stack = vec![workspace_src];
     while let Some(dir) = stack.pop() {
         for entry in fs::read_dir(&dir).expect("read_dir") {
