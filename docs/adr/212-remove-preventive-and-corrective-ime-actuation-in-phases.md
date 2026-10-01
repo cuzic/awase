@@ -23,6 +23,7 @@ related_adr:
   - "ADR-206"
   - "ADR-207"
   - "ADR-211"
+  - "ADR-213"
 ---
 
 # ADR-212: 予防的・補正的な IME actuation の段階的撤去
@@ -79,7 +80,7 @@ related_adr:
    **範囲外の2つは、別の既存のログで数える**: settle で落とされた SetOpen(C3)は `strip_ime_set_open_if_settling` の `[focus-settle] SetOpen(..) effect stripped`、C2 は `[idle-conv-check] TsfNative: engine ON 同期`(C2 は `dispatch_effect` を通らず、書かないので実送信の数える対象でもない)。
    **棚卸し漏れ(2026-10-01)**: Engine の非キーボード経路(`FocusChanged`/`RefreshState` の `check_active_transition`、`runtime/mod.rs::execute_decision`→`executor.execute_from_loop`)は `handle_engine_activation_sync` を通らない。CI では awase 起動47ms後、観測ゼロのbeliefから`dispatch_ime_set_open{open=true}`→`GJI direct`→`outcome=Applied`を確認した。C1〜C3だけでは入口を網羅していなかった。
    **「実送信」は `outcome=Applied` だけで数えない**(ActuationDecision.outcome:Applied だけでは操作成功と判断できない、BUG-141)。`win32.rs` の SendInput のバッチ分類(`kanji_marker` 等の目印)と突き合わせる。窓の種類・belief の状態(既知/未知)別に。
-5. **P2 は保留(方針見直し、2026-10-01)**。
+5. **P2 は保留(方針見直し、2026-10-01)。再開の設計と段階は [ADR-213](213-shadow-toggle-off-to-on-explicit-actuation-then-remove-activation-sync.md)(P2a/P2b/P2b'/P2c)**。
    - **全面停止は却下**: Engine で ActivationSync の `SetOpen` を出さないスパイクでは、`sc-hz-*`・`sc-kanji-*` が2回押した後に反転せず、cold 起動にも退行した。
    - **gate による縮小は無効のため取り下げ**: `handle_engine_activation_sync` 先頭で棄却しても、pending・抑制窓・`EngineActivationSync` の記録を省くだけで、decision の effect は `kp_stage_execute`→executor へ流れた。`[activation-sync] skipped SetOpen(true)` の直後に同じ打鍵の `GJI direct: send 0x0016`・`outcome=Applied` があるため、実書き込みは続いていた。
    - Imm32Unavailable では物理の半角/全角(0x16等)をOSへ届けず(`[imm32-off] key suppress`)、shadow toggleでbeliefをONにする。shadow toggleはON→OFFを書き込むがOFF→ONを書かないため、そのEngine活性化に伴うActivationSyncの`SetOpen(true)`が唯一の実ON書き込みになる。この経路は【予防的・補正的】ではなく、ユーザーが押したキーへの直接の応答(決定2の【許可】)を担う。
