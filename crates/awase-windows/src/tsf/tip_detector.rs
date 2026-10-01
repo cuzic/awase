@@ -215,7 +215,7 @@ pub(super) fn query_active_kind(
 /// 呼び出し元はエラーの詳細を区別する必要が無い——安全側に倒して「同定できなかった」として扱う）。
 #[must_use]
 pub fn query_tip_identity_on_current_sta() -> Option<crate::state::ime_kind::TipIdentity> {
-    use crate::state::ime_kind::{identify_tip, TipIdentity};
+    use crate::state::ime_kind::identify_tip;
     let (mgr, profiles) = create_profile_ctx()?;
     let gji_clsid = find_gji_clsid(&mgr, &profiles);
     unsafe {
