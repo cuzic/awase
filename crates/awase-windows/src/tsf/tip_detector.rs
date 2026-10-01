@@ -139,10 +139,10 @@ fn enabled_ja_tips(mgr: &ITfInputProcessorProfileMgr) -> Vec<crate::state::ime_k
             if res.is_err() || fetched == 0 {
                 break;
             }
-            // TF_IPP_FLAG_ENABLED = 0x1。langid 0 の言語中立 TIP(タッチ入力・音声認識)は除く。
+            // TF_IPP_FLAG_ENABLED = 0x2(0x1 は ACTIVE。CI ログでは本体 TIP が flags=0x2)。langid 0 の言語中立 TIP(タッチ入力・音声認識)は除く。
             if prof.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR
                 && prof.langid == 0x0411
-                && prof.dwFlags & 0x1 != 0
+                && prof.dwFlags & 0x2 != 0
             {
                 out.push(crate::state::ime_kind::EnabledJaTip {
                     clsid: prof.clsid.to_u128(),
