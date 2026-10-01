@@ -101,6 +101,27 @@ pub enum BaseDecision {
 
 // ── AppliedImeState ──────────────────────────────────────────────────────────
 
+/// generation を持たない apply 完了で、`applied` に書く open 値。
+///
+/// `ImeStateHub::record_ime_apply_result` の generation=None 分岐の純粋部（ADR-208 L0 で切り出した）。送らなかった結果（`UnsafeToToggle`/`NotOwned`/
+/// `Unwarranted`）は `None`（`applied` を動かさない）、`Failed` は逆向き（`!open`）。
+#[must_use]
+pub const fn apply_result_effective_open(
+    open: bool,
+    outcome: awase::platform::ImeOpenOutcome,
+) -> Option<bool> {
+    use awase::platform::ImeOpenOutcome;
+    match outcome {
+        ImeOpenOutcome::Applied
+        | ImeOpenOutcome::AppliedWithoutSendInput
+        | ImeOpenOutcome::AlreadyMatched => Some(open),
+        ImeOpenOutcome::Failed => Some(!open),
+        ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned | ImeOpenOutcome::Unwarranted => {
+            None
+        }
+    }
+}
+
 /// IME apply 結果の確信度。
 ///
 /// `Option<(bool, u64)>` + センチネル値 `ts=0` で表現していた3状態を型で明示する。
@@ -488,6 +509,28 @@ impl ImeModel {
                 base: decided_by,
                 guard_override,
             },
+        }
+    }
+
+    /// `applied` だけを指定した初期モデル（ADR-208 L0 の全列挙テストが、押下前の `applied` から実物の遷移を通すため）。
+    #[must_use]
+    pub fn with_applied(applied: AppliedImeState) -> Self {
+        Self {
+            applied,
+            ..Self::new()
+        }
+    }
+
+    /// generation を持たない apply 完了（同期経路・shadow toggle）の確認済み記録（ADR-098 決定6-a）。
+    ///
+    /// `ImeStateHub::record_confirmed` の純粋部（`applied` を `Confirmed` にし、向きが一致する pending を解放する）。
+    /// ADR-208 L0 で、全列挙テストが手書きの模倣でなく本物の遷移を通せるよう `ImeStateHub` から切り出した。
+    pub fn confirm_applied(&mut self, open: bool, at_ms: u64) {
+        self.applied = AppliedImeState::Confirmed { open, at_ms };
+        if let Some(p) = &self.pending {
+            if p.target == open {
+                self.pending = None;
+            }
         }
     }
 

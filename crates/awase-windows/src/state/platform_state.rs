@@ -524,8 +524,7 @@ impl ImeStateHub {
     /// INV-A97-1 の既知の例外は `record_optimistic` の doc を参照。
     pub(crate) fn record_confirmed(&mut self, open: bool, at_ms: u64) {
         self.note_awase_write_for_mode_key_pass();
-        self.shadow_model.applied = AppliedImeState::Confirmed { open, at_ms };
-        self.clear_pending_if_matches(open);
+        self.shadow_model.confirm_applied(open, at_ms);
     }
 
     /// 同じ apply が完了した扱いになったので pending も clear する。
@@ -996,28 +995,10 @@ impl ImeStateHub {
         generation: Option<ApplyGeneration>,
         ts: u64,
     ) -> ImeApplyAcceptance {
-        use awase::platform::ImeOpenOutcome;
-
         let Some(generation) = generation else {
-            if matches!(
-                outcome,
-                ImeOpenOutcome::UnsafeToToggle
-                    | ImeOpenOutcome::NotOwned
-                    | ImeOpenOutcome::Unwarranted
-            ) {
+            let Some(effective) = super::ime_model::apply_result_effective_open(open, outcome)
+            else {
                 return ImeApplyAcceptance::NotSent;
-            }
-
-            let effective = match outcome {
-                ImeOpenOutcome::Applied
-                | ImeOpenOutcome::AppliedWithoutSendInput
-                | ImeOpenOutcome::AlreadyMatched => open,
-                ImeOpenOutcome::Failed => !open,
-                ImeOpenOutcome::UnsafeToToggle
-                | ImeOpenOutcome::NotOwned
-                | ImeOpenOutcome::Unwarranted => {
-                    unreachable!("上で早期 return 済み")
-                }
             };
             // `ts` は常に `current_tick_ms()`（非ゼロ）由来——`on_ime_apply_complete`
             // の唯一の呼び出し元（`runtime/mod.rs`）がそうしている。よって
