@@ -864,19 +864,12 @@ impl Runtime {
     }
 
     pub fn execute_decision(&mut self, decision: awase::engine::Decision) -> CallbackResult {
-        let (callback, sync_outcomes, stripped_set_open) = self.executor.execute_from_loop(
+        let (callback, sync_outcomes) = self.executor.execute_from_loop(
             &mut self.platform,
             &mut self.platform_state.ime,
             decision,
         );
         self.dispatch_outcomes(sync_outcomes);
-        if stripped_set_open.is_some() {
-            // settle 中に握りつぶした SetOpen は自然には再発行されない
-            // （Engine::prev_activation は遷移確定済みのため）。既存の
-            // 他の settle 対応経路（撤去済みの apply_force_on_for_imm_broken 等）と同じ「settle 明けに
-            // refresh で再試行」パターンで確実に一度だけ再同期する。
-            self.schedule_settle_retry("SetOpen stripped from execute_from_loop decision");
-        }
         callback
     }
 
@@ -1071,8 +1064,8 @@ impl Runtime {
     }
 
     /// settle 期間中に IME apply/decision をスキップしたとき、settle 明けに refresh で
-    /// 一度だけ再試行する「確立済みパターン」（`executor::strip_ime_set_open_if_settling`
-    /// doc 参照）を一元化する。
+    /// 一度だけ再試行する「確立済みパターン」（drift correction の settle 延期用。
+    /// 明示操作の SetOpen を settle で落とす旧 strip は ADR-213 P2d-2 で撤去）を一元化する。
     ///
     /// 遅延は settle 残余の上限（= `focus_settle_ms()`）+ タイマー粒度マージン 50ms。
     /// `reason` はログの `[focus-settle] {reason} → ...` に埋め込まれる、呼び出し元ごとの
