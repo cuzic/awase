@@ -150,15 +150,47 @@ pub(crate) fn decide_chain(inputs: DecisionInputs) -> &'static [WriteMechanism] 
     caps(inputs.profile.into(), inputs.kind).chain
 }
 
-/// shadow toggle の明示書き込み（`kp_shadow_actuate`）で、view の `shadow_on` を未知として渡すか。
+/// 明示キー押下の書き込み（押下 ID を持つ order）で、view の `shadow_on`（`applied` 由来）を未知にするか
+/// （ADR-208 決定2 D1。ADR-213 決定1・PR #408 の `shadow_toggle_demotes_applied` を、shadow toggle だけでなく
+/// Engine の明示 `SetOpen` を含む押下の書き込み全般へ一般化した規則）。
 ///
-/// この書き込みは belief が `!open` から `open` に倒れたときだけ呼ばれる。このとき `applied` が
-/// `Some(open)` なら記録が直前の belief と食い違っており（IME が awase 以外の理由で閉じた等）、
-/// そのまま渡すと GjiDirect が already-matched で送信を省き、Suppress 済みの物理キーに誰も応答しない
-/// （BUG-156 型）。`Some(!open)`・`None` は元から送信されるので降格は不要（ADR-213 決定1、PR #408 Opus B-1）。
+/// 押下の書き込みでは、`applied` が `Some(open)`（書こうとする向きと同じ）でも、それは「前に書いた/確認した」記録で、
+/// 実 IME が今その向きである証拠ではない（IME が awase 以外の理由で変わった等）。そのまま渡すと GjiDirect が
+/// already-matched で送信を省き、Suppress/Consume 済みの物理キーに誰も応答しない（S-1、BUG-156 型）。
+/// `Some(!open)`・`None` は元から送信されるので降格は不要。
+/// 同一押下の二重送信（BUG-113）は `applied` ではなく押下 ID の予約（`state/press_ledger.rs`）が防ぐ。
 #[must_use]
-pub(crate) const fn shadow_toggle_demotes_applied(applied_open: Option<bool>, open: bool) -> bool {
+pub(crate) const fn explicit_press_demotes_applied(applied_open: Option<bool>, open: bool) -> bool {
     matches!(applied_open, Some(v) if v == open)
+}
+
+/// [`explicit_press_demotes_applied`] を view の `shadow_on` に適用する（`None` = 未知）。`applied` 自体は書き換えない
+/// （完了時の `record_ime_apply_result` が正しい値を書く）。**`press.is_some()` の order だけ**に使い、`press=None`
+/// （自動リピート・drift correction 等）は従来どおり `applied` をそのまま渡す。
+#[must_use]
+pub(crate) const fn explicit_press_shadow_on(
+    applied_open: Option<bool>,
+    open: bool,
+) -> Option<bool> {
+    if explicit_press_demotes_applied(applied_open, open) {
+        None
+    } else {
+        applied_open
+    }
+}
+
+/// `build_ime_control_view` に渡す `applied` のペア版。押下の書き込み（`press.is_some()`）は
+/// [`explicit_press_shadow_on`] で未知にした値、`press=None` は元のペアのまま。
+#[must_use]
+pub(crate) const fn explicit_press_applied_pair(
+    pair: Option<(bool, u64)>,
+    open: bool,
+    has_press: bool,
+) -> Option<(bool, u64)> {
+    match pair {
+        Some((v, _)) if has_press && explicit_press_demotes_applied(Some(v), open) => None,
+        other => other,
+    }
 }
 
 /// `GjiDirectStrategy::apply`のalready-matched判定
@@ -792,17 +824,55 @@ mod tests {
 }
 
 #[cfg(test)]
-mod shadow_toggle_demote_tests {
+mod explicit_press_demote_tests {
     use super::*;
 
     #[test]
     fn demotes_only_when_applied_equals_target() {
         // belief OFF のまま applied=Confirmed(true) が残り、半角/全角で ON にする場合が降格対象。
-        assert!(shadow_toggle_demotes_applied(Some(true), true));
-        assert!(shadow_toggle_demotes_applied(Some(false), false));
-        assert!(!shadow_toggle_demotes_applied(Some(false), true));
-        assert!(!shadow_toggle_demotes_applied(Some(true), false));
-        assert!(!shadow_toggle_demotes_applied(None, true));
+        assert!(explicit_press_demotes_applied(Some(true), true));
+        assert!(explicit_press_demotes_applied(Some(false), false));
+        assert!(!explicit_press_demotes_applied(Some(false), true));
+        assert!(!explicit_press_demotes_applied(Some(true), false));
+        assert!(!explicit_press_demotes_applied(None, true));
+    }
+
+    /// D1: `explicit_press_shadow_on` は降格すると未知、それ以外は `applied` をそのまま返す。
+    #[test]
+    fn shadow_on_is_unknown_only_when_applied_equals_the_target() {
+        for open in [false, true] {
+            assert_eq!(explicit_press_shadow_on(Some(open), open), None);
+            assert_eq!(explicit_press_shadow_on(Some(!open), open), Some(!open));
+            assert_eq!(explicit_press_shadow_on(None, open), None);
+        }
+    }
+
+    /// 押下 ID を持つ order だけが降格する。`press=None`（リピート・drift correction 等）は従来どおり
+    /// `applied` のペアをそのまま渡す（already-matched 省略が効く）。
+    #[test]
+    fn applied_pair_is_demoted_only_for_orders_with_a_press() {
+        let pair = Some((true, 123));
+        assert_eq!(explicit_press_applied_pair(pair, true, true), None);
+        assert_eq!(explicit_press_applied_pair(pair, true, false), pair);
+        // 逆向きの applied・未知はどちらでも変わらない。
+        assert_eq!(explicit_press_applied_pair(pair, false, true), pair);
+        assert_eq!(explicit_press_applied_pair(None, true, true), None);
+        assert_eq!(explicit_press_applied_pair(None, true, false), None);
+    }
+
+    /// S-1（ADR-208）の最小再現: GjiDirect で `applied==Some(open)` のとき、`press=None` は already-matched で省かれるが、
+    /// 押下の書き込みは降格して `gji_direct_already_matches` に当たらず送信される。
+    #[test]
+    fn press_write_is_not_elided_by_a_stale_applied_but_a_repeat_still_is() {
+        let applied = Some(true);
+        let open = true;
+        let elided_for = |has_press: bool| {
+            let shadow_on = explicit_press_applied_pair(applied.map(|v| (v, 0)), open, has_press)
+                .map(|(v, _)| v);
+            gji_direct_already_matches(shadow_on, open, false)
+        };
+        assert!(elided_for(false), "press=None は従来どおり省略");
+        assert!(!elided_for(true), "押下の書き込みは省略しない");
     }
 
     #[test]

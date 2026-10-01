@@ -16,7 +16,7 @@
 //! - Engine の明示 SetOpen の chord フィルタ: [`engine_set_open_filtered_by_chord`]
 //!   （`state/platform_state.rs::handle_engine_set_open` が呼ぶ）
 //! - 書き込みの gate・授権・機構選択・already-matched 省略: `decide_gate`・`issue_open_warrant`（[`WarrantJudge`] 経由）・
-//!   `decide_chain`・`decide_attempt`・`shadow_toggle_demotes_applied`（`state/ime_actuation_decision.rs`）
+//!   `decide_chain`・`decide_attempt`・`explicit_press_shadow_on`（`state/ime_actuation_decision.rs`）
 //!
 //! # 現状の順序の再現（循環を崩さない）
 //!
@@ -55,7 +55,7 @@ use awase::types::{
 use crate::focus::class_names::AppImeProfile;
 use crate::state::actuation_chain::WriteMechanism;
 use crate::state::ime_actuation_decision::{
-    decide_attempt, decide_chain, decide_gate, shadow_toggle_demotes_applied, DecisionInputs,
+    decide_attempt, decide_chain, decide_gate, explicit_press_shadow_on, DecisionInputs,
     DecisionSite, GateResult,
 };
 use crate::state::ime_event::ImePolicyProfile;
@@ -751,11 +751,7 @@ pub fn explicit_press_delivery_with(
             };
             // `kp_shadow_actuate`: `applied` が向きと一致するなら view の `shadow_on` を未知にする（M1、PR #408）。
             let applied_open = state.applied.open();
-            let shadow_on = if shadow_toggle_demotes_applied(applied_open, new_val) {
-                None
-            } else {
-                applied_open
-            };
+            let shadow_on = explicit_press_shadow_on(applied_open, new_val);
             let (write, reason) = attempt_write(state, new_val, shadow_on, req, judge);
             Delivery {
                 physical,
@@ -1194,11 +1190,7 @@ mod tests {
                 };
                 // `kp_shadow_actuate`: `applied` が向きと一致するなら view の `shadow_on` を未知にする（M1、PR #408）。
                 let applied_open = state.applied.open();
-                let shadow_on = if shadow_toggle_demotes_applied(applied_open, new_val) {
-                    None
-                } else {
-                    applied_open
-                };
+                let shadow_on = explicit_press_shadow_on(applied_open, new_val);
                 let (write, reason) = attempt_write(state, new_val, shadow_on, req, judge);
                 RefOut {
                     physical,
