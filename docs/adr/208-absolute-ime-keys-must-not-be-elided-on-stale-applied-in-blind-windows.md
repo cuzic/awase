@@ -9,7 +9,7 @@ summary: |-
   保証は1押下ごとの配送不変条件 INV-L1(物理が届くか awase が書くかのちょうど一方)と収束条件 INV-L2(絶対指定は1回、トグルは2回以内)。設計は新しい gate を足さず、既存の省略・授権(`applied` の already-matched・warrant)を緩める
   D1〜D4+押下 id による BUG-113 の二重送信防止。検証は純粋な決定関数の全列挙テスト(Linux)→ CI の drift × キー行列。L0〜L3 を v2 のブロッカーにする。
 status: |-
-  採用(2026-10-01、Opus round1 反映済み)。**L0 実装済み**(挙動不変の切り出し・差分 0 の確認・全列挙テスト・反例 golden。「L0 実装メモ」節)、L1 から未実装。所有者決定: 全窓で必ず書く(物理押下ごとに1回、同一押下の二重送信のみ防ぐ)、『解消』は最大2回の押下、検証は決定表の網羅テスト→CI の行列、InputRelay は『awase が actuate しない窓では開閉キーを握りつぶさず素通し』、MS-IME × 実 Chrome の `VK_IME_OFF` が効かない件(BUG-172 対照)は例外として明記し別機構は後で検討、L0〜L3 を v2 のブロッカーにする(L3' は実機 A/B が条件で v2 のブロッカーにしない)。
+  採用(2026-10-01、Opus round1 反映済み)。**L0 実装済み**(挙動不変の切り出し・差分 0 の確認・全列挙テスト・反例 golden。「L0 実装メモ」節)、**L1 実装済み**(押下 ID・applied の未知化・S-1 解消・BUG-113 の両立。「L1 実装メモ」節。実機・CI の drift × キー行列は未実施)、L2 から未実装。所有者決定: 全窓で必ず書く(物理押下ごとに1回、同一押下の二重送信のみ防ぐ)、『解消』は最大2回の押下、検証は決定表の網羅テスト→CI の行列、InputRelay は『awase が actuate しない窓では開閉キーを握りつぶさず素通し』、MS-IME × 実 Chrome の `VK_IME_OFF` が効かない件(BUG-172 対照)は例外として明記し別機構は後で検討、L0〜L3 を v2 のブロッカーにする(L3' は実機 A/B が条件で v2 のブロッカーにしない)。
 related_adr:
   - "ADR-205"
   - "ADR-206"
@@ -80,6 +80,18 @@ related_adr:
 - **状態空間**: Opus round1 の指摘どおり `was_down`(リピートは対象外、P6)と、同一押下で shadow と Engine が異なる向きを要求する構成(P5)を追加した。
 - **モデルの前提(推測を含む)**: 機構チェーンは先頭のみ、Engine の SetOpen は常に出る、実 IME は A1 のキーの配送を意味どおり処理し awase の書き込みはその向きに設定する、P5 は「Engine の executor は押下前の `applied` を見る」。押下 id(`PressId` 等)は L1 の範囲で、P5 の `#[ignore]` テストは現状のモデルとして置いた。
 - **成果物**: `tests/explicit_press_exhaustive.rs`(69,120 状態 × 12 キー、debug ビルドで約 3 秒)、`tests/golden/explicit_press_counterexamples.txt`(P1〜P6 の反例を分類 × 件数 + 各分類の最小の代表例で固定。分類外の反例があるとテストが失敗する。`UPDATE_GOLDEN=1` で再生成)。
+
+### L1 実装メモ(2026-10-01)
+
+- **押下 ID の付与**: コア crate の `awase::types::PressId`(単調増加 `u64` の newtype)と `is_press_start(is_keydown, injected, was_down)`(非注入の非リピート KeyDown)。`RawKeyEvent::press_id: Option<PressId>`、hook(`hook.rs::assign_press_id`)が振る。KeyUp・自動リピート・注入は `None`。reinject・drain replay・Ctrl 救済の 50ms 保留は同じ `RawKeyEvent` を再処理するので同じ id。
+- **Engine の運搬**(コア crate の型変更): `ImeEffect::SetOpen { open, press }`。コンボ・`keys.ime_*`・役割由来の開閉は `Engine::check_special_keys` がその打鍵の `press_id` を載せる(`Decision::stamp_set_open_press`)。単独タップ(ADR-206)は確定点(KeyUp/タイムアウト/次のキー)が KeyDown と別イベントなので、`ClassifiedEvent::press_id` → `PendingThumbData::press_id` が保留開始 KeyDown の id を保持し、`NicolaFsm::ime_open_requested`(`ImeOpenRequest { action, press }`)で確定時の effect まで運ぶ。自動リピートは `press=None`(特殊キー照合はリピートでも一致するが従来の `applied` 省略に任せる)。
+- **予約と衝突の優先順位**: `state/press_ledger.rs::PressLedger::claim`(純粋)を `ImeStateHub::claim_press_write` が order の**発行直前**に呼ぶ(`last_written_press`。ImmCross の async は完了が後から届くので完了時では二重送信を防げない)。書けなかった(UnsafeToToggle/Failed)ときも予約は解かない。同じ押下で同じ向き=`Duplicate`(書かない。executor は `AlreadyMatched`、shadow は何もしない)。**向きが逆なら Engine の明示コンボが後から上書きする**(`ConflictEngineWins`、書き込みは 2 回で最終の向きは Engine)。shadow が後に来たら先着の Engine を保つ(`ConflictKept`)。衝突は info ログと `JournalEntry::PressWriteClaim`。
+  - **この方式を選んだ理由**: 評価順は hook の shadow → Engine の `on_input` → executor で、shadow は Engine が同じ押下で `SetOpen` を出すかを知らずに先に書く。Engine の事前問い合わせ(`matches_ime_off` と同型)で shadow を止める案は、`ctx.ime_on`(shadow が belief を倒した後の値で組み立てられ、ImeToggle の向きがそれに依存する)と単独タップの確定が KeyUp という別イベントである点で、事前に分かる形にできない。shadow の書き込みを Engine 判断の後ろへ遅延する案は、Ctrl 救済の早期 return など全出口で実行を保証する必要があり変更が大きい。後から来る Engine が上書きする案は、順序・出口に依存せず `PressLedger` 1 箇所で決まり、衝突は稀(sync キーが `keys.ime_*` にも割り当てられた構成だけ)なので 2 回目の書き込みのコストが小さい。全列挙で向きが逆の衝突のうち Engine が上書きするのは 21,420 件、Engine 自身の書き込みが省略される(授権・Win キー等。別の穴)のは 15,540 件(golden の P5 info)。
+- **D1(applied の未知化)**: `ime_actuation_decision::explicit_press_shadow_on`/`explicit_press_applied_pair`(`shadow_toggle_demotes_applied` を一般化)。`ActuationOrder::with_press` が載せる `press.is_some()` の order だけ、`executor::dispatch_ime_set_open`(Engine)と `kp_shadow_actuate`(shadow)が view の `shadow_on` を未知にする。`applied` 自体は書き換えず、完了時の `record_ime_apply_result` が正しい値を書く(新しい `ImeEvent` は不要)。`press=None` は従来の already-matched 省略。shadow 経路は従来、リピートでも無条件に降格していたが、L1 でリピートは `applied` の省略に戻した。
+- **kp_shadow_actuate の refresh kill**: P2c(ActivationSync 撤去)で消えた打鍵前の `TIMER_IME_REFRESH` の kill を戻した(kill を優先。「直近 N ms の押下の書き込みでは drift を送らない」条件は tuning 定数と実測が要るので採らない)。
+- **ImmCross の書き込み時間切れ(項目6)は見送り**: `SendMessageTimeoutW(150ms)` の時間切れは取り消されず後で届くが、(1) 後続の機構(GjiDirect/MsImeDirect)は絶対指定の冪等な書き込みで、同じ向きに重なるだけ(逆向きの二重の「開閉」にならない)、(2) 止めると IME 窓が応答しない窓で VK へ落ちる収束経路(INV-L2)を失う、(3) 次の押下との順序逆転はフォールスルーの有無に関わらず起きる。時間切れを `ImmCrossOutcome::open_timed_out` として診断ログ(`[apply-ime] ImmCross failed (... timed_out=..)`)に出すだけにした。頻度を測って追い送りが害と分かったら `press.is_some()` の order だけ UnsafeToToggle(未確定)で止める案を再検討する。
+- **L0 モデルの更新**: `DeliveryMode::PressId`(L1、**現在の本番**)と `PressIdFixedPoint`(L1+D4、L3 の本番)を足し、`explicit_press_delivery_after`(同一押下で先に予約された向き `claimed` を渡す)と `dual_route_writes_with`、`ElisionReason::AlreadyWrittenThisPress` を追加。モデルは本番と同じ純粋関数(`PressLedger`、`explicit_press_shadow_on`)を呼ぶ。全列挙(69,120 状態 × 12 キー)で **S-1 は 0 件**(L1 前 `P1-PreL1` は 672 件、うち「起こりうる」264)、P5 は違反 0、P6 の `repeat_rewrites_gji_direct` は 0。`l1_changes_only_the_press_engine_already_matched_elision` が、L1 が L0 から変えるのは非リピートの Engine 経路の already-matched 省略だけであることを全列挙で固定。S-2〜S-4・L5・L9 は L2 以降(件数は golden)。
+- **本番との一致**: 押下の予約・applied の未知化の判断は、本番(`ImeStateHub::claim_press_write`・`dispatch_ime_set_open`・`kp_shadow_actuate`)とモデルが同じ純粋関数を呼ぶ(判断の二重実装なし)。入口の配線は `tests/architecture_guard.rs::press_id_is_claimed_and_carried_at_every_order_issuing_entry` が固定(order を発行する 2 入口が予約・`with_press`・未知化・kill を持ち、drift correction〈`ime_refresh.rs`〉は press を持たない)。実機・CI の drift × キー行列は未実施。
 
 ## リスク
 
