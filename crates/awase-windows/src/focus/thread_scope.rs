@@ -126,16 +126,18 @@ mod win {
                 cbSize: u32::try_from(size_of::<GUITHREADINFO>()).unwrap_or(0),
                 ..Default::default()
             };
-            let mut target = fg;
-            if GetGUIThreadInfo(fg_tid, &raw mut gti).is_ok() && !gti.hwndFocus.0.is_null() {
-                target = gti.hwndFocus;
-            }
+            let target =
+                if GetGUIThreadInfo(fg_tid, &raw mut gti).is_ok() && !gti.hwndFocus.0.is_null() {
+                    gti.hwndFocus
+                } else {
+                    fg
+                };
             let mut pid = 0_u32;
             let tid = GetWindowThreadProcessId(target, Some(&raw mut pid));
             if tid == 0 {
                 return None;
             }
-            let (mut c, mut e, mut k, mut u) = (
+            let (mut created, mut exited, mut kernel, mut user) = (
                 FILETIME::default(),
                 FILETIME::default(),
                 FILETIME::default(),
@@ -143,14 +145,14 @@ mod win {
             );
             let awase_start = if GetProcessTimes(
                 GetCurrentProcess(),
-                &raw mut c,
-                &raw mut e,
-                &raw mut k,
-                &raw mut u,
+                &raw mut created,
+                &raw mut exited,
+                &raw mut kernel,
+                &raw mut user,
             )
             .is_ok()
             {
-                Some(filetime(c))
+                Some(filetime(created))
             } else {
                 None
             };
@@ -159,10 +161,18 @@ mod win {
                 awase_start,
                 OpenThread(THREAD_QUERY_LIMITED_INFORMATION, false, tid),
             ) {
-                if GetThreadTimes(h, &raw mut c, &raw mut e, &raw mut k, &raw mut u).is_ok() {
+                if GetThreadTimes(
+                    h,
+                    &raw mut created,
+                    &raw mut exited,
+                    &raw mut kernel,
+                    &raw mut user,
+                )
+                .is_ok()
+                {
                     // 100ns 単位の差を ms にする（負=起動前）。
-                    let d = i128::from(filetime(c)) - i128::from(start);
-                    created_after_awase_ms = i64::try_from(d / 10_000).ok();
+                    let delta = i128::from(filetime(created)) - i128::from(start);
+                    created_after_awase_ms = i64::try_from(delta / 10_000).ok();
                 }
                 let _ = CloseHandle(h);
             }
