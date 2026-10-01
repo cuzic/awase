@@ -61,6 +61,7 @@ GJIは閉じても変換モードを保持し、開き直すと0x10のままだ�
    ただし、読めない窓では実スレッドの状態を観測できないため、実運用では「フォーカス変更時にhwndのスレッドIDを引き、同じスレッドのbeliefを引き継ぐ」以上の精緻化は要らない。
 2. **新しいスレッド/プロセスの窓の初期状態は「閉×ひらがな(0x09/0x19)」**（GJI、MS-IME本体とも）。これはawaseの既定の種（IME ON・ひらがな・ローマ字）と**開閉が違う**: 新しい窓は最初は閉。
    ただし、ユーザーが最初のキーでIMEを開く操作をすれば、開いた直後は**ひらがな**である（前の窓が0x10でも継承しない）。
+   実装は`focus/thread_scope.rs`からImm32Unavailableのcache missへ適用し、`SPI_GETTHREADLOCALINPUTSETTINGS==0`かつGJIまたは同定済みMS-IME本体に限定した。GJIはCIで`applied=true`→`ka`を検証済み。同定済みMS-IME本体にも適用されるが、CIのMS-IME構成はTIPを`MicrosoftIme (Other)`（IMM32 HKL）と同定して適用条件を満たさないため、**同定済みMS-IME本体×新スレッド=閉の経路はCIで一度も通っておらず未検証**（[ADR-212 決定5](212-remove-preventive-and-corrective-ime-actuation-in-phases.md#決定)）。
 3. **`UserImeOnEisuReset`（IME ONで`ObservedEisu`をひらがなに直す）の仮定の正誤**:
    - **正しい**: 新しいスレッド/プロセスの窓でIMEを開いたとき（0x09）。MS-IME本体で閉→開したとき（0x19に戻る）。
    - **誤り**: GJIで**同じスレッド内**で閉→開したとき（直前のモード0x10/0x1Bを保持）。blind s2 の実バグはここに当たる。

@@ -179,6 +179,7 @@
 | [BUG-176](BUG-176.md) | 実 Edge(GJI・Imm32Unavailable)で他プロセスが注入した VK_IME_OFF の後、IME は開いたままなのに awase が open=false へ追随して Engine を OFF にする(偽 OFF。初回セッションのみ・再現条件不明、#377 の効果自体は実機で確認済み) |
 | [BUG-177](BUG-177.md) | JIS キーボード実機(GJI)で学習プロセスが自分の注入した半角/全角(0xF3/0xF4)のキーアップを「物理入力」と数え、序盤で必ず interference 失敗する |
 | [BUG-178](BUG-178.md) | GJI(session_keymap=2 + 古い custom 表が残る構成)の実機で awase-keymap-learn-win が cell=73/84 のまま 22 分以上進まず終了しない |
+| [BUG-179](BUG-179.md) | CI の MS-IME 構成で awase 起動後に起動した Chrome へ IME 操作なしで k,a を打つと kiu になる |
 
 ## その他の資料
 
