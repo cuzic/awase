@@ -667,6 +667,19 @@ pub(crate) fn take_pending_end_composition() -> bool {
         .swap(false, Ordering::Relaxed)
 }
 
+/// 保留中の `StartComposition`/`EndComposition`（候補窓 SHOW/HIDE の latch）を捨てる。
+///
+/// IME OFF とフォーカス変更は、それまでの composition セッションの終わりを意味する。latch が
+/// drain されないまま残ると、次の send_keys/WM_DRAIN で**前のセッションの SHOW**が新しい状態へ
+/// `StartComposition` として配られる（OffCold では `StartComposition while engine off`、
+/// cold/warm では存在しない composition で `OnComposing` に入る）。`ImeOff`・`FocusChange` の
+/// GjiFsm 通知の直前に呼ぶ。
+pub(crate) fn discard_pending_composition_events() -> bool {
+    let start = take_pending_start_composition();
+    let end = take_pending_end_composition();
+    start || end
+}
+
 // ── IME 種別 ──
 
 /// フォアグラウンドで使用中の IME の種別。
@@ -709,6 +722,26 @@ mod tests {
     /// `TSF_OBS` はプロセス全体のグローバル状態のため、テスト間の競合を防ぐロック
     /// (`probe.rs`/`literal_detect_fsm.rs`と共有、詳細は`TSF_OBS_TEST_LOCK`のdoc参照)。
     use super::TSF_OBS_TEST_LOCK as TEST_LOCK;
+
+    /// IME OFF/フォーカス変更で保留の SHOW/HIDE latch が捨てられ、次の drain で前セッションの
+    /// `StartComposition` が配られない(ADR-213 P2b の CI で `StartComposition while engine off`)。
+    #[test]
+    fn discard_pending_composition_events_clears_both_latches() {
+        let _g = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        TSF_OBS
+            .pending_start_composition
+            .store(true, Ordering::Relaxed);
+        TSF_OBS
+            .pending_end_composition
+            .store(true, Ordering::Relaxed);
+        assert!(discard_pending_composition_events());
+        assert!(!take_pending_start_composition());
+        assert!(!take_pending_end_composition());
+        // 何も保留が無ければ false。
+        assert!(!discard_pending_composition_events());
+    }
 
     // ── BUG-39: literal_session_confirmed の世代付け回帰テスト ─────────────
 
