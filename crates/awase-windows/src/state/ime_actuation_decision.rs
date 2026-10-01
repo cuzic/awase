@@ -95,6 +95,8 @@ pub enum DecisionSite {
     ReassertExplicitPhysicalKey,
     ForceOnRomajiCorrection,
     ShadowToggleOff,
+    /// shadow toggle の OFF→ON 明示 actuation（ADR-213 決定1）。記録専用ラベル。
+    ShadowToggleOn,
     ForceOnBootstrap,
     BlacklistDriftCorrection,
 }
