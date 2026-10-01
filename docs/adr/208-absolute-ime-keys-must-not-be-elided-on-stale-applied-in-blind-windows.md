@@ -9,7 +9,7 @@ summary: |-
   保証は1押下ごとの配送不変条件 INV-L1(物理が届くか awase が書くかのちょうど一方)と収束条件 INV-L2(絶対指定は1回、トグルは2回以内)。設計は新しい gate を足さず、既存の省略・授権(`applied` の already-matched・warrant)を緩める
   D1〜D4+押下 id による BUG-113 の二重送信防止。検証は純粋な決定関数の全列挙テスト(Linux)→ CI の drift × キー行列。L0〜L3 を v2 のブロッカーにする。
 status: |-
-  採用(2026-10-01)。未実装(L0 から着手)。所有者決定: 全窓で必ず書く(物理押下ごとに1回、同一押下の二重送信のみ防ぐ)、『解消』は最大2回の押下、検証は決定表の網羅テスト→CI の行列、InputRelay は『awase が actuate しない窓では開閉キーを握りつぶさず素通し』、MS-IME × 実 Chrome の `VK_IME_OFF` が効かない件(BUG-172 対照)は例外として明記し別機構は後で検討、L0〜L3 を v2 のブロッカーにする(L3' は実機 A/B が条件で v2 のブロッカーにしない)。
+  採用(2026-10-01)。**L0 実装済み**(挙動不変の切り出しと全列挙テスト・反例 golden。詳細は「L0 実装メモ」節)、L1 から未実装。所有者決定: 全窓で必ず書く(物理押下ごとに1回、同一押下の二重送信のみ防ぐ)、『解消』は最大2回の押下、検証は決定表の網羅テスト→CI の行列、InputRelay は『awase が actuate しない窓では開閉キーを握りつぶさず素通し』、MS-IME × 実 Chrome の `VK_IME_OFF` が効かない件(BUG-172 対照)は例外として明記し別機構は後で検討、L0〜L3 を v2 のブロッカーにする(L3' は実機 A/B が条件で v2 のブロッカーにしない)。
 related_adr:
   - "ADR-205"
   - "ADR-206"
@@ -59,6 +59,14 @@ related_adr:
    | L3 | D4 と、Imm32Unavailable(Chrome)への適用。CI の drift × キー行列 |
    | L3' | TsfNative(WT×GJI)への拡張。**WT×GJI×PSReadLine の実機 A/B(押下ごとの `@` の発生率、develop と L3' 版、各 n≥30)がマージ条件**(単発 `VK_IME_OFF` は BUG-124 の「@」を誘発しうる)。`@` が出る場合の代替は ADR-206 の案「同じ OFF キーを2回続けて押したときだけ送る」(「2回で一致」に収まる) |
    | L4・L5 | InputRelay の素通し(決定3)、残る条件付き固着(S-3・S-4)の確認 |
+
+### L0 実装メモ(2026-10-01、挙動不変)
+
+- **切り出せた範囲**: 配送判断の核 `PhysicalKeyDisposition::plan` の本体を `state/physical_disposition.rs::plan_core`(ungated、`transport.rs` の `plan` は `ActiveImeKind` → `ImeKindId` の変換だけの殻)、shadow 昇格の intent 選択を `state/explicit_press.rs::select_shadow_intent`(`kp_stage_shadow_ime_toggle` が呼ぶ)、Engine の chord フィルタ条件を `engine_set_open_filtered_by_chord`(`handle_engine_set_open` が呼ぶ)。`issue_open_warrant`・`decide_gate`/`decide_chain`/`decide_attempt`・`shadow_toggle_demotes_applied`・`ShadowImeAction::resolve` は元から ungated で、そのまま合成した。
+- **関数の形が仕様と違う点**: `explicit_press_delivery_with(state, key, judge)`。授権(`issue_open_warrant`)は `IntentStore`/`ObservationStore` を要するが、観測を入れる口(`AnyObservation::restored_from_journal`)を本番コードから呼ぶことは architecture_guard が禁じているため、`WarrantJudge` として差し込む(テストは合成ストアで本物の `issue_open_warrant` を呼ぶ)。L1 以降で本番が呼ぶときは live の `WarrantContext` から判定する実装を渡す。
+- **循環は崩していない**: `kp_run_inner` の「shadow 昇格 → `plan`」の順を `explicit_press_delivery_with` が同じ順序で再現する。本番は本関数を呼ばない(D4 の一本化は L3)。
+- **モデルの前提(推測を含む)**: 機構チェーンは先頭のみ、Engine の SetOpen は常に出る、完了後の `applied` は `record_ime_apply_result` の意味論、実 IME は Allow で届いた物理キーを意味どおり処理し awase の書き込みはその向きに設定する。P5(BUG-113)は「shadow 書き込みの後の Engine SetOpen は押下前の `applied` を見る」という現状モデルでの件数で、押下 id(L2)まで `#[ignore]`。
+- **成果物**: `tests/explicit_press_exhaustive.rs`(全 34,560 状態 × 12 キー、デバッグビルドで約1秒)、`tests/golden/explicit_press_counterexamples.txt`(P1〜P5 の反例をクラス別の件数と代表例で固定。`UPDATE_GOLDEN=1` で再生成。L1〜L3 で件数が減る)。
 
 ## リスク
 
