@@ -10,7 +10,7 @@ summary: |-
   (2) 同じ打鍵の二重書き込みを strip で防ぐ(`apply` の already-matched 省略は GjiDirect のみ)、(3) `check_active_transition` 由来の ActivationSync だけを止め明示操作の SetOpen は残す、(4) ActivationSync が `on_ime_applied` で担っていた副作用の棚卸し、
   (5) 起動前から存在する窓で `ka` がリテラルになる挙動を P2b の revert 条件にする、(6) P2a/P2b/P2b'/P2c の段階を決める。Opus round1(2026-10-01)の指摘を反映。ADR-212 決定5 を更新し、ADR-191 の「EngineDecision」節は P2c で改訂する。
 status: |-
-  採用(2026-10-01、Opus round1 反映済み)。実装状況: P2a は PR #408(スパイク `spike/adr213-p2ab` の CI で退行なし・I2 Unwarranted が 0 件に、`docs/experiments.md` エントリ 30 参照)。P2b は CI で I2=0、BUG-180(PR #410)と同時に入れる。P2c は実装中。P2b' は B3 未検証のため候補のまま。実機・起動前の窓の `ka`・StaleConfirm 件数は未検証。
+  採用(2026-10-01、Opus round1 反映済み)。実装状況: P2a は PR #408(スパイク `spike/adr213-p2ab` の CI で退行なし・I2 Unwarranted が 0 件に、`docs/experiments.md` エントリ 30 参照)。P2b は実装済み(CI 検証は P2b の PR 参照)。P2c(`SetOpenOrigin`・`ImeEvent::EngineActivationSync`・`handle_engine_activation_sync`・shadow 同一目標 strip の撤去)は feat/adr213-p2c-remove-activation-sync で実装(2026-10-01)。C2 は `handle_conv_engine_on_sync` として副作用のみ残し、C3(`strip_ime_set_open_if_settling`)は残した(settle 中の明示操作が belief 未更新で実送信される非対称を避けるため)。P2b' は未実装。実機・起動前の窓の `ka`・StaleConfirm 件数は未検証。
 related_adr:
   - "ADR-212"
   - "ADR-191"
