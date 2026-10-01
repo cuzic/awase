@@ -567,7 +567,10 @@ impl ImeStateHub {
         generation: ApplyGeneration,
         tick_ms: TickMs,
     ) -> bool {
-        if self.is_ctrl_ime_chord_active() && !target {
+        if super::explicit_press::engine_set_open_filtered_by_chord(
+            self.is_ctrl_ime_chord_active(),
+            target,
+        ) {
             // chord transaction 中の二次 IME OFF 要求: フィルタ。
             // ChordEnded（Ctrl KeyUp）が barrier を解除するため、ここでは何もしない。
             //
