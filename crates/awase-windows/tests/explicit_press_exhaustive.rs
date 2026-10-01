@@ -2,14 +2,17 @@
 //! ADR-208 L0: 明示キー押下の配送 `explicit_press_delivery_with` の全列挙テストと、現状の反例の golden。
 //!
 //! 状態空間（belief 2 × applied 5 × is_japanese 2 × profile 6 × kind 2 × current_focus 2 × 観測 3 × IntentStore 3 ×
-//! candidate_was_seen 2 × chord 2 × win 2 = 34,560 状態）× キー 12 種 = 414,720 通りの押下を全列挙し
-//! （実 IME の初期値 R∈{false,true} も掛けると 829,440 通り）、次の性質を検査する。
+//! candidate_was_seen 2 × chord 2 × win 2 × was_down 2 = 69,120 状態）× キー 12 種 = 829,440 通りの押下を全列挙し
+//! （実 IME の初期値 R∈{false,true} も掛けると約 166 万通り）、次の性質を検査する。
 //!
-//! - **P1 (INV-L1)**: Win 押下を除き `(physical==Allow) XOR write.is_some()`（配送の過不足なし）。
+//! - **P1 (INV-L1)**: 対象押下（非リピート・Win 押下中を除く）の `Delivery` が、配送か書き込みの**ちょうど一方**
+//!   （`Delivery::resolve` が `Ok`）で、配送側なら前提 A1 の表のキー（`ExplicitKey::a1_holds`）。
 //! - **P2 (絶対キーの 1 回収束)**: 絶対指定キーは 1 押下で実 IME がキーの向きに一致する。
 //! - **P3 (トグルの 2 回収束)**: トグルキーは 2 押下以内で実 IME の状態が変わる（固着しない）。
 //! - **P4 (不動点なし)**: 最大 3 押下で同じ「どちらも届かない」を 2 回続けて繰り返さない。
-//! - **P5 (BUG-113)**: 同一押下で shadow 書き込みと Engine SetOpen が両方来ても送信 1 回（押下 id が L2 で入るまで未達）。
+//! - **P5 (BUG-113)**: 同一押下で shadow 経路と Engine SetOpen が両方来ても（向きが同じでも逆でも）書き込みは 1 回
+//!   （押下 id が L1 で入るまで未達）。
+//! - **P6**: 自動リピートの Down は対象外（`press=None`）。リピートで新たに書かない。
 //!
 //! 現状はこれらが破れる。**`#[should_panic]` にせず、破れるケースを ADR-208 監査（`docs/tasks/adr208-liveness-audit-2026-10-01.md`）
 //! の S-1〜S-4・L-x に対応するクラスごとの件数と代表例として golden（`tests/golden/explicit_press_counterexamples.txt`）に固定する。**
@@ -17,6 +20,9 @@
 //! 未分類の反例（`unclassified`）が出たらテストは失敗する（モデルか分類の更新漏れ）。
 //!
 //! 授権（`issue_open_warrant`）は合成した `IntentStore`/`ObservationStore` に対して**本物**を呼ぶ（`StoreJudge`）。
+//!
+//! 遷移（書いた後の applied）は実物の `ImeModel`（`confirm_applied`・`reduce`）を通す。D4 の固定点（`DeliveryMode::FixedPoint`）で
+//! の P1 も参考として golden に載せる（L3 で本番がこの形になる）。
 //!
 //! 再生成: `UPDATE_GOLDEN=1 cargo test -p awase-windows --test explicit_press_exhaustive`
 
@@ -29,14 +35,15 @@ use std::time::Instant;
 use awase_windows::state::app_ime_policy::AppImePolicy;
 use awase_windows::state::evidence::AnyObservation;
 use awase_windows::state::explicit_press::{
-    explicit_press_delivery_with, ime_after_press, state_after_press, AppliedKnowledge, Delivery,
-    ElisionReason, ExplicitKey, KeyMeaning, Physical, PressProfile, PressState, WarrantJudge,
-    WarrantRequest,
+    dual_route_writes, explicit_press_delivery_with, ime_after_press, state_after_press,
+    AppliedKnowledge, Delivery, DeliveryMode, ElisionReason, ExplicitKey, KeyMeaning, Physical,
+    PressProfile, PressState, Resolution, Violation, WarrantJudge, WarrantRequest,
 };
 use awase_windows::state::force_guard::ForceGuardSet;
 use awase_windows::state::ime_event::{
     HwndId, ImePolicyProfile, ObservationConfidence, ObservationSource, UserIntentSource,
 };
+use awase_windows::state::ime_kind::ImeKindId;
 use awase_windows::state::intent_store::IntentStore;
 use awase_windows::state::observation_store::ObservationStore;
 use awase_windows::state::open_warrant::{issue_open_warrant, WarrantContext};
@@ -116,44 +123,40 @@ impl WarrantJudge for StoreJudge {
 }
 
 fn delivery(judge: &StoreJudge, s: &PressState, key: ExplicitKey) -> Delivery {
-    explicit_press_delivery_with(s, key, judge)
+    explicit_press_delivery_with(s, key, judge, DeliveryMode::Legacy)
 }
 
 // ── 分類 ─────────────────────────────────────────────────────────────────────
 
-/// 反例のクラス（ADR-208 監査 §2/§3 の ID に対応）。表示順もこの順。
+/// 反例のクラス（ADR-208 の S-1〜S-4 と、監査・Opus レビューで分かった既知の分類）。表示順もこの順。
 const CLASSES: &[(&str, &str)] = &[
     (
-        "S1_L1_already_matched",
-        "S-1/L-1: GjiDirect の already-matched（Engine 経由の絶対キー × 古い applied）で Consume して書かない",
+        "S1_already_matched",
+        "S-1: GjiDirect の already-matched（Engine 経由の絶対キー × 古い applied）で Consume して書かない",
     ),
     (
-        "S2_L3_not_japanese_unwarranted",
-        "S-2/L-3: is_japanese_ime=false で授権が下りない（Engine のコンボ・0x16/0x1A が全窓で効かない）",
+        "S2_not_japanese",
+        "S-2: is_japanese_ime=false。授権が下りない（Engine のコンボ・0x16/0x1A）／漢字(0x19)・F13 が昇格せず握る・配送だけになる",
     ),
     (
-        "S4_L7_focus_none_unwarranted",
-        "S-4/L-7: current_focus=None で授権が下りない（意図の記録が no-op で Step 1 が外れ、鮮度内の観測が無いか向きが逆）",
+        "S3_shadow_noop_suppressed",
+        "S-3: shadow no-op（belief が既に向きと一致）は書かず、物理は Suppress される（ImmCross）",
+    ),
+    (
+        "S4_focus_none_unwarranted",
+        "S-4: current_focus=None で授権が下りない（意図の記録が no-op で Step 1 が外れ、鮮度内の観測が無いか向きが逆）",
     ),
     (
         "L9_chord_filtered_unwarranted",
-        "L-9: chord フィルタに落ちた Engine の OFF は意図を記録せず、観測と食い違うと授権が下りない",
-    ),
-    (
-        "unwarranted_other",
-        "授権が下りない（上記以外。分類の更新漏れの警告として件数を出す）",
-    ),
-    (
-        "L4_not_promoted_suppressed",
-        "L-4: is_japanese_ime=false の漢字(0x19)は shadow 昇格せず、ImmCross では物理も Suppress される",
-    ),
-    (
-        "S3_L6_shadow_noop_suppressed",
-        "S-3/L-6: shadow no-op（belief が既に向きと一致）は書かず、物理は Suppress される（ImmCross）",
+        "L-9（監査 §2、S-4 と同根: 意図が記録されない）: chord フィルタに落ちた Engine の OFF は意図を記録せず、観測と食い違うと授権が下りない",
     ),
     (
         "L5_input_relay_consumed",
-        "L-5: InputRelay の窓では Engine のコンボを Consume するが awase は書かない（所有者決定3で素通しへ）",
+        "L-5（所有者決定3、L4 段で素通しへ）: InputRelay の窓では Engine のコンボを Consume するが awase は書かない",
+    ),
+    (
+        "A1_noop_pass_through",
+        "前提 A1（Opus round1 B-2）: 前提 A1 が成り立たないキー（任意の sync キー等）の no-op を Allow で配送する（IME が処理する保証が無い）",
     ),
     (
         "double_actuation",
@@ -162,35 +165,39 @@ const CLASSES: &[(&str, &str)] = &[
     ("unclassified", "未分類（あってはならない）"),
 ];
 
-/// P1 を破る押下（Win 押下を除く）のクラス。破らなければ `None`。
+/// 対象押下の P1 を破るクラス。破らなければ `None`。対象外（リピート・Win 押下・物理のみで意図を持たないキー）も `None`。
 fn p1_class(s: &PressState, key: ExplicitKey, d: &Delivery) -> Option<&'static str> {
-    if s.win_held {
+    if s.win_held || s.was_down || !key.is_target_press_key() {
         return None;
     }
-    let delivered = d.physical == Physical::Allow;
-    let wrote = d.write.is_some();
-    // INV-L1: ちょうど一方。両方（二重 actuation）か、どちらも無し（二重の空振り）が違反。
-    if delivered != wrote {
-        return None;
-    }
-    if delivered && wrote {
-        return Some("double_actuation");
-    }
-    // どちらも届かない。理由で分類する。
     let eff_jp = state_after_press(s, key, d).is_japanese_ime;
-    Some(match d.reason {
-        ElisionReason::AlreadyMatched => "S1_L1_already_matched",
-        ElisionReason::Unwarranted if !eff_jp => "S2_L3_not_japanese_unwarranted",
-        ElisionReason::Unwarranted if !s.current_focus_known => "S4_L7_focus_none_unwarranted",
-        ElisionReason::Unwarranted if key == ExplicitKey::EngineOff && s.ctrl_chord => {
-            "L9_chord_filtered_unwarranted"
+    match d.resolve() {
+        Ok(Resolution::Write { .. }) => None,
+        // InputRelay は素通しが設計（中継先の IME が処理する。所有者決定3）なので A1 を問わない。
+        Ok(Resolution::PassThrough) if key.a1_holds() || s.profile == PressProfile::InputRelay => {
+            None
         }
-        ElisionReason::Unwarranted => "unwarranted_other",
-        ElisionReason::NotPromoted => "L4_not_promoted_suppressed",
-        ElisionReason::ShadowNoop => "S3_L6_shadow_noop_suppressed",
-        ElisionReason::InputRelayNotOwned => "L5_input_relay_consumed",
-        ElisionReason::WinHeld | ElisionReason::Written => "unclassified",
-    })
+        Ok(Resolution::PassThrough) => Some(if !eff_jp {
+            "S2_not_japanese"
+        } else if d.reason == ElisionReason::ShadowNoop {
+            "A1_noop_pass_through"
+        } else {
+            "unclassified"
+        }),
+        Err(Violation::Both { .. }) => Some("double_actuation"),
+        Err(Violation::Neither(reason)) => Some(match reason {
+            ElisionReason::AlreadyMatched => "S1_already_matched",
+            ElisionReason::Unwarranted if !eff_jp => "S2_not_japanese",
+            ElisionReason::Unwarranted if !s.current_focus_known => "S4_focus_none_unwarranted",
+            ElisionReason::Unwarranted if key == ExplicitKey::EngineOff && s.ctrl_chord => {
+                "L9_chord_filtered_unwarranted"
+            }
+            ElisionReason::NotPromoted if !eff_jp => "S2_not_japanese",
+            ElisionReason::ShadowNoop => "S3_shadow_noop_suppressed",
+            ElisionReason::InputRelayNotOwned => "L5_input_relay_consumed",
+            _ => "unclassified",
+        }),
+    }
 }
 
 fn fmt_state(s: &PressState, key: ExplicitKey, real: Option<bool>) -> String {
@@ -201,7 +208,7 @@ fn fmt_state(s: &PressState, key: ExplicitKey, real: Option<bool>) -> String {
     };
     let opt = |o: Option<bool>| o.map_or("None".to_string(), |v| format!("Some({v})"));
     let mut out = format!(
-        "key={key:?} belief={} applied={applied} jp={} profile={:?} kind={:?} focus={} obs={} intent={} cand={} chord={} win={}",
+        "key={key:?} belief={} applied={applied} jp={} profile={:?} kind={:?} focus={} obs={} intent={} cand={} chord={} win={} repeat={}",
         s.belief_open,
         s.is_japanese_ime,
         s.profile,
@@ -212,11 +219,29 @@ fn fmt_state(s: &PressState, key: ExplicitKey, real: Option<bool>) -> String {
         s.candidate_was_seen,
         s.ctrl_chord,
         s.win_held,
+        s.was_down,
     );
     if let Some(r) = real {
         let _ = write!(out, " R={r}");
     }
     out
+}
+
+/// 代表例の「小ささ」: 基準状態（belief=false・applied=Unknown・jp=true・ImmCross・GJI・focus=Some・観測/意図なし・
+/// 他は false）からずれているフィールドの数。小さいほど最小の代表例。
+fn complexity(s: &PressState) -> u32 {
+    u32::from(s.belief_open)
+        + u32::from(s.applied != AppliedKnowledge::Unknown)
+        + u32::from(!s.is_japanese_ime)
+        + u32::from(s.profile != PressProfile::ImmCross)
+        + u32::from(s.ime_kind != ImeKindId::Gji)
+        + u32::from(!s.current_focus_known)
+        + u32::from(s.actuating_obs.is_some())
+        + u32::from(s.intent.is_some())
+        + u32::from(s.candidate_was_seen)
+        + u32::from(s.ctrl_chord)
+        + u32::from(s.win_held)
+        + u32::from(s.was_down)
 }
 
 fn fmt_delivery(d: &Delivery) -> String {
@@ -232,8 +257,9 @@ fn fmt_delivery(d: &Delivery) -> String {
 struct ClassStat {
     all: u64,
     plausible: u64,
-    example: Option<String>,
-    plausible_example: Option<String>,
+    /// (複雑さ, 例)。複雑さが最小のもの（同点は列挙順で最初）。
+    example: Option<(u32, String)>,
+    plausible_example: Option<(u32, String)>,
 }
 
 #[derive(Default)]
@@ -245,7 +271,9 @@ struct PropStat {
 }
 
 impl PropStat {
-    fn add(&mut self, class: &'static str, plausible: bool, example: impl FnOnce() -> String) {
+    fn add(&mut self, class: &'static str, s: &PressState, example: impl FnOnce() -> String) {
+        let plausible = s.is_plausible();
+        let score = complexity(s);
         self.violations += 1;
         if plausible {
             self.plausible_violations += 1;
@@ -255,13 +283,18 @@ impl PropStat {
         if plausible {
             c.plausible += 1;
         }
-        if c.example.is_none() || (plausible && c.plausible_example.is_none()) {
+        let better = |cur: &Option<(u32, String)>| cur.as_ref().is_none_or(|(sc, _)| score < *sc);
+        let (b_all, b_pl) = (
+            better(&c.example),
+            plausible && better(&c.plausible_example),
+        );
+        if b_all || b_pl {
             let e = example();
-            if c.example.is_none() {
-                c.example = Some(e.clone());
+            if b_all {
+                c.example = Some((score, e.clone()));
             }
-            if plausible && c.plausible_example.is_none() {
-                c.plausible_example = Some(e);
+            if b_pl {
+                c.plausible_example = Some((score, e));
             }
         }
     }
@@ -269,55 +302,77 @@ impl PropStat {
 
 struct Report {
     p1: PropStat,
+    p1_fixed_point: PropStat,
     p2: PropStat,
     p3: PropStat,
     p4: PropStat,
     p5: PropStat,
+    p6: PropStat,
     states: u64,
     plausible_states: u64,
-}
-
-/// 反例のクラスを持たない（P1 を満たす）押下で P2/P3/P4 が破れる場合のクラス。
-fn fallback_class(s: &PressState, key: ExplicitKey, d: &Delivery) -> &'static str {
-    p1_class(s, key, d).unwrap_or("unclassified")
 }
 
 fn analyze() -> Report {
     let judge = StoreJudge::default();
     let mut rep = Report {
         p1: PropStat::default(),
+        p1_fixed_point: PropStat::default(),
         p2: PropStat::default(),
         p3: PropStat::default(),
         p4: PropStat::default(),
         p5: PropStat::default(),
+        p6: PropStat::default(),
         states: 0,
         plausible_states: 0,
     };
     for s in PressState::all() {
         rep.states += 1;
-        let plausible = s.is_plausible();
-        if plausible {
+        if s.is_plausible() {
             rep.plausible_states += 1;
         }
         for key in ExplicitKey::ALL {
             let d1 = delivery(&judge, &s, key);
 
-            // P1
+            // P1（現状）と、D4 固定点適用後の P1（参考）
             rep.p1.checked += 1;
             if let Some(class) = p1_class(&s, key, &d1) {
-                rep.p1.add(class, plausible, || {
+                rep.p1.add(class, &s, || {
                     format!("{} -> {}", fmt_state(&s, key, None), fmt_delivery(&d1))
                 });
             }
+            let dfp = explicit_press_delivery_with(&s, key, &judge, DeliveryMode::FixedPoint);
+            rep.p1_fixed_point.checked += 1;
+            if let Some(class) = p1_class(&s, key, &dfp) {
+                rep.p1_fixed_point.add(class, &s, || {
+                    format!("{} -> {}", fmt_state(&s, key, None), fmt_delivery(&dfp))
+                });
+            }
+
+            // P6: リピートの Down は対象外。リピートで新たに書かない（現状は書く＝`press=None` の省略に頼れていない）。
+            if s.was_down && !s.win_held && key.is_target_press_key() {
+                rep.p6.checked += 1;
+                if d1.write.is_some() {
+                    rep.p6.add("repeat_writes", &s, || {
+                        format!("{} -> {}", fmt_state(&s, key, None), fmt_delivery(&d1))
+                    });
+                }
+            }
+
+            // 収束・不動点の検査は対象押下（非リピート・Win なし）だけ。
+            if s.was_down || s.win_held || !key.is_target_press_key() {
+                continue;
+            }
+            let class_of =
+                |st: &PressState, d: &Delivery| p1_class(st, key, d).unwrap_or("unclassified");
 
             // P2（絶対キー、実 IME の初期値 R を掛ける）/ P3（トグル）
             for r0 in [false, true] {
                 match key.meaning() {
-                    KeyMeaning::Absolute(t) if !s.win_held => {
+                    KeyMeaning::Absolute(t) => {
                         rep.p2.checked += 1;
-                        let r1 = ime_after_press(r0, key, &d1);
+                        let r1 = ime_after_press(r0, key, s.profile, &d1);
                         if r1 != t {
-                            rep.p2.add(fallback_class(&s, key, &d1), plausible, || {
+                            rep.p2.add(class_of(&s, &d1), &s, || {
                                 format!(
                                     "{} -> {} (R: {r0} -> {r1}, 向き={t})",
                                     fmt_state(&s, key, Some(r0)),
@@ -326,17 +381,17 @@ fn analyze() -> Report {
                             });
                         }
                     }
-                    KeyMeaning::Toggle if !s.win_held => {
+                    KeyMeaning::Toggle => {
                         rep.p3.checked += 1;
-                        let r1 = ime_after_press(r0, key, &d1);
+                        let r1 = ime_after_press(r0, key, s.profile, &d1);
                         let s1 = state_after_press(&s, key, &d1);
                         let d2 = delivery(&judge, &s1, key);
-                        let r2 = ime_after_press(r1, key, &d2);
+                        let r2 = ime_after_press(r1, key, s.profile, &d2);
                         if r1 == r0 && r2 == r0 {
                             let class = p1_class(&s, key, &d1)
                                 .or_else(|| p1_class(&s1, key, &d2))
                                 .unwrap_or("unclassified");
-                            rep.p3.add(class, plausible, || {
+                            rep.p3.add(class, &s, || {
                                 format!(
                                     "{} -> 1回目 {} / 2回目 {} (R: {r0} -> {r1} -> {r2})",
                                     fmt_state(&s, key, Some(r0)),
@@ -346,63 +401,52 @@ fn analyze() -> Report {
                             });
                         }
                     }
-                    _ => {}
+                    KeyMeaning::NoIntent => {}
                 }
             }
 
-            // P4: 最大 3 押下で同じ「どちらも届かない」を 2 回続けない（R は配送に影響しないので掛けない）。
-            if !s.win_held {
-                rep.p4.checked += 1;
-                let mut cur = s;
-                let mut prev: Option<&'static str> = None;
-                let mut cur_d = d1;
-                for press in 1..=3 {
-                    let class = p1_class(&cur, key, &cur_d).filter(|c| *c != "double_actuation");
-                    if let (Some(p), Some(c)) = (prev, class) {
-                        if p == c {
-                            rep.p4.add(c, plausible, || {
-                                format!(
-                                    "{} -> {press}回目も同じ: {}",
-                                    fmt_state(&s, key, None),
-                                    fmt_delivery(&cur_d)
-                                )
-                            });
-                            break;
-                        }
+            // P4: 最大 3 押下で同じ違反を 2 回続けない（R は配送に影響しないので掛けない）。
+            rep.p4.checked += 1;
+            let mut cur = s;
+            let mut prev: Option<&'static str> = None;
+            let mut cur_d = d1;
+            for press in 1..=3 {
+                let class = p1_class(&cur, key, &cur_d).filter(|c| *c != "double_actuation");
+                if let (Some(p), Some(c)) = (prev, class) {
+                    if p == c {
+                        rep.p4.add(c, &s, || {
+                            format!(
+                                "{} -> {press}回目も同じ: {}",
+                                fmt_state(&s, key, None),
+                                fmt_delivery(&cur_d)
+                            )
+                        });
+                        break;
                     }
-                    prev = class;
-                    let next = state_after_press(&cur, key, &cur_d);
-                    cur = next;
-                    cur_d = delivery(&judge, &cur, key);
                 }
+                prev = class;
+                cur = state_after_press(&cur, key, &cur_d);
+                cur_d = delivery(&judge, &cur, key);
             }
-        }
 
-        // P5（BUG-113、現状のモデル・推測）: 同一押下で shadow 書き込み → Engine の SetOpen が続く（sync キーが
-        // `keys.ime_on/off` でもある構成）。Engine 側の executor は押下前の `applied_snapshot` を見る（完了の反映が
-        // 押下の処理後のため）と仮定する。
-        if !s.win_held {
-            for (shadow_key, engine_key) in [
-                (ExplicitKey::StaticOn, ExplicitKey::EngineOn),
-                (ExplicitKey::StaticOff, ExplicitKey::EngineOff),
-            ] {
-                rep.p5.checked += 1;
-                let d_shadow = delivery(&judge, &s, shadow_key);
-                let after = state_after_press(&s, shadow_key, &d_shadow);
-                let engine_state = PressState {
-                    applied: s.applied,
-                    ..after
-                };
-                let d_engine = delivery(&judge, &engine_state, engine_key);
-                if d_shadow.write.is_some() && d_engine.write.is_some() {
-                    rep.p5.add("bug113_double_send", plausible, || {
-                        format!(
-                            "{} -> shadow {} / engine {}",
-                            fmt_state(&s, shadow_key, None),
-                            fmt_delivery(&d_shadow),
-                            fmt_delivery(&d_engine)
-                        )
-                    });
+            // P5（BUG-113）: 同一押下で shadow 経路と Engine の SetOpen が両方来る構成。向きが同じでも逆でも書き込みは 1 回。
+            if key.is_shadow_path() && key.meaning() != KeyMeaning::NoIntent {
+                for engine_key in [ExplicitKey::EngineOn, ExplicitKey::EngineOff] {
+                    rep.p5.checked += 1;
+                    let w = dual_route_writes(&s, key, engine_key, &judge);
+                    if let [Some(a), Some(b)] = w {
+                        let class = if a == b {
+                            "bug113_double_send_same_direction"
+                        } else {
+                            "bug113_double_send_opposite_direction"
+                        };
+                        rep.p5.add(class, &s, || {
+                            format!(
+                                "{} + {engine_key:?} -> shadow write={a} / engine write={b}",
+                                fmt_state(&s, key, None)
+                            )
+                        });
+                    }
                 }
             }
         }
@@ -419,12 +463,15 @@ fn render(rep: &Report) -> String {
          # このファイルは自動生成される。更新は UPDATE_GOLDEN=1 で再生成すること。\n\
          #\n\
          # 状態空間(belief 2 × applied 5 × is_japanese 2 × profile 6 × kind 2 × current_focus 2 × 観測 3 ×\n\
-         # IntentStore 3 × candidate_was_seen 2 × chord 2 × win 2) × キー 12 種を全列挙した、現状の本番判断の合成結果。\n\
-         # L1〜L3 で穴を直すと該当クラスの件数が減る(この差分が進捗)。クラス名の ID は\n\
-         # docs/tasks/adr208-liveness-audit-2026-10-01.md の §2(L-n) / §3(S-n) に対応する。\n\
+         # IntentStore 3 × candidate_was_seen 2 × chord 2 × win 2 × was_down 2) × キー 12 種を全列挙した、現状の本番判断の合成結果。\n\
+         # 反例は「分類 × 件数 + 各分類の最小の代表例(基準状態からのずれが最小)」で固定する(S-2 だけで状態空間の約半分が\n\
+         # 反例なので行は列挙しない)。分類に当てはまらない反例(unclassified)が出たらテストが失敗する。\n\
+         # L1〜L3 で穴を直すと該当クラスの件数が 0 に向かう(この差分が進捗)。\n\
          # 「起こりうる」= Blind プロファイル(Imm32Unavailable/TsfNative)で Actuating 観測が無い組み合わせ。\n\
+         # 対象押下 = 非リピート・Win 押下なし・意図を持つキー。P1 の合格は Delivery が配送か書き込みのちょうど一方\n\
+         # (Delivery::resolve が Ok)で、配送側なら前提 A1 のキー(0x16/0x1A・0xF0/F2・学習済み 0xF3/0xF4)。\n\
          # P5 は「同一押下で shadow 書き込みの後に Engine の SetOpen が続くとき、executor は押下前の applied を見る」という\n\
-         # 現状のモデル(推測)での件数。押下 id(L2)で 0 になるべきもの。\n\
+         # 現状のモデル(推測)での件数。押下 id(L1)で 0 になるべきもの。\n\
          #\n",
     );
     let _ = writeln!(
@@ -434,11 +481,16 @@ fn render(rep: &Report) -> String {
         rep.plausible_states,
         ExplicitKey::ALL.len()
     );
-    let props: [(&str, &str, &PropStat); 5] = [
+    let props: [(&str, &str, &PropStat); 7] = [
         (
             "P1",
-            "INV-L1: Win 押下を除き (physical==Allow) XOR write.is_some()",
+            "INV-L1: 対象押下の Delivery が配送か書き込みのちょうど一方で、配送側なら A1 のキー",
             &rep.p1,
+        ),
+        (
+            "P1-FixedPoint",
+            "(参考) D4 の固定点(plan(false) を先に評価し Suppress なら no-op でも書く)を適用したときの P1。L3 で本番がこの形になる",
+            &rep.p1_fixed_point,
         ),
         (
             "P2",
@@ -452,13 +504,18 @@ fn render(rep: &Report) -> String {
         ),
         (
             "P4",
-            "最大 3 押下で同じ「どちらも届かない」を 2 回続けて繰り返さない",
+            "最大 3 押下で同じ違反を 2 回続けて繰り返さない",
             &rep.p4,
         ),
         (
             "P5",
-            "同一押下で shadow 書き込み + Engine SetOpen が来ても送信 1 回（現状モデル）",
+            "同一押下で shadow 経路と Engine SetOpen が両方来ても書き込みは 1 回（向きが逆の場合を含む。現状モデル）",
             &rep.p5,
+        ),
+        (
+            "P6",
+            "自動リピートの Down で新たに書かない（対象外。press=None の従来の省略に任せる）",
+            &rep.p6,
         ),
     ];
     for (id, desc, stat) in props {
@@ -479,19 +536,19 @@ fn render(rep: &Report) -> String {
             let desc = CLASSES
                 .iter()
                 .find(|(n, _)| n == name)
-                .map_or("(P5)", |(_, d)| *d);
+                .map_or("(P5/P6)", |(_, d)| *d);
             let _ = writeln!(
                 out,
                 "class\t{name}\tall\t{}\tplausible\t{}",
                 c.all, c.plausible
             );
             let _ = writeln!(out, "  # {desc}");
-            if let Some(e) = &c.example {
-                let _ = writeln!(out, "  example: {e}");
+            if let Some((_, e)) = &c.example {
+                let _ = writeln!(out, "  minimal_example: {e}");
             }
-            if let Some(e) = &c.plausible_example {
-                if Some(e) != c.example.as_ref() {
-                    let _ = writeln!(out, "  plausible_example: {e}");
+            if let Some((_, e)) = &c.plausible_example {
+                if Some(e) != c.example.as_ref().map(|(_, e)| e) {
+                    let _ = writeln!(out, "  minimal_plausible_example: {e}");
                 }
             }
         }
@@ -522,6 +579,7 @@ fn exhaustive_properties_and_counterexample_golden() {
     // 分類漏れは golden に載せず落とす（モデルか分類の更新漏れ）。
     for (name, stat) in [
         ("P1", &rep.p1),
+        ("P1-FixedPoint", &rep.p1_fixed_point),
         ("P2", &rep.p2),
         ("P3", &rep.p3),
         ("P4", &rep.p4),
@@ -532,6 +590,7 @@ fn exhaustive_properties_and_counterexample_golden() {
             stat.classes
                 .get("unclassified")
                 .and_then(|c| c.example.as_ref())
+                .map(|(_, e)| e)
         );
     }
 
@@ -556,7 +615,7 @@ fn exhaustive_properties_and_counterexample_golden() {
 #[test]
 fn p2_violations_reduce_to_p1_no_delivery() {
     let judge = StoreJudge::default();
-    for s in PressState::all().filter(|s| !s.win_held) {
+    for s in PressState::all().filter(|s| !s.win_held && !s.was_down) {
         for key in ExplicitKey::ALL {
             let KeyMeaning::Absolute(t) = key.meaning() else {
                 continue;
@@ -566,7 +625,7 @@ fn p2_violations_reduce_to_p1_no_delivery() {
             for r0 in [false, true] {
                 if p1_ok {
                     assert_eq!(
-                        ime_after_press(r0, key, &d),
+                        ime_after_press(r0, key, s.profile, &d),
                         t,
                         "P1 を満たすのに絶対キーが向きに一致しない: {} -> {}",
                         fmt_state(&s, key, Some(r0)),
@@ -671,7 +730,8 @@ fn physical_delivery_matches_the_audit_table() {
                 }
                 // F13 役割: ImmCross でも IU/TN でも、書いた押下だけ Suppress。
                 ExplicitKey::RoleFkeyToggle => {
-                    let expected = if d.shadow_toggled {
+                    // 自動リピートの Down は昇格しないが、ラッチ由来の `shadow_action` で Suppress される。
+                    let expected = if d.shadow_toggled || s.was_down {
                         Physical::Suppress
                     } else {
                         Physical::Allow
@@ -686,9 +746,9 @@ fn physical_delivery_matches_the_audit_table() {
 
 /// P5（BUG-113）: 同一押下で shadow 書き込みと Engine SetOpen が両方来ても送信 1 回。
 /// 現状は押下 id が無く、executor が押下前の `applied` を見るため二重送信になる状態がある
-/// （件数は golden の P5）。ADR-208 L2（押下 id）で通ること。
+/// （件数は golden の P5）。ADR-208 L1（押下 id）で通ること。
 #[test]
-#[ignore = "ADR-208 L2（押下 id: press_id・ActuationOrder.press・last_written_press）が入るまで未達。現状の件数は golden の P5"]
+#[ignore = "ADR-208 L1（押下 id: PressId・ImeEffect::SetOpen.press・ActuationOrder.press・last_written_press）が入るまで未達。現状の件数は golden の P5"]
 fn p5_same_press_sends_once() {
     let rep = analyze();
     assert_eq!(rep.p5.violations, 0, "{:?}", rep.p5.classes.keys());

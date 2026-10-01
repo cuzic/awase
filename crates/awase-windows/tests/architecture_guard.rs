@@ -1679,8 +1679,11 @@ fn applied_direct_assignments_are_accounted_for() {
         // appliedを`Unknown`へ落とす1件を追加（BUG-156、`reduce()`内の正規書き込み）。
         // 6→7。`ModeKeyPassedThrough`のreduce内で、揃えた観測がappliedと食い違うときappliedを`Unknown`へ落とす
         // 1件を追加（ADR-205 D6、BUG-172。`reduce()`内の正規書き込み）。
-        ("src/state/ime_model.rs", 7),
-        ("src/state/platform_state.rs", 2),
+        // 7→8 / platform_state 2→1（ADR-208 L0）。`ImeStateHub::record_confirmed` の `applied` 書き込み
+        // （generation=None の完了記録）を、全列挙テストが本物の遷移を通せるよう `ImeModel::confirm_applied`
+        // へ移した（挙動不変。`record_confirmed` はこれを呼ぶだけ）。書き込み点の総数は変わらない。
+        ("src/state/ime_model.rs", 8),
+        ("src/state/platform_state.rs", 1),
     ];
     const STRUCT_LITERAL_FIELDS: [(&str, usize); 1] = [("src/state/ime_model.rs", 1)];
 
