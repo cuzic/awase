@@ -235,6 +235,16 @@ fn send_key(vk: u32, down: bool) {
     }
 }
 
+fn send_ctrl_muhenkan() {
+    send_key(0xA2, true);
+    sleep(40);
+    send_key(0x1D, true);
+    sleep(60);
+    send_key(0x1D, false);
+    sleep(30);
+    send_key(0xA2, false);
+}
+
 fn sleep(ms: u64) {
     std::thread::sleep(Duration::from_millis(ms));
 }
@@ -956,11 +966,18 @@ fn main() {
                 continue;
             }
             let before = ime_control(0x0005, 0);
-            let set_ret = ime_control(0x0006, 0);
+            let ctrl_muhenkan = args.iter().any(|a| a == "--ctrl-muhenkan-off");
+            let set_ret = if ctrl_muhenkan {
+                send_ctrl_muhenkan();
+                None
+            } else {
+                ime_control(0x0006, 0)
+            };
             sleep(50);
             let after = ime_control(0x0005, 0);
             p.log.line(&format!(
-                "CLOSE_IME open_before={before:?} set_ret={set_ret:?} open_after={after:?}"
+                "CLOSE_IME method={} open_before={before:?} set_ret={set_ret:?} open_after={after:?}",
+                if ctrl_muhenkan { "ctrl_muhenkan" } else { "direct_close" }
             ));
             let closed_at = Instant::now();
             if args.iter().any(|a| a == "--refocus") {
@@ -985,6 +1002,21 @@ fn main() {
             if p.focus_lost {
                 p.log.line("RESULT INVALID: ページのフォーカスが外れた");
                 invalid += 1;
+            } else if ctrl_muhenkan {
+                // 物理 Ctrl+無変換 で OFF にする変種: 期待は「英字のまま(ka)」。`gap` は OFF 操作の直後も実 IME が開いたまま
+                // だった(awase の OFF 操作と実 IME がずれた)試行。checker は gap と実打鍵で ずれ有無/回復を分ける。
+                let gap = matches!(after, Some(v) if v != 0);
+                if got == Class::Plain {
+                    p.log
+                        .line(&format!("RESULT PASS: OFF が効き英字(ka) gap={gap}"));
+                    ok += 1;
+                } else {
+                    p.log.line(&format!(
+                        "RESULT FAIL: OFF が効かず 実際={} gap={gap}",
+                        got.label()
+                    ));
+                    bad += 1;
+                }
             } else if got == Class::Nicola {
                 p.log
                     .line("RESULT PASS: IME が開き直りNICOLA文字が出た(回復)");

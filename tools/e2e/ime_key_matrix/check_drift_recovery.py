@@ -37,6 +37,18 @@ recovered か reopened_by_typing で、reopened_by_typing がある=drift correc
 NOT_OBSERVED(実打鍵がかなの試行が無く、observed=0 かつ drift=0=戻さないのではなく見ていない) /
 NOT_RECOVERED(実打鍵がかなの試行が無く、observed>0 または drift>0) / UNDETERMINED(それ以外。typed_blind 等を含む)。
 判定は観測用(CI の expect は 'observe')。
+
+物理 Ctrl+無変換 変種(`typing_stress --drift-off-ctrl-muhenkan`、drift_on_close.method=ctrl_muhenkan): ハーネスが直接閉じる代わりに、
+マーカー付き SendInput の Ctrl↓→無変換↓↑→Ctrl↑ で OFF にする(debug awase は物理 Ctrl+無変換として扱う)。ここでの「ずれ」は
+「awase の OFF 操作のあとも実 IME が ON のまま」(close 直後の open=True)。試行の分類:
+  invalid        前提不成立(上と同じ。さらに awase.log の `[engine-input] vk=0x1D KeyDown` が物理 Ctrl 付き=`mods(c=true` かつ
+                 `phys_ctrl=true` でない、または1件も無い。phys_ctrl=false は注入が物理キー扱いされていない=INVALID)
+  gap_not_made   close 直後に実 IME が閉じた(OFF 操作が効き、ずれは作れなかった)
+  corrected      ずれができ、その後 ON のままではなくなった(最後のチェックポイントで閉、または実打鍵がかなでない)
+  not_corrected  ずれができ、最後まで ON のままで実打鍵もかな(drift correction 等で OFF へ戻らない)
+verdict: INVALID / GAP_NOT_MADE(ずれが1件も作れない) / CORRECTED(ずれた試行の全てが corrected) / NOT_CORRECTED(全て not_corrected) /
+UNDETERMINED。summary 行には既存列(recovered=corrected, not_recovered=not_corrected)に加え method=ctrl_muhenkan gap_made gap_not_made
+phys_ctrl_ok を付ける。
 使い方: check_drift_recovery.py [--json out.json] <typing_stress.log> <awase.log>
 終了コード: 0=RECOVERED / 1=それ以外 / 3=INVALID / 2=使い方の誤り
 """
@@ -60,6 +72,8 @@ PATTERNS = {
 PRE_KEYS = ("observed", "drift")
 TYPING_KEYS = ("conv_read", "reinit", "unicode")
 INTENT = re.compile(r"explicit_intent=(\S+)")
+MUHENKAN_DOWN = re.compile(r"\[engine-input\] vk=0x1D KeyDown")
+PHYS_CTRL = re.compile(r"mods\(c=true .*phys_ctrl=true")
 
 
 def load_awase(path: str) -> list:
@@ -103,7 +117,114 @@ def intent_between(lines: list, lo, hi):
     return last
 
 
+def phys_ctrl_check(lines: list, t0, t1):
+    """t0〜t1 の `[engine-input] vk=0x1D KeyDown` が全て物理 Ctrl 付きか。(件数, 物理 Ctrl 付きの件数)。"""
+    n = ok = 0
+    if t0 and t1:
+        for ts, line in lines:
+            if t0 <= ts <= t1 and MUHENKAN_DOWN.search(line):
+                n += 1
+                ok += bool(PHYS_CTRL.search(line))
+    return n, ok
+
+
+def analyze_ctrl(recs: list, lines: list) -> dict:
+    """物理 Ctrl+無変換で OFF にした変種(docstring 参照)。"""
+    cfg = next((r for r in recs if r.get("type") == "config"), {})
+    aborts = [r["reason"] for r in recs if r.get("type") == "abort"]
+    done = any(r.get("type") == "done" for r in recs)
+
+    def by_n(t):
+        d = {}
+        for r in recs:
+            if r.get("type") == t:
+                d.setdefault(r["n"], []).append(r)
+        return d
+
+    pre, close, checks, typed = by_n("drift_on_pre"), by_n("drift_on_close"), by_n("drift_on_check"), by_n("drift_on_typed")
+    ns = sorted(set(pre) | set(close) | set(checks) | set(typed))
+    counts = {"gap_not_made": 0, "corrected": 0, "not_corrected": 0, "invalid": 0}
+    seen = {k: 0 for k in PATTERNS}
+    trials, phys_ok = [], 0
+    for n in ns:
+        pr = pre.get(n, [{}])[0]
+        c = close.get(n, [{}])[0]
+        cps = sorted(checks.get(n, []), key=lambda r: r.get("checkpoint_ms", 0))
+        t = typed.get(n, [{}])[0]
+        t_close, t_press, t_end = c.get("utc"), t.get("press_utc"), t.get("utc")
+        it = intent_between(lines, pr.get("on_utc"), t_close)
+        w = window_counts(lines, t_close, t_press, PRE_KEYS)
+        nmu, nok = phys_ctrl_check(lines, t_close, t_press)
+        reason = None
+        if pr.get("real_ime_open") is not True:
+            reason = f"ON前提が未成立(pre_open={pr.get('real_ime_open')})"
+        elif pr.get("on_key") != "0x16":
+            reason = f"VK_IME_ON 以外で ON にした(on_key={pr.get('on_key')})"
+        elif it != "Some(true)":
+            reason = f"明示意図 ON を確認できない(ON操作〜close の最後の explicit_intent={it})"
+        elif c.get("method") != "ctrl_muhenkan":
+            reason = f"物理 Ctrl+無変換で OFF にしていない(method={c.get('method')})"
+        elif c.get("real_ime_open") is None:
+            reason = "close 直後の実 IME 状態を読めない"
+        elif not cps or all(x.get("real_ime_open") is None for x in cps):
+            reason = "全チェックポイントが読み取り不能"
+        elif not t:
+            reason = "打鍵確認の記録が無い"
+        elif t.get("focus_lost"):
+            reason = "打鍵前にフォーカスが外れた"
+        elif not (t_close and t_press and t_end) or not (t_close <= t_press <= t_end):
+            reason = "時間窓が不正(UTC 日付またぎ、または時刻の欠落)"
+        elif nmu == 0:
+            reason = "awase.log に Ctrl+無変換の engine-input が無い(注入が awase に届かない)"
+        elif nok != nmu:
+            reason = f"物理 Ctrl 扱いでない(vk=0x1D KeyDown {nmu} 件中 mods(c=true …) phys_ctrl=true は {nok} 件。前提不成立)"
+        last = next((x.get("real_ime_open") for x in reversed(cps) if x.get("real_ime_open") is not None), None)
+        if reason:
+            kind = "invalid"
+        else:
+            phys_ok += 1
+            if c.get("real_ime_open") is False:
+                kind = "gap_not_made"
+            else:
+                for k in PRE_KEYS:
+                    seen[k] += w[k] > 0
+                kind = "corrected" if (last is False or not t.get("ok")) else "not_corrected"
+        counts[kind] += 1
+        trials.append({"n": n, "kind": kind, "reason": reason, "checks": cps, "typed": t, "window": w,
+                       "intent": it, "on_key": pr.get("on_key"), "close_open": c.get("real_ime_open")})
+    invalid = []
+    if aborts:
+        invalid.append("中断: " + "; ".join(aborts))
+    if not done and not aborts:
+        invalid.append("完走マーカー(done)が無い")
+    if not trials:
+        invalid.append("試行が0件")
+    elif counts["invalid"] == len(trials):
+        invalid.append(f"全 {len(trials)} 試行が前提未成立でINVALID")
+    valid = len(trials) - counts["invalid"]
+    if not invalid and valid * 2 < len(trials):
+        invalid.append(f"有効試行が半数未満({valid}/{len(trials)})")
+    gap_made = counts["corrected"] + counts["not_corrected"]
+    if invalid:
+        verdict = "INVALID"
+    elif gap_made == 0:
+        verdict = "GAP_NOT_MADE"
+    elif counts["not_corrected"] == 0:
+        verdict = "CORRECTED"
+    elif counts["corrected"] == 0:
+        verdict = "NOT_CORRECTED"
+    else:
+        verdict = "UNDETERMINED"
+    return {"verdict": verdict, "cfg": cfg, "trials": trials, "invalid": invalid, "seen": seen,
+            "ctrl": True, "gap_made": gap_made, "gap_not_made": counts["gap_not_made"], "phys_ctrl_ok": phys_ok,
+            "counts": {"recovered": counts["corrected"], "reopened_by_typing": 0, "typed_blind": 0, "unexplained": 0,
+                       "api_only": 0, "not_recovered": counts["not_corrected"], "invalid": counts["invalid"]},
+            "intent_true": sum(1 for x in trials if x["intent"] == "Some(true)")}
+
+
 def analyze(recs: list, lines: list) -> dict:
+    if any(r.get("type") == "drift_on_close" and r.get("method") == "ctrl_muhenkan" for r in recs):
+        return analyze_ctrl(recs, lines)
     cfg = next((r for r in recs if r.get("type") == "config"), {})
     aborts = [r["reason"] for r in recs if r.get("type") == "abort"]
     done = any(r.get("type") == "done" for r in recs)
@@ -198,13 +319,17 @@ def analyze(recs: list, lines: list) -> dict:
 
 def summary_line(r: dict) -> str:
     c, k, w = r["cfg"], r["counts"], r["seen"]
+    extra = ""
+    if r.get("ctrl"):
+        extra = (f" method=ctrl_muhenkan gap_made={r['gap_made']} gap_not_made={r['gap_not_made']} "
+                 f"phys_ctrl_ok={r['phys_ctrl_ok']}")
     return (
         f"DRIFT_RECOVERY: verdict={r['verdict']} form={c.get('form', '?')} ime={c.get('ime', '?')} "
         f"trials={len(r['trials'])} recovered={k['recovered']} reopened_by_typing={k['reopened_by_typing']} "
         f"typed_blind={k['typed_blind']} unexplained={k['unexplained']} api_only={k['api_only']} "
         f"not_recovered={k['not_recovered']} invalid_trials={k['invalid']} observed={w['observed']} "
         f"drift={w['drift']} conv_read={w['conv_read']} reinit={w['reinit']} unicode={w['unicode']} "
-        f"intent_true={r['intent_true']}"
+        f"intent_true={r['intent_true']}" + extra
     )
 
 
@@ -238,7 +363,7 @@ def main(argv) -> int:
         tag = f"INVALID({t['reason']})" if t["reason"] else t["kind"]
         w = t["window"]
         print(f"  試行#{t['n']:>2} on_key={t['on_key']} intent={t['intent']} {cps} 打鍵結果={typed!r} "
-              f"[観測={w['observed']} drift={w['drift']} | conv_read={w['conv_read']} reinit={w['reinit']} unicode={w['unicode']}]  {tag}")
+              f"[観測={w['observed']} drift={w['drift']} | conv_read={w.get('conv_read', '-')} reinit={w.get('reinit', '-')} unicode={w.get('unicode', '-')}]  {tag}")
     for x in r["invalid"]:
         print(f"  INVALID: {x}")
     line = summary_line(r)
@@ -247,7 +372,7 @@ def main(argv) -> int:
         with open(json_out, "w", encoding="utf-8") as f:
             json.dump({"verdict": r["verdict"], "cfg": cfg, "counts": r["counts"], "seen": r["seen"],
                        "line": line, "invalid": r["invalid"]}, f, ensure_ascii=False)
-    return {"RECOVERED": 0, "REOPENED_BY_OTHER_PATH": 1, "UNDETERMINED": 1, "NOT_RECOVERED": 1, "NOT_OBSERVED": 1, "INVALID": 3}[r["verdict"]]
+    return {"CORRECTED": 0, "GAP_NOT_MADE": 1, "NOT_CORRECTED": 1, "RECOVERED": 0, "REOPENED_BY_OTHER_PATH": 1, "UNDETERMINED": 1, "NOT_RECOVERED": 1, "NOT_OBSERVED": 1, "INVALID": 3}[r["verdict"]]
 
 
 if __name__ == "__main__":

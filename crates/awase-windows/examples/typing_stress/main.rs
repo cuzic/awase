@@ -54,6 +54,8 @@
 //! 記録は `drift_on_pre`(`on_key`=ON にしたキー) / `drift_on_close`(`set_ret` は記録のみ) / `drift_on_check` / `drift_on_typed`。
 //! pre/close/typed には `utc`(HH:MM:SS.mmm、awase.log の時刻と突合せる用)を付ける。ON キーは awase の明示意図(SyncKey)に
 //! なる `VK_IME_ON`(0x16)を先頭にする(MS-IME の 0xF2 は mode-key passthrough で意図が消える)。
+//! `--drift-off-ctrl-muhenkan` では直接 close の代わりに、マーカー付き SendInput で
+//! Ctrl↓→無変換↓→無変換↑→Ctrl↑を送る。debug awase はこの注入を物理キーとして扱う。
 //!
 //! `--mode=reopen`(ADR-203 e2e (c)、BUG-170 の実機確認): 「OFF 前に1語確定 → 物理 OFF(`VK_IME_OFF`)→ `--reopen-gap`(既定600ms、1秒以内)後に
 //! 物理 ON(`--reopen-on-key`、既定は GJI 0x16・MS-IME 0xF2。GJI の ATOK プリセットで 0xF2 は ON にならないことを run 36555043470 で確認)→ 即打鍵(`--reopen-type-delay`、既定0)」を `--trials` 回。別プロセスの入力先(Chrome)でも動く
@@ -130,6 +132,8 @@ const ES_AUTOHSCROLL: u32 = 0x0080;
 
 const VK_MUHENKAN: u32 = 0x1D;
 const SCAN_MUHENKAN: u16 = 0x7B;
+const VK_LCONTROL: u32 = 0xA2;
+const SCAN_LCONTROL: u16 = 0x1D;
 const VK_HENKAN: u32 = 0x1C;
 const SCAN_HENKAN: u16 = 0x79;
 const VK_RETURN: u32 = 0x0D;
@@ -663,6 +667,17 @@ fn press(vk: u32, scan: u16, hold_ms: u64) {
     send_key(vk, scan, false);
 }
 
+/// settle-explicit と同じ「修飾キーを先に押し、対象キーを離してから修飾キーを離す」順序。
+fn press_ctrl_muhenkan() {
+    send_key(VK_LCONTROL, SCAN_LCONTROL, true);
+    sleep_ms(40);
+    send_key(VK_MUHENKAN, SCAN_MUHENKAN, true);
+    sleep_ms(60);
+    send_key(VK_MUHENKAN, SCAN_MUHENKAN, false);
+    sleep_ms(30);
+    send_key(VK_LCONTROL, SCAN_LCONTROL, false);
+}
+
 fn wait_until(target: Instant) {
     loop {
         let now = Instant::now();
@@ -1155,10 +1170,18 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
         );
         // 窓の起点は閉じる操作の直前に取る(閉じた直後の観測が窓から漏れないように)。
         let close_utc = utc_hms();
-        let set_ret = force_close_real_ime(child);
+        let ctrl_muhenkan = has_flag("--drift-off-ctrl-muhenkan");
+        let set_ret = if ctrl_muhenkan {
+            press_ctrl_muhenkan();
+            None
+        } else {
+            force_close_real_ime(child)
+        };
         sleep_ms(50);
         rec(
-            &json!({"type":"drift_on_close","n":n,"utc":close_utc,"set_ret":set_ret,"real_ime_open":real_ime_open(child)}),
+            &json!({"type":"drift_on_close","n":n,"utc":close_utc,"set_ret":set_ret,
+                "method":if ctrl_muhenkan {"ctrl_muhenkan"} else {"direct_close"},
+                "real_ime_open":real_ime_open(child)}),
         );
         // `--refocus`: 閉じた直後にフォーカスを一度外して戻す(awase のフォーカス変更経路=drift correction 再開の契機を通す)。
         if has_flag("--refocus") {
