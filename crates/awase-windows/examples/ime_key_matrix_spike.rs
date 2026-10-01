@@ -807,11 +807,10 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
     }
     if let Some((vk_char, vk_thumb, left)) = CHARTHUMB.with(|c| *c.borrow()) {
         if left > 0 {
-            // ADR-199 T10 決定A の1ラウンド: VK_IME_ON で IME を ON → 文字↓ → 親指↓(30ms後) → 文字↑(親指↓の2ms後=重なりほぼ無し)
+            // ADR-199 T10 決定A の1ラウンド: VK_IME_ON で IME を ON → 文字↓ → 親指↓ → 文字↑(同じ刻みで連続送信=重なりほぼ無し)
             // → 親指を800ms押し続けて離す(親指の KEY 行の +400ms は保持中、+1500ms は解放後)。
             const IME_ON_SETTLE_MS: u64 = 2500;
             const THUMB_LEAD_MS: u64 = 30;
-            const CHAR_UP_MS: u64 = 32;
             const THUMB_HOLD_MS: u64 = 800;
             const ROUND_MS: u64 = 6000;
             CHARTHUMB.with(|c| *c.borrow_mut() = Some((vk_char, vk_thumb, left - 1)));
@@ -819,9 +818,13 @@ fn auto_drive(now: u64, cur: St, hwnd: HWND) {
             let t1 = now + IME_ON_SETTLE_MS;
             AUTO_QUEUE.with(|q| {
                 let mut q = q.borrow_mut();
+                // 3 イベントを同じ時刻(同じタイマー刻み)に積む。`auto_drive` は期限が来たものを積んだ順に連続で
+                // 送るので、文字↓→親指↓→文字↑ が約0.1ms 以内に並ぶ(重なりほぼ無し)。以前は 30ms/32ms と離して
+                // いたが、タイマーが約64ms刻み(WM_TIMER)のため、親指↓と文字↑が別の刻みに割れて文字↑が63〜75ms
+                // 遅れ、awase が正しく同時打鍵と判定して FAIL する回が出た(P2 の標本取りで 24 ラウンド中 3 件)。
                 q.push((t1, vk_char, true));
-                q.push((t1 + THUMB_LEAD_MS, vk_thumb, true));
-                q.push((t1 + CHAR_UP_MS, vk_char, false));
+                q.push((t1, vk_thumb, true));
+                q.push((t1, vk_char, false));
                 q.push((t1 + THUMB_LEAD_MS + THUMB_HOLD_MS, vk_thumb, false));
             });
             AUTO_NEXT.with(|n| *n.borrow_mut() = now + ROUND_MS);
