@@ -15,7 +15,7 @@ use super::ApplyGeneration;
 use awase::engine::InputModeState;
 
 use super::ime_event::{
-    ApplyError, ChordKind, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile,
+    ApplyError, ChordKind, EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile,
     InputModeApplyResult, ObservationConfidence, ObservationSource, UserIntentSource,
 };
 use super::input_barrier::InputBarrier;
@@ -510,6 +510,38 @@ impl ImeModel {
                 guard_override,
             },
         }
+    }
+
+    /// generation 付きの apply 要求と完了（Engine 経路）を `reduce` に通す（ADR-208 L0 の全列挙テストのオラクル用）。
+    ///
+    /// event_log を経由しない純粋モデル上の遷移で、本番は `ImeStateHub` が event_log 経由で `reduce` する。
+    /// `reduce` の呼び出しを `ime_model.rs` 内（`self.reduce`）に留めるための薄い口。
+    pub fn apply_engine_request_and_completion(
+        &mut self,
+        open: bool,
+        outcome: awase::platform::ImeOpenOutcome,
+        generation: ApplyGeneration,
+    ) {
+        let envelope = |seq: u64, event: ImeEvent| ImeEventEnvelope {
+            time: EventTime {
+                seq,
+                monotonic: Instant::now(),
+                tick_ms: seq * 10,
+            },
+            event,
+        };
+        self.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: open,
+                generation,
+                ctrl_held: false,
+            },
+        ));
+        self.reduce(&envelope(
+            2,
+            ImeEvent::from_apply_outcome(open, outcome, generation),
+        ));
     }
 
     /// `applied` だけを指定した初期モデル（ADR-208 L0 の全列挙テストが、押下前の `applied` から実物の遷移を通すため）。

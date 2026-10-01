@@ -59,7 +59,6 @@ use crate::state::ime_actuation_decision::{
     DecisionSite, GateResult,
 };
 use crate::state::ime_event::ImePolicyProfile;
-use crate::state::ime_event::{EventTime, ImeEvent, ImeEventEnvelope};
 use crate::state::ime_kind::ImeKindId;
 use crate::state::ime_model::{apply_result_effective_open, AppliedImeState, ImeModel};
 use crate::state::physical_disposition::PhysicalKeyDisposition;
@@ -835,10 +834,8 @@ const fn knowledge_of(a: AppliedImeState) -> AppliedKnowledge {
 
 /// 書き込みの完了後の `applied`。**手で模倣せず実物の遷移を通す**: shadow 経路（generation なし）は
 /// `apply_result_effective_open`（`record_ime_apply_result` の generation=None 分岐の純粋部）と
-/// `ImeModel::confirm_applied`、Engine 経路（generation あり）は `ImeModel::reduce` の
+/// `ImeModel::confirm_applied`、Engine 経路（generation あり）は `ImeModel::apply_engine_request_and_completion`（`reduce` の
 /// `ImeApplyRequested` → `ImeEvent::from_apply_outcome`（`completion_can_update_applied` を含む）。
-// 変数名を `model` にしないのは layer_boundary_guard C-6（本番の `model.reduce(` は platform_state.rs の 1 箇所）の
-// 文字列走査に掛けないため。これは event_log を経由しない純粋モデル上のオラクルで、本番の reduce 呼び出しではない。
 fn applied_after(state: &PressState, key: ExplicitKey, d: Delivery) -> AppliedKnowledge {
     let (Some(outcome), Some(open)) = (d.outcome(), d.requested) else {
         return state.applied;
@@ -852,26 +849,7 @@ fn applied_after(state: &PressState, key: ExplicitKey, d: Delivery) -> AppliedKn
         }
         PressPath::Engine(_) => {
             let generation = ApplyGeneration::new(1).expect("1 は非ゼロ");
-            let env = |seq: u64, event: ImeEvent| ImeEventEnvelope {
-                time: EventTime {
-                    seq,
-                    monotonic: std::time::Instant::now(),
-                    tick_ms: seq * 10,
-                },
-                event,
-            };
-            oracle.reduce(&env(
-                1,
-                ImeEvent::ImeApplyRequested {
-                    target: open,
-                    generation,
-                    ctrl_held: false,
-                },
-            ));
-            oracle.reduce(&env(
-                2,
-                ImeEvent::from_apply_outcome(open, outcome, generation),
-            ));
+            oracle.apply_engine_request_and_completion(open, outcome, generation);
         }
     }
     knowledge_of(oracle.applied)
