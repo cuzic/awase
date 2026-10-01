@@ -551,6 +551,11 @@ impl WindowsPlatform {
         &mut self,
         injection_mode: crate::output::types::InjectionMode,
     ) {
+        if crate::tsf::observer::discard_pending_composition_events() {
+            tracing::debug!(
+                "[gji-fsm] FocusChange: 前セッションの保留 composition イベント(SHOW/HIDE)を破棄"
+            );
+        }
         let gji_idle_ms = crate::tsf::observer::gji_idle_ms();
         let state_before = self.gji_state_label();
         let resp = self
@@ -688,6 +693,11 @@ impl WindowsPlatform {
 
     /// IME OFF を GjiFsm に通知する（`on_ime_applied(open=false)` から呼ぶ）。
     pub(crate) fn gji_on_ime_off(&mut self) {
+        if crate::tsf::observer::discard_pending_composition_events() {
+            tracing::debug!(
+                "[gji-fsm] ImeOff: 前セッションの保留 composition イベント(SHOW/HIDE)を破棄"
+            );
+        }
         self.dispatch_gji_event("ImeOff", crate::tsf::gji_fsm::GjiEvent::ImeOff);
     }
 

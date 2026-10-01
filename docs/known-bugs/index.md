@@ -180,6 +180,7 @@
 | [BUG-177](BUG-177.md) | JIS キーボード実機(GJI)で学習プロセスが自分の注入した半角/全角(0xF3/0xF4)のキーアップを「物理入力」と数え、序盤で必ず interference 失敗する |
 | [BUG-178](BUG-178.md) | GJI(session_keymap=2 + 古い custom 表が残る構成)の実機で awase-keymap-learn-win が cell=73/84 のまま 22 分以上進まず終了しない |
 | [BUG-179](BUG-179.md) | CI の MS-IME 構成で awase 起動後に起動した Chrome へ IME 操作なしで k,a を打つと kiu になる |
+| [BUG-180](BUG-180.md) | 候補窓 SHOW/HIDE の保留 latch が IME OFF・フォーカス変更で捨てられず、次の drain で前セッションの StartComposition が配られる |
 
 ## その他の資料
 
