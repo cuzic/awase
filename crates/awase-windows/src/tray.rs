@@ -821,9 +821,8 @@ pub fn restart_as_admin() {
         if result.0 as isize > 32 {
             tracing::info!("Restarting as admin, exiting current process");
             std::process::exit(0);
-        } else {
-            tracing::warn!("Failed to restart as admin (user may have cancelled UAC)");
         }
+        tracing::warn!("Failed to restart as admin (user may have cancelled UAC)");
     }
 }
 
