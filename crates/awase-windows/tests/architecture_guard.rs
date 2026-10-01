@@ -1087,6 +1087,43 @@ fn native_toggle_shadow_off_never_uses_set_open() {
     );
 }
 
+/// ADR-213 P2d-2: settle 中の明示操作 `SetOpen` を落とす仕組みを復活させない。
+///
+/// `strip_ime_set_open_if_settling`（decision から SetOpen を除去）と
+/// `handle_engine_set_open` の `focus_transition_was_pending` フィルタ（belief 側）は、
+/// ActivationSync 撤去後は settle 中（フォーカス検知後 ImmCross 100ms・TsfNative 200ms）に
+/// 押された Ctrl+変換等を黙って捨てるだけになった。Chrome×GJI・Chrome×MS-IME は settle 約20ms
+/// 後の書き込みを受け付けると CI で実測済み（docs/experiments.md エントリ 30）。
+/// strip と belief フィルタは対でしか意味が無い（片方だけだと belief と実書き込みが食い違う）ので、
+/// どちらの再導入も本テストで止める。再導入するなら、窓の切り替え直後の明示操作で IME が
+/// 逆向きに切り替わった等の実測（ADR-213 の revert 条件）を添えて本テストごと更新すること。
+#[test]
+fn settle_does_not_drop_explicit_set_open() {
+    let executor_src = read_crate_file("src/runtime/executor.rs");
+    let executor = production_code_only(&executor_src);
+    assert!(
+        !executor.contains("fn strip_ime_set_open_if_settling"),
+        "runtime/executor.rs に strip_ime_set_open_if_settling が復活しています（ADR-213 P2d-2 で撤去済み）"
+    );
+    let key_pipeline_src = read_crate_file("src/runtime/key_pipeline.rs");
+    let key_pipeline = production_code_only(&key_pipeline_src);
+    assert!(
+        !key_pipeline.contains("strip_ime_set_open_if_settling(")
+            && !key_pipeline.contains("focus_transition_was_pending:")
+            && !key_pipeline.contains("focus_transition_was_pending,")
+            && !key_pipeline.contains("let focus_transition_was_pending"),
+        "runtime/key_pipeline.rs が settle で SetOpen を落とす分岐を再導入しています（ADR-213 P2d-2）"
+    );
+    let platform_state_src = read_crate_file("src/state/platform_state.rs");
+    let platform_state = production_code_only(&platform_state_src);
+    assert!(
+        !platform_state.contains("focus_transition_was_pending:")
+            && !platform_state.contains("focus_transition_was_pending {")
+            && !platform_state.contains("if focus_transition_was_pending"),
+        "state/platform_state.rs の handle_engine_set_open に settle フィルタが復活しています（ADR-213 P2d-2）"
+    );
+}
+
 /// conv ビット由来の open 推論を**構築**できるのは
 /// `report_conv_open_inference()` の 1 箇所だけ（ADR-089 §2.1・§7、INV-40）。
 ///
