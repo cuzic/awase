@@ -565,6 +565,7 @@ fn input_mode_observed_construction_sites_are_accounted_for() {
 ///
 /// 現在の designated 使用箇所（すべて Low confidence で `desired_open` を書き換えない）:
 /// - `reset_stale_ime_on_for_imm_broken`: Imm32Unavailable 入場時の安全デフォルト ON
+/// - `assume_closed_for_new_thread`: awase 起動後に作られたスレッドの安全デフォルト OFF
 ///   (`reset_to_off_for_tsf_native_cache_miss` は 37883d0 で TsfNative SSOT 化に伴い削除済み)
 ///
 /// Low confidence にすることで後続の実観測（Medium/High）で上書き可能にしている
@@ -582,14 +583,26 @@ fn heuristic_default_observation_is_limited_to_designated_methods() {
     let production = production_code_only(&content);
     let count = production.matches("evidence::HeuristicDefault").count();
     assert_eq!(
-        count, 1,
-        "{path} 内の `evidence::HeuristicDefault` 使用箇所数が想定(1)と異なります(実際: {count})。\n\
-         想定: reset_stale_ime_on_for_imm_broken (Imm32Unavailable entry → ON) の1箇所のみ。\n\
+        count, 2,
+        "{path} 内の `evidence::HeuristicDefault` 使用箇所数が想定(2)と異なります(実際: {count})。\n\
+         想定: reset_stale_ime_on_for_imm_broken (Imm32Unavailable entry → ON) と\n\
+         assume_closed_for_new_thread (awase 起動後の新規スレッド → OFF) の2箇所。\n\
          (reset_to_off_for_tsf_native_cache_miss は 37883d0 で TsfNative SSOT 化に伴い削除済み)\n\
          新しい安全デフォルト推測を追加する場合は `UserImeSetIntent` を使わず \
          `Observed::<evidence::HeuristicDefault>::at_startup` を使い、このカウントを \
          更新してください。"
     );
+    for designated in [
+        "fn reset_stale_ime_on_for_imm_broken",
+        "fn assume_closed_for_new_thread",
+    ] {
+        let body = extract_fn_body(production, designated);
+        assert_eq!(
+            body.matches("evidence::HeuristicDefault").count(),
+            1,
+            "`{designated}` が `HeuristicDefault` の designated 使用箇所であること"
+        );
+    }
 }
 
 /// `ImeEvent::InputModeApplied` は awase 自身の能動的な input_mode 更新に限定される。
@@ -2794,30 +2807,40 @@ fn startup_placeholder_desired_is_not_treated_as_intent() {
     );
 }
 
-/// BUG-163: awase 自身のウィンドウ（警告ダイアログ等）へのフォーカスでは、`reset_stale_ime_on_for_imm_broken`
-/// （キャッシュの無い窓の「安全デフォルト ON」の推測）を呼ばない。呼ぶと、先同期と GJI への ImeOn 通知
+/// BUG-163: awase 自身のウィンドウ（警告ダイアログ等）へのフォーカスでは、
+/// `reset_stale_ime_on_for_imm_broken`（安全デフォルト ON）も `assume_closed_for_new_thread`
+/// （安全デフォルト OFF）も呼ばない。ON 側を呼ぶと、先同期と GJI への ImeOn 通知
 /// （long-cold の `VK_IME_OFF→VK_IME_ON` reinit）へ進み、IME を閉じて起動したとき起動直後に awase が IME を開ける。
 #[test]
 fn stale_ime_on_heuristic_skips_awase_own_windows() {
     let content = read_crate_file("src/runtime/focus_tracking.rs");
     let production = production_code_only(&content);
-    let calls: Vec<usize> = production
-        .match_indices("reset_stale_ime_on_for_imm_broken(")
-        .map(|(i, _)| i)
-        .collect();
-    assert_eq!(
-        calls.len(),
-        1,
-        "`reset_stale_ime_on_for_imm_broken` の呼び出しは focus_tracking.rs の1箇所だけ"
-    );
-    let head = &production[..calls[0]];
-    let guard_at = head
-        .rfind("self.platform.focus.pid() == std::process::id()")
+    let body = extract_fn_body(production, "fn on_focus_process_changed(");
+    let guard_at = body
+        .find("self.platform.focus.pid() == std::process::id()")
         .expect("呼び出しの前に awase 自身のウィンドウの除外が必要（BUG-163）");
-    assert!(
-        calls[0] - guard_at < 1500,
-        "awase 自身のウィンドウの除外は、`reset_stale_ime_on_for_imm_broken` の呼び出しの直前の分岐にあること"
-    );
+    for method in [
+        "assume_closed_for_new_thread(",
+        "reset_stale_ime_on_for_imm_broken(",
+    ] {
+        assert_eq!(
+            count_real_calls(production, method),
+            1,
+            "`{method}` の呼び出しは focus_tracking.rs 全体で1箇所だけ"
+        );
+        let calls: Vec<usize> = body.match_indices(method).map(|(i, _)| i).collect();
+        assert_eq!(
+            calls.len(),
+            1,
+            "`{method}` の呼び出しは on_focus_process_changed の1箇所だけ"
+        );
+        assert!(
+            guard_at < calls[0]
+                && calls[0] - guard_at < 1_500
+                && body[guard_at..calls[0]].contains("} else {"),
+            "`{method}` は awase 自身のウィンドウを除外する分岐の直近の else 側でのみ呼ぶこと（BUG-163）"
+        );
+    }
 }
 
 /// ADR-089 §6 Phase C item 12（= ADR-086 INV-14 の未移行分の是正）:

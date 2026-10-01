@@ -1371,6 +1371,38 @@ impl ImeStateHub {
         );
     }
 
+    /// awase 起動後に作られたスレッドの IME は「閉」で始まる（`focus/thread_scope.rs`）。
+    /// 純粋な Imm32Unavailable では開閉を読めないため、この規則を根拠に「閉」を Low confidence の
+    /// `HeuristicDefault` として記録する（`reset_stale_ime_on_for_imm_broken` の ON 版と対）。
+    /// ユーザー意図は偽装せず、`desired_open` も書き換えない。明示操作・より強い観測が
+    /// 後から届けばそちらが優先される。
+    pub(crate) fn assume_closed_for_new_thread(
+        &mut self,
+        profile: ImePolicyProfile,
+        tick_ms: TickMs,
+    ) {
+        if !self.belief.is_japanese_ime() {
+            return;
+        }
+        tracing::info!(
+            "new-thread entry: IME は閉で始まる（awase 起動後に作られたスレッド）→ \
+             安全デフォルト OFF を Low confidence observation として記録"
+        );
+        let focus_epoch = self.shadow_model.observations.current_fence().epoch;
+        self.dispatch_event(
+            ImeEvent::ObserverReported(
+                Observed::<evidence::HeuristicDefault>::at_startup(
+                    profile,
+                    false,
+                    HwndId::NULL,
+                    focus_epoch,
+                )
+                .into(),
+            ),
+            tick_ms,
+        );
+    }
+
     pub(crate) fn set_is_japanese_ime(&mut self, value: bool) {
         self.belief.is_japanese_ime = value;
     }
@@ -1827,6 +1859,73 @@ mod tests {
         assert!(
             ps.ime.effective_open(),
             "実効値は Low confidence observation 経由で true になる"
+        );
+    }
+
+    #[test]
+    fn new_thread_assumption_makes_effective_open_false_without_changing_desired() {
+        let mut ps = ps_with_shadow(true, None, true);
+
+        ps.ime
+            .assume_closed_for_new_thread(ImePolicyProfile::Imm32Unavailable, TickMs(100));
+
+        assert!(!ps.ime.effective_open_at(TickMs(100)));
+        assert!(
+            ps.ime.model().desired_open(),
+            "HeuristicDefault OFF は desired_open を書き換えない"
+        );
+        assert_eq!(
+            ps.ime.explicit_intent(),
+            None,
+            "HeuristicDefault OFF は last_intent を作らない"
+        );
+    }
+
+    #[test]
+    fn new_thread_assumption_yields_to_last_intent() {
+        let mut ps = ps_with_shadow(true, Some(UserIntentSource::Command), true);
+
+        ps.ime
+            .assume_closed_for_new_thread(ImePolicyProfile::Imm32Unavailable, TickMs(100));
+
+        assert!(ps.ime.effective_open_at(TickMs(100)));
+        assert_eq!(ps.ime.explicit_intent(), Some(true));
+    }
+
+    #[test]
+    fn new_thread_assumption_yields_to_intent_store() {
+        let mut ps = PlatformState::new();
+        ps.ime.belief.is_japanese_ime = true;
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
+        dispatch_and_record_explicit_intent(&mut ps, true, 100);
+        // last_intent と観測を消し、IntentStore だけを優先根拠として残す。
+        dispatch_focus_changed(&mut ps, TARGET_HWND, 2, 200);
+        assert_eq!(ps.ime.explicit_intent(), None);
+
+        ps.ime
+            .assume_closed_for_new_thread(ImePolicyProfile::Imm32Unavailable, TickMs(300));
+
+        assert!(ps.ime.effective_open_at(TickMs(300)));
+    }
+
+    #[test]
+    fn new_thread_assumption_does_nothing_for_non_japanese_ime() {
+        let mut ps = ps_with_shadow(true, None, false);
+
+        ps.ime
+            .assume_closed_for_new_thread(ImePolicyProfile::Imm32Unavailable, TickMs(100));
+
+        assert!(ps.ime.effective_open_at(TickMs(100)));
+        assert!(ps.ime.model().desired_open());
+        assert_eq!(ps.ime.explicit_intent(), None);
+        assert!(
+            ps.ime
+                .shadow_model
+                .observations
+                .per_source
+                .heuristic_default
+                .is_none(),
+            "日本語 IME でなければ HeuristicDefault を記録しない"
         );
     }
 

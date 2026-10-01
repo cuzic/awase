@@ -29,6 +29,7 @@ pub(crate) struct FocusTracker {
     imm_learning: ImmCapabilityStore,
     injection_mode_store: InjectionModeStore,
     hwnd_ime_cache: HwndImeCache,
+    pub(crate) seen_threads: crate::focus::thread_scope::SeenThreads,
 }
 
 impl std::fmt::Debug for FocusTracker {
@@ -52,6 +53,7 @@ impl FocusTracker {
             imm_learning,
             injection_mode_store,
             hwnd_ime_cache: HwndImeCache::new(),
+            seen_threads: crate::focus::thread_scope::SeenThreads::default(),
         }
     }
 

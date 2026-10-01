@@ -767,6 +767,25 @@ fn main() {
         let _ = child.kill();
         return;
     }
+    // `--initial`(ADR-212 P2 調査): IME を一切操作せず、Chrome 起動直後に k,a を打って実 IME の初期状態を見る。
+    // `ka`(Plain)=閉で始まった / `か`(RomajiKana)=開で始まった / NICOLA 文字=awase が開いた(書き込み)。
+    // awase を先に起動してから Chrome を起動する構成(新しいスレッド)で使う。`--no-awase` の対照は IME の素の初期状態。
+    if args.iter().any(|a| a == "--initial") {
+        p.focus_lost = false;
+        bring_to_front();
+        sleep(settle_ms);
+        let got = p.probe_logged("起動直後(IME操作なし)");
+        p.log.line(&format!("INITIAL class={}", got.label()));
+        if got == Class::Plain {
+            p.log.line("RESULT PASS");
+        } else {
+            p.log
+                .line(&format!("RESULT FAIL: 期待=ka 実際={}", got.label()));
+        }
+        p.log.line("=== 全ケース完了 ===");
+        let _ = child.kill();
+        return;
+    }
     // `--close-ime=N`(BUG-172 の実 Chrome 確認): IME を ON にそろえた後、実 IME を WM_IME_CONTROL で直接閉じ、
     // 3 秒待ってからかな単打(k,a)を打って結果を見る。閉じたまま `ka`/ローマ字が出れば BUG-172 が実 Chrome でも起きる。
     // `open=` は awase と同じ経路(IMC_GETOPENSTATUS)の読み取り値(TsfNative では信頼できない可能性がある)。
