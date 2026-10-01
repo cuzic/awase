@@ -397,8 +397,10 @@ impl Engine {
         // 遷移しうる）。`SetOpenOrigin::ActivationSync` を渡し、Platform 層が
         // `last_intent`（ユーザー明示意図）を汚染しないようにする（`SetOpenOrigin` の
         // doc 参照）。
+        // ADR-213 決定3(P2b): 観測・RefreshState 由来の遷移は SetOpen を出さない（ユーザーの
+        // キーに応答する書き込みは shadow toggle の明示 actuation が担う）。UI 更新は従来どおり。
         let transition_effects =
-            self.transition_activation(new_state, SetOpenOrigin::ActivationSync);
+            self.transition_activation(new_state, SetOpenOrigin::ActivationSync, false);
         effects.extend(transition_effects);
         effects
     }
@@ -412,6 +414,8 @@ impl Engine {
     ///   追加送信すると全角英数→半角英数のような意図しない conv 変化が起きる。
     /// 同じ状態: 空の EffectVec
     ///
+    /// `emit_set_open`: false なら `SetOpen` を出さない（`EngineStateChanged` は出す。ADR-213 P2b）。
+    ///
     /// `origin`: 発行する `ImeEffect::SetOpen` に付与する `SetOpenOrigin`。呼び出し元が
     /// 「これは本物のユーザー操作（IME/エンジン ON/OFF コンボ、トレイ操作等）が引き金か、
     /// それとも通常のキー入力経路での自動遷移か」を判断して渡すこと。
@@ -419,6 +423,7 @@ impl Engine {
         &mut self,
         new_state: ActivationState,
         origin: SetOpenOrigin,
+        emit_set_open: bool,
     ) -> EffectVec {
         let was_active = self.prev_activation.is_active();
         let now_active = new_state.is_active();
@@ -429,7 +434,7 @@ impl Engine {
                 new_state,
                 ActivationState::Inactive(InactiveReason::NotRomajiInput)
             );
-            if !suppress_set_open {
+            if !suppress_set_open && emit_set_open {
                 effects.push(Effect::Ime(ImeEffect::SetOpen {
                     open: now_active,
                     origin,
@@ -790,7 +795,8 @@ impl Engine {
             } else {
                 ActivationState::Inactive(InactiveReason::UserDisabled)
             };
-            let effects = self.transition_activation(new_state, SetOpenOrigin::ExplicitUserAction);
+            let effects =
+                self.transition_activation(new_state, SetOpenOrigin::ExplicitUserAction, true);
             for e in effects {
                 decision.push_effect(e);
             }
@@ -815,7 +821,8 @@ impl Engine {
             ..*ctx
         };
         let target_state = self.compute_state(&pseudo_ctx);
-        let effects = self.transition_activation(target_state, SetOpenOrigin::ExplicitUserAction);
+        let effects =
+            self.transition_activation(target_state, SetOpenOrigin::ExplicitUserAction, true);
         if effects.is_empty() {
             decision.push_effect(Effect::Ime(ImeEffect::SetOpen {
                 open: true,
@@ -853,7 +860,8 @@ impl Engine {
         let was_active = self.prev_activation.is_active();
         let now_active = new_state.is_active();
 
-        let mut effects = self.transition_activation(new_state, SetOpenOrigin::ExplicitUserAction);
+        let mut effects =
+            self.transition_activation(new_state, SetOpenOrigin::ExplicitUserAction, true);
         if was_active == now_active {
             // 状態遷移なし → transition_activation は空 effects を返す。
             // IME 制御の意図 (SetOpen) は明示的に追加する。

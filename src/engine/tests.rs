@@ -8691,7 +8691,9 @@ mod engine_integration_tests {
         let mut engine = make_test_engine();
         assert!(engine.compute_active(&ime_on_ctx()));
 
-        let d = engine.on_command(EngineCommand::RefreshState, &ime_off_ctx());
+        // ADR-213 P2b: 観測由来(RefreshState)の遷移は SetOpen を出さないので、
+        // 明示操作(ToggleEngine)の遷移で検証する。
+        let d = engine.on_command(EngineCommand::ToggleEngine, &ime_on_ctx());
         assert!(
             has_effect(&d, |e| matches!(
                 e,
@@ -8786,17 +8788,18 @@ mod engine_integration_tests {
         assert!(!engine.compute_active(&ime_off_ctx()));
 
         let d = engine.on_command(EngineCommand::RefreshState, &ime_on_ctx());
+        // ADR-213 P2b: RefreshState 由来の遷移は SetOpen を出さない（UI 更新だけ）。
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
+            "RefreshState 由来の遷移は SetOpen を出してはならない, got {:?}",
+            effects_of(&d)
+        );
         assert!(
             has_effect(&d, |e| matches!(
                 e,
-                Effect::Ime(ImeEffect::SetOpen {
-                    open: true,
-                    origin: SetOpenOrigin::ActivationSync
-                })
+                Effect::Ui(UiEffect::EngineStateChanged { enabled: true })
             )),
-            "RefreshState 由来の SetOpen は ActivationSync でなければならない \
-             (ExplicitUserAction だと belief の last_intent が観測駆動の echo で \
-             汚染される), got {:?}",
+            "EngineStateChanged は従来どおり出る, got {:?}",
             effects_of(&d)
         );
         assert!(
