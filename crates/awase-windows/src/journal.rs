@@ -731,7 +731,6 @@ fn ime_event_kind_str(e: &crate::state::ime_event::ImeEvent) -> &'static str {
         ImeEvent::UserImeSetIntent { .. } => "UserImeSetIntent",
         ImeEvent::PanicReset { .. } => "PanicReset",
         ImeEvent::HwndCacheRestored { .. } => "HwndCacheRestored",
-        ImeEvent::EngineActivationSync { .. } => "EngineActivationSync",
         ImeEvent::ImeApplyRequested { .. } => "ImeApplyRequested",
         ImeEvent::ImeApplySucceeded { .. } => "ImeApplySucceeded",
         ImeEvent::ImeApplyFailed { .. } => "ImeApplyFailed",

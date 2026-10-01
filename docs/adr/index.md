@@ -219,7 +219,7 @@
 | [210](210-learned-table-hidden-state-converting-and-last-key.md) | 学習表の状態に「変換中」と「直前キーの文脈」を加える | 保留(2026-09-30)、Opus レビューで現案は不採用 |
 | [211](211-predict-open-close-from-gji-keymap-for-passive-keys.md) | GJI の MS-IME/MOBILE プリセットの F13(閉状態からだけ IME を開く受動のキー)で Engine が追随するよう打鍵時に「開く」と予測する。キーマップ全体からの一般化は需要確認まで見送り(実 Chrome CI の実測、Opus round1、ADR-199/209) | 採用(2026-09-30)。決定1・2 実装済み(PR #396)、決定3(通過マーク)は見送り |
 | [212](212-remove-preventive-and-corrective-ime-actuation-in-phases.md) | ユーザー操作を引き金にしない予防的・補正的な IME への書き込みを段階的に撤去する | 採用。P0・P1・P3〜P6実装済み、P2はADR-213で再開(P2a=PR #408) |
-| [213](213-shadow-toggle-off-to-on-explicit-actuation-then-remove-activation-sync.md) | shadow toggle の OFF→ON を明示 actuation にし、ActivationSync を撤去する(ADR-212 P2 再開) | 採用(2026-10-01、P2a=PR #408、P2b は CI で I2=0・BUG-180 と同時、P2c 実装中) |
+| [213](213-shadow-toggle-off-to-on-explicit-actuation-then-remove-activation-sync.md) | shadow toggle の OFF→ON を明示 actuation にし、ActivationSync を撤去する(ADR-212 P2 再開) | 採用(2026-10-01、P2a=PR #408・P2b=PR #411 マージ済み、P2c=本PR、P2dは実測スパイク中) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

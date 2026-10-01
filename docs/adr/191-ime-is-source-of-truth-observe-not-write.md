@@ -14,6 +14,7 @@ summary: |-
   (5)予測は物理キーの打鍵時点でbeliefへ反映し（`KeyEffectPredicted`、settle基準のfence）、観測は確認と訂正に回す。観測できないアプリ（TsfNative）では予測が唯一の信号になる。
   (6)成功基準は撤去量（追加は削除と対）。実装は`feat/adr191-remove-hardcoded-mode-keys`（PR #240〈`d777bcfe`〉でdevelopマージ済み）、実験の経緯と実測は補助資料[191-calibration-experiments.md]に置く。
 status: |-
+  **[ADR-213 P2c で一部改訂（2026-10-01）]** Engine が自動発行する `SetOpenOrigin::ActivationSync` を撤去（決定6の EngineDecision 系、本文「P1」節末尾に追記）。
   **[ADR-199 で一部置換（T7、2026-09-27）]** 決定1-1（静的に残す唯一の例外、round3 RM3「固定が常に勝つ」）は [ADR-199](199-derive-key-roles-from-user-ime-keymap.md)
   決定4に置き換わった（ユーザー設定から逆算した役割が勝つ）。本ADRの他の決定（IMEを状態の正とする方針、観測・予測の枠組み）は変わらない。
   **草案（2026-09-21）。opus敵対レビューround1〜4を実施し、指摘への対応を本文末尾の表にまとめた（停止条件・中止基準・複雑さの収支を含む）。実装は撤去ブランチ（PR #240でdevelopマージ済み）。**
@@ -32,6 +33,7 @@ related_adr:
   - "ADR-190"
   - "ADR-192"
   - "ADR-193"
+  - "ADR-213"
 ---
 
 # ADR-191: IMEの状態はIME自身を正とし、awaseは書き込まず観測・予測に追随する（開閉のみに作用するキーは例外）
@@ -320,6 +322,10 @@ P50=1ms・P95=34ms（10件、通知が来なかったキーは6/16=38%）。GJI�
   撤去量として数えられるのは実際に消えた行だけ）。ADR-189の固定セットは変えない。
   `ir_apply_drift_correction`（TsfNative救済の最後の1本、BUG-20）は、`--walk`では明示意図のシナリオを測れないので、撤去前に明示意図の回復シナリオのテストを用意する。
   `dispatch_ime_set_open`のEngineDecision系は、単独タップのopt-in経路と分離するには`SetOpen`に発生元の軸が要り、削除でなく追加になる。分離の是非を調査してから。
+  **ADR-213 P2c（2026-10-01）による改訂（EngineDecision 系）**: Engine が自動発行する`SetOpenOrigin::ActivationSync`（`check_active_transition`由来、観測・RefreshState・起動直後に実IMEを書く唯一の経路）は
+  撤去した（`SetOpenOrigin`ごと削除。`SetOpen`は明示操作〈IME/エンジンON/OFFコンボ・ToggleEngine・無変換/変換単独タップ〉だけが出す）。ユーザーのキーへの応答が必要な shadow toggle の OFF→ON は、
+  ActivationSync に頼らず`kp_shadow_actuate`が明示的に書く。よって上の「`SetOpen`に発生元の軸が要る」は不要になった（軸を足さずに自動発行側を消した）。残るEngineDecision系は明示操作のSetOpenだけで、
+  settle 中の一次フィルタ（`strip_ime_set_open_if_settling`）は、belief側の settle フィルタとセットで設計し直すまで残す。
 - 撤去に数えないもの: `classify_mode_key_ime_action`（表生成側へ移設されるだけ）、`ModeKeyConfig`/`muhenkan_solo_tap_dedicated_fn_key`（ユーザー設定で表とは別軸。決定6）。
 - **決定の依存順（round4 QM2、循環の解消）**: 予測表（決定3）→ 書き込みの線引き（決定1、分類a〜eは表から引く）→ 撤去（決定5・6）。表が無い・非決定のセルは「書かずに追随」で動くので、**撤去は表の完成を待たずに先行してよい**
   （例外の一般化は後から足す）。実際の順序: 撤去ブランチは、生成した表（格子第3版）と打鍵時予測を含めて実装済み。

@@ -52,9 +52,8 @@ pub(crate) struct ImeStateHub {
     /// - FocusChanged / Recovery / HwndCache ではリセットしない。
     ///
     /// BUG-48 修正（PR #44）により `Command` ソースは `handle_engine_set_open`
-    /// （`SetOpenOrigin::ExplicitUserAction`）経由でのみ発行されるようになり、
-    /// エンジン内部の対称 echo（`ActivationSync` → `handle_engine_activation_sync`、
-    /// こちらは `write_set_open_request` を呼ばない）とは完全に分離された。
+    /// 経由でのみ発行されるようになり、エンジン内部の対称 echo（旧 `ActivationSync`。
+    /// ADR-213 P2c で撤去済み）とは完全に分離された。
     /// つまり `Command` は「Ctrl+無変換 等デフォルトキーバインドでの明示 IME OFF/ON」を
     /// 表す実ユーザー操作専用ソースであり、SyncKey/PhysicalImeKey と同じ扱いにできる。
     last_user_explicit_off_ms: u64,
@@ -619,65 +618,32 @@ impl ImeStateHub {
         true
     }
 
-    /// `awase::engine::decision::SetOpenOrigin::ActivationSync` 由来の `SetOpen` を処理する。
+    /// idle-conv-check の conv 観測由来の「engine ON 同期」（`EngineSync::SetOpen`、
+    /// `kp_apply_conv_engine_sync`）が呼ぶ。`last_intent`/`desired_open` は書かない
+    /// （conv 観測は明示操作ではなく、`desired_open := effective_open()` の循環 echo になる）。
     ///
-    /// `handle_engine_set_open` との違いは唯一つ: `ImeEvent::UserImeSetIntent`（`last_intent`
-    /// を設定する）の代わりに `ImeEvent::EngineActivationSync`（`last_intent` を設定しない）を
-    /// dispatch する点。この SetOpen は Engine の active/inactive 遷移が対称性のために
-    /// 自動発行した echo であり、ユーザーが今このキーで ON/OFF を明示的に選んだわけではない
-    /// （`ctx.ime_on` が観測駆動で変化しただけでも Active/Inactive は遷移しうる）。
-    /// `last_intent` を設定すると、以後の drift correction がこの echo を「ユーザーの本物の
-    /// 意図」として扱ってしまい、ユーザーが明示的に IME を OFF にした直後でも Engine が
-    /// 勝手に ON へ戻る再発を引き起こす（2026-08-04、`docs/known-bugs.md` 参照）。
-    ///
-    /// chord/focus-transition-settling のフィルタ条件は `handle_engine_set_open` と同一
-    /// （どちらも「これから OS へ実 apply する SetOpen 要求」という点は変わらないため）。
-    ///
-    /// `last_explicit_ime_action_ms` は `handle_engine_set_open` と同様に更新する。この
-    /// フィールドの実際の役割は「ユーザーが明示操作したか」ではなく「awase 自身が
-    /// 能動的に IME へ書き込んだか」（`note_explicit_ime_action` の doc 参照）であり、
-    /// この関数も実際に OS へ SetOpen を適用する以上、idle-conv-check が遷移途中の
-    /// conv 値を汚染された観測として拾わないよう抑制窓を効かせる必要がある
-    /// （Opus レビュー 2026-08-04 で指摘: 更新しないと `get_ime_conversion_mode_raw_timeout_async`
-    /// が BUG-34 級にブロックしている間に本関数の SetOpen 適用が挟まった場合、
-    /// idle-conv-check のガード (b)（値一致比較）が素通りし、遷移途中の conv が
-    /// そのまま belief に入りうる）。
-    pub(crate) fn handle_engine_activation_sync(
+    /// 呼び出し時点の副作用だけを残す（BUG-51 追補 v3）: 検出状態のリセット、`ImeApplyRequested`
+    /// （世代の記録）、`last_explicit_ime_action_ms` の更新（idle-conv-check が遷移途中の conv 値を
+    /// 汚染された観測として拾わないための抑制窓。Opus レビュー 2026-08-04）。
+    /// 旧 `handle_engine_activation_sync`（`SetOpenOrigin::ActivationSync` 用）から、撤去した
+    /// `ImeEvent::EngineActivationSync`（reducer は何も書かない no-op）・chord/settle フィルタ
+    /// （呼び出し元は常に `target=true`・`focus_transition_was_pending=false` を渡すので不到達）を除いた。
+    /// ADR-213 P2c。
+    pub(crate) fn handle_conv_engine_on_sync(
         &mut self,
-        target: bool,
-        ctrl_held: bool,
-        focus_transition_was_pending: bool,
         generation: ApplyGeneration,
         tick_ms: TickMs,
-    ) -> bool {
-        if self.is_ctrl_ime_chord_active() && !target {
-            // 診断ログ: handle_engine_set_open 側と同じ理由で info に格上げ。
-            tracing::info!(
-                "[chord-filter] ActivationSync SetOpen(false) request filtered: \
-                 ctrl_ime_chord が既に active"
-            );
-            return false;
-        }
-        if focus_transition_was_pending {
-            // 2026-08-05: 実機再発報告の切り分けのため debug → info に格上げ。
-            tracing::info!(
-                "[focus-settle] ActivationSync SetOpen({target}) request filtered at belief \
-                 last line of defense (focus transition barrier still settling at event start)"
-            );
-            return false;
-        }
-        self.dispatch_event(ImeEvent::EngineActivationSync { target }, tick_ms);
+    ) {
         self.on_set_open_requested();
         self.dispatch_event(
             ImeEvent::ImeApplyRequested {
-                target,
+                target: true,
                 generation,
-                ctrl_held,
+                ctrl_held: false,
             },
             tick_ms,
         );
         self.last_explicit_ime_action_ms = tick_ms.0;
-        true
     }
 
     /// Ctrl 系 KeyUp で chord barrier を解除する。
@@ -2176,94 +2142,24 @@ mod tests {
         );
     }
 
-    // ── handle_engine_activation_sync（BUG-48）: handle_engine_set_open と同じ
-    //    filter を独立に実装しているため、乖離を検知できるよう同型のテストを鏡写しで
-    //    用意する（Opus レビュー 2026-08-04 で「コピペされた filter に対応テストが
-    //    無く、2つの実装が乖離しても気づけない」と指摘された）。
-
-    #[test]
-    fn handle_engine_activation_sync_filters_when_focus_transition_was_pending() {
-        let mut ps = ps_with_shadow(false, Some(UserIntentSource::SyncKey), true);
-        let applied = ps.ime.handle_engine_activation_sync(
-            true,
-            false,
-            true,
-            ApplyGeneration::new(1).unwrap(),
-            TickMs(0),
-        );
-        assert!(!applied, "focus transition pending 中は適用されない");
-        assert!(
-            !ps.ime.model().desired_open(),
-            "フィルタされた ActivationSync は desired_open を書き換えない \
-             (そもそも desired_open は書き換えない設計だが、フィルタされた場合も \
-             念のため確認する)"
-        );
-    }
-
-    #[test]
-    fn handle_engine_activation_sync_applies_when_focus_transition_not_pending() {
-        let mut ps = ps_with_shadow(false, None, true);
-        let applied = ps.ime.handle_engine_activation_sync(
-            true,
-            false,
-            false,
-            ApplyGeneration::new(1).unwrap(),
-            TickMs(0),
-        );
-        assert!(
-            applied,
-            "focus transition が pending でなければ通常通り適用される"
-        );
-    }
-
-    #[test]
-    fn handle_engine_activation_sync_ctrl_chord_filter_still_works() {
-        let mut ps = ps_with_shadow(false, None, true);
-        // 1 回目: ActivationSync による IME OFF 要求 + Ctrl 押下中 → chord transaction 開始。
-        let first = ps.ime.handle_engine_activation_sync(
-            false,
-            true,
-            false,
-            ApplyGeneration::new(1).unwrap(),
-            TickMs(0),
-        );
-        assert!(first, "chord を開始する最初の要求は適用される");
-        assert!(ps.ime.is_ctrl_ime_chord_active());
-        // 2 回目: chord transaction 中の二次 IME OFF 要求 → フィルタされる。
-        let second = ps.ime.handle_engine_activation_sync(
-            false,
-            true,
-            false,
-            ApplyGeneration::new(2).unwrap(),
-            TickMs(0),
-        );
-        assert!(
-            !second,
-            "chord transaction 中の二次 IME OFF 要求はフィルタされる"
-        );
-    }
+    // ── handle_conv_engine_on_sync（BUG-48/BUG-51 追補 v3、ADR-213 P2c）: ──
+    // conv 観測由来の engine ON 同期は last_intent/desired_open/IntentStore を書かない。
 
     // handle_engine_set_open との核心的な違い: last_intent が既にある間は
     // desired_open を一切書き換えない（BUG-48 修正の中心的な不変条件）。
     #[test]
-    fn handle_engine_activation_sync_never_sets_last_intent_or_desired_open() {
+    fn handle_conv_engine_on_sync_never_sets_last_intent_or_desired_open() {
         let mut ps = ps_with_shadow(false, Some(UserIntentSource::PhysicalImeKey), true);
-        let applied = ps.ime.handle_engine_activation_sync(
-            true,
-            false,
-            false,
-            ApplyGeneration::new(1).unwrap(),
-            TickMs(0),
-        );
-        assert!(applied);
+        ps.ime
+            .handle_conv_engine_on_sync(ApplyGeneration::new(1).unwrap(), TickMs(0));
         assert_eq!(
             ps.ime.model().last_intent.as_ref().map(|i| i.target),
             Some(false),
-            "ActivationSync はユーザーの明示的な OFF 意図 (last_intent) を上書きしない"
+            "conv 由来の engine ON 同期はユーザーの明示的な OFF 意図 (last_intent) を上書きしない"
         );
         assert!(
             !ps.ime.model().desired_open(),
-            "ActivationSync は desired_open も一切書き換えない"
+            "conv 由来の engine ON 同期は desired_open も一切書き換えない"
         );
         assert!(
             !ps.ime.effective_open(),
@@ -2271,23 +2167,16 @@ mod tests {
         );
     }
 
-    // 修正1a 回帰（BUG-51 追補 v3）: ActivationSync 経由（conv 由来の RomajiRecovered
-    // 相当）は last_intent/desired_open だけでなく IntentStore にも記録されない
+    // 修正1a 回帰（BUG-51 追補 v3）: conv 由来の RomajiRecovered 同期は last_intent/desired_open だけでなく IntentStore にも記録されない
     // こと。v1 のままだと DirectInput/RomajiRecovered が UserImeSetIntent{Command}
     // を dispatch し IntentStore に「壊れた conv 読み由来の偽の明示意図」が
     // FocusChanged を生き延びて残ってしまっていた（pre-mortem #1 角度2）。
     #[test]
-    fn handle_engine_activation_sync_does_not_record_intent_store_entry() {
+    fn handle_conv_engine_on_sync_does_not_record_intent_store_entry() {
         let mut ps = PlatformState::new();
         dispatch_focus_changed(&mut ps, TARGET_HWND, 1, 0);
-        let applied = ps.ime.handle_engine_activation_sync(
-            true,
-            false,
-            false,
-            ApplyGeneration::new(1).unwrap(),
-            TickMs(0),
-        );
-        assert!(applied);
+        ps.ime
+            .handle_conv_engine_on_sync(ApplyGeneration::new(1).unwrap(), TickMs(0));
         // IntentStore にエントリが無いことを直接確認する:
         // conv 観測が effective_open() を反転させても、IntentStore 側からの
         // 上書きは発生しない（= 生の shadow_model の値がそのまま反映される）。
@@ -2295,7 +2184,7 @@ mod tests {
         assert_eq!(
             ps.ime.effective_open_at(TickMs(100)),
             ps.ime.model().effective_open(),
-            "ActivationSync は IntentStore に記録しないため、hub 版と生の \
+            "conv 由来の engine ON 同期は IntentStore に記録しないため、hub 版と生の \
              ImeModel 版の effective_open() は一致し続ける（IntentStore 由来の \
              上書きが存在しないことの証拠）"
         );

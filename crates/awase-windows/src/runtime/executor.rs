@@ -142,6 +142,13 @@ impl std::fmt::Debug for DecisionExecutor {
 /// ここでは `settling` を受け取るだけで判定条件自体は変えない。belief（`desired_open` 等）を
 /// 汚染させない最終防衛線は `ImeStateHub::handle_engine_set_open` にある（意図が異なるため別に残す）。
 ///
+/// ADR-213 P2c: `ActivationSync` 起源の SetOpen は撤去済みで、ここが落とすのは明示操作
+/// （IME ON/OFF・エンジン ON/OFF コンボ等）の SetOpen だけになった。それでも撤去せず残す:
+/// 外すと settle 中の明示操作が未確定の belief に対して実送信される一方、belief 側
+/// （`handle_engine_set_open` の settle フィルタ）は書かれず、実 IME と belief が食い違う
+/// 非対称が生じる。strip の撤去は `handle_engine_set_open` の settle フィルタとセットで
+/// 設計し直す別件（settle 中の Ctrl+変換が落ちる挙動の是非を含む）。
+///
 /// settle 中に落とした事実は必ずログに残す（無音で消すと focus 遷移バグの調査コストが跳ね上がるため）。
 ///
 /// 戻り値 `Some(target)` は「本来 apply されるはずだった SetOpen(target) を握りつぶした」ことを
@@ -658,10 +665,10 @@ impl DecisionExecutor {
         // ImeEffect::SetOpen は ImmCross-first か否かで async / sync を分岐するため
         // 先に処理する（後段の `let platform_rt = platform` が `platform`
         // を独占する前に `build_ime_control_view` を呼ぶ必要がある）。
-        if let Effect::Ime(ImeEffect::SetOpen { open, origin }) = effect {
-            // ADR-212 P2: Engine の遷移が自動発行する `ActivationSync` と、ユーザーの明示操作（`ExplicitUserAction`）を
-            // ログで区別する（以前は origin をここで捨てていたので、どちらが実 actuation を起こしたか数えられなかった）。
-            // sync の経路は結果（outcome）も同じ行に出す。async（ImmCross 先の窓）は `generation` で、後から届く
+        if let Effect::Ime(ImeEffect::SetOpen { open }) = effect {
+            // ADR-212 P2: 実 actuation を起こした SetOpen をログで数える（outcome も同じ行に出す。
+            // 以前の `origin=`（ActivationSync/ExplicitUserAction）は ADR-213 P2c で SetOpenOrigin ごと撤去し、
+            // 全て明示操作になった）。async（ImmCross 先の窓）は `generation` で、後から届く
             // `on_ime_apply_complete{generation outcome}` の行と突き合わせる。settle で落とされた SetOpen は
             // `strip_ime_set_open_if_settling` の `[focus-settle]` ログで別に数える。
             let result = self.dispatch_ime_set_open(platform, ime, open, generation);
@@ -669,9 +676,7 @@ impl DecisionExecutor {
                 || "async".to_string(),
                 |(_, outcome)| format!("{outcome:?}"),
             );
-            tracing::info!(
-                "[set-open] origin={origin:?} open={open} generation={generation:?} outcome={outcome}"
-            );
+            tracing::info!("[set-open] open={open} generation={generation:?} outcome={outcome}");
             return result;
         }
         // EngineStateChanged: エンジン ON/OFF に連動して conv mutation ゲートを更新する。
@@ -1204,13 +1209,10 @@ mod tests {
 
     // ── strip_ime_set_open_if_settling (P3-1: focus-settle SetOpen 一次フィルタ) ──
 
-    use awase::engine::{Decision, Effect, ImeEffect, SetOpenOrigin, TimerEffect};
+    use awase::engine::{Decision, Effect, ImeEffect, TimerEffect};
 
     fn set_open_effect(open: bool) -> Effect {
-        Effect::Ime(ImeEffect::SetOpen {
-            open,
-            origin: SetOpenOrigin::ExplicitUserAction,
-        })
+        Effect::Ime(ImeEffect::SetOpen { open })
     }
 
     // settling=true: SetOpen effect は decision から除去され、除去された目標値が返る。

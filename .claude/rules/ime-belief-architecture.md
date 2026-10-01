@@ -132,7 +132,7 @@ IME を ON にする経路を追加したら、stale `ObservedEisu` の救済（
 規約は「読めば守れる」を前提にしない。以下の3段構えで、規約を破る近道が実際に取れないか、少なくとも自動で検知されるようにしている。
 
 1. **コンパイラ（最強、ただしモジュール外に対して）**: `desired_open` / `input_mode` フィールドの private 化。`UserIntentSource` から `Recovery` / `HwndCache` を削除し `PanicReset` / `HwndCacheRestored` 専用イベントに分離。`InputModeObserved` への `confidence` フィールド必須化。
-2. **dylint lint（HIR レベルの意味解析）**: `lints/ime_event_guard` — `ImeEvent::PanicReset` / `HwndCacheRestored` / `EngineActivationSync` / `KeyEffectPredicted` / `ModeKeyPassedThrough` が designated 関数（`apply_panic_reset` / `apply_hwnd_cache_restore` / `handle_engine_activation_sync` / `apply_key_effect_prediction` / `pass_through_observed`）以外で構築されると warning。`lints/observation_source_guard` — 禁止パターン2（観測偽装）を直接検出する: `InputModeObserved { source: ObservationSource::ImmGetOpenStatus, .. }` はどこで構築しても warning（この組合せは常に偽装）、`ConvBitsInference` は `apply_idle_conv_check` 以外で構築すると warning。`cargo dylint --all -p awase-windows -- --target x86_64-pc-windows-msvc` で両方まとめて実行。
+2. **dylint lint（HIR レベルの意味解析）**: `lints/ime_event_guard` — `ImeEvent::PanicReset` / `HwndCacheRestored` / `KeyEffectPredicted` / `ModeKeyPassedThrough` が designated 関数（`apply_panic_reset` / `apply_hwnd_cache_restore` / `apply_key_effect_prediction` / `pass_through_observed`）以外で構築されると warning。`lints/observation_source_guard` — 禁止パターン2（観測偽装）を直接検出する: `InputModeObserved { source: ObservationSource::ImmGetOpenStatus, .. }` はどこで構築しても warning（この組合せは常に偽装）、`ConvBitsInference` は `apply_idle_conv_check` 以外で構築すると warning。`cargo dylint --all -p awase-windows -- --target x86_64-pc-windows-msvc` で両方まとめて実行。
 3. **CI テスト（軽量な第二の防衛線）**: `crates/awase-windows/tests/architecture_guard.rs` — `PanicReset` / `HwndCacheRestored` / `InputModeObserved` の構築箇所数をテキスト走査で固定し、想定外の増加を検知する。`cargo test -p awase-windows --test architecture_guard`（Linux でも実行可能、CI に組み込み済み）。
 
 新しい「観測が乏しい状況での安全デフォルト」や「awase 自身の能動的訂正」を追加するときは、上記のどの仕組みにも引っかからないからといって「近道が許されている」わけではない。まず本当に `ObserverReported`（confidence 付き）/ `InputModeApplied`（strategy 付き）で表現できないか検討すること。
@@ -153,7 +153,7 @@ ADR-089 の r2〜r5 は **4 ラウンド連続で**「この 2 crate は Phase A
 | dylint crate | 見ているもの | Phase A（open 軸の型化）との関係 |
 |---|---|---|
 | `observation_source_guard` | `ImeEvent::InputModeObserved { source: .. }` の source 偽装。すなわち **input_mode 軸** | 無関係。Phase A が型化したのは `ObserverReported`（**open 軸**） |
-| `ime_event_guard` | `PanicReset` / `HwndCacheRestored` / `EngineActivationSync` / `KeyEffectPredicted` / `ModeKeyPassedThrough` の designated 関数外での構築 | 無関係。この 5 variant は**観測でも意図でもない**（belief の直接書き込み口＝ escape hatch）ため `Observed<E>` にも witness にも載らない |
+| `ime_event_guard` | `PanicReset` / `HwndCacheRestored` / `KeyEffectPredicted` / `ModeKeyPassedThrough` の designated 関数外での構築 | 無関係。この 4 variant は**観測でも意図でもない**（belief の直接書き込み口＝ escape hatch）ため `Observed<E>` にも witness にも載らない |
 
 `ime_event_guard` を型化しない理由は「できない」ではなく
 **「型化しても保証が上がらない」**である。`Observed<E>` の witness が成立するのは
@@ -189,12 +189,9 @@ input_mode 軸の型化は**ありうる**が、それは ADR-088 トラック A
    同名 variant を持つ別型やコメント／マクロ展開の差で誤検出・見逃しが
    起きうる。dylint は `is_ime_event()` で `typeck` 結果の ADT が
    `ime_event::ImeEvent` であることを確認してから判定する。
-3. **`EngineActivationSync` は dylint 単独防御である。**
-   `RESTRICTED_VARIANTS`（`lints/ime_event_guard/src/lib.rs:73`）の 3 variant の
-   うち `PanicReset` / `HwndCacheRestored` には `architecture_guard` の等価な
-   テキスト検査があるが、**`EngineActivationSync`（BUG-48）には無い**
-   （`grep -n EngineActivationSync crates/awase-windows/tests/architecture_guard.rs`
-   がヒットしないことで確認できる）。
+3. **`EngineActivationSync` は ADR-213 P2c で撤去した**（かつては `architecture_guard` に等価な
+   テキスト検査が無い dylint 単独防御の variant だった）。`RESTRICTED_VARIANTS` の残りは
+   `PanicReset` / `HwndCacheRestored` / `KeyEffectPredicted` / `ModeKeyPassedThrough`。
 
 **過大評価しないこと**: `observation_source_guard` の `path_expr_ident`
 （`lints/observation_source_guard/src/lib.rs:191`）は `ExprKind::Path` の
@@ -214,8 +211,8 @@ dylint は安くない。`.github/workflows/ci.yml` の `dylint` ジョブは ni
 1. まず nightly のピンを上げて追従する（3 crate 同時のコミットになる）。
 2. それが現実的でなくなったら、**`architecture_guard.rs` のテキスト検査へ
    降格する**（`lints/` を削除して「守らなくてよい」にはしない）。
-   降格 PR の**必須項目**: 上記 3 点のうち **(3) `EngineActivationSync` の
-   テキスト検査を新設すること**。これをしないと降格と同時に防御がゼロになる。
+   降格 PR では、dylint 単独で守っている variant（現在は無い。新設時は
+   テキスト検査を併せて用意すること）が降格と同時に無防備にならないようにし、
    失う検出力（(1)(2)）も ADR に記録する。
 3. **「dylint が壊れたから規律をやめる」は選択肢に入れない。**
 

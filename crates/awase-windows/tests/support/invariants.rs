@@ -18,8 +18,8 @@ pub fn assert_ok(h: &Harness, result: Result<(), String>) {
 ///
 /// タスクの原文は「明示意図が無く、観測が desired と一致（または desired が観測に揃えられた）間は、
 /// warrant が下りる書き込み命令は出ない」。これを文字どおりに検査すると、正常系で Engine が
-/// 活性化したときの `SetOpen(true, ActivationSync)`（IME は既に開いていて、書いても実状態は
-/// 変わらない。本番は `dispatch_ime_set_open` を通る）まで違反になるため、
+/// 活性化したときの書き込み（IME は既に開いていて、書いても実状態は変わらない。かつての
+/// `SetOpen(true, ActivationSync)` がこれに当たった。ADR-213 P2c で撤去）まで違反になりうるため、
 /// 「**実状態と異なる値**を warrant 付きで書く命令」に絞っている（書いても何も変わらない命令は
 /// ADR-191 の「awase は書かない」を実害の意味で破らない）。
 pub fn p1_no_warranted_write_without_intent(h: &Harness) -> Result<(), String> {

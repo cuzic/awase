@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use awase::config::ConfirmMode;
 use awase::engine::{
     Decision, Effect, Engine, EngineCommand, ImeEffect, InputContext, InputModeState, NicolaFsm,
-    SetOpenOrigin, SpecialKeyCombos,
+    SpecialKeyCombos,
 };
 use awase::scanmap::KeyboardModel;
 use awase::types::VkCode;
@@ -68,8 +68,6 @@ pub enum Source {
 /// 書き込み命令の出所。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteOrigin {
-    /// Engine の活性遷移が対称性のために出す `SetOpen`（`SetOpenOrigin::ActivationSync`）。
-    EngineActivationSync,
     /// drift correction（`ir_apply_drift_correction`）。
     DriftCorrection,
     /// ユーザーの明示操作（IME ON/OFF コンボ等）で awase が送る書き込み。
@@ -538,6 +536,9 @@ impl Harness {
         });
     }
 
+    /// Engine の観測・RefreshState・FocusChanged 由来の decision は `SetOpen` を出さない
+    /// （ADR-213 P2b/P2c。かつての ActivationSync の写しはここで書き込みを起案していた）。
+    /// 出たら退行なので panic する。明示操作の書き込みは `user_set_open` だけが起案する。
     fn handle_engine_decision(&mut self, decision: &Decision) {
         let effects = match decision {
             Decision::Consume { effects } | Decision::PassThroughWith { effects } => {
@@ -546,16 +547,10 @@ impl Harness {
             Decision::PassThrough => Vec::new(),
         };
         for e in effects {
-            if let Effect::Ime(ImeEffect::SetOpen { open, origin }) = e {
-                assert_eq!(
-                    origin,
-                    SetOpenOrigin::ActivationSync,
-                    "このハーネスでは明示操作の SetOpen は user_set_open だけが出す"
-                );
-                // `handle_engine_activation_sync`: echo を記録するだけで desired を書かない。
-                self.reduce(ImeEvent::EngineActivationSync { target: open });
-                self.issue_write(WriteOrigin::EngineActivationSync, open);
-            }
+            assert!(
+                !matches!(e, Effect::Ime(ImeEffect::SetOpen { .. })),
+                "このハーネスでは明示操作の SetOpen は user_set_open だけが出す: {e:?}"
+            );
         }
     }
 
