@@ -1183,6 +1183,11 @@ impl Runtime {
             return;
         }
         self.platform_state.ime.note_explicit_ime_action(tick_ms);
+        // P2c で ActivationSync（打鍵前に予約した TIMER_IME_REFRESH を kill していた経路）を撤去したため、この書き込みの
+        // 直後に予約済みの refresh → drift correction が同じ向きを重ねうる（BUG-113 型。PR #408 Opus M-1 が strip 経路で
+        // 同じ kill を足していた）。書き込みの前に打鍵前の refresh 予約を kill する。完了後の refresh は
+        // `on_ime_apply_complete` が改めて予約する（書き込み後の観測で再評価）。
+        self.platform.timer.kill(TIMER_IME_REFRESH);
         let caller = if open {
             DecisionSite::ShadowToggleOn
         } else {

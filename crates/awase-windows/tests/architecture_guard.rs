@@ -5856,3 +5856,59 @@ fn conv_engine_sync_has_no_apply_requested_generation_or_timer_kill() {
         );
     }
 }
+
+/// ADR-208 L1: 明示キー押下の書き込みを起案する入口（order を発行する 2 入口）は、order の**発行前**に押下 ID を
+/// 予約し（`claim_press_write`、`last_written_press`）、押下 ID を order に載せる（`with_press`）。
+/// どちらか 1 入口だけに足して満足しない（`fix-requires-evidence.md` の「IME actuation 合流点」）。
+/// drift correction（`runtime/ime_refresh.rs`）は押下に由来しないので `press=None` のまま（`with_press` を呼ばない）。
+#[test]
+fn press_id_is_claimed_and_carried_at_every_order_issuing_entry() {
+    // Engine 経由（executor）。async/sync の 2 order すべてが press を載せる。
+    let executor = read_crate_file("src/runtime/executor.rs");
+    let body = extract_fn_body(production_code_only(&executor), "fn dispatch_ime_set_open(");
+    let code = non_comment_lines(body);
+    assert_eq!(
+        code.matches("claim_press_write(").count(),
+        1,
+        "dispatch_ime_set_open は order の発行前に `claim_press_write` を 1 回だけ呼ぶこと（ADR-208 D1）"
+    );
+    assert_eq!(
+        code.matches(".with_press(press)").count(),
+        2,
+        "dispatch_ime_set_open の async/sync 両方の order に `.with_press(press)` を載せること（ADR-208 D1）"
+    );
+    assert!(
+        code.contains("explicit_press_applied_pair("),
+        "dispatch_ime_set_open は view の shadow_on を `explicit_press_applied_pair` で未知にすること（ADR-208 D1）"
+    );
+    // shadow toggle（key_pipeline）。
+    let kp = read_crate_file("src/runtime/key_pipeline.rs");
+    let body = extract_fn_body(production_code_only(&kp), "fn kp_shadow_actuate(");
+    let code = non_comment_lines(body);
+    assert_eq!(
+        code.matches("claim_press_write(").count(),
+        1,
+        "kp_shadow_actuate は order の発行前に `claim_press_write` を 1 回だけ呼ぶこと（ADR-208 D1）"
+    );
+    assert_eq!(
+        code.matches(".with_press(press)").count(),
+        2,
+        "kp_shadow_actuate の async/sync 両方の order に `.with_press(press)` を載せること（ADR-208 D1）"
+    );
+    assert!(
+        code.contains("explicit_press_applied_pair("),
+        "kp_shadow_actuate は view の shadow_on を `explicit_press_applied_pair` で未知にすること（ADR-208 D1）"
+    );
+    // 押下の書き込みの直後に予約済みの refresh → drift correction が同じ向きを重ねない（BUG-113 型）。
+    assert!(
+        code.contains("timer.kill(TIMER_IME_REFRESH)"),
+        "kp_shadow_actuate は書き込み前に打鍵前の `TIMER_IME_REFRESH` 予約を kill すること（P2c で ActivationSync の kill が消えた穴）"
+    );
+    // drift correction は押下に由来しない（press=None）。
+    let refresh = read_crate_file("src/runtime/ime_refresh.rs");
+    let refresh_prod = non_comment_lines(production_code_only(&refresh));
+    assert!(
+        !refresh_prod.contains("with_press(") && !refresh_prod.contains("claim_press_write("),
+        "ime_refresh.rs（drift correction）は押下 ID を持たない: `with_press`/`claim_press_write` を呼んではならない"
+    );
+}
