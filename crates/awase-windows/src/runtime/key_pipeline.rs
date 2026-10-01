@@ -90,14 +90,6 @@ impl Runtime {
             }
         }
 
-        // kp_stage_focus_probe が FocusTransition barrier を consume する前に
-        // settle 状態をスナップショットしておく（post_decision で使う。
-        // 消費後に読むと常に false になり判断できないため）。
-        let focus_transition_was_pending = self
-            .platform_state
-            .ime
-            .is_focus_transition_settling(std::time::Instant::now());
-
         self.kp_stage_focus_probe(&mut event);
         self.kp_stage_idle_conv_check(&event);
         let shadow_toggled = self.kp_stage_shadow_ime_toggle(&event);
@@ -199,28 +191,9 @@ impl Runtime {
         }
 
         let state_before = self.engine.debug_state_label();
-        let mut decision = self.engine.on_input(event, &ctx);
-        // キーボード経路の一次フィルタ（decision 除去の単一実装は executor 側ヘルパ）。
-        // フォーカス遷移直後（settle 期間内）に Engine が発行した SetOpen effect は、
-        // 実行(kp_stage_execute → 実際の SendInput)まで到達する前にここで取り除く。
-        // handle_engine_set_open 側のフィルタは belief の書き込み(desired_open等)を防ぐ
-        // 最終防衛線で意図が異なり、decision.effects に残った SetOpen は kp_stage_execute
-        // 経由で無条件に実行されてしまうため、effect 自体を落とすこの一次フィルタが必須
-        // （2026-07-05: 前回の修正が効かなかった原因）。
-        // この経路は kp_stage_focus_probe が barrier を consume 済みのため、live 評価ではなく
-        // イベント開始時にスナップショットした focus_transition_was_pending を settle 判定に使う。
-        let stripped_set_open = crate::runtime::executor::strip_ime_set_open_if_settling(
-            &mut decision,
-            focus_transition_was_pending,
-        );
-        if stripped_set_open.is_some() {
-            // settle 中に握りつぶした SetOpen は自然には再発行されない
-            // （Engine::prev_activation は遷移確定済みのため）。既存の
-            // 他の settle 対応経路（撤去済みの apply_force_on_for_imm_broken 等）と同じ「settle 明けに
-            // refresh で再試行」パターンで確実に一度だけ再同期する
-            // （2026-07-08: GjiFsm が resync できず「このせっけい」の文字欠落に至った実機ログから判明）。
-            self.schedule_settle_retry("SetOpen stripped from kp_run_inner decision");
-        }
+        let decision = self.engine.on_input(event, &ctx);
+        // ADR-213 P2d-2: settle 中の SetOpen 除去（旧 `strip_ime_set_open_if_settling`）は撤去した。
+        // SetOpen は明示操作だけが出し、settle 直後の書き込みも受け付けられると実測した。
         let state_after = self.engine.debug_state_label();
         // 配送判断(physical)をここで一度だけ確定させ、KeyInput journal 記録と
         // kp_stage_execute の実処理の両方に同じ値を渡す（BUG-90 調査: 以前は
@@ -261,7 +234,7 @@ impl Runtime {
             event.was_down,
         );
 
-        self.kp_stage_post_decision(&decision, &event, focus_transition_was_pending);
+        self.kp_stage_post_decision(&decision, &event);
 
         // Ctrl 系 KeyUp で chord barrier を解除する。
         // chord 状態の判断は ImeStateHub.on_ctrl_key_up() に集約（パイプラインは VK 分類のみ担う）。
@@ -1339,15 +1312,7 @@ impl Runtime {
     }
 
     /// Engine 判断後の後処理（IME 制御キー検出 + may_change_ime パススルー）
-    ///
-    /// `focus_transition_was_pending`: この event 処理開始時点で FocusTransition
-    /// barrier が settle 期間内だったか（`kp_run_inner` でのスナップショット）。
-    fn kp_stage_post_decision(
-        &mut self,
-        decision: &awase::engine::Decision,
-        event: &RawKeyEvent,
-        focus_transition_was_pending: bool,
-    ) {
+    fn kp_stage_post_decision(&mut self, decision: &awase::engine::Decision, event: &RawKeyEvent) {
         if let Some(new_ime_on) = decision.find_ime_set_open() {
             // IME-ON コンボ（既定: Ctrl+変換）は現在の IME 状態によらず SetOpen(true) を
             // 無条件で再発行する（`build_ime_set_open_decision` の「二重 enqueue 防止」
@@ -1370,13 +1335,12 @@ impl Runtime {
             let applied = self.platform_state.ime.handle_engine_set_open(
                 new_ime_on,
                 event.modifier_snapshot.ctrl,
-                focus_transition_was_pending,
                 generation,
                 tick_ms,
             );
             if applied {
                 // IntentStore（BUG-51 追補 v3）。`applied` ゲートは v1 の意味論（chord/focus-settle
-                // フィルタで belief 書き込み自体がスキップされた場合は記録しない）をそのまま保存する。
+                // フィルタ（chord のみ）で belief 書き込み自体がスキップされた場合は記録しない）をそのまま保存する。
                 self.platform_state.ime.record_explicit_intent(
                     new_ime_on,
                     crate::state::ime_event::UserIntentSource::Command,

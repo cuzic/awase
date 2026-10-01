@@ -557,16 +557,13 @@ impl ImeStateHub {
     ///
     /// 戻り値: apply 要求が実行されたか（ログ用）
     ///
-    /// `focus_transition_was_pending`: この event の処理開始時点（`kp_stage_focus_probe`
-    /// が barrier を consume する前）で FocusTransition barrier が settle 期間内だったか。
-    /// 呼び出し元はこの値を event 処理の先頭でスナップショットして渡すこと
-    /// （本関数の呼び出し時点で `is_focus_transition_settling` を評価しても、既に
-    /// consume 済みで false になっているため無意味）。
+    /// ADR-213 P2d-2: settle 中の SetOpen を belief 側でも落としていた
+    /// `focus_transition_was_pending` フィルタは、executor 側の strip と対で撤去した
+    /// （明示操作は settle 中も belief を書き、実書き込みも行う）。
     pub(crate) fn handle_engine_set_open(
         &mut self,
         target: bool,
         ctrl_held: bool,
-        focus_transition_was_pending: bool,
         generation: ApplyGeneration,
         tick_ms: TickMs,
     ) -> bool {
@@ -580,27 +577,6 @@ impl ImeStateHub {
             tracing::info!(
                 "[chord-filter] SetOpen(false) request filtered: ctrl_ime_chord が既に active \
                  (last_intent/desired_open は更新されない)"
-            );
-            return false;
-        }
-        if focus_transition_was_pending {
-            // belief 保護の最終防衛線（P3-1: 3→2 集約）。
-            //
-            // 一次フィルタは decision からの SetOpen effect 除去
-            // （`runtime::executor::strip_ime_set_open_if_settling`。キーボード経路 =
-            // key_pipeline::kp_run_inner と非キーボード経路 = execute_from_loop の両方から呼ぶ）。
-            // ここは意図が異なり（decision 除去 ≠ belief 汚染防止）、万一その一次フィルタを
-            // すり抜けた SetOpen 要求が belief（desired_open 等）を書き換えるのを防ぐ二重化。
-            //
-            // フォーカス遷移直後（settle_until 未経過）は、Alt+Tab 等の高速な多重フォーカス遷移で
-            // 中間ウィンドウ（Alt+Tab スイッチャー等）の未確定 belief に基づき Engine が SetOpen を
-            // 発行し得る（2026-07-05 実機ログで確認）。barrier consume 時に kick される非同期
-            // focus probe が観測を更新すれば、次の入力イベントで正しい SetOpen が再発行され自己修復する。
-            //
-            // 2026-08-05: 実機再発報告の切り分けのため debug → info に格上げ（頻度は低い）。
-            tracing::info!(
-                "[focus-settle] SetOpen({target}) request filtered at belief last line of defense \
-                 (focus transition barrier still settling at event start)"
             );
             return false;
         }
@@ -1878,46 +1854,42 @@ mod tests {
         );
     }
 
-    // ── handle_engine_set_open: focus_transition_was_pending フィルタ ──
+    // ── handle_engine_set_open: settle 中の明示操作は落とさない（ADR-213 P2d-2）──
     //
-    // 2026-07-05: Alt+Tab 中の中間ウィンドウ（Alt+Tab スイッチャー等）への一瞬の
-    // フォーカスで Engine が SetOpen を発行し、それが最終的な着地先ウィンドウとは
-    // 無関係な SendInput として実行され、belief と実IME状態が乖離するバグの修正。
-
-    // focus_transition_was_pending=true の場合、SetOpen 要求はフィルタされ
-    // desired_open/last_explicit_ime_action_ms は変化しない。
+    // 2026-07-05 に「Alt+Tab 中間窓で Engine の自動遷移が未確定 belief から書く」対策として
+    // 入れた focus_transition_was_pending フィルタは、自動遷移（ActivationSync）の撤去（P2c）後は
+    // settle 中の明示操作（Ctrl+変換等）を黙って捨てるだけになり、実測（Chrome×GJI・MS-IME が
+    // settle 約20ms後の書き込みを受け付ける）で撤去した。settle 中でも belief を書いて適用する。
     #[test]
-    fn handle_engine_set_open_filters_when_focus_transition_was_pending() {
+    fn handle_engine_set_open_applies_even_while_focus_transition_settling() {
         let mut ps = ps_with_shadow(false, Some(UserIntentSource::SyncKey), true);
-        let applied = ps.ime.handle_engine_set_open(
-            true,
-            false,
-            true,
-            ApplyGeneration::new(1).unwrap(),
-            TickMs(0),
-        );
-        assert!(!applied, "focus transition pending 中は適用されない");
+        // 将来に開始する barrier: settle_until が必ず now より先になり、settling が確実に true。
+        let started_at = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        ps.ime
+            .try_set_focus_transition_barrier(HwndId::NULL, started_at);
         assert!(
-            !ps.ime.model().desired_open(),
-            "フィルタされた SetOpen は desired_open を書き換えない"
+            ps.ime
+                .is_focus_transition_settling(std::time::Instant::now()),
+            "前提: settle 中"
+        );
+        let applied =
+            ps.ime
+                .handle_engine_set_open(true, false, ApplyGeneration::new(1).unwrap(), TickMs(0));
+        assert!(applied, "settle 中の明示操作 SetOpen も適用される");
+        assert!(
+            ps.ime.model().desired_open(),
+            "settle 中でも desired_open を書く（belief と実書き込みの非対称を作らない）"
         );
     }
 
-    // focus_transition_was_pending=false なら通常通り適用される（回帰防止）。
+    // settle 外でも通常通り適用される。
     #[test]
     fn handle_engine_set_open_applies_when_focus_transition_not_pending() {
         let mut ps = ps_with_shadow(false, Some(UserIntentSource::SyncKey), true);
-        let applied = ps.ime.handle_engine_set_open(
-            true,
-            false,
-            false,
-            ApplyGeneration::new(1).unwrap(),
-            TickMs(0),
-        );
-        assert!(
-            applied,
-            "focus transition が pending でなければ通常通り適用される"
-        );
+        let applied =
+            ps.ime
+                .handle_engine_set_open(true, false, ApplyGeneration::new(1).unwrap(), TickMs(0));
+        assert!(applied);
         assert!(ps.ime.model().desired_open());
     }
 
@@ -2026,29 +1998,21 @@ mod tests {
         );
     }
 
-    // 既存の CtrlImeChord フィルタが、focus_transition フィルタ追加後も
+    // 既存の CtrlImeChord フィルタが、settle フィルタの有無によらず
     // 引き続き機能することを確認する回帰テスト。
     #[test]
     fn handle_engine_set_open_ctrl_chord_filter_still_works() {
         let mut ps = ps_with_shadow(true, Some(UserIntentSource::SyncKey), true);
         // 1 回目: IME OFF 要求 + Ctrl 押下中 → chord transaction 開始。
-        let first = ps.ime.handle_engine_set_open(
-            false,
-            true,
-            false,
-            ApplyGeneration::new(1).unwrap(),
-            TickMs(0),
-        );
+        let first =
+            ps.ime
+                .handle_engine_set_open(false, true, ApplyGeneration::new(1).unwrap(), TickMs(0));
         assert!(first, "chord を開始する最初の要求は適用される");
         assert!(ps.ime.is_ctrl_ime_chord_active());
         // 2 回目: chord transaction 中の二次 IME OFF 要求 → フィルタされる。
-        let second = ps.ime.handle_engine_set_open(
-            false,
-            true,
-            false,
-            ApplyGeneration::new(2).unwrap(),
-            TickMs(0),
-        );
+        let second =
+            ps.ime
+                .handle_engine_set_open(false, true, ApplyGeneration::new(2).unwrap(), TickMs(0));
         assert!(
             !second,
             "chord transaction 中の二次 IME OFF 要求はフィルタされる"
@@ -2110,7 +2074,6 @@ mod tests {
     fn handle_engine_set_open_updates_persistent_explicit_off_ms() {
         let mut ps = ps_with_shadow(true, Some(UserIntentSource::SyncKey), true);
         let applied = ps.ime.handle_engine_set_open(
-            false,
             false,
             false,
             ApplyGeneration::new(1).unwrap(),
