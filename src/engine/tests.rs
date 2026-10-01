@@ -8769,18 +8769,13 @@ mod engine_integration_tests {
         );
     }
 
-    // 2026-08-04: 「IME OFF・Engine ON」再発対策（`SetOpenOrigin` 導入）の回帰テスト。
-    //
-    // `EngineCommand::RefreshState`（Platform 層が `ctx.ime_on` を再評価するたびに叩く
-    // 経路。IME ポーリング/idle-conv-check 由来で毎キー入力とは無関係に発火しうる）が
-    // 引き起こす active/inactive 遷移は `check_active_transition` を経由するため、
-    // 発行される `SetOpen` は必ず `SetOpenOrigin::ActivationSync` でなければならない。
-    // ここが誤って `ExplicitUserAction` になると、awase-windows 側の
-    // `kp_stage_post_decision` がユーザーの明示的な IME OFF 意図（`last_intent`）を
-    // 「観測駆動の echo」で上書きしてしまい、ユーザーが IME を OFF にした直後でも
-    // Engine が勝手に ON へ戻る（`docs/known-bugs.md` 参照）。
+    // ADR-213 P2b: `EngineCommand::RefreshState`（観測駆動。IME ポーリング/idle-conv-check 由来で
+    // 毎キー入力と無関係に発火しうる）が引き起こす active/inactive 遷移は `SetOpen` を出さない
+    // （UI 更新のみ）。ユーザーの明示操作に応答する書き込みは明示操作の経路が担う。
+    // 以前の `SetOpenOrigin::ActivationSync` はこの条件が破れたとき last_intent を汚染する
+    // 再発（2026-08-04 「IME OFF・Engine ON」）を避けるための区別だったが、SetOpen 自体が出なくなった。
     #[test]
-    fn refresh_state_transition_emits_activation_sync_origin_not_explicit_user_action() {
+    fn refresh_state_transition_emits_no_set_open() {
         let mut engine = make_test_engine();
         // make_test_engine() は prev_active=true から始まるため、まず ime_off_ctx() で
         // Inactive に落としてから、本題の Inactive→Active 遷移を起こす。
@@ -8788,7 +8783,6 @@ mod engine_integration_tests {
         assert!(!engine.compute_active(&ime_off_ctx()));
 
         let d = engine.on_command(EngineCommand::RefreshState, &ime_on_ctx());
-        // ADR-213 P2b: RefreshState 由来の遷移は SetOpen を出さない（UI 更新だけ）。
         assert!(
             !has_effect(&d, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
             "RefreshState 由来の遷移は SetOpen を出してはならない, got {:?}",
@@ -8802,22 +8796,11 @@ mod engine_integration_tests {
             "EngineStateChanged は従来どおり出る, got {:?}",
             effects_of(&d)
         );
-        assert!(
-            !has_effect(&d, |e| matches!(
-                e,
-                Effect::Ime(ImeEffect::SetOpen {
-                    origin: SetOpenOrigin::ExplicitUserAction,
-                    ..
-                })
-            )),
-            "RefreshState 由来の SetOpen に ExplicitUserAction が混ざってはならない, got {:?}",
-            effects_of(&d)
-        );
     }
 
-    // 対照テスト: IME-ON コンボ（本物のユーザー操作）は ExplicitUserAction を使う。
+    // 対照テスト: IME-ON コンボ（本物のユーザー操作）は SetOpen を出す。
     #[test]
-    fn ime_on_combo_emits_explicit_user_action_origin() {
+    fn ime_on_combo_emits_set_open() {
         let combo = ParsedKeyCombo {
             ctrl: false,
             shift: false,
@@ -8837,12 +8820,9 @@ mod engine_integration_tests {
         assert!(
             has_effect(&d, |e| matches!(
                 e,
-                Effect::Ime(ImeEffect::SetOpen {
-                    open: true,
-                    origin: SetOpenOrigin::ExplicitUserAction
-                })
+                Effect::Ime(ImeEffect::SetOpen { open: true })
             )),
-            "IME-ON コンボは ExplicitUserAction を使わなければならない, got {:?}",
+            "IME-ON コンボは SetOpen(true) を出さなければならない, got {:?}",
             effects_of(&d)
         );
     }

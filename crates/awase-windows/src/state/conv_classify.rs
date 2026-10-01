@@ -32,13 +32,13 @@ pub enum ConvSyncReason {
 pub enum EngineSync {
     /// engine への働きかけなし。
     None,
-    /// engine を ON にする (`handle_engine_activation_sync(true)`)。`RomajiRecovered`
+    /// engine を ON にする (`handle_conv_engine_on_sync`)。`RomajiRecovered`
     /// のみがこの経路を使う: `effective_open` が既に true の状態での belief 再同期で
     /// あり、shadow=OFF から新たに ON 意図を作り出すものではない。かつてはユーザー
     /// 意図経路 (`UserImeSetIntent{Command}`) の再利用を許容していたが、発火条件が
     /// `effective_open == true` を要求する以上 `desired_open := effective_open` の
-    /// 循環 echo（`ime_model.rs` の `EngineActivationSync` arm が明文で禁じるパターン）
-    /// にあたるため、BUG-51 追補 v3 で `handle_engine_activation_sync` へ移した
+    /// 循環 echo にあたるため、BUG-51 追補 v3 で last_intent/desired_open を書かない
+    /// 経路（旧 `EngineActivationSync`、ADR-213 P2c で `handle_conv_engine_on_sync` へ整理）へ移した
     /// （IntentStore への偽 intent 永続化の防止も兼ねる）。
     SetOpen(ConvSyncReason),
     // ADR-185: かつてここに`DirectInput`（`ObservedEisu`観測 → open軸へ`false`を書き、IME OFFを実送信）が

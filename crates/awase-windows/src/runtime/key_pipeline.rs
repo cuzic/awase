@@ -221,35 +221,6 @@ impl Runtime {
             // （2026-07-08: GjiFsm が resync できず「このせっけい」の文字欠落に至った実機ログから判明）。
             self.schedule_settle_retry("SetOpen stripped from kp_run_inner decision");
         }
-        // ADR-213 決定2: shadow toggle が同じ打鍵で既に `kp_shadow_actuate` で書いた目標と同じ
-        // ActivationSync の SetOpen は二重書き込みになる（`apply` の already-matched 省略は
-        // GjiDirect だけ。MS-IME は VK_IME_ON と ROMAN を毎回送り、ImmCross は async 書き込みが
-        // 2本走る）ので取り除く。P2b で ActivationSync 自体を止めるまでの暫定。
-        if shadow_toggled {
-            if let Some((target, awase::engine::SetOpenOrigin::ActivationSync)) =
-                decision.find_ime_set_open_with_origin()
-            {
-                if target == self.platform_state.ime.effective_open() {
-                    // ActivationSync 経路は SetOpen と一緒に打鍵前の refresh 予約を kill していた
-                    // (`kp_stage_post_decision`)。strip 後も kill しないと、書き込みの await 中に
-                    // refresh → drift correction が同じ書き込みを重ねる(PR #408 Opus M-1)。
-                    self.platform.timer.kill(TIMER_IME_REFRESH);
-                    decision.effects_mut().retain(|e| {
-                        !matches!(
-                            e,
-                            Effect::Ime(awase::engine::ImeEffect::SetOpen {
-                                origin: awase::engine::SetOpenOrigin::ActivationSync,
-                                ..
-                            })
-                        )
-                    });
-                    tracing::debug!(
-                        "[shadow-toggle] same-target ActivationSync SetOpen({target}) stripped \
-                         (already written by kp_shadow_actuate)"
-                    );
-                }
-            }
-        }
         let state_after = self.engine.debug_state_label();
         // 配送判断(physical)をここで一度だけ確定させ、KeyInput journal 記録と
         // kp_stage_execute の実処理の両方に同じ値を渡す（BUG-90 調査: 以前は
@@ -893,7 +864,7 @@ impl Runtime {
         now_tick: crate::state::TickMs,
     ) {
         use crate::state::conv_classify::EngineSync;
-        let target = match engine {
+        match engine {
             EngineSync::None => return,
             EngineSync::ReportOpenInference(reason) => {
                 // KatakanaShadowOff/NativeToggleShadowOff: engine を actuate せず
@@ -924,20 +895,18 @@ impl Runtime {
                 tracing::info!(
                     "[idle-conv-check] TsfNative: engine ON 同期 (conv=0x{conv:08X}, reason={reason:?})"
                 );
-                true
             }
-        };
+        }
         self.platform.timer.kill(TIMER_IME_REFRESH);
         let generation = self.platform_state.ime.allocate_event_generation();
         // SetOpen(RomajiRecovered): conv 観測からの自動同期であり、ユーザーの
         // 明示操作ではない。発火条件が effective_open==true を要求するため
-        // desired_open へ書くと desired_open := effective_open という循環 echo
-        // （ime_model.rs の EngineActivationSync arm が明文で禁じるパターン）に
-        // なる。BUG-48 の ActivationSync 経路（last_intent/desired_open/
-        // IntentStore を書かず actuation は同一）を使う（BUG-51 追補 v3）。
+        // desired_open へ書くと desired_open := effective_open という循環 echo に
+        // なる。last_intent/desired_open/IntentStore を書かず、世代の記録と
+        // idle-conv-check の抑制窓だけを更新する（BUG-51 追補 v3、ADR-213 P2c）。
         self.platform_state
             .ime
-            .handle_engine_activation_sync(target, false, false, generation, now_tick);
+            .handle_conv_engine_on_sync(generation, now_tick);
     }
 
     /// Shadow IME トグル処理
@@ -1188,11 +1157,9 @@ impl Runtime {
         // ON→OFF の場合、OS IME を明示的に OFF にする。
         // 【2026-09-17 訂正、ADR-179（旧178） round4/round8】旧コメントは「deactivation は
         // SetOpen(false) を生成しないため、このブロックが必要」としていたが誤り。
-        // `Engine::transition_activation`（`src/engine/engine.rs:456-475`）は
-        // `NotRomajiInput` の場合を除き、active→inactive 遷移でも
-        // `SetOpen(false, origin: ActivationSync)` を発行する（`transition_activation`
-        // の doc「active → inactive: OS IME を強制的に閉じる（対称性のため）」参照）。
-        // つまり `ActivationSync` 経由の自動 echo は deactivation 方向にも存在する。
+        // `Engine::transition_activation` は（当時）active→inactive 遷移でも自動で
+        // `SetOpen(false)` を発行していた。ADR-213 P2b/P2c で観測・RefreshState 由来の遷移は
+        // SetOpen を出さなくなり、この書き込みが shadow toggle の唯一の実書き込みになった。
         // このブロックが必要な本当の理由は、TSF モード (WezTerm 等) では物理キー
         // reinject だけでは OS IME が OFF にならない（IME 自身がこの物理キーに
         // 反応して状態を変えるとは限らない）ため、awase 自身が明示的に actuate する
@@ -1234,7 +1201,7 @@ impl Runtime {
     ///   `open` に倒れたときだけ呼ばれる）なら、view の `shadow_on` を未知（`None`）として渡す
     ///   （GjiDirect の already-matched 省略で、Suppress された物理キーの応答が消えるのを防ぐ。M1）。
     /// - 書き込みで `note_explicit_ime_action` を呼ぶ（idle-conv-check の抑制窓。M4）。
-    /// - ImmCross が先頭の窓は async（`with_app` 再入回避）。ON は executor の ActivationSync と同じ
+    /// - ImmCross が先頭の窓は async（`with_app` 再入回避）。ON は（撤去した）executor の ActivationSync と同じ
     ///   `Targeted`+`decide_dispatch_conv_after_open`（ROMAN 補完と宛先 hwnd 捕獲）。
     ///
     /// IMM クロスプロセス対応アプリ (WezTerm 等の TSF mode) は SendMessageTimeoutW を含む sync
@@ -1291,7 +1258,7 @@ impl Runtime {
             let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
             win32_async::spawn_local(async move {
                 let reason = crate::state::ime_event::OpenApplyReason::ShadowToggle;
-                // ON: executor の ActivationSync と同じ Targeted（ROMAN 補完と宛先捕獲）。
+                // ON: 旧 ActivationSync と同じ Targeted（ROMAN 補完と宛先捕獲）。
                 // OFF: 宛先の捕獲（ADR-086 INV-14）は未移行のため `Untargeted`（Phase C）。
                 // `run_open_chain_async` の呼び出し箇所は1つに保つ（architecture_guard）。
                 let (op, site) = if open {
@@ -1383,7 +1350,7 @@ impl Runtime {
         event: &RawKeyEvent,
         focus_transition_was_pending: bool,
     ) {
-        if let Some((new_ime_on, origin)) = decision.find_ime_set_open_with_origin() {
+        if let Some(new_ime_on) = decision.find_ime_set_open() {
             // IME-ON コンボ（既定: Ctrl+変換）は現在の IME 状態によらず SetOpen(true) を
             // 無条件で再発行する（`build_ime_set_open_decision` の「二重 enqueue 防止」
             // コメント参照）。このため handle_engine_set_open で belief を更新する前に
@@ -1392,80 +1359,54 @@ impl Runtime {
             // ローマ字入力 + CapsLock OFF へリセットする。既に OFF→ON の場合は従来通り
             // 単純に ON にするだけで良い）。
             let was_open_before = self.platform_state.ime.effective_open();
-            // 診断ログ用スナップショット (2026-08-05): handle_engine_set_open/
-            // handle_engine_activation_sync 呼び出し前の last_intent を控えておく。
-            // これらの呼び出しが last_intent を書き換えるため、後で「遷移直前は
+            // 診断ログ用スナップショット (2026-08-05): handle_engine_set_open 呼び出し前の
+            // last_intent を控えておく。この呼び出しが last_intent を書き換えるため、後で「遷移直前は
             // 本当に明示意図があったか」を確認するには呼び出し前に読む必要がある。
             let last_intent_before = self.platform_state.ime.explicit_intent();
             self.platform.timer.kill(TIMER_IME_REFRESH);
             let generation = self.platform_state.ime.allocate_event_generation();
             let tick_ms = crate::state::TickMs(hook::current_tick_ms());
-            // `origin` で belief 更新の経路を分ける（`SetOpenOrigin` の doc / 2026-08-04
-            // 「IME OFF・Engine ON」再発対策参照）。
-            // - ExplicitUserAction: IME/エンジン ON/OFF コンボ等、本物のユーザー操作。
-            //   `last_intent` を設定してよい（`handle_engine_set_open`）。
-            // - ActivationSync: `check_active_transition` が対称性のために自動発行した
-            //   echo（`ctx.ime_on` の観測駆動な変化だけでも起こりうる）。`last_intent` を
-            //   設定すると、この echo が「ユーザーの本物の意図」として固定化され、
-            //   以後の drift correction が効かなくなる（IME OFF 直後に Engine が勝手に
-            //   ON へ戻る再発の根本原因だった）。`handle_engine_activation_sync` で
-            //   `desired_open` のみ更新する。
-            let applied = match origin {
-                awase::engine::SetOpenOrigin::ExplicitUserAction => {
-                    let applied = self.platform_state.ime.handle_engine_set_open(
-                        new_ime_on,
-                        event.modifier_snapshot.ctrl,
-                        focus_transition_was_pending,
-                        generation,
-                        tick_ms,
-                    );
-                    if applied {
-                        // IntentStore（BUG-51 追補 v3）: IME/エンジン ON/OFF コンボ等、
-                        // 本物のユーザー操作であることが origin から確定している場合のみ
-                        // 記録する。`applied` ゲートは v1 の意味論（chord/focus-settle
-                        // フィルタで belief 書き込み自体がスキップされた場合は記録しない）を
-                        // そのまま保存する。記録を**この arm の中**に置くことで、
-                        // `ActivationSync`（conv 由来の対称 echo）が偽の明示意図を
-                        // 永続化する経路が構造的に存在しなくなる。
-                        self.platform_state.ime.record_explicit_intent(
-                            new_ime_on,
-                            crate::state::ime_event::UserIntentSource::Command,
-                            tick_ms,
-                        );
-                    }
-                    applied
-                }
-                awase::engine::SetOpenOrigin::ActivationSync => {
-                    self.platform_state.ime.handle_engine_activation_sync(
-                        new_ime_on,
-                        event.modifier_snapshot.ctrl,
-                        focus_transition_was_pending,
-                        generation,
-                        tick_ms,
-                    )
-                }
-            };
+            // Engine が発行する SetOpen は明示操作（IME/エンジン ON/OFF コンボ等）だけ
+            // （観測・RefreshState 由来の遷移は SetOpen を出さない。ADR-213 P2b/P2c）。
+            // よって `last_intent` を設定し、IntentStore に記録してよい。
+            let applied = self.platform_state.ime.handle_engine_set_open(
+                new_ime_on,
+                event.modifier_snapshot.ctrl,
+                focus_transition_was_pending,
+                generation,
+                tick_ms,
+            );
+            if applied {
+                // IntentStore（BUG-51 追補 v3）。`applied` ゲートは v1 の意味論（chord/focus-settle
+                // フィルタで belief 書き込み自体がスキップされた場合は記録しない）をそのまま保存する。
+                self.platform_state.ime.record_explicit_intent(
+                    new_ime_on,
+                    crate::state::ime_event::UserIntentSource::Command,
+                    tick_ms,
+                );
+            }
             // 2026-08-05: 実機再発報告（IME OFF 後 FocusChange 無しで Engine が勝手に
             // ON へ戻る）の切り分けのため debug → info に格上げし、遷移直前の
             // last_intent 内訳を追加した。この分岐は Engine の active/inactive が実際に
             // 遷移した時だけ通るため、毎 tick 出るログではない（低頻度）。
             tracing::info!(
-                "IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest, origin={origin:?}), \
+                "IME control: preconditions.ime_on = {new_ime_on} (SetOpenRequest), \
                  was_open_before={was_open_before} last_intent_before={last_intent_before:?} \
                  poll suspended{}",
-                if applied { "" } else { " [chord barrier active → skipped]" }
+                if applied {
+                    ""
+                } else {
+                    " [chord barrier active → skipped]"
+                }
             );
 
             // IME-ON コンボの既定値 `Ctrl+変換`（Shift/Alt/Win 無し）と一致する場合のみ
             // ひらがな＋ローマ字＋CapsLock OFF へのリセットを行う。
             //
-            // 注意: `origin==ExplicitUserAction` は IME-ON コンボだけでなく
+            // 注意: Engine が出す SetOpen は IME-ON コンボだけでなく
             // `Ctrl+Shift+変換`（EngineOn コンボ、`apply_active_transition` 経由）等の
-            // 他の明示操作も含む（`SetOpenOrigin` の doc 参照）。ActivationSync の echo
-            // を弾くのは `origin` チェックの役目だが、EngineOn コンボ等の
-            // "ExplicitUserAction だが IME-ON コンボそのものではない" ケースを弾いて
-            // いるのは `is_default_ime_on_combo` の VK/modifier 判定（特に `!shift`）
-            // のほうであり、こちらは削除できない。`keys.ime_on` をカスタマイズした
+            // 他の明示操作も含む。それらを弾いているのは `is_default_ime_on_combo` の
+            // VK/modifier 判定（特に `!shift`）であり、削除できない。`keys.ime_on` をカスタマイズした
             // 場合はこの判定も合わせて更新すること。
             let is_default_ime_on_combo = event.vk_code == crate::vk::VK_CONVERT
                 && event.modifier_snapshot.ctrl
@@ -1484,11 +1425,7 @@ impl Runtime {
             // なら実質no-op）。BUG-50 の originally-undetermined だった発生原因は
             // 追補（2026-08-17）で BUG-52 の機構と特定・修正済みであり、この
             // 無条件化はその機構への対症療法ではなく、charset 軸撤去の帰結。
-            if applied
-                && matches!(origin, awase::engine::SetOpenOrigin::ExplicitUserAction)
-                && new_ime_on
-                && is_default_ime_on_combo
-            {
+            if applied && new_ime_on && is_default_ime_on_combo {
                 Self::kp_reset_to_hiragana_romaji_capsoff(
                     self.platform.output.ime_mode_focus_gen.get(),
                 );
