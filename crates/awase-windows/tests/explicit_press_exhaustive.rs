@@ -1,8 +1,8 @@
 #![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 //! ADR-208 L0: 明示キー押下の配送 `explicit_press_delivery_with` の全列挙テストと、現状の反例の golden。
 //!
-//! 状態空間（belief 2 × applied 5 × is_japanese 2 × profile 6 × kind 2 × current_focus 2 × 観測 3 × IntentStore 3 ×
-//! candidate_was_seen 2 × chord 2 × win 2 × was_down 2 = 69,120 状態）× キー 12 種 = 829,440 通りの押下を全列挙し
+//! 状態空間（belief 2 × applied 5 × is_japanese 2 × profile 7 × kind 2 × current_focus 2 × 観測 3 × IntentStore 3 ×
+//! candidate_was_seen 2 × chord 2 × win 2 × was_down 2 = 80,640 状態）× キー 12 種 = 829,440 通りの押下を全列挙し
 //! （実 IME の初期値 R∈{false,true} も掛けると約 166 万通り）、次の性質を検査する。
 //!
 //! - **P1 (INV-L1)**: 対象押下（非リピート・Win 押下中を除く）の `Delivery` が、配送か書き込みの**ちょうど一方**
@@ -38,7 +38,8 @@ use std::time::Instant;
 use awase_windows::state::app_ime_policy::AppImePolicy;
 use awase_windows::state::evidence::AnyObservation;
 use awase_windows::state::explicit_press::{
-    dual_route_writes_with, explicit_press_delivery_with, ime_after_press, state_after_press,
+    dual_route_writes_ledger_only, dual_route_writes_with, explicit_press_delivery_after,
+    explicit_press_delivery_with, ime_after_press, reservation_after_route, state_after_press,
     AppliedKnowledge, Delivery, DeliveryMode, ElisionReason, ExplicitKey, KeyMeaning, Physical,
     PressProfile, PressState, Resolution, Violation, WarrantJudge, WarrantRequest,
 };
@@ -321,6 +322,8 @@ struct Report {
     p4: PropStat,
     p5: PropStat,
     p6: PropStat,
+    /// P5 の防御線: 予約（`PressLedger`）だけの評価。
+    p5_ledger: PropStat,
     /// P5 の参考: 同一押下で向きが逆の衝突で、Engine が shadow を上書きして 2 回書いた（Engine の向きに収束した）件数。
     p5_engine_overrides: u64,
     /// P5 の参考: 向きが逆の衝突だが Engine 自身の書き込みが省略され（授権・Win キー等）、shadow の向きが残った件数
@@ -341,6 +344,7 @@ fn analyze() -> Report {
         p4: PropStat::default(),
         p5: PropStat::default(),
         p6: PropStat::default(),
+        p5_ledger: PropStat::default(),
         p5_engine_overrides: 0,
         p5_engine_write_elided: 0,
         states: 0,
@@ -484,16 +488,30 @@ fn analyze() -> Report {
                     (ExplicitKey::EngineOn, true),
                     (ExplicitKey::EngineOff, false),
                 ] {
+                    // 本番: Engine が同じ打鍵の SetOpen を出すキーは、静的な事前問い合わせで shadow が書かない（M-4）。
                     rep.p5.checked += 1;
-                    let w = dual_route_writes_with(&s, key, engine_key, &judge, PROD);
-                    match w {
-                        [Some(a), Some(b)] if a == b => {
-                            rep.p5.add("bug113_double_send_same_direction", &s, || {
+                    let resolved = dual_route_writes_with(&s, key, engine_key, &judge, PROD);
+                    if let [Some(a), b] = resolved {
+                        rep.p5
+                            .add("shadow_writes_although_engine_owns_the_key", &s, || {
                                 format!(
-                                    "{} + {engine_key:?} -> shadow write={a} / engine write={b}",
+                                    "{} + {engine_key:?} -> shadow write={a} / engine write={b:?}",
                                     fmt_state(&s, key, None)
                                 )
                             });
+                    }
+                    // 防御線: 事前問い合わせが効かなかった場合に、予約だけで同じ向きの二重送信を防げるか。
+                    rep.p5_ledger.checked += 1;
+                    let w = dual_route_writes_ledger_only(&s, key, engine_key, &judge, PROD);
+                    match w {
+                        [Some(a), Some(b)] if a == b => {
+                            rep.p5_ledger
+                                .add("bug113_double_send_same_direction", &s, || {
+                                    format!(
+                                        "{} + {engine_key:?} -> shadow write={a} / engine write={b}",
+                                        fmt_state(&s, key, None)
+                                    )
+                                });
                         }
                         [Some(_), Some(_)] => rep.p5_engine_overrides += 1,
                         [Some(a), None] if a != engine_open => rep.p5_engine_write_elided += 1,
@@ -514,7 +532,7 @@ fn render(rep: &Report) -> String {
          # 生成元: crates/awase-windows/tests/explicit_press_exhaustive.rs\n\
          # このファイルは自動生成される。更新は UPDATE_GOLDEN=1 で再生成すること。\n\
          #\n\
-         # 状態空間(belief 2 × applied 5 × is_japanese 2 × profile 6 × kind 2 × current_focus 2 × 観測 3 ×\n\
+         # 状態空間(belief 2 × applied 5 × is_japanese 2 × profile 7 × kind 2 × current_focus 2 × 観測 3 ×\n\
          # IntentStore 3 × candidate_was_seen 2 × chord 2 × win 2 × was_down 2) × キー 12 種を全列挙した、現状(ADR-208 L1)の本番判断の合成結果。\n\
          # 反例は「分類 × 件数 + 各分類の最小の代表例(基準状態からのずれが最小)」で固定する(S-2 だけで状態空間の約半分が\n\
          # 反例なので行は列挙しない)。分類に当てはまらない反例(unclassified)が出たらテストが失敗する。\n\
@@ -534,7 +552,7 @@ fn render(rep: &Report) -> String {
         rep.plausible_states,
         ExplicitKey::ALL.len()
     );
-    let props: [(&str, &str, &PropStat); 8] = [
+    let props: [(&str, &str, &PropStat); 9] = [
         (
             "P1",
             "INV-L1: 対象押下の Delivery が配送か書き込みのちょうど一方で、配送側なら A1 のキー",
@@ -567,8 +585,13 @@ fn render(rep: &Report) -> String {
         ),
         (
             "P5",
-            "同一押下で shadow 経路と Engine SetOpen が両方来ても、同じ向きの二重送信は無い（押下 ID の予約。逆向きは Engine が上書き）",
+            "同一押下で shadow 経路と Engine SetOpen が重なるキー（keys.ime_* 等）では、Engine への静的な事前問い合わせで shadow は書かない（書き込みは Engine の 1 回）",
             &rep.p5,
+        ),
+        (
+            "P5-Ledger",
+            "(防御線) 事前問い合わせが効かなかったとき、予約だけで同じ向きの二重送信を防げる（逆向きは Engine が上書きして 2 回。同期で何も送らなかったときは予約を解く）",
+            &rep.p5_ledger,
         ),
         (
             "P6",
@@ -578,7 +601,7 @@ fn render(rep: &Report) -> String {
     ];
     for (id, desc, stat) in props {
         let _ = writeln!(out, "## {id}: {desc}");
-        if id == "P5" {
+        if id == "P5-Ledger" {
             let _ = writeln!(
                 out,
                 "info\tengine_overrides\t{}\t(向きが逆で Engine が shadow を上書きして 2 回書き、最終の向きが Engine)",
@@ -815,17 +838,129 @@ fn physical_delivery_matches_the_audit_table() {
     }
 }
 
-/// P5（BUG-113）: 同一押下で shadow 書き込みと Engine SetOpen が両方来ても、同じ向きの二重送信は無い。
-/// ADR-208 L1（押下 ID: `PressId`・`ImeEffect::SetOpen.press`・`ActuationOrder.press`・`PressLedger`）で通る
-/// （L1 前の件数は `dual_route_writes`〈Legacy〉の同じ空間で非ゼロだった）。向きが逆の衝突は Engine が上書きする。
+/// P5（BUG-113）: 同一押下で shadow 経路と Engine SetOpen が重なるキーでは、書き込みは Engine の 1 回だけ（M-4: shadow は
+/// 書く前に静的に抑止される）。防御線（予約）だけでも同じ向きの二重送信は無い。向きが逆の衝突は Engine が上書きする。
 #[test]
 fn p5_same_press_sends_once() {
     let rep = analyze();
     assert_eq!(rep.p5.violations, 0, "{:?}", rep.p5.classes.keys());
-    // 衝突の優先順位が実際に働いている（空振りしていない）。
+    assert_eq!(
+        rep.p5_ledger.violations,
+        0,
+        "{:?}",
+        rep.p5_ledger.classes.keys()
+    );
+    // 防御線の衝突の優先順位が実際に働いている（空振りしていない）。
     assert!(
         rep.p5_engine_overrides > 0,
         "向きが逆の衝突が 1 件も無い=モデルが衝突を作れていない"
+    );
+}
+
+/// M-1: 書かなかった重複（`AlreadyWrittenThisPress`）の完了は applied を動かさない（`AlreadyMatched` だと実 IME に書いていない
+/// 押下が applied=Confirmed になる）。完了は実物の `ImeModel` の遷移（`reduce`）を通して検査する。全状態 × 先行の予約の向きで固定。
+#[test]
+fn duplicate_completion_never_confirms_applied() {
+    let judge = StoreJudge::default();
+    let mut checked = 0u64;
+    for s in PressState::all().filter(|s| !s.was_down && !s.win_held) {
+        for key in [ExplicitKey::EngineOn, ExplicitKey::EngineOff] {
+            for claimed in [false, true] {
+                let d = explicit_press_delivery_after(&s, key, &judge, PROD, Some(claimed));
+                if d.reason == ElisionReason::AlreadyWrittenThisPress {
+                    checked += 1;
+                    assert_eq!(
+                        state_after_press(&s, key, &d).applied,
+                        s.applied,
+                        "書かなかった重複の完了が applied を動かした: {}",
+                        fmt_state(&s, key, None)
+                    );
+                }
+            }
+        }
+    }
+    assert!(checked > 0);
+}
+
+/// M-2: 同期の書き込みが何も送らなかったなら予約を解き、同じ押下の Engine 経路が改めて書く判断に進む（「絶対指定は 1 回」）。
+/// 非同期（ImmCross 先頭）は解けないので Engine 経路は省かれる（次の押下で直る。ADR-208 の例外）。
+#[test]
+fn sync_route_that_sent_nothing_releases_the_reservation_but_async_does_not() {
+    let judge = StoreJudge::default();
+    // 未授権（is_japanese_ime=false の S-2）の shadow 経路: 何も送らない。
+    let base = PressState {
+        belief_open: false,
+        applied: AppliedKnowledge::Unknown,
+        is_japanese_ime: false,
+        profile: PressProfile::ImmUnavailable,
+        ime_kind: ImeKindId::Gji,
+        current_focus_known: false,
+        actuating_obs: None,
+        intent: None,
+        candidate_was_seen: false,
+        ctrl_chord: false,
+        win_held: false,
+        was_down: false,
+    };
+    for (profile, expect_released) in [
+        (PressProfile::ImmUnavailable, true),
+        (PressProfile::ImmUnavailableTsfClass, true),
+        (PressProfile::TsfNative, true),
+        (PressProfile::ImmCross, false),
+    ] {
+        let s = PressState { profile, ..base };
+        let d_shadow = delivery(&judge, &s, ExplicitKey::StaticOn);
+        assert_eq!(d_shadow.reason, ElisionReason::Unwarranted, "{profile:?}");
+        assert_eq!(d_shadow.reserved, Some(true), "{profile:?}: 予約はした");
+        let claimed = reservation_after_route(&s, &d_shadow);
+        assert_eq!(claimed.is_none(), expect_released, "{profile:?}");
+        let d_engine =
+            explicit_press_delivery_after(&s, ExplicitKey::EngineOn, &judge, PROD, claimed);
+        if expect_released {
+            assert_ne!(
+                d_engine.reason,
+                ElisionReason::AlreadyWrittenThisPress,
+                "{profile:?}: 解いたので Engine は改めて書く判断に進む"
+            );
+        } else {
+            assert_eq!(
+                d_engine.reason,
+                ElisionReason::AlreadyWrittenThisPress,
+                "{profile:?}: 非同期は予約を解けない"
+            );
+        }
+    }
+}
+
+/// M-3: Windows Terminal 等（`Imm32Unavailable` に分類されるが実質 TSF）も、TsfNative と同じく L3' まで Engine 経路を
+/// 未知化しない（S-1 が残るのは実質 TSF の窓だけで、他は 0）。
+#[test]
+fn effectively_tsf_native_class_is_staged_like_tsf_native() {
+    let judge = StoreJudge::default();
+    let mut found = 0u64;
+    for s in PressState::all()
+        .filter(|s| s.profile == PressProfile::ImmUnavailableTsfClass && !s.was_down && !s.win_held)
+    {
+        let twin = PressState {
+            profile: PressProfile::TsfNative,
+            ..s
+        };
+        for key in [ExplicitKey::EngineOn, ExplicitKey::EngineOff] {
+            let a = delivery(&judge, &s, key);
+            let b = delivery(&judge, &twin, key);
+            // Engine 経路の未知化は TsfNative と同じ判断（物理・書き込み・理由が一致）。
+            assert_eq!(
+                (a.write, a.reason),
+                (b.write, b.reason),
+                "{}",
+                fmt_state(&s, key, None)
+            );
+            found += u64::from(a.reason == ElisionReason::AlreadyMatched);
+        }
+    }
+    assert!(
+        found > 0,
+        "実質 TSF のクラスで S-1 の段階制御が効いていない"
     );
 }
 
@@ -868,9 +1003,9 @@ fn s1_already_matched_is_resolved_by_l1_except_tsf_native() {
             let d = delivery(&judge, &s, key);
             if p1_class(&s, key, &d) == Some("S1_already_matched") {
                 assert_eq!(
-                    (s.profile, s.ime_kind),
-                    (PressProfile::TsfNative, ImeKindId::Gji),
-                    "TsfNative×GJI 以外に S-1 が残っています: {}",
+                    (s.profile.is_effectively_tsf_native(), s.ime_kind),
+                    (true, ImeKindId::Gji),
+                    "実質 TsfNative×GJI 以外に S-1 が残っています: {}",
                     fmt_state(&s, key, None)
                 );
                 residual_tsf_native += 1;
@@ -938,7 +1073,7 @@ fn l1_changes_only_the_press_engine_already_matched_elision() {
                 // リピートの shadow 経路は `applied` の省略（従来の無条件降格をやめる）ので、書いたかが変わりうる。
             } else if s.was_down
                 || pre.reason != ElisionReason::AlreadyMatched
-                || s.profile == PressProfile::TsfNative
+                || s.profile.is_effectively_tsf_native()
             {
                 assert_eq!(
                     (pre.physical, pre.write, pre.reason, pre.belief_after),
@@ -963,7 +1098,6 @@ fn l1_changes_only_the_press_engine_already_matched_elision() {
 /// （現状の順序ではありえないが、`PressLedger` の優先順位が本番の呼び出し側の前提）。
 #[test]
 fn shadow_never_overrides_an_earlier_engine_reservation() {
-    use awase_windows::state::explicit_press::explicit_press_delivery_after;
     let judge = StoreJudge::default();
     let base = PressState {
         belief_open: false,

@@ -884,6 +884,24 @@ impl Engine {
         )
     }
 
+    /// この打鍵に対して Engine が `SetOpen(ExplicitUserAction)` を出す（`keys.ime_on/off/toggle`・自動検出トグル・
+    /// 非活性時の役割由来の単独押下）なら、その向きを副作用なしで返す（ADR-208 決定2 D1、PR #419 Opus M-4）。
+    ///
+    /// Platform 層が shadow toggle の判断の**前**に呼び、Engine が同じ打鍵の開閉を担うキーでは shadow の書き込みを
+    /// 抑止する（衝突を書く前に静的に解く。同じ打鍵で shadow と Engine の 2 経路が逆向きに書くと、ImmCross が先頭の窓では
+    /// 両方 async で勝ち負けが保証されない）。`ctx` は shadow の判断**前**の値で組む（トグル型は `!ctx.ime_on` が向きに効く）。
+    /// `keys.ime_detect`（`sync_direction`）と重なるキーは `match_special_keys` が元から一致させない（二重処理の防止）。
+    /// エンジン ON/OFF コンボ（`EngineOn`/`EngineOff`）は IME の開閉キーではないので `None`。
+    #[must_use]
+    pub fn matches_ime_set_open(&self, ctx: &InputContext, event: &RawKeyEvent) -> Option<bool> {
+        match self.match_special_keys(ctx, event)? {
+            SpecialKeyMatch::ImeOn => Some(true),
+            SpecialKeyMatch::ImeOff => Some(false),
+            SpecialKeyMatch::ImeToggle => Some(!ctx.ime_on),
+            SpecialKeyMatch::EngineOn | SpecialKeyMatch::EngineOff => None,
+        }
+    }
+
     /// 変換/無変換系の特殊キーのコンボマッチのみを行う純粋判定メソッド（副作用なし）。
     fn match_special_keys(
         &self,

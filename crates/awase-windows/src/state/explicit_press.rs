@@ -62,7 +62,9 @@ use crate::state::ime_event::ImePolicyProfile;
 use crate::state::ime_kind::ImeKindId;
 use crate::state::ime_model::{apply_result_effective_open, AppliedImeState, ImeModel};
 use crate::state::physical_disposition::PhysicalKeyDisposition;
-use crate::state::press_ledger::{PressLedger, PressSource};
+use crate::state::press_ledger::{
+    outcome_sent_nothing, PressLedger, PressSource, DUPLICATE_OUTCOME,
+};
 use crate::state::ApplyGeneration;
 use awase::platform::ImeOpenOutcome;
 use awase::types::PressId;
@@ -167,17 +169,21 @@ pub enum PressProfile {
     Plain,
     Unknown,
     ImmUnavailable,
+    /// `Imm32Unavailable` に分類されるが実質 TSF ネイティブのクラス（Windows Terminal の
+    /// `CASCADIA_HOSTING_WINDOW_CLASS` 等、`AppImeProfile::is_effectively_tsf_native`）。
+    ImmUnavailableTsfClass,
     TsfNative,
     InputRelay,
 }
 
 impl PressProfile {
-    /// 全 6 値。
-    pub const ALL: [Self; 6] = [
+    /// 全 7 値。
+    pub const ALL: [Self; 7] = [
         Self::ImmCross,
         Self::Plain,
         Self::Unknown,
         Self::ImmUnavailable,
+        Self::ImmUnavailableTsfClass,
         Self::TsfNative,
         Self::InputRelay,
     ];
@@ -187,7 +193,7 @@ impl PressProfile {
     pub const fn app_profile(self) -> AppImeProfile {
         match self {
             Self::ImmCross | Self::Plain | Self::Unknown => AppImeProfile::Standard,
-            Self::ImmUnavailable => AppImeProfile::Imm32Unavailable,
+            Self::ImmUnavailable | Self::ImmUnavailableTsfClass => AppImeProfile::Imm32Unavailable,
             Self::TsfNative => AppImeProfile::TsfNative,
             Self::InputRelay => AppImeProfile::InputRelay,
         }
@@ -206,7 +212,16 @@ impl PressProfile {
     /// 実 IME の open 状態を直接読めない（`FeedbackPolicy::Blind`）プロファイルか。
     #[must_use]
     pub const fn is_blind(self) -> bool {
-        matches!(self, Self::ImmUnavailable | Self::TsfNative)
+        matches!(
+            self,
+            Self::ImmUnavailable | Self::ImmUnavailableTsfClass | Self::TsfNative
+        )
+    }
+
+    /// `AppImeProfile::is_effectively_tsf_native(class_name)` に相当（Engine 経路の段階制御の入力）。
+    #[must_use]
+    pub const fn is_effectively_tsf_native(self) -> bool {
+        matches!(self, Self::ImmUnavailableTsfClass | Self::TsfNative)
     }
 }
 
@@ -424,7 +439,7 @@ impl PressState {
     pub fn all() -> impl Iterator<Item = Self> {
         const B: [bool; 2] = [false, true];
         const OBS: [Option<bool>; 3] = [None, Some(false), Some(true)];
-        let mut v = Vec::with_capacity(2 * 5 * 2 * 6 * 2 * 2 * 3 * 3 * 2 * 2 * 2 * 2);
+        let mut v = Vec::with_capacity(2 * 5 * 2 * 7 * 2 * 2 * 3 * 3 * 2 * 2 * 2 * 2);
         for belief_open in B {
             for applied in AppliedKnowledge::ALL {
                 for is_japanese_ime in B {
@@ -478,6 +493,19 @@ impl PressState {
             candidate_was_seen: false,
         };
         decide_chain(inputs)[0] == WriteMechanism::GjiDirect
+    }
+
+    /// 先頭の書き込み機構が ImmCross か（ImmCross は非同期で完了が後から届くので、予約を解けない）。
+    #[must_use]
+    pub fn chain_head_is_imm_cross(&self) -> bool {
+        let inputs = DecisionInputs {
+            profile: self.profile.app_profile(),
+            kind: self.ime_kind,
+            shadow_on: None,
+            belief_input_mode: InputModeState::Unknown,
+            candidate_was_seen: false,
+        };
+        decide_chain(inputs)[0] == WriteMechanism::ImmCross
     }
 
     /// 実機で起こりうる組み合わせか。Blind プロファイル（Chrome/Edge/WT 等）は実 IME の open を直接読めないので、
@@ -587,9 +615,9 @@ impl Delivery {
     pub const fn outcome(&self) -> Option<ImeOpenOutcome> {
         match self.reason {
             ElisionReason::Written => Some(ImeOpenOutcome::Applied),
-            ElisionReason::AlreadyMatched | ElisionReason::AlreadyWrittenThisPress => {
-                Some(ImeOpenOutcome::AlreadyMatched)
-            }
+            ElisionReason::AlreadyMatched => Some(ImeOpenOutcome::AlreadyMatched),
+            // 書かなかった重複は「送っていない」outcome（本番の executor と同じ定数。`AlreadyMatched` だと applied が嘘の Confirmed になる）。
+            ElisionReason::AlreadyWrittenThisPress => Some(DUPLICATE_OUTCOME),
             ElisionReason::Unwarranted => Some(ImeOpenOutcome::Unwarranted),
             ElisionReason::InputRelayNotOwned => Some(ImeOpenOutcome::NotOwned),
             ElisionReason::WinHeld => Some(ImeOpenOutcome::UnsafeToToggle),
@@ -759,12 +787,13 @@ pub fn explicit_press_delivery_after(
             };
             // executor は `applied_snapshot` を渡す。L1（押下 ID あり）は `applied` が向きと一致していても未知にして
             // already-matched 省略を外す（D1。`explicit_press_applied_pair` と同じ `explicit_press_shadow_on`）。
-            let shadow_on =
-                if has_press && engine_press_unknowns_applied(state.profile.app_profile()) {
-                    explicit_press_shadow_on(state.applied.open(), target)
-                } else {
-                    state.applied.open()
-                };
+            let shadow_on = if has_press
+                && engine_press_unknowns_applied(state.profile.is_effectively_tsf_native())
+            {
+                explicit_press_shadow_on(state.applied.open(), target)
+            } else {
+                state.applied.open()
+            };
             let (write, reason) = attempt_write(
                 state,
                 target,
@@ -907,15 +936,17 @@ pub fn dual_route_writes(
     engine_key: ExplicitKey,
     judge: &impl WarrantJudge,
 ) -> [Option<bool>; 2] {
-    dual_route_writes_with(state, shadow_key, engine_key, judge, DeliveryMode::Legacy)
+    dual_route_writes_ledger_only(state, shadow_key, engine_key, judge, DeliveryMode::Legacy)
 }
 
-/// [`dual_route_writes`] の `mode` 指定版。
+/// [`dual_route_writes`] の `mode` 指定版で、**予約（`PressLedger`）だけ**で二重送信を防ぐ防御線の評価
+/// （Engine への静的な事前問い合わせ〈`dual_route_writes_with`〉が効かなかったときに残る分岐）。
 ///
-/// L1（`mode.has_press_id()`）では、shadow 経路が order を発行した時点で予約した向きを Engine 経路に渡す（`Delivery::reserved` → `explicit_press_delivery_after` の `claimed`）。評価順は本番と同じ
-/// （hook の shadow → Engine の `SetOpen`）。
+/// L1 では、shadow 経路が order を発行した時点で予約した向きを Engine 経路に渡す（`Delivery::reserved` →
+/// `explicit_press_delivery_after` の `claimed`）。**同期**の書き込み（先頭機構が ImmCross でない）が何も送らなかった
+/// （`outcome_sent_nothing`）ときは予約を解く（本番の `release_press_write`。PR #419 Opus M-2）。非同期（ImmCross 先頭）は解けない。
 #[must_use]
-pub fn dual_route_writes_with(
+pub fn dual_route_writes_ledger_only(
     state: &PressState,
     shadow_key: ExplicitKey,
     engine_key: ExplicitKey,
@@ -928,9 +959,42 @@ pub fn dual_route_writes_with(
         applied: state.applied,
         ..after
     };
-    let d_engine =
-        explicit_press_delivery_after(&engine_state, engine_key, judge, mode, d_shadow.reserved);
+    let claimed = reservation_after_route(state, &d_shadow);
+    let d_engine = explicit_press_delivery_after(&engine_state, engine_key, judge, mode, claimed);
     [d_shadow.write, d_engine.write]
+}
+
+/// ある経路の決定 `d` の後に、同じ押下の次の経路へ残る予約の向き。同期の書き込み（先頭機構が ImmCross でない）が何も
+/// 送らなかった（`outcome_sent_nothing`）なら予約を解いて `None`（本番の `release_press_write`）、それ以外は `d.reserved`。
+#[must_use]
+pub fn reservation_after_route(state: &PressState, d: &Delivery) -> Option<bool> {
+    let released =
+        !state.chain_head_is_imm_cross() && d.outcome().is_some_and(outcome_sent_nothing);
+    if released {
+        None
+    } else {
+        d.reserved
+    }
+}
+
+/// [`dual_route_writes_ledger_only`] に Engine への静的な事前問い合わせを加えた本番の評価。
+///
+/// 事前問い合わせは `Engine::matches_ime_set_open`（PR #419 Opus M-4）。Engine が同じ打鍵の `SetOpen` を出すキーでは shadow は昇格も書き込みもせず、Engine だけが書く
+/// （`[None, Engine の write]`）。リピート（押下 ID なし）の従来の挙動は L0 のまま。
+#[must_use]
+pub fn dual_route_writes_with(
+    state: &PressState,
+    shadow_key: ExplicitKey,
+    engine_key: ExplicitKey,
+    judge: &impl WarrantJudge,
+    mode: DeliveryMode,
+) -> [Option<bool>; 2] {
+    if !mode.has_press_id() {
+        return dual_route_writes_ledger_only(state, shadow_key, engine_key, judge, mode);
+    }
+    let _ = shadow_key; // shadow は Engine が担うキーでは何もしない（belief も触らない）。
+    let d_engine = explicit_press_delivery_after(state, engine_key, judge, mode, None);
+    [None, d_engine.write]
 }
 
 // ── 状態遷移モデル ────────────────────────────────────────────────────────────
@@ -1052,11 +1116,11 @@ mod tests {
 
     #[test]
     fn state_space_size_is_pinned() {
-        // belief 2 × applied 5 × japanese 2 × profile 6 × kind 2 × focus 2 × obs 3 × intent 3 ×
+        // belief 2 × applied 5 × japanese 2 × profile 7 × kind 2 × focus 2 × obs 3 × intent 3 ×
         // candidate 2 × chord 2 × win 2 × was_down 2
         assert_eq!(
             PressState::all().count(),
-            2 * 5 * 2 * 6 * 2 * 2 * 3 * 3 * 2 * 2 * 2 * 2
+            2 * 5 * 2 * 7 * 2 * 2 * 3 * 3 * 2 * 2 * 2 * 2
         );
         assert_eq!(ExplicitKey::ALL.len(), 12);
     }
@@ -1399,7 +1463,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(checked, 69_120 * 12 * 3);
+        assert_eq!(checked, 80_640 * 12 * 3);
     }
 
     /// 固定点（D4）: Legacy との差は「昇格した no-op で plan(false) が Suppress の押下が書く」ことだけ。
@@ -1806,6 +1870,6 @@ mod tests {
                 );
             }
         }
-        assert_eq!(plan_cases, 69_120 * 10 * 2 * 2);
+        assert_eq!(plan_cases, 80_640 * 10 * 2 * 2);
     }
 }

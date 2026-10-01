@@ -233,6 +233,24 @@ impl ImeStateHub {
         claim
     }
 
+    /// 同期の書き込みが何も送らなかったとき（`press_ledger::outcome_sent_nothing`）、同一押下の予約を解く
+    /// （次の経路〈同じ押下の Engine 等〉が改めて書ける。ADR-208 L1 / PR #419 Opus M-2）。async は完了が後から届くので解かない。
+    pub(crate) fn release_press_write(&mut self, press: Option<awase::types::PressId>, open: bool) {
+        if self.press_ledger.release(press, open) {
+            if let Some(press) = press {
+                tracing::debug!(
+                    "[press-ledger] press={press} open={open} の書き込みは何も送らなかった → 予約を解く"
+                );
+                self.journal.record(JournalEntry::PressWriteClaim {
+                    press: press.get(),
+                    open,
+                    source: "release",
+                    verdict: "released",
+                });
+            }
+        }
+    }
+
     /// shadow_model から派生した最新の explicit intent。
     ///
     /// (Step 2B 以降の SSOT。Priority 4-5 observer による上書きを block する根拠。)

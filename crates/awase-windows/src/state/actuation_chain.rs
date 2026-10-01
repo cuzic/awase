@@ -320,9 +320,10 @@ pub struct ActuationOrder {
     /// どの入口が起案したか（ADR-082 `EventOrigin` と journal を揃える）。
     origin: EventOrigin,
     /// この order を起こしたユーザー打鍵（非リピート KeyDown）の押下 ID（ADR-208 決定2 D1）。
-    /// `Some` の order は明示キー押下の書き込みで、(1) view の `shadow_on` を未知にして `applied` の already-matched
-    /// 省略を外し、(2) ImmCross の書き込みタイムアウトを「未確定」として追い送りしない。`None` はリピート・
-    /// drift correction 等（従来どおり）。
+    /// `Some` の order は明示キー押下の書き込みで、view の `shadow_on` を未知にして `applied` の already-matched
+    /// 省略を外す（Engine 経路の TsfNative は L3' まで除く）。ImmCross の書き込みの時間切れは診断ログ（`timed_out=`）に
+    /// 出すだけで、**追い送り（後続機構へのフォールスルー）は止めない**（INV-L1 の二重は向きが同じで冪等。止めると
+    /// 応答しない窓の収束経路を失う）。`None` はリピート・drift correction 等（従来どおり）。
     press: Option<awase::types::PressId>,
 }
 

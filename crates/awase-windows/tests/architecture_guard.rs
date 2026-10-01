@@ -4902,7 +4902,7 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
     );
     // `settle_fkey_role_latch` は `kp_stage_shadow_ime_toggle` の結果（`shadow_toggled`）を受けるので直後、`plan()` より前。
     let toggle_at = kp
-        .find("self.kp_stage_shadow_ime_toggle(&event)")
+        .find("self.kp_stage_shadow_ime_toggle(&event, engine_owns_open_key)")
         .expect("kp_stage_shadow_ime_toggle の呼び出し");
     let settle_at = kp
         .find("self.settle_fkey_role_latch(&event, shadow_toggled)")
@@ -4919,7 +4919,7 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
         .find("self.enrich_key_role(&mut event)")
         .expect("enrich_key_role の呼び出し");
     for later in [
-        "self.kp_stage_shadow_ime_toggle(&event)",
+        "self.kp_stage_shadow_ime_toggle(&event, engine_owns_open_key)",
         "PhysicalKeyDisposition::plan(",
     ] {
         let at = kp
@@ -5898,6 +5898,20 @@ fn press_id_is_claimed_and_carried_at_every_order_issuing_entry() {
     assert!(
         code.contains("explicit_press_applied_pair("),
         "kp_shadow_actuate は view の shadow_on を `explicit_press_applied_pair` で未知にすること（ADR-208 D1）"
+    );
+    // M-4: Engine が同じ打鍵で SetOpen を出すキーでは、shadow の判断の前に Engine へ純粋な問い合わせをして shadow を抑止する。
+    let run = non_comment_lines(production_code_only(&kp));
+    assert!(
+        run.contains("matches_ime_set_open(") && run.contains("kp_stage_shadow_ime_toggle(&event, engine_owns_open_key)"),
+        "kp_run_inner は shadow の判断の前に `engine.matches_ime_set_open` を問い合わせ、`engine_owns_open_key` を渡すこと（ADR-208 D1）"
+    );
+    let shadow_body = non_comment_lines(extract_fn_body(
+        production_code_only(&kp),
+        "fn kp_stage_shadow_ime_toggle(",
+    ));
+    assert!(
+        shadow_body.contains("if engine_owns_open_key {"),
+        "kp_stage_shadow_ime_toggle は `engine_owns_open_key` で昇格・書き込みを抑止すること（ADR-208 D1）"
     );
     // 押下の書き込みの直後に予約済みの refresh → drift correction が同じ向きを重ねない（BUG-113 型）。
     assert!(

@@ -175,9 +175,13 @@ pub(crate) const fn explicit_press_demotes_applied(applied_open: Option<bool>, o
 pub(crate) const ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE: bool = false;
 
 /// Engine 経路の押下の書き込みで、`applied` の未知化（D1）を適用する窓か（[`ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE`]）。
+///
+/// `effectively_tsf_native` は `AppImeProfile::is_effectively_tsf_native(class_name)` の値。`profile == TsfNative` だけを
+/// 見てはならない: Windows Terminal の `CASCADIA_HOSTING_WINDOW_CLASS` 等は `Imm32Unavailable` に分類されるが実質 TSF
+/// ネイティブで、見落とすと実機 A/B（L3'）の前に単発 `VK_IME_OFF` が出る（PR #419 Opus M-3、`focus/class_names.rs`）。
 #[must_use]
-pub(crate) const fn engine_press_unknowns_applied(profile: AppImeProfile) -> bool {
-    !matches!(profile, AppImeProfile::TsfNative) || ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE
+pub(crate) const fn engine_press_unknowns_applied(effectively_tsf_native: bool) -> bool {
+    !effectively_tsf_native || ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE
 }
 
 /// [`explicit_press_demotes_applied`] を view の `shadow_on` に適用する（`None` = 未知）。`applied` 自体は書き換えない
@@ -867,11 +871,24 @@ mod explicit_press_demote_tests {
     #[test]
     fn engine_press_unknowns_applied_except_tsf_native_until_l3_prime() {
         use crate::focus::class_names::AppImeProfile as P;
-        assert!(engine_press_unknowns_applied(P::Standard));
-        assert!(engine_press_unknowns_applied(P::Imm32Unavailable));
-        assert!(engine_press_unknowns_applied(P::InputRelay));
+        let eff =
+            |p: P, class: &str| engine_press_unknowns_applied(p.is_effectively_tsf_native(class));
+        assert!(eff(P::Standard, "Notepad"));
+        assert!(eff(P::Imm32Unavailable, "Chrome_WidgetWin_1"));
+        assert!(eff(P::InputRelay, "Notepad"));
         assert_eq!(
-            engine_press_unknowns_applied(P::TsfNative),
+            eff(P::TsfNative, "org.wezfurlong.wezterm"),
+            ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE
+        );
+        // Windows Terminal: プロファイルは Imm32Unavailable だが実質 TSF（M-3）。
+        let cascadia = "CASCADIA_HOSTING_WINDOW_CLASS";
+        assert_eq!(
+            P::from_class_name(cascadia),
+            P::Imm32Unavailable,
+            "前提: プロファイル値だけでは TsfNative に見えない"
+        );
+        assert_eq!(
+            eff(P::Imm32Unavailable, cascadia),
             ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE
         );
         assert!(

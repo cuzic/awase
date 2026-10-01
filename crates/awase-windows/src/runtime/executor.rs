@@ -712,7 +712,9 @@ impl DecisionExecutor {
         // BUG-124 型の「@」の実機 A/B（ADR-208 L3'）が済むまで従来のまま（`engine_press_unknowns_applied`）。
         let unknowns_applied = press.is_some()
             && crate::state::ime_actuation_decision::engine_press_unknowns_applied(
-                platform.current_app_profile(),
+                platform
+                    .current_app_profile()
+                    .is_effectively_tsf_native(platform.focus.class_name()),
             );
         let mut view = platform.build_ime_control_view(
             crate::state::ime_actuation_decision::explicit_press_applied_pair(
@@ -759,8 +761,9 @@ impl DecisionExecutor {
         }
         // ADR-208 D1: この押下で既に書いた（同じ向き）なら書かない。order の発行直前に予約する
         // （ImmCross の async は完了が WM 経由で後から届くため、完了時の記録では同じ打鍵の二重送信を防げない）。
-        // 予約は書けなかった（UnsafeToToggle/Failed）ときも解かない。上の gate（NotOwned）で返済み
-        // なので、書かない窓では予約しない。
+        // 非同期（ImmCross 先頭の窓）は完了が後から届くので、書けなくても予約は解かない（次の押下で直る）。
+        // 同期は何も送らなかったときだけ下で解く（`release_press_write`）。上の gate（NotOwned）で返済みなので、
+        // 書かない窓では予約しない。
         let claim =
             ime.claim_press_write(press, open, crate::state::press_ledger::PressSource::Engine);
         if !claim.writes() {
@@ -768,7 +771,8 @@ impl DecisionExecutor {
                 "[dispatch-ime] 同じ押下で既に書いた（{}）→ 書かない press={press:?} open={open}",
                 claim.label()
             );
-            return Some((open, awase::platform::ImeOpenOutcome::AlreadyMatched));
+            // 完了へ流す outcome は「送っていない」もの（`AlreadyMatched` だと書いていない押下が applied=Confirmed になる）。
+            return Some((open, crate::state::press_ledger::DUPLICATE_OUTCOME));
         }
         let imm_first = crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
         if imm_first {
@@ -930,6 +934,10 @@ impl DecisionExecutor {
                 .issue_self_actuation_order(open, "engine_decision_sync")
                 .with_press(press);
             let (outcome, mut record) = platform.apply_ime_open_with_view(order, &view, belief);
+            // 同期の書き込みが何も送らなかったなら予約を解く（同じ押下の次の経路が書ける。async は解けない）。
+            if crate::state::press_ledger::outcome_sent_nothing(outcome) {
+                ime.release_press_write(press, open);
+            }
             // /code-review指摘（B-2、PR #201）: `site`は上書きしない——
             // `decide_attempt`は常に`Sync`で呼ばれておりrecord.siteもSyncの
             // ままなので、`replay_record`のchain再導出/ImmCross command

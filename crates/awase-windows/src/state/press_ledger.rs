@@ -12,7 +12,9 @@
 //!
 //! ImmCross の書き込みは async で、完了は WM 経由で後から届く。完了時に記録すると、同じ打鍵の Engine の `SetOpen`
 //! （同期に評価される）が先に来て二重に送る。そのため [`PressLedger::claim`] は **order を発行する直前**に呼ぶ。
-//! `UnsafeToToggle`/`Failed` で書けなかった場合も予約は解かない（同一押下内の再試行はしない。次の押下で直る = INV-L2）。
+//! **非同期**の書き込みが書けなかった場合（UnsafeToToggle/Failed）は予約を解かない（完了が後から届き、同一押下内の再試行は
+//! しない。次の押下で直る = INV-L2。ADR-208 の例外）。**同期**の書き込みは書けたかを同じ呼び出しで知っているので、
+//! 何も送らなかったとき（`outcome_sent_nothing`）だけ [`PressLedger::release`] で解く（同じ押下の次の経路が書ける）。
 //!
 //! # 衝突（同じ押下で向きが違う 2 経路）の優先順位
 //!
@@ -25,7 +27,27 @@
 //! 純粋（Win32・`ImeStateHub` に依存しない）で、本番（`ImeStateHub::claim_press_write`）と全列挙テスト
 //! （`explicit_press` のモデル）が同じ [`PressLedger`] を呼ぶ。
 
+use awase::platform::ImeOpenOutcome;
 use awase::types::PressId;
+
+/// 同じ押下で既に書いた（`Duplicate`/`ConflictKept`）ため**書かなかった** Engine の `SetOpen` が完了へ流す outcome。
+///
+/// `AlreadyMatched` を返してはならない: `ImeEvent::from_apply_outcome` が `ImeApplySucceeded` にし、`handle_engine_set_open`
+/// の pending 世代と一致して受理され、**書いていない押下が `applied=Confirmed(open)` になる**（先行の書き込みが
+/// UnsafeToToggle・async の Failed だったとき嘘の確認になり、TsfNative では S-1 を L1 自身が作る。PR #419 Opus M-1）。
+/// 「送っていない」outcome（`UnsafeToToggle`。`record_ime_apply_result` が pending だけ解放し `applied` を動かさない）を返す。
+pub const DUPLICATE_OUTCOME: ImeOpenOutcome = ImeOpenOutcome::UnsafeToToggle;
+
+/// この outcome は何も送っていない（VK も IMM もメッセージも出していない）か。同期の書き込みでこれなら、同一押下の
+/// 予約を解いてよい（次の経路〈同じ押下の Engine 等〉が改めて書ける。PR #419 Opus M-2）。`Failed`（一部送った可能性）・
+/// `AlreadyMatched`（実 IME が既に向き）は解かない。
+#[must_use]
+pub const fn outcome_sent_nothing(outcome: ImeOpenOutcome) -> bool {
+    matches!(
+        outcome,
+        ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned | ImeOpenOutcome::Unwarranted
+    )
+}
 
 /// 書き込みを起案する経路（衝突の優先順位に使う）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,6 +135,19 @@ impl PressLedger {
         self.last
     }
 
+    /// 押下 `press` の向き `open` の予約を解く（同期の書き込みが何も送らなかったとき。`outcome_sent_nothing`）。
+    /// 現在の予約が `(press, open)` と一致するときだけ解く（衝突で上書きされた別向きの予約や別の押下には触れない）。
+    /// 戻り値: 解いたか。
+    pub fn release(&mut self, press: Option<PressId>, open: bool) -> bool {
+        match (press, self.last) {
+            (Some(p), Some((lp, lo))) if p == lp && lo == open => {
+                self.last = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// 押下 `press` の向き `open` の書き込みを予約する（order の発行直前に呼ぶ）。
     ///
     /// 押下 ID が無い（`None`）ときは何も記録しない。違う押下の予約は上書きする（押下 ID は単調増加で、
@@ -143,6 +178,39 @@ impl PressLedger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_only_drops_the_exact_reservation_so_the_next_route_can_write() {
+        let mut l = PressLedger::default();
+        l.claim(p(1), true, PressSource::Shadow);
+        assert!(!l.release(p(1), false), "向きが違う予約は解かない");
+        assert!(!l.release(p(2), true), "別の押下の予約は解かない");
+        assert!(!l.release(None, true));
+        assert!(l.release(p(1), true));
+        assert_eq!(l.last_written(), None);
+        // 解いた後は、同じ押下の次の経路が Fresh として書ける（「絶対指定は 1 回」）。
+        assert_eq!(l.claim(p(1), true, PressSource::Engine), PressClaim::Fresh);
+    }
+
+    #[test]
+    fn only_outcomes_that_sent_nothing_release_the_reservation() {
+        use ImeOpenOutcome::*;
+        for o in [UnsafeToToggle, NotOwned, Unwarranted] {
+            assert!(outcome_sent_nothing(o), "{o:?}");
+        }
+        // 一部送った可能性（Failed）・実 IME が既に向き（AlreadyMatched）・書いた（Applied*）は解かない。
+        for o in [Applied, AppliedWithoutSendInput, AlreadyMatched, Failed] {
+            assert!(!outcome_sent_nothing(o), "{o:?}");
+        }
+    }
+
+    /// M-1: 書かなかった重複の完了は「送っていない」outcome。`wrote_open_state` でも `AlreadyMatched` でもない。
+    #[test]
+    fn duplicate_completion_is_a_not_sent_outcome() {
+        assert!(outcome_sent_nothing(DUPLICATE_OUTCOME));
+        assert!(!DUPLICATE_OUTCOME.wrote_open_state());
+        assert_ne!(DUPLICATE_OUTCOME, ImeOpenOutcome::AlreadyMatched);
+    }
 
     fn p(n: u64) -> Option<PressId> {
         Some(PressId::new(n))

@@ -8956,6 +8956,53 @@ mod engine_integration_tests {
         assert_eq!(set_open_press(&up), Some(None), "got {:?}", effects_of(&up));
     }
 
+    /// M-4: Engine が同じ打鍵で `SetOpen` を出すキーを、副作用なしに向きつきで答える（shadow の抑止に使う）。
+    #[test]
+    fn matches_ime_set_open_reports_the_direction_without_side_effects() {
+        let engine = make_engine_with_bare_ime_on_combo();
+        let on = Ev::down(VK_CONVERT).at(100).press(1).build();
+        assert_eq!(engine.matches_ime_set_open(&ime_off_ctx(), &on), Some(true));
+        // 副作用なし（&self）: 同じ問い合わせを繰り返しても同じ答え。
+        assert_eq!(engine.matches_ime_set_open(&ime_off_ctx(), &on), Some(true));
+        // 無関係なキーは None。
+        let other = Ev::down(VK_A).at(100).press(2).build();
+        assert_eq!(engine.matches_ime_set_open(&ime_off_ctx(), &other), None);
+    }
+
+    /// M-4: `keys.ime_detect`（`sync_direction`）と重なるキーは Engine が元から一致させない（二重処理の防止）ので、
+    /// shadow が担う（Engine は問い合わせに `None`）。
+    #[test]
+    fn matches_ime_set_open_ignores_keys_that_are_also_sync_keys() {
+        let engine = make_engine_with_bare_ime_on_combo();
+        let ev = Ev::down(VK_CONVERT)
+            .at(100)
+            .press(3)
+            .sync_direction(ShadowImeAction::TurnOn)
+            .build();
+        assert_eq!(engine.matches_ime_set_open(&ime_off_ctx(), &ev), None);
+    }
+
+    /// M-4: トグル型（`keys.ime_toggle`）の向きは shadow の判断前の belief（`ctx.ime_on`）から決まる。
+    #[test]
+    fn matches_ime_set_open_toggle_direction_follows_ctx() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VkCode(0x7C),
+        };
+        let engine = make_engine_with_special(SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![],
+            ime_toggle: vec![combo],
+        });
+        let ev = Ev::down(VkCode(0x7C)).at(100).press(4).build();
+        assert_eq!(engine.matches_ime_set_open(&ime_off_ctx(), &ev), Some(true));
+        assert_eq!(engine.matches_ime_set_open(&ime_on_ctx(), &ev), Some(false));
+    }
+
     /// `stamp_set_open_press` は ID を持たない `SetOpen` にだけ載せ、既に持つものは書き換えない。
     #[test]
     fn stamp_set_open_press_does_not_overwrite_an_existing_press() {
