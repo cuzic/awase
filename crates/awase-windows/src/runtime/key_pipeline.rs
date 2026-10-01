@@ -230,6 +230,10 @@ impl Runtime {
                 decision.find_ime_set_open_with_origin()
             {
                 if target == self.platform_state.ime.effective_open() {
+                    // ActivationSync 経路は SetOpen と一緒に打鍵前の refresh 予約を kill していた
+                    // (`kp_stage_post_decision`)。strip 後も kill しないと、書き込みの await 中に
+                    // refresh → drift correction が同じ書き込みを重ねる(PR #408 Opus M-1)。
+                    self.platform.timer.kill(TIMER_IME_REFRESH);
                     decision.effects_mut().retain(|e| {
                         !matches!(
                             e,
@@ -1226,7 +1230,8 @@ impl Runtime {
     /// 開閉しない。`Decision` の effect を経由しないので C3（`strip_ime_set_open_if_settling`）
     /// には落とされない（settle 中でもユーザーのキーへの応答として書く）。
     ///
-    /// - `applied` が直前の belief と食い違う（`Some(!open)`）なら `Unknown` に降格してから書く
+    /// - `applied` が直前の belief と食い違う（`Some(open)`。この関数は belief が `!open` から
+    ///   `open` に倒れたときだけ呼ばれる）なら、view の `shadow_on` を未知（`None`）として渡す
     ///   （GjiDirect の already-matched 省略で、Suppress された物理キーの応答が消えるのを防ぐ。M1）。
     /// - 書き込みで `note_explicit_ime_action` を呼ぶ（idle-conv-check の抑制窓。M4）。
     /// - ImmCross が先頭の窓は async（`with_app` 再入回避）。ON は executor の ActivationSync と同じ
@@ -1244,10 +1249,12 @@ impl Runtime {
         } else {
             DecisionSite::ShadowToggleOff
         };
-        let applied_pair = if self.platform_state.ime.applied_state().applied_open() == Some(!open)
-        {
+        let applied_pair = if crate::state::ime_actuation_decision::shadow_toggle_demotes_applied(
+            self.platform_state.ime.applied_state().applied_open(),
+            open,
+        ) {
             tracing::debug!(
-                "[shadow-toggle] applied={:?} は belief と食い違う → Unknown に降格して書く",
+                "[shadow-toggle] applied={open:?} は belief(直前 {:?})と食い違う → shadow_on を未知として書く",
                 !open
             );
             None
@@ -1321,6 +1328,16 @@ impl Runtime {
                 let outcome =
                     crate::runtime::open_chain::run_open_chain_async(order, op, site, Some(caller))
                         .await;
+                // 書き込み後に await 中にフォーカスが変わっていたら、完了を `UnsafeToToggle`
+                // （記録を動かさない）に落とす。generation の無い完了が新しい窓の applied を
+                // `Confirmed` にしてしまうのを防ぐ（PR #408 Opus M-3）。取得できない（再入）ときは一致扱い。
+                let outcome = if crate::with_app(|app| app.platform.output.ime_mode_focus_gen.get())
+                    .is_some_and(|g| g != focus_gen)
+                {
+                    awase::platform::ImeOpenOutcome::UnsafeToToggle
+                } else {
+                    outcome
+                };
                 // `with_app` を握らず WM 経由で `on_ime_apply_complete` へ（再入で黙って消えない）。
                 crate::runtime::message_handlers::post_async_ime_apply_complete(
                     open, outcome, None, reason,

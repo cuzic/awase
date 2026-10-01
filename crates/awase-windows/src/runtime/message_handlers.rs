@@ -875,7 +875,15 @@ fn encode_apply_wparam(
         crate::state::ime_event::OpenApplyReason::Bootstrap => 1usize,
         // ADR-213: shadow toggle の ImmCross async 完了も運ぶ。
         crate::state::ime_event::OpenApplyReason::ShadowToggle => 2,
-        _ => 0,
+        crate::state::ime_event::OpenApplyReason::EngineDecision => 0,
+        // この async 経路に渡す呼び出し元が無い reason。渡すなら上のビット幅を拡張すること。
+        other => {
+            debug_assert!(
+                false,
+                "未対応の OpenApplyReason を async 完了に渡した: {other:?}"
+            );
+            0
+        }
     };
     ((generation as usize) << 3) | (reason_code << 1) | usize::from(open)
 }
