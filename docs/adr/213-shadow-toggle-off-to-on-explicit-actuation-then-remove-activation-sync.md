@@ -10,7 +10,7 @@ summary: |-
   (2) 同じ打鍵の二重書き込みを strip で防ぐ(`apply` の already-matched 省略は GjiDirect のみ)、(3) `check_active_transition` 由来の ActivationSync だけを止め明示操作の SetOpen は残す、(4) ActivationSync が `on_ime_applied` で担っていた副作用の棚卸し、
   (5) 起動前から存在する窓で `ka` がリテラルになる挙動を P2b の revert 条件にする、(6) P2a/P2b/P2b'/P2c の段階を決める。Opus round1(2026-10-01)の指摘を反映。ADR-212 決定5 を更新し、ADR-191 の「EngineDecision」節は P2c で改訂する。
 status: |-
-  採用(2026-10-01、Opus round1 の指摘を反映済み。未実装)。実装は P2a から1PRずつ。
+  採用(2026-10-01、Opus round1 反映済み)。実装状況: P2a は PR #408(スパイク `spike/adr213-p2ab` の CI で退行なし・I2 Unwarranted が 0 件に、`docs/experiments.md` エントリ 30 参照)。P2b/P2b'/P2c は未実装。実機・起動前の窓の `ka`・StaleConfirm 件数は未検証。
 related_adr:
   - "ADR-212"
   - "ADR-191"

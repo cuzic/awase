@@ -11,7 +11,7 @@ summary: |-
   ADR-191 の「warmup は既存の例外として残す」「EngineDecision」は、本 ADR で縮小・改訂する(所有者方針が ADR-191 より新しい)。各段は1PR・revert しやすい単位・実機A/B と CI で退行を確認し、`docs/experiments.md` に判定を残す。
   所有者決定: 左 Shift 単独タップの半角英数トグルは残す(対象外)、ActivationSync は実機で実送信の件数を測ってから止める。CI結果を受けた判断(2026-10-01): 全面停止は却下し、`handle_engine_activation_sync` の gate による縮小は実書き込みを止めないため取り下げた。P2 は方針見直しとして保留する。
 status: |-
-  採用(2026-09-30)。実装状況(2026-10-01): P0(#398)・P1(#399)・P3+P5 の reinit 分(#402)・P4(#401)・P5 の Unicode long-cold warmup(#403)・P6 の (b)(c)(#404)は develop に実装済み。P2(ActivationSync)は保留(方針見直し)。全面停止は CI で却下、gate による縮小は無効のため取り下げ。新スレッド=閉は ADR-191 の belief 側の改善として実装済み。GJI は CI で検証済み。同定済み MS-IME 本体にも適用されるが、その経路は CI 未検証。
+  採用(2026-09-30)。実装状況(2026-10-01): P0(#398)・P1(#399)・P3+P5 の reinit 分(#402)・P4(#401)・P5 の Unicode long-cold warmup(#403)・P6 の (b)(c)(#404)は develop に実装済み。P2(ActivationSync)は [ADR-213](213-shadow-toggle-off-to-on-explicit-actuation-then-remove-activation-sync.md) の段階(P2a〜P2c)で再開(P2a は PR #408)。全面停止は CI で却下、gate による縮小は無効のため取り下げ。新スレッド=閉は ADR-191 の belief 側の改善として実装済み。GJI は CI で検証済み。同定済み MS-IME 本体にも適用されるが、その経路は CI 未検証。
 related_adr:
   - "ADR-098"
   - "ADR-100"
@@ -66,7 +66,7 @@ related_adr:
    |---|---|---|---|
    | P0 | A4 確定キー reinject の eager warmup | 済み(#398)。実機 24→0、入力の欠落・リテラル化は増えなかった | **測った範囲**: 実機は IME ON・Engine OFF(生ローマ字を通す状態。NICOLA ON では、この経路は通らない〈`[relay-defer]`〉)、WT+GJI の MS-IME プリセット、n=24。**未測定**: NICOLA ON・MS-IME 本体・Chrome の実機 |
    | P1 | デッドコード(記号 VK フォールバックの `send_eager_tsf_warmup(off)`、`WarmupImeOn::off()`・`WarmupOrigin::Off`) | 撤去。挙動は変わらない | PR #399。コンパイル+`architecture_guard`(eager warmup 送信元の件数 3→2)。**`Platform::set_ime_open` は含めない**(上記) |
-   | P2 | C1・C2・C3 ActivationSync | **保留(方針見直し)**。下の決定4・5 | 全面停止は却下、gate による縮小は無効。shadow toggle の OFF→ON を明示的な actuation にする設計が先に必要 |
+   | P2 | C1・C2・C3 ActivationSync | **ADR-213 で再開**(P2a=PR #408、P2b/P2b'/P2c 未実装)。下の決定4・5 | 全面停止は却下、gate による縮小は無効。shadow toggle の OFF→ON を明示 actuation にしてから止める(スパイクは CI で退行なし) |
    | P3 | A6b Chrome/TSF give-up 後の reinit | 撤去。BS/ESC の回収だけに縮退 | 実 Chrome×GJI で 0/10 と実測で効かず、BUG-168 で入力中文字を消す副作用も既知。**一方、自前の RichEdit 窓(tsf×GJI、ADR-193)では 30/30 効いた**(review-2026-09-24-09)。CI で、撤去後に RichEdit 窓の自己回復がどう変わるかを見る |
    | P4 | A2 フォーカス変更 eager warmup、A3 随伴 eager warmup | 撤去。InjectionMode::Tsf(WezTerm 等)+GJI だけに効く | **P2 の後に行う**(A3 の引き金の多くは C1 の書き込み結果なので、P2 で発火頻度が変わる)。**2つの PR に分ける**: (1) 環境変数フラグの PR(既定は従来どおり、撤去以外を混ぜない)、(2) 恒久化の PR。ソークの合格条件: フラグなしの期間に `[tsf-eager-warmup]` の送信の目印が N 件以上出ていた窓で、フラグありの期間に cold が 60 件超で無破損(経路が一度も通らないまま「無破損」にしない)。WezTerm+GJI を実際に使っていない機械では判断できない |
    | P5 | A6 Unicode long-cold の reinit(Actuation 起点)、A5 Unicode long-cold の `VK_IME_ON`+`VK_A`+`BS` | **P2 の後の状態を前提に判断する**(P2 で C1 が消えると、Actuation 起点はユーザーの IME キーだけになり、A6 は A3 と同じ「ユーザーの書き込みに付随する warmup」になる)。A5 は高リスク(Unicode 注入は GJI の確認を迂回する) | 実機: Windows Terminal+GJI、10s 以上 idle 後の1文字目(`bあ` 型欠落) |
