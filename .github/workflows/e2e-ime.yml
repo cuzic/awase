@@ -252,7 +252,7 @@ jobs:
               for ime_name, ime, km, msime in SC_IMES],
             # ADR-199 T10 決定A: 文字→親指(無変換)の順で重なり不足(min_overlap_margin_percent=15)にしたまま親指を押し続けてタイムアウトを越えても、
             # 親指を押している間は forced の IME OFF(keys.ime_off)を発火せず、離した時に発火する(check_charthumb.py)。修正前の awase は押している間に閉じる。
-            cfg('sc-charthumb-gji-atok', 'pass', check='charthumb', args='--charthumb=41,1D', runs=2,
+            cfg('sc-charthumb-gji-atok', 'pass', check='charthumb', args='--charthumb=41,1D', runs=8,
                 general='min_overlap_margin_percent = 15', keys='ime_off = ["VK_NONCONVERT"]'),
             # ADR-206: 無変換/変換の単独タップ。GJI の CUSTOM 表で無変換(変換)を「全開状態で閉じるトグル」にしたとき、awase は生キーを GJI に通さず、
             # belief に従う絶対指定の ON/OFF を1回だけ書く(エンジン非活性側もエンジンの特殊キー照合で)。--seq: 16=IME ON、1D=無変換、1C=変換、1A=IME OFF。
