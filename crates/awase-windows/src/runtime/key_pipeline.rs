@@ -221,6 +221,35 @@ impl Runtime {
             // （2026-07-08: GjiFsm が resync できず「このせっけい」の文字欠落に至った実機ログから判明）。
             self.schedule_settle_retry("SetOpen stripped from kp_run_inner decision");
         }
+        // ADR-213 決定2: shadow toggle が同じ打鍵で既に `kp_shadow_actuate` で書いた目標と同じ
+        // ActivationSync の SetOpen は二重書き込みになる（`apply` の already-matched 省略は
+        // GjiDirect だけ。MS-IME は VK_IME_ON と ROMAN を毎回送り、ImmCross は async 書き込みが
+        // 2本走る）ので取り除く。P2b で ActivationSync 自体を止めるまでの暫定。
+        if shadow_toggled {
+            if let Some((target, awase::engine::SetOpenOrigin::ActivationSync)) =
+                decision.find_ime_set_open_with_origin()
+            {
+                if target == self.platform_state.ime.effective_open() {
+                    // ActivationSync 経路は SetOpen と一緒に打鍵前の refresh 予約を kill していた
+                    // (`kp_stage_post_decision`)。strip 後も kill しないと、書き込みの await 中に
+                    // refresh → drift correction が同じ書き込みを重ねる(PR #408 Opus M-1)。
+                    self.platform.timer.kill(TIMER_IME_REFRESH);
+                    decision.effects_mut().retain(|e| {
+                        !matches!(
+                            e,
+                            Effect::Ime(awase::engine::ImeEffect::SetOpen {
+                                origin: awase::engine::SetOpenOrigin::ActivationSync,
+                                ..
+                            })
+                        )
+                    });
+                    tracing::debug!(
+                        "[shadow-toggle] same-target ActivationSync SetOpen({target}) stripped \
+                         (already written by kp_shadow_actuate)"
+                    );
+                }
+            }
+        }
         let state_after = self.engine.debug_state_label();
         // 配送判断(physical)をここで一度だけ確定させ、KeyInput journal 記録と
         // kp_stage_execute の実処理の両方に同じ値を渡す（BUG-90 調査: 以前は
@@ -1177,73 +1206,9 @@ impl Runtime {
         // ため、async に spawn_local + OutputActiveGuard で dispatch する。
         // それ以外 (GjiDirect / MsImeDirect) は SendInput-only で非ブロッキングなので sync。
         //
-        if !self.platform_state.ime.effective_open() {
-            let view = self.shadow_ime_control_view();
-            let imm_first =
-                crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
-            if imm_first {
-                // async 完了前から ImeModel を OFF に確定させる（ADR-098 決定5/6-a:
-                // 旧コメント「楽観的 C」は実体（Confirmed）と食い違っていたため訂正。
-                // 直前の `!effective_open()` 確認 + 直後の実 ImmCross apply を伴う
-                // ため、belief laundering ではなく正当な pre-actuation write）。
-                self.platform_state.ime.record_confirmed(false, tick_ms.0);
-                // ADR-090 §2.A A-1（shadow）: 起案は spawn_local の**外**で行う
-                // ——future の中では `with_app` 再入で `ImeStateHub` に届かない
-                // （ADR-090 §4.2）。
-                let order = self.issue_actuation_order(false, "shadow_toggle_off");
-                let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
-                win32_async::spawn_local(async move {
-                    // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの**要素**と
-                    // して実行する。`Failed` のときのフォールスルー（旧
-                    // `apply_skipping_imm`）は `run_chain_async` が行う。
-                    // 宛先の捕獲（ADR-086 INV-14）はこの経路では未移行のため
-                    // `Untargeted` のまま（Phase C）。
-                    let outcome = crate::runtime::open_chain::run_open_chain_async(
-                        order,
-                        crate::runtime::open_chain::ImmCrossOp::Untargeted,
-                        crate::state::ime_actuation_decision::DecisionSite::RunOpenChainAsync,
-                        // ADR-163 Part D S-8対応: runtime/mod.rsのforce-on
-                        // bootstrap経路と`site`が同一値のため`caller`で区別する。
-                        Some(crate::state::ime_actuation_decision::DecisionSite::ShadowToggleOff),
-                    )
-                    .await;
-                    // B+C(ts更新)+D(noop)+E
-                    let _ = crate::with_app(|app| {
-                        app.on_ime_apply_complete(
-                            false,
-                            outcome,
-                            None,
-                            crate::state::ime_event::OpenApplyReason::ShadowToggle,
-                        );
-                    });
-                    drop(guard);
-                });
-            } else {
-                let order = self.issue_actuation_order(false, "shadow_toggle_off_sync");
-                let (outcome, mut record) =
-                    crate::ime_controller::ImeController::apply(order, &view);
-                // /code-review指摘（PR #201 wave3）: `caller`はasync分岐
-                // （`ShadowToggleOff`）でのみ設定され、この同期分岐は`site=Sync`
-                // のまま`caller=None`だった。同じ論理的呼び出し元なので同じ
-                // ラベルを付ける（B-2、PR #201のパターンに揃える）。
-                record.caller =
-                    Some(crate::state::ime_actuation_decision::DecisionSite::ShadowToggleOff);
-                self.platform_state
-                    .ime
-                    .journal
-                    .record(crate::journal::JournalEntry::ActuationDecision { record });
-                // B+C+D(noop)+E
-                self.on_ime_apply_complete(
-                    false,
-                    outcome,
-                    None,
-                    crate::state::ime_event::OpenApplyReason::ShadowToggle,
-                );
-            }
-            tracing::debug!(
-                "[shadow-toggle] ON→OFF: apply_ime_open(false) dispatched + applied=false"
-            );
-        }
+        // ADR-213 決定1: ON/OFF とも明示 actuation（`current` と `effective_open()` は
+        // 冒頭の no-op 判定で必ず食い違っている）。
+        self.kp_shadow_actuate(self.platform_state.ime.effective_open(), tick_ms);
         tracing::debug!(
             "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
             if current { "ON" } else { "OFF" },
@@ -1256,6 +1221,156 @@ impl Runtime {
             kind,
         );
         true
+    }
+
+    /// shadow toggle が belief を `open` に倒した直後の、OS IME への明示 actuation
+    /// （ADR-213 決定1。ON→OFF・OFF→ON を1本にまとめる）。
+    ///
+    /// 物理キーは `shadow_toggled` で Suppress されるため、ここで書かないと実 IME は
+    /// 開閉しない。`Decision` の effect を経由しないので C3（`strip_ime_set_open_if_settling`）
+    /// には落とされない（settle 中でもユーザーのキーへの応答として書く）。
+    ///
+    /// - `applied` が直前の belief と食い違う（`Some(open)`。この関数は belief が `!open` から
+    ///   `open` に倒れたときだけ呼ばれる）なら、view の `shadow_on` を未知（`None`）として渡す
+    ///   （GjiDirect の already-matched 省略で、Suppress された物理キーの応答が消えるのを防ぐ。M1）。
+    /// - 書き込みで `note_explicit_ime_action` を呼ぶ（idle-conv-check の抑制窓。M4）。
+    /// - ImmCross が先頭の窓は async（`with_app` 再入回避）。ON は executor の ActivationSync と同じ
+    ///   `Targeted`+`decide_dispatch_conv_after_open`（ROMAN 補完と宛先 hwnd 捕獲）。
+    ///
+    /// IMM クロスプロセス対応アプリ (WezTerm 等の TSF mode) は SendMessageTimeoutW を含む sync
+    /// `set_ime_open_cross_process` がフック内で `with_app` 再入を引き起こすため async に
+    /// `spawn_local` + OutputActiveGuard で dispatch する。それ以外 (GjiDirect / MsImeDirect) は
+    /// SendInput-only で非ブロッキングなので sync。
+    fn kp_shadow_actuate(&mut self, open: bool, tick_ms: crate::state::TickMs) {
+        use crate::state::ime_actuation_decision::DecisionSite;
+        self.platform_state.ime.note_explicit_ime_action(tick_ms);
+        let caller = if open {
+            DecisionSite::ShadowToggleOn
+        } else {
+            DecisionSite::ShadowToggleOff
+        };
+        let applied_pair = if crate::state::ime_actuation_decision::shadow_toggle_demotes_applied(
+            self.platform_state.ime.applied_state().applied_open(),
+            open,
+        ) {
+            tracing::debug!(
+                "[shadow-toggle] applied={open:?} は belief(直前 {:?})と食い違う → shadow_on を未知として書く",
+                !open
+            );
+            None
+        } else {
+            self.platform_state.ime.model().applied_pair()
+        };
+        let mut view = self.platform.build_ime_control_view(applied_pair);
+        view.belief_input_mode = self.platform_state.ime.input_mode();
+        let imm_first = crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
+        if imm_first {
+            if !open {
+                // async 完了前から ImeModel を OFF に確定させる（ADR-098 決定5/6-a:
+                // 直前の `!effective_open()` 確認 + 直後の実 ImmCross apply を伴うため、
+                // belief laundering ではなく正当な pre-actuation write）。
+                self.platform_state.ime.record_confirmed(false, tick_ms.0);
+            }
+            // ADR-090 §2.A A-1（shadow）: 起案は spawn_local の**外**で行う
+            // ——future の中では `with_app` 再入で `ImeStateHub` に届かない（ADR-090 §4.2）。
+            let order = self.issue_actuation_order(
+                open,
+                if open {
+                    "shadow_toggle_on"
+                } else {
+                    "shadow_toggle_off"
+                },
+            );
+            let focus_gen = self.platform.output.ime_mode_focus_gen.get();
+            let conv_after_open: crate::ime::ConvAfterOpen =
+                crate::state::ime_actuation_decision::decide_dispatch_conv_after_open(
+                    (&view).into(),
+                    open,
+                )
+                .into();
+            let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
+            win32_async::spawn_local(async move {
+                let reason = crate::state::ime_event::OpenApplyReason::ShadowToggle;
+                // ON: executor の ActivationSync と同じ Targeted（ROMAN 補完と宛先捕獲）。
+                // OFF: 宛先の捕獲（ADR-086 INV-14）は未移行のため `Untargeted`（Phase C）。
+                // `run_open_chain_async` の呼び出し箇所は1つに保つ（architecture_guard）。
+                let (op, site) = if open {
+                    let Some(target) = crate::ime::ActuationTarget::capture(focus_gen).await else {
+                        tracing::debug!(
+                            "[shadow-toggle] capture 失敗（フォーカス無し） → UnsafeToToggle"
+                        );
+                        crate::runtime::message_handlers::post_async_ime_apply_complete(
+                            open,
+                            awase::platform::ImeOpenOutcome::UnsafeToToggle,
+                            None,
+                            reason,
+                        );
+                        drop(guard);
+                        return;
+                    };
+                    (
+                        crate::runtime::open_chain::ImmCrossOp::Targeted {
+                            target,
+                            conv_after_open,
+                            focus_gen,
+                        },
+                        DecisionSite::DispatchImeSetOpen,
+                    )
+                } else {
+                    (
+                        crate::runtime::open_chain::ImmCrossOp::Untargeted,
+                        DecisionSite::RunOpenChainAsync,
+                    )
+                };
+                // ADR-089 §2.3 Phase B: ImmCross を機構チェーンの**要素**として実行する。
+                // ADR-163 Part D S-8対応: OFF の `site` は force-on bootstrap 経路と同値のため
+                // `caller` で区別する。
+                let outcome =
+                    crate::runtime::open_chain::run_open_chain_async(order, op, site, Some(caller))
+                        .await;
+                // 書き込み後に await 中にフォーカスが変わっていたら、完了を `UnsafeToToggle`
+                // （記録を動かさない）に落とす。generation の無い完了が新しい窓の applied を
+                // `Confirmed` にしてしまうのを防ぐ（PR #408 Opus M-3）。取得できない（再入）ときは一致扱い。
+                let outcome = if crate::with_app(|app| app.platform.output.ime_mode_focus_gen.get())
+                    .is_some_and(|g| g != focus_gen)
+                {
+                    awase::platform::ImeOpenOutcome::UnsafeToToggle
+                } else {
+                    outcome
+                };
+                // `with_app` を握らず WM 経由で `on_ime_apply_complete` へ（再入で黙って消えない）。
+                crate::runtime::message_handlers::post_async_ime_apply_complete(
+                    open, outcome, None, reason,
+                );
+                drop(guard);
+            });
+        } else {
+            let order = self.issue_actuation_order(
+                open,
+                if open {
+                    "shadow_toggle_on_sync"
+                } else {
+                    "shadow_toggle_off_sync"
+                },
+            );
+            let (outcome, mut record) = crate::ime_controller::ImeController::apply(order, &view);
+            // `site` は `Sync` のまま（replay の chain 再導出を保つ）、呼び出し元は `caller` で識別する。
+            record.caller = Some(caller);
+            self.platform_state
+                .ime
+                .journal
+                .record(crate::journal::JournalEntry::ActuationDecision { record });
+            self.on_ime_apply_complete(
+                open,
+                outcome,
+                None,
+                crate::state::ime_event::OpenApplyReason::ShadowToggle,
+            );
+        }
+        tracing::debug!(
+            "[shadow-toggle] {}: explicit apply dispatched (imm_first={imm_first})",
+            if open { "OFF→ON" } else { "ON→OFF" },
+        );
     }
 
     /// Engine 判断後の後処理（IME 制御キー検出 + may_change_ime パススルー）

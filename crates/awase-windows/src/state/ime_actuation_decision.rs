@@ -95,6 +95,8 @@ pub enum DecisionSite {
     ReassertExplicitPhysicalKey,
     ForceOnRomajiCorrection,
     ShadowToggleOff,
+    /// shadow toggle の OFF→ON 明示 actuation（ADR-213 決定1）。記録専用ラベル。
+    ShadowToggleOn,
     ForceOnBootstrap,
     BlacklistDriftCorrection,
 }
@@ -146,6 +148,17 @@ pub(crate) const fn is_input_relay(inputs: DecisionInputs) -> bool {
 #[must_use]
 pub(crate) fn decide_chain(inputs: DecisionInputs) -> &'static [WriteMechanism] {
     caps(inputs.profile.into(), inputs.kind).chain
+}
+
+/// shadow toggle の明示書き込み（`kp_shadow_actuate`）で、view の `shadow_on` を未知として渡すか。
+///
+/// この書き込みは belief が `!open` から `open` に倒れたときだけ呼ばれる。このとき `applied` が
+/// `Some(open)` なら記録が直前の belief と食い違っており（IME が awase 以外の理由で閉じた等）、
+/// そのまま渡すと GjiDirect が already-matched で送信を省き、Suppress 済みの物理キーに誰も応答しない
+/// （BUG-156 型）。`Some(!open)`・`None` は元から送信されるので降格は不要（ADR-213 決定1、PR #408 Opus B-1）。
+#[must_use]
+pub(crate) const fn shadow_toggle_demotes_applied(applied_open: Option<bool>, open: bool) -> bool {
+    matches!(applied_open, Some(v) if v == open)
 }
 
 /// `GjiDirectStrategy::apply`のalready-matched判定
@@ -775,5 +788,27 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod shadow_toggle_demote_tests {
+    use super::*;
+
+    #[test]
+    fn demotes_only_when_applied_equals_target() {
+        // belief OFF のまま applied=Confirmed(true) が残り、半角/全角で ON にする場合が降格対象。
+        assert!(shadow_toggle_demotes_applied(Some(true), true));
+        assert!(shadow_toggle_demotes_applied(Some(false), false));
+        assert!(!shadow_toggle_demotes_applied(Some(false), true));
+        assert!(!shadow_toggle_demotes_applied(Some(true), false));
+        assert!(!shadow_toggle_demotes_applied(None, true));
+    }
+
+    #[test]
+    fn demoted_view_is_not_already_matched() {
+        // 降格すると shadow_on=None になり、GjiDirect の already-matched 省略に当たらない。
+        assert!(gji_direct_already_matches(Some(true), true, false));
+        assert!(!gji_direct_already_matches(None, true, false));
     }
 }

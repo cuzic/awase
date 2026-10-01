@@ -816,6 +816,7 @@ fn decision_site_str(site: crate::state::ime_actuation_decision::DecisionSite) -
         DecisionSite::ReassertExplicitPhysicalKey => "ReassertExplicitPhysicalKey",
         DecisionSite::ForceOnRomajiCorrection => "ForceOnRomajiCorrection",
         DecisionSite::ShadowToggleOff => "ShadowToggleOff",
+        DecisionSite::ShadowToggleOn => "ShadowToggleOn",
         DecisionSite::ForceOnBootstrap => "ForceOnBootstrap",
         DecisionSite::BlacklistDriftCorrection => "BlacklistDriftCorrection",
     }

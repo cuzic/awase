@@ -830,8 +830,7 @@ fn decode_outcome(value: isize) -> ImeOpenOutcome {
 /// 以前はこの経路の唯一の生成元が `executor.rs::dispatch_ime_set_open`
 /// （常に `EngineDecision`）だったため固定値にしていたが、
 /// `try_force_on_bootstrap`（`Bootstrap`、`621bf93c` で撤去済み）が2つ目の生成元として加わったため、
-/// 呼び出し元が申告した reason を実際に運ぶ必要がある。**`EngineDecision` と
-/// `Bootstrap` の2値のみエンコードする**（1 bit）。この async 経路に将来
+/// 呼び出し元が申告した reason を実際に運ぶ必要がある。**`EngineDecision`・`Bootstrap`・`ShadowToggle` の3値のみエンコードする**（2 bit、ADR-213）。この async 経路に将来
 /// 別の `OpenApplyReason` を渡す呼び出し元を追加する場合は、この関数と
 /// `decode_reason` のビット幅を拡張すること（さもないと未知の reason が
 /// 静かに `EngineDecision` に丸められる）。
@@ -846,11 +845,7 @@ pub(crate) fn post_async_ime_apply_complete(
     // （旧 `generation.unwrap_or(0)` は `next_seq()` 由来の `generation == 0`
     // が bootstrap 経路で実際に払い出されうる番兵衝突を抱えていた）。
     let generation = crate::state::ApplyGeneration::to_wire(generation);
-    let reason_bit = usize::from(matches!(
-        reason,
-        crate::state::ime_event::OpenApplyReason::Bootstrap
-    ));
-    let wparam = ((generation as usize) << 2) | (reason_bit << 1) | usize::from(open);
+    let wparam = encode_apply_wparam(generation, reason, open);
     // エンジンスレッド上（win32-async の spawn_local タスク完了）から呼ばれるため
     // ログ出力してよい。post が失敗すると ImmCross の非同期 SetOpen 完了通知が
     // 握りつぶされ、pending generation の IME open belief が未解決のまま残る
@@ -870,12 +865,35 @@ pub(crate) fn post_async_ime_apply_complete(
     }
 }
 
+/// `WM_ASYNC_IME_APPLY_COMPLETE` の wparam を組み立てる（下位 bit: open、次の 2 bit: reason、残り: generation）。
+fn encode_apply_wparam(
+    generation: u64,
+    reason: crate::state::ime_event::OpenApplyReason,
+    open: bool,
+) -> usize {
+    let reason_code = match reason {
+        crate::state::ime_event::OpenApplyReason::Bootstrap => 1usize,
+        // ADR-213: shadow toggle の ImmCross async 完了も運ぶ。
+        crate::state::ime_event::OpenApplyReason::ShadowToggle => 2,
+        crate::state::ime_event::OpenApplyReason::EngineDecision => 0,
+        // この async 経路に渡す呼び出し元が無い reason。渡すなら上のビット幅を拡張すること。
+        other => {
+            debug_assert!(
+                false,
+                "未対応の OpenApplyReason を async 完了に渡した: {other:?}"
+            );
+            0
+        }
+    };
+    ((generation as usize) << 3) | (reason_code << 1) | usize::from(open)
+}
+
 /// [`post_async_ime_apply_complete`] の reason bit の逆変換。
 fn decode_reason(wparam: usize) -> crate::state::ime_event::OpenApplyReason {
-    if (wparam >> 1) & 1 != 0 {
-        crate::state::ime_event::OpenApplyReason::Bootstrap
-    } else {
-        crate::state::ime_event::OpenApplyReason::EngineDecision
+    match (wparam >> 1) & 3 {
+        1 => crate::state::ime_event::OpenApplyReason::Bootstrap,
+        2 => crate::state::ime_event::OpenApplyReason::ShadowToggle,
+        _ => crate::state::ime_event::OpenApplyReason::EngineDecision,
     }
 }
 
@@ -886,7 +904,7 @@ fn decode_reason(wparam: usize) -> crate::state::ime_event::OpenApplyReason {
 pub(crate) fn handle_wm_async_ime_apply_complete(app: &mut Runtime, wparam: usize, lparam: isize) {
     let open = (wparam & 1) != 0;
     let reason = decode_reason(wparam);
-    let generation = crate::state::ApplyGeneration::from_wire((wparam >> 2) as u64);
+    let generation = crate::state::ApplyGeneration::from_wire((wparam >> 3) as u64);
     let outcome = decode_outcome(lparam);
     if outcome == ImeOpenOutcome::Failed {
         tracing::warn!("apply_ime_open({open}) failed (async)");
@@ -2032,6 +2050,24 @@ pub(crate) fn handle_wm_dump_journal(app: &mut Runtime) {
         }
         Err(e) => {
             tracing::error!("[journal] ダンプ失敗: {e}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod apply_wparam_tests {
+    use super::{decode_reason, encode_apply_wparam};
+
+    #[test]
+    fn apply_wparam_round_trips_reason_open_and_generation() {
+        use crate::state::ime_event::OpenApplyReason as R;
+        for reason in [R::EngineDecision, R::Bootstrap, R::ShadowToggle] {
+            for open in [false, true] {
+                let w = encode_apply_wparam(5, reason, open);
+                assert_eq!(decode_reason(w), reason, "reason {reason:?}");
+                assert_eq!((w & 1) != 0, open);
+                assert_eq!(w >> 3, 5);
+            }
         }
     }
 }
