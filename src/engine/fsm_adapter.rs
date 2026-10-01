@@ -342,6 +342,7 @@ mod tests {
     ) -> RawKeyEvent {
         RawKeyEvent {
             was_down: false,
+            press_id: None,
             vk_code: vk,
             scan_code: scan,
             event_type,

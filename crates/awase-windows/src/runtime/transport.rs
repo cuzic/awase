@@ -146,6 +146,7 @@ mod plan_tests {
     ) -> RawKeyEvent {
         RawKeyEvent {
             was_down: false,
+            press_id: None,
             vk_code: crate::vk::VK_KANJI,
             scan_code: ScanCode(0x1E),
             event_type,

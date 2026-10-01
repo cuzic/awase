@@ -242,6 +242,7 @@ mod tests {
     fn ev(n: u16) -> RawKeyEvent {
         RawKeyEvent {
             was_down: false,
+            press_id: None,
             vk_code: VkCode(n),
             scan_code: ScanCode(u32::from(n)),
             event_type: KeyEventType::KeyDown,

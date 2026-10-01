@@ -3541,6 +3541,7 @@ mod tests {
             });
             let ev = RawKeyEvent {
                 was_down: false,
+                press_id: None,
                 vk_code: VkCode(0x41),
                 scan_code: scan,
                 event_type: KeyEventType::KeyUp,

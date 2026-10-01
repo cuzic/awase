@@ -212,6 +212,45 @@ pub enum KeyClassification {
     Passthrough,
 }
 
+/// 物理キーの「非リピート KeyDown 1 回」を識別する不透明な ID（[ADR-208](../docs/adr/208-absolute-ime-keys-must-not-be-elided-on-stale-applied-in-blind-windows.md) 決定2 D1）。
+///
+/// 単調増加の `u64` を包むだけで、値の大小や連続性に意味は持たせない（等価比較だけに使う）。
+/// プラットフォーム層（フック）が [`is_press_start`] を満たす KeyDown にだけ振り、`RawKeyEvent::press_id` として運ぶ。
+/// 同じ押下を再処理する経路（reinject・drain replay・Ctrl 救済の 50ms 保留）は同じ `RawKeyEvent` を使うので同じ ID になる。
+/// Engine は ID の中身を見ず、単独タップの確定まで運んで `ImeEffect::SetOpen.press` に載せるだけ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PressId(u64);
+
+impl PressId {
+    /// 値からの構築。プラットフォーム層のカウンタ（フック）が使う。
+    #[must_use]
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    /// ログ・journal 用の生値（比較には `==` を使うこと）。
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl core::fmt::Display for PressId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "#{}", self.0)
+    }
+}
+
+/// フックが `PressId` を振る条件（ADR-208 決定1「対象押下」の土台）: **非注入の非リピート KeyDown**。
+///
+/// `was_down` は `RawKeyEvent::was_down`（直前に同じ VK が物理的に押されたままだったか）。KeyUp と自動リピートの
+/// Down には振らない（リピートは `press=None` として従来の `applied` 省略に任せ、押し続けた間に書き込みが
+/// 連発するのを防ぐ）。注入イベントは `was_down` を更新しないのでここで除外する。
+#[must_use]
+pub const fn is_press_start(is_keydown: bool, injected: bool, was_down: bool) -> bool {
+    is_keydown && !injected && !was_down
+}
+
 /// フックから受け取る生のキーイベント
 ///
 /// プラットフォーム層が事前分類した情報を含む。Engine は `vk_code`/`scan_code` を
@@ -292,6 +331,12 @@ pub struct RawKeyEvent {
     /// 再取得しない）でこのフィールドを持つ——ADR-129 が扱った「replay を実行している
     /// "今" の値を誤って読む」事故と同型の罠を避けるため。
     pub was_down: bool,
+    /// 非注入の非リピート KeyDown だけに付く押下 ID（[`is_press_start`]）。KeyUp・自動リピート・注入イベントは `None`。
+    ///
+    /// ADR-208 決定2 D1: 「この押下で既に書いた」ことの記録（`last_written_press`）と、`applied` の already-matched 省略を
+    /// 押下の書き込みだけ緩めるための印。`modifier_snapshot`/`was_down` と同じ理由（capture 時点で埋め込み、
+    /// drain replay 時にライブ再取得しない）でこのフィールドを持つ。
+    pub press_id: Option<PressId>,
 }
 
 impl RawKeyEvent {
@@ -386,6 +431,35 @@ pub enum ContextChange {
 
 #[cfg(test)]
 mod tests {
+    use super::{is_press_start, PressId};
+
+    #[test]
+    fn press_id_is_assigned_only_to_non_injected_non_repeat_key_down() {
+        // (is_keydown, injected, was_down) -> 振るか
+        assert!(is_press_start(true, false, false), "物理の新規押下には振る");
+        assert!(
+            !is_press_start(true, false, true),
+            "自動リピートの Down には振らない"
+        );
+        assert!(!is_press_start(false, false, false), "KeyUp には振らない");
+        assert!(
+            !is_press_start(false, false, true),
+            "押下後の KeyUp にも振らない"
+        );
+        assert!(
+            !is_press_start(true, true, false),
+            "注入イベントには振らない"
+        );
+        assert!(!is_press_start(true, true, true));
+    }
+
+    #[test]
+    fn press_id_compares_by_value_and_displays_for_logs() {
+        assert_eq!(PressId::new(7), PressId::new(7));
+        assert_ne!(PressId::new(7), PressId::new(8));
+        assert_eq!(PressId::new(7).get(), 7);
+        assert_eq!(PressId::new(7).to_string(), "#7");
+    }
     use itertools::Itertools as _;
 
     use super::*;
@@ -429,6 +503,7 @@ mod tests {
             right_thumb_down_snapshot: None,
             injected,
             was_down: false,
+            press_id: None,
         }
     }
 

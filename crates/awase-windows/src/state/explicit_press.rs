@@ -362,6 +362,7 @@ impl ExplicitKey {
         };
         Some(RawKeyEvent {
             was_down,
+            press_id: None,
             vk_code: vk,
             scan_code: ScanCode(0),
             event_type: KeyEventType::KeyDown,

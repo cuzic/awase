@@ -1269,6 +1269,7 @@ fn build_raw_key_event(
     right_thumb_down_snapshot: Option<Timestamp>,
     injected: bool,
     was_down: bool,
+    press_id: Option<awase::types::PressId>,
 ) -> RawKeyEvent {
     use crate::vk::VkCodeExt;
     RawKeyEvent {
@@ -1290,7 +1291,22 @@ fn build_raw_key_event(
         right_thumb_down_snapshot,
         injected,
         was_down,
+        press_id,
     }
+}
+
+/// 次の `PressId` を採番する（ADR-208 決定2 D1）。フックスレッドだけが呼ぶ単調増加のカウンタ。
+static NEXT_PRESS_ID: AtomicU64 = AtomicU64::new(1);
+
+/// 非注入の非リピート KeyDown（`awase::types::is_press_start`）にだけ `PressId` を振る。
+/// KeyUp・自動リピート・注入イベントは `None`（リピートは従来の `applied` 省略に任せる）。
+fn assign_press_id(
+    is_keydown: bool,
+    injected: bool,
+    was_down: bool,
+) -> Option<awase::types::PressId> {
+    awase::types::is_press_start(is_keydown, injected, was_down)
+        .then(|| awase::types::PressId::new(NEXT_PRESS_ID.fetch_add(1, Ordering::Relaxed)))
 }
 
 /// テストドライバ（`examples/ime_key_matrix_spike.rs`、`examples/chrome_probe.rs`）が注入するキーの `dwExtraInfo`。
@@ -1804,6 +1820,7 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         right_thumb_down_snapshot,
         is_injected,
         was_down,
+        assign_press_id(is_keydown, is_injected, was_down),
     );
 
     // opus round2 M2': 入口（`hook_callback`冒頭）のガードは、これから

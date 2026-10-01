@@ -214,6 +214,7 @@ fn build_event(vk: VkCode, event_type: KeyEventType, timestamp: u64) -> RawKeyEv
     let (kc, pos) = classify_vk(vk);
     RawKeyEvent {
         was_down: false,
+        press_id: None,
         vk_code: vk,
         scan_code: ScanCode(0),
         event_type,

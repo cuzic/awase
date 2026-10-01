@@ -512,6 +512,7 @@ mod tests {
         };
         awase::types::RawKeyEvent {
             was_down: false,
+            press_id: None,
             vk_code: VkCode(0xF2),
             scan_code: ScanCode(0),
             event_type: KeyEventType::KeyDown,
