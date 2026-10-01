@@ -58,7 +58,10 @@ def analyze(recs, lines):
     if not typed.get("ok"): failures.append("打鍵結果が期待文字列と不一致")
     if drifts: failures.append(f"起動後30秒の drift={drifts}")
     desired = "true" if initial == "on" else "false"
-    if aligns != [desired]: failures.append(f"startup-align={aligns!r} (期待 [{desired!r}])")
+    # 実 Chrome(form=chromepage)は Imm32Unavailable で観測が来ず `[startup-align]`(最初の成功観測へ揃えた)が出ないのが正常。
+    # そこでは startup-align の有無を合否に入れず、観察項目として align 列に記録するだけにする。
+    chrome = cfg.get("form") == "chromepage"
+    if not chrome and aligns != [desired]: failures.append(f"startup-align={aligns!r} (期待 [{desired!r}])")
     if initial == "on":
         if not engine or engine[0] - start > 1.0:
             failures.append("最初の engine-input が起動から1秒以内でない")
@@ -68,7 +71,7 @@ def analyze(recs, lines):
     return {"verdict":"FAIL" if failures else "PASS","cfg":cfg,"initial":initial,
             "drift":drifts,"align":aligns,"reinit":reinit,"observe":observed,
             "first_engine_ms":None if not engine else round((engine[0]-start)*1000),
-            "failures":failures,"invalid":[]}
+            "failures":failures,"invalid":[],"align_gated":not chrome}
 
 
 def summary_line(r):
