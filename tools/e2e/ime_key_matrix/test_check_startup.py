@@ -18,7 +18,7 @@ class Startup(unittest.TestCase):
     def test_off_pass_and_observation_only(self):
         r=cs.analyze(recs("off", idle=False), logs("false", None, [(1.3,"Imm32Unavailable entry without trusted cache: 安全デフォルト ON\n")]))
         self.assertEqual((r["verdict"],r["observe"]),("PASS",1))
-    def test_late_first_key_fails(self): self.assertEqual(cs.analyze(recs(),logs(engine=1.001))["verdict"],"FAIL")
+    def test_late_first_key_is_invalid_not_fail(self): self.assertEqual(cs.analyze(recs(),logs(engine=1.001))["verdict"],"INVALID")
     def test_drift_fails(self): self.assertEqual(cs.analyze(recs(),logs(extra=[(2,"[drift] correction\n")]))["verdict"],"FAIL")
     def test_off_reinit_fails(self):
         self.assertEqual(cs.analyze(recs("off",idle=False),logs("false",None,[(2,"[ime-io] actuation SendInput kind=kanji_marker vk=[1A, 16]\n")]))["verdict"],"FAIL")

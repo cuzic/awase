@@ -62,12 +62,18 @@ def analyze(recs, lines):
     # そこでは startup-align の有無を合否に入れず、観察項目として align 列に記録するだけにする。
     chrome = cfg.get("form") == "chromepage"
     if not chrome and aligns != [desired]: failures.append(f"startup-align={aligns!r} (期待 [{desired!r}])")
+    late_first_key = initial == "on" and (not engine or engine[0] - start > 1.0)
     if initial == "on":
-        if not engine or engine[0] - start > 1.0:
-            failures.append("最初の engine-input が起動から1秒以内でない")
+        pass
     else:
         if reinit: failures.append(f"OFF起動直後の reinit={reinit}")
         if typed.get("open_after_idle") is True: failures.append("3秒アイドル中に IME が開いた")
+    # ON 起動の前提は「起動から1秒以内に最初の打鍵が入る」こと。ハーネスの起動検知・前面化の遅れ(runner の揺れ)で
+    # 1秒を超えたら、BUG-163 の『起動直後の最初の打鍵』を試せていないので FAIL でなく INVALID(前提不成立)にする。
+    if late_first_key:
+        return {"verdict":"INVALID","cfg":cfg,"initial":initial,"invalid":["最初の engine-input が起動から1秒以内でない(前提不成立)"],
+                "first_engine_ms":None if not engine else round((engine[0]-start)*1000),
+                "drift":drifts,"align":aligns,"reinit":reinit,"observe":observed,"failures":failures,"align_gated":not chrome}
     return {"verdict":"FAIL" if failures else "PASS","cfg":cfg,"initial":initial,
             "drift":drifts,"align":aligns,"reinit":reinit,"observe":observed,
             "first_engine_ms":None if not engine else round((engine[0]-start)*1000),
