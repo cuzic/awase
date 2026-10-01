@@ -9,7 +9,7 @@ summary: |-
   保証は1押下ごとの配送不変条件 INV-L1(物理が届くか awase が書くかのちょうど一方)と収束条件 INV-L2(絶対指定は1回、トグルは2回以内)。設計は新しい gate を足さず、既存の省略・授権(`applied` の already-matched・warrant)を緩める
   D1〜D4+押下 id による BUG-113 の二重送信防止。検証は純粋な決定関数の全列挙テスト(Linux)→ CI の drift × キー行列。L0〜L3 を v2 のブロッカーにする。
 status: |-
-  採用(2026-10-01、Opus round1 反映済み)。未実装(L0 から着手)。所有者決定: 全窓で必ず書く(物理押下ごとに1回、同一押下の二重送信のみ防ぐ)、『解消』は最大2回の押下、検証は決定表の網羅テスト→CI の行列、InputRelay は『awase が actuate しない窓では開閉キーを握りつぶさず素通し』、MS-IME × 実 Chrome の `VK_IME_OFF` が効かない件(BUG-172 対照)は例外として明記し別機構は後で検討、L0〜L3 を v2 のブロッカーにする(L3' は実機 A/B が条件で v2 のブロッカーにしない)。
+  採用(2026-10-01、Opus round1 反映済み)。**L0 実装済み**(挙動不変の切り出し・差分 0 の確認・全列挙テスト・反例 golden。「L0 実装メモ」節)、L1 から未実装。所有者決定: 全窓で必ず書く(物理押下ごとに1回、同一押下の二重送信のみ防ぐ)、『解消』は最大2回の押下、検証は決定表の網羅テスト→CI の行列、InputRelay は『awase が actuate しない窓では開閉キーを握りつぶさず素通し』、MS-IME × 実 Chrome の `VK_IME_OFF` が効かない件(BUG-172 対照)は例外として明記し別機構は後で検討、L0〜L3 を v2 のブロッカーにする(L3' は実機 A/B が条件で v2 のブロッカーにしない)。
 related_adr:
   - "ADR-205"
   - "ADR-206"
@@ -68,6 +68,18 @@ related_adr:
    | L4 | InputRelay の Engine 前 PassThrough(決定3) |
    | L5 | 残る条件付き固着(S-3・S-4)の確認 |
 7. **v2 ブロッカーの受け入れ条件**(L0〜L3 の完了条件): (1) 全列挙テスト: v2 範囲のセルで反例 0(分類外の反例も 0)。範囲外のセルの反例は、分類ごとの件数を golden に固定する(増えたら失敗)。(2) CI: S-1 の再現構成(Imm32Unavailable × GJI/MS-IME × Ctrl+変換/Ctrl+無変換/単独タップ × 外からの反転)が、各 n≥10 で、絶対キーは1押下、トグルは2押下で一致する。MS-IME×Chrome の OFF は例外の対照(E2)付き。(3) BUG-113: 既存の `@` 検出(`check_typing_stress.py`)の件数が、develop と同じ土台で増えていない。(4) 既存の `sc-*` の期待表が develop と同一。
+
+### L0 実装メモ(2026-10-01、挙動不変。Opus round1 反映後)
+
+- **切り出せた範囲**: 配送判断の核 `PhysicalKeyDisposition::plan` の本体を `state/physical_disposition.rs::plan_core`(ungated、`transport.rs` の `plan` は `ActiveImeKind` → `ImeKindId` の変換だけの殻)、shadow 昇格の選択を `state/explicit_press.rs::select_shadow_intent`、Engine の chord フィルタ条件を `engine_set_open_filtered_by_chord`、`record_ime_apply_result` の generation=None 分岐の純粋部を `ime_model::apply_result_effective_open` と `ImeModel::confirm_applied`(`ImeStateHub::record_confirmed` はこれを呼ぶだけ)。`issue_open_warrant`・`decide_*`・`shadow_toggle_demotes_applied`・`ShadowImeAction::resolve` は元から ungated でそのまま合成した。
+- **`Delivery` の型**: 現状の違反(二重・空振り)も記録するため `Delivery{physical, write, reason, ..}` は両方を持てる形のままにし、INV-L1 を満たす決定だけの型 `Resolution { PassThrough | Write{physical, open} }` へ `Delivery::resolve()` で写す。写せないものが `Violation::{Both, Neither}`(反例)。前提 A1 は `ExplicitKey::a1_holds()`(0x16/0x1A・0xF0/F2・学習済み 0xF3/0xF4。InputRelay は中継先が処理するので別扱い)。
+- **仕様との差**: 関数は `explicit_press_delivery_with(state, key, judge, mode)`。授権(`issue_open_warrant`)は `IntentStore`/`ObservationStore` を要するが、観測を入れる口(`AnyObservation::restored_from_journal`)を本番から呼ぶことを architecture_guard が禁じているため `WarrantJudge` として差し込む(テストは合成ストアで本物の `issue_open_warrant` を呼ぶ)。
+- **循環は固定点で表現**: `plan(false)` を先に評価 → 書く決定 → 後段 `plan(write_wanted)` の手順を `DeliveryMode::{Legacy, FixedPoint}` で表す。Legacy は現状(belief が倒れたときだけ書く)、FixedPoint は D4(昇格した no-op で plan(false) が Suppress なら書く)。本番は本関数をまだ呼ばない。
+- **挙動不変の確認**: 旧 `plan` + 旧 shadow 判断の合成(テスト内の `legacy_reference`)と新関数(Legacy)を、全列挙空間(状態 69,120 × キー 12 × 3 種の判定器 = 約 249 万通り)で比べて差分 0(`legacy_mode_matches_the_pre_extraction_composition_everywhere`)。Legacy と FixedPoint の差は「Suppress される no-op が書く」だけであることも固定した。Windows 側の `plan_tests` は Linux では走らないので windows-build CI が担う。
+- **オラクル**: 書いた後の `applied` は手で模倣せず、shadow 経路は `apply_result_effective_open` + `ImeModel::confirm_applied`、Engine 経路は `ImeModel::reduce`(`ImeApplyRequested` → `ImeEvent::from_apply_outcome`、`completion_can_update_applied` を含む)を通す。BUG-156 の降格(予測の不一致)は押下の遷移に関わらないので含めない。
+- **状態空間**: Opus round1 の指摘どおり `was_down`(リピートは対象外、P6)と、同一押下で shadow と Engine が異なる向きを要求する構成(P5)を追加した。
+- **モデルの前提(推測を含む)**: 機構チェーンは先頭のみ、Engine の SetOpen は常に出る、実 IME は A1 のキーの配送を意味どおり処理し awase の書き込みはその向きに設定する、P5 は「Engine の executor は押下前の `applied` を見る」。押下 id(`PressId` 等)は L1 の範囲で、P5 の `#[ignore]` テストは現状のモデルとして置いた。
+- **成果物**: `tests/explicit_press_exhaustive.rs`(69,120 状態 × 12 キー、debug ビルドで約 3 秒)、`tests/golden/explicit_press_counterexamples.txt`(P1〜P6 の反例を分類 × 件数 + 各分類の最小の代表例で固定。分類外の反例があるとテストが失敗する。`UPDATE_GOLDEN=1` で再生成)。
 
 ## リスク
 

@@ -15,7 +15,7 @@ use super::ApplyGeneration;
 use awase::engine::InputModeState;
 
 use super::ime_event::{
-    ApplyError, ChordKind, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile,
+    ApplyError, ChordKind, EventTime, HwndId, ImeEvent, ImeEventEnvelope, ImePolicyProfile,
     InputModeApplyResult, ObservationConfidence, ObservationSource, UserIntentSource,
 };
 use super::input_barrier::InputBarrier;
@@ -100,6 +100,27 @@ pub enum BaseDecision {
 }
 
 // ── AppliedImeState ──────────────────────────────────────────────────────────
+
+/// generation を持たない apply 完了で、`applied` に書く open 値。
+///
+/// `ImeStateHub::record_ime_apply_result` の generation=None 分岐の純粋部（ADR-208 L0 で切り出した）。送らなかった結果（`UnsafeToToggle`/`NotOwned`/
+/// `Unwarranted`）は `None`（`applied` を動かさない）、`Failed` は逆向き（`!open`）。
+#[must_use]
+pub const fn apply_result_effective_open(
+    open: bool,
+    outcome: awase::platform::ImeOpenOutcome,
+) -> Option<bool> {
+    use awase::platform::ImeOpenOutcome;
+    match outcome {
+        ImeOpenOutcome::Applied
+        | ImeOpenOutcome::AppliedWithoutSendInput
+        | ImeOpenOutcome::AlreadyMatched => Some(open),
+        ImeOpenOutcome::Failed => Some(!open),
+        ImeOpenOutcome::UnsafeToToggle | ImeOpenOutcome::NotOwned | ImeOpenOutcome::Unwarranted => {
+            None
+        }
+    }
+}
 
 /// IME apply 結果の確信度。
 ///
@@ -488,6 +509,60 @@ impl ImeModel {
                 base: decided_by,
                 guard_override,
             },
+        }
+    }
+
+    /// generation 付きの apply 要求と完了（Engine 経路）を `reduce` に通す（ADR-208 L0 の全列挙テストのオラクル用）。
+    ///
+    /// event_log を経由しない純粋モデル上の遷移で、本番は `ImeStateHub` が event_log 経由で `reduce` する。
+    /// `reduce` の呼び出しを `ime_model.rs` 内（`self.reduce`）に留めるための薄い口。
+    pub fn apply_engine_request_and_completion(
+        &mut self,
+        open: bool,
+        outcome: awase::platform::ImeOpenOutcome,
+        generation: ApplyGeneration,
+    ) {
+        let envelope = |seq: u64, event: ImeEvent| ImeEventEnvelope {
+            time: EventTime {
+                seq,
+                monotonic: Instant::now(),
+                tick_ms: seq * 10,
+            },
+            event,
+        };
+        self.reduce(&envelope(
+            1,
+            ImeEvent::ImeApplyRequested {
+                target: open,
+                generation,
+                ctrl_held: false,
+            },
+        ));
+        self.reduce(&envelope(
+            2,
+            ImeEvent::from_apply_outcome(open, outcome, generation),
+        ));
+    }
+
+    /// `applied` だけを指定した初期モデル（ADR-208 L0 の全列挙テストが、押下前の `applied` から実物の遷移を通すため）。
+    #[must_use]
+    pub fn with_applied(applied: AppliedImeState) -> Self {
+        Self {
+            applied,
+            ..Self::new()
+        }
+    }
+
+    /// generation を持たない apply 完了（同期経路・shadow toggle）の確認済み記録（ADR-098 決定6-a）。
+    ///
+    /// `ImeStateHub::record_confirmed` の純粋部（`applied` を `Confirmed` にし、向きが一致する pending を解放する）。
+    /// ADR-208 L0 で、全列挙テストが手書きの模倣でなく本物の遷移を通せるよう `ImeStateHub` から切り出した。
+    pub fn confirm_applied(&mut self, open: bool, at_ms: u64) {
+        self.applied = AppliedImeState::Confirmed { open, at_ms };
+        if let Some(p) = &self.pending {
+            if p.target == open {
+                self.pending = None;
+            }
         }
     }
 

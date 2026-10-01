@@ -847,9 +847,10 @@ fn forced_thumb_path_lives_in_the_engine_special_key_match() {
         "thumb_open_role_action は SetOpen を直接積まない（`ime_set_open_effects` 経由。ADR-206）"
     );
 
-    // 無変換/変換の VK 分岐は transport.rs に残す（Allow を返す形。分岐ごと消すと将来 shadow_action が付いたとき
-    // ImmCross で無条件 Suppress される）。
-    let transport = read_crate_file("src/runtime/transport.rs");
+    // 無変換/変換の VK 分岐は配送判断の核に残す（Allow を返す形。分岐ごと消すと将来 shadow_action が付いたとき
+    // ImmCross で無条件 Suppress される）。核は ADR-208 L0 で `runtime/transport.rs` から
+    // `state/physical_disposition.rs`（ungated）へ挙動を変えずに移した。
+    let transport = read_crate_file("src/state/physical_disposition.rs");
     let disposition = extract_fn_body(
         production_code_only(&transport),
         "fn thumb_or_role_fkey_disposition(",
@@ -857,7 +858,7 @@ fn forced_thumb_path_lives_in_the_engine_special_key_match() {
     assert!(
         disposition.contains("VK_CONVERT | crate::vk::VK_NONCONVERT")
             && !disposition.contains("explicit_ime_action_consumed"),
-        "transport.rs の無変換/変換の VK 分岐は Allow を返す形で残すこと（マーカーは撤去済み、ADR-206）"
+        "physical_disposition.rs の無変換/変換の VK 分岐は Allow を返す形で残すこと（マーカーは撤去済み、ADR-206）"
     );
 
     // InputRelay の窓では役割を付けない（エンジンが Consume して actuation が NotOwned だと誰も書かない）。
@@ -1678,8 +1679,11 @@ fn applied_direct_assignments_are_accounted_for() {
         // appliedを`Unknown`へ落とす1件を追加（BUG-156、`reduce()`内の正規書き込み）。
         // 6→7。`ModeKeyPassedThrough`のreduce内で、揃えた観測がappliedと食い違うときappliedを`Unknown`へ落とす
         // 1件を追加（ADR-205 D6、BUG-172。`reduce()`内の正規書き込み）。
-        ("src/state/ime_model.rs", 7),
-        ("src/state/platform_state.rs", 2),
+        // 7→8 / platform_state 2→1（ADR-208 L0）。`ImeStateHub::record_confirmed` の `applied` 書き込み
+        // （generation=None の完了記録）を、全列挙テストが本物の遷移を通せるよう `ImeModel::confirm_applied`
+        // へ移した（挙動不変。`record_confirmed` はこれを呼ぶだけ）。書き込み点の総数は変わらない。
+        ("src/state/ime_model.rs", 8),
+        ("src/state/platform_state.rs", 1),
     ];
     const STRUCT_LITERAL_FIELDS: [(&str, usize); 1] = [("src/state/ime_model.rs", 1)];
 
@@ -4164,7 +4168,10 @@ fn kp_stage_shadow_ime_toggle_never_reintroduces_case3_forced_actuate() {
 fn input_relay_profile_wiring_occurrence_counts_are_pinned() {
     let expectations: &[(&str, usize)] = &[
         ("src/focus/class_names.rs", 12),
-        ("src/runtime/transport.rs", 2),
+        // ADR-208 L0: `plan` の本体（InputRelay の早期 return）は `state/physical_disposition.rs::plan_core` へ
+        // 挙動を変えずに移した。`transport.rs` の `plan` は殻（`InputRelay` を名指ししない）。合計は 2 のまま。
+        ("src/runtime/transport.rs", 0),
+        ("src/state/physical_disposition.rs", 2),
         // ADR-163 TH1b-2a: `executor.rs::dispatch_ime_set_open` の InputRelay
         // ゲートは、5箇所（この関数 + `ime_controller.rs::apply` +
         // `open_chain.rs`の3関数）に重複していた同一条件のリテラル比較を
@@ -4806,8 +4813,14 @@ fn half_width_alnum_toggle_policy_is_wired_at_bootstrap_and_reload() {
 /// （CLAUDE.md 参照）、この静的スキャンが Linux CI 側の唯一の防波堤になる。
 #[test]
 fn bug116_shift_katakana_guards_are_present_in_production_code() {
-    let transport = read_crate_file("src/runtime/transport.rs");
-    let transport = strip_any_test_module(&transport);
+    // 配送判断の核は ADR-208 L0 で `state/physical_disposition.rs` へ移した（`transport.rs` の `plan` は殻）。
+    // 両方を連結して走査する（トークンの有無を見るだけなので、どちらにあってもよい）。
+    let transport = format!(
+        "{}\n{}",
+        strip_any_test_module(&read_crate_file("src/runtime/transport.rs")),
+        strip_any_test_module(&read_crate_file("src/state/physical_disposition.rs")),
+    );
+    let transport = transport.as_str();
     // Suppress の根拠は「役割由来の `Some(Toggle)` と 0xF3/0xF4 の組」（ADR-199 T4）。どちらかが消えると
     // VK だけ（または shadow_action だけ）で握りつぶす形に退行し、awase が書かないキーを Suppress しうる。
     for token in [
@@ -5577,7 +5590,8 @@ fn keys_ime_toggle_default_stays_empty_and_gui_jis_switch_follows_default() {
 #[test]
 fn bug173_physical_f2_is_never_suppressed_and_keyup_latch_order_is_fixed() {
     // 1. plan() の F2 分岐は常に Allow（VK だけで決まり、TSF/warmup の状態で Suppress を返さない）
-    let transport = read_crate_file("src/runtime/transport.rs");
+    // `plan` の本体（F2 分岐を含む）は ADR-208 L0 で `state/physical_disposition.rs::plan_core` へ移した。
+    let transport = read_crate_file("src/state/physical_disposition.rs");
     let transport = strip_any_test_module(&transport);
     let f2 = transport
         .find("if event.vk_code == crate::vk::VK_DBE_HIRAGANA {")

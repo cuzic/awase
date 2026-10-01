@@ -48,6 +48,8 @@ pub const VK_DELETE: VkCode = VkCode(0x2E);
 pub const VK_A: VkCode = VkCode(0x41);
 pub const VK_F11: VkCode = VkCode(0x7A);
 pub const VK_F12: VkCode = VkCode(0x7B);
+/// F13。役割由来の開閉操作の候補（`is_role_fkey` の先頭、ADR-199 決定18）。
+pub const VK_F13: VkCode = VkCode(0x7C);
 pub const VK_LSHIFT: VkCode = VkCode(0xA0);
 pub const VK_RSHIFT: VkCode = VkCode(0xA1);
 pub const VK_LCONTROL: VkCode = VkCode(0xA2);

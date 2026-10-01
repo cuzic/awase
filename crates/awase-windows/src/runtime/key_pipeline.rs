@@ -18,14 +18,7 @@ use awase::engine::{Effect, InputEffect, InputModeState, KanaLockStreak, WarnAct
 use awase::platform::TsfComposition as _;
 use awase::types::{KeyAction, KeyEventType, RawKeyEvent, ShadowImeAction};
 
-/// Shadow IME トグルの意図ソース (この pipeline 内のローカル routing 用)。
-#[derive(Debug, Clone, Copy)]
-enum IntentKind {
-    /// config 由来の同期キー
-    SyncKey,
-    /// 物理 KANJI キー
-    PhysicalImeKey,
-}
+use crate::state::explicit_press::ShadowIntentKind as IntentKind;
 
 impl Runtime {
     /// キーイベント処理エントリポイント
@@ -948,29 +941,13 @@ impl Runtime {
         // MS-IME自動検出由来のshadow_action) の順で意図を採用する。
         // 無変換/変換単独タップの開閉（bare `keys.ime_*`／IME 設定由来の役割）はここを通らず、
         // エンジンの特殊キー照合・FSM の単独タップ解決が担う（ADR-206）。
-        let intent_kind = if let Some(a) = event.ime_relevance.sync_direction {
-            Some((a, IntentKind::SyncKey))
-        } else if let Some(a) = event
-            .ime_relevance
-            .shadow_action
-            .filter(|_| crate::vk::is_static_idempotent_open_key(event.vk_code))
-        {
-            // ADR-207: VK_IME_ON/OFF（0x16/0x1A）は IME の種類に依らず冪等なので、`is_japanese_ime()`
-            // （awase のワーカースレッドの HKL 由来で偽になりうる）を問わず採用する。`keys.ime_detect`
-            // の既定（IMEオン/IMEオフ）を空にしても、従来 sync 既定が担っていた追随を保つ。
-            Some((a, IntentKind::PhysicalImeKey))
-        } else if self.platform_state.ime.belief.is_japanese_ime() {
-            event
-                .ime_relevance
-                .shadow_action
-                // ADR-199 決定18(ii): F13〜F24 の役割由来 Toggle は自動リピートの Down では昇格させない
-                // （物理の F13 はリピートし、`kp_stage_shadow_ime_toggle` はリピートを区別しないので、
-                // そのままではリピートのたびに開閉が反転する）。0xF3/0xF4・0x19 の挙動は変えない。
-                .filter(|_| !(event.was_down && crate::vk::is_role_fkey(event.vk_code)))
-                .map(|a| (a, IntentKind::PhysicalImeKey))
-        } else {
-            None
-        };
+        // 昇格する意図の選択（同期キー > 0x16/0x1A > 日本語 IME のときの shadow_action）は、ADR-208 L0 で
+        // `state/explicit_press.rs::select_shadow_intent`（ungated）へ挙動を変えずに切り出した
+        // （`explicit_press_delivery_with` の全列挙テストが同じ判断を Linux で呼ぶため）。
+        let intent_kind = crate::state::explicit_press::select_shadow_intent(
+            event,
+            self.platform_state.ime.belief.is_japanese_ime(),
+        );
         let Some((action, kind)) = intent_kind else {
             return false;
         };
