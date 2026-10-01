@@ -10,7 +10,7 @@ summary: |-
   (2) 同じ打鍵の二重書き込みを strip で防ぐ(`apply` の already-matched 省略は GjiDirect のみ)、(3) `check_active_transition` 由来の ActivationSync だけを止め明示操作の SetOpen は残す、(4) ActivationSync が `on_ime_applied` で担っていた副作用の棚卸し、
   (5) 起動前から存在する窓で `ka` がリテラルになる挙動を P2b の revert 条件にする、(6) P2a/P2b/P2b'/P2c の段階を決める。Opus round1(2026-10-01)の指摘を反映。ADR-212 決定5 を更新し、ADR-191 の「EngineDecision」節は P2c で改訂する。
 status: |-
-  採用(2026-10-01、Opus round1 反映済み)。実装状況: P2a は PR #408(スパイク `spike/adr213-p2ab` の CI で退行なし・I2 Unwarranted が 0 件に、`docs/experiments.md` エントリ 30 参照)。P2b/P2b'/P2c は未実装。実機・起動前の窓の `ka`・StaleConfirm 件数は未検証。
+  採用(2026-10-01、Opus round1 反映済み)。実装状況: P2a は PR #408(スパイク `spike/adr213-p2ab` の CI で退行なし・I2 Unwarranted が 0 件に、`docs/experiments.md` エントリ 30 参照)。P2b は CI で I2=0、BUG-180(PR #410)と同時に入れる。P2c は実装中。P2b' は B3 未検証のため候補のまま。実機・起動前の窓の `ka`・StaleConfirm 件数は未検証。
 related_adr:
   - "ADR-212"
   - "ADR-191"
@@ -72,6 +72,17 @@ sc-hz/kanji/dbe/shift の退行は B・C とも消えた(書き込み全停止�
    | P2b' | (P2b で取り残しが見えた場合だけ)ON/OFF 対称の BeliefSync 通知(決定4) | P2b と同じ土台での A/B |
    | P2c | `SetOpenOrigin::ActivationSync`・`ImeEvent::EngineActivationSync`・`handle_engine_activation_sync`・C2/C3 の整理(決定3・5)。テスト・lint・guard の更新 | コンパイル、`architecture_guard`、golden |
 9. **ADR-212 との関係**: ADR-212 決定5 の「P2 は保留」を、本 ADR の段階で再開する旨に更新する。ADR-191 の「EngineDecision」節は、P2c の PR で改訂する(ADR-212 決定6)。
+
+## 実装後の知見(2026-10-01、P2a=PR #408・P2b の CI 結果)
+
+- **P2b の CI**(`sc-*`、develop `59a5072c` と比較): 期待表は同一、I2 Unwarranted は全構成で 0(develop は最大17件)、起動前の窓の GJI(`sc-p2-initial-chrome-gji`)は 5/5 PASS。
+- **I2 が P2a 単体で間欠的に増える**(`sc-adr211-chrome-msime-f13`、5回中2回が超過、develop は 5回とも 1): Opus のコードレビューでは**退行ではない**。develop でも各 action の時点で ActivationSync の書き込みは出ており(filtered ログが Unwarranted しか拾わず見えなかった)、IME OFF より前の GJI I/O 観測(鮮度窓3秒)で授権されている。間欠は refresh(約500ms周期)と次の打鍵(約40ms)の競合による(推論)。`eff=false conf=true` は診断用の値で belief の食い違いではない。**P2b で I2=0 になるのは Unwarranted を出す経路ごと止めた副産物**で、原因の本体(明示意図より古い観測を drift correction と授権に使うこと)は残る。→ **P2a と P2b は同時に入れる**。原因の本体は P6 の候補(明示意図より前の観測を除外)。
+- **P2b の新しい懸念 `i4_gji_fsm_off_cold_composition`**(`sc-follow-chrome-atok-eisu`・`sc-follow-chrome-msime-hankaku`、再実行 4回中 1回+最初の run): 当初の仮説(絶対 IME OFF キーの書き手が ActivationSync だけだった、Opus B3)は**ログで反証**された(実 IME は閉じており、OFF は shadow toggle の `VK_IME_OFF` で書かれていた)。真因は2つの組み合わせ。
+  1. P2b で起動直後の loop 経路の `VK_IME_ON` が無くなり、それを引き金に起動していた GJI 変換プロセスが立ち上がらず、`gji_monitor` が最初の IME ON から最大約3秒つながらない(develop は書き込みの 10〜30ms 後に接続)。その間 literal-detect が `PlanSkippedLiteral` になり、cold probe が1 tickで `OnWarm` に確定する(実機では、ログイン後に一度でも IME を使っていれば小さい。GJI 変換プロセスの再起動後・ログイン直後は同じ窓ができる。推論)。
+  2. 候補窓 SHOW の保留 latch が IME OFF・フォーカス変更で捨てられない潜在バグ(develop にも以前からある。BUG-180、PR #410)。probe が早く終わったため、最後の送信の後に来た SHOW が残り、IME OFF の後の文字で古い SHOW が `StartComposition` として配られた。
+  対策: (1)BUG-180 の修正(PR #410)、(2)IME ON を書いたとき `gji_monitor` が未接続なら即時に再探索を要求する(新しい定数を足さない。**BUG-180 だけで i4 が消えるなら不要**)。起動時の `VK_IME_ON` を戻すのは ADR-212 の方針に反するので採らない。
+- **Opus B3 は今回の i4 の原因ではなく、未検証のまま残る**: IME が awase 以外の手段(言語バー・IME 自身が処理するキー)で閉じ、Engine が観測で deactivate する場合に、ActivationSync の OFF 方向が担っていた GjiFsm `ImeOff` 等が届かない件。P2b' の候補。
+- **検証に追加**: P2b 以降の CI では、各構成の run 1 で `attached to GJI process` の時刻が最初の送信より前か、`i4` と `PlanSkippedLiteral` の件数を develop と比べる。CI の複数回比較は、同じ ref への連続 dispatch が concurrency でキャンセルされるため、別ブランチ(`spike/*-repN`)で並列に流す。
 
 ## 非目的
 
