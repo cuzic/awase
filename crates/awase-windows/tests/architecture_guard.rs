@@ -5775,3 +5775,33 @@ fn derive_key_shadow_action_routes_ms_ime_to_msime_native_key_role() {
         "msime_key_assignment.rs: 値2（トグル）は Phase 4 で awase が肩代わりするので競合警告に含めない"
     );
 }
+
+/// `kp_apply_conv_engine_sync`（idle-conv-check の conv 観測由来の engine 同期）は、
+/// 書き込みと対の副作用（`ImeApplyRequested` の dispatch・イベント世代の確保・
+/// `TIMER_IME_REFRESH` の kill）を持たない（ADR-213 P2d-1、旧 C2）。
+///
+/// 旧実装はこれらを書いたが、conv 観測は書き込みではないので対の副作用は何も守らず、
+/// 世代だけが孤立 pending として残り、TsfNative で drift 補正タイマーを止めていた。
+/// `ReportOpenInference` 分岐の `schedule_ime_refresh(20)` は別物（kill ではなく予約）なので対象外。
+#[test]
+fn conv_engine_sync_has_no_apply_requested_generation_or_timer_kill() {
+    let path = "src/runtime/key_pipeline.rs";
+    let content = read_crate_file(path);
+    let production = production_code_only(&content);
+    let body = extract_fn_body(production, "fn kp_apply_conv_engine_sync(");
+    let code = non_comment_lines(body);
+    for forbidden in [
+        "ImeApplyRequested",
+        "allocate_event_generation",
+        "timer.kill(TIMER_IME_REFRESH)",
+        "handle_conv_engine_on_sync",
+    ] {
+        assert!(
+            !code.contains(forbidden),
+            "{path} の kp_apply_conv_engine_sync に `{forbidden}` が出現しています。\n\
+             conv 観測由来の engine 同期は PanicReset ガード解除\
+             （`release_panic_reset_guard_on_positive_evidence`）以外の副作用を持たないこと\
+             （ADR-213 P2d-1）。"
+        );
+    }
+}
