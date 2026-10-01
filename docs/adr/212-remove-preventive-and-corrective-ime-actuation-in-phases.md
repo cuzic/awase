@@ -45,7 +45,7 @@ related_adr:
 - **C1(ActivationSync)**: Engine の active/inactive 遷移が、対称性のために自動で `SetOpen` を発行し、executor が origin を見ずに実 VK/`ImmSetOpenStatus` の書き込みへ流す。
   ADR-191 は IME に書く振る舞いとして「EngineDecision」を認識しつつ、「発生元の軸が要るので、分離の是非を調査してから」と先送りしていた(L312・L322)。
   - **C2**(実送信の経路ではなく、**書かないのに pending を立てる経路**): idle-conv-check の `kp_apply_conv_engine_sync` が、`EngineSync::SetOpen(RomajiRecovered)` のとき Engine を経由せず `handle_engine_activation_sync` を**直接**呼ぶ。`SetOpen` の effect は出さず実 IME には書かないが、今すでに、完了の来ない pending transition(タイムアウトあり)と、書いていない抑制窓(`last_explicit_ime_action_ms`)を立てている(コメントの「actuation は同一」は実装と食い違う)。
-  - **C3**(再試行): 焦点の遷移中に落とした `SetOpen` を、settle 明けに出し直す仕組み(`strip_ime_set_open_if_settling`・`schedule_settle_retry`。2026-07-08「このせっけい→せっけい」対策=apply 完了通知でしか同期しないサブシステムの固着の防止)。
+  - **C3**(再試行): 焦点の遷移中に落とした `SetOpen` を、settle 明けに出し直す仕組み(`strip_ime_set_open_if_settling`・`schedule_settle_retry`。2026-07-08「このせっけい→せっけい」対策=apply 完了通知でしか同期しないサブシステムの固着の防止)。**注(ADR-213 P2d-2、2026-10-01)**: strip と strip した SetOpen の再試行は撤去済み。`schedule_settle_retry` は drift correction の settle 延期用だけ残る(P6 まで)。
 - **ActivationSync の actuation が担っていること(M6)**: 2026-08-04(IME OFF 後に Engine が勝手に ON へ戻る)の対策は、echo を `last_intent`/`desired_open` に書かないこと(belief 側)で、**actuation 自体は対策ではない**。actuation が実際に担うのは
   (i) `engine.rs` の「inactive → active: OS IME を強制的に開く(『nonaiyo』問題対策)」= belief が開・実 IME が閉のとき awase が開ける補正、(ii) 予測(ADR-191 の表・ADR-209・ADR-211)が belief を開にしたとき、warrant が下りれば**予測を実 IME に書いて自己成就させる**こと。(ii) は ADR-191「予測は書かない」と矛盾する。
   actuation を止めると、予測の誤りがリテラル出力として表に出るようになる(今は隠れている可能性)。
@@ -77,7 +77,7 @@ related_adr:
    → **計測専用の最小変更(PR #400)**: `dispatch_effect` で `[set-open] origin=… open=… generation=… outcome=…` を出す(key 経路・refresh 経路の両方が通る。sync は outcome を同じ行に、async〈ImmCross 先の窓〉は `outcome=async` で `generation` を出し、後から届く `on_ime_apply_complete{generation outcome}` の行と突き合わせる)。
    **数え方**: 実機(GJI+Windows Terminal、GJI+Chrome/Edge、MS-IME+メモ帳の通常使用)で、`[set-open] origin=ActivationSync` の件数を、直後の `actuation decision`/`[apply-ime]` の outcome(`Applied`/`AppliedWithoutSendInput`/`AlreadyMatched`/`Unwarranted`/`NotOwned`)別に数える。
    **注意(round3 m9)**: refresh 経路の async では `generation` が `None` や前の値になり、完了ログとの突き合わせに使えない場合がある。その場合は時刻と `open` の一致で対応を取る。
-   **範囲外の2つは、別の既存のログで数える**: settle で落とされた SetOpen(C3)は `strip_ime_set_open_if_settling` の `[focus-settle] SetOpen(..) effect stripped`、C2 は `[idle-conv-check] TsfNative: engine ON 同期`(C2 は `dispatch_effect` を通らず、書かないので実送信の数える対象でもない)。
+   **範囲外の2つは、別の既存のログで数える**: (C3 の strip は ADR-213 P2d-2 で撤去済みで、数える対象がなくなった)、C2 は `[idle-conv-check] TsfNative: engine ON 同期`(C2 は `dispatch_effect` を通らず、書かないので実送信の数える対象でもない)。
    **棚卸し漏れ(2026-10-01)**: Engine の非キーボード経路(`FocusChanged`/`RefreshState` の `check_active_transition`、`runtime/mod.rs::execute_decision`→`executor.execute_from_loop`)は `handle_engine_activation_sync` を通らない。CI では awase 起動47ms後、観測ゼロのbeliefから`dispatch_ime_set_open{open=true}`→`GJI direct`→`outcome=Applied`を確認した。C1〜C3だけでは入口を網羅していなかった。
    **「実送信」は `outcome=Applied` だけで数えない**(ActuationDecision.outcome:Applied だけでは操作成功と判断できない、BUG-141)。`win32.rs` の SendInput のバッチ分類(`kanji_marker` 等の目印)と突き合わせる。窓の種類・belief の状態(既知/未知)別に。
 5. **P2 は保留(方針見直し、2026-10-01)。再開の設計と段階は [ADR-213](213-shadow-toggle-off-to-on-explicit-actuation-then-remove-activation-sync.md)(P2a/P2b/P2b'/P2c)**。
@@ -85,7 +85,7 @@ related_adr:
    - **gate による縮小は無効のため取り下げ**: `handle_engine_activation_sync` 先頭で棄却しても、pending・抑制窓・`EngineActivationSync` の記録を省くだけで、decision の effect は `kp_stage_execute`→executor へ流れた。`[activation-sync] skipped SetOpen(true)` の直後に同じ打鍵の `GJI direct: send 0x0016`・`outcome=Applied` があるため、実書き込みは続いていた。
    - Imm32Unavailable では物理の半角/全角(0x16等)をOSへ届けず(`[imm32-off] key suppress`)、shadow toggleでbeliefをONにする。shadow toggleはON→OFFを書き込むがOFF→ONを書かないため、そのEngine活性化に伴うActivationSyncの`SetOpen(true)`が唯一の実ON書き込みになる。この経路は【予防的・補正的】ではなく、ユーザーが押したキーへの直接の応答(決定2の【許可】)を担う。
    - したがって、ActivationSync のvariantごとの削除やEngineで`SetOpen`を出さない変更には、先にshadow toggleのOFF→ONを明示的なactuation(`ExplicitUserAction`相当)にする設計が必要。それ無しでは全面停止と同じ退行になる。
-   - **C3**: settle の strip は ExplicitUserAction の SetOpen も落とすため、P2再開時に `schedule_settle_retry` の他用途を含めて要否を確認する。
+   - **C3**: settle の strip は ExplicitUserAction の SetOpen も落とすため、P2再開時に `schedule_settle_retry` の他用途を含めて要否を確認する。→ ADR-213 P2d-2 で strip・settle フィルタを撤去、`schedule_settle_retry` は drift correction 用だけ残した。
    **止めたときに戻りうる不具合(検証に入れる)**:
    - **BUG-170 型**: ActivationSync の書き込み結果は `on_ime_applied` → GjiFsm の同期・`feed_composition_event`・A3 の随伴 warmup を駆動している。書かなくなると、apply 完了通知でしか同期しない GjiFsm 等が `OffCold/OnWarm` に取り残され、毎打鍵 per-VK confirm → StaleConfirm → ESC で未確定文字が消える。ADR-203(ii)の `GjiEvent::Reopen` は予測 ON・shadow toggle ON の場合だけ発火する。**「Engine が観測/予測で active になった」ことを GjiFsm に伝える経路が無くなる可能性がある**ので、必要なら `Reopen` の発火元に「Engine の活性遷移」を足す判断を含める。検証: StaleConfirm の件数、ESC での未確定文字の消失。
    - **予測の誤りの表面化**(上の M6): ADR-209/211 の予測の偽 ON の件数(`[key-effect-miss]`)を見る。
