@@ -300,6 +300,8 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
         obs.ime_show_seq(),
         obs.ime_change_seq(),
     );
+    // 書き込みが `SendMessageTimeoutW` の時間切れで失敗したか（診断専用。`Targeted` だけが判別できる）。
+    let mut open_timed_out = false;
     let raw = match op {
         ImmCrossOp::Targeted {
             target,
@@ -322,6 +324,7 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
             if let Some(conv_outcome) = result.conv {
                 tracing::debug!("[apply-ime] ROMAN 補完結果: {conv_outcome:?}");
             }
+            open_timed_out = result.open_timed_out;
             result.open
         }
         ImmCrossOp::Untargeted => {
@@ -373,9 +376,16 @@ async fn imm_cross_write(op: ImmCrossOp, open: bool) -> (ImeOpenOutcome, Option<
                 );
                 ImeOpenOutcome::AlreadyMatched
             } else {
+                // ADR-208 L1 の調査: 送信が時間切れ（`open_timed_out`）だったときのメッセージは取り消されず、IME 窓が
+                // 後で処理しうる。それでも**フォールスルー（VK の追い送り）は止めない**。(1) チェーンの後続機構は
+                // GjiDirect/MsImeDirect だけで、どちらも絶対指定（`VK_IME_ON/OFF`・F21/F22 等）の冪等な書き込みなので、
+                // 遅れて届いた ImmCross と同じ向きに重なるだけで 1 押下 2 回の「開閉」にはならない。(2) 止めると、IME 窓が
+                // 応答しない窓（ここへ来る唯一の理由）で VK へ落ちる収束経路（INV-L2）を失う。(3) 次の押下の書き込みと
+                // 遅れて届いた古いメッセージの順序逆転は、フォールスルーの有無に関わらず起きる（取り消せない）。
+                // 時間切れの頻度は下のログで測る（`open_timed_out`）。
                 tracing::info!(
-                    "[apply-ime] ImmCross failed (async, actual ime_on={actual:?}), \
-                     falling through to next mechanism"
+                    "[apply-ime] ImmCross failed (async, actual ime_on={actual:?}, \
+                     timed_out={open_timed_out}), falling through to next mechanism"
                 );
                 // `Failed` は `falls_through` が真 → run_chain_async が次の機構へ
                 // 進む（旧 `apply_skipping_imm` と同じ範囲）。
