@@ -10,19 +10,22 @@
 //! - **P2 (絶対キーの 1 回収束)**: 絶対指定キーは 1 押下で実 IME がキーの向きに一致する。
 //! - **P3 (トグルの 2 回収束)**: トグルキーは 2 押下以内で実 IME の状態が変わる（固着しない）。
 //! - **P4 (不動点なし)**: 最大 3 押下で同じ「どちらも届かない」を 2 回続けて繰り返さない。
-//! - **P5 (BUG-113)**: 同一押下で shadow 経路と Engine SetOpen が両方来ても（向きが同じでも逆でも）書き込みは 1 回
-//!   （押下 id が L1 で入るまで未達）。
-//! - **P6**: 自動リピートの Down は対象外（`press=None`）。リピートで新たに書かない。
+//! - **P5 (BUG-113)**: 同一押下で shadow 経路と Engine SetOpen が両方来ても、**同じ向きの二重送信は無い**（押下 ID の予約、
+//!   ADR-208 L1）。向きが逆なら Engine の明示コンボが上書きして最終の向きは Engine（書き込みは 2 回。衝突の優先順位）。
+//! - **P6**: 自動リピートの Down は対象外（`press=None`）。押下の書き込みの直後のリピートは、GjiDirect の `applied` の
+//!   already-matched 省略に任せて VK を追い送りしない（ImmCross/MsImeDirect に省略は無く、従来どおり）。
 //!
-//! 現状はこれらが破れる。**`#[should_panic]` にせず、破れるケースを ADR-208 監査（`docs/tasks/adr208-liveness-audit-2026-10-01.md`）
-//! の S-1〜S-4・L-x に対応するクラスごとの件数と代表例として golden（`tests/golden/explicit_press_counterexamples.txt`）に固定する。**
-//! L1〜L3 で穴を直すと件数が減り、golden の更新（`UPDATE_GOLDEN=1`）がそのまま進捗になる。golden に載らない
-//! 未分類の反例（`unclassified`）が出たらテストは失敗する（モデルか分類の更新漏れ）。
+//! **本番の判断は ADR-208 L1 の `DeliveryMode::PressId`**（押下 ID の予約と applied の未知化）。破れるケースは
+//! **`#[should_panic]` にせず**、ADR-208 監査（`docs/tasks/adr208-liveness-audit-2026-10-01.md`）の S-1〜S-4・L-x に対応する
+//! クラスごとの件数と代表例として golden（`tests/golden/explicit_press_counterexamples.txt`）に固定する。
+//! L1 で S-1 は 0 になった（`P1-PreL1` が L1 前の件数）。L2/L3 で穴を直すと件数が減り、golden の更新（`UPDATE_GOLDEN=1`）が
+//! そのまま進捗になる。golden に載らない未分類の反例（`unclassified`）が出たらテストは失敗する（モデルか分類の更新漏れ）。
 //!
 //! 授権（`issue_open_warrant`）は合成した `IntentStore`/`ObservationStore` に対して**本物**を呼ぶ（`StoreJudge`）。
 //!
-//! 遷移（書いた後の applied）は実物の `ImeModel`（`confirm_applied`・`reduce`）を通す。D4 の固定点（`DeliveryMode::FixedPoint`）で
-//! の P1 も参考として golden に載せる（L3 で本番がこの形になる）。
+//! 遷移（書いた後の applied）は実物の `ImeModel`（`confirm_applied`・`reduce`）を通す。押下の予約は本番と同じ純粋な
+//! `PressLedger`、applied の未知化は本番と同じ `explicit_press_shadow_on` を呼ぶ。D4 の固定点（`DeliveryMode::PressIdFixedPoint`）
+//! での P1 も参考として golden に載せる（L3 で本番がこの形になる）。
 //!
 //! 再生成: `UPDATE_GOLDEN=1 cargo test -p awase-windows --test explicit_press_exhaustive`
 
@@ -35,7 +38,7 @@ use std::time::Instant;
 use awase_windows::state::app_ime_policy::AppImePolicy;
 use awase_windows::state::evidence::AnyObservation;
 use awase_windows::state::explicit_press::{
-    dual_route_writes, explicit_press_delivery_with, ime_after_press, state_after_press,
+    dual_route_writes_with, explicit_press_delivery_with, ime_after_press, state_after_press,
     AppliedKnowledge, Delivery, DeliveryMode, ElisionReason, ExplicitKey, KeyMeaning, Physical,
     PressProfile, PressState, Resolution, Violation, WarrantJudge, WarrantRequest,
 };
@@ -122,7 +125,15 @@ impl WarrantJudge for StoreJudge {
     }
 }
 
+/// 本番の判断（ADR-208 L1: 押下 ID の予約と applied の未知化）。
+const PROD: DeliveryMode = DeliveryMode::PressId;
+
 fn delivery(judge: &StoreJudge, s: &PressState, key: ExplicitKey) -> Delivery {
+    explicit_press_delivery_with(s, key, judge, PROD)
+}
+
+/// L1 前（ADR-208 L0 の現状）の判断。`P1-PreL1` で件数を比べるためだけに使う。
+fn delivery_pre_l1(judge: &StoreJudge, s: &PressState, key: ExplicitKey) -> Delivery {
     explicit_press_delivery_with(s, key, judge, DeliveryMode::Legacy)
 }
 
@@ -302,12 +313,19 @@ impl PropStat {
 
 struct Report {
     p1: PropStat,
+    /// 参考: L1 前（押下 ID なし）の P1。S-1 が L1 で 0 になったことを件数で残す。
+    p1_pre_l1: PropStat,
     p1_fixed_point: PropStat,
     p2: PropStat,
     p3: PropStat,
     p4: PropStat,
     p5: PropStat,
     p6: PropStat,
+    /// P5 の参考: 同一押下で向きが逆の衝突で、Engine が shadow を上書きして 2 回書いた（Engine の向きに収束した）件数。
+    p5_engine_overrides: u64,
+    /// P5 の参考: 向きが逆の衝突だが Engine 自身の書き込みが省略され（授権・Win キー等）、shadow の向きが残った件数
+    /// （P1 のクラス〈S-2 等〉で扱う別の穴。L2 以降で減る）。
+    p5_engine_write_elided: u64,
     states: u64,
     plausible_states: u64,
 }
@@ -316,12 +334,15 @@ fn analyze() -> Report {
     let judge = StoreJudge::default();
     let mut rep = Report {
         p1: PropStat::default(),
+        p1_pre_l1: PropStat::default(),
         p1_fixed_point: PropStat::default(),
         p2: PropStat::default(),
         p3: PropStat::default(),
         p4: PropStat::default(),
         p5: PropStat::default(),
         p6: PropStat::default(),
+        p5_engine_overrides: 0,
+        p5_engine_write_elided: 0,
         states: 0,
         plausible_states: 0,
     };
@@ -340,7 +361,15 @@ fn analyze() -> Report {
                     format!("{} -> {}", fmt_state(&s, key, None), fmt_delivery(&d1))
                 });
             }
-            let dfp = explicit_press_delivery_with(&s, key, &judge, DeliveryMode::FixedPoint);
+            let dpre = delivery_pre_l1(&judge, &s, key);
+            rep.p1_pre_l1.checked += 1;
+            if let Some(class) = p1_class(&s, key, &dpre) {
+                rep.p1_pre_l1.add(class, &s, || {
+                    format!("{} -> {}", fmt_state(&s, key, None), fmt_delivery(&dpre))
+                });
+            }
+            let dfp =
+                explicit_press_delivery_with(&s, key, &judge, DeliveryMode::PressIdFixedPoint);
             rep.p1_fixed_point.checked += 1;
             if let Some(class) = p1_class(&s, key, &dfp) {
                 rep.p1_fixed_point.add(class, &s, || {
@@ -348,12 +377,31 @@ fn analyze() -> Report {
                 });
             }
 
-            // P6: リピートの Down は対象外。リピートで新たに書かない（現状は書く＝`press=None` の省略に頼れていない）。
-            if s.was_down && !s.win_held && key.is_target_press_key() {
+            // P6: 押下の書き込みの直後の自動リピート（`press=None`）。GjiDirect は `applied` の already-matched 省略で VK を
+            // 追い送りしない（L1: 押下の書き込みだけが applied を未知にする。リピートは従来の省略）。トグルキーのリピートは
+            // belief を反転し続ける既存の挙動（ADR-199 決定18(ii) は F13 だけを除外）、ImmCross/MsImeDirect に省略は無い（従来どおり）。
+            if !s.was_down && !s.win_held && key.is_target_press_key() && d1.write.is_some() {
+                let s1 = PressState {
+                    was_down: true,
+                    ..state_after_press(&s, key, &d1)
+                };
+                let d2 = delivery(&judge, &s1, key);
                 rep.p6.checked += 1;
-                if d1.write.is_some() {
-                    rep.p6.add("repeat_writes", &s, || {
-                        format!("{} -> {}", fmt_state(&s, key, None), fmt_delivery(&d1))
+                if d2.write.is_some() {
+                    let class = if key.meaning() == KeyMeaning::Toggle && key.is_shadow_path() {
+                        "repeat_toggles_belief"
+                    } else if s.chain_head_is_gji_direct() {
+                        "repeat_rewrites_gji_direct"
+                    } else {
+                        "repeat_rewrites_no_applied_elision"
+                    };
+                    rep.p6.add(class, &s, || {
+                        format!(
+                            "{} -> 押下 {} / 直後のリピート {}",
+                            fmt_state(&s, key, None),
+                            fmt_delivery(&d1),
+                            fmt_delivery(&d2)
+                        )
                     });
                 }
             }
@@ -429,23 +477,27 @@ fn analyze() -> Report {
                 cur_d = delivery(&judge, &cur, key);
             }
 
-            // P5（BUG-113）: 同一押下で shadow 経路と Engine の SetOpen が両方来る構成。向きが同じでも逆でも書き込みは 1 回。
+            // P5（BUG-113）: 同一押下で shadow 経路と Engine の SetOpen が両方来る構成。同じ向きの二重送信は無い。
+            // 逆向きなら Engine の明示コンボが上書きする（最終の向きは Engine）。
             if key.is_shadow_path() && key.meaning() != KeyMeaning::NoIntent {
-                for engine_key in [ExplicitKey::EngineOn, ExplicitKey::EngineOff] {
+                for (engine_key, engine_open) in [
+                    (ExplicitKey::EngineOn, true),
+                    (ExplicitKey::EngineOff, false),
+                ] {
                     rep.p5.checked += 1;
-                    let w = dual_route_writes(&s, key, engine_key, &judge);
-                    if let [Some(a), Some(b)] = w {
-                        let class = if a == b {
-                            "bug113_double_send_same_direction"
-                        } else {
-                            "bug113_double_send_opposite_direction"
-                        };
-                        rep.p5.add(class, &s, || {
-                            format!(
-                                "{} + {engine_key:?} -> shadow write={a} / engine write={b}",
-                                fmt_state(&s, key, None)
-                            )
-                        });
+                    let w = dual_route_writes_with(&s, key, engine_key, &judge, PROD);
+                    match w {
+                        [Some(a), Some(b)] if a == b => {
+                            rep.p5.add("bug113_double_send_same_direction", &s, || {
+                                format!(
+                                    "{} + {engine_key:?} -> shadow write={a} / engine write={b}",
+                                    fmt_state(&s, key, None)
+                                )
+                            });
+                        }
+                        [Some(_), Some(_)] => rep.p5_engine_overrides += 1,
+                        [Some(a), None] if a != engine_open => rep.p5_engine_write_elided += 1,
+                        _ => {}
                     }
                 }
             }
@@ -457,21 +509,22 @@ fn analyze() -> Report {
 fn render(rep: &Report) -> String {
     let mut out = String::new();
     out.push_str(
-        "# 明示キー押下の配送 現状の反例 golden (ADR-208 L0)\n\
+        "# 明示キー押下の配送 現状の反例 golden (ADR-208 L1 時点)\n\
          #\n\
          # 生成元: crates/awase-windows/tests/explicit_press_exhaustive.rs\n\
          # このファイルは自動生成される。更新は UPDATE_GOLDEN=1 で再生成すること。\n\
          #\n\
          # 状態空間(belief 2 × applied 5 × is_japanese 2 × profile 6 × kind 2 × current_focus 2 × 観測 3 ×\n\
-         # IntentStore 3 × candidate_was_seen 2 × chord 2 × win 2 × was_down 2) × キー 12 種を全列挙した、現状の本番判断の合成結果。\n\
+         # IntentStore 3 × candidate_was_seen 2 × chord 2 × win 2 × was_down 2) × キー 12 種を全列挙した、現状(ADR-208 L1)の本番判断の合成結果。\n\
          # 反例は「分類 × 件数 + 各分類の最小の代表例(基準状態からのずれが最小)」で固定する(S-2 だけで状態空間の約半分が\n\
          # 反例なので行は列挙しない)。分類に当てはまらない反例(unclassified)が出たらテストが失敗する。\n\
-         # L1〜L3 で穴を直すと該当クラスの件数が 0 に向かう(この差分が進捗)。\n\
+         # L1 で S-1 は 0 になった(P1-PreL1 が L1 前の件数)。L2〜L3 で穴を直すと該当クラスの件数が 0 に向かう(この差分が進捗)。\n\
          # 「起こりうる」= Blind プロファイル(Imm32Unavailable/TsfNative)で Actuating 観測が無い組み合わせ。\n\
          # 対象押下 = 非リピート・Win 押下なし・意図を持つキー。P1 の合格は Delivery が配送か書き込みのちょうど一方\n\
          # (Delivery::resolve が Ok)で、配送側なら前提 A1 のキー(0x16/0x1A・0xF0/F2・学習済み 0xF3/0xF4)。\n\
          # P5 は「同一押下で shadow 書き込みの後に Engine の SetOpen が続くとき、executor は押下前の applied を見る」という\n\
-         # 現状のモデル(推測)での件数。押下 id(L1)で 0 になるべきもの。\n\
+         # モデル(推測)。押下 ID の予約(L1)で同じ向きの二重送信は 0。逆向きは Engine が上書きする(件数は engine_overrides)。\n\
+         # P6 は「押下の書き込みの直後の自動リピート」を 2 押下で見る。\n\
          #\n",
     );
     let _ = writeln!(
@@ -481,15 +534,20 @@ fn render(rep: &Report) -> String {
         rep.plausible_states,
         ExplicitKey::ALL.len()
     );
-    let props: [(&str, &str, &PropStat); 7] = [
+    let props: [(&str, &str, &PropStat); 8] = [
         (
             "P1",
             "INV-L1: 対象押下の Delivery が配送か書き込みのちょうど一方で、配送側なら A1 のキー",
             &rep.p1,
         ),
         (
+            "P1-PreL1",
+            "(参考) L1 前(押下 ID なし、ADR-208 L0 の現状)の P1。S-1 が L1 で 0 になった差分を残す",
+            &rep.p1_pre_l1,
+        ),
+        (
             "P1-FixedPoint",
-            "(参考) D4 の固定点(plan(false) を先に評価し Suppress なら no-op でも書く)を適用したときの P1。L3 で本番がこの形になる",
+            "(参考) L1 に D4 の固定点(plan(false) を先に評価し Suppress なら no-op でも書く)を重ねたときの P1。L3 で本番がこの形になる",
             &rep.p1_fixed_point,
         ),
         (
@@ -509,17 +567,29 @@ fn render(rep: &Report) -> String {
         ),
         (
             "P5",
-            "同一押下で shadow 経路と Engine SetOpen が両方来ても書き込みは 1 回（向きが逆の場合を含む。現状モデル）",
+            "同一押下で shadow 経路と Engine SetOpen が両方来ても、同じ向きの二重送信は無い（押下 ID の予約。逆向きは Engine が上書き）",
             &rep.p5,
         ),
         (
             "P6",
-            "自動リピートの Down で新たに書かない（対象外。press=None の従来の省略に任せる）",
+            "押下の書き込みの直後の自動リピート（press=None）で、GjiDirect は VK を追い送りしない（applied の省略）",
             &rep.p6,
         ),
     ];
     for (id, desc, stat) in props {
         let _ = writeln!(out, "## {id}: {desc}");
+        if id == "P5" {
+            let _ = writeln!(
+                out,
+                "info\tengine_overrides\t{}\t(向きが逆で Engine が shadow を上書きして 2 回書き、最終の向きが Engine)",
+                rep.p5_engine_overrides
+            );
+            let _ = writeln!(
+                out,
+                "info\tengine_write_elided\t{}\t(向きが逆だが Engine 自身の書き込みが省略され shadow の向きが残る。授権・Win キー等の別の穴)",
+                rep.p5_engine_write_elided
+            );
+        }
         let _ = writeln!(
             out,
             "checked\t{}\tviolations\t{}\tplausible_violations\t{}",
@@ -579,6 +649,7 @@ fn exhaustive_properties_and_counterexample_golden() {
     // 分類漏れは golden に載せず落とす（モデルか分類の更新漏れ）。
     for (name, stat) in [
         ("P1", &rep.p1),
+        ("P1-PreL1", &rep.p1_pre_l1),
         ("P1-FixedPoint", &rep.p1_fixed_point),
         ("P2", &rep.p2),
         ("P3", &rep.p3),
@@ -744,12 +815,160 @@ fn physical_delivery_matches_the_audit_table() {
     }
 }
 
-/// P5（BUG-113）: 同一押下で shadow 書き込みと Engine SetOpen が両方来ても送信 1 回。
-/// 現状は押下 id が無く、executor が押下前の `applied` を見るため二重送信になる状態がある
-/// （件数は golden の P5）。ADR-208 L1（押下 id）で通ること。
+/// P5（BUG-113）: 同一押下で shadow 書き込みと Engine SetOpen が両方来ても、同じ向きの二重送信は無い。
+/// ADR-208 L1（押下 ID: `PressId`・`ImeEffect::SetOpen.press`・`ActuationOrder.press`・`PressLedger`）で通る
+/// （L1 前の件数は `dual_route_writes`〈Legacy〉の同じ空間で非ゼロだった）。向きが逆の衝突は Engine が上書きする。
 #[test]
-#[ignore = "ADR-208 L1（押下 id: PressId・ImeEffect::SetOpen.press・ActuationOrder.press・last_written_press）が入るまで未達。現状の件数は golden の P5"]
 fn p5_same_press_sends_once() {
     let rep = analyze();
     assert_eq!(rep.p5.violations, 0, "{:?}", rep.p5.classes.keys());
+    // 衝突の優先順位が実際に働いている（空振りしていない）。
+    assert!(
+        rep.p5_engine_overrides > 0,
+        "向きが逆の衝突が 1 件も無い=モデルが衝突を作れていない"
+    );
+}
+
+/// L1 前（押下 ID なし）は同一押下の二重送信が実際に起きる（P5 が意味のあるテストであることの対照）。
+#[test]
+fn p5_pre_l1_double_sends_exist() {
+    let judge = StoreJudge::default();
+    let mut doubles = 0u64;
+    for s in PressState::all().filter(|s| !s.was_down && !s.win_held) {
+        for key in [
+            ExplicitKey::StaticOn,
+            ExplicitKey::StaticOff,
+            ExplicitKey::SyncOn,
+            ExplicitKey::SyncOff,
+        ] {
+            for engine_key in [ExplicitKey::EngineOn, ExplicitKey::EngineOff] {
+                if let [Some(_), Some(_)] =
+                    dual_route_writes_with(&s, key, engine_key, &judge, DeliveryMode::Legacy)
+                {
+                    doubles += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        doubles > 0,
+        "L1 前に二重送信が無いなら P5 は検査になっていない"
+    );
+}
+
+/// S-1（GjiDirect の already-matched。Engine 経由の絶対キー × 古い applied）は L1 で 0 件になる。L1 前は非ゼロ。
+#[test]
+fn s1_already_matched_is_resolved_by_l1() {
+    let rep = analyze();
+    for (name, stat) in [("P1", &rep.p1), ("P1-FixedPoint", &rep.p1_fixed_point)] {
+        assert!(
+            !stat.classes.contains_key("S1_already_matched"),
+            "{name} に S-1 が残っています: {:?}",
+            stat.classes
+                .get("S1_already_matched")
+                .and_then(|c| c.example.as_ref())
+        );
+    }
+    assert!(
+        rep.p1_pre_l1
+            .classes
+            .get("S1_already_matched")
+            .is_some_and(|c| c.all > 0),
+        "L1 前の P1 に S-1 が無い=対照が成り立っていない"
+    );
+}
+
+/// P6: 押下の書き込みの直後の自動リピートで、GjiDirect は VK を追い送りしない。
+#[test]
+fn p6_repeat_never_rewrites_gji_direct() {
+    let rep = analyze();
+    assert!(
+        !rep.p6.classes.contains_key("repeat_rewrites_gji_direct"),
+        "{:?}",
+        rep.p6
+            .classes
+            .get("repeat_rewrites_gji_direct")
+            .and_then(|c| c.example.as_ref())
+    );
+    assert!(rep.p6.checked > 0);
+}
+
+/// L1 が L0 から変えるのは、押下 ID を持つ押下（非リピート）の Engine 経路の already-matched 省略（S-1）だけ。
+/// shadow 経路は押下 ID あり（非リピート）なら L0 と同じ（従来から無条件に降格していた）、Engine 経路はリピート（`press=None`）
+/// なら L0 と同じ（`applied` の省略のまま）。
+#[test]
+fn l1_changes_only_the_press_engine_already_matched_elision() {
+    let judge = StoreJudge::default();
+    for s in PressState::all() {
+        for key in ExplicitKey::ALL {
+            let pre = delivery_pre_l1(&judge, &s, key);
+            let l1 = delivery(&judge, &s, key);
+            // `reserved`（予約の記録）は L1 で増えた帳簿で、書く/書かないの判断ではない。
+            let l1 = Delivery {
+                reserved: None,
+                ..l1
+            };
+            if key.is_shadow_path() {
+                if !s.was_down {
+                    assert_eq!(
+                        pre,
+                        l1,
+                        "{} 非リピートの shadow 経路は L0 と同じ",
+                        fmt_state(&s, key, None)
+                    );
+                }
+                // リピートの shadow 経路は `applied` の省略（従来の無条件降格をやめる）ので、書いたかが変わりうる。
+            } else if s.was_down || pre.reason != ElisionReason::AlreadyMatched {
+                assert_eq!(
+                    (pre.physical, pre.write, pre.reason, pre.belief_after),
+                    (l1.physical, l1.write, l1.reason, l1.belief_after),
+                    "{} Engine 経路は S-1（押下の already-matched）以外は L0 と同じ",
+                    fmt_state(&s, key, None)
+                );
+            } else {
+                // S-1: 押下の書き込みは already-matched で省かれず、授権・Win キーの判定へ進む。
+                assert_ne!(
+                    l1.reason,
+                    ElisionReason::AlreadyMatched,
+                    "{}",
+                    fmt_state(&s, key, None)
+                );
+            }
+        }
+    }
+}
+
+/// 同一押下の 2 経路の評価順（shadow → Engine）で、Engine が先に予約した逆向きを shadow が上書きしない
+/// （現状の順序ではありえないが、`PressLedger` の優先順位が本番の呼び出し側の前提）。
+#[test]
+fn shadow_never_overrides_an_earlier_engine_reservation() {
+    use awase_windows::state::explicit_press::explicit_press_delivery_after;
+    let judge = StoreJudge::default();
+    let base = PressState {
+        belief_open: false,
+        applied: AppliedKnowledge::Unknown,
+        is_japanese_ime: true,
+        profile: PressProfile::ImmCross,
+        ime_kind: ImeKindId::Gji,
+        current_focus_known: true,
+        actuating_obs: None,
+        intent: None,
+        candidate_was_seen: false,
+        ctrl_chord: false,
+        win_held: false,
+        was_down: false,
+    };
+    // Engine が OFF（false）を予約済みの押下に、shadow の ON（0x16）が来ても書かない。
+    let d = explicit_press_delivery_after(&base, ExplicitKey::StaticOn, &judge, PROD, Some(false));
+    assert_eq!(d.write, None);
+    assert_eq!(d.reason, ElisionReason::AlreadyWrittenThisPress);
+    // 同じ向きでも書かない。リピート（press なし）は予約を見ない。
+    let d = explicit_press_delivery_after(&base, ExplicitKey::StaticOn, &judge, PROD, Some(true));
+    assert_eq!(d.write, None);
+    let rep = PressState {
+        was_down: true,
+        ..base
+    };
+    let d = explicit_press_delivery_after(&rep, ExplicitKey::StaticOn, &judge, PROD, Some(true));
+    assert_ne!(d.reason, ElisionReason::AlreadyWrittenThisPress);
 }

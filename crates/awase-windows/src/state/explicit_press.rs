@@ -62,8 +62,10 @@ use crate::state::ime_event::ImePolicyProfile;
 use crate::state::ime_kind::ImeKindId;
 use crate::state::ime_model::{apply_result_effective_open, AppliedImeState, ImeModel};
 use crate::state::physical_disposition::PhysicalKeyDisposition;
+use crate::state::press_ledger::{PressLedger, PressSource};
 use crate::state::ApplyGeneration;
 use awase::platform::ImeOpenOutcome;
+use awase::types::PressId;
 
 // ── 本番と共有する純粋な判断（key_pipeline / platform_state が呼ぶ）────────────────────
 
@@ -464,6 +466,20 @@ impl PressState {
         v.into_iter()
     }
 
+    /// 先頭の書き込み機構が GjiDirect か（GjiDirect だけが `applied` の already-matched 省略を持つ。
+    /// L1 の自動リピートで「同じ向きの VK を追い送りしない」が `applied` 省略に頼れるかの判定に使う）。
+    #[must_use]
+    pub fn chain_head_is_gji_direct(&self) -> bool {
+        let inputs = DecisionInputs {
+            profile: self.profile.app_profile(),
+            kind: self.ime_kind,
+            shadow_on: None,
+            belief_input_mode: InputModeState::Unknown,
+            candidate_was_seen: false,
+        };
+        decide_chain(inputs)[0] == WriteMechanism::GjiDirect
+    }
+
     /// 実機で起こりうる組み合わせか。Blind プロファイル（Chrome/Edge/WT 等）は実 IME の open を直接読めないので、
     /// Actuating な観測は構造的に存在しない。反例の件数を「全空間」と「起こりうる空間」で並べるために使う。
     #[must_use]
@@ -502,6 +518,9 @@ pub enum ElisionReason {
     AlreadyMatched,
     /// Win キー押下中（`UnsafeToToggle`。その押下だけで状態は変わらない）。
     WinHeld,
+    /// 同じ押下で既に同じ向きを予約済み（`PressLedger::claim` が `Duplicate`/`ConflictKept`。ADR-208 L1 D1、BUG-113）。
+    /// Engine 経路は `AlreadyMatched` を返して完了へ流し、shadow 経路は何も返さない（`applied` を動かさない）。
+    AlreadyWrittenThisPress,
 }
 
 /// 1 押下の配送の決定結果（現状の本番の判断をそのまま記録した形。二重・空振りも表せる）。
@@ -525,6 +544,9 @@ pub struct Delivery {
     pub belief_after: bool,
     /// 押下後に IntentStore が持つ（フォーカス対象の）明示意図。
     pub intent_after: Option<bool>,
+    /// この押下で `last_written_press` に予約した向き（押下 ID を持つ押下が order を起案したときだけ `Some`。
+    /// 同一押下の後続の経路〈`explicit_press_delivery_after`〉の `claimed` に渡す。ADR-208 L1 D1）。
+    pub reserved: Option<bool>,
 }
 
 /// INV-L1 を満たす決定（配送か書き込みの**ちょうど一方**）。
@@ -565,7 +587,9 @@ impl Delivery {
     pub const fn outcome(&self) -> Option<ImeOpenOutcome> {
         match self.reason {
             ElisionReason::Written => Some(ImeOpenOutcome::Applied),
-            ElisionReason::AlreadyMatched => Some(ImeOpenOutcome::AlreadyMatched),
+            ElisionReason::AlreadyMatched | ElisionReason::AlreadyWrittenThisPress => {
+                Some(ImeOpenOutcome::AlreadyMatched)
+            }
             ElisionReason::Unwarranted => Some(ImeOpenOutcome::Unwarranted),
             ElisionReason::InputRelayNotOwned => Some(ImeOpenOutcome::NotOwned),
             ElisionReason::WinHeld => Some(ImeOpenOutcome::UnsafeToToggle),
@@ -603,19 +627,48 @@ pub enum DeliveryMode {
     /// 現状の本番: shadow が belief を倒した押下だけ書く（`plan` の入力 `shadow_toggled` はその結果）。
     Legacy,
     /// 固定点（D4、L3 で本番へ）: `plan(shadow_toggled=false)` を先に評価し、Suppress なら no-op でも書いて
-    /// `shadow_toggled=true` として後段の `plan(true)` を評価する。
+    /// `shadow_toggled=true` として後段の `plan(true)` を評価する。押下 ID（L1）は含まない。
     FixedPoint,
+    /// 押下 ID（ADR-208 L1、**現在の本番**）: 非リピートの押下（`was_down=false`）は `press=Some` として、(1) 書き込みの order の
+    /// 発行直前に `PressLedger::claim` で予約し（同じ押下で同じ向きなら書かない・Engine は逆向きなら上書きする）、
+    /// (2) view の `shadow_on` を `explicit_press_shadow_on` で未知にする（Engine 経路と shadow 経路の両方）。
+    /// リピート（`was_down=true`）は `press=None`: 予約せず、`applied` の already-matched 省略のまま
+    /// （shadow 経路も従来の無条件降格をやめる）。`plan` と shadow 判断の循環は Legacy のまま。
+    PressId,
+    /// L1 の押下 ID と D4 の固定点の両方（L3 で本番がこの形になる）。
+    PressIdFixedPoint,
+}
+
+impl DeliveryMode {
+    /// D4 の固定点を適用するか。
+    #[must_use]
+    pub const fn is_fixed_point(self) -> bool {
+        matches!(self, Self::FixedPoint | Self::PressIdFixedPoint)
+    }
+
+    /// L1 の押下 ID を適用するか（`press=Some` の押下で予約と applied の未知化を行う）。
+    #[must_use]
+    pub const fn has_press_id(self) -> bool {
+        matches!(self, Self::PressId | Self::PressIdFixedPoint)
+    }
 }
 
 // ── 決定関数 ─────────────────────────────────────────────────────────────────
 
-/// 書き込みの試行（gate → 授権 → 先頭機構の already-matched 判定）。`shadow_on` は view の `ControlLog.shadow_on`。
+/// 全列挙モデルが 1 押下に付ける押下 ID（値に意味は無い。`PressLedger` は ID の等価だけを見る）。
+const MODEL_PRESS: PressId = PressId::new(1);
+
+/// 書き込みの試行（gate → 押下の予約 → 授権 → 先頭機構の already-matched 判定）。`shadow_on` は view の
+/// `ControlLog.shadow_on`。`claim` は Engine 経路の押下の予約（本番の `executor::dispatch_ime_set_open` は gate の後・
+/// order の発行前に `claim_press_write` を呼ぶ。shadow 経路は `kp_shadow_actuate` の冒頭で gate より前に予約するので
+/// ここには渡さない）。
 fn attempt_write(
     state: &PressState,
     open: bool,
     shadow_on: Option<bool>,
     req: WarrantRequest,
     judge: &impl WarrantJudge,
+    claim: Option<(&mut PressLedger, PressSource)>,
 ) -> (Option<bool>, ElisionReason) {
     let inputs = DecisionInputs {
         profile: state.profile.app_profile(),
@@ -626,6 +679,11 @@ fn attempt_write(
     };
     if decide_gate(inputs) == GateResult::NotOwned {
         return (None, ElisionReason::InputRelayNotOwned);
+    }
+    if let Some((ledger, source)) = claim {
+        if !ledger.claim(Some(MODEL_PRESS), open, source).writes() {
+            return (None, ElisionReason::AlreadyWrittenThisPress);
+        }
     }
     if !judge.warranted(&req) {
         return (None, ElisionReason::Unwarranted);
@@ -653,6 +711,31 @@ pub fn explicit_press_delivery_with(
     judge: &impl WarrantJudge,
     mode: DeliveryMode,
 ) -> Delivery {
+    explicit_press_delivery_after(state, key, judge, mode, None)
+}
+
+/// [`explicit_press_delivery_with`] に、**同じ押下で先に予約された向き**（`claimed`、`last_written_press` の向き）を渡す版
+/// （ADR-208 L1 D1）。同一押下に shadow と Engine の 2 経路が来る構成（sync キーが `keys.ime_on/off` にも割り当てられている
+/// 等、BUG-113）で、後から来る経路の判断を前の経路の予約から決める。`claimed` は `mode.has_press_id()` かつ非リピート
+/// （押下 ID を持つ）ときだけ意味を持つ。
+///
+/// # Panics
+///
+/// 起きない（`explicit_press_delivery_with` と同じ）。
+#[must_use]
+pub fn explicit_press_delivery_after(
+    state: &PressState,
+    key: ExplicitKey,
+    judge: &impl WarrantJudge,
+    mode: DeliveryMode,
+    claimed: Option<bool>,
+) -> Delivery {
+    // 押下 ID を持つ押下か（L1）。自動リピートの Down はフックが `press_id=None` にする。
+    let has_press = mode.has_press_id() && !state.was_down;
+    let mut ledger = PressLedger::default();
+    if let (true, Some(open)) = (has_press, claimed) {
+        ledger.claim(Some(MODEL_PRESS), open, PressSource::Shadow);
+    }
     let is_japanese_ime = state.is_japanese_ime || key.upgrades_is_japanese();
     let policy_profile = state.profile.policy_profile();
     match key.path() {
@@ -673,8 +756,21 @@ pub fn explicit_press_delivery_with(
                 intent,
                 actuating_obs: state.actuating_obs,
             };
-            // executor は `applied_snapshot` をそのまま渡す（shadow 経路の降格は無い）。
-            let (write, reason) = attempt_write(state, target, state.applied.open(), req, judge);
+            // executor は `applied_snapshot` を渡す。L1（押下 ID あり）は `applied` が向きと一致していても未知にして
+            // already-matched 省略を外す（D1。`explicit_press_applied_pair` と同じ `explicit_press_shadow_on`）。
+            let shadow_on = if has_press {
+                explicit_press_shadow_on(state.applied.open(), target)
+            } else {
+                state.applied.open()
+            };
+            let (write, reason) = attempt_write(
+                state,
+                target,
+                shadow_on,
+                req,
+                judge,
+                has_press.then_some((&mut ledger, PressSource::Engine)),
+            );
             Delivery {
                 physical: Physical::Consume,
                 write,
@@ -684,6 +780,9 @@ pub fn explicit_press_delivery_with(
                 shadow_toggled: false,
                 belief_after: if filtered { state.belief_open } else { target },
                 intent_after: intent,
+                reserved: has_press
+                    .then(|| ledger.last_written().map(|(_, open)| open))
+                    .flatten(),
             }
         }
         PressPath::Shadow => {
@@ -700,7 +799,7 @@ pub fn explicit_press_delivery_with(
             // 2. 書く決定。Legacy は belief が倒れたときだけ。FixedPoint は昇格した押下で plan0 が Suppress なら
             //    no-op でも書く（Suppress した物理キーに誰も応答しない二重の空振りを避ける）。
             let write_wanted = flips
-                || (mode == DeliveryMode::FixedPoint
+                || (mode.is_fixed_point()
                     && resolved.is_some()
                     && plan0 == PhysicalKeyDisposition::Suppress);
             // 3. 後段の plan(shadow_toggled=write_wanted)。
@@ -724,6 +823,7 @@ pub fn explicit_press_delivery_with(
                     shadow_toggled: write_wanted,
                     belief_after,
                     intent_after: state.intent,
+                    reserved: None,
                 };
             };
             // 昇格した押下は `write_physical_key`/`write_sync_key` が意図を記録する（フォーカス不明なら no-op）。
@@ -738,6 +838,7 @@ pub fn explicit_press_delivery_with(
                     shadow_toggled: false,
                     belief_after,
                     intent_after,
+                    reserved: None,
                 };
             }
             let req = WarrantRequest {
@@ -749,10 +850,33 @@ pub fn explicit_press_delivery_with(
                 intent: intent_after,
                 actuating_obs: state.actuating_obs,
             };
+            // `kp_shadow_actuate` の冒頭: order の発行前に押下を予約する（gate より前）。同じ押下で既に同じ向き
+            // （または先着の Engine の逆向き）を予約済みなら書かない（BUG-113）。リピート（`press=None`）は予約しない。
+            if has_press {
+                let claim = ledger.claim(Some(MODEL_PRESS), new_val, PressSource::Shadow);
+                if !claim.writes() {
+                    return Delivery {
+                        physical,
+                        write: None,
+                        reason: ElisionReason::AlreadyWrittenThisPress,
+                        requested: Some(new_val),
+                        target: Some(new_val),
+                        shadow_toggled: write_wanted,
+                        belief_after,
+                        intent_after,
+                        reserved: ledger.last_written().map(|(_, open)| open),
+                    };
+                }
+            }
             // `kp_shadow_actuate`: `applied` が向きと一致するなら view の `shadow_on` を未知にする（M1、PR #408）。
+            // L1 では押下 ID を持つ押下だけ（リピートは従来の `applied` の already-matched 省略。`explicit_press_applied_pair`）。
             let applied_open = state.applied.open();
-            let shadow_on = explicit_press_shadow_on(applied_open, new_val);
-            let (write, reason) = attempt_write(state, new_val, shadow_on, req, judge);
+            let shadow_on = if mode.has_press_id() && state.was_down {
+                applied_open
+            } else {
+                explicit_press_shadow_on(applied_open, new_val)
+            };
+            let (write, reason) = attempt_write(state, new_val, shadow_on, req, judge, None);
             Delivery {
                 physical,
                 write,
@@ -762,6 +886,9 @@ pub fn explicit_press_delivery_with(
                 shadow_toggled: write_wanted,
                 belief_after,
                 intent_after,
+                reserved: has_press
+                    .then(|| ledger.last_written().map(|(_, open)| open))
+                    .flatten(),
             }
         }
     }
@@ -769,7 +896,7 @@ pub fn explicit_press_delivery_with(
 
 /// 同一押下で shadow 経路と Engine の SetOpen の両方が来る構成（sync キーが `keys.ime_on/off` にも割り当て
 /// られている等）の書き込み。Engine 側の executor は、押下前の `applied` を見ると仮定する（完了の反映は押下の処理後）。
-/// 戻り値は `[shadow の write, Engine の write]`。
+/// 戻り値は `[shadow の write, Engine の write]`。**L0 の現状（押下 ID なし）**。
 #[must_use]
 pub fn dual_route_writes(
     state: &PressState,
@@ -777,14 +904,28 @@ pub fn dual_route_writes(
     engine_key: ExplicitKey,
     judge: &impl WarrantJudge,
 ) -> [Option<bool>; 2] {
-    let d_shadow = explicit_press_delivery_with(state, shadow_key, judge, DeliveryMode::Legacy);
+    dual_route_writes_with(state, shadow_key, engine_key, judge, DeliveryMode::Legacy)
+}
+
+/// [`dual_route_writes`] の `mode` 指定版。L1（`mode.has_press_id()`）では、shadow 経路が order を発行した時点で予約した向きを
+/// Engine 経路に渡す（`Delivery::reserved` → `explicit_press_delivery_after` の `claimed`）。評価順は本番と同じ
+/// （hook の shadow → Engine の `SetOpen`）。
+#[must_use]
+pub fn dual_route_writes_with(
+    state: &PressState,
+    shadow_key: ExplicitKey,
+    engine_key: ExplicitKey,
+    judge: &impl WarrantJudge,
+    mode: DeliveryMode,
+) -> [Option<bool>; 2] {
+    let d_shadow = explicit_press_delivery_with(state, shadow_key, judge, mode);
     let after = state_after_press(state, shadow_key, &d_shadow);
     let engine_state = PressState {
         applied: state.applied,
         ..after
     };
     let d_engine =
-        explicit_press_delivery_with(&engine_state, engine_key, judge, DeliveryMode::Legacy);
+        explicit_press_delivery_after(&engine_state, engine_key, judge, mode, d_shadow.reserved);
     [d_shadow.write, d_engine.write]
 }
 
@@ -837,6 +978,12 @@ fn applied_after(state: &PressState, key: ExplicitKey, d: Delivery) -> AppliedKn
     let (Some(outcome), Some(open)) = (d.outcome(), d.requested) else {
         return state.applied;
     };
+    // shadow 経路が同じ押下の予約済みで書かなかった場合は、完了（`on_ime_apply_complete`）を呼ばない（`applied` は不変）。
+    // Engine 経路は `AlreadyMatched` を返して完了へ流す（`applied` は向きに Confirmed）。
+    if d.reason == ElisionReason::AlreadyWrittenThisPress && matches!(key.path(), PressPath::Shadow)
+    {
+        return state.applied;
+    }
     let mut oracle = ImeModel::with_applied(model_applied(state.applied));
     match key.path() {
         PressPath::Shadow => {
@@ -1123,7 +1270,7 @@ mod tests {
                 };
                 // executor は `applied_snapshot` をそのまま渡す（shadow 経路の降格は無い）。
                 let (write, reason) =
-                    attempt_write(state, target, state.applied.open(), req, judge);
+                    attempt_write(state, target, state.applied.open(), req, judge, None);
                 RefOut {
                     physical: Physical::Consume,
                     write,
@@ -1191,7 +1338,7 @@ mod tests {
                 // `kp_shadow_actuate`: `applied` が向きと一致するなら view の `shadow_on` を未知にする（M1、PR #408）。
                 let applied_open = state.applied.open();
                 let shadow_on = explicit_press_shadow_on(applied_open, new_val);
-                let (write, reason) = attempt_write(state, new_val, shadow_on, req, judge);
+                let (write, reason) = attempt_write(state, new_val, shadow_on, req, judge, None);
                 RefOut {
                     physical,
                     write,
@@ -1283,6 +1430,7 @@ mod tests {
             shadow_toggled: false,
             belief_after: false,
             intent_after: None,
+            reserved: None,
         };
         assert_eq!(
             d(Physical::Allow, None).resolve(),
