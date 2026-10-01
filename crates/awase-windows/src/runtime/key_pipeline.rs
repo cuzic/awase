@@ -1293,8 +1293,8 @@ impl Runtime {
             //   echo（`ctx.ime_on` の観測駆動な変化だけでも起こりうる）。`last_intent` を
             //   設定すると、この echo が「ユーザーの本物の意図」として固定化され、
             //   以後の drift correction が効かなくなる（IME OFF 直後に Engine が勝手に
-            //   ON へ戻る再発の根本原因だった）。`handle_engine_activation_sync` で
-            //   `desired_open` のみ更新する。
+            //   ON へ戻る再発の根本原因だった）。`handle_engine_activation_sync` は
+            //   belief を書かず、未観測状態からの ON だけを actuation へ通す。
             let applied = match origin {
                 awase::engine::SetOpenOrigin::ExplicitUserAction => {
                     let applied = self.platform_state.ime.handle_engine_set_open(

@@ -24,6 +24,11 @@ impl TickMs {
 pub mod belief;
 pub use belief::*;
 
+// ActivationSync の actuation gate。runtime の唯一の origin 分岐と、idle-conv
+// からの直接 handler 呼び出しを共通の純粋判定で覆う。Linux でも真理値表を実行する。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) mod activation_sync;
+
 pub mod hook_state;
 pub use hook_state::*;
 

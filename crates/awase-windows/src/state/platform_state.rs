@@ -630,8 +630,9 @@ impl ImeStateHub {
     /// 意図」として扱ってしまい、ユーザーが明示的に IME を OFF にした直後でも Engine が
     /// 勝手に ON へ戻る再発を引き起こす（2026-08-04、`docs/known-bugs.md` 参照）。
     ///
-    /// chord/focus-transition-settling のフィルタ条件は `handle_engine_set_open` と同一
-    /// （どちらも「これから OS へ実 apply する SetOpen 要求」という点は変わらないため）。
+    /// 実 apply は、観測・明示意図・打鍵予測が一切ない状態から active になる ON
+    /// 要求だけに限定する。gate で棄却した場合は chord/focus filter や reducer、
+    /// 抑制窓を含む後続処理へ一切触れない。
     ///
     /// `last_explicit_ime_action_ms` は `handle_engine_set_open` と同様に更新する。この
     /// フィールドの実際の役割は「ユーザーが明示操作したか」ではなく「awase 自身が
@@ -650,6 +651,13 @@ impl ImeStateHub {
         generation: ApplyGeneration,
         tick_ms: TickMs,
     ) -> bool {
+        let belief = self
+            .shadow_model
+            .activation_sync_belief_at(std::time::Instant::now());
+        if !super::activation_sync::should_actuate_activation_sync(target, belief) {
+            tracing::info!("[activation-sync] skipped SetOpen({target}): belief={belief:?}");
+            return false;
+        }
         if self.is_ctrl_ime_chord_active() && !target {
             // 診断ログ: handle_engine_set_open 側と同じ理由で info に格上げ。
             tracing::info!(
@@ -2217,29 +2225,19 @@ mod tests {
     }
 
     #[test]
-    fn handle_engine_activation_sync_ctrl_chord_filter_still_works() {
+    fn handle_engine_activation_sync_off_never_starts_ctrl_chord() {
         let mut ps = ps_with_shadow(false, None, true);
-        // 1 回目: ActivationSync による IME OFF 要求 + Ctrl 押下中 → chord transaction 開始。
-        let first = ps.ime.handle_engine_activation_sync(
+        let applied = ps.ime.handle_engine_activation_sync(
             false,
             true,
             false,
             ApplyGeneration::new(1).unwrap(),
             TickMs(0),
         );
-        assert!(first, "chord を開始する最初の要求は適用される");
-        assert!(ps.ime.is_ctrl_ime_chord_active());
-        // 2 回目: chord transaction 中の二次 IME OFF 要求 → フィルタされる。
-        let second = ps.ime.handle_engine_activation_sync(
-            false,
-            true,
-            false,
-            ApplyGeneration::new(2).unwrap(),
-            TickMs(0),
-        );
+        assert!(!applied, "ActivationSync の自動 OFF は常に適用されない");
         assert!(
-            !second,
-            "chord transaction 中の二次 IME OFF 要求はフィルタされる"
+            !ps.ime.is_ctrl_ime_chord_active(),
+            "棄却した要求は chord transaction にも触れない"
         );
     }
 
@@ -2255,7 +2253,7 @@ mod tests {
             ApplyGeneration::new(1).unwrap(),
             TickMs(0),
         );
-        assert!(applied);
+        assert!(!applied, "明示意図があれば ActivationSync は適用されない");
         assert_eq!(
             ps.ime.model().last_intent.as_ref().map(|i| i.target),
             Some(false),

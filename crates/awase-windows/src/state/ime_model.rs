@@ -51,6 +51,8 @@ impl ImeApplyAcceptance {
     }
 }
 
+use super::activation_sync::ActivationSyncBelief;
+
 // ── resolve_open_at 診断API（ADR-087 §5 Phase 0a item2/3） ──────────────────────
 
 /// `resolve_open_at()` の戻り値。`effective_open_at()` が返す `bool` に加えて、
@@ -488,6 +490,26 @@ impl ImeModel {
                 base: decided_by,
                 guard_override,
             },
+        }
+    }
+
+    /// ActivationSync の actuation gate が使う読み取り専用の belief 分類。
+    ///
+    /// 判定根拠は `resolve_open_at()` の `BaseDecision` に集約し、観測・意図・予測の
+    /// 有無をここで再実装しない。Low の `HeuristicDefault` と完全な fallback だけを
+    /// 「観測ゼロ」とする。
+    #[must_use]
+    pub(crate) fn activation_sync_belief_at(&self, now: Instant) -> ActivationSyncBelief {
+        match self.resolve_open_at(now).decided_by.base {
+            BaseDecision::DesiredFallback
+            | BaseDecision::MostRecentTrusted(ObservationSource::HeuristicDefault) => {
+                ActivationSyncBelief::Unobserved
+            }
+            BaseDecision::ExplicitIntent
+            | BaseDecision::KeyEffectPrediction
+            | BaseDecision::DeriveHigh(_)
+            | BaseDecision::DeriveMedium { .. }
+            | BaseDecision::MostRecentTrusted(_) => ActivationSyncBelief::Grounded,
         }
     }
 
@@ -2238,6 +2260,48 @@ mod tests {
     }
 
     // ── resolve_open_at / DecidedBy（ADR-087 §5 Phase 0a item2/3） ──────────────
+
+    #[test]
+    fn activation_sync_belief_distinguishes_placeholder_from_evidence() {
+        use crate::state::activation_sync::ActivationSyncBelief;
+
+        let now = Instant::now();
+        let mut model = ImeModel::new();
+        assert_eq!(
+            model.activation_sync_belief_at(now),
+            ActivationSyncBelief::Unobserved
+        );
+
+        model.reduce(&envelope(
+            1,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                false,
+                ObservationSource::HeuristicDefault,
+                HwndId::NULL,
+                ObservationConfidence::Low,
+                0,
+            )),
+        ));
+        assert_eq!(
+            model.activation_sync_belief_at(now),
+            ActivationSyncBelief::Unobserved
+        );
+
+        model.reduce(&envelope(
+            2,
+            ImeEvent::ObserverReported(AnyObservation::restored_from_journal(
+                true,
+                ObservationSource::ConvOpenInference,
+                HwndId::NULL,
+                ObservationConfidence::Medium,
+                0,
+            )),
+        ));
+        assert_eq!(
+            model.activation_sync_belief_at(now),
+            ActivationSyncBelief::Grounded
+        );
+    }
 
     #[test]
     fn resolve_open_at_decided_by_explicit_intent() {
