@@ -62,6 +62,9 @@ pub mod event_origin;
 #[cfg_attr(not(windows), allow(dead_code))]
 pub mod half_width_alnum;
 pub mod ime_actuation;
+// ADR-208 L0: `runtime/transport.rs::PhysicalKeyDisposition::plan` の本体（配送判断の核）を挙動を変えずに
+// 移した。ungated にして、`explicit_press` の全列挙テストが本番と同じ判断コードを Linux で呼べるようにする。
+pub mod physical_disposition;
 // ADR-089 §2.3/§2.6: Actuation の型状態チェーンと再試行 episode。ungated（走査
 // 規則を Linux で全数テストするため）。実 write は Windows 側の
 // `MechanismWriter` 実装（`ime_controller.rs`）が担う。
