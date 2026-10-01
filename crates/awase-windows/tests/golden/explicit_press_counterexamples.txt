@@ -3,7 +3,7 @@
 # 生成元: crates/awase-windows/tests/explicit_press_exhaustive.rs
 # このファイルは自動生成される。更新は UPDATE_GOLDEN=1 で再生成すること。
 #
-# 状態空間(belief 2 × applied 5 × is_japanese 2 × profile 6 × kind 2 × current_focus 2 × 観測 3 ×
+# 状態空間(belief 2 × applied 5 × is_japanese 2 × profile 7 × kind 2 × current_focus 2 × 観測 3 ×
 # IntentStore 3 × candidate_was_seen 2 × chord 2 × win 2 × was_down 2) × キー 12 種を全列挙した、現状(ADR-208 L1)の本番判断の合成結果。
 # 反例は「分類 × 件数 + 各分類の最小の代表例(基準状態からのずれが最小)」で固定する(S-2 だけで状態空間の約半分が
 # 反例なので行は列挙しない)。分類に当てはまらない反例(unclassified)が出たらテストが失敗する。
