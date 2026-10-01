@@ -125,6 +125,34 @@ fn find_gji_clsid(
     }
 }
 
+/// `EnumProfiles(JA)` から、日本語(0x0411)で有効な TIP を集める(BUG-179: HKL がアクティブのとき用)。
+fn enabled_ja_tips(mgr: &ITfInputProcessorProfileMgr) -> Vec<crate::state::ime_kind::EnabledJaTip> {
+    let mut out = Vec::new();
+    unsafe {
+        let Ok(enumerator) = mgr.EnumProfiles(0x0411) else {
+            return out;
+        };
+        loop {
+            let mut prof = TF_INPUTPROCESSORPROFILE::default();
+            let mut fetched: u32 = 0;
+            let res = enumerator.Next(std::slice::from_mut(&mut prof), &raw mut fetched);
+            if res.is_err() || fetched == 0 {
+                break;
+            }
+            // TF_IPP_FLAG_ENABLED = 0x1。langid 0 の言語中立 TIP(タッチ入力・音声認識)は除く。
+            if prof.dwProfileType == TF_PROFILETYPE_INPUTPROCESSOR
+                && prof.langid == 0x0411
+                && prof.dwFlags & 0x1 != 0
+            {
+                out.push(crate::state::ime_kind::EnabledJaTip {
+                    clsid: prof.clsid.to_u128(),
+                });
+            }
+        }
+    }
+    out
+}
+
 // ── アクティブ IME 種別クエリ ──────────────────────────────────────────────
 
 /// 現在アクティブな TIP の CLSID から、`ActiveImeKind`（互換の2値）と `TipIdentity`（GJI/Microsoft IME本体/
@@ -153,7 +181,9 @@ pub(super) fn query_active_kind(
             // IMM32 ベースの HKL → MS-IME 系とみなす（種別は互換のため MicrosoftIme のまま。
             // ただし Microsoft IME 本体とは同定しない）
             TSF_OBS.set_ime_product_name(None);
-            return Some((ActiveImeKind::MicrosoftIme, TipIdentity::Other));
+            let identity =
+                crate::state::ime_kind::identify_hkl_by_enabled_tips(&enabled_ja_tips(mgr));
+            return Some((ActiveImeKind::MicrosoftIme, identity));
         }
 
         TSF_OBS.set_ime_product_name(cached_profile_description(&prof));
@@ -194,7 +224,9 @@ pub fn query_tip_identity_on_current_sta() -> Option<crate::state::ime_kind::Tip
             .map_err(|e| tracing::debug!("[tip-detect] GetActiveProfile failed: {e}"))
             .ok()?;
         if prof.dwProfileType != TF_PROFILETYPE_INPUTPROCESSOR {
-            return Some(TipIdentity::Other);
+            return Some(crate::state::ime_kind::identify_hkl_by_enabled_tips(
+                &enabled_ja_tips(&mgr),
+            ));
         }
         Some(identify_tip(
             Some(prof.clsid.to_u128()),
@@ -245,7 +277,8 @@ pub(super) fn dump_profiles(
             }
             tracing::info!(
                 "[tip-detect] {kind} clsid={clsid} profile={pguid} lang={lang:04x} \
-                 desc={desc:?}",
+                 flags={flags:#x} desc={desc:?}",
+                flags = prof.dwFlags,
                 clsid = fmt_guid(&prof.clsid),
                 pguid = fmt_guid(&prof.guidProfile),
                 lang = prof.langid,

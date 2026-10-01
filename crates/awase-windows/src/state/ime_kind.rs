@@ -34,6 +34,23 @@ impl ImeKindId {
 /// 「この CLSID の TIP」と**厳密に**同定するために使う（ADR-191、レビュー round2 NB1）。
 pub const MS_IME_JA_TIP_CLSID: u128 = 0x03B5_835F_F03C_411B_9CE2_AA23_E117_1E36;
 
+/// 日本語(langid 0x0411)で有効な TIP の1件(`EnumProfiles` の列挙結果の要約)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnabledJaTip {
+    pub clsid: u128,
+}
+
+/// アクティブが IMM32 の HKL と見えるとき(`GetActiveProfile` が TIP を返さない)の同定(BUG-179)。
+/// 日本語で有効な TIP が Microsoft IME 本体の1件だけなら、その HKL は本体の IMM32 側とみなす。
+/// ATOK 等ほかの日本語 TIP が有効なら、どれが使われているか分からないので `Other` のまま。
+#[must_use]
+pub fn identify_hkl_by_enabled_tips(enabled_ja_tips: &[EnabledJaTip]) -> TipIdentity {
+    match enabled_ja_tips {
+        [only] if only.clsid == MS_IME_JA_TIP_CLSID => TipIdentity::MsImeNative,
+        _ => TipIdentity::Other,
+    }
+}
+
 /// アクティブな入力方式（TSF の TIP または IMM32 HKL）の同定結果。
 ///
 /// `ImeKindId::MsIme`（「GJI を検出できなかった」の意味）と違い、こちらは**明示的に同定できたか**を表す。
@@ -103,5 +120,23 @@ mod tests {
         // IMM32 HKL のみ（TIP でない）も表を当てない
         assert_eq!(identify_tip(None, Some(gji)), TipIdentity::Other);
         assert_eq!(identify_tip(None, None), TipIdentity::Other);
+    }
+
+    #[test]
+    fn hkl_is_ms_ime_native_only_when_it_is_the_sole_enabled_ja_tip() {
+        let ms = EnabledJaTip {
+            clsid: MS_IME_JA_TIP_CLSID,
+        };
+        let other = EnabledJaTip { clsid: 1 };
+        assert_eq!(
+            identify_hkl_by_enabled_tips(&[ms]),
+            TipIdentity::MsImeNative
+        );
+        assert_eq!(
+            identify_hkl_by_enabled_tips(&[ms, other]),
+            TipIdentity::Other
+        );
+        assert_eq!(identify_hkl_by_enabled_tips(&[other]), TipIdentity::Other);
+        assert_eq!(identify_hkl_by_enabled_tips(&[]), TipIdentity::Other);
     }
 }
