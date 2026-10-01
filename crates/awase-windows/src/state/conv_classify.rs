@@ -32,13 +32,14 @@ pub enum ConvSyncReason {
 pub enum EngineSync {
     /// engine への働きかけなし。
     None,
-    /// engine を ON にする (`handle_conv_engine_on_sync`)。`RomajiRecovered`
+    /// engine を ON にする（`should_release_panic_guard` が true になる唯一の variant）。`RomajiRecovered`
     /// のみがこの経路を使う: `effective_open` が既に true の状態での belief 再同期で
     /// あり、shadow=OFF から新たに ON 意図を作り出すものではない。かつてはユーザー
     /// 意図経路 (`UserImeSetIntent{Command}`) の再利用を許容していたが、発火条件が
     /// `effective_open == true` を要求する以上 `desired_open := effective_open` の
     /// 循環 echo にあたるため、BUG-51 追補 v3 で last_intent/desired_open を書かない
-    /// 経路（旧 `EngineActivationSync`、ADR-213 P2c で `handle_conv_engine_on_sync` へ整理）へ移した
+    /// 経路（旧 `EngineActivationSync`。ADR-213 P2c で `handle_conv_engine_on_sync` へ整理、P2d-1 で
+    /// 副作用を PanicReset ガード解除だけに縮小）へ移した
     /// （IntentStore への偽 intent 永続化の防止も兼ねる）。
     SetOpen(ConvSyncReason),
     // ADR-185: かつてここに`DirectInput`（`ObservedEisu`観測 → open軸へ`false`を書き、IME OFFを実送信）が
@@ -60,6 +61,18 @@ pub enum EngineSync {
     /// (`check_drift_correction` / `ir_apply_drift_correction`、BUG-20 で OFF 方向も
     /// 修正済み) に委ねられる。
     ReportOpenInference(ConvSyncReason),
+}
+
+/// conv 観測由来の engine 同期が「陽性の証拠」として PanicReset ガードを解除してよいか。
+///
+/// `SetOpen`（`effective_open == true` かつ romaji 回復を conv で観測）だけが true。
+/// ガードが立っている間は `effective_open()` が常に true を返すため、この観測だけでは
+/// 本物の ON か stale かを区別できないが、conv が romaji 可能へ回復したこと自体は
+/// panic reset 後の stale poll ではない陽性証拠として扱う（旧 `on_set_open_requested`
+/// 内の `force_guards.clear()` が担っていた解除の、PanicReset 限定の置き換え。ADR-213 P2d-1）。
+#[must_use]
+pub const fn should_release_panic_guard(engine_sync: EngineSync) -> bool {
+    matches!(engine_sync, EngineSync::SetOpen(_))
 }
 
 /// idle-conv-check の判断結果。input_mode belief の更新と engine 同期を分離して表す。
@@ -206,6 +219,23 @@ mod tests {
     const CONV_JISKANA: u32 = NATIVE | FULLSHAPE; // 0x0009: JISかな (ROMAN なし)
     const CONV_ZENKATA: u32 = NATIVE | KATAKANA | FULLSHAPE; // 0x000B: 全角カタカナ
     const CONV_HANKATA: u32 = NATIVE | KATAKANA; // 0x0003: 半角カタカナ 1544d3f
+
+    #[test]
+    fn should_release_panic_guard_only_for_set_open() {
+        assert!(should_release_panic_guard(EngineSync::SetOpen(
+            ConvSyncReason::RomajiRecovered
+        )));
+        assert!(should_release_panic_guard(EngineSync::SetOpen(
+            ConvSyncReason::NativeToggleShadowOff
+        )));
+        assert!(!should_release_panic_guard(EngineSync::None));
+        assert!(!should_release_panic_guard(
+            EngineSync::ReportOpenInference(ConvSyncReason::RomajiRecovered)
+        ));
+        assert!(!should_release_panic_guard(
+            EngineSync::ReportOpenInference(ConvSyncReason::NativeToggleShadowOff)
+        ));
+    }
 
     fn assumed() -> InputModeState {
         InputModeState::AssumedRomaji {

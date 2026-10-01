@@ -25,7 +25,7 @@
 //!     復帰する (UserHalfWidthAlnumToggle)
 //! 16. （撤去: `EngineActivationSync` のシナリオ。ADR-213 P2c でイベントごと撤去。
 //!     BUG-48 の不変条件は `src/engine/tests.rs::refresh_state_transition_emits_no_set_open`
-//!     と `platform_state.rs` の `handle_conv_engine_on_sync_*` が引き継ぐ）
+//!     と `platform_state.rs` の `release_panic_guard_*` が引き継ぐ）
 //!
 //! ## 実装状況
 //!

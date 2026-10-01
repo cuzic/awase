@@ -897,16 +897,14 @@ impl Runtime {
                 );
             }
         }
-        self.platform.timer.kill(TIMER_IME_REFRESH);
-        let generation = self.platform_state.ime.allocate_event_generation();
-        // SetOpen(RomajiRecovered): conv 観測からの自動同期であり、ユーザーの
-        // 明示操作ではない。発火条件が effective_open==true を要求するため
-        // desired_open へ書くと desired_open := effective_open という循環 echo に
-        // なる。last_intent/desired_open/IntentStore を書かず、世代の記録と
-        // idle-conv-check の抑制窓だけを更新する（BUG-51 追補 v3、ADR-213 P2c）。
-        self.platform_state
-            .ime
-            .handle_conv_engine_on_sync(generation, now_tick);
+        // conv 観測は明示操作ではなく、書き込みと対の副作用（TIMER_IME_REFRESH の kill・
+        // 世代・`ImeApplyRequested`・抑制窓）は C2 では何も守らず害があったため持たない
+        // （ADR-213 P2d-1）。残すのは PanicReset ガードの解除だけ。
+        if crate::state::conv_classify::should_release_panic_guard(engine) {
+            self.platform_state
+                .ime
+                .release_panic_reset_guard_on_positive_evidence();
+        }
     }
 
     /// Shadow IME トグル処理
