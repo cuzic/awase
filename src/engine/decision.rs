@@ -223,16 +223,16 @@ impl Decision {
     /// まだ押下 ID を持たない `SetOpen` に `press` を載せる（Engine の入口が、打鍵の ID を効果へ伝える。ADR-208 D1）。
     /// 既に ID を持つもの・`SetOpen` 以外は変えない。
     pub fn stamp_set_open_press(&mut self, press: Option<crate::types::PressId>) {
-        if press.is_none() {
+        let Some(press) = press else {
             return;
-        }
+        };
         let effects = match self {
             Self::Consume { effects } | Self::PassThroughWith { effects } => effects,
             Self::PassThrough => return,
         };
         for effect in effects {
             if let Effect::Ime(ImeEffect::SetOpen { press: slot, .. }) = effect {
-                slot.get_or_insert_with(|| press.expect("press.is_none() は早期 return 済み"));
+                slot.get_or_insert(press);
             }
         }
     }

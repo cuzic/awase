@@ -260,6 +260,8 @@ impl EvdevInput {
 
                     let raw_event = RawKeyEvent {
                         was_down: false,
+                        // ADR-208 L1: 押下 ID は Windows のフックだけが振る（Linux の IME 制御は押下単位の予約を持たない）。
+                        press_id: None,
                         vk_code: vk,
                         scan_code: scan,
                         event_type,

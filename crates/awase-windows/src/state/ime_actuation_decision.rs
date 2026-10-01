@@ -164,6 +164,22 @@ pub(crate) const fn explicit_press_demotes_applied(applied_open: Option<bool>, o
     matches!(applied_open, Some(v) if v == open)
 }
 
+/// ADR-208 L1 の段階: **Engine 経路**の `applied` の未知化（D1）を TsfNative の窓（WezTerm/Windows Terminal 等）へ適用するか。
+///
+/// ADR-208 の決定6・リスク2: TsfNative × GJI では、OFF キーごとに単発の `VK_IME_OFF` が出ると BUG-124 型の「@」
+/// （WT × GJI × PSReadLine）を誘発しうる。D1 の TN×GJI への適用（L3'）は、実機 A/B（押下ごとの `@` の発生率、develop と
+/// L3' 版、各 n≥30）をマージ条件にしている（v2 時点では既知の制限として残る）。それまで TsfNative の Engine 経路は従来の
+/// `applied` の already-matched 省略のまま（S-1 が残る）にし、実機 A/B の後でこの定数を `true` にして解禁する。
+/// 押下の予約（`claim_press_write`、BUG-113 の二重送信防止）と shadow 経路の降格（PR #408 から既にある）は TsfNative でも
+/// 変わらない（この定数は Engine 経路の未知化だけを止める）。
+pub(crate) const ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE: bool = false;
+
+/// Engine 経路の押下の書き込みで、`applied` の未知化（D1）を適用する窓か（[`ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE`]）。
+#[must_use]
+pub(crate) const fn engine_press_unknowns_applied(profile: AppImeProfile) -> bool {
+    !matches!(profile, AppImeProfile::TsfNative) || ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE
+}
+
 /// [`explicit_press_demotes_applied`] を view の `shadow_on` に適用する（`None` = 未知）。`applied` 自体は書き換えない
 /// （完了時の `record_ime_apply_result` が正しい値を書く）。**`press.is_some()` の order だけ**に使い、`press=None`
 /// （自動リピート・drift correction 等）は従来どおり `applied` をそのまま渡す。
@@ -845,6 +861,23 @@ mod explicit_press_demote_tests {
             assert_eq!(explicit_press_shadow_on(Some(!open), open), Some(!open));
             assert_eq!(explicit_press_shadow_on(None, open), None);
         }
+    }
+
+    /// TsfNative の Engine 経路は L3'（実機 A/B）まで未知化しない。他のプロファイルは未知化する。
+    #[test]
+    fn engine_press_unknowns_applied_except_tsf_native_until_l3_prime() {
+        use crate::focus::class_names::AppImeProfile as P;
+        assert!(engine_press_unknowns_applied(P::Standard));
+        assert!(engine_press_unknowns_applied(P::Imm32Unavailable));
+        assert!(engine_press_unknowns_applied(P::InputRelay));
+        assert_eq!(
+            engine_press_unknowns_applied(P::TsfNative),
+            ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE
+        );
+        assert!(
+            !ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE,
+            "実機 A/B（ADR-208 L3'）が済むまで false。解禁するときはこのテストと golden を更新すること"
+        );
     }
 
     /// 押下 ID を持つ order だけが降格する。`press=None`（リピート・drift correction 等）は従来どおり

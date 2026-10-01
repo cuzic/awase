@@ -55,8 +55,8 @@ use awase::types::{
 use crate::focus::class_names::AppImeProfile;
 use crate::state::actuation_chain::WriteMechanism;
 use crate::state::ime_actuation_decision::{
-    decide_attempt, decide_chain, decide_gate, explicit_press_shadow_on, DecisionInputs,
-    DecisionSite, GateResult,
+    decide_attempt, decide_chain, decide_gate, engine_press_unknowns_applied,
+    explicit_press_shadow_on, DecisionInputs, DecisionSite, GateResult,
 };
 use crate::state::ime_event::ImePolicyProfile;
 use crate::state::ime_kind::ImeKindId;
@@ -714,8 +714,9 @@ pub fn explicit_press_delivery_with(
     explicit_press_delivery_after(state, key, judge, mode, None)
 }
 
-/// [`explicit_press_delivery_with`] に、**同じ押下で先に予約された向き**（`claimed`、`last_written_press` の向き）を渡す版
-/// （ADR-208 L1 D1）。同一押下に shadow と Engine の 2 経路が来る構成（sync キーが `keys.ime_on/off` にも割り当てられている
+/// [`explicit_press_delivery_with`] に、同じ押下で先に予約された向き（`claimed`）を渡す版（ADR-208 L1 D1）。
+///
+/// 同一押下に shadow と Engine の 2 経路が来る構成（sync キーが `keys.ime_on/off` にも割り当てられている
 /// 等、BUG-113）で、後から来る経路の判断を前の経路の予約から決める。`claimed` は `mode.has_press_id()` かつ非リピート
 /// （押下 ID を持つ）ときだけ意味を持つ。
 ///
@@ -758,11 +759,12 @@ pub fn explicit_press_delivery_after(
             };
             // executor は `applied_snapshot` を渡す。L1（押下 ID あり）は `applied` が向きと一致していても未知にして
             // already-matched 省略を外す（D1。`explicit_press_applied_pair` と同じ `explicit_press_shadow_on`）。
-            let shadow_on = if has_press {
-                explicit_press_shadow_on(state.applied.open(), target)
-            } else {
-                state.applied.open()
-            };
+            let shadow_on =
+                if has_press && engine_press_unknowns_applied(state.profile.app_profile()) {
+                    explicit_press_shadow_on(state.applied.open(), target)
+                } else {
+                    state.applied.open()
+                };
             let (write, reason) = attempt_write(
                 state,
                 target,
@@ -894,9 +896,10 @@ pub fn explicit_press_delivery_after(
     }
 }
 
-/// 同一押下で shadow 経路と Engine の SetOpen の両方が来る構成（sync キーが `keys.ime_on/off` にも割り当て
-/// られている等）の書き込み。Engine 側の executor は、押下前の `applied` を見ると仮定する（完了の反映は押下の処理後）。
-/// 戻り値は `[shadow の write, Engine の write]`。**L0 の現状（押下 ID なし）**。
+/// 同一押下で shadow 経路と Engine の `SetOpen` の両方が来る構成の書き込み（**L0 の現状、押下 ID なし**）。
+///
+/// sync キーが `keys.ime_on/off` にも割り当てられている等。Engine 側の executor は、押下前の `applied` を見ると仮定する
+/// （完了の反映は押下の処理後）。戻り値は `[shadow の write, Engine の write]`。
 #[must_use]
 pub fn dual_route_writes(
     state: &PressState,
@@ -907,8 +910,9 @@ pub fn dual_route_writes(
     dual_route_writes_with(state, shadow_key, engine_key, judge, DeliveryMode::Legacy)
 }
 
-/// [`dual_route_writes`] の `mode` 指定版。L1（`mode.has_press_id()`）では、shadow 経路が order を発行した時点で予約した向きを
-/// Engine 経路に渡す（`Delivery::reserved` → `explicit_press_delivery_after` の `claimed`）。評価順は本番と同じ
+/// [`dual_route_writes`] の `mode` 指定版。
+///
+/// L1（`mode.has_press_id()`）では、shadow 経路が order を発行した時点で予約した向きを Engine 経路に渡す（`Delivery::reserved` → `explicit_press_delivery_after` の `claimed`）。評価順は本番と同じ
 /// （hook の shadow → Engine の `SetOpen`）。
 #[must_use]
 pub fn dual_route_writes_with(

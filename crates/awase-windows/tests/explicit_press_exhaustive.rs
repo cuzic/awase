@@ -18,7 +18,7 @@
 //! **本番の判断は ADR-208 L1 の `DeliveryMode::PressId`**（押下 ID の予約と applied の未知化）。破れるケースは
 //! **`#[should_panic]` にせず**、ADR-208 監査（`docs/tasks/adr208-liveness-audit-2026-10-01.md`）の S-1〜S-4・L-x に対応する
 //! クラスごとの件数と代表例として golden（`tests/golden/explicit_press_counterexamples.txt`）に固定する。
-//! L1 で S-1 は 0 になった（`P1-PreL1` が L1 前の件数）。L2/L3 で穴を直すと件数が減り、golden の更新（`UPDATE_GOLDEN=1`）が
+//! L1 で S-1 は TsfNative×GJI（BUG-124 の実機 A/B〈ADR-208 L3'〉まで段階制御）を除いて 0 になった（`P1-PreL1` が L1 前の件数）。L2/L3 で穴を直すと件数が減り、golden の更新（`UPDATE_GOLDEN=1`）が
 //! そのまま進捗になる。golden に載らない未分類の反例（`unclassified`）が出たらテストは失敗する（モデルか分類の更新漏れ）。
 //!
 //! 授権（`issue_open_warrant`）は合成した `IntentStore`/`ObservationStore` に対して**本物**を呼ぶ（`StoreJudge`）。
@@ -143,7 +143,7 @@ fn delivery_pre_l1(judge: &StoreJudge, s: &PressState, key: ExplicitKey) -> Deli
 const CLASSES: &[(&str, &str)] = &[
     (
         "S1_already_matched",
-        "S-1: GjiDirect の already-matched（Engine 経由の絶対キー × 古い applied）で Consume して書かない",
+        "S-1: GjiDirect の already-matched（Engine 経由の絶対キー × 古い applied）で Consume して書かない。L1 で解消（TsfNative×GJI だけ、BUG-124 の実機 A/B〈ADR-208 L3'〉まで既知の制限として残る）",
     ),
     (
         "S2_not_japanese",
@@ -518,7 +518,7 @@ fn render(rep: &Report) -> String {
          # IntentStore 3 × candidate_was_seen 2 × chord 2 × win 2 × was_down 2) × キー 12 種を全列挙した、現状(ADR-208 L1)の本番判断の合成結果。\n\
          # 反例は「分類 × 件数 + 各分類の最小の代表例(基準状態からのずれが最小)」で固定する(S-2 だけで状態空間の約半分が\n\
          # 反例なので行は列挙しない)。分類に当てはまらない反例(unclassified)が出たらテストが失敗する。\n\
-         # L1 で S-1 は 0 になった(P1-PreL1 が L1 前の件数)。L2〜L3 で穴を直すと該当クラスの件数が 0 に向かう(この差分が進捗)。\n\
+         # L1 で S-1 は TsfNative×GJI(BUG-124 の実機 A/B〈ADR-208 L3'〉まで段階制御)を除いて 0 になった(P1-PreL1 が L1 前の件数)。L2〜L3 で穴を直すと該当クラスの件数が 0 に向かう(この差分が進捗)。\n\
          # 「起こりうる」= Blind プロファイル(Imm32Unavailable/TsfNative)で Actuating 観測が無い組み合わせ。\n\
          # 対象押下 = 非リピート・Win 押下なし・意図を持つキー。P1 の合格は Delivery が配送か書き込みのちょうど一方\n\
          # (Delivery::resolve が Ok)で、配送側なら前提 A1 のキー(0x16/0x1A・0xF0/F2・学習済み 0xF3/0xF4)。\n\
@@ -542,7 +542,7 @@ fn render(rep: &Report) -> String {
         ),
         (
             "P1-PreL1",
-            "(参考) L1 前(押下 ID なし、ADR-208 L0 の現状)の P1。S-1 が L1 で 0 になった差分を残す",
+            "(参考) L1 前(押下 ID なし、ADR-208 L0 の現状)の P1。S-1 が L1 で解消した差分（TsfNative×GJI を除く）を残す",
             &rep.p1_pre_l1,
         ),
         (
@@ -856,26 +856,44 @@ fn p5_pre_l1_double_sends_exist() {
     );
 }
 
-/// S-1（GjiDirect の already-matched。Engine 経由の絶対キー × 古い applied）は L1 で 0 件になる。L1 前は非ゼロ。
+/// S-1（GjiDirect の already-matched。Engine 経由の絶対キー × 古い applied）は L1 で解消する。ただし TsfNative の窓は
+/// BUG-124 型の「@」の実機 A/B（ADR-208 L3'）が済むまで Engine 経路の未知化を止めている
+/// （`engine_press_unknowns_applied`）ので、残る S-1 は TsfNative × GJI の Engine 経路だけ。L1 前は全プロファイルで非ゼロ。
 #[test]
-fn s1_already_matched_is_resolved_by_l1() {
-    let rep = analyze();
-    for (name, stat) in [("P1", &rep.p1), ("P1-FixedPoint", &rep.p1_fixed_point)] {
-        assert!(
-            !stat.classes.contains_key("S1_already_matched"),
-            "{name} に S-1 が残っています: {:?}",
-            stat.classes
-                .get("S1_already_matched")
-                .and_then(|c| c.example.as_ref())
-        );
+fn s1_already_matched_is_resolved_by_l1_except_tsf_native() {
+    let judge = StoreJudge::default();
+    let mut residual_tsf_native = 0u64;
+    for s in PressState::all().filter(|s| !s.was_down && !s.win_held) {
+        for key in [ExplicitKey::EngineOn, ExplicitKey::EngineOff] {
+            let d = delivery(&judge, &s, key);
+            if p1_class(&s, key, &d) == Some("S1_already_matched") {
+                assert_eq!(
+                    (s.profile, s.ime_kind),
+                    (PressProfile::TsfNative, ImeKindId::Gji),
+                    "TsfNative×GJI 以外に S-1 が残っています: {}",
+                    fmt_state(&s, key, None)
+                );
+                residual_tsf_native += 1;
+            }
+        }
     }
     assert!(
-        rep.p1_pre_l1
-            .classes
-            .get("S1_already_matched")
-            .is_some_and(|c| c.all > 0),
-        "L1 前の P1 に S-1 が無い=対照が成り立っていない"
+        residual_tsf_native > 0,
+        "TsfNative の段階制御が効いていない（L3' 前は S-1 が残る）"
     );
+    let rep = analyze();
+    let pre = rep
+        .p1_pre_l1
+        .classes
+        .get("S1_already_matched")
+        .map_or(0, |c| c.all);
+    let now = rep
+        .p1
+        .classes
+        .get("S1_already_matched")
+        .map_or(0, |c| c.all);
+    assert_eq!(now, residual_tsf_native);
+    assert!(now < pre, "L1 が S-1 を減らしていない: pre={pre} now={now}");
 }
 
 /// P6: 押下の書き込みの直後の自動リピートで、GjiDirect は VK を追い送りしない。
@@ -893,7 +911,7 @@ fn p6_repeat_never_rewrites_gji_direct() {
     assert!(rep.p6.checked > 0);
 }
 
-/// L1 が L0 から変えるのは、押下 ID を持つ押下（非リピート）の Engine 経路の already-matched 省略（S-1）だけ。
+/// L1 が L0 から変えるのは、押下 ID を持つ押下（非リピート）の Engine 経路の already-matched 省略（S-1。TsfNative を除く）だけ。
 /// shadow 経路は押下 ID あり（非リピート）なら L0 と同じ（従来から無条件に降格していた）、Engine 経路はリピート（`press=None`）
 /// なら L0 と同じ（`applied` の省略のまま）。
 #[test]
@@ -918,11 +936,14 @@ fn l1_changes_only_the_press_engine_already_matched_elision() {
                     );
                 }
                 // リピートの shadow 経路は `applied` の省略（従来の無条件降格をやめる）ので、書いたかが変わりうる。
-            } else if s.was_down || pre.reason != ElisionReason::AlreadyMatched {
+            } else if s.was_down
+                || pre.reason != ElisionReason::AlreadyMatched
+                || s.profile == PressProfile::TsfNative
+            {
                 assert_eq!(
                     (pre.physical, pre.write, pre.reason, pre.belief_after),
                     (l1.physical, l1.write, l1.reason, l1.belief_after),
-                    "{} Engine 経路は S-1（押下の already-matched）以外は L0 と同じ",
+                    "{} Engine 経路は S-1（押下の already-matched。TsfNative は L3' まで対象外）以外は L0 と同じ",
                     fmt_state(&s, key, None)
                 );
             } else {

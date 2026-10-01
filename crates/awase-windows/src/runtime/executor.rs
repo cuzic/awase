@@ -708,12 +708,17 @@ impl DecisionExecutor {
         generation: Option<crate::state::ApplyGeneration>,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         // view は imm_first 判定と sync path の両方で使うため一度だけ構築する。
-        // D1: 押下の書き込みは `applied` を省略の根拠にしない（`applied` 自体は書き換えない）。
+        // D1: 押下の書き込みは `applied` を省略の根拠にしない（`applied` 自体は書き換えない）。ただし TsfNative の窓は
+        // BUG-124 型の「@」の実機 A/B（ADR-208 L3'）が済むまで従来のまま（`engine_press_unknowns_applied`）。
+        let unknowns_applied = press.is_some()
+            && crate::state::ime_actuation_decision::engine_press_unknowns_applied(
+                platform.current_app_profile(),
+            );
         let mut view = platform.build_ime_control_view(
             crate::state::ime_actuation_decision::explicit_press_applied_pair(
                 self.applied_snapshot.to_pair(),
                 open,
-                press.is_some(),
+                unknowns_applied,
             ),
         );
         view.belief_input_mode = self.belief_input_mode;
