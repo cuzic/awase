@@ -21,15 +21,14 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
 };
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
     VIRTUAL_KEY,
 };
 use windows::Win32::UI::TextServices::{
@@ -40,6 +39,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetMessageW, GetWindowThreadProcessId, SendMessageW, SetForegroundWindow, SwitchToThisWindow,
     TranslateMessage, MSG, WINDOW_EX_STYLE, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
+use windows::core::{PCWSTR, w};
 
 /// スパイクと同じ目印。`AWASE_TEST_INJECTION=1` の awase は、この目印の注入を物理キーとして扱う。
 const AUTO_MARKER: usize = awase_windows::hook::TEST_INJECTION_MARKER;
@@ -962,17 +962,24 @@ fn main() {
             p.log.line(&format!(
                 "CLOSE_IME open_before={before:?} set_ret={set_ret:?} open_after={after:?}"
             ));
+            let closed_at = Instant::now();
             if args.iter().any(|a| a == "--refocus") {
                 let away = focus_away();
                 sleep(300);
                 let back = bring_to_front();
                 p.log.line(&format!("REFOCUS away={away} back={back}"));
-                sleep(2700);
-            } else {
-                sleep(3000);
+            }
+            for checkpoint_ms in [500u64, 2000] {
+                let remaining =
+                    Duration::from_millis(checkpoint_ms).saturating_sub(closed_at.elapsed());
+                std::thread::sleep(remaining);
+                let open = ime_control(0x0005, 0);
+                p.log.line(&format!(
+                    "CLOSE_CHECK checkpoint_ms={checkpoint_ms} open={open:?}"
+                ));
             }
             let open_late = ime_control(0x0005, 0);
-            let got = p.probe_logged("閉じて3秒後");
+            let got = p.probe_logged("閉じて2秒後");
             p.log
                 .line(&format!("CLOSE_IME open_at_probe={open_late:?}"));
             if p.focus_lost {

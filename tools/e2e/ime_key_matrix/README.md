@@ -131,12 +131,14 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 構成名: `ts-<入力先>-<gji|msime>-<間隔ms>ms`。`ts-raw-*` は awase なしで同じ文字列を生のローマ字として同じ速度で打つ対照実験。
 自己検証(各試行の `inject` 記録): 予定時刻に対する実注入の遅れ、`SendInput` の成功数、自プロセスの LL フックに届いたイベント数と配送遅延。
 
-## v2 実機確認の e2e(`sc-reopen-*`・`sc-kanji-role-default-*`・`tsx-*-cold`、`check_reopen.py`)
+## v2 実機確認の e2e(`sc-startup-*`・`sc-driftrecovery-*`・`sc-reopen-*`)
 
 `docs/tasks/v2-release-checklist-2026-09-29.md` の実機確認項目のうち、CI で作れるものを構成にした(いずれも実測前なので `expect=observe`。最初の実測で fail が 0 なら pass へ上げる)。
 
 | 構成 | チェックリスト | 見るもの |
 |---|---|---|
+| `sc-startup-{gji,msime}-{edit,chrome}-{on,off}` | D1 / BUG-163 | 対象窓を awase 起動前に ON/OFF にし、ON は起動後1秒以内の初打鍵、OFF は3秒維持後の ON→打鍵を検証。`check_startup.py` がテキスト、30秒の drift、startup-align、OFF直後 reinit、engine-input 時刻を判定し、安全デフォルト ON は観察件数だけを出す |
+| `sc-driftrecovery-{gji,msime}-{tsf,chrome}` | D3 / ADR-178 | 実 IME を直接閉じてずれを作り10回観測。tsf は +0.5/+2秒、実 Chrome は実タイピングと awase.log を突合せる。`NOT_OBSERVED` と `NOT_RECOVERED` を区別し、expect=observe |
 | `sc-reopen-{tsf-gji-gap300\|600\|900, tsf-gji-henkan-gap600, chromepage-gji-gap600, tsf-msime-gap600}`、比較用 `tsf-gji-f2-gap600` | D2 / ADR-203 e2e (c)・BUG-170・171 | `typing_stress --mode=reopen`: 1語確定 → 物理 OFF(0x1A)→ gap ms 後に物理 ON(既定: GJI 0x16・MS-IME 0xF2。GJI の ATOK プリセットで 0xF2 は ON にならない)→ 即打鍵。判定は `check_reopen.py`(入力先のテキスト、OffCold 固着、StaleConfirm/flush の `escape=true`、物理 OFF が効いたか、ON 後に実 IME が閉じていないか。GJI の TSF 系は `--require-cold` で「最初の語が cold 経路」も判定)。遅延は「打鍵→最初の `[vk-send]`」と「`[vk-send]`→セッション確認(ADR-203 D2 の定義)」を別に出す。素の EDIT は Unicode 注入で IME 状態の証拠にならないので構成にしない |
 | `sc-kanji-role-default-{atok,msime}` | B2 副次 | tsv も keys 上書きも無い既定 config × GJI プリセットの Alt+半角/全角(0x19)。IME が閉じ Engine が追随するか(`check_kanji_role.py --expect=closed`) |
 | `tsx-{edit,rich,tsf}-{gji,msime}-20ms-cold`・`tsx-{chromepage,chromebar}-gji-20ms-cold` | D1 / BUG-163 | awase 起動直後に最初に打つ文字が欠けないか(メモ帳の代わりに素の EDIT/RichEdit/TSF 相当と実 Chrome)。起動直後の意図なし drift(I1)は不変条件の表に出る |
@@ -145,5 +147,5 @@ API が状態を偽ることもあるため、実際にキーを打って結果�
 **コスト**: `tsx-*-cold` は8構成×10回(各 wait=900)。`tsx-` 構成は既定では回らず、`only='tsx-*'`(または構成名の前方一致)の手動起動でだけ回る。
 
 **CI で作れない項目**: B3(a)(GJI の設定ダイアログで利用者が保存した CUSTOM 表に Hankaku/Zenkaku 行が残るか。ダイアログ操作は自動化できない。表の解釈自体は `sc-t1b-*` が見ている)、
-B4(MS-IME 本体の値2。設定アプリの「キーの割り当て」が出ず作れない、PR #378)、D3(物理 Ctrl は SendInput で作れない)。
+B4(MS-IME 本体の値2。設定アプリの「キーの割り当て」が出ず作れない、PR #378)、D3 の物理 Ctrl 操作そのもの(SendInput は PHYSICAL_KEY_STATE を作れないため、CI は実 IME の直接 close でずれだけを代替)。
 単体テスト: `python3 -m unittest discover -s tools/e2e/ime_key_matrix -p 'test_*.py'`。

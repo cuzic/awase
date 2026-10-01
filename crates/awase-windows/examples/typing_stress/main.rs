@@ -43,6 +43,9 @@
 //! が `is_physical_key_down`(PHYSICAL_KEY_STATE)で判定されるため、SendInput 注入では物理 Ctrl 押下として
 //! 認識されず駆動できない)。追加フラグ: `--drift-off-vk=0xNN`(既定 0x1D=VK_NONCONVERT)。
 //!
+//! `--mode=startup`(BUG-163 / D1): 対象窓を awase より先に IME ON/OFF にし、起動直後の初打鍵または
+//! 3 秒間の OFF 維持を検証する。`--startup-ime=on|off` は必須。
+//!
 //! `--mode=drift-on`(ADR-178 領域A撤去後の回帰観測): reassert/force-on 撤去後、drift correction「だけ」で
 //! TsfNative 相当の入力先(`--form=tsf`)の ON 回復が働くかを見る。手順は「IME を ON にそろえる(awase が明示意図 ON を
 //! 持つ)→ **ハーネスが自プロセスの入力欄の IME を直接閉じる**(awase を経由しない
@@ -85,10 +88,9 @@ use awase::scanmap::{KeyboardModel, PhysicalPos};
 use awase::types::VkCode;
 use awase::yab::{FullwidthStrExt, YabFace, YabLayout, YabValue};
 use serde_json::json;
-use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
 use windows::Win32::System::Threading::{
@@ -96,22 +98,23 @@ use windows::Win32::System::Threading::{
     THREAD_PRIORITY_TIME_CRITICAL,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-    KEYEVENTF_KEYUP, VIRTUAL_KEY,
+    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
+    SetFocus, VIRTUAL_KEY,
 };
 use windows::Win32::UI::TextServices::{
     CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfInputProcessorProfileMgr, ITfThreadMgr,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW,
-    FindWindowW, GetClassInfoExW, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo,
-    GetMessageW, GetWindowThreadProcessId, PostMessageW, PostQuitMessage, RegisterClassExW,
-    SendMessageW, SetForegroundWindow, SetWindowsHookExW, ShowWindow, SwitchToThisWindow,
-    TranslateMessage, CW_USEDEFAULT, GUITHREADINFO, KBDLLHOOKSTRUCT, MSG, SW_SHOW, WH_KEYBOARD_LL,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_DESTROY, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN,
-    WM_KEYUP, WM_SETTEXT, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSEXW, WS_BORDER, WS_CHILD,
-    WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
+    BringWindowToTop, CW_USEDEFAULT, CallNextHookEx, CreateWindowExW, DefWindowProcW,
+    DispatchMessageW, FindWindowW, GUITHREADINFO, GetClassInfoExW, GetClassNameW,
+    GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GetWindowThreadProcessId, KBDLLHOOKSTRUCT,
+    MSG, PostMessageW, PostQuitMessage, RegisterClassExW, SW_SHOW, SendMessageW,
+    SetForegroundWindow, SetWindowsHookExW, ShowWindow, SwitchToThisWindow, TranslateMessage,
+    WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_DESTROY, WM_GETTEXT,
+    WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP, WM_SETTEXT, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSEXW,
+    WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
 };
+use windows::core::{PCWSTR, w};
 
 #[link(name = "winmm")]
 extern "system" {
@@ -945,6 +948,17 @@ fn wait_for_awase() {
     sleep_ms(10_000);
 }
 
+fn wait_for_awase_startup() {
+    for _ in 0..200 {
+        if std::fs::metadata("awase.log").is_ok_and(|m| m.len() > 0) {
+            log("[init] awase.log を確認(startup; 安定待ちなし)");
+            return;
+        }
+        sleep_ms(25);
+    }
+    rec(&json!({"type":"abort","reason":"startup: awase.log を5秒以内に確認できない"}));
+}
+
 fn expect_string(seq: &[Cell]) -> String {
     seq.iter().map(|c| c.kana).collect()
 }
@@ -1099,7 +1113,7 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
     let trials: usize = arg_value("--trials=")
         .and_then(|v| v.parse().ok())
         .unwrap_or(10);
-    const CHECKPOINTS_MS: [u64; 3] = [500, 1500, 3000];
+    const CHECKPOINTS_MS: [u64; 2] = [500, 2000];
     let Some(probe) = cells[0]
         .iter()
         .find(|c| c.romaji == "ka")
@@ -1177,6 +1191,48 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
             "ok":text.trim() == probe.kana.to_string(),"real_ime_open":real_ime_open(child)}),
         );
         clear_text(child);
+    }
+}
+
+fn startup_scenario(child: HWND, cells: &[Vec<Cell>; 3], initial_on: bool) {
+    let Some(probe) = cells[0].iter().find(|c| c.romaji == "ka").cloned() else {
+        rec(&json!({"type":"abort","reason":"startup の打鍵確認に使う ka セルが無い"}));
+        return;
+    };
+    let detected_utc = utc_hms();
+    start_hook_thread();
+    if initial_on {
+        clear_text(child);
+        let press_utc = utc_hms();
+        press(probe.vk, probe.scan, 60);
+        sleep_ms(700);
+        press(VK_RETURN, 0x1C, 50);
+        sleep_ms(900);
+        let text = read_text_maybe_settled(child, true);
+        rec(
+            &json!({"type":"startup_typed","initial":"on","detected_utc":detected_utc,
+            "press_utc":press_utc,"text":text,"expect":probe.kana.to_string(),
+            "ok":text.trim()==probe.kana.to_string(),"real_ime_open":real_ime_open(child)}),
+        );
+    } else {
+        sleep_ms(3000);
+        let open_after_idle = real_ime_open(child);
+        let before_on_utc = utc_hms();
+        press(VK_IME_ON, 0x70, 50);
+        sleep_ms(800);
+        clear_text(child);
+        let press_utc = utc_hms();
+        press(probe.vk, probe.scan, 60);
+        sleep_ms(700);
+        press(VK_RETURN, 0x1C, 50);
+        sleep_ms(900);
+        let text = read_text_maybe_settled(child, true);
+        rec(
+            &json!({"type":"startup_typed","initial":"off","detected_utc":detected_utc,
+            "before_on_utc":before_on_utc,"press_utc":press_utc,"open_after_idle":open_after_idle,
+            "text":text,"expect":probe.kana.to_string(),"ok":text.trim()==probe.kana.to_string(),
+            "real_ime_open":real_ime_open(child)}),
+        );
     }
 }
 
@@ -1323,6 +1379,8 @@ fn worker(form: Form) {
     let drift = mode_arg.as_deref() == Some("drift");
     let drift_on = mode_arg.as_deref() == Some("drift-on");
     let reopen = mode_arg.as_deref() == Some("reopen");
+    let startup = mode_arg.as_deref() == Some("startup");
+    let startup_on = arg_value("--startup-ime=").as_deref() == Some("on");
     let iv_ms: f64 = arg_value("--interval=")
         .and_then(|v| v.parse().ok())
         .unwrap_or(20.0);
@@ -1365,7 +1423,7 @@ fn worker(form: Form) {
         collect_cells(&layout.right_thumb, Face::Right, &table),
     ];
     rec(
-        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if drift {"drift"} else if drift_on {"drift-on"} else if reopen {"reopen"} else if raw {"raw"} else {"nicola"},
+        &json!({"type":"config","form":form.name(),"ime":ime,"mode":if startup {"startup"} else if drift {"drift"} else if drift_on {"drift-on"} else if reopen {"reopen"} else if raw {"raw"} else {"nicola"},
         "interval_ms":iv_ms,"len":len,"trials":trials,"seed":seed,"kinds":kinds,
         "layout":layout_path,"cells":[cells[0].len(),cells[1].len(),cells[2].len()],
         "child_class":class_of(child),"perturb":perturb.describe()}),
@@ -1378,9 +1436,21 @@ fn worker(form: Form) {
 
     sleep_ms(500);
     refocus();
+    if startup {
+        press(if startup_on { VK_IME_ON } else { VK_IME_OFF }, 0x70, 50);
+        sleep_ms(800);
+        rec(
+            &json!({"type":"startup_pre","initial":if startup_on {"on"} else {"off"},
+            "utc":utc_hms(),"real_ime_open":real_ime_open(child)}),
+        );
+    }
     log("[TS] READY-FOR-AWASE");
     if !has_flag("--no-awase") {
-        wait_for_awase();
+        if startup {
+            wait_for_awase_startup();
+        } else {
+            wait_for_awase();
+        }
     }
     refocus();
     rec(&focus_report());
@@ -1388,6 +1458,11 @@ fn worker(form: Form) {
         rec(
             &json!({"type":"abort","reason":"前面化またはフォーカスに失敗したためキーを注入しない"}),
         );
+        finish();
+        return;
+    }
+    if startup {
+        startup_scenario(child, &cells, startup_on);
         finish();
         return;
     }
