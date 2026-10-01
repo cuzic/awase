@@ -589,6 +589,19 @@ impl Runtime {
         prev_pid: Option<u32>,
         prev: &FocusIdentity,
     ) {
+        // 初回訪問の記録は cache hit・TsfNative・明示 OFF 抑制など全分岐より前に行う。
+        // 分類後に前面窓が変わっても別窓を観測しないよう、分類済み HWND/PID を使う。
+        let thread_probe = crate::focus::thread_scope::probe_focus_thread(
+            classified.hwnd,
+            classified.process_id,
+            &mut self.platform.focus.seen_threads,
+        );
+        tracing::debug!(
+            "[thread-scope] scope={:?} pid={:?} tid={:?}",
+            thread_probe.map(|probe| probe.scope),
+            thread_probe.map(|probe| probe.pid),
+            thread_probe.map(|probe| probe.tid),
+        );
         tracing::info!(
             "FocusChange [{}→{}] {}: stale ime_on={} intent={:?} mode={:?} japanese={}",
             prev_pid.map_or_else(|| "?".to_string(), |p| p.to_string()),
@@ -720,24 +733,49 @@ impl Runtime {
                 if effective_cache_miss {
                     let last_off_ms = pre_focus_explicit_off_ms;
                     let elapsed = tick_ms.saturating_sub(last_off_ms);
+                    let scope = thread_probe.map(|probe| probe.scope);
+                    let spi_thread_local =
+                        crate::focus::thread_scope::read_thread_local_input_settings();
+                    let ime_kind = crate::tsf::observer::tsf_obs().table_ime_kind();
+                    let assumption =
+                        crate::focus::thread_scope::closed_assumption(spi_thread_local, ime_kind);
+                    let (applied, reason) =
+                        crate::focus::thread_scope::should_assume_closed(scope, assumption);
+                    let log_thread_scope = || {
+                        tracing::info!(
+                            "[thread-scope] pid={:?} tid={:?} created_after_awase_ms={:?} \
+                             scope={scope:?} applied={applied} reason={reason} spi_thread_local={spi_thread_local:?} \
+                             ime_kind={ime_kind:?}",
+                            thread_probe.map(|probe| probe.pid),
+                            thread_probe.map(|probe| probe.tid),
+                            thread_probe.and_then(|probe| probe.created_after_awase_ms),
+                        );
+                    };
+                    // BUG-163: awase 自身の警告ダイアログ等は入力先ではなく、ここで
+                    // ON/OFF いずれの安全デフォルトも記録してはならない。
+                    // ADR-212 P2: 測定済み条件の新規スレッドだけ OFF、それ以外は従来の ON。
                     if last_off_ms > 0 && elapsed < EXPLICIT_OFF_CACHE_SUPPRESS_MS {
                         tracing::debug!(
                             "[focus] Imm32Unavailable cache-miss: skip reset_stale \
                              — explicit IME OFF {elapsed}ms ago",
                         );
                     } else if self.platform.focus.pid() == std::process::id() {
-                        // BUG-163: awase 自身のウィンドウ（警告ダイアログ等、ADR-192）は、ユーザーの入力先ではない。
-                        // ここで「安全デフォルト ON」の推測を記録すると、先同期と GJI への ImeOn 通知
-                        // （long-cold の `VK_IME_OFF→VK_IME_ON` reinit）へ進み、IME を閉じて起動したとき
-                        // 起動直後に awase が IME を開けてしまう（CI: 起動 0.5 秒後の警告ダイアログ）。
                         tracing::debug!(
                             "[focus] Imm32Unavailable cache-miss: skip reset_stale — awase 自身のウィンドウ"
                         );
                     } else {
-                        self.platform_state.ime.reset_stale_ime_on_for_imm_broken(
-                            crate::state::ime_event::ImePolicyProfile::Imm32Unavailable,
-                            tick_ms,
-                        );
+                        log_thread_scope();
+                        if applied {
+                            self.platform_state.ime.assume_closed_for_new_thread(
+                                crate::state::ime_event::ImePolicyProfile::Imm32Unavailable,
+                                tick_ms,
+                            );
+                        } else {
+                            self.platform_state.ime.reset_stale_ime_on_for_imm_broken(
+                                crate::state::ime_event::ImePolicyProfile::Imm32Unavailable,
+                                tick_ms,
+                            );
+                        }
                     }
                 }
             }
