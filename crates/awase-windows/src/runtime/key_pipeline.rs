@@ -1123,7 +1123,11 @@ impl Runtime {
         //
         // ADR-213 決定1: ON/OFF とも明示 actuation（`current` と `effective_open()` は
         // 冒頭の no-op 判定で必ず食い違っている）。
-        self.kp_shadow_actuate(self.platform_state.ime.effective_open(), tick_ms);
+        self.kp_shadow_actuate(
+            self.platform_state.ime.effective_open(),
+            event.press_id,
+            tick_ms,
+        );
         tracing::debug!(
             "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
             if current { "ON" } else { "OFF" },
@@ -1156,26 +1160,41 @@ impl Runtime {
     /// `set_ime_open_cross_process` がフック内で `with_app` 再入を引き起こすため async に
     /// `spawn_local` + OutputActiveGuard で dispatch する。それ以外 (GjiDirect / MsImeDirect) は
     /// SendInput-only で非ブロッキングなので sync。
-    fn kp_shadow_actuate(&mut self, open: bool, tick_ms: crate::state::TickMs) {
+    fn kp_shadow_actuate(
+        &mut self,
+        open: bool,
+        press: Option<awase::types::PressId>,
+        tick_ms: crate::state::TickMs,
+    ) {
         use crate::state::ime_actuation_decision::DecisionSite;
+        // ADR-208 D1: この押下で既に同じ向きを書いた（reinject・drain replay・Ctrl 救済の 50ms 保留の再処理で
+        // 同じ `RawKeyEvent` が再び来た場合）なら書かない。order の発行直前に予約する（ImmCross の async は
+        // 完了が後から届くため、完了時の記録では二重送信を防げない）。`press=None`（自動リピート）は従来どおり書く判断に回す。
+        let claim = self.platform_state.ime.claim_press_write(
+            press,
+            open,
+            crate::state::press_ledger::PressSource::Shadow,
+        );
+        if !claim.writes() {
+            tracing::debug!(
+                "[shadow-toggle] 同じ押下で既に書いた/Engine が優先（{}）→ 書かない press={press:?} open={open}",
+                claim.label()
+            );
+            return;
+        }
         self.platform_state.ime.note_explicit_ime_action(tick_ms);
         let caller = if open {
             DecisionSite::ShadowToggleOn
         } else {
             DecisionSite::ShadowToggleOff
         };
-        let applied_pair = if crate::state::ime_actuation_decision::shadow_toggle_demotes_applied(
-            self.platform_state.ime.applied_state().applied_open(),
+        // D1: 押下の書き込みは `applied` が向きと一致していても省略の根拠にしない（`explicit_press_applied_pair`）。
+        // 以前は shadow 経路だけが無条件に降格していた（PR #408）。`press=None`（自動リピート）は従来の `applied` のまま。
+        let applied_pair = crate::state::ime_actuation_decision::explicit_press_applied_pair(
+            self.platform_state.ime.model().applied_pair(),
             open,
-        ) {
-            tracing::debug!(
-                "[shadow-toggle] applied={open:?} は belief(直前 {:?})と食い違う → shadow_on を未知として書く",
-                !open
-            );
-            None
-        } else {
-            self.platform_state.ime.model().applied_pair()
-        };
+            press.is_some(),
+        );
         let mut view = self.platform.build_ime_control_view(applied_pair);
         view.belief_input_mode = self.platform_state.ime.input_mode();
         let imm_first = crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
@@ -1188,14 +1207,16 @@ impl Runtime {
             }
             // ADR-090 §2.A A-1（shadow）: 起案は spawn_local の**外**で行う
             // ——future の中では `with_app` 再入で `ImeStateHub` に届かない（ADR-090 §4.2）。
-            let order = self.issue_actuation_order(
-                open,
-                if open {
-                    "shadow_toggle_on"
-                } else {
-                    "shadow_toggle_off"
-                },
-            );
+            let order = self
+                .issue_actuation_order(
+                    open,
+                    if open {
+                        "shadow_toggle_on"
+                    } else {
+                        "shadow_toggle_off"
+                    },
+                )
+                .with_press(press);
             let focus_gen = self.platform.output.ime_mode_focus_gen.get();
             let conv_after_open: crate::ime::ConvAfterOpen =
                 crate::state::ime_actuation_decision::decide_dispatch_conv_after_open(
@@ -1260,14 +1281,16 @@ impl Runtime {
                 drop(guard);
             });
         } else {
-            let order = self.issue_actuation_order(
-                open,
-                if open {
-                    "shadow_toggle_on_sync"
-                } else {
-                    "shadow_toggle_off_sync"
-                },
-            );
+            let order = self
+                .issue_actuation_order(
+                    open,
+                    if open {
+                        "shadow_toggle_on_sync"
+                    } else {
+                        "shadow_toggle_off_sync"
+                    },
+                )
+                .with_press(press);
             let (outcome, mut record) = crate::ime_controller::ImeController::apply(order, &view);
             // `site` は `Sync` のまま（replay の chain 再導出を保つ）、呼び出し元は `caller` で識別する。
             record.caller = Some(caller);

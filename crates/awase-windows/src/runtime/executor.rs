@@ -604,17 +604,19 @@ impl DecisionExecutor {
         // ImeEffect::SetOpen は ImmCross-first か否かで async / sync を分岐するため
         // 先に処理する（後段の `let platform_rt = platform` が `platform`
         // を独占する前に `build_ime_control_view` を呼ぶ必要がある）。
-        if let Effect::Ime(ImeEffect::SetOpen { open, .. }) = effect {
+        if let Effect::Ime(ImeEffect::SetOpen { open, press }) = effect {
             // ADR-212 P2: 実 actuation を起こした SetOpen をログで数える（outcome も同じ行に出す。
             // 以前の `origin=`（ActivationSync/ExplicitUserAction）は ADR-213 P2c で SetOpenOrigin ごと撤去し、
             // 全て明示操作になった）。async（ImmCross 先の窓）は `generation` で、後から届く
             // `on_ime_apply_complete{generation outcome}` の行と突き合わせる。
-            let result = self.dispatch_ime_set_open(platform, ime, open, generation);
+            let result = self.dispatch_ime_set_open(platform, ime, open, press, generation);
             let outcome = result.as_ref().map_or_else(
                 || "async".to_string(),
                 |(_, outcome)| format!("{outcome:?}"),
             );
-            tracing::info!("[set-open] open={open} generation={generation:?} outcome={outcome}");
+            tracing::info!(
+                "[set-open] open={open} press={press:?} generation={generation:?} outcome={outcome}"
+            );
             return result;
         }
         // EngineStateChanged: エンジン ON/OFF に連動して conv mutation ゲートを更新する。
@@ -690,16 +692,30 @@ impl DecisionExecutor {
     /// `win32_async::spawn_local` で非同期実行し `None` を返す（spawn 済み）。
     /// それ以外（GjiDirect / MsImeDirect 経路）はキー注入のみで非ブロッキングなため
     /// 既存の同期 chain を維持し、`Some(..)` を返す。
-    #[tracing::instrument(level = "debug", skip_all, fields(open = open, ?generation))]
+    ///
+    /// `press`（ADR-208 決定2 D1）: この `SetOpen` を起こしたユーザー打鍵（非リピート KeyDown）の押下 ID。
+    /// `Some` の書き込みは、(1) 同じ押下で既に同じ向きを予約済みなら書かず（BUG-113 の二重送信防止。向きが逆なら
+    /// Engine の明示コンボが優先して書く）、(2) view の `shadow_on` を `applied` が向きと一致していても未知にして
+    /// GjiDirect の already-matched 省略を外す（S-1: Blind 窓で stale な `applied` により絶対キーが握りつぶされ続ける
+    /// 固着の解消）。`None`（自動リピート等）は従来どおり `applied_snapshot` のまま。
+    #[tracing::instrument(level = "debug", skip_all, fields(open = open, ?press, ?generation))]
     fn dispatch_ime_set_open(
         &mut self,
         platform: &WindowsPlatform,
         ime: &mut ImeStateHub,
         open: bool,
+        press: Option<awase::types::PressId>,
         generation: Option<crate::state::ApplyGeneration>,
     ) -> Option<(bool, awase::platform::ImeOpenOutcome)> {
         // view は imm_first 判定と sync path の両方で使うため一度だけ構築する。
-        let mut view = platform.build_ime_control_view(self.applied_snapshot.to_pair());
+        // D1: 押下の書き込みは `applied` を省略の根拠にしない（`applied` 自体は書き換えない）。
+        let mut view = platform.build_ime_control_view(
+            crate::state::ime_actuation_decision::explicit_press_applied_pair(
+                self.applied_snapshot.to_pair(),
+                open,
+                press.is_some(),
+            ),
+        );
         view.belief_input_mode = self.belief_input_mode;
         let gate_inputs = (&view).into();
         if matches!(
@@ -736,6 +752,19 @@ impl DecisionExecutor {
                 .record(crate::journal::JournalEntry::ActuationDecision { record });
             return Some((open, awase::platform::ImeOpenOutcome::NotOwned));
         }
+        // ADR-208 D1: この押下で既に書いた（同じ向き）なら書かない。order の発行直前に予約する
+        // （ImmCross の async は完了が WM 経由で後から届くため、完了時の記録では同じ打鍵の二重送信を防げない）。
+        // 予約は書けなかった（UnsafeToToggle/Failed）ときも解かない。上の gate（NotOwned）で返済み
+        // なので、書かない窓では予約しない。
+        let claim =
+            ime.claim_press_write(press, open, crate::state::press_ledger::PressSource::Engine);
+        if !claim.writes() {
+            tracing::debug!(
+                "[dispatch-ime] 同じ押下で既に書いた（{}）→ 書かない press={press:?} open={open}",
+                claim.label()
+            );
+            return Some((open, awase::platform::ImeOpenOutcome::AlreadyMatched));
+        }
         let imm_first = crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
         if imm_first {
             // ── async path (ImmCross が選ばれるアプリ) ──
@@ -761,7 +790,9 @@ impl DecisionExecutor {
             // ADR-090 §2.A A-1（shadow）: 起案は spawn_local の**外**で行う
             // ——future の中では `with_app` 再入で `ImeStateHub` に届かない
             // （ADR-090 §4.2）。
-            let order = ime.issue_self_actuation_order(open, "engine_decision_async");
+            let order = ime
+                .issue_self_actuation_order(open, "engine_decision_async")
+                .with_press(press);
             let guard = crate::tsf::probe_bridge::OutputActiveGuard::begin();
             // ADR-086 §1.2 欠陥1 是正（opus レビュー指摘 2026-08-08）: 「open と
             // 同じウィンドウへ ROMAN ビットを補完する」という意図を、open/conv を
@@ -890,7 +921,9 @@ impl DecisionExecutor {
                 view.focus.profile
             );
             // ADR-090 §2.A A-1（shadow）。
-            let order = ime.issue_self_actuation_order(open, "engine_decision_sync");
+            let order = ime
+                .issue_self_actuation_order(open, "engine_decision_sync")
+                .with_press(press);
             let (outcome, mut record) = platform.apply_ime_open_with_view(order, &view, belief);
             // /code-review指摘（B-2、PR #201）: `site`は上書きしない——
             // `decide_attempt`は常に`Sync`で呼ばれておりrecord.siteもSyncの
