@@ -58,7 +58,10 @@ sc-hz/kanji/dbe/shift の退行は B・C とも消えた(書き込み全停止�
    | `mark_composition_cold(SetOpenTrue/False)`・`reset_candidate_was_seen` | 同上 |
    | idle-conv-check の抑制窓 | 決定1の `note_explicit_ime_action`(M4) |
    P2b' の `EngineActivated` Reopen は、スパイクの配置(`dispatch_effect` の `EngineStateChanged`)では settle 中の一瞬の活性化でも発火するため(M9)、**発火点を遷移の origin が分かる場所**(キーボード経路 `kp_stage_post_decision`、loop 経路 `execute_decision`)にし、settle 中は送らない。
-5. **C2・C3 の整理**(M5・M6): `kp_apply_conv_engine_sync` は `handle_engine_activation_sync` を直接呼ぶため、P2c でこの関数を消すなら C2 が何を残すか(ログだけ・抑制窓だけ)を決める。`lints/ime_event_guard/src/lib.rs`、`golden_scenarios.rs` シナリオ16、`platform_state.rs:2179-2300` のテスト、`tests/support/{harness,invariants}.rs` を、消す・書き換える対象として列挙する。C3 は、ActivationSync が消えると strip が落とすのは ExplicitUserAction だけになり、「settle 中の Ctrl+変換が黙って消える」という【許可】に反する挙動だけが残るので、P2c で strip と `schedule_settle_retry` を撤去する(または残す理由を書く)。
+5. **C2・C3 は P2c では残す。整理は P2d 候補**(2026-10-01、所有者判断。P2c 実装後の整理)。どちらも ActivationSync の撤去とは別件で、撤去してよい根拠(再現シナリオ)がまだ無い。
+   - **C2**(`kp_apply_conv_engine_sync`、idle-conv-check の `RomajiRecovered`): IME へは書かない。`handle_conv_engine_on_sync` に整理し、`handle_engine_activation_sync` から副作用だけを残した。残る副作用は、`TIMER_IME_REFRESH` の kill・`on_set_open_requested`(検出状態のリセット)・`ImeApplyRequested`(世代の記録)・`last_explicit_ime_action_ms`(idle-conv-check の抑制窓、遷移途中の conv を観測として拾わない)。chord/settle フィルタは、呼び出し元が常に `target=true`・settle なしを渡すため不到達で外した。**書かないのに pending と抑制窓を立てる**(ADR-212 が C2 で問題にした形)ので、縮小の余地がある。P2d で、`ImeApplyRequested` の pending が完了通知の来ないまま残らないかを確認し、残るなら抑制窓だけに縮める。
+   - **C3**(`strip_ime_set_open_if_settling`・`schedule_settle_retry`): P2b 後に SetOpen を出すのは明示操作(ToggleEngine・EngineOn/Off コンボ・IME OFF 中の Ctrl+変換・ADR-206 の単独タップ)だけ。もともとの動機(2026-07-05 Alt+Tab 中間窓で Engine の**自動**遷移が未確定 belief から SetOpen を書く)は消えた。一方、strip は settle 中の明示操作を黙って落とし(【許可】に反する)、`schedule_settle_retry` は refresh を予約するだけで SetOpen を再発行しない。**撤去すると**、Alt+Tab の中間窓へ未確定 belief のまま書く可能性が出て、belief 側の settle フィルタ(`handle_engine_set_open`)とセットで外さないと書き込みと belief が食い違う。検証用シナリオも無い。→ **P2c では残す**。P2d で、先に「settle 中の Ctrl+変換が落ちる」ことを示す回帰テストを足してから、strip・retry・belief 側フィルタをまとめて撤去する(再発行する案は defer キューを足すので採らない。ADR-156)。
+   - P2c で消す・書き換えたもの: `lints/ime_event_guard/src/lib.rs` の許可リスト、`golden_scenarios.rs` シナリオ16/16b(削除)、`platform_state.rs` の ActivationSync テスト群(filter 系3本を削除、不変条件2本を `handle_conv_engine_on_sync` 向けに書き換え)、`tests/support/{harness,invariants}.rs`(`WriteOrigin::EngineActivationSync` を撤去し、Engine decision に SetOpen が出たら panic する退行ガードに変更)。
 6. **loop 経路・起動直後の期待される挙動**(M7): `ImeModel` の初期値は `desired_open: true`(placeholder)で、起動47ms後の loop 経路の書き込みはこの既定 ON を実 IME に書いて自己成就させていた。P2b の後、**awase の起動前から存在するスレッドの窓(新スレッド=閉の対象外)で IME が実際に閉じていると、Engine は active のままローマ字を送り `ka` がリテラルで出る**。所有者方針(ADR-191、awase は IME に書かない)では「書かない結果」として受け入れる余地があるが、ADR-212 M6(i)(「nonaiyo」)の再現でもあるので、**P2b の revert 条件にする**: 起動前から存在する窓・IME 閉・観測なしで最初の文字がリテラルになる件数を CI/実機で数え、所有者に提示して判断を仰ぐ(受け入れる/belief の既定値を変える/P2b を revert)。
 7. **検証**(ADR-212 決定5 を引き継ぐ)。
    - **1打鍵あたりの実送信数**(P2a の不変条件): MS-IME の `VK_IME_ON` と ROMAN の IMC write が1回であること。`[apply-ime]`・`[ime-io] actuation SendInput` の件数を同じ打鍵のログで数える。`outcome=Applied` だけで成功としない。
@@ -70,7 +73,8 @@ sc-hz/kanji/dbe/shift の退行は B・C とも消えた(書き込み全停止�
    | P2a | 決定1・2・(M4 の抑制窓)。ActivationSync はまだ止めないが、shadow 打鍵の同一目標 SetOpen は strip | MS-IME/ImmCross で1打鍵あたり送信1回。sc-hz/kanji/dbe/shift |
    | P2b | loop 経路と shadow 以外のキーボード経路で、`check_active_transition` 由来の ActivationSync の SetOpen を止める(決定3)。**`EngineActivated` は入れない** | 起動直後(決定6)、OnWarm/OnComposing の取り残しの目印、StaleConfirm・`[key-effect-miss]` を develop と比較 |
    | P2b' | (P2b で取り残しが見えた場合だけ)ON/OFF 対称の BeliefSync 通知(決定4) | P2b と同じ土台での A/B |
-   | P2c | `SetOpenOrigin::ActivationSync`・`ImeEvent::EngineActivationSync`・`handle_engine_activation_sync`・C2/C3 の整理(決定3・5)。テスト・lint・guard の更新 | コンパイル、`architecture_guard`、golden |
+   | P2c | `SetOpenOrigin`(enum ごと)・`ImeEvent::EngineActivationSync`・`handle_engine_activation_sync`・shadow 同一目標 strip の撤去。C2 は副作用だけ残し(`handle_conv_engine_on_sync`)、C3 は残す(決定5)。テスト・lint・guard の更新 | コンパイル、`-D warnings`、`architecture_guard`、golden、dylint(CI) |
+   | P2d(候補) | C3(strip・retry・belief 側 settle フィルタ)の撤去と C2 の縮小(決定5)。先に settle 中の Ctrl+変換が落ちる回帰テストを足す | 回帰テスト、`sc-*` |
 9. **ADR-212 との関係**: ADR-212 決定5 の「P2 は保留」を、本 ADR の段階で再開する旨に更新する。ADR-191 の「EngineDecision」節は、P2c の PR で改訂する(ADR-212 決定6)。
 
 ## 実装後の知見(2026-10-01、P2a=PR #408・P2b の CI 結果)
