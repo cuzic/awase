@@ -40,10 +40,11 @@
 //!   `write_set_open_request` + `record_explicit_intent`。後者は `current_focus==None` では no-op）。
 //!   chord フィルタで落ちた Engine の OFF は `desired_open` も IntentStore も更新しない（`desired_open` は
 //!   belief と同じと仮定する）。
-//! - 完了後の `applied` は `record_ime_apply_result`（generation なし）の意味論: 送信した/AlreadyMatched は
-//!   `Confirmed(向き)`、`NotOwned`/`Unwarranted`/`UnsafeToToggle` は不変。
-//! - 実 IME の応答（[`ime_after_press`]）: Allow で届いた物理キーは IME が意味どおり処理する（絶対キーは向き、
-//!   トグルは反転）。awase の書き込みはその向きに設定する（二重 actuation のときは書き込みが後）。
+//! - 完了後の `applied` は**実物の遷移を呼ぶ**: shadow 経路は `ime_model::apply_result_effective_open`
+//!   （`record_ime_apply_result` の generation=None 分岐の純粋部）と `ImeModel::confirm_applied`、Engine 経路は
+//!   `ImeModel::reduce`（`ImeApplyRequested` → `ImeEvent::from_apply_outcome`、`completion_can_update_applied` を含む）。
+//! - 実 IME の応答（[`ime_after_press`]）: 前提 A1（[`A1_KEYS`]）のキーを Allow で配送すれば IME が意味どおり処理する
+//!   （絶対キーは向き、トグルは反転）。それ以外のキーの配送では何も起きないとみなす。awase の書き込みはその向きに設定する。
 
 use awase::engine::InputModeState;
 use awase::types::{
@@ -237,6 +238,15 @@ pub enum ExplicitKey {
     EngineOff,
 }
 
+/// 前提 A1 が成り立つキーの表（ADR-208 決定1）。成り立たないキー（任意の sync キー・漢字 0x19・F13 等）は
+/// 「Allow で配送してよいキー」から外れ、Suppress + write 側に寄せる。0xF3/0xF4 は GJI 学習表で開閉トグルとされる場合。
+pub const A1_KEYS: [ExplicitKey; 4] = [
+    ExplicitKey::StaticOn,
+    ExplicitKey::StaticOff,
+    ExplicitKey::HzToggle,
+    ExplicitKey::PhysOnlyMode,
+];
+
 /// キーの意味（収束条件の判定用）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyMeaning {
@@ -291,11 +301,8 @@ impl ExplicitKey {
     /// F2/0xF0 等の物理のみのモード・GJI 学習表で開閉トグルとされる 0xF3/0xF4。任意の sync キー・漢字(0x19)・
     /// 役割由来の F13 等・未学習の構成は成り立たない（それらを Allow で配送するのは INV-L1 の (i) として認めない）。
     #[must_use]
-    pub const fn a1_holds(self) -> bool {
-        matches!(
-            self,
-            Self::StaticOn | Self::StaticOff | Self::HzToggle | Self::PhysOnlyMode
-        )
+    pub fn a1_holds(self) -> bool {
+        A1_KEYS.contains(&self)
     }
 
     /// shadow toggle 経路（hook の昇格 → `plan`）のキーか（`false` は Engine の SetOpen 経路）。
@@ -830,15 +837,17 @@ const fn knowledge_of(a: AppliedImeState) -> AppliedKnowledge {
 /// `apply_result_effective_open`（`record_ime_apply_result` の generation=None 分岐の純粋部）と
 /// `ImeModel::confirm_applied`、Engine 経路（generation あり）は `ImeModel::reduce` の
 /// `ImeApplyRequested` → `ImeEvent::from_apply_outcome`（`completion_can_update_applied` を含む）。
+// 変数名を `model` にしないのは layer_boundary_guard C-6（本番の `model.reduce(` は platform_state.rs の 1 箇所）の
+// 文字列走査に掛けないため。これは event_log を経由しない純粋モデル上のオラクルで、本番の reduce 呼び出しではない。
 fn applied_after(state: &PressState, key: ExplicitKey, d: Delivery) -> AppliedKnowledge {
     let (Some(outcome), Some(open)) = (d.outcome(), d.requested) else {
         return state.applied;
     };
-    let mut model = ImeModel::with_applied(model_applied(state.applied));
+    let mut oracle = ImeModel::with_applied(model_applied(state.applied));
     match key.path() {
         PressPath::Shadow => {
             if let Some(effective) = apply_result_effective_open(open, outcome) {
-                model.confirm_applied(effective, 2);
+                oracle.confirm_applied(effective, 2);
             }
         }
         PressPath::Engine(_) => {
@@ -851,7 +860,7 @@ fn applied_after(state: &PressState, key: ExplicitKey, d: Delivery) -> AppliedKn
                 },
                 event,
             };
-            model.reduce(&env(
+            oracle.reduce(&env(
                 1,
                 ImeEvent::ImeApplyRequested {
                     target: open,
@@ -859,13 +868,13 @@ fn applied_after(state: &PressState, key: ExplicitKey, d: Delivery) -> AppliedKn
                     ctrl_held: false,
                 },
             ));
-            model.reduce(&env(
+            oracle.reduce(&env(
                 2,
                 ImeEvent::from_apply_outcome(open, outcome, generation),
             ));
         }
     }
-    knowledge_of(model.applied)
+    knowledge_of(oracle.applied)
 }
 
 /// 押下後の内部状態（belief・applied・is_japanese_ime・IntentStore・candidate_was_seen）。
@@ -886,6 +895,8 @@ pub fn state_after_press(state: &PressState, key: ExplicitKey, d: &Delivery) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::key_sequence_policy;
+    use crate::vk::VkCodeExt as _;
 
     /// 授権を常に下ろす/下ろさない判定器（本物の `issue_open_warrant` を使う判定器は
     /// `tests/explicit_press_exhaustive.rs`）。
@@ -1374,5 +1385,304 @@ mod tests {
                 assert_eq!(apply_result_effective_open(open, o), None);
             }
         }
+    }
+
+    // ── 逐語コピー（L0 限定のテスト用の意図的な重複。L1 以降で削除してよい）──────────────────────
+    //
+    // 出所: develop 2481948d（ADR-208 L0 の切り出し前）の `crates/awase-windows/src/runtime/transport.rs`
+    // （`thumb_or_role_fkey_disposition`・`plan`・`is_role_toggle_hz_key_down`）と
+    // `crates/awase-windows/src/runtime/key_pipeline.rs::kp_stage_shadow_ime_toggle` の intent 選択（951〜973 行）。
+    // 本体は逐語。差は (1) 名前に `legacy_` を付けた、(2) `plan` の `ActiveImeKind` 引数を（`ImeKindId` へ変換済みの）
+    // `ImeKindId` にし、冒頭の `.into()` 1 行を除いた、(3) intent 選択の `self.platform_state.ime.belief.is_japanese_ime()`
+    // を引数 `is_japanese_ime` にし、`IntentKind` を `ShadowIntentKind` にした、の機械的な置換だけ。
+    // doc コメントは落とした。新実装（`plan_core`・`select_shadow_intent`・`engine_set_open_filtered_by_chord`）との
+    // 差分 0 を `new_implementations_match_the_verbatim_legacy_copies` が全列挙で確かめる。
+
+    impl PhysicalKeyDisposition {
+        fn legacy_thumb_or_role_fkey_disposition(
+            event: &RawKeyEvent,
+            shadow_toggled: bool,
+        ) -> Option<Self> {
+            let suppress = if matches!(
+                event.vk_code,
+                crate::vk::VK_CONVERT | crate::vk::VK_NONCONVERT
+            ) {
+                false
+            } else if crate::vk::is_role_fkey(event.vk_code) {
+                let first_down = event.event_type == KeyEventType::KeyDown && !event.was_down;
+                // 役割由来の昇格（`shadow_action` あり）で書いたときだけ。同期キー（`keys.ime_detect`）由来の
+                // `shadow_toggled` では書いたことにしない（`shadow_action` は付かない、Opus レビュー PR #328）。
+                let role_action = event.ime_relevance.shadow_action.is_some();
+                if first_down {
+                    shadow_toggled && role_action
+                } else {
+                    role_action
+                }
+            } else {
+                return None;
+            };
+            Some(if suppress {
+                Self::Suppress
+            } else {
+                Self::Allow
+            })
+        }
+
+        /// 物理キーを OS に届けるかどうかの純粋関数。
+        ///
+        /// **F2 (VK_DBE_HIRAGANA)**: 常に Allow（BUG-173）。以前は TSF mode かつ
+        /// `f2_warmup_owned=true`（GJI 戦略）で Suppress していたが、ADR-100 決定2 で
+        /// warmup が `VK_IME_ON` 単発になり「代わりに F2 を再送する」契約が崩れていた。
+        /// 詳細は下の F2 分岐のコメント参照。
+        ///
+        /// **KANJI 関連キー**:
+        /// - ImmCross プロファイル: Down/Up 共に Suppress（spurious 連鎖を構造的に遮断）
+        /// - それ以外（Imm32Unavailable / TsfNative）: `apply-ime` が `GjiDirectStrategy` /
+        ///   `MsImeDirectStrategy` で実際に actuate する場合（`ime_actuation_owned`）のみ、
+        ///   shadow_toggle 発火時 KeyDown と全 KeyUp を Suppress。
+        ///   **例外: 半角/全角（0xF3 SBCSCHAR / 0xF4 DBCSCHAR。0xF2 HIRAGANA は上の専用分岐で
+        ///   別処理）のうち、awase が beliefに基づく開閉トグルとして書くキー
+        ///   （`Runtime::enrich_key_role` が役割から `Some(Toggle)` を付けたもの、ADR-199 決定8。GJI は `config1.db` から逆算、MS-IME本体は仕様固定。ただし採用中の学習表が
+        ///   半角/全角を開閉トグルでないと示すと`shadow_action`が付かず、この分岐の前に Down/Up とも Allow、ADR-195追記）の
+        ///   KeyDown は `shadow_toggled` に関わらず常に Suppress**（`ime_actuation_owned`
+        ///   の場合）。NICOLA の物理「IME ON」キー（scan 0x70）は、IME が既に目的の状態に
+        ///   ある時に押されると `VK_DBE_HIRAGANA` (0xF2) の代わりに `VK_DBE_*` を生成する
+        ///   ことがあり、素通しすると awase が書く開閉に加えて実 IME が同じキーを能動的に
+        ///   処理する二重 actuation になる（2026-08-05 実機、BUG-46/BUG-52）。
+        ///   **ADR-191（撤去後）**: awase が書かない英数(0xF0)・カタカナ(0xF1)・ひらがな(0xF2)
+        ///   などは Suppress せず OS（IME）へ素通しする（`shadow_action` を持たないので
+        ///   `is_kanji_event` 判定で Allow）。BUG-116/ADR-137 の「Shift+0xF1 だけ Allow」の
+        ///   特例は、0xF1 が常に Allow になったため撤去した。
+        ///
+        /// `ime_actuation_owned` を profile 単独ではなく `ActiveImeKind` からも導出するのは、
+        /// TsfNative（Windows Terminal 等）で GJI が起動している場合に awase 自身の
+        /// `SendInput(VK_IME_ON/OFF)`（`GjiDirectStrategy`）と、素通しされた元の物理 KANJI 系
+        /// キーの reinject が **二重に actuate** してしまうため（BUG-46）。旧実装は
+        /// `profile.should_pass_physical_key()`（TsfNative で常に true）のみで判定しており、
+        /// 「TSF が KANJI を正しく処理する」という前提が `GjiDirectStrategy` の全プロファイル
+        /// 適用化（`ime_controller.rs`）より前のまま残っていたことが原因だった。
+        fn legacy_plan(
+            event: &RawKeyEvent,
+            profile: AppImeProfile,
+            shadow_toggled: bool,
+            kind: ImeKindId,
+        ) -> Self {
+            // InputRelay: この窓は入力面ではなく、awase は actuation を所有しない
+            // （issue #136 / BUG-90 決定4）。物理 IME キーは常に Allow。
+            if profile == AppImeProfile::InputRelay {
+                return Self::Allow;
+            }
+
+            // F2 (VK_DBE_HIRAGANA): 常に Allow（BUG-173）。
+            //
+            // 旧実装は「TSF mode かつ GJI 戦略（`f2_warmup_owned`）なら Suppress」だった。この
+            // Suppress は「awase 自身が warmup として物理 F2 の代わりに SendInput(F2) を再送する」
+            // 契約（double-F2 防止）とセットの設計だったが、ADR-100 決定2（2026-08-22）で eager
+            // warmup の送信キーが `VK_DBE_HIRAGANA` から `VK_IME_ON` 単発（open 軸のみ）へ変わった
+            // 時点で契約が崩れていた。物理 F2 は消されるのに、代わりに届くのは open 軸だけで
+            // charset 軸（カタカナ→ひらがな）は戻らない「食い逃げ」になり、IME belief が OFF の
+            // ときは埋め合わせ（`kp_restore_hiragana_for_suppressed_mode_key`、`effective_open`
+            // 必須）も見送られて物理ひらがなキーが完全に無反応になった（ADR-137 M-6、
+            // BUG-173: GJI + Windows Terminal でカタカナから物理ひらがなキーで戻れない）。
+            //
+            // awase は物理 F2 の代わりに何も送らない（cold 化と GjiFsm 通知だけ、
+            // `WindowsPlatform::composition_native_f2_down`）ので、物理 F2 を素通ししても二重 actuation に
+            // ならない（conv は GJI 自身が物理キーとして処理する）。判定は VK だけで決まる。
+            if event.vk_code == crate::vk::VK_DBE_HIRAGANA {
+                return Self::Allow;
+            }
+
+            // BUG-136 (issue #136): 他プロセスの SendInput (LLKHF_INJECTED) 由来のイベントは、
+            // key_pipeline.rs::kp_stage_shadow_ime_toggle (BUG-14) が shadow_toggled への
+            // 昇格を既に禁止しているため、awase 自身が actuate することはない。
+            // 「解釈しない入力は消費しない」— awase が actuate しないのに物理キーだけ
+            // Suppress すると、OS 側にも awase 側にも誰も IME を切り替えない
+            // 「二重の空振り」になる（PowerToys Mouse Without Borders 等の正規リレー
+            // ツールでリモート側の英数/かなキーが完全に無反応になる、ADR-119 参照）。
+            //
+            // この early return は下の ImmCross アーム（`profile.can_use_imm32_
+            // cross_process()` → 無条件 Suppress）よりも先に来るため、ImmCross
+            // アプリでも injected イベントは貫通する。ImmCross の無条件 Suppress は
+            // 「spurious 連鎖の構造的遮断」（`feedback_immcross_owns_kanji`
+            // の設計原則 — ImmCross アプリには物理 IME キーを見せない）という別種の
+            // 保護だが、injected イベントは shadow_toggled を発火させないため awase
+            // 自身が actuate することはなく、spurious 連鎖の前提（awase の自
+            // actuation と物理キー通過の競合）がそもそも成立しない。したがって
+            // ここを貫通させても `feedback_immcross_owns_kanji` が防ごうとした
+            // リスクは再現しない（ADR-119 決定1参照）。
+            if event.injected {
+                debug_assert!(
+                    !shadow_toggled,
+                    "injected イベントで shadow_toggled が立つのは設計違反 \
+                 (BUG-14 ガード kp_stage_shadow_ime_toggle が必ず false にする)"
+                );
+                return Self::Allow;
+            }
+
+            // 無変換/変換（ADR-141、C2対策）: shadow_action は belief 追随専用
+            // （follow-only）であり、物理配送は既定で Allow する。C2対策で
+            // これら2キーにも`shadow_action`（`enrich_ime_relevance`経由の
+            // shadow_action override）が付くようになったため、対策なしだと
+            // 下の`is_kanji_event`判定を抜けてKANJI関連VK同様にSuppressされ
+            // うる——GJI自身がこの物理キーを見てIMEを切り替えることに
+            // 依存している設計（BUG-115）なので、Suppressすると「OS側にも
+            // awase側にも誰もIMEを切り替えない二重の空振り」（ADR-119と同型）
+            // になる。VK_DBE_HIRAGANA等の静的KANJIキーと異なり、無変換/変換は
+            // 既定では awase自身がactuationを所有する対象ではない（delegate/
+            // shadow-toggleのどちらが処理する場合もbelief追随のみで、OS側の
+            // 実際の切替はGJI自身が物理キー配送を通じて行う）ため、
+            // `is_kanji_event`判定より前でこの分岐を置く。
+            //
+            // 例外（旧 ADR-153 決定1 M19）は ADR-206 で撤去した: 生キーを届けない責務は、開閉を書く打鍵では
+            // エンジンの `Decision::Consume` が負う（`thumb_or_role_fkey_disposition` の doc 参照）。
+            if let Some(disposition) =
+                Self::legacy_thumb_or_role_fkey_disposition(event, shadow_toggled)
+            {
+                return disposition;
+            }
+
+            let is_kanji_event = event.ime_relevance.shadow_action.is_some();
+            if !is_kanji_event {
+                return Self::Allow;
+            }
+            let suppress = if profile.can_use_imm32_cross_process() {
+                // ImmCross: KANJI 関連 VK は原則 Down/Up 共に Suppress。
+                // 0xF2 HIRAGANA は上の専用分岐で常に先に Allow になる（BUG-173。MS-IME 本体が物理 F2 で開く
+                // 経路も残る、ADR-190）。
+                true
+            } else {
+                // apply-ime が GjiDirect/MsImeDirect で実際に actuate する場合のみ、
+                // shadow_toggle 発火時 KeyDown + 全 KeyUp を Suppress（BUG-46）。
+                let ime_actuation_owned = key_sequence_policy::gji_direct_applicable(kind)
+                    || key_sequence_policy::ms_ime_direct_applicable(kind);
+                // 半角/全角 (0xF3 SBCSCHAR / 0xF4 DBCSCHAR。0xF2 HIRAGANA は上の専用分岐で
+                // 既に処理済みのためここには来ない) の KeyDown は、**awase が beliefに基づく
+                // 開閉トグルとして書くキー**（`enrich_key_role` が役割から `Some(Toggle)` を付けた 0xF3/0xF4、
+                // ADR-199 決定8）に限り、`shadow_toggled` に関わらず常に Suppress。
+                // （採用中のGJI学習表が半角/全角を開閉トグルでないと示す場合は`shadow_action`が付かず、
+                // 上の`is_kanji_event`判定でDown/UpともAllow済みでここに来ない。ADR-195追記）
+                // 素通しすると、awase が書く開閉に加えて実 IME が同じキーを能動的に処理する
+                // 二重 actuation になる（BUG-46/BUG-52）。
+                //
+                // **ADR-191（撤去後）**: 英数(0xF0)・カタカナ(0xF1)は awase が書かない
+                // （`shadow_action` を持たない）。実 IME に処理させて Engine は観測に追随する
+                // ので、Suppress してはならない——握りつぶすと OS にも awase にも誰も何もしない
+                // 「二重の空振り」になる。この2キーは上の `is_kanji_event` 判定で既に Allow だが、
+                // 判定の根拠を「awase が書くキー」に揃えるため、ここでも VK を列挙せず
+                // 役割由来の `shadow_action`（`Some(Toggle)`）で決める（BUG-116/ADR-137 の Shift+0xF1 の特例は、
+                // 0xF1 が常に Allow になったため不要になり撤去した）。
+                //
+                // 設定 `dbe_mode_key_policy`（Passthrough で本条件を外す隠し設定）は撤去した
+                // （ADR-191、レビュー指摘B-M3）: 0xF3/0xF4 は `enrich_key_role` で（役割が無い・採用中の学習表が
+                // 開閉トグルでないと示す場合を除き）`Toggle` の `shadow_action` を持ち
+                // `shadow_toggled` で Suppress されるため、
+                // Passthrough を選んでも 0xF3/0xF4 は Suppress のままで、それ以外のキーには
+                // そもそも効かない、実質死んだ設定だった。旧 config.toml にキーが残っていても
+                // 未知キーとして無視され警告は出ない（`src/config.rs` のテストで固定）。
+                let is_dbe_mode_key_down = legacy_is_role_toggle_hz_key_down(event);
+                ime_actuation_owned
+                    && (shadow_toggled
+                        || is_dbe_mode_key_down
+                        || matches!(event.event_type, KeyEventType::KeyUp))
+            };
+            if suppress {
+                Self::Suppress
+            } else {
+                Self::Allow
+            }
+        }
+    }
+
+    fn legacy_is_role_toggle_hz_key_down(event: &RawKeyEvent) -> bool {
+        event.event_type == KeyEventType::KeyDown
+            && matches!(
+                event.ime_relevance.shadow_action,
+                Some(ShadowImeAction::Toggle)
+            )
+            && matches!(
+                event.vk_code.ime_kind(),
+                Some(crate::vk::ImeKeyKind::DbeSbcsChar | crate::vk::ImeKeyKind::DbeDbcsChar)
+            )
+    }
+
+    fn legacy_select_shadow_intent(
+        event: &RawKeyEvent,
+        is_japanese_ime: bool,
+    ) -> Option<(ShadowImeAction, ShadowIntentKind)> {
+        let intent_kind = if let Some(a) = event.ime_relevance.sync_direction {
+            Some((a, ShadowIntentKind::SyncKey))
+        } else if let Some(a) = event
+            .ime_relevance
+            .shadow_action
+            .filter(|_| crate::vk::is_static_idempotent_open_key(event.vk_code))
+        {
+            // ADR-207: VK_IME_ON/OFF（0x16/0x1A）は IME の種類に依らず冪等なので、`is_japanese_ime()`
+            // （awase のワーカースレッドの HKL 由来で偽になりうる）を問わず採用する。`keys.ime_detect`
+            // の既定（IMEオン/IMEオフ）を空にしても、従来 sync 既定が担っていた追随を保つ。
+            Some((a, ShadowIntentKind::PhysicalImeKey))
+        } else if is_japanese_ime {
+            event
+                .ime_relevance
+                .shadow_action
+                // ADR-199 決定18(ii): F13〜F24 の役割由来 Toggle は自動リピートの Down では昇格させない
+                // （物理の F13 はリピートし、`kp_stage_shadow_ime_toggle` はリピートを区別しないので、
+                // そのままではリピートのたびに開閉が反転する）。0xF3/0xF4・0x19 の挙動は変えない。
+                .filter(|_| !(event.was_down && crate::vk::is_role_fkey(event.vk_code)))
+                .map(|a| (a, ShadowIntentKind::PhysicalImeKey))
+        } else {
+            None
+        };
+        intent_kind
+    }
+
+    /// 切り出し前の `handle_engine_set_open` の条件（`self.is_ctrl_ime_chord_active() && !target`）。
+    const fn legacy_engine_filter(chord_active: bool, target: bool) -> bool {
+        chord_active && !target
+    }
+
+    /// 逐語コピーとの差分 0（L0 の「挙動を変えない」の、移動後の同一関数どうしの比較を避けた確認）。
+    /// 全 `PressState`（69,120）× 12 キー（イベントを持つ 10 種）× KeyDown/KeyUp × `shadow_toggled` × 4 プロファイル × 2 種別で
+    /// 配送を、`is_japanese_ime` で intent 選択を、chord × target でフィルタ条件を比べる。
+    #[test]
+    fn new_implementations_match_the_verbatim_legacy_copies() {
+        let mut plan_cases = 0u64;
+        for s in PressState::all() {
+            for key in ExplicitKey::ALL {
+                let Some(mut ev) = key.event(s.was_down) else {
+                    continue;
+                };
+                assert_eq!(
+                    select_shadow_intent(&ev, s.is_japanese_ime),
+                    legacy_select_shadow_intent(&ev, s.is_japanese_ime),
+                    "{key:?} {s:?}"
+                );
+                for event_type in [KeyEventType::KeyDown, KeyEventType::KeyUp] {
+                    ev.event_type = event_type;
+                    for toggled in [false, true] {
+                        let new = PhysicalKeyDisposition::plan_core(
+                            &ev,
+                            s.profile.app_profile(),
+                            toggled,
+                            s.ime_kind,
+                        );
+                        let old = PhysicalKeyDisposition::legacy_plan(
+                            &ev,
+                            s.profile.app_profile(),
+                            toggled,
+                            s.ime_kind,
+                        );
+                        assert_eq!(new, old, "{key:?} {event_type:?} toggled={toggled} {s:?}");
+                        plan_cases += 1;
+                    }
+                }
+            }
+            for target in [false, true] {
+                assert_eq!(
+                    engine_set_open_filtered_by_chord(s.ctrl_chord, target),
+                    legacy_engine_filter(s.ctrl_chord, target)
+                );
+            }
+        }
+        assert_eq!(plan_cases, 69_120 * 10 * 2 * 2);
     }
 }
