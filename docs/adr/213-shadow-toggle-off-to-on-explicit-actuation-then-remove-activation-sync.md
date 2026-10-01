@@ -99,6 +99,14 @@ sc-hz/kanji/dbe/shift の退行は B・C とも消えた(書き込み全停止�
 - **Opus B3 は今回の i4 の原因ではなく、未検証のまま残る**: IME が awase 以外の手段(言語バー・IME 自身が処理するキー)で閉じ、Engine が観測で deactivate する場合に、ActivationSync の OFF 方向が担っていた GjiFsm `ImeOff` 等が届かない件。P2b' の候補。
 - **検証に追加**: P2b 以降の CI では、各構成の run 1 で `attached to GJI process` の時刻が最初の送信より前か、`i4` と `PlanSkippedLiteral` の件数を develop と比べる。CI の複数回比較は、同じ ref への連続 dispatch が concurrency でキャンセルされるため、別ブランチ(`spike/*-repN`)で並列に流す。
 
+## 所有者決定(2026-10-01、起動直後の最初の内部状態と v2 の扱い)
+
+- **原則**: IME が ON なら NICOLA ON、IME が OFF なら NICOLA OFF。モードずれは許容するが、できるだけ少なくする。
+- **決定6(M7)の確定**: IME の状態が読めない窓(実 Chrome など Imm32Unavailable)で、awase 起動直後は**観測が得られるまで NICOLA は OFF(生キーを通す)**。実 IME が ON と分かってから NICOLA ON にする。belief の既定値(placeholder の ON)で Engine を active にしない。代償: IME が実際に ON でも、観測が得られるまで(先同期は最大約0.5秒、読めない窓はもっと長い)最初の文字が生のキーになる。実装は未着手(MS-IME×実 Chrome の ON 起動の切り分け実験〈`sc-startup-msime-chrome-on-*`〉の結果を見てから、`[msime-ready]` が開閉を読んで閉なら強制送信せず belief を正す修正とあわせて決める)。
+- **v2 のブロッカーにしない**: MS-IME×実 Chrome の起動直後の最初の文字(約半数でローマ字 `ka`、develop でも 6 回中 3 回)は、実験で環境側の寄与を切り分けたうえで既知の制限として記録する。awase 側の欠陥(IME が閉と確認したのに強制送信、観測を belief に反映しない)だけを修正する。
+- **v1 へは backport しない**(v2 リリースで v1 は保守終了、重大バグのみ backport の既存方針)。
+- **実機確認**(Windows 11、MS-IME 本体、起動前からある窓、WT×GJI の A/B)は、ADR-208 の L1〜L3 をマージし終えてからまとめて行う。
+
 ## 非目的
 
 - shadow toggle の ON→OFF の挙動変更。
