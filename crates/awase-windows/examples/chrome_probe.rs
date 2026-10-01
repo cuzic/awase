@@ -21,14 +21,15 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{LPARAM, WPARAM};
 use windows::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
     VIRTUAL_KEY,
 };
 use windows::Win32::UI::TextServices::{
@@ -39,7 +40,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetMessageW, GetWindowThreadProcessId, SendMessageW, SetForegroundWindow, SwitchToThisWindow,
     TranslateMessage, MSG, WINDOW_EX_STYLE, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
-use windows::core::{PCWSTR, w};
 
 /// スパイクと同じ目印。`AWASE_TEST_INJECTION=1` の awase は、この目印の注入を物理キーとして扱う。
 const AUTO_MARKER: usize = awase_windows::hook::TEST_INJECTION_MARKER;

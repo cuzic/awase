@@ -90,9 +90,10 @@ use awase::scanmap::{KeyboardModel, PhysicalPos};
 use awase::types::VkCode;
 use awase::yab::{FullwidthStrExt, YabFace, YabLayout, YabValue};
 use serde_json::json;
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
 use windows::Win32::System::Threading::{
@@ -100,23 +101,22 @@ use windows::Win32::System::Threading::{
     THREAD_PRIORITY_TIME_CRITICAL,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBD_EVENT_FLAGS, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput,
-    SetFocus, VIRTUAL_KEY,
+    SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
+    KEYEVENTF_KEYUP, VIRTUAL_KEY,
 };
 use windows::Win32::UI::TextServices::{
     CLSID_TF_InputProcessorProfiles, CLSID_TF_ThreadMgr, ITfInputProcessorProfileMgr, ITfThreadMgr,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, CW_USEDEFAULT, CallNextHookEx, CreateWindowExW, DefWindowProcW,
-    DispatchMessageW, FindWindowW, GUITHREADINFO, GetClassInfoExW, GetClassNameW,
-    GetForegroundWindow, GetGUIThreadInfo, GetMessageW, GetWindowThreadProcessId, KBDLLHOOKSTRUCT,
-    MSG, PostMessageW, PostQuitMessage, RegisterClassExW, SW_SHOW, SendMessageW,
-    SetForegroundWindow, SetWindowsHookExW, ShowWindow, SwitchToThisWindow, TranslateMessage,
-    WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_DESTROY, WM_GETTEXT,
-    WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP, WM_SETTEXT, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSEXW,
-    WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
+    BringWindowToTop, CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW,
+    FindWindowW, GetClassInfoExW, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo,
+    GetMessageW, GetWindowThreadProcessId, PostMessageW, PostQuitMessage, RegisterClassExW,
+    SendMessageW, SetForegroundWindow, SetWindowsHookExW, ShowWindow, SwitchToThisWindow,
+    TranslateMessage, CW_USEDEFAULT, GUITHREADINFO, KBDLLHOOKSTRUCT, MSG, SW_SHOW, WH_KEYBOARD_LL,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_DESTROY, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN,
+    WM_KEYUP, WM_SETTEXT, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSEXW, WS_BORDER, WS_CHILD,
+    WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
 };
-use windows::core::{PCWSTR, w};
 
 #[link(name = "winmm")]
 extern "system" {
