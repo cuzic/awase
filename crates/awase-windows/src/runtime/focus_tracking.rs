@@ -734,10 +734,30 @@ impl Runtime {
                             "[focus] Imm32Unavailable cache-miss: skip reset_stale — awase 自身のウィンドウ"
                         );
                     } else {
-                        self.platform_state.ime.reset_stale_ime_on_for_imm_broken(
-                            crate::state::ime_event::ImePolicyProfile::Imm32Unavailable,
-                            tick_ms,
+                        // ADR-212 P2: IME の開閉はスレッド単位で、awase 起動後に作られた
+                        // スレッドは必ず「閉」で始まる（focus/thread_scope.rs）。読めないこと
+                        // を根拠にした「安全デフォルト ON」を、この場合は「閉」へ改める。
+                        let probe = crate::focus::thread_scope::probe_focus_thread();
+                        tracing::info!(
+                            "[thread-scope] pid={:?} tid={:?} created_after_awase_ms={:?} scope={:?}",
+                            probe.map(|p| p.pid),
+                            probe.map(|p| p.tid),
+                            probe.and_then(|p| p.created_after_awase_ms),
+                            probe.map(|p| p.scope),
                         );
+                        if probe.is_some_and(|p| {
+                            p.scope == crate::focus::thread_scope::ThreadScope::NewSinceStart
+                        }) {
+                            self.platform_state.ime.assume_closed_for_new_thread(
+                                crate::state::ime_event::ImePolicyProfile::Imm32Unavailable,
+                                tick_ms,
+                            );
+                        } else {
+                            self.platform_state.ime.reset_stale_ime_on_for_imm_broken(
+                                crate::state::ime_event::ImePolicyProfile::Imm32Unavailable,
+                                tick_ms,
+                            );
+                        }
                     }
                 }
             }

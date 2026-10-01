@@ -8,6 +8,7 @@ pub mod cache;
 pub mod class_names;
 pub mod current;
 pub mod kinds;
+pub mod thread_scope;
 
 pub use kinds::{AppKind, FocusKind};
 
