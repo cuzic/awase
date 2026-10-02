@@ -10,7 +10,7 @@ summary: |-
   (C) 経路(窓プロファイルと書き込み機構の組)ごとに、効果を観測で確認できるか(閉ループ/準閉ループ/開ループ)と、省略してよい根拠を1か所で宣言し、開ループの経路は状態の推測を根拠に省略しない、の2つを決める。
   新しい台帳や gate は足さない。ADR-212 により押下以外の書き込みが減っているため、着手の前提条件(決定0)として、省略の根拠に `applied` を使っている押下以外の経路が現在も残っているかを先に測る。
 status: |-
-  提案(2026-10-02 下書き、未レビュー)。決定0(前提条件の確認)が未実施。Opus レビュー未実施。
+  提案(2026-10-02 下書き、未レビュー)。決定0(前提条件の確認)は実施済み(「決定 0 の結果」節): 省略の根拠に `applied` を使う押下以外の経路は、トレイ起点の Engine コマンド(P1)に限られ、実害は仮説。TsfNative の Engine 経路(P3)は ADR-208 L3' と同じ変更になるため、決定 1 の適用は L3' と一本化する。Opus レビュー未実施。
 related_adr:
   - "ADR-098"
   - "ADR-108"
@@ -54,6 +54,34 @@ belief と actuation の記録の取り違えと同じ型であり、BUG-141(GJI
    - `decide_attempt` が `press=None` で呼ばれ、かつ `shadow_on` が `Some` のまま渡る経路が、ADR-212/213 の撤去後も残っているか(grep と journal リプレイで列挙する)。
    - 残る経路がなければ、本 ADR の決定 1・2 は実装せず、決定 2 の「宣言」だけを ADR-208 の保証範囲の注記として残して終える(不要な機構を足さない)。
    - 残る経路がある場合、その経路が実際に BUG-141 型の握りつぶしを起こしうるか(ADR-208 の全列挙テストの状態空間で `press=None` の行を追加して数える)。
+   - **結果(2026-10-02)**: 経路は残っている(P1 トレイ起点の Engine コマンド、P3 TsfNative の Engine 経路)。ただし P1 の実害は未実測、P3 は ADR-208 L3' と重なる。下の「決定 0 の結果」節を参照。
+   - **未実施**: P1 が実際に握りつぶされるかの確認(全列挙テストへの行の追加、または CI で GJI × Blind 窓の「状態をリセット」を再現)。
+### 決定 0 の結果(2026-10-02、origin/develop `f4e225e8` のコードを読んで確認)
+
+`decide_attempt`(`ime_controller.rs:218,462`、`runtime/open_chain.rs:518`、`state/explicit_press.rs:802`)に至る actuation の入口は3つで、それぞれ `applied` 由来の `shadow_on` の扱いが違う。
+
+| 入口 | `applied` を省略の根拠にするか | 根拠 |
+| --- | --- | --- |
+| `executor::dispatch_ime_set_open`(Engine の `SetOpen`) | **する場合がある**(下の P1・P2) | `runtime/executor.rs:723-735`: `press.is_some()` かつ `engine_press_unknowns_applied` のときだけ未知にする |
+| `key_pipeline::kp_shadow_actuate`(shadow toggle) | `press=None`(自動リピート)のときだけ | `runtime/key_pipeline.rs:1277-1281`: `explicit_press_applied_pair(.., press.is_some())` |
+| drift correction(`ime_refresh.rs:958`) | **しない**。`apply_ime_open_with_belief(order, None, ..)` で `applied` に `None` を直書き(`shadow_on` は未知) | 読んで確認 |
+| `open_chain.rs` の `fallback_write` / `imm_cross_write` | しない。`fallback_write` は `shadow_on=None` に強制、`imm_cross_write` は直後の再観測(`imm_cross_reobservation_already_matches`) | ADR 本文の既存記述どおり(今回は再読していない) |
+
+`SetOpen` が `press=None` になる発行元は、`src/engine/engine.rs` の `transition_activation`(`:427`)、`apply_engine_on_with_ime_recovery`(`:824`)、`ime_set_open_effects`(`:864`)の3つ。打鍵起点のものは入口で `stamp_set_open_press`(`engine.rs:1113`)が `press_id` を載せるので `Some` になる。`None` のまま残る起点は次のとおり。
+
+- **P1: 打鍵ではない Engine コマンド**(`runtime/mod.rs:982` の `toggle_engine`〈トレイ〉、`:1001` の `force_engine_on`〈トレイの「状態をリセット」等〉)。
+  `apply_active_transition` / `apply_engine_on_with_ime_recovery` が `press=None` の `SetOpen` を出し、`applied` がそのまま GjiDirect の `gji_direct_already_matches` に渡る。
+  「状態をリセット」は drift を直す目的で使われるので、`applied` が既に ON なら IME が実際には OFF でも書き込みが省略されうる(**仮説。未実測**。ImmCross が先頭の窓は async 経路で、省略判定は GjiDirect のみ)。
+- **P2: 自動リピート**(`press=None`)。意図した省略(同じキーの押下で既に書いた)なので問題ではない。
+- **P3(`press=None` ではないが同じ構造): TsfNative の窓の Engine 経路**。`ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE=false`(`ime_actuation_decision.rs`)のため、押下でも `applied` を未知にしない。
+  ADR-208 の決定6が、BUG-124 型の「@」(WT × GJI × PSReadLine で OFF キーごとに単発の `VK_IME_OFF` が出る)の実機 A/B(L3')をマージ条件にしているため。S-1 は意図的に残っている。
+- **撤去済みで該当なし**: `check_active_transition` 由来の `SetOpen`(ActivationSync)は `transition_activation(new_state, false)`(`engine.rs:396`)で止まっている(ADR-213 P2b)。
+
+**含意**: 範囲は「ゼロ」ではないが、想定より狭い。(1) P1 は実在するが、トレイ操作という低頻度の経路で、実害は仮説の段階。(2) P3 は ADR-208 L3' と**同じ変更**(TsfNative の Engine 経路で `applied` を省略の根拠から外す)になるため、
+本 ADR の決定 1 を単独で入れると、L3' の実機 A/B 抜きで BUG-124 型の「@」のリスクを持ち込む。決定 1 の適用範囲は、ADR-208 L3' の判断(`ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE`)と**一本化する**(TsfNative の窓は L3' が解禁するまで従来どおり)。
+
+**`applied_open()` の他の消費者**(決定 1 で `Sent` を未知として扱うと挙動が変わるので、実装前に洗う): `state/ime_model.rs:616`、`:942`、`:970`(key-effect 予測と観測の照合)、`runtime/message_handlers.rs:960`。
+
 1. **B: `applied` の「送った」と「確認した」を型で分ける**。
    - `AppliedImeState` に `Sent{open, at_ms}` を足す(API が成功を返しただけ。実 IME の観測は未確認)。`Confirmed` は**観測で確認できた**場合だけに限る
      (読み戻して一致した、完了通知に対応する観測が届いた、等)。
@@ -82,7 +110,7 @@ belief と actuation の記録の取り違えと同じ型であり、BUG-141(GJI
 
 ## 未確定・リスク
 
-- 決定 0 の結果次第で、本 ADR の範囲は大きく縮む(最小で「注記のみ」)。ADR-212 の撤去が進むほど、対象は減る。
+- 決定 0 の結果、範囲は P1(トレイ起点の Engine コマンド)と P3(TsfNative、L3' と一本化)に縮んだ。P1 の実害の有無が、決定 1 を実装する価値を左右する。ADR-212 の撤去が進むほど、対象は減る。
 - `Optimistic` と `Sent` の統合可否は未確認。
 - 開ループの経路で省略をやめることは、冪等な絶対指定が二重に効かない前提に立つ。BUG-46 型の「awase の送信と物理キーの二重作用」では、この前提が崩れうる。
   物理キーの配送判断(`PhysicalKeyDisposition::plan`)との組み合わせを、決定 0 の列挙に含める。
