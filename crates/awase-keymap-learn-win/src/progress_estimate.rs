@@ -10,16 +10,18 @@
 //!
 //! 割合は一度出した値より下げない(分母の見積りが伸びても逆戻りさせない)。
 //!
-//! 定数の根拠(GJI、12状態×14キー=168セル、同じ構成の訓練打鍵数を4回実測:
-//! 1482/1512/1518/1501。セルが168に達したのが全体の約7割の時点):
-//! (1500 - 450) / 168 = 6.25打鍵/セル、末尾は約450打鍵。5モードの30状態は未測定の外挿。
+//! 定数の根拠(GJI、12状態×14キー=168セル): 訓練の総打鍵数は5回実測で
+//! 1482/1512/1518/1501/1527。直近の実機ランで168セルに達したのは870打鍵時点
+//! (62.8秒、総1527の約57%): 870/168 = 5.2打鍵/セル、末尾は 1500-870 = 約630打鍵。
+//! (時間では全体の約7割に見えたが、打鍵数では約57%。打鍵は時間に対して一様でない。)
+//! セル到達時点を測ったのは1回分のみ。5モードの30状態は未測定の外挿。
 //!
 //! OS非依存なのでLinuxでもユニットテストできる。
 
 /// 1セルを測るのに要する打鍵数(上記の実測から)。
-pub const PRESSES_PER_CELL: f64 = 6.25;
+pub const PRESSES_PER_CELL: f64 = 5.2;
 /// セルを測り終えた後のやり直し・検証などの打鍵数の枠。
-pub const TAIL_PRESSES: f64 = 450.0;
+pub const TAIL_PRESSES: f64 = 630.0;
 
 /// ある時点の学習の状況。
 #[derive(Debug, Clone, Copy)]
@@ -103,9 +105,9 @@ mod tests {
     #[test]
     fn starts_from_worst_case_near_measured_total() {
         let mut e = ProgressEstimator::new();
-        // 開始直後: 168セル×6.25 + 450 = 1500打鍵(実測の訓練打鍵数と同程度)。
+        // 開始直後: 168セル×5.2 + 630 = 約1504打鍵(実測の訓練打鍵数1482〜1527と同程度)。
         let total = e.expected_presses(snap(0, 0, 0));
-        assert_eq!(total, 1500);
+        assert!((1480..=1530).contains(&total), "{total}");
     }
 
     #[test]
@@ -118,8 +120,8 @@ mod tests {
             snap(200, 14, 1),
             snap(300, 20, 3),
             snap(700, 100, 8),
-            snap(1000, 168, 12),
-            snap(1300, 168, 12),
+            snap(870, 168, 12),
+            snap(1200, 168, 12),
             snap(1480, 168, 12),
             snap(1600, 168, 12),
         ];
@@ -145,13 +147,13 @@ mod tests {
             max_statuses: 30,
         });
         let done = e.expected_presses(Snapshot {
-            presses: 1050,
+            presses: 870,
             covered_cells: 168,
             observed_statuses: 12,
             keys: 14,
             max_statuses: 30,
         });
-        assert!(worst > 3000, "{worst}");
+        assert!(worst > 2500, "{worst}");
         assert!(done < worst, "{done} < {worst}");
     }
 
