@@ -64,7 +64,7 @@ related_adr:
    | L1 | **押下 id**(`PressId`、`ImeEffect::SetOpen.press`〈コア crate の型変更、単独タップの id 運搬〉、`ActuationOrder.press`、`last_written_press` の発行時予約、衝突の優先順位)と `applied` の未知化(D1)。S-1 の解消、BUG-113 の両立。**D2 で書き込みが増える前に、同一押下の二重送信の防御を入れる** |
    | L2 | D2・D3(warrant、`is_japanese_ime` を押下の授権から外す)。S-2 の解消 |
    | L3 | D4(`plan(false)` 先行の固定点)と、Imm32Unavailable(Chrome)への適用。CI の drift × キー行列(S-1)と E2 の対照構成 |
-   | L3' | TsfNative(WT×GJI)への拡張。**WT×GJI×PSReadLine の実機 A/B(押下ごとの `@` の発生率、develop と L3' 版、各 n≥30)がマージ条件**(単発 `VK_IME_OFF` は BUG-124 の「@」を誘発しうる)。`@` が出る場合の代替は ADR-206 の案「同じ OFF キーを2回続けて押したときだけ送る」(「2回で一致」に収まる) |
+   | L3' | TsfNative(WT×GJI)への拡張。**WT×GJI×PSReadLine の実機 A/B(押下ごとの `@` の発生率、develop と L3' 版、各 n≥30。BUG-175 の知見により、修飾キー〈Ctrl+Shift 等〉押下中の注入でも `@` が出ないかを含める)がマージ条件**(単発 `VK_IME_OFF` は BUG-124 の「@」を誘発しうる)。`@` が出る場合の代替は ADR-206 の案「同じ OFF キーを2回続けて押したときだけ送る」(「2回で一致」に収まる) |
    | L4 | InputRelay の Engine 前 PassThrough(決定3) |
    | L5 | 残る条件付き固着(S-3・S-4)の確認 |
 7. **v2 ブロッカーの受け入れ条件**(L0〜L3 の完了条件): (1) 全列挙テスト: v2 範囲のセルで反例 0(分類外の反例も 0)。範囲外のセルの反例は、分類ごとの件数を golden に固定する(増えたら失敗)。(2) CI: S-1 の再現構成(Imm32Unavailable × GJI/MS-IME × Ctrl+変換/Ctrl+無変換/単独タップ × 外からの反転)が、各 n≥10 で、絶対キーは1押下、トグルは2押下で一致する。MS-IME×Chrome の OFF は例外の対照(E2)付き。(3) BUG-113: 既存の `@` 検出(`check_typing_stress.py`)の件数が、develop と同じ土台で増えていない。(4) 既存の `sc-*` の期待表が develop と同一。

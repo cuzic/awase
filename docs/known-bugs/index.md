@@ -176,6 +176,7 @@
 | [BUG-172](BUG-172.md) | MS-IME+TsfNative で IME が閉じていても、msime-ready ゲートが conv の NATIVE を「ON確認」と扱い生ローマ字が入る(CI観測、実機未確認) |
 | [BUG-173](BUG-173.md) | GJI + TSFネイティブで物理ひらがなキー(0xF2)が常にSuppressされ、カタカナ固着から戻れない（ADR-100でwarmupがVK_IME_ON化し代替F2再送の契約が崩れていた） |
 | [BUG-174](BUG-174.md) | Ctrl↑のたびに awase 自身が `VK_IME_ON` を注入していた(CtrlUp warmup)。「@」報告の被疑箇所として撤去(原因かは実機未確認) |
+| [BUG-175](BUG-175.md) | eager warmup(`VK_IME_ON` の合成注入)が Win 以外の修飾キー押下中にも送られ、WT+GJI で Ctrl+Shift 押下中に「@」が出る(eager warmup は ADR-212 で撤去済み、知見は ADR-208 L3' に引き継ぎ) |
 | [BUG-176](BUG-176.md) | 実 Edge(GJI・Imm32Unavailable)で他プロセスが注入した VK_IME_OFF の後、IME は開いたままなのに awase が open=false へ追随して Engine を OFF にする(偽 OFF。初回セッションのみ・再現条件不明、#377 の効果自体は実機で確認済み) |
 | [BUG-177](BUG-177.md) | JIS キーボード実機(GJI)で学習プロセスが自分の注入した半角/全角(0xF3/0xF4)のキーアップを「物理入力」と数え、序盤で必ず interference 失敗する |
 | [BUG-178](BUG-178.md) | GJI(session_keymap=2 + 古い custom 表が残る構成)の実機で awase-keymap-learn-win が cell=73/84 のまま 22 分以上進まず終了しない |
