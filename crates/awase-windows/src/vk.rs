@@ -19,19 +19,34 @@ pub const LANGID_ENGLISH_US: u32 = 0x0409;
 ///
 /// 識別子 `VK_KANA` から、定数 `VK_KANA` と正規名 `"KANA"`(`VK_` を除いた形、
 /// `canonical_key_text` の出力と同じ規則)を作る。`[...]` は別名(`canonical_key_text`
-/// 適用後の形で書く: ASCII は大文字、`VK_` 無し)。16 進の VK 値を書くのはここだけ。
-/// 同じ名前が2か所にあると `key_table_names_are_unique` が落ちる。
+/// 適用後の形で書く: ASCII は大文字、`VK_` 無し)。定数と `from_name` の表の間で VK 値が
+/// ずれることはない(分類関数 `ImeKeyKind::from_vk` などは今も 16 進を持つ)。
+/// 同じ名前や同じ VK 値が2か所にあると `key_table_names_are_unique_and_canonical` が落ちる。
+/// 同じ VK の2つ目の定数が要るときは、表の外で普通の `pub const` を定義し、名前は別名に書く。
+///
+/// **値の独立した検査**: Windows ターゲットでは、各定数を `windows` crate の同名の
+/// `VIRTUAL_KEY` 定数とコンパイル時に突き合わせる。Microsoft 自身のメタデータが
+/// オラクルになるので、表の値の打ち間違い(`VK_LSHIFT`/`VK_RSHIFT` の入れ替えなど)は
+/// `cargo check --target x86_64-pc-windows-msvc` で検出される。
 ///
 /// 表に載せないキー(`VK_JUNJA` 等、`from_name` が受理していなかったもの)は、下で普通の
 /// 定数として定義する。
 macro_rules! vk_keys {
-    ($( $(#[$meta:meta])* $id:ident = $vk:literal $(, [$($alias:literal),* $(,)?])? ; )*) => {
-        $( $(#[$meta])* pub const $id: VkCode = VkCode($vk); )*
+    ($( $(#[doc = $doc:expr])* $id:ident = $vk:literal $(, [$($alias:literal),* $(,)?])? ; )*) => {
+        $( $(#[doc = $doc])* pub const $id: VkCode = VkCode($vk); )*
 
         /// `from_name` が引く表。`(識別子, 別名, VK 値)`。
         const KEY_TABLE: &[KeyEntry] = &[
             $( KeyEntry { ident: stringify!($id), aliases: &[$($($alias),*)?], vk: $vk } ),*
         ];
+
+        $(
+            #[cfg(windows)]
+            const _: () = assert!(
+                ::windows::Win32::UI::Input::KeyboardAndMouse::$id.0 == $vk,
+                concat!("VK 値が windows crate の定数と違う: ", stringify!($id))
+            );
+        )*
     };
 }
 
@@ -180,6 +195,16 @@ pub const VK_JUNJA: VkCode = VkCode(0x17);
 pub const VK_LWIN: VkCode = VkCode(0x5B);
 pub const VK_RWIN: VkCode = VkCode(0x5C);
 pub const VK_NONAME: VkCode = VkCode(0xFC);
+
+// 表外の4定数も、`vk_keys!` と同じく windows crate の定数と突き合わせる。
+#[cfg(windows)]
+const _: () = {
+    use windows::Win32::UI::Input::KeyboardAndMouse as km;
+    assert!(km::VK_JUNJA.0 == VK_JUNJA.0);
+    assert!(km::VK_LWIN.0 == VK_LWIN.0);
+    assert!(km::VK_RWIN.0 == VK_RWIN.0);
+    assert!(km::VK_NONAME.0 == VK_NONAME.0);
+};
 
 // ── IME キー種別 ──────────────────────────────────────────
 
@@ -1526,8 +1551,9 @@ mod tests {
 
     /// 表の全ての名前が、`VK_` 付き・小文字・`VK_` 無しのどれでも同じ VK に解決される
     /// (ADR-201 未決事項8。正規化の書き方を誤ると、特定の名前だけ受理されなくなる)。
-    /// 期待値は表自身から取る。表の値の独立した検査(旧 `LEGACY`)は、`vk_keys!` への集約で
-    /// 16 進を書く場所が1か所になったので撤去した(2026-10-02)。
+    /// 期待値は表自身から取るので、検査するのは `canonical_key_text` と `KeyEntry::matches` の
+    /// 組み合わせだけ。表の値は `vk_keys!` の windows crate 照合が、名前の削除は
+    /// `promised_names_are_still_accepted` が受け持つ(旧 `LEGACY` の撤去、2026-10-02)。
     #[test]
     fn key_table_names_resolve_in_every_spelling() {
         for e in super::KEY_TABLE {
@@ -1538,6 +1564,7 @@ mod tests {
                     format!("VK_{name}"),
                     name.to_ascii_lowercase(),
                     format!("vk_{}", name.to_ascii_lowercase()),
+                    format!("  {name} "),
                 ] {
                     assert_eq!(
                         VkCode::from_name(&spelled),
@@ -1547,6 +1574,32 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// 受理を約束した名前(ADR-201 が残す別名を含む)の一覧。16 進を含まない文字列だけの
+    /// 凍結リストで、表から行や別名を**消したとき**に落ちる(旧 `LEGACY` が兼ねていた役目。
+    /// 値の検査は `vk_keys!` の windows crate 照合が受け持つ)。名前を足したときは
+    /// ここに足さなくてよいが、**消す**ときは意図した受理の取り下げか確認すること。
+    #[test]
+    fn promised_names_are_still_accepted() {
+        const NAMES: &str = "\
+            A B C D E F G H I J K L M N O P Q R S T U V W X Y Z 0 1 2 3 4 5 6 7 8 9 \
+            OEM_PLUS OEM_COMMA OEM_MINUS OEM_PERIOD OEM_1 OEM_2 OEM_3 OEM_4 OEM_5 OEM_6 OEM_7 OEM_102 \
+            SPACE RETURN ENTER TAB BACK BACKSPACE ESCAPE ESC DELETE CONVERT 変換 NONCONVERT MUHENKAN 無変換 \
+            KANA かな カナ KANJI 漢字 IME_ON IMEON IMEオン IME_OFF IMEOFF IMEオフ \
+            DBE_ALPHANUMERIC DBE_KATAKANA DBE_HIRAGANA DBE_SBCSCHAR OEM_AUTO DBE_DBCSCHAR OEM_ENLW \
+            DBE_ROMAN DBE_NOROMAN SHIFT CONTROL MENU CAPITAL LSHIFT RSHIFT LCONTROL RCONTROL LMENU RMENU \
+            F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11 F12 F13 F14 F15 F16 F17 F18 F19 F20 F21 F22 F23 F24 \
+            LEFT UP RIGHT DOWN HOME END PRIOR NEXT INSERT SNAPSHOT";
+        let names: Vec<&str> = NAMES.split_whitespace().collect();
+        assert_eq!(names.len(), 126, "名前の数");
+        for name in names {
+            assert!(VkCode::from_name(name).is_some(), "{name}");
+            assert!(
+                VkCode::from_name(&format!("VK_{name}")).is_some(),
+                "VK_{name}"
+            );
         }
     }
 
@@ -1600,7 +1653,7 @@ mod tests {
             (0x86, "F23"),
             (0x87, "F24"),
         ];
-        // 旧表の名前 + 大小文字・`VK_` の違いを足した候補全部を総当たりする。
+        // 表の名前 + 大小文字・`VK_` の違いを足した候補全部を総当たりする。
         let names = LEGACY_AND_NEUTRAL_NAMES;
         for &(vk, group) in groups {
             let mut found = 0;
