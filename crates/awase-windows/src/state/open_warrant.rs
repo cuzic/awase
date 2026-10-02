@@ -87,6 +87,11 @@ pub enum WarrantBasis {
     /// `CASCADIA_HOSTING_WINDOW_CLASS` のような「Imm32Unavailable にも
     /// is_tsf_native にも該当するクラス」を誤判定し、BUG-16 を再発させる）。
     OwnSsot,
+    /// 明示キー押下（`ActuationOrder.press.is_some()`、ADR-208 決定2 D2・D3）の order が、**この押下の意図**
+    /// （`requested`）そのものを根拠に授権される。ユーザーの明示操作であり、ADR-090 の warrant が防ぎたい
+    /// 「推測による書き込み」ではない。Step 0（真の安全弁）の後で Step 1〜4 の代わりに使い、`is_japanese_ime`
+    /// （probe・HKL の誤答で偽になりうる）と `current_focus`（`None` だと IntentStore の Step 1 が外れる）を問わない。
+    ExplicitPress,
 }
 
 /// `WarrantBasis::HeuristicGuess` の内訳。
@@ -133,13 +138,43 @@ pub fn issue_open_warrant(
     target: HwndId,
     ctx: &WarrantContext<'_>,
 ) -> Option<OpenWarrant> {
-    if !ctx.is_japanese_ime {
+    issue_open_warrant_inner(requested, target, ctx, false)
+}
+
+/// 明示キー押下（`ActuationOrder.press.is_some()`）の order の授権（ADR-208 決定2 D2・D3）。
+///
+/// `issue_open_warrant` との違いは、`ctx.is_japanese_ime` による棄却（D2、S-2）と、`current_focus==None` で
+/// IntentStore の Step 1 が外れたときの棄却（D3、S-4）をしないこと。Step 0（真の安全弁）だけは押下でも先に効く。
+/// それ以外は押下の意図（`requested`）を [`WarrantBasis::ExplicitPress`] として授権する。
+#[must_use]
+pub fn issue_press_warrant(
+    requested: bool,
+    target: HwndId,
+    ctx: &WarrantContext<'_>,
+) -> Option<OpenWarrant> {
+    issue_open_warrant_inner(requested, target, ctx, true)
+}
+
+fn issue_open_warrant_inner(
+    requested: bool,
+    target: HwndId,
+    ctx: &WarrantContext<'_>,
+    explicit_press: bool,
+) -> Option<OpenWarrant> {
+    // 押下の order は `is_japanese_ime` を問わない（ADR-208 D2。0x16/0x1A・Engine のコンボが全窓で通る）。
+    if !explicit_press && !ctx.is_japanese_ime {
         return None;
     }
 
     // Step 0: 真の安全弁（active な guard は全て安全弁）。明示意図より先に評価する（§7 round3 M2）。
     if let Some(reason) = ctx.guards.active_reason() {
         return finalize(requested, true, WarrantBasis::SafetyValve(reason));
+    }
+
+    // 押下（ADR-208 D3）: この押下の意図で授権する。Step 1 は `current_focus==None`（target が NULL）だと
+    // 必ず外れ、Step 3/4 の観測や `desired_open` は押下の向きと食い違いうる（S-4）ため、押下では使わない。
+    if explicit_press {
+        return finalize(requested, requested, WarrantBasis::ExplicitPress);
     }
 
     // Step 1: 明示意図（IntentStore、対象一致・TTL は lookup 内部で判定済み）。
@@ -276,6 +311,79 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// ADR-208 D2（S-2）: 明示キー押下の order は `is_japanese_ime` が偽でも授権される。リピート等（`issue_open_warrant`）は従来どおり。
+    #[test]
+    fn press_warrant_ignores_is_japanese_ime_but_plain_warrant_does_not() {
+        let store = IntentStore::default();
+        let obs = ObservationStore::default();
+        let guards = ForceGuardSet::default();
+        // 観測の無い Win32（Blind でない）: 通常の授権は Step 1/3/4 のどれも成立せず、`is_japanese_ime` が真でも None。
+        let policy = AppImePolicy::from_profile(ImePolicyProfile::Plain);
+        let now = Instant::now();
+        for jp in [false, true] {
+            let c = ctx(&store, &obs, &guards, &policy, false, jp, now, TickMs(0));
+            for open in [false, true] {
+                assert_eq!(
+                    issue_press_warrant(open, TARGET, &c),
+                    Some(OpenWarrant {
+                        target: open,
+                        basis: WarrantBasis::ExplicitPress
+                    }),
+                    "jp={jp} open={open}"
+                );
+            }
+            assert_eq!(issue_open_warrant(true, TARGET, &c), None, "jp={jp}");
+        }
+    }
+
+    /// ADR-208 D3（S-4）: `current_focus==None`（target が NULL で IntentStore の Step 1 が外れる）でも、鮮度内の観測が
+    /// 押下の向きと食い違っていても、押下の order は押下の意図で授権される。
+    #[test]
+    fn press_warrant_does_not_depend_on_focus_target_or_conflicting_observation() {
+        let store = IntentStore::default();
+        let mut obs = ObservationStore::default();
+        let now = Instant::now();
+        rec(
+            &mut obs,
+            obs_at(
+                true,
+                ObservationSource::ImmGetOpenStatus,
+                ObservationConfidence::High,
+                now,
+            ),
+        );
+        let guards = ForceGuardSet::default();
+        let policy = AppImePolicy::from_profile(ImePolicyProfile::ImmCross);
+        let c = ctx(&store, &obs, &guards, &policy, true, true, now, TickMs(0));
+        // 通常の授権: 観測 ON と食い違う OFF は None（INV-20）。押下の OFF は授権される。
+        assert_eq!(issue_open_warrant(false, HwndId::NULL, &c), None);
+        assert_eq!(
+            issue_press_warrant(false, HwndId::NULL, &c).map(|w| w.basis),
+            Some(WarrantBasis::ExplicitPress)
+        );
+    }
+
+    /// 押下でも Step 0（真の安全弁）は先に効く（ON を要求する PanicReset の間は OFF を授権しない）。ON は SafetyValve として授権される。
+    #[test]
+    fn press_warrant_still_honors_the_safety_valve() {
+        let store = IntentStore::default();
+        let obs = ObservationStore::default();
+        let mut guards = ForceGuardSet::default();
+        guards.add(ForceGuard {
+            reason: ForceOnReason::PanicReset,
+            expires_at: None,
+            generation: 1,
+        });
+        let policy = AppImePolicy::from_profile(ImePolicyProfile::TsfNative);
+        let now = Instant::now();
+        let c = ctx(&store, &obs, &guards, &policy, false, false, now, TickMs(0));
+        assert_eq!(issue_press_warrant(false, TARGET, &c), None);
+        assert!(matches!(
+            issue_press_warrant(true, TARGET, &c).map(|w| w.basis),
+            Some(WarrantBasis::SafetyValve(_))
+        ));
     }
 
     #[test]
@@ -834,6 +942,7 @@ mod tests {
             WarrantBasis::Corroborated { .. } => "Corroborated",
             WarrantBasis::HeuristicGuess(_) => "HeuristicGuess",
             WarrantBasis::OwnSsot => "OwnSsot",
+            WarrantBasis::ExplicitPress => "ExplicitPress",
         }
     }
 
