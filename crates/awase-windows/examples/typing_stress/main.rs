@@ -45,6 +45,9 @@
 //!
 //! `--mode=startup`(BUG-163 / D1): 対象窓を awase より先に IME ON/OFF にし、起動直後の初打鍵または
 //! 3 秒間の OFF 維持を検証する。`--startup-ime=on|off` は必須。
+//! 追加フラグ(MS-IME×Chrome の ON 起動で最初の文字が `ka` になる件の切り分け用): `--no-awase` なら awase がいない対照として
+//! NICOLA 単打の代わりに生の `k`,`a` を打つ(閉なら `ka`、開なら `か`)。`--startup-skip-refocus2` は 2 回目の `refocus()` を省く。
+//! `startup_typed.real_ime_open_before_type` は打鍵直前に既定 IME 窓へ `IMC_GETOPENSTATUS` を送った値(Chrome 等の別プロセスでも読める)。
 //!
 //! `--mode=drift-on`(ADR-178 領域A撤去後の回帰観測): reassert/force-on 撤去後、drift correction「だけ」で
 //! TsfNative 相当の入力先(`--form=tsf`)の ON 回復が働くかを見る。手順は「IME を ON にそろえる(awase が明示意図 ON を
@@ -111,11 +114,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CallNextHookEx, CreateWindowExW, DefWindowProcW, DispatchMessageW,
     FindWindowW, GetClassInfoExW, GetClassNameW, GetForegroundWindow, GetGUIThreadInfo,
     GetMessageW, GetWindowThreadProcessId, PostMessageW, PostQuitMessage, RegisterClassExW,
-    SendMessageW, SetForegroundWindow, SetWindowsHookExW, ShowWindow, SwitchToThisWindow,
-    TranslateMessage, CW_USEDEFAULT, GUITHREADINFO, KBDLLHOOKSTRUCT, MSG, SW_SHOW, WH_KEYBOARD_LL,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_DESTROY, WM_GETTEXT, WM_GETTEXTLENGTH, WM_KEYDOWN,
-    WM_KEYUP, WM_SETTEXT, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSEXW, WS_BORDER, WS_CHILD,
-    WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
+    SendMessageTimeoutW, SendMessageW, SetForegroundWindow, SetWindowsHookExW, ShowWindow,
+    SwitchToThisWindow, TranslateMessage, CW_USEDEFAULT, GUITHREADINFO, KBDLLHOOKSTRUCT, MSG,
+    SW_SHOW, WH_KEYBOARD_LL, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_DESTROY, WM_GETTEXT,
+    WM_GETTEXTLENGTH, WM_KEYDOWN, WM_KEYUP, WM_SETTEXT, WM_SYSKEYDOWN, WM_SYSKEYUP, WNDCLASSEXW,
+    WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
 };
 
 #[link(name = "winmm")]
@@ -1011,6 +1014,39 @@ fn real_ime_open(child: HWND) -> Option<bool> {
     }
 }
 
+/// 既定 IME 窓へ `WM_IME_CONTROL(IMC_GETOPENSTATUS)` を送って IME の開閉を読む。別プロセスの入力先(実 Chrome)でも読める
+/// (`real_ime_open` は自プロセスの HIMC しか取れず Chrome では `None`)。`child` の既定 IME 窓が無ければ前面窓で試す。
+/// 取れない/応答が無いときは `None`。
+fn imc_open_status(child: HWND) -> Option<bool> {
+    const WM_IME_CONTROL: u32 = 0x0283;
+    const IMC_GETOPENSTATUS: usize = 0x0005;
+    const SMTO_ABORTIFHUNG: u32 = 0x0002;
+    // SAFETY: 既定 IME ウィンドウへ短いタイムアウト付きで同期送信するだけ。
+    unsafe {
+        let mut ime_wnd = windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd(child);
+        if ime_wnd.0.is_null() {
+            ime_wnd = windows::Win32::UI::Input::Ime::ImmGetDefaultIMEWnd(GetForegroundWindow());
+        }
+        if ime_wnd.0.is_null() {
+            return None;
+        }
+        let mut result = 0usize;
+        let r = SendMessageTimeoutW(
+            ime_wnd,
+            WM_IME_CONTROL,
+            WPARAM(IMC_GETOPENSTATUS),
+            LPARAM(0),
+            windows::Win32::UI::WindowsAndMessaging::SEND_MESSAGE_TIMEOUT_FLAGS(SMTO_ABORTIFHUNG),
+            500,
+            Some(&raw mut result),
+        );
+        if r.0 == 0 {
+            return None;
+        }
+        Some(result != 0)
+    }
+}
+
 fn ime_ready(raw: bool, cells: &[Vec<Cell>; 3], child: HWND) -> bool {
     // かなキー(NICOLA 単打 `ka`→か、raw なら k,a)を1回、ゆっくり打って確定し、IME と awase が効いているかを確かめる。
     let probe = cells[0]
@@ -1217,7 +1253,26 @@ fn drift_on_scenario(child: HWND, cells: &[Vec<Cell>; 3]) {
     }
 }
 
-fn startup_scenario(child: HWND, cells: &[Vec<Cell>; 3], initial_on: bool) {
+/// `probe`(NICOLA 単打セル)が生キーで出す1文字(小文字)。awase が Engine を止めて生キーが通ると、この文字がそのまま出る。
+fn raw_char_of(probe: &Cell) -> String {
+    u8::try_from(probe.vk)
+        .map(|b| char::from(b).to_ascii_lowercase().to_string())
+        .unwrap_or_default()
+}
+
+/// 起動シナリオの1打鍵。awase がいる(通常)ときは NICOLA 単打(`probe.vk`)、`--no-awase` の対照では生のローマ字 `k`,`a`。
+fn press_probe(probe: &Cell, no_awase: bool) {
+    if no_awase {
+        for ch in probe.romaji.bytes() {
+            press(u32::from(ch.to_ascii_uppercase()), 0, 60);
+            sleep_ms(40);
+        }
+    } else {
+        press(probe.vk, probe.scan, 60);
+    }
+}
+
+fn startup_scenario(child: HWND, cells: &[Vec<Cell>; 3], initial_on: bool, no_awase: bool) {
     let Some(probe) = cells[0].iter().find(|c| c.romaji == "ka").cloned() else {
         rec(&json!({"type":"abort","reason":"startup の打鍵確認に使う ka セルが無い"}));
         return;
@@ -1226,8 +1281,9 @@ fn startup_scenario(child: HWND, cells: &[Vec<Cell>; 3], initial_on: bool) {
     start_hook_thread();
     if initial_on {
         clear_text(child);
+        let open_before_type = imc_open_status(child);
         let press_utc = utc_hms();
-        press(probe.vk, probe.scan, 60);
+        press_probe(&probe, no_awase);
         sleep_ms(700);
         press(VK_RETURN, 0x1C, 50);
         sleep_ms(900);
@@ -1235,7 +1291,8 @@ fn startup_scenario(child: HWND, cells: &[Vec<Cell>; 3], initial_on: bool) {
         rec(
             &json!({"type":"startup_typed","initial":"on","detected_utc":detected_utc,
             "press_utc":press_utc,"text":text,"expect":probe.kana.to_string(),
-            "ok":text.trim()==probe.kana.to_string(),"real_ime_open":real_ime_open(child)}),
+            "ok":text.trim()==probe.kana.to_string(),"real_ime_open":real_ime_open(child),
+            "real_ime_open_before_type":open_before_type,"raw_char":raw_char_of(&probe),"no_awase":no_awase}),
         );
     } else {
         sleep_ms(3000);
@@ -1244,8 +1301,9 @@ fn startup_scenario(child: HWND, cells: &[Vec<Cell>; 3], initial_on: bool) {
         press(VK_IME_ON, 0x70, 50);
         sleep_ms(800);
         clear_text(child);
+        let open_before_type = imc_open_status(child);
         let press_utc = utc_hms();
-        press(probe.vk, probe.scan, 60);
+        press_probe(&probe, no_awase);
         sleep_ms(700);
         press(VK_RETURN, 0x1C, 50);
         sleep_ms(900);
@@ -1254,7 +1312,8 @@ fn startup_scenario(child: HWND, cells: &[Vec<Cell>; 3], initial_on: bool) {
             &json!({"type":"startup_typed","initial":"off","detected_utc":detected_utc,
             "before_on_utc":before_on_utc,"press_utc":press_utc,"open_after_idle":open_after_idle,
             "text":text,"expect":probe.kana.to_string(),"ok":text.trim()==probe.kana.to_string(),
-            "real_ime_open":real_ime_open(child)}),
+            "real_ime_open":real_ime_open(child),"real_ime_open_before_type":open_before_type,
+            "raw_char":raw_char_of(&probe),"no_awase":no_awase}),
         );
     }
 }
@@ -1448,6 +1507,7 @@ fn worker(form: Form) {
     rec(
         &json!({"type":"config","form":form.name(),"ime":ime,"mode":if startup {"startup"} else if drift {"drift"} else if drift_on {"drift-on"} else if reopen {"reopen"} else if raw {"raw"} else {"nicola"},
         "interval_ms":iv_ms,"len":len,"trials":trials,"seed":seed,"kinds":kinds,
+        "no_awase":has_flag("--no-awase"),"startup_skip_refocus2":has_flag("--startup-skip-refocus2"),
         "layout":layout_path,"cells":[cells[0].len(),cells[1].len(),cells[2].len()],
         "child_class":class_of(child),"perturb":perturb.describe()}),
     );
@@ -1475,7 +1535,13 @@ fn worker(form: Form) {
             wait_for_awase();
         }
     }
-    refocus();
+    if startup && has_flag("--no-awase") {
+        // awase なしの対照: 通常は awase の起動を待つ 1〜5 秒の間 IME が置かれるので、同程度の間を置いて打鍵位置を揃える。
+        sleep_ms(1500);
+    }
+    if !(startup && has_flag("--startup-skip-refocus2")) {
+        refocus();
+    }
     rec(&focus_report());
     if !focus_ok() {
         rec(
@@ -1485,7 +1551,7 @@ fn worker(form: Form) {
         return;
     }
     if startup {
-        startup_scenario(child, &cells, startup_on);
+        startup_scenario(child, &cells, startup_on, has_flag("--no-awase"));
         finish();
         return;
     }
