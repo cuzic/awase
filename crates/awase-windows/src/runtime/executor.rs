@@ -863,77 +863,11 @@ impl DecisionExecutor {
             None
         } else {
             // ── sync path (Chrome / GJI 経路 / TsfNative 経路) ──
-            //
-            // 観測値は冒頭で構築済みの view から読む（tsf_obs() の二重呼び出し回避）。
-            //
-            // 【doc 訂正、2026-08-10、ADR-087 §5 Phase 3 item14 棚卸しで判明】
-            // 元々このコメントは「EngineIntent かつ ImmCross/GJI で確認できない環境では
-            // confident=false → already_matched=false → 必ず apply する」という設計意図
-            // だったが、`belief.confident` を読んで already_matched 判定に使う本番コードは
-            // 現在存在しない（`already_matched`/`AlreadyMatched` は
-            // `ime_controller::ImeController::apply` が `view.control.shadow_on` から独立に
-            // 判定する）。`belief.confident` の本番消費者は診断ログ
-            // （`platform.rs::apply_ime_open_with_view` の `tracing::debug!`）のみ。
-            let now_ms = crate::hook::current_tick_ms();
-
-            // BUG-34 横展開 B: 以前はここで MS-IME + TsfNative の場合のみ
-            // get_ime_conversion_mode_raw_timeout(5) を同期的に呼んでいた
-            // （SendMessageTimeoutW ベース、SMTO_ABORTIFHUNG は呼び出し中に
-            // ハングし始めた相手には効かず最大 HungAppTimeout ~5s ブロックしうる、
-            // known-bugs.md BUG-34）。この打鍵経路は毎打鍵で走るため、ブロックすると
-            // その打鍵の IME open/close 判定そのものが Win32 往復の後ろに回る。
-            //
-            // この read の唯一の消費先は belief_inputs.conv_mode →
-            // OpenBeliefInputs::reduce → belief.effective_open/confident だが、
-            // apply_ime_open_with_view (platform.rs) は belief を tracing::debug! に
-            // 渡すだけで、実行本体 ImeController::apply(order, view) は belief
-            // 引数を受け取っていない（読んだ値は最終的にログ2行にしか影響しない）。
-            // そのため fence や degrade 方針を設計する必要はなく、単純に conv_mode
-            // を常に None にして同期 read を削除するだけで安全に打鍵経路の
-            // ブロックを解消できる。
-            //
-            // BUG-34 横展開レビュー指摘: 当初はここに fire-and-forget の診断読み取り
-            // （spawn_local + offload、結果は log のみ）を残していたが、この経路は
-            // 「毎打鍵で走る」（本関数冒頭のコメント参照）ため、キー入力のたびに
-            // OS スレッドを spawn する（`win32_async::offload` は呼び出しごとに
-            // `std::thread::spawn`）・宣言タイムアウトを 5ms→50ms に引き上げた
-            // クロスプロセス `SendMessageTimeoutW` を送る・その結果が
-            // `send_health::record` に給餌されグローバルなサーキットブレーカを
-            // 誤って作動させうる、という副作用があった。BUG-34 の第1修正
-            // （`kp_stage_idle_conv_check`）がまさにこの積み上がりを防ぐために
-            // in-flight ガードを持つのに対し、この診断はその保護を持たない
-            // 一回性イベント向けの idiom（shift-conv-guard entry verify）を
-            // 毎打鍵経路へ転用したものだった。唯一の消費先がログだけである以上、
-            // 削除するのが最も一貫した選択（fence/ガードを新設する価値がない）。
-            let conv_mode = None;
-
-            let belief_inputs = crate::output::OpenBeliefInputs {
-                // `OpenBeliefInputs.shadow_on` は診断ログ専用の消費先（上記コメント
-                // 参照）で、BUG-113 修正の対象外。`ControlLog.shadow_on` が
-                // `Option<bool>` 化された後もこちらの既存挙動（未知は false
-                // 扱い）を変えない。
-                shadow_on: view.control.shadow_on.unwrap_or(false),
-                applied: self.applied_snapshot,
-                candidate_visible: view.observed.candidate_visible,
-                candidate_was_seen: view.observed.candidate_was_seen,
-                gji_monitor_ok: view.observed.gji_monitor_ok,
-                conv_mode,
-                can_imm32_cross_process: view.focus.profile.can_use_imm32_cross_process(),
-                now_ms,
-            };
-            let belief = belief_inputs.reduce(open);
-            tracing::debug!(
-                "[dispatch-ime] belief: effective={} confident={} conv={:?} (profile={:?})",
-                belief.effective_open,
-                belief.confident,
-                conv_mode,
-                view.focus.profile
-            );
             // ADR-090 §2.A A-1（shadow）。
             let order = ime
                 .issue_self_actuation_order(open, "engine_decision_sync")
                 .with_press(press);
-            let (outcome, mut record) = platform.apply_ime_open_with_view(order, &view, belief);
+            let (outcome, mut record) = platform.apply_ime_open_with_view(order, &view);
             // 同期の書き込みが何も送らなかったなら予約を解く（同じ押下の次の経路が書ける。async は解けない）。
             if crate::state::press_ledger::outcome_sent_nothing(outcome) {
                 ime.release_press_write(press, open);
@@ -988,168 +922,13 @@ impl DecisionExecutor {
     }
 }
 
-/// `OpenBeliefInputs::reduce` および `AppliedImeState` の unit tests。
+/// `AppliedImeState` の unit tests。
 ///
 /// `awase-windows` クレートは `#![cfg(windows)]` で囲まれているため
 /// Windows 実機でのみ実行される。
 #[cfg(test)]
 mod tests {
-    use crate::output::OpenBeliefInputs;
     use crate::state::AppliedImeState;
-
-    /// Chrome 相当の設定（can_imm32=false, gji=false, EngineIntent）で confident を返すヘルパー。
-    /// `kanji_needs_context_override(...)` == `!chrome_intent(...).confident`
-    fn chrome_intent_confident(
-        desired: bool,
-        applied: AppliedImeState,
-        shadow_on: bool,
-        now_ms: u64,
-    ) -> bool {
-        let inputs = OpenBeliefInputs {
-            shadow_on,
-            applied,
-            candidate_visible: false,
-            candidate_was_seen: false,
-            gji_monitor_ok: false,
-            conv_mode: None,
-            can_imm32_cross_process: false,
-            now_ms,
-        };
-        inputs.reduce(desired).confident
-    }
-
-    // 6-C ケース 1: フォーカス直後 (Unknown) → confident=false（必ず apply）
-    #[test]
-    fn not_confident_when_unknown() {
-        assert!(!chrome_intent_confident(
-            false,
-            AppliedImeState::Unknown,
-            false,
-            1000
-        ));
-    }
-
-    // 6-C ケース 2: Optimistic のみ → confident=false
-    #[test]
-    fn not_confident_when_optimistic_only() {
-        assert!(!chrome_intent_confident(
-            false,
-            AppliedImeState::Optimistic(false),
-            false,
-            1000
-        ));
-    }
-
-    // ケース 3a: Confirmed OFF + 目標 OFF + 300ms 以内 → confident（二重送信防止）
-    #[test]
-    fn confident_when_confirmed_off_within_300ms() {
-        assert!(chrome_intent_confident(
-            false,
-            AppliedImeState::Confirmed {
-                open: false,
-                at_ms: 900
-            },
-            false,
-            1000
-        ));
-    }
-
-    // ケース 3b: Confirmed OFF + 目標 OFF + 300ms 超過 → not confident（desync 修正のため再送）
-    #[test]
-    fn not_confident_when_confirmed_off_over_300ms() {
-        assert!(!chrome_intent_confident(
-            false,
-            AppliedImeState::Confirmed {
-                open: false,
-                at_ms: 500
-            },
-            false,
-            1000
-        ));
-    }
-
-    // ケース 4: Confirmed + 目標 ON + 300ms 以内 → confident（二重送信防止）
-    #[test]
-    fn confident_when_confirmed_within_300ms() {
-        assert!(chrome_intent_confident(
-            true,
-            AppliedImeState::Confirmed {
-                open: false,
-                at_ms: 800
-            },
-            true,
-            1000
-        ));
-    }
-
-    // ケース 5: Confirmed + 300ms 超過 → not confident（再試行許容）
-    #[test]
-    fn not_confident_when_confirmed_over_300ms() {
-        assert!(!chrome_intent_confident(
-            true,
-            AppliedImeState::Confirmed {
-                open: false,
-                at_ms: 500
-            },
-            true,
-            1000
-        ));
-    }
-
-    // ケース 6: IMM32 使用可 → confident（ImmCross が先行するのでここには来ないが念のため）
-    #[test]
-    fn confident_when_imm32_available() {
-        let inputs = OpenBeliefInputs {
-            shadow_on: false,
-            applied: AppliedImeState::Unknown,
-            candidate_visible: false,
-            candidate_was_seen: false,
-            gji_monitor_ok: false,
-            conv_mode: None,
-            can_imm32_cross_process: true,
-            now_ms: 1000,
-        };
-        assert!(inputs.reduce(false).confident);
-    }
-
-    // ケース 7: GJI 健全 → confident
-    #[test]
-    fn confident_when_gji_healthy() {
-        let inputs = OpenBeliefInputs {
-            shadow_on: false,
-            applied: AppliedImeState::Unknown,
-            candidate_visible: false,
-            candidate_was_seen: false,
-            gji_monitor_ok: true,
-            conv_mode: None,
-            can_imm32_cross_process: false,
-            now_ms: 1000,
-        };
-        assert!(inputs.reduce(false).confident);
-    }
-
-    // （旧ケース 8「EngineIntent でない → confident」は 2026-07-06 到達不能パス監査
-    // B6 で撤去 — SetOpen は常に Engine の意図であり is_engine_intent 区別ごと畳んだ。）
-
-    // ケース 9: Confirmed ON + 目標 ON + 300ms 以内 → confident。
-    // 300ms超過後は他ケース同様not confidentになる(7a24442でOFF方向の「永続
-    // スキップ」を廃止した設計と一貫させるため、confidentは時間無制限の
-    // 「永続」ではなく300msの再検証ウィンドウという設計)。旧now_ms=100_000/
-    // at_ms=500(elapsed=99,500ms)はテスト新設(f7f09bc, 2026-06-04)時点で
-    // 既に300ms窓の外にあり、Windows実機で初めてこのテストを実行するまで
-    // (2026-07-25)発見されなかった。
-    #[test]
-    fn confident_when_confirmed_on_desired_on() {
-        assert!(chrome_intent_confident(
-            true,
-            AppliedImeState::Confirmed {
-                open: true,
-                at_ms: 900
-            },
-            true,
-            1000
-        ));
-    }
 
     // AppliedImeState ヘルパーメソッドのテスト
     #[test]

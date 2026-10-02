@@ -238,25 +238,6 @@ Profile ではなく Policy で表現する:
 LINE = Standard（AppImeProfile）+ owns_physical_kanji=true（AppImePolicy）
 ```
 
-### 読み戻し不能環境の confidence gate と 300ms ウィンドウ
-
-VK_KANJI を送る `KanjiToggleStrategy` は ADR-190 で撤去済み。現在残っている
-confidence 判定は、ImmCross/GJI で実状態を確認できない環境で `OpenBelief` を
-どの程度信頼するかを決めるためのもの。
-
-`output/ime_apply_planner.rs` は、読み戻し不能かつ GJI 監視も使えない場合だけ
-`shadow 一致 + Confirmed + 300ms 以内` を `confident=true` とする。300ms を超えた
-belief は、スリープ復帰やフォーカス変更後の desync を隠さないよう慎重に扱う。
-
-この判定は現在ログ・診断の信頼度として残っており、旧KanjiToggle送信可否の
-ゲートではない。将来 `confident` を本番分岐へ再配線する場合は、ADR-108 の
-`Confirmed` / `Optimistic` の扱いを先に見直すこと。
-
-`ImeControlView` にこれらの信頼度フィールドが追加された段階で、
-将来的に `UnsafeToToggle` を返す条件として実装する（§6 原則7 参照）。
-
----
-
 ## 4. 状態管理（ImeModel SSOT）
 
 ### 4-1. ImeModel の構造

@@ -31,7 +31,7 @@
 
 | ファミリー | 主なファイル |
 | --- | --- |
-| warmup / cold-start | `output/tsf_warmup_coord.rs`, `output/probe_io.rs`, `tsf/`, `output/ime_apply_planner.rs`, `tuning.rs` |
+| warmup / cold-start | `output/tsf_warmup_coord.rs`, `output/probe_io.rs`, `tsf/`, `tuning.rs` |
 | focus 遷移 | `focus/`, `runtime/focus_tracking.rs` |
 | IME belief | `state/ime_model.rs`, `state/observation_store.rs`, `state/platform_state.rs`（`ImeStateHub`・`check_drift_correction`）, `state/mode_key_pass.rs`（ADR-187、`desired_open`の揃え）, `state/key_effect_predictor.rs`/`state/key_effect_runtime.rs`/`state/key_effect_table.rs`（`KeyEffectPredicted`がbeliefを直接動かす）, `runtime/ime_coordinator.rs`, `focus/uia.rs`, `focus/msaa.rs` |
 | conv mode | `state/conv_mode.rs`, `focus/classify.rs`, `output/conv_actuation.rs`, `runtime/conv_actuation.rs`, `ime.rs` |

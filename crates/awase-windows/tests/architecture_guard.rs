@@ -4997,7 +4997,6 @@ fn decision3_instrument_targets_are_covered_by_reincidence_family_docs() {
         "runtime/transport.rs",
         "output/tsf_warmup_coord.rs",
         "output/probe_io.rs",
-        "output/ime_apply_planner.rs",
         "state/ime_model.rs",
         "state/observation_store.rs",
         "runtime/ime_coordinator.rs",

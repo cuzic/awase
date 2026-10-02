@@ -48,7 +48,7 @@ spurious OFF の実害を防いでいた）・根治の方針（spurious apply �
 
 ## 適用範囲
 
-- 対象ファイルの目安: `output/`（vk_send / probe_io / ime_apply_planner / tsf_warmup /
+- 対象ファイルの目安: `output/`（vk_send / probe_io / tsf_warmup /
   conv_actuation 系）、`tsf/`、`focus/`、`state/ime_*`、`runtime/ime_coordinator.rs`、
   `ime_controller.rs`、`tuning.rs`、`platform.rs`、`runtime/conv_actuation.rs`、
   `ime.rs`（ADR-084/086

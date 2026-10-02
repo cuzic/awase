@@ -1160,11 +1160,10 @@ impl WindowsPlatform {
         }
     }
 
-    /// 事前構築済みの `ImeControlView` と `OpenBelief` を受け取る中核実装。
+    /// 事前構築済みの `ImeControlView` を受け取る中核実装。
     ///
     /// `tsf_obs()` の重複呼び出しを避けるため view は呼び出し元が一度だけ構築して渡す。
     /// 戦略選択と実行は [`crate::ime_controller::ImeController`] が唯一の SSOT として担う。
-    /// `belief` は診断ログ用（`effective_open` / `confident`）に受け取る。
     // 兄弟メソッド apply_ime_open_with_belief から `self.` 記法で呼ばれるため、
     // また PlatformRuntime 委譲メソッド群との一貫した API 配置のため `&self` を維持する。
     #[allow(clippy::unused_self)]
@@ -1172,18 +1171,13 @@ impl WindowsPlatform {
         &self,
         order: crate::state::actuation_chain::ActuationOrder,
         view: &crate::state::ImeControlView<'_>,
-        belief: crate::output::OpenBelief,
     ) -> (
         awase::platform::ImeOpenOutcome,
         crate::state::actuation_decision_record::ActuationDecisionRecord,
     ) {
         let open = order.open();
         let (outcome, record) = crate::ime_controller::ImeController::apply(order, view);
-        tracing::debug!(
-            "[apply-ime] open={open} eff={} conf={} → outcome={outcome:?}",
-            belief.effective_open,
-            belief.confident
-        );
+        tracing::debug!("[apply-ime] open={open} → outcome={outcome:?}");
         (outcome, record)
     }
 
@@ -1194,13 +1188,12 @@ impl WindowsPlatform {
         &self,
         order: crate::state::actuation_chain::ActuationOrder,
         applied: Option<(bool, u64)>,
-        belief: crate::output::OpenBelief,
     ) -> (
         awase::platform::ImeOpenOutcome,
         crate::state::actuation_decision_record::ActuationDecisionRecord,
     ) {
         let view = self.build_ime_control_view(applied);
-        self.apply_ime_open_with_view(order, &view, belief)
+        self.apply_ime_open_with_view(order, &view)
     }
 
     /// `set_ime_open`（トレイトメソッド）の `ActuationOrder` 版

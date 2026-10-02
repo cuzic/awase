@@ -930,11 +930,11 @@ impl Runtime {
             },
             tick_ms,
         );
+        // ADR-090 §2.A 設計案 3 / A-1（shadow）。drift correction は既に
+        // `EventOrigin`（`act_origin`）を持っているので、それをそのまま
+        // order の出所として使う（journal の `ImeActuation` と揃う）。
+        let order = self.issue_actuation_order_with_origin(desired, act_origin);
         if self.can_use_imm32_cross_process() {
-            // ADR-090 §2.A 設計案 3 / A-1（shadow）。drift correction は既に
-            // `EventOrigin`（`act_origin`）を持っているので、それをそのまま
-            // order の出所として使う（journal の `ImeActuation` と揃う）。
-            let order = self.issue_actuation_order_with_origin(desired, act_origin);
             // ADR-090 §2.A A-2（2026-09-19）: `set_ime_open_ordered`が実際に
             // 書いたときだけ`applied`を`Optimistic`にする。以前は戻り値を
             // 無視して無条件に呼んでおり、A-2導入前（常に書き込む shadow
@@ -948,14 +948,7 @@ impl Runtime {
         } else {
             // set_ime_open は IMM32専用で Blacklist/TsfNative では no-op のため、
             // （撤去済みの）apply_force_on_for_imm_broken と同じ strategy chain 経由の実送信を使う。
-            let belief = crate::output::OpenBelief {
-                effective_open: desired,
-                confident: true,
-            };
-            let order = self.issue_actuation_order_with_origin(desired, act_origin);
-            let (outcome, mut record) = self
-                .platform
-                .apply_ime_open_with_belief(order, None, belief);
+            let (outcome, mut record) = self.platform.apply_ime_open_with_belief(order, None);
             // /code-review指摘（PR #201 wave3）: この同期記録点は`caller`が
             // 常に`None`のままで、`site=Sync`の他の呼び出し元と記録上区別
             // できなかった（B-2、PR #201パターンに揃える）。

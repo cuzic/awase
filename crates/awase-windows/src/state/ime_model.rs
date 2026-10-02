@@ -183,15 +183,6 @@ impl AppliedImeState {
     pub const fn is_confirmed(self) -> bool {
         matches!(self, Self::Confirmed { .. })
     }
-
-    /// `Confirmed { open, at_ms }` の `at_ms` を返す。それ以外は 0。
-    #[must_use]
-    pub const fn confirmed_at_ms(self) -> u64 {
-        match self {
-            Self::Confirmed { at_ms, .. } => at_ms,
-            _ => 0,
-        }
-    }
 }
 
 /// Shadow IME モデル。最終形 (Phase 3 完了時) ではこれが SSOT になる予定。
@@ -1727,11 +1718,9 @@ mod tests {
     fn applied_ime_state_to_pair_and_related_getters() {
         assert_eq!(AppliedImeState::Unknown.to_pair(), None);
         assert!(!AppliedImeState::Unknown.is_confirmed());
-        assert_eq!(AppliedImeState::Unknown.confirmed_at_ms(), 0);
 
         assert_eq!(AppliedImeState::Optimistic(true).to_pair(), Some((true, 0)));
         assert!(!AppliedImeState::Optimistic(true).is_confirmed());
-        assert_eq!(AppliedImeState::Optimistic(true).confirmed_at_ms(), 0);
 
         let confirmed = AppliedImeState::Confirmed {
             open: false,
@@ -1739,7 +1728,6 @@ mod tests {
         };
         assert_eq!(confirmed.to_pair(), Some((false, 42)));
         assert!(confirmed.is_confirmed());
-        assert_eq!(confirmed.confirmed_at_ms(), 42);
     }
 
     #[test]
