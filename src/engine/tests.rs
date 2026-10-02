@@ -136,6 +136,7 @@ impl Ev {
             injected: false,
             sync_direction: None,
             was_down: false,
+            press: None,
         }
     }
     fn up(vk: VkCode) -> EvBuilder {
@@ -147,6 +148,7 @@ impl Ev {
             injected: false,
             sync_direction: None,
             was_down: false,
+            press: None,
         }
     }
 }
@@ -159,9 +161,16 @@ struct EvBuilder {
     injected: bool,
     sync_direction: Option<crate::types::ShadowImeAction>,
     was_down: bool,
+    /// フックが振る押下 ID（ADR-208 D1。非リピート KeyDown のみ Some）。
+    press: Option<crate::types::PressId>,
 }
 
 impl EvBuilder {
+    /// 押下 ID `n` を持つ（フックが非リピート KeyDown に振る値の体）。
+    fn press(mut self, n: u64) -> Self {
+        self.press = Some(crate::types::PressId::new(n));
+        self
+    }
     /// 自動リピートの Down（`RawKeyEvent::was_down`）にする。
     fn repeat(mut self) -> Self {
         self.was_down = true;
@@ -190,6 +199,7 @@ impl EvBuilder {
         let (kc, pos) = classify_test_key(self.vk, self.scan);
         RawKeyEvent {
             was_down: self.was_down,
+            press_id: self.press,
             vk_code: self.vk,
             scan_code: self.scan,
             event_type: self.event_type,
@@ -897,6 +907,7 @@ fn test_ctrl_alt_win_thumb_key_never_enters_pending_due_to_os_modifier_bypass() 
 
         let down = RawKeyEvent {
             was_down: false,
+            press_id: None,
             vk_code: vk,
             scan_code: scan,
             event_type: KeyEventType::KeyDown,
@@ -945,6 +956,7 @@ fn test_thumb_alone_timeout_suppressed_when_thumb_is_os_modifier() {
 
     let down = RawKeyEvent {
         was_down: false,
+        press_id: None,
         vk_code: VK_LSHIFT,
         scan_code: vk_to_scan(VK_LSHIFT),
         event_type: KeyEventType::KeyDown,
@@ -1183,6 +1195,7 @@ fn enter_thumb_down_event(ts: Timestamp) -> RawKeyEvent {
     use crate::types::{ImeRelevance, KeyClassification, KeyEventType, ModifierState};
     RawKeyEvent {
         was_down: false,
+        press_id: None,
         vk_code: VK_RETURN,
         scan_code: vk_to_scan(VK_RETURN),
         event_type: KeyEventType::KeyDown,
@@ -3066,6 +3079,7 @@ fn test_nicola_state_stores_scan_code() {
     // Create a key event with a specific scan code
     let event = RawKeyEvent {
         was_down: false,
+        press_id: None,
         vk_code: VK_A,
         scan_code: ScanCode(0x1E), // A key scan code
         event_type: KeyEventType::KeyDown,
@@ -3102,6 +3116,7 @@ fn test_pending_char_thumb_stores_char_scan() {
 
     let char_event = RawKeyEvent {
         was_down: false,
+        press_id: None,
         vk_code: VK_A,
         scan_code: ScanCode(0x1E),
         event_type: KeyEventType::KeyDown,
@@ -3120,6 +3135,7 @@ fn test_pending_char_thumb_stores_char_scan() {
 
     let thumb_event = RawKeyEvent {
         was_down: false,
+        press_id: None,
         vk_code: VK_CONVERT,
         scan_code: ScanCode(0x79), // Convert key scan code
         event_type: KeyEventType::KeyDown,
@@ -8820,10 +8836,206 @@ mod engine_integration_tests {
         assert!(
             has_effect(&d, |e| matches!(
                 e,
-                Effect::Ime(ImeEffect::SetOpen { open: true })
+                Effect::Ime(ImeEffect::SetOpen { open: true, .. })
             )),
             "IME-ON コンボは SetOpen(true) を出さなければならない, got {:?}",
             effects_of(&d)
+        );
+    }
+
+    // ── ADR-208 決定2 D1: 押下 ID（PressId）の運搬 ──
+
+    /// `SetOpen` の押下 ID を取り出す（`SetOpen` が無ければ `None` の外側）。
+    fn set_open_press(d: &Decision) -> Option<Option<crate::types::PressId>> {
+        effects_of(d).iter().find_map(|e| match e {
+            Effect::Ime(ImeEffect::SetOpen { press, .. }) => Some(*press),
+            _ => None,
+        })
+    }
+
+    fn make_engine_with_bare_ime_on_combo() -> Engine {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VK_CONVERT,
+        };
+        make_engine_with_special(SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![combo],
+            ime_off: vec![],
+            ime_toggle: vec![],
+        })
+    }
+
+    /// コンボ（`keys.ime_on` 等）の `SetOpen` は、その打鍵の押下 ID を運ぶ。
+    #[test]
+    fn combo_set_open_carries_the_press_of_its_key_down() {
+        let mut engine = make_engine_with_bare_ime_on_combo();
+        let d = engine.on_input(
+            Ev::down(VK_CONVERT).at(100).press(7).build(),
+            &ime_off_ctx(),
+        );
+        assert_eq!(
+            set_open_press(&d),
+            Some(Some(crate::types::PressId::new(7))),
+            "got {:?}",
+            effects_of(&d)
+        );
+        assert_eq!(
+            d.find_ime_set_open_press(),
+            Some(crate::types::PressId::new(7))
+        );
+    }
+
+    /// 自動リピートの Down（フックは `press_id=None`）は、特殊キー照合に一致しても `press=None`
+    /// （従来の `applied` の already-matched 省略に任せ、押し続けた間の書き込み連発を防ぐ）。
+    #[test]
+    fn repeat_down_set_open_carries_no_press() {
+        let mut engine = make_engine_with_bare_ime_on_combo();
+        let d = engine.on_input(
+            Ev::down(VK_CONVERT).at(100).repeat().build(),
+            &ime_off_ctx(),
+        );
+        assert_eq!(
+            set_open_press(&d),
+            Some(None),
+            "リピートでも SetOpen は出るが press は None, got {:?}",
+            effects_of(&d)
+        );
+        assert_eq!(d.find_ime_set_open_press(), None);
+    }
+
+    /// 単独タップの確定点は KeyUp（press=None のイベント）だが、`SetOpen` は保留開始 KeyDown の押下 ID を運ぶ。
+    #[test]
+    fn solo_tap_set_open_carries_the_press_of_the_pending_key_down() {
+        let mut engine = make_test_engine_with_muhenkan_solo_tap_turn_off();
+        let _ = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(100).press(11).build(),
+            &ime_on_ctx(),
+        );
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
+        assert_eq!(
+            set_open_press(&up),
+            Some(Some(crate::types::PressId::new(11))),
+            "got {:?}",
+            effects_of(&up)
+        );
+    }
+
+    /// 次のキー（Passthrough）の到着で保留の親指が単独確定する経路も、保留開始 KeyDown の押下 ID を運ぶ
+    /// （到着キー自身の ID ではない）。
+    #[test]
+    fn solo_tap_resolved_by_next_key_carries_the_thumbs_press_not_the_next_keys() {
+        let mut engine = make_test_engine_with_muhenkan_solo_tap_turn_off();
+        let _ = engine.on_input(
+            Ev::down(VK_NONCONVERT).at(100).press(21).build(),
+            &ime_on_ctx(),
+        );
+        // 修飾でも文字でもないキー（Passthrough）が保留中の親指を単独確定する。
+        let d = engine.on_input(
+            Ev::down(VkCode(0x70)).at(150).press(22).build(),
+            &ime_on_ctx(),
+        );
+        assert_eq!(
+            set_open_press(&d),
+            Some(Some(crate::types::PressId::new(21))),
+            "got {:?}",
+            effects_of(&d)
+        );
+    }
+
+    /// 自動リピートの Down（`press_id=None`）で保留に入った親指の単独タップは `press=None`
+    /// （ID が無い押下の確定は従来どおり `applied` の省略に任せる）。
+    #[test]
+    fn solo_tap_pending_started_without_press_carries_no_press() {
+        let mut engine = make_test_engine_with_muhenkan_solo_tap_turn_off();
+        let _ = engine.on_input(Ev::down(VK_NONCONVERT).at(100).build(), &ime_on_ctx());
+        let up = engine.on_input(Ev::up(VK_NONCONVERT).at(200).build(), &ime_on_ctx());
+        assert_eq!(set_open_press(&up), Some(None), "got {:?}", effects_of(&up));
+    }
+
+    /// M-4: Engine が同じ打鍵で `SetOpen` を出すキーを、副作用なしに向きつきで答える（shadow の抑止に使う）。
+    #[test]
+    fn matches_ime_set_open_reports_the_direction_without_side_effects() {
+        let engine = make_engine_with_bare_ime_on_combo();
+        let on = Ev::down(VK_CONVERT).at(100).press(1).build();
+        assert_eq!(engine.matches_ime_set_open(&ime_off_ctx(), &on), Some(true));
+        // 副作用なし（&self）: 同じ問い合わせを繰り返しても同じ答え。
+        assert_eq!(engine.matches_ime_set_open(&ime_off_ctx(), &on), Some(true));
+        // 無関係なキーは None。
+        let other = Ev::down(VK_A).at(100).press(2).build();
+        assert_eq!(engine.matches_ime_set_open(&ime_off_ctx(), &other), None);
+    }
+
+    /// M-4: `keys.ime_detect`（`sync_direction`）と重なるキーは Engine が元から一致させない（二重処理の防止）ので、
+    /// shadow が担う（Engine は問い合わせに `None`）。
+    #[test]
+    fn matches_ime_set_open_ignores_keys_that_are_also_sync_keys() {
+        let engine = make_engine_with_bare_ime_on_combo();
+        let ev = Ev::down(VK_CONVERT)
+            .at(100)
+            .press(3)
+            .sync_direction(ShadowImeAction::TurnOn)
+            .build();
+        assert_eq!(engine.matches_ime_set_open(&ime_off_ctx(), &ev), None);
+    }
+
+    /// M-4: トグル型（`keys.ime_toggle`）の向きは shadow の判断前の belief（`ctx.ime_on`）から決まる。
+    #[test]
+    fn matches_ime_set_open_toggle_direction_follows_ctx() {
+        let combo = ParsedKeyCombo {
+            ctrl: false,
+            shift: false,
+            alt: false,
+            vk: VkCode(0x7C),
+        };
+        let engine = make_engine_with_special(SpecialKeyCombos {
+            engine_on: vec![],
+            engine_off: vec![],
+            ime_on: vec![],
+            ime_off: vec![],
+            ime_toggle: vec![combo],
+        });
+        let ev = Ev::down(VkCode(0x7C)).at(100).press(4).build();
+        assert_eq!(engine.matches_ime_set_open(&ime_off_ctx(), &ev), Some(true));
+        assert_eq!(engine.matches_ime_set_open(&ime_on_ctx(), &ev), Some(false));
+    }
+
+    /// `stamp_set_open_press` は ID を持たない `SetOpen` にだけ載せ、既に持つものは書き換えない。
+    #[test]
+    fn stamp_set_open_press_does_not_overwrite_an_existing_press() {
+        let mut d = Decision::consumed_with(smallvec::smallvec![
+            Effect::Ime(ImeEffect::SetOpen {
+                open: true,
+                press: None
+            }),
+            Effect::Ime(ImeEffect::SetOpen {
+                open: false,
+                press: Some(crate::types::PressId::new(1))
+            }),
+        ]);
+        d.stamp_set_open_press(Some(crate::types::PressId::new(9)));
+        let presses: Vec<_> = effects_of(&d)
+            .iter()
+            .filter_map(|e| match e {
+                Effect::Ime(ImeEffect::SetOpen { press, .. }) => Some(*press),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            presses,
+            vec![
+                Some(crate::types::PressId::new(9)),
+                Some(crate::types::PressId::new(1))
+            ]
+        );
+        // `None` を載せても何も変わらない。
+        d.stamp_set_open_press(None);
+        assert_eq!(
+            d.find_ime_set_open_press(),
+            Some(crate::types::PressId::new(9))
         );
     }
 

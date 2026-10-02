@@ -85,7 +85,22 @@ impl Runtime {
 
         self.kp_stage_focus_probe(&mut event);
         self.kp_stage_idle_conv_check(&event);
-        let shadow_toggled = self.kp_stage_shadow_ime_toggle(&event);
+        // ADR-208 D1（PR #419 Opus M-4）: 同じ打鍵で Engine が `SetOpen` を出すキー（`keys.ime_on/off/toggle`・自動検出トグル等）
+        // では、shadow の書き込みを抑止して Engine に任せる（衝突を書く前に静的に解く）。ctx は shadow の判断**前**の
+        // belief で組む（トグル型の向きが `!ctx.ime_on` で決まる）。
+        let engine_owns_open_key = matches!(event.event_type, KeyEventType::KeyDown) && {
+            let pre_ctx = super::build_input_context(
+                self.platform_state.ime.effective_open(),
+                self.platform_state.ime.input_mode(),
+                self.platform_state.ime.belief.is_japanese_ime(),
+                crate::tsf::observer::ime_composition_active_now(),
+                &event.modifier_snapshot,
+                event.left_thumb_down_snapshot,
+                event.right_thumb_down_snapshot,
+            );
+            self.engine.matches_ime_set_open(&pre_ctx, &event).is_some()
+        };
+        let shadow_toggled = self.kp_stage_shadow_ime_toggle(&event, engine_owns_open_key);
         self.settle_fkey_role_latch(&event, shadow_toggled);
 
         // ADR-129: ライブクエリ（`hook::thumb_down_timestamps()`）は使わない。
@@ -880,7 +895,11 @@ impl Runtime {
     // shadow IME belief トグルは分岐が本質的に多い。分割は挙動変更リスクが高いため
     // 複雑度警告のみ抑制する。
     #[expect(clippy::cognitive_complexity)]
-    fn kp_stage_shadow_ime_toggle(&mut self, event: &RawKeyEvent) -> bool {
+    fn kp_stage_shadow_ime_toggle(
+        &mut self,
+        event: &RawKeyEvent,
+        engine_owns_open_key: bool,
+    ) -> bool {
         if !matches!(event.event_type, KeyEventType::KeyDown) {
             return false;
         }
@@ -951,6 +970,15 @@ impl Runtime {
         let Some((action, kind)) = intent_kind else {
             return false;
         };
+        // Engine が同じ打鍵の開閉を担う（`engine_owns_open_key`）なら、shadow は belief も書き込みも触らない。
+        // belief・意図・eisu 救済は Engine の `SetOpen`（`kp_stage_post_decision`）が担う。物理は Engine の Consume が握る。
+        if engine_owns_open_key {
+            tracing::info!(
+                "[shadow-toggle] vk=0x{:02X} は Engine が同じ打鍵の SetOpen を出す（keys.ime_* 等）→ shadow は昇格・書き込みしない（ADR-208 D1）",
+                event.vk_code
+            );
+            return false;
+        }
         let new_val = action.resolve(current);
         let tick_ms = crate::state::TickMs(hook::current_tick_ms());
         // 診断ログ (2026-08-05 "IME OFF 後 FocusChange 無しで Engine が勝手に ON へ
@@ -1123,7 +1151,11 @@ impl Runtime {
         //
         // ADR-213 決定1: ON/OFF とも明示 actuation（`current` と `effective_open()` は
         // 冒頭の no-op 判定で必ず食い違っている）。
-        self.kp_shadow_actuate(self.platform_state.ime.effective_open(), tick_ms);
+        self.kp_shadow_actuate(
+            self.platform_state.ime.effective_open(),
+            event.press_id,
+            tick_ms,
+        );
         tracing::debug!(
             "Shadow IME toggle: {} → {} (vk=0x{:02X}, source={:?})",
             if current { "ON" } else { "OFF" },
@@ -1156,26 +1188,46 @@ impl Runtime {
     /// `set_ime_open_cross_process` がフック内で `with_app` 再入を引き起こすため async に
     /// `spawn_local` + OutputActiveGuard で dispatch する。それ以外 (GjiDirect / MsImeDirect) は
     /// SendInput-only で非ブロッキングなので sync。
-    fn kp_shadow_actuate(&mut self, open: bool, tick_ms: crate::state::TickMs) {
+    fn kp_shadow_actuate(
+        &mut self,
+        open: bool,
+        press: Option<awase::types::PressId>,
+        tick_ms: crate::state::TickMs,
+    ) {
         use crate::state::ime_actuation_decision::DecisionSite;
+        // ADR-208 D1: この押下で既に同じ向きを書いた（reinject・drain replay・Ctrl 救済の 50ms 保留の再処理で
+        // 同じ `RawKeyEvent` が再び来た場合）なら書かない。order の発行直前に予約する（ImmCross の async は
+        // 完了が後から届くため、完了時の記録では二重送信を防げない）。`press=None`（自動リピート）は従来どおり書く判断に回す。
+        let claim = self.platform_state.ime.claim_press_write(
+            press,
+            open,
+            crate::state::press_ledger::PressSource::Shadow,
+        );
+        if !claim.writes() {
+            tracing::debug!(
+                "[shadow-toggle] 同じ押下で既に書いた/Engine が優先（{}）→ 書かない press={press:?} open={open}",
+                claim.label()
+            );
+            return;
+        }
         self.platform_state.ime.note_explicit_ime_action(tick_ms);
+        // P2c で ActivationSync（打鍵前に予約した TIMER_IME_REFRESH を kill していた経路）を撤去したため、この書き込みの
+        // 直後に予約済みの refresh → drift correction が同じ向きを重ねうる（BUG-113 型。PR #408 Opus M-1 が strip 経路で
+        // 同じ kill を足していた）。書き込みの前に打鍵前の refresh 予約を kill する。完了後の refresh は
+        // `on_ime_apply_complete` が改めて予約する（書き込み後の観測で再評価）。
+        self.platform.timer.kill(TIMER_IME_REFRESH);
         let caller = if open {
             DecisionSite::ShadowToggleOn
         } else {
             DecisionSite::ShadowToggleOff
         };
-        let applied_pair = if crate::state::ime_actuation_decision::shadow_toggle_demotes_applied(
-            self.platform_state.ime.applied_state().applied_open(),
+        // D1: 押下の書き込みは `applied` が向きと一致していても省略の根拠にしない（`explicit_press_applied_pair`）。
+        // 以前は shadow 経路だけが無条件に降格していた（PR #408）。`press=None`（自動リピート）は従来の `applied` のまま。
+        let applied_pair = crate::state::ime_actuation_decision::explicit_press_applied_pair(
+            self.platform_state.ime.model().applied_pair(),
             open,
-        ) {
-            tracing::debug!(
-                "[shadow-toggle] applied={open:?} は belief(直前 {:?})と食い違う → shadow_on を未知として書く",
-                !open
-            );
-            None
-        } else {
-            self.platform_state.ime.model().applied_pair()
-        };
+            press.is_some(),
+        );
         let mut view = self.platform.build_ime_control_view(applied_pair);
         view.belief_input_mode = self.platform_state.ime.input_mode();
         let imm_first = crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
@@ -1188,14 +1240,16 @@ impl Runtime {
             }
             // ADR-090 §2.A A-1（shadow）: 起案は spawn_local の**外**で行う
             // ——future の中では `with_app` 再入で `ImeStateHub` に届かない（ADR-090 §4.2）。
-            let order = self.issue_actuation_order(
-                open,
-                if open {
-                    "shadow_toggle_on"
-                } else {
-                    "shadow_toggle_off"
-                },
-            );
+            let order = self
+                .issue_actuation_order(
+                    open,
+                    if open {
+                        "shadow_toggle_on"
+                    } else {
+                        "shadow_toggle_off"
+                    },
+                )
+                .with_press(press);
             let focus_gen = self.platform.output.ime_mode_focus_gen.get();
             let conv_after_open: crate::ime::ConvAfterOpen =
                 crate::state::ime_actuation_decision::decide_dispatch_conv_after_open(
@@ -1260,15 +1314,21 @@ impl Runtime {
                 drop(guard);
             });
         } else {
-            let order = self.issue_actuation_order(
-                open,
-                if open {
-                    "shadow_toggle_on_sync"
-                } else {
-                    "shadow_toggle_off_sync"
-                },
-            );
+            let order = self
+                .issue_actuation_order(
+                    open,
+                    if open {
+                        "shadow_toggle_on_sync"
+                    } else {
+                        "shadow_toggle_off_sync"
+                    },
+                )
+                .with_press(press);
             let (outcome, mut record) = crate::ime_controller::ImeController::apply(order, &view);
+            // 同期の書き込みが何も送らなかったなら予約を解く（同じ押下の Engine 経路が書ける。async は解けない）。
+            if crate::state::press_ledger::outcome_sent_nothing(outcome) {
+                self.platform_state.ime.release_press_write(press, open);
+            }
             // `site` は `Sync` のまま（replay の chain 再導出を保つ）、呼び出し元は `caller` で識別する。
             record.caller = Some(caller);
             self.platform_state

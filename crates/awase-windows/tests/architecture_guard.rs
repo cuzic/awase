@@ -878,7 +878,7 @@ fn forced_thumb_path_lives_in_the_engine_special_key_match() {
 #[test]
 fn ctrl_key_up_never_actuates_ime() {
     // 1. 旧 CtrlUp warmup の識別子が復活していない（crate 全体）。
-    let workspace_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let workspace_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut stack = vec![workspace_src];
     while let Some(dir) = stack.pop() {
         for entry in fs::read_dir(&dir).expect("read_dir") {
@@ -4902,7 +4902,7 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
     );
     // `settle_fkey_role_latch` は `kp_stage_shadow_ime_toggle` の結果（`shadow_toggled`）を受けるので直後、`plan()` より前。
     let toggle_at = kp
-        .find("self.kp_stage_shadow_ime_toggle(&event)")
+        .find("self.kp_stage_shadow_ime_toggle(&event, engine_owns_open_key)")
         .expect("kp_stage_shadow_ime_toggle の呼び出し");
     let settle_at = kp
         .find("self.settle_fkey_role_latch(&event, shadow_toggled)")
@@ -4919,7 +4919,7 @@ fn bug116_shift_katakana_guards_are_present_in_production_code() {
         .find("self.enrich_key_role(&mut event)")
         .expect("enrich_key_role の呼び出し");
     for later in [
-        "self.kp_stage_shadow_ime_toggle(&event)",
+        "self.kp_stage_shadow_ime_toggle(&event, engine_owns_open_key)",
         "PhysicalKeyDisposition::plan(",
     ] {
         let at = kp
@@ -5855,4 +5855,74 @@ fn conv_engine_sync_has_no_apply_requested_generation_or_timer_kill() {
              （ADR-213 P2d-1）。"
         );
     }
+}
+
+/// ADR-208 L1: 明示キー押下の書き込みを起案する入口（order を発行する 2 入口）は、order の**発行前**に押下 ID を
+/// 予約し（`claim_press_write`、`last_written_press`）、押下 ID を order に載せる（`with_press`）。
+/// どちらか 1 入口だけに足して満足しない（`fix-requires-evidence.md` の「IME actuation 合流点」）。
+/// drift correction（`runtime/ime_refresh.rs`）は押下に由来しないので `press=None` のまま（`with_press` を呼ばない）。
+#[test]
+fn press_id_is_claimed_and_carried_at_every_order_issuing_entry() {
+    // Engine 経由（executor）。async/sync の 2 order すべてが press を載せる。
+    let executor = read_crate_file("src/runtime/executor.rs");
+    let body = extract_fn_body(production_code_only(&executor), "fn dispatch_ime_set_open(");
+    let code = non_comment_lines(body);
+    assert_eq!(
+        code.matches("claim_press_write(").count(),
+        1,
+        "dispatch_ime_set_open は order の発行前に `claim_press_write` を 1 回だけ呼ぶこと（ADR-208 D1）"
+    );
+    assert_eq!(
+        code.matches(".with_press(press)").count(),
+        2,
+        "dispatch_ime_set_open の async/sync 両方の order に `.with_press(press)` を載せること（ADR-208 D1）"
+    );
+    assert!(
+        code.contains("explicit_press_applied_pair("),
+        "dispatch_ime_set_open は view の shadow_on を `explicit_press_applied_pair` で未知にすること（ADR-208 D1）"
+    );
+    // shadow toggle（key_pipeline）。
+    let kp = read_crate_file("src/runtime/key_pipeline.rs");
+    let body = extract_fn_body(production_code_only(&kp), "fn kp_shadow_actuate(");
+    let code = non_comment_lines(body);
+    assert_eq!(
+        code.matches("claim_press_write(").count(),
+        1,
+        "kp_shadow_actuate は order の発行前に `claim_press_write` を 1 回だけ呼ぶこと（ADR-208 D1）"
+    );
+    assert_eq!(
+        code.matches(".with_press(press)").count(),
+        2,
+        "kp_shadow_actuate の async/sync 両方の order に `.with_press(press)` を載せること（ADR-208 D1）"
+    );
+    assert!(
+        code.contains("explicit_press_applied_pair("),
+        "kp_shadow_actuate は view の shadow_on を `explicit_press_applied_pair` で未知にすること（ADR-208 D1）"
+    );
+    // M-4: Engine が同じ打鍵で SetOpen を出すキーでは、shadow の判断の前に Engine へ純粋な問い合わせをして shadow を抑止する。
+    let run = non_comment_lines(production_code_only(&kp));
+    assert!(
+        run.contains("matches_ime_set_open(") && run.contains("kp_stage_shadow_ime_toggle(&event, engine_owns_open_key)"),
+        "kp_run_inner は shadow の判断の前に `engine.matches_ime_set_open` を問い合わせ、`engine_owns_open_key` を渡すこと（ADR-208 D1）"
+    );
+    let shadow_body = non_comment_lines(extract_fn_body(
+        production_code_only(&kp),
+        "fn kp_stage_shadow_ime_toggle(",
+    ));
+    assert!(
+        shadow_body.contains("if engine_owns_open_key {"),
+        "kp_stage_shadow_ime_toggle は `engine_owns_open_key` で昇格・書き込みを抑止すること（ADR-208 D1）"
+    );
+    // 押下の書き込みの直後に予約済みの refresh → drift correction が同じ向きを重ねない（BUG-113 型）。
+    assert!(
+        code.contains("timer.kill(TIMER_IME_REFRESH)"),
+        "kp_shadow_actuate は書き込み前に打鍵前の `TIMER_IME_REFRESH` 予約を kill すること（P2c で ActivationSync の kill が消えた穴）"
+    );
+    // drift correction は押下に由来しない（press=None）。
+    let refresh = read_crate_file("src/runtime/ime_refresh.rs");
+    let refresh_prod = non_comment_lines(production_code_only(&refresh));
+    assert!(
+        !refresh_prod.contains("with_press(") && !refresh_prod.contains("claim_press_write("),
+        "ime_refresh.rs（drift correction）は押下 ID を持たない: `with_press`/`claim_press_write` を呼んではならない"
+    );
 }

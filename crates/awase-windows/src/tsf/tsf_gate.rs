@@ -647,6 +647,7 @@ mod tests {
 
         let dummy = RawKeyEvent {
             was_down: false,
+            press_id: None,
             vk_code: VkCode(0x41), // 'A'
             scan_code: ScanCode(0x1E),
             event_type: KeyEventType::KeyDown,

@@ -1313,6 +1313,11 @@ pub(crate) struct ImmCrossOutcome {
     pub open: ActuationOutcome,
     /// `conv_after_open` が `Some` かつ `open` が `Written` だったときのみ `Some`。
     pub conv: Option<ActuationOutcome>,
+    /// `open` が `Failed` で、その理由が `SendMessageTimeoutW` の時間切れだった（IME 窓へ送ったメッセージは取り消されず、
+    /// 後で届きうる）。即時の拒否（IME 窓なし・`ERROR_ACCESS_DENIED`）は `false`。診断専用で、`run_open_chain_async` の
+    /// フォールスルー判断には使わない（ADR-208 L1 の調査: 時間切れを「未確定」として追い送りを止める案は、IME 窓が応答しない
+    /// 窓で VK へ落ちる唯一の収束経路を失うので見送った。`open_chain.rs::imm_cross_write` の Failed 分岐のコメント参照）。
+    pub open_timed_out: bool,
 }
 
 /// IME を ON/OFF し、成功かつ `conv_after_open` が `Some` なら続けて conv-mode を
@@ -1351,6 +1356,7 @@ pub(crate) async fn set_ime_open_then_conv_for_target(
             ImmCrossOutcome {
                 open: ActuationOutcome::Aborted(AbortReason::GenStale),
                 conv: None,
+                open_timed_out: false,
             }
         }
         TargetVerifyOutcome::TargetMoved => {
@@ -1358,6 +1364,7 @@ pub(crate) async fn set_ime_open_then_conv_for_target(
             ImmCrossOutcome {
                 open: ActuationOutcome::Aborted(AbortReason::TargetMoved),
                 conv: None,
+                open_timed_out: false,
             }
         }
         TargetVerifyOutcome::Current(hwnd) => {
@@ -1370,19 +1377,23 @@ pub(crate) async fn set_ime_open_then_conv_for_target(
             // SAFETY: 上記と同じ。
             unsafe impl Send for SendableHwnd {}
             let target_hwnd = SendableHwnd(hwnd);
-            let (open_ok, conv_ok) = offload_unsafe(move || {
+            let (open_ok, open_timed_out, conv_ok) = offload_unsafe(move || {
                 // disjoint closure capture がラッパーを迂回するのを防ぐための
                 // 既知のイディオム（set_ime_conv_for_target 参照）。
                 let target_hwnd = target_hwnd;
                 let SendableHwnd(hwnd) = target_hwnd;
+                // 送信の時間切れ（メッセージは後で届きうる）か即時の拒否かを、同じワーカースレッドの
+                // thread-local（`send_ime_control_raw` が失敗時に立てる）から読む。
+                crate::imm::reset_probe_timed_out();
                 let open_ok = unsafe { set_ime_open_for_target(hwnd, open) };
+                let open_timed_out = !open_ok && crate::imm::take_probe_timed_out();
                 let conv_ok = match (open_ok, conv_after_open) {
                     (true, ConvAfterOpen::Write(target_conv)) => {
                         Some(unsafe { set_ime_romaji_mode_for_hwnd(hwnd, target_conv) })
                     }
                     (false, _) | (true, ConvAfterOpen::Skip) => None,
                 };
-                (open_ok, conv_ok)
+                (open_ok, open_timed_out, conv_ok)
             })
             .await;
             let open_outcome = if open_ok {
@@ -1398,11 +1409,13 @@ pub(crate) async fn set_ime_open_then_conv_for_target(
                 }
             });
             tracing::debug!(
-                "[imm-cross-actuate] hwnd={hwnd:?} open={open_outcome:?} conv={conv_outcome:?}"
+                "[imm-cross-actuate] hwnd={hwnd:?} open={open_outcome:?} conv={conv_outcome:?} \
+                 open_timed_out={open_timed_out}"
             );
             ImmCrossOutcome {
                 open: open_outcome,
                 conv: conv_outcome,
+                open_timed_out,
             }
         }
     }

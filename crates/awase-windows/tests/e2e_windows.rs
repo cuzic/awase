@@ -139,6 +139,7 @@ fn classify_vk(vk: u16) -> KeyClassification {
 fn key_down(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
     RawKeyEvent {
         was_down: false,
+        press_id: None,
         vk_code: VkCode(vk),
         scan_code: ScanCode(scan),
         event_type: KeyEventType::KeyDown,
@@ -160,6 +161,7 @@ fn key_down(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
 fn key_up(vk: u16, scan: u32, ts: u64) -> RawKeyEvent {
     RawKeyEvent {
         was_down: false,
+        press_id: None,
         vk_code: VkCode(vk),
         scan_code: ScanCode(scan),
         event_type: KeyEventType::KeyUp,

@@ -43,7 +43,15 @@ pub enum TimerEffect {
 #[derive(Debug, Clone)]
 pub enum ImeEffect {
     /// IME の ON/OFF を設定する（常に Engine の意図。観測同期は別経路）。
-    SetOpen { open: bool },
+    ///
+    /// `press`: この要求を起こしたユーザー打鍵（非リピート KeyDown）の押下 ID（ADR-208 決定2 D1）。
+    /// コンボ（Ctrl+変換等）・`keys.ime_*` はその打鍵の ID、無変換/変換の単独タップは保留開始 KeyDown の ID
+    /// （KeyUp/タイムアウトの確定まで `PendingThumbData` が運ぶ）。自動リピートの Down・タイマー由来等で
+    /// 押下に結びつかないものは `None`（従来どおり `applied` の already-matched 省略に任せる）。
+    SetOpen {
+        open: bool,
+        press: Option<crate::types::PressId>,
+    },
     // 旧 RequestRefresh は 2026-07-06 の到達不能パス監査で撤去（構築サイトゼロ）。
 }
 
@@ -192,11 +200,41 @@ impl Decision {
             Self::PassThrough => return None,
         };
         for effect in effects {
-            if let Effect::Ime(ImeEffect::SetOpen { open }) = effect {
+            if let Effect::Ime(ImeEffect::SetOpen { open, .. }) = effect {
                 return Some(*open);
             }
         }
         None
+    }
+
+    /// Effects 内の最初の `ImeEffect::SetOpen` の押下 ID を返す（`SetOpen` が無い、または押下に結びつかないなら `None`）。
+    #[must_use]
+    pub fn find_ime_set_open_press(&self) -> Option<crate::types::PressId> {
+        let effects = match self {
+            Self::Consume { effects } | Self::PassThroughWith { effects } => effects,
+            Self::PassThrough => return None,
+        };
+        effects.iter().find_map(|effect| match effect {
+            Effect::Ime(ImeEffect::SetOpen { press, .. }) => *press,
+            _ => None,
+        })
+    }
+
+    /// まだ押下 ID を持たない `SetOpen` に `press` を載せる（Engine の入口が、打鍵の ID を効果へ伝える。ADR-208 D1）。
+    /// 既に ID を持つもの・`SetOpen` 以外は変えない。
+    pub fn stamp_set_open_press(&mut self, press: Option<crate::types::PressId>) {
+        let Some(press) = press else {
+            return;
+        };
+        let effects = match self {
+            Self::Consume { effects } | Self::PassThroughWith { effects } => effects,
+            Self::PassThrough => return,
+        };
+        for effect in effects {
+            if let Effect::Ime(ImeEffect::SetOpen { press: slot, .. }) = effect {
+                slot.get_or_insert(press);
+            }
+        }
     }
 
     /// effects の先頭に `prefix` を挿入する。
@@ -459,7 +497,10 @@ mod tests {
     #[test]
     fn prepend_effects_orders_prefix_before_existing() {
         let mut d = Decision::consumed_with(smallvec![test_effect()]);
-        d.prepend_effects(smallvec![Effect::Ime(ImeEffect::SetOpen { open: true })]);
+        d.prepend_effects(smallvec![Effect::Ime(ImeEffect::SetOpen {
+            open: true,
+            press: None
+        })]);
         match d {
             Decision::Consume { effects } => {
                 assert_eq!(effects.len(), 2);
@@ -511,7 +552,10 @@ mod tests {
     fn find_ime_set_open_finds_set_open_among_other_effects() {
         let d = Decision::consumed_with(smallvec![
             test_effect(),
-            Effect::Ime(ImeEffect::SetOpen { open: false }),
+            Effect::Ime(ImeEffect::SetOpen {
+                open: false,
+                press: None
+            }),
         ]);
         assert_eq!(d.find_ime_set_open(), Some(false));
     }
@@ -526,7 +570,10 @@ mod tests {
     fn retaining_non_set_open_effects_removes_set_open_but_keeps_others() {
         let mut d = Decision::consumed_with(smallvec![
             test_effect(),
-            Effect::Ime(ImeEffect::SetOpen { open: false }),
+            Effect::Ime(ImeEffect::SetOpen {
+                open: false,
+                press: None
+            }),
         ]);
         assert_eq!(d.find_ime_set_open(), Some(false));
 

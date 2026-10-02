@@ -70,6 +70,8 @@ pub mod physical_disposition;
 // （それ以外は L1 以降）ため、`explicit_press_delivery_with` 等は非テストビルドでは未使用になる。
 #[allow(dead_code)]
 pub mod explicit_press;
+// ADR-208 L1: 「この押下で既に書いた」の予約（`last_written_press`）と同一押下の二重送信の防御・衝突の優先順位（純粋）。
+pub mod press_ledger;
 // ADR-089 §2.3/§2.6: Actuation の型状態チェーンと再試行 episode。ungated（走査
 // 規則を Linux で全数テストするため）。実 write は Windows 側の
 // `MechanismWriter` 実装（`ime_controller.rs`）が担う。
