@@ -114,6 +114,15 @@ related_adr:
 - **件数(120,960 状態 × 12 キー、P1 の反例)**: L3a 前 49,248 → L3a 後 23,328。S-3 は 25,920 → **0**(P2 の収束違反 49,248 → 23,328、P4 の繰り返し違反 92,160 → 40,320)。残る反例: S-1 1,728(TsfNative/Gji と実質 TSF の ImmUnavailableTsfClass/Gji、L3' 待ち)、L5 InputRelay 8,640(L4)、A1 外の no-op 12,960(Allow で配送するが IME が処理する保証が無いキー〈任意の sync キー等〉の no-op。モデルが『Allow なら IME が処理』としない部分で、D4 の範囲外)。
 - **見送り・残課題**: F13〜F24 の役割キーは no-op で `plan(false)` が Allow(`shadow_toggled` を見る規則)なので書かない(A1 外の no-op に含まれる)。実機・CI の drift × キー行列(ハング窓・IME の偽報告で no-op 書き込みが実際に救済することの確認)は未実施。
 
+### L3 の Chrome(Imm32Unavailable)適用の確認(2026-10-02、コード変更なし)
+
+L3 の「Imm32Unavailable(Chrome)への適用」は、新しい実装なしで **L1+L3a により成立している**ことを確認した。
+
+- **全列挙(`explicit_press_exhaustive`、18件 pass)**: `ImmUnavailable`(実 Chrome 相当)の S-1・S-3 は 0 件。S-1 の残りは `ImmUnavailableTsfClass`/`TsfNative` × GJI の 1,728 件(864 + 864、L3' 待ち)だけで、`ImmUnavailable` の反例は `A1_noop_pass_through`(A1 外の任意の sync キーの no-op を Allow で配送する。D4 の範囲外=二重配送を避けるため書かない)だけ。
+- **理由**: `kp_stage_shadow_ime_toggle` の D4 は `plan(false)` が Suppress のときだけ書く。Chrome の絶対キー(0x16/0x1A、Ctrl+変換/無変換、単独タップ)は Engine 経路で、L1 の押下 ID と `applied` の未知化により already-matched で省かれず書かれる。物理 Allow のキーは INV-L1 により書かない。
+- **CI(L3b、run 36951828252・36957521623)**: 実 Chrome × GJI は絶対キー1押下・トグル2押下以内で全セル収束。MS-IME × 実 Chrome は ON 方向が収束し、OFF 方向(絶対・トグルとも)は E2 の対照(fresh)も同率で失敗し ENV_EXCEPTION(決定4(a))。
+- したがって L3 の残りは、`sc-keymatrix-*` を `expect=pass` へ昇格する判断と、受け入れ条件(決定7(3)(4)の `@` 件数・`sc-*` 期待表)の最終確認だけで、Chrome 向けの本番コード変更は要らない。
+
 ## リスク
 
 1. D1 の押下 id が、同一押下の shadow 書き込みと Engine の SetOpen の二重送信(BUG-113)を取りこぼす(sync キーが `keys.ime_on` でもある構成など)。全列挙テストと `sc-kanji-*`/`sc-solotap-*` で固定する。
