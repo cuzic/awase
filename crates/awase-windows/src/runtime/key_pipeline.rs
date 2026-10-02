@@ -1086,7 +1086,7 @@ impl Runtime {
             }
             // ADR-208 D4（L3a）: belief が既に向きと一致していても、この押下の物理キーが Suppress される窓では
             // 実 IME へ誰も応答しない（外から実 IME が変わった・読み取りが嘘のとき固着する、S-3）。
-            return self.kp_shadow_noop_write(event, current, tick_ms);
+            return self.kp_shadow_noop_write(event, new_val, tick_ms);
         }
         self.platform_state.ime.on_ime_toggled();
         // ADR-203 (ii): OFF→ON に倒した瞬間は GjiFsm を開き直す（ON 方向のみ。向きは belief 次第で
@@ -1175,17 +1175,17 @@ impl Runtime {
         true
     }
 
-    /// shadow toggle の no-op 分岐（belief が既に押下の向き `open` と一致）の書き込み（ADR-208 決定2 D4・L3a、S-3）。
+    /// shadow toggle の no-op 分岐（belief が既に押下の向き〈キーの意味 `key_target`〉と一致）の書き込み（ADR-208 決定2 D4・L3a、S-3）。
     ///
     /// `plan` と shadow 判断の循環は**固定点**で解く: `plan(shadow_toggled=false)` を先に評価し、Suppress なら書いて
     /// `true`（後段の本物の `plan(true)` が評価される）を返す。Allow（物理が IME に届く窓）なら書かない（INV-L1 の
     /// 「ちょうど一方」。BUG-113 の二重送信を作らない）。リピート（`press_id=None`）と TsfNative（BUG-124 の実機 A/B 〈L3'〉まで
-    /// 段階制御、`shadow_noop_write_wanted`）は従来どおり書かない。同じ押下で Engine が出すキーは呼び出し前に除外済み
+    /// 段階制御、`shadow_noop_write_target`）は従来どおり書かない。同じ押下で Engine が出すキーは呼び出し前に除外済み
     /// （`engine_owns_open_key`）で、他の経路の予約とは `kp_shadow_actuate` の `claim_press_write` で重ならない。
     fn kp_shadow_noop_write(
         &mut self,
         event: &RawKeyEvent,
-        open: bool,
+        key_target: bool,
         tick_ms: crate::state::TickMs,
     ) -> bool {
         let profile = self.platform.current_app_profile();
@@ -1197,13 +1197,16 @@ impl Runtime {
         );
         let effectively_tsf_native =
             profile.is_effectively_tsf_native(self.platform.focus.class_name());
-        if !crate::state::explicit_press::shadow_noop_write_wanted(
+        // 書く向きはキーの意味（belief ではない）。PanicReset ガード等で belief が動かず `current != key_target` の
+        // まま no-op に入っても、逆向きを書かない（M-1）。
+        let Some(open) = crate::state::explicit_press::shadow_noop_write_target(
             event.press_id.is_some(),
             effectively_tsf_native,
             plan0 == crate::runtime::PhysicalKeyDisposition::Suppress,
-        ) {
+            key_target,
+        ) else {
             return false;
-        }
+        };
         tracing::info!(
             "[shadow-toggle] no-op だが物理キーは Suppress される窓 → 書く（ADR-208 D4）vk=0x{:02X} open={open}",
             event.vk_code

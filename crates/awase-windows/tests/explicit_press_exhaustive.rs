@@ -1289,6 +1289,7 @@ fn kanji_is_promoted_when_identified_and_passed_through_when_unidentified() {
 #[test]
 fn l3a_changes_only_the_suppressed_shadow_noop_write() {
     let judge = StoreJudge::default();
+    let mut written = 0u64;
     let (mut changed, mut tsf_kept, mut repeat_kept, mut allow_kept) = (0u64, 0u64, 0u64, 0u64);
     for s in PressState::all() {
         for key in ExplicitKey::ALL {
@@ -1311,6 +1312,13 @@ fn l3a_changes_only_the_suppressed_shadow_noop_write() {
                     fmt_state(&s, key, None)
                 );
                 assert!(l3a.shadow_toggled);
+                // M-1/m-2: 書いた向きはキーの意味（belief の向きではない）。書かない場合（授権・gate）も逆向きは書かない。
+                assert!(
+                    l3a.write.is_none() || l3a.write == l3a.target,
+                    "{} 書いた向きがキーの意味と一致しない: {l3a:?}",
+                    fmt_state(&s, key, None)
+                );
+                written += u64::from(l3a.write.is_some());
             } else {
                 assert_eq!(l2, l3a, "{}", fmt_state(&s, key, None));
                 if noop_suppressed {
@@ -1328,8 +1336,8 @@ fn l3a_changes_only_the_suppressed_shadow_noop_write() {
     }
     assert!(
         // tsf_kept は現状 0（TsfNative で Suppress される no-op はモデルに無い: Suppress されるのはトグルキーで、トグルは必ず belief を倒す）。
-        // TsfNative の除外は `shadow_noop_write_wanted` の単体テストが固定する（L3' で定数を反転するときの足場）。
-        changed > 0 && repeat_kept > 0 && allow_kept > 0,
+        // TsfNative の除外は `shadow_noop_write_target` の単体テストが固定する（L3' で定数を反転するときの足場）。
+        changed > 0 && written > 0 && repeat_kept > 0 && allow_kept > 0,
         "{changed} {tsf_kept} {repeat_kept} {allow_kept}"
     );
 }
