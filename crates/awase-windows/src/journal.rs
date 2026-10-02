@@ -828,7 +828,7 @@ impl JournalEntry {
                     elapsed_ms,
                     target_open = record.target,
                     attempts = record.attempts,
-                    policy = variant_name(&record.policy),
+                    policy = variant_name(record.policy),
                     action = variant_name(record.action),
                     "ime actuation"
                 );
