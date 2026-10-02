@@ -7,7 +7,7 @@ summary: |-
   (2) `LEGACY` を生成にすると凍結オラクルが自己比較になり、表の誤りを検出できなくなる、(3) 行数は純増、(4) この ADR が防ぐ型の同期漏れの実害は確認できない(issue #99 は別の型)、(5) match が持つ重複名のコンパイル時検査が消える、と指摘され取り下げた。
   既存の「手動同期 + 検出テスト」は `core_key_identity_covers_from_name`・`key_acceptance_tests.rs`(300 件超)・gji-config の検査でほぼ全域が揃っている。残る穴は `egui_key_to_internal`(設定 GUI のキャプチャ表)の出力が `from_name` で解決できるか未検査な点だけで、テスト数行で塞ぐ。
 status: |-
-  見送り(2026-10-02)、テスト 1 本の追加のみ提案。Opus round3 で収束(Must なし、新規指摘なし)。D2 のテスト(`egui_capture_names_are_accepted_by_their_readers`)は実装済み。表の単一ソース化は見送り。
+  見送り(2026-10-02)。D2 のテスト(`egui_capture_names_are_accepted_by_their_readers`)は実装済み。crate をまたぐ単一ソース化(D1)は見送りのまま。ただし同日の追記(PR #430)で、`vk.rs` 内の定数と `from_name` を `vk_keys!` に統合し、D1 が「現状のまま」とした `LEGACY` を撤去した(D1 を一部上書き)。
 related_adr:
   - "ADR-019"
   - "ADR-161"
@@ -31,7 +31,7 @@ related_adr:
 
 ## 決定
 
-### D1: 表の単一ソース化は行わない
+### D1: crate をまたぐ表の単一ソース化は行わない(`vk.rs` 内の統合と LEGACY 撤去は末尾の追記で上書き)
 
 `from_name`・`LEGACY`・`KEY_IDENTITY_ALIASES`・各候補表は現状のまま。ADR-161 の「宣言から生成」の精神は、テストの期待値まで同じ仕様から作るとオラクルでなくなる点で、このデータには合わない。
 
@@ -72,3 +72,16 @@ related_adr:
 ## 影響
 
 テスト 1 本の追加のみ(D2)。本番コードに影響しない。
+
+## 追記(2026-10-02): vk.rs 内の定数と from_name の統合、LEGACY の撤去(D1 を一部上書き)
+
+本 ADR の議論の後、所有者の判断で `vk.rs` の中だけで閉じる統合を実施した(PR #430)。D1 が見送った crate をまたぐ単一ソース化(`KEY_NAMES`)とは別物だが、D1 が「`LEGACY` は現状のまま」とした点は上書きしている。
+
+- **やったこと**: `pub const VK_*`(47 個)と `from_name` の match(111 腕、うち 43 腕が定数と同じ値を 16 進で再掲していた)を、`vk_keys!` マクロ 1 か所に統合した。識別子 `VK_KANA` から定数と正規名 `"KANA"` を作り、別名だけを `[...]` で書く。**定数と `from_name` の間の**重複がなくなった(`ImeKeyKind::from_vk`・`classify_modifier` などの分類関数は今も 16 進を持つので、「16 進を書く場所が 1 か所」ではない)。
+- **挙動は変えていない**: 置き換え前後で名前→VK の対応 126 個が一致することを、旧 match の文字列リテラルと新マクロ呼び出しを別々に抽出して機械的に比べて確認した(コードレビューでも独立に再確認)。
+- **失ったもの**: (1) match が持っていた重複名のコンパイル時検査(S4)→ `key_table_names_are_unique_and_canonical` が名前の一意性、正規形、VK 値の一意性を見る。(2) `LEGACY`(123 名の凍結表)の二つの役目。
+- **LEGACY の役目の引き継ぎ**:
+  - **値の独立した検査**: `vk_keys!` が、Windows ターゲットで各定数を `windows` crate の同名 `VIRTUAL_KEY` 定数とコンパイル時に突き合わせる(表の 111 個と表外の 4 個、計 115 個が全件一致することを確認済み)。Microsoft 自身のメタデータがオラクルになるので、round1 M1 の「独立したオラクルを失う」に答える。`VK_LSHIFT`/`VK_RSHIFT` を入れ替えると `cargo check --target x86_64-pc-windows-msvc` が落ちることを確認した。Linux のテストでは検出されず、CI の `windows-cross-check`・`windows-build` が担当する。
+  - **名前の削除の検出**: 16 進を含まない文字列だけの `promised_names_are_still_accepted`(126 名)を置いた。これが無いと、`OEM_AUTO`・`OEM_ENLW`・`IMEON`・`IMEOFF`・`漢字` や、内部で使われない `VK_F1`〜`VK_F10` などを表から消しても、落ちるテストが他に無い(ADR-201 が残す別名の受理が黙って外れる)。
+  - **全綴りでの解決**: `key_table_names_resolve_in_every_spelling`(`VK_` 付き・小文字・`VK_` 無し・前後の空白)。期待値は表自身から取るので、検査するのは `canonical_key_text` と `KeyEntry::matches` の組み合わせだけ。
+- **範囲外のまま**: `awase-settings` の `KEYMAP_MAIN_KEYS`・`egui_key_to_internal`、`key_text.rs::KEY_IDENTITY_ALIASES`、macOS の名前表、`config_diagnostics.rs` の `LEGACY_NO_PREFIX_NAMES`/`NEW_ONLY_VK_SUFFIXES`(別名集合に依存する第 3 の手書き表で、新しい別名を表に足しても追随しない。既存の問題)。

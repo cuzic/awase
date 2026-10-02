@@ -15,65 +15,196 @@ pub const LANGID_ENGLISH_US: u32 = 0x0409;
 // 各ファイルに散らばっていた `const VK_FOO: u16 = 0x..` を
 // `VkCode` 型として集約。Windows API 境界では `.0` で剥がす。
 
-pub const VK_BACK: VkCode = VkCode(0x08);
-pub const VK_TAB: VkCode = VkCode(0x09);
-pub const VK_RETURN: VkCode = VkCode(0x0D);
-pub const VK_SHIFT: VkCode = VkCode(0x10);
-pub const VK_CONTROL: VkCode = VkCode(0x11);
-pub const VK_MENU: VkCode = VkCode(0x12);
-/// VK_CAPITAL (0x14) — CapsLock。JIS キーボードでは Shift+英数 と物理的に
-/// 同一スキャンコード（ADR-111 参照）。`[[keymap]]` の `from`/`to` 禁止対象
-/// （ADR-114 決定5）で名前付き定数として参照するため追加。
-pub const VK_CAPITAL: VkCode = VkCode(0x14);
-pub const VK_KANA: VkCode = VkCode(0x15);
-pub const VK_IME_ON: VkCode = VkCode(0x16);
-pub const VK_JUNJA: VkCode = VkCode(0x17);
-pub const VK_KANJI: VkCode = VkCode(0x19);
-pub const VK_IME_OFF: VkCode = VkCode(0x1A);
-pub const VK_ESCAPE: VkCode = VkCode(0x1B);
-pub const VK_CONVERT: VkCode = VkCode(0x1C);
-pub const VK_NONCONVERT: VkCode = VkCode(0x1D);
-pub const VK_SPACE: VkCode = VkCode(0x20);
-pub const VK_PRIOR: VkCode = VkCode(0x21);
-pub const VK_NEXT: VkCode = VkCode(0x22);
-pub const VK_END: VkCode = VkCode(0x23);
-pub const VK_HOME: VkCode = VkCode(0x24);
-pub const VK_LEFT: VkCode = VkCode(0x25);
-pub const VK_UP: VkCode = VkCode(0x26);
-pub const VK_RIGHT: VkCode = VkCode(0x27);
-pub const VK_DOWN: VkCode = VkCode(0x28);
-pub const VK_INSERT: VkCode = VkCode(0x2D);
-pub const VK_DELETE: VkCode = VkCode(0x2E);
+/// VK 定数と、`from_name` が引く名前表を**1か所**で宣言する。
+///
+/// 識別子 `VK_KANA` から、定数 `VK_KANA` と正規名 `"KANA"`(`VK_` を除いた形、
+/// `canonical_key_text` の出力と同じ規則)を作る。`[...]` は別名(`canonical_key_text`
+/// 適用後の形で書く: ASCII は大文字、`VK_` 無し)。定数と `from_name` の表の間で VK 値が
+/// ずれることはない(分類関数 `ImeKeyKind::from_vk` などは今も 16 進を持つ)。
+/// 同じ名前や同じ VK 値が2か所にあると `key_table_names_are_unique_and_canonical` が落ちる。
+/// 同じ VK の2つ目の定数が要るときは、表の外で普通の `pub const` を定義し、名前は別名に書く。
+///
+/// **値の独立した検査**: Windows ターゲットでは、各定数を `windows` crate の同名の
+/// `VIRTUAL_KEY` 定数とコンパイル時に突き合わせる。Microsoft 自身のメタデータが
+/// オラクルになるので、表の値の打ち間違い(`VK_LSHIFT`/`VK_RSHIFT` の入れ替えなど)は
+/// `cargo check --target x86_64-pc-windows-msvc` で検出される。
+///
+/// 表に載せないキー(`VK_JUNJA` 等、`from_name` が受理していなかったもの)は、下で普通の
+/// 定数として定義する。
+macro_rules! vk_keys {
+    ($( $(#[doc = $doc:expr])* $id:ident = $vk:literal $(, [$($alias:literal),* $(,)?])? ; )*) => {
+        $( $(#[doc = $doc])* pub const $id: VkCode = VkCode($vk); )*
+
+        /// `from_name` が引く表。`(識別子, 別名, VK 値)`。
+        const KEY_TABLE: &[KeyEntry] = &[
+            $( KeyEntry { ident: stringify!($id), aliases: &[$($($alias),*)?], vk: $vk } ),*
+        ];
+
+        $(
+            #[cfg(windows)]
+            const _: () = assert!(
+                ::windows::Win32::UI::Input::KeyboardAndMouse::$id.0 == $vk,
+                concat!("VK 値が windows crate の定数と違う: ", stringify!($id))
+            );
+        )*
+    };
+}
+
+struct KeyEntry {
+    /// `"VK_KANA"` のような識別子そのもの。正規名は `VK_` を除いたもの。
+    ident: &'static str,
+    aliases: &'static [&'static str],
+    vk: u16,
+}
+
+impl KeyEntry {
+    /// `canonical_key_text` 適用済みの名前がこの項目を指すか。
+    fn matches(&self, canonical: &str) -> bool {
+        self.ident.strip_prefix("VK_") == Some(canonical) || self.aliases.contains(&canonical)
+    }
+}
+
+vk_keys! {
 /// VK_A (0x41) — 'A' キー。GJI cold-start warmup の犠牲キー (`send_unicode_cold_warmup_keys`) 用途。
-pub const VK_A: VkCode = VkCode(0x41);
-pub const VK_F11: VkCode = VkCode(0x7A);
-pub const VK_F12: VkCode = VkCode(0x7B);
-/// F13。役割由来の開閉操作の候補（`is_role_fkey` の先頭、ADR-199 決定18）。
-pub const VK_F13: VkCode = VkCode(0x7C);
-pub const VK_LSHIFT: VkCode = VkCode(0xA0);
-pub const VK_RSHIFT: VkCode = VkCode(0xA1);
-pub const VK_LCONTROL: VkCode = VkCode(0xA2);
-pub const VK_RCONTROL: VkCode = VkCode(0xA3);
-pub const VK_LMENU: VkCode = VkCode(0xA4);
-pub const VK_RMENU: VkCode = VkCode(0xA5);
-pub const VK_OEM_MINUS: VkCode = VkCode(0xBD);
-pub const VK_LWIN: VkCode = VkCode(0x5B);
-pub const VK_RWIN: VkCode = VkCode(0x5C);
-pub const VK_DBE_ALPHANUMERIC: VkCode = VkCode(0xF0);
-pub const VK_DBE_KATAKANA: VkCode = VkCode(0xF1);
-pub const VK_DBE_HIRAGANA: VkCode = VkCode(0xF2);
-pub const VK_DBE_SBCSCHAR: VkCode = VkCode(0xF3);
-pub const VK_DBE_DBCSCHAR: VkCode = VkCode(0xF4);
+VK_A = 0x41;
+VK_B = 0x42;
+VK_C = 0x43;
+VK_D = 0x44;
+VK_E = 0x45;
+VK_F = 0x46;
+VK_G = 0x47;
+VK_H = 0x48;
+VK_I = 0x49;
+VK_J = 0x4A;
+VK_K = 0x4B;
+VK_L = 0x4C;
+VK_M = 0x4D;
+VK_N = 0x4E;
+VK_O = 0x4F;
+VK_P = 0x50;
+VK_Q = 0x51;
+VK_R = 0x52;
+VK_S = 0x53;
+VK_T = 0x54;
+VK_U = 0x55;
+VK_V = 0x56;
+VK_W = 0x57;
+VK_X = 0x58;
+VK_Y = 0x59;
+VK_Z = 0x5A;
+VK_0 = 0x30;
+VK_1 = 0x31;
+VK_2 = 0x32;
+VK_3 = 0x33;
+VK_4 = 0x34;
+VK_5 = 0x35;
+VK_6 = 0x36;
+VK_7 = 0x37;
+VK_8 = 0x38;
+VK_9 = 0x39;
+VK_OEM_PLUS = 0xBB;
+VK_OEM_COMMA = 0xBC;
+VK_OEM_MINUS = 0xBD;
+VK_OEM_PERIOD = 0xBE;
+VK_OEM_1 = 0xBA;
+VK_OEM_2 = 0xBF;
+VK_OEM_3 = 0xC0;
+VK_OEM_4 = 0xDB;
+VK_OEM_5 = 0xDC;
+VK_OEM_6 = 0xDD;
+VK_OEM_7 = 0xDE;
+VK_OEM_102 = 0xE2;
+VK_SPACE = 0x20;
+VK_RETURN = 0x0D, ["ENTER"];
+VK_TAB = 0x09;
+VK_BACK = 0x08, ["BACKSPACE"];
+VK_ESCAPE = 0x1B, ["ESC"];
+VK_DELETE = 0x2E;
+VK_CONVERT = 0x1C, ["変換"];
+VK_NONCONVERT = 0x1D, ["MUHENKAN", "無変換"];
+VK_KANA = 0x15, ["かな", "カナ"];
+VK_KANJI = 0x19, ["漢字"];
+VK_IME_ON = 0x16, ["IMEON", "IMEオン"];
+VK_IME_OFF = 0x1A, ["IMEOFF", "IMEオフ"];
+VK_DBE_ALPHANUMERIC = 0xF0;
+VK_DBE_KATAKANA = 0xF1;
+VK_DBE_HIRAGANA = 0xF2;
+VK_DBE_SBCSCHAR = 0xF3, ["OEM_AUTO"];
+VK_DBE_DBCSCHAR = 0xF4, ["OEM_ENLW"];
 /// VK_DBE_ROMAN (0xF5) — ローマ字入力モードへの切替（IME open 状態は変えない）。
 ///
 /// `ImeKeyKind`（IME ON/OFF の shadow 追従用）には**含めない**: このキーは
 /// ROMAN ビット（かな入力方式）のみを制御し、`ShadowImeEffect::TurnOn/TurnOff/Toggle`
 /// のいずれにも該当しない。IME 自体の開閉状態を持つ shadow 追従の対象外。
-pub const VK_DBE_ROMAN: VkCode = VkCode(0xF5);
+VK_DBE_ROMAN = 0xF5;
 /// VK_DBE_NOROMAN (0xF6) — JIS かな直接入力モードへの切替（IME open 状態は変えない）。
 /// `VK_DBE_ROMAN` と同じ理由で `ImeKeyKind` には含めない。
-pub const VK_DBE_NOROMAN: VkCode = VkCode(0xF6);
+VK_DBE_NOROMAN = 0xF6;
+VK_SHIFT = 0x10;
+VK_CONTROL = 0x11;
+VK_MENU = 0x12;
+/// VK_CAPITAL (0x14) — CapsLock。JIS キーボードでは Shift+英数 と物理的に
+/// 同一スキャンコード（ADR-111 参照）。`[[keymap]]` の `from`/`to` 禁止対象
+/// （ADR-114 決定5）で名前付き定数として参照するため追加。
+VK_CAPITAL = 0x14;
+VK_LSHIFT = 0xA0;
+VK_RSHIFT = 0xA1;
+VK_LCONTROL = 0xA2;
+VK_RCONTROL = 0xA3;
+VK_LMENU = 0xA4;
+VK_RMENU = 0xA5;
+VK_F1 = 0x70;
+VK_F2 = 0x71;
+VK_F3 = 0x72;
+VK_F4 = 0x73;
+VK_F5 = 0x74;
+VK_F6 = 0x75;
+VK_F7 = 0x76;
+VK_F8 = 0x77;
+VK_F9 = 0x78;
+VK_F10 = 0x79;
+VK_F11 = 0x7A;
+VK_F12 = 0x7B;
+/// F13。役割由来の開閉操作の候補（`is_role_fkey` の先頭、ADR-199 決定18）。
+VK_F13 = 0x7C;
+VK_F14 = 0x7D;
+VK_F15 = 0x7E;
+VK_F16 = 0x7F;
+VK_F17 = 0x80;
+VK_F18 = 0x81;
+VK_F19 = 0x82;
+VK_F20 = 0x83;
+VK_F21 = 0x84;
+VK_F22 = 0x85;
+VK_F23 = 0x86;
+VK_F24 = 0x87;
+VK_LEFT = 0x25;
+VK_UP = 0x26;
+VK_RIGHT = 0x27;
+VK_DOWN = 0x28;
+VK_HOME = 0x24;
+VK_END = 0x23;
+VK_PRIOR = 0x21;
+VK_NEXT = 0x22;
+VK_INSERT = 0x2D;
+VK_SNAPSHOT = 0x2C;
+}
+
+// `from_name` が受理しないキー(表に載せない)。
+pub const VK_JUNJA: VkCode = VkCode(0x17);
+pub const VK_LWIN: VkCode = VkCode(0x5B);
+pub const VK_RWIN: VkCode = VkCode(0x5C);
 pub const VK_NONAME: VkCode = VkCode(0xFC);
+
+// 表外の4定数も、`vk_keys!` と同じく windows crate の定数と突き合わせる。
+#[cfg(windows)]
+const _: () = {
+    use windows::Win32::UI::Input::KeyboardAndMouse as km;
+    assert!(km::VK_JUNJA.0 == VK_JUNJA.0);
+    assert!(km::VK_LWIN.0 == VK_LWIN.0);
+    assert!(km::VK_RWIN.0 == VK_RWIN.0);
+    assert!(km::VK_NONAME.0 == VK_NONAME.0);
+};
 
 // ── IME キー種別 ──────────────────────────────────────────
 
@@ -541,121 +672,11 @@ impl VkCodeExt for VkCode {
         // コアの検証（`awase::key_text::key_identity`）と規則が同じになる（ADR-201 決定1）。
         // `"Left Alt"`/`"Right Alt"` は VK 名ではないのでここには入れない
         // （`resolve_thumb_key` が目印として先に処理する）。
-        match awase::key_text::canonical_key_text(name).as_str() {
-            "A" => Some(Self(0x41)),
-            "B" => Some(Self(0x42)),
-            "C" => Some(Self(0x43)),
-            "D" => Some(Self(0x44)),
-            "E" => Some(Self(0x45)),
-            "F" => Some(Self(0x46)),
-            "G" => Some(Self(0x47)),
-            "H" => Some(Self(0x48)),
-            "I" => Some(Self(0x49)),
-            "J" => Some(Self(0x4A)),
-            "K" => Some(Self(0x4B)),
-            "L" => Some(Self(0x4C)),
-            "M" => Some(Self(0x4D)),
-            "N" => Some(Self(0x4E)),
-            "O" => Some(Self(0x4F)),
-            "P" => Some(Self(0x50)),
-            "Q" => Some(Self(0x51)),
-            "R" => Some(Self(0x52)),
-            "S" => Some(Self(0x53)),
-            "T" => Some(Self(0x54)),
-            "U" => Some(Self(0x55)),
-            "V" => Some(Self(0x56)),
-            "W" => Some(Self(0x57)),
-            "X" => Some(Self(0x58)),
-            "Y" => Some(Self(0x59)),
-            "Z" => Some(Self(0x5A)),
-            "0" => Some(Self(0x30)),
-            "1" => Some(Self(0x31)),
-            "2" => Some(Self(0x32)),
-            "3" => Some(Self(0x33)),
-            "4" => Some(Self(0x34)),
-            "5" => Some(Self(0x35)),
-            "6" => Some(Self(0x36)),
-            "7" => Some(Self(0x37)),
-            "8" => Some(Self(0x38)),
-            "9" => Some(Self(0x39)),
-            "OEM_PLUS" => Some(Self(0xBB)),
-            "OEM_COMMA" => Some(Self(0xBC)),
-            "OEM_MINUS" => Some(Self(0xBD)),
-            "OEM_PERIOD" => Some(Self(0xBE)),
-            "OEM_2" => Some(Self(0xBF)),
-            "OEM_1" => Some(Self(0xBA)),
-            "OEM_3" => Some(Self(0xC0)),
-            "OEM_4" => Some(Self(0xDB)),
-            "OEM_5" => Some(Self(0xDC)),
-            "OEM_6" => Some(Self(0xDD)),
-            "OEM_7" => Some(Self(0xDE)),
-            "OEM_102" => Some(Self(0xE2)),
-            "SPACE" => Some(Self(0x20)),
-            "RETURN" | "ENTER" => Some(Self(0x0D)),
-            "TAB" => Some(Self(0x09)),
-            "BACK" | "BACKSPACE" => Some(Self(0x08)),
-            "ESCAPE" | "ESC" => Some(Self(0x1B)),
-            "DELETE" => Some(Self(0x2E)),
-            "CONVERT" | "変換" => Some(Self(0x1C)),
-            "NONCONVERT" | "MUHENKAN" | "無変換" => Some(Self(0x1D)),
-            "KANA" | "かな" | "カナ" => Some(Self(0x15)),
-            "KANJI" | "漢字" => Some(Self(0x19)),
-            "IME_ON" | "IMEON" | "IMEオン" => Some(Self(0x16)),
-            "IME_OFF" | "IMEOFF" | "IMEオフ" => Some(Self(0x1A)),
-            "DBE_ALPHANUMERIC" => Some(Self(0xF0)),
-            "DBE_KATAKANA" => Some(Self(0xF1)),
-            "DBE_HIRAGANA" => Some(Self(0xF2)),
-            "DBE_SBCSCHAR" | "OEM_AUTO" => Some(Self(0xF3)),
-            "DBE_DBCSCHAR" | "OEM_ENLW" => Some(Self(0xF4)),
-            "DBE_ROMAN" => Some(Self(0xF5)),
-            "DBE_NOROMAN" => Some(Self(0xF6)),
-            "SHIFT" => Some(Self(0x10)),
-            "CONTROL" => Some(Self(0x11)),
-            "MENU" => Some(Self(0x12)),
-            "CAPITAL" => Some(Self(0x14)),
-            "LSHIFT" => Some(Self(0xA0)),
-            "RSHIFT" => Some(Self(0xA1)),
-            "LCONTROL" => Some(Self(0xA2)),
-            "RCONTROL" => Some(Self(0xA3)),
-            "LMENU" => Some(Self(0xA4)),
-            "RMENU" => Some(Self(0xA5)),
-            "F1" => Some(Self(0x70)),
-            "F2" => Some(Self(0x71)),
-            "F3" => Some(Self(0x72)),
-            "F4" => Some(Self(0x73)),
-            "F5" => Some(Self(0x74)),
-            "F6" => Some(Self(0x75)),
-            "F7" => Some(Self(0x76)),
-            "F8" => Some(Self(0x77)),
-            "F9" => Some(Self(0x78)),
-            "F10" => Some(Self(0x79)),
-            "F11" => Some(Self(0x7A)),
-            "F12" => Some(Self(0x7B)),
-            "F13" => Some(Self(0x7C)),
-            "F14" => Some(Self(0x7D)),
-            "F15" => Some(Self(0x7E)),
-            "F16" => Some(Self(0x7F)),
-            "F17" => Some(Self(0x80)),
-            "F18" => Some(Self(0x81)),
-            "F19" => Some(Self(0x82)),
-            "F20" => Some(Self(0x83)),
-            "F21" => Some(Self(0x84)),
-            "F22" => Some(Self(0x85)),
-            "F23" => Some(Self(0x86)),
-            "F24" => Some(Self(0x87)),
-            // 矢印キー（以前は表に無く、`[[keymaps]]` の `to` などに指定できなかった）。
-            "LEFT" => Some(Self(0x25)),
-            "UP" => Some(Self(0x26)),
-            "RIGHT" => Some(Self(0x27)),
-            "DOWN" => Some(Self(0x28)),
-            "HOME" => Some(Self(0x24)),
-            "END" => Some(Self(0x23)),
-            "PRIOR" => Some(Self(0x21)),
-            "NEXT" => Some(Self(0x22)),
-            "INSERT" => Some(Self(0x2D)),
-            "SNAPSHOT" => Some(Self(0x2C)),
-            _ => None,
-        }
+        let canonical = awase::key_text::canonical_key_text(name);
+        KEY_TABLE
+            .iter()
+            .find(|e| e.matches(&canonical))
+            .map(|e| Self(e.vk))
     }
 }
 
@@ -1505,10 +1526,6 @@ mod tests {
         assert!(VkCode::from_name("Right Alt").is_none());
     }
 
-    /// ADR-201 未決事項8: 書き直し前の `from_name` が受理していた全ての名前が、
-    /// 正規化した表でも同じ VK に解決される(表のキーの正規化漏れがあると、その名前だけ
-    /// 受理されなくなる)。あわせて、各名前を小文字・`VK_` 無しに変えても同じ VK になる
-    /// (別の VK と衝突しない)。
     /// 矢印キー（`VK_LEFT`/`UP`/`RIGHT`/`DOWN`）は表に無かった。`VK_` 付き・無し・大文字小文字を問わず
     /// 解決でき、`parse_key_combo` でも使えること（`[[keymaps]]` の `to`・`from`、ホットキー等）。
     #[test]
@@ -1532,142 +1549,85 @@ mod tests {
         assert_eq!(VkCode::from_name("Left Alt"), None);
     }
 
+    /// 表の全ての名前が、`VK_` 付き・小文字・`VK_` 無しのどれでも同じ VK に解決される
+    /// (ADR-201 未決事項8。正規化の書き方を誤ると、特定の名前だけ受理されなくなる)。
+    /// 期待値は表自身から取るので、検査するのは `canonical_key_text` と `KeyEntry::matches` の
+    /// 組み合わせだけ。表の値は `vk_keys!` の windows crate 照合が、名前の削除は
+    /// `promised_names_are_still_accepted` が受け持つ(旧 `LEGACY` の撤去、2026-10-02)。
     #[test]
-    fn from_name_resolves_every_legacy_name_to_the_same_vk() {
-        const LEGACY: &[(&str, u16)] = &[
-            ("VK_A", 0x41),
-            ("VK_B", 0x42),
-            ("VK_C", 0x43),
-            ("VK_D", 0x44),
-            ("VK_E", 0x45),
-            ("VK_F", 0x46),
-            ("VK_G", 0x47),
-            ("VK_H", 0x48),
-            ("VK_I", 0x49),
-            ("VK_J", 0x4A),
-            ("VK_K", 0x4B),
-            ("VK_L", 0x4C),
-            ("VK_M", 0x4D),
-            ("VK_N", 0x4E),
-            ("VK_O", 0x4F),
-            ("VK_P", 0x50),
-            ("VK_Q", 0x51),
-            ("VK_R", 0x52),
-            ("VK_S", 0x53),
-            ("VK_T", 0x54),
-            ("VK_U", 0x55),
-            ("VK_V", 0x56),
-            ("VK_W", 0x57),
-            ("VK_X", 0x58),
-            ("VK_Y", 0x59),
-            ("VK_Z", 0x5A),
-            ("VK_0", 0x30),
-            ("VK_1", 0x31),
-            ("VK_2", 0x32),
-            ("VK_3", 0x33),
-            ("VK_4", 0x34),
-            ("VK_5", 0x35),
-            ("VK_6", 0x36),
-            ("VK_7", 0x37),
-            ("VK_8", 0x38),
-            ("VK_9", 0x39),
-            ("VK_OEM_PLUS", 0xBB),
-            ("VK_OEM_COMMA", 0xBC),
-            ("VK_OEM_MINUS", 0xBD),
-            ("VK_OEM_PERIOD", 0xBE),
-            ("VK_OEM_2", 0xBF),
-            ("VK_OEM_1", 0xBA),
-            ("VK_OEM_3", 0xC0),
-            ("VK_OEM_4", 0xDB),
-            ("VK_OEM_5", 0xDC),
-            ("VK_OEM_6", 0xDD),
-            ("VK_OEM_7", 0xDE),
-            ("VK_OEM_102", 0xE2),
-            ("VK_SPACE", 0x20),
-            ("VK_RETURN", 0x0D),
-            ("VK_TAB", 0x09),
-            ("VK_BACK", 0x08),
-            ("VK_ESCAPE", 0x1B),
-            ("VK_DELETE", 0x2E),
-            ("VK_CONVERT", 0x1C),
-            ("Convert", 0x1C),
-            ("変換", 0x1C),
-            ("VK_NONCONVERT", 0x1D),
-            ("VK_MUHENKAN", 0x1D),
-            ("Nonconvert", 0x1D),
-            ("無変換", 0x1D),
-            ("VK_KANA", 0x15),
-            ("Kana", 0x15),
-            ("かな", 0x15),
-            ("カナ", 0x15),
-            ("VK_KANJI", 0x19),
-            ("Kanji", 0x19),
-            ("漢字", 0x19),
-            ("VK_IME_ON", 0x16),
-            ("ImeOn", 0x16),
-            ("IMEオン", 0x16),
-            ("VK_IME_OFF", 0x1A),
-            ("ImeOff", 0x1A),
-            ("IMEオフ", 0x1A),
-            ("VK_DBE_ALPHANUMERIC", 0xF0),
-            ("VK_DBE_KATAKANA", 0xF1),
-            ("VK_DBE_HIRAGANA", 0xF2),
-            ("VK_DBE_SBCSCHAR", 0xF3),
-            ("VK_OEM_AUTO", 0xF3),
-            ("VK_DBE_DBCSCHAR", 0xF4),
-            ("VK_OEM_ENLW", 0xF4),
-            ("VK_DBE_ROMAN", 0xF5),
-            ("VK_DBE_NOROMAN", 0xF6),
-            ("VK_SHIFT", 0x10),
-            ("VK_CONTROL", 0x11),
-            ("VK_MENU", 0x12),
-            ("VK_CAPITAL", 0x14),
-            ("VK_LSHIFT", 0xA0),
-            ("VK_RSHIFT", 0xA1),
-            ("VK_LCONTROL", 0xA2),
-            ("VK_RCONTROL", 0xA3),
-            ("VK_LMENU", 0xA4),
-            ("VK_RMENU", 0xA5),
-            ("VK_F1", 0x70),
-            ("VK_F2", 0x71),
-            ("VK_F3", 0x72),
-            ("VK_F4", 0x73),
-            ("VK_F5", 0x74),
-            ("VK_F6", 0x75),
-            ("VK_F7", 0x76),
-            ("VK_F8", 0x77),
-            ("VK_F9", 0x78),
-            ("VK_F10", 0x79),
-            ("VK_F11", 0x7A),
-            ("VK_F12", 0x7B),
-            ("VK_F13", 0x7C),
-            ("VK_F14", 0x7D),
-            ("VK_F15", 0x7E),
-            ("VK_F16", 0x7F),
-            ("VK_F17", 0x80),
-            ("VK_F18", 0x81),
-            ("VK_F19", 0x82),
-            ("VK_F20", 0x83),
-            ("VK_F21", 0x84),
-            ("VK_F22", 0x85),
-            ("VK_F23", 0x86),
-            ("VK_F24", 0x87),
-            ("VK_HOME", 0x24),
-            ("VK_END", 0x23),
-            ("VK_PRIOR", 0x21),
-            ("VK_NEXT", 0x22),
-            ("VK_INSERT", 0x2D),
-            ("VK_SNAPSHOT", 0x2C),
-        ];
-        assert_eq!(LEGACY.len(), 123);
-        for &(name, vk) in LEGACY {
-            assert_eq!(VkCode::from_name(name), Some(VkCode(vk)), "{name}");
-            let lower = name.to_ascii_lowercase();
-            assert_eq!(VkCode::from_name(&lower), Some(VkCode(vk)), "{lower}");
-            if let Some(bare) = name.strip_prefix("VK_") {
-                assert_eq!(VkCode::from_name(bare), Some(VkCode(vk)), "{bare}");
+    fn key_table_names_resolve_in_every_spelling() {
+        for e in super::KEY_TABLE {
+            let bare = e.ident.strip_prefix("VK_").unwrap();
+            for name in std::iter::once(bare).chain(e.aliases.iter().copied()) {
+                for spelled in [
+                    name.to_string(),
+                    format!("VK_{name}"),
+                    name.to_ascii_lowercase(),
+                    format!("vk_{}", name.to_ascii_lowercase()),
+                    format!("  {name} "),
+                ] {
+                    assert_eq!(
+                        VkCode::from_name(&spelled),
+                        Some(VkCode(e.vk)),
+                        "{spelled:?} ({})",
+                        e.ident
+                    );
+                }
             }
         }
+    }
+
+    /// 受理を約束した名前(ADR-201 が残す別名を含む)の一覧。16 進を含まない文字列だけの
+    /// 凍結リストで、表から行や別名を**消したとき**に落ちる(旧 `LEGACY` が兼ねていた役目。
+    /// 値の検査は `vk_keys!` の windows crate 照合が受け持つ)。名前を足したときは
+    /// ここに足さなくてよいが、**消す**ときは意図した受理の取り下げか確認すること。
+    #[test]
+    fn promised_names_are_still_accepted() {
+        const NAMES: &str = "\
+            A B C D E F G H I J K L M N O P Q R S T U V W X Y Z 0 1 2 3 4 5 6 7 8 9 \
+            OEM_PLUS OEM_COMMA OEM_MINUS OEM_PERIOD OEM_1 OEM_2 OEM_3 OEM_4 OEM_5 OEM_6 OEM_7 OEM_102 \
+            SPACE RETURN ENTER TAB BACK BACKSPACE ESCAPE ESC DELETE CONVERT 変換 NONCONVERT MUHENKAN 無変換 \
+            KANA かな カナ KANJI 漢字 IME_ON IMEON IMEオン IME_OFF IMEOFF IMEオフ \
+            DBE_ALPHANUMERIC DBE_KATAKANA DBE_HIRAGANA DBE_SBCSCHAR OEM_AUTO DBE_DBCSCHAR OEM_ENLW \
+            DBE_ROMAN DBE_NOROMAN SHIFT CONTROL MENU CAPITAL LSHIFT RSHIFT LCONTROL RCONTROL LMENU RMENU \
+            F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11 F12 F13 F14 F15 F16 F17 F18 F19 F20 F21 F22 F23 F24 \
+            LEFT UP RIGHT DOWN HOME END PRIOR NEXT INSERT SNAPSHOT";
+        let names: Vec<&str> = NAMES.split_whitespace().collect();
+        assert_eq!(names.len(), 126, "名前の数");
+        for name in names {
+            assert!(VkCode::from_name(name).is_some(), "{name}");
+            assert!(
+                VkCode::from_name(&format!("VK_{name}")).is_some(),
+                "VK_{name}"
+            );
+        }
+    }
+
+    /// `vk_keys!` の表の整合性。match と違い、重複した名前はコンパイルでは検出されないので
+    /// ここで見る。(1) 正規名と別名が表全体で一意、(2) 正規名・別名が `canonical_key_text` の
+    /// 出力と同じ形(`"Esc"` や `"VK_ESC"` と書くと永久に一致しない)、(3) VK 値が一意
+    /// (別名は同じ項目に書く)。
+    #[test]
+    fn key_table_names_are_unique_and_canonical() {
+        let mut seen = std::collections::HashMap::new();
+        let mut vks = std::collections::HashSet::new();
+        for e in super::KEY_TABLE {
+            let canonical = e.ident.strip_prefix("VK_").expect("識別子は VK_ で始まる");
+            assert!(vks.insert(e.vk), "VK 値が重複: {} ({:#04X})", e.ident, e.vk);
+            for name in std::iter::once(canonical).chain(e.aliases.iter().copied()) {
+                assert_eq!(
+                    awase::key_text::canonical_key_text(name),
+                    name,
+                    "{}: 名前 {name:?} が canonical_key_text の出力と違う",
+                    e.ident
+                );
+                if let Some(prev) = seen.insert(name, e.ident) {
+                    panic!("名前 {name:?} が {prev} と {} の両方にある", e.ident);
+                }
+            }
+        }
+        // 表が空振りしていないこと(A-Z 26 + 0-9 10 + F1-F24 24 + その他)。
+        assert!(super::KEY_TABLE.len() > 100, "{}", super::KEY_TABLE.len());
     }
 
     /// ADR-201 R3-4(見逃し防止の向き): コアの検証が意味を問うキー(かな、F15〜F24、
@@ -1693,7 +1653,7 @@ mod tests {
             (0x86, "F23"),
             (0x87, "F24"),
         ];
-        // 旧表の名前 + 大小文字・`VK_` の違いを足した候補全部を総当たりする。
+        // 表の名前 + 大小文字・`VK_` の違いを足した候補全部を総当たりする。
         let names = LEGACY_AND_NEUTRAL_NAMES;
         for &(vk, group) in groups {
             let mut found = 0;
