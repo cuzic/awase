@@ -716,7 +716,6 @@ fn key_input_identity(entry: &JournalEntry) -> crate::journal_policy::KeyInputId
     }
 }
 
-/// `Option<MechanismCommand>` の判別子名（`None` は文字列 `"None"`）。
 /// tracing 用の判別子文字列（variant 名）。`strum::IntoStaticStr` の derive が生成する
 /// `From<T>`/`From<&T>` 経由で取るため、variant 追加時の対応表の更新漏れが起きない。
 /// 値は journal の JSON シリアライズ（serde、variant 名そのまま）と表記が揃う。
@@ -724,6 +723,7 @@ fn variant_name<T: Into<&'static str>>(value: T) -> &'static str {
     value.into()
 }
 
+/// `Option<MechanismCommand>` の判別子名（`None` は文字列 `"None"`）。
 fn mechanism_command_str(
     command: Option<crate::state::ime_actuation_decision::MechanismCommand>,
 ) -> &'static str {
