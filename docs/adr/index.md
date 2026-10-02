@@ -223,6 +223,9 @@
 | [214](214-split-sent-from-confirmed-and-declare-skip-eligibility-per-path.md) | IME への書き込みの「送った」と「観測で確認した」を型で分け、送信を省略してよい根拠を経路ごとに宣言する | 保留(2026-10-02。決定0の経路確認と P1 の特性テストまで。実機の実害が未確認のため実装せず、再開条件は ADR 本文) |
 | [215](215-derive-variant-name-and-display-tables.md) | variant 名・Display の手書き対応表を strum/thiserror の derive に置き換える(ADR-139 決定4の一部を上書き) | 提案(Opusレビュー round1 で採用可)。実装済み・未マージ |
 | [216](216-remove-diagnostic-only-open-belief-and-unread-apply-arguments.md) | 診断ログ専用の OpenBelief と、読まれない applied の時刻・常に None の引数を撤去する | R1〜R4 実装済み(CI 確認待ち) |
+| [218](218-declarative-rule-table-for-architecture-guard-count-pins.md) | architecture_guard.rs の「出現数固定」型ガードを宣言テーブル + 汎用チェッカーにする | 提案(Opus レビュー待ち) |
+| [219](219-key-sequence-scenario-dsl-for-engine-tests.md) | エンジンの同時打鍵テストを時刻つきキー列のテキスト形式で書けるようにする | 提案(Opus レビュー待ち) |
+| [220](220-single-source-key-name-table.md) | キー名の対応表を 1 つの宣言に集める | 提案(Opus レビュー待ち) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような
