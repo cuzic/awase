@@ -684,6 +684,17 @@ pub const fn kanji_role_plan(is_gji: bool, ctrl: bool, shift: bool, win: bool) -
     }
 }
 
+/// 0x19 を受動（`shadow_action=None`、物理は素通し）にするか（ADR-208 L2 M-1、所有者決定）。
+///
+/// IME が TIP で未同定
+/// （`table_ime_kind()==None`: 英語 IME・IME 無しの窓・起動直後）かつ `is_japanese_ime` が偽なら、0x19 は IME の開閉キーではなく
+/// （US 配列の Alt+` 等）、静的 Toggle のままだと昇格しないのに Suppress して IME にも awase にも届かない二重の空振りになる。
+/// `is_japanese_ime` が真（ATOK 等の未同定の日本語 IME）・同定済みは従来どおり（静的 Toggle／GJI は役割）。
+#[must_use]
+pub const fn kanji_passive_when_unidentified(ime_identified: bool, is_japanese_ime: bool) -> bool {
+    !ime_identified && !is_japanese_ime
+}
+
 /// F13〜F24 のラッチを、`kp_stage_shadow_ime_toggle` の結果で確定する純関数（ADR-199 決定18(i)）。
 ///
 /// - 最初の Down（非injected・`!was_down`、`fresh_first_down`）: `(scan, 実際に書いたか→Some(Toggle)/None)` で上書き。
@@ -1774,6 +1785,15 @@ mod tests {
         assert_eq!(kanji_role_plan(true, true, false, false), Passive);
         assert_eq!(kanji_role_plan(true, false, true, false), Passive);
         assert_eq!(kanji_role_plan(true, false, false, true), Passive);
+    }
+
+    /// ADR-208 L2 M-1: 未同定かつ `is_japanese_ime` 偽のときだけ 0x19 は受動。
+    #[test]
+    fn kanji_passive_only_when_unidentified_and_not_japanese() {
+        assert!(kanji_passive_when_unidentified(false, false));
+        assert!(!kanji_passive_when_unidentified(false, true));
+        assert!(!kanji_passive_when_unidentified(true, false));
+        assert!(!kanji_passive_when_unidentified(true, true));
     }
 
     /// 役割を引かずに受動と決める条件（ADR-199 決定18、PR #328 Opus レビュー: 同期キーに F キーを書いた場合）。

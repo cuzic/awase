@@ -956,16 +956,19 @@ impl Runtime {
         // /code-review指摘: 直後の`current`と同じ`effective_open()`を2回
         // 呼んでいた（間に belief を書き換える処理は無い）ため、1回にまとめる。
         let current = self.platform_state.ime.effective_open();
-        // 同期キー (config sync_direction) > 物理 KANJI (Japanese 限定、GJI/
-        // MS-IME自動検出由来のshadow_action) の順で意図を採用する。
+        // 同期キー (config sync_direction) > 物理 KANJI 等 (GJI/MS-IME 自動検出由来のshadow_action、
+        // 非リピートなら `is_japanese_ime` は問わない。0x19 は TIP 同定済みのときだけ) の順で意図を採用する。
         // 無変換/変換単独タップの開閉（bare `keys.ime_*`／IME 設定由来の役割）はここを通らず、
         // エンジンの特殊キー照合・FSM の単独タップ解決が担う（ADR-206）。
         // 昇格する意図の選択（同期キー > 0x16/0x1A > 日本語 IME のときの shadow_action）は、ADR-208 L0 で
         // `state/explicit_press.rs::select_shadow_intent`（ungated）へ挙動を変えずに切り出した
         // （`explicit_press_delivery_with` の全列挙テストが同じ判断を Linux で呼ぶため）。
+        // L2（ADR-208 D2）: 非リピートの押下は `is_japanese_ime` が偽でも昇格する（0x19 等が固着しないように）。
         let intent_kind = crate::state::explicit_press::select_shadow_intent(
             event,
             self.platform_state.ime.belief.is_japanese_ime(),
+            // 0x19 は TIP 同定済み（GJI、または CLSID で同定できた MS-IME 本体）のときだけ昇格する（ADR-208 D2）。
+            crate::tsf::observer::tsf_obs().table_ime_kind().is_some(),
         );
         let Some((action, kind)) = intent_kind else {
             return false;

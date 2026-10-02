@@ -1,8 +1,8 @@
 #![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 //! ADR-208 L0: 明示キー押下の配送 `explicit_press_delivery_with` の全列挙テストと、現状の反例の golden。
 //!
-//! 状態空間（belief 2 × applied 5 × is_japanese 2 × profile 7 × kind 2 × current_focus 2 × 観測 3 × IntentStore 3 ×
-//! candidate_was_seen 2 × chord 2 × win 2 × was_down 2 = 80,640 状態）× キー 12 種 = 829,440 通りの押下を全列挙し
+//! 状態空間（belief 2 × applied 5 × is_japanese 2 × profile 7 × (kind, TIP 同定) 3 × current_focus 2 × 観測 3 × IntentStore 3 ×
+//! candidate_was_seen 2 × chord 2 × win 2 × was_down 2 = 120,960 状態）× キー 12 種 = 1,451,520 通りの押下を全列挙し
 //! （実 IME の初期値 R∈{false,true} も掛けると約 166 万通り）、次の性質を検査する。
 //!
 //! - **P1 (INV-L1)**: 対象押下（非リピート・Win 押下中を除く）の `Delivery` が、配送か書き込みの**ちょうど一方**
@@ -50,7 +50,7 @@ use awase_windows::state::ime_event::{
 use awase_windows::state::ime_kind::ImeKindId;
 use awase_windows::state::intent_store::IntentStore;
 use awase_windows::state::observation_store::ObservationStore;
-use awase_windows::state::open_warrant::{issue_open_warrant, WarrantContext};
+use awase_windows::state::open_warrant::{issue_open_warrant, issue_press_warrant, WarrantContext};
 use awase_windows::state::TickMs;
 
 const TARGET: HwndId = HwndId(0x1234);
@@ -58,7 +58,7 @@ const TARGET: HwndId = HwndId(0x1234);
 /// 合成ストアに対して本物の `issue_open_warrant` を呼ぶ判定器（結果は引数の組でメモ化する）。
 #[derive(Default)]
 struct StoreJudge {
-    memo: RefCell<HashMap<(bool, bool, bool, u8, bool, Option<bool>, Option<bool>), bool>>,
+    memo: RefCell<HashMap<(bool, bool, bool, u8, bool, Option<bool>, Option<bool>, bool), bool>>,
 }
 
 fn policy_index(p: ImePolicyProfile) -> u8 {
@@ -81,6 +81,7 @@ impl WarrantJudge for StoreJudge {
             req.desired_open,
             req.intent,
             req.actuating_obs,
+            req.explicit_press,
         );
         if let Some(v) = self.memo.borrow().get(&key) {
             return *v;
@@ -120,7 +121,13 @@ impl WarrantJudge for StoreJudge {
         } else {
             HwndId::NULL
         };
-        let v = issue_open_warrant(req.requested, target, &ctx).is_some();
+        // 本番は `ActuationOrder::issue`（両方を評価）→ `with_press(Some)` で押下の授権へ差し替える（ADR-208 L2）。
+        let v = if req.explicit_press {
+            issue_press_warrant(req.requested, target, &ctx)
+        } else {
+            issue_open_warrant(req.requested, target, &ctx)
+        }
+        .is_some();
         self.memo.borrow_mut().insert(key, v);
         v
     }
@@ -131,6 +138,11 @@ const PROD: DeliveryMode = DeliveryMode::PressId;
 
 fn delivery(judge: &StoreJudge, s: &PressState, key: ExplicitKey) -> Delivery {
     explicit_press_delivery_with(s, key, judge, PROD)
+}
+
+/// L1 まで（ADR-208 L2 前）の判断。`P1-PreL2` で L2 の効果を件数で比べるためだけに使う。
+fn delivery_pre_l2(judge: &StoreJudge, s: &PressState, key: ExplicitKey) -> Delivery {
+    explicit_press_delivery_with(s, key, judge, DeliveryMode::PressIdBeforeL2)
 }
 
 /// L1 前（ADR-208 L0 の現状）の判断。`P1-PreL1` で件数を比べるためだけに使う。
@@ -148,7 +160,7 @@ const CLASSES: &[(&str, &str)] = &[
     ),
     (
         "S2_not_japanese",
-        "S-2: is_japanese_ime=false。授権が下りない（Engine のコンボ・0x16/0x1A）／漢字(0x19)・F13 が昇格せず握る・配送だけになる",
+        "S-2: is_japanese_ime=false。授権が下りない（Engine のコンボ・0x16/0x1A）／漢字(0x19)・F13 が昇格せず握る・配送だけになる。L2 で解消（押下の授権と非リピートの昇格が is_japanese_ime を問わない）",
     ),
     (
         "S3_shadow_noop_suppressed",
@@ -156,7 +168,7 @@ const CLASSES: &[(&str, &str)] = &[
     ),
     (
         "S4_focus_none_unwarranted",
-        "S-4: current_focus=None で授権が下りない（意図の記録が no-op で Step 1 が外れ、鮮度内の観測が無いか向きが逆）",
+        "S-4: current_focus=None で授権が下りない（意図の記録が no-op で Step 1 が外れ、鮮度内の観測が無いか向きが逆）。L2 で解消（押下の授権は押下の意図そのもの、ExplicitPress）",
     ),
     (
         "L9_chord_filtered_unwarranted",
@@ -177,9 +189,15 @@ const CLASSES: &[(&str, &str)] = &[
     ("unclassified", "未分類（あってはならない）"),
 ];
 
+/// 0x19 が IME の開閉キーではない状態（TIP 未同定かつ `is_japanese_ime=false`、ADR-208 L2 M-1）。受動（`shadow_action=None`）で
+/// 物理は素通しなので、awase が決めることは無く P1〜P4 の対象外（英語 IME・IME 無しの窓・US 配列の Alt+` を飲み込まない）。
+fn kanji_is_not_an_ime_key(s: &PressState, key: ExplicitKey) -> bool {
+    key == ExplicitKey::Kanji && !s.is_japanese_ime && !s.ime_identified
+}
+
 /// 対象押下の P1 を破るクラス。破らなければ `None`。対象外（リピート・Win 押下・物理のみで意図を持たないキー）も `None`。
 fn p1_class(s: &PressState, key: ExplicitKey, d: &Delivery) -> Option<&'static str> {
-    if s.win_held || s.was_down || !key.is_target_press_key() {
+    if s.win_held || s.was_down || !key.is_target_press_key() || kanji_is_not_an_ime_key(s, key) {
         return None;
     }
     let eff_jp = state_after_press(s, key, d).is_japanese_ime;
@@ -189,10 +207,12 @@ fn p1_class(s: &PressState, key: ExplicitKey, d: &Delivery) -> Option<&'static s
         Ok(Resolution::PassThrough) if key.a1_holds() || s.profile == PressProfile::InputRelay => {
             None
         }
-        Ok(Resolution::PassThrough) => Some(if !eff_jp {
-            "S2_not_japanese"
-        } else if d.reason == ElisionReason::ShadowNoop {
+        // no-op（belief が既に向きと一致）を A1 の無いキーで配送するのは `is_japanese_ime` を問わない別の穴（L2 で、
+        // `is_japanese_ime` が偽の no-op を S-2 と誤分類していたのを直した）。
+        Ok(Resolution::PassThrough) => Some(if d.reason == ElisionReason::ShadowNoop {
             "A1_noop_pass_through"
+        } else if !eff_jp {
+            "S2_not_japanese"
         } else {
             "unclassified"
         }),
@@ -247,6 +267,7 @@ fn complexity(s: &PressState) -> u32 {
         + u32::from(!s.is_japanese_ime)
         + u32::from(s.profile != PressProfile::ImmCross)
         + u32::from(s.ime_kind != ImeKindId::Gji)
+        + u32::from(!s.ime_identified)
         + u32::from(!s.current_focus_known)
         + u32::from(s.actuating_obs.is_some())
         + u32::from(s.intent.is_some())
@@ -316,6 +337,10 @@ struct Report {
     p1: PropStat,
     /// 参考: L1 前（押下 ID なし）の P1。S-1 が L1 で 0 になったことを件数で残す。
     p1_pre_l1: PropStat,
+    /// P1 の S-1 のプロファイル別件数（TSF 系だけであることを golden に固定する）。
+    s1_by_profile: BTreeMap<String, u64>,
+    /// 参考: L2 前（L1 まで）の P1。S-2・S-4 が L2 で 0 になったことを件数で残す。
+    p1_pre_l2: PropStat,
     p1_fixed_point: PropStat,
     p2: PropStat,
     p3: PropStat,
@@ -338,6 +363,8 @@ fn analyze() -> Report {
     let mut rep = Report {
         p1: PropStat::default(),
         p1_pre_l1: PropStat::default(),
+        s1_by_profile: BTreeMap::new(),
+        p1_pre_l2: PropStat::default(),
         p1_fixed_point: PropStat::default(),
         p2: PropStat::default(),
         p3: PropStat::default(),
@@ -361,6 +388,11 @@ fn analyze() -> Report {
             // P1（現状）と、D4 固定点適用後の P1（参考）
             rep.p1.checked += 1;
             if let Some(class) = p1_class(&s, key, &d1) {
+                if class == "S1_already_matched" {
+                    *rep.s1_by_profile
+                        .entry(format!("{:?}/{:?}", s.profile, s.ime_kind))
+                        .or_default() += 1;
+                }
                 rep.p1.add(class, &s, || {
                     format!("{} -> {}", fmt_state(&s, key, None), fmt_delivery(&d1))
                 });
@@ -370,6 +402,13 @@ fn analyze() -> Report {
             if let Some(class) = p1_class(&s, key, &dpre) {
                 rep.p1_pre_l1.add(class, &s, || {
                     format!("{} -> {}", fmt_state(&s, key, None), fmt_delivery(&dpre))
+                });
+            }
+            let dpre2 = delivery_pre_l2(&judge, &s, key);
+            rep.p1_pre_l2.checked += 1;
+            if let Some(class) = p1_class(&s, key, &dpre2) {
+                rep.p1_pre_l2.add(class, &s, || {
+                    format!("{} -> {}", fmt_state(&s, key, None), fmt_delivery(&dpre2))
                 });
             }
             let dfp =
@@ -411,7 +450,11 @@ fn analyze() -> Report {
             }
 
             // 収束・不動点の検査は対象押下（非リピート・Win なし）だけ。
-            if s.was_down || s.win_held || !key.is_target_press_key() {
+            if s.was_down
+                || s.win_held
+                || !key.is_target_press_key()
+                || kanji_is_not_an_ime_key(&s, key)
+            {
                 continue;
             }
             let class_of =
@@ -527,16 +570,16 @@ fn analyze() -> Report {
 fn render(rep: &Report) -> String {
     let mut out = String::new();
     out.push_str(
-        "# 明示キー押下の配送 現状の反例 golden (ADR-208 L1 時点)\n\
+        "# 明示キー押下の配送 現状の反例 golden (ADR-208 L2 時点)\n\
          #\n\
          # 生成元: crates/awase-windows/tests/explicit_press_exhaustive.rs\n\
          # このファイルは自動生成される。更新は UPDATE_GOLDEN=1 で再生成すること。\n\
          #\n\
-         # 状態空間(belief 2 × applied 5 × is_japanese 2 × profile 7 × kind 2 × current_focus 2 × 観測 3 ×\n\
-         # IntentStore 3 × candidate_was_seen 2 × chord 2 × win 2 × was_down 2) × キー 12 種を全列挙した、現状(ADR-208 L1)の本番判断の合成結果。\n\
+         # 状態空間(belief 2 × applied 5 × is_japanese 2 × profile 7 × (kind, TIP 同定) 3 × current_focus 2 × 観測 3 ×\n\
+         # IntentStore 3 × candidate_was_seen 2 × chord 2 × win 2 × was_down 2) × キー 12 種を全列挙した、現状(ADR-208 L2)の本番判断の合成結果。\n\
          # 反例は「分類 × 件数 + 各分類の最小の代表例(基準状態からのずれが最小)」で固定する(S-2 だけで状態空間の約半分が\n\
          # 反例なので行は列挙しない)。分類に当てはまらない反例(unclassified)が出たらテストが失敗する。\n\
-         # L1 で S-1 は TsfNative×GJI(BUG-124 の実機 A/B〈ADR-208 L3'〉まで段階制御)を除いて 0 になった(P1-PreL1 が L1 前の件数)。L2〜L3 で穴を直すと該当クラスの件数が 0 に向かう(この差分が進捗)。\n\
+         # L1 で S-1 は TsfNative×GJI(BUG-124 の実機 A/B〈ADR-208 L3'〉まで段階制御)を除いて 0 になった(P1-PreL1 が L1 前の件数)。L2 で S-2(is_japanese_ime=false)と S-4(current_focus=None)は 0 になった(P1-PreL2 が L2 前の件数)。L3 以降で穴を直すと該当クラスの件数が 0 に向かう(この差分が進捗)。\n\
          # 「起こりうる」= Blind プロファイル(Imm32Unavailable/TsfNative)で Actuating 観測が無い組み合わせ。\n\
          # 対象押下 = 非リピート・Win 押下なし・意図を持つキー。P1 の合格は Delivery が配送か書き込みのちょうど一方\n\
          # (Delivery::resolve が Ok)で、配送側なら前提 A1 のキー(0x16/0x1A・0xF0/F2・学習済み 0xF3/0xF4)。\n\
@@ -552,7 +595,7 @@ fn render(rep: &Report) -> String {
         rep.plausible_states,
         ExplicitKey::ALL.len()
     );
-    let props: [(&str, &str, &PropStat); 9] = [
+    let props: [(&str, &str, &PropStat); 10] = [
         (
             "P1",
             "INV-L1: 対象押下の Delivery が配送か書き込みのちょうど一方で、配送側なら A1 のキー",
@@ -562,6 +605,11 @@ fn render(rep: &Report) -> String {
             "P1-PreL1",
             "(参考) L1 前(押下 ID なし、ADR-208 L0 の現状)の P1。S-1 が L1 で解消した差分（TsfNative×GJI を除く）を残す",
             &rep.p1_pre_l1,
+        ),
+        (
+            "P1-PreL2",
+            "(参考) L2 前(L1 まで、押下の授権が is_japanese_ime・current_focus を問う)の P1。S-2・S-4 が L2 で解消した差分を残す",
+            &rep.p1_pre_l2,
         ),
         (
             "P1-FixedPoint",
@@ -601,6 +649,11 @@ fn render(rep: &Report) -> String {
     ];
     for (id, desc, stat) in props {
         let _ = writeln!(out, "## {id}: {desc}");
+        if id == "P1" {
+            for (k, n) in &rep.s1_by_profile {
+                let _ = writeln!(out, "info\ts1_profile/kind\t{k}\t{n}");
+            }
+        }
         if id == "P5-Ledger" {
             let _ = writeln!(
                 out,
@@ -673,6 +726,7 @@ fn exhaustive_properties_and_counterexample_golden() {
     for (name, stat) in [
         ("P1", &rep.p1),
         ("P1-PreL1", &rep.p1_pre_l1),
+        ("P1-PreL2", &rep.p1_pre_l2),
         ("P1-FixedPoint", &rep.p1_fixed_point),
         ("P2", &rep.p2),
         ("P3", &rep.p3),
@@ -775,6 +829,11 @@ fn physical_delivery_matches_the_audit_table() {
             // Engine のコンボ・単独タップは常に Consume。
             if matches!(key, ExplicitKey::EngineOn | ExplicitKey::EngineOff) {
                 assert_eq!(d.physical, Physical::Consume, "{key:?} {s:?}");
+                continue;
+            }
+            // 未同定かつ `is_japanese_ime=false` の 0x19 は受動（ADR-208 L2 M-1）。IME の開閉キーではないので常に素通し。
+            if kanji_is_not_an_ime_key(&s, key) {
+                assert_eq!(d.physical, Physical::Allow, "{key:?} {s:?}");
                 continue;
             }
             // InputRelay は常に Allow（issue #136）。
@@ -887,19 +946,21 @@ fn duplicate_completion_never_confirms_applied() {
 #[test]
 fn sync_route_that_sent_nothing_releases_the_reservation_but_async_does_not() {
     let judge = StoreJudge::default();
-    // 未授権（is_japanese_ime=false の S-2）の shadow 経路: 何も送らない。
+    // Win キー押下中（`UnsafeToToggle`。L2 で押下の授権は常に下りるので、同期で何も送らない代表は Win 押下）の
+    // shadow 経路: 何も送らない。
     let base = PressState {
         belief_open: false,
         applied: AppliedKnowledge::Unknown,
         is_japanese_ime: false,
         profile: PressProfile::ImmUnavailable,
         ime_kind: ImeKindId::Gji,
+        ime_identified: true,
         current_focus_known: false,
         actuating_obs: None,
         intent: None,
         candidate_was_seen: false,
         ctrl_chord: false,
-        win_held: false,
+        win_held: true,
         was_down: false,
     };
     for (profile, expect_released) in [
@@ -910,7 +971,7 @@ fn sync_route_that_sent_nothing_releases_the_reservation_but_async_does_not() {
     ] {
         let s = PressState { profile, ..base };
         let d_shadow = delivery(&judge, &s, ExplicitKey::StaticOn);
-        assert_eq!(d_shadow.reason, ElisionReason::Unwarranted, "{profile:?}");
+        assert_eq!(d_shadow.reason, ElisionReason::WinHeld, "{profile:?}");
         assert_eq!(d_shadow.reserved, Some(true), "{profile:?}: 予約はした");
         let claimed = reservation_after_route(&s, &d_shadow);
         assert_eq!(claimed.is_none(), expect_released, "{profile:?}");
@@ -1016,18 +1077,20 @@ fn s1_already_matched_is_resolved_by_l1_except_tsf_native() {
         residual_tsf_native > 0,
         "TsfNative の段階制御が効いていない（L3' 前は S-1 が残る）"
     );
-    let rep = analyze();
-    let pre = rep
-        .p1_pre_l1
-        .classes
-        .get("S1_already_matched")
-        .map_or(0, |c| c.all);
-    let now = rep
-        .p1
-        .classes
-        .get("S1_already_matched")
-        .map_or(0, |c| c.all);
-    assert_eq!(now, residual_tsf_native);
+    // L2 前の S-1 は `is_japanese_ime=true` の状態にしか現れなかった（偽は S-2 の Unwarranted が先に出た）ので、L1 が
+    // S-1 を減らしたかは `is_japanese_ime=true` の状態どうしで比べる（L2 で S-2 から S-1 へ移ってきた分を含めない）。
+    let mut pre = 0u64;
+    let mut now = 0u64;
+    for s in PressState::all().filter(|s| !s.was_down && !s.win_held && s.is_japanese_ime) {
+        for key in [ExplicitKey::EngineOn, ExplicitKey::EngineOff] {
+            if p1_class(&s, key, &delivery_pre_l1(&judge, &s, key)) == Some("S1_already_matched") {
+                pre += 1;
+            }
+            if p1_class(&s, key, &delivery(&judge, &s, key)) == Some("S1_already_matched") {
+                now += 1;
+            }
+        }
+    }
     assert!(now < pre, "L1 が S-1 を減らしていない: pre={pre} now={now}");
 }
 
@@ -1046,7 +1109,7 @@ fn p6_repeat_never_rewrites_gji_direct() {
     assert!(rep.p6.checked > 0);
 }
 
-/// L1 が L0 から変えるのは、押下 ID を持つ押下（非リピート）の Engine 経路の already-matched 省略（S-1。TsfNative を除く）だけ。
+/// L1 が L0 から変えるのは（L2 前の判断どうしの比較）、押下 ID を持つ押下（非リピート）の Engine 経路の already-matched 省略（S-1。TsfNative を除く）だけ。
 /// shadow 経路は押下 ID あり（非リピート）なら L0 と同じ（従来から無条件に降格していた）、Engine 経路はリピート（`press=None`）
 /// なら L0 と同じ（`applied` の省略のまま）。
 #[test]
@@ -1055,7 +1118,7 @@ fn l1_changes_only_the_press_engine_already_matched_elision() {
     for s in PressState::all() {
         for key in ExplicitKey::ALL {
             let pre = delivery_pre_l1(&judge, &s, key);
-            let l1 = delivery(&judge, &s, key);
+            let l1 = delivery_pre_l2(&judge, &s, key);
             // `reserved`（予約の記録）は L1 で増えた帳簿で、書く/書かないの判断ではない。
             let l1 = Delivery {
                 reserved: None,
@@ -1105,6 +1168,7 @@ fn shadow_never_overrides_an_earlier_engine_reservation() {
         is_japanese_ime: true,
         profile: PressProfile::ImmCross,
         ime_kind: ImeKindId::Gji,
+        ime_identified: true,
         current_focus_known: true,
         actuating_obs: None,
         intent: None,
@@ -1126,4 +1190,96 @@ fn shadow_never_overrides_an_earlier_engine_reservation() {
     };
     let d = explicit_press_delivery_after(&rep, ExplicitKey::StaticOn, &judge, PROD, Some(true));
     assert_ne!(d.reason, ElisionReason::AlreadyWrittenThisPress);
+}
+
+/// L2（ADR-208 決定2 D2・D3）が L1 から変えるのは、押下 ID を持つ押下（非リピート）の授権（`is_japanese_ime`・`current_focus` を
+/// 問わない）と、shadow 昇格の `is_japanese_ime` 条件の撤去（0x19・0xF3/F4・F13）だけ。リピート（`press=None`）は L1 と同じ。
+/// 押下の order は（真の安全弁を除き、全列挙のモデルには無い）`Unwarranted` で止まらない。
+#[test]
+fn l2_changes_only_the_press_warrant_and_the_shadow_promotion() {
+    let judge = StoreJudge::default();
+    let mut changed = 0u64;
+    for s in PressState::all() {
+        for key in ExplicitKey::ALL {
+            let l1 = delivery_pre_l2(&judge, &s, key);
+            let l2 = delivery(&judge, &s, key);
+            if s.was_down {
+                // 変わるのは未同定かつ `is_japanese_ime=false` の 0x19 の物理（受動 → 素通し、M-1）だけ。
+                if kanji_is_not_an_ime_key(&s, key) {
+                    assert_eq!(l2.physical, Physical::Allow);
+                    assert_eq!((l1.write, l1.reason), (l2.write, l2.reason));
+                } else {
+                    assert_eq!(l1, l2, "{} リピートは L1 と同じ", fmt_state(&s, key, None));
+                }
+                continue;
+            }
+            assert_ne!(
+                l2.reason,
+                ElisionReason::Unwarranted,
+                "{} 押下の order は授権される（D2・D3）",
+                fmt_state(&s, key, None)
+            );
+            if l1 != l2 {
+                changed += 1;
+                // 変わるのは「授権されなかった」か「昇格しなかった」押下だけ。
+                assert!(
+                    matches!(
+                        l1.reason,
+                        ElisionReason::Unwarranted | ElisionReason::NotPromoted
+                    ),
+                    "{} -> L1 {:?} / L2 {:?}",
+                    fmt_state(&s, key, None),
+                    l1,
+                    l2
+                );
+            }
+        }
+    }
+    assert!(changed > 0);
+}
+
+/// S-2（`is_japanese_ime=false`）と S-4（`current_focus=None`）は L2 で 0 件になる（残る反例は別クラス）。
+#[test]
+fn s2_and_s4_are_resolved_by_l2() {
+    let rep = analyze();
+    for class in ["S2_not_japanese", "S4_focus_none_unwarranted"] {
+        let pre = rep.p1_pre_l2.classes.get(class).map_or(0, |c| c.all);
+        let now = rep.p1.classes.get(class).map_or(0, |c| c.all);
+        assert!(pre > 0, "{class}: L2 前の件数が 0（モデルの更新漏れ）");
+        assert_eq!(
+            now,
+            0,
+            "{class} が L2 で解消していない: {:?}",
+            rep.p1.classes.get(class).and_then(|c| c.example.as_ref())
+        );
+    }
+}
+
+/// 0x19 は TIP 未同定かつ `is_japanese_ime=false` のときだけ受動（昇格せず、物理は素通し。ADR-208 L2 M-1、所有者決定）。
+/// 同定済みなら `is_japanese_ime` の誤判定でも昇格して書く。
+#[test]
+fn kanji_is_promoted_when_identified_and_passed_through_when_unidentified() {
+    let judge = StoreJudge::default();
+    let mut passive = 0u64;
+    for s in PressState::all().filter(|s| !s.was_down && !s.win_held) {
+        let d = delivery(&judge, &s, ExplicitKey::Kanji);
+        let promoted = d.reason != ElisionReason::NotPromoted;
+        assert_eq!(
+            promoted,
+            s.is_japanese_ime || s.ime_identified,
+            "{}",
+            fmt_state(&s, ExplicitKey::Kanji, None)
+        );
+        if kanji_is_not_an_ime_key(&s, ExplicitKey::Kanji) {
+            // 飲み込まない（二重の空振りにならない）: 物理は Down/Up とも素通し（Allow）で awase は何も書かない。
+            assert_eq!(
+                (d.physical, d.write),
+                (Physical::Allow, None),
+                "{}",
+                fmt_state(&s, ExplicitKey::Kanji, None)
+            );
+            passive += 1;
+        }
+    }
+    assert!(passive > 0);
 }

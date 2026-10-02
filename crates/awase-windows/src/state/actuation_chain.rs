@@ -118,7 +118,7 @@ use awase::platform::ImeOpenOutcome;
 use super::event_origin::EventOrigin;
 use super::ime_actuation::{ActuationAction, FeedbackPolicy};
 use super::ime_event::HwndId;
-use super::open_warrant::{issue_open_warrant, OpenWarrant, WarrantContext};
+use super::open_warrant::{issue_open_warrant, issue_press_warrant, OpenWarrant, WarrantContext};
 
 // ── WriteMechanism ────────────────────────────────────────────────────────────
 
@@ -317,6 +317,10 @@ pub struct ActuationOrder {
     open: bool,
     /// `issue_open_warrant()` の結果。`None` = 授権が下りなかった。
     warrant: Option<OpenWarrant>,
+    /// 明示キー押下の order として授権した場合の warrant（ADR-208 決定2 D2・D3、`issue_press_warrant`）。
+    /// 押下 ID は order の発行後に [`Self::with_press`] で載るので、両方を発行時に評価しておき、`Some` が載ったら
+    /// `warrant` を差し替える（`is_japanese_ime`・`current_focus` を問わない授権）。
+    press_warrant: Option<OpenWarrant>,
     /// どの入口が起案したか（ADR-082 `EventOrigin` と journal を揃える）。
     origin: EventOrigin,
     /// この order を起こしたユーザー打鍵（非リピート KeyDown）の押下 ID（ADR-208 決定2 D1）。
@@ -344,6 +348,7 @@ impl ActuationOrder {
         Self {
             open,
             warrant: issue_open_warrant(open, target, ctx),
+            press_warrant: issue_press_warrant(open, target, ctx),
             origin,
             press: None,
         }
@@ -353,6 +358,10 @@ impl ActuationOrder {
     /// 押下 ID の予約（`ImeStateHub::claim_press_write`）は order の**発行前**に済ませること。
     pub fn with_press(mut self, press: Option<awase::types::PressId>) -> Self {
         self.press = press;
+        if press.is_some() {
+            // ADR-208 D2・D3: 押下の order は押下の授権（`is_japanese_ime`・`current_focus` を問わない）に差し替える。
+            self.warrant = self.press_warrant.take();
+        }
         self
     }
 
@@ -681,6 +690,49 @@ mod tests {
         ImeOpenOutcome::UnsafeToToggle,
         ImeOpenOutcome::NotOwned,
     ];
+
+    /// ADR-208 D2・D3: `with_press(Some)` が載ると、`is_japanese_ime` が偽でも授権される（`ExplicitPress`）。`press=None`
+    /// （リピート・drift correction 等）と `with_press(None)` は従来どおり `is_japanese_ime` を問う。
+    #[test]
+    fn with_press_swaps_in_the_explicit_press_warrant() {
+        use crate::state::app_ime_policy::AppImePolicy;
+        use crate::state::event_origin::{EventOrigin, EventSource, Generation};
+        use crate::state::force_guard::ForceGuardSet;
+        use crate::state::ime_event::{HwndId, ImePolicyProfile};
+        use crate::state::intent_store::IntentStore;
+        use crate::state::observation_store::ObservationStore;
+        use crate::state::open_warrant::WarrantContext;
+        use crate::state::TickMs;
+
+        let store = IntentStore::default();
+        let obs = ObservationStore::default();
+        let guards = ForceGuardSet::default();
+        let policy = AppImePolicy::from_profile(ImePolicyProfile::Plain);
+        let ctx = WarrantContext {
+            intent_store: &store,
+            obs: &obs,
+            guards: &guards,
+            policy: &policy,
+            desired_open: false,
+            is_japanese_ime: false,
+            now: std::time::Instant::now(),
+            now_ms: TickMs(0),
+        };
+        let origin = EventOrigin::new(EventSource::Physical, Generation::new(1));
+        let issue = || ActuationOrder::issue(true, HwndId::NULL, &ctx, origin);
+
+        assert!(
+            issue().would_have_blocked(),
+            "press なしは is_japanese_ime=false で未授権"
+        );
+        assert!(issue().with_press(None).would_have_blocked());
+        let order = issue().with_press(Some(awase::types::PressId::new(1)));
+        assert!(
+            !order.would_have_blocked(),
+            "押下の order は授権される（D2・D3）"
+        );
+        assert_eq!(order.press(), Some(awase::types::PressId::new(1)));
+    }
 
     fn warrant(target: bool) -> OpenWarrant {
         OpenWarrant {
