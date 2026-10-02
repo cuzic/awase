@@ -7,7 +7,7 @@ summary: |-
   (2) `LEGACY` を生成にすると凍結オラクルが自己比較になり、表の誤りを検出できなくなる、(3) 行数は純増、(4) この ADR が防ぐ型の同期漏れの実害は確認できない(issue #99 は別の型)、(5) match が持つ重複名のコンパイル時検査が消える、と指摘され取り下げた。
   既存の「手動同期 + 検出テスト」は `core_key_identity_covers_from_name`・`key_acceptance_tests.rs`(300 件超)・gji-config の検査でほぼ全域が揃っている。残る穴は `egui_key_to_internal`(設定 GUI のキャプチャ表)の出力が `from_name` で解決できるか未検査な点だけで、テスト数行で塞ぐ。
 status: |-
-  見送り(2026-10-02)、テスト 1 本の追加のみ提案。Opus round1 で方針転換、round2(Must なし)の Should/Nit を反映。
+  見送り(2026-10-02)、テスト 1 本の追加のみ提案。Opus round3 で収束(Must なし、新規指摘なし)。テストは未実装。
 related_adr:
   - "ADR-019"
   - "ADR-161"
