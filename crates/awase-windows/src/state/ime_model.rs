@@ -3693,4 +3693,69 @@ mod tests {
         let model = ImeModel::new();
         assert!(!model.is_focus_transition_settling(Instant::now()));
     }
+
+    // ── ADR-214 決定0 P1: 打鍵ではない Engine コマンドの `SetOpen`(press=None)と stale な `applied` ──
+
+    /// 特性テスト(現状の挙動を固定する。直すべき挙動の宣言ではない)。
+    ///
+    /// トレイの「状態をリセット」(`force_engine_on`)は、belief が OFF で active になれないとき `SetOpen{true, press: None}`
+    /// を出す(`src/engine/engine.rs::apply_engine_on_with_ime_recovery`)。この `SetOpen` は押下 ID を持たないので、
+    /// executor は `applied` をそのまま view の `shadow_on` に渡す(`explicit_press_applied_pair(.., has_press=false)`)。
+    /// belief は `applied` と無関係に決まる(`resolve_open_at`)ので、「belief は OFF、`applied` は `Confirmed(true)`」は到達できる
+    /// (例: 物理の IME キーが通過して明示意図が OFF になったが、awase は書かなかった)。このとき GjiDirect は already-matched で
+    /// 送信を省く。同じ状態でも押下付き(`press.is_some()`)なら `applied` が未知になり送信される。
+    #[test]
+    fn adr214_p1_press_none_set_open_is_elided_by_stale_applied_in_gji_blind_window() {
+        use crate::focus::class_names::AppImeProfile;
+        use crate::state::actuation_chain::WriteMechanism;
+        use crate::state::ime_actuation_decision::{
+            decide_attempt, explicit_press_applied_pair, DecisionInputs, DecisionSite,
+        };
+        use crate::state::ime_kind::ImeKindId;
+
+        let mut model = ImeModel::new();
+        // awase が以前に ON を書いた(API 成功を `Confirmed` と記録する経路。ADR-214 背景)。
+        model.confirm_applied(true, 100);
+        // その後、物理の IME キーが通過して明示意図が OFF になった(awase は書いていないので `applied` は動かない)。
+        model.reduce(&envelope(
+            1,
+            ImeEvent::UserImeSetIntent {
+                target: false,
+                source: UserIntentSource::PhysicalImeKey,
+            },
+        ));
+        assert!(
+            !model.effective_open_at(Instant::now()),
+            "belief(= Engine の ctx.ime_on)は OFF"
+        );
+        assert_eq!(
+            model.applied_pair().map(|(open, _)| open),
+            Some(true),
+            "applied は Confirmed(true) のまま(belief と無関係)"
+        );
+
+        // `force_engine_on` → ctx.ime_on=false → `SetOpen{open: true, press: None}`。
+        let open = true;
+        let decide = |has_press: bool| {
+            let pair = explicit_press_applied_pair(model.applied_pair(), open, has_press);
+            let inputs = DecisionInputs {
+                profile: AppImeProfile::Imm32Unavailable,
+                kind: ImeKindId::Gji,
+                shadow_on: pair.map(|(v, _)| v),
+                belief_input_mode: InputModeState::Unknown,
+                candidate_was_seen: false,
+            };
+            decide_attempt(inputs, DecisionSite::Sync, WriteMechanism::GjiDirect, open).1
+        };
+
+        assert_eq!(
+            decide(false),
+            None,
+            "press=None: stale な applied=Confirmed(true) で GjiDirect の送信が省かれる(ADR-214 P1)"
+        );
+        assert!(
+            decide(true).is_some(),
+            "押下付きなら applied を未知にして送る(ADR-208 L1。対照)"
+        );
+    }
 }

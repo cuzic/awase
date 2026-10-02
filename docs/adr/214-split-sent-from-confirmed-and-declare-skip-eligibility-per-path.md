@@ -10,7 +10,7 @@ summary: |-
   (C) 経路(窓プロファイルと書き込み機構の組)ごとに、効果を観測で確認できるか(閉ループ/準閉ループ/開ループ)と、省略してよい根拠を1か所で宣言し、開ループの経路は状態の推測を根拠に省略しない、の2つを決める。
   新しい台帳や gate は足さない。ADR-212 により押下以外の書き込みが減っているため、着手の前提条件(決定0)として、省略の根拠に `applied` を使っている押下以外の経路が現在も残っているかを先に測る。
 status: |-
-  提案(2026-10-02 下書き、未レビュー)。決定0(前提条件の確認)は実施済み(「決定 0 の結果」節): 省略の根拠に `applied` を使う押下以外の経路は、トレイ起点の Engine コマンド(P1)に限られ、実害は仮説。TsfNative の Engine 経路(P3)は ADR-208 L3' と同じ変更になるため、決定 1 の適用は L3' と一本化する。Opus レビュー未実施。
+  提案(2026-10-02 下書き、未レビュー)。決定0(前提条件の確認)は実施済み(「決定 0 の結果」節): 省略の根拠に `applied` を使う押下以外の経路は、トレイ起点の Engine コマンド(P1)に限られ、決定の層では省略されることを特性テストで確認(実機の頻度と実害は未確認)。TsfNative の Engine 経路(P3)は ADR-208 L3' と同じ変更になるため、決定 1 の適用は L3' と一本化する。Opus レビュー未実施。
 related_adr:
   - "ADR-098"
   - "ADR-108"
@@ -55,7 +55,7 @@ belief と actuation の記録の取り違えと同じ型であり、BUG-141(GJI
    - 残る経路がなければ、本 ADR の決定 1・2 は実装せず、決定 2 の「宣言」だけを ADR-208 の保証範囲の注記として残して終える(不要な機構を足さない)。
    - 残る経路がある場合、その経路が実際に BUG-141 型の握りつぶしを起こしうるか(ADR-208 の全列挙テストの状態空間で `press=None` の行を追加して数える)。
    - **結果(2026-10-02)**: 経路は残っている(P1 トレイ起点の Engine コマンド、P3 TsfNative の Engine 経路)。ただし P1 の実害は未実測、P3 は ADR-208 L3' と重なる。下の「決定 0 の結果」節を参照。
-   - **未実施**: P1 が実際に握りつぶされるかの確認(全列挙テストへの行の追加、または CI で GJI × Blind 窓の「状態をリセット」を再現)。
+   - **P1 の確認(2026-10-02)**: 決定の層では確認済み(特性テスト2本)。実機の頻度と実害の大きさは未確認(下の P1 の節)。
 ### 決定 0 の結果(2026-10-02、origin/develop `f4e225e8` のコードを読んで確認)
 
 `decide_attempt`(`ime_controller.rs:218,462`、`runtime/open_chain.rs:518`、`state/explicit_press.rs:802`)に至る actuation の入口は3つで、それぞれ `applied` 由来の `shadow_on` の扱いが違う。
@@ -70,8 +70,15 @@ belief と actuation の記録の取り違えと同じ型であり、BUG-141(GJI
 `SetOpen` が `press=None` になる発行元は、`src/engine/engine.rs` の `transition_activation`(`:427`)、`apply_engine_on_with_ime_recovery`(`:824`)、`ime_set_open_effects`(`:864`)の3つ。打鍵起点のものは入口で `stamp_set_open_press`(`engine.rs:1113`)が `press_id` を載せるので `Some` になる。`None` のまま残る起点は次のとおり。
 
 - **P1: 打鍵ではない Engine コマンド**(`runtime/mod.rs:982` の `toggle_engine`〈トレイ〉、`:1001` の `force_engine_on`〈トレイの「状態をリセット」等〉)。
-  `apply_active_transition` / `apply_engine_on_with_ime_recovery` が `press=None` の `SetOpen` を出し、`applied` がそのまま GjiDirect の `gji_direct_already_matches` に渡る。
-  「状態をリセット」は drift を直す目的で使われるので、`applied` が既に ON なら IME が実際には OFF でも書き込みが省略されうる(**仮説。未実測**。ImmCross が先頭の窓は async 経路で、省略判定は GjiDirect のみ)。
+  belief が OFF で active になれないときだけ `apply_engine_on_with_ime_recovery` が `SetOpen{true, press: None}` を出す(belief が ON で既に active なら `SetOpen` は出ない)。
+  `applied` がそのまま GjiDirect の `gji_direct_already_matches` に渡り、`applied=Confirmed(true)` なら省略される。
+  **確認済み(2026-10-02、Linux の特性テスト2本)**:
+  - `engine::tests::…::on_command_force_engine_on_emits_set_open_without_press_only_when_belief_is_off`: belief OFF なら `SetOpen{true}` が `press=None` で出る。belief ON で active なら出ない。
+  - `state::ime_model::tests::adr214_p1_press_none_set_open_is_elided_by_stale_applied_in_gji_blind_window`: 実際の `ImeModel` で「`applied=Confirmed(true)`、belief は物理 IME キーの明示意図で OFF」を作る
+    (belief は `applied` と無関係に決まるので到達できる)と、Imm32Unavailable × GJI(`CHAIN_GJI_ONLY`、Blind)で `decide_attempt` が送信を省く(`None`)。同じ状態でも押下付き(`has_press=true`)なら送る。
+  - 影響を受けるのは GJI だけ(MS-IME の `MsImeDirect` は省略判定を持たない)。窓は Imm32Unavailable と TsfNative(いずれも `CHAIN_GJI_ONLY`)、および ImmCross 先頭の窓で ImmCross が失敗して GjiDirect に落ちた場合。
+  - **未確認**: 実機で起きるか(belief OFF × `applied=Confirmed(true)` の食い違いが実運用で出るか)、省略された後に何かが回復するか(Blind の drift correction は `applied=None` で送るが、その発火条件は読んでいない)。
+    つまり P1 は「決定の層では**確認済み**、実機の頻度と実害の大きさは**未確認**」。
 - **P2: 自動リピート**(`press=None`)。意図した省略(同じキーの押下で既に書いた)なので問題ではない。
 - **P3(`press=None` ではないが同じ構造): TsfNative の窓の Engine 経路**。`ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE=false`(`ime_actuation_decision.rs`)のため、押下でも `applied` を未知にしない。
   ADR-208 の決定6が、BUG-124 型の「@」(WT × GJI × PSReadLine で OFF キーごとに単発の `VK_IME_OFF` が出る)の実機 A/B(L3')をマージ条件にしているため。S-1 は意図的に残っている。
@@ -80,7 +87,7 @@ belief と actuation の記録の取り違えと同じ型であり、BUG-141(GJI
 **含意**: 範囲は「ゼロ」ではないが、想定より狭い。(1) P1 は実在するが、トレイ操作という低頻度の経路で、実害は仮説の段階。(2) P3 は ADR-208 L3' と**同じ変更**(TsfNative の Engine 経路で `applied` を省略の根拠から外す)になるため、
 本 ADR の決定 1 を単独で入れると、L3' の実機 A/B 抜きで BUG-124 型の「@」のリスクを持ち込む。決定 1 の適用範囲は、ADR-208 L3' の判断(`ENGINE_PRESS_UNKNOWNS_APPLIED_IN_TSF_NATIVE`)と**一本化する**(TsfNative の窓は L3' が解禁するまで従来どおり)。
 
-**`applied_open()` の他の消費者**(決定 1 で `Sent` を未知として扱うと挙動が変わるので、実装前に洗う): `state/ime_model.rs:616`、`:942`、`:970`(key-effect 予測と観測の照合)、`runtime/message_handlers.rs:960`。
+**`applied_open()` の他の消費者**(決定 1 で `Sent` を未知として扱うと挙動が変わるので、実装前に洗う): `state/ime_model.rs:616`(完了通知の受理判定。`Superseded` の条件に `applied != Some(open)` を使う)、`:942`、`:970`、`runtime/message_handlers.rs:960`(後3つは未読)。
 
 1. **B: `applied` の「送った」と「確認した」を型で分ける**。
    - `AppliedImeState` に `Sent{open, at_ms}` を足す(API が成功を返しただけ。実 IME の観測は未確認)。`Confirmed` は**観測で確認できた**場合だけに限る

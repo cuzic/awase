@@ -6374,6 +6374,32 @@ mod engine_integration_tests {
         )));
     }
 
+    /// ADR-214 決定0 P1: belief が OFF のとき、`ForceEngineOn`(トレイの「状態をリセット」)は押下 ID を持たない
+    /// `SetOpen{true}` を出す。逆に belief が ON で既に active なら `SetOpen` を出さない。
+    /// 打鍵起点の `SetOpen` は `stamp_set_open_press` で `press` が載るが、コマンド起点には載らない。
+    #[test]
+    fn on_command_force_engine_on_emits_set_open_without_press_only_when_belief_is_off() {
+        let mut engine = make_test_engine();
+        let d = engine.on_command(EngineCommand::ForceEngineOn, &ime_off_ctx());
+        assert!(
+            has_effect(&d, |e| matches!(
+                e,
+                Effect::Ime(ImeEffect::SetOpen {
+                    open: true,
+                    press: None
+                })
+            )),
+            "belief OFF: SetOpen{{true}} が press=None で出る"
+        );
+
+        let mut engine = make_test_engine();
+        let d = engine.on_command(EngineCommand::ForceEngineOn, &ime_on_ctx());
+        assert!(
+            !has_effect(&d, |e| matches!(e, Effect::Ime(ImeEffect::SetOpen { .. }))),
+            "belief ON で既に active: SetOpen は出ない(書き込みの省略以前に、そもそも送らない)"
+        );
+    }
+
     #[test]
     fn on_command_force_engine_on_is_noop_when_already_on() {
         // トグルと違い、既に ON のときは OFF に反転させない（冪等）。
