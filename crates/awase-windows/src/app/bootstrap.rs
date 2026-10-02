@@ -1021,6 +1021,7 @@ pub(super) fn run_all() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let debug_console = args.iter().any(|a| a == "--debug");
     init_logging(debug_console);
+    crate::verify_fix::log_active();
 
     // panic 発生時にファイル:行番号とメッセージをログに記録する。
     // デフォルトの panic handler は stderr に書くだけなので awase.log には残らない。

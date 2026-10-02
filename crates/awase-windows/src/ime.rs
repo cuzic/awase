@@ -173,6 +173,14 @@ pub unsafe fn send_ime_mode_key(vk: awase::types::VkCode) -> bool {
             "[ime-mode] SendInput(vk=0x{vk:02X}) sent {sent}/{} events",
             inputs.len()
         );
+        tracing::warn!(
+            "[verify:modekey-partial] vk=0x{vk:02X} sent={sent} total={}",
+            inputs.len()
+        );
+        if crate::verify_fix::on("f2-modekey-allsent") {
+            crate::verify_fix::fired("f2-modekey-allsent");
+            return false;
+        }
     }
     true
 }

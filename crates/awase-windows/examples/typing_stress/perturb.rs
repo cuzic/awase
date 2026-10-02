@@ -10,6 +10,7 @@
 //! | `--start-delay=MS`                  | 入力欄を空にしてから打鍵を始めるまでの待ち(既定 300)              |
 //! | `--interrupt=off_on\|off\|f2\|none`  | 打鍵直後(未確定)に IME 制御キーを送る(未確定文字が消えるかの対照) |
 //! | `--settle-read`                     | 内容が 800ms 変わらなくなるまで読み直す(取りこぼしと遅延の切り分け) |
+//! | `--off-after=N`                     | N 文字目の直後(打鍵列の途中)に明示 IME OFF(`VK_IME_OFF`、マーカー付き=awase には物理キー)を差し込む。cold の probe 実行中の ImeOff 競合(CI 検証スパイク) |
 
 use serde_json::json;
 
@@ -60,6 +61,7 @@ pub(crate) struct Perturbation {
     pub(crate) start_delay_ms: u64,
     interrupt: Option<Interrupt>,
     pub(crate) settle_read: bool,
+    off_after: usize,
 }
 
 fn num<T: std::str::FromStr>(key: &str) -> Option<T> {
@@ -84,6 +86,7 @@ impl Perturbation {
                 })
             }),
             settle_read: has_flag("--settle-read"),
+            off_after: num("--off-after=").unwrap_or(0),
         }
     }
 
@@ -97,7 +100,8 @@ impl Perturbation {
         json!({"cold":self.cold,"pause_after":self.pause_after,"pause_ms":self.pause_ms,
                "idle_ms":self.idle_ms,"switch_focus":self.switch_focus,
                "start_delay_ms":self.start_delay_ms,
-               "interrupt":self.interrupt.map(Interrupt::name),"settle_read":self.settle_read})
+               "interrupt":self.interrupt.map(Interrupt::name),"settle_read":self.settle_read,
+               "off_after":self.off_after})
     }
 
     /// 打鍵列の `pause_after` 文字目の直後に `pause_ms` の間を空ける(その後は詰めて続ける)。
@@ -112,6 +116,26 @@ impl Perturbation {
                 e.t_us += self.pause_ms * 1000;
             }
         }
+    }
+
+    /// `--off-after=N`: `N` 文字目と `N+1` 文字目の境界に、明示 IME OFF(`VK_IME_OFF` の down/up)を打鍵列へ差し込む。
+    /// 文字 `i` のイベントは `t_us = i*iv_us + (0〜70% of iv_us)` に収まるため、境界 `N*iv_us` の少し手前
+    /// (80%/90% 位置)に置けば、直前の文字のイベントより後・次の文字より前になる。
+    /// `after_inject` の `--interrupt` と違い、打鍵の最中(cold の probe 実行中)に OFF が入る。
+    pub(crate) fn apply_off_after(&self, evs: &mut Vec<Ev>, iv_us: u64) {
+        if self.off_after == 0 || iv_us == 0 {
+            return;
+        }
+        let boundary = self.off_after as u64 * iv_us;
+        for (back_pct, down) in [(20, true), (10, false)] {
+            evs.push(Ev {
+                t_us: boundary.saturating_sub(iv_us * back_pct / 100),
+                vk: VK_IME_OFF,
+                scan: 0x70,
+                down,
+            });
+        }
+        evs.sort_by_key(|e| e.t_us);
     }
 
     /// 各試行の入力欄クリアの前に呼ぶ: アイドル → 別窓へ切替 → 入力先へ復帰。

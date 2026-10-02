@@ -350,6 +350,13 @@ pub(crate) fn apply_mechanism(
                 "[apply-ime] GJI direct: shadow already {} (open={open}), skip",
                 if open { "ON" } else { "OFF" }
             );
+            let (applied_kind, applied_age_ms) =
+                crate::verify_fix::last_applied_for_log(crate::hook::current_tick_ms());
+            tracing::warn!(
+                "[verify:skip-gji-direct] open={open} shadow_on={:?} applied_kind={applied_kind} applied_age_ms={}",
+                view.control.shadow_on,
+                applied_age_ms.map_or_else(|| "none".to_owned(), |v| v.to_string())
+            );
             ImeOpenOutcome::AlreadyMatched
         }
     }

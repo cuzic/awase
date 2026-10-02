@@ -1151,6 +1151,11 @@ impl ImeModel {
             // pending 自身の確認ではないため `Confirmed` にはしない。
             self.applied = AppliedImeState::Optimistic(target);
         }
+        tracing::warn!(
+            "[verify:apply-succeeded] target={target} accepted={} applied_after={}",
+            matches!(acceptance, ImeApplyAcceptance::Accepted),
+            verify_applied_kind(self.applied)
+        );
     }
 
     /// `ImeApplyFailed`(ADR-170 決定1)。
@@ -1180,12 +1185,33 @@ impl ImeModel {
             // 送っていないため実状態不明であり `applied` を書かない。この
             // 非対称の除去は独立した挙動変更なので別ADRで扱う。
             if matches!(acceptance, ImeApplyAcceptance::Accepted) {
-                self.applied = AppliedImeState::Confirmed {
-                    open: !target,
-                    at_ms: envelope.time.tick_ms,
-                };
+                if matches!(outcome, awase::platform::ImeOpenOutcome::Failed)
+                    && crate::verify_fix::on("f1-failed-unknown")
+                {
+                    crate::verify_fix::fired("f1-failed-unknown");
+                    self.applied = AppliedImeState::Unknown;
+                } else {
+                    self.applied = AppliedImeState::Confirmed {
+                        open: !target,
+                        at_ms: envelope.time.tick_ms,
+                    };
+                }
             }
         }
+        tracing::warn!(
+            "[verify:apply-failed] target={target} error={error:?} accepted={} applied_after={}",
+            matches!(acceptance, ImeApplyAcceptance::Accepted),
+            verify_applied_kind(self.applied)
+        );
+    }
+}
+
+/// 検証スパイク専用: `applied` の種別名（`[verify:*]` ログ用）。
+fn verify_applied_kind(applied: AppliedImeState) -> &'static str {
+    match applied {
+        AppliedImeState::Confirmed { .. } => "confirmed",
+        AppliedImeState::Optimistic(_) => "optimistic",
+        _ => "unknown",
     }
 }
 

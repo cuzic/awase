@@ -22,7 +22,7 @@
 //!
 //! ## 摂動(`perturb.rs`、すべて既定オフ)
 //! 連続打鍵では作れない実利用に近い状況を試行に差し込む: `--cold` / `--pause-after=N --pause-ms=MS` / `--idle=MS` /
-//! `--switch-focus` / `--start-delay=MS` / `--interrupt=off_on|off|f2` / `--settle-read`。意味は `perturb.rs` の表を参照。
+//! `--switch-focus` / `--start-delay=MS` / `--interrupt=off_on|off|f2` / `--settle-read` / `--off-after=N`。意味は `perturb.rs` の表を参照。
 //! 指定した摂動は `config` レコードの `perturb` に記録される。
 //!
 //! ## フラグ
@@ -1621,6 +1621,7 @@ fn worker(form: Form) {
                 nicola_events(&seq, iv_us)
             };
             perturb.apply_pause(&mut evs, iv_us);
+            perturb.apply_off_after(&mut evs, iv_us);
             perturb.before_trial(target());
             clear_text(child);
             sleep_ms(perturb.start_delay_ms);

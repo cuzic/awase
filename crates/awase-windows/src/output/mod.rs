@@ -326,6 +326,15 @@ impl Output {
         &self,
         event: crate::tsf::gji_fsm::GjiEvent,
     ) -> timed_fsm::Response<crate::tsf::gji_fsm::GjiAction, crate::tsf::gji_fsm::GjiTimer> {
+        // 検証スパイク: CancelProbe の原因イベント（ImeOff / FocusChange / CompositionReset 等）を
+        // `[verify:cancel-probe]` に出すため、直近に FSM へ入れたイベントの種別名を覚えておく。
+        LAST_GJI_EVENT_KIND.with(|k| {
+            let dbg = format!("{event:?}");
+            let end = dbg
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(dbg.len());
+            *k.borrow_mut() = dbg[..end].to_owned();
+        });
         self.warmup_coord.gji_on_event(event)
     }
 
@@ -1153,6 +1162,15 @@ impl Output {
         // 残すと shadow と実体がずれ、残った VK は「誰にも所有されないまま、
         // はるか後の無関係な回収でまとめて送られる」——BUG-27 の順序反転になる。
         let discarded = self.warmup_coord.take_pending_deferred();
+        tracing::warn!(
+            "[verify:cancel-probe] origin={} deferred_n={} deferred_vks={:?}",
+            LAST_GJI_EVENT_KIND.with(|k| k.borrow().clone()),
+            discarded.len(),
+            discarded
+                .iter()
+                .map(|d| (d.vk.0, d.origin))
+                .collect::<Vec<_>>()
+        );
         if !discarded.is_empty() {
             tracing::warn!(
                 "[stage-cancel] deferred {n} VK(s) を破棄（宛先窓が変わった / エンジン停止）",
@@ -1750,4 +1768,9 @@ mod tests {
     fn test_ascii_to_vk_unknown() {
         assert_eq!(ascii_to_vk('\u{3042}'), None); // 'あ'
     }
+}
+
+thread_local! {
+    /// 検証スパイク専用: 直近に GjiFsm へ入れたイベントの種別名。
+    static LAST_GJI_EVENT_KIND: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }

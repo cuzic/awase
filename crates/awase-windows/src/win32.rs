@@ -294,7 +294,14 @@ pub(crate) fn send_input_safe(inputs: &[INPUT]) -> u32 {
     let size = i32::try_from(size_of::<INPUT>()).expect("INPUT size fits in i32");
     // SAFETY: inputs スライスは呼び出し中有効であり、size は sizeof::<INPUT>() の正確な値。
     //         SendInput はスライスの範囲外を読まない。
-    unsafe { SendInput(inputs, size) }
+    let sent = unsafe { SendInput(inputs, size) };
+    if sent as usize != inputs.len() {
+        tracing::warn!(
+            "[verify:sendinput-partial] site=central sent={sent} total={}",
+            inputs.len()
+        );
+    }
+    sent
 }
 
 /// `&str` を NUL 終端 UTF-16 `Vec<u16>` に変換する。

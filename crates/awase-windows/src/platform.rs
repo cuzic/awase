@@ -938,6 +938,7 @@ impl PlatformRuntime for WindowsPlatform {
         // get_gui_thread_info + send_ime_control が ~200ms タイムアウトしてブロックする。
         // 早期 return して IMM32 経由のクロスプロセス呼び出しをスキップする。
         if !self.current_app_profile().can_use_imm32_cross_process() {
+            tracing::warn!("[verify:set-open-async] open={open} dispatched=false result=skipped");
             return false;
         }
         // `set_ime_open_cross_process` は SendMessageTimeoutW を含むため、メインスレッドで
@@ -945,8 +946,13 @@ impl PlatformRuntime for WindowsPlatform {
         // async ラッパーを spawn_local で fire-and-forget する。
         // 戻り値の semantics は「dispatch 成功」(= profile 互換) に変更。実際の SendMessage
         // 結果は呼び出し側に届かない（旧 API の sync bool に依存していた診断ログは廃止）。
+        tracing::warn!("[verify:set-open-async] open={open} dispatched=true result=pending");
         win32_async::spawn_local(async move {
-            let _ = crate::ime::set_ime_open_cross_process_async(open).await;
+            let ok = crate::ime::set_ime_open_cross_process_async(open).await;
+            tracing::warn!(
+                "[verify:set-open-async] open={open} dispatched=true result={}",
+                if ok { "ok" } else { "false" }
+            );
         });
         true
     }
@@ -1145,6 +1151,7 @@ impl WindowsPlatform {
             ""
         };
         let shadow_on = applied.map(|(open, _applied_at_ms)| open);
+        crate::verify_fix::note_applied_seen(applied);
         crate::state::ImeControlView {
             focus: crate::state::FocusFacts {
                 class_name,

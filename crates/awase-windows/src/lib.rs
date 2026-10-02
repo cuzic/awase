@@ -38,6 +38,7 @@ pub mod scanmap;
 pub mod single_thread_cell;
 pub mod state;
 pub mod tuning;
+pub mod verify_fix;
 pub mod vk;
 
 // ── Windows 専用モジュール ───────────────────────────────────────────────────────
@@ -236,7 +237,7 @@ pub fn with_app<R>(f: impl FnOnce(&mut Runtime) -> R) -> Option<R> {
     RUNTIME.try_borrow_mut().map_or_else(
         || {
             tracing::warn!(
-                "with_app re-entry detected — returning None (caller should re-post if needed)"
+                "[verify:with_app-reentry] with_app re-entry detected — returning None (caller should re-post if needed)"
             );
             None
         },

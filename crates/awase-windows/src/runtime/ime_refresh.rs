@@ -943,7 +943,10 @@ impl Runtime {
             // 欠陥になっていた（ADR-098が警告する「belief をactuationの
             // 記録として書く」誤用と同型）。
             if self.platform.set_ime_open_ordered(order) {
+                tracing::warn!("[verify:optimistic] desired={desired} source=drift");
                 self.platform_state.ime.record_optimistic(desired);
+            } else {
+                tracing::warn!("[verify:optimistic-skipped] desired={desired} source=drift");
             }
         } else {
             // set_ime_open は IMM32専用で Blacklist/TsfNative では no-op のため、

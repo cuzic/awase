@@ -272,7 +272,7 @@ impl Output {
                                 MsImePollStatus::Pending
                             }
                         })
-                        .unwrap_or(MsImePollStatus::Stale)
+                        .unwrap_or_else(|| ms_ime_poll_with_app_none("ms_ime_ready.good_read"))
                     }
                     // Abandoned（issue前の交錯）、または Read だが read 後の
                     // checkpoint3 でフェンス不一致を検知した場合。
@@ -308,7 +308,7 @@ impl Output {
                                 MsImePollStatus::Pending
                             }
                         })
-                        .unwrap_or(MsImePollStatus::Stale)
+                        .unwrap_or_else(|| ms_ime_poll_with_app_none("ms_ime_ready.abandoned"))
                     }
                 };
 
@@ -613,6 +613,10 @@ where
                         + mark cold",
                             cold_seq = cold_seq.value(),
                         );
+                        tracing::warn!(
+                            "[verify:recovery-resend] cold={cold_seq} backs={backs} romaji={romaji:?}",
+                            cold_seq = cold_seq.value(),
+                        );
                         io.set_raw_literal(backs, romaji, escape_composition);
                     } else {
                         tracing::warn!(
@@ -624,7 +628,18 @@ where
                         // 以前はここで VK_IME_OFF→VK_IME_ON の reinit を予約していた(BUG-33/36/168)が、
                         // 実 Chrome×GJI で 0/10 と効かず、入力中文字を消す副作用もあったので撤去した(ADR-212 P3)。
                         // 見た目の掃除(BS)だけを予約する。
-                        io.set_raw_literal(backs, String::new(), escape_composition);
+                        tracing::warn!(
+                            "[verify:giveup-bs] cold={cold_seq} backs={backs} lost_romaji={romaji:?} consecutive={}",
+                            consecutive + 1,
+                            cold_seq = cold_seq.value(),
+                        );
+                        let backs_to_send = if crate::verify_fix::on("f4-giveup-keep-literal") {
+                            crate::verify_fix::fired("f4-giveup-keep-literal");
+                            0
+                        } else {
+                            backs
+                        };
+                        io.set_raw_literal(backs_to_send, String::new(), escape_composition);
                     }
                     io.mark_cold_raw_tsf();
                 }
@@ -1366,5 +1381,18 @@ mod tests {
             io.mark_cold_raw_tsf_called.get(),
             "consecutive > 0: mark_cold_raw_tsf で cold に戻すべき"
         );
+    }
+}
+
+/// `with_app` が再入で `None` を返したときの MS-IME ready poll の扱い（検証スパイク）。
+///
+/// 通常は `Stale`（ポーラー終了）。`f6-poll-none-pending` では `Pending`（次 tick に継続）。
+fn ms_ime_poll_with_app_none(site: &str) -> MsImePollStatus {
+    tracing::warn!("[verify:poll-with_app-none] site={site}");
+    if crate::verify_fix::on("f6-poll-none-pending") {
+        crate::verify_fix::fired("f6-poll-none-pending");
+        MsImePollStatus::Pending
+    } else {
+        MsImePollStatus::Stale
     }
 }

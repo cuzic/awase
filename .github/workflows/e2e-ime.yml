@@ -10,6 +10,7 @@ name: e2e-ime
 # ci/e2e-scenarios ブランチへの push は、操作シナリオ(名前が sc- で始まる構成、下のplan参照)だけを回す。
 # ci/e2e-calibration ブランチへの push は、ADR-191 の学習/検証ラウンド(名前が cal- で始まる構成)だけを回す。
 # ci/e2e-typing-stress ブランチへの push は、高速打鍵ストレス(名前が ts- で始まる構成、examples/typing_stress/)だけを回す。
+# ci/send-confirm-verify ブランチへの push は、「送信=確認済み」取り違えと途中破棄の仮説検証(名前が vf- で始まる構成、下のplan参照)だけを回す。
 # 実アプリ(Chrome・不具合報告フォーム)を入力先にする/摂動を足す拡張構成は tsx- で始まる。重いので既定では回さず、only='tsx-*' で回す。
 # (workflow_dispatch は既定ブランチにワークフローが無いと使えないので、構成を絞るには only 入力かこのブランチを使う)
 #
@@ -35,7 +36,7 @@ on:
         required: false
         default: ''
   push:
-    branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress]
+    branches: [ci/e2e-ime, ci/e2e-scenarios, ci/e2e-calibration, ci/e2e-typing-stress, ci/send-confirm-verify]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -76,7 +77,7 @@ jobs:
       - id: p
         shell: python
         env:
-          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || '' }}
+          ONLY: ${{ inputs.only || (github.ref_name == 'ci/e2e-scenarios' && 'sc-*') || (github.ref_name == 'ci/e2e-calibration' && 'cal-*') || (github.ref_name == 'ci/e2e-typing-stress' && 'ts-*') || (github.ref_name == 'ci/send-confirm-verify' && 'vf-*') || '' }}
           # ONLY が空(ci/e2e-ime への push、workflow_dispatch の only 空)のときは cal-*(学習/検証ラウンド。47構成・計 約24.7時間ぶんの上限時間)と ts-*(高速打鍵ストレス)・tsx-*(その拡張)を除く。
           # cal-* を走らせるには only='cal-*' を渡すか、ci/e2e-calibration ブランチを使う。
           EXCLUDE_CAL_WHEN_EMPTY: '1'
@@ -94,10 +95,11 @@ jobs:
           # ime: gji=Google日本語入力(chocolatey) / msime=Microsoft IME(標準の日本語IME)
           # 撤去実験の根拠は docs/adr/186-*.md。a3(eisu reset抑止)は撤去済みのため無い。
           # keys: config.toml の [keys] に足す/上書きする行(;区切り)。[keys] が無ければ末尾に作る
+          # env: awase(とスパイク)を起動する前に設定する環境変数(;区切りの `NAME=value`)。CI 検証スパイク(vf-*)の修正案フラグ AWASE_VERIFY_FIXES=... 用
           # general: config.toml の [general] に足す/上書きする行(;区切り)。例: 'half_width_alnum_toggle = "all"'
-          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs=''):
+          def cfg(name, expect, mutator='', args='', keymap=1, custom_table='false', check='expect', bin=None, ime='gji', awase='true', cache='works', runs=3, wait=330, gate='', general='', probe='', probe_bin='compartment_notify_probe', legacy_custom='false', stress='', keys='', tsv='', chrome='', checkargs='', env=''):
             return dict(name=name, bin=bin or (name if mutator else 'baseline'), mutator=mutator, args=args,
-                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs)
+                        keymap=keymap, custom_table=custom_table, check=check, expect=expect, ime=ime, awase=awase, cache=cache, runs=runs, wait=wait, gate=gate, general=general, probe=probe, probe_bin=probe_bin, legacy_custom=legacy_custom, stress=stress, keys=keys, tsv=tsv, chrome=chrome, checkargs=checkargs, env=env)
           # tsx-* 構成(高速打鍵ストレスの拡張): name は 'tsx-' を自動で付ける。raw=True なら awase なしの対照(生ローマ字)。
           # extra は typing_stress.exe への追加フラグ(摂動など)。kinds/trials/len は省略すると typing_stress の既定。
           def tsx(name, form, ime, iv, raw=False, extra='', kinds='', trials=None, len=None, runs=3, wait=900):
@@ -558,6 +560,49 @@ jobs:
             cfg('cal-driftrec-chrome-gji', 'observe', check='chromeprobe', keymap=1, runs=1, wait=400,
                 chrome='--close-ime=10 --settle=800'),
           ]
+          # --- 送信=確認済み取り違えと途中破棄の仮説検証(vf-*、ci/send-confirm-verify) ---
+          # docs: Opus 根本原因レビュー(RC1=Applied を Confirmed とみなし後続送信を省く / RC2=BS・再送・deferred の多段補償 / RC3=with_app 再入の Stale 読み替え)。
+          # 既存構成を複製して名前を vf-<変種>-<元の構成名> にし、expect=observe(合否に含めない)で回す。変種は env=AWASE_VERIFY_FIXES(awase の verify_fix.rs)で切り替える:
+          #   base=フラグなし(発生頻度の測定)/ f1f2=Failed→Unknown + send_ime_mode_key が all_sent / f4=give-up で BS 掃除をしない / f6=MS-IME ready poll の with_app None を継続 / all=全部。
+          # awase が awase.log に出す `[verify:TAG] key=value` 行は summarize_verify.py が構成ごとに集計し、summary に変種を並べた表を出す。
+          # only 空の既定には含めない(上の除外)。ci/send-confirm-verify への push か only='vf-*' で回す。Σruns は 256 未満(下の n_jobs 検査)。
+          VF_FIX = dict(
+            base='',
+            f1f2='AWASE_VERIFY_FIXES=f1-failed-unknown,f2-modekey-allsent',
+            f4='AWASE_VERIFY_FIXES=f4-giveup-keep-literal',
+            f6='AWASE_VERIFY_FIXES=f6-poll-none-pending',
+            all='AWASE_VERIFY_FIXES=f1-failed-unknown,f2-modekey-allsent,f4-giveup-keep-literal,f6-poll-none-pending')
+          by_name = {c['name']: c for c in configs}
+          def vf(var, src, base=None, runs=None):
+            c = dict(base if base is not None else by_name[src])
+            c.update(name=f'vf-{var}-{src}', expect='observe', env=VF_FIX[var], vf_src=src, vf_var=var)
+            if runs: c['runs'] = runs
+            return c
+          # RC2-b(Opus 推測): cold の probe 実行中に明示 OFF(VK_IME_OFF、マーカー付き=物理キー扱い)を打鍵列の N 文字目直後へ差し込み、
+          # cancel_probe が ImeOff を契機に deferred(ユーザー入力)を捨てるかを見る。typing_stress の --off-after=N(perturb.rs)。
+          vf_offrace = {
+            'offrace-chromepage-gji': tsx('x', 'chromepage', 'gji', 20, extra='--cold --off-after=1', kinds='single', trials=1, len=15, runs=10, wait=900),
+            'offrace5-chromepage-gji': tsx('x', 'chromepage', 'gji', 20, extra='--cold --off-after=5', kinds='single', trials=1, len=15, runs=10, wait=900),
+            'offrace-tsf-gji': tsx('x', 'tsf', 'gji', 20, extra='--cold --off-after=1', kinds='single', trials=1, len=15, runs=10, wait=900),
+          }
+          vfs = [vf('base', k, base=v) for k, v in vf_offrace.items()]
+          # RC2(raw recovery の BS/give-up・probe 中断): 実 Chrome×GJI の cold 起動直後と長 idle 後。base と f4(give-up の BS 掃除なし)を並べる。
+          for src in ('tsx-chromepage-gji-20ms-cold', 'tsx-chromebar-gji-20ms-cold', 'tsx-chromepage-gji-10ms-idle20s',
+                      'tsx-chromepage-gji-30ms-idle20s', 'tsx-chromebar-gji-10ms-idle20s'):
+            vfs += [vf('base', src), vf('f4', src)]
+          # RC1(applied=Confirmed による送信省略、Failed→Confirmed{!target}): Blind 窓(TsfNative 相当・実 Chrome)への明示キー、drift 回復、起動直後。base と f1f2。
+          for src in ('tsx-tsf-gji-20ms-cold', 'sc-driftrecovery-gji-tsf', 'sc-driftrecovery-msime-tsf', 'sc-driftrecovery-gji-chrome',
+                      'sc-driftrecovery-msime-chrome', 'sc-p2-initial-chrome-gji', 'sc-p2-initial-chrome-msime',
+                      *[f'sc-keymatrix-{g}-{w}-{i}' for g in ('abs', 'tog') for w in ('edit', 'tsf', 'chrome') for i in ('gji', 'msime')]):
+            vfs += [vf('base', src), vf('f1f2', src)]
+          # RC3(MS-IME ready poll の with_app None → Stale): MS-IME × TSF 系。base と f6(sc-p2-initial-chrome-msime は上で base 済みなので f6 だけ)。
+          for src in ('tsx-tsf-msime-20ms-cold', 'sc-adr209-chrome-msime', 'sc-adr209-chrome-msime-stale', 'ts-tsf-msime-10ms', 'ts-tsf-msime-2ms'):
+            vfs += [vf('base', src), vf('f6', src)]
+          vfs.append(vf('f6', 'sc-p2-initial-chrome-msime'))
+          # 全フラグ同時(相互作用の確認): 代表3構成。
+          for src in ('tsx-chromepage-gji-20ms-cold', 'tsx-tsf-msime-20ms-cold', 'sc-keymatrix-abs-chrome-gji', 'sc-keymatrix-tog-chrome-gji'):
+            vfs.append(vf('all', src))
+          configs += vfs
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
             configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
@@ -568,7 +613,7 @@ jobs:
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
             # sc-startup-msime-chrome-on-*(切り分け実験、各 runs=8)・sc-keymatrix-*(ADR-208 L3b)も既定から除く(足すと既定が 256 を超える)。only で明示して回す。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-'))]
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'vf-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])
@@ -852,6 +897,12 @@ jobs:
           [IO.File]::WriteAllText("$PWD\dist\cache.toml", "[imm_capability.`"ime_key_matrix_spike.exe`"]`r`nEdit = `"${{ matrix.cfg.cache }}`"`r`nRICHEDIT50W = `"works`"`r`n[imm_capability.`"typing_stress.exe`"]`r`nEdit = `"works`"`r`nRICHEDIT50W = `"works`"`r`n", (New-Object Text.UTF8Encoding($false)))
           $env:RUST_LOG = 'debug'
           $env:AWASE_TEST_INJECTION = '1'
+          # cfg の env(;区切りの NAME=value)。CI 検証スパイク(vf-*)の AWASE_VERIFY_FIXES など。awase とスパイクは Start-Process で子として起動するため継承される。
+          foreach ($kv in ('${{ matrix.cfg.env }}' -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+            $name, $value = $kv -split '=', 2
+            Set-Item -Path "Env:$name" -Value $value
+            "env: $name=$value"
+          }
           # 順序: スパイクを先に起動し、初期化(TSF/ActivateProfile)が終わってから awase を起動する。
           # スパイクの初期化中に awase がIMMをプローブすると応答が無く、3回連続の miss で Edit を「IMM不可」と
           # 誤学習して conv を読まなくなる。--activate-gji はキーフックをawase起動後に遅延インストールし、
@@ -1035,6 +1086,15 @@ jobs:
           "inv_rc=$LASTEXITCODE" | Out-File -FilePath inv_rc.txt -Encoding ascii
           exit 0
 
+      # CI 検証スパイク(vf-*): awase.log の `[verify:TAG]` 行をタグ別に集計する(summarize_verify.py)。summary が構成×変種の表にする。情報のみ。
+      - name: 検証スパイクの [verify:*] ログを集計する
+        if: steps.gate.outputs.skip != 'true' && startsWith(matrix.cfg.name, 'vf-') && matrix.cfg.awase != 'false'
+        shell: pwsh
+        run: |
+          $env:PYTHONUTF8 = '1'
+          python tools\e2e\ime_key_matrix\summarize_verify.py --json verify.json dist\awase.log | Tee-Object -FilePath verify.txt
+          exit 0
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -1057,6 +1117,8 @@ jobs:
             invariants.txt
             invariants.json
             inv_rc.txt
+            verify.txt
+            verify.json
           retention-days: 7
 
   summary:
@@ -1273,6 +1335,90 @@ jobs:
                     "pass=絶対は1押下、トグルは2押下以内で一致。E2 列=例外セルの照合結果(fresh_similar=新鮮でも同じ程度に失敗→環境、fresh_ok=新鮮だと閉じる→内部状態による固着、no_fresh_cell=対照セルなし)と fresh の失敗率。", "",
                     "| 構成 | セル | 判定 | pass | 目標 | made/n | 1押下 | 2押下 | 3押下 | 固着 | gap_not_made/invalid | E2 |",
                     "|---|---|---|---|---|---|---|---|---|---|---|---|"] + km_rows
+          # --- 送信=確認済み取り違えと途中破棄の仮説検証(vf-*): 元の構成ごとに 変種(base / 修正案フラグ付き)を並べる。---
+          # 各 run の verify.json(summarize_verify.py)と result.txt の既存指標(TYPING_STRESS / KEYMATRIX_CELL)・rc.txt を合算する。情報のみで合否には含めない。
+          vf_cfgs = [c for c in configs if c.get('vf_src')]
+          if vf_cfgs:
+            VAR_ORDER = ['base', 'f1f2', 'f4', 'f6', 'all']
+            agg = {}
+            for c in vf_cfgs:
+              a = agg.setdefault((c['vf_src'], c['vf_var']), dict(name=c['name'], jobs=0, missing=0, pass_=0, fail=0, invalid=0, tags={}, bd={}, ts={}, km={}, flags=set(), vmissing=0))
+              for run in range(1, c.get('runs', 3) + 1):
+                d = f"results/result-{c['name']}-{run}"
+                a['jobs'] += 1
+                rcf = f"{d}/rc.txt"
+                if not os.path.exists(rcf):
+                  a['missing'] += 1
+                else:
+                  rc = int(re.search(r'rc=(\d+)', open(rcf).read()).group(1))
+                  a['pass_' if rc == 0 else 'invalid' if rc == 3 else 'fail'] += 1
+                vf_ = f"{d}/verify.json"
+                if os.path.exists(vf_):
+                  j = json.load(open(vf_, encoding='utf-8'))
+                  for t, n in j.get('counts', {}).items():
+                    a['tags'][t] = a['tags'].get(t, 0) + n
+                  for k, v in j.get('breakdown', {}).items():
+                    if isinstance(v, dict):
+                      for kk, n in v.items():
+                        a['bd'].setdefault(k, {})[kk] = a['bd'].setdefault(k, {}).get(kk, 0) + n
+                    else:
+                      a['bd'].setdefault(k, {})['n'] = a['bd'].setdefault(k, {}).get('n', 0) + v
+                  if j.get('fix_flags'):
+                    a['flags'].add(j['fix_flags'])
+                else:
+                  a['vmissing'] += 1
+                rf = f"{d}/result.txt"
+                if os.path.exists(rf):
+                  for l in open(rf, encoding='utf-8', errors='replace').read().splitlines():
+                    if l.startswith('TYPING_STRESS:'):
+                      for k, v in re.findall(r'(\w+)=(\S+)', l):
+                        if k in ('trials', 'fail', 'loss', 'extra', 'reorder', 'literal', 'substitute') and v.lstrip('-').isdigit():
+                          a['ts'][k] = a['ts'].get(k, 0) + int(v)
+                    elif l.startswith('KEYMATRIX_CELL:'):
+                      v = dict(re.findall(r'(\w+)=(\S+)', l)).get('verdict', '?')
+                      a['km'][v] = a['km'].get(v, 0) + 1
+            def vf_keys():
+              srcs = sorted({k[0] for k in agg}, key=lambda x: (not x.startswith('offrace'), x))
+              return [(src, var) for src in srcs for var in VAR_ORDER if (src, var) in agg]
+            def bd(a, key, name):
+              return a['bd'].get(key, {}).get(name, 0)
+            def fmt(d):
+              return ', '.join(f'{k}:{v}' for k, v in sorted(d.items())) if d else '-'
+            out += ["", "## 仮説検証(vf-*、Opus 根本原因レビュー RC1〜RC3 の発生頻度と修正案フラグの効果。情報のみ、合否には含めない)", "",
+                    "変種: base=フラグなし(発生頻度) / f1f2=Failed→Unknown+send_ime_mode_key が all_sent / f4=give-up で BS 掃除なし / f6=MS-IME ready poll の with_app None を継続 / all=全部。"
+                    "同じ元の構成の行を縦に比べる(base と変種で FAIL/literal/loss/STUCK が増減したか)。件数は全 run の合算。"
+                    "成功指標: PASS/FAIL=rc.txt、typing=TYPING_STRESS の合算(試行/FAIL試行/消失/余計/入替/リテラル/置換)、keymatrix=KEYMATRIX_CELL の判定別セル数。", "",
+                    "| 元の構成 | 変種 | ジョブ | PASS | FAIL | INVALID | 欠落 | verify欠落 | 有効フラグ | typing(試行/FAIL/消失/余計/入替/リテラル/置換) | keymatrix判定 |",
+                    "|---|---|---|---|---|---|---|---|---|---|---|"]
+            for src, var in vf_keys():
+              a = agg[(src, var)]
+              t = a['ts']
+              typing = '-' if not t else '/'.join(str(t.get(k, 0)) for k in ('trials', 'fail', 'loss', 'extra', 'reorder', 'literal', 'substitute'))
+              out.append(f"| {src} | {var} | {a['jobs']} | {a['pass_']} | {a['fail']} | {a['invalid']} | {a['missing']} | {a['vmissing']} | {', '.join(sorted(a['flags'])) or '-'} | {typing} | {fmt(a['km'])} |")
+            out += ["", "### RC1: 送信=確認済みの取り違え(applied が Confirmed/Optimistic の根拠で送信を省略したか、失敗/タイムアウトが何件あったか)", "",
+                    "skip-gji-direct=GjiDirect が「shadow が一致」で送信を省略した件数(applied_kind 別: confirmed=確認済みと記録された値で省略 / optimistic=楽観値 / unknown)。"
+                    "apply-failed=非同期適用の失敗(Timeout/CrossProcessFailed 等。f1 なしなら applied を Confirmed{!target} に書く)。set-open-async=drift correction 等の fire-and-forget の発行結果。"
+                    "optimistic=drift correction が楽観更新した件数(-skipped=warrant で拒否され更新しなかった)。modekey-partial / sendinput-partial=送信件数が足りなかった件数(0 なら『件数を見ない』は実害なし)。", "",
+                    "| 元の構成 | 変種 | skip-gji-direct | applied_kind 内訳 | apply-succeeded | apply-failed | failed の error 内訳 | set-open-async | optimistic | optimistic-skipped | modekey-partial | sendinput-partial |",
+                    "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+            for src, var in vf_keys():
+              a = agg[(src, var)]; tg = a['tags']
+              out.append(f"| {src} | {var} | {tg.get('skip-gji-direct', 0)} | {fmt(a['bd'].get('skip-gji-direct.applied_kind', {}))} | {tg.get('apply-succeeded', 0)} | {tg.get('apply-failed', 0)} | {fmt(a['bd'].get('apply-failed.error', {}))} | {fmt(a['bd'].get('set-open-async.result', {}))} | {tg.get('optimistic', 0)} | {tg.get('optimistic-skipped', 0)} | {tg.get('modekey-partial', 0)} | {tg.get('sendinput-partial', 0)} |")
+            out += ["", "### RC2: 多段補償(raw recovery の BS・give-up、probe 取り消しによる deferred 破棄)", "",
+                    "cancel-probe=probe の取り消し件数(origin 別=契機のイベント。ImeOff なら awase 自身の OFF 書き込みや明示キーが契機)。deferred_n>0=そのうちユーザー入力(deferred VK)を実際に捨てた件数と契機別。"
+                    "giveup-bs=give-up で BS 掃除だけ予約した件数、lost_romaji 非空=見えていた文字を消して再送しなかった件数(f4 ではこれが 0 になる想定)。recovery-resend=BS+romaji 再送を予約した件数。", "",
+                    "| 元の構成 | 変種 | cancel-probe | origin 内訳 | deferred_n>0 | deferred_n>0 の origin | giveup-bs | lost_romaji 非空 | recovery-resend | fix-applied |",
+                    "|---|---|---|---|---|---|---|---|---|---|"]
+            for src, var in vf_keys():
+              a = agg[(src, var)]; tg = a['tags']
+              out.append(f"| {src} | {var} | {tg.get('cancel-probe', 0)} | {fmt(a['bd'].get('cancel-probe.origin', {}))} | {bd(a, 'cancel-probe.deferred_n>0', 'n')} | {fmt(a['bd'].get('cancel-probe.deferred_n>0.origin', {}))} | {tg.get('giveup-bs', 0)} | {bd(a, 'giveup-bs.lost_romaji_nonempty', 'n')} | {tg.get('recovery-resend', 0)} | {fmt(a['bd'].get('fix-applied.flag', {}))} |")
+            out += ["", "### RC3: with_app 再入失敗(MS-IME ready poll が None を Stale と読み替えた件数ほか)", "",
+                    "poll-with_app-none=ready poll の with_app が None を返した件数(site 別。0 なら CI では顕在化しない)。with_app-reentry=with_app の再入検知(全体)。f6 では None を Pending(継続)にする。", "",
+                    "| 元の構成 | 変種 | poll-with_app-none | site 内訳 | with_app-reentry |",
+                    "|---|---|---|---|---|"]
+            for src, var in vf_keys():
+              a = agg[(src, var)]; tg = a['tags']
+              out.append(f"| {src} | {var} | {tg.get('poll-with_app-none', 0)} | {fmt(a['bd'].get('poll-with_app-none.site', {}))} | {tg.get('with_app-reentry', 0)} |")
           open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8').write('\n'.join(out) + '\n')
           print('\n'.join(out))
           if os.environ.get('GATE_MODE') == 'invariants':
