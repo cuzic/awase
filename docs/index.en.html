@@ -594,6 +594,47 @@ footer p{margin-bottom:0.3rem}
   </div>
 </section>
 
+<!-- v2 -->
+<section id="v2">
+  <div class="container">
+    <h2 class="section-title">What's new in v2 (differences from v1)</h2>
+    <p class="section-lead">v2 is rebuilt on one principle: the IME is the source of truth, and awase observes and follows it instead of writing to it.</p>
+    <div class="install-block">
+      <div class="modes-grid">
+        <div class="mode-row">
+          <span class="mode-name">No more preventive writes</span>
+          <span class="mode-desc">Automatic IME key sends on every Enter, on focus change, when Ctrl is released, or when the engine is toggled have been removed. awase observes the IME state and follows it</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">IME keys always converge</span>
+          <span class="mode-desc">Press Ctrl+Henkan/Muhenkan, Kana, Hankaku/Zenkaku, etc., and whatever awase believes internally, an absolute key takes one press and a toggle at most two for the real IME to match</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">Key roles derived from your IME settings</span>
+          <span class="mode-desc">awase reads the key settings of Google Japanese Input and MS-IME to decide how to treat Hankaku/Zenkaku, Muhenkan/Henkan and F13–F24, so custom bindings work too</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">Key-effect learning</span>
+          <span class="mode-desc">For an IME with custom key settings, awase learns on the real machine what each key does and builds a table (adopt or re-verify from the settings screen)</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">Settings diagnostics</span>
+          <span class="mode-desc">Key names are read with one tolerant rule everywhere, and mistakes produce warnings instead of being silently ignored. Saving from the settings screen keeps your comments</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">Bug fixes</span>
+          <span class="mode-desc">Katakana lock in Windows Terminal + Google Japanese Input, lost characters under fast typing in Chrome, following an IME closed from outside, and about 20 others (18 listed with BUG numbers in the migration guide)</span>
+        </div>
+      </div>
+      <p style="color:var(--text-secondary);font-size:0.95rem;line-height:1.9;margin-top:1rem">
+        Your <code>config.toml</code> carries over, but some settings change. See the
+        <a href="https://github.com/cuzic/awase/blob/main/docs/migration-v1-to-v2.md">v1 to v2 differences and migration guide</a> (Japanese) and the
+        <a href="changelog.en.html">changelog</a>.
+      </p>
+    </div>
+  </div>
+</section>
+
 <!-- Install -->
 <section id="install">
   <div class="container">

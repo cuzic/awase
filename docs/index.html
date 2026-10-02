@@ -594,6 +594,47 @@ footer p{margin-bottom:0.3rem}
   </div>
 </section>
 
+<!-- v2 -->
+<section id="v2">
+  <div class="container">
+    <h2 class="section-title">v2 の主な変更（v1 との違い）</h2>
+    <p class="section-lead">v2 は「IME の状態は IME 自身が正。awase は書かずに観測して追随する」方針に作り直した版です。</p>
+    <div class="install-block">
+      <div class="modes-grid">
+        <div class="mode-row">
+          <span class="mode-name">先回りの書き込みをやめた</span>
+          <span class="mode-desc">確定キーごと・フォーカス変更時・Ctrl を離したとき・エンジン ON/OFF 時の IME キー自動送信を撤去。IME の状態は観測して追随します</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">IME キーが必ず合う</span>
+          <span class="mode-desc">Ctrl+変換/無変換・かな・半角/全角などを押すと、内部状態によらず、絶対指定は 1 回、トグルは 2 回以内で実際の IME が一致します</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">キーの役割を IME 設定から逆算</span>
+          <span class="mode-desc">Google 日本語入力・MS-IME のキー設定を読み取り、半角/全角・無変換/変換・F13〜F24 の扱いを決めます（カスタム設定でも動く）</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">キー効果の学習</span>
+          <span class="mode-desc">カスタムキー設定の IME で、キーを押すと IME がどうなるかを実機で学習し表にします（設定画面から採用・再検証）</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">設定の診断</span>
+          <span class="mode-desc">キー名の書き方を全項目で寛容に解釈し、間違いは黙って無視せず警告します。設定画面の保存はコメントを保ちます</span>
+        </div>
+        <div class="mode-row">
+          <span class="mode-name">不具合修正</span>
+          <span class="mode-desc">Windows Terminal + Google 日本語入力のカタカナ固着、Chrome の高速打鍵での文字消失、外部から閉じられた IME への追随ほか 約 20 件（BUG 番号つき 18 件を移行ガイドに一覧）</span>
+        </div>
+      </div>
+      <p style="color:var(--text-secondary);font-size:0.95rem;line-height:1.9;margin-top:1rem">
+        設定ファイル（<code>config.toml</code>）は引き継げますが、一部の設定は変わります。
+        <a href="https://github.com/cuzic/awase/blob/main/docs/migration-v1-to-v2.md">v1 から v2 への違いと移行ガイド</a> と
+        <a href="changelog.html">更新履歴</a> を確認してください。
+      </p>
+    </div>
+  </div>
+</section>
+
 <!-- Install -->
 <section id="install">
   <div class="container">
