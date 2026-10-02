@@ -1,7 +1,7 @@
 #![allow(clippy::all, clippy::pedantic, clippy::nursery)]
 //! ADR-208 L0: 明示キー押下の配送 `explicit_press_delivery_with` の全列挙テストと、現状の反例の golden。
 //!
-//! 状態空間（belief 2 × applied 5 × is_japanese 2 × profile 7 × kind 2 × current_focus 2 × 観測 3 × IntentStore 3 ×
+//! 状態空間（belief 2 × applied 5 × is_japanese 2 × profile 7 × (kind, TIP 同定) 3 × current_focus 2 × 観測 3 × IntentStore 3 ×
 //! candidate_was_seen 2 × chord 2 × win 2 × was_down 2 = 120,960 状態）× キー 12 種 = 1,451,520 通りの押下を全列挙し
 //! （実 IME の初期値 R∈{false,true} も掛けると約 166 万通り）、次の性質を検査する。
 //!
@@ -163,10 +163,6 @@ const CLASSES: &[(&str, &str)] = &[
         "S-2: is_japanese_ime=false。授権が下りない（Engine のコンボ・0x16/0x1A）／漢字(0x19)・F13 が昇格せず握る・配送だけになる。L2 で解消（押下の授権と非リピートの昇格が is_japanese_ime を問わない）",
     ),
     (
-        "K1_kanji_unidentified_by_design",
-        "仕様（所有者決定）: 0x19 は IME が TIP で未同定（英語 IME・IME 無しの窓・第三者 IME・起動直後）かつ is_japanese_ime=false のとき昇格しない（Alt+` 等への副作用を避ける）。S-2 の残りではない",
-    ),
-    (
         "S3_shadow_noop_suppressed",
         "S-3: shadow no-op（belief が既に向きと一致）は書かず、物理は Suppress される（ImmCross）",
     ),
@@ -193,9 +189,15 @@ const CLASSES: &[(&str, &str)] = &[
     ("unclassified", "未分類（あってはならない）"),
 ];
 
+/// 0x19 が IME の開閉キーではない状態（TIP 未同定かつ `is_japanese_ime=false`、ADR-208 L2 M-1）。受動（`shadow_action=None`）で
+/// 物理は素通しなので、awase が決めることは無く P1〜P4 の対象外（英語 IME・IME 無しの窓・US 配列の Alt+` を飲み込まない）。
+fn kanji_is_not_an_ime_key(s: &PressState, key: ExplicitKey) -> bool {
+    key == ExplicitKey::Kanji && !s.is_japanese_ime && !s.ime_identified
+}
+
 /// 対象押下の P1 を破るクラス。破らなければ `None`。対象外（リピート・Win 押下・物理のみで意図を持たないキー）も `None`。
 fn p1_class(s: &PressState, key: ExplicitKey, d: &Delivery) -> Option<&'static str> {
-    if s.win_held || s.was_down || !key.is_target_press_key() {
+    if s.win_held || s.was_down || !key.is_target_press_key() || kanji_is_not_an_ime_key(s, key) {
         return None;
     }
     let eff_jp = state_after_press(s, key, d).is_japanese_ime;
@@ -209,8 +211,6 @@ fn p1_class(s: &PressState, key: ExplicitKey, d: &Delivery) -> Option<&'static s
         // `is_japanese_ime` が偽の no-op を S-2 と誤分類していたのを直した）。
         Ok(Resolution::PassThrough) => Some(if d.reason == ElisionReason::ShadowNoop {
             "A1_noop_pass_through"
-        } else if !eff_jp && key == ExplicitKey::Kanji && !s.ime_identified {
-            "K1_kanji_unidentified_by_design"
         } else if !eff_jp {
             "S2_not_japanese"
         } else {
@@ -223,11 +223,6 @@ fn p1_class(s: &PressState, key: ExplicitKey, d: &Delivery) -> Option<&'static s
             ElisionReason::Unwarranted if !s.current_focus_known => "S4_focus_none_unwarranted",
             ElisionReason::Unwarranted if key == ExplicitKey::EngineOff && s.ctrl_chord => {
                 "L9_chord_filtered_unwarranted"
-            }
-            ElisionReason::NotPromoted
-                if !eff_jp && key == ExplicitKey::Kanji && !s.ime_identified =>
-            {
-                "K1_kanji_unidentified_by_design"
             }
             ElisionReason::NotPromoted if !eff_jp => "S2_not_japanese",
             ElisionReason::ShadowNoop => "S3_shadow_noop_suppressed",
@@ -342,6 +337,8 @@ struct Report {
     p1: PropStat,
     /// 参考: L1 前（押下 ID なし）の P1。S-1 が L1 で 0 になったことを件数で残す。
     p1_pre_l1: PropStat,
+    /// P1 の S-1 のプロファイル別件数（TSF 系だけであることを golden に固定する）。
+    s1_by_profile: BTreeMap<String, u64>,
     /// 参考: L2 前（L1 まで）の P1。S-2・S-4 が L2 で 0 になったことを件数で残す。
     p1_pre_l2: PropStat,
     p1_fixed_point: PropStat,
@@ -366,6 +363,7 @@ fn analyze() -> Report {
     let mut rep = Report {
         p1: PropStat::default(),
         p1_pre_l1: PropStat::default(),
+        s1_by_profile: BTreeMap::new(),
         p1_pre_l2: PropStat::default(),
         p1_fixed_point: PropStat::default(),
         p2: PropStat::default(),
@@ -390,6 +388,11 @@ fn analyze() -> Report {
             // P1（現状）と、D4 固定点適用後の P1（参考）
             rep.p1.checked += 1;
             if let Some(class) = p1_class(&s, key, &d1) {
+                if class == "S1_already_matched" {
+                    *rep.s1_by_profile
+                        .entry(format!("{:?}/{:?}", s.profile, s.ime_kind))
+                        .or_default() += 1;
+                }
                 rep.p1.add(class, &s, || {
                     format!("{} -> {}", fmt_state(&s, key, None), fmt_delivery(&d1))
                 });
@@ -447,7 +450,11 @@ fn analyze() -> Report {
             }
 
             // 収束・不動点の検査は対象押下（非リピート・Win なし）だけ。
-            if s.was_down || s.win_held || !key.is_target_press_key() {
+            if s.was_down
+                || s.win_held
+                || !key.is_target_press_key()
+                || kanji_is_not_an_ime_key(&s, key)
+            {
                 continue;
             }
             let class_of =
@@ -568,7 +575,7 @@ fn render(rep: &Report) -> String {
          # 生成元: crates/awase-windows/tests/explicit_press_exhaustive.rs\n\
          # このファイルは自動生成される。更新は UPDATE_GOLDEN=1 で再生成すること。\n\
          #\n\
-         # 状態空間(belief 2 × applied 5 × is_japanese 2 × profile 7 × kind 2 × current_focus 2 × 観測 3 ×\n\
+         # 状態空間(belief 2 × applied 5 × is_japanese 2 × profile 7 × (kind, TIP 同定) 3 × current_focus 2 × 観測 3 ×\n\
          # IntentStore 3 × candidate_was_seen 2 × chord 2 × win 2 × was_down 2) × キー 12 種を全列挙した、現状(ADR-208 L2)の本番判断の合成結果。\n\
          # 反例は「分類 × 件数 + 各分類の最小の代表例(基準状態からのずれが最小)」で固定する(S-2 だけで状態空間の約半分が\n\
          # 反例なので行は列挙しない)。分類に当てはまらない反例(unclassified)が出たらテストが失敗する。\n\
@@ -642,6 +649,11 @@ fn render(rep: &Report) -> String {
     ];
     for (id, desc, stat) in props {
         let _ = writeln!(out, "## {id}: {desc}");
+        if id == "P1" {
+            for (k, n) in &rep.s1_by_profile {
+                let _ = writeln!(out, "info\ts1_profile/kind\t{k}\t{n}");
+            }
+        }
         if id == "P5-Ledger" {
             let _ = writeln!(
                 out,
@@ -817,6 +829,11 @@ fn physical_delivery_matches_the_audit_table() {
             // Engine のコンボ・単独タップは常に Consume。
             if matches!(key, ExplicitKey::EngineOn | ExplicitKey::EngineOff) {
                 assert_eq!(d.physical, Physical::Consume, "{key:?} {s:?}");
+                continue;
+            }
+            // 未同定かつ `is_japanese_ime=false` の 0x19 は受動（ADR-208 L2 M-1）。IME の開閉キーではないので常に素通し。
+            if kanji_is_not_an_ime_key(&s, key) {
+                assert_eq!(d.physical, Physical::Allow, "{key:?} {s:?}");
                 continue;
             }
             // InputRelay は常に Allow（issue #136）。
@@ -1187,7 +1204,13 @@ fn l2_changes_only_the_press_warrant_and_the_shadow_promotion() {
             let l1 = delivery_pre_l2(&judge, &s, key);
             let l2 = delivery(&judge, &s, key);
             if s.was_down {
-                assert_eq!(l1, l2, "{} リピートは L1 と同じ", fmt_state(&s, key, None));
+                // 変わるのは未同定かつ `is_japanese_ime=false` の 0x19 の物理（受動 → 素通し、M-1）だけ。
+                if kanji_is_not_an_ime_key(&s, key) {
+                    assert_eq!(l2.physical, Physical::Allow);
+                    assert_eq!((l1.write, l1.reason), (l2.write, l2.reason));
+                } else {
+                    assert_eq!(l1, l2, "{} リピートは L1 と同じ", fmt_state(&s, key, None));
+                }
                 continue;
             }
             assert_ne!(
@@ -1232,12 +1255,12 @@ fn s2_and_s4_are_resolved_by_l2() {
     }
 }
 
-/// 0x19 は TIP 未同定かつ `is_japanese_ime=false` のときだけ昇格しない（仕様、所有者決定。K1）。同定済みなら `is_japanese_ime` の
-/// 誤判定でも昇格して書く。
+/// 0x19 は TIP 未同定かつ `is_japanese_ime=false` のときだけ受動（昇格せず、物理は素通し。ADR-208 L2 M-1、所有者決定）。
+/// 同定済みなら `is_japanese_ime` の誤判定でも昇格して書く。
 #[test]
-fn kanji_is_promoted_when_identified_and_not_when_unidentified_by_design() {
+fn kanji_is_promoted_when_identified_and_passed_through_when_unidentified() {
     let judge = StoreJudge::default();
-    let mut k1 = 0u64;
+    let mut passive = 0u64;
     for s in PressState::all().filter(|s| !s.was_down && !s.win_held) {
         let d = delivery(&judge, &s, ExplicitKey::Kanji);
         let promoted = d.reason != ElisionReason::NotPromoted;
@@ -1247,9 +1270,16 @@ fn kanji_is_promoted_when_identified_and_not_when_unidentified_by_design() {
             "{}",
             fmt_state(&s, ExplicitKey::Kanji, None)
         );
-        if !promoted {
-            k1 += 1;
+        if kanji_is_not_an_ime_key(&s, ExplicitKey::Kanji) {
+            // 飲み込まない（二重の空振りにならない）: 物理は Down/Up とも素通し（Allow）で awase は何も書かない。
+            assert_eq!(
+                (d.physical, d.write),
+                (Physical::Allow, None),
+                "{}",
+                fmt_state(&s, ExplicitKey::Kanji, None)
+            );
+            passive += 1;
         }
     }
-    assert!(k1 > 0);
+    assert!(passive > 0);
 }

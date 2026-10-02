@@ -362,6 +362,11 @@ impl ExplicitKey {
     /// 物理（非注入・非リピート）KeyDown として hook が組み立てるイベント。Engine 経路のキーは
     /// 配送が常に Consume なので `plan` には渡さない（`None`）。
     fn event(self, was_down: bool) -> Option<RawKeyEvent> {
+        self.event_for(was_down, false)
+    }
+
+    /// [`Self::event`] の、0x19 を受動（`kanji_passive`、ADR-208 L2 M-1: `enrich_key_role` が `shadow_action` を付けない）にできる版。
+    fn event_for(self, was_down: bool, kanji_passive: bool) -> Option<RawKeyEvent> {
         let (vk, shadow_action, sync_direction) = match self {
             Self::StaticOn => (crate::vk::VK_IME_ON, Some(ShadowImeAction::TurnOn), None),
             Self::StaticOff => (crate::vk::VK_IME_OFF, Some(ShadowImeAction::TurnOff), None),
@@ -370,7 +375,11 @@ impl ExplicitKey {
                 Some(ShadowImeAction::Toggle),
                 None,
             ),
-            Self::Kanji => (crate::vk::VK_KANJI, Some(ShadowImeAction::Toggle), None),
+            Self::Kanji => (
+                crate::vk::VK_KANJI,
+                (!kanji_passive).then_some(ShadowImeAction::Toggle),
+                None,
+            ),
             Self::RoleFkeyToggle => (crate::vk::VK_F13, Some(ShadowImeAction::Toggle), None),
             // 同期キー（`keys.ime_detect`）は `enrich_ime_relevance` が `sync_direction` を付ける。ここでは IME の VK
             // （かな 0x15 等。静的分類で `shadow_action` も付く）を設定した構成を表す。IME の VK でない任意の VK を
@@ -861,8 +870,15 @@ pub fn explicit_press_delivery_after(
             }
         }
         PressPath::Shadow => {
+            // L2 M-1: 未同定かつ `is_japanese_ime` 偽の 0x19 は受動（`enrich_key_role`）。物理は `plan` が素通しにする。
+            let kanji_passive = mode.has_l2()
+                && key == ExplicitKey::Kanji
+                && crate::state::key_effect_runtime::kanji_passive_when_unidentified(
+                    state.ime_identified,
+                    is_japanese_ime,
+                );
             let event = key
-                .event(state.was_down)
+                .event_for(state.was_down, kanji_passive)
                 .expect("Shadow 経路のキーは必ず RawKeyEvent を持つ");
             let intent_kind = select_shadow_intent(&event, is_japanese_ime, state.ime_identified)
                 .filter(|(_, kind)| {
@@ -1912,6 +1928,11 @@ mod tests {
     }
 
     /// 逐語コピーとの差分 0（L0 の「挙動を変えない」の、移動後の同一関数どうしの比較を避けた確認）。
+    /// 役割分担: このテストは「変更点以外が逐語コピーと同じ」ことの確認（`expected_jp` は新実装の条件式の再掲で、変更点の意味は
+    /// 検証しない）。変更点そのもの（0x19 は同定済み、0xF3/F4/F13 は `is_japanese_ime` を問わない、未同定の 0x19 は受動）の期待値は
+    /// `select_shadow_intent_matches_the_pre_extraction_branches` と
+    /// `tests/explicit_press_exhaustive.rs::kanji_is_promoted_when_identified_and_passed_through_when_unidentified` が直接固定する。
+    ///
     /// 全 `PressState`（120,960）× 12 キー（イベントを持つ 10 種）× KeyDown/KeyUp × `shadow_toggled` × 4 プロファイル × 2 種別で
     /// 配送を、`is_japanese_ime` で intent 選択を、chord × target でフィルタ条件を比べる。
     #[test]

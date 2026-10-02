@@ -710,7 +710,16 @@ impl Runtime {
     ) -> Option<awase::types::ShadowImeAction> {
         use crate::state::ime_kind::ImeKindId;
         use crate::state::key_effect_runtime::{kanji_role_plan, KanjiRolePlan};
-        let is_gji = crate::tsf::observer::tsf_obs().table_ime_kind() == Some(ImeKindId::Gji);
+        let table_kind = crate::tsf::observer::tsf_obs().table_ime_kind();
+        // ADR-208 L2 M-1: IME 未同定かつ `is_japanese_ime` 偽は受動（物理は素通し。静的 Toggle のままだと昇格しないのに
+        // Suppress される二重の空振りになる）。`latch_step` の closure 内なので Down/Up の判定はラッチで一貫する。
+        if crate::state::key_effect_runtime::kanji_passive_when_unidentified(
+            table_kind.is_some(),
+            self.platform_state.ime.belief.is_japanese_ime(),
+        ) {
+            return None;
+        }
+        let is_gji = table_kind == Some(ImeKindId::Gji);
         match kanji_role_plan(is_gji, m.ctrl, m.shift, m.win) {
             KanjiRolePlan::KeepStatic => static_action,
             KanjiRolePlan::Passive => None,
