@@ -133,8 +133,8 @@ impl WarrantJudge for StoreJudge {
     }
 }
 
-/// 本番の判断（ADR-208 L1: 押下 ID の予約と applied の未知化）。
-const PROD: DeliveryMode = DeliveryMode::PressId;
+/// 本番の判断（ADR-208 L1〜L3a: 押下 ID の予約・applied の未知化・授権・D4 の固定点）。
+const PROD: DeliveryMode = DeliveryMode::PressIdFixedPoint;
 
 fn delivery(judge: &StoreJudge, s: &PressState, key: ExplicitKey) -> Delivery {
     explicit_press_delivery_with(s, key, judge, PROD)
@@ -411,8 +411,7 @@ fn analyze() -> Report {
                     format!("{} -> {}", fmt_state(&s, key, None), fmt_delivery(&dpre2))
                 });
             }
-            let dfp =
-                explicit_press_delivery_with(&s, key, &judge, DeliveryMode::PressIdFixedPoint);
+            let dfp = explicit_press_delivery_with(&s, key, &judge, DeliveryMode::PressId);
             rep.p1_fixed_point.checked += 1;
             if let Some(class) = p1_class(&s, key, &dfp) {
                 rep.p1_fixed_point.add(class, &s, || {
@@ -570,13 +569,13 @@ fn analyze() -> Report {
 fn render(rep: &Report) -> String {
     let mut out = String::new();
     out.push_str(
-        "# 明示キー押下の配送 現状の反例 golden (ADR-208 L2 時点)\n\
+        "# 明示キー押下の配送 現状の反例 golden (ADR-208 L3a 時点)\n\
          #\n\
          # 生成元: crates/awase-windows/tests/explicit_press_exhaustive.rs\n\
          # このファイルは自動生成される。更新は UPDATE_GOLDEN=1 で再生成すること。\n\
          #\n\
          # 状態空間(belief 2 × applied 5 × is_japanese 2 × profile 7 × (kind, TIP 同定) 3 × current_focus 2 × 観測 3 ×\n\
-         # IntentStore 3 × candidate_was_seen 2 × chord 2 × win 2 × was_down 2) × キー 12 種を全列挙した、現状(ADR-208 L2)の本番判断の合成結果。\n\
+         # IntentStore 3 × candidate_was_seen 2 × chord 2 × win 2 × was_down 2) × キー 12 種を全列挙した、現状(ADR-208 L3a)の本番判断の合成結果。\n\
          # 反例は「分類 × 件数 + 各分類の最小の代表例(基準状態からのずれが最小)」で固定する(S-2 だけで状態空間の約半分が\n\
          # 反例なので行は列挙しない)。分類に当てはまらない反例(unclassified)が出たらテストが失敗する。\n\
          # L1 で S-1 は TsfNative×GJI(BUG-124 の実機 A/B〈ADR-208 L3'〉まで段階制御)を除いて 0 になった(P1-PreL1 が L1 前の件数)。L2 で S-2(is_japanese_ime=false)と S-4(current_focus=None)は 0 になった(P1-PreL2 が L2 前の件数)。L3 以降で穴を直すと該当クラスの件数が 0 に向かう(この差分が進捗)。\n\
@@ -612,8 +611,8 @@ fn render(rep: &Report) -> String {
             &rep.p1_pre_l2,
         ),
         (
-            "P1-FixedPoint",
-            "(参考) L1 に D4 の固定点(plan(false) を先に評価し Suppress なら no-op でも書く)を重ねたときの P1。L3 で本番がこの形になる",
+            "P1-PreL3a",
+            "(参考) L3a 前(L2 まで、D4 の固定点なし)の P1。S-3(IC の shadow no-op が書かず Suppress される)が L3a で解消した差分を残す",
             &rep.p1_fixed_point,
         ),
         (
@@ -727,7 +726,7 @@ fn exhaustive_properties_and_counterexample_golden() {
         ("P1", &rep.p1),
         ("P1-PreL1", &rep.p1_pre_l1),
         ("P1-PreL2", &rep.p1_pre_l2),
-        ("P1-FixedPoint", &rep.p1_fixed_point),
+        ("P1-PreL3a", &rep.p1_fixed_point),
         ("P2", &rep.p2),
         ("P3", &rep.p3),
         ("P4", &rep.p4),
@@ -1202,7 +1201,7 @@ fn l2_changes_only_the_press_warrant_and_the_shadow_promotion() {
     for s in PressState::all() {
         for key in ExplicitKey::ALL {
             let l1 = delivery_pre_l2(&judge, &s, key);
-            let l2 = delivery(&judge, &s, key);
+            let l2 = explicit_press_delivery_with(&s, key, &judge, DeliveryMode::PressId);
             if s.was_down {
                 // 変わるのは未同定かつ `is_japanese_ime=false` の 0x19 の物理（受動 → 素通し、M-1）だけ。
                 if kanji_is_not_an_ime_key(&s, key) {
@@ -1282,4 +1281,63 @@ fn kanji_is_promoted_when_identified_and_passed_through_when_unidentified() {
         }
     }
     assert!(passive > 0);
+}
+
+/// L3a（ADR-208 決定2 D4）が L2 から変えるのは、shadow の no-op（belief が既に向きと一致）で `plan(shadow_toggled=false)` が
+/// Suppress の非リピートの押下が書くようになる（S-3）ことだけ。物理の配送は変わらない（後段の `plan(true)` も Suppress）。
+/// Allow の窓・リピート・TsfNative（BUG-124 の実機 A/B〈L3'〉まで段階制御）・Engine 経路は L2 と同じ。
+#[test]
+fn l3a_changes_only_the_suppressed_shadow_noop_write() {
+    let judge = StoreJudge::default();
+    let mut written = 0u64;
+    let (mut changed, mut tsf_kept, mut repeat_kept, mut allow_kept) = (0u64, 0u64, 0u64, 0u64);
+    for s in PressState::all() {
+        for key in ExplicitKey::ALL {
+            let l2 = explicit_press_delivery_with(&s, key, &judge, DeliveryMode::PressId);
+            let l3a = delivery(&judge, &s, key);
+            assert_eq!(
+                l2.physical,
+                l3a.physical,
+                "{} 物理の配送は変わらない",
+                fmt_state(&s, key, None)
+            );
+            let noop_suppressed =
+                l2.reason == ElisionReason::ShadowNoop && l2.physical == Physical::Suppress;
+            if noop_suppressed && !s.was_down && !s.profile.is_effectively_tsf_native() {
+                changed += 1;
+                assert_ne!(
+                    l3a.reason,
+                    ElisionReason::ShadowNoop,
+                    "{} Suppress される no-op は書く判断に回る",
+                    fmt_state(&s, key, None)
+                );
+                assert!(l3a.shadow_toggled);
+                // M-1/m-2: 書いた向きはキーの意味（belief の向きではない）。書かない場合（授権・gate）も逆向きは書かない。
+                assert!(
+                    l3a.write.is_none() || l3a.write == l3a.target,
+                    "{} 書いた向きがキーの意味と一致しない: {l3a:?}",
+                    fmt_state(&s, key, None)
+                );
+                written += u64::from(l3a.write.is_some());
+            } else {
+                assert_eq!(l2, l3a, "{}", fmt_state(&s, key, None));
+                if noop_suppressed {
+                    if s.was_down {
+                        repeat_kept += 1;
+                    } else {
+                        tsf_kept += 1;
+                    }
+                }
+                if l2.reason == ElisionReason::ShadowNoop && l2.physical == Physical::Allow {
+                    allow_kept += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        // tsf_kept は現状 0（TsfNative で Suppress される no-op はモデルに無い: Suppress されるのはトグルキーで、トグルは必ず belief を倒す）。
+        // TsfNative の除外は `shadow_noop_write_target` の単体テストが固定する（L3' で定数を反転するときの足場）。
+        changed > 0 && written > 0 && repeat_kept > 0 && allow_kept > 0,
+        "{changed} {tsf_kept} {repeat_kept} {allow_kept}"
+    );
 }

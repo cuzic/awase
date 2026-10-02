@@ -733,6 +733,36 @@ impl DeliveryMode {
     }
 }
 
+/// ADR-208 L3a（D4）の段階: shadow の **no-op 分岐の書き込み**（belief が既に押下の向きと一致しているのに、物理が Suppress される窓で
+/// 実 IME へ書く）を TsfNative の窓（WezTerm/Windows Terminal 等）へ適用するか。
+///
+/// **現状は到達しない防御**: `plan(false)` が Suppress になる no-op は `Standard`（ImmCross）だけで、TSF 扱いのクラスは `Standard` にならない
+/// （TsfNative の no-op は物理が Allow で届くので書く理由が無い）。TsfNative の `plan` が no-op の Down を Suppress するよう
+/// 変わったときの足場で、BUG-124 の「@」（WT × GJI × PSReadLine）の実機 A/B（L3'）が解禁の条件。定数を `true` にするだけでは
+/// no-op 書き込みは増えない（`plan` の Suppress 条件を広げる設計が別に要る）。
+pub(crate) const SHADOW_NOOP_WRITES_IN_TSF_NATIVE: bool = false;
+
+/// shadow の no-op 分岐で書く向き（D4 の固定点の手順2。`plan(shadow_toggled=false)` が Suppress の昇格した押下だけ）。
+/// 本番の `kp_shadow_noop_write` と全列挙モデル（`DeliveryMode::PressIdFixedPoint`）が共有する。
+/// `has_press` は非リピートの押下（押下 ID あり）。リピートは従来どおり no-op では書かない。
+///
+/// **書く向きは常にキーの意味 `key_target`（`action.resolve(current)`）**。belief（`current`）ではない: PanicReset ガード等で
+/// belief が動かず `current != key_target` のまま no-op に入っても、キーと逆向きを書かない（INV-L2。OFF キーで IME を開かない）。
+#[must_use]
+pub(crate) const fn shadow_noop_write_target(
+    has_press: bool,
+    effectively_tsf_native: bool,
+    plan0_suppress: bool,
+    key_target: bool,
+) -> Option<bool> {
+    if has_press && plan0_suppress && (!effectively_tsf_native || SHADOW_NOOP_WRITES_IN_TSF_NATIVE)
+    {
+        Some(key_target)
+    } else {
+        None
+    }
+}
+
 // ── 決定関数 ─────────────────────────────────────────────────────────────────
 
 /// 全列挙モデルが 1 押下に付ける押下 ID（値に意味は無い。`PressLedger` は ID の等価だけを見る）。
@@ -896,10 +926,21 @@ pub fn explicit_press_delivery_after(
                 PhysicalKeyDisposition::plan_core(&event, app_profile, false, state.ime_kind);
             // 2. 書く決定。Legacy は belief が倒れたときだけ。FixedPoint は昇格した押下で plan0 が Suppress なら
             //    no-op でも書く（Suppress した物理キーに誰も応答しない二重の空振りを避ける）。
-            let write_wanted = flips
-                || (mode.is_fixed_point()
-                    && resolved.is_some()
-                    && plan0 == PhysicalKeyDisposition::Suppress);
+            let plan0_suppress = plan0 == PhysicalKeyDisposition::Suppress;
+            let noop_write = if mode.has_press_id() {
+                // 本番（L3a）と同じ判断を共有する（押下 ID あり・TsfNative は L3' まで除外）。
+                mode.is_fixed_point()
+                    && shadow_noop_write_target(
+                        has_press,
+                        state.profile.is_effectively_tsf_native(),
+                        plan0_suppress,
+                        resolved.unwrap_or(state.belief_open),
+                    )
+                    .is_some()
+            } else {
+                mode.is_fixed_point() && plan0_suppress
+            };
+            let write_wanted = flips || (resolved.is_some() && noop_write);
             // 3. 後段の plan(shadow_toggled=write_wanted)。
             let physical = match PhysicalKeyDisposition::plan_core(
                 &event,
@@ -1988,5 +2029,29 @@ mod tests {
             }
         }
         assert_eq!(plan_cases, 120_960 * 10 * 2 * 2);
+    }
+}
+
+#[cfg(test)]
+mod shadow_noop_write_tests {
+    use super::shadow_noop_write_target;
+
+    #[test]
+    fn writes_only_for_a_suppressed_non_repeat_press_outside_tsf_native() {
+        // 押下 ID あり・plan0 が Suppress・TsfNative でない → キーの意味の向きを書く（belief の向きではない）。
+        assert_eq!(
+            shadow_noop_write_target(true, false, true, false),
+            Some(false)
+        );
+        assert_eq!(
+            shadow_noop_write_target(true, false, true, true),
+            Some(true)
+        );
+        // plan0 が Allow（物理が IME に届く窓）なら書かない（INV-L1 の「ちょうど一方」、BUG-113）。
+        assert_eq!(shadow_noop_write_target(true, false, false, true), None);
+        // リピート（押下 ID なし）は書かない。
+        assert_eq!(shadow_noop_write_target(false, false, true, true), None);
+        // TsfNative は L3' まで書かない。
+        assert_eq!(shadow_noop_write_target(true, true, true, true), None);
     }
 }
