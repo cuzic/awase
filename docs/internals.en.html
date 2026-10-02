@@ -648,6 +648,15 @@ awase's countermeasure: focus had changed → reject this observation</div>
   </p>
 
   <div class="callout purple">
+    <strong>v2 policy: observe instead of writing.</strong>
+    Preventive or corrective writes that were not triggered by a user action (a <code>VK_IME_ON</code> on every Enter,
+    a resend when Ctrl is released, opening or closing the IME along with the engine's ON/OFF, and so on) have been removed;
+    awase now observes the IME state and follows it (ADR-212/213). In return, when you press an explicit IME key
+    (Ctrl+Henkan/Muhenkan, Kana, Hankaku/Zenkaku, Kanji, etc.), awase never skips it because of stale internal state:
+    an absolute key takes one press and a toggle at most two for the real IME to match (ADR-208).
+  </div>
+
+  <div class="callout purple">
     <strong>The special case of LINE / Qt apps:</strong>
     Qt-based apps such as LINE start their own IME state transition when they receive IME-related keys
     (such as hankaku/zenkaku).

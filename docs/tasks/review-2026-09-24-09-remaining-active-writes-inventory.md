@@ -10,7 +10,8 @@ source_review: 俯瞰レビュー（2026-09-24）の B-5（起動時強制ON以�
 # 残存する能動書き込みの棚卸し（俯瞰レビュー B-5 後半 / C-2）
 
 索引: [11](review-2026-09-24-11-low-priority-backlog.md)。起動時の `desired_open=true` は [05](review-2026-09-24-05-startup-desired-open-forced-on.md)。
-**2026-09-29 追記（B5 同期）**: 下の「## 2026-09-29 時点の現状（B5 同期）」が最新。それより下の各節は 2026-09-24 時点（基準 `5877f982`）の記述で、
+**2026-10-02 追記（B5 追補）**: 下の「## 2026-10-02 時点の現状（B5 追補: ADR-212/213/208）」が最新（その下の 2026-09-29 の節はその前の状態）。
+**2026-09-29 追記（B5 同期）**: 下の「## 2026-09-29 時点の現状（B5 同期）」。それより下の各節は 2026-09-24 時点（基準 `5877f982`）の記述で、
 撤去・再設計の決定により古くなった箇所には各所に「→ 2026-09-29」の注記を付けた。行番号は、`origin/develop`（`2c4d48b2`）で再確認したものにだけ新しい番号を書いた。
 元の裏取り基準は `5877f982`（origin/develop）。`cbae84ff` 以降の差分（PR #293〜#296）で `crates/awase-windows/src` に入った変更は `tuning.rs`（`KEY_EFFECT_SETTLE_MS`）だけで、`lints/` は変わっていない。本文の行番号は `5877f982` で再確認した。
 `.claude/rules/ime-belief-architecture.md`・`fix-requires-evidence.md`（IME actuation 合流点・warmup・focus 遷移・conv mode の各ファミリー）の対象領域。
@@ -77,6 +78,31 @@ IMM 経由の書き込みは、最終的に `ime.rs:371` の `modify_conv_mode`�
 ADR-191 決定5の指標5（IME へ書く振る舞いの数）の列挙は「固定の例外・表駆動の追加・opt-in の単独タップ・`keys.ime_on/off/toggle`・EngineDecision・warmup」。conv 軸の書き込みは、`cold_warmup.rs:94` を除いて対応する項目が無い。
 
 lint（`lints/actuation_call_guard/src/lib.rs:98-101`）は `actuate_ime_control` の許可呼び出し元として `set_ime_open_for_target` と `modify_conv_mode` を持つだけで、`set_ime_conv_for_target` / `set_ime_mode_for_target` / `set_ime_romaji_mode_for_hwnd` を呼ぶ側は数えていない（確認済み）。
+
+## 2026-10-02 時点の現状（B5 追補: ADR-212/213/208）
+
+`origin/develop`（`7119e808`）時点。**この節が最新で、下の 2026-09-29 の節・それ以前の記述と食い違う場合はこちらが正**。
+ADR-212（予防的・補正的な IME 書き込みの段階撤去）・ADR-213（ActivationSync の撤去）・ADR-208（明示キーの固着ゼロの保証）の結果を反映する。
+実測は [docs/experiments.md](../experiments.md) エントリ 30、棚卸しの元は [actuation-inventory-2026-09-30.md](actuation-inventory-2026-09-30.md)。
+
+| 経路 | 現状（2026-10-02） | 根拠・備考 |
+|---|---|---|
+| 確定キー（Enter）reinject の eager warmup | **撤去済み**（ADR-212 P0、PR #398） | 実機 24→0 回、入力の欠落・リテラル化は増えず。測った範囲は WT+GJI の MS-IME プリセット・IME ON・Engine OFF だけ（NICOLA ON・MS-IME 本体・Chrome の実機は未測定） |
+| 記号 VK フォールバックの `send_eager_tsf_warmup(off)`（デッドコード） | **撤去済み**（ADR-212 P1、PR #399） | 挙動は変わらない |
+| Chrome/TSF give-up 後の reinit（`VK_IME_OFF`→`VK_IME_ON`） | **撤去済み**（ADR-212 P3、PR #402）。BS/ESC の回収だけに縮退 | 実 Chrome×GJI で 0/10 と効かず、BUG-168 の副作用もあった。自前 RichEdit 窓（tsf×GJI、ADR-193）では撤去前 30/30 効いていた（撤去後の自己回復の変化は ADR-212 の P3 の項を参照） |
+| フォーカス変更時・SetOpen(true) 随伴の eager warmup | **撤去済み**（ADR-212 P4、PR #401）。Ctrl↑ の eager warmup は BUG-173/174 で撤去済み | `InjectionMode::Tsf`（WezTerm 等）+ GJI だけに効いていた経路 |
+| Unicode long-cold の reinit・`VK_IME_ON`+`VK_A`+BS | **撤去済み**（ADR-212 P5、PR #402・#403） | Unicode 注入は GJI の確認を迂回するため、判断は P2 の後の状態を前提に行った |
+| drift correction の (b) 古い desired の補正・(c) HWND キャッシュ復元 | **撤去済み**（ADR-212 P6 の (b)(c)、PR #404）。(a) 明示意図後の補正は ADR-212 決定2 で別扱い | 実 Chrome では観測が乗らず判断に届かない（BUG-172、ADR-205 の監視窓が別途追随） |
+| **ActivationSync 起源の `SetOpen`**（Engine の ON/OFF 遷移が自動で IME の開閉を書く経路） | **撤去済み**（ADR-213 P2a〜P2d-2、PR #408・#411・#412・#413 ほか） | 全面停止は CI で退行（sc-hz/sc-kanji）、gate による縮小は無効だったため、shadow toggle の OFF→ON を明示 actuation（`DecisionSite::ShadowToggleOn`）にしてから止めた。新スレッド=閉は belief 側の改善（ADR-212 P2 の後続、`4f28dd86`） |
+| 明示キーの書き込み（`keys.ime_on/off`、Ctrl+変換/無変換、役割由来の Toggle） | **存続**。ただし ADR-208 L0〜L3 で省略条件を緩め、押下 ID（`PressId`）で 1 押下 1 回に限定した | 絶対指定は 1 回、トグルは 2 回以内で一致する保証（INV-L2）。CI の drift × キー行列（`sc-keymatrix-*`、16 構成）で確認。TsfNative×WT×GJI（L3'）・InputRelay（L4）・S-3/S-4（L5）は v2 では既知の制限 |
+| shadow no-op（既に一致）で物理が Suppress される窓 | **書く**（ADR-208 L3a、D4 固定点）。Allow・リピート・TsfNative は書かない | 全列挙で S-3 25,920→0。BUG-113 型の二重送信は押下 ID の予約で防ぐ |
+| `keys.engine_on_ime_key`/`engine_off_ime_key` | **撤去済み**（ADR-207、`279268f3`） | 旧 config に残っていればトレイで通知 |
+| `muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action` | **撤去済み**（ADR-206、`669b784e`・`b28b7ca5`）。役割があれば Passthrough のときだけ絶対指定を 1 回送る | 「@」（WT+GJI）が出るかの実機確認は未実施 |
+| MS-IME 本体の無変換/変換=値 2（トグル） | **役割由来の開閉として扱う**（ADR-199 T17 Phase 4、PR #379） | 実機（MS-IME 設定 UI・入力中/変換中の各状態）は未実施 |
+| フォーカス変更時の強制 OFF、force-on/reassert | 撤去済み（2026-09-25 #313、2026-09-18）。変更なし | 上の 2026-09-29 の節 |
+
+**未解決・次の判断**: ADR-212 P7（ROMAN 補完・conv 軸、MS-IME 本体の実機が条件）は別に判断する。MS-IME 本体 × 実 Chrome の `VK_IME_OFF` が効かない件は ADR-208 決定4(a) の例外（E1・E2 で認定、CI の fresh 対照で ENV_EXCEPTION を確認）。
+実機でのみ確認できる項目（WT×GJI の「@」、MS-IME 本体の設定 UI と各状態、実 AutoHotkey での追随）は [v2-manual-verification-guide-2026-09-29.md](v2-manual-verification-guide-2026-09-29.md) に残る。
 
 ## 2026-09-29 時点の現状（B5 同期）
 

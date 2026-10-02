@@ -1063,6 +1063,27 @@ engine_off_solo_triple = "VK_NONCONVERT"
         （左親指キーが無変換なら「無変換キー単独タップを常に無視する」、右親指キーが変換なら
         「変換キー単独タップを常に無視する」）のチェックを外してください。
       </p>
+      <p class="note">
+        チェックを外した単独タップは、IME 側でそのキーが IME オン/オフ/トグルに割り当てられている場合
+        （<code>keys.ime_on</code>/<code>ime_off</code> に書いた場合を含む）、生のキーを OS に届けず、
+        awase が現在の状態に従って IME オン/オフを<strong>1 回だけ</strong>送ります。
+        チェックが入っている（既定）間は、単独タップで awase が IME を動かすことはありません。
+      </p>
+    </div>
+
+    <div class="card">
+      <h3>IME オン/オフのキーを押しても、IME と NICOLA の状態が合わない</h3>
+      <p style="color:var(--text-secondary);font-size:0.93rem;margin-bottom:0.6rem">
+        Ctrl+変換・Ctrl+無変換・半角/全角・かな・漢字などの IME キーを押したとき、awase は内部の状態がどうなっていても、
+        絶対指定のキー（IME オン、IME オフ）は<strong>1 回</strong>、トグルのキーは<strong>2 回以内</strong>の押下で、
+        実際の IME の状態がキーの意味に一致するようにしています（「何度押しても変わらない」状態をなくすための保証）。
+        外部のプログラムが IME を操作したときなど、一時的に状態がずれること自体は起こりえますが、押し直せば直ります。
+      </p>
+      <p class="note">
+        既知の例外: MS-IME 本体 + 実 Chrome では、awase が送る IME オフが効かないことがあります（awase を再起動した直後でも同じです）。
+        この組み合わせで IME をオフにするには、英数キーなど MS-IME 自身に届くキーを使ってください。
+        Windows Terminal + Google 日本語入力と、リモートデスクトップなど入力を別マシンへ中継するアプリでは、この保証は未対応です。
+      </p>
     </div>
 
     <div class="card">

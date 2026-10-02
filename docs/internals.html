@@ -636,6 +636,14 @@ awase の対策: フォーカスが変わっていた → この観測は棄却<
   </p>
 
   <div class="callout purple">
+    <strong>v2 の方針：書かずに観測する。</strong>
+    ユーザーの操作を引き金にしない先回り・補正の書き込み（Enter ごとの <code>VK_IME_ON</code>、
+    Ctrl を離したときの再送、エンジン ON/OFF に連動した IME の開閉など）は撤去し、IME の状態は観測して追随します
+    （ADR-212/213）。その代わり、明示的な IME キー（Ctrl+変換/無変換、かな、半角/全角、漢字など）を押したときは、
+    awase の内部状態が古くても省略せず、絶対指定は 1 回、トグルは 2 回以内で実際の IME が一致するようにしています（ADR-208）。
+  </div>
+
+  <div class="callout purple">
     <strong>LINE・Qt アプリの特殊ケース：</strong>
     LINE などの Qt ベースアプリは、IME に関するキー（半角/全角など）を受け取ると
     独自の IME 状態遷移を始めてしまいます。
