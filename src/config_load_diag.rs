@@ -35,6 +35,45 @@ const REMOVED_WITH_NOTICE: &[(&str, &str)] = &[
     ),
 ];
 
+/// 撤去済みで、**値が既定でないときだけ**効果があった(通知する)キー(パス)。
+/// v1 の設定画面が全項目を書き出すため、既定値(`false`・`"suppress"`)はほぼ全員の config.toml に残っており、
+/// キーがあるだけで通知すると全員に出てしまう。値が既定でない設定だけを通知する。
+const REMOVED_WITH_VALUE_NOTICE: &[&str] = &[
+    "general.gji_thumb_key_ime_toggle",
+    "general.dbe_mode_key_policy",
+];
+
+/// 値が既定でない撤去済みキーの通知文を集める。`root` は config.toml 全体の表。
+#[must_use]
+pub fn removed_value_notices(root: &toml::Table) -> Vec<String> {
+    let general = root.get("general").and_then(toml::Value::as_table);
+    let mut out = Vec::new();
+    if general
+        .and_then(|g| g.get("gji_thumb_key_ime_toggle"))
+        .and_then(toml::Value::as_bool)
+        == Some(true)
+    {
+        out.push(
+            "general.gji_thumb_key_ime_toggle は撤去されました。値は無視されます。GJI の無変換/変換/ひらがな/カタカナキーの\
+             状態依存トグルは、IME のキー設定から自動で判定します（代わりの設定はありません）。\
+             config.toml から削除してください（設定画面で保存しても消えます）"
+                .to_string(),
+        );
+    }
+    if general
+        .and_then(|g| g.get("dbe_mode_key_policy"))
+        .and_then(toml::Value::as_str)
+        .is_some_and(|v| !v.eq_ignore_ascii_case("suppress"))
+    {
+        out.push(
+            "general.dbe_mode_key_policy は撤去されました。値は無視されます。\
+             config.toml から削除してください（設定画面で保存しても消えます）"
+                .to_string(),
+        );
+    }
+    out
+}
+
 /// 撤去済みで効果があったキーなら、通知文を返す。
 #[must_use]
 pub fn removed_notice(path: &str) -> Option<&'static str> {
@@ -45,7 +84,10 @@ pub fn removed_notice(path: &str) -> Option<&'static str> {
 
 /// 撤去済みで効果があったキー(パス)の一覧。設定の保存が、ファイルから消す対象に使う。
 pub fn removed_notice_paths() -> impl Iterator<Item = &'static str> {
-    REMOVED_WITH_NOTICE.iter().map(|(p, _)| *p)
+    REMOVED_WITH_NOTICE
+        .iter()
+        .map(|(p, _)| *p)
+        .chain(REMOVED_WITH_VALUE_NOTICE.iter().copied())
 }
 
 /// 撤去済みのキーか。
@@ -145,7 +187,31 @@ mod tests {
             assert!(!is_removed_key(p), "無警告の表に重複登録しない: {p}");
         }
         assert!(removed_notice("keys.engine_on").is_none());
-        assert_eq!(removed_notice_paths().count(), 2);
+        assert_eq!(removed_notice_paths().count(), 4);
+    }
+
+    #[test]
+    fn removed_value_notices_only_for_non_default_values() {
+        let t = |s: &str| s.parse::<toml::Table>().unwrap();
+        // v1 の設定画面が書き出す既定値だけなら通知しない。
+        assert!(removed_value_notices(&t(
+            "[general]\ngji_thumb_key_ime_toggle = false\ndbe_mode_key_policy = \"suppress\"\n"
+        ))
+        .is_empty());
+        assert!(removed_value_notices(&t("[general]\n")).is_empty());
+        // 既定でない値は通知する。
+        let m = removed_value_notices(&t("[general]\ngji_thumb_key_ime_toggle = true\n"));
+        assert_eq!(m.len(), 1);
+        assert!(
+            m[0].contains("gji_thumb_key_ime_toggle") && m[0].contains("撤去"),
+            "{m:?}"
+        );
+        let m = removed_value_notices(&t("[general]\ndbe_mode_key_policy = \"passthrough\"\n"));
+        assert_eq!(m.len(), 1);
+        assert!(m[0].contains("dbe_mode_key_policy"), "{m:?}");
+        for p in REMOVED_WITH_VALUE_NOTICE {
+            assert!(is_removed_key(p), "ログ警告は出さない表にも載せる: {p}");
+        }
     }
 
     #[test]

@@ -222,6 +222,47 @@ fn remove_retired_keys(doc: &mut DocumentMut) {
     }
 }
 
+/// v1 の既定値と**ちょうど同じ**値（`keys.ime_toggle = ["VK_KANJI"]`、`keys.ime_detect` の `IMEオン`/`IMEオフ`）が
+/// 文書に残っていれば消す。読み込み時に空として扱っている（`KeysConfig::drop_retired_default_values`）ので、
+/// 保存でファイルからも消して一貫させる。他の値（旧既定に足したもの等）は触らない。
+fn remove_retired_default_values(doc: &mut DocumentMut) {
+    use crate::config::{
+        RETIRED_DEFAULT_IME_DETECT_OFF, RETIRED_DEFAULT_IME_DETECT_ON, RETIRED_DEFAULT_IME_TOGGLE,
+    };
+    fn remove_if_only(doc: &mut DocumentMut, table: &[&str], key: &str, only: &str) {
+        let mut cur = doc.as_item_mut();
+        for seg in table {
+            let Some(next) = cur.get_mut(*seg) else {
+                return;
+            };
+            cur = next;
+        }
+        let Some(t) = cur.as_table_like_mut() else {
+            return;
+        };
+        let is_only = t
+            .get(key)
+            .and_then(Item::as_array)
+            .is_some_and(|a| a.len() == 1 && a.get(0).and_then(|v| v.as_str()) == Some(only));
+        if is_only {
+            t.remove(key);
+        }
+    }
+    remove_if_only(doc, &["keys"], "ime_toggle", RETIRED_DEFAULT_IME_TOGGLE);
+    remove_if_only(
+        doc,
+        &["keys", "ime_detect"],
+        "on",
+        RETIRED_DEFAULT_IME_DETECT_ON,
+    );
+    remove_if_only(
+        doc,
+        &["keys", "ime_detect"],
+        "off",
+        RETIRED_DEFAULT_IME_DETECT_OFF,
+    );
+}
+
 /// `path` の `disk` を読み、`base` から `to_save` への差だけを書いて保存する。
 ///
 /// - ファイルが存在しない: 空の文書から始め、`to_save` のうち既定値と違う項目をすべて書く。
@@ -244,6 +285,7 @@ pub fn save_edit(to_save: &AppConfig, base: &AppConfig, path: &std::path::Path) 
     apply_edits(&mut doc, &diff(&base, to_save)?);
     migrate_legacy_confirm_mode(&mut doc);
     remove_retired_keys(&mut doc);
+    remove_retired_default_values(&mut doc);
     crate::fs_atomic::write_atomic(path, doc.to_string().as_bytes())
 }
 
@@ -287,6 +329,38 @@ mod tests {
         [[keymap]]\n\
         from = \"Ctrl+VK_I\"\n\
         to = [\"F7\"]\n";
+
+    /// v1 の設定画面が書き出した旧既定値（`ime_toggle = ["VK_KANJI"]`、`ime_detect` の `IMEオン`/`IMEオフ`）と、
+    /// 撤去済みの `gji_thumb_key_ime_toggle`・`dbe_mode_key_policy` は、保存でファイルから消える。
+    /// 旧既定に足した値・別の値・コメントは残る。
+    #[test]
+    fn retired_defaults_and_removed_keys_are_dropped_on_save() {
+        let text = "# top\n[general]\nsimultaneous_threshold_ms = 80 # note\n\
+                    gji_thumb_key_ime_toggle = true\ndbe_mode_key_policy = \"passthrough\"\n\n\
+                    [keys]\nime_toggle = [\"VK_KANJI\"]\n\n\
+                    [keys.ime_detect]\non = [\"IMEオン\"]\noff = [\"IMEオフ\", \"VK_F17\"]\n";
+        let p = write("retired", text);
+        let base = AppConfig::load(&p).unwrap();
+        assert!(base.keys.ime_toggle.is_empty() && base.keys.ime_detect.on.is_empty());
+        assert_eq!(base.removed_notices().len(), 2);
+        // 何も変えずに保存しても、旧既定値と撤去キーは消える。
+        save_edit(&base.clone(), &base, &p).unwrap();
+        let saved = read(&p);
+        assert!(!saved.contains("ime_toggle"), "{saved}");
+        assert!(!saved.contains("gji_thumb_key_ime_toggle"), "{saved}");
+        assert!(!saved.contains("dbe_mode_key_policy"), "{saved}");
+        assert!(!saved.contains("on = ["), "{saved}");
+        // 旧既定に足した値は尊重して残す。コメントも残る。
+        assert!(saved.contains("off = [\"IMEオフ\", \"VK_F17\"]"), "{saved}");
+        assert!(
+            saved.contains("# top") && saved.contains("# note"),
+            "{saved}"
+        );
+        let reloaded = AppConfig::load(&p).unwrap();
+        assert!(reloaded.removed_notices().is_empty());
+        assert_eq!(reloaded.keys.ime_detect.off, vec!["IMEオフ", "VK_F17"]);
+        let _ = std::fs::remove_file(&p);
+    }
 
     #[test]
     fn legacy_confirm_mode_is_rewritten_to_wait_on_save() {

@@ -612,6 +612,36 @@ impl Default for KeysConfig {
     }
 }
 
+impl KeysConfig {
+    /// v1 の既定値と**ちょうど同じ**値を空として扱う（v2 の既定は空）。
+    ///
+    /// v1 の設定画面は全項目を書き出すので、旧既定（`ime_toggle = ["VK_KANJI"]`、
+    /// `ime_detect` の `IMEオン`/`IMEオフ`）が明示値として config.toml に残っている。
+    /// 尊重して残すと v2 の既定（空）が効かないので、読み込み時に空へ戻し、保存で
+    /// ファイルからも消す（`config_save::remove_retired_default_values`）。
+    pub(crate) fn drop_retired_default_values(&mut self) {
+        fn is_exactly(v: &[String], only: &str) -> bool {
+            matches!(v, [x] if x == only)
+        }
+        if is_exactly(&self.ime_toggle, RETIRED_DEFAULT_IME_TOGGLE) {
+            self.ime_toggle.clear();
+        }
+        if is_exactly(&self.ime_detect.on, RETIRED_DEFAULT_IME_DETECT_ON) {
+            self.ime_detect.on.clear();
+        }
+        if is_exactly(&self.ime_detect.off, RETIRED_DEFAULT_IME_DETECT_OFF) {
+            self.ime_detect.off.clear();
+        }
+    }
+}
+
+/// v1 の `keys.ime_toggle` の既定値（v2 の既定は空）。
+pub(crate) const RETIRED_DEFAULT_IME_TOGGLE: &str = "VK_KANJI";
+/// v1 の `keys.ime_detect.on` の既定値（v2 の既定は空）。
+pub(crate) const RETIRED_DEFAULT_IME_DETECT_ON: &str = "IMEオン";
+/// v1 の `keys.ime_detect.off` の既定値（v2 の既定は空）。
+pub(crate) const RETIRED_DEFAULT_IME_DETECT_OFF: &str = "IMEオフ";
+
 /// アプリオーバーライドのエントリ（プロセス名とクラス名の組み合わせ）
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppOverrideEntry {
@@ -888,10 +918,19 @@ impl AppConfig {
                     &path, &siblings,
                 ));
         }
+        let raw_table = toml::from_str::<toml::Table>(text).ok();
+        // 撤去済みで、値が既定でないときだけ効果があった設定（`gji_thumb_key_ime_toggle = true` 等）の通知。
+        if let Some(t) = &raw_table {
+            config
+                .removed_notices
+                .extend(crate::config_load_diag::removed_value_notices(t));
+        }
+        // v1 の設定画面が書き出した旧既定値は、読み込み時に空として扱う（保存で消す）。
+        config.keys.drop_retired_default_values();
         // 廃止済みの confirm_mode（A2）: serde alias で `Wait` として読まれているので、
         // 元の文字列を見て警告だけ積む。
-        if let Some(old) = toml::from_str::<toml::Table>(text)
-            .ok()
+        if let Some(old) = raw_table
+            .as_ref()
             .and_then(|t| {
                 t.get("general")?
                     .get("confirm_mode")?
@@ -1709,16 +1748,50 @@ default_layout = "nicola.yab"
         assert_eq!(keys.ime_off, vec!["Ctrl+無変換".to_string()]);
     }
 
-    /// 既存ユーザーの config.toml に残る明示の `ime_toggle = ["VK_KANJI"]`
-    /// （旧既定値を GUI の `AppConfig::save` が書き出したもの）は、読込時に消さず尊重する
-    /// （既定値の変更は明示値に影響しない）。
+    /// v1 の設定画面が書き出した旧既定値（`ime_toggle = ["VK_KANJI"]`、`ime_detect` の `IMEオン`/`IMEオフ`）は、
+    /// 読み込み時に空として扱う（v2 の既定が効く）。旧既定と**ちょうど同じ**ときだけで、他の値は尊重する。
     #[test]
-    fn test_explicit_ime_toggle_vk_kanji_is_preserved_on_load() {
-        let config: AppConfig = toml::from_str("[keys]\nime_toggle = [\"VK_KANJI\"]\n").unwrap();
-        assert_eq!(config.keys.ime_toggle, vec!["VK_KANJI".to_string()]);
+    fn test_retired_default_values_are_dropped_on_load() {
+        let c = AppConfig::from_toml_str(
+            "[keys]\nime_toggle = [\"VK_KANJI\"]\n[keys.ime_detect]\non = [\"IMEオン\"]\noff = [\"IMEオフ\"]\n",
+        )
+        .unwrap();
+        assert!(c.keys.ime_toggle.is_empty());
+        assert!(c.keys.ime_detect.on.is_empty() && c.keys.ime_detect.off.is_empty());
+        // 旧既定と違う値は尊重する（他のキーを足した場合も、別のキーの場合も）。
+        let c = AppConfig::from_toml_str(
+            "[keys]\nime_toggle = [\"VK_KANJI\", \"VK_F8\"]\n[keys.ime_detect]\non = [\"IMEオン\", \"VK_F16\"]\noff = [\"VK_F17\"]\n",
+        )
+        .unwrap();
+        assert_eq!(c.keys.ime_toggle, vec!["VK_KANJI", "VK_F8"]);
+        assert_eq!(c.keys.ime_detect.on, vec!["IMEオン", "VK_F16"]);
+        assert_eq!(c.keys.ime_detect.off, vec!["VK_F17"]);
         // [keys] を書いても ime_toggle を省略すれば既定（空）。
-        let config: AppConfig = toml::from_str("[keys]\nime_on = [\"Ctrl+変換\"]\n").unwrap();
-        assert!(config.keys.ime_toggle.is_empty());
+        let c = AppConfig::from_toml_str("[keys]\nime_on = [\"Ctrl+変換\"]\n").unwrap();
+        assert!(c.keys.ime_toggle.is_empty());
+    }
+
+    /// 撤去済みで値が既定でない設定（`gji_thumb_key_ime_toggle = true`、`dbe_mode_key_policy = "passthrough"`）は
+    /// 通知し、既定値（`false`・`"suppress"`。v1 の設定画面が書き出す）では通知しない。
+    #[test]
+    fn test_removed_non_default_settings_notice_only_when_effective() {
+        let c = AppConfig::from_toml_str(
+            "[general]\ngji_thumb_key_ime_toggle = false\ndbe_mode_key_policy = \"suppress\"\n",
+        )
+        .unwrap();
+        assert!(c.removed_notices().is_empty(), "{:?}", c.removed_notices());
+        let c = AppConfig::from_toml_str(
+            "[general]\ngji_thumb_key_ime_toggle = true\ndbe_mode_key_policy = \"passthrough\"\n",
+        )
+        .unwrap();
+        assert_eq!(c.removed_notices().len(), 2, "{:?}", c.removed_notices());
+        assert!(c.load_warnings().is_empty());
+        let (_v, warnings) = c.validate();
+        assert_eq!(
+            warnings.iter().filter(|w| w.contains("撤去")).count(),
+            2,
+            "{warnings:?}"
+        );
     }
 
     /// 撤去済みフィールド（output_mode / hook_mode）が
