@@ -113,6 +113,24 @@ jobs:
             if ime == 'msime': flags.append('--msime')
             return cfg(f"tsx-{'raw-' if raw else ''}{name}", 'observe', check='typing', ime=ime, awase='false' if raw else 'true', runs=runs, wait=wait, stress=' '.join(flags))
           SC_IMES = [('msime-native', 'msime', 1, ' --msime'), ('gji-msime', 'gji', 2, ''), ('gji-atok', 'gji', 1, '')]
+          # sc-keymatrix-*(ADR-208 L3b): 「ずれの作り方 × 明示キー」行列(判定は check_keymatrix.py、観測のみ=expect=observe)。1構成=1ジョブで、セルごとに内部10試行。
+          # セルの書式 `<key>=<kind>:<gap>`: key=VK の16進(ctrl+ 前置でマーカー付き注入の物理 Ctrl 付き) / kind=on・off・tog / gap=sync・close・open・fresh。
+          # 既定の sc-* や only='sc-*' には含めない(下の plan の除外)。only='sc-keymatrix-*' か完全一致で回す。
+          # keys: abs=絶対キー用(Ctrl+変換/Ctrl+無変換に加えて、無変換/変換の単独タップを bare の keys.ime_off/ime_on にする=ADR-206 の役割由来)、
+          #       tog=無変換の単独タップを keys.ime_toggle にする(トグルの検証用。0xF3/0x19 は IME/awase の shadow トグルで設定不要)。
+          KM_KEYS = dict(abs='ime_on = ["Ctrl+変換", "VK_CONVERT"]; ime_off = ["Ctrl+無変換", "VK_NONCONVERT"]', tog='ime_toggle = ["VK_NONCONVERT"]')
+          def km_cells(grp, msime):
+            if grp == 'abs':
+              c = ['ctrl+1c=on:close', 'ctrl+1d=off:open', 'ctrl+1c=on:sync', 'ctrl+1d=off:sync', '1c=on:close', '1d=off:open', '16=on:close', '1a=off:open']
+              return c + (['f2=on:close'] if msime else [])
+            return ['1d=tog:sync', '1d=tog:close', '1d=tog:open', 'f3=tog:close', 'f3=tog:open', '19=tog:close', '19=tog:open']
+          def km(name, win, ime_name, cells, grp, wait=1800):
+            msime = ime_name == 'msime'
+            common = dict(ime='msime' if msime else 'gji', keymap=2 if (msime and win == 'chrome') else 1, runs=1, wait=wait, keys=KM_KEYS[grp], check='keymatrix')
+            cs = ','.join(cells)
+            if win == 'chrome':
+              return cfg(name, 'observe', chrome=f"--keymatrix={cs} --settle=800{' --msime' if msime else ''}", **common)
+            return cfg(name, 'observe', stress=f"--form={win} --mode=keymatrix --km-cells={cs} --layout=@REPO@/layout/nicola_keytop.yab{' --msime' if msime else ''}", **common)
           configs = [
             # --- 撤去実験(ATOK、実機E1〜E7bと同じ) ---
             cfg('baseline', 'pass'),
@@ -404,6 +422,16 @@ jobs:
               for ime_name, ime, km, msime in (('gji', 'gji', 1, ''), ('msime', 'msime', 1, ' --msime'))],
             cfg('sc-driftrecovery-ctrlmuhenkan-gji-chrome', 'observe', check='driftrecovery', runs=1, wait=400, chrome='--close-ime=10 --ctrl-muhenkan-off --settle=800'),
             cfg('sc-driftrecovery-ctrlmuhenkan-msime-chrome', 'observe', check='driftrecovery', ime='msime', keymap=2, runs=1, wait=400, chrome='--close-ime=10 --ctrl-muhenkan-off --settle=800 --msime'),
+            # --- ADR-208 L3b: ずれの作り方 × 明示キー行列(only='sc-keymatrix-*' で回す)。窓=edit(ImmCross)/tsf(TsfNative 相当)/chrome(実 Chrome=Imm32Unavailable)、IME=GJI(ATOK プリセット)/MS-IME 本体。 ---
+            # abs=絶対キー(Ctrl+変換/Ctrl+無変換/単独タップ変換・無変換/0x16/0x1A、MS-IME は F2 も)を、実 IME を外から閉/開した後と ずれなしで押す(1押下で一致するか)。
+            # tog=トグル(無変換の単独タップ=keys.ime_toggle、0xF3、0x19)を外から閉/開した後に押す(2押下以内で一致するか)。
+            *[km(f'sc-keymatrix-{grp}-{win}-{ime_name}', win, ime_name, km_cells(grp, ime_name == 'msime'), grp)
+              for grp in ('abs', 'tog') for win in ('edit', 'tsf', 'chrome') for ime_name in ('gji', 'msime')],
+            # E2(ADR-208 決定4): awase を再起動して belief・applied が未知の状態(fresh)で OFF 系を押す対照。同じ job の open/sync セルと失敗率を比べ、
+            # 例外(MS-IME × 実 Chrome の OFF)なら新鮮でも同じ率で閉じない=ENV_EXCEPTION、新鮮だと閉じるなら内部状態による固着=STUCK(バグ)。
+            *[km(f'sc-keymatrix-e2-{ime_name}-chrome', 'chrome', ime_name,
+                 ['ctrl+1d=off:fresh', 'ctrl+1d=off:open', 'ctrl+1d=off:sync', '1d=off:fresh', '1d=off:open', 'ctrl+1c=on:fresh'], 'abs', wait=2400)
+              for ime_name in ('msime', 'gji')],
             cfg('sc-dbe-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
                 args='--seq=F2,F0,F2,F1,F2,F0,F0,F1,F2 --msime'),
             cfg('sc-hz-msime-native-noawase', 'observe', check='consistency', ime='msime', awase='false',
@@ -526,10 +554,14 @@ jobs:
           only = [x.strip() for x in os.environ.get('ONLY', '').split(',') if x.strip()]
           if only:
             configs = [c for c in configs if any(c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1])) for o in only)]
+            # sc-keymatrix-*(ADR-208 L3b)は only='sc-*' のような広い指定には含めない(足すと only='sc-*' が 256 ジョブに近づく)。
+            # only に sc-keymatrix- で始まる指定(例 'sc-keymatrix-*'、完全一致)があり、それに合致する構成だけ回す。
+            configs = [c for c in configs if not c['name'].startswith('sc-keymatrix-')
+                       or any(o.startswith('sc-keymatrix-') and (c['name'] == o or (o.endswith('*') and c['name'].startswith(o[:-1]))) for o in only)]
           elif os.environ.get('EXCLUDE_CAL_WHEN_EMPTY') == '1':
             # 既定(only 空)では cal-*(学習/検証ラウンド)を除く。develop 由来の51構成(ADR-186/190)の挙動を変えない。
-            # sc-startup-msime-chrome-on-*(切り分け実験、各 runs=8)も既定から除く(足すと既定が 256 を超える)。only で明示して回す。
-            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'sc-startup-msime-chrome-on-'))]
+            # sc-startup-msime-chrome-on-*(切り分け実験、各 runs=8)・sc-keymatrix-*(ADR-208 L3b)も既定から除く(足すと既定が 256 を超える)。only で明示して回す。
+            configs = [c for c in configs if not c['name'].startswith(('cal-', 'ts-', 'tsx-', 'sc-startup-msime-chrome-on-', 'sc-keymatrix-'))]
           if os.environ.get('RUNS', '').strip():
             for c in configs:
               c['runs'] = int(os.environ['RUNS'])
@@ -931,6 +963,10 @@ jobs:
             } else {
               python tools\e2e\ime_key_matrix\check_drift_recovery.py --json driftrec.json dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
             }
+          } elseif ('${{ matrix.cfg.check }}' -eq 'keymatrix') {
+            # ADR-208 L3b: 「ずれの作り方 × 明示キー」行列。実 Chrome は chrome_probe.log、自前窓は typing_stress.log を読む。
+            $kmlog = if ('${{ matrix.cfg.chrome }}' -ne '') { 'dist\chrome_probe.log' } else { 'dist\typing_stress.log' }
+            python tools\e2e\ime_key_matrix\check_keymatrix.py --json keymatrix.json $kmlog dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'startup') {
             python tools\e2e\ime_key_matrix\check_startup.py --json startup.json ${{ matrix.cfg.checkargs }} dist\typing_stress.log dist\awase.log | Tee-Object -FilePath result.txt
           } elseif ('${{ matrix.cfg.check }}' -eq 'toggle') {
@@ -1003,6 +1039,7 @@ jobs:
             dist/typing_stress.log
             typing.json
             reopen.json
+            keymatrix.json
             env.txt
             dist/compartment_notify_probe.log
             dist/compartment_notify_probe_diag.log
@@ -1204,6 +1241,31 @@ jobs:
                     "打鍵→vk-send=ON キー押下の打鍵から最初の [vk-send] まで(同時打鍵待ちと押下時間を含む、p50/最大 ms)、セッション確認=その [vk-send] から `per-VK 全 VK 確認済み → セッション確認` まで(ADR-203 D2 の定義、p50/最大 ms)。", "",
                     "| 構成 | 回 | 判定 | pass | fail | invalid | blind | require_cold | first_vk_cold | 打鍵→vk-send | セッション確認 |",
                     "|---|---|---|---|---|---|---|---|---|---|---|"] + reopen_rows
+          # ADR-208 L3b(sc-keymatrix-*): result.txt の KEYMATRIX_CELL 行(1セル1行)を表にする。
+          km_rows = []
+          for c in configs:
+            if c.get('check') != 'keymatrix':
+              continue
+            for run in range(1, c.get('runs', 3) + 1):
+              f = f"results/result-{c['name']}-{run}/result.txt"
+              cell_lines = []
+              if os.path.exists(f):
+                cell_lines = [l for l in open(f, encoding='utf-8', errors='replace').read().splitlines() if l.startswith('KEYMATRIX_CELL:')]
+              if not cell_lines:
+                km_rows.append(f"| {c['name']} | 欠落 |" + " - |" * 10)
+                continue
+              for l in cell_lines:
+                kv = dict(re.findall(r'(\w+)=(\S+)', l))
+                km_rows.append(f"| {c['name']} | {kv.get('cell')} | {kv.get('verdict')} | {kv.get('pass')} | {kv.get('target')} | {kv.get('made')}/{kv.get('n')} | {kv.get('c1')} | {kv.get('c2')} | {kv.get('late')} | {kv.get('stuck')} | {kv.get('gap_not_made')}/{kv.get('invalid')} | {kv.get('e2')} {kv.get('fresh_fail_rate')} |")
+          if km_rows:
+            out += ["", "## ADR-208 L3b ずれの作り方 × 明示キー行列(sc-keymatrix-*、観測のみ)", "",
+                    "セル=`キー=種別:ずれ`(種別 on/off=絶対、tog=トグル。ずれ close=awase に ON を書かせた後に実 IME を外から閉じる(S-1)、open=OFF を書かせた後に外から開く、fresh=awase 再起動直後で belief・applied が未知、sync=ずれなし)。"
+                    "made/n=ずれを作れた試行/全試行。c1/c2/late/stuck=1押下目/2押下目/3押下目で目標に一致/3回押しても不一致。"
+                    "判定: CONVERGED_1=全試行が1押下で一致 / CONVERGED_2=2押下まで(トグルなら合格、絶対キーは1押下の保証違反) / CONVERGED_LATE / STUCK=固着 / "
+                    "ENV_EXCEPTION=MS-IME × 実 Chrome の OFF 方向で、fresh の対照も同じ程度に失敗(環境の例外、ADR-208 決定4 の E2) / GAP_NOT_MADE=ずれを作れなかった / INVALID。"
+                    "pass=絶対は1押下、トグルは2押下以内で一致。E2 列=例外セルの照合結果(fresh_similar=新鮮でも同じ程度に失敗→環境、fresh_ok=新鮮だと閉じる→内部状態による固着、no_fresh_cell=対照セルなし)と fresh の失敗率。", "",
+                    "| 構成 | セル | 判定 | pass | 目標 | made/n | 1押下 | 2押下 | 3押下 | 固着 | gap_not_made/invalid | E2 |",
+                    "|---|---|---|---|---|---|---|---|---|---|---|---|"] + km_rows
           open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8').write('\n'.join(out) + '\n')
           print('\n'.join(out))
           if os.environ.get('GATE_MODE') == 'invariants':
