@@ -2531,7 +2531,7 @@ mod tests {
         assert!(ps.ime.effective_open_at(TickMs(110)), "明示 ON 直後は true");
         // awase 自身の直近の書き込みの記録は ON（追随後の実状態 OFF と食い違う → 未確認へ落ちる、D6）。
         ps.ime.record_confirmed(true, 90);
-        assert!(ps.ime.model().applied_pair().is_some());
+        assert!(ps.ime.model().applied_state().applied_open().is_some());
         // arm 前の直近の読み（基準値になる）。窓が無いので追随しない。
         assert_eq!(
             ps.ime
@@ -2551,7 +2551,7 @@ mod tests {
         assert!(ps.ime.explicit_intent().is_none());
         assert_eq!(ps.ime.last_external_change_ms(), 1032);
         assert_eq!(
-            ps.ime.model().applied_pair(),
+            ps.ime.model().applied_state().applied_open(),
             None,
             "追随経路だけが食い違う applied を未確認へ落とす（demote_applied=true、GjiDirect の already-matched を防ぐ）"
         );

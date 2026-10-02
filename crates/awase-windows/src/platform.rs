@@ -1130,21 +1130,21 @@ impl WindowsPlatform {
 
     /// `apply_ime_open` 用の `ImeControlView` を構築する。
     ///
-    /// `applied` には呼び出し元が持つ `ImeModel.applied_pair()` の戻り値を渡す。
+    /// `applied` には呼び出し元が持つ `AppliedImeState::applied_open()` の戻り値を渡す。
     /// `None`（未適用・`AppliedImeState::Unknown`）は `ControlLog.shadow_on`
     /// の `None`（未知）へそのまま伝播する——`Some(false)`（確認済み OFF）
     /// と潰して混同してはならない（BUG-113 Blocker、docs/known-bugs.md 参照）。
     #[tracing::instrument(level = "debug", skip_all, fields(?applied))]
     pub(crate) fn build_ime_control_view(
         &self,
-        applied: Option<(bool, u64)>,
+        applied: Option<bool>,
     ) -> crate::state::ImeControlView<'_> {
         let class_name = if self.focus.is_focused() {
             self.focus.class_name()
         } else {
             ""
         };
-        let shadow_on = applied.map(|(open, _applied_at_ms)| open);
+        let shadow_on = applied;
         crate::state::ImeControlView {
             focus: crate::state::FocusFacts {
                 class_name,
@@ -1160,47 +1160,25 @@ impl WindowsPlatform {
         }
     }
 
-    /// 事前構築済みの `ImeControlView` と `OpenBelief` を受け取る中核実装。
+    /// 事前構築済みの `ImeControlView` を受け取る中核実装。
     ///
     /// `tsf_obs()` の重複呼び出しを避けるため view は呼び出し元が一度だけ構築して渡す。
     /// 戦略選択と実行は [`crate::ime_controller::ImeController`] が唯一の SSOT として担う。
-    /// `belief` は診断ログ用（`effective_open` / `confident`）に受け取る。
-    // 兄弟メソッド apply_ime_open_with_belief から `self.` 記法で呼ばれるため、
-    // また PlatformRuntime 委譲メソッド群との一貫した API 配置のため `&self` を維持する。
+    // PlatformRuntime 委譲メソッド群との一貫した API 配置のため
+    // `&self` を維持する。
     #[allow(clippy::unused_self)]
     pub(crate) fn apply_ime_open_with_view(
         &self,
         order: crate::state::actuation_chain::ActuationOrder,
         view: &crate::state::ImeControlView<'_>,
-        belief: crate::output::OpenBelief,
     ) -> (
         awase::platform::ImeOpenOutcome,
         crate::state::actuation_decision_record::ActuationDecisionRecord,
     ) {
         let open = order.open();
         let (outcome, record) = crate::ime_controller::ImeController::apply(order, view);
-        tracing::debug!(
-            "[apply-ime] open={open} eff={} conf={} → outcome={outcome:?}",
-            belief.effective_open,
-            belief.confident
-        );
+        tracing::debug!("[apply-ime] open={open} → outcome={outcome:?}");
         (outcome, record)
-    }
-
-    /// `applied` から view を構築して [`Self::apply_ime_open_with_view`] に委譲する。
-    ///
-    /// 呼び出し元が view を持たない場合（refresh / probe 完了後等）のラッパー。
-    pub(crate) fn apply_ime_open_with_belief(
-        &self,
-        order: crate::state::actuation_chain::ActuationOrder,
-        applied: Option<(bool, u64)>,
-        belief: crate::output::OpenBelief,
-    ) -> (
-        awase::platform::ImeOpenOutcome,
-        crate::state::actuation_decision_record::ActuationDecisionRecord,
-    ) {
-        let view = self.build_ime_control_view(applied);
-        self.apply_ime_open_with_view(order, &view, belief)
     }
 
     /// `set_ime_open`（トレイトメソッド）の `ActuationOrder` 版

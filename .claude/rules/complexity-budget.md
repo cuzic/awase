@@ -12,7 +12,7 @@ E1が定める規約を文書化したものだが、発効条件（下記「発
 
 - **actuation合流点数**: `lints/actuation_call_guard/src/lib.rs::RESTRICTED_CALLS`が
   宣言する各チョークポイント（`set_ime_open`・`send_input_safe`・`send_ime_control`・
-  `apply_ime_open_with_view`・`apply_ime_open_with_belief`）の許可呼び出し元リスト。
+  `apply_ime_open_with_view`）の許可呼び出し元リスト。
 - **tuning定数数**: `crates/awase-windows/src/tuning.rs`の`pub const`定数
   （`#[measured_macro::measured(...)]`が必須、[tuning-constants](./tuning-constants.md)
   参照）。

@@ -15,15 +15,11 @@ pub(crate) use types::InjectionMode;
 
 pub(crate) mod conv_actuation;
 pub(crate) mod held_modifiers;
-pub(crate) mod ime_apply_planner;
 mod key_injector;
 pub(crate) mod probe_io;
 mod resolve;
 mod tsf_warmup_coord;
 mod vk_send;
-/// IME open 状態の観測値を適用時ビリーフへ純粋還元する data-model
-/// （`OpenBeliefInputs::reduce`）。
-pub(crate) use ime_apply_planner::{OpenBelief, OpenBeliefInputs};
 use resolve::special_key_to_vk;
 pub(crate) use tsf_warmup_coord::TsfWarmupCoordinator;
 

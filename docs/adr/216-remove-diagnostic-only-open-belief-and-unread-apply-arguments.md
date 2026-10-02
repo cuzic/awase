@@ -8,7 +8,7 @@ summary: |-
   コードを読んで確認した(2026-10-02、develop `db93ce88`)。いずれも挙動に影響しない。これらを撤去して、`Option<bool>` の「未知を false にする」罠(BUG-113、ADR-098 決定1-b)の読み手を減らす。
   新しい型や gate は足さない(ADR-215 の決定 A の「型で塞ぐ」案は、Opus レビューで消費者の撤去が先と指摘され、取り下げた)。撤去後に残る読み手を数え直してから、型が要るかを別途判断する。
 status: |-
-  提案(2026-10-02)。Opus 敵対的レビュー round3 で収束(round2 の修正条件と、round3 の2点〈`gji_last_io_ms` は消さない、R2 の回帰テスト主張を弱める〉を本文に反映済み)。未実装。
+  提案(2026-10-02)。Opus 敵対的レビュー round3 で収束(round2 の修正条件と、round3 の2点〈`gji_last_io_ms` は消さない、R2 の回帰テスト主張を弱める〉を本文に反映済み)。R1〜R4 実装済み(2026-10-02、ブランチ `refactor/adr216-r1-remove-open-belief`、Opus コードレビューで挙動の変化なし)。`windows-build` の E2E `sc-*` の journal 分布の確認は PR の CI 待ち。
 related_adr:
   - "ADR-087"
   - "ADR-098"
@@ -46,7 +46,7 @@ ADR-215 の草稿は、`Option<bool>` の罠(未知を `unwrap_or(false)` で確
 3. **`apply_ime_open_with_belief(order, applied, belief)` の `applied` は常に `None`。**
    - 呼び出し元は `runtime/ime_refresh.rs:958` の1箇所だけで、`None` を直書きしている(drift correction の OFF 方向回復。ADR-214 の決定 0 の表にも「`applied` に `None` を直書き」とある)。
    - この関数は `build_ime_control_view(applied)` → `apply_ime_open_with_view` の2行の委譲でしかない。
-4. **`confirmed_at_ms()`(`state/ime_model.rs:189`)の本番の読み手は `output/ime_apply_planner.rs:87` だけ。** R1 の後は読み手がゼロになる(テスト `ime_model.rs:1730-1742` のみ)。`Confirmed { at_ms }` を読むのは `to_pair()` と `confirmed_at_ms()` だけなので、R1+R2 の後、`at_ms` は `record_confirmed`(`ime_model.rs:561`)と `executor.rs:984` で書かれて `Debug` 出力にしか出ない値になる(`AppliedImeState` は serialize されない)。rustc の dead_code も `cargo machete` もこれは検出しない。
+4. **`confirmed_at_ms()`(`state/ime_model.rs:189`)の本番の読み手は `output/ime_apply_planner.rs:87` だけ。** R1 の後は読み手がゼロになる(テスト `ime_model.rs:1730-1742` のみ)。`Confirmed { at_ms }` は R1 の後、実効的には書かれるだけの値になる(`to_pair()` が組に含めるが、その時刻成分は全呼び出し元で捨てられ、`AppliedImeState` は serialize されない)。rustc の dead_code も `cargo machete` もこれは検出しない。
 5. **`ObservedState` の `candidate_visible`・`gji_monitor_ok` の読み手は `executor.rs:917,919` だけ**で、R1 の後はフィールドとして書かれるだけになる(`ime_decision_view.rs:45,51,72,74,94,96`。Opus round3 が `obs.`/`view.observed.`/分割代入のいずれの形でも他に読み手がないことを確認)。**`gji_last_io_ms`(`:48`)は読み手がいる**(`runtime/key_pipeline.rs:310-311` が `obs.gji_last_io_ms` を読み、`compute_focus_probe_grace` に渡す)ので消さない(round2 でこれを「読み手ゼロ」としたのは誤りで、round3 で訂正した)。`gji_monitor_ok` の doc(「`GjiDirectStrategy` の `is_applicable` ゲートに使用」)は既に古い(実際の判定は `observed.active_ime_kind`、`ime_controller.rs:108,141`)。`candidate_was_seen` は `DecisionInputs`(ADR-171)でも読まれるので残る。`TSF_OBS` 側のアクセサは他の読み手がいるので残す。
 6. **`AppliedImeState::applied_open()`(`state/ime_model.rs:153-172`)の doc は古い。** すでに存在しない `WarmupImeOn`/`warmup_ime_on()`/`resolve_warmup_ime_on` を参照し、
    production の呼び出し元を「1箇所＋橋渡し」と書くが、現在は4箇所(`ime_model.rs:616`、`:942`、`:970`、`runtime/message_handlers.rs:960`)。
@@ -121,7 +121,8 @@ ADR-215 の草稿は、`Option<bool>` の罠(未知を `unwrap_or(false)` で確
   R2 は view の `shadow_on` の供給を変えるので、ここが挙動の本当の確認になる。実機は確認しない(挙動を変えない削除のため)。
 - `ime_key_sequence_golden.rs` と ADR-163 のコーパス再生(`bug-131`)は、R1〜R3 が触る「view の組み立て」と「ログ専用の値」を通らないので、変更前後で必ず同じ結果になる。**回帰していないことの一般的な確認に過ぎない**
   (`windows-build` で実行されること、コーパスの再生が差分ゼロであること)。
-- 撤去で消えた行数(R1 だけで 250 行前後の見込み)を、実装後に実測してこの節へ書き戻す。
+- 撤去で消えた行数は、R1 実装後の `git diff --stat` で **438 行**（12 files changed, 10 insertions(+), 438 deletions(-)）。
+- R2 の後の実測は、`git diff --stat` で **85 行削除**（11 files changed, 69 insertions(+), 85 deletions(-)）。
 
 ## 未確定・リスク
 

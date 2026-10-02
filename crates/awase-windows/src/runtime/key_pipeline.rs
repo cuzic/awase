@@ -1268,12 +1268,16 @@ impl Runtime {
         };
         // D1: 押下の書き込みは `applied` が向きと一致していても省略の根拠にしない（`explicit_press_applied_pair`）。
         // 以前は shadow 経路だけが無条件に降格していた（PR #408）。`press=None`（自動リピート）は従来の `applied` のまま。
-        let applied_pair = crate::state::ime_actuation_decision::explicit_press_applied_pair(
-            self.platform_state.ime.model().applied_pair(),
+        let applied = crate::state::ime_actuation_decision::explicit_press_applied_pair(
+            self.platform_state
+                .ime
+                .model()
+                .applied_state()
+                .applied_open(),
             open,
             press.is_some(),
         );
-        let mut view = self.platform.build_ime_control_view(applied_pair);
+        let mut view = self.platform.build_ime_control_view(applied);
         view.belief_input_mode = self.platform_state.ime.input_mode();
         let imm_first = crate::ime_controller::ImeController::imm_cross_is_first_applicable(&view);
         if imm_first {

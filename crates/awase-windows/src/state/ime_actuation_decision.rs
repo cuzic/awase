@@ -203,17 +203,18 @@ pub(crate) const fn explicit_press_shadow_on(
     }
 }
 
-/// `build_ime_control_view` に渡す `applied` のペア版。押下の書き込み（`press.is_some()`）は
-/// [`explicit_press_shadow_on`] で未知にした値、`press=None` は元のペアのまま。
+/// `build_ime_control_view` に渡す `applied`。押下の書き込み（`press.is_some()`）は
+/// [`explicit_press_shadow_on`] で未知にした値、`press=None` は元の値のまま。
 #[must_use]
 pub(crate) const fn explicit_press_applied_pair(
-    pair: Option<(bool, u64)>,
+    applied: Option<bool>,
     open: bool,
     has_press: bool,
-) -> Option<(bool, u64)> {
-    match pair {
-        Some((v, _)) if has_press && explicit_press_demotes_applied(Some(v), open) => None,
-        other => other,
+) -> Option<bool> {
+    if has_press {
+        explicit_press_shadow_on(applied, open)
+    } else {
+        applied
     }
 }
 
@@ -902,14 +903,14 @@ mod explicit_press_demote_tests {
     }
 
     /// 押下 ID を持つ order だけが降格する。`press=None`（リピート・drift correction 等）は従来どおり
-    /// `applied` のペアをそのまま渡す（already-matched 省略が効く）。
+    /// `applied` をそのまま渡す（already-matched 省略が効く）。
     #[test]
     fn applied_pair_is_demoted_only_for_orders_with_a_press() {
-        let pair = Some((true, 123));
-        assert_eq!(explicit_press_applied_pair(pair, true, true), None);
-        assert_eq!(explicit_press_applied_pair(pair, true, false), pair);
+        let applied = Some(true);
+        assert_eq!(explicit_press_applied_pair(applied, true, true), None);
+        assert_eq!(explicit_press_applied_pair(applied, true, false), applied);
         // 逆向きの applied・未知はどちらでも変わらない。
-        assert_eq!(explicit_press_applied_pair(pair, false, true), pair);
+        assert_eq!(explicit_press_applied_pair(applied, false, true), applied);
         assert_eq!(explicit_press_applied_pair(None, true, true), None);
         assert_eq!(explicit_press_applied_pair(None, true, false), None);
     }
@@ -921,8 +922,7 @@ mod explicit_press_demote_tests {
         let applied = Some(true);
         let open = true;
         let elided_for = |has_press: bool| {
-            let shadow_on = explicit_press_applied_pair(applied.map(|v| (v, 0)), open, has_press)
-                .map(|(v, _)| v);
+            let shadow_on = explicit_press_applied_pair(applied, open, has_press);
             gji_direct_already_matches(shadow_on, open, false)
         };
         assert!(elided_for(false), "press=None は従来どおり省略");

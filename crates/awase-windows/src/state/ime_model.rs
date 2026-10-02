@@ -140,36 +140,20 @@ pub enum AppliedImeState {
 }
 
 impl AppliedImeState {
-    /// `build_ime_control_view` 互換の `Option<(bool, u64)>` に変換する。
-    #[must_use]
-    pub const fn to_pair(self) -> Option<(bool, u64)> {
-        match self {
-            Self::Unknown => None,
-            Self::Optimistic(open) => Some((open, 0)),
-            Self::Confirmed { open, at_ms } => Some((open, at_ms)),
-        }
-    }
-
     /// apply 済みの open 値を返す（Optimistic も含む）。Unknown は None。
     ///
     /// **証拠用アクセサ（ADR-098 決定6-c）**: belief フォールバックを持たない。
     /// 「送信を省略してよいか」のような抑制器/トリガーの判断（誤った yes が無音
-    /// で不可逆な被害を生む用途）にのみ使うこと。現在の production 呼び出し元は
-    /// `sync_ime_kind_from_observation`（GjiFsm 遷移トリガー）の1箇所
-    /// （決定1-b で7箇所を `WarmupImeOn`/`warmup_ime_on()` へ移した残り。
-    /// かつてあった `send_engine_state_ime_key` のモードキー抑止判断は ADR-207 で撤去）に加え、
-    /// `ImeStateHub::resolve_warmup_ime_on`（`state/platform_state.rs`）自身が
-    /// `WarmupImeOn::from_applied_or_belief` へ渡すための橋渡しとして呼ぶ
-    /// 4箇所目がある——こちらは「evidence-only の値を belief フォールバック
-    /// 可能な `WarmupImeOn` へ変換する」ための正規の窓口であり、上記3箇所の
-    /// ような直接の証拠判定ではない。
+    /// で不可逆な被害を生む用途）にのみ使うこと。`unwrap_or(false)` してはならない
+    /// （`Unknown` を「確認済みの false」として扱うことになる）。
     ///
-    /// eager warmup のような「belief にフォールバックしてよい」情報用途には
-    /// `ImeStateHub::warmup_ime_on()`（`WarmupImeOn::from_applied_or_belief`）を
-    /// 使うこと——ここで `unwrap_or(false)` してはならない。`applied` が
-    /// `Unknown` の窓（TsfNative のフォーカス復帰直後等）でこの値をそのまま
-    /// belief 相当として扱うと、warmup が握り潰され BUG-02 系のリテラル化が
-    /// 再燃した実例がある（このセッションの設計討議ラウンド1）。
+    /// 省略の根拠に使うなら、`Optimistic`（OS 未確認）ではなく `Confirmed` かを
+    /// 確認すること（ADR-214）。
+    ///
+    /// 本番の呼び出し元（`ImeModel` 内部を除く）: `sync_ime_kind_from_observation`
+    /// （`runtime/message_handlers.rs`、GjiFsm 遷移トリガー）、`shadow_ime_control_view`
+    /// （`runtime/mod.rs`）、`executor.rs` の order 起案、`key_pipeline.rs` の
+    /// shadow 起案。後ろ3つは `build_ime_control_view` の `applied` に渡す。
     #[must_use]
     pub const fn applied_open(self) -> Option<bool> {
         match self {
@@ -182,15 +166,6 @@ impl AppliedImeState {
     #[must_use]
     pub const fn is_confirmed(self) -> bool {
         matches!(self, Self::Confirmed { .. })
-    }
-
-    /// `Confirmed { open, at_ms }` の `at_ms` を返す。それ以外は 0。
-    #[must_use]
-    pub const fn confirmed_at_ms(self) -> u64 {
-        match self {
-            Self::Confirmed { at_ms, .. } => at_ms,
-            _ => 0,
-        }
     }
 }
 
@@ -570,12 +545,6 @@ impl ImeModel {
     #[must_use]
     pub const fn applied_state(&self) -> AppliedImeState {
         self.applied
-    }
-
-    /// `build_ime_control_view` 互換の `Option<(bool, u64)>` を返す。
-    #[must_use]
-    pub const fn applied_pair(&self) -> Option<(bool, u64)> {
-        self.applied.to_pair()
     }
 
     /// `pending` transition の generation を返す。apply 完了 event の照合用。
@@ -1227,7 +1196,7 @@ mod tests {
         }
     }
 
-    // ── AppliedImeState / ImeModel::applied_pair 系 getter ──────────────────
+    // ── AppliedImeState / ImeModel::applied_state 系 getter ─────────────────
     //
     // これらは `runtime/executor.rs` で間接的に使われテストもあるが、そちらは
     // crate 全体が `#![cfg(windows)]` のため Linux 上の `cargo mutants -p
@@ -1724,34 +1693,35 @@ mod tests {
     }
 
     #[test]
-    fn applied_ime_state_to_pair_and_related_getters() {
-        assert_eq!(AppliedImeState::Unknown.to_pair(), None);
+    fn applied_ime_state_applied_open_and_related_getters() {
+        assert_eq!(AppliedImeState::Unknown.applied_open(), None);
         assert!(!AppliedImeState::Unknown.is_confirmed());
-        assert_eq!(AppliedImeState::Unknown.confirmed_at_ms(), 0);
 
-        assert_eq!(AppliedImeState::Optimistic(true).to_pair(), Some((true, 0)));
+        assert_eq!(AppliedImeState::Optimistic(true).applied_open(), Some(true));
         assert!(!AppliedImeState::Optimistic(true).is_confirmed());
-        assert_eq!(AppliedImeState::Optimistic(true).confirmed_at_ms(), 0);
 
         let confirmed = AppliedImeState::Confirmed {
             open: false,
             at_ms: 42,
         };
-        assert_eq!(confirmed.to_pair(), Some((false, 42)));
+        assert_eq!(confirmed.applied_open(), Some(false));
         assert!(confirmed.is_confirmed());
-        assert_eq!(confirmed.confirmed_at_ms(), 42);
     }
 
     #[test]
-    fn applied_pair_reflects_applied_state() {
+    fn applied_open_reflects_applied_state() {
         let mut model = ImeModel::new();
-        assert_eq!(model.applied_pair(), None, "初期状態は Unknown");
+        assert_eq!(
+            model.applied_state().applied_open(),
+            None,
+            "初期状態は Unknown"
+        );
 
         model.applied = AppliedImeState::Confirmed {
             open: true,
             at_ms: 7,
         };
-        assert_eq!(model.applied_pair(), Some((true, 7)));
+        assert_eq!(model.applied_state().applied_open(), Some(true));
     }
 
     #[test]
@@ -2045,7 +2015,7 @@ mod tests {
             AppliedImeState::Unknown,
             "食い違う予測: 古い記録は証拠にしない"
         );
-        assert_eq!(model.applied_pair(), None);
+        assert_eq!(model.applied_state().applied_open(), None);
 
         model.applied = AppliedImeState::Confirmed {
             open: true,
@@ -3729,7 +3699,7 @@ mod tests {
             "belief(= Engine の ctx.ime_on)は OFF"
         );
         assert_eq!(
-            model.applied_pair().map(|(open, _)| open),
+            model.applied_state().applied_open(),
             Some(true),
             "applied は Confirmed(true) のまま(belief と無関係)"
         );
@@ -3737,11 +3707,12 @@ mod tests {
         // `force_engine_on` → ctx.ime_on=false → `SetOpen{open: true, press: None}`。
         let open = true;
         let decide = |has_press: bool| {
-            let pair = explicit_press_applied_pair(model.applied_pair(), open, has_press);
+            let applied =
+                explicit_press_applied_pair(model.applied_state().applied_open(), open, has_press);
             let inputs = DecisionInputs {
                 profile: AppImeProfile::Imm32Unavailable,
                 kind: ImeKindId::Gji,
-                shadow_on: pair.map(|(v, _)| v),
+                shadow_on: applied,
                 belief_input_mode: InputModeState::Unknown,
                 candidate_was_seen: false,
             };

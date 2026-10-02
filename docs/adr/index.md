@@ -222,7 +222,7 @@
 | [213](213-shadow-toggle-off-to-on-explicit-actuation-then-remove-activation-sync.md) | shadow toggle の OFF→ON を明示 actuation にし、ActivationSync を撤去する(ADR-212 P2 再開) | 採用(2026-10-01、P2a=PR #408・P2b=PR #411 マージ済み、P2c=マージ済み、P2d-1(C2縮小)=#413 マージ済み・実機未検証、P2d-2(C3撤去)=PR #414) |
 | [214](214-split-sent-from-confirmed-and-declare-skip-eligibility-per-path.md) | IME への書き込みの「送った」と「観測で確認した」を型で分け、送信を省略してよい根拠を経路ごとに宣言する | 保留(2026-10-02。決定0の経路確認と P1 の特性テストまで。実機の実害が未確認のため実装せず、再開条件は ADR 本文) |
 | [215](215-derive-variant-name-and-display-tables.md) | variant 名・Display の手書き対応表を strum/thiserror の derive に置き換える(ADR-139 決定4の一部を上書き) | 提案(Opusレビュー round1 で採用可)。実装済み・未マージ |
-| [216](216-remove-diagnostic-only-open-belief-and-unread-apply-arguments.md) | 診断ログ専用の OpenBelief と、読まれない applied の時刻・常に None の引数を撤去する | 提案(Opusレビュー待ち)。未実装 |
+| [216](216-remove-diagnostic-only-open-belief-and-unread-apply-arguments.md) | 診断ログ専用の OpenBelief と、読まれない applied の時刻・常に None の引数を撤去する | R1〜R4 実装済み(CI 確認待ち) |
 
 上表の ADR はすべて日本語・本ディレクトリ（`docs/adr/`）配下にある（旧来「ADR-009〜029
 は英語版が `docs/` 直下に別途存在する」という記載がここにあったが、実際にはそのような

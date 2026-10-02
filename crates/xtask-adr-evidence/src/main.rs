@@ -224,7 +224,7 @@ fn main() -> ExitCode {
 
     println!("# architecture_guard.rs ガード期待値との照合\n");
     let mut mismatches = Vec::new();
-    for target in ["apply_ime_open_with_view", "apply_ime_open_with_belief"] {
+    for target in ["apply_ime_open_with_view"] {
         let Some(call) = calls.iter().find(|c| c.callee == target) else {
             continue;
         };

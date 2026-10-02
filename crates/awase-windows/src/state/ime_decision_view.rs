@@ -40,20 +40,14 @@ pub(crate) struct FocusFacts<'a> {
 /// `tsf_obs()` を直接使う別カテゴリであり、この型の対象外。
 #[derive(Clone, Copy)]
 pub(crate) struct ObservedState {
-    /// TSF/GJI: `GoogleJapaneseInputCandidateWindow` が現在表示中かどうか。
-    /// EVENT_OBJECT_SHOW/HIDE で更新されるアトミック値のスナップショット。
-    pub candidate_visible: bool,
     /// GJI プロセスの最終 I/O 変化時刻 (ms)。0 = 未観測。
     /// TSF gate の warmup 判定・GJI アイドル時間計算に使用する。
     pub gji_last_io_ms: u64,
-    /// GJI モニターが利用可能か（プロセス発見・ハンドル取得成功）。
-    /// `GjiDirectStrategy` の `is_applicable` ゲートに使用する。
-    pub gji_monitor_ok: bool,
     /// GJI candidate が SHOW になってから次の `apply_ime_open` 完了まで `true`。
     /// `shadow=false` なのに candidate が表示された desync を
     /// `GjiDirectStrategy`（ADR-171、OFF方向の already-matched 判定の上書き）が検出するために使う。
     pub candidate_was_seen: bool,
-    /// 現在使用中の IME 種別（`gji_monitor_ok` から派生）。
+    /// 現在使用中の IME 種別（`active_ime_kind` の判定結果）。
     /// warmup strategy 切り替え（`WM_IME_KIND_CHANGED`）に使用する。
     pub active_ime_kind: crate::tsf::observer::ActiveImeKind,
     /// （GJI/MS-IME 問わず）IME composition window が可視かどうか（ADR-117、issue #138 診断用）。
@@ -69,9 +63,7 @@ pub(crate) struct ObservedState {
 impl Default for ObservedState {
     fn default() -> Self {
         Self {
-            candidate_visible: false,
             gji_last_io_ms: 0,
-            gji_monitor_ok: false,
             candidate_was_seen: false,
             active_ime_kind: crate::tsf::observer::ActiveImeKind::MicrosoftIme,
             composition_active: false,
@@ -91,9 +83,7 @@ impl ObservedState {
     /// 判断サイトはこのメソッドで 1 回スナップショットを取り、以降は `&ObservedState` を参照する。
     pub(crate) fn from_snapshot(snapshot: &TsfObservations) -> Self {
         Self {
-            candidate_visible: snapshot.gji_candidate_visible(),
             gji_last_io_ms: snapshot.gji_last_io_ms(),
-            gji_monitor_ok: snapshot.gji_monitor_ok(),
             candidate_was_seen: crate::tsf::observer::candidate_was_seen(),
             active_ime_kind: snapshot.active_ime_kind(),
             composition_active: snapshot.ime_composition_active(),
