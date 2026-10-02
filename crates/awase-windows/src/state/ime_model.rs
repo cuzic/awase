@@ -144,22 +144,16 @@ impl AppliedImeState {
     ///
     /// **証拠用アクセサ（ADR-098 決定6-c）**: belief フォールバックを持たない。
     /// 「送信を省略してよいか」のような抑制器/トリガーの判断（誤った yes が無音
-    /// で不可逆な被害を生む用途）にのみ使うこと。現在の production 呼び出し元は
-    /// `sync_ime_kind_from_observation`（GjiFsm 遷移トリガー）の1箇所
-    /// （決定1-b で7箇所を `WarmupImeOn`/`warmup_ime_on()` へ移した残り。
-    /// かつてあった `send_engine_state_ime_key` のモードキー抑止判断は ADR-207 で撤去）に加え、
-    /// `ImeStateHub::resolve_warmup_ime_on`（`state/platform_state.rs`）自身が
-    /// `WarmupImeOn::from_applied_or_belief` へ渡すための橋渡しとして呼ぶ
-    /// 4箇所目がある——こちらは「evidence-only の値を belief フォールバック
-    /// 可能な `WarmupImeOn` へ変換する」ための正規の窓口であり、上記3箇所の
-    /// ような直接の証拠判定ではない。
+    /// で不可逆な被害を生む用途）にのみ使うこと。`unwrap_or(false)` してはならない
+    /// （`Unknown` を「確認済みの false」として扱うことになる）。
     ///
-    /// eager warmup のような「belief にフォールバックしてよい」情報用途には
-    /// `ImeStateHub::warmup_ime_on()`（`WarmupImeOn::from_applied_or_belief`）を
-    /// 使うこと——ここで `unwrap_or(false)` してはならない。`applied` が
-    /// `Unknown` の窓（TsfNative のフォーカス復帰直後等）でこの値をそのまま
-    /// belief 相当として扱うと、warmup が握り潰され BUG-02 系のリテラル化が
-    /// 再燃した実例がある（このセッションの設計討議ラウンド1）。
+    /// 省略の根拠に使うなら、`Optimistic`（OS 未確認）ではなく `Confirmed` かを
+    /// 確認すること（ADR-214）。
+    ///
+    /// 本番の呼び出し元（`ImeModel` 内部を除く）: `sync_ime_kind_from_observation`
+    /// （`runtime/message_handlers.rs`、GjiFsm 遷移トリガー）、`shadow_ime_control_view`
+    /// （`runtime/mod.rs`）、`executor.rs` の order 起案、`key_pipeline.rs` の
+    /// shadow 起案。後ろ3つは `build_ime_control_view` の `applied` に渡す。
     #[must_use]
     pub const fn applied_open(self) -> Option<bool> {
         match self {
