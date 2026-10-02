@@ -1123,7 +1123,10 @@ impl SettingsApp {
             .ok()
             .map(|stderr| {
                 std::thread::spawn(move || {
-                    keymap_learn_launcher::drain_learning_stderr_lines(stderr)
+                    keymap_learn_launcher::drain_learning_stderr_lines_logged(
+                        stderr,
+                        keymap_learn_launcher::learning_log_path().as_deref(),
+                    )
                 })
             });
         // Arc<Mutex<Child>>で共有し、UIの「キャンセル」ボタン・on_exit・読み取りスレッドの

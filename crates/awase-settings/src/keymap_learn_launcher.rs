@@ -217,8 +217,39 @@ pub fn take_learning_stderr(child: &mut Child) -> io::Result<ChildStderr> {
 /// 用途は想定しない。
 #[must_use]
 pub fn drain_learning_stderr_lines(stderr: ChildStderr) -> Option<String> {
+    drain_learning_stderr_lines_logged(stderr, None)
+}
+
+/// 学習ログの保存先(`%LOCALAPPDATA%\awase\keymap-learn.log`)。汚染の原因調査は
+/// 最終行だけでは足りず、直近イベントを含む全行が要るためファイルへ残す。
+#[must_use]
+pub fn learning_log_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("LOCALAPPDATA")?;
+    Some(
+        std::path::PathBuf::from(base)
+            .join("awase")
+            .join("keymap-learn.log"),
+    )
+}
+
+/// [`drain_learning_stderr_lines`]に加え、全行を`log_path`へ書き出す(起動のたびに作り直す)。
+#[must_use]
+pub fn drain_learning_stderr_lines_logged(
+    stderr: ChildStderr,
+    log_path: Option<&std::path::Path>,
+) -> Option<String> {
+    use std::io::Write;
+    let mut log = log_path.and_then(|path| {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        std::fs::File::create(path).ok()
+    });
     let mut last = None;
     for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+        if let Some(file) = log.as_mut() {
+            let _ = writeln!(file, "{line}");
+        }
         if !line.trim().is_empty() {
             last = Some(line);
         }

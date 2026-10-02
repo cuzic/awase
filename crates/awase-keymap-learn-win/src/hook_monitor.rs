@@ -44,14 +44,23 @@ unsafe extern "system" fn hook_callback(ncode: i32, wparam: WPARAM, lparam: LPAR
         }
         InjectionOrigin::External => {
             EXTERNAL_COUNT.fetch_add(1, Ordering::SeqCst);
+            crate::diag::record("外部注入キー", &describe_key(kb, wparam));
         }
         InjectionOrigin::Physical => {
             PHYSICAL_COUNT.fetch_add(1, Ordering::SeqCst);
+            crate::diag::record("物理キー", &describe_key(kb, wparam));
         }
     }
     // 自分の注入・外部からの注入・物理入力のいずれも、観測するだけで消費しない
     // （学習窓の入力そのものは妨げない）。
     unsafe { CallNextHookEx(None, ncode, wparam, lparam) }
+}
+
+fn describe_key(kb: &KBDLLHOOKSTRUCT, wparam: WPARAM) -> String {
+    format!(
+        "msg=0x{:X} vk=0x{:02X} scan=0x{:02X} flags=0x{:02X} extra=0x{:X}",
+        wparam.0, kb.vkCode, kb.scanCode, kb.flags.0, kb.dwExtraInfo
+    )
 }
 
 /// フックスレッドが起動しきるまでスピン待機する。
@@ -87,6 +96,7 @@ impl HookMonitor {
     /// # Errors
     /// スレッドのスポーン失敗、または`SetWindowsHookExW`が失敗した場合。
     pub fn install() -> windows::core::Result<Self> {
+        crate::diag::init();
         HOOK_TID.store(0, Ordering::SeqCst);
         SELF_OBSERVED.store(0, Ordering::SeqCst);
         EXTERNAL_COUNT.store(0, Ordering::SeqCst);
