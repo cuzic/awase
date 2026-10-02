@@ -1084,7 +1084,9 @@ impl Runtime {
                     );
                 }
             }
-            return false;
+            // ADR-208 D4（L3a）: belief が既に向きと一致していても、この押下の物理キーが Suppress される窓では
+            // 実 IME へ誰も応答しない（外から実 IME が変わった・読み取りが嘘のとき固着する、S-3）。
+            return self.kp_shadow_noop_write(event, new_val, tick_ms);
         }
         self.platform_state.ime.on_ime_toggled();
         // ADR-203 (ii): OFF→ON に倒した瞬間は GjiFsm を開き直す（ON 方向のみ。向きは belief 次第で
@@ -1173,6 +1175,46 @@ impl Runtime {
         true
     }
 
+    /// shadow toggle の no-op 分岐（belief が既に押下の向き〈キーの意味 `key_target`〉と一致）の書き込み（ADR-208 決定2 D4・L3a、S-3）。
+    ///
+    /// `plan` と shadow 判断の循環は**固定点**で解く: `plan(shadow_toggled=false)` を先に評価し、Suppress なら書いて
+    /// `true`（後段の本物の `plan(true)` が評価される）を返す。Allow（物理が IME に届く窓）なら書かない（INV-L1 の
+    /// 「ちょうど一方」。BUG-113 の二重送信を作らない）。リピート（`press_id=None`）と TsfNative（BUG-124 の実機 A/B 〈L3'〉まで
+    /// 段階制御、`shadow_noop_write_target`）は従来どおり書かない。同じ押下で Engine が出すキーは呼び出し前に除外済み
+    /// （`engine_owns_open_key`）で、他の経路の予約とは `kp_shadow_actuate` の `claim_press_write` で重ならない。
+    fn kp_shadow_noop_write(
+        &mut self,
+        event: &RawKeyEvent,
+        key_target: bool,
+        tick_ms: crate::state::TickMs,
+    ) -> bool {
+        let profile = self.platform.current_app_profile();
+        let plan0 = crate::runtime::PhysicalKeyDisposition::plan(
+            event,
+            profile,
+            false,
+            crate::tsf::observer::tsf_obs().active_ime_kind(),
+        );
+        let effectively_tsf_native =
+            profile.is_effectively_tsf_native(self.platform.focus.class_name());
+        // 書く向きはキーの意味（belief ではない）。PanicReset ガード等で belief が動かず `current != key_target` の
+        // まま no-op に入っても、逆向きを書かない（M-1）。
+        let Some(open) = crate::state::explicit_press::shadow_noop_write_target(
+            event.press_id.is_some(),
+            effectively_tsf_native,
+            plan0 == crate::runtime::PhysicalKeyDisposition::Suppress,
+            key_target,
+        ) else {
+            return false;
+        };
+        tracing::info!(
+            "[shadow-toggle] no-op だが物理キーは Suppress される窓 → 書く（ADR-208 D4）vk=0x{:02X} open={open}",
+            event.vk_code
+        );
+        self.kp_shadow_actuate(open, event.press_id, tick_ms);
+        true
+    }
+
     /// shadow toggle が belief を `open` に倒した直後の、OS IME への明示 actuation
     /// （ADR-213 決定1。ON→OFF・OFF→ON を1本にまとめる）。
     ///
@@ -1181,7 +1223,7 @@ impl Runtime {
     /// には落とされない（settle 中でもユーザーのキーへの応答として書く）。
     ///
     /// - `applied` が直前の belief と食い違う（`Some(open)`。この関数は belief が `!open` から
-    ///   `open` に倒れたときだけ呼ばれる）なら、view の `shadow_on` を未知（`None`）として渡す
+    ///   `open` に倒れたとき、または no-op 分岐から呼ばれる〈L3a の `kp_shadow_noop_write`、belief==`open`〉）なら、view の `shadow_on` を未知（`None`）として渡す
     ///   （GjiDirect の already-matched 省略で、Suppress された物理キーの応答が消えるのを防ぐ。M1）。
     /// - 書き込みで `note_explicit_ime_action` を呼ぶ（idle-conv-check の抑制窓。M4）。
     /// - ImmCross が先頭の窓は async（`with_app` 再入回避）。ON は（撤去した）executor の ActivationSync と同じ
