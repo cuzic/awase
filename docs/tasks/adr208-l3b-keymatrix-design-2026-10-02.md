@@ -103,3 +103,12 @@ gh workflow run e2e-ime.yml --ref ci/adr208-l3b-keymatrix -f only='sc-keymatrix-
 - `crates/awase-windows/examples/chrome_probe.rs`: `--keymatrix=…`(同じ書式)。`KM_CONFIG`/`KM` 行を出す。`scan_for` に 0x19 を追加。
 - `tools/e2e/ime_key_matrix/check_keymatrix.py` + `test_check_keymatrix.py`(Linux の単体テスト、28 件)。
 - `.github/workflows/e2e-ime.yml`: 構成の定義(`km` ヘルパー)、plan の除外、判定ステップ(`check=keymatrix`)、summary の表、artifact に `keymatrix.json`。
+
+## 追記(2026-10-02): トグルの E2 対照(`sc-keymatrix-e2-tog-{msime,gji}-chrome`)の結果
+
+run 36957521623(`ci/adr208-l3b-tog-fresh`、観測のみ)。初回CIで未切り分けだった「MS-IME × 実 Chrome のトグル OFF 方向の STUCK」に、`tog:fresh` の対照を足した。
+
+- **MS-IME × 実 Chrome**: `1d=tog:fresh` 9/10、`f3=tog:fresh` 10/10、`19=tog:fresh` 10/10 が STUCK(awase 再起動直後=belief・applied 未知でも閉じない)。同 job の `1d=tog:sync` も 0.90 で `fresh_similar`。いずれも **ENV_EXCEPTION**(決定4(a)の環境の例外。内部固着ではない)。
+- **GJI(対照)**: fresh/sync は1押下、open は2押下で全セル収束(トグルの保証を満たす)。
+- **未測定**: MS-IME × 実 Chrome の `tog:open`(1d/f3/19)は ずれを作れず GAP_NOT_MADE(0/10)。初回CIで STUCK だった open セルは今回再現せず、外部 open が Chrome で作れない既知の件と同根とみられる。
+- i2 は両構成とも 0(`i2_unwarranted`)。
