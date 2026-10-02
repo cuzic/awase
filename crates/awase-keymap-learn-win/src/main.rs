@@ -31,6 +31,7 @@ mod app {
     use awase_keymap_learn::verify::{
         classify_robust, predict, score_walk, ScoreReport, WalkObs, DEFAULT_MIN_MINORITY,
     };
+    use awase_keymap_learn_win::progress_estimate::{ProgressEstimator, Snapshot};
     use awase_keymap_learn_win::reconvert_cells::blank_idle_reconvert_predictions;
     use awase_keymap_learn_win::settle_tuning::SettleTuning;
     use awase_keymap_learn_win::RealImeDriver;
@@ -627,20 +628,16 @@ mod app {
         estimated.max(table.observed_status_count() as u32 * KEYS.len() as u32)
     }
 
-    /// 進捗(現在何セル目/推定残り時間)を標準出力へ運ぶsinkを作る(ADR-195段階6)。
-    /// awase-settings(較正ウィザード)はこの行をパースしてUI表示する。IPCは
-    /// 使わない(ペイロードが1ワード固定で表本体を運べないため、詳細はADR本文
-    /// 「段階6」節参照)。表本体はここでは一切標準出力へ出さない。
-    /// 1状態あたりの想定打鍵数。進捗率の分母(`状態数 × これ`)に使う。セル数は学習の序盤で
-    /// 頭打ちになり終盤に動かなくなる(実測: 約65秒で168セルに達した後、約27秒は不変)が、打鍵数は
-    /// 最後まで線形に増える。GJI(ATOK/MS-IMEプリセット、12状態)の学習で訓練の打鍵数を4回測ると
-    /// 1482/1512/1518/1501 で、12状態あたり 123〜127。125を採る(5モードの30状態は未測定の外挿)。
-    const EXPECTED_PRESSES_PER_STATE: u32 = 125;
-
+    /// 進捗(現在何セル目/打鍵数ベースの進捗率/推定残り時間)を標準出力へ運ぶsinkを作る
+    /// (ADR-195段階6)。awase-settings(較正ウィザード)はこの行をパースしてUI表示する。IPCは
+    /// 使わない(ペイロードが1ワード固定で表本体を運べないため、詳細はADR本文「段階6」節参照)。
+    /// 表本体はここでは一切標準出力へ出さない。分母(`expected_presses`)は
+    /// [`awase_keymap_learn_win::progress_estimate`]が最悪ケースから縮めていく。
     fn make_progress_sink(
         estimated_total_cells: u32,
-        expected_presses: u32,
+        max_statuses: u32,
     ) -> impl FnMut(&Stats, &Table) {
+        let mut estimator = ProgressEstimator::new();
         move |stats, table| {
             if stats.presses % PROGRESS_EVERY_N_PRESSES != 0 {
                 return;
@@ -648,10 +645,15 @@ mod app {
             let cell = table.covered1() as u32;
             let total_cells = effective_total_cells(table, estimated_total_cells);
             let elapsed_ms = stats.timeline.last().map_or(0.0, |&(ms, _, _)| ms);
-            // 打鍵数に基づく線形外挿。想定を超えて続く場合は分母を押下数+1へ伸ばして、
-            // 残り時間が0に張り付くだけで進捗が逆戻りしないようにする。
             let presses = stats.presses;
-            let expected = expected_presses.max(presses + 1);
+            let expected = estimator.expected_presses(Snapshot {
+                presses,
+                covered_cells: cell,
+                observed_statuses: table.observed_status_count() as u32,
+                keys: KEYS.len() as u32,
+                max_statuses,
+            });
+            // その端末の1打鍵あたりの実測からの線形外挿(固定の秒数は使わない)。
             let eta_ms = if presses == 0 {
                 -1.0
             } else {
@@ -886,8 +888,7 @@ mod app {
         let mut executor = Executor::new(driver, AnomalyPolicy::default(), ReadPolicy::Single);
 
         let total_cells = model.distinct_status_count() as u32 * KEYS.len() as u32;
-        let expected_presses = model.states.len() as u32 * EXPECTED_PRESSES_PER_STATE;
-        executor.set_progress_sink(make_progress_sink(total_cells, expected_presses));
+        executor.set_progress_sink(make_progress_sink(total_cells, model.states.len() as u32));
 
         let req = Req::default();
         run(
