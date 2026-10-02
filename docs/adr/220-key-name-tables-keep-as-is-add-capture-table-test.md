@@ -72,3 +72,14 @@ related_adr:
 ## 影響
 
 テスト 1 本の追加のみ(D2)。本番コードに影響しない。
+
+## 追記(2026-10-02): vk.rs 内の定数と from_name の統合、LEGACY の撤去
+
+本 ADR の議論の後、所有者の判断で `vk.rs` の中だけで閉じる統合を実施した。D1(`KEY_NAMES` による crate をまたぐ単一ソース化)は引き続き見送りで、これは別物。
+
+- **やったこと**: `pub const VK_*`(47 個)と `from_name` の match(111 腕、うち 43 腕が定数と同じ値を 16 進で再掲していた)を、`vk_keys!` マクロ 1 か所に統合した。識別子 `VK_KANA` から定数と正規名 `"KANA"` を作り、別名だけを `[...]` で書く。16 進の VK 値を書く場所が 1 か所になった。
+- **挙動は変えていない**: 置き換え前後で名前→VK の対応 126 個が一致することを、旧 match の文字列リテラルと新マクロ呼び出しを別々に抽出して機械的に比べて確認した。
+- **失ったもの**: match が持っていた重複名のコンパイル時検査(S4)。`key_table_names_are_unique_and_canonical` が名前の一意性、正規名・別名が `canonical_key_text` の出力と同じ形であること、VK 値の一意性を見る。
+- **LEGACY の撤去**: 上の機械的な同値確認を済ませたうえで、`from_name_resolves_every_legacy_name_to_the_same_vk`(123 名の凍結表)を削除した。round1 M1 が指摘した「独立したオラクル」を失う判断で、表の VK 値の打ち間違いは、候補表の受理テスト(`key_acceptance_tests.rs`)・矢印キーのテスト・設定の解決テストの範囲外のキー(`F1`〜`F10` の一部、OEM 系など)では検出されなくなる。16 進を書く場所が 1 か所になったので重複由来のずれは起きないが、値そのものの誤りは検出できない。許容した。
+- **残した検査**: `LEGACY` が兼ねていた「`VK_` 付き・小文字・`VK_` 無しのどれでも同じ VK に解決される」は `key_table_names_resolve_in_every_spelling` で表を回して見る(期待値は表自身から取る)。
+- **範囲外のまま**: `awase-settings` の `KEYMAP_MAIN_KEYS`・`egui_key_to_internal`、`key_text.rs::KEY_IDENTITY_ALIASES`、macOS の名前表。
