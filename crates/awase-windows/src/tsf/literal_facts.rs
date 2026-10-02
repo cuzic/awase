@@ -2,7 +2,7 @@
 
 use crate::state::event_origin::Generation;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(strum::IntoStaticStr, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum LiteralVerdict {
     CompositionConfirmed,
     SuspectedLiteral,

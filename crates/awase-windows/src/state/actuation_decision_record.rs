@@ -337,20 +337,14 @@ impl From<&ActuationDecisionRecord> for ActuationDecisionRecordWire {
 /// ワイヤの`Vec`長が[`MAX_WRITE_MECHANISMS`]を超えていた場合のエラー
 /// （改ざんされた、または将来`MAX_WRITE_MECHANISMS`が縮小されたフィクスチャの
 /// デシリアライズ時のみ発生しうる）。
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "{field} has {len} entries, exceeding MAX_WRITE_MECHANISMS={}",
+    MAX_WRITE_MECHANISMS
+)]
 struct WireLenOverflow {
     field: &'static str,
     len: usize,
-}
-
-impl std::fmt::Display for WireLenOverflow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} has {} entries, exceeding MAX_WRITE_MECHANISMS={MAX_WRITE_MECHANISMS}",
-            self.field, self.len
-        )
-    }
 }
 
 fn fixed_array_from_vec<T: Copy>(

@@ -3574,11 +3574,6 @@ fn initial_focus_fence_event_only_touches_the_fence() {
                 ("state/ime_model.rs", 1),
                 // variant 定義そのもの。
                 ("state/ime_event.rs", 1),
-                // ADR-139決定4: journal.rs::ime_event_kind_str がtracing出力用の
-                // 判別子文字列としてvariant名を返すだけの非機能的な参照
-                // （belief には一切触れない）。1行にmatchアームと戻り値の文字列
-                // リテラルの両方でvariant名が現れるため2としてカウントされる。
-                ("journal.rs", 2),
             ],
         ),
         (
@@ -3638,11 +3633,6 @@ fn initial_app_policy_event_only_touches_app_policy() {
             ("runtime/focus_tracking.rs", 1),
             ("state/ime_model.rs", 1),
             ("state/ime_event.rs", 1),
-            // ADR-139決定4: journal.rs::ime_event_kind_str がtracing出力用の
-            // 判別子文字列としてvariant名を返すだけの非機能的な参照
-            // （belief には一切触れない）。1行にmatchアームと戻り値の文字列
-            // リテラルの両方でvariant名が現れるため2としてカウントされる。
-            ("journal.rs", 2),
         ],
     )];
     for path in &files {
@@ -3694,7 +3684,6 @@ fn mode_key_passed_through_event_is_dispatched_from_one_place() {
             "state/platform_state.rs" => 1,
             "state/ime_model.rs" => 1,
             "state/ime_event.rs" => 1,
-            "journal.rs" => 2,
             _ => 0,
         };
         assert_eq!(
@@ -3801,9 +3790,6 @@ fn initial_focus_hwnd_event_only_touches_current_focus() {
             ("runtime/focus_tracking.rs", 1),
             ("state/ime_model.rs", 1),
             ("state/ime_event.rs", 1),
-            // journal.rs::ime_event_kind_str の判別子文字列（belief には触れない）。
-            // matchアームと戻り値の文字列リテラルの両方で現れるため2。
-            ("journal.rs", 2),
         ],
     )];
     for path in &files {
@@ -5109,7 +5095,7 @@ fn decision3_instrument_targets_are_covered_by_reincidence_family_docs() {
 /// 言及は対象外にするため、コメント行を除去してから走査する。
 #[test]
 fn journal_emit_tracing_has_no_debug_display_sigils_or_wildcards() {
-    const START_MARKER: &str = "fn decision_kind_str(";
+    const START_MARKER: &str = "fn decision_kind_shape(";
     const END_MARKER: &str = "/// 統合イベントジャーナル。";
 
     let content = read_crate_file("src/journal.rs");
@@ -5126,7 +5112,7 @@ fn journal_emit_tracing_has_no_debug_display_sigils_or_wildcards() {
         !block.contains('?'),
         "journal.rs の emit_tracing 実装に `?`（Debug フォーマット）が含まれています。\
          ADR-139決定4はDebug文字列化を禁止しています（ADR-082決定1の巻き戻し防止）。\
-         判別子文字列は型に手を入れず journal.rs 内の private fn でマッピングすること。"
+         判別子文字列は `strum::IntoStaticStr` + `variant_name` で取ること。"
     );
     assert!(
         !block.contains('%'),

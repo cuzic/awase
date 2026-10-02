@@ -14,7 +14,9 @@ use super::ime_event::ObservationSource;
 /// JSON フィクスチャとして固定化する）が [`FeedbackPolicy::decide_action`] の実引数を
 /// そのまま往復できるようにするため（`ConvClassifyFixture` が `ConvTransition` 等の
 /// 本番型を直接シリアライズする既存パターンと同じ）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    strum::IntoStaticStr, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
 pub enum FeedbackPolicy {
     /// 実読み戻しが可能（ImmCross 等）。
     Read {
@@ -204,7 +206,9 @@ impl ConvergedReceipt {
 /// [`FeedbackPolicy::decide_action`] の判定結果。次に actuate すべきか、打ち切るべきか。
 ///
 /// `serde` 導出は `DriftCorrectionFixture`（下記）の `expected` フィールド用。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    strum::IntoStaticStr, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
 pub enum ActuationAction {
     /// まだ試行回数に余裕がある、実際に actuate してよい。
     Send,
