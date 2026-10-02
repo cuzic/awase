@@ -102,7 +102,7 @@ sc-hz/kanji/dbe/shift の退行は B・C とも消えた(書き込み全停止�
 ## 所有者決定(2026-10-01、起動直後の最初の内部状態と v2 の扱い)
 
 - **原則**: IME が ON なら NICOLA ON、IME が OFF なら NICOLA OFF。モードずれは許容するが、できるだけ少なくする。
-- **決定6(M7)の確定**: IME の状態が読めない窓(実 Chrome など Imm32Unavailable)で、awase 起動直後は**観測が得られるまで NICOLA は OFF(生キーを通す)**。実 IME が ON と分かってから NICOLA ON にする。belief の既定値(placeholder の ON)で Engine を active にしない。代償: IME が実際に ON でも、観測が得られるまで(先同期は最大約0.5秒、読めない窓はもっと長い)最初の文字が生のキーになる。実装は未着手(MS-IME×実 Chrome の ON 起動の切り分け実験〈`sc-startup-msime-chrome-on-*`〉の結果を見てから、`[msime-ready]` が開閉を読んで閉なら強制送信せず belief を正す修正とあわせて決める)。
+- **決定6(M7)の確定**: IME の状態が読めない窓(実 Chrome など Imm32Unavailable)で、awase 起動直後は**観測が得られるまで NICOLA は OFF(生キーを通す)**。実 IME が ON と分かってから NICOLA ON にする。belief の既定値(placeholder の ON)で Engine を active にしない。代償: IME が実際に ON でも、観測が得られるまで(先同期は最大約0.5秒、読めない窓はもっと長い)最初の文字が生のキーになる。実装は未着手。MS-IME×実 Chrome の ON 起動の切り分け実験(`sc-startup-msime-chrome-on-{noawase,precheck,gated,norefocus2}` 各8回、2026-10-01 23:22 UTC)は**全 32 回 PASS**(打鍵直前の実 IME は全回 open、awase なしの対照も 8/8 かな)で、14:52 UTC ごろに出た約半数の `ka` は**再現せず環境依存と判断**した。再現できない現象への修正は見送り、再発時に切り分け構成で `real_ime_open_before_type=false` の回を捕まえてから、`[msime-ready]` が閉と確認したら強制送信せず belief を正す修正とあわせて決める。
 - **v2 のブロッカーにしない**: MS-IME×実 Chrome の起動直後の最初の文字(約半数でローマ字 `ka`、develop でも 6 回中 3 回)は、実験で環境側の寄与を切り分けたうえで既知の制限として記録する。awase 側の欠陥(IME が閉と確認したのに強制送信、観測を belief に反映しない)だけを修正する。
 - **v1 へは backport しない**(v2 リリースで v1 は保守終了、重大バグのみ backport の既存方針)。
 - **実機確認**(Windows 11、MS-IME 本体、起動前からある窓、WT×GJI の A/B)は、ADR-208 の L1〜L3 をマージし終えてからまとめて行う。
