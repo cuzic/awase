@@ -3,7 +3,7 @@ id: ADR-215
 title: |-
   variant 名や Display の手書き対応表を strum/thiserror の derive に置き換える(ADR-139 決定4の一部を上書き)
 summary: |-
-  `journal.rs` には、enum の variant 名を文字列にする手書きの `match` が14関数あり、variant の追加のたびに更新が要った(更新漏れは、`_ =>` を書かないという約束だけが安全装置だった)。
+  `journal.rs` には、enum の variant 名を文字列にする手書きの `match` が14関数あり、variant の追加のたびに更新が要った(`_ =>` を書かないという約束があったため、variant の追加でコンパイルが落ちて更新は強制されていた)。実際の利点は、約100行の定型コードの削除と、variant の改名が tracing の文字列に自動で追従することで、「更新漏れを型で防ぐ」ではない。
   これを `strum::IntoStaticStr` の derive と `variant_name()` 1本に置き換えた(コミット `b3f922f9`、挙動は変えない)。あわせて、エラー型 `WireLenOverflow` の `Display` を `thiserror`、`KeyboardModel` の `Display` を `strum::Display` にした。
   この変更は ADR-139 決定4(判別子文字列は journal.rs 内に閉じた private fn で持ち、core crate の型に手を入れない)を上書きする。ADR-019(OS 非依存)が禁じるのは `windows-rs`・`cfg(target_os)`・VK 数値で、`strum` は該当しないため、core crate への依存追加は許容する。
   当初この ADR は、`Option<bool>` を3値の型にする決定 A と、bool 引数を enum にする決定 B も含んでいたが、Opus レビュー(round1)で、型を足す前に消費者を撤去するほうが先と指摘され取り下げた(ADR-216)。
@@ -25,13 +25,13 @@ related_adr:
 
 ## 決定
 
-- **variant 名は `strum::IntoStaticStr` を derive し、`journal.rs` の `variant_name()` 1本で取る。** 対象は15 enum。ほとんどは `awase-windows` 内の型だが、
+- **variant 名は `strum::IntoStaticStr` を derive し、`journal.rs` の `variant_name()` 1本で取る。** 対象は16 enum。ほとんどは `awase-windows` 内の型だが、
   `ImeOpenOutcome`・`InputModeState`・`KeyClassification` は core crate `awase` の型で、そこにも derive を足した。
-  文字列は variant 名そのままで、journal の JSON(serde、variant 名そのまま)との表記の一致は維持される(ADR-139 決定2)。
+  文字列は variant 名そのままで、journal の JSON(serde、variant 名そのまま)との表記の一致は維持される(ADR-139 決定4 の第2項)。
 - **エラー型は `thiserror`、エラーではない型の `Display` は `strum::Display` を使う。** `WireLenOverflow` は `thiserror`、`KeyboardModel` の `Display` は `strum::Display`(lowercase)。
   `ClassifyReason`/`RejectReason` のような「理由」の型は、`Error` を実装すると意味が紛れ、`ClassifyReason` は Debug と Display で引用符の有無も違うため、手書きのままにする。
 - **新規の依存 `strum` を、root crate `awase` と `awase-windows` に足す。**
-- **`architecture_guard` の変更**: `journal.rs` 内の variant 名の出現数(2)の許容を3テストから撤去し、`emit_tracing` のワイルドカード検査の開始マーカーを `fn decision_kind_shape(` に移した。
+- **`architecture_guard` の変更**: `journal.rs` 内の variant 名の出現数(2)の許容を4テスト(`initial_focus_fence_event_only_touches_the_fence`、`initial_app_policy_event_only_touches_app_policy`、`initial_focus_hwnd_event_only_touches_current_focus`、`mode_key_passed_through_event_is_dispatched_from_one_place`)から撤去し、`emit_tracing` のワイルドカード検査の開始マーカーを `fn decision_kind_shape(` に移した。
   許容件数(2)が、journal.rs の該当件数 0 の下で `_ => 0` の既定に落ちるため、検査はむしろ厳しくなる。走査範囲は `emit_tracing` を引き続き含む。
 
 ### ADR-139 決定4の上書き
@@ -43,7 +43,7 @@ ADR-139 決定4(`docs/adr/139-tracing-metrics-observability-migration.md`)は「
   ADR-139 が避けたかった「依存追加の議論」は、本 ADR で行った。
 - 決定4が守りたかったもう1つの点(判別子を journal の JSON と同じ表記にする、`_ =>` を書かず variant の追加をコンパイルで検知する)は、derive が variant の追加に自動で追従するため、
   むしろ強くなる。
-- 変わらないもの: `emit_tracing` の `?`/`%` 禁止(決定4の第2項)、`seq`/`elapsed_ms` の明示(第1項)。
+- 上書きするのは、決定4 第2項のうち「判別子文字列は journal.rs 内に閉じた private fn で持つ」「core crate の型に手を入れない」の2文だけ。第2項の他の文(`?`/`%` 禁止、表記を JSON と揃える)と、第1項(`seq`/`elapsed_ms` の明示)は変えない。ADR-139 の frontmatter の `status` にも上書きを1行足した。
 
 ## 決定しないこと
 
