@@ -10,8 +10,6 @@ pub mod reconvert_cells;
 pub mod settle_tuning;
 
 #[cfg(windows)]
-mod diag;
-#[cfg(windows)]
 mod driver;
 #[cfg(windows)]
 mod env_version;

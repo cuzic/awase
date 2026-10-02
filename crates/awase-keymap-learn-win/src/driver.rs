@@ -102,15 +102,6 @@ static FOCUS_LOST_EVENTS: AtomicU32 = AtomicU32::new(0);
 extern "system" fn window_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if msg == WM_ACTIVATE && (wparam.0 & 0xFFFF) as u16 == WA_INACTIVE {
         FOCUS_LOST_EVENTS.fetch_add(1, Ordering::SeqCst);
-        // lparam = 代わりにアクティブになる窓（別プロセスなら奪った相手）
-        crate::diag::record(
-            "学習窓が非アクティブ化",
-            &format!(
-                "代わりにアクティブ化: {} / 前面: {}",
-                crate::diag::describe_window(HWND(lparam.0 as *mut _)),
-                crate::diag::describe_foreground()
-            ),
-        );
     }
     if msg == WM_IME_NOTIFY {
         queue_notify(wparam.0);
@@ -169,13 +160,9 @@ fn log_contamination_cause(context: &str, external: bool, physical: bool, focus_
         causes.push("フォーカス喪失");
     }
     eprintln!(
-        "[awase-keymap-learn-win] {context}: 汚染を検出({}) 前面窓: {}",
-        causes.join("・"),
-        crate::diag::describe_foreground()
+        "[awase-keymap-learn-win] {context}: 汚染を検出({})",
+        causes.join("・")
     );
-    for line in crate::diag::drain() {
-        eprintln!("[awase-keymap-learn-win]   直近イベント {line}");
-    }
 }
 
 #[derive(Debug)]
@@ -711,16 +698,6 @@ impl RealImeDriver {
             eprintln!(
                 "[awase-keymap-learn-win] 送信前ゲート: フォーカスが学習窓に無いためVK 0x{vk:02X}の送信を中止した"
             );
-            // 原因調査用: 前面窓・フォーカス窓と、直近の物理/外部入力・非アクティブ化の記録。
-            eprintln!(
-                "[awase-keymap-learn-win]   学習窓: {} / 前面: {} / フォーカス: {}",
-                crate::diag::describe_window(self.window),
-                crate::diag::describe_foreground(),
-                crate::diag::describe_window(unsafe { GetFocus() })
-            );
-            for line in crate::diag::drain() {
-                eprintln!("[awase-keymap-learn-win]   直近イベント {line}");
-            }
             // round3 R1対応（N5が生んだ退行の修正）: フォーカスを失うと、以降の
             // 送信はすべてこのゲートで拒否され続け、`delivered=false`のため
             // `check_session_interference`は一度も呼ばれない（round2 N5対応）。

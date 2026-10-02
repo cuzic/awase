@@ -93,17 +93,6 @@ impl ImeNotifyMonitor {
         self.notify_observed_since_mark.set(true);
         let outside_window = self.expect_until.get().is_none_or(|deadline| at > deadline);
         if outside_window {
-            #[cfg(windows)]
-            crate::diag::record(
-                "猶予外のIME通知",
-                &format!(
-                    "wparam=0x{wparam:X} 猶予期限={}",
-                    self.expect_until.get().map_or_else(
-                        || "未申告".to_owned(),
-                        |d| format!("{}ms超過", at.saturating_duration_since(d).as_millis()),
-                    )
-                ),
-            );
             self.external_count.set(self.external_count.get() + 1);
         }
     }
