@@ -32,9 +32,10 @@ All notable changes to this project will be documented in this file.
   - 次の項目は、解決できない値があると警告が出る（トレイ通知とログ）: `[[post_bypass]]` の key、`[[keymaps]]` の from/to、`muhenkan_solo_tap_dedicated_fn_key`、`engine_toggle_hotkey`（名前が解決できない場合と、他のアプリが先に使っていて登録できない場合の両方）。設定を再読み込みしても、同じ内容ならトレイ通知は繰り返さない
   - 未知の項目名（`[general]` の綴り間違いなど）は、近い名前の候補つきで警告する。**この警告はログと設定画面の警告欄だけ**に出し、トレイ通知は出さない。撤去済みの項目（`apply_calibrated_mode_keys`・`[[calibration]]` など）は警告しない
   - 上の「今まで無視されていた設定が有効になる」設定があるときは、起動時のログに「以前は無視されていた設定 N 件が有効になりました」と該当項目を出す（トレイ通知・設定画面には出さない）
+- **撤去した設定 `general.gji_thumb_key_ime_toggle`（設定画面の「GJI の状態依存トグルをベストエフォートで追従する」）と `general.dbe_mode_key_policy`（隠し設定）が `true`／`passthrough` のまま残っているときは、起動時にトレイで通知する。** 値は無視され、設定画面で保存すると行は消える。GJI の状態依存トグルは IME のキー設定から自動で判定する。既定値（`false`／`suppress`）のままなら何も出ない
 - **`keys.engine_on_ime_key`/`engine_off_ime_key`（エンジン ON/OFF 時に IME のモードキーを送る上級者向け設定）を撤去した（ADR-207）。** 既定は無効で設定画面にも無かったが、2026-08-15 より前に設定画面で一度でも保存した人の `config.toml` には旧既定（`VK_DBE_DBCSCHAR`/`VK_DBE_SBCSCHAR`）が残っていて、エンジンの ON/OFF に合わせて全角/半角モードを送る機能が有効だった。更新するとそれが止まる。`config.toml` に残っていても無視され、起動時に通知が出る（設定画面で保存するとその行は消える）。代わりの設定は無い。IME の開閉は `keys.ime_on`/`ime_off` で設定できる
 - `keys.ime_detect.on`/`off` の既定を空にした（以前は `IMEオン`/`IMEオフ`）。IMEオン/IMEオフ キー（VK_IME_ON/OFF）の追随は、指定しなくても自動で行われる（入力言語の判定が一時的に日本語でないと出る環境でも追随するよう直した）。書いてある値はそのまま使われる
-- **`keys.ime_toggle` の既定を空にした（以前は `VK_KANJI`＝半角/全角）。** `config.toml` に `VK_KANJI` を明示している場合はその設定を尊重し、消さない
+- **`keys.ime_toggle` の既定を空にした（以前は `VK_KANJI`＝半角/全角）。** v1 の設定画面が書き出した旧既定値（`ime_toggle = ["VK_KANJI"]`、`ime_detect` の `IMEオン`/`IMEオフ`）と**ちょうど同じ**値は、読み込み時に空として扱い、設定画面で保存するとファイルからも消える（旧既定に別のキーを足した設定や、別のキーは尊重する）
 - **無変換/変換の単独タップの動作を整理した（ADR-206）。`muhenkan_solo_tap_ime_action`/`henkan_solo_tap_ime_action` を撤去した。**
   - 単独タップは Suppress／Passthrough の設定に従う。IME 側でそのキーが IME オン/オフ/トグルに割り当てられているとき（`keys.ime_on`/`ime_off` に書いた場合を含む）は、Passthrough のときだけ、生キーを抑止して awase が現在の状態に従って ON/OFF を明示的に送る。Suppress は IME を動かさない
   - 旧設定は読み込み時に `keys.ime_*` 相当へ移して警告する。同じキーの設定が既にあれば移行しない。設定画面で保存すると旧設定は消える

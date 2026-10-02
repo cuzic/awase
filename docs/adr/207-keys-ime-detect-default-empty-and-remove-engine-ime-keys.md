@@ -156,3 +156,15 @@ ImmCross の偽の窓では Engine が inactive で `SetOpen` が出ず、現状
   連鎖削除に漏れ・過剰なし(`actuation_call_guard` 許可リストは更新不要、`applied_snapshot` 楽観更新と `uses_kanji_toggle` を残す判断は妥当)、
   通知の配線・頻度(起動ごとに 1 回、リロードでは同内容なら出ない)は意図どおり。任意の小修正(通知文に「設定画面で保存しても消えます」、CHANGELOG の ADR-201 項からの除外、
   usage の「代わりの設定はありません」)は反映済み。ADR 番号は 205(BUG-172)・206(solo-tap)・208 と衝突なし。
+
+## 追記（2026-10-02）: 撤去した設定の通知と、旧既定値の自動削除
+
+所有者決定（2026-10-02）。「効果があった設定を黙って消さない」を、キーの存在でなく**値が既定でないとき**に広げた。
+
+- `general.gji_thumb_key_ime_toggle = true` と `general.dbe_mode_key_policy` が `suppress` 以外のときだけ、`removed_notices`（トレイ通知）に積む。
+  v1 の設定画面は全項目を書き出すので、既定値（`false`・`"suppress"`）はほぼ全員の config.toml に残っており、キーがあるだけで通知すると全員に出る。
+  設定画面の保存は、どちらのキーもファイルから消す（`config_save::remove_retired_keys`）。
+- v1 の設定画面が書き出した旧既定値（`keys.ime_toggle = ["VK_KANJI"]`、`keys.ime_detect.on = ["IMEオン"]`・`off = ["IMEオフ"]`）と**ちょうど同じ**値は、
+  読み込み時に空として扱い（`KeysConfig::drop_retired_default_values`）、保存でファイルからも消す（`config_save::remove_retired_default_values`）。
+  旧既定に別のキーを足した値は尊重する。これで、「ユーザーが明示した値は既定と無関係に尊重する」（本文の調査 1）のうち、旧既定と同一の値だけが覆る（v2 の既定が既存ユーザーにも効く）。
+  明示した `ime_toggle = ["VK_KANJI"]` は GJI の 0x19 の役割判定（ADR-202）が担うので、動作は変わらない見込み（実機未確認）。

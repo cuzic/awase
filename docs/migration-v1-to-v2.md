@@ -29,7 +29,7 @@ v2 は方針を変えました。
 
 | 項目 | v1 | v2 |
 |---|---|---|
-| `keys.ime_toggle` | 既定 `VK_KANJI`（半角/全角） | **既定は空**。明示した `VK_KANJI` は尊重（消さない）。IME 側の設定に従う |
+| `keys.ime_toggle` | 既定 `VK_KANJI`（半角/全角） | **既定は空**。v1 の旧既定と**ちょうど同じ**値（`["VK_KANJI"]`）は読み込み時に空として扱い、保存で消える。IME 側の設定に従う |
 | `keys.ime_detect.on` / `off` | 既定 `IMEオン` / `IMEオフ` | **既定は空**。IMEオン/オフ キー（`VK_IME_ON/OFF`）への追随は指定なしで自動 |
 | `keys.engine_on_ime_key` / `engine_off_ime_key` | エンジン ON/OFF 時に IME のモードキーを送る | **撤去**。残っていれば無視し、起動時にトレイで通知。設定画面で保存すると消える |
 | `muhenkan_solo_tap_ime_action` / `henkan_solo_tap_ime_action` | 無変換/変換の単独タップで IME 操作 | **撤去**。読み込み時に `keys.ime_*` 相当へ移行して警告（同じキーの設定が既にあれば移行しない）。保存すると消える |
@@ -39,16 +39,16 @@ v2 は方針を変えました。
 | 設定の誤り | 無視 | **警告**（トレイ通知とログ、設定画面の警告欄）。未知の項目名は近い候補つき |
 | 設定画面での保存 | 全体を書き直す | **差分だけ書く**（コメント・未知のキーを保つ。`toml_edit`）。GUI 保存は三者比較で、外部編集を巻き込まない |
 | `use_learned_keymap_table` | なし | **新設（既定 true）**。IME キー効果の学習結果を使う（§3） |
-| `general.gji_thumb_key_ime_toggle`（設定画面の「GJI の無変換/変換/ひらがな/カタカナキーの状態依存トグルをベストエフォートで追従する（自己責任）」） | opt-in（既定 off） | **撤去（通知なし）**。`config.toml` に残っていても**黙って無視**される。同じ目的は、IME のキー設定から役割を逆算する仕組み（ADR-199）が既定で担う |
-| `general.dbe_mode_key_policy`（隠し設定。`passthrough` で DBE キーの抑止を外す） | 既定 `suppress` | **撤去（通知なし）**。黙って無視される（`passthrough` は実質効いていなかったため） |
+| `general.gji_thumb_key_ime_toggle`（設定画面の「GJI の無変換/変換/ひらがな/カタカナキーの状態依存トグルをベストエフォートで追従する（自己責任）」） | opt-in（既定 off） | **撤去**。`true` で残っていれば起動時に通知し、値は無視される（`false` なら何も出ない）。保存で行が消える。同じ目的は、IME のキー設定から役割を逆算する仕組み（ADR-199）が既定で担う |
+| `general.dbe_mode_key_policy`（隠し設定。`passthrough` で DBE キーの抑止を外す） | 既定 `suppress` | **撤去**。`passthrough` で残っていれば起動時に通知し、値は無視される（実質効いていなかったため）。保存で行が消える |
 | `[[calibration]]` | — | v2 には読み書きがない。残っていても無視される |
 | `diagnostics.hook_self_heal` | なし | **新設（既定 true）**。キーボードフックの自己修復。問題があれば `false` で無効化できる |
 | `predict_henkan_open_in_unreadable_windows` | なし | **新設**。読めない窓で、GJI の MS-IME プリセットの変換キーによる IME の開きを予測する（ADR-209） |
 | `warn_state_dependent_mode_keys` | なし | **新設**。状態依存の IME モードキーを検出して警告する（ADR-192） |
 
-> **v1 の設定画面で一度でも保存した `config.toml` には、v1 の既定値が明示的に書かれています**（例: `keys.ime_toggle = ["VK_KANJI"]`、`keys.ime_detect` の `IMEオン`/`IMEオフ`）。
-> v2 は明示された値を**そのまま尊重する**（消さない）ので、上の「既定を空にした」変更は新規インストールや値を書いていない設定にだけ効きます。v2 の既定どおりにしたい場合は、これらの行を `config.toml` から削除してください。
-> 逆に `gji_thumb_key_ime_toggle` や `dbe_mode_key_policy` のように v2 で撤去された設定は、残っていても通知なしで無視されます。
+> **v1 の設定画面で保存した `config.toml` には、v1 の既定値が明示的に書かれています**（`keys.ime_toggle = ["VK_KANJI"]`、`keys.ime_detect` の `IMEオン`/`IMEオフ`）。
+> v2 は、旧既定と**ちょうど同じ**値を読み込み時に空として扱い、設定画面で保存するとファイルからも消します（旧既定に別のキーを足した設定や、別のキーは尊重します）。
+> 撤去された `gji_thumb_key_ime_toggle`・`dbe_mode_key_policy` は、`true`／`passthrough` のまま残っているときだけ起動時にトレイで通知します（既定値なら何も出ません）。設定画面で保存すると行が消えます。
 
 > **心当たりのある再割り当てが、更新しただけで効き始めることがあります。** 昔書いたまま効かなかった `[[keymap]]` や `VK_` なしのキー名などです。更新後に `config.toml` を確認し、起動時ログの「以前は無視されていた設定 N 件が有効になりました」を見てください。
 
