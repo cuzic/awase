@@ -65,7 +65,7 @@ belief と actuation の記録の取り違えと同じ型であり、BUG-141(GJI
 | --- | --- | --- |
 | `executor::dispatch_ime_set_open`(Engine の `SetOpen`) | **する場合がある**(下の P1・P2) | `runtime/executor.rs:723-735`: `press.is_some()` かつ `engine_press_unknowns_applied` のときだけ未知にする |
 | `key_pipeline::kp_shadow_actuate`(shadow toggle) | `press=None`(自動リピート)のときだけ | `runtime/key_pipeline.rs:1277-1281`: `explicit_press_applied_pair(.., press.is_some())` |
-| drift correction(`ime_refresh.rs:958`) | **しない**。`apply_ime_open_with_belief(order, None, ..)` で `applied` に `None` を直書き(`shadow_on` は未知) | 読んで確認 |
+| drift correction(`ime_refresh.rs:958`) | **しない**。`applied` に `None` を直書き(`shadow_on` は未知)。ADR-216 R3 の後は `build_ime_control_view(None)` → `apply_ime_open_with_view`(旧 `apply_ime_open_with_belief(order, None, ..)`) | 読んで確認 |
 | `open_chain.rs` の `fallback_write` / `imm_cross_write` | しない。`fallback_write` は `shadow_on=None` に強制、`imm_cross_write` は直後の再観測(`imm_cross_reobservation_already_matches`) | ADR 本文の既存記述どおり(今回は再読していない) |
 
 `SetOpen` が `press=None` になる発行元は、`src/engine/engine.rs` の `transition_activation`(`:427`)、`apply_engine_on_with_ime_recovery`(`:824`)、`ime_set_open_effects`(`:864`)の3つ。打鍵起点のものは入口で `stamp_set_open_press`(`engine.rs:1113`)が `press_id` を載せるので `Some` になる。`None` のまま残る起点は次のとおり。

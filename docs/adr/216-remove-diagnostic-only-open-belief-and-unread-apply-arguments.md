@@ -8,7 +8,7 @@ summary: |-
   コードを読んで確認した(2026-10-02、develop `db93ce88`)。いずれも挙動に影響しない。これらを撤去して、`Option<bool>` の「未知を false にする」罠(BUG-113、ADR-098 決定1-b)の読み手を減らす。
   新しい型や gate は足さない(ADR-215 の決定 A の「型で塞ぐ」案は、Opus レビューで消費者の撤去が先と指摘され、取り下げた)。撤去後に残る読み手を数え直してから、型が要るかを別途判断する。
 status: |-
-  提案(2026-10-02)。Opus 敵対的レビュー round3 で収束(round2 の修正条件と、round3 の2点〈`gji_last_io_ms` は消さない、R2 の回帰テスト主張を弱める〉を本文に反映済み)。未実装。
+  提案(2026-10-02)。Opus 敵対的レビュー round3 で収束(round2 の修正条件と、round3 の2点〈`gji_last_io_ms` は消さない、R2 の回帰テスト主張を弱める〉を本文に反映済み)。R1〜R4 実装済み(2026-10-02、ブランチ `refactor/adr216-r1-remove-open-belief`、Opus コードレビューで挙動の変化なし)。`windows-build` の E2E `sc-*` の journal 分布の確認は PR の CI 待ち。
 related_adr:
   - "ADR-087"
   - "ADR-098"
