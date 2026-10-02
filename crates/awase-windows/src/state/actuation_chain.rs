@@ -127,7 +127,17 @@ use super::open_warrant::{issue_open_warrant, issue_press_warrant, OpenWarrant, 
 /// **キー値（VK）は持たない**——`state/key_sequence_policy.rs::ime_key_for` が
 /// SSOT のままである（ADR-089 §2.8、INV-44。`docs/experiments.md` エントリ01 の
 /// 回帰検知点を分裂させない）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    strum::IntoStaticStr,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum WriteMechanism {
     /// `ImmSetOpenStatus` のクロスプロセス呼び出し。VK を送らない。
     ImmCross,

@@ -200,7 +200,7 @@ pub enum KeyEventType {
 }
 
 /// キーの基本分類（プラットフォーム層が事前に決定）
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(strum::IntoStaticStr, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyClassification {
     /// 文字キー（NICOLA 変換対象、PhysicalPos あり）
     Char,

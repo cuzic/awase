@@ -85,7 +85,9 @@ pub(crate) enum GateResult {
 /// 変更しない）。`ReassertExplicitPhysicalKey`/`ForceOnRomajiCorrection`と同じ
 /// `caller`（`ActuationDecisionRecord::caller`）による事後ラベル付けで解決する:
 /// `run_open_chain_async`の`caller`引数に、呼び出し元がこの2値のどちらかを渡す。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    strum::IntoStaticStr, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
 pub enum DecisionSite {
     Sync,
     ImmCrossWrite,
@@ -102,7 +104,9 @@ pub enum DecisionSite {
 }
 
 /// 1機構分の「何を送るか」の決定結果（実I/Oは含まない）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    strum::IntoStaticStr, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
 pub enum MechanismCommand {
     /// 同期`ImmCrossProcessStrategy::apply`が呼ぶ`set_ime_open_cross_process(open)`相当。
     SetOpenCrossProcessSync(bool),

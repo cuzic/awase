@@ -56,19 +56,14 @@ pub struct KeyEventSummary {
 impl KeyEventSummary {
     #[must_use]
     pub fn from_raw(event: &awase::types::RawKeyEvent) -> Self {
-        use awase::types::{KeyClassification, KeyEventType};
+        use awase::types::KeyEventType;
         Self {
             vk_code: event.vk_code.0,
             scan_code: event.scan_code.0,
             is_down: matches!(event.event_type, KeyEventType::KeyDown),
             injected: event.injected,
             timestamp_us: event.timestamp,
-            key_class: match event.key_classification {
-                KeyClassification::Char => "Char",
-                KeyClassification::LeftThumb => "LeftThumb",
-                KeyClassification::RightThumb => "RightThumb",
-                KeyClassification::Passthrough => "Passthrough",
-            },
+            key_class: variant_name(event.key_classification),
             alt: event.modifier_snapshot.alt,
             ctrl: event.modifier_snapshot.ctrl,
             shift: event.modifier_snapshot.shift,
@@ -110,7 +105,7 @@ pub struct HookImeModeDiagnosticRecord {
 }
 
 /// `Decision` の種別サマリ
-#[derive(Debug, Serialize)]
+#[derive(strum::IntoStaticStr, Debug, Serialize)]
 #[serde(tag = "kind")]
 pub enum DecisionKind {
     PassThrough,
@@ -145,7 +140,7 @@ impl DecisionKind {
 /// （ImmCross プロファイルの無条件 Suppress、または GJI/MS-IME 稼働時の
 /// `is_dbe_mode_key_down` 条件による Suppress）が journal から見えないこと
 /// が判明したため追加した。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(strum::IntoStaticStr, Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind")]
 pub enum PhysicalDispositionSummary {
     /// 元の物理キーイベントをそのまま OS に通した
@@ -177,7 +172,7 @@ impl PhysicalDispositionSummary {
 /// 変換は唯一の呼び出し元（`platform.rs::flush_raw_tsf_literal_recovery`）
 /// のインライン `match` で行う——値をそのまま運ぶだけで判断ロジックを
 /// 含まないため、`output` 側に変換関数を置く必要がない。
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(strum::IntoStaticStr, Debug, Clone, Copy, Serialize)]
 #[serde(tag = "kind")]
 pub enum DeferredRecoveryOutcomeSummary {
     /// give-up 検出時と drain 処理時でフォーカス世代が変わっていたため、
@@ -655,11 +650,12 @@ impl JournalEntry {
 // 一部だけ `info!` に格上げすると既定フィルタ `"info"` の下で awase.log が
 // 常時肥大化し、決定2〈ログ肥大防止〉と矛盾する）。
 //
-// 判別子文字列（`?`/`%` の代わり）は journal.rs 内に閉じた private fn として
-// 実装する（型自体に `as_str()` を生やさない — `ConvClassifyCall` 等が保持する
-// `awase::engine::InputModeState` のような core crate の型に手を入れず、
-// ADR-019 の依存追加議論を避けるため）。値は journal の JSON シリアライズ
-// （serde、variant 名そのまま）と表記を揃える。
+// 判別子文字列（`?`/`%` の代わり）は、各 enum に `strum::IntoStaticStr` を derive して
+// `variant_name` 経由で取る（以前は journal.rs 内の手書き `match` 対応表だった。
+// variant 追加時の更新漏れを derive が型で防ぐ）。`strum` は OS 非依存で、core crate
+// の型に derive を足しても ADR-019 の制約（windows-rs / cfg(target_os) / VK 数値の
+// 持ち込み禁止）には触れない。値は journal の JSON シリアライズ（serde、variant 名
+// そのまま）と表記を揃える。
 //
 // 深くネストした構造体（`ActuationRecord`/`AnyObservation`/
 // `DriftGiveUpDiagnosticRecord` 等）は、当面トップレベルの主要フィールド、
@@ -667,21 +663,6 @@ impl JournalEntry {
 // 決定4 必須条件6）。`match` の網羅性（`_ =>` を書かない）だけは全箇所で守る
 // ——将来 variant が増えたときにコンパイルエラーで検知させるための唯一の
 // 安全装置。
-
-fn decision_kind_str(d: &DecisionKind) -> &'static str {
-    match d {
-        DecisionKind::PassThrough => "PassThrough",
-        DecisionKind::PassThroughWith { .. } => "PassThroughWith",
-        DecisionKind::Consume { .. } => "Consume",
-    }
-}
-
-fn physical_disposition_str(p: &PhysicalDispositionSummary) -> &'static str {
-    match p {
-        PhysicalDispositionSummary::Allow => "Allow",
-        PhysicalDispositionSummary::Suppress { .. } => "Suppress",
-    }
-}
 
 /// ADR-169: `journal_policy`（Windows非依存）は `DecisionKind`（`journal`
 /// モジュール自体が `#[cfg(windows)]` 配下）を直接参照できないため、比較用の
@@ -735,162 +716,18 @@ fn key_input_identity(entry: &JournalEntry) -> crate::journal_policy::KeyInputId
     }
 }
 
-fn ime_event_kind_str(e: &crate::state::ime_event::ImeEvent) -> &'static str {
-    use crate::state::ime_event::ImeEvent;
-    match e {
-        ImeEvent::UserImeToggleIntent { .. } => "UserImeToggleIntent",
-        ImeEvent::UserImeSetIntent { .. } => "UserImeSetIntent",
-        ImeEvent::PanicReset { .. } => "PanicReset",
-        ImeEvent::HwndCacheRestored { .. } => "HwndCacheRestored",
-        ImeEvent::ImeApplyRequested { .. } => "ImeApplyRequested",
-        ImeEvent::ImeApplySucceeded { .. } => "ImeApplySucceeded",
-        ImeEvent::ImeApplyFailed { .. } => "ImeApplyFailed",
-        ImeEvent::ObserverReported(_) => "ObserverReported",
-        ImeEvent::FocusChanged { .. } => "FocusChanged",
-        ImeEvent::FocusHwndUpdated { .. } => "FocusHwndUpdated",
-        ImeEvent::InitialFocusFenceEstablished { .. } => "InitialFocusFenceEstablished",
-        ImeEvent::InitialAppPolicyEstablished { .. } => "InitialAppPolicyEstablished",
-        ImeEvent::ModeKeyPassedThrough { .. } => "ModeKeyPassedThrough",
-        ImeEvent::KeyEffectPredicted { .. } => "KeyEffectPredicted",
-        ImeEvent::InitialFocusHwndEstablished { .. } => "InitialFocusHwndEstablished",
-        ImeEvent::ChordEnded { .. } => "ChordEnded",
-        ImeEvent::DriftDetected { .. } => "DriftDetected",
-        ImeEvent::InputModeObserved { .. } => "InputModeObserved",
-        ImeEvent::InputModeApplied { .. } => "InputModeApplied",
-        ImeEvent::UserChangedInputMode { .. } => "UserChangedInputMode",
-    }
+/// tracing 用の判別子文字列（variant 名）。`strum::IntoStaticStr` の derive が生成する
+/// `From<T>`/`From<&T>` 経由で取るため、variant 追加時の対応表の更新漏れが起きない。
+/// 値は journal の JSON シリアライズ（serde、variant 名そのまま）と表記が揃う。
+fn variant_name<T: Into<&'static str>>(value: T) -> &'static str {
+    value.into()
 }
 
-fn ime_open_outcome_str(o: awase::platform::ImeOpenOutcome) -> &'static str {
-    use awase::platform::ImeOpenOutcome;
-    match o {
-        ImeOpenOutcome::Applied => "Applied",
-        ImeOpenOutcome::AppliedWithoutSendInput => "AppliedWithoutSendInput",
-        ImeOpenOutcome::AlreadyMatched => "AlreadyMatched",
-        ImeOpenOutcome::Failed => "Failed",
-        ImeOpenOutcome::UnsafeToToggle => "UnsafeToToggle",
-        ImeOpenOutcome::NotOwned => "NotOwned",
-        ImeOpenOutcome::Unwarranted => "Unwarranted",
-    }
-}
-
-fn open_apply_reason_str(r: crate::state::ime_event::OpenApplyReason) -> &'static str {
-    use crate::state::ime_event::OpenApplyReason;
-    match r {
-        OpenApplyReason::EngineDecision => "EngineDecision",
-        OpenApplyReason::ImmBrokenForceOn => "ImmBrokenForceOn",
-        OpenApplyReason::Bootstrap => "Bootstrap",
-        OpenApplyReason::DriftCorrection => "DriftCorrection",
-        OpenApplyReason::ShadowToggle => "ShadowToggle",
-        OpenApplyReason::ExplicitKeyReassert => "ExplicitKeyReassert",
-    }
-}
-
-fn literal_verdict_str(v: crate::tsf::literal_facts::LiteralVerdict) -> &'static str {
-    use crate::tsf::literal_facts::LiteralVerdict;
-    match v {
-        LiteralVerdict::CompositionConfirmed => "CompositionConfirmed",
-        LiteralVerdict::SuspectedLiteral => "SuspectedLiteral",
-        LiteralVerdict::StaleConfirm => "StaleConfirm",
-        LiteralVerdict::VetoExpired => "VetoExpired",
-        LiteralVerdict::SessionSkip => "SessionSkip",
-        LiteralVerdict::PlanSkippedLiteral => "PlanSkippedLiteral",
-        LiteralVerdict::AbortedNoVerdict => "AbortedNoVerdict",
-    }
-}
-
-fn actuation_action_str(a: crate::state::ime_actuation::ActuationAction) -> &'static str {
-    use crate::state::ime_actuation::ActuationAction;
-    match a {
-        ActuationAction::Send => "Send",
-        ActuationAction::GiveUp => "GiveUp",
-    }
-}
-
-fn feedback_policy_kind_str(p: &crate::state::ime_actuation::FeedbackPolicy) -> &'static str {
-    use crate::state::ime_actuation::FeedbackPolicy;
-    match p {
-        FeedbackPolicy::Read { .. } => "Read",
-        FeedbackPolicy::Blind { .. } => "Blind",
-    }
-}
-
-fn decision_site_str(site: crate::state::ime_actuation_decision::DecisionSite) -> &'static str {
-    use crate::state::ime_actuation_decision::DecisionSite;
-    match site {
-        DecisionSite::Sync => "Sync",
-        DecisionSite::ImmCrossWrite => "ImmCrossWrite",
-        DecisionSite::FallbackWrite => "FallbackWrite",
-        DecisionSite::RunOpenChainAsync => "RunOpenChainAsync",
-        DecisionSite::DispatchImeSetOpen => "DispatchImeSetOpen",
-        DecisionSite::ReassertExplicitPhysicalKey => "ReassertExplicitPhysicalKey",
-        DecisionSite::ForceOnRomajiCorrection => "ForceOnRomajiCorrection",
-        DecisionSite::ShadowToggleOff => "ShadowToggleOff",
-        DecisionSite::ShadowToggleOn => "ShadowToggleOn",
-        DecisionSite::ForceOnBootstrap => "ForceOnBootstrap",
-        DecisionSite::BlacklistDriftCorrection => "BlacklistDriftCorrection",
-    }
-}
-
-fn write_mechanism_str(mechanism: crate::state::actuation_chain::WriteMechanism) -> &'static str {
-    use crate::state::actuation_chain::WriteMechanism;
-    match mechanism {
-        WriteMechanism::ImmCross => "ImmCross",
-        WriteMechanism::GjiDirect => "GjiDirect",
-        WriteMechanism::MsImeDirect => "MsImeDirect",
-    }
-}
-
+/// `Option<MechanismCommand>` の判別子名（`None` は文字列 `"None"`）。
 fn mechanism_command_str(
     command: Option<crate::state::ime_actuation_decision::MechanismCommand>,
 ) -> &'static str {
-    use crate::state::ime_actuation_decision::MechanismCommand;
-    match command {
-        Some(MechanismCommand::SetOpenCrossProcessSync(_)) => "SetOpenCrossProcessSync",
-        Some(MechanismCommand::SetOpenCrossProcessAsyncUntargeted(_)) => {
-            "SetOpenCrossProcessAsyncUntargeted"
-        }
-        Some(MechanismCommand::SetOpenThenConvForTarget { .. }) => "SetOpenThenConvForTarget",
-        Some(MechanismCommand::SendVk(_)) => "SendVk",
-        None => "None",
-    }
-}
-
-fn app_ime_profile_str(profile: crate::focus::class_names::AppImeProfile) -> &'static str {
-    use crate::focus::class_names::AppImeProfile;
-    match profile {
-        AppImeProfile::Standard => "Standard",
-        AppImeProfile::Imm32Unavailable => "Imm32Unavailable",
-        AppImeProfile::TsfNative => "TsfNative",
-        AppImeProfile::InputRelay => "InputRelay",
-    }
-}
-
-fn ime_kind_id_str(kind: crate::state::ime_kind::ImeKindId) -> &'static str {
-    use crate::state::ime_kind::ImeKindId;
-    match kind {
-        ImeKindId::Gji => "Gji",
-        ImeKindId::MsIme => "MsIme",
-    }
-}
-
-fn input_mode_state_str(state: awase::engine::InputModeState) -> &'static str {
-    use awase::engine::InputModeState;
-    match state {
-        InputModeState::ObservedRomaji => "ObservedRomaji",
-        InputModeState::ObservedKana => "ObservedKana",
-        InputModeState::ObservedEisu => "ObservedEisu",
-        InputModeState::AssumedRomaji { .. } => "AssumedRomaji",
-        InputModeState::Unknown => "Unknown",
-    }
-}
-
-fn deferred_recovery_outcome_str(o: &DeferredRecoveryOutcomeSummary) -> &'static str {
-    match o {
-        DeferredRecoveryOutcomeSummary::DiscardedStale { .. } => "DiscardedStale",
-        DeferredRecoveryOutcomeSummary::SkippedWhilePolling => "SkippedWhilePolling",
-        DeferredRecoveryOutcomeSummary::Flushed { .. } => "Flushed",
-    }
+    command.map_or("None", variant_name)
 }
 
 impl JournalEntry {
@@ -931,8 +768,8 @@ impl JournalEntry {
                     key_class = event.key_class,
                     state_before = state_before.as_str(),
                     state_after = state_after.as_str(),
-                    decision = decision_kind_str(decision),
-                    physical = physical_disposition_str(physical),
+                    decision = variant_name(decision),
+                    physical = variant_name(physical),
                     repeat_count,
                     last_timestamp_us,
                     last_elapsed_ms,
@@ -959,7 +796,7 @@ impl JournalEntry {
                     target: "awase::journal",
                     seq,
                     elapsed_ms,
-                    event_kind = ime_event_kind_str(event),
+                    event_kind = variant_name(event),
                     "ime event"
                 );
             }
@@ -991,8 +828,8 @@ impl JournalEntry {
                     elapsed_ms,
                     target_open = record.target,
                     attempts = record.attempts,
-                    policy = feedback_policy_kind_str(&record.policy),
-                    action = actuation_action_str(record.action),
+                    policy = variant_name(record.policy),
+                    action = variant_name(record.action),
                     "ime actuation"
                 );
             }
@@ -1006,30 +843,30 @@ impl JournalEntry {
                     target: "awase::journal",
                     seq,
                     elapsed_ms,
-                    site = decision_site_str(record.site),
-                    caller = record.caller.map_or("None", decision_site_str),
+                    site = variant_name(record.site),
+                    caller = record.caller.map_or("None", variant_name),
                     open = record.order.open,
                     chain_len = record.chain_len,
                     attempts_len = record.attempts_len,
-                    gate_profile = app_ime_profile_str(record.gate_inputs.profile),
-                    gate_kind = ime_kind_id_str(record.gate_inputs.kind),
+                    gate_profile = variant_name(record.gate_inputs.profile),
+                    gate_kind = variant_name(record.gate_inputs.kind),
                     gate_shadow_known = record.gate_inputs.shadow_on.is_some(),
                     gate_shadow_on = record.gate_inputs.shadow_on.unwrap_or(false),
-                    gate_input_mode = input_mode_state_str(record.gate_inputs.belief_input_mode),
+                    gate_input_mode = variant_name(record.gate_inputs.belief_input_mode),
                     first_attempt_present = first_attempt.is_some(),
                     first_mechanism = first_attempt
-                        .map_or("None", |attempt| write_mechanism_str(attempt.mechanism)),
+                        .map_or("None", |attempt| variant_name(attempt.mechanism)),
                     first_command = first_attempt
                         .map_or("None", |attempt| mechanism_command_str(attempt.command)),
                     first_outcome = first_attempt
-                        .map_or("None", |attempt| ime_open_outcome_str(attempt.outcome)),
+                        .map_or("None", |attempt| variant_name(attempt.outcome)),
                     first_with_app_available = first_attempt
                         .is_some_and(|attempt| attempt.with_app_available),
                     first_profile = first_inputs
-                        .map_or("None", |inputs| app_ime_profile_str(inputs.profile)),
-                    first_kind = first_inputs.map_or("None", |inputs| ime_kind_id_str(inputs.kind)),
+                        .map_or("None", |inputs| variant_name(inputs.profile)),
+                    first_kind = first_inputs.map_or("None", |inputs| variant_name(inputs.kind)),
                     first_input_mode = first_inputs
-                        .map_or("None", |inputs| input_mode_state_str(inputs.belief_input_mode)),
+                        .map_or("None", |inputs| variant_name(inputs.belief_input_mode)),
                     "actuation decision"
                 );
             }
@@ -1082,8 +919,8 @@ impl JournalEntry {
                     seq,
                     elapsed_ms,
                     open,
-                    outcome = ime_open_outcome_str(*outcome),
-                    reason = open_apply_reason_str(*reason),
+                    outcome = variant_name(*outcome),
+                    reason = variant_name(*reason),
                     "ime open applied"
                 );
             }
@@ -1193,7 +1030,7 @@ impl JournalEntry {
                     target: "awase::journal",
                     seq,
                     elapsed_ms,
-                    verdict = literal_verdict_str(record.facts.verdict),
+                    verdict = variant_name(record.facts.verdict),
                     consecutive_before = record.consecutive_before,
                     gave_up = record.gave_up,
                     backs = record.backs,
@@ -1208,7 +1045,7 @@ impl JournalEntry {
                     seq,
                     elapsed_ms,
                     trigger = *trigger,
-                    outcome = deferred_recovery_outcome_str(outcome),
+                    outcome = variant_name(outcome),
                     "deferred recovery flush"
                 );
             }

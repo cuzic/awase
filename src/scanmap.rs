@@ -23,8 +23,11 @@ impl PhysicalPos {
 ///
 /// 行ごとのキー数はモデルによって異なる。
 /// .yab レイアウトのパース時と、プラットフォーム層のキーコード変換で使用される。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, strum::Display,
+)]
 #[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "lowercase")]
 pub enum KeyboardModel {
     /// JIS キーボード (日本語109キー)
     /// Row 0: 13 (数字10 + `-` + `^` + `¥`), Row 1: 12, Row 2: 12, Row 3: 11
@@ -48,15 +51,6 @@ impl KeyboardModel {
         match self {
             Self::Jis => [13, 12, 12, 11],
             Self::Us => [12, 12, 11, 10],
-        }
-    }
-}
-
-impl std::fmt::Display for KeyboardModel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Jis => write!(f, "jis"),
-            Self::Us => write!(f, "us"),
         }
     }
 }

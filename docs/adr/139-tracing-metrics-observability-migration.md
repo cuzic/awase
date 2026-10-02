@@ -6,6 +6,7 @@ summary: |-
   ユーザー依頼「ログ/メトリクスをtracing/metricsクレートでRustベストプラクティスに準拠させたい、大胆かつ非連続的な変更も含めて」を受け起票。Opus 2体（architect/premortem役）の敵対的レビュー3ラウンドで収束。r1でarchitectが事実誤認6件を検出（実測1161箇所〈880超ではない〉、`app.log`ではなく`awase.log`、tracingは既にfacade3本のみ推移的依存でsubscriberスタックは全て新規、hook.rsの通常打鍵経路はログゼロで`hook_channel.rs`が既に同期I/O排除を構造的に実装済み等）。premortemがBlocker多数を検出: `architecture_guard.rs:1406`が`"log::warn!("`を構造マーカーに使い機械置換で確実にpanic（ADR-080不変条件6/BUG-33ガード）、`keymap.rs`の実行時`log::Level`分岐にtracing等価物なし、決定3の対象ファイルが`fix-requires-evidence.md`表と不一致（IME belief系が全滅）、決定4当初案（journalをtracing Layer化）は`Layer::enabled`にフィールド値が渡らず`with_app`再入で最重要イベントがdropされるため技術的に不成立。r2でarchitectが決定4に代案Option C（journal→tracingの一方向fan-out）を提案しB4/B5を解消、決定5(`metrics`crate)は`BugReportStateSnapshot`と重複するため不採用、決定5-1(awase-settingsパネル)は別プロセスでIPCが片方向のみのため実現不能と判明。r3でOption Cの設置場所を`push_journal_entry`から真の合流点`UnifiedJournal::absorb`へ訂正（premortem発見のB9、`JournalEntry::ImeEvent`が漏れる経路を防ぐ）、clippyのcognitive_complexity懸念は実測（同一構造で`log`/`tracing`とも同スコア29/15）で否認
 status: |-
   採用・実装済み（Opus 2体の敵対的レビュー計5ラウンド〈設計3+実装コード2〉で収束、Blockerゼロ）。PR #172でdevelopマージ済み（`48406822`、2026-09-06）
+  【追記 2026-10-02】決定4第2項の「判別子文字列は journal.rs 内の private fn で持つ・core crate の型に手を入れない」は ADR-215 で `strum::IntoStaticStr` の derive に上書きされた
 related_adr:
   - "ADR-019"
   - "ADR-080"
@@ -469,7 +470,7 @@ pub fn absorb(&mut self, envelope: JournalEnvelope) {
    形にした）を実質的に巻き戻す。判別子文字列は enum の型自体に `as_str()` を生やす
    のではなく、**`journal.rs` 内に閉じた private fn**として実装する（`ConvClassifyCall`
    等が保持する `awase::engine::InputModeState` のような core crate の型に手を入れず、
-   ADR-019 の依存追加議論を避けるため）。この文字列値は journal の JSON シリアライズ
+   ADR-019 の依存追加議論を避けるため）。**【追記 2026-10-02、ADR-215 が上書き】** この「journal.rs 内に閉じた private fn」と「core crate の型に手を入れない」は、ADR-215 で `strum::IntoStaticStr` の derive に置き換えた（core crate への `strum` 依存の追加を含む。ADR-019 の禁止事項には当たらない）。この文字列値は journal の JSON シリアライズ
    （serde、variant 名そのまま）と**同じ表記に揃える** — tracing 側で独自の
    snake_case 等を作ると、`log_excerpt`（JSON）を見る人と `app_log_excerpt`
    （awase.log）を見る人とで語彙が食い違い、不具合報告の triage を混乱させる。

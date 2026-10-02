@@ -150,7 +150,9 @@ use std::time::Duration;
 use crate::types::{KeyAction, RawKeyEvent};
 
 /// `apply_ime_open` の実行結果。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    strum::IntoStaticStr, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
 pub enum ImeOpenOutcome {
     /// 実 `SendInput`（VK送信）を伴って確実に設定できた（`GjiDirectStrategy`/
     /// `MsImeDirectStrategy`）。

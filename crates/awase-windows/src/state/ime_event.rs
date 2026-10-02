@@ -334,7 +334,7 @@ pub enum InputModeApplyResult {
 /// （conv-mode 軸の `ConvMutationReason` と同型の役割分担、ADR-086 §5 Phase 3
 /// item 2 の訂正経緯参照）。ログ・ジャーナルから「これは force による書き込みか、
 /// 観測に基づく是正か、エンジンの通常の決定か」が一意に読めるようにする。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(strum::IntoStaticStr, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum OpenApplyReason {
     /// `Engine::on_input`/`on_timeout` の `Decision::SetOpen` エフェクトによる、
     /// 通常のキー入力駆動の適用（`executor.rs::execute_one`/`dispatch_ime_set_open`）。
@@ -371,7 +371,7 @@ pub enum OpenApplyReason {
 /// 構造化）が必要とする。全フィールドが `Serialize` 対応のプレーンな値のみで
 /// 構成されるため機械的に導出可能。書き出し専用のため `Deserialize` は導出しない
 /// （`state::ime_actuation::ActuationRecord` と同じ方針）。
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(strum::IntoStaticStr, Debug, Clone, serde::Serialize)]
 pub enum ImeEvent {
     /// ユーザー/awase が IME を toggle したい意図
     UserImeToggleIntent { source: UserIntentSource },

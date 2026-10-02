@@ -56,6 +56,7 @@ timed-fsm = { path = "crates/timed-fsm", version = "0.5.0" }
 smallvec = "1.15.1"
 itertools = "0.13"
 rustc-hash = "2"
+strum = { version = "0.27", features = ["derive"] }
 serde_ignored = "0.1"
 
 [lints.rust]
